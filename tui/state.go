@@ -17,14 +17,16 @@ type Line struct {
 
 // State TUI 展示状态(事件驱动,线程安全由调用方保证)。
 type State struct {
-	Lines    []Line
-	Running  bool
-	Model    string
-	Profile  string
-	Error    string
-	Input    string
-	Cursor   int
-	LastTool string
+	Lines          []Line
+	Running        bool
+	Model          string
+	Profile        string
+	Error          string
+	Input          string
+	Cursor         int
+	LastTool       string
+	Sandbox        string // 沙箱档位显示(read-only|workspace-write|full-access)
+	PendingConfirm string // 非空 = 有待确认的危险操作(确认弹层)
 }
 
 // ApplySessionEvent 把会话事件推进到展示状态(纯逻辑,可测)。
@@ -87,6 +89,17 @@ func (s *State) ApplyStatus(status string) {
 }
 
 // SetError 设置错误(输入处理失败等)。
+// ApplyConfirmPrompt 显示确认弹层。
+func (s *State) ApplyConfirmPrompt(prompt string) {
+	s.PendingConfirm = prompt
+}
+
+// ResolveConfirm 用户答复后清除弹层,返回决定。
+func (s *State) ResolveConfirm(ok bool) bool {
+	s.PendingConfirm = ""
+	return ok
+}
+
 func (s *State) SetError(msg string) {
 	s.Error = msg
 	s.Lines = append(s.Lines, Line{Kind: "error", Text: msg})

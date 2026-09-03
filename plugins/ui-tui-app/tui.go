@@ -39,6 +39,10 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		}
 	}
 	app := tui.NewApp(c, loop, llm, profile)
+	// 确认服务(审批弹层)注册到宿主;未装配时 policy-approval 按安全默认拒绝
+	if err := c.Provide("ctx.confirm", app); err != nil {
+		return nil, err
+	}
 	if err := app.Start(); err != nil {
 		return nil, err
 	}

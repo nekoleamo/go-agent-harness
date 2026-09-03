@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+
+	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
 var (
@@ -56,8 +58,8 @@ func Render(s *State, width, height int) string {
 		state = "运行中…"
 	}
 	status := styleStatus.Render(fmt.Sprintf(
-		" gah | %s | %s | 模型: %s | %s%s",
-		s.Profile, state, orDefault(s.Model, "未设置"), s.LastTool, strings.Repeat(" ", width),
+		" gah | %s | %s | 模型: %s | 沙箱: %s%s",
+		s.Profile, state, orDefault(s.Model, "未设置"), orDefault(s.Sandbox, string(sdk.SandboxWorkspace)), strings.Repeat(" ", width),
 	))
 
 	return lipgloss.JoinVertical(lipgloss.Left, main, input, status)

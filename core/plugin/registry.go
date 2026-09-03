@@ -141,6 +141,12 @@ func cyclic(manifest map[string]*sdk.Manifest, order []string) []string {
 
 // StartAll 按拓扑序启动全部插件。任一个启动失败则逆序回滚已启动插件,返回错误。
 func (r *Registry) StartAll(c sdk.Ctx) error {
+	return r.StartSubset(c, nil)
+}
+
+// StartSubset 按拓扑序启动 enabled 子集(nil/空 = 全部;配置树启停的装配入口)。
+// 未启用的已注册插件保持 stopped 态,可经 plugin-manager 运行期 Load。
+func (r *Registry) StartSubset(c sdk.Ctx, enabled map[string]bool) error {
 	order, err := r.AssertAvailable()
 	if err != nil {
 		return err
@@ -151,6 +157,9 @@ func (r *Registry) StartAll(c sdk.Ctx) error {
 
 	var started []string
 	for _, id := range order {
+		if enabled != nil && !enabled[id] {
+			continue
+		}
 		if err := r.startOne(c, id); err != nil {
 			// 回滚:已启动的逆序 dispose
 			for i := len(started) - 1; i >= 0; i-- {

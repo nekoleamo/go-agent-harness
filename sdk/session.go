@@ -64,4 +64,8 @@ type SessionLog interface {
 	Replay() []SessionEvent
 	// Flush 落盘(内存会话为 no-op)。
 	Flush() error
+
+	// SetHistory 设置历史注入条数:-1 = 禁止注入;0 = 全部(unlimited);N>0 = 最近 N 条。
+	// 对齐设计 §9:history injection(默认 unlimited)。
+	SetHistory(n int)
 }

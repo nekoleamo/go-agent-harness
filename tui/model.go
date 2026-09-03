@@ -16,6 +16,8 @@ type statusMsg struct{ status string }
 
 type agentDoneMsg struct{ err error }
 
+type confirmMsg struct{ prompt string }
+
 // Model 实现 tea.Model。
 type Model struct {
 	state *State
@@ -24,6 +26,7 @@ type Model struct {
 
 	onSubmit  func(input string)     // 普通输入提交(注入)
 	onCommand func(cmd string) error // 命令处理(注入)
+	onConfirm func(ok bool)          // 确认答复(注入;见 app.Confirm)
 }
 
 func (m *Model) Init() tea.Cmd { return nil }
@@ -41,6 +44,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.state.SetError("回合失败: " + msg.err.Error())
 		}
 		m.state.Running = false
+	case confirmMsg:
+		m.state.ApplyConfirmPrompt(msg.prompt)
 	case tea.KeyMsg:
 		m.handleKey(msg)
 	}
@@ -58,6 +63,18 @@ func (m *Model) View() tea.View {
 
 func (m *Model) handleKey(msg tea.KeyMsg) {
 	k := msg.Key()
+	// 确认弹层优先:y/n 决定(任何确认态下的键入不再进输入框)
+	if m.state.PendingConfirm != "" {
+		switch k.Code {
+		case 'y', 'Y':
+			m.state.ResolveConfirm(true)
+			m.onConfirm(true)
+		case 'n', 'N':
+			m.state.ResolveConfirm(false)
+			m.onConfirm(false)
+		}
+		return
+	}
 	// Ctrl+C:输入为空退出,输入中清空
 	if k.Mod&tea.ModCtrl != 0 && (k.Code == 'c' || k.Code == 'C') {
 		if m.state.Input == "" {

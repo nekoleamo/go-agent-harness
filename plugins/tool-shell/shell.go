@@ -66,7 +66,7 @@ func (s *ShellTool) Execute(ctx context.Context, raw string) (any, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(dctx, "sh", "-c", a.Command)
-	cmd.Env = os.Environ() // 凭据白名单化在 M4 引入
+	cmd.Env = sdk.SanitizedEnv(os.Environ()) // 凭据隔离:滤除 *_API_KEY/*_TOKEN 等
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return map[string]any{

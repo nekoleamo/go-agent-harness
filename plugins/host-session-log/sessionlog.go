@@ -42,12 +42,13 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 // Log 是会话日志实现。事件并发追加,jsonl 落盘(按项目 key 一个文件)。
 // 每次 Append 后经 ctx 广播 session/event(供 UI/遥测实时订阅)。
 type Log struct {
-	mu     sync.Mutex
-	events []sdk.SessionEvent
-	seq    atomic.Uint64
-	file   *os.File
-	path   string
-	ctx    sdk.Ctx
+	mu           sync.Mutex
+	events       []sdk.SessionEvent
+	seq          atomic.Uint64
+	file         *os.File
+	path         string
+	ctx          sdk.Ctx
+	historyLimit int // -1 禁止 / 0 全部 / N>0 最近 N 条
 }
 
 func newLog(dir string) *Log {
@@ -142,7 +143,21 @@ func (l *Log) DeriveMessages() []sdk.LLMMessage {
 			}
 		}
 	}
+	// history injection:-1 禁止(仅系统消息由组装层补充);N>0 保留最近 N 条;0 = 全部
+	if l.historyLimit < 0 {
+		return nil
+	}
+	if l.historyLimit > 0 && len(out) > l.historyLimit {
+		out = out[len(out)-l.historyLimit:]
+	}
 	return out
+}
+
+// SetHistory 设置历史注入条数。-1 禁止;0 全部;N>0 最近 N 条。
+func (l *Log) SetHistory(n int) {
+	l.mu.Lock()
+	l.historyLimit = n
+	l.mu.Unlock()
 }
 
 // Replay 全量回放。

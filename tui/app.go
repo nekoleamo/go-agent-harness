@@ -3,6 +3,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -14,24 +15,41 @@ import (
 // 事件流:session/event + agent/status 广播 → program.Send → Update → 渲染。
 // 输入:onSubmit → goroutine 跑 agentLoop.Run(回合异步,不阻塞 UI)。
 type App struct {
-	model   *Model
-	program *tea.Program
-	c       sdk.Ctx
-	loop    sdk.AgentLoop
-	llm     sdk.LLMService
-
-	subs []sdk.Disposer
+	model     *Model
+	program   *tea.Program
+	c         sdk.Ctx
+	loop      sdk.AgentLoop
+	llm       sdk.LLMService
+	confirmCh chan bool // Confirm 阻塞等待用户答复
+	subs      []sdk.Disposer
 }
 
 // NewApp 构造 TUI 应用。
 func NewApp(c sdk.Ctx, loop sdk.AgentLoop, llm sdk.LLMService, profile string) *App {
 	state := &State{Profile: profile}
 	m := &Model{state: state}
-	a := &App{model: m, c: c, loop: loop, llm: llm}
+	a := &App{model: m, c: c, loop: loop, llm: llm, confirmCh: make(chan bool, 1)}
 	m.onSubmit = a.submit
 	m.onCommand = a.command
+	m.onConfirm = a.confirmResult
 	a.program = tea.NewProgram(m)
 	return a
+}
+
+// Confirm 实现 sdk.ConfirmService:弹层询问用户 y/n。
+// 无 UI 运行(非 TTY 降级)时 UI 插件不装配本服务,策略拒绝(安全默认)。
+func (a *App) Confirm(ctx context.Context, prompt string) (bool, error) {
+	a.program.Send(confirmMsg{prompt})
+	select {
+	case ok := <-a.confirmCh:
+		return ok, nil
+	case <-ctx.Done():
+		return false, ctx.Err()
+	}
+}
+
+func (a *App) confirmResult(ok bool) {
+	a.confirmCh <- ok
 }
 
 // Start 启动 TUI(goroutine 跑 Run),挂接事件订阅。
@@ -94,14 +112,128 @@ func (a *App) command(raw string) error {
 		}
 		a.llm.SetModel(fields[1])
 		a.model.state.Model = fields[1]
+	case "sandbox":
+		return a.cmdSandbox(fields)
+	case "plugins":
+		return a.cmdPlugins(fields)
+	case "settings":
+		return a.cmdSettings(fields)
+	case "export":
+		return a.cmdExport()
 	case "help":
 		a.model.state.Lines = append(a.model.state.Lines,
-			Line{Kind: "meta", Text: "命令:/model <名> 切换模型 | /help 帮助 | /exit 退出(其余命令 M4 接入)"})
-	case "sandbox", "plugins", "sessions", "jobs", "settings", "export":
-		return errString("/" + fields[0] + " 将在 M4 可用")
+			Line{Kind: "meta", Text: "命令:/model <名> | /sandbox ro|ws|full | /plugins list|on|off|unload | /settings history N|off | /export | /help | /exit"})
+	case "sessions", "jobs":
+		return errString("/" + fields[0] + " 将在 M5 可用")
 	default:
 		return errString("未知命令 /" + fields[0] + "(输入 /help)")
 	}
+	return nil
+}
+
+func (a *App) cmdSandbox(fields []string) error {
+	if len(fields) < 2 {
+		return errString("/sandbox ro|ws|full(read-only|workspace-write|full-access)")
+	}
+	var sb sdk.Sandbox
+	if err := a.c.Inject("ctx.sandbox", &sb); err != nil {
+		return errString("ctx.sandbox 未装配: " + err.Error())
+	}
+	var mode sdk.SandboxMode
+	switch fields[1] {
+	case "ro":
+		mode = sdk.SandboxReadOnly
+	case "ws":
+		mode = sdk.SandboxWorkspace
+	case "full":
+		mode = sdk.SandboxFullAccess
+	default:
+		return errString("/sandbox ro|ws|full")
+	}
+	sb.SetMode(mode)
+	a.model.state.Sandbox = string(mode)
+	return nil
+}
+
+func (a *App) cmdPlugins(fields []string) error {
+	var mgr sdk.PluginManager
+	if err := a.c.Inject("ctx.pluginManager", &mgr); err != nil {
+		return errString("ctx.pluginManager 未装配: " + err.Error())
+	}
+	if len(fields) < 2 {
+		rows := "插件:"
+		for _, info := range mgr.List() {
+			rows += "\n  " + info.ID + " [" + info.Type + "] " + info.State
+		}
+		a.model.state.Lines = append(a.model.state.Lines, Line{Kind: "meta", Text: rows})
+		return nil
+	}
+	switch fields[1] {
+	case "on", "load":
+		if len(fields) < 3 {
+			return errString("/plugins on <id>")
+		}
+		if err := mgr.Load(fields[2]); err != nil {
+			return errString(err.Error())
+		}
+		return nil
+	case "off", "unload":
+		if len(fields) < 3 {
+			return errString("/plugins off <id>")
+		}
+		if err := mgr.Unload(fields[2]); err != nil {
+			return errString(err.Error())
+		}
+		return nil
+	case "list":
+		rows := "插件:"
+		for _, info := range mgr.List() {
+			rows += "\n  " + info.ID + " [" + info.Type + "] " + info.State
+		}
+		a.model.state.Lines = append(a.model.state.Lines, Line{Kind: "meta", Text: rows})
+		return nil
+	default:
+		return errString("/plugins list|on|off <id>")
+	}
+}
+
+func (a *App) cmdSettings(fields []string) error {
+	var sessions sdk.SessionLog
+	if err := a.c.Inject("ctx.sessions", &sessions); err != nil {
+		return errString("ctx.sessions 未装配")
+	}
+	if len(fields) < 3 || fields[1] != "history" {
+		return errString("/settings history N|off|unlimited")
+	}
+	var n int
+	switch fields[2] {
+	case "off":
+		n = -1
+	case "unlimited":
+		n = 0
+	default:
+		if _, err := fmt.Sscanf(fields[2], "%d", &n); err != nil || n < 0 {
+			return errString("/settings history N|off|unlimited")
+		}
+	}
+	sessions.SetHistory(n)
+	a.model.state.Lines = append(a.model.state.Lines,
+		Line{Kind: "meta", Text: "/settings history -> " + fields[2]})
+	return nil
+}
+
+func (a *App) cmdExport() error {
+	var sessions sdk.SessionLog
+	if err := a.c.Inject("ctx.sessions", &sessions); err != nil {
+		return errString("ctx.sessions 未装配")
+	}
+	evs := sessions.Replay()
+	var sb strings.Builder
+	for _, ev := range evs {
+		sb.WriteString(ev.Kind + " ")
+	}
+	a.model.state.Lines = append(a.model.state.Lines,
+		Line{Kind: "meta", Text: "会话事件数: " + fmt.Sprint(len(evs)) + " | 序列: " + sb.String()})
 	return nil
 }
 

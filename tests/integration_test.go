@@ -11,6 +11,7 @@ import (
 	"github.com/nekoleamo/go-agent-harness/core/ctx"
 	"github.com/nekoleamo/go-agent-harness/core/event"
 	"github.com/nekoleamo/go-agent-harness/core/plugin"
+	"github.com/nekoleamo/go-agent-harness/plugins/catalogue"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -29,16 +30,42 @@ func buildTestEnv(t *testing.T) (*ctx.Ctx, *plugin.Registry) {
 		{ID: "host-system-prompt"},
 		{ID: "llm-mock"},
 		{ID: "tool-shell"},
+		{ID: "policy-sandbox", Data: map[string]any{"mode": "workspace-write"}},
 		{ID: "host-agent-loop"},
 	})
+	// 内部服务(boot 同款,见 cmd/gah)
+	if err := c.Provide("system.registry", reg); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Provide("system.catalogue", catalogueInfoForTest()); err != nil {
+		t.Fatal(err)
+	}
 	if err := base.RegisterAll(reg, tree); err != nil {
 		t.Fatal(err)
 	}
-	if err := reg.StartAll(c); err != nil {
+	if err := reg.StartSubset(c, enabledSetForTest(tree)); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { reg.DisposeAll() })
 	return c, reg
+}
+
+func catalogueInfoForTest() map[string]sdk.PluginInfo {
+	out := make(map[string]sdk.PluginInfo)
+	for id, d := range catalogue.All {
+		out[id] = sdk.PluginInfo{ID: id, Type: d.Manifest.Type, Bundle: d.Bundle}
+	}
+	return out
+}
+
+func enabledSetForTest(tree *config.Tree) map[string]bool {
+	set := make(map[string]bool)
+	for _, id := range tree.List() {
+		if tree.Enabled(id) {
+			set[id] = true
+		}
+	}
+	return set
 }
 
 func TestEndToEndTurn(t *testing.T) {
@@ -146,6 +173,38 @@ func TestVetoViaPreExecute(t *testing.T) {
 type policyErr struct{ msg string }
 
 func (e *policyErr) Error() string { return e.msg }
+
+func TestSandboxReadOnlyBlocksShell(t *testing.T) {
+	c, _ := buildTestEnv(t)
+	var sb sdk.Sandbox
+	if err := c.Inject("ctx.sandbox", &sb); err != nil {
+		t.Fatal(err)
+	}
+	// 默认 workspace-write:shell 放行
+	var tools sdk.ToolRegistry
+	if err := c.Inject("ctx.tools", &tools); err != nil {
+		t.Fatal(err)
+	}
+	res, err := tools.Execute(context.Background(), "shell", `{"command":"echo ok"}`)
+	if err != nil || res.Error != "" {
+		t.Fatalf("workspace-write 下 shell 应放行,err=%v res=%+v", err, res)
+	}
+	// read-only:shell 被 veto(structured 错误,不中断)
+	sb.SetMode(sdk.SandboxReadOnly)
+	res, err = tools.Execute(context.Background(), "shell", `{"command":"echo blocked"}`)
+	if err != nil {
+		t.Fatalf("veto 应转为结构化结果,got err: %v", err)
+	}
+	if res.Error == "" {
+		t.Fatalf("read-only 下 shell 应被拦截: %+v", res)
+	}
+	// 切回 full-access:放行
+	sb.SetMode(sdk.SandboxFullAccess)
+	res, err = tools.Execute(context.Background(), "shell", `{"command":"echo free"}`)
+	if err != nil || res.Error != "" {
+		t.Fatalf("full-access 下 shell 应放行,err=%v res=%+v", err, res)
+	}
+}
 
 func requireKind(t *testing.T, kinds []string, kind string) {
 	t.Helper()

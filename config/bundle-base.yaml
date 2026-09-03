@@ -13,6 +13,8 @@ entries:
   - id: policy-sandbox
     data:
       mode: workspace-write
+  - id: policy-approval
+  - id: host-plugin-manager
   - id: host-cwd-sessions
     enabled: false
   - id: host-jobs
