@@ -5,6 +5,8 @@ import "time"
 
 // 持久会话事件 Kind(对齐 dsh 轮次流程的事件域)。
 const (
+	// EventSession 广播:每次会话事件 Append 后发出(UI/遥测实时订阅;对齐 dsh session/event)。
+	EventSession          = "session/event"
 	EventTurnStart        = "turn/start"
 	EventTurnEnd          = "turn/end"
 	EventStepStart        = "step/start"

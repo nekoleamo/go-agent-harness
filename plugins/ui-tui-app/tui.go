@@ -1,0 +1,55 @@
+// Package uitui 提供 ui-tui-app 插件:挂载 TUI 界面(设计:UI 本身也是插件)。
+// 非 TTY 环境自动降级(跳过 TUI);GAH_NO_TUI 环境变量强制关闭(headless/CI)。
+package uitui
+
+import (
+	"os"
+
+	"github.com/nekoleamo/go-agent-harness/sdk"
+	"github.com/nekoleamo/go-agent-harness/tui"
+)
+
+// Plugin 实现 ui-tui-app。requires ctx.agentLoop/ctx.llm(会话事件经 ctx 广播订阅)。
+type Plugin struct{}
+
+func (p *Plugin) Name() string { return "ui-tui-app" }
+
+// Start 注入依赖并启动 TUI。
+func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
+	if os.Getenv("GAH_NO_TUI") != "" {
+		return func() {}, nil
+	}
+	if !stdinIsTTY() {
+		// 非交互环境:降级,不启动 TUI
+		return func() {}, nil
+	}
+
+	var loop sdk.AgentLoop
+	var llm sdk.LLMService
+	if err := c.Inject("ctx.agentLoop", &loop); err != nil {
+		return nil, err
+	}
+	if err := c.Inject("ctx.llm", &llm); err != nil {
+		return nil, err
+	}
+	profile := "tui"
+	if m != nil && m.Data != nil {
+		if pr, ok := m.Data["profile"].(string); ok {
+			profile = pr
+		}
+	}
+	app := tui.NewApp(c, loop, llm, profile)
+	if err := app.Start(); err != nil {
+		return nil, err
+	}
+	return func() { app.Close() }, nil
+}
+
+// stdinIsTTY 检测 stdin 是否为交互终端(管道/重定向时降级文本)。
+func stdinIsTTY() bool {
+	fi, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
+}

@@ -1,0 +1,166 @@
+// Package tui 提供 ui-tui-app 的界面实现(bubbletea v2 + lipgloss)。
+// 状态机与渲染为纯逻辑,可脱离终端单测;bubbletea 壳仅做事件分发。
+package tui
+
+import (
+	"strings"
+
+	"github.com/nekoleamo/go-agent-harness/sdk"
+)
+
+// Line 会话流展示行。
+type Line struct {
+	Kind      string // user|assistant|tool|meta|error
+	Text      string
+	Streaming bool // assistant 流式增量中
+}
+
+// State TUI 展示状态(事件驱动,线程安全由调用方保证)。
+type State struct {
+	Lines    []Line
+	Running  bool
+	Model    string
+	Profile  string
+	Error    string
+	Input    string
+	Cursor   int
+	LastTool string
+}
+
+// ApplySessionEvent 把会话事件推进到展示状态(纯逻辑,可测)。
+func (s *State) ApplySessionEvent(ev *sdk.SessionEvent) {
+	switch ev.Kind {
+	case sdk.EventUserMessage:
+		if u, ok := ev.Payload.(sdk.UserMessage); ok {
+			s.Lines = append(s.Lines, Line{Kind: "user", Text: u.Content})
+		}
+	case sdk.EventAssistantChunk:
+		if cev, ok := ev.Payload.(sdk.LLMStreamEvent); ok && cev.Delta != "" {
+			s.appendStreaming(cev.Delta)
+		}
+	case sdk.EventAssistantMessage:
+		if a, ok := ev.Payload.(sdk.AssistantMessage); ok {
+			s.finishStreaming(a.Content)
+			if len(a.ToolCalls) > 0 {
+				for _, tc := range a.ToolCalls {
+					s.Lines = append(s.Lines, Line{Kind: "tool", Text: toolCallText(tc)})
+				}
+			}
+		}
+	case sdk.EventToolCall:
+		if tc, ok := ev.Payload.(sdk.ToolCallEvent); ok {
+			s.Lines = append(s.Lines, Line{Kind: "tool", Text: toolCallText(sdk.ToolCall{ID: tc.ID, Name: tc.Name, Arguments: tc.Arguments})})
+		}
+	case sdk.EventToolResult:
+		if r, ok := ev.Payload.(sdk.ToolResultEvent); ok {
+			sum := r.Content
+			if len(sum) > 160 {
+				sum = sum[:160] + "…"
+			}
+			kind := "tool"
+			label := "✓"
+			if r.Error != "" {
+				kind = "error"
+				label = "✗"
+				sum = r.Error
+			}
+			s.Lines = append(s.Lines, Line{Kind: kind, Text: label + " " + r.Name + ": " + sum})
+		}
+	case sdk.EventTurnEnd:
+		s.Lines = append(s.Lines, Line{Kind: "meta", Text: "—— 轮次结束 ——"})
+	case sdk.EventAgentError:
+		if err, ok := ev.Payload.(error); ok {
+			s.Error = err.Error()
+			s.Lines = append(s.Lines, Line{Kind: "error", Text: "agent error: " + err.Error()})
+		}
+	}
+}
+
+// ApplyStatus 处理 agent/status(running/idle)。
+func (s *State) ApplyStatus(status string) {
+	switch status {
+	case "running":
+		s.Running = true
+	case "idle":
+		s.Running = false
+	}
+}
+
+// SetError 设置错误(输入处理失败等)。
+func (s *State) SetError(msg string) {
+	s.Error = msg
+	s.Lines = append(s.Lines, Line{Kind: "error", Text: msg})
+}
+
+func (s *State) appendStreaming(delta string) {
+	if n := len(s.Lines); n > 0 && s.Lines[n-1].Kind == "assistant" && s.Lines[n-1].Streaming {
+		s.Lines[n-1].Text += delta
+		return
+	}
+	s.Lines = append(s.Lines, Line{Kind: "assistant", Text: delta, Streaming: true})
+}
+
+func (s *State) finishStreaming(final string) {
+	if n := len(s.Lines); n > 0 && s.Lines[n-1].Kind == "assistant" && s.Lines[n-1].Streaming {
+		s.Lines[n-1].Text = final
+		s.Lines[n-1].Streaming = false
+		return
+	}
+	if final != "" {
+		s.Lines = append(s.Lines, Line{Kind: "assistant", Text: final})
+	}
+}
+
+// InsertRune 输入字符。
+func (s *State) InsertRune(r rune) {
+	b := []rune(s.Input)
+	b = append(b[:s.Cursor], append([]rune{r}, b[s.Cursor:]...)...)
+	s.Input = string(b)
+	s.Cursor++
+}
+
+// Backspace 删除光标前一字符。
+func (s *State) Backspace() {
+	if s.Cursor <= 0 || s.Input == "" {
+		return
+	}
+	b := []rune(s.Input)
+	s.Input = string(append(b[:s.Cursor-1], b[s.Cursor:]...))
+	s.Cursor--
+}
+
+// ClearInput 提交后清空输入。
+func (s *State) ClearInput() {
+	s.Input = ""
+	s.Cursor = 0
+}
+
+func toolCallText(tc sdk.ToolCall) string {
+	args := tc.Arguments
+	if len(args) > 80 {
+		args = args[:80] + "…"
+	}
+	return "⚙ " + tc.Name + " " + args
+}
+
+// visible 滚动窗口:只渲染最近 n 行。
+func (s *State) visible(n int) []Line {
+	if len(s.Lines) <= n {
+		return s.Lines
+	}
+	return s.Lines[len(s.Lines)-n:]
+}
+
+// RecentLines 供测试:返回当前展示行文本。
+func (s *State) RecentLines(n int) []string {
+	out := make([]string, 0, len(s.Lines))
+	for _, l := range s.visible(n) {
+		out = append(out, l.Kind+": "+l.Text)
+	}
+	return out
+}
+
+// InputText 命令判定:以 / 开头。
+func (s *State) IsCommand() bool {
+	return strings.HasPrefix(s.Input, "/")
+}

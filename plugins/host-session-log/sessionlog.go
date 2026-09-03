@@ -5,6 +5,7 @@
 package sessionlog
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -31,6 +32,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		}
 	}
 	lg := newLog(path)
+	lg.ctx = c
 	if err := c.Provide("ctx.sessions", lg); err != nil {
 		return nil, err
 	}
@@ -38,12 +40,14 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 }
 
 // Log 是会话日志实现。事件并发追加,jsonl 落盘(按项目 key 一个文件)。
+// 每次 Append 后经 ctx 广播 session/event(供 UI/遥测实时订阅)。
 type Log struct {
 	mu     sync.Mutex
 	events []sdk.SessionEvent
 	seq    atomic.Uint64
 	file   *os.File
 	path   string
+	ctx    sdk.Ctx
 }
 
 func newLog(dir string) *Log {
@@ -77,6 +81,9 @@ func (l *Log) Append(ev sdk.SessionEvent) error {
 		_, jerr = l.file.Write(append(line, '\n'))
 	}
 	l.mu.Unlock()
+	if l.ctx != nil {
+		l.ctx.Emit(context.Background(), sdk.EventSession, &ev, sdk.Emit)
+	}
 	return jerr
 }
 

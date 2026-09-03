@@ -152,6 +152,19 @@ func ReadPatch(path string) ([]Entry, error) {
 	return p.Entries, nil
 }
 
+// BundlesOfProfile 只读 profile 声明的 bundle 列表(供 boot 装配器调度,避免破坏 LoadProfile 签名)。
+func BundlesOfProfile(profilePath string) ([]string, error) {
+	raw, err := os.ReadFile(profilePath)
+	if err != nil {
+		return nil, err
+	}
+	var p Profile
+	if err := yaml.Unmarshal(raw, &p); err != nil {
+		return nil, err
+	}
+	return p.Bundles, nil
+}
+
 // ReadBundle 读取 bundle 文件(独立使用的便捷入口)。
 func ReadBundle(path string) (*Bundle, error) {
 	raw, err := os.ReadFile(path)
