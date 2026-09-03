@@ -316,7 +316,18 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 | **M5.5**(已交付) | ✅ 指令文件注入(全局/项目 AGENTS.md,顺序即覆盖)+ ✅ 技能机制(host-skills)+ ✅ 技能自注册(gah-plugin-dev) | 指令与技能按需加载 |
 | **完善 A 组**(已交付) | ✅ 会话持久化+项目隔离(host-cwd-sessions)+ ✅ LLM 断流指数退避重试(§11)+ ✅ TUI 回合取消(Esc→取消链) | 跨期共享隔离;断流自愈;可中断 |
 | **完善 B 组**(已交付) | ✅ apiVersion 语义化校验(SDK 兼容红线,go-version)+ ✅ /export 真导出(jsonl)+ ✅ 外部插件热重载接线(host-bridge watch→自动重载)+ ✅ go:embed 配置样板+home 首启释放+`--ephemeral` 落地(空目录发布实测通过) | 发布形态自包含;插件版本兼容强制;外部插件更新自动生效 |
+| **M6 规划**(待交付) | 见下(§14.1 未交付规划清单;按需求逐个实现,无硬性交付线) | 每项独立验收 |
 | **交付门**(已通过) | 单二进制 <25MB / `CGO_ENABLED=0` / 六目标交叉编译 / 裸机 scp 启动 | ✅ 实测数据见 §7.6 |
+
+### 14.1 未交付规划清单(M6,按需逐个实现)
+
+| 项 | 内容 | 验收 |
+|---|---|---|
+| M6.1 host-jobs 后台任务 | `ctx.jobs` 服务(提交/列表/输出/终止)+ 模型工具(job_list/job_output/job_kill)+ TUI `/jobs list\|output\|kill`;对接 workflow background | 后台任务可提交/取回/终止,不阻塞回合 |
+| M6.2 子代理 fanout | workflow 增加 agent/parallel/pipeline 编排(独立 agent 上下文,复用现有 agent-loop / 会话隔离) | 脚本可扇出多个子代理并行执行并聚合 |
+| M6.3 pty 交互 | tool-shell 引入 `creack/pty`(data.pty 开关):交互式命令(REPL/git 编辑器等) | shell 工具可驱动交互式进程 |
+| M6.4 tool-files / tool-web | 文件工具(读写/编辑,经 `ctx.sandbox.ValidatePath` 联动)+ 纯 Go HTTP fetch 工具 | 文件操作受沙箱三档约束;fetch 零外部依赖 |
+| M6.5 token 压缩 | 会话超限时滚动摘要压缩(完整日志仍留盘)(§9) | 长会话注入 token 受限可用 |
 
 ## 15. 风险与权衡
 
