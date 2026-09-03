@@ -129,4 +129,4 @@ goreleaser release --snapshot
 
 ## 十、协议
 
-未指定 license;内部项目,代码与文档供参考学习。
+**MIT License**(见 [LICENSE](./LICENSE),© 2026 nekoleamo):宽松许可,允许任意使用/修改/商用闭源分发。
