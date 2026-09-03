@@ -8,6 +8,7 @@ import (
 	"github.com/nekoleamo/go-agent-harness/plugins/host-llm"
 	"github.com/nekoleamo/go-agent-harness/plugins/host-plugin-manager"
 	"github.com/nekoleamo/go-agent-harness/plugins/host-session-log"
+	"github.com/nekoleamo/go-agent-harness/plugins/host-skills"
 	"github.com/nekoleamo/go-agent-harness/plugins/host-system-prompt"
 	"github.com/nekoleamo/go-agent-harness/plugins/host-tools"
 	"github.com/nekoleamo/go-agent-harness/plugins/llm-mock"
@@ -42,6 +43,9 @@ var All = map[string]Def{
 	"host-system-prompt": {Factory: func() sdk.Plugin { return &hostsystemprompt.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "host-system-prompt", Type: "host", APIVersion: ">=1.0,<2.0",
 		Provides: []string{"ctx.systemPrompt"}}, Bundle: "base"},
+	"host-skills": {Factory: func() sdk.Plugin { return &hostskills.Plugin{} }, Manifest: &sdk.Manifest{
+		ID: "host-skills", Type: "host", APIVersion: ">=1.0,<2.0",
+		Requires: []string{"ctx.tools", "ctx.systemPrompt"}}, Bundle: "base"},
 	"policy-approval": {Factory: func() sdk.Plugin { return &policyapproval.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "policy-approval", Type: "policy", APIVersion: ">=1.0,<2.0"}, Bundle: "base"},
 	"policy-sandbox": {Factory: func() sdk.Plugin { return &policysandbox.Plugin{} }, Manifest: &sdk.Manifest{

@@ -14,6 +14,7 @@ entries:
     data:
       mode: workspace-write
   - id: policy-approval
+  - id: host-skills
   - id: host-plugin-manager
   - id: host-cwd-sessions
     enabled: false
