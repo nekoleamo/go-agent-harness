@@ -1,0 +1,6 @@
+# dev profile:最小样例,用于 --dump-config 演示与配置层测试。
+name: dev
+bundles:
+  - base
+patches:
+  - patch-example.yaml

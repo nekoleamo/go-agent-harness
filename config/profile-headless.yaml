@@ -1,0 +1,5 @@
+# headless profile:无 UI 一次性运行器(CI/自动化/容器)。
+name: headless
+bundles:
+  - base
+patches: []

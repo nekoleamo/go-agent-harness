@@ -1,0 +1,5 @@
+# tui bundle:叠加界面插件(ui-tui-app,模块在 tui/ 包)。
+name: tui
+entries:
+  - id: ui-tui-app
+    enabled: true
