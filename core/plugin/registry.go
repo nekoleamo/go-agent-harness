@@ -188,6 +188,40 @@ func (r *Registry) startOne(c sdk.Ctx, id string) error {
 	return nil
 }
 
+// BlockedByLoaded 返回仍加载且依赖 id 所提供服务键的插件(运行期卸载防护)。
+func (r *Registry) BlockedByLoaded(id string) []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	m, ok := r.manifest[id]
+	if !ok {
+		return nil
+	}
+	if _, running := r.instances[id]; !running {
+		return nil // 未加载,卸载无影响
+	}
+	provided := map[string]bool{}
+	for _, k := range m.Provides {
+		provided[k] = true
+	}
+	var blocked []string
+	for oid, om := range r.manifest {
+		if oid == id {
+			continue
+		}
+		if _, running := r.instances[oid]; !running {
+			continue
+		}
+		for _, need := range om.Requires {
+			if provided[need] {
+				blocked = append(blocked, oid)
+				break
+			}
+		}
+	}
+	sort.Strings(blocked)
+	return blocked
+}
+
 // Dispose 逆序执行某插件的全部 disposers(幂等)。
 func (r *Registry) Dispose(id string) {
 	r.mu.Lock()

@@ -125,6 +125,8 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 ## 4. 生命周期与热重载
 - 卸载 = Disposer 链逆序执行(后注册先撤销)。
 - 运行期插拔:`host-plugin-manager`(plugins/manager.go)提供 Load/Unload;TUI `/plugins on|off`。
+- **结构性防护**:卸载被已加载插件依赖的插件会被拒绝(`BlockedByLoaded`,显式报错:先卸依赖者或走配置切换)——结构性服务(host-tools 等)建议配置层切换(重启生效)。
+- **工具同名注册**被忽略并记录警告(不静默):替换同名工具 = 先关闭旧提供者插件,再启用新插件。
 - 外部进程插件(崩溃隔离):host-bridge(go-plugin net/rpc)/ mcp-bridge(MCP stdio),见各自包注释与测试。
 
 ## 5. 检查清单(提交前)

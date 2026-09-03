@@ -2,6 +2,7 @@ package hostplugmgr_test
 
 import (
 	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/nekoleamo/go-agent-harness/core/config"
@@ -99,6 +100,26 @@ func TestUnloadRemovesToolLoadRestores(t *testing.T) {
 	}
 	if _, ok := tools.Get("shell"); !ok {
 		t.Fatal("重载后 shell 工具应恢复")
+	}
+}
+
+func TestUnloadStructuralBlocked(t *testing.T) {
+	c, _, m := buildEnv(t)
+	// tool-shell 已加载且依赖 ctx.tools:卸载 host-tools 应被拒绝
+	err := m.Unload("host-tools")
+	if err == nil {
+		t.Fatal("卸载被依赖的结构性插件应被拒绝")
+	}
+	if !strings.Contains(err.Error(), "依赖") {
+		t.Fatalf("错误应提示依赖关系: %v", err)
+	}
+	// 宿主与工具仍完好
+	var tools sdk.ToolRegistry
+	if err := c.Inject("ctx.tools", &tools); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := tools.Get("shell"); !ok {
+		t.Fatal("拒绝卸载后工具应保持可用")
 	}
 }
 

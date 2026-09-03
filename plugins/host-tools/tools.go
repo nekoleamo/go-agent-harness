@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 
@@ -19,7 +20,7 @@ func (p *Plugin) Name() string { return "host-tools" }
 
 // Start 注册 ctx.tools 服务。
 func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
-	r := &reg{c: c, tools: make(map[string]sdk.Tool)}
+	r := &reg{c: c, tools: make(map[string]sdk.Tool), logger: c.Logger()}
 	if err := c.Provide("ctx.tools", r); err != nil {
 		return nil, err
 	}
@@ -27,10 +28,11 @@ func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
 }
 
 type reg struct {
-	c     sdk.Ctx
-	mu    sync.RWMutex
-	order []string
-	tools map[string]sdk.Tool
+	c      sdk.Ctx
+	mu     sync.RWMutex
+	order  []string
+	tools  map[string]sdk.Tool
+	logger *slog.Logger
 }
 
 // Register 注册工具(返回 Disposer)。
@@ -42,6 +44,10 @@ func (r *reg) Register(t sdk.Tool) sdk.Disposer {
 	r.mu.Lock()
 	if _, ok := r.tools[def.Name]; ok {
 		r.mu.Unlock()
+		// 重名注册非静默:显式提示(替换同名工具应关闭旧工具插件后再启用新插件)
+		if r.logger != nil {
+			r.logger.Warn("tool 注册冲突已忽略", "tool", def.Name, "hint", "先关闭提供同名工具的插件,再启用新插件")
+		}
 		return func() {}
 	}
 	r.tools[def.Name] = t

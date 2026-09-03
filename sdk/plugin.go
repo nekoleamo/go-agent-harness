@@ -7,6 +7,8 @@ type RegistryOps interface {
 	StartOne(c Ctx, id string) error
 	Dispose(id string)
 	Snapshot() []string
+	// BlockedByLoaded 返回仍加载且依赖 id 所提供服务键的插件列表(非空 = 运行期卸载会破坏它们)。
+	BlockedByLoaded(id string) []string
 }
 
 // PluginInfo 运行/配置三源清单条目。

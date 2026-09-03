@@ -79,9 +79,14 @@ func (m *Manager) Load(id string) error {
 }
 
 // Unload 停止插件实例(副作用随 Disposer 逆序撤销;幂等)。
+// 结构性防护:仍被已加载插件依赖时拒绝卸载(显式失败,提示先卸载依赖或走配置切换)。
 func (m *Manager) Unload(id string) error {
 	if _, ok := m.candidates[id]; !ok {
 		return fmt.Errorf("plugin-manager: 未知插件 %q", id)
+	}
+	blocked := m.ops.BlockedByLoaded(id)
+	if len(blocked) > 0 {
+		return fmt.Errorf("plugin-manager: %q 正在被已加载插件 %v 依赖,拒绝运行期卸载;请先卸载依赖者或经配置切换(enabled:false,重启生效)", id, blocked)
 	}
 	m.ops.Dispose(id)
 	return nil
