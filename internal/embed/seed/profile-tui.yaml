@@ -1,0 +1,7 @@
+# tui profile:交互界面(TUI 为默认形态)。
+# 结构对齐设计 §1/§2:profile 列出按序应用 bundle 与 patch。
+name: tui
+bundles:
+  - base
+  - tui
+patches: []

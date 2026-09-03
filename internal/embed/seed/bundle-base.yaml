@@ -1,0 +1,27 @@
+# base bundle:对齐 dsh-base,一切功能皆插件的共享第一层。
+# M1 阶段条目仅记录意图;对应插件工厂在 M2 base bundle 落地。
+name: base
+entries:
+  - id: host-session-log
+  - id: host-tools
+  - id: host-system-prompt
+  - id: host-llm
+  - id: llm-openai-compat
+    data:
+      base_url: https://api.deepseek.com/v1
+  - id: host-agent-loop
+  - id: policy-sandbox
+    data:
+      mode: workspace-write
+  - id: policy-approval
+  - id: host-skills
+  - id: host-plugin-manager
+  - id: host-cwd-sessions
+  - id: host-jobs
+    enabled: false
+  - id: host-bridge
+    enabled: false # 外部插件桥(M5):默认关闭;启用后扫描 extplugins/ 或 data.dir 加载 tool-* 二进制
+  - id: mcp-bridge
+    enabled: false # MCP client 桥(M5.5):默认关闭;data.command 指定 MCP server 启动命令
+  - id: tool-shell
+

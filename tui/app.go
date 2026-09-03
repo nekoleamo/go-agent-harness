@@ -3,7 +3,10 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -132,7 +135,7 @@ func (a *App) command(raw string) error {
 	case "settings":
 		return a.cmdSettings(fields)
 	case "export":
-		return a.cmdExport()
+		return a.cmdExport(fields)
 	case "help":
 		a.model.state.Lines = append(a.model.state.Lines,
 			Line{Kind: "meta", Text: "命令:/model <名> | /sandbox ro|ws|full | /plugins list|on|off|unload | /settings history N|off | /export | /help | /exit"})
@@ -254,18 +257,45 @@ func (a *App) cmdSessions() error {
 	return nil
 }
 
-func (a *App) cmdExport() error {
+func (a *App) cmdExport(fields []string) error {
 	var sessions sdk.SessionLog
 	if err := a.c.Inject("ctx.sessions", &sessions); err != nil {
 		return errString("ctx.sessions 未装配")
 	}
+	// 默认导出到当前会话存档路径(host-cwd-sessions),可指定 /export <path>
+	path := ""
+	if len(fields) > 1 {
+		path = fields[1]
+	} else {
+		var cs sdk.CwdSessions
+		if err := a.c.Inject("ctx.cwdSessions", &cs); err == nil {
+			path = cs.Path()
+		}
+	}
 	evs := sessions.Replay()
+	if path == "" {
+		// 无落盘配置:仅统计(兜底)
+		a.model.state.Lines = append(a.model.state.Lines,
+			Line{Kind: "meta", Text: "会话事件数: " + fmt.Sprint(len(evs))})
+		return nil
+	}
 	var sb strings.Builder
 	for _, ev := range evs {
-		sb.WriteString(ev.Kind + " ")
+		b, err := json.Marshal(ev)
+		if err != nil {
+			continue
+		}
+		sb.Write(b)
+		sb.WriteByte('\n')
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return errString("导出失败: " + err.Error())
+	}
+	if err := os.WriteFile(path, []byte(sb.String()), 0o644); err != nil {
+		return errString("导出失败: " + err.Error())
 	}
 	a.model.state.Lines = append(a.model.state.Lines,
-		Line{Kind: "meta", Text: "会话事件数: " + fmt.Sprint(len(evs)) + " | 序列: " + sb.String()})
+		Line{Kind: "meta", Text: fmt.Sprintf("已导出 %d 条事件 → %s", len(evs), path)})
 	return nil
 }
 

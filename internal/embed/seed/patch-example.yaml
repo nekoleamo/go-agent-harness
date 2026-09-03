@@ -1,0 +1,5 @@
+# 示例 patch:按 id 定位条目替换/插入(对齐 cordis.patch.yml)。
+# 这里把 host-jobs 关闭(演示 enabled 插拔开关)。
+entries:
+  - id: host-jobs
+    enabled: false

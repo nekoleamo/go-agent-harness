@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/hashicorp/go-version"
+
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -47,6 +49,9 @@ func (r *Registry) Register(f sdk.Factory, m *sdk.Manifest) error {
 	if m.ID == "" {
 		return fmt.Errorf("plugin: manifest requires id")
 	}
+	if err := checkAPIVersion(m); err != nil {
+		return fmt.Errorf("plugin: %q: %w", m.ID, err)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, dup := r.factories[m.ID]; dup {
@@ -54,6 +59,25 @@ func (r *Registry) Register(f sdk.Factory, m *sdk.Manifest) error {
 	}
 	r.factories[m.ID] = f
 	r.manifest[m.ID] = m
+	return nil
+}
+
+// checkAPIVersion SDK 版本兼容校验:清单声明的语义化范围必须包含 sdk.SDKVersion(红线:显式失败不静默)。
+func checkAPIVersion(m *sdk.Manifest) error {
+	if m.APIVersion == "" {
+		return fmt.Errorf("manifest 缺少 apiVersion(必须声明语义化范围,如 >=1.0,<2.0)")
+	}
+	constraint, err := version.NewConstraint(m.APIVersion)
+	if err != nil {
+		return fmt.Errorf("apiVersion %q 解析失败: %v", m.APIVersion, err)
+	}
+	sdkVer, err := version.NewVersion(sdk.SDKVersion)
+	if err != nil {
+		return err
+	}
+	if !constraint.Check(sdkVer) {
+		return fmt.Errorf("apiVersion %q 不含 SDK %s(插件与 SDK 不兼容)", m.APIVersion, sdk.SDKVersion)
+	}
 	return nil
 }
 

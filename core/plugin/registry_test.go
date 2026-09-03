@@ -47,6 +47,25 @@ func (b *broken) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	return nil, errors.New("broken start")
 }
 
+func TestAPIVersionEnforced(t *testing.T) {
+	r := New()
+	// 无 apiVersion → 拒绝
+	bad := &sdk.Manifest{ID: "no-ver", Type: "host", Provides: []string{"ctx.x"}}
+	if err := r.Register(func() sdk.Plugin { return &counter{id: "no-ver"} }, bad); err == nil {
+		t.Fatal("缺 apiVersion 应拒绝")
+	}
+	// 不含 SDK 1.0 的范围 → 拒绝
+	incompat := &sdk.Manifest{ID: "old", Type: "host", APIVersion: ">=0.5,<1.0"}
+	if err := r.Register(func() sdk.Plugin { return &counter{id: "old"} }, incompat); err == nil {
+		t.Fatal("不兼容的 apiVersion 应拒绝")
+	}
+	// 合法范围 → 通过
+	ok := &sdk.Manifest{ID: "ok", Type: "host", APIVersion: ">=1.0,<2.0"}
+	if err := r.Register(func() sdk.Plugin { return &counter{id: "ok"} }, ok); err != nil {
+		t.Fatalf("合法 apiVersion 应通过: %v", err)
+	}
+}
+
 func TestTopoOrder(t *testing.T) {
 	r := New()
 	r.Register(func() sdk.Plugin { return &counter{id: "b"} }, m("b", []string{"ctx.tools"}, []string{"ctx.llm"}))

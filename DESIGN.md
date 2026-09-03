@@ -314,7 +314,8 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 | ~~M4.5~~ | starlark workflow 已随 M5 交付(tool-workflow 插件,天然沙箱/组合多步/background) | — |
 | **M5 进阶**(已交付) | ✅ external 插件桥(崩溃隔离验证)+ ✅ starlark workflow + ✅ MCP client 桥 + ✅ 配置自愈 | 外部崩溃→结构化错误/宿主存活;MCP 互通;坏配置可回滚 |
 | **M5.5**(已交付) | ✅ 指令文件注入(全局/项目 AGENTS.md,顺序即覆盖)+ ✅ 技能机制(host-skills)+ ✅ 技能自注册(gah-plugin-dev) | 指令与技能按需加载 |
-| **完善 A 组**(已交付) | ✅ 会话持久化+项目隔离(host-cwd-sessions:$GAH_HOME/sessions/<project-key>.jsonl,重启恢复)+ ✅ LLM 断流指数退避重试(§11 兑现:可重试×3,4xx 不重试)+ ✅ TUI 回合取消(Esc→取消链) | 会话跨期共享项目隔离;断流自愈;运行中可中断 |
+| **完善 A 组**(已交付) | ✅ 会话持久化+项目隔离(host-cwd-sessions)+ ✅ LLM 断流指数退避重试(§11)+ ✅ TUI 回合取消(Esc→取消链) | 跨期共享隔离;断流自愈;可中断 |
+| **完善 B 组**(已交付) | ✅ apiVersion 语义化校验(SDK 兼容红线,go-version)+ ✅ /export 真导出(jsonl)+ ✅ 外部插件热重载接线(host-bridge watch→自动重载)+ ✅ go:embed 配置样板+home 首启释放+`--ephemeral` 落地(空目录发布实测通过) | 发布形态自包含;插件版本兼容强制;外部插件更新自动生效 |
 | **交付门**(已通过) | 单二进制 <25MB / `CGO_ENABLED=0` / 六目标交叉编译 / 裸机 scp 启动 | ✅ 实测数据见 §7.6 |
 
 ## 15. 风险与权衡

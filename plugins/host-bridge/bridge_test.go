@@ -42,8 +42,8 @@ func buildEnv(t *testing.T, dir string) (sdk.Ctx, *plugin.Registry) {
 		m    *sdk.Manifest
 		data map[string]any
 	}{
-		{"host-tools", func() sdk.Plugin { return &hosttools.Plugin{} }, &sdk.Manifest{ID: "host-tools", Provides: []string{"ctx.tools"}}, nil},
-		{"host-bridge", func() sdk.Plugin { return &Plugin{} }, &sdk.Manifest{ID: "host-bridge", Requires: []string{"ctx.tools"}}, map[string]any{"dir": dir}},
+		{"host-tools", func() sdk.Plugin { return &hosttools.Plugin{} }, &sdk.Manifest{ID: "host-tools", APIVersion: ">=1.0,<2.0", Provides: []string{"ctx.tools"}}, nil},
+		{"host-bridge", func() sdk.Plugin { return &Plugin{} }, &sdk.Manifest{ID: "host-bridge", APIVersion: ">=1.0,<2.0", Requires: []string{"ctx.tools"}}, map[string]any{"dir": dir, "watch": true}},
 	}
 	for _, d := range defs {
 		mm := *d.m
@@ -91,6 +91,40 @@ func TestExternalToolLoadAndExecute(t *testing.T) {
 	}
 	if res.Error != "" || !strings.Contains(res.Content, "你好") {
 		t.Fatalf("外部工具应回显: %+v", res)
+	}
+}
+
+func TestExternalPluginHotReload(t *testing.T) {
+	dir := t.TempDir()
+	buildExternalPlugin(t, dir)
+	c, _ := buildEnv(t, dir)
+	var tools sdk.ToolRegistry
+	if err := c.Inject("ctx.tools", &tools); err != nil {
+		t.Fatal(err)
+	}
+	// 正常调用
+	res, err := tools.Execute(context.Background(), "echo", `{"text":"before"}`)
+	if err != nil || res.Error != "" {
+		t.Fatalf("初始调用失败: %v %+v", err, res)
+	}
+	// touch 触发 watcher(fsnotify write 事件 → debounce → 重载)
+	if err := os.Chtimes(filepath.Join(dir, "tool-echo"), time.Now(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	// 等待重载完成(300ms debounce + 新进程启动),工具应仍可用
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		res, err := tools.Execute(context.Background(), "echo", `{"text":"after"}`)
+		if err != nil {
+			t.Fatalf("重载后调用不得报错: %v", err)
+		}
+		if res.Error == "" {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if res.Error != "" {
+		t.Fatalf("热重载后 echo 应可用: %+v", res)
 	}
 }
 

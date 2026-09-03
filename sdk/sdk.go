@@ -92,3 +92,6 @@ type Event struct {
 
 // Factory 插件构造工厂:由 bundle/配置按 id 关联到具体实现。
 type Factory func() Plugin
+
+// SDKVersion 当前 SDK 语义化版本(插件 apiVersion 范围必须包含它,见 core/plugin.Registry)。
+const SDKVersion = "1.0.0"

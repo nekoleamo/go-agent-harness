@@ -10,10 +10,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hashicorp/go-plugin"
 
+	coreplugin "github.com/nekoleamo/go-agent-harness/core/plugin"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -37,9 +39,51 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	if err := c.Inject("ctx.tools", &tools); err != nil {
 		return nil, err
 	}
-	disposers := []sdk.Disposer{}
-	loaded := 0
-	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+	b := &Bridge{dir: dir, tools: tools, entries: map[string]*extEntry{}}
+	// 扫描加载全部外部插件
+	if err := b.loadEntries(); err != nil {
+		return nil, err
+	}
+	// 热重载接线:data.watch = true 时监听目录,二进制变更自动重载(dispose 旧进程+加载新)
+	var watchClose func()
+	if m != nil && m.Data != nil {
+		if w, ok := m.Data["watch"].(bool); ok && w {
+			_, closeFn, werr := coreplugin.NewWatcher(dir, 300*time.Millisecond, func(path string) {
+				b.reload(path)
+			})
+			if werr != nil {
+				b.closeAll()
+				return nil, fmt.Errorf("host-bridge: 监听 %s: %w", dir, werr)
+			}
+			watchClose = closeFn
+		}
+	}
+	return func() {
+		if watchClose != nil {
+			watchClose()
+		}
+		b.closeAll()
+	}, nil
+}
+
+// extEntry 一个已加载的外部插件条目。
+type extEntry struct {
+	tool  sdk.Tool
+	unreg sdk.Disposer
+	kill  sdk.Disposer
+}
+
+// Bridge 外部插件目录管理(扫描/重载/关闭)。
+type Bridge struct {
+	dir     string
+	tools   sdk.ToolRegistry
+	mu      sync.RWMutex
+	entries map[string]*extEntry // bin 绝对路径 → 条目
+}
+
+// loadEntries 扫描目录并加载 tool-* 二进制。
+func (b *Bridge) loadEntries() error {
+	return filepath.WalkDir(b.dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return nil
 		}
@@ -50,22 +94,48 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		if lerr != nil {
 			return fmt.Errorf("host-bridge: 加载 %s: %w", path, lerr)
 		}
-		disposers = append(disposers, tools.Register(t))
-		disposers = append(disposers, kill)
-		loaded++
+		b.mu.Lock()
+		b.entries[path] = &extEntry{tool: t, kill: kill, unreg: b.tools.Register(t)}
+		b.mu.Unlock()
 		return nil
 	})
-	if err != nil {
-		return nil, err
-	}
-	if loaded == 0 {
-		return func() {}, nil
-	}
-	return func() {
-		for i := len(disposers) - 1; i >= 0; i-- {
-			disposers[i]()
+}
+
+// reload 二进制变更:dispose 旧进程并加载新实例(热重载接线)。
+func (b *Bridge) reload(path string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	entry, ok := b.entries[path]
+	if !ok {
+		// 新出现的二进制:直接加载
+		if strings.HasPrefix(filepath.Base(path), "tool-") {
+			t, kill, err := loadExternalTool(path)
+			if err == nil {
+				b.entries[path] = &extEntry{tool: t, kill: kill, unreg: b.tools.Register(t)}
+			}
 		}
-	}, nil
+		return
+	}
+	// 旧实例撤销:注销工具 + kill 进程
+	entry.unreg()
+	entry.kill()
+	t, kill, err := loadExternalTool(path)
+	if err != nil {
+		delete(b.entries, path)
+		return // 新二进制不可用:工具消失(下次变更再试)
+	}
+	b.entries[path] = &extEntry{tool: t, kill: kill, unreg: b.tools.Register(t)}
+}
+
+// closeAll 关闭全部插件条目(逆序)。
+func (b *Bridge) closeAll() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for p, e := range b.entries {
+		e.unreg()
+		e.kill()
+		delete(b.entries, p)
+	}
 }
 
 // loadExternalTool 启动外部插件进程并返回工具包装(崩溃隔离:RPC 失败转结构化错误)。
