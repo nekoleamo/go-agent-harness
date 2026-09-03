@@ -1,0 +1,26 @@
+// AgentLoop 接口与系统提示服务。
+package sdk
+
+import "context"
+
+// AgentLoop 是可替换的 agent 循环(默认实现由 host-agent-loop 提供,对齐 dsh `ctx.agentLoop`)。
+// 宿主不内置任何循环语义;换实现 = 换插件。
+type AgentLoop interface {
+	// Run 处理一次用户输入(可含多步 ReAct 迭代),直至完成一轮。
+	// 输入与输出均经会话日志记录(不变量:模型可见即已记录)。
+	Run(ctx context.Context, input string) error
+}
+
+// SystemPrompt 片段:命名 + 内容提供器(内容可引用 ctx 动态组装)。
+type SystemPromptSection struct {
+	Name    string
+	Content func() string
+}
+
+// SystemPromptService 服务(ctx.systemPrompt):片段注册 + 组装模型可见消息。
+type SystemPromptService interface {
+	// AddSection 注册一个系统提示片段,返回 Disposer。
+	AddSection(s SystemPromptSection) Disposer
+	// Assemble 组装 system 消息:固定引导 + 注册片段 + 工具 schema 清单 + 历史消息。
+	Assemble(history []LLMMessage, tools []ToolDefinition) []LLMMessage
+}

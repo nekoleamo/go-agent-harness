@@ -1,0 +1,259 @@
+// Package llmopenai 提供 llm-openai-compat 插件:OpenAI 兼容协议适配器(/v1/chat/completions + SSE)。
+// 零 SDK 依赖,纯 net/http 实现;通吃 DeepSeek/OpenAI/Ollama/vLLM/Kimi/llama.cpp 等兼容端点。
+// 配置(data):base_url(默认读 env DEEPSEEK_BASE_URL/OPENAI_BASE_URL,再默认 https://api.openai.com/v1)
+//           model(默认读 env DEEPSEEK_MODEL/OPENAI_MODEL);api key 读 env *_API_KEY(凭据隔离红线:仅本适配器可读)。
+package llmopenai
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/nekoleamo/go-agent-harness/sdk"
+)
+
+// Plugin 实现 llm-openai-compat。
+type Plugin struct{}
+
+func (p *Plugin) Name() string { return "llm-openai-compat" }
+
+// Start 注册适配器到 ctx.llm。
+func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
+	a := &Adapter{client: &http.Client{Timeout: 5 * time.Minute}}
+	if m != nil && m.Data != nil {
+		if u, ok := m.Data["base_url"].(string); ok && u != "" {
+			a.baseURL = strings.TrimSuffix(u, "/")
+		}
+		if mod, ok := m.Data["model"].(string); ok && mod != "" {
+			a.model = mod
+		}
+	}
+	if a.baseURL == "" {
+		a.baseURL = firstEnv("DEEPSEEK_BASE_URL", "OPENAI_BASE_URL")
+	}
+	if a.baseURL == "" {
+		a.baseURL = "https://api.openai.com/v1"
+	}
+	if a.model == "" {
+		a.model = firstEnv("DEEPSEEK_MODEL", "OPENAI_MODEL")
+	}
+	if a.model == "" {
+		a.model = "deepseek-chat"
+	}
+	a.apiKey = firstEnv("DEEPSEEK_API_KEY", "OPENAI_API_KEY")
+
+	var llm sdk.LLMService
+	if err := c.Inject("ctx.llm", &llm); err != nil {
+		return nil, err
+	}
+	d := llm.RegisterAdapter(a)
+	llm.SetModel(a.model)
+	return d, nil
+}
+
+func firstEnv(keys ...string) string {
+	for _, k := range keys {
+		if v := os.Getenv(k); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// Adapter 实现 sdk.LLMAdapter。
+type Adapter struct {
+	client  *http.Client
+	baseURL string
+	model   string
+	apiKey  string
+}
+
+func (a *Adapter) Name() string { return "llm-openai-compat" }
+
+// wire 服务端 API 消息结构。
+type wireMsg struct {
+	Role       string         `json:"role"`
+	Content    *string        `json:"content,omitempty"`
+	ToolCalls  []wireToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string         `json:"tool_call_id,omitempty"`
+}
+
+type wireToolCall struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+type wireTool struct {
+	Type     string      `json:"type"`
+	Function wireToolDef `json:"function"`
+}
+
+type wireToolDef struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Parameters  map[string]any `json:"parameters"`
+}
+
+type wireReq struct {
+	Model       string     `json:"model"`
+	Messages    []wireMsg  `json:"messages"`
+	Tools       []wireTool `json:"tools,omitempty"`
+	Stream      bool       `json:"stream"`
+	MaxTokens   *int       `json:"max_tokens,omitempty"`
+	Temperature *float64   `json:"temperature,omitempty"`
+}
+
+type wireChunk struct {
+	Choices []struct {
+		Delta struct {
+			Content   string        `json:"content"`
+			ToolCalls []wireToolCall `json:"tool_calls"`
+		} `json:"delta"`
+		FinishReason *string `json:"finish_reason"`
+	} `json:"choices"`
+	Usage *struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+	} `json:"usage"`
+}
+
+// Complete 发起流式请求(SSE)。
+func (a *Adapter) Complete(ctx context.Context, req *sdk.LLMRequest, onChunk func(ev sdk.LLMStreamEvent) error) (*sdk.LLMResponse, error) {
+	model := req.Model
+	if model == "" {
+		model = a.model
+	}
+	wire := wireReq{Model: model, Stream: true, MaxTokens: req.MaxTokens, Temperature: req.Temperature}
+	for _, msg := range req.Messages {
+		wm := wireMsg{Role: string(msg.Role)}
+		if msg.ToolCallID != "" {
+			wm.ToolCallID = msg.ToolCallID
+		}
+		if msg.Content != "" {
+			wm.Content = strPtr(msg.Content)
+		}
+		for _, tc := range msg.ToolCalls {
+			wtc := wireToolCall{ID: tc.ID, Type: "function"}
+			wtc.Function.Name = tc.Name
+			wtc.Function.Arguments = tc.Arguments
+			wm.ToolCalls = append(wm.ToolCalls, wtc)
+		}
+		wire.Messages = append(wire.Messages, wm)
+	}
+	for _, t := range req.Tools {
+		wire.Tools = append(wire.Tools, wireTool{Type: "function", Function: wireToolDef{
+			Name: t.Name, Description: t.Description, Parameters: t.InputSchema}})
+	}
+
+	body, err := json.Marshal(wire)
+	if err != nil {
+		return nil, err
+	}
+	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost, a.baseURL+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	hreq.Header.Set("Content-Type", "application/json")
+	hreq.Header.Set("Accept", "text/event-stream")
+	if a.apiKey != "" {
+		hreq.Header.Set("Authorization", "Bearer "+a.apiKey)
+	}
+
+	resp, err := a.client.Do(hreq)
+	if err != nil {
+		return nil, fmt.Errorf("llm-openai: request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("llm-openai: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+
+	var content strings.Builder
+	var calls []sdk.ToolCall
+	finish := sdk.FinishReasonStop
+	usage := sdk.Usage{}
+	sc := bufio.NewScanner(resp.Body)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for sc.Scan() {
+		line := sc.Text()
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "[DONE]" {
+			break
+		}
+		var ck wireChunk
+		if err := json.Unmarshal([]byte(data), &ck); err != nil {
+			continue // 忽略坏行(脆弱兼容)
+		}
+		if ck.Usage != nil {
+			usage = sdk.Usage{PromptTokens: ck.Usage.PromptTokens, CompletionTokens: ck.Usage.CompletionTokens}
+		}
+		for _, ch := range ck.Choices {
+			ev := sdk.LLMStreamEvent{Delta: ch.Delta.Content}
+			if len(ch.Delta.ToolCalls) > 0 {
+				tc := ch.Delta.ToolCalls[0]
+				ev.ToolCallID = tc.ID
+				ev.ToolCallName = tc.Function.Name
+				ev.ToolCallArgs = tc.Function.Arguments
+				idx := findCall(&calls, tc.ID)
+				calls[idx].Name += tc.Function.Name
+				calls[idx].Arguments += tc.Function.Arguments
+			}
+			if ch.FinishReason != nil {
+				switch *ch.FinishReason {
+				case "tool_calls":
+					finish = sdk.FinishReasonToolCalls
+				case "length":
+					finish = sdk.FinishReasonLength
+				default:
+					finish = sdk.FinishReasonStop
+				}
+			}
+			if ev.Delta != "" {
+				content.WriteString(ev.Delta)
+			}
+			if onChunk != nil {
+				if err := onChunk(ev); err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
+	if err := sc.Err(); err != nil && ctx.Err() == nil {
+		return nil, fmt.Errorf("llm-openai: stream: %w", err)
+	}
+	done := sdk.LLMStreamEvent{Done: true, FinishReason: finish, Usage: usage}
+	done.Message = sdk.LLMMessage{Role: sdk.RoleAssistant, Content: content.String(), ToolCalls: calls}
+	if onChunk != nil {
+		if err := onChunk(done); err != nil {
+			return nil, err
+		}
+	}
+	return &sdk.LLMResponse{Message: done.Message, FinishReason: finish, Usage: usage}, nil
+}
+
+func findCall(calls *[]sdk.ToolCall, id string) int {
+	for i := range *calls {
+		if (*calls)[i].ID == id {
+			return i
+		}
+	}
+	*calls = append(*calls, sdk.ToolCall{ID: id})
+	return len(*calls) - 1
+}
+
+func strPtr(s string) *string { return &s }

@@ -3,8 +3,6 @@
 name: base
 entries:
   - id: host-session-log
-    data:
-      path: sessions/
   - id: host-tools
   - id: host-system-prompt
   - id: host-llm
@@ -16,5 +14,8 @@ entries:
     data:
       mode: workspace-write
   - id: host-cwd-sessions
+    enabled: false
   - id: host-jobs
-    enabled: true
+    enabled: false
+  - id: tool-shell
+

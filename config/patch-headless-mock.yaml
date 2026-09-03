@@ -1,0 +1,6 @@
+# dev/CI 默认:用 llm-mock 跑 headless(无外网可测);生产关 mock 开真实适配器。
+entries:
+  - id: llm-openai-compat
+    enabled: false
+  - id: llm-mock
+    enabled: true

@@ -30,8 +30,9 @@ type Manifest struct {
 	Type       string   // llm/tool/policy/agent/host/ui
 	APIVersion string   // 语义化版本范围,如 ">=1.0,<2.0"
 	Provides   []string // 提供的 ctx 服务键(拓扑排序依据)
-	Requires   []string // 依赖的 ctx 服务键(缺失时显式失败,不静默降级)
+	Requires    []string // 依赖的 ctx 服务键(缺失时显式失败,不静默降级)
 	Capabilities []string // 声明的能力(如 "tools:execute", "fs:write")
+	Data         map[string]any // 配置条目 data 透传(插件自解释)
 }
 
 // Ctx 是插件可见的运行上下文:服务注册/注入 + 事件总线。

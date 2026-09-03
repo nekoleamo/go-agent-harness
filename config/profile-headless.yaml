@@ -1,5 +1,8 @@
 # headless profile:无 UI 一次性运行器(CI/自动化/容器)。
+# headless profile:无 UI 一次性运行器(CI/自动化/容器)。
+# 默认启用 llm-mock(dev/CI 无外网);生产使用自建 patch 关闭 mock 并启用 llm-openai-compat。
 name: headless
 bundles:
   - base
-patches: []
+patches:
+  - patch-headless-mock.yaml
