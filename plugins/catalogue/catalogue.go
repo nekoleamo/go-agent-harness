@@ -12,6 +12,7 @@ import (
 	"github.com/nekoleamo/go-agent-harness/plugins/host-tools"
 	"github.com/nekoleamo/go-agent-harness/plugins/llm-mock"
 	"github.com/nekoleamo/go-agent-harness/plugins/llm-openai-compat"
+	"github.com/nekoleamo/go-agent-harness/plugins/mcp-bridge"
 	"github.com/nekoleamo/go-agent-harness/plugins/policy-approval"
 	"github.com/nekoleamo/go-agent-harness/plugins/policy-sandbox"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool-shell"
@@ -61,6 +62,9 @@ var All = map[string]Def{
 		Requires: []string{"ctx.tools"}}, Bundle: "base"},
 	"tool-shell": {Factory: func() sdk.Plugin { return &toolshell.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "tool-shell", Type: "tool", APIVersion: ">=1.0,<2.0",
+		Requires: []string{"ctx.tools"}}, Bundle: "base"},
+	"mcp-bridge": {Factory: func() sdk.Plugin { return &mcpbridge.Plugin{} }, Manifest: &sdk.Manifest{
+		ID: "mcp-bridge", Type: "host", APIVersion: ">=1.0,<2.0",
 		Requires: []string{"ctx.tools"}}, Bundle: "base"},
 	"host-bridge": {Factory: func() sdk.Plugin { return &hostbridge.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "host-bridge", Type: "host", APIVersion: ">=1.0,<2.0",

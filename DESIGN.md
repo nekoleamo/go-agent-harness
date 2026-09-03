@@ -300,7 +300,7 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 | **M3 tui bundle** | ui-tui-app:会话流/工具面板/状态栏/命令托盘/流式渲染 | §12 命令全可用 |
 | **M4 生态完善**(已交付) | policy-sandbox(三档)/policy-approval(危险命令确认)/凭据隔离(env 白名单)/host-plugin-manager(运行期插拔)/history 注入(settings) | 插件运行时装卸不影响会话;沙箱三档生效 |
 | ~~M4.5~~ | starlark workflow 已随 M5 交付(tool-workflow 插件,天然沙箱/组合多步/background) | — |
-| **M5 进阶**(部分交付) | ✅ external 插件桥(go-plugin 进程隔离,**崩溃隔离已验证**)+ ✅ starlark workflow;MCP client 桥/子代理 fanout/配置自愈/pty 延后 | 外部插件崩溃拖垮宿主 → 调用转结构化错误,宿主存活 |
+| **M5 进阶**(部分交付) | ✅ external 插件桥(go-plugin 进程隔离,**崩溃隔离已验证**)+ ✅ starlark workflow + ✅ MCP client 桥(mcp-bridge,stdio JSON-RPC,mcp_* 工具)+ ✅ 配置自愈(坏配置回滚备份重试);子代理 fanout/pty 延后 | 外部插件崩溃拖垮宿主 → 调用转结构化错误,宿主存活;MCP 工具互通;坏配置不卡启动 |
 | **交付门(贯穿)** | **§7 验收:单二进制 <25MB、`CGO_ENABLED=0`、goreleaser 六目标全绿,裸机 scp 启动成功** | 每里程碑均发布 dist 草稿 |
 
 ## 15. 风险与权衡

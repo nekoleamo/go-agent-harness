@@ -85,6 +85,41 @@ func TestProfileBundlePatchMerge(t *testing.T) {
 	}
 }
 
+func TestSaveAndRecoverBackup(t *testing.T) {
+	dir := t.TempDir()
+	tree := NewTree()
+	tree.Apply([]Entry{{ID: "good-a", Data: map[string]any{"v": 1}}, {ID: "good-b"}})
+	if err := SaveBackup(tree, dir, 3); err != nil {
+		t.Fatal(err)
+	}
+	// 再存一份(覆盖 latest)
+	tree2 := NewTree()
+	tree2.Apply([]Entry{{ID: "good-a", Data: map[string]any{"v": 2}}})
+	if err := SaveBackup(tree2, dir, 3); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := LoadLatestBackup(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered == nil {
+		t.Fatal("应有备份")
+	}
+	if e, _ := recovered.Get("good-a"); e.Data["v"] != 2 {
+		t.Fatalf("latest 应是最新配置,got %v", e.Data)
+	}
+	if len(recovered.List()) != 1 {
+		t.Fatalf("备份内容应与 tree2 一致,got %v", recovered.List())
+	}
+}
+
+func TestLoadLatestBackupAbsent(t *testing.T) {
+	recovered, err := LoadLatestBackup(t.TempDir())
+	if err != nil || recovered != nil {
+		t.Fatalf("无备份时应返回 nil,nil,got %v %v", recovered, err)
+	}
+}
+
 func TestDumpRoundTrip(t *testing.T) {
 	tree := NewTree()
 	tree.Apply([]Entry{{ID: "x", Data: map[string]any{"k": "v"}}})

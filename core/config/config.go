@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -163,6 +164,68 @@ func BundlesOfProfile(profilePath string) ([]string, error) {
 		return nil, err
 	}
 	return p.Bundles, nil
+}
+
+// —— 配置自愈(对齐设计 M5.5:启动失败不直接退出,回滚最近正常备份重试一次) ——
+
+// BackupDir 备份目录名(与生效配置相对)。
+const BackupDir = "config-backups"
+
+// SaveBackup 把当前生效配置树序列化到备份目录(保留最近 maxKeep 份)。
+// 路径:同目录下 BackupDir/;文件名按时间戳,gah.yaml 恒为最新一份(启动时覆盖)。
+func SaveBackup(t *Tree, configDir string, maxKeep int) error {
+	raw, err := t.DumpYAML()
+	if err != nil {
+		return err
+	}
+	dir := filepath.Join(configDir, BackupDir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	latest := filepath.Join(dir, "config.latest.yaml")
+	if err := os.WriteFile(latest, raw, 0o644); err != nil {
+		return err
+	}
+	// 轮换保留
+	snap := filepath.Join(dir, fmt.Sprintf("config.%s.yaml", time.Now().Format("20060102-150405")))
+	if err := os.WriteFile(snap, raw, 0o644); err != nil {
+		return err
+	}
+	entries, _ := os.ReadDir(dir)
+	var snaps []string
+	for _, e := range entries {
+		if e.IsDir() || e.Name() == "config.latest.yaml" {
+			continue
+		}
+		snaps = append(snaps, filepath.Join(dir, e.Name()))
+	}
+	for len(snaps) > maxKeep {
+		os.Remove(snaps[0])
+		snaps = snaps[1:]
+	}
+	return nil
+}
+
+// LoadLatestBackup 读回最近一次备份(latest.yaml),缺省返回 nil(无备份可回滚)。
+func LoadLatestBackup(configDir string) (*Tree, error) {
+	p := filepath.Join(configDir, BackupDir, "config.latest.yaml")
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		return nil, nil // 无备份(首次启动)
+	}
+	var b Patch
+	patch := &b
+	_ = patch
+	type treeShape struct {
+		Entries []Entry `yaml:"entries"`
+	}
+	var shape treeShape
+	if err := yaml.Unmarshal(raw, &shape); err != nil {
+		return nil, err
+	}
+	t := NewTree()
+	t.Apply(shape.Entries)
+	return t, nil
 }
 
 // ReadBundle 读取 bundle 文件(独立使用的便捷入口)。

@@ -21,5 +21,7 @@ entries:
     enabled: false
   - id: host-bridge
     enabled: false # 外部插件桥(M5):默认关闭;启用后扫描 extplugins/ 或 data.dir 加载 tool-* 二进制
+  - id: mcp-bridge
+    enabled: false # MCP client 桥(M5.5):默认关闭;data.command 指定 MCP server 启动命令
   - id: tool-shell
 
