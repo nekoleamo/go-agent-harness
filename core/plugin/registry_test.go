@@ -140,9 +140,9 @@ func TestReloadDisposesOldInstance(t *testing.T) {
 
 // disposeOrder 插件:记录 dispose 顺序。
 type disposeOrder struct {
-	id    string
-	seq   *[]string
-	mu    *sync.Mutex
+	id  string
+	seq *[]string
+	mu  *sync.Mutex
 }
 
 func (p *disposeOrder) Name() string { return p.id }

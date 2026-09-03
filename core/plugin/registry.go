@@ -24,10 +24,10 @@ type Instance struct {
 // Registry 管理插件装配与生命周期。
 type Registry struct {
 	mu        sync.RWMutex
-	factories map[string]sdk.Factory  // id → 构造工厂
+	factories map[string]sdk.Factory // id → 构造工厂
 	manifest  map[string]*sdk.Manifest
-	instances map[string]*Instance    // 已启动的实例(id →)
-	order     []string                // 启动顺序(拓扑序)
+	instances map[string]*Instance // 已启动的实例(id →)
+	order     []string             // 启动顺序(拓扑序)
 }
 
 // New 创建空注册表。

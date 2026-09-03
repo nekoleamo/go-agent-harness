@@ -1,7 +1,8 @@
 // Package llmopenai 提供 llm-openai-compat 插件:OpenAI 兼容协议适配器(/v1/chat/completions + SSE)。
 // 零 SDK 依赖,纯 net/http 实现;通吃 DeepSeek/OpenAI/Ollama/vLLM/Kimi/llama.cpp 等兼容端点。
 // 配置(data):base_url(默认读 env DEEPSEEK_BASE_URL/OPENAI_BASE_URL,再默认 https://api.openai.com/v1)
-//           model(默认读 env DEEPSEEK_MODEL/OPENAI_MODEL);api key 读 env *_API_KEY(凭据隔离红线:仅本适配器可读)。
+//
+//	model(默认读 env DEEPSEEK_MODEL/OPENAI_MODEL);api key 读 env *_API_KEY(凭据隔离红线:仅本适配器可读)。
 package llmopenai
 
 import (
@@ -117,7 +118,7 @@ type wireReq struct {
 type wireChunk struct {
 	Choices []struct {
 		Delta struct {
-			Content   string        `json:"content"`
+			Content   string         `json:"content"`
 			ToolCalls []wireToolCall `json:"tool_calls"`
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason"`

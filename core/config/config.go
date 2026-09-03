@@ -25,15 +25,15 @@ type Entry struct {
 
 // Bundle 是配置项的分发格式:一组按序应用的 entry 列表(对齐 dsh bundle)。
 type Bundle struct {
-	Name    string   `yaml:"name"`
-	Entries []Entry  `yaml:"entries"`
+	Name    string  `yaml:"name"`
+	Entries []Entry `yaml:"entries"`
 }
 
 // Profile 是具名组装:按序应用的 bundle 名 + 本 profile 的 patch 文件。
 type Profile struct {
-	Name     string   `yaml:"name"`
-	Bundles  []string `yaml:"bundles"`
-	Patches  []string `yaml:"patches"` // patch 文件路径(相对 profile 文件所在目录)
+	Name    string   `yaml:"name"`
+	Bundles []string `yaml:"bundles"`
+	Patches []string `yaml:"patches"` // patch 文件路径(相对 profile 文件所在目录)
 }
 
 // Patch 文件:按 entry id 替换/插入。

@@ -22,8 +22,8 @@ type Bus struct {
 }
 
 type entry struct {
-	id  uint64
-	fn  sdk.AnyListener
+	id uint64
+	fn sdk.AnyListener
 }
 
 // New 创建事件总线。

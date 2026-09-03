@@ -5,17 +5,17 @@ import "time"
 
 // 持久会话事件 Kind(对齐 dsh 轮次流程的事件域)。
 const (
-	EventTurnStart    = "turn/start"
-	EventTurnEnd      = "turn/end"
-	EventStepStart    = "step/start"
-	EventStepEnd      = "step/end"
-	EventUserMessage  = "user/message"
-	EventAssistantChunk = "assistant/chunk"
+	EventTurnStart        = "turn/start"
+	EventTurnEnd          = "turn/end"
+	EventStepStart        = "step/start"
+	EventStepEnd          = "step/end"
+	EventUserMessage      = "user/message"
+	EventAssistantChunk   = "assistant/chunk"
 	EventAssistantMessage = "assistant/message"
-	EventToolCall     = "tool/call"
-	EventToolResult   = "tool/result"
-	EventAgentStatus  = "agent/status"
-	EventAgentError   = "agent/error"
+	EventToolCall         = "tool/call"
+	EventToolResult       = "tool/result"
+	EventAgentStatus      = "agent/status"
+	EventAgentError       = "agent/error"
 )
 
 // SessionEvent 是追加到会话日志的持久事实。
