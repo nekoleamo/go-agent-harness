@@ -1,0 +1,24 @@
+entries:
+    - id: host-session-log
+    - id: host-tools
+    - id: host-system-prompt
+    - id: host-llm
+    - id: llm-openai-compat
+      enabled: false
+    - id: host-agent-loop
+    - id: policy-sandbox
+      data:
+        mode: workspace-write
+    - id: policy-approval
+    - id: host-plugin-manager
+    - id: host-cwd-sessions
+      enabled: false
+    - id: host-jobs
+      enabled: false
+    - id: host-bridge
+      enabled: false
+    - id: mcp-bridge
+      enabled: false
+    - id: tool-shell
+    - id: llm-mock
+      enabled: true
