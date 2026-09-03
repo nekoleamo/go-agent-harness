@@ -17,7 +17,6 @@ entries:
   - id: host-skills
   - id: host-plugin-manager
   - id: host-cwd-sessions
-    enabled: false
   - id: host-jobs
     enabled: false
   - id: host-bridge

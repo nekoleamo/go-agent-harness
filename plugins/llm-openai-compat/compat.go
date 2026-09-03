@@ -173,12 +173,19 @@ func (a *Adapter) Complete(ctx context.Context, req *sdk.LLMRequest, onChunk fun
 
 	resp, err := a.client.Do(hreq)
 	if err != nil {
-		return nil, fmt.Errorf("llm-openai: request: %w", err)
+		if ctx.Err() != nil {
+			return nil, ctx.Err() // 取消:不包装,不重试
+		}
+		return nil, &sdk.RetryableError{Err: fmt.Errorf("llm-openai: request: %w", err)} // 网络故障可重试
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("llm-openai: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+		err := fmt.Errorf("llm-openai: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+		if resp.StatusCode >= 500 {
+			return nil, &sdk.RetryableError{Err: err} // 5xx 瞬态:可重试
+		}
+		return nil, err // 4xx(auth/quota):不可重试(§11)
 	}
 
 	var content strings.Builder
@@ -234,8 +241,11 @@ func (a *Adapter) Complete(ctx context.Context, req *sdk.LLMRequest, onChunk fun
 			}
 		}
 	}
-	if err := sc.Err(); err != nil && ctx.Err() == nil {
-		return nil, fmt.Errorf("llm-openai: stream: %w", err)
+	if err := sc.Err(); err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, &sdk.RetryableError{Err: fmt.Errorf("llm-openai: stream: %w", err)} // 断流可重试
 	}
 	done := sdk.LLMStreamEvent{Done: true, FinishReason: finish, Usage: usage}
 	done.Message = sdk.LLMMessage{Role: sdk.RoleAssistant, Content: content.String(), ToolCalls: calls}

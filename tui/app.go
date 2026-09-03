@@ -22,6 +22,8 @@ type App struct {
 	llm       sdk.LLMService
 	confirmCh chan bool // Confirm 阻塞等待用户答复
 	subs      []sdk.Disposer
+
+	cancelFn context.CancelFunc // 当前回合的取消函数(Esc 中断,见 model.onCancel)
 }
 
 // NewApp 构造 TUI 应用。
@@ -32,6 +34,7 @@ func NewApp(c sdk.Ctx, loop sdk.AgentLoop, llm sdk.LLMService, profile string) *
 	m.onSubmit = a.submit
 	m.onCommand = a.command
 	m.onConfirm = a.confirmResult
+	m.onCancel = a.cancelCurrent
 	a.program = tea.NewProgram(m)
 	return a
 }
@@ -89,12 +92,22 @@ func (a *App) Close() {
 	a.program.Quit()
 }
 
-// submit 普通输入:异步跑一轮。
+// submit 普通输入:异步跑一轮(持有取消句柄,Esc 中断)。
 func (a *App) submit(input string) {
+	ctx, cancel := context.WithCancel(context.Background())
+	a.cancelFn = cancel
 	go func() {
-		err := a.loop.Run(context.Background(), input)
+		err := a.loop.Run(ctx, input)
+		a.cancelFn = nil
 		a.program.Send(agentDoneMsg{err})
 	}()
+}
+
+// cancelCurrent 取消进行中的回合(取消链:turn → LLM 流 → 工具进程,见设计 §8)。
+func (a *App) cancelCurrent() {
+	if a.cancelFn != nil {
+		a.cancelFn()
+	}
 }
 
 // command 处理 / 命令(M3:help/model/exit;沙箱/插件管理在 M4 接入)。
@@ -123,8 +136,10 @@ func (a *App) command(raw string) error {
 	case "help":
 		a.model.state.Lines = append(a.model.state.Lines,
 			Line{Kind: "meta", Text: "命令:/model <名> | /sandbox ro|ws|full | /plugins list|on|off|unload | /settings history N|off | /export | /help | /exit"})
-	case "sessions", "jobs":
-		return errString("/" + fields[0] + " 将在 M5 可用")
+	case "sessions":
+		return a.cmdSessions()
+	case "jobs":
+		return errString("/jobs 尚未实现(host-jobs 延后)")
 	default:
 		return errString("未知命令 /" + fields[0] + "(输入 /help)")
 	}
@@ -219,6 +234,23 @@ func (a *App) cmdSettings(fields []string) error {
 	sessions.SetHistory(n)
 	a.model.state.Lines = append(a.model.state.Lines,
 		Line{Kind: "meta", Text: "/settings history -> " + fields[2]})
+	return nil
+}
+
+func (a *App) cmdSessions() error {
+	var cs sdk.CwdSessions
+	if err := a.c.Inject("ctx.cwdSessions", &cs); err != nil {
+		return errString("ctx.cwdSessions 未装配: " + err.Error())
+	}
+	rows := "当前会话: " + cs.Current() + "\n已有会话:"
+	list := cs.List()
+	if len(list) == 0 {
+		rows += " (无)"
+	}
+	for _, k := range list {
+		rows += "\n  " + k
+	}
+	a.model.state.Lines = append(a.model.state.Lines, Line{Kind: "meta", Text: rows})
 	return nil
 }
 

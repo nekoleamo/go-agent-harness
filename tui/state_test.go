@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -89,6 +90,36 @@ func TestRenderContainsKeyParts(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("渲染缺少 %q:\n%s", want, out)
 		}
+	}
+}
+
+func TestCancelShowsMetaNotError(t *testing.T) {
+	m := &Model{state: &State{Running: true}}
+	updated, _ := m.Update(agentDoneMsg{err: context.Canceled})
+	m2 := updated.(*Model)
+	if m2.state.Running {
+		t.Fatal("取消后应停止运行态")
+	}
+	last := m2.state.Lines[len(m2.state.Lines)-1]
+	if last.Kind != "meta" || !strings.Contains(last.Text, "回合已取消") {
+		t.Fatalf("取消应显示提示而非错误: %+v", last)
+	}
+}
+
+func TestEscapeCancelsRunning(t *testing.T) {
+	cancelled := false
+	onCancel := func() { cancelled = true }
+	m := &Model{state: &State{Running: true}, onCancel: onCancel}
+	m.handleEscape()
+	if !cancelled {
+		t.Fatal("Running 时 Esc 应触发取消")
+	}
+	// 非运行态 Esc 不触发
+	cancelled = false
+	m.state.Running = false
+	m.handleEscape()
+	if cancelled {
+		t.Fatal("非运行态 Esc 不应触发取消")
 	}
 }
 

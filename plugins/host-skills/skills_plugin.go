@@ -1,9 +1,9 @@
 // Package hostskills 提供 host-skills 插件:技能(skill)加载机制,对齐 pi/dsc 语义。
-//  - 扫描技能目录(全局 $GAH_HOME/skills + 项目 <cwd>/.gah/skills + data.dirs 扩展);
-//    每个技能 = SKILL.md(YAML frontmatter: name/description/trigger + 正文);
-//  - 注册两个工具:list_skills(技能索引)/ read_skill(按名读全文);
-//  - 注册 system prompt 片段「可用技能索引」:模型在任务匹配触发词时按需 read_skill,
-//    不全文灌提示(同 pi 的按需加载语义)。
+//   - 扫描技能目录(全局 $GAH_HOME/skills + 项目 <cwd>/.gah/skills + data.dirs 扩展);
+//     每个技能 = SKILL.md(YAML frontmatter: name/description/trigger + 正文);
+//   - 注册两个工具:list_skills(技能索引)/ read_skill(按名读全文);
+//   - 注册 system prompt 片段「可用技能索引」:模型在任务匹配触发词时按需 read_skill,
+//     不全文灌提示(同 pi 的按需加载语义)。
 package hostskills
 
 import (

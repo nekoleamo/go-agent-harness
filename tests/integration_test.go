@@ -3,6 +3,8 @@ package tests
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"testing"
 
@@ -173,6 +175,34 @@ func TestVetoViaPreExecute(t *testing.T) {
 type policyErr struct{ msg string }
 
 func (e *policyErr) Error() string { return e.msg }
+
+func TestTurnCancelled(t *testing.T) {
+	c, _ := buildTestEnv(t)
+	var loop sdk.AgentLoop
+	if err := c.Inject("ctx.agentLoop", &loop); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // 立即取消:取消链应在第一步生效
+	err := loop.Run(ctx, "hi")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("取消应传播到 turn,got %v", err)
+	}
+	var sessions sdk.SessionLog
+	if err := c.Inject("ctx.sessions", &sessions); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, ev := range sessions.Replay() {
+		if ev.Kind == sdk.EventTurnEnd && fmt.Sprint(ev.Payload) == "cancelled" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("会话应记录 cancelled 的 turn/end: %v", sessions.Replay())
+	}
+}
 
 func TestSandboxReadOnlyBlocksShell(t *testing.T) {
 	c, _ := buildTestEnv(t)

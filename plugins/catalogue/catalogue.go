@@ -5,6 +5,7 @@ package catalogue
 import (
 	"github.com/nekoleamo/go-agent-harness/plugins/host-agent-loop"
 	"github.com/nekoleamo/go-agent-harness/plugins/host-bridge"
+	"github.com/nekoleamo/go-agent-harness/plugins/host-cwd-sessions"
 	"github.com/nekoleamo/go-agent-harness/plugins/host-llm"
 	"github.com/nekoleamo/go-agent-harness/plugins/host-plugin-manager"
 	"github.com/nekoleamo/go-agent-harness/plugins/host-session-log"
@@ -70,6 +71,10 @@ var All = map[string]Def{
 	"mcp-bridge": {Factory: func() sdk.Plugin { return &mcpbridge.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "mcp-bridge", Type: "host", APIVersion: ">=1.0,<2.0",
 		Requires: []string{"ctx.tools"}}, Bundle: "base"},
+	"host-cwd-sessions": {Factory: func() sdk.Plugin { return &hostcwdsessions.Plugin{} }, Manifest: &sdk.Manifest{
+		ID: "host-cwd-sessions", Type: "host", APIVersion: ">=1.0,<2.0",
+		Provides: []string{"ctx.cwdSessions"},
+		Requires: []string{"ctx.sessions"}}, Bundle: "base"},
 	"host-bridge": {Factory: func() sdk.Plugin { return &hostbridge.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "host-bridge", Type: "host", APIVersion: ">=1.0,<2.0",
 		Requires: []string{"ctx.tools"}}, Bundle: "base"},

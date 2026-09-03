@@ -65,7 +65,20 @@ type SessionLog interface {
 	// Flush 落盘(内存会话为 no-op)。
 	Flush() error
 
+	// SetPath 设置会话落盘路径(jsonl;host-cwd-sessions 按项目 key 调用)。
+	SetPath(path string)
+
 	// SetHistory 设置历史注入条数:-1 = 禁止注入;0 = 全部(unlimited);N>0 = 最近 N 条。
 	// 对齐设计 §9:history injection(默认 unlimited)。
 	SetHistory(n int)
+}
+
+// CwdSessions 服务(ctx.cwdSessions):项目级会话(host-cwd-sessions)。
+type CwdSessions interface {
+	// Current 当前项目会话 key(由 cwd 派生,同项目跨期共享)。
+	Current() string
+	// Path 当前会话落盘路径。
+	Path() string
+	// List 列出项目会话 key(按名称;含历史项目)。
+	List() []string
 }

@@ -4,8 +4,10 @@ package hostllm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
@@ -69,7 +71,7 @@ func (s *Service) completeAdapter() (sdk.LLMAdapter, error) {
 	return s.adapters[s.order[0]], nil
 }
 
-// Complete 以默认适配器发起请求。
+// Complete 以默认适配器发起请求;对可重试错误实施指数退避重试(§11 矩阵:网络断流/5xx 可重试,4xx 不可重试)。
 func (s *Service) Complete(ctx context.Context, req *sdk.LLMRequest, onChunk func(ev sdk.LLMStreamEvent) error) (*sdk.LLMResponse, error) {
 	a, err := s.completeAdapter()
 	if err != nil {
@@ -83,7 +85,34 @@ func (s *Service) Complete(ctx context.Context, req *sdk.LLMRequest, onChunk fun
 	if req.Model == "" {
 		return nil, fmt.Errorf("llm: model not set (SetModel before first request)")
 	}
-	return a.Complete(ctx, req, onChunk)
+	return retry(ctx, a, req, onChunk)
+}
+
+// retry 指数退避重试:最多 3 次,间隔 1s/2s/4s;仅重试 sdk.RetryableError;ctx 取消立即返回。
+func retry(ctx context.Context, a sdk.LLMAdapter, req *sdk.LLMRequest, onChunk func(ev sdk.LLMStreamEvent) error) (*sdk.LLMResponse, error) {
+	const maxAttempts = 3
+	var last error
+	for i := 0; i < maxAttempts; i++ {
+		resp, err := a.Complete(ctx, req, onChunk)
+		if err == nil {
+			return resp, nil
+		}
+		var retryable *sdk.RetryableError
+		if !errors.As(err, &retryable) || ctx.Err() != nil {
+			return nil, err // 不可重试或已取消
+		}
+		last = err
+		if i == maxAttempts-1 {
+			break
+		}
+		backoff := time.Duration(1<<i) * time.Second // 1s, 2s, 4s
+		select {
+		case <-time.After(backoff):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return nil, last
 }
 
 // SetModel 设置当前模型名。

@@ -2,6 +2,8 @@
 package tui
 
 import (
+	"context"
+	"errors"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -27,6 +29,7 @@ type Model struct {
 	onSubmit  func(input string)     // 普通输入提交(注入)
 	onCommand func(cmd string) error // 命令处理(注入)
 	onConfirm func(ok bool)          // 确认答复(注入;见 app.Confirm)
+	onCancel  func()                 // 取消进行中的回合(注入;Esc 触发)
 }
 
 func (m *Model) Init() tea.Cmd { return nil }
@@ -41,7 +44,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.state.ApplyStatus(msg.status)
 	case agentDoneMsg:
 		if msg.err != nil {
-			m.state.SetError("回合失败: " + msg.err.Error())
+			if errors.Is(msg.err, context.Canceled) {
+				// 用户主动取消(Esc):提示而非报错
+				m.state.Lines = append(m.state.Lines, Line{Kind: "meta", Text: "回合已取消"})
+			} else {
+				m.state.SetError("回合失败: " + msg.err.Error())
+			}
 		}
 		m.state.Running = false
 	case confirmMsg:
@@ -59,6 +67,14 @@ func (m *Model) View() tea.View {
 	v := tea.NewView(Render(m.state, m.w, m.h))
 	v.AltScreen = true
 	return v
+}
+
+// handleEscape Esc 键处理:运行中取消当前回合。
+func (m *Model) handleEscape() {
+	if m.state.Running && m.onCancel != nil {
+		m.onCancel()
+		m.state.Lines = append(m.state.Lines, Line{Kind: "meta", Text: "正在取消回合…"})
+	}
 }
 
 func (m *Model) handleKey(msg tea.KeyMsg) {
@@ -89,6 +105,9 @@ func (m *Model) handleKey(msg tea.KeyMsg) {
 		m.submit()
 	case tea.KeyBackspace:
 		m.state.Backspace()
+	case tea.KeyEscape:
+		// Esc:中断进行中的回合(取消链:turn → LLM 流 → 工具进程)
+		m.handleEscape()
 	default:
 		if k.Text != "" {
 			for _, r := range k.Text {

@@ -313,7 +313,8 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 | **M4 生态完善**(已交付) | policy-sandbox(三档)/policy-approval(危险命令确认)/凭据隔离(env 白名单)/host-plugin-manager(运行期插拔)/history 注入(settings) | 插件运行时装卸不影响会话;沙箱三档生效 |
 | ~~M4.5~~ | starlark workflow 已随 M5 交付(tool-workflow 插件,天然沙箱/组合多步/background) | — |
 | **M5 进阶**(已交付) | ✅ external 插件桥(崩溃隔离验证)+ ✅ starlark workflow + ✅ MCP client 桥 + ✅ 配置自愈 | 外部崩溃→结构化错误/宿主存活;MCP 互通;坏配置可回滚 |
-| **M5.5**(已交付) | ✅ 指令文件注入(全局/项目 AGENTS.md,顺序即覆盖)+ ✅ 技能机制(host-skills:扫描 SKILL.md、list/read 工具、prompt 索引)+ ✅ 技能自注册(gah-plugin-dev) | 全局/项目指令与技能按需加载 |
+| **M5.5**(已交付) | ✅ 指令文件注入(全局/项目 AGENTS.md,顺序即覆盖)+ ✅ 技能机制(host-skills)+ ✅ 技能自注册(gah-plugin-dev) | 指令与技能按需加载 |
+| **完善 A 组**(已交付) | ✅ 会话持久化+项目隔离(host-cwd-sessions:$GAH_HOME/sessions/<project-key>.jsonl,重启恢复)+ ✅ LLM 断流指数退避重试(§11 兑现:可重试×3,4xx 不重试)+ ✅ TUI 回合取消(Esc→取消链) | 会话跨期共享项目隔离;断流自愈;运行中可中断 |
 | **交付门**(已通过) | 单二进制 <25MB / `CGO_ENABLED=0` / 六目标交叉编译 / 裸机 scp 启动 | ✅ 实测数据见 §7.6 |
 
 ## 15. 风险与权衡
