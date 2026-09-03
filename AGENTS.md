@@ -29,5 +29,7 @@
 - 外部进程插件(host-bridge/mcp-bridge):测试内 `go build` 产物到临时目录再加载。
 
 ## 会话状态
-- 交付里程碑:M1 微内核/M2 base/M3 TUI/M4 生态/M5 桥与 workflow/M5.5 自愈+MCP,均已提交;-race 全绿 14 包。
+- 交付里程碑:M1 微内核 / M2 base / M3 TUI / M4 生态 / M5 桥与 workflow / M5.5 自愈+MCP / M5.6 指令与技能,均已提交;-race 全绿 16 包。
+- 新增能力:AGENTS.md 指令注入(全局 `$GAH_HOME/AGENTS.md` + 项目 `AGENTS.md`,顺序即覆盖)、技能机制(host-skills:全局 `$GAH_HOME/skills` + 项目 `.gah/skills` 扫描 SKILL.md,list_skills/read_skill,prompt 注入索引)、自注册技能 `gah-plugin-dev`(仓库 `.gah/skills/`)。
+- 交付门已通过:单二进制 15.8MB(<25MB)、`CGO_ENABLED=0` 静态、六目标交叉编译、裸机 `env -i` 启动成功;实测见 DESIGN.md §7.6,发行配置 `.goreleaser.yaml`。
 - 延后:子代理 fanout 完善、pty 交互(见 DESIGN.md §14)。

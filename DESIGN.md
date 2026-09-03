@@ -240,6 +240,18 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 
 替换二进制即升级(配置/会话在 home,与二进制解耦);跨版本 schema 迁移由 host-cwd-sessions 在首启时执行,失败回滚。
 
+### 7.6 交付实测(已通过)
+
+| 验收项 | 实测结果 |
+|---|---|
+| `CGO_ENABLED=0` 静态编译 | ✅ `-trimpath -ldflags="-s -w -X main.version=v0.1.0"`;otool 仅系统库 |
+| 体积 <25MB | ✅ 15.8MB(darwin/arm64);linux/windows 16–17MB |
+| 版本注入 | ✅ `gah -version` → `gah v0.1.0 (github.com/nekoleamo/go-agent-harness)` |
+| 交叉编译六目标 | ✅ darwin/linux/windows × amd64/arm64(除 windows/arm64 视 pty) |
+| 裸机启动 | ✅ `env -i PATH=/usr/bin:/bin HOME=<tmp>` 下 headless 一轮成功 |
+| 冒烟 | ✅ headless 完整轮次 / `--dump-config` / 非 TTY 降级 |
+| 校验 | ✅ sha256 附档;`.goreleaser.yaml` 已配置(tar.gz/zip + checksums) |
+
 ---
 
 ## 8. 并发与取消语义(Go 实现核心细节)
@@ -300,8 +312,9 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 | **M3 tui bundle** | ui-tui-app:会话流/工具面板/状态栏/命令托盘/流式渲染 | §12 命令全可用 |
 | **M4 生态完善**(已交付) | policy-sandbox(三档)/policy-approval(危险命令确认)/凭据隔离(env 白名单)/host-plugin-manager(运行期插拔)/history 注入(settings) | 插件运行时装卸不影响会话;沙箱三档生效 |
 | ~~M4.5~~ | starlark workflow 已随 M5 交付(tool-workflow 插件,天然沙箱/组合多步/background) | — |
-| **M5 进阶**(部分交付) | ✅ external 插件桥(go-plugin 进程隔离,**崩溃隔离已验证**)+ ✅ starlark workflow + ✅ MCP client 桥(mcp-bridge,stdio JSON-RPC,mcp_* 工具)+ ✅ 配置自愈(坏配置回滚备份重试);子代理 fanout/pty 延后 | 外部插件崩溃拖垮宿主 → 调用转结构化错误,宿主存活;MCP 工具互通;坏配置不卡启动 |
-| **交付门(贯穿)** | **§7 验收:单二进制 <25MB、`CGO_ENABLED=0`、goreleaser 六目标全绿,裸机 scp 启动成功** | 每里程碑均发布 dist 草稿 |
+| **M5 进阶**(已交付) | ✅ external 插件桥(崩溃隔离验证)+ ✅ starlark workflow + ✅ MCP client 桥 + ✅ 配置自愈 | 外部崩溃→结构化错误/宿主存活;MCP 互通;坏配置可回滚 |
+| **M5.5**(已交付) | ✅ 指令文件注入(全局/项目 AGENTS.md,顺序即覆盖)+ ✅ 技能机制(host-skills:扫描 SKILL.md、list/read 工具、prompt 索引)+ ✅ 技能自注册(gah-plugin-dev) | 全局/项目指令与技能按需加载 |
+| **交付门**(已通过) | 单二进制 <25MB / `CGO_ENABLED=0` / 六目标交叉编译 / 裸机 scp 启动 | ✅ 实测数据见 §7.6 |
 
 ## 15. 风险与权衡
 

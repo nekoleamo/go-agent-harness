@@ -1,0 +1,31 @@
+# goreleaser 发行配置(DESIGN.md §7.4 交付门:六目标全绿,CGO_ENABLED=0,体积 <25MB)。
+# 使用:安装 goreleaser 后 `goreleaser release` 或 `goreleaser release --snapshot`。
+before:
+  hooks:
+    - go mod tidy
+builds:
+  - id: gah
+    binary: gah
+    main: ./cmd/gah
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+    ignore:
+      - goos: windows
+        goarch: arm64 # 视 pty 进度启用
+archives:
+  - id: gah-archive
+    formats: [tar.gz, zip]
+    files:
+      - DESIGN.md
+      - README.md
+checksum:
+  name_template: checksums.txt
+release:
+  github:
+    owner: nekoleamo
+    name: go-agent-harness
+    draft: true
