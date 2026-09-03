@@ -19,5 +19,7 @@ entries:
     enabled: false
   - id: host-jobs
     enabled: false
+  - id: host-bridge
+    enabled: false # 外部插件桥(M5):默认关闭;启用后扫描 extplugins/ 或 data.dir 加载 tool-* 二进制
   - id: tool-shell
 

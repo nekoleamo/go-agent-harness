@@ -119,6 +119,12 @@ func (r *reg) Execute(ctx context.Context, name, args string) (*sdk.ToolResult, 
 		} else {
 			content = string(b)
 		}
+		// 结构化错误契约:结果对象含 error 键时提升为 Error 字段
+		if m, isMap := out.(map[string]any); isMap {
+			if e, ok := m["error"].(string); ok && e != "" {
+				merr = e
+			}
+		}
 	}
 	res := &sdk.ToolResult{Content: content, Error: merr}
 

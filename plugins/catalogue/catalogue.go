@@ -4,6 +4,7 @@ package catalogue
 
 import (
 	"github.com/nekoleamo/go-agent-harness/plugins/host-agent-loop"
+	"github.com/nekoleamo/go-agent-harness/plugins/host-bridge"
 	"github.com/nekoleamo/go-agent-harness/plugins/host-llm"
 	"github.com/nekoleamo/go-agent-harness/plugins/host-plugin-manager"
 	"github.com/nekoleamo/go-agent-harness/plugins/host-session-log"
@@ -14,6 +15,7 @@ import (
 	"github.com/nekoleamo/go-agent-harness/plugins/policy-approval"
 	"github.com/nekoleamo/go-agent-harness/plugins/policy-sandbox"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool-shell"
+	"github.com/nekoleamo/go-agent-harness/plugins/tool-workflow"
 	"github.com/nekoleamo/go-agent-harness/plugins/ui-tui-app"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
@@ -54,8 +56,14 @@ var All = map[string]Def{
 	"llm-mock": {Factory: func() sdk.Plugin { return &llmmock.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "llm-mock", Type: "llm", APIVersion: ">=1.0,<2.0",
 		Requires: []string{"ctx.llm"}}, Bundle: "base"},
+	"tool-workflow": {Factory: func() sdk.Plugin { return &toolworkflow.Plugin{} }, Manifest: &sdk.Manifest{
+		ID: "tool-workflow", Type: "tool", APIVersion: ">=1.0,<2.0",
+		Requires: []string{"ctx.tools"}}, Bundle: "base"},
 	"tool-shell": {Factory: func() sdk.Plugin { return &toolshell.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "tool-shell", Type: "tool", APIVersion: ">=1.0,<2.0",
+		Requires: []string{"ctx.tools"}}, Bundle: "base"},
+	"host-bridge": {Factory: func() sdk.Plugin { return &hostbridge.Plugin{} }, Manifest: &sdk.Manifest{
+		ID: "host-bridge", Type: "host", APIVersion: ">=1.0,<2.0",
 		Requires: []string{"ctx.tools"}}, Bundle: "base"},
 	"host-plugin-manager": {Factory: func() sdk.Plugin { return &hostplugmgr.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "host-plugin-manager", Type: "host", APIVersion: ">=1.0,<2.0",
