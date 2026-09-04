@@ -22,6 +22,7 @@ archives:
     files:
       - DESIGN.md
       - README.md
+      - LICENSE
 checksum:
   name_template: checksums.txt
 release:
