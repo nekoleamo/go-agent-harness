@@ -4,6 +4,7 @@
 package providerfile
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,11 +12,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Provider 提供商配置(base_url/api_key/model 三项)。
+// Provider 提供商配置(base_url/api_key/model 三项;omitempty:逐项删除后不写出空字段)。
 type Provider struct {
-	BaseURL string `yaml:"base_url"`
-	APIKey  string `yaml:"api_key"`
-	Model   string `yaml:"model"`
+	BaseURL string `yaml:"base_url,omitempty"`
+	APIKey  string `yaml:"api_key,omitempty"`
+	Model   string `yaml:"model,omitempty"`
 }
 
 // Path 配置文件绝对路径(GAH_HOME 覆盖;默认 ~/.gah/config/provider.yaml)。
@@ -63,6 +64,20 @@ func Save(p Provider) error {
 	return os.WriteFile(path, raw, 0o600)
 }
 
+// UpdateModel 同步更新持久化 model(/model 联动:provider.yaml 存在时更新,
+// 其余字段保留;无持久化 provider = no-op)。
+func UpdateModel(model string) error {
+	p, err := Load()
+	if err != nil {
+		return err
+	}
+	if p.BaseURL == "" && p.APIKey == "" {
+		return nil // 无持久化 provider:无需联动
+	}
+	p.Model = model
+	return Save(p)
+}
+
 // Clear 删除配置文件(回退 env/样板)。
 func Clear() error {
 	err := os.Remove(Path())
@@ -70,4 +85,27 @@ func Clear() error {
 		return nil
 	}
 	return err
+}
+
+// Unset 逐项删除某一字段(base_url|api_key|model),其余保留;全空时删除文件;
+// 文件不存在 = no-op。
+func Unset(field string) error {
+	p, err := Load()
+	if err != nil {
+		return err
+	}
+	switch field {
+	case "base_url":
+		p.BaseURL = ""
+	case "api_key":
+		p.APIKey = ""
+	case "model":
+		p.Model = ""
+	default:
+		return fmt.Errorf("provider: 未知字段 %q(可选 base_url|api_key|model)", field)
+	}
+	if p.BaseURL == "" && p.APIKey == "" && p.Model == "" {
+		return Clear() // 全空等价整文件删除
+	}
+	return Save(p)
 }

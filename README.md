@@ -76,9 +76,10 @@ export DEEPSEEK_API_KEY=sk-...            # 或 OPENAI_API_KEY / GAH_BASE 自定
 任意 OpenAI 兼容端点(DeepSeek/SiliconFlow/Ollama/vLLM/Kimi…)只需一行:
 
 ```
-/provider set <baseUrl> <apiKey> [model]    # 立即生效并持久化(provider.yaml, 0600)
+/provider set <baseUrl> <apiKey> [model]     # 立即生效并持久化(provider.yaml, 0600)
 /provider show                               # 查看当前端点/模型/凭据(打码)
-/provider clear                              # 清除设置,回退 env/样板
+/provider unset base_url|api_key|model       # 逐项删除(该项回退 env/样板,其余保留)
+/provider clear                              # 全部清除+运行时立即复位
 ```
 
 示例(以 SiliconFlow 为例):

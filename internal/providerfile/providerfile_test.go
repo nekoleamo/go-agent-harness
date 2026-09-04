@@ -53,6 +53,77 @@ func TestSaveLoadClear(t *testing.T) {
 	}
 }
 
+func TestUnsetSingleField(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GAH_HOME", home)
+	p := Provider{BaseURL: "https://api.siliconflow.cn/v1", APIKey: "sk-123456", Model: "deepseek-ai/DeepSeek-V3"}
+	if err := Save(p); err != nil {
+		t.Fatal(err)
+	}
+	// 只删 api_key:其余保留
+	if err := Unset("api_key"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.APIKey != "" || got.BaseURL != p.BaseURL || got.Model != p.Model {
+		t.Fatalf("只删 api_key,其余保留: %+v", got)
+	}
+	// 再删 base_url:只剩 model
+	if err := Unset("base_url"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = Load()
+	if got.BaseURL != "" || got.Model != p.Model {
+		t.Fatalf("删除 base_url 后仅剩 model: %+v", got)
+	}
+	// 删最后一项:整文件删除
+	if err := Unset("model"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(Path()); !os.IsNotExist(err) {
+		t.Fatalf("全空应删除文件: %v", err)
+	}
+}
+
+func TestUnsetUnknownAndMissing(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GAH_HOME", home)
+	if err := Unset("apiKey"); err == nil {
+		t.Fatal("未知字段应显式报错(字段名 base_url|api_key|model)")
+	}
+	// 文件不存在:no-op 不报错
+	if err := Unset("api_key"); err != nil {
+		t.Fatalf("文件不存在应为 no-op: %v", err)
+	}
+}
+
+func TestUpdateModelKeepsOthers(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GAH_HOME", home)
+	// 无持久化 provider:no-op 不写文件
+	if err := UpdateModel("gpt-4o"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(Path()); !os.IsNotExist(err) {
+		t.Fatal("无 provider 不应写文件")
+	}
+	// 有持久化:更新 model 保留其余
+	p := Provider{BaseURL: "https://api.siliconflow.cn/v1", APIKey: "sk-123456", Model: "old"}
+	if err := Save(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := UpdateModel("deepseek-ai/DeepSeek-V3"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := Load()
+	if got.Model != "deepseek-ai/DeepSeek-V3" || got.BaseURL != p.BaseURL || got.APIKey != p.APIKey {
+		t.Fatalf("UpdateModel 应只改 model: %+v", got)
+	}
+}
+
 func TestLoadMalformed(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("GAH_HOME", home)

@@ -376,14 +376,36 @@ func (a *App) cmdProvider(args []string) (string, error) {
 			return "", errString("已运行时生效,但持久化失败: " + err.Error())
 		}
 		return "已切换: " + args[1] + " | 模型: " + orDefault(a.llm.Model(), "未设置") + " | Key: " + maskKey(args[2]) + "(已持久化 provider.yaml, 0600)", nil
+	case "unset":
+		if len(args) < 2 {
+			return "", errString("/provider unset base_url|api_key|model")
+		}
+		if err := providerfile.Unset(args[1]); err != nil {
+			return "", errString(err.Error())
+		}
+		if err := a.llm.UnsetProvider(args[1]); err != nil {
+			return "", errString("已删除持久化项,但运行时回退失败: " + err.Error())
+		}
+		return "已删除 " + args[1] + "(持久化与运行期均已回退)", nil
 	case "clear":
 		if err := providerfile.Clear(); err != nil {
 			return "", errString("清除失败: " + err.Error())
 		}
-		return "已清除 provider.yaml(当前运行期端点不变;重启后回退 env/样板)", nil
+		if err := a.llm.ResetProvider(); err != nil {
+			return "", errString("已删除 provider.yaml,但运行时复位失败: " + err.Error())
+		}
+		return "已清除设置并复位运行期(回退 env/样板),重启后一致", nil
 	default:
-		return "", errString("/provider show|set|clear")
+		return "", errString("/provider show|set|unset|clear")
 	}
+}
+
+// providerUnsetLevel /provider unset 的二级枚举(可删字段)。
+func providerUnsetLevel(picked []string) []sdk.Option {
+	if len(picked) < 2 || picked[1] != "unset" {
+		return nil // 非 unset 分支无二级 → 选中即执行
+	}
+	return []sdk.Option{{Value: "base_url", Desc: "删除端点,回退 env/样板"}, {Value: "api_key", Desc: "删除凭据,回退 env"}, {Value: "model", Desc: "删除模型,回退默认"}}
 }
 
 // maskKey 凭据打码(尾 4 位;短 key 全掩)。
@@ -410,12 +432,20 @@ func (a *App) registerInternalCommands() {
 			}
 			a.llm.SetModel(args[0])
 			a.model.state.Model = args[0]
+			// 联动:持久化 provider 存在时同步 model(重启后模型与端点保持一致)
+			if err := providerfile.UpdateModel(args[0]); err != nil {
+				return "已切换模型 " + args[0] + ",但持久化同步失败: " + err.Error(), nil
+			}
 			return "", nil
 		}},
-		{Name: "provider", Usage: "/provider show|set <baseUrl> <apiKey> [model]|clear", Desc: "配置 LLM 提供商端点/凭据", Run: a.cmdProvider,
-			Args: []func([]string) []sdk.Option{func([]string) []sdk.Option {
-				return []sdk.Option{{Value: "show", Desc: "查看当前提供商(凭据打码)"}, {Value: "set", Desc: "设置端点/凭据/模型(写 provider.yaml,立即生效)"}, {Value: "clear", Desc: "清除设置,回退 env/样板"}}
-			}}},
+		{Name: "provider", Usage: "/provider show|set|unset|clear", Desc: "配置 LLM 提供商端点/凭据", Run: a.cmdProvider,
+			Args: []func([]string) []sdk.Option{
+				func([]string) []sdk.Option {
+					return []sdk.Option{{Value: "show", Desc: "查看当前提供商(凭据打码)"}, {Value: "set", Desc: "设置端点/凭据/模型(立即生效+持久化)"}, {Value: "unset", Desc: "逐项删除配置(恢复 env/样板)"}, {Value: "clear", Desc: "全部清除+运行时复位"}}
+				},
+				// 二级:仅 unset 枚举可删字段;show/set/clear 无二级 → 选中即执行
+				providerUnsetLevel,
+			}},
 		{Name: "sandbox", Usage: "/sandbox ro|ws|full", Desc: "运行期切沙箱档", Run: a.cmdSandbox,
 			Args: []func([]string) []sdk.Option{func([]string) []sdk.Option {
 				return []sdk.Option{{Value: "ro", Desc: "只读"}, {Value: "ws", Desc: "工作区写入"}, {Value: "full", Desc: "完全访问"}}

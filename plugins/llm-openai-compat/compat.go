@@ -29,6 +29,7 @@ func (p *Plugin) Name() string { return "llm-openai-compat" }
 
 // Start 注册适配器到 ctx.llm。配置优先级:provider.yaml(经 /provider set 持久化)
 // > data 样板 > env;apiKey 另有 env 优先(用户 shell 显式设置最高)。
+// 生效值同时存为默认快照(Unset/Reset 逐项/全量恢复用)。
 func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	a := &Adapter{client: &http.Client{Timeout: 5 * time.Minute}}
 	if m != nil && m.Data != nil {
@@ -64,6 +65,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 			}
 		}
 	}
+	a.defaultBaseURL, a.defaultAPIKey, a.defaultModel = a.baseURL, a.apiKey, a.model
 
 	var llm sdk.LLMService
 	if err := c.Inject("ctx.llm", &llm); err != nil {
@@ -90,6 +92,8 @@ type Adapter struct {
 	baseURL string
 	model   string
 	apiKey  string
+	// 启动默认快照(Unset/Reset 恢复用;env/样板/provider.yaml 顺序的生效值)
+	defaultBaseURL, defaultAPIKey, defaultModel string
 }
 
 func (a *Adapter) Name() string { return "llm-openai-compat" }
@@ -111,6 +115,31 @@ func (a *Adapter) ProviderInfo() (string, string) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.baseURL, a.apiKey
+}
+
+// Unset 删除某一字段配置,该项恢复启动默认(env/样板);其余保持。
+func (a *Adapter) Unset(field string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	switch field {
+	case "base_url":
+		a.baseURL = a.defaultBaseURL
+	case "api_key":
+		a.apiKey = a.defaultAPIKey
+	case "model":
+		a.model = a.defaultModel
+	default:
+		return fmt.Errorf("provider: 未知字段 %q(可选 base_url|api_key|model)", field)
+	}
+	return nil
+}
+
+// Reset 恢复全部字段为启动默认(env/样板)。
+func (a *Adapter) Reset() error {
+	a.mu.Lock()
+	a.baseURL, a.apiKey, a.model = a.defaultBaseURL, a.defaultAPIKey, a.defaultModel
+	a.mu.Unlock()
+	return nil
 }
 
 // endpoint 当前聊天端点(锁保护读取)。

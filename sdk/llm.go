@@ -109,6 +109,12 @@ type LLMService interface {
 	// claude-* 前缀路由的适配器不受影响;无支持适配器时显式报错。
 	SetProvider(baseURL, apiKey string) error
 
+	// UnsetProvider 逐项删除配置(base_url|api_key|model),该项恢复为启动默认(env/样板)。
+	UnsetProvider(field string) error
+
+	// ResetProvider 恢复全部字段为启动默认(env/样板)。
+	ResetProvider() error
+
 	// ProviderInfo 当前通用适配器的端点与凭据(展示用;key 返回原文供打码)。
 	ProviderInfo() (baseURL, apiKey string, ok bool)
 }
@@ -117,6 +123,10 @@ type LLMService interface {
 type ProviderAdapter interface {
 	// Configure 切换端点与凭据(原子生效;baseURL 校验 http(s) 前缀)。
 	Configure(baseURL, apiKey string) error
+	// Unset 删除某一字段(base_url|api_key|model),恢复为启动默认(env/样板)。
+	Unset(field string) error
+	// Reset 恢复全部字段为启动默认(env/样板)。
+	Reset() error
 	// ProviderInfo 返回当前端点与凭据。
 	ProviderInfo() (baseURL, apiKey string)
 }

@@ -177,6 +177,24 @@ func (s *Service) SetProvider(baseURL, apiKey string) error {
 	return pa.Configure(baseURL, apiKey)
 }
 
+// UnsetProvider 逐项删除配置(TUI /provider unset;该项恢复启动默认)。
+func (s *Service) UnsetProvider(field string) error {
+	pa, err := s.genericProvider()
+	if err != nil {
+		return err
+	}
+	return pa.Unset(field)
+}
+
+// ResetProvider 恢复全部字段为启动默认(TUI /provider clear)。
+func (s *Service) ResetProvider() error {
+	pa, err := s.genericProvider()
+	if err != nil {
+		return err
+	}
+	return pa.Reset()
+}
+
 // ProviderInfo 当前通用适配器的端点与凭据(展示用;key 由调用方打码)。
 func (s *Service) ProviderInfo() (string, string, bool) {
 	pa, err := s.genericProvider()

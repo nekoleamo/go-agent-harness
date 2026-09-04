@@ -44,6 +44,36 @@ func TestProviderInfoAndEndpoint(t *testing.T) {
 	}
 }
 
+func TestUnsetAndResetSnapshot(t *testing.T) {
+	a := &Adapter{baseURL: "https://api.siliconflow.cn/v1", apiKey: "sk-set", model: "m1",
+		defaultBaseURL: "https://api.deepseek.com/v1", defaultAPIKey: "sk-env", defaultModel: "deepseek-chat"}
+	// unset api_key:该项回退默认,其余保持
+	if err := a.Unset("api_key"); err != nil {
+		t.Fatal(err)
+	}
+	if a.apiKey != "sk-env" || a.baseURL != "https://api.siliconflow.cn/v1" || a.model != "m1" {
+		t.Fatalf("unset 应只恢复该项: %s %s %s", a.apiKey, a.baseURL, a.model)
+	}
+	// unset model
+	if err := a.Unset("model"); err != nil {
+		t.Fatal(err)
+	}
+	if a.model != "deepseek-chat" {
+		t.Fatalf("unset model 应回退默认: %s", a.model)
+	}
+	// 未知字段:显式报错
+	if err := a.Unset("baseUrl"); err == nil {
+		t.Fatal("未知字段应报错")
+	}
+	// reset:全量回退
+	if err := a.Reset(); err != nil {
+		t.Fatal(err)
+	}
+	if a.baseURL != "https://api.deepseek.com/v1" || a.apiKey != "sk-env" || a.model != "deepseek-chat" {
+		t.Fatalf("reset 应全量回退: %s %s %s", a.baseURL, a.apiKey, a.model)
+	}
+}
+
 func TestConfigureEmptyKeyAllowed(t *testing.T) {
 	a := &Adapter{baseURL: "https://api.x/v1", apiKey: "k"}
 	// 本地端点(如 Ollama)无 key 也允许(仅 URL 校验)
