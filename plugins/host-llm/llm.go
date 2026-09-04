@@ -66,7 +66,7 @@ func (s *Service) completeAdapter() (sdk.LLMAdapter, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if len(s.order) == 0 {
-		return nil, fmt.Errorf("llm: no adapter registered")
+		return nil, fmt.Errorf("llm: 无可用 LLM 适配器(适配器插件 llm-* 已卸载或未启用,回合无法继续)")
 	}
 	return s.adapters[s.order[0]], nil
 }

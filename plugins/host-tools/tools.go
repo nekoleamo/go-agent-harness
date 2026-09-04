@@ -98,7 +98,7 @@ func (r *reg) Execute(ctx context.Context, name, args string) (*sdk.ToolResult, 
 	t, ok := r.tools[name]
 	r.mu.RUnlock()
 	if !ok {
-		res := &sdk.ToolResult{Error: fmt.Sprintf("tool %q not found", name), Content: "{}"}
+		res := &sdk.ToolResult{Error: fmt.Sprintf("工具 %q 不存在 (对应插件可能已卸载/未启用;可经 /plugins list 排查)", name), Content: "{}"}
 		r.broadcastResult(ctx, name, res)
 		return res, nil
 	}

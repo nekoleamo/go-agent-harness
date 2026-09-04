@@ -127,6 +127,7 @@ goreleaser release --snapshot
 - **已交付**:M1 微内核 → M2 base(ReAct/LLM/工具)→ M3 TUI → M4 生态(沙箱/审批/插拔/凭据)→ M5 桥 + starlark workflow → M5.5 MCP + 配置自愈 → M5.6 指令注入 + 技能机制 → 完善 A 组(会话持久化/重试/取消)+ B 组(apiVersion 校验/export/外部热重载/embed 交付);20 包 `-race` 全绿;交付门通过(单二进制自包含实测)。
 - **M6 已全部交付**:host-jobs 后台任务(`ctx.jobs` + job_list/output/kill + `/jobs`)、workflow 子代理 fanout(agent/parallel/pipeline)、tool-shell pty 交互(`data.pty` 开关)、tool-files/tool-web(file_read/write/append/edit + web_fetch,经 `ctx.sandbox` 三档联动)、会话 token 滚动摘要压缩(`token_budget_chars`,完整日志留盘)、插件安装(`gah -install <repo>@version` / `-uninstall` / `-list-plugins`,manifest 见 DESIGN §14.1)。
 - **P0+P1 外部化(已交付)**:sdk 独立 module;桥协议多工具化 + 工具级超时 + 崩溃自动拉起;shell/files/web 合并为 tool-basic 随主包 embed,首启释放 `~/.gah/plugins/`,运行时全为外部进程插件(内置 tool-* 停用,host-bridge 默认启用;单二进制 38MB < 40MB)。
+- **P2 插拔解耦(已交付)**:集成矩阵验证插件卸载解耦——被依赖者拒卸(提示含依赖者)、叶子/无依赖者可卸且回合继续、卸载后调用已卸工具给可操作提示、LLM 适配器全卸后回合显式失败不静默;宿主服务类(skills/jobs/workflow)保持进程内(外部化需宿主服务桥,与微内核/veto 语义冲突,收益低)。
 
 ## 十、协议
 

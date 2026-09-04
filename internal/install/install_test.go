@@ -130,6 +130,56 @@ func TestInstallBridge(t *testing.T) {
 	}
 }
 
+// TestInstallMultiTool 多工具插件(P2a):一个二进制承载多工具(桥协议枚举),装后产物即多工具入口。
+func TestInstallMultiTool(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "go.mod"), "module multi-tool\n\ngo 1.27\n\nrequire github.com/nekoleamo/go-agent-harness v0.0.0\n\nrequire github.com/nekoleamo/go-agent-harness/sdk v0.0.0\n\nreplace github.com/nekoleamo/go-agent-harness => "+repoRoot(t)+"\n\nreplace github.com/nekoleamo/go-agent-harness/sdk => "+filepath.Join(repoRoot(t), "sdk"))
+	writeFile(t, filepath.Join(repo, "plugin.yaml"), "id: multi\nprotocol: bridge\nbinary: tool-multi\n")
+	writeFile(t, filepath.Join(repo, "main.go"), `package main
+
+import (
+	"context"
+
+	bridge "github.com/nekoleamo/go-agent-harness/plugins/host-bridge"
+	"github.com/nekoleamo/go-agent-harness/sdk"
+)
+
+type hiTool struct{}
+
+func (hiTool) Definition() sdk.ToolDefinition {
+	return sdk.ToolDefinition{Name: "hi", Description: "多工具测试:打招呼"}
+}
+func (hiTool) Execute(_ context.Context, args string) (any, error) {
+	return map[string]any{"hi": "ok"}, nil
+}
+
+func main() {
+	bridge.ServeTools(map[string]sdk.Tool{
+		"hi":  hiTool{},
+		"bye": hiTool{},
+	})
+}
+`)
+	runGit(t, repo, "init", "-q")
+	runGit(t, repo, "config", "user.email", "t@t")
+	runGit(t, repo, "config", "user.name", "t")
+	runGit(t, repo, "add", ".")
+	runGit(t, repo, "commit", "-qm", "init")
+	home := makeHome(t)
+	res, err := Install(repo, home)
+	if err != nil {
+		t.Fatalf("多工具插件安装失败: %v", err)
+	}
+	if res.ID != "multi" {
+		t.Fatalf("id 不符: %+v", res)
+	}
+	// 桥协议枚举多工具的入口产物存在即可(注册面由 host-bridge 枚举测试覆盖)
+	bin := filepath.Join(home, "plugins", "multi", "tool-multi")
+	if fi, err := os.Stat(bin); err != nil || fi.Size() == 0 {
+		t.Fatalf("产物缺失: %v %v", bin, err)
+	}
+}
+
 // TestInstallMCP mcp 插件:不拉取,直接登记 mcp-bridge 配置。
 func TestInstallMCP(t *testing.T) {
 	home := makeHome(t)
