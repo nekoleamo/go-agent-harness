@@ -3,17 +3,6 @@ module github.com/nekoleamo/go-agent-harness
 go 1.27.0
 
 require (
-	charm.land/bubbletea/v2 v2.0.7
-	charm.land/lipgloss/v2 v2.0.4
-	github.com/creack/pty v1.1.24
-	github.com/fsnotify/fsnotify v1.10.1
-	github.com/hashicorp/go-plugin v1.8.0
-	github.com/hashicorp/go-version v1.9.0
-	go.starlark.net v0.0.0-20260828210309-6dd8f160a37f
-	gopkg.in/yaml.v3 v3.0.1
-)
-
-require (
 	github.com/charmbracelet/colorprofile v0.4.3 // indirect
 	github.com/charmbracelet/ultraviolet v0.0.0-20260525132238-948f4557a654 // indirect
 	github.com/charmbracelet/x/ansi v0.11.7 // indirect
@@ -42,3 +31,17 @@ require (
 	google.golang.org/grpc v1.61.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 )
+
+require (
+	charm.land/bubbletea/v2 v2.0.7
+	charm.land/lipgloss/v2 v2.0.4
+	github.com/creack/pty v1.1.24
+	github.com/fsnotify/fsnotify v1.10.1
+	github.com/hashicorp/go-plugin v1.8.0
+	github.com/hashicorp/go-version v1.9.0
+	github.com/nekoleamo/go-agent-harness/sdk v0.0.0
+	go.starlark.net v0.0.0-20260828210309-6dd8f160a37f
+	gopkg.in/yaml.v3 v3.0.1
+)
+
+replace github.com/nekoleamo/go-agent-harness/sdk => ./sdk

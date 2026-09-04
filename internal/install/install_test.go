@@ -14,7 +14,7 @@ import (
 func makeFixture(t *testing.T) string {
 	t.Helper()
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "go.mod"), "module demo-tool\n\ngo 1.27\n\nrequire github.com/nekoleamo/go-agent-harness v0.0.0\n\nreplace github.com/nekoleamo/go-agent-harness => "+repoRoot(t))
+	writeFile(t, filepath.Join(repo, "go.mod"), "module demo-tool\n\ngo 1.27\n\nrequire github.com/nekoleamo/go-agent-harness v0.0.0\n\nrequire github.com/nekoleamo/go-agent-harness/sdk v0.0.0\n\nreplace github.com/nekoleamo/go-agent-harness => "+repoRoot(t)+"\n\nreplace github.com/nekoleamo/go-agent-harness/sdk => "+filepath.Join(repoRoot(t), "sdk"))
 	writeFile(t, filepath.Join(repo, "plugin.yaml"), "id: demo\nprotocol: bridge\nbinary: tool-demo\n")
 	// 桥协议实现:直接复用仓库示例插件源码(握手 + echo 工具)
 	example, err := os.ReadFile(filepath.Join(repoRoot(t), "extplugins", "tool-echo", "main.go"))
