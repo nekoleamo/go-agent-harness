@@ -1,0 +1,26 @@
+# CI:go vet + go test -race 全绿 + 裸机启动冒烟(对齐 AGENTS.md 与 DESIGN.md §15)。
+# 裸机冒烟:env -i 纯净环境启动二进制(无 git/chromium 等依赖),验证单二进制自包含。
+name: ci
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: go vet
+        run: go vet ./...
+      - name: go test -race
+        run: go test -race ./...
+      - name: 裸机冒烟(env -i 纯净环境启动)
+        run: |
+          CGO_ENABLED=0 go build -trimpath -o gah ./cmd/gah
+          env -i HOME="$(mktemp -d)" PATH="$PATH" ./gah --profile headless --ephemeral --dump-config >/dev/null
+          echo "裸机启动 OK"
