@@ -82,6 +82,34 @@ func TestInputOperations(t *testing.T) {
 	}
 }
 
+// TestInsertTextPaste 粘贴插入:光标中/末尾插入、单行化(换行转空格)。
+func TestInsertTextPaste(t *testing.T) {
+	s := &State{}
+	s.InsertText("sk-1234567890")
+	if s.Input != "sk-1234567890" || s.Cursor != 13 {
+		t.Fatalf("末尾插入不符: %q cursor=%d", s.Input, s.Cursor)
+	}
+	// 光标中插:构造光标位于 '-' 后(State 无左右键,直接设 Cursor)
+	s2 := &State{Input: "sk-1234567890", Cursor: 5}
+	s2.InsertText("X")
+	if s2.Input != "sk-12X34567890" {
+		t.Fatalf("光标中插不符: %q", s2.Input)
+	}
+	if s2.Cursor != 6 {
+		t.Fatalf("中插后光标应前移: %d", s2.Cursor)
+	}
+	// 粘贴单行化:复制常见的尾换行/CRLF → 空格,不影响后续命令解析
+	s.ClearInput()
+	s.InsertText("https://api.siliconflow.cn/v1\n")
+	if s.Input != "https://api.siliconflow.cn/v1 " {
+		t.Fatalf("尾换行应转空格: %q", s.Input)
+	}
+	s.InsertText("sk-abc\r\n")
+	if s.Input != "https://api.siliconflow.cn/v1 sk-abc " {
+		t.Fatalf("CRLF 应转空格: %q", s.Input)
+	}
+}
+
 func TestRenderContainsKeyParts(t *testing.T) {
 	s := &State{Profile: "tui", Running: true, Input: "你好", Model: "mock-model"}
 	s.ApplySessionEvent(&sdk.SessionEvent{Kind: sdk.EventUserMessage, Payload: sdk.UserMessage{Content: "hi"}})

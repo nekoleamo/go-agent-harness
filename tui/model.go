@@ -56,6 +56,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.state.Running = false
 	case confirmMsg:
 		m.state.ApplyConfirmPrompt(msg.prompt)
+	case tea.PasteMsg:
+		// bracketed paste:整段插入(终端 Cmd+V/中键粘贴);与字符输入同语义
+		m.state.PickDismissed = false
+		m.state.InsertText(msg.Content)
+		m.syncHints()
 	case tea.KeyMsg:
 		m.handleKey(msg)
 	}

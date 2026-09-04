@@ -127,6 +127,23 @@ func (s *State) finishStreaming(final string) {
 	}
 }
 
+// InsertText 光标处插入一段文本(粘贴支持;bracketed paste 单行化:
+// 命令行语义,换行转空格——API key/URL 复制常带尾换行,防破坏渲染)。
+func (s *State) InsertText(text string) {
+	text = strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ").Replace(text)
+	t := []rune(text)
+	if len(t) == 0 {
+		return
+	}
+	b := []rune(s.Input)
+	out := make([]rune, 0, len(b)+len(t))
+	out = append(out, b[:s.Cursor]...)
+	out = append(out, t...)
+	out = append(out, b[s.Cursor:]...)
+	s.Input = string(out)
+	s.Cursor += len(t)
+}
+
 // InsertRune 输入字符。
 func (s *State) InsertRune(r rune) {
 	b := []rune(s.Input)
