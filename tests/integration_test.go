@@ -300,7 +300,8 @@ func TestPluginUnloadMatrix(t *testing.T) {
 
 	// 2) 叶子/无依赖者逐个卸载:宿主存活 + 回合可继续(不 panic)
 	// 含无依赖者的宿主服务(agent-loop/plugin-manager/cwd-sessions 卸载无副作用,引用仍可用)
-	leaves := []string{"policy-approval", "tool-shell", "host-skills", "host-jobs", "host-bridge", "mcp-bridge", "policy-sandbox", "host-agent-loop", "host-plugin-manager", "host-cwd-sessions"}
+	// M6.8:host-bridge 依赖 host-jobs/host-fanout → 卸载需自内向外(先卸 bridge 再卸其依赖者)
+	leaves := []string{"policy-approval", "tool-shell", "host-skills", "mcp-bridge", "policy-sandbox", "host-agent-loop", "host-plugin-manager", "host-cwd-sessions", "token-compress", "host-bridge", "host-jobs", "host-fanout"}
 	for _, id := range leaves {
 		if err := mgr.Unload(id); err != nil {
 			t.Fatalf("卸载 %s 失败: %v", id, err)

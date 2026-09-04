@@ -1,0 +1,9 @@
+# mcp-serve profile:MCP server 独立进程形态(M6.8)。
+# 仅装配 base 的工具宿主(host-tools/host-bridge/外部工具 + mcp-server),
+# 把当前进程工具暴露为 stdio JSON-RPC,供外部 MCP client(如 Claude Desktop)拉起。
+# 用法:gah --profile mcp-serve(默认关闭 llm 循环;可加 patch 启用 LLM 供回调/子代理)
+name: mcp-serve
+bundles:
+  - base
+patches:
+  - patch-serve-mcp.yaml

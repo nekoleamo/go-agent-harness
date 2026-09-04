@@ -1,0 +1,9 @@
+# MCP server 独立 serve 形态(M6.8):gah 作为 MCP server 被外部 client 拉起。
+# 用法:GAH_MCP_SERVE=1 gah --profile mcp-serve(仅装配工具宿主 + mcp-server,不跑 agent)
+entries:
+  - id: host-agent-loop
+    enabled: false # serve 模式不跑 ReAct 循环
+  - id: host-skills
+    enabled: false # 技能注入与 serve 无关(可选留用)
+  - id: mcp-server
+    enabled: true

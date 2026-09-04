@@ -103,7 +103,8 @@ var All = map[string]Def{
 		Requires: []string{"ctx.llm", "ctx.tools", "ctx.systemPrompt"}}, Bundle: "base"},
 	"host-bridge": {Factory: func() sdk.Plugin { return &hostbridge.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "host-bridge", Type: "host", APIVersion: ">=1.0,<2.0",
-		Requires: []string{"ctx.tools"}}, Bundle: "base"},
+		// M6.8 回调通道:外部进程经 GAH_CB_ADDR 请求宿主 tools/jobs/fanout 服务
+		Requires: []string{"ctx.tools", "ctx.jobs", "ctx.fanout"}}, Bundle: "base"},
 	"host-jobs": {Factory: func() sdk.Plugin { return &hostjobs.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "host-jobs", Type: "host", APIVersion: ">=1.0,<2.0",
 		Provides: []string{"ctx.jobs"},
