@@ -50,6 +50,14 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	}, nil
 }
 
+// serverVersion 版本贯通:优先 GAH_VERSION(boot 由 main.version 注入),回退 dev。
+func serverVersion() string {
+	if v := os.Getenv("GAH_VERSION"); v != "" {
+		return v
+	}
+	return "dev"
+}
+
 // serve 顺序读行处理(stdin EOF/断开即退出,serve 会话结束)。
 func serve(tools sdk.ToolRegistry, r io.Reader, w io.Writer, done chan struct{}) {
 	sc := bufio.NewReader(r)
@@ -97,7 +105,7 @@ func handle(tools sdk.ToolRegistry, w io.Writer, line []byte) {
 		writeResult(w, r.ID, map[string]any{
 			"protocolVersion": "2024-11-05",
 			"capabilities":    map[string]any{"tools": map[string]any{}},
-			"serverInfo":      map[string]string{"name": "gah", "version": "dev"},
+			"serverInfo":      map[string]string{"name": "gah", "version": serverVersion()},
 		})
 	case "ping":
 		writeResult(w, r.ID, map[string]any{})

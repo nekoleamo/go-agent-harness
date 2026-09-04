@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"crypto/rand"
+	"encoding/hex"
 	"io"
 	"net/rpc"
 	"os"
@@ -51,11 +53,12 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	var fanout sdk.FanoutService
 	_ = c.Inject("ctx.jobs", &jobs)
 	_ = c.Inject("ctx.fanout", &fanout)
-	cbAddr, cbClose, err := serveCallback(NewCallback(tools, jobs, fanout))
+	cbToken := randomToken() // M7 鉴权:本进程随机 token,经 GAH_CB_TOKEN 注入外部进程
+	cbAddr, cbClose, err := serveCallback(NewCallback(tools, jobs, fanout, cbToken))
 	if err != nil {
 		return nil, err
 	}
-	b := &Bridge{dir: dir, tools: tools, entries: map[string]*extEntry{}, cbAddr: cbAddr}
+	b := &Bridge{dir: dir, tools: tools, entries: map[string]*extEntry{}, cbAddr: cbAddr, cbToken: cbToken}
 	if err := b.loadEntries(); err != nil {
 		cbClose()
 		return nil, err
@@ -97,6 +100,7 @@ type Bridge struct {
 	dir     string
 	tools   sdk.ToolRegistry
 	cbAddr  string // 宿主回调通道地址(GAH_CB_ADDR 注入外部进程)
+	cbToken string // M7 鉴权 token(GAH_CB_TOKEN 注入外部进程,回传校验)
 	mu      sync.RWMutex
 	entries map[string]*extEntry // bin 绝对路径 → 条目
 }
@@ -125,7 +129,7 @@ func (b *Bridge) loadEntries() error {
 
 // loadOne 启动外部插件进程并组装条目(定义枚举 + 协议探测)。
 func (b *Bridge) loadOne(path string) (*extEntry, error) {
-	cl, killFn, err := startPlugin(path, b.cbAddr)
+	cl, killFn, err := startPlugin(path, b.cbAddr, b.cbToken)
 	if err != nil {
 		return nil, err
 	}
@@ -263,9 +267,9 @@ func (b *Bridge) respawn(path string) {
 
 // startPlugin 启动外部插件进程,返回 rpc client 与 kill 函数(崩溃隔离:死进程快速失败)。
 // 回调通道:宿主地址经 GAH_CB_ADDR 环境变量注入(外部进程 Dial 后请求宿主服务)。
-func startPlugin(bin string, cbAddr string) (*rpc.Client, func(), error) {
+func startPlugin(bin string, cbAddr, cbToken string) (*rpc.Client, func(), error) {
 	cmd := exec.Command(bin)
-	cmd.Env = append(os.Environ(), "GAH_CB_ADDR="+cbAddr)
+	cmd.Env = append(os.Environ(), "GAH_CB_ADDR="+cbAddr, "GAH_CB_TOKEN="+cbToken)
 	client := plugin.NewClient(&plugin.ClientConfig{
 		HandshakeConfig: handshake,
 		Plugins: map[string]plugin.Plugin{
@@ -414,4 +418,13 @@ func pluginHome() string {
 		return filepath.Join(uh, ".gah")
 	}
 	return os.TempDir()
+}
+
+// randomToken M7:回调通道握手 token(本进程随机,防本机任意进程连回调)。
+func randomToken() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("tok-%d", time.Now().UnixNano()) // 兜底:时间戳(非安全场景足够)
+	}
+	return hex.EncodeToString(b)
 }

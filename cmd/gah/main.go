@@ -47,6 +47,9 @@ func main() {
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 
+	// 版本贯通(M7):mcp-server 等插件经 GAH_VERSION 读取构建版本
+	os.Setenv("GAH_VERSION", version)
+
 	// 1. 运行时 home 初始化:首启释放 seed 样板(home/config),ephemeral 用临时 home 退出即焚(设计 §7.3)
 	home := homeDir()
 	if *ephemeral {

@@ -11,17 +11,19 @@ import (
 	"errors"
 	"net"
 	"net/rpc"
+	"os"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
 // —— 宿主侧:Callback RPC 服务 ——
 
-// CallArgs 一次回调请求(服务 + 方法 + JSON 参数)。
+// CallArgs 一次回调请求(服务 + 方法 + JSON 参数 + 握手 token)。
 type CallArgs struct {
 	Service string
 	Method  string
 	Args    string
+	Token   string // M7 鉴权:宿主注入 GAH_CB_TOKEN,外部进程回传
 }
 
 // Callback 宿主侧回调服务(tools/jobs/fanout,经 Ctx 注入)。
@@ -29,15 +31,19 @@ type Callback struct {
 	tools  sdk.ToolRegistry
 	jobs   sdk.JobService
 	fanout sdk.FanoutService
+	token  string // 本进程回调通道 token(空 = 鉴权关闭,兼容旧外部二进制)
 }
 
 // NewCallback 构造回调服务(jobs/fanout 可为 nil;对应方法返回显式错误)。
-func NewCallback(tools sdk.ToolRegistry, jobs sdk.JobService, fanout sdk.FanoutService) *Callback {
-	return &Callback{tools: tools, jobs: jobs, fanout: fanout}
+func NewCallback(tools sdk.ToolRegistry, jobs sdk.JobService, fanout sdk.FanoutService, token string) *Callback {
+	return &Callback{tools: tools, jobs: jobs, fanout: fanout, token: token}
 }
 
-// Call 执行一次宿主服务调用,结果(JSON 字符串)写入 reply。
+// Call 执行一次宿主服务调用(校验 token,结果 JSON 写入 reply)。
 func (cb *Callback) Call(args CallArgs, reply *string) error {
+	if cb.token != "" && args.Token != cb.token {
+		return errors.New("callback: 鉴权失败(token 不匹配)")
+	}
 	ctx := context.Background()
 	switch args.Service {
 	case "tools":
@@ -235,12 +241,13 @@ func serveCallback(cb *Callback) (string, func(), error) {
 
 // —— 外部侧:回调客户端与 sdk 接口代理 ——
 
-// CallbackClient 外部进程侧回调连接(经 GAH_CB_ADDR Dial 宿主)。
+// CallbackClient 外部进程侧回调连接(经 GAH_CB_ADDR Dial,携带 GAH_CB_TOKEN)。
 type CallbackClient struct {
-	cl *rpc.Client
+	cl    *rpc.Client
+	token string
 }
 
-// DialCallback 连接宿主回调服务(地址来自宿主注入环境变量 GAH_CB_ADDR)。
+// DialCallback 连接宿主回调服务(地址/token 来自宿主注入的环境变量 GAH_CB_ADDR/GAH_CB_TOKEN)。
 func DialCallback(addr string) (*CallbackClient, error) {
 	if addr == "" {
 		return nil, errors.New("callback: 缺 GAH_CB_ADDR(宿主未开启回调通道)")
@@ -249,10 +256,10 @@ func DialCallback(addr string) (*CallbackClient, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &CallbackClient{cl: cl}, nil
+	return &CallbackClient{cl: cl, token: os.Getenv("GAH_CB_TOKEN")}, nil
 }
 
-// Call 请求宿主服务(service.method)。
+// Call 请求宿主服务(service.method,自动携带握手 token)。
 func (cc *CallbackClient) Call(service, method string, args any, reply *string) error {
 	raw := ""
 	if args != nil {
@@ -262,7 +269,7 @@ func (cc *CallbackClient) Call(service, method string, args any, reply *string) 
 		}
 		raw = string(b)
 	}
-	return cc.cl.Call("CB.Call", CallArgs{Service: service, Method: method, Args: raw}, reply)
+	return cc.cl.Call("CB.Call", CallArgs{Service: service, Method: method, Args: raw, Token: cc.token}, reply)
 }
 
 // Close 关闭回调连接。
