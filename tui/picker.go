@@ -26,7 +26,14 @@ func advanceEnter(input string, pick *Pick, levels levelsFn) (newInput string, n
 		return input, nil, true // 无选择态回车 = 直接提交(普通输入语义)
 	}
 	v := pick.Items[pick.Cursor].Value
-	picked := append(strings.Fields(strings.TrimPrefix(input, "/")), v)
+	// 命令级(Level 0):input 只是过滤前缀(如 /s),不进入命令文本——仅选中命令名;
+	// 参数级(input 为完整命令文本,如 /sandbox):已选值保留并追加新值。
+	var picked []string
+	if pick.Level == 0 {
+		picked = []string{v}
+	} else {
+		picked = append(strings.Fields(strings.TrimPrefix(input, "/")), v)
+	}
 	newInput = "/" + strings.Join(picked, " ")
 
 	if pick.Level == 0 {

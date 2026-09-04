@@ -17,6 +17,29 @@ func staticOpts(opts ...sdk.Option) func([]string) []sdk.Option {
 	return func([]string) []sdk.Option { return opts }
 }
 
+// TestAdvancePrefixNotMerged 回归:输入前缀过滤(/s)后选中命令,命令文本不得携带前缀。
+func TestAdvancePrefixNotMerged(t *testing.T) {
+	levels := func(name string) []func([]string) []sdk.Option {
+		if name == "settings" {
+			return []func([]string) []sdk.Option{staticOpts(opt("history", "历史条数"))}
+		}
+		return nil
+	}
+	// 用户输入 /s(前缀过滤),高亮 settings,Enter
+	in, pick, commit := advanceEnter("/s", &Pick{Level: 0, Items: []sdk.Option{opt("sandbox", "沙箱"), opt("settings", "历史注入")}, Cursor: 1}, levels)
+	if in != "/settings" {
+		t.Fatalf("命令级选择不得携带过滤前缀,应为 /settings, got %q", in)
+	}
+	if commit || pick == nil {
+		t.Fatalf("应进入 settings 的参数级: commit=%v pick=%v", commit, pick)
+	}
+	// 参数级:基础文本保留并追加(已是完整命令文本)
+	in2, _, commit2 := advanceEnter(in, pick, levels)
+	if !commit2 || in2 != "/settings history" {
+		t.Fatalf("参数级追加应为 /settings history: %q commit=%v", in2, commit2)
+	}
+}
+
 // TestAdvanceNoArgCommand 无参数级命令:Enter 选中即直接执行。
 func TestAdvanceNoArgCommand(t *testing.T) {
 	levels := func(name string) []func([]string) []sdk.Option { return nil }
