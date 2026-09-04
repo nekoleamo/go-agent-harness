@@ -149,9 +149,20 @@ func TestServeProtocol(t *testing.T) {
 	// id=1 initialize
 	var hand struct {
 		ProtocolVersion string `json:"protocolVersion"`
+		ServerInfo      struct {
+			Name    string `json:"name"`
+			Version string `json:"version"`
+		} `json:"serverInfo"`
 	}
 	if err := json.Unmarshal(m["1"].Result, &hand); err != nil || hand.ProtocolVersion != "2024-11-05" {
 		t.Fatalf("initialize 应回协议版本: %s", m["1"].Result)
+	}
+	// 版本贯通(M7):GAH_VERSION 有值则回传该版本;测试内显式置空回退 dev
+	if hand.ServerInfo.Name != "gah" {
+		t.Fatalf("serverInfo.name 应为 gah: %s", m["1"].Result)
+	}
+	if hand.ServerInfo.Version != "dev" {
+		t.Fatalf("GAH_VERSION 为空时应回退 dev,实际: %s", m["1"].Result)
 	}
 	// id=2 tools/list 应含 greet/boom
 	var lst struct {
@@ -186,6 +197,24 @@ func TestServeProtocol(t *testing.T) {
 	}
 	if err := json.Unmarshal(m["6"].Result, &te); err != nil || !te.IsError {
 		t.Fatalf("业务失败应 isError: %s", m["6"].Result)
+	}
+}
+
+// TestServerVersionFromEnv 版本贯通正路径(M7):GAH_VERSION 注入后 initialize 回传该版本。
+func TestServerVersionFromEnv(t *testing.T) {
+	t.Setenv("GAH_VERSION", "v1.2.3")
+	c, buf := newEnv(t)
+	lines := serveOnce(t, c, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`+"\n", 1, buf)
+	var hand struct {
+		ServerInfo struct {
+			Version string `json:"version"`
+		} `json:"serverInfo"`
+	}
+	if err := json.Unmarshal(parseResp(t, lines)["1"].Result, &hand); err != nil {
+		t.Fatal(err)
+	}
+	if hand.ServerInfo.Version != "v1.2.3" {
+		t.Fatalf("GAH_VERSION 应贯通到 serverInfo.version: %q", hand.ServerInfo.Version)
 	}
 }
 
