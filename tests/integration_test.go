@@ -256,6 +256,7 @@ func TestPluginUnloadMatrix(t *testing.T) {
 	off, on := false, true
 	tree.Apply([]config.Entry{
 		{ID: "llm-openai-compat", Enabled: &off},
+		{ID: "llm-anthropic-compat", Enabled: &off}, // 避免矩阵测试打真实 Anthropic API
 		{ID: "llm-mock", Enabled: &on},
 	})
 	if err := c.Provide("system.registry", reg); err != nil {
