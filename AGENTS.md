@@ -30,8 +30,8 @@
 - 外部进程插件(host-bridge/mcp-bridge):测试内 `go build` 产物到临时目录再加载。
 
 ## 会话状态
-- 交付里程碑:M1–M5.6 + 完善 A/B 组(会话持久化/重试/取消/apiVersion 校验/export 导出/外部插件热重载/embed 交付+ephemeral),均已提交;-race 全绿 20 包。
-- 延后:host-jobs 后台任务、子代理 fanout、pty、tool-files/web、token 压缩(见 DESIGN.md §14)。
-- 新增能力:AGENTS.md 指令注入(全局 `$GAH_HOME/AGENTS.md` + 项目 `AGENTS.md`,顺序即覆盖)、技能机制(host-skills:全局 `$GAH_HOME/skills` + 项目 `.gah/skills` 扫描 SKILL.md,list_skills/read_skill,prompt 注入索引)、自注册技能 `gah-plugin-dev`(仓库 `.gah/skills/`)。
-- 交付门已通过:单二进制 15.8MB(<25MB)、`CGO_ENABLED=0` 静态、六目标交叉编译、裸机 `env -i` 启动成功;实测见 DESIGN.md §7.6,发行配置 `.goreleaser.yaml`。
-- 延后:子代理 fanout 完善、pty 交互(见 DESIGN.md §14)。
+- 交付里程碑:M1–M5.6 + 完善 A/B 组 + M6.1–M6.6 + P0–P2 全部交付(见 DESIGN.md §14),均已提交;-race 全绿(`go test -race ./...`)。
+- M6 已交付:host-jobs 后台任务、workflow 子代理 fanout(agent/parallel/pipeline)、pty 交互(tool-shell data.pty)、tool-files/tool-web(沙箱联动)、token 滚动摘要压缩(token_budget_chars)、插件安装 `gah -install/-uninstall/-list-plugins`;P0–P2:外部化+崩溃拉起+工具级超时、tool-basic 随包释放、插拔解耦矩阵。
+- 新增能力:Anthropic 适配器(llm-anthropic-compat,`claude-*` 模型前缀路由)、**MCP server 端**(plugins/mcp-server,stdio JSON-RPC,与 mcp-bridge 对称,见 DESIGN.md §14.1 M6.7)、AGENTS.md 指令注入(全局 `$GAH_HOME/AGENTS.md` + 项目 `AGENTS.md`,顺序即覆盖)、技能机制(host-skills:全局 `$GAH_HOME/skills` + 项目 `.gah/skills` 扫描 SKILL.md,list_skills/read_skill,prompt 注入索引)、自注册技能 `gah-plugin-dev`(仓库 `.gah/skills/`)。
+- 交付门已通过:单二进制 15.8MB(<25MB)、`CGO_ENABLED=0` 静态、六目标交叉编译、裸机 `env -i` 启动成功;实测见 DESIGN.md §7.6,发行配置 `.goreleaser.yaml`,CI 见 `.github/workflows/ci.yml`(vet + -race + 裸机冒烟)。
+- 测试注意:tests 卸载矩阵需关闭 llm-anthropic-compat(防打真实 API),补丁已入仓;新插件必须登记 catalogue 并同步 config 与 internal/embed/seed 两份 bundle 样板。

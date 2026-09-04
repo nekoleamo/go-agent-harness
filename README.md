@@ -25,15 +25,21 @@ Go 实现的编程代理 Agent Harness:以**单二进制**交付全部能力,对
 | **headless** | 无 UI 一次性运行器(`--input`),CI/容器友好 |
 | **ReAct 循环** | 对齐 dsh 轮次:pre-step → llm/stream → tool/call* → turn/end,工具可替换 |
 | **结构化工具** | MCP 兼容 schema;执行流水线 pre-execute(veto)→ execute → post-execute → result 广播;工具错误结构化回传模型 |
-| **LLM 统一域模型** | 纯 HTTP+SSE 的 OpenAI 兼容适配器(DeepSeek/OpenAI/Ollama/vLLM/Kimi/llama.cpp 通吃)+ Anthropic 适配器计划;mock 适配器供 CI |
+| **LLM 统一域模型** | 纯 HTTP+SSE 的 OpenAI 兼容适配器(DeepSeek/OpenAI/Ollama/vLLM/Kimi/llama.cpp 通吃)+ Anthropic 适配器(模型前缀路由 `claude-*`);mock 适配器供 CI |
 | **沙箱三档** | read-only / workspace-write(相对路径以 workspace 为根,防 `../` 穿越)/ full-access;TUI `/sandbox` 运行期切换 |
 | **安全** | 危险命令(rm -rf / git push -f / sudo / chmod 777…)经用户 y/n 确认;无确认通道时安全拒绝;凭据隔离:工具子进程 env 滤除 `*_API_KEY/_TOKEN/_SECRET` |
 | **starlark workflow** | 模型写受限 starlark 脚本一把过组合多步工具调用(天然沙箱/无标准库);`background` 异步 + 收集 |
 | **外部插件桥** | host-bridge:独立进程插件(go-plugin),**崩溃隔离**(外部进程被杀,宿主存活,调用转结构化错误) |
 | **MCP client 桥** | mcp-bridge:stdio JSON-RPC 接入 MCP server,工具注册为 `mcp_<name>` |
+| **MCP server 端** | mcp-server:本仓全部工具暴露为 MCP server(stdio JSON-RPC,initialize/tools/list/tools/call,插拔实时反映) |
+| **后台任务** | host-jobs + workflow `background`:长任务异步提交/取回/终止,不阻塞回合 |
+| **子代理 fanout** | workflow `agent/parallel/pipeline`:扇出多个子代理并行执行并聚合 |
+| **会话 token 压缩** | 超预算滚动摘要(完整日志留盘),长会话注入受限可用 |
+| **插件安装** | `gah -install/-uninstall/-list-plugins`:git 拉取构建落盘,一条命令装完即启用 |
 | **指令文件** | 全局 `$GAH_HOME/AGENTS.md` + 项目 `AGENTS.md` 自动注入 system prompt(顺序即覆盖) |
 | **技能机制** | host-skills:扫描技能目录(SKILL.md),`list_skills`/`read_skill` 按需加载,提示注入技能索引;仓库已自注册 `gah-plugin-dev` 技能 |
 | **配置自愈** | 启动失败自动回滚最近正常备份重试一次,坏配置不卡死 |
+| **pty 交互** | tool-shell `data.pty` 开关(creack/pty):驱动 REPL/git 编辑器等交互进程 |
 
 ## 三、快速开始
 
