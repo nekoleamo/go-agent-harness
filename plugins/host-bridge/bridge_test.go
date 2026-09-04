@@ -185,3 +185,80 @@ func killPluginProcess(name string) bool {
 }
 
 var _ = os.Getpid
+
+// TestToolLevelTimeout 工具级超时(P0-2):定义声明 timeout_ms 覆写全局 3s。
+func TestToolLevelTimeout(t *testing.T) {
+	if got := rpcTimeoutFor(sdk.ToolDefinition{TimeoutMs: 0}); got != 3*time.Second {
+		t.Fatalf("未声明超时应回落全局默认: %v", got)
+	}
+	if got := rpcTimeoutFor(sdk.ToolDefinition{TimeoutMs: 90_000}); got != 90*time.Second {
+		t.Fatalf("应使用工具声明超时: %v", got)
+	}
+	if got := rpcTimeoutFor(sdk.ToolDefinition{TimeoutMs: 1500}); got != 1500*time.Millisecond {
+		t.Fatalf("毫秒换算不符: %v", got)
+	}
+}
+
+// TestCrashAutoRespawn 进程崩溃自动拉起(P0-3):连接断裂 → 调用转错误 +
+// 异步重建新实例(节流内),之后调用恢复正常。
+func TestCrashAutoRespawn(t *testing.T) {
+	dir := t.TempDir()
+	buildExternalPlugin(t, dir)
+
+	// 仅 host-tools(不启动 host-bridge 插件,手工构造 Bridge 便于检查条目)
+	logger := slog.New(slog.DiscardHandler)
+	bus := event.New(logger)
+	c := ctx.New(logger, bus)
+	reg := plugin.New()
+	mm := sdk.Manifest{ID: "host-tools", APIVersion: ">=1.0,<2.0", Provides: []string{"ctx.tools"}}
+	if err := reg.Register(func() sdk.Plugin { return &hosttools.Plugin{} }, &mm); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.StartSubset(c, map[string]bool{"host-tools": true}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(reg.DisposeAll)
+	var tools sdk.ToolRegistry
+	if err := c.Inject("ctx.tools", &tools); err != nil {
+		t.Fatal(err)
+	}
+	b := &Bridge{dir: dir, tools: tools, entries: map[string]*extEntry{}}
+	if err := b.loadEntries(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(b.closeAll)
+	path := filepath.Join(dir, "tool-echo")
+
+	res, err := tools.Execute(context.Background(), "echo", `{"text":"before"}`)
+	if err != nil || res.Error != "" {
+		t.Fatalf("基准调用失败: %v %+v", err, res)
+	}
+	old := b.entries[path]
+	if old == nil {
+		t.Fatal("条目缺失")
+	}
+	// 模拟进程死亡:连接断裂
+	old.client.Close()
+
+	// 调用应转结构化错误,且触发自动拉起(轮询直到新实例恢复)
+	deadline := time.Now().Add(10 * time.Second)
+	var recovered bool
+	for time.Now().Before(deadline) {
+		res, err := tools.Execute(context.Background(), "echo", `{"text":"after"}`)
+		if err != nil {
+			t.Fatalf("宿主不应 panic: %v", err)
+		}
+		if res.Error == "" && strings.Contains(res.Content, "after") {
+			b.mu.RLock()
+			recovered = b.entries[path] != old
+			b.mu.RUnlock()
+			if recovered {
+				break
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if !recovered {
+		t.Fatal("崩溃后应自动拉起并恢复调用")
+	}
+}

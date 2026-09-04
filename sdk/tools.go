@@ -4,10 +4,12 @@ package sdk
 import "context"
 
 // ToolDefinition MCP 兼容工具定义:name/description/inputSchema(JSON Schema)。
+// TimeoutMs 工具级执行超时(P0-2,host-bridge 覆写全局 3s 桥超时);0 = 使用默认。
 type ToolDefinition struct {
 	Name        string
 	Description string
 	InputSchema map[string]any // JSON Schema 对象
+	TimeoutMs   int64          `json:"timeout_ms,omitempty"` // 毫秒;0 = 桥默认
 }
 
 // Tool 一个可执行工具。Execute 的 args 是 JSON 字符串(模型生成)。
