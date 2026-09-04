@@ -10,6 +10,7 @@ import (
 
 	"github.com/nekoleamo/go-agent-harness/core/ctx"
 	"github.com/nekoleamo/go-agent-harness/core/event"
+	"github.com/nekoleamo/go-agent-harness/plugins/host-fanout"
 	"github.com/nekoleamo/go-agent-harness/plugins/host-jobs"
 	"github.com/nekoleamo/go-agent-harness/plugins/host-llm"
 	"github.com/nekoleamo/go-agent-harness/plugins/host-system-prompt"
@@ -46,10 +47,8 @@ func buildEnv(t *testing.T) sdk.Ctx {
 	if _, err := (&hostsystemprompt.Plugin{}).Start(c, &sdk.Manifest{}); err != nil {
 		t.Fatal(err)
 	}
-	// llm-mock 适配器:请求1 调 shell,请求2 文本收尾
-	if _, err := (&llmmock.Plugin{}).Start(c, &sdk.Manifest{Data: map[string]any{
-		"script": `[{"tool":{"name":"shell","args":"{\"command\":\"echo sub-ok\"}"}},{"text":"子代理完成","finish":"stop"}]`,
-	}}); err != nil {
+	// 子代理编排宿主服务(M6.2 拆分):host-fanout(ctx.fanout),依赖上述 llm/tools/sysp
+	if _, err := (&hostfanout.Plugin{}).Start(c, &sdk.Manifest{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := (&Plugin{}).Start(c, &sdk.Manifest{}); err != nil {
