@@ -3,6 +3,9 @@
 /dist/
 /gah
 
+# codegraph 本地索引(MCP 知识图谱,不随仓库)
+.codegraph/
+
 # 会话日志与运行时数据(home 由 GAH_HOME 定位,仓库内不留)
 /sessions/
 *.jsonl

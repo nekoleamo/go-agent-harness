@@ -28,12 +28,28 @@ jobs:
           # 其余目标由 go build 能否取到对应 embed 目录保证)。
           for t in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64; do
             os=${t%/*}; arch=${t#*/}
-            GOOS=$os GOARCH=$arch CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "/tmp/gah-$t" ./cmd/gah
-            size=$(stat -c%s "/tmp/gah-$t")
+            GOOS=$os GOARCH=$arch CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "/tmp/gah-${os}-${arch}" ./cmd/gah
+            size=$(stat -c%s "/tmp/gah-${os}-${arch}")
             echo "$t: $size bytes"
             [ "$size" -lt 41943040 ] || { echo "体积门失败($t): $size >= 40MB"; exit 1; }
           done
           go test ./internal/embed/ -run TestExtPluginsMatchPlatform -count=1
+          cp "/tmp/gah-linux-amd64" ./gah # 供后续裸机冒烟(体积门 step 并入矩阵后补产物)
+      - name: 发行流水线冒烟(goreleaser snapshot 全链路)
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          args: release --snapshot --clean
+      - name: snapshot 产物抽查(五目标归档 + linux/amd64 主包架构)
+        run: |
+          # 冒烟覆盖:before hook(go mod tidy + 重生成插件)→ 五目标交叉构建 →
+          # 归档/checksum;插件平台匹配已由 gen-extplugins.sh 内 assert_arch 与单测护栏。
+          for t in darwin_amd64 darwin_arm64 linux_amd64 linux_arm64 windows_amd64; do
+            ls dist/*${t}*.tar.gz >/dev/null || { echo "缺少 ${t} 归档"; exit 1; }
+          done
+          mkdir -p /tmp/dist-check && tar -xzf dist/*linux_amd64*.tar.gz -C /tmp/dist-check
+          find /tmp/dist-check -name gah -type f -exec head -c 4 {} \; | od -An -tx1 | grep -q '7f 45 4c 46' \
+            || { echo "linux/amd64 主包非 ELF"; exit 1; }
+          echo "发行流水线冒烟 OK"
       - name: 裸机冒烟(env -i 纯净环境启动)
         run: |
           env -i HOME="$(mktemp -d)" PATH="$PATH" ./gah --profile headless --ephemeral --dump-config >/dev/null
