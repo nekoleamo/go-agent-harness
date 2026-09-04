@@ -125,7 +125,7 @@ goreleaser release --snapshot
 ## 九、状态与路线图
 
 - **已交付**:M1 微内核 → M2 base(ReAct/LLM/工具)→ M3 TUI → M4 生态(沙箱/审批/插拔/凭据)→ M5 桥 + starlark workflow → M5.5 MCP + 配置自愈 → M5.6 指令注入 + 技能机制 → 完善 A 组(会话持久化/重试/取消)+ B 组(apiVersion 校验/export/外部热重载/embed 交付);20 包 `-race` 全绿;交付门通过(单二进制自包含实测)。
-- **规划中(M6,按需实现)**:host-jobs 后台任务、子代理 fanout、pty 交互、tool-files/tool-web、token 压缩——明细见 DESIGN.md §14.1。
+- **规划中(M6,按需实现)**:host-jobs 后台任务、子代理 fanout、pty 交互、tool-files/tool-web、token 压缩、插件安装(`gah install` + 线上索引)——明细见 DESIGN.md §14.1。
 
 ## 十、协议
 

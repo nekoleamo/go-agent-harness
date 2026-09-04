@@ -1,12 +1,15 @@
 // Package llmmock 提供 llm-mock 插件:脚本化流式适配器(dev/测试用,不需要 API key)。
-// 行为由 Manifest 配置:data.script = JSON 数组,每项 {text?|tool?:{name,args}, finish?}。
-// 脚本每一步 = 一次请求的响应(按请求序号消费),模拟多轮 ReAct。CI 不依赖外网。
+// 行为由 Manifest 配置:data.script = 脚本数组(JSON 字符串或 YAML 嵌套列表均可),
+// 每项 {text?|tool?:{name,args}, finish?}。脚本每一步 = 一次请求的响应(按请求序号消费),
+// 模拟多轮 ReAct。CI 不依赖外网。
+// 注:类型不匹配(如写成了对象)会显式报错,拒绝静默回退默认脚本。
 package llmmock
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync/atomic"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
@@ -34,14 +37,19 @@ type step struct {
 func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	a := &Adapter{steps: defaultSteps()}
 	if m != nil && m.Data != nil {
-		if raw, ok := m.Data["script"].(string); ok && raw != "" {
-			var steps []step
-			if err := json.Unmarshal([]byte(raw), &steps); err != nil {
+		if v, ok := m.Data["script"]; ok {
+			steps, err := parseScript(v)
+			if err != nil {
 				return nil, fmt.Errorf("llm-mock: script: %w", err)
 			}
 			a.steps = steps
 		}
 	}
+	return p.register(c, a)
+}
+
+// register 把适配器挂到 ctx.llm(与 Start 分离,便于测试)。
+func (p *Plugin) register(c sdk.Ctx, a *Adapter) (sdk.Disposer, error) {
 	var llm sdk.LLMService
 	if err := c.Inject("ctx.llm", &llm); err != nil {
 		return nil, err
@@ -49,6 +57,35 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	d := llm.RegisterAdapter(a)
 	llm.SetModel("mock-model")
 	return d, nil
+}
+
+// parseScript 解析 data.script:接受 JSON 字符串或 YAML 嵌套列表([]any/[]map[string]any);
+// 空脚本与类型不符显式报错,拒绝静默回退默认脚本。
+func parseScript(v any) ([]step, error) {
+	var raw []byte
+	switch s := v.(type) {
+	case string:
+		if strings.TrimSpace(s) == "" {
+			return nil, fmt.Errorf("script 为空字符串")
+		}
+		raw = []byte(s)
+	case []any, []map[string]any: // YAML 嵌套列表形态
+		b, err := json.Marshal(s)
+		if err != nil {
+			return nil, fmt.Errorf("script 列表序列化失败: %w", err)
+		}
+		raw = b
+	default:
+		return nil, fmt.Errorf("script 须为 JSON 字符串或列表,收到 %T", v)
+	}
+	var steps []step
+	if err := json.Unmarshal(raw, &steps); err != nil {
+		return nil, fmt.Errorf("解析脚本失败: %w", err)
+	}
+	if len(steps) == 0 {
+		return nil, fmt.Errorf("script 为空列表")
+	}
+	return steps, nil
 }
 
 // defaultSteps 默认脚本:请求 1 → shell 工具调用;请求 2 → 文本收尾。
