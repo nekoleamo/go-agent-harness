@@ -41,7 +41,7 @@
 - LLM 提供商运行时配置:host-llm.SetProvider/ProviderInfo(命中通用适配器,claude-* 路由不受影响)+ 适配器可选 sdk.ProviderAdapter(Configure/ProviderInfo);TUI `/provider show|set|clear` 写 `~/.gah/config/provider.yaml`(0600,env 显式优先,坏 yaml 显式报错)——任意 OpenAI 兼容端点一行配置即用(SiliconFlow 等),零重启。
 - TUI 思考状态:回合中状态栏显示思考动画(⠋ 旋转,tea.Every tick)+ Esc 取消提示,工具执行时切换"执行工具: <name>",含当前工作区目录名;空闲停 tick。
 - 选择器自由级:CommandSpec.Args 改 ArgLevel(枚举级 Options / 自由级 FreeArgs):命令需手动输入参数(如 /model 模型名、/provider set baseUrl/apiKey)选中后断点保留文本回输入框+提示继续输入,不直接执行;无可定义级命令(/help、/provider show)仍直接执行。
-- 思考等级:Tab=前进/Shift+Tab=后退循环(off→low→medium→high),/thinking 命令(枚举选择器),状态栏"思维: <等级>"(off 隐藏);host-llm 会话级注入(请求未显式时),openai→reasoning_effort / anthropic→thinking budget_tokens(1024/4096/16384),off 均不发送(安全默认,兼容不支持端点)。
+- 思考等级:切换仅 **Tab=前进 / Shift+Tab=后退** 快捷键(off→low→medium→high→off,从 off 开始;无 /thinking 命令),状态栏"思维: <等级>"(off 隐藏);host-llm 会话级注入(请求未显式时),openai→reasoning_effort / anthropic→thinking budget_tokens(1024/4096/16384),off 均不发送(安全默认)。
 - 交互式命令选择器:CommandSpec.Args 参数级联选项(每级动态枚举器,nil=自由级断点,最后级无选项直接执行);TUI 输入 / 自动激活列表、↑/↓ 移动、Enter 级联确定、Esc 退出;`/sandbox` → ro|ws|full 示例,host-jobs 的 /jobs 二级动态枚举任务 ID。
 - P3 首启健壮性(main 设 `GAH_HOME=home` 统一 home 事实源,ephemeral 彻底隔离外部插件目录)+ host-bridge 加载软降级(单插件加载失败 ERROR 跳过,不拖垮 boot)+ CI 裸机冒烟新增 headless 真实回合护栏;见 DESIGN.md §14.1 P3。
 - 交付门已通过:单二进制 31.9MB(<40MB,M7 gzip embed 修复,M6.9 峰值 83.5MB 曾击穿)、`CGO_ENABLED=0` 静态、六目标交叉编译、裸机 `env -i` 启动成功 + 体积门(CI);实测见 DESIGN.md §7.6,发行配置 `.goreleaser.yaml`,CI 见 `.github/workflows/ci.yml`(vet + -race + 体积门 + 裸机冒烟)。

@@ -369,16 +369,6 @@ type errString string
 
 func (e errString) Error() string { return string(e) }
 
-// cmdThinking /thinking off|low|medium|high:设置会话级思考等级(Tab/Shift+Tab 同效)。
-func (a *App) cmdThinking(args []string) (string, error) {
-	if len(args) < 1 {
-		return "", errString("/thinking off|low|medium|high")
-	}
-	a.llm.SetThinking(sdk.ParseThinking(args[0]))
-	a.model.state.Thinking = args[0]
-	return "思考等级 -> " + args[0], nil
-}
-
 // cmdProvider /provider show|set|clear:LLM 提供商运行时配置(TUI 入口)。
 // set 写 provider.yaml(0600)并立即生效;重启后 env 显式优先、其次本文件。
 func (a *App) cmdProvider(args []string) (string, error) {
@@ -520,10 +510,6 @@ func (a *App) registerInternalCommands() {
 		return
 	}
 	internal := []sdk.CommandSpec{
-		{Name: "thinking", Usage: "/thinking off|low|medium|high", Desc: "思考等级(快捷键 Tab/Shift+Tab)", Run: a.cmdThinking,
-			Args: []sdk.ArgLevel{{Options: func([]string) []sdk.Option {
-				return []sdk.Option{{Value: "off", Desc: "关闭思考"}, {Value: "low", Desc: "低等级"}, {Value: "medium", Desc: "中等级"}, {Value: "high", Desc: "高等级"}}
-			}}}},
 		{Name: "model", Usage: "/model <名>", Desc: "切换模型", Args: []sdk.ArgLevel{{Options: a.modelOptions, FreeArgs: func([]string) []string { return []string{"模型名"} }}}, Run: func(args []string) (string, error) {
 			if len(args) < 1 {
 				return "", errString("/model <名称> 切换模型")
