@@ -17,6 +17,7 @@ import (
 	"github.com/nekoleamo/go-agent-harness/plugins/llm-mock"
 	"github.com/nekoleamo/go-agent-harness/plugins/llm-openai-compat"
 	"github.com/nekoleamo/go-agent-harness/plugins/mcp-bridge"
+	"github.com/nekoleamo/go-agent-harness/plugins/mcp-server"
 	"github.com/nekoleamo/go-agent-harness/plugins/policy-approval"
 	"github.com/nekoleamo/go-agent-harness/plugins/policy-sandbox"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool-files"
@@ -83,6 +84,9 @@ var All = map[string]Def{
 		Requires: []string{"ctx.tools"}}, Bundle: "base"},
 	"mcp-bridge": {Factory: func() sdk.Plugin { return &mcpbridge.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "mcp-bridge", Type: "host", APIVersion: ">=1.0,<2.0",
+		Requires: []string{"ctx.tools"}}, Bundle: "base"},
+	"mcp-server": {Factory: func() sdk.Plugin { return &mcpserver.Plugin{} }, Manifest: &sdk.Manifest{
+		ID: "mcp-server", Type: "host", APIVersion: ">=1.0,<2.0",
 		Requires: []string{"ctx.tools"}}, Bundle: "base"},
 	"host-cwd-sessions": {Factory: func() sdk.Plugin { return &hostcwdsessions.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "host-cwd-sessions", Type: "host", APIVersion: ">=1.0,<2.0",

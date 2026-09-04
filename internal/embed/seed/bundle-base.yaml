@@ -28,6 +28,8 @@ entries:
     enabled: true
   - id: mcp-bridge
     enabled: false # MCP client 桥(M5.5):默认关闭;data.command 指定 MCP server 启动命令
+  - id: mcp-server
+    enabled: false # MCP server 端(二期已交付):默认关闭,serve/headless 场景启用(gah 作 MCP server 被拉起)
   - id: tool-shell
     enabled: false # P1 外部化:内嵌实现停用,由 host-bridge 加载 home/plugins 外部进程
   - id: tool-files
