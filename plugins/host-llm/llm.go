@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -61,30 +62,52 @@ func (s *Service) RegisterAdapter(a sdk.LLMAdapter) sdk.Disposer {
 	}
 }
 
-// completeAdapter 取当前默认适配器:首个注册者(M3 起支持按模型路由)。
-func (s *Service) completeAdapter() (sdk.LLMAdapter, error) {
+// completeAdapter 路由当前模型到适配器:模型名精确/前缀命中 ModelRouter 声明优先;
+// 无命中 → 首个注册者(默认回退,对齐原语义)。
+func (s *Service) completeAdapter(model string) (sdk.LLMAdapter, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if len(s.order) == 0 {
 		return nil, fmt.Errorf("llm: 无可用 LLM 适配器(适配器插件 llm-* 已卸载或未启用,回合无法继续)")
+	}
+	if model != "" {
+		for _, a := range s.adapters {
+			if r, ok := a.(sdk.ModelRouter); ok {
+				for _, m := range r.Models() {
+					if model == m || strings.HasPrefix(model, m+"-") {
+						return a, nil
+					}
+				}
+			}
+		}
+	}
+	// 默认回退:首个未声明模型前缀的通用适配器(与注册顺序解耦;
+	// 全为前缀声明型时才落 order[0])
+	for _, n := range s.order {
+		a := s.adapters[n]
+		if _, ok := a.(sdk.ModelRouter); !ok {
+			return a, nil
+		}
 	}
 	return s.adapters[s.order[0]], nil
 }
 
 // Complete 以默认适配器发起请求;对可重试错误实施指数退避重试(§11 矩阵:网络断流/5xx 可重试,4xx 不可重试)。
 func (s *Service) Complete(ctx context.Context, req *sdk.LLMRequest, onChunk func(ev sdk.LLMStreamEvent) error) (*sdk.LLMResponse, error) {
-	a, err := s.completeAdapter()
+	model := req.Model
+	if model == "" {
+		s.mu.RLock()
+		model = s.model
+		s.mu.RUnlock()
+	}
+	if model == "" {
+		return nil, fmt.Errorf("llm: model not set (SetModel before first request)")
+	}
+	a, err := s.completeAdapter(model)
 	if err != nil {
 		return nil, err
 	}
-	if req.Model == "" {
-		s.mu.RLock()
-		req.Model = s.model
-		s.mu.RUnlock()
-	}
-	if req.Model == "" {
-		return nil, fmt.Errorf("llm: model not set (SetModel before first request)")
-	}
+	req.Model = model
 	return retry(ctx, a, req, onChunk)
 }
 

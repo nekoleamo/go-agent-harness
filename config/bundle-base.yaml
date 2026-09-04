@@ -11,6 +11,9 @@ entries:
   - id: llm-openai-compat
     data:
       base_url: https://api.deepseek.com/v1
+  - id: llm-anthropic-compat
+    data:
+      base_url: https://api.anthropic.com/v1 # model=claude-* 时经模型前缀路由到本适配器
   - id: host-agent-loop
   - id: policy-sandbox
     data:

@@ -72,11 +72,20 @@ type LLMResponse struct {
 }
 
 // LLMAdapter 模型提供商适配器。Name 为稳定标识(llm-openai-compat 等)。
+// 可选接口 ModelRouter 声明支持的模型前缀(host-llm 按当前模型名路由;
+// 未实现则作为默认回退适配器,对齐原 order[0] 语义)。
 type LLMAdapter interface {
 	Name() string
 	// Complete 发起流式请求:onChunk 按增量回调;返回聚合后的完整响应。
 	// 实现必须尊重 ctx 取消(取消链见设计 §8)。
 	Complete(ctx context.Context, req *LLMRequest, onChunk func(ev LLMStreamEvent) error) (*LLMResponse, error)
+}
+
+// ModelRouter 可选接口:声明适配器支持的模型名/前缀(如 "claude")。
+// host-llm 路由:当前模型名精确或前缀命中任一适配器声明 → 优先;
+// 无命中 → 首个注册适配器(默认回退)。
+type ModelRouter interface {
+	Models() []string
 }
 
 // LLMService 服务(ctx.llm):注册适配器 + 以当前默认适配器请求。

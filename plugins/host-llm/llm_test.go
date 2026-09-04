@@ -79,3 +79,51 @@ func TestCancelStopsRetryLoop(t *testing.T) {
 		t.Fatalf("取消后不应继续重试,got %d 次调用", a.calls.Load())
 	}
 }
+
+// TestModelPrefixRouting 模型前缀路由:claude-* 命中 ModelRouter 声明,其余回落默认。
+// 路由实现(Anthropic 适配器接入的方式,见 llm-anthropic-compat)。
+func TestModelPrefixRouting(t *testing.T) {
+	s := &Service{adapters: map[string]sdk.LLMAdapter{}, model: "claude-sonnet-4-5", order: []string{"openai", "claude"}}
+	aOpenai := &msgAdapter{name: "openai"}
+	aClaude := &msgAdapter{name: "claude"}
+	s.adapters["openai"] = aOpenai
+	s.adapters["claude"] = aClaude
+
+	a, err := s.completeAdapter("claude-sonnet-4-5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Name() != "claude" {
+		t.Fatalf("claude-* 应路由到 claude 适配器,got %s", a.Name())
+	}
+	a, err = s.completeAdapter("deepseek-chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Name() != "openai" {
+		t.Fatalf("非 claude 模型应回落首个注册适配器,got %s", a.Name())
+	}
+	a, err = s.completeAdapter("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Name() != "openai" {
+		t.Fatalf("空模型应回落默认,got %s", a.Name())
+	}
+}
+
+// msgAdapter 简单适配器(带 ModelRouter,供路由测试)。
+type msgAdapter struct {
+	name string
+}
+
+func (m *msgAdapter) Name() string { return m.name }
+func (m *msgAdapter) Models() []string {
+	if m.name == "claude" {
+		return []string{"claude"}
+	}
+	return nil
+}
+func (m *msgAdapter) Complete(ctx context.Context, req *sdk.LLMRequest, onChunk func(ev sdk.LLMStreamEvent) error) (*sdk.LLMResponse, error) {
+	return &sdk.LLMResponse{Message: sdk.LLMMessage{Role: sdk.RoleAssistant, Content: m.name}}, nil
+}

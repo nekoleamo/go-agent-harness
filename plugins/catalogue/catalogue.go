@@ -13,6 +13,7 @@ import (
 	"github.com/nekoleamo/go-agent-harness/plugins/host-skills"
 	"github.com/nekoleamo/go-agent-harness/plugins/host-system-prompt"
 	"github.com/nekoleamo/go-agent-harness/plugins/host-tools"
+	"github.com/nekoleamo/go-agent-harness/plugins/llm-anthropic-compat"
 	"github.com/nekoleamo/go-agent-harness/plugins/llm-mock"
 	"github.com/nekoleamo/go-agent-harness/plugins/llm-openai-compat"
 	"github.com/nekoleamo/go-agent-harness/plugins/mcp-bridge"
@@ -64,6 +65,9 @@ var All = map[string]Def{
 		Requires: []string{"ctx.llm"}}, Bundle: "base"},
 	"llm-mock": {Factory: func() sdk.Plugin { return &llmmock.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "llm-mock", Type: "llm", APIVersion: ">=1.0,<2.0",
+		Requires: []string{"ctx.llm"}}, Bundle: "base"},
+	"llm-anthropic-compat": {Factory: func() sdk.Plugin { return &llmanthropic.Plugin{} }, Manifest: &sdk.Manifest{
+		ID: "llm-anthropic-compat", Type: "llm", APIVersion: ">=1.0,<2.0",
 		Requires: []string{"ctx.llm"}}, Bundle: "base"},
 	"tool-workflow": {Factory: func() sdk.Plugin { return &toolworkflow.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "tool-workflow", Type: "tool", APIVersion: ">=1.0,<2.0",
