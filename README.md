@@ -125,8 +125,7 @@ goreleaser release --snapshot
 ## 九、状态与路线图
 
 - **已交付**:M1 微内核 → M2 base(ReAct/LLM/工具)→ M3 TUI → M4 生态(沙箱/审批/插拔/凭据)→ M5 桥 + starlark workflow → M5.5 MCP + 配置自愈 → M5.6 指令注入 + 技能机制 → 完善 A 组(会话持久化/重试/取消)+ B 组(apiVersion 校验/export/外部热重载/embed 交付);20 包 `-race` 全绿;交付门通过(单二进制自包含实测)。
-- **已交付 M6.1–M6.5**:host-jobs 后台任务(`ctx.jobs` + job_list/output/kill + `/jobs`)、workflow 子代理 fanout(agent/parallel/pipeline)、tool-shell pty 交互(`data.pty` 开关)、tool-files/tool-web(file_read/write/append/edit + web_fetch,经 `ctx.sandbox` 三档联动)、会话 token 滚动摘要压缩(`token_budget_chars`,完整日志留盘)。
-- **规划中(M6)**:插件安装(`gah install` + 线上索引)——明细见 DESIGN.md §14.1。
+- **M6 已全部交付**:host-jobs 后台任务(`ctx.jobs` + job_list/output/kill + `/jobs`)、workflow 子代理 fanout(agent/parallel/pipeline)、tool-shell pty 交互(`data.pty` 开关)、tool-files/tool-web(file_read/write/append/edit + web_fetch,经 `ctx.sandbox` 三档联动)、会话 token 滚动摘要压缩(`token_budget_chars`,完整日志留盘)、插件安装(`gah -install <repo>@version` / `-uninstall` / `-list-plugins`,manifest 见 DESIGN §14.1)。
 
 ## 十、协议
 
