@@ -33,6 +33,7 @@
 - 交付里程碑:M1–M5.6 + 完善 A/B 组 + M6.1–M6.6 + P0–P2 全部交付(见 DESIGN.md §14),均已提交;-race 全绿(`go test -race ./...`)。
 - M6 已交付:host-jobs 后台任务、pty 交互(tool-shell data.pty)、tool-files/tool-web(沙箱联动)、插件安装 `gah -install/-uninstall/-list-plugins`;P0–P2:外部化+崩溃拉起+工具级超时、tool-basic 随包释放、插拔解耦矩阵。
 - M6.8 拆分重构:token-compress(滚动摘要压缩从 host-session-log 拆出,独立开关/测试)+ host-fanout(子代理编排从 tool-workflow 拆出,ctx.fanout 宿主服务);tool-workflow 回归纯 starlark 执行器。
+- M6.9 工具类全外部化:tool-workflow/tool-mcp 移出宿主(extplugins/ 独立二进制,随包 embed 释放);host-bridge 增宿主回调通道(GAH_CB_ADDR,外部进程请求宿主 tools/jobs/fanout);`gah --profile mcp-serve` 独立 serve 形态;外部化后全库依赖 host-bridge(卸载矩阵需先卸 bridge 再卸 jobs/fanout)。
 - 新增能力:Anthropic 适配器(llm-anthropic-compat,`claude-*` 模型前缀路由)、**MCP server 端**(plugins/mcp-server,stdio JSON-RPC,与 mcp-bridge 对称,见 DESIGN.md §14.1 M6.7)、AGENTS.md 指令注入(全局 `$GAH_HOME/AGENTS.md` + 项目 `AGENTS.md`,顺序即覆盖)、技能机制(host-skills:全局 `$GAH_HOME/skills` + 项目 `.gah/skills` 扫描 SKILL.md,list_skills/read_skill,prompt 注入索引)、自注册技能 `gah-plugin-dev`(仓库 `.gah/skills/`)。
 - 交付门已通过:单二进制 15.8MB(<25MB)、`CGO_ENABLED=0` 静态、六目标交叉编译、裸机 `env -i` 启动成功;实测见 DESIGN.md §7.6,发行配置 `.goreleaser.yaml`,CI 见 `.github/workflows/ci.yml`(vet + -race + 裸机冒烟)。
-- 测试注意:tests 卸载矩阵需关闭 llm-anthropic-compat(防打真实 API),补丁已入仓;新插件必须登记 catalogue 并同步 config 与 internal/embed/seed 两份 bundle 样板。
+- 测试注意:tests 卸载矩阵需关闭 llm-anthropic-compat(防打真实 API)且按依赖序卸载(先 host-bridge 再 host-jobs/host-fanout);新插件必须登记 catalogue 并同步 config 与 internal/embed/seed 两份 bundle 样板;外部化二进制经 scripts/gen-extplugins.sh 重新生成(embed 缺失主包构建失败)。

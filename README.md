@@ -29,7 +29,9 @@ Go 实现的编程代理 Agent Harness:以**单二进制**交付全部能力,对
 | **沙箱三档** | read-only / workspace-write(相对路径以 workspace 为根,防 `../` 穿越)/ full-access;TUI `/sandbox` 运行期切换 |
 | **安全** | 危险命令(rm -rf / git push -f / sudo / chmod 777…)经用户 y/n 确认;无确认通道时安全拒绝;凭据隔离:工具子进程 env 滤除 `*_API_KEY/_TOKEN/_SECRET` |
 | **starlark workflow** | 模型写受限 starlark 脚本一把过组合多步工具调用(天然沙箱/无标准库);`background` 异步 + 收集 |
-| **外部插件桥** | host-bridge:独立进程插件(go-plugin),**崩溃隔离**(外部进程被杀,宿主存活,调用转结构化错误) |
+| **外部插件桥** | host-bridge:独立进程插件(go-plugin),**崩溃隔离**(外部进程被杀,宿主存活,调用转结构化错误);M6.8 增宿主回调通道(GAH_CB_ADDR),外部进程可请求宿主 tools/jobs/fanout 服务 |
+| **工具类全外部化** | shell/files/web(tool-basic)+ workflow(tool-workflow)+ MCP client(tool-mcp)全部独立进程;内嵌实现停用;脚本工具调用/背景任务/子代理编排经回调回宿主 |
+| **MCP server serve 形态** | `gah --profile mcp-serve`:仅工具宿主 + mcp-server,可被外部 MCP client(Claude Desktop 等)独立拉起 |
 | **MCP client 桥** | mcp-bridge:stdio JSON-RPC 接入 MCP server,工具注册为 `mcp_<name>` |
 | **MCP server 端** | mcp-server:本仓全部工具暴露为 MCP server(stdio JSON-RPC,initialize/tools/list/tools/call,插拔实时反映) |
 | **后台任务** | host-jobs + workflow `background`:长任务异步提交/取回/终止,不阻塞回合 |
