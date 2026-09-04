@@ -129,6 +129,42 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 - **工具同名注册**被忽略并记录警告(不静默):替换同名工具 = 先关闭旧提供者插件,再启用新插件。
 - 外部进程插件(崩溃隔离):host-bridge(go-plugin net/rpc)/ mcp-bridge(MCP stdio),见各自包注释与测试。
 
+### 4.1 外部插件开发(外部化形态)
+
+形态定位:独立二进制(崩溃隔离/独立升级),随包 embed 释放、host-bridge 扫描加载(M6.9 起工具类全部走此形态)。最小参照实现:`extplugins/tool-echo`(约 50 行)。
+
+**入口与握手**
+```go
+func main() {
+    hostbridge.ServeTools(map[string]sdk.Tool{
+        "echo": &echoTool{},
+    })
+}
+```
+- 唯一入口 `ServeTools(tools)`(外部进程服务端;宿主同仓库编译,import `plugins/host-bridge` 的 serve.go 符号或按 extplugins 现有写法)。
+- 握手标识 `GAH_PLUGIN=gah-external-tool` 缺失即拒启(防误跑)。
+
+**桥协议**
+- 多工具(新协议):`Definitions` 枚举 + `ExecuteNamed` 按名执行;旧单工具协议(`Definition`/`Execute`)宿主自动回退兼容。
+- 工具级超时:定义声明 `TimeoutMs`(毫秒),覆写宿主全局默认 3s。
+
+**宿主回调通道**(仅服务调用,不桥事件 veto)
+- 环境注入:`GAH_CB_ADDR`(宿主回调地址)+ `GAH_CB_TOKEN`(鉴权,回传校验)。
+- 可用:tools.execute/list、jobs.run/output、fanout.agent/parallel/pipeline;宿主未装配对应服务时返回显式错误(不静默)。
+
+**错误与退出语义(P3 软降级)**
+- 业务失败回 `reply.Error`(结构化),回传模型、不中断宿主 turn。
+- 插件加载/启动失败 = 自身被跳过(宿主 ERROR 日志,继续 boot);**exit code 不向宿主传语义**——缺配置必须在 stderr 显式说明后 `exit 1`(防静默空转,参照 extplugins/tool-mcp 的 GAH_MCP_COMMAND 模式)。
+- 运行期崩溃:调用转结构化错误,宿主 60s 节流自动拉起。
+
+**平台与构建(P4)**
+- 插件二进制必须与宿主同平台;`scripts/gen-extplugins.sh` 按发行矩阵(darwin/linux × amd64/arm64 + windows/amd64)构建,embed 分平台打包(主包每目标只嵌本平台产物)。
+- 新增外部插件:加进脚本的 NAMES 列表 + catalogue 登记;构建链产物缺失时主包构建失败(防漏,勿手动删除 embed 产物目录)。
+
+**验收路径**
+- 单测参照 `plugins/host-bridge/bridge_test.go` 的 `buildExternalPlugin` 模式(测试内 `go build` 产物再装配断言崩溃隔离/软降级)。
+- 集成端到端见 `tests/external_test.go`(`releaseExt` 释放 + 真实回合走回调通道)。
+
 ## 5. 检查清单(提交前)
 - [ ] 只 import sdk;无 core/tui/其它插件 import
 - [ ] Start 返回的 Disposer 可逆且幂等(注册的每个副作用都有撤销)
@@ -137,3 +173,4 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 - [ ] config 条目已加(含 enabled/data)
 - [ ] 单测通过;-race 全绿
 - [ ] 错误回传模型(结构化 error),不 panic
+- [ ] 外部插件型:握手/协议/回调/退出语义(§4.1)已符合;产物已编入 scripts/gen-extplugins.sh 的 NAMES
