@@ -167,3 +167,55 @@ func TestInstallMissingManifest(t *testing.T) {
 		t.Fatal("缺 plugin.yaml 应报错")
 	}
 }
+
+// TestRuntimePatchPersist TUI 持久开关原语:写入/读取/清除/幂等。
+func TestRuntimePatchPersist(t *testing.T) {
+	home := makeHome(t)
+	patch := RuntimePatch(home)
+
+	// 写入两个条目(幂等合并)
+	for i := 0; i < 2; i++ {
+		if err := EnsurePatch(patch, Entry{ID: "host-jobs", Enabled: false}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := EnsurePatch(patch, Entry{ID: "host-bridge", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	got := ReadEnablements(patch)
+	if got["host-jobs"] != false || got["host-bridge"] != true {
+		t.Fatalf("ReadEnablements 不符: %+v", got)
+	}
+	// profile 引用(幂等)
+	if err := EnsureProfileRef(home, "patch-runtime.yaml"); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureProfileRef(home, "patch-runtime.yaml"); err != nil {
+		t.Fatal(err)
+	}
+	pb, _ := os.ReadFile(filepath.Join(home, "config", "profile-tui.yaml"))
+	if strings.Count(string(pb), "patch-runtime.yaml") != 1 {
+		t.Fatalf("profile 引用应幂等(仅一次): %s", pb)
+	}
+	// 清除一条(幂等)
+	if err := RemoveEntry(patch, "host-jobs"); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveEntry(patch, "host-jobs"); err != nil {
+		t.Fatal(err)
+	}
+	got = ReadEnablements(patch)
+	if _, ok := got["host-jobs"]; ok {
+		t.Fatalf("清除后不应存在: %+v", got)
+	}
+	if got["host-bridge"] != true {
+		t.Fatalf("其它条目应保留: %+v", got)
+	}
+	// 文件缺失:读空表、清除不报错
+	if len(ReadEnablements(RuntimePatch(t.TempDir()))) != 0 {
+		t.Fatal("缺失文件应返回空表")
+	}
+	if err := RemoveEntry(filepath.Join(t.TempDir(), "x.yaml"), "id"); err != nil {
+		t.Fatal(err)
+	}
+}

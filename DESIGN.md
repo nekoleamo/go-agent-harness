@@ -54,7 +54,7 @@
 
 **插拔保证**:
 - 任一能力的启停 = patch 一条 entry(`enabled: true/false` 或移除条目),支持 profile 级与运行期两级;
-- 运行期开关:`host-plugin-manager` 提供 load/unload 工具(模型可经工具调用,TUI 可经 `/plugins on|off`),dispose 后副作用即时撤销;
+- 运行期+持久开关:`host-plugin-manager` 提供 load/unload 工具(模型可经工具调用,TUI 可经 `/plugins on|off`),dispose 后副作用即时撤销;TUI 的 `/plugins on|off|default` 同时写入 `patch-runtime.yaml`(幂等合并 + profile 自动引用),重启仍生效,`default` 清除持久覆盖恢复配置树默认;
 - `--dump-config` 打印的任何条目都可被自己的 patch 替换(对齐 dsh)。
 
 ### 2.3 插件形态决策(区别于 dsc)
@@ -294,7 +294,7 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 | `/sessions` `/session` `/export` | 会话列表/切换/导出 |
 | `/settings ...` | 设置(含 `history N\|off\|unlimited`) |
 | `/jobs list\|output\|kill` | 后台任务 |
-| `/plugins on\|off\|list` | 插件运行期插拔 |
+| `/plugins on\|off\|default <id>` | 插件运行期插拔 + 持久开关(`patch-runtime.yaml`,重启仍生效;`default` 恢复配置树默认) |
 | `/model` | 切换模型/提供商 |
 
 ## 13. 开发规范

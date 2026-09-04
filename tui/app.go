@@ -11,6 +11,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/nekoleamo/go-agent-harness/internal/install"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -138,7 +139,7 @@ func (a *App) command(raw string) error {
 		return a.cmdExport(fields)
 	case "help":
 		a.model.state.Lines = append(a.model.state.Lines,
-			Line{Kind: "meta", Text: "命令:/model <名> | /sandbox ro|ws|full | /plugins list|on|off|unload | /jobs list|output|kill | /settings history N|off | /export | /help | /exit"})
+			Line{Kind: "meta", Text: "命令:/model <名> | /sandbox ro|ws|full | /plugins list|on|off|default <id> | /jobs list|output|kill | /settings history N|off | /export | /help | /exit"})
 	case "sessions":
 		return a.cmdSessions()
 	case "jobs":
@@ -194,6 +195,12 @@ func (a *App) cmdPlugins(fields []string) error {
 		if err := mgr.Load(fields[2]); err != nil {
 			return errString(err.Error())
 		}
+		// 持久化开关:patch-runtime.yaml 记录 enabled:true,重启发仍生效
+		if err := a.persistPlugin(fields[2], true); err != nil {
+			return errString("已加载,但持久化失败: " + err.Error())
+		}
+		a.model.state.Lines = append(a.model.state.Lines,
+			Line{Kind: "meta", Text: "已加载并持久启用 " + fields[2] + "(重启仍生效)"})
 		return nil
 	case "off", "unload":
 		if len(fields) < 3 {
@@ -202,17 +209,62 @@ func (a *App) cmdPlugins(fields []string) error {
 		if err := mgr.Unload(fields[2]); err != nil {
 			return errString(err.Error())
 		}
+		// 持久化开关:patch-runtime.yaml 记录 enabled:false,重启仍关闭
+		if err := a.persistPlugin(fields[2], false); err != nil {
+			return errString("已卸载,但持久化失败: " + err.Error())
+		}
+		a.model.state.Lines = append(a.model.state.Lines,
+			Line{Kind: "meta", Text: "已卸载并持久关闭 " + fields[2] + "(重启仍关闭)"})
 		return nil
-	case "list":
+	case "default":
+		if len(fields) < 3 {
+			return errString("/plugins default <id>")
+		}
+		if err := install.RemoveEntry(install.RuntimePatch(a.pluginHome()), fields[2]); err != nil {
+			return errString(err.Error())
+		}
+		a.model.state.Lines = append(a.model.state.Lines,
+			Line{Kind: "meta", Text: "已清除持久覆盖 " + fields[2] + "(恢复配置树默认,重启生效)"})
+		return nil
+	case "list", "":
 		rows := "插件:"
+		persist := install.ReadEnablements(install.RuntimePatch(a.pluginHome()))
 		for _, info := range mgr.List() {
-			rows += "\n  " + info.ID + " [" + info.Type + "] " + info.State
+			suffix := ""
+			if on, ok := persist[info.ID]; ok {
+				if on {
+					suffix = " (持久开)"
+				} else {
+					suffix = " (持久关)"
+				}
+			}
+			rows += "\n  " + info.ID + " [" + info.Type + "] " + info.State + suffix
 		}
 		a.model.state.Lines = append(a.model.state.Lines, Line{Kind: "meta", Text: rows})
 		return nil
 	default:
-		return errString("/plugins list|on|off <id>")
+		return errString("/plugins list|on|off|default <id>")
 	}
+}
+
+// persistPlugin 持久化插件开关:写入 patch-runtime.yaml 并让全部 profile 引用(重启生效)。
+func (a *App) persistPlugin(id string, enabled bool) error {
+	patched := install.RuntimePatch(a.pluginHome())
+	if err := install.EnsurePatch(patched, install.Entry{ID: id, Enabled: enabled}); err != nil {
+		return err
+	}
+	return install.EnsureProfileRef(a.pluginHome(), "patch-runtime.yaml")
+}
+
+// pluginHome 运行时 home(GAH_HOME 覆盖;默认 ~/.gah,与 boot 一致)。
+func (a *App) pluginHome() string {
+	if h := os.Getenv("GAH_HOME"); h != "" {
+		return h
+	}
+	if uh, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(uh, ".gah")
+	}
+	return os.TempDir()
 }
 
 // cmdJobs /jobs list|output|kill(host-jobs 后台任务,见设计 §14.1 M6.1)。
