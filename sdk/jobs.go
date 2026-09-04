@@ -20,10 +20,10 @@ const (
 type Job struct {
 	ID        string    `json:"id"`
 	State     JobState  `json:"state"`
-	Command   string    `json:"command,omitempty"`  // 命令任务:shell 命令行
-	Output    string    `json:"output,omitempty"`   // 累计输出(命令任务 stdout+stderr)
-	Result    any       `json:"result,omitempty"`   // 函数任务返回值(workflow background 对接)
-	Error     string    `json:"error,omitempty"`    // 失败原因
+	Command   string    `json:"command,omitempty"` // 命令任务:shell 命令行
+	Output    string    `json:"output,omitempty"`  // 累计输出(命令任务 stdout+stderr)
+	Result    any       `json:"result,omitempty"`  // 函数任务返回值(workflow background 对接)
+	Error     string    `json:"error,omitempty"`   // 失败原因
 	CreatedAt time.Time `json:"created_at"`
 	DoneAt    time.Time `json:"done_at,omitempty"`
 }

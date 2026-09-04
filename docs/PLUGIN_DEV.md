@@ -51,7 +51,10 @@ type Plugin interface {
 | `ctx.agentLoop` | host-agent-loop | 默认 ReAct 循环(可替换) |
 | `ctx.sandbox` | policy-sandbox | 三档沙箱(ro/ws/full) |
 | `ctx.pluginManager` | host-plugin-manager | 运行期插拔(Load/Unload) |
-| `ctx.confirm` | ui-tui-app | 危险操作 y/n 确认(无实现 = 安全拒绝) |
+| `ctx.confirm` | ui-tui-app | 危险操作 y/n 确认(无实现 = 安全拒绝)
+| `ctx.commands` | host-commands | 斜杠命令注册表:Register/List/Get;TUI 提示/分发/help 动态来自本表 |
+
+**给插件加斜杠命令**(如 host-jobs 注册 `/jobs`):Start 内**可选注入** `_ = c.Inject("ctx.commands", &cmds)`(未装配=无 TUI 场景,跳过不报错——与沙箱可选注入同模式),随后 `cmds.Register(CommandSpec{Name, Usage, Desc, Run})`;Run 返回**输出文本 + error**(输出由 TUI 显示为 meta 行);返回 Disposer 随插件卸载撤销命令;**同名冲突被拒绝**(先到先得,非静默)。插件命令自动进入 `/` 提示列表与 `/help`。 |
 | `system.registry` / `system.catalogue` | boot 注入 | 宿主内部服务(插件不可自行 import) |
 
 ### 2.4 事件命名与语义

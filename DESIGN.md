@@ -288,6 +288,8 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 
 ## 12. TUI 用户命令(对照验收)
 
+> 命令体系经 **ctx.commands 注册表**(host-commands)动态装配:内部命令(宿主级)与插件命令共表(如 host-jobs 注册 `/jobs`);输入 `/` 实时显示全部命令、`/s` 前缀过滤——**插件新增命令自动进入提示**,卸载随 Disposer 撤销,TUI 分发/`/help` 均查表(见 PLUGIN_DEV.md 命令注册小节)。
+
 | 命令 | 作用 |
 |---|---|
 | `/sandbox <ro\|ws\|full>` | 运行期切沙箱档 |

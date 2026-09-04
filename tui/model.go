@@ -26,10 +26,11 @@ type Model struct {
 	w, h  int
 	quit  bool
 
-	onSubmit  func(input string)     // 普通输入提交(注入)
-	onCommand func(cmd string) error // 命令处理(注入)
-	onConfirm func(ok bool)          // 确认答复(注入;见 app.Confirm)
-	onCancel  func()                 // 取消进行中的回合(注入;Esc 触发)
+	onSubmit  func(input string)           // 普通输入提交(注入)
+	onCommand func(cmd string) error       // 命令处理(注入)
+	onConfirm func(ok bool)                // 确认答复(注入;见 app.Confirm)
+	onCancel  func()                       // 取消进行中的回合(注入;Esc 触发)
+	hints     func(prefix string) []string // 命令提示(注入;前缀=去掉 / 后的输入)
 }
 
 func (m *Model) Init() tea.Cmd { return nil }
@@ -97,6 +98,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) {
 			m.quit = true
 		} else {
 			m.state.ClearInput()
+			m.syncHints()
 		}
 		return
 	}
@@ -105,6 +107,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) {
 		m.submit()
 	case tea.KeyBackspace:
 		m.state.Backspace()
+		m.syncHints()
 	case tea.KeyEscape:
 		// Esc:中断进行中的回合(取消链:turn → LLM 流 → 工具进程)
 		m.handleEscape()
@@ -113,14 +116,26 @@ func (m *Model) handleKey(msg tea.KeyMsg) {
 			for _, r := range k.Text {
 				m.state.InsertRune(r)
 			}
+			m.syncHints()
 		}
 	}
+}
+
+// syncHints 输入以 / 开头时按当前前缀刷新命令提示(注册表过滤动态生效)。
+func (m *Model) syncHints() {
+	input := m.state.Input
+	if !strings.HasPrefix(input, "/") || m.hints == nil {
+		m.state.Suggestions = nil
+		return
+	}
+	m.state.Suggestions = m.hints(strings.TrimPrefix(input, "/"))
 }
 
 // submit 提交输入:命令走 onCommand,否则走 onSubmit(异步回合)。
 func (m *Model) submit() {
 	input := m.state.Input
 	m.state.ClearInput()
+	m.syncHints()
 	if input == "" {
 		return
 	}

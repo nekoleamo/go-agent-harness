@@ -17,9 +17,9 @@ const (
 	EventToolCall         = "tool/call"
 	EventToolResult       = "tool/result"
 	// EventSummary 滚动摘要事件(M6.5):载荷为累计摘要文本;原始消息事件保留在日志(留盘完整)。
-	EventSummary = "session/summary"
-	EventAgentStatus      = "agent/status"
-	EventAgentError       = "agent/error"
+	EventSummary     = "session/summary"
+	EventAgentStatus = "agent/status"
+	EventAgentError  = "agent/error"
 )
 
 // SessionEvent 是追加到会话日志的持久事实。

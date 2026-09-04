@@ -5,6 +5,7 @@ package catalogue
 import (
 	"github.com/nekoleamo/go-agent-harness/plugins/host-agent-loop"
 	"github.com/nekoleamo/go-agent-harness/plugins/host-bridge"
+	"github.com/nekoleamo/go-agent-harness/plugins/host-commands"
 	"github.com/nekoleamo/go-agent-harness/plugins/host-cwd-sessions"
 	"github.com/nekoleamo/go-agent-harness/plugins/host-fanout"
 	"github.com/nekoleamo/go-agent-harness/plugins/host-llm"
@@ -101,6 +102,9 @@ var All = map[string]Def{
 		ID: "host-fanout", Type: "host", APIVersion: ">=1.0,<2.0",
 		Provides: []string{"ctx.fanout"},
 		Requires: []string{"ctx.llm", "ctx.tools", "ctx.systemPrompt"}}, Bundle: "base"},
+	"host-commands": {Factory: func() sdk.Plugin { return &hostcommands.Plugin{} }, Manifest: &sdk.Manifest{
+		ID: "host-commands", Type: "host", APIVersion: ">=1.0,<2.0",
+		Provides: []string{"ctx.commands"}}, Bundle: "base"},
 	"host-bridge": {Factory: func() sdk.Plugin { return &hostbridge.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "host-bridge", Type: "host", APIVersion: ">=1.0,<2.0",
 		// M6.8 回调通道:外部进程经 GAH_CB_ADDR 请求宿主 tools/jobs/fanout 服务

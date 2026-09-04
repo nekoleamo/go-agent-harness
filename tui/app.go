@@ -26,19 +26,29 @@ type App struct {
 	llm       sdk.LLMService
 	confirmCh chan bool // Confirm 阻塞等待用户答复
 	subs      []sdk.Disposer
+	cmds      sdk.CommandRegistry // ctx.commands(可为 nil:未装配时命令不可用)
 
 	cancelFn context.CancelFunc // 当前回合的取消函数(Esc 中断,见 model.onCancel)
 }
 
-// NewApp 构造 TUI 应用。
+// NewApp 构造 TUI 应用。命令注册表(ctx.commands,host-commands 提供)注入:
+// 内部命令(宿主级)注册进表与插件命令共表——提示列表/分发/help 全部动态。
 func NewApp(c sdk.Ctx, loop sdk.AgentLoop, llm sdk.LLMService, profile string) *App {
 	state := &State{Profile: profile}
 	m := &Model{state: state}
 	a := &App{model: m, c: c, loop: loop, llm: llm, confirmCh: make(chan bool, 1)}
+	var reg sdk.CommandRegistry
+	if err := c.Inject("ctx.commands", &reg); err != nil {
+		// host-commands 未装配:命令分发/提示不可用(不阻塞 TUI)
+		reg = nil
+	}
+	a.cmds = reg
 	m.onSubmit = a.submit
 	m.onCommand = a.command
 	m.onConfirm = a.confirmResult
 	m.onCancel = a.cancelCurrent
+	m.hints = a.suggestHints
+	a.registerInternalCommands()
 	a.program = tea.NewProgram(m)
 	return a
 }
@@ -114,52 +124,40 @@ func (a *App) cancelCurrent() {
 	}
 }
 
-// command 处理 / 命令(M3:help/model/exit;沙箱/插件管理在 M4 接入)。
+// command 处理 / 命令:查注册表分发(内部命令与插件命令统一;
+// host-commands 未装配时命令不可用,显式提示)。Run 输出文本显示为 meta 行。
 func (a *App) command(raw string) error {
+	if a.cmds == nil {
+		return errString("命令不可用: ctx.commands 未装配(host-commands)")
+	}
 	fields := strings.Fields(strings.TrimPrefix(raw, "/"))
 	if len(fields) == 0 {
 		return nil
 	}
-	switch fields[0] {
-	case "exit":
-		a.program.Quit()
-	case "model":
-		if len(fields) < 2 {
-			return errString("/model <名称> 切换模型")
-		}
-		a.llm.SetModel(fields[1])
-		a.model.state.Model = fields[1]
-	case "sandbox":
-		return a.cmdSandbox(fields)
-	case "plugins":
-		return a.cmdPlugins(fields)
-	case "settings":
-		return a.cmdSettings(fields)
-	case "export":
-		return a.cmdExport(fields)
-	case "help":
-		a.model.state.Lines = append(a.model.state.Lines,
-			Line{Kind: "meta", Text: "命令:/model <名> | /sandbox ro|ws|full | /plugins list|on|off|default <id> | /jobs list|output|kill | /settings history N|off | /export | /help | /exit"})
-	case "sessions":
-		return a.cmdSessions()
-	case "jobs":
-		return a.cmdJobs(fields)
-	default:
-		return errString("未知命令 /" + fields[0] + "(输入 /help)")
+	spec, ok := a.cmds.Get(fields[0])
+	if !ok {
+		return errString("未知命令 /" + fields[0] + "(输入 /help 查看全部)")
+	}
+	out, err := spec.Run(fields[1:])
+	if err != nil {
+		return err
+	}
+	if out != "" {
+		a.model.state.Lines = append(a.model.state.Lines, Line{Kind: "meta", Text: out})
 	}
 	return nil
 }
 
-func (a *App) cmdSandbox(fields []string) error {
-	if len(fields) < 2 {
-		return errString("/sandbox ro|ws|full(read-only|workspace-write|full-access)")
+func (a *App) cmdSandbox(args []string) (string, error) {
+	if len(args) < 1 {
+		return "", errString("/sandbox ro|ws|full(read-only|workspace-write|full-access)")
 	}
 	var sb sdk.Sandbox
 	if err := a.c.Inject("ctx.sandbox", &sb); err != nil {
-		return errString("ctx.sandbox 未装配: " + err.Error())
+		return "", errString("ctx.sandbox 未装配: " + err.Error())
 	}
 	var mode sdk.SandboxMode
-	switch fields[1] {
+	switch args[0] {
 	case "ro":
 		mode = sdk.SandboxReadOnly
 	case "ws":
@@ -167,84 +165,77 @@ func (a *App) cmdSandbox(fields []string) error {
 	case "full":
 		mode = sdk.SandboxFullAccess
 	default:
-		return errString("/sandbox ro|ws|full")
+		return "", errString("/sandbox ro|ws|full")
 	}
 	sb.SetMode(mode)
 	a.model.state.Sandbox = string(mode)
-	return nil
+	return "", nil
 }
 
-func (a *App) cmdPlugins(fields []string) error {
+func (a *App) cmdPlugins(args []string) (string, error) {
 	var mgr sdk.PluginManager
 	if err := a.c.Inject("ctx.pluginManager", &mgr); err != nil {
-		return errString("ctx.pluginManager 未装配: " + err.Error())
+		return "", errString("ctx.pluginManager 未装配: " + err.Error())
 	}
-	if len(fields) < 2 {
-		rows := "插件:"
-		for _, info := range mgr.List() {
-			rows += "\n  " + info.ID + " [" + info.Type + "] " + info.State
-		}
-		a.model.state.Lines = append(a.model.state.Lines, Line{Kind: "meta", Text: rows})
-		return nil
+	if len(args) < 1 {
+		return pluginRows(mgr, a.pluginHome()), nil
 	}
-	switch fields[1] {
+	switch args[0] {
 	case "on", "load":
-		if len(fields) < 3 {
-			return errString("/plugins on <id>")
+		if len(args) < 2 {
+			return "", errString("/plugins on <id>")
 		}
-		if err := mgr.Load(fields[2]); err != nil {
-			return errString(err.Error())
+		if err := mgr.Load(args[1]); err != nil {
+			return "", errString(err.Error())
 		}
 		// 持久化开关:patch-runtime.yaml 记录 enabled:true,重启发仍生效
-		if err := a.persistPlugin(fields[2], true); err != nil {
-			return errString("已加载,但持久化失败: " + err.Error())
+		if err := a.persistPlugin(args[1], true); err != nil {
+			return "", errString("已加载,但持久化失败: " + err.Error())
 		}
-		a.model.state.Lines = append(a.model.state.Lines,
-			Line{Kind: "meta", Text: "已加载并持久启用 " + fields[2] + "(重启仍生效)"})
-		return nil
+		return "已加载并持久启用 " + args[1] + "(重启仍生效)", nil
 	case "off", "unload":
-		if len(fields) < 3 {
-			return errString("/plugins off <id>")
+		if len(args) < 2 {
+			return "", errString("/plugins off <id>")
 		}
-		if err := mgr.Unload(fields[2]); err != nil {
-			return errString(err.Error())
+		if err := mgr.Unload(args[1]); err != nil {
+			return "", errString(err.Error())
 		}
 		// 持久化开关:patch-runtime.yaml 记录 enabled:false,重启仍关闭
-		if err := a.persistPlugin(fields[2], false); err != nil {
-			return errString("已卸载,但持久化失败: " + err.Error())
+		if err := a.persistPlugin(args[1], false); err != nil {
+			return "", errString("已卸载,但持久化失败: " + err.Error())
 		}
-		a.model.state.Lines = append(a.model.state.Lines,
-			Line{Kind: "meta", Text: "已卸载并持久关闭 " + fields[2] + "(重启仍关闭)"})
-		return nil
+		return "已卸载并持久关闭 " + args[1] + "(重启仍关闭)", nil
 	case "default":
-		if len(fields) < 3 {
-			return errString("/plugins default <id>")
+		if len(args) < 2 {
+			return "", errString("/plugins default <id>")
 		}
-		if err := install.RemoveEntry(install.RuntimePatch(a.pluginHome()), fields[2]); err != nil {
-			return errString(err.Error())
+		if err := install.RemoveEntry(install.RuntimePatch(a.pluginHome()), args[1]); err != nil {
+			return "", errString(err.Error())
 		}
-		a.model.state.Lines = append(a.model.state.Lines,
-			Line{Kind: "meta", Text: "已清除持久覆盖 " + fields[2] + "(恢复配置树默认,重启生效)"})
-		return nil
+		return "已清除持久覆盖 " + args[1] + "(恢复配置树默认,重启生效)", nil
 	case "list", "":
-		rows := "插件:"
-		persist := install.ReadEnablements(install.RuntimePatch(a.pluginHome()))
-		for _, info := range mgr.List() {
-			suffix := ""
-			if on, ok := persist[info.ID]; ok {
-				if on {
-					suffix = " (持久开)"
-				} else {
-					suffix = " (持久关)"
-				}
-			}
-			rows += "\n  " + info.ID + " [" + info.Type + "] " + info.State + suffix
-		}
-		a.model.state.Lines = append(a.model.state.Lines, Line{Kind: "meta", Text: rows})
-		return nil
+		return pluginRows(mgr, a.pluginHome()), nil
 	default:
-		return errString("/plugins list|on|off|default <id>")
+		return "", errString("/plugins list|on|off|default <id>")
 	}
+}
+
+// pluginRows 插件列表文本(含持久开关后缀)。
+func pluginRows(mgr sdk.PluginManager, home string) string {
+	rows := "插件:"
+	persist := install.ReadEnablements(install.RuntimePatch(home))
+	for _, info := range mgr.List() {
+		suffix := ""
+		if on, ok := persist[info.ID]; ok {
+			if on {
+				suffix = " (持久开)"
+			} else {
+				suffix = " (持久关)"
+			}
+		}
+		rows += "\n  " + info.ID + " [" + info.Type + "] " + info.State + suffix
+	}
+	return rows
 }
 
 // persistPlugin 持久化插件开关:写入 patch-runtime.yaml 并让全部 profile 引用(重启生效)。
@@ -267,88 +258,33 @@ func (a *App) pluginHome() string {
 	return os.TempDir()
 }
 
-// cmdJobs /jobs list|output|kill(host-jobs 后台任务,见设计 §14.1 M6.1)。
-func (a *App) cmdJobs(fields []string) error {
-	var jobs sdk.JobService
-	if err := a.c.Inject("ctx.jobs", &jobs); err != nil {
-		return errString("ctx.jobs 未装配(host-jobs): " + err.Error())
-	}
-	if len(fields) < 2 {
-		return errString("/jobs list|output <id>|kill <id>")
-	}
-	switch fields[1] {
-	case "list":
-		rows := "后台任务:"
-		for _, j := range jobs.List() {
-			rows += fmt.Sprintf("\n  %s [%s] %s", j.ID, j.State, j.Command)
-			if j.Result != nil {
-				rows += fmt.Sprintf(" → %v", j.Result)
-			}
-		}
-		a.model.state.Lines = append(a.model.state.Lines, Line{Kind: "meta", Text: rows})
-		return nil
-	case "output":
-		if len(fields) < 3 {
-			return errString("/jobs output <id>")
-		}
-		j, ok := jobs.Output(fields[2])
-		if !ok {
-			return errString("任务不存在: " + fields[2])
-		}
-		text := fmt.Sprintf("%s [%s] 命令: %s\n", j.ID, j.State, j.Command)
-		if j.Output != "" {
-			text += j.Output
-		} else if j.Result != nil {
-			text += fmt.Sprintf("%v", j.Result)
-		}
-		if j.Error != "" {
-			text += "错误: " + j.Error
-		}
-		a.model.state.Lines = append(a.model.state.Lines, Line{Kind: "meta", Text: text})
-		return nil
-	case "kill":
-		if len(fields) < 3 {
-			return errString("/jobs kill <id>")
-		}
-		if err := jobs.Kill(fields[2]); err != nil {
-			return errString(err.Error())
-		}
-		a.model.state.Lines = append(a.model.state.Lines, Line{Kind: "meta", Text: "已终止 " + fields[2]})
-		return nil
-	default:
-		return errString("/jobs list|output|kill")
-	}
-}
-
-func (a *App) cmdSettings(fields []string) error {
+func (a *App) cmdSettings(args []string) (string, error) {
 	var sessions sdk.SessionLog
 	if err := a.c.Inject("ctx.sessions", &sessions); err != nil {
-		return errString("ctx.sessions 未装配")
+		return "", errString("ctx.sessions 未装配")
 	}
-	if len(fields) < 3 || fields[1] != "history" {
-		return errString("/settings history N|off|unlimited")
+	if len(args) < 2 || args[0] != "history" {
+		return "", errString("/settings history N|off|unlimited")
 	}
 	var n int
-	switch fields[2] {
+	switch args[1] {
 	case "off":
 		n = -1
 	case "unlimited":
 		n = 0
 	default:
-		if _, err := fmt.Sscanf(fields[2], "%d", &n); err != nil || n < 0 {
-			return errString("/settings history N|off|unlimited")
+		if _, err := fmt.Sscanf(args[1], "%d", &n); err != nil || n < 0 {
+			return "", errString("/settings history N|off|unlimited")
 		}
 	}
 	sessions.SetHistory(n)
-	a.model.state.Lines = append(a.model.state.Lines,
-		Line{Kind: "meta", Text: "/settings history -> " + fields[2]})
-	return nil
+	return "/settings history -> " + args[1], nil
 }
 
-func (a *App) cmdSessions() error {
+func (a *App) cmdSessions() (string, error) {
 	var cs sdk.CwdSessions
 	if err := a.c.Inject("ctx.cwdSessions", &cs); err != nil {
-		return errString("ctx.cwdSessions 未装配: " + err.Error())
+		return "", errString("ctx.cwdSessions 未装配: " + err.Error())
 	}
 	rows := "当前会话: " + cs.Current() + "\n已有会话:"
 	list := cs.List()
@@ -358,19 +294,18 @@ func (a *App) cmdSessions() error {
 	for _, k := range list {
 		rows += "\n  " + k
 	}
-	a.model.state.Lines = append(a.model.state.Lines, Line{Kind: "meta", Text: rows})
-	return nil
+	return rows, nil
 }
 
-func (a *App) cmdExport(fields []string) error {
+func (a *App) cmdExport(args []string) (string, error) {
 	var sessions sdk.SessionLog
 	if err := a.c.Inject("ctx.sessions", &sessions); err != nil {
-		return errString("ctx.sessions 未装配")
+		return "", errString("ctx.sessions 未装配")
 	}
 	// 默认导出到当前会话存档路径(host-cwd-sessions),可指定 /export <path>
 	path := ""
-	if len(fields) > 1 {
-		path = fields[1]
+	if len(args) > 0 {
+		path = args[0]
 	} else {
 		var cs sdk.CwdSessions
 		if err := a.c.Inject("ctx.cwdSessions", &cs); err == nil {
@@ -380,9 +315,7 @@ func (a *App) cmdExport(fields []string) error {
 	evs := sessions.Replay()
 	if path == "" {
 		// 无落盘配置:仅统计(兜底)
-		a.model.state.Lines = append(a.model.state.Lines,
-			Line{Kind: "meta", Text: "会话事件数: " + fmt.Sprint(len(evs))})
-		return nil
+		return "会话事件数: " + fmt.Sprint(len(evs)), nil
 	}
 	var sb strings.Builder
 	for _, ev := range evs {
@@ -394,16 +327,79 @@ func (a *App) cmdExport(fields []string) error {
 		sb.WriteByte('\n')
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return errString("导出失败: " + err.Error())
+		return "", errString("导出失败: " + err.Error())
 	}
 	if err := os.WriteFile(path, []byte(sb.String()), 0o644); err != nil {
-		return errString("导出失败: " + err.Error())
+		return "", errString("导出失败: " + err.Error())
 	}
-	a.model.state.Lines = append(a.model.state.Lines,
-		Line{Kind: "meta", Text: fmt.Sprintf("已导出 %d 条事件 → %s", len(evs), path)})
-	return nil
+	return fmt.Sprintf("已导出 %d 条事件 → %s", len(evs), path), nil
 }
 
 type errString string
 
 func (e errString) Error() string { return string(e) }
+
+// registerInternalCommands 注册宿主级内部命令(与插件命令共表,
+// host-commands 未装配时跳过)。Run 参数为去掉命令名后的剩余参数。
+func (a *App) registerInternalCommands() {
+	if a.cmds == nil {
+		return
+	}
+	internal := []sdk.CommandSpec{
+		{Name: "model", Usage: "/model <名>", Desc: "切换模型", Run: func(args []string) (string, error) {
+			if len(args) < 1 {
+				return "", errString("/model <名称> 切换模型")
+			}
+			a.llm.SetModel(args[0])
+			a.model.state.Model = args[0]
+			return "", nil
+		}},
+		{Name: "sandbox", Usage: "/sandbox ro|ws|full", Desc: "运行期切沙箱档", Run: a.cmdSandbox},
+		{Name: "plugins", Usage: "/plugins list|on|off|default <id>", Desc: "插件插拔/持久开关", Run: a.cmdPlugins},
+		{Name: "settings", Usage: "/settings history N|off|unlimited", Desc: "历史注入", Run: a.cmdSettings},
+		{Name: "export", Usage: "/export [path]", Desc: "导出会话 jsonl", Run: a.cmdExport},
+		{Name: "sessions", Usage: "/sessions", Desc: "当前/已有会话", Run: func([]string) (string, error) { return a.cmdSessions() }},
+		{Name: "help", Usage: "/help", Desc: "命令帮助", Run: a.cmdHelp},
+		{Name: "exit", Usage: "/exit", Desc: "退出", Run: func([]string) (string, error) {
+			a.program.Quit()
+			return "", nil
+		}},
+	}
+	for _, spec := range internal {
+		if _, err := a.cmds.Register(spec); err != nil {
+			// 同名冲突:注册表拒绝(宿主命令与插件命令共存时先到先得,不覆盖)
+			a.model.state.Lines = append(a.model.state.Lines,
+				Line{Kind: "error", Text: err.Error()})
+		}
+	}
+}
+
+// cmdHelp 动态命令帮助:遍历注册表输出 usage(插件命令自动纳入,提示前缀过滤说明)。
+func (a *App) cmdHelp([]string) (string, error) {
+	var b strings.Builder
+	b.WriteString("命令(输入 / 实时提示,前缀过滤):")
+	for _, spec := range a.cmds.List() {
+		b.WriteString("\n  " + spec.Usage + " — " + spec.Desc)
+	}
+	return b.String(), nil
+}
+
+// suggestHints 命令提示:注册表按输入前缀过滤(空前缀=全部,无匹配=空)。
+// 输入 / 时显示所有命令,/s 时仅 s 开头——插件注册命令自动进入提示。
+func (a *App) suggestHints(prefix string) []string {
+	if a.cmds == nil {
+		return nil
+	}
+	return filterHints(a.cmds.List(), prefix)
+}
+
+// filterHints 命令提示过滤(纯函数):空前缀=全部,按名前缀过滤,无匹配=空。
+func filterHints(specs []sdk.CommandSpec, prefix string) []string {
+	var out []string
+	for _, spec := range specs {
+		if prefix == "" || strings.HasPrefix(spec.Name, prefix) {
+			out = append(out, " /"+spec.Name+" "+spec.Desc)
+		}
+	}
+	return out
+}

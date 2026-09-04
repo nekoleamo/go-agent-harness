@@ -25,8 +25,9 @@ type State struct {
 	Input          string
 	Cursor         int
 	LastTool       string
-	Sandbox        string // 沙箱档位显示(read-only|workspace-write|full-access)
-	PendingConfirm string // 非空 = 有待确认的危险操作(确认弹层)
+	Sandbox        string   // 沙箱档位显示(read-only|workspace-write|full-access)
+	PendingConfirm string   // 非空 = 有待确认的危险操作(确认弹层)
+	Suggestions    []string // 输入 / 前缀时的命令提示(注册表过滤结果,渲染于输入行下方)
 }
 
 // ApplySessionEvent 把会话事件推进到展示状态(纯逻辑,可测)。

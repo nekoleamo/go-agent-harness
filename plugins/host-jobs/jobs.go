@@ -38,8 +38,78 @@ func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
 	d1 := tools.Register(&ListTool{j: j})
 	d2 := tools.Register(&OutputTool{j: j})
 	d3 := tools.Register(&KillTool{j: j})
-	return func() { d1(); d2(); d3() }, nil
+	disposers := []sdk.Disposer{func() { d1(); d2(); d3() }}
+	// 命令注册(可选注入:未装配 ctx.commands/无 TUI 时跳过,不报错——与沙箱同模式)
+	var cmds sdk.CommandRegistry
+	_ = c.Inject("ctx.commands", &cmds)
+	if cmds != nil {
+		d, err := cmds.Register(sdk.CommandSpec{
+			Name:  "jobs",
+			Usage: "/jobs list|output <id>|kill <id>",
+			Desc:  "后台任务",
+			Run:   func(args []string) (string, error) { return jobsCmd(args, j) },
+		})
+		if err != nil {
+			return nil, err
+		}
+		disposers = append(disposers, d)
+	}
+	return func() {
+		for _, d := range disposers {
+			d()
+		}
+	}, nil
 }
+
+// jobsCmd /jobs 命令实现(输出文本由 TUI 显示;错误带用法)。
+func jobsCmd(args []string, j *Jobs) (string, error) {
+	if len(args) < 1 {
+		return "", errString("/jobs list|output <id>|kill <id>")
+	}
+	switch args[0] {
+	case "list":
+		rows := "后台任务:"
+		for _, jb := range j.List() {
+			rows += fmt.Sprintf("\n  %s [%s] %s", jb.ID, jb.State, jb.Command)
+			if jb.Result != nil {
+				rows += fmt.Sprintf(" → %v", jb.Result)
+			}
+		}
+		return rows, nil
+	case "output":
+		if len(args) < 2 {
+			return "", errString("/jobs output <id>")
+		}
+		jb, ok := j.Output(args[1])
+		if !ok {
+			return "", errString("任务不存在: " + args[1])
+		}
+		text := fmt.Sprintf("%s [%s] 命令: %s\n", jb.ID, jb.State, jb.Command)
+		if jb.Output != "" {
+			text += jb.Output
+		} else if jb.Result != nil {
+			text += fmt.Sprintf("%v", jb.Result)
+		}
+		if jb.Error != "" {
+			text += "错误: " + jb.Error
+		}
+		return text, nil
+	case "kill":
+		if len(args) < 2 {
+			return "", errString("/jobs kill <id>")
+		}
+		if err := j.Kill(args[1]); err != nil {
+			return "", errString(err.Error())
+		}
+		return "已终止 " + args[1], nil
+	default:
+		return "", errString("/jobs list|output|kill")
+	}
+}
+
+type errString string
+
+func (e errString) Error() string { return string(e) }
 
 // Jobs 实现 sdk.JobService。
 type Jobs struct {

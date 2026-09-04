@@ -20,12 +20,19 @@ var (
 	styleStatus = lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
 )
 
-// Render 渲染整屏。mainH = 会话流区域高度,input+status 占 3 行。
+// Render 渲染整屏。mainH = 会话流区域高度;底部含输入行 + 命令提示区(动态) + 状态栏。
+// 提示区最多 maxHintRows 行(超限截断),避免挤压会话流。
+const maxHintRows = 6
+
 func Render(s *State, width, height int) string {
 	if width <= 0 || height <= 0 {
 		width, height = 80, 24
 	}
-	mainH := height - 3
+	hintRows := len(s.Suggestions)
+	if hintRows > maxHintRows {
+		hintRows = maxHintRows
+	}
+	mainH := height - 3 - hintRows
 	if mainH < 1 {
 		mainH = 1
 	}
@@ -52,6 +59,15 @@ func Render(s *State, width, height int) string {
 		_ = cursor
 	}
 
+	// 命令提示区(输入 / 前缀时显示;灰色,一行一条)
+	var hints []string
+	for i := 0; i < hintRows; i++ {
+		hints = append(hints, styleMeta.Render(s.Suggestions[i]))
+	}
+	if len(s.Suggestions) > maxHintRows {
+		hints = append(hints, styleMeta.Render("…"))
+	}
+
 	// 状态栏
 	state := "空闲"
 	if s.Running {
@@ -62,7 +78,10 @@ func Render(s *State, width, height int) string {
 		s.Profile, state, orDefault(s.Model, "未设置"), orDefault(s.Sandbox, string(sdk.SandboxWorkspace)), strings.Repeat(" ", width),
 	))
 
-	return lipgloss.JoinVertical(lipgloss.Left, main, input, status)
+	bottom := []string{input}
+	bottom = append(bottom, hints...)
+	bottom = append(bottom, status)
+	return lipgloss.JoinVertical(lipgloss.Left, main, strings.Join(bottom, "\n"))
 }
 
 func renderLine(l Line) string {
