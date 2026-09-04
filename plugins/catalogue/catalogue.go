@@ -7,6 +7,7 @@ import (
 	"github.com/nekoleamo/go-agent-harness/plugins/host-bridge"
 	"github.com/nekoleamo/go-agent-harness/plugins/host-cwd-sessions"
 	"github.com/nekoleamo/go-agent-harness/plugins/host-llm"
+	"github.com/nekoleamo/go-agent-harness/plugins/host-jobs"
 	"github.com/nekoleamo/go-agent-harness/plugins/host-plugin-manager"
 	"github.com/nekoleamo/go-agent-harness/plugins/host-session-log"
 	"github.com/nekoleamo/go-agent-harness/plugins/host-skills"
@@ -77,6 +78,10 @@ var All = map[string]Def{
 		Requires: []string{"ctx.sessions"}}, Bundle: "base"},
 	"host-bridge": {Factory: func() sdk.Plugin { return &hostbridge.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "host-bridge", Type: "host", APIVersion: ">=1.0,<2.0",
+		Requires: []string{"ctx.tools"}}, Bundle: "base"},
+	"host-jobs": {Factory: func() sdk.Plugin { return &hostjobs.Plugin{} }, Manifest: &sdk.Manifest{
+		ID: "host-jobs", Type: "host", APIVersion: ">=1.0,<2.0",
+		Provides: []string{"ctx.jobs"},
 		Requires: []string{"ctx.tools"}}, Bundle: "base"},
 	"host-plugin-manager": {Factory: func() sdk.Plugin { return &hostplugmgr.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "host-plugin-manager", Type: "host", APIVersion: ">=1.0,<2.0",

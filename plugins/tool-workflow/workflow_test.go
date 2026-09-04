@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/nekoleamo/go-agent-harness/core/ctx"
 	"github.com/nekoleamo/go-agent-harness/core/event"
+	"github.com/nekoleamo/go-agent-harness/plugins/host-jobs"
 	"github.com/nekoleamo/go-agent-harness/plugins/host-tools"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool-shell"
 	"github.com/nekoleamo/go-agent-harness/sdk"
@@ -23,6 +25,9 @@ func buildEnv(t *testing.T) sdk.Ctx {
 		t.Fatal(err)
 	}
 	if _, err := (&toolshell.Plugin{}).Start(c, &sdk.Manifest{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&hostjobs.Plugin{}).Start(c, &sdk.Manifest{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := (&Plugin{}).Start(c, &sdk.Manifest{}); err != nil {
@@ -121,12 +126,20 @@ func TestWorkflowBackgroundAndCollect(t *testing.T) {
 	if job.JobID == "" {
 		t.Fatal("应返回 job_id")
 	}
-	col, err := tools.Execute(context.Background(), "workflow_collect", mustJSON(t, map[string]any{"job_id": job.JobID}))
-	if err != nil || col.Error != "" {
-		t.Fatalf("collect 失败: err=%v col=%+v", err, col)
-	}
-	if !contains(col.Content, "bg-ok") {
-		t.Fatalf("collect 应包含结果: %s", col.Content)
+	// 真异步(M6.1):collect 轮询直到完成
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		col, err := tools.Execute(context.Background(), "workflow_collect", mustJSON(t, map[string]any{"job_id": job.JobID}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if col.Error == "" && contains(col.Content, "bg-ok") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("collect 超时未取到结果: %s %s", col.Error, col.Content)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 

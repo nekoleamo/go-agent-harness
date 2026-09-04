@@ -138,11 +138,11 @@ func (a *App) command(raw string) error {
 		return a.cmdExport(fields)
 	case "help":
 		a.model.state.Lines = append(a.model.state.Lines,
-			Line{Kind: "meta", Text: "命令:/model <名> | /sandbox ro|ws|full | /plugins list|on|off|unload | /settings history N|off | /export | /help | /exit"})
+			Line{Kind: "meta", Text: "命令:/model <名> | /sandbox ro|ws|full | /plugins list|on|off|unload | /jobs list|output|kill | /settings history N|off | /export | /help | /exit"})
 	case "sessions":
 		return a.cmdSessions()
 	case "jobs":
-		return errString("/jobs 尚未实现(host-jobs 延后)")
+		return a.cmdJobs(fields)
 	default:
 		return errString("未知命令 /" + fields[0] + "(输入 /help)")
 	}
@@ -212,6 +212,59 @@ func (a *App) cmdPlugins(fields []string) error {
 		return nil
 	default:
 		return errString("/plugins list|on|off <id>")
+	}
+}
+
+// cmdJobs /jobs list|output|kill(host-jobs 后台任务,见设计 §14.1 M6.1)。
+func (a *App) cmdJobs(fields []string) error {
+	var jobs sdk.JobService
+	if err := a.c.Inject("ctx.jobs", &jobs); err != nil {
+		return errString("ctx.jobs 未装配(host-jobs): " + err.Error())
+	}
+	if len(fields) < 2 {
+		return errString("/jobs list|output <id>|kill <id>")
+	}
+	switch fields[1] {
+	case "list":
+		rows := "后台任务:"
+		for _, j := range jobs.List() {
+			rows += fmt.Sprintf("\n  %s [%s] %s", j.ID, j.State, j.Command)
+			if j.Result != nil {
+				rows += fmt.Sprintf(" → %v", j.Result)
+			}
+		}
+		a.model.state.Lines = append(a.model.state.Lines, Line{Kind: "meta", Text: rows})
+		return nil
+	case "output":
+		if len(fields) < 3 {
+			return errString("/jobs output <id>")
+		}
+		j, ok := jobs.Output(fields[2])
+		if !ok {
+			return errString("任务不存在: " + fields[2])
+		}
+		text := fmt.Sprintf("%s [%s] 命令: %s\n", j.ID, j.State, j.Command)
+		if j.Output != "" {
+			text += j.Output
+		} else if j.Result != nil {
+			text += fmt.Sprintf("%v", j.Result)
+		}
+		if j.Error != "" {
+			text += "错误: " + j.Error
+		}
+		a.model.state.Lines = append(a.model.state.Lines, Line{Kind: "meta", Text: text})
+		return nil
+	case "kill":
+		if len(fields) < 3 {
+			return errString("/jobs kill <id>")
+		}
+		if err := jobs.Kill(fields[2]); err != nil {
+			return errString(err.Error())
+		}
+		a.model.state.Lines = append(a.model.state.Lines, Line{Kind: "meta", Text: "已终止 " + fields[2]})
+		return nil
+	default:
+		return errString("/jobs list|output|kill")
 	}
 }
 

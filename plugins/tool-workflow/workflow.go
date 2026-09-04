@@ -11,8 +11,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"sync"
-	"time"
 
 	"go.starlark.net/starlark"
 	"go.starlark.net/syntax"
@@ -31,23 +29,19 @@ func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
 	if err := c.Inject("ctx.tools", &tools); err != nil {
 		return nil, err
 	}
-	w := &WorkflowTool{tools: tools, logger: c.Logger(), jobs: make(map[string]*resultJob)}
+	w := &WorkflowTool{tools: tools, logger: c.Logger()}
+	// 后台任务经 ctx.jobs(host-jobs,M6.1);未装配时 background 调用显式报错
+	_ = c.Inject("ctx.jobs", &w.jobsSvc)
 	d1 := tools.Register(w)
 	d2 := tools.Register(&Collector{w: w})
 	return func() { d1(); d2() }, nil
 }
 
-// resultJob 异步任务记录。
-type resultJob struct {
-	result any
-}
-
 // WorkflowTool 执行 starlark 工作流脚本。
 type WorkflowTool struct {
-	tools  sdk.ToolRegistry
-	logger *slog.Logger
-	mu     sync.Mutex
-	jobs   map[string]*resultJob
+	tools   sdk.ToolRegistry
+	logger  *slog.Logger
+	jobsSvc sdk.JobService // 可为 nil:host-jobs 未装配时 background 报错
 }
 
 func (w *WorkflowTool) Definition() sdk.ToolDefinition {
@@ -76,16 +70,22 @@ func (w *WorkflowTool) Execute(ctx context.Context, raw string) (any, error) {
 	if strings.TrimSpace(a.Script) == "" {
 		return nil, fmt.Errorf("workflow: 缺少 script")
 	}
+	if a.Background {
+		// 真异步(M6.1):提交到 ctx.jobs 立即返回,不阻塞回合;结果经 workflow_collect 轮询
+		if w.jobsSvc == nil {
+			return map[string]any{"error": "后台任务需要 host-jobs 插件(ctx.jobs 未装配)"}, nil
+		}
+		id, err := w.jobsSvc.Run(func(ctx context.Context) (any, error) {
+			return w.run(ctx, a.Script)
+		})
+		if err != nil {
+			return map[string]any{"error": err.Error()}, nil
+		}
+		return map[string]any{"background": true, "job_id": id}, nil
+	}
 	result, err := w.run(ctx, a.Script)
 	if err != nil {
 		return map[string]any{"error": err.Error()}, nil
-	}
-	if a.Background {
-		id := fmt.Sprintf("job_%d", time.Now().UnixNano())
-		w.mu.Lock()
-		w.jobs[id] = &resultJob{result: result}
-		w.mu.Unlock()
-		return map[string]any{"background": true, "job_id": id, "result": result}, nil
 	}
 	return result, nil
 }
@@ -184,13 +184,20 @@ func (c *Collector) Execute(ctx context.Context, raw string) (any, error) {
 	if err := json.Unmarshal([]byte(raw), &a); err != nil {
 		return nil, err
 	}
-	c.w.mu.Lock()
-	defer c.w.mu.Unlock()
-	j, ok := c.w.jobs[a.JobID]
+	if c.w.jobsSvc == nil {
+		return map[string]any{"error": "ctx.jobs 未装配(host-jobs)"}, nil
+	}
+	job, ok := c.w.jobsSvc.Output(a.JobID)
 	if !ok {
 		return map[string]any{"error": "job 不存在: " + a.JobID}, nil
 	}
-	return map[string]any{"job_id": a.JobID, "result": j.result}, nil
+	if job.State == sdk.JobRunning {
+		return map[string]any{"job_id": a.JobID, "state": "running"}, nil
+	}
+	if job.State != sdk.JobDone {
+		return map[string]any{"job_id": a.JobID, "state": string(job.State), "error": job.Error}, nil
+	}
+	return map[string]any{"job_id": a.JobID, "result": job.Result}, nil
 }
 
 // —— 值转换(starlark ↔ go) ——
