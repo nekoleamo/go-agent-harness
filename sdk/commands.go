@@ -10,10 +10,21 @@ type CommandSpec struct {
 	Desc  string // 一句话说明(提示列表展示)
 	// Run 执行;返回输出文本(可多行,由 TUI 显示为 meta 行)与错误。
 	Run func(args []string) (string, error)
-	// Args 参数级联选项(交互式选择器数据源):每级一个枚举器,picked 为前几级
-	// 已选值(运行时动态求值,如插件/任务列表);返回 nil/空 = 该级自由输入
-	// (选择器断点,回输入框),最后一级无选项 = 直接执行。零值 = 无参数级。
-	Args []func(picked []string) []Option
+	// Args 参数级联定义(交互式选择器):每级为枚举级(Options)或自由级
+	// (FreeArgs,需手动输入)之一;picked 为前几级已选值(运行时动态求值,
+	// 如插件/任务列表)。枚举选完 → 下一级;自由级 → 断点回输入框补参
+	// (提示继续输入);无定义级 → 直接执行。零值 = 无参数级。
+	Args []ArgLevel
+}
+
+// ArgLevel 一级参数定义:枚举(可选项)或自由(需手动输入,选择器断点)。
+// 同一级只有一个生效:Options 非空用枚举;否则 FreeArgs 非空提示手动输入;
+// 两者皆空 = 无定义(该路径直接执行)。
+type ArgLevel struct {
+	// Options 枚举选项(可空:该级非枚举);picked 为前几级已选值。
+	Options func(picked []string) []Option
+	// FreeArgs 自由参数名列表(可空);picked 同。非空 = 用户需手动输入这些参数。
+	FreeArgs func(picked []string) []string
 }
 
 // Option 交互式选择器的一个选项(Value 为填入命令行的值,Desc 为说明)。

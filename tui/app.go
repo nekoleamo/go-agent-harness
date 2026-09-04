@@ -35,7 +35,7 @@ type App struct {
 // NewApp 构造 TUI 应用。命令注册表(ctx.commands,host-commands 提供)注入:
 // 内部命令(宿主级)注册进表与插件命令共表——提示列表/分发/help 全部动态。
 func NewApp(c sdk.Ctx, loop sdk.AgentLoop, llm sdk.LLMService, profile string) *App {
-	state := &State{Profile: profile}
+	state := &State{Profile: profile, Workspace: workspaceName()}
 	m := &Model{state: state}
 	a := &App{model: m, c: c, loop: loop, llm: llm, confirmCh: make(chan bool, 1)}
 	var reg sdk.CommandRegistry
@@ -117,6 +117,15 @@ func (a *App) submit(input string) {
 		a.cancelFn = nil
 		a.program.Send(agentDoneMsg{err})
 	}()
+}
+
+// workspaceName 当前工作区目录名(状态栏显示;取不到时空串)。
+func workspaceName() string {
+	wd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	return filepath.Base(wd)
 }
 
 // cancelCurrent 取消进行中的回合(取消链:turn → LLM 流 → 工具进程,见设计 §8)。
@@ -408,6 +417,14 @@ func providerUnsetLevel(picked []string) []sdk.Option {
 	return []sdk.Option{{Value: "base_url", Desc: "删除端点,回退 env/样板"}, {Value: "api_key", Desc: "删除凭据,回退 env"}, {Value: "model", Desc: "删除模型,回退默认"}}
 }
 
+// providerSetFree /provider set 的自由参数提示(仅 set 分支;其余无 → 直接执行)。
+func providerSetFree(picked []string) []string {
+	if len(picked) < 2 || picked[1] != "set" {
+		return nil
+	}
+	return []string{"baseUrl", "apiKey", "model?"}
+}
+
 // maskKey 凭据打码(尾 4 位;短 key 全掩)。
 func maskKey(k string) string {
 	if k == "" {
@@ -426,7 +443,7 @@ func (a *App) registerInternalCommands() {
 		return
 	}
 	internal := []sdk.CommandSpec{
-		{Name: "model", Usage: "/model <名>", Desc: "切换模型", Run: func(args []string) (string, error) {
+		{Name: "model", Usage: "/model <名>", Desc: "切换模型", Args: []sdk.ArgLevel{{FreeArgs: func([]string) []string { return []string{"模型名"} }}}, Run: func(args []string) (string, error) {
 			if len(args) < 1 {
 				return "", errString("/model <名称> 切换模型")
 			}
@@ -439,24 +456,24 @@ func (a *App) registerInternalCommands() {
 			return "", nil
 		}},
 		{Name: "provider", Usage: "/provider show|set|unset|clear", Desc: "配置 LLM 提供商端点/凭据", Run: a.cmdProvider,
-			Args: []func([]string) []sdk.Option{
-				func([]string) []sdk.Option {
+			Args: []sdk.ArgLevel{
+				{Options: func([]string) []sdk.Option {
 					return []sdk.Option{{Value: "show", Desc: "查看当前提供商(凭据打码)"}, {Value: "set", Desc: "设置端点/凭据/模型(立即生效+持久化)"}, {Value: "unset", Desc: "逐项删除配置(恢复 env/样板)"}, {Value: "clear", Desc: "全部清除+运行时复位"}}
-				},
-				// 二级:仅 unset 枚举可删字段;show/set/clear 无二级 → 选中即执行
-				providerUnsetLevel,
+				}},
+				// 二级:set → 自由参数(baseUrl/apiKey/model?);unset → 枚举字段;show/clear → 无定义直接执行
+				{Options: providerUnsetLevel, FreeArgs: providerSetFree},
 			}},
 		{Name: "sandbox", Usage: "/sandbox ro|ws|full", Desc: "运行期切沙箱档", Run: a.cmdSandbox,
-			Args: []func([]string) []sdk.Option{func([]string) []sdk.Option {
+			Args: []sdk.ArgLevel{{Options: func([]string) []sdk.Option {
 				return []sdk.Option{{Value: "ro", Desc: "只读"}, {Value: "ws", Desc: "工作区写入"}, {Value: "full", Desc: "完全访问"}}
-			}}},
+			}}}},
 		{Name: "plugins", Usage: "/plugins list|on|off|default <id>", Desc: "插件插拔/持久开关", Run: a.cmdPlugins,
-			Args: []func([]string) []sdk.Option{
-				func([]string) []sdk.Option {
+			Args: []sdk.ArgLevel{
+				{Options: func([]string) []sdk.Option {
 					return []sdk.Option{{Value: "list", Desc: "列出插件"}, {Value: "on", Desc: "加载并持久启用"}, {Value: "off", Desc: "卸载并持久关闭"}, {Value: "default", Desc: "恢复配置默认"}}
-				},
+				}},
 				// 二级动态:on/off/default 枚举当前插件;list 无二级 → 直接执行
-				func(picked []string) []sdk.Option {
+				{Options: func(picked []string) []sdk.Option {
 					if len(picked) < 2 || picked[1] == "list" {
 						return nil
 					}
@@ -469,14 +486,14 @@ func (a *App) registerInternalCommands() {
 						opts = append(opts, sdk.Option{Value: info.ID, Desc: info.Type})
 					}
 					return opts
-				},
+				}},
 			}},
 		{Name: "settings", Usage: "/settings history N|off|unlimited", Desc: "历史注入", Run: a.cmdSettings,
-			Args: []func([]string) []sdk.Option{
-				func([]string) []sdk.Option { return []sdk.Option{{Value: "history", Desc: "历史条数"}} },
-				func([]string) []sdk.Option {
+			Args: []sdk.ArgLevel{
+				{Options: func([]string) []sdk.Option { return []sdk.Option{{Value: "history", Desc: "历史条数"}} }},
+				{Options: func([]string) []sdk.Option {
 					return []sdk.Option{{Value: "off", Desc: "关闭历史注入"}, {Value: "unlimited", Desc: "不限条数"}}
-				},
+				}},
 			}},
 		{Name: "export", Usage: "/export [path]", Desc: "导出会话 jsonl", Run: a.cmdExport},
 		{Name: "sessions", Usage: "/sessions", Desc: "当前/已有会话", Run: func([]string) (string, error) { return a.cmdSessions() }},
@@ -526,7 +543,7 @@ func filterHints(specs []sdk.CommandSpec, prefix string) []sdk.Option {
 }
 
 // levels 取命令的参数级枚举器(选择器级联推进数据源)。
-func (a *App) levels(name string) []func(picked []string) []sdk.Option {
+func (a *App) levels(name string) []sdk.ArgLevel {
 	if a.cmds == nil {
 		return nil
 	}

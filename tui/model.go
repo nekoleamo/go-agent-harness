@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -26,15 +27,23 @@ type Model struct {
 	w, h  int
 	quit  bool
 
-	onSubmit  func(input string)                              // 普通输入提交(注入)
-	onCommand func(cmd string) error                          // 命令处理(注入)
-	onConfirm func(ok bool)                                   // 确认答复(注入;见 app.Confirm)
-	onCancel  func()                                          // 取消进行中的回合(注入;Esc 触发)
-	hints     func(prefix string) []sdk.Option                // 命令选项(注入;前缀=去掉 / 后的输入)
-	levels    func(name string) []func([]string) []sdk.Option // 命令参数级枚举器(注入)
+	onSubmit  func(input string)               // 普通输入提交(注入)
+	onCommand func(cmd string) error           // 命令处理(注入)
+	onConfirm func(ok bool)                    // 确认答复(注入;见 app.Confirm)
+	onCancel  func()                           // 取消进行中的回合(注入;Esc 触发)
+	hints     func(prefix string) []sdk.Option // 命令选项(注入;前缀=去掉 / 后的输入)
+	levels    func(name string) []sdk.ArgLevel // 命令参数级定义(注入;枚举/自由级)
 }
 
-func (m *Model) Init() tea.Cmd { return nil }
+// spinInterval 思考动画帧间隔。
+type spinnerMsg struct{}
+
+const spinInterval = 120 * time.Millisecond
+
+func (m *Model) Init() tea.Cmd {
+	// 首帧即启动 tick(回合未运行时 Update 不再续发,自动停)
+	return tea.Every(spinInterval, func(time.Time) tea.Msg { return spinnerMsg{} })
+}
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -56,6 +65,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.state.Running = false
 	case confirmMsg:
 		m.state.ApplyConfirmPrompt(msg.prompt)
+	case spinnerMsg:
+		// 思考动画:仅回合运行中续发 tick(空闲停,不浪费重绘)
+		if m.state.Running {
+			m.state.SpinnerIdx++
+			return m, tea.Every(spinInterval, func(time.Time) tea.Msg { return spinnerMsg{} })
+		}
 	case tea.PasteMsg:
 		// bracketed paste:整段插入(终端 Cmd+V/中键粘贴);与字符输入同语义
 		m.state.PickDismissed = false
@@ -153,17 +168,17 @@ func (m *Model) enter() {
 		m.submit()
 		return
 	}
-	newInput, next, commit := advanceEnter(m.state.Input, m.state.Pick, m.levels)
-	m.state.Input = newInput
-	m.state.Cursor = len([]rune(newInput))
-	m.state.Pick = next
-	if next == nil {
-		m.state.PickDismissed = true
-		m.state.Suggestions = nil // 断点/完成:清残留提示,防渲染旧命令列表
+	res := AdvanceEnter(m.state.Input, m.state.Pick, m.levels)
+	m.state.Input = res.Input
+	m.state.Cursor = len([]rune(res.Input))
+	m.state.Pick = res.Pick
+	m.state.Suggestions = res.Hints // 断点时显示“继续输入”提示
+	if res.Pick == nil {
+		m.state.PickDismissed = true // 断点/完成:重新输入才再激活
 	}
-	// 不再调 syncHints:新文本会被重新过滤成命令列表,覆盖推进出的参数级
-	// (选择确认是用户主动操作,非输入变化;渲染直接用 Pick.Items)。
-	if commit {
+	// 不调 syncHints:新文本会被重新过滤成命令列表,覆盖推进出的参数级
+	// (选择确认是用户主动操作,非输入变化;渲染直接用 Pick.Items/Hints)。
+	if res.Commit {
 		m.submit()
 	}
 }

@@ -30,6 +30,8 @@ type State struct {
 	Suggestions    []string // 输入 / 前缀时的命令提示(注册表过滤结果,渲染于输入行下方)
 	Pick           *Pick    // 非空 = 交互式选择器激活(↑/↓ 移动,Enter 应用)
 	PickDismissed  bool     // Esc/断点后抑制自动激活,直至输入变化
+	SpinnerIdx     int      // 思考动画帧索引(回合运行中 tick 推进)
+	Workspace      string   // 当前工作区显示(启动时 cwd 目录名)
 }
 
 // ApplySessionEvent 把会话事件推进到展示状态(纯逻辑,可测)。
@@ -55,9 +57,12 @@ func (s *State) ApplySessionEvent(ev *sdk.SessionEvent) {
 	case sdk.EventToolCall:
 		if tc, ok := ev.Payload.(sdk.ToolCallEvent); ok {
 			s.Lines = append(s.Lines, Line{Kind: "tool", Text: toolCallText(sdk.ToolCall{ID: tc.ID, Name: tc.Name, Arguments: tc.Arguments})})
+			s.LastTool = tc.Name // 状态栏"执行工具"提示
 		}
 	case sdk.EventToolResult:
 		if r, ok := ev.Payload.(sdk.ToolResultEvent); ok {
+			s.LastTool = "" // 工具完成:回“思考中”
+
 			sum := r.Content
 			if len(sum) > 160 {
 				sum = sum[:160] + "…"
@@ -73,6 +78,7 @@ func (s *State) ApplySessionEvent(ev *sdk.SessionEvent) {
 		}
 	case sdk.EventTurnEnd:
 		s.Lines = append(s.Lines, Line{Kind: "meta", Text: "—— 轮次结束 ——"})
+		s.LastTool = ""
 	case sdk.EventAgentError:
 		if err, ok := ev.Payload.(error); ok {
 			s.Error = err.Error()

@@ -290,7 +290,8 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 ## 12. TUI 用户命令(对照验收)
 
 > 命令体系经 **ctx.commands 注册表**(host-commands)动态装配:内部命令(宿主级)与插件命令共表(如 host-jobs 注册 `/jobs`);输入 `/` 实时显示全部命令、`/s` 前缀过滤——**插件新增命令自动进入提示**,卸载随 Disposer 撤销,TUI 分发/`/help` 均查表(见 PLUGIN_DEV.md 命令注册小节)。
-> **交互式选择器**:输入 `/` 自动激活选项列表(高亮首项),**↑/↓ 移动、Enter 确定、Esc 退出**;命令声明的参数级(Args)→ 逐级选择——如 `/sandbox` → `ro|ws|full` → 选完即执行;自由参数级自动回到输入框补齐(如 `/model <名>`);动态枚举实时反映运行时状态(如 `/jobs output` 列当前任务 ID、`/plugins on` 列插件列表)。
+> **交互式选择器**:输入 `/` 自动激活选项列表(高亮首项),**↑/↓ 移动、Enter 确定、Esc 退出**;命令声明的参数级(ArgLevel)→ 逐级选择——枚举级(`Options`)选完进下一级(如 `/sandbox` → `ro|ws|full` → 选完即执行);**自由级(`FreeArgs`)自动断点回输入框、提示继续输入**(如 `/model <名>`、`/provider set <baseUrl> <apiKey>`——保留命令文本不直接执行);无可定义级直接执行(`/help`)。动态枚举实时反映运行时状态(`/jobs output` 列任务 ID、`/plugins on` 列插件)。
+> **状态栏**:回合运行中显示思考动画(`思考中 ⠋`)+ `(Esc 取消)`;工具执行时切换 `执行工具: <name>`;显示当前工作区目录名(`工作区: <dir>`)。
 
 | 命令 | 作用 |
 |---|---|

@@ -98,3 +98,29 @@ func TestRenderHintArea(t *testing.T) {
 		t.Fatal("超限提示应截断")
 	}
 }
+
+// TestStatusBarSpinnerAndWorkspace 思考动画/工具执行态/工作区显示(状态栏)。
+func TestStatusBarSpinnerAndWorkspace(t *testing.T) {
+	s := &State{Profile: "tui", Workspace: "go-agent-harness", Model: "mock"}
+	// 空闲:无动画、显示工作区
+	out := Render(s, 80, 24)
+	if !strings.Contains(out, "工作区: go-agent-harness") {
+		t.Fatalf("状态栏应显示工作区:\n%s", out)
+	}
+	// 思考中:动画帧 + Esc 取消提示
+	s.Running = true
+	out2 := Render(s, 80, 24)
+	frame := spinnerFrames[s.SpinnerIdx%len(spinnerFrames)]
+	if !strings.Contains(out2, "思考中") || !strings.Contains(out2, frame) {
+		t.Fatalf("回合中应显示思考动画:\n%s", out2)
+	}
+	if !strings.Contains(out2, "Esc 取消") {
+		t.Fatal("应提示 Esc 可取消")
+	}
+	// 工具执行:显示工具名
+	s.LastTool = "shell"
+	out3 := Render(s, 80, 24)
+	if !strings.Contains(out3, "执行工具: shell") {
+		t.Fatalf("工具执行应显示工具名:\n%s", out3)
+	}
+}

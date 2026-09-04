@@ -49,11 +49,11 @@ func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
 			Desc:  "后台任务",
 			Run:   func(args []string) (string, error) { return jobsCmd(args, j) },
 			// 交互式选择器级联:一级 list/output/kill;二级动态枚举任务 ID(output/kill 时)
-			Args: []func([]string) []sdk.Option{
-				func([]string) []sdk.Option {
+			Args: []sdk.ArgLevel{
+				{Options: func([]string) []sdk.Option {
 					return []sdk.Option{{Value: "list", Desc: "列出全部任务"}, {Value: "output", Desc: "取任务输出"}, {Value: "kill", Desc: "终止任务"}}
-				},
-				func(picked []string) []sdk.Option {
+				}},
+				{Options: func(picked []string) []sdk.Option {
 					if len(picked) < 2 || picked[1] == "list" {
 						return nil // list 无二级 → 选完直接执行
 					}
@@ -62,7 +62,7 @@ func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
 						opts = append(opts, sdk.Option{Value: jb.ID, Desc: jb.Command})
 					}
 					return opts
-				},
+				}},
 			},
 		})
 		if err != nil {

@@ -83,14 +83,19 @@ func Render(s *State, width, height int) string {
 		hints = append(hints, styleMeta.Render("…"))
 	}
 
-	// 状态栏
+	// 状态栏(思考动画:回合运行中持续旋转,证明未卡住;工具执行时显示工具名)
 	state := "空闲"
 	if s.Running {
-		state = "运行中…"
+		if s.LastTool != "" {
+			state = "执行工具: " + s.LastTool + " " + spinnerFrame(s.SpinnerIdx)
+		} else {
+			state = "思考中 " + spinnerFrame(s.SpinnerIdx)
+		}
+		state += " (Esc 取消)"
 	}
 	status := styleStatus.Render(fmt.Sprintf(
-		" gah | %s | %s | 模型: %s | 沙箱: %s%s",
-		s.Profile, state, orDefault(s.Model, "未设置"), orDefault(s.Sandbox, string(sdk.SandboxWorkspace)), strings.Repeat(" ", width),
+		" gah | %s | 工作区: %s | %s | 模型: %s | 沙箱: %s%s",
+		s.Profile, orDefault(s.Workspace, "?"), state, orDefault(s.Model, "未设置"), orDefault(s.Sandbox, string(sdk.SandboxWorkspace)), strings.Repeat(" ", width),
 	))
 
 	bottom := []string{input}
@@ -116,6 +121,13 @@ func renderLine(l Line) string {
 	default:
 		return l.Text
 	}
+}
+
+// spinnerFrames 思考动画帧(braille 旋转,回合运行中 tick 推进)。
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+func spinnerFrame(i int) string {
+	return spinnerFrames[i%len(spinnerFrames)]
 }
 
 func orDefault(s, def string) string {
