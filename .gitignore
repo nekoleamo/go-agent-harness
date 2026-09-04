@@ -1,13 +1,3 @@
-# 构建产物
 /bin/
 /dist/
-gah
-
-# 会话日志与运行时数据(home 由 GAH_HOME 定位,仓库内不留)
-/sessions/
-*.jsonl
-
-# 编辑器
-.DS_Store
-.idea/
-.vscode/
+/gah
