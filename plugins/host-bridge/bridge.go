@@ -1,5 +1,6 @@
-// 宿主侧桥:扫描外部插件目录,加载 tool-* 二进制,注册为 sdk.Tool。
-// P0:工具级超时(def.TimeoutMs 覆写全局 3s)+ 进程崩溃自动拉起(连接错误
+// Package hostbridge 提供 host-bridge 插件:外部进程插件桥(宿主侧,崩溃隔离)。
+// 扫描外部插件目录,加载 tool-* 二进制(go-plugin/gRPC),注册为 sdk.Tool;
+// P0:工具级超时(TimeOutMs 覆写全局 3s)+ 进程崩溃自动拉起(连接错误
 // → 节流重建进程,下次调用走新实例);多工具协议(ExecuteNamed/Definitions,
 // 旧单工具协议自动回退)。
 package hostbridge

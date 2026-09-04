@@ -1,4 +1,4 @@
-// serve.go:外部插件进程的服务端通用入口(P1 外部化)。
+// serve.go:外部插件进程的服务端通用入口(P1 外部化;随 tool-basic 等外部二进制编译)。
 // ServeTools 暴露多工具:Definitions(复数)枚举 + ExecuteNamed 按名执行;
 // 旧单工具协议(Definition/Execute)保持兼容(单工具进程亦可用)。
 package hostbridge

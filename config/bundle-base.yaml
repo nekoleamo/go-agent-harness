@@ -3,8 +3,9 @@
 name: base
 entries:
   - id: host-session-log
+  - id: token-compress
     data:
-      token_budget_chars: 40960 # M6.5:投影字符预算,超限滚动摘要压缩(0 = 关闭)
+      token_budget_chars: 40960 # M6.5 拆分:独立插件,投影字符预算,超限滚动摘要压缩(0 = 关闭)
   - id: host-tools
   - id: host-system-prompt
   - id: host-llm
@@ -23,6 +24,8 @@ entries:
   - id: host-plugin-manager
   - id: host-cwd-sessions
   - id: host-jobs
+  - id: host-fanout
+    enabled: true # M6.2 拆分:子代理编排宿主服务(ctx.fanout),tool-workflow 依赖
   - id: host-bridge
     # P1 方案B:默认启用,dir 缺省指向 home/plugins(首启随包释放 tool-basic)
     enabled: true

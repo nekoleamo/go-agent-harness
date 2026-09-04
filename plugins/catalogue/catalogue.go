@@ -6,6 +6,7 @@ import (
 	"github.com/nekoleamo/go-agent-harness/plugins/host-agent-loop"
 	"github.com/nekoleamo/go-agent-harness/plugins/host-bridge"
 	"github.com/nekoleamo/go-agent-harness/plugins/host-cwd-sessions"
+	"github.com/nekoleamo/go-agent-harness/plugins/host-fanout"
 	"github.com/nekoleamo/go-agent-harness/plugins/host-llm"
 	"github.com/nekoleamo/go-agent-harness/plugins/host-jobs"
 	"github.com/nekoleamo/go-agent-harness/plugins/host-plugin-manager"
@@ -18,6 +19,7 @@ import (
 	"github.com/nekoleamo/go-agent-harness/plugins/llm-openai-compat"
 	"github.com/nekoleamo/go-agent-harness/plugins/mcp-bridge"
 	"github.com/nekoleamo/go-agent-harness/plugins/mcp-server"
+	"github.com/nekoleamo/go-agent-harness/plugins/token-compress"
 	"github.com/nekoleamo/go-agent-harness/plugins/policy-approval"
 	"github.com/nekoleamo/go-agent-harness/plugins/policy-sandbox"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool-files"
@@ -72,7 +74,7 @@ var All = map[string]Def{
 		Requires: []string{"ctx.llm"}}, Bundle: "base"},
 	"tool-workflow": {Factory: func() sdk.Plugin { return &toolworkflow.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "tool-workflow", Type: "tool", APIVersion: ">=1.0,<2.0",
-		Requires: []string{"ctx.tools"}}, Bundle: "base"},
+		Requires: []string{"ctx.tools", "ctx.fanout"}}, Bundle: "base"},
 	"tool-shell": {Factory: func() sdk.Plugin { return &toolshell.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "tool-shell", Type: "tool", APIVersion: ">=1.0,<2.0",
 		Requires: []string{"ctx.tools"}}, Bundle: "base"},
@@ -88,10 +90,17 @@ var All = map[string]Def{
 	"mcp-server": {Factory: func() sdk.Plugin { return &mcpserver.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "mcp-server", Type: "host", APIVersion: ">=1.0,<2.0",
 		Requires: []string{"ctx.tools"}}, Bundle: "base"},
+	"token-compress": {Factory: func() sdk.Plugin { return &tokencompress.Plugin{} }, Manifest: &sdk.Manifest{
+		ID: "token-compress", Type: "host", APIVersion: ">=1.0,<2.0",
+		Requires: []string{"ctx.sessions"}}, Bundle: "base"},
 	"host-cwd-sessions": {Factory: func() sdk.Plugin { return &hostcwdsessions.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "host-cwd-sessions", Type: "host", APIVersion: ">=1.0,<2.0",
 		Provides: []string{"ctx.cwdSessions"},
 		Requires: []string{"ctx.sessions"}}, Bundle: "base"},
+	"host-fanout": {Factory: func() sdk.Plugin { return &hostfanout.Plugin{} }, Manifest: &sdk.Manifest{
+		ID: "host-fanout", Type: "host", APIVersion: ">=1.0,<2.0",
+		Provides: []string{"ctx.fanout"},
+		Requires: []string{"ctx.llm", "ctx.tools", "ctx.systemPrompt"}}, Bundle: "base"},
 	"host-bridge": {Factory: func() sdk.Plugin { return &hostbridge.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "host-bridge", Type: "host", APIVersion: ">=1.0,<2.0",
 		Requires: []string{"ctx.tools"}}, Bundle: "base"},

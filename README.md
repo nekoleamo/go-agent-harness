@@ -33,8 +33,8 @@ Go 实现的编程代理 Agent Harness:以**单二进制**交付全部能力,对
 | **MCP client 桥** | mcp-bridge:stdio JSON-RPC 接入 MCP server,工具注册为 `mcp_<name>` |
 | **MCP server 端** | mcp-server:本仓全部工具暴露为 MCP server(stdio JSON-RPC,initialize/tools/list/tools/call,插拔实时反映) |
 | **后台任务** | host-jobs + workflow `background`:长任务异步提交/取回/终止,不阻塞回合 |
-| **子代理 fanout** | workflow `agent/parallel/pipeline`:扇出多个子代理并行执行并聚合 |
-| **会话 token 压缩** | 超预算滚动摘要(完整日志留盘),长会话注入受限可用 |
+| **子代理 fanout** | host-fanout 宿主服务(ctx.fanout):`agent/parallel/pipeline` 独立上下文 ReAct,扇出多个子代理并行执行并聚合;workflow 等任意入口可复用 |
+| **会话 token 压缩** | token-compress 独立插件:超预算滚动摘要(完整日志留盘),长会话注入受限可用 |
 | **插件安装** | `gah -install/-uninstall/-list-plugins`:git 拉取构建落盘,一条命令装完即启用 |
 | **指令文件** | 全局 `$GAH_HOME/AGENTS.md` + 项目 `AGENTS.md` 自动注入 system prompt(顺序即覆盖) |
 | **技能机制** | host-skills:扫描技能目录(SKILL.md),`list_skills`/`read_skill` 按需加载,提示注入技能索引;仓库已自注册 `gah-plugin-dev` 技能 |
