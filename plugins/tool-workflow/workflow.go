@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 
 	"go.starlark.net/starlark"
 	"go.starlark.net/syntax"
@@ -29,9 +30,12 @@ func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
 	if err := c.Inject("ctx.tools", &tools); err != nil {
 		return nil, err
 	}
-	w := &WorkflowTool{tools: tools, logger: c.Logger()}
+	w := &WorkflowTool{tools: tools, logger: c.Logger(), c: c}
 	// 后台任务经 ctx.jobs(host-jobs,M6.1);未装配时 background 调用显式报错
 	_ = c.Inject("ctx.jobs", &w.jobsSvc)
+	// 子代理编排(M6.2)经 ctx.llm/ctx.systemPrompt;未装配时 agent/parallel/pipeline 显式报错
+	_ = c.Inject("ctx.llm", &w.llm)
+	_ = c.Inject("ctx.systemPrompt", &w.sp)
 	d1 := tools.Register(w)
 	d2 := tools.Register(&Collector{w: w})
 	return func() { d1(); d2() }, nil
@@ -42,6 +46,9 @@ type WorkflowTool struct {
 	tools   sdk.ToolRegistry
 	logger  *slog.Logger
 	jobsSvc sdk.JobService // 可为 nil:host-jobs 未装配时 background 报错
+	llm     sdk.LLMService
+	sp      sdk.SystemPromptService
+	c       sdk.Ctx
 }
 
 func (w *WorkflowTool) Definition() sdk.ToolDefinition {
@@ -102,6 +109,16 @@ func (w *WorkflowTool) run(ctx context.Context, script string) (any, error) {
 			return w.callTool(th, ctx, name, args, kwargs)
 		})
 	}
+	// 子代理编排(M6.2):agent / parallel / pipeline
+	predeclared["agent"] = starlark.NewBuiltin("agent", func(th *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+		return w.builtinAgent(th, ctx, args, kwargs)
+	})
+	predeclared["parallel"] = starlark.NewBuiltin("parallel", func(th *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+		return w.builtinParallel(th, ctx, args, kwargs)
+	})
+	predeclared["pipeline"] = starlark.NewBuiltin("pipeline", func(th *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+		return w.builtinPipeline(th, ctx, args, kwargs)
+	})
 
 	thread := &starlark.Thread{Name: "workflow"}
 	thread.Print = func(th *starlark.Thread, msg string) {
@@ -127,10 +144,7 @@ func (w *WorkflowTool) callTool(th *starlark.Thread, ctx context.Context, name s
 	if name == "workflow" || name == "workflow_collect" {
 		return nil, fmt.Errorf("workflow: 嵌套调用 %q 被禁用", name)
 	}
-	obj := map[string]any{}
-	for _, k := range kwargs {
-		obj[k[0].(starlark.String).GoString()] = valueToGo(k[1])
-	}
+	obj := kwargMap(kwargs)
 	if len(args) == 1 {
 		switch v := args[0].(type) {
 		case starlark.String:
@@ -159,6 +173,212 @@ func (w *WorkflowTool) callTool(th *starlark.Thread, ctx context.Context, name s
 		return starlark.String(res.Content), nil
 	}
 	return goToValue(out), nil
+}
+
+// kwargMap 将 starlark kwargs/单位置 dict 归一为 go map。
+func kwargMap(kwargs []starlark.Tuple) map[string]any {
+	obj := map[string]any{}
+	for _, k := range kwargs {
+		obj[k[0].(starlark.String).GoString()] = valueToGo(k[1])
+	}
+	return obj
+}
+
+// —— 子代理编排(M6.2,设计 §14.1)——
+
+// maxSubSteps 子代理单轮最大 ReAct 迭代(防死循环)。
+const maxSubSteps = 8
+
+// runSubAgent 在独立上下文中跑一轮 ReAct:独立会话历史(不写主会话),
+// 复用 ctx.llm/ctx.tools/ctx.systemPrompt;返回最终 assistant 文本。
+// findCall 按 ToolCallID 定位或追加(流式增量聚合,同 host-agent-loop 语义)。
+func findCall(calls *[]sdk.ToolCall, id string) int {
+	for i := range *calls {
+		if (*calls)[i].ID == id {
+			return i
+		}
+	}
+	*calls = append(*calls, sdk.ToolCall{ID: id})
+	return len(*calls) - 1
+}
+
+func (w *WorkflowTool) runSubAgent(ctx context.Context, input string) (string, error) {
+	if w.llm == nil || w.sp == nil {
+		return "", fmt.Errorf("子代理编排需要 ctx.llm / ctx.systemPrompt(未装配)")
+	}
+	history := []sdk.LLMMessage{{Role: sdk.RoleUser, Content: input}}
+	for step := 0; step < maxSubSteps; step++ {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		messages := w.sp.Assemble(history, w.tools.List())
+		var (
+			content strings.Builder
+			calls   []sdk.ToolCall
+			final   sdk.LLMResponse
+		)
+		onChunk := func(ev sdk.LLMStreamEvent) error {
+			if ev.Delta != "" {
+				content.WriteString(ev.Delta)
+			}
+			if ev.ToolCallID != "" {
+				idx := findCall(&calls, ev.ToolCallID)
+				calls[idx].Name += ev.ToolCallName
+				calls[idx].Arguments += ev.ToolCallArgs
+			}
+			if ev.Done {
+				final = sdk.LLMResponse{Message: ev.Message, FinishReason: ev.FinishReason, Usage: ev.Usage}
+			}
+			return nil
+		}
+		resp, err := w.llm.Complete(ctx, &sdk.LLMRequest{Messages: messages}, onChunk)
+		if err != nil {
+			return "", err
+		}
+		if resp != nil {
+			final = *resp
+		}
+		if len(calls) > 0 {
+			final.Message.ToolCalls = calls
+		}
+		if final.Message.Content == "" {
+			final.Message.Content = content.String()
+		}
+		history = append(history, final.Message)
+		if len(calls) == 0 {
+			return final.Message.Content, nil
+		}
+		// 执行子代理工具调用(同工具流水线,策略拦截经 tools/pre-execute 生效)
+		for _, call := range calls {
+			if call.Name == "workflow" || call.Name == "workflow_collect" {
+				history = append(history, sdk.LLMMessage{Role: sdk.RoleTool,
+					Content: "子代理不允许嵌套调用 " + call.Name, ToolCallID: call.ID})
+				continue
+			}
+			res, err := w.tools.Execute(ctx, call.Name, call.Arguments)
+			if err != nil {
+				history = append(history, sdk.LLMMessage{Role: sdk.RoleTool, Content: "错误: " + err.Error(), ToolCallID: call.ID})
+			} else if res != nil {
+				content := res.Content
+				if res.Error != "" {
+					content = "错误: " + res.Error
+				}
+				history = append(history, sdk.LLMMessage{Role: sdk.RoleTool, Content: content, ToolCallID: call.ID})
+			}
+		}
+	}
+	return "", fmt.Errorf("子代理超过 %d 步未收敛", maxSubSteps)
+}
+
+// builtinAgent agent({"input": ...}):单子代理一轮。
+func (w *WorkflowTool) builtinAgent(th *starlark.Thread, ctx context.Context, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	obj := kwargMap(kwargs)
+	if len(args) == 1 {
+		if m, ok := valueToGo(args[0]).(map[string]any); ok {
+			mergeInto(obj, m)
+		}
+	}
+	input, _ := obj["input"].(string)
+	if strings.TrimSpace(input) == "" {
+		return nil, fmt.Errorf("agent: 需要 input 字符串")
+	}
+	result, err := w.runSubAgent(ctx, input)
+	if err != nil {
+		return goToValue(map[string]any{"error": err.Error()}), nil
+	}
+	return goToValue(map[string]any{"result": result}), nil
+}
+
+// builtinParallel parallel({"agents": [...]}):并发扇出多个子代理并聚合。
+func (w *WorkflowTool) builtinParallel(th *starlark.Thread, ctx context.Context, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	obj := kwargMap(kwargs)
+	if len(args) == 1 {
+		if m, ok := valueToGo(args[0]).(map[string]any); ok {
+			mergeInto(obj, m)
+		}
+	}
+	rawAgents, ok := obj["agents"].([]any)
+	if !ok || len(rawAgents) == 0 {
+		return nil, fmt.Errorf("parallel: 需要非空 agents 列表")
+	}
+	inputs := make([]string, 0, len(rawAgents))
+	for _, a := range rawAgents {
+		if m, ok := a.(map[string]any); ok {
+			if in, ok := m["input"].(string); ok && strings.TrimSpace(in) != "" {
+				inputs = append(inputs, in)
+				continue
+			}
+		}
+		return nil, fmt.Errorf("parallel: agents 每项须为 {\"input\": 字符串}")
+	}
+	results := make([]map[string]any, len(inputs))
+	var wg sync.WaitGroup
+	for i, in := range inputs {
+		wg.Add(1)
+		go func(i int, in string) {
+			defer wg.Done()
+			res, err := w.runSubAgent(ctx, in)
+			item := map[string]any{"input": in}
+			if err != nil {
+				item["error"] = err.Error()
+			} else {
+				item["result"] = res
+			}
+			results[i] = item
+		}(i, in)
+	}
+	wg.Wait()
+	return goToValue(map[string]any{"agents": results}), nil
+}
+
+// builtinPipeline pipeline({"steps": [...]}):串行链,上一步输出作为下一步输入。
+func (w *WorkflowTool) builtinPipeline(th *starlark.Thread, ctx context.Context, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	obj := kwargMap(kwargs)
+	if len(args) == 1 {
+		if m, ok := valueToGo(args[0]).(map[string]any); ok {
+			mergeInto(obj, m)
+		}
+	}
+	rawSteps, ok := obj["steps"].([]any)
+	if !ok || len(rawSteps) == 0 {
+		return nil, fmt.Errorf("pipeline: 需要非空 steps 列表")
+	}
+	inputs := make([]string, 0, len(rawSteps))
+	for _, s := range rawSteps {
+		in, ok := s.(string)
+		if !ok || strings.TrimSpace(in) == "" {
+			return nil, fmt.Errorf("pipeline: steps 每项须为输入字符串")
+		}
+		inputs = append(inputs, in)
+	}
+	result := ""
+	var stepsOut []map[string]any
+	for _, in := range inputs {
+		cur := in
+		if result != "" {
+			cur = result // 上一步输出作为下一步输入
+		}
+		res, err := w.runSubAgent(ctx, cur)
+		step := map[string]any{"input": cur}
+		if err != nil {
+			step["error"] = err.Error()
+			stepsOut = append(stepsOut, step)
+			return goToValue(map[string]any{"steps": stepsOut, "error": err.Error()}), nil
+		}
+		step["result"] = res
+		stepsOut = append(stepsOut, step)
+		result = res
+	}
+	return goToValue(map[string]any{"steps": stepsOut, "result": result}), nil
 }
 
 // Collector 收集异步结果。
