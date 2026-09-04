@@ -1,3 +1,4 @@
+// host-session-log 测试:投影/持久化/历史注入 + 压缩器注入整合(token 压缩算法本身在 token-compress)。
 package sessionlog
 
 import (
@@ -7,14 +8,46 @@ import (
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
-// mockLog 构造带预算的日志。
-func mockLog(budget int) *Log {
-	l := newLog("")
-	l.budget = budget
-	return l
+// stubCompressor 测试压缩器:一次把水位后所有事件折叠为一条摘要(最简单折叠)。
+// 用于验证 host-session-log 的注入整合(水位推进/摘要置顶/完整日志留盘)。
+type stubCompressor struct {
+	calls int
 }
 
-// appendTurn 一轮会话:用户问 + 助手答 + 工具结果(各约 40-50 字)。
+func (s *stubCompressor) Fold(evs []sdk.SessionEvent, watermark int, budget int, summary func(string)) int {
+	s.calls++
+	// 折叠水位后事件至最后一个用户轮之前(保留最新轮完整)
+	start := watermark + 1
+	end := lastUserIndexStub(evs) - 1
+	if end < start {
+		return watermark
+	}
+	var b strings.Builder
+	for i := start; i <= end; i++ {
+		switch p := evs[i].Payload.(type) {
+		case sdk.UserMessage:
+			b.WriteString("用户: " + p.Content[:min(20, len(p.Content))] + ";")
+		case sdk.AssistantMessage:
+			b.WriteString("助手;")
+		case sdk.ToolResultEvent:
+			b.WriteString("工具;")
+		}
+	}
+	summary("stub:" + b.String())
+	return end
+}
+
+func lastUserIndexStub(evs []sdk.SessionEvent) int {
+	last := -1
+	for i, ev := range evs {
+		if ev.Kind == sdk.EventUserMessage {
+			last = i
+		}
+	}
+	return last
+}
+
+// appendTurn 一轮会话:用户问 + 助手答 + 工具结果。
 func appendTurn(l *Log, round int) {
 	_ = l.Append(sdk.SessionEvent{Kind: sdk.EventUserMessage, Payload: sdk.UserMessage{
 		Content: "用户问题 第" + strings.Repeat("行", 40) + itoa(round)}})
@@ -36,34 +69,40 @@ func itoa(n int) string {
 	return string(b)
 }
 
-// TestRollingSummary 长会话:投影受限并出现滚动摘要;完整日志留盘(Replay 原样)。
-func TestRollingSummary(t *testing.T) {
-	l := mockLog(400)
-	for i := 1; i <= 12; i++ {
+// TestFullProjectionNoCompressor 未注册压缩器:全量投影,行为与旧版一致。
+func TestFullProjectionNoCompressor(t *testing.T) {
+	l := newLog("")
+	for i := 1; i <= 5; i++ {
 		appendTurn(l, i)
-		l.DeriveMessages() // 触发压缩检查(agent-loop 每步调用)
 	}
 	msgs := l.DeriveMessages()
-	// 投影字符受限(单块边界允许少量超出)
-	var total int
-	for _, m := range msgs {
-		total += len([]rune(m.Content))
+	if len(msgs) != 15 { // 5 轮 × 3 条
+		t.Fatalf("应全量投影: %d", len(msgs))
 	}
-	if total > 400*4 {
-		t.Fatalf("投影字符应受限: %d", total)
+}
+
+// TestCompressorInjectIntegrate 压缩器注入整合:超预算触发 Fold,摘要置顶、压缩块跳过、完整日志留盘。
+func TestCompressorInjectIntegrate(t *testing.T) {
+	l := newLog("")
+	for i := 1; i <= 6; i++ {
+		appendTurn(l, i)
 	}
-	// 摘要出现:system 角色,含对话痕迹
-	var sawSummary bool
-	for _, m := range msgs {
-		if m.Role == sdk.RoleSystem && strings.Contains(m.Content, "用户") && strings.Contains(m.Content, "滚动摘要") {
-			sawSummary = true
-			break
-		}
+	stub := &stubCompressor{}
+	l.RegisterCompressor(200, stub)
+	msgs := l.DeriveMessages()
+	if stub.calls == 0 {
+		t.Fatal("超预算应触发 Fold")
 	}
-	if !sawSummary {
-		t.Fatalf("应有滚动摘要(system 消息): %+v", msgs)
+	// 摘要置顶(system)
+	if len(msgs) == 0 || msgs[0].Role != sdk.RoleSystem || !strings.Contains(msgs[0].Content, "stub:") {
+		t.Fatalf("摘要应置顶: %+v", msgs)
 	}
-	// 完整日志留盘:Replay 含全部用户事件 + 摘要事件
+	// 最新轮保留(末尾为第 6 轮工具结果)
+	last := msgs[len(msgs)-1]
+	if last.Role != sdk.RoleTool || last.ToolCallID != "c6" {
+		t.Fatalf("最新轮应保留: %+v", msgs)
+	}
+	// 完整日志留盘:全部用户事件 + 摘要事件
 	events := l.Replay()
 	var userCount, summaryCount int
 	for _, ev := range events {
@@ -74,70 +113,75 @@ func TestRollingSummary(t *testing.T) {
 			summaryCount++
 		}
 	}
-	if userCount != 12 {
-		t.Fatalf("完整日志应保留全部 12 轮用户事件: %d", userCount)
+	if userCount != 6 {
+		t.Fatalf("完整日志应保留 6 轮用户事件: %d", userCount)
 	}
 	if summaryCount == 0 {
 		t.Fatal("应有摘要事件落盘")
 	}
 }
 
-// TestSummaryRollsForward 滚动:摘要保留早期轮次痕迹,最新块完整投影。
-func TestSummaryRollsForward(t *testing.T) {
-	l := mockLog(300)
-	for i := 1; i <= 8; i++ {
-		appendTurn(l, i)
-		l.DeriveMessages()
-	}
-	msgs := l.DeriveMessages()
-	// 最新块保留(末尾为第 8 轮工具结果)
-	last := msgs[len(msgs)-1]
-	if last.Role != sdk.RoleTool || last.ToolCallID != "c8" {
-		t.Fatalf("最新块应保留(末尾为第 8 轮工具结果): %+v", last)
-	}
-	// 摘要含早期轮次痕迹(第 1 轮用户问题)
-	var summary string
-	for _, m := range msgs {
-		if m.Role == sdk.RoleSystem {
-			summary = m.Content
-		}
-	}
-	if summary == "" || !strings.Contains(summary, "用户问题 第") {
-		t.Fatalf("摘要应含早期轮次痕迹: %q", summary)
-	}
-	// 累计摘要限长(防自身膨胀)
-	if len([]rune(summary)) > 300/2+30 {
-		t.Fatalf("摘要应限长: %d", len([]rune(summary)))
-	}
-}
-
-// TestNoSummaryWhenWithinBudget 预算充足:不压缩,无摘要事件。
-func TestNoSummaryWhenWithinBudget(t *testing.T) {
-	l := mockLog(1000000)
+// TestCompressorWithinBudget 预算充足:不触发折叠,无摘要。
+func TestCompressorWithinBudget(t *testing.T) {
+	l := newLog("")
 	for i := 1; i <= 3; i++ {
 		appendTurn(l, i)
 	}
+	stub := &stubCompressor{}
+	l.RegisterCompressor(1000000, stub)
 	msgs := l.DeriveMessages()
+	if stub.calls != 0 {
+		t.Fatal("预算充足不应触发 Fold")
+	}
 	for _, m := range msgs {
 		if m.Role == sdk.RoleSystem {
 			t.Fatal("预算充足不应出现摘要")
 		}
 	}
-	for _, ev := range l.Replay() {
-		if ev.Kind == sdk.EventSummary {
-			t.Fatal("预算充足不应有摘要事件")
-		}
+}
+
+// TestHistoryInjection 历史注入:-1 禁止 / N 最近 N 条消息(与压缩器无关的基础语义)。
+func TestHistoryInjection(t *testing.T) {
+	l := newLog("")
+	for i := 1; i <= 3; i++ {
+		appendTurn(l, i)
+	}
+	l.SetHistory(2)
+	msgs := l.DeriveMessages()
+	if len(msgs) != 2 { // 最近 2 条消息
+		t.Fatalf("应保留最近 2 条消息: %d", len(msgs))
+	}
+	l.SetHistory(-1)
+	if msgs := l.DeriveMessages(); msgs != nil {
+		t.Fatalf("-1 应禁止注入: %+v", msgs)
 	}
 }
 
-// TestBudgetOffByDefault 默认(budget=0):不压缩,行为与旧版一致。
-func TestBudgetOffByDefault(t *testing.T) {
-	l := mockLog(0)
-	for i := 1; i <= 5; i++ {
+// TestSummaryEventProjection 摘要事件消费:水位内摘要恒置顶(令牌压缩后多次投影稳定)。
+func TestSummaryEventProjection(t *testing.T) {
+	l := newLog("")
+	for i := 1; i <= 4; i++ {
 		appendTurn(l, i)
 	}
-	msgs := l.DeriveMessages()
-	if len(msgs) != 15 { // 5 轮 × 3 条
-		t.Fatalf("默认应全量投影: %d", len(msgs))
+	stub := &stubCompressor{}
+	l.RegisterCompressor(150, stub)
+	first := l.DeriveMessages()
+	second := l.DeriveMessages()
+	// 已折叠完成,再次投影不应重复折叠(水位推进后预算内)
+	if stub.calls > 2 {
+		t.Fatalf("重复投影不应反复折叠: %d 次", stub.calls)
 	}
+	if len(first) != len(second) {
+		t.Fatalf("折叠完成后投影应稳定: 前 %d 后 %d", len(first), len(second))
+	}
+	if first[0].Role != sdk.RoleSystem || second[0].Role != sdk.RoleSystem {
+		t.Fatalf("摘要应持续置顶: %+v / %+v", first, second)
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

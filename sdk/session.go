@@ -73,6 +73,20 @@ type SessionLog interface {
 	// SetHistory 设置历史注入条数:-1 = 禁止注入;0 = 全部(unlimited);N>0 = 最近 N 条。
 	// 对齐设计 §9:history injection(默认 unlimited)。
 	SetHistory(n int)
+
+	// RegisterCompressor 注册滚动摘要压缩器与其字符预算(M6.5 拆分后由 token-compress 注入)。
+	// budget <= 0 关闭压缩;压缩器在投影超预算时被调用(详见 SessionCompressor)。
+	RegisterCompressor(budget int, c SessionCompressor)
+}
+
+// SessionCompressor 滚动摘要引擎(M6.5 拆出 token-compress;仅消费 SessionEvent,零内部状态)。
+// host-session-log 在投影超预算时回调 Fold;引擎折叠事件流最旧块为累计摘要,
+// 每折一块调用 summary 回调持久化 session/summary 事件;host 据此推进水位(投影跳过已压缩块)。
+type SessionCompressor interface {
+	// Fold 折叠 evs 中水位后的最旧块(不得越过最后一个用户轮),
+	// 直至估算投影回预算内或无可折叠;返回已被摘要覆盖的最大事件索引(水位)。
+	// watermark -1 表示尚未压缩;summary 回调幂等可多次调用。
+	Fold(evs []SessionEvent, watermark int, budget int, summary func(string)) int
 }
 
 // CwdSessions 服务(ctx.cwdSessions):项目级会话(host-cwd-sessions)。
