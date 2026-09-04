@@ -1,6 +1,8 @@
-// Package toolshell 提供 tool-shell 插件:最小 shell 执行工具(MVP 阶段)。
-// 沙箱三档拦截在 M4 policy-sandbox 引入(监听 tools/pre-execute);本版本仅提供基础执行:
-// JSON args {"command": "..."},ContextCommand 超时 60s,错误结构化回传模型。
+// Package toolshell 提供 tool-shell 插件:shell 执行工具。
+// 沙箱三档拦截在 M4 policy-sandbox 引入(监听 tools/pre-execute)。
+// 普通模式:JSON args {"command": "..."},超时 60s,错误结构化回传模型;
+// pty 模式(M6.3,data.pty 开关):命令挂 pseudo-terminal,input 可一次性写入,
+// 交互式命令(REPL/git 编辑器/询问式脚本)走 execPty(见 pty.go)。
 package toolshell
 
 import (
@@ -20,22 +22,31 @@ type Plugin struct{}
 func (p *Plugin) Name() string { return "tool-shell" }
 
 // Start 注册 shell 工具。
-func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
+func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	var tools sdk.ToolRegistry
 	if err := c.Inject("ctx.tools", &tools); err != nil {
 		return nil, err
 	}
-	d := tools.Register(&ShellTool{timeout: 60 * time.Second})
+	// data.pty 开关(M6.3):启用后 shell 挂伪终端执行,交互式命令可用 input 批次输入
+	ptyEnabled := false
+	if m != nil && m.Data != nil {
+		if on, ok := m.Data["pty"].(bool); ok {
+			ptyEnabled = on
+		}
+	}
+	d := tools.Register(&ShellTool{timeout: 60 * time.Second, pty: ptyEnabled})
 	return d, nil
 }
 
 type args struct {
 	Command string `json:"command"`
+	Input   string `json:"input,omitempty"` // pty 模式:一次性写入的输入(REPL 命令/编辑器内容)
 }
 
 // ShellTool 执行 shell 命令。
 type ShellTool struct {
 	timeout time.Duration
+	pty     bool // data.pty 开关:命令挂伪终端执行
 }
 
 func (s *ShellTool) Definition() sdk.ToolDefinition {
@@ -46,6 +57,7 @@ func (s *ShellTool) Definition() sdk.ToolDefinition {
 			"type": "object",
 			"properties": map[string]any{
 				"command": map[string]any{"type": "string", "description": "要执行的 shell 命令"},
+				"input":    map[string]any{"type": "string", "description": "pty 模式:一次性写入的输入"},
 			},
 			"required": []any{"command"},
 		},
@@ -60,6 +72,22 @@ func (s *ShellTool) Execute(ctx context.Context, raw string) (any, error) {
 	}
 	if a.Command == "" {
 		return nil, fmt.Errorf("shell: 缺少 command 参数")
+	}
+
+	if s.pty {
+		// pty 模式(M6.3):伪终端执行,输入批次写入,终输出采集(超时兜底)
+		if a.Command == "" {
+			return nil, fmt.Errorf("shell: 缺少 command 参数")
+		}
+		out, timedOut, perr := execPty(ctx, a.Command, a.Input)
+		if perr != nil {
+			return map[string]any{"error": "shell: pty 启动失败: " + perr.Error()}, nil
+		}
+		res := map[string]any{"output": string(out)}
+		if timedOut {
+			res["timeout"] = true // 交互进程未退出:已终止并返回已捕获输出
+		}
+		return res, nil
 	}
 
 	dctx, cancel := context.WithTimeout(ctx, s.timeout)
