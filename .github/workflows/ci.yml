@@ -31,3 +31,10 @@ jobs:
         run: |
           env -i HOME="$(mktemp -d)" PATH="$PATH" ./gah --profile headless --ephemeral --dump-config >/dev/null
           echo "裸机启动 OK"
+      - name: 裸机真实回合(首启释放+外部插件全装配+P3 软降级护栏)
+        run: |
+          # 真实首启路径:GAH_HOME 贯通临时 home → 外部插件三件套释放并装配;
+          # tool-mcp 无 GAH_MCP_COMMAND 经 P3 软降级跳过(仅 ERROR 日志);
+          # headless 默认 llm-mock(无外网)跑完整回合(调 tool-basic shell)。
+          env -i HOME="$(mktemp -d)" PATH="$PATH" ./gah --profile headless --ephemeral -input "hi" >/dev/null
+          echo "headless 真实回合 OK"

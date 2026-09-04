@@ -35,5 +35,6 @@
 - M6.8 拆分重构:token-compress(滚动摘要压缩从 host-session-log 拆出,独立开关/测试)+ host-fanout(子代理编排从 tool-workflow 拆出,ctx.fanout 宿主服务);tool-workflow 回归纯 starlark 执行器。
 - M6.9 工具类全外部化:tool-workflow/tool-mcp 移出宿主(extplugins/ 独立二进制,随包 embed 释放);host-bridge 增宿主回调通道(GAH_CB_ADDR,外部进程请求宿主 tools/jobs/fanout);`gah --profile mcp-serve` 独立 serve 形态;外部化后全库依赖 host-bridge(卸载矩阵需先卸 bridge 再卸 jobs/fanout)。
 - 新增能力:Anthropic 适配器(llm-anthropic-compat,`claude-*` 模型前缀路由)、**MCP server 端**(plugins/mcp-server,stdio JSON-RPC,与 mcp-bridge 对称,见 DESIGN.md §14.1 M6.7)、AGENTS.md 指令注入(全局 `$GAH_HOME/AGENTS.md` + 项目 `AGENTS.md`,顺序即覆盖)、技能机制(host-skills:全局 `$GAH_HOME/skills` + 项目 `.gah/skills` 扫描 SKILL.md,list_skills/read_skill,prompt 注入索引)、自注册技能 `gah-plugin-dev`(仓库 `.gah/skills/`)。
+- P3 首启健壮性(main 设 `GAH_HOME=home` 统一 home 事实源,ephemeral 彻底隔离外部插件目录)+ host-bridge 加载软降级(单插件加载失败 ERROR 跳过,不拖垮 boot)+ CI 裸机冒烟新增 headless 真实回合护栏;见 DESIGN.md §14.1 P3。
 - 交付门已通过:单二进制 31.9MB(<40MB,M7 gzip embed 修复,M6.9 峰值 83.5MB 曾击穿)、`CGO_ENABLED=0` 静态、六目标交叉编译、裸机 `env -i` 启动成功 + 体积门(CI);实测见 DESIGN.md §7.6,发行配置 `.goreleaser.yaml`,CI 见 `.github/workflows/ci.yml`(vet + -race + 体积门 + 裸机冒烟)。
 - 测试注意:tests 卸载矩阵需关闭 llm-anthropic-compat(防打真实 API)且按依赖序卸载(先 host-bridge 再 host-jobs/host-fanout);新插件必须登记 catalogue 并同步 config 与 internal/embed/seed 两份 bundle 样板;外部化二进制经 scripts/gen-extplugins.sh 重新生成(embed 缺失主包构建失败)。

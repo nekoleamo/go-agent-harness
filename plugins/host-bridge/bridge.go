@@ -13,6 +13,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"io"
+	"log/slog"
 	"net/rpc"
 	"os"
 	"os/exec"
@@ -58,7 +59,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	if err != nil {
 		return nil, err
 	}
-	b := &Bridge{dir: dir, tools: tools, entries: map[string]*extEntry{}, cbAddr: cbAddr, cbToken: cbToken}
+	b := &Bridge{dir: dir, tools: tools, entries: map[string]*extEntry{}, cbAddr: cbAddr, cbToken: cbToken, lg: c.Logger()}
 	if err := b.loadEntries(); err != nil {
 		cbClose()
 		return nil, err
@@ -101,14 +102,39 @@ type Bridge struct {
 	tools   sdk.ToolRegistry
 	cbAddr  string // 宿主回调通道地址(GAH_CB_ADDR 注入外部进程)
 	cbToken string // M7 鉴权 token(GAH_CB_TOKEN 注入外部进程,回传校验)
+	lg      *slog.Logger // P3 软降级日志(sdk.Ctx.Logger();nil 时兜底 slog.Default)
 	mu      sync.RWMutex
 	entries map[string]*extEntry // bin 绝对路径 → 条目
 }
 
-// loadEntries 扫描目录并加载 tool-* 二进制。
+// logErr 记录外部插件加载失败(P3 软降级:不拖垮 boot,但信息不丢失)。
+func (b *Bridge) logErr(msg string, kv ...any) {
+	lg := b.lg
+	if lg == nil {
+		lg = slog.Default()
+	}
+	lg.Error(msg, kv...)
+}
+
+// loadEntries 扫描目录并加载 tool-* 二进制。P3 软降级:
+// - 目录不存在 = 空插件集(未安装/已卸载),WARN 跳过,boot 继续;
+// - 目录存在但不可读 = 装配层错误,显式失败;
+// - 单个外部插件加载失败(缺配置/崩溃/不兼容)记 ERROR 跳过、继续装配;
+// 未装上的工具对模型不可见,调用侧已有显式提示,不复拖垮整体 boot。
 func (b *Bridge) loadEntries() error {
+	if _, err := os.Stat(b.dir); err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("host-bridge: 外部插件目录不可访问 %s: %w", b.dir, err)
+		}
+		b.logErr("host-bridge: 外部插件目录不存在(空插件集),跳过扫描", "dir", b.dir)
+		return nil
+	}
 	return filepath.WalkDir(b.dir, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+		if err != nil {
+			b.logErr("host-bridge: 扫描路径失败,跳过", "path", path, "err", err)
+			return nil
+		}
+		if d.IsDir() {
 			return nil
 		}
 		if !strings.HasPrefix(d.Name(), "tool-") {
@@ -116,7 +142,8 @@ func (b *Bridge) loadEntries() error {
 		}
 		e, lerr := b.loadOne(path)
 		if lerr != nil {
-			return fmt.Errorf("host-bridge: 加载 %s: %w", path, lerr)
+			b.logErr("host-bridge: 跳过加载失败的外部插件", "path", path, "err", lerr)
+			return nil
 		}
 		unreg := b.registerAll(e)
 		b.mu.Lock()
@@ -188,6 +215,8 @@ func (b *Bridge) reload(path string) {
 				e.unreg = unreg
 				b.entries[path] = e
 				b.mu.Unlock()
+			} else {
+				b.logErr("host-bridge: 热重载加载新插件失败", "path", path, "err", err)
 			}
 		}
 		return
@@ -201,6 +230,7 @@ func (b *Bridge) reload(path string) {
 		b.mu.Lock()
 		delete(b.entries, path)
 		b.mu.Unlock()
+		b.logErr("host-bridge: 热重载更新失败,条目已撤销", "path", path, "err", err)
 		return
 	}
 	unreg := b.registerAll(e)
@@ -248,6 +278,7 @@ func (b *Bridge) onDead(path string) {
 func (b *Bridge) respawn(path string) {
 	e, err := b.loadOne(path)
 	if err != nil {
+		b.logErr("host-bridge: 崩溃自动拉起失败(60s 节流内不再尝试)", "path", path, "err", err)
 		return
 	}
 	b.mu.Lock()

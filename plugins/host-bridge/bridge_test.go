@@ -186,6 +186,39 @@ func killPluginProcess(name string) bool {
 
 var _ = os.Getpid
 
+// TestBadPluginDoesNotBreakBoot P3 首启健壮性:目录含无法启动的坏插件(缺配置/
+// 崩溃/不可执行)时,boot 不得整体失败——坏插件记 ERROR 跳过,好插件正常加载。
+func TestBadPluginDoesNotBreakBoot(t *testing.T) {
+	dir := t.TempDir()
+	buildExternalPlugin(t, dir)
+	// 坏插件:shell 脚本立即 exit 1(go-plugin 握手失败→加载错误)
+	bad := filepath.Join(dir, "tool-bad")
+	if err := os.WriteFile(bad, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	c, _ := buildEnv(t, dir) // Start 不得因坏插件失败
+
+	var tools sdk.ToolRegistry
+	if err := c.Inject("ctx.tools", &tools); err != nil {
+		t.Fatal(err)
+	}
+	// 好插件仍在:echo 已注册且可调用
+	def, ok := tools.Get("echo")
+	if !ok {
+		t.Fatal("坏插件存在时,正常插件 echo 仍应注册(P3 软降级)")
+	}
+	if !strings.Contains(def.Description, "外部插件") {
+		t.Fatalf("定义应来自外部插件: %+v", def)
+	}
+	res, err := tools.Execute(context.Background(), "echo", `{"text":"ok"}`)
+	if err != nil || res.Error != "" {
+		t.Fatalf("坏插件存在时正常工具应可用: %v %+v", err, res)
+	}
+	if _, ok := tools.Get("bad"); ok {
+		t.Fatal("坏插件的工具不应注册")
+	}
+}
+
 // TestToolLevelTimeout 工具级超时(P0-2):定义声明 timeout_ms 覆写全局 3s。
 func TestToolLevelTimeout(t *testing.T) {
 	if got := rpcTimeoutFor(sdk.ToolDefinition{TimeoutMs: 0}); got != 3*time.Second {

@@ -61,6 +61,9 @@ func main() {
 		home = tmp
 		defer os.RemoveAll(home)
 	}
+	// P3 统一 home 事实源:经 GAH_HOME 贯通插件层(host-bridge 默认扫描目录等),
+	// ephemeral 模式彻底隔离(外部插件目录一并入临时 home,退出即焚)。
+	os.Setenv("GAH_HOME", home)
 	if _, err := embed.EnsureSeed(home); err != nil {
 		logger.Error("boot: 首启释放样板失败", "err", err)
 		os.Exit(1)
