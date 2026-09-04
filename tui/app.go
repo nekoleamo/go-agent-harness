@@ -48,6 +48,7 @@ func NewApp(c sdk.Ctx, loop sdk.AgentLoop, llm sdk.LLMService, profile string) *
 	m.onConfirm = a.confirmResult
 	m.onCancel = a.cancelCurrent
 	m.hints = a.suggestHints
+	m.levels = a.levels
 	a.registerInternalCommands()
 	a.program = tea.NewProgram(m)
 	return a
@@ -354,9 +355,38 @@ func (a *App) registerInternalCommands() {
 			a.model.state.Model = args[0]
 			return "", nil
 		}},
-		{Name: "sandbox", Usage: "/sandbox ro|ws|full", Desc: "运行期切沙箱档", Run: a.cmdSandbox},
-		{Name: "plugins", Usage: "/plugins list|on|off|default <id>", Desc: "插件插拔/持久开关", Run: a.cmdPlugins},
-		{Name: "settings", Usage: "/settings history N|off|unlimited", Desc: "历史注入", Run: a.cmdSettings},
+		{Name: "sandbox", Usage: "/sandbox ro|ws|full", Desc: "运行期切沙箱档", Run: a.cmdSandbox,
+			Args: []func([]string) []sdk.Option{func([]string) []sdk.Option {
+				return []sdk.Option{{Value: "ro", Desc: "只读"}, {Value: "ws", Desc: "工作区写入"}, {Value: "full", Desc: "完全访问"}}
+			}}},
+		{Name: "plugins", Usage: "/plugins list|on|off|default <id>", Desc: "插件插拔/持久开关", Run: a.cmdPlugins,
+			Args: []func([]string) []sdk.Option{
+				func([]string) []sdk.Option {
+					return []sdk.Option{{Value: "list", Desc: "列出插件"}, {Value: "on", Desc: "加载并持久启用"}, {Value: "off", Desc: "卸载并持久关闭"}, {Value: "default", Desc: "恢复配置默认"}}
+				},
+				// 二级动态:on/off/default 枚举当前插件;list 无二级 → 直接执行
+				func(picked []string) []sdk.Option {
+					if len(picked) < 2 || picked[1] == "list" {
+						return nil
+					}
+					var mgr sdk.PluginManager
+					if err := a.c.Inject("ctx.pluginManager", &mgr); err != nil {
+						return nil
+					}
+					var opts []sdk.Option
+					for _, info := range mgr.List() {
+						opts = append(opts, sdk.Option{Value: info.ID, Desc: info.Type})
+					}
+					return opts
+				},
+			}},
+		{Name: "settings", Usage: "/settings history N|off|unlimited", Desc: "历史注入", Run: a.cmdSettings,
+			Args: []func([]string) []sdk.Option{
+				func([]string) []sdk.Option { return []sdk.Option{{Value: "history", Desc: "历史条数"}} },
+				func([]string) []sdk.Option {
+					return []sdk.Option{{Value: "off", Desc: "关闭历史注入"}, {Value: "unlimited", Desc: "不限条数"}}
+				},
+			}},
 		{Name: "export", Usage: "/export [path]", Desc: "导出会话 jsonl", Run: a.cmdExport},
 		{Name: "sessions", Usage: "/sessions", Desc: "当前/已有会话", Run: func([]string) (string, error) { return a.cmdSessions() }},
 		{Name: "help", Usage: "/help", Desc: "命令帮助", Run: a.cmdHelp},
@@ -384,22 +414,34 @@ func (a *App) cmdHelp([]string) (string, error) {
 	return b.String(), nil
 }
 
-// suggestHints 命令提示:注册表按输入前缀过滤(空前缀=全部,无匹配=空)。
-// 输入 / 时显示所有命令,/s 时仅 s 开头——插件注册命令自动进入提示。
-func (a *App) suggestHints(prefix string) []string {
+// suggestHints 命令选项:注册表按输入前缀过滤(空前缀=全部,无匹配=空)。
+// 输入 / 时显示所有命令,/s 时仅 s 开头——插件注册命令自动进入选项。
+func (a *App) suggestHints(prefix string) []sdk.Option {
 	if a.cmds == nil {
 		return nil
 	}
 	return filterHints(a.cmds.List(), prefix)
 }
 
-// filterHints 命令提示过滤(纯函数):空前缀=全部,按名前缀过滤,无匹配=空。
-func filterHints(specs []sdk.CommandSpec, prefix string) []string {
-	var out []string
+// filterHints 命令选项过滤(纯函数):空前缀=全部,按名前缀过滤,无匹配=空。
+func filterHints(specs []sdk.CommandSpec, prefix string) []sdk.Option {
+	var out []sdk.Option
 	for _, spec := range specs {
 		if prefix == "" || strings.HasPrefix(spec.Name, prefix) {
-			out = append(out, " /"+spec.Name+" "+spec.Desc)
+			out = append(out, sdk.Option{Value: spec.Name, Desc: spec.Desc})
 		}
 	}
 	return out
+}
+
+// levels 取命令的参数级枚举器(选择器级联推进数据源)。
+func (a *App) levels(name string) []func(picked []string) []sdk.Option {
+	if a.cmds == nil {
+		return nil
+	}
+	spec, ok := a.cmds.Get(name)
+	if !ok {
+		return nil
+	}
+	return spec.Args
 }

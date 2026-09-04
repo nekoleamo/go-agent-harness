@@ -10,6 +10,16 @@ type CommandSpec struct {
 	Desc  string // 一句话说明(提示列表展示)
 	// Run 执行;返回输出文本(可多行,由 TUI 显示为 meta 行)与错误。
 	Run func(args []string) (string, error)
+	// Args 参数级联选项(交互式选择器数据源):每级一个枚举器,picked 为前几级
+	// 已选值(运行时动态求值,如插件/任务列表);返回 nil/空 = 该级自由输入
+	// (选择器断点,回输入框),最后一级无选项 = 直接执行。零值 = 无参数级。
+	Args []func(picked []string) []Option
+}
+
+// Option 交互式选择器的一个选项(Value 为填入命令行的值,Desc 为说明)。
+type Option struct {
+	Value string
+	Desc  string
 }
 
 // CommandRegistry 服务(ctx.commands):斜杠命令注册表(单一事实源)。

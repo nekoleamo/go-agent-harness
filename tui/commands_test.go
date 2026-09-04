@@ -27,24 +27,43 @@ func TestFilterHintsPrefix(t *testing.T) {
 		t.Fatalf("'/': 应显示全部 4 条, got %d: %v", len(all), all)
 	}
 	for _, h := range all {
-		if !strings.HasPrefix(h, " /") {
-			t.Fatalf("提示行应以 / 开头: %q", h)
+		if h.Value == "" {
+			t.Fatalf("选项 Value 不应为空: %+v", h)
 		}
 	}
 	// /s → sandbox/settings(s 开头)
 	s := filterHints(specs, "s")
-	if len(s) != 2 || !strings.Contains(s[0], "sandbox") || !strings.Contains(s[1], "settings") {
-		t.Fatalf("'/s': 应只显示 s 开头 2 条: %v", s)
+	if len(s) != 2 || s[0].Value != "sandbox" || s[1].Value != "settings" {
+		t.Fatalf("'/s': 应只显示 s 开头 2 条: %+v", s)
 	}
 	// /set → settings(唯一)
 	set := filterHints(specs, "set")
-	if len(set) != 1 || !strings.Contains(set[0], "settings") {
-		t.Fatalf("'/set': 应只显示 settings: %v", set)
+	if len(set) != 1 || set[0].Value != "settings" {
+		t.Fatalf("'/set': 应只显示 settings: %+v", set)
 	}
 	// /x → 无匹配
 	x := filterHints(specs, "x")
 	if len(x) != 0 {
-		t.Fatalf("'/x': 无匹配应为空: %v", x)
+		t.Fatalf("'/x': 无匹配应为空: %+v", x)
+	}
+}
+
+// TestRenderPickHighlight 选择器激活:高亮行带头 ▸,非选中行不带。
+func TestRenderPickHighlight(t *testing.T) {
+	s := &State{Input: "/"}
+	s.Pick = &Pick{Items: []sdk.Option{{Value: "sandbox", Desc: "切沙箱档"}, {Value: "settings", Desc: "历史注入"}}, Cursor: 0}
+	out := Render(s, 80, 24)
+	if !strings.Contains(out, "▸ /sandbox") {
+		t.Fatalf("选中行应带头 ▸:\n%s", out)
+	}
+	if strings.Contains(out, "▸ /settings") {
+		t.Fatal("非选中行不应带头 ▸")
+	}
+	// 移动后高亮切换
+	s.Pick.Cursor = 1
+	out2 := Render(s, 80, 24)
+	if !strings.Contains(out2, "▸ /settings") || strings.Contains(out2, "▸ /sandbox") {
+		t.Fatalf("光标移动后高亮应切换\n%s", out2)
 	}
 }
 

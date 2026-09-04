@@ -28,6 +28,8 @@ type State struct {
 	Sandbox        string   // 沙箱档位显示(read-only|workspace-write|full-access)
 	PendingConfirm string   // 非空 = 有待确认的危险操作(确认弹层)
 	Suggestions    []string // 输入 / 前缀时的命令提示(注册表过滤结果,渲染于输入行下方)
+	Pick           *Pick    // 非空 = 交互式选择器激活(↑/↓ 移动,Enter 应用)
+	PickDismissed  bool     // Esc/断点后抑制自动激活,直至输入变化
 }
 
 // ApplySessionEvent 把会话事件推进到展示状态(纯逻辑,可测)。

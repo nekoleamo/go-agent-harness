@@ -54,7 +54,9 @@ type Plugin interface {
 | `ctx.confirm` | ui-tui-app | 危险操作 y/n 确认(无实现 = 安全拒绝)
 | `ctx.commands` | host-commands | 斜杠命令注册表:Register/List/Get;TUI 提示/分发/help 动态来自本表 |
 
-**给插件加斜杠命令**(如 host-jobs 注册 `/jobs`):Start 内**可选注入** `_ = c.Inject("ctx.commands", &cmds)`(未装配=无 TUI 场景,跳过不报错——与沙箱可选注入同模式),随后 `cmds.Register(CommandSpec{Name, Usage, Desc, Run})`;Run 返回**输出文本 + error**(输出由 TUI 显示为 meta 行);返回 Disposer 随插件卸载撤销命令;**同名冲突被拒绝**(先到先得,非静默)。插件命令自动进入 `/` 提示列表与 `/help`。 |
+**给插件加斜杠命令**(如 host-jobs 注册 `/jobs`):Start 内**可选注入** `_ = c.Inject("ctx.commands", &cmds)`(未装配=无 TUI 场景,跳过不报错——与沙箱可选注入同模式),随后 `cmds.Register(CommandSpec{Name, Usage, Desc, Run})`;Run 返回**输出文本 + error**(输出由 TUI 显示为 meta 行);返回 Disposer 随插件卸载撤销命令;**同名冲突被拒绝**(先到先得,非静默)。插件命令自动进入 `/` 选项列表与 `/help`。
+
+**交互式选择器**(可选增强):`Args []func(picked []string) []sdk.Option` 声明参数级联选项——每级一个枚举器(可**动态求值**,如任务/插件列表,`picked` 为前几级已选值);nil/空 = 该级自由输入(选择器断点回输入框);最后级无选项 = 直接执行。示例见 host-jobs 的 `/jobs`(一级 list/output/kill,二级动态任务 ID)。TUI 中:输入 `/` 自动激活列表,↑/↓ 移动、Enter 确定、Esc 退出选择。 |
 | `system.registry` / `system.catalogue` | boot 注入 | 宿主内部服务(插件不可自行 import) |
 
 ### 2.4 事件命名与语义

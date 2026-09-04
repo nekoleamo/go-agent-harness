@@ -18,6 +18,7 @@ var (
 	styleError  = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
 	stylePrompt = lipgloss.NewStyle().Foreground(lipgloss.Color("207")).Bold(true)
 	styleStatus = lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
+	stylePick   = lipgloss.NewStyle().Foreground(lipgloss.Color("207")).Bold(true) // 选择器高亮行
 )
 
 // Render 渲染整屏。mainH = 会话流区域高度;底部含输入行 + 命令提示区(动态) + 状态栏。
@@ -28,7 +29,21 @@ func Render(s *State, width, height int) string {
 	if width <= 0 || height <= 0 {
 		width, height = 80, 24
 	}
-	hintRows := len(s.Suggestions)
+	// 选择器激活时提示区 = 选项列表(高亮当前);否则静态提示行
+	var hintItems []string
+	if s.Pick != nil {
+		for i, it := range s.Pick.Items {
+			line := " /" + it.Value + " " + it.Desc
+			if i == s.Pick.Cursor {
+				hintItems = append(hintItems, stylePick.Render("▸"+line))
+			} else {
+				hintItems = append(hintItems, styleMeta.Render(line))
+			}
+		}
+	} else {
+		hintItems = append(hintItems, s.Suggestions...)
+	}
+	hintRows := len(hintItems)
 	if hintRows > maxHintRows {
 		hintRows = maxHintRows
 	}
@@ -59,12 +74,12 @@ func Render(s *State, width, height int) string {
 		_ = cursor
 	}
 
-	// 命令提示区(输入 / 前缀时显示;灰色,一行一条)
+	// 命令提示区(输入 / 前缀时显示;选择器激活时高亮当前项)
 	var hints []string
 	for i := 0; i < hintRows; i++ {
-		hints = append(hints, styleMeta.Render(s.Suggestions[i]))
+		hints = append(hints, hintItems[i])
 	}
-	if len(s.Suggestions) > maxHintRows {
+	if len(hintItems) > maxHintRows {
 		hints = append(hints, styleMeta.Render("…"))
 	}
 
