@@ -49,9 +49,11 @@ func (e *errLLM) Complete(_ context.Context, _ *sdk.LLMRequest, _ func(sdk.LLMSt
 	return nil, errors.New("llm 流中断")
 }
 func (e *errLLM) RegisterAdapter(_ sdk.LLMAdapter) sdk.Disposer { return func() {} }
-func (e *errLLM) SetModel(_ string)                            {}
-func (e *errLLM) Model() string                               { return "err" }
-func (e *errLLM) List() []string                              { return nil }
+func (e *errLLM) SetModel(_ string)                             {}
+func (e *errLLM) Model() string                                 { return "err" }
+func (e *errLLM) List() []string                                { return nil }
+func (e *errLLM) SetProvider(_, _ string) error                 { return errors.New("unavailable") }
+func (e *errLLM) ProviderInfo() (string, string, bool)          { return "", "", false }
 
 // buildEnv 装配 sessions/tools/llm(mock)/systemPrompt + 本插件(llmScript 非法时走失败路径)。
 func buildEnv(t *testing.T, llmScript string) *env {

@@ -300,6 +300,7 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 | `/jobs list\|output\|kill` | 后台任务 |
 | `/plugins on\|off\|default <id>` | 插件运行期插拔 + 持久开关(`patch-runtime.yaml`,重启仍生效;`default` 恢复配置树默认) |
 | `/model` | 切换模型/提供商 |
+| `/provider show\|set\|clear` | LLM 端点/凭据运行时配置:`set <baseUrl> <apiKey> [model]` 立即生效并写 `provider.yaml`(0600,env 显式优先);show 打码展示;clear 回退 env/样板 |
 
 ## 13. 开发规范
 

@@ -104,4 +104,19 @@ type LLMService interface {
 
 	// List 列出已注册适配器(调试/UI)。
 	List() []string
+
+	// SetProvider 运行时切换端点与凭据(作用于通用适配器,零重启)。
+	// claude-* 前缀路由的适配器不受影响;无支持适配器时显式报错。
+	SetProvider(baseURL, apiKey string) error
+
+	// ProviderInfo 当前通用适配器的端点与凭据(展示用;key 返回原文供打码)。
+	ProviderInfo() (baseURL, apiKey string, ok bool)
+}
+
+// ProviderAdapter 可选接口:适配器支持运行时端点/凭据配置(TUI /provider)。
+type ProviderAdapter interface {
+	// Configure 切换端点与凭据(原子生效;baseURL 校验 http(s) 前缀)。
+	Configure(baseURL, apiKey string) error
+	// ProviderInfo 返回当前端点与凭据。
+	ProviderInfo() (baseURL, apiKey string)
 }

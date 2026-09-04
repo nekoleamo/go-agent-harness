@@ -12,6 +12,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/nekoleamo/go-agent-harness/internal/install"
+	"github.com/nekoleamo/go-agent-harness/internal/providerfile"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -210,6 +211,7 @@ func (a *App) cmdPlugins(args []string) (string, error) {
 		if len(args) < 2 {
 			return "", errString("/plugins default <id>")
 		}
+
 		if err := install.RemoveEntry(install.RuntimePatch(a.pluginHome()), args[1]); err != nil {
 			return "", errString(err.Error())
 		}
@@ -340,6 +342,61 @@ type errString string
 
 func (e errString) Error() string { return string(e) }
 
+// cmdProvider /provider show|set|clear:LLM 提供商运行时配置(TUI 入口)。
+// set 写 provider.yaml(0600)并立即生效;重启后 env 显式优先、其次本文件。
+func (a *App) cmdProvider(args []string) (string, error) {
+	if len(args) < 1 {
+		return "", errString("/provider show|set <baseUrl> <apiKey> [model]|clear")
+	}
+	switch args[0] {
+	case "show":
+		u, k, ok := a.llm.ProviderInfo()
+		line := "提供商: "
+		if !ok {
+			return line + "(可用 /provider set <baseUrl> <apiKey> [model] 配置 openai 兼容端点)", nil
+		}
+		line += u + " | 模型: " + orDefault(a.llm.Model(), "未设置") + " | API Key: " + maskKey(k)
+		if p, err := providerfile.Load(); err == nil && (p.APIKey != "" || p.BaseURL != "") {
+			line += "\n持久化: provider.yaml(" + orDefault(p.BaseURL, "仅 key") + ", 重启回退 env 优先)"
+		}
+		return line, nil
+	case "set":
+		if len(args) < 3 {
+			return "", errString("/provider set <baseUrl> <apiKey> [model]\n示例: /provider set https://api.siliconflow.cn/v1 sk-xxxx deepseek-ai/DeepSeek-V3")
+		}
+		if err := a.llm.SetProvider(args[1], args[2]); err != nil {
+			return "", errString(err.Error())
+		}
+		p := providerfile.Provider{BaseURL: args[1], APIKey: args[2]}
+		if len(args) > 3 {
+			p.Model = args[3]
+			a.llm.SetModel(args[3])
+		}
+		if err := providerfile.Save(p); err != nil {
+			return "", errString("已运行时生效,但持久化失败: " + err.Error())
+		}
+		return "已切换: " + args[1] + " | 模型: " + orDefault(a.llm.Model(), "未设置") + " | Key: " + maskKey(args[2]) + "(已持久化 provider.yaml, 0600)", nil
+	case "clear":
+		if err := providerfile.Clear(); err != nil {
+			return "", errString("清除失败: " + err.Error())
+		}
+		return "已清除 provider.yaml(当前运行期端点不变;重启后回退 env/样板)", nil
+	default:
+		return "", errString("/provider show|set|clear")
+	}
+}
+
+// maskKey 凭据打码(尾 4 位;短 key 全掩)。
+func maskKey(k string) string {
+	if k == "" {
+		return "(未设置)"
+	}
+	if len(k) <= 6 {
+		return "***"
+	}
+	return "***" + k[len(k)-4:]
+}
+
 // registerInternalCommands 注册宿主级内部命令(与插件命令共表,
 // host-commands 未装配时跳过)。Run 参数为去掉命令名后的剩余参数。
 func (a *App) registerInternalCommands() {
@@ -355,6 +412,10 @@ func (a *App) registerInternalCommands() {
 			a.model.state.Model = args[0]
 			return "", nil
 		}},
+		{Name: "provider", Usage: "/provider show|set <baseUrl> <apiKey> [model]|clear", Desc: "配置 LLM 提供商端点/凭据", Run: a.cmdProvider,
+			Args: []func([]string) []sdk.Option{func([]string) []sdk.Option {
+				return []sdk.Option{{Value: "show", Desc: "查看当前提供商(凭据打码)"}, {Value: "set", Desc: "设置端点/凭据/模型(写 provider.yaml,立即生效)"}, {Value: "clear", Desc: "清除设置,回退 env/样板"}}
+			}}},
 		{Name: "sandbox", Usage: "/sandbox ro|ws|full", Desc: "运行期切沙箱档", Run: a.cmdSandbox,
 			Args: []func([]string) []sdk.Option{func([]string) []sdk.Option {
 				return []sdk.Option{{Value: "ro", Desc: "只读"}, {Value: "ws", Desc: "工作区写入"}, {Value: "full", Desc: "完全访问"}}

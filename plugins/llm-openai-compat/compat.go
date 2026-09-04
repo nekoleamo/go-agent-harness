@@ -15,8 +15,10 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/nekoleamo/go-agent-harness/internal/providerfile"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -25,7 +27,8 @@ type Plugin struct{}
 
 func (p *Plugin) Name() string { return "llm-openai-compat" }
 
-// Start 注册适配器到 ctx.llm。
+// Start 注册适配器到 ctx.llm。配置优先级:provider.yaml(经 /provider set 持久化)
+// > data 样板 > env;apiKey 另有 env 优先(用户 shell 显式设置最高)。
 func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	a := &Adapter{client: &http.Client{Timeout: 5 * time.Minute}}
 	if m != nil && m.Data != nil {
@@ -48,7 +51,19 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	if a.model == "" {
 		a.model = "deepseek-chat"
 	}
+	// apiKey:env 显式优先;否则 provider.yaml(/provider set 持久化)
 	a.apiKey = firstEnv("DEEPSEEK_API_KEY", "OPENAI_API_KEY")
+	if a.apiKey == "" {
+		if pv, err := providerfile.Load(); err == nil && pv.APIKey != "" {
+			a.apiKey = pv.APIKey
+			if pv.BaseURL != "" {
+				a.baseURL = strings.TrimSuffix(pv.BaseURL, "/")
+			}
+			if pv.Model != "" {
+				a.model = pv.Model
+			}
+		}
+	}
 
 	var llm sdk.LLMService
 	if err := c.Inject("ctx.llm", &llm); err != nil {
@@ -68,15 +83,49 @@ func firstEnv(keys ...string) string {
 	return ""
 }
 
-// Adapter 实现 sdk.LLMAdapter。
+// Adapter 实现 sdk.LLMAdapter + sdk.ProviderAdapter(TUI /provider 运行时切换)。
 type Adapter struct {
 	client  *http.Client
+	mu      sync.RWMutex // 保护 baseURL/apiKey(Configure 写/Complete 读)
 	baseURL string
 	model   string
 	apiKey  string
 }
 
 func (a *Adapter) Name() string { return "llm-openai-compat" }
+
+// Configure 运行时切换端点与凭据(校验 http(s) 前缀;原子生效,零重启)。
+func (a *Adapter) Configure(baseURL, apiKey string) error {
+	if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
+		return fmt.Errorf("provider: base_url 须为 http(s):// 前缀: %q", baseURL)
+	}
+	a.mu.Lock()
+	a.baseURL = strings.TrimSuffix(baseURL, "/")
+	a.apiKey = apiKey
+	a.mu.Unlock()
+	return nil
+}
+
+// ProviderInfo 当前端点与凭据(展示用)。
+func (a *Adapter) ProviderInfo() (string, string) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.baseURL, a.apiKey
+}
+
+// endpoint 当前聊天端点(锁保护读取)。
+func (a *Adapter) endpoint() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.baseURL + "/chat/completions"
+}
+
+// credentials 当前凭据。
+func (a *Adapter) credentials() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.apiKey
+}
 
 // wire 服务端 API 消息结构。
 type wireMsg struct {
@@ -161,14 +210,14 @@ func (a *Adapter) Complete(ctx context.Context, req *sdk.LLMRequest, onChunk fun
 	if err != nil {
 		return nil, err
 	}
-	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost, a.baseURL+"/chat/completions", bytes.NewReader(body))
+	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost, a.endpoint(), bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	hreq.Header.Set("Content-Type", "application/json")
 	hreq.Header.Set("Accept", "text/event-stream")
-	if a.apiKey != "" {
-		hreq.Header.Set("Authorization", "Bearer "+a.apiKey)
+	if key := a.credentials(); key != "" {
+		hreq.Header.Set("Authorization", "Bearer "+key)
 	}
 
 	resp, err := a.client.Do(hreq)

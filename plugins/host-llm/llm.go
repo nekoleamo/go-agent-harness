@@ -145,6 +145,48 @@ func (s *Service) SetModel(model string) {
 	s.mu.Unlock()
 }
 
+// genericProvider 当前通用适配器(非 ModelRouter 声明型,即 openai 兼容类)。
+func (s *Service) genericProvider() (sdk.ProviderAdapter, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var fallback sdk.LLMAdapter
+	for _, n := range s.order {
+		a := s.adapters[n]
+		if _, ok := a.(sdk.ModelRouter); ok {
+			continue
+		}
+		if pa, ok := a.(sdk.ProviderAdapter); ok {
+			return pa, nil
+		}
+		if fallback == nil {
+			fallback = a
+		}
+	}
+	if fallback != nil {
+		return nil, fmt.Errorf("llm: 通用适配器 %s 不支持运行时 provider 配置(未实现 sdk.ProviderAdapter)", fallback.Name())
+	}
+	return nil, fmt.Errorf("llm: 无通用 LLM 适配器(adapter 插件未装配),无法配置 provider")
+}
+
+// SetProvider 运行时切换端点与凭据(TUI /provider set;零重启)。
+func (s *Service) SetProvider(baseURL, apiKey string) error {
+	pa, err := s.genericProvider()
+	if err != nil {
+		return err
+	}
+	return pa.Configure(baseURL, apiKey)
+}
+
+// ProviderInfo 当前通用适配器的端点与凭据(展示用;key 由调用方打码)。
+func (s *Service) ProviderInfo() (string, string, bool) {
+	pa, err := s.genericProvider()
+	if err != nil {
+		return "", "", false
+	}
+	u, k := pa.ProviderInfo()
+	return u, k, true
+}
+
 // Model 返回当前模型名。
 func (s *Service) Model() string {
 	s.mu.RLock()

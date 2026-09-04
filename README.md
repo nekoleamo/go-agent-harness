@@ -71,6 +71,24 @@ export DEEPSEEK_API_KEY=sk-...            # 或 OPENAI_API_KEY / GAH_BASE 自定
 
 或自建 profile:复制 `config/profile-headless.yaml` 为自定义配置,patch 中关闭 `llm-mock`、启用 `llm-openai-compat`(可配 `data.base_url/model`)。
 
+### 快速新增任意提供商(TUI 内,零改配置零重启)
+
+任意 OpenAI 兼容端点(DeepSeek/SiliconFlow/Ollama/vLLM/Kimi…)只需一行:
+
+```
+/provider set <baseUrl> <apiKey> [model]    # 立即生效并持久化(provider.yaml, 0600)
+/provider show                               # 查看当前端点/模型/凭据(打码)
+/provider clear                              # 清除设置,回退 env/样板
+```
+
+示例(以 SiliconFlow 为例):
+
+```
+/provider set https://api.siliconflow.cn/v1 sk-<你的key> deepseek-ai/DeepSeek-V3
+```
+
+之后正常对话即可;换回环境变量配置用 `/provider clear`。
+
 ## 四、TUI 命令
 
 | 命令 | 作用 |

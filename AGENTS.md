@@ -38,6 +38,7 @@
 - P4 发行平台匹配:gen-extplugins.sh 按发行矩阵五目标构建外部插件(内含 assert_arch 魔数/架构断言,build 后立即校验)→embed 按平台拆包(build-tag 同名变量,主包只嵌本平台产物,体积门不变);CI 交叉编译矩阵(五目标+每目标体积门+TestExtPluginsMatchPlatform)+ 发行流水线冒烟(goreleaser snapshot 全链路:before hook→五目标归档→产物抽查);tests 经 embed.OpenExtPlugin 读本平台产物。产物用 `gzip -9 -n`(确定性,重跑无 diff)。修改 embed 布局后需重跑 scripts/gen-extplugins.sh(旧平铺 *.gz 会被清,embed 目录缺失主包构建失败)。
 - 样板版本化:config/bundle-*.yaml 头部 `# seed-version: N`(seed 与 repo 两份同步,guard 测试强制);EnsureSeed 落盘版本低于 seed → 备份(.bak-时间戳)后覆盖——**新增 base 能力条目必须 bump 版本号**(否则老用户不自动升级)。仅 bundle 系列参与;profile/patch 不覆盖。
 - 命令注册表:新增 host-commands(base,Provides ctx.commands):插件在 Start 可选注入注册命令(Register 同名冲突拒绝,Disposer 撤销);命令 Run 返回(输出文本,error);新插件命令自动进提示/help,不改 TUI 代码。新增插件须登记 catalogue + 同步 config 与 seed 两份 bundle 样板。
+- LLM 提供商运行时配置:host-llm.SetProvider/ProviderInfo(命中通用适配器,claude-* 路由不受影响)+ 适配器可选 sdk.ProviderAdapter(Configure/ProviderInfo);TUI `/provider show|set|clear` 写 `~/.gah/config/provider.yaml`(0600,env 显式优先,坏 yaml 显式报错)——任意 OpenAI 兼容端点一行配置即用(SiliconFlow 等),零重启。
 - 交互式命令选择器:CommandSpec.Args 参数级联选项(每级动态枚举器,nil=自由级断点,最后级无选项直接执行);TUI 输入 / 自动激活列表、↑/↓ 移动、Enter 级联确定、Esc 退出;`/sandbox` → ro|ws|full 示例,host-jobs 的 /jobs 二级动态枚举任务 ID。
 - P3 首启健壮性(main 设 `GAH_HOME=home` 统一 home 事实源,ephemeral 彻底隔离外部插件目录)+ host-bridge 加载软降级(单插件加载失败 ERROR 跳过,不拖垮 boot)+ CI 裸机冒烟新增 headless 真实回合护栏;见 DESIGN.md §14.1 P3。
 - 交付门已通过:单二进制 31.9MB(<40MB,M7 gzip embed 修复,M6.9 峰值 83.5MB 曾击穿)、`CGO_ENABLED=0` 静态、六目标交叉编译、裸机 `env -i` 启动成功 + 体积门(CI);实测见 DESIGN.md §7.6,发行配置 `.goreleaser.yaml`,CI 见 `.github/workflows/ci.yml`(vet + -race + 体积门 + 裸机冒烟)。
