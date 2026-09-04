@@ -1,7 +1,11 @@
 // /provider 与 /model 命令辅助单测:凭据打码、模型来源备注、URL 来源短名。
 package tui
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/nekoleamo/go-agent-harness/sdk"
+)
 
 func TestMaskKey(t *testing.T) {
 	cases := []struct{ in, want string }{
@@ -44,6 +48,28 @@ func TestProviderShortFromURL(t *testing.T) {
 	for _, c := range cases {
 		if got := providerShortFromURL(c.in); got != c.want {
 			t.Fatalf("providerShortFromURL(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestNextThinking 思考等级循环:前进 off→low→medium→high→off,后退反向。
+func TestNextThinking(t *testing.T) {
+	cases := []struct {
+		cur  sdk.ThinkingLevel
+		dir  int
+		want string
+	}{
+		{sdk.ThinkingOff, 1, "low"},
+		{sdk.ThinkingLow, 1, "medium"},
+		{sdk.ThinkingMedium, 1, "high"},
+		{sdk.ThinkingHigh, 1, "off"}, // 回环
+		{sdk.ThinkingLow, -1, "off"}, // 后退
+		{sdk.ThinkingOff, -1, "high"},
+	}
+	for _, c := range cases {
+		got := nextThinking(c.cur, c.dir).String()
+		if got != c.want {
+			t.Fatalf("nextThinking(%v,%d) = %q, want %q", c.cur, c.dir, got, c.want)
 		}
 	}
 }

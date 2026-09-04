@@ -108,13 +108,20 @@ type wireTool struct {
 }
 
 type wireReq struct {
-	Model       string     `json:"model"`
-	MaxTokens   int        `json:"max_tokens"`
-	System      string     `json:"system,omitempty"`
-	Messages    []wireMsg  `json:"messages"`
-	Tools       []wireTool `json:"tools,omitempty"`
-	Stream      bool       `json:"stream"`
-	Temperature *float64   `json:"temperature,omitempty"`
+	Model       string        `json:"model"`
+	MaxTokens   int           `json:"max_tokens"`
+	System      string        `json:"system,omitempty"`
+	Messages    []wireMsg     `json:"messages"`
+	Tools       []wireTool    `json:"tools,omitempty"`
+	Stream      bool          `json:"stream"`
+	Temperature *float64      `json:"temperature,omitempty"`
+	Thinking    *wireThinking `json:"thinking,omitempty"` // 思考等级(off 不发送)
+}
+
+// wireThinking Anthropic 扩展思考参数(type=enabled + budget_tokens)。
+type wireThinking struct {
+	Type         string `json:"type"`
+	BudgetTokens int    `json:"budget_tokens,omitempty"`
 }
 
 // wireEvent SSE 事件(共用字段:type、index、delta、content_block、message、usage)。
@@ -146,6 +153,15 @@ func (a *Adapter) Complete(ctx context.Context, req *sdk.LLMRequest, onChunk fun
 		model = a.model
 	}
 	wire := wireReq{Model: model, MaxTokens: a.maxTokens, Stream: true, Temperature: req.Temperature}
+	// 思考等级映射(low/medium/high → thinking.budget_tokens;off 不发送,兼容不支持端点)
+	switch req.Thinking {
+	case sdk.ThinkingLow:
+		wire.Thinking = &wireThinking{Type: "enabled", BudgetTokens: 1024}
+	case sdk.ThinkingMedium:
+		wire.Thinking = &wireThinking{Type: "enabled", BudgetTokens: 4096}
+	case sdk.ThinkingHigh:
+		wire.Thinking = &wireThinking{Type: "enabled", BudgetTokens: 16384}
+	}
 	var system strings.Builder
 	for _, msg := range req.Messages {
 		switch msg.Role {

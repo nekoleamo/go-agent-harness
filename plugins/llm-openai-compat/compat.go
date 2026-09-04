@@ -245,12 +245,13 @@ type wireToolDef struct {
 }
 
 type wireReq struct {
-	Model       string     `json:"model"`
-	Messages    []wireMsg  `json:"messages"`
-	Tools       []wireTool `json:"tools,omitempty"`
-	Stream      bool       `json:"stream"`
-	MaxTokens   *int       `json:"max_tokens,omitempty"`
-	Temperature *float64   `json:"temperature,omitempty"`
+	Model           string     `json:"model"`
+	Messages        []wireMsg  `json:"messages"`
+	Tools           []wireTool `json:"tools,omitempty"`
+	Stream          bool       `json:"stream"`
+	MaxTokens       *int       `json:"max_tokens,omitempty"`
+	Temperature     *float64   `json:"temperature,omitempty"`
+	ReasoningEffort string     `json:"reasoning_effort,omitempty"` // 思考等级(off 不发送)
 }
 
 type wireChunk struct {
@@ -295,6 +296,15 @@ func (a *Adapter) Complete(ctx context.Context, req *sdk.LLMRequest, onChunk fun
 			Name: t.Name, Description: t.Description, Parameters: t.InputSchema}})
 	}
 
+	// 思考等级映射(low/medium/high → reasoning_effort;off 不发送(omitempty),兼容不支持端点)
+	switch req.Thinking {
+	case sdk.ThinkingLow:
+		wire.ReasoningEffort = "low"
+	case sdk.ThinkingMedium:
+		wire.ReasoningEffort = "medium"
+	case sdk.ThinkingHigh:
+		wire.ReasoningEffort = "high"
+	}
 	body, err := json.Marshal(wire)
 	if err != nil {
 		return nil, err

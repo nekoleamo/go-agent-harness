@@ -57,6 +57,8 @@ func (e *errLLM) UnsetProvider(_ string) error                  { return errors.
 func (e *errLLM) ResetProvider() error                          { return errors.New("unavailable") }
 func (e *errLLM) ProviderInfo() (string, string, bool)          { return "", "", false }
 func (e *errLLM) ListModels() ([]sdk.ModelInfo, error)          { return nil, errors.New("unavailable") }
+func (e *errLLM) SetThinking(_ sdk.ThinkingLevel)               {}
+func (e *errLLM) Thinking() sdk.ThinkingLevel                   { return sdk.ThinkingOff }
 
 // buildEnv 装配 sessions/tools/llm(mock)/systemPrompt + 本插件(llmScript 非法时走失败路径)。
 func buildEnv(t *testing.T, llmScript string) *env {

@@ -35,6 +35,40 @@ type LLMRequest struct {
 	Tools       []ToolDefinition
 	MaxTokens   *int
 	Temperature *float64
+	Thinking    ThinkingLevel // 思考等级(默认 Off=不发送;host-llm 注入会话级)
+}
+
+// ThinkingLevel 思考等级(推理预算)。Off=关闭(默认,不发送推理字段——对不支持端点安全);
+// Low/Medium/High 由适配器映射各 API 参数(OpenAI reasoning_effort / Anthropic budget)。
+type ThinkingLevel int
+
+const (
+	ThinkingOff     ThinkingLevel = iota
+	ThinkingLow
+	ThinkingMedium
+	ThinkingHigh
+)
+
+// Names 全部等级(循环切换/枚举显示用,顺序即切换顺序)。
+func (ThinkingLevel) Names() []string { return []string{"off", "low", "medium", "high"} }
+
+// Parse 解析等级名(未知 = Off)。
+func ParseThinking(s string) ThinkingLevel {
+	switch s {
+	case "low":
+		return ThinkingLow
+	case "medium":
+		return ThinkingMedium
+	case "high":
+		return ThinkingHigh
+	default:
+		return ThinkingOff
+	}
+}
+
+// String 等级展示名。
+func (t ThinkingLevel) String() string {
+	return t.Names()[int(t)%len(t.Names())]
 }
 
 // FinishReason 结束原因。
@@ -131,6 +165,11 @@ type LLMService interface {
 
 	// ListModels 当前通用适配器端点可用模型列表(TUI /model 动态枚举;失败回退手动)。
 	ListModels() ([]ModelInfo, error)
+
+	// SetThinking 设置会话级思考等级(TUI Tab/Shift+Tab 循环;Complete 注入未显式设置的请求)。
+	SetThinking(t ThinkingLevel)
+	// Thinking 当前会话级思考等级。
+	Thinking() ThinkingLevel
 }
 
 // ProviderAdapter 可选接口:适配器支持运行时端点/凭据配置(TUI /provider)。

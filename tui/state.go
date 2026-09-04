@@ -32,6 +32,7 @@ type State struct {
 	PickDismissed  bool     // Esc/断点后抑制自动激活,直至输入变化
 	SpinnerIdx     int      // 思考动画帧索引(回合运行中 tick 推进)
 	Workspace      string   // 当前工作区显示(启动时 cwd 目录名)
+	Thinking       string   // 思考等级显示(off 空;Tab/Shift+Tab 切换)
 }
 
 // ApplySessionEvent 把会话事件推进到展示状态(纯逻辑,可测)。

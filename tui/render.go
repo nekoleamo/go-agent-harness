@@ -93,9 +93,13 @@ func Render(s *State, width, height int) string {
 		}
 		state += " (Esc 取消)"
 	}
+	think := ""
+	if s.Thinking != "" && s.Thinking != "off" {
+		think = " | 思维: " + s.Thinking
+	}
 	status := styleStatus.Render(fmt.Sprintf(
-		" gah | %s | 工作区: %s | %s | 模型: %s | 沙箱: %s%s",
-		s.Profile, orDefault(s.Workspace, "?"), state, orDefault(s.Model, "未设置"), orDefault(s.Sandbox, string(sdk.SandboxWorkspace)), strings.Repeat(" ", width),
+		" gah | %s | 工作区: %s | %s | 模型: %s%s | 沙箱: %s%s",
+		s.Profile, orDefault(s.Workspace, "?"), state, orDefault(s.Model, "未设置"), think, orDefault(s.Sandbox, string(sdk.SandboxWorkspace)), strings.Repeat(" ", width),
 	))
 
 	bottom := []string{input}

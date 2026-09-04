@@ -36,7 +36,7 @@ type App struct {
 // NewApp 构造 TUI 应用。命令注册表(ctx.commands,host-commands 提供)注入:
 // 内部命令(宿主级)注册进表与插件命令共表——提示列表/分发/help 全部动态。
 func NewApp(c sdk.Ctx, loop sdk.AgentLoop, llm sdk.LLMService, profile string) *App {
-	state := &State{Profile: profile, Workspace: workspaceName()}
+	state := &State{Profile: profile, Workspace: workspaceName(), Thinking: sdk.ThinkingLevel(0).String()}
 	m := &Model{state: state}
 	a := &App{model: m, c: c, loop: loop, llm: llm, confirmCh: make(chan bool, 1)}
 	var reg sdk.CommandRegistry
@@ -51,6 +51,7 @@ func NewApp(c sdk.Ctx, loop sdk.AgentLoop, llm sdk.LLMService, profile string) *
 	m.onCancel = a.cancelCurrent
 	m.hints = a.suggestHints
 	m.levels = a.levels
+	m.onThinkingCycle = a.cycleThinking
 	a.registerInternalCommands()
 	a.program = tea.NewProgram(m)
 	return a
@@ -118,6 +119,22 @@ func (a *App) submit(input string) {
 		a.cancelFn = nil
 		a.program.Send(agentDoneMsg{err})
 	}()
+}
+
+// cycleThinking Tab(前进)/Shift+Tab(后退)循环思考等级(off→low→medium→high);
+// 写会话级 + TUI 显示,状态栏感知当前等级。
+func (a *App) cycleThinking(dir int) {
+	next := nextThinking(a.llm.Thinking(), dir)
+	a.llm.SetThinking(next)
+	a.model.state.Thinking = next.String()
+}
+
+// nextThinking 思考等级循环(纯函数):dir=1 前进(off→low→medium→high),-1 后退。
+
+func nextThinking(cur sdk.ThinkingLevel, dir int) sdk.ThinkingLevel {
+	names := sdk.ThinkingLevel(0).Names()
+	n := (int(cur) + dir + len(names)) % len(names)
+	return sdk.ThinkingLevel(n)
 }
 
 // workspaceName 当前工作区目录名(状态栏显示;取不到时空串)。
@@ -352,6 +369,16 @@ type errString string
 
 func (e errString) Error() string { return string(e) }
 
+// cmdThinking /thinking off|low|medium|high:设置会话级思考等级(Tab/Shift+Tab 同效)。
+func (a *App) cmdThinking(args []string) (string, error) {
+	if len(args) < 1 {
+		return "", errString("/thinking off|low|medium|high")
+	}
+	a.llm.SetThinking(sdk.ParseThinking(args[0]))
+	a.model.state.Thinking = args[0]
+	return "思考等级 -> " + args[0], nil
+}
+
 // cmdProvider /provider show|set|clear:LLM 提供商运行时配置(TUI 入口)。
 // set 写 provider.yaml(0600)并立即生效;重启后 env 显式优先、其次本文件。
 func (a *App) cmdProvider(args []string) (string, error) {
@@ -493,6 +520,10 @@ func (a *App) registerInternalCommands() {
 		return
 	}
 	internal := []sdk.CommandSpec{
+		{Name: "thinking", Usage: "/thinking off|low|medium|high", Desc: "思考等级(快捷键 Tab/Shift+Tab)", Run: a.cmdThinking,
+			Args: []sdk.ArgLevel{{Options: func([]string) []sdk.Option {
+				return []sdk.Option{{Value: "off", Desc: "关闭思考"}, {Value: "low", Desc: "低等级"}, {Value: "medium", Desc: "中等级"}, {Value: "high", Desc: "高等级"}}
+			}}}},
 		{Name: "model", Usage: "/model <名>", Desc: "切换模型", Args: []sdk.ArgLevel{{Options: a.modelOptions, FreeArgs: func([]string) []string { return []string{"模型名"} }}}, Run: func(args []string) (string, error) {
 			if len(args) < 1 {
 				return "", errString("/model <名称> 切换模型")

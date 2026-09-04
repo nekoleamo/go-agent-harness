@@ -33,6 +33,7 @@ type Service struct {
 	adapters map[string]sdk.LLMAdapter
 	order    []string // 注册顺序(首个为默认候选)
 	model    string
+	thinking sdk.ThinkingLevel // 会话级思考等级(Tab 循环;默认 Off)
 }
 
 // RegisterAdapter 注册适配器。
@@ -102,6 +103,12 @@ func (s *Service) Complete(ctx context.Context, req *sdk.LLMRequest, onChunk fun
 	}
 	if model == "" {
 		return nil, fmt.Errorf("llm: model not set (SetModel before first request)")
+	}
+	// 思考等级注入:请求未显式设置时用会话级(Tab 切换的等级;agent-loop 无需感知)
+	if req.Thinking == sdk.ThinkingOff {
+		s.mu.RLock()
+		req.Thinking = s.thinking
+		s.mu.RUnlock()
 	}
 	a, err := s.completeAdapter(model)
 	if err != nil {
@@ -205,6 +212,20 @@ func (s *Service) ListModels() ([]sdk.ModelInfo, error) {
 		return ml.ListModels()
 	}
 	return nil, fmt.Errorf("llm: 通用适配器 %s 不支持模型列举(未实现 sdk.ModelLister)", paName(pa))
+}
+
+// SetThinking 设置会话级思考等级(思考等级注入未显式设置的请求)。
+func (s *Service) SetThinking(t sdk.ThinkingLevel) {
+	s.mu.Lock()
+	s.thinking = t
+	s.mu.Unlock()
+}
+
+// Thinking 当前会话级思考等级。
+func (s *Service) Thinking() sdk.ThinkingLevel {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.thinking
 }
 
 // paName ProviderAdapter 的名称(展示用)。
