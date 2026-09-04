@@ -45,8 +45,19 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	if err := c.Inject("ctx.tools", &tools); err != nil {
 		return nil, err
 	}
-	b := &Bridge{dir: dir, tools: tools, entries: map[string]*extEntry{}}
+	// 宿主回调通道(M6.8 外部化):外部进程经 GAH_CB_ADDR 请求宿主服务
+	// (tools/jobs/fanout;jobs/fanout 未装配时对应回调返回显式错误)
+	var jobs sdk.JobService
+	var fanout sdk.FanoutService
+	_ = c.Inject("ctx.jobs", &jobs)
+	_ = c.Inject("ctx.fanout", &fanout)
+	cbAddr, cbClose, err := serveCallback(NewCallback(tools, jobs, fanout))
+	if err != nil {
+		return nil, err
+	}
+	b := &Bridge{dir: dir, tools: tools, entries: map[string]*extEntry{}, cbAddr: cbAddr}
 	if err := b.loadEntries(); err != nil {
+		cbClose()
 		return nil, err
 	}
 	var watchClose func()
@@ -67,6 +78,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 			watchClose()
 		}
 		b.closeAll()
+		cbClose()
 	}, nil
 }
 
@@ -84,6 +96,7 @@ type extEntry struct {
 type Bridge struct {
 	dir     string
 	tools   sdk.ToolRegistry
+	cbAddr  string // 宿主回调通道地址(GAH_CB_ADDR 注入外部进程)
 	mu      sync.RWMutex
 	entries map[string]*extEntry // bin 绝对路径 → 条目
 }
@@ -112,7 +125,7 @@ func (b *Bridge) loadEntries() error {
 
 // loadOne 启动外部插件进程并组装条目(定义枚举 + 协议探测)。
 func (b *Bridge) loadOne(path string) (*extEntry, error) {
-	cl, killFn, err := startPlugin(path)
+	cl, killFn, err := startPlugin(path, b.cbAddr)
 	if err != nil {
 		return nil, err
 	}
@@ -249,13 +262,16 @@ func (b *Bridge) respawn(path string) {
 }
 
 // startPlugin 启动外部插件进程,返回 rpc client 与 kill 函数(崩溃隔离:死进程快速失败)。
-func startPlugin(bin string) (*rpc.Client, func(), error) {
+// 回调通道:宿主地址经 GAH_CB_ADDR 环境变量注入(外部进程 Dial 后请求宿主服务)。
+func startPlugin(bin string, cbAddr string) (*rpc.Client, func(), error) {
+	cmd := exec.Command(bin)
+	cmd.Env = append(os.Environ(), "GAH_CB_ADDR="+cbAddr)
 	client := plugin.NewClient(&plugin.ClientConfig{
 		HandshakeConfig: handshake,
 		Plugins: map[string]plugin.Plugin{
 			pluginName: &toolPluginBridge{},
 		},
-		Cmd: exec.Command(bin),
+		Cmd: cmd,
 	})
 	proto, err := client.Client()
 	if err != nil {

@@ -319,20 +319,7 @@ func (c *Collector) Execute(ctx context.Context, raw string) (any, error) {
 	if err := json.Unmarshal([]byte(raw), &a); err != nil {
 		return nil, err
 	}
-	if c.w.jobsSvc == nil {
-		return map[string]any{"error": "ctx.jobs 未装配(host-jobs)"}, nil
-	}
-	job, ok := c.w.jobsSvc.Output(a.JobID)
-	if !ok {
-		return map[string]any{"error": "job 不存在: " + a.JobID}, nil
-	}
-	if job.State == sdk.JobRunning {
-		return map[string]any{"job_id": a.JobID, "state": "running"}, nil
-	}
-	if job.State != sdk.JobDone {
-		return map[string]any{"job_id": a.JobID, "state": string(job.State), "error": job.Error}, nil
-	}
-	return map[string]any{"job_id": a.JobID, "result": job.Result}, nil
+	return CollectResult(ctx, c.w.jobsSvc, a.JobID), nil
 }
 
 // —— 值转换(starlark ↔ go) ——
