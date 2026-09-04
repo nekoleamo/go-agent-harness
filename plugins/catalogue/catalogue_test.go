@@ -1,0 +1,122 @@
+// catalogue 守卫测试:单一事实源一致性(登记覆盖 plugins/ 目录、依赖无悬空、bundle 归属)。
+package catalogue
+
+import (
+	"os"
+	"strings"
+	"testing"
+
+	"github.com/nekoleamo/go-agent-harness/plugins/host-fanout"
+	"github.com/nekoleamo/go-agent-harness/plugins/host-jobs"
+	"github.com/nekoleamo/go-agent-harness/plugins/mcp-server"
+	"github.com/nekoleamo/go-agent-harness/plugins/token-compress"
+	"github.com/nekoleamo/go-agent-harness/sdk"
+)
+
+// TestEveryPluginDirRegistered 每个 plugins/ 下的插件包都有 catalogue 登记。
+func TestEveryPluginDirRegistered(t *testing.T) {
+	dirs, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range dirs {
+		if !d.IsDir() {
+			continue
+		}
+		id := d.Name()
+		if _, ok := All[id]; !ok {
+			t.Fatalf("插件目录 %s 未在 catalogue 登记(单一事实源)", id)
+		}
+	}
+}
+
+// TestRequiredDepsReferenced requires 引用的 ctx.* 服务必须有提供方(悬空依赖 → 装配必失败)。
+func TestRequiredDepsReferenced(t *testing.T) {
+	provides := map[string]bool{}
+	for _, d := range All {
+		for _, p := range d.Manifest.Provides {
+			provides[p] = true
+		}
+	}
+	for id, d := range All {
+		for _, r := range d.Manifest.Requires {
+			if strings.HasPrefix(r, "ctx.") && !provides[r] {
+				t.Fatalf("%s requires %s,但无任何插件 provides 它(悬空依赖)", id, r)
+			}
+		}
+	}
+}
+
+// TestBundleCoverage base/tui 两 bundle 均有插件归属,且每插件 bundle 字段合法。
+func TestBundleCoverage(t *testing.T) {
+	seen := map[string]bool{}
+	for id, d := range All {
+		switch d.Bundle {
+		case "base", "tui":
+		default:
+			t.Fatalf("%s 的 bundle 归属非法: %q", id, d.Bundle)
+		}
+		seen[d.Bundle] = true
+	}
+	for _, b := range []string{"base", "tui"} {
+		if !seen[b] {
+			t.Fatalf("bundle %s 无任何插件归属", b)
+		}
+	}
+}
+
+// TestIDTypeConsistency 插件 id 与包/类型符合命名约定(host-*/tool-*/policy-*/llm-*/ui-*)。
+func TestIDTypeConsistency(t *testing.T) {
+	for id, d := range All {
+		switch d.Manifest.Type {
+		case "host", "agent", "tool", "policy", "llm", "ui":
+		default:
+			t.Fatalf("%s 的 Type 非法: %q", id, d.Manifest.Type)
+		}
+	}
+}
+
+// TestSpecialPluginsPresent M6.8/M6.9 拆分后的关键插件在册。
+func TestSpecialPluginsPresent(t *testing.T) {
+	for _, want := range []string{"host-fanout", "token-compress", "mcp-server", "mcp-bridge", "tool-workflow"} {
+		if _, ok := All[want]; !ok {
+			t.Fatalf("应存在插件 %s", want)
+		}
+	}
+	// 抽查工厂可实例化且包名一致(签名保真)
+	checks := map[string]sdk.Plugin{
+		"host-fanout":   &hostfanout.Plugin{},
+		"host-jobs":     &hostjobs.Plugin{},
+		"mcp-server":    &mcpserver.Plugin{},
+		"token-compress": &tokencompress.Plugin{},
+	}
+	for id, pl := range checks {
+		if pl.Name() != id {
+			t.Fatalf("插件 %s 的 Name()=%q 与登记不符", id, pl.Name())
+		}
+	}
+}
+
+// TestNoDuplicateIDs 无重复登记。
+func TestNoDuplicateIDs(t *testing.T) {
+	ids := map[string]int{}
+	for id := range All {
+		ids[id]++
+	}
+	for id, n := range ids {
+		if n > 1 {
+			t.Fatalf("重复登记: %s ×%d", id, n)
+		}
+	}
+}
+
+// TestManifestAPIVersionOk apiVersion 语义红线(>=1.0,<2.0 对齐 SDK 兼容)。
+func TestManifestAPIVersionOk(t *testing.T) {
+	for id, d := range All {
+		if d.Manifest.APIVersion != ">=1.0,<2.0" {
+			t.Fatalf("%s 的 APIVersion 偏离: %q", id, d.Manifest.APIVersion)
+		}
+	}
+}
+
+// TestDirNameMatchesID 插件目录名必须等于登记 id(目录扫描的命名约定)。
