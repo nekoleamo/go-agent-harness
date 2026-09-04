@@ -40,6 +40,49 @@ func TestAdvancePrefixNotMerged(t *testing.T) {
 	}
 }
 
+// TestModelEnterKeepsArgLevel 回归:enter 确认命令后不得被前缀过滤覆盖回命令列表。
+func TestModelEnterKeepsArgLevel(t *testing.T) {
+	cmds := []sdk.CommandSpec{
+		testSpec("sandbox", "切沙箱档"),
+		testSpec("settings", "历史注入"),
+	}
+	levels := func(name string) []func([]string) []sdk.Option {
+		if name == "sandbox" {
+			return []func([]string) []sdk.Option{staticOpts(opt("ro", "只读"), opt("ws", "工作区"), opt("full", "全放开"))}
+		}
+		return nil
+	}
+	var submitted string
+	m := &Model{
+		state:  &State{Input: "/"},
+		hints:  func(prefix string) []sdk.Option { return filterHints(cmds, prefix) },
+		levels: levels,
+		onCommand: func(raw string) error {
+			submitted = raw
+			return nil
+		},
+	}
+	m.state.Pick = &Pick{Items: filterHints(cmds, "")}
+	m.enter()
+	// 确认 sandbox 后:文本 /sandbox,选择态应为 Level1 参数项(不被命令过滤覆盖)
+	if m.state.Input != "/sandbox" {
+		t.Fatalf("输入应替换为 /sandbox: %q", m.state.Input)
+	}
+	p := m.state.Pick
+	if p == nil || p.Level != 1 || len(p.Items) != 3 || p.Items[0].Value != "ro" {
+		t.Fatalf("应保持参数级(ro/ws/full),不得回退命令列表: %+v", p)
+	}
+	// 再 Enter 确认 ws → 执行并清空
+	p.Cursor = 1
+	m.enter()
+	if m.state.Input != "" {
+		t.Fatalf("执行提交后输入应清空: %q", m.state.Input)
+	}
+	if submitted != "/sandbox ws" {
+		t.Fatalf("提交命令行应为 /sandbox ws: %q", submitted)
+	}
+}
+
 // TestAdvanceNoArgCommand 无参数级命令:Enter 选中即直接执行。
 func TestAdvanceNoArgCommand(t *testing.T) {
 	levels := func(name string) []func([]string) []sdk.Option { return nil }

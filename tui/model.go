@@ -153,9 +153,11 @@ func (m *Model) enter() {
 	m.state.Cursor = len([]rune(newInput))
 	m.state.Pick = next
 	if next == nil {
-		m.state.PickDismissed = true // 断点/完成:重新输入才再激活
+		m.state.PickDismissed = true
+		m.state.Suggestions = nil // 断点/完成:清残留提示,防渲染旧命令列表
 	}
-	m.syncHints()
+	// 不再调 syncHints:新文本会被重新过滤成命令列表,覆盖推进出的参数级
+	// (选择确认是用户主动操作,非输入变化;渲染直接用 Pick.Items)。
 	if commit {
 		m.submit()
 	}
