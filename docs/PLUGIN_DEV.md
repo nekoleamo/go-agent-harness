@@ -110,6 +110,8 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 - Bundle 归属决定由哪个 profile 装配(base 默认;tui 界面类)。
 
 ### 3.5 配置条目(启停/参数)
+
+> **样板演进规则**:新增/修改 **base 能力条目**(host-* 等)时,必须同步:① `config/bundle-*.yaml` 顶部 `# seed-version: N` **+1**(老用户自动升级,备份后覆盖);② 同步 `internal/embed/seed/bundle-*.yaml`(guard 测试强制一致);③ 登记 catalogue。(profile/patch 属用户配置偏好,不改版本号,不自动覆盖。)
 `config/bundle-base.yaml` 加条目(可 `enabled: false` 默认关闭;参数进 `data:`):
 
 ```yaml

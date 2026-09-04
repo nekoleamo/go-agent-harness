@@ -5,11 +5,14 @@ package embed
 import (
 	"compress/gzip"
 	"embed"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
@@ -36,9 +39,11 @@ func listNames(fsys fs.FS, dir string) ([]string, error) {
 	return out, nil
 }
 
-// EnsureSeed 把 seed 样板释放到 home 的 config/ 目录(缺失才写;用户编辑不被覆盖)。
-// 返回释放的文件名列表。
-// EnsurePlugins(P1 方案 B):随包插件二进制释放到 home/plugins/<name>/(已存在跳过,用户自装不覆盖)。
+// EnsureSeed 把 seed 样板释放到 home 的 config/ 目录。
+// 版本语义:缺失写;已存在且版本一致 → 跳过(用户编辑不被覆盖);
+// **seed 版本更高(bundle-*.yaml 头部 seed-version)→ 备份后覆盖**——新增基础能力条目
+// (host-* 等)老用户自动升级,无需人工删样板(配置树语义:用户自定义应走 patch 层)。
+// 返回释放/升级的文件名列表。
 func EnsureSeed(home string) ([]string, error) {
 	cfgDir := filepath.Join(home, "config")
 	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
@@ -51,12 +56,31 @@ func EnsureSeed(home string) ([]string, error) {
 	var written []string
 	for _, n := range names {
 		dst := filepath.Join(cfgDir, n)
-		if _, err := os.Stat(dst); err == nil {
-			continue // 已存在:不覆盖(可编辑层)
-		}
 		raw, err := Seed.ReadFile("seed/" + n)
 		if err != nil {
 			return nil, err
+		}
+		if _, err := os.Stat(dst); os.IsNotExist(err) {
+			if err := os.WriteFile(dst, raw, 0o644); err != nil {
+				return nil, err
+			}
+			written = append(written, dst)
+			continue
+		}
+		if !strings.HasPrefix(n, "bundle-") {
+			continue // 非 bundle 样板(profile/patch):用户配置偏好,已有不覆盖
+		}
+		if seedVersion(raw) <= diskVersion(dst) {
+			continue // 版本一致或更高:不覆盖(用户编辑保留)
+		}
+		// 版本升级:备份旧内容后覆盖(新增能力条目对老用户生效)
+		old, err := os.ReadFile(dst)
+		if err != nil {
+			return nil, fmt.Errorf("seed 升级读取旧样板失败 %s: %w", dst, err)
+		}
+		bak := dst + ".bak-" + time.Now().Format("20060102-150405")
+		if err := os.WriteFile(bak, old, 0o644); err != nil {
+			return nil, fmt.Errorf("seed 升级备份失败 %s: %w", dst, err)
 		}
 		if err := os.WriteFile(dst, raw, 0o644); err != nil {
 			return nil, err
@@ -64,6 +88,32 @@ func EnsureSeed(home string) ([]string, error) {
 		written = append(written, dst)
 	}
 	return written, nil
+}
+
+// seedVersion 解析样板首部 seed-version 注释(bundle 系列;无标记 = 0)。
+func seedVersion(raw []byte) int {
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "# seed-version:") {
+			// 取首个 token(容忍行内说明:# seed-version: 1 # 备注…)
+			f := strings.Fields(strings.TrimPrefix(line, "# seed-version:"))
+			if len(f) > 0 {
+				if v, err := strconv.Atoi(f[0]); err == nil {
+					return v
+				}
+			}
+		}
+	}
+	return 0
+}
+
+// diskVersion 读取落盘样板版本(无版本/不可读 = 0,视为旧版触发升级)。
+func diskVersion(path string) int {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	return seedVersion(raw)
 }
 
 // EnsurePlugins 释放随包外部插件二进制到 home/plugins/<name>/<name>(方案 B 首启释放)。

@@ -223,6 +223,7 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 |---|---|
 | home 目录 | 默认 `~/.gah/`,env `GAH_HOME` 覆盖;无写权限降级 temp home |
 | 首次启动 | 释放可编辑层(配置样板、sessions/)到 home;embed 资源只读共享,不重复释放 |
+| 样板版本升级 | `bundle-*.yaml` 头部 `seed-version`;落盘版本低于 seed(或无版本旧样板)→ **备份(.bak-时间戳)后覆盖**——新增 base 能力条目(host-* 等)老用户自动补齐,零人工干预;版本一致/非 bundle 样板(profile/patch)不覆盖(用户自定义保留,应走 patch 层) |
 | 会话日志 | `~/.gah/sessions/<project-key>.jsonl` |
 | `--ephemeral` | 一次性模式:全部落 temp、退出即焚(适用于容器/CI) |
 | 外部插件目录 | `~/.gah/plugins/`(M5 桥加载;不存在 = 仅内置插件,正常降级) |

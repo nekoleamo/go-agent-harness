@@ -17,7 +17,7 @@ func binArch(raw []byte) (osName, arch string) {
 	if len(raw) >= 2 && raw[0] == 'M' && raw[1] == 'Z' {
 		// PE: DOS e_lfanew(offset 0x3C)→ PE 头 → machine(offset +4)
 		if len(raw) >= 4+64+4+2 {
-			peOff := binary.LittleEndian.Uint32(raw[0x3C : 0x40])
+			peOff := binary.LittleEndian.Uint32(raw[0x3C:0x40])
 			if peOff+24 <= uint32(len(raw)) && string(raw[peOff:peOff+4]) == "PE\x00\x00" {
 				mach := binary.LittleEndian.Uint16(raw[peOff+4 : peOff+6])
 				if mach == 0x8664 {

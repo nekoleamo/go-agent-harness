@@ -1,3 +1,4 @@
+# seed-version: 1 # 样板版本:新增能力条目时 +1,老用户自动升级(备份后覆盖)
 # tui bundle:叠加界面插件(ui-tui-app,模块在 tui/ 包)。
 name: tui
 entries:

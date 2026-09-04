@@ -1,3 +1,4 @@
+# seed-version: 1 # 样板版本:新增 base 能力条目(host-* 等)时 +1,老用户自动升级(备份后覆盖)
 # base bundle:对齐 dsh-base,一切功能皆插件的共享第一层。
 # M1 阶段条目仅记录意图;对应插件工厂在 M2 base bundle 落地。
 name: base
