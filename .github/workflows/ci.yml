@@ -21,12 +21,19 @@ jobs:
         run: go vet ./...
       - name: go test -race
         run: go test -race ./...
-      - name: 体积门(单二进制 <40MB)
+      - name: 交叉编译矩阵(五目标+体积门+平台匹配)
         run: |
-          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o gah ./cmd/gah
-          size=$(stat -c%s gah)
-          echo "主二进制: $size bytes"
-          [ "$size" -lt 41943040 ] || { echo "体积门失败: $size >= 40MB"; exit 1; }
+          # P4:主包五目标交叉编译 + 每目标体积门(<40MB);embed 经 build-tag
+          # 只嵌本平台外部插件(产物平台匹配由下方单测在 linux/amd64 上校验,
+          # 其余目标由 go build 能否取到对应 embed 目录保证)。
+          for t in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64; do
+            os=${t%/*}; arch=${t#*/}
+            GOOS=$os GOARCH=$arch CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "/tmp/gah-$t" ./cmd/gah
+            size=$(stat -c%s "/tmp/gah-$t")
+            echo "$t: $size bytes"
+            [ "$size" -lt 41943040 ] || { echo "体积门失败($t): $size >= 40MB"; exit 1; }
+          done
+          go test ./internal/embed/ -run TestExtPluginsMatchPlatform -count=1
       - name: 裸机冒烟(env -i 纯净环境启动)
         run: |
           env -i HOME="$(mktemp -d)" PATH="$PATH" ./gah --profile headless --ephemeral --dump-config >/dev/null

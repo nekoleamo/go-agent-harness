@@ -15,16 +15,15 @@ import (
 )
 
 //go:embed seed
-//go:embed extplugins
 var Seed embed.FS
 
 // FileNames 返回 seed 中的样板文件名(首启释放清单)。
 func FileNames() ([]string, error) {
-	return listNames("seed")
+	return listNames(Seed, "seed")
 }
 
-func listNames(dir string) ([]string, error) {
-	entries, err := fs.ReadDir(Seed, dir)
+func listNames(fsys fs.FS, dir string) ([]string, error) {
+	entries, err := fs.ReadDir(fsys, dir)
 	if err != nil {
 		return nil, err
 	}
@@ -70,8 +69,17 @@ func EnsureSeed(home string) ([]string, error) {
 // EnsurePlugins 释放随包外部插件二进制到 home/plugins/<name>/<name>(方案 B 首启释放)。
 // P0 体积门(M7):embed 存 gzip(.gz,压缩率约 50%),释放时解压落盘;
 // 已存在的同名文件跳过(用户经 gah -install/-uninstall 维护的版本优先)。
+// OpenExtPlugin 打开本平台外部插件 gzip 产物(只读;调用方负责 Close)。
+// P4 平台匹配:build-tag 保证只取当前构建平台的产物(黑盒测试/工具链读取用)。
+func OpenExtPlugin(bin string) (io.ReadCloser, error) {
+	return extPlugins.Open(extPluginDir + "/" + bin + ".gz")
+}
+
+// 外部插件 embed 声明按平台拆在 extplugins_<os>_<arch>.go(build-tag 限定,
+// 每平台文件定义同名 extPlugins/extPluginDir;主包每目标只嵌本平台产物,
+// 体积门不变,发行产物平台匹配——P4 交叉编译矩阵回归)。
 func EnsurePlugins(home string) ([]string, error) {
-	names, err := listNames("extplugins")
+	names, err := listNames(extPlugins, extPluginDir)
 	if err != nil {
 		return nil, err
 	}
@@ -85,7 +93,7 @@ func EnsurePlugins(home string) ([]string, error) {
 		if _, err := os.Stat(dst); err == nil {
 			continue // 已存在(用户自装/旧版本):不覆盖
 		}
-		fgz, err := Seed.Open("extplugins/" + n)
+		fgz, err := extPlugins.Open(extPluginDir + "/" + n)
 		if err != nil {
 			return nil, err
 		}
