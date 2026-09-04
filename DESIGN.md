@@ -327,7 +327,7 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 | M6.2 子代理 fanout ✅ | workflow 增加 agent/parallel/pipeline 编排(独立 agent 上下文,复用现有 agent-loop / 会话隔离) | 脚本可扇出多个子代理并行执行并聚合 |
 | M6.3 pty 交互 ✅ | tool-shell 引入 `creack/pty`(data.pty 开关):交互式命令(REPL/git 编辑器等) | shell 工具可驱动交互式进程 |
 | M6.4 tool-files / tool-web ✅ | 文件工具(读写/编辑,经 `ctx.sandbox.ValidatePath` 联动)+ 纯 Go HTTP fetch 工具 | 文件操作受沙箱三档约束;fetch 零外部依赖 |
-| M6.5 token 压缩 | 会话超限时滚动摘要压缩(完整日志仍留盘)(§9) | 长会话注入 token 受限可用 |
+| M6.5 token 压缩 ✅ | 会话超限时滚动摘要压缩(完整日志仍留盘)(§9) | 长会话注入 token 受限可用 |
 | M6.6 插件安装与线上索引 | `gah install <repo>@version` 子命令:下载/编译 → 落 `~/.gah/plugins/` → 登记 catalogue → 生成启用 patch 一站式安装;线上 registry 的 manifest 元数据(name/apiVersion/provides/tool 列表/协议类型 bridge\|mcp);自有桥协议 SDK 独立模块或对生态只推 MCP(§5.5 工具定义与 MCP 桥互通) | 一条命令装完即启用;卸载撤销干净;MCP server 与自有桥插件经同一索引发现 |
 
 ## 15. 风险与权衡

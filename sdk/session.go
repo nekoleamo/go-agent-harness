@@ -16,6 +16,8 @@ const (
 	EventAssistantMessage = "assistant/message"
 	EventToolCall         = "tool/call"
 	EventToolResult       = "tool/result"
+	// EventSummary 滚动摘要事件(M6.5):载荷为累计摘要文本;原始消息事件保留在日志(留盘完整)。
+	EventSummary = "session/summary"
 	EventAgentStatus      = "agent/status"
 	EventAgentError       = "agent/error"
 )

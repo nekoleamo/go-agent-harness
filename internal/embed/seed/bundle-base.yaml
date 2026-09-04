@@ -3,6 +3,8 @@
 name: base
 entries:
   - id: host-session-log
+    data:
+      token_budget_chars: 40960 # M6.5:投影字符预算,超限滚动摘要压缩(0 = 关闭)
   - id: host-tools
   - id: host-system-prompt
   - id: host-llm
