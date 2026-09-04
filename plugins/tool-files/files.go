@@ -32,6 +32,35 @@ func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
 	return f.register(tools), nil
 }
 
+// NewTools 外部化工厂(P1):四件套工具表(外部进程经桥协议暴露;沙箱由宿主注入,外部进程不装配)。
+func NewTools() map[string]sdk.Tool {
+	f := &FilesTool{sb: nil}
+	return map[string]sdk.Tool{
+		"file_read":   &fileTool{name: "file_read", f: f, schema: fileSchema("read")},
+		"file_write":  &fileTool{name: "file_write", f: f, schema: fileSchema("write")},
+		"file_append": &fileTool{name: "file_append", f: f, schema: fileSchema("write")},
+		"file_edit":   &fileTool{name: "file_edit", f: f, schema: fileSchema("edit")},
+	}
+}
+
+// fileSchema 工具参数 schema 模板。
+func fileSchema(kind string) map[string]any {
+	switch kind {
+	case "read":
+		return map[string]any{"type": "object", "required": []any{"path"},
+			"properties": map[string]any{"path": map[string]any{"type": "string"}}}
+	case "write":
+		return map[string]any{"type": "object", "required": []any{"path", "content"},
+			"properties": map[string]any{
+				"path": map[string]any{"type": "string"}, "content": map[string]any{"type": "string"}}}
+	default:
+		return map[string]any{"type": "object", "required": []any{"path", "old", "new"},
+			"properties": map[string]any{
+				"path": map[string]any{"type": "string"}, "old": map[string]any{"type": "string"},
+				"new": map[string]any{"type": "string"}}}
+	}
+}
+
 // FilesTool 文件工具集(单结构多工具定义由注册处展开)。
 type FilesTool struct {
 	sb sdk.Sandbox
@@ -140,8 +169,8 @@ func (f *FilesTool) exec(ctx context.Context, name, raw string) (any, error) {
 // register 注册四个工具(统一执行分发)。
 func (f *FilesTool) register(tools sdk.ToolRegistry) sdk.Disposer {
 	d1 := tools.Register(&fileTool{name: "file_read", f: f, schema: map[string]any{
-		"type":     "object",
-		"required": []any{"path"},
+		"type":       "object",
+		"required":   []any{"path"},
 		"properties": map[string]any{"path": map[string]any{"type": "string"}},
 	}})
 	d2 := tools.Register(&fileTool{name: "file_write", f: f, schema: map[string]any{
@@ -166,7 +195,7 @@ func (f *FilesTool) register(tools sdk.ToolRegistry) sdk.Disposer {
 		"properties": map[string]any{
 			"path": map[string]any{"type": "string"},
 			"old":  map[string]any{"type": "string"},
-			"new" : map[string]any{"type": "string"},
+			"new":  map[string]any{"type": "string"},
 		},
 	}})
 	return func() { d1(); d2(); d3(); d4() }

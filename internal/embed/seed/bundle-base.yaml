@@ -21,10 +21,14 @@ entries:
   - id: host-cwd-sessions
   - id: host-jobs
   - id: host-bridge
-    enabled: false # 外部插件桥(M5):默认关闭;启用后扫描 extplugins/ 或 data.dir 加载 tool-* 二进制
+    # P1 方案B:默认启用,dir 缺省指向 home/plugins(首启随包释放 tool-basic)
+    enabled: true
   - id: mcp-bridge
     enabled: false # MCP client 桥(M5.5):默认关闭;data.command 指定 MCP server 启动命令
   - id: tool-shell
+    enabled: false # P1 外部化:内嵌实现停用,由 host-bridge 加载 home/plugins 外部进程
   - id: tool-files
+    enabled: false # P1 外部化同上
   - id: tool-web
+    enabled: false # P1 外部化同上
 

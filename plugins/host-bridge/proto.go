@@ -18,13 +18,20 @@ func Handshake() plugin.HandshakeConfig { return handshake }
 const pluginName = "tool"
 
 // ToolServer 外部插件侧实现的 RPC 服务(net/rpc 方法签名)。
+// 新协议(多工具):Definitions + ExecuteNamed;旧协议(单工具)保持兼容。
 type ToolServer interface {
-	Definition(args struct{}, reply *string) error
-	Execute(args *ExecArgs, reply *ExecReply) error
+	Definitions(args struct{}, reply *string) error
+	ExecuteNamed(args *ExecNamedArgs, reply *ExecReply) error
 }
 
 // ExecArgs/ExecReply RPC 载荷。strings 传输(JSON),gob 可序列化。
 type ExecArgs struct {
+	JSONArgs string
+}
+
+// ExecNamedArgs 新协议载荷:工具名 + 参数。
+type ExecNamedArgs struct {
+	Name     string
 	JSONArgs string
 }
 

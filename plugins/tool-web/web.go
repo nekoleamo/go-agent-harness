@@ -20,6 +20,11 @@ const (
 	maxBody      = 1 << 20 // 1MB
 )
 
+// NewTool 外部化工厂(P1):外部进程入口的工具实例。
+func NewTool() sdk.Tool {
+	return &WebTool{client: &http.Client{Timeout: fetchTimeout}}
+}
+
 // Plugin 实现 tool-web。requires ctx.tools。
 type Plugin struct{}
 

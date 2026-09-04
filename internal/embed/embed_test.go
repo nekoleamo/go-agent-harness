@@ -8,6 +8,32 @@ import (
 	"testing"
 )
 
+// TestEnsurePlugins 方案B首启释放:产物落 home/plugins/<name>/,幂等(不覆盖已有)。
+func TestEnsurePlugins(t *testing.T) {
+	home := t.TempDir()
+	written, err := EnsurePlugins(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(written) == 0 {
+		t.Fatal("应有随包插件释放")
+	}
+	// 产物可执行文件存在
+	for _, w := range written {
+		if fi, err := os.Stat(w); err != nil || fi.Mode()&0o111 == 0 {
+			t.Fatalf("产物应存在且可执行: %s %v", w, err)
+		}
+	}
+	// 幂等:二次释放不写、不覆盖
+	repeat, err := EnsurePlugins(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repeat) != 0 {
+		t.Fatalf("二次释放应为空: %v", repeat)
+	}
+}
+
 func TestSeedMatchesRepoConfig(t *testing.T) {
 	names, err := FileNames()
 	if err != nil {

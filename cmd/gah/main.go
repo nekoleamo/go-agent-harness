@@ -62,6 +62,10 @@ func main() {
 		logger.Error("boot: 首启释放样板失败", "err", err)
 		os.Exit(1)
 	}
+	// P1 方案 B:随包外部插件首启释放(home/plugins/,已有跳过)
+	if _, err := embed.EnsurePlugins(home); err != nil {
+		logger.Warn("boot: 释放外部插件失败(跳过,可后续 gah -install)", "err", err)
+	}
 	// 插件安装/卸载/清单(M6.6):seed 释放后可写登记 patch 与 profile 引用
 	if *installFlag != "" {
 		res, err := install.Install(*installFlag, home)

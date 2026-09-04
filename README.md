@@ -105,7 +105,7 @@ $GAH_HOME(缺省 ~/.gah)  # 全局指令 AGENTS.md / 全局技能 skills/ / 会�
 ├── sdk/              # 插件唯一依赖的接口与域模型
 ├── bundles/          # bundle 装配(base/tui/register)
 ├── plugins/          # 16 个内置插件(host-*/tool-*/policy-*/llm-*/ui/mcp/skills)
-├── extplugins/       # 外部进程插件示例(tool-echo,隔离验证)
+├── extplugins/       # 外部进程插件入口(tool-echo 示例 / tool-basic 三件套)
 ├── tui/              # bubbletea v2 界面(状态机可测)
 ├── tests/            # 端到端 + 迷你 MCP server
 ├── config/           # profile/bundle/patch 样板
@@ -126,6 +126,7 @@ goreleaser release --snapshot
 
 - **已交付**:M1 微内核 → M2 base(ReAct/LLM/工具)→ M3 TUI → M4 生态(沙箱/审批/插拔/凭据)→ M5 桥 + starlark workflow → M5.5 MCP + 配置自愈 → M5.6 指令注入 + 技能机制 → 完善 A 组(会话持久化/重试/取消)+ B 组(apiVersion 校验/export/外部热重载/embed 交付);20 包 `-race` 全绿;交付门通过(单二进制自包含实测)。
 - **M6 已全部交付**:host-jobs 后台任务(`ctx.jobs` + job_list/output/kill + `/jobs`)、workflow 子代理 fanout(agent/parallel/pipeline)、tool-shell pty 交互(`data.pty` 开关)、tool-files/tool-web(file_read/write/append/edit + web_fetch,经 `ctx.sandbox` 三档联动)、会话 token 滚动摘要压缩(`token_budget_chars`,完整日志留盘)、插件安装(`gah -install <repo>@version` / `-uninstall` / `-list-plugins`,manifest 见 DESIGN §14.1)。
+- **P0+P1 外部化(已交付)**:sdk 独立 module;桥协议多工具化 + 工具级超时 + 崩溃自动拉起;shell/files/web 合并为 tool-basic 随主包 embed,首启释放 `~/.gah/plugins/`,运行时全为外部进程插件(内置 tool-* 停用,host-bridge 默认启用;单二进制 38MB < 40MB)。
 
 ## 十、协议
 

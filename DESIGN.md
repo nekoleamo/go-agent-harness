@@ -233,7 +233,7 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 |---|---|
 | 编译 | `CGO_ENABLED=0 go build -trimpath`;`-ldflags "-s -w -X main.version=..."` 注入版本 |
 | 矩阵 | goreleaser:linux/macOS × amd64/arm64(Windows 随 pty 进度) |
-| 体积验收 | 单二进制 **< 25MB**;超限则 upx(可选)与 embed 资源压缩审查 |
+| 体积验收 | 单二进制 **< 40MB**(P1 方案B 含随包外部插件 tool-basic ~13MB;基线 23MB);超限则 upx(可选)与 embed 资源压缩审查 |
 | 校验 | 发布附 sha256;`gah version` 输出版本与构建信息 |
 
 ### 7.5 升级
@@ -245,7 +245,7 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 | 验收项 | 实测结果 |
 |---|---|
 | `CGO_ENABLED=0` 静态编译 | ✅ `-trimpath -ldflags="-s -w -X main.version=v0.1.0"`;otool 仅系统库 |
-| 体积 <25MB | ✅ 15.8MB(darwin/arm64);linux/windows 16–17MB |
+| 体积 <40MB | ✅ 38.1MB(darwin/arm64,P1 起含随包插件);基线(无插件)23MB |
 | 版本注入 | ✅ `gah -version` → `gah v0.1.0 (github.com/nekoleamo/go-agent-harness)` |
 | 交叉编译六目标 | ✅ darwin/linux/windows × amd64/arm64(除 windows/arm64 视 pty) |
 | 裸机启动 | ✅ `env -i PATH=/usr/bin:/bin HOME=<tmp>` 下 headless 一轮成功 |
@@ -317,7 +317,7 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 | **完善 A 组**(已交付) | ✅ 会话持久化+项目隔离(host-cwd-sessions)+ ✅ LLM 断流指数退避重试(§11)+ ✅ TUI 回合取消(Esc→取消链) | 跨期共享隔离;断流自愈;可中断 |
 | **完善 B 组**(已交付) | ✅ apiVersion 语义化校验(SDK 兼容红线,go-version)+ ✅ /export 真导出(jsonl)+ ✅ 外部插件热重载接线(host-bridge watch→自动重载)+ ✅ go:embed 配置样板+home 首启释放+`--ephemeral` 落地(空目录发布实测通过) | 发布形态自包含;插件版本兼容强制;外部插件更新自动生效 |
 | **M6 规划**(待交付) | 见下(§14.1 未交付规划清单;按需求逐个实现,无硬性交付线) | 每项独立验收 |
-| **交付门**(已通过) | 单二进制 <25MB / `CGO_ENABLED=0` / 六目标交叉编译 / 裸机 scp 启动 | ✅ 实测数据见 §7.6 |
+| **交付门**(已通过,P1 更新) | 单二进制 <40MB(P1 起附包插件)/ `CGO_ENABLED=0` / 六目标交叉编译 / 裸机 scp 启动(首启释放插件后可用) | ✅ 实测数据见 §7.6 |
 
 ### 14.1 未交付规划清单(M6,按需逐个实现)
 
@@ -329,6 +329,8 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 | M6.4 tool-files / tool-web ✅ | 文件工具(读写/编辑,经 `ctx.sandbox.ValidatePath` 联动)+ 纯 Go HTTP fetch 工具 | 文件操作受沙箱三档约束;fetch 零外部依赖 |
 | M6.5 token 压缩 ✅ | 会话超限时滚动摘要压缩(完整日志仍留盘)(§9) | 长会话注入 token 受限可用 |
 | M6.6 插件安装与线上索引 ✅ | `gah -install <repo>[@version]` / `-uninstall <id>` / `-list-plugins`:git 拉取 → 构建 → 落 `~/.gah/plugins/<id>/` → 幂等登记 `patch-installed.yaml` + profile 自动引用(装完即启用);manifest(仓库根 `plugin.yaml`:{id, protocol: bridge\|mcp, binary, build});MCP 插件直接登记 mcp-bridge 配置(`mcp:<id>:<command>`) | 一条命令装完即启用;卸载撤销干净;MCP server 与自有桥插件经同一入口发现 |
+| P0 外部化基础 ✅ | sdk 独立 module(monorepo,替换本地);桥协议多工具化(Definitions/ExecuteNamed,旧单工具回退)+ 工具级超时(TimeoutMs)+ 进程崩溃自动拉起(60s 节流) | 第三方独立开发;长命令不被 3s 截断;崩溃自动恢复 |
+| P1 方案B 随包释放 ✅ | tool-shell/files/web 合一批二进制 tool-basic(多工具),embed 随主包;首启释放 `~/.gah/plugins/`(已有跳过);base bundle 内置 tool-* 停用、host-bridge 默认启用(dir 缺省 home/plugins) | 开箱即用(运行时全为外部进程插件);`-list-plugins` 可见;体积 <40MB |
 
 ## 15. 风险与权衡
 
@@ -337,7 +339,7 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 | 进程内插件崩溃拖垮宿主 | M5 gRPC 桥;MVP 接受 |
 | 热重载引用泄漏/竞态 | disposer 强制清理 + `-race` CI + RCU 式切换 |
 | 微内核边界漂移(功能悄悄进 core) | 评审红线:`core/` 不 import 业务包;`--dump-config` 可见性 |
-| 二进制体积超 25MB | upx(可选);embed 资源压缩;chroma/goldmark 类大库按需侧载进 tui bundle(不进 base) |
+| 二进制体积超 40MB | upx(可选);embed 资源压缩;chroma/goldmark 类大库按需侧载进 tui bundle(不进 base);随包插件按需裁剪 |
 | 增强工具被误当运行时依赖 | §7.1 红线:CI 增加裸机(无 git/chromium)启动冒烟测试 |
 | 流式渲染复杂度 | M3 集中投入 |
 | starlark 表达力不足 | 编排场景已涵盖,缺失再加 go-lua 适配器 |

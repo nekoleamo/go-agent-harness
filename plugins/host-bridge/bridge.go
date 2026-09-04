@@ -1,6 +1,7 @@
 // 宿主侧桥:扫描外部插件目录,加载 tool-* 二进制,注册为 sdk.Tool。
 // P0:工具级超时(def.TimeoutMs 覆写全局 3s)+ 进程崩溃自动拉起(连接错误
-// → 节流重建进程,下次调用走新实例)。
+// → 节流重建进程,下次调用走新实例);多工具协议(ExecuteNamed/Definitions,
+// 旧单工具协议自动回退)。
 package hostbridge
 
 import (
@@ -37,7 +38,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		}
 	}
 	if dir == "" {
-		dir = "extplugins"
+		dir = filepath.Join(pluginHome(), "plugins") // P1:默认 home/plugins(方案B 释放目录)
 	}
 	var tools sdk.ToolRegistry
 	if err := c.Inject("ctx.tools", &tools); err != nil {
@@ -68,14 +69,14 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	}, nil
 }
 
-// extEntry 一个外部插件条目。
+// extEntry 一个外部插件进程条目(可承载多工具)。
 type extEntry struct {
-	tool      sdk.Tool
-	unreg     sdk.Disposer
+	tools     map[string]*toolRPCClient
+	unreg     sdk.Disposer // 聚合注销(全部工具)
 	kill      sdk.Disposer
-	def       sdk.ToolDefinition
 	client    *rpc.Client
-	respawnAt time.Time // 崩溃重拉节流(60s 内不重复)
+	proto     int // 0 未知 / 1 旧单工具协议 / 2 新多工具协议
+	respawnAt time.Time
 }
 
 // Bridge 外部插件目录管理(扫描/重载/关闭/崩溃拉起)。
@@ -99,7 +100,7 @@ func (b *Bridge) loadEntries() error {
 		if lerr != nil {
 			return fmt.Errorf("host-bridge: 加载 %s: %w", path, lerr)
 		}
-		unreg := b.tools.Register(e.tool) // 锁外注册(tc 自带 def 快照)
+		unreg := b.registerAll(e)
 		b.mu.Lock()
 		e.unreg = unreg
 		b.entries[path] = e
@@ -108,28 +109,51 @@ func (b *Bridge) loadEntries() error {
 	})
 }
 
-// loadOne 启动外部插件进程并组装条目(定义缓存 + client)。
+// loadOne 启动外部插件进程并组装条目(定义枚举 + 协议探测)。
 func (b *Bridge) loadOne(path string) (*extEntry, error) {
 	cl, killFn, err := startPlugin(path)
 	if err != nil {
 		return nil, err
 	}
-	// 定义缓存(一次 RPC;失败不阻塞注册,返回空定义)
-	def := fetchDef(cl)
-	t := &toolRPCClient{br: b, path: path, def: def} // def 快照随实例,Register 无需查 map
-	e := &extEntry{tool: t, def: def, client: cl, kill: killFn, unreg: func() {}}
-	return e, nil
+	e := &extEntry{client: cl, kill: killFn, unreg: func() {}, tools: map[string]*toolRPCClient{}}
+	// 协议探测:新协议(Definitions)优先,旧单工具协议回退
+	raw := ""
+	if cerr := cl.Call("Plugin.Definitions", struct{}{}, &raw); cerr == nil && raw != "" {
+		var multi []defDTO
+		if json.Unmarshal([]byte(raw), &multi) == nil && len(multi) > 0 {
+			e.proto = 2
+			for _, d := range multi {
+				def := sdk.ToolDefinition{Name: d.Name, Description: d.Description, InputSchema: d.InputSchema, TimeoutMs: d.TimeoutMs}
+				e.tools[d.Name] = &toolRPCClient{br: b, path: path, name: d.Name, def: def}
+			}
+			return e, nil
+		}
+	}
+	// 旧协议:单工具
+	var defJSON string
+	if cerr := cl.Call("Plugin.Definition", struct{}{}, &defJSON); cerr == nil {
+		var def sdk.ToolDefinition
+		if json.Unmarshal([]byte(defJSON), &def) == nil && def.Name != "" {
+			e.proto = 1
+			e.tools[def.Name] = &toolRPCClient{br: b, path: path, name: def.Name, def: def}
+			return e, nil
+		}
+	}
+	killFn()
+	return nil, fmt.Errorf("host-bridge: 插件未按桥协议暴露工具 %s", path)
 }
 
-// fetchDef 经 RPC 取工具定义(JSON 解包)。
-func fetchDef(cl *rpc.Client) sdk.ToolDefinition {
-	var raw string
-	if err := cl.Call("Plugin.Definition", struct{}{}, &raw); err != nil {
-		return sdk.ToolDefinition{}
+// registerAll 注册全部工具并返回聚合注销。
+func (b *Bridge) registerAll(e *extEntry) sdk.Disposer {
+	disposers := make([]sdk.Disposer, 0, len(e.tools))
+	for _, t := range e.tools {
+		disposers = append(disposers, b.tools.Register(t))
 	}
-	var def sdk.ToolDefinition
-	_ = json.Unmarshal([]byte(raw), &def)
-	return def
+	return func() {
+		for _, d := range disposers {
+			d()
+		}
+	}
 }
 
 // reload 二进制变更:dispose 旧进程并加载新实例(热重载接线)。
@@ -138,11 +162,10 @@ func (b *Bridge) reload(path string) {
 	entry, ok := b.entries[path]
 	b.mu.Unlock()
 	if !ok {
-		// 新出现的二进制:直接加载
 		if strings.HasPrefix(filepath.Base(path), "tool-") {
 			e, err := b.loadOne(path)
 			if err == nil {
-				unreg := b.tools.Register(e.tool)
+				unreg := b.registerAll(e)
 				b.mu.Lock()
 				e.unreg = unreg
 				b.entries[path] = e
@@ -151,7 +174,6 @@ func (b *Bridge) reload(path string) {
 		}
 		return
 	}
-	// 旧实例撤销:注销工具 + kill 进程
 	b.mu.Lock()
 	entry.unreg()
 	entry.kill()
@@ -161,16 +183,16 @@ func (b *Bridge) reload(path string) {
 		b.mu.Lock()
 		delete(b.entries, path)
 		b.mu.Unlock()
-		return // 新二进制不可用:工具消失(下次变更再试)
+		return
 	}
-	unreg := b.tools.Register(e.tool)
+	unreg := b.registerAll(e)
 	b.mu.Lock()
 	e.unreg = unreg
 	b.entries[path] = e
 	b.mu.Unlock()
 }
 
-// closeAll 关闭全部插件条目(逆序)。
+// closeAll 关闭全部插件条目。
 func (b *Bridge) closeAll() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -191,16 +213,6 @@ func (b *Bridge) clientFor(path string) *rpc.Client {
 	return nil
 }
 
-// defFor 取工具定义(注册时缓存,免每次 RPC)。
-func (b *Bridge) defFor(path string) sdk.ToolDefinition {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	if e, ok := b.entries[path]; ok {
-		return e.def
-	}
-	return sdk.ToolDefinition{}
-}
-
 // onDead 连接错误 → 标记并异步重建进程(60s 节流,防崩溃循环)。
 func (b *Bridge) onDead(path string) {
 	b.mu.Lock()
@@ -218,14 +230,14 @@ func (b *Bridge) onDead(path string) {
 func (b *Bridge) respawn(path string) {
 	e, err := b.loadOne(path)
 	if err != nil {
-		return // 重建失败:节流期内不再反复尝试(下次连接错误再触发)
+		return
 	}
 	b.mu.Lock()
 	if old, ok := b.entries[path]; ok {
-		old.unreg() // 先注销旧工具(重名注册会非静默忽略)
+		old.unreg()
 	}
 	b.mu.Unlock()
-	unreg := b.tools.Register(e.tool)
+	unreg := b.registerAll(e)
 	b.mu.Lock()
 	if old, ok := b.entries[path]; ok {
 		old.kill()
@@ -265,6 +277,14 @@ func startPlugin(bin string) (*rpc.Client, func(), error) {
 	}, nil
 }
 
+// defDTO 多工具协议的定义载荷。
+type defDTO struct {
+	Name        string         `json:"Name"`
+	Description string         `json:"Description"`
+	InputSchema map[string]any `json:"InputSchema"`
+	TimeoutMs   int64          `json:"TimeoutMs"`
+}
+
 // rpcTimeout 默认外部 RPC 调用超时(崩溃隔离:死进程快速失败而非死等)。
 const rpcTimeout = 3 * time.Second
 
@@ -275,9 +295,6 @@ func rpcTimeoutFor(def sdk.ToolDefinition) time.Duration {
 	}
 	return rpcTimeout
 }
-
-// respawnCooldown 崩溃自动拉起的节流窗口。
-const respawnCooldown = 60 * time.Second
 
 // toolPluginBridge 桥插件:连接 net/rpc,Client() 返回 gob 转发客户端。
 type toolPluginBridge struct{}
@@ -296,14 +313,12 @@ type rpcClientOnly struct{ client *rpc.Client }
 type toolRPCClient struct {
 	br   *Bridge
 	path string
+	name string
 	def  sdk.ToolDefinition
 }
 
 func (t *toolRPCClient) Definition() sdk.ToolDefinition {
-	if t.def.Name != "" {
-		return t.def
-	}
-	return t.br.defFor(t.path) // 兜底(理论不触发)
+	return t.def
 }
 
 func (t *toolRPCClient) Execute(ctx context.Context, args string) (any, error) {
@@ -316,10 +331,18 @@ func (t *toolRPCClient) Execute(ctx context.Context, args string) (any, error) {
 		reply ExecReply
 		err   error
 	}
+	call := func(reply *ExecReply) error {
+		err := cl.Call("Plugin.ExecuteNamed", &ExecNamedArgs{Name: t.name, JSONArgs: args}, reply)
+		if err != nil && isMethodMissing(err) {
+			// 旧单工具协议回退
+			return cl.Call("Plugin.Execute", &ExecArgs{JSONArgs: args}, reply)
+		}
+		return err
+	}
 	ch := make(chan rpcOut, 1)
 	go func() {
 		var reply ExecReply
-		err := cl.Call("Plugin.Execute", &ExecArgs{JSONArgs: args}, &reply)
+		err := call(&reply)
 		ch <- rpcOut{reply, err}
 	}()
 	var out rpcOut
@@ -331,7 +354,7 @@ func (t *toolRPCClient) Execute(ctx context.Context, args string) (any, error) {
 		return map[string]any{"error": "外部插件不可达(超时)"}, nil
 	}
 	if isConnErr(out.err) {
-		t.br.onDead(t.path) // 进程死亡:异步重建,下次调用走新实例
+		t.br.onDead(t.path)
 		return map[string]any{"error": "外部插件不可达(进程崩溃,自动重建中): " + out.err.Error()}, nil
 	}
 	if out.err != nil {
@@ -347,6 +370,11 @@ func (t *toolRPCClient) Execute(ctx context.Context, args string) (any, error) {
 	return out.reply.Content, nil
 }
 
+// isMethodMissing 协议方法不存在(旧插件回退信号)。
+func isMethodMissing(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "can't find method")
+}
+
 // isConnErr 判定连接类错误(进程死亡/连接关闭/EOF),非插件业务错误。
 func isConnErr(err error) bool {
 	if err == nil {
@@ -358,4 +386,15 @@ func isConnErr(err error) bool {
 	msg := err.Error()
 	return strings.Contains(msg, "connection") || strings.Contains(msg, "EOF") ||
 		strings.Contains(msg, "shut down")
+}
+
+// pluginHome 运行时 home(GAH_HOME 覆盖;默认 ~/.gah,与 boot 一致)。
+func pluginHome() string {
+	if h := os.Getenv("GAH_HOME"); h != "" {
+		return h
+	}
+	if uh, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(uh, ".gah")
+	}
+	return os.TempDir()
 }

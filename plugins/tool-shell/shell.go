@@ -38,6 +38,11 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	return d, nil
 }
 
+// NewTool 外部化工厂(P1):构造外部进程入口的工具实例。
+func NewTool(ptyEnabled bool) sdk.Tool {
+	return &ShellTool{timeout: 60 * time.Second, pty: ptyEnabled}
+}
+
 type args struct {
 	Command string `json:"command"`
 	Input   string `json:"input,omitempty"` // pty 模式:一次性写入的输入(REPL 命令/编辑器内容)
@@ -57,7 +62,7 @@ func (s *ShellTool) Definition() sdk.ToolDefinition {
 			"type": "object",
 			"properties": map[string]any{
 				"command": map[string]any{"type": "string", "description": "要执行的 shell 命令"},
-				"input":    map[string]any{"type": "string", "description": "pty 模式:一次性写入的输入"},
+				"input":   map[string]any{"type": "string", "description": "pty 模式:一次性写入的输入"},
 			},
 			"required": []any{"command"},
 		},
