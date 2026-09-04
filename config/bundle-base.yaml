@@ -23,4 +23,6 @@ entries:
   - id: mcp-bridge
     enabled: false # MCP client 桥(M5.5):默认关闭;data.command 指定 MCP server 启动命令
   - id: tool-shell
+  - id: tool-files
+  - id: tool-web
 

@@ -18,7 +18,9 @@ import (
 	"github.com/nekoleamo/go-agent-harness/plugins/mcp-bridge"
 	"github.com/nekoleamo/go-agent-harness/plugins/policy-approval"
 	"github.com/nekoleamo/go-agent-harness/plugins/policy-sandbox"
+	"github.com/nekoleamo/go-agent-harness/plugins/tool-files"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool-shell"
+	"github.com/nekoleamo/go-agent-harness/plugins/tool-web"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool-workflow"
 	"github.com/nekoleamo/go-agent-harness/plugins/ui-tui-app"
 	"github.com/nekoleamo/go-agent-harness/sdk"
@@ -68,6 +70,12 @@ var All = map[string]Def{
 		Requires: []string{"ctx.tools"}}, Bundle: "base"},
 	"tool-shell": {Factory: func() sdk.Plugin { return &toolshell.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "tool-shell", Type: "tool", APIVersion: ">=1.0,<2.0",
+		Requires: []string{"ctx.tools"}}, Bundle: "base"},
+	"tool-files": {Factory: func() sdk.Plugin { return &toolfiles.Plugin{} }, Manifest: &sdk.Manifest{
+		ID: "tool-files", Type: "tool", APIVersion: ">=1.0,<2.0",
+		Requires: []string{"ctx.tools"}}, Bundle: "base"},
+	"tool-web": {Factory: func() sdk.Plugin { return &toolweb.Plugin{} }, Manifest: &sdk.Manifest{
+		ID: "tool-web", Type: "tool", APIVersion: ">=1.0,<2.0",
 		Requires: []string{"ctx.tools"}}, Bundle: "base"},
 	"mcp-bridge": {Factory: func() sdk.Plugin { return &mcpbridge.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "mcp-bridge", Type: "host", APIVersion: ">=1.0,<2.0",
