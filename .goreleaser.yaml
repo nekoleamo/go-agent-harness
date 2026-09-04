@@ -1,8 +1,9 @@
-# goreleaser 发行配置(DESIGN.md §7.4 交付门:六目标全绿,CGO_ENABLED=0,体积 <25MB)。
+# goreleaser 发行配置(DESIGN.md §7.4 交付门:六目标全绿,CGO_ENABLED=0,体积 <40MB)。
 # 使用:安装 goreleaser 后 `goreleaser release` 或 `goreleaser release --snapshot`。
 before:
   hooks:
     - go mod tidy
+    - bash scripts/gen-extplugins.sh # M7 体积门:重建外部插件 gzip embed(漏则体积回归)
 builds:
   - id: gah
     binary: gah

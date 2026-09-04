@@ -233,7 +233,7 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 |---|---|
 | 编译 | `CGO_ENABLED=0 go build -trimpath`;`-ldflags "-s -w -X main.version=..."` 注入版本 |
 | 矩阵 | goreleaser:linux/macOS × amd64/arm64(Windows 随 pty 进度) |
-| 体积验收 | 单二进制 **< 40MB**(P1 方案B 含随包外部插件 tool-basic ~13MB;基线 23MB);超限则 upx(可选)与 embed 资源压缩审查 |
+| 体积验收 | 单二进制 **< 40MB**(M6.9 工具类全外部化 + M7 gzip embed:外部插件 .gz 压缩率 ~50%,三件套 ~15MB;基线 ~18MB);超限则 upx(可选)与 embed 资源压缩审查 |
 | 校验 | 发布附 sha256;`gah version` 输出版本与构建信息 |
 
 ### 7.5 升级
@@ -245,7 +245,7 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 | 验收项 | 实测结果 |
 |---|---|
 | `CGO_ENABLED=0` 静态编译 | ✅ `-trimpath -ldflags="-s -w -X main.version=v0.1.0"`;otool 仅系统库 |
-| 体积 <40MB | ✅ 38.1MB(darwin/arm64,P1 起含随包插件);基线(无插件)23MB |
+| 体积 <40MB | ✅ 31.9MB(darwin/arm64,M7 gzip embed 回归;M6.9 峰值曾达 83.5MB 已修复);基线(无插件)~18MB |
 | 版本注入 | ✅ `gah -version` → `gah v0.1.0 (github.com/nekoleamo/go-agent-harness)` |
 | 交叉编译六目标 | ✅ darwin/linux/windows × amd64/arm64(除 windows/arm64 视 pty) |
 | 裸机启动 | ✅ `env -i PATH=/usr/bin:/bin HOME=<tmp>` 下 headless 一轮成功 |

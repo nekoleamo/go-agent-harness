@@ -1,5 +1,5 @@
-# CI:go vet + go test -race 全绿 + 裸机启动冒烟(对齐 AGENTS.md 与 DESIGN.md §15)。
-# 裸机冒烟:env -i 纯净环境启动二进制(无 git/chromium 等依赖),验证单二进制自包含。
+# CI:go vet + go test -race 全绿 + 体积门 + 裸机冒烟(对齐 AGENTS.md 与 DESIGN.md §15)。
+# 体积门(<40MB):外部插件 gzip embed 后单二进制交付(防止类似 M6.9 体积回归)。
 name: ci
 on:
   push:
@@ -15,12 +15,19 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: 重建外部插件(gzip embed)
+        run: bash scripts/gen-extplugins.sh
       - name: go vet
         run: go vet ./...
       - name: go test -race
         run: go test -race ./...
+      - name: 体积门(单二进制 <40MB)
+        run: |
+          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o gah ./cmd/gah
+          size=$(stat -c%s gah)
+          echo "主二进制: $size bytes"
+          [ "$size" -lt 41943040 ] || { echo "体积门失败: $size >= 40MB"; exit 1; }
       - name: 裸机冒烟(env -i 纯净环境启动)
         run: |
-          CGO_ENABLED=0 go build -trimpath -o gah ./cmd/gah
           env -i HOME="$(mktemp -d)" PATH="$PATH" ./gah --profile headless --ephemeral --dump-config >/dev/null
           echo "裸机启动 OK"

@@ -11,7 +11,7 @@ Go 实现的编程代理 Agent Harness:以**单二进制**交付全部能力,对
 
 **排除 dsh 因 Node.js 带来的依赖**:
 
-- 单一静态二进制(`CGO_ENABLED=0`,实测 **15.8MB**),无 node 运行时、无 node_modules 分发链;
+- 单一静态二进制(`CGO_ENABLED=0`,实测 **31.9MB**),无 node 运行时、无 node_modules 分发链;
 - `scp` 一个文件到目标机即开箱可用,运行时依赖 = 0(仅系统库);
 - 六目标交叉编译(darwin/linux/windows × amd64/arm64),裸环境 `env -i` 可直接启动。
 
@@ -128,13 +128,13 @@ $GAH_HOME(缺省 ~/.gah)  # 全局指令 AGENTS.md / 全局技能 skills/ / 会�
 goreleaser release --snapshot
 ```
 
-验收实测(DESIGN.md §7.6):静态单文件 15.8MB、六目标全绿、裸机启动、sha256 附档。
+验收实测(DESIGN.md §7.6):静态单文件 31.9MB、六目标全绿、裸机启动、sha256 附档。
 
 ## 九、状态与路线图
 
 - **已交付**:M1 微内核 → M2 base(ReAct/LLM/工具)→ M3 TUI → M4 生态(沙箱/审批/插拔/凭据)→ M5 桥 + starlark workflow → M5.5 MCP + 配置自愈 → M5.6 指令注入 + 技能机制 → 完善 A 组(会话持久化/重试/取消)+ B 组(apiVersion 校验/export/外部热重载/embed 交付);20 包 `-race` 全绿;交付门通过(单二进制自包含实测)。
 - **M6 已全部交付**:host-jobs 后台任务(`ctx.jobs` + job_list/output/kill + `/jobs`)、workflow 子代理 fanout(agent/parallel/pipeline)、tool-shell pty 交互(`data.pty` 开关)、tool-files/tool-web(file_read/write/append/edit + web_fetch,经 `ctx.sandbox` 三档联动)、会话 token 滚动摘要压缩(`token_budget_chars`,完整日志留盘)、插件安装(`gah -install <repo>@version` / `-uninstall` / `-list-plugins`,manifest 见 DESIGN §14.1)。
-- **P0+P1 外部化(已交付)**:sdk 独立 module;桥协议多工具化 + 工具级超时 + 崩溃自动拉起;shell/files/web 合并为 tool-basic 随主包 embed,首启释放 `~/.gah/plugins/`,运行时全为外部进程插件(内置 tool-* 停用,host-bridge 默认启用;单二进制 38MB < 40MB)。
+- **P0+P1 外部化(已交付)**:sdk 独立 module;桥协议多工具化 + 工具级超时 + 崩溃自动拉起;shell/files/web 合并为 tool-basic 随主包 embed,首启释放 `~/.gah/plugins/`,运行时全为外部进程插件(内置工具停用,host-bridge 默认启用;M6.9 扩展到 workflow/mcp 桥,M7 gzip 回归后单二进制 31.9MB < 40MB)。
 - **P2 插拔解耦(已交付)**:集成矩阵验证插件卸载解耦——被依赖者拒卸(提示含依赖者)、叶子/无依赖者可卸且回合继续、卸载后调用已卸工具给可操作提示、LLM 适配器全卸后回合显式失败不静默;宿主服务类(skills/jobs/workflow)保持进程内(外部化需宿主服务桥,与微内核/veto 语义冲突,收益低)。
 - **Anthropic 支持(已交付)**:llm-anthropic-compat(Messages API + SSE);模型前缀路由——`/model claude-*` 自动走 Anthropic(`ANTHROPIC_API_KEY`),非 claude 回落 OpenAI 兼容适配器;单测 + 路由单测 + 端到端回合验证。
 

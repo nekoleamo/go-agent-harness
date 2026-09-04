@@ -5,9 +5,11 @@
 package tests
 
 import (
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -29,9 +31,21 @@ import (
 func releaseExt(t *testing.T, dir string, names ...string) {
 	t.Helper()
 	for _, n := range names {
-		raw, err := embed.Seed.ReadFile("extplugins/" + n)
+		// M7 体积门:embed 存 gzip,named name.gz;释放时解压
+		fgz, err := embed.Seed.Open("extplugins/" + n + ".gz")
 		if err != nil {
-			t.Fatalf("embed 读取 %s: %v", n, err)
+			t.Fatalf("embed 读取 %s.gz: %v", n, err)
+		}
+		gzr, gerr := gzip.NewReader(fgz)
+		if gerr != nil {
+			fgz.Close()
+			t.Fatal(gerr)
+		}
+		raw, err := io.ReadAll(gzr)
+		gzr.Close()
+		fgz.Close()
+		if err != nil {
+			t.Fatal(err)
 		}
 		dst := filepath.Join(dir, n)
 		if err := os.WriteFile(dst, raw, 0o755); err != nil {

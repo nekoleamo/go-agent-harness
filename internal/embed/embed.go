@@ -3,10 +3,13 @@
 package embed
 
 import (
+	"compress/gzip"
 	"embed"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
@@ -65,6 +68,7 @@ func EnsureSeed(home string) ([]string, error) {
 }
 
 // EnsurePlugins 释放随包外部插件二进制到 home/plugins/<name>/<name>(方案 B 首启释放)。
+// P0 体积门(M7):embed 存 gzip(.gz,压缩率约 50%),释放时解压落盘;
 // 已存在的同名文件跳过(用户经 gah -install/-uninstall 维护的版本优先)。
 func EnsurePlugins(home string) ([]string, error) {
 	names, err := listNames("extplugins")
@@ -73,15 +77,32 @@ func EnsurePlugins(home string) ([]string, error) {
 	}
 	var written []string
 	for _, n := range names {
-		dst := filepath.Join(home, "plugins", n, n)
+		if !strings.HasSuffix(n, ".gz") {
+			continue // 只处理 gzip 打包的外部插件
+		}
+		bin := strings.TrimSuffix(n, ".gz")
+		dst := filepath.Join(home, "plugins", bin, bin)
 		if _, err := os.Stat(dst); err == nil {
 			continue // 已存在(用户自装/旧版本):不覆盖
 		}
-		raw, err := Seed.ReadFile("extplugins/" + n)
+		fgz, err := Seed.Open("extplugins/" + n)
 		if err != nil {
 			return nil, err
 		}
+		gzr, err := gzip.NewReader(fgz)
+		if err != nil {
+			fgz.Close()
+			return nil, err
+		}
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			gzr.Close()
+			fgz.Close()
+			return nil, err
+		}
+		raw, err := io.ReadAll(gzr)
+		gzr.Close()
+		fgz.Close()
+		if err != nil {
 			return nil, err
 		}
 		if err := os.WriteFile(dst, raw, 0o755); err != nil {
