@@ -3,6 +3,7 @@
 //   - 脚本内每个可用工具以同名函数暴露(shell{...});无标准库/系统调用 → 天然沙箱;
 //   - 结果约定:顶层变量 result 即结果(可赋值 dict/list);
 //   - background: true 异步执行,结果经 workflow_collect 取回。
+//
 // 职责边界(M6.2 拆分):本插件只做 starlark 沙箱执行 + 工具适配;
 // 子代理编排(agent/parallel/pipeline)的宿主服务在 host-fanout(ctx.fanout)。
 package toolworkflow

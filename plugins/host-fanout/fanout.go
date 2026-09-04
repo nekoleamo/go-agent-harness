@@ -30,8 +30,8 @@ func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
 	if err := c.Inject("ctx.tools", &tools); err != nil {
 		return nil, err
 	}
-	_ = c.Inject("ctx.llm", &llm)           // 未装配时子代理调用显式报错
-	_ = c.Inject("ctx.systemPrompt", &sp)   // 同上
+	_ = c.Inject("ctx.llm", &llm)         // 未装配时子代理调用显式报错
+	_ = c.Inject("ctx.systemPrompt", &sp) // 同上
 	f := &Fanout{tools: tools, llm: llm, sp: sp}
 	if err := c.Provide("ctx.fanout", f); err != nil {
 		return nil, err
@@ -41,9 +41,9 @@ func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
 
 // Fanout 子代理编排实现。
 type Fanout struct {
-	tools  sdk.ToolRegistry
-	llm    sdk.LLMService
-	sp     sdk.SystemPromptService
+	tools sdk.ToolRegistry
+	llm   sdk.LLMService
+	sp    sdk.SystemPromptService
 }
 
 // maxSubSteps 子代理单轮最大 ReAct 迭代(防死循环)。

@@ -195,6 +195,26 @@ func (s *Service) ResetProvider() error {
 	return pa.Reset()
 }
 
+// ListModels 当前通用适配器端点可用模型列表(TUI /model 动态枚举)。
+func (s *Service) ListModels() ([]sdk.ModelInfo, error) {
+	pa, err := s.genericProvider()
+	if err != nil {
+		return nil, err
+	}
+	if ml, ok := pa.(sdk.ModelLister); ok {
+		return ml.ListModels()
+	}
+	return nil, fmt.Errorf("llm: 通用适配器 %s 不支持模型列举(未实现 sdk.ModelLister)", paName(pa))
+}
+
+// paName ProviderAdapter 的名称(展示用)。
+func paName(pa sdk.ProviderAdapter) string {
+	if n, ok := pa.(interface{ Name() string }); ok {
+		return n.Name()
+	}
+	return fmt.Sprintf("%T", pa)
+}
+
 // ProviderInfo 当前通用适配器的端点与凭据(展示用;key 由调用方打码)。
 func (s *Service) ProviderInfo() (string, string, bool) {
 	pa, err := s.genericProvider()

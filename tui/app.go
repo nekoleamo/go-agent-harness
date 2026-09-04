@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -425,6 +426,55 @@ func providerSetFree(picked []string) []string {
 	return []string{"baseUrl", "apiKey", "model?"}
 }
 
+// modelOptions 动态模型枚举(来源备注;失败/空 → nil 回退手动输入)。
+// sdk 层面:Options 先于 FreeArgs 尝试(advanceInto 语义)。
+func (a *App) modelOptions([]string) []sdk.Option {
+	infos, err := a.llm.ListModels()
+	if err != nil {
+		return nil
+	}
+	src := a.providerShort()
+	opts := make([]sdk.Option, 0, len(infos))
+	for _, m := range infos {
+		opts = append(opts, sdk.Option{Value: m.ID, Desc: modelDesc(m.ID, m.OwnedBy, src)})
+	}
+	return opts
+}
+
+// providerShort 当前 provider 域名短名(api.siliconflow.cn → siliconflow;模型来源备注)。
+func (a *App) providerShort() string {
+	base, _, ok := a.llm.ProviderInfo()
+	if !ok {
+		return "?"
+	}
+	return providerShortFromURL(base)
+}
+
+// providerShortFromURL URL → 来源短名(纯函数,可测):api.siliconflow.cn → siliconflow。
+func providerShortFromURL(u string) string {
+	parsed, err := url.Parse(u)
+	if err != nil || parsed.Hostname() == "" {
+		// 非法/无主机:回退原始串(避免凭空猜来源)
+		return strings.TrimPrefix(strings.TrimPrefix(u, "https://"), "http://")
+	}
+	h := strings.TrimPrefix(parsed.Hostname(), "api.")
+	if i := strings.Index(h, "."); i > 0 {
+		h = h[:i]
+	}
+	if h == "" {
+		return "?"
+	}
+	return h
+}
+
+// modelDesc 模型选项来源备注(纯函数):(来源),归属前缀不同时附带 (来源/归属)。
+func modelDesc(id, ownedBy, src string) string {
+	if ownedBy != "" && ownedBy != strings.Split(id, "/")[0] {
+		return "(" + src + "/" + ownedBy + ")"
+	}
+	return "(" + src + ")"
+}
+
 // maskKey 凭据打码(尾 4 位;短 key 全掩)。
 func maskKey(k string) string {
 	if k == "" {
@@ -443,7 +493,7 @@ func (a *App) registerInternalCommands() {
 		return
 	}
 	internal := []sdk.CommandSpec{
-		{Name: "model", Usage: "/model <名>", Desc: "切换模型", Args: []sdk.ArgLevel{{FreeArgs: func([]string) []string { return []string{"模型名"} }}}, Run: func(args []string) (string, error) {
+		{Name: "model", Usage: "/model <名>", Desc: "切换模型", Args: []sdk.ArgLevel{{Options: a.modelOptions, FreeArgs: func([]string) []string { return []string{"模型名"} }}}, Run: func(args []string) (string, error) {
 			if len(args) < 1 {
 				return "", errString("/model <名称> 切换模型")
 			}

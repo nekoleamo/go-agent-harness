@@ -90,15 +90,15 @@ type wireToolUse struct {
 }
 
 type wireToolResult struct {
-	Type        string `json:"type"`
-	ToolUseID   string `json:"tool_use_id"`
-	Content     string `json:"content"`
-	IsError     bool   `json:"is_error,omitempty"`
+	Type      string `json:"type"`
+	ToolUseID string `json:"tool_use_id"`
+	Content   string `json:"content"`
+	IsError   bool   `json:"is_error,omitempty"`
 }
 
 type wireMsg struct {
-	Role    string  `json:"role"`
-	Content []any   `json:"content"`
+	Role    string `json:"role"`
+	Content []any  `json:"content"`
 }
 
 type wireTool struct {
@@ -108,13 +108,13 @@ type wireTool struct {
 }
 
 type wireReq struct {
-	Model      string     `json:"model"`
-	MaxTokens  int        `json:"max_tokens"`
-	System     string     `json:"system,omitempty"`
-	Messages   []wireMsg  `json:"messages"`
-	Tools      []wireTool `json:"tools,omitempty"`
-	Stream     bool       `json:"stream"`
-	Temperature *float64  `json:"temperature,omitempty"`
+	Model       string     `json:"model"`
+	MaxTokens   int        `json:"max_tokens"`
+	System      string     `json:"system,omitempty"`
+	Messages    []wireMsg  `json:"messages"`
+	Tools       []wireTool `json:"tools,omitempty"`
+	Stream      bool       `json:"stream"`
+	Temperature *float64   `json:"temperature,omitempty"`
 }
 
 // wireEvent SSE 事件(共用字段:type、index、delta、content_block、message、usage)。

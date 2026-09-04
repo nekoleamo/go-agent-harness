@@ -18,7 +18,11 @@ type providerAdapter struct {
 	defaultKey    string
 	configuredURL string
 	configuredKey string
+	models        []sdk.ModelInfo // ListModels 返回
 }
+
+// ListModels 实现 sdk.ModelLister(转发测试用)。
+func (a *providerAdapter) ListModels() ([]sdk.ModelInfo, error) { return a.models, nil }
 
 func (a *providerAdapter) Name() string { return a.name }
 func (a *providerAdapter) Complete(ctx context.Context, req *sdk.LLMRequest, onChunk func(ev sdk.LLMStreamEvent) error) (*sdk.LLMResponse, error) {
@@ -120,6 +124,28 @@ func TestSetProviderInvalidURL(t *testing.T) {
 	}
 	if gen.configuredURL != "" {
 		t.Fatalf("校验失败不应写入: %s", gen.configuredURL)
+	}
+}
+
+// TestListModelsForward 转发通用适配器的模型列表(OwnedBy 保留可空);无 ModelLister 显式报错。
+func TestListModelsForward(t *testing.T) {
+	gen := &providerAdapter{name: "generic", models: []sdk.ModelInfo{
+		{ID: "deepseek-ai/DeepSeek-V3", OwnedBy: "deepseek-ai"},
+		{ID: "Qwen/Qwen2.5-72B-Instruct"}, // OwnedBy 可空
+	}}
+	s := &Service{adapters: map[string]sdk.LLMAdapter{"generic": gen}, order: []string{"generic"}}
+	infos, err := s.ListModels()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(infos) != 2 || infos[1].OwnedBy != "" {
+		t.Fatalf("ListModels 转发不符(OwnedBy 保留可空): %+v", infos)
+	}
+	// 仅有前缀路由适配器(claude,未实现 ModelLister)→ 显式报错
+	cl := &Service{adapters: map[string]sdk.LLMAdapter{}, order: []string{"claude"}}
+	cl.adapters["claude"] = &claudeAdapter{providerAdapter: providerAdapter{name: "claude"}}
+	if _, err := cl.ListModels(); err == nil {
+		t.Fatal("无 ModelLister 通用适配器应显式报错")
 	}
 }
 

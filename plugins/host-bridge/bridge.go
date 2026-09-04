@@ -7,11 +7,11 @@ package hostbridge
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"crypto/rand"
-	"encoding/hex"
 	"io"
 	"log/slog"
 	"net/rpc"
@@ -100,8 +100,8 @@ type extEntry struct {
 type Bridge struct {
 	dir     string
 	tools   sdk.ToolRegistry
-	cbAddr  string // 宿主回调通道地址(GAH_CB_ADDR 注入外部进程)
-	cbToken string // M7 鉴权 token(GAH_CB_TOKEN 注入外部进程,回传校验)
+	cbAddr  string       // 宿主回调通道地址(GAH_CB_ADDR 注入外部进程)
+	cbToken string       // M7 鉴权 token(GAH_CB_TOKEN 注入外部进程,回传校验)
 	lg      *slog.Logger // P3 软降级日志(sdk.Ctx.Logger();nil 时兜底 slog.Default)
 	mu      sync.RWMutex
 	entries map[string]*extEntry // bin 绝对路径 → 条目

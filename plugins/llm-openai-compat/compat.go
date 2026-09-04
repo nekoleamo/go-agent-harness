@@ -94,11 +94,13 @@ type Adapter struct {
 	apiKey  string
 	// 启动默认快照(Unset/Reset 恢复用;env/样板/provider.yaml 顺序的生效值)
 	defaultBaseURL, defaultAPIKey, defaultModel string
+	modelsCache                                 []sdk.ModelInfo // ListModels TTL 缓存
+	modelsCachedAt                              time.Time       // 缓存写入时间
 }
 
 func (a *Adapter) Name() string { return "llm-openai-compat" }
 
-// Configure 运行时切换端点与凭据(校验 http(s) 前缀;原子生效,零重启)。
+// Configure 运行时切换端点与凭据(校验 http(s) 前缀;原子生效,零重启;模型缓存失效)。
 func (a *Adapter) Configure(baseURL, apiKey string) error {
 	if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
 		return fmt.Errorf("provider: base_url 须为 http(s):// 前缀: %q", baseURL)
@@ -106,6 +108,7 @@ func (a *Adapter) Configure(baseURL, apiKey string) error {
 	a.mu.Lock()
 	a.baseURL = strings.TrimSuffix(baseURL, "/")
 	a.apiKey = apiKey
+	a.modelsCache = nil // 端点已变:缓存失效
 	a.mu.Unlock()
 	return nil
 }
@@ -140,6 +143,63 @@ func (a *Adapter) Reset() error {
 	a.baseURL, a.apiKey, a.model = a.defaultBaseURL, a.defaultAPIKey, a.defaultModel
 	a.mu.Unlock()
 	return nil
+}
+
+// modelCacheTTL 模型列表缓存时长(防每次 /model 回车打端点)。
+const modelCacheTTL = 10 * time.Minute
+
+// ListModels 拉取当前端点 /models 可用模型(TTL 缓存 + 锁;切换端点后失效)。
+func (a *Adapter) ListModels() ([]sdk.ModelInfo, error) {
+	a.mu.RLock()
+	if a.modelsCache != nil && time.Since(a.modelsCachedAt) < modelCacheTTL {
+		infos := a.modelsCache
+		a.mu.RUnlock()
+		return infos, nil
+	}
+	baseURL := a.baseURL
+	key := a.apiKey
+	a.mu.RUnlock()
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, baseURL+"/models", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	if key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("llm-openai: models 列表请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("llm-openai: models HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	var mr modelsResp
+	if err := json.NewDecoder(resp.Body).Decode(&mr); err != nil {
+		return nil, fmt.Errorf("llm-openai: models 解析失败: %w", err)
+	}
+	infos := make([]sdk.ModelInfo, 0, len(mr.Data))
+	for _, d := range mr.Data {
+		if d.ID != "" {
+			infos = append(infos, sdk.ModelInfo{ID: d.ID, OwnedBy: d.OwnedBy})
+		}
+	}
+	a.mu.Lock()
+	a.modelsCache = infos
+	a.modelsCachedAt = time.Now()
+	a.mu.Unlock()
+	return infos, nil
+}
+
+type modelsResp struct {
+	Object string `json:"object"`
+	Data   []struct {
+		ID      string `json:"id"`
+		OwnedBy string `json:"owned_by"`
+	} `json:"data"`
 }
 
 // endpoint 当前聊天端点(锁保护读取)。

@@ -255,7 +255,9 @@ func TestLiveToolList(t *testing.T) {
 	disp := tools.Register(fakeTool{def: sdk.ToolDefinition{Name: "live", Description: "运行期注册", InputSchema: map[string]any{"type": "object"}}})
 	lines := serveOnce(t, c, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`+"\n", 1, buf)
 	var lst struct {
-		Tools []struct{ Name string `json:"name"` } `json:"tools"`
+		Tools []struct {
+			Name string `json:"name"`
+		} `json:"tools"`
 	}
 	if err := json.Unmarshal(parseResp(t, lines)["1"].Result, &lst); err != nil {
 		t.Fatal(err)

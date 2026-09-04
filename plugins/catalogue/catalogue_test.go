@@ -85,9 +85,9 @@ func TestSpecialPluginsPresent(t *testing.T) {
 	}
 	// 抽查工厂可实例化且包名一致(签名保真)
 	checks := map[string]sdk.Plugin{
-		"host-fanout":   &hostfanout.Plugin{},
-		"host-jobs":     &hostjobs.Plugin{},
-		"mcp-server":    &mcpserver.Plugin{},
+		"host-fanout":    &hostfanout.Plugin{},
+		"host-jobs":      &hostjobs.Plugin{},
+		"mcp-server":     &mcpserver.Plugin{},
 		"token-compress": &tokencompress.Plugin{},
 	}
 	for id, pl := range checks {

@@ -88,6 +88,17 @@ type ModelRouter interface {
 	Models() []string
 }
 
+// ModelInfo 一个可选模型(经 ListModels 从端点 /models 拉取)。
+type ModelInfo struct {
+	ID      string // 模型名(如 deepseek-ai/DeepSeek-V3)
+	OwnedBy string // 模型归属(如 deepseek-ai;可空)
+}
+
+// ModelLister 可选接口:适配器支持列举端点可用模型(TUI /model 动态枚举;失败回退手动)。
+type ModelLister interface {
+	ListModels() ([]ModelInfo, error)
+}
+
 // LLMService 服务(ctx.llm):注册适配器 + 以当前默认适配器请求。
 type LLMService interface {
 	// RegisterAdapter 注册适配器,返回 Disposer(卸载即撤销)。
@@ -117,6 +128,9 @@ type LLMService interface {
 
 	// ProviderInfo 当前通用适配器的端点与凭据(展示用;key 返回原文供打码)。
 	ProviderInfo() (baseURL, apiKey string, ok bool)
+
+	// ListModels 当前通用适配器端点可用模型列表(TUI /model 动态枚举;失败回退手动)。
+	ListModels() ([]ModelInfo, error)
 }
 
 // ProviderAdapter 可选接口:适配器支持运行时端点/凭据配置(TUI /provider)。
