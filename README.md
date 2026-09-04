@@ -95,7 +95,7 @@ export DEEPSEEK_API_KEY=sk-...            # 或 OPENAI_API_KEY / GAH_BASE 自定
 | 命令 | 作用 |
 |---|---|
 | `/model <名>` | 切换模型(**动态枚举当前端点全部模型**,来源括号备注如 `(siliconflow)`;列表失败/无 key 回退手动输入) |
-| **思考等级快捷键** | `Tab` 前进 / `Shift+Tab` 后退循环(off→low→medium→high→off,从 off 开始);状态栏显示 `思维: <等级>`(off 隐藏);无 `/thinking` 命令,仅快捷键切换 |
+| `/thinking off\|low\|medium\|high` | 思考等级(推理预算);**快捷键 Shift+Tab 循环前进**(off→low→medium→high→off,从 off 开始);状态栏显示 `思维: <等级>`(off 隐藏) |
 | `/sandbox ro\|ws\|full` | 运行期切沙箱档(状态栏实时显示) |
 | `/plugins list\|on\|off <id>` | 运行期插拔插件 |
 | `/settings history N\|off\|unlimited` | 会话历史注入条数 |

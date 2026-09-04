@@ -27,13 +27,13 @@ type Model struct {
 	w, h  int
 	quit  bool
 
-	onSubmit  func(input string)               // 普通输入提交(注入)
-	onCommand func(cmd string) error           // 命令处理(注入)
-	onConfirm func(ok bool)                    // 确认答复(注入;见 app.Confirm)
-	onCancel  func()                           // 取消进行中的回合(注入;Esc 触发)
-	hints     func(prefix string) []sdk.Option // 命令选项(注入;前缀=去掉 / 后的输入)
-	levels    func(name string) []sdk.ArgLevel // 命令参数级定义(注入;枚举/自由级)
-	onThinkingCycle func(dir int) // Tab/Shift+Tab 思考等级循环(注入:dir=1 前进,-1 后退)
+	onSubmit        func(input string)               // 普通输入提交(注入)
+	onCommand       func(cmd string) error           // 命令处理(注入)
+	onConfirm       func(ok bool)                    // 确认答复(注入;见 app.Confirm)
+	onCancel        func()                           // 取消进行中的回合(注入;Esc 触发)
+	hints           func(prefix string) []sdk.Option // 命令选项(注入;前缀=去掉 / 后的输入)
+	levels          func(name string) []sdk.ArgLevel // 命令参数级定义(注入;枚举/自由级)
+	onThinkingCycle func(dir int)                    // Tab/Shift+Tab 思考等级循环(注入:dir=1 前进,-1 后退)
 }
 
 // spinInterval 思考动画帧间隔。
@@ -145,13 +145,9 @@ func (m *Model) handleKey(msg tea.KeyMsg) {
 			}
 		}
 	case tea.KeyTab:
-		// Tab = 思考等级前进循环;Shift+Tab = 后退循环(off→low→medium→high→off)
-		if m.onThinkingCycle != nil {
-			dir := 1
-			if k.Mod&tea.ModShift != 0 {
-				dir = -1
-			}
-			m.onThinkingCycle(dir)
+		// 仅 Shift+Tab 切换思考等级(前进循环 off→low→medium→high→off);单独 Tab 不绑定
+		if k.Mod&tea.ModShift != 0 && m.onThinkingCycle != nil {
+			m.onThinkingCycle(1)
 		}
 	case tea.KeyEscape:
 		if m.state.Pick != nil {
