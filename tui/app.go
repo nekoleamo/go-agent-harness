@@ -50,6 +50,7 @@ func NewApp(c sdk.Ctx, loop sdk.AgentLoop, llm sdk.LLMService, profile string) *
 	}
 	m := &Model{state: state}
 	a := &App{model: m, c: c, loop: loop, llm: llm, confirmCh: make(chan bool, 1)}
+	a.syncDisplay() // 状态栏模型 + 来源(provider 域名缩写)拉实际生效值
 	var reg sdk.CommandRegistry
 	if err := c.Inject("ctx.commands", &reg); err != nil {
 		// host-commands 未装配:命令分发/提示不可用(不阻塞 TUI)
@@ -645,6 +646,7 @@ func (a *App) cmdProvider(args []string) (string, error) {
 		if err := providerfile.Save(p); err != nil {
 			return "", errString("已运行时生效,但持久化失败: " + err.Error())
 		}
+		a.syncDisplay() // 端点/模型变更后刷新状态栏(含来源)
 		return "已切换: " + args[1] + " | 模型: " + orDefault(a.llm.Model(), "未设置") + " | Key: " + maskKey(args[2]) + "(已持久化 provider.yaml, 0600)", nil
 	case "unset":
 		if len(args) < 2 {
@@ -656,6 +658,7 @@ func (a *App) cmdProvider(args []string) (string, error) {
 		if err := a.llm.UnsetProvider(args[1]); err != nil {
 			return "", errString("已删除持久化项,但运行时回退失败: " + err.Error())
 		}
+		a.syncDisplay()
 		return "已删除 " + args[1] + "(持久化与运行期均已回退)", nil
 	case "clear":
 		if err := providerfile.Clear(); err != nil {
@@ -664,6 +667,7 @@ func (a *App) cmdProvider(args []string) (string, error) {
 		if err := a.llm.ResetProvider(); err != nil {
 			return "", errString("已删除 provider.yaml,但运行时复位失败: " + err.Error())
 		}
+		a.syncDisplay()
 		return "已清除设置并复位运行期(回退 env/样板),重启后一致", nil
 	default:
 		return "", errString("/provider show|set|unset|clear")
@@ -699,6 +703,17 @@ func (a *App) modelOptions([]string) []sdk.Option {
 		opts = append(opts, sdk.Option{Value: m.ID, Desc: modelDesc(m.ID, m.OwnedBy, src)})
 	}
 	return opts
+}
+
+// syncDisplay 状态栏模型与来源随 provider/模型配置刷新(启动、/model、provider set/unset/clear)。
+// 模型 id = 适配器实际生效值;来源 = 当前 provider 域名短名(未配置则空,不显示)。
+func (a *App) syncDisplay() {
+	a.model.state.Model = a.llm.Model()
+	src := ""
+	if base, _, ok := a.llm.ProviderInfo(); ok {
+		src = providerShortFromURL(base)
+	}
+	a.model.state.ModelSrc = src
 }
 
 // providerShort 当前 provider 域名短名(api.siliconflow.cn → siliconflow;模型来源备注)。
@@ -762,7 +777,7 @@ func (a *App) registerInternalCommands() {
 				return "", errString("/model <名称> 切换模型")
 			}
 			a.llm.SetModel(args[0])
-			a.model.state.Model = args[0]
+			a.syncDisplay()
 			// 联动:持久化 provider 存在时同步 model(重启后模型与端点保持一致)
 			if err := providerfile.UpdateModel(args[0]); err != nil {
 				return "已切换模型 " + args[0] + ",但持久化同步失败: " + err.Error(), nil

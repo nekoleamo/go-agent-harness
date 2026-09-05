@@ -96,6 +96,7 @@
 - 2026-09-06:TUI 选择/提示列表滚动窗口修复(选项超 6 行截断丢弃 → pickWindow 随光标滚动展示剩余项,上/下箭头双向滚动;静态 / 命令提示超窗改余量提示;见 docs/TUI_OPTIMIZE.md §1.7)。
 - 2026-09-06:TUI 选择器内过滤(参数级直接打字=子串即时过滤 Value/Desc,退格/Esc 恢复,无匹配回车不提交;命令名前缀过滤不变;见 docs/TUI_OPTIMIZE.md §1.8)。
 - 2026-09-06:TUI 多值自由参数逐步向导(框架级 A:FreeArgs 多参数=逐级 Enter 输入,尾 '?' 可选可跳过,旧单参/一次多词语义兼容;provider set 即获逐级体验;见 docs/TUI_OPTIMIZE.md §1.9)。
+- 2026-09-06:TUI 状态栏模型来源标注(选中/启动后显示 模型: id(来源缩写如 siliconflow),随 provider set/unset/clear、/model 与启动经 syncDisplay 刷新,未配置不显示)。
 - 2026-09-05:初版(覆盖 M7–M11 与 TUI S1–S3,依据 DESIGN §14.1 切片与 docs/TUI_OPTIMIZE.md)。
 - 2025-10:P4 体验改进排期新增(来源 docs/PI_COMPARISON.md;P0–P2 已交付,P3 M7 待排;见总览与 P4 节)。
 - 2026-09-05:TUI 线 P0 三件(S1.5/S1.2/S1.1)与 M6.15–M6.21 修复链全部交付(含 /search 自由级断点交互修复);宿主工具线(M8/M10)仍未开工;剩余 P0 = 4(S1.3 输入增强)→5(M8-todo T1)→6(M10-memory)→6a(/workspace)。

@@ -82,8 +82,12 @@ func renderStatusLine(s *State, width int) string {
 	if s.Thinking != "" && s.Thinking != "off" {
 		think = " | 思维: " + s.Thinking
 	}
+	model := orDefault(s.Model, "未设置")
+	if s.Model != "" && s.ModelSrc != "" {
+		model += "(" + s.ModelSrc + ")" // 来源标注:同名模型跨 provider 可辨
+	}
 	return styleStatus.Render(fmt.Sprintf(
 		" gah | %s | %s | 工作区: %s | 模型: %s%s | 沙箱: %s%s%s%s",
-		state, s.Profile, orDefault(s.Workspace, "?"), orDefault(s.Model, "未设置"), think, orDefault(s.Sandbox, string(sdk.SandboxWorkspace)), sess, stats, strings.Repeat(" ", width),
+		state, s.Profile, orDefault(s.Workspace, "?"), model, think, orDefault(s.Sandbox, string(sdk.SandboxWorkspace)), sess, stats, strings.Repeat(" ", width),
 	))
 }

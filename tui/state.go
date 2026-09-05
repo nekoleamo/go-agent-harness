@@ -22,7 +22,8 @@ type Line struct {
 type State struct {
 	Lines          []Line
 	Running        bool
-	Model          string
+	Model          string // 当前模型 id(状态栏;空 = 未设置)
+	ModelSrc       string // 模型来源缩写(当前 provider 域名,如 siliconflow;空 = 未配置/不显示)
 	Profile        string
 	Error          string
 	Input          string

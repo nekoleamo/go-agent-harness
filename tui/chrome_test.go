@@ -82,6 +82,15 @@ func TestStatusLineFields(t *testing.T) {
 	if out := stripColor(renderStatusLine(s4, 60)); !strings.Contains(out, "会话: s1") {
 		t.Fatalf("会话 id 应显示: %q", out)
 	}
+	// 模型来源标注(同名模型跨 provider 可辨);未设置模型时不追加
+	s5 := &State{Model: "deepseek-ai/DeepSeek-V3", ModelSrc: "siliconflow"}
+	if out := stripColor(renderStatusLine(s5, 60)); !strings.Contains(out, "deepseek-ai/DeepSeek-V3(siliconflow)") {
+		t.Fatalf("模型应带来源: %q", out)
+	}
+	s6 := &State{}
+	if out := stripColor(renderStatusLine(s6, 60)); strings.Contains(out, "未设置(") {
+		t.Fatalf("未设置模型不应追加来源: %q", out)
+	}
 }
 
 // TestHintLines 提示区截断:超过 maxHintRows 截断并补 "…"。
