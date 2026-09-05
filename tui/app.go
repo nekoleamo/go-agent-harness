@@ -32,6 +32,9 @@ type App struct {
 	cmds      sdk.CommandRegistry // ctx.commands(可为 nil:未装配时命令不可用)
 
 	cancelFn context.CancelFunc // 当前回合的取消函数(Esc 中断,见 model.onCancel)
+
+	mFiles    []sdk.Option // @ 引用文件索引缓存(projectFiles;当前 cwd 下惰性构建)
+	mFilesDir string       // 缓存对应的 cwd(失效判据:workspace 切换后重建)
 }
 
 // NewApp 构造 TUI 应用。命令注册表(ctx.commands,host-commands 提供)注入:
@@ -63,6 +66,7 @@ func NewApp(c sdk.Ctx, loop sdk.AgentLoop, llm sdk.LLMService, profile string) *
 	m.onCancel = a.cancelCurrent
 	m.hints = a.suggestHints
 	m.levels = a.levels
+	m.onFiles = a.projectFiles // @ 引用补全候选(项目文件索引,含 cwd 缓存;workspace 切换失效)
 	m.onThinkingCycle = a.cycleThinking
 	m.onStats = func() sdk.UsageStats {
 		var us sdk.UsageStatsService
@@ -621,6 +625,8 @@ func (a *App) cmdWorkspace(args []string) (string, error) {
 	if err := os.Chdir(target); err != nil {
 		return "", errString("/workspace: chdir 失败: " + err.Error())
 	}
+	a.mFilesDir = ""  // @ 引用文件索引缓存失效(下个 cwd 重新索引)
+	a.mFiles = nil
 	a.model.state.Workspace = workspaceName() // 状态栏工作区名随切换刷新
 	var cs sdk.CwdSessions
 	if err := a.c.Inject("ctx.cwdSessions", &cs); err == nil {

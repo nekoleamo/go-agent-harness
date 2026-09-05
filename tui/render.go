@@ -66,7 +66,23 @@ func Render(s *State, width, height int) string {
 	// 选择器激活时提示区 = 选项列表(高亮当前,滚动窗口);否则静态提示行。
 	// 参数级过滤(Filter 非空):首行过滤状态(占 1 行,选项窗口相应减 1),无匹配时仅状态行。
 	var hintItems []string
-	if s.Pick != nil {
+	if s.Mention != nil {
+		// @ 文件引用候选窗口(↑/↓ 移动、Tab/Enter 应用;与命令选择器互斥)
+		items := s.Mention.Items
+		if len(items) == 0 {
+			hintItems = append(hintItems, styleMeta.Render("无匹配文件(继续输入/退格恢复)"))
+		} else {
+			start, end := pickWindow(len(items), s.Mention.Cursor, maxHintRows)
+			for i := start; i < end; i++ {
+				line := " @" + items[i].Value + " " + items[i].Desc
+				if i == s.Mention.Cursor {
+					hintItems = append(hintItems, stylePick.Render("▸"+line))
+				} else {
+					hintItems = append(hintItems, styleMeta.Render(line))
+				}
+			}
+		}
+	} else if s.Pick != nil {
 		items := s.Pick.Items
 		vis := maxHintRows
 		if s.Pick.Filter != "" {

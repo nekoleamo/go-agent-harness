@@ -64,6 +64,7 @@ type Model struct {
 	onCancel        func()                           // 取消进行中的回合(注入;Esc 触发)
 	hints           func(prefix string) []sdk.Option // 命令选项(注入;前缀=去掉 / 后的输入)
 	levels          func(name string) []sdk.ArgLevel // 命令参数级定义(注入;枚举/自由级)
+	onFiles         func() []sdk.Option             // @ 文件引用候选(注入;App 项目文件索引含缓存)
 	onThinkingCycle func(dir int)                    // Tab/Shift+Tab 思考等级循环(注入:dir=1 前进,-1 后退)
 	onStats         func() sdk.UsageStats            // 会话 token 统计拉取(注入;回合结束刷新状态栏)
 }
@@ -756,6 +757,14 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	}
 	switch k.Code {
 	case tea.KeyEnter:
+		// @ 引用补全激活:Enter 应用当前高亮项;无候选退出引用态(继续正常回车语义)
+		if m.state.Mention != nil {
+			if len(m.state.Mention.Items) > 0 {
+				m.state.applyMention(m.state.Mention.Items[m.state.Mention.Cursor].Value)
+				return nil
+			}
+			m.state.Mention = nil
+		}
 		// Shift+Enter:多行输入——普通输入态插入换行(选择器激活/自由向导中仍与 Enter
 		// 相同:应用选项/步进,不插入换行)。
 		if k.Mod&tea.ModShift != 0 && m.state.Pick == nil && m.state.Free == nil {
@@ -785,12 +794,20 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	case tea.KeyLeft:
 		if m.state.Pick == nil {
 			m.state.CursorLeft() // 左移(边界钳制)
+			m.refreshMention()   // 光标移出 @token 段则关闭引用候选
 		}
 	case tea.KeyRight:
 		if m.state.Pick == nil {
 			m.state.CursorRight()
+			m.refreshMention()
 		}
 	case tea.KeyUp:
+		if p := m.state.Mention; p != nil {
+			if p.Cursor > 0 {
+				p.Cursor-- // @ 候选:上移
+			}
+			return nil
+		}
 		if p := m.state.Pick; p != nil {
 			if p.Cursor > 0 {
 				p.Cursor-- // 选择器:上移选项
@@ -800,6 +817,12 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			m.state.LineUp()
 		}
 	case tea.KeyDown:
+		if p := m.state.Mention; p != nil {
+			if p.Cursor < len(p.Items)-1 {
+				p.Cursor++ // @ 候选:下移
+			}
+			return nil
+		}
 		if p := m.state.Pick; p != nil {
 			if p.Cursor < len(p.Items)-1 {
 				p.Cursor++ // 选择器:下移选项
@@ -811,10 +834,12 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	case tea.KeyHome:
 		if m.state.Pick == nil {
 			m.state.CursorHome() // 输入光标回头(旧 ↑ 聶责;Home 恒定语义)
+			m.refreshMention()
 		}
 	case tea.KeyEnd:
 		if m.state.Pick == nil {
 			m.state.CursorEnd() // 输入光标回尾(旧 ↓ 聶责)
+			m.refreshMention()
 		}
 	case tea.KeyPgUp:
 		// 整页翻(兼容保留;箭头逐行为主通道)
@@ -834,12 +859,22 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			}
 		}
 	case tea.KeyTab:
-		// 仅 Shift+Tab 切换思考等级(前进循环 off→low→medium→high→off);单独 Tab 不绑定
+		// Tab:@ 引用补全激活时应用当前高亮项(无匹配退出);否则 Shift+Tab 循环思考等级
+		if m.state.Mention != nil {
+			if len(m.state.Mention.Items) > 0 {
+				m.state.applyMention(m.state.Mention.Items[m.state.Mention.Cursor].Value)
+			} else {
+				m.state.Mention = nil
+			}
+			return nil
+		}
 		if k.Mod&tea.ModShift != 0 && m.onThinkingCycle != nil {
 			m.onThinkingCycle(1)
 		}
 	case tea.KeyEscape:
-		if m.pickFilterEsc() {
+		if m.state.Mention != nil {
+			m.state.Mention = nil // @ 引用候选关闭(文本保留,回普通输入)
+		} else if m.pickFilterEsc() {
 			// 参数级过滤词非空:Esc 先清过滤恢复全量(再按才退出选择)
 		} else if m.state.Pick != nil {
 			m.state.Pick = nil
@@ -983,9 +1018,19 @@ func clampPickCursor(p *Pick) {
 	}
 }
 
+// refreshMention @ 引用候选刷新(注入文件列表;命令/选择器/向导态内部自动禁用)。
+func (m *Model) refreshMention() {
+	if m.state.Pick != nil || m.state.Free != nil || m.onFiles == nil {
+		m.state.Mention = nil
+		return
+	}
+	m.state.syncMention(m.onFiles())
+}
+
 // syncHints 输入以 / 开头时按当前前缀刷新选项:非空自动激活选择器;
 // Esc/断点后(PickDismissed)只显示提示不激活,直至用户再次输入。
 func (m *Model) syncHints() {
+	m.refreshMention() // @ 引用补全(与命令选择互斥;/ 输入内部不激活)
 	input := m.state.Input
 	if !strings.HasPrefix(input, "/") || m.hints == nil {
 		m.state.Suggestions = nil

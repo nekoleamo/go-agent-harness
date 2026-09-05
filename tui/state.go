@@ -46,6 +46,7 @@ type State struct {
 	Suggestions    []string       // 输入 / 前缀时的命令提示(注册表过滤结果,渲染于输入行下方)
 	Pick           *Pick          // 非空 = 交互式选择器激活(↑/↓ 移动,Enter 应用)
 	PickDismissed  bool           // Esc/断点后抑制自动激活,直至输入变化
+	Mention        *Mention       // 非空 = @ 文件引用补全激活(↑/↓ 移动,Tab/Enter 应用;见 mention.go)
 	Free           *freeStep      // 多值自由参数逐步向导(/provider set 等;断点建立,submit 前步进)。nil = 未启用
 	QuitArmed      bool           // 双按退出武装中:第一次 Ctrl+C(输入为空)后待第二次确认(输入行提示)
 	SpinnerIdx     int            // 思考动画帧索引(回合运行中 tick 推进)
