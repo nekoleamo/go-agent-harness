@@ -65,6 +65,7 @@ type Model struct {
 	hints           func(prefix string) []sdk.Option // 命令选项(注入;前缀=去掉 / 后的输入)
 	levels          func(name string) []sdk.ArgLevel // 命令参数级定义(注入;枚举/自由级)
 	onFiles         func() []sdk.Option             // @ 文件引用候选(注入;App 项目文件索引含缓存)
+	onWidgets       func() []Widget                 // P4-12 widget 行注入(渲染帧拉取;App widgets 集合)
 	onThinkingCycle func(dir int)                    // Tab/Shift+Tab 思考等级循环(注入:dir=1 前进,-1 后退)
 	onStats         func() sdk.UsageStats            // 会话 token 统计拉取(注入;回合结束刷新状态栏)
 }
@@ -176,6 +177,10 @@ func (m *Model) View() tea.View {
 	// 免去每次全量 Render/flatten(风暴数百事件逐个重渲染会拖慢事件队列,键盘/Ctrl+C 排队)。
 	content := m.cacheContent
 	if !(m.skipView && m.cacheSet && m.w == m.cacheW && m.h == m.cacheH) {
+		// P4-12:渲染帧拉取宿主注册的 widget(动态信息;开关由 state.WidgetOn 控制)
+		if m.onWidgets != nil {
+			m.state.Widgets = m.onWidgets()
+		}
 		content = Render(m.state, m.w, m.h)
 		m.cacheContent = content
 		m.cacheSet = true

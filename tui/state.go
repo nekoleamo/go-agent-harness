@@ -36,6 +36,11 @@ type State struct {
 	// 命令(/ 前缀)不入队(即时执行,保持现状);会话切换清空。见 queue.go。
 	Queue []string
 
+	// Widgets + WidgetOn(P4-12 T5):输入行上方可注册的动态信息行(宿主/未来插件
+	// 经 App.AddWidget 注入,渲染帧求值);/widgets on|off 开关。见 widgets.go。
+	Widgets  []Widget
+	WidgetOn bool
+
 	// vCol + vActive 多行编辑垂直移动(LineUp/LineDown)的意图列:第一次垂直移动
 	// 捕捉当前列,行间移动保持该列(bash/readline 语义);线性编辑/内容变化置
 	// vActive=false 失效,下次垂直移动重新捕捉。零值(未激活)即安全初值。

@@ -24,6 +24,7 @@ const (
 
 	// —— 输入/命令/选择器 ——
 	TokPrompt Token = "prompt" // 输入提示符:品红
+	TokWidget Token = "widget" // 输入区上方 widget 行:浅灰(次要信息)
 	TokPick   Token = "pick"   // 选择器高亮行:品红
 	TokCursor Token = "cursor" // 输入块光标:琥珀
 
@@ -63,7 +64,7 @@ var DefaultPalette = map[Token]string{
 	TokUser: "81", TokAssistant: "120", TokTool: "220", TokToolOK: "114", TokMeta: "245",
 	TokError: "203", TokPrompt: "207", TokPick: "207", TokCursor: "214",
 
-	TokStatus: "250", TokBusy: "214",
+	TokStatus: "250", TokBusy: "214", TokWidget: "249",
 
 	TokBarThumb: "214", TokBarTrack: "240", TokBarHover: "172", TokBarEnd: "214",
 

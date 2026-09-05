@@ -9,7 +9,7 @@ var baseline = map[Token]string{
 	TokUser: "81", TokAssistant: "120", TokTool: "220", TokToolOK: "114", TokMeta: "245",
 	TokError: "203", TokPrompt: "207", TokPick: "207", TokCursor: "214",
 
-	TokStatus: "250", TokBusy: "214",
+	TokStatus: "250", TokBusy: "214", TokWidget: "249",
 
 	TokBarThumb: "214", TokBarTrack: "240", TokBarHover: "172", TokBarEnd: "214",
 

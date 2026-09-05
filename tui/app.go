@@ -31,7 +31,8 @@ type App struct {
 	subs      []sdk.Disposer
 	cmds      sdk.CommandRegistry // ctx.commands(可为 nil:未装配时命令不可用)
 
-	cancelFn context.CancelFunc // 当前回合的取消函数(Esc 中断,见 model.onCancel)
+	cancelFn  context.CancelFunc // 当前回合的取消函数(Esc 中断,见 model.onCancel)
+	widgets    []Widget          // P4-12 输入区 widget 行(宿主/插件经 AddWidget 注册)
 
 	mFiles    []sdk.Option // @ 引用文件索引缓存(projectFiles;当前 cwd 下惰性构建)
 	mFilesDir string       // 缓存对应的 cwd(失效判据:workspace 切换后重建)
@@ -66,7 +67,8 @@ func NewApp(c sdk.Ctx, loop sdk.AgentLoop, llm sdk.LLMService, profile string) *
 	m.onCancel = a.cancelCurrent
 	m.hints = a.suggestHints
 	m.levels = a.levels
-	m.onFiles = a.projectFiles // @ 引用补全候选(项目文件索引,含 cwd 缓存;workspace 切换失效)
+	m.onFiles = a.projectFiles   // @ 引用补全候选(项目文件索引,含 cwd 缓存;workspace 切换失效)
+	m.onWidgets = func() []Widget { return a.widgets } // P4-12 widget 行注入(渲染帧拉取)
 	m.onThinkingCycle = a.cycleThinking
 	m.onStats = func() sdk.UsageStats {
 		var us sdk.UsageStatsService
@@ -392,6 +394,27 @@ func compactSummaryLine(summary string, folded int) string {
 		s = string([]rune(s)[:159]) + "…"
 	}
 	return fmt.Sprintf("已折叠 %d 条事件为滚动摘要。当前摘要: %s", folded, s)
+}
+
+// AddWidget 注册一条输入区上方 widget(宿主/未来插件;Text 每次渲染求值,空返回不显示)。
+func (a *App) AddWidget(id string, text func() string) {
+	if id == "" || text == nil {
+		return
+	}
+	a.widgets = append(a.widgets, Widget{ID: id, Text: text})
+}
+
+// cmdWidgets /widgets on|off:输入区上方 widget 区开关(无参默认开启)。
+func (a *App) cmdWidgets(args []string) (string, error) {
+	if len(args) > 0 && args[0] == "off" {
+		a.model.state.WidgetOn = false
+		return "widget 区已关闭(输入行上方空间交还主区)", nil
+	}
+	a.model.state.WidgetOn = true
+	if len(a.widgets) == 0 {
+		return "widget 区已开启(当前无宿主注册条目;未来插件/内部功能可 AddWidget)", nil
+	}
+	return fmt.Sprintf("widget 区已开启(%d 条已注册,输入行上方显示)", len(a.widgets)), nil
 }
 
 func (a *App) cmdExport(args []string) (string, error) {
@@ -1059,6 +1082,7 @@ func (a *App) registerInternalCommands() {
 			}},
 		{Name: "export", Usage: "/export [path]", Desc: "导出会话 jsonl", Run: a.cmdExport},
 		{Name: "compact", Usage: "/compact [指示词]", Desc: "手动滚动摘要压缩(立即折叠旧历史;指示词仅作记录)", Run: a.cmdCompact},
+		{Name: "widgets", Usage: "/widgets on|off", Desc: "输入区上方 widget 区开关(宿主注册的动态信息行)", Run: a.cmdWidgets},
 		{Name: "search", Usage: "/search <词>", Desc: "会话内搜索(命中高亮,n/N/F3 循环跳转,Esc 退出)",
 			// 自由级断点:选中后光标停留输入框提示继续输入,输入词回车才执行——
 			// 否则选中即提交(无参报错),再输入的文字会误走普通消息发给大模型。

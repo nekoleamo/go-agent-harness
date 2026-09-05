@@ -27,6 +27,8 @@ var (
 	// 滚动条增强:悬停高亮(更亮琥珀)与回底指示(▼,浏览历史时底行显示,点击回最新)
 	styleBarHover = lipgloss.NewStyle().Foreground(fg(TokBarHover))
 	styleBarEnd   = lipgloss.NewStyle().Foreground(fg(TokBarEnd)).Bold(true)
+	// P4-12 widget 行:输入行上方动态信息(浅灰,次要信息不抢视点)
+	styleWidget = lipgloss.NewStyle().Foreground(fg(TokWidget))
 )
 
 const maxHintRows = 6
@@ -127,7 +129,9 @@ func Render(s *State, width, height int) string {
 	// 输入区多行(P4-6):在既有单行几何(height-3-hintRows)上按输入多出的物理行数
 	// 再扣主区(单行时差值 0,公式与历史完全一致,既有布局测试不回归)。
 	inputExtra := strings.Count(inputStr, "\n")
-	mainH := height - 3 - hintRows - inputExtra
+	// P4-12 widget 槽位:输入行上方动态信息行(开关关=0),同样扣主区
+	widgetRows := widgetLines(s)
+	mainH := height - 3 - hintRows - inputExtra - len(widgetRows)
 	if mainH < 1 {
 		mainH = 1
 	}
@@ -217,7 +221,12 @@ func Render(s *State, width, height int) string {
 	}
 	main := strings.Join(body, "\n")
 
-	bottom := []string{inputStr}
+	// 底部区:widgets → 输入 → 提示 → 状态栏(widget 在输入行上方)
+	bottom := widgetRows
+	for i, wtxt := range bottom {
+		bottom[i] = styleWidget.Render("◇ " + wtxt) // 输入区上方动态信息(前缀区分)
+	}
+	bottom = append(bottom, inputStr)
 	bottom = append(bottom, renderHintLines(s, hintItems, hintRows)...)
 	bottom = append(bottom, renderStatusLine(s, width))
 	return lipgloss.JoinVertical(lipgloss.Left, main, strings.Join(bottom, "\n"))
