@@ -67,7 +67,7 @@
 
 ## P4 体验改进(对齐 pi 基线;来源 docs/PI_COMPARISON.md)
 
-> 状态:P4-1(消息队列)、P4-3(代码块高亮)、P4-4(会话命名)、P4-6(多行输入/外部编辑器)、P4-7(工具视觉增强)、P4-9(语义色 token 化)✅ 已交付,其余 ⏳ 未实施。排期原则:用户可感 > 依赖 M7 > 成本。Agent 能力面无缺口
+> 状态:P4-1(消息队列)、P4-3(代码块高亮)、P4-4(会话命名)、P4-6(多行输入/外部编辑器)、P4-7(工具视觉增强)、P4-8(/compact 手动压缩)、P4-9(语义色 token 化)✅ 已交付,其余 ⏳ 未实施。排期原则:用户可感 > 依赖 M7 > 成本。Agent 能力面无缺口
 > (pi 明示不内置的 MCP/subagent/权限/plan/todo/后台 bash,gah 均已交付),本阶段只补交互与会话体验。
 
 | # | 功能 | 依赖 | 工作量 | 切片/要点 | 验收 |
@@ -79,7 +79,7 @@
 | P4-5 | **C6 多级上下文文件加载** | host-system-prompt | M | 从 cwd 逐级向上读 AGENTS.md 并入 project instructions(近者覆盖远者);AGENTS.override.md 语义;不涉 core | 上级目录约定自动生效;层级覆盖正确;有单测 |
 | P4-6 ✅ | **T2b 多行输入 + 外部编辑器** | TUI 输入 | S–M | ✅ 已交付:Shift+Enter 插入换行(仅普通输入态;选择器/自由向导仍与 Enter 同语义)、↑/↓ 行间移动(列意图记忆 bash/readline 语义,单行退化原首/尾)、输入区多行渲染(续行对齐、主区自动扣减);Ctrl+G 外部编辑器整段编辑($VISUAL>$EDITOR>nano,tea.ExecProcess 自动 releaseTerminal 交还终端,保存退出回填,undo 一步;命令参数支持如 "code -w");多行普通消息可提交,命令(/ 前缀)保持单行语义——含换行拒绝保留现场提示,纯空白不发起回合;Ctrl+C 清空/双按退出语义不回归 | 多行输入可提交;外部编辑回填;↑↓ 行间光标;Ctrl+C 语义不回归(新增 multiline_test,全库 -race 绿,pre-existing pty 探针除外) |
 | P4-7 ✅ | **T3 工具结果视觉增强** | S2.2 就绪 | M | ✅ 已交付:工具三态语义色(调用 ⚙ 琥珀 / 成功 ✓ 绿 styleToolOK / 失败 ✗ error 红);展开结果 diff 轻染色(+++/---/@@ 头灰、+ 行淡绿、- 行暗红,字符无损);搜索命中/选区回落基础样式 | ✅ 工具执行状态一眼可分;失败醒目;diff 染色可读;单测 toolrow_test + 全库 -race 38 包绿(pty 探针 pre-existing 除外) |
-| P4-8 | **C2 手动 /compact [prompt]** | token-compress | M | /compact 主动触发压缩(带可选自定义指示);完成后回显摘要;超限自动压缩不变 | 手动压缩即时生效;摘要可读;不重复压缩空会话 |
+| P4-8 ✅ | **C2 手动 /compact [prompt]** | token-compress | M | ✅ 已交付:sdk.CompactService 可选接口(host-session-log Log 实现,类型断言发现,不改 ctx.sessions);/compact 立即以注册预算折叠滚动摘要(不等投影超限,自动压缩不变),回读累计摘要回显(截断单行);无可折叠/压缩器未注册/预算关闭均明确提示不静默;prompt 指示词仅记录(token-compress 为抽取式引擎,不消费其内容);空会话不重复压缩 | 手动压缩即时生效;摘要可读;错误显式;短会话/关闭预算有明确提示(新增 compact_test 用真实 Engine,-race 全绿) |
 | P4-9 ✅ | **E2 语义色 token 化** | S2.2 | S–M | ✅ 已交付:tui/palette.go 新增 Token+DefaultPalette(21 token)+ fg() 唯一取色入口;render.go/markdown.go/session.go 全部色值字面量收口为 token 派生(零裸色值);palette_test.go 基线守卫(逐 token 对原 256 索引 + 无空色值) | ✅ 渲染逐字等价(全 tui 单测 SGR 精确断言绿);换肤仅改 DefaultPalette 本表 |
 | P4-10 | **C1 会话树/分支** | ⚠️ M7.2 后(或独立 TUI 树) | L | /tree 跳任意点续聊;/fork 从旧消息派生;/clone 复制当前分支;分支摘要;基于 sessionlog 树索引 | 回退/多方案并行;树导航 UI;弃支可摘要 |
 | P4-11 | **E4 配置热更(/reload 等效)** | 独立 | M | 运行期重载 keybinding/主题/上下文文件/命令(外部插件热重载已有) | 免重启生效;错误回滚 |
@@ -89,6 +89,7 @@
 > **绑 M7**:C1 会话树 UI、E1 UI 扩展 seam(Web 侧 registry 先行,M7.2 槽位概念 TUI 后接)。
 
 ## 变更记录
+- 2026-09-06:P4-8 C2 手动 /compact 交付(/compact [指示词]:sdk.CompactService 断言 + Log.Compact 立即折叠,回显单行摘要;未启用/无可压缩显式提示;自动超限压缩不变;指示词仅记录——抽取式引擎不消费);剩余 P4 5 项。
 - 2026-09-06:P4-1 T1 消息队列交付(回合级排队:运行中 Enter 入队、命令不入队即时执行;成功回合自动逐条续发、取消/失败暂停;Alt+Up/Esc 取回;会话切换清空;范围收敛——轮内"转向打断"需 agent-loop 注入 seam 记入未实施);剩余 P4 6 项。
 - 2026-09-06:P4-6 T2b 多行输入 + 外部编辑器交付(Shift+Enter 换行/↑↓ 行间移动列意图/输入区多行渲染;Ctrl+G $VISUAL>$EDITOR>nano 整段编辑,ExecProcess 自动 releaseTerminal 保存回填 undo 一步;命令单行语义含换行拒绝保留现场、纯空白不发起回合);剩余 P4 7 项。
 - 2026-09-06:P4-4 C3 会话命名交付(/name <名> 设置、- 清除;host-cwd-sessions names.json 按会话文件独立持久、坏文件容忍;状态栏/切换选择器//session current 显示名优先,无名称回退 id);P4 首个交付项,剩余 11 项。

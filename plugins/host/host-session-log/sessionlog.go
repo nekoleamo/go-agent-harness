@@ -389,6 +389,40 @@ func (l *Log) Replay() []sdk.SessionEvent {
 	return append([]sdk.SessionEvent(nil), l.events...)
 }
 
+// Compact 实现 sdk.CompactService(/compact 手动压缩):立即以注册预算折叠滚动摘要,
+// 不等待投影超限(自动路径仍由 DeriveMessages 触发)。prompt 仅作指示词记录
+// (token-compress 抽取式引擎不消费其内容,不污染事实摘要)。
+// 返回:最新累计摘要文本、本次折叠事件跨度(0 = 无可折叠)、错误(压缩器/预算未启用)。
+func (l *Log) Compact(prompt string) (string, int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.compressor == nil {
+		return "", 0, errors.New("压缩器未注册(token-compress 未装配)")
+	}
+	if l.budget <= 0 {
+		return "", 0, errors.New("压缩预算关闭(data.token_budget_chars=0;自动压缩亦不生效)")
+	}
+	old := l.compressedUntil
+	w := l.compressor.Fold(l.events, l.compressedUntil, l.budget, func(s string) {
+		_ = l.appendLocked(sdk.SessionEvent{Kind: sdk.EventSummary, Payload: s})
+	})
+	l.compressedUntil = w
+	folded := w - old
+	if folded < 0 {
+		folded = 0
+	}
+	// 回读最新累计摘要(与 projectLocked 同口径:最新 EventSummary 载荷)
+	summary := ""
+	for _, ev := range l.events {
+		if ev.Kind == sdk.EventSummary {
+			if s, ok := ev.Payload.(string); ok && s != "" {
+				summary = s
+			}
+		}
+	}
+	return summary, folded, nil
+}
+
 // Flush 落盘(os.Sync)。
 func (l *Log) Flush() error {
 	l.mu.Lock()

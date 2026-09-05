@@ -97,6 +97,15 @@ type SessionCompressor interface {
 	Fold(evs []SessionEvent, watermark int, budget int, summary func(string)) int
 }
 
+// CompactService 手动滚动压缩服务(/compact;可选实现——host-session-log 实现,
+// 未实现时 TUI 命令提示不可用)。不改变 ctx.sessions 接口(类型断言发现)。
+type CompactService interface {
+	// Compact 立即以注册预算折叠滚动摘要(不等待投影超限)。prompt 为调用方指示词
+	// (token-compress 为抽取式引擎,不消费其内容,仅作记录);返回最新累计摘要文本
+	// 与本次被摘要覆盖的事件跨度(0 = 无可折叠/未发生)。
+	Compact(prompt string) (summary string, folded int, err error)
+}
+
 // UsageEvent 一轮 LLM 请求的 token 消耗(session/usage 载荷):模型名 + Usage。
 // 模型名供 host-usage-stats 按内置窗口表解析上下文总量(不同模型窗口差异大,
 // 单值默认过粗暴;模型切换后随事件自动更新)。

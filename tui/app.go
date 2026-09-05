@@ -359,6 +359,37 @@ func (a *App) cmdSessions() (string, error) {
 	return rows, nil
 }
 
+// cmdCompact /compact [指示词]:手动触发滚动摘要压缩(经会话日志 CompactService)。
+// 结果回显摘要;无可折叠/未启用明确提示,不静默降级。
+func (a *App) cmdCompact(args []string) (string, error) {
+	var sessions sdk.SessionLog
+	if err := a.c.Inject("ctx.sessions", &sessions); err != nil {
+		return "", errString("ctx.sessions 未装配")
+	}
+	cs, ok := sessions.(sdk.CompactService)
+	if !ok {
+		return "", errString("手动压缩不可用: 会话日志未实现 CompactService(host-session-log)")
+	}
+	prompt := strings.Join(args, " ")
+	summary, folded, err := cs.Compact(prompt)
+	if err != nil {
+		return "", errString("/compact: " + err.Error())
+	}
+	if folded <= 0 {
+		return "无可压缩历史(会话较短或已是最新;超出预算时仍会自动压缩)", nil
+	}
+	return compactSummaryLine(summary, folded), nil
+}
+
+// compactSummaryLine 压缩结果回显文案(折叠事件数 + 单行截断摘要;纯函数可测)。
+func compactSummaryLine(summary string, folded int) string {
+	s := strings.Join(strings.Fields(summary), " ") // 换行压空格
+	if n := len([]rune(s)); n > 160 {
+		s = string([]rune(s)[:159]) + "…"
+	}
+	return fmt.Sprintf("已折叠 %d 条事件为滚动摘要。当前摘要: %s", folded, s)
+}
+
 func (a *App) cmdExport(args []string) (string, error) {
 	var sessions sdk.SessionLog
 	if err := a.c.Inject("ctx.sessions", &sessions); err != nil {
@@ -826,6 +857,7 @@ func (a *App) registerInternalCommands() {
 				}},
 			}},
 		{Name: "export", Usage: "/export [path]", Desc: "导出会话 jsonl", Run: a.cmdExport},
+		{Name: "compact", Usage: "/compact [指示词]", Desc: "手动滚动摘要压缩(立即折叠旧历史;指示词仅作记录)", Run: a.cmdCompact},
 		{Name: "search", Usage: "/search <词>", Desc: "会话内搜索(命中高亮,n/N/F3 循环跳转,Esc 退出)",
 			// 自由级断点:选中后光标停留输入框提示继续输入,输入词回车才执行——
 			// 否则选中即提交(无参报错),再输入的文字会误走普通消息发给大模型。
