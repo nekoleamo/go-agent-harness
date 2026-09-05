@@ -9,22 +9,22 @@ import (
 )
 
 var (
-	styleUser   = lipgloss.NewStyle().Foreground(lipgloss.Color("81")).Bold(true)
-	styleAsst   = lipgloss.NewStyle().Foreground(lipgloss.Color("120"))
-	styleTool   = lipgloss.NewStyle().Foreground(lipgloss.Color("220"))
-	styleMeta   = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
-	styleError  = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
-	stylePrompt = lipgloss.NewStyle().Foreground(lipgloss.Color("207")).Bold(true)
-	styleStatus = lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
-	styleBusy   = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))            // 运行中状态高亮(琥珀色,醒目)
-	stylePick   = lipgloss.NewStyle().Foreground(lipgloss.Color("207")).Bold(true) // 选择器高亮行
-	styleCursor = lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true) // 输入块光标(琥珀)
+	styleUser   = lipgloss.NewStyle().Foreground(fg(TokUser)).Bold(true)
+	styleAsst   = lipgloss.NewStyle().Foreground(fg(TokAssistant))
+	styleTool   = lipgloss.NewStyle().Foreground(fg(TokTool))
+	styleMeta   = lipgloss.NewStyle().Foreground(fg(TokMeta))
+	styleError  = lipgloss.NewStyle().Foreground(fg(TokError))
+	stylePrompt = lipgloss.NewStyle().Foreground(fg(TokPrompt)).Bold(true)
+	styleStatus = lipgloss.NewStyle().Foreground(fg(TokStatus))
+	styleBusy   = lipgloss.NewStyle().Foreground(fg(TokBusy))              // 运行中状态高亮(琥珀色,醒目)
+	stylePick   = lipgloss.NewStyle().Foreground(fg(TokPick)).Bold(true)   // 选择器高亮行
+	styleCursor = lipgloss.NewStyle().Foreground(fg(TokCursor)).Bold(true) // 输入块光标(琥珀)
 	// 滚动条:滑块(琥珀)与轨道(灰)——会话流超过窗口时右侧显示,位置反映浏览进度
-	styleBarThumb = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
-	styleBarTrack = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	styleBarThumb = lipgloss.NewStyle().Foreground(fg(TokBarThumb))
+	styleBarTrack = lipgloss.NewStyle().Foreground(fg(TokBarTrack))
 	// 滚动条增强:悬停高亮(更亮琥珀)与回底指示(▼,浏览历史时底行显示,点击回最新)
-	styleBarHover = lipgloss.NewStyle().Foreground(lipgloss.Color("172"))
-	styleBarEnd   = lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true)
+	styleBarHover = lipgloss.NewStyle().Foreground(fg(TokBarHover))
+	styleBarEnd   = lipgloss.NewStyle().Foreground(fg(TokBarEnd)).Bold(true)
 )
 
 // Render 渲染整屏。mainH = 会话流区域高度;底部含输入行 + 命令提示区(动态) + 状态栏。

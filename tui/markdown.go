@@ -17,15 +17,8 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-// markdown 着色调色板(256 色,与既有 styleForKind 风格统一)。
-var (
-	mdCodeFg  = lipgloss.Color("179") // 行内 code:暗金
-	mdBoldFg  = lipgloss.Color("231") // 粗体:亮白(粗体 + 提亮)
-	mdTitleFg = lipgloss.Color("51")  // 标题:青
-	mdListFg  = lipgloss.Color("220") // 列表符:琥珀
-	mdHrFg    = lipgloss.Color("245") // 分隔线(---/***):灰
-)
-
+// markdown 着色调色板(token 化,P4-9):颜色一律经 palette.go 的 fg() 派生,
+// 本文件零色值字面量;默认表值即既有 256 色基线。
 // mdAnnotateRow 把单个物理行文本按 markdown token 分段着色,返回含 SGR 文本。
 // baseFg 为普通段前景色(调用方传入该行 kind 的基础色);无 token 时返回整段 base 色。
 func mdAnnotateRow(text string, baseFg color.Color) string {
@@ -36,12 +29,12 @@ func mdAnnotateRow(text string, baseFg color.Color) string {
 	}
 	// 分隔线 --- / *** / ___ (仅由这些构成):统一灰,弱化占屏感。
 	if isHrLine(trim) {
-		return mdSeg(text, mdHrFg, false)
+		return mdSeg(text, fg(TokMdHr), false)
 	}
 	// 标题行 #..###### :整行标题色 + 粗体。
 	if isTitleLine(trim) {
 		// 保留原行文本(含缩进),只整体换色提亮;行首 # 前缀不动(rune 一致)。
-		return mdSeg(text, mdTitleFg, true)
+		return mdSeg(text, fg(TokMdTitle), true)
 	}
 	// 列表行(纯文本前缀着色,列表符改色,后续正文走通用 token 解析)。
 	if isListLine(trim) {
@@ -130,7 +123,7 @@ func mdListRow(text string, baseFg color.Color) string {
 	if trimIdx > 0 {
 		b.WriteString(mdSeg(text[:trimIdx], baseFg, false))
 	}
-	b.WriteString(mdSeg(marker, mdListFg, true))
+	b.WriteString(mdSeg(marker, fg(TokMdList), true))
 	b.WriteString(mdTokens(body, baseFg))
 	return b.String()
 }
@@ -160,7 +153,7 @@ func mdTokens(text string, baseFg color.Color) string {
 		case text[i] == '*' && i+1 < len(text) && text[i+1] == '*':
 			if j := strings.Index(text[i+2:], "**"); j >= 0 {
 				flushPlain(i)
-				b.WriteString(mdSeg(text[i+2:i+2+j], mdBoldFg, true))
+				b.WriteString(mdSeg(text[i+2:i+2+j], fg(TokMdBold), true))
 				i += j + 4
 				segStart = i
 				continue
@@ -176,5 +169,5 @@ func mdTokens(text string, baseFg color.Color) string {
 
 // mdCode 行内 code 段着色:不含反引号(成对标记被消费,阅读更干净),code 色区分。
 func mdCode(inner string) string {
-	return lipgloss.NewStyle().Foreground(mdCodeFg).Render(inner)
+	return lipgloss.NewStyle().Foreground(fg(TokMdCode)).Render(inner)
 }

@@ -67,11 +67,10 @@ func (s *State) selRange(gRow int) (active bool, c0, c1 int) {
 	return true, c0, c1
 }
 
-// 搜索高亮颜色:命中行暗背景、当前命中琥珀背景(醒目,与选区反色叠加。
-// lipgloss.Background 用 256 色索引,与 24 位色共存)。
-const (
-	searchBg    = "238" // 命中行背景(暗)
-	searchCurBg = "214" // 当前命中背景(琥珀,醒目)
+// 搜索高亮颜色(token 派生;表值即既有基线,见 palette.go)。
+var (
+	searchBg    = DefaultPalette[TokSearchBg]    // 命中行背景(暗)
+	searchCurBg = DefaultPalette[TokSearchCurBg] // 当前命中背景(琥珀,醒目)
 )
 
 // renderSessionRow 渲染会话流物理行:kind 基础样式 + 搜索命中整行背景(当前命中更亮)
