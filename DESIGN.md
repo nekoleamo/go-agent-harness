@@ -337,7 +337,7 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 >
 > **当前未实施清单(3 项)**:M7 Web UI · M7.2 UI 槽位插件化 · M7.3 WebSocket 通道 —— 见下方各 ⏳ 行。M6.1–M6.21、M8、M10 已交付 ✅;M9.1(one-shot)、M11-T1(规划输出+确认门)、M11-T2(plan→todo 联动)、M9.2(后台 delegate 子集)已交付 ✅(细表见下方对应行正文「交付(…)」)。P1 剩余:S2.2 渲染组件化(折叠交互随 S2.2);subagent send_message/fork 归后续。
 >
-> **TUI 界面优化**(非里程碑,详见 `docs/TUI_OPTIMIZE.md`):S1.1–S1.6 全交付 ✅;S1.4 Markdown 轻渲染、S2.1 消息分组/工具行去重、S2.2 第一步(装饰层抽离 chrome.go + 折叠交互单击展开) 已交付 ✅(2025-09/10 迭代);剩余 S2.2 会话流引擎拆模 → S3 主屏 scrollback(S3.2 synchronized output 由 bubbletea v2 框架自动启用 ✅)。
+> **TUI 界面优化**(非里程碑,详见 `docs/TUI_OPTIMIZE.md`):S1.1–S1.6 全交付 ✅;S1.4 Markdown 轻渲染、S2.1 消息分组/工具行去重、S2.2 渲染组件化(render/session/chrome/markdown 四层)+ 折叠交互 已交付 ✅(2025-09/10 迭代);剩余 S3 主屏 scrollback(S3.2 synchronized output 由 bubbletea v2 框架自动启用 ✅)。
 >
 > **实施排期**:P0 已全部交付 ✅(TUI S1.1/S1.2/S1.3/S1.5/S1.6 + M8-T1 + M10 + /workspace)。P1 已全部交付 ✅(S1.4 + S2.1 消息分组 + M9.1 + M11-T1,2025-09 迭代;S2.1 折叠交互随 S2.2)→ P2 后期(S3 + M9.2/M11-T2 + S2.2)→ P3 远期(M7 全家桶 + M8-T2)——详见 `docs/ROADMAP.md`(含工作量/依赖链/验收)。
 

@@ -34,7 +34,7 @@
 |---|---|---|---|---|---|
 | 7 ✅ | **TUI S1.4 Markdown 轻渲染** | 渲染文本层;建议在 S2.2 前以最小侵入做 | M | ✅ 已交付(tui/markdown.go):粗体/行内 code/标题/列表缩进/分隔线;折行后逐物理行 token 着色;每段独立 SGR(字符无损、宽度不变);assistant 行无搜索/选区时启用 | ✅ 单测 12 项 + 全库 -race 绿 |
 | 8 ✅ | **TUI S2.1 消息分组/工具行去重** | 独立 | S | ✅ 已交付:工具行双写去重(EventAssistantMessage 不再铺 ToolCalls 行,仅 EventToolCall+Result 单写)+ 重放跨轮细分隔线(turnDivider);⚙ 折叠可展开交互归 S2.2 组件化后接入 | ✅ 多轮结构可分;工具行不翻倍占屏 |
-| 9 ⏳(第一步✅) | **TUI S2.2 渲染组件化 + 折叠交互** | ⚠️ TUI 各项完成后再做 | L | ✅ 第一步:装饰层抽离(chrome.go 输入/提示/状态栏,chrome_test 单测)+ 折叠交互(tool 结果 Full 全文 + 单击展开/收起,fold_test);⏳ 会话流引擎(滚动条/窗口)独立文件 | ✅ 模块单测;Render 输出与现行为一致 |
+| 9 ✅ | **TUI S2.2 渲染组件化 + 折叠交互** | — | L | ✅ 已交付:render.go(装配)/session.go(引擎)/chrome.go(装饰)/markdown.go(样式)四层分离;折叠交互(Full 全文 + 单击展开) | ✅ 模块单测;Render 输出与现行为一致 |
 | 10 ✅ | **M9 tool-subagent M9.1**(one-shot) | 引擎 host-fanout 已存在 | M | ✅ 已交付:plugins/tool/tool-subagent(subagent delegate)+ extplugins/tool-subagent(GAH_CB_ADDR 回调 fanout.agent)+ gen 矩阵重建 | ✅ 模型可委派子 agent 取回结果(TestExternalSubagent);崩溃隔离 |
 | 11 ✅ | **M11 tool-auto-plan T1**(规划输出+确认门) | 独立(与 M8 分工) | M | ✅ 已交付:plugins/tool/tool-auto-plan(auto_plan 6 action + 规则注入 enable_rule,进程内装配同 host-skills,不进 tool-basic) | ✅ 规划落盘跨会话可取;确认前零副作用(规则注入) |
 
