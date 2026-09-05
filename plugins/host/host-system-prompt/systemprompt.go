@@ -47,8 +47,10 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		}
 	}
 	if cfg.project {
-		if raw, err := os.ReadFile(projectInstructionsPath()); err == nil {
-			s.projectInstr = string(raw)
+		// 多级上下文(P4-5):从 cwd 逐级向上收集 AGENTS.md,近者覆盖远者;
+		// 同级 AGENTS.override.md 存在时替换该级 AGENTS.md。
+		if wd, err := os.Getwd(); err == nil {
+			s.projectLevels = projectLevelsWalk(wd)
 		}
 	}
 	for _, pth := range cfg.extra {
@@ -84,22 +86,46 @@ func globalInstructionsPath() string {
 	return filepath.Join(home, "AGENTS.md")
 }
 
-// projectInstructionsPath <cwd>/AGENTS.md(workspace 根 = 启动目录,与沙箱根一致)。
-func projectInstructionsPath() string {
-	wd, err := os.Getwd()
-	if err != nil {
-		return ""
+// projectLevel 一个层级目录的指令来源(近者覆盖远者;override 同级替换)。
+type projectLevel struct {
+	dir     string // 所在目录(展示用)
+	file    string // 实际文件名(AGENTS.md 或 AGENTS.override.md)
+	content string
+}
+
+// projectLevelsWalk 从 wd 逐级向上收集指令文件(根 → cwd,近者在后):
+// 每级优先取 AGENTS.override.md(存在则忽略同目录 AGENTS.md——override 语义)。
+func projectLevelsWalk(wd string) []projectLevel {
+	var rev []projectLevel
+	dir := wd
+	for {
+		if b, err := os.ReadFile(filepath.Join(dir, "AGENTS.override.md")); err == nil {
+			rev = append(rev, projectLevel{dir: dir, file: "AGENTS.override.md", content: string(b)})
+		} else if b, err := os.ReadFile(filepath.Join(dir, "AGENTS.md")); err == nil {
+			rev = append(rev, projectLevel{dir: dir, file: "AGENTS.md", content: string(b)})
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
 	}
-	return filepath.Join(wd, "AGENTS.md")
+	// 反转为远→近(近者在后,覆盖语义)
+	out := make([]projectLevel, 0, len(rev))
+	for i := len(rev) - 1; i >= 0; i-- {
+		out = append(out, rev[i])
+	}
+	return out
 }
 
 // Service 实现 sdk.SystemPromptService。
 type Service struct {
-	mu           sync.RWMutex
-	sections     []sdk.SystemPromptSection
-	globalInstr  string
-	projectInstr string
-	extraInstr   []string
+	mu            sync.RWMutex
+	sections      []sdk.SystemPromptSection
+	globalInstr   string
+	projectInstr  string // 单级回退(测试构造/旧路径);多级经 projectLevels
+	projectLevels []projectLevel
+	extraInstr     []string
 }
 
 // AddSection 注册系统提示片段。
@@ -130,7 +156,15 @@ func (s *Service) Assemble(history []sdk.LLMMessage, tools []sdk.ToolDefinition)
 	sb.WriteString("你是 gah(Go Agent Harness)中的编程代理。遵循用户的指令完成任务。")
 	sb.WriteString("\n\n规则:\n- 需要外部信息或操作时,调用可用工具,不要猜测。\n- 工具调用必须通过 API 的结构化 tool_calls 字段发起;禁止在回复正文中书写工具调用标签/标记(如 <tool_calls>、<invoke>、<antml:invoke> 等)——正文中的调用不会被 gah 执行。\n- 工具结果以 JSON 呈现,仅依赖结果内容,不臆造。\n- 若工具返回错误,分析错误后调整策略重试,或明确告知无法完成。\n- 若没有可用工具能完成任务,直接如实说明;不得假装已调用工具或编造调用结果。")
 	s.writeInstrBlock(&sb, s.globalInstr, "\n\n全局指令(AGENTS.md,用户级):\n")
-	s.writeInstrBlock(&sb, s.projectInstr, "\n\n项目指令(AGENTS.md,项目级):\n")
+	if len(s.projectLevels) > 0 {
+		// 多级(P4-5):根 → cwd 逐级注入,近者放后覆盖远者;每级标明来源目录
+		sb.WriteString("\n\n项目指令(AGENTS.md 层级,从根目录到当前目录,近者覆盖远者):\n")
+		for _, lv := range s.projectLevels {
+			s.writeInstrBlock(&sb, lv.content, fmt.Sprintf("- 来自 %s/%s:\n", lv.dir, lv.file))
+		}
+	} else {
+		s.writeInstrBlock(&sb, s.projectInstr, "\n\n项目指令(AGENTS.md,项目级):\n")
+	}
 	for i, e := range s.extraInstr {
 		s.writeInstrBlock(&sb, e, fmt.Sprintf("\n\n附加指令 %d:\n", i+1))
 	}
