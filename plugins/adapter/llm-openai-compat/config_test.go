@@ -26,7 +26,7 @@ func TestResolveConfigModelRestoredWithoutKey(t *testing.T) {
 	// 场景:用户 /model 后 provider.yaml 只含 model(UpdateModel 仅当 provider 存在才写;
 	// 此处构造仅 model 的极端持久化,验证恢复逻辑不依赖其它字段)
 	pv := providerfile.Provider{Model: "deepseek-ai/DeepSeek-V3"}
-	if err := providerfile.Save(pv); err != nil {
+	if err := providerfile.Add(pv); err != nil {
 		t.Fatal(err)
 	}
 	base, key, mod, err := resolveConfig(dataManifest())
@@ -51,7 +51,7 @@ func TestResolveConfigEnvKeyWithProviderModel(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("GAH_HOME", home)
 	t.Setenv("DEEPSEEK_API_KEY", "sk-env-123456")
-	if err := providerfile.Save(providerfile.Provider{BaseURL: "https://api.siliconflow.cn/v1", APIKey: "sk-old", Model: "deepseek-ai/DeepSeek-V3"}); err != nil {
+	if err := providerfile.Add(providerfile.Provider{BaseURL: "https://api.siliconflow.cn/v1", APIKey: "sk-old", Model: "deepseek-ai/DeepSeek-V3"}); err != nil {
 		t.Fatal(err)
 	}
 	base, key, mod, err := resolveConfig(&sdk.Manifest{ID: "x", Data: nil})
@@ -75,7 +75,7 @@ func TestResolveConfigPrecedence(t *testing.T) {
 	t.Setenv("GAH_HOME", home)
 	t.Setenv("DEEPSEEK_BASE_URL", "https://env.example.com/v1")
 	t.Setenv("DEEPSEEK_MODEL", "env-model")
-	if err := providerfile.Save(providerfile.Provider{BaseURL: "https://pv.example.com/v1", Model: "pv-model"}); err != nil {
+	if err := providerfile.Add(providerfile.Provider{BaseURL: "https://pv.example.com/v1", Model: "pv-model"}); err != nil {
 		t.Fatal(err)
 	}
 	base, _, mod, err := resolveConfig(dataManifest())

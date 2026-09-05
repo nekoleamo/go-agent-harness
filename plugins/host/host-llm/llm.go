@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nekoleamo/go-agent-harness/internal/providerfile"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -34,6 +35,9 @@ type Service struct {
 	order    []string // 注册顺序(首个为默认候选)
 	model    string
 	thinking sdk.ThinkingLevel // 会话级思考等级(Tab 循环;默认 Off)
+
+	provModelsCache []sdk.ProviderModelList // ListAllModels TTL 缓存
+	provModelsAt    time.Time               // 缓存写入时刻
 }
 
 // RegisterAdapter 注册适配器。
@@ -150,6 +154,138 @@ func (s *Service) SetModel(model string) {
 	s.mu.Lock()
 	s.model = model
 	s.mu.Unlock()
+}
+
+// —— 多 provider 并存(sdk.MultiProviderService;provider.yaml 为单一事实源,add/use/set
+// 先持久化再由运行时按活跃同步适配器端点与模型;env 显式仍最高——用户显式操作覆盖) ——
+
+// provModelsTTL ListAllModels 缓存时长(与适配器模型缓存同量级)。
+const provModelsTTL = 10 * time.Minute
+
+// Providers 全部 provider 运行时视图(文件活跃标记)。
+func (s *Service) Providers() []sdk.ProviderProfile {
+	f, err := providerfile.LoadFile()
+	if err != nil {
+		return nil
+	}
+	out := make([]sdk.ProviderProfile, 0, len(f.Providers))
+	for _, p := range f.Providers {
+		out = append(out, sdk.ProviderProfile{Name: p.Name, BaseURL: p.BaseURL,
+			APIKey: p.APIKey, Model: p.Model, Active: p.Name == f.Active})
+	}
+	return out
+}
+
+// AddProvider 新增/更新 provider(同名 upsert 并激活;首个自动激活)。
+// 成为活跃时立即同步适配器端点与模型(运行时即生效)。
+func (s *Service) AddProvider(name, baseURL, apiKey, model string) error {
+	if name == "" {
+		name = providerfile.ShortNameOf(baseURL)
+	}
+	if err := providerfile.Add(providerfile.Provider{Name: name, BaseURL: baseURL, APIKey: apiKey, Model: model}); err != nil {
+		return err
+	}
+	f, err := providerfile.LoadFile()
+	if err != nil {
+		return err
+	}
+	if f.Active != name {
+		return nil // 新增非活跃:仅并存,不切运行时
+	}
+	p, ok := findProvider(f, name)
+	if !ok {
+		return nil
+	}
+	return s.switchActive(p)
+}
+
+// SetActiveProvider 切换活跃 provider(校验存在;立即同步适配器端点与模型并持久化 active)。
+func (s *Service) SetActiveProvider(name string) error {
+	if err := providerfile.SetActive(name); err != nil {
+		return err
+	}
+	f, err := providerfile.LoadFile()
+	if err != nil {
+		return err
+	}
+	p, ok := findProvider(f, name)
+	if !ok {
+		return fmt.Errorf("provider: 不存在 %q", name)
+	}
+	return s.switchActive(p)
+}
+
+// findProvider 从文件视图按名取 provider。
+func findProvider(f providerfile.File, name string) (providerfile.Provider, bool) {
+	for _, p := range f.Providers {
+		if p.Name == name {
+			return p, true
+		}
+	}
+	return providerfile.Provider{}, false
+}
+
+// switchActive 同步通用适配器到活跃 provider 端点/模型(Configure + SetModel;零重启)。
+func (s *Service) switchActive(p providerfile.Provider) error {
+	if p.BaseURL == "" {
+		return fmt.Errorf("provider: %s 未配置 base_url(请 /provider set 补齐)", p.Name)
+	}
+	pa, err := s.genericProvider()
+	if err != nil {
+		return err
+	}
+	if err := pa.Configure(p.BaseURL, p.APIKey); err != nil {
+		return err
+	}
+	if p.Model != "" {
+		s.SetModel(p.Model)
+	}
+	return nil
+}
+
+// ListAllModels 聚合所有 provider 端点 /models(TTL 缓存;单条失败记入其 Err,不整体失败)。
+// 活跃 provider 走通用适配器 ListModels(复用其 TTL 缓存),非活跃经 sdk.OpenAIFetchModels 直拉。
+func (s *Service) ListAllModels() []sdk.ProviderModelList {
+	s.mu.RLock()
+	if s.provModelsCache != nil && time.Since(s.provModelsAt) < provModelsTTL {
+		out := append([]sdk.ProviderModelList(nil), s.provModelsCache...)
+		s.mu.RUnlock()
+		return out
+	}
+	s.mu.RUnlock()
+
+	f, err := providerfile.LoadFile()
+	if err != nil {
+		return nil
+	}
+	out := make([]sdk.ProviderModelList, 0, len(f.Providers))
+	for _, p := range f.Providers {
+		if p.Name == f.Active {
+			out = append(out, s.listActiveModels(p))
+		} else {
+			m, e := sdk.OpenAIFetchModels(p.BaseURL, p.APIKey)
+			out = append(out, sdk.ProviderModelList{Name: p.Name, BaseURL: p.BaseURL, Models: m, Err: e})
+		}
+	}
+	s.mu.Lock()
+	s.provModelsCache = out
+	s.provModelsAt = time.Now()
+	s.mu.Unlock()
+	return out
+}
+
+// listActiveModels 活跃 provider 的模型列表(经通用适配器 ModelLister,复用其端点缓存)。
+func (s *Service) listActiveModels(p providerfile.Provider) sdk.ProviderModelList {
+	pa, err := s.genericProvider()
+	if err != nil {
+		return sdk.ProviderModelList{Name: p.Name, BaseURL: p.BaseURL, Err: err}
+	}
+	if ml, ok := pa.(sdk.ModelLister); ok {
+		m, e := ml.ListModels()
+		return sdk.ProviderModelList{Name: p.Name, BaseURL: p.BaseURL, Models: m, Err: e}
+	}
+	m, e := sdk.OpenAIFetchModels(p.BaseURL, p.APIKey)
+	return sdk.ProviderModelList{Name: p.Name, BaseURL: p.BaseURL, Models: m, Err: e}
 }
 
 // genericProvider 当前通用适配器(非 ModelRouter 声明型,即 openai 兼容类)。

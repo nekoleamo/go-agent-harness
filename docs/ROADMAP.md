@@ -89,6 +89,7 @@
 > **绑 M7**:C1 会话树 UI、E1 UI 扩展 seam(Web 侧 registry 先行,M7.2 槽位概念 TUI 后接)。
 
 ## 变更记录
+- 2026-09-06:M12 多 provider 并存交付(独立需求:多 provider 配置可并存、/model 聚合所有 provider 模型——存储 provider.yaml v2{active,providers[]}+旧格式迁移;sdk.MultiProviderService 可选接口+OpenAIFetchModels;host-llm Add/SetActive/ListAllModels(活跃走适配器缓存,非活跃直拉,TTP 缓存,单条失败不整体崩);TUI /provider show|add|use|set|unset|clear 与 /model 聚合(选中自动切所属 provider,手动 /model 向后兼容),见 DESIGN §14.1 M12)。
 - 2026-09-06:P4-2 T2a @文件引用 + Tab 路径补全交付(@token 自动激活项目文件候选(URL 内不触发),↑↓/Tab/Enter/Esc 完整交互;App 项目文件索引含 cwd 缓存与 workspace 切换失效);剩余 P4 4 项。
 - 2026-09-06:P4-8 C2 手动 /compact 交付(/compact [指示词]:sdk.CompactService 断言 + Log.Compact 立即折叠,回显单行摘要;未启用/无可压缩显式提示;自动超限压缩不变;指示词仅记录——抽取式引擎不消费);剩余 P4 5 项。
 - 2026-09-06:P4-1 T1 消息队列交付(回合级排队:运行中 Enter 入队、命令不入队即时执行;成功回合自动逐条续发、取消/失败暂停;Alt+Up/Esc 取回;会话切换清空;范围收敛——轮内"转向打断"需 agent-loop 注入 seam 记入未实施);剩余 P4 6 项。

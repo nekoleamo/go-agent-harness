@@ -655,49 +655,19 @@ func (a *App) cmdThinking(args []string) (string, error) {
 // set 写 provider.yaml(0600)并立即生效;重启后 env 显式优先、其次本文件。
 func (a *App) cmdProvider(args []string) (string, error) {
 	if len(args) < 1 {
-		return "", errString("/provider show|set <baseUrl> <apiKey> [model]|clear")
+		return "", errString("/provider show|add|use|set|unset|clear")
 	}
 	switch args[0] {
 	case "show":
-		u, k, ok := a.llm.ProviderInfo()
-		line := "提供商: "
-		if !ok {
-			return line + "(可用 /provider set <baseUrl> <apiKey> [model] 配置 openai 兼容端点)", nil
-		}
-		line += u + " | 模型: " + orDefault(a.llm.Model(), "未设置") + " | API Key: " + maskKey(k)
-		if p, err := providerfile.Load(); err == nil && (p.APIKey != "" || p.BaseURL != "") {
-			line += "\n持久化: provider.yaml(" + orDefault(p.BaseURL, "仅 key") + ", 重启回退 env 优先)"
-		}
-		return line, nil
+		return a.providerShow()
+	case "add":
+		return a.providerAdd(args[1:])
+	case "use":
+		return a.providerUse(args[1:])
 	case "set":
-		if len(args) < 3 {
-			return "", errString("/provider set <baseUrl> <apiKey> [model]\n示例: /provider set https://api.siliconflow.cn/v1 sk-xxxx deepseek-ai/DeepSeek-V3")
-		}
-		if err := a.llm.SetProvider(args[1], args[2]); err != nil {
-			return "", errString(err.Error())
-		}
-		p := providerfile.Provider{BaseURL: args[1], APIKey: args[2]}
-		if len(args) > 3 {
-			p.Model = args[3]
-			a.llm.SetModel(args[3])
-		}
-		if err := providerfile.Save(p); err != nil {
-			return "", errString("已运行时生效,但持久化失败: " + err.Error())
-		}
-		a.syncDisplay() // 端点/模型变更后刷新状态栏(含来源)
-		return "已切换: " + args[1] + " | 模型: " + orDefault(a.llm.Model(), "未设置") + " | Key: " + maskKey(args[2]) + "(已持久化 provider.yaml, 0600)", nil
+		return a.providerSet(args[1:])
 	case "unset":
-		if len(args) < 2 {
-			return "", errString("/provider unset base_url|api_key|model")
-		}
-		if err := providerfile.Unset(args[1]); err != nil {
-			return "", errString(err.Error())
-		}
-		if err := a.llm.UnsetProvider(args[1]); err != nil {
-			return "", errString("已删除持久化项,但运行时回退失败: " + err.Error())
-		}
-		a.syncDisplay()
-		return "已删除 " + args[1] + "(持久化与运行期均已回退)", nil
+		return a.providerUnset(args[1:])
 	case "clear":
 		if err := providerfile.Clear(); err != nil {
 			return "", errString("清除失败: " + err.Error())
@@ -706,39 +676,246 @@ func (a *App) cmdProvider(args []string) (string, error) {
 			return "", errString("已删除 provider.yaml,但运行时复位失败: " + err.Error())
 		}
 		a.syncDisplay()
-		return "已清除设置并复位运行期(回退 env/样板),重启后一致", nil
+		return "已清除全部 provider 并复位运行期(回退 env/样板)", nil
 	default:
-		return "", errString("/provider show|set|unset|clear")
+		return "", errString("/provider show|add|use|set|unset|clear")
 	}
 }
 
-// providerUnsetLevel /provider unset 的二级枚举(可删字段)。
-func providerUnsetLevel(picked []string) []sdk.Option {
-	if len(picked) < 2 || picked[1] != "unset" {
-		return nil // 非 unset 分支无二级 → 选中即执行
+// multiSvc 多 provider 服务断言(失败 = 显式错误,不静默回退旧单逻辑)。
+func (a *App) multiSvc() (sdk.MultiProviderService, error) {
+	ms, ok := a.llm.(sdk.MultiProviderService)
+	if !ok {
+		return nil, errString("多 provider 不可用: LLM 服务未实现 MultiProviderService")
 	}
-	return []sdk.Option{{Value: "base_url", Desc: "删除端点,回退 env/样板"}, {Value: "api_key", Desc: "删除凭据,回退 env"}, {Value: "model", Desc: "删除模型,回退默认"}}
+	return ms, nil
 }
 
-// providerSetFree /provider set 的自由参数提示(仅 set 分支;其余无 → 直接执行)。
-func providerSetFree(picked []string) []string {
-	if len(picked) < 2 || picked[1] != "set" {
-		return nil
-	}
-	return []string{"baseUrl", "apiKey", "model?"}
-}
-
-// modelOptions 动态模型枚举(来源备注;失败/空 → nil 回退手动输入)。
-// sdk 层面:Options 先于 FreeArgs 尝试(advanceInto 语义)。
-func (a *App) modelOptions([]string) []sdk.Option {
-	infos, err := a.llm.ListModels()
+// switchProvider 切换活跃 provider(端点+模型即切)。
+func (a *App) switchProvider(name string) error {
+	ms, err := a.multiSvc()
 	if err != nil {
+		return err
+	}
+	return ms.SetActiveProvider(name)
+}
+
+// providerShow 列出全部 provider(name/端点/模型/key 打码/活跃★)。
+func (a *App) providerShow() (string, error) {
+	ms, err := a.multiSvc()
+	if err != nil {
+		return "", err
+	}
+	ps := ms.Providers()
+	if len(ps) == 0 {
+		return "提供商: (可用 /provider add <baseUrl> <apiKey> [model] 配置 openai 兼容端点)", nil
+	}
+	var b strings.Builder
+	for i, p := range ps {
+		mark := " "
+		if p.Active {
+			mark = "★"
+		}
+		fmt.Fprintf(&b, "  %s %s | %s | 模型: %s | Key: %s\n",
+			mark, p.Name, orDefault(p.BaseURL, "未配置端点"), orDefault(p.Model, "未设置"), maskKey(p.APIKey))
+		_ = i
+	}
+	b.WriteString("  (切换: /provider use <name>;新增: /provider add <baseUrl> <apiKey> [model];编辑活跃: /provider set)")
+	return "提供商: \n" + b.String(), nil
+}
+
+// providerAdd 新增并存(名自动=域短名;首个自动活跃,同名 upsert 更新并激活)。
+func (a *App) providerAdd(args []string) (string, error) {
+	if len(args) < 2 {
+		return "", errString("/provider add <baseUrl> <apiKey> [model]\n示例: /provider add https://api.siliconflow.cn/v1 sk-xxxx deepseek-ai/DeepSeek-V3")
+	}
+	ms, err := a.multiSvc()
+	if err != nil {
+		return "", err
+	}
+	model := ""
+	if len(args) > 2 {
+		model = args[2]
+	}
+	if err := ms.AddProvider("", args[0], args[1], model); err != nil {
+		return "", errString(err.Error())
+	}
+	name := providerfile.ShortNameOf(args[0])
+	a.syncDisplay()
+	if providerfile.Active() == name {
+		return "已添加并激活 provider " + name + "(" + args[0] + ")\n模型: " + orDefault(a.llm.Model(), "未设置") + " | Key: " + maskKey(args[1]), nil
+	}
+	return "已添加 provider " + name + "(当前活跃保持 " + providerfile.Active() + ";切换: /provider use " + name + ")", nil
+}
+
+// providerUse 切换活跃(端点+模型即切)。
+func (a *App) providerUse(args []string) (string, error) {
+	if len(args) < 1 {
+		return "", errString("/provider use <name>(/provider show 查看名称)")
+	}
+	if err := a.switchProvider(args[0]); err != nil {
+		return "", errString(err.Error())
+	}
+	a.syncDisplay()
+	return "已切换 → " + args[0] + " | 模型: " + orDefault(a.llm.Model(), "未设置") + " | 端点: " + orDefault(providerBaseOf(args[0]), "?"), nil
+}
+
+// providerBaseOf 活跃 provider 端点(展示用;空 = 未知)。
+func providerBaseOf(name string) string {
+	f, err := providerfile.LoadFile()
+	if err != nil {
+		return ""
+	}
+	for _, p := range f.Providers {
+		if p.Name == name {
+			return p.BaseURL
+		}
+	}
+	return ""
+}
+
+// providerSet 编辑当前活跃(base/key 必给,model 可选;无活跃时自动新建首条)。
+// 旧单 provider 流程不变:set 即编辑/新建默认活跃。
+func (a *App) providerSet(args []string) (string, error) {
+	if len(args) < 2 {
+		return "", errString("/provider set <baseUrl> <apiKey> [model]\n示例: /provider set https://api.siliconflow.cn/v1 sk-xxxx deepseek-ai/DeepSeek-V3")
+	}
+	name := providerfile.Active()
+	model := ""
+	if len(args) > 2 {
+		model = args[2]
+	}
+	if name == "" {
+		// 无 provider:按 add 语义新建首条并激活
+		name = providerfile.ShortNameOf(args[0])
+		if err := a.switchAddAsSet(name, args[0], args[1], model); err != nil {
+			return "", errString(err.Error())
+		}
+	} else {
+		// 编辑活跃:持久化字段(base/key 覆盖,model 空保留)→ 重新激活生效
+		if err := providerfile.SetFields(name, args[0], args[1], model); err != nil {
+			return "", errString("持久化失败: " + err.Error())
+		}
+		if err := a.switchProvider(name); err != nil {
+			return "", errString("已持久化,但运行期切换失败: " + err.Error())
+		}
+	}
+	a.syncDisplay()
+	return "已更新活跃 provider " + name + "(" + orDefault(providerBaseOf(name), "?") + ")\n模型: " + orDefault(a.llm.Model(), "未设置") + " | Key: " + maskKey(providerKeyOf(name)), nil
+}
+
+// switchAddAsSet 无 provider 时 set = 新建并激活(AddProvider 首条自动激活)。
+func (a *App) switchAddAsSet(name, base, key, model string) error {
+	ms, err := a.multiSvc()
+	if err != nil {
+		return err
+	}
+	if err := ms.AddProvider(name, base, key, model); err != nil {
+		return err
+	}
+	if providerfile.Active() == name {
 		return nil
 	}
-	src := a.providerShort()
-	opts := make([]sdk.Option, 0, len(infos))
-	for _, m := range infos {
-		opts = append(opts, sdk.Option{Value: m.ID, Desc: modelDesc(m.ID, m.OwnedBy, src)})
+	return a.switchProvider(name)
+}
+
+// providerKeyOf provider 的 api_key(展示打码;空 = 未知)。
+func providerKeyOf(name string) string {
+	f, err := providerfile.LoadFile()
+	if err != nil {
+		return ""
+	}
+	for _, p := range f.Providers {
+		if p.Name == name {
+			return p.APIKey
+		}
+	}
+	return ""
+}
+
+// providerUnset 逐项删除活跃字段;字段删空 → 移除该 provider 并重切活跃。
+func (a *App) providerUnset(args []string) (string, error) {
+	if len(args) < 1 {
+		return "", errString("/provider unset base_url|api_key|model")
+	}
+	oldActive := providerfile.Active()
+	if err := providerfile.Unset(args[0]); err != nil {
+		return "", errString(err.Error())
+	}
+	if err := a.llm.UnsetProvider(args[0]); err != nil {
+		return "", errString("已删除持久化项,但运行时回退失败: " + err.Error())
+	}
+	// 活跃被移除(删空)时重切到剩余活跃(若存在)
+	newActive := providerfile.Active()
+	if newActive != "" && newActive != oldActive {
+		if err := a.switchProvider(newActive); err != nil {
+			return "", errString("活跃已重置为 " + newActive + ",但运行期切换失败: " + err.Error())
+		}
+	}
+	a.syncDisplay()
+	return "已删除 " + args[0] + "(持久化与运行期均已回退)", nil
+}
+
+// providerLevel2 /provider 二级:use → 枚举现有 provider 名;unset → 字段枚举。
+func (a *App) providerLevel2(picked []string) []sdk.Option {
+	if len(picked) < 2 {
+		return nil
+	}
+	switch picked[1] {
+	case "use":
+		f, err := providerfile.LoadFile()
+		if err != nil {
+			return nil
+		}
+		opts := make([]sdk.Option, 0, len(f.Providers))
+		for _, p := range f.Providers {
+			opts = append(opts, sdk.Option{Value: p.Name, Desc: p.BaseURL})
+		}
+		return opts
+	case "unset":
+		return []sdk.Option{{Value: "base_url", Desc: "删除端点,回退 env/样板"}, {Value: "api_key", Desc: "删除凭据,回退 env"}, {Value: "model", Desc: "删除模型,回退默认"}}
+	}
+	return nil // add/set/clear → 自由参数或直接执行
+}
+
+// providerFree2 /provider 二级自由参数:add/set → baseUrl/apiKey/model?(尾可选可跳过)。
+func (a *App) providerFree2(picked []string) []string {
+	if len(picked) < 2 {
+		return nil
+	}
+	switch picked[1] {
+	case "add", "set":
+		return []string{"baseUrl", "apiKey", "model?"}
+	}
+	return nil
+}
+
+// modelOptions 动态模型枚举:聚合所有 provider 端点模型,选项携带来源
+// (Value=provider|model;选中后 /model Run 解析并自动切所属 provider)。
+// 单 provider 拉取失败只缺该家模型(经 /provider show 可见状态);无可用 → nil 回退手动输入。
+func (a *App) modelOptions([]string) []sdk.Option {
+	ms, err := a.multiSvc()
+	if err != nil {
+		infos, lerr := a.llm.ListModels()
+		if lerr != nil {
+			return nil
+		}
+		src := a.providerShort()
+		opts := make([]sdk.Option, 0, len(infos))
+		for _, m := range infos {
+			opts = append(opts, sdk.Option{Value: m.ID, Desc: modelDesc(m.ID, m.OwnedBy, src)})
+		}
+		return opts
+	}
+	all := ms.ListAllModels()
+	opts := make([]sdk.Option, 0, 16)
+	for _, pl := range all {
+		if pl.Err != nil || len(pl.Models) == 0 {
+			continue // 不可达/无模型:仅 show 可见,不提供无效选项
+		}
+		for _, m := range pl.Models {
+			opts = append(opts, sdk.Option{Value: pl.Name + "|" + m.ID, Desc: modelDesc(m.ID, m.OwnedBy, pl.Name)})
+		}
 	}
 	return opts
 }
@@ -810,25 +987,43 @@ func (a *App) registerInternalCommands() {
 			Args: []sdk.ArgLevel{{Options: func([]string) []sdk.Option {
 				return []sdk.Option{{Value: "off", Desc: "关闭思考"}, {Value: "low", Desc: "低等级"}, {Value: "medium", Desc: "中等级"}, {Value: "high", Desc: "高等级"}}
 			}}}},
-		{Name: "model", Usage: "/model <名>", Desc: "切换模型", Args: []sdk.ArgLevel{{Options: a.modelOptions, FreeArgs: func([]string) []string { return []string{"模型名"} }}}, Run: func(args []string) (string, error) {
+		{Name: "model", Usage: "/model <名>", Desc: "切换模型(枚举聚合全部 provider,选中自动切所属 provider)", Args: []sdk.ArgLevel{{Options: a.modelOptions, FreeArgs: func([]string) []string { return []string{"模型名"} }}}, Run: func(args []string) (string, error) {
 			if len(args) < 1 {
 				return "", errString("/model <名称> 切换模型")
 			}
-			a.llm.SetModel(args[0])
+			model := args[0]
+			name := ""
+			// 枚举选项(多 provider 聚合)携带来源:Value=provider|model;手动输入无分隔符 → 当前活跃
+			if i := strings.Index(model, "|"); i > 0 {
+				name, model = model[:i], model[i+1:]
+			}
+			if name != "" {
+				if err := a.switchProvider(name); err != nil {
+					return "", errString(err.Error())
+				}
+			}
+			a.llm.SetModel(model)
 			a.syncDisplay()
-			// 联动:持久化 provider 存在时同步 model(重启后模型与端点保持一致)
-			if err := providerfile.UpdateModel(args[0]); err != nil {
-				return "已切换模型 " + args[0] + ",但持久化同步失败: " + err.Error(), nil
+			// 联动:持久化活跃 provider 的 model(重启后模型与端点保持一致)
+			if err := providerfile.UpdateModel(model); err != nil {
+				return "已切换模型 " + model + ",但持久化同步失败: " + err.Error(), nil
 			}
 			return "", nil
 		}},
-		{Name: "provider", Usage: "/provider show|set|unset|clear", Desc: "配置 LLM 提供商端点/凭据", Run: a.cmdProvider,
+		{Name: "provider", Usage: "/provider show|add|use|set|unset|clear", Desc: "配置 LLM 提供商(多 provider 并存/show|add|use|set|unset|clear)", Run: a.cmdProvider,
 			Args: []sdk.ArgLevel{
 				{Options: func([]string) []sdk.Option {
-					return []sdk.Option{{Value: "show", Desc: "查看当前提供商(凭据打码)"}, {Value: "set", Desc: "设置端点/凭据/模型(立即生效+持久化)"}, {Value: "unset", Desc: "逐项删除配置(恢复 env/样板)"}, {Value: "clear", Desc: "全部清除+运行时复位"}}
+					return []sdk.Option{
+						{Value: "show", Desc: "列出全部提供商(活跃标★,凭据打码)"},
+						{Value: "add", Desc: "新增并存(baseUrl apiKey [model];名自动=域短名,首个自动活跃)"},
+						{Value: "use", Desc: "切换活跃(枚举现有)"},
+						{Value: "set", Desc: "编辑当前活跃的端点/凭据/模型(立即生效+持久化)"},
+						{Value: "unset", Desc: "逐项删除活跃字段(恢复 env/样板)"},
+						{Value: "clear", Desc: "全部清除+运行时复位"},
+					}
 				}},
-				// 二级:set → 自由参数(baseUrl/apiKey/model?);unset → 枚举字段;show/clear → 无定义直接执行
-				{Options: providerUnsetLevel, FreeArgs: providerSetFree},
+				// 二级:use → 枚举现有 provider 名;add/set → 自由参数(baseUrl/apiKey/model?);unset → 枚举字段
+				{Options: a.providerLevel2, FreeArgs: a.providerFree2},
 			}},
 		{Name: "sandbox", Usage: "/sandbox ro|ws|full", Desc: "运行期切沙箱档", Run: a.cmdSandbox,
 			Args: []sdk.ArgLevel{{Options: func([]string) []sdk.Option {

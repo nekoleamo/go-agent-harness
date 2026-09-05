@@ -2,7 +2,15 @@
 // 适配器实现本包接口,提供商差异在适配器内映射;宿主仅消费域模型。
 package sdk
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+)
 
 type Role string
 
@@ -212,4 +220,78 @@ type ProviderAdapter interface {
 	Reset() error
 	// ProviderInfo 返回当前端点与凭据。
 	ProviderInfo() (baseURL, apiKey string)
+}
+
+// ProviderProfile 一个 provider 的运行时视图(展示/切换用;host-llm 提供)。
+type ProviderProfile struct {
+	Name    string // 标识/切换名(域短名,持久化 provider.yaml 的 name)
+	BaseURL string
+	APIKey  string
+	Model   string
+	Active  bool // 当前活跃(adapter 端点与模型均指向它)
+}
+
+// ProviderModelList 一个 provider 端点的模型列表(/model 聚合各 provider 的结果)。
+type ProviderModelList struct {
+	Name    string
+	BaseURL string
+	Models  []ModelInfo
+	Err     error // 单条拉取失败记入该条(不整体失败);空 = 成功
+}
+
+// MultiProviderService 多 provider 并存扩展(host-llm 实现;类型断言发现,LLMService 接口不变)。
+type MultiProviderService interface {
+	// Providers 全部 provider 运行时视图(含活跃标记)。
+	Providers() []ProviderProfile
+	// AddProvider 新增/更新一个 provider(同名 upsert;首个自动激活;同名更新时激活并立即生效)。
+	AddProvider(name, baseURL, apiKey, model string) error
+	// SetActiveProvider 切换活跃 provider(校验存在;立即 Configure 适配器并 SetModel)。
+	SetActiveProvider(name string) error
+	// ListAllModels 聚合所有 provider 端点 /models 列表(TTL 缓存;单条失败记 Err 不整体失败)。
+	ListAllModels() []ProviderModelList
+}
+
+// modelsFetchClient 模型列表直拉客户端(多 provider 聚合/非缓存路径共用;30s 超时)。
+var modelsFetchClient = &http.Client{Timeout: 30 * time.Second}
+
+// OpenAIFetchModels 直拉 openai 兼容端点 /models(不经过适配器/缓存——供 host-llm 聚合
+// 非活跃端点;与适配器 ListModels 的端点语义同构)。baseURL 空 → 显式错误。
+func OpenAIFetchModels(baseURL, apiKey string) ([]ModelInfo, error) {
+	baseURL = strings.TrimSuffix(strings.TrimSpace(baseURL), "/")
+	if baseURL == "" {
+		return nil, fmt.Errorf("openai-models: 未配置端点")
+	}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, baseURL+"/models", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	resp, err := modelsFetchClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("openai-models: 模型列表请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("openai-models: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	var mr struct {
+		Data []struct {
+			ID      string `json:"id"`
+			OwnedBy string `json:"owned_by"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&mr); err != nil {
+		return nil, fmt.Errorf("openai-models: 解析失败: %w", err)
+	}
+	out := make([]ModelInfo, 0, len(mr.Data))
+	for _, d := range mr.Data {
+		if d.ID != "" {
+			out = append(out, ModelInfo{ID: d.ID, OwnedBy: d.OwnedBy})
+		}
+	}
+	return out, nil
 }
