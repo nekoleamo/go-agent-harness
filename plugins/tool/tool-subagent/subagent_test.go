@@ -105,8 +105,14 @@ func TestDefinition(t *testing.T) {
 	}
 	act, _ := schema.Properties["action"].(map[string]any)
 	enum, _ := act["enum"].([]any)
-	if len(enum) != 1 || enum[0] != "delegate" {
-		t.Fatalf("T1 仅 delegate action: %v", enum)
+	want := []string{"delegate", "spawn", "agents", "agent_status", "agent_kill"}
+	if len(enum) != len(want) {
+		t.Fatalf("action 集不符: %v", enum)
+	}
+	for i, w := range want {
+		if enum[i] != w {
+			t.Fatalf("action[%d] 应 %q: %v", i, w, enum)
+		}
 	}
 	if !strings.Contains(def.Description, "上下文隔离") {
 		t.Fatalf("描述应含隔离语义")
@@ -123,3 +129,107 @@ var (
 	_ sdk.Tool   = (*Tool)(nil)
 	_ sdk.Plugin = (*Plugin)(nil)
 )
+
+// stubFanout 后台会话控制面测试替身(实现 sdk.FanoutService 全接口)。
+type stubFanout struct {
+	spawned string
+	killed  string
+	handles []sdk.AgentHandle
+}
+
+func (s *stubFanout) Agent(_ context.Context, input string) (string, error) { return "agent:" + input, nil }
+func (s *stubFanout) Parallel(context.Context, []string) []sdk.FanoutResult { return nil }
+func (s *stubFanout) Pipeline(context.Context, []string) ([]sdk.FanoutResult, string, error) {
+	return nil, "", nil
+}
+func (s *stubFanout) SpawnAgent(_ context.Context, input string) (string, error) {
+	s.spawned = input
+	return "ag9", nil
+}
+func (s *stubFanout) ListAgents() []sdk.AgentHandle {
+	s.handles = []sdk.AgentHandle{{ID: "ag9", Input: "x", State: sdk.AgentDone, Result: "r"}}
+	return s.handles
+}
+func (s *stubFanout) AgentStatus(id string) (sdk.AgentHandle, bool) {
+	if id != "ag9" {
+		return sdk.AgentHandle{}, false
+	}
+	return sdk.AgentHandle{ID: "ag9", State: sdk.AgentDone, Result: "done-result"}, true
+}
+func (s *stubFanout) KillAgent(id string) error { s.killed = id; return nil }
+
+// TestSpawnAction spawn → agent_id 句柄返回。
+func TestSpawnAction(t *testing.T) {
+	st := &stubFanout{}
+	tool := NewTool(st).(*Tool)
+	out, err := tool.Execute(context.Background(), `{"action":"spawn","task":"后台长任务"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := out.(map[string]any)
+	if m["agent_id"] != "ag9" || m["state"] != "running" {
+		t.Fatalf("spawn 应返回句柄: %+v", m)
+	}
+	if !strings.Contains(st.spawned, "后台长任务") {
+		t.Fatalf("task 应透传: %q", st.spawned)
+	}
+}
+
+// TestAgentsAction agents → 列表返回。
+func TestAgentsAction(t *testing.T) {
+	st := &stubFanout{}
+	tool := NewTool(st).(*Tool)
+	out, err := tool.Execute(context.Background(), `{"action":"agents"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := out.(map[string]any)
+	list, ok := m["agents"].([]sdk.AgentHandle)
+	if !ok || len(list) != 1 || list[0].ID != "ag9" {
+		t.Fatalf("agents 应返回列表: %+v", m)
+	}
+}
+
+// TestAgentStatusAndKill agent_status/agent_kill 分发。
+func TestAgentStatusAndKill(t *testing.T) {
+	st := &stubFanout{}
+	tool := NewTool(st).(*Tool)
+	out, err := tool.Execute(context.Background(), `{"action":"agent_status","agent_id":"ag9"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := out.(sdk.AgentHandle)
+	if h.State != sdk.AgentDone || h.Result != "done-result" {
+		t.Fatalf("agent_status 应回状态: %+v", h)
+	}
+	// 缺 id → 结构化错误
+	out, _ = tool.Execute(context.Background(), `{"action":"agent_status"}`)
+	if _, ok := out.(map[string]any)["error"]; !ok {
+		t.Fatalf("agent_status 缺 id 应报错: %+v", out)
+	}
+	out, err = tool.Execute(context.Background(), `{"action":"agent_kill","agent_id":"ag9"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.killed != "ag9" || out.(map[string]any)["killed"] != "ag9" {
+		t.Fatalf("agent_kill 应分发: %+v killed=%q", out, st.killed)
+	}
+}
+
+// TestNoFanoutBackend 未装配 fanout 时控制面动作显式报错。
+func TestNoFanoutBackend(t *testing.T) {
+	tool := NewTool(nil).(*Tool)
+	for _, a := range []string{`{"action":"delegate","task":"t"}`, `{"action":"spawn","task":"t"}`,
+		`{"action":"agents"}`, `{"action":"agent_kill","agent_id":"x"}`} {
+		out, err := tool.Execute(context.Background(), a)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out.(map[string]any)["error"].(string), "未装配") {
+			t.Fatalf("%s 未装配应显式报错: %+v", a, out)
+		}
+	}
+}
+
+// 编译期:stubFanout 实现 sdk.FanoutService。
+var _ sdk.FanoutService = (*stubFanout)(nil)

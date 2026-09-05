@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
@@ -32,7 +33,7 @@ func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
 	}
 	_ = c.Inject("ctx.llm", &llm)         // 未装配时子代理调用显式报错
 	_ = c.Inject("ctx.systemPrompt", &sp) // 同上
-	f := &Fanout{tools: tools, llm: llm, sp: sp}
+	f := &Fanout{tools: tools, llm: llm, sp: sp, agents: map[string]*agentSession{}}
 	if err := c.Provide("ctx.fanout", f); err != nil {
 		return nil, err
 	}
@@ -44,10 +45,106 @@ type Fanout struct {
 	tools sdk.ToolRegistry
 	llm   sdk.LLMService
 	sp    sdk.SystemPromptService
+
+	// M9.2 后台子代理会话控制:agents 表 + 序号。会话独立上下文(Background + cancel),
+	// 不随发起方 ctx 取消;由 KillAgent/宿主 shutdown 显式终止。
+	mu     sync.Mutex
+	agents map[string]*agentSession
+	seq    int
+}
+
+// agentSession 一个后台子代理会话。
+type agentSession struct {
+	handle  sdk.AgentHandle
+	cancel  context.CancelFunc
+	done    chan struct{}
 }
 
 // maxSubSteps 子代理单轮最大 ReAct 迭代(防死循环)。
 const maxSubSteps = 8
+
+// SpawnAgent 后台启动单子代理(不阻塞):立即返回句柄 id;子代理在独立上下文运行,
+// 完成/失败/被终止后状态经 ListAgents/AgentStatus 可取(轮询)。
+func (f *Fanout) SpawnAgent(_ context.Context, input string) (string, error) {
+	if f.llm == nil || f.sp == nil {
+		return "", fmt.Errorf("子代理编排需要 ctx.llm / ctx.systemPrompt(未装配)")
+	}
+	if strings.TrimSpace(input) == "" {
+		return "", fmt.Errorf("子代理任务为空")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	f.mu.Lock()
+	f.seq++
+	id := fmt.Sprintf("ag%d", f.seq)
+	f.agents[id] = &agentSession{
+		handle: sdk.AgentHandle{ID: id, Input: strings.TrimSpace(input), State: sdk.AgentRunning,
+			CreatedAt: time.Now()},
+		cancel: cancel,
+		done:   make(chan struct{}),
+	}
+	f.mu.Unlock()
+	go func() {
+		result, err := f.runSubAgent(ctx, input)
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		ag := f.agents[id]
+		if ctx.Err() != nil {
+			ag.handle.State = sdk.AgentKilled
+			ag.handle.Error = "任务被终止"
+		} else if err != nil {
+			ag.handle.State = sdk.AgentFailed
+			ag.handle.Error = err.Error()
+		} else {
+			ag.handle.State = sdk.AgentDone
+			ag.handle.Result = result
+		}
+		close(ag.done)
+	}()
+	return id, nil
+}
+
+// ListAgents 全部后台子代理会话(末位最新)。
+func (f *Fanout) ListAgents() []sdk.AgentHandle {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]sdk.AgentHandle, 0, len(f.agents))
+	for _, ag := range f.agents {
+		out = append(out, ag.handle)
+	}
+	return out
+}
+
+// AgentStatus 取单个会话状态。
+func (f *Fanout) AgentStatus(id string) (sdk.AgentHandle, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	ag, ok := f.agents[id]
+	if !ok {
+		return sdk.AgentHandle{}, false
+	}
+	return ag.handle, true
+}
+
+// KillAgent 终止运行中的子代理(killed 状态)。已完成任务返回错误。
+func (f *Fanout) KillAgent(id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	ag, ok := f.agents[id]
+	if !ok {
+		return fmt.Errorf("子代理会话不存在 %q", id)
+	}
+	switch ag.handle.State {
+	case sdk.AgentRunning:
+		ag.handle.State = sdk.AgentKilled
+		ag.cancel() // 独立 ctx 取消 → runSubAgent 退出,goroutine 结束
+		return nil
+	case sdk.AgentDone, sdk.AgentFailed:
+		return fmt.Errorf("子代理会话 %q 已结束(%s)", id, ag.handle.State)
+	case sdk.AgentKilled:
+		return fmt.Errorf("子代理会话 %q 已终止", id)
+	}
+	return nil
+}
 
 // Agent 单子代理一轮 ReAct:独立历史(不写主会话),返回最终 assistant 文本。
 func (f *Fanout) Agent(ctx context.Context, input string) (string, error) {

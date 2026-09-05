@@ -236,6 +236,58 @@ func TestExternalSubagent(t *testing.T) {
 	}
 }
 
+// TestExternalSubagentBackground 外部 tool-subagent 后台会话(M9.2):spawn 经回调宿主
+// fanout.SpawnAgent(不阻塞),agents/agent_status 轮询至 done 取回结论。
+func TestExternalSubagentBackground(t *testing.T) {
+	extDir := t.TempDir()
+	releaseExt(t, extDir, "tool-subagent")
+	c, _ := buildExternalEnv(t, extDir)
+
+	var tools sdk.ToolRegistry
+	if err := c.Inject("ctx.tools", &tools); err != nil {
+		t.Fatal(err)
+	}
+	res, err := tools.Execute(context.Background(), "subagent", mustJSON2(t, map[string]any{
+		"action": "spawn",
+		"task":   "后台独立任务",
+	}))
+	if err != nil || res.Error != "" {
+		t.Fatalf("spawn 失败: err=%v res=%+v", err, res)
+	}
+	var sp struct {
+		AgentID string `json:"agent_id"`
+	}
+	if err := json.Unmarshal([]byte(res.Content), &sp); err != nil || sp.AgentID == "" {
+		t.Fatalf("spawn 应返回 agent_id: %s", res.Content)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		st, err := tools.Execute(context.Background(), "subagent", mustJSON2(t, map[string]any{
+			"action":   "agent_status",
+			"agent_id": sp.AgentID,
+		}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var h sdk.AgentHandle
+		if json.Unmarshal([]byte(st.Content), &h) == nil && h.State == sdk.AgentDone && h.Result != "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("后台子代理轮询超时: %s", st.Content)
+		}
+		time.Sleep(80 * time.Millisecond)
+	}
+	// agents 列表应含该会话
+	ls, err := tools.Execute(context.Background(), "subagent", mustJSON2(t, map[string]any{"action": "agents"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(ls.Content, sp.AgentID) {
+		t.Fatalf("agents 应含会话 %s: %s", sp.AgentID, ls.Content)
+	}
+}
+
 // runGoBuild 编译测试辅助(相对 tests/ 包目录)。
 func runGoBuild(t *testing.T, out, pkg string) error {
 	t.Helper()

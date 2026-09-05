@@ -1,13 +1,36 @@
 // 子代理编排服务(host-fanout,M6.2 拆出):独立上下文 ReAct 编排。
 package sdk
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // FanoutResult 一次子代理运行结果(input + result|error)。
 type FanoutResult struct {
 	Input  string
 	Result string
 	Error  string
+}
+
+// AgentState 后台子代理会话状态。
+type AgentState string
+
+const (
+	AgentRunning AgentState = "running"
+	AgentDone    AgentState = "done"
+	AgentFailed  AgentState = "failed"
+	AgentKilled  AgentState = "killed"
+)
+
+// AgentHandle 后台子代理会话句柄(M9.2:delegate 后台带手柄,轮询取状态/结果)。
+type AgentHandle struct {
+	ID        string     `json:"id"`
+	Input     string     `json:"input"`
+	State     AgentState `json:"state"`
+	Result    string     `json:"result,omitempty"`
+	Error     string     `json:"error,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
 }
 
 // FanoutService 服务(ctx.fanout):子代理编排(独立会话历史,不写主会话)。
@@ -20,4 +43,12 @@ type FanoutService interface {
 	Parallel(ctx context.Context, inputs []string) []FanoutResult
 	// Pipeline 串行链:上一步输出作为下一步输入;返回每步结果与最终输出。
 	Pipeline(ctx context.Context, steps []string) ([]FanoutResult, string, error)
+	// SpawnAgent 后台启动单子代理(不阻塞):返回句柄 id,轮询 ListAgents/AgentHandle。
+	SpawnAgent(ctx context.Context, input string) (string, error)
+	// ListAgents 全部后台子代理会话(含历史,末位最新)。
+	ListAgents() []AgentHandle
+	// AgentStatus 取单个会话状态(结果/错误)。
+	AgentStatus(id string) (AgentHandle, bool)
+	// KillAgent 终止运行中的子代理(killed 状态;已完成返回错误)。
+	KillAgent(id string) error
 }

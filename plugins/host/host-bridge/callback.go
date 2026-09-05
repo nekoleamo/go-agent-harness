@@ -212,6 +212,53 @@ func (cb *Callback) fanoutCall(ctx context.Context, method, raw string, reply *s
 		b, _ := json.Marshal(map[string]any{"steps": steps, "final": final})
 		*reply = string(b)
 		return nil
+	case "spawn":
+		var p struct {
+			Input string
+		}
+		if err := json.Unmarshal([]byte(raw), &p); err != nil {
+			return err
+		}
+		id, err := cb.fanout.SpawnAgent(ctx, p.Input)
+		if err != nil {
+			return err
+		}
+		*reply = id
+		return nil
+	case "list":
+		b, err := json.Marshal(cb.fanout.ListAgents())
+		if err != nil {
+			return err
+		}
+		*reply = string(b)
+		return nil
+	case "status":
+		var p struct {
+			ID string
+		}
+		if err := json.Unmarshal([]byte(raw), &p); err != nil {
+			return err
+		}
+		h, ok := cb.fanout.AgentStatus(p.ID)
+		if !ok {
+			return errors.New("callback: 子代理会话不存在 " + p.ID)
+		}
+		b, _ := json.Marshal(h)
+		*reply = string(b)
+		return nil
+	case "kill":
+		var p struct {
+			ID string
+		}
+		if err := json.Unmarshal([]byte(raw), &p); err != nil {
+			return err
+		}
+		if err := cb.fanout.KillAgent(p.ID); err != nil {
+			*reply = err.Error()
+			return nil // 业务失败经 reply 回传(kill 单例方法无 Go 错误语义需求)
+		}
+		*reply = ""
+		return nil
 	}
 	return errors.New("callback: 未知 fanout 方法 " + method)
 }
@@ -391,4 +438,48 @@ func (f *cbFanout) Pipeline(_ context.Context, steps []string) ([]sdk.FanoutResu
 		return nil, "", errors.New("回调 pipeline 解析失败")
 	}
 	return r.Steps, r.Final, nil
+}
+
+// SpawnAgent/ListAgents/AgentStatus/KillAgent(M9.2 后台会话控制)回调宿主转发。
+func (f *cbFanout) SpawnAgent(_ context.Context, input string) (string, error) {
+	var id string
+	if err := f.cc.Call("fanout", "spawn", map[string]string{"Input": input}, &id); err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+func (f *cbFanout) ListAgents() []sdk.AgentHandle {
+	var s string
+	if err := f.cc.Call("fanout", "list", nil, &s); err != nil {
+		return nil
+	}
+	var out []sdk.AgentHandle
+	if json.Unmarshal([]byte(s), &out) != nil {
+		return nil
+	}
+	return out
+}
+
+func (f *cbFanout) AgentStatus(id string) (sdk.AgentHandle, bool) {
+	var s string
+	if err := f.cc.Call("fanout", "status", map[string]string{"ID": id}, &s); err != nil {
+		return sdk.AgentHandle{}, false
+	}
+	var h sdk.AgentHandle
+	if json.Unmarshal([]byte(s), &h) != nil {
+		return sdk.AgentHandle{}, false
+	}
+	return h, true
+}
+
+func (f *cbFanout) KillAgent(id string) error {
+	var e string
+	if err := f.cc.Call("fanout", "kill", map[string]string{"ID": id}, &e); err != nil {
+		return err
+	}
+	if e != "" {
+		return errors.New(e)
+	}
+	return nil
 }

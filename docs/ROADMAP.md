@@ -43,7 +43,7 @@
 | # | 功能 | 依赖 | 工作量 | 切片/要点 | 验收 |
 |---|---|---|---|---|---|
 | 12 | **TUI S3.2 synchronized output** | 独立小项,可提前 | XS | DECSET 2026 合并大刷新 | 滚动/长输出无撕裂;不支持的终端忽略 |
-| 13 | **M9.2 控制组+背景** | ⚠️ M9.1 | M | send_message/interrupt/list_agents;continuable 背景(复用 host-jobs 管道);fork | 可中断/消息/后台续跑 |
+| 13 ✅ | **M9.2 控制组+背景**(后台子集) | ⚠️ M9.1 | M | ✅ 已交付:后台 delegate 带手柄(spawn/agents/agent_status/agent_kill)——sdk.FanoutService 后台会话 + host-fanout 引擎 + 回调桥 + extplugins;send_message/fork 未实施(需消息循环/事件流种入,记录后续) | ✅ 可后台委派/列表/查状态/终止 |
 | 14 ✅ | **M11-T2 plan→todo 承接** | ⚠️ M11-T1 + M8-T1 | M | ✅ 已交付:规则文本/Description 增补联动边界(auto_plan 管确认门,确认后执行期由 todo 承接,检查清单转 todo.create,执行完回归档);TestRuleTodoHandoff 等回归 | ✅ 确认门→todo 承接语义清晰 |
 | 15 | **TUI S3.1 主屏 scrollback 模式** | ⚠️ S2.2 组件化 | L | `--view regular`/`/view regular`;输出流进 scrollback、底部固定输入;滚动交终端 | 长输出不占屏;模式切换无残留 |
 

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nekoleamo/go-agent-harness/core/ctx"
 	"github.com/nekoleamo/go-agent-harness/core/event"
@@ -114,5 +115,81 @@ func TestContextCancel(t *testing.T) {
 	_, err := svc.Agent(ctx2, "任务")
 	if err == nil {
 		t.Fatal("取消的 ctx 应报错")
+	}
+}
+
+// TestSpawnAgentLifecycle M9.2:后台 spawn → 完成(done 含结果)→ 状态可查;再 kill 报错。
+func TestSpawnAgentLifecycle(t *testing.T) {
+	svc := buildEnv(t)
+	id, err := svc.SpawnAgent(context.Background(), "后台任务")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id == "" {
+		t.Fatal("spawn 应返回句柄 id")
+	}
+	// 轮询完成(mock 两步 LLM,很快)
+	var h sdk.AgentHandle
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var ok bool
+		h, ok = svc.AgentStatus(id)
+		if !ok {
+			t.Fatalf("会话 %s 应存在", id)
+		}
+		if h.State == sdk.AgentDone || h.State == sdk.AgentFailed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("等待超时: %+v", h)
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	if h.State != sdk.AgentDone || !strings.Contains(h.Result, "子代理完成") {
+		t.Fatalf("后台子代理应 done 且含结果: %+v", h)
+	}
+	// ListAgents 应含该会话
+	found := false
+	for _, x := range svc.ListAgents() {
+		if x.ID == id && x.State == sdk.AgentDone {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("list 应含已完成会话 %s", id)
+	}
+	// 已完成 kill → 错误
+	if err := svc.KillAgent(id); err == nil {
+		t.Fatal("已完成会话 kill 应报错")
+	}
+}
+
+// TestSpawnAgentKill M9.2:运行中 kill → killed 状态(不再产出结果)。
+func TestSpawnAgentKill(t *testing.T) {
+	svc := buildEnv(t)
+	id, err := svc.SpawnAgent(context.Background(), "可终止任务")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.KillAgent(id); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		h, ok := svc.AgentStatus(id)
+		if !ok {
+			t.Fatal("会话应存在")
+		}
+		if h.State == sdk.AgentKilled {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("kill 后应转 killed: %+v", h)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	// 二次 kill → 错误
+	if err := svc.KillAgent(id); err == nil {
+		t.Fatal("二次 kill 应报错")
 	}
 }
