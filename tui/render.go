@@ -2,6 +2,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -28,18 +29,47 @@ var (
 	styleBarEnd   = lipgloss.NewStyle().Foreground(fg(TokBarEnd)).Bold(true)
 )
 
-// Render 渲染整屏。mainH = 会话流区域高度;底部含输入行 + 命令提示区(动态) + 状态栏。
-// 提示区最多 maxHintRows 行(超限截断),避免挤压会话流。
 const maxHintRows = 6
 
+// pickWindow 提示/选项列表窗口(超限滚动):以高亮 cursor 为锚取 visible 个可见项。
+// cursor 下移触底后窗口随之下滚一行、上移触顶后随之上滚;n ≤ visible 时全量显示。
+// 返回窗口 [start, end)(下标;n == 0 或 visible ≤ 0 时返回空窗口)。
+func pickWindow(n, cursor, visible int) (start, end int) {
+	if n <= 0 || visible <= 0 {
+		return 0, 0
+	}
+	if n <= visible {
+		return 0, n
+	}
+	if cursor < 0 {
+		cursor = 0
+	}
+	if cursor >= n {
+		cursor = n - 1
+	}
+	start = cursor - (visible - 1)
+	if start < 0 {
+		start = 0
+	}
+	if start+visible > n {
+		start = n - visible
+	}
+	return start, start + visible
+}
+
+// Render 渲染整屏。mainH = 会话流区域高度;底部含输入行 + 命令提示区(动态) + 状态栏。
+// 提示区最多 maxHintRows 行:选择器超限按 cursor 滚动窗口;静态提示超限截前段并提示余量。
 func Render(s *State, width, height int) string {
 	if width <= 0 || height <= 0 {
 		width, height = 80, 24
 	}
-	// 选择器激活时提示区 = 选项列表(高亮当前);否则静态提示行
+	// 选择器激活时提示区 = 选项列表(高亮当前,滚动窗口);否则静态提示行
 	var hintItems []string
 	if s.Pick != nil {
-		for i, it := range s.Pick.Items {
+		items := s.Pick.Items
+		start, end := pickWindow(len(items), s.Pick.Cursor, maxHintRows)
+		for i := start; i < end; i++ {
+			it := items[i]
 			line := " /" + it.Value + " " + it.Desc
 			if i == s.Pick.Cursor {
 				hintItems = append(hintItems, stylePick.Render("▸"+line))
@@ -47,6 +77,11 @@ func Render(s *State, width, height int) string {
 				hintItems = append(hintItems, styleMeta.Render(line))
 			}
 		}
+	} else if len(s.Suggestions) > maxHintRows {
+		// 静态提示超窗(如 / 全部命令):截前段 + 末行余量提示(输入继续前缀过滤)
+		hintItems = append(hintItems, s.Suggestions[:maxHintRows-1]...)
+		hintItems = append(hintItems,
+			styleMeta.Render(fmt.Sprintf("… 还有 %d 项(继续输入过滤)", len(s.Suggestions)-(maxHintRows-1))))
 	} else {
 		hintItems = append(hintItems, s.Suggestions...)
 	}
