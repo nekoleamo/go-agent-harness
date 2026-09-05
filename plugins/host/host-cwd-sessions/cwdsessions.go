@@ -92,14 +92,15 @@ func SessionPath(root, key, id string) string {
 // Service 实现 sdk.CwdSessions。
 type Service struct {
 	key      string
-	path     string          // 当前会话落盘路径
-	current  string          // 当前会话 id(空 = 主会话)
-	sessions sdk.SessionLog  // ctx.sessions(切换时 Load 恢复历史)
-	wsMu     sync.Mutex      // workspaces 记录文件写锁
+	path     string         // 当前会话落盘路径
+	current  string         // 当前会话 id(空 = 主会话)
+	sessions sdk.SessionLog // ctx.sessions(切换时 Load 恢复历史)
+	wsMu     sync.Mutex     // workspaces 记录文件写锁
+	nmMu     sync.Mutex     // 会话显示名(names.json)读写锁
 }
 
-func (s *Service) Current() string { return s.key }
-func (s *Service) Path() string    { return s.path }
+func (s *Service) Current() string        { return s.key }
+func (s *Service) Path() string           { return s.path }
 func (s *Service) CurrentSession() string { return s.current }
 
 // List 列出 sessions 目录下已有项目会话 key(按名称排序)。
@@ -126,6 +127,9 @@ func (s *Service) List() []string {
 // 每条带落盘路径/修改时间/事件数(TUI 选择器展示)。
 func (s *Service) Sessions() []sdk.SessionInfo {
 	root := SessionsRoot()
+	s.nmMu.Lock()
+	names := loadNames(filepath.Join(root, "names.json"))
+	s.nmMu.Unlock()
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return nil
@@ -149,7 +153,7 @@ func (s *Service) Sessions() []sdk.SessionInfo {
 		default:
 			continue // 其他项目会话
 		}
-		info := sdk.SessionInfo{ID: id, Path: filepath.Join(root, name)}
+		info := sdk.SessionInfo{ID: id, Path: filepath.Join(root, name), Name: names[name]}
 		if fi, err := e.Info(); err == nil {
 			info.MTime = fi.ModTime().Unix()
 			info.Frames = countLines(info.Path)
@@ -202,6 +206,36 @@ func (s *Service) New() (string, error) {
 	return id, nil
 }
 
+// Rename 设置当前会话显示名(name 空 = 清除,展示回退 id/主会话)。
+// 名写入 names.json(覆写式索引,key = 会话文件名),随会话文件持久,
+// 重启/切会话仍保留;非关键路径,写失败静默容忍(同 workspaces)。
+func (s *Service) Rename(name string) error {
+	s.nmMu.Lock()
+	defer s.nmMu.Unlock()
+	m := loadNames(sessionNamesPath())
+	if m == nil {
+		m = map[string]string{}
+	}
+	file := filepath.Base(s.path)
+	if name == "" {
+		delete(m, file)
+	} else {
+		m[file] = name
+	}
+	return saveNames(sessionNamesPath(), m)
+}
+
+// SessionName 当前会话显示名(空 = 未命名)。
+func (s *Service) SessionName() string {
+	s.nmMu.Lock()
+	defer s.nmMu.Unlock()
+	m := loadNames(sessionNamesPath())
+	if m == nil {
+		return ""
+	}
+	return m[filepath.Base(s.path)]
+}
+
 // SwitchProject 切换当前项目(key 重绑):
 // /workspace 后由宿主 os.Chdir 再调本方法(新 key = sdk.ProjectKeyFromCwd)。
 // 重绑后自动新建空会话(上下文与后续记录切新项目文件;旧项目经 /session switch 回溯)。
@@ -251,6 +285,38 @@ func (s *Service) recordProject(key, dir string) {
 // workspacesPath 最近使用工作区记录文件($GAH_HOME/sessions/workspaces.json)。
 func workspacesPath() string {
 	return filepath.Join(SessionsRoot(), "workspaces.json")
+}
+
+// sessionNamesPath 会话显示名索引文件($GAH_HOME/sessions/names.json)。
+// 与 workspaces.json 同目录同类覆写式 JSON;key = 会话文件名(<key>.jsonl /
+// <key>-<id>.jsonl,全局唯一),value = 显示名。
+func sessionNamesPath() string {
+	return filepath.Join(SessionsRoot(), "names.json")
+}
+
+// loadNames 读显示名索引(缺文件/坏 json = 空 map,容忍;与 workspaces 同款)。
+func loadNames(path string) map[string]string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var m map[string]string
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil
+	}
+	return m
+}
+
+// saveNames 覆写显示名索引(目录自动建;失败静默——命名非关键路径)。
+func saveNames(path string, m map[string]string) error {
+	b, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, b, 0o600)
 }
 
 // loadWorkspaces 读记录(缺文件/坏 json = 空,容忍)。

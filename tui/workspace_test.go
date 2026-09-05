@@ -11,9 +11,10 @@ import (
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
-// fakeCwdSessions 记录 SwitchProject 调用 + 供 RecentProjects 最近使用列表。
+// fakeCwdSessions 记录 SwitchProject/会话命名调用 + 供 RecentProjects 最近使用列表。
 type fakeCwdSessions struct {
 	switchedKey string
+	name        string
 	recent      []sdk.ProjectInfo
 }
 
@@ -25,6 +26,8 @@ func (f *fakeCwdSessions) Open(string) error                 { return nil }
 func (f *fakeCwdSessions) CurrentSession() string            { return "" }
 func (f *fakeCwdSessions) New() (string, error)              { return "n1", nil }
 func (f *fakeCwdSessions) RecentProjects() []sdk.ProjectInfo { return f.recent }
+func (f *fakeCwdSessions) Rename(n string) error              { f.name = n; return nil }
+func (f *fakeCwdSessions) SessionName() string                { return f.name }
 func (f *fakeCwdSessions) SwitchProject(key string) (string, error) {
 	f.switchedKey = key
 	return "sp1", nil
@@ -191,5 +194,41 @@ func TestWorkspacePickerCascade(t *testing.T) {
 	}
 	if len(res3.Hints) == 0 || !strings.Contains(strings.Join(res3.Hints, " "), "目录路径") {
 		t.Fatalf("断点应提示输入目录: %v", res3.Hints)
+	}
+}
+
+// TestCmdName /name 命名当前会话:显示名写入 cwdSessions、状态栏标签=名优先;
+// 清除(-)后回退 id;未装配 ctx.cwdSessions 时显式报错不 panic。
+func TestCmdName(t *testing.T) {
+	fake := &fakeCwdSessions{}
+	a := workspaceApp(fake)
+	if err := a.command("/name 重构排期"); err != nil {
+		t.Fatal(err)
+	}
+	if fake.name != "重构排期" {
+		t.Fatalf("Rename 未收到显示名,got %q", fake.name)
+	}
+	if a.model.state.Session != "重构排期" {
+		t.Fatalf("状态栏标签应为名,got %q", a.model.state.Session)
+	}
+	// 含空格名:Fields 拆分后自由参数字段应 Join 还原
+	if err := a.command("/name 我的 实验"); err != nil {
+		t.Fatal(err)
+	}
+	if fake.name != "我的 实验" {
+		t.Fatalf("含空格名应还原,got %q", fake.name)
+	}
+	// 清除:回退空(未命名主会话 id 空 → 状态栏不显示)
+	if err := a.command("/name -"); err != nil {
+		t.Fatal(err)
+	}
+	if fake.name != "" || a.model.state.Session != "" {
+		t.Fatalf("清除后应回退,got name=%q session=%q", fake.name, a.model.state.Session)
+	}
+	// 未装配 ctx.cwdSessions:显式错误
+	c := &stubCtx{svc: map[string]any{"ctx.commands": newMemRegistry()}}
+	na := NewApp(c, stubLoop{}, stubLLM{}, "tui")
+	if err := na.command("/name x"); err == nil {
+		t.Fatal("未装配 ctx.cwdSessions 应报错")
 	}
 }

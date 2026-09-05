@@ -37,7 +37,7 @@ type State struct {
 	SpinnerIdx     int            // 思考动画帧索引(回合运行中 tick 推进)
 	Workspace      string         // 当前工作区显示(启动时 cwd 目录名)
 	Thinking       string         // 思考等级显示(off 空;Tab/Shift+Tab 切换)
-	Session        string         // 当前会话 id 显示(空 = 主会话;状态栏)
+	Session        string         // 当前会话标签(显示名优先,无名称回退 id;空 = 未命名主会话;状态栏)
 	Stats          sdk.UsageStats // 会话 token 统计(回合结束刷新;状态栏显示使用率/缓存命中率)
 
 	// ScrollOffset 会话流上滚物理行数(0 = 跟随最新;>0 = 浏览历史),渲染时钳制。

@@ -73,13 +73,11 @@ func NewApp(c sdk.Ctx, loop sdk.AgentLoop, llm sdk.LLMService, profile string) *
 	a.registerInternalCommands()
 	// 启动即新会话(host-cwd-sessions 启动时 New):模型上下文与展示层均从空开始,
 	// 不自动重放主会话历史——过往对话保留在会话文件,经 /session switch 进入时重放。
-	// 状态栏显示当前会话 id(时间戳,便于辨识当前会话与回溯旧会话)。
+	// 状态栏显示当前会话标签(名优先,无名称回退 id/主会话)。
 	{
 		var cs sdk.CwdSessions
 		if err := c.Inject("ctx.cwdSessions", &cs); err == nil {
-			if id := cs.CurrentSession(); id != "" {
-				state.Session = id
-			}
+			state.Session = sessionLabel(cs)
 		}
 	}
 	a.program = tea.NewProgram(m)
@@ -418,7 +416,7 @@ func (a *App) cmdSession(args []string) (string, error) {
 		return a.cmdSessions() // 列出已有会话文件(原 /sessions)
 	case "current":
 		return "当前项目: " + cs.Current() +
-			"\n当前会话: " + orDefault(cs.CurrentSession(), "主会话") +
+			"\n当前会话: " + orDefault(sessionLabel(cs), "主会话") +
 			"\n落盘: " + cs.Path(), nil
 	case "new":
 		id, err := cs.New()
@@ -466,25 +464,43 @@ func (a *App) sessionSwitchOptions(picked []string) []sdk.Option {
 	return opts
 }
 
-// sessionDesc 会话选项描述:主会话标注跨期共享;切换会话带最后修改时间与事件条数。
-func sessionDesc(si sdk.SessionInfo) string {
-	if si.ID == "" {
-		return "主会话(跨期共享)"
+// sessionLabel 当前会话状态栏/展示标签:显示名优先,无名称回退会话 id
+// (未命名主会话 id 为空 → 返回空串,状态栏不显示会话段)。
+func sessionLabel(cs sdk.CwdSessions) string {
+	if n := cs.SessionName(); n != "" {
+		return n
 	}
-	d := "会话 " + si.ID
-	if si.MTime > 0 {
-		d += " · " + time.Unix(si.MTime, 0).Format("01-02 15:04")
-	}
-	if si.Frames >= 0 {
-		d += " · " + fmt.Sprint(si.Frames) + " 条"
-	}
-	return d
+	return cs.CurrentSession()
 }
 
-// afterSessionSwitch 切换会话后的界面同步:状态栏会话 id、重置 token 统计、
+// sessionDesc 会话选项描述:主会话标注跨期共享;切换会话带最后修改时间与事件条数;
+// 显示名优先(名 + id/主会话),无名称回退 id。
+func sessionDesc(si sdk.SessionInfo) string {
+	main := si.ID == ""
+	label := si.Name
+	switch {
+	case label == "" && main:
+		label = "主会话"
+	case label == "":
+		label = "会话 " + si.ID
+	case main:
+		label += "(主会话)"
+	}
+	if !main {
+		if si.MTime > 0 {
+			label += " · " + time.Unix(si.MTime, 0).Format("01-02 15:04")
+		}
+		if si.Frames >= 0 {
+			label += " · " + fmt.Sprint(si.Frames) + " 条"
+		}
+	}
+	return label
+}
+
+// afterSessionSwitch 切换会话后的界面同步:状态栏会话标签(名优先)、重置 token 统计、
 // 清空 TUI 会话流并重放新会话历史(继续上下文可见)。
 func (a *App) afterSessionSwitch(cs sdk.CwdSessions) {
-	a.model.state.Session = cs.CurrentSession()
+	a.model.state.Session = sessionLabel(cs)
 	var us sdk.UsageStatsService
 	if err := a.c.Inject("ctx.usageStats", &us); err == nil {
 		us.Reset() // 新会话从零累计(窗口保留)
@@ -501,7 +517,7 @@ func (a *App) afterSessionSwitch(cs sdk.CwdSessions) {
 		}
 	}
 	a.model.state.Lines = append(a.model.state.Lines,
-		Line{Kind: "meta", Text: "—— 已切换到会话: " + orDefault(cs.CurrentSession(), "主会话") + " ——"})
+		Line{Kind: "meta", Text: "—— 已切换到会话: " + orDefault(sessionLabel(cs), "主会话") + " ——"})
 }
 
 // workspaceNewSentinel 选择器哨兵项:选中后进入二级自由断点输入新目录路径。
@@ -824,6 +840,27 @@ func (a *App) registerInternalCommands() {
 				}},
 				// 二级:仅 switch 分支动态枚举会话列表;list/new/current 无二级直接执行
 				{Options: a.sessionSwitchOptions},
+			}},
+		{Name: "name", Usage: "/name <显示名>", Desc: "给当前会话加显示名(- 清除;状态栏/切换列表名优先)",
+			// 自由级断点:选中后输入显示名回车执行(可含空格;同 /search 语义)。
+			Args: []sdk.ArgLevel{{FreeArgs: func([]string) []string { return []string{"显示名"} }}},
+			Run: func(args []string) (string, error) {
+				var cs sdk.CwdSessions
+				if err := a.c.Inject("ctx.cwdSessions", &cs); err != nil {
+					return "", errString("ctx.cwdSessions 未装配: " + err.Error())
+				}
+				name := strings.Join(args, " ")
+				if name == "-" {
+					name = "" // 清除显示名
+				}
+				if err := cs.Rename(name); err != nil {
+					return "", errString("命名失败: " + err.Error())
+				}
+				a.model.state.Session = sessionLabel(cs)
+				if name == "" {
+					return "已清除当前会话显示名", nil
+				}
+				return "已命名当前会话: " + name, nil
 			}},
 		{Name: "help", Usage: "/help", Desc: "命令帮助", Run: a.cmdHelp},
 		{Name: "exit", Usage: "/exit", Desc: "退出", Run: func([]string) (string, error) {

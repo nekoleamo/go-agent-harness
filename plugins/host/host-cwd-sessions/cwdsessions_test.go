@@ -269,3 +269,106 @@ func TestRecentProjects(t *testing.T) {
 	}
 	_ = id
 }
+
+// --- 会话显示名(/name)测试 ---
+
+// withGahHome 临时 GAH_HOME(测试隔离;恢复原值)。
+func withGahHome(t *testing.T, dir string) {
+	t.Helper()
+	prev := os.Getenv("GAH_HOME")
+	os.Setenv("GAH_HOME", dir)
+	t.Cleanup(func() { os.Setenv("GAH_HOME", prev) })
+}
+
+func TestSessionRenamePersistAndIndependent(t *testing.T) {
+	tmp := t.TempDir()
+	root := filepath.Join(tmp, "sessions")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	withGahHome(t, tmp)
+	// 主会话 + 一个切换会话文件
+	os.WriteFile(filepath.Join(root, "k.jsonl"), []byte("e1\n"), 0o644)
+	swPath := filepath.Join(root, "k-20261002-100000.jsonl")
+	os.WriteFile(swPath, []byte("e1\n"), 0o644)
+	// 分别命名(按会话独立)
+	main := &Service{key: "k", path: filepath.Join(root, "k.jsonl")}
+	if err := main.Rename("总纲"); err != nil {
+		t.Fatal(err)
+	}
+	sw := &Service{key: "k", path: swPath}
+	if err := sw.Rename("重构排期"); err != nil {
+		t.Fatal(err)
+	}
+	if got := main.SessionName(); got != "总纲" {
+		t.Fatalf("主会话名,got %q", got)
+	}
+	// 重启等价:新实例(仅 key)读 names.json 恢复主会话名;Sessions 列表两者独立带名
+	svc2 := &Service{key: "k", path: filepath.Join(root, "k.jsonl")}
+	if got := svc2.SessionName(); got != "总纲" {
+		t.Fatalf("重启后主会话名应保留,got %q", got)
+	}
+	names := map[string]string{}
+	for _, si := range svc2.Sessions() {
+		names[si.ID] = si.Name
+	}
+	if names[""] != "总纲" {
+		t.Fatalf("Sessions 主会话 Name 应带,got %q", names[""])
+	}
+	if names["20261002-100000"] != "重构排期" {
+		t.Fatalf("Sessions 切换会话 Name 应独立,got %q", names["20261002-100000"])
+	}
+}
+
+func TestSessionRenameClear(t *testing.T) {
+	tmp := t.TempDir()
+	root := filepath.Join(tmp, "sessions")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	withGahHome(t, tmp)
+	p := filepath.Join(root, "k-1.jsonl")
+	os.WriteFile(p, []byte("e1\n"), 0o644)
+	svc := &Service{key: "k", path: p}
+	if err := svc.Rename("临时名"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Rename(""); err != nil { // 清除
+		t.Fatal(err)
+	}
+	if got := svc.SessionName(); got != "" {
+		t.Fatalf("清除后应无名,got %q", got)
+	}
+	svc2 := &Service{key: "k", path: p}
+	if got := svc2.SessionName(); got != "" {
+		t.Fatalf("清除应持久,got %q", got)
+	}
+}
+
+func TestSessionNamesCorruptTolerated(t *testing.T) {
+	tmp := t.TempDir()
+	root := filepath.Join(tmp, "sessions")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	withGahHome(t, tmp)
+	p := filepath.Join(root, "k-1.jsonl")
+	os.WriteFile(p, []byte("e1\n"), 0o644)
+	// 坏 names.json:读=未命名不报错;Rename 覆写修复后可继续
+	os.WriteFile(filepath.Join(root, "names.json"), []byte("{{{not-json"), 0o644)
+	svc := &Service{key: "k", path: p}
+	if got := svc.SessionName(); got != "" {
+		t.Fatalf("坏索引应视为未命名,got %q", got)
+	}
+	if err := svc.Rename("ok"); err != nil {
+		t.Fatalf("坏索引下 Rename 应可覆写修复: %v", err)
+	}
+	if got := svc.SessionName(); got != "ok" {
+		t.Fatalf("修复后应读到名,got %q", got)
+	}
+	// 新实例读修复后文件正常
+	svc2 := &Service{key: "k", path: p}
+	if got := svc2.SessionName(); got != "ok" {
+		t.Fatalf("修复后持久,got %q", got)
+	}
+}

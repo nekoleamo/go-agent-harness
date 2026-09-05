@@ -17,7 +17,7 @@ const (
 	EventToolCall         = "tool/call"
 	EventToolResult       = "tool/result"
 	// EventSummary 滚动摘要事件(M6.5):载荷为累计摘要文本;原始消息事件保留在日志(留盘完整)。
-	EventSummary     = "session/summary"
+	EventSummary = "session/summary"
 	// EventUsage 每轮 LLM 请求完成后的 token 消耗(M):载荷为 sdk.UsageEvent(模型名 + Usage);
 	// agent-loop 每轮记录(同日志留盘),host-usage-stats 订阅累计为会话级统计。
 	EventUsage       = "session/usage"
@@ -108,10 +108,11 @@ type UsageEvent struct {
 // SessionInfo 一个会话的元信息(host-cwd-sessions 列表/切换用)。
 // ID 空 = 主会话(<key>.jsonl,跨期共享历史);非空 = 切换会话(<key>-<id>.jsonl)。
 type SessionInfo struct {
-	ID      string // 会话 id(空 = 主会话)
-	Path    string // 落盘 jsonl 路径
-	MTime   int64  // 最后修改时间(unix 秒;0 = 未知/未落盘)
-	Frames  int    // 事件条数(-1 = 未统计)
+	ID     string // 会话 id(空 = 主会话)
+	Path   string // 落盘 jsonl 路径
+	Name   string // 显示名(/name 设置;空 = 未命名)
+	MTime  int64  // 最后修改时间(unix 秒;0 = 未知/未落盘)
+	Frames int    // 事件条数(-1 = 未统计)
 }
 
 // CwdSessions 服务(ctx.cwdSessions):项目级会话(host-cwd-sessions)。
@@ -129,6 +130,11 @@ type CwdSessions interface {
 	Open(id string) error
 	// CurrentSession 当前会话 id(空 = 主会话)。
 	CurrentSession() string
+	// Rename 设置当前会话显示名(空 = 清除)。名随会话文件持久化,
+	// 状态栏/会话列表/切换选择器以名为优先展示,无名称回退 id/主会话。
+	Rename(name string) error
+	// SessionName 当前会话显示名(空 = 未命名)。
+	SessionName() string
 	// New 新建会话:生成唯一 id 并 Open,返回新会话 id。
 	New() (string, error)
 	// SwitchProject 切换当前项目:key = 新项目 key(cwd 派生),重绑后自动新建
