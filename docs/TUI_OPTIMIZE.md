@@ -116,6 +116,18 @@
   Backspace/Esc/enter 无匹配守卫)+ tui/render.go(过滤状态行)+ pickfilter_test。
 - 验收:会话列表打字即时收缩;退格/Esc 恢复;无匹配回车不执行。
 
+### 1.9 多值自由参数逐步向导(/provider set 式逐级输入)✅ 已实施
+- 问题:`/provider set` 需一次输入三个自由参数(baseUrl apiKey model),断点只给一次提示,
+  少输/错位即报错重来。
+- 方案(框架级,契约不变):自由参数(FreeArgs 返回多个名)= 逐级输入序列。首次断点提示
+  第 1/N 步;每 Enter 确认一个值并提示下一参数;名尾 '?'(如 model?) = 可选参数(仅最后一步,
+  空回车跳过);序列收齐(或尾可选跳过)才真正执行命令。旧语义兼容:单参数命令逐字不变;
+  一次多词输入等价旧执行路径;退格删词自动回退步数;命令变更自动脱离向导。
+- 已落地:sdk/commands.go(ArgLevel 契约注释)+ tui/picker.go(advanceResult.Free + freeStep +
+  freeStepHints 分步提示)+ tui/state.go(Free 状态)+ tui/model.go(submit 前 freeContinue 步进/
+  跳过/等待/脱离)+ freewizard_test。provider set 无声明改动即获逐级体验。
+- 验收:/provider set 逐步输入 URL→回车→Key→回车→(model 输入或回车跳过)后生效。
+
 ## S2 内容与结构质量
 
 ### 2.1 消息视觉分组

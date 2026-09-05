@@ -878,6 +878,16 @@ func (m *Model) enter() {
 	if res.Pick == nil {
 		m.state.PickDismissed = true // 断点/完成:重新输入才再激活
 	}
+	// 多值自由参数:断点建立逐步向导(序列 >1;单参数保持旧直接输入语义)
+	if res.Pick == nil {
+		if len(res.Free) > 1 {
+			if f := strings.Fields(strings.TrimPrefix(res.Input, "/")); len(f) > 0 {
+				m.state.Free = &freeStep{Cmd: f[0], Params: res.Free, Base: len(f), Done: 0}
+			}
+		} else {
+			m.state.Free = nil
+		}
+	}
 	// 不调 syncHints:新文本会被重新过滤成命令列表,覆盖推进出的参数级
 	// (选择确认是用户主动操作,非输入变化;渲染直接用 Pick.Items/Hints)。
 	if res.Commit {
@@ -956,6 +966,9 @@ func (m *Model) syncHints() {
 // submit 提交输入:命令走 onCommand,否则走 onSubmit(异步回合)。
 func (m *Model) submit() {
 	input := m.state.Input
+	if m.freeContinue(input) {
+		return // 多值自由参数逐步向导推进(命令未执行,等待下一参数输入)
+	}
 	m.state.ClearInput()
 	m.syncHints()
 	if input == "" {
@@ -969,4 +982,46 @@ func (m *Model) submit() {
 		return
 	}
 	m.onSubmit(input)
+}
+
+// freeContinue 多值自由参数向导(仅 Free 启用,见 freeStep):命令序列未收齐时不执行——
+// 本次回车带新词 = 步进并提示下一步;无新词在尾可选步 = 跳过执行、在必填步 = 等待继续输入。
+// 返回 true = 已拦截(submit 未执行);false = 可直接执行(向导未启用/已收齐/命令已变更)。
+func (m *Model) freeContinue(input string) bool {
+	f := m.state.Free
+	if f == nil || len(f.Params) == 0 {
+		return false
+	}
+	fields := strings.Fields(strings.TrimPrefix(input, "/"))
+	if len(fields) == 0 || fields[0] != f.Cmd {
+		m.state.Free = nil // 命令已变更:脱离向导
+		return false
+	}
+	d := len(fields) - f.Base // 已输入自由词数
+	if d < 0 {
+		d = 0
+	}
+	advanced := d > f.Done // 本次回车是否带来新自由词(决定尾可选步空回车=跳过的判据)
+	switch {
+	case advanced:
+		if d >= len(f.Params) {
+			m.state.Free = nil // 全部(或一次多词超量)填完:执行(Run 自校验)
+			return false
+		}
+		f.Done = d // 步进到下一待填参数
+	case d < f.Done:
+		f.Done = d // 用户退格删词:回退步数
+	}
+	if f.Done >= len(f.Params) {
+		m.state.Free = nil
+		return false
+	}
+	idx := f.Done
+	// 仅"无新词回车"落在尾可选步 = 跳过执行;刚带词推进到此步只提示(等待输入/再空回车跳过)
+	if !advanced && d == f.Done && idx == len(f.Params)-1 && strings.HasSuffix(f.Params[idx], "?") {
+		m.state.Free = nil
+		return false
+	}
+	m.state.Suggestions = freeStepHints(m.state.Input, f.Params, idx) // 提示当前步
+	return true
 }

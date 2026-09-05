@@ -20,6 +20,9 @@ type CommandSpec struct {
 // ArgLevel 一级参数定义:枚举(可选项)或自由(需手动输入,选择器断点)。
 // 同一级只有一个生效:Options 非空用枚举;否则 FreeArgs 非空提示手动输入;
 // 两者皆空 = 无定义(该路径直接执行)。
+// 自由参数(FreeArgs 返回多个名)语义 = **逐级输入序列**(如 /provider set 的
+// baseUrl/apiKey/model?):每 Enter 确认一个值并提示下一参数;名尾 '?' = 可选参数
+// (须为序列最后一项,空回车跳过);单个名保持一次性断点输入(旧行为)。
 type ArgLevel struct {
 	// Options 枚举选项(可空:该级非枚举);picked 为前几级已选值。
 	Options func(picked []string) []Option

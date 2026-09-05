@@ -21,15 +21,25 @@ type Pick struct {
 	Filter string       // 参数级过滤词(非空时 Items 为其匹配子集)
 }
 
+// freeStep 多值自由参数逐步向导状态(如 /provider set 的 baseUrl/apiKey/model)。
+// 仅自由参数序列 >1 的命令启用;每 Enter 确认一步(值入命令文本),尾可选步空回车 = 跳过。
+type freeStep struct {
+	Cmd    string   // 命令名(向导归属;命令变更即脱离)
+	Params []string // 自由参数名序列(尾 '?' = 可选,须为最后一项)
+	Base   int      // 断点时刻命令已含词数(命令名+已选枚举;自由词计数基准)
+	Done   int      // 已确认输入的自由参数个数
+}
+
 // levelsFn 取命令的参数级定义(由 App 注入:查 ctx.commands 注册表)。
 type levelsFn func(name string) []sdk.ArgLevel
 
-// advanceResult 回车推进结果:新文本/下一级选择/是否提交/断点提示行。
+// advanceResult 回车推进结果:新文本/下一级选择/是否提交/断点提示行/自由参数序列。
 type advanceResult struct {
 	Input  string
 	Pick   *Pick
 	Commit bool
 	Hints  []string // 断点时提示“继续输入”的自由参数行(渲染于输入框下)
+	Free   []string // 自由断点:待逐级输入的自由参数名序列(>1 启用逐步向导;单参数恒空)
 }
 
 // AdvanceEnter 回车推进选择:应用当前高亮项,决定新文本/下一级/提交/断点提示。
@@ -89,21 +99,36 @@ func advanceInto(newInput string, picked []string, lv []sdk.ArgLevel, idx int, l
 			// 自由级断点:保留文本回输入框,提示继续输入参数。
 			// 尾随空格:用户直接打字即拼成 "/cmd <词>",否则粘连成 "/cmd<词>"
 			// (断点态输入的词会误拼进命令名,提交报未知命令/误走普通消息)。
-			return advanceResult{Input: newInput + " ", Hints: freeHintLines(newInput, free)}
+			// 多值参数(free >1):返回序列供逐步向导逐级 Enter(见 freeStep)。
+			return advanceResult{Input: newInput + " ", Hints: freeStepHints(newInput, free, 0), Free: free}
 		}
 	}
 	return advanceResult{Input: newInput, Commit: true} // 无定义级:直接执行
 }
 
-// freeHintLines 断点提示行(“继续输入”自由参数)。
-func freeHintLines(input string, free []string) []string {
+// freeStepHints 自由断点提示行:单参数保持既有文案(兼容);多参数按逐步向导显示当前步。
+func freeStepHints(input string, free []string, idx int) []string {
 	name := ""
 	if f := strings.Fields(strings.TrimPrefix(input, "/")); len(f) > 0 {
 		name = f[0]
 	}
-	out := []string{" 继续输入 " + strings.Join(free, " | ")}
+	n := len(free)
+	if n <= 1 {
+		out := []string{" 继续输入 " + strings.Join(free, " | ")}
+		if name != "" {
+			out = append(out, fmt.Sprintf(" /%s %s", name, strings.Join(free, " ")))
+		}
+		return out
+	}
+	cur := free[idx]
+	disp := strings.TrimSuffix(cur, "?") // '?' 尾 = 可选参数(仅允许最后一步)
+	tail := ""
+	if idx == n-1 && strings.HasSuffix(cur, "?") {
+		tail = "(回车跳过)"
+	}
+	out := []string{fmt.Sprintf(" 第 %d/%d 步:输入 %s%s", idx+1, n, disp, tail)}
 	if name != "" {
-		out = append(out, fmt.Sprintf(" /%s %s", name, strings.Join(free, " ")))
+		out = append(out, fmt.Sprintf(" /%s … %s", name, disp))
 	}
 	return out
 }
