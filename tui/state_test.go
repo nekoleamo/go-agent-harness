@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -79,6 +80,138 @@ func TestInputOperations(t *testing.T) {
 	s.Input = "/model deepseek-chat"
 	if !s.IsCommand() {
 		t.Fatal("命令判定失败")
+	}
+}
+
+// TestCursorMovement 光标移动:左/右边界钳制、头部/尾部跳转、Delete 删光标处。
+func TestCursorMovement(t *testing.T) {
+	s := &State{Input: "hello", Cursor: 2}
+	s.CursorLeft()
+	if s.Cursor != 1 {
+		t.Fatalf("左移不符: %d", s.Cursor)
+	}
+	s.CursorHome()
+	if s.Cursor != 0 {
+		t.Fatalf("头部不符: %d", s.Cursor)
+	}
+	s.CursorLeft() // 头部越界钳制
+	if s.Cursor != 0 {
+		t.Fatalf("头部越界应钳制: %d", s.Cursor)
+	}
+	s.CursorEnd()
+	if s.Cursor != 5 {
+		t.Fatalf("尾部不符: %d", s.Cursor)
+	}
+	s.CursorRight() // 尾部越界钳制
+	if s.Cursor != 5 {
+		t.Fatalf("尾部越界应钳制: %d", s.Cursor)
+	}
+	// 光标中 Delete:删光标处字符
+	s = &State{Input: "hello", Cursor: 1}
+	s.CursorRight()
+	if s.Input != "hello" || s.Cursor != 2 {
+		t.Fatalf("右移后不符: %q %d", s.Input, s.Cursor)
+	}
+	// 直接验证 Delete(光标=1:删 'e')
+	s2 := &State{Input: "hello", Cursor: 1}
+	s2.Delete()
+	if s2.Input != "hllo" || s2.Cursor != 1 {
+		t.Fatalf("Delete 应删光标处: %q %d", s2.Input, s2.Cursor)
+	}
+	// 末尾 Delete = no-op
+	s3 := &State{Input: "hi", Cursor: 2}
+	s3.Delete()
+	if s3.Input != "hi" {
+		t.Fatalf("末尾 Delete 应 no-op: %q", s3.Input)
+	}
+	// CursorEnd 后插入(追加)
+	s4 := &State{Input: "hi", Cursor: 2}
+	s4.InsertRune('!')
+	if s4.Input != "hi!" || s4.Cursor != 3 {
+		t.Fatalf("尾部追加不符: %q %d", s4.Input, s4.Cursor)
+	}
+}
+
+// TestScrollWindow 滚动窗口:文本超窗口后 offset 生效,钳制到最新窗口。
+func TestScrollWindow(t *testing.T) {
+	s := &State{}
+	for i := 0; i < 10; i++ {
+		s.Lines = append(s.Lines, Line{Kind: "meta", Text: fmt.Sprintf("L%d", i)})
+	}
+	// 窗口 3:默认跟随最新
+	win := s.visible(3)
+	if len(win) != 3 || win[2].Text != "L9" {
+		t.Fatalf("默认应显示最新窗口: %+v", win)
+	}
+	// 上滚 5 行:窗口前移到更早内容(L2–L4)
+	s.ScrollBy(5, 3)
+	win = s.visible(3)
+	if len(win) != 3 || win[0].Text != "L2" || win[2].Text != "L4" {
+		t.Fatalf("上滚窗口不符: %+v", win)
+	}
+	if s.ScrollOffset != 5 {
+		t.Fatalf("offset 不符: %d", s.ScrollOffset)
+	}
+	// 回底
+	s.ScrollBy(-9, 3)
+	if s.ScrollOffset != 0 {
+		t.Fatalf("回底应为 0: %d", s.ScrollOffset)
+	}
+	// 越界上滚钳制到最大合法窗口
+	s.ScrollBy(100, 3)
+	win = s.visible(3)
+	if win[0].Text != "L0" {
+		t.Fatalf("极限上滚应显示最早窗口: %+v", win)
+	}
+}
+
+// TestApplyReplaySkipsTurnEnd 重放跳过 turn/end 轮次分隔行(实时回合保留)。
+func TestApplyReplaySkipsTurnEnd(t *testing.T) {
+	s := &State{}
+	s.ApplyReplay(&sdk.SessionEvent{Kind: sdk.EventUserMessage, Payload: sdk.UserMessage{Content: "hi"}})
+	s.ApplyReplay(&sdk.SessionEvent{Kind: sdk.EventTurnEnd, Payload: "done"})
+	s.ApplyReplay(&sdk.SessionEvent{Kind: sdk.EventAssistantMessage, Payload: sdk.AssistantMessage{Content: "ok"}})
+	if len(s.Lines) != 2 {
+		t.Fatalf("重放应跳过轮次分隔行: %d 行", len(s.Lines))
+	}
+	for _, l := range s.Lines {
+		if strings.Contains(l.Text, "轮次结束") {
+			t.Fatal("重放不应出现“轮次结束”meta 行")
+		}
+	}
+	// 实时事件照常(不分隔)
+	s.ApplySessionEvent(&sdk.SessionEvent{Kind: sdk.EventTurnEnd, Payload: "done"})
+	if n := len(s.Lines); n != 3 || !strings.Contains(s.Lines[n-1].Text, "轮次结束") {
+		t.Fatalf("实时 turn/end 应保留分隔行: %d 行", n)
+	}
+}
+
+// TestScrollMetrics 滚动条度量:无需滚动全窗口/滑块比例/沉底/极限顶部。
+func TestScrollMetrics(t *testing.T) {
+	// 无需滚动:窗口=总行
+	top, thumb := scrollMetrics(5, 5, 0)
+	if top != 0 || thumb != 5 {
+		t.Fatalf("无需滚动应全窗口: %d %d", top, thumb)
+	}
+	// 总10行窗口3:跟随最新 → 滑块沉底
+	top, thumb = scrollMetrics(10, 3, 0)
+	if thumb != 1 || top != 2 {
+		t.Fatalf("沉底不符: top=%d thumb=%d", top, thumb)
+	}
+	// 极限上滚(offset=maxOff=7):滑块到顶
+	top, thumb = scrollMetrics(10, 3, 7)
+	if top != 0 || thumb != 1 {
+		t.Fatalf("到顶不符: top=%d thumb=%d", top, thumb)
+	}
+	// 中间位置:滑块按比例
+	top, thumb = scrollMetrics(10, 3, 3)
+	if top != 1 {
+		t.Fatalf("中间位置 top 不符: %d", top)
+	}
+	// 窗口 0 防御
+	top, thumb = scrollMetrics(10, 0, 0)
+	if thumb != 0 {
+		t.Fatalf("win<=0 应 0: %d", thumb)
 	}
 }
 

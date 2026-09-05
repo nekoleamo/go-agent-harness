@@ -10,7 +10,7 @@ import (
 
 	"github.com/hashicorp/go-plugin"
 
-	bridge "github.com/nekoleamo/go-agent-harness/plugins/host-bridge"
+	bridge "github.com/nekoleamo/go-agent-harness/plugins/host/host-bridge"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 

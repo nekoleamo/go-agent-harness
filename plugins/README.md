@@ -1,0 +1,45 @@
+# plugins/ 插件目录总览
+
+一切能力皆插件:每个插件一个独立包(仅 import `sdk/`),经 `catalogue/` 单一事实源登记,装配层按配置树 enabled 启停。分组仅为可读性整理,不改包名/接口/装配语义。
+
+```
+plugins/
+├── catalogue/   # 汇总事实源:每个插件的工厂 + Manifest(provides/requires)+ bundle 归属
+├── host/        # 宿主级服务(Agent 能力宿主,内置)
+├── adapter/     # LLM 提供商适配器
+├── policy/      # 策略(沙箱/审批)
+├── tool/        # 内置工具(注意:已在 M6.9 外部化为 extplugins/,默认 enabled:false)
+├── mcp/         # MCP 桥/服务端
+└── ui/          # 界面
+```
+
+| 类别 | 插件 | 职责 | 依赖(requires) |
+|---|---|---|---|
+| host | host-session-log | 会话日志:追加式事件流 + 模型历史投影(ctx.sessions) | — |
+| host | token-compress | 滚动摘要压缩(超预算回调压缩器) | ctx.sessions |
+| host | host-tools | 工具注册表(ctx.tools) | — |
+| host | host-system-prompt | 系统提示组装(ctx.systemPrompt) | — |
+| host | host-llm | LLM 注册表 + 路由 + 重试(ctx.llm) | — |
+| host | host-commands | 斜杠命令注册表(ctx.commands) | — |
+| host | host-agent-loop | 默认 ReAct 回合循环(ctx.agentLoop) | ctx.sessions/ctx.llm/ctx.tools/ctx.systemPrompt |
+| host | host-cwd-sessions | 项目级会话隔离 + 多会话切换(ctx.cwdSessions) | ctx.sessions |
+| host | host-usage-stats | 会话 token 统计 + 模型窗口解析(ctx.usageStats) | — |
+| host | host-skills | 技能机制(SKILL.md 扫描) | ctx.tools/ctx.systemPrompt |
+| host | host-jobs | 后台任务(ctx.jobs) | ctx.tools |
+| host | host-fanout | 子代理编排(ctx.fanout) | ctx.llm/ctx.tools/ctx.systemPrompt |
+| host | host-plugin-manager | 运行期插拔(ctx.pluginManager) | — |
+| host | host-bridge | 外部插件桥(加载 home/plugins 外部进程,GAH_CB_ADDR 回调) | ctx.tools/ctx.jobs/ctx.fanout |
+| adapter | llm-openai-compat | OpenAI 兼容适配器(SSE + usage/缓存解析) | ctx.llm |
+| adapter | llm-anthropic-compat | Anthropic 适配器(claude-* 前缀路由) | ctx.llm |
+| adapter | llm-mock | 假适配器(dev/CI 无外网) | ctx.llm |
+| policy | policy-sandbox | 沙箱三档(ctx.sandbox) | — |
+| policy | policy-approval | 危险操作审批(TUI y/n) | — |
+| tool | tool-shell / tool-files / tool-web / tool-workflow / tool-memory / tool-todo | 工具实现(默认关闭,已外部化);tool-web 含 web_fetch/web_search(M6.14,默认 Exa,data.provider 可换);tool-memory 含 memory(M10,remember/list/recall/forget);tool-todo 含 todo(M8,4 状态机 + blockedBy) | ctx.tools(workflow 另需 ctx.fanout) |
+| mcp | mcp-bridge / mcp-server | MCP 客户端桥 / MCP server 端 | ctx.tools |
+| ui | ui-tui-app | TUI 挂载 | ctx.agentLoop/ctx.llm |
+
+## 维护约定
+
+- **新增插件**:在对应类别下建包 → `catalogue/` 登记(provides/requires/bundle)→ config/ 与 internal/embed/seed/ 两份 bundle 样板同步(新增条目 bump seed-version)→ 插件只 import `sdk/`(红线:不 import core/tui/其它插件包)。
+- **外部化目标**(M6.9/P4):工具类保持外部二进制(`extplugins/` + embed 按平台拆包),内置二进制只承载 host/adapter/policy/ui。分组不影响外部化:路径变化随映射同步,编译期兜底。
+- **窗口表**维护:新模型上下文窗口见 `host/host-usage-stats/modelwindows.go`。

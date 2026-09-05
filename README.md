@@ -100,7 +100,9 @@ export DEEPSEEK_API_KEY=sk-...            # 或 OPENAI_API_KEY / GAH_BASE 自定
 | `/plugins list\|on\|off <id>` | 运行期插拔插件 |
 | `/settings history N\|off\|unlimited` | 会话历史注入条数 |
 | `/export` | 会话事件序列 |
-| `/help` `/exit` | 帮助 / 退出(Ctrl+C 亦可) |
+| `/help` `/exit` | 帮助 / 退出(**Ctrl+C 连按两次**,防误触) |
+
+> **键位速记**:输入中单次 `Ctrl+C` 仅清空输入(不退出);输入为空时需**连按两次** `Ctrl+C`(2 秒窗口内)才彻底退出,第一次按下会高亮提示再按一次,超时或按其他键自动解除;`Esc` 取消进行中的回合。
 
 ## 五、配置与运行时目录
 
@@ -132,14 +134,20 @@ $GAH_HOME(缺省 ~/.gah)  # 全局指令 AGENTS.md / 全局技能 skills/ / 会�
 ├── core/             # 微内核:ctx/event/plugin/config
 ├── sdk/              # 插件唯一依赖的接口与域模型
 ├── bundles/          # bundle 装配(base/tui/register)
-├── plugins/          # 16 个内置插件(host-*/tool-*/policy-*/llm-*/ui/mcp/skills)
+├── plugins/          # 全量插件:按类别子目录分组(host/adapter/policy/tool/mcp/ui,
+│                     # 总览见 plugins/README.md;catalogue/ 为汇总事实源)
 ├── extplugins/       # 外部进程插件入口(tool-echo 示例 / tool-basic 三件套)
-├── tui/              # bubbletea v2 界面(状态机可测)
+│                     # ——工具类保持外部化(embed 释放),内置二进制只承载 host/adapter/policy/ui
+├── tui/              # bubbletea v2 界面(状态机可测;独立于插件包体系,ui-tui-app 薄壳引用)
 ├── tests/            # 端到端 + 迷你 MCP server
+├── internal/         # install/embed/providerfile(发行/首启/运行配置)
 ├── config/           # profile/bundle/patch 样板
-├── .gah/skills/      # 自注册技能
+├── scripts/          # gen-extplugins.sh 等构建/发行脚本
+├── .gah/skills/      # 自注册技能(gah-plugin-dev)
 └── docs/ DESIGN.md AGENTS.md README.md
 ```
+
+> 目录分组仅为可读性整理(M6.11):不改包名/接口/装配语义;外部化目标不受影响——`plugins/tool`、`plugins/mcp` 的内嵌实现默认停用,由 `host-bridge` 加载 `extplugins/`(与 `~/.gah/plugins/` 外部进程)。
 
 ## 八、发行
 
@@ -154,6 +162,9 @@ goreleaser release --snapshot
 
 - **已交付**:M1 微内核 → M2 base(ReAct/LLM/工具)→ M3 TUI → M4 生态(沙箱/审批/插拔/凭据)→ M5 桥 + starlark workflow → M5.5 MCP + 配置自愈 → M5.6 指令注入 + 技能机制 → 完善 A 组(会话持久化/重试/取消)+ B 组(apiVersion 校验/export/外部热重载/embed 交付);20 包 `-race` 全绿;交付门通过(单二进制自包含实测)。
 - **M6 已全部交付**:host-jobs 后台任务(`ctx.jobs` + job_list/output/kill + `/jobs`)、workflow 子代理 fanout(agent/parallel/pipeline)、tool-shell pty 交互(`data.pty` 开关)、tool-files/tool-web(file_read/write/append/edit + web_fetch,经 `ctx.sandbox` 三档联动)、会话 token 滚动摘要压缩(`token_budget_chars`,完整日志留盘)、插件安装(`gah -install <repo>@version` / `-uninstall` / `-list-plugins`,manifest 见 DESIGN §14.1)。
+- **M6.10–M6.12(已交付)**:会话 token 统计与上下文窗口动态解析(host-usage-stats;状态栏显示 `上下文 12.3K/64K (19%)` 与缓存命中率)、多会话切换(`/session switch|new|current`,切换后重放历史继续、重启恢复主会话)、plugins/ 目录分组与配置持久化修复(模型/base_url 启动恢复、TUI 启动显示实际配置、history 落盘 sidecar)。M6.13 工具调用纪律(正文伪调用标签提示修正,防空转兜底)。
+- **M6.14 已交付**:联网搜索 web_search(plugins/tool/tool-web 同包扩展,免新插件;`{query, num_results 默认 5 上限 10}` → 标题/URL/摘要列表,需原文正文再调 web_fetch);默认 Exa 直连(`EXA_API_KEY`,外部进程全量 env 透传、模型不可见),`data.provider` 可换其它 provider;401/429/5xx 错误结构化归一;共享 http client(30s 超时/UA/1MB 上限);`-race` 全绿,主包 39.9MB(<40MB 体积门)。
+- **规划中(待实施)**:M7 Web UI(含 UI 槽位插件化 M7.2、WebSocket 通道 M7.3)与工具类 M8 tool-todo / M9 tool-subagent / M10 tool-memory / M11 tool-auto-plan 均见 DESIGN §14.1,按需求逐个实施。
 - **P0+P1 外部化(已交付)**:sdk 独立 module;桥协议多工具化 + 工具级超时 + 崩溃自动拉起;shell/files/web 合并为 tool-basic 随主包 embed,首启释放 `~/.gah/plugins/`,运行时全为外部进程插件(内置工具停用,host-bridge 默认启用;M6.9 扩展到 workflow/mcp 桥,M7 gzip 回归后单二进制 31.9MB < 40MB)。
 - **P2 插拔解耦(已交付)**:集成矩阵验证插件卸载解耦——被依赖者拒卸(提示含依赖者)、叶子/无依赖者可卸且回合继续、卸载后调用已卸工具给可操作提示、LLM 适配器全卸后回合显式失败不静默;宿主服务类(skills/jobs/workflow)保持进程内(外部化需宿主服务桥,与微内核/veto 语义冲突,收益低)。
 - **Anthropic 支持(已交付)**:llm-anthropic-compat(Messages API + SSE);模型前缀路由——`/model claude-*` 自动走 Anthropic(`ANTHROPIC_API_KEY`),非 claude 回落 OpenAI 兼容适配器;单测 + 路由单测 + 端到端回合验证。

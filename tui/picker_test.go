@@ -70,8 +70,8 @@ func TestAdvanceFreeBreak(t *testing.T) {
 	if res.Pick != nil {
 		t.Fatalf("断点应退出选择态: %v", res.Pick)
 	}
-	if res.Input != "/model" {
-		t.Fatalf("断点应保留命令文本: %q", res.Input)
+	if res.Input != "/model " {
+		t.Fatalf("断点应保留命令文本并带尾随空格(直接打字即参数): %q", res.Input)
 	}
 	if len(res.Hints) == 0 || !strings.Contains(res.Hints[0], "模型名") {
 		t.Fatalf("断点应有继续输入提示: %v", res.Hints)
@@ -106,8 +106,8 @@ func TestAdvanceSubFreeBreak(t *testing.T) {
 	}
 	// 选中 set → 自由级断点(继续输入 baseUrl/apiKey)
 	res2b := AdvanceEnter("/provider", &Pick{Level: 1, Items: res.Pick.Items, Cursor: 1}, levels)
-	if res2b.Commit || res2b.Input != "/provider set" {
-		t.Fatalf("set 应在断点保留文本: %q commit=%v", res2b.Input, res2b.Commit)
+	if res2b.Commit || res2b.Input != "/provider set " {
+		t.Fatalf("set 应在断点保留文本(带尾随空格): %q commit=%v", res2b.Input, res2b.Commit)
 	}
 	if len(res2b.Hints) == 0 || !strings.Contains(strings.Join(res2b.Hints, " "), "baseUrl") {
 		t.Fatalf("set 断点应提示 baseUrl 等: %v", res2b.Hints)

@@ -83,8 +83,10 @@ func advanceInto(newInput string, picked []string, lv []sdk.ArgLevel, idx int, l
 	}
 	if lv[next].FreeArgs != nil {
 		if free := lv[next].FreeArgs(picked); len(free) > 0 {
-			// 自由级断点:保留文本回输入框,提示继续输入参数
-			return advanceResult{Input: newInput, Hints: freeHintLines(newInput, free)}
+			// 自由级断点:保留文本回输入框,提示继续输入参数。
+			// 尾随空格:用户直接打字即拼成 "/cmd <词>",否则粘连成 "/cmd<词>"
+			// (断点态输入的词会误拼进命令名,提交报未知命令/误走普通消息)。
+			return advanceResult{Input: newInput + " ", Hints: freeHintLines(newInput, free)}
 		}
 	}
 	return advanceResult{Input: newInput, Commit: true} // 无定义级:直接执行

@@ -148,7 +148,7 @@ func main() {
     })
 }
 ```
-- 唯一入口 `ServeTools(tools)`(外部进程服务端;宿主同仓库编译,import `plugins/host-bridge` 的 serve.go 符号或按 extplugins 现有写法)。
+- 唯一入口 `ServeTools(tools)`(外部进程服务端;宿主同仓库编译,import `plugins/host/host-bridge` 的 serve.go 符号或按 extplugins 现有写法)。
 - 握手标识 `GAH_PLUGIN=gah-external-tool` 缺失即拒启(防误跑)。
 
 **桥协议**
@@ -169,7 +169,7 @@ func main() {
 - 新增外部插件:加进脚本的 NAMES 列表 + catalogue 登记;构建链产物缺失时主包构建失败(防漏,勿手动删除 embed 产物目录)。
 
 **验收路径**
-- 单测参照 `plugins/host-bridge/bridge_test.go` 的 `buildExternalPlugin` 模式(测试内 `go build` 产物再装配断言崩溃隔离/软降级)。
+- 单测参照 `plugins/host/host-bridge/bridge_test.go` 的 `buildExternalPlugin` 模式(测试内 `go build` 产物再装配断言崩溃隔离/软降级)。
 - 集成端到端见 `tests/external_test.go`(`releaseExt` 释放 + 真实回合走回调通道)。
 
 ## 5. 检查清单(提交前)

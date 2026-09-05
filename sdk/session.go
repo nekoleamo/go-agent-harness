@@ -18,6 +18,9 @@ const (
 	EventToolResult       = "tool/result"
 	// EventSummary 滚动摘要事件(M6.5):载荷为累计摘要文本;原始消息事件保留在日志(留盘完整)。
 	EventSummary     = "session/summary"
+	// EventUsage 每轮 LLM 请求完成后的 token 消耗(M):载荷为 sdk.UsageEvent(模型名 + Usage);
+	// agent-loop 每轮记录(同日志留盘),host-usage-stats 订阅累计为会话级统计。
+	EventUsage       = "session/usage"
 	EventAgentStatus = "agent/status"
 	EventAgentError  = "agent/error"
 )
@@ -70,6 +73,11 @@ type SessionLog interface {
 	// SetPath 设置会话落盘路径(jsonl;host-cwd-sessions 按项目 key 调用)。
 	SetPath(path string)
 
+	// Load 切换到指定会话:关闭当前落盘文件,清空内存事件,
+	// 读入该路径 jsonl 已有事件(容忍坏行)并恢复序号(seq 接续)。
+	// 文件不存在 = 空会话(新建);path 空 = 纯内存会话。
+	Load(path string) error
+
 	// SetHistory 设置历史注入条数:-1 = 禁止注入;0 = 全部(unlimited);N>0 = 最近 N 条。
 	// 对齐设计 §9:history injection(默认 unlimited)。
 	SetHistory(n int)
@@ -89,6 +97,23 @@ type SessionCompressor interface {
 	Fold(evs []SessionEvent, watermark int, budget int, summary func(string)) int
 }
 
+// UsageEvent 一轮 LLM 请求的 token 消耗(session/usage 载荷):模型名 + Usage。
+// 模型名供 host-usage-stats 按内置窗口表解析上下文总量(不同模型窗口差异大,
+// 单值默认过粗暴;模型切换后随事件自动更新)。
+type UsageEvent struct {
+	Model string
+	Usage Usage
+}
+
+// SessionInfo 一个会话的元信息(host-cwd-sessions 列表/切换用)。
+// ID 空 = 主会话(<key>.jsonl,跨期共享历史);非空 = 切换会话(<key>-<id>.jsonl)。
+type SessionInfo struct {
+	ID      string // 会话 id(空 = 主会话)
+	Path    string // 落盘 jsonl 路径
+	MTime   int64  // 最后修改时间(unix 秒;0 = 未知/未落盘)
+	Frames  int    // 事件条数(-1 = 未统计)
+}
+
 // CwdSessions 服务(ctx.cwdSessions):项目级会话(host-cwd-sessions)。
 type CwdSessions interface {
 	// Current 当前项目会话 key(由 cwd 派生,同项目跨期共享)。
@@ -97,4 +122,26 @@ type CwdSessions interface {
 	Path() string
 	// List 列出项目会话 key(按名称;含历史项目)。
 	List() []string
+	// Sessions 当前项目的会话列表(主会话 + 已切换会话;按最后修改时间倒序)。
+	Sessions() []SessionInfo
+	// Open 切换当前会话:载入 id 对应文件的历史并设为落盘目标。
+	// id 空 = 主会话;文件不存在 = 新建会话(空历史,继续从头记)。
+	Open(id string) error
+	// CurrentSession 当前会话 id(空 = 主会话)。
+	CurrentSession() string
+	// New 新建会话:生成唯一 id 并 Open,返回新会话 id。
+	New() (string, error)
+	// SwitchProject 切换当前项目:key = 新项目 key(cwd 派生),重绑后自动新建
+	// 空会话(当前上下文与后续记录切到新项目文件;旧项目历史经 List/Sessions 回溯)。
+	// 返回新会话 id。key 空 = default。
+	SwitchProject(key string) (string, error)
+	// RecentProjects 最近使用工作区(项目)列表,按最近使用时间倒序(TUI /workspace 选择)。
+	RecentProjects() []ProjectInfo
+}
+
+// ProjectInfo 一条工作区(项目)使用记录:key(cwd 派生)与真实目录、最近使用时间。
+type ProjectInfo struct {
+	Key string `json:"key"`
+	Dir string `json:"dir"`
+	TS  int64  `json:"ts"` // 最近使用 unix 秒
 }

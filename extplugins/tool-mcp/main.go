@@ -10,8 +10,8 @@ import (
 	"os"
 	"strings"
 
-	bridge "github.com/nekoleamo/go-agent-harness/plugins/host-bridge"
-	"github.com/nekoleamo/go-agent-harness/plugins/mcp-bridge"
+	bridge "github.com/nekoleamo/go-agent-harness/plugins/host/host-bridge"
+	"github.com/nekoleamo/go-agent-harness/plugins/mcp/mcp-bridge"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -36,7 +37,17 @@ type App struct {
 // NewApp 构造 TUI 应用。命令注册表(ctx.commands,host-commands 提供)注入:
 // 内部命令(宿主级)注册进表与插件命令共表——提示列表/分发/help 全部动态。
 func NewApp(c sdk.Ctx, loop sdk.AgentLoop, llm sdk.LLMService, profile string) *App {
-	state := &State{Profile: profile, Workspace: workspaceName(), Thinking: sdk.ThinkingLevel(0).String()}
+	// 启动即从服务拉取实际生效配置(模型/沙箱/思考等级),状态栏不显示"未设置"等假默认;
+	// 装配顺序保证适配器已 SetModel(host-llm → 适配器先于 ui 启动)。
+	state := &State{Profile: profile, Workspace: workspaceName(),
+		Model:    llm.Model(),
+		Thinking: llm.Thinking().String(),
+	}
+	// 沙箱档位从服务读实际值(而非展示层写死 workspace-write)
+	var sb sdk.Sandbox
+	if err := c.Inject("ctx.sandbox", &sb); err == nil && sb != nil {
+		state.Sandbox = string(sb.Mode())
+	}
 	m := &Model{state: state}
 	a := &App{model: m, c: c, loop: loop, llm: llm, confirmCh: make(chan bool, 1)}
 	var reg sdk.CommandRegistry
@@ -52,7 +63,25 @@ func NewApp(c sdk.Ctx, loop sdk.AgentLoop, llm sdk.LLMService, profile string) *
 	m.hints = a.suggestHints
 	m.levels = a.levels
 	m.onThinkingCycle = a.cycleThinking
+	m.onStats = func() sdk.UsageStats {
+		var us sdk.UsageStatsService
+		if err := a.c.Inject("ctx.usageStats", &us); err != nil {
+			return sdk.UsageStats{} // host-usage-stats 未装配:状态栏显示 上下文 -
+		}
+		return us.Stats()
+	}
 	a.registerInternalCommands()
+	// 启动即新会话(host-cwd-sessions 启动时 New):模型上下文与展示层均从空开始,
+	// 不自动重放主会话历史——过往对话保留在会话文件,经 /session switch 进入时重放。
+	// 状态栏显示当前会话 id(时间戳,便于辨识当前会话与回溯旧会话)。
+	{
+		var cs sdk.CwdSessions
+		if err := c.Inject("ctx.cwdSessions", &cs); err == nil {
+			if id := cs.CurrentSession(); id != "" {
+				state.Session = id
+			}
+		}
+	}
 	a.program = tea.NewProgram(m)
 	return a
 }
@@ -111,9 +140,13 @@ func (a *App) Close() {
 }
 
 // submit 普通输入:异步跑一轮(持有取消句柄,Esc 中断)。
+// 提交瞬间同步置运行态(状态栏立即显示旋转 logo + 思考中,不等 agent/status 事件广播),
+// 回合结束(agentDoneMsg)再回空闲。
 func (a *App) submit(input string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	a.cancelFn = cancel
+	a.model.state.Running = true
+	a.model.state.LastTool = ""
 	go func() {
 		err := a.loop.Run(ctx, input)
 		a.cancelFn = nil
@@ -369,6 +402,190 @@ type errString string
 
 func (e errString) Error() string { return string(e) }
 
+// cmdSession /session list|switch|new|current:列出/切换/新建/查看会话(会话管理统一入口)。
+// switch 二级枚举(选择器)选会话进入;切换后清流、重放该会话历史(继续上下文可见)、
+// 重置 token 统计(新会话从零累计),状态栏显示当前会话 id。
+func (a *App) cmdSession(args []string) (string, error) {
+	var cs sdk.CwdSessions
+	if err := a.c.Inject("ctx.cwdSessions", &cs); err != nil {
+		return "", errString("ctx.cwdSessions 未装配: " + err.Error())
+	}
+	if len(args) < 1 {
+		return "", errString("/session list|switch|new|current")
+	}
+	switch args[0] {
+	case "list":
+		return a.cmdSessions() // 列出已有会话文件(原 /sessions)
+	case "current":
+		return "当前项目: " + cs.Current() +
+			"\n当前会话: " + orDefault(cs.CurrentSession(), "主会话") +
+			"\n落盘: " + cs.Path(), nil
+	case "new":
+		id, err := cs.New()
+		if err != nil {
+			return "", errString(err.Error())
+		}
+		a.afterSessionSwitch(cs)
+		return "已新建会话 " + id + "(空历史,后续对话记入新会话)", nil
+	case "switch":
+		if len(args) < 2 {
+			return "", errString("/session switch <会话 id>(二级选择或手动输入;main=主会话)")
+		}
+		id := args[1]
+		if id == "main" {
+			id = "" // 主会话(跨期共享历史)
+		}
+		if err := cs.Open(id); err != nil {
+			return "", errString("切换失败: " + err.Error())
+		}
+		a.afterSessionSwitch(cs)
+		return "已切换到会话 " + orDefault(cs.CurrentSession(), "主会话"), nil
+	default:
+		return "", errString("/session switch|new|current")
+	}
+}
+
+// sessionSwitchOptions /session switch 的二级动态枚举:当前项目会话列表。
+// 主会话用 main 标识(选择器选项 Value 非空);切换会话用其 id。
+func (a *App) sessionSwitchOptions(picked []string) []sdk.Option {
+	if len(picked) < 2 || picked[1] != "switch" {
+		return nil // 非 switch 分支无二级 → 直接执行
+	}
+	var cs sdk.CwdSessions
+	if err := a.c.Inject("ctx.cwdSessions", &cs); err != nil {
+		return nil // 未装配:无选项,回退手动输入
+	}
+	var opts []sdk.Option
+	for _, si := range cs.Sessions() {
+		v := si.ID
+		if v == "" {
+			v = "main"
+		}
+		opts = append(opts, sdk.Option{Value: v, Desc: sessionDesc(si)})
+	}
+	return opts
+}
+
+// sessionDesc 会话选项描述:主会话标注跨期共享;切换会话带最后修改时间与事件条数。
+func sessionDesc(si sdk.SessionInfo) string {
+	if si.ID == "" {
+		return "主会话(跨期共享)"
+	}
+	d := "会话 " + si.ID
+	if si.MTime > 0 {
+		d += " · " + time.Unix(si.MTime, 0).Format("01-02 15:04")
+	}
+	if si.Frames >= 0 {
+		d += " · " + fmt.Sprint(si.Frames) + " 条"
+	}
+	return d
+}
+
+// afterSessionSwitch 切换会话后的界面同步:状态栏会话 id、重置 token 统计、
+// 清空 TUI 会话流并重放新会话历史(继续上下文可见)。
+func (a *App) afterSessionSwitch(cs sdk.CwdSessions) {
+	a.model.state.Session = cs.CurrentSession()
+	var us sdk.UsageStatsService
+	if err := a.c.Inject("ctx.usageStats", &us); err == nil {
+		us.Reset() // 新会话从零累计(窗口保留)
+		a.model.state.Stats = us.Stats()
+	} else {
+		a.model.state.Stats = sdk.UsageStats{}
+	}
+	a.model.state.Lines = nil
+	a.model.state.LastTool = ""
+	var sessions sdk.SessionLog
+	if err := a.c.Inject("ctx.sessions", &sessions); err == nil {
+		for _, ev := range sessions.Replay() {
+			a.model.state.ApplyReplay(&ev) // 与启动重放同款:跳过轮次分隔行
+		}
+	}
+	a.model.state.Lines = append(a.model.state.Lines,
+		Line{Kind: "meta", Text: "—— 已切换到会话: " + orDefault(cs.CurrentSession(), "主会话") + " ——"})
+}
+
+// workspaceNewSentinel 选择器哨兵项:选中后进入二级自由断点输入新目录路径。
+const workspaceNewSentinel = "__new_dir__"
+
+// workspaceOptions /workspace 一级枚举:最近使用工作区(按最近使用时间倒序,
+// 宿主已排)+ 哨兵“输入新目录路径…”。无记录 = nil(回退一级自由输入)。
+func (a *App) workspaceOptions([]string) []sdk.Option {
+	var cs sdk.CwdSessions
+	if err := a.c.Inject("ctx.cwdSessions", &cs); err != nil {
+		return nil
+	}
+	recs := cs.RecentProjects()
+	if len(recs) == 0 {
+		return nil
+	}
+	opts := make([]sdk.Option, 0, len(recs)+1)
+	for _, r := range recs {
+		opts = append(opts, sdk.Option{Value: r.Dir, Desc: workspaceTimeFmt(r.TS) + " · " + r.Key})
+	}
+	opts = append(opts, sdk.Option{Value: workspaceNewSentinel, Desc: "输入新目录路径…"})
+	return opts
+}
+
+// workspaceTimeFmt 最近使用时间显示:今日 = HH:MM,更早 = MM-DD HH:MM。
+func workspaceTimeFmt(ts int64) string {
+	t := time.Unix(ts, 0)
+	if time.Since(t) < 24*time.Hour && t.Day() == time.Now().Day() {
+		return t.Format("15:04")
+	}
+	return t.Format("01-02 15:04")
+}
+
+// cmdWorkspace /workspace [目录]:切工作区(项目)。
+// 流程:展开/校验目标目录 → os.Chdir(后续回合/新进程按新 cwd)→ 会话重绑
+// (ctx.cwdSessions.SwitchProject,新建空会话:上下文切到新项目文件,旧项目历史经
+// /session switch 回溯)→ 界面同步(afterSessionSwitch:清流/重放/统计重置)→
+// 状态栏工作区名刷新。args 含哨兵(选择器“新路径”入口)时去掉哨兵取剩余路径。
+// 注意(收敛版):沙箱 root 与已运行的外部工具进程 cwd 仍按启动工作区——
+// 工具进程重启(host-bridge 重载/热更新)后按新 cwd;会话/上下文/展示即时切换。
+func (a *App) cmdWorkspace(args []string) (string, error) {
+	raw := strings.Join(args, " ")
+	raw = strings.TrimSpace(strings.TrimPrefix(raw, workspaceNewSentinel))
+	if raw == "" {
+		return "", errString("/workspace [目录]")
+	}
+	if raw == "~" || strings.HasPrefix(raw, "~/") {
+		if uh, err := os.UserHomeDir(); err == nil {
+			raw = filepath.Join(uh, strings.TrimPrefix(raw, "~"))
+		}
+	}
+	target := raw
+	if !filepath.IsAbs(target) {
+		abs, err := filepath.Abs(target)
+		if err != nil {
+			return "", errString("路径解析失败: " + err.Error())
+		}
+		target = abs
+	}
+	target = filepath.Clean(target)
+	fi, err := os.Stat(target)
+	if err != nil {
+		return "", errString("/workspace: 目录不存在或不可访问: " + target)
+	}
+	if !fi.IsDir() {
+		return "", errString("/workspace: 非目录: " + target)
+	}
+	if err := os.Chdir(target); err != nil {
+		return "", errString("/workspace: chdir 失败: " + err.Error())
+	}
+	a.model.state.Workspace = workspaceName() // 状态栏工作区名随切换刷新
+	var cs sdk.CwdSessions
+	if err := a.c.Inject("ctx.cwdSessions", &cs); err == nil {
+		id, err := cs.SwitchProject(sdk.ProjectKeyFromCwd())
+		if err != nil {
+			return "", errString("/workspace: 会话切换失败: " + err.Error())
+		}
+		a.afterSessionSwitch(cs)
+		return "已切换工作区 → " + target + "\n会话 key: " + cs.Current() +
+			"(新会话 " + id + ",历史经 /session switch 回溯;工具进程 cwd 于重启后生效)", nil
+	}
+	return "已切换工作区(未装配 cwdSessions,仅 chdir)→ " + target, nil
+}
+
 // cmdThinking /thinking off|low|medium|high:设置会话级思考等级(Shift+Tab 循环同效)。
 func (a *App) cmdThinking(args []string) (string, error) {
 	if len(args) < 1 {
@@ -577,7 +794,37 @@ func (a *App) registerInternalCommands() {
 				}},
 			}},
 		{Name: "export", Usage: "/export [path]", Desc: "导出会话 jsonl", Run: a.cmdExport},
-		{Name: "sessions", Usage: "/sessions", Desc: "当前/已有会话", Run: func([]string) (string, error) { return a.cmdSessions() }},
+		{Name: "search", Usage: "/search <词>", Desc: "会话内搜索(命中高亮,n/N/F3 循环跳转,Esc 退出)",
+			// 自由级断点:选中后光标停留输入框提示继续输入,输入词回车才执行——
+			// 否则选中即提交(无参报错),再输入的文字会误走普通消息发给大模型。
+			Args: []sdk.ArgLevel{{FreeArgs: func([]string) []string { return []string{"搜索词"} }}},
+			Run: func(args []string) (string, error) {
+				if len(args) < 1 {
+					return "", errString("/search <词>")
+				}
+				return a.model.searchRun(strings.Join(args, " ")), nil
+			}},
+		{Name: "workspace", Usage: "/workspace [目录]", Desc: "切换工作区(项目):最近使用列表选择或输入新目录,切换即开新会话",
+			// 一级:最近使用工作区枚举(选历史目录直接执行)+ 哨兵“输入新路径”→ 二级自由断点;
+			// 无历史记录时一级回退 FreeArgs(直接输入目录)。
+			Args: []sdk.ArgLevel{
+				{Options: a.workspaceOptions, FreeArgs: func([]string) []string { return []string{"目录路径"} }},
+				{FreeArgs: func(picked []string) []string {
+					if len(picked) >= 2 && picked[1] == workspaceNewSentinel {
+						return []string{"目录路径"}
+					}
+					return nil // 选了具体历史目录:直接执行
+				}},
+			},
+			Run: a.cmdWorkspace},
+		{Name: "session", Usage: "/session list|switch|new|current", Desc: "会话管理:列出/切换/新建/查看", Run: a.cmdSession,
+			Args: []sdk.ArgLevel{
+				{Options: func([]string) []sdk.Option {
+					return []sdk.Option{{Value: "list", Desc: "列出已有会话文件"}, {Value: "switch", Desc: "切换到已有会话(二级选择)"}, {Value: "new", Desc: "新建会话(空历史)"}, {Value: "current", Desc: "查看当前会话"}}
+				}},
+				// 二级:仅 switch 分支动态枚举会话列表;list/new/current 无二级直接执行
+				{Options: a.sessionSwitchOptions},
+			}},
 		{Name: "help", Usage: "/help", Desc: "命令帮助", Run: a.cmdHelp},
 		{Name: "exit", Usage: "/exit", Desc: "退出", Run: func([]string) (string, error) {
 			a.program.Quit()

@@ -37,8 +37,14 @@ var (
 	listPlugins = flag.Bool("list-plugins", false, "列出已安装的外部插件")
 )
 
+	// 非 TTY 检测(TUI profile):stdin 为 pipe/重定向时 bubbletea 会直读 stdin 卡死挂起;
+	// 显式拒绝并提示走 headless(或提供 -input)——不再死机。
 func main() {
 	flag.Parse()
+	if !isStdinTTY() && *inputFlag == "" && *profileFlag == "tui" {
+		fmt.Fprintln(os.Stderr, "gah: TUI 需要交互式终端(stdin 非 TTY)。管道/后台场景请用: -profile headless -input <文本>")
+		os.Exit(1)
+	}
 
 	if *showVersion {
 		fmt.Printf("gah %s (github.com/nekoleamo/go-agent-harness)\n", version)
@@ -265,6 +271,16 @@ func enabledSet(tree *config.Tree) map[string]bool {
 		}
 	}
 	return set
+}
+
+
+// isStdinTTY stdin 是否交互终端(char device);pipe/重定向 → false。
+func isStdinTTY() bool {
+	fi, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
 }
 
 // homeDir 运行时主目录:$GAH_HOME 或 ~/.gah。

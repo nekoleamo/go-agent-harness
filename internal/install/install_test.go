@@ -140,7 +140,7 @@ func TestInstallMultiTool(t *testing.T) {
 import (
 	"context"
 
-	bridge "github.com/nekoleamo/go-agent-harness/plugins/host-bridge"
+	bridge "github.com/nekoleamo/go-agent-harness/plugins/host/host-bridge"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 

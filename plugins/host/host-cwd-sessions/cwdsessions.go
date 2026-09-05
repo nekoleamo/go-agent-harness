@@ -1,0 +1,311 @@
+// Package hostcwdsessions 提供 host-cwd-sessions 插件:项目级会话隔离与持久化,
+// 支持多会话切换(同一项目可开多个会话,继续任一历史)。
+// 会话落盘 $GAH_HOME/sessions/:主会话 <key>.jsonl(跨期共享,兼容旧版);
+// 切换会话 <key>-<id>.jsonl(id = 创建时间戳)。每次启动即新开会话(空历史、新文件),
+// 过往对话保留在主会话/历史切换会话文件,经 TUI /session switch 回溯。
+// 不同项目隔离(对齐 dsc 项目式历史隔离)。
+package hostcwdsessions
+
+import (
+	"bufio"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/nekoleamo/go-agent-harness/sdk"
+)
+
+// Plugin 实现 host-cwd-sessions。requires ctx.sessions。
+type Plugin struct{}
+
+func (p *Plugin) Name() string { return "host-cwd-sessions" }
+
+// Start 注入会话日志,启动即新开会话(空历史、新落盘文件)并注册 ctx.cwdSessions。
+func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
+	var sessions sdk.SessionLog
+	if err := c.Inject("ctx.sessions", &sessions); err != nil {
+		return nil, err
+	}
+	key := ProjectKeyFromCwd()
+	svc := &Service{key: key, sessions: sessions}
+	svc.recordProject(key, currentDir()) // 启动即记录当前项目(最近使用列表)
+	// 每次启动 = 新会话(空历史):不再自动恢复主会话——过往对话保留在
+	// <key>.jsonl(主会话)/历史切换会话文件,经 /session switch 回溯。
+	if _, err := svc.New(); err != nil {
+		return nil, err
+	}
+	if err := c.Provide("ctx.cwdSessions", svc); err != nil {
+		return nil, err
+	}
+	return func() {}, nil
+}
+
+// SessionsRoot $GAH_HOME/sessions(缺省 ~/.gah/sessions)。
+func SessionsRoot() string {
+	home := os.Getenv("GAH_HOME")
+	if home == "" {
+		uh, err := os.UserHomeDir()
+		if err != nil {
+			uh = os.TempDir()
+		}
+		home = filepath.Join(uh, ".gah")
+	}
+	return filepath.Join(home, "sessions")
+}
+
+// ProjectKeyFromCwd 当前工作目录 → 项目 key(绝对路径清洗)。
+func ProjectKeyFromCwd() string {
+	wd, err := os.Getwd()
+	if err != nil {
+		return "default"
+	}
+	return ProjectKey(wd)
+}
+
+// ProjectKey 绝对路径 → 项目 key:分隔符/冒号统一转 -,去除首尾 -。
+func ProjectKey(abs string) string {
+	clean := filepath.Clean(abs)
+	if clean == "." || clean == "" {
+		return "default"
+	}
+	r := strings.NewReplacer("/", "-", `\`, "-", ":", "-")
+	out := strings.Trim(r.Replace(clean), "-")
+	if out == "" {
+		return "default"
+	}
+	return out
+}
+
+// SessionPath 会话落盘路径(纯函数):id 空 = 主会话 <key>.jsonl;否则 <key>-<id>.jsonl。
+func SessionPath(root, key, id string) string {
+	if id == "" {
+		return filepath.Join(root, key+".jsonl")
+	}
+	return filepath.Join(root, key+"-"+id+".jsonl")
+}
+
+// Service 实现 sdk.CwdSessions。
+type Service struct {
+	key      string
+	path     string          // 当前会话落盘路径
+	current  string          // 当前会话 id(空 = 主会话)
+	sessions sdk.SessionLog  // ctx.sessions(切换时 Load 恢复历史)
+	wsMu     sync.Mutex      // workspaces 记录文件写锁
+}
+
+func (s *Service) Current() string { return s.key }
+func (s *Service) Path() string    { return s.path }
+func (s *Service) CurrentSession() string { return s.current }
+
+// List 列出 sessions 目录下已有项目会话 key(按名称排序)。
+func (s *Service) List() []string {
+	entries, err := os.ReadDir(SessionsRoot())
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if strings.HasSuffix(name, ".jsonl") {
+			out = append(out, strings.TrimSuffix(name, ".jsonl"))
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// Sessions 当前项目的会话列表:主会话置顶,切换会话按最后修改时间倒序。
+// 每条带落盘路径/修改时间/事件数(TUI 选择器展示)。
+func (s *Service) Sessions() []sdk.SessionInfo {
+	root := SessionsRoot()
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil
+	}
+	prefix := s.key + "-"
+	var out []sdk.SessionInfo
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasSuffix(name, ".jsonl") {
+			continue
+		}
+		var id string
+		switch {
+		case name == s.key+".jsonl":
+			id = ""
+		case strings.HasPrefix(name, prefix):
+			id = strings.TrimSuffix(strings.TrimPrefix(name, prefix), ".jsonl")
+		default:
+			continue // 其他项目会话
+		}
+		info := sdk.SessionInfo{ID: id, Path: filepath.Join(root, name)}
+		if fi, err := e.Info(); err == nil {
+			info.MTime = fi.ModTime().Unix()
+			info.Frames = countLines(info.Path)
+		}
+		out = append(out, info)
+	}
+	// 主会话(id 空)置顶;切换会话按修改时间倒序(最近在前)
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].ID == "" {
+			return true
+		}
+		if out[j].ID == "" {
+			return false
+		}
+		return out[i].MTime > out[j].MTime
+	})
+	return out
+}
+
+// Open 切换当前会话:id 空 = 主会话;否则载入 <key>-<id>.jsonl。
+// 文件不存在 = 新建会话(空历史)。切换后历史经 ctx.sessions.Load 恢复,后续续记。
+func (s *Service) Open(id string) error {
+	path := SessionPath(SessionsRoot(), s.key, id)
+	if s.sessions != nil {
+		if err := s.sessions.Load(path); err != nil {
+			return err
+		}
+	}
+	s.path = path
+	s.current = id
+	return nil
+}
+
+// New 新建会话:生成唯一 id(时间戳;同分钟冲突追加序号)并 Open,返回新会话 id。
+func (s *Service) New() (string, error) {
+	base := time.Now().Format("20060102-150405")
+	id := base
+	for n := 2; ; n++ {
+		if !fileExists(SessionPath(SessionsRoot(), s.key, id)) {
+			break
+		}
+		id = fmt.Sprintf("%s-%d", base, n)
+		if n > 10000 {
+			return "", fmt.Errorf("cwdsessions: 无法生成唯一会话 id(%s)", base)
+		}
+	}
+	if err := s.Open(id); err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+// SwitchProject 切换当前项目(key 重绑):
+// /workspace 后由宿主 os.Chdir 再调本方法(新 key = sdk.ProjectKeyFromCwd)。
+// 重绑后自动新建空会话(上下文与后续记录切新项目文件;旧项目经 /session switch 回溯)。
+// 无论是否同 key 均刷新该项目的“最近使用”时间(记录文件);同 key 仅 touch 不建新会话。
+// 调用方串行(回合外)。
+func (s *Service) SwitchProject(key string) (string, error) {
+	if key == "" {
+		key = "default"
+	}
+	s.recordProject(key, currentDir())
+	if key == s.key {
+		return s.current, nil // 同项目:仅刷新最近使用时间
+	}
+	s.key = key
+	return s.New()
+}
+
+// RecentProjects 最近使用工作区列表(按最近使用时间倒序;无记录 = 空)。
+func (s *Service) RecentProjects() []sdk.ProjectInfo {
+	s.wsMu.Lock()
+	defer s.wsMu.Unlock()
+	recs := loadWorkspaces(workspacesPath())
+	sort.SliceStable(recs, func(i, j int) bool { return recs[i].TS > recs[j].TS })
+	return recs
+}
+
+// recordProject 幂等 upsert 一条最近使用记录(量小,覆写式 json)。
+func (s *Service) recordProject(key, dir string) {
+	if key == "" || dir == "" {
+		return
+	}
+	s.wsMu.Lock()
+	defer s.wsMu.Unlock()
+	recs := loadWorkspaces(workspacesPath())
+	now := time.Now().Unix()
+	for i := range recs {
+		if recs[i].Key == key {
+			recs[i].Dir, recs[i].TS = dir, now
+			_ = saveWorkspaces(workspacesPath(), recs)
+			return
+		}
+	}
+	recs = append(recs, sdk.ProjectInfo{Key: key, Dir: dir, TS: now})
+	_ = saveWorkspaces(workspacesPath(), recs)
+}
+
+// workspacesPath 最近使用工作区记录文件($GAH_HOME/sessions/workspaces.json)。
+func workspacesPath() string {
+	return filepath.Join(SessionsRoot(), "workspaces.json")
+}
+
+// loadWorkspaces 读记录(缺文件/坏 json = 空,容忍)。
+func loadWorkspaces(path string) []sdk.ProjectInfo {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var recs []sdk.ProjectInfo
+	if err := json.Unmarshal(b, &recs); err != nil {
+		return nil
+	}
+	return recs
+}
+
+// saveWorkspaces 覆写记录(目录自动建;失败静默——记录非关键路径)。
+func saveWorkspaces(path string, recs []sdk.ProjectInfo) error {
+	b, err := json.Marshal(recs)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, b, 0o600)
+}
+
+// currentDir 当前工作目录(记录用;取不到 = 空,跳过记录)。
+func currentDir() string {
+	wd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	return wd
+}
+
+// countLines 文件事件条数(会话描述用;读不了 = -1)。
+func countLines(path string) int {
+	f, err := os.Open(path)
+	if err != nil {
+		return -1
+	}
+	defer f.Close()
+	n := 0
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for sc.Scan() {
+		if len(sc.Bytes()) > 0 {
+			n++
+		}
+	}
+	return n
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}

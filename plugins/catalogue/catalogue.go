@@ -3,31 +3,34 @@
 package catalogue
 
 import (
-	"github.com/nekoleamo/go-agent-harness/plugins/host-agent-loop"
-	"github.com/nekoleamo/go-agent-harness/plugins/host-bridge"
-	"github.com/nekoleamo/go-agent-harness/plugins/host-commands"
-	"github.com/nekoleamo/go-agent-harness/plugins/host-cwd-sessions"
-	"github.com/nekoleamo/go-agent-harness/plugins/host-fanout"
-	"github.com/nekoleamo/go-agent-harness/plugins/host-jobs"
-	"github.com/nekoleamo/go-agent-harness/plugins/host-llm"
-	"github.com/nekoleamo/go-agent-harness/plugins/host-plugin-manager"
-	"github.com/nekoleamo/go-agent-harness/plugins/host-session-log"
-	"github.com/nekoleamo/go-agent-harness/plugins/host-skills"
-	"github.com/nekoleamo/go-agent-harness/plugins/host-system-prompt"
-	"github.com/nekoleamo/go-agent-harness/plugins/host-tools"
-	"github.com/nekoleamo/go-agent-harness/plugins/llm-anthropic-compat"
-	"github.com/nekoleamo/go-agent-harness/plugins/llm-mock"
-	"github.com/nekoleamo/go-agent-harness/plugins/llm-openai-compat"
-	"github.com/nekoleamo/go-agent-harness/plugins/mcp-bridge"
-	"github.com/nekoleamo/go-agent-harness/plugins/mcp-server"
-	"github.com/nekoleamo/go-agent-harness/plugins/policy-approval"
-	"github.com/nekoleamo/go-agent-harness/plugins/policy-sandbox"
-	"github.com/nekoleamo/go-agent-harness/plugins/token-compress"
-	"github.com/nekoleamo/go-agent-harness/plugins/tool-files"
-	"github.com/nekoleamo/go-agent-harness/plugins/tool-shell"
-	"github.com/nekoleamo/go-agent-harness/plugins/tool-web"
-	"github.com/nekoleamo/go-agent-harness/plugins/tool-workflow"
-	"github.com/nekoleamo/go-agent-harness/plugins/ui-tui-app"
+	"github.com/nekoleamo/go-agent-harness/plugins/host/host-agent-loop"
+	"github.com/nekoleamo/go-agent-harness/plugins/host/host-bridge"
+	"github.com/nekoleamo/go-agent-harness/plugins/host/host-commands"
+	"github.com/nekoleamo/go-agent-harness/plugins/host/host-cwd-sessions"
+	"github.com/nekoleamo/go-agent-harness/plugins/host/host-fanout"
+	"github.com/nekoleamo/go-agent-harness/plugins/host/host-jobs"
+	"github.com/nekoleamo/go-agent-harness/plugins/host/host-llm"
+	"github.com/nekoleamo/go-agent-harness/plugins/host/host-plugin-manager"
+	"github.com/nekoleamo/go-agent-harness/plugins/host/host-session-log"
+	"github.com/nekoleamo/go-agent-harness/plugins/host/host-skills"
+	"github.com/nekoleamo/go-agent-harness/plugins/host/host-system-prompt"
+	"github.com/nekoleamo/go-agent-harness/plugins/host/host-tools"
+	"github.com/nekoleamo/go-agent-harness/plugins/host/host-usage-stats"
+	"github.com/nekoleamo/go-agent-harness/plugins/adapter/llm-anthropic-compat"
+	"github.com/nekoleamo/go-agent-harness/plugins/adapter/llm-mock"
+	"github.com/nekoleamo/go-agent-harness/plugins/adapter/llm-openai-compat"
+	"github.com/nekoleamo/go-agent-harness/plugins/mcp/mcp-bridge"
+	"github.com/nekoleamo/go-agent-harness/plugins/mcp/mcp-server"
+	"github.com/nekoleamo/go-agent-harness/plugins/policy/policy-approval"
+	"github.com/nekoleamo/go-agent-harness/plugins/policy/policy-sandbox"
+	"github.com/nekoleamo/go-agent-harness/plugins/host/token-compress"
+	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-files"
+	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-memory"
+	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-shell"
+	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-todo"
+	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-web"
+	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-workflow"
+	"github.com/nekoleamo/go-agent-harness/plugins/ui/ui-tui-app"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -85,6 +88,12 @@ var All = map[string]Def{
 	"tool-web": {Factory: func() sdk.Plugin { return &toolweb.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "tool-web", Type: "tool", APIVersion: ">=1.0,<2.0",
 		Requires: []string{"ctx.tools"}}, Bundle: "base"},
+	"tool-memory": {Factory: func() sdk.Plugin { return &toolmemory.Plugin{} }, Manifest: &sdk.Manifest{
+		ID: "tool-memory", Type: "tool", APIVersion: ">=1.0,<2.0",
+		Requires: []string{"ctx.tools"}}, Bundle: "base"},
+	"tool-todo": {Factory: func() sdk.Plugin { return &tooltodo.Plugin{} }, Manifest: &sdk.Manifest{
+		ID: "tool-todo", Type: "tool", APIVersion: ">=1.0,<2.0",
+		Requires: []string{"ctx.tools"}}, Bundle: "base"},
 	"mcp-bridge": {Factory: func() sdk.Plugin { return &mcpbridge.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "mcp-bridge", Type: "host", APIVersion: ">=1.0,<2.0",
 		Requires: []string{"ctx.tools"}}, Bundle: "base"},
@@ -94,6 +103,11 @@ var All = map[string]Def{
 	"token-compress": {Factory: func() sdk.Plugin { return &tokencompress.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "token-compress", Type: "host", APIVersion: ">=1.0,<2.0",
 		Requires: []string{"ctx.sessions"}}, Bundle: "base"},
+	"host-usage-stats": {Factory: func() sdk.Plugin { return &hostusagestats.Plugin{} }, Manifest: &sdk.Manifest{
+		ID: "host-usage-stats", Type: "host", APIVersion: ">=1.0,<2.0",
+		// 独立统计:只订阅 session/event 广播(session/usage 事件),零注入依赖;
+		// data.context_window 配置模型上下文窗口(默认 65536,展示上下文使用率)。
+		Provides: []string{"ctx.usageStats"}}, Bundle: "base"},
 	"host-cwd-sessions": {Factory: func() sdk.Plugin { return &hostcwdsessions.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "host-cwd-sessions", Type: "host", APIVersion: ">=1.0,<2.0",
 		Provides: []string{"ctx.cwdSessions"},

@@ -4,6 +4,8 @@ package tui
 
 import (
 	"strings"
+	"time"
+	"unicode"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
@@ -30,9 +32,63 @@ type State struct {
 	Suggestions    []string // 输入 / 前缀时的命令提示(注册表过滤结果,渲染于输入行下方)
 	Pick           *Pick    // 非空 = 交互式选择器激活(↑/↓ 移动,Enter 应用)
 	PickDismissed  bool     // Esc/断点后抑制自动激活,直至输入变化
+	QuitArmed      bool     // 双按退出武装中:第一次 Ctrl+C(输入为空)后待第二次确认(输入行提示)
 	SpinnerIdx     int      // 思考动画帧索引(回合运行中 tick 推进)
 	Workspace      string   // 当前工作区显示(启动时 cwd 目录名)
 	Thinking       string   // 思考等级显示(off 空;Tab/Shift+Tab 切换)
+	Session        string   // 当前会话 id 显示(空 = 主会话;状态栏)
+	Stats          sdk.UsageStats // 会话 token 统计(回合结束刷新;状态栏显示使用率/缓存命中率)
+
+	// ScrollOffset 会话流上滚物理行数(0 = 跟随最新;>0 = 浏览历史),渲染时钳制。
+	ScrollOffset int
+
+	// sessionWin 最近一次渲染的会话流可视窗口行数(渲染写回;滚动条命中/拖动用,
+	// 与渲染 scrollMetrics 同几何——避免估算偏差导致点不到滑块)。0 = 未渲染。
+	sessionWin int
+
+	// 鼠标划选(拖选复制):选区以全局物理行 + rune 列(0 基,不含 pad)描述。
+	// 渲染按 selRange 反色高亮;释放后保留高亮(已复制),再次按下/Esc 清除。
+	SelActive bool
+	SelRow0   int // 按下点行
+	SelCol0   int // 按下点列
+	SelRow1   int // 当前(拖动)行
+	SelCol1   int // 当前(拖动)列
+
+	// 滚动条展示增强:回底指示/hover 高亮/auto-hide。
+	// BarShownAt 最近一次滚动条相关交互时刻(滚轮/拖动/回底);渲染判定
+	// time.Since 超过 barHideDelay 且非 hover 时隐藏滚动条。HoverBar 鼠标悬停轨道列。
+	BarShownAt time.Time
+	HoverBar   bool
+
+	// 会话内搜索:SearchQuery 非空 = 搜索激活。SearchHits 为命中逻辑行(Lines 索引,
+	// 大小写不敏感子串匹配原文),SearchIdx 为当前定位命中(跳转/高亮)。
+	SearchQuery string
+	SearchHits  []int
+	SearchIdx   int
+
+	// flatN 最近一次渲染展平出的会话流物理行数(含折行;ScrollBy 上限钳制用,渲染后刷新)。
+	flatN int
+
+	// S1.3 输入增强:历史/undo/编辑快捷键。
+	// CmdHistory 本进程已提交的斜杠命令(命令不入会话 Lines,单独记录补历史源;
+	// 普通 user 消息经 Lines 提取)。histActive+histIdx = 历史翻页态(false 未翻),
+	// histDraft = 开始翻页前的输入草稿(HistNext 越过最新一条后还原)。undo/redo 为
+	// 输入框文本快照栈(编辑前入栈;提交/清空即清栈;相邻同型编辑合并为一个 undo 步)。
+	CmdHistory []string
+	histActive bool
+	histCur    int      // 当前显示条目在 histRev 中的下标(0 = 最新一条)
+	histRev    []string // 翻页开始重建的历史(最新在前);草稿态不活跃时为空
+	histDraft  string
+	undo       []ustep
+	redo       []ustep
+	lastEdit   time.Time
+	lastKind   byte
+}
+
+// ustep 输入撤销步(文本 + 光标位置快照)。
+type ustep struct {
+	text string
+	cur  int
 }
 
 // ApplySessionEvent 把会话事件推进到展示状态(纯逻辑,可测)。
@@ -142,6 +198,7 @@ func (s *State) InsertText(text string) {
 	if len(t) == 0 {
 		return
 	}
+	s.snapshotUndo('t')
 	b := []rune(s.Input)
 	out := make([]rune, 0, len(b)+len(t))
 	out = append(out, b[:s.Cursor]...)
@@ -153,10 +210,40 @@ func (s *State) InsertText(text string) {
 
 // InsertRune 输入字符。
 func (s *State) InsertRune(r rune) {
+	s.snapshotUndo('i')
 	b := []rune(s.Input)
 	b = append(b[:s.Cursor], append([]rune{r}, b[s.Cursor:]...)...)
 	s.Input = string(b)
 	s.Cursor++
+}
+
+// CursorLeft/Right 光标左右移动(边界钳制)。
+func (s *State) CursorLeft() {
+	if s.Cursor > 0 {
+		s.Cursor--
+	}
+}
+
+func (s *State) CursorRight() {
+	n := len([]rune(s.Input))
+	if s.Cursor < n {
+		s.Cursor++
+	}
+}
+
+// CursorHome/End 光标跳输入框头/尾。
+func (s *State) CursorHome() { s.Cursor = 0 }
+func (s *State) CursorEnd()  { s.Cursor = len([]rune(s.Input)) }
+
+// Delete 删除光标处字符(末尾 no-op)。
+func (s *State) Delete() {
+	n := len([]rune(s.Input))
+	if s.Cursor >= n {
+		return
+	}
+	s.snapshotUndo('d')
+	b := []rune(s.Input)
+	s.Input = string(append(b[:s.Cursor], b[s.Cursor+1:]...))
 }
 
 // Backspace 删除光标前一字符。
@@ -164,17 +251,221 @@ func (s *State) Backspace() {
 	if s.Cursor <= 0 || s.Input == "" {
 		return
 	}
+	s.snapshotUndo('b')
 	b := []rune(s.Input)
 	s.Input = string(append(b[:s.Cursor-1], b[s.Cursor:]...))
 	s.Cursor--
 }
 
-// ClearInput 提交后清空输入。
+// ClearInput 提交/清空后复位输入区:文本与光标清空,undo/redo 栈清空(提交即
+// 丢弃撤销历史),历史翻页指针复位(草稿不再需要)。
 func (s *State) ClearInput() {
 	s.Input = ""
 	s.Cursor = 0
+	s.undo = nil
+	s.redo = nil
+	s.histActive = false
+	s.histCur = 0
+	s.histRev = nil
+	s.histDraft = ""
 }
 
+// —— S1.3 输入增强:历史(Ctrl+P/N)、undo/redo(Ctrl+Z/Ctrl+Shift+Z)、
+// kill(Ctrl+K/U)、按词移动(Alt+←/→)。状态机纯逻辑,可脱离终端单测。 ——
+
+// RecordCmd 记录一条已提交的斜杠命令(历史源补充;命令不入会话 Lines)。
+// 上限 200 条,超出丢最旧。
+func (s *State) RecordCmd(cmd string) {
+	if cmd == "" || !strings.HasPrefix(cmd, "/") {
+		return
+	}
+	s.CmdHistory = append(s.CmdHistory, cmd)
+	if len(s.CmdHistory) > 200 {
+		s.CmdHistory = append([]string(nil), s.CmdHistory[len(s.CmdHistory)-200:]...)
+	}
+}
+
+// histList 输入历史源(时间序,去相邻重复):会话 user 消息(Lines,含跨会话重放)
+// + 本进程已提交命令(CmdHistory,较新置后)。
+func (s *State) histList() []string {
+	var out []string
+	last := ""
+	add := func(t string) {
+		if t == "" || t == last {
+			return
+		}
+		last = t
+		out = append(out, t)
+	}
+	for _, ln := range s.Lines {
+		if ln.Kind == "user" && !ln.Streaming {
+			add(ln.Text)
+		}
+	}
+	for _, c := range s.CmdHistory {
+		add(c)
+	}
+	return out
+}
+
+// HistPrev Ctrl+P 上一条历史:首次记录当前输入为草稿并重建历史(最新在前);
+// 已到最老则停在原地。
+func (s *State) HistPrev() bool {
+	if !s.histActive {
+		hist := s.histList()
+		if len(hist) == 0 {
+			return false
+		}
+		s.histDraft = s.Input
+		s.histActive = true
+		s.histCur = -1
+		s.histRev = make([]string, len(hist))
+		for i, h := range hist {
+			s.histRev[len(hist)-1-i] = h // 反转:最新在前
+		}
+	}
+	if s.histCur+1 >= len(s.histRev) {
+		return false // 已到最老
+	}
+	s.histCur++
+	s.setFromHist(s.histRev[s.histCur])
+	return true
+}
+
+// HistNext Ctrl+N 下一条历史:越过最新一条后还原开始翻页前的草稿。
+func (s *State) HistNext() bool {
+	if !s.histActive {
+		return false
+	}
+	if s.histCur == 0 { // 回到最新边界:还原草稿并退出翻页态
+		s.histActive = false
+		s.Input = s.histDraft
+		s.Cursor = len([]rune(s.Input))
+		return true
+	}
+	s.histCur--
+	s.setFromHist(s.histRev[s.histCur])
+	return true
+}
+
+// setFromHist 历史条目填入输入框(光标到尾;置 PickDismissed 防 / 开头自动激活选择器)。
+func (s *State) setFromHist(t string) {
+	s.Input = t
+	s.Cursor = len([]rune(t))
+	s.PickDismissed = true
+}
+
+// snapshotUndo 编辑动作前入栈(相邻同型 800ms 内合并为一个 undo 步,防逐字符爆栈);
+// 任何新编辑使 redo 失效。
+func (s *State) snapshotUndo(kind byte) {
+	now := time.Now()
+	if s.lastKind == kind && now.Sub(s.lastEdit) < 800*time.Millisecond {
+		return
+	}
+	s.pushUndo(s.Input, s.Cursor)
+	s.lastKind = kind
+	s.lastEdit = now
+	s.redo = nil
+}
+
+// pushUndo 入撤销栈(上限 256,超出丢最旧)。
+func (s *State) pushUndo(text string, cur int) {
+	if len(s.undo) >= 256 {
+		s.undo = append([]ustep(nil), s.undo[1:]...)
+	}
+	s.undo = append(s.undo, ustep{text: text, cur: cur})
+}
+
+// Undo Ctrl+Z:回退一个编辑步(当前文本进 redo 栈)。无栈返回 false。
+func (s *State) Undo() bool {
+	if len(s.undo) == 0 {
+		return false
+	}
+	s.redo = append(s.redo, ustep{text: s.Input, cur: s.Cursor})
+	last := s.undo[len(s.undo)-1]
+	s.undo = s.undo[:len(s.undo)-1]
+	s.Input = last.text
+	s.Cursor = last.cur
+	s.PickDismissed = true
+	return true
+}
+
+// Redo Ctrl+Shift+Z:重做被撤销的编辑步。
+func (s *State) Redo() bool {
+	if len(s.redo) == 0 {
+		return false
+	}
+	last := s.redo[len(s.redo)-1]
+	s.redo = s.redo[:len(s.redo)-1]
+	s.pushUndo(s.Input, s.Cursor)
+	s.Input = last.text
+	s.Cursor = last.cur
+	s.PickDismissed = true
+	return true
+}
+
+// KillToEnd Ctrl+K:删除光标到行尾,返回是否有删除。
+func (s *State) KillToEnd() bool {
+	n := len([]rune(s.Input))
+	if s.Cursor >= n {
+		return false
+	}
+	s.snapshotUndo('k')
+	r := []rune(s.Input)
+	s.Input = string(r[:s.Cursor])
+	return true
+}
+
+// KillToStart Ctrl+U:删除光标到行首,返回是否有删除。
+func (s *State) KillToStart() bool {
+	if s.Cursor <= 0 {
+		return false
+	}
+	s.snapshotUndo('u')
+	r := []rune(s.Input)
+	s.Input = string(r[s.Cursor:])
+	s.Cursor = 0
+	return true
+}
+
+// WordLeft Alt+←:光标按词左移(跨过紧邻空白再跨一个词)。
+func (s *State) WordLeft() {
+	r := []rune(s.Input)
+	i := s.Cursor
+	if i <= 0 {
+		return
+	}
+	i--
+	for i > 0 && unicode.IsSpace(r[i]) {
+		i--
+	}
+	for i > 0 && !unicode.IsSpace(r[i-1]) {
+		i--
+	}
+	s.Cursor = i
+}
+
+// WordRight Alt+→:光标移动到下一词词首——当前在词中先走到词尾,
+// 再跨过空白停在词首(词内或词后均前移一词)。
+func (s *State) WordRight() {
+	r := []rune(s.Input)
+	n := len(r)
+	i := s.Cursor
+	if i >= n {
+		return
+	}
+	if !unicode.IsSpace(r[i]) {
+		for i < n && !unicode.IsSpace(r[i]) {
+			i++ // 词中:先走到词尾
+		}
+	}
+	for i < n && unicode.IsSpace(r[i]) {
+		i++ // 跨过空白
+	}
+	s.Cursor = i
+}
+
+// toolCallText 工具调用展示行。
 func toolCallText(tc sdk.ToolCall) string {
 	args := tc.Arguments
 	if len(args) > 80 {
@@ -183,12 +474,51 @@ func toolCallText(tc sdk.ToolCall) string {
 	return "⚙ " + tc.Name + " " + args
 }
 
-// visible 滚动窗口:只渲染最近 n 行。
-func (s *State) visible(n int) []Line {
-	if len(s.Lines) <= n {
-		return s.Lines
+// ApplyReplay 重放历史事件到展示层(/session switch 切换会话后):跳过 turn/end 的“轮次结束”分隔行——
+// 重放几十轮历史会追加数十条 meta 噪音;分隔行仅实时回合有感(分隔感)。
+func (s *State) ApplyReplay(ev *sdk.SessionEvent) {
+	if ev.Kind == sdk.EventTurnEnd {
+		return
 	}
-	return s.Lines[len(s.Lines)-n:]
+	s.ApplySessionEvent(ev)
+}
+
+// visible 滚动窗口:按 ScrollOffset 取最近 n 行(offset=0 跟随最新;>0 上滚看历史),钳制。
+func (s *State) visible(n int) []Line {
+	total := len(s.Lines)
+	if total == 0 || n <= 0 {
+		return nil
+	}
+	win := n
+	if win > total {
+		win = total // 窗口大于总行数:全显(防负索引)
+	}
+	offset := s.ScrollOffset
+	maxOff := total - win
+	if offset > maxOff {
+		offset = maxOff
+	}
+	s.ScrollOffset = offset // 钳制写回(渲染与状态一致)
+	return s.Lines[total-offset-win : total-offset]
+}
+
+// ScrollBy 会话流相对滚动:delta>0 上滚看历史,delta<0 回底部;height=当前窗口高(钳制用)。
+// 滚动以物理行为单位(与可见窗口一致;上限用最近展平行数 flatN,首次未知时退化按 Lines)。
+func (s *State) ScrollBy(delta, height int) {
+	if height < 1 {
+		height = 1
+	}
+	s.ScrollOffset += delta
+	if s.ScrollOffset < 0 {
+		s.ScrollOffset = 0
+	}
+	lim := s.flatN - height
+	if lim < 0 {
+		lim = len(s.Lines) - height // 展平未知(未渲染/流式追加中):按逻辑行数粗钳,渲染时精确
+	}
+	if lim > 0 && s.ScrollOffset > lim {
+		s.ScrollOffset = lim
+	}
 }
 
 // RecentLines 供测试:返回当前展示行文本。
@@ -203,4 +533,28 @@ func (s *State) RecentLines(n int) []string {
 // InputText 命令判定:以 / 开头。
 func (s *State) IsCommand() bool {
 	return strings.HasPrefix(s.Input, "/")
+}
+
+// searchHitLine 逻辑行是否命中搜索;SearchIdx 当前命中是否该行。
+func (s *State) searchHitLine(lineIdx int) bool {
+	if s.SearchQuery == "" {
+		return false
+	}
+	for _, h := range s.SearchHits {
+		if h == lineIdx {
+			return true
+		}
+	}
+	return false
+}
+
+// searchCurLine 当前定位命中逻辑行(-1 无)。
+func (s *State) searchCurLine() int {
+	if s.SearchQuery == "" || s.SearchHits == nil {
+		return -1
+	}
+	if s.SearchIdx < 0 || s.SearchIdx >= len(s.SearchHits) {
+		return -1
+	}
+	return s.SearchHits[s.SearchIdx]
 }

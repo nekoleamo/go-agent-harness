@@ -3,27 +3,65 @@ package catalogue
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/nekoleamo/go-agent-harness/plugins/host-fanout"
-	"github.com/nekoleamo/go-agent-harness/plugins/host-jobs"
-	"github.com/nekoleamo/go-agent-harness/plugins/mcp-server"
-	"github.com/nekoleamo/go-agent-harness/plugins/token-compress"
+	"github.com/nekoleamo/go-agent-harness/plugins/host/host-fanout"
+	"github.com/nekoleamo/go-agent-harness/plugins/host/host-jobs"
+	"github.com/nekoleamo/go-agent-harness/plugins/mcp/mcp-server"
+	"github.com/nekoleamo/go-agent-harness/plugins/host/token-compress"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
-// TestEveryPluginDirRegistered 每个 plugins/ 下的插件包都有 catalogue 登记。
+// pluginDirsUnder 递归收集 plugins/ 下含 Go 源文件的插件目录(深度 ≤2,跳过 catalogue 自身)。
+// 分组后布局:类别子目录(host/adapter/policy/tool/mcp/ui)下各插件一个目录。
+func pluginDirsUnder(root string) []string {
+	var out []string
+	top, err := os.ReadDir(root)
+	if err != nil {
+		return out
+	}
+	for _, d := range top {
+		if !d.IsDir() || d.Name() == "catalogue" {
+			continue
+		}
+		sub := filepath.Join(root, d.Name())
+		entries, err := os.ReadDir(sub)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			dir := filepath.Join(sub, e.Name())
+			fs, err := os.ReadDir(dir)
+			if err != nil {
+				continue
+			}
+			hasGo := false
+			for _, f := range fs {
+				if !f.IsDir() && strings.HasSuffix(f.Name(), ".go") {
+					hasGo = true
+					break
+				}
+			}
+			if hasGo {
+				out = append(out, e.Name())
+			}
+		}
+	}
+	return out
+}
+
+// TestEveryPluginDirRegistered 每个 plugins/ 下的插件包(含类别子目录)都有 catalogue 登记。
 func TestEveryPluginDirRegistered(t *testing.T) {
-	dirs, err := os.ReadDir(".")
+	root, err := filepath.Abs("..")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, d := range dirs {
-		if !d.IsDir() {
-			continue
-		}
-		id := d.Name()
+	for _, id := range pluginDirsUnder(root) {
 		if _, ok := All[id]; !ok {
 			t.Fatalf("插件目录 %s 未在 catalogue 登记(单一事实源)", id)
 		}

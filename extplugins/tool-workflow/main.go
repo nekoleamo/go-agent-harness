@@ -13,8 +13,8 @@ import (
 	"os"
 	"strings"
 
-	bridge "github.com/nekoleamo/go-agent-harness/plugins/host-bridge"
-	"github.com/nekoleamo/go-agent-harness/plugins/tool-workflow"
+	bridge "github.com/nekoleamo/go-agent-harness/plugins/host/host-bridge"
+	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-workflow"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 

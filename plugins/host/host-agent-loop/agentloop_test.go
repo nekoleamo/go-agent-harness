@@ -1,0 +1,367 @@
+// host-agent-loop 单元测试:回合流程与取消/LLM 错误/工具错误分支(装配 + errLLM 注入)。
+package hostagentloop
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"strings"
+	"testing"
+
+	"github.com/nekoleamo/go-agent-harness/core/ctx"
+	"github.com/nekoleamo/go-agent-harness/core/event"
+	"github.com/nekoleamo/go-agent-harness/plugins/adapter/llm-mock"
+	"github.com/nekoleamo/go-agent-harness/plugins/host/host-llm"
+	"github.com/nekoleamo/go-agent-harness/plugins/host/host-session-log"
+	"github.com/nekoleamo/go-agent-harness/plugins/host/host-system-prompt"
+	"github.com/nekoleamo/go-agent-harness/plugins/host/host-tools"
+	"github.com/nekoleamo/go-agent-harness/sdk"
+)
+
+// env 装配结果(同包可见字段,便于测试注入)。
+type env struct {
+	c        sdk.Ctx
+	sessions sdk.SessionLog
+	tools    sdk.ToolRegistry
+	sp       sdk.SystemPromptService
+	loop     *Loop
+	log      *sessionlog.Log
+}
+
+// fakeTool 工具:echo 回显;fail 返回业务错误(结构化)。
+type fakeTool struct{ def sdk.ToolDefinition }
+
+func (f fakeTool) Definition() sdk.ToolDefinition { return f.def }
+func (f fakeTool) Execute(_ context.Context, args string) (any, error) {
+	switch f.def.Name {
+	case "echo":
+		return map[string]any{"echo": args}, nil
+	case "fail":
+		return map[string]any{"error": "业务失败"}, nil
+	}
+	return nil, nil
+}
+
+// errLLM 流错误注入(Complete 恒失败)。
+type errLLM struct{}
+
+func (e *errLLM) Complete(_ context.Context, _ *sdk.LLMRequest, _ func(sdk.LLMStreamEvent) error) (*sdk.LLMResponse, error) {
+	return nil, errors.New("llm 流中断")
+}
+func (e *errLLM) RegisterAdapter(_ sdk.LLMAdapter) sdk.Disposer { return func() {} }
+func (e *errLLM) SetModel(_ string)                             {}
+func (e *errLLM) Model() string                                 { return "err" }
+func (e *errLLM) List() []string                                { return nil }
+func (e *errLLM) SetProvider(_, _ string) error                 { return errors.New("unavailable") }
+func (e *errLLM) UnsetProvider(_ string) error                  { return errors.New("unavailable") }
+func (e *errLLM) ResetProvider() error                          { return errors.New("unavailable") }
+func (e *errLLM) ProviderInfo() (string, string, bool)          { return "", "", false }
+func (e *errLLM) ListModels() ([]sdk.ModelInfo, error)          { return nil, errors.New("unavailable") }
+func (e *errLLM) SetThinking(_ sdk.ThinkingLevel)               {}
+func (e *errLLM) Thinking() sdk.ThinkingLevel                   { return sdk.ThinkingOff }
+
+// buildEnv 装配 sessions/tools/llm(mock)/systemPrompt + 本插件(llmScript 非法时走失败路径)。
+func buildEnv(t *testing.T, llmScript string) *env {
+	t.Helper()
+	logger := slog.New(slog.DiscardHandler)
+	bus := event.New(logger)
+	c := ctx.New(logger, bus)
+	if _, err := (&sessionlog.Plugin{}).Start(c, &sdk.Manifest{}); err != nil {
+		t.Fatal(err)
+	}
+	var sessions sdk.SessionLog
+	if err := c.Inject("ctx.sessions", &sessions); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&hosttools.Plugin{}).Start(c, &sdk.Manifest{}); err != nil {
+		t.Fatal(err)
+	}
+	var tools sdk.ToolRegistry
+	if err := c.Inject("ctx.tools", &tools); err != nil {
+		t.Fatal(err)
+	}
+	tools.Register(fakeTool{def: sdk.ToolDefinition{Name: "echo", Description: "回显", InputSchema: map[string]any{"type": "object"}}})
+	tools.Register(fakeTool{def: sdk.ToolDefinition{Name: "fail", Description: "失败", InputSchema: map[string]any{"type": "object"}}})
+	if _, err := (&hostllm.Plugin{}).Start(c, &sdk.Manifest{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&llmmock.Plugin{}).Start(c, &sdk.Manifest{Data: map[string]any{"script": llmScript}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&hostsystemprompt.Plugin{}).Start(c, &sdk.Manifest{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&Plugin{}).Start(c, &sdk.Manifest{}); err != nil {
+		t.Fatal(err)
+	}
+	var loop sdk.AgentLoop
+	if err := c.Inject("ctx.agentLoop", &loop); err != nil {
+		t.Fatal(err)
+	}
+	var sp sdk.SystemPromptService
+	if err := c.Inject("ctx.systemPrompt", &sp); err != nil {
+		t.Fatal(err)
+	}
+	return &env{c: c, sessions: sessions, tools: tools, sp: sp, loop: loop.(*Loop), log: sessions.(*sessionlog.Log)}
+}
+
+// kinds 事件 Kind 序列。
+func kinds(l *sessionlog.Log) string {
+	var out []string
+	for _, e := range l.Replay() {
+		out = append(out, e.Kind)
+	}
+	return strings.Join(out, ",")
+}
+
+// TestTurnToolThenText 工具调用轮→文本收尾轮:完整回合 done。
+func TestTurnToolThenText(t *testing.T) {
+	e := buildEnv(t, `[
+		{"tool":{"name":"echo","args":"{\"v\":1}"}},
+		{"text":"完成","finish":"stop"}
+	]`)
+	if err := e.loop.Run(context.Background(), "任务"); err != nil {
+		t.Fatal(err)
+	}
+	k := kinds(e.log)
+	for _, want := range []string{"user/message", "step/start", "step/end", "assistant/message", "tool/call", "tool/result", "turn/end"} {
+		if !strings.Contains(k, want) {
+			t.Fatalf("流程应记录 %s: %s", want, k)
+		}
+	}
+	if !strings.HasSuffix(k, "turn/end") {
+		t.Fatalf("回合应以 turn/end 收尾: %s", k)
+	}
+}
+
+// TestTurnCancelled 上下文取消:回合以 cancelled 结束并返回错误。
+func TestTurnCancelled(t *testing.T) {
+	e := buildEnv(t, `[
+		{"tool":{"name":"echo","args":"{}"}},
+		{"text":"完成","finish":"stop"}
+	]`)
+	ctx2, cancel := context.WithCancel(context.Background())
+	cancel() // 首步前取消
+	if err := e.loop.Run(ctx2, "任务"); err == nil {
+		t.Fatal("取消的回合应返回错误")
+	}
+	// cancelled 是 turn/end 的载荷(非 Kind),断言末尾事件
+	evts := e.log.Replay()
+	last := evts[len(evts)-1]
+	if last.Kind != sdk.EventTurnEnd || last.Payload != "cancelled" {
+		t.Fatalf("应以 cancelled turn/end 收尾: %+v", last)
+	}
+}
+
+// TestTurnLLMError LLM 流错误:回合显式失败且无 done(不静默)。
+func TestTurnLLMError(t *testing.T) {
+	e := buildEnv(t, `[
+		{"text":"完成","finish":"stop"}
+	]`)
+	bad := &Loop{c: e.c, sessions: e.sessions, tools: e.tools, llm: &errLLM{}, sp: e.sp}
+	if err := bad.Run(context.Background(), "任务"); err == nil {
+		t.Fatal("LLM 错误应使回合失败")
+	}
+	if strings.Contains(kinds(e.log), "done") {
+		t.Fatalf("失败回合不应 done: %s", kinds(e.log))
+	}
+}
+
+// TestToolErrorStructured 工具业务错误:结构化回传(模型可见 ERROR 前缀)。
+func TestToolErrorStructured(t *testing.T) {
+	e := buildEnv(t, `[
+		{"tool":{"name":"fail","args":"{}"}},
+		{"text":"收尾","finish":"stop"}
+	]`)
+	if err := e.loop.Run(context.Background(), "任务"); err != nil {
+		t.Fatal(err)
+	}
+	var sawToolErr bool
+	for _, m := range e.log.DeriveMessages() {
+		if m.Role == sdk.RoleTool && strings.Contains(m.Content, "ERROR") {
+			sawToolErr = true
+			break
+		}
+	}
+	if !sawToolErr {
+		t.Fatalf("工具错误应结构化回传: %+v", e.log.DeriveMessages())
+	}
+}
+
+// scriptedLLM 脚本化 LLM(capture):按请求序号依次返回固定文本,记录每次请求的完整消息。
+type scriptedLLM struct {
+	steps    []string
+	n        int
+	requests [][]sdk.LLMMessage
+	toolSets [][]sdk.ToolDefinition // 每次请求的 tools 下发(结构化调用依赖)
+}
+
+func (s *scriptedLLM) Name() string { return "scripted" }
+func (s *scriptedLLM) Complete(_ context.Context, req *sdk.LLMRequest, _ func(sdk.LLMStreamEvent) error) (*sdk.LLMResponse, error) {
+	cp := append([]sdk.LLMMessage(nil), req.Messages...)
+	s.requests = append(s.requests, cp)
+	s.toolSets = append(s.toolSets, append([]sdk.ToolDefinition(nil), req.Tools...))
+	i := s.n
+	s.n++
+	if i >= len(s.steps) {
+		i = len(s.steps) - 1
+	}
+	return &sdk.LLMResponse{Message: sdk.LLMMessage{Role: sdk.RoleAssistant, Content: s.steps[i]}, FinishReason: sdk.FinishReasonStop}, nil
+}
+
+// buildEnvScripted 装配(host-llm + scripted adapter 注入;替换 mock),返回 env + adapter。
+func buildEnvScripted(t *testing.T, steps []string) (*env, *scriptedLLM) {
+	t.Helper()
+	logger := slog.New(slog.DiscardHandler)
+	bus := event.New(logger)
+	c := ctx.New(logger, bus)
+	if _, err := (&sessionlog.Plugin{}).Start(c, &sdk.Manifest{}); err != nil {
+		t.Fatal(err)
+	}
+	var sessions sdk.SessionLog
+	if err := c.Inject("ctx.sessions", &sessions); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&hosttools.Plugin{}).Start(c, &sdk.Manifest{}); err != nil {
+		t.Fatal(err)
+	}
+	var tools sdk.ToolRegistry
+	if err := c.Inject("ctx.tools", &tools); err != nil {
+		t.Fatal(err)
+	}
+	tools.Register(fakeTool{def: sdk.ToolDefinition{Name: "echo", Description: "回显", InputSchema: map[string]any{"type": "object"}}})
+	if _, err := (&hostllm.Plugin{}).Start(c, &sdk.Manifest{}); err != nil {
+		t.Fatal(err)
+	}
+	var llm sdk.LLMService
+	if err := c.Inject("ctx.llm", &llm); err != nil {
+		t.Fatal(err)
+	}
+	sa := &scriptedLLM{steps: steps}
+	llm.RegisterAdapter(sa)
+	llm.SetModel("scripted") // host-llm Complete 需模型已设置(对齐 mock 适配器行为)
+	if _, err := (&hostsystemprompt.Plugin{}).Start(c, &sdk.Manifest{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&Plugin{}).Start(c, &sdk.Manifest{}); err != nil {
+		t.Fatal(err)
+	}
+	var loop sdk.AgentLoop
+	if err := c.Inject("ctx.agentLoop", &loop); err != nil {
+		t.Fatal(err)
+	}
+	var sp sdk.SystemPromptService
+	if err := c.Inject("ctx.systemPrompt", &sp); err != nil {
+		t.Fatal(err)
+	}
+	return &env{c: c, sessions: sessions, tools: tools, sp: sp, loop: loop.(*Loop), log: sessions.(*sessionlog.Log)}, sa
+}
+
+// countKind 统计事件流中某 Kind 出现次数。
+func countKind(l *sessionlog.Log, kind string) int {
+	n := 0
+	for _, e := range l.Replay() {
+		if e.Kind == kind {
+			n++
+		}
+	}
+	return n
+}
+
+// TestLLMRequestCarriesTools 结构化工具调用依赖 tools 下发到 API(修复:M6.14 后实测回合模型
+// 只能正文伪调用——根因是 req.Tools 未赋值;此处断言每次请求都携带模型可见工具定义。
+func TestLLMRequestCarriesTools(t *testing.T) {
+	e, sa := buildEnvScripted(t, []string{"完成", "完成"})
+	if err := e.loop.Run(context.Background(), "任务"); err != nil {
+		t.Fatal(err)
+	}
+	var sawEcho bool
+	for _, set := range sa.toolSets {
+		for _, d := range set {
+			if d.Name == "echo" {
+				sawEcho = true
+			}
+		}
+	}
+	if !sawEcho {
+		t.Fatal("LLM 请求应携带工具定义(echo);缺失则模型无法走结构化 tool_calls")
+	}
+}
+
+// TestFakeToolCallGetsReminder 正文伪调用(无真实 tool_call):不被当作最终答案,注入提醒再给一轮;
+// 提醒消息送达模型(第二请求末尾含"系统提醒")。
+func TestFakeToolCallGetsReminder(t *testing.T) {
+	e, sa := buildEnvScripted(t, []string{
+		"我来帮你查天气。<DSML><tool_calls><invoke name=\"web_fetch\">https://wttr.in</invoke></tool_calls>",
+		"我用工具查询天气。(正常文本,无调用)",
+	})
+	if err := e.loop.Run(context.Background(), "查宜兴天气"); err != nil {
+		t.Fatal(err)
+	}
+	if got := countKind(e.log, sdk.EventAssistantMessage); got != 2 {
+		t.Fatalf("伪调用不应作终答:应 2 轮 assistant(提醒后再答),got %d", got)
+	}
+	if len(sa.requests) != 2 {
+		t.Fatalf("应发生 2 次请求,got %d", len(sa.requests))
+	}
+	// 提醒送达模型:第二请求末尾 user 消息含"系统提醒"
+	last := sa.requests[1][len(sa.requests[1])-1]
+	if last.Role != sdk.RoleUser || !strings.Contains(last.Content, "系统提醒") {
+		t.Fatalf("第二请求应携带伪调用提醒: role=%s content=%q", last.Role, last.Content)
+	}
+}
+
+// TestFakeToolCallReminderOnce 提醒每回合仅一次:二次伪调用不再无限修正,回合正常结束。
+func TestFakeToolCallReminderOnce(t *testing.T) {
+	e, sa := buildEnvScripted(t, []string{
+		"伪调用一 <tool_calls>x</tool_calls>",
+		"伪调用二 <antml:invoke>y</antml:invoke>", // 已提醒过 → 此轮直接结束
+	})
+	if err := e.loop.Run(context.Background(), "任务"); err != nil {
+		t.Fatal(err)
+	}
+	if len(sa.requests) != 2 {
+		t.Fatalf("提醒上限:应 2 次请求后结束(不无限),got %d", len(sa.requests))
+	}
+	if got := countKind(e.log, sdk.EventAssistantMessage); got != 2 {
+		t.Fatalf("assistant 应为 2,got %d", got)
+	}
+	if !strings.HasSuffix(kinds(e.log), "turn/end") {
+		t.Fatalf("应正常 turn/end 收尾: %s", kinds(e.log))
+	}
+}
+
+// TestFakeToolCallReminderOnceMarkdown 误报防护:正文仅提一句格式但无调用标签 → 不提醒(一次即终答)。
+func TestNoFakeMarkerPlainText(t *testing.T) {
+	e, sa := buildEnvScripted(t, []string{"当前天气:宜兴小雨 27°C(直接回答,无工具调用)"})
+	if err := e.loop.Run(context.Background(), "天气"); err != nil {
+		t.Fatal(err)
+	}
+	if len(sa.requests) != 1 {
+		t.Fatalf("无伪调用标记应一次请求收尾,got %d", len(sa.requests))
+	}
+	if got := countKind(e.log, sdk.EventAssistantMessage); got != 1 {
+		t.Fatalf("assistant 应为 1,got %d", got)
+	}
+}
+
+// TestContainsFakeToolCall 检测函数:真实伪调用标记命中;普通文本/大小写不敏感。
+func TestContainsFakeToolCall(t *testing.T) {
+	cases := []struct {
+		text string
+		want bool
+	}{
+		{"我来调用工具 <tool_calls>...", true},
+		{"<DSML><invoke name=\"x\">", true},
+		{"<antml:invoke name=\"tool\">", true},
+		{"<function_calls>json</function_calls>", true},
+		{"正常回答,无任何标记", false},
+		{"", false},
+		{"模型在文档里写 <tool_calls> 标签的含义", true}, // 复述格式也触发(温和提醒,可接受)
+	}
+	for _, c := range cases {
+		if got := containsFakeToolCall(c.text); got != c.want {
+			t.Errorf("containsFakeToolCall(%q) = %v,want %v", c.text, got, c.want)
+		}
+	}
+}

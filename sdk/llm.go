@@ -84,6 +84,16 @@ const (
 type Usage struct {
 	PromptTokens     int
 	CompletionTokens int
+	CachedTokens     int // 缓存命中输入 token(openai prompt_tokens_details.cached_tokens / anthropic cache_read_input_tokens)
+}
+
+// UsageStats 会话级 token 消耗统计(ctx.usageStats,host-usage-stats 累计)。
+type UsageStats struct {
+	PromptTokens     int // 累计输入 token
+	CompletionTokens int // 累计输出 token
+	CachedTokens     int // 累计缓存命中输入 token
+	Requests         int // 累计请求数
+	Window           int // 模型上下文窗口(token;context_window 配置,默认 65536)
 }
 
 // LLMStreamEvent 流式增量(文本增量 + 工具调用增量;Done 时携带最终消息)。
@@ -97,6 +107,17 @@ type LLMStreamEvent struct {
 	FinishReason FinishReason
 	Usage        Usage
 }
+
+// LLMError LLM 请求失败包装:携带请求模型名(错误文本可能含上下文窗口信息,
+// host-usage-stats 订阅 agent/error 解析学习——新模型窗口自动获取的通道)。
+// 保持 Unwrap,重试/取消判定不受影响。
+type LLMError struct {
+	Model string
+	Err   error
+}
+
+func (e *LLMError) Error() string { return e.Err.Error() }
+func (e *LLMError) Unwrap() error { return e.Err }
 
 // LLMResponse 完整响应(适配器聚合流式增量后返回)。
 type LLMResponse struct {
@@ -131,6 +152,15 @@ type ModelInfo struct {
 // ModelLister 可选接口:适配器支持列举端点可用模型(TUI /model 动态枚举;失败回退手动)。
 type ModelLister interface {
 	ListModels() ([]ModelInfo, error)
+}
+
+// UsageStatsService 服务(ctx.usageStats):会话级 token 消耗统计(host-usage-stats 提供)。
+// TUI 状态栏显示上下文使用率/缓存命中率;切换会话时经 Reset 归零。
+type UsageStatsService interface {
+	// Stats 当前会话累计统计快照。
+	Stats() UsageStats
+	// Reset 归零统计(切换会话时调用;新会话从零累计)。
+	Reset()
 }
 
 // LLMService 服务(ctx.llm):注册适配器 + 以当前默认适配器请求。

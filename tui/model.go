@@ -3,7 +3,10 @@ package tui
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
+	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -17,7 +20,16 @@ type sessionEventMsg struct{ ev *sdk.SessionEvent }
 
 type statusMsg struct{ status string }
 
+// mouseEventMsg 鼠标事件转发消息。⚠️ View.OnMouse 不能原样返回 MouseMsg:
+// MouseWheelMsg/MouseClickMsg 等实现 MouseMsg 接口,tea 系统层 case MouseMsg 会再次捕获
+// 同一个消息→无限重发死循环(实测 24 万/秒滚轮风暴、界面失控)。必须包装成自定义类型。
+type mouseEventMsg struct{ ev tea.MouseMsg }
+
 type agentDoneMsg struct{ err error }
+
+type disarmQuitMsg struct{} // 双按退出武装超时解除(tea.Tick 单次延迟发送)
+
+type barHideMsg struct{} // 滚动条 auto-hide:最近交互超时后触发重绘隐藏(tea.Tick 单次)
 
 type confirmMsg struct{ prompt string }
 
@@ -27,6 +39,24 @@ type Model struct {
 	w, h  int
 	quit  bool
 
+	quitArmed bool // 双按退出武装中:第一次 Ctrl+C(输入为空)后待第二次确认
+
+	lastWheel    time.Time // 滚轮事件节流:kitty 平滑滚轮/触摸板一次手势可发成百上千事件,
+	// 不经节流会“滚一下停不下来”(每事件都滚)→ 限制处理频率(wheelThrottle)。
+	wheelGesture int       // 本滚轮手势累计事件数(超时未滚或方向反转 = 新手势清零)
+	wheelDir     int       // 本滚轮手势方向(1=上,-1=下;方向反转即新手势——防 cap 挡住用户换向)
+	dragBar      bool  // 滚动条滑块拖动中(命中滑块按下;motion 按比例跟手)
+	dragY        int   // 拖动锚点 Y(按下时鼠标在会话流区的行号)
+	dragOff      int   // 拖动锚点 ScrollOffset(按下时)
+	selRows      []string // 鼠标划选期间展平行文本缓存(press 时取,避免 motion 高频重复 flatten)
+	selMoved     bool     // 本次划选是否有位移(释放时判定点击 vs 拖动)
+	skipView     bool      // 本 Update 未改渲染输入:View 返回缓存,快速消化滚轮事件风暴
+	// (风暴事件逐个进队列,即使节流丢弃也走完整 Update→View;缓存让丢弃事件几乎零开销,
+	// 键盘/Ctrl+C 不必在成百滚轮事件后排长队)。
+	cacheContent string // View 缓存(仅 skipView 命中时复用)
+	cacheSet     bool
+	cacheW, cacheH int
+
 	onSubmit        func(input string)               // 普通输入提交(注入)
 	onCommand       func(cmd string) error           // 命令处理(注入)
 	onConfirm       func(ok bool)                    // 确认答复(注入;见 app.Confirm)
@@ -34,6 +64,7 @@ type Model struct {
 	hints           func(prefix string) []sdk.Option // 命令选项(注入;前缀=去掉 / 后的输入)
 	levels          func(name string) []sdk.ArgLevel // 命令参数级定义(注入;枚举/自由级)
 	onThinkingCycle func(dir int)                    // Tab/Shift+Tab 思考等级循环(注入:dir=1 前进,-1 后退)
+	onStats         func() sdk.UsageStats            // 会话 token 统计拉取(注入;回合结束刷新状态栏)
 }
 
 // spinInterval 思考动画帧间隔。
@@ -41,12 +72,33 @@ type spinnerMsg struct{}
 
 const spinInterval = 120 * time.Millisecond
 
+// quitConfirmWindow 双按退出确认窗口:第一次 Ctrl+C(输入为空)武装后,
+// 窗口内再按一次才彻底退出;超时未按自动解除(防误触)。
+const quitConfirmWindow = 2 * time.Second
+
+// 滚轮节流与手势上限:
+// - wheelStep:滚轮一格滚动行数(步进小=滚动更细腻/丝滑;↑/↓ 逐行精确浏览不受影响);
+// - wheelThrottle:两次实际滚动最小间隔(平滑滚轮/触摸板高频事件;越短帧率越高越丝滑,
+//   33Hz×2 行 ≈ 66 行/s — 与 50ms×3 行同吞吐但视觉平滑一倍);
+// - gestureReset:距上次实际滚动超过该时长 = 新的一次手势(累计清零);
+// - gestureCap:单次连续手势(含触控板惯性/长滑)最多处理事件数,超出即丢弃——
+//   防“滚一下一直滚、无法打断”(约 gestureCap×wheelStep 行/手势)。
+// - barHideDelay:滚动条交互后静止超时(隐藏;鼠标悬停期间不隐藏)。
+const (
+	wheelStep     = 2
+	wheelThrottle = 30 * time.Millisecond
+	gestureReset  = 350 * time.Millisecond
+	gestureCap    = 24
+	barHideDelay  = 1500 * time.Millisecond
+)
+
 func (m *Model) Init() tea.Cmd {
 	// 首帧即启动 tick(回合未运行时 Update 不再续发,自动停)
 	return tea.Every(spinInterval, func(time.Time) tea.Msg { return spinnerMsg{} })
 }
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
@@ -55,6 +107,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case statusMsg:
 		m.state.ApplyStatus(msg.status)
 	case agentDoneMsg:
+		// 回合结束:刷新 token 统计(上下文使用率/缓存命中率,状态栏)
+		if m.onStats != nil {
+			m.state.Stats = m.onStats()
+		}
 		if msg.err != nil {
 			if errors.Is(msg.err, context.Canceled) {
 				// 用户主动取消(Esc):提示而非报错
@@ -77,22 +133,502 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.state.PickDismissed = false
 		m.state.InsertText(msg.Content)
 		m.syncHints()
+	case mouseEventMsg:
+		// 鼠标事件(经 View.OnMouse 包装转发到 Update,见 mouseEventMsg 注释)
+		switch e := msg.ev.(type) {
+		case tea.MouseWheelMsg:
+			m.handleWheel(e.Button)
+		case tea.MouseClickMsg:
+			m.handleMousePress(e.Mouse())
+		case tea.MouseMotionMsg:
+			m.handleMouseMotion(e.Mouse())
+		case tea.MouseReleaseMsg:
+			m.handleMouseRelease(e.Mouse())
+		}
+		cmd = m.markBar() // 滚动条显示计时重置并排 auto-hide tick(渲染按时间/hover 判定隐藏)
+	case barHideMsg:
+		// 仅触发重绘:渲染按 BarShownAt/HoverBar 判定滚动条隐藏(消息本身无状态变更)
 	case tea.KeyMsg:
-		m.handleKey(msg)
+		cmd = m.handleKey(msg) // Ctrl+C 武装时携带超时解除命令
+	case disarmQuitMsg:
+		// 双按退出超时:自动解除武装(再按一次已不再退出,回到初始态)
+		m.disarmQuit()
 	}
 	if m.quit {
 		return m, tea.Quit
 	}
-	return m, nil
+	return m, cmd
 }
 
 func (m *Model) View() tea.View {
-	v := tea.NewView(Render(m.state, m.w, m.h))
+	// 缓存:滚轮风暴丢弃事件(skipView)未改渲染输入 → 直接复用上次渲染结果,
+	// 免去每次全量 Render/flatten(风暴数百事件逐个重渲染会拖慢事件队列,键盘/Ctrl+C 排队)。
+	content := m.cacheContent
+	if !(m.skipView && m.cacheSet && m.w == m.cacheW && m.h == m.cacheH) {
+		content = Render(m.state, m.w, m.h)
+		m.cacheContent = content
+		m.cacheSet = true
+		m.cacheW, m.cacheH = m.w, m.h
+	}
+	m.skipView = false
+	v := tea.NewView(content)
 	v.AltScreen = true
+	v.MouseMode = tea.MouseModeCellMotion // 启用鼠标:滚轮滚动会话流(点击/释放/滚轮)
+	// v2 鼠标事件须经 View.OnMouse 转发才送达 Update;但绝不能原样返回 MouseMsg
+	// (MouseWheelMsg 等实现 MouseMsg 接口,tea 系统层 case MouseMsg 会再次捕获同一消息,
+	// 无限重发死循环——实测 24 万/秒滚轮风暴)。包装成自定义类型 mouseEventMsg 绕过。
+	v.OnMouse = func(msg tea.MouseMsg) tea.Cmd {
+		return func() tea.Msg { return mouseEventMsg{msg} }
+	}
 	return v
 }
 
-// handleEscape Esc 键处理:运行中取消当前回合。
+// handleWheel 滚轮事件(经 View.OnMouse 包装的 mouseEventMsg 送达)。
+// 节流(wheelThrottle)防高频事件逐格滚;单次手势上限(gestureCap)防平滑滚轮/触摸板
+// 惯性长滑“滚不停、无法打断”;方向反转 = 新手势(换向立即响应,不被 cap 卡住)。
+func (m *Model) handleWheel(btn tea.MouseButton) {
+	now := time.Now()
+	// 节流:一次手势可发大量事件,50ms 内只滚一次。被节流丢弃的事件仍占 Update 队列——
+	// 标记 skipView(本次未改渲染输入),View 返回缓存让风暴事件近乎零开销地快速消化。
+	if !m.lastWheel.IsZero() && now.Sub(m.lastWheel) < wheelThrottle {
+		m.skipView = true
+		return
+	}
+	if btn != tea.MouseWheelUp && btn != tea.MouseWheelDown {
+		return // 仅处理上下滚(水平滚轮无绑定)
+	}
+	dir := 1
+	if btn == tea.MouseWheelDown {
+		dir = -1
+	}
+	// 手势边界:距上次实际滚动超过 gestureReset(新一次手势)或方向反转
+	// (用户换向滚——上滚 24 行后立即下滚必须响应,不被手势上限卡住)→ 累计清零。
+	if now.Sub(m.lastWheel) > gestureReset || (m.wheelDir != 0 && dir != m.wheelDir) {
+		m.wheelGesture = 0
+		m.wheelDir = dir
+	}
+	// 选择器激活:滚轮移动选项(不参与会话流滚动手势)。
+	if m.state.Pick != nil {
+		m.lastWheel = now
+		if dir > 0 && m.state.Pick.Cursor > 0 {
+			m.state.Pick.Cursor--
+		} else if dir < 0 && m.state.Pick.Cursor < len(m.state.Pick.Items)-1 {
+			m.state.Pick.Cursor++
+		}
+		return
+	}
+	// 单次手势滚动上限:同向连续手势最多滚 gestureCap 行,超出即丢弃剩余事件——
+	// 防平滑滚轮/触摸板惯性一次手势“滚不停、无法打断”。
+	if m.wheelGesture >= gestureCap {
+		m.skipView = true
+		return
+	}
+	m.lastWheel = now
+	m.wheelGesture++
+	m.wheelDir = dir
+	if dir > 0 {
+		m.state.ScrollBy(wheelStep, m.h-4) // 上滚看历史(一格 wheelStep 行,系统手感)
+	} else {
+		m.state.ScrollBy(-wheelStep, m.h-4) // 下滚回最新
+	}
+}
+
+// scrollbarCol 滚动条所在列(渲染:内容 colW=m.w-3 宽 + 1 空格 + bar 贴右缘,bar 在 w-2)。
+// 命中区取 bar 及前一空格列(w-3..w-2),便于点按。
+func (m *Model) scrollbarCol() int {
+	c := m.w - 3
+	if c < 0 {
+		return 0
+	}
+	return c
+}
+
+// scrollbarGeom 会话流窗口高 win 与滚动条几何(与渲染 scrollMetrics 同式):
+// 内容行 total、窗口 win → 滑块高 thumb、当前滑块顶 top(0=轨道顶)。total<=win 返回不可滚。
+func (m *Model) scrollbarGeom(total, win int) (thumb, top int, ok bool) {
+	maxOff := total - win
+	if maxOff <= 0 {
+		return 0, 0, false
+	}
+	thumb = win * win / total
+	if thumb < 1 {
+		thumb = 1
+	}
+	if thumb > win {
+		thumb = win
+	}
+	off := m.state.ScrollOffset
+	if off < 0 {
+		off = 0
+	}
+	if off > maxOff {
+		off = maxOff
+	}
+	top = (maxOff - off) * (win - thumb) / maxOff
+	if top > win-thumb {
+		top = win - thumb
+	}
+	if top < 0 {
+		top = 0
+	}
+	return thumb, top, true
+}
+
+// handleBarPress 滚动条按下:命中滑块 → 记录锚点进入拖动(offset 不变,拖动按比例跟手);
+// 点轨道空白 → 整页翻向该侧(不进入拖动,滑块仍可单独抓住)。
+func (m *Model) handleBarPress(mo tea.Mouse) {
+	win := m.state.sessionWin // 渲染实际会话窗口高(与滚动条渲染同几何;未渲染回退估算)
+	if win < 2 {
+		win = m.h - 3
+	}
+	if win < 2 || mo.Y < 0 || mo.Y >= win {
+		return
+	}
+	if mo.X < m.scrollbarCol() {
+		return // 未命中滚动条列
+	}
+	// 回底指示:浏览历史(offset>0)且点击底行 → 回最新
+	if m.state.ScrollOffset > 0 && mo.Y == win-1 {
+		m.state.ScrollOffset = 0
+		return
+	}
+	total := m.state.flatN
+	thumb, top, ok := m.scrollbarGeom(total, win)
+	if !ok {
+		return // 内容不足窗口:无滚动条
+	}
+	switch {
+	case mo.Y >= top && mo.Y < top+thumb:
+		// 抓住滑块:锚点记录,offset 保持,拖动时滑块跟手
+		m.dragBar = true
+		m.dragY = mo.Y
+		m.dragOff = m.state.ScrollOffset
+	default:
+		// 轨道空白:整页翻向点击侧(向上=看更早,向下=回最新)
+		page := win
+		if page < 4 {
+			page = 4
+		}
+		if mo.Y < top {
+			m.state.ScrollOffset += page // 点击滑块上方:向上翻页(更早历史)
+		} else {
+			m.state.ScrollOffset -= page // 点击滑块下方:向下翻页(回最新)
+		}
+		maxOff := total - win
+		if m.state.ScrollOffset < 0 {
+			m.state.ScrollOffset = 0
+		}
+		if m.state.ScrollOffset > maxOff {
+			m.state.ScrollOffset = maxOff
+		}
+	}
+}
+
+// handleBarDrag 拖动(按住滑块移动):offset 按锚点 + 鼠标位移 × 比例映射——
+// 滑块视觉位移与鼠标 1:1 跟手(内容行远多于窗口时亦然)。
+func (m *Model) handleBarDrag(mo tea.Mouse) {
+	if !m.dragBar {
+		return
+	}
+	win := m.state.sessionWin
+	if win < 2 {
+		win = m.h - 3
+	}
+	total := m.state.flatN
+	maxOff := total - win
+	thumb, _, ok := m.scrollbarGeom(total, win)
+	if !ok || win-thumb < 1 {
+		return
+	}
+	// 鼠标位置钳制到轨道内,拖出窗口仍继续(释放才停)
+	y := mo.Y
+	if y < 0 {
+		y = 0
+	}
+	if y > win-1 {
+		y = win - 1
+	}
+	// 滑块行程 (win-thumb) 对应内容全行程 maxOff:比例 = maxOff/(win-thumb)
+	ratio := float64(maxOff) / float64(win-thumb)
+	off := float64(m.dragOff) + float64(m.dragY-y)*ratio
+	if off < 0 {
+		off = 0
+	}
+	if off > float64(maxOff) {
+		off = float64(maxOff)
+	}
+	m.state.ScrollOffset = int(off + 0.5)
+}
+
+// mouseColW 内容列宽(与渲染同算式 colW=w-3)。
+func (m *Model) mouseColW() int {
+	c := m.w - 3
+	if c < 8 {
+		c = 8
+	}
+	return c
+}
+
+// mouseRowAt 会话区鼠标 y → 全局物理行号(越界钳到窗口内;无内容返回 -1)。
+func (m *Model) mouseRowAt(y int) int {
+	win := m.state.sessionWin
+	if win < 2 {
+		win = m.h - 3
+	}
+	if y < 0 {
+		y = 0
+	}
+	if y >= win {
+		y = win - 1
+	}
+	total := m.state.flatN
+	if total <= 0 {
+		return -1
+	}
+	if total <= win {
+		return y
+	}
+	off := m.state.ScrollOffset
+	if off > total-win {
+		off = total - win
+	}
+	if off < 0 {
+		off = 0
+	}
+	return total - win - off + y
+}
+
+// colAt 鼠标 x(0 基终端列)→ rune 列(0 基;text 为展平行文本无 pad,双宽字符按列宽)。
+func colAt(text string, x int) int {
+	if x <= 0 || text == "" {
+		return 0
+	}
+	cw, idx := 0, 0
+	for _, r := range text {
+		w := runeCols(r)
+		if w == 0 {
+			idx++
+			continue
+		}
+		if cw+w > x {
+			break
+		}
+		cw += w
+		idx++
+	}
+	n := len([]rune(text))
+	if idx > n {
+		idx = n
+	}
+	return idx
+}
+
+// handleMousePress 鼠标按下:bar 列走滚动条;内容区(非选择器)开始划选——
+// 清除旧选区、缓存展平行文本(拖动不高频重算)、记起点。
+func (m *Model) handleMousePress(mo tea.Mouse) {
+	if mo.X >= m.scrollbarCol() {
+		m.handleBarPress(mo)
+		return
+	}
+	if m.state.Pick != nil {
+		return // 选择器激活:内容区不划选(避免与选项交互混淆)
+	}
+	m.state.SelActive = false
+	m.selMoved = false
+	m.selRows = nil
+	rows := flattenLines(m.state.Lines, m.mouseColW())
+	m.selRows = make([]string, len(rows))
+	for i, p := range rows {
+		m.selRows[i] = p.text
+	}
+	r := m.mouseRowAt(mo.Y)
+	if r < 0 || r >= len(m.selRows) {
+		m.selRows = nil
+		return
+	}
+	m.state.SelRow0, m.state.SelCol0 = r, colAt(m.selRows[r], mo.X)
+	m.state.SelRow1, m.state.SelCol1 = m.state.SelRow0, m.state.SelCol0
+	m.state.SelActive = true
+}
+
+// handleMouseMotion 拖动/悬停:划选中更新选区末端;滚动条拖动中滚滚动条;
+// 否则更新滚动条悬停状态(bar 列且会话区 → hover,auto-hide 期间保持显示)。
+func (m *Model) handleMouseMotion(mo tea.Mouse) {
+	if m.state.SelActive {
+		if m.selRows == nil {
+			return
+		}
+		r := m.mouseRowAt(mo.Y)
+		if r >= len(m.selRows) {
+			r = len(m.selRows) - 1
+		}
+		if r < 0 {
+			return
+		}
+		c := colAt(m.selRows[r], mo.X)
+		if r != m.state.SelRow0 || c != m.state.SelCol0 {
+			m.selMoved = true
+		}
+		m.state.SelRow1, m.state.SelCol1 = r, c
+		return
+	}
+	if m.dragBar {
+		m.handleBarDrag(mo)
+		m.state.HoverBar = true
+		return
+	}
+	// 悬停判定:bar 列且会话流区
+	win := m.state.sessionWin
+	if win < 2 {
+		win = m.h - 3
+	}
+	m.state.HoverBar = mo.X >= m.scrollbarCol() && mo.Y >= 0 && mo.Y < win
+}
+
+// markBar 滚动条交互计时:重置显示计时并返回 auto-hide tick 命令(渲染按时间/HoverBar 判定隐藏)。
+func (m *Model) markBar() tea.Cmd {
+	m.state.BarShownAt = time.Now()
+	return tea.Tick(barHideDelay, func(time.Time) tea.Msg { return barHideMsg{} })
+}
+
+// searchRun 执行会话内搜索:匹配 Lines 原文(大小写不敏感子串),记录命中逻辑行、
+// 定位首个命中;无命中自动退出。返回描述文本(命令回执)。
+func (m *Model) searchRun(q string) string {
+	m.state.SearchQuery = q
+	m.state.SearchHits = nil
+	m.state.SearchIdx = 0
+	m.skipView = false
+	if q == "" {
+		return "搜索已清除"
+	}
+	ql := strings.ToLower(q)
+	for i, ln := range m.state.Lines {
+		if strings.Contains(strings.ToLower(ln.Text), ql) {
+			m.state.SearchHits = append(m.state.SearchHits, i)
+		}
+	}
+	if len(m.state.SearchHits) == 0 {
+		m.state.SearchQuery = "" // 无命中:退出搜索态
+		return "搜索 \"" + q + "\":无命中"
+	}
+	m.searchGoto(m.state.SearchHits[0])
+	return fmt.Sprintf("搜索 \"%s\":命中 %d 行(n/N 循环跳转,F3 下一处,Esc 退出)", q, len(m.state.SearchHits))
+}
+
+// searchGoto 定位到命中逻辑行:其展平首个物理行放窗口顶(可看下文)。
+func (m *Model) searchGoto(lineIdx int) {
+	rows := flattenLines(m.state.Lines, m.mouseColW())
+	first := -1
+	for i, p := range rows {
+		if p.lineIdx == lineIdx {
+			first = i
+			break
+		}
+	}
+	if first < 0 {
+		return
+	}
+	win := m.state.sessionWin
+	if win < 2 {
+		win = m.h - 3
+	}
+	maxOff := len(rows) - win
+	if maxOff < 0 {
+		maxOff = 0
+	}
+	if first > maxOff {
+		first = maxOff
+	}
+	m.state.ScrollOffset = first
+	m.skipView = false
+}
+
+// searchJump 循环跳转下一/上一命中(搜索激活且非空命中时)。
+func (m *Model) searchJump(next bool) {
+	if m.state.SearchQuery == "" || len(m.state.SearchHits) == 0 {
+		return
+	}
+	n := len(m.state.SearchHits)
+	if next {
+		m.state.SearchIdx = (m.state.SearchIdx + 1) % n
+	} else {
+		m.state.SearchIdx = (m.state.SearchIdx - 1 + n) % n
+	}
+	m.searchGoto(m.state.SearchHits[m.state.SearchIdx])
+}
+
+// handleMouseRelease 释放:划选有位移 → 复制选中文本(OSC52)并保留高亮;
+// 单击(无位移)→ 清除选区;滚动条拖动 → 结束。
+func (m *Model) handleMouseRelease(mo tea.Mouse) {
+	if m.state.SelActive {
+		if m.selMoved {
+			if text := m.selectedText(); text != "" {
+				writeClipboardOSC52(text)
+			}
+		} else {
+			m.state.SelActive = false // 单击:清除
+		}
+		m.selRows = nil
+		m.selMoved = false
+		return
+	}
+	if m.dragBar {
+		m.dragBar = false
+	}
+}
+
+// selectedText 依选区(行+列,反向拖动已归一)提取选中文本,行间用 \n 拼接。
+func (m *Model) selectedText() string {
+	if m.selRows == nil {
+		return ""
+	}
+	a, b := m.state.SelRow0, m.state.SelRow1
+	cA, cB := m.state.SelCol0, m.state.SelCol1
+	if a > b {
+		a, b = b, a
+		cA, cB = cB, cA
+	}
+	if a < 0 {
+		a = 0
+	}
+	if a >= len(m.selRows) {
+		return ""
+	}
+	if b >= len(m.selRows) {
+		b = len(m.selRows) - 1
+	}
+	var out []string
+	for i := a; i <= b; i++ {
+		rs := []rune(m.selRows[i])
+		c0, c1 := 0, len(rs)
+		if i == a {
+			c0 = cA
+		}
+		if i == b {
+			c1 = cB
+		}
+		if c0 < 0 {
+			c0 = 0
+		}
+		if c1 > len(rs) {
+			c1 = len(rs)
+		}
+		if c0 > c1 {
+			c0 = c1
+		}
+		out = append(out, string(rs[c0:c1]))
+	}
+	return strings.Join(out, "\n")
+}
+
+// writeClipboardOSC52 经 OSC52 将文本写入系统剪贴板(kitty/iTerm2 等支持)。
+// 全局函数变量便于单测替换捕获。
+var writeClipboardOSC52 = func(text string) {
+	b64 := base64.StdEncoding.EncodeToString([]byte(text))
+	fmt.Fprintf(os.Stdout, "\x1b]52;c;%s\x07", b64)
+}
+
+// handleEscape Esc 键处理:运行中取消当前回合(有划选时先清除选区)。
 func (m *Model) handleEscape() {
 	if m.state.Running && m.onCancel != nil {
 		m.onCancel()
@@ -100,9 +636,9 @@ func (m *Model) handleEscape() {
 	}
 }
 
-func (m *Model) handleKey(msg tea.KeyMsg) {
+func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	k := msg.Key()
-	// 确认弹层优先:y/n 决定(任何确认态下的键入不再进输入框)
+	// 确认弹层优先:y/n 决定(任何确认态下的键入不再进输入框,Ctrl+C 亦被忽略)
 	if m.state.PendingConfirm != "" {
 		switch k.Code {
 		case 'y', 'Y':
@@ -112,18 +648,74 @@ func (m *Model) handleKey(msg tea.KeyMsg) {
 			m.state.ResolveConfirm(false)
 			m.onConfirm(false)
 		}
-		return
+		return nil
 	}
-	// Ctrl+C:输入为空退出,输入中清空
+	// Ctrl+C(防误触):输入中仅清空不退出;输入为空需连按两次才彻底退出——
+	// 第一次武装并提示(2 秒窗口内再按退出;超时或其他任意键自动解除)。
 	if k.Mod&tea.ModCtrl != 0 && (k.Code == 'c' || k.Code == 'C') {
 		if m.state.Input == "" {
-			m.quit = true
+			if m.quitArmed {
+				m.quit = true // 窗口内第二次:彻底退出
+				return nil
+			}
+			return m.armQuit() // 第一次:武装待确认,返回超时解除命令
 		} else {
+			// 输入中:清空输入(不退出),同时解除可能的武装
+			m.disarmQuit()
 			m.state.PickDismissed = false
 			m.state.ClearInput()
 			m.syncHints()
 		}
-		return
+		return nil
+	}
+	// 武装期间按其他任意键:待退出状态解除(不退出;后续按键语义照常,如 Esc 照常取消回合)
+	m.disarmQuit()
+	// S1.3 输入增强组合键(选择器未激活时;组合键 Text 为空,不会误入文本分支):
+	// Ctrl+P/N 历史、Ctrl+Z/Ctrl+Shift+Z undo/redo、Ctrl+K/U kill、Alt+←/→ 按词移动。
+	if m.state.Pick == nil && k.Mod&tea.ModCtrl != 0 {
+		switch k.Code {
+		case 'p':
+			if m.state.HistPrev() {
+				m.syncHints()
+			}
+			return nil
+		case 'n':
+			if m.state.HistNext() {
+				m.syncHints()
+			}
+			return nil
+		case 'z', 'Z':
+			var ok bool
+			if k.Mod&tea.ModShift != 0 || k.Code == 'Z' {
+				ok = m.state.Redo()
+			} else {
+				ok = m.state.Undo()
+			}
+			if ok {
+				m.syncHints()
+			}
+			return nil
+		case 'k':
+			if m.state.KillToEnd() {
+				m.syncHints()
+			}
+			return nil
+		case 'u':
+			if m.state.KillToStart() {
+				m.syncHints()
+			}
+			return nil
+		}
+	}
+	if m.state.Pick == nil && k.Mod&tea.ModAlt != 0 {
+		switch k.Code {
+		case tea.KeyLeft:
+			m.state.WordLeft()
+			return nil
+		case tea.KeyRight:
+			m.state.WordRight()
+			return nil
+		}
 	}
 	switch k.Code {
 	case tea.KeyEnter:
@@ -132,16 +724,59 @@ func (m *Model) handleKey(msg tea.KeyMsg) {
 		m.state.PickDismissed = false
 		m.state.Backspace()
 		m.syncHints()
+	case tea.KeyDelete:
+		if m.state.Pick == nil {
+			m.state.Delete() // 删除光标处字符
+		}
+	case tea.KeyLeft:
+		if m.state.Pick == nil {
+			m.state.CursorLeft() // 左移(边界钳制)
+		}
+	case tea.KeyRight:
+		if m.state.Pick == nil {
+			m.state.CursorRight()
+		}
 	case tea.KeyUp:
 		if p := m.state.Pick; p != nil {
 			if p.Cursor > 0 {
-				p.Cursor--
+				p.Cursor-- // 选择器:上移选项
 			}
+		} else {
+			// 输入框光标回头(历史浏览走滚轮/滚动条/PgUp,方向键交还输入编辑)
+			m.state.CursorHome()
 		}
 	case tea.KeyDown:
 		if p := m.state.Pick; p != nil {
 			if p.Cursor < len(p.Items)-1 {
-				p.Cursor++
+				p.Cursor++ // 选择器:下移选项
+			}
+		} else {
+			// 输入框光标回尾(↑/↓ = 输入行首/尾;滚动见 KeyUp 注释)
+			m.state.CursorEnd()
+		}
+	case tea.KeyHome:
+		if m.state.Pick == nil {
+			m.state.CursorHome() // 输入光标回头(旧 ↑ 聶责;Home 恒定语义)
+		}
+	case tea.KeyEnd:
+		if m.state.Pick == nil {
+			m.state.CursorEnd() // 输入光标回尾(旧 ↓ 聶责)
+		}
+	case tea.KeyPgUp:
+		// 整页翻(兼容保留;箭头逐行为主通道)
+		m.state.ScrollBy(m.h-4, m.h-4)
+		m.markBar() // 键盘翻页同样重置滚动条显示计时
+	case tea.KeyPgDown:
+		// 整页翻回底部
+		m.state.ScrollBy(-(m.h - 4), m.h-4)
+		m.markBar()
+	case tea.KeyF3:
+		// 搜索激活时:F3 跳下一命中(Shift+F3 上一处)
+		if m.state.SearchQuery != "" {
+			if k.Mod&tea.ModShift != 0 {
+				m.searchJump(false)
+			} else {
+				m.searchJump(true)
 			}
 		}
 	case tea.KeyTab:
@@ -153,12 +788,27 @@ func (m *Model) handleKey(msg tea.KeyMsg) {
 		if m.state.Pick != nil {
 			m.state.Pick = nil
 			m.state.PickDismissed = true // 退出选择:保留文本,回普通输入
+		} else if m.state.SearchQuery != "" {
+			// 搜索激活:Esc 退出搜索(清除高亮/命中;不中断回合)
+			m.state.SearchQuery = ""
+			m.state.SearchHits = nil
+			m.state.SearchIdx = 0
+		} else if m.state.SelActive {
+			// 有鼠标划选:Esc 清除选区(不中断回合)
+			m.state.SelActive = false
+			m.selRows = nil
+			m.selMoved = false
 		} else {
 			// Esc:中断进行中的回合(取消链:turn → LLM 流 → 工具进程)
 			m.handleEscape()
 		}
 	default:
 		if k.Text != "" {
+			// 搜索激活且输入框为空:n/N 跳下一命中(不输入字符)
+			if (k.Text == "n" || k.Text == "N") && m.state.SearchQuery != "" && m.state.Input == "" {
+				m.searchJump(true)
+				return nil
+			}
 			m.state.PickDismissed = false
 			for _, r := range k.Text {
 				m.state.InsertRune(r)
@@ -166,6 +816,21 @@ func (m *Model) handleKey(msg tea.KeyMsg) {
 			m.syncHints()
 		}
 	}
+	return nil
+}
+
+// armQuit 第一次 Ctrl+C(输入为空):武装待退出——界面提示再按一次彻底退出;
+// 返回超时命令:quitConfirmWindow 内未再按 → disarmQuitMsg 自动解除(防误触)。
+func (m *Model) armQuit() tea.Cmd {
+	m.quitArmed = true
+	m.state.QuitArmed = true
+	return tea.Tick(quitConfirmWindow, func(time.Time) tea.Msg { return disarmQuitMsg{} })
+}
+
+// disarmQuit 解除双按退出武装(超时 / 输入中按 Ctrl+C / 按其他任意键)。
+func (m *Model) disarmQuit() {
+	m.quitArmed = false
+	m.state.QuitArmed = false
 }
 
 // enter 回车:选择器激活时应用高亮项(命令/参数级联推进);否则普通提交。
@@ -216,6 +881,7 @@ func (m *Model) submit() {
 		return
 	}
 	if strings.HasPrefix(input, "/") {
+		m.state.RecordCmd(input) // S1.3:斜杠命令入输入历史(不入会话 Lines)
 		if err := m.onCommand(input); err != nil {
 			m.state.SetError(err.Error())
 		}

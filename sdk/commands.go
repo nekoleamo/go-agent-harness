@@ -34,7 +34,7 @@ type Option struct {
 }
 
 // CommandRegistry 服务(ctx.commands):斜杠命令注册表(单一事实源)。
-// 实现:plugins/host-commands(base bundle,先于依赖者启动)。
+// 实现:plugins/host/host-commands(base bundle,先于依赖者启动)。
 type CommandRegistry interface {
 	// Register 注册命令,返回撤销 Disposer。同名冲突拒绝并返回错误(非静默)。
 	Register(spec CommandSpec) (Disposer, error)

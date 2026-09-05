@@ -4,6 +4,7 @@ package embed
 
 import (
 	"compress/gzip"
+	"crypto/sha256"
 	"embed"
 	"fmt"
 	"io"
@@ -118,11 +119,23 @@ func diskVersion(path string) int {
 
 // EnsurePlugins 释放随包外部插件二进制到 home/plugins/<name>/<name>(方案 B 首启释放)。
 // P0 体积门(M7):embed 存 gzip(.gz,压缩率约 50%),释放时解压落盘;
-// 已存在的同名文件跳过(用户经 gah -install/-uninstall 维护的版本优先)。
+// 自动升级:内容(sha256)与 embed 一致 → 跳过(幂等,同版/用户自装产物保留);
+// 内容不同 → 覆盖(插件产物必须与主程序版本匹配,旧版能力缺失有害,如缺 web_search)。
+// 不保留备份:plugins 扫描会加载任何 tool-* 前缀文件(host-bridge),同目录备份会被误加载;
+// 二进制随包可再生,无保留价值。
 // OpenExtPlugin 打开本平台外部插件 gzip 产物(只读;调用方负责 Close)。
 // P4 平台匹配:build-tag 保证只取当前构建平台的产物(黑盒测试/工具链读取用)。
 func OpenExtPlugin(bin string) (io.ReadCloser, error) {
 	return extPlugins.Open(extPluginDir + "/" + bin + ".gz")
+}
+
+// readFileBytes 读文件内容(不存在/读失败 ok=false,与幂等跳过区分)。
+func readFileBytes(path string) ([]byte, bool) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	return raw, true
 }
 
 // 外部插件 embed 声明按平台拆在 extplugins_<os>_<arch>.go(build-tag 限定,
@@ -140,9 +153,6 @@ func EnsurePlugins(home string) ([]string, error) {
 		}
 		bin := strings.TrimSuffix(n, ".gz")
 		dst := filepath.Join(home, "plugins", bin, bin)
-		if _, err := os.Stat(dst); err == nil {
-			continue // 已存在(用户自装/旧版本):不覆盖
-		}
 		fgz, err := extPlugins.Open(extPluginDir + "/" + n)
 		if err != nil {
 			return nil, err
@@ -152,15 +162,17 @@ func EnsurePlugins(home string) ([]string, error) {
 			fgz.Close()
 			return nil, err
 		}
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-			gzr.Close()
-			fgz.Close()
-			return nil, err
-		}
 		raw, err := io.ReadAll(gzr)
 		gzr.Close()
 		fgz.Close()
 		if err != nil {
+			return nil, err
+		}
+		// 自动升级:内容一致 → 跳过(幂等);内容不同 → 覆盖(必须与主程序匹配)。
+		if cur, ok := readFileBytes(dst); ok && sha256.Sum256(cur) == sha256.Sum256(raw) {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			return nil, err
 		}
 		if err := os.WriteFile(dst, raw, 0o755); err != nil {

@@ -1,4 +1,4 @@
-# seed-version: 1 # 样板版本:新增 base 能力条目(host-* 等)时 +1,老用户自动升级(备份后覆盖)
+# seed-version: 6 # 样板版本:新增 base 能力条目(host-* 等)时 +1,老用户自动升级(备份后覆盖)
 # base bundle:对齐 dsh-base,一切功能皆插件的共享第一层。
 # M1 阶段条目仅记录意图;对应插件工厂在 M2 base bundle 落地。
 name: base
@@ -25,13 +25,21 @@ entries:
   - id: host-skills
   - id: host-plugin-manager
   - id: host-cwd-sessions
+  - id: host-usage-stats
+    # 会话 token 统计(ctx.usageStats):状态栏显示上下文使用率/缓存命中率。
+    # 上下文窗口解析链:data.context_window(统一覆盖)> data.model_windows(按模型名前缀覆盖,
+    # 新模型/文档更新无需改代码)> 内置窗口表(claude 1M/200K、deepseek 128K、gemini 1M 等,
+    # 发行版本基线);未知/空模型窗口=0,状态栏只显示使用量(不显示总量/百分比)。
   - id: host-jobs
   - id: host-fanout
     enabled: true # M6.2 拆分:子代理编排宿主服务(ctx.fanout),tool-workflow 依赖
   - id: host-bridge
     # P1 方案B:默认启用,dir 缺省指向 home/plugins(首启随包释放 tool-basic)
     # M6.8 外部化:同时释放 tool-workflow/tool-mcp;回调通道 GAH_CB_ADDR 注入外部进程
+    # 热更新(watch)默认开启:插件二进制/目录变化(fsnotify debounce)自动重载,运行中零重启生效
     enabled: true
+    data:
+      watch: true
   - id: mcp-bridge
     enabled: false # M6.8 外部化:内嵌实现停用,由 host-bridge 加载 extplugins/tool-mcp(GAH_MCP_COMMAND 指定 MCP server)
   - id: mcp-server
@@ -42,6 +50,11 @@ entries:
     enabled: false # P1 外部化同上
   - id: tool-web
     enabled: false # P1 外部化同上
+    # M6.14:包内含 web_fetch/web_search;web_search provider 经 data.provider 选(缺省 exa = 直连 Exa API,EXA_API_KEY;未知名显式失败)
+  - id: tool-memory
+    enabled: false # M10 外部化:memory(remember/list/recall/forget)由 host-bridge 加载 extplugins/tool-basic;内嵌双轨同 tool-files
+  - id: tool-todo
+    enabled: false # M8 外部化:todo(create/start/complete/pend/delete/update/list/get)由 host-bridge 加载 extplugins/tool-basic;内嵌双轨同 tool-files
   - id: tool-workflow
     enabled: false # M6.8 外部化:内嵌实现停用,由 host-bridge 加载 extplugins/tool-workflow(宿主回调通道驱动)
 

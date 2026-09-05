@@ -9,7 +9,63 @@ import (
 	"testing"
 )
 
-// TestEnsurePlugins 方案B首启释放:产物落 home/plugins/<name>/,幂等(不覆盖已有)。
+// TestEnsurePluginsUpgrade 自动升级:内容与 embed 不一致 → 覆盖;一致 → 跳过(幂等)。
+// 覆盖旧插件二进制的能力缺失问题(如旧 tool-basic 缺 web_search),无需手动删除。
+func TestEnsurePluginsUpgrade(t *testing.T) {
+	home := t.TempDir()
+	if _, err := EnsurePlugins(home); err != nil {
+		t.Fatal(err)
+	}
+	// 写一个内容错误的旧产物(模拟旧版本二进制)
+	dst := ""
+	names, err := listNames(extPlugins, extPluginDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range names {
+		if strings.HasSuffix(n, ".gz") {
+			dst = filepath.Join(home, "plugins", strings.TrimSuffix(n, ".gz"), strings.TrimSuffix(n, ".gz"))
+			break
+		}
+	}
+	if dst == "" {
+		t.Fatal("无外部插件产物")
+	}
+	if err := os.WriteFile(dst, []byte("stale-plugin-binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// 二次 EnsurePlugins:内容不同 → 覆盖为 embed 产物
+	upgraded, err := EnsurePlugins(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saw bool
+	for _, w := range upgraded {
+		if w == dst {
+			saw = true
+		}
+	}
+	if !saw {
+		t.Fatalf("旧内容应被覆盖并写入: %v", upgraded)
+	}
+	raw, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) == "stale-plugin-binary" {
+		t.Fatal("旧内容应被覆盖")
+	}
+	// 第三次:内容已一致 → 跳过
+	repeat, err := EnsurePlugins(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repeat) != 0 {
+		t.Fatalf("内容一致后应幂等跳过: %v", repeat)
+	}
+}
+
+// TestEnsurePlugins 方案B首启释放:产物落 home/plugins/<name>/,幂等(不覆盖已有/内容一致)。
 func TestEnsurePlugins(t *testing.T) {
 	home := t.TempDir()
 	written, err := EnsurePlugins(home)
