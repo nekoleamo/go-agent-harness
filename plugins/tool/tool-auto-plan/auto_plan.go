@@ -126,23 +126,26 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 
 // RuleSectionText 规划模式系统提示片段(纯函数,便于单测断言)。
 func RuleSectionText() string {
-	return `规划模式:用户请求要求"先规划后执行",或属于复杂任务(3+ 步)时,先只读探索(查询类工具),` +
+	return `规划模式:用户请求要求“先规划后执行”,或属于复杂任务(3+ 步)时,先只读探索(查询类工具),` +
 		`再用 auto_plan.create 输出结构化规划(目标/关键约束与风险/检查清单步骤)并等待用户明确确认。` +
-		`用户确认(如"确认/执行/开始")前,不得执行任何有副作用操作(文件写/命令/网络等);纯查询可做。` +
-		`确认后 auto_plan.confirm,再按步骤逐项推进并 auto_plan.step 标记状态,全部完成 auto_plan.complete 归档。` +
-		`意图判定:请求本身已含明确执行指令(命令式,如"将规划写入文档""仅/只 <动词>")时不视为规划请求,直接按其指令执行。`
+		`用户确认(如“确认/执行/开始”)前,不得执行任何有副作用操作(文件写/命令/网络等);纯查询可做。` +
+		`确认后 auto_plan.confirm;执行期任务追踪交由 todo 承接(M11-T2 分工:auto_plan 管规划期产物与确认门,` +
+		`todo 管确认后的执行任务状态机):把规划检查清单逐项 todo.create(blockedBy 串依赖),按 todo 状态机推进执行;` +
+		`执行完成后回 auto_plan.step/complete 归档规划(或仅 complete 整体归档)。` +
+		`意图判定:请求本身已含明确执行指令(命令式,如“将规划写入文档”“仅/只 <动词>”)时不视为规划请求,直接按其指令执行。`
 }
 
 func (t *Tool) Definition() sdk.ToolDefinition {
 	return sdk.ToolDefinition{
 		Name: "auto_plan",
-		Description: "规划模式工具(规划期产物;执行期任务用 todo)。模型面对'先规划后执行'或复杂任务(3+ 步)时," +
+		Description: "规划模式工具(规划期产物与确认门;执行期任务追踪用 todo)。模型面对'先规划后执行'或复杂任务(3+ 步)时," +
 			"先只读探索再 create 落盘结构化规划,等用户确认后才执行。action:" +
 			"create(request 必填,objective/constraints[]/steps[] 由探索后生成;steps=线性检查清单标题数组)→ 返回 id(状态 proposed);" +
 			"get(id) 看详情;list(status?) 当前项目全部(摘要);" +
-			"step(id,index,status) 步骤推进(status: pending|in_progress|completed;仅 confirmed 后可改,completed 步骤锁定);" +
 			"confirm(id) 用户明确确认后标记(proposed→confirmed,允许执行);" +
-			"complete(id) 全部完成后归档(confirmed→completed)。跨会话保留、人工可编辑 jsonl。",
+			"step(id,index,status) 步骤推进(status: pending|in_progress|completed;仅 confirmed 后可改,completed 步骤锁定;执行期主要状态机用 todo,plan step 供轻量/收尾同步);" +
+			"complete(id) 全部完成后归档(confirmed→completed)。M11-T2 联动:确认后把检查清单转 todo.create 逐项追踪执行(todo 状态机)," +
+			"执行完回 complete 归档规划。跨会话保留、人工可编辑 jsonl。",
 		InputSchema: map[string]any{
 			"type":     "object",
 			"required": []any{"action"},

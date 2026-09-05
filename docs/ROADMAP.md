@@ -44,7 +44,7 @@
 |---|---|---|---|---|---|
 | 12 | **TUI S3.2 synchronized output** | 独立小项,可提前 | XS | DECSET 2026 合并大刷新 | 滚动/长输出无撕裂;不支持的终端忽略 |
 | 13 | **M9.2 控制组+背景** | ⚠️ M9.1 | M | send_message/interrupt/list_agents;continuable 背景(复用 host-jobs 管道);fork | 可中断/消息/后台续跑 |
-| 14 | **M11-T2 plan→todo 承接** | ⚠️ M11-T1 + M8-T1 | M | 确认后逐步骤推进,执行期由 todo 承接 | 规划确认后自动转执行 |
+| 14 ✅ | **M11-T2 plan→todo 承接** | ⚠️ M11-T1 + M8-T1 | M | ✅ 已交付:规则文本/Description 增补联动边界(auto_plan 管确认门,确认后执行期由 todo 承接,检查清单转 todo.create,执行完回归档);TestRuleTodoHandoff 等回归 | ✅ 确认门→todo 承接语义清晰 |
 | 15 | **TUI S3.1 主屏 scrollback 模式** | ⚠️ S2.2 组件化 | L | `--view regular`/`/view regular`;输出流进 scrollback、底部固定输入;滚动交终端 | 长输出不占屏;模式切换无残留 |
 
 ## P3 远期(季度+:Web 全家桶)

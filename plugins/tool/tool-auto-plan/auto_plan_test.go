@@ -224,7 +224,7 @@ func TestConcurrency(t *testing.T) {
 // TestRuleText 规则片段含关键纪律(确认前零副作用/意图判定)。
 func TestRuleText(t *testing.T) {
 	text := RuleSectionText()
-	for _, want := range []string{"auto_plan.create", "确认", "副作用", "意图判定", "auto_plan.confirm"} {
+	for _, want := range []string{"auto_plan.create", "确认", "副作用", "意图判定", "auto_plan.confirm", "todo"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("规则文本应含 %q", want)
 		}
@@ -240,5 +240,44 @@ func TestStoreRootDefault(t *testing.T) {
 	}
 	if !strings.Contains(path, filepath.Join("home", "plans")) {
 		t.Fatalf("缺省 root 应为 $GAH_HOME/plans: %s", path)
+	}
+}
+
+// TestRuleTodoHandoff M11-T2:规则文本明确确认后执行期由 todo 承接(plan=规划/确认门,todo=执行状态机)。
+func TestRuleTodoHandoff(t *testing.T) {
+	text := RuleSectionText()
+	// 联动边界核心:确认门属于 auto_plan,执行状态机转移给 todo,执行完归档回 plan。
+	for _, want := range []string{"执行期任务追踪交由 todo", "todo.create", "todo 状态机", "complete 归档规划"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("联动规则应含 %q", want)
+		}
+	}
+	def := NewTool().Definition()
+	for _, want := range []string{"执行期任务追踪用 todo", "todo.create", "执行完回 complete 归档规划"} {
+		if !strings.Contains(def.Description, want) {
+			t.Fatalf("工具描述应含联动 %q", want)
+		}
+	}
+}
+
+// TestLifecycleWithTodoHandoff 确认后执行路径:plan 步骤仍可推进(轻量),complete 归档;
+// 联动边界不改动 T1 生命周期行为(回归护栏)。
+func TestLifecycleWithTodoHandoff(t *testing.T) {
+	s := newStore(t)
+	p, err := s.Create("任务", "", nil, []string{"a", "b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Confirm(p.ID); err != nil {
+		t.Fatal(err)
+	}
+	// 联动场景:执行期由 todo 承接 → 规划侧确认后即可直接归档(complete 允许在步骤未逐项标记时),
+	// 供“转交 todo 后整体收尾”路径;步骤逐项推进路径仍可用(T1 兼容)。
+	if err := s.Complete(p.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := s.Get(p.ID)
+	if !ok || got.Status != StatusCompleted {
+		t.Fatalf("联动收尾应可归档: %+v ok=%v", got, ok)
 	}
 }
