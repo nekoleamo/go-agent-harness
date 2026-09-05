@@ -10,22 +10,41 @@ import (
 )
 
 // renderInputLine 输入区:块光标插入在光标处(前后分半);双按退出武装提示。
+// 多行输入(P4-6):文本按 \n 逐行渲染,续行前缀与首行 "❯ " 对齐(等宽空格);
+// 光标所在行插入块光标,其余行原样。单行行为与历史一致(逐字等价)。
 func renderInputLine(s *State, _ int) string {
-	input := stylePrompt.Render("❯ ")
-	runes := []rune(s.Input)
-	c := s.Cursor
-	if c < 0 {
-		c = 0
+	line, col := cursorLineCol([]rune(s.Input), s.Cursor)
+	var sb strings.Builder
+	for i, ln := range strings.Split(s.Input, "\n") {
+		if i > 0 {
+			sb.WriteByte('\n')
+		}
+		if i == 0 {
+			sb.WriteString(stylePrompt.Render("❯ "))
+		} else {
+			sb.WriteString("  ") // 续行对齐(❯ 为 1 列宽 + 空格)
+		}
+		r := []rune(ln)
+		if i == line {
+			c := col
+			if c < 0 {
+				c = 0
+			}
+			if c > len(r) {
+				c = len(r)
+			}
+			sb.WriteString(string(r[:c]))
+			sb.WriteString(styleCursor.Render("█"))
+			sb.WriteString(string(r[c:]))
+		} else {
+			sb.WriteString(ln)
+		}
 	}
-	if c > len(runes) {
-		c = len(runes)
-	}
-	input += string(runes[:c]) + styleCursor.Render("█") + string(runes[c:])
 	// 双按退出武装提示(防误触):第一次 Ctrl+C(输入为空)后高亮提醒再按一次才彻底退出
 	if s.QuitArmed {
-		input += " " + styleBusy.Render("⚠ 再按一次 Ctrl+C 彻底退出 (2s)")
+		sb.WriteString(" " + styleBusy.Render("⚠ 再按一次 Ctrl+C 彻底退出 (2s)"))
 	}
-	return input
+	return sb.String()
 }
 
 // renderHintLines 命令提示区(输入 / 前缀时显示;选择器激活时高亮当前项)。

@@ -67,7 +67,7 @@
 
 ## P4 体验改进(对齐 pi 基线;来源 docs/PI_COMPARISON.md)
 
-> 状态:P4-3(代码块高亮)、P4-4(会话命名)、P4-7(工具视觉增强)、P4-9(语义色 token 化)✅ 已交付(2025-10),其余 ⏳ 未实施(2025-10 排期)。排期原则:用户可感 > 依赖 M7 > 成本。Agent 能力面无缺口
+> 状态:P4-3(代码块高亮)、P4-4(会话命名)、P4-6(多行输入/外部编辑器)、P4-7(工具视觉增强)、P4-9(语义色 token 化)✅ 已交付,其余 ⏳ 未实施。排期原则:用户可感 > 依赖 M7 > 成本。Agent 能力面无缺口
 > (pi 明示不内置的 MCP/subagent/权限/plan/todo/后台 bash,gah 均已交付),本阶段只补交互与会话体验。
 
 | # | 功能 | 依赖 | 工作量 | 切片/要点 | 验收 |
@@ -77,7 +77,7 @@
 | P4-3 ✅ | **T4 代码块高亮** | S2.2 引擎就绪 | S–M | ✅ 已交付:render 层展平后 annotateCodeFences 跨行状态标注(仅 assistant 参与切换,工具结果含 ``` 不干扰);围栏行/块内行统一代码色 + 单遍极简语法着色(字符串/注释/关键字,字符无损),块内禁 md token 误伤;折叠/搜索/选区回落路径不变 | ✅ 代码块可读、与正文区分;无 ANSI 泄漏/宽度不变(新增围栏/高亮单测,全库 -race 38 包绿) |
 | P4-4 ✅ | **C3 会话命名(/name)** | host-cwd-sessions | S | ✅ 已交付:tui/app.go 注册 /name <名>(- 清除)+ host-cwd-sessions names.json 索引(按会话文件独立持久,坏文件容忍)+ 状态栏/切换选择器/session current 显示名优先 | ✅ 状态栏显示名;重开/切会话名保留;无名称回退 id/主会话;全库 -race 38 包绿(pty 探针 pre-existing 除外) |
 | P4-5 | **C6 多级上下文文件加载** | host-system-prompt | M | 从 cwd 逐级向上读 AGENTS.md 并入 project instructions(近者覆盖远者);AGENTS.override.md 语义;不涉 core | 上级目录约定自动生效;层级覆盖正确;有单测 |
-| P4-6 | **T2b 多行输入 + 外部编辑器** | TUI 输入 | S–M | Shift+Enter 多行;Ctrl+G 调 $EDITOR/nano 编辑整段后回填 | 多行输入可提交;外部编辑回填;Ctrl+C 语义不回归 |
+| P4-6 ✅ | **T2b 多行输入 + 外部编辑器** | TUI 输入 | S–M | ✅ 已交付:Shift+Enter 插入换行(仅普通输入态;选择器/自由向导仍与 Enter 同语义)、↑/↓ 行间移动(列意图记忆 bash/readline 语义,单行退化原首/尾)、输入区多行渲染(续行对齐、主区自动扣减);Ctrl+G 外部编辑器整段编辑($VISUAL>$EDITOR>nano,tea.ExecProcess 自动 releaseTerminal 交还终端,保存退出回填,undo 一步;命令参数支持如 "code -w");多行普通消息可提交,命令(/ 前缀)保持单行语义——含换行拒绝保留现场提示,纯空白不发起回合;Ctrl+C 清空/双按退出语义不回归 | 多行输入可提交;外部编辑回填;↑↓ 行间光标;Ctrl+C 语义不回归(新增 multiline_test,全库 -race 绿,pre-existing pty 探针除外) |
 | P4-7 ✅ | **T3 工具结果视觉增强** | S2.2 就绪 | M | ✅ 已交付:工具三态语义色(调用 ⚙ 琥珀 / 成功 ✓ 绿 styleToolOK / 失败 ✗ error 红);展开结果 diff 轻染色(+++/---/@@ 头灰、+ 行淡绿、- 行暗红,字符无损);搜索命中/选区回落基础样式 | ✅ 工具执行状态一眼可分;失败醒目;diff 染色可读;单测 toolrow_test + 全库 -race 38 包绿(pty 探针 pre-existing 除外) |
 | P4-8 | **C2 手动 /compact [prompt]** | token-compress | M | /compact 主动触发压缩(带可选自定义指示);完成后回显摘要;超限自动压缩不变 | 手动压缩即时生效;摘要可读;不重复压缩空会话 |
 | P4-9 ✅ | **E2 语义色 token 化** | S2.2 | S–M | ✅ 已交付:tui/palette.go 新增 Token+DefaultPalette(21 token)+ fg() 唯一取色入口;render.go/markdown.go/session.go 全部色值字面量收口为 token 派生(零裸色值);palette_test.go 基线守卫(逐 token 对原 256 索引 + 无空色值) | ✅ 渲染逐字等价(全 tui 单测 SGR 精确断言绿);换肤仅改 DefaultPalette 本表 |
@@ -89,6 +89,7 @@
 > **绑 M7**:C1 会话树 UI、E1 UI 扩展 seam(Web 侧 registry 先行,M7.2 槽位概念 TUI 后接)。
 
 ## 变更记录
+- 2026-09-06:P4-6 T2b 多行输入 + 外部编辑器交付(Shift+Enter 换行/↑↓ 行间移动列意图/输入区多行渲染;Ctrl+G $VISUAL>$EDITOR>nano 整段编辑,ExecProcess 自动 releaseTerminal 保存回填 undo 一步;命令单行语义含换行拒绝保留现场、纯空白不发起回合);剩余 P4 7 项。
 - 2026-09-06:P4-4 C3 会话命名交付(/name <名> 设置、- 清除;host-cwd-sessions names.json 按会话文件独立持久、坏文件容忍;状态栏/切换选择器//session current 显示名优先,无名称回退 id);P4 首个交付项,剩余 11 项。
 - 2026-09-06:P4-9 E2 语义色 token 化交付(tui/palette.go:21 语义 token + DefaultPalette 单一事实源 + fg() 唯一入口;render/markdown/session 色值字面量清零;渲染逐字等价,换肤只改表);剩余 P4 10 项。
 - 2026-09-06:P4-3 T4 代码块高亮交付(render 层 annotateCodeFences 跨行围栏标注(仅 assistant 翻转,工具结果 ``` 不干扰)+ 块内统一代码色与单遍极简语法着色(字符串/注释/关键字)、块内禁 md token;palette 增 md-key/md-str/md-cmt 三 token;围栏/高亮/字符无损单测);剩余 P4 9 项。

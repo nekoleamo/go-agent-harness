@@ -105,7 +105,13 @@ func Render(s *State, width, height int) string {
 	if hintRows > maxHintRows {
 		hintRows = maxHintRows
 	}
-	mainH := height - 3 - hintRows
+	// 输入区可能多行(P4-6 Shift+Enter 换行):主区高度扣输入物理行数,
+	// 其余(提示区/状态栏)各占其位。单行输入时 inputRows=1,公式与历史一致。
+	inputStr := renderInputLine(s, width)
+	// 输入区多行(P4-6):在既有单行几何(height-3-hintRows)上按输入多出的物理行数
+	// 再扣主区(单行时差值 0,公式与历史完全一致,既有布局测试不回归)。
+	inputExtra := strings.Count(inputStr, "\n")
+	mainH := height - 3 - hintRows - inputExtra
 	if mainH < 1 {
 		mainH = 1
 	}
@@ -195,7 +201,7 @@ func Render(s *State, width, height int) string {
 	}
 	main := strings.Join(body, "\n")
 
-	bottom := []string{renderInputLine(s, width)}
+	bottom := []string{inputStr}
 	bottom = append(bottom, renderHintLines(s, hintItems, hintRows)...)
 	bottom = append(bottom, renderStatusLine(s, width))
 	return lipgloss.JoinVertical(lipgloss.Left, main, strings.Join(bottom, "\n"))

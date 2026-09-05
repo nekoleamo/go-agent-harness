@@ -149,6 +149,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd = m.markBar() // 滚动条显示计时重置并排 auto-hide tick(渲染按时间/hover 判定隐藏)
 	case barHideMsg:
 		// 仅触发重绘:渲染按 BarShownAt/HoverBar 判定滚动条隐藏(消息本身无状态变更)
+	case editorDoneMsg:
+		// 外部编辑器(Ctrl+G)结束:读回结果回填输入框(tea.ExecProcess 自动临时退出
+		// alt-screen 交还终端给编辑器;恢复后收到本消息)
+		m.finishExternal(msg)
 	case tea.KeyMsg:
 		cmd = m.handleKey(msg) // Ctrl+C 武装时携带超时解除命令
 	case disarmQuitMsg:
@@ -722,6 +726,9 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 				m.syncHints()
 			}
 			return nil
+		case 'g', 'G':
+			// Ctrl+G:外部编辑器编辑整段($VISUAL/$EDITOR/nano;保存退出回填输入框)
+			return m.externalEdit()
 		}
 	}
 	if m.state.Pick == nil && k.Mod&tea.ModAlt != 0 {
@@ -736,6 +743,20 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	}
 	switch k.Code {
 	case tea.KeyEnter:
+		// Shift+Enter:多行输入——普通输入态插入换行(选择器激活/自由向导中仍与 Enter
+		// 相同:应用选项/步进,不插入换行)。
+		if k.Mod&tea.ModShift != 0 && m.state.Pick == nil && m.state.Free == nil {
+			m.state.InsertNewline()
+			if strings.HasPrefix(m.state.Input, "/") {
+				// 命令单行语义:已带换行的 / 输入退出选择器与提示(提交时拒绝,见 submit)
+				m.state.Pick = nil
+				m.state.PickDismissed = true
+				m.state.Suggestions = nil
+			} else {
+				m.syncHints()
+			}
+			return nil
+		}
 		m.enter()
 	case tea.KeyBackspace:
 		m.state.PickDismissed = false
@@ -762,8 +783,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 				p.Cursor-- // 选择器:上移选项
 			}
 		} else {
-			// 输入框光标回头(历史浏览走滚轮/滚动条/PgUp,方向键交还输入编辑)
-			m.state.CursorHome()
+			// 输入框:多行内上移一行(列意图记忆);单行退化为光标回头
+			m.state.LineUp()
 		}
 	case tea.KeyDown:
 		if p := m.state.Pick; p != nil {
@@ -771,8 +792,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 				p.Cursor++ // 选择器:下移选项
 			}
 		} else {
-			// 输入框光标回尾(↑/↓ = 输入行首/尾;滚动见 KeyUp 注释)
-			m.state.CursorEnd()
+			// 输入框:多行内下移一行(列意图记忆);单行退化为光标回尾
+			m.state.LineDown()
 		}
 	case tea.KeyHome:
 		if m.state.Pick == nil {
@@ -964,15 +985,22 @@ func (m *Model) syncHints() {
 }
 
 // submit 提交输入:命令走 onCommand,否则走 onSubmit(异步回合)。
+// 多行输入(P4-6)下普通消息可含换行;命令(/ 前缀)保持单行语义——含换行拒绝(不清空,
+// 用户可修改);空/纯空白(含仅换行/空格)不发起回合。
 func (m *Model) submit() {
 	input := m.state.Input
 	if m.freeContinue(input) {
 		return // 多值自由参数逐步向导推进(命令未执行,等待下一参数输入)
 	}
+	if strings.HasPrefix(input, "/") && strings.ContainsRune(input, '\n') {
+		m.state.Lines = append(m.state.Lines, Line{Kind: "meta",
+			Text: "命令不支持多行(/ 前缀为命令;多行内容请去掉 / 作为普通消息发送)"})
+		return // 保留现场,用户可退格删换行或去掉 / 后回车
+	}
 	m.state.ClearInput()
 	m.syncHints()
-	if input == "" {
-		return
+	if strings.TrimSpace(input) == "" {
+		return // 空/纯空白:不发起回合
 	}
 	if strings.HasPrefix(input, "/") {
 		m.state.RecordCmd(input) // S1.3:斜杠命令入输入历史(不入会话 Lines)

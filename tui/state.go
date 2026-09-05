@@ -29,6 +29,12 @@ type State struct {
 	Input          string
 	Cursor         int
 	LastTool       string
+
+	// vCol + vActive 多行编辑垂直移动(LineUp/LineDown)的意图列:第一次垂直移动
+	// 捕捉当前列,行间移动保持该列(bash/readline 语义);线性编辑/内容变化置
+	// vActive=false 失效,下次垂直移动重新捕捉。零值(未激活)即安全初值。
+	vCol    int
+	vActive bool
 	Sandbox        string         // 沙箱档位显示(read-only|workspace-write|full-access)
 	PendingConfirm string         // 非空 = 有待确认的危险操作(确认弹层)
 	Suggestions    []string       // 输入 / 前缀时的命令提示(注册表过滤结果,渲染于输入行下方)
@@ -222,6 +228,7 @@ func (s *State) InsertText(text string) {
 	out = append(out, b[s.Cursor:]...)
 	s.Input = string(out)
 	s.Cursor += len(t)
+	s.vActive = false
 }
 
 // InsertRune 输入字符。
@@ -231,6 +238,7 @@ func (s *State) InsertRune(r rune) {
 	b = append(b[:s.Cursor], append([]rune{r}, b[s.Cursor:]...)...)
 	s.Input = string(b)
 	s.Cursor++
+	s.vActive = false
 }
 
 // CursorLeft/Right 光标左右移动(边界钳制)。
@@ -238,6 +246,7 @@ func (s *State) CursorLeft() {
 	if s.Cursor > 0 {
 		s.Cursor--
 	}
+	s.vActive = false
 }
 
 func (s *State) CursorRight() {
@@ -245,11 +254,18 @@ func (s *State) CursorRight() {
 	if s.Cursor < n {
 		s.Cursor++
 	}
+	s.vActive = false
 }
 
-// CursorHome/End 光标跳输入框头/尾。
-func (s *State) CursorHome() { s.Cursor = 0 }
-func (s *State) CursorEnd()  { s.Cursor = len([]rune(s.Input)) }
+// CursorHome/End 光标跳输入框头/尾(多行时为首/末行首/整段尾;行内首尾经 ↑/↓)。
+func (s *State) CursorHome() {
+	s.Cursor = 0
+	s.vActive = false
+}
+func (s *State) CursorEnd() {
+	s.Cursor = len([]rune(s.Input))
+	s.vActive = false
+}
 
 // Delete 删除光标处字符(末尾 no-op)。
 func (s *State) Delete() {
@@ -260,6 +276,7 @@ func (s *State) Delete() {
 	s.snapshotUndo('d')
 	b := []rune(s.Input)
 	s.Input = string(append(b[:s.Cursor], b[s.Cursor+1:]...))
+	s.vActive = false
 }
 
 // Backspace 删除光标前一字符。
@@ -271,6 +288,7 @@ func (s *State) Backspace() {
 	b := []rune(s.Input)
 	s.Input = string(append(b[:s.Cursor-1], b[s.Cursor:]...))
 	s.Cursor--
+	s.vActive = false
 }
 
 // ClearInput 提交/清空后复位输入区:文本与光标清空,undo/redo 栈清空(提交即
@@ -278,6 +296,7 @@ func (s *State) Backspace() {
 func (s *State) ClearInput() {
 	s.Input = ""
 	s.Cursor = 0
+	s.vActive = false
 	s.undo = nil
 	s.redo = nil
 	s.histActive = false
@@ -368,6 +387,7 @@ func (s *State) HistNext() bool {
 func (s *State) setFromHist(t string) {
 	s.Input = t
 	s.Cursor = len([]rune(t))
+	s.vActive = false
 	s.PickDismissed = true
 }
 
@@ -402,6 +422,7 @@ func (s *State) Undo() bool {
 	s.undo = s.undo[:len(s.undo)-1]
 	s.Input = last.text
 	s.Cursor = last.cur
+	s.vActive = false
 	s.PickDismissed = true
 	return true
 }
@@ -416,6 +437,7 @@ func (s *State) Redo() bool {
 	s.pushUndo(s.Input, s.Cursor)
 	s.Input = last.text
 	s.Cursor = last.cur
+	s.vActive = false
 	s.PickDismissed = true
 	return true
 }
@@ -429,6 +451,7 @@ func (s *State) KillToEnd() bool {
 	s.snapshotUndo('k')
 	r := []rune(s.Input)
 	s.Input = string(r[:s.Cursor])
+	s.vActive = false
 	return true
 }
 
@@ -441,6 +464,7 @@ func (s *State) KillToStart() bool {
 	r := []rune(s.Input)
 	s.Input = string(r[s.Cursor:])
 	s.Cursor = 0
+	s.vActive = false
 	return true
 }
 
@@ -459,6 +483,7 @@ func (s *State) WordLeft() {
 		i--
 	}
 	s.Cursor = i
+	s.vActive = false
 }
 
 // WordRight Alt+→:光标移动到下一词词首——当前在词中先走到词尾,
@@ -479,6 +504,7 @@ func (s *State) WordRight() {
 		i++ // 跨过空白
 	}
 	s.Cursor = i
+	s.vActive = false
 }
 
 // toolCallText 工具调用展示行。
