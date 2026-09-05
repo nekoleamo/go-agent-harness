@@ -40,28 +40,72 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 			}
 		}
 	}
-	s := &Service{}
-	if cfg.global {
+	s := &Service{cfg: cfg}
+	s.loadLocked() // 启动读取(含多级上下文 P4-5)
+	if err := c.Provide("ctx.systemPrompt", s); err != nil {
+		return nil, err
+	}
+	return func() {}, nil
+}
+
+// loadLocked 按配置重读指令文件(启动与 /reload 共用;调用方持有或不持锁——Start 未发布无竞争)。
+func (s *Service) loadLocked() {
+	if s.cfg.global {
 		if raw, err := os.ReadFile(globalInstructionsPath()); err == nil {
 			s.globalInstr = string(raw)
 		}
 	}
-	if cfg.project {
+	if s.cfg.project {
 		// 多级上下文(P4-5):从 cwd 逐级向上收集 AGENTS.md,近者覆盖远者;
 		// 同级 AGENTS.override.md 存在时替换该级 AGENTS.md。
 		if wd, err := os.Getwd(); err == nil {
 			s.projectLevels = projectLevelsWalk(wd)
 		}
 	}
-	for _, pth := range cfg.extra {
+	for _, pth := range s.cfg.extra {
 		if raw, err := os.ReadFile(pth); err == nil {
 			s.extraInstr = append(s.extraInstr, string(raw))
 		}
 	}
-	if err := c.Provide("ctx.systemPrompt", s); err != nil {
-		return nil, err
+}
+
+// ReloadInstructions 实现 sdk.ReloadableInstructions(/reload):按配置重读指令文件;
+// 缺失文件按无处理(NotFound = 清除旧值);其它读取错误保留旧值并返回(错误回滚)。
+func (s *Service) ReloadInstructions() error {
+	gi := s.globalInstr
+	lv := s.projectLevels
+	ex := s.extraInstr
+	if s.cfg.global {
+		raw, err := os.ReadFile(globalInstructionsPath())
+		if err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("重载全局指令失败(旧值保留): %w", err)
+		}
+		if err == nil {
+			gi = string(raw)
+		} else {
+			gi = ""
+		}
 	}
-	return func() {}, nil
+	if s.cfg.project {
+		wd, err := os.Getwd()
+		if err == nil {
+			lv = projectLevelsWalk(wd)
+		}
+	}
+	ex = nil
+	for _, p := range s.cfg.extra {
+		raw, err := os.ReadFile(p)
+		if err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("重载附加指令失败(旧值保留): %w", err)
+		}
+		if err == nil {
+			ex = append(ex, string(raw))
+		}
+	}
+	s.mu.Lock()
+	s.globalInstr, s.projectLevels, s.extraInstr = gi, lv, ex
+	s.mu.Unlock()
+	return nil
 }
 
 type instrCfg struct {
@@ -121,6 +165,7 @@ func projectLevelsWalk(wd string) []projectLevel {
 // Service 实现 sdk.SystemPromptService。
 type Service struct {
 	mu            sync.RWMutex
+	cfg           instrCfg // 启动配置(/reload 重读依据)
 	sections      []sdk.SystemPromptSection
 	globalInstr   string
 	projectInstr  string // 单级回退(测试构造/旧路径);多级经 projectLevels

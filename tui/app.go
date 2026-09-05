@@ -405,6 +405,23 @@ func (a *App) AddWidget(id string, text func() string) {
 }
 
 // cmdWidgets /widgets on|off:输入区上方 widget 区开关(无参默认开启)。
+// cmdReload /reload:热重载指令文件(全局/多级项目/附加 AGENTS.md)。
+// 外部编辑无需重启;读取失败保留旧值(错误回滚)并显式提示。
+func (a *App) cmdReload(_ []string) (string, error) {
+	var sp sdk.SystemPromptService
+	if err := a.c.Inject("ctx.systemPrompt", &sp); err != nil {
+		return "", errString("ctx.systemPrompt 未装配")
+	}
+	rl, ok := sp.(sdk.ReloadableInstructions)
+	if !ok {
+		return "", errString("指令重载不可用: SystemPromptService 未实现 ReloadableInstructions")
+	}
+	if err := rl.ReloadInstructions(); err != nil {
+		return "", errString("/reload 失败(旧值保留): " + err.Error())
+	}
+	return "已热重载指令文件(全局/项目层级/附加;下次回合的 system prompt 生效)", nil
+}
+
 func (a *App) cmdWidgets(args []string) (string, error) {
 	if len(args) > 0 && args[0] == "off" {
 		a.model.state.WidgetOn = false
@@ -1083,6 +1100,7 @@ func (a *App) registerInternalCommands() {
 		{Name: "export", Usage: "/export [path]", Desc: "导出会话 jsonl", Run: a.cmdExport},
 		{Name: "compact", Usage: "/compact [指示词]", Desc: "手动滚动摘要压缩(立即折叠旧历史;指示词仅作记录)", Run: a.cmdCompact},
 		{Name: "widgets", Usage: "/widgets on|off", Desc: "输入区上方 widget 区开关(宿主注册的动态信息行)", Run: a.cmdWidgets},
+		{Name: "reload", Usage: "/reload", Desc: "热重载指令文件(AGENTS.md 层级/全局/附加;外部编辑即生效)", Run: a.cmdReload},
 		{Name: "search", Usage: "/search <词>", Desc: "会话内搜索(命中高亮,n/N/F3 循环跳转,Esc 退出)",
 			// 自由级断点:选中后光标停留输入框提示继续输入,输入词回车才执行——
 			// 否则选中即提交(无参报错),再输入的文字会误走普通消息发给大模型。

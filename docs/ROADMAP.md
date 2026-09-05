@@ -67,7 +67,7 @@
 
 ## P4 体验改进(对齐 pi 基线;来源 docs/PI_COMPARISON.md)
 
-> 状态:P4-1(消息队列)、P4-2(@文件引用+Tab 补全)、P4-3(代码块高亮)、P4-4(会话命名)、P4-5(C6 多级上下文)、P4-6(多行输入/外部编辑器)、P4-7(工具视觉增强)、P4-8(/compact 手动压缩)、P4-9(语义色 token 化)、P4-12(widget 槽位)✅ 已交付,其余 ⏳ 未实施。排期原则:用户可感 > 依赖 M7 > 成本。Agent 能力面无缺口
+> 状态:P4-1(消息队列)、P4-2(@文件引用+Tab 补全)、P4-3(代码块高亮)、P4-4(会话命名)、P4-5(C6 多级上下文)、P4-6(多行输入/外部编辑器)、P4-7(工具视觉增强)、P4-8(/compact 手动压缩)、P4-9(语义色 token 化)、P4-11(/reload 热更)、P4-12(widget 槽位)✅ 已交付,其余 ⏳ 未实施(P4-10 C1 会话树)。排期原则:用户可感 > 依赖 M7 > 成本。Agent 能力面无缺口
 > (pi 明示不内置的 MCP/subagent/权限/plan/todo/后台 bash,gah 均已交付),本阶段只补交互与会话体验。
 
 | # | 功能 | 依赖 | 工作量 | 切片/要点 | 验收 |
@@ -82,13 +82,14 @@
 | P4-8 ✅ | **C2 手动 /compact [prompt]** | token-compress | M | ✅ 已交付:sdk.CompactService 可选接口(host-session-log Log 实现,类型断言发现,不改 ctx.sessions);/compact 立即以注册预算折叠滚动摘要(不等投影超限,自动压缩不变),回读累计摘要回显(截断单行);无可折叠/压缩器未注册/预算关闭均明确提示不静默;prompt 指示词仅记录(token-compress 为抽取式引擎,不消费其内容);空会话不重复压缩 | 手动压缩即时生效;摘要可读;错误显式;短会话/关闭预算有明确提示(新增 compact_test 用真实 Engine,-race 全绿) |
 | P4-9 ✅ | **E2 语义色 token 化** | S2.2 | S–M | ✅ 已交付:tui/palette.go 新增 Token+DefaultPalette(21 token)+ fg() 唯一取色入口;render.go/markdown.go/session.go 全部色值字面量收口为 token 派生(零裸色值);palette_test.go 基线守卫(逐 token 对原 256 索引 + 无空色值) | ✅ 渲染逐字等价(全 tui 单测 SGR 精确断言绿);换肤仅改 DefaultPalette 本表 |
 | P4-10 | **C1 会话树/分支** | ⚠️ M7.2 后(或独立 TUI 树) | L | /tree 跳任意点续聊;/fork 从旧消息派生;/clone 复制当前分支;分支摘要;基于 sessionlog 树索引 | 回退/多方案并行;树导航 UI;弃支可摘要 |
-| P4-11 | **E4 配置热更(/reload 等效)** | 独立 | M | 运行期重载 keybinding/主题/上下文文件/命令(外部插件热重载已有) | 免重启生效;错误回滚 |
+| P4-11 ✅ | **E4 配置热更(/reload 等效)** | 独立 | M | ✅ 已交付:sdk.ReloadableInstructions 可选接口(断言发现)+ host-system-prompt ReloadInstructions(按配置文件重读全局/多级项目/附加 AGENTS.md;NotFound=清除旧值,其它读取失败保留旧值返回错误=错误回滚);TUI /reload 命令(显式提示失败保留旧值);下次回合 SystemPrompt 生效,免重启。外部进程插件热重载既有(host-bridge watch)。键位/主题无用户配置文件(硬编码+DefaultPalette 单一事实源,无重载对象)已文档注明 | 外部编辑 AGENTS.md 后 /reload 免重启生效;失败保留旧值显式提示(新增 reload_test,-race 绿) |
 | P4-12 ✅ | **T5 输入区 widget 槽位** | S2.2 | S–M | ✅ 已交付:State.Widgets+WidgetOn;App.AddWidget(id,text func) 宿主注册(每次渲染求值,空/nil 跳过,单行化截断;渲染帧经 onWidgets 拉取);输入行上方 ◇ 前缀渲染,主区高度自动扣减(不挤输入);/widgets on|off 开关(新增 TokWidget 语义色)| widget 展示;不挤输入;可开关(新增 widgets_test,-race 绿) |
 
 > **明确不做/远期**(已决策):S3.1 scrollback 双形态(方案 A)、图片富媒体、全量键位自定义。
 > **绑 M7**:C1 会话树 UI、E1 UI 扩展 seam(Web 侧 registry 先行,M7.2 槽位概念 TUI 后接)。
 
 ## 变更记录
+- 2026-09-06:P4-11 E4 配置热更交付(sdk.ReloadableInstructions 断言 + host-system-prompt ReloadInstructions 重读全局/层级/附加指令文件,NotFound=清除、其它失败保留旧值;/reload 命令免重启生效);剩余 P4 1 项。
 - 2026-09-06:P4-12 T5 输入区 widget 槽位交付(State.Widgets+WidgetOn / App.AddWidget 宿主注册渲染帧求值 / 输入行上方渲染主区扣减 / /widgets on|off / TokWidget 语义色);剩余 P4 2 项。
 - 2026-09-06:P4-5 C6 多级上下文文件加载交付(从 cwd 逐级向上收集 AGENTS.md 近者覆盖远者,来源标注;AGENTS.override.md 同级替换;缺失跳过);剩余 P4 3 项。
 - 2026-09-06:M12 多 provider 并存交付(独立需求:多 provider 配置可并存、/model 聚合所有 provider 模型——存储 provider.yaml v2{active,providers[]}+旧格式迁移;sdk.MultiProviderService 可选接口+OpenAIFetchModels;host-llm Add/SetActive/ListAllModels(活跃走适配器缓存,非活跃直拉,TTP 缓存,单条失败不整体崩);TUI /provider show|add|use|set|unset|clear 与 /model 聚合(选中自动切所属 provider,手动 /model 向后兼容),见 DESIGN §14.1 M12)。

@@ -97,6 +97,12 @@ type SessionCompressor interface {
 	Fold(evs []SessionEvent, watermark int, budget int, summary func(string)) int
 }
 
+// ReloadableInstructions 指令文件热重载(/reload 等效;可选实现——host-system-prompt 实现)。
+// 重读全局/多级项目/附加指令文件,失败保留旧值(错误回滚,免重启生效)。
+type ReloadableInstructions interface {
+	ReloadInstructions() error
+}
+
 // CompactService 手动滚动压缩服务(/compact;可选实现——host-session-log 实现,
 // 未实现时 TUI 命令提示不可用)。不改变 ctx.sessions 接口(类型断言发现)。
 type CompactService interface {
