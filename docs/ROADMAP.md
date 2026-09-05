@@ -10,7 +10,7 @@
 | 阶段 | 窗口 | 内容 | 里程碑判定 |
 |---|---|---|---|
 | P0 近期 ✅ | 已完成 | TUI S1.5/S1.1/S1.2/S1.3 + M8-T1 + M10 + 6a /workspace | ✅ 全部交付:划选/搜索/滚动条/输入增强;todo/memory 工具;工作区切换 |
-| P1 中期(当前) | 下一迭代 | TUI S1.4/S2.1/S2.2 + M9(M9.1)+ M11-T1 | Markdown 可读、渲染组件化;subagent 委派 one-shot;auto-plan 输出+确认门 |
+| P1 中期 ✅(已完成) | 已完成 | TUI S1.4/S2.1 + M9.1 + M11-T1 | ✅ 已交付:Markdown 轻渲染(S1.4);消息分组/工具行去重(S2.1);subagent one-shot 委派(M9.1);auto-plan 规划+确认门(M11-T1) |
 | P2 后期(6 周–3月) | 三~四期 | TUI S3.1/S3.2 + M9.2 + M11-T2 | 主屏 scrollback 模式;subagent 控制组/背景;plan→todo 承接 |
 | P3 远期(季度+) | 独立里程碑 | M7(M7.1 Web UI)+ M7.2 槽位 + M7.3 WS + M8-T2(展示联动) | Web UI 全能力闭环;槽位插件化;todo 面板 |
 
@@ -32,11 +32,11 @@
 
 | # | 功能 | 依赖 | 工作量 | 切片/要点 | 验收 |
 |---|---|---|---|---|---|
-| 7 | **TUI S1.4 Markdown 轻渲染** | 渲染文本层;建议在 S2.2 前以最小侵入做 | M | 粗体/行内 code/标题/列表缩进;先折行后按 token 着色 | 常见回复可读;无 ANSI 泄漏 |
-| 8 | **TUI S2.1 消息分组/工具行折叠** | 独立 | S | user/assistant 细分隔线;⚙ 行默认折叠可展开(折叠态纯展示) | 多轮结构一眼可分;工具调用不占屏 |
-| 9 | **TUI S2.2 渲染组件化** | ⚠️ P1 内 TUI 各项完成后再做(重构基座) | L | render.go 拆:会话流引擎/输入/状态栏/提示/markdown 样式层;各持 state 子视图 | 每模块单测;Render 输出基线一致 |
-| 10 | **M9 tool-subagent M9.1**(one-shot) | 引擎 host-fanout 已存在 | M | 工具面+GAH_CB_ADDR 回调 fanout 桥+one-shot 委派;extplugins 独立入口 | 模型可委派子 agent 并取回结果;崩溃隔离 |
-| 11 | **M11 tool-auto-plan T1**(规划输出+确认门) | 独立(与 M8 分工) | M | 探索→结构化规划→等确认(确认前零副作用工具);enable_rule 开关;catalogue+bundle | 规划落盘跨会话可取;确认门生效 |
+| 7 ✅ | **TUI S1.4 Markdown 轻渲染** | 渲染文本层;建议在 S2.2 前以最小侵入做 | M | ✅ 已交付(tui/markdown.go):粗体/行内 code/标题/列表缩进/分隔线;折行后逐物理行 token 着色;每段独立 SGR(字符无损、宽度不变);assistant 行无搜索/选区时启用 | ✅ 单测 12 项 + 全库 -race 绿 |
+| 8 ✅ | **TUI S2.1 消息分组/工具行去重** | 独立 | S | ✅ 已交付:工具行双写去重(EventAssistantMessage 不再铺 ToolCalls 行,仅 EventToolCall+Result 单写)+ 重放跨轮细分隔线(turnDivider);⚙ 折叠可展开交互归 S2.2 组件化后接入 | ✅ 多轮结构可分;工具行不翻倍占屏 |
+| 9 ⏳ | **TUI S2.2 渲染组件化** | ⚠️ P1 内 TUI 各项完成后再做(重构基座) | L | render.go 拆:会话流引擎/输入/状态栏/提示/markdown 样式层;各持 state 子视图 | 每模块单测;Render 输出基线一致 |
+| 10 ✅ | **M9 tool-subagent M9.1**(one-shot) | 引擎 host-fanout 已存在 | M | ✅ 已交付:plugins/tool/tool-subagent(subagent delegate)+ extplugins/tool-subagent(GAH_CB_ADDR 回调 fanout.agent)+ gen 矩阵重建 | ✅ 模型可委派子 agent 取回结果(TestExternalSubagent);崩溃隔离 |
+| 11 ✅ | **M11 tool-auto-plan T1**(规划输出+确认门) | 独立(与 M8 分工) | M | ✅ 已交付:plugins/tool/tool-auto-plan(auto_plan 6 action + 规则注入 enable_rule,进程内装配同 host-skills,不进 tool-basic) | ✅ 规划落盘跨会话可取;确认前零副作用(规则注入) |
 
 ## P2 后期(6 周–3 月:形态演进、高级交互)
 

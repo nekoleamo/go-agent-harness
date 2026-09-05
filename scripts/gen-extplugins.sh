@@ -12,7 +12,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 EMBED_DIR=internal/embed/extplugins
 TARGETS="darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64"
-NAMES="tool-basic tool-workflow tool-mcp"
+NAMES="tool-basic tool-workflow tool-mcp tool-subagent"
 
 # assert_arch <bin> <expect-os> <expect-arch>:build 后(压缩前)校验产物头部魔数
 # 与架构字段 == 目标平台(P4 漂移护栏:脚本/工具链改动漏平台立即失败)。

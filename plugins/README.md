@@ -35,6 +35,8 @@ plugins/
 | policy | policy-sandbox | 沙箱三档(ctx.sandbox) | — |
 | policy | policy-approval | 危险操作审批(TUI y/n) | — |
 | tool | tool-shell / tool-files / tool-web / tool-workflow / tool-memory / tool-todo | 工具实现(默认关闭,已外部化);tool-web 含 web_fetch/web_search(M6.14,默认 Exa,data.provider 可换);tool-memory 含 memory(M10,remember/list/recall/forget);tool-todo 含 todo(M8,4 状态机 + blockedBy) | ctx.tools(workflow 另需 ctx.fanout) |
+| tool | tool-auto-plan | 规划模式(M11):auto_plan(create/get/list/step/confirm/complete)+ 规则注入(enable_rule,进程内装配同 host-skills,需 ctx.systemPrompt) | ctx.tools + ctx.systemPrompt |
+| tool | tool-subagent | 子代理委派(M9.1):subagent delegate 单 action;extplugins/tool-subagent 独立进程(回调宿主 ctx.fanout) | ctx.tools + ctx.fanout |
 | mcp | mcp-bridge / mcp-server | MCP 客户端桥 / MCP server 端 | ctx.tools |
 | ui | ui-tui-app | TUI 挂载 | ctx.agentLoop/ctx.llm |
 

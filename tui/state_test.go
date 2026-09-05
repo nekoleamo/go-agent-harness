@@ -186,6 +186,64 @@ func TestApplyReplaySkipsTurnEnd(t *testing.T) {
 	}
 }
 
+// TestAssistantToolCallsNoDup assistant 带工具声明后不再双写工具行(工具行由 EventToolCall 单发)。
+func TestAssistantToolCallsNoDup(t *testing.T) {
+	s := &State{}
+	s.ApplySessionEvent(&sdk.SessionEvent{Kind: sdk.EventUserMessage, Payload: sdk.UserMessage{Content: "hi"}})
+	s.ApplySessionEvent(&sdk.SessionEvent{
+		Kind: sdk.EventAssistantMessage,
+		Payload: sdk.AssistantMessage{Content: "", ToolCalls: []sdk.ToolCall{
+			{ID: "c1", Name: "shell", Arguments: `{"command":"ls"}`},
+		}},
+	})
+	s.ApplySessionEvent(&sdk.SessionEvent{Kind: sdk.EventToolCall, Payload: sdk.ToolCallEvent{ID: "c1", Name: "shell", Arguments: `{"command":"ls"}`}})
+	s.ApplySessionEvent(&sdk.SessionEvent{Kind: sdk.EventToolResult, Payload: sdk.ToolResultEvent{CallID: "c1", Name: "shell", Content: "ok"}})
+	// 工具行:EventToolCall 1 条 + 结果 1 条,无 assistant 预铺重复行
+	toolRows := 0
+	for _, l := range s.Lines {
+		if l.Kind == "tool" {
+			toolRows++
+		}
+	}
+	if toolRows != 2 {
+		t.Fatalf("工具行应仅 EventToolCall+Result 两条(无 assistant 双写): %d 行 → %+v", toolRows, s.Lines)
+	}
+}
+
+// TestReplayTurnDivider 重放跨轮插细分隔线(轮界可分);首轮/同轮不插。
+func TestReplayTurnDivider(t *testing.T) {
+	s := &State{}
+	s.ApplyReplay(&sdk.SessionEvent{Kind: sdk.EventUserMessage, Payload: sdk.UserMessage{Content: "q1"}})
+	s.ApplyReplay(&sdk.SessionEvent{Kind: sdk.EventTurnEnd, Payload: "done"})
+	s.ApplyReplay(&sdk.SessionEvent{Kind: sdk.EventAssistantMessage, Payload: sdk.AssistantMessage{Content: "a1"}})
+	s.ApplyReplay(&sdk.SessionEvent{Kind: sdk.EventUserMessage, Payload: sdk.UserMessage{Content: "q2"}})
+	s.ApplyReplay(&sdk.SessionEvent{Kind: sdk.EventTurnEnd, Payload: "done"})
+	s.ApplyReplay(&sdk.SessionEvent{Kind: sdk.EventAssistantMessage, Payload: sdk.AssistantMessage{Content: "a2"}})
+	// 期望:user(q1) assistant(a1) [分隔] user(q2) assistant(a2)
+	hasDivider := false
+	for _, l := range s.Lines {
+		if l.Kind == "meta" && strings.Contains(l.Text, "─") {
+			hasDivider = true
+		}
+	}
+	if !hasDivider {
+		t.Fatalf("跨轮应插细分隔线: %+v", s.Lines)
+	}
+	// 总数:q1 a1 [分隔] q2 a2 = 5 行(不含轮次结束)
+	if len(s.Lines) != 5 {
+		t.Fatalf("行数应为 5(q1 a1 ─ q2 a2), got %d: %+v", len(s.Lines), s.Lines)
+	}
+	if s.Lines[2].Kind != "meta" || s.Lines[2].Text != turnDivider {
+		t.Fatalf("分隔线应位于第 3 行: %+v", s.Lines[2])
+	}
+	// 不出现全宽“轮次结束”meta
+	for _, l := range s.Lines {
+		if strings.Contains(l.Text, "轮次结束") {
+			t.Fatal("重放不应出现全宽轮次结束行")
+		}
+	}
+}
+
 // TestScrollMetrics 滚动条度量:无需滚动全窗口/滑块比例/沉底/极限顶部。
 func TestScrollMetrics(t *testing.T) {
 	// 无需滚动:窗口=总行

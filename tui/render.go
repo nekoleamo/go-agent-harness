@@ -290,7 +290,14 @@ const (
 
 // renderSessionRow 渲染会话流物理行:kind 基础样式 + 搜索命中整行背景(当前命中更亮)
 // + 鼠标选区反色段(命中/选区可同时存在)。
+// S1.4 Markdown 轻渲染:assistant 行无搜索命中/无选区时走 mdAnnotateRow(token 分段着色);
+// 命中/选区叠加时回落纯文本渲染(色文本不含在反色/背景几何内,轻渲染以可交互优先)。
 func renderSessionRow(p physRow, s *State, gRow int) string {
+	if p.kind == "assistant" && !s.searchHitLine(p.lineIdx) && !s.SelActive {
+		if styled := mdAnnotateRow(p.text, styleAsst.GetForeground()); styled != "" {
+			return styled
+		}
+	}
 	st := styleForKind(p.kind)
 	if s.searchHitLine(p.lineIdx) {
 		if p.lineIdx == s.searchCurLine() {

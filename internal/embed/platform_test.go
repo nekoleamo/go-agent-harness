@@ -65,7 +65,7 @@ func platformDirName() string {
 	return extPluginDir[strings.LastIndex(extPluginDir, "/")+1:]
 }
 
-// TestExtPluginsMatchPlatform P4 回归:本平台 embed 产物(恰好 3 个)解压后
+// TestExtPluginsMatchPlatform P4 回归:本平台 embed 产物解压后
 // 头部标识的 OS/arch 必须等于构建平台;其他平台产物不得混入(交叉编译漂移护栏)。
 func TestExtPluginsMatchPlatform(t *testing.T) {
 	entries, err := fs.ReadDir(extPlugins, extPluginDir)
@@ -78,8 +78,9 @@ func TestExtPluginsMatchPlatform(t *testing.T) {
 			gz = append(gz, e)
 		}
 	}
-	if len(gz) != 3 {
-		t.Fatalf("本平台应恰好 3 个插件产物,got %d(%v)", len(gz), gz)
+	// 期望集 = gen-extplugins.sh NAMES(darwin/linux/windows 各 4 个产物)。
+	if len(gz) != 4 {
+		t.Fatalf("本平台应恰好 4 个插件产物,got %d(%v)", len(gz), gz)
 	}
 	if platformDirName() != runtime.GOOS+"-"+runtime.GOARCH {
 		t.Fatalf("embed 目录 %s 与构建平台 %s/%s 不符(build-tag 漂移)", platformDirName(), runtime.GOOS, runtime.GOARCH)

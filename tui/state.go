@@ -105,11 +105,9 @@ func (s *State) ApplySessionEvent(ev *sdk.SessionEvent) {
 	case sdk.EventAssistantMessage:
 		if a, ok := ev.Payload.(sdk.AssistantMessage); ok {
 			s.finishStreaming(a.Content)
-			if len(a.ToolCalls) > 0 {
-				for _, tc := range a.ToolCalls {
-					s.Lines = append(s.Lines, Line{Kind: "tool", Text: toolCallText(tc)})
-				}
-			}
+			// 工具行不在 assistant 消息处铺(避免与随后的 EventToolCall 双写重复):
+			// 模型声明调用后由 agent-loop 逐条发 EventToolCall/EventToolResult,
+			// 工具行只在那两处生成(S2.1 去重)。a.ToolCalls 仅保留于会话日志。
 		}
 	case sdk.EventToolCall:
 		if tc, ok := ev.Payload.(sdk.ToolCallEvent); ok {
@@ -474,14 +472,24 @@ func toolCallText(tc sdk.ToolCall) string {
 	return "⚙ " + tc.Name + " " + args
 }
 
-// ApplyReplay 重放历史事件到展示层(/session switch 切换会话后):跳过 turn/end 的“轮次结束”分隔行——
-// 重放几十轮历史会追加数十条 meta 噪音;分隔行仅实时回合有感(分隔感)。
+// ApplyReplay 重放历史事件到展示层(/session switch 切换会话后)。
+// 多轮结构:跨轮时插一条细分隔线(轻量 meta,替代全宽“轮次结束”行——重放几十轮
+// 若每轮都铺全宽分隔仍显吵;细线只标轮界,实时回合保留原“轮次结束”分隔感)。
 func (s *State) ApplyReplay(ev *sdk.SessionEvent) {
 	if ev.Kind == sdk.EventTurnEnd {
 		return
 	}
+	// 新一轮 user 消息且当前已有内容且末行不是分隔线 → 插细分隔线(轮界)。
+	if ev.Kind == sdk.EventUserMessage && len(s.Lines) > 0 {
+		if last := s.Lines[len(s.Lines)-1]; last.Kind != "meta" {
+			s.Lines = append(s.Lines, Line{Kind: "meta", Text: turnDivider})
+		}
+	}
 	s.ApplySessionEvent(ev)
 }
+
+// turnDivider 轮次细分隔线(弱化 meta;跨轮结构一眼可分)。
+const turnDivider = "· ─ ─ ─ ·"
 
 // visible 滚动窗口:按 ScrollOffset 取最近 n 行(offset=0 跟随最新;>0 上滚看历史),钳制。
 func (s *State) visible(n int) []Line {

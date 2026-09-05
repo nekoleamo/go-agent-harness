@@ -1,4 +1,4 @@
-# seed-version: 6 # 样板版本:新增 base 能力条目(host-* 等)时 +1,老用户自动升级(备份后覆盖)
+# seed-version: 8 # 样板版本:新增 base 能力条目(host-* 等)时 +1,老用户自动升级(备份后覆盖)
 # base bundle:对齐 dsh-base,一切功能皆插件的共享第一层。
 # M1 阶段条目仅记录意图;对应插件工厂在 M2 base bundle 落地。
 name: base
@@ -55,6 +55,14 @@ entries:
     enabled: false # M10 外部化:memory(remember/list/recall/forget)由 host-bridge 加载 extplugins/tool-basic;内嵌双轨同 tool-files
   - id: tool-todo
     enabled: false # M8 外部化:todo(create/start/complete/pend/delete/update/list/get)由 host-bridge 加载 extplugins/tool-basic;内嵌双轨同 tool-files
+  - id: tool-auto-plan
+    # M11:auto_plan(规划模式)与 todo 同属工具,但需进程内规则注入(ctx.systemPrompt AddSection,
+    # 外部进程无法注入)→ 装配进宿主(host-skills 同款),不进 tool-basic。
+    # data.enable_rule:规则注入开关(默认开;与 AGENTS.md 全局“操作确认”规则重复冗余时可关)
+    data:
+      enable_rule: true
+  - id: tool-subagent
+    enabled: false # M9.1 外部化:内嵌实现停用,由 host-bridge 加载 extplugins/tool-subagent(独立进程,回调宿主 fanout)
   - id: tool-workflow
     enabled: false # M6.8 外部化:内嵌实现停用,由 host-bridge 加载 extplugins/tool-workflow(宿主回调通道驱动)
 

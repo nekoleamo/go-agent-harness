@@ -199,6 +199,43 @@ func TestExternalMCPBridge(t *testing.T) {
 	}
 }
 
+// TestExternalSubagent 外部 tool-subagent:子代理委派工具在独立进程注册(崩溃隔离),
+// delegate 经宿主回调通道请求 fanout.agent——子代理(独立上下文)由 mock llm 驱动返回结论。
+func TestExternalSubagent(t *testing.T) {
+	extDir := t.TempDir()
+	releaseExt(t, extDir, "tool-subagent")
+	c, _ := buildExternalEnv(t, extDir)
+
+	var tools sdk.ToolRegistry
+	if err := c.Inject("ctx.tools", &tools); err != nil {
+		t.Fatal(err)
+	}
+	def, ok := tools.Get("subagent")
+	if !ok {
+		var names []string
+		for _, d := range tools.List() {
+			names = append(names, d.Name)
+		}
+		t.Fatalf("subagent 应经 tool-subagent 注册,实际: %v", names)
+	}
+	if !strings.Contains(def.Description, "隔离") {
+		t.Fatalf("定义应含上下文隔离语义: %+v", def)
+	}
+	res, err := tools.Execute(context.Background(), "subagent", mustJSON2(t, map[string]any{
+		"action": "delegate",
+		"task":   "独立评审这段设计",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Error != "" {
+		t.Fatalf("delegate 应成功(子代理经 mock 回结论): %s", res.Error)
+	}
+	if !strings.Contains(res.Content, "result") {
+		t.Fatalf("delegate 应回传子代理结论: %s", res.Content)
+	}
+}
+
 // runGoBuild 编译测试辅助(相对 tests/ 包目录)。
 func runGoBuild(t *testing.T, out, pkg string) error {
 	t.Helper()

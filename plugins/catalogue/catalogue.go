@@ -24,9 +24,11 @@ import (
 	"github.com/nekoleamo/go-agent-harness/plugins/policy/policy-approval"
 	"github.com/nekoleamo/go-agent-harness/plugins/policy/policy-sandbox"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/token-compress"
+	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-auto-plan"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-files"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-memory"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-shell"
+	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-subagent"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-todo"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-web"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-workflow"
@@ -82,6 +84,9 @@ var All = map[string]Def{
 	"tool-shell": {Factory: func() sdk.Plugin { return &toolshell.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "tool-shell", Type: "tool", APIVersion: ">=1.0,<2.0",
 		Requires: []string{"ctx.tools"}}, Bundle: "base"},
+	"tool-subagent": {Factory: func() sdk.Plugin { return &toolsubagent.Plugin{} }, Manifest: &sdk.Manifest{
+		ID: "tool-subagent", Type: "tool", APIVersion: ">=1.0,<2.0",
+		Requires: []string{"ctx.tools", "ctx.fanout"}}, Bundle: "base"},
 	"tool-files": {Factory: func() sdk.Plugin { return &toolfiles.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "tool-files", Type: "tool", APIVersion: ">=1.0,<2.0",
 		Requires: []string{"ctx.tools"}}, Bundle: "base"},
@@ -91,6 +96,9 @@ var All = map[string]Def{
 	"tool-memory": {Factory: func() sdk.Plugin { return &toolmemory.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "tool-memory", Type: "tool", APIVersion: ">=1.0,<2.0",
 		Requires: []string{"ctx.tools"}}, Bundle: "base"},
+	"tool-auto-plan": {Factory: func() sdk.Plugin { return &toolautoplan.Plugin{} }, Manifest: &sdk.Manifest{
+		ID: "tool-auto-plan", Type: "tool", APIVersion: ">=1.0,<2.0",
+		Requires: []string{"ctx.tools", "ctx.systemPrompt"}}, Bundle: "base"},
 	"tool-todo": {Factory: func() sdk.Plugin { return &tooltodo.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "tool-todo", Type: "tool", APIVersion: ">=1.0,<2.0",
 		Requires: []string{"ctx.tools"}}, Bundle: "base"},
