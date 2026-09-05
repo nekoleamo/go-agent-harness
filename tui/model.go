@@ -739,6 +739,9 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		m.enter()
 	case tea.KeyBackspace:
 		m.state.PickDismissed = false
+		if m.pickFilterBackspace() {
+			return nil // 参数级选择态:退格只删过滤词(不动命令文本)
+		}
 		m.state.Backspace()
 		m.syncHints()
 	case tea.KeyDelete:
@@ -802,7 +805,9 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			m.onThinkingCycle(1)
 		}
 	case tea.KeyEscape:
-		if m.state.Pick != nil {
+		if m.pickFilterEsc() {
+			// 参数级过滤词非空:Esc 先清过滤恢复全量(再按才退出选择)
+		} else if m.state.Pick != nil {
 			m.state.Pick = nil
 			m.state.PickDismissed = true // 退出选择:保留文本,回普通输入
 		} else if m.state.SearchQuery != "" {
@@ -825,6 +830,11 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			// 搜索激活且输入框为空:n/N 跳下一命中(不输入字符)
 			if (k.Text == "n" || k.Text == "N") && m.state.SearchQuery != "" && m.state.Input == "" {
 				m.searchJump(true)
+				return nil
+			}
+			// 参数级选择器激活:直接打字 = 即时过滤选项(不写入命令文本)
+			if p := m.state.Pick; p != nil && p.Level > 0 {
+				m.pickFilterType(k.Text)
 				return nil
 			}
 			m.state.PickDismissed = false
@@ -857,6 +867,9 @@ func (m *Model) enter() {
 		m.submit()
 		return
 	}
+	if len(m.state.Pick.Items) == 0 {
+		return // 过滤无匹配:回车不提交(防误执行当前命令文本)
+	}
 	res := AdvanceEnter(m.state.Input, m.state.Pick, m.levels)
 	m.state.Input = res.Input
 	m.state.Cursor = len([]rune(res.Input))
@@ -869,6 +882,56 @@ func (m *Model) enter() {
 	// (选择确认是用户主动操作,非输入变化;渲染直接用 Pick.Items/Hints)。
 	if res.Commit {
 		m.submit()
+	}
+}
+
+// pickFilterType 参数级选择过滤:键入并入 Filter,从全量重算匹配子集(光标钳制)。
+// All 为空时以当前 Items 视为全量(过滤词输入前保持不动)。
+func (m *Model) pickFilterType(s string) {
+	p := m.state.Pick
+	if p.All == nil {
+		p.All = p.Items
+	}
+	p.Filter += s
+	p.Items = filterOptions(p.All, p.Filter)
+	clampPickCursor(p)
+}
+
+// pickFilterBackspace 参数级选择退格:删过滤词尾字符并重算。
+// 返回 true = 已消费(参数级选择态退格不编辑命令文本);false = 非参数级选择,走普通退格。
+func (m *Model) pickFilterBackspace() bool {
+	p := m.state.Pick
+	if p == nil || p.Level <= 0 {
+		return false
+	}
+	if p.Filter != "" {
+		r := []rune(p.Filter)
+		p.Filter = string(r[:len(r)-1])
+		p.Items = filterOptions(p.All, p.Filter)
+		clampPickCursor(p)
+	}
+	return true
+}
+
+// pickFilterEsc 参数级选择 Esc:过滤词非空则清过滤恢复全量(返回 true 已消费);
+// 否则返回 false 交既有逻辑(退出选择器)。
+func (m *Model) pickFilterEsc() bool {
+	p := m.state.Pick
+	if p == nil || p.Level <= 0 || p.Filter == "" {
+		return false
+	}
+	p.Filter = ""
+	p.Items = p.All
+	clampPickCursor(p)
+	return true
+}
+
+// clampPickCursor 光标钳制到当前 Items 内(空集归 0)。
+func clampPickCursor(p *Pick) {
+	if len(p.Items) == 0 {
+		p.Cursor = 0
+	} else if p.Cursor >= len(p.Items) {
+		p.Cursor = len(p.Items) - 1
 	}
 }
 

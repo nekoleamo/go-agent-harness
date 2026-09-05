@@ -63,11 +63,27 @@ func Render(s *State, width, height int) string {
 	if width <= 0 || height <= 0 {
 		width, height = 80, 24
 	}
-	// 选择器激活时提示区 = 选项列表(高亮当前,滚动窗口);否则静态提示行
+	// 选择器激活时提示区 = 选项列表(高亮当前,滚动窗口);否则静态提示行。
+	// 参数级过滤(Filter 非空):首行过滤状态(占 1 行,选项窗口相应减 1),无匹配时仅状态行。
 	var hintItems []string
 	if s.Pick != nil {
 		items := s.Pick.Items
-		start, end := pickWindow(len(items), s.Pick.Cursor, maxHintRows)
+		vis := maxHintRows
+		if s.Pick.Filter != "" {
+			vis = maxHintRows - 1
+			total := len(s.Pick.All)
+			if total == 0 {
+				total = len(items)
+			}
+			if len(items) == 0 {
+				hintItems = append(hintItems, styleMeta.Render(
+					fmt.Sprintf("过滤: %s → 无匹配(退格清除)", s.Pick.Filter)))
+			} else {
+				hintItems = append(hintItems, styleMeta.Render(
+					fmt.Sprintf("过滤: %s → %d/%d 项(退格清除/Esc 恢复)", s.Pick.Filter, len(items), total)))
+			}
+		}
+		start, end := pickWindow(len(items), s.Pick.Cursor, vis)
 		for i := start; i < end; i++ {
 			it := items[i]
 			line := " /" + it.Value + " " + it.Desc

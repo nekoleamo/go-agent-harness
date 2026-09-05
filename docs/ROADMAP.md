@@ -94,6 +94,7 @@
 - 2026-09-06:P4-3 T4 代码块高亮交付(render 层 annotateCodeFences 跨行围栏标注(仅 assistant 翻转,工具结果 ``` 不干扰)+ 块内统一代码色与单遍极简语法着色(字符串/注释/关键字)、块内禁 md token;palette 增 md-key/md-str/md-cmt 三 token;围栏/高亮/字符无损单测);剩余 P4 9 项。
 - 2026-09-06:P4-7 T3 工具结果视觉增强交付(工具三态语义色:调用 ⚙ 琥珀 / 成功 ✓ 绿 / 失败 ✗ 红;展开结果 diff 轻染色 +行绿/-行红/头灰,搜索命中与选区回落基础样式;palette 增 tool-ok/diff-add/diff-del/diff-hdr 四 token;toolrow_test 单测);剩余 P4 8 项。
 - 2026-09-06:TUI 选择/提示列表滚动窗口修复(选项超 6 行截断丢弃 → pickWindow 随光标滚动展示剩余项,上/下箭头双向滚动;静态 / 命令提示超窗改余量提示;见 docs/TUI_OPTIMIZE.md §1.7)。
+- 2026-09-06:TUI 选择器内过滤(参数级直接打字=子串即时过滤 Value/Desc,退格/Esc 恢复,无匹配回车不提交;命令名前缀过滤不变;见 docs/TUI_OPTIMIZE.md §1.8)。
 - 2026-09-05:初版(覆盖 M7–M11 与 TUI S1–S3,依据 DESIGN §14.1 切片与 docs/TUI_OPTIMIZE.md)。
 - 2025-10:P4 体验改进排期新增(来源 docs/PI_COMPARISON.md;P0–P2 已交付,P3 M7 待排;见总览与 P4 节)。
 - 2026-09-05:TUI 线 P0 三件(S1.5/S1.2/S1.1)与 M6.15–M6.21 修复链全部交付(含 /search 自由级断点交互修复);宿主工具线(M8/M10)仍未开工;剩余 P0 = 4(S1.3 输入增强)→5(M8-todo T1)→6(M10-memory)→6a(/workspace)。

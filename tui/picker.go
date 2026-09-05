@@ -12,10 +12,13 @@ import (
 )
 
 // Pick 选择器状态(Level 0=命令选择,1+=参数级)。
+// 参数级(Level>0)支持过滤:Filter 为键入的过滤词,Items = All 的匹配子集(滚动窗口随光标)。
 type Pick struct {
 	Level  int
 	Items  []sdk.Option
 	Cursor int
+	All    []sdk.Option // 原始全量(进入本级时的选项;过滤/退格恢复用)。空 = Items 即全量。
+	Filter string       // 参数级过滤词(非空时 Items 为其匹配子集)
 }
 
 // levelsFn 取命令的参数级定义(由 App 注入:查 ctx.commands 注册表)。
@@ -77,7 +80,7 @@ func advanceInto(newInput string, picked []string, lv []sdk.ArgLevel, idx int, l
 	}
 	if lv[next].Options != nil {
 		if opts := lv[next].Options(picked); len(opts) > 0 {
-			return advanceResult{Input: newInput, Pick: &Pick{Level: next + 1, Items: opts}}
+			return advanceResult{Input: newInput, Pick: &Pick{Level: next + 1, Items: opts, All: opts}}
 		}
 		// Options 空:继续看本级的自由定义
 	}
@@ -110,6 +113,22 @@ func pickLines(opts []sdk.Option) []string {
 	out := make([]string, 0, len(opts))
 	for _, o := range opts {
 		out = append(out, " /"+o.Value+" "+o.Desc)
+	}
+	return out
+}
+
+// filterOptions 选项子串过滤(大小写不敏感;Value 或 Desc 任一命中)。q 空 = 原样返回。
+func filterOptions(items []sdk.Option, q string) []sdk.Option {
+	if q == "" {
+		return items
+	}
+	lq := strings.ToLower(q)
+	var out []sdk.Option
+	for _, it := range items {
+		if strings.Contains(strings.ToLower(it.Value), lq) ||
+			strings.Contains(strings.ToLower(it.Desc), lq) {
+			out = append(out, it)
+		}
 	}
 	return out
 }
