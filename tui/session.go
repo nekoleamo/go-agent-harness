@@ -86,6 +86,12 @@ func renderSessionRow(p physRow, s *State, gRow int) string {
 		}
 	}
 	if p.kind == "assistant" && !s.searchHitLine(p.lineIdx) && !s.SelActive {
+		// 代码围栏(P4-3):围栏行/块内行统一代码色 + 极简语法着色(render 层先行标注)
+		if p.inCode || p.codeFence {
+			if styled := mdCodeBlockRow(p.text, p.lang); styled != "" {
+				return styled
+			}
+		}
 		if styled := mdAnnotateRow(p.text, styleAsst.GetForeground()); styled != "" {
 			return styled
 		}
@@ -131,6 +137,35 @@ func renderSessionRow(p physRow, s *State, gRow int) string {
 	return sb.String()
 }
 
+// annotateCodeFences 逐行扫描标注代码围栏(assistant 行参与切换;其它 kind 不翻转——
+// 工具结果/元信息里出现 ``` 不干扰正文围栏配对;同逻辑行跨物理行按序连续判定)。
+// 围栏行标记 codeFence + 开围栏解析 lang;其后续 assistant 内容行置 inCode 并沿用 lang。
+func annotateCodeFences(rows []physRow) {
+	in := false
+	lang := ""
+	for i := range rows {
+		p := &rows[i]
+		if p.kind != "assistant" {
+			continue
+		}
+		if l, ok := mdFenceInfo(strings.TrimSpace(p.text)); ok {
+			p.codeFence = true
+			if !in {
+				lang = l // 开围栏:记录语言(如无 info 则空)
+			}
+			in = !in
+			if !in {
+				lang = "" // 闭围栏:清除
+			}
+			continue
+		}
+		if in {
+			p.inCode = true
+			p.lang = lang
+		}
+	}
+}
+
 // foldMarkFor 折叠行(结果行 Full 非空)的物理行尾缀提示:仅逻辑行首物理行附加标记。
 // 空 = 非折叠行/非首物理行(其余物理行不重复标注)。
 func foldMarkFor(s *State, p physRow) string {
@@ -159,11 +194,15 @@ func stRenderText(s *State, p physRow, gRow int, mark string) string {
 }
 
 // physRow 会话流物理显示行:kind 决定着色;text 已含首行前缀(❯)且宽度 ≤ 内容列宽。
+// inCode/codeFence/lang 为代码围栏标注(annotateCodeFences 逐行扫描后写;仅 assistant 参与)。
 type physRow struct {
-	kind    string
-	text    string
-	lineIdx int  // 归属逻辑行(Lines 索引;搜索命中/高亮定位用)
-	first   bool // 该逻辑行首物理行(折叠标记/搜索定位只在首行)
+	kind      string
+	text      string
+	lineIdx   int    // 归属逻辑行(Lines 索引;搜索命中/高亮定位用)
+	first     bool   // 该逻辑行首物理行(折叠标记/搜索定位只在首行)
+	inCode    bool   // 位于代码围栏内(内容行)
+	codeFence bool   // 围栏行本身(``` / ~~~ 开或闭)
+	lang      string // 围栏语言(开围栏行解析;块内内容行沿用)
 }
 
 // padRow 把行文本对齐到内容列宽(colW):不足补空格,超限截断(折行已保证不超)。

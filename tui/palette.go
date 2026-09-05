@@ -37,11 +37,14 @@ const (
 	TokBarEnd   Token = "barend"   // 回底指示(▼):琥珀
 
 	// —— markdown 轻渲染 ——
-	TokMdCode  Token = "md-code"  // 行内 code:暗金
+	TokMdCode  Token = "md-code"  // 行内 code 与代码块前景:暗金
 	TokMdBold  Token = "md-bold"  // 粗体:亮白
 	TokMdTitle Token = "md-title" // 标题:青
 	TokMdList  Token = "md-list"  // 列表符:琥珀
 	TokMdHr    Token = "md-hr"    // 分隔线:灰
+	TokMdKey   Token = "md-key"   // 代码块内关键字:淡紫
+	TokMdStr   Token = "md-str"   // 代码块内字符串:暖橙
+	TokMdCmt   Token = "md-cmt"   // 代码块内注释:灰
 
 	// —— 搜索高亮 ——
 	TokSearchBg    Token = "search-bg"     // 命中行背景:暗
@@ -59,6 +62,7 @@ var DefaultPalette = map[Token]string{
 	TokBarThumb: "214", TokBarTrack: "240", TokBarHover: "172", TokBarEnd: "214",
 
 	TokMdCode: "179", TokMdBold: "231", TokMdTitle: "51", TokMdList: "220", TokMdHr: "245",
+	TokMdKey: "141", TokMdStr: "215", TokMdCmt: "244",
 
 	TokSearchBg: "238", TokSearchCurBg: "214",
 }

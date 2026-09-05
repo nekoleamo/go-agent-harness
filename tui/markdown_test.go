@@ -171,3 +171,83 @@ func TestRenderSessionRowAssistantMD(t *testing.T) {
 		t.Fatalf("user 行不应 md: %q", out)
 	}
 }
+
+// TestMDCodeBlockFence 代码围栏渲染:围栏行与块内行整体代码色、块内不做 md 解释;
+// 块外普通行仍走 markdown。P4-3。
+func TestMDCodeBlockFence(t *testing.T) {
+	lines := []Line{
+		{Kind: "assistant", Text: "请看代码:"},
+		{Kind: "assistant", Text: "```go\nfunc add(a, b int) int {\n\treturn a + b\n}\n```"},
+		{Kind: "assistant", Text: "如上 **粗体** 正常"},
+	}
+	rows := flattenLines(lines, 120)
+	annotateCodeFences(rows)
+	// 围栏标注:开围栏行 codeFence、闭围栏行 codeFence、块内内容行 inCode 且沿用语言
+	if !rows[1].codeFence || rows[1].inCode {
+		t.Fatalf("开围栏行应标 codeFence 非 inCode: %+v", rows[1])
+	}
+	for i := 2; i < 5; i++ {
+		if !rows[i].inCode || rows[i].lang != "go" {
+			t.Fatalf("块内行 %d 应 inCode+lang go: %+v", i, rows[i])
+		}
+	}
+	if !rows[5].codeFence {
+		t.Fatalf("闭围栏行应标 codeFence: %+v", rows[5])
+	}
+	if rows[6].inCode {
+		t.Fatalf("闭围栏后不应 inCode: %+v", rows[6])
+	}
+	// 渲染:块内行带代码色 SGR;块外 md 行仍着色且粗体不丢
+	inner := renderSessionRow(rows[3], &State{Lines: lines}, 3)
+	if !strings.Contains(inner, "38;5;") {
+		t.Fatalf("块内行应带代码色 SGR: %q", inner)
+	}
+	out := renderSessionRow(rows[6], &State{Lines: lines}, 6)
+	if !strings.Contains(out, "38;5;1;") && !strings.Contains(out, "38;5;") && !strings.Contains(out, "\x1b[1m") {
+		t.Fatalf("块外行仍应 md 着色: %q", out)
+	}
+}
+
+// TestCodeBlockRowHighlight 语法着色:字符串/注释/关键字分段,字符无损(去 ANSI 后原文一致)。
+func TestCodeBlockRowHighlight(t *testing.T) {
+	cases := []struct{ text, lang string }{
+		{"func main() { return }", "go"},
+		{"def f():\n    return 1", "python"},
+		{"// 注释说明", "go"},
+		{"# shebang 注释", "sh"},
+		{"for x in items: # 注释", "python"},
+		{"s := \"hello, world\"", "go"},
+		{"key = '值' # 尾注", "python"},
+		{"sql := `SELECT * FROM t WHERE id = 1`", ""},
+		{"纯文本行 with 中文 和符号#not-comment", ""},
+	}
+	for _, c := range cases {
+		out := mdCodeBlockRow(c.text, c.lang)
+		if stripANSI(out) != c.text {
+			t.Fatalf("[%s/%s] 字符应无损: got %q want %q", c.lang, c.text, stripANSI(out), c.text)
+		}
+	}
+	// 关键字色(141)、注释色(244)、字符串色(215)段都应出现
+	hl := mdCodeBlockRow("func main() {\nreturn \"x\" // c\n}", "go")
+	if !strings.Contains(hl, "38;5;141") {
+		t.Fatalf("关键字应着色: %q", hl)
+	}
+	if !strings.Contains(hl, "38;5;215") {
+		t.Fatalf("字符串应着色: %q", hl)
+	}
+	if !strings.Contains(hl, "38;5;244") {
+		t.Fatalf("注释应着色: %q", hl)
+	}
+}
+
+// TestCodeBlockRowNoLangHash 无语言代码块不把 # 当注释(防普通文本误伤);URL 协议符不触发 //。
+func TestCodeBlockRowNoLangHash(t *testing.T) {
+	out := mdCodeBlockRow("# 标题样文本", "")
+	if strings.Contains(out, "38;5;244") {
+		t.Fatalf("无语言块内 # 不应按注释着色: %q", out)
+	}
+	out = mdCodeBlockRow("http://example.com/x", "go")
+	if strings.Contains(out, "38;5;244") {
+		t.Fatalf("http:// 不应触发注释: %q", out)
+	}
+}

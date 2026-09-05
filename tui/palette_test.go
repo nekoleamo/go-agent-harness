@@ -14,6 +14,7 @@ var baseline = map[Token]string{
 	TokBarThumb: "214", TokBarTrack: "240", TokBarHover: "172", TokBarEnd: "214",
 
 	TokMdCode: "179", TokMdBold: "231", TokMdTitle: "51", TokMdList: "220", TokMdHr: "245",
+	TokMdKey: "141", TokMdStr: "215", TokMdCmt: "244",
 
 	TokSearchBg: "238", TokSearchCurBg: "214",
 }

@@ -85,6 +85,7 @@ func Render(s *State, width, height int) string {
 	// S2.2 折叠视图:已展开的结果行(lineIdx FoldOpen)用 Full 参与展平(全文多行);
 	// 未展开保持 Text 摘要单行。搜索/鼠标命中仍以 Lines 摘要为基准(见 searchHitLine)。
 	rows := flattenViewLines(s, colW)
+	annotateCodeFences(rows) // 代码围栏跨行标注(assistant 物理行顺序切换;滚动/折叠视图每帧重算)
 	total := len(rows)
 	if total > 0 {
 		s.flatN = total // 刷新展平行数(ScrollBy 上限钳制用)
