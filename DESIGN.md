@@ -337,7 +337,7 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 >
 > **当前未实施清单(5 项)**:M7 Web UI · M7.2 UI 槽位插件化 · M7.3 WebSocket 通道 · M8-T2 展示联动(依赖 M7.2)· M9 send_message/fork(依赖后台引擎会话化)——详见下方对应 ⏳ 行。已交付 ✅:M6.1–M6.21、M8-T1、M10、M9.1(one-shot)、M11-T1、M11-T2、M9.2(后台 delegate 子集)、M12 多 provider 并存(2026-09,见下交付表)。TUI 线全交付 ✅(S1.1–S2.2 + 折叠交互;S3.1 决策方案 A 记录在案;S3.2 框架覆盖)。
 >
-> **体验改进排期(对比 pi,非里程碑)**:12 项已入 `docs/ROADMAP.md` P4 节(来源 `docs/PI_COMPARISON.md`;T1 消息队列/@引用等,均未开工;P4-3 代码块高亮、P4-4 C3 会话命名、P4-7 T3 工具视觉增强与 P4-9 E2 语义色 token 化已交付 ✅(2025-10,见 docs/ROADMAP.md P4 节))。
+> **体验改进(对比 pi 基线)**:P4 12 项**全部交付** ✅(2026-09 收口:P4-1 消息队列 · P4-2 @引用+Tab 补全 · P4-3 代码块高亮 · P4-4 会话命名 · P4-5 C6 多级上下文 · P4-6 多行输入/外部编辑器 · P4-7 工具视觉增强 · P4-8 /compact · P4-9 语义色 token 化 · P4-10 C1 会话树/分支(树可视化 UI 归 M7 后)· P4-11 /reload · P4-12 widget 槽位;细见 `docs/ROADMAP.md` P4 节)。
 >
 > **TUI 界面优化**(非里程碑,详见 `docs/TUI_OPTIMIZE.md`):S1.1–S1.6 全交付 ✅;S1.4 Markdown 轻渲染、S2.1 消息分组/工具行去重、S2.2 渲染组件化(render/session/chrome/markdown 四层)+ 折叠交互 已交付 ✅(2025-09/10 迭代);S3.1 主屏 scrollback 决策=方案 A 维持现状(2025-10,理由与 B/C 备选记录于 docs/TUI_OPTIMIZE.md S3),S3.2 框架覆盖 ✅(S3.2 synchronized output 由 bubbletea v2 框架自动启用 ✅)。
 >
