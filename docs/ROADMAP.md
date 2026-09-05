@@ -13,7 +13,7 @@
 | P1 中期 ✅(已完成) | 已完成 | TUI S1.4/S2.1 + M9.1 + M11-T1 | ✅ 已交付:Markdown 轻渲染(S1.4);消息分组/工具行去重(S2.1);subagent one-shot 委派(M9.1);auto-plan 规划+确认门(M11-T1) |
 | P2 后期 ✅(已完成/决策) | 已完成 | S3.2(框架)+ M9.2(后台子集)+ M11-T2 + S2.2 | ✅ M9.2 后台委派;M11-T2 plan→todo;S2.2 渲染四层;S3.2 框架覆盖;S3.1 决策=方案 A 维持现状(记录在案) |
 | P3 远期(季度+) | 独立里程碑 | M7(M7.1 Web UI)+ M7.2 槽位 + M7.3 WS + M8-T2(展示联动) | Web UI 全能力闭环;槽位插件化;todo 面板 |
-| P4 体验改进(对比 pi 基线,见 docs/PI_COMPARISON.md) | 独立迭代 | T1 消息队列 · T2a @引用+Tab 补全 · **T4 代码块高亮 ✅** · **C3 会话命名 ✅** · **E2 语义色 ✅** · C6 多级上下文文件;T2b/T3/C2 次之;会话树 C1 与 UI seam E1 绑 M7.2 后 | 交互体验对齐 pi;Agent 能力面无缺口 |
+| P4 体验改进(对比 pi 基线,见 docs/PI_COMPARISON.md) | 独立迭代 | T1 消息队列 · T2a @引用+Tab 补全 · **T4 代码块高亮 ✅** · **C3 会话命名 ✅** · **T3 工具视觉 ✅** · **E2 语义色 ✅** · C6 多级上下文文件;T2b/T3/C2 次之;会话树 C1 与 UI seam E1 绑 M7.2 后 | 交互体验对齐 pi;Agent 能力面无缺口 |
 
 ## P0 近期(1–2 周:优先用户痛点、低风险、依赖已就绪)
 
@@ -67,7 +67,7 @@
 
 ## P4 体验改进(对齐 pi 基线;来源 docs/PI_COMPARISON.md)
 
-> 状态:P4-3(代码块高亮)、P4-4(会话命名)、P4-9(语义色 token 化)✅ 已交付(2025-10),其余 ⏳ 未实施(2025-10 排期)。排期原则:用户可感 > 依赖 M7 > 成本。Agent 能力面无缺口
+> 状态:P4-3(代码块高亮)、P4-4(会话命名)、P4-7(工具视觉增强)、P4-9(语义色 token 化)✅ 已交付(2025-10),其余 ⏳ 未实施(2025-10 排期)。排期原则:用户可感 > 依赖 M7 > 成本。Agent 能力面无缺口
 > (pi 明示不内置的 MCP/subagent/权限/plan/todo/后台 bash,gah 均已交付),本阶段只补交互与会话体验。
 
 | # | 功能 | 依赖 | 工作量 | 切片/要点 | 验收 |
@@ -78,7 +78,7 @@
 | P4-4 ✅ | **C3 会话命名(/name)** | host-cwd-sessions | S | ✅ 已交付:tui/app.go 注册 /name <名>(- 清除)+ host-cwd-sessions names.json 索引(按会话文件独立持久,坏文件容忍)+ 状态栏/切换选择器/session current 显示名优先 | ✅ 状态栏显示名;重开/切会话名保留;无名称回退 id/主会话;全库 -race 38 包绿(pty 探针 pre-existing 除外) |
 | P4-5 | **C6 多级上下文文件加载** | host-system-prompt | M | 从 cwd 逐级向上读 AGENTS.md 并入 project instructions(近者覆盖远者);AGENTS.override.md 语义;不涉 core | 上级目录约定自动生效;层级覆盖正确;有单测 |
 | P4-6 | **T2b 多行输入 + 外部编辑器** | TUI 输入 | S–M | Shift+Enter 多行;Ctrl+G 调 $EDITOR/nano 编辑整段后回填 | 多行输入可提交;外部编辑回填;Ctrl+C 语义不回归 |
-| P4-7 | **T3 工具结果视觉增强** | S2.2 就绪 | M | 工具行状态图标统一(⚙ 调用/✓ 成功/✗ 失败/… 运行)+ 失败着色块;结果区 diff 行(+/ -)轻染色 | 工具执行状态一眼可分;失败醒目;diff 染色可读 |
+| P4-7 ✅ | **T3 工具结果视觉增强** | S2.2 就绪 | M | ✅ 已交付:工具三态语义色(调用 ⚙ 琥珀 / 成功 ✓ 绿 styleToolOK / 失败 ✗ error 红);展开结果 diff 轻染色(+++/---/@@ 头灰、+ 行淡绿、- 行暗红,字符无损);搜索命中/选区回落基础样式 | ✅ 工具执行状态一眼可分;失败醒目;diff 染色可读;单测 toolrow_test + 全库 -race 38 包绿(pty 探针 pre-existing 除外) |
 | P4-8 | **C2 手动 /compact [prompt]** | token-compress | M | /compact 主动触发压缩(带可选自定义指示);完成后回显摘要;超限自动压缩不变 | 手动压缩即时生效;摘要可读;不重复压缩空会话 |
 | P4-9 ✅ | **E2 语义色 token 化** | S2.2 | S–M | ✅ 已交付:tui/palette.go 新增 Token+DefaultPalette(21 token)+ fg() 唯一取色入口;render.go/markdown.go/session.go 全部色值字面量收口为 token 派生(零裸色值);palette_test.go 基线守卫(逐 token 对原 256 索引 + 无空色值) | ✅ 渲染逐字等价(全 tui 单测 SGR 精确断言绿);换肤仅改 DefaultPalette 本表 |
 | P4-10 | **C1 会话树/分支** | ⚠️ M7.2 后(或独立 TUI 树) | L | /tree 跳任意点续聊;/fork 从旧消息派生;/clone 复制当前分支;分支摘要;基于 sessionlog 树索引 | 回退/多方案并行;树导航 UI;弃支可摘要 |
@@ -92,6 +92,7 @@
 - 2026-09-06:P4-4 C3 会话命名交付(/name <名> 设置、- 清除;host-cwd-sessions names.json 按会话文件独立持久、坏文件容忍;状态栏/切换选择器//session current 显示名优先,无名称回退 id);P4 首个交付项,剩余 11 项。
 - 2026-09-06:P4-9 E2 语义色 token 化交付(tui/palette.go:21 语义 token + DefaultPalette 单一事实源 + fg() 唯一入口;render/markdown/session 色值字面量清零;渲染逐字等价,换肤只改表);剩余 P4 10 项。
 - 2026-09-06:P4-3 T4 代码块高亮交付(render 层 annotateCodeFences 跨行围栏标注(仅 assistant 翻转,工具结果 ``` 不干扰)+ 块内统一代码色与单遍极简语法着色(字符串/注释/关键字)、块内禁 md token;palette 增 md-key/md-str/md-cmt 三 token;围栏/高亮/字符无损单测);剩余 P4 9 项。
+- 2026-09-06:P4-7 T3 工具结果视觉增强交付(工具三态语义色:调用 ⚙ 琥珀 / 成功 ✓ 绿 / 失败 ✗ 红;展开结果 diff 轻染色 +行绿/-行红/头灰,搜索命中与选区回落基础样式;palette 增 tool-ok/diff-add/diff-del/diff-hdr 四 token;toolrow_test 单测);剩余 P4 8 项。
 - 2026-09-05:初版(覆盖 M7–M11 与 TUI S1–S3,依据 DESIGN §14.1 切片与 docs/TUI_OPTIMIZE.md)。
 - 2025-10:P4 体验改进排期新增(来源 docs/PI_COMPARISON.md;P0–P2 已交付,P3 M7 待排;见总览与 P4 节)。
 - 2026-09-05:TUI 线 P0 三件(S1.5/S1.2/S1.1)与 M6.15–M6.21 修复链全部交付(含 /search 自由级断点交互修复);宿主工具线(M8/M10)仍未开工;剩余 P0 = 4(S1.3 输入增强)→5(M8-todo T1)→6(M10-memory)→6a(/workspace)。

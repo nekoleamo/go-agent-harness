@@ -18,6 +18,7 @@ const (
 	TokUser      Token = "user"      // 用户行:青
 	TokAssistant Token = "assistant" // 助手回复:绿
 	TokTool      Token = "tool"      // 工具调用/结果:琥珀
+	TokToolOK    Token = "tool-ok"   // 工具结果成功行:绿
 	TokMeta      Token = "meta"      // 系统/切换提示等:灰
 	TokError     Token = "error"     // 错误横幅:红
 
@@ -49,12 +50,17 @@ const (
 	// —— 搜索高亮 ——
 	TokSearchBg    Token = "search-bg"     // 命中行背景:暗
 	TokSearchCurBg Token = "search-cur-bg" // 当前命中背景:琥珀
+
+	// —— 工具结果 diff 轻染色(P4-7)——
+	TokDiffAdd Token = "diff-add" // 新增行(+):淡绿
+	TokDiffDel Token = "diff-del" // 删除行(-):暗红
+	TokDiffHdr Token = "diff-hdr" // 文件/块头(+++ --- @@):灰
 )
 
 // DefaultPalette 默认调色板(token → 256 色索引)。
 // 值为既有渲染基线(对齐历史逐字输出),勿改动;新换肤 = 在此覆盖/替换后重建样式。
 var DefaultPalette = map[Token]string{
-	TokUser: "81", TokAssistant: "120", TokTool: "220", TokMeta: "245",
+	TokUser: "81", TokAssistant: "120", TokTool: "220", TokToolOK: "114", TokMeta: "245",
 	TokError: "203", TokPrompt: "207", TokPick: "207", TokCursor: "214",
 
 	TokStatus: "250", TokBusy: "214",
@@ -65,6 +71,8 @@ var DefaultPalette = map[Token]string{
 	TokMdKey: "141", TokMdStr: "215", TokMdCmt: "244",
 
 	TokSearchBg: "238", TokSearchCurBg: "214",
+
+	TokDiffAdd: "114", TokDiffDel: "167", TokDiffHdr: "245",
 }
 
 // fg 取 token 对应前景色(样式构造统一入口;缺 token 回退无色)。

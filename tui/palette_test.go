@@ -6,7 +6,7 @@ import "testing"
 
 // baseline 既有硬编码色值基线(token → 原 256 色索引)。
 var baseline = map[Token]string{
-	TokUser: "81", TokAssistant: "120", TokTool: "220", TokMeta: "245",
+	TokUser: "81", TokAssistant: "120", TokTool: "220", TokToolOK: "114", TokMeta: "245",
 	TokError: "203", TokPrompt: "207", TokPick: "207", TokCursor: "214",
 
 	TokStatus: "250", TokBusy: "214",
@@ -17,6 +17,8 @@ var baseline = map[Token]string{
 	TokMdKey: "141", TokMdStr: "215", TokMdCmt: "244",
 
 	TokSearchBg: "238", TokSearchCurBg: "214",
+
+	TokDiffAdd: "114", TokDiffDel: "167", TokDiffHdr: "245",
 }
 
 func TestPaletteBaseline(t *testing.T) {

@@ -43,6 +43,35 @@ func styleForKind(kind string) lipgloss.Style {
 	}
 }
 
+// rowBaseStyle 逻辑行渲染基础样式:工具结果成功行(文本 ✓ 开头,kind tool)用成功绿,
+// 与调用行(琥珀)/失败行(error 红)区分——语义色差(P4-7)。其余按 kind。
+func rowBaseStyle(p physRow) lipgloss.Style {
+	if p.kind == "tool" && strings.HasPrefix(p.text, "✓") {
+		return styleToolOK
+	}
+	return styleForKind(p.kind)
+}
+
+// diffToolRow 工具结果展开行的 diff 轻染色(单行整色,字符无损;无 diff 特征返回空串):
+// 文件/块头(+++ / --- / @@)灰,新增行(+)淡绿,删除行(-)暗红。
+// 只识别行首(允许前导空白)的 +/- 前缀,不解析 diff 内部结构(轻渲染取舍)。
+func diffToolRow(text string) string {
+	i := 0
+	for i < len(text) && (text[i] == ' ' || text[i] == '\t') {
+		i++
+	}
+	s := text[i:]
+	switch {
+	case strings.HasPrefix(s, "+++") || strings.HasPrefix(s, "---") || strings.HasPrefix(s, "@@"):
+		return lipgloss.NewStyle().Foreground(fg(TokDiffHdr)).Render(text)
+	case strings.HasPrefix(s, "+"):
+		return lipgloss.NewStyle().Foreground(fg(TokDiffAdd)).Render(text)
+	case strings.HasPrefix(s, "-"):
+		return lipgloss.NewStyle().Foreground(fg(TokDiffDel)).Render(text)
+	}
+	return ""
+}
+
 // selRange 选区对全局物理行 gRow 的命中列区间(0 基 rune);未命中返回 active=false。
 func (s *State) selRange(gRow int) (active bool, c0, c1 int) {
 	if !s.SelActive {
@@ -96,7 +125,13 @@ func renderSessionRow(p physRow, s *State, gRow int) string {
 			return styled
 		}
 	}
-	st := styleForKind(p.kind)
+	// P4-7 工具结果 diff 轻染色:展开内容行的 +/- 行(搜索命中/选区回落基础样式,叠加几何不冲突)
+	if p.kind == "tool" && !s.searchHitLine(p.lineIdx) && !s.SelActive {
+		if d := diffToolRow(p.text); d != "" {
+			return d
+		}
+	}
+	st := rowBaseStyle(p)
 	if s.searchHitLine(p.lineIdx) {
 		if p.lineIdx == s.searchCurLine() {
 			st = st.Background(lipgloss.Color(searchCurBg))
@@ -187,7 +222,7 @@ func foldMarkFor(s *State, p physRow) string {
 
 // stRenderText 渲染带折叠标记的普通文本行(不叠加 md/搜索/选区——折叠行交互优先)。
 func stRenderText(s *State, p physRow, gRow int, mark string) string {
-	st := styleForKind(p.kind)
+	st := rowBaseStyle(p)
 	// 在首物理行文本后追加可点击标记(颜色弱化),方便识别可切换行
 	_ = gRow
 	return st.Render(p.text + mark)

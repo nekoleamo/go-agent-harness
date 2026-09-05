@@ -12,6 +12,7 @@ var (
 	styleUser   = lipgloss.NewStyle().Foreground(fg(TokUser)).Bold(true)
 	styleAsst   = lipgloss.NewStyle().Foreground(fg(TokAssistant))
 	styleTool   = lipgloss.NewStyle().Foreground(fg(TokTool))
+	styleToolOK = lipgloss.NewStyle().Foreground(fg(TokToolOK)) // 工具结果成功行(绿,与调用琥珀区分)
 	styleMeta   = lipgloss.NewStyle().Foreground(fg(TokMeta))
 	styleError  = lipgloss.NewStyle().Foreground(fg(TokError))
 	stylePrompt = lipgloss.NewStyle().Foreground(fg(TokPrompt)).Bold(true)
