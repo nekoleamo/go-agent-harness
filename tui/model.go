@@ -121,6 +121,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.state.Running = false
+		// P4-1 消息队列:回合成功结束且有排队 → 自动发下一条(每次一条,保证会话串行)。
+		// 取消(Esc)与回合失败不续发——用户意图停止/需先处理,队列保留供 Alt+Up/Esc 取回。
+		if msg.err == nil && len(m.state.Queue) > 0 && m.onSubmit != nil {
+			m.submitQueuedNext()
+		}
 	case confirmMsg:
 		m.state.ApplyConfirmPrompt(msg.prompt)
 	case spinnerMsg:
@@ -739,6 +744,14 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		case tea.KeyRight:
 			m.state.WordRight()
 			return nil
+		case tea.KeyUp:
+			// P4-1:取回最新一条排队消息到编辑区(队尾弹出;回合运行中亦可用)
+			if len(m.state.Queue) > 0 {
+				m.state.Input = m.state.PopQueued()
+				m.state.Cursor = len([]rune(m.state.Input))
+				m.state.PickDismissed = true
+			}
+			return nil
 		}
 	}
 	switch k.Code {
@@ -842,6 +855,10 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			m.selRows = nil
 			m.selLineIdx = nil
 			m.selMoved = false
+		} else if !m.state.Running && len(m.state.Queue) > 0 {
+			// P4-1:回合结束/取消后队列有消息,取回最新一条到编辑区(逐次按 Esc 取一条)
+			m.state.Input = m.state.PopQueued()
+			m.state.Cursor = len([]rune(m.state.Input))
 		} else {
 			// Esc:中断进行中的回合(取消链:turn → LLM 流 → 工具进程)
 			m.handleEscape()
@@ -1009,7 +1026,22 @@ func (m *Model) submit() {
 		}
 		return
 	}
+	// P4-1:回合运行中普通消息不启动新回合 → 入队(状态栏显“待发 N”,回合结束自动发送);
+	// 空闲 Enter 正常提交。命令不入队(即时执行保持现状)。
+	if m.state.Running {
+		m.state.Enqueue(input)
+		return
+	}
 	m.onSubmit(input)
+}
+
+// submitQueuedNext 自动发送队列下一条(回合成功结束后调用;Running 由 onSubmit 置位)。
+func (m *Model) submitQueuedNext() {
+	t := m.state.Dequeue()
+	if t == "" {
+		return
+	}
+	m.onSubmit(t)
 }
 
 // freeContinue 多值自由参数向导(仅 Free 启用,见 freeStep):命令序列未收齐时不执行——

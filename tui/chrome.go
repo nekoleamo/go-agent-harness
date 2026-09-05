@@ -78,6 +78,10 @@ func renderStatusLine(s *State, width int) string {
 		runningStyle = styleBusy // 运行态高亮(醒目,一眼看到当前状态)
 	}
 	state = runningStyle.Render(state)
+	// P4-1 消息队列:有待发消息时显示计数与取回键(空闲时亦提示,队列由回合结束/取消后保留)
+	if n := len(s.Queue); n > 0 {
+		state += " " + styleBusy.Render(fmt.Sprintf("· 待发 %d (Alt+Up 取回)", n))
+	}
 	sess := ""
 	if s.Session != "" {
 		sess = " | 会话: " + s.Session

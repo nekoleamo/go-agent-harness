@@ -30,6 +30,12 @@ type State struct {
 	Cursor         int
 	LastTool       string
 
+	// Queue 消息队列(P4-1):回合运行中提交的普通消息按序暂存(回合串行——空闲 Enter
+	// 直接开新回合,运行中 Enter 排队),当前回合成功结束后自动逐条发送(每次一条,
+	// 保证会话串行);回合取消/失败不自动续发,队列保留供 Alt+Up/Esc 取回编辑。
+	// 命令(/ 前缀)不入队(即时执行,保持现状);会话切换清空。见 queue.go。
+	Queue []string
+
 	// vCol + vActive 多行编辑垂直移动(LineUp/LineDown)的意图列:第一次垂直移动
 	// 捕捉当前列,行间移动保持该列(bash/readline 语义);线性编辑/内容变化置
 	// vActive=false 失效,下次垂直移动重新捕捉。零值(未激活)即安全初值。

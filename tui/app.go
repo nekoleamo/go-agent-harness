@@ -511,6 +511,7 @@ func (a *App) afterSessionSwitch(cs sdk.CwdSessions) {
 	}
 	a.model.state.Lines = nil
 	a.model.state.LastTool = ""
+	a.model.state.ClearQueue() // P4-1:切会话丢弃旧队列(防错发到新会话上下文)
 	var sessions sdk.SessionLog
 	if err := a.c.Inject("ctx.sessions", &sessions); err == nil {
 		for _, ev := range sessions.Replay() {
