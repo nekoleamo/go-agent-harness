@@ -17,9 +17,9 @@
 | 会话内搜索 | `AltScreenSearch`(索引 + searchNext/Previous) | ✅ `/search` 已交付 |
 | 滚动条 | thumb/track 样式、可拖、**hover 高亮、auto-hide、回到最新指示器** | ✅ 回底/hover/auto-hide 已交付 |
 | 输入框 | Editor:autocomplete/history/kill-ring/undo/word 导航 | ✅ 历史/undo/kill/词导航已交付 |
-| 内容渲染 | markdown/text/truncated-text、box、组件布局(v/h-stack/spacer) | 纯文本单色;render.go 单函数 |
+| 内容渲染 | markdown/text/truncated-text、box、组件布局(v/h-stack/spacer) | S1.4 md 轻渲染已交付(tui/markdown.go);render.go 拆模归 S2.2 |
 | 交互基建 | mouse-region(组件绑鼠标)、loader、select-list、状态行 | 部分:spinner/banner/picker/滚动条拖动✓ |
-| 渲染稳度 | 差分渲染 + synchronized output | bubbletea 差分✓;无 synchronized output |
+| 渲染稳度 | 差分渲染 + synchronized output(DECSET 2026) | bubbletea 差分✓;synchronized output 由框架自动启用(tea.go 终端能力查询,kitty/wezterm 等自动,2026 已支持) |
 
 ## S1 交互补全(当前架构内,低风险,优先)
 
