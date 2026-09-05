@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -347,6 +348,119 @@ func (a *App) cmdSettings(args []string) (string, error) {
 	}
 	sessions.SetHistory(n)
 	return "/settings history -> " + args[1], nil
+}
+
+// forkSessions 注入 ForkableSessions(host-cwd-sessions 实现;/fork /clone 依赖)。
+func (a *App) forkableSessions() (sdk.ForkableSessions, error) {
+	var cs sdk.CwdSessions
+	if err := a.c.Inject("ctx.cwdSessions", &cs); err != nil {
+		return nil, errString("ctx.cwdSessions 未装配")
+	}
+	fs, ok := cs.(sdk.ForkableSessions)
+	if !ok {
+		return nil, errString("会话分支不可用: CwdSessions 未实现 ForkableSessions(host-cwd-sessions)")
+	}
+	return fs, nil
+}
+
+// lastUserSeq 当前会话最近提问 seq(/fork 缺省分支点;无提问返回 0)。
+func lastUserSeq(fs sdk.ForkableSessions, cur string) uint64 {
+	pts, err := fs.ForkPoints(cur)
+	if err != nil || len(pts) == 0 {
+		return 0
+	}
+	return pts[len(pts)-1].Seq
+}
+
+// cmdFork /fork [seq]:从历史 seq 处派生分支会话(继承到该点),切换过去从该点续聊。
+func (a *App) cmdFork(args []string) (string, error) {
+	fs, err := a.forkableSessions()
+	if err != nil {
+		return "", err
+	}
+	var cs sdk.CwdSessions
+	_ = a.c.Inject("ctx.cwdSessions", &cs)
+	cur := cs.CurrentSession()
+	seq := uint64(0)
+	if len(args) >= 1 {
+		n, perr := strconv.ParseUint(args[0], 10, 64)
+		if perr != nil {
+			return "", errString("/fork [seq]: seq 须为数字(/tree 查看各会话提问点)")
+		}
+		seq = n
+	} else {
+		seq = lastUserSeq(fs, cur)
+		if seq == 0 {
+			return "", errString("当前会话无提问点可分支(先发消息或 /tree 查 seq)")
+		}
+	}
+	id, err := fs.ForkAt(seq)
+	if err != nil {
+		return "", errString(err.Error())
+	}
+	a.afterSessionSwitch(cs)
+	return "已从 seq " + fmt.Sprintf("%d", seq) + " 派生分支会话 " + id +
+		"(继承到该点历史;后续对话只写本分支;切换回源:/session switch)", nil
+}
+
+// cmdClone /clone:复制当前会话(同一分支另一路演进),切换过去继续。
+func (a *App) cmdClone(_ []string) (string, error) {
+	fs, err := a.forkableSessions()
+	if err != nil {
+		return "", err
+	}
+	var cs sdk.CwdSessions
+	_ = a.c.Inject("ctx.cwdSessions", &cs)
+	id, err := fs.CloneCurrent()
+	if err != nil {
+		return "", errString(err.Error())
+	}
+	a.afterSessionSwitch(cs)
+	return "已复制当前会话为分支 " + id + "(独立演进;切换回源:/session switch)", nil
+}
+
+// cmdTree /tree:会话分支树——列出项目各会话(名/源标记)+ 每会话可 fork 的提问点(seq + 摘要)。
+func (a *App) cmdTree(_ []string) (string, error) {
+	fs, err := a.forkableSessions()
+	if err != nil {
+		return "", err
+	}
+	var cs sdk.CwdSessions
+	if err := a.c.Inject("ctx.cwdSessions", &cs); err != nil {
+		return "", errString("ctx.cwdSessions 未装配")
+	}
+	var b strings.Builder
+	cur := cs.CurrentSession()
+	for _, si := range cs.Sessions() {
+		mark := "  "
+		if si.ID == cur {
+			mark = "★"
+		}
+		name := si.Name
+		if name == "" {
+			if si.ID == "" {
+				name = "主会话"
+			} else {
+				name = si.ID
+			}
+		}
+		pts, err := fs.ForkPoints(si.ID)
+		if err != nil {
+			continue
+		}
+		fmt.Fprintf(&b, "  %s %s(提问 %d 个;/fork 取 seq)\n", mark, name, len(pts))
+		// 列出分支点(最多 5 条,显示 seq 供 /fork 定位)
+		start := 0
+		if len(pts) > 5 {
+			start = len(pts) - 5
+			fmt.Fprintf(&b, "      …(更早 %d 个,/tree 截断)\n", start)
+		}
+		for _, pt := range pts[start:] {
+			fmt.Fprintf(&b, "      #%d %s\n", pt.Seq, pt.Text)
+		}
+	}
+	b.WriteString("  (分支: /fork [seq] 从此点派生;复制当前: /clone;切换:/session switch)")
+	return "会话分支树:\n" + b.String(), nil
 }
 
 func (a *App) cmdSessions() (string, error) {
@@ -1124,6 +1238,9 @@ func (a *App) registerInternalCommands() {
 				}},
 			},
 			Run: a.cmdWorkspace},
+		{Name: "fork", Usage: "/fork [seq]", Desc: "从历史任意点派生分支会话(/tree 查看 seq;缺省=最近提问)", Run: a.cmdFork},
+		{Name: "clone", Usage: "/clone", Desc: "复制当前会话(同一分支另一路演进)", Run: a.cmdClone},
+		{Name: "tree", Usage: "/tree", Desc: "会话分支树(会话 + 可 fork 的提问点)", Run: a.cmdTree},
 		{Name: "session", Usage: "/session list|switch|new|current", Desc: "会话管理:列出/切换/新建/查看", Run: a.cmdSession,
 			Args: []sdk.ArgLevel{
 				{Options: func([]string) []sdk.Option {

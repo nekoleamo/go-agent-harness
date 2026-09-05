@@ -97,6 +97,24 @@ type SessionCompressor interface {
 	Fold(evs []SessionEvent, watermark int, budget int, summary func(string)) int
 }
 
+// ForkPoint 会话历史中可作分支点的用户消息(seq + 摘要;供 /fork 定位与 /tree 展示)。
+type ForkPoint struct {
+	Seq  uint64
+	Text string
+}
+
+// ForkableSessions 会话树/分支(P4-10;可选实现——host-cwd-sessions)。类型断言发现,
+// ctx.cwdSessions 接口不变。分支 = 复制继承历史到点的独立会话文件,继续演进互不影响。
+type ForkableSessions interface {
+	// ForkAt 从当前会话历史 seq 处派生新会话(继承 seq 及以前的全部事件),
+	// 切换过去并从该点继续(新轮次只写新文件);返回新会话 id。
+	ForkAt(seq uint64) (string, error)
+	// CloneCurrent 复制当前会话全量到新会话文件(同一分支的另一路演进);返回新 id。
+	CloneCurrent() (string, error)
+	// ForkPoints 某会话文件(空 id = 主会话)的用户消息分支点列表(时间序;seq 供 /fork)。
+	ForkPoints(id string) ([]ForkPoint, error)
+}
+
 // ReloadableInstructions 指令文件热重载(/reload 等效;可选实现——host-system-prompt 实现)。
 // 重读全局/多级项目/附加指令文件,失败保留旧值(错误回滚,免重启生效)。
 type ReloadableInstructions interface {
