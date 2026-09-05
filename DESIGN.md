@@ -335,11 +335,11 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 
 > **状态图例**:标题 `✅` = 已交付实施;标题 `⏳ 未实施` = 规划待执行、尚未开工(规划条目正文为完整方案,按切片实施)。
 >
-> **当前未实施清单(3 项)**:M7 Web UI · M7.2 UI 槽位插件化 · M7.3 WebSocket 通道 —— 见下方各 ⏳ 行。M6.1–M6.21、M8、M10、M9.1(one-shot)、M11-T1、M11-T2、M9.2(后台 delegate 子集)已交付 ✅(细表见下方对应行正文「交付(…)」)。TUI 线全交付 ✅(S1.1–S2.2 折叠 + S3.1 决策方案 A + S3.2 框架);subagent send_message/fork 归后续。
+> **当前未实施清单(5 项)**:M7 Web UI · M7.2 UI 槽位插件化 · M7.3 WebSocket 通道 · M8-T2 展示联动(依赖 M7.2)· M9 send_message/fork(依赖后台引擎会话化)——详见下方对应 ⏳ 行。已交付 ✅:M6.1–M6.21、M8-T1、M10、M9.1(one-shot)、M11-T1、M11-T2、M9.2(后台 delegate 子集,见下交付表)。TUI 线全交付 ✅(S1.1–S2.2 + 折叠交互;S3.1 决策方案 A 记录在案;S3.2 框架覆盖)。
 >
 > **TUI 界面优化**(非里程碑,详见 `docs/TUI_OPTIMIZE.md`):S1.1–S1.6 全交付 ✅;S1.4 Markdown 轻渲染、S2.1 消息分组/工具行去重、S2.2 渲染组件化(render/session/chrome/markdown 四层)+ 折叠交互 已交付 ✅(2025-09/10 迭代);S3.1 主屏 scrollback 决策=方案 A 维持现状(2025-10,理由与 B/C 备选记录于 docs/TUI_OPTIMIZE.md S3),S3.2 框架覆盖 ✅(S3.2 synchronized output 由 bubbletea v2 框架自动启用 ✅)。
 >
-> **实施排期**:P0 已全部交付 ✅(TUI S1.1/S1.2/S1.3/S1.5/S1.6 + M8-T1 + M10 + /workspace)。P1 已全部交付 ✅(S1.4 + S2.1 消息分组 + M9.1 + M11-T1,2025-09 迭代;S2.1 折叠交互随 S2.2)→ P2 后期(S3 + M9.2/M11-T2 + S2.2)→ P3 远期(M7 全家桶 + M8-T2)——详见 `docs/ROADMAP.md`(含工作量/依赖链/验收)。
+> **实施排期**:P0 ✅、P1 ✅、P2 ✅ 均已交付(S1.1–S2.2 折叠交互 + S3.1 决策方案 A + S3.2 框架 + M8-T1 + M9.1/M9.2 + M10 + M11-T1/T2 + /workspace;P1/P2 完成于 2025-09/10)→ **剩余 = P3 远期**(M7 Web UI 全家桶 + M7.2 槽位 + M7.3 WS + M8-T2 展示联动)+ subagent send_message/fork —— 详见 `docs/ROADMAP.md` 与下方未实施清单。
 
 | 项 | 内容 | 验收 |
 |---|---|---|
