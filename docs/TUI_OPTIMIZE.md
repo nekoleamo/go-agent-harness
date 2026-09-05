@@ -8,7 +8,7 @@
 > markdown.go(md 样式层)四层分离,行为逐字等价(30+ Render 基线测试锁输出);
 > 折叠交互已实施(tool 结果行存 Full 全文(foldFullLimit 4KB 保护),State.FoldOpen +
 > 鼠标单击 toggle 展开/收起,flattenViewLines 视图几何一致;fold_test.go 6 项);
-> ⏳ S3:主屏 scrollback 模式(S3.2 synchronized output 由 bubbletea v2 框架自动启用 ✅)。
+> ✅ S2.2 全部分层完成;S3 决策:方案 A 维持现状(记录在案,见 S3 决策记录),S3.2 由框架启用 ✅。
 > 参考对象:`@earendil-works/pi-tui`(0.85.0,差分渲染 TUI 库)与 pi agent 会话界面;
 > 本规划只借鉴**交互/布局/结构理念**,实现仍在 gah 的 bubbletea v2 + lipgloss 技术栈内(Go),
 > 不引入 JS/pi-tui 代码。排期见 [ROADMAP.md](ROADMAP.md)。
@@ -107,15 +107,29 @@
 - 目标:后续增删 UI 特性不再"改一处动全局"(滚动问题即源于单文件耦合)。
 - 验收:tui 单测覆盖每模块;Render 输出与现行为一致(基线用例)。
 
-## S3 形态演进(需产品取舍,预留)
+## S3 形态演进(决策:暂定方案 A 维持现状,其余记录在案)
 
-### 3.1 主屏 scrollback 模式(对标 pi TuiMainScreen)
+### 决策记录(2025-10)
+> **结论**:S3.1 主屏 scrollback 模式**暂不实施**,维持方案 A(alt-screen + 自研物理行滚动)。
+> 理由(技术核查):bubbletea v2 无 append-only renderer——非 AltScreen 模式仍是 cellbuf 差分重绘
+> (cursed_renderer.go Erase+Touched 固定区更新),历史不会推进终端 scrollback;"输出进 scrollback +
+> 底部固定输入"需放弃 bubbletea 新写渲染器,与现有全部交互(搜索/滚轮/划选/滚动条)双轨维护。
+> 与既有能力重叠(alt-screen 已可物理行滚动 + /search 回看;滚轮风暴根因 M6.16 已修)。
+>
+> **备选方案(记录在案,后续再研究)**:
+> - **方案 B regular 双形态**:`gah --view regular`;非 bubbletea 渲染,stdout 追加输出 + 底部固定输入行,
+>   滚动交终端原生。功能降级(无划选/搜索高亮/折叠);成本 ~ 与现有 TUI 等量,风险高(两套 UI 维护)。
+> - **方案 C 转 M7 Web UI**:浏览器天然 scrollback/滚动,可复用会话日志;独立 XL 里程碑。
+> - 若出现具体场景(长日志跟随、脚本管道、终端原生滚动习惯)再评估。
+
+### 3.1(留档)主屏 scrollback 模式(对标 pi TuiMainScreen,暂缓)
 - 入口:`gah --view regular` 或 `/view regular`(运行时切换);默认仍 alt 专注模式。
 - 行为:输出流式追加到主屏 scrollback,输入行/状态行固定在视口底部;
   上滚查历史 = 终端原生 scrollback(零滚轮代码),下滚=回输入。
 - 收益:长输出(日志/大回复)不占屏、天然可回看;绕开自研滚轮整类问题。
 - 约束:"流式输出+底部固定输入"的追加渲染(非全屏重绘);S2.2 组件化是前提。
 - 验收:regular 模式输出进 scrollback、命令交互不受影响;切换无残留。
+- 状态:暂缓(见上决策记录)。
 
 ### 3.2 渲染稳度:synchronized output
 - 窗口/终端支持时启用同步输出(DECSET 2026),大刷新合并减少闪烁。

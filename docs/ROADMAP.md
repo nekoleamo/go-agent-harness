@@ -11,7 +11,7 @@
 |---|---|---|---|
 | P0 近期 ✅ | 已完成 | TUI S1.5/S1.1/S1.2/S1.3 + M8-T1 + M10 + 6a /workspace | ✅ 全部交付:划选/搜索/滚动条/输入增强;todo/memory 工具;工作区切换 |
 | P1 中期 ✅(已完成) | 已完成 | TUI S1.4/S2.1 + M9.1 + M11-T1 | ✅ 已交付:Markdown 轻渲染(S1.4);消息分组/工具行去重(S2.1);subagent one-shot 委派(M9.1);auto-plan 规划+确认门(M11-T1) |
-| P2 后期(6 周–3月) | 三~四期 | TUI S3.1/S3.2 + M9.2 + M11-T2 | 主屏 scrollback 模式;subagent 控制组/背景;plan→todo 承接 |
+| P2 后期 ✅(已完成/决策) | 已完成 | S3.2(框架)+ M9.2(后台子集)+ M11-T2 + S2.2 | ✅ M9.2 后台委派;M11-T2 plan→todo;S2.2 渲染四层;S3.2 框架覆盖;S3.1 决策=方案 A 维持现状(记录在案) |
 | P3 远期(季度+) | 独立里程碑 | M7(M7.1 Web UI)+ M7.2 槽位 + M7.3 WS + M8-T2(展示联动) | Web UI 全能力闭环;槽位插件化;todo 面板 |
 
 ## P0 近期(1–2 周:优先用户痛点、低风险、依赖已就绪)
@@ -42,10 +42,10 @@
 
 | # | 功能 | 依赖 | 工作量 | 切片/要点 | 验收 |
 |---|---|---|---|---|---|
-| 12 | **TUI S3.2 synchronized output** | 独立小项,可提前 | XS | DECSET 2026 合并大刷新 | 滚动/长输出无撕裂;不支持的终端忽略 |
+| 12 ✅ | **TUI S3.2 synchronized output** | 独立小项 | XS | ✅ 已确认由 bubbletea v2 框架自动启用(tea.go 终端能力查询 2026) | ✅ 框架覆盖,无需自实现 |
 | 13 ✅ | **M9.2 控制组+背景**(后台子集) | ⚠️ M9.1 | M | ✅ 已交付:后台 delegate 带手柄(spawn/agents/agent_status/agent_kill)——sdk.FanoutService 后台会话 + host-fanout 引擎 + 回调桥 + extplugins;send_message/fork 未实施(需消息循环/事件流种入,记录后续) | ✅ 可后台委派/列表/查状态/终止 |
 | 14 ✅ | **M11-T2 plan→todo 承接** | ⚠️ M11-T1 + M8-T1 | M | ✅ 已交付:规则文本/Description 增补联动边界(auto_plan 管确认门,确认后执行期由 todo 承接,检查清单转 todo.create,执行完回归档);TestRuleTodoHandoff 等回归 | ✅ 确认门→todo 承接语义清晰 |
-| 15 | **TUI S3.1 主屏 scrollback 模式** | ⚠️ S2.2 组件化 | L | `--view regular`/`/view regular`;输出流进 scrollback、底部固定输入;滚动交终端 | 长输出不占屏;模式切换无残留 |
+| 15 ⏸️ | **TUI S3.1 主屏 scrollback 模式** | ⚠️ S2.2 组件化 | L | 决策:方案 A 维持现状(暂不实施)。B/C 备选记录在案(docs/TUI_OPTIMIZE.md S3 决策记录),后续再研究 | —(暂缓) |
 
 ## P3 远期(季度+:Web 全家桶)
 
