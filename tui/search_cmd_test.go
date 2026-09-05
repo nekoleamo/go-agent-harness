@@ -53,15 +53,15 @@ func (stubLLM) SetModel(string)                             {}
 func (stubLLM) Complete(context.Context, *sdk.LLMRequest, func(sdk.LLMStreamEvent) error) (*sdk.LLMResponse, error) {
 	return nil, nil
 }
-func (stubLLM) Model() string                       { return "mock" }
-func (stubLLM) List() []string                      { return nil }
-func (stubLLM) SetProvider(string, string) error    { return nil }
-func (stubLLM) UnsetProvider(string) error          { return nil }
-func (stubLLM) ResetProvider() error                { return nil }
+func (stubLLM) Model() string                        { return "mock" }
+func (stubLLM) List() []string                       { return nil }
+func (stubLLM) SetProvider(string, string) error     { return nil }
+func (stubLLM) UnsetProvider(string) error           { return nil }
+func (stubLLM) ResetProvider() error                 { return nil }
 func (stubLLM) ProviderInfo() (string, string, bool) { return "", "", false }
 func (stubLLM) ListModels() ([]sdk.ModelInfo, error) { return nil, nil }
-func (stubLLM) SetThinking(sdk.ThinkingLevel)       {}
-func (stubLLM) Thinking() sdk.ThinkingLevel         { return sdk.ThinkingOff }
+func (stubLLM) SetThinking(sdk.ThinkingLevel)        {}
+func (stubLLM) Thinking() sdk.ThinkingLevel          { return sdk.ThinkingOff }
 
 type stubLoop struct{}
 

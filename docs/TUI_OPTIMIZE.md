@@ -3,8 +3,11 @@
 > 状态:✅ S1.1/S1.2/S1.3/S1.5/S1.6 已实施;✅ S1.4 Markdown 轻渲染已实施
 > (assistant 行 token 级粗体/行内 code/标题/列表/分隔线,折叠后逐 token 着色,字符无损);
 > ✅ S2.1 消息分组已实施(工具行双写去重 + 重放跨轮细分隔线 + 结果单行截断);
-> ⏳ 折叠交互“⚙ 默认折叠/点击展开”依赖 S2.2 渲染组件化后接入(state 折叠集合 + 鼠标单击
-> 命中折叠行 toggle;现工具行去重后一轮多工具不再双写占屏,等效接近折叠目标);S3 见下。
+> ✅ S2.2 组件化第一步已实施(tui/chrome.go:输入行/提示区/状态栏从 render.go 抽离为无状态
+> 纯函数,chrome_test.go 分段单测;render.go 聚焦会话流 479 行)+ 折叠交互已实施
+> (tool 结果行存 Full 全文(foldFullLimit 4KB 保护),State.FoldOpen + 鼠标单击 toggle 展开/收起,
+> 视图 flattenViewLines 几何一致;fold_test.go 6 项单测);
+> ⏳ S2.2 剩余:会话流引擎进一步拆模(render 内滚动条/窗口逻辑独立文件);S3 见下。
 > 参考对象:`@earendil-works/pi-tui`(0.85.0,差分渲染 TUI 库)与 pi agent 会话界面;
 > 本规划只借鉴**交互/布局/结构理念**,实现仍在 gah 的 bubbletea v2 + lipgloss 技术栈内(Go),
 > 不引入 JS/pi-tui 代码。排期见 [ROADMAP.md](ROADMAP.md)。

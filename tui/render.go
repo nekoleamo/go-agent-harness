@@ -7,8 +7,6 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
-
-	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
 var (
@@ -19,7 +17,7 @@ var (
 	styleError  = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
 	stylePrompt = lipgloss.NewStyle().Foreground(lipgloss.Color("207")).Bold(true)
 	styleStatus = lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
-	styleBusy   = lipgloss.NewStyle().Foreground(lipgloss.Color("214")) // 运行中状态高亮(琥珀色,醒目)
+	styleBusy   = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))            // 运行中状态高亮(琥珀色,醒目)
 	stylePick   = lipgloss.NewStyle().Foreground(lipgloss.Color("207")).Bold(true) // 选择器高亮行
 	styleCursor = lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true) // 输入块光标(琥珀)
 	// 滚动条:滑块(琥珀)与轨道(灰)——会话流超过窗口时右侧显示,位置反映浏览进度
@@ -85,7 +83,9 @@ func Render(s *State, width, height int) string {
 	// 会话流:逻辑行展平为物理显示行(按 \n 分段 + 终端列宽折行)。
 	// 一条 Line 的文本可能含换行(多段回复/长新闻),直接当单行渲染会撑爆窗口——
 	// 这里拆成与终端物理行一一对应的行,滚动窗口按物理行计算。
-	rows := flattenLines(s.Lines, colW)
+	// S2.2 折叠视图:已展开的结果行(lineIdx FoldOpen)用 Full 参与展平(全文多行);
+	// 未展开保持 Text 摘要单行。搜索/鼠标命中仍以 Lines 摘要为基准(见 searchHitLine)。
+	rows := flattenViewLines(s, colW)
 	total := len(rows)
 	if total > 0 {
 		s.flatN = total // 刷新展平行数(ScrollBy 上限钳制用)
@@ -143,77 +143,9 @@ func Render(s *State, width, height int) string {
 	}
 	main := strings.Join(body, "\n")
 
-	// 输入区:光标按 Cursor 位置渲染(块光标插入在光标处,前后分半)
-	input := stylePrompt.Render("❯ ")
-	runes := []rune(s.Input)
-	c := s.Cursor
-	if c < 0 {
-		c = 0
-	}
-	if c > len(runes) {
-		c = len(runes)
-	}
-	input += string(runes[:c]) + styleCursor.Render("█") + string(runes[c:])
-	// 双按退出武装提示(防误触):第一次 Ctrl+C(输入为空)后高亮提醒再按一次才彻底退出
-	if s.QuitArmed {
-		input += " " + styleBusy.Render("⚠ 再按一次 Ctrl+C 彻底退出 (2s)")
-	}
-
-	// 命令提示区(输入 / 前缀时显示;选择器激活时高亮当前项)
-	var hints []string
-	for i := 0; i < hintRows; i++ {
-		hints = append(hints, hintItems[i])
-	}
-	if len(hintItems) > maxHintRows {
-		hints = append(hints, styleMeta.Render("…"))
-	}
-
-	// 状态段:回合运行中前置像素循环 logo(旋转帧)高亮显示“思考中/执行工具”,
-	// 提交回车即置 Running → 立即可见(不依赖事件广播时序);空闲灰字。
-	state := "空闲"
-	runningStyle := styleStatus
-	if s.Running {
-		frame := spinnerFrame(s.SpinnerIdx)
-		if s.LastTool != "" {
-			state = frame + " 执行工具: " + s.LastTool
-		} else {
-			state = frame + " 思考中"
-		}
-		state += " (Esc 取消)"
-		runningStyle = styleBusy // 运行态高亮(醒目,一眼看到当前状态)
-	}
-	state = runningStyle.Render(state)
-	sess := ""
-	if s.Session != "" {
-		sess = " | 会话: " + s.Session
-	}
-	// 上下文使用率 / 缓存命中率(host-usage-stats 统计;无请求时显示 -)。
-	// 窗口已知(>0):显示 使用量/总量 与百分比;窗口未知(0,未知/空模型):只显示使用量,
-	// 不显示总量与百分比(不假精确)。缓存命中率与窗口无关,有命中即显示。
-	stats := " | 上下文 -"
-	if s.Stats.Requests > 0 {
-		used := s.Stats.PromptTokens
-		if w := s.Stats.Window; w > 0 {
-			stats = fmt.Sprintf(" | 上下文 %s/%s (%d%%) ", fmtK(used), fmtK(w), used*100/w)
-		} else {
-			stats = fmt.Sprintf(" | 上下文 %s ", fmtK(used)) // 窗口未知:仅使用量
-		}
-		if s.Stats.CachedTokens > 0 {
-			stats += fmt.Sprintf("缓存 %d%%", s.Stats.CachedTokens*100/s.Stats.PromptTokens)
-		}
-	}
-	think := ""
-	if s.Thinking != "" && s.Thinking != "off" {
-		think = " | 思维: " + s.Thinking
-	}
-	status := styleStatus.Render(fmt.Sprintf(
-		" gah | %s | %s | 工作区: %s | 模型: %s%s | 沙箱: %s%s%s%s",
-		state, s.Profile, orDefault(s.Workspace, "?"), orDefault(s.Model, "未设置"), think, orDefault(s.Sandbox, string(sdk.SandboxWorkspace)), sess, stats, strings.Repeat(" ", width),
-	))
-
-	bottom := []string{input}
-	bottom = append(bottom, hints...)
-	bottom = append(bottom, status)
+	bottom := []string{renderInputLine(s, width)}
+	bottom = append(bottom, renderHintLines(s, hintItems, hintRows)...)
+	bottom = append(bottom, renderStatusLine(s, width))
 	return lipgloss.JoinVertical(lipgloss.Left, main, strings.Join(bottom, "\n"))
 }
 
@@ -284,15 +216,22 @@ func (s *State) selRange(gRow int) (active bool, c0, c1 int) {
 // 搜索高亮颜色:命中行暗背景、当前命中琥珀背景(醒目,与选区反色叠加。
 // lipgloss.Background 用 256 色索引,与 24 位色共存)。
 const (
-	searchBg     = "238" // 命中行背景(暗)
-	searchCurBg  = "214" // 当前命中背景(琥珀,醒目)
+	searchBg    = "238" // 命中行背景(暗)
+	searchCurBg = "214" // 当前命中背景(琥珀,醒目)
 )
 
 // renderSessionRow 渲染会话流物理行:kind 基础样式 + 搜索命中整行背景(当前命中更亮)
 // + 鼠标选区反色段(命中/选区可同时存在)。
 // S1.4 Markdown 轻渲染:assistant 行无搜索命中/无选区时走 mdAnnotateRow(token 分段着色);
 // 命中/选区叠加时回落纯文本渲染(色文本不含在反色/背景几何内,轻渲染以可交互优先)。
+// S2.2 折叠:结果行首物理行带折叠提示尾缀(未展开 ▲ 可点展开 / 已展开 ▼ 可点收起)。
 func renderSessionRow(p physRow, s *State, gRow int) string {
+	// 折叠/展开提示尾缀(结果行 Full 非空):展开态或折叠态均标记可点击切换。
+	if mark := foldMarkFor(s, p); mark != "" {
+		if !s.searchHitLine(p.lineIdx) && !s.SelActive {
+			return stRenderText(s, p, gRow, mark)
+		}
+	}
 	if p.kind == "assistant" && !s.searchHitLine(p.lineIdx) && !s.SelActive {
 		if styled := mdAnnotateRow(p.text, styleAsst.GetForeground()); styled != "" {
 			return styled
@@ -339,11 +278,39 @@ func renderSessionRow(p physRow, s *State, gRow int) string {
 	return sb.String()
 }
 
+// foldMarkFor 折叠行(结果行 Full 非空)的物理行尾缀提示:仅逻辑行首物理行附加标记。
+// 空 = 非折叠行/非首物理行(其余物理行不重复标注)。
+func foldMarkFor(s *State, p physRow) string {
+	if !p.first {
+		return ""
+	}
+	if p.lineIdx < 0 || p.lineIdx >= len(s.Lines) {
+		return ""
+	}
+	ln := s.Lines[p.lineIdx]
+	if ln.Full == "" {
+		return "" // 非结果行(无可展开全文)
+	}
+	if s.foldOpenOf(p.lineIdx) {
+		return " ▼" // 已展开:可点收起
+	}
+	return " ▲" // 折叠:可点展开
+}
+
+// stRenderText 渲染带折叠标记的普通文本行(不叠加 md/搜索/选区——折叠行交互优先)。
+func stRenderText(s *State, p physRow, gRow int, mark string) string {
+	st := styleForKind(p.kind)
+	// 在首物理行文本后追加可点击标记(颜色弱化),方便识别可切换行
+	_ = gRow
+	return st.Render(p.text + mark)
+}
+
 // physRow 会话流物理显示行:kind 决定着色;text 已含首行前缀(❯)且宽度 ≤ 内容列宽。
 type physRow struct {
-	kind   string
-	text   string
-	lineIdx int // 归属逻辑行(Lines 索引;搜索命中/高亮定位用)
+	kind    string
+	text    string
+	lineIdx int  // 归属逻辑行(Lines 索引;搜索命中/高亮定位用)
+	first   bool // 该逻辑行首物理行(折叠标记/搜索定位只在首行)
 }
 
 // padRow 把行文本对齐到内容列宽(colW):不足补空格,超限截断(折行已保证不超)。
@@ -356,23 +323,46 @@ func padRow(text string, colW int) string {
 func flattenLines(lines []Line, colW int) []physRow {
 	var rows []physRow
 	for li, ln := range lines {
-		segs := strings.Split(ln.Text, "\n")
-		for si, seg := range segs {
-			limit := colW
-			if si == 0 && ln.Kind == "user" {
-				limit = colW - 2 // 首行挂 "❯ " 前缀,可用宽减 2
+		rows = append(rows, flattenLine(li, ln, colW)...)
+	}
+	return rows
+}
+
+// flattenViewLines 折叠感知的会话流展平:已展开的结果行(lineIdx ∈ FoldOpen)以 Full 全文
+// 参与展平(多物理行),其余行用摘要 Text;折叠行的摘要尾缀提示可展开。
+func flattenViewLines(s *State, colW int) []physRow {
+	var rows []physRow
+	for li, ln := range s.Lines {
+		text := ln.Text
+		if ln.Full != "" && s.foldOpenOf(li) {
+			text = ln.Full // 展开:全文(可能多段多行)
+		} else if ln.Full != "" && !strings.Contains(ln.Text, "…") {
+			// 折叠提示:内容确被截断(摘要无省略号说明其实很短——无需展开提示)
+		}
+		rows = append(rows, flattenLine(li, Line{Kind: ln.Kind, Text: text}, colW)...)
+	}
+	return rows
+}
+
+// flattenLine 单逻辑行 → 物理行序列。
+func flattenLine(li int, ln Line, colW int) []physRow {
+	var rows []physRow
+	segs := strings.Split(ln.Text, "\n")
+	for si, seg := range segs {
+		limit := colW
+		if si == 0 && ln.Kind == "user" {
+			limit = colW - 2 // 首行挂 "❯ " 前缀,可用宽减 2
+		}
+		if limit < 1 {
+			limit = 1
+		}
+		parts := wrapSegment(seg, limit)
+		for pi, p := range parts {
+			t := p
+			if si == 0 && pi == 0 && ln.Kind == "user" {
+				t = "❯ " + p
 			}
-			if limit < 1 {
-				limit = 1
-			}
-			parts := wrapSegment(seg, limit)
-			for pi, p := range parts {
-				t := p
-				if si == 0 && pi == 0 && ln.Kind == "user" {
-					t = "❯ " + p
-				}
-				rows = append(rows, physRow{kind: ln.Kind, text: t, lineIdx: li})
-			}
+			rows = append(rows, physRow{kind: ln.Kind, text: t, lineIdx: li, first: si == 0 && pi == 0})
 		}
 	}
 	return rows

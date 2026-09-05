@@ -178,4 +178,3 @@ func mdTokens(text string, baseFg color.Color) string {
 func mdCode(inner string) string {
 	return lipgloss.NewStyle().Foreground(mdCodeFg).Render(inner)
 }
-

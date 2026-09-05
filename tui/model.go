@@ -41,20 +41,21 @@ type Model struct {
 
 	quitArmed bool // 双按退出武装中:第一次 Ctrl+C(输入为空)后待第二次确认
 
-	lastWheel    time.Time // 滚轮事件节流:kitty 平滑滚轮/触摸板一次手势可发成百上千事件,
+	lastWheel time.Time // 滚轮事件节流:kitty 平滑滚轮/触摸板一次手势可发成百上千事件,
 	// 不经节流会“滚一下停不下来”(每事件都滚)→ 限制处理频率(wheelThrottle)。
-	wheelGesture int       // 本滚轮手势累计事件数(超时未滚或方向反转 = 新手势清零)
-	wheelDir     int       // 本滚轮手势方向(1=上,-1=下;方向反转即新手势——防 cap 挡住用户换向)
-	dragBar      bool  // 滚动条滑块拖动中(命中滑块按下;motion 按比例跟手)
-	dragY        int   // 拖动锚点 Y(按下时鼠标在会话流区的行号)
-	dragOff      int   // 拖动锚点 ScrollOffset(按下时)
+	wheelGesture int      // 本滚轮手势累计事件数(超时未滚或方向反转 = 新手势清零)
+	wheelDir     int      // 本滚轮手势方向(1=上,-1=下;方向反转即新手势——防 cap 挡住用户换向)
+	dragBar      bool     // 滚动条滑块拖动中(命中滑块按下;motion 按比例跟手)
+	dragY        int      // 拖动锚点 Y(按下时鼠标在会话流区的行号)
+	dragOff      int      // 拖动锚点 ScrollOffset(按下时)
 	selRows      []string // 鼠标划选期间展平行文本缓存(press 时取,避免 motion 高频重复 flatten)
+	selLineIdx   []int    // 与 selRows 平行的逻辑行索引(press 缓存;单击折叠命中用)
 	selMoved     bool     // 本次划选是否有位移(释放时判定点击 vs 拖动)
-	skipView     bool      // 本 Update 未改渲染输入:View 返回缓存,快速消化滚轮事件风暴
+	skipView     bool     // 本 Update 未改渲染输入:View 返回缓存,快速消化滚轮事件风暴
 	// (风暴事件逐个进队列,即使节流丢弃也走完整 Update→View;缓存让丢弃事件几乎零开销,
 	// 键盘/Ctrl+C 不必在成百滚轮事件后排长队)。
-	cacheContent string // View 缓存(仅 skipView 命中时复用)
-	cacheSet     bool
+	cacheContent   string // View 缓存(仅 skipView 命中时复用)
+	cacheSet       bool
 	cacheW, cacheH int
 
 	onSubmit        func(input string)               // 普通输入提交(注入)
@@ -77,13 +78,13 @@ const spinInterval = 120 * time.Millisecond
 const quitConfirmWindow = 2 * time.Second
 
 // 滚轮节流与手势上限:
-// - wheelStep:滚轮一格滚动行数(步进小=滚动更细腻/丝滑;↑/↓ 逐行精确浏览不受影响);
-// - wheelThrottle:两次实际滚动最小间隔(平滑滚轮/触摸板高频事件;越短帧率越高越丝滑,
-//   33Hz×2 行 ≈ 66 行/s — 与 50ms×3 行同吞吐但视觉平滑一倍);
-// - gestureReset:距上次实际滚动超过该时长 = 新的一次手势(累计清零);
-// - gestureCap:单次连续手势(含触控板惯性/长滑)最多处理事件数,超出即丢弃——
-//   防“滚一下一直滚、无法打断”(约 gestureCap×wheelStep 行/手势)。
-// - barHideDelay:滚动条交互后静止超时(隐藏;鼠标悬停期间不隐藏)。
+//   - wheelStep:滚轮一格滚动行数(步进小=滚动更细腻/丝滑;↑/↓ 逐行精确浏览不受影响);
+//   - wheelThrottle:两次实际滚动最小间隔(平滑滚轮/触摸板高频事件;越短帧率越高越丝滑,
+//     33Hz×2 行 ≈ 66 行/s — 与 50ms×3 行同吞吐但视觉平滑一倍);
+//   - gestureReset:距上次实际滚动超过该时长 = 新的一次手势(累计清零);
+//   - gestureCap:单次连续手势(含触控板惯性/长滑)最多处理事件数,超出即丢弃——
+//     防“滚一下一直滚、无法打断”(约 gestureCap×wheelStep 行/手势)。
+//   - barHideDelay:滚动条交互后静止超时(隐藏;鼠标悬停期间不隐藏)。
 const (
 	wheelStep     = 2
 	wheelThrottle = 30 * time.Millisecond
@@ -436,14 +437,18 @@ func (m *Model) handleMousePress(mo tea.Mouse) {
 	m.state.SelActive = false
 	m.selMoved = false
 	m.selRows = nil
-	rows := flattenLines(m.state.Lines, m.mouseColW())
+	m.selLineIdx = nil
+	rows := flattenViewLines(m.state, m.mouseColW())
 	m.selRows = make([]string, len(rows))
+	m.selLineIdx = make([]int, len(rows))
 	for i, p := range rows {
 		m.selRows[i] = p.text
+		m.selLineIdx[i] = p.lineIdx
 	}
 	r := m.mouseRowAt(mo.Y)
 	if r < 0 || r >= len(m.selRows) {
 		m.selRows = nil
+		m.selLineIdx = nil
 		return
 	}
 	m.state.SelRow0, m.state.SelCol0 = r, colAt(m.selRows[r], mo.X)
@@ -517,7 +522,7 @@ func (m *Model) searchRun(q string) string {
 
 // searchGoto 定位到命中逻辑行:其展平首个物理行放窗口顶(可看下文)。
 func (m *Model) searchGoto(lineIdx int) {
-	rows := flattenLines(m.state.Lines, m.mouseColW())
+	rows := flattenViewLines(m.state, m.mouseColW())
 	first := -1
 	for i, p := range rows {
 		if p.lineIdx == lineIdx {
@@ -566,9 +571,21 @@ func (m *Model) handleMouseRelease(mo tea.Mouse) {
 				writeClipboardOSC52(text)
 			}
 		} else {
-			m.state.SelActive = false // 单击:清除
+			// 单击:若命中可折叠结果行(全文 Full)则切换展开/收起(几何变化),否则清除选区。
+			idx := -1
+			if m.selLineIdx != nil {
+				r := m.state.SelRow0
+				if r >= 0 && r < len(m.selLineIdx) {
+					idx = m.selLineIdx[r]
+				}
+			}
+			if idx >= 0 && idx < len(m.state.Lines) && m.state.Lines[idx].Full != "" && m.state.ToggleFold(idx) {
+				m.skipView = false // 几何变化:强制重渲染(不再复用缓存)
+			}
+			m.state.SelActive = false // 单击清除(不论是否 toggle)
 		}
 		m.selRows = nil
+		m.selLineIdx = nil
 		m.selMoved = false
 		return
 	}
@@ -797,6 +814,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			// 有鼠标划选:Esc 清除选区(不中断回合)
 			m.state.SelActive = false
 			m.selRows = nil
+			m.selLineIdx = nil
 			m.selMoved = false
 		} else {
 			// Esc:中断进行中的回合(取消链:turn → LLM 流 → 工具进程)

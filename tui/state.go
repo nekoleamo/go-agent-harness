@@ -14,7 +14,8 @@ import (
 type Line struct {
 	Kind      string // user|assistant|tool|meta|error
 	Text      string
-	Streaming bool // assistant 流式增量中
+	Full      string // S2.2:折叠行全文(tool 结果超长时存原文,展开切换)
+	Streaming bool   // assistant 流式增量中
 }
 
 // State TUI 展示状态(事件驱动,线程安全由调用方保证)。
@@ -27,16 +28,16 @@ type State struct {
 	Input          string
 	Cursor         int
 	LastTool       string
-	Sandbox        string   // 沙箱档位显示(read-only|workspace-write|full-access)
-	PendingConfirm string   // 非空 = 有待确认的危险操作(确认弹层)
-	Suggestions    []string // 输入 / 前缀时的命令提示(注册表过滤结果,渲染于输入行下方)
-	Pick           *Pick    // 非空 = 交互式选择器激活(↑/↓ 移动,Enter 应用)
-	PickDismissed  bool     // Esc/断点后抑制自动激活,直至输入变化
-	QuitArmed      bool     // 双按退出武装中:第一次 Ctrl+C(输入为空)后待第二次确认(输入行提示)
-	SpinnerIdx     int      // 思考动画帧索引(回合运行中 tick 推进)
-	Workspace      string   // 当前工作区显示(启动时 cwd 目录名)
-	Thinking       string   // 思考等级显示(off 空;Tab/Shift+Tab 切换)
-	Session        string   // 当前会话 id 显示(空 = 主会话;状态栏)
+	Sandbox        string         // 沙箱档位显示(read-only|workspace-write|full-access)
+	PendingConfirm string         // 非空 = 有待确认的危险操作(确认弹层)
+	Suggestions    []string       // 输入 / 前缀时的命令提示(注册表过滤结果,渲染于输入行下方)
+	Pick           *Pick          // 非空 = 交互式选择器激活(↑/↓ 移动,Enter 应用)
+	PickDismissed  bool           // Esc/断点后抑制自动激活,直至输入变化
+	QuitArmed      bool           // 双按退出武装中:第一次 Ctrl+C(输入为空)后待第二次确认(输入行提示)
+	SpinnerIdx     int            // 思考动画帧索引(回合运行中 tick 推进)
+	Workspace      string         // 当前工作区显示(启动时 cwd 目录名)
+	Thinking       string         // 思考等级显示(off 空;Tab/Shift+Tab 切换)
+	Session        string         // 当前会话 id 显示(空 = 主会话;状态栏)
 	Stats          sdk.UsageStats // 会话 token 统计(回合结束刷新;状态栏显示使用率/缓存命中率)
 
 	// ScrollOffset 会话流上滚物理行数(0 = 跟随最新;>0 = 浏览历史),渲染时钳制。
@@ -68,6 +69,10 @@ type State struct {
 
 	// flatN 最近一次渲染展平出的会话流物理行数(含折行;ScrollBy 上限钳制用,渲染后刷新)。
 	flatN int
+
+	// S2.2 工具结果行折叠:foldOpen 记录已展开的逻辑行(lineIdx → true)。
+	// 默认折叠(摘要单行显示);鼠标单击结果行展开查看完整内容(Line.Full)。
+	FoldOpen map[int]bool
 
 	// S1.3 输入增强:历史/undo/编辑快捷键。
 	// CmdHistory 本进程已提交的斜杠命令(命令不入会话 Lines,单独记录补历史源;
@@ -118,18 +123,29 @@ func (s *State) ApplySessionEvent(ev *sdk.SessionEvent) {
 		if r, ok := ev.Payload.(sdk.ToolResultEvent); ok {
 			s.LastTool = "" // 工具完成:回“思考中”
 
-			sum := r.Content
-			if len(sum) > 160 {
-				sum = sum[:160] + "…"
-			}
 			kind := "tool"
 			label := "✓"
+			full := r.Content
 			if r.Error != "" {
 				kind = "error"
 				label = "✗"
-				sum = r.Error
+				full = r.Error
 			}
-			s.Lines = append(s.Lines, Line{Kind: kind, Text: label + " " + r.Name + ": " + sum})
+			// 摘要行(S2.1 单行截断);完整内容存 Full(上限防爆,会话日志仍是事实源)。
+			// S2.2 折叠:结果行可点击展开/收起(见 state.foldOpen)。
+			sum := full
+			if len(sum) > 160 {
+				sum = sum[:160] + "…"
+			}
+			sum = strings.ReplaceAll(sum, "\n", " ") // 摘要强制单行(多段折行由展开查看)
+			if len(sum) > 160 {
+				sum = sum[:160] + "…"
+			}
+			stored := full
+			if len(stored) > foldFullLimit {
+				stored = stored[:foldFullLimit] + "…(截断,完整见会话日志)"
+			}
+			s.Lines = append(s.Lines, Line{Kind: kind, Text: label + " " + r.Name + ": " + sum, Full: stored})
 		}
 	case sdk.EventTurnEnd:
 		s.Lines = append(s.Lines, Line{Kind: "meta", Text: "—— 轮次结束 ——"})
@@ -470,6 +486,29 @@ func toolCallText(tc sdk.ToolCall) string {
 		args = args[:80] + "…"
 	}
 	return "⚙ " + tc.Name + " " + args
+}
+
+// foldFullLimit Line.Full 存储上限(超长工具结果防 TUI 内存/渲染爆;会话日志是事实源)。
+const foldFullLimit = 4096
+
+// ToggleFold 切换工具结果行的展开/折叠(仅结果行有 Full 时有效)。返回切换是否生效。
+func (s *State) ToggleFold(lineIdx int) bool {
+	if lineIdx < 0 || lineIdx >= len(s.Lines) {
+		return false
+	}
+	if s.Lines[lineIdx].Full == "" {
+		return false // 无全文(未折叠行/调用行):不响应
+	}
+	if s.FoldOpen == nil {
+		s.FoldOpen = map[int]bool{}
+	}
+	s.FoldOpen[lineIdx] = !s.FoldOpen[lineIdx]
+	return true
+}
+
+// foldOpenOf 逻辑行是否展开(结果行 Full 非空默认折叠)。
+func (s *State) foldOpenOf(lineIdx int) bool {
+	return s.FoldOpen != nil && s.FoldOpen[lineIdx]
 }
 
 // ApplyReplay 重放历史事件到展示层(/session switch 切换会话后)。
