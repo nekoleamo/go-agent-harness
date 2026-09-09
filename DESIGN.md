@@ -343,12 +343,11 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 >
 > **实施排期**:P0 ✅、P1 ✅、P2 ✅、P3 ✅、P4 ✅ 均已交付(P0:划选/搜索/滚动条/输入增强 + M8-T1 + M10 + /workspace;P1:S1.4/S2.1 + M9.1 + M11-T1;P2:S2.2/S3.2 + M9.2/9.3 + M11-T2 + S3.1 决策方案 A;P3:M7 Web UI 全家桶 + M7.2 槽位 + M7.3 WS + M8-T2 展示联动 + M13/M14/M16,完成于 2026-09)。
 
-> **当前未实施清单(2026-09-09 三端全面检查登记,⏳ 待执行,按序开工)**:
-> ⏳ **Q1 三端 bug 修复**:① `web-src/components/JobsPanel.vue` 轮询不随面板开合——timer 在 onMounted 常驻启动、仅关窗不停止(组件常驻、内部 v-if 控制显示),关闭后仍每 3s 打 `/api/jobs` 浪费请求 → 改 `watch(open)` 启停(与注释“开窗时 3s 轮询”一致,App 的 5s 徽标轮询保留);② `plugins/host/host-backup/backup.go` `backupCmd` 对 `/backup ~/<名>` 的 `~` **未展开**(直接 os.Create 落字面 `~` 目录,与 `/workspace` 的 `~` 展开不一致)→ 复用 host-internal-commands 同款展开逻辑。
-> ⏳ **Q2 web 端 token 化**:web 组件 26 处散写裸色值(`#fdf3f3/#f3c1c2/#e6f6ee/#fef6ec/#b45309` 等)违反 AGENTS.md「组件不得散写裸色值」→ style.css 补语义 soft token(`--ok-soft/--err-soft/--tool-soft` 等)统一引用(taste skill 评审后实施)。
-> ⏳ **Q3 注释与加固**:① `desktop/src-tauri/src/main.rs` 注释仍写「GAH_HOME 不设=共享 ~/.gah」,便携根已是二进制同级 `gah-data` → 注释同步(代码行为正确);② `web/server.go` SSE 可加 `retry:` 指令与 `X-Content-Type-Options: nosniff`(仅本机绑定风险低,属加固)。
-> ⏳ **Q4 提交纪律**:工作区 146 个文件未提交(**含 M17/M18 代码 + seed-version 11**),建议 Q1–Q3 完成后一并提交防漂移。
-> 验收:Q1 面板关闭不再轮询、/backup ~/ 路径正确落盘;Q2 无散写裸色值(taste 评审);Q3 注释准确/头加固;全库 -race 绿。
+> **当前未实施清单:已清零(2026-09-09 登记 Q1–Q4 四项,2026-09-16 全交付 ✅)**。
+> ✅ **Q1 三端 bug 修复** 已交付:① `web-src/src/components/JobsPanel.vue` 轮询改 `watch(open)` 启停(immediate 首开即拉,关窗 clearInterval,组件常驻/v-if 控显语义不变,App 5s 徽标轮询未动);② `plugins/host/host-backup/backup.go` `backupCmd` 对 `/backup ~/<名>` 展开 `~`(复用 host-internal-commands 同款逻辑,os.UserHomeDir + TrimPrefix;dest 与展示分支同用展开值)。
+> ✅ **Q2 web 端 token 化** 已交付:style.css 补 `--ok-soft/--err-soft/--err-line/--tool-soft/--tool-line/--tool-strong/--overlay/--fg-on-accent` 八枚 token(soft 系浅背景/浅边框/深字、遮罩统一 0.28、accent 钮反白);App/ConfirmDialog/ConfirmBar/InputBar/JobsPanel/SettingsPanel/Sidebar/StreamView 八组件 29 处裸色值(含 rgba 遮罩 4 处)全部 token 化,`grep '#..|rgba'` 组件目录零残留(存量 style.css 内仅剩 token 定义与全局 tooltip 基础样式);vue-tsc + vite build 通过。
+> ✅ **Q3 注释与加固** 已交付:① `desktop/src-tauri/src/main.rs` 两处注释同步为便携根解析链(GAH_HOME env > 二进制同级 gah-data/(首启自动新建)> ~/.gah > TempDir),代码行为不变;② `web/server.go` SSE 增 `retry: 3000` 断线重连指令(与 Last-Event-ID 续传配合)+ `X-Content-Type-Options: nosniff`。
+> ✅ **Q4 提交纪律** 已交付:Q1–Q3 + M17/M18 + seed-version 11 一并落库(`2e69e16`,216 文件;**纠偏:.gitignore 原只忽略 `/web-src/node_modules/`,示例 UI 插件 `web-src/examples/*/node_modules`(2145 文件)裸入库风险→补 `web-src/examples/**/node_modules/` 规则**,清除 ci.yml.snip 0 字节残留);Q1 补单测 TestBackupCmdTildeExpand(`bcf349d`);全库 45 包 `go test -race -count=1` 全绿 + go vet 通过,工作区干净。
 
 | 项 | 内容 | 验收 |
 |---|---|---|
