@@ -4,10 +4,10 @@
 > 状态图例:`🧭 待执行`(已确认、按序开工)/ `⏳ 暂缓或按需` / `🚧 规划定稿` / `✅ 已闭环`。
 > 权威细节:DESIGN §14.1 交付表与未实施清单、docs/ROADMAP.md、docs/WEB_ATTACHMENTS_PLAN.md、docs/DESKTOP_FEASIBILITY.md。
 
-## 执行总览(2026-09-09 更新:三端全面检查登记 Q 组待执行;其余已交付)
+## 执行总览(2026-09-16 更新:Q/R 组三端检查全交付;未实施清单清零;待办仅 C 组发行流程明确暂缓)
 
 ```
-Q 组:2026-09-09 三端全面检查登记(⏳ 待执行)——Q1 三端 bug 修复/ Q2 web token 化 / Q3 注释加固 / Q4 提交纪律,详见 DESIGN §14.1 未实施清单
+Q 组:2026-09-09 三端全面检查登记 → 2026-09-16 全交付 ✅(Q1 轮询/~ 展开/Q2 token 化/Q3 注释加固/Q4 提交;R5 复查 + R6 观察项完善),详见 DESIGN §14.1 未实施清单
 ```
 
 ```
@@ -19,7 +19,7 @@ Q 组:2026-09-09 三端全面检查登记(⏳ 待执行)——Q1 三端 bug 修�
 6. C1 桌面壳 P1 ✅(已交付);C2/C3 发行流程 ⏳ 明确暂缓(用户决定暂不走发行流程),enabled 条件:证书/CI/更新通道就绪
 ```
 
-> 当前待办(= ⏳):**Q 组三端检查修复(Q1–Q4,2026-09-09 登记,待执行)** + C 组桌面壳(C2/C3 明确暂缓)。B/C0/M17/M18 历史交付见下各表与 DESIGN §14.1。
+> 当前待办(= ⏳):**仅 C 组发行流程(C2 mac 签名公证 + win NSIS + CI 矩阵 / C3 updater 更新通道,用户明确暂缓)**。A/B/C0/C1/Q/R/M17/M18/policy-guard 历史交付见下各表与 DESIGN §14.1,未实施清单已清零。
 
 ## A 组 · Web 附件/输入快捷键(✅ 已交付 2026-09,登记 DESIGN §14.1 / VERIFY)
 
@@ -34,7 +34,7 @@ Q 组:2026-09-09 三端全面检查登记(⏳ 待执行)——Q1 三端 bug 修�
 | A5 | F5 TUI 键补全(Ctrl+A/B/F/Y)+ F6 兼容矩阵 | M | ✅ |
 | A6 | F7 文档纪律登记(DESIGN §14.1 / VERIFY 矩阵 / 本文档) | S | ✅ |
 
-## B 组 · DESIGN §14.1 二期待办(⏳ 按序)
+## B 组 · DESIGN §14.1 二期(B1–B5 全部 ✅ 已交付 2026-09)
 
 | 编号 | 项 | 量级 | 建议 |
 |---|---|---|---|
@@ -44,7 +44,7 @@ Q 组:2026-09-09 三端全面检查登记(⏳ 待执行)——Q1 三端 bug 修�
 | B4 | mcp-bridge server 崩溃看护 | M | ✅ 已交付 2026-09:holder.supervise(60s 节流 respawn)+ mcpTool 经 current() 恒取活动连接 + TestHolderRespawnOnCrash |
 | B5 | UI 槽位 v2(设置/侧栏/附加面板扩展点) | L | ✅ 已交付 2026-09:registry v2 三扩展点(settings-section/sidebar-action/extra-panel,多实例追加)+ 加载器分派 + 三落点(SettingsPanel/Sidebar/App 抽屉)+ 安装侧白名单扩 + extension-demo 示例;全库 43 包 -race 绿(登记 DESIGN「B5 UI 槽位 v2」)
 
-## C 组 · 桌面壳(⏳ 暂缓,按需启用)
+## C 组 · 桌面壳(C0/C1 壳工程 ✅ 已交付;C2/C3 发行流程 ⏳ 暂缓,按需启用)
 
 规划:docs/DESKTOP_FEASIBILITY.md;前置已交付:`POST /api/shutdown`(跨平台优雅停机,已登记 §14.1)。
 

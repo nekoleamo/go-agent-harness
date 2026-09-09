@@ -48,7 +48,7 @@
 | 13 ✅ | **M9.2 控制组+背景** | ⚠️ M9.1 | M | ✅ 已交付:后台 delegate 带手柄(spawn/agents/agent_status/agent_kill)+ **M9.3 send_message/fork(2026-09)**:接口扩展(Fork/SendMessage/AgentHandle.Messages)+ fanout 引擎 inbox/dialog/seed(运行循环每步 drain 注入,回复经 agent_status.messages 可读)+ 回调协议 send/fork + 工具面 send_message/fork action;全库 -race 绿 | ✅ 可后台委派/列表/查状态/终止/消息引导;fork 继承父上下文 |
 | 14 ✅ | **M11-T2 plan→todo 承接** | ⚠️ M11-T1 + M8-T1 | M | ✅ 已交付:规则文本/Description 增补联动边界(auto_plan 管确认门,确认后执行期由 todo 承接,检查清单转 todo.create,执行完回归档);TestRuleTodoHandoff 等回归 | ✅ 确认门→todo 承接语义清晰 |
 | 15 ⏸️ | **TUI S3.1 主屏 scrollback 模式** | ⚠️ S2.2 组件化 | L | 决策:方案 A 维持现状(暂不实施)。B/C 备选记录在案(docs/TUI_OPTIMIZE.md S3 决策记录),后续再研究 | —(暂缓) |
-| 16 ⏳ | **UI 槽位 v2:设置等新扩展点插件化** | ⚠️ M7.2(v1 契约)+ M16.8 设置面板 | L | v1 仅四槽位(stream/input/statusbar/confirm)可覆盖;v2 将 **设置面板区段、侧栏扩展区、附加面板入口**开放为插件扩展点(registry v2 + manifest 扩展点声明 + 插件可在 App 内注册自定义入口/面板容器;App 骨架中可插拔面收敛为显式槽位)。切片:① 契约扩展(registry v2,向后兼容 v1 插件)② 新槽位落点(设置面板 sections / 侧栏 actions / 附加面板 host)③ 示例插件+文档 | ✅ 第三方 UI 插件可向设置面板/侧栏注入扩展,附加面板与 v1 并存;v1 插件零改动 |
+| 16 ✅ | **UI 槽位 v2:设置等新扩展点插件化** | ⚠️ M7.2(v1 契约)+ M16.8 设置面板 | L | 已交付 2026-09(B5):registry v2 三扩展点(settings-section/sidebar-action/extra-panel,多实例追加)+ 加载器分派 + 三落点(SettingsPanel/Sidebar/App 抽屉)+ 安装侧白名单扩 + extension-demo 示例;登记 DESIGN「B5 UI 槽位 v2」。规划原文:v1 仅四槽位(stream/input/statusbar/confirm)可覆盖;v2 将 **设置面板区段、侧栏扩展区、附加面板入口**开放为插件扩展点 | ✅ 第三方 UI 插件可向设置面板/侧栏注入扩展,附加面板与 v1 并存;v1 插件零改动 |
 
 ## P3(已交付 2026-09:Web 全家桶)
 
