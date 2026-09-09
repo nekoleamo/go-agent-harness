@@ -44,6 +44,7 @@ func TestHomeDirIgnoresEnv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	exe = execRealPath(exe) // 归一(mac /var→/private/var)后作为期望数据根父目录
 	expected := filepath.Join(filepath.Dir(filepath.Clean(exe)), "gah-data")
 	t.Setenv("GAH_HOME", t.TempDir()) // 任意非便携路径
 	got := homeDir()
@@ -66,5 +67,27 @@ func TestPortableRootReadonlyDir(t *testing.T) {
 	defer os.Chmod(binDir, 0o700) // 还原供 TempDir 清理
 	if got := portableRoot(exe); got != "" {
 		t.Fatalf("只读目录应回落空(不可便携): %q", got)
+	}
+}
+
+// TestExecRealPath 符号链接启动时 os.Executable 返回入口链接路径;execRealPath
+// 应归一到真实二进制(数据根随真实目录,pi 式 symlink 全局安装的正确性基础)。
+func TestExecRealPath(t *testing.T) {
+	base := t.TempDir()
+	target := filepath.Join(base, "real-gah")
+	if err := os.WriteFile(target, []byte("bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "link-gah")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink 不可用: %v", err)
+	}
+	realTarget, _ := filepath.EvalSymlinks(target) // mac 归一到 /private/var 前缀
+	if got := execRealPath(link); got != realTarget {
+		t.Fatalf("execRealPath(%q) = %q,want 真实 %q", link, got, realTarget)
+	}
+	// 非链接路径:与 EvalSymlinks 自身结果一致(原样或前缀归一)
+	if got := execRealPath(target); got != realTarget {
+		t.Fatalf("execRealPath 非链接路径应仅前缀归一: %q", got)
 	}
 }

@@ -338,7 +338,9 @@ func isStdinTTY() bool {
 //
 // 任一分支都不落系统根(防根);全部运行数据统一在此单根下。
 func homeDir() string {
-	if exe, err := os.Executable(); err == nil {
+	exe, err := os.Executable()
+	if err == nil {
+		exe = execRealPath(exe) // 符号链接归一:数据根跟随真实二进制(PATH/symlink 启动时一致)
 		if pd := portableRoot(exe); pd != "" {
 			return pd
 		}
@@ -346,7 +348,16 @@ func homeDir() string {
 	return "" // 不可便携:调用方报错退出
 }
 
-// portableRoot 便携数据根解析:给定 gah 二进制路径(经符号链接归一出调用方处理)
+// execRealPath 归一符号链接(PATH 里 ln -s 启动时,os.Executable 返回入口链接路径;
+// 数据根应随真实二进制目录,不随调用入口目录)。
+func execRealPath(exe string) string {
+	if real, err := filepath.EvalSymlinks(exe); err == nil {
+		return real
+	}
+	return exe
+}
+
+// portableRoot 便携数据根解析:给定 gah 二进制路径(已由调用方 execRealPath 归一符号链接)
 // → 同目录 gah-data/。已存在 → 用之;不存在 → MkdirAll 新建(成功后由首启释放填充
 // 内容);创建失败(二进制目录只读/不可写)= 不可便携 → 返回空(调用方报错退出)。
 func portableRoot(exe string) string {

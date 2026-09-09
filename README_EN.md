@@ -62,6 +62,18 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$(git describe 
 ./scripts/gen.sh cli
 ```
 
+### Global install (deploy once, run from any directory, pi-style)
+
+```bash
+# macOS / Linux: build → ~/.local/gah + symlink ~/.local/bin/gah (prompts for PATH when missing)
+bash scripts/install.sh
+# Windows (PowerShell): build → %LOCALAPPDATA%\gah + add to the user PATH (new terminal)
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1
+```
+
+After install, run `gah` / `gah web` / `gah --profile headless -input "…"` from any directory.
+The data root is `gah-data/` next to the real binary (created on first run; a symlinked launch also resolves to the real install dir). Sessions/memory/todo are isolated per project by the current cwd. Upgrade = rerun the script; uninstall = `--uninstall` / `-Uninstall`.
+
 ### Three run forms
 
 ```bash

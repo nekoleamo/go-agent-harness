@@ -63,6 +63,18 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$(git describe 
 ./scripts/gen.sh cli
 ```
 
+### 全局安装(一次部署,任意目录启动,pi 式)
+
+```bash
+# macOS / Linux:构建 → ~/.local/gah + 符号链接 ~/.local/bin/gah(缺 PATH 时自动提示)
+bash scripts/install.sh
+# Windows(PowerShell):构建 → %LOCALAPPDATA%\gah + 加入用户 PATH(新开终端生效)
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1
+```
+
+安装后任意目录直接: `gah` / `gah web` / `gah --profile headless -input "…"`。
+数据根 = 安装目录下 `gah-data/`(首次运行自动创建;符号链接启动亦解析到真实安装目录);会话/记忆/todo 按项目 cwd 自动隔离。升级 = 重跑脚本;卸载 = `--uninstall` / `-Uninstall`。
+
 ### 三种运行形态
 
 ```bash
