@@ -1034,10 +1034,14 @@ func TestShutdownEndpoint(t *testing.T) {
 	if !body.OK || !body.ShuttingDown {
 		t.Fatalf("响应体异常: %+v", body)
 	}
+	// 回调在服务端 Flush 后同步执行,但客户端收到完整 body 即可返回——存在小竞态窗口(CI 稳定复现),轮询等待
+	deadline := time.Now().Add(2 * time.Second)
+	for !fired.Load() && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
 	if !fired.Load() {
 		t.Fatal("OnShutdown 未被触发")
 	}
-
 	// 鉴权保护:auth_token 非空时未带 token → 401 且不触发
 	var fired2 atomic.Bool
 	as, _ := newTestServer()

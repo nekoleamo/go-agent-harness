@@ -163,6 +163,7 @@ func (j *Jobs) Submit(cmdline string) (string, error) {
 	j.add(e)
 	go func() {
 		cmd := exec.Command("/bin/sh", "-c", cmdline)
+		setupCmdGroup(cmd) // 独立进程组(组杀可连带 sh -c 子进程,防孤儿)
 		cmd.Env = sdk.SanitizedEnv(nil) // 凭据隔离:滤除 *_API_KEY/*_TOKEN/*_SECRET
 		var buf bytes.Buffer
 		cmd.Stdout = &buf
@@ -171,7 +172,7 @@ func (j *Jobs) Submit(cmdline string) (string, error) {
 			j.finish(e, sdk.JobFailed, "", err.Error())
 			return
 		}
-		go func() { <-ctx.Done(); _ = cmd.Process.Kill() }() // 终止 = 杀进程
+		go func() { <-ctx.Done(); _ = killCmdGroup(cmd) }() // 终止 = 杀进程组
 		err := cmd.Wait()
 		output := buf.String()
 		if ctx.Err() != nil {
