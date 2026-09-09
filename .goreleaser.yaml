@@ -1,4 +1,5 @@
 # goreleaser 发行配置(DESIGN.md §7.4 交付门:六目标全绿,CGO_ENABLED=0,体积 <40MB)。
+version: 2
 # 使用:安装 goreleaser 后 `goreleaser release` 或 `goreleaser release --snapshot`。
 before:
   hooks:
@@ -27,8 +28,3 @@ archives:
       - LICENSE
 checksum:
   name_template: checksums.txt
-release:
-  github:
-    owner: nekoleamo
-    name: go-agent-harness
-    draft: true
