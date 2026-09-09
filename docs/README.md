@@ -1,32 +1,34 @@
-# docs 文档导航(规划与开发文档单一入口)
+# docs 文档导航(单一入口)
 
-> 项目规划/进度/规约文档分散在各处,本文件为统一索引,避免散乱。
-> 阅读顺序建议:先看「规划总览」→ 对应专项 → 交付状态以 AGENTS 会话状态为准。
+> 项目规划/规约/交付记录分散在各文档,本文件为统一索引,避免散乱。
+> **交付总览以 DESIGN.md §14.1 交付表为准**;跨文档状态冲突时以 DESIGN 为准。
 
-## 规划与排期
-| 文档 | 内容 | 何时看 |
-|---|---|---|
-| [ROADMAP.md](ROADMAP.md) | **全部未完成功能的实施排期总览**(P0–P3 阶段、依赖链、工作量、验收;覆盖 M7–M11 与 TUI S1–S3) | 想知道"下一步做什么/排期" |
-| [DESKTOP_FEASIBILITY.md](DESKTOP_FEASIBILITY.md) | **桌面端(mac/win)可行性报告**(Tauri v2 sidecar 方案;含 spike 实测记录、架构、gah 改动清单、分发矩阵、里程碑) | 桌面壳相关决策/实施时 |
-| [WEB_ATTACHMENTS_PLAN.md](WEB_ATTACHMENTS_PLAN.md) | **Web 附件(图片/文件)与输入快捷键规划**(一期含多模态看图;决策记录、F1–F7 实施清单、风险) | Web 附件/快捷键相关时 |
-| [RELEASE.md](RELEASE.md) | **桌面壳零成本发行**(无 Apple/微软签名;updater ed25519 自持签名 + 发布脚本 + CI 矩阵 + 首次启动放行指引) | 发桌面版/改发布流水线时 |
-| [TODO_OVERVIEW.md](TODO_OVERVIEW.md) | **待完成项统筹总览**(单页:全部待办/暂缓/已闭环 + 执行顺序 + 状态) | 想看“当前有哪些没做、排到哪” |
-| [TUI_OPTIMIZE.md](TUI_OPTIMIZE.md) | **TUI 界面优化专项**(S1 交互补全/S2 质量/S3 形态;含已交付项 ✅ 与滚动/搜索/划选实现细节) | TUI 相关需求/改动时 |
-| DESIGN.md(§14.1) | 里程碑交付细表与未实施清单(规划条目正文) | 查具体规划条目/已交付记录 |
-
-## 交付状态(权威)
+## 核心文档
 | 文档 | 内容 |
 |---|---|
-| AGENTS.md「会话状态」 | **已交付功能完整清单**(M1–M6.20,含 TUI 各项)与红线/测试注意 |
-| DESIGN.md(§14.1 / 交付表) | 与 AGENTS 对应的大表/细表(可能带更多实现细节) |
+| [README.md](../README.md) | 项目门面:定位/功能特性/命令/配置/使用(英文版 [README_EN.md](../README_EN.md),中英同步) |
+| [DESIGN.md](../DESIGN.md) | 完整设计文档;**§14.1 交付表/未实施清单 = 交付记录单一入口** |
+| [AGENTS.md](../AGENTS.md) | 项目硬规范(红线/便携纪律/UI 规范/测试惯例/变更纪律/README 双语同步) |
+
+## 规划与专项
+| 文档 | 内容 | 何时看 |
+|---|---|---|
+| [ROADMAP.md](ROADMAP.md) | 里程碑实施排期(P0–P3 阶段、依赖、验收;历史交付亦登记) | 下一步做什么/排期 |
+| [TODO_OVERVIEW.md](TODO_OVERVIEW.md) | 待办统筹单页(待办/暂缓/已闭环 + 状态与顺序) | 当前哪些没做/排到哪 |
+| [VERIFY.md](VERIFY.md) | 真机验证清单(交互类逐项勾选;Web/桌面节含协议级自动化对照) | 发版前人工验收 |
+| [TUI_OPTIMIZE.md](TUI_OPTIMIZE.md) | TUI 交互优化专项(S1–S3 已交付项与滚动/搜索/划选实现细节) | TUI 相关需求/改动 |
+| [WEB_ATTACHMENTS_PLAN.md](WEB_ATTACHMENTS_PLAN.md) | Web 附件(图片/文件)+ 输入快捷键规划(F1–F7) | Web 附件/快捷键 |
+| [DESKTOP_FEASIBILITY.md](DESKTOP_FEASIBILITY.md) | 桌面壳可行性报告 + 实施蓝图(spike/架构/数据根/分发/决策记录) | 桌面壳相关 |
+| [RELEASE.md](RELEASE.md) | 桌面零成本发行(updater ed25519 自持签名/发布脚本/CI 矩阵/无签名首次放行) | 发桌面版/改发布流水线 |
+| [PI_COMPARISON.md](PI_COMPARISON.md) | pi vs gah 对比基线(改进点按价值×成本评级,实施落 DESIGN) | 参考 pi 做体验改进 |
 
 ## 开发规约
 | 文档 | 内容 |
 |---|---|
-| [PLUGIN_DEV.md](PLUGIN_DEV.md) | 插件开发规范(红线:只 import sdk、注册即副作用、catalogue 单一事实源等) |
-| AGENTS.md(其余) | 项目定位/事件与配置约定/发布构建/CI 惯例 |
+| [PLUGIN_DEV.md](PLUGIN_DEV.md) | 插件开发规范(红线:只 import sdk、注册即副作用、catalogue 单一事实源、样板演进) |
+| [plugins/README.md](../plugins/README.md) | 插件类别总览(host/adapter/policy/tool/mcp/ui;catalogue 为事实源) |
 
-## 变更约定
-- 新功能/需求评估:先看 ROADMAP 是否已有对应项(P0 立即 / P1–P3 排期),再决定"立即实现"或"入规划"。
-- 已交付:在 AGENTS 会话状态与 DESIGN §14.1 同步更新(M 序号递增),专项细节入 TUI_OPTIMIZE 对应条目并标 ✅。
-- 规划变化:更新 ROADMAP 状态列(✅/进行中/未动)。
+## 变更约定(与 AGENTS「变更纪律」对齐)
+- **交付登记**:新交付写 DESIGN §14.1(交付表或未实施清单区),专项细节入对应专项文档并标 ✅/日期;代码同步(登记/样板/测试)先行。
+- **规划变化**:更新 ROADMAP 状态列(✅/进行中/未动)与 TODO_OVERVIEW 状态。
+- **README 双语**:README.md 与 README_EN.md 同步维护(AGENTS「README 双语同步」)。

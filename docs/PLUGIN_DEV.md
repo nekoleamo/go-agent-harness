@@ -190,7 +190,7 @@ func main() {
 - [ ] 缺依赖显式报错,不静默
 - [ ] catalogue 已登记(provides/requires/bundle 正确)
 - [ ] config 条目已加(含 enabled/data)
-- [ ] **便携纪律**(见 AGENTS.md「便携纪律」):任何写盘路径以 GAH_HOME 为根(禁用硬编码 ~/.gah、cwd 相对写、系统根/散目录);密钥入 config/、env 入 gah-data/env.sh;新增路径 helper 可审计
+- [ ] **便携纪律**(见 AGENTS.md「便携纪律」):任何写盘路径以 `$GAH_HOME` 为根(注意 GAH_HOME 是 boot 内部贯通变量,**数据根唯一 = 二进制同级 gah-data/**,用户不可经 env 指定);禁用硬编码 ~/.gah、cwd 相对写、系统根/散目录;密钥入 config/、env 入 gah-data/env.sh;新增路径 helper 可审计
 - [ ] 单测通过;-race 全绿
 - [ ] 错误回传模型(结构化 error),不 panic
 - [ ] 外部插件型:握手/协议/回调/退出语义(§4.1)已符合;产物已编入 scripts/gen-extplugins.sh 的 NAMES

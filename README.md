@@ -8,7 +8,7 @@ Go 实现的编程代理 Agent Harness:以**单静态二进制**交付全部能�
 > - 完整设计:[DESIGN.md](./DESIGN.md)(§14.1 交付表/未实施清单)
 > - 插件开发:[docs/PLUGIN_DEV.md](./docs/PLUGIN_DEV.md);插件总览:[plugins/README.md](./plugins/README.md)
 > - 能力与排期:交付记录见 [docs/ROADMAP.md](./docs/ROADMAP.md)(兼作实施排期)、[docs/TODO_OVERVIEW.md](./docs/TODO_OVERVIEW.md)(待办统筹单页)
-> - 专项文档:[docs/VERIFY.md](./docs/VERIFY.md)(真机验收清单)、[docs/TUI_OPTIMIZE.md](./docs/TUI_OPTIMIZE.md)(TUI 交互细则)、[docs/WEB_ATTACHMENTS_PLAN.md](./docs/WEB_ATTACHMENTS_PLAN.md)(Web 附件规划)、[docs/DESKTOP_FEASIBILITY.md](./docs/DESKTOP_FEASIBILITY.md)(桌面端可行性)、[docs/PI_COMPARISON.md](./docs/PI_COMPARISON.md)
+> - 专项文档:[docs/VERIFY.md](./docs/VERIFY.md)(真机验收清单)、[docs/TUI_OPTIMIZE.md](./docs/TUI_OPTIMIZE.md)(TUI 交互细则)、[docs/WEB_ATTACHMENTS_PLAN.md](./docs/WEB_ATTACHMENTS_PLAN.md)(Web 附件规划)、[docs/DESKTOP_FEASIBILITY.md](./docs/DESKTOP_FEASIBILITY.md)(桌面端可行性)、[docs/RELEASE.md](./docs/RELEASE.md)(桌面零成本发行)、[docs/PI_COMPARISON.md](./docs/PI_COMPARISON.md)(pi 对比基线)
 
 ---
 
@@ -294,7 +294,7 @@ export GAH_MCP_COMMANDS="deja=/opt/homebrew/bin/deja\ncodegraph=codegraph serve 
 ├── tests/            # 端到端 + 迷你 MCP server(卸载矩阵见 AGENTS.md)
 ├── internal/         # embed(seed 样板/外部分发)/ install(插件安装)/ prefs(偏好持久化)/ providerfile
 ├── config/           # profile/bundle/patch 样板(seed-version 与 internal/embed/seed 同步)
-├── scripts/          # gen.sh(统一构建)/ gen-web.sh / gen-extplugins.sh / gen-desktop.sh / ws-smoke.go
+├── scripts/          # gen.sh(统一构建)/ gen-web.sh / gen-extplugins.sh / gen-desktop.sh / publish-desktop.sh(桌面零成本发行)/ ws-smoke.go
 ├── desktop/          # 桌面壳 P1(Tauri v2 + sidecar gah;零成本发行:updater+CI 见 docs/RELEASE.md)
 ├── .gah/skills/      # 自注册技能(gah-plugin-dev)
 └── docs/             # PLUGIN_DEV/VERIFY/TUI_OPTIMIZE/ROADMAP/TODO_OVERVIEW/DESKTOP_FEASIBILITY/…
