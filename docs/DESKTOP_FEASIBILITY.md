@@ -106,12 +106,13 @@ Tauri 用系统 WebView(WKWebView/WebView2),**无浏览器运行时依赖**,不�
 |---|---|---|
 | P0 | spike 已过;gah 侧改动②(GAH_WEB_ADDR) | S |
 | P1 | `desktop/` Tauri 工程:sidecar spawn + ready 轮询 + navigate + 托盘/通知/自启/单实例 + 退出链(shutdown→兜底 kill) | L ✅ 已落地(2026-09) |
-| P2 | mac 签名+公证、win NSIS、CI 矩阵(复用 goreleaser 产物做 sidecar) | L |
-| P3 | updater 更新通道(需自托管 + 签名) | M |
+| P2 | mac 签名+公证、win NSIS、CI 矩阵(复用 goreleaser 产物做 sidecar) | L 🚧 **零成本变体已铺(2026-09-16)**:不购证书——publish-desktop.sh(无签名 bundle + updater 自持签名)+ release-desktop.yml(公开 repo 免费 runner,tauri.conf 增 nsis);证书方案可按需平滑叠加 |
+| P3 | updater 更新通道(需自托管 + 签名) | M 🚧 **已接入(2026-09-16)**:tauri-plugin-updater + 托盘「检查更新」+ ed25519 自持密钥 + GitHub Releases 为端点(免自托管) |
 
 ## 10. 决策记录
 
 - 2026-09-06:确定 **Tauri v2 sidecar + R2 同源直连**;排除 Electron/Wails/纯 systray;不采用 PWA。
 - 2026-09-06:spike 实证关键链路(mac arm64),验证报告此文档;gah 侧停机端点先行交付。
 - 2026-09-16:**P1 壳工程落地**(desktop/src-tauri/main.rs:spawn sidecar + 就绪轮询 navigate + 托盘/通知/自启/单实例 + 退出链)。**数据根决策变更**:壳 spawn 恒传 GAH_HOME(显式 env > 系统应用数据目录 appDataHome()),弃早期「共享 ~/.gah / .app 内便携根」——便携根随升级丢失且可能只读;启动 12s 未就绪窗口注入失败提示(含数据根)。cargo check 通过。
+- 2026-09-16(零成本发行决策):**不购 Apple Developer / Windows 签名证书**;C2/C3 以零成本形态推进——updater 用 ed25519 自持密钥(tauri signer,~/.tauri/gah.key,公钥入 conf)+ GitHub Releases(公开 repo)为更新端点;工程侧已铺:tauri-plugin-updater 注册与托盘「检查更新」、tauri.conf nsis target、scripts/publish-desktop.sh(构建+签名+latest.json/merge)、.github/workflows/release-desktop.yml(mac aarch64 + win x86_64 + merge 上传, tag v* 触发);无签名分发指引 docs/RELEASE.md(右键打开/xattr 去隔离/SmartScreen)。代价:用户首次启动一次手动放行;repo 需公开(用户已确认)。
 - P1 壳工程已按 P0→P3 落地(2026-09);P2 签名/公证、P3 updater 仍待用户排期。

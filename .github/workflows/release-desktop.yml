@@ -1,0 +1,92 @@
+# 桌面壳零成本发行(tag v* 触发):无 Apple/Windows 代码签名(mac 首启右键打开,
+# win SmartScreen 放行;见 docs/RELEASE.md);updater ed25519 自持签名(secret:
+# TAURI_SIGNING_PRIVATE_KEY,由 tauri signer generate 生成,私钥勿入库)。
+# 流程:mac aarch64 + win x86_64 两 job 各跑 publish-desktop.sh → artifact 汇总 →
+# merge latest.json → softprops 上传安装包 + latest.json 到该 tag 的 GitHub Release。
+# 说明:mac x86_64(老 Intel)暂未入矩阵,需要时加 macos-13 或交叉 job。
+name: release-desktop
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  desktop-mac-aarch64:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # git describe --tags 需全历史
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - name: 重建外部插件 embed(改动时;sidecar go build 依赖)
+        run: bash scripts/gen-extplugins.sh
+      - name: 桌面发行(aarch64)
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: bash scripts/publish-desktop.sh darwin-aarch64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-desktop-mac-aarch64
+          path: dist-desktop
+          if-no-files-found: error
+
+  desktop-win-x86_64:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - name: 重建外部插件 embed
+        run: bash scripts/gen-extplugins.sh
+      - name: 桌面发行(win x86_64;NSIS 由 tauri-cli 自动拉取)
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: bash scripts/publish-desktop.sh windows-x86_64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-desktop-win-x86_64
+          path: dist-desktop
+          if-no-files-found: error
+
+  merge-upload:
+    needs: [desktop-mac-aarch64, desktop-win-x86_64]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-desktop-*
+          merge-multiple: true
+          path: dist-desktop
+      - name: 安装 jq 并合并 latest.json
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq jq >/dev/null
+          bash scripts/publish-desktop.sh merge
+      - name: 上传 Release(安装包 + latest.json)
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist-desktop/latest.json
+            dist-desktop/**/*.app.tar.gz
+            dist-desktop/**/*.dmg
+            dist-desktop/**/*-setup.exe
+          draft: false
+          prerelease: false
+          generate_release_notes: true

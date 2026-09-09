@@ -20,6 +20,7 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WindowEvent};
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_notification::NotificationExt;
+use tauri_plugin_updater::UpdaterExt;
 use tauri_plugin_shell::process::CommandChild;
 use tauri_plugin_shell::ShellExt;
 
@@ -81,6 +82,41 @@ fn appDataHome() -> String {
     std::env::temp_dir().join("gah").to_string_lossy().into_owned()
 }
 
+// checkForUpdates 检查更新(tauri-plugin-updater;endpoint 见 tauri.conf plugins.updater):
+// 有更新 → 下载安装 + 通知后自动重启;无更新/失败 → 通知(失败不打断,便于未发布期开发)。
+async fn checkForUpdates(app: tauri::AppHandle) {
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let updater = app.updater()?;
+        if let Some(update) = updater.check().await? {
+            update.download_and_install(|_, _| {}, || {}).await?;
+            let _ = app
+                .notification()
+                .builder()
+                .title("gah")
+                .body("更新已安装,即将重启")
+                .show();
+            app.restart();
+        } else {
+            let _ = app
+                .notification()
+                .builder()
+                .title("gah")
+                .body("已是最新版本")
+                .show();
+        }
+        Ok(())
+    }
+    .await;
+    if let Err(e) = result {
+        let _ = app
+            .notification()
+            .builder()
+            .title("gah")
+            .body(format!("检查更新失败:{e}"))
+            .show();
+    }
+}
+
 fn stateRunning() -> bool {
     // /api/state JSON 含 "running":true|false;粗解析含子串即可
     let mut s = match TcpStream::connect_timeout(&GAH_ADDR.parse::<std::net::SocketAddr>().unwrap(), Duration::from_millis(300)) {
@@ -122,6 +158,7 @@ fn main() {
             None,
         ))
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Sidecar(Mutex::new(None)))
         .setup(|app| {
             let handle = app.handle().clone();
@@ -132,6 +169,9 @@ fn main() {
             let autostart_item = MenuItemBuilder::with_id("autostart", "开机自启")
                 .build(app)
                 .unwrap();
+            let check_item = MenuItemBuilder::with_id("check_update", "检查更新…")
+                .build(app)
+                .unwrap();
             let quit_item = MenuItemBuilder::with_id("quit", "退出 gah")
                 .build(app)
                 .unwrap();
@@ -139,6 +179,7 @@ fn main() {
                 .items(&[
                     &show_item,
                     &autostart_item,
+                    &check_item,
                     &PredefinedMenuItem::separator(app).unwrap(),
                     &quit_item,
                 ])
@@ -162,6 +203,11 @@ fn main() {
                         } else {
                             let _ = m.enable();
                         }
+                    }
+                    "check_update" => {
+                        // 托盘「检查更新」:异步检查 → 有更新下载安装并重启;结果经系统通知反馈
+                        let h = app.clone();
+                        tauri::async_runtime::spawn(async move { checkForUpdates(h).await });
                     }
                     "quit" => quitApp(app),
                     _ => {}

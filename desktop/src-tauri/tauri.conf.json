@@ -19,6 +19,23 @@
     "active": true,
     "externalBin": ["binaries/gah"],
     "icon": ["icons/icon.png"],
-    "targets": ["app", "dmg"]
+    "targets": ["app", "dmg", "nsis"],
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "endpoints": [
+        "https://github.com/nekoleamo/go-agent-harness/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDFGNzNFNDNGOEQzNjE0RkEKUldUNkZEYU5QK1J6SDdKSHFFM2dRbTZsd0dJek5hTU9VSmxSVHd3WXpzRFdVVDV4Vld4eVNZbE0K"
+    }
   }
 }
