@@ -27,6 +27,7 @@ type Bridge struct {
 
 	cwd  sdk.CwdSessions // ctx.cwdSessions(P1 会话绑定;可选——未装配会话命令降级)
 	llm  sdk.LLMService  // ctx.llm(/status 模型名;可选)
+	jobs sdk.JobService // ctx.jobs(/bg 后台任务;可选——未装配命令降级)
 	bind *bindStore      // chat→宿主会话映射(opt.SessionBindPath;nil = 无绑定能力)
 
 	mu       sync.Mutex
@@ -71,6 +72,12 @@ func New(c sdk.Ctx, loop sdk.AgentLoop, sessions sdk.SessionLog, tr Transport, o
 	if opt.BusyReply != "" {
 		o.BusyReply = opt.BusyReply
 	}
+	if opt.AsyncAfter > 0 {
+		o.AsyncAfter = opt.AsyncAfter
+	}
+	if opt.AsyncNotice != "" {
+		o.AsyncNotice = opt.AsyncNotice
+	}
 	if opt.PairingReply != nil {
 		o.PairingReply = opt.PairingReply
 	}
@@ -102,6 +109,10 @@ func (b *Bridge) injectOptionalServices(c sdk.Ctx) {
 	var lls sdk.LLMService
 	if err := c.Inject("ctx.llm", &lls); err == nil {
 		b.llm = lls
+	}
+	var jb sdk.JobService
+	if err := c.Inject("ctx.jobs", &jb); err == nil {
+		b.jobs = jb
 	}
 }
 
@@ -277,6 +288,27 @@ func (b *Bridge) bindSession(r Route) {
 	}
 }
 
+// releaseSlot 释放回合槽(/stop 后置、回合完成、/bg 完成):busy 复位 → 续跑队列
+// 下一条(busy 槽直接交接,防并发双开)。typing 停止由各调用路径自行处理。
+func (b *Bridge) releaseSlot() {
+	b.mu.Lock()
+	b.busy = false
+	b.curRoute = Route{}
+	b.qMu.Lock()
+	next := b.dequeue()
+	b.qMu.Unlock()
+	if next != nil {
+		b.busy = true
+		b.curRoute = next.route
+	}
+	b.mu.Unlock()
+	if next != nil {
+		go func() {
+			_ = b.runTurn(context.Background(), next.route, next.text, next.atts)
+		}()
+	}
+}
+
 // runTurn 回合驱动:绑定会话 → 记录回合起点 seq → agentLoop.Run → 聚合回合内
 // 新增 assistant 最终文本回推;结束路径(成功/错误)统一停 typing 并续跑队列下一条。
 // 忙闲由调用方(HandleInbound/enqueue 续跑)保证——runTurn 自身不再查 busy。
@@ -300,27 +332,35 @@ func (b *Bridge) runTurn(ctx context.Context, r Route, text string, atts []sdk.A
 			_ = ta.StopTyping(context.Background(), r)
 		}
 	}()
-	defer func() {
-		b.mu.Lock()
-		b.busy = false
-		b.curRoute = Route{}
-		// 续跑队列下一条(busy 槽直接交接,防并发 drain 双开)
-		b.qMu.Lock()
-		next := b.dequeue()
-		b.qMu.Unlock()
-		if next != nil {
-			b.busy = true
-			b.curRoute = next.route
-		}
-		b.mu.Unlock()
-		if next != nil {
-			go func() {
-				_ = b.runTurn(context.Background(), next.route, next.text, next.atts)
-			}()
-		}
-	}()
+	defer b.releaseSlot() // 结束路径统一:释放 busy 槽 + 续跑队列
 
+	// 回合执行(§7.5 P2):AsyncAfter 阈值内未完成 → 回“处理中”并转入后台,
+	// 完成后仍自动回推(QQ 被动窗口过期由 transport 门控自动转主动配额/滞留)。
+	return b.runExecution(ctx, r, text, atts)
+}
+
+// runExecution 同步/后台执行回合:完成或(启用时)超阈值转后台通知。回合槽(busy)
+// 保持占用至完成(agent-loop 单飞写会话,防并发回合错乱);队列消息随后续 drain。
+func (b *Bridge) runExecution(ctx context.Context, r Route, text string, atts []sdk.Attachment) error {
 	seq0 := b.lastSeq()
+	ch := make(chan error, 1)
+	go func() {
+		ch <- b.executeTurn(ctx, r, text, atts, seq0)
+	}()
+	if b.opt.AsyncAfter <= 0 {
+		return <-ch
+	}
+	select {
+	case err := <-ch:
+		return err
+	case <-time.After(b.opt.AsyncAfter):
+		_ = b.sendText(context.Background(), r, b.opt.AsyncNotice)
+		return <-ch // 转入后台:继续等待完成(结果回推仍发生)
+	}
+}
+
+// executeTurn 执行一次回合:loop 注入(附件优先)→ 错误回推/聚合最终文本回推。
+func (b *Bridge) executeTurn(ctx context.Context, r Route, text string, atts []sdk.Attachment, seq0 uint64) error {
 	var err error
 	// 媒体附件(如有):经 AttachmentInput 注入回合(图片视觉/文件路径引用);未实现回落 Run
 	if len(atts) > 0 {
@@ -365,6 +405,8 @@ func (b *Bridge) dispatchCommand(ctx context.Context, r Route, line string) erro
 		return b.sendText(ctx, r, "⏹ 已请求停止当前回合。")
 	case "im":
 		return b.sendText(ctx, r, b.imCmd(ctx, args))
+	case "bg":
+		return b.sendText(ctx, r, b.bgCmd(r, args))
 	case "new", "status", "sessionlist", "session", "history":
 		// P1 会话绑定命令面(IM 通道专属,带 route 上下文;不注册全局——
 		// 宿主 /session 等命令归 host-internal-commands,IM 绑定语义与其不同)
@@ -382,6 +424,54 @@ func (b *Bridge) dispatchCommand(ctx context.Context, r Route, line string) erro
 		return b.sendText(ctx, r, "命令 /"+name+" 失败: "+err.Error())
 	}
 	return b.sendText(ctx, r, out)
+}
+
+// bgCmd /bg <任务>:显式转入后台(P2 §7.5;经 ctx.jobs 托管,回合槽保持占用至完成,
+// 防并发双 loop 写会话;完成后聚合输出主动回推)。仅空闲可提交。
+func (b *Bridge) bgCmd(r Route, args []string) string {
+	if b.jobs == nil {
+		return "后台任务服务不可用: 宿主 host-jobs 未装配。"
+	}
+	task := strings.Join(args, " ")
+	if task == "" {
+		return "用法: /bg <任务描述> —— 后台执行,完成自动推送结果(可用 /jobs 查看)。"
+	}
+	b.mu.Lock()
+	if b.busy {
+		b.mu.Unlock()
+		return "⏳ 回合进行中,请稍后再提交(/stop 可取消当前回合)。"
+	}
+	b.busy = true
+	b.curRoute = r
+	b.mu.Unlock()
+	go b.submitBG(r, task)
+	return "✅ 已转入后台执行;完成自动推送结果(可用 /jobs 查看任务)。"
+}
+
+// submitBG 后台任务体:host-jobs 托管;回合槽由 job 完成时释放(防并发双 loop)。
+func (b *Bridge) submitBG(r Route, task string) {
+	b.bindSession(r)
+	seq0 := b.lastSeq()
+	if _, err := b.jobs.Run(func(c context.Context) (any, error) {
+		defer b.releaseSlot() // job 真正完成才释放 busy 槽 + 续跑队列
+		err := b.loop.Run(c, task)
+		if err != nil {
+			if !errors.Is(err, context.Canceled) {
+				_ = b.sendText(context.Background(), r, "❌ 后台任务失败: "+err.Error())
+			}
+			return nil, err
+		}
+		texts := b.assistantTextsAfter(seq0)
+		out := "✅ 完成(无文本输出)"
+		if len(texts) > 0 {
+			out = texts[len(texts)-1]
+		}
+		_ = b.sendText(context.Background(), r, "🔄 [后台任务完成]\n"+out)
+		return out, nil
+	}); err != nil {
+		b.releaseSlot() // 提交失败:立即恢复
+		_ = b.sendText(context.Background(), r, "❌ 后台任务提交失败: "+err.Error())
+	}
 }
 
 // imCmd /im 子命令(状态/配对;allow/revoke 由插件壳或主机直调 Access)。

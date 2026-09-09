@@ -71,6 +71,10 @@ type Options struct {
 	PairingTTL time.Duration
 	// BusyReply 回合进行中收到普通消息且队列已满时的提示(空 = 默认文案)。
 	BusyReply string
+	// AsyncAfter 回合超过该时长未完成 → 回"处理中"并转入后台(P2 §7.5;<=0 = 同步等待不转)。
+	AsyncAfter time.Duration
+	// AsyncNotice 转后台通知文案(空 = 默认文案)。
+	AsyncNotice string
 	// SessionBindPath chat↔宿主会话绑定映射持久化路径(P1;空 = 仅内存不落盘)。
 	SessionBindPath string
 	// UnauthorizedReply pairing 模式向陌生用户回配对提示(allowlist/disabled 模式静默)。
@@ -81,7 +85,9 @@ func defaultOptions() Options {
 	return Options{
 		Mode:       AccessDisabled,
 		PairingTTL: time.Hour,
-		BusyReply:  "⏳ 正在处理上一条消息,请稍候(可用 /stop 取消)。",
+		BusyReply:  "⏳ 队列已满,请稍候(可用 /stop 取消当前回合)。",
+		// AsyncAfter 默认 0 = 同步等待;通道层按平台被动窗口覆写(QQ 被动 5min)
+		AsyncNotice: "⏳ 任务较长,已转入后台执行;完成后自动推送结果(主动推送受平台额度限制)。",
 		PairingReply: func(code string) string {
 			return fmt.Sprintf("⚠️ 未授权。配对码: %s —— 请在主机执行 /im pair %s 授权后重试。", code, code)
 		},

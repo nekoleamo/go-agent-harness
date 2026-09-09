@@ -5,6 +5,7 @@ package im
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -672,6 +673,153 @@ func TestSessionSwitchBusyRejected(t *testing.T) {
 	}
 	if cwd.CurrentSession() != bound {
 		t.Fatalf("busy 中切换不应生效,got %q", cwd.CurrentSession())
+	}
+	close(release)
+	<-done
+}
+
+// TestTurnAsyncAfter P2 长回合自动转后台:AsyncAfter 阈值内未完成 → 先回
+// "转入后台"通知(HandleInbound 提前返回),回合完成后结果仍自动回推(不丢)。
+func TestTurnAsyncAfter(t *testing.T) {
+	b, loop, tr, sessions := buildTestBridge(t, Options{
+		Mode:       AccessAllowlist,
+		Allow:      []string{"mock\x00owner"},
+		AsyncAfter: 60 * time.Millisecond,
+	})
+	loop.onRun = func(ctx context.Context, _ string) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(200 * time.Millisecond): // 超过阈值
+		}
+		return sessions.Append(sdk.SessionEvent{Kind: sdk.EventAssistantMessage, Payload: sdk.AssistantMessage{Content: "长任务结果"}})
+	}
+	start := time.Now()
+	if err := b.HandleInbound(context.Background(), Inbound{Route: mkRoute("owner"), MsgID: "1", Text: "长任务"}); err != nil {
+		t.Fatal(err)
+	}
+	// busy 槽保持到回合完成(agent-loop 单飞写会话,防并发回合错乱);
+	// AsyncAfter 语义 = 阈值时先通知"转后台",完成结果仍自动回推(主动投递路径)。
+	if elapsed := time.Since(start); elapsed < 150*time.Millisecond {
+		t.Fatalf("回合应完整执行至完成,实际 %v", elapsed)
+	}
+	sent := tr.sent()
+	if len(sent) < 1 || !strings.Contains(sent[0], "转入后台") {
+		t.Fatalf("应先回转后台通知: %+v", sent)
+	}
+	found := false
+	for _, x := range sent {
+		if strings.Contains(x, "长任务结果") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("完成结果应自动回推: %+v", sent)
+	}
+}
+
+// stubJobs 后台任务记录(host-jobs 语义简化:异步执行 fn;记录输入)。
+type stubJobs struct {
+	mu  sync.Mutex
+	rns []sdk.JobFunc
+}
+
+func (j *stubJobs) Submit(cmdline string) (string, error) { return "j" + fmt.Sprintf("%d", len(j.rns)), nil }
+func (j *stubJobs) Run(fn sdk.JobFunc) (string, error) {
+	j.mu.Lock()
+	id := fmt.Sprintf("job-%d", len(j.rns)+1)
+	j.rns = append(j.rns, fn)
+	j.mu.Unlock()
+	go func() { _, _ = fn(context.Background()) }() // 异步执行
+	return id, nil
+}
+func (j *stubJobs) List() []sdk.Job { return nil }
+func (j *stubJobs) Output(id string) (sdk.Job, bool) {
+	return sdk.Job{}, false
+}
+func (j *stubJobs) Kill(id string) error { return nil }
+func (j *stubJobs) ran() int {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return len(j.rns)
+}
+
+// TestBgCommand /bg 后台执行(P2):提交回执 → job 异步跑 loop → 完成聚合主动回推;
+// busy 槽在 job 完成后释放(期间普通消息排队)。
+func TestBgCommand(t *testing.T) {
+	b, loop, tr, sessions := buildTestBridge(t, Options{Mode: AccessAllowlist, Allow: []string{"mock\x00owner"}})
+	b.jobs = &stubJobs{}
+	// job 异步跑 loop;完成自动回推(onRun 先设,防与 job goroutine 竞态)
+	loop.onRun = func(_ context.Context, in string) error {
+		return sessions.Append(sdk.SessionEvent{Kind: sdk.EventAssistantMessage, Payload: sdk.AssistantMessage{Content: "后台结果:" + in}})
+	}
+	if err := b.HandleInbound(context.Background(), Inbound{Route: mkRoute("owner"), MsgID: "1", Text: "/bg 帮我跑个长任务"}); err != nil {
+		t.Fatal(err)
+	}
+	sent := tr.sent()
+	if len(sent) != 1 || !strings.Contains(sent[0], "转入后台执行") {
+		t.Fatalf("应回提交回执: %+v", sent)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		sent = tr.sent()
+		found := false
+		for _, x := range sent {
+			if strings.Contains(x, "后台结果") {
+				found = true
+			}
+		}
+		if found {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("后台完成未回推: %+v", sent)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	loop.mu.Lock()
+	defer loop.mu.Unlock()
+	if len(loop.inputs) != 1 || loop.inputs[0] != "帮我跑个长任务" {
+		t.Fatalf("后台应执行任务文本: %+v", loop.inputs)
+	}
+}
+
+// TestBgCommandBusy 回合进行中 /bg 被拒(防并发双 loop 写会话)。
+func TestBgCommandBusy(t *testing.T) {
+	b, _, tr, _ := buildTestBridge(t, Options{Mode: AccessAllowlist, Allow: []string{"mock\x00owner"}})
+	b.jobs = &stubJobs{}
+	release := make(chan struct{})
+	b.loop.(*stubLoop).onRun = func(ctx context.Context, _ string) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-release:
+		}
+		return nil
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- b.HandleInbound(context.Background(), Inbound{Route: mkRoute("owner"), MsgID: "1", Text: "任务"})
+	}()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		b.mu.Lock()
+		busy := b.busy
+		b.mu.Unlock()
+		if busy {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("回合未进入 busy")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	tr.reset()
+	if err := b.HandleInbound(context.Background(), Inbound{Route: mkRoute("owner"), MsgID: "2", Text: "/bg 并发任务"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(tr.sent(), "\n"), "回合进行中") {
+		t.Fatalf("busy 中 /bg 应被拒: %+v", tr.sent())
 	}
 	close(release)
 	<-done

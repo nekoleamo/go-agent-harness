@@ -84,12 +84,15 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	tr := &qqTransport{name: channelName, store: store, creds: creds,
 		baseURL: baseURL, tokenURL: tokenURL, lastError: "未配置(执行 /qq login)",
 		budget:  newActiveQuota(quotaPath()),
-		replies: make(map[string]*replyCtx), seq: make(map[string]uint64), outbox: make(map[string]string)}
+		replies: make(map[string]*replyCtx), seq: make(map[string]uint64),
+		ledger:   newDeliveryLedger(outboxPath())}
 	b := im.New(c, loop, sessions, tr, im.Options{
 		Mode:  mode,
 		Allow: creds.Allow, // 已授权用户持久恢复
 		// P1 会话绑定:chat→宿主会话映射落盘(重启恢复绑定)
 		SessionBindPath: sessionBindPath(),
+		// P2 §7.5:被动回复窗口 5min —— 回合超时即转后台通知,完成经门控投递
+		AsyncAfter: 5 * time.Minute,
 	})
 	tr.bridge = b
 	// 授权变化持久化(/im pair 批准、allow/revoke):写回凭证 store,重启恢复。
@@ -159,6 +162,15 @@ func quotaPath() string {
 	return filepath.Join(home, "config", "qqbot-quota.yaml")
 }
 
+// outboxPath 滞留 ledger 落盘路径:$GAH_HOME/config/qqbot-outbox.yaml(0600;重启不丢滞留)。
+func outboxPath() string {
+	home := os.Getenv("GAH_HOME")
+	if home == "" {
+		home = os.TempDir()
+	}
+	return filepath.Join(home, "config", "qqbot-outbox.yaml")
+}
+
 // sessionBindPath chat↔宿主会话绑定映射路径:$GAH_HOME/config/im-sessions.yaml
 // (P1 会话绑定命令面;routeKey 含 \x00 经 JSON 转义安全往返,0600 原子写)。
 func sessionBindPath() string {
@@ -189,7 +201,7 @@ type qqTransport struct {
 	seq       map[string]uint64  // ChatID → msg_seq(与 msg_id 联合幂等,自增)
 	typingCtl context.CancelFunc // 回合中 input_notify 周期刷新控制器(回合结束取消)
 	budget    *activeQuota       // 主动消息配额记账(私信主动 2 条/天/用户;落盘重启不超发)
-	outbox    map[string]string  // ChatID → 滞留文本(被动失效/频控/配额耗尽时暂存,下次入站补发)
+	ledger    *deliveryLedger // 滞留 ledger(落盘重启不丢;被动失效/频控/配额耗尽时暂存,下次入站补发)
 }
 
 func (t *qqTransport) Name() string { return t.name }
@@ -465,29 +477,22 @@ func activeOneMessage(text string) qqbot.SendMessage {
 	return qqbot.SendMessage{MsgType: qqbot.MsgTypeText, Content: string(rs[:keep]) + truncTail}
 }
 
-// stash 滞留整段文本(被动失效/频控/配额耗尽时;下次该会话入站 flush 补发)。
+// stash 滞留整段文本(P2 delivery ledger:落盘重启不丢;下次该会话入站 flush 补发)。
 func (t *qqTransport) stash(chatID, text string) {
 	if chatID == "" || text == "" {
 		return
 	}
-	t.mu.Lock()
-	t.outbox[chatID] = text
-	t.mu.Unlock()
+	t.ledger.Set(chatID, text)
 }
 
 // flushOutbox 入站后先补发滞留内容(此时刚缓存新 msg_id,被动窗口内);失败放回下次。
 func (t *qqTransport) flushOutbox(ctx context.Context, route im.Route) {
-	t.mu.Lock()
-	pend, ok := t.outbox[route.ChatID]
-	delete(t.outbox, route.ChatID)
-	t.mu.Unlock()
-	if !ok || pend == "" {
+	pend := t.ledger.GetAndClear(route.ChatID)
+	if pend == "" {
 		return
 	}
 	if err := t.SendText(ctx, route, pend); err != nil {
-		t.mu.Lock()
-		t.outbox[route.ChatID] = pend // 补发失败(如仍频控):放回下次
-		t.mu.Unlock()
+		t.ledger.Set(route.ChatID, pend) // 补发失败(如仍频控):放回下次
 	}
 }
 
