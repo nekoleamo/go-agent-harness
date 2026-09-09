@@ -21,7 +21,7 @@ Tauri 用系统 WebView(WKWebView/WebView2),**无浏览器运行时依赖**,不�
 | 服务形态 | `gah web` ≡ `--profile web`;SSE/WS+REST+静态 embed 自包含 | 壳只需拉起进程 + WebView 指 URL |
 | 无 TTY 运行 | 非 TTY 拒绝仅限 `tui` profile;profile-web 不含 ui-tui-app | 后台无头运行现成可用(实测) |
 | 停机 | SIGINT/SIGTERM → DisposeAll;**Windows 无 SIGTERM** | 需跨平台停机端点(已交付 `POST /api/shutdown`) |
-| 数据根 | 壳 spawn sidecar 时**恒传 `GAH_HOME`**:显式 env > 系统应用数据目录 `appDataHome()`(macOS ~/Library/Application Support/gah;Linux XDG_DATA_HOME|~/.local/share/gah;Windows %APPDATA%\gah) | `.app` 内便携根(Contents/MacOS/gah-data)随升级丢失且可能只读,**不作桌面默认**;与 CLI 便携形态(gah-data)分根,无文件竞争 |
+| 数据根 | 壳**不传 `GAH_HOME` env**(2026-09-16 R8 收紧:数据根唯一 = 二进制同级 `gah-data/`);sidecar 自解析便携 gah-data(与 gah 同目录,首启自动新建) | `.app` 内数据根 = Contents/MacOS/gah-data,升级 .app 会替换该目录——需保留数据请先 `/backup`(与 CLI 便携同构,无分根) |
 | 鉴权 | auth_token 可选;静态不鉴权;前端无 token 逻辑 | 桌面壳维持留空(仅本机绑定)即当前默认可用 |
 | 分发 | goreleaser 六目标(darwin/linux/win × amd64/arm64;win/arm64 ignore) | 壳矩阵取 darwin×2 + win×amd64,gah 产物现成 |
 
@@ -46,9 +46,9 @@ Tauri 用系统 WebView(WKWebView/WebView2),**无浏览器运行时依赖**,不�
 │ 退出:POST /api/shutdown → 等端口释放 →          │
 │      超时 SIGKILL 兜底;信号强杀由启动探测兜底   │
 └──────────────┬──────────────────────────────────┘
-               │(子进程,env: GAH_HOME、GAH_WEB_OPEN=0)
+               │(子进程,env: GAH_WEB_OPEN=0;数据根 = sidecar 同级 gah-data/)
         ┌──────▼──────┐
-        │ gah 单二进制 │ ← 数据落 GAH_HOME(壳显式传入的应用数据目录,稳定可写)
+        │ gah 单二进制 │ ← 数据落 sidecar 同级 gah-data/(便携,与 CLI 同构)
         └─────────────┘
 ```
 
@@ -79,7 +79,7 @@ Tauri 用系统 WebView(WKWebView/WebView2),**无浏览器运行时依赖**,不�
 | 建议③ | 前端补 token 携带(读 `?token=`→sessionStorage/cookie)以支持 auth_token 桌面场景;默认空 token 可不做 | ⏳ 可选安全增强 |
 | 不改 | CORS(同源不需要)、bundle/profile(复用 profile-web) | — |
 
-> **落地偏差(2026-09-16)**:§2 原「数据布局不改(共享 ~/.gah)」已变更——壳恒传 GAH_HOME(显式 env > 应用数据目录),与 CLI 便携分根;见 §10 决策记录。
+> **落地变更(2026-09-16)**:R6 曾改「壳恒传 GAH_HOME=应用数据目录」;R8(同日)再次收紧——**数据根唯一 = sidecar 同级 `gah-data/`**,壳不再传 GAH_HOME env(与 CLI 便携同构);见 §10 决策记录。
 
 ## 7. 分发矩阵
 
@@ -114,5 +114,6 @@ Tauri 用系统 WebView(WKWebView/WebView2),**无浏览器运行时依赖**,不�
 - 2026-09-06:确定 **Tauri v2 sidecar + R2 同源直连**;排除 Electron/Wails/纯 systray;不采用 PWA。
 - 2026-09-06:spike 实证关键链路(mac arm64),验证报告此文档;gah 侧停机端点先行交付。
 - 2026-09-16:**P1 壳工程落地**(desktop/src-tauri/main.rs:spawn sidecar + 就绪轮询 navigate + 托盘/通知/自启/单实例 + 退出链)。**数据根决策变更**:壳 spawn 恒传 GAH_HOME(显式 env > 系统应用数据目录 appDataHome()),弃早期「共享 ~/.gah / .app 内便携根」——便携根随升级丢失且可能只读;启动 12s 未就绪窗口注入失败提示(含数据根)。cargo check 通过。
+- 2026-09-16(**R8 数据根收紧,取代 R6 应用数据目录方案**):用户决策「排除 GAH_HOME env,数据根只允许 gah-data,不允许 ~/.gah」——cmd/gah homeDir 移除 GAH_HOME env 输入源(设了也忽略并告警),仅便携 gah-data(自动创建);桌面壳同步:spawn 不再传 GAH_HOME、删 appDataHome(),数据根 = sidecar 同级 gah-data(Contents/MacOS/gah-data);失败提示改为 gah-data 可写性指引;副作用:升级 .app 会替换该目录,需 /backup 保留数据(文档 RELEASE/README 已注)。cargo check 通过,cmd/gah 单测补 TestHomeDirIgnoresEnv。
 - 2026-09-16(零成本发行决策):**不购 Apple Developer / Windows 签名证书**;C2/C3 以零成本形态推进——updater 用 ed25519 自持密钥(tauri signer,~/.tauri/gah.key,公钥入 conf)+ GitHub Releases(公开 repo)为更新端点;工程侧已铺:tauri-plugin-updater 注册与托盘「检查更新」、tauri.conf nsis target、scripts/publish-desktop.sh(构建+签名+latest.json/merge)、.github/workflows/release-desktop.yml(mac aarch64 + win x86_64 + merge 上传, tag v* 触发);无签名分发指引 docs/RELEASE.md(右键打开/xattr 去隔离/SmartScreen)。代价:用户首次启动一次手动放行;repo 需公开(用户已确认)。
 - P1 壳工程已按 P0→P3 落地(2026-09);P2 签名/公证、P3 updater 仍待用户排期。

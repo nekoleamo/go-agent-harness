@@ -1,5 +1,5 @@
 // P5.7 便携数据根自动创建测试:同级 gah-data 不存在 → 新建;已存在 → 复用;
-// 二进制目录只读(创建失败)→ 回落空(由 homeDir 继续 ~/.gah)。
+// 二进制目录只读(创建失败)→ 回落空(调用方报错;数据根唯一 = 便携 gah-data)。
 package main
 
 import (
@@ -35,6 +35,22 @@ func TestPortableRootReusesExisting(t *testing.T) {
 	if got := portableRoot(exe); got != want {
 		t.Fatalf("已存在应直接复用: %q", got)
 	}
+}
+
+// TestHomeDirIgnoresEnv 2026-09-16 收紧:GAH_HOME env 不再作为输入源,
+// homeDir 只返回二进制同级便携根(不存在则自动新建),绝不返回 env 指定路径。
+func TestHomeDirIgnoresEnv(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := filepath.Join(filepath.Dir(filepath.Clean(exe)), "gah-data")
+	t.Setenv("GAH_HOME", t.TempDir()) // 任意非便携路径
+	got := homeDir()
+	if got != expected {
+		t.Fatalf("homeDir 应忽略 GAH_HOME env 并返回便携根 %q,得 %q", expected, got)
+	}
+	defer os.RemoveAll(expected) // 清理测试二进制旁自动创建的 gah-data
 }
 
 func TestPortableRootReadonlyDir(t *testing.T) {

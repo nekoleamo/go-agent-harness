@@ -213,7 +213,7 @@ Samples live in `config/` (two copies kept in sync with `internal/embed/seed`; `
 
 ### Runtime data root (GAH_HOME, fully portable)
 
-Resolution order: `GAH_HOME env` > **`gah-data/` next to the binary (auto-created on first run, releasing config samples + bundled plugins — the deployment directory is self-contained)**; if neither applies (not portable) startup **fails with an explicit error** (`~/.gah`/TempDir fallbacks were removed in 2026-09, see cmd/gah homeDir).
+The data root is **the `gah-data/` sibling of the gah binary (the only one; auto-created on first run, releasing config samples + bundled plugins — the deployment directory is self-contained)**. If creation fails (read-only/unwritable dir) startup **fails with an explicit error**. Neither `GAH_HOME env` nor `~/.gah` acts as a data-root source anymore (tightened 2026-09-16; after boot GAH_HOME is set internally for plumbing, see cmd/gah homeDir).
 
 ```bash
 # 1) Drop gah into any directory; the first run auto-creates gah-data/ and releases config samples + plugins:
@@ -230,7 +230,7 @@ Resolution order: `GAH_HOME env` > **`gah-data/` next to the binary (auto-create
 
 | Variable | Effect |
 |---|---|
-| `GAH_HOME` | Data root (overrides portable discovery; default chain = `GAH_HOME` > sibling `gah-data/` (auto-created on first run); not portable → error exit; `~/.gah`/TempDir removed 2026-09) |
+| `GAH_HOME` | Internal plumbing variable (set by boot to the portable `gah-data/`; plugins/external processes derive subdirs from it); **user-set values are ignored** (the only data root is the sibling `gah-data/`, since 2026-09-16; a different user-set value logs a warning) |
 | `GAH_PROFILE` / `GAH_NO_TUI` | Default profile / force TUI off (headless/CI) |
 | `GAH_WEB_ADDR` / `GAH_WEB_OPEN` / `GAH_WEB_STATIC` | Web listen address (default 127.0.0.1:2233) / auto-open browser / static dir override (dev HMR) |
 | `GAH_MCP_COMMAND` / `GAH_MCP_COMMANDS` | MCP bridge (single server `name=command` / multi server one per line `name=command args`; tools `mcp_<server>_<tool>`) |

@@ -90,12 +90,8 @@ func drainUntil(out chan string, d time.Duration, conds ...string) (string, bool
 // TestTUIProbe 首次输入 + 退出链 + 输出检查。
 func TestTUIProbe(t *testing.T) {
 	bin := buildGahCurrent(t) // 当前源码构建(2026-09-08:统一探针二进制防仓库根旧二进制漂移)
-	home := t.TempDir()
-	env := append(os.Environ(),
-		"GAH_HOME="+home,
-		"TERM=xterm-256color",
-		"LANG=zh_CN.UTF-8",
-	)
+	// R8(2026-09-16):数据根唯一 = 二进制同级 gah-data(GAH_HOME env 被忽略;空则首启自动新建)
+	env := probeEnv()
 
 	ptmx, cmd, out := runTUIViaPty(t, bin, env)
 	defer ptmx.Close()
@@ -140,7 +136,7 @@ func TestTUIProbe(t *testing.T) {
 func TestTUIProbeNonTTY(t *testing.T) {
 	bin := buildGahCurrent(t) // 当前源码构建(2026-09-08:统一探针二进制防漂移)
 	cmd := exec.Command(bin)
-	cmd.Env = append(os.Environ(), "GAH_HOME="+t.TempDir())
+	cmd.Env = probeEnv() // R8:数据根 = bin 同级 gah-data(不再传 GAH_HOME env)
 	stdin, _ := cmd.StdinPipe()
 	cmd.Stdout = nil
 	cmd.Stderr = nil
@@ -176,15 +172,16 @@ func TestTUIProbeRealHome(t *testing.T) {
 	if _, err := os.Stat(realHome); err != nil {
 		t.Skip("仓库 gah-data 不可用: " + err.Error())
 	}
-	tmp := t.TempDir()
+	bin := buildGahCurrent(t) // 当前源码构建(2026-09-08:统一探针二进制防漂移)
+	// R8:数据根 = bin 同级 gah-data(拷贝仓库便携根内容做预置数据;不传 GAH_HOME env)
+	dataRoot := probeDataDir(t, bin)
 	for _, sub := range []string{"config", "sessions"} {
-		if err := exec.Command("cp", "-R", filepath.Join(realHome, sub), filepath.Join(tmp, sub)).Run(); err != nil {
+		if err := exec.Command("cp", "-R", filepath.Join(realHome, sub), filepath.Join(dataRoot, sub)).Run(); err != nil {
 			t.Skipf("拷贝 gah-data %s 失败: %v", sub, err)
 		}
 	}
-	bin := buildGahCurrent(t) // 当前源码构建(2026-09-08:统一探针二进制防漂移)
 	// cwd 需要匹配用户原项目(会话按 cwd 派生 key;拷贝含全量 sessions,任意 cwd 可恢复其会话)
-	env := append(os.Environ(), "GAH_HOME="+tmp, "TERM=xterm-256color", "LANG=zh_CN.UTF-8")
+	env := probeEnv()
 
 	ptmx, cmd, out := runTUIViaPty(t, bin, env)
 	defer ptmx.Close()
@@ -255,8 +252,8 @@ func TestTUIProbeScrollbarAndArrow(t *testing.T) {
 	if _, err := os.Stat(cwd); err != nil {
 		t.Skip("仓库路径不可用(本机专用探针): " + err.Error())
 	}
-	home := t.TempDir()
-	sessionsDir := filepath.Join(home, "sessions")
+	dataRoot := probeDataDir(t, bin) // R8:数据根 = bin 同级 gah-data(GAH_HOME env 被忽略)
+	sessionsDir := filepath.Join(dataRoot, "sessions")
 	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -265,7 +262,7 @@ func TestTUIProbeScrollbarAndArrow(t *testing.T) {
 	bigPath := filepath.Join(sessionsDir, key+"-probebig.jsonl")
 	writeProbeSession(bigPath, 400)
 
-	env := append(os.Environ(), "GAH_HOME="+home, "TERM=xterm-256color", "LANG=zh_CN.UTF-8")
+	env := probeEnv()
 	ptmx, cmd, out := runTUIViaPtyWorkingDir(t, bin, env, cwd)
 	defer ptmx.Close()
 
@@ -314,6 +311,23 @@ func TestTUIProbeScrollbarAndArrow(t *testing.T) {
 		_ = cmd.Process.Kill()
 		t.Fatal("退出卡死")
 	}
+}
+
+// probeEnv R8(2026-09-16)收紧后:gah 数据根唯一 = 二进制同级 gah-data(GAH_HOME env
+// 被忽略并告警),探针启动不再传 GAH_HOME;数据隔离由 buildGahCurrent 每测试独立
+// TempDir 保证(bin 同级 gah-data 首启自动新建)。
+func probeEnv() []string {
+	return append(os.Environ(), "TERM=xterm-256color", "LANG=zh_CN.UTF-8")
+}
+
+// probeDataDir 返回 bin 同级 gah-data 数据根并确保存在(探针预置数据用)。
+func probeDataDir(t *testing.T, bin string) string {
+	t.Helper()
+	d := filepath.Join(filepath.Dir(bin), "gah-data")
+	if err := os.MkdirAll(d, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return d
 }
 
 // buildGahCurrent 用当前源码构建 gah 到临时目录(探针与源码一致,防仓库根旧二进制漂移)。
@@ -381,14 +395,14 @@ func TestTUIProbeScrollSettle(t *testing.T) {
 	if _, err := os.Stat(realHome); err != nil {
 		t.Skip("仓库 gah-data 不可用: " + err.Error())
 	}
-	tmp := t.TempDir()
+	bin := buildGahCurrent(t)        // 当前源码构建(2026-09-08:统一探针二进制防漂移)
+	dataRoot := probeDataDir(t, bin) // R8:数据根 = bin 同级 gah-data,预置仓库便携根内容
 	for _, sub := range []string{"config", "sessions"} {
-		if err := exec.Command("cp", "-R", filepath.Join(realHome, sub), filepath.Join(tmp, sub)).Run(); err != nil {
+		if err := exec.Command("cp", "-R", filepath.Join(realHome, sub), filepath.Join(dataRoot, sub)).Run(); err != nil {
 			t.Skipf("拷贝 gah-data %s 失败: %v", sub, err)
 		}
 	}
-	bin := buildGahCurrent(t) // 当前源码构建(2026-09-08:统一探针二进制防漂移)
-	env := append(os.Environ(), "GAH_HOME="+tmp, "TERM=xterm-256color", "LANG=zh_CN.UTF-8")
+	env := probeEnv()
 	ptmx, cmd, out := runTUIViaPtyWorkingDir(t, bin, env, "/Users/nekoleamo/Documents/Working/go-agent-harness")
 	defer ptmx.Close()
 

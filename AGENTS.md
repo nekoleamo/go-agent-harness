@@ -18,8 +18,8 @@
 
 ## 便携纪律(运行数据单根,完全便携)
 **一切 gah 自身产生的运行数据/配置/密钥/插件必须落在 `GAH_HOME` 单根下**(main 启动 Setenv GAH_HOME;便携模式 = 与 gah 二进制同级的 `gah-data/` 自动发现、**不存在则首启自动新建并释放初始化内容**,M16.9/P5.7)。目标:部署目录内 gah+gah-data(+start.sh)即完整,升级只替换 gah 单文件、数据随目录整体迁移。
-- **新增任何写盘路径必须经 GAH_HOME 派生**(复用 home helper/`os.Getenv("GAH_HOME")`),并给可审计的 Path() helper(便于盘点);禁止:硬编码 `~/.gah`、`UserHomeDir` 直拼、相对 cwd 写、系统根、二进制旁散目录、XDG 位置。
-- 路径解析只允许一条链(与 cmd/gah homeDir 一致):`GAH_HOME env` > 二进制同级 `gah-data/`(不存在则首启自动新建)——新代码不得另起解析链;`~/.gah`/TempDir 兑底已弃用(2026-09,homeDir 返回空 + boot 报错退出):运行态 GAH_HOME 恒设,下游一律经该 env 派生;仅不经 cmd/gah 的嵌入/单测可能为空,宁回 TempDir 也不落 cwd/根。
+- **新增任何写盘路径必须经 `$GAH_HOME` 派生**(boot 后经 os.Getenv 可用;注意它是**内部贯通变量**——数据根唯一 = 二进制同级 `gah-data/`,用户不可经 env 指定,2026-09-16 收紧),并给可审计的 Path() helper(便于盘点);禁止:硬编码 `~/.gah`、`UserHomeDir` 直拼、相对 cwd 写、系统根、二进制旁散目录、XDG 位置。
+- 路径解析只允许一条链(与 cmd/gah homeDir 一致):**二进制同级 `gah-data/`(唯一数据根;不存在则首启自动新建)**——新代码不得另起解析链;`GAH_HOME env` 与 `~/.gah`/TempDir 均不作输入源(2026-09-16 收紧;homeDir 创建失败返回空 + boot 报错退出);运行态 GAH_HOME 由 boot Setenv 恒设,下游一律经该 env 派生;仅不经 cmd/gah 的嵌入/单测可能为空,宁回 TempDir 也不落 cwd/根。
 - 密钥类配置(provider.yaml / search.yaml 等)一律入 `config/` 随目录迁移;启动环境变量(GAH_MCP_COMMANDS 等)放 `gah-data/env.sh` 由 start.sh source,**不得以 shell profile(~/.zshrc 等)作为唯一承载**。
 - 新增数据子目录(记忆/计划/会话/任务等)一律 `$GAH_HOME/<name>/`;外部插件/UI 插件落 `$GAH_HOME/plugins/`、`$GAH_HOME/ui-plugins/`。
 - **例外(不属于 gah 运行数据,不受本纪律约束)**:项目级技能 `.gah/skills/`(随仓库/git 走)、工作区写工具(tool-files 等)对用户明确要操作的文件、仓库源码与 seed 样板(config/bundle-*.yaml、internal/embed/seed 为生成源)。

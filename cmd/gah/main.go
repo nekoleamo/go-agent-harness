@@ -77,9 +77,13 @@ func main() {
 		defer os.RemoveAll(home)
 	}
 	if home == "" {
-		// ~/.gah 已弃用:不可便携时要求显式数据根,不再静默回退重建 ~/.gah
-		logger.Error("boot: 无法确定运行时数据目录(未设 GAH_HOME,且非便携部署)。请将 gah 与 gah-data/ 置于同目录运行,或 export GAH_HOME=<数据根>")
+		// 数据根唯一 = 二进制同级 gah-data/(2026-09-16 收紧:不再接受 GAH_HOME env / ~/.gah)
+		logger.Error("boot: 无法确定运行时数据目录。请将 gah 与 gah-data/ 置于同目录(目录需可写),数据根仅支持 gah-data")
 		os.Exit(1)
+	}
+	// 用户显式设置的 GAH_HOME env 不再作为输入源(数据根已锁定便携 gah-data):不一致时告警防误导
+	if h := os.Getenv("GAH_HOME"); h != "" && h != home {
+		logger.Warn("boot: 忽略 GAH_HOME env(数据根仅允许二进制同级 gah-data)", "GAH_HOME", h, "gah-data", home)
 	}
 	// P3 统一 home 事实源:经 GAH_HOME 贯通插件层(host-bridge 默认扫描目录等),
 	// ephemeral 模式彻底隔离(外部插件目录一并入临时 home,退出即焚)。
@@ -326,29 +330,25 @@ func isStdinTTY() bool {
 	return fi.Mode()&os.ModeCharDevice != 0
 }
 
-// homeDir 运行时数据根(便携优先):
-//  1. GAH_HOME env(显式覆盖)
-//  2. 便携模式:与 gah 二进制同级的 gah-data/(不存在则自动新建——部署目录即自包含,
-//    初始化内容(config 样板/外部插件)由后续首启 EnsureSeed/EnsurePlugins 释放;
-//    创建失败(目录只读等)= 不可便携 → 返回空,由调用方报错退出)
-// 3. ~/.gah 已弃用(2026-09-08 起全部数据迁移至便携 gah-data),不再作为隐式兜底,
-//    避免任何运行形态意外重建 ~/.gah。
-// 任一分支都不会落入系统根(防根);全部运行数据统一在此单根下。
+// homeDir 运行时数据根(**唯一:与 gah 二进制同级的 gah-data/ 便携根**)。
+//   - 已存在 → 用之;不存在 → 自动新建(初始化内容由首启 EnsureSeed/EnsurePlugins 释放)
+//   - 创建失败(二进制目录只读/不可写)= 不可便携 → 返回空,由调用方报错退出
+//   - GAH_HOME env 与 ~/.gah 均**不再作为输入源**(2026-09-16 收紧:数据根只允许 gah-data);
+//     内部贯通仍经 boot 后 os.Setenv("GAH_HOME", home)(插件/外部进程读该 env 派生子目录)
+//
+// 任一分支都不落系统根(防根);全部运行数据统一在此单根下。
 func homeDir() string {
-	if h := os.Getenv("GAH_HOME"); h != "" {
-		return h
-	}
 	if exe, err := os.Executable(); err == nil {
 		if pd := portableRoot(exe); pd != "" {
 			return pd
 		}
 	}
-	return "" // 未设 GAH_HOME 且不可便携:调用方报错(不再回退 ~/.gah)
+	return "" // 不可便携:调用方报错退出
 }
 
 // portableRoot 便携数据根解析:给定 gah 二进制路径(经符号链接归一出调用方处理)
 // → 同目录 gah-data/。已存在 → 用之;不存在 → MkdirAll 新建(成功后由首启释放填充
-// 内容);创建失败(二进制目录只读/不可写)= 不可便携 → 返回空(调用方回落 ~/.gah)。
+// 内容);创建失败(二进制目录只读/不可写)= 不可便携 → 返回空(调用方报错退出)。
 func portableRoot(exe string) string {
 	pd := filepath.Join(filepath.Dir(filepath.Clean(exe)), "gah-data")
 	if fi, serr := os.Stat(pd); serr == nil && fi.IsDir() {

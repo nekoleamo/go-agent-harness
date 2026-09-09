@@ -51,7 +51,7 @@ cat ~/.tauri/gah.key.pub   # 公钥 → tauri.conf.json plugins.updater.pubkey
 ```
 - **私钥 `gah.key` 绝不入库**;备份到安全处(丢失则旧版无法验签,需全量重装)
 - CI 用 `secrets.TAURI_SIGNING_PRIVATE_KEY`(内容=私钥字符串),脚本已支持
-- 更新机制是**整包替换**:升级只替换 .app/setup 安装,数据根(应用数据目录)不迁移、不丢
+- 更新机制是**整包替换**:升级替换 .app/setup 安装文件——**数据根 = gah(sidecar)同级 `gah-data/`**(与 CLI 便携同构);升级 .app 会连同该目录一起替换,如需保留数据请先 `/backup` 备份(或自行迁出 gah-data)。
 
 ## 已知边界(后续可平滑升级)
 
