@@ -1,0 +1,387 @@
+// Package uimwechat 提供 ui-im-wechat 插件(IM 远程控制线 P0-2b):微信个人号经 iLink Bot API
+// 接入 im.Bridge——transport(poll loop:getupdates 长轮询 → im.HandleInbound;SendText → sendmessage,
+// context_token 按用户缓存回显) + 装配(注入 loop/sessions → im.New → Provide ctx.confirm +
+// 注册 /stop、/im(桥)+ /wechat login|status(通道命令))。凭证入 $GAH_HOME/config/ilink-wechat.yaml。
+// 安全:默认 pairing(登录成功自动授权扫码者);allowlist 经 store 持久。媒体 CDN 留 P0-2c。
+package uimwechat
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
+
+	"github.com/nekoleamo/go-agent-harness/ilink"
+	"github.com/nekoleamo/go-agent-harness/im"
+	"github.com/nekoleamo/go-agent-harness/sdk"
+)
+
+// Plugin 实现 ui-im-wechat。Requires ctx.agentLoop/ctx.sessions(注入);
+// 提供 ctx.confirm(IM 审批通道,与 tui/web profile 互斥——profile 层保证)。
+type Plugin struct{}
+
+func (p *Plugin) Name() string { return "ui-im-wechat" }
+
+const channelName = "wechat"
+
+// Start 装配桥与通道;已登录则自动启动 poll loop(未登录不崩,/wechat login 后启用)。
+func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
+	mode := im.AccessPairing
+	baseURL := ilink.DefaultBaseURL
+	if m != nil && m.Data != nil {
+		if v, ok := m.Data["mode"].(string); ok && v != "" {
+			mode = im.AccessMode(v)
+		}
+		if v, ok := m.Data["base_url"].(string); ok && v != "" {
+			baseURL = v
+		}
+	}
+	var loop sdk.AgentLoop
+	if err := c.Inject("ctx.agentLoop", &loop); err != nil {
+		return nil, err
+	}
+	var sessions sdk.SessionLog
+	if err := c.Inject("ctx.sessions", &sessions); err != nil {
+		return nil, err
+	}
+	var turn sdk.TurnControl
+	_ = c.Inject("ctx.turnControl", &turn)
+	var cmds sdk.CommandRegistry
+	_ = c.Inject("ctx.commands", &cmds)
+
+	store := ilink.NewStore(credsPath())
+	creds, err := store.Load()
+	if err != nil {
+		return nil, err
+	}
+	tr := &wechatTransport{name: channelName, store: store, creds: creds, baseURL: baseURL,
+		lastError: "未登录(执行 /wechat login)", tickets: make(map[string]ticketEntry)}
+	b := im.New(nil, loop, sessions, tr, im.Options{
+		Mode:  mode,
+		Allow: creds.Allow, // 已授权用户持久恢复
+	})
+	tr.bridge = b
+	if turn != nil {
+		b.SetTurnControl(turn)
+	}
+	// 已登录自动启动 poll loop
+	if creds.Token != "" {
+		tr.client = ilink.New(creds.BaseURL, creds.Token)
+		tr.startPoll()
+	}
+	// ctx.confirm = IM 桥(与 tui/web 互斥由 profile)
+	if err := c.Provide("ctx.confirm", b); err != nil {
+		return nil, err
+	}
+	// 命令注册:桥自带 /stop /im(pair/status/list)+ 通道命令 /wechat login|status
+	var ds []sdk.Disposer
+	if cmds != nil {
+		d, err := b.RegisterCommands(cmds)
+		if err != nil {
+			return nil, err
+		}
+		ds = append(ds, d)
+		d2, err := cmds.Register(sdk.CommandSpec{
+			Name:  "wechat",
+			Usage: "/wechat login|status",
+			Desc:  "微信 iLink 通道:扫码登录/状态",
+			Run:   func(args []string) (string, error) { return tr.wechatCmd(context.Background(), args) },
+		})
+		if err != nil {
+			return nil, err
+		}
+		ds = append(ds, d2)
+	}
+	return func() {
+		tr.stopPoll()
+		for _, d := range ds {
+			d()
+		}
+	}, nil
+}
+
+// credsPath 凭证路径:$GAH_HOME/config/ilink-wechat.yaml(便携纪律;空 GAH_HOME 兜底 TempDir)。
+func credsPath() string {
+	home := os.Getenv("GAH_HOME")
+	if home == "" {
+		home = os.TempDir()
+	}
+	return filepath.Join(home, "config", "ilink-wechat.yaml")
+}
+
+// ticketEntry typing 票据缓存。
+type ticketEntry struct {
+	ticket    string
+	expiresAt time.Time
+}
+
+// wechatTransport 实现 im.Transport + poll loop。
+type wechatTransport struct {
+	name    string
+	store   *ilink.Store
+	creds   *ilink.Credentials
+	baseURL string
+	bridge  *im.Bridge
+	client  *ilink.Client
+
+	mu        sync.Mutex
+	polling   bool
+	stopCh    chan struct{}
+	lastError string
+	tickets   map[string]ticketEntry
+	tokens    map[string]string // userID → context_token(iLink 回显必须)
+	loginBusy bool
+}
+
+func (t *wechatTransport) Name() string { return t.name }
+
+// SendText 回推文本(先显 typing;context_token 缺失无法发送,记诊断)。
+func (t *wechatTransport) SendText(ctx context.Context, to im.Route, text string) error {
+	t.mu.Lock()
+	cli := t.client
+	token := t.tokens[to.UserID]
+	user := to.UserID
+	t.mu.Unlock()
+	if cli == nil {
+		return fmt.Errorf("wechat: 未登录")
+	}
+	if token == "" {
+		return fmt.Errorf("wechat: 无 %s 的 context_token,无法回复(请对方先发消息)", user)
+	}
+	if tkt := t.typingTicket(user); tkt != "" {
+		_ = cli.SendTyping(ctx, user, tkt, false)
+	}
+	return cli.SendMessage(ctx, to.UserID, text, token, "")
+}
+
+// typingTicket 取(缓存 ~20h;失败静默——typing 尽力而为)。
+func (t *wechatTransport) typingTicket(user string) string {
+	t.mu.Lock()
+	if e, ok := t.tickets[user]; ok && time.Now().Before(e.expiresAt) {
+		t.mu.Unlock()
+		return e.ticket
+	}
+	t.mu.Unlock()
+	cli := t.client
+	if cli == nil {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	tkt, err := cli.GetTypingTicket(ctx, user)
+	if err != nil {
+		return ""
+	}
+	t.mu.Lock()
+	t.tickets[user] = ticketEntry{ticket: tkt, expiresAt: time.Now().Add(20 * time.Hour)}
+	t.mu.Unlock()
+	return tkt
+}
+
+// startPoll 启动轮询 goroutine(幂等)。
+func (t *wechatTransport) startPoll() {
+	t.mu.Lock()
+	if t.polling {
+		t.mu.Unlock()
+		return
+	}
+	t.polling = true
+	t.stopCh = make(chan struct{})
+	stop := t.stopCh
+	t.mu.Unlock()
+	go t.pollLoop(stop)
+}
+
+// stopPoll 停止轮询(幂等)。
+func (t *wechatTransport) stopPoll() {
+	t.mu.Lock()
+	if !t.polling {
+		t.mu.Unlock()
+		return
+	}
+	t.polling = false
+	close(t.stopCh)
+	t.mu.Unlock()
+}
+
+// pollLoop 长轮询主循环:取消息 → 桥处理;断线退避;会话过期(errcode -14)停轮询并置诊断。
+func (t *wechatTransport) pollLoop(stop chan struct{}) {
+	backoff := 2 * time.Second
+	for {
+		select {
+		case <-stop:
+			return
+		default:
+		}
+		t.mu.Lock()
+		creds := *t.creds
+		cli := t.client
+		t.mu.Unlock()
+		if cli == nil {
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() { // stop 时取消本轮长轮询(否则最长挂 35s)
+			select {
+			case <-stop:
+				cancel()
+			case <-done:
+			}
+		}()
+		resp, err := cli.GetUpdates(ctx, creds.SyncBuf)
+		close(done)
+		if err != nil {
+			cancel()
+			t.setLastError("轮询错误: " + err.Error())
+			if ilink.SessionExpired(err) {
+				t.setLastError("微信会话已过期(ret=-14),请重新执行 /wechat login")
+				return // 停轮询,等重新登录
+			}
+			time.Sleep(backoff)
+			if backoff < 30*time.Second {
+				backoff *= 2
+			}
+			continue
+		}
+		backoff = 2 * time.Second
+		t.setLastError("")
+		if resp.GetUpdatesBuf != "" && resp.GetUpdatesBuf != creds.SyncBuf {
+			t.mu.Lock()
+			t.creds.SyncBuf = resp.GetUpdatesBuf
+			_ = t.store.Save(t.creds)
+			t.mu.Unlock()
+		}
+		for _, msg := range resp.Msgs {
+			t.handleInbound(&msg)
+		}
+	}
+}
+
+// handleInbound 解析一条入站消息交给桥(token 缓存 + 去重 id 由桥负责)。
+func (t *wechatTransport) handleInbound(msg *ilink.InboundMessage) {
+	if msg.MessageType != 1 || msg.FromUserID == "" {
+		return
+	}
+	text := msg.ExtractText()
+	if text == "" {
+		return
+	}
+	t.mu.Lock()
+	if t.tokens == nil {
+		t.tokens = make(map[string]string)
+	}
+	if msg.ContextToken != "" {
+		t.tokens[msg.FromUserID] = msg.ContextToken
+	}
+	t.mu.Unlock()
+	route := im.Route{Channel: t.name, UserID: msg.FromUserID, ChatID: msg.FromUserID}
+	// 稳定消息 id:ts + 文本指纹(重复投递去重;跨渠道无需全局)
+	h := sha256.Sum256([]byte(text))
+	msgID := fmt.Sprintf("%d-%s", msg.CreateTimeMs, hex.EncodeToString(h[:6]))
+	_ = t.bridge.HandleInbound(context.Background(), im.Inbound{Route: route, MsgID: msgID, Text: text})
+}
+
+func (t *wechatTransport) setLastError(msg string) {
+	t.mu.Lock()
+	t.lastError = msg
+	t.mu.Unlock()
+}
+
+// wechatCmd /wechat 命令:login/status。
+func (t *wechatTransport) wechatCmd(ctx context.Context, args []string) (string, error) {
+	if len(args) == 0 || args[0] == "status" {
+		return t.statusText(), nil
+	}
+	if args[0] != "login" {
+		return "", fmt.Errorf("用法: /wechat login|status")
+	}
+	t.mu.Lock()
+	if t.loginBusy {
+		t.mu.Unlock()
+		return "登录进行中,请稍候…", nil
+	}
+	t.mu.Unlock()
+	qr, err := ilink.FetchQR(ctx, t.baseURL)
+	if err != nil {
+		return "", fmt.Errorf("获取二维码失败: %w", err)
+	}
+	t.mu.Lock()
+	t.loginBusy = true
+	t.mu.Unlock()
+	go func() {
+		defer func() {
+			t.mu.Lock()
+			t.loginBusy = false
+			t.mu.Unlock()
+		}()
+		t.finishLogin(qr)
+	}()
+	return "请用微信扫码登录:\n" + qr.QRCodeImg + "\n(等待确认,超时 5 分钟;状态查询 /wechat status)", nil
+}
+
+// finishLogin 后台完成扫码登录:轮询确认 → 存凭证 → 授权扫码者 → 启动 poll。
+func (t *wechatTransport) finishLogin(qr *ilink.QRResponse) {
+	creds, err := ilink.LoginQRFromToken(context.Background(), t.baseURL, qr.QRCode, 5*time.Minute)
+	if err != nil {
+		t.setLastError("登录失败: " + err.Error())
+		return
+	}
+	t.mu.Lock()
+	if !hasStr(t.creds.Allow, channelName+"\x00"+creds.UserID) && creds.UserID != "" {
+		t.creds.Allow = append(t.creds.Allow, channelName+"\x00"+creds.UserID)
+	}
+	t.creds.Token = creds.Token
+	t.creds.BaseURL = creds.BaseURL
+	t.creds.AccountID = creds.AccountID
+	t.creds.UserID = creds.UserID
+	t.creds.SyncBuf = ""
+	if err := t.store.Save(t.creds); err != nil {
+		t.mu.Unlock()
+		t.setLastError("保存凭证失败: " + err.Error())
+		return
+	}
+	t.client = ilink.New(t.creds.BaseURL, t.creds.Token)
+	t.mu.Unlock()
+	t.bridge.Access().Allow(channelName + "\x00" + creds.UserID)
+	t.setLastError("")
+	t.startPoll()
+}
+
+// statusText 状态文本。
+func (t *wechatTransport) statusText() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	state := "未登录"
+	acct := ""
+	if t.creds.Token != "" {
+		state = "已登录"
+		acct = t.creds.AccountID
+		if len(t.creds.Token) > 8 {
+			acct += " token…" + t.creds.Token[len(t.creds.Token)-4:]
+		}
+	}
+	polling := "停"
+	if t.polling {
+		polling = "运行"
+	}
+	allowed := len(t.creds.Allow)
+	if t.bridge != nil {
+		allowed = len(t.bridge.Access().List())
+	}
+	return fmt.Sprintf("wechat: %s(%s) 轮询=%s 已授权=%d\n最近: %s", state, acct, polling, allowed, t.lastError)
+}
+
+func hasStr(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}

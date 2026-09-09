@@ -7,12 +7,12 @@ import (
 	"github.com/nekoleamo/go-agent-harness/plugins/adapter/llm-mock"
 	"github.com/nekoleamo/go-agent-harness/plugins/adapter/llm-openai-compat"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-agent-loop"
+	"github.com/nekoleamo/go-agent-harness/plugins/host/host-backup"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-bridge"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-commands"
-	"github.com/nekoleamo/go-agent-harness/plugins/host/host-backup"
-	"github.com/nekoleamo/go-agent-harness/plugins/host/host-internal-commands"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-cwd-sessions"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-fanout"
+	"github.com/nekoleamo/go-agent-harness/plugins/host/host-internal-commands"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-jobs"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-llm"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-plugin-manager"
@@ -33,6 +33,7 @@ import (
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-todo"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-web"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-workflow"
+	"github.com/nekoleamo/go-agent-harness/plugins/ui/ui-im-wechat"
 	"github.com/nekoleamo/go-agent-harness/plugins/ui/ui-tui-app"
 	"github.com/nekoleamo/go-agent-harness/plugins/ui/ui-web-app"
 	"github.com/nekoleamo/go-agent-harness/sdk"
@@ -155,6 +156,10 @@ var All = map[string]Def{
 	"ui-web-app": {Factory: func() sdk.Plugin { return &uiweb.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "ui-web-app", Type: "ui", APIVersion: ">=1.0,<2.0",
 		Requires: []string{"ctx.agentLoop", "ctx.sessions", "ctx.llm"}}, Bundle: "web"},
+	"ui-im-wechat": {Factory: func() sdk.Plugin { return &uimwechat.Plugin{} }, Manifest: &sdk.Manifest{
+		ID: "ui-im-wechat", Type: "ui", APIVersion: ">=1.0,<2.0",
+		Provides: []string{"ctx.confirm"},                            // IM 审批通道(与 tui/web 互斥,profile 层保证)
+		Requires: []string{"ctx.agentLoop", "ctx.sessions"}}, Bundle: "im-wechat", Manage: "scenario"},
 }
 
 // RegisterAll 把 bundle == name 的全部插件注册进 registry(不按 enabled 过滤;过滤在装配层)。

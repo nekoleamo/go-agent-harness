@@ -1,0 +1,8 @@
+# im-wechat profile:微信个人号 iLink Bot 远程控制形态(IM 线 P0-2b)。
+# 用法:gah --profile im-wechat(或 -profile im-wechat;与 tui/web 互斥)。
+# 启动后执行 /wechat login 扫码,微信向机器人发消息即远程操作宿主(普通文本 = agent 回合;/stop 取消)。
+name: im-wechat
+bundles:
+  - base
+  - im-wechat
+patches: []

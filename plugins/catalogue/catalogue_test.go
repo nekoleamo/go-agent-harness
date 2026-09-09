@@ -90,13 +90,14 @@ func TestBundleCoverage(t *testing.T) {
 	seen := map[string]bool{}
 	for id, d := range All {
 		switch d.Bundle {
-		case "base", "tui", "web":
+		case "base", "tui", "web", "im-wechat":
 		default:
 			t.Fatalf("%s 的 bundle 归属非法: %q", id, d.Bundle)
 		}
 		seen[d.Bundle] = true
 	}
-	for _, b := range []string{"base", "tui", "web"} {
+	for _, b := range []string{"base", "tui", "web", "im-wechat"} {
+
 		if !seen[b] {
 			t.Fatalf("bundle %s 无任何插件归属", b)
 		}
