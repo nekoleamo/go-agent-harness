@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/nekoleamo/go-agent-harness/core/ctx"
 	"github.com/nekoleamo/go-agent-harness/core/event"
+	"github.com/nekoleamo/go-agent-harness/plugins/host/host-cwd-sessions"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-session-log"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
@@ -129,42 +132,65 @@ func TestAllowlistAggregate(t *testing.T) {
 	}
 }
 
-// TestBusyReply 忙时普通消息回提示(不排队、不开第二回合)。
-func TestBusyReply(t *testing.T) {
-	b, _, tr, sessions := buildTestBridge(t, Options{Mode: AccessAllowlist, Allow: []string{"mock\x00owner"}})
+// TestBusyQueue P1 忙时队列:回合进行中消息入队(回提示)→ 完成自动续跑;
+// 队列满(已有 1 条)时再来的消息回"忙"提示(不丢不炸)。
+func TestBusyQueue(t *testing.T) {
+	b, _, tr, _ := buildTestBridge(t, Options{Mode: AccessAllowlist, Allow: []string{"mock\x00owner"}})
 	release := make(chan struct{})
 	entered := make(chan struct{})
 	var once sync.Once
-	b.loop = &stubLoop{onRun: func(ctx context.Context, _ string) error {
+	loop := &stubLoop{}
+	b.loop = loop
+	loop.onRun = func(ctx context.Context, _ string) error {
 		once.Do(func() { close(entered) })
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-release:
 		}
-		_ = sessions // 回合挂起不产出
-		return nil
-	}}
+		return nil // 回合无产出 → 收尾回"✅ 完成"占位
+	}
 	done := make(chan error, 1)
 	go func() {
 		done <- b.HandleInbound(context.Background(), Inbound{Route: mkRoute("owner"), MsgID: "1", Text: "任务A"})
 	}()
 	<-entered
-	// 第二用户消息 → busy 提示
+	// 忙时第二条 → 入队(回提示);第三条 → 队列满回"忙"
 	if err := b.HandleInbound(context.Background(), Inbound{Route: mkRoute("owner"), MsgID: "2", Text: "任务B"}); err != nil {
 		t.Fatal(err)
 	}
+	if err := b.HandleInbound(context.Background(), Inbound{Route: mkRoute("owner"), MsgID: "3", Text: "任务C"}); err != nil {
+		t.Fatal(err)
+	}
+	sent := tr.sent()
+	if len(sent) < 1 || !strings.Contains(sent[0], "加入队列") {
+		t.Fatalf("忙时应回入队提示: %+v", sent)
+	}
+	if len(sent) < 2 || !strings.Contains(sent[1], "请稍候") {
+		t.Fatalf("队列满应回忙提示: %+v", sent)
+	}
+	// 释放:回合A 完成 → 自动续跑回合B;任务C 不入回合
 	close(release)
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
-	sent := tr.sent()
-	if len(sent) < 1 || !strings.Contains(sent[0], "请稍候") {
-		t.Fatalf("应回忙提示: %+v", sent)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		loop.mu.Lock()
+		n := len(loop.inputs)
+		loop.mu.Unlock()
+		if n >= 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("队列续跑超时: inputs=%d", n)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	// 回合随后结束(无产出)→ 完成占位(第二条)
-	if len(sent) < 2 || !strings.Contains(sent[len(sent)-1], "完成") {
-		t.Fatalf("回合结束后应回完成占位: %+v", sent)
+	loop.mu.Lock()
+	defer loop.mu.Unlock()
+	if len(loop.inputs) != 2 || loop.inputs[0] != "任务A" || loop.inputs[1] != "任务B" {
+		t.Fatalf("应依次跑 A/B,任务C 不排队: %+v", loop.inputs)
 	}
 }
 
@@ -443,4 +469,210 @@ func TestParseConfirmReply(t *testing.T) {
 			t.Errorf("parseConfirmReply(%q) = (%v,%v),want (%v,%v)", c.text, ok, known, c.ok, c.known)
 		}
 	}
+}
+
+// reset 清空已记录出站(供分段断言)。
+func (t *stubTransport) reset() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.sends = nil
+}
+
+// buildBridgeP1 装配真 sessionlog + host-cwd-sessions(会话绑定命令面测试底座;
+// host-cwd-sessions 启动即新开会话——与宿主语义一致)。bindPath 空 = 绑定不落盘。
+func buildBridgeP1(t *testing.T, bindPath string) (*Bridge, *stubLoop, *stubTransport, sdk.CwdSessions, sdk.SessionLog) {
+	t.Helper()
+	t.Setenv("GAH_HOME", t.TempDir())
+	logger := slog.New(slog.DiscardHandler)
+	bus := event.New(logger)
+	c := ctx.New(logger, bus)
+	if _, err := (&sessionlog.Plugin{}).Start(c, &sdk.Manifest{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&hostcwdsessions.Plugin{}).Start(c, &sdk.Manifest{}); err != nil {
+		t.Fatal(err)
+	}
+	var sessions sdk.SessionLog
+	if err := c.Inject("ctx.sessions", &sessions); err != nil {
+		t.Fatal(err)
+	}
+	var cwd sdk.CwdSessions
+	if err := c.Inject("ctx.cwdSessions", &cwd); err != nil {
+		t.Fatal(err)
+	}
+	loop := &stubLoop{}
+	tr := &stubTransport{}
+	b := New(c, loop, sessions, tr, Options{
+		Mode:            AccessAllowlist,
+		Allow:           []string{"mock\x00owner"},
+		SessionBindPath: bindPath,
+	})
+	return b, loop, tr, cwd, sessions
+}
+
+// TestSessionCommandsP1 会话绑定命令面:/new 新建绑定 → 回合落新会话 →
+// /history 回读绑定会话 → /session main 解绑回主 → 会话隔离。
+func TestSessionCommandsP1(t *testing.T) {
+	b, loop, tr, cwd, sessions := buildBridgeP1(t, "")
+	if err := b.HandleInbound(context.Background(), Inbound{Route: mkRoute("owner"), MsgID: "1", Text: "/new"}); err != nil {
+		t.Fatal(err)
+	}
+	sent := tr.sent()
+	if len(sent) != 1 || !strings.Contains(sent[0], "已新建会话并绑定") {
+		t.Fatalf("/new 应回新建绑定提示: %+v", sent)
+	}
+	newID := cwd.CurrentSession()
+	if newID == "" {
+		t.Fatal("/new 后应处于新建会话")
+	}
+	// 绑定会话内回合:文本 → 回合产物写入绑定会话(user+assistant,对齐 agent-loop)
+	loop.onRun = func(_ context.Context, in string) error {
+		if err := sessions.Append(sdk.SessionEvent{Kind: sdk.EventUserMessage, Payload: sdk.UserMessage{Content: in}}); err != nil {
+			return err
+		}
+		return sessions.Append(sdk.SessionEvent{Kind: sdk.EventAssistantMessage, Payload: sdk.AssistantMessage{Content: "回答1"}})
+	}
+	if err := b.HandleInbound(context.Background(), Inbound{Route: mkRoute("owner"), MsgID: "2", Text: "第一次对话"}); err != nil {
+		t.Fatal(err)
+	}
+	// /history 应回读绑定会话内容(❯ 用户 + 🤖 助手)
+	tr.reset()
+	if err := b.HandleInbound(context.Background(), Inbound{Route: mkRoute("owner"), MsgID: "3", Text: "/history"}); err != nil {
+		t.Fatal(err)
+	}
+	h := strings.Join(tr.sent(), "\n")
+	if !strings.Contains(h, "❯ 第一次对话") || !strings.Contains(h, "🤖 回答1") {
+		t.Fatalf("/history 应回读绑定会话: %+v", h)
+	}
+	// /sessionlist 含新会话与主会话
+	tr.reset()
+	if err := b.HandleInbound(context.Background(), Inbound{Route: mkRoute("owner"), MsgID: "4", Text: "/sessionlist"}); err != nil {
+		t.Fatal(err)
+	}
+	l := strings.Join(tr.sent(), "\n")
+	if !strings.Contains(l, newID) || !strings.Contains(l, "/new") {
+		t.Fatalf("/sessionlist 应含新建会话与绑定指引: %+v", l)
+	}
+	// /session main 解绑回主会话
+	tr.reset()
+	if err := b.HandleInbound(context.Background(), Inbound{Route: mkRoute("owner"), MsgID: "5", Text: "/session main"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(tr.sent(), "\n"), "回到主会话") {
+		t.Fatalf("/session main 应解绑回主: %+v", tr.sent())
+	}
+	if cwd.CurrentSession() != "" {
+		t.Fatalf("回主会话后 CurrentSession 应为空,got %q", cwd.CurrentSession())
+	}
+}
+
+// TestSessionBindRestore 绑定持久化:新桥(同 bindPath 重启)按绑定恢复会话,
+// 回合前 bindSession 把宿主当前会话切回绑定会话(覆盖启动即新建的宿主会话)。
+func TestSessionBindRestore(t *testing.T) {
+	bindPath := filepath.Join(t.TempDir(), "im-sessions.yaml")
+	time.Sleep(1100 * time.Millisecond) // host 启动 New 与 /new 的 id 秒级时间戳,需跨秒才唯一
+	b, _, _, cwd, _ := buildBridgeP1(t, bindPath)
+	if err := b.HandleInbound(context.Background(), Inbound{Route: mkRoute("owner"), MsgID: "1", Text: "/new"}); err != nil {
+		t.Fatal(err)
+	}
+	wantID := cwd.CurrentSession()
+	if wantID == "" {
+		t.Fatal("/new 应返回会话 id")
+	}
+	// 重启:全新环境(新 GAH_HOME/新宿主,启动会话 = 新 id ≠ 绑定 id)
+	b2, loop2, tr2, cwd2, sessions2 := buildBridgeP1(t, bindPath)
+	loop2.onRun = finishText(sessions2, "恢复后回答")
+	if err := b2.HandleInbound(context.Background(), Inbound{Route: mkRoute("owner"), MsgID: "10", Text: "重启后的消息"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := cwd2.CurrentSession(); got != wantID {
+		t.Fatalf("重启后回合应落到绑定会话 %q,got %q", wantID, got)
+	}
+	if !strings.Contains(strings.Join(tr2.sent(), "\n"), "恢复后回答") {
+		t.Fatalf("绑定会话回合应正常回复: %+v", tr2.sent())
+	}
+}
+
+// TestSessionBindStaleDeleted 绑定会话被宿主删除 → 回合前自动解绑回主会话
+// (防 Open 对不存在文件误新建空会话;绑定记录同步清除)。
+func TestSessionBindStaleDeleted(t *testing.T) {
+	b, loop, tr, cwd, sessions := buildBridgeP1(t, "")
+	time.Sleep(1100 * time.Millisecond) // /new 跨秒,避免与 host 启动会话同 id
+	if err := b.HandleInbound(context.Background(), Inbound{Route: mkRoute("owner"), MsgID: "1", Text: "/new"}); err != nil {
+		t.Fatal(err)
+	}
+	bound := cwd.CurrentSession()
+	if bound == "" {
+		t.Fatal("/new 应返回会话 id")
+	}
+	// 跑一回合落盘(首次 Append 才建 jsonl,后续才能“被外部删除”)
+	loop.onRun = finishText(sessions, "占位")
+	if err := b.HandleInbound(context.Background(), Inbound{Route: mkRoute("owner"), MsgID: "2", Text: "先落盘"}); err != nil {
+		t.Fatal(err)
+	}
+	// 宿主侧删除绑定会话文件(外部清理语义;hostcwdsessions.Sessions 枚举磁盘 → 绑定失效)
+	file := filepath.Join(hostcwdsessions.SessionsRoot(), cwd.Current()+"-"+bound+".jsonl")
+	if err := os.Remove(file); err != nil {
+		t.Fatal(err)
+	}
+	// 下一条消息:bindSession 发现绑定失效 → 解绑,回合照常不崩
+	loop.onRun = finishText(sessions, "删除后回答")
+	if err := b.HandleInbound(context.Background(), Inbound{Route: mkRoute("owner"), MsgID: "3", Text: "删除后消息"}); err != nil {
+		t.Fatal(err)
+	}
+	if b.bind.Get(mkRoute("owner").Key()) != "" {
+		t.Fatal("失效绑定应已清除(自动解绑回主)")
+	}
+	if !strings.Contains(strings.Join(tr.sent(), "\n"), "删除后回答") {
+		t.Fatalf("解绑后回合应正常: %+v", tr.sent())
+	}
+}
+
+// TestSessionSwitchBusyRejected 回合进行中 /session(切换类)被拒——防 agent-loop
+// 写盘中途切会话致回合内事件错乱;只读 /status 仍可用。
+func TestSessionSwitchBusyRejected(t *testing.T) {
+	b, _, tr, cwd, _ := buildBridgeP1(t, "")
+	if err := b.HandleInbound(context.Background(), Inbound{Route: mkRoute("owner"), MsgID: "1", Text: "/new"}); err != nil {
+		t.Fatal(err)
+	}
+	bound := cwd.CurrentSession()
+	release := make(chan struct{})
+	b.loop.(*stubLoop).onRun = func(ctx context.Context, _ string) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-release:
+		}
+		return nil
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- b.HandleInbound(context.Background(), Inbound{Route: mkRoute("owner"), MsgID: "2", Text: "长任务"})
+	}()
+	// 回合挂起期间发 /session main → 拒绝且不切换
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		b.mu.Lock()
+		busy := b.busy
+		b.mu.Unlock()
+		if busy {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("回合未进入 busy")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	tr.reset()
+	if err := b.HandleInbound(context.Background(), Inbound{Route: mkRoute("owner"), MsgID: "3", Text: "/session main"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(tr.sent(), "\n"), "回合进行中") {
+		t.Fatalf("busy 中 /session 应被拒: %+v", tr.sent())
+	}
+	if cwd.CurrentSession() != bound {
+		t.Fatalf("busy 中切换不应生效,got %q", cwd.CurrentSession())
+	}
+	close(release)
+	<-done
 }

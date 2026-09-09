@@ -76,9 +76,11 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	}
 	tr := &wechatTransport{name: channelName, store: store, creds: creds, baseURL: baseURL,
 		lastError: "未登录(执行 /wechat login)", tickets: make(map[string]ticketEntry)}
-	b := im.New(nil, loop, sessions, tr, im.Options{
+	b := im.New(c, loop, sessions, tr, im.Options{
 		Mode:  mode,
 		Allow: creds.Allow, // 已授权用户持久恢复
+		// P1 会话绑定:chat→宿主会话映射落盘(重启恢复绑定)
+		SessionBindPath: sessionBindPath(),
 	})
 	tr.bridge = b
 	// 授权变化持久化(/im pair 批准、allow/revoke、登录授权):写回凭证 store,
@@ -142,6 +144,16 @@ func credsPath() string {
 		home = os.TempDir()
 	}
 	return filepath.Join(home, "config", "ilink-wechat.yaml")
+}
+
+// sessionBindPath chat↔宿主会话绑定映射路径:$GAH_HOME/config/im-sessions.yaml
+// (P1 会话绑定命令面;与 QQ 线同根文件——同进程并存时共享绑定表)。
+func sessionBindPath() string {
+	home := os.Getenv("GAH_HOME")
+	if home == "" {
+		home = os.TempDir()
+	}
+	return filepath.Join(home, "config", "im-sessions.yaml")
 }
 
 // ticketEntry typing 票据缓存。

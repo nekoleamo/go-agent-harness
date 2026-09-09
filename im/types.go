@@ -64,8 +64,10 @@ type Options struct {
 	Allow []string
 	// PairingTTL 配对码有效期(默认 1h)。
 	PairingTTL time.Duration
-	// BusyReply 回合进行中收到普通消息的提示(空 = 默认文案)。
+	// BusyReply 回合进行中收到普通消息且队列已满时的提示(空 = 默认文案)。
 	BusyReply string
+	// SessionBindPath chat↔宿主会话绑定映射持久化路径(P1;空 = 仅内存不落盘)。
+	SessionBindPath string
 	// UnauthorizedReply pairing 模式向陌生用户回配对提示(allowlist/disabled 模式静默)。
 	PairingReply func(code string) string
 }

@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -24,16 +25,29 @@ type Bridge struct {
 	opt      Options
 	turn     sdk.TurnControl // ctx.turnControl(可选;/stop 取消依赖)
 
+	cwd  sdk.CwdSessions // ctx.cwdSessions(P1 会话绑定;可选——未装配会话命令降级)
+	llm  sdk.LLMService  // ctx.llm(/status 模型名;可选)
+	bind *bindStore      // chat→宿主会话映射(opt.SessionBindPath;nil = 无绑定能力)
+
 	mu       sync.Mutex
 	busy     bool
 	curRoute Route               // 当前回合归属会话(审批确认推送目标)
 	cmds     sdk.CommandRegistry // ctx.commands(可选;RegisterCommands 注入)
+
+	qMu     sync.Mutex
+	queued  []queuedInbound // P1 忙时队列(全局 FIFO 单槽;回合完成自动续跑)
 
 	confirmMu sync.Mutex
 	pending   map[string]*confirmWait // route.Key() → 待回答确认
 
 	dedupMu sync.Mutex
 	dedup   map[string]time.Time // route+msgid → 首次 seen(窗口裁剪)
+}
+
+// queuedInbound 一条忙时排队的入站(回合结束后按序续跑)。
+type queuedInbound struct {
+	route Route
+	text  string
 }
 
 // confirmWait 一条待回答的确认(policy 侧 Confirm 阻塞等待;用户消息经 answerPending 回填)。
@@ -62,12 +76,31 @@ func New(c sdk.Ctx, loop sdk.AgentLoop, sessions sdk.SessionLog, tr Transport, o
 	if opt.Allow != nil {
 		o.Allow = opt.Allow
 	}
-	return &Bridge{
+	b := &Bridge{
 		c: c, loop: loop, sessions: sessions, tr: tr,
 		acc:     NewAccess(o.Mode, o.Allow, o.PairingTTL),
 		opt:     o,
 		pending: make(map[string]*confirmWait),
 		dedup:   make(map[string]time.Time),
+		bind:    newBindStore(o.SessionBindPath),
+	}
+	b.injectOptionalServices(c) // 可选:ctx.cwdSessions/ctx.llm(P1 会话绑定/模型名)
+	return b
+}
+
+// injectOptionalServices 尝试注入可选宿主服务(P1 会话绑定/cwd;缺失静默跳过——
+// 相应命令面降级提示)。仅当 New 收到真实 Ctx(插件壳传入)时执行。
+func (b *Bridge) injectOptionalServices(c sdk.Ctx) {
+	if c == nil {
+		return
+	}
+	var cwd sdk.CwdSessions
+	if err := c.Inject("ctx.cwdSessions", &cwd); err == nil {
+		b.cwd = cwd
+	}
+	var lls sdk.LLMService
+	if err := c.Inject("ctx.llm", &lls); err == nil {
+		b.llm = lls
 	}
 }
 
@@ -122,7 +155,16 @@ func (b *Bridge) HandleInbound(ctx context.Context, in Inbound) error {
 		return b.dispatchCommand(ctx, r, text)
 	}
 
-	// 5. 回合驱动(busy 串行:忙时回提示,不排队——queue 语义 P1)
+	// 5. 回合驱动(P1 busy queue:忙时入队 FIFO 单槽,完成后自动续跑;队列满回"忙")
+	b.mu.Lock()
+	busy := b.busy
+	b.mu.Unlock()
+	if busy {
+		if b.enqueue(r, text) {
+			return b.sendText(ctx, r, "⏳ 正在处理上一条消息,你已加入队列(完成后自动处理;可 /stop 取消)。")
+		}
+		return b.sendText(ctx, r, b.opt.BusyReply)
+	}
 	return b.runTurn(ctx, r, text)
 }
 
@@ -186,13 +228,60 @@ func (b *Bridge) answerPending(ctx context.Context, r Route, text string) bool {
 	return true
 }
 
-// runTurn 回合驱动:记录回合起点 seq → agentLoop.Run → 聚合回合内新增 assistant 最终文本回推。
-func (b *Bridge) runTurn(ctx context.Context, r Route, text string) error {
-	b.mu.Lock()
-	if b.busy {
-		b.mu.Unlock()
-		return b.sendText(ctx, r, b.opt.BusyReply)
+// enqueue 忙时入队(全局 FIFO 单槽)。成功返回 true;队列已满返回 false(回"忙")。
+func (b *Bridge) enqueue(r Route, text string) bool {
+	b.qMu.Lock()
+	defer b.qMu.Unlock()
+	if len(b.queued) >= 1 {
+		return false
 	}
+	b.queued = append(b.queued, queuedInbound{route: r, text: text})
+	return true
+}
+
+// dequeue 取队头(锁内调用方自持 qMu;无元素返回 nil)。
+func (b *Bridge) dequeue() *queuedInbound {
+	if len(b.queued) == 0 {
+		return nil
+	}
+	q := b.queued[0]
+	b.queued = b.queued[1:]
+	return &q
+}
+
+// bindSession 回合前把宿主当前会话切到该 chat 的绑定会话(P1;幂等)。
+// 绑定 id 已被宿主删除(磁盘枚举不见)→ 解绑回主会话,防 Open 误新建空会话;
+// 当前已在该会话但文件被外部删除同样自愈解绑(每回合一次磁盘枚举,IM 低频可接受)。
+func (b *Bridge) bindSession(r Route) {
+	if b.cwd == nil || b.bind == nil {
+		return // 未装配/无绑定能力:跟随宿主当前会话(默认行为)
+	}
+	id := b.bind.Get(r.Key())
+	if id == "" {
+		return
+	}
+	exists := false
+	for _, s := range b.cwd.Sessions() {
+		if s.ID == id {
+			exists = true
+			break
+		}
+	}
+	if !exists {
+		b.bind.Set(r.Key(), "") // 会话已删 → 解绑回主会话
+		return
+	}
+	if b.cwd.CurrentSession() != id {
+		_ = b.cwd.Open(id)
+	}
+}
+
+// runTurn 回合驱动:绑定会话 → 记录回合起点 seq → agentLoop.Run → 聚合回合内
+// 新增 assistant 最终文本回推;结束路径(成功/错误)统一停 typing 并续跑队列下一条。
+// 忙闲由调用方(HandleInbound/enqueue 续跑)保证——runTurn 自身不再查 busy。
+func (b *Bridge) runTurn(ctx context.Context, r Route, text string) error {
+	b.bindSession(r) // P1:按 chat 绑定切到宿主会话(未绑定/无能力 = 跟随当前)
+	b.mu.Lock()
 	b.busy = true
 	b.curRoute = r
 	b.mu.Unlock()
@@ -214,7 +303,20 @@ func (b *Bridge) runTurn(ctx context.Context, r Route, text string) error {
 		b.mu.Lock()
 		b.busy = false
 		b.curRoute = Route{}
+		// 续跑队列下一条(busy 槽直接交接,防并发 drain 双开)
+		b.qMu.Lock()
+		next := b.dequeue()
+		b.qMu.Unlock()
+		if next != nil {
+			b.busy = true
+			b.curRoute = next.route
+		}
 		b.mu.Unlock()
+		if next != nil {
+			go func() {
+				_ = b.runTurn(context.Background(), next.route, next.text)
+			}()
+		}
 	}()
 
 	seq0 := b.lastSeq()
@@ -252,6 +354,10 @@ func (b *Bridge) dispatchCommand(ctx context.Context, r Route, line string) erro
 		return b.sendText(ctx, r, "⏹ 已请求停止当前回合。")
 	case "im":
 		return b.sendText(ctx, r, b.imCmd(ctx, args))
+	case "new", "status", "sessionlist", "session", "history":
+		// P1 会话绑定命令面(IM 通道专属,带 route 上下文;不注册全局——
+		// 宿主 /session 等命令归 host-internal-commands,IM 绑定语义与其不同)
+		return b.sendText(ctx, r, b.sessionCmd(ctx, r, name, args))
 	}
 	if cmds == nil {
 		return b.sendText(ctx, r, "命令不可用: 宿主 ctx.commands 未装配")
@@ -295,6 +401,177 @@ func (b *Bridge) imCmd(ctx context.Context, args []string) string {
 	default:
 		return "用法: /im status|pair <配对码>|list"
 	}
+}
+
+// sessionCmd P1 会话绑定命令面(IM 通道专属;仅授权用户可达——gate 已在前置裁决)。
+// 宿主会话服务未装配时全部降级提示。命令:
+//
+//	/new            新建宿主会话并绑定本聊天
+//	/status         模型 · 当前会话 · 忙闲
+//	/sessionlist    枚举当前项目会话(仅元数据)
+//	/session <id>   绑定到既有会话;main = 解绑回主会话;无参 = 当前绑定
+//	/history [N]    回读当前(绑定)会话最近 N 条对话(默认 10,上限 50)
+func (b *Bridge) sessionCmd(_ context.Context, r Route, name string, args []string) string {
+	if b.cwd == nil {
+		return "会话服务不可用: 宿主 host-cwd-sessions 未装配(该能力需 base bundle)。"
+	}
+	// 切换类命令(/new /session)在回合进行中拒绝——agent-loop 正写当前会话,
+	// 中途切落盘目标会使回合内事件错乱;只读命令(/status /sessionlist /history)可随时用。
+	if name == "new" || name == "session" {
+		b.mu.Lock()
+		busy := b.busy
+		b.mu.Unlock()
+		if busy {
+			return "⏳ 回合进行中,请稍候再切换会话(或 /stop 取消当前回合)。"
+		}
+	}
+	switch name {
+	case "new":
+		id, err := b.cwd.New()
+		if err != nil {
+			return "❌ 新建会话失败: " + err.Error()
+		}
+		b.bind.Set(r.Key(), id)
+		return "✅ 已新建会话并绑定本聊天: " + id + "\n(后续消息进入该会话;/sessionlist 查看,主会话不受影响)"
+	case "status":
+		return b.statusText()
+	case "sessionlist":
+		return b.sessionListText()
+	case "session":
+		return b.sessionBindCmd(r, args)
+	case "history":
+		return b.historyText(args)
+	}
+	return ""
+}
+
+// statusText /status:模型 · 会话 · 忙闲(权限 = 渠道访问策略,列表类命令仅授权用户可见)。
+func (b *Bridge) statusText() string {
+	model := "未设置"
+	if b.llm != nil && b.llm.Model() != "" {
+		model = b.llm.Model()
+	}
+	sid := b.cwd.CurrentSession()
+	label := "主会话"
+	if sid != "" {
+		if n := b.cwd.SessionName(); n != "" {
+			label = sid + "(" + n + ")"
+		} else {
+			label = sid
+		}
+	}
+	b.mu.Lock()
+	busy := b.busy
+	b.mu.Unlock()
+	state := "空闲"
+	if busy {
+		state = "忙碌"
+	}
+	return fmt.Sprintf("模型: %s\n会话: %s\n状态: %s(已授权 %d)", model, label, state, len(b.acc.List()))
+}
+
+// sessionListText /sessionlist:枚举当前项目会话(倒序 mtime;当前会话标记 *)。
+func (b *Bridge) sessionListText() string {
+	infos := b.cwd.Sessions()
+	if len(infos) == 0 {
+		return "当前项目暂无会话。"
+	}
+	cur := b.cwd.CurrentSession()
+	var sb strings.Builder
+	sb.WriteString("会话列表(当前项目):\n")
+	for _, s := range infos {
+		mark := " "
+		if s.ID == cur {
+			mark = "*"
+		}
+		name := s.ID
+		if name == "" {
+			name = "主会话"
+		}
+		if s.Name != "" {
+			name += "(" + s.Name + ")"
+		}
+		preview := ""
+		if s.Preview != "" {
+			preview = " · " + truncateRunes(s.Preview, 36)
+		}
+		sb.WriteString(fmt.Sprintf(" %s %s%s\n", mark, name, preview))
+	}
+	sb.WriteString("绑定: /session <id>;新建: /new;回主: /session main")
+	return strings.TrimRight(sb.String(), "\n")
+}
+
+// sessionBindCmd /session:绑定/解绑/查询当前绑定。
+func (b *Bridge) sessionBindCmd(r Route, args []string) string {
+	key := r.Key()
+	if len(args) == 0 {
+		cur := b.bind.Get(key)
+		label := "主会话(未绑定)"
+		if cur != "" {
+			label = cur
+		}
+		return "当前绑定: " + label + "\n用法: /session <id>|main(/sessionlist 查看可用 id)"
+	}
+	arg := args[0]
+	if arg == "main" || arg == "0" {
+		if err := b.cwd.Open(""); err != nil {
+			return "❌ 切回主会话失败: " + err.Error()
+		}
+		b.bind.Set(key, "")
+		return "✅ 已解绑,回到主会话。"
+	}
+	for _, s := range b.cwd.Sessions() {
+		if s.ID == arg {
+			if err := b.cwd.Open(arg); err != nil {
+				return "❌ 切换会话失败: " + err.Error()
+			}
+			b.bind.Set(key, arg)
+			return "✅ 已绑定会话: " + arg + "\n(/history 回读,后续消息进入该会话)"
+		}
+	}
+	return "会话不存在: " + arg + "(可 /sessionlist 查看)"
+}
+
+// historyText /history [N]:回读当前(绑定)会话最近 N 条 user/assistant 文本。
+func (b *Bridge) historyText(args []string) string {
+	n := 10
+	if len(args) > 0 {
+		if v, err := strconv.Atoi(args[0]); err == nil && v > 0 {
+			n = v
+		}
+	}
+	if n > 50 {
+		n = 50
+	}
+	var lines []string
+	for _, ev := range b.sessions.Replay() {
+		switch ev.Kind {
+		case sdk.EventUserMessage:
+			if u, ok := ev.Payload.(sdk.UserMessage); ok && u.Content != "" {
+				lines = append(lines, "❯ "+u.Content)
+			}
+		case sdk.EventAssistantMessage:
+			if text := assistantContent(ev.Payload); text != "" {
+				lines = append(lines, "🤖 "+text)
+			}
+		}
+	}
+	if len(lines) == 0 {
+		return "该会话暂无历史。"
+	}
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n\n")
+}
+
+// truncateRunes 按 rune 截断(超长追加省略号)。
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
 }
 
 // RegisterCommands 向 ctx.commands 注册桥命令(/stop /im;TUI/Web/IM 全端可见)。

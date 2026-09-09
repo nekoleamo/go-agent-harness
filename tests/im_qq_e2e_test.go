@@ -343,6 +343,7 @@ func buildQQEnv(t *testing.T, baseURL, mode string, script any) string {
 	tree := config.NewTree()
 	tree.Apply([]config.Entry{
 		{ID: "host-session-log"},
+		{ID: "host-cwd-sessions"},
 		{ID: "host-llm"},
 		{ID: "host-tools"},
 		{ID: "host-commands"},
@@ -659,4 +660,30 @@ func pollQQSends(t *testing.T, m *qqMock, want int, timeout time.Duration) {
 		}
 	}
 	t.Fatalf("超时未达 %d 次正文发送,当前 %d", want, m.textSendCount())
+}
+
+// TestImQQSessionCommandsE2E(P1 会话绑定命令面):真实装配(含 host-cwd-sessions)全链路——
+// QQ /new 新建并绑定会话 → 普通消息回合(落绑定会话)→ /history 回读绑定会话内容。
+// 命令经 QQ 通道执行;回合前按绑定切会话(host 启动会话被覆盖)。
+func TestImQQSessionCommandsE2E(t *testing.T) {
+	m, hs := newQQMock(t)
+	m.events = []map[string]any{c2cEvent(2, "qqmsg-b1", "OPENID1", "/new")}
+	buildQQEnv(t, hs.URL, "allowlist", qqScript)
+
+	// 1. /new → 回复含新会话 id(纯文本 msg_type=0)
+	rec := m.waitSend(t, "已新建会话并绑定", 20*time.Second)
+	if int(rec.body["msg_type"].(float64)) != qqbot.MsgTypeText {
+		t.Fatalf("/new 回复应为纯文本: %+v", rec.body)
+	}
+	// 2. 普通文本消息 → 回合(写入绑定会话)→ QQ 回推脚本文本
+	m.pushEvent(c2cEvent(3, "qqmsg-b2", "OPENID1", "你好 QQ"))
+	if got := m.waitSend(t, "QQ 回推:远程命令已执行", 20*time.Second); int(got.body["msg_type"].(float64)) != qqbot.MsgTypeText {
+		t.Fatalf("回合回复应为纯文本: %+v", got.body)
+	}
+	// 3. /history → 回读绑定会话(user 事件 + assistant 事件)
+	m.pushEvent(c2cEvent(4, "qqmsg-b3", "OPENID1", "/history"))
+	h := m.waitSend(t, "❯ 你好 QQ", 20*time.Second)
+	if !strings.Contains(h.bodyText(), "🤖 QQ 回推:远程命令已执行") {
+		t.Fatalf("/history 应回读绑定会话的问答: %q", h.bodyText())
+	}
 }

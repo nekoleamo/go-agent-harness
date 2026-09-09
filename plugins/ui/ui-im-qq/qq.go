@@ -85,9 +85,11 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		baseURL: baseURL, tokenURL: tokenURL, lastError: "未配置(执行 /qq login)",
 		budget:  newActiveQuota(quotaPath()),
 		replies: make(map[string]*replyCtx), seq: make(map[string]uint64), outbox: make(map[string]string)}
-	b := im.New(nil, loop, sessions, tr, im.Options{
+	b := im.New(c, loop, sessions, tr, im.Options{
 		Mode:  mode,
 		Allow: creds.Allow, // 已授权用户持久恢复
+		// P1 会话绑定:chat→宿主会话映射落盘(重启恢复绑定)
+		SessionBindPath: sessionBindPath(),
 	})
 	tr.bridge = b
 	// 授权变化持久化(/im pair 批准、allow/revoke):写回凭证 store,重启恢复。
@@ -155,6 +157,16 @@ func quotaPath() string {
 		home = os.TempDir()
 	}
 	return filepath.Join(home, "config", "qqbot-quota.yaml")
+}
+
+// sessionBindPath chat↔宿主会话绑定映射路径:$GAH_HOME/config/im-sessions.yaml
+// (P1 会话绑定命令面;routeKey 含 \x00 经 JSON 转义安全往返,0600 原子写)。
+func sessionBindPath() string {
+	home := os.Getenv("GAH_HOME")
+	if home == "" {
+		home = os.TempDir()
+	}
+	return filepath.Join(home, "config", "im-sessions.yaml")
 }
 
 // qqTransport 实现 im.Transport:WS 收事件 + REST 被动回复。
