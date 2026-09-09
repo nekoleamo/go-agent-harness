@@ -259,7 +259,7 @@ func (j *Jobs) Kill(id string) error {
 	e.cancel() // 命令任务:取消 → 杀进程;函数任务:取消 ctx
 	select {
 	case <-e.done:
-	case <-time.After(3 * time.Second): // 杀不掉也给报错,由调用方重试
+	case <-time.After(8 * time.Second): // 杀不掉也给报错,由调用方重试(慢机/大进程树 3s 偏紧,CI 偶发超时)
 		return fmt.Errorf("host-jobs: 任务 %s 终止超时", id)
 	}
 	return nil

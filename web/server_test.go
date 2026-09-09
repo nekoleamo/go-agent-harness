@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1010,9 +1011,9 @@ func TestShutdownEndpoint(t *testing.T) {
 	}
 	hs.Close()
 
-	// 装配 → 200 且回调触发
-	fired := false
-	s.OnShutdown = func() { fired = true }
+	// 装配 → 200 且回调触发(回调在 HTTP goroutine,标记用 atomic 防测试 race)
+	var fired atomic.Bool
+	s.OnShutdown = func() { fired.Store(true) }
 	hs2 := httptest.NewServer(s.handler())
 	defer hs2.Close()
 	resp, err = http.Post(hs2.URL+"/api/shutdown", "", nil)
@@ -1033,15 +1034,15 @@ func TestShutdownEndpoint(t *testing.T) {
 	if !body.OK || !body.ShuttingDown {
 		t.Fatalf("响应体异常: %+v", body)
 	}
-	if !fired {
+	if !fired.Load() {
 		t.Fatal("OnShutdown 未被触发")
 	}
 
 	// 鉴权保护:auth_token 非空时未带 token → 401 且不触发
-	fired2 := false
+	var fired2 atomic.Bool
 	as, _ := newTestServer()
 	as.cfg.AuthToken = "tk"
-	as.OnShutdown = func() { fired2 = true }
+	as.OnShutdown = func() { fired2.Store(true) }
 	has := httptest.NewServer(as.authMiddleware(as.handler()))
 	defer has.Close()
 	req, _ := http.NewRequest("POST", has.URL+"/api/shutdown", nil)
@@ -1053,7 +1054,7 @@ func TestShutdownEndpoint(t *testing.T) {
 	if r2.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("无 token 应 401,得 %d", r2.StatusCode)
 	}
-	if fired2 {
+	if fired2.Load() {
 		t.Fatal("未授权请求不应触发 OnShutdown")
 	}
 }
