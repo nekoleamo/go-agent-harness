@@ -19,7 +19,7 @@ const (
 	ApprovalStrict ApprovalMode = "strict" // 严格:危险操作直接拒绝,不弹窗
 )
 
-// ApprovalService 审批服务:档位查询/切换(由 policy-approval 实现,Provide ctx.approval)。
+// ApprovalService 审批服务:档位查询/切换(由 policy-guard 实现,Provide ctx.approval)。
 type ApprovalService interface {
 	Mode() ApprovalMode
 	SetMode(m ApprovalMode)

@@ -27,7 +27,7 @@ func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
 	if err := c.Inject("ctx.tools", &tools); err != nil {
 		return nil, err
 	}
-	// 沙箱可选注入:未装配(如无 policy-sandbox)时跳过 read-only 检查,不影响任务机制
+	// 沙箱可选注入:未装配(如无 policy-guard)时跳过 read-only 检查,不影响任务机制
 	var sb sdk.Sandbox
 	_ = c.Inject("ctx.sandbox", &sb)
 
@@ -265,7 +265,7 @@ func (j *Jobs) Kill(id string) error {
 	return nil
 }
 
-// checkExec read-only 沙箱下拒绝提交(执行器类约束,对齐 policy-sandbox)。
+// checkExec read-only 沙箱下拒绝提交(执行器类约束,对齐 policy-guard)。
 func (j *Jobs) checkExec() error {
 	if j.sb != nil && j.sb.Mode() == sdk.SandboxReadOnly {
 		return fmt.Errorf("sandbox: read-only 拒绝提交后台任务")

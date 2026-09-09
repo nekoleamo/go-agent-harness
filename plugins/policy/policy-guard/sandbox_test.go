@@ -1,4 +1,4 @@
-package policysandbox
+package policyguard
 
 import (
 	"os"
@@ -10,7 +10,7 @@ import (
 )
 
 func TestModeSetGet(t *testing.T) {
-	p := Default(t.TempDir())
+	p := DefaultSandbox(t.TempDir())
 	if p.Mode() != sdk.SandboxWorkspace {
 		t.Fatalf("默认档应为 workspace-write,got %s", p.Mode())
 	}
@@ -22,7 +22,7 @@ func TestModeSetGet(t *testing.T) {
 
 func TestCheckToolByMode(t *testing.T) {
 	root := t.TempDir()
-	p := Default(root)
+	p := DefaultSandbox(root)
 	// workspace-write:执行器放行
 	if err := p.CheckTool("shell"); err != nil {
 		t.Fatalf("workspace-write 应放行 shell,got %v", err)
@@ -46,7 +46,7 @@ func TestValidatePath(t *testing.T) {
 	root := t.TempDir()
 	sub := filepath.Join(root, "sub")
 	os.MkdirAll(sub, 0o755)
-	p := Default(root)
+	p := DefaultSandbox(root)
 
 	if err := p.ValidatePath("sub/a.txt"); err != nil { // 相对 → 在 root 内
 		t.Fatalf("workspace 内相对路径应放行,got %v", err)
@@ -70,14 +70,14 @@ func TestValidatePath(t *testing.T) {
 func TestValidatePathRejectsOutOfWorkspaceAbs(t *testing.T) {
 	root := t.TempDir()
 	other := t.TempDir()
-	p := Default(root)
+	p := DefaultSandbox(root)
 	if err := p.ValidatePath(filepath.Join(other, "f.txt")); err == nil {
 		t.Fatal("workspace 外的绝对路径应拒绝")
 	}
 }
 
 func TestDefaultRoot(t *testing.T) {
-	p := Default("/tmp/ws")
+	p := DefaultSandbox("/tmp/ws")
 	if !strings.HasSuffix(p.Root(), "ws") {
 		t.Fatalf("root 不符: %s", p.Root())
 	}

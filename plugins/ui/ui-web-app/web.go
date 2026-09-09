@@ -1,6 +1,6 @@
 // Package uiweb 提供 ui-web-app 插件:挂载 Web UI(设计 §14.1 M7;对称 ui-tui-app 先例)。
 // 能力全在宿主,浏览器只订阅事件流:插件薄壳读取 data.addr/auth_token/static_dir,
-// 启动 web/ 运行时(HTTP + SSE + REST),提供 ctx.confirm Web 实现(policy-approval 审批弹层)。
+// 启动 web/ 运行时(HTTP + SSE + REST),提供 ctx.confirm Web 实现(policy-guard 审批弹层)。
 // profile-web 与 profile-tui 互斥(不并行装配,保 ctx.confirm 唯一)。
 package uiweb
 
@@ -76,7 +76,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	if err != nil {
 		return nil, err
 	}
-	// 确认服务注册到宿主(policy-approval 经此弹层;未装配时安全默认拒绝)
+	// 确认服务注册到宿主(policy-guard 经此弹层;未装配时安全默认拒绝)
 	if err := c.Provide("ctx.confirm", confirm); err != nil {
 		unsub()
 		return nil, err

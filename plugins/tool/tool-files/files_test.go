@@ -12,7 +12,7 @@ import (
 	"github.com/nekoleamo/go-agent-harness/core/ctx"
 	"github.com/nekoleamo/go-agent-harness/core/event"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-tools"
-	"github.com/nekoleamo/go-agent-harness/plugins/policy/policy-sandbox"
+	"github.com/nekoleamo/go-agent-harness/plugins/policy/policy-guard"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -25,7 +25,7 @@ func buildEnv(t *testing.T, root string, mode sdk.SandboxMode) sdk.Ctx {
 	if _, err := (&hosttools.Plugin{}).Start(c, &sdk.Manifest{}); err != nil {
 		t.Fatal(err)
 	}
-	sb := policysandbox.Default(root)
+	sb := policyguard.DefaultSandbox(root)
 	sb.SetMode(mode)
 	if err := c.Provide("ctx.sandbox", sb); err != nil {
 		t.Fatal(err)

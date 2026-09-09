@@ -1,4 +1,4 @@
-package policyapproval
+package policyguard
 
 import (
 	"context"
@@ -25,8 +25,8 @@ func (f *fakeConfirm) Confirm(ctx context.Context, prompt string) (bool, error) 
 	return f.resp, nil
 }
 
-// build 装配 host-tools + policy-approval(可选确认服务)。
-func build(t *testing.T, confirm sdk.ConfirmService) sdk.Ctx {
+// build 装配 host-tools + policy-guard(可选确认服务;审批/沙箱档位由 manifest data 指定)。
+func build(t *testing.T, confirm sdk.ConfirmService, data ...map[string]any) sdk.Ctx {
 	t.Helper()
 	logger := slog.New(slog.DiscardHandler)
 	bus := event.New(logger)
@@ -39,7 +39,11 @@ func build(t *testing.T, confirm sdk.ConfirmService) sdk.Ctx {
 	if _, err := (&hosttools.Plugin{}).Start(c, &sdk.Manifest{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := (&Plugin{}).Start(c, &sdk.Manifest{}); err != nil {
+	md := &sdk.Manifest{}
+	if len(data) > 0 {
+		md.Data = data[0]
+	}
+	if _, err := (&Plugin{}).Start(c, md); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := (&echoTool{}).Start(c, &sdk.Manifest{}); err != nil {
@@ -80,34 +84,31 @@ func TestApprovalModes(t *testing.T) {
 	}
 
 	// strict:直接拒绝(确认服务在场也拒绝,allowlist 不生效语义=每次拦截)
-	c := build(t, &fakeConfirm{resp: true})
+	c := build(t, &fakeConfirm{resp: true}, map[string]any{"approval": "strict"})
 	var ap sdk.ApprovalService
 	if err := c.Inject("ctx.approval", &ap); err != nil {
 		t.Fatal("ctx.approval 未提供")
 	}
-	ap.SetMode(sdk.ApprovalStrict)
 	if res := exec(c); res.Error == "" {
 		t.Fatal("strict 档下危险操作应被直接拒绝")
 	}
 
 	// open:直接放行
-	c2 := build(t, &fakeConfirm{resp: true})
+	c2 := build(t, &fakeConfirm{resp: true}, map[string]any{"approval": "open"})
 	var ap2 sdk.ApprovalService
 	if err := c2.Inject("ctx.approval", &ap2); err != nil {
 		t.Fatal(err)
 	}
-	ap2.SetMode(sdk.ApprovalOpen)
 	if res := exec(c2); res.Error != "" {
 		t.Fatalf("open 档下危险操作应放行,got %+v", res)
 	}
 
 	// smart:命中弹确认,用户拒绝则拦截
-	c3 := build(t, &fakeConfirm{resp: false})
+	c3 := build(t, &fakeConfirm{resp: false}, map[string]any{"approval": "smart"})
 	var ap3 sdk.ApprovalService
 	if err := c3.Inject("ctx.approval", &ap3); err != nil {
 		t.Fatal(err)
 	}
-	ap3.SetMode(sdk.ApprovalSmart)
 	if res := exec(c3); res.Error == "" {
 		t.Fatal("smart 档用户拒绝后应拦截")
 	}
@@ -148,7 +149,7 @@ func TestNoConfirmServiceDenies(t *testing.T) {
 
 func TestConfirmDenyAndAllow(t *testing.T) {
 	// 用户拒绝
-	c := build(t, &fakeConfirm{resp: false})
+	c := build(t, &fakeConfirm{resp: false}, map[string]any{"approval": "smart"})
 	var tools sdk.ToolRegistry
 	if err := c.Inject("ctx.tools", &tools); err != nil {
 		t.Fatal(err)
@@ -162,7 +163,7 @@ func TestConfirmDenyAndAllow(t *testing.T) {
 	}
 
 	// 用户允许
-	c2 := build(t, &fakeConfirm{resp: true})
+	c2 := build(t, &fakeConfirm{resp: true}, map[string]any{"approval": "smart"})
 	var tools2 sdk.ToolRegistry
 	if err := c2.Inject("ctx.tools", &tools2); err != nil {
 		t.Fatal(err)

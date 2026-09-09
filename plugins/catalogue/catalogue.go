@@ -24,8 +24,7 @@ import (
 	"github.com/nekoleamo/go-agent-harness/plugins/host/token-compress"
 	"github.com/nekoleamo/go-agent-harness/plugins/mcp/mcp-bridge"
 	"github.com/nekoleamo/go-agent-harness/plugins/mcp/mcp-server"
-	"github.com/nekoleamo/go-agent-harness/plugins/policy/policy-approval"
-	"github.com/nekoleamo/go-agent-harness/plugins/policy/policy-sandbox"
+	"github.com/nekoleamo/go-agent-harness/plugins/policy/policy-guard"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-auto-plan"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-files"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-memory"
@@ -66,11 +65,9 @@ var All = map[string]Def{
 	"host-skills": {Factory: func() sdk.Plugin { return &hostskills.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "host-skills", Type: "host", APIVersion: ">=1.0,<2.0",
 		Requires: []string{"ctx.tools", "ctx.systemPrompt"}}, Bundle: "base"},
-	"policy-approval": {Factory: func() sdk.Plugin { return &policyapproval.Plugin{} }, Manifest: &sdk.Manifest{
-		ID: "policy-approval", Type: "policy", APIVersion: ">=1.0,<2.0"}, Bundle: "base"},
-	"policy-sandbox": {Factory: func() sdk.Plugin { return &policysandbox.Plugin{} }, Manifest: &sdk.Manifest{
-		ID: "policy-sandbox", Type: "policy", APIVersion: ">=1.0,<2.0",
-		Provides: []string{"ctx.sandbox"}}, Bundle: "base"},
+	"policy-guard": {Factory: func() sdk.Plugin { return &policyguard.Plugin{} }, Manifest: &sdk.Manifest{
+		ID: "policy-guard", Type: "policy", APIVersion: ">=1.0,<2.0",
+		Provides: []string{"ctx.sandbox", "ctx.approval"}}, Bundle: "base"},
 	"host-agent-loop": {Factory: func() sdk.Plugin { return &hostagentloop.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "host-agent-loop", Type: "agent", APIVersion: ">=1.0,<2.0",
 		Provides: []string{"ctx.agentLoop"},

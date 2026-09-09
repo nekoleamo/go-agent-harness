@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nekoleamo/go-agent-harness/plugins/policy/policy-sandbox"
+	"github.com/nekoleamo/go-agent-harness/plugins/policy/policy-guard"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -166,9 +166,9 @@ func TestListAndHistory(t *testing.T) {
 	}
 }
 
-// TestReadOnlySandbox 拒绝提交:对齐 policy-sandbox read-only 档。
+// TestReadOnlySandbox 拒绝提交:对齐 policy-guard read-only 档。
 func TestReadOnlySandbox(t *testing.T) {
-	sb := policysandbox.Default("/tmp/ws")
+	sb := policyguard.DefaultSandbox("/tmp/ws")
 	sb.SetMode(sdk.SandboxReadOnly)
 	j := New(sb)
 	if _, err := j.Submit(`echo hi`); err == nil {

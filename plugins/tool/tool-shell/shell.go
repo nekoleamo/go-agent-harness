@@ -1,5 +1,5 @@
 // Package toolshell 提供 tool-shell 插件:shell 执行工具。
-// 沙箱三档拦截在 M4 policy-sandbox 引入(监听 tools/pre-execute)。
+// 沙箱三档拦截在 M4 policy-guard 引入(监听 tools/pre-execute)。
 // 普通模式:JSON args {"command": "..."},超时 60s,错误结构化回传模型;
 // pty 模式(M6.3,data.pty 开关):命令挂 pseudo-terminal,input 可一次性写入,
 // 交互式命令(REPL/git 编辑器/询问式脚本)走 execPty(见 pty.go)。

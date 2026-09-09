@@ -109,7 +109,7 @@ type Service struct {
 	ftMu     sync.Mutex     // 分支树衍生记录(fork-tree.json)读写锁
 	// emitWS 工作区切换事件广播(可选,nil = 不广播;Plugin.Start 绑定 c.Emit)。
 	// 宿主订阅方:host-bridge(重启外部工具进程使其继承新 cwd)、
-	// policy-sandbox(沙箱 root 同步)——工具真正在新目录执行。
+	// policy-guard(沙箱 root 同步)——工具真正在新目录执行。
 	emitWS func(dir string)
 
 	// emitSession 会话切换事件广播(可选;Open/New 后触发,UI 订阅重放刷新)。
