@@ -37,11 +37,12 @@ type pendingPairing struct {
 
 // Access 访问控制(并发安全)。
 type Access struct {
-	mu      sync.Mutex
-	mode    AccessMode
-	allow   map[string]bool           // senderKey → 授权
-	pending map[string]pendingPairing // code → 记录
-	ttl     time.Duration
+	mu       sync.Mutex
+	mode     AccessMode
+	allow    map[string]bool           // senderKey → 授权
+	pending  map[string]pendingPairing // code → 记录
+	ttl      time.Duration
+	onChange func() // 授权集变化回调(插件壳接线做持久化;锁外调用,可 nil)
 }
 
 // NewAccess 构造访问控制(opt.Allow 为初始授权;ttl 配对码有效期)。
@@ -56,6 +57,14 @@ func NewAccess(mode AccessMode, allow []string, ttl time.Duration) *Access {
 		a.allow[k] = true
 	}
 	return a
+}
+
+// SetOnChange 注册授权集变化回调(Allow/Revoke/ApprovePair 后调用;锁外触发,
+// 回调内可读 List() 并持久化——如写回凭证 store,重启不丢授权)。
+func (a *Access) SetOnChange(fn func()) {
+	a.mu.Lock()
+	a.onChange = fn
+	a.mu.Unlock()
 }
 
 // Mode 当前访问模式。
@@ -101,18 +110,27 @@ func (a *Access) Gate(senderKey string) (gateResult, string) {
 // Allow 直接授权一个发送方(幂等)。
 func (a *Access) Allow(senderKey string) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	a.allow[senderKey] = true
+	cb := a.onChange
+	a.mu.Unlock()
+	if cb != nil {
+		cb()
+	}
 }
 
 // Revoke 撤销授权。
 func (a *Access) Revoke(senderKey string) bool {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	if !a.allow[senderKey] {
+		a.mu.Unlock()
 		return false
 	}
 	delete(a.allow, senderKey)
+	cb := a.onChange
+	a.mu.Unlock()
+	if cb != nil {
+		cb()
+	}
 	return true
 }
 
@@ -137,16 +155,22 @@ func (a *Access) List() []string {
 // ApprovePair 用配对码批准其发送方(过期/未知返回 false)。
 func (a *Access) ApprovePair(code string) bool {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	p, ok := a.pending[code]
 	if !ok {
+		a.mu.Unlock()
 		return false
 	}
 	delete(a.pending, code)
 	if time.Now().After(p.expiresAt) {
+		a.mu.Unlock()
 		return false
 	}
 	a.allow[p.senderKey] = true
+	cb := a.onChange
+	a.mu.Unlock()
+	if cb != nil {
+		cb()
+	}
 	return true
 }
 

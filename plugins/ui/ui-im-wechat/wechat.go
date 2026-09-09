@@ -79,6 +79,18 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		Allow: creds.Allow, // 已授权用户持久恢复
 	})
 	tr.bridge = b
+	// 授权变化持久化(/im pair 批准、allow/revoke、登录授权):写回凭证 store,
+	// 重启恢复——配对批准不再因重启丢失(P1 真机需求)。回调锁外触发,List 安全。
+	b.Access().SetOnChange(func() {
+		allow := b.Access().List()
+		tr.mu.Lock()
+		tr.creds.Allow = allow
+		err := tr.store.Save(tr.creds)
+		tr.mu.Unlock()
+		if err != nil {
+			tr.setLastError("授权持久化失败: " + err.Error())
+		}
+	})
 	if turn != nil {
 		b.SetTurnControl(turn)
 	}

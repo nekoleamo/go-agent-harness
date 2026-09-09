@@ -22,6 +22,8 @@ import (
 	"github.com/nekoleamo/go-agent-harness/core/event"
 	"github.com/nekoleamo/go-agent-harness/core/plugin"
 	"github.com/nekoleamo/go-agent-harness/ilink"
+	"github.com/nekoleamo/go-agent-harness/im"
+	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
 // wechatMock iLink 服务器:getupdates 可编程(首条入站);sendmessage/sendtyping 收集。
@@ -254,4 +256,36 @@ func TestImWechatAutoLogin(t *testing.T) {
 	if !strings.Contains(got, "远程命令已执行") {
 		t.Fatalf("回推不符: %q", got)
 	}
+}
+
+// TestImWechatAuthPersist 授权变化持久化:配对/allow 后写回凭证 store,重启恢复(模拟重载)。
+func TestImWechatAuthPersist(t *testing.T) {
+	m, hs := newWechatMock(t)
+	c, home := buildWechatEnv(t, hs.URL, "allowlist", true)
+	store := ilink.NewStore(filepath.Join(home, "config", "ilink-wechat.yaml"))
+	var cs sdk.ConfirmService
+	if err := c.Inject("ctx.confirm", &cs); err != nil {
+		t.Fatal(err)
+	}
+	bridge := cs.(*im.Bridge)
+
+	// 模拟主机 /im pair 批准新用户 → onChange → 落盘
+	bridge.Access().Allow("wechat\x00u2")
+	persisted, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(persisted.Allow) != 2 {
+		t.Fatalf("批准后 Allow 应含 2 项并落盘,got %v", persisted.Allow)
+	}
+	// 模拟撤销
+	bridge.Access().Revoke("wechat\x00user1")
+	persisted, err = store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(persisted.Allow) != 1 || persisted.Allow[0] != "wechat\x00u2" {
+		t.Fatalf("撤销应落盘,got %v", persisted.Allow)
+	}
+	_ = m
 }
