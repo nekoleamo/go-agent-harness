@@ -4,7 +4,7 @@
 
 Go 实现的编程代理 Agent Harness:以**单静态二进制**交付全部能力,零运行时依赖。对齐 DeepSeek Harness 与 Cordis 的「一切皆插件」设计哲学——微内核仅负责插件的加载/卸载/依赖管理(零 Agent 能力、零 UI),全部能力以插件形式经配置层(profile→bundle→patch)随时插拔开关。
 
-> 设计参考:DeepSeek Harness(TS/Cordis)、[naamfung/dsc](https://github.com/naamfung/dsc)(Go/go-plugin/gRPC)。
+> 设计参考:DeepSeek Harness(TS/Cordis)、[naamfung/dsc](https://github.com/naamfung/dsc)(Go/go-plugin/gRPC)、[pi coding agent](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)(TS 终端 harness;对比分析见 [docs/PI_COMPARISON.md](./docs/PI_COMPARISON.md))。
 > - 完整设计:[DESIGN.md](./DESIGN.md)(§14.1 交付表/未实施清单)
 > - 插件开发:[docs/PLUGIN_DEV.md](./docs/PLUGIN_DEV.md);插件总览:[plugins/README.md](./plugins/README.md)
 > - 能力与排期:交付记录见 [docs/ROADMAP.md](./docs/ROADMAP.md)(兼作实施排期)、[docs/TODO_OVERVIEW.md](./docs/TODO_OVERVIEW.md)(待办统筹单页)

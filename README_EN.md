@@ -3,7 +3,7 @@
 A programming-agent harness implemented in Go, shipping **all capabilities as a single static binary** with zero runtime dependencies. It follows the "everything is a plugin" philosophy of DeepSeek Harness and Cordis: the microkernel only handles plugin load/unload and dependency management (no agent logic, no UI). Every capability lives in a plugin that the config layer (`profile → bundle → patch`) can switch on or off at will.
 
 > English edition of [README.md](./README.md). Keep both in sync when updating. 中文版见 [README.md](./README.md)。
-> Design references: [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness) (TS/Cordis), [naamfung/dsc](https://github.com/naamfung/dsc) (Go/go-plugin/gRPC).
+> Design references: [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness) (TS/Cordis), [naamfung/dsc](https://github.com/naamfung/dsc) (Go/go-plugin/gRPC), [pi coding agent](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) (TS terminal harness; comparison in [docs/PI_COMPARISON.md](./docs/PI_COMPARISON.md)).
 > - Full design: [DESIGN.md](./DESIGN.md) (§14.1 delivery table / backlog)
 > - Plugin development: [docs/PLUGIN_DEV.md](./docs/PLUGIN_DEV.md); plugin overview: [plugins/README.md](./plugins/README.md)
 > - Capabilities & roadmap: [docs/ROADMAP.md](./docs/ROADMAP.md), [docs/TODO_OVERVIEW.md](./docs/TODO_OVERVIEW.md) (single-page todo tracker)
