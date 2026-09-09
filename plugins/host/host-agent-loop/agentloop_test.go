@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nekoleamo/go-agent-harness/core/ctx"
 	"github.com/nekoleamo/go-agent-harness/core/event"
@@ -132,6 +133,74 @@ func TestTurnToolThenText(t *testing.T) {
 	if !strings.HasSuffix(k, "turn/end") {
 		t.Fatalf("回合应以 turn/end 收尾: %s", k)
 	}
+}
+
+// blockLLM Complete 阻塞至 ctx 取消(回合取消测试的挂起点)。
+type blockLLM struct{ errLLM }
+
+func (b *blockLLM) Complete(ctx context.Context, _ *sdk.LLMRequest, _ func(sdk.LLMStreamEvent) error) (*sdk.LLMResponse, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// TestTurnControlCancel 回合取消走 ctx.turnControl:运行中 Running、Cancel 后回合
+// 以 cancelled 结束、注销后非 Running(TUI Esc/Web cancel/IM /stop 共用入口)。
+func TestTurnControlCancel(t *testing.T) {
+	e := buildEnv(t, `[{"text":"x","finish":"stop"}]`)
+	var tci sdk.TurnControl
+	if err := e.c.Inject("ctx.turnControl", &tci); err != nil {
+		t.Fatal(err)
+	}
+	if tci.Running() {
+		t.Fatal("初始应无运行回合")
+	}
+	loop := &Loop{c: e.c, sessions: e.sessions, tools: e.tools, llm: &blockLLM{}, sp: e.sp, tc: tci.(*control)}
+	done := make(chan error, 1)
+	go func() { done <- loop.Run(context.Background(), "任务") }()
+	time.Sleep(80 * time.Millisecond) // 等待进入 Complete 阻塞点
+	if !tci.Running() {
+		t.Fatal("回合挂起时应 Running=true")
+	}
+	tci.Cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("取消后应返回 context.Canceled,got %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Cancel 后回合未结束(超时)")
+	}
+	if tci.Running() {
+		t.Fatal("回合结束后应非 Running")
+	}
+	evts := e.log.Replay()
+	last := evts[len(evts)-1]
+	if last.Kind != sdk.EventTurnEnd || last.Payload != "cancelled" {
+		t.Fatalf("应以 cancelled turn/end 收尾: %+v", last)
+	}
+}
+
+// TestTurnControlRegistry control 注册表语义:注册/取消/注销/幂等。
+func TestTurnControlRegistry(t *testing.T) {
+	c := newTurnControl()
+	if c.Running() {
+		t.Fatal("空注册表应非 Running")
+	}
+	ctx0, cancel := context.WithCancel(context.Background())
+	tok := c.register(cancel)
+	if !c.Running() {
+		t.Fatal("注册后应 Running")
+	}
+	c.Cancel()
+	if ctx0.Err() == nil {
+		t.Fatal("Cancel 应触发回合 ctx 取消")
+	}
+	c.Cancel() // 幂等:重复取消不 panic
+	c.unregister(tok)
+	if c.Running() {
+		t.Fatal("注销后应非 Running")
+	}
+	c.unregister(tok) // 幂等注销
 }
 
 // TestTurnCancelled 上下文取消:回合以 cancelled 结束并返回错误。

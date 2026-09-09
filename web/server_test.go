@@ -266,6 +266,19 @@ func (s *stubCmds) Get(name string) (sdk.CommandSpec, bool) {
 	return spec, ok
 }
 
+// stubTurnControl 回合控制 stub(Cancel 调用经 channel 记录,断言 200/503 分支)。
+type stubTurnControl struct {
+	cancelled chan struct{}
+}
+
+func (s *stubTurnControl) Running() bool { return false }
+func (s *stubTurnControl) Cancel() {
+	select {
+	case s.cancelled <- struct{}{}:
+	default:
+	}
+}
+
 // newTestServer 组装一个可测试的 Server(直接注入字段,不经 sdk.Ctx)。
 // stubTodoTools 供 TestTodoEndpoint(todo 面板端点:固定返回任务列表)。
 type stubTodoTools struct{ sdk.ToolRegistry }
@@ -544,6 +557,42 @@ func TestControlWorkspace(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("未装配应 400,得 %d", resp.StatusCode)
+	}
+}
+
+// TestControlCancel 回合取消端点:POST /api/control {cancel} → ctx.turnControl.Cancel;
+// 未装配显式 503(不静默)。
+func TestControlCancel(t *testing.T) {
+	s, _ := newTestServer()
+	tc := &stubTurnControl{cancelled: make(chan struct{}, 1)}
+	s.tc = tc
+	hs := httptest.NewServer(s.handler())
+	defer hs.Close()
+	resp, err := http.Post(hs.URL+"/api/control", "application/json", strings.NewReader(`{"cancel":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("cancel 应 200,得 %d", resp.StatusCode)
+	}
+	select {
+	case <-tc.cancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Cancel 未被调用")
+	}
+
+	// 未装配 → 503(与其它可选服务一致)
+	s2, _ := newTestServer()
+	hs2 := httptest.NewServer(s2.handler())
+	defer hs2.Close()
+	resp, err = http.Post(hs2.URL+"/api/control", "application/json", strings.NewReader(`{"cancel":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("未装配应 503,得 %d", resp.StatusCode)
 	}
 }
 

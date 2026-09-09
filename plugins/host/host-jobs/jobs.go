@@ -35,6 +35,10 @@ func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
 	if err := c.Provide("ctx.jobs", j); err != nil {
 		return nil, err
 	}
+	// 终态事件通知(job/done;IM/Web 订阅后可主动通知/联动,免轮询)。
+	j.SetNotify(func(ev sdk.JobDoneEvent) {
+		c.Emit(context.Background(), sdk.EventJobDone, &ev, sdk.Emit)
+	})
 	d1 := tools.Register(&ListTool{j: j})
 	d2 := tools.Register(&OutputTool{j: j})
 	d3 := tools.Register(&KillTool{j: j})
@@ -129,11 +133,12 @@ func (e errString) Error() string { return string(e) }
 
 // Jobs 实现 sdk.JobService。
 type Jobs struct {
-	mu    sync.Mutex
-	seq   uint64
-	jobs  map[string]*entry
-	sb    sdk.Sandbox // 可为 nil(未装配沙箱)
-	order []string    // ID 顺序(末位最新),历史清理用
+	mu     sync.Mutex
+	seq    uint64
+	jobs   map[string]*entry
+	sb     sdk.Sandbox // 可为 nil(未装配沙箱)
+	order  []string    // ID 顺序(末位最新),历史清理用
+	notify func(sdk.JobDoneEvent) // 终态通知(可 nil;host-jobs 装配时注入 job/done Emit)
 }
 
 // entry 一条任务记录。
@@ -149,6 +154,9 @@ const keepHistory = 20 // 完成后最多保留的任务数(防内存膨胀)
 func New(sb sdk.Sandbox) *Jobs {
 	return &Jobs{jobs: make(map[string]*entry), sb: sb}
 }
+
+// SetNotify 注入终态通知回调(可 nil 关闭);每任务完成恰一次。
+func (j *Jobs) SetNotify(fn func(sdk.JobDoneEvent)) { j.notify = fn }
 
 // Submit 提交 shell 命令后台执行(读沙箱模式下拒绝)。
 func (j *Jobs) Submit(cmdline string) (string, error) {
@@ -294,7 +302,6 @@ func (j *Jobs) finish(e *entry, state sdk.JobState, output, errMsg string) {
 // finishWith 标记完成并清理历史(保留最近 keepHistory 条)。
 func (j *Jobs) finishWith(e *entry, mutate func(*sdk.Job)) {
 	j.mu.Lock()
-	defer j.mu.Unlock()
 	mutate(&e.job)
 	e.job.DoneAt = time.Now()
 	close(e.done)
@@ -316,6 +323,11 @@ func (j *Jobs) finishWith(e *entry, mutate func(*sdk.Job)) {
 		// 运行中的最旧条目不能删(保留前台),重置计数重扫
 		j.order = append([]string{id}, j.order...) // 放回队首继续找
 		break
+	}
+	ev := sdk.JobDoneEvent{ID: e.job.ID, State: e.job.State}
+	j.mu.Unlock()
+	if j.notify != nil {
+		j.notify(ev)
 	}
 }
 

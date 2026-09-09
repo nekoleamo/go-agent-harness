@@ -23,6 +23,9 @@ const (
 	EventUsage       = "session/usage"
 	EventAgentStatus = "agent/status"
 	EventAgentError  = "agent/error"
+	// EventJobDone 后台任务终态事件(host-jobs 终态 done/failed/killed 发出;载荷 *sdk.JobDoneEvent)。
+	// 订阅方可主动通知(IM/Web 推送)或触发联动;output/result 经 ctx.jobs.Output 取回,不进载荷。
+	EventJobDone = "job/done"
 )
 
 // SessionEvent 是追加到会话日志的持久事实。

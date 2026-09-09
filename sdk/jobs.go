@@ -31,6 +31,12 @@ type Job struct {
 // JobFunc 函数型后台任务(workflow background 注册;ctx 取消即终止)。
 type JobFunc func(ctx context.Context) (any, error)
 
+// JobDoneEvent job/done 事件载荷(终态通知;仅 ID+State,输出经 ctx.jobs.Output 取回)。
+type JobDoneEvent struct {
+	ID    string   `json:"id"`
+	State JobState `json:"state"`
+}
+
 // JobService 后台任务服务:提交(shell 命令/函数)→ 列表 → 取输出 → 终止。
 // 提交不阻塞调用方;状态经 Output 轮询取回(M6.1 验收:不阻塞回合)。
 type JobService interface {

@@ -30,3 +30,13 @@ type SystemPromptService interface {
 	// Assemble 组装 system 消息:固定引导 + 注册片段 + 工具 schema 清单 + 历史消息。
 	Assemble(history []LLMMessage, tools []ToolDefinition) []LLMMessage
 }
+
+// TurnControl 服务(ctx.turnControl):回合运行控制(IM 远程 /stop、Web 取消、TUI Esc 共用)。
+// 由 host-agent-loop 提供:每次 Run 内部派生可取消 ctx 并注册,回合结束自动注销。
+// 实现必须并发安全(允许多回合并发注册,各自独立取消)。
+type TurnControl interface {
+	// Running 是否存在运行中的回合。
+	Running() bool
+	// Cancel 取消全部运行中的回合(无运行回合 = no-op;幂等,重复调用无害)。
+	Cancel()
+}

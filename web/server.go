@@ -89,6 +89,7 @@ type Server struct {
 	jobs     sdk.JobService        // 可选(后台任务)
 	pm       sdk.PluginManager     // 可选(插件启停)
 	sp       sdk.SystemPromptService // 可选(/reload 指令热更)
+	tc       sdk.TurnControl       // 可选(回合取消 /api/control cancel;未装配 = 503)
 
 	running     atomic.Bool
 	http        *http.Server
@@ -130,6 +131,7 @@ func (s *Server) Inject(c sdk.Ctx) error {
 	_ = c.Inject("ctx.jobs", &s.jobs)
 	_ = c.Inject("ctx.pluginManager", &s.pm)
 	_ = c.Inject("ctx.systemPrompt", &s.sp)
+	_ = c.Inject("ctx.turnControl", &s.tc)
 	// running 状态:随 agent/status 事件驱动(回合开始 running,结束 idle)
 	unsub := c.Subscribe(sdk.EventAgentStatus, func(_ context.Context, ev *sdk.Event) error {
 		s.running.Store(ev.Payload == "running")
@@ -627,9 +629,19 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 		Sandbox   string `json:"sandbox"`
 		Approval  string `json:"approval"`
 		Workspace string `json:"workspace"`
+		Cancel    bool   `json:"cancel"` // 取消运行中回合(经 ctx.turnControl;未装配 503)
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "坏请求体", http.StatusBadRequest)
+		return
+	}
+	if req.Cancel {
+		if s.tc == nil {
+			http.Error(w, "回合控制未装配(ctx.turnControl)", http.StatusServiceUnavailable)
+			return
+		}
+		s.tc.Cancel()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return
 	}
 	if req.Model != "" {

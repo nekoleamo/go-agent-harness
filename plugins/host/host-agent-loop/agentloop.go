@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
@@ -38,11 +39,59 @@ func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
 	if err := c.Inject("ctx.systemPrompt", &sp); err != nil {
 		return nil, err
 	}
-	loop := &Loop{c: c, sessions: sessions, tools: tools, llm: llm, sp: sp}
+	loop := &Loop{c: c, sessions: sessions, tools: tools, llm: llm, sp: sp, tc: newTurnControl()}
 	if err := c.Provide("ctx.agentLoop", loop); err != nil {
 		return nil, err
 	}
+	// ctx.turnControl 回合控制(TUI Esc / Web /api/control / IM /stop 共用取消入口)。
+	if err := c.Provide("ctx.turnControl", loop.tc); err != nil {
+		return nil, err
+	}
 	return func() {}, nil
+}
+
+// control 实现 sdk.TurnControl:并发安全的回合取消注册表。
+// 每次 Run 派生可取消 ctx 并 register 拿到 token,回合结束(任意路径)defer unregister。
+// Cancel 先摘快照再解锁调用(回调可能触发 unregister,防自锁);CancelFunc 幂等。
+type control struct {
+	mu      sync.Mutex
+	seq     uint64
+	cancels map[uint64]context.CancelFunc
+}
+
+func newTurnControl() *control { return &control{cancels: make(map[uint64]context.CancelFunc)} }
+
+// register 注册一个回合取消函数,返回注销 token。
+func (c *control) register(fn context.CancelFunc) uint64 {
+	c.mu.Lock()
+	c.seq++
+	c.cancels[c.seq] = fn
+	c.mu.Unlock()
+	return c.seq
+}
+
+func (c *control) unregister(tok uint64) {
+	c.mu.Lock()
+	delete(c.cancels, tok)
+	c.mu.Unlock()
+}
+
+func (c *control) Running() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.cancels) > 0
+}
+
+func (c *control) Cancel() {
+	c.mu.Lock()
+	fns := make([]context.CancelFunc, 0, len(c.cancels))
+	for _, fn := range c.cancels {
+		fns = append(fns, fn)
+	}
+	c.mu.Unlock()
+	for _, fn := range fns {
+		fn()
+	}
 }
 
 // Loop 实现 sdk.AgentLoop。
@@ -52,9 +101,10 @@ type Loop struct {
 	tools    sdk.ToolRegistry
 	llm      sdk.LLMService
 	sp       sdk.SystemPromptService
-	finished bool   // 当前轮次是否应结束(step 内修改,单 goroutine 使用)
-	reminded bool   // 本回合已给过伪调用提醒(每回合最多 1 次,防无限修正循环)
-	reminder string // 待注入下轮的提醒消息(伪调用检测触发)
+	tc       *control // ctx.turnControl 实现(回合取消注册表)
+	finished bool     // 当前轮次是否应结束(step 内修改,单 goroutine 使用)
+	reminded bool     // 本回合已给过伪调用提醒(每回合最多 1 次,防无限修正循环)
+	reminder string   // 待注入下轮的提醒消息(伪调用检测触发)
 }
 
 // Run 处理一次用户输入直至一轮完成(无附件;等价 RunWithAttachments nil)。
@@ -64,7 +114,17 @@ func (l *Loop) Run(ctx context.Context, input string) error {
 
 // RunWithAttachments 处理一次用户输入(附件一期:图片随消息视觉注入,文件路径引用)。
 func (l *Loop) RunWithAttachments(ctx context.Context, input string, atts []sdk.Attachment) error {
-	l.c.Emit(ctx, "agent/status", "running", sdk.Emit)
+	// 回合级可取消 ctx:派生 child 并注册到 ctx.turnControl(TUI Esc/Web 取消/IM /stop 经
+	// Cancel() 取消同一回合);父 ctx 取消沿链生效;回合结束(任意返回路径)注销并释放。
+	runCtx, runCancel := context.WithCancel(ctx)
+	var tok uint64
+	if l.tc != nil { // 直接构造的 Loop(旧测试/无 turnControl 场景)跳过注册
+		tok = l.tc.register(runCancel)
+		defer l.tc.unregister(tok)
+	}
+	defer runCancel()
+
+	l.c.Emit(runCtx, "agent/status", "running", sdk.Emit)
 	// 回合级状态重置:伪调用提醒每回合至多一次
 	l.reminded = false
 	l.reminder = ""
@@ -72,11 +132,11 @@ func (l *Loop) RunWithAttachments(ctx context.Context, input string, atts []sdk.
 		return err
 	}
 	for step := 0; step < maxSteps; step++ {
-		if err := l.step(ctx); err != nil {
+		if err := l.step(runCtx); err != nil {
 			if errors.Is(err, context.Canceled) {
 				l.sessions.Append(sdk.SessionEvent{Kind: sdk.EventTurnEnd, Payload: "cancelled"})
 			} else {
-				l.c.Emit(ctx, "agent/error", err, sdk.Emit)
+				l.c.Emit(runCtx, "agent/error", err, sdk.Emit)
 			}
 			l.c.Emit(context.Background(), "agent/status", "idle", sdk.Emit)
 			return err

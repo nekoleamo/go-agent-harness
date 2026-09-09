@@ -3,6 +3,7 @@ package hostjobs
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -163,6 +164,65 @@ func TestListAndHistory(t *testing.T) {
 	list = j.List()
 	if len(list) != keepHistory {
 		t.Fatalf("历史应限 keepHistory: got %d, want %d", len(list), keepHistory)
+	}
+}
+
+// TestJobDoneEventNotify 终态通知:done/failed/killed 各恰一次(ID+State)。
+func TestJobDoneEventNotify(t *testing.T) {
+	j := New(nil)
+	var mu sync.Mutex
+	var evs []sdk.JobDoneEvent
+	notified := make(chan struct{}, 8)
+	j.SetNotify(func(ev sdk.JobDoneEvent) {
+		mu.Lock()
+		evs = append(evs, ev)
+		mu.Unlock()
+		notified <- struct{}{}
+	})
+	// done
+	id1, err := j.Run(func(context.Context) (any, error) { return "ok", nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, j, id1)
+	// failed
+	id2, err := j.Run(func(context.Context) (any, error) { return nil, errors.New("boom") })
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, j, id2)
+	// killed:阻塞函数任务经 Kill 终止
+	id3, err := j.Run(func(ctx context.Context) (any, error) { <-ctx.Done(); return nil, ctx.Err() })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := j.Kill(id3); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		select {
+		case <-notified:
+		case <-time.After(5 * time.Second):
+			t.Fatal("终态通知缺失")
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(evs) != 3 {
+		t.Fatalf("应收到 3 次通知,got %d", len(evs))
+	}
+	byID := map[string]sdk.JobDoneEvent{}
+	for _, ev := range evs {
+		byID[ev.ID] = ev
+	}
+	if s := byID[id1].State; s != sdk.JobDone {
+		t.Errorf("%s 应为 done,got %s", id1, s)
+	}
+	if s := byID[id2].State; s != sdk.JobFailed {
+		t.Errorf("%s 应为 failed,got %s", id2, s)
+	}
+	if s := byID[id3].State; s != sdk.JobKilled {
+		t.Errorf("%s 应为 killed,got %s", id3, s)
 	}
 }
 

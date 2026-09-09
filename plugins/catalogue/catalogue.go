@@ -70,7 +70,7 @@ var All = map[string]Def{
 		Provides: []string{"ctx.sandbox", "ctx.approval"}}, Bundle: "base"},
 	"host-agent-loop": {Factory: func() sdk.Plugin { return &hostagentloop.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "host-agent-loop", Type: "agent", APIVersion: ">=1.0,<2.0",
-		Provides: []string{"ctx.agentLoop"},
+		Provides: []string{"ctx.agentLoop", "ctx.turnControl"},
 		Requires: []string{"ctx.sessions", "ctx.llm", "ctx.tools", "ctx.systemPrompt"}}, Bundle: "base"},
 	"llm-openai-compat": {Factory: func() sdk.Plugin { return &llmopenai.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "llm-openai-compat", Type: "llm", APIVersion: ">=1.0,<2.0",
