@@ -144,14 +144,14 @@ func (b *Bridge) Confirm(ctx context.Context, prompt string) (bool, error) {
 		delete(b.pending, route.Key())
 		b.confirmMu.Unlock()
 	}()
-	if err := b.sendText(ctx, route, "🔐 需要确认: "+prompt+"\n回复 y 批准 / n 拒绝"); err != nil {
+	if err := b.sendText(ctx, route, "🔐 需要确认: "+prompt+"\n回复 y 批准 / n 拒绝(约 2 分钟无回复自动拒绝)"); err != nil {
 		return false, err
 	}
 	select {
 	case ok := <-w.ch:
 		return ok, nil
 	case <-ctx.Done():
-		_ = b.sendText(context.Background(), route, "⏰ 确认等待超时,已按拒绝处理。")
+		_ = b.sendText(context.Background(), route, "⏰ 确认等待超时,已按拒绝处理(如需执行请重新发一条消息触发)。")
 		return false, ctx.Err()
 	}
 }
@@ -172,6 +172,13 @@ func (b *Bridge) answerPending(ctx context.Context, r Route, text string) bool {
 	b.confirmMu.Lock()
 	delete(b.pending, r.Key())
 	b.confirmMu.Unlock()
+	// 即时回执:让用户确认回填已生效(真机反馈“y 后一直操作中”→ 需区分
+	// 回填未达 vs 回合仍在执行;回执先于回合恢复发出,顺序合理)。
+	if ok2 {
+		_ = b.sendText(context.Background(), r, "✅ 已批准,继续执行…")
+	} else {
+		_ = b.sendText(context.Background(), r, "❌ 已拒绝,操作未执行。")
+	}
 	select {
 	case w.ch <- ok2:
 	default: // 已超时(Confirm 侧已返回);不回填
