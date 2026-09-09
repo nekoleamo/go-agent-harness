@@ -42,7 +42,7 @@ func buildWebTestEnv(t *testing.T) (*ctx.Ctx, *web.Server) {
 		{ID: "llm-mock"},
 		{ID: "tool-shell"},
 		{ID: "tool-todo"},
-		{ID: "policy-sandbox", Data: map[string]any{"mode": "workspace-write"}},
+		{ID: "policy-guard", Data: map[string]any{"approval": "smart", "sandbox": "workspace-write", "sync": true}},
 		{ID: "host-agent-loop"},
 	})
 	if err := c.Provide("system.registry", reg); err != nil {

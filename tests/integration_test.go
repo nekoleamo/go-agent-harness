@@ -33,7 +33,7 @@ func buildTestEnv(t *testing.T) (*ctx.Ctx, *plugin.Registry) {
 		{ID: "host-system-prompt"},
 		{ID: "llm-mock"},
 		{ID: "tool-shell"},
-		{ID: "policy-sandbox", Data: map[string]any{"mode": "workspace-write"}},
+		{ID: "policy-guard", Data: map[string]any{"approval": "smart", "sandbox": "workspace-write", "sync": true}},
 		{ID: "host-agent-loop"},
 	})
 	// 内部服务(boot 同款,见 cmd/gah)
@@ -301,7 +301,7 @@ func TestPluginUnloadMatrix(t *testing.T) {
 	// 2) 叶子/无依赖者逐个卸载:宿主存活 + 回合可继续(不 panic)
 	// 含无依赖者的宿主服务(agent-loop/plugin-manager/cwd-sessions 卸载无副作用,引用仍可用)
 	// M6.8:host-bridge 依赖 host-jobs/host-fanout → 卸载需自内向外(先卸 bridge 再卸其依赖者)
-	leaves := []string{"policy-approval", "tool-shell", "host-skills", "mcp-bridge", "policy-sandbox", "host-agent-loop", "host-plugin-manager", "host-cwd-sessions", "token-compress", "host-bridge", "host-jobs", "host-fanout"}
+	leaves := []string{"policy-guard", "tool-shell", "host-skills", "mcp-bridge", "host-agent-loop", "host-plugin-manager", "host-cwd-sessions", "token-compress", "host-bridge", "host-jobs", "host-fanout"}
 	for _, id := range leaves {
 		if err := mgr.Unload(id); err != nil {
 			t.Fatalf("卸载 %s 失败: %v", id, err)

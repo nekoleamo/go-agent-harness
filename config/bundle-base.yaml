@@ -1,4 +1,4 @@
-# seed-version: 11 # 样板版本:新增 base 能力条目(host-* 等)时 +1,老用户自动升级(备份后覆盖)
+# seed-version: 12 # 样板版本:新增 base 能力条目(host-* 等)时 +1,老用户自动升级(备份后覆盖)
 # base bundle:对齐 dsh-base,一切功能皆插件的共享第一层。
 # M1 阶段条目仅记录意图;对应插件工厂在 M2 base bundle 落地。
 name: base
@@ -19,12 +19,11 @@ entries:
   - id: host-commands # 斜杠命令注册表(ctx.commands):插件命令自动进入 TUI 提示
   - id: host-internal-commands # B3 命令下沉:内部命令(thinking/model/provider/…/reload)宿主注册,web/TUI / 通用
   - id: host-agent-loop
-  - id: policy-sandbox
+  - id: policy-guard # M19 融合:policy-approval + policy-sandbox 统一策略插件(对外契约不变)
     data:
-      mode: workspace-write
-  - id: policy-approval
-    data:
-      mode: smart # M17 审批档位:open 开放放行 / smart 智能弹确认(默认) / strict 严格直接拒绝;运行期 /approval 切换
+      approval: smart # 审批档位:open 放行 / smart 弹确认(默认) / strict 拒绝;运行期 /approval 切换
+      sandbox: workspace-write # 沙箱档位:read-only / workspace-write(默认) / full-access;运行期 /sandbox 切换
+      sync: true # 档位联动:open → 沙箱有效 full-access;strict → 有效 read-only;smart 各自独立
   - id: host-skills
   - id: host-plugin-manager
   - id: host-cwd-sessions

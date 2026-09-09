@@ -51,7 +51,7 @@ func TestAnthropicRouteE2E(t *testing.T) {
 		{ID: "host-system-prompt"},
 		{ID: "llm-anthropic-compat", Data: map[string]any{"base_url": srv.URL, "model": "claude-sonnet-4-5"}},
 		{ID: "host-agent-loop"},
-		{ID: "policy-sandbox", Data: map[string]any{"mode": "workspace-write"}},
+		{ID: "policy-guard", Data: map[string]any{"approval": "smart", "sandbox": "workspace-write", "sync": true}},
 		{ID: "llm-openai-compat", Enabled: func() *bool { f := false; return &f }()},
 		{ID: "llm-mock", Enabled: func() *bool { f := false; return &f }()},
 	})

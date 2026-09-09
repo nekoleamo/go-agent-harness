@@ -21,6 +21,8 @@
 # 示例 UI 插件(M7.2)本地构建依赖
 /web-src/examples/**/node_modules/
 /gah-data
+# 运行期配置备份(生效配置同目录 config-backups/;仓库 config/ 为样板目录,备份不入库)
+/config/config-backups/
 
 # 桌面壳产物与依赖(desktop/;sidecar 二进制构建产物,构建时由 scripts/gen-desktop.sh 生成)
 /desktop/src-tauri/target/
