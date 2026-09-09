@@ -28,8 +28,8 @@ import (
 // 过低版本(0.1.0)文字可收但媒体消息服务端拒绝)。
 const ChannelVersion = "2.2.0"
 
-// BotAgent UA 式客户端标识(base_info.bot_agent)。
-const BotAgent = "gah-ilink/0.1.0"
+// BotAgent UA 式客户端标识(base_info.bot_agent;微信端可能展示该操作者名,保持与产品名一致)。
+const BotAgent = "GoAgentHarness/0.1.0"
 
 // DefaultBaseURL iLink API 默认端点。
 const DefaultBaseURL = "https://ilinkai.weixin.qq.com/"
@@ -188,6 +188,7 @@ type Item struct {
 	Type      int        `json:"type"`
 	TextItem  *TextItem  `json:"text_item,omitempty"`
 	ImageItem *ImageItem `json:"image_item,omitempty"`
+	VoiceItem *VoiceItem `json:"voice_item,omitempty"`
 	FileItem  *FileItem  `json:"file_item,omitempty"`
 }
 
@@ -201,6 +202,12 @@ type ImageItem struct {
 	AesKey string `json:"aeskey"`
 	Media  *Media `json:"media"`
 	URL    string `json:"url"`
+}
+
+// VoiceItem 语音项(优先用服务端 ASR 转写文本)。
+type VoiceItem struct {
+	Text     string `json:"text"`
+	PlayTime int    `json:"playtime"`
 }
 
 // FileItem 文件项。
@@ -231,7 +238,11 @@ func (m *InboundMessage) ExtractText() string {
 		case 2:
 			imgs++
 		case 3:
-			parts = append(parts, "(语音)")
+			if it.VoiceItem != nil && it.VoiceItem.Text != "" {
+				parts = append(parts, it.VoiceItem.Text) // 服务端 ASR 转写优先
+			} else {
+				parts = append(parts, "(语音)")
+			}
 		case 4:
 			if it.FileItem != nil {
 				name := it.FileItem.FileName

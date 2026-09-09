@@ -47,6 +47,15 @@ type Transport interface {
 	SendText(ctx context.Context, to Route, text string) error
 }
 
+// TypingAware 可选能力:回合运行期间显示/取消平台"正在输入"指示(Transport 可选实现,
+// best-effort——未实现则静默跳过)。用于长回合可感知(真机反馈:无法判断工作/断联)。
+type TypingAware interface {
+	// ShowTyping 开始显示输入状态(实现应持续至 StopTyping,平台若自动消失需周期刷新)。
+	ShowTyping(ctx context.Context, route Route) error
+	// StopTyping 取消输入状态(回合结束/错误路径均调用)。
+	StopTyping(ctx context.Context, route Route) error
+}
+
 // Options 桥配置(data 透传 + 默认值)。
 type Options struct {
 	// Mode 访问模式(默认 disabled = 静默丢弃一切未授权消息)。

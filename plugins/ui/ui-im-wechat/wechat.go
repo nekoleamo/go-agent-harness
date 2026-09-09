@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,6 +28,14 @@ type Plugin struct{}
 func (p *Plugin) Name() string { return "ui-im-wechat" }
 
 const channelName = "wechat"
+
+// 出站长回复策略:iLink 单条兼容上限 ~2000 字(社区保守值,非服务端公开);
+// 短窗口连发受限(社区实测 ~10 条/窗口,超出尾部静默丢失,用户发消息才能恢复)。
+const (
+	wechatChunkLimit = 2000                   // 单条消息上限(按 Unicode 字符)
+	wechatChunkGap   = 300 * time.Millisecond // 分块间隔(防连发触发窗口截断)
+	wechatMaxChunks  = 10                     // 单回合最多分块数(超出截断 + 提示)
+)
 
 // Start 装配桥与通道;已登录则自动启动 poll loop;未登录(data.auto_login 默认 true)
 // 自动发起扫码登录(二维码链接打印 stderr,headless 场景无交互入口;确认后自动授权并启动)。
@@ -143,11 +152,67 @@ type wechatTransport struct {
 	tickets   map[string]ticketEntry
 	tokens    map[string]string // userID → context_token(iLink 回显必须)
 	loginBusy bool
+	typingCtl context.CancelFunc // 回合进行中的 typing 周期刷新控制器(回合结束取消)
 }
 
 func (t *wechatTransport) Name() string { return t.name }
 
-// SendText 回推文本(先显 typing;context_token 缺失无法发送,记诊断)。
+// ShowTyping im.TypingAware:回合开始显示“正在输入”并周期刷新(iLink typing 状态生命周期
+// 短,每 ~20s 重发 show 保持);回合结束由 StopTyping 取消。best-effort(失败静默)。
+func (t *wechatTransport) ShowTyping(_ context.Context, r im.Route) error {
+	user := r.UserID
+	t.mu.Lock()
+	if t.typingCtl != nil {
+		t.typingCtl() // 上一个回合残留刷新先停
+	}
+	c2, cancel := context.WithCancel(context.Background())
+	t.typingCtl = cancel
+	t.mu.Unlock()
+	go func() {
+		t.sendTypingNow(user, true)
+		tk := time.NewTicker(5 * time.Second) // iLink typing 生命周期短,~5s keepalive 保持
+		defer tk.Stop()
+		for {
+			select {
+			case <-c2.Done():
+				return
+			case <-tk.C:
+				t.sendTypingNow(user, true)
+			}
+		}
+	}()
+	return nil
+}
+
+// StopTyping im.TypingAware:回合结束取消 typing 并即时发 cancel。
+func (t *wechatTransport) StopTyping(_ context.Context, r im.Route) error {
+	t.mu.Lock()
+	c := t.typingCtl
+	t.typingCtl = nil
+	t.mu.Unlock()
+	if c != nil {
+		c()
+	}
+	t.sendTypingNow(r.UserID, false)
+	return nil
+}
+
+// sendTypingNow 发送一次 typing 状态(show=true 显示输入中;失败静默——typing 尽力而为)。
+func (t *wechatTransport) sendTypingNow(user string, show bool) {
+	t.mu.Lock()
+	cli := t.client
+	t.mu.Unlock()
+	if cli == nil {
+		return
+	}
+	if tkt := t.typingTicket(user); tkt != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = cli.SendTyping(ctx, user, tkt, show)
+	}
+}
+
+// SendText 回推文本(context_token 缺失无法发送,记诊断)。
 func (t *wechatTransport) SendText(ctx context.Context, to im.Route, text string) error {
 	t.mu.Lock()
 	cli := t.client
@@ -160,10 +225,71 @@ func (t *wechatTransport) SendText(ctx context.Context, to im.Route, text string
 	if token == "" {
 		return fmt.Errorf("wechat: 无 %s 的 context_token,无法回复(请对方先发消息)", user)
 	}
-	if tkt := t.typingTicket(user); tkt != "" {
-		_ = cli.SendTyping(ctx, user, tkt, false)
+	// 长回复分块(iLink 单条兼容上限 ~2000 字;短窗口条数受限 ~10 条,过长提示截断):
+	// 分块间小间隔避免连发触发窗口截断(社区头号坑:hermes/cc-connect 长回复尾部静默丢失)。
+	chunks := splitLongText(text)
+	n := len(chunks)
+	if n > wechatMaxChunks {
+		chunks = chunks[:wechatMaxChunks]
 	}
-	return cli.SendMessage(ctx, to.UserID, text, token, "")
+	for i, ch := range chunks {
+		if err := cli.SendMessage(ctx, to.UserID, ch, token, ""); err != nil {
+			if n > wechatMaxChunks {
+				_ = cli.SendMessage(context.Background(), to.UserID, "⚠️ 回复过长已截断;请回复 continue 获取剩余内容", token, "")
+			}
+			return err
+		}
+		if i < len(chunks)-1 {
+			time.Sleep(wechatChunkGap)
+		}
+	}
+	if n > wechatMaxChunks {
+		return cli.SendMessage(context.Background(), to.UserID, "⚠️ 回复过长已截断;请回复 continue 获取剩余内容", token, "")
+	}
+	return nil
+}
+
+// splitLongText 按 ~2000 字切分:优先段落(空行)→ 行 → 空格;无边界硬切(对齐社区兼容策略)。
+func splitLongText(text string) []string {
+	if len([]rune(text)) <= wechatChunkLimit {
+		return []string{text}
+	}
+	var chunks []string
+	rest := text
+	for len([]rune(rest)) > wechatChunkLimit {
+		cut := cutAt(rest, wechatChunkLimit)
+		piece := strings.TrimSpace(rest[:cut])
+		rest = strings.TrimSpace(rest[cut:])
+		if piece != "" {
+			chunks = append(chunks, piece)
+		}
+	}
+	if rest != "" {
+		chunks = append(chunks, rest)
+	}
+	if len(chunks) == 0 {
+		chunks = []string{text}
+	}
+	return chunks
+}
+
+// cutAt 在 limit 内找最佳切点(段落空行 > 换行 > 空格 > 硬切)。
+func cutAt(s string, limit int) int {
+	r := []rune(s)
+	if len(r) <= limit {
+		return len(r)
+	}
+	window := string(r[:limit])
+	if i := strings.LastIndex(window, "\n\n"); i > 0 {
+		return len([]rune(window[:i])) + 2
+	}
+	if i := strings.LastIndex(window, "\n"); i > 0 {
+		return len([]rune(window[:i])) + 1
+	}
+	if i := strings.LastIndex(window, " "); i > 0 {
+		return len([]rune(window[:i])) + 1
+	}
+	return limit
 }
 
 // typingTicket 取(缓存 ~20h;失败静默——typing 尽力而为)。

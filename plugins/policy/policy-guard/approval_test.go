@@ -54,12 +54,30 @@ func build(t *testing.T, confirm sdk.ConfirmService, data ...map[string]any) sdk
 
 func TestMatchDangerous(t *testing.T) {
 	cases := map[string]bool{
-		`{"command":"ls -la"}`:           false,
-		`{"command":"rm -rf /tmp/x"}`:    true,
-		`{"command":"git push -f"}`:      true,
-		`{"command":"sudo apt install"}`: true,
-		`{"command":"chmod 777 f"}`:      true,
-		`{"command":"echo hi"}`:          false,
+		`{"command":"ls -la"}`:                       false,
+		`{"command":"rm -rf /tmp/x"}`:                true,
+		`{"command":"rmdir /tmp/d"}`:                 true, // IM 真机反馈:rmdir 此前漏网
+		`{"command":"rmdir -p a/b"}`:                 true,
+		`{"command":"rm -f /tmp/x"}`:                 true,
+		`{"command":"unlink /tmp/f"}`:                true,
+		`{"command":"shred -u /tmp/x"}`:              true,
+		`{"command":"truncate -s 0 f"}`:              true,
+		`{"command":"find / -name '*.log' -delete"}`: true,
+		`{"command":"git push -f"}`:                  true,
+		`{"command":"git push --force-with-lease"}`:  true,
+		`{"command":"git reset --hard HEAD~1"}`:      true,
+		`{"command":"git clean -fd"}`:                true,
+		`{"command":"git push origin main"}`:         false,
+		`{"command":"git reset --soft HEAD~1"}`:      false,
+		`{"command":"sudo apt install"}`:             true,
+		`{"command":"pkexec ls"}`:                    true,
+		`{"command":"chmod 777 f"}`:                  true,
+		`{"command":"chmod -R 777 dir"}`:             true,
+		`{"command":"chmod 644 f"}`:                  false,
+		`{"command":"chmod +x f"}`:                   false,
+		`{"command":"echo hi"}`:                      false,
+		`{"command":"rm -v /tmp/f"}`:                 true, // IM 反馈:rm -v 此前漏网
+		`{"command":"rm data.txt"}`:                  true, // 裸 rm(任意形态删除均确认)
 	}
 	for args, want := range cases {
 		_, hit := matchDangerous(args)

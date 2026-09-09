@@ -189,6 +189,20 @@ func (b *Bridge) runTurn(ctx context.Context, r Route, text string) error {
 	b.busy = true
 	b.curRoute = r
 	b.mu.Unlock()
+	// typing:回合进行中持续“正在输入”(Transport 实现 TypingAware 时;best-effort,
+	// 用户凭此判断仍在工作 vs 断联——真机反馈)。结束路径(成功/错误)统一停止。
+	var ta TypingAware
+	if t, ok := b.tr.(TypingAware); ok {
+		ta = t
+	}
+	if ta != nil {
+		_ = ta.ShowTyping(context.Background(), r)
+	}
+	defer func() {
+		if ta != nil {
+			_ = ta.StopTyping(context.Background(), r)
+		}
+	}()
 	defer func() {
 		b.mu.Lock()
 		b.busy = false

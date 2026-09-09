@@ -16,11 +16,20 @@ var dangerousPatterns = []struct {
 	name string
 	re   *regexp.Regexp
 }{
-	{"递归删除", regexp.MustCompile(`\brm\s+-rf\b|\brm\s+--recursive\b|rm\s+-[a-zA-Z]*r\b`)},
-	{"强制推送", regexp.MustCompile(`\bgit\s+push.*\s-f\b|\bgit\s+push.*--force\b`)},
+	// 删除操作全形态(IM 真机反馈:rmdir/rm -f/rm -v 先后漏网 → 统一 rm/rmdir/unlink 全匹配;
+	// 文本级启发,命令文本含删除词的会保守触发确认,可拒绝)。
+	{"删除操作", regexp.MustCompile(`\brm\b|\brmdir\b|\bunlink\b`)},
+	// 删除增强:shred/truncate(覆写/清空)、find -delete(批量删)。
+	{"删除增强(shred/truncate/find -delete)", regexp.MustCompile(`\bshred\b|\btruncate\b|\bfind\b[^\n]*-delete\b`)},
+	// 强制推送(含 --force-with-lease 同属强推变体)。
+	{"强制推送", regexp.MustCompile(`\bgit\s+push.*\s-f\b|\bgit\s+push.*--force\b|\bgit\s+push.*--force-with-lease\b`)},
+	// git 破坏性操作:reset --hard(丢工作区)、clean -f(删未跟踪)。
+	{"git 破坏性操作(reset --hard/clean -f)", regexp.MustCompile(`\bgit\s+reset\s+--hard\b|\bgit\s+clean\s+-[a-zA-Z]*f[a-zA-Z]*\b`)},
 	{"磁盘擦写", regexp.MustCompile(`\b(dd|mkfs|fdisk|parted)\b`)},
-	{"权限后门", regexp.MustCompile(`\bchmod\s+777\b`)},
-	{"特权操作", regexp.MustCompile(`\bsudo\b`)},
+	// 权限后门:chmod 含 777(覆盖 -R 777 与参数顺序变体)。
+	{"权限后门(chmod 777)", regexp.MustCompile(`\bchmod\b[^\n]*\b777\b`)},
+	// 特权操作。
+	{"特权操作(sudo/pkexec)", regexp.MustCompile(`\bsudo\b|\bpkexec\b`)},
 }
 
 const confirmTimeout = 2 * time.Minute

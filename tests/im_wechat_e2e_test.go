@@ -24,12 +24,13 @@ import (
 	"github.com/nekoleamo/go-agent-harness/ilink"
 )
 
-// wechatMock iLink 服务器:getupdates 可编程(首条入站);sendmessage 收集。
+// wechatMock iLink 服务器:getupdates 可编程(首条入站);sendmessage/sendtyping 收集。
 type wechatMock struct {
-	mu       sync.Mutex
-	updates  []map[string]any
-	sendMsgs []map[string]any
-	notify   chan struct{} // sendmessage 到达通知
+	mu          sync.Mutex
+	updates     []map[string]any
+	sendMsgs    []map[string]any
+	typingShows int           // sendtyping status=1(show)次数
+	notify      chan struct{} // sendmessage 到达通知
 }
 
 func newWechatMock(t *testing.T) (*wechatMock, *httptest.Server) {
@@ -62,6 +63,15 @@ func newWechatMock(t *testing.T) (*wechatMock, *httptest.Server) {
 		case "/ilink/bot/getconfig":
 			w.Write([]byte(`{"ret":0,"ilink_user_id":"u","typing_ticket":"tkt-e2e"}`))
 		case "/ilink/bot/sendtyping":
+			var bd struct {
+				Status int `json:"status"`
+			}
+			json.NewDecoder(r.Body).Decode(&bd)
+			if bd.Status == 1 {
+				m.mu.Lock()
+				m.typingShows++
+				m.mu.Unlock()
+			}
 			w.Write([]byte(`{"ret":0}`))
 		case "/ilink/bot/get_bot_qrcode":
 			w.Write([]byte(`{"qrcode":"qr-auto","qrcode_img_content":"https://wx.example/qr-auto"}`))
@@ -140,6 +150,14 @@ func TestImWechatE2E(t *testing.T) {
 	got := m.waitSend(t, "远程命令已执行", 15*time.Second)
 	if !strings.Contains(got, "远程命令已执行") {
 		t.Fatalf("回推不符: %q", got)
+	}
+	// typing 指示:回合期间应至少一次 status=1(show)(长回合可感知工作/断联)
+	time.Sleep(400 * time.Millisecond)
+	m.mu.Lock()
+	shows := m.typingShows
+	m.mu.Unlock()
+	if shows < 1 {
+		t.Fatalf("回合应发送 typing show,got %d", shows)
 	}
 	// 未授权用户(hacker)消息:静默丢弃 —— 轮询若干窗口断言无新增出站
 	time.Sleep(800 * time.Millisecond)

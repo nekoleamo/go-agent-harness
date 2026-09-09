@@ -4,6 +4,7 @@ package im
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"sync"
@@ -164,6 +165,76 @@ func TestBusyReply(t *testing.T) {
 	// 回合随后结束(无产出)→ 完成占位(第二条)
 	if len(sent) < 2 || !strings.Contains(sent[len(sent)-1], "完成") {
 		t.Fatalf("回合结束后应回完成占位: %+v", sent)
+	}
+}
+
+// typingTransport 实现 TypingAware 的记录 transport(断言 show/stop 时序)。
+type typingTransport struct {
+	stub *stubTransport
+	mu   sync.Mutex
+	seq  []string
+}
+
+func (t *typingTransport) Name() string { return "typing" }
+func (t *typingTransport) SendText(ctx context.Context, r Route, text string) error {
+	return t.stub.SendText(ctx, r, text)
+}
+func (t *typingTransport) ShowTyping(context.Context, Route) error {
+	t.mu.Lock()
+	t.seq = append(t.seq, "show")
+	t.mu.Unlock()
+	return nil
+}
+func (t *typingTransport) StopTyping(context.Context, Route) error {
+	t.mu.Lock()
+	t.seq = append(t.seq, "stop")
+	t.mu.Unlock()
+	return nil
+}
+func (t *typingTransport) typedSeq() []string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make([]string, len(t.seq))
+	copy(out, t.seq)
+	return out
+}
+
+// TestTurnTypingIndicator typing 指示:回合开始 show、结束 stop(成功与错误路径均 stop)。
+// 长回合期间用户凭“正在输入”判断仍工作 vs 断联(真机反馈)。
+func TestTurnTypingIndicator(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		fail bool
+	}{
+		{"成功路径", false},
+		{"错误路径", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b, loop, _, sessions := buildTestBridge(t, Options{Mode: AccessAllowlist, Allow: []string{"mock\x00owner"}})
+			tt := &typingTransport{stub: &stubTransport{}}
+			b.tr = tt
+			loop.onRun = func(_ context.Context, _ string) error {
+				if tc.fail {
+					return errors.New("boom")
+				}
+				return sessions.Append(sdk.SessionEvent{Kind: sdk.EventAssistantMessage, Payload: sdk.AssistantMessage{Content: "结果"}})
+			}
+			if err := b.HandleInbound(context.Background(), Inbound{Route: mkRoute("owner"), MsgID: "1", Text: "hi"}); tc.fail {
+				if err == nil {
+					t.Fatal("错误路径应返回回合错误")
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			seq := tt.typedSeq()
+			if len(seq) != 2 || seq[0] != "show" || seq[1] != "stop" {
+				t.Fatalf("typing 时序应 show→stop,got %v", seq)
+			}
+			// 成功路径有回复;错误路径有错误提示——均发生在 stop 前(best-effort 不影响主流程)
+			if n := len(tt.stub.sent()); n != 1 {
+				t.Fatalf("应有一条出站消息,got %v", tt.stub.sent())
+			}
+		})
 	}
 }
 
