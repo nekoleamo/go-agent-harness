@@ -1,10 +1,11 @@
 // Package policyguard 提供 policy-guard 统一策略插件。
 // 由 policy-approval(审批档位)+ policy-sandbox(沙箱档位)融合而来:
-//   对外契约不变——仍 Provide ctx.approval / ctx.sandbox 两个服务,
-//   仍响应 tools/pre-execute 与 cwd/workspace-switched 事件,
-//   /approval /sandbox 命令、TUI/Web 展示、prefs 持久化全部零改动;
-//   对内统一——单一 pre-execute 裁决点(行为顺序可控),并新增
-//   data.sync 档位联动(approval 为权威档位,驱动沙箱有效行为)。
+//
+//	对外契约不变——仍 Provide ctx.approval / ctx.sandbox 两个服务,
+//	仍响应 tools/pre-execute 与 cwd/workspace-switched 事件,
+//	/approval /sandbox 命令、TUI/Web 展示、prefs 持久化全部零改动;
+//	对内统一——单一 pre-execute 裁决点(行为顺序可控),并新增
+//	data.sync 档位联动(approval 为权威档位,驱动沙箱有效行为)。
 package policyguard
 
 import (
@@ -20,9 +21,10 @@ func (p *Plugin) Name() string { return "policy-guard" }
 
 // Start 装配审批 + 沙箱两个策略器,统一挂 pre-execute / workspace-switched 订阅。
 // manifest data:
-//   approval: open|smart|strict(默认 smart,原 policy-approval mode)
-//   sandbox:  read-only|workspace-write|full-access(默认 workspace-write,原 policy-sandbox mode)
-//   sync:     档位联动开关(默认 true:open → 沙箱有效 full-access;strict → 有效 read-only)
+//
+//	approval: open|smart|strict(默认 smart,原 policy-approval mode)
+//	sandbox:  read-only|workspace-write|full-access(默认 workspace-write,原 policy-sandbox mode)
+//	sync:     档位联动开关(默认 true:open → 沙箱有效 full-access;strict → 有效 read-only)
 func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	approvalMode, sandboxMode, sync := sdk.ApprovalSmart, sdk.SandboxWorkspace, true
 	if m != nil && m.Data != nil {
@@ -58,6 +60,11 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		}
 		if call.Name == "shell" {
 			if pattern, hit := matchDangerous(call.Arguments); hit {
+				// 确认通道每次现取(而非 Start 一次性注入):ctx.confirm 由 UI/IM 插件
+				// Provide 且与本插件无拓扑顺序约束(可能后于本插件启动)——一次性注入会恒 nil,
+				// 使 smart 档永远“无通道拒绝”。未装配 = nil → 安全拒绝(语义不变)。
+				var confirm sdk.ConfirmService
+				_ = c.Inject("ctx.confirm", &confirm)
 				if err := ap.check(ctx, confirm, pattern); err != nil {
 					return err
 				}
