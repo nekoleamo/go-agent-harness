@@ -49,6 +49,12 @@ func main() {
 		os.Args = append([]string{os.Args[0]}, os.Args[2:]...)
 		*profileFlag = "web"
 	}
+	// IM 线入口糖:gah im ≡ gah --profile im-wechat(微信个人号 iLink 远程控制;
+	// 启动未登录则自动扫码(二维码链接打印到 stderr),或登录态直接轮询)
+	if len(os.Args) > 1 && os.Args[1] == "im" {
+		os.Args = append([]string{os.Args[0]}, os.Args[2:]...)
+		*profileFlag = "im-wechat"
+	}
 	flag.Parse()
 	if !isStdinTTY() && *inputFlag == "" && *profileFlag == "tui" {
 		fmt.Fprintln(os.Stderr, "gah: TUI 需要交互式终端(stdin 非 TTY)。管道/后台场景请用: -profile headless -input <文本>")

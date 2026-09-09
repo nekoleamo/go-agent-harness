@@ -63,6 +63,10 @@ func newWechatMock(t *testing.T) (*wechatMock, *httptest.Server) {
 			w.Write([]byte(`{"ret":0,"ilink_user_id":"u","typing_ticket":"tkt-e2e"}`))
 		case "/ilink/bot/sendtyping":
 			w.Write([]byte(`{"ret":0}`))
+		case "/ilink/bot/get_bot_qrcode":
+			w.Write([]byte(`{"qrcode":"qr-auto","qrcode_img_content":"https://wx.example/qr-auto"}`))
+		case "/ilink/bot/get_qrcode_status":
+			w.Write([]byte(`{"status":"confirmed","bot_token":"tk-auto","ilink_bot_id":"bot-auto","ilink_user_id":"uAuto"}`))
 		default:
 			w.WriteHeader(404)
 		}
@@ -128,46 +132,9 @@ func TestImWechatE2E(t *testing.T) {
 		}}},
 	}
 
-	// GAH_HOME 隔离 + 预置凭证(已登录;base_url 指向 mock)
-	home := t.TempDir()
-	t.Setenv("GAH_HOME", home)
+	// 装配(base+im-wechat,预置凭证=已登录;allowlist 只放行 user1)
+	_, home := buildWechatEnv(t, hs.URL, "allowlist", true)
 	store := ilink.NewStore(filepath.Join(home, "config", "ilink-wechat.yaml"))
-	if err := store.Save(&ilink.Credentials{Token: "tk-e2e", BaseURL: hs.URL + "/",
-		AccountID: "bot", UserID: "u0", Allow: []string{"wechat\x00user1"}}); err != nil {
-		t.Fatal(err)
-	}
-
-	logger := slog.New(slog.DiscardHandler)
-	bus := event.New(logger)
-	c := ctx.New(logger, bus)
-	reg := plugin.New()
-	tree := config.NewTree()
-	tree.Apply([]config.Entry{
-		{ID: "host-session-log"},
-		{ID: "host-llm"},
-		{ID: "host-tools"},
-		{ID: "host-commands"},
-		{ID: "host-system-prompt"},
-		{ID: "llm-mock", Data: map[string]any{"script": wechatScript}},
-		{ID: "host-agent-loop"},
-		{ID: "ui-im-wechat", Data: map[string]any{"base_url": hs.URL + "/", "mode": "allowlist"}},
-	})
-	if err := c.Provide("system.registry", reg); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.Provide("system.catalogue", catalogueInfoForTest()); err != nil {
-		t.Fatal(err)
-	}
-	if err := baseb.RegisterAll(reg, tree); err != nil {
-		t.Fatal(err)
-	}
-	if err := imwechatb.RegisterAll(reg, tree); err != nil {
-		t.Fatal(err)
-	}
-	if err := reg.StartSubset(c, enabledSetForTest(tree)); err != nil {
-		t.Fatal(err)
-	}
-	defer reg.DisposeAll()
 
 	// 已登录 → poll loop 自动收第一条(授权用户)→ 回合 → sendmessage 回推
 	got := m.waitSend(t, "远程命令已执行", 15*time.Second)
@@ -186,5 +153,87 @@ func TestImWechatE2E(t *testing.T) {
 	}
 	if len(persisted.Allow) != 1 || persisted.Allow[0] != "wechat\x00user1" || persisted.Token != "tk-e2e" {
 		t.Fatalf("凭证/授权持久化缺失: %+v", persisted)
+	}
+}
+
+// buildWechatEnv 装配 base+im-wechat(mock iLink;可带预置凭证文件)。
+func buildWechatEnv(t *testing.T, baseURL, mode string, withCreds bool) (*ctx.Ctx, string) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("GAH_HOME", home)
+	if withCreds {
+		store := ilink.NewStore(filepath.Join(home, "config", "ilink-wechat.yaml"))
+		if err := store.Save(&ilink.Credentials{Token: "tk-e2e", BaseURL: baseURL + "/",
+			AccountID: "bot", UserID: "u0", Allow: []string{"wechat\x00user1"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	logger := slog.New(slog.DiscardHandler)
+	bus := event.New(logger)
+	c := ctx.New(logger, bus)
+	reg := plugin.New()
+	tree := config.NewTree()
+	tree.Apply([]config.Entry{
+		{ID: "host-session-log"},
+		{ID: "host-llm"},
+		{ID: "host-tools"},
+		{ID: "host-commands"},
+		{ID: "host-system-prompt"},
+		{ID: "llm-mock", Data: map[string]any{"script": wechatScript}},
+		{ID: "host-agent-loop"},
+		{ID: "ui-im-wechat", Data: map[string]any{"base_url": baseURL + "/", "mode": mode}},
+	})
+	if err := c.Provide("system.registry", reg); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Provide("system.catalogue", catalogueInfoForTest()); err != nil {
+		t.Fatal(err)
+	}
+	if err := baseb.RegisterAll(reg, tree); err != nil {
+		t.Fatal(err)
+	}
+	if err := imwechatb.RegisterAll(reg, tree); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.StartSubset(c, enabledSetForTest(tree)); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { reg.DisposeAll() })
+	return c, home
+}
+
+// TestImWechatAutoLogin 无凭证启动:auto_login 自动扫码(QR mock 立即确认)→ 存凭证/授权 →
+// poll 收消息 → 回合回推(mock 断言)。
+func TestImWechatAutoLogin(t *testing.T) {
+	m, hs := newWechatMock(t)
+	m.updates = []map[string]any{
+		{"ret": 0, "get_updates_buf": "b1", "msgs": []map[string]any{{
+			"message_type": 1, "from_user_id": "uAuto", "to_user_id": "bot",
+			"context_token": "ct-auto", "create_time_ms": int64(333),
+			"item_list": []map[string]any{{"type": 1, "text_item": map[string]any{"text": "你好"}}},
+		}}},
+	}
+	_, home := buildWechatEnv(t, hs.URL, "allowlist", false)
+
+	// auto_login 自动完成 → 凭证落盘(tk-auto)+ 扫码者授权 → 入站被处理并回推
+	deadline := time.Now().Add(10 * time.Second)
+	var creds *ilink.Credentials
+	for time.Now().Before(deadline) {
+		var err error
+		creds, err = ilink.NewStore(filepath.Join(home, "config", "ilink-wechat.yaml")).Load()
+		if err == nil && creds.Token == "tk-auto" && len(creds.Allow) > 0 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if creds == nil || creds.Token != "tk-auto" {
+		t.Fatalf("auto_login 应落盘 tk-auto 凭证: %+v", creds)
+	}
+	if len(creds.Allow) != 1 || creds.Allow[0] != "wechat\x00uAuto" {
+		t.Fatalf("扫码者应被自动授权: %+v", creds.Allow)
+	}
+	got := m.waitSend(t, "远程命令已执行", 15*time.Second)
+	if !strings.Contains(got, "远程命令已执行") {
+		t.Fatalf("回推不符: %q", got)
 	}
 }

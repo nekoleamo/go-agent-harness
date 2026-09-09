@@ -28,16 +28,21 @@ func (p *Plugin) Name() string { return "ui-im-wechat" }
 
 const channelName = "wechat"
 
-// Start 装配桥与通道;已登录则自动启动 poll loop(未登录不崩,/wechat login 后启用)。
+// Start 装配桥与通道;已登录则自动启动 poll loop;未登录(data.auto_login 默认 true)
+// 自动发起扫码登录(二维码链接打印 stderr,headless 场景无交互入口;确认后自动授权并启动)。
 func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	mode := im.AccessPairing
 	baseURL := ilink.DefaultBaseURL
+	autoLogin := true
 	if m != nil && m.Data != nil {
 		if v, ok := m.Data["mode"].(string); ok && v != "" {
 			mode = im.AccessMode(v)
 		}
 		if v, ok := m.Data["base_url"].(string); ok && v != "" {
 			baseURL = v
+		}
+		if v, ok := m.Data["auto_login"].(bool); ok {
+			autoLogin = v
 		}
 	}
 	var loop sdk.AgentLoop
@@ -72,6 +77,9 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	if creds.Token != "" {
 		tr.client = ilink.New(creds.BaseURL, creds.Token)
 		tr.startPoll()
+	} else if autoLogin {
+		tr.setLastError("未登录,自动发起扫码登录…")
+		go tr.autoLogin()
 	}
 	// ctx.confirm = IM 桥(与 tui/web 互斥由 profile)
 	if err := c.Provide("ctx.confirm", b); err != nil {
@@ -323,6 +331,17 @@ func (t *wechatTransport) wechatCmd(ctx context.Context, args []string) (string,
 		t.finishLogin(qr)
 	}()
 	return "请用微信扫码登录:\n" + qr.QRCodeImg + "\n(等待确认,超时 5 分钟;状态查询 /wechat status)", nil
+}
+
+// autoLogin 未登录自动扫码:取二维码 → 打印链接(stderr;headless 可见)→ 后台轮询确认。
+func (t *wechatTransport) autoLogin() {
+	qr, err := ilink.FetchQR(context.Background(), t.baseURL)
+	if err != nil {
+		t.setLastError("获取登录二维码失败: " + err.Error())
+		return
+	}
+	fmt.Fprintf(os.Stderr, "\n[wechat] 请用微信打开链接扫码登录:\n  %s\n等待手机确认(5 分钟内)…\n", qr.QRCodeImg)
+	t.finishLogin(qr)
 }
 
 // finishLogin 后台完成扫码登录:轮询确认 → 存凭证 → 授权扫码者 → 启动 poll。
