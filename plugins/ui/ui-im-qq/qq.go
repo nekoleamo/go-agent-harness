@@ -434,10 +434,11 @@ func (t *qqTransport) SendText(ctx context.Context, to im.Route, text string) er
 }
 
 // buildTextMessages 按 §7.6 呈现组装发送清单(富文本单条 md / 纯文本 / 超长纯文本分块)。
+// 分块走出站预算层 im.SplitText(rune 安全;与微信线共用同一实现)。
 func buildTextMessages(text string) []qqbot.SendMessage {
 	if len([]rune(text)) > qqChunkLimit {
 		var out []qqbot.SendMessage
-		for _, ch := range splitQQText(text) {
+		for _, ch := range im.SplitText(text, qqChunkLimit) {
 			out = append(out, qqbot.SendMessage{MsgType: qqbot.MsgTypeText, Content: ch})
 		}
 		return out
@@ -573,44 +574,7 @@ func (t *qqTransport) sendInputState(r im.Route, inputType int) {
 	_ = cli.SendInputState(ctx, r.UserID, inputType, 60, msgID, 0)
 }
 
-// splitQQText 按 4000 字切分:优先段落(空行)→ 行 → 空格 → 硬切。
-// 全程在 []rune 空间切(rune 安全:块均合法 UTF-8,不会从多字节字符中间截断产生乱码)。
-func splitQQText(text string) []string {
-	rs := []rune(text)
-	if len(rs) <= qqChunkLimit {
-		return []string{text}
-	}
-	var chunks []string
-	for start := 0; start < len(rs); {
-		end := cutRunes(rs, start, qqChunkLimit)
-		if piece := strings.TrimSpace(string(rs[start:end])); piece != "" {
-			chunks = append(chunks, piece)
-		}
-		if end <= start {
-			break // 防御:切点不推进则终止(空块循环)
-		}
-		start = end
-	}
-	if len(chunks) == 0 {
-		chunks = []string{text}
-	}
-	return chunks
-}
 
-// cutRunes 在 rs[start:start+limit] 内找最佳切点(rune 下标):段落空行 > 换行 > 空格 > 硬切。
-func cutRunes(rs []rune, start, limit int) int {
-	end := start + limit
-	if end >= len(rs) {
-		return len(rs)
-	}
-	window := string(rs[start:end])
-	for _, sep := range []string{"\n\n", "\n", " "} {
-		if i := strings.LastIndex(window, sep); i > 0 {
-			return start + len([]rune(window[:i])) + len([]rune(sep))
-		}
-	}
-	return end
-}
 
 // qqCmd /qq 命令:login/status。
 func (t *qqTransport) qqCmd(_ context.Context, args []string) (string, error) {

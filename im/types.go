@@ -14,6 +14,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
 // Route 一条 IM 会话位置:渠道 + 发送方 + 聊天。
@@ -32,10 +34,13 @@ func (r Route) Key() string { return r.Channel + "\x00" + r.ChatID }
 func (r Route) SenderKey() string { return r.Channel + "\x00" + r.UserID }
 
 // Inbound 一条已解析的 IM 入站消息(transport 层解码后交给 Bridge)。
+// Attachments 媒体入站(P0-2c):transport 预下载/解密后填本地 Path;
+// 桥在回合时经 AttachmentInput 注入(图片视觉;文本已并入 Text 则不传)。
 type Inbound struct {
-	Route Route
-	MsgID string // 通道消息 id(去重用;空 = 不去重)
-	Text  string // 文本内容(媒体留 P0-2b)
+	Route       Route
+	MsgID       string // 通道消息 id(去重用;空 = 不去重)
+	Text        string // 文本内容
+	Attachments []sdk.Attachment
 }
 
 // Transport 传输抽象:桥只通过它回推文本。入站方向由 transport 自行接收,

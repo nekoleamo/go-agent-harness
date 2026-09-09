@@ -8,17 +8,18 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/nekoleamo/go-agent-harness/im"
 	"github.com/nekoleamo/go-agent-harness/qqbot"
 )
 
 // TestSplitQQText 短文本单块;长文本按段/行/空格/硬切;每块 <=4000。
 func TestSplitQQText(t *testing.T) {
 	short := "你好"
-	if got := splitQQText(short); len(got) != 1 || got[0] != short {
+	if got := im.SplitText(short, qqChunkLimit); len(got) != 1 || got[0] != short {
 		t.Fatalf("短文本应单块: %v", got)
 	}
 	long := strings.Repeat("字", qqChunkLimit*2+10)
-	chunks := splitQQText(long)
+	chunks := im.SplitText(long, qqChunkLimit)
 	if len(chunks) < 3 {
 		t.Fatalf("应切成 >=3 块,got %d", len(chunks))
 	}
@@ -32,11 +33,11 @@ func TestSplitQQText(t *testing.T) {
 	}
 	// 段落边界优先
 	para := strings.Repeat("甲", qqChunkLimit/2) + "\n\n" + strings.Repeat("乙", 6000)
-	if chunks = splitQQText(para); len(chunks) < 2 {
+	if chunks = im.SplitText(para, qqChunkLimit); len(chunks) < 2 {
 		t.Fatalf("段落文本应 >=2 块,got %d", len(chunks))
 	}
 	// 纯空白不 panic
-	if chunks = splitQQText(strings.Repeat(" ", qqChunkLimit+10)); len(chunks) == 0 {
+	if chunks = im.SplitText(strings.Repeat(" ", qqChunkLimit+10), qqChunkLimit); len(chunks) == 0 {
 		t.Fatal("空白输入应安全返回")
 	}
 }

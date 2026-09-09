@@ -75,7 +75,8 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		return nil, err
 	}
 	tr := &wechatTransport{name: channelName, store: store, creds: creds, baseURL: baseURL,
-		lastError: "未登录(执行 /wechat login)", tickets: make(map[string]ticketEntry)}
+		lastError: "未登录(执行 /wechat login)", tickets: make(map[string]ticketEntry),
+		sender: im.NewSender(&im.Budget{MaxChunk: wechatChunkLimit, MaxChunks: wechatMaxChunks, Gap: wechatChunkGap})}
 	b := im.New(c, loop, sessions, tr, im.Options{
 		Mode:  mode,
 		Allow: creds.Allow, // 已授权用户持久恢复
@@ -170,6 +171,7 @@ type wechatTransport struct {
 	baseURL string
 	bridge  *im.Bridge
 	client  *ilink.Client
+	sender  *im.Sender // 出站预算层(P1b):统一分块/截断/间隔
 
 	mu        sync.Mutex
 	polling   bool
@@ -251,68 +253,14 @@ func (t *wechatTransport) SendText(ctx context.Context, to im.Route, text string
 	if token == "" {
 		return fmt.Errorf("wechat: 无 %s 的 context_token,无法回复(请对方先发消息)", user)
 	}
-	// 长回复分块(iLink 单条兼容上限 ~2000 字;短窗口条数受限 ~10 条,过长提示截断):
-	// 分块间小间隔避免连发触发窗口截断(社区头号坑:hermes/cc-connect 长回复尾部静默丢失)。
-	chunks := splitLongText(text)
-	n := len(chunks)
-	if n > wechatMaxChunks {
-		chunks = chunks[:wechatMaxChunks]
-	}
-	for i, ch := range chunks {
-		if err := cli.SendMessage(ctx, to.UserID, ch, token, ""); err != nil {
-			if n > wechatMaxChunks {
-				_ = cli.SendMessage(context.Background(), to.UserID, "⚠️ 回复过长已截断;请回复 continue 获取剩余内容", token, "")
-			}
-			return err
-		}
-		if i < len(chunks)-1 {
-			time.Sleep(wechatChunkGap)
-		}
-	}
-	if n > wechatMaxChunks {
-		return cli.SendMessage(context.Background(), to.UserID, "⚠️ 回复过长已截断;请回复 continue 获取剩余内容", token, "")
-	}
-	return nil
+	// 出站预算层(im.Sender):rune 安全分块(单条 ~2000)+ 一轮 ≤10 块截断提示 +
+	// 块间间隔防连发触发短窗口截断(社区头号坑:hermes/cc-connect 长回复尾部静默丢失)。
+	return t.sender.Send(ctx, text, func(chunk string) error {
+		return cli.SendMessage(ctx, to.UserID, chunk, token, "")
+	})
 }
 
-// splitLongText 按 ~2000 字切分:优先段落(空行)→ 行 → 空格 → 硬切。
-// 全程在 []rune 空间切(rune 安全:块均合法 UTF-8,不会从多字节字符中间截断产生乱码)。
-func splitLongText(text string) []string {
-	rs := []rune(text)
-	if len(rs) <= wechatChunkLimit {
-		return []string{text}
-	}
-	var chunks []string
-	for start := 0; start < len(rs); {
-		end := wechatCutRunes(rs, start, wechatChunkLimit)
-		if piece := strings.TrimSpace(string(rs[start:end])); piece != "" {
-			chunks = append(chunks, piece)
-		}
-		if end <= start {
-			break // 防御:切点不推进则终止
-		}
-		start = end
-	}
-	if len(chunks) == 0 {
-		chunks = []string{text}
-	}
-	return chunks
-}
 
-// wechatCutRunes 在 rs[start:start+limit] 内找最佳切点(rune 下标):段落空行 > 换行 > 空格 > 硬切。
-func wechatCutRunes(rs []rune, start, limit int) int {
-	end := start + limit
-	if end >= len(rs) {
-		return len(rs)
-	}
-	window := string(rs[start:end])
-	for _, sep := range []string{"\n\n", "\n", " "} {
-		if i := strings.LastIndex(window, sep); i > 0 {
-			return start + len([]rune(window[:i])) + len([]rune(sep))
-		}
-	}
-	return end
-}
 
 // typingTicket 取(缓存 ~20h;失败静默——typing 尽力而为)。
 func (t *wechatTransport) typingTicket(user string) string {
@@ -436,8 +384,18 @@ func (t *wechatTransport) handleInbound(msg *ilink.InboundMessage) {
 	if msg.MessageType != 1 || msg.FromUserID == "" {
 		return
 	}
+	// 媒体入站(P0-2c):图片/文本文件预下载(CDN token 有有效期,即时取)并解密;
+	// 图片走附件视觉注入,文本文件内容并入正文,其它文件落盘 + 说明。
+	atts, mediaNote := t.mediaExtract(msg)
 	text := msg.ExtractText()
-	if text == "" {
+	if mediaNote != "" {
+		if text != "" {
+			text += "\n" + mediaNote
+		} else {
+			text = mediaNote
+		}
+	}
+	if text == "" && len(atts) == 0 {
 		return
 	}
 	t.mu.Lock()
@@ -452,7 +410,130 @@ func (t *wechatTransport) handleInbound(msg *ilink.InboundMessage) {
 	// 稳定消息 id:ts + 文本指纹(重复投递去重;跨渠道无需全局)
 	h := sha256.Sum256([]byte(text))
 	msgID := fmt.Sprintf("%d-%s", msg.CreateTimeMs, hex.EncodeToString(h[:6]))
-	_ = t.bridge.HandleInbound(context.Background(), im.Inbound{Route: route, MsgID: msgID, Text: text})
+	_ = t.bridge.HandleInbound(context.Background(), im.Inbound{Route: route, MsgID: msgID, Text: text, Attachments: atts})
+}
+
+// mediaExtract 媒体入站提取:下载+解密媒体项 → 附件(图片视觉)与正文说明(文本文件内容)。
+// best-effort:单条媒体失败仅记诊断并跳过,不阻断整条文本消息(防 CDN/密钥异常拖垮对话)。
+func (t *wechatTransport) mediaExtract(msg *ilink.InboundMessage) ([]sdk.Attachment, string) {
+	var atts []sdk.Attachment
+	var notes []string
+	for i, it := range msg.ItemList {
+		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+		switch it.Type {
+		case 2: // 图片 → 视觉附件
+			if it.ImageItem == nil {
+				cancel()
+				continue
+			}
+			url := it.ImageItem.URL
+			aesKey := it.ImageItem.AesKey
+			if url == "" && it.ImageItem.Media != nil {
+				url = it.ImageItem.Media.FullURL
+				if aesKey == "" {
+					aesKey = it.ImageItem.Media.AesKey
+				}
+			}
+			if url == "" {
+				cancel()
+				continue
+			}
+			data, derr := ilink.DownloadMedia(ctx, url)
+			if derr == nil && aesKey != "" {
+				data, _ = ilink.DecryptMedia(data, aesKey) // 解密失败宽容保留原文
+			}
+			if derr != nil {
+				t.setLastError("媒体下载失败: " + derr.Error())
+				cancel()
+				continue
+			}
+			ext := ilink.ExtFromURL(url)
+			if ext == "" {
+				ext = "jpg"
+			}
+			path, serr := saveMediaFile(fmt.Sprintf("%s-%d", msg.FromUserID, i), ext, data)
+			cancel()
+			if serr != nil {
+				t.setLastError("媒体落盘失败: " + serr.Error())
+				continue
+			}
+			atts = append(atts, sdk.Attachment{Kind: sdk.AttachmentImage, Name: "图片" + ext, MimeType: "image/" + ext, Path: path})
+			notes = append(notes, fmt.Sprintf("(已接收 %d 张图片,正在查看)", 1))
+		case 4: // 文件 → 文本类提取内容入正文;其它落盘+路径引用
+			if it.FileItem == nil {
+				cancel()
+				continue
+			}
+			name := it.FileItem.FileName
+			if it.FileItem.Media == nil || it.FileItem.Media.FullURL == "" {
+				cancel()
+				continue
+			}
+			data, derr := ilink.DownloadMedia(ctx, it.FileItem.Media.FullURL)
+			if derr == nil && it.FileItem.Media.AesKey != "" {
+				data, _ = ilink.DecryptMedia(data, it.FileItem.Media.AesKey)
+			}
+			if derr != nil {
+				t.setLastError("文件下载失败: " + derr.Error())
+				cancel()
+				continue
+			}
+			cancel()
+			ext := ilink.ExtFromURL(it.FileItem.Media.FullURL)
+			if ext == "" {
+				ext = "bin"
+			}
+			if isTextExt(ext) && len(data) <= 1<<20 { // 文本类 ≤1MB → 内容并入正文(截断防护)
+				content := string(data)
+				if r := []rune(content); len(r) > 6000 {
+					content = string(r[:6000]) + "\n…(文件过长已截断)"
+				}
+				if name == "" {
+					name = "附件." + ext
+				}
+				notes = append(notes, fmt.Sprintf("[文件 %s 内容]\n%s", name, content))
+			} else {
+				path, serr := saveMediaFile(fmt.Sprintf("%s-%d", msg.FromUserID, i), ext, data)
+				if serr != nil {
+					t.setLastError("文件落盘失败: " + serr.Error())
+					continue
+				}
+				atts = append(atts, sdk.Attachment{Kind: sdk.AttachmentFile, Name: name, Path: path})
+				notes = append(notes, fmt.Sprintf("(收到文件 %s,已存 %s;如需读取请告知)", name, path))
+			}
+		}
+		cancel()
+	}
+	if len(atts) == 0 && len(notes) > 0 {
+		return nil, strings.Join(notes, "\n")
+	}
+	return atts, strings.Join(notes, "\n")
+}
+
+// saveMediaFile 媒体字节落盘 $GAH_HOME/im-media/<user>-<idx>.<ext>(便携纪律派生)。
+func saveMediaFile(base, ext string, data []byte) (string, error) {
+	home := os.Getenv("GAH_HOME")
+	if home == "" {
+		home = os.TempDir()
+	}
+	dir := filepath.Join(home, "im-media")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, base+"."+ext)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// isTextExt 文本类扩展名白名单(内容可安全并入 IM 正文)。
+func isTextExt(ext string) bool {
+	switch ext {
+	case "txt", "md", "markdown", "json", "jsonl", "yaml", "yml", "csv", "log", "go", "py", "js", "ts", "html", "css", "sh", "toml", "xml", "ini", "conf", "env", "sql":
+		return true
+	}
+	return false
 }
 
 func (t *wechatTransport) setLastError(msg string) {

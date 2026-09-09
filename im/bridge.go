@@ -48,6 +48,7 @@ type Bridge struct {
 type queuedInbound struct {
 	route Route
 	text  string
+	atts  []sdk.Attachment
 }
 
 // confirmWait 一条待回答的确认(policy 侧 Confirm 阻塞等待;用户消息经 answerPending 回填)。
@@ -160,12 +161,12 @@ func (b *Bridge) HandleInbound(ctx context.Context, in Inbound) error {
 	busy := b.busy
 	b.mu.Unlock()
 	if busy {
-		if b.enqueue(r, text) {
+		if b.enqueue(r, text, in.Attachments) {
 			return b.sendText(ctx, r, "⏳ 正在处理上一条消息,你已加入队列(完成后自动处理;可 /stop 取消)。")
 		}
 		return b.sendText(ctx, r, b.opt.BusyReply)
 	}
-	return b.runTurn(ctx, r, text)
+	return b.runTurn(ctx, r, text, in.Attachments)
 }
 
 // Confirm sdk.ConfirmService:把审批推给当前回合归属用户,等其文字回答(y/n)。
@@ -229,13 +230,13 @@ func (b *Bridge) answerPending(ctx context.Context, r Route, text string) bool {
 }
 
 // enqueue 忙时入队(全局 FIFO 单槽)。成功返回 true;队列已满返回 false(回"忙")。
-func (b *Bridge) enqueue(r Route, text string) bool {
+func (b *Bridge) enqueue(r Route, text string, atts []sdk.Attachment) bool {
 	b.qMu.Lock()
 	defer b.qMu.Unlock()
 	if len(b.queued) >= 1 {
 		return false
 	}
-	b.queued = append(b.queued, queuedInbound{route: r, text: text})
+	b.queued = append(b.queued, queuedInbound{route: r, text: text, atts: atts})
 	return true
 }
 
@@ -279,7 +280,7 @@ func (b *Bridge) bindSession(r Route) {
 // runTurn 回合驱动:绑定会话 → 记录回合起点 seq → agentLoop.Run → 聚合回合内
 // 新增 assistant 最终文本回推;结束路径(成功/错误)统一停 typing 并续跑队列下一条。
 // 忙闲由调用方(HandleInbound/enqueue 续跑)保证——runTurn 自身不再查 busy。
-func (b *Bridge) runTurn(ctx context.Context, r Route, text string) error {
+func (b *Bridge) runTurn(ctx context.Context, r Route, text string, atts []sdk.Attachment) error {
 	b.bindSession(r) // P1:按 chat 绑定切到宿主会话(未绑定/无能力 = 跟随当前)
 	b.mu.Lock()
 	b.busy = true
@@ -314,13 +315,23 @@ func (b *Bridge) runTurn(ctx context.Context, r Route, text string) error {
 		b.mu.Unlock()
 		if next != nil {
 			go func() {
-				_ = b.runTurn(context.Background(), next.route, next.text)
+				_ = b.runTurn(context.Background(), next.route, next.text, next.atts)
 			}()
 		}
 	}()
 
 	seq0 := b.lastSeq()
-	err := b.loop.Run(ctx, text)
+	var err error
+	// 媒体附件(如有):经 AttachmentInput 注入回合(图片视觉/文件路径引用);未实现回落 Run
+	if len(atts) > 0 {
+		if al, ok := b.loop.(sdk.AttachmentInput); ok {
+			err = al.RunWithAttachments(ctx, text, atts)
+		} else {
+			err = b.loop.Run(ctx, text) // 文本已含媒体描述占位(ExtractText),降级不丢内容
+		}
+	} else {
+		err = b.loop.Run(ctx, text)
+	}
 	if err != nil {
 		var msg string
 		if errors.Is(err, context.Canceled) {
