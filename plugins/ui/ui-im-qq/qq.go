@@ -113,8 +113,13 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	if creds.Configured() {
 		tr.startGateway()
 	}
-	// ctx.confirm = IM 桥(与 tui/web 互斥由 profile)
-	if err := c.Provide("ctx.confirm", b); err != nil {
+	// ctx.confirm = IM 桥(单 profile 自提供;P3 融合:装配 host-confirm-fusion 时
+	// 改为注册呈现者,与 web 等渠道并存同卡——不再 Provide 防同名冲突)
+	var confirmReg sdk.Disposer = func() {}
+	var fusion sdk.ConfirmFusion
+	if err := c.Inject("ctx.confirmFusion", &fusion); err == nil && fusion != nil {
+		confirmReg = fusion.Register("im-qq", b)
+	} else if err := c.Provide("ctx.confirm", b); err != nil {
 		return nil, err
 	}
 	// 命令注册:桥自带 /stop /im(pair/status/list)+ 通道命令 /qq login|status
@@ -137,6 +142,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		ds = append(ds, d2)
 	}
 	return func() {
+		confirmReg()
 		tr.stopGateway()
 		for _, d := range ds {
 			d()
@@ -380,6 +386,11 @@ func (t *qqTransport) SendText(ctx context.Context, to im.Route, text string) er
 
 	// 组装呈现清单(超限纯文本分块 / 富文本 markdown 单条 / 纯文本单条)
 	msgs := buildTextMessages(text)
+	// 审批确认文本 → 附加键盘(批准/拒绝按钮;action.type=2 回复消息,点击以按钮文本
+	// 回消息 → 落入现有文字 y/n 管线,零新增回调协议)。键盘消息紧随说明文本。
+	if strings.HasPrefix(text, confirmPrefix) {
+		msgs = append(msgs, qqbot.SendMessage{MsgType: qqbot.MsgTypeKeyboard, Keyboard: confirmKeyboard()})
+	}
 	trunc := len(msgs) > qqMaxChunks
 	if trunc {
 		msgs = msgs[:qqMaxChunks]
@@ -459,6 +470,17 @@ func buildTextMessages(text string) []qqbot.SendMessage {
 		return []qqbot.SendMessage{{MsgType: qqbot.MsgTypeMarkdown, Markdown: &qqbot.Markdown{Content: text}}}
 	}
 	return []qqbot.SendMessage{{MsgType: qqbot.MsgTypeText, Content: text}}
+}
+
+// confirmPrefix 审批确认文本前缀(桥 Present;命中则附加键盘)。
+const confirmPrefix = "🔐 需要确认: "
+
+// confirmKeyboard 审批键盘:批准/拒绝 reply 按钮(点击以按钮文本回复 → y/n 词表匹配)。
+func confirmKeyboard() *qqbot.Keyboard {
+	return &qqbot.Keyboard{Content: &qqbot.KeyboardContent{Rows: []qqbot.KeyboardRow{{Buttons: []qqbot.KeyboardButton{
+		{ID: "approve", RenderData: qqbot.ButtonRender{Label: "批准", Style: 3}, Action: qqbot.ButtonAction{Type: 2, Permission: qqbot.ButtonPermission{Type: 1}}},
+		{ID: "deny", RenderData: qqbot.ButtonRender{Label: "拒绝", Style: 4}, Action: qqbot.ButtonAction{Type: 2, Permission: qqbot.ButtonPermission{Type: 1}}},
+	}}}}}
 }
 
 // truncTail 主动截断尾部提示(预留空间保证整体 ≤4000)。

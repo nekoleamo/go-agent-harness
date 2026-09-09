@@ -179,6 +179,7 @@ type Mention struct {
 
 // 消息类型(决定哪个内容字段生效)。
 const (
+	MsgTypeKeyboard = 1 // 内嵌键盘(keyboard)
 	MsgTypeText     = 0 // 纯文本(content)
 	MsgTypeMarkdown = 2 // Markdown(markdown.content)
 	MsgTypeImage    = 3 // 图片(url)

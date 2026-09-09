@@ -1,0 +1,11 @@
+# im-qq-web profile:QQ 远程控制 + Web/桌面界面并存(P3 三端融合)。
+# 用法:gah --profile im-qq-web(桌面壳以 --profile im-qq-web 打包即得 IM + Web 双端)。
+# host-confirm-fusion 统一 ctx.confirm:危险操作确认同时在 QQ 与 Web 呈现,任一应答生效;
+# 长回合经 QQ 通道自动转后台推送(5min 被动窗口),Web 侧同会话可见。
+name: im-qq-web
+bundles:
+  - base
+  - confirm-fusion
+  - im-qq
+  - web
+patches: []

@@ -28,19 +28,30 @@ func NewConfirm(hub *EventHub) *ConfirmService {
 	return &ConfirmService{hub: hub, pending: make(map[string]chan bool)}
 }
 
-// Confirm 推送审批弹层并阻塞等待用户应答。
-func (s *ConfirmService) Confirm(ctx context.Context, prompt string) (bool, error) {
+// Present sdk.ConfirmPresenter:推送审批弹层并返回应答通道(/api/confirm 回传);
+// cancel 清理本次 pending(幂等)。融合场景(Fusion 广播)多 UI 并存共用。
+func (s *ConfirmService) Present(ctx context.Context, prompt string) (<-chan bool, func(), error) {
 	id := randID()
 	ch := make(chan bool, 1)
 	s.mu.Lock()
 	s.pending[id] = ch
 	s.mu.Unlock()
-	defer func() {
+	s.hub.Push(Frame{Type: FrameConfirm, Payload: &ConfirmRequest{ID: id, Prompt: prompt}})
+	cancel := func() {
 		s.mu.Lock()
 		delete(s.pending, id)
 		s.mu.Unlock()
-	}()
-	s.hub.Push(Frame{Type: FrameConfirm, Payload: &ConfirmRequest{ID: id, Prompt: prompt}})
+	}
+	return ch, cancel, nil
+}
+
+// Confirm 推送审批弹层并阻塞等待用户应答。
+func (s *ConfirmService) Confirm(ctx context.Context, prompt string) (bool, error) {
+	ch, cancel, err := s.Present(ctx, prompt)
+	if err != nil {
+		return false, err
+	}
+	defer cancel()
 	select {
 	case ok := <-ch:
 		return ok, nil
@@ -62,6 +73,13 @@ func (s *ConfirmService) Answer(id string, ok bool) {
 	case ch <- ok:
 	default:
 	}
+}
+
+// PendingCount 当前未决确认数(融合断言/诊断)。
+func (s *ConfirmService) PendingCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.pending)
 }
 
 // randID 生成 8 字节随机十六进制 id(审批弹层标识,不可枚举猜解)。

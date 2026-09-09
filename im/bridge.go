@@ -180,29 +180,46 @@ func (b *Bridge) HandleInbound(ctx context.Context, in Inbound) error {
 	return b.runTurn(ctx, r, text, in.Attachments)
 }
 
-// Confirm sdk.ConfirmService:把审批推给当前回合归属用户,等其文字回答(y/n)。
-// ctx 取消/超时安全默认拒绝(对齐 web/confirm.go 语义)。
-func (b *Bridge) Confirm(ctx context.Context, prompt string) (bool, error) {
+// Present sdk.ConfirmPresenter(P3 融合):把审批推给当前回合归属用户(文字 y/n),
+// 返回应答通道;应答经用户消息 answerPending 回填。无活动回合显式报错。
+func (b *Bridge) Present(ctx context.Context, prompt string) (<-chan bool, func(), error) {
 	b.mu.Lock()
 	route := b.curRoute
 	b.mu.Unlock()
 	if route.UserID == "" {
-		return false, fmt.Errorf("im: 无活动回合归属会话,无法确认(未装配确认通道)")
+		return nil, nil, fmt.Errorf("im: 无活动回合归属会话,无法确认")
 	}
 	w := &confirmWait{ch: make(chan bool, 1)}
 	b.confirmMu.Lock()
 	b.pending[route.Key()] = w
 	b.confirmMu.Unlock()
-	defer func() {
+	// 推送后 pending 等待;应答(answerPending 删除/回填)或超时(Fusion cancel)后清理
+	if err := b.sendText(ctx, route, "🔐 需要确认: "+prompt+"\n回复 y 批准 / n 拒绝(约 2 分钟无回复自动拒绝)"); err != nil {
 		b.confirmMu.Lock()
 		delete(b.pending, route.Key())
 		b.confirmMu.Unlock()
-	}()
-	if err := b.sendText(ctx, route, "🔐 需要确认: "+prompt+"\n回复 y 批准 / n 拒绝(约 2 分钟无回复自动拒绝)"); err != nil {
+		return nil, nil, err
+	}
+	cancel := func() { // 幂等:应答已回填后删除无副作用
+		b.confirmMu.Lock()
+		delete(b.pending, route.Key())
+		b.confirmMu.Unlock()
+	}
+	return w.ch, cancel, nil
+}
+
+// Confirm sdk.ConfirmService:Present + 等待应答;ctx 取消/超时安全默认拒绝。
+func (b *Bridge) Confirm(ctx context.Context, prompt string) (bool, error) {
+	b.mu.Lock()
+	route := b.curRoute
+	b.mu.Unlock()
+	ch, cancel, err := b.Present(ctx, prompt)
+	if err != nil {
 		return false, err
 	}
+	defer cancel()
 	select {
-	case ok := <-w.ch:
+	case ok := <-ch:
 		return ok, nil
 	case <-ctx.Done():
 		_ = b.sendText(context.Background(), route, "⏰ 确认等待超时,已按拒绝处理(如需执行请重新发一条消息触发)。")

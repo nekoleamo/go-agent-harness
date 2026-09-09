@@ -1,0 +1,10 @@
+# im-wechat-web profile:微信远程控制 + Web/桌面界面并存(P3 三端融合)。
+# 用法:gah --profile im-wechat-web。微信 iLink 主动投递受限 → 响应式为主;
+# 融合后确认也可在 Web 面板应答(不依赖 IM 回复窗口)。
+name: im-wechat-web
+bundles:
+  - base
+  - confirm-fusion
+  - im-wechat
+  - web
+patches: []

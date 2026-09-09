@@ -76,8 +76,14 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	if err != nil {
 		return nil, err
 	}
-	// 确认服务注册到宿主(policy-guard 经此弹层;未装配时安全默认拒绝)
-	if err := c.Provide("ctx.confirm", confirm); err != nil {
+	// 确认服务注册到宿主(policy-guard 经此弹层;未装配时安全默认拒绝)。
+	// P3 融合:已装配 host-confirm-fusion(提供 ctx.confirmFusion)→ 注册为呈现者
+	// (与 IM 等渠道并存同卡),不再 Provide ctx.confirm;未装配 = 单 web profile 自提供。
+	var fusionReg sdk.Disposer = func() {}
+	var fusion sdk.ConfirmFusion
+	if err := c.Inject("ctx.confirmFusion", &fusion); err == nil && fusion != nil {
+		fusionReg = fusion.Register("web", confirm)
+	} else if err := c.Provide("ctx.confirm", confirm); err != nil {
 		unsub()
 		return nil, err
 	}
@@ -87,6 +93,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		}
 	}()
 	return func() {
+		fusionReg()
 		unsub()
 		srv.Shutdown()
 	}, nil

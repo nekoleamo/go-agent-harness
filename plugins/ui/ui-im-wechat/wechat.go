@@ -107,8 +107,13 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		tr.setLastError("未登录,自动发起扫码登录…")
 		go tr.autoLogin()
 	}
-	// ctx.confirm = IM 桥(与 tui/web 互斥由 profile)
-	if err := c.Provide("ctx.confirm", b); err != nil {
+	// ctx.confirm = IM 桥(单 profile 自提供;P3 融合:装配 host-confirm-fusion 时
+	// 注册呈现者与 web 并存,不 Provide 防同名冲突)
+	var confirmReg sdk.Disposer = func() {}
+	var fusion sdk.ConfirmFusion
+	if err := c.Inject("ctx.confirmFusion", &fusion); err == nil && fusion != nil {
+		confirmReg = fusion.Register("im-wechat", b)
+	} else if err := c.Provide("ctx.confirm", b); err != nil {
 		return nil, err
 	}
 	// 命令注册:桥自带 /stop /im(pair/status/list)+ 通道命令 /wechat login|status
@@ -131,6 +136,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		ds = append(ds, d2)
 	}
 	return func() {
+		confirmReg()
 		tr.stopPoll()
 		for _, d := range ds {
 			d()

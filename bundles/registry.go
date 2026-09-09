@@ -4,6 +4,7 @@ package bundles
 
 import (
 	baseb "github.com/nekoleamo/go-agent-harness/bundles/base"
+	confirmfusionb "github.com/nekoleamo/go-agent-harness/bundles/confirm-fusion"
 	imqqb "github.com/nekoleamo/go-agent-harness/bundles/im-qq"
 	imwechatb "github.com/nekoleamo/go-agent-harness/bundles/im-wechat"
 	tuib "github.com/nekoleamo/go-agent-harness/bundles/tui"
@@ -18,9 +19,10 @@ type RegisterFunc func(r *plugin.Registry, t *config.Tree) error
 
 // Registry bundle 名 → 装配器。
 var Registry = map[string]RegisterFunc{
-	"base":      baseb.RegisterAll,
-	"tui":       tuib.RegisterAll,
-	"web":       webb.RegisterAll,
-	"im-wechat": imwechatb.RegisterAll,
-	"im-qq":     imqqb.RegisterAll,
+	"base":            baseb.RegisterAll,
+	"tui":             tuib.RegisterAll,
+	"web":             webb.RegisterAll,
+	"im-wechat":       imwechatb.RegisterAll,
+	"im-qq":           imqqb.RegisterAll,
+	"confirm-fusion":  confirmfusionb.RegisterAll,
 }

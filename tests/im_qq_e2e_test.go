@@ -20,12 +20,14 @@ import (
 	"github.com/gorilla/websocket"
 
 	baseb "github.com/nekoleamo/go-agent-harness/bundles/base"
+	confirmfusionb "github.com/nekoleamo/go-agent-harness/bundles/confirm-fusion"
 	imqqb "github.com/nekoleamo/go-agent-harness/bundles/im-qq"
 	"github.com/nekoleamo/go-agent-harness/core/config"
 	"github.com/nekoleamo/go-agent-harness/core/ctx"
 	"github.com/nekoleamo/go-agent-harness/core/event"
 	"github.com/nekoleamo/go-agent-harness/core/plugin"
 	"github.com/nekoleamo/go-agent-harness/qqbot"
+	"github.com/nekoleamo/go-agent-harness/web"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -685,5 +687,147 @@ func TestImQQSessionCommandsE2E(t *testing.T) {
 	h := m.waitSend(t, "❯ 你好 QQ", 20*time.Second)
 	if !strings.Contains(h.bodyText(), "🤖 QQ 回推:远程命令已执行") {
 		t.Fatalf("/history 应回读绑定会话的问答: %q", h.bodyText())
+	}
+}
+
+// TestImQQWebFusionE2E(P3 三端融合):base+confirm-fusion+im-qq 真实装配(ui-im-qq 插件
+// 检测 ctx.confirmFusion → 注册呈现者不再 Provide)+ 手动装配 web 呈现者 → ctx.confirm
+// 单实例(fusion)。QQ 危险命令 → policy smart → fusion 广播双渠道(web+im)——
+// web 侧不答、IM 回 y → 批准执行;验证:双 Provide 不冲突 + 首答生效。
+func TestImQQWebFusionE2E(t *testing.T) {
+	m, hs := newQQMock(t)
+	m.events = []map[string]any{c2cEvent(2, "qqmsg-f1", "OPENID1", "帮我清理临时文件")}
+	home := t.TempDir()
+	t.Setenv("GAH_HOME", home)
+	store := qqbot.NewStore(filepath.Join(home, "config", "qqbot.yaml"))
+	if err := store.Save(&qqbot.Credentials{AppID: "app-e2e", AppSecret: "sec-e2e", Allow: []string{"qq\x00OPENID1"}}); err != nil {
+		t.Fatal(err)
+	}
+	logger := slog.New(slog.DiscardHandler)
+	bus := event.New(logger)
+	c := ctx.New(logger, bus)
+	reg := plugin.New()
+	tree := config.NewTree()
+	tree.Apply([]config.Entry{
+		{ID: "host-session-log"},
+		{ID: "host-cwd-sessions"},
+		{ID: "host-llm"},
+		{ID: "host-tools"},
+		{ID: "host-commands"},
+		{ID: "host-system-prompt"},
+		{ID: "llm-mock", Data: map[string]any{"script": qqDangerScript}},
+		{ID: "policy-guard", Data: map[string]any{"approval": "smart", "sandbox": "workspace-write", "sync": true}},
+		{ID: "host-agent-loop"},
+		{ID: "host-confirm-fusion"},
+		{ID: "ui-im-qq", Data: map[string]any{
+			"mode":      "allowlist",
+			"base_url":  hs.URL,
+			"token_url": hs.URL + "/app/getAppAccessToken",
+		}},
+	})
+	if err := c.Provide("system.registry", reg); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Provide("system.catalogue", catalogueInfoForTest()); err != nil {
+		t.Fatal(err)
+	}
+	if err := baseb.RegisterAll(reg, tree); err != nil {
+		t.Fatal(err)
+	}
+	if err := imqqb.RegisterAll(reg, tree); err != nil {
+		t.Fatal(err)
+	}
+	if err := confirmfusionb.RegisterAll(reg, tree); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.StartSubset(c, enabledSetForTest(tree)); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { reg.DisposeAll() })
+	// StartSubset 后:注入 fusion/tools;手动装配 web 呈现者(等价 ui-web-app 融合
+	// 分支:注入 fusion 注册,不 Provide ctx.confirm——双 Provide 冲突即此防住)
+	var fusion sdk.ConfirmFusion
+	if err := c.Inject("ctx.confirmFusion", &fusion); err != nil {
+		t.Fatalf("fusion 未装配: %v", err)
+	}
+	webConfirm := web.NewConfirm(web.NewHub())
+	fusion.Register("web", webConfirm)
+	var tools sdk.ToolRegistry
+	if err := c.Inject("ctx.tools", &tools); err != nil {
+		t.Fatal(err)
+	}
+	tools.Register(&fakeQQShell{})
+
+	// 1. QQ 危险命令 → 确认推送(经 fusion 广播 → im 呈现者文本 y/n)
+	rec := m.waitSend(t, "需要确认", 20*time.Second)
+	if !strings.Contains(rec.bodyText(), "回复 y 批准 / n 拒绝") {
+		t.Fatalf("IM 呈现应带 y/n: %q", rec.bodyText())
+	}
+	// 2. 双端同卡:web 呈现者也被调用(Present 收到同一 prompt → 弹层帧推送 hub)
+	if !webConfirmHasPending(t, webConfirm, 3*time.Second) {
+		t.Fatal("web 呈现者应收到确认(双端同卡)")
+	}
+	// 3. web 不答,IM 回 y → 批准执行(首答生效)
+	m.pushEvent(c2cEvent(3, "qqmsg-f2", "OPENID1", "y"))
+	got := m.waitSend(t, "已清理临时文件", 20*time.Second)
+	if !strings.Contains(got.bodyText(), "已清理临时文件") {
+		t.Fatalf("批准后应执行并回推: %q", got.bodyText())
+	}
+	// 4. ctx.confirm 单实例(未 Provide 冲突;policy-guard 经 fusion 注入)
+	var cs sdk.ConfirmService
+	if err := c.Inject("ctx.confirm", &cs); err != nil {
+		t.Fatalf("ctx.confirm 应可用: %v", err)
+	}
+}
+
+// webConfirmHasPending 断言 web ConfirmService 有未决弹层(经 Present 推送后 pending 非空)。
+func webConfirmHasPending(t *testing.T, s *web.ConfirmService, timeout time.Duration) bool {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if s.PendingCount() > 0 {
+			return true
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return false
+}
+
+// TestImQQKeyboardConfirmE2E(QQ 键盘 confirm):危险命令 → 确认文本后附键盘消息
+// (msg_type=1,含 批准/拒绝 按钮,action.type=2 reply)→ 用户"点击"(回文本"批准")
+// → 批准执行(按钮文本落入文字 y/n 管线,零新增回调协议)。
+func TestImQQKeyboardConfirmE2E(t *testing.T) {
+	m, hs := newQQMock(t)
+	m.events = []map[string]any{c2cEvent(2, "qqmsg-k1", "OPENID1", "帮我清理临时文件")}
+	buildQQApproveEnv(t, hs.URL, qqDangerScript)
+
+	// 1. 确认文本(y/n 指引)
+	rec := m.waitSend(t, "需要确认", 20*time.Second)
+	if !strings.Contains(rec.bodyText(), "回复 y 批准 / n 拒绝") {
+		t.Fatalf("确认说明缺 y/n: %q", rec.bodyText())
+	}
+	// 2. 键盘消息伴随(msg_type=1 + keyboard 按钮批准/拒绝)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if kb, ok := m.findSend(func(s sendRec) bool {
+			if int(s.body["msg_type"].(float64)) != qqbot.MsgTypeKeyboard {
+				return false
+			}
+			kd, ok := s.body["keyboard"].(map[string]any)
+			return ok && kd != nil
+		}); ok {
+			_ = kb
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("确认应附键盘消息: %v", m.sentContents())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	// 3. 点击"批准"= 回文本"批准"(reply 按钮)→ 现有 y/n 管线批准 → 执行回推
+	m.pushEvent(c2cEvent(3, "qqmsg-k2", "OPENID1", "批准"))
+	got := m.waitSend(t, "已清理临时文件", 20*time.Second)
+	if !strings.Contains(got.bodyText(), "已清理临时文件") {
+		t.Fatalf("键盘批准后应执行: %q", got.bodyText())
 	}
 }

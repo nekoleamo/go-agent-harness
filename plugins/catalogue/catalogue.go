@@ -10,6 +10,7 @@ import (
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-backup"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-bridge"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-commands"
+	"github.com/nekoleamo/go-agent-harness/plugins/host/host-confirm-fusion"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-cwd-sessions"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-fanout"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-internal-commands"
@@ -157,13 +158,19 @@ var All = map[string]Def{
 	"ui-web-app": {Factory: func() sdk.Plugin { return &uiweb.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "ui-web-app", Type: "ui", APIVersion: ">=1.0,<2.0",
 		Requires: []string{"ctx.agentLoop", "ctx.sessions", "ctx.llm"}}, Bundle: "web"},
+	"host-confirm-fusion": {Factory: func() sdk.Plugin { return &hostconfirmfusion.Plugin{} }, Manifest: &sdk.Manifest{
+		ID: "host-confirm-fusion", Type: "host", APIVersion: ">=1.0,<2.0",
+		// P3 三端融合:统一 ctx.confirm(仲裁广播 web/tui/im 呈现者,首答生效);
+		// 装配本插件时 web/im 改为注册呈现者不 Provide,同进程并存不再冲突
+		Provides: []string{"ctx.confirm", "ctx.confirmFusion"}}, Bundle: "confirm-fusion"},
 	"ui-im-wechat": {Factory: func() sdk.Plugin { return &uimwechat.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "ui-im-wechat", Type: "ui", APIVersion: ">=1.0,<2.0",
-		Provides: []string{"ctx.confirm"},                            // IM 审批通道(与 tui/web 互斥,profile 层保证)
+		// ctx.confirm 条件提供(运行时):单 profile 自 Provide;装配 host-confirm-fusion 时
+		// 改为注册呈现者(不声明 Provides——声明级与 fusion 冲突,装配层按声明检测)
 		Requires: []string{"ctx.agentLoop", "ctx.sessions"}}, Bundle: "im-wechat", Manage: "scenario"},
 	"ui-im-qq": {Factory: func() sdk.Plugin { return &uimqq.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "ui-im-qq", Type: "ui", APIVersion: ">=1.0,<2.0",
-		Provides: []string{"ctx.confirm"},                            // IM 审批通道(与 tui/web/im-wechat 互斥,profile 层保证)
+		// ctx.confirm 条件提供(运行时):单 profile 自 Provide;装配 fusion 时注册呈现者
 		Requires: []string{"ctx.agentLoop", "ctx.sessions"}}, Bundle: "im-qq", Manage: "scenario"},
 }
 

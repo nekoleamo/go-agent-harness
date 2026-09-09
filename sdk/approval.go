@@ -10,6 +10,24 @@ type ConfirmService interface {
 	Confirm(ctx context.Context, prompt string) (bool, error)
 }
 
+// ConfirmPresenter 确认呈现者(P3 三端融合):单个 UI 渠道(web/tui/im)向用户呈现
+// 一次确认并回传其应答通道。Fusion 广播给所有已注册 presenter,任一应答即生效
+// (双端同卡同决策;无原生控件渠道降级文字作答由 presenter 自行处理)。
+type ConfirmPresenter interface {
+	// Present 呈现确认并返回应答通道(ok=true 批准)。调用方 select ch 或 ctx.Done;
+	// 无论结果,结束前必须调 cancel() 清理该次呈现(超时/放弃/已应答均幂等安全)。
+	Present(ctx context.Context, prompt string) (answer <-chan bool, cancel func(), err error)
+}
+
+// ConfirmFusion 融合仲裁服务(P3;Provide ctx.confirmFusion,由 host-confirm-fusion 提供)。
+// UI 插件(web/tui/im)注册 Presenter;policy-guard 经 ctx.confirm(Fusion 本身)确认。
+// 装配了 Fusion 时 UI 不再 Provide ctx.confirm(由 Fusion 统一提供),同进程并存不再冲突。
+type ConfirmFusion interface {
+	// Register 注册渠道呈现者;返回 Disposer 随插件卸载撤销。
+	Register(channel string, p ConfirmPresenter) Disposer
+}
+
+
 // ApprovalMode 审批档位枚举(对齐 SandboxMode 三档先例)。
 type ApprovalMode string
 
