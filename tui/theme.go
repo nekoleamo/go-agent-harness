@@ -17,17 +17,13 @@ import (
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
-// themeHome $GAH_HOME(未设回退 ~/.gah;对齐 exakey.go search.yaml 先例)。
+// themeHome 运行时数据根(GAH_HOME,boot 恒设;~/.gah 兜底已弃用 2026-09)。
+// 空仅出现在不经 cmd/gah 的嵌入/单测:宁回 TempDir 也不落 cwd/根。
 func themeHome() string {
-	home := os.Getenv("GAH_HOME")
-	if home == "" {
-		if uh, err := os.UserHomeDir(); err == nil {
-			home = filepath.Join(uh, ".gah")
-		} else {
-			home = os.TempDir()
-		}
+	if home := os.Getenv("GAH_HOME"); home != "" {
+		return home
 	}
-	return home
+	return os.TempDir()
 }
 
 // themeMainPath 用户全局主题文件 $GAH_HOME/config/theme.yaml。

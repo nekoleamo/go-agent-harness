@@ -376,13 +376,11 @@ func (a *App) persistPlugin(id string, enabled bool) error {
 	return install.EnsureProfileRef(a.pluginHome(), "patch-runtime.yaml")
 }
 
-// pluginHome 运行时 home(GAH_HOME 覆盖;默认 ~/.gah,与 boot 一致)。
+// pluginHome 运行时数据根(GAH_HOME,与 boot 一致;~/.gah 兜底已弃用 2026-09;
+// 空仅嵌入/单测,宁回 TempDir 也不落 cwd/根)。
 func (a *App) pluginHome() string {
 	if h := os.Getenv("GAH_HOME"); h != "" {
 		return h
-	}
-	if uh, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(uh, ".gah")
 	}
 	return os.TempDir()
 }

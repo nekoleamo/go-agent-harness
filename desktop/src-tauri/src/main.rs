@@ -1,6 +1,7 @@
 // gah 桌面壳(P1 落地,可行性见 docs/DESKTOP_FEASIBILITY.md):
-// 启动 → spawn sidecar gah --profile web(GAH_WEB_OPEN=0,GAH_HOME 不设=由 gah 主程序
-// 自动解析:二进制同级 gah-data/(便携根,首启自动新建)> ~/.gah > TempDir)
+// 启动 → spawn sidecar gah --profile web(GAH_WEB_OPEN=0);GAH_HOME 未显式设置时由
+// sidecar 主程序解析:二进制同级 gah-data/(便携根,首启自动新建;Tauri 壳内即
+// Contents/MacOS/gah-data);不可便携则报错退出——~/.gah/TempDir 兜底已弃用(2026-09)
 //      → 轮询 /api/state 就绪 → 主窗口 navigate http://127.0.0.1:2233
 // 单实例(多开 focus 现有窗口);托盘(打开/自启开关/退出);
 // 回合完成通知(轮询 state.running 翻转);退出链:POST /api/shutdown → 等端口释放 →

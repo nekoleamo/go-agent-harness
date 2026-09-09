@@ -43,9 +43,9 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	if v := os.Getenv("GAH_WEB_ADDR"); v != "" {
 		cfg.Addr = v
 	}
-	// UI 插件目录(M7.2):默认 $GAH_HOME/ui-plugins(与主配置同 home;~/.gah 兜底)
+	// UI 插件目录(M7.2):默认 $GAH_HOME/ui-plugins(与主配置同 home,数据单根)
 	cfg.UIPluginsDir = filepath.Join(uiPluginsHome(), "ui-plugins")
-	// 附件目录(附件一期):$GAH_HOME/attachments(数据单根,随目录迁移;~/.gah 兜底)
+	// 附件目录(附件一期):$GAH_HOME/attachments(数据单根,随目录迁移)
 	cfg.AttachmentsDir = filepath.Join(uiPluginsHome(), "attachments")
 	var sessions sdk.SessionLog
 	if err := c.Inject("ctx.sessions", &sessions); err != nil {
@@ -126,13 +126,11 @@ func openBrowserCmd(url string) *exec.Cmd {
 	}
 }
 
-// uiPluginsHome 运行时主目录(与 cmd/gah homeDir 同语义;插件层不可见 cmd 包)。
+// uiPluginsHome 运行时数据根(与 cmd/gah 同语义,boot 恒设 GAH_HOME;
+// ~/.gah/$HOME 兜底已弃用 2026-09;空仅嵌入/单测,宁回 TempDir 也不落 cwd/根)。
 func uiPluginsHome() string {
 	if h := os.Getenv("GAH_HOME"); h != "" {
 		return h
-	}
-	if uh, err := os.UserHomeDir(); err == nil {
-		return uh
 	}
 	return os.TempDir()
 }
