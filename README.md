@@ -8,7 +8,7 @@ Go 实现的编程代理 Agent Harness:以**单静态二进制**交付全部能�
 > - 完整设计:[DESIGN.md](./DESIGN.md)(§14.1 交付表/未实施清单)
 > - 插件开发:[docs/PLUGIN_DEV.md](./docs/PLUGIN_DEV.md);插件总览:[plugins/README.md](./plugins/README.md)
 > - 能力与排期:交付记录见 [docs/ROADMAP.md](./docs/ROADMAP.md)(兼作实施排期)、[docs/TODO_OVERVIEW.md](./docs/TODO_OVERVIEW.md)(待办统筹单页)
-> - 专项文档:[docs/VERIFY.md](./docs/VERIFY.md)(真机验收清单)、[docs/TUI_OPTIMIZE.md](./docs/TUI_OPTIMIZE.md)(TUI 交互细则)、[docs/WEB_ATTACHMENTS_PLAN.md](./docs/WEB_ATTACHMENTS_PLAN.md)(Web 附件规划)、[docs/DESKTOP_FEASIBILITY.md](./docs/DESKTOP_FEASIBILITY.md)(桌面端可行性)、[docs/RELEASE.md](./docs/RELEASE.md)(桌面零成本发行)、[docs/PI_COMPARISON.md](./docs/PI_COMPARISON.md)(pi 对比基线)
+> - 专项文档:[docs/VERIFY.md](./docs/VERIFY.md)(真机验收清单)、[docs/TUI_OPTIMIZE.md](./docs/TUI_OPTIMIZE.md)(TUI 交互细则)、[docs/WEB_ATTACHMENTS_PLAN.md](./docs/WEB_ATTACHMENTS_PLAN.md)(Web 附件规划)、[docs/DESKTOP_FEASIBILITY.md](./docs/DESKTOP_FEASIBILITY.md)(桌面端可行性)、[docs/RELEASE.md](./docs/RELEASE.md)(桌面零成本发行)、[docs/PI_COMPARISON.md](./docs/PI_COMPARISON.md)(pi + dsh 对比基线)
 
 ---
 

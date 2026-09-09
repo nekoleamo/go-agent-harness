@@ -20,7 +20,7 @@
 | [WEB_ATTACHMENTS_PLAN.md](WEB_ATTACHMENTS_PLAN.md) | Web 附件(图片/文件)+ 输入快捷键规划(F1–F7) | Web 附件/快捷键 |
 | [DESKTOP_FEASIBILITY.md](DESKTOP_FEASIBILITY.md) | 桌面壳可行性报告 + 实施蓝图(spike/架构/数据根/分发/决策记录) | 桌面壳相关 |
 | [RELEASE.md](RELEASE.md) | 桌面零成本发行(updater ed25519 自持签名/发布脚本/CI 矩阵/无签名首次放行) | 发桌面版/改发布流水线 |
-| [PI_COMPARISON.md](PI_COMPARISON.md) | pi vs gah 对比基线(改进点按价值×成本评级,实施落 DESIGN) | 参考 pi 做体验改进 |
+| [PI_COMPARISON.md](PI_COMPARISON.md) | pi + dsh 对比基线(交互基线→pi、架构来源→dsh;改进点按价值×成本评级,实施落 DESIGN) | 参考 pi/dsh 做改进、评估对齐 |
 
 ## 开发规约
 | 文档 | 内容 |
