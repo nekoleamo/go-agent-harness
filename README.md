@@ -4,11 +4,9 @@
 
 Go 实现的编程代理 Agent Harness:以**单静态二进制**交付全部能力,零运行时依赖。对齐 DeepSeek Harness 与 Cordis 的「一切皆插件」设计哲学——微内核仅负责插件的加载/卸载/依赖管理(零 Agent 能力、零 UI),全部能力以插件形式经配置层(profile→bundle→patch)随时插拔开关。
 
-> 设计参考:DeepSeek Harness(TS/Cordis)、[naamfung/dsc](https://github.com/naamfung/dsc)(Go/go-plugin/gRPC)、[pi coding agent](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)(TS 终端 harness;对比分析见 [docs/PI_COMPARISON.md](./docs/PI_COMPARISON.md))。
+> 设计参考:DeepSeek Harness(TS/Cordis)、[naamfung/dsc](https://github.com/naamfung/dsc)(Go/go-plugin/gRPC)、[pi coding agent](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)(TS 终端 harness)。
 > - 完整设计:[DESIGN.md](./DESIGN.md)(§14.1 交付表/未实施清单)
 > - 插件开发:[docs/PLUGIN_DEV.md](./docs/PLUGIN_DEV.md);插件总览:[plugins/README.md](./plugins/README.md)
-> - 能力与排期:交付记录见 [docs/ROADMAP.md](./docs/ROADMAP.md)(兼作实施排期)、[docs/TODO_OVERVIEW.md](./docs/TODO_OVERVIEW.md)(待办统筹单页)
-> - 专项文档:[docs/VERIFY.md](./docs/VERIFY.md)(真机验收清单)、[docs/TUI_OPTIMIZE.md](./docs/TUI_OPTIMIZE.md)(TUI 交互细则)、[docs/WEB_ATTACHMENTS_PLAN.md](./docs/WEB_ATTACHMENTS_PLAN.md)(Web 附件规划)、[docs/DESKTOP_FEASIBILITY.md](./docs/DESKTOP_FEASIBILITY.md)(桌面端可行性)、[docs/RELEASE.md](./docs/RELEASE.md)(桌面零成本发行)、[docs/PI_COMPARISON.md](./docs/PI_COMPARISON.md)(pi + dsh 对比基线)
 
 ---
 
@@ -52,7 +50,7 @@ Go 实现的编程代理 Agent Harness:以**单静态二进制**交付全部能�
 | **pty 交互** | tool-shell `data.pty` 开关:驱动 REPL / git 编辑器等交互进程 |
 | **Web 附件+多模态** | 输入框传图片/文件(按钮+拖放+粘贴),芯片预览/删除;图片经 openai/anthropic 适配器结构化注入(模型看图),文本附件路径引用;落盘 `$GAH_HOME/attachments/` |
 | **优雅停机** | `POST /api/shutdown` → DisposeAll 全回收(Windows 无 SIGTERM 的统一停机通道;桌面壳/运维复用) |
-| **桌面壳(P1)** | `desktop/` Tauri v2 壳:sidecar gah + 窗口直连本地服务;托盘/通知/自启/单实例;**零成本发行**(updater ed25519 自持签名 + CI 矩阵 + 无签名指引,见 [docs/RELEASE.md](./docs/RELEASE.md)) |
+| **桌面壳(P1)** | `desktop/` Tauri v2 壳:sidecar gah + 窗口直连本地服务;托盘/通知/自启/单实例;**零成本发行**(updater ed25519 自持签名 + CI 矩阵 + 无签名首次启动指引) |
 
 ## 三、快速开始
 
@@ -297,7 +295,7 @@ export GAH_MCP_COMMANDS="deja=/opt/homebrew/bin/deja\ncodegraph=codegraph serve 
 ├── scripts/          # gen.sh(统一构建)/ gen-web.sh / gen-extplugins.sh / gen-desktop.sh / publish-desktop.sh(桌面零成本发行)/ ws-smoke.go
 ├── desktop/          # 桌面壳 P1(Tauri v2 + sidecar gah;零成本发行:updater+CI 见 docs/RELEASE.md)
 ├── .gah/skills/      # 自注册技能(gah-plugin-dev)
-└── docs/             # PLUGIN_DEV/VERIFY/TUI_OPTIMIZE/ROADMAP/TODO_OVERVIEW/DESKTOP_FEASIBILITY/…
+└── docs/             # 本地设计文档(随仓库分发仅 PLUGIN_DEV.md;其余设计/排期/清单为本地资料)
 ```
 
 ## 十、构建与发行
@@ -316,12 +314,6 @@ export GAH_MCP_COMMANDS="deja=/opt/homebrew/bin/deja\ncodegraph=codegraph serve 
 
 验收实测(DESIGN §7.6 / 最新基线):`CGO_ENABLED=0` 静态单文件 **36.8MB**(<40MB 体积门)、六目标交叉编译全绿、裸机 `env -i` 启动成功、sha256 附档。
 
-## 十一、当前状态
-
-- **里程碑全部交付**:M1–M18、P0–P5.7、M7 Web 全线、TUI 优化线(S1–S3)*、P4 体验 12 项——DESIGN §14.1 未实施清单已清零;全库 `go test ./... -race` 全绿。
-- **双界面并存**:TUI 与 Web 能力对等,同一数据根;桌面壳(P1)已落地;零成本发行工程侧已铺(updater 自持签名 + release-desktop CI 矩阵,见 [docs/RELEASE.md](./docs/RELEASE.md)),待首个 tag 启用;付费签名(Apple/微软)不做。
-- 交付明细与逐项验收见 [DESIGN.md](./DESIGN.md) §14.1 交付表 / [docs/ROADMAP.md](./docs/ROADMAP.md) / [docs/TODO_OVERVIEW.md](./docs/TODO_OVERVIEW.md)。
-
-## 十二、协议
+## 十一、协议
 
 **MIT License**(见 [LICENSE](./LICENSE),© 2026 nekoleamo):宽松许可,允许任意使用/修改/商用闭源分发。

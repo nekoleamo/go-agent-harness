@@ -3,11 +3,9 @@
 A programming-agent harness implemented in Go, shipping **all capabilities as a single static binary** with zero runtime dependencies. It follows the "everything is a plugin" philosophy of DeepSeek Harness and Cordis: the microkernel only handles plugin load/unload and dependency management (no agent logic, no UI). Every capability lives in a plugin that the config layer (`profile → bundle → patch`) can switch on or off at will.
 
 > English edition of [README.md](./README.md). Keep both in sync when updating. 中文版见 [README.md](./README.md)。
-> Design references: [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness) (TS/Cordis), [naamfung/dsc](https://github.com/naamfung/dsc) (Go/go-plugin/gRPC), [pi coding agent](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) (TS terminal harness; comparison in [docs/PI_COMPARISON.md](./docs/PI_COMPARISON.md)).
+> Design references: [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness) (TS/Cordis), [naamfung/dsc](https://github.com/naamfung/dsc) (Go/go-plugin/gRPC), [pi coding agent](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) (TS terminal harness).
 > - Full design: [DESIGN.md](./DESIGN.md) (§14.1 delivery table / backlog)
 > - Plugin development: [docs/PLUGIN_DEV.md](./docs/PLUGIN_DEV.md); plugin overview: [plugins/README.md](./plugins/README.md)
-> - Capabilities & roadmap: [docs/ROADMAP.md](./docs/ROADMAP.md), [docs/TODO_OVERVIEW.md](./docs/TODO_OVERVIEW.md) (single-page todo tracker)
-> - Special topics: [docs/VERIFY.md](./docs/VERIFY.md) (verification checklist), [docs/TUI_OPTIMIZE.md](./docs/TUI_OPTIMIZE.md), [docs/WEB_ATTACHMENTS_PLAN.md](./docs/WEB_ATTACHMENTS_PLAN.md), [docs/DESKTOP_FEASIBILITY.md](./docs/DESKTOP_FEASIBILITY.md), [docs/PI_COMPARISON.md](./docs/PI_COMPARISON.md), [docs/RELEASE.md](./docs/RELEASE.md)
 
 ---
 
@@ -51,7 +49,7 @@ One source, three surfaces: the same gah binary hosts **TUI / Web / headless**; 
 | **pty interaction** | tool-shell `data.pty` flag: drive REPLs, git editors, and other interactive processes |
 | **Web attachments + multimodal** | Drop images/files into the input (button + drag-drop + paste), chip preview/remove; images injected structurally through openai/anthropic adapters (the model sees images); text files referenced by path; stored under `$GAH_HOME/attachments/` |
 | **Graceful shutdown** | `POST /api/shutdown` → DisposeAll full teardown (the cross-platform stop channel, incl. Windows without SIGTERM; reused by the desktop shell) |
-| **Desktop shell (P1)** | `desktop/` Tauri v2 shell: sidecar gah + window wired straight to the local service; tray/notify/autostart/single-instance; **zero-cost release** (updater with self-held ed25519 signing + CI matrix + unsigned-run guide; see [docs/RELEASE.md](./docs/RELEASE.md)) |
+| **Desktop shell (P1)** | `desktop/` Tauri v2 shell: sidecar gah + window wired straight to the local service; tray/notify/autostart/single-instance; **zero-cost release** (updater with self-held ed25519 signing + CI matrix + unsigned-run first-launch guide) |
 
 ## 3. Quick start
 
@@ -293,9 +291,9 @@ Red lines: plugins import **only `sdk/`** — never core/tui/other plugins; regi
 ├── internal/         # embed (seed samples/external plugins) / install / prefs / providerfile
 ├── config/           # profile/bundle/patch samples (seed-version kept in sync with internal/embed/seed)
 ├── scripts/          # gen.sh (unified build)/ gen-web.sh / gen-extplugins.sh / gen-desktop.sh / ws-smoke.go / publish-desktop.sh
-├── desktop/          # desktop shell P1 (Tauri v2 + sidecar gah; zero-cost release: updater+CI, see docs/RELEASE.md)
+├── desktop/          # desktop shell P1 (Tauri v2 + sidecar gah; zero-cost release: updater+CI)
 ├── .gah/skills/      # self-registered skills (gah-plugin-dev)
-└── docs/             # PLUGIN_DEV/VERIFY/TUI_OPTIMIZE/ROADMAP/TODO_OVERVIEW/DESKTOP_FEASIBILITY/RELEASE…
+└── docs/             # local design docs (only PLUGIN_DEV.md ships with the repo; the rest are local materials)
 ```
 
 ## 10. Build & release
@@ -314,12 +312,6 @@ One gah binary, three surfaces: the Web frontend is embedded; TUI/Web/headless a
 
 Measured acceptance (DESIGN §7.6 / latest baseline): `CGO_ENABLED=0` static single file **36.8MB** (<40MB gate), six-target cross-compilation green, bare `env -i` boot OK, sha256 attached.
 
-## 11. Current status
-
-- **All milestones delivered**: M1–M18, P0–P5.7, the whole M7 Web line, the TUI optimization line (S1–S3)*, 12 P4 experience items — DESIGN §14.1 backlog is empty; full repo `go test ./... -race` is green.
-- **Dual UI in parallel**: TUI and Web are feature-equivalent over one data root; the desktop shell (P1) is in place; the zero-cost release engineering (self-signed updater + release-desktop CI matrix; see [docs/RELEASE.md](./docs/RELEASE.md)) is scaffolded, waiting for the first tag; paid signing (Apple/Microsoft) is deliberately not done.
-- Delivery details & per-item acceptance: [DESIGN.md](./DESIGN.md) §14.1, [docs/ROADMAP.md](./docs/ROADMAP.md), [docs/TODO_OVERVIEW.md](./docs/TODO_OVERVIEW.md).
-
-## 12. License
+## 11. License
 
 **MIT License** (see [LICENSE](./LICENSE), © 2026 nekoleamo): permissive — use, modify, and distribute commercially under closed source.
