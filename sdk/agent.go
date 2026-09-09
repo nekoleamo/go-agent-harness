@@ -11,6 +11,12 @@ type AgentLoop interface {
 	Run(ctx context.Context, input string) error
 }
 
+// AttachmentInput 可选扩展:AgentLoop 实现时可接收附件(Web 附件一期)。
+// 未实现该接口的循环经类型断言失败回落 Run(附件以 [附件] 文本引用随 content 保留)。
+type AttachmentInput interface {
+	RunWithAttachments(ctx context.Context, input string, atts []Attachment) error
+}
+
 // SystemPrompt 片段:命名 + 内容提供器(内容可引用 ctx 动态组装)。
 type SystemPromptSection struct {
 	Name    string

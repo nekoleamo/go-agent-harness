@@ -1,0 +1,17 @@
+{
+  "name": "gah-ui-statusbar-demo",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "gah UI 插件示例(M7.2):覆盖 statusbar 槽位,展示模型徽标叠加。",
+  "scripts": {
+    "build": "vite build"
+  },
+  "dependencies": {
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "vite": "^6.1.0"
+  }
+}

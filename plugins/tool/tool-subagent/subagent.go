@@ -10,7 +10,8 @@
 // T1 范围:one-shot 同步委派 delegate(task) → 等子代理完成取回最终文本;
 // 子代理上下文隔离(仅结论进父级)。
 // T2 范围:后台会话控制面——spawn(task) 后台启动带句柄(不阻塞当前回合),
-// agents()/agent_status(id)/agent_kill(id) 查询与终止;send_message/fork 后续提供。
+// agents()/agent_status(id)/agent_kill(id) 查询与终止;fork(带父上下文后台启动)、
+// send_message(向运行中的子代理注入消息,回复经 agent_status 的 messages 可读)。
 package toolsubagent
 
 import (
@@ -43,14 +44,20 @@ type fnOnly struct {
 }
 
 func (o *fnOnly) Agent(ctx context.Context, input string) (string, error) { return o.agent(ctx, input) }
-func (o *fnOnly) Parallel(context.Context, []string) []sdk.FanoutResult       { return nil }
+func (o *fnOnly) Parallel(context.Context, []string) []sdk.FanoutResult   { return nil }
 func (o *fnOnly) Pipeline(context.Context, []string) ([]sdk.FanoutResult, string, error) {
 	return nil, "", fmt.Errorf("未装配 fanout")
 }
-func (o *fnOnly) SpawnAgent(context.Context, string) (string, error)              { return "", fmt.Errorf("未装配 fanout") }
-func (o *fnOnly) ListAgents() []sdk.AgentHandle                                   { return nil }
-func (o *fnOnly) AgentStatus(string) (sdk.AgentHandle, bool)                      { return sdk.AgentHandle{}, false }
-func (o *fnOnly) KillAgent(string) error                                          { return fmt.Errorf("未装配 fanout") }
+func (o *fnOnly) SpawnAgent(context.Context, string) (string, error) {
+	return "", fmt.Errorf("未装配 fanout")
+}
+func (o *fnOnly) Fork(context.Context, string) (string, error) {
+	return "", fmt.Errorf("未装配 fanout")
+}
+func (o *fnOnly) SendMessage(string, string) error           { return fmt.Errorf("未装配 fanout") }
+func (o *fnOnly) ListAgents() []sdk.AgentHandle              { return nil }
+func (o *fnOnly) AgentStatus(string) (sdk.AgentHandle, bool) { return sdk.AgentHandle{}, false }
+func (o *fnOnly) KillAgent(string) error                     { return fmt.Errorf("未装配 fanout") }
 
 // Plugin 实现 tool-subagent(双轨:装配进宿主时经 ctx.tools 注册)。
 type Plugin struct{}
@@ -79,14 +86,18 @@ func (t *Tool) Definition() sdk.ToolDefinition {
 			"适合可并行拆给独立上下文的子任务(独立实现/独立评审/独立调研);轻量单步直接自己做,不必委派。" +
 			"spawn(task)→ 后台启动子代理(不阻塞当前回合),返回 agent_id 句柄——长任务/需并行推进时用;" +
 			"agents()→ 全部后台会话(状态 running/done/failed/killed);agent_status(agent_id)→ 单个状态与结果;" +
-			"agent_kill(agent_id)→ 终止运行中的后台子代理。持续交互/消息(fork)后续版本提供。",
+			"fork(task)→ 带父上下文的子代理:继承当前会话已发生的历史 + task,后台启动(句柄同 spawn);" +
+			"agents()→ 全部后台会话(状态 running/done/failed/killed);agent_status(agent_id)→ 单个状态与" +
+			"结果,含 send_message 对话记录(messages);agent_kill(agent_id)→ 终止运行中的后台子代理;" +
+			"send_message(agent_id, message)→ 向运行中的子代理注入消息(追加为输入,子代理继续执行并回复)。",
 		InputSchema: map[string]any{
 			"type":     "object",
 			"required": []any{"action"},
 			"properties": map[string]any{
-				"action": map[string]any{"type": "string", "enum": []string{"delegate", "spawn", "agents", "agent_status", "agent_kill"}},
-				"task":    map[string]any{"type": "string", "description": "delegate/spawn:委派目标(含验收口径/输入输出约束)"},
-				"agent_id": map[string]any{"type": "string", "description": "agent_status/agent_kill:后台会话句柄"},
+				"action":   map[string]any{"type": "string", "enum": []string{"delegate", "spawn", "fork", "agents", "agent_status", "agent_kill", "send_message"}},
+				"task":     map[string]any{"type": "string", "description": "delegate/spawn/fork:委派目标(含验收口径/输入输出约束)"},
+				"agent_id": map[string]any{"type": "string", "description": "agent_status/agent_kill/send_message:后台会话句柄"},
+				"message":  map[string]any{"type": "string", "description": "send_message:注入给运行中子代理的消息内容"},
 			},
 		},
 	}
@@ -97,6 +108,7 @@ type args struct {
 	Action  string `json:"action"`
 	Task    string `json:"task"`
 	AgentID string `json:"agent_id"`
+	Message string `json:"message"`
 }
 
 // Execute 执行 action;业务失败以 map{"error":...} 回传(不中断 turn)。
@@ -127,6 +139,26 @@ func (t *Tool) Execute(ctx context.Context, raw string) (any, error) {
 			return map[string]any{"error": "subagent: 后台启动失败: " + err.Error()}, nil
 		}
 		return map[string]any{"agent_id": id, "state": "running"}, nil
+	case "fork":
+		if strings.TrimSpace(a.Task) == "" {
+			return map[string]any{"error": "subagent: fork 需 task(委派目标)"}, nil
+		}
+		id, err := t.fanout.Fork(ctx, strings.TrimSpace(a.Task))
+		if err != nil {
+			return map[string]any{"error": "subagent: fork 失败: " + err.Error()}, nil
+		}
+		return map[string]any{"agent_id": id, "state": "running"}, nil
+	case "send_message":
+		if strings.TrimSpace(a.AgentID) == "" {
+			return map[string]any{"error": "subagent: send_message 需 agent_id"}, nil
+		}
+		if strings.TrimSpace(a.Message) == "" {
+			return map[string]any{"error": "subagent: send_message 需 message(注入内容)"}, nil
+		}
+		if err := t.fanout.SendMessage(strings.TrimSpace(a.AgentID), a.Message); err != nil {
+			return map[string]any{"error": "subagent: 注入失败: " + err.Error()}, nil
+		}
+		return map[string]any{"sent": a.AgentID, "message": a.Message}, nil
 	case "agents":
 		return map[string]any{"agents": t.fanout.ListAgents()}, nil
 	case "agent_status":
@@ -147,6 +179,6 @@ func (t *Tool) Execute(ctx context.Context, raw string) (any, error) {
 		}
 		return map[string]any{"killed": a.AgentID}, nil
 	default:
-		return map[string]any{"error": fmt.Sprintf("subagent: 未知 action %q(delegate|spawn|agents|agent_status|agent_kill)", a.Action)}, nil
+		return map[string]any{"error": fmt.Sprintf("subagent: 未知 action %q(delegate|spawn|fork|agents|agent_status|agent_kill|send_message)", a.Action)}, nil
 	}
 }

@@ -372,3 +372,174 @@ func TestSessionNamesCorruptTolerated(t *testing.T) {
 		t.Fatalf("修复后持久,got %q", got)
 	}
 }
+
+func TestPreview(t *testing.T) {
+	tmp := t.TempDir()
+	root := filepath.Join(tmp, "sessions")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Setenv("GAH_HOME", tmp); err != nil {
+		t.Fatal(err)
+	}
+	main := filepath.Join(root, "key.jsonl")
+	user := `{"Kind":"user/message","Payload":{"Content":"帮我优化 web 端页面,要求界面清新简洁大方"},"Seq":1}`
+	asst := `{"Kind":"assistant/chunk","Payload":{"Delta":"好的"},"Seq":2}`
+	os.WriteFile(main, []byte(user+"\n"+asst+"\n"), 0o644)
+	svc := &Service{key: "key", path: main}
+	list := svc.Sessions()
+	if len(list) != 1 || !strings.Contains(list[0].Preview, "帮我优化 web 端页面") {
+		t.Fatalf("Preview 应取首条用户消息: %+v", list)
+	}
+	// 长文本截断 + 省略号
+	long := strings.Repeat("很长", 60)
+	os.WriteFile(main, []byte(`{"Kind":"user/message","Payload":{"Content":"`+long+`"},"Seq":1}`+"\n"), 0o644)
+	if p := previewOf(main, 48); !strings.HasSuffix(p, "…") || len([]rune(p)) > 49 {
+		t.Fatalf("超长应截断加省略号: %d %q", len([]rune(p)), p)
+	}
+}
+
+func TestDelete(t *testing.T) {
+	tmp := t.TempDir()
+	root := filepath.Join(tmp, "sessions")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Setenv("GAH_HOME", tmp); err != nil {
+		t.Fatal(err)
+	}
+	main := filepath.Join(root, "key.jsonl")
+	idf := filepath.Join(root, "key-20240101-1200.jsonl")
+	os.WriteFile(main, []byte("e1\n"), 0o644)
+	os.WriteFile(idf, []byte("e1\n"), 0o644)
+	fs := &fakeSessions{}
+	svc := &Service{key: "key", path: idf, sessions: fs, current: "20240101-1200"}
+	// 名称索引
+	svc.Rename("历史会话")
+	// 删除非当前会话不存在 = 报错
+	if err := svc.Delete("nope"); err == nil {
+		t.Fatalf("删除不存在的会话应报错")
+	}
+	// 删除当前打开会话 → 自动新建空会话承接(干净新起点)
+	if err := svc.Delete("20240101-1200"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(idf); !os.IsNotExist(err) {
+		t.Fatalf("会话文件应被删除")
+	}
+	if svc.CurrentSession() == "" || svc.CurrentSession() == "20240101-1200" {
+		t.Fatalf("删除当前会话后应新开空会话,got %q", svc.CurrentSession())
+	}
+	// 名称索引同步清理
+	if got := svc.SessionName(); got != "" {
+		t.Fatalf("删除后名称索引应清理,got %q", got)
+	}
+}
+
+func TestUnrecordProject(t *testing.T) {
+	tmp := t.TempDir()
+	root := filepath.Join(tmp, "sessions")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Setenv("GAH_HOME", tmp); err != nil {
+		t.Fatal(err)
+	}
+	svc := &Service{key: "k"}
+	recs := []sdk.ProjectInfo{
+		{Key: "a", Dir: "/a", TS: 3},
+		{Key: "b", Dir: "/b", TS: 2},
+	}
+	if err := saveWorkspaces(workspacesPath(), recs); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.UnrecordProject("a"); err != nil {
+		t.Fatal(err)
+	}
+	got := svc.RecentProjects()
+	if len(got) != 1 || got[0].Key != "b" {
+		t.Fatalf("应仅剩 b: %+v", got)
+	}
+	// 不存在 key 幂等
+	if err := svc.UnrecordProject("zzz"); err != nil {
+		t.Fatalf("幂等删除应成功: %v", err)
+	}
+}
+
+func TestSwitchDir(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.Setenv("GAH_HOME", tmp); err != nil {
+		t.Fatal(err)
+	}
+	proj := filepath.Join(tmp, "proj-a")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(tmp, "sessions")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mainP := filepath.Join(root, "k.jsonl")
+	os.WriteFile(mainP, []byte("e1\n"), 0o644)
+	fs := &fakeSessions{}
+	emitted := []string{}
+	svc := &Service{key: "k", path: mainP, sessions: fs, emitWS: func(d string) { emitted = append(emitted, d) }}
+	if err := svc.Open(""); err != nil {
+		t.Fatal(err)
+	}
+	// 切换到真实目录:key 派生 + 新建空会话 + 记录 dir 为真实目录 + 广播事件
+	id, err := svc.SwitchDir(proj)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id == "" || svc.Current() != sdk.ProjectKey(proj) || svc.CurrentSession() != id {
+		t.Fatalf("切换后 key/会话不符: key=%s current=%s", svc.Current(), svc.CurrentSession())
+	}
+	if cwd, _ := os.Getwd(); cwd != proj {
+		// macOS /var 为 /private/var 符号链接:归一化后比较
+		rp, _ := filepath.EvalSymlinks(proj)
+		if cwd != rp {
+			t.Fatalf("进程 cwd 应切到 %s,实际 %s", proj, cwd)
+		}
+	}
+	if len(emitted) != 1 || emitted[0] != proj {
+		t.Fatalf("切换应广播 cwd/workspace-switched(dir=%s),got %v", proj, emitted)
+	}
+	// 同项目再次切换(touch):不发事件(无实际目录变化)
+	_ = emitted
+	if _, err := svc.SwitchDir(proj); err != nil {
+		t.Fatal(err)
+	}
+	if len(emitted) != 1 {
+		t.Fatalf("同项目切换不应重复广播,got %v", emitted)
+	}
+	t.Chdir(tmp) // 恢复(cwd 已被本进程改掉)
+	recs := svc.RecentProjects()
+	if len(recs) != 1 || recs[0].Dir != proj {
+		t.Fatalf("记录 dir 应为真实目录: %+v", recs)
+	}
+	// 目录不可用 → 显式失败(不静默)
+	if _, err := svc.SwitchDir(filepath.Join(tmp, "no-such-dir")); err == nil {
+		t.Fatalf("不存在目录应显式失败")
+	}
+}
+
+// TestSessionSwitchEmitted Open/New 广播 cwd/session-switched(B3 命令下沉 UI 刷新驱动)。
+func TestSessionSwitchEmitted(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("GAH_HOME", root) // SessionsRoot 隔离(New 的文件存在性检查不落真实 ~/.gah)
+	var got []string
+	svc := &Service{key: "k", sessions: nil, emitSession: func(id string) { got = append(got, id) }}
+	if err := svc.Open("s1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "s1" {
+		t.Fatalf("Open 应广播 s1,got %v", got)
+	}
+	if _, err := svc.New(); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[1] == "" || got[1] == "s1" {
+		t.Fatalf("New 应广播新 id,got %v", got)
+	}
+}

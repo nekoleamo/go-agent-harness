@@ -170,7 +170,7 @@ type Service struct {
 	globalInstr   string
 	projectInstr  string // 单级回退(测试构造/旧路径);多级经 projectLevels
 	projectLevels []projectLevel
-	extraInstr     []string
+	extraInstr    []string
 }
 
 // AddSection 注册系统提示片段。

@@ -15,6 +15,7 @@ var (
 	styleTool   = lipgloss.NewStyle().Foreground(fg(TokTool))
 	styleToolOK = lipgloss.NewStyle().Foreground(fg(TokToolOK)) // 工具结果成功行(绿,与调用琥珀区分)
 	styleMeta   = lipgloss.NewStyle().Foreground(fg(TokMeta))
+	styleThink  = lipgloss.NewStyle().Foreground(fg(TokThinking)).Italic(true) // 思维块(灰斜体,弱化不抢正文)
 	styleError  = lipgloss.NewStyle().Foreground(fg(TokError))
 	stylePrompt = lipgloss.NewStyle().Foreground(fg(TokPrompt)).Bold(true)
 	styleStatus = lipgloss.NewStyle().Foreground(fg(TokStatus))
@@ -32,6 +33,45 @@ var (
 )
 
 const maxHintRows = 6
+
+// inputMaxRows 输入区窗口物理行上限(超长输入封顶,主区不被压没):
+// ≈ 主区可用几何的三分之一,至少 3 行。由 renderInputLine 的 maxRows 变参传入渲染。
+func inputMaxRows(height int) int {
+	r := (height - 8) / 3
+	if r < 3 {
+		r = 3
+	}
+	return r
+}
+
+// renderInputFrame 输入区圆角矩形框(整宽对齐终端):
+// 边框/边线颜色随思考等级(thinking 语义,对齐 pi 编辑器边框色),内容行 pad 统一宽。
+// 多行内容(窗口滚动/省略指示行)整体包框;左缘不再重复竖线(语义移交边框色)。
+// 输出行宽恒等于 width(顶边 ╭+─×width-2+╮;内容行 │ +pad+ │)。
+func renderInputFrame(content string, width int, thinking string) string {
+	if width < 4 {
+		width = 4
+	}
+	edge := thinkEdgeColor(thinking)
+	inner := width - 2 // 框内宽(不含左右边框列)
+	lines := strings.Split(content, "\n")
+	var sb strings.Builder
+	sb.WriteString(lipgloss.NewStyle().Foreground(edge).Render("╭" + strings.Repeat("─", inner) + "╮"))
+	for _, ln := range lines {
+		sb.WriteByte('\n')
+		pad := (inner - 2) - lipgloss.Width(ln) // 内容宽 = inner-2(左"│ "右" │"各 2 列)
+		if pad < 0 {
+			pad = 0
+		}
+		sb.WriteString(lipgloss.NewStyle().Foreground(edge).Render("│ "))
+		sb.WriteString(ln)
+		sb.WriteString(strings.Repeat(" ", pad))
+		sb.WriteString(lipgloss.NewStyle().Foreground(edge).Render(" │"))
+	}
+	sb.WriteByte('\n')
+	sb.WriteString(lipgloss.NewStyle().Foreground(edge).Render("╰" + strings.Repeat("─", inner) + "╯"))
+	return sb.String()
+}
 
 // pickWindow 提示/选项列表窗口(超限滚动):以高亮 cursor 为锚取 visible 个可见项。
 // cursor 下移触底后窗口随之下滚一行、上移触顶后随之上滚;n ≤ visible 时全量显示。
@@ -123,15 +163,17 @@ func Render(s *State, width, height int) string {
 	if hintRows > maxHintRows {
 		hintRows = maxHintRows
 	}
-	// 输入区可能多行(P4-6 Shift+Enter 换行):主区高度扣输入物理行数,
-	// 其余(提示区/状态栏)各占其位。单行输入时 inputRows=1,公式与历史一致。
-	inputStr := renderInputLine(s, width)
-	// 输入区多行(P4-6):在既有单行几何(height-3-hintRows)上按输入多出的物理行数
-	// 再扣主区(单行时差值 0,公式与历史完全一致,既有布局测试不回归)。
-	inputExtra := strings.Count(inputStr, "\n")
+	// 输入区可能多行(P4-6 Shift+Enter 换行,超长输入经 inputMaxRows 封顶滚动窗口):
+	// 主区高度扣输入物理行数,其余(提示区/状态栏)各占其位;长输入压不没主区。
+	inputContent := renderInputLine(s, width, inputMaxRows(height))
+	inputStr := renderInputFrame(inputContent, width, s.Thinking) // 圆角矩形框化(边框色随思考)
+	// 输入区多行:在既有单行几何(height-8-hintRows,8 = 指标行 1 + 状态栏 1 +
+	// 空隙行 1 + 输入内容 1 + 顶/底边框 2 + 分隔线 1 + 预留 1)上按输入多出的物理行数再扣主区(单行时差值 0)。
+	// inputExtra 按**内容行**(不含顶/底边框两行)计,省略指示行(窗口滚动时)计入,几何与渲染一致。
+	inputExtra := strings.Count(inputContent, "\n")
 	// P4-12 widget 槽位:输入行上方动态信息行(开关关=0),同样扣主区
 	widgetRows := widgetLines(s)
-	mainH := height - 3 - hintRows - inputExtra - len(widgetRows)
+	mainH := height - 8 - hintRows - inputExtra - len(widgetRows)
 	if mainH < 1 {
 		mainH = 1
 	}
@@ -164,6 +206,7 @@ func Render(s *State, width, height int) string {
 	// 未展开保持 Text 摘要单行。搜索/鼠标命中仍以 Lines 摘要为基准(见 searchHitLine)。
 	rows := flattenViewLines(s, colW)
 	annotateCodeFences(rows) // 代码围栏跨行标注(assistant 物理行顺序切换;滚动/折叠视图每帧重算)
+	annotateRowBg(rows, s.Lines) // P5 背景块标注(user 整块/工具调用与结果首行;同每帧重算)
 	total := len(rows)
 	if total > 0 {
 		s.flatN = total // 刷新展平行数(ScrollBy 上限钳制用)
@@ -221,13 +264,18 @@ func Render(s *State, width, height int) string {
 	}
 	main := strings.Join(body, "\n")
 
-	// 底部区:widgets → 输入 → 提示 → 状态栏(widget 在输入行上方)
-	bottom := widgetRows
-	for i, wtxt := range bottom {
-		bottom[i] = styleWidget.Render("◇ " + wtxt) // 输入区上方动态信息(前缀区分)
+	// 底部区(M15 pi 式 + F15.1/F15.2 修正):整宽分隔线 → widgets → 输入 → 提示 →
+	// 状态栏 → 指标行(模型/思维/上下文在最后一行下面,固定不随输入移动)。
+	rule := styleMeta.Render(strings.Repeat("─", width))
+	bottom := []string{rule}
+	bottom = append(bottom, widgetRows...)
+	for i := 1; i < len(bottom); i++ {
+		bottom[i] = styleWidget.Render("◇ " + widgetRows[i-1]) // 输入区上方动态信息(前缀区分)
 	}
 	bottom = append(bottom, inputStr)
 	bottom = append(bottom, renderHintLines(s, hintItems, hintRows)...)
+	bottom = append(bottom, "") // F15.5:状态栏/指标行与输入/提示区留空隙行
 	bottom = append(bottom, renderStatusLine(s, width))
+	bottom = append(bottom, renderMetricLine(s)) // 最底行:模型/思维/上下文(最后一行下面)
 	return lipgloss.JoinVertical(lipgloss.Left, main, strings.Join(bottom, "\n"))
 }

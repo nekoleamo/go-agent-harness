@@ -20,15 +20,15 @@ type Line struct {
 
 // State TUI 展示状态(事件驱动,线程安全由调用方保证)。
 type State struct {
-	Lines          []Line
-	Running        bool
-	Model          string // 当前模型 id(状态栏;空 = 未设置)
-	ModelSrc       string // 模型来源缩写(当前 provider 域名,如 siliconflow;空 = 未配置/不显示)
-	Profile        string
-	Error          string
-	Input          string
-	Cursor         int
-	LastTool       string
+	Lines    []Line
+	Running  bool
+	Model    string // 当前模型 id(状态栏;空 = 未设置)
+	ModelSrc string // 模型来源缩写(当前 provider 域名,如 siliconflow;空 = 未配置/不显示)
+	Profile  string
+	Error    string
+	Input    string
+	Cursor   int
+	LastTool string
 
 	// Queue 消息队列(P4-1):回合运行中提交的普通消息按序暂存(回合串行——空闲 Enter
 	// 直接开新回合,运行中 Enter 排队),当前回合成功结束后自动逐条发送(每次一条,
@@ -44,9 +44,14 @@ type State struct {
 	// vCol + vActive 多行编辑垂直移动(LineUp/LineDown)的意图列:第一次垂直移动
 	// 捕捉当前列,行间移动保持该列(bash/readline 语义);线性编辑/内容变化置
 	// vActive=false 失效,下次垂直移动重新捕捉。零值(未激活)即安全初值。
-	vCol    int
-	vActive bool
+	vCol           int
+	vActive        bool
+
+	// selectAll 全选输入态(Ctrl+A):下一次 Backspace/Delete = 清空,插入 = 替换;
+	// 其它导航/编辑动作自动复位。实现"选中一次性删除/全选替换"(TUI 无渲染选区)。
+	selectAll bool
 	Sandbox        string         // 沙箱档位显示(read-only|workspace-write|full-access)
+	Approval       string         // 审批档位显示(open|smart|strict)
 	PendingConfirm string         // 非空 = 有待确认的危险操作(确认弹层)
 	Suggestions    []string       // 输入 / 前缀时的命令提示(注册表过滤结果,渲染于输入行下方)
 	Pick           *Pick          // 非空 = 交互式选择器激活(↑/↓ 移动,Enter 应用)
@@ -59,6 +64,18 @@ type State struct {
 	Thinking       string         // 思考等级显示(off 空;Tab/Shift+Tab 切换)
 	Session        string         // 当前会话标签(显示名优先,无名称回退 id;空 = 未命名主会话;状态栏)
 	Stats          sdk.UsageStats // 会话 token 统计(回合结束刷新;状态栏显示使用率/缓存命中率)
+
+	// P5 回合耗时:turnStart 运行起点(ApplyStatus running 首设),turnDur 上次回合耗时
+	// (ApplyStatus idle 结算;状态栏空闲态展示)。私有,渲染层同包可读。
+	turnStart time.Time
+	turnDur   time.Duration
+
+	// P5.2 工具耗时:toolStart 最近一次 EventToolCall 时刻;EventToolResult 结算加到
+	// 结果行文本(>=100ms 才显示——重放进内存毫秒级,自然抑制)。零协议改,纯展示层。
+	toolStart time.Time
+
+	// B1 思维块折叠:ThinkingFull 展开(显示完整思维文本);false = 折叠(渲染截断首段)。
+	ThinkingFull bool
 
 	// ScrollOffset 会话流上滚物理行数(0 = 跟随最新;>0 = 浏览历史),渲染时钳制。
 	ScrollOffset int
@@ -99,7 +116,9 @@ type State struct {
 	// 普通 user 消息经 Lines 提取)。histActive+histIdx = 历史翻页态(false 未翻),
 	// histDraft = 开始翻页前的输入草稿(HistNext 越过最新一条后还原)。undo/redo 为
 	// 输入框文本快照栈(编辑前入栈;提交/清空即清栈;相邻同型编辑合并为一个 undo 步)。
+	// killBuf 最近一次 Ctrl+K/U 删除的文本(P5:Alt+P yank 粘贴,单槽不做 ring)。
 	CmdHistory []string
+	killBuf    string
 	histActive bool
 	histCur    int      // 当前显示条目在 histRev 中的下标(0 = 最新一条)
 	histRev    []string // 翻页开始重建的历史(最新在前);草稿态不活跃时为空
@@ -124,8 +143,13 @@ func (s *State) ApplySessionEvent(ev *sdk.SessionEvent) {
 			s.Lines = append(s.Lines, Line{Kind: "user", Text: u.Content})
 		}
 	case sdk.EventAssistantChunk:
-		if cev, ok := ev.Payload.(sdk.LLMStreamEvent); ok && cev.Delta != "" {
-			s.appendStreaming(cev.Delta)
+		if cev, ok := ev.Payload.(sdk.LLMStreamEvent); ok {
+			// B1 思维块:thinking 增量独立行累积(与正文互斥发送;折叠态 Ctrl+T 切换见渲染)
+			if cev.Thinking != "" {
+				s.appendThinking(cev.Thinking)
+			} else if cev.Delta != "" {
+				s.appendStreaming(cev.Delta)
+			}
 		}
 	case sdk.EventAssistantMessage:
 		if a, ok := ev.Payload.(sdk.AssistantMessage); ok {
@@ -138,6 +162,7 @@ func (s *State) ApplySessionEvent(ev *sdk.SessionEvent) {
 		if tc, ok := ev.Payload.(sdk.ToolCallEvent); ok {
 			s.Lines = append(s.Lines, Line{Kind: "tool", Text: toolCallText(sdk.ToolCall{ID: tc.ID, Name: tc.Name, Arguments: tc.Arguments})})
 			s.LastTool = tc.Name // 状态栏"执行工具"提示
+			s.toolStart = time.Now() // 工具耗时起点(下次 Result 结算)
 		}
 	case sdk.EventToolResult:
 		if r, ok := ev.Payload.(sdk.ToolResultEvent); ok {
@@ -161,6 +186,13 @@ func (s *State) ApplySessionEvent(ev *sdk.SessionEvent) {
 			if len(sum) > 160 {
 				sum = sum[:160] + "…"
 			}
+			// P5.2 工具耗时:调用到结果真实耗时段(>=100ms)挂结果行尾(重放毫秒级自然抑制;
+			// toolStart 零值 = 无前置 ToolCall(异常/重放起点),不显示)
+			if !s.toolStart.IsZero() {
+				if dur := time.Since(s.toolStart); dur >= 100*time.Millisecond {
+					sum += " (" + fmtDur(dur) + ")"
+				}
+			}
 			stored := full
 			if len(stored) > foldFullLimit {
 				stored = stored[:foldFullLimit] + "…(截断,完整见会话日志)"
@@ -179,12 +211,20 @@ func (s *State) ApplySessionEvent(ev *sdk.SessionEvent) {
 }
 
 // ApplyStatus 处理 agent/status(running/idle)。
+// P5 回合耗时:running 进入计时(幂等,重复事件首设),idle 结算 turnDur。
 func (s *State) ApplyStatus(status string) {
 	switch status {
 	case "running":
 		s.Running = true
+		if s.turnStart.IsZero() {
+			s.turnStart = time.Now()
+		}
 	case "idle":
 		s.Running = false
+		if !s.turnStart.IsZero() {
+			s.turnDur = time.Since(s.turnStart)
+			s.turnStart = time.Time{}
+		}
 	}
 }
 
@@ -203,6 +243,15 @@ func (s *State) ResolveConfirm(ok bool) bool {
 func (s *State) SetError(msg string) {
 	s.Error = msg
 	s.Lines = append(s.Lines, Line{Kind: "error", Text: msg})
+}
+
+// appendThinking 思维增量累积:紧邻上一行同为 thinking 则续写,否则新起一行(kind=thinking)。
+func (s *State) appendThinking(delta string) {
+	if n := len(s.Lines); n > 0 && s.Lines[n-1].Kind == "thinking" {
+		s.Lines[n-1].Text += delta
+		return
+	}
+	s.Lines = append(s.Lines, Line{Kind: "thinking", Text: delta})
 }
 
 func (s *State) appendStreaming(delta string) {
@@ -232,6 +281,7 @@ func (s *State) InsertText(text string) {
 	if len(t) == 0 {
 		return
 	}
+	s.consumeSelectAll() // 全选态输入 = 替换
 	s.snapshotUndo('t')
 	b := []rune(s.Input)
 	out := make([]rune, 0, len(b)+len(t))
@@ -245,6 +295,7 @@ func (s *State) InsertText(text string) {
 
 // InsertRune 输入字符。
 func (s *State) InsertRune(r rune) {
+	s.consumeSelectAll() // 全选态输入 = 替换
 	s.snapshotUndo('i')
 	b := []rune(s.Input)
 	b = append(b[:s.Cursor], append([]rune{r}, b[s.Cursor:]...)...)
@@ -253,8 +304,33 @@ func (s *State) InsertRune(r rune) {
 	s.vActive = false
 }
 
-// CursorLeft/Right 光标左右移动(边界钳制)。
+// SelectAll 全选输入文本(Ctrl+A):光标置尾,进入全选态;
+// 随后 Backspace/Delete 一次清空,输入字符=整段替换。
+func (s *State) SelectAll() {
+	s.Cursor = len([]rune(s.Input))
+	s.selectAll = s.Input != ""
+	s.vActive = false
+}
+
+// consumeSelectAll 消费全选态:Backspace/Delete=清空,插入=替换底座(清空后继续)。
+// 返回是否曾处于全选态(插入方据此决定 snapshotUndo 已处理)。
+func (s *State) consumeSelectAll() bool {
+	if !s.selectAll {
+		return false
+	}
+	s.selectAll = false
+	if s.Input == "" {
+		return true
+	}
+	s.snapshotUndo('a')
+	s.Input = ""
+	s.Cursor = 0
+	return true
+}
+
+// CursorLeft/Right 光标左右移动(边界钳制;离开全选态)。
 func (s *State) CursorLeft() {
+	s.selectAll = false
 	if s.Cursor > 0 {
 		s.Cursor--
 	}
@@ -262,6 +338,7 @@ func (s *State) CursorLeft() {
 }
 
 func (s *State) CursorRight() {
+	s.selectAll = false
 	n := len([]rune(s.Input))
 	if s.Cursor < n {
 		s.Cursor++
@@ -279,8 +356,11 @@ func (s *State) CursorEnd() {
 	s.vActive = false
 }
 
-// Delete 删除光标处字符(末尾 no-op)。
+// Delete 删除光标处字符(末尾 no-op;全选态=一次清空)。
 func (s *State) Delete() {
+	if s.consumeSelectAll() {
+		return
+	}
 	n := len([]rune(s.Input))
 	if s.Cursor >= n {
 		return
@@ -291,8 +371,11 @@ func (s *State) Delete() {
 	s.vActive = false
 }
 
-// Backspace 删除光标前一字符。
+// Backspace 删除光标前一字符(全选态=一次清空)。
 func (s *State) Backspace() {
+	if s.consumeSelectAll() {
+		return
+	}
 	if s.Cursor <= 0 || s.Input == "" {
 		return
 	}
@@ -306,6 +389,7 @@ func (s *State) Backspace() {
 // ClearInput 提交/清空后复位输入区:文本与光标清空,undo/redo 栈清空(提交即
 // 丢弃撤销历史),历史翻页指针复位(草稿不再需要)。
 func (s *State) ClearInput() {
+	s.selectAll = false
 	s.Input = ""
 	s.Cursor = 0
 	s.vActive = false
@@ -454,7 +538,7 @@ func (s *State) Redo() bool {
 	return true
 }
 
-// KillToEnd Ctrl+K:删除光标到行尾,返回是否有删除。
+// KillToEnd Ctrl+K:删除光标到行尾(被杀文本存入 killBuf 供 Alt+P yank),返回是否有删除。
 func (s *State) KillToEnd() bool {
 	n := len([]rune(s.Input))
 	if s.Cursor >= n {
@@ -462,20 +546,37 @@ func (s *State) KillToEnd() bool {
 	}
 	s.snapshotUndo('k')
 	r := []rune(s.Input)
+	s.killBuf = string(r[s.Cursor:])
 	s.Input = string(r[:s.Cursor])
 	s.vActive = false
 	return true
 }
 
-// KillToStart Ctrl+U:删除光标到行首,返回是否有删除。
+// KillToStart Ctrl+U:删除光标到行首(被杀文本存入 killBuf 供 Alt+P yank),返回是否有删除。
 func (s *State) KillToStart() bool {
 	if s.Cursor <= 0 {
 		return false
 	}
 	s.snapshotUndo('u')
 	r := []rune(s.Input)
+	s.killBuf = string(r[:s.Cursor])
 	s.Input = string(r[s.Cursor:])
 	s.Cursor = 0
+	s.vActive = false
+	return true
+}
+
+// Yank Alt+P:粘贴最近 KillToEnd/KillToStart 删除的文本到光标处(入 undo,可撤销)。
+// killBuf 为空 no-op(返回 false)。
+func (s *State) Yank() bool {
+	if s.killBuf == "" {
+		return false
+	}
+	s.snapshotUndo('y')
+	r := []rune(s.Input)
+	ins := []rune(s.killBuf)
+	s.Input = string(append(append(append([]rune{}, r[:s.Cursor]...), ins...), r[s.Cursor:]...))
+	s.Cursor += len(ins)
 	s.vActive = false
 	return true
 }

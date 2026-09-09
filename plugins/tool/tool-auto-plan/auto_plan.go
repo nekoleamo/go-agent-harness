@@ -3,11 +3,12 @@
 // todo = 执行期任务追踪(确认后执行期由 todo 承接)。
 //
 // 工具 auto_plan(单 schema 多 action):
-//   create  —— 模型先做只读探索,生成结构化规划(目标/关键约束与风险/线性检查清单)并落盘;
-//   get/list —— 读取(当前项目全部);
-//   step    —— 步骤状态推进(待→进行中→完成,线性清单,不上依赖图防过度工程);
-//   confirm —— 用户明确"确认/执行/开始"后标记已确认,允许进入执行阶段;
-//   complete—— 全部完成后归档。
+//
+//	create  —— 模型先做只读探索,生成结构化规划(目标/关键约束与风险/线性检查清单)并落盘;
+//	get/list —— 读取(当前项目全部);
+//	step    —— 步骤状态推进(待→进行中→完成,线性清单,不上依赖图防过度工程);
+//	confirm —— 用户明确"确认/执行/开始"后标记已确认,允许进入执行阶段;
+//	complete—— 全部完成后归档。
 //
 // 规划模式规则注入(enable_rule 开关,默认开):装配进宿主时经 ctx.systemPrompt
 // AddSection 注入——用户请求要求先规划后执行或为复杂任务(3+ 步)时,模型须先只读
@@ -72,13 +73,13 @@ type Step struct {
 
 // View list 摘要(精简字段,objective/constraints 留 get)。
 type View struct {
-	ID       string   `json:"id"`
-	Status   string   `json:"status"`
-	Request  string   `json:"request"`
-	Objective string  `json:"objective,omitempty"`
-	Done     int      `json:"done"` // 已完成步骤数 / 总步骤数
-	Total    int      `json:"total"`
-	TS       int64    `json:"ts"`
+	ID        string `json:"id"`
+	Status    string `json:"status"`
+	Request   string `json:"request"`
+	Objective string `json:"objective,omitempty"`
+	Done      int    `json:"done"` // 已完成步骤数 / 总步骤数
+	Total     int    `json:"total"`
+	TS        int64  `json:"ts"`
 }
 
 // Tool 实现 sdk.Tool(单工具多 action)。
@@ -150,14 +151,14 @@ func (t *Tool) Definition() sdk.ToolDefinition {
 			"type":     "object",
 			"required": []any{"action"},
 			"properties": map[string]any{
-				"action": map[string]any{"type": "string", "enum": []string{"create", "get", "list", "step", "confirm", "complete"}},
-				"request": map[string]any{"type": "string", "description": "create:原始用户请求(必填)"},
-				"objective": map[string]any{"type": "string", "description": "create:目标"},
+				"action":      map[string]any{"type": "string", "enum": []string{"create", "get", "list", "step", "confirm", "complete"}},
+				"request":     map[string]any{"type": "string", "description": "create:原始用户请求(必填)"},
+				"objective":   map[string]any{"type": "string", "description": "create:目标"},
 				"constraints": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "create:关键约束与风险"},
-				"steps": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "create:线性检查清单步骤标题(顺序)"},
-				"id": map[string]any{"type": "string", "description": "get/step/confirm/complete 目标规划"},
-				"status": map[string]any{"type": "string", "description": "list 过滤(proposed|confirmed|completed);step 目标步骤状态(pending|in_progress|completed)"},
-				"index": map[string]any{"type": "integer", "description": "step:步骤序号(0 起)"},
+				"steps":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "create:线性检查清单步骤标题(顺序)"},
+				"id":          map[string]any{"type": "string", "description": "get/step/confirm/complete 目标规划"},
+				"status":      map[string]any{"type": "string", "description": "list 过滤(proposed|confirmed|completed);step 目标步骤状态(pending|in_progress|completed)"},
+				"index":       map[string]any{"type": "integer", "description": "step:步骤序号(0 起)"},
 			},
 		},
 	}

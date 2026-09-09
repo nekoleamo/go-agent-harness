@@ -72,6 +72,22 @@ func itoa(n int) string {
 	return string(b)
 }
 
+// TestDeriveAttachments 附件随 UserMessage 传递到 LLMMessage(附件一期)。
+func TestDeriveAttachments(t *testing.T) {
+	l := newLog("")
+	atts := []sdk.Attachment{{Kind: sdk.AttachmentImage, Name: "a.png", MimeType: "image/png", Rel: "20260906-000000/a.png"}}
+	if err := l.Append(sdk.SessionEvent{Kind: sdk.EventUserMessage, Payload: sdk.UserMessage{Content: "看图", Attachments: atts}}); err != nil {
+		t.Fatal(err)
+	}
+	msgs := l.DeriveMessages()
+	if len(msgs) != 1 || msgs[0].Role != sdk.RoleUser {
+		t.Fatalf("投影异常: %+v", msgs)
+	}
+	if len(msgs[0].Attachments) != 1 || msgs[0].Attachments[0].Rel != atts[0].Rel {
+		t.Fatalf("附件未传递: %+v", msgs[0].Attachments)
+	}
+}
+
 // TestFullProjectionNoCompressor 未注册压缩器:全量投影,行为与旧版一致。
 func TestFullProjectionNoCompressor(t *testing.T) {
 	l := newLog("")

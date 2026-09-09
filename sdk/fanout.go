@@ -23,14 +23,22 @@ const (
 	AgentKilled  AgentState = "killed"
 )
 
-// AgentHandle 后台子代理会话句柄(M9.2:delegate 后台带手柄,轮询取状态/结果)。
+// AgentMessage 父子代理对话记录(send_message 注入 + 子代理回复;经 AgentStatus 可读)。
+type AgentMessage struct {
+	From    string `json:"from"` // user = 父级注入;agent = 子代理回复
+	Content string `json:"content"`
+}
+
+// AgentHandle 后台子代理会话句柄(M9.2:delegate 后台带手柄,轮询取状态/结果;
+// M9.3:Messages 记录 send_message 注入与子代理回复的对话)。
 type AgentHandle struct {
-	ID        string     `json:"id"`
-	Input     string     `json:"input"`
-	State     AgentState `json:"state"`
-	Result    string     `json:"result,omitempty"`
-	Error     string     `json:"error,omitempty"`
-	CreatedAt time.Time  `json:"created_at"`
+	ID        string         `json:"id"`
+	Input     string         `json:"input"`
+	State     AgentState     `json:"state"`
+	Result    string         `json:"result,omitempty"`
+	Error     string         `json:"error,omitempty"`
+	CreatedAt time.Time      `json:"created_at"`
+	Messages  []AgentMessage `json:"messages,omitempty"`
 }
 
 // FanoutService 服务(ctx.fanout):子代理编排(独立会话历史,不写主会话)。
@@ -45,9 +53,15 @@ type FanoutService interface {
 	Pipeline(ctx context.Context, steps []string) ([]FanoutResult, string, error)
 	// SpawnAgent 后台启动单子代理(不阻塞):返回句柄 id,轮询 ListAgents/AgentHandle。
 	SpawnAgent(ctx context.Context, input string) (string, error)
+	// Fork 派生带父上下文的子代理(M9.3):初始消息历史 = 父会话已投影历史(DeriveMessages)
+	// + input;后台启动返回句柄 id(轮询取状态/结果)。
+	Fork(ctx context.Context, input string) (string, error)
+	// SendMessage 向运行中的后台子代理注入一条消息(M9.3):追加为 user 输入,
+	// 子代理继续执行并回复(对话记录经 AgentStatus.Messages 可读)。非 running 报错。
+	SendMessage(id, message string) error
 	// ListAgents 全部后台子代理会话(含历史,末位最新)。
 	ListAgents() []AgentHandle
-	// AgentStatus 取单个会话状态(结果/错误)。
+	// AgentStatus 取单个会话状态(结果/错误/消息对话)。
 	AgentStatus(id string) (AgentHandle, bool)
 	// KillAgent 终止运行中的子代理(killed 状态;已完成返回错误)。
 	KillAgent(id string) error

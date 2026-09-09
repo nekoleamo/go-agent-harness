@@ -17,6 +17,9 @@ type PluginInfo struct {
 	Type   string
 	Bundle string
 	State  string // loaded(运行中)| configured(已注册未运行)| loaded(外部)
+	// Manage 声明管理域(单一事实源=catalogue 声明,web/tui 展示层透传,勿另行硬编码):
+	// external(已外部化,勿启停)| scenario(场景专用,勿启)| 空(常规,按运行态派生 host/web)。
+	Manage string
 }
 
 // PluginManager 服务(ctx.pluginManager):运行期插拔。

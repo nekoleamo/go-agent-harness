@@ -10,7 +10,8 @@ import (
 )
 
 type fakeForkable struct {
-	pts []sdk.ForkPoint
+	pts   []sdk.ForkPoint
+	nodes []sdk.ForkNode
 }
 
 func (f *fakeForkable) ForkAt(seq uint64) (string, error) { return "", nil }
@@ -21,6 +22,9 @@ func (f *fakeForkable) ForkPoints(id string) ([]sdk.ForkPoint, error) {
 	}
 	return f.pts, nil
 }
+func (f *fakeForkable) ForkTree() ([]sdk.ForkNode, error) { return f.nodes, nil }
+
+// nodes 派生关系(测试注入;nil = 无记录回退平铺)。
 
 func TestLastUserSeq(t *testing.T) {
 	f := &fakeForkable{pts: []sdk.ForkPoint{{Seq: 2, Text: "a"}, {Seq: 5, Text: "b"}, {Seq: 9, Text: "c"}}}

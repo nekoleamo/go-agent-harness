@@ -1,0 +1,7 @@
+# 构建镜像(仓库工程级):cargo 依赖从 crates.io 拉取;中国区网络改用清华 HTTPS 镜像
+# (用户全局若已配官方/其它镜像,此文件为项目级基线;不可达时注释回退官方 index)。
+[source.crates-io]
+replace-with = "tuna"
+
+[source.tuna]
+registry = "https://mirrors.tuna.tsinghua.edu.cn/git/crates.io-index.git"

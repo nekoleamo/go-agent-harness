@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nekoleamo/go-agent-harness/sdk"
 	tokencompress "github.com/nekoleamo/go-agent-harness/plugins/host/token-compress"
+	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
 func TestCompactFoldsHistory(t *testing.T) {

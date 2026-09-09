@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/rpc"
 	"os"
+	"strings"
 
 	"github.com/hashicorp/go-plugin"
 
@@ -67,5 +68,29 @@ func (s *echoRPCServer) Execute(args *bridge.ExecArgs, reply *bridge.ExecReply) 
 	}
 	b, _ := json.Marshal(map[string]any{"echo": "外部插件: " + a.Text})
 	reply.Content = string(b)
+	return nil
+}
+
+// Commands M14 外部命令桥示例:同一外部插件可同时提供工具与命令。
+// 声明 /echo 命令(一级自由参数 文本;无枚举级)。
+func (s *echoRPCServer) Commands(args struct{}, reply *string) error {
+	b, err := json.Marshal([]bridge.CommandDTO{
+		{Name: "echo", Usage: "/echo <文本>", Desc: "外部插件命令示例:回显文本(与工具共存)",
+			Args: []bridge.CommandArgDTO{{FreeArgs: []string{"文本"}}}},
+	})
+	if err != nil {
+		return err
+	}
+	*reply = string(b)
+	return nil
+}
+
+// RunCommand 命令执行(宿主 /echo 分发 → 外部进程执行,输出文本回宿主 TUI meta 行)。
+func (s *echoRPCServer) RunCommand(args *bridge.RunCommandArgs, reply *bridge.ExecReply) error {
+	if args.Name != "echo" {
+		reply.Error = fmt.Sprintf("外部插件无此命令 %q", args.Name)
+		return nil
+	}
+	reply.Content = "外部命令 echo: " + strings.Join(args.Args, " ")
 	return nil
 }

@@ -26,7 +26,7 @@ func main() {
 	}
 	tools["web_fetch"] = toolweb.NewTool()
 	tools["web_search"] = toolweb.NewSearchTool(toolweb.NewExaProvider(nil)) // M6.14:默认 exa,EXA_API_KEY
-	tools["memory"] = toolmemory.NewTool()                                  // M10:跨会话操作记忆
-	tools["todo"] = tooltodo.NewTool()                                      // M8:任务清单(4 状态机/blockedBy)
+	tools["memory"] = toolmemory.NewTool()                                   // M10:跨会话操作记忆
+	tools["todo"] = tooltodo.NewTool()                                       // M8:任务清单(4 状态机/blockedBy)
 	bridge.ServeTools(tools)
 }

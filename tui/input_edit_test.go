@@ -8,6 +8,51 @@ import (
 )
 
 // histState 构造含历史源(user 行 + 命令)的 State。
+// TestSelectAllConsume Ctrl+A 全选:Backspace/Delete 一次清空;输入=替换;方向键复位。
+func TestSelectAllConsume(t *testing.T) {
+	s := &State{}
+	s.Input = "hello world"
+	s.Cursor = 5
+	s.SelectAll()
+	s.Backspace()
+	if s.Input != "" || s.Cursor != 0 {
+		t.Fatalf("全选+Backspace 应清空,got %q cur=%d", s.Input, s.Cursor)
+	}
+	// 全选替换:输入字符 = 整段替换
+	s.Input = "abc"
+	s.Cursor = 1
+	s.SelectAll()
+	s.InsertRune('X')
+	if s.Input != "X" || s.Cursor != 1 {
+		t.Fatalf("全选+输入应替换为 X,got %q cur=%d", s.Input, s.Cursor)
+	}
+	// 空输入 SelectAll 不进入全选态(无内容可全选)
+	s.Input = ""
+	s.SelectAll()
+	if s.selectAll {
+		t.Fatal("空输入不应进入全选态")
+	}
+	// 方向键移动退出全选态
+	s.Input = "abc"
+	s.Cursor = 0
+	s.SelectAll()
+	if !s.selectAll {
+		t.Fatal("应进入全选态")
+	}
+	s.CursorLeft()
+	if s.selectAll {
+		t.Fatal("光标移动应退出全选态")
+	}
+	// Delete 全选清空同样生效
+	s.Input = "xyz"
+	s.Cursor = 3
+	s.SelectAll()
+	s.Delete()
+	if s.Input != "" {
+		t.Fatalf("全选+Delete 应清空,got %q", s.Input)
+	}
+}
+
 func histState() *State {
 	s := &State{}
 	s.Lines = append(s.Lines,
@@ -164,6 +209,43 @@ func TestKillEndAndStart(t *testing.T) {
 	s.Cursor = len([]rune(s.Input))
 	if s.KillToEnd() {
 		t.Fatal("光标已到行尾,不应再删除")
+	}
+}
+
+// TestYankKillBuf P5:kill-ring 单槽——Ctrl+K/U 删除记录,killBuf 循环覆盖,Alt+P 粘贴可撤销。
+func TestYankKillBuf(t *testing.T) {
+	s := &State{}
+	for _, r := range "one two" {
+		s.InsertRune(r)
+	}
+	// Ctrl+K 杀 "two"(光标 4 后)
+	s.Cursor = 4
+	if !s.KillToEnd() || s.killBuf != "two" || s.Input != "one " {
+		t.Fatalf("kill to end 应记录 killBuf: %q buf %q", s.Input, s.killBuf)
+	}
+	// 光标回 0,Alt+P yank 粘贴
+	s.Cursor = 0
+	if !s.Yank() || s.Input != "twoone " || s.Cursor != 3 {
+		t.Fatalf("yank 应粘贴到光标: %q c%d", s.Input, s.Cursor)
+	}
+	// yank 可撤销
+	if !s.Undo() || s.Input != "one " || s.Cursor != 0 {
+		t.Fatalf("undo yank: %q c%d", s.Input, s.Cursor)
+	}
+	// Ctrl+U 覆盖 killBuf(单槽最近):光标 2 杀 "on"
+	s.Cursor = 2
+	if !s.KillToStart() || s.killBuf != "on" || s.Input != "e " {
+		t.Fatalf("kill to start 应覆盖 killBuf: %q input %q", s.killBuf, s.Input)
+	}
+	// 连续 kill 后 yank 用最新 buf
+	s.Cursor = 0
+	if !s.Yank() || s.Input != "one " || s.Cursor != 2 {
+		t.Fatalf("yank 应用最近 killBuf: %q c%d", s.Input, s.Cursor)
+	}
+	// 空 buf no-op
+	s2 := &State{}
+	if s2.Yank() {
+		t.Fatal("空 killBuf 不应 yank")
 	}
 }
 

@@ -1,11 +1,15 @@
 // Package policyapproval 提供 policy-approval 插件:危险操作检测 + 用户确认。
-// 监听 tools/pre-execute:命中危险模式经 ctx.confirm 请求确认;无确认服务 → 拒绝(安全默认)。
+// 审批档位三档(对齐 policy-sandbox 三档先例,Provide ctx.approval 供运行期切换):
+//   open 开放:危险操作直接放行,不弹确认(信任模型/无人值守)
+//   smart 智能(默认):命中危险模式经 ctx.confirm 请求确认;无确认服务 → 拒绝(安全默认)
+//   strict 严格:危险操作直接拒绝,不弹窗(最高防线)
 package policyapproval
 
 import (
 	"context"
 	"fmt"
 	"regexp"
+	"sync"
 	"time"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
@@ -31,9 +35,19 @@ type Plugin struct{}
 func (p *Plugin) Name() string { return "policy-approval" }
 
 // Start 挂载 pre-execute 拦截(确认服务缺失时不报错,策略按无通道拒绝)。
-func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
+func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	var confirm sdk.ConfirmService
 	_ = c.Inject("ctx.confirm", &confirm)
+
+	pol := &Policy{mode: sdk.ApprovalSmart}
+	if m != nil && m.Data != nil {
+		if md, ok := m.Data["mode"].(string); ok && md != "" {
+			pol.mode = sdk.ApprovalMode(md)
+		}
+	}
+	if err := c.Provide("ctx.approval", pol); err != nil {
+		return nil, err
+	}
 
 	d := c.Subscribe("tools/pre-execute", func(ctx context.Context, ev *sdk.Event) error {
 		call, ok := ev.Payload.(*sdk.ToolCallEvent)
@@ -44,6 +58,37 @@ func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
 		if !hit {
 			return nil
 		}
+		return pol.check(ctx, confirm, pattern)
+	})
+	return d, nil
+}
+
+// Policy 实现 sdk.ApprovalService(带锁,运行期可切档)。
+type Policy struct {
+	mu   sync.RWMutex
+	mode sdk.ApprovalMode
+}
+
+func (p *Policy) Mode() sdk.ApprovalMode {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.mode
+}
+
+func (p *Policy) SetMode(m sdk.ApprovalMode) {
+	p.mu.Lock()
+	p.mode = m
+	p.mu.Unlock()
+}
+
+// check 按档处理命中危险操作:open 放行 / smart 弹确认(无通道拒绝) / strict 直接拒绝。
+func (p *Policy) check(ctx context.Context, confirm sdk.ConfirmService, pattern string) error {
+	switch p.Mode() {
+	case sdk.ApprovalOpen:
+		return nil // 开放档:直接放行
+	case sdk.ApprovalStrict:
+		return fmt.Errorf("approval: 严格档拒绝危险操作(%s)", pattern)
+	default: // smart(默认,现状行为)
 		cl, cancel := context.WithTimeout(ctx, confirmTimeout)
 		defer cancel()
 		if confirm == nil {
@@ -57,8 +102,7 @@ func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
 			return fmt.Errorf("approval: 用户拒绝危险操作(%s)", pattern)
 		}
 		return nil
-	})
-	return d, nil
+	}
 }
 
 // matchDangerous 返回命中的危险模式名。

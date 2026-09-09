@@ -4,6 +4,7 @@ package toolsubagent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -105,7 +106,7 @@ func TestDefinition(t *testing.T) {
 	}
 	act, _ := schema.Properties["action"].(map[string]any)
 	enum, _ := act["enum"].([]any)
-	want := []string{"delegate", "spawn", "agents", "agent_status", "agent_kill"}
+	want := []string{"delegate", "spawn", "fork", "agents", "agent_status", "agent_kill", "send_message"}
 	if len(enum) != len(want) {
 		t.Fatalf("action 集不符: %v", enum)
 	}
@@ -133,11 +134,15 @@ var (
 // stubFanout 后台会话控制面测试替身(实现 sdk.FanoutService 全接口)。
 type stubFanout struct {
 	spawned string
+	forked  string
+	sent    string
 	killed  string
 	handles []sdk.AgentHandle
 }
 
-func (s *stubFanout) Agent(_ context.Context, input string) (string, error) { return "agent:" + input, nil }
+func (s *stubFanout) Agent(_ context.Context, input string) (string, error) {
+	return "agent:" + input, nil
+}
 func (s *stubFanout) Parallel(context.Context, []string) []sdk.FanoutResult { return nil }
 func (s *stubFanout) Pipeline(context.Context, []string) ([]sdk.FanoutResult, string, error) {
 	return nil, "", nil
@@ -145,6 +150,17 @@ func (s *stubFanout) Pipeline(context.Context, []string) ([]sdk.FanoutResult, st
 func (s *stubFanout) SpawnAgent(_ context.Context, input string) (string, error) {
 	s.spawned = input
 	return "ag9", nil
+}
+func (s *stubFanout) Fork(_ context.Context, input string) (string, error) {
+	s.forked = input
+	return "ag10", nil
+}
+func (s *stubFanout) SendMessage(id, message string) error {
+	if id != "ag9" {
+		return fmt.Errorf("无此会话 %q", id)
+	}
+	s.sent = message
+	return nil
 }
 func (s *stubFanout) ListAgents() []sdk.AgentHandle {
 	s.handles = []sdk.AgentHandle{{ID: "ag9", Input: "x", State: sdk.AgentDone, Result: "r"}}
@@ -216,10 +232,61 @@ func TestAgentStatusAndKill(t *testing.T) {
 	}
 }
 
+// TestForkAction fork → 带父上下文后台启动,返回句柄。
+func TestForkAction(t *testing.T) {
+	st := &stubFanout{}
+	tool := NewTool(st).(*Tool)
+	out, err := tool.Execute(context.Background(), `{"action":"fork","task":"继承父上下文的任务"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := out.(map[string]any)
+	if m["agent_id"] != "ag10" || m["state"] != "running" {
+		t.Fatalf("fork 应返回句柄: %+v", m)
+	}
+	if !strings.Contains(st.forked, "继承父上下文") {
+		t.Fatalf("task 应透传: %q", st.forked)
+	}
+	// 空 task → 结构化错误
+	out, _ = tool.Execute(context.Background(), `{"action":"fork"}`)
+	if _, ok := out.(map[string]any)["error"]; !ok {
+		t.Fatalf("fork 缺 task 应报错: %+v", out)
+	}
+}
+
+// TestSendMessageAction send_message → 注入消息透传。
+func TestSendMessageAction(t *testing.T) {
+	st := &stubFanout{}
+	tool := NewTool(st).(*Tool)
+	out, err := tool.Execute(context.Background(), `{"action":"send_message","agent_id":"ag9","message":"补充要求"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := out.(map[string]any)
+	if m["sent"] != "ag9" || !strings.Contains(st.sent, "补充要求") {
+		t.Fatalf("send_message 应透传注入: %+v sent=%q", m, st.sent)
+	}
+	// 缺 agent_id/message → 结构化错误
+	for _, a := range []string{`{"action":"send_message","message":"x"}`, `{"action":"send_message","agent_id":"ag9"}`} {
+		out, _ = tool.Execute(context.Background(), a)
+		if _, ok := out.(map[string]any)["error"]; !ok {
+			t.Fatalf("%s 缺参应报错: %+v", a, out)
+		}
+	}
+	// 后端错误回传
+	st2 := &stubFanout{}
+	tool2 := NewTool(st2).(*Tool)
+	out, _ = tool2.Execute(context.Background(), `{"action":"send_message","agent_id":"nope","message":"x"}`)
+	if !strings.Contains(out.(map[string]any)["error"].(string), "无此会话") {
+		t.Fatalf("后端错误应回传: %+v", out)
+	}
+}
+
 // TestNoFanoutBackend 未装配 fanout 时控制面动作显式报错。
 func TestNoFanoutBackend(t *testing.T) {
 	tool := NewTool(nil).(*Tool)
 	for _, a := range []string{`{"action":"delegate","task":"t"}`, `{"action":"spawn","task":"t"}`,
+		`{"action":"fork","task":"t"}`, `{"action":"send_message","agent_id":"x","message":"m"}`,
 		`{"action":"agents"}`, `{"action":"agent_kill","agent_id":"x"}`} {
 		out, err := tool.Execute(context.Background(), a)
 		if err != nil {

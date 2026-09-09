@@ -140,16 +140,28 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 
 形态定位:独立二进制(崩溃隔离/独立升级),随包 embed 释放、host-bridge 扫描加载(M6.9 起工具类全部走此形态)。最小参照实现:`extplugins/tool-echo`(约 50 行)。
 
-**入口与握手**
+**入口与握手**(M14 起可带命令)
 ```go
 func main() {
     hostbridge.ServeTools(map[string]sdk.Tool{
         "echo": &echoTool{},
+    }, map[string]sdk.CommandSpec{ // M14:可选(不传 = 纯工具插件,旧行为不变)
+        "echo": {Name: "echo", Usage: "/echo <文本>", Desc: "...",
+            Args: []sdk.ArgLevel{{FreeArgs: func([]string) []string { return []string{"文本"} }}},
+            Run: func(args []string) (string, error) { return strings.Join(args, " "), nil }},
     })
 }
 ```
-- 唯一入口 `ServeTools(tools)`(外部进程服务端;宿主同仓库编译,import `plugins/host/host-bridge` 的 serve.go 符号或按 extplugins 现有写法)。
+- 唯一入口 `ServeTools(tools, commands...)`(外部进程服务端;宿主同仓库编译,import `plugins/host/host-bridge` 的 serve.go 符号或按 extplugins 现有写法)。
 - 握手标识 `GAH_PLUGIN=gah-external-tool` 缺失即拒启(防误跑)。
+
+**外部命令桥(M14,免编译加命令)**:外部插件声明的命令经 host-bridge 自动转注册进 `ctx.commands`(与进程内插件命令同表),**新命令插件丢进 `~/.gah/plugins/` 即生效,无需重编译 gah**(目录 fsnotify 热重载、崩溃自动拉起复用既有机制)。语义:
+- 声明即注册:Args 级联照常(枚举级 `Options` 运行期经桥 RPC 求值、自由级 `FreeArgs` 触发断点向导);执行 `Run` 在外部进程内完成,输出文本+error 回宿主 TUI meta 行。
+- 同名命令冲突:先到先得,拒绝并记警告(被跳过命令不注册,插件继续加载);插件卸载/热重载随 Disposer 撤销。
+- TUI 侧零改动:`/` 提示、`/help`、选择器断点全部自动来自 `ctx.commands` 注册表。
+- 参照实现:`extplugins/tool-echo`(工具 + `/echo` 命令共存,约 80 行)。
+- **纯命令插件**:外部插件可只提供命令(无工具)——宿主扫描识别 `tool-*` 与 `cmd-*` 前缀(文件名 `cmd-<名>`),`ServeTools(nil, commands)` 直接可用;loadOne 工具或命令任一满足即加载。
+- **命令超时**(可选):`sdk.CommandSpec.TimeoutMs`(毫秒)声明执行/枚举选项 RPC 超时,0 = 宿主全局默认 3s——死进程/慢命令不会阻塞 TUI 线程(超时即显式报错,连接类错误仍触发自动拉起)。
 
 **桥协议**
 - 多工具(新协议):`Definitions` 枚举 + `ExecuteNamed` 按名执行;旧单工具协议(`Definition`/`Execute`)宿主自动回退兼容。
@@ -178,6 +190,7 @@ func main() {
 - [ ] 缺依赖显式报错,不静默
 - [ ] catalogue 已登记(provides/requires/bundle 正确)
 - [ ] config 条目已加(含 enabled/data)
+- [ ] **便携纪律**(见 AGENTS.md「便携纪律」):任何写盘路径以 GAH_HOME 为根(禁用硬编码 ~/.gah、cwd 相对写、系统根/散目录);密钥入 config/、env 入 gah-data/env.sh;新增路径 helper 可审计
 - [ ] 单测通过;-race 全绿
 - [ ] 错误回传模型(结构化 error),不 panic
 - [ ] 外部插件型:握手/协议/回调/退出语义(§4.1)已符合;产物已编入 scripts/gen-extplugins.sh 的 NAMES

@@ -5,6 +5,45 @@ package tui
 // lineSeg 输入的一行:[start, end) rune 下标(不含行尾 \n;末行到文本尾;空行 start==end)。
 type lineSeg struct{ start, end int }
 
+// inputPhys 输入文本折行成物理行并换算光标位置(超长输入滚动窗口用)。
+// 折行复用 wrapSegment(双宽字符不跨行拆分,长行不再横向截断);空输入 = 单空物理行。
+// 返回 phys(全部物理行)、curPhys(光标所在物理行下标)、curCol(该行内 rune 列)。
+// 光标视为字符间位置:行尾(换行前)归当前行末,末行文本尾归末行末。
+func inputPhys(text string, cursor, w int) (phys []string, curPhys, curCol int) {
+	if w < 1 {
+		w = 1
+	}
+	rs := []rune(text)
+	n := len(rs)
+	if cursor < 0 {
+		cursor = 0
+	}
+	if cursor > n {
+		cursor = n
+	}
+	start := 0
+	for i := 0; i <= n; i++ {
+		isNL := i < n && rs[i] == '\n'
+		if i < n && !isNL {
+			continue
+		}
+		seg := string(rs[start:i]) // 逻辑行 [start,i)(不含 \n;末尾空行 start==i)
+		sub := wrapSegment(seg, w)
+		if cursor >= start && cursor <= i { // 光标落本逻辑行(含行尾/末行文本尾)
+			pre := wrapSegment(string(rs[start:cursor]), w) // 光标前缀分段=全量折行的前段划分(前缀式贪心)
+			curPhys = len(phys) + len(pre) - 1
+			curCol = len([]rune(pre[len(pre)-1]))
+		}
+		phys = append(phys, sub...)
+		start = i + 1
+	}
+	if len(phys) == 0 {
+		phys = []string{""}
+		curPhys, curCol = 0, 0
+	}
+	return phys, curPhys, curCol
+}
+
 // segLines 把输入 runes 按 \n 切分成行区间(尾随 \n 产生末尾空行段;空串 = 单空行)。
 // 例:""→[{0,0}]、"a\nb"→[{0,1},{2,3}]、"a\n"→[{0,1},{2,2}]。
 func segLines(rs []rune) []lineSeg {

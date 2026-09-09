@@ -65,6 +65,72 @@ func TestMatchDangerous(t *testing.T) {
 	}
 }
 
+func TestApprovalModes(t *testing.T) {
+	exec := func(c sdk.Ctx) sdk.ToolResult {
+		t.Helper()
+		var tools sdk.ToolRegistry
+		if err := c.Inject("ctx.tools", &tools); err != nil {
+			t.Fatal(err)
+		}
+		res, err := tools.Execute(context.Background(), "shell", `{"command":"rm -rf /tmp/x"}`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return *res
+	}
+
+	// strict:直接拒绝(确认服务在场也拒绝,allowlist 不生效语义=每次拦截)
+	c := build(t, &fakeConfirm{resp: true})
+	var ap sdk.ApprovalService
+	if err := c.Inject("ctx.approval", &ap); err != nil {
+		t.Fatal("ctx.approval 未提供")
+	}
+	ap.SetMode(sdk.ApprovalStrict)
+	if res := exec(c); res.Error == "" {
+		t.Fatal("strict 档下危险操作应被直接拒绝")
+	}
+
+	// open:直接放行
+	c2 := build(t, &fakeConfirm{resp: true})
+	var ap2 sdk.ApprovalService
+	if err := c2.Inject("ctx.approval", &ap2); err != nil {
+		t.Fatal(err)
+	}
+	ap2.SetMode(sdk.ApprovalOpen)
+	if res := exec(c2); res.Error != "" {
+		t.Fatalf("open 档下危险操作应放行,got %+v", res)
+	}
+
+	// smart:命中弹确认,用户拒绝则拦截
+	c3 := build(t, &fakeConfirm{resp: false})
+	var ap3 sdk.ApprovalService
+	if err := c3.Inject("ctx.approval", &ap3); err != nil {
+		t.Fatal(err)
+	}
+	ap3.SetMode(sdk.ApprovalSmart)
+	if res := exec(c3); res.Error == "" {
+		t.Fatal("smart 档用户拒绝后应拦截")
+	}
+
+	// 运行期切档生效:strict → open 切换后放行
+	ap3.SetMode(sdk.ApprovalOpen)
+	if res := exec(c3); res.Error != "" {
+		t.Fatalf("切 open 档后应放行,got %+v", res)
+	}
+}
+
+func TestDefaultModeSmart(t *testing.T) {
+	// 无 manifest data 时默认 smart:非危险命令放行,危险命令无确认通道拒绝
+	c := build(t, nil)
+	var ap sdk.ApprovalService
+	if err := c.Inject("ctx.approval", &ap); err != nil {
+		t.Fatal(err)
+	}
+	if ap.Mode() != sdk.ApprovalSmart {
+		t.Fatalf("默认档应为 smart,got %s", ap.Mode())
+	}
+}
+
 func TestNoConfirmServiceDenies(t *testing.T) {
 	c := build(t, nil)
 	var tools sdk.ToolRegistry

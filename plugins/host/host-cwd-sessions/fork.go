@@ -79,7 +79,8 @@ func (s *Service) ForkAt(seq uint64) (string, error) {
 	if len(cut) == 0 {
 		return "", fmt.Errorf("cwdsessions: fork seq %d 无继承事件(超出历史范围?)", seq)
 	}
-	src := orName(s.current, "主")
+	parent := s.current // Open 前取父(切换后 current=新 id)
+	src := orName(parent, "主")
 	id, path, err := forkID(s.key)
 	if err != nil {
 		return "", err
@@ -91,13 +92,15 @@ func (s *Service) ForkAt(seq uint64) (string, error) {
 		return "", err
 	}
 	_ = s.Rename(fmt.Sprintf("fork@%d ← %s", seq, src))
+	s.recordFork(id, parent, seq) // 派生溯源(fork-tree.json;供 /tree 树形)
 	return id, nil
 }
 
 // CloneCurrent 复制当前会话全量到新会话文件(同一分支的另一路演进)。返回新会话 id。
 func (s *Service) CloneCurrent() (string, error) {
+	parent := s.current // Open 前取父(切换后 current=新 id)
 	evs := s.sessions.Replay()
-	src := orName(s.current, "主")
+	src := orName(parent, "主")
 	id, path, err := forkID(s.key)
 	if err != nil {
 		return "", err
@@ -109,6 +112,7 @@ func (s *Service) CloneCurrent() (string, error) {
 		return "", err
 	}
 	_ = s.Rename("clone ← " + src)
+	s.recordFork(id, parent, 0) // 克隆溯源(seq 0 = 全量;供 /tree 树形)
 	return id, nil
 }
 

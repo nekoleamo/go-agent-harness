@@ -16,10 +16,25 @@
 - 缺失依赖显式失败,不静默降级。
 - core/ 包必须带单测;新增分发模式/生命周期语义需测试覆盖。
 
+## 便携纪律(运行数据单根,完全便携)
+**一切 gah 自身产生的运行数据/配置/密钥/插件必须落在 `GAH_HOME` 单根下**(main 启动 Setenv GAH_HOME;便携模式 = 与 gah 二进制同级的 `gah-data/` 自动发现、**不存在则首启自动新建并释放初始化内容**,M16.9/P5.7)。目标:部署目录内 gah+gah-data(+start.sh)即完整,升级只替换 gah 单文件、数据随目录整体迁移。
+- **新增任何写盘路径必须经 GAH_HOME 派生**(复用 home helper/`os.Getenv("GAH_HOME")`),并给可审计的 Path() helper(便于盘点);禁止:硬编码 `~/.gah`、`UserHomeDir` 直拼、相对 cwd 写、系统根、二进制旁散目录、XDG 位置。
+- 路径解析只允许一条链(与 cmd/gah homeDir 一致):`GAH_HOME env` > 二进制同级 `gah-data/` > `~/.gah` > TempDir——新代码不得另起解析链;`GAH_HOME` 为空且各分支失败时宁回 TempDir 也不落 cwd/根。
+- 密钥类配置(provider.yaml / search.yaml 等)一律入 `config/` 随目录迁移;启动环境变量(GAH_MCP_COMMANDS 等)放 `gah-data/env.sh` 由 start.sh source,**不得以 shell profile(~/.zshrc 等)作为唯一承载**。
+- 新增数据子目录(记忆/计划/会话/任务等)一律 `$GAH_HOME/<name>/`;外部插件/UI 插件落 `$GAH_HOME/plugins/`、`$GAH_HOME/ui-plugins/`。
+- **例外(不属于 gah 运行数据,不受本纪律约束)**:项目级技能 `.gah/skills/`(随仓库/git 走)、工作区写工具(tool-files 等)对用户明确要操作的文件、仓库源码与 seed 样板(config/bundle-*.yaml、internal/embed/seed 为生成源)。
+- review/验收点:新代码若含 `os.WriteFile`/`MkdirAll`/`os.Create`,路径根必须可回溯到 GAH_HOME 链。
+
 ## 语言与工具
 - Go 1.27+;golangci-lint;testify 可选,多数用例标准库断言即可。
 - 发布编译:`CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$(git describe --tags)"`。
 - CI:go vet + go test ./... -race;全库测试必须保持 -race 全绿。
+
+## UI 规范(web/tui)
+- **web 端一切相关改动默认先读并遵循 `design-taste-frontend`(taste)skill**(见 ~/.pi/agent/skills/02-design/taste-skill/SKILL.md):设计读、三转盘、防 AI 俗套(emoji/默认紫渐变/三等高卡片/过度动效)、色彩一致性(单强调色 + 语义色)、形状一致性(圆角系统)、pre-flight 清单(无 em-dash、按钮对比度、CTA 单行、taste skill §14)。taste 不适用的应用型 UI 部分(数据密度/工作台)仍遵循其色彩/字体/形状纪律。
+- 界面默认语言与观感对齐 DeepSeek Harness 设计语言:bluish 中性色阶 + DeepSeek 蓝 `#4176e6` 单强调色;token 定义在 `web-src/src/style.css`(圆角/边框/阴影分层),组件不得散写裸色值。
+- 增删改等有副作用操作必须二次确认(居中弹层);会话流按消息类型(text/角色/工具/系统)给不同文字色或背景块;连接状态等实时信号放显眼处(状态栏),不放右下角弱位。
+- 渲染层禁止 v-html(文本一律插值转义);web 前端依赖新增必须评审(taste skill §3.F)。
 
 ## 事件与配置约定
 - 插件事件名用点分(`agent/pre-step`、`tools/pre-execute`),扩展点优先 waterfall(=veto 语义)。

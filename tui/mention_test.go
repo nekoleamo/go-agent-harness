@@ -32,12 +32,12 @@ func TestMentionTokenAt(t *testing.T) {
 	}{
 		{"", 0, 0, false},
 		{"@", 1, 0, true},
-		{"@a", 2, 0, true},          // 词首 @
-		{"看 @file", 7, 2, true},     // 空格后 @
-		{"看 @", 3, 2, true},         // 空 token
+		{"@a", 2, 0, true},            // 词首 @
+		{"看 @file", 7, 2, true},       // 空格后 @
+		{"看 @", 3, 2, true},           // 空 token
 		{"mail@x.com", 10, 0, false},  // 段内 @(非词首)→ 不触发
 		{"http://a/@u", 12, 0, false}, // URL 段内 @:段起点非 @ → 不触发(防误触发)
-		{"@a b", 2, 0, true}, // 光标在 @a 词尾(未越过空格):仍触发
+		{"@a b", 2, 0, true},          // 光标在 @a 词尾(未越过空格):仍触发
 		{"\u770b @file", 7, 2, true},  // 中文前缀+空格后 @ 触发
 	}
 	for _, c := range cases {
@@ -177,9 +177,9 @@ func TestIndexProjectFiles(t *testing.T) {
 	mk("a.go")
 	mk("pkg/b.go")
 	mk("docs/read.md")
-	mk(".hidden/h.go")       // 隐藏目录跳过
+	mk(".hidden/h.go")          // 隐藏目录跳过
 	mk("node_modules/dep/x.go") // 依赖目录跳过
-	mk("vendor/y.go")        // 命名约定外保留
+	mk("vendor/y.go")           // 命名约定外保留
 	opts := indexProjectFiles(dir)
 	got := map[string]bool{}
 	for _, o := range opts {

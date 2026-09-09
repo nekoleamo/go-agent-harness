@@ -57,13 +57,18 @@ type Loop struct {
 	reminder string // 待注入下轮的提醒消息(伪调用检测触发)
 }
 
-// Run 处理一次用户输入直至一轮完成。
+// Run 处理一次用户输入直至一轮完成(无附件;等价 RunWithAttachments nil)。
 func (l *Loop) Run(ctx context.Context, input string) error {
+	return l.RunWithAttachments(ctx, input, nil)
+}
+
+// RunWithAttachments 处理一次用户输入(附件一期:图片随消息视觉注入,文件路径引用)。
+func (l *Loop) RunWithAttachments(ctx context.Context, input string, atts []sdk.Attachment) error {
 	l.c.Emit(ctx, "agent/status", "running", sdk.Emit)
 	// 回合级状态重置:伪调用提醒每回合至多一次
 	l.reminded = false
 	l.reminder = ""
-	if err := l.sessions.Append(sdk.SessionEvent{Kind: sdk.EventUserMessage, Payload: sdk.UserMessage{Content: input}}); err != nil {
+	if err := l.sessions.Append(sdk.SessionEvent{Kind: sdk.EventUserMessage, Payload: sdk.UserMessage{Content: input, Attachments: atts}}); err != nil {
 		return err
 	}
 	for step := 0; step < maxSteps; step++ {

@@ -68,6 +68,7 @@ func buildExternalEnv(t *testing.T, dir string, extra ...config.Entry) (*ctx.Ctx
 		{ID: "host-llm"},
 		{ID: "host-system-prompt"},
 		{ID: "llm-mock"},
+		{ID: "host-session-log"}, // M9.3 fork 的 ctx.sessions 来源(须在 host-fanout 之前装配)
 		{ID: "host-jobs"},
 		{ID: "host-fanout"},
 		{ID: "host-bridge", Data: map[string]any{"dir": dir}},
@@ -93,6 +94,7 @@ func buildExternalEnv(t *testing.T, dir string, extra ...config.Entry) (*ctx.Ctx
 // TestExternalWorkflow 外部 tool-workflow:starlark 引擎在外部进程,脚本内工具调用经
 // 宿主回调 → host-bridge → 外部 tool-basic(shell)。
 func TestExternalWorkflow(t *testing.T) {
+	t.Parallel() // M16 T1:独立 e2e(各自 TempDir)并行化
 	extDir := t.TempDir()
 	releaseExt(t, extDir, "tool-basic", "tool-workflow")
 	c, _ := buildExternalEnv(t, extDir)
@@ -125,6 +127,7 @@ result = {"out": r}`
 // TestExternalWorkflowBackground 外部 workflow 背景任务:回调宿主 jobs.run 托管,
 // 宿主任务体经桥协议调回外部进程执行;workflow_collect 回调取回。
 func TestExternalWorkflowBackground(t *testing.T) {
+	t.Parallel() // M16 T1:独立 e2e(各自 TempDir)并行化
 	extDir := t.TempDir()
 	releaseExt(t, extDir, "tool-basic", "tool-workflow")
 	c, _ := buildExternalEnv(t, extDir)
@@ -199,9 +202,48 @@ func TestExternalMCPBridge(t *testing.T) {
 	}
 }
 
+// TestExternalMCPBridgeMulti 外部 tool-mcp 多 server:GAH_MCP_COMMANDS 每行挂一个
+// MCP server,工具按 mcp_<server>_<name> 注册且路由到各自 server 实例。-race 全绿。
+func TestExternalMCPBridgeMulti(t *testing.T) {
+	extDir := t.TempDir()
+	releaseExt(t, extDir, "tool-basic", "tool-mcp")
+	bin := filepath.Join(extDir, "mcpserver")
+	if err := runGoBuild(t, bin, "./mcpserver"); err != nil {
+		t.Fatalf("编译 mcpserver: %v", err)
+	}
+	t.Setenv("GAH_MCP_COMMANDS", "alpha="+bin+" -name alpha\nbeta="+bin+" -name beta")
+	c, _ := buildExternalEnv(t, extDir)
+
+	var tools sdk.ToolRegistry
+	if err := c.Inject("ctx.tools", &tools); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]string{"mcp_alpha_greet": "alpha", "mcp_beta_greet": "beta"} {
+		def, ok := tools.Get(name)
+		if !ok {
+			var names []string
+			for _, d := range tools.List() {
+				names = append(names, d.Name)
+			}
+			t.Fatalf("%s 应经 tool-mcp 注册,实际: %v", name, names)
+		}
+		if !strings.Contains(def.Description, want) {
+			t.Fatalf("定义应来自 server %s: %+v", want, def)
+		}
+		res, err := tools.Execute(context.Background(), name, `{"name":"世界"}`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Error != "" || !strings.Contains(res.Content, "你好, 世界!(via "+want+")") {
+			t.Fatalf("%s 应路由到 server %s: %+v", name, want, res)
+		}
+	}
+}
+
 // TestExternalSubagent 外部 tool-subagent:子代理委派工具在独立进程注册(崩溃隔离),
 // delegate 经宿主回调通道请求 fanout.agent——子代理(独立上下文)由 mock llm 驱动返回结论。
 func TestExternalSubagent(t *testing.T) {
+	t.Parallel() // M16 T1:独立 e2e(各自 TempDir)并行化
 	extDir := t.TempDir()
 	releaseExt(t, extDir, "tool-subagent")
 	c, _ := buildExternalEnv(t, extDir)
@@ -239,6 +281,7 @@ func TestExternalSubagent(t *testing.T) {
 // TestExternalSubagentBackground 外部 tool-subagent 后台会话(M9.2):spawn 经回调宿主
 // fanout.SpawnAgent(不阻塞),agents/agent_status 轮询至 done 取回结论。
 func TestExternalSubagentBackground(t *testing.T) {
+	t.Parallel() // M16 T1:独立 e2e(各自 TempDir)并行化
 	extDir := t.TempDir()
 	releaseExt(t, extDir, "tool-subagent")
 	c, _ := buildExternalEnv(t, extDir)
@@ -288,6 +331,63 @@ func TestExternalSubagentBackground(t *testing.T) {
 	}
 }
 
+// TestExternalSubagentFork 外部 tool-subagent fork(M9.3):宿主 ctx.sessions 已有父历史,
+// fork 经回调通道请求 fanout.Fork(种入父历史后台启动)并轮询至 done 取回结论。
+func TestExternalSubagentFork(t *testing.T) {
+	t.Parallel() // M16 T1:独立 e2e(各自 TempDir)并行化
+	extDir := t.TempDir()
+	releaseExt(t, extDir, "tool-subagent")
+	c, _ := buildExternalEnv(t, extDir)
+
+	var sessions sdk.SessionLog
+	if err := c.Inject("ctx.sessions", &sessions); err != nil {
+		t.Fatal(err)
+	}
+	// 父会话已有历史(fork 种入源;模型可见=已记录)
+	if err := sessions.Append(sdk.SessionEvent{Kind: sdk.EventUserMessage, Payload: sdk.UserMessage{Content: "父级问题"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sessions.Append(sdk.SessionEvent{Kind: sdk.EventAssistantMessage, Payload: sdk.AssistantMessage{Content: "父级回答"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	var tools sdk.ToolRegistry
+	if err := c.Inject("ctx.tools", &tools); err != nil {
+		t.Fatal(err)
+	}
+	res, err := tools.Execute(context.Background(), "subagent", mustJSON2(t, map[string]any{
+		"action": "fork",
+		"task":   "在父上下文基础上继续",
+	}))
+	if err != nil || res.Error != "" {
+		t.Fatalf("fork 失败: err=%v res=%+v", err, res)
+	}
+	var sp struct {
+		AgentID string `json:"agent_id"`
+	}
+	if err := json.Unmarshal([]byte(res.Content), &sp); err != nil || sp.AgentID == "" {
+		t.Fatalf("fork 应返回 agent_id: %s", res.Content)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		st, err := tools.Execute(context.Background(), "subagent", mustJSON2(t, map[string]any{
+			"action":   "agent_status",
+			"agent_id": sp.AgentID,
+		}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var h sdk.AgentHandle
+		if json.Unmarshal([]byte(st.Content), &h) == nil && h.State == sdk.AgentDone && h.Result != "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("fork 子代理轮询超时: %s", st.Content)
+		}
+		time.Sleep(80 * time.Millisecond)
+	}
+}
+
 // runGoBuild 编译测试辅助(相对 tests/ 包目录)。
 func runGoBuild(t *testing.T, out, pkg string) error {
 	t.Helper()
@@ -308,4 +408,3 @@ func mustJSON2(t *testing.T, v any) string {
 	}
 	return string(b)
 }
-

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/nekoleamo/go-agent-harness/bundles"
@@ -27,19 +28,27 @@ import (
 var version = "dev"
 
 var (
-	profileFlag = flag.String("profile", "tui", "profile 名(tui | headless | dev)")
-	inputFlag   = flag.String("input", "", "headless:一次输入,跑一轮后输出模型回复并退出")
-	dumpConfig  = flag.Bool("dump-config", false, "输出合并后的配置树并退出")
-	ephemeral   = flag.Bool("ephemeral", false, "一次性模式:配置落 temp,退出即焚")
-	showVersion = flag.Bool("version", false, "输出版本信息并退出")
-	installFlag = flag.String("install", "", "安装线上插件(M6.6):<repo>[@version] 或 mcp:<id>:<command>,装完即启用")
-	uninstallFl = flag.String("uninstall", "", "卸载插件:<id>(删 home/plugins/<id>,桥 watch 自动撤销)")
-	listPlugins = flag.Bool("list-plugins", false, "列出已安装的外部插件")
+	profileFlag  = flag.String("profile", "tui", "profile 名(tui | headless | dev)")
+	inputFlag    = flag.String("input", "", "headless:一次输入,跑一轮后输出模型回复并退出")
+	dumpConfig   = flag.Bool("dump-config", false, "输出合并后的配置树并退出")
+	ephemeral    = flag.Bool("ephemeral", false, "一次性模式:配置落 temp,退出即焚")
+	showVersion  = flag.Bool("version", false, "输出版本信息并退出")
+	installFlag  = flag.String("install", "", "安装线上插件(M6.6):<repo>[@version] 或 mcp:<id>:<command>,装完即启用")
+	uninstallFl  = flag.String("uninstall", "", "卸载插件:<id>(删 home/plugins/<id>,桥 watch 自动撤销)")
+	listPlugins  = flag.Bool("list-plugins", false, "列出已安装的外部插件")
+	installUIFl  = flag.String("install-ui", "", "安装 UI 插件(M7.2):<repo>[@version] 或本地目录;v-html 扫描拒装")
+	uninstallUIF = flag.String("uninstall-ui", "", "卸载 UI 插件:<id>(删 home/ui-plugins/<id>,重载页面即回默认)")
+	listUIPlugs  = flag.Bool("list-ui-plugins", false, "列出已安装的 UI 插件")
 )
 
-	// 非 TTY 检测(TUI profile):stdin 为 pipe/重定向时 bubbletea 会直读 stdin 卡死挂起;
-	// 显式拒绝并提示走 headless(或提供 -input)——不再死机。
+// 非 TTY 检测(TUI profile):stdin 为 pipe/重定向时 bubbletea 会直读 stdin 卡死挂起;
+// 显式拒绝并提示走 headless(或提供 -input)——不再死机。
 func main() {
+	// M7 入口糖:gah web ≡ gah --profile web(Web UI 形态,浏览器访问 http://127.0.0.1:2233)
+	if len(os.Args) > 1 && os.Args[1] == "web" {
+		os.Args = append([]string{os.Args[0]}, os.Args[2:]...)
+		*profileFlag = "web"
+	}
 	flag.Parse()
 	if !isStdinTTY() && *inputFlag == "" && *profileFlag == "tui" {
 		fmt.Fprintln(os.Stderr, "gah: TUI 需要交互式终端(stdin 非 TTY)。管道/后台场景请用: -profile headless -input <文本>")
@@ -107,6 +116,36 @@ func main() {
 				protocol = "bridge"
 			}
 			fmt.Printf("%s\t%s	%s\n", it.ID, protocol, it.Binary)
+		}
+		return
+	}
+	// UI 插件安装/卸载/清单(M7.2):产物落 home/ui-plugins/<id>/,装配即生效(重载页面)
+	if *installUIFl != "" {
+		res, err := install.InstallUI(*installUIFl, home)
+		if err != nil {
+			logger.Error("install-ui: 失败", "err", err)
+			os.Exit(1)
+		}
+		fmt.Printf("已安装 UI 插件 %s v%s(覆盖 %d 槽位)\n", res.ID, res.Version, res.Slots)
+		fmt.Printf("  落位: %s\n", res.Dir)
+		fmt.Printf("  生效: 重载 web 页面即换(ui-web-app 聚合自动发现)\n")
+		return
+	}
+	if *uninstallUIF != "" {
+		if err := install.UninstallUI(*uninstallUIF, home); err != nil {
+			logger.Error("uninstall-ui: 失败", "err", err)
+			os.Exit(1)
+		}
+		fmt.Printf("已卸载 UI 插件 %s(重载 web 页面回默认实现)\n", *uninstallUIF)
+		return
+	}
+	if *listUIPlugs {
+		for _, it := range install.ListUI(home) {
+			slots := make([]string, 0, len(it.Slots))
+			for _, s := range it.Slots {
+				slots = append(slots, s.Name)
+			}
+			fmt.Printf("%s\tv%s\t[%s]\t%s\n", it.ID, it.Version, strings.Join(slots, ","), it.Dir)
 		}
 		return
 	}
@@ -257,7 +296,7 @@ func assembleAndStart(logger *slog.Logger, tree *config.Tree, profilePath string
 func catalogueInfo() map[string]sdk.PluginInfo {
 	out := make(map[string]sdk.PluginInfo)
 	for id, d := range catalogue.All {
-		out[id] = sdk.PluginInfo{ID: id, Type: d.Manifest.Type, Bundle: d.Bundle}
+		out[id] = sdk.PluginInfo{ID: id, Type: d.Manifest.Type, Bundle: d.Bundle, Manage: d.Manage}
 	}
 	return out
 }
@@ -273,7 +312,6 @@ func enabledSet(tree *config.Tree) map[string]bool {
 	return set
 }
 
-
 // isStdinTTY stdin 是否交互终端(char device);pipe/重定向 → false。
 func isStdinTTY() bool {
 	fi, err := os.Stdin.Stat()
@@ -283,15 +321,41 @@ func isStdinTTY() bool {
 	return fi.Mode()&os.ModeCharDevice != 0
 }
 
-// homeDir 运行时主目录:$GAH_HOME 或 ~/.gah。
+// homeDir 运行时数据根(便携优先):
+//  1. GAH_HOME env(显式覆盖)
+//  2. 便携模式:与 gah 二进制同级的 gah-data/(不存在则自动新建——部署目录即自包含,
+//    初始化内容(config 样板/外部插件)由后续首启 EnsureSeed/EnsurePlugins 释放;
+//    创建失败(目录只读等)= 不可便携 → 回落;升级仅替换 gah 单文件)
+//  3. 默认 ~/.gah
+// 任一分支都不会落入系统根(防根);全部运行数据统一在此单根下。
 func homeDir() string {
 	if h := os.Getenv("GAH_HOME"); h != "" {
 		return h
+	}
+	if exe, err := os.Executable(); err == nil {
+		if pd := portableRoot(exe); pd != "" {
+			return pd
+		}
 	}
 	if uh, err := os.UserHomeDir(); err == nil {
 		return filepath.Join(uh, ".gah")
 	}
 	return os.TempDir()
+}
+
+// portableRoot 便携数据根解析:给定 gah 二进制路径(经符号链接归一出调用方处理)
+// → 同目录 gah-data/。已存在 → 用之;不存在 → MkdirAll 新建(成功后由首启释放填充
+// 内容);创建失败(二进制目录只读/不可写)= 不可便携 → 返回空(调用方回落 ~/.gah)。
+func portableRoot(exe string) string {
+	pd := filepath.Join(filepath.Dir(filepath.Clean(exe)), "gah-data")
+	if fi, serr := os.Stat(pd); serr == nil && fi.IsDir() {
+		return pd
+	} else if serr != nil && os.IsNotExist(serr) {
+		if merr := os.MkdirAll(pd, 0o755); merr == nil {
+			return pd // 新建成功:homeDir 后续 EnsureSeed/EnsurePlugins 释放初始化内容
+		}
+	}
+	return ""
 }
 
 // loadProfileTree 解析 profile 文件;bundle 由配置文件同目录解析。

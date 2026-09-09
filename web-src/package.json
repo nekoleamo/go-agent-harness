@@ -1,0 +1,21 @@
+{
+  "name": "gah-web",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "gah Web UI 前端(Vue3 + Vite + TS;M7)。产物 web/dist 由 scripts/gen-web.sh 构建并 embed 进主二进制,运行时严格零构建。",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "typecheck": "vue-tsc --noEmit"
+  },
+  "dependencies": {
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "typescript": "~5.7.3",
+    "vite": "^6.1.0",
+    "vue-tsc": "^2.2.0"
+  }
+}

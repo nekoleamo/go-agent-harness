@@ -1,0 +1,10 @@
+{
+  "id": "extension-demo",
+  "version": "0.1.0",
+  "out": "dist",
+  "slots": [
+    { "name": "settings-section", "priority": 10, "module": "./dist/section.js", "title": "插件区段" },
+    { "name": "sidebar-action", "priority": 10, "module": "./dist/action.js", "title": "示例动作" },
+    { "name": "extra-panel", "priority": 10, "module": "./dist/panel.js", "title": "示例面板" }
+  ]
+}

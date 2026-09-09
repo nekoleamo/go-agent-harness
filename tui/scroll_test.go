@@ -25,7 +25,7 @@ func TestRenderMultiLineBounded(t *testing.T) {
 	if n > 13 {
 		t.Fatalf("渲染行数失控:%d 行(高度 12 时应 ≈11-12),多行文本把界面撑爆", n)
 	}
-	if !strings.Contains(out, "❯") || !strings.Contains(out, "gah |") {
+	if !strings.Contains(out, "❯") || !strings.Contains(out, "工作区:") {
 		t.Fatal("输入行/状态栏应始终在渲染结果中(多行文本不应挤掉它们)")
 	}
 	if !strings.Contains(out, "░") && !strings.Contains(out, "█") {

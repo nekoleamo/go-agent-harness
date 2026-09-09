@@ -11,9 +11,9 @@ import (
 // TestSessionStyleLayers 样式分层:四种 kind 各自独立样式(引擎层不含 user 前景污染)。
 func TestSessionStyleLayers(t *testing.T) {
 	cases := map[string]string{
-		"user":      "81", // 绿
-		"assistant": "120",
-		"tool":      "220",
+		"user":      "81",  // 青
+		"assistant": "253", // 近白(克制,markdown 局部高亮承担层次)
+		"tool":      "246", // 灰(调暗)
 		"error":     "203",
 	}
 	for kind, want := range cases {

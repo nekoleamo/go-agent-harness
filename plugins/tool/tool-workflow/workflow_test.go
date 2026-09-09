@@ -10,12 +10,12 @@ import (
 
 	"github.com/nekoleamo/go-agent-harness/core/ctx"
 	"github.com/nekoleamo/go-agent-harness/core/event"
+	"github.com/nekoleamo/go-agent-harness/plugins/adapter/llm-mock"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-fanout"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-jobs"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-llm"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-system-prompt"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-tools"
-	"github.com/nekoleamo/go-agent-harness/plugins/adapter/llm-mock"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-shell"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )

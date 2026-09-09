@@ -64,8 +64,8 @@ type Model struct {
 	onCancel        func()                           // 取消进行中的回合(注入;Esc 触发)
 	hints           func(prefix string) []sdk.Option // 命令选项(注入;前缀=去掉 / 后的输入)
 	levels          func(name string) []sdk.ArgLevel // 命令参数级定义(注入;枚举/自由级)
-	onFiles         func() []sdk.Option             // @ 文件引用候选(注入;App 项目文件索引含缓存)
-	onWidgets       func() []Widget                 // P4-12 widget 行注入(渲染帧拉取;App widgets 集合)
+	onFiles         func() []sdk.Option              // @ 文件引用候选(注入;App 项目文件索引含缓存)
+	onWidgets       func() []Widget                  // P4-12 widget 行注入(渲染帧拉取;App widgets 集合)
 	onThinkingCycle func(dir int)                    // Tab/Shift+Tab 思考等级循环(注入:dir=1 前进,-1 后退)
 	onStats         func() sdk.UsageStats            // 会话 token 统计拉取(注入;回合结束刷新状态栏)
 }
@@ -737,9 +737,36 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 				m.syncHints()
 			}
 			return nil
+		case 'a':
+			// Ctrl+A:全选输入文本(随后删除=清空/输入=替换;终端无关)
+			m.state.SelectAll()
+			m.syncHints()
+			return nil
+		case 'b', 'f':
+			// Ctrl+B/F:逐字符左右移动(ASCII 控制键,最通吃;Alt+←/→ 按词语义的兜底导航)
+			if k.Code == 'b' {
+				m.state.CursorLeft()
+			} else {
+				m.state.CursorRight()
+			}
+			return nil
+		case 'y':
+			// Ctrl+Y:redo(与 Ctrl+Shift+Z 等价;部分终端不转发 Shift 组合的兜底)
+			if m.state.Redo() {
+				m.syncHints()
+			}
+			return nil
 		case 'g', 'G':
 			// Ctrl+G:外部编辑器编辑整段($VISUAL/$EDITOR/nano;保存退出回填输入框)
 			return m.externalEdit()
+		case 'o', 'O':
+			// Ctrl+O:切换最近一条工具结果行的展开/折叠(P5,对齐 pi app.tools.expand)
+			m.toggleLastFold()
+			return nil
+		case 't', 'T':
+			// Ctrl+T:切换思维块展开/折叠(B1,对齐 pi app.thinking.toggle)
+			m.state.ThinkingFull = !m.state.ThinkingFull
+			return nil
 		}
 	}
 	if m.state.Pick == nil && k.Mod&tea.ModAlt != 0 {
@@ -749,6 +776,12 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			return nil
 		case tea.KeyRight:
 			m.state.WordRight()
+			return nil
+		case 'p':
+			// Alt+P:yank 粘贴最近 Ctrl+K/U 删除的文本(kill-ring 单槽;入 undo)
+			if m.state.Yank() {
+				m.syncHints()
+			}
 			return nil
 		case tea.KeyUp:
 			// P4-1:取回最新一条排队消息到编辑区(队尾弹出;回合运行中亦可用)
@@ -807,6 +840,12 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			m.refreshMention()
 		}
 	case tea.KeyUp:
+		// Ctrl+↑/Ctrl+Shift+↑:跳到最早一条用户消息(对话起点;P5 消息跳转)
+		if k.Mod&tea.ModCtrl != 0 {
+			m.jumpToFirstUser()
+			m.markBar()
+			return nil
+		}
 		if p := m.state.Mention; p != nil {
 			if p.Cursor > 0 {
 				p.Cursor-- // @ 候选:上移
@@ -822,6 +861,12 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			m.state.LineUp()
 		}
 	case tea.KeyDown:
+		// Ctrl+↓/Ctrl+Shift+↓:回到底部跟随最新(P5 消息跳转)
+		if k.Mod&tea.ModCtrl != 0 {
+			m.state.ScrollOffset = 0
+			m.markBar()
+			return nil
+		}
 		if p := m.state.Mention; p != nil {
 			if p.Cursor < len(p.Items)-1 {
 				p.Cursor++ // @ 候选:下移
@@ -1020,6 +1065,41 @@ func clampPickCursor(p *Pick) {
 		p.Cursor = 0
 	} else if p.Cursor >= len(p.Items) {
 		p.Cursor = len(p.Items) - 1
+	}
+}
+
+// toggleLastFold 切换最近一条可折叠结果行(工具结果全文,Line.Full 非空)的展开/折叠
+// (Ctrl+O;对齐 pi app.tools.expand)。切换后回到底部跟随(新内容可见);无可折叠行 no-op。
+func (m *Model) toggleLastFold() {
+	for i := len(m.state.Lines) - 1; i >= 0; i-- {
+		if m.state.Lines[i].Full != "" && m.state.ToggleFold(i) {
+			m.state.ScrollOffset = 0
+			return
+		}
+	}
+}
+
+// jumpToFirstUser 跳到最早一条用户消息(Ctrl+↑):滚动窗口顶端对齐其首物理行。
+// 无 user 行 no-op;折叠展开全文行按摘要宽度近似计量(跳转定位不必像素级精确)。
+func (m *Model) jumpToFirstUser() {
+	lines := m.state.Lines
+	if len(lines) == 0 {
+		return
+	}
+	colW := m.w - 3
+	if colW < 8 {
+		colW = 8
+	}
+	for li, ln := range lines {
+		if ln.Kind != "user" {
+			continue
+		}
+		off := 0
+		for j := 0; j < li; j++ {
+			off += len(flattenLine(j, lines[j], colW))
+		}
+		m.state.ScrollOffset = off
+		return
 	}
 }
 

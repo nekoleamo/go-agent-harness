@@ -4,6 +4,7 @@ before:
   hooks:
     - go mod tidy
     - bash scripts/gen-extplugins.sh # M7 体积门:重建外部插件 gzip embed(漏则体积回归)
+    - bash scripts/gen-web.sh # M7 Web UI:重建前端产物(漏则 go:embed 编译失败)
 builds:
   - id: gah
     binary: gah

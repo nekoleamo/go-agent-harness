@@ -305,7 +305,7 @@ func TestRenderContainsKeyParts(t *testing.T) {
 	s := &State{Profile: "tui", Running: true, Input: "你好", Model: "mock-model"}
 	s.ApplySessionEvent(&sdk.SessionEvent{Kind: sdk.EventUserMessage, Payload: sdk.UserMessage{Content: "hi"}})
 	out := Render(s, 80, 24)
-	for _, want := range []string{"tui", "思考中", "模型: mock-model", "hi", "❯"} {
+	for _, want := range []string{"工作区:", "思考中", "模型: mock-model", "hi", "❯"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("渲染缺少 %q:\n%s", want, out)
 		}

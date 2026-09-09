@@ -170,10 +170,12 @@
 - 验收:滚动/长输出重绘无撕裂闪烁;不支持的终端自动忽略。
 
 ## 不做/远期
-- kitty 图形协议富媒体(图像直接上屏)、多面板布局、主题系统:
+- kitty 图形协议富媒体(图像直接上屏)、多面板布局:
   留给 M7 Web UI(M7.2 槽位插件化)之后的统一展示层评估。
+- **TUI 主题系统(样式/配色外部统一修改)** ✅ **M13 已交付(2026-09)**:注入通道 = ui-tui-app `data.palette` / `$GAH_HOME/config/theme.yaml`(用户全局,覆盖前者)+ `/theme <名|default>` 运行期切换 `config/themes/<名>.yaml`;默认表兜底、渲染层零改动、免重编译换肤。详见 DESIGN.md §14.1 M13。
 
 ## 阶段推进建议(执行记录)
+0. ✅ **M15 pi 式默认样式(2026-09)**:① **状态栏精简**——去掉 profile/模型/思维/上下文与 gah 标识(**F15.3**),保留 `状态(思考/执行前置滚动图案 + Esc 取消/Esc 待发计数) | 工作区 | 沙箱 | 审批(开放/智能/严格;M17 补充,2026-09,空档省略) | 会话`;思考动画为**定宽 5 shade 光条滚动** `█▓▒░░ → ░█▓▒░ → ░░█▓▒ → …`(F15.3 修正:▁▂▃▄▅ 细分块在 Menlo 等字体缺失显示空白,改 ░▒▓█ 家族——主流终端字体普遍支持、光条左右滚动醒目);② **输入行右侧挂载运行指标** —— **F15.1/F15.2 修正(用户反馈:输入长时信息被挤压 → 后要求放最后一行下面)**:改为**屏幕最底独立指标行**(模型含来源 · 思维 · 上下文 x/y (n%) 缓存 n%,位于状态栏之下固定显示,不随输入移动、输入多长信息完整不省略);③ **底部区整宽淡色分隔线**(主区会话流与底部区边界,几何统一纳入 mainH=height-4;**F15.5:状态栏/指标行与输入区之间增 1 空隙行**,mainH=height-6);④ **调色板降饱和**(assistant 120→253 近白克制、tool 220→246 灰、status 250→252、widget 249→243——层次由 markdown 局部高亮承担;默认表即新基线,`/theme`/theme.yaml 通道不变)。渲染层纯函数(chrome/render/palette),TUI 单测断言同步更新(chrome_test 重构 + 新增 TestInputLineRight;palette/session/toolrow/commands/multiline/state 基线同步);全库 -race 39 包绿。详见 DESIGN.md §14.1 M15。
 1. ✅ S1.2 + S1.1(滚动条/搜索)+ S1.5(划选)+ S1.3(输入增强)+ S1.6(/workspace)已实施。
 2. ✅ S1.4(Markdown 轻渲染)已实施(markdown.go 单测 12 项;kitty 真机见渲染)。
 3. ✅ S2.1(消息分组)已实施:工具行去重(EventAssistantMessage 不再双写 ToolCalls 行,
@@ -182,6 +184,12 @@
    ⏳ 可展开折叠交互留 S2.2 组件化(需 state 折叠集合 + 鼠标单击命中折叠行)。
 4. → S2.2(渲染组件化):S2.1 折叠交互在此接入。
 5. → S3(形态):S2.2 完成后评估,作为独立里程碑。
+6. ✅ **P5 TUI 视觉升级(2026-09-08,对照本地 pi gruvbox-dark 查漏补缺)**:① **V1 主题 token 扩 16**(palette.go)——背景四 token(用户 236/调用 235/结果 237,黑底三层灰)、md-link/md-quote、think-off/low/med/high 四边框色、syntax-var/num/type/op/punct;既有 token 零改动。② **V2 用户消息整块背景**(session.go annotateRowBg:user 全物理行 236 底;叠加=搜索命中>user 背景>选区)。③ **V3 工具框感**:调用行 `▍` 左缘竖线(flattenLine 复用 ❯ 前缀机制,limit-2)+235 底;成功/失败结果行首行 237 底(折叠摘要即框感,展开正文走 diff/md 不加背景);折叠早退路径(stRenderText)背景保持。④ **V4 md 补全**(markdown.go):链接 `[text]` link 色+下划线(`](url)` 原样保留字符无损)、引用行 `>` 标记 think-off 加粗+正文 quote 米白、代码块语法 3 色扩 8 分类(数字 orange/类型 cyan/变量米白/运算符/标点 dim)。⑤ **V5 输入聚焦**:输入行左缘 `│` 竖线随 think 等级着色(off 灰/low 蓝灰/med 绿/high 紫;零额外行高)。⑥ **V6 小功能**:Ctrl+O 最近结果行折叠切换(对齐 pi app.tools.expand,切换回底)、回合耗时(status running/idle 计时,空闲态状态栏 `上一回合 X.Xs`,不依赖事件时序)、Ctrl+↑/↓ 跳最早 user 行/回底。测试:rowbg_test(标注/渲染/竖线/折叠保持)+ markdown 链接引用语法增强 + turn_test(计时/Ctrl+O/跳转)+ palette/multiline 基线同步;真机 pty ANSI 断言(背景 236/235/237 与输入竖线命中);全库 -race 绿(不含预存旧二进制 pty 探针)。详见 DESIGN §14.1 P5。
+8. ✅ **P5.2 A 组(2026-09-08)**:① **工具耗时**(tui/state.go toolStart):EventToolCall 计时 → EventToolResult 结算,>=100ms 挂结果行尾(重放毫秒级自然抑制;零值保护防虚构时长;失败结果同样显示)。② **会话内容预览**(tui/app.go sessionDesc):/session switch 每项带首条用户消息预览(20 字,复用 SessionInfo.Preview)。测试 duration_test.go + 真机选择器 ─ 预览;详见 DESIGN §14.1 P5.2。
+10. ✅ **P5.3 B1 思维块(2026-09-08)**:① **事件字段**(sdk/llm.go LLMStreamEvent.Thinking);② **adapter 解析**(compat.go reasoning_content → ev.Thinking);③ **TUI 渲染**(thinking 行灰斜体(新 token thinking=242)+Ctrl+T 折叠(ThinkingFull 切换,flattenViewLines 展平层截首段 40+「…(Ctrl+T 展开)」,展开全文;搜索/选区命中完整));④ **投影零改动**(thinking 在 chunk 不进 LLMMessage)。测试:compat_test TestCompleteStreamsThinking + tui thinking_test(三测试);anthropic 后置。详见 DESIGN §14.1 P5.3。
+9. ✅ **P5.1 剩余体验优化(2026-09-08)**:① **gruvbox-dark 主题样板**(config/themes/gruvbox-dark.yaml,44 token 覆盖全表 hex 色,对照用户本地 pi 同名主题;复制到 $GAH_HOME/config/themes 后 `/theme gruvbox-dark` 一键切换,真机 pty 验证列表出现);② **md 链接 OSC8 超链接**(markdown.go mdLink 经 lipgloss Hyperlink 原生输出 `ESC]8;;url` 包裹,宽度计算无扰、终端 cmd/ctrl+点击打开;链接测试剥 OSC(BEL 终止)断言 url 存在);③ **kill-ring yank**(state.go killBuf:Ctrl+K/U 删除记入单槽,Alt+P 粘贴到光标(入 undo 可撤销),model.go Alt 分支;input_edit_test 增 TestYankKillBuf)。全库 -race 绿(不含预存 pty 探针)。详见 DESIGN §14.1 P5.1。
+11. ✅ **P5.4 B2/B3(2026-09-08)**:B2 /export html——path 以 .html 结尾渲染自包含 HTML(host-internal-commands/render_html.go;user/think 灰块/assistant 拼合/tool ok·err/全转义;jsonl 后缀不变)。B3 /tree 树形——sdk.ForkNode+ForkTree 接口;fork-tree.json 记录派生溯源(ForkAt/CloneCurrent,seq0=克隆);tui treeRenderNodes 渲染树(主恒根/fork 自主挂主/孤儿根/无记录平铺/环深保护/└─+★)。详见 DESIGN §14.1 P5.4。
+12. ✅ **M17 /approval 三档(2026-09)**:`/approval open|smart|strict`——对齐 /sandbox 交互:命令提示一级枚举三档(开放=危险命令直接放行 / 智能=命中弹确认(默认)/ 严格=直接拒绝);执行后 `prefs.SetApproval` 持久化,启动 applyPrefs 恢复档位(TUI/Web 共享 gah-state.json);ctx.approval 未装配显式报错。TUI 注册判重跳过(host-internal-commands 先注册则复用宿主命令)。详见 DESIGN §14.1 M17。
 
 ## 验收总则
 - 每项:tui 单测(-race)+ kitty 真机(键盘/鼠标/滚轮/拖动/搜索/历史)+ 全库 -race 绿。

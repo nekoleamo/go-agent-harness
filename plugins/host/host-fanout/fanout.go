@@ -33,7 +33,9 @@ func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
 	}
 	_ = c.Inject("ctx.llm", &llm)         // 未装配时子代理调用显式报错
 	_ = c.Inject("ctx.systemPrompt", &sp) // 同上
-	f := &Fanout{tools: tools, llm: llm, sp: sp, agents: map[string]*agentSession{}}
+	var sessions sdk.SessionLog
+	_ = c.Inject("ctx.sessions", &sessions) // fork 需要(ctx.sessions 未装配时 Fork 显式报错)
+	f := &Fanout{tools: tools, llm: llm, sp: sp, sessions: sessions, agents: map[string]*agentSession{}}
 	if err := c.Provide("ctx.fanout", f); err != nil {
 		return nil, err
 	}
@@ -42,9 +44,10 @@ func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
 
 // Fanout 子代理编排实现。
 type Fanout struct {
-	tools sdk.ToolRegistry
-	llm   sdk.LLMService
-	sp    sdk.SystemPromptService
+	tools    sdk.ToolRegistry
+	llm      sdk.LLMService
+	sp       sdk.SystemPromptService
+	sessions sdk.SessionLog // M9.3 fork 的父上下文来源(可 nil → Fork 显式报错)
 
 	// M9.2 后台子代理会话控制:agents 表 + 序号。会话独立上下文(Background + cancel),
 	// 不随发起方 ctx 取消;由 KillAgent/宿主 shutdown 显式终止。
@@ -55,10 +58,19 @@ type Fanout struct {
 
 // agentSession 一个后台子代理会话。
 type agentSession struct {
-	handle  sdk.AgentHandle
-	cancel  context.CancelFunc
-	done    chan struct{}
+	handle sdk.AgentHandle
+	cancel context.CancelFunc
+	done   chan struct{}
+	// M9.3 send_message/fork:
+	// inbox 父级注入消息通道(运行循环每步 drain);seed 为 fork 种入的父会话历史;
+	// dialog 为注入消息与子代理回复的对话记录(经 snapshot 附着到 handle.Messages)。
+	inbox  chan string
+	seed   []sdk.LLMMessage
+	dialog []sdk.AgentMessage
 }
+
+// inboxCap 注入消息队列容量(运行循环每步 drain,32 已宽裕)。
+const inboxCap = 32
 
 // maxSubSteps 子代理单轮最大 ReAct 迭代(防死循环)。
 const maxSubSteps = 8
@@ -66,11 +78,29 @@ const maxSubSteps = 8
 // SpawnAgent 后台启动单子代理(不阻塞):立即返回句柄 id;子代理在独立上下文运行,
 // 完成/失败/被终止后状态经 ListAgents/AgentStatus 可取(轮询)。
 func (f *Fanout) SpawnAgent(_ context.Context, input string) (string, error) {
+	return f.spawnBackground(input, false)
+}
+
+// Fork 派生带父上下文的子代理(M9.3):初始消息历史 = 父会话已投影历史
+// (ctx.sessions.DeriveMessages)+ input;后台启动返回句柄 id。
+func (f *Fanout) Fork(_ context.Context, input string) (string, error) {
+	return f.spawnBackground(input, true)
+}
+
+// spawnBackground 后台启动公共路径:forkSeed=true 时种入父会话历史。
+func (f *Fanout) spawnBackground(input string, forkSeed bool) (string, error) {
 	if f.llm == nil || f.sp == nil {
 		return "", fmt.Errorf("子代理编排需要 ctx.llm / ctx.systemPrompt(未装配)")
 	}
 	if strings.TrimSpace(input) == "" {
 		return "", fmt.Errorf("子代理任务为空")
+	}
+	var seed []sdk.LLMMessage
+	if forkSeed {
+		if f.sessions == nil {
+			return "", fmt.Errorf("fork 需要 ctx.sessions(host-session-log 未装配)")
+		}
+		seed = f.sessions.DeriveMessages()
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	f.mu.Lock()
@@ -81,10 +111,12 @@ func (f *Fanout) SpawnAgent(_ context.Context, input string) (string, error) {
 			CreatedAt: time.Now()},
 		cancel: cancel,
 		done:   make(chan struct{}),
+		inbox:  make(chan string, inboxCap),
+		seed:   seed,
 	}
 	f.mu.Unlock()
 	go func() {
-		result, err := f.runSubAgent(ctx, input)
+		result, err := f.runAgentLoop(ctx, input, f.agents[id])
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		ag := f.agents[id]
@@ -103,18 +135,66 @@ func (f *Fanout) SpawnAgent(_ context.Context, input string) (string, error) {
 	return id, nil
 }
 
+// SendMessage 向运行中的后台子代理注入一条消息(M9.3):非阻塞投递到 inbox,
+// 子代理运行循环下一轮收到并继续。非 running 会话显式报错。
+func (f *Fanout) SendMessage(id, message string) error {
+	if strings.TrimSpace(message) == "" {
+		return fmt.Errorf("注入消息为空")
+	}
+	f.mu.Lock()
+	ag, ok := f.agents[id]
+	var state sdk.AgentState
+	if ok {
+		state = ag.handle.State
+	}
+	f.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("子代理会话不存在 %q", id)
+	}
+	switch state {
+	case sdk.AgentRunning:
+		select {
+		case ag.inbox <- message:
+			return nil
+		default:
+			return fmt.Errorf("子代理 %q 注入队列已满(运行循环未及时消费)", id)
+		}
+	case sdk.AgentDone:
+		return fmt.Errorf("子代理会话 %q 已完成,不再接收消息", id)
+	case sdk.AgentFailed:
+		return fmt.Errorf("子代理会话 %q 已失败,不再接收消息", id)
+	case sdk.AgentKilled:
+		return fmt.Errorf("子代理会话 %q 已终止,不再接收消息", id)
+	}
+	return fmt.Errorf("子代理会话 %q 状态未知", id)
+}
+
+// logDialog 记录父子代理对话一条(f.mu 保护;snapshot 同理锁内读)。
+func (f *Fanout) logDialog(ag *agentSession, from, content string) {
+	f.mu.Lock()
+	ag.dialog = append(ag.dialog, sdk.AgentMessage{From: from, Content: content})
+	f.mu.Unlock()
+}
+
+// snapshot 组装对外句柄(锁内拷贝 dialog 为 Messages)。
+func (f *Fanout) snapshot(ag *agentSession) sdk.AgentHandle {
+	h := ag.handle
+	h.Messages = append([]sdk.AgentMessage(nil), ag.dialog...)
+	return h
+}
+
 // ListAgents 全部后台子代理会话(末位最新)。
 func (f *Fanout) ListAgents() []sdk.AgentHandle {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := make([]sdk.AgentHandle, 0, len(f.agents))
 	for _, ag := range f.agents {
-		out = append(out, ag.handle)
+		out = append(out, f.snapshot(ag))
 	}
 	return out
 }
 
-// AgentStatus 取单个会话状态。
+// AgentStatus 取单个会话状态(含 send_message 对话记录)。
 func (f *Fanout) AgentStatus(id string) (sdk.AgentHandle, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -122,7 +202,7 @@ func (f *Fanout) AgentStatus(id string) (sdk.AgentHandle, bool) {
 	if !ok {
 		return sdk.AgentHandle{}, false
 	}
-	return ag.handle, true
+	return f.snapshot(ag), true
 }
 
 // KillAgent 终止运行中的子代理(killed 状态)。已完成任务返回错误。
@@ -207,16 +287,42 @@ func findCall(calls *[]sdk.ToolCall, id string) int {
 	return len(*calls) - 1
 }
 
-// runSubAgent 在独立上下文中跑一轮 ReAct(复用 ctx.llm/ctx.tools/ctx.systemPrompt);
+// runSubAgent 同步路径:独立上下文跑一轮 ReAct(复用 ctx.llm/ctx.tools/ctx.systemPrompt);
 // 工具调用经全流水线执行(策略拦截经 tools/pre-execute 生效)。
 func (f *Fanout) runSubAgent(ctx context.Context, input string) (string, error) {
+	return f.runAgentLoop(ctx, input, nil)
+}
+
+// runAgentLoop 核心循环:ag 非 nil 时(后台会话)每步开头 drain inbox(send_message
+// 注入→追加 user 输入继续执行)并记录父子对话;ag.seed 为 fork 种入的父会话历史。
+func (f *Fanout) runAgentLoop(ctx context.Context, input string, ag *agentSession) (string, error) {
 	if f.llm == nil || f.sp == nil {
 		return "", fmt.Errorf("子代理编排需要 ctx.llm / ctx.systemPrompt(未装配)")
 	}
-	history := []sdk.LLMMessage{{Role: sdk.RoleUser, Content: input}}
+	var history []sdk.LLMMessage
+	if ag != nil && len(ag.seed) > 0 {
+		history = append(append([]sdk.LLMMessage{}, ag.seed...),
+			sdk.LLMMessage{Role: sdk.RoleUser, Content: input})
+	} else {
+		history = []sdk.LLMMessage{{Role: sdk.RoleUser, Content: input}}
+	}
+	pendingReply := false // 注入消息后等待的首个文本回复(记录为 dialog agent 侧)
 	for step := 0; step < maxSubSteps; step++ {
 		if err := ctx.Err(); err != nil {
 			return "", err
+		}
+		if ag != nil {
+		drainLoop:
+			for {
+				select {
+				case msg := <-ag.inbox:
+					history = append(history, sdk.LLMMessage{Role: sdk.RoleUser, Content: msg})
+					f.logDialog(ag, "user", msg)
+					pendingReply = true
+				default:
+					break drainLoop
+				}
+			}
 		}
 		messages := f.sp.Assemble(history, f.tools.List())
 		var (
@@ -252,6 +358,11 @@ func (f *Fanout) runSubAgent(ctx context.Context, input string) (string, error) 
 			final.Message.Content = content.String()
 		}
 		history = append(history, final.Message)
+		// 注入消息后的首个文本回复记入 dialog(带工具调用的轮次不记,工具结果非面向父级回复)
+		if ag != nil && pendingReply && final.Message.Content != "" {
+			f.logDialog(ag, "agent", final.Message.Content)
+			pendingReply = false
+		}
 		if len(calls) == 0 {
 			return final.Message.Content, nil
 		}

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nekoleamo/go-agent-harness/core/ctx"
 	"github.com/nekoleamo/go-agent-harness/core/event"
@@ -25,6 +26,50 @@ func buildMiniServer(t *testing.T, dir string) string {
 		t.Fatalf("编译 mcpserver 失败: %v\n%s", err, out)
 	}
 	return bin
+}
+
+func TestHolderRespawnOnCrash(t *testing.T) {
+	bin := buildMiniServer(t, t.TempDir())
+	cli, err := spawn(bin, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rctx := context.Background()
+	if err := cli.initialize(rctx); err != nil {
+		t.Fatal(err)
+	}
+	h := &holder{cli: cli, command: bin, throttle: 150 * time.Millisecond, lg: slog.New(slog.DiscardHandler)}
+	go h.supervise()
+
+	// 杀进程模拟崩溃
+	old := cli.cmd.Process
+	_ = old.Kill()
+	// 等重启(轮询 current 换新连接;超时防护)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if h.current() != cli {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("崩溃后未自动重启")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	// 新连接可正常 tools/list
+	nc := h.current()
+	defs, err := nc.toolsList(rctx)
+	if err != nil {
+		t.Fatalf("重启后 tools/list 失败: %v", err)
+	}
+	if len(defs) != 1 || defs[0].Name != "greet" {
+		t.Fatalf("重启后工具定义异常: %+v", defs)
+	}
+	// 关闭:停看护、杀当前进程,无残留
+	h.close()
+	time.Sleep(100 * time.Millisecond)
+	if h.closed == false {
+		t.Fatal("holder 应已关闭")
+	}
 }
 
 func TestMCPBridge(t *testing.T) {

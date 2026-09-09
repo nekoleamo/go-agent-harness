@@ -35,6 +35,10 @@ func mdAnnotateRow(text string, baseFg color.Color) string {
 	if isHrLine(trim) {
 		return mdSeg(text, fg(TokMdHr), false)
 	}
+	// 引用行 > :标记用边框灰加粗(borderMuted 语义),正文 quote 米白(P5 对齐 pi mdQuote)。
+	if isQuoteLine(trim) {
+		return mdQuoteRow(text)
+	}
 	// 标题行 #..###### :整行标题色 + 粗体。
 	if isTitleLine(trim) {
 		// 保留原行文本(含缩进),只整体换色提亮;行首 # 前缀不动(rune 一致)。
@@ -89,6 +93,32 @@ func isHrLine(trim string) bool {
 		}
 	}
 	return true
+}
+
+// isQuoteLine 行首(去空白)为 "> " 或单独 ">"(引用块行;嵌套 ">>" 落入,轻渲染不细分)。
+func isQuoteLine(trim string) bool {
+	return strings.HasPrefix(trim, ">") && (len(trim) == 1 || trim[1] == ' ')
+}
+
+// mdQuoteRow 引用行渲染:前导空白保留,'>' 标记用边框灰加粗(弱化),正文走通用 token
+// 解析但 base 用 quote 米白(链接/粗体/code 等仍可着色)。字符无损。
+func mdQuoteRow(text string) string {
+	trimIdx := strings.IndexFunc(text, func(r rune) bool { return r != ' ' && r != '\t' })
+	if trimIdx < 0 {
+		return mdSeg(text, fg(TokMdQuote), false)
+	}
+	rest := text[trimIdx:]
+	body := rest[1:] // 保留 '>' 后的原文空格(字符无损);单 '>' 行正文为空
+	if len(rest) == 1 {
+		body = ""
+	}
+	var sb strings.Builder
+	if trimIdx > 0 {
+		sb.WriteString(mdSeg(text[:trimIdx], fg(TokMdQuote), false))
+	}
+	sb.WriteString(mdSeg(">", fg(TokThinkOff), true))
+	sb.WriteString(mdTokens(body, fg(TokMdQuote)))
+	return sb.String()
 }
 
 // isListLine 行首(去空白)为 "- " "* " "+ " 或 "N. " 列表符。
@@ -234,24 +264,60 @@ func mdCodeBlockLine(text string, lang string) string {
 			segStart = len(text)
 			break
 		}
-		// 关键字:整词匹配(字母/下划线开头,数字续)
+		// 数字:0-9 开头(16 进制 0x/小数/下划线后缀连续扫描),对齐 gruvbox syntaxNumber orange
+		if c >= '0' && c <= '9' {
+			j := i + 1
+			for j < len(text) && isNumChar(text[j]) {
+				j++
+			}
+			plain(segStart, i)
+			flush(text[i:j], fg(TokSyntaxNum))
+			segStart = j
+			i = j
+			continue
+		}
+		// 标识符:关键字(md-key)/类型(大写开头)/变量(其余)——对齐 gruvbox syntax 三色
 		if isWordStart(c) {
 			j := i + 1
 			for j < len(text) && isWordChar(text[j]) {
 				j++
 			}
-			if mdKeywords[text[i:j]] {
-				plain(segStart, i)
-				flush(text[i:j], fg(TokMdKey))
-				segStart = j
+			w := text[i:j]
+			var tc color.Color
+			switch {
+			case mdKeywords[w]:
+				tc = fg(TokMdKey)
+			case w[0] >= 'A' && w[0] <= 'Z':
+				tc = fg(TokSyntaxType)
+			default:
+				tc = fg(TokSyntaxVar)
 			}
+			plain(segStart, i)
+			flush(w, tc)
+			segStart = j
 			i = j
 			continue
+		}
+		// 运算符 / 标点:单字符着色(gruvbox syntaxOp accent2 / syntaxPunct dim)
+		if strings.IndexByte("=+-*/<>!&|^~%?:", c) >= 0 {
+			plain(segStart, i)
+			flush(text[i:i+1], fg(TokSyntaxOp))
+			segStart = i + 1
+		} else if strings.IndexByte("()[]{};,.", c) >= 0 {
+			plain(segStart, i)
+			flush(text[i:i+1], fg(TokSyntaxPunct))
+			segStart = i + 1
 		}
 		i++
 	}
 	plain(segStart, len(text))
 	return b.String()
+}
+
+// isNumChar 数字续字符:数字 / 16 进制字母 / xX / 小数点 / 下划线(近似,轻渲染不细究)。
+func isNumChar(c byte) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') ||
+		c == 'x' || c == 'X' || c == '.' || c == '_'
 }
 
 // isWordStart 词首字节(ASCII 标识符;UTF-8 多字节一律按普通字符,不参与关键字匹配)。
@@ -305,6 +371,25 @@ func mdTokens(text string, baseFg color.Color) string {
 	}
 	for i := 0; i < len(text); {
 		switch {
+		case text[i] == '[':
+			// 链接 [text](url):text 用 link 色 + 下划线(轻渲染),'](url)' 标记与地址
+			// 按原文保留(字符无损)——只强调链接文本,不消费任何字符。
+			if j := strings.IndexByte(text[i+1:], ']'); j >= 0 && i+1+j+1 < len(text) && text[i+1+j+1] == '(' {
+				if e := strings.IndexByte(text[i+1+j+2:], ')'); e >= 0 {
+					inner := text[i+1 : i+1+j]
+					url := text[i+1+j+2 : i+1+j+2+e]
+					end := i + 1 + j + 2 + e + 2 // ']' 后整段 '](url)' 的下界
+					flushPlain(i)
+					segStart = i
+					b.WriteString(mdSeg(text[i:i+1], baseFg, false)) // '[' 原样
+					b.WriteString(mdLink(inner, url))
+					b.WriteString(mdSeg(text[i+1+j:end], baseFg, false)) // '](url)' 原样(字符无损)
+					i = end
+					segStart = end
+					continue
+				}
+			}
+			i++
 		case text[i] == '`':
 			if j := strings.IndexByte(text[i+1:], '`'); j >= 0 {
 				flushPlain(i)
@@ -329,6 +414,12 @@ func mdTokens(text string, baseFg color.Color) string {
 	}
 	flushPlain(len(text))
 	return b.String()
+}
+
+// mdLink 链接文本段着色(P5):link 蓝灰 + 下划线 + OSC8 超链接(lipgloss Hyperlink 原生,
+// 支持终端 cmd/ctrl+点击打开 url;宽度计算无扰)。URL 不在正文展示,仅作超链接目标。
+func mdLink(inner, url string) string {
+	return lipgloss.NewStyle().Foreground(fg(TokMdLink)).Underline(true).Hyperlink(url).Render(inner)
 }
 
 // mdCode 行内 code 段着色:不含反引号(成对标记被消费,阅读更干净),code 色区分。

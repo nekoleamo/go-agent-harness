@@ -19,9 +19,28 @@ const pluginName = "tool"
 
 // ToolServer 外部插件侧实现的 RPC 服务(net/rpc 方法签名)。
 // 新协议(多工具):Definitions + ExecuteNamed;旧协议(单工具)保持兼容。
+// M14 外部命令桥(可选):Commands + CommandOptions + RunCommand——旧插件未实现时
+// 宿主按"无命令"处理(调用报 can't find method → 跳过),行为不变。
 type ToolServer interface {
 	Definitions(args struct{}, reply *string) error
 	ExecuteNamed(args *ExecNamedArgs, reply *ExecReply) error
+
+	Commands(args struct{}, reply *string) error              // 命令定义枚举(JSON 数组)
+	CommandOptions(args *CmdOptionsArgs, reply *string) error // 枚举级选项运行期求值
+	RunCommand(args *RunCommandArgs, reply *ExecReply) error  // 命令执行(host→external)
+}
+
+// CmdOptionsArgs 枚举级选项请求(宿主 TUI 选择器求值时调用)。
+type CmdOptionsArgs struct {
+	Name   string
+	Level  int
+	Picked []string
+}
+
+// RunCommandArgs 命令执行请求(宿主斜杠命令分发 → 外部进程)。
+type RunCommandArgs struct {
+	Name string
+	Args []string
 }
 
 // ExecArgs/ExecReply RPC 载荷。strings 传输(JSON),gob 可序列化。
@@ -38,4 +57,22 @@ type ExecNamedArgs struct {
 type ExecReply struct {
 	Content string // 结果 JSON/文本
 	Error   string // 结构化错误(非空 = 失败,不中断 turn)
+}
+
+// CommandDTO 命令定义载荷(M14 外部命令桥;Args 级联声明,对齐 sdk.ArgLevel 语义)。
+// 每级:Enum=true 枚举级(选项运行期经 CommandOptions 求值);FreeArgs 非空=自由级
+// (参数名序列,名尾 '?' 可选参数);皆空=无定义级(该路径直接执行)。
+// TimeoutMs:命令执行/枚举选项 RPC 超时(毫秒),0 = 宿主全局默认(3s),对齐工具级语义。
+type CommandDTO struct {
+	Name      string          `json:"Name"`
+	Usage     string          `json:"Usage"`
+	Desc      string          `json:"Desc"`
+	TimeoutMs int64           `json:"TimeoutMs,omitempty"`
+	Args      []CommandArgDTO `json:"Args"`
+}
+
+// CommandArgDTO 一级参数的声明(见 CommandDTO)。
+type CommandArgDTO struct {
+	FreeArgs []string `json:"FreeArgs,omitempty"`
+	Enum     bool     `json:"Enum,omitempty"`
 }

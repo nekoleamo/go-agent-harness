@@ -1,0 +1,17 @@
+{
+  "name": "gah-ui-todo-panel",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "gah UI 插件示例(M8-T2):todo 面板展示联动——经 /api/todo 读任务状态实时反映模型任务推进。",
+  "scripts": {
+    "build": "vite build"
+  },
+  "dependencies": {
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "vite": "^6.1.0"
+  }
+}

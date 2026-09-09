@@ -1,0 +1,494 @@
+<script setup lang="ts">
+// 左侧抽屉:工作区固定展示(顶部独立区,不归类到历史)+ 会话历史(内容省略版预览)。
+// 全部增删改操作(切换会话/工作区、新建、改名、删除)经全局确认条二次确认(inject askConfirm)。
+// 切换/删除/改名后 emit session-changed(宿主重建 SSE 重放);列表经 refreshKey 或手动刷新重拉。
+import { inject, onMounted, ref, watch } from 'vue'
+import { api } from '../api'
+import { extraPanels, sidebarActions } from '../registry'
+import type { ExtensionReg } from '../registry'
+import type { AskConfirm, SessionInfo, WorkspaceInfo } from '../types'
+
+const props = defineProps<{
+  refreshKey: number
+  curSession?: string
+  curKey?: string
+}>()
+
+const emit = defineEmits<{ (e: 'session-changed'): void; (e: 'open-panel', key: string): void }>()
+
+const open = ref(true)
+const sessions = ref<SessionInfo[]>([])
+const workspaces = ref<WorkspaceInfo[]>([])
+const err = ref('')
+// 会话名内联编辑态({ id, val });保存仍走确认条
+const editing = ref<{ id: string; val: string } | null>(null)
+const ask = inject<(a: AskConfirm) => void>('askConfirm')
+
+async function refresh(): Promise<void> {
+  err.value = ''
+  const [ss, ws] = await Promise.all([api.sessions(), api.workspaces()])
+  sessions.value = ss
+  workspaces.value = ws
+}
+
+function label(s: SessionInfo): string {
+  if (s.Name) return s.Name
+  return s.ID ? '#' + s.ID : '主会话'
+}
+function fmtDir(dir: string): string {
+  const i = dir.lastIndexOf('/')
+  return i >= 0 ? dir.slice(i + 1) : dir
+}
+function fmtTime(ts: number): string {
+  if (!ts) return ''
+  const d = new Date(ts * 1000)
+  const now = new Date()
+  if (d.toDateString() === now.toDateString()) {
+    return d.toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' })
+  }
+  return d.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })
+}
+
+// guard 统一二次确认入口(无注入兜底直执行,防御性)
+function guard(title: string, danger: boolean, run: () => void): void {
+  if (!ask) {
+    run()
+    return
+  }
+  ask({ title, danger, run })
+}
+
+async function doSwitchSession(id: string): Promise<void> {
+  try {
+    await api.sessionSwitch(id)
+    emit('session-changed')
+  } catch (e) {
+    err.value = (e as Error).message
+  }
+}
+function switchSession(s: SessionInfo): void {
+  guard('切换到会话「' + label(s) + '」？', false, () => void doSwitchSession(s.ID))
+}
+async function doNewSession(): Promise<void> {
+  try {
+    await api.sessionNew()
+    emit('session-changed')
+  } catch (e) {
+    err.value = (e as Error).message
+  }
+}
+function newSession(): void {
+  guard('新建会话？', false, () => void doNewSession())
+}
+
+// —— 会话改名(内联编辑,保存时二次确认;后端 rename 仅作用当前会话 → 先切目标会话再改名)—
+function startEdit(s: SessionInfo): void {
+  editing.value = { id: s.ID, val: s.Name }
+}
+async function doSaveName(s: SessionInfo): Promise<void> {
+  const v = editing.value?.val.trim() ?? ''
+  editing.value = null
+  if (!v) return
+  try {
+    await api.sessionSwitch(s.ID) // 同名/当前会话幂等
+    await api.sessionRename(v)
+    emit('session-changed')
+    void refresh()
+  } catch (e) {
+    err.value = (e as Error).message
+  }
+}
+function saveName(s: SessionInfo): void {
+  const v = editing.value?.val.trim() ?? ''
+  if (!v) {
+    editing.value = null
+    return
+  }
+  const cur = label(s)
+  guard('重命名会话「' + cur + '」为「' + v + '」？', false, () => void doSaveName(s))
+}
+
+// —— 删除(仅删记录,不删文件夹;删除类标红)—
+async function doDeleteSession(s: SessionInfo): Promise<void> {
+  try {
+    await api.sessionDelete(s.ID)
+    emit('session-changed') // 删除当前会话后端已新建空会话承接
+    window.dispatchEvent(new Event('gah:sessions-changed'))
+    void refresh()
+  } catch (e) {
+    err.value = (e as Error).message
+  }
+}
+function exportSession(s: SessionInfo): void {
+  // 会话导出:后端原始 jsonl 下载(a.download 配合 Content-Disposition)
+  const a = document.createElement('a')
+  a.href = '/api/sessions/' + encodeURIComponent(s.ID || '') + '/export'
+  a.download = 'session-' + (s.ID || 'main') + '.jsonl'
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+}
+function deleteSession(s: SessionInfo): void {
+  // 删除当前会话时后端自动新建空会话承接(删除后界面干净无旧内容回放)
+  const isCur = (s.ID || '') === (props.curSession || '')
+  guard('删除会话「' + label(s) + '」？' + (isCur ? '删除后开启新会话' : '仅删该会话记录'), true, () => void doDeleteSession(s))
+}
+
+// —— 工作区切换/删除 —
+async function doSwitchWorkspace(w: WorkspaceInfo): Promise<void> {
+  try {
+    await api.control({ workspace: w.dir }) // dir 语义:后端 SwitchDir(Chdir + key 派生)
+    emit('session-changed')
+  } catch (e) {
+    err.value = (e as Error).message
+  }
+}
+function switchWorkspace(w: WorkspaceInfo): void {
+  guard('切换到工作区「' + (fmtDir(w.dir) || w.key) + '」？', false, () => void doSwitchWorkspace(w))
+}
+async function doForgetWorkspace(w: WorkspaceInfo): Promise<void> {
+  try {
+    await api.workspaceForget(w.key)
+    void refresh()
+  } catch (e) {
+    err.value = (e as Error).message
+  }
+}
+function forgetWorkspace(w: WorkspaceInfo): void {
+  guard('删除工作区记录「' + (fmtDir(w.dir) || w.key) + '」？(不删文件夹)', true, () => void doForgetWorkspace(w))
+}
+
+onMounted(() => {
+  void refresh()
+})
+watch(() => props.refreshKey, () => void refresh())
+defineExpose({ refresh })
+</script>
+
+<template>
+  <div class="sidebar" :class="{ closed: !open }">
+    <div v-if="open" class="panel">
+      <div class="head">
+        <span class="title">会话</span>
+        <button class="toggle" data-tip="收起侧栏" @click="open = false">⇤</button>
+      </div>
+
+      <!-- 工作区:固定展示(独立区,不归入历史) -->
+      <div class="sec ws-sec">
+        <div class="sec-h">
+          <span>工作区</span>
+          <span class="act" data-tip="刷新列表" @click="refresh">↻</span>
+        </div>
+        <div class="items">
+          <div
+            v-for="w in workspaces"
+            :key="w.key"
+            class="item"
+            :class="{ cur: w.key === curKey }"
+            data-tip="切换到该工作区(需确认)"
+            @click="switchWorkspace(w)"
+          >
+            <div class="row1">
+              <span class="nm">{{ fmtDir(w.dir) || w.key }}</span>
+              <span class="ops">
+                <span class="op del" data-tip="删除记录(不动文件夹)" @click.stop="forgetWorkspace(w)">×</span>
+              </span>
+            </div>
+            <div class="sub mono">{{ w.key }}</div>
+          </div>
+          <div v-if="!workspaces.length" class="empty">暂无记录</div>
+        </div>
+      </div>
+
+      <!-- 会话历史(内容省略版预览;独立滚动区) -->
+      <div class="sec session-sec">
+        <div class="sec-h">
+          <span>历史会话</span>
+          <span class="act" data-tip="新建会话(需确认)" @click="newSession">＋ 新建</span>
+        </div>
+        <div class="items">
+          <div
+            v-for="s in sessions"
+            :key="s.ID || '(main)'"
+            class="item session-item"
+            :class="{ cur: (s.ID || '') === (curSession || '') }"
+            data-tip="切换到该会话(需确认)"
+            @click="switchSession(s)"
+          >
+            <div class="row1">
+              <input
+                v-if="editing && editing.id === s.ID"
+                v-model="editing.val"
+                class="name-input"
+                placeholder="会话名"
+                data-tip="Enter 保存(需确认)"
+                @click.stop
+                @keydown.enter.prevent="saveName(s)"
+                @keydown.esc="editing = null"
+                @blur="editing = null"
+              />
+              <span v-else class="nm">{{ label(s) }}</span>
+              <span class="ops">
+                <span v-if="editing && editing.id === s.ID" class="op" data-tip="保存改名(需确认)" @click.stop="saveName(s)">✓</span>
+                <template v-else>
+                  <span class="op" data-tip="修改会话名(需确认)" @click.stop="startEdit(s)">✎</span>
+                  <span class="op" data-tip="导出会话 jsonl" @click.stop="exportSession(s)">⤓</span>
+                  <span class="op del" data-tip="删除会话(仅删记录,需确认)" @click.stop="deleteSession(s)">×</span>
+                </template>
+              </span>
+            </div>
+            <div class="preview" :class="{ empty: !s.Preview }">{{ s.Preview || '（空会话）' }}</div>
+            <div class="sub mono">{{ fmtTime(s.MTime) }}</div>
+          </div>
+          <div v-if="!sessions.length" class="empty">无会话</div>
+        </div>
+      </div>
+
+      <!-- v2 扩展点:侧栏动作(插件注入) -->
+      <div v-if="sidebarActions().length" class="sec">
+        <div class="sec-h">
+          <span>插件动作</span>
+        </div>
+        <div class="items">
+          <div v-for="a in sidebarActions()" :key="a.key" class="item act-item">
+            <component :is="a.component" />
+          </div>
+        </div>
+      </div>
+
+      <!-- v2 扩展点:附加面板入口(插件声明 extra-panel;点击开抽屉) -->
+      <div v-if="extraPanels().length" class="sec">
+        <div class="sec-h">
+          <span>附加面板</span>
+        </div>
+        <div class="items">
+          <div
+            v-for="p in (extraPanels() as ExtensionReg[])"
+            :key="p.key"
+            class="item act-item"
+            data-tip="打开面板"
+            @click="emit('open-panel', p.key)"
+          >
+            <span class="nm">{{ p.title || '面板' }}</span>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="err" class="err">{{ err }}</div>
+    </div>
+
+    <button v-else class="handle" data-tip="展开侧栏" @click="open = true">☰</button>
+  </div>
+</template>
+
+<style scoped>
+.sidebar {
+  flex-shrink: 0;
+  border-right: 1px solid var(--line);
+  background: var(--bg2);
+  transition: width 0.18s ease;
+}
+.sidebar.closed {
+  width: 28px;
+  border-right: none;
+}
+.panel {
+  width: 264px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: 10px 6px 8px;
+  overflow: hidden; /* 整体不再滚:工作区与历史会话各自独立滚动 */
+}
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 8px 10px;
+  flex-shrink: 0;
+}
+.title {
+  font-weight: 600;
+  color: var(--fg);
+  font-size: 13px;
+}
+.toggle,
+.handle {
+  background: none;
+  border: none;
+  color: var(--fg-faint);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+.toggle:hover,
+.handle:hover {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.handle {
+  width: 100%;
+  height: 100%;
+  font-size: 13px;
+  writing-mode: vertical-rl;
+}
+.sec {
+  margin-bottom: 12px;
+}
+/* 工作区:顶部独立区,超出自行滚动(flex-shrink 0 + 内滚),不占会会话滚动 */
+.ws-sec {
+  flex-shrink: 0;
+  max-height: 250px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line-faint);
+}
+.ws-sec .items {
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+/* 历史会话:占满剩余高度,独立滚动 */
+.session-sec {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.session-sec .items {
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+.sec-h {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 8px 6px;
+  color: var(--fg-faint);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.act {
+  color: var(--accent);
+  cursor: pointer;
+  font-weight: 400;
+  font-size: 12px;
+  letter-spacing: 0;
+}
+.items {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.item {
+  padding: 6px 8px 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  box-shadow: inset 3px 0 0 transparent;
+  transition: background 0.15s ease;
+}
+.item:hover {
+  background: var(--bg3);
+}
+.item.cur {
+  background: var(--accent-soft);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.row1 {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+}
+.nm {
+  font-size: 13px;
+  color: var(--fg);
+  word-break: break-all;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.item.cur .nm {
+  font-weight: 500;
+}
+.name-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  color: var(--fg);
+  font-size: 12px;
+  padding: 2px 6px;
+  outline: none;
+}
+.preview {
+  font-size: 12px;
+  color: var(--fg-dim);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-all;
+}
+.preview.empty {
+  color: var(--fg-faint);
+  font-style: italic;
+}
+.sub {
+  font-size: 11px;
+  color: var(--fg-faint);
+  word-break: break-all;
+}
+.ops {
+  display: inline-flex;
+  gap: 2px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.item:hover .ops,
+.item.cur .ops,
+.name-input + .ops {
+  opacity: 1;
+}
+.op {
+  background: none;
+  border: none;
+  color: var(--fg-faint);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0 3px;
+  border-radius: 4px;
+  line-height: 1.6;
+}
+.op:hover {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.op.del:hover {
+  color: var(--err);
+  background: var(--err-soft);
+}
+.empty {
+  color: var(--fg-faint);
+  font-size: 12px;
+  padding: 4px 8px;
+}
+.err {
+  color: var(--err);
+  font-size: 12px;
+  padding: 4px 8px;
+}
+</style>

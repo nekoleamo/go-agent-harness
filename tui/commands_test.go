@@ -68,19 +68,20 @@ func TestRenderPickHighlight(t *testing.T) {
 }
 
 // TestRenderHintArea 提示区渲染:有 Suggestions 时出现提示行且会话流高度收缩。
-// 高度验证:20 条历史行时,无提示可见全部;2 条提示挤出最早行(mainH 收缩)。
+// 高度验证:18 条历史行时,无提示窗口 mainH=16 可见末尾 16 条(输入区含圆角框边框);
+// 2 条提示再挤出两行(mainH 收缩)。
 func TestRenderHintArea(t *testing.T) {
 	s := &State{Input: "/"}
-	for i := 0; i < 20; i++ {
+	for i := 0; i < 18; i++ {
 		s.Lines = append(s.Lines, Line{Kind: "user", Text: "行序号 " + fmt.Sprint(i)})
 	}
 	out := Render(s, 80, 24)
 	if strings.Contains(out, "/jobs 后台任务") {
 		t.Fatal("无输入状态不应出现提示行")
 	}
-	// 无提示:mainH=21,20 行全可见(含最早行)
-	if !strings.Contains(out, "行序号 0") {
-		t.Fatal("无提示时最早行应可见(mainH=21)")
+	// 无提示:F15.5 空隙行后 mainH=16,窗口显示末尾 16 条(行序号 2 起)
+	if !strings.Contains(out, "行序号 2") || strings.Contains(out, "行序号 0") {
+		t.Fatal("无提示时窗口应显示末尾 16 条(mainH=16): 最早行被挤出")
 	}
 	// 有提示:mainH 收缩,最早行被挤出
 	s.Suggestions = []string{" /jobs 后台任务", " /sandbox 切沙箱档"}
@@ -175,7 +176,7 @@ func TestUsageStatsZeroWindow(t *testing.T) {
 func TestUsageStatsUnknownWindow(t *testing.T) {
 	s := &State{Profile: "tui", Stats: sdk.UsageStats{PromptTokens: 1234, Requests: 1, Window: 0}}
 	out := Render(s, 80, 24)
-	if !strings.Contains(out, "上下文 1.2K ") {
+	if !strings.Contains(out, "上下文 1.2K") {
 		t.Fatalf("未知窗口应仅显示使用量 1.2K:\n%s", out)
 	}
 	if strings.Contains(out, "1.2K/") {

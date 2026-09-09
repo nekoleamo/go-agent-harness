@@ -1,0 +1,17 @@
+{
+  "name": "gah-ui-extension-demo",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "gah UI 插件示例(B5/v2):demonstrate 三扩展点(settings-section/sidebar-action/extra-panel)。",
+  "scripts": {
+    "build": "vite build"
+  },
+  "dependencies": {
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "vite": "^6.1.0"
+  }
+}

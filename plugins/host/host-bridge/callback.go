@@ -259,6 +259,33 @@ func (cb *Callback) fanoutCall(ctx context.Context, method, raw string, reply *s
 		}
 		*reply = ""
 		return nil
+	case "fork": // M9.3 带父上下文后台启动(种入父会话历史)
+		var p struct {
+			Input string
+		}
+		if err := json.Unmarshal([]byte(raw), &p); err != nil {
+			return err
+		}
+		id, err := cb.fanout.Fork(ctx, p.Input)
+		if err != nil {
+			return err
+		}
+		*reply = id
+		return nil
+	case "send": // M9.3 向运行中的子代理注入消息
+		var p struct {
+			ID      string
+			Message string
+		}
+		if err := json.Unmarshal([]byte(raw), &p); err != nil {
+			return err
+		}
+		if err := cb.fanout.SendMessage(p.ID, p.Message); err != nil {
+			*reply = err.Error()
+			return nil // 业务失败经 reply 回传(send 单例方法同 kill 语义)
+		}
+		*reply = ""
+		return nil
 	}
 	return errors.New("callback: 未知 fanout 方法 " + method)
 }
@@ -476,6 +503,26 @@ func (f *cbFanout) AgentStatus(id string) (sdk.AgentHandle, bool) {
 func (f *cbFanout) KillAgent(id string) error {
 	var e string
 	if err := f.cc.Call("fanout", "kill", map[string]string{"ID": id}, &e); err != nil {
+		return err
+	}
+	if e != "" {
+		return errors.New(e)
+	}
+	return nil
+}
+
+// Fork/SendMessage(M9.3 send_message/fork)回调宿主转发。
+func (f *cbFanout) Fork(_ context.Context, input string) (string, error) {
+	var id string
+	if err := f.cc.Call("fanout", "fork", map[string]string{"Input": input}, &id); err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+func (f *cbFanout) SendMessage(id, message string) error {
+	var e string
+	if err := f.cc.Call("fanout", "send", map[string]string{"ID": id, "Message": message}, &e); err != nil {
 		return err
 	}
 	if e != "" {

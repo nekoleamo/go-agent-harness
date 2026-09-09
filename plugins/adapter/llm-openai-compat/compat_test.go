@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -27,6 +29,34 @@ func sseServer(t *testing.T, lines ...string) (*httptest.Server, *Adapter) {
 	}))
 	t.Cleanup(srv.Close)
 	return srv, &Adapter{client: srv.Client(), baseURL: srv.URL, model: "test-model"}
+}
+
+func TestWireContentMultimodal(t *testing.T) {
+	img := filepath.Join(t.TempDir(), "a.png")
+	if err := os.WriteFile(img, []byte{0x89, 'P', 'N', 'G', 1, 2, 3}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// 图片附件 → 结构化数组(text + image_url data URI)
+	got := wireContent(sdk.LLMMessage{Content: "看图", Attachments: []sdk.Attachment{
+		{Kind: sdk.AttachmentImage, Path: img, MimeType: "image/png"}}})
+	parts, ok := got.([]any)
+	if !ok || len(parts) != 2 {
+		t.Fatalf("应 text+image 两块,got %T(%v)", got, got)
+	}
+	url := parts[1].(map[string]any)["image_url"].(map[string]any)["url"].(string)
+	if !strings.HasPrefix(url, "data:image/png;base64,") {
+		t.Fatalf("data URI 前缀不对: %s", url)
+	}
+	// 纯文本 → 原字符串(兼容)
+	if v := wireContent(sdk.LLMMessage{Content: "hi"}); v != "hi" {
+		t.Fatalf("纯文本应原样,got %v", v)
+	}
+	// file 类附件(无视觉) → 原字符串
+	v := wireContent(sdk.LLMMessage{Content: "x", Attachments: []sdk.Attachment{
+		{Kind: sdk.AttachmentFile, Path: img}}})
+	if v != "x" {
+		t.Fatalf("file 类不应构造视觉,got %v", v)
+	}
 }
 
 func TestCompleteStreamsText(t *testing.T) {
@@ -54,6 +84,33 @@ func TestCompleteStreamsText(t *testing.T) {
 	}
 	if resp.FinishReason != sdk.FinishReasonStop || resp.Message.Content != "你好" {
 		t.Fatalf("聚合响应不符: %+v", resp.Message)
+	}
+}
+
+// TestCompleteStreamsThinking B1:reasoning_content 增量解析为 Thinking 字段(与 content 互斥)。
+func TestCompleteStreamsThinking(t *testing.T) {
+	_, a := sseServer(t,
+		`{"choices":[{"delta":{"reasoning_content":"先分析"},"finish_reason":null}]}`,
+		`{"choices":[{"delta":{"reasoning_content":"再回答"},"finish_reason":null}]}`,
+		`{"choices":[{"delta":{"content":"正文"},"finish_reason":"stop"}]}`,
+	)
+	var think, content strings.Builder
+	resp, err := a.Complete(context.Background(), &sdk.LLMRequest{Model: "test-model"}, func(ev sdk.LLMStreamEvent) error {
+		think.WriteString(ev.Thinking)
+		content.WriteString(ev.Delta)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if think.String() != "先分析再回答" {
+		t.Fatalf("思考增量应拼合: %q", think.String())
+	}
+	if content.String() != "正文" {
+		t.Fatalf("正文增量应正常: %q", content.String())
+	}
+	if resp.Message.Content != "正文" {
+		t.Fatalf("聚合响应仅含正文(思考不并消息): %+v", resp.Message)
 	}
 }
 

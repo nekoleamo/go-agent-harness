@@ -1,0 +1,60 @@
+# P5 主题样板:gruvbox-dark(对照用户本地 pi 的 @firstpick/pi-themes-bundle 同名主题)。
+# 用法:复制到 $GAH_HOME/config/themes/(或 $GAH_HOME 未设时 ~/.gah/config/themes),
+# TUI 内 `/theme gruvbox-dark` 一键切换(列表自动出现);`/theme default` 恢复启动覆盖链。
+# 亦可将本文件内容并入 $GAH_HOME/config/theme.yaml 作全局默认。token 名见 tui/palette.go;
+# 部分覆盖即可(未列 token 回落默认表)。色值支持 256 色索引数字或 #hex。
+name: gruvbox-dark
+# —— 会话流内容行 ——
+user: "#ebdbb2"        # 用户消息文字(textSoft 米白)
+assistant: "#ebdbb2"   # 助手回复(textSoft)
+tool: "#d5c4a1"        # 工具调用(muted)
+tool-ok: "#b8bb26"     # 工具成功结果(green)
+meta: "#928374"        # 系统/切换提示(comment 灰)
+error: "#fb4934"       # 错误(red)
+# —— 消息/工具背景块(P5)——
+user-bg: "#282828"     # 用户消息整块背景(bgUser)
+tool-bg: "#1d2021"     # 工具调用背景(bgPending)
+tool-ok-bg: "#3c3836"  # 成功结果背景(bgSuccess)
+tool-err-bg: "#3c3836" # 失败结果背景(bgError)
+# —— 输入/命令/选择器 ——
+prompt: "#83a598"      # 输入提示符(accent)
+pick: "#83a598"        # 选择器高亮
+cursor: "#fabd2f"      # 输入块光标(yellow)
+# —— 状态栏 ——
+status: "#d5c4a1"
+busy: "#fabd2f"
+widget: "#bdae93"      # 输入区上方 widget 行(dim)
+# —— 滚动条 ——
+barthumb: "#fabd2f"
+bartrack: "#504945"
+barhover: "#fe8019"
+barend: "#fabd2f"
+# —— markdown ——
+md-code: "#8ec07c"     # 行内 code 与代码块前景(cyan)
+md-bold: "#fbf1c7"     # 粗体(light 高亮)
+md-title: "#fe8019"    # 标题(orange)
+md-list: "#d3869b"     # 列表符(purple)
+md-hr: "#665c54"       # 分隔线(borderMuted)
+md-link: "#83a598"     # 链接文本(accent)
+md-quote: "#d5c4a1"    # 引用行(muted)
+md-key: "#d3869b"      # 代码块关键字(purple)
+md-str: "#b8bb26"      # 代码块字符串(green)
+md-cmt: "#928374"      # 代码块注释(comment)
+# —— 语法高亮细化 ——
+syntax-var: "#ebdbb2"
+syntax-num: "#fe8019"
+syntax-type: "#8ec07c"
+syntax-op: "#8ec07c"
+syntax-punct: "#bdae93"
+# —— 输入左缘竖线(thinking 边框)——
+think-off: "#665c54"
+think-low: "#83a598"
+think-med: "#8ec07c"
+think-high: "#d3869b"
+# —— 搜索高亮 ——
+search-bg: "#3c3836"    # 命中行背景(bgSelect)
+search-cur-bg: "#fabd2f" # 当前命中背景(yellow)
+# —— 工具结果 diff ——
+diff-add: "#b8bb26"
+diff-del: "#fb4934"
+diff-hdr: "#928374"

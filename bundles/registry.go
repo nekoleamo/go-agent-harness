@@ -5,6 +5,7 @@ package bundles
 import (
 	baseb "github.com/nekoleamo/go-agent-harness/bundles/base"
 	tuib "github.com/nekoleamo/go-agent-harness/bundles/tui"
+	webb "github.com/nekoleamo/go-agent-harness/bundles/web"
 
 	"github.com/nekoleamo/go-agent-harness/core/config"
 	"github.com/nekoleamo/go-agent-harness/core/plugin"
@@ -17,4 +18,5 @@ type RegisterFunc func(r *plugin.Registry, t *config.Tree) error
 var Registry = map[string]RegisterFunc{
 	"base": baseb.RegisterAll,
 	"tui":  tuib.RegisterAll,
+	"web":  webb.RegisterAll,
 }

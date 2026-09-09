@@ -8,6 +8,7 @@ package hostcwdsessions
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -33,6 +34,14 @@ func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
 	}
 	key := ProjectKeyFromCwd()
 	svc := &Service{key: key, sessions: sessions}
+	// 工作区切换事件广播(广播模式,监听器错误仅记日志不中断切换)
+	svc.emitWS = func(dir string) {
+		_, _ = c.Emit(context.Background(), "cwd/workspace-switched", dir, sdk.Emit)
+	}
+	// 会话切换事件广播(Open/New 后;UI 订阅重放,B3 命令下沉双端联动)
+	svc.emitSession = func(id string) {
+		_, _ = c.Emit(context.Background(), "cwd/session-switched", id, sdk.Emit)
+	}
 	svc.recordProject(key, currentDir()) // 启动即记录当前项目(最近使用列表)
 	// 每次启动 = 新会话(空历史):不再自动恢复主会话——过往对话保留在
 	// <key>.jsonl(主会话)/历史切换会话文件,经 /session switch 回溯。
@@ -97,6 +106,14 @@ type Service struct {
 	sessions sdk.SessionLog // ctx.sessions(切换时 Load 恢复历史)
 	wsMu     sync.Mutex     // workspaces 记录文件写锁
 	nmMu     sync.Mutex     // 会话显示名(names.json)读写锁
+	ftMu     sync.Mutex     // 分支树衍生记录(fork-tree.json)读写锁
+	// emitWS 工作区切换事件广播(可选,nil = 不广播;Plugin.Start 绑定 c.Emit)。
+	// 宿主订阅方:host-bridge(重启外部工具进程使其继承新 cwd)、
+	// policy-sandbox(沙箱 root 同步)——工具真正在新目录执行。
+	emitWS func(dir string)
+
+	// emitSession 会话切换事件广播(可选;Open/New 后触发,UI 订阅重放刷新)。
+	emitSession func(id string)
 }
 
 func (s *Service) Current() string        { return s.key }
@@ -158,6 +175,7 @@ func (s *Service) Sessions() []sdk.SessionInfo {
 			info.MTime = fi.ModTime().Unix()
 			info.Frames = countLines(info.Path)
 		}
+		info.Preview = previewOf(info.Path, 48) // 内容省略版(首条用户消息截断)
 		out = append(out, info)
 	}
 	// 主会话(id 空)置顶;切换会话按修改时间倒序(最近在前)
@@ -184,6 +202,9 @@ func (s *Service) Open(id string) error {
 	}
 	s.path = path
 	s.current = id
+	if s.emitSession != nil {
+		s.emitSession(id)
+	}
 	return nil
 }
 
@@ -204,6 +225,61 @@ func (s *Service) New() (string, error) {
 		return "", err
 	}
 	return id, nil
+}
+
+// Delete 删除会话记录:仅删 <key>[-<id>].jsonl 与显示名索引条目不碰任何目录;
+// id 空 = 主会话;删除的是当前打开会话时自动新建空会话承接(删除即干净新起点,
+// 不回主会话——避免旧历史立刻回放造成“没删干净”观感)。
+func (s *Service) Delete(id string) error {
+	if !validSessionID(id) {
+		return fmt.Errorf("cwdsessions: 非法会话 id")
+	}
+	file := s.key + ".jsonl"
+	if id != "" {
+		file = s.key + "-" + id + ".jsonl"
+	}
+	path := filepath.Join(SessionsRoot(), file)
+	if !fileExists(path) {
+		return fmt.Errorf("cwdsessions: 会话不存在: %s", file)
+	}
+	if err := os.Remove(path); err != nil {
+		return err
+	}
+	// 清理显示名索引(非关键路径,失败容忍)
+	s.nmMu.Lock()
+	m := loadNames(sessionNamesPath())
+	if _, ok := m[file]; ok {
+		delete(m, file)
+		_ = saveNames(sessionNamesPath(), m)
+	}
+	s.nmMu.Unlock()
+	// 删除的若是当前打开会话 → 新建空会话承接
+	if s.current == id {
+		_, err := s.New()
+		return err
+	}
+	return nil
+}
+
+// UnrecordProject 删除工作区使用记录:仅从 workspaces 记录移除该 key,
+// 不删除对应文件夹与其中的会话文件;不存在幂等成功。
+func (s *Service) UnrecordProject(key string) error {
+	if key == "" {
+		return fmt.Errorf("cwdsessions: 非法工作区 key")
+	}
+	s.wsMu.Lock()
+	defer s.wsMu.Unlock()
+	recs := loadWorkspaces(workspacesPath())
+	out := recs[:0]
+	for _, r := range recs {
+		if r.Key != key {
+			out = append(out, r)
+		}
+	}
+	if len(out) == len(recs) {
+		return nil // 无变更(不存在即幂等)
+	}
+	return saveWorkspaces(workspacesPath(), out)
 }
 
 // Rename 设置当前会话显示名(name 空 = 清除,展示回退 id/主会话)。
@@ -250,6 +326,32 @@ func (s *Service) SwitchProject(key string) (string, error) {
 		return s.current, nil // 同项目:仅刷新最近使用时间
 	}
 	s.key = key
+	if s.emitWS != nil {
+		s.emitWS(currentDir()) // 同 SwitchDir:广播通知宿主同步
+	}
+	return s.New()
+}
+
+// SwitchDir 切换工作区到真实目录(dir 语义,对齐 TUI /workspace):
+// os.Chdir(dir) → key = sdk.ProjectKey(dir) → 重绑并新建空会话。
+// 工作区记录以真实 dir 落盘(修复 web 端按 key 切换导致的 dir 污染:
+// 不再依赖宿主当前 cwd 猜目录)。目录不可用显式失败(不静默降级)。
+func (s *Service) SwitchDir(dir string) (string, error) {
+	if dir == "" {
+		return "", fmt.Errorf("cwdsessions: 缺工作区目录")
+	}
+	if err := os.Chdir(dir); err != nil {
+		return "", fmt.Errorf("cwdsessions: 工作区目录不可用 %s: %w", dir, err)
+	}
+	key := sdk.ProjectKey(dir)
+	s.recordProject(key, dir) // 真实目录(不随宿主 cwd 漂移)
+	if key == s.key {
+		return s.current, nil // 同项目:仅刷新最近使用时间
+	}
+	s.key = key
+	if s.emitWS != nil {
+		s.emitWS(dir) // 通知宿主重启外部工具进程/同步沙箱 root,使真 cwd 生效
+	}
 	return s.New()
 }
 
@@ -354,6 +456,51 @@ func currentDir() string {
 }
 
 // countLines 文件事件条数(会话描述用;读不了 = -1)。
+// previewOf 会话内容省略版:扫描 jsonl 取首条用户消息(user/message)文本,
+// 截断到 maxRunes(超限加省略号);无用户消息/坏行 = 空。仅读第一条即停,廉价。
+func previewOf(path string, maxRunes int) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	for sc.Scan() {
+		var ev struct {
+			Kind    string
+			Payload map[string]any
+		}
+		if json.Unmarshal(sc.Bytes(), &ev) != nil || ev.Kind != "user/message" {
+			continue
+		}
+		s, _ := ev.Payload["Content"].(string)
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		r := []rune(s)
+		if len(r) > maxRunes {
+			return string(r[:maxRunes]) + "…"
+		}
+		return s
+	}
+	return ""
+}
+
+// validSessionID 会话 id 字符白名单(防路径穿越:仅字母数字与 -_)。
+func validSessionID(id string) bool {
+	for _, r := range id {
+		switch {
+		case r >= '0' && r <= '9', r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r == '-', r == '_':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 func countLines(path string) int {
 	f, err := os.Open(path)
 	if err != nil {

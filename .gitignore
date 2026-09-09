@@ -14,3 +14,14 @@
 .DS_Store
 .idea/
 .vscode/
+
+# M7 前端产物与依赖(web-src 工程本地;产物必须存在供 go:embed,但不由 git 托管版本)
+/web/dist/
+/web-src/node_modules/
+# 示例 UI 插件(M7.2)本地构建依赖
+/web-src/examples/**/node_modules/
+/gah-data
+
+# 桌面壳产物与依赖(desktop/;sidecar 二进制构建产物,构建时由 scripts/gen-desktop.sh 生成)
+/desktop/src-tauri/target/
+/desktop/src-tauri/binaries/

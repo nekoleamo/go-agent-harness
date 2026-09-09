@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +16,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/nekoleamo/go-agent-harness/internal/install"
+	"github.com/nekoleamo/go-agent-harness/internal/prefs"
 	"github.com/nekoleamo/go-agent-harness/internal/providerfile"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
@@ -32,16 +34,18 @@ type App struct {
 	subs      []sdk.Disposer
 	cmds      sdk.CommandRegistry // ctx.commands(可为 nil:未装配时命令不可用)
 
-	cancelFn  context.CancelFunc // 当前回合的取消函数(Esc 中断,见 model.onCancel)
-	widgets    []Widget          // P4-12 输入区 widget 行(宿主/插件经 AddWidget 注册)
+	cancelFn context.CancelFunc // 当前回合的取消函数(Esc 中断,见 model.onCancel)
+	widgets  []Widget           // P4-12 输入区 widget 行(宿主/插件经 AddWidget 注册)
 
 	mFiles    []sdk.Option // @ 引用文件索引缓存(projectFiles;当前 cwd 下惰性构建)
 	mFilesDir string       // 缓存对应的 cwd(失效判据:workspace 切换后重建)
+
+	themeBase map[string]string // M13 启动活动覆盖链(data.palette+theme.yaml),/theme default 重置目标
 }
 
 // NewApp 构造 TUI 应用。命令注册表(ctx.commands,host-commands 提供)注入:
 // 内部命令(宿主级)注册进表与插件命令共表——提示列表/分发/help 全部动态。
-func NewApp(c sdk.Ctx, loop sdk.AgentLoop, llm sdk.LLMService, profile string) *App {
+func NewApp(c sdk.Ctx, loop sdk.AgentLoop, llm sdk.LLMService, profile string, palette ...map[string]string) *App {
 	// 启动即从服务拉取实际生效配置(模型/沙箱/思考等级),状态栏不显示"未设置"等假默认;
 	// 装配顺序保证适配器已 SetModel(host-llm → 适配器先于 ui 启动)。
 	state := &State{Profile: profile, Workspace: workspaceName(),
@@ -55,6 +59,25 @@ func NewApp(c sdk.Ctx, loop sdk.AgentLoop, llm sdk.LLMService, profile string) *
 	}
 	m := &Model{state: state}
 	a := &App{model: m, c: c, loop: loop, llm: llm, confirmCh: make(chan bool, 1)}
+	// M13 主题启动加载链:data.palette(装配层样板)→ theme.yaml(用户全局覆盖)→ 默认表。
+	// 坏主题文件显式提示(错误行),不中断 TUI(渲染以默认表兜底)。
+	base := map[string]string{}
+	if len(palette) > 0 {
+		for k, v := range palette[0] {
+			base[k] = v
+		}
+	}
+	if over, err := loadThemeMain(); err != nil {
+		state.Lines = append(state.Lines, Line{Kind: "error", Text: "主题加载失败: " + err.Error()})
+	} else {
+		for k, v := range over {
+			base[k] = v
+		}
+		if err := ApplyTheme(base); err != nil {
+			state.Lines = append(state.Lines, Line{Kind: "error", Text: "主题应用失败: " + err.Error()})
+		}
+	}
+	a.themeBase = base
 	a.syncDisplay() // 状态栏模型 + 来源(provider 域名缩写)拉实际生效值
 	var reg sdk.CommandRegistry
 	if err := c.Inject("ctx.commands", &reg); err != nil {
@@ -68,7 +91,7 @@ func NewApp(c sdk.Ctx, loop sdk.AgentLoop, llm sdk.LLMService, profile string) *
 	m.onCancel = a.cancelCurrent
 	m.hints = a.suggestHints
 	m.levels = a.levels
-	m.onFiles = a.projectFiles   // @ 引用补全候选(项目文件索引,含 cwd 缓存;workspace 切换失效)
+	m.onFiles = a.projectFiles                         // @ 引用补全候选(项目文件索引,含 cwd 缓存;workspace 切换失效)
 	m.onWidgets = func() []Widget { return a.widgets } // P4-12 widget 行注入(渲染帧拉取)
 	m.onThinkingCycle = a.cycleThinking
 	m.onStats = func() sdk.UsageStats {
@@ -79,6 +102,7 @@ func NewApp(c sdk.Ctx, loop sdk.AgentLoop, llm sdk.LLMService, profile string) *
 		return us.Stats()
 	}
 	a.registerInternalCommands()
+	a.applyPrefs() // 恢复上次退出偏好(思考/沙箱/历史;与 Web 共享 gah-state.json)
 	// 启动即新会话(host-cwd-sessions 启动时 New):模型上下文与展示层均从空开始,
 	// 不自动重放主会话历史——过往对话保留在会话文件,经 /session switch 进入时重放。
 	// 状态栏显示当前会话标签(名优先,无名称回退 id/主会话)。
@@ -124,7 +148,17 @@ func (a *App) Start() error {
 		}
 		return nil
 	})
-	a.subs = []sdk.Disposer{d1, d2}
+	// 会话/工作区切换事件(B3 命令下沉):宿主命令执行切换后 UI 经此重放刷新
+	// (替代原命令内 afterSessionSwitch 直调——判重跳过后命令走宿主版本)
+	d3 := a.c.Subscribe("cwd/session-switched", func(context.Context, *sdk.Event) error {
+		a.onSessionSwitched()
+		return nil
+	})
+	d4 := a.c.Subscribe("cwd/workspace-switched", func(context.Context, *sdk.Event) error {
+		a.onSessionSwitched()
+		return nil
+	})
+	a.subs = []sdk.Disposer{d1, d2, d3, d4}
 
 	go func() {
 		_, err := a.program.Run()
@@ -216,6 +250,31 @@ func (a *App) command(raw string) error {
 	return nil
 }
 
+func (a *App) cmdApproval(args []string) (string, error) {
+	if len(args) < 1 {
+		return "", errString("/approval open|smart|strict(开放|智能|严格)")
+	}
+	var ap sdk.ApprovalService
+	if err := a.c.Inject("ctx.approval", &ap); err != nil {
+		return "", errString("ctx.approval 未装配: " + err.Error())
+	}
+	var mode sdk.ApprovalMode
+	switch args[0] {
+	case "open":
+		mode = sdk.ApprovalOpen
+	case "smart":
+		mode = sdk.ApprovalSmart
+	case "strict":
+		mode = sdk.ApprovalStrict
+	default:
+		return "", errString("/approval open|smart|strict")
+	}
+	ap.SetMode(mode)
+	a.model.state.Approval = string(mode)
+	prefs.SetApproval(string(mode))
+	return "", nil
+}
+
 func (a *App) cmdSandbox(args []string) (string, error) {
 	if len(args) < 1 {
 		return "", errString("/sandbox ro|ws|full(read-only|workspace-write|full-access)")
@@ -237,6 +296,7 @@ func (a *App) cmdSandbox(args []string) (string, error) {
 	}
 	sb.SetMode(mode)
 	a.model.state.Sandbox = string(mode)
+	prefs.SetSandbox(string(mode)) // 退出即记(与 Web 共享偏好)
 	return "", nil
 }
 
@@ -347,6 +407,7 @@ func (a *App) cmdSettings(args []string) (string, error) {
 		}
 	}
 	sessions.SetHistory(n)
+	prefs.SetHistory(n) // 全局历史注入偏好(会话级 sidecar 之外,跨新会话记忆)
 	return "/settings history -> " + args[1], nil
 }
 
@@ -419,7 +480,9 @@ func (a *App) cmdClone(_ []string) (string, error) {
 	return "已复制当前会话为分支 " + id + "(独立演进;切换回源:/session switch)", nil
 }
 
-// cmdTree /tree:会话分支树——列出项目各会话(名/源标记)+ 每会话可 fork 的提问点(seq + 摘要)。
+// cmdTree /tree:会话分支树——树形展示派生关系(fork/clone 溯源,P5.2-B3)+ 每会话
+// 可 fork 的提问点(seq + 摘要)。树由 host-cwd-sessions fork-tree.json 派生关系组装;
+// 无派生记录时回退平铺(各会话独立成根),行为向后兼容。
 func (a *App) cmdTree(_ []string) (string, error) {
 	fs, err := a.forkableSessions()
 	if err != nil {
@@ -429,13 +492,12 @@ func (a *App) cmdTree(_ []string) (string, error) {
 	if err := a.c.Inject("ctx.cwdSessions", &cs); err != nil {
 		return "", errString("ctx.cwdSessions 未装配")
 	}
-	var b strings.Builder
+	nodes, _ := fs.ForkTree()
 	cur := cs.CurrentSession()
+	// 节点显示名表 + 当前标记
+	disp := map[string]string{}
+	curMark := map[string]bool{}
 	for _, si := range cs.Sessions() {
-		mark := "  "
-		if si.ID == cur {
-			mark = "★"
-		}
 		name := si.Name
 		if name == "" {
 			if si.ID == "" {
@@ -444,23 +506,99 @@ func (a *App) cmdTree(_ []string) (string, error) {
 				name = si.ID
 			}
 		}
-		pts, err := fs.ForkPoints(si.ID)
-		if err != nil {
+		disp[si.ID] = name
+		curMark[si.ID] = si.ID == cur
+	}
+	body := treeRenderNodes(nodes, disp, curMark, fs.ForkPoints)
+	body += "  (分支: /fork [seq] 从此点派生;复制当前: /clone;切换:/session switch)"
+	return "会话分支树:\n" + body, nil
+}
+
+// treeRenderNodes 会话分支树渲染(纯函数,可单测):由派生关系 nodes 组装树并输出文本。
+// 根判定:无父 / 父不在节点集 → 根;完全无记录 → 按 disp 全部平铺为根(向后兼容)。
+// 递归深度 ≤12 + visited 防环。forkPts 注入各会话分支点列表(错误忽略→空)。
+func treeRenderNodes(nodes []sdk.ForkNode, disp map[string]string, curMark map[string]bool,
+	forkPts func(id string) ([]sdk.ForkPoint, error)) string {
+	children := map[string][]sdk.ForkNode{}
+	known := map[string]bool{}
+	for _, n := range nodes {
+		known[n.ID] = true
+	}
+	for _, n := range nodes {
+		children[n.Parent] = append(children[n.Parent], n)
+	}
+	// 根判定:主会话(id 空)恒为根且其派生挂其下;其它节点 Parent 非空但父不在
+	// 节点集(孤儿/记录不全)独立成根;完全无记录 → 平铺 disp(向后兼容)。
+	roots := []string{}
+	for _, n := range nodes {
+		if n.ID == "" {
+			roots = append(roots, "") // 主会话根(派生经 children[""] 收录,不重复)
 			continue
 		}
-		fmt.Fprintf(&b, "  %s %s(提问 %d 个;/fork 取 seq)\n", mark, name, len(pts))
-		// 列出分支点(最多 5 条,显示 seq 供 /fork 定位)
+		if n.Parent == "" {
+			// fork 自主(父=主会话):主节点在 known 则挂其下(children 已收录,非根);
+			// 节点集缺主(异常)→ 独立成根兜底
+			if !known[""] {
+				roots = append(roots, n.ID)
+			}
+			continue
+		}
+		if !known[n.Parent] {
+			roots = append(roots, n.ID) // 孤儿(父记录缺失):独立根
+		}
+	}
+	if len(roots) == 0 {
+		for id := range disp {
+			roots = append(roots, id)
+		}
+	}
+	sort.Strings(roots)
+	var b strings.Builder
+	var walk func(id string, depth int, visited map[string]bool)
+	walk = func(id string, depth int, visited map[string]bool) {
+		if depth > 12 || visited[id] {
+			return
+		}
+		visited[id] = true
+		pad := strings.Repeat("    ", depth)
+		if depth > 0 {
+			pad += "└─ "
+		}
+		mark := "  "
+		if curMark[id] {
+			mark = "★"
+		}
+		name := disp[id]
+		if name == "" {
+			if id == "" {
+				name = "主会话"
+			} else {
+				name = id
+			}
+		}
+		var pts []sdk.ForkPoint
+		if forkPts != nil {
+			pts, _ = forkPts(id)
+		}
+		fmt.Fprintf(&b, "  %s %s %s(提问 %d 个;/fork 取 seq)\n", pad, mark, name, len(pts))
 		start := 0
 		if len(pts) > 5 {
 			start = len(pts) - 5
-			fmt.Fprintf(&b, "      …(更早 %d 个,/tree 截断)\n", start)
+			fmt.Fprintf(&b, "  %s    …(更早 %d 个,/tree 截断)\n", pad, start)
 		}
 		for _, pt := range pts[start:] {
-			fmt.Fprintf(&b, "      #%d %s\n", pt.Seq, pt.Text)
+			fmt.Fprintf(&b, "  %s    #%d %s\n", pad, pt.Seq, pt.Text)
+		}
+		kids := append([]sdk.ForkNode{}, children[id]...)
+		sort.Slice(kids, func(i, j int) bool { return kids[i].ID < kids[j].ID })
+		for _, k := range kids {
+			walk(k.ID, depth+1, visited)
 		}
 	}
-	b.WriteString("  (分支: /fork [seq] 从此点派生;复制当前: /clone;切换:/session switch)")
-	return "会话分支树:\n" + b.String(), nil
+	for _, id := range roots {
+		walk(id, 0, map[string]bool{})
+	}
+	return b.String()
 }
 
 func (a *App) cmdSessions() (string, error) {
@@ -684,12 +822,22 @@ func sessionDesc(si sdk.SessionInfo) string {
 			label += " · " + fmt.Sprint(si.Frames) + " 条"
 		}
 	}
+	// P5.2 会话内容预览(对齐 web Sidebar Preview):首条用户消息截 20 字,
+	// /session switch 选择器一眼识别会话内容(超长选择器行由渲染截断)。
+	if si.Preview != "" {
+		p := []rune(si.Preview)
+		if len(p) > 20 {
+			p = p[:20]
+		}
+		label += " ─ " + string(p)
+	}
 	return label
 }
 
 // afterSessionSwitch 切换会话后的界面同步:状态栏会话标签(名优先)、重置 token 统计、
 // 清空 TUI 会话流并重放新会话历史(继续上下文可见)。
 func (a *App) afterSessionSwitch(cs sdk.CwdSessions) {
+	a.model.state.Workspace = workspaceName() // 工作区切换后 cwd 已更新,状态栏同步
 	a.model.state.Session = sessionLabel(cs)
 	var us sdk.UsageStatsService
 	if err := a.c.Inject("ctx.usageStats", &us); err == nil {
@@ -709,6 +857,17 @@ func (a *App) afterSessionSwitch(cs sdk.CwdSessions) {
 	}
 	a.model.state.Lines = append(a.model.state.Lines,
 		Line{Kind: "meta", Text: "—— 已切换到会话: " + orDefault(sessionLabel(cs), "主会话") + " ——"})
+}
+
+// onSessionSwitched 会话/工作区切换事件驱动刷新(B3 命令下沉后:宿主命令执行切换经
+// cwd/session-switched|cwd/workspace-switched 广播,此处 Inject 服务取当前态重放。
+// 替代原命令内 afterSessionSwitch 直调)。
+func (a *App) onSessionSwitched() {
+	var cs sdk.CwdSessions
+	if err := a.c.Inject("ctx.cwdSessions", &cs); err != nil {
+		return
+	}
+	a.afterSessionSwitch(cs)
 }
 
 // workspaceNewSentinel 选择器哨兵项:选中后进入二级自由断点输入新目录路径。
@@ -779,7 +938,7 @@ func (a *App) cmdWorkspace(args []string) (string, error) {
 	if err := os.Chdir(target); err != nil {
 		return "", errString("/workspace: chdir 失败: " + err.Error())
 	}
-	a.mFilesDir = ""  // @ 引用文件索引缓存失效(下个 cwd 重新索引)
+	a.mFilesDir = "" // @ 引用文件索引缓存失效(下个 cwd 重新索引)
 	a.mFiles = nil
 	a.model.state.Workspace = workspaceName() // 状态栏工作区名随切换刷新
 	var cs sdk.CwdSessions
@@ -796,6 +955,39 @@ func (a *App) cmdWorkspace(args []string) (string, error) {
 }
 
 // cmdThinking /thinking off|low|medium|high:设置会话级思考等级(Shift+Tab 循环同效)。
+// applyPrefs 启动恢复上次退出偏好(思考/沙箱/历史;与 Web 共享 internal/prefs,
+// model 由 providerfile 链自行恢复)。单条非法/服务缺失跳过,不阻塞 TUI 启动。
+func (a *App) applyPrefs() {
+	defer func() { _ = recover() }() // 偏好恢复非关键:测试/极简宿主缺实现时兜底不崩
+	p := prefs.Load()
+	if p.Thinking != "" {
+		if lvl := sdk.ParseThinking(p.Thinking); lvl.String() == p.Thinking {
+			a.llm.SetThinking(lvl)
+			a.model.state.Thinking = lvl.String()
+		}
+	}
+	if p.Sandbox != "" {
+		var sb sdk.Sandbox
+		if err := a.c.Inject("ctx.sandbox", &sb); err == nil && sb != nil {
+			sb.SetMode(sdk.SandboxMode(p.Sandbox))
+			a.model.state.Sandbox = p.Sandbox
+		}
+	}
+	if p.Approval != "" {
+		var ap sdk.ApprovalService
+		if err := a.c.Inject("ctx.approval", &ap); err == nil && ap != nil {
+			ap.SetMode(sdk.ApprovalMode(p.Approval))
+			a.model.state.Approval = p.Approval
+		}
+	}
+	if p.History != nil {
+		var sess sdk.SessionLog
+		if err := a.c.Inject("ctx.sessions", &sess); err == nil && sess != nil {
+			sess.SetHistory(*p.History)
+		}
+	}
+}
+
 func (a *App) cmdThinking(args []string) (string, error) {
 	if len(args) < 1 {
 		return "", errString("/thinking off|low|medium|high")
@@ -1183,6 +1375,10 @@ func (a *App) registerInternalCommands() {
 			Args: []sdk.ArgLevel{{Options: func([]string) []sdk.Option {
 				return []sdk.Option{{Value: "ro", Desc: "只读"}, {Value: "ws", Desc: "工作区写入"}, {Value: "full", Desc: "完全访问"}}
 			}}}},
+		{Name: "approval", Usage: "/approval open|smart|strict", Desc: "运行期切审批档", Run: a.cmdApproval,
+			Args: []sdk.ArgLevel{{Options: func([]string) []sdk.Option {
+				return []sdk.Option{{Value: "open", Desc: "开放:危险操作直接放行"}, {Value: "smart", Desc: "智能:命中危险模式弹确认"}, {Value: "strict", Desc: "严格:危险操作直接拒绝"}}
+			}}}},
 		{Name: "plugins", Usage: "/plugins list|on|off|default <id>", Desc: "插件插拔/持久开关", Run: a.cmdPlugins,
 			Args: []sdk.ArgLevel{
 				{Options: func([]string) []sdk.Option {
@@ -1270,6 +1466,8 @@ func (a *App) registerInternalCommands() {
 				}
 				return "已命名当前会话: " + name, nil
 			}},
+		{Name: "theme", Usage: "/theme <主题名|default>", Desc: "切换配色主题(config/themes/*.yaml;default=恢复启动活动覆盖链)",
+			Run: a.cmdTheme, Args: []sdk.ArgLevel{{Options: themeOptions}}},
 		{Name: "help", Usage: "/help", Desc: "命令帮助", Run: a.cmdHelp},
 		{Name: "exit", Usage: "/exit", Desc: "退出", Run: func([]string) (string, error) {
 			a.program.Quit()
@@ -1277,12 +1475,44 @@ func (a *App) registerInternalCommands() {
 		}},
 	}
 	for _, spec := range internal {
+		if _, ok := a.cmds.Get(spec.Name); ok {
+			// 已下沉宿主(host-internal-commands)/外部命令插件先注册:判重跳过,
+			// TUI 共用注册表命令(node UI 专属命令外,执行即宿主版本,UI 刷新经事件驱动)
+			continue
+		}
 		if _, err := a.cmds.Register(spec); err != nil {
 			// 同名冲突:注册表拒绝(宿主命令与插件命令共存时先到先得,不覆盖)
 			a.model.state.Lines = append(a.model.state.Lines,
 				Line{Kind: "error", Text: err.Error()})
 		}
 	}
+}
+
+// cmdTheme /theme [主题名|default]:运行期切换配色主题
+// (config/themes/<名>.yaml 经 ApplyTheme 覆盖当前调色板,下一帧即时重绘);
+// default = 重置回启动活动覆盖链(data.palette+theme.yaml)。
+func (a *App) cmdTheme(args []string) (string, error) {
+	name := strings.TrimSpace(strings.Join(args, " "))
+	if name == "" {
+		return "", errString("/theme <主题名|default> 切换配色主题")
+	}
+	if name == themeResetSentinel {
+		ResetTheme()
+		if len(a.themeBase) > 0 {
+			if err := ApplyTheme(a.themeBase); err != nil {
+				return "", errString("恢复活动覆盖失败: " + err.Error())
+			}
+		}
+		return "已恢复默认配色(活动覆盖: data.palette + theme.yaml)", nil
+	}
+	over, err := loadThemeNamed(name)
+	if err != nil {
+		return "", errString(err.Error())
+	}
+	if err := ApplyTheme(over); err != nil {
+		return "", errString(err.Error())
+	}
+	return "已切换主题 " + name, nil
 }
 
 // cmdHelp 动态命令帮助:遍历注册表输出 usage(插件命令自动纳入,提示前缀过滤说明)。

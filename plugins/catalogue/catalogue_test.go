@@ -9,8 +9,8 @@ import (
 
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-fanout"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-jobs"
-	"github.com/nekoleamo/go-agent-harness/plugins/mcp/mcp-server"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/token-compress"
+	"github.com/nekoleamo/go-agent-harness/plugins/mcp/mcp-server"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -85,18 +85,18 @@ func TestRequiredDepsReferenced(t *testing.T) {
 	}
 }
 
-// TestBundleCoverage base/tui 两 bundle 均有插件归属,且每插件 bundle 字段合法。
+// TestBundleCoverage base/tui/web 三 bundle 均有插件归属,且每插件 bundle 字段合法。
 func TestBundleCoverage(t *testing.T) {
 	seen := map[string]bool{}
 	for id, d := range All {
 		switch d.Bundle {
-		case "base", "tui":
+		case "base", "tui", "web":
 		default:
 			t.Fatalf("%s 的 bundle 归属非法: %q", id, d.Bundle)
 		}
 		seen[d.Bundle] = true
 	}
-	for _, b := range []string{"base", "tui"} {
+	for _, b := range []string{"base", "tui", "web"} {
 		if !seen[b] {
 			t.Fatalf("bundle %s 无任何插件归属", b)
 		}
@@ -145,6 +145,37 @@ func TestNoDuplicateIDs(t *testing.T) {
 		if n > 1 {
 			t.Fatalf("重复登记: %s ×%d", id, n)
 		}
+	}
+}
+
+// TestManageDeclared 管理域声明守卫:值合法,且历史名单集合不退化(catalogue 为单一事实源,
+// web 展示层透传声明,不再硬编码名单;缺失声明 → 界面误显示可启停)。
+func TestManageDeclared(t *testing.T) {
+	external := map[string]bool{
+		"tool-shell": true, "tool-files": true, "tool-web": true, "tool-memory": true,
+		"tool-todo": true, "tool-subagent": true, "tool-workflow": true, "mcp-bridge": true,
+	}
+	scenario := map[string]bool{"llm-mock": true, "mcp-server": true, "ui-tui-app": true}
+	for id, d := range All {
+		switch d.Manage {
+		case "", "external", "scenario":
+		default:
+			t.Fatalf("%s 的 Manage 声明非法: %q", id, d.Manage)
+		}
+		if external[id] && d.Manage != "external" {
+			t.Fatalf("%s 应声明 external(M6.8 外部化),得 %q", id, d.Manage)
+		}
+		delete(external, id)
+		if scenario[id] && d.Manage != "scenario" {
+			t.Fatalf("%s 应声明 scenario(场景专用),得 %q", id, d.Manage)
+		}
+		delete(scenario, id)
+	}
+	if len(external) > 0 {
+		t.Fatalf("external 声明缺失,界面将误显示可启停: %v", external)
+	}
+	if len(scenario) > 0 {
+		t.Fatalf("scenario 声明缺失: %v", scenario)
 	}
 }
 

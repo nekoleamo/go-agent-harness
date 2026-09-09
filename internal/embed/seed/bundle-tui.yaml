@@ -1,5 +1,6 @@
 # seed-version: 1 # 样板版本:新增能力条目时 +1,老用户自动升级(备份后覆盖)
 # tui bundle:叠加界面插件(ui-tui-app,模块在 tui/ 包)。
+# M13 主题外部化:配置入口 data.palette(token→色值,部分覆盖,缺省回落默认表)。
 name: tui
 entries:
   - id: ui-tui-app

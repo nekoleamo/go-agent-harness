@@ -36,6 +36,8 @@ func styleForKind(kind string) lipgloss.Style {
 		return styleTool
 	case "meta":
 		return styleMeta
+	case "thinking":
+		return styleThink // 思维块灰斜体(弱化,不抢正文)
 	case "error":
 		return styleError
 	default:
@@ -96,11 +98,7 @@ func (s *State) selRange(gRow int) (active bool, c0, c1 int) {
 	return true, c0, c1
 }
 
-// 搜索高亮颜色(token 派生;表值即既有基线,见 palette.go)。
-var (
-	searchBg    = DefaultPalette[TokSearchBg]    // 命中行背景(暗)
-	searchCurBg = DefaultPalette[TokSearchCurBg] // 当前命中背景(琥珀,醒目)
-)
+// 搜索高亮颜色经 colorVal 取当前生效值(主题覆盖即时生效,见 palette.go)。
 
 // renderSessionRow 渲染会话流物理行:kind 基础样式 + 搜索命中整行背景(当前命中更亮)
 // + 鼠标选区反色段(命中/选区可同时存在)。
@@ -132,11 +130,15 @@ func renderSessionRow(p physRow, s *State, gRow int) string {
 		}
 	}
 	st := rowBaseStyle(p)
+	// P5 背景块:先应用语义背景(user 整块/工具调用与结果首行),搜索命中背景后置覆盖(命中优先)。
+	if p.bg != "" {
+		st = st.Background(lipgloss.Color(colorVal(Token(p.bg))))
+	}
 	if s.searchHitLine(p.lineIdx) {
 		if p.lineIdx == s.searchCurLine() {
-			st = st.Background(lipgloss.Color(searchCurBg))
+			st = st.Background(lipgloss.Color(colorVal(TokSearchCurBg)))
 		} else {
-			st = st.Background(lipgloss.Color(searchBg))
+			st = st.Background(lipgloss.Color(colorVal(TokSearchBg)))
 		}
 	}
 	act, c0, c1 := s.selRange(gRow)
@@ -172,6 +174,39 @@ func renderSessionRow(p physRow, s *State, gRow int) string {
 	return sb.String()
 }
 
+// annotateRowBg 逐逻辑行标注背景块(P5 视觉升级,对齐 pi userMessageBg/tool*Bg 语义):
+// user 行全部物理行深灰底(整块消息背景);工具调用行(⚙ 前缀)与工具结果行
+// (✓ 成功/✗ 失败 前缀)仅首物理行带背景——折叠摘要即"框感"标题底,展开全文行
+// 走 diff/md 染色(内嵌 ANSI reset 会清外层背景,不加背景防冲突)。
+// 叠加顺序:renderSessionRow 先应用 bg,搜索命中背景后置覆盖(命中优先),选区反色叠加其上。
+func annotateRowBg(rows []physRow, lines []Line) {
+	for li, ln := range lines {
+		var tok Token
+		switch {
+		case ln.Kind == "user":
+			tok = TokUserBg // 用户消息:整块背景
+		case ln.Kind == "tool" && strings.HasPrefix(ln.Text, "⚙ "):
+			tok = TokToolBg // 工具调用行(pending 态)
+		case ln.Kind == "tool" && strings.HasPrefix(ln.Text, "✓"):
+			tok = TokToolOKBg // 工具成功结果行
+		case ln.Kind == "error" && strings.HasPrefix(ln.Text, "✗"):
+			tok = TokToolErrBg // 工具失败结果行(agent error 行不含 ✗ 前缀,不误标)
+		}
+		if tok == "" {
+			continue
+		}
+		for i := range rows {
+			p := &rows[i]
+			if p.lineIdx != li {
+				continue
+			}
+			if tok == TokUserBg || p.first {
+				p.bg = string(tok)
+			}
+		}
+	}
+}
+
 // annotateCodeFences 逐行扫描标注代码围栏(assistant 行参与切换;其它 kind 不翻转——
 // 工具结果/元信息里出现 ``` 不干扰正文围栏配对;同逻辑行跨物理行按序连续判定)。
 // 围栏行标记 codeFence + 开围栏解析 lang;其后续 assistant 内容行置 inCode 并沿用 lang。
@@ -201,6 +236,10 @@ func annotateCodeFences(rows []physRow) {
 	}
 }
 
+// thinkingFoldLen 思维块折叠态首段 rune 数:宽字符 2 列,40 rune ≈ 80 列,+展开提示 ~13 列 < 100 列单行。
+// 截断在 flattenViewLines 展平层(按逻辑行),展开态(Ctrl+T)全文参与展平。
+const thinkingFoldLen = 40
+
 // foldMarkFor 折叠行(结果行 Full 非空)的物理行尾缀提示:仅逻辑行首物理行附加标记。
 // 空 = 非折叠行/非首物理行(其余物理行不重复标注)。
 func foldMarkFor(s *State, p physRow) string {
@@ -223,6 +262,10 @@ func foldMarkFor(s *State, p physRow) string {
 // stRenderText 渲染带折叠标记的普通文本行(不叠加 md/搜索/选区——折叠行交互优先)。
 func stRenderText(s *State, p physRow, gRow int, mark string) string {
 	st := rowBaseStyle(p)
+	// P5 背景块:折叠结果行同样带语义背景(与 renderSessionRow 主路径一致)
+	if p.bg != "" {
+		st = st.Background(lipgloss.Color(colorVal(Token(p.bg))))
+	}
 	// 在首物理行文本后追加可点击标记(颜色弱化),方便识别可切换行
 	_ = gRow
 	return st.Render(p.text + mark)
@@ -238,6 +281,7 @@ type physRow struct {
 	inCode    bool   // 位于代码围栏内(内容行)
 	codeFence bool   // 围栏行本身(``` / ~~~ 开或闭)
 	lang      string // 围栏语言(开围栏行解析;块内内容行沿用)
+	bg        string // 背景块语义色 token 名(annotateRowBg 后写;user 全行/工具调用与结果首行);空=无背景
 }
 
 // padRow 把行文本对齐到内容列宽(colW):不足补空格,超限截断(折行已保证不超)。
@@ -266,6 +310,12 @@ func flattenViewLines(s *State, colW int) []physRow {
 		} else if ln.Full != "" && !strings.Contains(ln.Text, "…") {
 			// 折叠提示:内容确被截断(摘要无省略号说明其实很短——无需展开提示)
 		}
+		// B1 思维块折叠(Ctrl+T):折叠态截断到阈值一字物理行+展开提示(宽字符 2 列,48 rune ≈ 96 列)
+		if ln.Kind == "thinking" && !s.ThinkingFull {
+			if r := []rune(ln.Text); len(r) > thinkingFoldLen {
+				text = string(r[:thinkingFoldLen]) + " …(Ctrl+T 展开)"
+			}
+		}
 		rows = append(rows, flattenLine(li, Line{Kind: ln.Kind, Text: text}, colW)...)
 	}
 	return rows
@@ -277,8 +327,11 @@ func flattenLine(li int, ln Line, colW int) []physRow {
 	segs := strings.Split(ln.Text, "\n")
 	for si, seg := range segs {
 		limit := colW
-		if si == 0 && ln.Kind == "user" {
+		switch {
+		case si == 0 && ln.Kind == "user":
 			limit = colW - 2 // 首行挂 "❯ " 前缀,可用宽减 2
+		case si == 0 && ln.Kind == "tool" && strings.HasPrefix(ln.Text, "⚙ "):
+			limit = colW - 2 // 工具调用行:左缘竖线 "▍ " 前缀(P5 框感)
 		}
 		if limit < 1 {
 			limit = 1
@@ -286,8 +339,13 @@ func flattenLine(li int, ln Line, colW int) []physRow {
 		parts := wrapSegment(seg, limit)
 		for pi, p := range parts {
 			t := p
-			if si == 0 && pi == 0 && ln.Kind == "user" {
-				t = "❯ " + p
+			if si == 0 && pi == 0 {
+				switch {
+				case ln.Kind == "user":
+					t = "❯ " + p
+				case ln.Kind == "tool" && strings.HasPrefix(ln.Text, "⚙ "):
+					t = "▍ " + p
+				}
 			}
 			rows = append(rows, physRow{kind: ln.Kind, text: t, lineIdx: li, first: si == 0 && pi == 0})
 		}
@@ -383,8 +441,13 @@ func isWideRune(r rune) bool {
 	return false
 }
 
-// spinnerFrames 思考动画帧(braille 旋转,回合运行中 tick 推进)。
-var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+// spinnerFrames 思考动画帧(F15.3 修正:shade 光条滚动)。
+// 用 ░▒▓█(ANSI/Mac 字体普遍支持)做定宽 5 的光条左右滚动——比 braille 旋转醒目,
+// 比 ▁▂▃▄▅ 细分块稳(后者在 Menlo 等字体缺失,显示空白被用戶反馈“无波浪”)；
+// 回合运行中 tick 推进。
+var spinnerFrames = []string{
+	"█▓▒░░", "░█▓▒░", "░░█▓▒", "░█▓▒░", "█▓▒░░",
+}
 
 func spinnerFrame(i int) string {
 	return spinnerFrames[i%len(spinnerFrames)]

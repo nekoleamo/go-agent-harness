@@ -295,7 +295,7 @@ func (l *Log) projectLocked(watermark int) []sdk.LLMMessage {
 		switch ev.Kind {
 		case sdk.EventUserMessage:
 			if u, ok := ev.Payload.(sdk.UserMessage); ok {
-				out = append(out, sdk.LLMMessage{Role: sdk.RoleUser, Content: u.Content})
+				out = append(out, sdk.LLMMessage{Role: sdk.RoleUser, Content: u.Content, Attachments: u.Attachments})
 			}
 		case sdk.EventAssistantMessage:
 			if a, ok := ev.Payload.(sdk.AssistantMessage); ok {

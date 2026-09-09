@@ -35,7 +35,8 @@ type SessionEvent struct {
 
 // UserMessage 用户输入(user/message 载荷)。
 type UserMessage struct {
-	Content string
+	Content     string
+	Attachments []Attachment // 附件(图片视觉/文件引用;Rel 随 jsonl 便携,Path 运行时)
 }
 
 // AssistantMessage 助手完整消息(assistant/message 载荷;chunk 事件只携带增量)。
@@ -103,6 +104,13 @@ type ForkPoint struct {
 	Text string
 }
 
+// ForkNode 分支树节点:派生会话与来源(父会话 id + 父分支点 seq;seq 0 = 全量克隆)。
+type ForkNode struct {
+	ID        string // 会话 id(空 = 主会话)
+	Parent    string // 父会话 id(空 = 根)
+	ParentSeq uint64 // 父会话分支点 seq(0 = 克隆全量)
+}
+
 // ForkableSessions 会话树/分支(P4-10;可选实现——host-cwd-sessions)。类型断言发现,
 // ctx.cwdSessions 接口不变。分支 = 复制继承历史到点的独立会话文件,继续演进互不影响。
 type ForkableSessions interface {
@@ -113,6 +121,9 @@ type ForkableSessions interface {
 	CloneCurrent() (string, error)
 	// ForkPoints 某会话文件(空 id = 主会话)的用户消息分支点列表(时间序;seq 供 /fork)。
 	ForkPoints(id string) ([]ForkPoint, error)
+	// ForkTree 项目会话分支树节点(派生关系:/fork 与 /clone 记录;P5.2-B3)。
+	// 返回全部节点(含主会话,Parent 空 = 根);实现不提供时返回空表。
+	ForkTree() ([]ForkNode, error)
 }
 
 // ReloadableInstructions 指令文件热重载(/reload 等效;可选实现——host-system-prompt 实现)。
@@ -141,11 +152,12 @@ type UsageEvent struct {
 // SessionInfo 一个会话的元信息(host-cwd-sessions 列表/切换用)。
 // ID 空 = 主会话(<key>.jsonl,跨期共享历史);非空 = 切换会话(<key>-<id>.jsonl)。
 type SessionInfo struct {
-	ID     string // 会话 id(空 = 主会话)
-	Path   string // 落盘 jsonl 路径
-	Name   string // 显示名(/name 设置;空 = 未命名)
-	MTime  int64  // 最后修改时间(unix 秒;0 = 未知/未落盘)
-	Frames int    // 事件条数(-1 = 未统计)
+	ID      string // 会话 id(空 = 主会话)
+	Path    string // 落盘 jsonl 路径
+	Name    string // 显示名(/name 设置;空 = 未命名)
+	Preview string // 会话内容省略版(首条用户消息截断;空 = 无内容)
+	MTime   int64  // 最后修改时间(unix 秒;0 = 未知/未落盘)
+	Frames  int    // 事件条数(-1 = 未统计)
 }
 
 // CwdSessions 服务(ctx.cwdSessions):项目级会话(host-cwd-sessions)。
@@ -166,14 +178,24 @@ type CwdSessions interface {
 	// Rename 设置当前会话显示名(空 = 清除)。名随会话文件持久化,
 	// 状态栏/会话列表/切换选择器以名为优先展示,无名称回退 id/主会话。
 	Rename(name string) error
+	// Delete 删除会话记录(仅删该会话 jsonl 与显示名索引,不动任何目录)。
+	// id 空 = 主会话;删除的是当前打开会话时自动切回主会话。
+	Delete(id string) error
+	// UnrecordProject 删除工作区(项目)使用记录(仅移除 workspaces 记录,
+	// 不删除对应文件夹与其中的会话文件)。不存在则幂等成功。
+	UnrecordProject(key string) error
 	// SessionName 当前会话显示名(空 = 未命名)。
 	SessionName() string
 	// New 新建会话:生成唯一 id 并 Open,返回新会话 id。
 	New() (string, error)
 	// SwitchProject 切换当前项目:key = 新项目 key(cwd 派生),重绑后自动新建
 	// 空会话(当前上下文与后续记录切到新项目文件;旧项目历史经 List/Sessions 回溯)。
-	// 返回新会话 id。key 空 = default。
+	// 返回新会话 id。key 空 = default。宿主侧需先 os.Chdir(与 SwitchDir 的分工)。
 	SwitchProject(key string) (string, error)
+	// SwitchDir 切换工作区到真实目录(dir 语义,与 TUI 一致):os.Chdir(dir) →
+	// key = ProjectKey(dir) → 重绑并新建空会话;工作区记录以真实 dir 落盘。
+	// 目录不可用显式失败(不静默降级)。返回新会话 id。
+	SwitchDir(dir string) (string, error)
 	// RecentProjects 最近使用工作区(项目)列表,按最近使用时间倒序(TUI /workspace 选择)。
 	RecentProjects() []ProjectInfo
 }

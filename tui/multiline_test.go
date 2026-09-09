@@ -194,6 +194,7 @@ func TestApplyExternalAndUndo(t *testing.T) {
 func TestRenderInputLineMultiline(t *testing.T) {
 	s := &State{Input: "ab\ncd\nef", Cursor: 6} // 光标 = 行2 首(cd 行尾换行后)
 	out := stripColor(renderInputLine(s, 80))
+	// F15.1:指标信息在独立行,输入行不含(多行输入逐字等价);提示符与续行缩进统一 2 列
 	if !strings.Contains(out, "❯ ab\n  cd\n  █ef") {
 		t.Fatalf("多行输入渲染: %q", out)
 	}
@@ -202,33 +203,57 @@ func TestRenderInputLineMultiline(t *testing.T) {
 	if out := stripColor(renderInputLine(s2, 80)); !strings.Contains(out, "❯ a█b\n  cd") {
 		t.Fatalf("光标行0: %q", out)
 	}
-	// 单行逐字等价(历史行为不变)
+	// 单行逐字等价(历史行为不变;指标行独立;思考等级语义移至框边框色)
 	s3 := &State{Input: "hello", Cursor: 2}
 	if out := stripColor(renderInputLine(s3, 80)); out != "❯ he█llo" {
 		t.Fatalf("单行渲染: %q", out)
 	}
 }
 
+// TestInputEdgeThinkingColor P5:框边框色随思考等级(off 灰/low 蓝灰/med 绿/high 紫)。
+func TestInputEdgeThinkingColor(t *testing.T) {
+	cases := []struct {
+		level string
+		want  string // 24-bit RGB 分量(lipgloss 输出格式 38;2;r;g;b)
+	}{
+		{"", "38;2;102;92;84"}, {"off", "38;2;102;92;84"}, {"low", "38;2;131;165;152"},
+		{"medium", "38;2;142;192;124"}, {"high", "38;2;211;134;155"},
+	}
+	for _, c := range cases {
+		out := renderInputFrame("x", 80, c.level)
+		if !strings.Contains(out, c.want) {
+			t.Fatalf("思考 %q 框边框应含色 %s: %q", c.level, c.want, out)
+		}
+	}
+}
+
 func TestRenderMultiLineInputLayout(t *testing.T) {
 	// 输入两行:主区高度自动扣 1(总输出行数恒定 = height-1,与单行输入一致)。
 	s := &State{Input: "a\nb", Cursor: 1}
-	for i := 0; i < 6; i++ {
+	for i := 0; i < 18; i++ { // 填满主区(两行输入 mainH=11)验证恒定公式
 		s.Lines = append(s.Lines, Line{Kind: "user", Text: "行" + string(rune('0'+i))})
 	}
-	out := Render(s, 80, 8)
+	out := Render(s, 80, 20)
 	lines := strings.Split(out, "\n")
-	if len(lines) != 7 { // 恒定 height-1(固有 1 行空隙,与单行输入同)
-		t.Fatalf("输出应 7 行,实际 %d", len(lines))
+	if len(lines) != 19 { // 恒定 height-1(输入区含圆角框:内容 2 + 顶/底边框 2)
+		t.Fatalf("输出应 19 行,实际 %d", len(lines))
 	}
-	if !strings.Contains(stripColor(lines[len(lines)-1]), "gah") {
-		t.Fatalf("末行应为状态栏: %q", lines[len(lines)-1])
+	// F15.2:末行为指标行(模型/上下文在最后一行下面),其上是状态栏
+	if !strings.Contains(stripColor(lines[len(lines)-1]), "上下文 -") {
+		t.Fatalf("末行应为指标行: %q", lines[len(lines)-1])
 	}
-	// 多行输入占 bottom 两物理行:主区 4 行(行2..5 被展示),输入首行在输出第 5 行(下标 4)
-	if !strings.Contains(stripColor(lines[4]), "❯ a█") {
-		t.Fatalf("输入首行应在主区之下: %q", lines[4])
+	if !strings.Contains(stripColor(lines[len(lines)-2]), "工作区:") {
+		t.Fatalf("状态栏应在指标行之上: %q", lines[len(lines)-2])
 	}
-	if got := strings.TrimRight(stripColor(lines[5]), " "); got != "  b" {
-		t.Fatalf("续行应对齐缩进: %q", got)
+	// 圆角框:分隔线 → 顶边框 → 内容首行(光标块) → 内容续行 → 底边框
+	if !strings.Contains(stripColor(lines[12]), "╭") || !strings.Contains(stripColor(lines[15]), "╰") {
+		t.Fatalf("输入区顶/底圆角边框应渲染: %q / %q", lines[12], lines[15])
+	}
+	if !strings.Contains(stripColor(lines[13]), "❯ a█") {
+		t.Fatalf("输入内容首行应含光标块: %q", lines[13])
+	}
+	if got := strings.TrimRight(stripColor(lines[14]), " "); !strings.Contains(got, "b") || !strings.HasPrefix(got, "│") {
+		t.Fatalf("续行应于框内缩进对齐: %q", got)
 	}
 }
 

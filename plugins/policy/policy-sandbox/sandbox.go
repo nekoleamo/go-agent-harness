@@ -40,7 +40,17 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		}
 		return s.CheckTool(call.Name)
 	})
-	return d, nil
+	// 工作区切换事件:沙箱 root 同步到新目录(写校验/相对根解析即时生效)
+	d2 := c.Subscribe("cwd/workspace-switched", func(ctx context.Context, ev *sdk.Event) error {
+		if dir, ok := ev.Payload.(string); ok {
+			s.SetRoot(dir)
+		}
+		return nil
+	})
+	return func() {
+		d()
+		d2()
+	}, nil
 }
 
 // Policy 实现 sdk.Sandbox。
@@ -62,7 +72,21 @@ func (p *Policy) SetMode(m sdk.SandboxMode) {
 	p.mu.Unlock()
 }
 
-func (p *Policy) Root() string { return p.root }
+func (p *Policy) Root() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.root
+}
+
+// SetRoot 更新 workspace 根(工作区切换后调用;读/写校验即时按新 root)。
+func (p *Policy) SetRoot(dir string) {
+	if dir == "" {
+		return
+	}
+	p.mu.Lock()
+	p.root = filepath.Clean(dir)
+	p.mu.Unlock()
+}
 
 // ValidatePath 路径写校验(read-only 拒绝一切;workspace-write 限制在 root 内,防 ../ 穿越)。
 func (p *Policy) ValidatePath(path string) error {

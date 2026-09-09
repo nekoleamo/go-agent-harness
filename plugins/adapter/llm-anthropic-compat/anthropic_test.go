@@ -3,11 +3,14 @@ package llmanthropic
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -32,6 +35,55 @@ func sseServer(t *testing.T, lines ...string) (*httptest.Server, *Adapter, *byte
 	}))
 	t.Cleanup(srv.Close)
 	return srv, &Adapter{client: srv.Client(), baseURL: srv.URL, model: "test-model", maxTokens: 4096}, &lastBody
+}
+
+// TestCompleteSendsImageBlock 图片附件 → 请求 payload 含 image base64 块(附件一期视觉注入)。
+func TestCompleteSendsImageBlock(t *testing.T) {
+	img := filepath.Join(t.TempDir(), "p.png")
+	if err := os.WriteFile(img, []byte{1, 2, 3}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, a, body := sseServer(t,
+		`{"type":"message_start","message":{"usage":{"input_tokens":10,"output_tokens":0}}}`,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"text"}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":10,"output_tokens":1}}`,
+		`{"type":"message_stop"}`,
+	)
+	_, err := a.Complete(context.Background(), &sdk.LLMRequest{Model: "test-model", Messages: []sdk.LLMMessage{
+		{Role: sdk.RoleUser, Content: "看图", Attachments: []sdk.Attachment{
+			{Kind: sdk.AttachmentImage, Path: img, MimeType: "image/png"}}}}}, func(_ sdk.LLMStreamEvent) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reqWire struct {
+		Messages []struct {
+			Content []map[string]any `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(body.Bytes(), &reqWire); err != nil {
+		t.Fatal(err)
+	}
+	if len(reqWire.Messages) == 0 {
+		t.Fatal("无 messages 入请求")
+	}
+	found := false
+	for _, blk := range reqWire.Messages[0].Content {
+		if blk["type"] == "image" {
+			src := blk["source"].(map[string]any)
+			if src["type"] != "base64" || src["media_type"] != "image/png" {
+				t.Fatalf("image source 字段: %v", src)
+			}
+			if src["data"] != base64.StdEncoding.EncodeToString([]byte{1, 2, 3}) {
+				t.Fatalf("base64 内容不符: %v", src["data"])
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("请求未含 image 块")
+	}
 }
 
 // eventName 从事件 JSON 中取 type(测试用简化解析)。

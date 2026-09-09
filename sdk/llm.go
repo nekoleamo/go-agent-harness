@@ -28,12 +28,32 @@ type ToolCall struct {
 	Arguments string
 }
 
+// AttachmentKind 附件类型(image=视觉注入;file=路径引用文本,模型经工具读)。
+type AttachmentKind string
+
+const (
+	AttachmentImage AttachmentKind = "image"
+	AttachmentFile  AttachmentKind = "file"
+)
+
+// Attachment 消息附件(附件一期):image 经适配器构造结构化 image 块(视觉),file 仅路径引用。
+// Path 为运行时绝对路径(json 忽略;会话重放时空,适配器跳过视觉注入,保留文本引用);
+// Rel 相对附件根($GAH_HOME/attachments/…)随会话 jsonl 持久化(便携:随目录迁移有效)。
+type Attachment struct {
+	Kind     AttachmentKind `json:"kind,omitempty"`
+	Name     string         `json:"name,omitempty"`
+	MimeType string         `json:"mime_type,omitempty"`
+	Rel      string         `json:"rel,omitempty"`
+	Path     string         `json:"-"`
+}
+
 // LLMMessage 模型对话消息。
 type LLMMessage struct {
-	Role       Role
-	Content    string
-	ToolCalls  []ToolCall
-	ToolCallID string // RoleTool 时关联的工具调用 id
+	Role        Role
+	Content     string
+	Attachments []Attachment
+	ToolCalls   []ToolCall
+	ToolCallID  string // RoleTool 时关联的工具调用 id
 }
 
 // LLMRequest 一次模型请求。Tools 为模型可见的工具 schema 列表。
@@ -51,7 +71,7 @@ type LLMRequest struct {
 type ThinkingLevel int
 
 const (
-	ThinkingOff     ThinkingLevel = iota
+	ThinkingOff ThinkingLevel = iota
 	ThinkingLow
 	ThinkingMedium
 	ThinkingHigh
@@ -104,9 +124,10 @@ type UsageStats struct {
 	Window           int // 模型上下文窗口(token;context_window 配置,默认 65536)
 }
 
-// LLMStreamEvent 流式增量(文本增量 + 工具调用增量;Done 时携带最终消息)。
+// LLMStreamEvent 流式增量(文本增量 + 思维增量 + 工具调用增量;Done 时携带最终消息)。
 type LLMStreamEvent struct {
 	Delta        string // 文本增量
+	Thinking     string // 思维增量(推理模型 reasoning_content/thinking;非空=思维段,与 Delta 互斥发送)
 	ToolCallID   string // 工具调用开始/延续时提供
 	ToolCallName string // 工具名 delta
 	ToolCallArgs string // 参数增量

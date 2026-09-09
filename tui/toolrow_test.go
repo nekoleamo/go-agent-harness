@@ -45,8 +45,8 @@ func TestToolRowSemanticColor(t *testing.T) {
 		return out
 	}
 	call := apply(sdk.SessionEvent{Kind: sdk.EventToolCall, Payload: sdk.ToolCallEvent{ID: "1", Name: "web_fetch", Arguments: "{}"}})
-	if !strings.Contains(call[0], "38;5;220") {
-		t.Fatalf("调用行应琥珀: %q", call[0])
+	if !strings.Contains(call[0], "38;5;246") {
+		t.Fatalf("调用行应灰(调暗): %q", call[0])
 	}
 	ok := apply(sdk.SessionEvent{Kind: sdk.EventToolResult, Payload: sdk.ToolResultEvent{CallID: "1", Name: "read", Content: "ok"}})
 	if !strings.Contains(ok[0], "38;5;114") {

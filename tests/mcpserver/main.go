@@ -1,16 +1,20 @@
 // Command mcpserver 迷你 MCP server(stdio JSON-RPC,仅供集成测试)。
 // 读取 stdin 每行一个 JSON-RPC 请求,写出响应;提供单个工具 greet。
+// -name <id> 标识本 server 实例(多 server 测试区分路由;默认 "mini")。
 package main
 
 import (
 	"bufio"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
 	"strings"
 )
 
 func main() {
+	name := flag.String("name", "mini", "server 实例标识(注入工具描述与回显)")
+	flag.Parse()
 	sc := bufio.NewScanner(os.Stdin)
 	for sc.Scan() {
 		line := sc.Text()
@@ -39,7 +43,7 @@ func main() {
 			resp = map[string]any{"jsonrpc": "2.0", "id": *req.ID, "result": map[string]any{
 				"tools": []any{map[string]any{
 					"name":        "greet",
-					"description": "问候一个名字",
+					"description": "问候一个名字(via " + *name + ")",
 					"inputSchema": map[string]any{
 						"type":       "object",
 						"properties": map[string]any{"name": map[string]any{"type": "string"}},
@@ -57,7 +61,7 @@ func main() {
 			}
 			_ = json.Unmarshal([]byte(line), &p)
 			resp = map[string]any{"jsonrpc": "2.0", "id": *req.ID, "result": map[string]any{
-				"content": []any{map[string]any{"type": "text", "text": "你好, " + p.Params.Arguments.Name + "!"}},
+				"content": []any{map[string]any{"type": "text", "text": "你好, " + p.Params.Arguments.Name + "!(via " + *name + ")"}},
 			}}
 		default:
 			resp = map[string]any{"jsonrpc": "2.0", "id": *req.ID, "error": map[string]any{"code": -32601, "message": "method not found"}}

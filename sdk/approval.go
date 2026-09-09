@@ -9,3 +9,18 @@ import "context"
 type ConfirmService interface {
 	Confirm(ctx context.Context, prompt string) (bool, error)
 }
+
+// ApprovalMode 审批档位枚举(对齐 SandboxMode 三档先例)。
+type ApprovalMode string
+
+const (
+	ApprovalOpen   ApprovalMode = "open"   // 开放:危险操作直接放行,不弹确认
+	ApprovalSmart  ApprovalMode = "smart"  // 智能:命中危险模式弹确认(默认,现状行为)
+	ApprovalStrict ApprovalMode = "strict" // 严格:危险操作直接拒绝,不弹窗
+)
+
+// ApprovalService 审批服务:档位查询/切换(由 policy-approval 实现,Provide ctx.approval)。
+type ApprovalService interface {
+	Mode() ApprovalMode
+	SetMode(m ApprovalMode)
+}

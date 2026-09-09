@@ -10,6 +10,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -96,6 +97,18 @@ type wireToolResult struct {
 	IsError   bool   `json:"is_error,omitempty"`
 }
 
+// wireImage 图片视觉块(附件一期):base64 source。
+type wireImage struct {
+	Type   string            `json:"type"`
+	Source wireImageSource   `json:"source"`
+}
+
+type wireImageSource struct {
+	Type      string `json:"type"`
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
+}
+
 type wireMsg struct {
 	Role    string `json:"role"`
 	Content []any  `json:"content"`
@@ -141,8 +154,8 @@ type wireEvent struct {
 		StopReason  string `json:"stop_reason"`
 	} `json:"delta"`
 	Usage *struct {
-		InputTokens  int `json:"input_tokens"`
-		OutputTokens int `json:"output_tokens"`
+		InputTokens          int `json:"input_tokens"`
+		OutputTokens         int `json:"output_tokens"`
 		CacheReadInputTokens int `json:"cache_read_input_tokens"` // 缓存命中输入 token
 	} `json:"usage"`
 }
@@ -179,6 +192,23 @@ func (a *Adapter) Complete(ctx context.Context, req *sdk.LLMRequest, onChunk fun
 		var blocks []any
 		if msg.Content != "" {
 			blocks = append(blocks, wireText{Type: "text", Text: msg.Content})
+		}
+		// 图片视觉注入(附件一期;仅 Path 非空=当前回合上传,历史重放跳过)
+		for _, att := range msg.Attachments {
+			if att.Kind != sdk.AttachmentImage || att.Path == "" {
+				continue
+			}
+			data, err := os.ReadFile(att.Path)
+			if err != nil {
+				continue
+			}
+			mime := att.MimeType
+			if mime == "" {
+				mime = "image/png"
+			}
+			blocks = append(blocks, wireImage{Type: "image", Source: wireImageSource{
+				Type: "base64", MediaType: mime, Data: base64.StdEncoding.EncodeToString(data),
+			}})
 		}
 		for _, tc := range msg.ToolCalls {
 			var input map[string]any

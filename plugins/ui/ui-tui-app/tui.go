@@ -33,12 +33,23 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		return nil, err
 	}
 	profile := "tui"
+	var palette map[string]string
 	if m != nil && m.Data != nil {
 		if pr, ok := m.Data["profile"].(string); ok {
 			profile = pr
 		}
+		// M13 主题外部化:data.palette(token→色值,可部分覆盖,缺省回落默认表)
+		// 为装配层样板入口;用户全局主题另见 $GAH_HOME/config/theme.yaml(优先覆盖此值)。
+		if pm, ok := m.Data["palette"].(map[string]any); ok {
+			palette = make(map[string]string, len(pm))
+			for k, v := range pm {
+				if s, ok := v.(string); ok {
+					palette[k] = s
+				}
+			}
+		}
 	}
-	app := tui.NewApp(c, loop, llm, profile)
+	app := tui.NewApp(c, loop, llm, profile, palette)
 	// 确认服务(审批弹层)注册到宿主;未装配时 policy-approval 按安全默认拒绝
 	if err := c.Provide("ctx.confirm", app); err != nil {
 		return nil, err

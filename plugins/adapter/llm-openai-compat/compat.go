@@ -9,6 +9,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -49,7 +50,9 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 
 // resolveConfig 适配器配置解析链(每字段独立,纯逻辑可测)。修复:模型/base_url 恢复
 // 不再被 apiKey 有无 gate——env 提供 key 或 provider.yaml 仅存 model 时同样生效:
-//   env 显式 > provider.yaml(/provider set、/model 持久化)> data 样板 > 内置默认。
+//
+//	env 显式 > provider.yaml(/provider set、/model 持久化)> data 样板 > 内置默认。
+//
 // apiKey env 显式最高(凭据隔离);坏 provider.yaml 显式报错(不静默降级到样板)。
 func resolveConfig(m *sdk.Manifest) (baseURL, apiKey, model string, err error) {
 	// 1) env 显式(最高)
@@ -230,9 +233,10 @@ func (a *Adapter) credentials() string {
 }
 
 // wire 服务端 API 消息结构。
+// Content 为 string(纯文本,兼容)或 []any(多模态:image_url 视觉注入,附件一期)。
 type wireMsg struct {
 	Role       string         `json:"role"`
-	Content    *string        `json:"content,omitempty"`
+	Content    any            `json:"content,omitempty"`
 	ToolCalls  []wireToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string         `json:"tool_call_id,omitempty"`
 }
@@ -270,14 +274,15 @@ type wireReq struct {
 type wireChunk struct {
 	Choices []struct {
 		Delta struct {
-			Content   string         `json:"content"`
-			ToolCalls []wireToolCall `json:"tool_calls"`
+			Content          string         `json:"content"`
+			ReasoningContent string         `json:"reasoning_content"` // 思维增量(deepseek 推理模型)
+			ToolCalls        []wireToolCall `json:"tool_calls"`
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage *struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
+		PromptTokens        int `json:"prompt_tokens"`
+		CompletionTokens    int `json:"completion_tokens"`
 		PromptTokensDetails *struct {
 			CachedTokens int `json:"cached_tokens"` // 缓存命中(deepseek 等)
 		} `json:"prompt_tokens_details"`
@@ -296,8 +301,8 @@ func (a *Adapter) Complete(ctx context.Context, req *sdk.LLMRequest, onChunk fun
 		if msg.ToolCallID != "" {
 			wm.ToolCallID = msg.ToolCallID
 		}
-		if msg.Content != "" {
-			wm.Content = strPtr(msg.Content)
+		if msg.Content != "" || len(msg.Attachments) > 0 {
+			wm.Content = wireContent(msg)
 		}
 		for _, tc := range msg.ToolCalls {
 			wtc := wireToolCall{ID: tc.ID, Type: "function"}
@@ -379,7 +384,7 @@ func (a *Adapter) Complete(ctx context.Context, req *sdk.LLMRequest, onChunk fun
 			}
 		}
 		for _, ch := range ck.Choices {
-			ev := sdk.LLMStreamEvent{Delta: ch.Delta.Content}
+			ev := sdk.LLMStreamEvent{Delta: ch.Delta.Content, Thinking: ch.Delta.ReasoningContent}
 			if len(ch.Delta.ToolCalls) > 0 {
 				tc := ch.Delta.ToolCalls[0]
 				if tc.ID == "" {
@@ -441,3 +446,43 @@ func findCall(calls *[]sdk.ToolCall, id string) int {
 }
 
 func strPtr(s string) *string { return &s }
+
+// wireContent 构造消息 content:含可视觉注入的图片附件时输出结构化数组
+// (text + image_url[data URI]);否则纯文本 string(既有兼容)。
+func wireContent(msg sdk.LLMMessage) any {
+	hasVis := false
+	for _, att := range msg.Attachments {
+		if att.Kind == sdk.AttachmentImage && att.Path != "" {
+			hasVis = true
+			break
+		}
+	}
+	if !hasVis {
+		return msg.Content
+	}
+	var parts []any
+	if msg.Content != "" {
+		parts = append(parts, map[string]any{"type": "text", "text": msg.Content})
+	}
+	for _, att := range msg.Attachments {
+		if att.Kind != sdk.AttachmentImage || att.Path == "" {
+			continue
+		}
+		data, err := os.ReadFile(att.Path)
+		if err != nil {
+			continue
+		}
+		mime := att.MimeType
+		if mime == "" {
+			mime = "image/png"
+		}
+		parts = append(parts, map[string]any{
+			"type":     "image_url",
+			"image_url": map[string]any{"url": "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data)},
+		})
+	}
+	if len(parts) == 0 {
+		return msg.Content
+	}
+	return parts
+}

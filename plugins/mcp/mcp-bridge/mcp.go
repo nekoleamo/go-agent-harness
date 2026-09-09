@@ -12,8 +12,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os/exec"
 	"sync"
+	"time"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
@@ -58,17 +60,98 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		cli.close()
 		return nil, fmt.Errorf("mcp-bridge: tools/list: %w", err)
 	}
+	// holder 生命周期看护:进程崩溃自动重启(60s 节流),工具读取始终持当前连接
+	h := &holder{cli: cli, command: command, args: args, throttle: 60 * time.Second, lg: c.Logger()}
 	disposers := []sdk.Disposer{}
 	for _, def := range defs {
 		sdkDef := sdk.ToolDefinition{Name: "mcp_" + def.Name, Description: def.Description, InputSchema: def.InputSchema}
-		disposers = append(disposers, tools.Register(&mcpTool{cli: cli, def: sdkDef}))
+		disposers = append(disposers, tools.Register(&mcpTool{cli: h, def: sdkDef}))
 	}
+	go h.supervise()
 	return func() {
 		for i := len(disposers) - 1; i >= 0; i-- {
 			disposers[i]()
 		}
-		cli.close()
+		h.close()
 	}, nil
+}
+
+// holder MCP 连接生命周期看护(崩溃看护):进程退出后按节流自动 respawn,
+// 工具调用经 current() 恒取当前活动连接。重启节流防崩溃循环(cmd.Wait 独占)。
+type holder struct {
+	mu       sync.RWMutex
+	cli      *mcpClient
+	command  string
+	args     []string
+	closed   bool
+	respawn  time.Time
+	throttle time.Duration
+	lg       *slog.Logger
+}
+
+func (h *holder) current() *mcpClient {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.cli
+}
+
+// supervise 阻塞等进程退出;崩溃则按节流重建(spawn+initialize+toolsList)。
+// 进程被 disposer 杀掉时 closed=true → 直接退出,不再重启。
+func (h *holder) supervise() {
+	for {
+		_ = h.cli.cmd.Wait() // 进程退出(崩溃/被杀/正常退出)
+		h.mu.Lock()
+		if h.closed {
+			h.mu.Unlock()
+			return
+		}
+		if !time.Now().After(h.respawn) {
+			wait := time.Until(h.respawn)
+			h.mu.Unlock()
+			time.Sleep(wait)
+			continue
+		}
+		h.respawn = time.Now().Add(h.throttle)
+		h.mu.Unlock()
+
+		nc, err := spawn(h.command, h.args)
+		if err != nil {
+			h.lg.Warn("mcp-bridge: 重启进程失败", "err", err)
+			time.Sleep(h.throttle)
+			continue
+		}
+		rctx := context.Background()
+		if err := nc.initialize(rctx); err != nil {
+			nc.close()
+			h.lg.Warn("mcp-bridge: 重启 initialize 失败,待下轮", "err", err)
+			continue
+		}
+		if _, err := nc.toolsList(rctx); err != nil {
+			nc.close()
+			h.lg.Warn("mcp-bridge: 重启 tools/list 失败,待下轮", "err", err)
+			continue
+		}
+		h.mu.Lock()
+		if h.closed {
+			h.mu.Unlock()
+			nc.close()
+			return
+		}
+		h.cli = nc
+		h.mu.Unlock()
+		h.lg.Info("mcp-bridge: 崩溃自动恢复", "command", h.command)
+	}
+}
+
+// close 停看护并杀当前进程(不 Wait:Wait 由 supervise 独占回收)。
+func (h *holder) close() {
+	h.mu.Lock()
+	h.closed = true
+	cur := h.cli
+	h.mu.Unlock()
+	if cur != nil {
+		cur.closeKill()
+	}
 }
 
 // —— JSON-RPC 消息 ——
@@ -119,6 +202,14 @@ func (m *mcpClient) close() {
 	m.stdin.Close()
 	m.cmd.Process.Kill()
 	m.cmd.Wait()
+}
+
+// closeKill 只杀进程不 Wait(Wait 由 holder.supervise 独占回收;无看护路径用 close)。
+func (m *mcpClient) closeKill() {
+	m.stdin.Close()
+	if m.cmd.Process != nil {
+		_ = m.cmd.Process.Kill()
+	}
 }
 
 // call 发请求并等对应 id 的响应(stdout 逐行;id 不匹配跳过)。
@@ -196,15 +287,19 @@ func (m *mcpClient) toolsList(ctx context.Context) ([]toolDef, error) {
 	return r.Tools, nil
 }
 
-// mcpTool 把 MCP 工具适配为 sdk.Tool。
+// mcpTool 把 MCP 工具适配为 sdk.Tool(经 holder 取当前活动连接,崩溃重启后自动恢复)。
 type mcpTool struct {
-	cli *mcpClient
+	cli *holder
 	def sdk.ToolDefinition
 }
 
 func (t *mcpTool) Definition() sdk.ToolDefinition { return t.def }
 
 func (t *mcpTool) Execute(ctx context.Context, args string) (any, error) {
+	client := t.cli.current()
+	if client == nil {
+		return map[string]any{"error": "MCP 连接已关闭"}, nil
+	}
 	var arguments map[string]any
 	if err := json.Unmarshal([]byte(args), &arguments); err != nil {
 		arguments = map[string]any{"input": args}
@@ -215,7 +310,7 @@ func (t *mcpTool) Execute(ctx context.Context, args string) (any, error) {
 			Text string `json:"text"`
 		} `json:"content"`
 	}
-	if err := t.cli.call(ctx, "tools/call", map[string]any{
+	if err := client.call(ctx, "tools/call", map[string]any{
 		"name":      t.def.Name[len("mcp_"):],
 		"arguments": arguments,
 	}, &r); err != nil {

@@ -10,6 +10,8 @@ type CommandSpec struct {
 	Desc  string // 一句话说明(提示列表展示)
 	// Run 执行;返回输出文本(可多行,由 TUI 显示为 meta 行)与错误。
 	Run func(args []string) (string, error)
+	// TimeoutMs 外部命令执行/枚举选项 RPC 超时(毫秒,M14 外部命令桥);0 = 宿主全局默认。
+	TimeoutMs int64
 	// Args 参数级联定义(交互式选择器):每级为枚举级(Options)或自由级
 	// (FreeArgs,需手动输入)之一;picked 为前几级已选值(运行时动态求值,
 	// 如插件/任务列表)。枚举选完 → 下一级;自由级 → 断点回输入框补参

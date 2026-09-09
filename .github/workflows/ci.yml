@@ -15,8 +15,15 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web-src/package-lock.json
       - name: 重建外部插件(gzip embed)
         run: bash scripts/gen-extplugins.sh
+      - name: 重建前端产物(M7:vue-tsc 类型检查 + vite build → web/dist,漏则 go:embed 编译失败)
+        run: bash scripts/gen-web.sh
       - name: go vet
         run: go vet ./...
       - name: go test -race
@@ -61,3 +68,23 @@ jobs:
           # headless 默认 llm-mock(无外网)跑完整回合(调 tool-basic shell)。
           env -i HOME="$(mktemp -d)" PATH="$PATH" ./gah --profile headless --ephemeral -input "hi" >/dev/null
           echo "headless 真实回合 OK"
+      - name: 全库 -race 计时回归护栏(M16 T3:改动后首跑 ≤150s;本地实测 74s)
+        run: |
+          start=$(date +%s)
+          go test ./... -count=1 -race
+          code=$?
+          end=$(date +%s)
+          echo "full race first-run: $((end-start))s"
+          [ $code -eq 0 ] || exit $code
+          [ $((end-start)) -le 150 ] || { echo "计时回归:首次全库 -race 超 150s(此前基线 74s)"; exit 1; }
+
+      - name: WebSocket 通道冒烟(M7.3:WS 事件载体 + 会话帧)
+        run: |
+          # 起 web 形态(mock 默认;ephemeral 临时 home)后经 go run 冒烟脚本:
+          # POST input 制造事件 → WS 握手(Accept 官方向量)→ 断言收到 user/message 帧。
+          env -i HOME="$(mktemp -d)" PATH="$PATH" GAH_WEB_OPEN=0 ./gah --profile web --ephemeral &
+          GAH_PID=$!
+          sleep 2
+          go run ./scripts/ws-smoke.go
+          kill $GAH_PID 2>/dev/null || true
+          echo "WS 通道冒烟 OK"

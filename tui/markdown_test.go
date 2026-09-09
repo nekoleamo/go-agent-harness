@@ -9,21 +9,43 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-// stripANSI 去掉全部 CSI 序列(校验"无 ANSI 泄漏"用)。
+// stripANSI 去掉全部 CSI 与 OSC 序列(校验"无 ANSI 泄漏"用)。
+// OSC(ESC]…ESC\ 或 …BEL)为超链接等控制序列,一并剥离。显式索引推进,防 C1/OSC 边界错位。
 func stripANSI(s string) string {
 	var b strings.Builder
 	rs := []rune(s)
-	for i := 0; i < len(rs); i++ {
+	i := 0
+	for i < len(rs) {
 		if rs[i] == 0x1b && i+1 < len(rs) && rs[i+1] == '[' {
+			i += 2
 			for i < len(rs) {
-				if rs[i] >= 'A' && rs[i] <= 'Z' || rs[i] >= 'a' && rs[i] <= 'z' {
+				c := rs[i]
+				if c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' {
 					break
 				}
 				i++
 			}
-			continue // 跳过 CSI…字母
+			i++ // 吞终结字母
+			continue
+		}
+		if rs[i] == 0x1b && i+1 < len(rs) && rs[i+1] == ']' {
+			// OSC:推进到终止符之后(ST=ESC\ 或 BEL)\u002c不依赖外层步进
+			i += 2
+			for i < len(rs) {
+				if rs[i] == 0x07 {
+					i++
+					break
+				}
+				if rs[i] == 0x1b && i+1 < len(rs) && rs[i+1] == '\\' {
+					i += 2
+					break
+				}
+				i++
+			}
+			continue
 		}
 		b.WriteRune(rs[i])
+		i++
 	}
 	return b.String()
 }
@@ -249,5 +271,77 @@ func TestCodeBlockRowNoLangHash(t *testing.T) {
 	out = mdCodeBlockRow("http://example.com/x", "go")
 	if strings.Contains(out, "38;5;244") {
 		t.Fatalf("http:// 不应触发注释: %q", out)
+	}
+}
+
+// TestCodeBlockSyntaxExtended P5:语法高亮细分类——变量/数字/类型/运算符/标点分段着色,
+// 字符无损;既有关键字/字符串/注释断言不回归。
+func TestCodeBlockSyntaxExtended(t *testing.T) {
+	out := mdCodeBlockRow("func main() { x := 42; y = x + 1 }", "go")
+	if stripANSI(out) != "func main() { x := 42; y = x + 1 }" {
+		t.Fatalf("字符应无损: %q", stripANSI(out))
+	}
+	// 数字 orange(38;2;254;128;25)、运算符 green、标点 dim、声明变量米白
+	if !strings.Contains(out, "38;2;254;128;25") {
+		t.Fatalf("数字应 orange 着色: %q", out)
+	}
+	if !strings.Contains(out, "38;2;142;192;124") {
+		t.Fatalf("运算符应 accent2 着色: %q", out)
+	}
+	if !strings.Contains(out, "38;2;235;219;178") {
+		t.Fatalf("变量应米白着色: %q", out)
+	}
+	if !strings.Contains(out, "38;5;141") {
+		t.Fatalf("关键字(md-key)应保留: %q", out)
+	}
+	// 大写开头 = 类型(Go 泛型/结构体名;不误读为关键字)
+	out2 := mdCodeBlockRow("func NewServer(cfg Config) error { return nil }", "go")
+	if !strings.Contains(out2, "38;2;142;192;124") {
+		t.Fatalf("类型(大写开头)应 cyan 着色: %q", out2)
+	}
+	if stripANSI(out2) != "func NewServer(cfg Config) error { return nil }" {
+		t.Fatalf("字符应无损: %q", stripANSI(out2))
+	}
+}
+
+// TestMdLinkInline P5:链接 [text](url) 成对识别:文本 link 蓝灰 + 下划线,URL 不展示,
+// 字符按原样保留(去 ANSI 后原文含 url);未配对 [x] 不误消费。
+func TestMdLinkInline(t *testing.T) {
+	out := mdAnnotateRow("参见 [参考文档](https://example.com/a) 与原文", fg(TokAssistant))
+	if stripANSI(out) != "参见 [参考文档](https://example.com/a) 与原文" {
+		t.Fatalf("字符应无损: %q", stripANSI(out))
+	}
+	if !strings.Contains(out, "38;2;131;165;152") {
+		t.Fatalf("链接文本应 link 蓝灰: %q", out)
+	}
+	if !strings.Contains(out, "4m") {
+		t.Fatalf("链接应下划线: %q", out)
+	}
+	// OSC8 超链接(lipgloss BEL 终止):url 存在且正文去 ANSI 后原文含完整链接语法
+	if !strings.Contains(out, "\x1b]8;;https://example.com/a\a") {
+		t.Fatalf("链接应含 OSC8 超链接: %q", out)
+	}
+	// 未配对 [x(无 ]()):不误消费(无色 link 段)
+	out2 := mdAnnotateRow("方括号 [未闭合", fg(TokAssistant))
+	if strings.Contains(out2, "131;165;152") {
+		t.Fatalf("未配对 [ 不应按链接: %q", out2)
+	}
+}
+
+// TestMdQuoteRow P5:引用行 > :标记边框灰加粗,正文 quote 米白;字符无损。
+func TestMdQuoteRow(t *testing.T) {
+	out := mdAnnotateRow("> 这是引用内容", fg(TokAssistant))
+	if stripANSI(out) != "> 这是引用内容" {
+		t.Fatalf("字符应无损: %q", stripANSI(out))
+	}
+	if !strings.Contains(out, "38;2;102;92;84") {
+		t.Fatalf("引用标记应边框灰加粗: %q", out)
+	}
+	if !strings.Contains(out, "38;2;213;196;161") {
+		t.Fatalf("引用正文应 quote 米白: %q", out)
+	}
+	// 非引用行不误判(列表/正文)
+	if out := mdAnnotateRow("- 列表项", fg(TokAssistant)); strings.Contains(out, "213;196;161") {
+		t.Fatalf("列表行不应按引用: %q", out)
 	}
 }

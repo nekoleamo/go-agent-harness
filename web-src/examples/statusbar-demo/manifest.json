@@ -1,0 +1,8 @@
+{
+  "id": "statusbar-demo",
+  "version": "0.1.0",
+  "out": "dist",
+  "slots": [
+    { "name": "statusbar", "priority": 100, "module": "./dist/plugin.js" }
+  ]
+}

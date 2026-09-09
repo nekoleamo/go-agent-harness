@@ -1,0 +1,113 @@
+/* 设计 token:对齐 DeepSeek Harness 界面语言(bluish 中性 + DeepSeek 蓝单强调色)。
+   形状规则(全局锁定):输入/按钮 8px(--r-input)、卡片/浮层 10px(--r-card)、气泡 14px(--r-bubble)。
+   边框层次:--line 主边框、--line-strong 分隔强调、--line-faint 弱细分隔。 */
+:root {
+  color-scheme: light;
+  /* 动效 token:克制动效基座(仅 transform/opacity;时长/曲线统一) */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-fast: 0.15s;
+  --dur-base: 0.28s;
+  --dur-slow: 0.4s;
+
+  /* 中性色阶(bluish,带轻微蓝调) */
+  --bg: #ffffff;
+  --bg2: #f7f8fa;
+  --bg3: #f1f3f5;
+  --line-faint: #f0f2f5;
+  --line: #e8eaee;
+  --line-strong: #dfe2e8;
+  /* 文字:主 / 次 / 弱 */
+  --fg: #171a1f;
+  --fg-dim: #565d65;
+  --fg-faint: #9aa0a6;
+  /* 强调:DeepSeek 蓝单色 */
+  --accent: #4176e6;
+  --accent-hover: #5590f0;
+  --accent-soft: #eaf0fd;
+  /* 语义色 */
+  --ok: #1a9e5c;
+  --err: #e5484d;
+  --tool: #d97706;
+  /* 语义 soft 系(浅背景/浅边框/深字):组件统一引用,不散写裸色值 */
+  --ok-soft: #e6f6ee;
+  --err-soft: #fdf3f3;
+  --err-line: #f3c1c2;
+  --tool-soft: #fef6ec;
+  --tool-line: #f3e2cc;
+  --tool-strong: #b45309;
+  /* 通用遮罩与反白(浮层统一层级视觉) */
+  --overlay: rgba(23, 26, 31, 0.28);
+  --fg-on-accent: #ffffff;
+  /* 形状与阴影 */
+  --r-input: 8px;
+  --r-card: 10px;
+  --r-bubble: 14px;
+  --shadow-pop: 0 8px 24px rgba(23, 26, 31, 0.08), 0 2px 8px rgba(23, 26, 31, 0.04);
+  --shadow-dialog: 0 12px 40px rgba(23, 26, 31, 0.16), 0 2px 6px rgba(23, 26, 31, 0.06);
+}
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font: 14px/1.6 -apple-system, 'PingFang SC', 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif;
+}
+pre,
+code,
+.mono {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+/* 统一工具提示(data-tip 属性;鼠标停留即时显示,替代原生 title 延迟) */
+[data-tip] {
+  position: relative;
+  cursor: pointer;
+}
+[data-tip]:hover::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: #2d2f33;
+  color: #ffffff;
+  font-size: 12px;
+  line-height: 1.4;
+  padding: 4px 9px;
+  border-radius: 6px;
+  /* 限宽自动换行,防长文案撑出横向滚动条(nowrap 的长 tooltip 会溢出视口) */
+  max-width: min(70vw, 300px);
+  width: max-content;
+  white-space: normal;
+  overflow-wrap: break-word;
+  text-align: center;
+  z-index: 50;
+  pointer-events: none;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.16);
+}
+
+/* 键盘可访问性:统一 accent 焦点环 */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: 4px;
+}
+
+/* 尊重系统减弱动效:全局降级(动画/过渡趋零) */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

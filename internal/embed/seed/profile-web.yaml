@@ -1,0 +1,8 @@
+# web profile:Web UI 形态(对称 tui 先例;M7)。
+# 入口糖命令:gah web ≡ gah --profile web(浏览器访问 http://127.0.0.1:2233)。
+# 结构对齐设计 §1/§2:profile 列出按序应用 bundle 与 patch。
+name: web
+bundles:
+  - base
+  - web
+patches: []

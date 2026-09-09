@@ -9,9 +9,9 @@ import (
 func TestWidgetLinesRendering(t *testing.T) {
 	s := &State{WidgetOn: true, Widgets: []Widget{
 		{ID: "todo", Text: func() string { return "任务: 1 进行中" }},
-		{ID: "empty", Text: func() string { return "" }},          // 空返回不显示
+		{ID: "empty", Text: func() string { return "" }},        // 空返回不显示
 		{ID: "multi", Text: func() string { return "多\n行 信息" }}, // 单行化
-		{ID: "nil", Text: nil},                                    // nil 跳过
+		{ID: "nil", Text: nil}, // nil 跳过
 	}}
 	lines := widgetLines(s)
 	if len(lines) != 2 {
@@ -53,8 +53,15 @@ func TestWidgetLayoutDeduction(t *testing.T) {
 	if len(lines) != 9 { // 恒定 height-1
 		t.Fatalf("输出行数应恒定: %d", len(lines))
 	}
-	if !strings.Contains(stripColor(lines[6]), "◇ 动态") {
-		t.Fatalf("widget 应渲染于输入行上方: %q", lines[6])
+	if !strings.Contains(stripColor(lines[2]), "◇ 动态") {
+		t.Fatalf("widget 应渲染于输入行上方: %q", lines[2])
+	}
+	// 输入区圆角框:widget 之下为顶边框与内容行
+	if !strings.Contains(stripColor(lines[3]), "╭") {
+		t.Fatalf("输入区顶边框应在 widget 之下: %q", lines[3])
+	}
+	if !strings.Contains(stripColor(lines[4]), "❯ hi█") {
+		t.Fatalf("输入内容首行应在顶边框之下: %q", lines[4])
 	}
 	// 关闭后 widget 行消失,主区恢复一行(最早行可见范围变化)
 	s.WidgetOn = false

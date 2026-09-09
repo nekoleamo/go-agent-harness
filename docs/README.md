@@ -7,6 +7,9 @@
 | 文档 | 内容 | 何时看 |
 |---|---|---|
 | [ROADMAP.md](ROADMAP.md) | **全部未完成功能的实施排期总览**(P0–P3 阶段、依赖链、工作量、验收;覆盖 M7–M11 与 TUI S1–S3) | 想知道"下一步做什么/排期" |
+| [DESKTOP_FEASIBILITY.md](DESKTOP_FEASIBILITY.md) | **桌面端(mac/win)可行性报告**(Tauri v2 sidecar 方案;含 spike 实测记录、架构、gah 改动清单、分发矩阵、里程碑) | 桌面壳相关决策/实施时 |
+| [WEB_ATTACHMENTS_PLAN.md](WEB_ATTACHMENTS_PLAN.md) | **Web 附件(图片/文件)与输入快捷键规划**(一期含多模态看图;决策记录、F1–F7 实施清单、风险) | Web 附件/快捷键相关时 |
+| [TODO_OVERVIEW.md](TODO_OVERVIEW.md) | **待完成项统筹总览**(单页:全部待办/暂缓/已闭环 + 执行顺序 + 状态) | 想看“当前有哪些没做、排到哪” |
 | [TUI_OPTIMIZE.md](TUI_OPTIMIZE.md) | **TUI 界面优化专项**(S1 交互补全/S2 质量/S3 形态;含已交付项 ✅ 与滚动/搜索/划选实现细节) | TUI 相关需求/改动时 |
 | DESIGN.md(§14.1) | 里程碑交付细表与未实施清单(规划条目正文) | 查具体规划条目/已交付记录 |
 

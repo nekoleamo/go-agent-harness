@@ -1,6 +1,6 @@
 # gah 未完成功能实施排期
 
-> 覆盖:DESIGN §14.1 未实施清单(M7–M11)+ `docs/TUI_OPTIMIZE.md`(TUI 优化 S1–S3)。
+> 覆盖:DESIGN §14.1 未实施清单(历史:原 M7–M11,**现已全部交付清零**,本表兼作交付记录)+ `docs/TUI_OPTIMIZE.md`(TUI 优化 S1–S3)。
 > 排期原则:**依赖约束 > 用户价值 > 风险/成本**;TUI 与宿主工具两类可并行推进(两者无强依赖,
 > 仅 M9.2/8-T2 等少量交叉);每项独立验收(单测 -race + kitty 真机 + 全库 -race)。
 > 工作量:XS <1d,S 1–3d,M 3–8d,L 2–4周,XL 1–3月。标注 ⚠️ 依赖前项。
@@ -12,8 +12,9 @@
 | P0 近期 ✅ | 已完成 | TUI S1.5/S1.1/S1.2/S1.3 + M8-T1 + M10 + 6a /workspace | ✅ 全部交付:划选/搜索/滚动条/输入增强;todo/memory 工具;工作区切换 |
 | P1 中期 ✅(已完成) | 已完成 | TUI S1.4/S2.1 + M9.1 + M11-T1 | ✅ 已交付:Markdown 轻渲染(S1.4);消息分组/工具行去重(S2.1);subagent one-shot 委派(M9.1);auto-plan 规划+确认门(M11-T1) |
 | P2 后期 ✅(已完成/决策) | 已完成 | S3.2(框架)+ M9.2(后台子集)+ M11-T2 + S2.2 | ✅ M9.2 后台委派;M11-T2 plan→todo;S2.2 渲染四层;S3.2 框架覆盖;S3.1 决策=方案 A 维持现状(记录在案) |
-| P3 远期(季度+) | 独立里程碑 | M7(M7.1 Web UI)+ M7.2 槽位 + M7.3 WS + M8-T2(展示联动) | Web UI 全能力闭环;槽位插件化;todo 面板 |
+| P3 ✅ 已交付(2026-09) | 独立里程碑 | M7 Web UI + M7.2 槽位插件化 + M7.3 WS 通道 + M8-T2 展示联动(+M13/M14/M16/M16.7–16.9:Web 会话工作台·设置面板·UI 收敛·便携数据根,见下方) | Web UI 全能力闭环、槽位插件化、可视化设置、完全便携均 ✅;二期待办( jobs 面板/export/命令下沉/mcp 看护)见 DESIGN §14.1 未实施清单 |
 | P4 体验改进(对比 pi 基线,见 docs/PI_COMPARISON.md) | 独立迭代 | **12 项全部交付 ✅(2026-09)**:P4-1 消息队列 · P4-2 @引用+Tab 补全 · P4-3 代码块高亮 · P4-4 会话命名 · P4-5 C6 多级上下文 · P4-6 多行输入/外部编辑器 · P4-7 工具视觉 · P4-8 /compact · P4-9 语义色 · P4-10 C1 会话树/分支 · P4-11 /reload · P4-12 widget 槽位(细见 P4 节);会话树可视化 UI 与 E1 UI seam 仍绑 M7.2 | 交互体验对齐 pi;Agent 能力面无缺口 |
+| P5 TUI 视觉升级 ✅(2026-09-08,对照本地 pi gruvbox-dark) | 独立迭代 | **6 项全部交付**:V1 主题 token 扩 16(背景/md-link-quote/thinking 边框/syntax 细化)· V2 用户消息整块背景 · V3 工具框感(▍ 竖线+三态背景) · V4 md 链接/引用/语法高亮 · V5 输入思考色左缘竖线 · V6 Ctrl+O 折叠/回合耗时/Ctrl+↑↓ 跳转(细见 DESIGN §14.1 P5 / TUI_OPTIMIZE 执行记录 6) | 对照 gruvbox-dark 的界面层次补齐(消息/工具背景块、框感、md 完整度、输入聚焦);主题外部化对新 token 天然生效 |
 
 ## P0 近期(1–2 周:优先用户痛点、低风险、依赖已就绪)
 
@@ -44,19 +45,28 @@
 | # | 功能 | 依赖 | 工作量 | 切片/要点 | 验收 |
 |---|---|---|---|---|---|
 | 12 ✅ | **TUI S3.2 synchronized output** | 独立小项 | XS | ✅ 已确认由 bubbletea v2 框架自动启用(tea.go 终端能力查询 2026) | ✅ 框架覆盖,无需自实现 |
-| 13 ✅ | **M9.2 控制组+背景**(后台子集) | ⚠️ M9.1 | M | ✅ 已交付:后台 delegate 带手柄(spawn/agents/agent_status/agent_kill)——sdk.FanoutService 后台会话 + host-fanout 引擎 + 回调桥 + extplugins;send_message/fork 未实施(需消息循环/事件流种入,记录后续) | ✅ 可后台委派/列表/查状态/终止 |
+| 13 ✅ | **M9.2 控制组+背景** | ⚠️ M9.1 | M | ✅ 已交付:后台 delegate 带手柄(spawn/agents/agent_status/agent_kill)+ **M9.3 send_message/fork(2026-09)**:接口扩展(Fork/SendMessage/AgentHandle.Messages)+ fanout 引擎 inbox/dialog/seed(运行循环每步 drain 注入,回复经 agent_status.messages 可读)+ 回调协议 send/fork + 工具面 send_message/fork action;全库 -race 绿 | ✅ 可后台委派/列表/查状态/终止/消息引导;fork 继承父上下文 |
 | 14 ✅ | **M11-T2 plan→todo 承接** | ⚠️ M11-T1 + M8-T1 | M | ✅ 已交付:规则文本/Description 增补联动边界(auto_plan 管确认门,确认后执行期由 todo 承接,检查清单转 todo.create,执行完回归档);TestRuleTodoHandoff 等回归 | ✅ 确认门→todo 承接语义清晰 |
 | 15 ⏸️ | **TUI S3.1 主屏 scrollback 模式** | ⚠️ S2.2 组件化 | L | 决策:方案 A 维持现状(暂不实施)。B/C 备选记录在案(docs/TUI_OPTIMIZE.md S3 决策记录),后续再研究 | —(暂缓) |
+| 16 ⏳ | **UI 槽位 v2:设置等新扩展点插件化** | ⚠️ M7.2(v1 契约)+ M16.8 设置面板 | L | v1 仅四槽位(stream/input/statusbar/confirm)可覆盖;v2 将 **设置面板区段、侧栏扩展区、附加面板入口**开放为插件扩展点(registry v2 + manifest 扩展点声明 + 插件可在 App 内注册自定义入口/面板容器;App 骨架中可插拔面收敛为显式槽位)。切片:① 契约扩展(registry v2,向后兼容 v1 插件)② 新槽位落点(设置面板 sections / 侧栏 actions / 附加面板 host)③ 示例插件+文档 | ✅ 第三方 UI 插件可向设置面板/侧栏注入扩展,附加面板与 v1 并存;v1 插件零改动 |
 
-## P3 远期(季度+:Web 全家桶)
+## P3(已交付 2026-09:Web 全家桶)
 
 | # | 功能 | 依赖 | 工作量 | 切片/要点 | 验收 |
 |---|---|---|---|---|---|
-| 16 | **M7 Web UI** | — | XL | S1 web/包(server/SSE/静态/槽位骨架)+ui-web-app 插件+全套配置+`gah web` 2233;S2 交互闭环;S3 Seq 断线重放/auth_token | web 上跑通 TUI 同集能力 |
-| 17 | **M7.2 UI 槽位插件化** | ⚠️ M7 | L | 加载器+manifest+安装命令;defineAsyncComponent 覆盖槽位 | 第三方 UI 插件可安装/覆盖槽位 |
-| 18 | **M7.3 WebSocket** | ⚠️ M7 | M | 通道 seam(SSE 为第一实现,WS 同 payload) | 双通道统一订阅 |
-| 19 | **M8-T2 展示联动** | ⚠️ M7.2 | M | todo 面板实时反馈任务推进(web 侧) | 模型任务进展 web 可见 |
-| 20 | **M9.3 控制面完整** | ⚠️ M9.2 | L | send_message(子代理消息循环)/ fork(父事件流种入子会话) | 子代理运行中可消息引导/中断;fork 上下文继承 |
+| 16 ✅ | **M7 Web UI** | — | XL | ✅ 已交付(2026-09):S1–S3 一次完工——web/ 包(server/events/confirm:SSE 下行 + REST 上行,Last-Event-ID 断线重放经会话 Seq)+ ui-web-app 插件(data.addr/auth_token/static_dir)+ bundle-web/profile-web/seed 全套 + `gah web` 入口糖;web-src/ 前端(Vue3+Vite+TS:SFC,会话流/状态栏/`/` 命令提示/审批弹层/会话切换)+ registry.ts 四槽位契约 v1(M7.2 预留)+ scripts/gen-web.sh(embed web/dist,漏则主包编译失败)+ CI vue-tsc + tests 端到端;TUI 内部命令(会话/模型类)不下沉,web 侧以等价 REST(/api/sessions、/api/control)承接(命令经 ctx.commands 的宿主命令仍可用) | ✅ web 上跑通 TUI 同集能力;断线续传;auth_token 鉴权;-race 绿 |
+| 17 ✅ | **M7.2 UI 槽位插件化** | ⚠️ M7 | L | ✅ 已交付(2026-09):加载器(plugins.ts 动态导入+priority 覆盖)+ manifest.json 契约 v1 + `gah -install-ui/-uninstall-ui/-list-ui-plugins`(v-html 指令扫描拒装;npm 构建落 $GAH_HOME/ui-plugins/<id>/)+ server 托管(/ui-plugins/ + /api/ui-plugins 聚合)+ 示例插件 web-src/examples/statusbar-demo | ✅ 第三方 UI 插件装完即覆盖槽位(重载页面生效);registry v1 兼容;-race 绿 |
+| 18 ✅ | **M7.3 WebSocket** | ⚠️ M7 | M | ✅ 已交付(2026-09):web/ws.go 零依赖 RFC6455(握手/Origin 同源/文本帧)+ server 共享 consumeStream(EventHub=seam)+ 前端 transport.ts WS 优先降级 ES + cookie 鉴权 + CI ws-smoke.go 冒烟 | ✅ 双通道同 payload 可切;前端零返工;-race 绿 |
+| 19 ✅ | **M8-T2 展示联动** | ⚠️ M7.2 | M | ✅ 已交付(2026-09):/api/todo(经 ctx.tools 代理 todo list)+ 演示插件 web-src/examples/todo-panel(槽位插件:statusbar 覆盖 + 浮动面板,5s 轮询/刷新,状态徽标;priority 120);tests e2e 含 tool-todo 验证 200 | ✅ 模型任务进展 web 面板实时可见;同槽位 priority 抢占语义实测;-race 绿 |
+| 20 ✅ | **M9.3 控制面完整** | ⚠️ M9.2 | L | ✅ 已交付(2026-09):send_message(运行中注入,回复经 messages 可读)/ fork(父会话历史种入);交互语义=输入注入非暂停式,暂停-恢复归展示联动线评估 | ✅ 子代理运行中可消息引导;fork 上下文继承 |
+| 21 ✅ | **M13 TUI 主题外部化** | — | S–M | ✅ 已交付(2026-09):palette 覆盖层(ApplyTheme/colorVal,默认表兜底)+ 启动链(data.palette<theme.yaml)+ /theme 切换(themes/*.yaml)+ 防穿越/显式报错;palette_test/theme_test/theme_cmd_test | ✅ 改配置/命令即整体换肤(零重编译);基线守卫不破;-race 绿 |
+| 22 | **M14 外部命令桥** ✅ | ⚠️ host-bridge | M | ✅ 已交付(2026-09):协议加 Commands/CommandOptions/RunCommand(ServeTools 变参);host-bridge 转注册 ctx.commands(同名字冲突跳过/Disposer 撤销);**命令 RPC 超时保护**(TimeoutMs 覆写,默认 3s)+ **纯命令插件**(cmd-* 前缀识别,无工具可载);tool-echo 参照实现;command_bridge_test 端到端 | ✅ 新命令插件零重编译 gah、丢目录即生效;`/` 提示自动可见;慢命令不阻塞 TUI;旧插件零改动兼容;-race 绿 |
+| 23 ✅ | **M16 测试提速专项** | — | M | ✅ 已交付(2026-09):pty 探针窗口收紧 + drainUntil 条件提前退出、external 独立 e2e t.Parallel、CI 计时护栏;全库首跑 74s(基线 ~100s);≤60s 目标未完全达成(host-bridge RPC/embed 校验记录后续优化)。详见 DESIGN §14.1 M16 | ✅ 首跑 74s、重复 ≤5s、覆盖不减;-race 绿 |
+| 24 ✅ | **M16.7 Web 会话工作台与交互收敛**(2026-09) | ⚠️ M7.2 | L | ✅ 已交付(taste skill 纪律全 web):侧栏重构(工作区固定区/会话摘要/改名/删除,二次确认居中弹层)+ 消息类型分色 + 连接状态入状态栏 + 工作区切换**真正切目录**(SwitchDir + cwd/workspace-switched 事件 → host-bridge 外部进程重启继承新 cwd、policy-sandbox root 同步)+ 删除语义(删当前会话自动新建空承接)+ tool-mcp 多 server(GAH_MCP_COMMANDS)+ 命令/接口 details 见 DESIGN §14.1 M16.7 | ✅ web 会话工作台可视化完备;工具真实在新工作区目录执行;-race 全绿 |
+| 25 ✅ | **M16.8 Web 可视化设置面板与 UI 收敛**(2026-09) | ⚠️ M16.7 | L | ✅ 已交付:设置抽屉(模型/思考/沙箱/Provider/插件/历史/压缩)+ 后端 compact/history 端点 + 输入一体外壳(DeepSeek 式,空态居中/对话态沉底)+ 左右分割布局 + 克制动效层(reduced-motion)+ 偏好持久化 internal/prefs(TUI/Web 共享)+ 插件管理域(manage: host/web/external/scenario,外部化只读)。细节见 DESIGN §14.1 M16.8 | ✅ 命令能力转可视化;升级替换单文件;外部化插件 web 防误启;-race 全绿 |
+| 26 ✅ | **M16.9 便携数据根与纪律**(2026-09) | ⚠️ main | S–M | ✅ 已交付:homeDir 便携自动发现(gah 同级 gah-data,GAH_HOME>便携>~/.gah>TempDir)+ 迁移(旧 ~/.gah→gah-data,env 入 gah-data/env.sh,start.sh 启动)+ 便携纪律入 AGENTS/PLUGIN_DEV 规范。细节见 DESIGN §14.1 M16.9 | ✅ 升级只替换 gah 单文件;数据/密钥/env 全随 gah-data;-race 全绿 |
+| 27 ✅ | **M17 审批等级三档**(2026-09) | — | M | ✅ 已交付:policy-approval 由单档扩三档(open 放行 / smart 默认弹确认 / strict 直接拒绝)+ sdk.ApprovalMode/ApprovalService(Provide ctx.approval)+ TUI `/approval`(tui + host-internal-commands 双轨,判重跳过)+ Web 设置面板「审批」分段(/api/control approval + state.approval)+ 偏好持久化 internal/prefs(重启恢复)+ bundle `data.mode: smart`(seed 9→10)。细节见 DESIGN §14.1 M17 | ✅ 危险操作按档处理;TUI/Web 双端可切、重启恢复;-race 全绿 |
+| 28 ✅ | **M18 整体备份/恢复**(2026-09) | ⚠️ M16.9 | M | ✅ 已交付:新插件 plugins/host/host-backup(Provide ctx.backup)——`/backup` 一键打包 GAH_HOME(config 含密钥/plugins/sessions/env.sh/偏好,**排除 backups/ 自身**)+ 确定性 tar.gz(gzip 头置零,同源字节一致)+ 时间戳命名防覆盖;默认存 `$GAH_HOME/backups/` + 外部 dest;`/backup list|restore`(恢复前**自动先备份当前态**,`../` 越界/坏归档拒绝)+ web `/api/backup`(未装配 503)+ 设置面板「数据备份」区段(恢复二次确认)+ catalogue/bundle(seed 10→11)。细节见 DESIGN §14.1 M18 | ✅ 一键整体备份含密钥、随 gah-data 迁移、恢复前自备份+二次确认;-race 全绿 |
 
 ## 并行性与约束
 - **两条并行线**:TUI 线(1–4→7–9→12/15)与宿主工具线(5/6→10/11→13/14),可在同迭代交替交付。
@@ -82,13 +92,19 @@
 | P4-8 ✅ | **C2 手动 /compact [prompt]** | token-compress | M | ✅ 已交付:sdk.CompactService 可选接口(host-session-log Log 实现,类型断言发现,不改 ctx.sessions);/compact 立即以注册预算折叠滚动摘要(不等投影超限,自动压缩不变),回读累计摘要回显(截断单行);无可折叠/压缩器未注册/预算关闭均明确提示不静默;prompt 指示词仅记录(token-compress 为抽取式引擎,不消费其内容);空会话不重复压缩 | 手动压缩即时生效;摘要可读;错误显式;短会话/关闭预算有明确提示(新增 compact_test 用真实 Engine,-race 全绿) |
 | P4-9 ✅ | **E2 语义色 token 化** | S2.2 | S–M | ✅ 已交付:tui/palette.go 新增 Token+DefaultPalette(21 token)+ fg() 唯一取色入口;render.go/markdown.go/session.go 全部色值字面量收口为 token 派生(零裸色值);palette_test.go 基线守卫(逐 token 对原 256 索引 + 无空色值) | ✅ 渲染逐字等价(全 tui 单测 SGR 精确断言绿);换肤仅改 DefaultPalette 本表 |
 | P4-10 ✅ | **C1 会话树/分支**(可用闭环;树可视化导航归 M7 后) | 独立 TUI 树 | L | ✅ 已交付:sdk.ForkableSessions 可选接口(host-cwd-sessions ForkAt/CloneCurrent/ForkPoints);/fork [seq] 从历史任意点派生分支会话(继承到该点,切换续聊,新轮次只写新文件;缺省=最近提问)、/clone 复制当前独立演进;分支自动命名标记(fork@seq ← 源 / clone ← 源);/tree 会话分支树(各会话 + 可 fork 提问点 seq+摘要);导航复用 /session switch;坏行容忍 | 回退/多方案并行;/tree 定位点 + /fork 派生 + /session 切换(新增 fork/forkcmd 单测,-race 绿;树形可视化导航 UI 与弃支摘要归 M7.2 后) |
-| P4-11 ✅ | **E4 配置热更(/reload 等效)** | 独立 | M | ✅ 已交付:sdk.ReloadableInstructions 可选接口(断言发现)+ host-system-prompt ReloadInstructions(按配置文件重读全局/多级项目/附加 AGENTS.md;NotFound=清除旧值,其它读取失败保留旧值返回错误=错误回滚);TUI /reload 命令(显式提示失败保留旧值);下次回合 SystemPrompt 生效,免重启。外部进程插件热重载既有(host-bridge watch)。键位/主题无用户配置文件(硬编码+DefaultPalette 单一事实源,无重载对象)已文档注明 | 外部编辑 AGENTS.md 后 /reload 免重启生效;失败保留旧值显式提示(新增 reload_test,-race 绿) |
+| P4-11 ✅ | **E4 配置热更(/reload 等效)** | 独立 | M | ✅ 已交付:sdk.ReloadableInstructions 可选接口(断言发现)+ host-system-prompt ReloadInstructions(按配置文件重读全局/多级项目/附加 AGENTS.md;NotFound=清除旧值,其它读取失败保留旧值返回错误=错误回滚);TUI /reload 命令(显式提示失败保留旧值);下次回合 SystemPrompt 生效,免重启。外部进程插件热重载既有(host-bridge watch)。键位目前无用户配置文件(硬编码);主题外部化已交付 **M13**(DESIGN §14.1:注入通道=theme.yaml/data.palette + /theme 切换,默认表兜底) | 外部编辑 AGENTS.md 后 /reload 免重启生效;失败保留旧值显式提示(新增 reload_test,-race 绿) |
 | P4-12 ✅ | **T5 输入区 widget 槽位** | S2.2 | S–M | ✅ 已交付:State.Widgets+WidgetOn;App.AddWidget(id,text func) 宿主注册(每次渲染求值,空/nil 跳过,单行化截断;渲染帧经 onWidgets 拉取);输入行上方 ◇ 前缀渲染,主区高度自动扣减(不挤输入);/widgets on|off 开关(新增 TokWidget 语义色)| widget 展示;不挤输入;可开关(新增 widgets_test,-race 绿) |
 
-> **明确不做/远期**(已决策):S3.1 scrollback 双形态(方案 A)、图片富媒体、全量键位自定义。
+> **明确不做/远期**(已决策):S3.1 scrollback 双形态(方案 A)、全量键位自定义。~~图片富媒体~~ **已撤销(2026-09)**:改为 Web 附件(图片/文件)一期含多模态注入,见 docs/WEB_ATTACHMENTS_PLAN.md 与 docs/TODO_OVERVIEW.md A 组。
 > **绑 M7**:C1 会话树 UI、E1 UI 扩展 seam(Web 侧 registry 先行,M7.2 槽位概念 TUI 后接)。
 
 ## 变更记录
+- 2026-09-06:tests/TestTUIProbeScrollbarAndArrow 探针修复:对齐现行语义(M6.15 启动首屏干净不强制重放历史/滚动条、M6.17 ↑↓ 归输入框光标,滚动键用 PgUp /\x1b[5~/、选择器分步推进——命令级前缀过滤,继续输入超命令名即脱选择态);进入历史会话(/session 分步选中 switch → 二级会话列表)后验滚动条轨道 ░ + PgUp 两次滚动 diff + 退出链。**全库 -race 全绿,不再有 pre-existing 失败**。
+- 2026-09-06:M14 补丁:外部命令 RPC 超时保护(rpcCall 复用,命令可声明 TimeoutMs 覆写)sdk.CommandSpec.TimeoutMs 新字段 + 纯命令插件支持(host-bridge 扫描 tool-*/cmd-* 前缀,loadOne 工具或命令任一满足即载,ServeTools(nil, commands) 可纯命令);TestExternalCmdOnlyPluginWithTimeout 端到端;-race 绿(除 pre-existing pty 探针)。
+- 2026-09-06:M14 外部命令桥交付(桥协议加 Commands/CommandOptions/RunCommand(CommandDTO 级联声明,旧插件无方法自动按"无命令"处理,零改动兼容);ServeTools(tools, commands...);host-bridge 可选注入 ctx.commands+转注册(同名冲突显式跳过/Disposer 撤销)+ commandRPCClient RPC 代理(枚举级经 CommandOptions 求值,连接错误自动拉起);extplugins/tool-echo 参照实现;command_bridge_test 装配真进程端到端+-race 绿(除 pre-existing pty 探针))。
+- 2026-09-06:M13 TUI 主题外部化交付(tui/palette.go 覆盖层 ApplyTheme/colorVal(默认表兜底,未知 token/非法色值显式报错)+ NewApp 变参 palette 启动链(data.palette<theme.yaml)+ tui/theme.go 文件层(theme.yaml/themes/<名>.yaml,防穿越,对齐 search.yaml 先例)+ /theme 命令(枚举主题列表+default 哨兵,运行期切换/恢复);palette_test/theme_test/theme_cmd_test 配套;-race 绿(除 pre-existing pty 探针))。
+- 2026-09-06:M14 外部命令桥入未实施规划(DESIGN §14.1 未实施清单 6→7 项 + ROADMAP P3 表 22 号;背景:外部进程协议仅工具,命令注册通道 ctx.commands 在进程内;方案=桥协议加 CommandSpec 声明→host-bridge 转注册→GAH_CB_ADDR 回调 commands.run,复用热重载/崩溃拉起/软降级,新命令插件零重编译 gah。)
+- 2026-09-06:M13 TUI 主题外部化入未实施规划(DESIGN §14.1 未实施清单 5→6 项 + ROADMAP P3 表 21 号 + TUI_OPTIMIZE 不做/远期同步;背景:P4-9 token 化后换肤表仍编译期硬编码,注入通道=ui-tui-app data.palette / theme.yaml / /theme,默认表兜底,零重编译换肤)。
 - 2026-09-06:P4-10 C1 会话树/分支交付(sdk.ForkableSessions 断言 + host-cwd-sessions ForkAt/CloneCurrent/ForkPoints;/fork [seq] 任意点派生(缺省最近提问)/clone 复制;/tree 列出各会话可 fork 提问点;自动命名标记;导航复用 /session switch;树形可视化 UI 归 M7 后)——**P4 12 项全部交付**。
 - 2026-09-06:P4-11 E4 配置热更交付(sdk.ReloadableInstructions 断言 + host-system-prompt ReloadInstructions 重读全局/层级/附加指令文件,NotFound=清除、其它失败保留旧值;/reload 命令免重启生效);剩余 P4 1 项。
 - 2026-09-06:P4-12 T5 输入区 widget 槽位交付(State.Widgets+WidgetOn / App.AddWidget 宿主注册渲染帧求值 / 输入行上方渲染主区扣减 / /widgets on|off / TokWidget 语义色);剩余 P4 2 项。
@@ -114,3 +130,7 @@
 - 2026-09-05:M8 tool-todo T1 交付(见 DESIGN §14.1 M8 ✅):剩余 P0 = 6a(/workspace 切换)。
 - 2026-09-05:P0 收口:/workspace 切换交付(sdk.CwdSessions.SwitchProject + host 重绑 + TUI 命令,会话/上下文/展示即时切换;工具进程 cwd 重启后生效,见 TUI_OPTIMIZE §1.6)。P0 全部完成,下一阶段转 P1(M9/M11/S1.4/S2)与 P2+/P3(M7 等,见总览)。
 - 2026-09-05:/workspace 升级为选择器两级交互(最近使用工作区按时间倒序 + 「输入新目录路径」入口;sdk.RecentProjects + host workspaces.json 记录;选历史直接切、哨兵断点输路径;同项目仅刷新最近时间)。
+- 2026-09-06:M9.3 send_message/fork 交付(sdk.FanoutService 增 Fork/SendMessage + AgentHandle.Messages;sdk 子代理运行循环 inbox 注入/dialog 记录/fork 父会话历史种入;回调协议 send/fork 分支;工具面 send_message/fork action;host-fanout/tool-subagent/host-bridge 单测 + 外部 e2e TestExternalSubagentFork;gen 重建产物;全库 -race 39 包绿)——**M9 全交付**,未实施清单 5→4 项,剩余全为 M7 Web 线。
+- 2026-09-06:M15 全交付(M13 主题外部化上收口:TUI π 式默认样式——状态栏精简去 gah、思考动画 shade 光条滚动、指标行最底、底部区空隙行;F15.1–F15.5 迭代,全库 -race 39 包绿,详见 DESIGN §14.1 M15)。
+- 2026-09-06:M16 测试提速专项入规划(DESIGN §14.1 未实施清单 4→5 项 + ROADMAP P3 表 23 号,排期待 M7 Web 后;背景:改代码后首次全库 -race ~1m40s(tests pty 探针 84s/embed 27s/bridge 22s),日常缓存命中 3s(去 -count=1 即用 Go 测试缓存);目标:首跑 ≤60s + 计时回归护栏)。
+- 2026-09-06:M16.7/M16.8/M16.9 交付入 ROADMAP P3 表(24–26 号,与 DESIGN §14.1 交付行对应):web 会话工作台/taste UI 收敛/设置面板/输入一体外壳/克制动效/偏好持久化(内嵌 prefs TUI 共享)/工作区真实切目录/插件管理域/manage 只读/tool-mcp 多 server/便携数据根(gah-data)+ 便携纪律规范。二期待办:jobs 面板、会话 export、TUI 命令下沉、mcp server 看护(见 DESIGN §14.1 未实施清单 2026-09 二期)。
