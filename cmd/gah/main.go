@@ -65,7 +65,7 @@ func main() {
 	// 版本贯通(M7):mcp-server 等插件经 GAH_VERSION 读取构建版本
 	os.Setenv("GAH_VERSION", version)
 
-	// 1. 运行时 home 初始化:首启释放 seed 样板(home/config),ephemeral 用临时 home 退出即焚(设计 §7.3)
+	// 运行时 home 初始化:首启释放 seed 样板(home/config),ephemeral 用临时 home 退出即焚(设计 §7.3)
 	home := homeDir()
 	if *ephemeral {
 		tmp, err := os.MkdirTemp("", "gah-ephemeral-")
@@ -75,6 +75,11 @@ func main() {
 		}
 		home = tmp
 		defer os.RemoveAll(home)
+	}
+	if home == "" {
+		// ~/.gah 已弃用:不可便携时要求显式数据根,不再静默回退重建 ~/.gah
+		logger.Error("boot: 无法确定运行时数据目录(未设 GAH_HOME,且非便携部署)。请将 gah 与 gah-data/ 置于同目录运行,或 export GAH_HOME=<数据根>")
+		os.Exit(1)
 	}
 	// P3 统一 home 事实源:经 GAH_HOME 贯通插件层(host-bridge 默认扫描目录等),
 	// ephemeral 模式彻底隔离(外部插件目录一并入临时 home,退出即焚)。
@@ -325,8 +330,9 @@ func isStdinTTY() bool {
 //  1. GAH_HOME env(显式覆盖)
 //  2. 便携模式:与 gah 二进制同级的 gah-data/(不存在则自动新建——部署目录即自包含,
 //    初始化内容(config 样板/外部插件)由后续首启 EnsureSeed/EnsurePlugins 释放;
-//    创建失败(目录只读等)= 不可便携 → 回落;升级仅替换 gah 单文件)
-//  3. 默认 ~/.gah
+//    创建失败(目录只读等)= 不可便携 → 返回空,由调用方报错退出)
+// 3. ~/.gah 已弃用(2026-09-08 起全部数据迁移至便携 gah-data),不再作为隐式兜底,
+//    避免任何运行形态意外重建 ~/.gah。
 // 任一分支都不会落入系统根(防根);全部运行数据统一在此单根下。
 func homeDir() string {
 	if h := os.Getenv("GAH_HOME"); h != "" {
@@ -337,10 +343,7 @@ func homeDir() string {
 			return pd
 		}
 	}
-	if uh, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(uh, ".gah")
-	}
-	return os.TempDir()
+	return "" // 未设 GAH_HOME 且不可便携:调用方报错(不再回退 ~/.gah)
 }
 
 // portableRoot 便携数据根解析:给定 gah 二进制路径(经符号链接归一出调用方处理)

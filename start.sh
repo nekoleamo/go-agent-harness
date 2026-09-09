@@ -11,4 +11,7 @@ if [ -f gah-data/env.sh ]; then
   source gah-data/env.sh
 fi
 
+# 数据根显式锁定为同级 gah-data(~/.gah 已弃用,杜绝任何便携回落路径)
+export GAH_HOME="$(pwd)/gah-data"
+
 exec ./gah "$@"
