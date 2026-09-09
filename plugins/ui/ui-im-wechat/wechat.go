@@ -392,13 +392,25 @@ func (t *wechatTransport) pollLoop(stop chan struct{}) {
 			t.mu.Unlock()
 		}
 		for _, msg := range resp.Msgs {
-			t.handleInbound(&msg)
+			// 每条消息独立 goroutine 处理:回合(含 Confirm 等待)若占住轮询线程,
+			// 将不再 getupdates,用户在确认等待期间回复的 y/n 永远拉不进来 → 必超时
+			// (真机反馈:y、n 均 2 分钟超时;mock 因测试多 goroutine 并发才通过)。
+			// 并发安全性由 im.Bridge 保证(busy 互斥 + pending 先判定);panic 隔离在
+			// handleInbound 内 recover,避免单条消息拖死整个轮询。
+			m := msg
+			go t.handleInbound(&m)
 		}
 	}
 }
 
 // handleInbound 解析一条入站消息交给桥(token 缓存 + 去重 id 由桥负责)。
+// 由独立 goroutine 调用;panic 隔离(单条消息异常不拖死轮询/进程)。
 func (t *wechatTransport) handleInbound(msg *ilink.InboundMessage) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "[wechat] 消息处理 panic(已隔离): %v\n", r)
+		}
+	}()
 	if msg.MessageType != 1 || msg.FromUserID == "" {
 		return
 	}
