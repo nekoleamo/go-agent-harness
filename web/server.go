@@ -237,19 +237,32 @@ func (s *Server) afterOf(r *http.Request) uint64 {
 	return after
 }
 
-// consumeStream 通道消费(通道 seam:SSE 与 WS 共用):历史重放(seq > after)→ 实时转发。
-// sink 返回错误(载体写失败=客户端断连)即退;stop 为请求上下文取消。
+// consumeStream 通道消费(通道 seam:SSE 与 WS 共用):先订阅实时(弥合
+// 重放快照与订阅建立之间的广播 gap)→ 历史重放(seq > after,经 seen 去重
+// ——重放期间已入实时流的新帧不重复发)→ 实时转发。sink 返回错误
+// (载体写失败=客户端断连)即退;stop 为请求上下文取消。
 func (s *Server) consumeStream(after uint64, sink func(Frame) error, stop <-chan struct{}) {
+	ch, unsub := s.hub.Stream()
+	defer unsub()
+	seen := after // 已消费会话游标(会话帧按 Seq 全局递增;非会话帧 ID=0 不参与去重)
 	for _, f := range s.hub.ReplayAfter(s.sessions, after) {
+		if f.ID > 0 && f.ID <= seen {
+			continue // 已被实时流抢先(重放期间新帧入 ch 排队,seq 去重防双发)
+		}
 		if err := sink(f); err != nil {
 			return
 		}
+		seen = f.ID
 	}
-	ch, unsub := s.hub.Stream()
-	defer unsub()
 	for {
 		select {
 		case f := <-ch:
+			if f.ID > 0 {
+				if f.ID <= seen {
+					continue // 重放已发(去重)
+				}
+				seen = f.ID
+			}
 			if err := sink(f); err != nil {
 				return
 			}

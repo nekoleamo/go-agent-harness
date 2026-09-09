@@ -98,7 +98,17 @@ func TestWebEndToEndTurn(t *testing.T) {
 		t.Fatalf("state 应 200,得 %d", resp.StatusCode)
 	}
 
-	// 2. 回合提交(mock LLM 一步:调 shell 工具 + 收尾回复)
+	// 2. 先建 SSE 连接(订阅先于回合提交,对齐真实前端时序;避免依赖历史重放窗口)
+	evResp, err := http.Get(hs.URL + "/api/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer evResp.Body.Close()
+	if !strings.Contains(evResp.Header.Get("Content-Type"), "text/event-stream") {
+		t.Fatalf("SSE Content-Type 不符: %q", evResp.Header.Get("Content-Type"))
+	}
+
+	// 3. 回合提交(mock LLM 一步:调 shell 工具 + 收尾回复)
 	resp, err = http.Post(hs.URL+"/api/input", "application/json",
 		strings.NewReader(`{"content":"请运行 echo 集成测试"}`))
 	if err != nil {
@@ -109,15 +119,7 @@ func TestWebEndToEndTurn(t *testing.T) {
 		t.Fatalf("input 应 202,得 %d", resp.StatusCode)
 	}
 
-	// 3. SSE 连接读取事件流,断言帧序列
-	evResp, err := http.Get(hs.URL + "/api/events")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer evResp.Body.Close()
-	if !strings.Contains(evResp.Header.Get("Content-Type"), "text/event-stream") {
-		t.Fatalf("SSE Content-Type 不符: %q", evResp.Header.Get("Content-Type"))
-	}
+	// 4. 读取事件流,断言帧序列(实时路径覆盖:tool/call 等全部经已建立连接到达)
 	sc := bufio.NewScanner(evResp.Body)
 	sc.Buffer(make([]byte, 4096), 1<<20)
 	kinds := map[string]bool{}

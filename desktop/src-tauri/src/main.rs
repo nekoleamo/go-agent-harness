@@ -1,7 +1,7 @@
 // gah 桌面壳(P1 落地,可行性见 docs/DESKTOP_FEASIBILITY.md):
-// 启动 → spawn sidecar gah --profile web(GAH_WEB_OPEN=0);GAH_HOME 未显式设置时由
-// sidecar 主程序解析:二进制同级 gah-data/(便携根,首启自动新建;Tauri 壳内即
-// Contents/MacOS/gah-data);不可便携则报错退出——~/.gah/TempDir 兜底已弃用(2026-09)
+// 启动 → spawn sidecar gah --profile web(GAH_WEB_OPEN=0);数据根恒传 GAH_HOME:
+// 显式 env > 系统应用数据目录(~/Library/Application Support/gah)——壳内便携根
+// (.app/Contents/MacOS/gah-data)随升级丢失且可能只读,不作桌面默认)
 //      → 轮询 /api/state 就绪 → 主窗口 navigate http://127.0.0.1:2233
 // 单实例(多开 focus 现有窗口);托盘(打开/自启开关/退出);
 // 回合完成通知(轮询 state.running 翻转);退出链:POST /api/shutdown → 等端口释放 →
@@ -46,6 +46,39 @@ fn httpProbe(path: &str, timeout: Duration) -> bool {
         Ok(n) => buf[..n].windows(3).any(|w| w == b"200"),
         Err(_) => false,
     }
+}
+
+// appDataHome 桌面壳默认数据根(GAH_HOME 未设时):系统应用数据目录
+// (macOS ~/Library/Application Support/gah;Linux XDG_DATA_HOME|~/.local/share/gah;
+// Windows %APPDATA%\gah)。稳定可写、升级不丢;gah 主程序首启自动补全内部目录。
+fn appDataHome() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(h) = std::env::var("HOME") {
+            let p = std::path::Path::new(&h).join("Library/Application Support/gah");
+            let _ = std::fs::create_dir_all(&p);
+            return p.to_string_lossy().into_owned();
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(ap) = std::env::var("APPDATA") {
+            let p = std::path::Path::new(&ap).join("gah");
+            let _ = std::fs::create_dir_all(&p);
+            return p.to_string_lossy().into_owned();
+        }
+    }
+    if let Ok(x) = std::env::var("XDG_DATA_HOME") {
+        let p = std::path::Path::new(&x).join("gah");
+        let _ = std::fs::create_dir_all(&p);
+        return p.to_string_lossy().into_owned();
+    }
+    if let Ok(h) = std::env::var("HOME") {
+        let p = std::path::Path::new(&h).join(".local/share/gah");
+        let _ = std::fs::create_dir_all(&p);
+        return p.to_string_lossy().into_owned();
+    }
+    std::env::temp_dir().join("gah").to_string_lossy().into_owned()
 }
 
 fn stateRunning() -> bool {
@@ -146,16 +179,14 @@ fn main() {
                 .expect("托盘构建失败");
             let _ = handle.emit("tray-ready", ());
 
-            // —— spawn sidecar gah --profile web(GAH_HOME 不设=便携根解析链:二进制同级 gah-data/ 优先) ——
-            let home = std::env::var("GAH_HOME").unwrap_or_default();
-            let mut cmd = app
+            // —— spawn sidecar gah --profile web(数据根:显式 GAH_HOME > 应用数据目录) ——
+            let home = std::env::var("GAH_HOME").unwrap_or_else(|_| appDataHome());
+            let cmd = app
                 .shell()
                 .sidecar("gah")
                 .expect("externalBin 缺失: 先运行 scripts/gen-desktop.sh")
-                .env("GAH_WEB_OPEN", "0");
-            if !home.is_empty() {
-                cmd = cmd.env("GAH_HOME", &home); // 显式 GAH_HOME(测试/便携部署)优先
-            }
+                .env("GAH_WEB_OPEN", "0")
+                .env("GAH_HOME", &home);
             let (mut rx, child) = cmd
                 .args(["--profile", "web"])
                 .spawn()
@@ -185,6 +216,13 @@ fn main() {
                     std::thread::sleep(Duration::from_millis(200));
                 }
                 let _ = handle3.emit("sidecar-start-failed", "gah 60×200ms 内未就绪");
+                // 失败指引:窗口不再停留在"正在启动",注入错误提示(含数据根路径与日志指引)
+                if let Some(w) = handle3.get_webview_window("main") {
+                    let _ = w.eval(&format!(
+                        "document.body.innerHTML='<div style=\"font-family:-apple-system,sans-serif;padding:40px;max-width:560px\"><h2>gah 服务未能启动</h2><p>数据根: {home}</p><p>请检查 gah 数据目录可写性后重启;详细日志见终端输出。</p></div>'",
+                        home = home
+                    ));
+                }
             });
 
             // —— 回合完成通知:轮询 state.running 翻转(running→idle 发通知) ——

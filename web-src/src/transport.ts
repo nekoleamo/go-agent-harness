@@ -25,12 +25,17 @@ export function createTransport(): Transport {
   return new EsTransport()
 }
 
-// WsTransport WebSocket 承载。
+// WsTransport WebSocket 承载。断开后指数退避重连(1s/2s/4s,带 after 游标
+// 差集续传);持续失败(约 7s)才永久降级 EventSource(浏览器自动重连自愈)。
 class WsTransport implements Transport {
   private sock: WebSocket | null = null
   private listeners = new Map<string, TransportListener[]>()
   private closed = false
   private es: EsTransport | null = null
+  private retry = 0
+  private retryTimer: ReturnType<typeof setTimeout> | null = null
+  // 降级前重连次数(退避 1s/2s/4s;超过 → 永久降级 SSE)
+  private static readonly maxRetry = 3
   onopen?: () => void
   onreconnecting?: () => void
   onclose?: () => void
@@ -47,6 +52,8 @@ class WsTransport implements Transport {
     this.sock = sock
     sock.onopen = () => {
       if (this.closed) return
+      this.retry = 0
+      this.clearRetryTimer()
       this.onopen?.()
     }
     sock.onmessage = (e) => {
@@ -59,18 +66,35 @@ class WsTransport implements Transport {
       }
     }
     sock.onclose = () => {
-      if (this.closed) return
-      this.es?.close()
-      // WS 关闭 → 降级 EventSource(同 payload 续接;Last-Event-ID 自动差集)
+      if (this.closed || this.es) return
+      if (this.retry < WsTransport.maxRetry) {
+        // 指数退避重连(短暂抖动/后端热重启数秒内回 WS)
+        this.retry++
+        this.onreconnecting?.()
+        const delay = Math.min(1000 * 2 ** (this.retry - 1), 8000)
+        this.retryTimer = setTimeout(() => {
+          this.retryTimer = null
+          this.connect()
+        }, delay)
+        return
+      }
+      // 持续失败 → 永久降级 EventSource(同 payload 续接;Last-Event-ID 自动差集)
+      this.onreconnecting?.()
       this.es = new EsTransport(this.onopen, this.onreconnecting, this.onclose)
       for (const [t, fns] of this.listeners) {
         for (const fn of fns) this.es.on(t, fn)
       }
-      this.onreconnecting?.()
     }
     sock.onerror = () => {
+      // 浏览器保证 onerror 后必触发 onclose(统一在那里调度重连/降级)
       this.onreconnecting?.()
-      sock.close() // 触发 onclose → 降级
+    }
+  }
+
+  private clearRetryTimer(): void {
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer)
+      this.retryTimer = null
     }
   }
 
@@ -95,6 +119,7 @@ class WsTransport implements Transport {
 
   close(): void {
     this.closed = true
+    this.clearRetryTimer()
     this.sock?.close()
     this.es?.close()
   }
