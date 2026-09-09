@@ -27,3 +27,7 @@
 # 桌面壳产物与依赖(desktop/;sidecar 二进制构建产物,构建时由 scripts/gen-desktop.sh 生成)
 /desktop/src-tauri/target/
 /desktop/src-tauri/binaries/
+
+# 内部设计/推进文档不入库(对外仅保留插件开发规范 PLUGIN_DEV.md;其余随本地开发,不随仓库分发)
+/docs/*
+!/docs/PLUGIN_DEV.md
