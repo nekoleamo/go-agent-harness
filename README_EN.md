@@ -74,6 +74,8 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 After install, run `gah` / `gah web` / `gah --profile headless -input "…"` from any directory.
 The data root is `gah-data/` next to the real binary (created on first run; a symlinked launch also resolves to the real install dir). Sessions/memory/todo are isolated per project by the current cwd. Upgrade = rerun the script; uninstall = `--uninstall` / `-Uninstall`.
 
+**Two modes coexist (same binary; the mode is the location)**: ① **Global/shared** — after install, run `gah` from any directory; the data root lives once under the install dir's `gah-data/`, with sessions/memory isolated per project by the cwd. ② **Portable single** — just copy/download `gah` into any directory and run it there; that directory auto-creates its own independent `gah-data/`, fully isolated from the global install. They never interfere; no switching needed.
+
 ### Three run forms
 
 ```bash
