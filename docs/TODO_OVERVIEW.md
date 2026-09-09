@@ -62,8 +62,8 @@ Q 组:2026-09-09 三端全面检查登记 → 2026-09-16 全交付 ✅(Q1 轮询
 | Q1 | 三端 bug 修复:JobsPanel 轮询不随开合(改 watch(open) 启停)+ host-backup `/backup ~` 未展开(复用 ~ 展开) | S | ✅ |
 | Q2 | web 端散写裸色值 token 化(29 处;补语义 soft token --ok-soft/--err-soft/--tool-soft/--overlay/--fg-on-accent,taste 评审) | M | ✅ |
 | Q3 | 注释与加固:desktop 注释同步便携根 gah-data + web SSE `retry:`/`nosniff` 头 | S | ✅ |
-| Q4 | 提交纪律:Q1–Q3 + M17/M18 + seed-version 11 一并落库(2e69e16) | S | ✅ |
-| R5 | 三端复查(承接 56a0267 弃用 ~/.gah):uiPluginsHome/themeHome/pluginHome 旧解析链收敛 + desktop 注释 + AGENTS.md 便携纪律同步 | M | ✅ |
+| Q4 | 提交纪律:Q1–Q3 + M17/M18 + seed-version 11 一并落库(b98eb17) | S | ✅ |
+| R5 | 三端复查(承接 57739b1 弃用 ~/.gah):uiPluginsHome/themeHome/pluginHome 旧解析链收敛 + desktop 注释 + AGENTS.md 便携纪律同步 | M | ✅ |
 | R6 | 观察项完善:SSE 重放/订阅 gap 修复(先订阅后重放+seq 去重)+ WS 指数退避重连 + 桌面壳数据根(appDataHome)与失败提示 | M | ✅ |
 
 ## 已闭环(2026-09,不计入待办)
