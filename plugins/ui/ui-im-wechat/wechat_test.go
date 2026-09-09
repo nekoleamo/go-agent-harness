@@ -4,6 +4,9 @@ package uimwechat
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
+
+	"github.com/nekoleamo/go-agent-harness/ilink"
 )
 
 // TestSplitLongText 分块:短文本单块;长文本按段/行/空格/硬切;字符数不超上限。
@@ -21,6 +24,9 @@ func TestSplitLongText(t *testing.T) {
 	for i, c := range chunks {
 		if n := len([]rune(c)); n > wechatChunkLimit {
 			t.Fatalf("块 %d 超限 %d > %d", i, n, wechatChunkLimit)
+		}
+		if !utf8.ValidString(c) {
+			t.Fatalf("块 %d 非法 UTF-8(切点截断多字节字符)", i)
 		}
 	}
 	if joined := strings.Join(chunks, ""); len([]rune(joined)) != len([]rune(long)) {
@@ -41,5 +47,33 @@ func TestSplitLongTextTrimSafe(t *testing.T) {
 	chunks := splitLongText(long)
 	if len(chunks) == 0 || chunks[0] == "" {
 		t.Fatalf("空/空白输入应安全返回,got %v", chunks)
+	}
+}
+
+// TestRenderQRText 终端二维码渲染:URL → ASCII 二维码文本(含半块字符,可扫);空输入安全返回。
+func TestRenderQRText(t *testing.T) {
+	url := "https://weixin.qq.com/x/cAbCdEfGhIjK"
+	s := renderQRText(url)
+	if s == "" {
+		t.Fatal("二维码渲染为空")
+	}
+	hasBlock := false
+	for _, ch := range []string{"█", "▀", "▄", "▌", "▐"} {
+		if strings.Contains(s, ch) {
+			hasBlock = true
+			break
+		}
+	}
+	if !hasBlock {
+		t.Fatalf("二维码应含块状字符(半块渲染):\n%s", s)
+	}
+	// 空输入安全
+	if s2 := renderQRText(""); s2 != "" {
+		t.Fatalf("空输入应返回空,got %q", s2)
+	}
+	// 登录指引含二维码 + URL 兜底行
+	hint := loginHint(&ilink.QRResponse{QRCode: "qr-1", QRCodeImg: url})
+	if !strings.Contains(hint, url) || !strings.Contains(hint, "█") {
+		t.Fatalf("登录指引应含二维码块与 URL 兜底: %s", hint)
 	}
 }

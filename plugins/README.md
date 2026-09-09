@@ -42,6 +42,7 @@ plugins/
 | ui | ui-tui-app | TUI 挂载 | ctx.agentLoop/ctx.llm |
 | ui | ui-web-app | Web UI 挂载(M7):SSE 下行 + REST 上行;会话/状态栏/命令/审批/会话切换;addr 默认 127.0.0.1:2233,auth_token 可选,static_dir 开发态(HMR);与 tui bundle 互斥 | ctx.agentLoop/ctx.sessions/ctx.llm + ctx.confirm(提供) |
 | ui | ui-im-wechat | 微信个人号远程控制(IM 线 P0-2b):iLink Bot 长轮询收发 + im.Bridge 接宿主回合/命令/审批;/wechat login 扫码;凭证入 $GAH_HOME/config/ilink-wechat.yaml;profile-im-wechat 与 tui/web 互斥 | ctx.agentLoop/ctx.sessions + ctx.confirm(提供) |
+| ui | ui-im-qq | QQ 官方 Bot v2 远程控制(IM 线 P0-2b-QQ):qqbot WS gateway 收事件 + REST 被动回复 + im.Bridge 接宿主回合/命令/审批;/qq login 填 AppID/AppSecret;凭证入 $GAH_HOME/config/qqbot.yaml;profile-im-qq 与 tui/web/im-wechat 互斥 | ctx.agentLoop/ctx.sessions + ctx.confirm(提供) |
 
 ## 维护约定
 

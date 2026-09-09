@@ -16,6 +16,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mdp/qrterminal/v3"
+
 	"github.com/nekoleamo/go-agent-harness/ilink"
 	"github.com/nekoleamo/go-agent-harness/im"
 	"github.com/nekoleamo/go-agent-harness/sdk"
@@ -261,23 +263,23 @@ func (t *wechatTransport) SendText(ctx context.Context, to im.Route, text string
 	return nil
 }
 
-// splitLongText 按 ~2000 字切分:优先段落(空行)→ 行 → 空格;无边界硬切(对齐社区兼容策略)。
+// splitLongText 按 ~2000 字切分:优先段落(空行)→ 行 → 空格 → 硬切。
+// 全程在 []rune 空间切(rune 安全:块均合法 UTF-8,不会从多字节字符中间截断产生乱码)。
 func splitLongText(text string) []string {
-	if len([]rune(text)) <= wechatChunkLimit {
+	rs := []rune(text)
+	if len(rs) <= wechatChunkLimit {
 		return []string{text}
 	}
 	var chunks []string
-	rest := text
-	for len([]rune(rest)) > wechatChunkLimit {
-		cut := cutAt(rest, wechatChunkLimit)
-		piece := strings.TrimSpace(rest[:cut])
-		rest = strings.TrimSpace(rest[cut:])
-		if piece != "" {
+	for start := 0; start < len(rs); {
+		end := wechatCutRunes(rs, start, wechatChunkLimit)
+		if piece := strings.TrimSpace(string(rs[start:end])); piece != "" {
 			chunks = append(chunks, piece)
 		}
-	}
-	if rest != "" {
-		chunks = append(chunks, rest)
+		if end <= start {
+			break // 防御:切点不推进则终止
+		}
+		start = end
 	}
 	if len(chunks) == 0 {
 		chunks = []string{text}
@@ -285,23 +287,19 @@ func splitLongText(text string) []string {
 	return chunks
 }
 
-// cutAt 在 limit 内找最佳切点(段落空行 > 换行 > 空格 > 硬切)。
-func cutAt(s string, limit int) int {
-	r := []rune(s)
-	if len(r) <= limit {
-		return len(r)
+// wechatCutRunes 在 rs[start:start+limit] 内找最佳切点(rune 下标):段落空行 > 换行 > 空格 > 硬切。
+func wechatCutRunes(rs []rune, start, limit int) int {
+	end := start + limit
+	if end >= len(rs) {
+		return len(rs)
 	}
-	window := string(r[:limit])
-	if i := strings.LastIndex(window, "\n\n"); i > 0 {
-		return len([]rune(window[:i])) + 2
+	window := string(rs[start:end])
+	for _, sep := range []string{"\n\n", "\n", " "} {
+		if i := strings.LastIndex(window, sep); i > 0 {
+			return start + len([]rune(window[:i])) + len([]rune(sep))
+		}
 	}
-	if i := strings.LastIndex(window, "\n"); i > 0 {
-		return len([]rune(window[:i])) + 1
-	}
-	if i := strings.LastIndex(window, " "); i > 0 {
-		return len([]rune(window[:i])) + 1
-	}
-	return limit
+	return end
 }
 
 // typingTicket 取(缓存 ~20h;失败静默——typing 尽力而为)。
@@ -451,6 +449,26 @@ func (t *wechatTransport) setLastError(msg string) {
 	t.mu.Unlock()
 }
 
+// renderQRText 把二维码内容(iLink qrcode_img_content = 待编码的登录 URL)渲染为 ASCII 二维码文本,
+// 终端直接可扫(半块渲染,视觉方正;空输出回退纯 URL 行由调用方兜底)。
+func renderQRText(content string) string {
+	if content == "" {
+		return ""
+	}
+	var buf strings.Builder
+	qrterminal.GenerateWithConfig(content, qrterminal.Config{
+		Level: qrterminal.M, Writer: &buf, QuietZone: 1, HalfBlocks: true,
+	})
+	return strings.TrimRight(buf.String(), "\n")
+}
+
+// loginHint 登录指引文本:ASCII 二维码 + URL 兜底行(极窄终端/不支持半块时仍可打开链接)。
+func loginHint(qr *ilink.QRResponse) string {
+	code := renderQRText(qr.QRCodeImg)
+	hint := "请用微信扫描下方二维码登录(二维码不清晰或无法扫描,请打开链接):\n" + code + "\n"
+	return hint + "链接: " + qr.QRCodeImg + "\n(等待确认,超时 5 分钟;状态查询 /wechat status)"
+}
+
 // wechatCmd /wechat 命令:login/status。
 func (t *wechatTransport) wechatCmd(ctx context.Context, args []string) (string, error) {
 	if len(args) == 0 || args[0] == "status" {
@@ -480,17 +498,18 @@ func (t *wechatTransport) wechatCmd(ctx context.Context, args []string) (string,
 		}()
 		t.finishLogin(qr)
 	}()
-	return "请用微信扫码登录:\n" + qr.QRCodeImg + "\n(等待确认,超时 5 分钟;状态查询 /wechat status)", nil
+	return loginHint(qr), nil
 }
 
-// autoLogin 未登录自动扫码:取二维码 → 打印链接(stderr;headless 可见)→ 后台轮询确认。
+// autoLogin 未登录自动扫码:取二维码 → 终端渲染 ASCII 二维码 + URL(stderr;headless 可见)→ 后台轮询确认。
 func (t *wechatTransport) autoLogin() {
 	qr, err := ilink.FetchQR(context.Background(), t.baseURL)
 	if err != nil {
 		t.setLastError("获取登录二维码失败: " + err.Error())
 		return
 	}
-	fmt.Fprintf(os.Stderr, "\n[wechat] 请用微信打开链接扫码登录:\n  %s\n等待手机确认(5 分钟内)…\n", qr.QRCodeImg)
+	code := renderQRText(qr.QRCodeImg)
+	fmt.Fprintf(os.Stderr, "\n[wechat] 请用微信扫描下方二维码登录(无法扫描请打开链接):\n%s\n链接: %s\n等待手机确认(5 分钟内)…\n", code, qr.QRCodeImg)
 	t.finishLogin(qr)
 }
 

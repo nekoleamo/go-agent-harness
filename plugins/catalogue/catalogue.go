@@ -33,6 +33,7 @@ import (
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-todo"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-web"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-workflow"
+	"github.com/nekoleamo/go-agent-harness/plugins/ui/ui-im-qq"
 	"github.com/nekoleamo/go-agent-harness/plugins/ui/ui-im-wechat"
 	"github.com/nekoleamo/go-agent-harness/plugins/ui/ui-tui-app"
 	"github.com/nekoleamo/go-agent-harness/plugins/ui/ui-web-app"
@@ -160,6 +161,10 @@ var All = map[string]Def{
 		ID: "ui-im-wechat", Type: "ui", APIVersion: ">=1.0,<2.0",
 		Provides: []string{"ctx.confirm"},                            // IM 审批通道(与 tui/web 互斥,profile 层保证)
 		Requires: []string{"ctx.agentLoop", "ctx.sessions"}}, Bundle: "im-wechat", Manage: "scenario"},
+	"ui-im-qq": {Factory: func() sdk.Plugin { return &uimqq.Plugin{} }, Manifest: &sdk.Manifest{
+		ID: "ui-im-qq", Type: "ui", APIVersion: ">=1.0,<2.0",
+		Provides: []string{"ctx.confirm"},                            // IM 审批通道(与 tui/web/im-wechat 互斥,profile 层保证)
+		Requires: []string{"ctx.agentLoop", "ctx.sessions"}}, Bundle: "im-qq", Manage: "scenario"},
 }
 
 // RegisterAll 把 bundle == name 的全部插件注册进 registry(不按 enabled 过滤;过滤在装配层)。

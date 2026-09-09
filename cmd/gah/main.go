@@ -50,10 +50,15 @@ func main() {
 		*profileFlag = "web"
 	}
 	// IM 线入口糖:gah im ≡ gah --profile im-wechat(微信个人号 iLink 远程控制;
-	// 启动未登录则自动扫码(二维码链接打印到 stderr),或登录态直接轮询)
+	// 启动未登录则自动扫码(二维码链接打印到 stderr),或登录态直接轮询);
+	// gah im-qq ≡ gah --profile im-qq(QQ 官方 Bot v2;启动后 /qq login 填 AppID/AppSecret)
 	if len(os.Args) > 1 && os.Args[1] == "im" {
 		os.Args = append([]string{os.Args[0]}, os.Args[2:]...)
 		*profileFlag = "im-wechat"
+	}
+	if len(os.Args) > 1 && os.Args[1] == "im-qq" {
+		os.Args = append([]string{os.Args[0]}, os.Args[2:]...)
+		*profileFlag = "im-qq"
 	}
 	flag.Parse()
 	if !isStdinTTY() && *inputFlag == "" && *profileFlag == "tui" {

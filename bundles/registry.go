@@ -4,6 +4,7 @@ package bundles
 
 import (
 	baseb "github.com/nekoleamo/go-agent-harness/bundles/base"
+	imqqb "github.com/nekoleamo/go-agent-harness/bundles/im-qq"
 	imwechatb "github.com/nekoleamo/go-agent-harness/bundles/im-wechat"
 	tuib "github.com/nekoleamo/go-agent-harness/bundles/tui"
 	webb "github.com/nekoleamo/go-agent-harness/bundles/web"
@@ -21,4 +22,5 @@ var Registry = map[string]RegisterFunc{
 	"tui":       tuib.RegisterAll,
 	"web":       webb.RegisterAll,
 	"im-wechat": imwechatb.RegisterAll,
+	"im-qq":     imqqb.RegisterAll,
 }

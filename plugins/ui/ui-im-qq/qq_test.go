@@ -1,0 +1,196 @@
+// ui-im-qq transport 纯函数单测:QQ 文本分块(4000/段落优先/截断;镜像微信线策略,常量不同)、
+// /qq login 无参输出 AppID/AppSecret 获取指引(与真机验收"填 AppID/AppSecret"对齐)、凭证掩码。
+package uimqq
+
+import (
+	"os"
+	"strings"
+	"testing"
+	"unicode/utf8"
+
+	"github.com/nekoleamo/go-agent-harness/qqbot"
+)
+
+// TestSplitQQText 短文本单块;长文本按段/行/空格/硬切;每块 <=4000。
+func TestSplitQQText(t *testing.T) {
+	short := "你好"
+	if got := splitQQText(short); len(got) != 1 || got[0] != short {
+		t.Fatalf("短文本应单块: %v", got)
+	}
+	long := strings.Repeat("字", qqChunkLimit*2+10)
+	chunks := splitQQText(long)
+	if len(chunks) < 3 {
+		t.Fatalf("应切成 >=3 块,got %d", len(chunks))
+	}
+	for i, c := range chunks {
+		if n := len([]rune(c)); n > qqChunkLimit {
+			t.Fatalf("块 %d 超限 %d > %d", i, n, qqChunkLimit)
+		}
+		if !utf8.ValidString(c) {
+			t.Fatalf("块 %d 非法 UTF-8(切点截断多字节字符)", i)
+		}
+	}
+	// 段落边界优先
+	para := strings.Repeat("甲", qqChunkLimit/2) + "\n\n" + strings.Repeat("乙", 6000)
+	if chunks = splitQQText(para); len(chunks) < 2 {
+		t.Fatalf("段落文本应 >=2 块,got %d", len(chunks))
+	}
+	// 纯空白不 panic
+	if chunks = splitQQText(strings.Repeat(" ", qqChunkLimit+10)); len(chunks) == 0 {
+		t.Fatal("空白输入应安全返回")
+	}
+}
+
+// TestQQCmdLoginGuide 无参 /qq login 输出指引(含获取位置与两种填入方式),不落盘。
+func TestQQCmdLoginGuide(t *testing.T) {
+	tr := &qqTransport{name: channelName, lastError: "未配置(执行 /qq login)"}
+	tr.store = qqbot.NewStore(t.TempDir() + "/qqbot.yaml")
+	out, err := tr.qqCmd(nil, []string{"login"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "AppID") || !strings.Contains(out, "AppSecret") ||
+		!strings.Contains(out, "q.qq.com") || !strings.Contains(out, "/qq login <AppID>") {
+		t.Fatalf("登录指引缺关键内容: %s", out)
+	}
+	if len(out) > 400 {
+		t.Fatalf("指引过长(%d),应简洁", len(out))
+	}
+	// /qq status 无凭证:状态文本含"未配置"
+	st, _ := tr.qqCmd(nil, []string{"status"})
+	if !strings.Contains(st, "未配置") || !strings.Contains(st, "/qq login") {
+		t.Fatalf("status 不符: %s", st)
+	}
+}
+
+// TestQQCmdLoginPersist 带参登录落盘凭证(0600)与 AppSecret 掩码展示。
+func TestQQCmdLoginPersist(t *testing.T) {
+	tr := &qqTransport{name: channelName, lastError: "未配置"}
+	tr.store = qqbot.NewStore(t.TempDir() + "/qqbot.yaml")
+	out, err := tr.qqCmd(nil, []string{"login", "APP123456", "SECRET-abc-xyz"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "已保存") {
+		t.Fatalf("登录返回不符: %s", out)
+	}
+	// 凭证落盘且已配置
+	creds, err := tr.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if creds.AppID != "APP123456" || creds.AppSecret != "SECRET-abc-xyz" {
+		t.Fatalf("凭证不符: %+v", creds)
+	}
+	// status 展示掩码(不泄露全量 AppSecret 也不显示 secret)
+	st := tr.statusText()
+	if !strings.Contains(st, "APP1") || strings.Contains(st, "SECRET-abc-xyz") {
+		t.Fatalf("status 掩码不符: %s", st)
+	}
+}
+
+// TestIsRichText 呈现决策:代码围栏/列表 → markdown;纯短句/普通段落 → 纯文本。
+func TestIsRichText(t *testing.T) {
+	md := []string{
+		"```go\nfunc main() {}\n```",
+		"- 步骤一\n- 步骤二",
+		"* 要点\n* 补充",
+		"1. 第一\n2. 第二",
+		"执行结果:\n  1) 成功\n  2) 警告",
+	}
+	for _, s := range md {
+		if !isRichText(s) {
+			t.Fatalf("应判定富文本: %q", s)
+		}
+	}
+	plain := []string{
+		"任务完成",
+		"这是一段普通说明文字,没有任何列表或代码。",
+		"-x 不是列表",
+		"12% 的进度",
+		"邮箱 a@b.com",
+	}
+	for _, s := range plain {
+		if isRichText(s) {
+			t.Fatalf("不应判定富文本: %q", s)
+		}
+	}
+}
+
+// TestActiveQuotaAllowConsume 配额 2 条/天:Consume 扣减,超限 Allow=false,Remaining 归零。
+func TestActiveQuotaAllowConsume(t *testing.T) {
+	q := newActiveQuota("") // 纯内存
+	sender := "qq\x00OPENID1"
+	for i := 0; i < q.maxPerDay; i++ {
+		if !q.Allow(sender) {
+			t.Fatalf("第 %d 次应有预算", i+1)
+		}
+		if err := q.Consume(sender); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if q.Allow(sender) {
+		t.Fatal("超限后不应再有预算")
+	}
+	if r := q.Remaining(sender); r != 0 {
+		t.Fatalf("剩余应为 0,got %d", r)
+	}
+	if r := q.Remaining("qq\x00other"); r != q.maxPerDay {
+		t.Fatalf("未用用户应满额,got %d", r)
+	}
+}
+
+// TestActiveQuotaPersist 落盘往返:同日重启继承已用额度(重启不超发),文件 0600。
+func TestActiveQuotaPersist(t *testing.T) {
+	path := t.TempDir() + "/qqbot-quota.yaml"
+	q := newActiveQuota(path)
+	sender := "qq\x00OPENID1"
+	if err := q.Consume(sender); err != nil {
+		t.Fatal(err)
+	}
+	// 重建(模拟重启):同日应继承已用 1 条 → 剩 1
+	q2 := newActiveQuota(path)
+	if q2.Allow(sender) != true || q2.Remaining(sender) != q.maxPerDay-1 {
+		t.Fatalf("重启应继承额度,remaining=%d", q2.Remaining(sender))
+	}
+	if err := q2.Consume(sender); err != nil {
+		t.Fatal(err)
+	}
+	if q2.Allow(sender) {
+		t.Fatal("继承 + 再扣一条应超限")
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Fatalf("配额文件应 0600,got %v", fi.Mode().Perm())
+	}
+}
+
+// TestActiveQuotaCrossDayReset 跨日文件(旧 day)不继承(新一天预算重置)。
+func TestActiveQuotaCrossDayReset(t *testing.T) {
+	path := t.TempDir() + "/qqbot-quota.yaml"
+	os.WriteFile(path, []byte("day: 2020-01-01\nused:\n  \"qq\\x00OPENID1\": 2\n"), 0o600)
+	q := newActiveQuota(path)
+	if !q.Allow("qq\x00OPENID1") {
+		t.Fatal("跨日应重置预算(旧日已用不继承)")
+	}
+}
+
+// TestActiveOneMessage 主动合并单条:短文原样;超 4000 截断 ≤4000 且带截断提示。
+func TestActiveOneMessage(t *testing.T) {
+	short := "任务完成"
+	msg := activeOneMessage(short)
+	if msg.MsgType != 0 || msg.Content != short {
+		t.Fatalf("短文主动原样: %+v", msg)
+	}
+	long := strings.Repeat("很长的输出", 3000) // 21000 字
+	msg = activeOneMessage(long)
+	if n := len([]rune(msg.Content)); n > 4000 {
+		t.Fatalf("主动截断应 ≤4000,got %d", n)
+	}
+	if !strings.Contains(msg.Content, "截断") {
+		t.Fatalf("截断应带提示: %q", msg.Content[len(msg.Content)-30:])
+	}
+}

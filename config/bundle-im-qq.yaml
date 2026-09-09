@@ -1,0 +1,15 @@
+# seed-version: 1 # 样板版本:新增能力条目时 +1,老用户自动升级(备份后覆盖)
+# im-qq bundle:QQ 官方 Bot v2 远程控制(IM 远程控制线 P0-2b-QQ;运行时 im/ + qqbot/)。
+#   经 im.Bridge 接宿主 agent 能力面(回合/命令/审批);提供 ctx.confirm(IM 审批通道)。
+#   与 tui/web/im-wechat profile 互斥(ctx.confirm 唯一,profile 层保证)。
+# data.mode:     访问模式 pairing(默认,配对码经 /im pair 授权)|allowlist|disabled(静默拒)
+# data.base_url: OpenAPI 根(默认官方 https://api.bot.qq.com;未上架联调可指沙箱 sandbox.api.sgroup.qq.com)
+# data.token_url:access_token 换取端点(默认官方 bots.qq.com;一般无需改)
+# 凭证:AppID/AppSecret 经 /qq login 落 $GAH_HOME/config/qqbot.yaml(0600,随目录迁移);
+#   群与单聊同用户是两个 openid(单聊 user_openid/群 member_openid),授权按各自 SenderKey 添加。
+name: im-qq
+entries:
+  - id: ui-im-qq
+    enabled: true
+    data:
+      mode: pairing
