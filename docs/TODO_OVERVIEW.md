@@ -55,14 +55,16 @@ Q 组:2026-09-09 三端全面检查登记(⏳ 待执行)——Q1 三端 bug 修�
 | C2 | mac 签名公证 + win NSIS + CI 矩阵 | L | ⏳ 明确暂缓(用户决定暂不走发行流程) |
 | C3 | updater 更新通道(自托管 + 签名) | M | ⏳ 明确暂缓(随 C2,依赖签名) |
 
-## Q 组 · 三端全面检查(⏳ 待执行 2026-09-09,登记 DESIGN §14.1 未实施清单)
+## Q 组 · 三端全面检查(**已交付** ✅ 2026-09-16,登记 DESIGN §14.1 未实施清单)
 
 | 编号 | 项 | 量级 | 状态 |
 |---|---|---|---|
-| Q1 | 三端 bug 修复:JobsPanel 轮询不随开合(改 watch(open) 启停)+ host-backup `/backup ~` 未展开(复用 ~ 展开) | S | ⏳ |
-| Q2 | web 端散写裸色值 token 化(26 处;补语义 soft token,--ok-soft/--err-soft/--tool-soft 等,taste 评审) | M | ⏳ |
-| Q3 | 注释与加固:desktop 注释同步便携根 gah-data + web SSE `retry:`/`nosniff` 头 | S | ⏳ |
-| Q4 | 提交纪律:工作区 146 文件未提交(含 M17/M18+seed-version 11),Q1–Q3 后一并提交 | S | ⏳ |
+| Q1 | 三端 bug 修复:JobsPanel 轮询不随开合(改 watch(open) 启停)+ host-backup `/backup ~` 未展开(复用 ~ 展开) | S | ✅ |
+| Q2 | web 端散写裸色值 token 化(29 处;补语义 soft token --ok-soft/--err-soft/--tool-soft/--overlay/--fg-on-accent,taste 评审) | M | ✅ |
+| Q3 | 注释与加固:desktop 注释同步便携根 gah-data + web SSE `retry:`/`nosniff` 头 | S | ✅ |
+| Q4 | 提交纪律:Q1–Q3 + M17/M18 + seed-version 11 一并落库(2e69e16) | S | ✅ |
+| R5 | 三端复查(承接 56a0267 弃用 ~/.gah):uiPluginsHome/themeHome/pluginHome 旧解析链收敛 + desktop 注释 + AGENTS.md 便携纪律同步 | M | ✅ |
+| R6 | 观察项完善:SSE 重放/订阅 gap 修复(先订阅后重放+seq 去重)+ WS 指数退避重连 + 桌面壳数据根(appDataHome)与失败提示 | M | ✅ |
 
 ## 已闭环(2026-09,不计入待办)
 
@@ -70,6 +72,8 @@ Q 组:2026-09-09 三端全面检查登记(⏳ 待执行)——Q1 三端 bug 修�
 - `POST /api/shutdown` 优雅停机端点(Web.OnShutdown + ui-web-app 绑定 + 单测 + 真机端到端)→ DESIGN §14.1 交付表 + VERIFY.md
 - **M17 审批等级三档**:policy-approval 扩三档(open 放行 / smart 默认弹确认 / strict 直接拒绝)+ sdk.ApprovalService + TUI `/approval` + Web 设置面板「审批」分段 + 偏好持久化 + bundle mode 配置(seed 10)→ DESIGN §14.1 M17
 - **M18 整体备份/恢复**:新插件 host-backup(`/backup` 一键打包 GAH_HOME 确定性 tar.gz,排除 backups/ 自身;/backup list|restore,恢复前自动先备份当前态 + 越界拒绝)+ web `/api/backup` + 设置面板「数据备份」区段 + catalogue/bundle(seed 10→11)→ DESIGN §14.1 M18
+- **policy-guard 融合**(并行会话,2026-09):policy-approval + policy-sandbox 合并为单插件统一裁决点(seed 12)→ DESIGN §14.1 交付表 + R5 登记
+- **R5 三端复查 / R6 观察项完善**(2026-09-16):旧解析链收敛、SSE gap、WS 重连、桌面数据根 → DESIGN §14.1 R5/R6 登记
 
 ## 决策/冲突登记
 

@@ -2,7 +2,7 @@
 
 > 基于 DeepSeek Harness(dsh)"一切皆插件"设计哲学 + Cordis 可逆插件框架理念,使用 Go 实现。Cordis 插件系统 Go 化。暂不使用 Web 端,以 TUI 为界面。
 > 参考项目:DeepSeek Harness(TS/Cordis)、[naamfung/dsc](https://github.com/naamfung/dsc)(Go/go-plugin/gRPC)。
-> 状态:已实施。M1–M6、P0–P4、M7 Web 线 + M16.7(Web 会话工作台/taste UI 收敛/工作区真实切目录/删除语义/tool-mcp 多 server)+ M16.8(可视化设置面板/输入一体外壳/左右分割/动效层/偏好持久化 TUI 共享/插件管理域)+ M16.9(便携数据根 gah-data + 便携纪律)全部交付(M7 起 Web 端已启用,与 TUI 双界面并存);**2026-09 二期五项全部交付**:Web jobs 面板(B1)/会话 export(B2)/命令下沉宿主(B3)/mcp-bridge 看护(B4)/UI 槽位 v2(B5);另交付:优雅停机端点 POST /api/shutdown、Web 附件(图片/文件)+多模态、快捷键(与兼容矩阵)、GAH_WEB_ADDR。**M17 审批等级三档(开放/智能/严格)+ M18 整体备份/恢复 已交付(见 §14.1 交付表)**:审批档 open/smart/strict 运行期切换(TUI /approval + Web 设置面板,偏好持久化);/backup 一键打包 GAH_HOME(确定性 tar.gz,排除 backups/ 自身,恢复前自动先备份当前态)。交付总览以 AGENTS.md「便携纪律」与 DESIGN §14.1 交付表、docs/ROADMAP.md P3 表、docs/TODO_OVERVIEW.md 为准。
+> 状态:已实施。M1–M6、P0–P4、M7 Web 线 + M16.7(Web 会话工作台/taste UI 收敛/工作区真实切目录/删除语义/tool-mcp 多 server)+ M16.8(可视化设置面板/输入一体外壳/左右分割/动效层/偏好持久化 TUI 共享/插件管理域)+ M16.9(便携数据根 gah-data + 便携纪律)全部交付(M7 起 Web 端已启用,与 TUI 双界面并存);**2026-09 二期五项全部交付**:Web jobs 面板(B1)/会话 export(B2)/命令下沉宿主(B3)/mcp-bridge 看护(B4)/UI 槽位 v2(B5);另交付:优雅停机端点 POST /api/shutdown、Web 附件(图片/文件)+多模态、快捷键(与兼容矩阵)、GAH_WEB_ADDR。**M17 审批等级三档(开放/智能/严格)+ M18 整体备份/恢复 已交付(见 §14.1 交付表)**:审批档 open/smart/strict 运行期切换(TUI /approval + Web 设置面板,偏好持久化);/backup 一键打包 GAH_HOME(确定性 tar.gz,排除 backups/ 自身,恢复前自动先备份当前态)。**policy-guard 融合 + seed-version 12**(policy-approval/policy-sandbox 合并单插件统一裁决,并行会话交付)。**R5 三端复查 + R6 观察项完善已交付(2026-09-16)**:~/.gah 旧解析链残留收敛(56a0267 弃用同步)、SSE 重放/订阅 gap 修复(先订阅后重放+Seq 去重)、WS 指数退避重连、桌面壳数据根恒传应用数据目录 + 启动失败窗口提示;DESIGN §14.1 未实施清单清零。交付总览以 AGENTS.md「便携纪律」与 DESIGN §14.1 交付表、docs/ROADMAP.md P3 表、docs/TODO_OVERVIEW.md 为准。
 
 ## 0. 项目目的
 
@@ -50,7 +50,7 @@
 
 **插件加载来源两级**(详见 §7):
 1. **内置插件**:`go:embed` 随二进制编译,boot 直接注册——零外部文件依赖;
-2. **外部插件**:`~/.gah/plugins/` 目录,经 M5 gRPC 桥加载(可选,缺失即降级为仅内置)。
+2. **外部插件**:`$GAH_HOME/plugins/` 目录(缺省便携根 gah-data/plugins,见 §7.3),经外部进程桥(host-bridge)加载(可选,缺失即降级为仅内置)。
 
 **插拔保证**:
 - 任一能力的启停 = patch 一条 entry(`enabled: true/false` 或移除条目),支持 profile 级与运行期两级;
@@ -223,12 +223,12 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 
 | 项 | 行为 |
 |---|---|
-| home 目录 | 默认 `~/.gah/`,env `GAH_HOME` 覆盖;无写权限降级 temp home |
+| home 目录 | 数据根解析链(2026-09 起):`GAH_HOME env` > 二进制同级 `gah-data/`(便携,首启自动新建并释放初始化内容);两者皆无(不可便携)= **启动显式报错退出**——~/.gah/TempDir 兑底已弃用(56a0267);运行态由 main Setenv GAH_HOME 贯通插件层 |
 | 首次启动 | 释放可编辑层(配置样板、sessions/)到 home;embed 资源只读共享,不重复释放 |
 | 样板版本升级 | `bundle-*.yaml` 头部 `seed-version`;落盘版本低于 seed(或无版本旧样板)→ **备份(.bak-时间戳)后覆盖**——新增 base 能力条目(host-* 等)老用户自动补齐,零人工干预;版本一致/非 bundle 样板(profile/patch)不覆盖(用户自定义保留,应走 patch 层) |
-| 会话日志 | `~/.gah/sessions/<project-key>.jsonl`(主会话,跨期共享);切换会话 `<project-key>-<id>.jsonl`(id=创建时间戳);重启经 Load 恢复历史 |
+| 会话日志 | `$GAH_HOME/sessions/<project-key>.jsonl`(主会话,跨期共享);切换会话 `<project-key>-<id>.jsonl`(id=创建时间戳);重启经 Load 恢复历史 |
 | `--ephemeral` | 一次性模式:全部落 temp、退出即焚(适用于容器/CI) |
-| 外部插件目录 | `~/.gah/plugins/`(M5 桥加载;不存在 = 仅内置插件,正常降级);插件二进制**自动升级**:每次启动 sha256 比对 embed 产物与落盘内容,不同则覆盖(旧版能力缺失,如缺 web_search;不保留备份——plugins 扫描会加载 tool-* 前缀文件,二进制随包可再生;同版/用户自装产物跳过,幂等) |
+| 外部插件目录 | `$GAH_HOME/plugins/`(M5 桥加载;不存在 = 仅内置插件,正常降级);插件二进制**自动升级**:每次启动 sha256 比对 embed 产物与落盘内容,不同则覆盖(旧版能力缺失,如缺 web_search;不保留备份——plugins 扫描会加载 tool-* 前缀文件,二进制随包可再生;同版/用户自装产物跳过,幂等) |
 
 ### 7.4 构建交付规范
 
@@ -431,6 +431,7 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 | **设置面板备份端点 null 崩溃修复(web)** ✅ (2026-09) | 现象:点击状态栏「设置」无弹窗。根因:host-backup 空备份目录 `List()` 返回 nil → `GET /api/backup` 直接序列化为 `null` → 前端 loadBackups 赋值 `backups=null` → 面板渲染「数据备份」区段读 `null.length` 抛 TypeError → Vue 渲染中断整面板不出现(控制台反复报错)。**修复**(双向防守):① web/server.go handleBackup GET 段 `list==nil → []`(JSON 契约空数组);② SettingsPanel loadBackups `(await api.backups()) ?? []` 兜底。**验证**:headless Chrome CDP 真机复现(点击后 mask/panel 缺失+控制台 TypeError)→ 修复后 `GET /api/backup` 返回 `[]`、点击设置面板正常弹出(aria-expanded=true、mask/panel 均渲染、零控制台错误);web+host-backup 定向与全库 -race 绿;vue-tsc 0 错 | 设置面板在任何 profile 正常弹出(空备份目录不再 null 崩溃);后端契约空数组 + 前端 ?? [] 双保险;-race 全绿 |
 | **Web 体验改进:模型筛选 + 侧栏双滚动 + models 契约修** ✅ (2026-09) | ① **设置面板模型筛选**:原生 select 改**输入框实时过滤 + 匹配列表**(provider·模型名均可匹配,列表 max-height 滚动、当前高亮、点选即应用,沿用 applyModel 链路);模型过多不再难找。② **侧栏工作区/历史会话分块双滚动**:panel 整体滚动改 flex column;工作区顶部独立区(flex-shrink 0 + max-height 250,内部自行滚动),历史会话占满剩余(flex 1,独立滚动);两区互不挤压、各自滚动条。③ **顺带契约修**:`/api/models?all=1` 无 provider 时 ListAllModels nil → 序列化 `{providers:null}`,与 backups 同族;handleModels 补 nil→[](前端 ?? [] 双保险)。**验证**:CDP 真机(侧栏注入 30 会话 → session scrollHeight 759>client 228 独立滚;设置面板弹出 + 筛选框/空态提示就位;`/api/models?all=1` 返回 `{providers:[]}`);vue-tsc 0 错 + build 通过;全库 -race 绿 | 模型过多可输入筛选快速定位;工作区与会话各自滚动互不干扰;空模型/provider 配置不再 null 干扰前端;-race 全绿 |
 | **桌面化准备:POST /api/shutdown 优雅停机端点** ✅ (2026-09) | 背景:Tauri 桌面壳 spike 验证暴露——Windows 无 SIGTERM、壳被信号强杀时 dispose 不跑,缺**跨平台优雅停机通道**(dispose 链本身完整,早前“插件残留”系信号未达宿主之误判,受控 SIGTERM 实测外部插件 100% 回收)。改动:`web.Server` 增公开字段 `OnShutdown func()`(对齐 OnReady 模式)+ 路由 `POST /api/shutdown`(走 authMiddleware;先回 200+Flush 再触发回调,避免与 http.Shutdown 竞争;未装配 → 503 不静默降级);`plugins/ui/ui-web-app` 绑定 `OnShutdown` → `Emit("system/shutdown")`(cmd/gah 既有订阅 → 退出 → DisposeAll 回收插件/外部进程)。**验证**:web 单测(未装配 503 / 装配 200+回调触发+响应体 / auth_token 未授权 401 且不触发);真机端到端(真实宿主 POST → 200 → 优雅退出 → 外部插件全回收(go-plugin Kill 链日志完整)→ 端口释放);相关包 -race 绿;残留扫描干净 | `gah web` 运行中 POST /api/shutdown → 200 且宿主/外部插件/端口全量干净回收;桌面壳与 Windows 场景复用此端点优雅停机 |
+| **policy-guard 审批+沙箱融合** ✅ (2026-09,seed 12) | **并行会话交付**:policy-approval(审批三档 open/smart/strict)+ policy-sandbox(沙箱三档 read-only/workspace-write/full-access)合并为单插件 `plugins/policy/policy-guard`(统一裁决点 guard.go + 审批支路 approval.go + 沙箱支路 sandbox.go + link.go 联动),档位状态机/裁决语义与迁移前一致(有“有效档”概念承接升级);原两插件从 catalogue/代码移除;config 与 seed 两份 bundle-base 同步(seed-version 11→12),tests 引用同步(web_e2e/integration 等);全库 -race 绿 | 审批+沙箱单插件统一裁决;档位/沙箱能力与迁移前等价;-race 绿 |
 
 ## Web 附件(图片/文件)+ 多模态 + 输入快捷键 ✅ (2026-09)
 
@@ -478,7 +479,7 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 | 模块 | 交付 | 验证 |
 |---|---|---|
 | **工程** | `desktop/src-tauri/`(Cargo.toml:tauri 2 + shell/single-instance/autostart/notification + tray-icon feature;tauri.conf externalBin sidecar;frontendDist=ui 占位 loading;bundle targets app+dmg)+ `.cargo/config.toml`(tuna 镜像,中国区可构建) | cargo build 通过 |
-| **壳逻辑**(main.rs) | spawn sidecar `gah --profile web`(GAH_WEB_OPEN=0;GAH_HOME 不设=与 CLI 共享 ~/.gah,显式传入优先)→ 轮询 `/api/state` 就绪 → navigate(端口已占用 = 接管现有实例,启动探测兜底);单实例插件(多开 focus);托盘(显示窗口/开机自启开关/退出);回合完成通知(轮询 running 翻转);关窗驻托盘(CloseRequested prevent_close+hide);**退出链**:托盘退出 → POST /api/shutdown → 等端口释放(5s)→ 超时置强杀标记 → RunEvent::Exit kill 兜底 | 真机:sidecar spawn ✓ 2233 LISTEN ✓ WebKit 渲染(14 连接)✓ shutdown 200 → sidecar 退出/插件零残留/端口释放/壳保持 ✓ |
+| **壳逻辑**(main.rs) | spawn sidecar `gah --profile web`(GAH_WEB_OPEN=0;GAH_HOME 不设=与 CLI 共享 ~/.gah,显式传入优先)→ 轮询 `/api/state` 就绪 → navigate(端口已占用 = 接管现有实例,启动探测兜底);单实例插件(多开 focus);托盘(显示窗口/开机自启开关/退出);回合完成通知(轮询 running 翻转);关窗驻托盘(CloseRequested prevent_close+hide);**退出链**:托盘退出 → POST /api/shutdown → 等端口释放(5s)→ 超时置强杀标记 → RunEvent::Exit kill 兜底 | 真机:sidecar spawn ✓ 2233 LISTEN ✓ WebKit 渲染(14 连接)✓ shutdown 200 → sidecar 退出/插件零残留/端口释放/壳保持 ✓ *(2026-09-16 R6 变更:spawn 改恒传 GAH_HOME(显式 env > 应用数据目录),不再与 CLI 共享 ~/.gah;见 R6 登记与 docs/DESKTOP_FEASIBILITY.md §10)* |
 | **构建** | `scripts/gen-desktop.sh`(本平台 triple sidecar go build → cargo build dev/release) | 脚本跑通 |
 | **登记** | .gitignore(desktop target/binaries;Cargo.lock/ui 保留入库) | — |
 

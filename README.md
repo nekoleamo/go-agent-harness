@@ -212,13 +212,13 @@ patch-*.yaml            # 按 id 替换/插入/启停条目(随时插拔)
 
 ### 运行时数据根(GAH_HOME,完全便携)
 
-优先级:`GAH_HOME env` > **gah 二进制同级的 `gah-data/`(不存在则首次启动自动新建并释放初始化内容——config 样板与随包插件,部署目录即自包含)** > `~/.gah` > TempDir。
+优先级:`GAH_HOME env` > **gah 二进制同级的 `gah-data/`(不存在则首次启动自动新建并释放初始化内容——config 样板与随包插件,部署目录即自包含)**;两者皆无(不可便携)时启动**显式报错退出**(`~/.gah`/TempDir 兑底已弃用 2026-09,见 cmd/gah homeDir)。
 
 ```bash
 # 1) 把 gah 放到任一目录,首次运行自动建 gah-data/ 并释放 config 样板 + 插件:
 ./gah --profile web
 #    已有数据(如从旧 ~/.gah):mkdir gah-data && cp -a ~/.gah/. gah-data/  # 密钥随 config 进入
-# 2) 后续升级只替换 gah 这一个文件,数据不动;只读目录无法自建时回落 ~/.gah
+# 2) 后续升级只替换 gah 这一个文件,数据不动;只读目录无法自建 → 设 GAH_HOME 或移到可写目录
 ```
 
 - 多份 gah 副本可共享同一 gah-data(数据仍单根,不落系统根/不散 cwd);显式覆盖用 `GAH_HOME=/path ./gah ...`。
@@ -229,7 +229,7 @@ patch-*.yaml            # 按 id 替换/插入/启停条目(随时插拔)
 
 | 变量 | 作用 |
 |---|---|
-| `GAH_HOME` | 数据单根(优先于便携自动发现;缺省链 = `GAH_HOME` > 二进制同级 `gah-data/` > `~/.gah` > TempDir) |
+| `GAH_HOME` | 数据单根(优先于便携自动发现;缺省链 = `GAH_HOME` > 二进制同级 `gah-data/`(首启自动新建);不可便携 → 报错退出,`~/.gah`/TempDir 兑底已弃用 2026-09) |
 | `GAH_PROFILE` / `GAH_NO_TUI` | 默认 profile / 强制关闭 TUI(headless/CI) |
 | `GAH_WEB_ADDR` / `GAH_WEB_OPEN` / `GAH_WEB_STATIC` | Web 监听地址(默认 127.0.0.1:2233)/ 是否自动开浏览器 / 静态目录覆写(开发态 HMR) |
 | `GAH_MCP_COMMAND` / `GAH_MCP_COMMANDS` | MCP 桥接入(单 server `name=command` / 多 server 每行 `name=command args`,工具 `mcp_<server>_<工具>`) |

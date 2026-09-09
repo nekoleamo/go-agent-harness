@@ -1,6 +1,6 @@
 # 桌面端(mac/win)可行性报告:Tauri sidecar 方案
 
-> 状态:已调研 + spike 实测(macOS arm64,2026-09-06)。**执行暂缓**:壳工程未开工;本报告为决策依据与实施蓝图。
+> 状态:已调研 + spike 实测(macOS arm64,2026-09-06)。**壳工程 P1 已落地**(desktop/,2026-09);本报告为决策依据与实施蓝图,落地偏差(数据根等)以 §2/§6/§10 记录为准。
 > 决策记录、交付登记见 DESIGN.md §14.1 交付表(桌面化准备行)与 docs/VERIFY.md(M7 Web 节)。
 
 ## 0. 结论先行
@@ -21,7 +21,7 @@ Tauri 用系统 WebView(WKWebView/WebView2),**无浏览器运行时依赖**,不�
 | 服务形态 | `gah web` ≡ `--profile web`;SSE/WS+REST+静态 embed 自包含 | 壳只需拉起进程 + WebView 指 URL |
 | 无 TTY 运行 | 非 TTY 拒绝仅限 `tui` profile;profile-web 不含 ui-tui-app | 后台无头运行现成可用(实测) |
 | 停机 | SIGINT/SIGTERM → DisposeAll;**Windows 无 SIGTERM** | 需跨平台停机端点(已交付 `POST /api/shutdown`) |
-| home 链 | GAH_HOME env > 二进制同级 gah-data > ~/.gah | sidecar 在 .app bundle 内,同级无 gah-data → 自然落 ~/.gah,与 CLI 共享数据 |
+| 数据根 | 壳 spawn sidecar 时**恒传 `GAH_HOME`**:显式 env > 系统应用数据目录 `appDataHome()`(macOS ~/Library/Application Support/gah;Linux XDG_DATA_HOME|~/.local/share/gah;Windows %APPDATA%\gah) | `.app` 内便携根(Contents/MacOS/gah-data)随升级丢失且可能只读,**不作桌面默认**;与 CLI 便携形态(gah-data)分根,无文件竞争 |
 | 鉴权 | auth_token 可选;静态不鉴权;前端无 token 逻辑 | 桌面壳维持留空(仅本机绑定)即当前默认可用 |
 | 分发 | goreleaser 六目标(darwin/linux/win × amd64/arm64;win/arm64 ignore) | 壳矩阵取 darwin×2 + win×amd64,gah 产物现成 |
 
@@ -48,7 +48,7 @@ Tauri 用系统 WebView(WKWebView/WebView2),**无浏览器运行时依赖**,不�
 └──────────────┬──────────────────────────────────┘
                │(子进程,env: GAH_HOME、GAH_WEB_OPEN=0)
         ┌──────▼──────┐
-        │ gah 单二进制 │ ← 数据全部落 GAH_HOME(~/.gah),与 CLI 共享
+        │ gah 单二进制 │ ← 数据落 GAH_HOME(壳显式传入的应用数据目录,稳定可写)
         └─────────────┘
 ```
 
@@ -77,7 +77,9 @@ Tauri 用系统 WebView(WKWebView/WebView2),**无浏览器运行时依赖**,不�
 | 必须① 停机端点 | `web.Server.OnShutdown` + `POST /api/shutdown`(ui-web-app 绑定 `system/shutdown`);Windows 无 SIGTERM、壳优雅退出统一通道 | ✅ **已交付**(DESIGN §14.1 交付表) |
 | 必须② 动态端口 | ui-web-app 支持 `GAH_WEB_ADDR` env(对齐 GAH_WEB_STATIC/OPEN 先例);监听失败显式信号 | ⏳ 壳工程前做(多实例/端口冲突) |
 | 建议③ | 前端补 token 携带(读 `?token=`→sessionStorage/cookie)以支持 auth_token 桌面场景;默认空 token 可不做 | ⏳ 可选安全增强 |
-| 不改 | CORS(同源不需要)、数据布局(壳不设 GAH_HOME 即与 CLI 共享 ~/.gah)、bundle/profile(复用 profile-web) | — |
+| 不改 | CORS(同源不需要)、bundle/profile(复用 profile-web) | — |
+
+> **落地偏差(2026-09-16)**:§2 原「数据布局不改(共享 ~/.gah)」已变更——壳恒传 GAH_HOME(显式 env > 应用数据目录),与 CLI 便携分根;见 §10 决策记录。
 
 ## 7. 分发矩阵
 
@@ -94,7 +96,7 @@ Tauri 用系统 WebView(WKWebView/WebView2),**无浏览器运行时依赖**,不�
 ## 8. 风险与未决项
 
 1. WKWebView 直连 http://127.0.0.1 的剪贴板/WS 深水区行为(spike 已证连接/渲染/事件通道;剪贴板 API 需真机交互确认)
-2. 双实例竞争:壳 + 终端 CLI 同跑同一 ~/.gah(端口冲突提示/接管逻辑)
+2. 双实例竞争:壳 + 终端 CLI 同跑(数据分根无文件竞争;2233 端口冲突由就绪轮询「端口已占用 → 直接 navigate 接管」兜底)
 3. 壳被强杀留孤儿:启动探测端口占用 / Rust 信号 handler
 4. Windows 真机验证(无 arm64 本机)与 macOS 签名/公证流水线成本
 
@@ -103,7 +105,7 @@ Tauri 用系统 WebView(WKWebView/WebView2),**无浏览器运行时依赖**,不�
 | 阶段 | 内容 | 量级 |
 |---|---|---|
 | P0 | spike 已过;gah 侧改动②(GAH_WEB_ADDR) | S |
-| P1 | `desktop/` Tauri 工程:sidecar spawn + ready 轮询 + navigate + 托盘/通知/自启/单实例 + 退出链(shutdown→兜底 kill) | L |
+| P1 | `desktop/` Tauri 工程:sidecar spawn + ready 轮询 + navigate + 托盘/通知/自启/单实例 + 退出链(shutdown→兜底 kill) | L ✅ 已落地(2026-09) |
 | P2 | mac 签名+公证、win NSIS、CI 矩阵(复用 goreleaser 产物做 sidecar) | L |
 | P3 | updater 更新通道(需自托管 + 签名) | M |
 
@@ -111,4 +113,5 @@ Tauri 用系统 WebView(WKWebView/WebView2),**无浏览器运行时依赖**,不�
 
 - 2026-09-06:确定 **Tauri v2 sidecar + R2 同源直连**;排除 Electron/Wails/纯 systray;不采用 PWA。
 - 2026-09-06:spike 实证关键链路(mac arm64),验证报告此文档;gah 侧停机端点先行交付。
-- 暂缓执行桌面壳工程,待用户按 P0→P3 排期启用。
+- 2026-09-16:**P1 壳工程落地**(desktop/src-tauri/main.rs:spawn sidecar + 就绪轮询 navigate + 托盘/通知/自启/单实例 + 退出链)。**数据根决策变更**:壳 spawn 恒传 GAH_HOME(显式 env > 系统应用数据目录 appDataHome()),弃早期「共享 ~/.gah / .app 内便携根」——便携根随升级丢失且可能只读;启动 12s 未就绪窗口注入失败提示(含数据根)。cargo check 通过。
+- P1 壳工程已按 P0→P3 落地(2026-09);P2 签名/公证、P3 updater 仍待用户排期。

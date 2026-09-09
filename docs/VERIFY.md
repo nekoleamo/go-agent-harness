@@ -104,8 +104,12 @@
 
 ## M7.3 WebSocket 通道
 - [ ] 浏览器(现代 Chrome/Firefox/Safari)打开界面 → 网络面板可见 /api/events/ws 101;消息经 WS 到达(非 SSE)
-- [ ] 停 web 服务再起 → WS 关闭自动降级 EventSource(角标"重连中"→ 恢复);会话事件不丢(after 续传)
+- [ ] 停 web 服务再起 → WS 指数退避重连(1s/2s/4s,角标"重连中");~7s 持续失败才降级 EventSource(浏览器自动重连);会话事件不丢(after/Last-Event-ID 差集续传)
 - [ ] `data.auth_token` 配置 + 前端带 token(URL ?token=)→ cookie 写入后刷新/WS 自动携带,无 401
+
+## M7.3 补充:R6 三端观察项完善(2026-09-16)
+- [ ] SSE 重放/订阅 gap:重放进行中广播的会话帧不丢不重(consumeStream 先订阅后重放 + Seq 去重;web/consume_test.go 回归护栏)
+- [ ] 桌面壳数据根:未设 GAH_HOME 启动 → 数据落应用数据目录(~/Library/Application Support/gah);12s 未就绪窗口显示失败提示(含数据根路径),不再停留在"正在启动"
 
 ## B5 UI 槽位 v2(扩展点)
 - [ ] `gah -install-ui <extension-demo 目录>` → 重载页面:设置抽屉底部出现「插件区段」;侧栏出现「插件动作」与「附加面板」区;点「示例面板」→ 右侧抽屉打开(标题=manifest.title)
