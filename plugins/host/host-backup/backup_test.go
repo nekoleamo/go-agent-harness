@@ -41,6 +41,24 @@ func mustWrite(t *testing.T, p, content string) {
 	}
 }
 
+// TestBackupCmdTildeExpand /backup ~/<名> 的 ~ 展开与 /workspace 同款(不落字面 ~ 目录)。
+func TestBackupCmdTildeExpand(t *testing.T) {
+	b := buildHome(t)
+	uh := t.TempDir()
+	t.Setenv("HOME", uh)
+	out, err := backupCmd([]string{"~/mybackup.tar.gz"}, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(uh, "mybackup.tar.gz")
+	if !strings.Contains(out, want) {
+		t.Fatalf("返回消息应含展开路径 %s,got: %s", want, out)
+	}
+	if _, err := os.Stat(want); err != nil {
+		t.Fatalf("归档应落于展开路径: %v", err)
+	}
+}
+
 // TestBackupContents 备份内容完整:config(密钥)/sessions/env.sh 在内,backups/ 自身排除。
 func TestBackupContents(t *testing.T) {
 	b := buildHome(t)
