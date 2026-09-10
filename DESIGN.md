@@ -442,7 +442,7 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 > ✅ **MED-3 · 微信出站媒体(beta;2026-10-11 已交付,真机核对后转正)**:① **协议层**(`ilink/upload.go`):三段式——`getuploadurl`(`filekey` 16B hex / `media_type` / `to_user_id` / `rawsize` / `rawfilemd5` / `filesize`=PKCS7 后大小 / `aeskey` 16B hex / `no_need_thumb`)→ **AES-128-ECB + PKCS7 加密**(`EncryptMedia`,与入站 `DecryptMedia` 同口径;明文为 16 整数倍时补满一块)→ `POST c2c/upload?encrypted_query_param&filekey`(`application/octet-stream`,取响应头 **`x-encrypted-param`**;5xx 重试 ≤3、4xx 立即中止、缺响应头显式报错)→ `sendmessage` 媒体项(`image_item{media{encrypt_query_param,aes_key=base64(32 字符 hex),encrypt_type:1},mid_size}` / `file_item{media,file_name,md5,len}` / `video_item{media,video_size,play_length}` / `voice_item{media}`);**`upload_param` 与 v2.1+ `upload_full_url` 双兼容**(full url 原样使用,不追加 filekey);`context_token` 必需(缺失显式报错,不假装成功)。② **通道层**(`plugins/ui/ui-im-wechat/media.go`):`wechatTransport` 实现 `im.MediaSender`——产物登记制(复核 size 与登记一致)、类型映射(`media_type` 1/2/3/4 × item type 2/3/4/5;**不合规一律降级为文件并留痕 lastError**;语音无稳定发送端点 → 文件)、群投递/未登录/无 token/超 20MB 各自显式错误;加密与密文**全内存**(不落盘);`ret=-14` → lastError 提示重新扫码。③ **测试**:`ilink/upload_test.go`(PKCS7/密文大小/密钥形状/AES 回环;`getuploadurl` 鉴权头与字段 + `upload_full_url` 兼容 + `ret=-14` 识别;CDN 查询参数/octet-stream/响应头/5xx 重试 ≤3/4xx 立即中止/缺头报错;媒体项 JSON 形状;aes_key=base64(hex);`sendmessage` 形状与缺 token/未登录)+ `plugins/ui/ui-im-wechat/media_test.go`(三段式形状与密文回环、文件项与降级留痕、守卫矩阵(群/未登记/无 token/未登录/不可读/大小不符/超限)、失败可见(get/CDN/发送/会话过期)、**真实 `*ilink.Client` 全链路**(httptest 假 iLink API + 假 CDN,断言线上形状)、`im.MediaSender` 契约自检)+ **装配级端到端**(`tests/im_wechat_media_e2e_test.go`:base+im-wechat+tool-im 真实装配 + 注入固定工作区 + mock iLink/假 CDN → `im_send_file` 走「登记账本 → Bridge → MediaSender → 真实 `*ilink.Client` 三段式」闭环;断言媒体项文件字段与图片分支(`media_type=1` + `image_item.mid_size`)/`context_token` 回显/密文可解回原文/`upload_full_url` 原样使用;越界路径显式拒绝且零出站)。全库 `go test ./... -race -count=1` + `go vet ./...` 绿。**契约对照逐字段见 docs/IM_REMOTE §9.4**。
 > ✅ **RST-2 · IM 图片回推(2026-10-11 已交付)**:① **宿主侧路径**(`sdk.DocRaster.CachePath`,不进 JSON):光栅产物路径回传宿主编排层,模型/前端看不到宿主路径;`host-docview.Raster` 填充并测试存在性。② **窄白名单**(`im/artifact.go`):登记允许根 = 当前工作区 ∪ **`$GAH_HOME/cache/doc/raster`**(仅此一个子目录,realpath 归一后比较;GAH_HOME 其它路径(config/sessions/其它 cache)仍拒绝;无 GAH_HOME 时白名单失效)——光栅产物由 host-docview 从工作区文件生成,不是任意用户文件。③ **工具**(`tool-im` 增 `im_send_page`):`ctx.doc` 的 `DocRasterService` 渲染指定页(page 默认 1、dpi 透传 36–300)→ 登记光栅产物 → 投递到已授权目标;未启用光栅/非 PDF/无宿主路径/渠道不支持 → 各自明确错误;默认不注册与审批自检口径不变(三工具一并检查)。④ **测试**:host-docview(光栅结果带 CachePath 且文件存在、位于 cache/doc/raster)+ im(光栅缓存可登记,而同根其它路径仍拒绝、无 GAH_HOME 不放行)+ tool-im(参数透传与登记的是光栅产物、默认页码、能力错误矩阵)。全库 `go test ./... -race -count=1` 绿。**端到端**:`im_send_page` = 文档 → 图片 → 已授权 IM 目标(MED-2 通道);真机验收见 VERIFY。
 >
-> ### G 组剩余项实施方案(2026-10-11;分析后定稿 → **本批 7/8 已交付(含 MED-3),SELF-1 暂存**)
+> ### G 组剩余项实施方案(2026-10-11;分析后定稿 → **8 项实作已全部交付(含 MED-3/DOC-2);SELF-1 按需暂存(二轮分析已收口);新增 DOC-3 方案待批**)
 >
 > 前置件 E-A/E-C/E-D/E-E 已交付,下列方案的依赖与成本都已实测(证据见上方「评测分析」)。**优先级 = 依赖最少 × 风险最低 × 收益明确**。
 >
@@ -457,6 +457,7 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 > | ~~**P3 · RST-2**~~ ✅ | IM 图片回推 | ✅ **2026-10-11 已交付**(`im_send_page` + 光栅窄白名单;端到端闭环) | — | 已收口 | — |
 > | **P4 · SELF-1** D6-1c 自包含档 | pdfium-WASM + wazero 替换外部光栅 | ✅ **实测已完成(2026-10-11,含 wazero 上跑通 + 与 poppler 像素对照)**;余 = ~~有网实测~~ + **体积门决策**(+5.5 MiB → ≈46.2 MiB 越门) | M | ⏸ **暂存**:残留风险 = `invoke_*`(wazero 无 table/函数引用 API,只能 stub)与体积门;**仅当需要「零外部依赖部署」时才做**(当前外部 pdftoppm 路径已覆盖功能) | 8 |
 > | ~~**P5 · DOC-2**~~ ✅ D6-3 窄修 | xlsx 批注(legacy+回复式)/文本框文本 → note + `xl/media/*` 复用 `DocAsset` + 隐藏行/列提示;探针档位同步 | ✅ **2026-10-11 已交付**:`extract_xlsx_extra.go` + 4 组单测;语料 strict 复验 `content_gaps=0` | 已收口(图表/透视的视觉性损失登记为接受) |
+> | **P6 · DOC-3** D6-3 同类剩余 | docx 批注(legacy+回复式)/文本框 → note(**真丢文本**,零依赖)+ pptx 讲者备注 + 图表/SmartArt 数据提取 | ✅ 方案已定(2026-10-11,见下方「DOC-3 方案」) | S–M | 🧭 **待批**(DOC-3a 优先;验收沿用 harness 口径) |
 >
 > ---
 >
@@ -497,6 +498,55 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 > **残留风险(未解,必须随实施一并解决)**:Emscripten `invoke_*`(JS 侧函数指针 trampoline)在 wazero **无法忠实实现**——公开 API 无 table / function-reference 调用能力,只能空 stub;实测真实认证页触发 **6 次**,渲染经像素对照无可见影响,**但不能证明安全**(setjmp/longjmp 路径尤甚)。彻底解决 = 自行以 `-sSTANDALONE_WASM` / `-sSUPPORT_LONGJMP=wasm` 构建 pdfium(emsdk + depot_tools,重型,上游 #28)。
 >
 > **对决策的影响(硬数字)**:体积 **+3.46 MiB(wazero 运行时,实测 hello 1.12→probe 4.59 MiB「-s -w」)+ 2.03 MiB(wasm.gz)** ≈ **+5.5 MiB** → 二进制 40.72 → **≈46.2 MiB,超出当前 ≤46 MiB 门**;gz 27.16 → 29.2 MiB(门 ≤30,余量 0.8)。故 **SELF-1 不能单独上**,必须先做 E-C 登记的降体路径(外部插件协议去 gRPC 化 ≈ -14 MiB / extplugins 附包化 ≈ -20 MiB)或重定体积门。若实施,gz 后的 wasm 可**在内存解压**后交给 wazero(不走临时文件),能力面照 RST-1 契约挂在 `DocRasterService` 之后(pdftoppm 优先、自包含档兜底)。
+>
+>
+> #### SELF-1 可能性分析(二轮,2026-10-11;多构建对比 + 保真交叉验证 + 四条落地路径)
+>
+> **目的**:一轮实测已证「wazero 上跑得动、与 poppler 仅差抗锯齿」,但留下两个未决问题(① `invoke_*` 能否忠实实现 ② 体积门怎么办)。二轮把这两问用**可核对证据**收口,并把落地方式算成四条路线。
+>
+> **① 候选矩阵(4 个独立构建,tool 同源不同 flag;均为「无 memory/table 导入」的自持内存产物)**
+>
+> | 构建 | raw | gz | 导入面 | 观察 |
+> |---|---|---|---|---|
+> | `@embedpdf/pdfium` 2.15.0 | 4.42 MiB | **2.03 MiB** | env 30 + wasi 7 = 37 | 另有 `PDFiumExt_*` 扩展(PNG 编码等);需真 `_emscripten_memcpy_js`(实测 413 次)与 `emscripten_resize_heap`(15 次) |
+> | `@hyzyla/pdfium` 2.1.13 | 3.80 MiB | **1.92 MiB** | env 23 + wasi 7 = 30 | 最小 gz;但 `invoke_*` 调用最频繁(10 页流程 63 次) |
+> | `pdfium-lib` 8046d(normal) | 5.05 MiB | 2.36 MiB | env 26 + wasi 7 = 33 | 含 `_tzset_js`/`_abort_js` 等 JS glue |
+> | **`pdfium-lib` 8046d `pdfium.std.wasm`(`-sSTANDALONE_WASM=1`)** | 5.06 MiB | 2.36 MiB | **env 11 + wasi 8 = 19** | **宿主面最小**:无 `_emscripten_memcpy_js`/无 `resize_heap`(改 `emscripten_notify_memory_growth`)、`__syscall_*` 仅 4 个;`invoke_*` 仍有 5 个 |
+>
+> **② `invoke_*` 问题(结论:无法忠实实现,但**可证明无害**且必须留告警)**:① 实现上无解 —— wazero 公开 API **无 table / function-reference 调用能力**(`api` 包无 `Table`/`FunctionReference`),宿主 stub 无法回调 wasm 函数指针;② **`-sSTANDALONE_WASM=1` 并不能消除**(实测 std 构建仍导入 5 个 `invoke_*`)——上游结论一致:Emscripten 的 setjmp/longjmp trampoline 在 standalone 下仍需宿主提供,`-sSUPPORT_LONGJMP=wasm` 支持不一致(上游 issue 未定),自建构建是重型路线(emsdk + depot_tools);③ **但实测其返回值不被使用**:改动探针把 `invoke_*` 返回值**毒化**(i32→0xdeadbeef / f64→-1.5)后重渲染,与 no-op 版**逐像素完全相同**(0 px,认证页 6 次调用 / std 构建 4 次调用,目标函数为 3 个未导出小函数 43/109/439 字节,发布版无 name 段无法命名);④ 生产守卫:`invoke` 计数 > 0 时在光栅结果上附**显式告警**(「该文档触发 pdfium JS-glue 回调路径,结果未经交叉校验」),语料像素门负责兜底。
+>
+> **③ 保真交叉验证(三方对照,认证页/144dpi)**:`pdfium(std)` vs `poppler` = differing 5.61% / meanΔ2.04;`pdfium(embedpdf)` vs `poppler` = 5.62% / 2.04;**`pdfium(embedpdf)` vs `pdfium(std)` = 0 px(maxΔ3)**。即:与 poppler 的差异来自 **poppler 侧的字形/AA 策略**(差异叠加图经视觉核验全在边缘),**两个独立构建的 pdfium 结果完全一致** —— 反证 stub 未扭曲输出。合成 10 页 0.15% / iWork 图形页 0.96%(墨迹量相同)。
+>
+> **④ 体积与落地路线(实测数字;当前 40.74 MiB / gz 27.17,门 ≤46 / ≤30)**
+>
+> | 路线 | 主仓二进制 | 部署动作 | 判定 |
+> |---|---|---|---|
+> | **A 嵌入** | +3.46(wazero)+2.03~2.36(wasm.gz)= **≈46.2–46.6 MiB 越门** | 无 | ✗ 需先降体 |
+> | **B(推荐)wazero 内置 + wasm 按需(sha256 固定)落 `$GAH_HOME/cache/pdfium/`** | +3.46 → **≈44.2 MiB ✓** | 首次光栅一次性拉取 2.0–2.4 MiB(或随部署目录放一份) | ✓ 保持「主仓二进制不膨胀」+ pdftoppm 优先、自包含兜底 |
+> | C 发行侧可安装 external plugin(`gah --install`,提供 `ctx.docRaster`) | **+0** | 插件产物 ≈10–11 MiB gz(go-plugin 5 + wazero 3.5 + wasm 2) | ✓ 架构最贴插件模型;多一套安装/生命周期 |
+> | D 先降体(去 gRPC 化 -14 / extplugins 附包化 -20)再走 A | +5.5 后仍门内 | 无 | ✓ 但降体本身是独立工程 |
+>
+> **⑤ 其他实测约束**:wasm 线性内存 ≈17.9 MiB(空载)→ 41.6 MiB(10 页 @144dpi);**编译期内存是主要开销**(探针进程峰值 RSS:embedpdf 256 MiB / pdfium-lib std 594 MiB;10 页渲染耗时 23 ms);冷编译 828 ms、命中 compilation cache 26 ms → 生产应把 cache 落 `$GAH_HOME/cache/wazero/`(首次摊销)。宿主面仅 19–37 个导入,其中有语义者 4 类:`fd_write`(诊断)、`emscripten_notify_memory_growth`/`resize_heap`(内存通知/增长)、`__syscall_*`(**必须返回 -ENOSYS 而不是 0**,否则 Emscripten FS 会误判 openat 成功);`clock_time_get` 等 WASI 29 个可直接复用 wazero 标准 WASI 宿主,但 Emscripten 的 32 位偏移变体(`fd_seek(i32,…)`)须按模块自身导入签名构建宿主。
+>
+> **结论**:SELF-1 **技术上成立且保真达标**(残差仅「无法证明对未测文档绝对安全」+ 体积/内存成本),推荐 **路线 B**,并以「`invoke>0` 告警 + 语料像素门(有 poppler 时强制交叉核对)」作为验收纪律;是否开工仍取决于「零外部依赖部署」是否为真实需求(当前 pdftoppm 已覆盖功能)。
+>
+>
+> #### DOC-3 方案(docx/pptx 同类剩余项;2026-10-11 提出,**待批**)
+>
+> **现状(DOC-2 后,探针声明档位)**:xlsx 侧已清零 content;docx/pptx 仍有**真丢文本**与**视觉性损失**两类——
+>
+> | 项 | 部件/证据 | 现状 | 分类 | 方案 |
+> |---|---|---|---|---|
+> | docx 批注(legacy) | `word/comments.xml`(探针 comments=content/**warned**) | 仅告警,文本不可见(与 xlsx 修前同级) | **真丢文本** | **DOC-3a**:按 DOC-2 同构解析 `<w:comment><w:t>`(含作者 `w:author`/日期)→ note 块 |
+> | docx 回复式批注 | `word/commentsExtended.xml` + `word/people.xml` | 完全未处理 | **真丢文本** | **DOC-3a**:person 显示名 + parentId 回复串,合并为一条 note |
+> | docx **文本框** | `word/document.xml` 的 `w:txbxContent`(探针 textBox=content;**抽取器零命中**) | 文本丢失 | **真丢文本** | **DOC-3a**:流式收集 `w:txbxContent` 内 `w:t` → note(页眉/页脚内的降级为 info,与探针 severityFor 一致) |
+> | docx 图表 / SmartArt | `word/charts/*`、`word/diagrams/*`(content) | 丢失 | 视觉 + 部分数据 | **DOC-3c**:图表可提 `c:numCache`/`c:strCache` 数据点(零依赖)映射为表格/note;SmartArt 文字在 `dgm:dataModel` 的 `a:t`;若提取不可靠 → 登记「视觉性损失,接受」 |
+> | pptx 讲者备注 | `ppt/notesSlides/*`(info/**warned**) | 未抽文本 | 信息级 | **DOC-3b**:抽备注文本 → note(讲者意图常有价值) |
+> | pptx 图表 / SmartArt / 内嵌表 | `ppt/charts/*`、`ppt/diagrams/*`、`ppt/embeddings/*`(content) | 丢失 | 视觉 + 数据 | **DOC-3c**:同 docx 口径(提取数据/文本 or 登记接受);内嵌 xlsx 需先解包再走 xlsx 抽取器(复用既有 extractor) |
+>
+> **交付顺序与验收**:**DOC-3a**(docx 批注 + 文本框;零依赖、真丢文本、与 DOC-2 完全同构,预计 1 文件 + 3 组单测)→ **DOC-3b**(pptx 备注,小)→ **DOC-3c**(图表/SmartArt 数据提取,**先探针再决定**:若提取后 `GAPSUMMARY` 仅剩视觉性差异,则把 chart/smartArt 降为 style 并登记接受,与 DOC-2 的 chart/pivot 处理一致)。每步验收沿用同一口径:`GAH_DOC_CORPUS(_GAP_STRICT)` 复跑 + 探针 `ours`/severity 同步 + 回归断言(不得回退 content 档)。
+>
+> **明确不做**:pptx 形状/动画保真渲染、SmartArt 版式还原、图表视觉还原(与「阅读视图」定位一致;真需视觉看图走 PDF/光栅路径)。
 >
 >
 > #### P1-1 · IM-1 `im_send` / `im_status`(G-E5-3;**方案要点**)
