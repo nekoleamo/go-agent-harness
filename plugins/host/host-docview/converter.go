@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -26,6 +27,11 @@ const (
 	converterMaxOut  = 200 << 20 // 转换产物上限(超过视为异常,拒绝)
 	converterKeepFor = 7 * 24 * time.Hour
 	converterLogTail = 400 // 失败时带入的 stderr 尾巴长度
+
+	// RST-1 光栅预算:DPI 安全区间 + 单页 PNG 上限。
+	rasterMinDPI   = 36
+	rasterMaxDPI   = 300
+	rasterMaxBytes = 8 << 20
 )
 
 // legacyOfficeExts 需要外部转换器的旧二进制 Office(CFB)扩展名。
@@ -34,8 +40,9 @@ var legacyOfficeExts = map[string]bool{"doc": true, "xls": true, "ppt": true}
 // converter 外部转换器探测结果与调用封装(run 可注入以便离线单测)。
 type converter struct {
 	enabled  bool
+	rasterOn bool   // D6-1a/RST-1:外部 pdftoppm 光栅开关(data.external_raster,默认关)
 	soffice  string // 命中路径(空 = 未安装)
-	pdftoppm string // 命中路径(仅探测展示;光栅归 D6-1)
+	pdftoppm string // PDF → PNG 光栅(RST-1;探测命中才可用)
 	cacheDir string
 	run      func(ctx context.Context, bin string, args ...string) error
 }
@@ -74,6 +81,84 @@ func (c converter) available() bool { return c.soffice != "" }
 
 // usable 是否可以真正执行转换(启用 + 工具在)。
 func (c converter) usable() bool { return c.enabled && c.available() }
+
+// rasterUsable 是否可执行光栅(开关开 + pdftoppm 在)。
+func (c converter) rasterUsable() bool { return c.rasterOn && c.pdftoppm != "" }
+
+// clampDPI 把请求 DPI 收进安全区间(0 = 默认 96)。
+func clampDPI(dpi int) int {
+	if dpi <= 0 {
+		return 96
+	}
+	if dpi < rasterMinDPI {
+		return rasterMinDPI
+	}
+	if dpi > rasterMaxDPI {
+		return rasterMaxDPI
+	}
+	return dpi
+}
+
+// rasterPDF 把 PDF 指定页光栅化为 PNG(RST-1):pdftoppm -png -singlefile;
+// 产物落 cache/doc/raster/(便携纪律;同源同页同 dpi 复用缓存),超时/超限显式报错。
+// 返回 PNG 路径(位于缓存目录)。
+func (c converter) rasterPDF(ctx context.Context, abs string, fileSize int64, modUnix int64, page, dpi int) (string, error) {
+	if !c.rasterUsable() {
+		return "", fmt.Errorf("外部光栅未启用或未安装 pdftoppm")
+	}
+	dir := filepath.Join(c.cacheDir, "raster")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("创建光栅缓存目录失败: %w", err)
+	}
+	c.pruneDir(dir)
+	out := filepath.Join(dir, rasterCacheName(abs, fileSize, modUnix, page, dpi))
+	if fi, err := os.Stat(out); err == nil && fi.Size() > 0 {
+		return out, nil // 缓存命中(同源同页同 dpi)
+	}
+	tmp := filepath.Join(dir, fmt.Sprintf(".tmp-%d-%d", os.Getpid(), time.Now().UnixNano()))
+	cctx, cancel := context.WithTimeout(ctx, converterTimeout)
+	defer cancel()
+	// pdftoppm 会追加 .png 后缀(即便给了前缀);先写临时前缀再改名
+	if err := c.run(cctx, c.pdftoppm,
+		"-png", "-singlefile", "-r", strconv.Itoa(dpi),
+		"-f", strconv.Itoa(page), "-l", strconv.Itoa(page), abs, tmp); err != nil {
+		return "", fmt.Errorf("pdftoppm 光栅失败: %w", err)
+	}
+	if err := os.Rename(tmp+".png", out); err != nil {
+		return "", fmt.Errorf("光栅产物落盘失败: %w", err)
+	}
+	fi, err := os.Stat(out)
+	if err != nil {
+		return "", fmt.Errorf("光栅产物不可读: %w", err)
+	}
+	if fi.Size() > rasterMaxBytes {
+		_ = os.Remove(out)
+		return "", fmt.Errorf("光栅产物过大(%d 字节 > %d;可降 dpi 或改页)", fi.Size(), int64(rasterMaxBytes))
+	}
+	return out, nil
+}
+
+// rasterCacheName 光栅缓存名(源路径+size+mtime+页+dpi 派生)。
+func rasterCacheName(abs string, size, modUnix int64, page, dpi int) string {
+	h := sha1.Sum([]byte(fmt.Sprintf("%s|%d|%d|%d|%d", abs, size, modUnix, page, dpi)))
+	return fmt.Sprintf("p%d-%dx-%s.png", page, dpi, hex.EncodeToString(h[:8]))
+}
+
+// pruneDir 清理目录内超过保留期的文件(best-effort)。
+func (c converter) pruneDir(dir string) {
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	cut := time.Now().Add(-converterKeepFor)
+	for _, e := range ents {
+		info, err := e.Info()
+		if err != nil || info.ModTime().After(cut) {
+			continue
+		}
+		_ = os.RemoveAll(filepath.Join(dir, e.Name()))
+	}
+}
 
 // hints 当前探测结果的人类可读描述(供 unsupported 提示/诊断)。
 func (c converter) hints() []string {

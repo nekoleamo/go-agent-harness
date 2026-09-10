@@ -1,6 +1,6 @@
 // `gah doc` 文档阅读 CLI(D 组文档预览 D1;对齐 docs/DOC_PREVIEW_PLAN.md §6.3)。
 //
-//	gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-bytes B] [--tree] [--lines N] [--convert]
+//	gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-bytes B] [--tree] [--lines N] [--convert] [--raster]
 //
 // 退出码:0 成功 / 1 其它错误 / 2 用法 / 3 不支持格式 / 4 超预算 / 5 解析失败。
 // 不启动插件装配(纯读命令):直接构造 host-docview 服务。
@@ -52,10 +52,13 @@ func runDocCmd(args []string) int {
 	lines := fs.Int("lines", 0, "输出行数上限(0 = 默认)")
 	depth := fs.Int("depth", 2, "--tree 时递归深度(1–4)")
 	convert := fs.Bool("convert", false, "旧二进制 Office(.doc/.xls/.ppt)经本机 LibreOffice 转 PDF 后抽取(需 soffice)")
+	raster := fs.Bool("raster", false, "PDF 页光栅化为 PNG(RST-1;需本机 poppler pdftoppm)")
+	dpi := fs.Int("dpi", 0, "--raster 渲染 DPI(默认 96;区间 36–300)")
+	outPath := fs.String("o", "", "--raster 输出文件(默认写 stdout)")
 	// flag 包在首个位置参数处停止解析,而本命令习惯写 `gah doc <path> --json` →
 	// 预分离「标志(+其值)」与「位置参数」后统一交给 Parse(两类顺序均可)。
 	var flags, pos []string
-	takesValue := map[string]bool{"page": true, "sheet": true, "max-bytes": true, "max-input-bytes": true, "lines": true, "depth": true}
+	takesValue := map[string]bool{"page": true, "sheet": true, "max-bytes": true, "max-input-bytes": true, "lines": true, "depth": true, "dpi": true, "o": true}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if strings.HasPrefix(a, "-") && a != "-" {
@@ -79,7 +82,9 @@ func runDocCmd(args []string) int {
 	}
 	path := rest[0]
 
-	svc := hostdocview.New(hostdocview.Options{Home: os.Getenv("GAH_HOME"), ExternalConverters: *convert})
+	svc := hostdocview.New(hostdocview.Options{
+		Home: os.Getenv("GAH_HOME"), ExternalConverters: *convert, ExternalRaster: *raster,
+	})
 	ctx := context.Background()
 
 	if *tree {
@@ -102,6 +107,32 @@ func runDocCmd(args []string) int {
 	}
 
 	req := sdk.DocRequest{Path: path, Page: *page, Sheet: *sheet, MaxBytes: *maxBytes, MaxInputBytes: *maxInputBytes, Limit: *lines}
+	if *raster {
+		rs, ok := any(svc).(sdk.DocRasterService)
+		if !ok {
+			fmt.Fprintln(os.Stderr, "gah doc: 光栅能力不可用")
+			return 3
+		}
+		out, err := rs.Raster(ctx, sdk.DocRequest{Path: path}, *page, *dpi)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "gah doc:", err)
+			return docExitCode(err)
+		}
+		if *outPath == "" {
+			if _, err := os.Stdout.Write(out.Data); err != nil {
+				fmt.Fprintln(os.Stderr, "gah doc: 写 stdout 失败:", err)
+				return 1
+			}
+			return 0
+		}
+		if err := os.WriteFile(*outPath, out.Data, 0o644); err != nil {
+			fmt.Fprintln(os.Stderr, "gah doc: 写文件失败:", err)
+			return 1
+		}
+		fmt.Fprintf(os.Stderr, "已写出 %s(第 %d 页,%d dpi,%dx%d,%d 字节)\n",
+			*outPath, out.Page, out.DPI, out.W, out.H, out.Bytes)
+		return 0
+	}
 	if *asJSON {
 		v, err := svc.Preview(ctx, req)
 		if err != nil {

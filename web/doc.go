@@ -190,6 +190,50 @@ func (s *Server) handleDocAsset(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.Copy(w, io.LimitReader(rc, 20<<20))
 }
 
+// handleDocRaster GET /api/doc/raster?path=&page=1&dpi=96:PDF 页光栅化(RST-1/D6-1a)。
+// 服务端经外部 pdftoppm 渲染(需 host-docview data.external_raster);返回 PNG 字节。
+func (s *Server) handleDocRaster(w http.ResponseWriter, r *http.Request) {
+	svc, ok := s.docSvc(w)
+	if !ok {
+		return
+	}
+	rs, ok := svc.(sdk.DocRasterService)
+	if !ok {
+		http.Error(w, "光栅预览未启用(需 host-docview data.external_raster 与本机 poppler)",
+			http.StatusServiceUnavailable)
+		return
+	}
+	req := docRequest(r)
+	if strings.TrimSpace(req.Path) == "" {
+		http.Error(w, "缺少 path 参数", http.StatusBadRequest)
+		return
+	}
+	page := atoiDefault(r.URL.Query().Get("page"), 1)
+	dpi := atoiDefault(r.URL.Query().Get("dpi"), 0)
+	out, err := rs.Raster(r.Context(), req, page, dpi)
+	if err != nil {
+		code, msg := docErrStatus(err)
+		http.Error(w, msg, code)
+		return
+	}
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "private, max-age=300")
+	_, _ = w.Write(out.Data)
+}
+
+// atoiDefault 宽松整数解析(空/非法 → def)。
+func atoiDefault(s string, def int) int {
+	if strings.TrimSpace(s) == "" {
+		return def
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil {
+		return def
+	}
+	return n
+}
+
 // handleDocTree GET /api/doc/tree?path=&depth=2:工作台文件树。
 func (s *Server) handleDocTree(w http.ResponseWriter, r *http.Request) {
 	svc, ok := s.docSvc(w)

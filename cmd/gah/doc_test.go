@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
@@ -106,5 +108,52 @@ func TestDocCmdConvertFlagParses(t *testing.T) {
 	// 未加 --convert:始终 3(默认不启用外部转换器)
 	if code := runDocCmd([]string{p}); code != 3 {
 		t.Fatalf("默认应退出 3,得 %d", code)
+	}
+}
+
+// RST-1:--raster 光栅化(需本机 poppler;缺失则跳过 —— CI 无 poppler 时不失败)。
+func TestDocCmdRaster(t *testing.T) {
+	if _, err := exec.LookPath("pdftoppm"); err != nil {
+		t.Skip("本机无 pdftoppm(poppler),跳过真实光栅")
+	}
+	dir := t.TempDir()
+	// 用 CUPS/系统 PDF:优先本机生成的语料,缺失则跳过(不引入二进制夹具入库)
+	src := os.Getenv("GAH_DOC_CORPUS")
+	var pdf string
+	if src != "" {
+		ents, _ := os.ReadDir(src)
+		for _, e := range ents {
+			if strings.HasSuffix(e.Name(), ".pdf") {
+				pdf = filepath.Join(src, e.Name())
+				break
+			}
+		}
+	}
+	if pdf == "" {
+		t.Skip("未提供 GAH_DOC_CORPUS 中的 PDF 语料,跳过(见 scripts/gen-doc-corpus.sh)")
+	}
+	out := filepath.Join(dir, "page.png")
+	if code := runDocCmd([]string{pdf, "--raster", "--page", "1", "--dpi", "72", "-o", out}); code != 0 {
+		t.Fatalf("--raster 应成功,退出码 %d", code)
+	}
+	fi, err := os.Stat(out)
+	if err != nil || fi.Size() == 0 {
+		t.Fatalf("应产出 PNG: %v", err)
+	}
+	head := make([]byte, 8)
+	f, err := os.Open(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.Read(head); err != nil {
+		t.Fatal(err)
+	}
+	if string(head[1:4]) != "PNG" {
+		t.Fatalf("产物应为 PNG: %q", head)
+	}
+	// 未启用光栅(不带 --raster)时,同一 PDF 走文本路径不产 PNG
+	if code := runDocCmd([]string{pdf, "--json"}); code != 0 {
+		t.Fatalf("PDF 文本路径应成功,退出码 %d", code)
 	}
 }

@@ -374,7 +374,7 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 >
 > | 编号 | 项 | 现有 hook(已就绪的落点) | 缺什么 | 量级 | 触发 / 阻塞 |
 > |---|---|---|---|---|---|
-> | **D6-1(E1)** | pdfium-on-WASM 光栅(wazero,纯 Go 无 CGO) | `sdk.DocAsset` 元数据 + `/api/doc/asset` 端点 + image 块渲染三端就绪 | `DocService.Raster(path,page,dpi)` + wazero 运行时 + WASM embed + 三端接线(TUI 位图 / Web 缩略图 / IM 图片回推) | M–L | 按需;体积实测(embed ≈10MB±)与内存上限先评 | 📊 **评测(见下方「G 组剩余项评测分析」)**:被依赖阻塞 + 破体积门;TUI 无图形协议支持 → TUI 位图**新登记不做**;建议仅在 E-B/E-C 完成后评估 IM 缩略图分支
+> | **D6-1(E1)** | pdfium-on-WASM 光栅 | ✅ **主力路径已由 RST-1 交付**(外部 pdftoppm:零体积、契约 `DocRasterService` 已就位);余下仅 **RST-2 IM 图片回推**(依赖 MED-1+通道 SendMedia)与 **SELF-1 自包含档**(需有网实测 pdfium.wasm 体积/内存 + `STANDALONE_WASM` 风险) | `MediaSender` 落地 + 有网实测 | M–L | 📊 **评测见上**;**TUI 位图明确不做**(无图形协议) | **评测(见下方「G 组剩余项评测分析」)**:被依赖阻塞 + 破体积门;TUI 无图形协议支持 → TUI 位图**新登记不做**;建议仅在 E-B/E-C 完成后评估 IM 缩略图分支
 > | ~~**D6-2(E2)**~~ ✅ | 外部转换器探测 | ✅ **已交付 2026-10-11**:`converter.go`(PATH 探测 soffice/libreoffice/pdftoppm;**默认关闭** `data.external_converters`)+ `--headless --convert-to pdf` → D4 PDF 抽取 + 产物落 `$GAH_HOME/cache/doc/`(sha1 复用名,7 天按龄清理,30s 超时,200MiB 上限)+ Web 原生查看器(资产端点放行 `application/pdf`)+ 失败显式回退 + `gah doc --convert` | — | ✅ 已收口 |
 > | **D6-3(E3)** | 引入 `excelize` 替代自研 xlsx | ✅ **判定能力已就绪(DOC-1,2026-10-11)**:GAP 探针给 content/style/info 三档结论 + `GAPSUMMARY`;**首轮真实语料 content_gaps=0** | 仅当真实样本出现 **content 级缺口**(图表/透视/批注/内嵌图整体丢失)才评估;引入前须有网实测依赖与体积(x/crypto·x/image 为新增) | M | ⏸ **当前不引入**(未证伪) | 📊 **评测**:触发条件当前**不可判定**(全仓无真实文档语料);依赖需新增 x/crypto·x/image(gah 现无)且本环境无外网无法实测体积;前置件 E-D
 > | ~~**D6-4**~~ ✅ | HTML 预览收口 | ① **HTML 源码视图块模型已交付**(`extract_html.go`:`<title>` 提取(实体解码/空白折叠/200 字上限)+ 单 `code` 块(零 HTML 通道)+ 含 `<script>`/内联事件时显式告警;`pending` 表清零)② **门控已交付**(DocPanel 默认源码,「沙箱预览」按钮显式点击才挂载 `sandbox=""` iframe;切文件/切工作区重置回源码) | — | ✅ 2026-10-11 已交付 |
@@ -435,6 +435,8 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 >
 > ✅ **MED-1 · 出站媒体接口与产物登记(2026-10-11 已交付;D2 口径落实)**:① **通道能力契约**(`im/media_out.go`):`MediaKind`(image/video/voice/file,对齐 QQ `file_type` 与 iLink `media_type`)+ `MediaPayload{ArtifactID,Kind,Path,Name,Mime,Size}` + 可选接口 `MediaSender.SendMedia`(**与 `TypingAware` 同型**:类型断言发现,未实现 → 显式报「该渠道不支持出站文件」,既有 `Transport`/Mock/另一通道零改动)。② **产物登记账本**(`im/artifact.go`,`sdk.IMAttachmentService` = Bridge 实现):**先登记后投递**——只登记**当前工作区内**(`ctx.sandbox.Root()` realpath 前缀校验,未装配退进程 cwd)的常规文件,大小 ≤ `data.media_max_mb`(默认 20MB),类型按扩展名判 image/video/voice/file;ID = 路径+size+mtime 的 sha256 前缀(**幂等**:同版本同 id);**单次可用** + 10 分钟 TTL + 容量 8(超出淘汰最旧);发送前复核 size/mtime(文件被改 → 拒绝并要求重新登记);投递失败 **回滚条目可重试**;目标仍走 `Targets()` 已授权口径(未授权拒绝、未登记 id 拒绝)。③ **状态/装配**:`sdk.IMControlStatus.PendingArtifacts`(im_status 可见待投产物数);两 im 壳解析 `data.media_max_mb` 传入 `im.Options.MediaMaxMB`;bundle 样板加提示注释。④ **测试**:`im/artifact_test.go` 8 组(工作区外/目录/不存在/空路径拒绝、类型判定表、大小上限、幂等、未授权与未登记拒绝、正常投递 payload 与路由、单次可用、通道失败回滚、文件变更拒绝、TTL 与容量淘汰、未实现 MediaSender 显式报错)。全库 `go test ./... -race -count=1` 绿。
 >
+> ✅ **RST-1 · 外部 pdftoppm 光栅(2026-10-11 已交付;D3 口径 = 外部优先,自包含档后置)**:① **契约**(`sdk/doc.go`):`DocRaster{Path,Page,DPI,W,H,Bytes,Mime,Data}` + **可选能力** `DocRasterService.Raster(ctx,req,page,dpi)`(类型断言发现;未实现 → 调用方显式报「光栅预览未启用」,`DocService` 不破坏)。② **实现**(`host-docview`):`data.external_raster`(默认关)+ `pdftoppm -png -singlefile -r <dpi> -f <page> -l <page>`;DPI 裁剪 36–300(默认 96)、单页上限 8MiB、超时 30s;产物落 **`$GAH_HOME/cache/doc/raster/`**(sha1(源路径+size+mtime+页+dpi) 复用名,同页同 dpi 不重转,7 天按龄清理);页数越界 → `ErrDocNotFound`、未启用/无 pdftoppm → `ErrDocUnsupported`、超限 → `ErrDocTooLarge`、渲染失败 → `ErrDocParse`;非 PDF 显式拒绝(提示可先 `external_converters` 转 PDF)。③ **消费端**:Web `GET /api/doc/raster?path=&page=&dpi=`(image/png + `nosniff` + 私缓存;未启用 503、缺 path 400、错误映射 415/404/413/422)+ `gah doc <pdf> --raster [--page N] [--dpi D] [-o out.png]`(默认写 stdout;实测本机 CUPS 产出 PDF → 816×1056 PNG / 11446 字节)。**TUI 位图仍不做**(无图形协议);IM 图片回推归 RST-2(依赖 MED-1 + 通道 SendMedia)。④ **测试**:converter 光栅 4 组(注入 run 不依赖 poppler:成功落缓存目录/缓存命中不重跑/换页换 dpi 重跑/源变更换名、未启用与无 pdftoppm 报错、run 失败上下文、DPI 裁剪表、超限不留缓存、按龄清理);service 5 组(契约自检、成功含 W/H、越界 NotFound、未启用 Unsupported、非 PDF Unsupported、超限 TooLarge);web(200 PNG + nosniff + 参数透传 + 缺 path 400 + 三类错误映射 + 未实现能力 503);CLI(真实 pdftoppm 光栅断言 PNG 魔数,无 poppler 或无语料时跳过)。全库 `go test ./... -race -count=1` 绿 + 前端 24/24。
+>
 > ### G 组剩余项实施方案(2026-10-11;分析后定稿,**待决策点确认即开工**)
 >
 > 前置件 E-A/E-C/E-D/E-E 已交付,下列方案的依赖与成本都已实测(证据见上方「评测分析」)。**优先级 = 依赖最少 × 风险最低 × 收益明确**。
@@ -444,7 +446,7 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 > | ~~**P1 · IM-1**~~ ✅ | `im_send`/`im_status`(默认不注册) | ✅ **2026-10-11 已交付**(见上方交付行) | — | 已收口 | — |
 > | ~~**P1 · DOC-1**~~ ✅ | D6-3 判定 GAP 报告 | ✅ **2026-10-11 已交付**(首轮真实语料 content_gaps=0 → 暂不引依赖) | — | 已收口 | — |
 > | ~~**P2 · MED-1**~~ ✅ | 出站媒体接口 + 产物登记 | ✅ **2026-10-11 已交付**(登记制/越界与限额拒绝/TTL+单次可用/失败回滚) | — | 已收口 | — |
-> | **P2 · RST-1** D6-1a 光栅 | 外部 `pdftoppm` 光栅(零体积) | 本机 poppler(已实测可用) | S–M | 低(opt-in + 结构化失败) | 4 |
+> | ~~**P2 · RST-1**~~ ✅ | 外部 pdftoppm 光栅 | ✅ **2026-10-11 已交付**(`DocRasterService` + `/api/doc/raster` + `gah doc --raster`;零二进制增量) | — | 已收口 | — |
 > | **P3 · MED-2** E-B QQ | 分片上传 + `msg_type=7` 出站文件 | MED-1 | M | 中(官方契约齐备,mock 可验;真机验收) | 5 |
 > | **P3 · MED-3** E-B 微信 | iLink 上传三段式(加密→CDN→媒体项) | MED-1 | M–L | **高**(仅第三方逆向证据;真机前标 beta) | 6 |
 > | **P3 · RST-2** D6-1b 图片回推 | IM 图片回推(光栅产物 → 通道) | MED-1 + RST-1 | S–M | 中 | 7 |

@@ -131,6 +131,28 @@ type DocView struct {
 	Meta      map[string]string `json:"meta,omitempty"`      // 端无关的附加事实(如 pdf pages_needing_ocr)
 }
 
+// DocRaster 光栅化结果(D6-1a;外部 pdftoppm 优先,RST-1)。
+// Data 为 PNG 字节(单页;上限由实现方预算约束),供 Web 端点 / IM 图片回推 / CLI 使用。
+type DocRaster struct {
+	Path  string `json:"path"`
+	Page  int    `json:"page"` // 1-based
+	DPI   int    `json:"dpi"`
+	W     int    `json:"width,omitempty"`
+	H     int    `json:"height,omitempty"`
+	Bytes int64  `json:"bytes"`
+	Mime  string `json:"mime,omitempty"` // image/png
+	Data  []byte `json:"-"`
+}
+
+// DocRasterService 可选能力:把 PDF 页光栅化为图片(实现方 = host-docview;
+// 未实现/未启用 → 调用方显式报「该环境不支持光栅预览」)。
+// 取舍(见 DESIGN §14.1 实施方案 RST-1/SELF-1):默认走**外部 pdftoppm**(零二进制增量);
+// 需要零外部依赖部署时才评估 pdfium-WASM 自包含档。
+type DocRasterService interface {
+	// Raster 光栅化指定页(page 1-based;dpi 由实现方裁剪到安全区间)。
+	Raster(ctx context.Context, req DocRequest, page, dpi int) (*DocRaster, error)
+}
+
 // DocRequest 预览/抽取请求(预算与分页)。
 type DocRequest struct {
 	Path          string `json:"path"`

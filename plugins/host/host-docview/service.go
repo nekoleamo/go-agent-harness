@@ -9,8 +9,10 @@
 package hostdocview
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"image"
 	"io"
 	"log/slog"
 	"os"
@@ -18,6 +20,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	pdf "github.com/Detective-XH/gopdf"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
@@ -82,6 +86,8 @@ type Options struct {
 	Logger  *slog.Logger
 	// ExternalConverters 启用外部转换器(D6-2:soffice → PDF 高保真预览;默认关闭)。
 	ExternalConverters bool
+	// ExternalRaster 启用外部光栅(D6-1a/RST-1:pdftoppm → PNG;默认关闭)。
+	ExternalRaster bool
 	// Converter 注入的转换器(单测用;零值 = 按 ExternalConverters + Home 探测)。
 	Converter *converter
 }
@@ -150,6 +156,9 @@ func New(o Options) *Service {
 	} else {
 		s.conv = newConverter(o.ExternalConverters, o.Home)
 	}
+	if o.ExternalRaster {
+		s.conv.rasterOn = true
+	}
 	return s
 }
 
@@ -194,6 +203,15 @@ func (s *Service) applyData(data map[string]any) {
 			s.conv.enabled = b
 		case string:
 			s.conv.enabled = strings.EqualFold(strings.TrimSpace(b), "true")
+		}
+	}
+	// D6-1a/RST-1:外部光栅开关(默认关闭;data.external_raster=true 且本机有 pdftoppm 才可用)
+	if v, ok := data["external_raster"]; ok {
+		switch b := v.(type) {
+		case bool:
+			s.conv.rasterOn = b
+		case string:
+			s.conv.rasterOn = strings.EqualFold(strings.TrimSpace(b), "true")
 		}
 	}
 }
@@ -292,6 +310,69 @@ func (s *Service) Asset(ctx context.Context, req sdk.DocRequest, assetID string)
 	}
 	rc, mimeType, err := s.openAsset(ctx, ref)
 	return rc, mimeType, err
+}
+
+// Raster 光栅化 PDF 页(D6-1a/RST-1;实现 sdk.DocRasterService)。
+// 未启用/无 pdftoppm → ErrDocUnsupported;页越界 → ErrDocNotFound;产物超限 → ErrDocTooLarge。
+func (s *Service) Raster(ctx context.Context, req sdk.DocRequest, page, dpi int) (*sdk.DocRaster, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.budget.Timeout)
+	defer cancel()
+	abs, fi, err := s.prepare(req, true)
+	if err != nil {
+		return nil, err
+	}
+	if format := s.detect(abs, req); format != sdk.DocFormatPDF {
+		return nil, fmt.Errorf("%w: 仅支持 PDF 光栅(当前 %s);旧 Office 可先用 external_converters 转 PDF",
+			sdk.ErrDocUnsupported, format)
+	}
+	if !s.conv.rasterUsable() {
+		return nil, fmt.Errorf("%w: 外部光栅未启用(需 data.external_raster=true 且本机安装 poppler pdftoppm)",
+			sdk.ErrDocUnsupported)
+	}
+	if page <= 0 {
+		page = 1
+	}
+	// 页数校验(越界显式报错,不做静默回退)
+	if r, err := openPDFFile(abs, fi.Size()); err == nil {
+		if total := r.NumPage(); total > 0 && page > total {
+			return nil, fmt.Errorf("%w: 页码越界(共 %d 页)", sdk.ErrDocNotFound, total)
+		}
+	}
+	d := clampDPI(dpi)
+	pngPath, err := s.conv.rasterPDF(ctx, abs, fi.Size(), fi.ModTime().UnixNano(), page, d)
+	if err != nil {
+		if strings.Contains(err.Error(), "过大") {
+			return nil, fmt.Errorf("%w: %v", sdk.ErrDocTooLarge, err)
+		}
+		return nil, fmt.Errorf("%w: %v", sdk.ErrDocParse, err)
+	}
+	data, err := os.ReadFile(pngPath)
+	if err != nil {
+		return nil, fmt.Errorf("%w: 光栅产物不可读: %v", sdk.ErrDocParse, err)
+	}
+	w, h := pngDims(data)
+	return &sdk.DocRaster{
+		Path: displayPath(req, abs), Page: page, DPI: d, W: w, H: h,
+		Bytes: int64(len(data)), Mime: "image/png", Data: data,
+	}, nil
+}
+
+// openPDFFile 打开 PDF 读取器(仅用于页数校验;失败不致命,由后续步骤报错)。
+func openPDFFile(abs string, size int64) (*pdf.Reader, error) {
+	f, err := os.Open(abs)
+	if err != nil {
+		return nil, err
+	}
+	return openPDF(f, size)
+}
+
+// pngDims 读 PNG 宽高(失败返回 0,0;不影响光栅成功)。
+func pngDims(data []byte) (int, int) {
+	img, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return 0, 0
+	}
+	return img.Width, img.Height
 }
 
 // Raw 原生字节(Range/下载用;调用方负责 Close)。

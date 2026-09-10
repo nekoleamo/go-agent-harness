@@ -3,8 +3,12 @@
 package hostdocview
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"image"
+	"image/color"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -227,4 +231,184 @@ func TestConverterHints(t *testing.T) {
 	if _, err := (converter{}).convertToPDF(context.Background(), "/tmp/x.doc", fakeFileInfo{}); err == nil {
 		t.Fatal("不可用时应显式报错")
 	}
+}
+
+// —— RST-1 外部光栅单测(注入 run,不依赖本机 poppler) ——
+
+// tinyPNG 生成最小合法 PNG(2×1,红/蓝),供光栅 stub 写盘。
+func tinyPNG(t *testing.T) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 2, 1))
+	img.Set(0, 0, color.RGBA{R: 255, A: 255})
+	img.Set(1, 0, color.RGBA{B: 255, A: 255})
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// rasterStub 构造可用光栅的转换器(记录调用次数 + 可注入 run 错误)。
+func rasterStub(t *testing.T, pngBytes []byte, runErr error) (*converter, *int) {
+	t.Helper()
+	calls := 0
+	return &converter{
+		rasterOn: true,
+		pdftoppm: "/usr/bin/pdftoppm",
+		cacheDir: filepath.Join(t.TempDir(), "cache", "doc"),
+		run: func(_ context.Context, _ string, args ...string) error {
+			calls++
+			if runErr != nil {
+				return runErr
+			}
+			// 最后两个参数:输入 PDF 与输出前缀(pdftoppm 追加 .png)
+			prefix := args[len(args)-1]
+			return os.WriteFile(prefix+".png", pngBytes, 0o644)
+		},
+	}, &calls
+}
+
+func TestConverterRasterPDF(t *testing.T) {
+	pngBytes := tinyPNG(t)
+	conv, calls := rasterStub(t, pngBytes, nil)
+	out, err := conv.rasterPDF(context.Background(), "/tmp/a.pdf", 100, 42, 1, 96)
+	if err != nil {
+		t.Fatalf("光栅应成功: %v", err)
+	}
+	if !strings.HasSuffix(out, ".png") || filepath.Dir(out) != filepath.Join(conv.cacheDir, "raster") {
+		t.Fatalf("产物应落 cache/doc/raster: %s", out)
+	}
+	got, err := os.ReadFile(out)
+	if err != nil || len(got) != len(pngBytes) {
+		t.Fatalf("产物内容异常: %v %d", err, len(got))
+	}
+	if *calls != 1 {
+		t.Fatalf("应只调用一次: %d", *calls)
+	}
+	// 缓存命中:同源同页同 dpi 不重跑
+	if _, err := conv.rasterPDF(context.Background(), "/tmp/a.pdf", 100, 42, 1, 96); err != nil {
+		t.Fatal(err)
+	}
+	if *calls != 1 {
+		t.Fatalf("缓存命中不应重跑: %d", *calls)
+	}
+	// 页/dpi 不同 → 不同产物(重跑)
+	if _, err := conv.rasterPDF(context.Background(), "/tmp/a.pdf", 100, 42, 2, 96); err != nil {
+		t.Fatal(err)
+	}
+	if *calls != 2 {
+		t.Fatalf("换页应重跑: %d", *calls)
+	}
+	if _, err := conv.rasterPDF(context.Background(), "/tmp/a.pdf", 100, 42, 2, 150); err != nil {
+		t.Fatal(err)
+	}
+	if *calls != 3 {
+		t.Fatalf("换 dpi 应重跑: %d", *calls)
+	}
+	// 源文件变更(mtime/size)→ 不同缓存名
+	if n1, n2 := rasterCacheName("/a.pdf", 1, 1, 1, 96), rasterCacheName("/a.pdf", 1, 2, 1, 96); n1 == n2 {
+		t.Fatal("mtime 变化应产生不同光栅缓存名")
+	}
+}
+
+func TestConverterRasterGuardsAndErrors(t *testing.T) {
+	// 未启用 / 未安装 → 显式错误
+	if _, err := (converter{}).rasterPDF(context.Background(), "/tmp/a.pdf", 1, 1, 1, 96); err == nil {
+		t.Fatal("未启用应报错")
+	}
+	off := &converter{rasterOn: true, pdftoppm: "", cacheDir: t.TempDir()}
+	if _, err := off.rasterPDF(context.Background(), "/tmp/a.pdf", 1, 1, 1, 96); err == nil {
+		t.Fatal("无 pdftoppm 应报错")
+	}
+	if off.rasterUsable() {
+		t.Fatal("rasterUsable 应为 false")
+	}
+	// run 失败 → 带上下文错误
+	bad, _ := rasterStub(t, nil, errors.New("pdftoppm: boom"))
+	if _, err := bad.rasterPDF(context.Background(), "/tmp/a.pdf", 1, 1, 1, 96); err == nil ||
+		!strings.Contains(err.Error(), "pdftoppm 光栅失败") {
+		t.Fatalf("失败应带上下文: %v", err)
+	}
+	// DPI 裁剪
+	for in, want := range map[int]int{-5: 96, 0: 96, 10: rasterMinDPI, 96: 96, 900: rasterMaxDPI} {
+		if got := clampDPI(in); got != want {
+			t.Fatalf("clampDPI(%d)=%d want %d", in, got, want)
+		}
+	}
+	// 产物超限 → 报错且不留缓存
+	big := make([]byte, rasterMaxBytes+1)
+	conv, _ := rasterStub(t, big, nil)
+	if _, err := conv.rasterPDF(context.Background(), "/tmp/a.pdf", 1, 1, 1, 96); err == nil ||
+		!strings.Contains(err.Error(), "过大") {
+		t.Fatalf("超限应报错: %v", err)
+	}
+	ents, _ := os.ReadDir(filepath.Join(conv.cacheDir, "raster"))
+	for _, e := range ents {
+		if strings.HasSuffix(e.Name(), ".png") {
+			t.Fatalf("超限产物不应留缓存: %s", e.Name())
+		}
+	}
+	// 缓存按龄清理(超期文件被删,新文件保留)
+	conv2, _ := rasterStub(t, tinyPNG(t), nil)
+	dir := filepath.Join(conv2.cacheDir, "raster")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := filepath.Join(dir, "old.png")
+	if err := os.WriteFile(old, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().Add(-8 * 24 * time.Hour)
+	if err := os.Chtimes(old, past, past); err != nil {
+		t.Fatal(err)
+	}
+	conv2.pruneDir(dir)
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Fatal("超期光栅缓存应被清理")
+	}
+}
+
+func TestServiceRaster(t *testing.T) {
+	s, dir := newSvc(t, Budget{})
+	p := writeFile(t, dir, "doc.pdf", pdfWithText(t, "hello raster"))
+	conv, _ := rasterStub(t, tinyPNG(t), nil)
+	s.conv = *conv
+
+	out, err := s.Raster(context.Background(), sdk.DocRequest{Path: p}, 1, 0)
+	if err != nil {
+		t.Fatalf("Raster 应成功: %v", err)
+	}
+	if out.Page != 1 || out.DPI != 96 || out.Mime != "image/png" || out.Bytes == 0 || out.W != 2 || out.H != 1 {
+		t.Fatalf("光栅结果异常: %+v", out)
+	}
+	if out.Path != p {
+		t.Fatalf("对外路径应为调用方视角: %s", out.Path)
+	}
+	// 页码越界 → ErrDocNotFound
+	if _, err := s.Raster(context.Background(), sdk.DocRequest{Path: p}, 9, 96); !errors.Is(err, sdk.ErrDocNotFound) {
+		t.Fatalf("越界应报 not found: %v", err)
+	}
+	// 未启用 → ErrDocUnsupported
+	s2, dir2 := newSvc(t, Budget{})
+	p2 := writeFile(t, dir2, "doc.pdf", pdfWithText(t, "x"))
+	if _, err := s2.Raster(context.Background(), sdk.DocRequest{Path: p2}, 1, 96); !errors.Is(err, sdk.ErrDocUnsupported) {
+		t.Fatalf("未启用应报 unsupported: %v", err)
+	}
+	// 非 PDF → ErrDocUnsupported
+	s3, dir3 := newSvc(t, Budget{})
+	p3 := writeFile(t, dir3, "note.txt", []byte("hi"))
+	s3.conv = *conv
+	if _, err := s3.Raster(context.Background(), sdk.DocRequest{Path: p3}, 1, 96); !errors.Is(err, sdk.ErrDocUnsupported) {
+		t.Fatalf("非 PDF 应报 unsupported: %v", err)
+	}
+	// 产物超限 → ErrDocTooLarge
+	s4, dir4 := newSvc(t, Budget{})
+	p4 := writeFile(t, dir4, "doc.pdf", pdfWithText(t, "x"))
+	bigConv, _ := rasterStub(t, make([]byte, rasterMaxBytes+1), nil)
+	s4.conv = *bigConv
+	if _, err := s4.Raster(context.Background(), sdk.DocRequest{Path: p4}, 1, 96); !errors.Is(err, sdk.ErrDocTooLarge) {
+		t.Fatalf("超限应报 too large: %v", err)
+	}
+	// 契约自检
+	var _ sdk.DocRasterService = s
 }

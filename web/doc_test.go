@@ -30,6 +30,24 @@ type stubDoc struct {
 	lastReq    sdk.DocRequest
 	lastDepth  int
 	lastText   string
+	// RST-1 光栅(D6-1a)
+	rasterData []byte
+	rasterErr  error
+	rasterPage int
+	rasterDPI  int
+	noRaster   bool // true = 不实现 DocRasterService(未启用场景)
+}
+
+// Raster 实现 sdk.DocRasterService(noRaster 时不参与类型断言——通过外层包装控制)。
+func (d *stubDoc) Raster(_ context.Context, _ sdk.DocRequest, page, dpi int) (*sdk.DocRaster, error) {
+	d.rasterPage, d.rasterDPI = page, dpi
+	if d.rasterErr != nil {
+		return nil, d.rasterErr
+	}
+	if d.rasterData == nil {
+		d.rasterData = []byte("\x89PNG\r\n\x1a\n")
+	}
+	return &sdk.DocRaster{Page: page, DPI: dpi, Mime: "image/png", Bytes: int64(len(d.rasterData)), Data: d.rasterData}, nil
 }
 
 func (d *stubDoc) Detect(context.Context, sdk.DocRequest) (sdk.DocFormat, error) {
@@ -416,4 +434,105 @@ func TestDocOpenBroadcastsFrame(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("未收到 FrameDoc 帧")
 	}
+}
+
+// RST-1:光栅端点(200 PNG / 参数透传 / nosniff / 未实现 503 / 缺 path 400 / 错误映射)。
+func TestDocRasterEndpoint(t *testing.T) {
+	d := &stubDoc{rasterData: []byte("\x89PNG\r\n\x1a\nDATA")}
+	_, hs := docTestServer(d)
+	defer hs.Close()
+	resp, err := http.Get(hs.URL + "/api/doc/raster?path=a.pdf&page=3&dpi=150")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("应 200,得 %d", resp.StatusCode)
+	}
+	if resp.Header.Get("Content-Type") != "image/png" {
+		t.Fatalf("Content-Type 应为 image/png: %s", resp.Header.Get("Content-Type"))
+	}
+	if resp.Header.Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatal("应带 nosniff")
+	}
+	if resp.Header.Get("Cache-Control") == "" {
+		t.Fatal("应带 Cache-Control")
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != string(d.rasterData) {
+		t.Fatalf("响应体应为 PNG 字节: %q", body)
+	}
+	if d.rasterPage != 3 || d.rasterDPI != 150 {
+		t.Fatalf("page/dpi 应透传: %d/%d", d.rasterPage, d.rasterDPI)
+	}
+
+	// 缺 path → 400
+	resp2, err := http.Get(hs.URL + "/api/doc/raster")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusBadRequest {
+		t.Fatalf("缺 path 应 400,得 %d", resp2.StatusCode)
+	}
+
+	// 错误映射:未启用(ErrDocUnsupported)→ 415;越界(NotFound)→ 404;超限 → 413
+	for _, c := range []struct {
+		err  error
+		want int
+	}{
+		{sdk.ErrDocUnsupported, http.StatusUnsupportedMediaType},
+		{sdk.ErrDocNotFound, http.StatusNotFound},
+		{sdk.ErrDocTooLarge, http.StatusRequestEntityTooLarge},
+	} {
+		d2 := &stubDoc{rasterErr: c.err}
+		_, hs2 := docTestServer(d2)
+		r, err := http.Get(hs2.URL + "/api/doc/raster?path=a.pdf")
+		if err != nil {
+			t.Fatal(err)
+		}
+		code := r.StatusCode
+		r.Body.Close()
+		hs2.Close()
+		if code != c.want {
+			t.Fatalf("err=%v 应映射 %d,得 %d", c.err, c.want, code)
+		}
+	}
+
+	// 未实现 DocRasterService(光栅未启用)→ 503
+	_, hs3 := docTestServer(stubDocNoRaster{})
+	defer hs3.Close()
+	resp3, err := http.Get(hs3.URL + "/api/doc/raster?path=a.pdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp3.Body.Close()
+	if resp3.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("未启用应 503,得 %d", resp3.StatusCode)
+	}
+}
+
+// stubDocNoRaster 只实现 PreView 的极简 DocService(用于验证"未实现光栅能力"的 503 路径)。
+type stubDocNoRaster struct{}
+
+func (stubDocNoRaster) Detect(context.Context, sdk.DocRequest) (sdk.DocFormat, error) {
+	return sdk.DocFormatMarkdown, nil
+}
+func (stubDocNoRaster) Preview(context.Context, sdk.DocRequest) (*sdk.DocView, error) {
+	return &sdk.DocView{}, nil
+}
+func (stubDocNoRaster) Text(context.Context, sdk.DocRequest) (*sdk.DocText, error) {
+	return &sdk.DocText{}, nil
+}
+func (stubDocNoRaster) Asset(context.Context, sdk.DocRequest, string) (io.ReadCloser, string, error) {
+	return nil, "", sdk.ErrDocNotFound
+}
+func (stubDocNoRaster) Raw(context.Context, sdk.DocRequest) (io.ReadSeekCloser, string, error) {
+	return nil, "", sdk.ErrDocNotFound
+}
+func (stubDocNoRaster) List(context.Context, sdk.DocRequest, int) (*sdk.DocTree, error) {
+	return &sdk.DocTree{}, nil
+}
+func (stubDocNoRaster) Render(context.Context, string, int) (*sdk.DocView, error) {
+	return &sdk.DocView{}, nil
 }

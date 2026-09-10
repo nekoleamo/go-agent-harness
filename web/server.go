@@ -244,6 +244,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET /api/doc/preview", s.handleDocPreview)
 	mux.HandleFunc("GET /api/doc/raw", s.handleDocRaw)
 	mux.HandleFunc("GET /api/doc/asset", s.handleDocAsset)
+	mux.HandleFunc("GET /api/doc/raster", s.handleDocRaster)
 	mux.HandleFunc("GET /api/doc/tree", s.handleDocTree)
 	mux.HandleFunc("GET /api/doc/html", s.handleDocHTML)
 	mux.HandleFunc("POST /api/doc/render", s.handleDocRender)
