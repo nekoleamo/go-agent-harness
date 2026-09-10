@@ -1,4 +1,4 @@
-# seed-version: 13 # 样板版本:新增 base 能力条目(host-* 等)时 +1,老用户自动升级(备份后覆盖)
+# seed-version: 14 # 样板版本:新增 base 能力条目(host-* 等)时 +1,老用户自动升级(备份后覆盖)
 # base bundle:对齐 dsh-base,一切功能皆插件的共享第一层。
 # M1 阶段条目仅记录意图;对应插件工厂在 M2 base bundle 落地。
 name: base
@@ -30,6 +30,13 @@ entries:
   - id: host-backup # M18 整体备份/恢复:ctx.backup + /backup 命令;备份目录 $GAH_HOME/backups(排除自身)
     data:
       keep: 5 # 自动备份轮转保留份数(backup_on_start 开时生效)
+  - id: host-docview
+    # D 组文档预览:ctx.doc(sdk.DocService)——一个文档模型 + 四端呈现器(TUI/Web/headless/IM);
+    # 解析器(沙箱/逃逸/deny-list)+ 预算 + 内存缓存 + 格式探测;后续切片扩 md/docx/xlsx/pptx/pdf。
+    data:
+      max_input_mb: 50 # 源文件大小上限
+      max_preview_kb: 1024 # 面板预览文本预算
+      timeout_seconds: 10 # 单次抽取超时
   - id: host-usage-stats
     # 会话 token 统计(ctx.usageStats):状态栏显示上下文使用率/缓存命中率。
     # 上下文窗口解析链:data.context_window(统一覆盖)> data.model_windows(按模型名前缀覆盖,

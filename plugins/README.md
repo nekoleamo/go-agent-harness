@@ -30,6 +30,7 @@ plugins/
 | host | host-plugin-manager | 运行期插拔(ctx.pluginManager) | — |
 | host | host-bridge | 外部插件桥(加载 home/plugins 外部进程,GAH_CB_ADDR 回调) | ctx.tools/ctx.jobs/ctx.fanout |
 | host | host-backup | 整体备份/恢复(M18):ctx.backup + /backup 命令;备份目录 $GAH_HOME/backups(排除自身) | — |
+| host | host-docview | 文档预览(D 组):ctx.doc(sdk.DocService)——统一块模型 + 解析器/预算/缓存/格式探测;四端(TUI/Web/headless/IM)同源渲染 | ctx.sandbox(可选) |
 | adapter | llm-openai-compat | OpenAI 兼容适配器(SSE + usage/缓存解析) | ctx.llm |
 | adapter | llm-anthropic-compat | Anthropic 适配器(claude-* 前缀路由) | ctx.llm |
 | adapter | llm-mock | 假适配器(dev/CI 无外网) | ctx.llm |
