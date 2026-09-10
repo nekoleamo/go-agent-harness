@@ -81,18 +81,18 @@ type Server struct {
 	sessions sdk.SessionLog
 	llm      sdk.LLMService
 	sb       sdk.Sandbox
-	ap       sdk.ApprovalService // 可选(审批档位 M17:未装配时 state 省略/control 400)
-	bk       sdk.BackupService   // 可选(整体备份 M18:未装配时 /api/backup 503)
-	us       sdk.UsageStatsService // 可选
-	cs       sdk.CwdSessions       // 可选
-	cmds     sdk.CommandRegistry   // 可选(未装配 = / 命令不可用)
-	tools    sdk.ToolRegistry      // 可选(工具清单/调用/todo 面板)
-	jobs     sdk.JobService        // 可选(后台任务)
-	pm       sdk.PluginManager     // 可选(插件启停)
-	imc      sdk.IMChannelService  // 可选(IM 通道状态 /api/im/channels;未装配 503)
-	imLogin  sdk.IMLoginProvider  // 可选(面板扫码登录 /api/im/login;渠道未实现则 503)
+	ap       sdk.ApprovalService     // 可选(审批档位 M17:未装配时 state 省略/control 400)
+	bk       sdk.BackupService       // 可选(整体备份 M18:未装配时 /api/backup 503)
+	us       sdk.UsageStatsService   // 可选
+	cs       sdk.CwdSessions         // 可选
+	cmds     sdk.CommandRegistry     // 可选(未装配 = / 命令不可用)
+	tools    sdk.ToolRegistry        // 可选(工具清单/调用/todo 面板)
+	jobs     sdk.JobService          // 可选(后台任务)
+	pm       sdk.PluginManager       // 可选(插件启停)
+	imc      sdk.IMChannelService    // 可选(IM 通道状态 /api/im/channels;未装配 503)
+	imLogin  sdk.IMLoginProvider     // 可选(面板扫码登录 /api/im/login;渠道未实现则 503)
 	sp       sdk.SystemPromptService // 可选(/reload 指令热更)
-	tc       sdk.TurnControl       // 可选(回合取消 /api/control cancel;未装配 = 503)
+	tc       sdk.TurnControl         // 可选(回合取消 /api/control cancel;未装配 = 503)
 
 	running     atomic.Bool
 	http        *http.Server
@@ -195,6 +195,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET /api/jobs/{id}", s.handleJobGet)
 	mux.HandleFunc("POST /api/jobs/{id}/kill", s.handleJobKill)
 	mux.HandleFunc("POST /api/commands/{name}", s.handleCommandRun)
+	mux.HandleFunc("POST /api/commands/{name}/options", s.handleCommandOptions)
 	mux.HandleFunc("GET /api/plugins", s.handlePlugins)
 	mux.HandleFunc("POST /api/plugins/{id}/load", s.handlePluginAction)
 	mux.HandleFunc("POST /api/plugins/{id}/unload", s.handlePluginAction)
@@ -622,6 +623,56 @@ type CommandView struct {
 	Desc  string `json:"desc"`
 }
 
+// CommandOptionView 参数级候选项(逐级确认)。
+type CommandOptionView struct {
+	Value string `json:"value"`
+	Desc  string `json:"desc"`
+}
+
+// handleCommandOptions 命令参数级枚举(POST /api/commands/{name}/options)。
+// 与 TUI 选择器共用同一注册表声明(CommandSpec.Args):请求 {"picked":["env"]}
+// (picked 不含命令名,服务端拼 [name, ...picked])→ 返回下一级的枚举候选与自由参数提示;
+// items 与 freeArgs 皆空 = done(可直接执行)。无参数级声明也返回 done(前端不再提示)。
+func (s *Server) handleCommandOptions(w http.ResponseWriter, r *http.Request) {
+	if s.cmds == nil {
+		http.Error(w, "命令注册表未装配(ctx.commands)", http.StatusServiceUnavailable)
+		return
+	}
+	name := r.PathValue("name")
+	spec, ok := s.cmds.Get(name)
+	if !ok {
+		http.Error(w, "命令未注册: /"+name, http.StatusNotFound)
+		return
+	}
+	var req struct {
+		Picked []string `json:"picked"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "坏请求体", http.StatusBadRequest)
+		return
+	}
+	picked := append([]string{name}, req.Picked...)
+	resp := struct {
+		Level    int                 `json:"level"`    // 返回的是第 level+1 级
+		Items    []CommandOptionView `json:"items"`    // 枚举候选(可逐级点击)
+		FreeArgs []string            `json:"freeArgs"` // 自由参数提示(需手动输入)
+		Done     bool                `json:"done"`     // 无更多级 → 可直接执行
+	}{Level: len(req.Picked) + 1}
+	if idx := len(req.Picked); idx < len(spec.Args) {
+		arg := spec.Args[idx]
+		if arg.Options != nil {
+			for _, o := range arg.Options(picked) {
+				resp.Items = append(resp.Items, CommandOptionView{Value: o.Value, Desc: o.Desc})
+			}
+		}
+		if arg.FreeArgs != nil {
+			resp.FreeArgs = arg.FreeArgs(picked)
+		}
+	}
+	resp.Done = len(resp.Items) == 0 && len(resp.FreeArgs) == 0
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (s *Server) handleCommands(w http.ResponseWriter, r *http.Request) {
 	if s.cmds == nil {
 		writeJSON(w, http.StatusOK, []CommandView{})
@@ -867,16 +918,16 @@ func (s *Server) uiPluginsHandler() http.Handler {
 // —— 附件上传与托管(附件一期):multipart 流式、大小/类型白名单、路径防穿越。 ——
 
 const (
-	maxAttachBytes = 20 << 20  // 单文件上限 20MB
-	maxAttachTotal = 32 << 20  // 单请求总上限 32MB
-	maxAttachParts = 8         // 单请求最多 8 个文件
+	maxAttachBytes = 20 << 20 // 单文件上限 20MB
+	maxAttachTotal = 32 << 20 // 单请求总上限 32MB
+	maxAttachParts = 8        // 单请求最多 8 个文件
 )
 
 // AttachmentView 上传成功返回视图(前端 chip/预览用;Path=本地路径供 input 引用)。
 type AttachmentView struct {
 	Name string `json:"name"`
-	Path string `json:"path"`   // 本地绝对路径(input 提交时回传)
-	URL  string `json:"url"`    // /attachments/<时间戳>/<名> 预览
+	Path string `json:"path"` // 本地绝对路径(input 提交时回传)
+	URL  string `json:"url"`  // /attachments/<时间戳>/<名> 预览
 	Size int64  `json:"size"`
 }
 

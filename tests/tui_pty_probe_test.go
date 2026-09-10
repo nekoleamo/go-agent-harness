@@ -22,8 +22,13 @@ import (
 
 // runTUIViaPty 在 pty 中启动 gah,返回输出流读取函数与进程句柄。
 func runTUIViaPty(t *testing.T, bin string, env []string) (*os.File, *exec.Cmd, chan string) {
+	return runTUIViaPtyArgs(t, bin, env)
+}
+
+// runTUIViaPtyArgs 带启动参数(如 --profile im-qq-tui)的 pty 启动。
+func runTUIViaPtyArgs(t *testing.T, bin string, env []string, args ...string) (*os.File, *exec.Cmd, chan string) {
 	t.Helper()
-	cmd := exec.Command(bin)
+	cmd := exec.Command(bin, args...)
 	cmd.Env = env
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 80})
 	if err != nil {
@@ -449,4 +454,41 @@ func TestTUIProbeScrollSettle(t *testing.T) {
 		_ = cmd.Process.Kill()
 		t.Fatal("退出卡死")
 	}
+}
+
+// TestTUIProbeQQCommandLevels /qq 逐级确认(命令面选择器):/qq → L1 子命令枚举 → status 选完即执行;
+// env 路径再出 official|sandbox 枚举。im-qq-tui profile + 临时数据根(无凭证 → 不连真实 QQ)。
+func TestTUIProbeQQCommandLevels(t *testing.T) {
+	bin := buildGahCurrent(t)
+	ptmx, cmd, out := runTUIViaPtyArgs(t, bin, probeEnv(), "--profile", "im-qq-tui")
+	defer ptmx.Close()
+	defer func() { _ = cmd.Process.Kill() }()
+
+	if boot, ok := drainUntil(out, 8*time.Second, "工作区: "); !ok {
+		t.Fatalf("8s 未见 TUI 首帧: %q", firstN(tailS(boot, 600), 600))
+	}
+	// 1) /qq → L1 子命令枚举(此前已有)
+	io.WriteString(ptmx, "/qq\r")
+	lv1, ok := drainUntil(out, 4*time.Second, "查看配置", "切换 OpenAPI 环境")
+	if !ok {
+		t.Fatalf("L1 未出子命令枚举: %q", firstN(tailS(lv1, 600), 600))
+	}
+	// 2) 选 status(光标默认第一项)→ 直接执行,回显通道状态
+	io.WriteString(ptmx, "\r")
+	st, ok := drainUntil(out, 6*time.Second, "访问=", "网关=")
+	if !ok {
+		t.Fatalf("status 未执行回显: %q", firstN(tailS(st, 600), 600))
+	}
+	// 3) /qq → L1 → ↓↓ 到 env → Enter → L2 出 official|sandbox 枚举(逐级确认新增)
+	io.WriteString(ptmx, "/qq\r")
+	if _, ok := drainUntil(out, 4*time.Second, "查看配置"); !ok {
+		t.Fatal("第二次 L1 未出现")
+	}
+	io.WriteString(ptmx, "\x1b[B\x1b[B\r")
+	lv2, ok := drainUntil(out, 4*time.Second, "sandbox", "沙箱环境")
+	if !ok {
+		t.Fatalf("env 的 L2 未出 official/sandbox 枚举: %q", firstN(tailS(lv2, 600), 600))
+	}
+	// 退出链由 TestTUIProbe 覆盖(此处只验证命令面级联;defer 已 Kill)
+	_ = cmd
 }

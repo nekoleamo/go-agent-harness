@@ -34,14 +34,14 @@ type App struct {
 	llm       sdk.LLMService
 	confirmCh chan bool // Confirm 阻塞等待用户答复(单通道,兼容旧路径)
 
-	pendMu  sync.Mutex   // 融合 Present 的待应答通道(P3:tui 作为 confirm presenter)
-	pending []chan bool  // 每次 Present 一个;确认结果广播并清理
+	pendMu  sync.Mutex  // 融合 Present 的待应答通道(P3:tui 作为 confirm presenter)
+	pending []chan bool // 每次 Present 一个;确认结果广播并清理
 
-	askMu   sync.Mutex               // 提问待答通道(P3:tui 作为 question presenter)
+	askMu   sync.Mutex                // 提问待答通道(P3:tui 作为 question presenter)
 	qPend   []chan sdk.QuestionAnswer // 每次 PresentQuestion 一个;作答广播并清理
-	started atomic.Bool  // TUI 程序已启动(未启动时不向 program 发送,防测试/装配期阻塞)
-	subs      []sdk.Disposer
-	cmds      sdk.CommandRegistry // ctx.commands(可为 nil:未装配时命令不可用)
+	started atomic.Bool               // TUI 程序已启动(未启动时不向 program 发送,防测试/装配期阻塞)
+	subs    []sdk.Disposer
+	cmds    sdk.CommandRegistry // ctx.commands(可为 nil:未装配时命令不可用)
 
 	cancelFn context.CancelFunc // 当前回合的取消函数(Esc 中断,见 model.onCancel)
 	widgets  []Widget           // P4-12 输入区 widget 行(宿主/插件经 AddWidget 注册)
@@ -520,6 +520,43 @@ func lastUserSeq(fs sdk.ForkableSessions, cur string) uint64 {
 		return 0
 	}
 	return pts[len(pts)-1].Seq
+}
+
+// forkSeqOptions /fork 一级枚举:当前会话可分支提问点(seq + 摘要,最新在前,最多 12 项);
+// 无提问点/服务缺失 = 空(选择器回退 FreeArgs 手输 seq)。
+func (a *App) forkSeqOptions([]string) []sdk.Option {
+	fs, err := a.forkableSessions()
+	if err != nil {
+		return nil
+	}
+	var cs sdk.CwdSessions
+	if err := a.c.Inject("ctx.cwdSessions", &cs); err != nil {
+		return nil
+	}
+	pts, err := fs.ForkPoints(cs.CurrentSession())
+	if err != nil || len(pts) == 0 {
+		return nil
+	}
+	if len(pts) > 12 {
+		pts = pts[len(pts)-12:]
+	}
+	opts := make([]sdk.Option, 0, len(pts))
+	for i := len(pts) - 1; i >= 0; i-- {
+		opts = append(opts, sdk.Option{Value: strconv.FormatUint(pts[i].Seq, 10), Desc: forkPointDesc(pts[i])})
+	}
+	return opts
+}
+
+// forkPointDesc 提问点一行摘要(seq + 文本截断 40 字)。
+func forkPointDesc(p sdk.ForkPoint) string {
+	s := strings.Join(strings.Fields(p.Text), " ")
+	if r := []rune(s); len(r) > 40 {
+		s = string(r[:39]) + "…"
+	}
+	if s == "" {
+		s = "(无文本)"
+	}
+	return fmt.Sprintf("seq %d · %s", p.Seq, s)
 }
 
 // cmdFork /fork [seq]:从历史 seq 处派生分支会话(继承到该点),切换过去从该点续聊。
@@ -1493,12 +1530,25 @@ func (a *App) registerInternalCommands() {
 			Args: []sdk.ArgLevel{
 				{Options: func([]string) []sdk.Option { return []sdk.Option{{Value: "history", Desc: "历史条数"}} }},
 				{Options: func([]string) []sdk.Option {
-					return []sdk.Option{{Value: "off", Desc: "关闭历史注入"}, {Value: "unlimited", Desc: "不限条数"}}
-				}},
+					return []sdk.Option{
+						{Value: "off", Desc: "关闭历史注入"},
+						{Value: "unlimited", Desc: "不限条数"},
+						{Value: "20", Desc: "最近 20 条"},
+						{Value: "50", Desc: "最近 50 条"},
+						{Value: "100", Desc: "最近 100 条"},
+						{Value: "200", Desc: "最近 200 条"},
+					}
+				}, FreeArgs: func([]string) []string { return []string{"条数(off|unlimited|数字)"} }},
 			}},
-		{Name: "export", Usage: "/export [path]", Desc: "导出会话 jsonl", Run: a.cmdExport},
-		{Name: "compact", Usage: "/compact [指示词]", Desc: "手动滚动摘要压缩(立即折叠旧历史;指示词仅作记录)", Run: a.cmdCompact},
-		{Name: "widgets", Usage: "/widgets on|off", Desc: "输入区上方 widget 区开关(宿主注册的动态信息行)", Run: a.cmdWidgets},
+		{Name: "export", Usage: "/export [path]", Desc: "导出会话(.html 结尾→自包含网页;否则 jsonl)", Run: a.cmdExport,
+			// 自由级断点:回车直接执行(默认路径 jsonl);输入路径回车则导出到该路径
+			Args: []sdk.ArgLevel{{FreeArgs: func([]string) []string { return []string{"路径?"} }}}},
+		{Name: "compact", Usage: "/compact [指示词]", Desc: "手动滚动摘要压缩(立即折叠旧历史;指示词仅作记录)", Run: a.cmdCompact,
+			Args: []sdk.ArgLevel{{FreeArgs: func([]string) []string { return []string{"指示词?"} }}}},
+		{Name: "widgets", Usage: "/widgets on|off", Desc: "输入区上方 widget 区开关(宿主注册的动态信息行)", Run: a.cmdWidgets,
+			Args: []sdk.ArgLevel{{Options: func([]string) []sdk.Option {
+				return []sdk.Option{{Value: "on", Desc: "显示 widget 行"}, {Value: "off", Desc: "隐藏 widget 行"}}
+			}}}},
 		{Name: "reload", Usage: "/reload", Desc: "热重载指令文件(AGENTS.md 层级/全局/附加;外部编辑即生效)", Run: a.cmdReload},
 		{Name: "search", Usage: "/search <词>", Desc: "会话内搜索(命中高亮,n/N/F3 循环跳转,Esc 退出)",
 			// 自由级断点:选中后光标停留输入框提示继续输入,输入词回车才执行——
@@ -1523,7 +1573,9 @@ func (a *App) registerInternalCommands() {
 				}},
 			},
 			Run: a.cmdWorkspace},
-		{Name: "fork", Usage: "/fork [seq]", Desc: "从历史任意点派生分支会话(/tree 查看 seq;缺省=最近提问)", Run: a.cmdFork},
+		{Name: "fork", Usage: "/fork [seq]", Desc: "从历史任意点派生分支会话(/tree 查看 seq;缺省=最近提问)", Run: a.cmdFork,
+			// 一级枚举可分支提问点(seq + 摘要,最新在前);无提问点回退手输 seq
+			Args: []sdk.ArgLevel{{Options: a.forkSeqOptions, FreeArgs: func([]string) []string { return []string{"seq"} }}}},
 		{Name: "clone", Usage: "/clone", Desc: "复制当前会话(同一分支另一路演进)", Run: a.cmdClone},
 		{Name: "tree", Usage: "/tree", Desc: "会话分支树(会话 + 可 fork 的提问点)", Run: a.cmdTree},
 		{Name: "session", Usage: "/session list|switch|new|current", Desc: "会话管理:列出/切换/新建/查看", Run: a.cmdSession,

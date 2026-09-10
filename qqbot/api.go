@@ -129,6 +129,20 @@ func NewClient(ts *TokenSource) *Client {
 // WithBaseURL 覆盖 OpenAPI 根(沙箱联调/测试 mock)。
 func (c *Client) WithBaseURL(u string) *Client { c.BaseURL = strings.TrimSuffix(u, "/"); return c }
 
+// GatewayURL 探测 GET /gateway/bot 并返回 wss 地址(环境/凭证连通性自检;
+// /qq env 切换后即时校验用)。与 Gateway 内部同源:同 base + 同鉴权头归一。
+func (c *Client) GatewayURL(ctx context.Context) (string, error) {
+	if c.TS == nil {
+		return "", errors.New("qqbot: 未配置 token 源")
+	}
+	tk, err := c.TS.Token(ctx)
+	if err != nil {
+		return "", err
+	}
+	g := &Gateway{BaseURL: c.BaseURL}
+	return g.fetchGatewayURL(ctx, tk)
+}
+
 // do 公共 POST:补鉴权头 → 发送 → 解析业务错误({code,message} 非 0 显式返回;HTTP 429 归类频控)。
 // 401(access_token 失效,理论不应出现——60s 前已刷新)兜底:清缓存重取一次后重试。
 func (c *Client) do(ctx context.Context, path string, body any) error {

@@ -164,3 +164,57 @@ func TestAdvanceDynamicLevel(t *testing.T) {
 		t.Fatalf("list 无二级应执行: %q commit=%v", res2.Input, res2.Commit)
 	}
 }
+
+// TestAdvanceLevelOptionsWithFreeFallback 同一级同时声明 Options 与 FreeArgs(如 /qq 新形态):
+// 命中枚举路径 → 出选项;Options 返回空 → 回退自由输入序列;两者皆空 → 直接执行。
+func TestAdvanceLevelOptionsWithFreeFallback(t *testing.T) {
+	levels := func(name string) []sdk.ArgLevel {
+		if name != "qq" {
+			return nil
+		}
+		return []sdk.ArgLevel{
+			staticLevel(opt("status", "状态"), opt("login", "配置"), opt("env", "环境")),
+			{
+				Options: func(picked []string) []sdk.Option {
+					if len(picked) >= 2 && picked[1] == "env" {
+						return []sdk.Option{opt("official", "正式"), opt("sandbox", "沙箱")}
+					}
+					return nil
+				},
+				FreeArgs: func(picked []string) []string {
+					if len(picked) >= 2 && picked[1] == "login" {
+						return []string{"AppID", "AppSecret"}
+					}
+					return nil
+				},
+			},
+		}
+	}
+	res := AdvanceEnter("/", &Pick{Items: []sdk.Option{opt("qq", "QQ")}}, levels)
+	if res.Pick == nil || res.Pick.Level != 1 || len(res.Pick.Items) != 3 {
+		t.Fatalf("应进入 L2 子命令枚举: %+v", res.Pick)
+	}
+	// env → L3 枚举
+	res.Pick.Cursor = 2
+	res2 := AdvanceEnter(res.Input, res.Pick, levels)
+	if res2.Pick == nil || len(res2.Pick.Items) != 2 || res2.Pick.Items[1].Value != "sandbox" {
+		t.Fatalf("env 应逐级出 official/sandbox: %+v", res2.Pick)
+	}
+	res2.Pick.Cursor = 1
+	res3 := AdvanceEnter(res2.Input, res2.Pick, levels)
+	if !res3.Commit || res3.Input != "/qq env sandbox" {
+		t.Fatalf("env 选完应执行: %q commit=%v", res3.Input, res3.Commit)
+	}
+	// login → Options 空 → 回退自由序列
+	res.Pick.Cursor = 1
+	res4 := AdvanceEnter(res.Input, res.Pick, levels)
+	if res4.Commit || len(res4.Free) != 2 || res4.Free[0] != "AppID" {
+		t.Fatalf("login 应回退自由序列: %+v", res4)
+	}
+	// status → 两者皆空 → 直接执行
+	res.Pick.Cursor = 0
+	res5 := AdvanceEnter(res.Input, res.Pick, levels)
+	if !res5.Commit || res5.Input != "/qq status" {
+		t.Fatalf("status 应直接执行: %q commit=%v", res5.Input, res5.Commit)
+	}
+}

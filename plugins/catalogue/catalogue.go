@@ -26,8 +26,8 @@ import (
 	"github.com/nekoleamo/go-agent-harness/plugins/mcp/mcp-bridge"
 	"github.com/nekoleamo/go-agent-harness/plugins/mcp/mcp-server"
 	"github.com/nekoleamo/go-agent-harness/plugins/policy/policy-guard"
-	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-auto-plan"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-ask"
+	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-auto-plan"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-files"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-memory"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-shell"
@@ -146,21 +146,26 @@ var All = map[string]Def{
 	"host-backup": {Factory: func() sdk.Plugin { return &hostbackup.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "host-backup", Type: "host", APIVersion: ">=1.0,<2.0",
 		// M18 整体备份/恢复:ctx.backup 服务 + /backup 命令;备份目录 $GAH_HOME/backups(排除自身)
-		Provides: []string{"ctx.backup"}}, Bundle: "base"},
+		// Requires ctx.commands:命令注册依赖启动顺序(map 遍历随机) —— 硬声明让拓扑保证 host-commands 先行
+		Provides: []string{"ctx.backup"},
+		Requires: []string{"ctx.commands"}}, Bundle: "base"},
 	"host-bridge": {Factory: func() sdk.Plugin { return &hostbridge.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "host-bridge", Type: "host", APIVersion: ">=1.0,<2.0",
 		// M6.8 回调通道:外部进程经 GAH_CB_ADDR 请求宿主 tools/jobs/fanout 服务
-		Requires: []string{"ctx.tools", "ctx.jobs", "ctx.fanout"}}, Bundle: "base"},
+		// ctx.commands:外部命令 spec 注册(经 / 提示与选择器共用注册表)
+		Requires: []string{"ctx.commands", "ctx.tools", "ctx.jobs", "ctx.fanout"}}, Bundle: "base"},
 	"host-jobs": {Factory: func() sdk.Plugin { return &hostjobs.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "host-jobs", Type: "host", APIVersion: ">=1.0,<2.0",
 		Provides: []string{"ctx.jobs"},
-		Requires: []string{"ctx.tools"}}, Bundle: "base"},
+		// ctx.commands:/jobs 命令注册(需 host-commands 先行);ctx.tools:任务执行依赖
+		Requires: []string{"ctx.commands", "ctx.tools"}}, Bundle: "base"},
 	"host-plugin-manager": {Factory: func() sdk.Plugin { return &hostplugmgr.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "host-plugin-manager", Type: "host", APIVersion: ">=1.0,<2.0",
 		Provides: []string{"ctx.pluginManager"}}, Bundle: "base"},
 	"ui-tui-app": {Factory: func() sdk.Plugin { return &uitui.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "ui-tui-app", Type: "ui", APIVersion: ">=1.0,<2.0",
-		Requires: []string{"ctx.agentLoop", "ctx.llm"}}, Bundle: "tui", Manage: "scenario"},
+		// ctx.commands:内部命令注册表(ui-tui-app 与宿主命令共表;判重跳过宿主已注册同名)
+		Requires: []string{"ctx.agentLoop", "ctx.llm", "ctx.commands"}}, Bundle: "tui", Manage: "scenario"},
 	"ui-web-app": {Factory: func() sdk.Plugin { return &uiweb.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "ui-web-app", Type: "ui", APIVersion: ">=1.0,<2.0",
 		Requires: []string{"ctx.agentLoop", "ctx.sessions", "ctx.llm"}}, Bundle: "web"},
@@ -173,11 +178,13 @@ var All = map[string]Def{
 		ID: "ui-im-wechat", Type: "ui", APIVersion: ">=1.0,<2.0",
 		// ctx.confirm 条件提供(运行时):单 profile 自 Provide;装配 host-confirm-fusion 时
 		// 改为注册呈现者(不声明 Provides——声明级与 fusion 冲突,装配层按声明检测)
-		Requires: []string{"ctx.agentLoop", "ctx.sessions"}}, Bundle: "im-wechat", Manage: "scenario"},
+		// ctx.commands:/wechat、/stop、/im 命令注册(拓扑保证 host-commands 先行)
+		Requires: []string{"ctx.agentLoop", "ctx.commands", "ctx.sessions"}}, Bundle: "im-wechat", Manage: "scenario"},
 	"ui-im-qq": {Factory: func() sdk.Plugin { return &uimqq.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "ui-im-qq", Type: "ui", APIVersion: ">=1.0,<2.0",
 		// ctx.confirm 条件提供(运行时):单 profile 自 Provide;装配 fusion 时注册呈现者
-		Requires: []string{"ctx.agentLoop", "ctx.sessions"}}, Bundle: "im-qq", Manage: "scenario"},
+		// ctx.commands:/qq、/stop、/im 命令注册(拓扑保证 host-commands 先行)
+		Requires: []string{"ctx.agentLoop", "ctx.commands", "ctx.sessions"}}, Bundle: "im-qq", Manage: "scenario"},
 }
 
 // RegisterAll 把 bundle == name 的全部插件注册进 registry(不按 enabled 过滤;过滤在装配层)。

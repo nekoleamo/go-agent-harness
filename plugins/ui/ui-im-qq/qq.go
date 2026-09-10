@@ -88,13 +88,15 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		ledger:    newDeliveryLedger(outboxPath()),
 		remainder: make(map[string]string)}
 	b := im.New(c, loop, sessions, tr, im.Options{
-		Mode:  mode,
+		Mode:        mode,
 		Allow:       creds.Allow,  // 已授权用户持久恢复
 		AllowGroups: creds.Groups, // 已授权群持久恢复(群维度授权)
 		// P1 会话绑定:chat→宿主会话映射落盘(重启恢复绑定)
 		SessionBindPath: sessionBindPath(),
 		// P2 §7.5:被动回复窗口 5min —— 回合超时即转后台通知,完成经门控投递
 		AsyncAfter: 5 * time.Minute,
+		// 入站诊断(未授权丢弃/重复丢弃/回合启动)→ 环形缓冲,/qq status 可见
+		Diag: func(s string) { tr.diagf("%s", s) },
 	})
 	tr.bridge = b
 	// 授权变化持久化(/im pair 批准、allow/revoke):写回凭证 store,重启恢复。
@@ -151,26 +153,39 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		}
 		ds = append(ds, d)
 		d2, err := cmds.Register(sdk.CommandSpec{
-			Name:  "qq",
-			Usage: "/qq status|login|env",
-			Desc:  "QQ 官方 Bot 通道:配置(AppID/AppSecret)/状态",
+			Name: "qq",
+			// 三级逐级确认:L1 子命令枚举 → L2(env:环境枚举 / login:AppID、AppSecret 逐步输入自由序列);
+			// status 无二级参数(选完即执行)。
+			Usage: "/qq status|login|env [official|sandbox]",
+			Desc:  "QQ 官方 Bot 通道:配置(AppID/AppSecret)/状态/环境",
 			Run:   func(args []string) (string, error) { return tr.qqCmd(context.Background(), args) },
-			// 二级选项:status 查看 / login 填凭证(login 再分两级输入 AppID、AppSecret)
 			Args: []sdk.ArgLevel{
 				{Options: func([]string) []sdk.Option {
 					return []sdk.Option{
-						{Value: "status", Desc: "查看配置/网关/已授权"},
+						{Value: "status", Desc: "查看配置/环境/网关/诊断"},
 						{Value: "login", Desc: "填写 AppID/AppSecret 并启动网关"},
-						{Value: "env", Desc: "切换 OpenAPI 环境(未上架机器人联调用 sandbox)"},
+						{Value: "env", Desc: "切换 OpenAPI 环境(群聊测试需 sandbox)"},
 					}
 				}},
-				{FreeArgs: func(picked []string) []string {
-					// picked = [命令名, 第一级值, ...](picked[0] 恒为命令名)
-					if len(picked) >= 2 && picked[1] == "login" {
-						return []string{"AppID", "AppSecret"}
-					}
-					return nil // status:无参数,直接执行
-				}},
+				{
+					// 环境枚举(env 路径);login 路径 Options 空 → 回退到自由参数序列
+					Options: func(picked []string) []sdk.Option {
+						if len(picked) >= 2 && picked[1] == "env" {
+							return []sdk.Option{
+								{Value: "official", Desc: "正式环境(api.bot.qq.com;已上架机器人;群聊需企业公开服务)"},
+								{Value: "sandbox", Desc: "沙箱环境(sandbox.api.sgroup.qq.com;个人开发者群聊唯一路径)"},
+							}
+						}
+						return nil
+					},
+					FreeArgs: func(picked []string) []string {
+						// picked = [命令名, 第一级值, ...](picked[0] 恒为命令名)
+						if len(picked) >= 2 && picked[1] == "login" {
+							return []string{"AppID", "AppSecret"}
+						}
+						return nil // status/env 无自由参数(env 走上级枚举)
+					},
+				},
 			},
 		})
 		if err != nil {
@@ -245,8 +260,11 @@ type qqTransport struct {
 	seq       map[string]uint64  // ChatID → msg_seq(与 msg_id 联合幂等,自增)
 	typingCtl context.CancelFunc // 回合中 input_notify 周期刷新控制器(回合结束取消)
 	budget    *activeQuota       // 主动消息配额记账(私信主动 2 条/天/用户;落盘重启不超发)
-	ledger    *deliveryLedger // 滞留 ledger(落盘重启不丢;被动失效/频控/配额耗尽时暂存,下次入站补发)
-	remainder map[string]string // chatID → 被截断的剩余文本(用户回 continue 时被动续发)
+	ledger    *deliveryLedger    // 滞留 ledger(落盘重启不丢;被动失效/频控/配额耗尽时暂存,下次入站补发)
+	remainder map[string]string  // chatID → 被截断的剩余文本(用户回 continue 时被动续发)
+	diagRing  []string           // 最近入站诊断(环形;/qq status 展示 + GAH_QQ_DEBUG=1 打 stderr)
+	gen       int64              // 网关世代号:start/stop 递增;旧 goroutine 收尾仅当同世代才改状态(防覆盖)
+	evCounts  map[string]int     // 事件类型计数(诊断:平台是否推事件——群@=0 即平台侧未推)
 }
 
 func (t *qqTransport) Name() string { return t.name }
@@ -263,7 +281,12 @@ func (t *qqTransport) startGateway() {
 	if creds.BaseURL != "" { // 凭证显式设置(如 /qq env sandbox)优先
 		baseURL = creds.BaseURL
 	}
+	t.running = true
+	t.gen++ // 本世代:旧 goroutine 的收尾不得再改动状态(见 gatewayStopped)
+	gen := t.gen
+	t.lastError = ""
 	t.mu.Unlock()
+
 	ts := qqbot.NewTokenSource(creds.AppID, creds.AppSecret)
 	ts.URL = tokenURL
 	cli := qqbot.NewClient(ts)
@@ -283,19 +306,28 @@ func (t *qqTransport) startGateway() {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.mu.Lock()
 	t.gateway, t.client, t.stop = gw, cli, cancel
-	t.running = true
-	t.lastError = ""
 	t.mu.Unlock()
-	go func() {
-		if err := gw.Run(ctx); err != nil {
-			if err != context.Canceled {
-				t.setLastError("gateway 停止: " + err.Error())
-			}
-		}
-		t.mu.Lock()
-		t.running = false
+	t.diagf("网关启动 环境=%s base=%s", envName(baseURL), baseURL)
+	go func() { t.gatewayStopped(gen, gw.Run(ctx)) }()
+}
+
+// gatewayStopped 网关 goroutine 收尾:仅当仍是**本世代**(未被 stopGateway/新 startGateway 取代)
+// 才更新 running/lastError。否则旧 goroutine 会覆盖新网关状态——实测现象:切环境后事件仍在到达
+// (诊断有 READY/入站)但 `/qq status` 误报"网关=停"。
+func (t *qqTransport) gatewayStopped(gen int64, err error) {
+	t.mu.Lock()
+	if t.gen != gen {
 		t.mu.Unlock()
-	}()
+		return
+	}
+	t.running = false
+	if err != nil && err != context.Canceled {
+		t.lastError = "gateway 停止: " + err.Error()
+	}
+	t.mu.Unlock()
+	if err != nil && err != context.Canceled {
+		t.diagf("网关停止: %v", err)
+	}
 }
 
 // stopGateway 停止 gateway(幂等)。
@@ -304,6 +336,7 @@ func (t *qqTransport) stopGateway() {
 	c := t.stop
 	t.gateway, t.client, t.stop = nil, nil, nil
 	t.running = false
+	t.gen++ // 使在途 goroutine 的收尾失效(不覆盖后续新网关状态)
 	t.mu.Unlock()
 	if c != nil {
 		c()
@@ -316,27 +349,92 @@ func (t *qqTransport) setLastError(s string) {
 	t.mu.Unlock()
 }
 
+// diagf 记录一条入站/出站诊断:始终入环形缓冲(/qq status 可见);设 GAH_QQ_DEBUG=1
+// 时同时打 stderr。真机排障核心:群 @ 无反应时用它区分
+// "事件未到达 ← 平台侧" / "被判定丢弃 ← 代码" / "已交桥但未授权"。
+func (t *qqTransport) diagf(format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	t.mu.Lock()
+	t.diagRing = append(t.diagRing, time.Now().Format("15:04:05")+" "+msg)
+	if len(t.diagRing) > 40 {
+		t.diagRing = t.diagRing[len(t.diagRing)-40:]
+	}
+	t.mu.Unlock()
+	if os.Getenv("GAH_QQ_DEBUG") != "" {
+		fmt.Fprintf(os.Stderr, "[qq] %s\n", msg)
+	}
+}
+
+// countEvent 事件类型计数(诊断用;不受诊断环形滚动影响,可长期印证平台是否推过某类事件)。
+func (t *qqTransport) countEvent(kind string) {
+	t.mu.Lock()
+	if t.evCounts == nil {
+		t.evCounts = map[string]int{}
+	}
+	t.evCounts[kind]++
+	t.mu.Unlock()
+}
+
+// evCount 读取单个计数。
+func (t *qqTransport) evCount(kind string) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.evCounts[kind]
+}
+
+// diagLines 最近 n 条诊断(不足则全部;无诊断返回空串)。
+func (t *qqTransport) diagLines(n int) string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.diagRing) == 0 {
+		return ""
+	}
+	start := len(t.diagRing) - n
+	if start < 0 {
+		start = 0
+	}
+	return strings.Join(t.diagRing[start:], "\n")
+}
+
 // onEvent gateway 事件回调(reader goroutine 内同步调用,必须快:仅做解析与转派 goroutine)。
 func (t *qqTransport) onEvent(e qqbot.Event) {
 	switch e.Type {
-	case qqbot.EventReady: // 记录机器人自身 openid(群 @ 过滤);状态在线
+	case qqbot.EventReady:
+		t.countEvent("ready") // 记录机器人自身 openid(群 @ 过滤);状态在线
 		var rd qqbot.Ready
 		if err := json.Unmarshal(e.Data, &rd); err == nil {
 			t.mu.Lock()
 			t.botOpenID = rd.User.ID
 			t.lastError = ""
 			t.mu.Unlock()
+			t.diagf("READY 机器人上线 openid=%s ws=%s", rd.User.ID, t.connectedWS())
 		}
 	case qqbot.EventC2CMessage:
+		t.countEvent("c2c")
 		var m qqbot.C2CMessage
 		if err := json.Unmarshal(e.Data, &m); err == nil {
+			t.diagf("事件 C2C_MESSAGE_CREATE msg=%s user=%s len=%d att=%d", m.ID, m.Author.UserOpenID, len([]rune(m.Content)), len(m.Attachments))
 			go t.handleC2C(&m) // 独立 goroutine(回合/Confirm 等待不阻塞网关读循环)
+		} else {
+			t.diagf("事件解析失败 C2C_MESSAGE_CREATE: %v", err)
 		}
 	case qqbot.EventGroupAtMsg:
+		t.countEvent("group")
 		var m qqbot.GroupAtMessage
 		if err := json.Unmarshal(e.Data, &m); err == nil {
+			t.diagf("事件 GROUP_AT_MESSAGE_CREATE msg=%s group=%s member=%s authorid=%s mentions=%d len=%d",
+				m.ID, m.GroupOpenID, m.Author.MemberOpenID, m.Author.ID, len(m.Mentions), len([]rune(m.Content)))
 			go t.handleGroup(&m)
+		} else {
+			t.diagf("事件解析失败 GROUP_AT_MESSAGE_CREATE: %v", err)
 		}
+
+	default:
+		t.countEvent("other")
+		// 其余 Dispatch 一律留痕:平台侧权限/入群/审核相关事件(GROUP_ADD_ROBOT/
+		// GROUP_DEL_ROBOT/GROUP_MSG_REJECT/FRIEND_ADD/INTERACTION 等)在此可见,
+		// 是"群事件完全不来"与"来了但类型不同"的关键区分点。
+		t.diagf("事件(未处理) %s size=%d", e.Type, len(e.Data))
 	}
 }
 
@@ -347,20 +445,29 @@ func (t *qqTransport) handleC2C(m *qqbot.C2CMessage) {
 			fmt.Fprintf(os.Stderr, "[qq] 消息处理 panic(已隔离): %v\n", r)
 		}
 	}()
-	if m.Author.UserOpenID == "" {
+	sender := m.Author.UserOpenID
+	if sender == "" {
+		sender = m.Author.ID // author 字段差异兜底(官方单聊给 user_openid,防御用 id)
+	}
+	if sender == "" {
+		t.diagf("C2C 丢弃:author 标识缺失(msg=%s)", m.ID)
 		return
 	}
-	if m.Content == "" && len(m.Attachments) == 0 {
+	if m.Content == "" && len(m.Attachments) == 0 && len(m.MsgElements) == 0 {
+		t.diagf("C2C 丢弃:无文本/附件/消息元素(msg=%s user=%s)", m.ID, sender)
 		return
 	}
-	route := im.Route{Channel: t.name, UserID: m.Author.UserOpenID, ChatID: m.Author.UserOpenID}
+	route := im.Route{Channel: t.name, UserID: sender, ChatID: sender}
 	t.cacheReply(route.ChatID, m.ID)
 	if t.flushRemainder(route, m.Content) {
 		return // continue 续取:不走回合
 	}
 	t.flushOutbox(context.Background(), route) // 滞留内容先被动补发(新 msg_id 窗口)
-	atts, note := t.mediaExtract(m.Attachments, m.Author.UserOpenID)
+	atts, note := t.mediaExtract(m.Attachments, sender)
 	text := m.Content
+	if strings.TrimSpace(text) == "" {
+		text = qqbot.ElementsText(m.MsgElements) // 引用/聊天记录类消息(Content 为空)
+	}
 	if note != "" {
 		if text != "" {
 			text += "\n" + note
@@ -374,30 +481,50 @@ func (t *qqTransport) handleC2C(m *qqbot.C2CMessage) {
 	_ = t.bridge.HandleInbound(context.Background(), im.Inbound{Route: route, MsgID: "c2c:" + m.ID, Text: text, Attachments: atts})
 }
 
-// handleGroup 群 @ 消息:仅 @ 机器人(mentions 含机器人)才处理(官方已按事件类型过滤,防御加强)。
+// handleGroup 群 @ 消息:官方 GROUP_AT_MESSAGE_CREATE 仅在用户 @ 机器人时推送,
+// 故不做"mentions 是否含机器人"前置否决(见 mentionsBot 注释)。panic 隔离。
 func (t *qqTransport) handleGroup(m *qqbot.GroupAtMessage) {
 	defer func() {
 		if r := recover(); r != nil {
 			fmt.Fprintf(os.Stderr, "[qq] 群消息处理 panic(已隔离): %v\n", r)
 		}
 	}()
-	if m.GroupOpenID == "" || m.Author.MemberOpenID == "" {
+	sender := m.Author.MemberOpenID
+	if sender == "" {
+		sender = m.Author.ID // 字段差异兼容(官方群事件 member_openid 有值,防御兜底)
+	}
+	if m.GroupOpenID == "" || sender == "" {
+		t.diagf("群丢弃:标识缺失(group=%q member=%q authorid=%q msg=%s)", m.GroupOpenID, m.Author.MemberOpenID, m.Author.ID, m.ID)
 		return
 	}
-	if m.Content == "" && len(m.Attachments) == 0 {
+	if m.Content == "" && len(m.Attachments) == 0 && len(m.MsgElements) == 0 {
+		t.diagf("群丢弃:无文本/附件/消息元素(group=%s member=%s msg=%s)", m.GroupOpenID, sender, m.ID)
 		return
+	}
+	if t.isSelfMessage(m) {
+		t.diagf("群丢弃:机器人自身消息(防回环,group=%s member=%s)", m.GroupOpenID, sender)
+		return // 自身回环(群内机器人自己发的消息):丢弃防自问自答
 	}
 	if !t.mentionsBot(m) {
-		return // 非 @ 机器人(模拟器/异常推送):丢弃
+		t.diagf("群丢弃:判定为 @ 其它机器人(mentions=%d group=%s member=%s)", len(m.Mentions), m.GroupOpenID, sender)
+		return // 明确判定为 @ 其它机器人(非本机器人):丢弃
 	}
-	route := im.Route{Channel: t.name, UserID: m.Author.MemberOpenID, ChatID: m.GroupOpenID}
+	text := m.Content
+	// 引用/聊天记录类消息(message_type 103/102)正文可能为空,内容在 msg_elements 内。
+	if strings.TrimSpace(text) == "" {
+		text = qqbot.ElementsText(m.MsgElements)
+	}
+	if text == "" && len(m.Attachments) == 0 {
+		t.diagf("群丢弃:正文与附件均为空(group=%s member=%s msg=%s)", m.GroupOpenID, sender, m.ID)
+		return
+	}
+	route := im.Route{Channel: t.name, UserID: sender, ChatID: m.GroupOpenID}
 	t.cacheReply(route.ChatID, m.ID)
 	if t.flushRemainder(route, m.Content) {
 		return // continue 续取:不走回合
 	}
 	t.flushOutbox(context.Background(), route) // 滞留内容先被动补发(新 msg_id 窗口)
-	atts, note := t.mediaExtract(m.Attachments, m.Author.MemberOpenID)
-	text := m.Content
+	atts, note := t.mediaExtract(m.Attachments, sender)
 	if note != "" {
 		if text != "" {
 			text += "\n" + note
@@ -408,23 +535,60 @@ func (t *qqTransport) handleGroup(m *qqbot.GroupAtMessage) {
 	if text == "" && len(atts) == 0 {
 		return
 	}
+	t.diagf("群消息交桥:group=%s member=%s msg=%s(未授权将在 /qq status 诊断中显示)", m.GroupOpenID, sender, m.ID)
 	_ = t.bridge.HandleInbound(context.Background(), im.Inbound{Route: route, MsgID: "grp:" + m.ID, Text: text, Attachments: atts})
 }
 
-// mentionsBot 群消息是否 @ 了机器人:botOpenID 已知时严格校验;未知(未 Ready)放行。
-func (t *qqTransport) mentionsBot(m *qqbot.GroupAtMessage) bool {
+// botOpenIDValue 读取已记录的机器人自身 OpenID(READY d.user.id;未 Ready 为空)。
+func (t *qqTransport) botOpenIDValue() string {
 	t.mu.Lock()
-	bot := t.botOpenID
+	defer t.mu.Unlock()
+	return t.botOpenID
+}
+
+// connectedWS 当前网关实际连接的 WS 地址(诊断:确认沙箱/正式;未连接为空)。
+func (t *qqTransport) connectedWS() string {
+	t.mu.Lock()
+	gw := t.gateway
 	t.mu.Unlock()
+	if gw == nil {
+		return ""
+	}
+	return gw.ConnectedURL()
+}
+
+// isSelfMessage 该群消息是否由本机器人自己发出(防对话回环)。
+func (t *qqTransport) isSelfMessage(m *qqbot.GroupAtMessage) bool {
+	bot := t.botOpenIDValue()
 	if bot == "" {
+		return false
+	}
+	return m.Author.ID == bot || m.Author.MemberOpenID == bot || m.Author.UserOpenID == bot
+}
+
+// mentionsBot 防御性判定群消息是否针对本机器人。
+//
+// 官方语义(GROUP_AT_MESSAGE_CREATE):事件类型本身即"用户 @ 机器人"的推送条件,
+// 且 mentions 列表**不含 @ 机器人自身**(bot.q.qq.com 群@机器人消息 / User schema);
+// 真机 @ 机器人时 mentions 常为空数组。此前实现要求 mentions 命中机器人 ID,
+// 真机表现为**群内 @ 机器人完全无反应**(mentions 为空 → 恒判否 → 静默丢弃),
+// 单测因 mock 自造了含机器人 ID 的 mentions 而假绿。
+// 现规则:仅当能明确证明"@ 的不是本机器人"(mentions 非空且全部元素都是其它机器人)
+// 才丢弃,其余一律放行(交给事件类型语义 + 桥的访问控制)。
+func (t *qqTransport) mentionsBot(m *qqbot.GroupAtMessage) bool {
+	if len(m.Mentions) == 0 {
 		return true
 	}
+	bot := t.botOpenIDValue()
 	for _, mt := range m.Mentions {
-		if mt.ID == bot || mt.MemberOpenID == bot || mt.UserOpenID == bot {
+		if bot != "" && (mt.ID == bot || mt.MemberOpenID == bot || mt.UserOpenID == bot) {
 			return true
 		}
+		if !mt.Bot {
+			return true // 列表含真人用户:本机器人必然也是被 @ 方之一(官方语义)
+		}
 	}
-	return false
+	return false // 全部为机器人且都不是本机器人 → 其它机器人被 @,丢弃
 }
 
 // cacheReply 缓存 ChatID → 最近被动消息(msg_id 5min 窗口);群/单聊共用。
@@ -799,8 +963,6 @@ func (t *qqTransport) sendInputState(r im.Route, inputType int) {
 	_ = cli.SendInputState(ctx, r.UserID, inputType, 60, msgID, 0)
 }
 
-
-
 // qqCmd /qq 命令:login/status。
 func (t *qqTransport) qqCmd(_ context.Context, args []string) (string, error) {
 	if len(args) == 0 || args[0] == "status" {
@@ -826,7 +988,7 @@ func (t *qqTransport) qqCmd(_ context.Context, args []string) (string, error) {
 		"(凭证 0600 落盘随 $GAH_HOME 迁移;access_token 运行时换取不落盘)", nil
 }
 
-// envCmd /qq env:查看/切换 OpenAPI 根(未上架机器人需沙箱环境联调)。
+// envCmd /qq env:查看/切换 OpenAPI 环境(正式 api.bot.qq.com / 沙箱 sandbox.api.sgroup.qq.com)。
 func (t *qqTransport) envCmd(args []string) (string, error) {
 	t.mu.Lock()
 	cur := t.baseURL
@@ -835,14 +997,15 @@ func (t *qqTransport) envCmd(args []string) (string, error) {
 	}
 	t.mu.Unlock()
 	if len(args) < 2 {
-		return fmt.Sprintf("当前 OpenAPI 根: %s\n切换: /qq env official|sandbox(或直接给 URL)", cur), nil
+		return fmt.Sprintf("当前 OpenAPI 环境: %s(%s)\n切换: /qq env official|sandbox(或直接给 URL)%s",
+			envName(cur), cur, t.sandboxGuide()), nil
 	}
 	var u string
 	switch args[1] {
 	case "official":
 		u = qqbot.DefaultBaseURL
 	case "sandbox":
-		u = "https://sandbox.api.sgroup.qq.com"
+		u = sandboxBaseURL
 	default:
 		u = args[1]
 	}
@@ -858,10 +1021,59 @@ func (t *qqTransport) envCmd(args []string) (string, error) {
 		return "", fmt.Errorf("qq: 保存环境失败: %w", err)
 	}
 	t.stopGateway()
-	if creds.Configured() {
-		t.startGateway()
+	if !creds.Configured() {
+		return "已切换 OpenAPI 环境: " + envName(u) + "(" + u + ")(尚未配置凭证:先 /qq login)", nil
 	}
-	return "已切换 OpenAPI 根: " + u + "(网关已重启;状态查询 /qq status)", nil
+	t.startGateway()
+	// 即时连通性自检:换 token + GET /gateway/bot —— 失败原因直接回显(不再只落 lastError)
+	if msg := t.envProbe(); msg != "" {
+		return "已切换 OpenAPI 环境: " + envName(u) + "(" + u + ")。网关已重启,但**连通性自检失败**: " + msg + t.sandboxGuide(), nil
+	}
+	return "已切换 OpenAPI 环境: " + envName(u) + "(" + u + ")。网关已重启,连通性自检通过(token 换取 + /gateway/bot 均 OK)。" +
+		"状态查询 /qq status。" + t.sandboxGuide(), nil
+}
+
+// sandboxBaseURL 沙箱环境 OpenAPI 根(官方 api-v2 文档;与正式同一 AppID/AppSecret)。
+const sandboxBaseURL = "https://sandbox.api.sgroup.qq.com"
+
+// sandboxGuide 沙箱操作指引(个人开发者群聊唯一路径:正式环境群聊需企业「公开服务」)。
+func (t *qqTransport) sandboxGuide() string {
+	return "\n沙箱用法(个人开发者群聊唯一路径;正式环境群聊需企业「公开服务」):\n" +
+		"  1) 沙箱配置页 https://q.qq.com/qqbot/#/developer/sandbox 添加**测试用户**(你的 QQ 号)与**测试群**\n" +
+		"     (测试群填 QQ **群号**(纯数字,非群 openid);须你为群主/管理员,成员 ≤20 人)\n" +
+		"     ※ 看不到该页/保存失败:先完成开发者**认证**(未认证机器人仅开发者本人可用;个人认证可公开使用、进群上限 500)\n" +
+		"  2) 该群里:群设置 → 群机器人 → 添加测试机器人\n" +
+		"  3) 只有已配置的沙箱群/测试用户会产生事件;沙箱**不支持私聊**\n" +
+		"  4) 群里 @ 机器人后 /qq status 应出现 GROUP_AT_MESSAGE_CREATE;未授权群会回配对码提示(主机侧 /im allowg <群openid>)\n" +
+		"  切回正式: /qq env official"
+}
+
+// envProbe 环境连通性自检(换 token + GET /gateway/bot);返回空串 = 通过。
+func (t *qqTransport) envProbe() string {
+	t.mu.Lock()
+	cli := t.client
+	t.mu.Unlock()
+	if cli == nil {
+		return "网关客户端未就绪(网关未启动)"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := cli.GatewayURL(ctx); err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
+// envName 环境中文名(展示用;未识别 URL 归“自定义”)。
+func envName(u string) string {
+	switch {
+	case strings.Contains(u, "sandbox"):
+		return "sandbox(沙箱)"
+	case u == qqbot.DefaultBaseURL || strings.Contains(u, "api.bot.qq.com") || strings.Contains(u, "api.sgroup.qq.com"):
+		return "official(正式)"
+	default:
+		return "自定义"
+	}
 }
 
 // login 保存凭证并启动网关(AppSecret 属密钥,落盘收紧 0600)。
@@ -958,9 +1170,19 @@ func (t *qqTransport) statusText() string {
 	if t.bridge != nil {
 		allowed = len(t.bridge.Access().List())
 	}
+	groups, mode := 0, ""
+	if t.bridge != nil {
+		groups = len(t.bridge.Access().Groups())
+		mode = string(t.bridge.Access().Mode())
+	}
 	if t.creds != nil && t.creds.BaseURL != "" {
 		cfg += "@" + t.creds.BaseURL
 	}
+	curEnv := t.baseURL
+	if t.creds != nil && t.creds.BaseURL != "" {
+		curEnv = t.creds.BaseURL
+	}
+	tokenURL := t.tokenURL
 	lastErr := t.lastError
 	t.mu.Unlock()
 	// gateway 内部诊断(断线/鉴权失败等)合并展示(锁外调用防锁序问题)
@@ -976,7 +1198,18 @@ func (t *qqTransport) statusText() string {
 	if lastErr == "" {
 		lastErr = "无"
 	}
-	return fmt.Sprintf("qq: %s(%s) 网关=%s 已授权=%d\n最近: %s", cfg, appID, gw, allowed, lastErr)
+	out := fmt.Sprintf("qq: %s(%s) 环境=%s 网关=%s 访问=%s 已授权用户=%d 已授权群=%d\n最近: %s",
+		cfg, appID, envName(curEnv), gw, mode, allowed, groups, lastErr)
+	out += fmt.Sprintf("\n事件统计: C2C=%d 群@=%d 其它=%d(群@ 长期为 0 = 平台侧未推,查沙箱配置/认证)",
+		t.evCount("c2c"), t.evCount("group"), t.evCount("other"))
+	out += "\ntoken 端点: " + tokenURL
+	if strings.Contains(curEnv, "sandbox") {
+		out += "\n(沙箱:仅已在「沙箱配置」中添加的群/测试用户会产生事件;沙箱不支持私聊)"
+	}
+	if d := t.diagLines(8); d != "" {
+		out += "\n诊断(最近 8 条;设 GAH_QQ_DEBUG=1 可同步打 stderr):\n" + d
+	}
+	return out
 }
 
 // mask 凭证掩码(前 4 位 + 长度,防全量泄露)。

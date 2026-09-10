@@ -136,6 +136,18 @@ export interface CommandView {
   desc: string
 }
 
+// 命令参数级(逐级确认;/api/commands/{name}/options)
+export interface CommandOption {
+  value: string
+  desc: string
+}
+export interface CommandOptionsResp {
+  level: number
+  items: CommandOption[]
+  freeArgs: string[]
+  done: boolean
+}
+
 // 会话列表项(/api/sessions)
 export interface SessionInfo {
   ID: string

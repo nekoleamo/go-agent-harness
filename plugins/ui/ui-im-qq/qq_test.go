@@ -3,6 +3,8 @@
 package uimqq
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -345,4 +347,141 @@ func TestQQMediaExtract(t *testing.T) {
 	if !strings.Contains(note5, "未给下载地址") {
 		t.Fatalf("缺地址应给说明: %q", note5)
 	}
+}
+
+// TestMentionsBotOfficialSemantics 群 @ 判定回归护栏(真机 bug:群内 @ 机器人无反应)。
+// 官方语义:GROUP_AT_MESSAGE_CREATE 仅在 @ 机器人时推送,且 mentions **不含机器人自身**
+// (bot.q.qq.com 群@机器人消息)→ 不能以"mentions 含机器人"为触发前提;真机 mentions 常为空。
+func TestMentionsBotOfficialSemantics(t *testing.T) {
+	cases := []struct {
+		name     string
+		bot      string
+		mentions []qqbot.Mention
+		want     bool
+	}{
+		{"mentions 空(真机常见形态)", "BOTOPENID", nil, true},
+		{"mentions 仅含其它被 @ 用户(不含机器人)", "BOTOPENID", []qqbot.Mention{{ID: "U1", Username: "小明"}}, true},
+		{"mentions 显式含机器人自身 id", "BOTOPENID", []qqbot.Mention{{ID: "BOTOPENID", Bot: true}}, true},
+		{"mentions 全为其它机器人", "BOTOPENID", []qqbot.Mention{{ID: "OTHERBOT", Bot: true}}, false},
+		{"未 Ready(botOpenID 空)+ 其它机器人", "", []qqbot.Mention{{ID: "OTHERBOT", Bot: true}}, false},
+		{"未 Ready(botOpenID 空)+ mentions 空", "", nil, true},
+	}
+	for _, c := range cases {
+		tr := &qqTransport{botOpenID: c.bot}
+		if got := tr.mentionsBot(&qqbot.GroupAtMessage{Mentions: c.mentions}); got != c.want {
+			t.Fatalf("%s: mentionsBot=%v want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestIsSelfMessage 机器人自身群消息判定(防自问自答回环)。
+func TestIsSelfMessage(t *testing.T) {
+	tr := &qqTransport{botOpenID: "BOTOPENID"}
+	if !tr.isSelfMessage(&qqbot.GroupAtMessage{Author: qqbot.Author{MemberOpenID: "BOTOPENID", Bot: true}}) {
+		t.Fatal("机器人自身 member_openid 应判为自身消息")
+	}
+	if tr.isSelfMessage(&qqbot.GroupAtMessage{Author: qqbot.Author{MemberOpenID: "MEMBER9", Bot: false}}) {
+		t.Fatal("普通成员不应判为自身消息")
+	}
+	empty := &qqTransport{}
+	if empty.isSelfMessage(&qqbot.GroupAtMessage{Author: qqbot.Author{MemberOpenID: "X"}}) {
+		t.Fatal("未 Ready 时不应误判")
+	}
+}
+
+// TestDiagRing diagf 诊断环形缓冲(真机排障可见性):累积 + 上限截断 + 最近优先。
+func TestDiagRing(t *testing.T) {
+	tr := &qqTransport{}
+	for i := 0; i < 45; i++ {
+		tr.diagf("事件 %d", i)
+	}
+	lines := strings.Split(tr.diagLines(100), "\n")
+	if len(lines) != 40 {
+		t.Fatalf("环形上限应为 40 条,got %d", len(lines))
+	}
+	if !strings.Contains(lines[len(lines)-1], "事件 44") {
+		t.Fatalf("应保留最新一条: %q", lines[len(lines)-1])
+	}
+	if !strings.Contains(lines[0], "事件 5") {
+		t.Fatalf("最旧应为事件 5: %q", lines[0])
+	}
+	if got := tr.diagLines(3); len(strings.Split(got, "\n")) != 3 {
+		t.Fatalf("diagLines(3) 应取最近 3 条: %q", got)
+	}
+	if (&qqTransport{}).diagLines(5) != "" {
+		t.Fatal("无诊断应返回空串")
+	}
+}
+
+// TestEnvNameAndGuide envName 环境识别 + /qq env 无参指引含沙箱群聊前置(个人开发者群聊唯一路径)。
+func TestEnvNameAndGuide(t *testing.T) {
+	if got := envName("https://sandbox.api.sgroup.qq.com"); !strings.Contains(got, "沙箱") {
+		t.Fatalf("沙箱 URL 应识别为沙箱: %q", got)
+	}
+	if got := envName(qqbot.DefaultBaseURL); !strings.Contains(got, "正式") {
+		t.Fatalf("官方根应识别为正式: %q", got)
+	}
+	if got := envName("https://example.com"); got != "自定义" {
+		t.Fatalf("未知 URL 应为自定义: %q", got)
+	}
+	tr := &qqTransport{creds: &qqbot.Credentials{AppID: "a", AppSecret: "b"}, baseURL: qqbot.DefaultBaseURL}
+	out, err := tr.qqCmd(context.Background(), []string{"env"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"沙箱配置页", "qqbot/#/developer/sandbox", "群机器人", "不支持私聊"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("env 指引应含 %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestGatewayStoppedGeneration 网关世代语义(修 status 误报"网关=停"):
+// 旧世代 goroutine 收尾不得改动新网关状态;同世代才清 running 并记错误。
+func TestGatewayStoppedGeneration(t *testing.T) {
+	tr := &qqTransport{running: true, gen: 2}
+	// 旧世代(gen=1)收尾:不生效
+	tr.gatewayStopped(1, nil)
+	if !tr.running {
+		t.Fatal("旧世代收尾不得清 running(否则切环境后 status 误报网关=停)")
+	}
+	// 同世代 + 取消:清 running,不写错误
+	tr.gatewayStopped(2, context.Canceled)
+	if tr.running || tr.lastError != "" {
+		t.Fatalf("正常停止应清 running 且无错误: %+v", tr.lastError)
+	}
+	// 同世代 + 真实错误:记录错误并进诊断
+	tr2 := &qqTransport{running: true, gen: 5}
+	tr2.gatewayStopped(5, errors.New("ws 拨号失败"))
+	if tr2.running || !strings.Contains(tr2.lastError, "ws 拨号失败") {
+		t.Fatalf("错误应记入 lastError: %q", tr2.lastError)
+	}
+	if !strings.Contains(tr2.diagLines(5), "网关停止") {
+		t.Fatalf("错误应进诊断环形: %q", tr2.diagLines(5))
+	}
+	// 旧世代错误也不得覆盖新状态
+	tr3 := &qqTransport{running: true, gen: 9}
+	tr3.gatewayStopped(8, errors.New("旧错误"))
+	if !tr3.running || tr3.lastError != "" {
+		t.Fatalf("旧世代错误不得覆盖: running=%v err=%q", tr3.running, tr3.lastError)
+	}
+}
+
+// TestEventCountsDiag 事件类型计数诊断:分类累计 + /qq status 展示
+// (群@=0 长期不变 = 平台侧未推送,用于把"无反应"定位到沙箱配置/认证而非本地代码)。
+func TestEventCountsDiag(t *testing.T) {
+	tr := &qqTransport{evCounts: map[string]int{}}
+	tr.countEvent("group")
+	tr.countEvent("group")
+	tr.countEvent("c2c")
+	tr.countEvent("ready")
+	if tr.evCount("group") != 2 || tr.evCount("c2c") != 1 {
+		t.Fatalf("计数不符: group=%d c2c=%d", tr.evCount("group"), tr.evCount("c2c"))
+	}
+	out := tr.statusText()
+	if !strings.Contains(out, "事件统计: C2C=1 群@=2 其它=0") {
+		t.Fatalf("/qq status 应展示事件统计:\n%s", out)
+	}
+	// 空 transports(nil map)不 panic
+	(&qqTransport{}).statusText()
 }

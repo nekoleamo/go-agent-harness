@@ -27,7 +27,7 @@ type Bridge struct {
 
 	cwd  sdk.CwdSessions // ctx.cwdSessions(P1 会话绑定;可选——未装配会话命令降级)
 	llm  sdk.LLMService  // ctx.llm(/status 模型名;可选)
-	jobs sdk.JobService // ctx.jobs(/bg 后台任务;可选——未装配命令降级)
+	jobs sdk.JobService  // ctx.jobs(/bg 后台任务;可选——未装配命令降级)
 	bind *bindStore      // chat→宿主会话映射(opt.SessionBindPath;nil = 无绑定能力)
 
 	mu       sync.Mutex
@@ -35,8 +35,8 @@ type Bridge struct {
 	curRoute Route               // 当前回合归属会话(审批确认推送目标)
 	cmds     sdk.CommandRegistry // ctx.commands(可选;RegisterCommands 注入)
 
-	qMu     sync.Mutex
-	queued  []queuedInbound // P1 忙时队列(全局 FIFO 单槽;回合完成自动续跑)
+	qMu    sync.Mutex
+	queued []queuedInbound // P1 忙时队列(全局 FIFO 单槽;回合完成自动续跑)
 
 	confirmMu sync.Mutex
 	pending   map[string]*confirmWait // route.Key() → 待回答确认
@@ -46,6 +46,15 @@ type Bridge struct {
 
 	dedupMu sync.Mutex
 	dedup   map[string]time.Time // route+msgid → 首次 seen(窗口裁剪)
+
+	seenMu sync.Mutex
+	seen   []seenGroup // 最近出现过的群(未授权也记;/im allowg 选项枚举用,免手抄 openid)
+}
+
+// seenGroup 最近从通道收到的群一条(展示/选项用)。
+type seenGroup struct {
+	chatID string
+	at     time.Time
 }
 
 // queuedInbound 一条忙时排队的入站(回合结束后按序续跑)。
@@ -90,6 +99,9 @@ func New(c sdk.Ctx, loop sdk.AgentLoop, sessions sdk.SessionLog, tr Transport, o
 	if opt.PairingReply != nil {
 		o.PairingReply = opt.PairingReply
 	}
+	if opt.Diag != nil {
+		o.Diag = opt.Diag
+	}
 	if opt.Allow != nil {
 		o.Allow = opt.Allow
 	}
@@ -98,12 +110,12 @@ func New(c sdk.Ctx, loop sdk.AgentLoop, sessions sdk.SessionLog, tr Transport, o
 	}
 	b := &Bridge{
 		c: c, loop: loop, sessions: sessions, tr: tr,
-		acc:     newAccessWith(o),
-		opt:     o,
+		acc:      newAccessWith(o),
+		opt:      o,
 		pending:  make(map[string]*confirmWait),
 		qPending: make(map[string]*questionWait),
 		dedup:    make(map[string]time.Time),
-		bind:    newBindStore(o.SessionBindPath),
+		bind:     newBindStore(o.SessionBindPath),
 	}
 	b.injectOptionalServices(c) // 可选:ctx.cwdSessions/ctx.llm(P1 会话绑定/模型名)
 	return b
@@ -135,6 +147,15 @@ func (b *Bridge) SetTurnControl(t sdk.TurnControl) { b.turn = t }
 // Access 暴露访问控制(主机命令/测试调整用)。
 func (b *Bridge) Access() *Access { return b.acc }
 
+// diagf 入站诊断(Options.Diag;nil = 静默)。用于真机排障:区分"事件未到达 / 未授权丢弃 /
+// 重复丢弃 / 回合已启动",避免无反应时无法定位。
+func (b *Bridge) diagf(format string, args ...any) {
+	if b.opt.Diag == nil {
+		return
+	}
+	b.opt.Diag(fmt.Sprintf(format, args...))
+}
+
 // HandleInbound 处理一条已解析入站消息(transport 逐条调用;可并发)。
 func (b *Bridge) HandleInbound(ctx context.Context, in Inbound) error {
 	text := strings.TrimSpace(in.Text)
@@ -148,13 +169,20 @@ func (b *Bridge) HandleInbound(ctx context.Context, in Inbound) error {
 	if r.UserID == "" {
 		return nil
 	}
+	// 记录群活动(未授权/被拒也记:供 /im allowg 枚举已知群,免手抄 group_openid)
+	if r.ChatID != "" && r.ChatID != r.UserID {
+		b.noteGroup(r.ChatID)
+	}
 
 	// 1. 访问控制(gate;drop 静默,防枚举)
 	res, code := b.acc.Gate(r.SenderKey(), r.ChatKey())
 	switch res {
 	case gateDrop:
+		b.diagf("入站丢弃:未授权(mode=%s sender=%s chat=%s;群场景可用 /im allowg %s 授权整群)",
+			b.acc.Mode(), r.SenderKey(), r.ChatKey(), r.ChatID)
 		return nil
 	case gatePair:
+		b.diagf("入站未授权:已回配对码提示(code=%s sender=%s chat=%s)", code, r.SenderKey(), r.ChatKey())
 		msg := ""
 		if code != "" && b.opt.PairingReply != nil {
 			msg = b.opt.PairingReply(code, r)
@@ -167,8 +195,11 @@ func (b *Bridge) HandleInbound(ctx context.Context, in Inbound) error {
 
 	// 2. 去重(通道消息 id;5min 窗口)
 	if in.MsgID != "" && !b.markSeen(r, in.MsgID) {
+		b.diagf("入站丢弃:重复消息(msgID=%s sender=%s)", in.MsgID, r.SenderKey())
 		return nil
 	}
+
+	b.diagf("入站放行:回合启动(sender=%s chat=%s runes=%d)", r.SenderKey(), r.ChatKey(), len([]rune(text)))
 
 	// 3. 交互归属判定(回合中用户回答确认/提问;先于 busy 与回合,防打断)
 	if b.answerPending(ctx, r, text) {
@@ -684,6 +715,20 @@ func (b *Bridge) imCmd(ctx context.Context, args []string) string {
 				out += "  " + b.stripChan(g) + "\n"
 			}
 		}
+		// 最近活动群(未授权也列出 → 可直接 /im allowg 选择)
+		auth := make(map[string]bool)
+		for _, g := range b.acc.Groups() {
+			auth[b.stripChan(g)] = true
+		}
+		var pending []string
+		for _, g := range b.seenGroups() {
+			if !auth[g.chatID] {
+				pending = append(pending, fmt.Sprintf("  %s(最近活动 %s)", g.chatID, g.at.Format("15:04")))
+			}
+		}
+		if len(pending) > 0 {
+			out += "\n最近活动群(未授权;可 /im allowg 授权):\n" + strings.Join(pending, "\n")
+		}
 		return strings.TrimRight(out, "\n")
 	default:
 		return "用法: /im status|pair <配对码>|allowg <群ChatID>|revokeg <群ChatID>|list"
@@ -869,6 +914,57 @@ func (b *Bridge) chanKey(chatID string) string {
 	return b.tr.Name() + "\x00" + chatID
 }
 
+// noteGroup 记录群活动(去重保序、最新在前、上限 20)。
+func (b *Bridge) noteGroup(chatID string) {
+	if chatID == "" {
+		return
+	}
+	b.seenMu.Lock()
+	defer b.seenMu.Unlock()
+	for i, g := range b.seen {
+		if g.chatID == chatID {
+			b.seen = append(b.seen[:i], b.seen[i+1:]...)
+			break
+		}
+	}
+	b.seen = append([]seenGroup{{chatID: chatID, at: time.Now()}}, b.seen...)
+	if len(b.seen) > 20 {
+		b.seen = b.seen[:20]
+	}
+}
+
+// seenGroups 已知群快照(最新在前)。
+func (b *Bridge) seenGroups() []seenGroup {
+	b.seenMu.Lock()
+	defer b.seenMu.Unlock()
+	return append([]seenGroup(nil), b.seen...)
+}
+
+// groupOptions 群参数选项(命令面逐级确认):allowg → 最近活动过的群(含未授权);
+// revokeg → 仅已授权群。Value 为裸群 openid(imCmd 内部再 chanKey)。
+func (b *Bridge) groupOptions(authorized bool) []sdk.Option {
+	if authorized {
+		out := make([]sdk.Option, 0, 4)
+		for _, g := range b.acc.Groups() {
+			out = append(out, sdk.Option{Value: b.stripChan(g), Desc: "已授权群"})
+		}
+		return out
+	}
+	auth := make(map[string]bool)
+	for _, g := range b.acc.Groups() {
+		auth[b.stripChan(g)] = true
+	}
+	out := make([]sdk.Option, 0, 4)
+	for _, g := range b.seenGroups() {
+		desc := "最近活动 " + g.at.Format("15:04")
+		if auth[g.chatID] {
+			desc = "已授权 · " + desc
+		}
+		out = append(out, sdk.Option{Value: g.chatID, Desc: desc})
+	}
+	return out
+}
+
 // stripChan 去掉访问控制键的渠道前缀(展示用)。
 func (b *Bridge) stripChan(key string) string {
 	if i := strings.Index(key, "\x00"); i >= 0 {
@@ -906,30 +1002,45 @@ func (b *Bridge) RegisterCommands(cmds sdk.CommandRegistry) (sdk.Disposer, error
 		Run: func(args []string) (string, error) {
 			return b.imCmd(context.Background(), args), nil
 		},
-		// 二级选项:status/list 直接执行;pair 再输入配对码(自由参数)
+		// 三级逐级确认:L1 子命令 → L2(pair/allowg/revokeg 参数;allowg/revokeg 优先枚举已见群)
 		Args: []sdk.ArgLevel{
 			{Options: func([]string) []sdk.Option {
 				return []sdk.Option{
 					{Value: "status", Desc: "通道状态(模式/已授权/忙闲)"},
-					{Value: "list", Desc: "已授权用户/群列表"},
+					{Value: "list", Desc: "已授权用户/群 + 最近活动群"},
 					{Value: "pair", Desc: "用配对码授权新用户"},
 					{Value: "allowg", Desc: "授权整群(群内成员免各自配对)"},
 					{Value: "revokeg", Desc: "撤销群授权"},
 				}
 			}},
-			{FreeArgs: func(picked []string) []string {
-				// picked = [命令名, 第一级值, ...](picked[0] 恒为命令名)
-				if len(picked) < 2 {
+			{
+				// 群参数枚举(从入站事件记住的群直接选,免手抄 openid;无已知群时回退自由输入)
+				Options: func(picked []string) []sdk.Option {
+					if len(picked) < 2 {
+						return nil
+					}
+					switch picked[1] {
+					case "allowg":
+						return b.groupOptions(false)
+					case "revokeg":
+						return b.groupOptions(true)
+					}
 					return nil
-				}
-				switch picked[1] {
-				case "pair":
-					return []string{"配对码"}
-				case "allowg", "revokeg":
-					return []string{"群ChatID"}
-				}
-				return nil
-			}},
+				},
+				FreeArgs: func(picked []string) []string {
+					// picked = [命令名, 第一级值, ...](picked[0] 恒为命令名)
+					if len(picked) < 2 {
+						return nil
+					}
+					switch picked[1] {
+					case "pair":
+						return []string{"配对码"}
+					case "allowg", "revokeg":
+						return []string{"群ChatID"}
+					}
+					return nil
+				},
+			},
 		},
 	})
 	if err != nil {

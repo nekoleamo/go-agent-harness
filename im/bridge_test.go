@@ -724,7 +724,9 @@ type stubJobs struct {
 	rns []sdk.JobFunc
 }
 
-func (j *stubJobs) Submit(cmdline string) (string, error) { return "j" + fmt.Sprintf("%d", len(j.rns)), nil }
+func (j *stubJobs) Submit(cmdline string) (string, error) {
+	return "j" + fmt.Sprintf("%d", len(j.rns)), nil
+}
 func (j *stubJobs) Run(fn sdk.JobFunc) (string, error) {
 	j.mu.Lock()
 	id := fmt.Sprintf("job-%d", len(j.rns)+1)
@@ -839,8 +841,8 @@ func TestParseQuestionAnswer(t *testing.T) {
 		{"2", []string{"plan-b"}, "", true},
 		{"方案C", []string{"plan-c"}, "", true},
 		{"plan-a", []string{"plan-a"}, "", true},
-		{"九", nil, "", false},        // 非法编号且不允许自由文本
-		{"1,3", nil, "", false},        // 单选回多个 → 提示重答
+		{"九", nil, "", false},   // 非法编号且不允许自由文本
+		{"1,3", nil, "", false}, // 单选回多个 → 提示重答
 		{"", nil, "", false},
 	}
 	for _, c := range cases {
@@ -954,5 +956,94 @@ func TestImCommandGroupAllow(t *testing.T) {
 	}
 	if got := strings.Join(tr.sent(), "\n"); !strings.Contains(got, "未授权") || !strings.Contains(got, "allowg") {
 		t.Fatalf("撤销后群消息应回配对+群授权指引: %q", got)
+	}
+}
+
+// TestBridgeDiagCallback 入站诊断回调(真机排障):未授权丢弃 / 配对提示 / 回合启动均上报。
+func TestBridgeDiagCallback(t *testing.T) {
+	var mu sync.Mutex
+	var got []string
+	diag := func(s string) { mu.Lock(); got = append(got, s); mu.Unlock() }
+	snapshot := func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return strings.Join(got, "\n")
+	}
+	reset := func() { mu.Lock(); got = nil; mu.Unlock() }
+
+	// 未授权(allowlist 静默丢弃)→ 诊断含"入站丢弃:未授权"
+	b, _, _, _ := buildTestBridge(t, Options{Mode: AccessAllowlist, Allow: []string{"mock\x00OK"}, Diag: diag})
+	_ = b.HandleInbound(context.Background(), Inbound{Route: mkRoute("UNAUTH"), MsgID: "m1", Text: "hi"})
+	if !strings.Contains(snapshot(), "入站丢弃:未授权") {
+		t.Fatalf("未授权应上报诊断: %q", snapshot())
+	}
+
+	// 放行一条 + 重复 msgID → 诊断含"入站放行"与"重复消息"
+	reset()
+	_ = b.HandleInbound(context.Background(), Inbound{Route: mkRoute("OK"), MsgID: "m2", Text: "hi"})
+	_ = b.HandleInbound(context.Background(), Inbound{Route: mkRoute("OK"), MsgID: "m2", Text: "hi"})
+	j := snapshot()
+	if !strings.Contains(j, "入站放行") || !strings.Contains(j, "重复消息") {
+		t.Fatalf("应同时上报放行与重复丢弃: %q", j)
+	}
+
+	// 配对模式 → 诊断含"已回配对码提示"
+	reset()
+	b2, _, _, _ := buildTestBridge(t, Options{Mode: AccessPairing, Diag: diag})
+	_ = b2.HandleInbound(context.Background(), Inbound{Route: mkRoute("STRANGER"), MsgID: "m3", Text: "hi"})
+	if !strings.Contains(snapshot(), "已回配对码提示") {
+		t.Fatalf("配对模式应上报提示诊断: %q", snapshot())
+	}
+
+	// nil Diag 不应 panic
+	b3, _, _, _ := buildTestBridge(t, Options{Mode: AccessPairing})
+	if err := b3.HandleInbound(context.Background(), Inbound{Route: mkRoute("STRANGER"), MsgID: "m4", Text: "hi"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestImGroupOptions 群参数逐级确认:/im allowg 枚举最近活动群(未授权也列,免手抄 openid)、
+// revokeg 枚举已授权群;/im list 同时给出未授权群提示。
+func TestImGroupOptions(t *testing.T) {
+	b, _, _, _ := buildTestBridge(t, Options{Mode: AccessPairing})
+	// 私聊不应被记录为群
+	if err := b.HandleInbound(context.Background(), Inbound{Route: mkRoute("U1"), MsgID: "d1", Text: "hi"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := b.groupOptions(false); len(got) != 0 {
+		t.Fatalf("私聊不应记入群选项: %+v", got)
+	}
+	// 未授权群入站(被拒也记录)→ allowg 选项可见
+	grp := Route{Channel: "mock", UserID: "U1", ChatID: "G1"}
+	if err := b.HandleInbound(context.Background(), Inbound{Route: grp, MsgID: "g1", Text: "hi"}); err != nil {
+		t.Fatal(err)
+	}
+	opts := b.groupOptions(false)
+	if len(opts) != 1 || opts[0].Value != "G1" {
+		t.Fatalf("allowg 应列出最近活动群: %+v", opts)
+	}
+	if got := b.groupOptions(true); len(got) != 0 {
+		t.Fatalf("未授权时 revokeg 不应有选项: %+v", got)
+	}
+	if out := b.imCmd(context.Background(), []string{"list"}); !strings.Contains(out, "最近活动群(未授权") {
+		t.Fatalf("未授权群应在 /im list 列出: %q", out)
+	}
+	// 群授权后:allowg 标注已授权、revokeg 可撤销、list 不再提示未授权
+	b.acc.AllowGroup(b.chanKey("G1"))
+	if opts := b.groupOptions(false); len(opts) != 1 || !strings.Contains(opts[0].Desc, "已授权") {
+		t.Fatalf("授权后 allowg 选项应标注已授权: %+v", opts)
+	}
+	if rv := b.groupOptions(true); len(rv) != 1 || rv[0].Value != "G1" {
+		t.Fatalf("revokeg 应列出已授权群: %+v", rv)
+	}
+	if out := b.imCmd(context.Background(), []string{"list"}); !strings.Contains(out, "已授权群") || strings.Contains(out, "最近活动群") {
+		t.Fatalf("授权后 list 不应再提示未授权群: %q", out)
+	}
+	// 新群出现 → 最新在前
+	if err := b.HandleInbound(context.Background(), Inbound{Route: Route{Channel: "mock", UserID: "U1", ChatID: "G2"}, MsgID: "g2", Text: "hi"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := b.groupOptions(false); len(got) != 2 || got[0].Value != "G2" {
+		t.Fatalf("最近活动群应最新在前: %+v", got)
 	}
 }

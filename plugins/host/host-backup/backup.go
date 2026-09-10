@@ -24,6 +24,12 @@ const backupsDir = "backups"
 // 自动备份保留份数(backup_on_start 轮转)。
 const defaultKeep = 5
 
+// 选择器哨兵:立即备份(默认目录)、备份到自定义路径(二级自由输入)。
+const (
+	backupNowSentinel    = "__now__"
+	backupCustomSentinel = "__custom__"
+)
+
 // Plugin 实现 host-backup。requires ctx.commands(可选:未装配跳过命令注册)。
 type Plugin struct{}
 
@@ -46,23 +52,37 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	if cmds != nil {
 		d, err := cmds.Register(sdk.CommandSpec{
 			Name:  "backup",
-			Usage: "/backup [dest 路径] | list | restore <name>",
+			Usage: "/backup now|[dest 路径]|list|restore <name>",
 			Desc:  "整体备份/恢复(GAH_HOME 单根;restore 前自动先备份当前态)",
 			Run:   func(args []string) (string, error) { return backupCmd(args, b) },
+			// 逐级确认:一级 立即备份(默认目录)/list/restore/自定义路径哨兵;二级 restore 枚举备份、自定义路径自由输入。
 			Args: []sdk.ArgLevel{
 				{Options: func([]string) []sdk.Option {
-					return []sdk.Option{{Value: "list", Desc: "列出已有备份"}, {Value: "restore", Desc: "恢复备份(先自动备份当前态)"}}
+					return []sdk.Option{
+						{Value: backupNowSentinel, Desc: "立即备份到默认目录 " + backupsDir + "/"},
+						{Value: "list", Desc: "列出已有备份"},
+						{Value: "restore", Desc: "恢复备份(先自动备份当前态)"},
+						{Value: backupCustomSentinel, Desc: "备份到自定义路径…"},
+					}
 				}},
-				{Options: func(picked []string) []sdk.Option {
-					if len(picked) < 2 || picked[1] != "restore" {
+				{
+					Options: func(picked []string) []sdk.Option {
+						if len(picked) < 2 || picked[1] != "restore" {
+							return nil
+						}
+						opts := make([]sdk.Option, 0, 8)
+						for _, bi := range b.List() {
+							opts = append(opts, sdk.Option{Value: bi.Name, Desc: fmt.Sprintf("%s (%dKB)", time.Unix(bi.Time, 0).Format("01-02 15:04"), bi.Size/1024)})
+						}
+						return opts
+					},
+					FreeArgs: func(picked []string) []string {
+						if len(picked) >= 2 && picked[1] == backupCustomSentinel {
+							return []string{"目标路径"}
+						}
 						return nil
-					}
-					opts := make([]sdk.Option, 0, 8)
-					for _, bi := range b.List() {
-						opts = append(opts, sdk.Option{Value: bi.Name, Desc: fmt.Sprintf("%s (%dKB)", time.Unix(bi.Time, 0).Format("01-02 15:04"), bi.Size/1024)})
-					}
-					return opts
-				}},
+					},
+				},
 			},
 		})
 		if err == nil {
@@ -322,7 +342,7 @@ func extractTarGz(arc, root string) error {
 			if err != nil {
 				return err
 			}
-		// 其余类型(符号链接/设备等)跳过:备份数据文件为主,链接目标跨机不可靠
+			// 其余类型(符号链接/设备等)跳过:备份数据文件为主,链接目标跨机不可靠
 		}
 	}
 	return nil
@@ -330,7 +350,7 @@ func extractTarGz(arc, root string) error {
 
 // backupCmd /backup 命令执行:无参 = 备份到默认目录;list = 列出;restore <name> = 恢复。
 func backupCmd(args []string, b *Backup) (string, error) {
-	if len(args) == 0 {
+	if len(args) == 0 || args[0] == backupNowSentinel {
 		name, err := b.Backup("")
 		if err != nil {
 			return "", err
@@ -357,9 +377,12 @@ func backupCmd(args []string, b *Backup) (string, error) {
 			return "", err
 		}
 		return "已从 " + args[1] + " 恢复(恢复前当前态已自动备份进 backups/;重启后完全生效)", nil
-		default:
+	default:
 		// dest 路径备份(外部路径/目录);~/ 展开与 /workspace 同款(host-internal-commands)
-		dest := args[0]
+		dest := strings.TrimSpace(strings.TrimPrefix(args[0], backupCustomSentinel))
+		if dest == "" {
+			return "", fmt.Errorf("/backup: 未给目标路径(如 /backup /tmp/x.tar.gz 或 /backup ~/Desktop)")
+		}
 		if dest == "~" || strings.HasPrefix(dest, "~/") {
 			if uh, err := os.UserHomeDir(); err == nil {
 				dest = filepath.Join(uh, strings.TrimPrefix(dest, "~"))

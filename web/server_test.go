@@ -55,12 +55,13 @@ func (s *stubLLM) Thinking() sdk.ThinkingLevel { return sdk.ThinkingMedium }
 func (s *stubLLM) ListModels() ([]sdk.ModelInfo, error) {
 	return []sdk.ModelInfo{{ID: "deepseek-chat"}}, nil
 }
+
 // —— MultiProviderService 扩展(M12 stub) ——
 func (s *stubLLM) Providers() []sdk.ProviderProfile {
 	return []sdk.ProviderProfile{{Name: "demo", BaseURL: "http://x", Model: "deepseek-chat", Active: true}}
 }
 func (s *stubLLM) AddProvider(name, baseURL, apiKey, model string) error { return nil }
-func (s *stubLLM) SetActiveProvider(name string) error                    { return nil }
+func (s *stubLLM) SetActiveProvider(name string) error                   { return nil }
 func (s *stubLLM) ListAllModels() []sdk.ProviderModelList {
 	return []sdk.ProviderModelList{{Name: "demo", BaseURL: "http://x", Models: []sdk.ModelInfo{{ID: "deepseek-chat"}}}}
 }
@@ -163,9 +164,9 @@ type stubCSPlain struct{ sdk.CwdSessions }
 
 type stubTools struct {
 	sdk.ToolRegistry
-	defs      map[string]sdk.ToolDefinition
-	called    []string
-	callErr   error
+	defs    map[string]sdk.ToolDefinition
+	called  []string
+	callErr error
 }
 
 func (s *stubTools) List() []sdk.ToolDefinition {
@@ -193,7 +194,7 @@ type stubJobs struct {
 	killed []string
 }
 
-func (s *stubJobs) List() []sdk.Job               { return s.list }
+func (s *stubJobs) List() []sdk.Job { return s.list }
 func (s *stubJobs) Output(id string) (sdk.Job, bool) {
 	for _, j := range s.list {
 		if j.ID == id {
@@ -209,8 +210,8 @@ func (s *stubJobs) Kill(id string) error {
 
 type stubPM struct {
 	sdk.PluginManager
-	list    []sdk.PluginInfo
-	loaded  []string
+	list     []sdk.PluginInfo
+	loaded   []string
 	unloaded []string
 }
 
@@ -771,12 +772,12 @@ func TestCommandRunEndpoint(t *testing.T) {
 func TestPluginsEndpoints(t *testing.T) {
 	s, _ := newTestServer()
 	s.pm = &stubPM{list: []sdk.PluginInfo{
-		{ID: "tool-x", State: "configured"},                          // 无声明常规 → web
+		{ID: "tool-x", State: "configured"},                         // 无声明常规 → web
 		{ID: "tool-shell", State: "configured", Manage: "external"}, // 声明外部化 → external
 		{ID: "ui-tui-app", State: "configured", Manage: "scenario"}, // 声明场景 → scenario
-		{ID: "host-tools", State: "loaded"},                          // 运行态 → host
-		{ID: "tool-web", State: "loaded", Manage: "external"},      // 声明 external 但已运行 → host 优先
-		{ID: "llm-mock", State: "configured", Manage: "scenario"},  // 声明场景 → scenario
+		{ID: "host-tools", State: "loaded"},                         // 运行态 → host
+		{ID: "tool-web", State: "loaded", Manage: "external"},       // 声明 external 但已运行 → host 优先
+		{ID: "llm-mock", State: "configured", Manage: "scenario"},   // 声明场景 → scenario
 	}}
 	hs := httptest.NewServer(s.handler())
 	defer hs.Close()
@@ -1566,5 +1567,104 @@ func TestQuestionEndpoint(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("作答未回填")
+	}
+}
+
+// TestCommandOptionsEndpoint 命令逐级确认端点(POST /api/commands/{name}/options):
+// 枚举级联 / 自由参数提示 / 越界 done / 未注册 404 / 未装配 503。
+func TestCommandOptionsEndpoint(t *testing.T) {
+	s, _ := newTestServer()
+	cmds := newStubCmds()
+	_, err := cmds.Register(sdk.CommandSpec{
+		Name: "qq", Usage: "/qq status|login|env", Desc: "逐级测试",
+		Run: func([]string) (string, error) { return "", nil },
+		Args: []sdk.ArgLevel{
+			{Options: func([]string) []sdk.Option {
+				return []sdk.Option{{Value: "env", Desc: "环境"}, {Value: "status", Desc: "状态"}}
+			}},
+			{
+				Options: func(picked []string) []sdk.Option {
+					if len(picked) >= 2 && picked[1] == "env" {
+						return []sdk.Option{{Value: "sandbox", Desc: "沙箱"}, {Value: "official", Desc: "正式"}}
+					}
+					return nil
+				},
+				FreeArgs: func(picked []string) []string {
+					if len(picked) >= 2 && picked[1] == "login" {
+						return []string{"AppID", "AppSecret"}
+					}
+					return nil
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = cmds.Register(sdk.CommandSpec{Name: "plain", Usage: "/plain", Desc: "无参数", Run: func([]string) (string, error) { return "", nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.cmds = cmds
+	hs := httptest.NewServer(s.handler())
+	defer hs.Close()
+
+	type optionsResp struct {
+		Level    int                 `json:"level"`
+		Items    []CommandOptionView `json:"items"`
+		FreeArgs []string            `json:"freeArgs"`
+		Done     bool                `json:"done"`
+	}
+	post := func(name, body string) (int, optionsResp) {
+		t.Helper()
+		resp, err := http.Post(hs.URL+"/api/commands/"+name+"/options", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var out optionsResp
+		if resp.StatusCode == 200 {
+			if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return resp.StatusCode, out
+	}
+
+	// 一级:命令自身声明候选(selected 为空)
+	if code, out := post("qq", `{"picked":[]}`); code != 200 || out.Level != 1 || len(out.Items) != 2 || out.Done {
+		t.Fatalf("一级应返回 2 个候选: code=%d %+v", code, out)
+	}
+	// 二级 env → 枚举 official/sandbox
+	if _, out := post("qq", `{"picked":["env"]}`); out.Level != 2 || len(out.Items) != 2 || out.Items[1].Value != "official" {
+		t.Fatalf("env 二级候选不符: %+v", out)
+	}
+	// 二级 login → 自由参数提示(无枚举)
+	if _, out := post("qq", `{"picked":["login"]}`); len(out.Items) != 0 || len(out.FreeArgs) != 2 || out.FreeArgs[0] != "AppID" || out.Done {
+		t.Fatalf("login 应返回自由参数提示: %+v", out)
+	}
+	// 越界(已到末级)→ done(前端不再提示,可直接执行)
+	if _, out := post("qq", `{"picked":["env","sandbox"]}`); !out.Done || len(out.Items) != 0 {
+		t.Fatalf("末级应 done: %+v", out)
+	}
+	// 无参数级命令 → done
+	if _, out := post("plain", `{"picked":[]}`); !out.Done {
+		t.Fatalf("无参数命令应 done: %+v", out)
+	}
+	// 未注册 404
+	if code, _ := post("nope", `{}`); code != http.StatusNotFound {
+		t.Fatalf("未注册应 404,得 %d", code)
+	}
+	// 未装配 503
+	s2, _ := newTestServer()
+	hs2 := httptest.NewServer(s2.handler())
+	defer hs2.Close()
+	resp, err := http.Post(hs2.URL+"/api/commands/x/options", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("未装配应 503,得 %d", resp.StatusCode)
 	}
 }

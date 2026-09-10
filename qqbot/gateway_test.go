@@ -369,3 +369,17 @@ func TestFetchGatewayURLAuthHeader(t *testing.T) {
 		t.Fatalf("裸 token 应自动加前缀,得 %q", auth)
 	}
 }
+
+// TestGatewayConnectedURLDiagnostic 诊断:记录实际连接的 WS 地址(确认沙箱环境是否连到沙箱网关)。
+func TestGatewayConnectedURLDiagnostic(t *testing.T) {
+	g := NewGateway(nil, nil)
+	if g.ConnectedURL() != "" {
+		t.Fatal("未连接应为空")
+	}
+	g.mu.Lock()
+	g.wsURL = "wss://sandbox.api.sgroup.qq.com/websocket"
+	g.mu.Unlock()
+	if got := g.ConnectedURL(); got != "wss://sandbox.api.sgroup.qq.com/websocket" {
+		t.Fatalf("应回记录地址, got %q", got)
+	}
+}

@@ -38,6 +38,7 @@ type Gateway struct {
 	MinBackoff    time.Duration // 断线重连初始退避(默认 2s;测试可缩小)
 
 	mu        sync.Mutex
+	wsURL     string    // 实际连接的 WS 地址(诊断:确认连的是沙箱/正式网关)
 	sessionID string    // Ready 后记录;Resume 用
 	seq       int64     // 最后收到的事件序号(心跳回显)
 	lastAck   time.Time // 最后心跳 ACK 时间(超 3×interval 无 ack 判死连,主动重连)
@@ -60,6 +61,13 @@ func (g *Gateway) LastError() string {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.lastError
+}
+
+// ConnectedURL 实际连接的 WS 地址(未连接返回空;诊断用 —— 用于确认沙箱环境是否真的连到沙箱网关)。
+func (g *Gateway) ConnectedURL() string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.wsURL
 }
 
 // Online 是否已鉴权上线(session 有效)。
@@ -156,6 +164,9 @@ func (g *Gateway) runOnce(ctx context.Context) error {
 			return err
 		}
 	}
+	g.mu.Lock()
+	g.wsURL = url // 诊断:记录实际连接地址(沙箱/正式由服务端 /gateway/bot 返回决定)
+	g.mu.Unlock()
 	conn, err := g.dial(ctx, url)
 	if err != nil {
 		return err

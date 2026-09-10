@@ -339,3 +339,33 @@ func TestIMCommandsSubLevels(t *testing.T) {
 		t.Fatalf("list 路径不应有额外参数: %+v", got)
 	}
 }
+
+// TestImWechatSessionExpiredE2E 会话过期(ret=-14):清理失效凭证(token/游标)并停轮询,
+// 诊断提示可见(避免重启后带失效凭证反复失败;auto_relogin 默认开时会再发起扫码)。
+func TestImWechatSessionExpiredE2E(t *testing.T) {
+	m, hs := newWechatMock(t)
+	m.mu.Lock()
+	m.updates = []map[string]any{{"ret": -14, "get_updates_buf": "", "msgs": []any{}}}
+	m.mu.Unlock()
+	_, home := buildWechatEnv(t, hs.URL, "allowlist", true)
+
+	// auto_relogin 默认开:过期 → 清理失效凭证 → 自动重新扫码(mock 完成确认)→ 新凭证落盘。
+	// 断言旧 token 被替换(mock 的自动登录凭证为 tk-auto),证明清理+重登闭环生效。
+	deadline := time.Now().Add(15 * time.Second)
+	var last string
+	for time.Now().Before(deadline) {
+		store := ilink.NewStore(filepath.Join(home, "config", "ilink-wechat.yaml"))
+		if c, err := store.Load(); err == nil {
+			last = c.Token
+			if c.Token == "tk-auto" { // 自动重登成功:失效 token 已被替换
+				if c.SyncBuf != "buf-live" && c.SyncBuf != "" {
+					// 游标随新登录重置(具体值由 mock 决定,不做强断言)
+					t.Logf("新登录后游标: %q", c.SyncBuf)
+				}
+				return
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatalf("会话过期后应自动重新登录(期望 tk-auto),当前 %q", last)
+}

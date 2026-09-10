@@ -27,8 +27,8 @@ import (
 	"github.com/nekoleamo/go-agent-harness/core/event"
 	"github.com/nekoleamo/go-agent-harness/core/plugin"
 	"github.com/nekoleamo/go-agent-harness/qqbot"
-	"github.com/nekoleamo/go-agent-harness/web"
 	"github.com/nekoleamo/go-agent-harness/sdk"
+	"github.com/nekoleamo/go-agent-harness/web"
 )
 
 // qqMock QQ 全栈服务器:REST(token 换取/发消息)+ WS gateway(/gateway/bot 分发 wss)。
@@ -292,22 +292,34 @@ func TestImQQE2E(t *testing.T) {
 	}
 }
 
-// TestImQQGroupAtE2E 群 @:仅 @ 机器人(mentions 含 BOTOPENID)消息触发 → 群被动回复;
-// 非 @ 机器人消息丢弃;群回复走群消息端点。
+// TestImQQGroupAtE2E 群 @:官方语义 = GROUP_AT_MESSAGE_CREATE 事件本身即"@ 机器人"触发,
+// 且 mentions **不含机器人自身**(真机常为空数组)→ 必须触发回复;
+// 仅"mentions 全为其它机器人"与"机器人自身消息"丢弃;群回复走群消息端点。
 func TestImQQGroupAtE2E(t *testing.T) {
 	m, hs := newQQMock(t)
+	// 真机最常见形态:mentions 为空(官方只推 @ 机器人事件,列表不含机器人自身)
 	atBot := map[string]any{"op": 0, "t": qqbot.EventGroupAtMsg, "s": 2, "d": map[string]any{
-		"id": "grpmsg-1", "author": map[string]any{"member_openid": "MEMBER9"},
-		"group_openid": "GRP1", "content": "@gah 群命令", "timestamp": "2026-10-01T00:00:00+08:00",
-		"mentions": []map[string]any{{"id": "BOTOPENID", "member_openid": "BOTMEMBER"}}}}
-	notBot := map[string]any{"op": 0, "t": qqbot.EventGroupAtMsg, "s": 3, "d": map[string]any{
-		"id": "grpmsg-2", "author": map[string]any{"member_openid": "MEMBER9"},
-		"group_openid": "GRP1", "content": "你好", "timestamp": "2026-10-01T00:00:01+08:00",
-		"mentions": []map[string]any{{"id": "OTHERUSER", "member_openid": "OTHER"}}}}
-	m.events = []map[string]any{atBot, notBot}
+		"id": "grpmsg-1", "author": map[string]any{"member_openid": "MEMBER9", "bot": false},
+		"group_openid": "GRP1", "content": " @gah 群命令 ", "timestamp": "2026-10-01T00:00:00+08:00"}}
+	// 引用消息(message_type=103,content 空,正文在 msg_elements)
+	referral := map[string]any{"op": 0, "t": qqbot.EventGroupAtMsg, "s": 3, "d": map[string]any{
+		"id": "grpmsg-3", "author": map[string]any{"member_openid": "MEMBER9", "bot": false},
+		"group_openid": "GRP1", "content": "", "message_type": 103,
+		"msg_elements": []map[string]any{{"content": "引用内容:@gah 群命令"}},
+		"timestamp":    "2026-10-01T00:00:02+08:00"}}
+	// 其它机器人被 @(mentions 全为机器人且非本机器人)→ 丢弃
+	otherBot := map[string]any{"op": 0, "t": qqbot.EventGroupAtMsg, "s": 4, "d": map[string]any{
+		"id": "grpmsg-2", "author": map[string]any{"member_openid": "MEMBER9", "bot": false},
+		"group_openid": "GRP1", "content": "其它机器人命令", "timestamp": "2026-10-01T00:00:01+08:00",
+		"mentions": []map[string]any{{"id": "OTHERBOT", "bot": true}}}}
+	// 机器人自身消息(防回环)
+	selfEcho := map[string]any{"op": 0, "t": qqbot.EventGroupAtMsg, "s": 5, "d": map[string]any{
+		"id": "grpmsg-4", "author": map[string]any{"member_openid": "BOTOPENID", "bot": true},
+		"group_openid": "GRP1", "content": "自问自答", "timestamp": "2026-10-01T00:00:03+08:00"}}
+	m.events = []map[string]any{atBot, referral, otherBot, selfEcho}
 	buildQQEnv(t, hs.URL, "allowlist-grp", qqScript)
 
-	// @ 机器人 → 群回复(群端点 + 群 msg_id)
+	// @ 机器人(mentions 空)→ 群回复(群端点 + 群 msg_id)
 	rec := m.waitSend(t, "远程命令已执行", 20*time.Second)
 	if rec.path != "/v2/groups/GRP1/messages" {
 		t.Fatalf("应发群消息,path=%q", rec.path)
@@ -315,10 +327,15 @@ func TestImQQGroupAtE2E(t *testing.T) {
 	if rec.body["msg_id"] != "grpmsg-1" {
 		t.Fatalf("群被动回复应带群事件 msg_id,got %v", rec.body["msg_id"])
 	}
-	// 非 @ 机器人消息:丢弃(文本出站仍 1 条)
-	time.Sleep(1200 * time.Millisecond)
-	if n := m.textSendCount(); n != 1 {
-		t.Fatalf("非 @ 消息应被丢弃,文本出站 %d 条: %v", n, m.sentContents())
+	// 引用消息(msg_elements 正文)→ 也应触发一次回复(文本出站累计 2)
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) && m.textSendCount() < 2 {
+		time.Sleep(100 * time.Millisecond)
+	}
+	// 其它机器人被 @ / 机器人自身消息:丢弃(文本出站仍 2 条)
+	time.Sleep(1500 * time.Millisecond)
+	if n := m.textSendCount(); n != 2 {
+		t.Fatalf("应仅 @ 机器人与引用消息触发回复,文本出站 %d 条: %v", n, m.sentContents())
 	}
 }
 
@@ -879,6 +896,17 @@ func TestIMQQCommandSubLevels(t *testing.T) {
 	if got := qc.Args[1].FreeArgs([]string{"qq", "status"}); got != nil {
 		t.Fatalf("status 路径不应有额外参数: %+v", got)
 	}
+	// env 路径:L2 枚举 official/sandbox(逐级确认,免手输;login 路径无枚举走自由序列)
+	envOpts := qc.Args[1].Options([]string{"qq", "env"})
+	if len(envOpts) != 2 || envOpts[0].Value != "official" || envOpts[1].Value != "sandbox" {
+		t.Fatalf("env 路径应给 official/sandbox 枚举: %+v", envOpts)
+	}
+	if got := qc.Args[1].Options([]string{"qq", "login"}); len(got) != 0 {
+		t.Fatalf("login 路径应回退自由输入(AppID/AppSecret),不应有枚举: %+v", got)
+	}
+	if got := qc.Args[1].Options([]string{"qq", "status"}); len(got) != 0 {
+		t.Fatalf("status 路径不应有枚举: %+v", got)
+	}
 	if got := qc.Args[1].FreeArgs([]string{"qq"}); got != nil {
 		t.Fatalf("仅命令名(未选级)不应返回参数: %+v", got)
 	}
@@ -1014,9 +1042,8 @@ func TestImQQAskQuestionE2E(t *testing.T) {
 func TestImQQGroupGrantE2E(t *testing.T) {
 	m, hs := newQQMock(t)
 	m.events = []map[string]any{{"op": 0, "t": qqbot.EventGroupAtMsg, "s": 2, "d": map[string]any{
-		"id": "grpmsg-g1", "author": map[string]any{"member_openid": "STRANGER7"},
-		"group_openid": "GRP1", "content": "@gah 群命令", "timestamp": "2026-10-01T00:00:00+08:00",
-		"mentions": []map[string]any{{"id": "BOTOPENID", "member_openid": "BOTMEMBER"}}}}}
+		"id": "grpmsg-g1", "author": map[string]any{"member_openid": "STRANGER7", "bot": false},
+		"group_openid": "GRP1", "content": " @gah 群命令 ", "timestamp": "2026-10-01T00:00:00+08:00"}}}
 	buildQQEnv(t, hs.URL, "group-grant", qqScript)
 
 	// 群授权放行 → 群回复(成员 STRANGER7 无单独授权)

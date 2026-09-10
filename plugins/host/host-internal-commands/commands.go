@@ -131,11 +131,21 @@ func (h *Host) specs() []sdk.CommandSpec {
 			Args: []sdk.ArgLevel{
 				{Options: func([]string) []sdk.Option { return []sdk.Option{{Value: "history", Desc: "历史条数"}} }},
 				{Options: func([]string) []sdk.Option {
-					return []sdk.Option{{Value: "off", Desc: "关闭历史注入"}, {Value: "unlimited", Desc: "不限条数"}}
-				}},
+					return []sdk.Option{
+						{Value: "off", Desc: "关闭历史注入"},
+						{Value: "unlimited", Desc: "不限条数"},
+						{Value: "20", Desc: "最近 20 条"},
+						{Value: "50", Desc: "最近 50 条"},
+						{Value: "100", Desc: "最近 100 条"},
+						{Value: "200", Desc: "最近 200 条"},
+					}
+				}, FreeArgs: func([]string) []string { return []string{"条数(off|unlimited|数字)"} }},
 			}},
-		{Name: "export", Usage: "/export [path]", Desc: "导出会话 jsonl", Run: h.cmdExport},
-		{Name: "compact", Usage: "/compact [指示词]", Desc: "手动滚动摘要压缩(立即折叠旧历史;指示词仅作记录)", Run: h.cmdCompact},
+		{Name: "export", Usage: "/export [path]", Desc: "导出会话(.html 结尾→自包含网页;否则 jsonl)", Run: h.cmdExport,
+			// 自由级断点:回车直接执行(默认路径 jsonl);输入路径回车则导出到该路径
+			Args: []sdk.ArgLevel{{FreeArgs: func([]string) []string { return []string{"路径?"} }}}},
+		{Name: "compact", Usage: "/compact [指示词]", Desc: "手动滚动摘要压缩(立即折叠旧历史;指示词仅作记录)", Run: h.cmdCompact,
+			Args: []sdk.ArgLevel{{FreeArgs: func([]string) []string { return []string{"指示词?"} }}}},
 		{Name: "workspace", Usage: "/workspace [目录]", Desc: "切换工作区(项目):最近使用列表选择或输入新目录,切换即开新会话",
 			Args: []sdk.ArgLevel{
 				{Options: h.workspaceOptions, FreeArgs: func([]string) []string { return []string{"目录路径"} }},

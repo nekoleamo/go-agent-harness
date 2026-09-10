@@ -2,7 +2,7 @@
 // 输入区(槽位 input):回合提交 + "/" 命令提示(经 ctx.commands 注册表)+ 会话切换 + 状态控制。
 // 排版对齐 DeepSeek Harness:一体圆角外壳内嵌输入与工具条(思考/沙箱/会话在框内底部,发送圆钮右侧),
 // 空状态(centered)放大居中,有会话内容后沉底常规形态。
-import { computed, inject, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { api } from '../api'
 import type { AskConfirm, AttachmentView, CommandView, SessionInfo, StateView } from '../types'
 
@@ -135,11 +135,50 @@ function guard(title: string, run: () => void): void {
   ask({ title, run })
 }
 
+// —— 命令逐级确认(与 TUI 选择器同一注册表声明;/api/commands/{name}/options) ——
+// 选中命令后逐级拉候选:有枚举 → 列表点击继续;无枚举但有自由参数 → 提示手动输入;皆无 → 结束。
+const levelCmd = ref('') // 正在逐级选择的命令名('' = 命令级)
+const levelPath = ref<string[]>([]) // 已选参数值(不含命令名)
+const levelItems = ref<CommandView[]>([]) // 当前级候选(复用渲染形状)
+const levelFree = ref('') // 自由参数提示(无枚举时)
+
 const hints = computed(() => {
+  if (levelItems.value.length) return levelItems.value
   if (!text.value.startsWith('/')) return []
   const p = text.value.slice(1)
   if (!p) return cmds.value.slice(0, 8)
   return cmds.value.filter((c) => c.name.startsWith(p)).slice(0, 8)
+})
+
+function resetLevel(): void {
+  levelCmd.value = ''
+  levelPath.value = []
+  levelItems.value = []
+  levelFree.value = ''
+}
+
+async function loadLevel(): Promise<void> {
+  const name = levelCmd.value
+  if (!name) return
+  try {
+    const resp = await api.commandOptions(name, levelPath.value)
+    levelItems.value = resp.items.map((i) => ({ name: i.value, usage: '', desc: i.desc }))
+    levelFree.value = resp.items.length === 0 && !resp.done ? resp.freeArgs.join(' | ') : ''
+  } catch {
+    levelItems.value = []
+    levelFree.value = ''
+  }
+}
+
+async function pickLevel(value: string): Promise<void> {
+  levelPath.value = [...levelPath.value, value]
+  text.value = '/' + levelCmd.value + ' ' + levelPath.value.join(' ') + ' '
+  await loadLevel()
+}
+
+// 手工改写命令文本(如换成别的命令)→ 退出逐级态,避免陈旧候选
+watch(text, (v) => {
+  if (levelCmd.value && !v.startsWith('/' + levelCmd.value + ' ')) resetLevel()
 })
 
 const THINK = ['off', 'low', 'medium', 'high'] as const
@@ -220,7 +259,14 @@ async function submit(): Promise<void> {
 }
 
 function pickHint(name: string): void {
+  if (levelCmd.value) {
+    void pickLevel(name) // 参数级:点击值继续下一级
+    return
+  }
+  resetLevel()
+  levelCmd.value = name
   text.value = '/' + name + ' '
+  void loadLevel() // 命令级:拉取该命令的参数级候选
 }
 
 // 会话切换抽屉
@@ -302,10 +348,20 @@ defineExpose({ cycleThinking, cycleSandbox })
 <template>
   <div class="shell" :class="{ centered, dragging }" @dragover.prevent="onDragOver" @dragleave="dragging = false" @drop.prevent="onDrop">
     <!-- / 命令提示(浮于外壳上方) -->
-    <div v-if="hints.length" class="float">
-      <div v-for="h in hints" :key="h.name" class="hint" data-tip="执行命令" @mousedown.prevent="pickHint(h.name)">
+    <div v-if="hints.length || levelFree" class="float">
+      <div
+        v-for="h in hints"
+        :key="h.name"
+        class="hint"
+        :data-tip="levelCmd ? '选择该参数' : '继续选择参数'"
+        @mousedown.prevent="pickHint(h.name)"
+      >
         <span class="hn">{{ h.name }}</span>
         <span class="hd">{{ h.desc }}</span>
+      </div>
+      <div v-if="levelFree" class="hint free" data-tip="手动输入该参数">
+        <span class="hn">…</span>
+        <span class="hd">继续输入 {{ levelFree }}</span>
       </div>
     </div>
 
@@ -637,6 +693,12 @@ defineExpose({ cycleThinking, cycleSandbox })
 }
 .hint:hover {
   background: var(--bg3);
+}
+.hint.free {
+  cursor: default;
+}
+.hint.free .hd {
+  color: var(--fg-dim);
 }
 .hn {
   color: var(--accent);

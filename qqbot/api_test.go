@@ -393,3 +393,39 @@ func TestDownloadMediaWithAuth(t *testing.T) {
 		t.Fatal("空 URL 应报错")
 	}
 }
+
+// TestClientGatewayURL 环境/凭证连通性自检(Client.GatewayURL):GET base+/gateway/bot
+// 带单前缀鉴权头;token 换取失败显式报错(供 /qq env 切换后即时校验)。
+func TestClientGatewayURL(t *testing.T) {
+	var gotAuth, gotPath string
+	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth, gotPath = r.Header.Get("Authorization"), r.URL.Path
+		if r.URL.Path != "/gateway/bot" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"url": "wss://sandbox.example/ws", "shards": 1})
+	}))
+	defer hs.Close()
+	tokSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "tk-1", "expires_in": "7200"})
+	}))
+	defer tokSrv.Close()
+	ts := NewTokenSource("app", "sec")
+	ts.URL = tokSrv.URL
+	cli := NewClient(ts).WithBaseURL(hs.URL)
+	got, err := cli.GatewayURL(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "wss://sandbox.example/ws" {
+		t.Fatalf("gateway url=%q", got)
+	}
+	if gotPath != "/gateway/bot" || gotAuth != "QQBot tk-1" {
+		t.Fatalf("请求不符: path=%q auth=%q", gotPath, gotAuth)
+	}
+	// 无 token 源 → 显式报错(不静默)
+	if _, err := NewClient(nil).WithBaseURL(hs.URL).GatewayURL(context.Background()); err == nil {
+		t.Fatal("无 token 源应报错")
+	}
+}

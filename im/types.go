@@ -88,6 +88,8 @@ type Options struct {
 	AsyncNotice string
 	// SessionBindPath chat↔宿主会话绑定映射持久化路径(P1;空 = 仅内存不落盘)。
 	SessionBindPath string
+	// Diag 入站诊断回调(真机排障:未授权丢弃/重复丢弃/回合启动均经此上报;nil = 静默)。
+	Diag func(string)
 	// UnauthorizedReply pairing 模式向陌生用户回配对提示(allowlist/disabled 模式静默;
 	// route 供群场景提示群 ChatKey 与 /im allowg 指引)。
 	PairingReply func(code string, route Route) string

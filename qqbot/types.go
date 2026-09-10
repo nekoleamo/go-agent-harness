@@ -18,13 +18,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 )
 
-// DefaultBaseURL OpenAPI 根(官方统一为 api.bot.qq.com;旧域名 api.sgroup.qq.com 等价)。
+// DefaultBaseURL OpenAPI 根(官方 api-v2 文档:https://api.bot.qq.com;旧域名
+// api.sgroup.qq.com 等价)。沙箱环境为 https://sandbox.api.sgroup.qq.com。
 const DefaultBaseURL = "https://api.bot.qq.com"
 
-// DefaultTokenURL access_token 换取端点(不区分正式/沙箱环境)。
-const DefaultTokenURL = "https://bots.qq.com/app/getAppAccessToken"
+// DefaultTokenURL access_token 换取端点(api-v2 文档 接口调用与鉴权:POST
+// https://api.bot.qq.com/app/getAppAccessToken;不区分正式/沙箱环境)。
+// 旧域名 https://bots.qq.com/app/getAppAccessToken 仍可用。
+const DefaultTokenURL = "https://api.bot.qq.com/app/getAppAccessToken"
 
 // ErrNotConfigured 未填 AppID/AppSecret(需先 /qq login 配置)。
 var ErrNotConfigured = errors.New("qqbot: 未配置 AppID/AppSecret,请先执行 /qq login")
@@ -84,8 +88,8 @@ type Credentials struct {
 	AppID     string   `yaml:"app_id"`
 	AppSecret string   `yaml:"app_secret"`
 	BaseURL   string   `yaml:"base_url,omitempty"` // OpenAPI 根(默认 https://api.bot.qq.com;沙箱联调可指 sandbox.api.sgroup.qq.com)
-	Allow     []string `yaml:"allow,omitempty"`     // 已授权 SenderKey(channel\0user),与 ilink 同构(T6 接线)
-	Groups    []string `yaml:"groups,omitempty"`    // 已授权群 chatKey(channel\0chatID;群维度授权,群内成员免配对)
+	Allow     []string `yaml:"allow,omitempty"`    // 已授权 SenderKey(channel\0user),与 ilink 同构(T6 接线)
+	Groups    []string `yaml:"groups,omitempty"`   // 已授权群 chatKey(channel\0chatID;群维度授权,群内成员免配对)
 }
 
 // ---- WS gateway 帧(与官方 opcode 表一致)----
@@ -144,10 +148,15 @@ type Event struct {
 
 // ---- 入站消息事件 d 字段 ----
 
-// Author 消息作者(单聊取 user_openid;群聊取 member_openid)。
+// Author 消息作者(官方 User schema:单聊取 user_openid;群聊取 member_openid)。
 type Author struct {
-	UserOpenID   string `json:"user_openid,omitempty"`
-	MemberOpenID string `json:"member_openid,omitempty"`
+	ID           string `json:"id,omitempty"`            // 用户唯一标识(OpenID 格式)
+	Username     string `json:"username,omitempty"`      // 昵称
+	Bot          bool   `json:"bot,omitempty"`           // 是否机器人(其它机器人消息防御)
+	UnionOpenID  string `json:"union_openid,omitempty"`  // 跨应用统一 OpenID(可能为空)
+	UserOpenID   string `json:"user_openid,omitempty"`   // 单聊场景用户 OpenID
+	MemberOpenID string `json:"member_openid,omitempty"` // 群聊场景群成员 OpenID
+	MemberRole   string `json:"member_role,omitempty"`   // 群内角色 member/admin/owner
 }
 
 // C2CMessage C2C_MESSAGE_CREATE 事件 d 字段(单聊)。
@@ -157,18 +166,46 @@ type C2CMessage struct {
 	Author      Author              `json:"author"`
 	Content     string              `json:"content"`
 	Timestamp   string              `json:"timestamp"`
-	Attachments []MessageAttachment `json:"attachments,omitempty"` // 富媒体附件(图片/语音/视频/文件)
+	MessageType int                 `json:"message_type,omitempty"` // 0=文本 3=结构化卡片 101/102/103=并行/聊天记录/引用
+	MsgElements []MsgElement        `json:"msg_elements,omitempty"` // 引用/合并消息正文(Content 可能为空)
+	Attachments []MessageAttachment `json:"attachments,omitempty"`  // 富媒体附件(图片/语音/视频/文件)
 }
 
 // GroupAtMessage GROUP_AT_MESSAGE_CREATE 事件 d 字段(群 @;官方群事件本就只推 @ 机器人)。
 type GroupAtMessage struct {
-	ID          string    `json:"id"`
-	Author      Author    `json:"author"`
-	GroupOpenID string    `json:"group_openid"`
-	Content     string              `json:"content"`
+	ID          string              `json:"id"`
+	Author      Author              `json:"author"`
+	GroupOpenID string              `json:"group_openid"`
+	Content     string              `json:"content"` // 已由官方去除 @机器人 前缀
 	Timestamp   string              `json:"timestamp"`
+	MessageType int                 `json:"message_type,omitempty"` // 同上
+	MsgElements []MsgElement        `json:"msg_elements,omitempty"` // 引用/合并消息正文
 	Mentions    []Mention           `json:"mentions,omitempty"`
 	Attachments []MessageAttachment `json:"attachments,omitempty"` // 富媒体附件(图片/语音/视频/文件)
+}
+
+// MsgElement 消息元素(引用/并行/聊天记录类消息的正文包裹;可递归嵌套)。
+type MsgElement struct {
+	Author      Author              `json:"author,omitempty"`
+	MessageType int                 `json:"message_type,omitempty"`
+	Content     string              `json:"content,omitempty"`
+	Attachments []MessageAttachment `json:"attachments,omitempty"`
+	MsgElements []MsgElement        `json:"msg_elements,omitempty"`
+}
+
+// ElementsText 递归提取消息元素文本(引用/聊天记录消息 Content 为空时的正文兜底;
+// 无文本返回空串)。
+func ElementsText(elems []MsgElement) string {
+	var parts []string
+	for _, e := range elems {
+		if s := strings.TrimSpace(e.Content); s != "" {
+			parts = append(parts, s)
+		}
+		if s := ElementsText(e.MsgElements); s != "" {
+			parts = append(parts, s)
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 // MessageAttachment 入站附件(官方事件字段名与 botgo 一致:url 可直接下载;
@@ -182,12 +219,10 @@ type MessageAttachment struct {
 	Size        int    `json:"size,omitempty"`
 }
 
-// Mention @ 提及(群消息中 @ 机器人段;含机器人自身与其它 @ 用户)。
-type Mention struct {
-	ID           string `json:"id"`
-	UserOpenID   string `json:"user_openid,omitempty"`
-	MemberOpenID string `json:"member_openid,omitempty"`
-}
+// Mention @ 提及(官方 mentions 元素即 User schema)。
+// 注意:官方文档明确该列表**不含 @ 机器人自身**(bot.q.qq.com 群@机器人消息),故
+// 不可用"mentions 是否含机器人"作为触发前提——真机 @ 机器人时该数组常为空。
+type Mention = Author
 
 // ---- 出站消息模型(发送消息接口)----
 

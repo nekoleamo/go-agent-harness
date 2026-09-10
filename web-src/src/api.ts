@@ -1,5 +1,5 @@
 // REST 客户端(上行)+ 工具函数。核心交互纯 REST,不绕模板渲染。
-import type { AttachmentView, CommandView, IMChannelStatus, IMLoginQR, IMLoginState, Job, ModelsAllResp, PluginInfo, ProviderInfo, SessionInfo, StateView, WorkspaceInfo } from './types'
+import type { AttachmentView, CommandOptionsResp, CommandView, IMChannelStatus, IMLoginQR, IMLoginState, Job, ModelsAllResp, PluginInfo, ProviderInfo, SessionInfo, StateView, WorkspaceInfo } from './types'
 
 const BASE = ''
 const json = {
@@ -27,6 +27,14 @@ export const api = {
   },
   commands(): Promise<CommandView[]> {
     return req('/api/commands')
+  },
+  // 命令参数级(逐级确认;与 TUI 选择器同一注册表声明):picked 不含命令名
+  commandOptions(name: string, picked: string[]): Promise<CommandOptionsResp> {
+    return req('/api/commands/' + encodeURIComponent(name) + '/options', {
+      method: 'POST',
+      headers: json,
+      body: JSON.stringify({ picked }),
+    })
   },
   sessions(): Promise<SessionInfo[]> {
     return req('/api/sessions')
