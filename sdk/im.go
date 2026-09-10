@@ -77,6 +77,7 @@ type IMControlStatus struct {
 	Busy       bool           `json:"busy"`
 	Authorized int            `json:"authorized_users"`
 	Groups     int            `json:"authorized_groups"`
+	Artifacts  int            `json:"pending_artifacts,omitempty"` // 已登记待投产物数(MED-1)
 	Targets    []IMSendTarget `json:"targets,omitempty"`
 }
 
@@ -94,6 +95,28 @@ type IMControlService interface {
 	Targets() []IMSendTarget
 	// SendText 向已授权目标投递文本(未授权/空文本/未装配 → 显式错误)。
 	SendText(ctx context.Context, target, text string) error
+}
+
+// IMArtifact 已登记产物(MED-1;D2 口径:仅工作区内、大小受限的常规文件可登记)。
+type IMArtifact struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Kind      string    `json:"kind"` // image | video | voice | file
+	Mime      string    `json:"mime,omitempty"`
+	Bytes     int64     `json:"bytes"`
+	ExpiresAt time.Time `json:"expires_at,omitempty"`
+	Scope     string    `json:"scope,omitempty"` // 限定的投递目标(空 = 任意已授权目标)
+}
+
+// IMAttachmentService 受控出站媒体面(MED-1;实现方 = im.Bridge,Provide "ctx.imControl" 的同一实例)。
+// 纪律:① **先登记后投递**(通道只接受登记 id,模型不得凭路径外发任意文件);
+// ② 登记仅限当前工作区内的常规文件 + 大小/类型白名单;③ 单次可用 + TTL;
+// ④ 投递目标仍受 IMControlService 的已授权口径约束;⑤ 失败原样返回(登记条目可重试)。
+type IMAttachmentService interface {
+	// RegisterArtifact 登记一个待发送产物(工作区内、大小受限;幂等:同文件同版本返回同 id)。
+	RegisterArtifact(ctx context.Context, path string) (IMArtifact, error)
+	// SendArtifact 向已授权目标投递已登记产物(未登记/已用过/过期 → 显式错误)。
+	SendArtifact(ctx context.Context, target, artifactID string) error
 }
 
 // ApprovalToolGate 可选能力(实现方 = policy-guard):该工具是否需要逐次审批。

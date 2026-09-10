@@ -27,7 +27,6 @@ type ConfirmFusion interface {
 	Register(channel string, p ConfirmPresenter) Disposer
 }
 
-
 // ApprovalMode 审批档位枚举(对齐 SandboxMode 三档先例)。
 type ApprovalMode string
 

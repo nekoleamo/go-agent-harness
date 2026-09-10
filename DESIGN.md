@@ -433,6 +433,8 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 >
 > ✅ **DOC-1 · D6-3 判定 GAP 报告(2026-10-11 已交付;D4 口径 = 只测量不改抽取器)**:① **探针**(`plugins/host/host-docview/fidelity_gap_test.go`,test-only 不进二进制):直读源 OOXML 容器,按格式列 **12(xlsx)/11(docx)/7(pptx)** 条特性探针,输出 `GAP file=… feature=… source_hits=… parts=… ours=… severity=…` 与跨文件 `GAPSUMMARY`;严重度三档 **content(可见内容整体丢失)/style(文字在、格式丢)/info(有意取舍或已显式告警)**——**D4 门槛 = 仅 content 命中才评估重型依赖**。② **按承载部件定级**(关键防误报):页眉/页脚/脚注/尾注/批注内的特性一律降级 info(这些部件我们**已显式告警**不解析,不重复计为内容缺口);正文命中才是 content;多部件取最严重者。③ **首轮真实语料结论**:8 件(docx 3 / pdf 4 / xlsx 1)→ **content_gaps = 0**;命中仅 `textBox/field`(两处真实合同,均在 `word/footer1.xml` → info,由既有「含页脚,本期不解析」告警覆盖)、`headerFooter`(info)、`mergeCell`(ours=supported,info)。**判定:当前真实语料未证伪自研抽取器 → 不引入 excelize**;触发条件 = 把带图表/透视/批注/内嵌图的真实 xlsx 放入语料目录跑 harness 后出现 content 级 GAP(命令:`bash scripts/gen-doc-corpus.sh <dir> <真实文件…>` + `GAH_DOC_CORPUS=<dir> go test ./plugins/host/host-docview/ -run TestFidelityCorpus -v`;`GAH_DOC_CORPUS_GAP_STRICT=1` 可把 content 缺口升级为失败)。④ **测试**:探针单测(`fidelity_gap_unit_test.go`:合成 OOXML 锁定 xlsx 12 项/docx 部件降级与多部件取最严重/pptx 7 项/汇总格式/排序/坏容器结构化错误/非 OOXML 空结果),与抽取器行为一一对应。全库 `go test ./... -race -count=1` 绿。
 >
+> ✅ **MED-1 · 出站媒体接口与产物登记(2026-10-11 已交付;D2 口径落实)**:① **通道能力契约**(`im/media_out.go`):`MediaKind`(image/video/voice/file,对齐 QQ `file_type` 与 iLink `media_type`)+ `MediaPayload{ArtifactID,Kind,Path,Name,Mime,Size}` + 可选接口 `MediaSender.SendMedia`(**与 `TypingAware` 同型**:类型断言发现,未实现 → 显式报「该渠道不支持出站文件」,既有 `Transport`/Mock/另一通道零改动)。② **产物登记账本**(`im/artifact.go`,`sdk.IMAttachmentService` = Bridge 实现):**先登记后投递**——只登记**当前工作区内**(`ctx.sandbox.Root()` realpath 前缀校验,未装配退进程 cwd)的常规文件,大小 ≤ `data.media_max_mb`(默认 20MB),类型按扩展名判 image/video/voice/file;ID = 路径+size+mtime 的 sha256 前缀(**幂等**:同版本同 id);**单次可用** + 10 分钟 TTL + 容量 8(超出淘汰最旧);发送前复核 size/mtime(文件被改 → 拒绝并要求重新登记);投递失败 **回滚条目可重试**;目标仍走 `Targets()` 已授权口径(未授权拒绝、未登记 id 拒绝)。③ **状态/装配**:`sdk.IMControlStatus.PendingArtifacts`(im_status 可见待投产物数);两 im 壳解析 `data.media_max_mb` 传入 `im.Options.MediaMaxMB`;bundle 样板加提示注释。④ **测试**:`im/artifact_test.go` 8 组(工作区外/目录/不存在/空路径拒绝、类型判定表、大小上限、幂等、未授权与未登记拒绝、正常投递 payload 与路由、单次可用、通道失败回滚、文件变更拒绝、TTL 与容量淘汰、未实现 MediaSender 显式报错)。全库 `go test ./... -race -count=1` 绿。
+>
 > ### G 组剩余项实施方案(2026-10-11;分析后定稿,**待决策点确认即开工**)
 >
 > 前置件 E-A/E-C/E-D/E-E 已交付,下列方案的依赖与成本都已实测(证据见上方「评测分析」)。**优先级 = 依赖最少 × 风险最低 × 收益明确**。
@@ -441,7 +443,7 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 > |---|---|---|---|---|---|
 > | ~~**P1 · IM-1**~~ ✅ | `im_send`/`im_status`(默认不注册) | ✅ **2026-10-11 已交付**(见上方交付行) | — | 已收口 | — |
 > | ~~**P1 · DOC-1**~~ ✅ | D6-3 判定 GAP 报告 | ✅ **2026-10-11 已交付**(首轮真实语料 content_gaps=0 → 暂不引依赖) | — | 已收口 | — |
-> | **P2 · MED-1** E-B 接口 | `im.MediaSender` + 产物登记 + 失败可见(mock e2e) | — | M | 中(接口 + 安全口径) | 3 |
+> | ~~**P2 · MED-1**~~ ✅ | 出站媒体接口 + 产物登记 | ✅ **2026-10-11 已交付**(登记制/越界与限额拒绝/TTL+单次可用/失败回滚) | — | 已收口 | — |
 > | **P2 · RST-1** D6-1a 光栅 | 外部 `pdftoppm` 光栅(零体积) | 本机 poppler(已实测可用) | S–M | 低(opt-in + 结构化失败) | 4 |
 > | **P3 · MED-2** E-B QQ | 分片上传 + `msg_type=7` 出站文件 | MED-1 | M | 中(官方契约齐备,mock 可验;真机验收) | 5 |
 > | **P3 · MED-3** E-B 微信 | iLink 上传三段式(加密→CDN→媒体项) | MED-1 | M–L | **高**(仅第三方逆向证据;真机前标 beta) | 6 |

@@ -25,6 +25,7 @@ func (b *Bridge) Status() sdk.IMControlStatus {
 		Busy:       busy,
 		Authorized: len(b.acc.List()),
 		Groups:     len(b.acc.Groups()),
+		Artifacts:  b.artifactCount(),
 		Targets:    b.Targets(),
 	}
 	if cs := b.imConnect(); cs != nil {

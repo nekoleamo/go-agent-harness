@@ -81,6 +81,8 @@ type Options struct {
 	Allow []string
 	// AllowGroups 初始群 allowlist(群维度授权 chatKey;群内成员免各自配对)。
 	AllowGroups []string
+	// MediaMaxMB 出站媒体大小上限(MB;0 = 默认 20;MED-1 D2 口径)。
+	MediaMaxMB int
 	// PairingTTL 配对码有效期(默认 1h)。
 	PairingTTL time.Duration
 	// BusyReply 回合进行中收到普通消息且队列已满时的提示(空 = 默认文案)。

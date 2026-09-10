@@ -46,6 +46,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	baseURL := ilink.DefaultBaseURL
 	autoLogin := true
 	autoRelogin := true // 会话过期自动重登(默认开;关闭后仅提示,由用户手动 /wechat login)
+	mediaMaxMB := 0     // MED-1:出站媒体大小上限(MB;0 = 默认 20)
 	if m != nil && m.Data != nil {
 		if v, ok := m.Data["mode"].(string); ok && v != "" {
 			mode = im.AccessMode(v)
@@ -58,6 +59,12 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		}
 		if v, ok := m.Data["auto_relogin"].(bool); ok {
 			autoRelogin = v
+		}
+		switch v := m.Data["media_max_mb"].(type) {
+		case int:
+			mediaMaxMB = v
+		case float64:
+			mediaMaxMB = int(v)
 		}
 	}
 	var loop sdk.AgentLoop
@@ -88,6 +95,8 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		AllowGroups: creds.Groups, // 已授权群持久恢复(群维度授权)
 		// P1 会话绑定:chat→宿主会话映射落盘(重启恢复绑定)
 		SessionBindPath: sessionBindPath(),
+		// MED-1:出站媒体大小上限(data.media_max_mb,默认 20)
+		MediaMaxMB: mediaMaxMB,
 	})
 	tr.bridge = b
 	// 授权变化持久化(/im pair 批准、allow/revoke、登录授权):写回凭证 store,
@@ -117,11 +126,11 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	}
 	// ctx.imChannels:Web/桌面设置面板 IM 通道状态 + 扫码登录(P3 三端融合;
 	// 适配器同时实现 sdk.IMLoginProvider → web /api/im/login 可用)
-		// G-E5-3:受控出站面(im_send/im_status 经此投递;工具默认不注册,见 plugins/tool/tool-im)
+	// G-E5-3:受控出站面(im_send/im_status 经此投递;工具默认不注册,见 plugins/tool/tool-im)
 	if err := c.Provide("ctx.imControl", b); err != nil {
 		return nil, err
 	}
-if err := c.Provide("ctx.imChannels", imChannelStatus{tr: tr, bridge: b}); err != nil {
+	if err := c.Provide("ctx.imChannels", imChannelStatus{tr: tr, bridge: b}); err != nil {
 		return nil, err
 	}
 	// ctx.confirm = IM 桥(单 profile 自提供;P3 融合:装配 host-confirm-fusion 时

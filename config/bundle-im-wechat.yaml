@@ -6,6 +6,7 @@
 # data.base_url:iLink 端点(默认官方 ilinkai.weixin.qq.com;一般无需改)
 # 凭证:扫码登录自动写入 $GAH_HOME/config/ilink-wechat.yaml(0600,随目录迁移);
 #   登录命令 /wechat login(输出二维码链接,微信扫码确认),状态 /wechat status。
+# MED-1:出站媒体大小上限 data.media_max_mb(默认 20MB;超出显式拒绝)。
 name: im-wechat
 entries:
   - id: ui-im-wechat

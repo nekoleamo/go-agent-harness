@@ -17,13 +17,16 @@ import (
 
 // Bridge IM 桥:入站消息处理 + 回合驱动 + 确认服务。并发安全(回合串行;多 transport goroutine 可并发 HandleInbound)。
 type Bridge struct {
-	c        sdk.Ctx
-	loop     sdk.AgentLoop  // ctx.agentLoop(必需)
-	sessions sdk.SessionLog // ctx.sessions(必需;输出聚合)
-	tr       Transport
-	acc      *Access
-	opt      Options
-	turn     sdk.TurnControl // ctx.turnControl(可选;/stop 取消依赖)
+	c          sdk.Ctx
+	loop       sdk.AgentLoop  // ctx.agentLoop(必需)
+	sessions   sdk.SessionLog // ctx.sessions(必需;输出聚合)
+	tr         Transport
+	acc        *Access
+	opt        Options
+	turn       sdk.TurnControl // ctx.turnControl(可选;/stop 取消依赖)
+	mediaMaxMB int             // 出站媒体大小上限(MB;0 = 默认 20)
+
+	arts *artifactBook // MED-1 产物登记账本(出站媒体前置:D2 口径)
 
 	cwd  sdk.CwdSessions // ctx.cwdSessions(P1 会话绑定;可选——未装配会话命令降级)
 	llm  sdk.LLMService  // ctx.llm(/status 模型名;可选)
@@ -119,14 +122,19 @@ func New(c sdk.Ctx, loop sdk.AgentLoop, sessions sdk.SessionLog, tr Transport, o
 	if opt.AllowGroups != nil {
 		o.AllowGroups = opt.AllowGroups
 	}
+	if opt.MediaMaxMB > 0 {
+		o.MediaMaxMB = opt.MediaMaxMB
+	}
 	b := &Bridge{
 		c: c, loop: loop, sessions: sessions, tr: tr,
-		acc:      newAccessWith(o),
-		opt:      o,
-		pending:  make(map[string]*confirmWait),
-		qPending: make(map[string]*questionWait),
-		dedup:    make(map[string]time.Time),
-		bind:     newBindStore(o.SessionBindPath),
+		acc:        newAccessWith(o),
+		opt:        o,
+		arts:       newArtifactBook(),
+		mediaMaxMB: o.MediaMaxMB,
+		pending:    make(map[string]*confirmWait),
+		qPending:   make(map[string]*questionWait),
+		dedup:      make(map[string]time.Time),
+		bind:       newBindStore(o.SessionBindPath),
 	}
 	b.injectOptionalServices(c) // 可选:ctx.cwdSessions/ctx.llm(P1 会话绑定/模型名)
 	return b

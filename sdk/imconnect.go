@@ -54,7 +54,7 @@ type IMConnectField struct {
 	Placeholder string            `json:"placeholder,omitempty"`
 	Help        string            `json:"help,omitempty"`
 	Required    bool              `json:"required,omitempty"`
-	Options     []IMConnectOption `json:"options,omitempty"` // 非空 = 枚举单选
+	Options     []IMConnectOption `json:"options,omitempty"`    // 非空 = 枚举单选
 	Configured  bool              `json:"configured,omitempty"` // 已配置(前端显示「重新填写」)
 	Mask        string            `json:"mask,omitempty"`       // 已配置时的脱敏展示(尾号 4 位)
 }

@@ -15,11 +15,11 @@ type QuestionOption struct {
 
 // Question 一次结构化提问。
 type Question struct {
-	ID       string           `json:"id,omitempty"`       // 提问标识(呈现/诊断用;空由服务生成)
-	Prompt   string           `json:"prompt"`             // 问题正文
-	Options  []QuestionOption `json:"options,omitempty"`  // 可选项(空 = 纯自由文本提问)
-	Multiple bool             `json:"multiple,omitempty"` // 多选(用户可选多个 Value)
-	FreeText bool             `json:"free_text,omitempty"`// 允许自由文本作答(即使有选项)
+	ID       string           `json:"id,omitempty"`        // 提问标识(呈现/诊断用;空由服务生成)
+	Prompt   string           `json:"prompt"`              // 问题正文
+	Options  []QuestionOption `json:"options,omitempty"`   // 可选项(空 = 纯自由文本提问)
+	Multiple bool             `json:"multiple,omitempty"`  // 多选(用户可选多个 Value)
+	FreeText bool             `json:"free_text,omitempty"` // 允许自由文本作答(即使有选项)
 }
 
 // QuestionAnswer 用户作答(Values 与 Text 至少一项非空)。

@@ -7,6 +7,7 @@
 # data.token_url:access_token 换取端点(默认官方 bots.qq.com;一般无需改)
 # 凭证:AppID/AppSecret 经 /qq login 落 $GAH_HOME/config/qqbot.yaml(0600,随目录迁移);
 #   群与单聊同用户是两个 openid(单聊 user_openid/群 member_openid),授权按各自 SenderKey 添加。
+# MED-1:出站媒体大小上限 data.media_max_mb(默认 20MB;超出显式拒绝)。
 name: im-qq
 entries:
   - id: ui-im-qq
