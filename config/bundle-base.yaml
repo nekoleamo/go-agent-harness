@@ -24,6 +24,10 @@ entries:
       approval: smart # 审批档位:open 放行 / smart 弹确认(默认) / strict 拒绝;运行期 /approval 切换
       sandbox: workspace-write # 沙箱档位:read-only / workspace-write(默认) / full-access;运行期 /sandbox 切换
       sync: true # 档位联动:open → 沙箱有效 full-access;strict → 有效 read-only;smart 各自独立
+      # E-A 工具级审批(默认空 = 行为零变化):列出的工具每次调用都按上表档位裁决
+      # (open 放行 / smart 弹确认 / strict 拒绝)。远程或破坏性副作用的工具应入此表,
+      # 例如未来的 im_send。支持列表或逗号/空白分隔字符串。
+      approval_tools: []
   - id: host-skills
   - id: host-plugin-manager
   - id: host-cwd-sessions
