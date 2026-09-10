@@ -111,30 +111,35 @@ func TestGapProbeXLSX(t *testing.T) {
 }
 
 func TestGapProbeDOCXSeverityByPart(t *testing.T) {
-	// 正文文本框 = 内容级缺口(文字会丢)
+	// DOC-3a 后:文本框文字已进 note 块 → info(不再是内容级缺口)
 	g := gapOf(t, sdk.DocFormatDOCX, map[string]string{
 		"word/document.xml": `<w:document><w:txbxContent><w:t>正文框内文字</w:t></w:txbxContent></w:document>`,
 	})
-	if f := g["textBox"]; f.Severity != gapContent {
-		t.Fatalf("正文文本框应报内容级: %+v", f)
+	if f := g["textBox"]; f.Severity != gapInfo || f.Ours != "supported" {
+		t.Fatalf("正文文本框应为 info/supported: %+v", f)
 	}
-	// 页眉/页脚文本框 = info(已由「页脚不解析」显式告警覆盖,不重复计为内容缺口)
+	// 页眉/页脚文本框同样 info,且报告须给出承载部件
 	g2 := gapOf(t, sdk.DocFormatDOCX, map[string]string{
 		"word/footer1.xml": `<w:ftr><w:txbxContent><w:t>11</w:t></w:txbxContent></w:ftr>`,
 	})
 	if f := g2["textBox"]; f.Severity != gapInfo {
-		t.Fatalf("页脚文本框应降级为 info: %+v", f)
+		t.Fatalf("页脚文本框应报 info: %+v", f)
 	}
 	if !strings.Contains(strings.Join(f2parts(g2["textBox"]), ";"), "footer1.xml") {
 		t.Fatalf("报告应给出承载部件: %+v", g2["textBox"].Parts)
 	}
-	// 正文与页脚同时命中 → 取最严重(content)
+	// 多部件命中 → 计数合计
 	g3 := gapOf(t, sdk.DocFormatDOCX, map[string]string{
 		"word/document.xml": `<w:document><w:txbxContent><w:t>x</w:t></w:txbxContent></w:document>`,
 		"word/header1.xml":  `<w:hdr><w:txbxContent><w:t>y</w:t></w:txbxContent></w:hdr>`,
 	})
-	if f := g3["textBox"]; f.Severity != gapContent || f.Hits != 2 {
-		t.Fatalf("多部件应取最严重且计数合计: %+v", f)
+	if f := g3["textBox"]; f.Severity != gapInfo || f.Hits != 2 {
+		t.Fatalf("多部件应计数合计: %+v", f)
+	}
+	// 批注:DOC-3a 已支持(文本进 note)
+	g6 := gapOf(t, sdk.DocFormatDOCX, map[string]string{"word/comments.xml": `<w:comments/>`})
+	if f := g6["comments"]; f.Severity != gapInfo || f.Ours != "supported" {
+		t.Fatalf("批注应为 info/supported: %+v", f)
 	}
 	// 图表/SmartArt(正文内嵌)= content;页眉内 → info
 	g4 := gapOf(t, sdk.DocFormatDOCX, map[string]string{

@@ -196,11 +196,12 @@ func gapProbes(format sdk.DocFormat) []gapProbe {
 			{feature: "footnoteEndnote", severity: gapInfo, ours: "warned", match: func(e map[string][]byte) []gapHit {
 				return append(nameHits(e, "word/footnotes"), nameHits(e, "word/endnotes")...)
 			}},
-			{feature: "comments", severity: gapContent, ours: "warned", match: func(e map[string][]byte) []gapHit {
+			// DOC-3a 已交付:批注(legacy + 回复式)文本进 note 块
+			{feature: "comments", severity: gapInfo, ours: "supported", match: func(e map[string][]byte) []gapHit {
 				return nameHits(e, "word/comments")
 			}},
-			// 文本框:正文里的文本框会丢文字(内容级);页眉/页脚里的已由 headerFooter 告警覆盖 → info
-			{feature: "textBox", severity: gapContent, ours: "absent", severityFor: downgradeAux(gapContent),
+			// DOC-3a 已交付:正文文本框文字进 note 块(页眉/页脚内的由 headerFooter 告警覆盖,同为 info)
+			{feature: "textBox", severity: gapInfo, ours: "supported",
 				match: func(e map[string][]byte) []gapHit { return contentHits(e, `<w:txbxContent`) }},
 			{feature: "chart", severity: gapContent, ours: "absent", severityFor: downgradeAux(gapContent),
 				match: func(e map[string][]byte) []gapHit { return nameHits(e, "word/charts/") }},

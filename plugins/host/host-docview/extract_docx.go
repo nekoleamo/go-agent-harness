@@ -129,6 +129,8 @@ type docxParser struct {
 	mergeAt      map[[2]int]int // (锚行, 列) → 该行内单元格下标
 	pendingMerge int            // 当前单元格为 vMerge restart 的列(-1 = 否)
 	nested       int            // 嵌套表格跳过深度(>0 = 正在跳过)
+	skip         int            // 有意跳过的子树深度(>0 = 正在跳过;DOC-3a)
+	acChoice     []bool         // mc:AlternateContent 栈:该层是否已出现 mc:Choice(DOC-3a)
 	firstBold    bool           // 首行整行加粗(无 tblHeader 时的表头启发)
 
 	blocks    []sdk.DocBlock
@@ -160,8 +162,12 @@ func extractDOCX(ctx context.Context, s *Service, abs string, fi os.FileInfo, re
 	}
 	p.finish()
 
-	v.Blocks = p.blocks
+	// DOC-3a:批注(legacy + 回复式)与文本框(此前静默丢失)。
+	// 须在 o.warnings 汇总**之前**调用:内部经 o.addWarning 记的告警需一并收进 v.Warnings。
+	extra, xwarns := docxAnnotations(o, main)
+	v.Blocks = append(p.blocks, extra...)
 	v.Truncated = append(v.Truncated, p.truncated...)
+	v.Warnings = append(v.Warnings, xwarns...)
 	v.Warnings = append(v.Warnings, o.warnings...)
 	if len(v.Blocks) == 0 {
 		v.Blocks = []sdk.DocBlock{{Kind: sdk.DocBlockNote, Text: "docx 无可见文本内容"}}
@@ -296,6 +302,29 @@ func (p *docxParser) parse(ctx context.Context) error {
 
 // start 元素开始分派(嵌套表格经 nested 深度计数整体跳过)。
 func (p *docxParser) start(t xml.StartElement) {
+	if p.skip > 0 {
+		p.skip++
+		return
+	}
+	// DOC-3a:① w:txbxContent(文本框)文字由 docxAnnotations 单独以 note 输出,避免正文流里重复/无标记;
+	//          ② mc:Fallback 是 mc:Choice 的兼容副本(Word 双写同一内容 → 否则文本/图片重复),
+	//             仅当同一 mc:AlternateContent 内**确有 Choice** 时才跳过(纯 Fallback 内容必须保留)。
+	switch t.Name.Local {
+	case "txbxContent":
+		p.skip = 1
+		return
+	case "AlternateContent":
+		p.acChoice = append(p.acChoice, false)
+	case "Choice":
+		if n := len(p.acChoice); n > 0 {
+			p.acChoice[n-1] = true
+		}
+	case "Fallback":
+		if n := len(p.acChoice); n > 0 && p.acChoice[n-1] {
+			p.skip = 1
+			return
+		}
+	}
 	if p.nested > 0 {
 		p.nested++
 		return
@@ -404,6 +433,10 @@ func (p *docxParser) start(t xml.StartElement) {
 
 // end 元素结束分派。
 func (p *docxParser) end(t xml.EndElement) {
+	if p.skip > 0 {
+		p.skip--
+		return
+	}
 	if p.nested > 0 {
 		p.nested--
 		return
@@ -416,6 +449,10 @@ func (p *docxParser) end(t xml.EndElement) {
 	case "pPr", "tcPr", "trPr", "tblPr", "sectPr":
 		if p.pPrDepth > 0 {
 			p.pPrDepth--
+		}
+	case "AlternateContent":
+		if n := len(p.acChoice); n > 0 {
+			p.acChoice = p.acChoice[:n-1]
 		}
 	case "r":
 		p.runFmt = sdk.DocRun{} // 运行结束才复位格式(w:rPr 结束早于 w:t)
@@ -441,6 +478,9 @@ func (p *docxParser) end(t xml.EndElement) {
 
 // chardata 文本节点(区分正文/公式)。
 func (p *docxParser) chardata(s string) {
+	if p.skip > 0 {
+		return
+	}
 	if p.inMath {
 		p.mathText.WriteString(s)
 		return
@@ -700,11 +740,12 @@ func (p *docxParser) addBlock(b sdk.DocBlock) {
 	p.blocks = append(p.blocks, b)
 }
 
-// finish 收尾:未解析部件(页眉页脚/脚注/批注)显式提示。
+// finish 收尾:未解析部件(页眉页脚/脚注/尾注)显式提示。
+// DOC-3a 后 `word/comments.xml` 已解析(文本进 note 块),不再列入未解析清单。
 func (p *docxParser) finish() {
 	for _, probe := range []struct{ prefix, label string }{
 		{"word/header", "页眉"}, {"word/footer", "页脚"}, {"word/footnotes.xml", "脚注"},
-		{"word/endnotes.xml", "尾注"}, {"word/comments.xml", "批注"},
+		{"word/endnotes.xml", "尾注"},
 	} {
 		if p.o.hasPrefix(probe.prefix) {
 			p.o.addWarning(fmt.Sprintf("docx 含%s,本期不解析(仅正文)", probe.label))

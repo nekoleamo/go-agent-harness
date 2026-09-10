@@ -10,6 +10,8 @@
 #   - 系统真实 PDF:Homebrew 测试夹具 / CoreSimulator 设备 PDF(存在才拷)
 #   - 高级特性 xlsx(图表/透视/批注/内嵌图/文本框):本机无 xlsx 生产者,由
 #     scripts/gen-xlsx-advanced.py 以**纯标准库手工构造 OOXML** 补位(D6-3 判定件)
+#   - 高级特性 docx(批注/回复式批注/文本框):textutil 无法写批注,由
+#     scripts/gen-docx-advanced.py 以同一方式补位(DOC-3a 判定件)
 #
 # 用法:
 #   bash scripts/gen-doc-corpus.sh [目标目录] [额外真实文件或目录 ...]
@@ -79,6 +81,18 @@ for src in \
     made=$((made+1))
   fi
 done
+
+# —— 3a) 高级特性 docx(DOC-3a 判定件;textutil 无法写批注 → 纯标准库手工构造 OOXML) ——
+if command -v python3 >/dev/null 2>&1; then
+  SCRIPT_DIR_D="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  if python3 "$SCRIPT_DIR_D/gen-docx-advanced.py" "$OUT"; then
+    made=$((made+1))
+  else
+    echo "  失败: gen-docx-advanced.py"
+  fi
+else
+  skip "python3 不存在(无法生成含批注 docx)"
+fi
 
 # —— 3b) 高级特性 xlsx(D6-3 判定件;本机无 xlsx 生产者 → 纯标准库手工构造 OOXML) ——
 #   性质:合成容器(非第三方生产者输出),只用于驱动特性探针/抽取路径,见脚本头部说明。
