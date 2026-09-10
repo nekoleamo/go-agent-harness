@@ -193,3 +193,28 @@ func TestChannelStatusImplementsLoginProvider(t *testing.T) {
 		t.Fatalf("未登录应 idle: %+v", st)
 	}
 }
+
+// TestInvalidateCreds 会话过期清理:token/游标清空并落盘(避免重启后带失效凭证反复失败)。
+func TestInvalidateCreds(t *testing.T) {
+	dir := t.TempDir()
+	store := ilink.NewStore(dir + "/ilink-wechat.yaml")
+	creds := &ilink.Credentials{Token: "tk-old", SyncBuf: "buf-1", BaseURL: "https://x", AccountID: "acc"}
+	if err := store.Save(creds); err != nil {
+		t.Fatal(err)
+	}
+	tr := &wechatTransport{name: channelName, store: store, creds: creds, client: ilink.New("https://x", "tk-old")}
+	tr.invalidateCreds()
+	if tr.creds.Token != "" || tr.creds.SyncBuf != "" || tr.client != nil {
+		t.Fatalf("应清理登录态: %+v", tr.creds)
+	}
+	if tr.creds.AccountID != "acc" { // 账号信息保留(仅登录态失效)
+		t.Fatalf("账号字段不应被清: %+v", tr.creds)
+	}
+	got, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Token != "" || got.SyncBuf != "" {
+		t.Fatalf("落盘应已清理登录态: %+v", got)
+	}
+}

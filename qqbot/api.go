@@ -119,7 +119,11 @@ type Client struct {
 
 // NewClient 构造 OpenAPI 客户端(默认根 https://api.bot.qq.com)。
 func NewClient(ts *TokenSource) *Client {
-	return &Client{BaseURL: DefaultBaseURL, TS: ts, HTTP: ts.HTTP}
+	c := &Client{BaseURL: DefaultBaseURL, TS: ts, HTTP: http.DefaultClient}
+	if ts != nil && ts.HTTP != nil { // nil ts = 测试/无鉴权下载:HTTP 回落默认客户端
+		c.HTTP = ts.HTTP
+	}
+	return c
 }
 
 // WithBaseURL 覆盖 OpenAPI 根(沙箱联调/测试 mock)。
@@ -174,6 +178,44 @@ func (c *Client) doRetry(ctx context.Context, path string, body any, allowRetry 
 		return fmt.Errorf("qqbot: %s http %d: %s", path, resp.StatusCode, truncate(string(raw), 200))
 	}
 	return nil
+}
+
+// DownloadMedia 下载入站附件(事件 attachments[].url;带 QQBot 鉴权头;20MB 上限)。
+// 返回字节与响应 Content-Type(空则调用方按 ext 推断)。
+func (c *Client) DownloadMedia(ctx context.Context, url string) ([]byte, string, error) {
+	if url == "" {
+		return nil, "", fmt.Errorf("qqbot: 附件 URL 为空")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	if c.TS != nil {
+		if tk, terr := c.TS.Token(ctx); terr == nil {
+			req.Header.Set("Authorization", IdentifyToken(tk))
+		}
+	}
+	hc := c.HTTP
+	if hc == nil {
+		hc = http.DefaultClient
+	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("qqbot: 附件下载失败: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 200))
+		return nil, "", fmt.Errorf("qqbot: 附件下载 http %d: %s", resp.StatusCode, truncate(string(raw), 160))
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 20<<20+1))
+	if err != nil {
+		return nil, "", err
+	}
+	if len(data) > 20<<20 {
+		return nil, "", fmt.Errorf("qqbot: 附件超 20MB 上限")
+	}
+	return data, resp.Header.Get("Content-Type"), nil
 }
 
 // SendC2CMessage 发送单聊消息(POST /v2/users/{openid}/messages)。

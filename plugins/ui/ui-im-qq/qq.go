@@ -347,7 +347,10 @@ func (t *qqTransport) handleC2C(m *qqbot.C2CMessage) {
 			fmt.Fprintf(os.Stderr, "[qq] 消息处理 panic(已隔离): %v\n", r)
 		}
 	}()
-	if m.Author.UserOpenID == "" || m.Content == "" {
+	if m.Author.UserOpenID == "" {
+		return
+	}
+	if m.Content == "" && len(m.Attachments) == 0 {
 		return
 	}
 	route := im.Route{Channel: t.name, UserID: m.Author.UserOpenID, ChatID: m.Author.UserOpenID}
@@ -356,7 +359,19 @@ func (t *qqTransport) handleC2C(m *qqbot.C2CMessage) {
 		return // continue 续取:不走回合
 	}
 	t.flushOutbox(context.Background(), route) // 滞留内容先被动补发(新 msg_id 窗口)
-	_ = t.bridge.HandleInbound(context.Background(), im.Inbound{Route: route, MsgID: "c2c:" + m.ID, Text: m.Content})
+	atts, note := t.mediaExtract(m.Attachments, m.Author.UserOpenID)
+	text := m.Content
+	if note != "" {
+		if text != "" {
+			text += "\n" + note
+		} else {
+			text = note
+		}
+	}
+	if text == "" && len(atts) == 0 {
+		return
+	}
+	_ = t.bridge.HandleInbound(context.Background(), im.Inbound{Route: route, MsgID: "c2c:" + m.ID, Text: text, Attachments: atts})
 }
 
 // handleGroup 群 @ 消息:仅 @ 机器人(mentions 含机器人)才处理(官方已按事件类型过滤,防御加强)。
@@ -366,7 +381,10 @@ func (t *qqTransport) handleGroup(m *qqbot.GroupAtMessage) {
 			fmt.Fprintf(os.Stderr, "[qq] 群消息处理 panic(已隔离): %v\n", r)
 		}
 	}()
-	if m.GroupOpenID == "" || m.Author.MemberOpenID == "" || m.Content == "" {
+	if m.GroupOpenID == "" || m.Author.MemberOpenID == "" {
+		return
+	}
+	if m.Content == "" && len(m.Attachments) == 0 {
 		return
 	}
 	if !t.mentionsBot(m) {
@@ -378,7 +396,19 @@ func (t *qqTransport) handleGroup(m *qqbot.GroupAtMessage) {
 		return // continue 续取:不走回合
 	}
 	t.flushOutbox(context.Background(), route) // 滞留内容先被动补发(新 msg_id 窗口)
-	_ = t.bridge.HandleInbound(context.Background(), im.Inbound{Route: route, MsgID: "grp:" + m.ID, Text: m.Content})
+	atts, note := t.mediaExtract(m.Attachments, m.Author.MemberOpenID)
+	text := m.Content
+	if note != "" {
+		if text != "" {
+			text += "\n" + note
+		} else {
+			text = note
+		}
+	}
+	if text == "" && len(atts) == 0 {
+		return
+	}
+	_ = t.bridge.HandleInbound(context.Background(), im.Inbound{Route: route, MsgID: "grp:" + m.ID, Text: text, Attachments: atts})
 }
 
 // mentionsBot 群消息是否 @ 了机器人:botOpenID 已知时严格校验;未知(未 Ready)放行。
@@ -562,6 +592,87 @@ func activeOneMessage(text string) qqbot.SendMessage {
 
 // dupPrefix 重投提示(P2 二期):此前投递结果未确认,至少一次语义下可能已送达。
 const dupPrefix = "♻️ 可能重复(此前投递未确认):\n"
+
+// mediaExtract 入站附件处理(P0-2c QQ 侧):图片 → 视觉附件;文本类文件 → 内容并入正文;
+// 语音/视频/其它 → 落盘 + 说明。best-effort:单条失败仅记诊断,不阻断文本消息。
+func (t *qqTransport) mediaExtract(atts []qqbot.MessageAttachment, who string) ([]sdk.Attachment, string) {
+	if len(atts) == 0 {
+		return nil, ""
+	}
+	t.mu.Lock()
+	cli := t.client
+	t.mu.Unlock()
+	if cli == nil {
+		return nil, ""
+	}
+	var out []sdk.Attachment
+	var notes []string
+	for i, a := range atts {
+		ct := strings.ToLower(strings.TrimSpace(a.ContentType))
+		name := a.FileName
+		if name == "" {
+			name = fmt.Sprintf("附件-%d", i+1)
+		}
+		if ct == "voice" { // 语音:无服务端转写文本 → 明确告知(无需下载)
+			notes = append(notes, "(收到语音消息,暂不支持转写;如需可改用文字)")
+			continue
+		}
+		if a.URL == "" {
+			notes = append(notes, fmt.Sprintf("(收到 %s,但事件未给下载地址)", name))
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+		data, hct, err := cli.DownloadMedia(ctx, a.URL)
+		cancel()
+		if err != nil {
+			t.setLastError("附件下载失败: " + err.Error())
+			notes = append(notes, fmt.Sprintf("(收到 %s,下载失败)", name))
+			continue
+		}
+		ext := im.MediaExtFromContentType(ct)
+		if ext == "" {
+			ext = im.MediaExtFromContentType(hct)
+		}
+		switch {
+		case strings.HasPrefix(ct, "image/") || strings.HasPrefix(strings.ToLower(hct), "image/"):
+			if ext == "" {
+				ext = "jpg"
+			}
+			p, serr := im.SaveMedia(fmt.Sprintf("%s-%d", who, i), ext, data)
+			if serr != nil {
+				t.setLastError("附件落盘失败: " + serr.Error())
+				continue
+			}
+			mime := ct
+			if mime == "" {
+				mime = hct
+			}
+			out = append(out, sdk.Attachment{Kind: sdk.AttachmentImage, Name: name, MimeType: mime, Path: p})
+			notes = append(notes, "(已接收图片,正在查看)")
+		default: // 视频/文件
+			if im.IsTextExt(ext) && len(data) <= 1<<20 {
+				content := string(data)
+				if r := []rune(content); len(r) > 6000 {
+					content = string(r[:6000]) + "\n…(文件过长已截断)"
+				}
+				notes = append(notes, fmt.Sprintf("[文件 %s 内容]\n%s", name, content))
+				continue
+			}
+			p, serr := im.SaveMedia(fmt.Sprintf("%s-%d", who, i), ext, data)
+			if serr != nil {
+				t.setLastError("附件落盘失败: " + serr.Error())
+				continue
+			}
+			kind := "文件"
+			if strings.HasPrefix(ct, "video/") {
+				kind = "视频"
+			}
+			out = append(out, sdk.Attachment{Kind: sdk.AttachmentFile, Name: name, Path: p})
+			notes = append(notes, fmt.Sprintf("(收到%s %s,已存 %s;如需读取请告知)", kind, name, p))
+		}
+	}
+	return out, strings.Join(notes, "\n")
+}
 
 // flushRemainder 用户回 continue/继续 且有被截断剩余 → 被动续发(返回 true = 已消费)。
 func (t *qqTransport) flushRemainder(route im.Route, text string) bool {

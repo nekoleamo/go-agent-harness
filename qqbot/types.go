@@ -153,10 +153,11 @@ type Author struct {
 // C2CMessage C2C_MESSAGE_CREATE 事件 d 字段(单聊)。
 // ID = 消息 ID(<->被动回复 msg_id;5 分钟内有效)。
 type C2CMessage struct {
-	ID        string `json:"id"`
-	Author    Author `json:"author"`
-	Content   string `json:"content"`
-	Timestamp string `json:"timestamp"`
+	ID          string              `json:"id"`
+	Author      Author              `json:"author"`
+	Content     string              `json:"content"`
+	Timestamp   string              `json:"timestamp"`
+	Attachments []MessageAttachment `json:"attachments,omitempty"` // 富媒体附件(图片/语音/视频/文件)
 }
 
 // GroupAtMessage GROUP_AT_MESSAGE_CREATE 事件 d 字段(群 @;官方群事件本就只推 @ 机器人)。
@@ -164,9 +165,21 @@ type GroupAtMessage struct {
 	ID          string    `json:"id"`
 	Author      Author    `json:"author"`
 	GroupOpenID string    `json:"group_openid"`
-	Content     string    `json:"content"`
-	Timestamp   string    `json:"timestamp"`
-	Mentions    []Mention `json:"mentions,omitempty"`
+	Content     string              `json:"content"`
+	Timestamp   string              `json:"timestamp"`
+	Mentions    []Mention           `json:"mentions,omitempty"`
+	Attachments []MessageAttachment `json:"attachments,omitempty"` // 富媒体附件(图片/语音/视频/文件)
+}
+
+// MessageAttachment 入站附件(官方事件字段名与 botgo 一致:url 可直接下载;
+// content_type 形如 image/jpeg、voice、video/mp4)。
+type MessageAttachment struct {
+	URL         string `json:"url,omitempty"`
+	FileName    string `json:"filename,omitempty"`
+	ContentType string `json:"content_type,omitempty"`
+	Width       int    `json:"width,omitempty"`
+	Height      int    `json:"height,omitempty"`
+	Size        int    `json:"size,omitempty"`
 }
 
 // Mention @ 提及(群消息中 @ 机器人段;含机器人自身与其它 @ 用户)。

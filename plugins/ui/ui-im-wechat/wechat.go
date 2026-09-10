@@ -45,6 +45,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	mode := im.AccessPairing
 	baseURL := ilink.DefaultBaseURL
 	autoLogin := true
+	autoRelogin := true // 会话过期自动重登(默认开;关闭后仅提示,由用户手动 /wechat login)
 	if m != nil && m.Data != nil {
 		if v, ok := m.Data["mode"].(string); ok && v != "" {
 			mode = im.AccessMode(v)
@@ -54,6 +55,9 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		}
 		if v, ok := m.Data["auto_login"].(bool); ok {
 			autoLogin = v
+		}
+		if v, ok := m.Data["auto_relogin"].(bool); ok {
+			autoRelogin = v
 		}
 	}
 	var loop sdk.AgentLoop
@@ -77,7 +81,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	tr := &wechatTransport{name: channelName, store: store, creds: creds, baseURL: baseURL,
 		lastError: "未登录(执行 /wechat login)", tickets: make(map[string]ticketEntry),
 		sender:    im.NewSender(&im.Budget{MaxChunk: wechatChunkLimit, MaxChunks: wechatMaxChunks, Gap: wechatChunkGap}),
-		remainder: make(map[string]string)}
+		remainder: make(map[string]string), autoRelogin: autoRelogin}
 	b := im.New(c, loop, sessions, tr, im.Options{
 		Mode:  mode,
 		Allow:       creds.Allow,  // 已授权用户持久恢复
@@ -257,6 +261,7 @@ type wechatTransport struct {
 	loginBusy bool
 	remainder map[string]string // chatID → 被截断的剩余文本(用户回 continue 时被动补发)
 	loginState sdk.IMLoginState // 面板扫码登录进度(P3 Web 面板)
+	autoRelogin bool            // 会话过期时自动清理失效凭证并发起重新扫码(data.auto_relogin,默认 true)
 	typingCtl context.CancelFunc // 回合进行中的 typing 周期刷新控制器(回合结束取消)
 }
 
@@ -431,7 +436,13 @@ func (t *wechatTransport) pollLoop(stop chan struct{}) {
 			cancel()
 			t.setLastError("轮询错误: " + err.Error())
 			if ilink.SessionExpired(err) {
-				t.setLastError("微信会话已过期(ret=-14),请重新执行 /wechat login")
+				t.invalidateCreds() // 失效凭证清理落盘(避免重启后继续失败)
+				if t.autoRelogin {
+					t.setLastError("微信会话已过期(ret=-14):已清理失效凭证并自动发起重新登录;请扫码(终端二维码 / Web 面板「扫码登录」)")
+					go t.autoLogin() // 取新二维码(打印到 stderr)+ 后台等待确认
+				} else {
+					t.setLastError("微信会话已过期(ret=-14),请重新执行 /wechat login")
+				}
 				return // 停轮询,等重新登录
 			}
 			time.Sleep(backoff)
@@ -628,7 +639,7 @@ func (t *wechatTransport) mediaExtract(msg *ilink.InboundMessage) ([]sdk.Attachm
 			if ext == "" {
 				ext = "jpg"
 			}
-			path, serr := saveMediaFile(fmt.Sprintf("%s-%d", msg.FromUserID, i), ext, data)
+			path, serr := im.SaveMedia(fmt.Sprintf("%s-%d", msg.FromUserID, i), ext, data)
 			cancel()
 			if serr != nil {
 				t.setLastError("媒体落盘失败: " + serr.Error())
@@ -660,7 +671,7 @@ func (t *wechatTransport) mediaExtract(msg *ilink.InboundMessage) ([]sdk.Attachm
 			if ext == "" {
 				ext = "bin"
 			}
-			if isTextExt(ext) && len(data) <= 1<<20 { // 文本类 ≤1MB → 内容并入正文(截断防护)
+			if im.IsTextExt(ext) && len(data) <= 1<<20 { // 文本类 ≤1MB → 内容并入正文(截断防护)
 				content := string(data)
 				if r := []rune(content); len(r) > 6000 {
 					content = string(r[:6000]) + "\n…(文件过长已截断)"
@@ -670,7 +681,7 @@ func (t *wechatTransport) mediaExtract(msg *ilink.InboundMessage) ([]sdk.Attachm
 				}
 				notes = append(notes, fmt.Sprintf("[文件 %s 内容]\n%s", name, content))
 			} else {
-				path, serr := saveMediaFile(fmt.Sprintf("%s-%d", msg.FromUserID, i), ext, data)
+				path, serr := im.SaveMedia(fmt.Sprintf("%s-%d", msg.FromUserID, i), ext, data)
 				if serr != nil {
 					t.setLastError("文件落盘失败: " + serr.Error())
 					continue
@@ -687,31 +698,6 @@ func (t *wechatTransport) mediaExtract(msg *ilink.InboundMessage) ([]sdk.Attachm
 	return atts, strings.Join(notes, "\n")
 }
 
-// saveMediaFile 媒体字节落盘 $GAH_HOME/im-media/<user>-<idx>.<ext>(便携纪律派生)。
-func saveMediaFile(base, ext string, data []byte) (string, error) {
-	home := os.Getenv("GAH_HOME")
-	if home == "" {
-		home = os.TempDir()
-	}
-	dir := filepath.Join(home, "im-media")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", err
-	}
-	path := filepath.Join(dir, base+"."+ext)
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return "", err
-	}
-	return path, nil
-}
-
-// isTextExt 文本类扩展名白名单(内容可安全并入 IM 正文)。
-func isTextExt(ext string) bool {
-	switch ext {
-	case "txt", "md", "markdown", "json", "jsonl", "yaml", "yml", "csv", "log", "go", "py", "js", "ts", "html", "css", "sh", "toml", "xml", "ini", "conf", "env", "sql":
-		return true
-	}
-	return false
-}
 
 func (t *wechatTransport) setLastError(msg string) {
 	t.mu.Lock()
@@ -769,6 +755,25 @@ func (t *wechatTransport) wechatCmd(ctx context.Context, args []string) (string,
 		t.finishLogin(qr)
 	}()
 	return loginHint(qr), nil
+}
+
+// invalidateCreds 清理失效登录态(token/sync 游标)并落盘——
+// 避免重启后带着失效凭证反复失败;用户重扫后恢复正常。
+func (t *wechatTransport) invalidateCreds() {
+	t.mu.Lock()
+	if t.creds == nil {
+		t.mu.Unlock()
+		return
+	}
+	t.creds.Token = ""
+	t.creds.SyncBuf = ""
+	t.client = nil
+	creds := t.creds
+	store := t.store
+	t.mu.Unlock()
+	if err := store.Save(creds); err != nil {
+		t.setLastError("失效凭证清理落盘失败: " + err.Error())
+	}
 }
 
 // autoLogin 未登录自动扫码:取二维码 → 终端渲染 ASCII 二维码 + URL(stderr;headless 可见)→ 后台轮询确认。

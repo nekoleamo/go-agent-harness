@@ -3,6 +3,7 @@
 package qqbot
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -346,5 +347,49 @@ func TestFlexInt(t *testing.T) {
 	}
 	if v.A != 7200 || v.B != 42 || v.C != 0 {
 		t.Fatalf("解析不符: %+v", v)
+	}
+}
+
+// TestDownloadMediaWithAuth 附件下载:带 QQBot 鉴权头、返回字节与 Content-Type、404/超限报错。
+func TestDownloadMediaWithAuth(t *testing.T) {
+	var auth string
+	tokHS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"access_token":"tk-1","expires_in":"7200"}`))
+	}))
+	defer tokHS.Close()
+	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = r.Header.Get("Authorization")
+		switch r.URL.Path {
+		case "/ok.jpg":
+			w.Header().Set("Content-Type", "image/jpeg")
+			w.Write([]byte("\xff\xd8\xff-fake-jpeg"))
+		case "/big":
+			w.Write(bytes.Repeat([]byte("b"), 21<<20))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer hs.Close()
+	ts := NewTokenSource("app-x", "sec-y")
+	ts.URL = tokHS.URL
+	c := NewClient(ts)
+	data, ct, err := c.DownloadMedia(context.Background(), hs.URL+"/ok.jpg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ct != "image/jpeg" || len(data) != 13 {
+		t.Fatalf("下载不符: ct=%q len=%d", ct, len(data))
+	}
+	if auth != "QQBot tk-1" {
+		t.Fatalf("附件下载应带鉴权头(单前缀),得 %q", auth)
+	}
+	if _, _, err := c.DownloadMedia(context.Background(), hs.URL+"/missing"); err == nil {
+		t.Fatal("404 应报错")
+	}
+	if _, _, err := c.DownloadMedia(context.Background(), hs.URL+"/big"); err == nil {
+		t.Fatal("超限应报错")
+	}
+	if _, _, err := c.DownloadMedia(context.Background(), ""); err == nil {
+		t.Fatal("空 URL 应报错")
 	}
 }

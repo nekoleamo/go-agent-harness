@@ -12,6 +12,7 @@ import (
 
 	"github.com/nekoleamo/go-agent-harness/im"
 	"github.com/nekoleamo/go-agent-harness/qqbot"
+	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
 // TestSplitQQText 短文本单块;长文本按段/行/空格/硬切;每块 <=4000。
@@ -293,5 +294,55 @@ func TestFlushRemainder(t *testing.T) {
 	}
 	if tr.flushRemainder(route, "继续") {
 		t.Fatal("无剩余不应消费(交桥处理)")
+	}
+}
+
+// TestQQMediaExtract 入站附件:图片→视觉附件落盘;文本类→内容并入正文;语音→说明;失败→诊断不阻断。
+func TestQQMediaExtract(t *testing.T) {
+	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/p.jpg":
+			w.Header().Set("Content-Type", "image/jpeg")
+			w.Write([]byte("fake-jpeg"))
+		case "/a.txt":
+			w.Header().Set("Content-Type", "text/plain")
+			w.Write([]byte("文件内容 hello"))
+		default:
+			http.Error(w, "boom", http.StatusInternalServerError)
+		}
+	}))
+	defer hs.Close()
+	tr := &qqTransport{name: channelName, client: qqbot.NewClient(nil)}
+
+	// 图片 → 视觉附件(路径存在)+ 说明
+	atts, note := tr.mediaExtract([]qqbot.MessageAttachment{{URL: hs.URL + "/p.jpg", ContentType: "image/jpeg"}}, "U1")
+	if len(atts) != 1 || atts[0].Kind != sdk.AttachmentImage || atts[0].MimeType != "image/jpeg" {
+		t.Fatalf("图片应产视觉附件: %+v", atts)
+	}
+	if _, err := os.Stat(atts[0].Path); err != nil {
+		t.Fatalf("应落盘: %v", err)
+	}
+	if !strings.Contains(note, "图片") {
+		t.Fatalf("说明应含图片提示: %q", note)
+	}
+	// 文本类文件 → 内容并入正文
+	atts2, note2 := tr.mediaExtract([]qqbot.MessageAttachment{{URL: hs.URL + "/a.txt", ContentType: "text/plain", FileName: "a.txt"}}, "U1")
+	if len(atts2) != 0 || !strings.Contains(note2, "文件内容 hello") || !strings.Contains(note2, "a.txt") {
+		t.Fatalf("文本类应并入正文: %+v %q", atts2, note2)
+	}
+	// 语音 → 说明(不落盘)
+	_, note3 := tr.mediaExtract([]qqbot.MessageAttachment{{URL: hs.URL + "/v.mp3", ContentType: "voice"}}, "U1")
+	if !strings.Contains(note3, "语音") {
+		t.Fatalf("语音应给说明: %q", note3)
+	}
+	// 下载失败 → 说明 + 诊断,不 panic
+	_, note4 := tr.mediaExtract([]qqbot.MessageAttachment{{URL: hs.URL + "/bad", ContentType: "image/png"}}, "U1")
+	if !strings.Contains(note4, "下载失败") || tr.lastError == "" {
+		t.Fatalf("失败应给说明与诊断: %q err=%q", note4, tr.lastError)
+	}
+	// 无 URL → 说明
+	_, note5 := tr.mediaExtract([]qqbot.MessageAttachment{{ContentType: "image/png"}}, "U1")
+	if !strings.Contains(note5, "未给下载地址") {
+		t.Fatalf("缺地址应给说明: %q", note5)
 	}
 }
