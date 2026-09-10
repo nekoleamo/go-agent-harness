@@ -7,12 +7,12 @@ import (
 	"testing"
 )
 
-// TestLedgerRoundtrip Set → 新实例(同路径=重启)恢复 → GetAndClear 清空并落盘。
+// TestLedgerRoundtrip Stash → 新实例(同路径=重启)恢复 → Take 清空并落盘。
 func TestLedgerRoundtrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "outbox.yaml")
 	l := newDeliveryLedger(path)
-	l.Set("OPENID1", "滞留内容A")
-	l.Set("MEMBER9", "群滞留B")
+	l.Stash("OPENID1", "滞留内容A")
+	l.Stash("MEMBER9", "群滞留B")
 	if l.Count() != 2 {
 		t.Fatalf("Count 应 2,got %d", l.Count())
 	}
@@ -21,8 +21,8 @@ func TestLedgerRoundtrip(t *testing.T) {
 	if !l2.Pending("OPENID1") || !l2.Pending("MEMBER9") {
 		t.Fatal("重启后滞留应恢复")
 	}
-	if got := l2.GetAndClear("OPENID1"); got != "滞留内容A" {
-		t.Fatalf("取走不符: %q", got)
+	if got, att := l2.Take("OPENID1"); got != "滞留内容A" || att != 1 {
+		t.Fatalf("取走不符: %q attempts=%d", got, att)
 	}
 	if l2.Pending("OPENID1") {
 		t.Fatal("取走后应不再 pending")
@@ -52,8 +52,45 @@ func TestLedgerEmpty(t *testing.T) {
 	}
 	// 空 path = 仅内存(不落盘不报错)
 	l := newDeliveryLedger("")
-	l.Set("k", "v")
+	l.Stash("k", "v")
 	if !l.Pending("k") {
 		t.Fatal("内存模式应可滞留")
+	}
+}
+
+// TestLedgerAttempts Stash 递增尝试次数;Take 返回原文与次数(P2 二期重投标记依据)。
+func TestLedgerAttempts(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "outbox.yaml")
+	l := newDeliveryLedger(path)
+	// 首次滞留(第 1 次投递失败)
+	l.Stash("OPENID1", "内容")
+	if got, att := l.Take("OPENID1"); got != "内容" || att != 1 {
+		t.Fatalf("首次滞留 attempts 应 1: %q %d", got, att)
+	}
+	// 模拟:补发失败两次(放回原文)→ attempts 累计
+	l.Stash("OPENID1", "内容")
+	l.Stash("OPENID1", "内容")
+	if got, att := l.Take("OPENID1"); got != "内容" || att != 2 {
+		t.Fatalf("两次失败 attempts 应 2: %q %d", got, att)
+	}
+	// 取走后清空,再滞留重新从 1 计
+	l.Stash("OPENID1", "新内容")
+	// 重启(新实例读盘):计数应持久
+	if got, att := newDeliveryLedger(path).Take("OPENID1"); got != "新内容" || att != 1 {
+		t.Fatalf("重启后 attempts 应持久且清空后重置: %q %d", got, att)
+	}
+}
+
+// TestLedgerLegacyFormat 一期旧格式(entries: {chat: "纯文本"})可无损加载。
+func TestLedgerLegacyFormat(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.yaml")
+	legacy := "entries:\n  \"qq\\x00OPENID1\": \"旧格式滞留内容\"\n"
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	l := newDeliveryLedger(path)
+	got, att := l.Take("qq\x00OPENID1")
+	if got != "旧格式滞留内容" || att != 0 {
+		t.Fatalf("旧格式应兼容加载(文本保留、尝试次数 0): %q attempts=%d", got, att)
 	}
 }

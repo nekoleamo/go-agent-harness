@@ -120,11 +120,23 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	// ctx.confirm = IM 桥(单 profile 自提供;P3 融合:装配 host-confirm-fusion 时
 	// 改为注册呈现者,与 web 等渠道并存同卡——不再 Provide 防同名冲突)
 	var confirmReg sdk.Disposer = func() {}
+	var questionReg sdk.Disposer = func() {}
 	var fusion sdk.ConfirmFusion
 	if err := c.Inject("ctx.confirmFusion", &fusion); err == nil && fusion != nil {
 		confirmReg = fusion.Register("im-qq", b)
-	} else if err := c.Provide("ctx.confirm", b); err != nil {
-		return nil, err
+		// P3 语义交互:同一桥作为提问呈现者注册(与确认同管道,首答生效)
+		var qfusion sdk.QuestionService
+		if err := c.Inject("ctx.question", &qfusion); err == nil && qfusion != nil {
+			questionReg = qfusion.RegisterQuestioner("im-qq", b)
+		}
+	} else {
+		if err := c.Provide("ctx.confirm", b); err != nil {
+			return nil, err
+		}
+		// 单 profile(无 fusion):桥自身提供结构化提问服务
+		if err := c.Provide("ctx.question", im.NewQuestionService(b)); err != nil {
+			return nil, err
+		}
 	}
 	// 命令注册:桥自带 /stop /im(pair/status/list)+ 通道命令 /qq login|status
 	var ds []sdk.Disposer
@@ -162,6 +174,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	}
 	return func() {
 		confirmReg()
+		questionReg()
 		tr.stopGateway()
 		for _, d := range ds {
 			d()
@@ -518,22 +531,30 @@ func activeOneMessage(text string) qqbot.SendMessage {
 	return qqbot.SendMessage{MsgType: qqbot.MsgTypeText, Content: string(rs[:keep]) + truncTail}
 }
 
+// dupPrefix 重投提示(P2 二期):此前投递结果未确认,至少一次语义下可能已送达。
+const dupPrefix = "♻️ 可能重复(此前投递未确认):\n"
+
 // stash 滞留整段文本(P2 delivery ledger:落盘重启不丢;下次该会话入站 flush 补发)。
 func (t *qqTransport) stash(chatID, text string) {
 	if chatID == "" || text == "" {
 		return
 	}
-	t.ledger.Set(chatID, text)
+	t.ledger.Stash(chatID, text)
 }
 
 // flushOutbox 入站后先补发滞留内容(此时刚缓存新 msg_id,被动窗口内);失败放回下次。
+// 此前失败过的内容补发时加 dupPrefix(表示可能已送达,防用户误判重复消息)。
 func (t *qqTransport) flushOutbox(ctx context.Context, route im.Route) {
-	pend := t.ledger.GetAndClear(route.ChatID)
+	pend, attempts := t.ledger.Take(route.ChatID)
 	if pend == "" {
 		return
 	}
-	if err := t.SendText(ctx, route, pend); err != nil {
-		t.ledger.Set(route.ChatID, pend) // 补发失败(如仍频控):放回下次
+	send := pend
+	if attempts > 0 {
+		send = dupPrefix + send
+	}
+	if err := t.SendText(ctx, route, send); err != nil {
+		t.ledger.Stash(route.ChatID, pend) // 放回原文(前缀发送时拼,不写回,防累积)
 	}
 }
 

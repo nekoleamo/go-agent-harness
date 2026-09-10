@@ -114,11 +114,23 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	// ctx.confirm = IM 桥(单 profile 自提供;P3 融合:装配 host-confirm-fusion 时
 	// 注册呈现者与 web 并存,不 Provide 防同名冲突)
 	var confirmReg sdk.Disposer = func() {}
+	var questionReg sdk.Disposer = func() {}
 	var fusion sdk.ConfirmFusion
 	if err := c.Inject("ctx.confirmFusion", &fusion); err == nil && fusion != nil {
 		confirmReg = fusion.Register("im-wechat", b)
-	} else if err := c.Provide("ctx.confirm", b); err != nil {
-		return nil, err
+		// P3 语义交互:同一桥作为提问呈现者注册(与确认同管道,首答生效)
+		var qfusion sdk.QuestionService
+		if err := c.Inject("ctx.question", &qfusion); err == nil && qfusion != nil {
+			questionReg = qfusion.RegisterQuestioner("im-wechat", b)
+		}
+	} else {
+		if err := c.Provide("ctx.confirm", b); err != nil {
+			return nil, err
+		}
+		// 单 profile(无 fusion):桥自身提供结构化提问服务
+		if err := c.Provide("ctx.question", im.NewQuestionService(b)); err != nil {
+			return nil, err
+		}
 	}
 	// 命令注册:桥自带 /stop /im(pair/status/list)+ 通道命令 /wechat login|status
 	var ds []sdk.Disposer
@@ -148,6 +160,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	}
 	return func() {
 		confirmReg()
+		questionReg()
 		tr.stopPoll()
 		for _, d := range ds {
 			d()

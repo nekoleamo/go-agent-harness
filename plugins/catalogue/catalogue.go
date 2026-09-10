@@ -27,6 +27,7 @@ import (
 	"github.com/nekoleamo/go-agent-harness/plugins/mcp/mcp-server"
 	"github.com/nekoleamo/go-agent-harness/plugins/policy/policy-guard"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-auto-plan"
+	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-ask"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-files"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-memory"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-shell"
@@ -105,6 +106,11 @@ var All = map[string]Def{
 	"tool-auto-plan": {Factory: func() sdk.Plugin { return &toolautoplan.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "tool-auto-plan", Type: "tool", APIVersion: ">=1.0,<2.0",
 		Requires: []string{"ctx.tools", "ctx.systemPrompt"}}, Bundle: "base"},
+	"tool-ask": {Factory: func() sdk.Plugin { return &toolask.Plugin{} }, Manifest: &sdk.Manifest{
+		ID: "tool-ask", Type: "tool", APIVersion: ">=1.0,<2.0",
+		// P3 语义交互:ask_user_question 结构化提问(单选/多选/自由文本);
+		// 进程内装配(提问通道 ctx.question 运行期现取,由 host-confirm-fusion 提供)
+		Requires: []string{"ctx.tools"}}, Bundle: "base"},
 	"tool-todo": {Factory: func() sdk.Plugin { return &tooltodo.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "tool-todo", Type: "tool", APIVersion: ">=1.0,<2.0",
 		Requires: []string{"ctx.tools"}}, Bundle: "base", Manage: "external"},

@@ -1,4 +1,4 @@
-# seed-version: 12 # 样板版本:新增 base 能力条目(host-* 等)时 +1,老用户自动升级(备份后覆盖)
+# seed-version: 13 # 样板版本:新增 base 能力条目(host-* 等)时 +1,老用户自动升级(备份后覆盖)
 # base bundle:对齐 dsh-base,一切功能皆插件的共享第一层。
 # M1 阶段条目仅记录意图;对应插件工厂在 M2 base bundle 落地。
 name: base
@@ -60,6 +60,10 @@ entries:
     # M6.14:包内含 web_fetch/web_search;web_search provider 经 data.provider 选(缺省 exa = 直连 Exa API,EXA_API_KEY;未知名显式失败)
   - id: tool-memory
     enabled: false # M10 外部化:memory(remember/list/recall/forget)由 host-bridge 加载 extplugins/tool-basic;内嵌双轨同 tool-files
+  - id: tool-ask
+    # P3 语义交互:ask_user_question 结构化提问(单选/多选/自由文本)。
+    # 进程内装配(同 tool-auto-plan:提问通道需 ctx.question 运行期注入,外部进程不可达);
+    # 问题经 ctx.question(host-confirm-fusion)广播 web/im/tui 渠道呈现,首答生效。
   - id: tool-todo
     enabled: false # M8 外部化:todo(create/start/complete/pend/delete/update/list/get)由 host-bridge 加载 extplugins/tool-basic;内嵌双轨同 tool-files
   - id: tool-auto-plan

@@ -647,6 +647,16 @@ func TestImQQRateLimitStashE2E(t *testing.T) {
 	if len(texts) < 2 { // 尝试那条也记录了(含文本)
 		t.Fatalf("应含补发与新回复文本: %v", texts)
 	}
+	// P2 二期:补发内容带"可能重复"提示(此前投递失败过,可能已送达)
+	dup := false
+	for _, tx := range texts {
+		if strings.Contains(tx, "♻️ 可能重复") {
+			dup = true
+		}
+	}
+	if !dup {
+		t.Fatalf("补发应带 ♻️ 可能重复 前缀: %v", texts)
+	}
 }
 
 func pollQQSends(t *testing.T, m *qqMock, want int, timeout time.Duration) {
@@ -908,4 +918,85 @@ func mustQQEnvCtx(t *testing.T, baseURL string) sdk.Ctx {
 	}
 	t.Cleanup(func() { reg.DisposeAll() })
 	return c
+}
+
+// qqAskScript 语义交互脚本:模型先结构化提问,收到作答后收尾。
+var qqAskScript = []any{
+	map[string]any{"tool": map[string]any{
+		"name": "ask_user_question",
+		"args": `{"prompt":"部署到哪个环境?","options":[{"value":"dev","desc":"开发"},{"value":"prod","desc":"生产"}]}`,
+	}},
+	map[string]any{"text": "已选生产环境,开始部署", "finish": "stop"},
+}
+
+// buildQQAskEnv 语义交互装配 = base + confirm-fusion + im-qq + tool-ask(mock QQ)。
+func buildQQAskEnv(t *testing.T, baseURL string) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("GAH_HOME", home)
+	store := qqbot.NewStore(filepath.Join(home, "config", "qqbot.yaml"))
+	if err := store.Save(&qqbot.Credentials{AppID: "app-e2e", AppSecret: "sec-e2e", Allow: []string{"qq\x00OPENID1"}}); err != nil {
+		t.Fatal(err)
+	}
+	logger := slog.New(slog.DiscardHandler)
+	bus := event.New(logger)
+	c := ctx.New(logger, bus)
+	reg := plugin.New()
+	tree := config.NewTree()
+	tree.Apply([]config.Entry{
+		{ID: "host-session-log"},
+		{ID: "host-cwd-sessions"},
+		{ID: "host-llm"},
+		{ID: "host-tools"},
+		{ID: "host-commands"},
+		{ID: "host-system-prompt"},
+		{ID: "llm-mock", Data: map[string]any{"script": qqAskScript}},
+		{ID: "host-agent-loop"},
+		{ID: "host-confirm-fusion"},
+		{ID: "tool-ask"},
+		{ID: "ui-im-qq", Data: map[string]any{
+			"mode": "allowlist", "base_url": baseURL, "token_url": baseURL + "/app/getAppAccessToken",
+		}},
+	})
+	if err := c.Provide("system.registry", reg); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Provide("system.catalogue", catalogueInfoForTest()); err != nil {
+		t.Fatal(err)
+	}
+	if err := baseb.RegisterAll(reg, tree); err != nil {
+		t.Fatal(err)
+	}
+	if err := imqqb.RegisterAll(reg, tree); err != nil {
+		t.Fatal(err)
+	}
+	if err := confirmfusionb.RegisterAll(reg, tree); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.StartSubset(c, enabledSetForTest(tree)); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { reg.DisposeAll() })
+}
+
+// TestImQQAskQuestionE2E(P3 语义交互):模型调 ask_user_question → QQ 收到编号选项 →
+// 用户回 "2" → 作答经问答管道回填工具 → 回合收尾(全程零额外回调协议)。
+func TestImQQAskQuestionE2E(t *testing.T) {
+	m, hs := newQQMock(t)
+	m.events = []map[string]any{c2cEvent(2, "qqmsg-q1", "OPENID1", "帮我部署")}
+	buildQQAskEnv(t, hs.URL)
+
+	// 1. 结构化提问推送(编号选项)
+	rec := m.waitSend(t, "部署到哪个环境?", 20*time.Second)
+	body := rec.bodyText()
+	if !strings.Contains(body, "1) 开发") || !strings.Contains(body, "2) 生产") || !strings.Contains(body, "回复编号") {
+		t.Fatalf("提问应含编号选项与作答指引: %q", body)
+	}
+	// 2. 用户回编号 2 → 作答回填
+	m.pushEvent(c2cEvent(3, "qqmsg-q2", "OPENID1", "2"))
+	// 3. 工具返回作答 → 模型收尾文本
+	got := m.waitSend(t, "已选生产环境", 20*time.Second)
+	if !strings.Contains(got.bodyText(), "开始部署") {
+		t.Fatalf("收尾文本不符: %q", got.bodyText())
+	}
 }

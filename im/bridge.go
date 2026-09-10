@@ -41,6 +41,9 @@ type Bridge struct {
 	confirmMu sync.Mutex
 	pending   map[string]*confirmWait // route.Key() → 待回答确认
 
+	askMu    sync.Mutex
+	qPending map[string]*questionWait // route.Key() → 待回答提问(P3 语义交互)
+
 	dedupMu sync.Mutex
 	dedup   map[string]time.Time // route+msgid → 首次 seen(窗口裁剪)
 }
@@ -55,6 +58,12 @@ type queuedInbound struct {
 // confirmWait 一条待回答的确认(policy 侧 Confirm 阻塞等待;用户消息经 answerPending 回填)。
 type confirmWait struct {
 	ch chan bool
+}
+
+// questionWait 一条待回答的结构化提问(工具侧 Ask 阻塞等待;用户消息经 answerQuestion 回填)。
+type questionWait struct {
+	q  sdk.Question
+	ch chan sdk.QuestionAnswer
 }
 
 const dedupWindow = 5 * time.Minute
@@ -88,8 +97,9 @@ func New(c sdk.Ctx, loop sdk.AgentLoop, sessions sdk.SessionLog, tr Transport, o
 		c: c, loop: loop, sessions: sessions, tr: tr,
 		acc:     NewAccess(o.Mode, o.Allow, o.PairingTTL),
 		opt:     o,
-		pending: make(map[string]*confirmWait),
-		dedup:   make(map[string]time.Time),
+		pending:  make(map[string]*confirmWait),
+		qPending: make(map[string]*questionWait),
+		dedup:    make(map[string]time.Time),
 		bind:    newBindStore(o.SessionBindPath),
 	}
 	b.injectOptionalServices(c) // 可选:ctx.cwdSessions/ctx.llm(P1 会话绑定/模型名)
@@ -159,6 +169,9 @@ func (b *Bridge) HandleInbound(ctx context.Context, in Inbound) error {
 
 	// 3. 交互归属判定(回合中用户回答确认/提问;先于 busy 与回合,防打断)
 	if b.answerPending(ctx, r, text) {
+		return nil
+	}
+	if b.answerQuestion(ctx, r, text) {
 		return nil
 	}
 
@@ -255,6 +268,136 @@ func (b *Bridge) answerPending(ctx context.Context, r Route, text string) bool {
 	default: // 已超时(Confirm 侧已返回);不回填
 	}
 	return true
+}
+
+// PresentQuestion sdk.QuestionPresenter(P3 语义交互):把结构化提问推给当前回合归属用户
+// (编号选项 + 自由文本提示),返回作答通道;cancel 幂等清理。
+func (b *Bridge) PresentQuestion(ctx context.Context, q sdk.Question) (<-chan sdk.QuestionAnswer, func(), error) {
+	b.mu.Lock()
+	route := b.curRoute
+	b.mu.Unlock()
+	if route.UserID == "" {
+		return nil, nil, fmt.Errorf("im: 无活动回合归属会话,无法提问(未装配提问通道)")
+	}
+	w := &questionWait{q: q, ch: make(chan sdk.QuestionAnswer, 1)}
+	b.askMu.Lock()
+	b.qPending[route.Key()] = w
+	b.askMu.Unlock()
+	cancel := func() {
+		b.askMu.Lock()
+		delete(b.qPending, route.Key())
+		b.askMu.Unlock()
+	}
+	if err := b.sendText(ctx, route, questionText(q)); err != nil {
+		cancel()
+		return nil, nil, err
+	}
+	return w.ch, cancel, nil
+}
+
+// questionText 提问推送文本(编号选项;自由文本提示;多选说明)。
+func questionText(q sdk.Question) string {
+	var sb strings.Builder
+	sb.WriteString("❓ " + q.Prompt)
+	for i, o := range q.Options {
+		desc := o.Desc
+		if desc == "" {
+			desc = o.Value
+		}
+		sb.WriteString(fmt.Sprintf("\n  %d) %s", i+1, desc))
+	}
+	switch {
+	case len(q.Options) > 0 && q.Multiple:
+		sb.WriteString("\n回复编号(多选可用逗号分隔,如 1,3)")
+	case len(q.Options) > 0:
+		sb.WriteString("\n回复编号选择")
+	}
+	if q.FreeText || len(q.Options) == 0 {
+		sb.WriteString("\n(也可直接回复内容作答)")
+	}
+	return sb.String()
+}
+
+// answerQuestion 用户消息是否为某待答提问的作答(consumed=true 表示已消费)。
+// 解析:编号(1-based)/选项值精确匹配(多选取并集);纯文本提问或无匹配且允许自由文本 → Text。
+func (b *Bridge) answerQuestion(ctx context.Context, r Route, text string) bool {
+	b.askMu.Lock()
+	w, ok := b.qPending[r.Key()]
+	b.askMu.Unlock()
+	if !ok {
+		return false
+	}
+	ans, matched := parseQuestionAnswer(w.q, text)
+	if !matched {
+		_ = b.sendText(ctx, r, "请按提示回复编号"+func() string {
+			if w.q.Multiple {
+				return "(多选可用逗号分隔)"
+			}
+			return ""
+		}())
+		return true // 消费该条,防误入回合
+	}
+	b.askMu.Lock()
+	delete(b.qPending, r.Key())
+	b.askMu.Unlock()
+	select {
+	case w.ch <- ans:
+	default: // 已超时(调用侧已返回)
+	}
+	return true
+}
+
+// parseQuestionAnswer 解析用户回答:返回作答与是否可用。
+// 选项匹配优先(编号 / Value 精确 / Desc 精确);无匹配时若允许自由文本则整段作为 Text。
+func parseQuestionAnswer(q sdk.Question, text string) (sdk.QuestionAnswer, bool) {
+	t := strings.TrimSpace(text)
+	if t == "" {
+		return sdk.QuestionAnswer{}, false
+	}
+	if len(q.Options) == 0 { // 纯自由文本提问
+		if q.FreeText || true { // 无选项必为文本作答
+			return sdk.QuestionAnswer{Text: t}, true
+		}
+	}
+	parts := strings.FieldsFunc(t, func(r rune) bool {
+		return r == ',' || r == '，' || r == ' ' || r == '、' || r == ';' || r == '；' || r == '\n' || r == '\t'
+	})
+	var values []string
+	seen := map[string]bool{}
+	matchedAll := true
+	for _, p := range parts {
+		matched := ""
+		if n, err := strconv.Atoi(p); err == nil {
+			if n >= 1 && n <= len(q.Options) {
+				matched = q.Options[n-1].Value
+			}
+		} else {
+			for _, o := range q.Options {
+				if o.Value == p || (o.Desc != "" && o.Desc == p) {
+					matched = o.Value
+					break
+				}
+			}
+		}
+		if matched == "" {
+			matchedAll = false
+			break
+		}
+		if !seen[matched] {
+			seen[matched] = true
+			values = append(values, matched)
+		}
+	}
+	if matchedAll && len(values) > 0 {
+		if !q.Multiple && len(values) > 1 {
+			return sdk.QuestionAnswer{}, false // 单选却回多个:提示重答
+		}
+		return sdk.QuestionAnswer{Values: values}, true
+	}
+	if q.FreeText { // 允许自由文本:整段作答
+		return sdk.QuestionAnswer{Text: t}, true
+	}
+	return sdk.QuestionAnswer{}, false
 }
 
 // enqueue 忙时入队(全局 FIFO 单槽)。成功返回 true;队列已满返回 false(回"忙")。
@@ -845,4 +988,32 @@ func parseConfirmReply(text string) (bool, bool) {
 		return false, true
 	}
 	return false, false
+}
+
+// singleQuestion 单通道提问服务适配(P3;无 fusion 的单 profile 场景):
+// 桥自身只实现 sdk.QuestionPresenter,这里提供 sdk.QuestionService(Ask 直连本桥)。
+type singleQuestion struct{ b *Bridge }
+
+// NewQuestionService 构造单通道提问服务(供 ui-im-* 插件壳在无 host-confirm-fusion 时
+// Provide ctx.question;融合场景由 fusion 统一提供,桥经 RegisterQuestioner 注册呈现)。
+func NewQuestionService(b *Bridge) sdk.QuestionService { return singleQuestion{b: b} }
+
+// Ask 呈现提问并等待作答(ctx 取消按失败返回)。
+func (s singleQuestion) Ask(ctx context.Context, q sdk.Question) (sdk.QuestionAnswer, error) {
+	ch, cancel, err := s.b.PresentQuestion(ctx, q)
+	if err != nil {
+		return sdk.QuestionAnswer{}, err
+	}
+	defer cancel()
+	select {
+	case a := <-ch:
+		return a, nil
+	case <-ctx.Done():
+		return sdk.QuestionAnswer{}, ctx.Err()
+	}
+}
+
+// RegisterQuestioner 单通道场景无需注册(桥即唯一渠道)。
+func (s singleQuestion) RegisterQuestioner(string, sdk.QuestionPresenter) sdk.Disposer {
+	return func() {}
 }

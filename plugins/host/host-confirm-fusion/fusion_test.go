@@ -111,3 +111,76 @@ func TestFusionChannelList(t *testing.T) {
 		t.Fatalf("Channels 应 2,got %d", got)
 	}
 }
+
+// stubQuestioner 可控提问应答。
+type stubQuestioner struct {
+	got  chan sdk.Question
+	ans  chan sdk.QuestionAnswer
+	done chan struct{} // cancel 触发
+}
+
+func (s *stubQuestioner) PresentQuestion(_ context.Context, q sdk.Question) (<-chan sdk.QuestionAnswer, func(), error) {
+	s.got <- q
+	return s.ans, func() {
+		select {
+		case <-s.done:
+		default:
+			close(s.done)
+		}
+	}, nil
+}
+
+// TestFusionAskQuestion 提问融合:广播两渠道,首答生效,未答渠道 cancel。
+func TestFusionAskQuestion(t *testing.T) {
+	f := &Fusion{presenters: make(map[string]sdk.ConfirmPresenter), questioners: make(map[string]sdk.QuestionPresenter)}
+	q1 := &stubQuestioner{got: make(chan sdk.Question, 1), ans: make(chan sdk.QuestionAnswer, 1), done: make(chan struct{})}
+	q2 := &stubQuestioner{got: make(chan sdk.Question, 1), ans: make(chan sdk.QuestionAnswer, 1), done: make(chan struct{})}
+	d1 := f.RegisterQuestioner("web", q1)
+	d2 := f.RegisterQuestioner("im-qq", q2)
+	defer d1()
+	defer d2()
+
+	question := sdk.Question{Prompt: "选环境", Options: []sdk.QuestionOption{{Value: "dev"}, {Value: "prod"}}}
+	go func() { q2.ans <- sdk.QuestionAnswer{Values: []string{"prod"}} }()
+	ans, err := f.Ask(context.Background(), question)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ans.Values) != 1 || ans.Values[0] != "prod" {
+		t.Fatalf("应取首答渠道结果: %+v", ans)
+	}
+	for i, q := range []*stubQuestioner{q1, q2} {
+		select {
+		case got := <-q.got:
+			if got.Prompt != "选环境" || len(got.Options) != 2 {
+				t.Fatalf("渠道 %d 提问载荷不符: %+v", i, got)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("渠道 %d 应收到提问(广播)", i)
+		}
+	}
+	// 未应答渠道应被 cancel
+	select {
+	case <-q1.done:
+	case <-time.After(time.Second):
+		t.Fatal("未应答渠道应收到 cancel")
+	}
+}
+
+// TestFusionAskNoChannel 无提问渠道:显式报错(不静默假答)。
+func TestFusionAskNoChannel(t *testing.T) {
+	f := &Fusion{presenters: make(map[string]sdk.ConfirmPresenter), questioners: make(map[string]sdk.QuestionPresenter)}
+	if _, err := f.Ask(context.Background(), sdk.Question{Prompt: "x"}); err == nil {
+		t.Fatal("无渠道应报错")
+	}
+	// 注册后注销 → 视为无渠道
+	q := &stubQuestioner{got: make(chan sdk.Question, 1), ans: make(chan sdk.QuestionAnswer, 1), done: make(chan struct{})}
+	d := f.RegisterQuestioner("tui", q)
+	if len(f.QuestionChannels()) != 1 {
+		t.Fatal("注册后应有 1 渠道")
+	}
+	d()
+	if _, err := f.Ask(context.Background(), sdk.Question{Prompt: "x"}); err == nil {
+		t.Fatal("注销后应报错")
+	}
+}

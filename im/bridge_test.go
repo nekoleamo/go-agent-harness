@@ -824,3 +824,98 @@ func TestBgCommandBusy(t *testing.T) {
 	close(release)
 	<-done
 }
+
+// TestParseQuestionAnswer 提问作答解析:编号/值/说明匹配、多选、自由文本、非法输入。
+func TestParseQuestionAnswer(t *testing.T) {
+	q := sdk.Question{Prompt: "选哪个?", Options: []sdk.QuestionOption{
+		{Value: "plan-a", Desc: "方案A"}, {Value: "plan-b", Desc: "方案B"}, {Value: "plan-c", Desc: "方案C"},
+	}}
+	cases := []struct {
+		in      string
+		values  []string
+		text    string
+		matched bool
+	}{
+		{"2", []string{"plan-b"}, "", true},
+		{"方案C", []string{"plan-c"}, "", true},
+		{"plan-a", []string{"plan-a"}, "", true},
+		{"九", nil, "", false},        // 非法编号且不允许自由文本
+		{"1,3", nil, "", false},        // 单选回多个 → 提示重答
+		{"", nil, "", false},
+	}
+	for _, c := range cases {
+		got, ok := parseQuestionAnswer(q, c.in)
+		if ok != c.matched || strings.Join(got.Values, ",") != strings.Join(c.values, ",") || got.Text != c.text {
+			t.Errorf("parse(%q) = (%v,%v),want (%v,%v)", c.in, got.Values, ok, c.values, c.matched)
+		}
+	}
+	// 多选
+	multi := sdk.Question{Prompt: "选多项", Multiple: true, Options: q.Options}
+	if got, ok := parseQuestionAnswer(multi, "1, 3"); !ok || strings.Join(got.Values, ",") != "plan-a,plan-c" {
+		t.Fatalf("多选应解析 1,3 → plan-a,plan-c: %v %v", got.Values, ok)
+	}
+	// 自由文本(有选项且 FreeText)
+	free := sdk.Question{Prompt: "选或写", FreeText: true, Options: q.Options}
+	if got, ok := parseQuestionAnswer(free, "我自己想的第二种做法"); !ok || got.Text != "我自己想的第二种做法" {
+		t.Fatalf("FreeText 应整段作答: %+v %v", got, ok)
+	}
+	// 纯自由文本提问(无选项)
+	plain := sdk.Question{Prompt: "叫什么名字?"}
+	if got, ok := parseQuestionAnswer(plain, "阿黄"); !ok || got.Text != "阿黄" {
+		t.Fatalf("无选项提问应整段作答: %+v %v", got, ok)
+	}
+}
+
+// TestQuestionPresentAndAnswer 桥级:提问推送(编号提示)→ 用户回编号 → 作答回填;
+// 无法识别时提示且消费该条(不误入回合)。
+func TestQuestionPresentAndAnswer(t *testing.T) {
+	b, loop, tr, _ := buildTestBridge(t, Options{Mode: AccessAllowlist, Allow: []string{"mock\x00owner"}})
+	b.mu.Lock()
+	b.curRoute = mkRoute("owner") // 模拟回合中(提问发生在回合内)
+	b.mu.Unlock()
+	ch, cancel, err := b.PresentQuestion(context.Background(), sdk.Question{
+		Prompt:  "部署到哪个环境?",
+		Options: []sdk.QuestionOption{{Value: "dev", Desc: "开发"}, {Value: "prod", Desc: "生产"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	sent := tr.sent()
+	if len(sent) != 1 || !strings.Contains(sent[0], "❓ 部署到哪个环境?") || !strings.Contains(sent[0], "1) 开发") {
+		t.Fatalf("提问推送应含问题与编号选项: %+v", sent)
+	}
+	// 用户先回无法识别的内容 → 提示重答,不开回合
+	if err := b.HandleInbound(context.Background(), Inbound{Route: mkRoute("owner"), MsgID: "1", Text: "随便"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(tr.sent(), "\n"), "请按提示回复编号") {
+		t.Fatalf("无法识别应提示重答: %+v", tr.sent())
+	}
+	loop.mu.Lock()
+	n := len(loop.inputs)
+	loop.mu.Unlock()
+	if n != 0 {
+		t.Fatal("作答消息不应开回合")
+	}
+	// 回编号 → 作答回填
+	if err := b.HandleInbound(context.Background(), Inbound{Route: mkRoute("owner"), MsgID: "2", Text: "2"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case ans := <-ch:
+		if len(ans.Values) != 1 || ans.Values[0] != "prod" {
+			t.Fatalf("应回填 prod: %+v", ans)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("作答未回填")
+	}
+	// cancel 后 pending 清理
+	cancel()
+	b.askMu.Lock()
+	n2 := len(b.qPending)
+	b.askMu.Unlock()
+	if n2 != 0 {
+		t.Fatalf("cancel 后应清理 pending,got %d", n2)
+	}
+}

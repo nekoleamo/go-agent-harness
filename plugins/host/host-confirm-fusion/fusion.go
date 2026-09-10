@@ -8,6 +8,7 @@ package hostconfirmfusion
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
@@ -16,7 +17,8 @@ import (
 // Fusion ctx.confirm 实现 + 呈现者注册表。并发安全。
 type Fusion struct {
 	mu          sync.Mutex
-	presenters  map[string]sdk.ConfirmPresenter // 注册顺序无关;应答竞速
+	presenters  map[string]sdk.ConfirmPresenter  // 确认呈现者(注册顺序无关;应答竞速)
+	questioners map[string]sdk.QuestionPresenter // 提问呈现者(P3 语义交互;同源管道)
 	registerSeq int
 }
 
@@ -27,14 +29,113 @@ func (p *Plugin) Name() string { return "host-confirm-fusion" }
 
 // Start 提供 ctx.confirm(Fusion)+ ctx.confirmFusion。
 func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
-	f := &Fusion{presenters: make(map[string]sdk.ConfirmPresenter)}
+	f := &Fusion{
+		presenters:  make(map[string]sdk.ConfirmPresenter),
+		questioners: make(map[string]sdk.QuestionPresenter),
+	}
 	if err := c.Provide("ctx.confirm", f); err != nil {
 		return nil, err
 	}
 	if err := c.Provide("ctx.confirmFusion", f); err != nil {
 		return nil, err
 	}
+	// P3 语义交互:同一实例提供结构化提问(Ask + 渠道注册)
+	if err := c.Provide("ctx.question", f); err != nil {
+		return nil, err
+	}
 	return func() {}, nil
+}
+
+// RegisterQuestioner 注册提问渠道呈现者(sdk.QuestionService;Disposer 幂等撤销)。
+func (f *Fusion) RegisterQuestioner(channel string, p sdk.QuestionPresenter) sdk.Disposer {
+	f.mu.Lock()
+	f.registerSeq++
+	f.questioners[channel] = p
+	f.mu.Unlock()
+	return func() {
+		f.mu.Lock()
+		if f.questioners[channel] == p {
+			delete(f.questioners, channel)
+		}
+		f.mu.Unlock()
+	}
+}
+
+// QuestionChannels 已注册提问渠道(诊断)。
+func (f *Fusion) QuestionChannels() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, 0, len(f.questioners))
+	for k := range f.questioners {
+		out = append(out, k)
+	}
+	return out
+}
+
+// Ask sdk.QuestionService:广播提问给全部渠道,首答生效;无渠道显式报错(不静默假答)。
+func (f *Fusion) Ask(ctx context.Context, q sdk.Question) (sdk.QuestionAnswer, error) {
+	f.mu.Lock()
+	presenters := make([]sdk.QuestionPresenter, 0, len(f.questioners))
+	for _, p := range f.questioners {
+		presenters = append(presenters, p)
+	}
+	f.mu.Unlock()
+	if len(presenters) == 0 {
+		return sdk.QuestionAnswer{}, fmt.Errorf("question: 无提问渠道(未注册 UI 呈现者)")
+	}
+	type active struct {
+		ch     <-chan sdk.QuestionAnswer
+		cancel func()
+	}
+	var cases []active
+	for _, p := range presenters {
+		ch, cancel, err := p.PresentQuestion(ctx, q)
+		if err != nil || ch == nil {
+			continue
+		}
+		cases = append(cases, active{ch: ch, cancel: cancel})
+	}
+	defer func() {
+		for _, c := range cases {
+			c.cancel()
+		}
+	}()
+	if len(cases) == 0 {
+		return sdk.QuestionAnswer{}, fmt.Errorf("question: 全部渠道呈现失败")
+	}
+	if len(cases) == 1 {
+		select {
+		case a := <-cases[0].ch:
+			return a, nil
+		case <-ctx.Done():
+			return sdk.QuestionAnswer{}, ctx.Err()
+		}
+	}
+	merged := make(chan sdk.QuestionAnswer, 1)
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(len(cases))
+	for _, c := range cases {
+		go func(ac active) {
+			defer wg.Done()
+			select {
+			case a := <-ac.ch:
+				select {
+				case merged <- a:
+				default:
+				}
+			case <-done:
+			}
+		}(c)
+	}
+	go func() { wg.Wait(); close(merged) }()
+	defer close(done)
+	select {
+	case a := <-merged:
+		return a, nil
+	case <-ctx.Done():
+		return sdk.QuestionAnswer{}, ctx.Err()
+	}
 }
 
 // Register 注册渠道呈现者(Disposer 幂等撤销)。

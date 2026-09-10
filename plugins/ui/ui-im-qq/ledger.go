@@ -12,31 +12,55 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// ledgerState 落盘形态(ChatID → 滞留文本;key 用渠道内 chatID 即足够,
-// 单渠道文件内不冲突)。
-type ledgerState struct {
-	Entries map[string]string `yaml:"entries"`
+// ledgerEntry 一条滞留记录:原文 + 已尝试投递次数(P2 二期:>0 = 此前投递失败过,
+// 重投时加"可能重复"提示——发送结果未确认时至少一次语义的可见标记,对齐 hermes)。
+type ledgerEntry struct {
+	Text     string `yaml:"text"`
+	Attempts int    `yaml:"attempts,omitempty"`
 }
 
-// deliveryLedger ChatID → 滞留文本 持久映射(并发安全)。
+// UnmarshalYAML 兼容一期旧格式(entries: {chat: "文本"} 纯字符串)。
+func (e *ledgerEntry) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode { // 旧格式:纯文本
+		e.Text = node.Value
+		return nil
+	}
+	type alias ledgerEntry
+	var a alias
+	if err := node.Decode(&a); err != nil {
+		return err
+	}
+	*e = ledgerEntry(a)
+	return nil
+}
+
+// ledgerState 落盘形态(ChatID → 记录;key 用渠道内 chatID 即足够,
+// 单渠道文件内不冲突)。
+type ledgerState struct {
+	Entries map[string]ledgerEntry `yaml:"entries"`
+}
+
+// deliveryLedger ChatID → 滞留记录 持久映射(并发安全)。
 type deliveryLedger struct {
 	mu   sync.Mutex
 	path string
-	m    map[string]string
+	m    map[string]ledgerEntry
 }
 
 func newDeliveryLedger(path string) *deliveryLedger {
-	l := &deliveryLedger{path: path, m: make(map[string]string)}
+	l := &deliveryLedger{path: path, m: make(map[string]ledgerEntry)}
 	if path != "" {
 		l.load()
 	}
 	return l
 }
 
-// Set 滞留整段文本(覆盖旧滞留——同 chat 单槽,旧内容已被新结果取代)。
-func (l *deliveryLedger) Set(chatID, text string) {
+// Stash 滞留整段文本(覆盖旧滞留文本——同 chat 单槽,旧内容已被新结果取代;
+// 尝试次数递增:每次滞留都是一次投递失败 → 重投时据此加"可能重复"提示)。
+func (l *deliveryLedger) Stash(chatID, text string) {
 	l.mu.Lock()
-	l.m[chatID] = text
+	prev := l.m[chatID]
+	l.m[chatID] = ledgerEntry{Text: text, Attempts: prev.Attempts + 1}
 	raw, err := yaml.Marshal(&ledgerState{Entries: l.m})
 	path := l.path
 	l.mu.Unlock()
@@ -46,10 +70,12 @@ func (l *deliveryLedger) Set(chatID, text string) {
 	saveYAML0600(path, raw)
 }
 
-// GetAndClear 取走滞留内容(补发成功语义:调用方拿到即视为已投递,失败自行 Set 放回)。
-func (l *deliveryLedger) GetAndClear(chatID string) string {
+// Take 取走滞留内容(补发语义:调用方拿到即视为已投递,失败自行 Stash 放回原文)。
+// 返回原文与已尝试次数(>0 = 此前失败过,调用方据此加重复提示;前缀由调用方拼,
+// 避免把提示写回原文造成累积)。
+func (l *deliveryLedger) Take(chatID string) (string, int) {
 	l.mu.Lock()
-	pend := l.m[chatID]
+	e := l.m[chatID]
 	delete(l.m, chatID)
 	raw, err := yaml.Marshal(&ledgerState{Entries: l.m})
 	path := l.path
@@ -57,7 +83,7 @@ func (l *deliveryLedger) GetAndClear(chatID string) string {
 	if err == nil && path != "" {
 		saveYAML0600(path, raw)
 	}
-	return pend
+	return e.Text, e.Attempts
 }
 
 // Pending 是否存在滞留(状态展示)。
