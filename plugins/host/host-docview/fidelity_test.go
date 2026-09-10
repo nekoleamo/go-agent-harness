@@ -49,11 +49,15 @@ func TestFidelityCorpus(t *testing.T) {
 		t.Fatalf("语料目录无可用文档: %s", dir)
 	}
 	strict := os.Getenv("GAH_DOC_CORPUS_STRICT") == "1"
+	// gapStrict(DOC-1):出现 content 级缺口即判失败(默认只报告;D6-3 判定由人拍板)
+	gapStrict := os.Getenv("GAH_DOC_CORPUS_GAP_STRICT") == "1"
 	minCover := 0.85
-	t.Logf("语料文件 %d 个(strict=%v,minCover=%.2f): %s", len(files), strict, minCover, dir)
+	t.Logf("语料文件 %d 个(strict=%v,gapStrict=%v,minCover=%.2f): %s", len(files), strict, gapStrict, minCover, dir)
 
 	// 语料在 workspace 之外:按 CLI/TUI 单机语义构造无沙箱服务(strict 策略不适用)
 	s := New(Options{Home: t.TempDir(), Logger: slog.New(slog.DiscardHandler)})
+	// 跨文件特性聚合(GAPSUMMARY:一屏看清"真实语料到底用了哪些高级特性")
+	agg := map[string][]string{}
 	byFormat := map[string]int{}
 	for _, f := range files {
 		rel := filepath.Base(f)
@@ -126,6 +130,26 @@ func TestFidelityCorpus(t *testing.T) {
 			t.Logf("REPORT note file=%s 行截断 total=%d shown=%d", rel, tx.TotalLines, len(tx.Lines))
 		}
 
+		// DOC-1:源高级特性 GAP 报告(D6-3 判定依据;不改抽取器)
+		if gaps, gerr := probeGaps(view.Format, f); gerr != nil {
+			t.Logf("REPORT note file=%s GAP 探针失败: %v", rel, gerr)
+		} else if len(gaps) > 0 {
+			contentGaps := 0
+			for _, g := range gaps {
+				if g.Severity == gapContent {
+					contentGaps++
+				}
+				t.Logf("GAP file=%s feature=%s source_hits=%d parts=%s ours=%s severity=%s",
+					rel, g.Feature, g.Hits, strings.Join(g.Parts, ";"), g.Ours, g.Severity)
+				agg[g.Feature] = append(agg[g.Feature], g.Severity)
+			}
+			t.Logf("REPORT gap file=%s features=%d summary=%s content_gaps=%d",
+				rel, len(gaps), gapSummary(gaps), contentGaps)
+			if gapStrict && contentGaps > 0 {
+				t.Errorf("%s: 存在 %d 项内容级缺口(见上方 GAP 行;D6-3 判定依据)", rel, contentGaps)
+			}
+		}
+
 		// PDF:与 poppler 独立实现对照
 		if view.Format == sdk.DocFormatPDF {
 			ref, ok := pdftotextText(t, f)
@@ -152,7 +176,17 @@ func TestFidelityCorpus(t *testing.T) {
 			}
 		}
 	}
-	t.Logf("SUMMARY formats=%s files=%d", kindsSummary(byFormat), len(files))
+	// 跨文件 GAP 汇总(内容级优先列出;D6-3 判定据此拍板)
+	for feat, sevs := range agg {
+		worst := gapInfo
+		for _, sev := range sevs {
+			if sev == gapContent || (sev == gapStyle && worst == gapInfo) {
+				worst = sev
+			}
+		}
+		t.Logf("GAPSUMMARY feature=%s files=%d severity=%s", feat, len(sevs), worst)
+	}
+	t.Logf("SUMMARY formats=%s files=%d gap_features=%d", kindsSummary(byFormat), len(files), len(agg))
 }
 
 // corpusFiles 列举语料目录中的可识别文档(排序 + 上限;忽略隐藏文件与目录)。
