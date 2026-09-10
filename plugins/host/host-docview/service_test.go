@@ -146,7 +146,7 @@ func TestPendingFormatExplicit(t *testing.T) {
 	for _, c := range []struct {
 		name string
 		f    sdk.DocFormat
-	}{{"a.docx", sdk.DocFormatDOCX}, {"a.xlsx", sdk.DocFormatXLSX}, {"a.pptx", sdk.DocFormatPPTX}, {"a.html", sdk.DocFormatHTML}} {
+	}{{"a.xlsx", sdk.DocFormatXLSX}, {"a.pptx", sdk.DocFormatPPTX}, {"a.html", sdk.DocFormatHTML}} {
 		p := writeFile(t, dir, c.name, []byte("x"))
 		v, err := s.Preview(context.Background(), sdk.DocRequest{Path: p})
 		if err != nil {

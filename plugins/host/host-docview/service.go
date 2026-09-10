@@ -131,11 +131,11 @@ func New(o Options) *Service {
 		sdk.DocFormatBinary:      extractBinary,
 		sdk.DocFormatImage:       extractImage,
 		sdk.DocFormatPDF:         extractPDF,
+		sdk.DocFormatDOCX:        extractDOCX,
 		sdk.DocFormatUnsupported: extractUnsupported,
 	}
 	s.pending = map[sdk.DocFormat]string{
 		sdk.DocFormatHTML: "切片 D6(源码视图 + 沙箱 iframe)",
-		sdk.DocFormatDOCX: "切片 D2(自研 OOXML)",
 		sdk.DocFormatXLSX: "切片 D3(自研 OOXML)",
 		sdk.DocFormatPPTX: "切片 D3(自研 OOXML)",
 	}
