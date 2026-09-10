@@ -340,7 +340,16 @@ func writePPTX(t *testing.T, dir string, png []byte) string {
 		"ppt/slides/_rels/slide1.xml.rels": []byte(pptxSlide1Rels),
 		"ppt/slides/slide2.xml":            []byte(pptxSlide2),
 		"ppt/media/image1.png":             png,
-		"ppt/notesSlides/notesSlide1.xml":  []byte(`<?xml version="1.0"?><p:notes xmlns:p="x"/>`),
+		"ppt/notesSlides/notesSlide1.xml": []byte(`<?xml version="1.0" encoding="UTF-8"?>
+<p:notes xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+         xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+ <p:cSld><p:spTree>
+  <p:sp><p:nvSpPr><p:nvPr><p:ph type="body" idx="1"/></p:nvPr></p:nvSpPr>
+    <p:txBody><a:p><a:r><a:t>讲者备注:先讲结论</a:t></a:r></a:p><a:p><a:r><a:t>再讲数据来源</a:t></a:r></a:p></p:txBody></p:sp>
+  <p:sp><p:nvSpPr><p:nvPr><p:ph type="sldNum" sz="quarter" idx="10"/></p:nvPr></p:nvSpPr>
+    <p:txBody><a:p><a:fld id="{X}" type="slidenum"><a:t>1</a:t></a:fld></a:p></p:txBody></p:sp>
+ </p:spTree></p:cSld>
+</p:notes>`),
 	})
 	if err := os.WriteFile(p, data, 0o644); err != nil {
 		t.Fatal(err)
@@ -416,9 +425,25 @@ func TestExtractPPTX(t *testing.T) {
 		t.Fatalf("资产取回失败: %v", err)
 	}
 	rc.Close()
-	// 备注页显式警告
-	if !strings.Contains(strings.Join(v.Warnings, " "), "备注页") {
-		t.Fatalf("应提示备注页未解析: %v", v.Warnings)
+	// DOC-3b:备注页文本已解析为 note(sldIdLst 顺序中 slide1 = 第 2 张);不再报「含备注页」;
+	// 幻灯片编号占位(sldNum)不得混入备注文本。
+	note := ""
+	for _, b := range v.Blocks {
+		if b.Kind == sdk.DocBlockNote && strings.Contains(b.Text, "备注(第 2 张)") {
+			note = b.Text
+		}
+	}
+	if note == "" {
+		t.Fatalf("备注页应产出 note 块: %+v", v.Blocks)
+	}
+	if !strings.Contains(note, "讲者备注:先讲结论 再讲数据来源") {
+		t.Fatalf("备注文本不符(多段落应合并): %q", note)
+	}
+	if strings.Contains(note, "1") && strings.Contains(note, "slidenum") {
+		t.Fatalf("幻灯片编号不应混入备注: %q", note)
+	}
+	if strings.Contains(strings.Join(v.Warnings, " "), "备注页") {
+		t.Fatalf("备注已解析,不应再报警告: %v", v.Warnings)
 	}
 }
 

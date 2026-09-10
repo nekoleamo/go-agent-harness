@@ -221,7 +221,8 @@ func gapProbes(format sdk.DocFormat) []gapProbe {
 		}
 	case sdk.DocFormatPPTX:
 		return []gapProbe{
-			{feature: "notes", severity: gapInfo, ours: "warned", match: func(e map[string][]byte) []gapHit {
+			// DOC-3b 已交付:讲者备注文本进 note 块(幻灯片编号占位跳过)
+			{feature: "notes", severity: gapInfo, ours: "supported", match: func(e map[string][]byte) []gapHit {
 				return nameHits(e, "ppt/notesSlides/")
 			}},
 			{feature: "chart", severity: gapContent, ours: "absent", match: func(e map[string][]byte) []gapHit {

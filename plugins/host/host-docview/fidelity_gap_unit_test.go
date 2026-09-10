@@ -136,6 +136,11 @@ func TestGapProbeDOCXSeverityByPart(t *testing.T) {
 	if f := g3["textBox"]; f.Severity != gapInfo || f.Hits != 2 {
 		t.Fatalf("多部件应计数合计: %+v", f)
 	}
+	// 备注:DOC-3b 已支持(文本进 note)
+	g7 := gapOf(t, sdk.DocFormatPPTX, map[string]string{"ppt/notesSlides/notesSlide1.xml": `<p:notes/>`})
+	if f := g7["notes"]; f.Severity != gapInfo || f.Ours != "supported" {
+		t.Fatalf("pptx 备注应为 info/supported: %+v", f)
+	}
 	// 批注:DOC-3a 已支持(文本进 note)
 	g6 := gapOf(t, sdk.DocFormatDOCX, map[string]string{"word/comments.xml": `<w:comments/>`})
 	if f := g6["comments"]; f.Severity != gapInfo || f.Ours != "supported" {

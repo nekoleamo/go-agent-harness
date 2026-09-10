@@ -201,17 +201,14 @@ func (p *pptxParser) parseSlide(ctx context.Context, part string, no int) {
 		}
 	}
 	p.endTable()
-	// 备注页(存在即提示)
-	if p.o.hasPrefix("ppt/notesSlides") {
-		relNotes := false
-		for _, rel := range p.o.rels(part) {
-			if strings.Contains(rel.Type, "notesSlide") {
-				relNotes = true
-				break
-			}
-		}
-		if relNotes {
-			p.o.addWarning(fmt.Sprintf("第 %d 张幻灯片含备注页,本期不解析", no))
+	// DOC-3b:备注页文本(讲者备注常含实质内容)→ note 块(此前只告警「本期不解析」)
+	if notesPart := pptxNotesRel(p.o, part); notesPart != "" {
+		text, err := pptxNotesText(p.o, notesPart)
+		switch {
+		case err != nil:
+			p.o.addWarning(fmt.Sprintf("第 %d 张幻灯片备注页解析失败: %v", no, err))
+		case text != "":
+			p.addBlock(sdk.DocBlock{Kind: sdk.DocBlockNote, Text: fmt.Sprintf("备注(第 %d 张): %s", no, text)})
 		}
 	}
 	// 标题占位继承(仅标题):本张无标题时回退布局/母版
