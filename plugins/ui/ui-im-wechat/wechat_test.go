@@ -218,3 +218,45 @@ func TestInvalidateCreds(t *testing.T) {
 		t.Fatalf("落盘应已清理登录态: %+v", got)
 	}
 }
+
+// TestDisconnectClearsCredsAndQR E3-R:/im logout —— 清凭证(授权保留)+ 连接卡回 idle + 二维码作废。
+func TestDisconnectClearsCredsAndQR(t *testing.T) {
+	var v any = imChannelStatus{tr: &wechatTransport{name: channelName}}
+	if _, ok := v.(sdk.IMDisconnectProvider); !ok {
+		t.Fatal("imChannelStatus 应实现 sdk.IMDisconnectProvider")
+	}
+	dir := t.TempDir()
+	store := ilink.NewStore(dir + "/ilink-wechat.yaml")
+	creds := &ilink.Credentials{Token: "tk", SyncBuf: "buf", BaseURL: "https://x",
+		AccountID: "acc", Allow: []string{"wechat\x00u1"}, Groups: []string{"wechat\x00g1"}}
+	if err := store.Save(creds); err != nil {
+		t.Fatal(err)
+	}
+	tr := &wechatTransport{name: channelName, store: store, creds: creds,
+		client: ilink.New("https://x", "tk"), conn: sdk.IMConnectStatus{Phase: sdk.IMPhaseWaitingScan, QRContent: "qr-payload"}}
+	if err := tr.disconnect(); err != nil {
+		t.Fatal(err)
+	}
+	if tr.creds.Token != "" || tr.creds.SyncBuf != "" || tr.client != nil {
+		t.Fatalf("应清理登录态: %+v", tr.creds)
+	}
+	if len(tr.creds.Allow) != 1 || len(tr.creds.Groups) != 1 {
+		t.Fatalf("授权名单必须保留: %+v", tr.creds)
+	}
+	if got, _ := store.Load(); got.Token != "" || got.SyncBuf != "" || len(got.Allow) != 1 {
+		t.Fatalf("落盘异常: %+v", got)
+	}
+	if st := tr.ConnectStatus(); st.Phase != sdk.IMPhaseIdle {
+		t.Fatalf("连接卡应回 idle: %+v", st)
+	}
+	tr.mu.Lock()
+	qr := tr.conn.QRContent
+	tr.mu.Unlock()
+	if qr != "" {
+		t.Fatalf("退出后二维码应作废: %q", qr)
+	}
+	// 幂等:重复调用不报错
+	if err := tr.disconnect(); err != nil {
+		t.Fatalf("重复退出应幂等: %v", err)
+	}
+}

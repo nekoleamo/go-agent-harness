@@ -2,7 +2,44 @@
 // 宿主(或未来插件)经 App.AddWidget 注册,渲染帧从 onWidgets 拉取;可经 /widgets on|off 开关。
 package tui
 
-import "strings"
+import (
+	"strings"
+
+	"charm.land/lipgloss/v2"
+)
+
+// WidgetSeg 一段 widget 文本(G-E3-R2):Level 空/未知 = 默认 widget 前景色。
+// 语义色档位:ok(绿) / warn·busy(琥珀) / err(红) / off(灰)。
+type WidgetSeg struct {
+	Text  string
+	Level string
+}
+
+// RenderWidgetSegs 组装一条 widget 行:每段独立着色,段间自动回落 widget 默认前景色。
+// 供宿主/插件构造语义色状态行(如「● 微信 已连接 · ● QQ(沙箱) 在线」);
+// 纯文本亦可用(Level 置空),输出与直接拼字符串一致(无 ANSI)。
+func RenderWidgetSegs(segs ...WidgetSeg) string {
+	var sb strings.Builder
+	for _, s := range segs {
+		sb.WriteString(widgetStyle(s.Level).Render(s.Text))
+	}
+	return sb.String()
+}
+
+// widgetStyle 语义色档位 → 样式(未知档位回落 widget 默认色)。
+func widgetStyle(level string) lipgloss.Style {
+	switch level {
+	case "ok":
+		return lipgloss.NewStyle().Foreground(fg(TokToolOK))
+	case "warn", "busy":
+		return lipgloss.NewStyle().Foreground(fg(TokBusy))
+	case "err":
+		return lipgloss.NewStyle().Foreground(fg(TokError))
+	case "off":
+		return lipgloss.NewStyle().Foreground(fg(TokMeta))
+	}
+	return styleWidget
+}
 
 // Widget 一条 widget 行:ID 标识,Text 每次渲染求值(返回空 = 该帧不显示)。
 type Widget struct {
@@ -26,10 +63,47 @@ func widgetLines(s *State) []string {
 		if txt == "" {
 			continue
 		}
-		if n := len([]rune(txt)); n > 100 {
-			txt = string([]rune(txt)[:99]) + "…"
-		}
-		out = append(out, txt)
+		out = append(out, truncateVisible(txt, widgetMaxRunes))
 	}
 	return out
+}
+
+// widgetMaxRunes widget 行可见字符上限(防撑屏;超长内容由会话流滚动查看)。
+const widgetMaxRunes = 100
+
+// truncateVisible 按可见字符数截断:ANSI 转义序列整体跨过(不计长、不切断),
+// 截断时末尾追加省略号。语义色分段文本必须走本函数(直接按 rune 计数会把颜色码算进去)。
+// 不主动补 reset:调用方(lipgloss Render)会在行尾闭合样式,不会溢出到相邻内容。
+func truncateVisible(s string, max int) string {
+	if max <= 1 {
+		return "…"
+	}
+	rs := []rune(s)
+	var sb strings.Builder
+	n, cut := 0, false
+	for i := 0; i < len(rs); {
+		if rs[i] == 0x1b && i+1 < len(rs) && rs[i+1] == '[' { // CSI: ESC '[' 参数…终止字节(0x40–0x7E)
+			j := i + 2
+			for j < len(rs) && (rs[j] < 0x40 || rs[j] > 0x7e) {
+				j++
+			}
+			if j < len(rs) {
+				j++ // 含终止字节
+			}
+			sb.WriteString(string(rs[i:j]))
+			i = j
+			continue
+		}
+		if n >= max-1 {
+			cut = true
+			break
+		}
+		sb.WriteRune(rs[i])
+		n++
+		i++
+	}
+	if cut {
+		sb.WriteString("…")
+	}
+	return sb.String()
 }

@@ -675,10 +675,10 @@ func (b *Bridge) submitBG(r Route, task string) {
 	}
 }
 
-// imCmd /im 子命令(状态/配对/群授权;用户级 allow/revoke 由插件壳或主机直调 Access)。
+// imCmd /im 子命令(能力感知聚合/状态/配对/群授权/退出;用户级 allow/revoke 由插件壳或主机直调 Access)。
 func (b *Bridge) imCmd(ctx context.Context, args []string) string {
 	if len(args) == 0 {
-		return "用法: /im status|pair <配对码>|allowg <群ChatID>|revokeg <群ChatID>|list"
+		return b.imDashboard()
 	}
 	switch args[0] {
 	case "status":
@@ -737,9 +737,114 @@ func (b *Bridge) imCmd(ctx context.Context, args []string) string {
 			out += "\n最近活动群(未授权;可 /im allowg 授权):\n" + strings.Join(pending, "\n")
 		}
 		return strings.TrimRight(out, "\n")
+	case "channels":
+		return b.imDashboard()
+	case "logout", "disconnect":
+		dp := b.imDisconnect()
+		if dp == nil {
+			return "该渠道不支持 /im logout(未实现断开能力;请用渠道命令,如 /qq login 重配置)。"
+		}
+		if err := dp.Disconnect(ctx); err != nil {
+			return "❌ 断开失败: " + err.Error()
+		}
+		return "✅ 已断开连接并清理本地凭证(授权名单保留;重新登录请用渠道登录命令)。"
 	default:
-		return "用法: /im status|pair <配对码>|allowg <群ChatID>|revokeg <群ChatID>|list"
+		return "用法: /im [status|channels|list|pair <配对码>|allowg <群ChatID>|revokeg <群ChatID>|logout]"
 	}
+}
+
+// imConnect 当前渠道的连接服务(可选能力:ctx.imChannels 实现方按需实现 IMConnectService)。
+// 懒解析:UI/IM 插件启动顺序无拓扑约束,启动期一次性注入会恒 nil(对齐 policy-guard 时序坑)。
+func (b *Bridge) imConnect() sdk.IMConnectService {
+	if b.c == nil { // 单测可构造无宿主服务的桥(nil Ctx)
+		return nil
+	}
+	var ic sdk.IMChannelService
+	if err := b.c.Inject("ctx.imChannels", &ic); err != nil || ic == nil {
+		return nil
+	}
+	cs, _ := ic.(sdk.IMConnectService)
+	return cs
+}
+
+// imDisconnect 当前渠道的断开能力(可选;未实现 → /im 不提供 logout)。
+func (b *Bridge) imDisconnect() sdk.IMDisconnectProvider {
+	if b.c == nil {
+		return nil
+	}
+	var ic sdk.IMChannelService
+	if err := b.c.Inject("ctx.imChannels", &ic); err != nil || ic == nil {
+		return nil
+	}
+	dp, _ := ic.(sdk.IMDisconnectProvider)
+	return dp
+}
+
+// imDashboard /im 聚合总览(能力感知:渠道·连接方式·相位·环境·授权·退出)。
+// 信息源均为已装配可选服务 + 桥内账本;缺失能力显式标「未知/不支持」,不静默省略。
+func (b *Bridge) imDashboard() string {
+	b.mu.Lock()
+	busy := b.busy
+	b.mu.Unlock()
+	state := "idle"
+	if busy {
+		state = "busy"
+	}
+	groups := b.acc.Groups()
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "im(%s) 模式=%s 状态=%s 授权用户=%d 授权群=%d\n",
+		b.tr.Name(), b.acc.Mode(), state, len(b.acc.List()), len(groups))
+	if cs := b.imConnect(); cs != nil {
+		spec := cs.ConnectSpec()
+		st := cs.ConnectStatus()
+		fmt.Fprintf(&sb, "连接: 渠道=%s 方式=%s 相位=%s\n", spec.Channel, spec.Kind, st.Phase)
+		if st.Detail != "" {
+			sb.WriteString("　　" + st.Detail + "\n")
+		}
+		if st.Account != "" {
+			sb.WriteString("账号: " + st.Account + "\n")
+		}
+		if st.Env != "" {
+			sb.WriteString("环境: " + st.Env + "\n")
+		}
+		if st.Error != "" {
+			sb.WriteString("错误: " + st.Error + "\n")
+		}
+		if spec.LoginURL != "" {
+			sb.WriteString("平台入口: " + spec.LoginURL + "\n")
+		}
+		if spec.Hint != "" {
+			sb.WriteString("提示: " + spec.Hint + "\n")
+		}
+	} else {
+		sb.WriteString("连接: 未知(渠道未实现连接契约 ctx.imChannels/IMConnectService)\n")
+	}
+	// 授权全景:已授权群 + 最近活动群(含未授权;可直接 /im allowg)
+	if len(groups) > 0 {
+		sb.WriteString("已授权群: ")
+		names := make([]string, 0, len(groups))
+		for _, g := range groups {
+			names = append(names, b.stripChan(g))
+		}
+		sb.WriteString(strings.Join(names, " , ") + "\n")
+	}
+	if seen := b.seenGroups(); len(seen) > 0 {
+		auth := make(map[string]bool, len(groups))
+		for _, g := range groups {
+			auth[b.stripChan(g)] = true
+		}
+		for _, g := range seen {
+			if !auth[g.chatID] {
+				fmt.Fprintf(&sb, "最近活动群(未授权,可 /im allowg): %s(%s)\n", g.chatID, g.at.Format("15:04"))
+			}
+		}
+	}
+	if b.imDisconnect() != nil {
+		sb.WriteString("退出: /im logout(断开并清理本地凭证;授权名单保留)\n")
+	} else {
+		sb.WriteString("退出: 该渠道未实现断开能力(用渠道命令管理登录态)\n")
+	}
+	return strings.TrimRight(sb.String(), "\n")
 }
 
 // sessionCmd P1 会话绑定命令面(IM 通道专属;仅授权用户可达——gate 已在前置裁决)。
@@ -1017,8 +1122,8 @@ func (b *Bridge) RegisterCommands(cmds sdk.CommandRegistry) (sdk.Disposer, error
 	ds = append(ds, d1)
 	d2, err := cmds.Register(sdk.CommandSpec{
 		Name:  "im",
-		Usage: "/im status|pair <配对码>|allowg|revokeg <群ChatID>|list",
-		Desc:  "IM 远程控制状态/配对(授权新用户)",
+		Usage: "/im [status|channels|list|pair <配对码>|allowg|revokeg|logout]",
+		Desc:  "IM 远程控制:能力感知总览/状态/配对/群授权/断开连接",
 		Run: func(args []string) (string, error) {
 			return b.imCmd(context.Background(), args), nil
 		},
@@ -1027,10 +1132,12 @@ func (b *Bridge) RegisterCommands(cmds sdk.CommandRegistry) (sdk.Disposer, error
 			{Options: func([]string) []sdk.Option {
 				return []sdk.Option{
 					{Value: "status", Desc: "通道状态(模式/已授权/忙闲)"},
+					{Value: "channels", Desc: "能力感知总览(连接/环境/授权/退出)"},
 					{Value: "list", Desc: "已授权用户/群 + 最近活动群"},
 					{Value: "pair", Desc: "用配对码授权新用户"},
 					{Value: "allowg", Desc: "授权整群(群内成员免各自配对)"},
 					{Value: "revokeg", Desc: "撤销群授权"},
+					{Value: "logout", Desc: "断开连接并清理本地凭证"},
 				}
 			}},
 			{

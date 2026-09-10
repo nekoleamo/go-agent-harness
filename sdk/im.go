@@ -10,11 +10,11 @@ import (
 
 // IMChannelStatus 一个 IM 渠道的展示状态。
 type IMChannelStatus struct {
-	Channel  string `json:"channel"`  // wechat / qq
-	State    string `json:"state"`    // online / running / configuring / 未配置(展示文案由前端映射)
-	Detail   string `json:"detail"`   // 通道 statusText 摘要(模型/网关/授权数等)
-	Error    string `json:"error"`    // lastError 脱敏诊断(空 = 无)
-	Authorized int  `json:"authorized"` // 已授权 SenderKey 数
+	Channel    string `json:"channel"`    // wechat / qq
+	State      string `json:"state"`      // online / running / configuring / 未配置(展示文案由前端映射)
+	Detail     string `json:"detail"`     // 通道 statusText 摘要(模型/网关/授权数等)
+	Error      string `json:"error"`      // lastError 脱敏诊断(空 = 无)
+	Authorized int    `json:"authorized"` // 已授权 SenderKey 数
 }
 
 // IMChannelService 渠道状态查询(web server 可选注入;未装配 = 面板隐藏该区)。
@@ -44,4 +44,14 @@ type IMLoginProvider interface {
 	StartLogin(ctx context.Context) (IMLoginQR, error)
 	// LoginState 当前登录进度。
 	LoginState() IMLoginState
+}
+
+// IMDisconnectProvider 可选能力:渠道支持断开连接并清理本地凭证(E3-R「/im 退出」)。
+// 纪律:
+//   - 只清凭证(重新登录方可再用),**不删除已授权名单**(授权是身份语义,与连接分离);
+//   - 幂等:未连接时调用不得报错;
+//   - 未实现 = 桥层不提供 /im logout(显式提示「该渠道不支持」,不静默假装成功)。
+type IMDisconnectProvider interface {
+	// Disconnect 断开当前连接并清理本地凭证(幂等)。
+	Disconnect(ctx context.Context) error
 }

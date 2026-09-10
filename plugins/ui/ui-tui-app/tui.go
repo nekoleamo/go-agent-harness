@@ -51,6 +51,8 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		}
 	}
 	app := tui.NewApp(c, loop, llm, profile, palette)
+	// G-E3-R2:IM 状态 widget(懒解析 ctx.imChannels;未装配/无渠道 → 不显示)
+	app.AddWidget("im", imStatusWidget(c))
 	// 确认服务(审批弹层):单 profile 自 Provide;P3 融合(host-confirm-fusion 装配)
 	// 时注册为 tui 呈现者,与 web/im 同进程并存同卡(不再 Provide 防同名冲突)。
 	var confirmReg sdk.Disposer = func() {}

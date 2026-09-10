@@ -93,3 +93,63 @@ func TestWidgetsCommandToggle(t *testing.T) {
 		t.Fatal("空注册应忽略")
 	}
 }
+
+// G-E3-R2:widget 语义色分段(状态行「● 微信 已连接 · ● QQ(沙箱) 在线」)。
+func TestRenderWidgetSegs(t *testing.T) {
+	out := RenderWidgetSegs(
+		WidgetSeg{Text: "●", Level: "ok"},
+		WidgetSeg{Text: " 微信"},
+		WidgetSeg{Text: " 已连接", Level: "ok"},
+		WidgetSeg{Text: " · "},
+		WidgetSeg{Text: "◐", Level: "warn"},
+		WidgetSeg{Text: " QQ(沙箱)"},
+		WidgetSeg{Text: " 运行中", Level: "warn"},
+	)
+	if got := stripColor(out); got != "● 微信 已连接 · ◐ QQ(沙箱) 运行中" {
+		t.Fatalf("文本拼合异常: %q", got)
+	}
+	// 语义色确实写入 ANSI(ok=绿 / warn=琥珀 / 默认=widget 灰各不同)
+	if !strings.Contains(out, "\x1b[") {
+		t.Fatalf("语义色未着色: %q", out)
+	}
+	okColor := RenderWidgetSegs(WidgetSeg{Text: "x", Level: "ok"})
+	warnColor := RenderWidgetSegs(WidgetSeg{Text: "x", Level: "warn"})
+	defColor := RenderWidgetSegs(WidgetSeg{Text: "x"})
+	if okColor == warnColor || okColor == defColor || warnColor == defColor {
+		t.Fatalf("档位色应互不相同: ok=%q warn=%q default=%q", okColor, warnColor, defColor)
+	}
+	// 未知档位回落默认色
+	if RenderWidgetSegs(WidgetSeg{Text: "x", Level: "不存在"}) != defColor {
+		t.Fatal("未知档位应回落 widget 默认色")
+	}
+	// 接入 widgetLines:单行化与截断仍成立
+	s := &State{WidgetOn: true, Widgets: []Widget{{ID: "im", Text: func() string { return out }}}}
+	lines := widgetLines(s)
+	if len(lines) != 1 || stripColor(lines[0]) != "● 微信 已连接 · ◐ QQ(沙箱) 运行中" {
+		t.Fatalf("widgetLines 应保留分段文本: %+v", lines)
+	}
+}
+
+// truncateVisible:按可见字符截断(ANSI 颜色码不计长、不被切断)。
+func TestTruncateVisible(t *testing.T) {
+	if got := truncateVisible("abc", 100); got != "abc" {
+		t.Fatalf("短文本应原样: %q", got)
+	}
+	long := strings.Repeat("长", 200)
+	got := truncateVisible(long, 100)
+	if n := len([]rune(got)); n != 100 || !strings.HasSuffix(got, "…") {
+		t.Fatalf("无 ANSI 截断异常: %d %q", n, got[len(got)-3:])
+	}
+	// 语义色文本:颜色码不计长(若按 rune 计数会被提前截断)
+	colored := RenderWidgetSegs(WidgetSeg{Text: strings.Repeat("字", 120), Level: "ok"})
+	tr := truncateVisible(colored, 100)
+	if got := stripColor(tr); got != strings.Repeat("字", 99)+"…" {
+		t.Fatalf("ANSI 截断异常(可见 %d 字): %q", len([]rune(got)), got)
+	}
+	if !strings.Contains(tr, "\x1b[38;5;114m") {
+		t.Fatalf("应保留颜色前缀: %q", tr)
+	}
+	if n := truncateVisible("abcdef", 1); n != "…" {
+		t.Fatalf("max<=1 应只留省略号: %q", n)
+	}
+}

@@ -246,6 +246,9 @@ func (a imChannelStatus) StartLogin(ctx context.Context) (sdk.IMLoginQR, error) 
 // LoginState sdk.IMLoginProvider 转发。
 func (a imChannelStatus) LoginState() sdk.IMLoginState { return a.tr.LoginState() }
 
+// Disconnect sdk.IMDisconnectProvider 转发(E3-R /im logout)。
+func (a imChannelStatus) Disconnect(context.Context) error { return a.tr.disconnect() }
+
 // ticketEntry typing 票据缓存。
 type ticketEntry struct {
 	ticket    string
@@ -705,9 +708,12 @@ func (t *wechatTransport) ConnectStatus() sdk.IMConnectStatus {
 // setConn 写连接状态并广播事件(事件化替代轮询)。
 func (t *wechatTransport) setConn(st sdk.IMConnectStatus) {
 	t.mu.Lock()
-	// 保留已取到的二维码(相位推进时不清空)
-	if st.QRContent == "" && st.Phase != sdk.IMPhaseDone && st.Phase != sdk.IMPhaseFailed {
-		st.QRContent = t.conn.QRContent
+	// 保留已取到的二维码(仅扫码进行中的相位;idle/done/failed 等终态一律清空)
+	switch st.Phase {
+	case sdk.IMPhaseWaitingScan, sdk.IMPhaseScanned, sdk.IMPhaseExpiredRefresh, sdk.IMPhaseValidating:
+		if st.QRContent == "" {
+			st.QRContent = t.conn.QRContent
+		}
 	}
 	t.conn = st
 	t.mu.Unlock()
@@ -936,6 +942,29 @@ func (t *wechatTransport) invalidateCreds() {
 	if err := store.Save(creds); err != nil {
 		t.setLastError("失效凭证清理落盘失败: " + err.Error())
 	}
+}
+
+// disconnect E3-R:断开连接并清理本地凭证(退登;授权名单保留),幂等。
+// 与 invalidateCreds 的区别:先停轮询(会话过期场景轮询已自停),并显式回退连接卡相位。
+func (t *wechatTransport) disconnect() error {
+	t.stopPoll()
+	t.mu.Lock()
+	t.client = nil
+	if t.creds != nil {
+		t.creds.Token = ""
+		t.creds.SyncBuf = ""
+	}
+	creds, store := t.creds, t.store
+	t.mu.Unlock()
+	if creds != nil && store != nil {
+		if err := store.Save(creds); err != nil {
+			return err
+		}
+	}
+	t.setLastError("未登录(执行 /wechat login)")
+	t.setLoginState(sdk.IMLoginState{Phase: "idle", Detail: "已退出登录"})
+	t.setConn(sdk.IMConnectStatus{Channel: t.name, Phase: sdk.IMPhaseIdle, Detail: "已退出登录"})
+	return nil
 }
 
 // autoLogin 未登录自动扫码:取二维码 → 终端渲染 ASCII 二维码 + URL(stderr;headless 可见)→ 后台轮询确认。

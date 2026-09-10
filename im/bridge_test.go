@@ -1047,3 +1047,115 @@ func TestImGroupOptions(t *testing.T) {
 		t.Fatalf("最近活动群应最新在前: %+v", got)
 	}
 }
+
+// fakeIMChannel /im 聚合与退出的测试替身(三个可选能力齐备:状态/连接/断开)。
+type fakeIMChannel struct {
+	status    sdk.IMConnectStatus
+	spec      sdk.IMConnectSpec
+	logout    int
+	logoutErr error
+}
+
+func (f *fakeIMChannel) Status() []sdk.IMChannelStatus {
+	return []sdk.IMChannelStatus{{Channel: f.spec.Channel, State: "online", Detail: "已登录", Authorized: 2}}
+}
+func (f *fakeIMChannel) ConnectSpec() sdk.IMConnectSpec { return f.spec }
+func (f *fakeIMChannel) StartConnect(context.Context) (sdk.IMConnectStatus, error) {
+	return f.status, nil
+}
+func (f *fakeIMChannel) SubmitConfig(context.Context, map[string]string) (sdk.IMConnectStatus, error) {
+	return f.status, nil
+}
+func (f *fakeIMChannel) ConnectStatus() sdk.IMConnectStatus { return f.status }
+func (f *fakeIMChannel) Disconnect(context.Context) error {
+	f.logout++
+	return f.logoutErr
+}
+
+// buildBridgeIM 装配带 ctx.imChannels 的桥(svc 为 nil = 未装配渠道服务)。
+func buildBridgeIM(t *testing.T, svc sdk.IMChannelService) (*Bridge, sdk.Ctx) {
+	t.Helper()
+	t.Setenv("GAH_HOME", t.TempDir())
+	logger := slog.New(slog.DiscardHandler)
+	c := ctx.New(logger, event.New(logger))
+	if _, err := (&sessionlog.Plugin{}).Start(c, &sdk.Manifest{}); err != nil {
+		t.Fatal(err)
+	}
+	if svc != nil {
+		if err := c.Provide("ctx.imChannels", svc); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var sessions sdk.SessionLog
+	if err := c.Inject("ctx.sessions", &sessions); err != nil {
+		t.Fatal(err)
+	}
+	b := New(c, &stubLoop{}, sessions, &stubTransport{}, Options{
+		Mode: AccessAllowlist, Allow: []string{"mock\x00owner"},
+		AllowGroups: []string{"mock\x00GROUP-1"},
+	})
+	return b, c
+}
+
+// TestImDashboardAggregatesCapabilities /im 无参 = 能力感知总览(渠道/连接方式/相位/环境/账号/授权/退出)。
+func TestImDashboardAggregatesCapabilities(t *testing.T) {
+	fake := &fakeIMChannel{
+		spec: sdk.IMConnectSpec{Channel: "qq", Kind: sdk.IMConnectForm, LoginURL: "https://q.qq.com/qqbot/", Hint: "官方无扫码"},
+		status: sdk.IMConnectStatus{Channel: "qq", Phase: sdk.IMPhaseDone, Detail: "网关在线",
+			Account: "…1234", Env: "sandbox"},
+	}
+	b, _ := buildBridgeIM(t, fake)
+	out := b.imCmd(context.Background(), nil)
+	for _, want := range []string{
+		"im(mock)", "授权用户=1", "授权群=1",
+		"渠道=qq", "方式=form", "相位=done", "网关在线",
+		"账号: …1234", "环境: sandbox", "平台入口: https://q.qq.com/qqbot/", "提示: 官方无扫码",
+		"已授权群: GROUP-1", "退出: /im logout",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("总览缺少 %q:\n%s", want, out)
+		}
+	}
+	// channels 子命令与无参一致
+	if got := b.imCmd(context.Background(), []string{"channels"}); got != out {
+		t.Fatalf("/im channels 应与无参一致")
+	}
+}
+
+// TestImLogoutDisconnects /im logout:调用渠道断开能力并清凭证提示;授权名单保留。
+func TestImLogoutDisconnects(t *testing.T) {
+	fake := &fakeIMChannel{spec: sdk.IMConnectSpec{Channel: "wechat", Kind: sdk.IMConnectQR}}
+	b, _ := buildBridgeIM(t, fake)
+	out := b.imCmd(context.Background(), []string{"logout"})
+	if !strings.Contains(out, "已断开连接") || fake.logout != 1 {
+		t.Fatalf("logout 未生效: out=%q calls=%d", out, fake.logout)
+	}
+	if !strings.Contains(out, "授权名单保留") {
+		t.Fatalf("应显式说明授权名单保留: %q", out)
+	}
+	// 断开失败如实回显(不假装成功)
+	fake.logoutErr = errors.New("网络不可达")
+	if out := b.imCmd(context.Background(), []string{"logout"}); !strings.Contains(out, "断开失败") || !strings.Contains(out, "网络不可达") {
+		t.Fatalf("失败未如实回显: %q", out)
+	}
+}
+
+// TestImLogoutUnsupported 渠道未实现断开能力:总览与命令均显式说明(不静默)。
+func TestImLogoutUnsupported(t *testing.T) {
+	b, _ := buildBridgeIM(t, nil)
+	out := b.imCmd(context.Background(), nil)
+	if !strings.Contains(out, "连接: 未知") || !strings.Contains(out, "退出: 该渠道未实现断开能力") {
+		t.Fatalf("未装配渠道应显式说明: %q", out)
+	}
+	if out := b.imCmd(context.Background(), []string{"logout"}); !strings.Contains(out, "不支持") {
+		t.Fatalf("logout 应显式不支持: %q", out)
+	}
+	// 无 Ctx 的桥(nil):能力探测不 panic,显式回落「未知/不支持」
+	plain := New(nil, &stubLoop{}, nil, &stubTransport{}, Options{Mode: AccessAllowlist, Allow: []string{"mock\x00owner"}})
+	if plain.imConnect() != nil || plain.imDisconnect() != nil {
+		t.Fatal("nil Ctx 应探测不到渠道能力")
+	}
+	if out := plain.imCmd(context.Background(), nil); !strings.Contains(out, "连接: 未知") {
+		t.Fatalf("nil Ctx 总览异常: %q", out)
+	}
+}

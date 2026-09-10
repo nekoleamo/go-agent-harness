@@ -1301,6 +1301,29 @@ func (a imChannelStatus) Status() []sdk.IMChannelStatus {
 	}}
 }
 
+// Disconnect sdk.IMDisconnectProvider 转发(E3-R /im logout)。
+func (a imChannelStatus) Disconnect(context.Context) error { return a.tr.disconnect() }
+
+// disconnect E3-R:停止网关并清理本地凭证(AppID/AppSecret;授权/群名单保留),幂等。
+func (t *qqTransport) disconnect() error {
+	t.stopGateway()
+	t.mu.Lock()
+	if t.creds != nil {
+		t.creds.AppID = ""
+		t.creds.AppSecret = ""
+	}
+	creds, store := t.creds, t.store
+	t.mu.Unlock()
+	if creds != nil && store != nil {
+		if err := store.Save(creds); err != nil {
+			return err
+		}
+	}
+	t.setLastError("未配置(执行 /qq login)")
+	t.setConnStatus(sdk.IMConnectStatus{Channel: t.name, Phase: sdk.IMPhaseIdle, Detail: "已退出登录"})
+	return nil
+}
+
 // statusText 状态文本。
 func (t *qqTransport) statusText() string {
 	t.mu.Lock()

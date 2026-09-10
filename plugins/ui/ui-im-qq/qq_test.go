@@ -485,3 +485,49 @@ func TestEventCountsDiag(t *testing.T) {
 	// 空 transports(nil map)不 panic
 	(&qqTransport{}).statusText()
 }
+
+// TestQQDisconnect E3-R:/im logout —— 停网关 + 清凭证(授权/群名单保留)+ 连接卡回 idle。
+func TestQQDisconnect(t *testing.T) {
+	var v any = imChannelStatus{tr: &qqTransport{name: channelName}}
+	if _, ok := v.(sdk.IMDisconnectProvider); !ok {
+		t.Fatal("imChannelStatus 应实现 sdk.IMDisconnectProvider")
+	}
+	dir := t.TempDir()
+	store := qqbot.NewStore(dir + "/qqbot.yaml")
+	creds := &qqbot.Credentials{AppID: "app-1", AppSecret: "sec-1", BaseURL: "https://sandbox.api.sgroup.qq.com",
+		Allow: []string{"qq\x00u1"}, Groups: []string{"qq\x00g1"}}
+	if err := store.Save(creds); err != nil {
+		t.Fatal(err)
+	}
+	tr := &qqTransport{name: channelName, store: store, creds: creds, baseURL: qqbot.DefaultBaseURL,
+		replies: map[string]*replyCtx{}, seq: map[string]uint64{}, evCounts: map[string]int{},
+		conn: sdk.IMConnectStatus{Phase: sdk.IMPhaseDone, Detail: "网关在线"}}
+	if err := tr.disconnect(); err != nil {
+		t.Fatal(err)
+	}
+	if tr.creds.Configured() {
+		t.Fatalf("应清理凭证: %+v", tr.creds)
+	}
+	if len(tr.creds.Allow) != 1 || len(tr.creds.Groups) != 1 {
+		t.Fatalf("授权名单必须保留: %+v", tr.creds)
+	}
+	if tr.creds.BaseURL == "" {
+		t.Fatal("环境选择应保留(仅清凭证)")
+	}
+	if got, _ := store.Load(); got.Configured() || len(got.Allow) != 1 {
+		t.Fatalf("落盘异常: %+v", got)
+	}
+	if st := (imChannelStatus{tr: tr}).ConnectStatus(); st.Phase != sdk.IMPhaseIdle {
+		t.Fatalf("连接卡应回 idle: %+v", st)
+	}
+	if tr.running {
+		t.Fatal("网关应已停止")
+	}
+	if !strings.Contains(tr.statusText(), "未配置") {
+		t.Fatalf("状态文本应显示未配置: %q", tr.statusText())
+	}
+	// 幂等
+	if err := tr.disconnect(); err != nil {
+		t.Fatalf("重复退出应幂等: %v", err)
+	}
+}
