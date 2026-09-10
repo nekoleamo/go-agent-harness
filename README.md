@@ -238,6 +238,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `POST /api/attachments` + `GET /attachments/...` | 附件上传(20MB/类型白名单)/ 静态预览 |
 | `POST /api/reload` | 指令文件热更 |
 | `POST /api/shutdown` | 优雅停机(→ system/shutdown → DisposeAll 全回收;桌面壳/运维复用) |
+| `GET /api/guides`、`POST /api/guides` | 首启引导关闭记录(桌面壳 `?shell=desktop` 首启提示 IM 连接;「不再提示」落宿主共享偏好) |
 | `GET /api/im/connect/spec`、`POST /api/im/connect/start`、`POST /api/im/connect/submit`、`GET /api/im/connect/state` | IM 连接:方式声明(扫码/表单)/ 发起 / 提交表单 / 状态(相位变化另有 `im/connect` SSE 事件推送) |
 | `GET /api/im/groups`、`POST /api/im/groups` | IM 群维度授权:群列表(已授权 ∪ 最近活动,含 last-seen 与长期无活动标记)/ 授权或撤销(`{chat_id, allow}`;未知群撤销 422) |
 | `GET /api/ui-plugins` + `/ui-plugins/` | UI 插件聚合视图 / 静态托管 |

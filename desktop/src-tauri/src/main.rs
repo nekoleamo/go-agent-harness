@@ -25,6 +25,8 @@ use tauri_plugin_shell::ShellExt;
 
 const GAH_ADDR: &str = "127.0.0.1:2233";
 const GAH_URL: &str = "http://127.0.0.1:2233";
+// 桌面壳标记:web UI 依 `?shell=desktop` 展示首启引导(G-E4-R;浏览器端不受影响)。
+const GAH_URL_SHELL: &str = "http://127.0.0.1:2233/?shell=desktop";
 
 struct Sidecar(Mutex<Option<CommandChild>>);
 static READY: AtomicBool = AtomicBool::new(false);
@@ -264,7 +266,7 @@ fn main() {
                         READY.store(true, Ordering::SeqCst);
                         let _ = handle3.emit("sidecar-ready", GAH_URL);
                         if let Some(w) = handle3.get_webview_window("main") {
-                            let _ = w.navigate(GAH_URL.parse().unwrap());
+                            let _ = w.navigate(GAH_URL_SHELL.parse().unwrap());
                         }
                         return;
                     }

@@ -7,7 +7,7 @@ import { consume, isUsage, newModel, type StreamModel } from './sse'
 import { createTransport, type Transport } from './transport'
 import { extraPanel, slotComponent, type MetaLine } from './registry'
 import { OPEN_DOC_EVENT, docRequest } from './docstore'
-import { OPEN_PANEL_EVENT, upsertIMStatus } from './imstore'
+import { OPEN_PANEL_EVENT, imStatus, upsertIMStatus } from './imstore'
 import type { SessionEvent, StateView, ConfirmRequest, CommandResult, QuestionRequest } from './types'
 import StatusBar from './components/StatusBar.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
@@ -16,6 +16,7 @@ import ConfirmBar from './components/ConfirmBar.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import JobsPanel from './components/JobsPanel.vue'
 import Sidebar from './components/Sidebar.vue'
+import FirstRunGuide from './components/FirstRunGuide.vue'
 
 const state = ref<StateView>({
   model: '',
@@ -259,10 +260,64 @@ function onOpenDoc(ev: Event): void {
   openPanel.value = 'host-docview'
 }
 
+// —— 首启引导(G-E4-R):仅桌面壳(?shell=desktop)+ 有 IM 渠道 + 未连接 + 未关闭 ——
+const GUIDE_ID = 'desktop-im'
+const showGuide = ref(false)
+let guideChecked = false
+const isDesktopShell = (): boolean => new URLSearchParams(window.location.search).get('shell') === 'desktop'
+async function checkGuide(): Promise<void> {
+  if (guideChecked || !isDesktopShell()) return
+  try {
+    await api.imConnectSpec() // 无 IM 渠道(503)→ 无引导
+  } catch {
+    return
+  }
+  try {
+    if ((await api.guides()).dismissed?.includes(GUIDE_ID)) {
+      guideChecked = true
+      return
+    }
+  } catch {
+    /* 偏好不可得(旧宿主):仍提示一次 */
+  }
+  try {
+    const st = await api.imConnectState()
+    upsertIMStatus(st)
+    if (st.phase === 'done') {
+      guideChecked = true
+      return
+    }
+  } catch {
+    /* 状态不可得:按未连接处理 */
+  }
+  guideChecked = true
+  showGuide.value = true
+}
+function guideConnect(): void {
+  showGuide.value = false
+  openPanel.value = 'im-connect'
+}
+async function guideDismiss(): Promise<void> {
+  showGuide.value = false
+  try {
+    await api.dismissGuide(GUIDE_ID)
+  } catch {
+    /* 记录失败:下次仍提示(不静默假装已记) */
+  }
+}
+// 连接成功后自动收起(用户自己去了别处完成连接)
+watch(
+  () => imStatus.value?.phase,
+  (p) => {
+    if (p === 'done') showGuide.value = false
+  },
+)
+
 onMounted(async () => {
   window.addEventListener(OPEN_DOC_EVENT, onOpenDoc)
   window.addEventListener(OPEN_PANEL_EVENT, onOpenPanel)
   await refreshStats()
+  void checkGuide()
   rebuild(false)
   // 统计节流刷新(usage 事件外,兜底上下文/缓存显示)
   statsTimer = setInterval(() => void refreshStats(), 3000)
@@ -321,6 +376,9 @@ onUnmounted(() => {
         </section>
       </div>
     </div>
+
+    <!-- 首启引导(G-E4-R):桌面壳首次启动且 IM 未连接 -->
+    <FirstRunGuide :open="showGuide" @connect="guideConnect" @dismiss="guideDismiss" @later="showGuide = false" />
 
     <!-- 槽位:confirm(审批弹层) -->
     <section class="confirm-slot" data-ui-slot="confirm">

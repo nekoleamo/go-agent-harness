@@ -351,6 +351,11 @@ export interface IMConnectSpec {
   hint?: string
   action?: string
 }
+// 首启引导关闭状态(G-E4-R;gah-state.json 共享偏好)
+export interface GuidesResp {
+  dismissed: string[]
+}
+
 // 群维度授权条目(G-E5-2;Web 面板「群授权」区段)
 export interface IMGroupEntry {
   channel?: string

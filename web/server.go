@@ -236,6 +236,8 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST /api/im/connect/start", s.handleIMConnectStart)
 	mux.HandleFunc("POST /api/im/connect/submit", s.handleIMConnectSubmit)
 	mux.HandleFunc("GET /api/im/connect/state", s.handleIMConnectState)
+	mux.HandleFunc("GET /api/guides", s.handleGuidesList)
+	mux.HandleFunc("POST /api/guides", s.handleGuideDismiss)
 	mux.HandleFunc("GET /api/im/groups", s.handleIMGroups)
 	mux.HandleFunc("POST /api/im/groups", s.handleIMGroupSet)
 	// 文档预览(D1):无条件注册,服务缺失时 503(前端据 503 隐藏入口)

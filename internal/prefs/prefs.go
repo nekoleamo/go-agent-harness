@@ -16,6 +16,9 @@ type Prefs struct {
 	Sandbox  string `json:"sandbox,omitempty"`
 	Approval string `json:"approval,omitempty"`
 	History  *int   `json:"history,omitempty"`
+	// DismissedGuides 已关闭的首启引导 id(G-E4-R:桌面首启引导「不再提示」;
+	// 与 TUI/Web 共享同一偏好文件,跨端只提示一次)。
+	DismissedGuides []string `json:"dismissed_guides,omitempty"`
 }
 
 // Path 偏好文件路径(GAH_HOME 未设 = 空,表示跳过持久化——测试/无 home 场景纯内存)。
@@ -90,5 +93,33 @@ func SetHistory(n int) {
 func SetApproval(v string) {
 	p := Load()
 	p.Approval = v
+	Save(p)
+}
+
+// GuideDismissed 该引导是否已被关闭(空 id = false)。
+func GuideDismissed(id string) bool {
+	if id == "" {
+		return false
+	}
+	for _, g := range Load().DismissedGuides {
+		if g == id {
+			return true
+		}
+	}
+	return false
+}
+
+// SetGuideDismissed 记下已关闭的引导(幂等;空 id 忽略)。
+func SetGuideDismissed(id string) {
+	if id == "" {
+		return
+	}
+	p := Load()
+	for _, g := range p.DismissedGuides {
+		if g == id {
+			return
+		}
+	}
+	p.DismissedGuides = append(p.DismissedGuides, id)
 	Save(p)
 }

@@ -1,5 +1,5 @@
 // REST 客户端(上行)+ 工具函数。核心交互纯 REST,不绕模板渲染。
-import type { AttachmentView, CommandOptionsResp, CommandView, DocTree, DocView, IMChannelStatus, IMConnectSpec, IMConnectStatus, IMGroupsResp, IMLoginQR, IMLoginState, Job, ModelsAllResp, PluginInfo, ProviderInfo, SessionInfo, StateView, WorkspaceInfo } from './types'
+import type { AttachmentView, CommandOptionsResp, CommandView, DocTree, DocView, GuidesResp, IMChannelStatus, IMConnectSpec, IMConnectStatus, IMGroupsResp, IMLoginQR, IMLoginState, Job, ModelsAllResp, PluginInfo, ProviderInfo, SessionInfo, StateView, WorkspaceInfo } from './types'
 
 const BASE = ''
 const json = {
@@ -99,6 +99,13 @@ export const api = {
   },
   imConnectState(): Promise<IMConnectStatus> {
     return req('/api/im/connect/state')
+  },
+  // —— 首启引导关闭记录(G-E4-R;宿主共享偏好 gah-state.json) ——
+  guides(): Promise<GuidesResp> {
+    return req('/api/guides')
+  },
+  dismissGuide(id: string): Promise<GuidesResp> {
+    return req('/api/guides', { method: 'POST', headers: json, body: JSON.stringify({ id }) })
   },
   // —— IM 群维度授权(G-E5-2:未装配 IMGroupAccessService → 503) ——
   imGroups(): Promise<IMGroupsResp> {
