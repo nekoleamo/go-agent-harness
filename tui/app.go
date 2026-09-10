@@ -104,6 +104,7 @@ func NewApp(c sdk.Ctx, loop sdk.AgentLoop, llm sdk.LLMService, profile string, p
 	m.onFiles = a.projectFiles                         // @ 引用补全候选(项目文件索引,含 cwd 缓存;workspace 切换失效)
 	m.onWidgets = func() []Widget { return a.widgets } // P4-12 widget 行注入(渲染帧拉取)
 	m.onThinkingCycle = a.cycleThinking
+	m.onOpenDoc = a.loadDocPager
 	m.onStats = func() sdk.UsageStats {
 		var us sdk.UsageStatsService
 		if err := a.c.Inject("ctx.usageStats", &us); err != nil {
@@ -124,6 +125,54 @@ func NewApp(c sdk.Ctx, loop sdk.AgentLoop, llm sdk.LLMService, profile string, p
 	}
 	a.program = tea.NewProgram(m)
 	return a
+}
+
+// OpenDoc 请求打开文档预览(host `doc/open` 事件 / 工具行 / 命令;异步投递到 UI 循环)。
+func (a *App) OpenDoc(path string, page, sheet int) {
+	if path == "" {
+		return
+	}
+	if a.program != nil && a.started.Load() {
+		a.program.Send(DocOpenMsg{Path: path, Page: page, Sheet: sheet})
+		return
+	}
+	// 未启动/测试:直接构造(不阻塞)
+	if p, err := a.loadDocPager(path, page, sheet); err == nil && p != nil {
+		a.model.state.Doc = p
+	}
+}
+
+// loadDocPager 经 ctx.doc 加载文档并构造 pager(TUI 侧不到 Web 端点,直连服务)。
+func (a *App) loadDocPager(path string, page, sheet int) (*DocPager, error) {
+	var doc sdk.DocService
+	if err := a.c.Inject("ctx.doc", &doc); err != nil {
+		return nil, errString("ctx.doc 未装配(host-docview): " + err.Error())
+	}
+	req := sdk.DocRequest{Path: path, Page: page, Sheet: sheet}
+	if abs, err := a.absWorkspacePath(path); err == nil {
+		req.Path = abs
+	}
+	v, err := doc.Preview(context.Background(), req)
+	if err != nil {
+		return nil, err
+	}
+	return NewDocPager(v, page, sheet), nil
+}
+
+// absWorkspacePath 把工作区相对路径解析为绝对路径(TUI 侧 ctx.doc 未注入沙箱时
+// resolver 以 cwd 为根,显式绝对化避免歧义)。
+func (a *App) absWorkspacePath(p string) (string, error) {
+	if filepath.IsAbs(p) {
+		return filepath.Clean(p), nil
+	}
+	root := "."
+	var sb sdk.Sandbox
+	if err := a.c.Inject("ctx.sandbox", &sb); err == nil && sb != nil && sb.Root() != "" {
+		root = sb.Root()
+	} else if wd, err := os.Getwd(); err == nil {
+		root = wd
+	}
+	return filepath.Join(root, p), nil
 }
 
 // Confirm 实现 sdk.ConfirmService:弹层询问用户 y/n。

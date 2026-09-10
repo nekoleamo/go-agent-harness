@@ -22,7 +22,7 @@ const pdfFactsMaxPages = 1000
 const pdfWarnCap = 50
 
 // extractPDF PDF:页数 + 页事实分类(text/scanned/image/mixed)+ 标题作者 + Warnings。
-func extractPDF(ctx context.Context, s *Service, abs string, fi os.FileInfo, _ sdk.DocRequest, format sdk.DocFormat) (*sdk.DocView, error) {
+func extractPDF(ctx context.Context, s *Service, abs string, fi os.FileInfo, req sdk.DocRequest, format sdk.DocFormat) (*sdk.DocView, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -43,7 +43,7 @@ func extractPDF(ctx context.Context, s *Service, abs string, fi os.FileInfo, _ s
 	}
 	_ = s
 
-	v := baseView(abs, fi.Size(), fi.ModTime().UnixNano(), format)
+	v := baseView(req, abs, fi.Size(), fi.ModTime().UnixNano(), format)
 	info := r.Info()
 	v.Title = strings.TrimSpace(info.Title())
 	v.Author = strings.TrimSpace(info.Author())

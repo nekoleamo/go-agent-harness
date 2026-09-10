@@ -133,16 +133,17 @@ type DocView struct {
 
 // DocRequest 预览/抽取请求(预算与分页)。
 type DocRequest struct {
-	Path      string `json:"path"`
-	MaxBytes  int64  `json:"maxBytes,omitempty"`  // 预览字节预算(0 = 默认 1MiB)
-	MaxBlocks int    `json:"maxBlocks,omitempty"` // 块数上限(0 = 默认 4000)
-	Offset    int    `json:"offset,omitempty"`    // Text:起始行(0-based)
-	Limit     int    `json:"limit,omitempty"`     // Text:行数上限(0 = 默认 2000)
-	Page      int    `json:"page,omitempty"`      // pdf 起始页(0 = 全部)
-	Pages     []int  `json:"pages,omitempty"`     // 显式页集(空 = 全部)
-	Sheet     int    `json:"sheet,omitempty"`     // xlsx 工作表(0 = 首表)
-	NoAssets  bool   `json:"noAssets,omitempty"`  // 只取结构,不抽内嵌资产
-	Strict    bool   `json:"strict,omitempty"`    // 严格路径策略(Web/IM 端;根集合收窄 + deny-list)
+	Path          string `json:"path"`
+	MaxBytes      int64  `json:"maxBytes,omitempty"`      // 预览字节预算(0 = 默认 1MiB)
+	MaxInputBytes int64  `json:"maxInputBytes,omitempty"` // 源文件大小上限覆盖(0 = 服务默认 50MiB)
+	MaxBlocks     int    `json:"maxBlocks,omitempty"`     // 块数上限(0 = 默认 4000)
+	Offset        int    `json:"offset,omitempty"`        // Text:起始行(0-based)
+	Limit         int    `json:"limit,omitempty"`         // Text:行数上限(0 = 默认 2000)
+	Page          int    `json:"page,omitempty"`          // pdf 起始页(0 = 全部)
+	Pages         []int  `json:"pages,omitempty"`         // 显式页集(空 = 全部)
+	Sheet         int    `json:"sheet,omitempty"`         // xlsx 工作表(0 = 首表)
+	NoAssets      bool   `json:"noAssets,omitempty"`      // 只取结构,不抽内嵌资产
+	Strict        bool   `json:"strict,omitempty"`        // 严格路径策略(Web/IM 端;根集合收窄 + deny-list)
 }
 
 // DocLine 行号化文本行(模型工具与 CLI 共用)。
@@ -170,6 +171,27 @@ type DocText struct {
 	Warnings         []string     `json:"warnings,omitempty"`
 }
 
+// DocEntry 文件树条目(工作台左侧树;目录条目也可预览其子项)。
+// Path 为**调用方视角的逻辑路径**(相对路径优先),不含宿主绝对路径。
+type DocEntry struct {
+	Name        string    `json:"name"`
+	Path        string    `json:"path"`
+	Dir         bool      `json:"dir"`
+	Size        int64     `json:"size,omitempty"`
+	ModTime     time.Time `json:"modTime,omitempty"`
+	Format      DocFormat `json:"format,omitempty"`
+	Previewable bool      `json:"previewable,omitempty"`
+}
+
+// DocTree 有界目录列举结果(depth 与条目数封顶,超限写 Truncated)。
+type DocTree struct {
+	Path      string     `json:"path"`
+	Name      string     `json:"name"`
+	Entries   []DocEntry `json:"entries"`
+	Truncated []string   `json:"truncated,omitempty"`
+	Warnings  []string   `json:"warnings,omitempty"`
+}
+
 // DocService 文档预览服务(ctx.doc,由 host-docview 提供)。
 // 所有路径经统一 resolver(沙箱 + 逃逸校验 + deny-list);预算超限写 Truncated/Warnings,绝不静默。
 // 每个方法都在 DocRequest 中携带路径与 Strict(Web/IM 端更严的路径策略)。
@@ -184,4 +206,8 @@ type DocService interface {
 	Asset(ctx context.Context, req DocRequest, assetID string) (io.ReadCloser, string, error)
 	// Raw 原生字节(Range 支持;web 端点与下载复用)。
 	Raw(ctx context.Context, req DocRequest) (io.ReadSeekCloser, string, error)
+	// List 有界目录列举(工作台文件树;depth 1–4,条目数封顶)。
+	List(ctx context.Context, req DocRequest, depth int) (*DocTree, error)
+	// Render 把 markdown 文本直接转为块模型(会话流 md 渲染 / IM 降级;不触碰文件系统)。
+	Render(ctx context.Context, text string, maxBlocks int) (*DocView, error)
 }

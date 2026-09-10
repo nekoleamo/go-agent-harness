@@ -72,6 +72,10 @@ func main() {
 			*profileFlag = "im-qq"
 		}
 	}
+	// 文档阅读 CLI(D1):`gah doc <path> …` 纯读命令,不装配插件(零副作用,直连 host-docview)
+	if isDocSubcommand(os.Args) {
+		os.Exit(runDocCmd(os.Args[2:]))
+	}
 	flag.Parse()
 	if !isStdinTTY() && *inputFlag == "" && *profileFlag == "tui" {
 		fmt.Fprintln(os.Stderr, "gah: TUI 需要交互式终端(stdin 非 TTY)。管道/后台场景请用: -profile headless -input <文本>")

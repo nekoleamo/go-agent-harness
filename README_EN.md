@@ -48,6 +48,7 @@ One source, three surfaces: the same gah binary hosts **TUI / Web / headless**; 
 | **Config self-healing** | On boot failure, automatically rolls back to the last good backup and retries once; broken config does not brick startup |
 | **pty interaction** | tool-shell `data.pty` flag: drive REPLs, git editors, and other interactive processes |
 | **Web attachments + multimodal** | Drop images/files into the input (button + drag-drop + paste), chip preview/remove; images injected structurally through openai/anthropic adapters (the model sees images); text files referenced by path; stored under `$GAH_HOME/attachments/` |
+| **Document preview** | One block model rendered by four front ends (markdown/text/code/CSV/notebook + PDF page facts): Web preview workbench (file tree / native PDF viewer / sandboxed HTML), TUI `/preview` pager (scroll/search/horizontal), `gah doc` CLI, and markdown rendering in the web session stream; every path goes through the sandbox + escape checks + secret deny-list, zero `v-html` |
 | **Graceful shutdown** | `POST /api/shutdown` → DisposeAll full teardown (the cross-platform stop channel, incl. Windows without SIGTERM; reused by the desktop shell) |
 | **Desktop shell (P1)** | `desktop/` Tauri v2 shell: sidecar gah + window wired straight to the local service; tray/notify/autostart/single-instance; **zero-cost release** (updater with self-held ed25519 signing + CI matrix + unsigned-run first-launch guide) |
 
@@ -131,6 +132,13 @@ Then chat normally; use `/provider clear` to return to env-var config.
 | `-uninstall <id>` / `-list-plugins` | uninstall / list external plugins |
 | `-install-ui <repo\|local dir>` / `-uninstall-ui <id>` / `-list-ui-plugins` | UI-plugin install / uninstall / list |
 
+Document reading subcommand (same level as `web`/`im`; zero assembly, read-only):
+
+```bash
+gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B] [--tree] [--depth N]
+# exit codes: 0 ok / 2 usage / 3 unsupported format / 4 over budget / 5 parse failure
+```
+
 ## 4. TUI commands
 
 > Commands register into the host `ctx.commands` and work from TUI/Web/headless with a `/` prefix; typing `/` pops the command palette (name+description, filterable). **Every command supports step-by-step confirmation**: arguments cascade as declared (subcommand enums → dynamic candidates such as providers/sessions/plugins/jobs/backups/themes/IM groups; free-form args break into input prompts) — the TUI uses its picker, and Web uses the same registry-declared candidate list (click through the levels). TUI-only commands (search/widgets/theme/help/exit/fork/clone/tree/name) are available in the TUI only.
@@ -151,6 +159,7 @@ Then chat normally; use `/provider clear` to return to env-var config.
 | `/reload` | Hot-reload instruction files (AGENTS.md hierarchy/global/extra; external edits apply without restart) |
 | `/jobs list\|output <id>\|kill <id>` | Background jobs: list / output / kill (same source as workflow `background` and the Web jobs panel) |
 | `/backup [dest]\|list\|restore <name>` | Full GAH_HOME backup (config incl. keys/plugins/sessions/env.sh/prefs, excludes backups/ itself): no arg = back up now (default `$GAH_HOME/backups/`, external path allowed) / `list` (newest first) / `restore <name>` (**auto-backs-up the current state first**; fully effective after restart) |
+| `/preview <path>` | Open the document preview workbench: TUI shows a full-screen pager (`↑↓`/`PgUp`/`PgDn` scroll, `←→` horizontal, `/` search with `n/N`, `q`/`Esc` close); Web opens the document panel at that file (markdown/text/code/CSV/notebook/docx/xlsx/pptx/PDF) |
 | `/search <word>` | In-session search (hits highlighted; n/N/F3 cycle; Esc exits) |
 | `/theme [name]` | Switch theme (enumerates `$GAH_HOME/config/themes/*.yaml`; `default` resets; no recompile; persists) |
 | `/fork [seq]` | Derive a branch session from any point in history (`/tree` shows seqs; default = latest question) |
@@ -185,6 +194,7 @@ Then chat normally; use `/provider clear` to return to env-var config.
 - **Settings panel** (⚙ in the status bar): model dropdown (all providers aggregated), thinking/sandbox/**approval** segmented controls, history-injection dropdown + compact button, provider management (enable/delete/add), plugin toggles, instruction reload, **data backup** (back up now / restore — **double-confirmed**). Every change persists on exit (gah-state.json, shared with the TUI).
 - **Sidebar**: pinned workspaces (switching = real chdir) + session history (name/content preview/time; ✎ rename, × delete — double-confirmed), attachment upload (button/drag-drop/paste; image thumbnails + the model sees images), session export (⤓ jsonl/HTML).
 - **Status bar**: connection state (green/orange), model/thinking/sandbox/session, context·cache usage, background-jobs button (running badge + list/output/kill).
+- **Document preview panel** (sidebar "Document preview"): workspace file tree on the left (filter / lazy expand / whole tree resets on workspace switch) and preview on the right (markdown block rendering, code/tables, docx/xlsx/pptx block model, native in-browser PDF viewer, images, sandboxed HTML iframe; truncation and warning strips); tool result rows with a previewable path get a "Preview" button; assistant text in the session stream is markdown-rendered server-side (zero `v-html` in the frontend).
 - **WebSocket channel**: `/api/events/ws` (same payload as SSE; the frontend degrades automatically).
 - **General REST surface** (callable by the frontend or scripts; missing services return explicit 503/501):
 
@@ -210,6 +220,7 @@ Then chat normally; use `/provider clear` to return to env-var config.
 | `POST /api/reload` | Instruction-file hot reload |
 | `POST /api/shutdown` | Graceful shutdown (→ system/shutdown → DisposeAll; reused by desktop/ops) |
 | `GET /api/ui-plugins` + `/ui-plugins/` | UI-plugin aggregate view / static hosting |
+| `GET /api/doc/preview` `raw` `asset` `tree` `html`, `POST /api/doc/render` | Document preview (block-model JSON) / raw bytes (Range, `dl=1` download) / embedded assets (MIME allow-list) / file tree / sandboxed HTML (CSP) / markdown text → block model |
 
 ## 7. Configuration & runtime directories
 

@@ -48,9 +48,18 @@ var denyBase = []string{
 // denyGlob 后缀类 deny-list(strict)。
 var denyGlob = []string{"*.pem", "*.key", "*.p12", "*.pfx", "*.keystore", "*.jks", "*.ppk", "*_rsa", "*_ed25519"}
 
-// Resolve 解析并校验路径,返回可用的绝对路径(realpath)。
+// Resolve 解析并校验路径(要求为文件),返回可用的绝对路径(realpath)。
 // strict=true 时启用 Web/IM 端更严策略(根集合收窄 + deny-list + $GAH_HOME/config 拒绝)。
 func (r *Resolver) Resolve(p string, strict bool) (string, error) {
+	return r.resolve(p, strict, false)
+}
+
+// ResolveDir 同 Resolve,但允许目标为目录(文件树/工作台用)。
+func (r *Resolver) ResolveDir(p string, strict bool) (string, error) {
+	return r.resolve(p, strict, true)
+}
+
+func (r *Resolver) resolve(p string, strict, allowDir bool) (string, error) {
 	p = strings.TrimSpace(p)
 	if p == "" {
 		return "", fmt.Errorf("%w: 空路径", sdk.ErrDocDenied)
@@ -86,7 +95,7 @@ func (r *Resolver) Resolve(p string, strict bool) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("%w: %s", sdk.ErrDocNotFound, p)
 	}
-	if fi.IsDir() {
+	if fi.IsDir() && !allowDir {
 		return "", fmt.Errorf("%w: 目标是目录(预览仅支持文件)", sdk.ErrDocDenied)
 	}
 	real = filepath.Clean(real)

@@ -49,6 +49,7 @@ Go 实现的编程代理 Agent Harness:以**单静态二进制**交付全部能�
 | **配置自愈** | 启动失败自动回滚最近正常备份重试一次,坏配置不卡死 |
 | **pty 交互** | tool-shell `data.pty` 开关:驱动 REPL / git 编辑器等交互进程 |
 | **Web 附件+多模态** | 输入框传图片/文件(按钮+拖放+粘贴),芯片预览/删除;图片经 openai/anthropic 适配器结构化注入(模型看图),文本附件路径引用;落盘 `$GAH_HOME/attachments/` |
+| **文档预览** | 一个块模型 + 四端同源渲染(markdown/文本/代码/CSV/notebook + PDF 页事实):Web 预览工作台(文件树/PDF 原生查看器/HTML 沙箱)、TUI `/preview` pager(滚动/搜索/横移)、`gah doc` CLI、会话流 markdown 渲染;路径经沙箱+逃逸校验+密钥 deny-list,零 v-html |
 | **优雅停机** | `POST /api/shutdown` → DisposeAll 全回收(Windows 无 SIGTERM 的统一停机通道;桌面壳/运维复用) |
 | **桌面壳(P1)** | `desktop/` Tauri v2 壳:sidecar gah + 窗口直连本地服务;托盘/通知/自启/单实例;**零成本发行**(updater ed25519 自持签名 + CI 矩阵 + 无签名首次启动指引) |
 
@@ -132,6 +133,13 @@ export DEEPSEEK_API_KEY=sk-...            # 或 OPENAI_API_KEY / ANTHROPIC_API_K
 | `-uninstall <id>` / `-list-plugins` | 卸载 / 列出外部插件 |
 | `-install-ui <repo\|本地目录>` / `-uninstall-ui <id>` / `-list-ui-plugins` | UI 插件安装 / 卸载 / 列出 |
 
+文档阅读子命令(web/im 同级入口,零装配纯读):
+
+```bash
+gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B] [--tree] [--depth N]
+# 退出码:0 成功 / 2 用法 / 3 不支持格式 / 4 超预算 / 5 解析失败
+```
+
 ## 四、TUI 命令
 
 > 命令注册进宿主 `ctx.commands`,TUI/Web/headless `/` 前缀通用;输入 `/` 弹出命令提示(名称+说明,可继续输入过滤)。**所有命令支持逐级确认**:参数按声明级联(子命令枚举 → 动态候选,如 provider/会话/插件/任务/备份/主题/群列表;需手输的走自由参数断点),TUI 用选择器、Web 用同一注册表声明的候选列表(点击逐级选)。TUI 专属命令(search/widgets/theme/help/exit/fork/clone/tree/name)仅 TUI 可用。
@@ -152,6 +160,7 @@ export DEEPSEEK_API_KEY=sk-...            # 或 OPENAI_API_KEY / ANTHROPIC_API_K
 | `/reload` | 热重载指令文件(AGENTS.md 层级/全局/附加;外部编辑即生效,免重启) |
 | `/jobs list\|output <id>\|kill <id>` | 后台任务列表 / 取输出 / 终止(与 workflow `background`、Web 任务面板同源) |
 | `/backup [dest]\|list\|restore <name>` | 整体备份 GAH_HOME(config 含密钥/plugins/sessions/env.sh/偏好,排除 backups/ 自身):无参=立即备份(默认存 `$GAH_HOME/backups/`,可指定外部路径)/ `list` 列出(时间倒序)/ `restore <name>` 恢复(**恢复前自动先备份当前态**,重启后完全生效) |
+| `/preview <路径>` | 文档预览工作台:TUI 打开全屏 pager(↑↓/PgUp/PgDn 滚动、←→ 横移、`/` 搜索 n/N 跳转、q/Esc 关闭);Web 打开文档面板并定位该文件(markdown/文本/代码/CSV/notebook/docx/xlsx/pptx/PDF) |
 | `/search <词>` | 会话内搜索(命中高亮,n/N/F3 循环跳转,Esc 退出) |
 | `/theme [名]` | 切换主题(枚举 `$GAH_HOME/config/themes/*.yaml`;`default` 回默认;零重编译换肤,偏好持久化) |
 | `/fork [seq]` | 从历史任意点派生分支会话(`/tree` 查看 seq;缺省=最近提问) |
@@ -186,6 +195,7 @@ export DEEPSEEK_API_KEY=sk-...            # 或 OPENAI_API_KEY / ANTHROPIC_API_K
 - **设置面板**(状态栏 ⚙):模型下拉(聚合全部 provider)、思考/沙箱/**审批**分段控件、历史注入下拉 + 压缩按钮、Provider 管理(启用/删除/新增)、插件开关、指令重载、**数据备份**(立即备份 / 恢复备份——**二次确认**);全部设置退出即记(偏好持久化,gah-state.json 与 TUI 共享)。
 - **侧栏**:工作区固定区(切换 = 真实切目录) + 历史会话(名称/内容预览/时间,✎ 改名、× 删除——二次确认)、附件上传(按钮/拖放/粘贴,图片缩略图 + 模型看图)、会话导出(⤓ jsonl/HTML)。
 - **状态栏**:连接状态(绿/橙)、模型/思维/沙箱/会话、上下文·缓存使用率、后台任务钮(运行徽标 + 列表/输出/终止)。
+- **文档预览面板**(侧栏「文档预览」):左侧工作区文件树(过滤/懒展开/工作区切换整树重置)+ 右侧预览(markdown 块渲染、代码/表格、docx/xlsx/pptx 块模型、PDF 浏览器原生查看器、图片、HTML 沙箱 iframe;截断与警告黄色提示条);工具结果行含可预览路径时出现「预览」按钮;会话流 assistant 文本走 markdown 块渲染(服务端解析,前端零 v-html)。
 - **WebSocket 通道**:`/api/events/ws`(与 SSE 同 payload,前端自动降级)。
 - **通用 REST 能力面**(前端/脚本均可直接调用,未装配服务 503/501 显式):
 
@@ -211,6 +221,7 @@ export DEEPSEEK_API_KEY=sk-...            # 或 OPENAI_API_KEY / ANTHROPIC_API_K
 | `POST /api/reload` | 指令文件热更 |
 | `POST /api/shutdown` | 优雅停机(→ system/shutdown → DisposeAll 全回收;桌面壳/运维复用) |
 | `GET /api/ui-plugins` + `/ui-plugins/` | UI 插件聚合视图 / 静态托管 |
+| `GET /api/doc/preview` `raw` `asset` `tree` `html`、`POST /api/doc/render` | 文档预览(块模型 JSON)/ 原生字节(Range,`dl=1` 下载)/ 内嵌资产(MIME 白名单)/ 文件树 / HTML 沙箱(CSP)/ markdown 文本→块模型 |
 
 ## 七、配置与运行时目录
 

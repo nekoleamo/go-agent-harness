@@ -105,6 +105,10 @@ func Render(s *State, width, height int) string {
 	if width <= 0 || height <= 0 {
 		width, height = 80, 24
 	}
+	// 文档预览 pager(D1):全屏模态浮层,独立渲染路径(不动会话流渲染)
+	if s.Doc != nil {
+		return s.Doc.Render(width, height)
+	}
 	// 选择器激活时提示区 = 选项列表(高亮当前,滚动窗口);否则静态提示行。
 	// 参数级过滤(Filter 非空):首行过滤状态(占 1 行,选项窗口相应减 1),无匹配时仅状态行。
 	var hintItems []string
@@ -205,7 +209,7 @@ func Render(s *State, width, height int) string {
 	// S2.2 折叠视图:已展开的结果行(lineIdx FoldOpen)用 Full 参与展平(全文多行);
 	// 未展开保持 Text 摘要单行。搜索/鼠标命中仍以 Lines 摘要为基准(见 searchHitLine)。
 	rows := flattenViewLines(s, colW)
-	annotateCodeFences(rows) // 代码围栏跨行标注(assistant 物理行顺序切换;滚动/折叠视图每帧重算)
+	annotateCodeFences(rows)     // 代码围栏跨行标注(assistant 物理行顺序切换;滚动/折叠视图每帧重算)
 	annotateRowBg(rows, s.Lines) // P5 背景块标注(user 整块/工具调用与结果首行;同每帧重算)
 	total := len(rows)
 	if total > 0 {

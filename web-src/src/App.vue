@@ -6,6 +6,7 @@ import type { AskConfirm } from './types'
 import { consume, isUsage, newModel, type StreamModel } from './sse'
 import { createTransport, type Transport } from './transport'
 import { extraPanel, slotComponent, type MetaLine } from './registry'
+import { OPEN_DOC_EVENT, docRequest } from './docstore'
 import type { SessionEvent, StateView, ConfirmRequest, CommandResult, QuestionRequest } from './types'
 import StatusBar from './components/StatusBar.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
@@ -223,13 +224,23 @@ async function onAnswer(ok: boolean): Promise<void> {
 // 槽位:默认组件(registry 可被 UI 插件覆盖;宿主直挂渲染避免绕模板)
 const hasSlot = (n: 'stream' | 'input' | 'statusbar' | 'confirm') => slotComponent(n) !== null
 
+// 文档预览意图(工具行/侧栏):打开工作台抽屉并定位文件(单一入口,含 docRequest 赋值)
+function onOpenDoc(ev: Event): void {
+  const path = (ev as CustomEvent<string>).detail
+  if (!path) return
+  docRequest.value = path
+  openPanel.value = 'host-docview'
+}
+
 onMounted(async () => {
+  window.addEventListener(OPEN_DOC_EVENT, onOpenDoc)
   await refreshStats()
   rebuild(false)
   // 统计节流刷新(usage 事件外,兜底上下文/缓存显示)
   statsTimer = setInterval(() => void refreshStats(), 3000)
 })
 onUnmounted(() => {
+  window.removeEventListener(OPEN_DOC_EVENT, onOpenDoc)
   transport?.close()
   if (statsTimer) clearInterval(statsTimer)
 })
@@ -309,7 +320,7 @@ onUnmounted(() => {
           <span class="ep-close" data-tip="关闭" @click="openPanel = null">×</span>
         </div>
         <div class="ep-body">
-          <component :is="openPanelComp" />
+          <component :is="openPanelComp" @close="openPanel = null" />
         </div>
       </aside>
     </div>

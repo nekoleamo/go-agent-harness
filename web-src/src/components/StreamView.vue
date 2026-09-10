@@ -5,6 +5,8 @@
 import { ref } from 'vue'
 import type { Msg, ToolRow } from '../sse'
 import type { MetaLine } from '../registry'
+import DocText from './doc/DocText.vue'
+import { previewablePathOf, requestDoc } from '../docstore'
 
 defineProps<{
   frames: Msg[]
@@ -61,10 +63,20 @@ function attUrl(rel: string): string {
         </div>
       </div>
       <div v-else-if="m.kind === 'assistant'" class="assistant">
-        <div class="text" :class="{ 'pending': m.text === '' }">{{ m.text }}</div>
+        <div class="text" :class="{ 'pending': m.text === '' }">
+          <DocText v-if="m.text" :text="m.text" />
+        </div>
         <div v-for="t in toolCallsOf(m)" :key="t.id" class="tool-inline mono">
           <span class="tl">{{ t.name }}</span>
           <span class="toolargs">{{ t.args }}</span>
+          <button
+            v-if="previewablePathOf(t.args)"
+            class="t-prev"
+            data-tip="在文档预览工作台打开"
+            @click="requestDoc(previewablePathOf(t.args))"
+          >
+            预览
+          </button>
         </div>
       </div>
       <div v-else-if="m.kind === 'tool'" class="tool mono">
@@ -212,6 +224,19 @@ function attUrl(rel: string): string {
 }
 .fold:hover {
   text-decoration: underline;
+}
+.t-prev {
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0 6px;
+  line-height: 1.6;
+}
+.t-prev:hover {
+  border-color: var(--accent);
 }
 .meta {
   color: var(--fg-faint);

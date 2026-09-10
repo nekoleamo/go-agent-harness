@@ -27,7 +27,7 @@ type Plugin struct{}
 
 func (p *Plugin) Name() string { return "host-docview" }
 
-// Start 提供 ctx.doc 服务(预算可由 manifest data 覆盖)。
+// Start 提供 ctx.doc 服务(预算可由 manifest data 覆盖)+ 注册 /preview 命令。
 func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	var sb sdk.Sandbox
 	_ = c.Inject("ctx.sandbox", &sb) // 可选:未装配则不限制读(TUI/CLI 单机场景)
@@ -38,7 +38,40 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	if err := c.Provide("ctx.doc", svc); err != nil {
 		return nil, err
 	}
-	return func() {}, nil
+	// /preview <路径>:发出 doc/open 意图事件,各端 UI(TUI/Web/IM)订阅后本地打开预览
+	// (命令不解锁任何读写能力,仅表达意图;真实访问仍经各端自己的 resolver 策略)。
+	var cmds sdk.CommandRegistry
+	if err := c.Inject("ctx.commands", &cmds); err != nil {
+		return func() {}, nil // 命令表未装配(极简 headless):服务可用,命令缺省
+	}
+	dis, err := cmds.Register(sdk.CommandSpec{
+		Name:  "preview",
+		Usage: "/preview <文件路径>",
+		Desc:  "在文档预览工作台打开文件(TUI pager / Web 面板;含 markdown/Office/PDF)",
+		Run: func(args []string) (string, error) {
+			p := strings.TrimSpace(strings.Join(args, " "))
+			if p == "" {
+				return "", fmt.Errorf("/preview <文件路径>")
+			}
+			// 先本地校验(格式可识别 + 路径可解析),避免把无效意图广播给各端
+			if f, ok := FormatByName(p); !ok || f == sdk.DocFormatUnsupported {
+				return "", fmt.Errorf("不支持预览的文件类型: %s", filepath.Base(p))
+			}
+			// 非 strict:本步只校验"可识别格式 + 路径可达"(TUI/CLI 语境);
+			// 各端真正打开时再按自身策略(Web/IM 经 /api/doc/* 的 strict 解析器)收窄根集合。
+			if _, err := svc.Detect(context.Background(), sdk.DocRequest{Path: p}); err != nil {
+				return "", err
+			}
+			if _, err := c.Emit(context.Background(), sdk.EventDocOpen, sdk.DocOpenEvent{Path: p}, sdk.Emit); err != nil {
+				return "", err
+			}
+			return "已请求预览 " + p + "(TUI 弹 pager / Web 打开文档面板)", nil
+		},
+	})
+	if err != nil {
+		return func() {}, nil // 同名冲突(外部已注册):不覆盖,静默跳过(非致命)
+	}
+	return func() { dis() }, nil
 }
 
 // Options 构造选项。
@@ -52,8 +85,11 @@ type Options struct {
 // extractor 一个格式抽取器。abs 已过 resolver 与源大小预算;fi 为已 stat 的元信息。
 type extractor func(ctx context.Context, s *Service, abs string, fi os.FileInfo, req sdk.DocRequest, format sdk.DocFormat) (*sdk.DocView, error)
 
-// assetRef 内嵌资产位置(docx/pptx 的 zip part);ID 为不透明标识。
+// assetRef 资产位置:zip part(docx/pptx 的 media)或同目录文件(markdown 图片)。
+// doc 为归属文档的 realpath(取回时校验,防跨文档串用资产 ID)。
 type assetRef struct {
+	kind string // zip | file
+	doc  string
 	abs  string
 	part string
 	mime string
@@ -87,6 +123,9 @@ func New(o Options) *Service {
 		assets: map[string]assetRef{},
 	}
 	s.extractors = map[sdk.DocFormat]extractor{
+		sdk.DocFormatMarkdown:    extractMarkdown,
+		sdk.DocFormatCSV:         extractTabular,
+		sdk.DocFormatNotebook:    extractNotebook,
 		sdk.DocFormatText:        extractTextOrCode,
 		sdk.DocFormatCode:        extractTextOrCode,
 		sdk.DocFormatBinary:      extractBinary,
@@ -95,13 +134,10 @@ func New(o Options) *Service {
 		sdk.DocFormatUnsupported: extractUnsupported,
 	}
 	s.pending = map[sdk.DocFormat]string{
-		sdk.DocFormatMarkdown: "切片 D1(goldmark)",
-		sdk.DocFormatCSV:      "切片 D1(tabular)",
-		sdk.DocFormatNotebook: "切片 D1",
-		sdk.DocFormatHTML:     "切片 D6(源码视图 + 沙箱 iframe)",
-		sdk.DocFormatDOCX:     "切片 D2(自研 OOXML)",
-		sdk.DocFormatXLSX:     "切片 D3(自研 OOXML)",
-		sdk.DocFormatPPTX:     "切片 D3(自研 OOXML)",
+		sdk.DocFormatHTML: "切片 D6(源码视图 + 沙箱 iframe)",
+		sdk.DocFormatDOCX: "切片 D2(自研 OOXML)",
+		sdk.DocFormatXLSX: "切片 D3(自研 OOXML)",
+		sdk.DocFormatPPTX: "切片 D3(自研 OOXML)",
 	}
 	return s
 }
@@ -154,17 +190,29 @@ func (s *Service) RegisterExtractor(f sdk.DocFormat, fn extractor) {
 	delete(s.pending, f)
 }
 
-// RegisterAsset 登记内嵌资产(docx/pptx 抽取器调用);返回不透明 ID。
+// RegisterAsset 登记 zip 内嵌资产(docx/pptx 抽取器调用);返回不透明 ID。
 // abs 会被 realpath 归—(与 resolver 产出的路径一致,避免 symlink 前缀差异)。
 func (s *Service) RegisterAsset(abs, part, mime string) string {
-	if rr, err := filepath.EvalSymlinks(abs); err == nil {
-		abs = filepath.Clean(rr)
-	} else {
-		abs = filepath.Clean(abs)
-	}
+	abs = realPathOrClean(abs)
 	id := assetID(abs, part)
-	s.assets[id] = assetRef{abs: abs, part: part, mime: mime}
+	s.assets[id] = assetRef{kind: assetKindZip, doc: abs, abs: abs, part: part, mime: mime}
 	return id
+}
+
+// RegisterFileAsset 登记同目录文件资产(markdown 图片等)并归属到文档 doc;返回不透明 ID。
+func (s *Service) RegisterFileAsset(doc, abs, mime string) string {
+	doc = realPathOrClean(doc)
+	abs = realPathOrClean(abs)
+	id := assetID(doc+"\x00"+abs, "")
+	s.assets[id] = assetRef{kind: assetKindFile, doc: doc, abs: abs, mime: mime}
+	return id
+}
+
+func realPathOrClean(abs string) string {
+	if rr, err := filepath.EvalSymlinks(abs); err == nil {
+		return filepath.Clean(rr)
+	}
+	return filepath.Clean(abs)
 }
 
 // Detect 格式判定(经 resolver,仅扩展名 + %PDF- 魔数特例 + UTF-8 兜底)。
@@ -197,7 +245,7 @@ func (s *Service) Preview(ctx context.Context, req sdk.DocRequest) (*sdk.DocView
 			return nil, err
 		}
 	} else {
-		v = s.pendingView(abs, fi, format)
+		v = s.pendingView(req, abs, fi, format)
 	}
 	s.cache.put(key, v)
 	return v, nil
@@ -219,7 +267,7 @@ func (s *Service) Asset(ctx context.Context, req sdk.DocRequest, assetID string)
 		return nil, "", err
 	}
 	ref, ok := s.assets[assetID]
-	if !ok || ref.abs != abs {
+	if !ok || ref.doc != abs {
 		return nil, "", fmt.Errorf("%w: 未知内嵌资产 %s", sdk.ErrDocUnsupported, assetID)
 	}
 	rc, mimeType, err := s.openAsset(ctx, ref)
@@ -252,8 +300,12 @@ func (s *Service) prepare(req sdk.DocRequest, checkSize bool) (string, os.FileIn
 	if err != nil {
 		return "", nil, fmt.Errorf("%w: %v", sdk.ErrDocNotFound, err)
 	}
-	if checkSize && fi.Size() > s.budget.MaxInputBytes {
-		return "", nil, fmt.Errorf("%w: %s 大小 %d 字节超出上限 %d", sdk.ErrDocTooLarge, fi.Name(), fi.Size(), s.budget.MaxInputBytes)
+	limit := s.budget.MaxInputBytes
+	if req.MaxInputBytes > 0 {
+		limit = req.MaxInputBytes
+	}
+	if checkSize && fi.Size() > limit {
+		return "", nil, fmt.Errorf("%w: %s 大小 %d 字节超出上限 %d", sdk.ErrDocTooLarge, fi.Name(), fi.Size(), limit)
 	}
 	return abs, fi, nil
 }
@@ -275,8 +327,8 @@ func (s *Service) detect(abs string, req sdk.DocRequest) sdk.DocFormat {
 }
 
 // pendingView 未交付格式的显式提示视图(仍然可下载/raw;绝不假装完整)。
-func (s *Service) pendingView(abs string, fi os.FileInfo, format sdk.DocFormat) *sdk.DocView {
-	v := baseView(abs, fi.Size(), fi.ModTime().UnixNano(), format)
+func (s *Service) pendingView(req sdk.DocRequest, abs string, fi os.FileInfo, format sdk.DocFormat) *sdk.DocView {
+	v := baseView(req, abs, fi.Size(), fi.ModTime().UnixNano(), format)
 	slice := s.pending[format]
 	if slice == "" {
 		slice = "后续切片"

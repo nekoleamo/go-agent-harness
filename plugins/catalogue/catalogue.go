@@ -152,9 +152,11 @@ var All = map[string]Def{
 		Requires: []string{"ctx.commands"}}, Bundle: "base"},
 	"host-docview": {Factory: func() sdk.Plugin { return &hostdocview.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "host-docview", Type: "host", APIVersion: ">=1.0,<2.0",
-		// D 组文档预览(D0):ctx.doc(sdk.DocService)——一个文档模型 + 四端呈现器;
+		// D 组文档预览(D0/D1):ctx.doc(sdk.DocService)——一个文档模型 + 四端呈现器;
 		// ctx.sandbox 可选注入(未装配则不限制读,单机 TUI/CLI 场景)
-		Provides: []string{"ctx.doc"}}, Bundle: "base"},
+		// ctx.commands:/preview 命令注册依赖启动顺序(拓扑保证 host-commands 先行)
+		Provides: []string{"ctx.doc"},
+		Requires: []string{"ctx.commands"}}, Bundle: "base"},
 	"host-bridge": {Factory: func() sdk.Plugin { return &hostbridge.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "host-bridge", Type: "host", APIVersion: ">=1.0,<2.0",
 		// M6.8 回调通道:外部进程经 GAH_CB_ADDR 请求宿主 tools/jobs/fanout 服务

@@ -115,13 +115,7 @@ func TestPreviewBinaryFallback(t *testing.T) {
 
 func TestPreviewImageMetadata(t *testing.T) {
 	s, dir := newSvc(t, Budget{})
-	var buf bytes.Buffer
-	img := image.NewRGBA(image.Rect(0, 0, 7, 5))
-	img.Set(0, 0, color.RGBA{R: 255, A: 255})
-	if err := png.Encode(&buf, img); err != nil {
-		t.Fatal(err)
-	}
-	p := writeFile(t, dir, "pic.png", buf.Bytes())
+	p := writeFile(t, dir, "pic.png", pngBytes(t, 7, 5))
 	v, err := s.Preview(context.Background(), sdk.DocRequest{Path: p})
 	if err != nil {
 		t.Fatal(err)
@@ -152,7 +146,7 @@ func TestPendingFormatExplicit(t *testing.T) {
 	for _, c := range []struct {
 		name string
 		f    sdk.DocFormat
-	}{{"a.md", sdk.DocFormatMarkdown}, {"a.docx", sdk.DocFormatDOCX}, {"a.csv", sdk.DocFormatCSV}, {"a.xlsx", sdk.DocFormatXLSX}} {
+	}{{"a.docx", sdk.DocFormatDOCX}, {"a.xlsx", sdk.DocFormatXLSX}, {"a.pptx", sdk.DocFormatPPTX}, {"a.html", sdk.DocFormatHTML}} {
 		p := writeFile(t, dir, c.name, []byte("x"))
 		v, err := s.Preview(context.Background(), sdk.DocRequest{Path: p})
 		if err != nil {
@@ -339,4 +333,16 @@ func TestPluginProvidesDocService(t *testing.T) {
 	if len(PreviewableExts()) < 30 {
 		t.Fatalf("可预览扩展名过少: %d", len(PreviewableExts()))
 	}
+}
+
+// pngBytes 生成指定尺寸的 PNG(夹具共用)。
+func pngBytes(t *testing.T, w, h int) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	img.Set(0, 0, color.RGBA{G: 255, A: 255})
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
 }

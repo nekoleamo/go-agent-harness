@@ -72,11 +72,23 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 			return nil, err
 		}
 	}
+	// 文档预览意图(doc/open;D 组 D1):TUI 本地打开 pager 浮层(与 Web/IM 同事件源)
+	docOpen := c.Subscribe(sdk.EventDocOpen, func(_ context.Context, ev *sdk.Event) error {
+		switch p := ev.Payload.(type) {
+		case sdk.DocOpenEvent:
+			app.OpenDoc(p.Path, p.Page, p.Sheet)
+		case *sdk.DocOpenEvent:
+			app.OpenDoc(p.Path, p.Page, p.Sheet)
+		}
+		return nil
+	})
 	if err := app.Start(); err != nil {
+		docOpen()
 		confirmReg()
 		return nil, err
 	}
 	return func() {
+		docOpen()
 		confirmReg()
 		questionReg()
 		app.Close()

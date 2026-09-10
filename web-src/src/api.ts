@@ -1,5 +1,5 @@
 // REST 客户端(上行)+ 工具函数。核心交互纯 REST,不绕模板渲染。
-import type { AttachmentView, CommandOptionsResp, CommandView, IMChannelStatus, IMLoginQR, IMLoginState, Job, ModelsAllResp, PluginInfo, ProviderInfo, SessionInfo, StateView, WorkspaceInfo } from './types'
+import type { AttachmentView, CommandOptionsResp, CommandView, DocTree, DocView, IMChannelStatus, IMLoginQR, IMLoginState, Job, ModelsAllResp, PluginInfo, ProviderInfo, SessionInfo, StateView, WorkspaceInfo } from './types'
 
 const BASE = ''
 const json = {
@@ -136,6 +136,21 @@ export const api = {
   },
   reload(): Promise<void> {
     return req('/api/reload', { method: 'POST', headers: json, body: '{}' })
+  },
+  // —— 文档预览(D1;/api/doc/*;未装配 503,前端据首次探测隐藏入口) ——
+  docPreview(path: string, opts?: { page?: number; sheet?: number; max?: number }): Promise<DocView> {
+    const q = new URLSearchParams({ path })
+    if (opts?.page) q.set('page', String(opts.page))
+    if (opts?.sheet) q.set('sheet', String(opts.sheet))
+    if (opts?.max) q.set('max', String(opts.max))
+    return req('/api/doc/preview?' + q.toString())
+  },
+  docTree(path: string, depth = 2): Promise<DocTree> {
+    const q = new URLSearchParams({ path, depth: String(depth) })
+    return req('/api/doc/tree?' + q.toString())
+  },
+  docRender(text: string): Promise<DocView> {
+    return req('/api/doc/render', { method: 'POST', headers: json, body: JSON.stringify({ text }) })
   },
   // —— 后台任务 ——
   jobs(): Promise<Job[]> {

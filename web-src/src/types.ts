@@ -228,3 +228,93 @@ export interface Job {
   created_at: string
   done_at?: string
 }
+
+// —— 文档预览(D1;/api/doc/* 契约,sdk.DocView 原样) ——
+export type DocBlockKind =
+  | 'heading'
+  | 'paragraph'
+  | 'list'
+  | 'quote'
+  | 'code'
+  | 'table'
+  | 'image'
+  | 'divider'
+  | 'page'
+  | 'sheet'
+  | 'slide'
+  | 'note'
+  | 'unsupported'
+export interface DocRun {
+  text: string
+  bold?: boolean
+  italic?: boolean
+  strike?: boolean
+  code?: boolean
+  link?: string
+}
+export interface DocCell {
+  text: string
+  colSpan?: number
+  rowSpan?: number
+  align?: string
+  numeric?: boolean
+}
+export interface DocAsset {
+  id: string
+  mime?: string
+  name?: string
+  w?: number
+  h?: number
+  bytes?: number
+}
+export interface DocBlock {
+  kind: DocBlockKind
+  level?: number
+  text?: string
+  runs?: DocRun[]
+  head?: string[]
+  rows?: DocCell[][]
+  lang?: string
+  asset?: DocAsset
+  page?: number
+  meta?: Record<string, string>
+}
+export interface DocSheet {
+  name: string
+  rows: number
+  cols: number
+  hidden?: boolean
+}
+export interface DocView {
+  path?: string
+  name?: string
+  format?: string
+  size?: number
+  modTime?: string
+  title?: string
+  author?: string
+  blocks?: DocBlock[]
+  sheets?: DocSheet[]
+  pages?: number
+  kind?: string
+  rawUrl?: string
+  truncated?: string[]
+  warnings?: string[]
+  meta?: Record<string, string>
+}
+export interface DocEntry {
+  name: string
+  path: string
+  dir: boolean
+  size?: number
+  modTime?: string
+  format?: string
+  previewable?: boolean
+}
+export interface DocTree {
+  path?: string
+  name?: string
+  entries: DocEntry[]
+  truncated?: string[]
+  warnings?: string[]
+}

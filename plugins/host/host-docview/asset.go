@@ -1,5 +1,5 @@
-// 内嵌资产访问(docx/pptx 的 zip part):ID 为不透明哈希,不暴露宿主路径。
-// 预算与 zip 炸弹防护与抽取阶段共用(见 budget.go)。
+// 内嵌/伴生资产访问:zip part(docx/pptx 的 media)与同目录文件(markdown 图片)。
+// ID 为不透明哈希,不暴露宿主路径;预算与 zip 炸弹防护与抽取阶段共用(见 budget.go)。
 package hostdocview
 
 import (
@@ -10,8 +10,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
+)
+
+// 资产来源类型。
+const (
+	assetKindZip  = "zip"
+	assetKindFile = "file"
 )
 
 // assetID 由(文件绝对路径, part 名)派生不透明 ID。
@@ -20,8 +27,15 @@ func assetID(abs, part string) string {
 	return hex.EncodeToString(sum[:])[:24]
 }
 
-// openAsset 按 ref 打开 zip part;返回的 reader 负责同时关闭 zip 句柄。
+// openAsset 按 ref 打开资产;返回的 reader 一并负责其容器句柄。
 func (s *Service) openAsset(_ context.Context, ref assetRef) (io.ReadCloser, string, error) {
+	if ref.kind == assetKindFile {
+		f, err := os.Open(ref.abs)
+		if err != nil {
+			return nil, "", fmt.Errorf("%w: 打开资产失败: %v", sdk.ErrDocNotFound, err)
+		}
+		return f, ref.mime, nil
+	}
 	zr, err := zip.OpenReader(ref.abs)
 	if err != nil {
 		return nil, "", fmt.Errorf("%w: 打开容器失败: %v", sdk.ErrDocParse, err)

@@ -86,8 +86,8 @@ func (c *docCache) put(k cacheKey, v *sdk.DocView) {
 
 // paramSig 参数签名(可变维度进 key;零值不进,保证默认请求命中同一份)。
 func paramSig(req sdk.DocRequest) string {
-	return fmt.Sprintf("mb=%d/bl=%d/pg=%d/pgs=%v/sh=%d/na=%t/st=%t",
-		req.MaxBytes, req.MaxBlocks, req.Page, req.Pages, req.Sheet, req.NoAssets, req.Strict)
+	return fmt.Sprintf("mb=%d/mi=%d/bl=%d/pg=%d/pgs=%v/sh=%d/na=%t/st=%t",
+		req.MaxBytes, req.MaxInputBytes, req.MaxBlocks, req.Page, req.Pages, req.Sheet, req.NoAssets, req.Strict)
 }
 
 // viewSize 粗略估算视图内存占用(块数 + 文本长度),够用即可。

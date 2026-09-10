@@ -62,17 +62,18 @@ type Model struct {
 	cacheSet       bool
 	cacheW, cacheH int
 
-	onSubmit        func(input string)               // 普通输入提交(注入)
-	onCommand       func(cmd string) error           // 命令处理(注入)
-	onConfirm       func(ok bool)                    // 确认答复(注入;见 app.Confirm)
-	onQuestion      func(sdk.QuestionAnswer)        // 提问作答(注入;见 app.PresentQuestion)
-	onCancel        func()                           // 取消进行中的回合(注入;Esc 触发)
-	hints           func(prefix string) []sdk.Option // 命令选项(注入;前缀=去掉 / 后的输入)
-	levels          func(name string) []sdk.ArgLevel // 命令参数级定义(注入;枚举/自由级)
-	onFiles         func() []sdk.Option              // @ 文件引用候选(注入;App 项目文件索引含缓存)
-	onWidgets       func() []Widget                  // P4-12 widget 行注入(渲染帧拉取;App widgets 集合)
-	onThinkingCycle func(dir int)                    // Tab/Shift+Tab 思考等级循环(注入:dir=1 前进,-1 后退)
-	onStats         func() sdk.UsageStats            // 会话 token 统计拉取(注入;回合结束刷新状态栏)
+	onSubmit        func(input string)                                    // 普通输入提交(注入)
+	onCommand       func(cmd string) error                                // 命令处理(注入)
+	onConfirm       func(ok bool)                                         // 确认答复(注入;见 app.Confirm)
+	onQuestion      func(sdk.QuestionAnswer)                              // 提问作答(注入;见 app.PresentQuestion)
+	onCancel        func()                                                // 取消进行中的回合(注入;Esc 触发)
+	hints           func(prefix string) []sdk.Option                      // 命令选项(注入;前缀=去掉 / 后的输入)
+	levels          func(name string) []sdk.ArgLevel                      // 命令参数级定义(注入;枚举/自由级)
+	onFiles         func() []sdk.Option                                   // @ 文件引用候选(注入;App 项目文件索引含缓存)
+	onWidgets       func() []Widget                                       // P4-12 widget 行注入(渲染帧拉取;App widgets 集合)
+	onThinkingCycle func(dir int)                                         // Tab/Shift+Tab 思考等级循环(注入:dir=1 前进,-1 后退)
+	onStats         func() sdk.UsageStats                                 // 会话 token 统计拉取(注入;回合结束刷新状态栏)
+	onOpenDoc       func(path string, page, sheet int) (*DocPager, error) // 文档预览加载(注入;ctx.doc)
 }
 
 // spinInterval 思考动画帧间隔。
@@ -110,6 +111,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
+	case DocOpenMsg:
+		// 文档预览意图(doc/open 事件 / /preview 命令 / 工具行):加载并打开 pager 浮层
+		if m.onOpenDoc != nil {
+			pager, err := m.onOpenDoc(msg.Path, msg.Page, msg.Sheet)
+			if err != nil {
+				m.state.Lines = append(m.state.Lines, Line{Kind: "error", Text: "文档预览失败: " + err.Error()})
+			} else if pager != nil {
+				m.state.Doc = pager
+			}
+		}
+		m.skipView = false
 	case sessionEventMsg:
 		m.state.ApplySessionEvent(msg.ev)
 	case statusMsg:
@@ -223,6 +235,13 @@ func (m *Model) handleWheel(btn tea.MouseButton) {
 	dir := 1
 	if btn == tea.MouseWheelDown {
 		dir = -1
+	}
+	// 文档 pager 浮层:滚轮归 pager(不走会话流滚动与节流统计)
+	if p := m.state.Doc; p != nil {
+		p.ScrollWheel(dir > 0)
+		m.lastWheel = now
+		m.skipView = false
+		return
 	}
 	// 手势边界:距上次实际滚动超过 gestureReset(新一次手势)或方向反转
 	// (用户换向滚——上滚 24 行后立即下滚必须响应,不被手势上限卡住)→ 累计清零。
@@ -677,6 +696,13 @@ func (m *Model) handleEscape() {
 
 func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	k := msg.Key()
+	// 文档预览 pager(D1)最优先:全屏模态,全部按键归 pager;关闭后回到会话流
+	if p := m.state.Doc; p != nil {
+		if p.HandleKey(k, m.w, m.h) {
+			m.state.Doc = nil
+		}
+		return nil
+	}
 	// 确认弹层优先:y/n 决定(任何确认态下的键入不再进输入框,Ctrl+C 亦被忽略)
 	if m.state.PendingConfirm != "" {
 		switch k.Code {

@@ -93,6 +93,8 @@ type Server struct {
 	imLogin  sdk.IMLoginProvider     // 可选(面板扫码登录 /api/im/login;渠道未实现则 503)
 	sp       sdk.SystemPromptService // 可选(/reload 指令热更)
 	tc       sdk.TurnControl         // 可选(回合取消 /api/control cancel;未装配 = 503)
+	doc      sdk.DocService          // 可选(文档预览 D1:未装配 → /api/doc/* 503;懒解析见 docSvc)
+	ctx      sdk.Ctx                 // 宿主上下文(懒解析可选服务,避免装配顺序依赖)
 
 	running     atomic.Bool
 	http        *http.Server
@@ -142,6 +144,10 @@ func (s *Server) Inject(c sdk.Ctx) error {
 	}
 	_ = c.Inject("ctx.systemPrompt", &s.sp)
 	_ = c.Inject("ctx.turnControl", &s.tc)
+	s.ctx = c
+	// ctx.doc 采用**懒解析**(见 docSvc):ui-web-app 与 host-docview 无拓扑依赖,
+	// 启动顺序不定 —— 启动期一次性 Inject 会恒为 nil(policy-guard ctx.confirm 同款时序坑)。
+	_ = c.Inject("ctx.doc", &s.doc)
 	// running 状态:随 agent/status 事件驱动(回合开始 running,结束 idle)
 	unsub := c.Subscribe(sdk.EventAgentStatus, func(_ context.Context, ev *sdk.Event) error {
 		s.running.Store(ev.Payload == "running")
@@ -217,6 +223,13 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET /api/im/channels", s.handleIMChannels)
 	mux.HandleFunc("POST /api/im/login", s.handleIMLogin)
 	mux.HandleFunc("GET /api/im/login/state", s.handleIMLoginState)
+	// 文档预览(D1):无条件注册,服务缺失时 503(前端据 503 隐藏入口)
+	mux.HandleFunc("GET /api/doc/preview", s.handleDocPreview)
+	mux.HandleFunc("GET /api/doc/raw", s.handleDocRaw)
+	mux.HandleFunc("GET /api/doc/asset", s.handleDocAsset)
+	mux.HandleFunc("GET /api/doc/tree", s.handleDocTree)
+	mux.HandleFunc("GET /api/doc/html", s.handleDocHTML)
+	mux.HandleFunc("POST /api/doc/render", s.handleDocRender)
 	mux.HandleFunc("POST /api/question", s.handleQuestion)
 	mux.Handle("/ui-plugins/", s.uiPluginsHandler())
 	mux.Handle("/attachments/", s.attachmentsHandler())
