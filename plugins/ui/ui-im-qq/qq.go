@@ -267,15 +267,19 @@ type qqTransport struct {
 	lastError string
 	botOpenID string // READY d.user.id(群 @ 过滤:mentions 需含机器人)
 	replies   map[string]*replyCtx
-	seq       map[string]uint64  // ChatID → msg_seq(与 msg_id 联合幂等,自增)
-	typingCtl context.CancelFunc // 回合中 input_notify 周期刷新控制器(回合结束取消)
-	budget    *activeQuota       // 主动消息配额记账(私信主动 2 条/天/用户;落盘重启不超发)
-	ledger    *deliveryLedger    // 滞留 ledger(落盘重启不丢;被动失效/频控/配额耗尽时暂存,下次入站补发)
-	remainder map[string]string  // chatID → 被截断的剩余文本(用户回 continue 时被动续发)
-	diagRing  []string           // 最近入站诊断(环形;/qq status 展示 + GAH_QQ_DEBUG=1 打 stderr)
-	gen       int64              // 网关世代号:start/stop 递增;旧 goroutine 收尾仅当同世代才改状态(防覆盖)
-	evCounts  map[string]int     // 事件类型计数(诊断:平台是否推事件——群@=0 即平台侧未推)
+	seq       map[string]uint64   // ChatID → msg_seq(与 msg_id 联合幂等,自增)
+	typingCtl context.CancelFunc  // 回合中 input_notify 周期刷新控制器(回合结束取消)
+	budget    *activeQuota        // 主动消息配额记账(私信主动 2 条/天/用户;落盘重启不超发)
+	ledger    *deliveryLedger     // 滞留 ledger(落盘重启不丢;被动失效/频控/配额耗尽时暂存,下次入站补发)
+	remainder map[string]string   // chatID → 被截断的剩余文本(用户回 continue 时被动续发)
+	diagRing  []string            // 最近入站诊断(环形;/qq status 展示 + GAH_QQ_DEBUG=1 打 stderr)
+	gen       int64               // 网关世代号:start/stop 递增;旧 goroutine 收尾仅当同世代才改状态(防覆盖)
+	evCounts  map[string]int      // 事件类型计数(诊断:平台是否推事件——群@=0 即平台侧未推)
+	conn      sdk.IMConnectStatus // E0/E2:连接卡相位(表单校验中/失败原因)
 }
+
+// maskedSentinel 前端提交"未改动"密钥时的哨兵值(不回显明文,沿用已配置值)。
+const maskedSentinel = "__keep__"
 
 func (t *qqTransport) Name() string { return t.name }
 
@@ -1124,6 +1128,147 @@ func (t *qqTransport) login(appID, secret string) error {
 	return nil
 }
 
+// —— E0/E2:IMConnectService(form 渠道路径:表单 + 即时校验 + 平台外链) ——
+
+// ConnectSpec QQ 连接方式声明(官方无扫码鉴权 → 表单 + 外链引导;密钥不回显)。
+func (a imChannelStatus) ConnectSpec() sdk.IMConnectSpec {
+	tr := a.tr
+	tr.mu.Lock()
+	configured, appID := false, ""
+	curEnv := tr.baseURL
+	if tr.creds != nil {
+		if tr.creds.Configured() {
+			configured = true
+			appID = maskTail(tr.creds.AppID)
+		}
+		if tr.creds.BaseURL != "" {
+			curEnv = tr.creds.BaseURL
+		}
+	}
+	tr.mu.Unlock()
+	envVal := "official"
+	if strings.Contains(curEnv, "sandbox") {
+		envVal = "sandbox"
+	}
+	return sdk.IMConnectSpec{
+		Channel:  tr.name,
+		Kind:     sdk.IMConnectForm,
+		Action:   "保存并校验",
+		LoginURL: "https://q.qq.com/qqbot/#/developer/sandbox",
+		DocsURL:  "https://bot.q.qq.com/wiki/",
+		Hint: "QQ 官方 Bot **无扫码鉴权**(鉴权恒为 AppID+AppSecret → access_token);" +
+			"需先在开放平台创建机器人并取得凭证。个人开发者的群聊需配置沙箱测试用户/测试群。",
+		Fields: []sdk.IMConnectField{
+			{Key: "app_id", Label: "AppID", Required: true, Placeholder: "机器人 AppID",
+				Help: "开放平台 → 开发 → 开发设置", Configured: configured, Mask: appID},
+			{Key: "app_secret", Label: "AppSecret", Secret: true, Required: true, Placeholder: "机器人 AppSecret",
+				Help: "仅用于换取 access_token;不回显、不落日志", Configured: configured, Mask: "已配置"},
+			{Key: "env", Label: "环境", Required: true, Options: []sdk.IMConnectOption{
+				{Value: "official", Desc: "正式环境(bot.q.qq.com)"},
+				{Value: "sandbox", Desc: "沙箱环境(个人开发者群聊必需)"},
+			}, Help: "当前:" + envVal},
+		},
+	}
+}
+
+// StartConnect form 渠道无独立"发起"动作:返回当前状态并提示填表。
+func (a imChannelStatus) StartConnect(context.Context) (sdk.IMConnectStatus, error) {
+	return a.ConnectStatus(), nil
+}
+
+// SubmitConfig 提交 AppID/AppSecret/环境:落盘 → 换 token 即时校验 → 启动网关。
+// 失败原因直接回显(不静默);密钥不回显(只回尾号)。
+func (a imChannelStatus) SubmitConfig(ctx context.Context, values map[string]string) (sdk.IMConnectStatus, error) {
+	tr := a.tr
+	appID := strings.TrimSpace(values["app_id"])
+	secret := strings.TrimSpace(values["app_secret"])
+	env := strings.TrimSpace(values["env"])
+	tr.setConnStatus(sdk.IMConnectStatus{Channel: tr.name, Phase: sdk.IMPhaseValidating, Detail: "正在校验凭证…"})
+	fail := func(msg string) (sdk.IMConnectStatus, error) {
+		st := sdk.IMConnectStatus{Channel: tr.name, Phase: sdk.IMPhaseFailed, Error: msg}
+		tr.setConnStatus(st)
+		return st, fmt.Errorf("%s", msg)
+	}
+	if appID == "" || secret == "" {
+		return fail("AppID 与 AppSecret 均不能为空(开放平台 → 开发 → 开发设置)")
+	}
+	// 密钥未重填(哨兵/空)→ 沿用已配置值;环境显式选择则先落盘(校验失败也保留用户选择)
+	tr.mu.Lock()
+	if tr.creds == nil {
+		tr.creds = &qqbot.Credentials{}
+	}
+	if secret == maskedSentinel {
+		secret = tr.creds.AppSecret
+	}
+	if secret == "" {
+		tr.mu.Unlock()
+		return fail("AppSecret 为必填(未配置过请填写;已配置可留空沿用)")
+	}
+	switch env {
+	case "official":
+		tr.creds.BaseURL = qqbot.DefaultBaseURL
+	case "sandbox":
+		tr.creds.BaseURL = sandboxBaseURL
+	}
+	tr.mu.Unlock()
+	// login:落盘凭证 + 启动网关 + 换 token 即时校验(失败原因含排查指引)
+	if err := tr.login(appID, secret); err != nil {
+		return fail(err.Error())
+	}
+	st := sdk.IMConnectStatus{Channel: tr.name, Phase: sdk.IMPhaseDone,
+		Detail: "凭证已保存并校验通过", Account: maskTail(appID)}
+	if env == "sandbox" {
+		st.Env = "sandbox"
+	}
+	tr.setConnStatus(st)
+	return st, nil
+}
+
+// ConnectStatus 当前连接状态(读 status 聚合 + 最近一次连接相位)。
+func (a imChannelStatus) ConnectStatus() sdk.IMConnectStatus {
+	tr := a.tr
+	tr.mu.Lock()
+	conn := tr.conn
+	online := false
+	if tr.creds != nil && tr.creds.Configured() {
+		online = true
+	}
+	appID := ""
+	if tr.creds != nil {
+		appID = maskTail(tr.creds.AppID)
+	}
+	tr.mu.Unlock()
+	if conn.Phase == sdk.IMPhaseValidating || conn.Phase == sdk.IMPhaseFailed {
+		return conn
+	}
+	if online {
+		st := sdk.IMConnectStatus{Channel: tr.name, Phase: sdk.IMPhaseDone, Detail: "已配置", Account: appID}
+		if tr.gatewayOnline() {
+			st.Detail = "网关在线"
+		}
+		return st
+	}
+	return sdk.IMConnectStatus{Channel: tr.name, Phase: sdk.IMPhaseIdle, Detail: "未配置(需 AppID/AppSecret)"}
+}
+
+// setConnStatus 写连接状态并广播事件(im/connect)。
+func (t *qqTransport) setConnStatus(st sdk.IMConnectStatus) {
+	t.mu.Lock()
+	t.conn = st
+	b := t.bridge
+	t.mu.Unlock()
+	if b != nil {
+		b.EmitConnect(st)
+	}
+}
+
+// gatewayOnline 网关是否在线(简化只读判定)。
+func (t *qqTransport) gatewayOnline() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.gateway != nil && t.gateway.Online()
+}
+
 // imChannelStatus sdk.IMChannelService 适配(web 面板 IM 通道状态)。
 type imChannelStatus struct {
 	tr     *qqTransport
@@ -1228,4 +1373,12 @@ func mask(s string) string {
 		return "****"
 	}
 	return s[:4] + "…" + fmt.Sprintf("(%d)", len(s))
+}
+
+// maskTail 脱敏摘要(只留尾号 4 位;短值原样)。与微信壳同名同义(两端各自持有,避免跨插件依赖)。
+func maskTail(s string) string {
+	if len(s) <= 4 {
+		return s
+	}
+	return "…" + s[len(s)-4:]
 }

@@ -85,6 +85,49 @@ async fn checkForUpdates(app: tauri::AppHandle) {
     }
 }
 
+// httpGET 取一个 GET 响应体的粗文本(裸 TCP;壳只做轻量探活,不引 HTTP 库)。
+// 失败返回空串(未就绪/未装配/连不上都归"无数据")。
+fn httpGET(path: &str) -> String {
+    let mut s = match TcpStream::connect_timeout(&GAH_ADDR.parse::<std::net::SocketAddr>().unwrap(), Duration::from_millis(300)) {
+        Ok(s) => s,
+        Err(_) => return String::new(),
+    };
+    let _ = s.set_read_timeout(Some(Duration::from_millis(500)));
+    let req = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    if s.write_all(req.as_bytes()).is_err() {
+        return String::new();
+    }
+    let mut all = Vec::new();
+    let mut buf = [0u8; 512];
+    loop {
+        match s.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => all.extend_from_slice(&buf[..n]),
+        }
+    }
+    String::from_utf8_lossy(&all).to_string()
+}
+
+// jsonStr 粗取 JSON 字符串字段值("key":"value";值内无转义即可,探活用)。
+fn jsonStr(body: &str, key: &str) -> String {
+    let pat = format!("\"{key}\":\"");
+    let Some(i) = body.find(&pat) else { return String::new() };
+    let rest = &body[i + pat.len()..];
+    match rest.find('"') {
+        Some(j) => rest[..j].to_string(),
+        None => String::new(),
+    }
+}
+
+// imPhase 当前 IM 连接相位(E 组 E4 托盘通知;未装配 IM 通道 → 空串)。
+fn imPhase() -> String {
+    let body = httpGET("/api/im/connect/state");
+    if body.is_empty() || !body.contains("\"phase\"") {
+        return String::new();
+    }
+    jsonStr(&body, "phase")
+}
+
 fn stateRunning() -> bool {
     // /api/state JSON 含 "running":true|false;粗解析含子串即可
     let mut s = match TcpStream::connect_timeout(&GAH_ADDR.parse::<std::net::SocketAddr>().unwrap(), Duration::from_millis(300)) {
@@ -238,6 +281,7 @@ fn main() {
             let handle4 = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let mut prev = stateRunning();
+                let mut prev_im = imPhase();
                 loop {
                     std::thread::sleep(Duration::from_secs(2));
                     let cur = stateRunning();
@@ -248,6 +292,20 @@ fn main() {
                             .show();
                     }
                     prev = cur;
+                    // IM 通道相位通知(E4):失败/需重新登录、连接成功、掉线 三类事件
+                    let im = imPhase();
+                    if !im.is_empty() && im != prev_im && READY.load(Ordering::SeqCst) {
+                        let body = match im.as_str() {
+                            "failed" => Some("IM 通道需要处理:凭证失效或校验失败,请在「IM 通道」面板重新连接"),
+                            "done" => Some("IM 通道已连接"),
+                            "idle" if prev_im == "done" => Some("IM 通道已断开(需重新连接)"),
+                            _ => None,
+                        };
+                        if let Some(text) = body {
+                            let _ = handle4.notification().builder().title("gah").body(text).show();
+                        }
+                    }
+                    prev_im = im;
                 }
             });
 

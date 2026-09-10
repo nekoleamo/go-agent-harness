@@ -269,10 +269,11 @@ type wechatTransport struct {
 	tickets     map[string]ticketEntry
 	tokens      map[string]string // userID → context_token(iLink 回显必须)
 	loginBusy   bool
-	remainder   map[string]string  // chatID → 被截断的剩余文本(用户回 continue 时被动补发)
-	loginState  sdk.IMLoginState   // 面板扫码登录进度(P3 Web 面板)
-	autoRelogin bool               // 会话过期时自动清理失效凭证并发起重新扫码(data.auto_relogin,默认 true)
-	typingCtl   context.CancelFunc // 回合进行中的 typing 周期刷新控制器(回合结束取消)
+	remainder   map[string]string   // chatID → 被截断的剩余文本(用户回 continue 时被动补发)
+	loginState  sdk.IMLoginState    // 面板扫码登录进度(P3 Web 面板;兼容旧端点)
+	conn        sdk.IMConnectStatus // E0/E1:连接卡相位 + 当前二维码(过期自动重取时刷新)
+	autoRelogin bool                // 会话过期时自动清理失效凭证并发起重新扫码(data.auto_relogin,默认 true)
+	typingCtl   context.CancelFunc  // 回合进行中的 typing 周期刷新控制器(回合结束取消)
 }
 
 func (t *wechatTransport) Name() string { return t.name }
@@ -584,6 +585,160 @@ func (t *wechatTransport) LoginState() sdk.IMLoginState {
 	return sdk.IMLoginState{Phase: "idle", Detail: "未登录"}
 }
 
+// —— E0/E1:IMConnectService(qr 渠道路径) ——
+
+// ConnectSpec 微信连接方式声明(扫码;协议不下发有效期 → 提示过期自动刷新)。
+func (a imChannelStatus) ConnectSpec() sdk.IMConnectSpec {
+	return sdk.IMConnectSpec{
+		Channel: a.tr.name,
+		Kind:    sdk.IMConnectQR,
+		Action:  "扫码登录",
+		Hint:    "用微信扫码并在手机上确认;协议不下发有效期,过期会自动刷新二维码,无需重按",
+		DocsURL: "https://github.com/nekoleamo/go-agent-harness",
+	}
+}
+
+// StartConnect 发起扫码登录(内部经 LoginQRWithProgress:相位细粒度 + 过期自动重取)。
+func (a imChannelStatus) StartConnect(ctx context.Context) (sdk.IMConnectStatus, error) {
+	return a.tr.StartConnect(ctx)
+}
+
+// SubmitConfig 微信无表单配置(扫码登录);显式拒绝而非假成功。
+func (a imChannelStatus) SubmitConfig(context.Context, map[string]string) (sdk.IMConnectStatus, error) {
+	return sdk.IMConnectStatus{Channel: a.tr.name, Phase: sdk.IMPhaseFailed,
+		Error: "微信为扫码登录,无表单配置项"}, fmt.Errorf("微信为扫码登录,无表单配置项")
+}
+
+// ConnectStatus 当前连接状态(读同一状态机)。
+func (a imChannelStatus) ConnectStatus() sdk.IMConnectStatus { return a.tr.ConnectStatus() }
+
+// StartConnect 连接卡启动:取码 → 相位回调(事件化)→ 成功后保存凭证并启动轮询。
+// 与 StartLogin 的差别:① 相位更细(含 expired_refresh);② 过期自动重取(新码同步到 conn);
+// ③ 相位变化 emit im/connect(各端订阅,不再 2s 高频轮询)。
+func (t *wechatTransport) StartConnect(ctx context.Context) (sdk.IMConnectStatus, error) {
+	t.mu.Lock()
+	if t.loginBusy {
+		st := t.conn
+		t.mu.Unlock()
+		return st, fmt.Errorf("登录进行中(%s)", st.Detail)
+	}
+	t.loginBusy = true
+	t.conn = sdk.IMConnectStatus{Channel: t.name, Phase: sdk.IMPhaseWaitingScan, Detail: "正在获取二维码…"}
+	t.mu.Unlock()
+	// 立刻返回"取码中":取码在后台完成并通过事件推送二维码(接口不阻塞等待扫码)
+	go func() {
+		defer func() {
+			t.mu.Lock()
+			t.loginBusy = false
+			t.mu.Unlock()
+		}()
+		creds, err := ilink.LoginQRWithProgress(ctx, t.baseURL, 10*time.Minute,
+			func(qr *ilink.QRResponse) {
+				t.setConn(sdk.IMConnectStatus{Channel: t.name, Phase: sdk.IMPhaseWaitingScan,
+					Detail: "请用微信扫码并在手机上确认", QRContent: qr.QRCodeImg})
+			},
+			func(phase, detail string) {
+				if phase == "validating" {
+					t.setConnPhase(sdk.IMPhaseValidating, detail)
+					return
+				}
+				t.setConnPhase(phase, detail)
+			})
+		if err != nil {
+			t.setConn(sdk.IMConnectStatus{Channel: t.name, Phase: sdk.IMPhaseFailed, Error: err.Error()})
+			t.setLoginState(sdk.IMLoginState{Phase: "failed", Error: err.Error()})
+			return
+		}
+		if err := t.applyCreds(creds); err != nil {
+			t.setConn(sdk.IMConnectStatus{Channel: t.name, Phase: sdk.IMPhaseFailed, Error: err.Error()})
+			t.setLoginState(sdk.IMLoginState{Phase: "failed", Error: err.Error()})
+			return
+		}
+		t.setConn(sdk.IMConnectStatus{Channel: t.name, Phase: sdk.IMPhaseDone, Detail: "登录成功",
+			Account: maskTail(creds.AccountID)})
+		t.setLoginState(sdk.IMLoginState{Phase: "done", Detail: "登录成功"})
+	}()
+	return sdk.IMConnectStatus{Channel: t.name, Phase: sdk.IMPhaseWaitingScan, Detail: "正在获取二维码…"}, nil
+}
+
+// applyCreds 保存凭证 + 授权扫码者 + 启动轮询(finishLogin 的复用内核)。
+func (t *wechatTransport) applyCreds(creds *ilink.Credentials) error {
+	t.mu.Lock()
+	if !hasStr(t.creds.Allow, channelName+"\x00"+creds.UserID) && creds.UserID != "" {
+		t.creds.Allow = append(t.creds.Allow, channelName+"\x00"+creds.UserID)
+	}
+	t.creds.Token = creds.Token
+	t.creds.BaseURL = creds.BaseURL
+	t.creds.AccountID = creds.AccountID
+	t.creds.UserID = creds.UserID
+	t.creds.SyncBuf = ""
+	if err := t.store.Save(t.creds); err != nil {
+		t.mu.Unlock()
+		t.setLastError("保存凭证失败: " + err.Error())
+		return err
+	}
+	t.client = ilink.New(t.creds.BaseURL, t.creds.Token)
+	t.mu.Unlock()
+	t.bridge.Access().Allow(channelName + "\x00" + creds.UserID)
+	t.setLastError("")
+	t.startPoll()
+	return nil
+}
+
+// ConnectStatus 当前连接状态(登录中读 conn;已登录 → done)。
+func (t *wechatTransport) ConnectStatus() sdk.IMConnectStatus {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.loginBusy {
+		return t.conn
+	}
+	if t.creds != nil && t.creds.Token != "" {
+		return sdk.IMConnectStatus{Channel: t.name, Phase: sdk.IMPhaseDone, Detail: "已登录",
+			Account: maskTail(t.creds.AccountID)}
+	}
+	if t.conn.Phase == sdk.IMPhaseFailed {
+		return t.conn
+	}
+	return sdk.IMConnectStatus{Channel: t.name, Phase: sdk.IMPhaseIdle, Detail: "未登录"}
+}
+
+// setConn 写连接状态并广播事件(事件化替代轮询)。
+func (t *wechatTransport) setConn(st sdk.IMConnectStatus) {
+	t.mu.Lock()
+	// 保留已取到的二维码(相位推进时不清空)
+	if st.QRContent == "" && st.Phase != sdk.IMPhaseDone && st.Phase != sdk.IMPhaseFailed {
+		st.QRContent = t.conn.QRContent
+	}
+	t.conn = st
+	t.mu.Unlock()
+	if t.bridge != nil {
+		t.bridge.EmitConnect(st)
+	}
+}
+
+// setConnPhase 仅推进相位(保留二维码)。
+func (t *wechatTransport) setConnPhase(phase, detail string) {
+	t.mu.Lock()
+	st := t.conn
+	st.Phase, st.Detail = phase, detail
+	if phase == sdk.IMPhaseExpiredRefresh {
+		st.QRContent = "" // 旧码作废,等新码回调填入
+	}
+	t.conn = st
+	t.mu.Unlock()
+	if t.bridge != nil {
+		t.bridge.EmitConnect(st)
+	}
+}
+
+// maskTail 脱敏摘要(只留尾号 4 位;空值原样)。
+func maskTail(s string) string {
+	if len(s) <= 4 {
+		return s
+	}
+	return "…" + s[len(s)-4:]
+}
+
 // setLoginState 写登录进度。
 func (t *wechatTransport) setLoginState(st sdk.IMLoginState) {
 	t.mu.Lock()
@@ -795,33 +950,39 @@ func (t *wechatTransport) autoLogin() {
 	t.finishLogin(qr)
 }
 
-// finishLogin 后台完成扫码登录:轮询确认 → 存凭证 → 授权扫码者 → 启动 poll。
+// finishLogin 后台完成扫码登录(E1:过期自动重取 + 相位回显):
+//   - 相位(等待扫码/已扫码/过期重取/保存)经 stderr 一行行回显(终端直接可见);
+//   - 二维码过期时**自动重取并在终端重绘**新码(旧行为:打印一次,过期需用户重按);
+//   - 成功后存凭证 + 授权扫码者 + 启动 poll。
+//
 // 返回错误供面板登录流程记录进度(旧调用方忽略)。
 func (t *wechatTransport) finishLogin(qr *ilink.QRResponse) error {
-	creds, err := ilink.LoginQRFromToken(context.Background(), t.baseURL, qr.QRCode, 5*time.Minute)
+	creds, err := ilink.LoginQRWithProgress(context.Background(), t.baseURL, 10*time.Minute,
+		func(nq *ilink.QRResponse) {
+			code := renderQRText(nq.QRCodeImg)
+			fmt.Fprintf(os.Stderr, "\n[wechat] 新二维码(请用微信扫描;无法扫描请打开链接):\n%s\n链接: %s\n", code, nq.QRCodeImg)
+			t.setConn(sdk.IMConnectStatus{Channel: t.name, Phase: sdk.IMPhaseWaitingScan,
+				Detail: "请用微信扫码并在手机上确认", QRContent: nq.QRCodeImg})
+		},
+		func(phase, detail string) {
+			fmt.Fprintf(os.Stderr, "[wechat] %s\n", detail)
+			if phase == "validating" {
+				t.setConnPhase(sdk.IMPhaseValidating, detail)
+				return
+			}
+			t.setConnPhase(phase, detail)
+		})
 	if err != nil {
 		t.setLastError("登录失败: " + err.Error())
+		t.setConn(sdk.IMConnectStatus{Channel: t.name, Phase: sdk.IMPhaseFailed, Error: err.Error()})
 		return err
 	}
-	t.mu.Lock()
-	if !hasStr(t.creds.Allow, channelName+"\x00"+creds.UserID) && creds.UserID != "" {
-		t.creds.Allow = append(t.creds.Allow, channelName+"\x00"+creds.UserID)
-	}
-	t.creds.Token = creds.Token
-	t.creds.BaseURL = creds.BaseURL
-	t.creds.AccountID = creds.AccountID
-	t.creds.UserID = creds.UserID
-	t.creds.SyncBuf = ""
-	if err := t.store.Save(t.creds); err != nil {
-		t.mu.Unlock()
-		t.setLastError("保存凭证失败: " + err.Error())
+	if err := t.applyCreds(creds); err != nil {
+		t.setConn(sdk.IMConnectStatus{Channel: t.name, Phase: sdk.IMPhaseFailed, Error: err.Error()})
 		return err
 	}
-	t.client = ilink.New(t.creds.BaseURL, t.creds.Token)
-	t.mu.Unlock()
-	t.bridge.Access().Allow(channelName + "\x00" + creds.UserID)
-	t.setLastError("")
-	t.startPoll()
+	t.setConn(sdk.IMConnectStatus{Channel: t.name, Phase: sdk.IMPhaseDone, Detail: "登录成功",
+		Account: maskTail(creds.AccountID)})
 	return nil
 }
 

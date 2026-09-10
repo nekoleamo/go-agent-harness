@@ -91,6 +91,21 @@ The data root is `gah-data/` next to the real binary (created on first run; a sy
 
 > `--ephemeral` puts all runtime data (incl. the external plugin dir) into a temp home that is deleted on exit — good for isolated CI smoke tests.
 
+### IM remote control (WeChat / QQ)
+
+Drive the agent from your phone: WeChat/QQ messages start turns, and dangerous operations are approved on the phone (`y`/`n`).
+
+```bash
+./gah im          # interactive: terminal UI + WeChat channel; non-TTY falls back to headless (QR goes to stderr)
+./gah im-qq       # same, over the official QQ bot channel
+./gah im --status [--channel wechat|qq] [--json]   # connectivity probe (exit 0 online / 3 not connected / 4 bad credentials / 5 not assembled)
+```
+
+- **How to connect**: the Web/desktop panel's "IM channel" card (sidebar badge shows the state) — **WeChat** by QR scan (expired codes are **auto-refreshed**, no re-click); **QQ** by AppID/AppSecret (**the official bot API has no QR auth**) with instant validation and a platform link; secrets are never echoed (tail only), never logged, written 0600.
+- **Credentials**: `$GAH_HOME/config/ilink-wechat.yaml` / `qqbot.yaml`, migrating with `gah-data/`.
+- **Deny by default**: connecting is not authorizing — pair with `/im pair` or an allowlist (per-group `/im allowg`).
+- **Remote commands**: `/new`, `/status`, `/sessionlist`, `/session`, `/history`, `/stop`, `/bg`; long turns move to the background and push the result back.
+
 ### Use a real model
 
 ```bash

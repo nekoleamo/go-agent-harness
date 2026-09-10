@@ -112,3 +112,12 @@ func docDegradeText(tx *sdk.DocText, ev sdk.DocOpenEvent) string {
 	}
 	return strings.TrimRight(sb.String(), "\n")
 }
+
+// EmitConnect 广播 IM 连接相位变化(im/connect;各端订阅更新连接卡)。
+// 事件载荷不含凭证(E0 契约纪律)。
+func (b *Bridge) EmitConnect(st sdk.IMConnectStatus) {
+	if b == nil || b.c == nil {
+		return
+	}
+	_, _ = b.c.Emit(context.Background(), sdk.EventIMConnect, st, sdk.Emit)
+}

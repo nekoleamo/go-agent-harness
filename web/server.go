@@ -91,6 +91,7 @@ type Server struct {
 	pm       sdk.PluginManager       // 可选(插件启停)
 	imc      sdk.IMChannelService    // 可选(IM 通道状态 /api/im/channels;未装配 503)
 	imLogin  sdk.IMLoginProvider     // 可选(面板扫码登录 /api/im/login;渠道未实现则 503)
+	imConn   sdk.IMConnectService    // 可选(E0:统一连接契约 /api/im/connect/*;懒解析见 imConnService)
 	sp       sdk.SystemPromptService // 可选(/reload 指令热更)
 	tc       sdk.TurnControl         // 可选(回合取消 /api/control cancel;未装配 = 503)
 	doc      sdk.DocService          // 可选(文档预览 D1:未装配 → /api/doc/* 503;懒解析见 docSvc)
@@ -140,7 +141,10 @@ func (s *Server) Inject(c sdk.Ctx) error {
 	_ = c.Inject("ctx.pluginManager", &s.pm)
 	_ = c.Inject("ctx.imChannels", &s.imc) // 可选:未装配则 /api/im/channels 503
 	if lp, ok := s.imc.(sdk.IMLoginProvider); ok {
-		s.imLogin = lp // 渠道实现扫码登录(如 ui-im-wechat)时启用面板入口
+		s.imLogin = lp // 渠道实现扫码登录(如 ui-im-wechat)时启用面板入口(旧端点兼容)
+	}
+	if ic, ok := s.imc.(sdk.IMConnectService); ok {
+		s.imConn = ic // E0:统一连接契约
 	}
 	_ = c.Inject("ctx.systemPrompt", &s.sp)
 	_ = c.Inject("ctx.turnControl", &s.tc)
@@ -223,6 +227,11 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET /api/im/channels", s.handleIMChannels)
 	mux.HandleFunc("POST /api/im/login", s.handleIMLogin)
 	mux.HandleFunc("GET /api/im/login/state", s.handleIMLoginState)
+	// IM 连接(E0):统一扫码/表单契约(未装配 → 503)
+	mux.HandleFunc("GET /api/im/connect/spec", s.handleIMConnectSpec)
+	mux.HandleFunc("POST /api/im/connect/start", s.handleIMConnectStart)
+	mux.HandleFunc("POST /api/im/connect/submit", s.handleIMConnectSubmit)
+	mux.HandleFunc("GET /api/im/connect/state", s.handleIMConnectState)
 	// 文档预览(D1):无条件注册,服务缺失时 503(前端据 503 隐藏入口)
 	mux.HandleFunc("GET /api/doc/preview", s.handleDocPreview)
 	mux.HandleFunc("GET /api/doc/raw", s.handleDocRaw)

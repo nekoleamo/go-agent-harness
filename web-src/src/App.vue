@@ -7,6 +7,7 @@ import { consume, isUsage, newModel, type StreamModel } from './sse'
 import { createTransport, type Transport } from './transport'
 import { extraPanel, slotComponent, type MetaLine } from './registry'
 import { OPEN_DOC_EVENT, docRequest } from './docstore'
+import { OPEN_PANEL_EVENT, upsertIMStatus } from './imstore'
 import type { SessionEvent, StateView, ConfirmRequest, CommandResult, QuestionRequest } from './types'
 import StatusBar from './components/StatusBar.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
@@ -168,6 +169,10 @@ function rebuild(keepCursor: boolean): void {
     const d = f.payload as { path?: string }
     if (d?.path) onOpenDoc(new CustomEvent(OPEN_DOC_EVENT, { detail: d.path }))
   })
+  // IM 连接相位(E0:im/connect 事件推送,取代 2s 高额轮询)
+  transport.on('imconnect', (f) => {
+    upsertIMStatus(f.payload as never)
+  })
 }
 
 async function refreshStats(): Promise<void> {
@@ -230,6 +235,12 @@ async function onAnswer(ok: boolean): Promise<void> {
 const hasSlot = (n: 'stream' | 'input' | 'statusbar' | 'confirm') => slotComponent(n) !== null
 
 // 文档预览意图(工具行/侧栏):打开工作台抽屉并定位文件(单一入口,含 docRequest 赋值)
+// 侧栏徽标 → 打开附加面板抽屉(与 docstore 同型:窗口事件解耦)
+function onOpenPanel(ev: Event): void {
+  const key = (ev as CustomEvent<string>).detail
+  if (key) openPanel.value = key
+}
+
 function onOpenDoc(ev: Event): void {
   const path = (ev as CustomEvent<string>).detail
   if (!path) return
@@ -239,6 +250,7 @@ function onOpenDoc(ev: Event): void {
 
 onMounted(async () => {
   window.addEventListener(OPEN_DOC_EVENT, onOpenDoc)
+  window.addEventListener(OPEN_PANEL_EVENT, onOpenPanel)
   await refreshStats()
   rebuild(false)
   // 统计节流刷新(usage 事件外,兜底上下文/缓存显示)
@@ -246,6 +258,7 @@ onMounted(async () => {
 })
 onUnmounted(() => {
   window.removeEventListener(OPEN_DOC_EVENT, onOpenDoc)
+  window.removeEventListener(OPEN_PANEL_EVENT, onOpenPanel)
   transport?.close()
   if (statsTimer) clearInterval(statsTimer)
 })

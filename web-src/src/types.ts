@@ -2,7 +2,7 @@
 // 契约来源:web/server.go 的 SSE 帧与 REST 响应。
 
 // —— SSE 帧 ——
-export type FrameType = 'session' | 'status' | 'error' | 'confirm' | 'command' | 'question' | 'doc'
+export type FrameType = 'session' | 'status' | 'error' | 'confirm' | 'command' | 'question' | 'doc' | 'imconnect'
 
 export interface Frame {
   id: number
@@ -317,4 +317,41 @@ export interface DocTree {
   entries: DocEntry[]
   truncated?: string[]
   warnings?: string[]
+}
+
+// —— IM 连接(E 组 E0;与 sdk/imconnect.go 契约一致)—— 
+export interface IMConnectOption {
+  value: string
+  desc?: string
+}
+export interface IMConnectField {
+  key: string
+  label: string
+  secret?: boolean
+  placeholder?: string
+  help?: string
+  required?: boolean
+  options?: IMConnectOption[]
+  configured?: boolean
+  mask?: string
+}
+export interface IMConnectSpec {
+  channel: string
+  kind: 'qr' | 'form' | 'none'
+  fields?: IMConnectField[]
+  login_url?: string
+  docs_url?: string
+  hint?: string
+  action?: string
+}
+export interface IMConnectStatus {
+  channel: string
+  phase: string
+  detail?: string
+  error?: string
+  qr_content?: string
+  qr_png?: string
+  expires_at?: string
+  account?: string
+  env?: string
 }

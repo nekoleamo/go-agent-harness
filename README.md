@@ -92,6 +92,21 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 
 > `--ephemeral` 将全部运行数据(含外部插件目录)放入临时 home,退出即焚,适合 CI 隔离冒烟。
 
+### IM 远程控制(微信 / QQ)
+
+把手机当远程终端:微信 / QQ 消息驱动 Agent 回合,危险操作在手机上审批(`y`/`n`)。
+
+```bash
+./gah im          # 交互终端:终端界面 + 微信通道并存(非 TTY 自动 headless,二维码打到 stderr)
+./gah im-qq       # 同上,QQ 官方 Bot 通道
+./gah im --status [--channel wechat|qq] [--json]   # 连接探活(退出码 0 在线 / 3 未连接 / 4 凭证无效 / 5 未装配)
+```
+
+- **连接方式**:Web/桌面面板「IM 通道」(侧栏徽标显示连接状态)→ **微信**扫码登录(二维码过期**自动重取**,无需重按);**QQ** 填 AppID/AppSecret(**官方无扫码鉴权**)+ 即时校验 + 平台外链引导;密钥不回显(只显示尾号)、不落日志、写盘 0600。
+- **凭证落位**:`$GAH_HOME/config/ilink-wechat.yaml`(微信)/ `qqbot.yaml`(QQ),随 `gah-data/` 整体迁移。
+- **授权默认拒绝**:连接成功 ≠ 任何人可用,须 `/im pair` 配对码或 allowlist(群维度 `/im allowg`)。
+- **远程命令**:`/new` `/status` `/sessionlist` `/session` `/history` `/stop` `/bg` 等;长回合自动转后台并回推结果。
+
 ### 使用真实大模型
 
 ```bash
@@ -220,6 +235,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `POST /api/attachments` + `GET /attachments/...` | 附件上传(20MB/类型白名单)/ 静态预览 |
 | `POST /api/reload` | 指令文件热更 |
 | `POST /api/shutdown` | 优雅停机(→ system/shutdown → DisposeAll 全回收;桌面壳/运维复用) |
+| `GET /api/im/connect/spec`、`POST /api/im/connect/start`、`POST /api/im/connect/submit`、`GET /api/im/connect/state` | IM 连接:方式声明(扫码/表单)/ 发起 / 提交表单 / 状态(相位变化另有 `im/connect` SSE 事件推送) |
 | `GET /api/ui-plugins` + `/ui-plugins/` | UI 插件聚合视图 / 静态托管 |
 | `GET /api/doc/preview` `raw` `asset` `tree` `html`、`POST /api/doc/render` | 文档预览(块模型 JSON)/ 原生字节(Range,`dl=1` 下载)/ 内嵌资产(MIME 白名单)/ 文件树 / HTML 沙箱(CSP)/ markdown 文本→块模型 |
 

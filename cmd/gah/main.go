@@ -39,6 +39,9 @@ var (
 	installUIFl  = flag.String("install-ui", "", "安装 UI 插件(M7.2):<repo>[@version] 或本地目录;v-html 扫描拒装")
 	uninstallUIF = flag.String("uninstall-ui", "", "卸载 UI 插件:<id>(删 home/ui-plugins/<id>,重载页面即回默认)")
 	listUIPlugs  = flag.Bool("list-ui-plugins", false, "列出已安装的 UI 插件")
+	imStatusFlag = flag.Bool("im-status", false, "IM 连接探活:打印渠道状态并按 0/3/4/5 退出(配合 gah im / gah im-qq)")
+	imChannelFl  = flag.String("im-channel", "", "IM 探活限定渠道(wechat|qq;缺省=当前 profile 渠道)")
+	imStatusJSON = flag.Bool("im-status-json", false, "IM 探活输出 JSON")
 )
 
 // 非 TTY 检测(TUI profile):stdin 为 pipe/重定向时 bubbletea 会直读 stdin 卡死挂起;
@@ -56,6 +59,7 @@ func main() {
 	// 打到 stderr)、gah im-qq ≡ --profile im-qq。显式 -profile 仍可覆盖。
 	if len(os.Args) > 1 && os.Args[1] == "im" {
 		os.Args = append([]string{os.Args[0]}, os.Args[2:]...)
+		extractIMStatusArgs()
 		if isStdinTTY() {
 			*profileFlag = "im-wechat-tui"
 			fmt.Fprintln(os.Stderr, "gah im: 交互终端 → 启用 im-wechat-tui(终端界面 + 微信通道;纯后台请用 --profile im-wechat)")
@@ -65,6 +69,7 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] == "im-qq" {
 		os.Args = append([]string{os.Args[0]}, os.Args[2:]...)
+		extractIMStatusArgs()
 		if isStdinTTY() {
 			*profileFlag = "im-qq-tui"
 			fmt.Fprintln(os.Stderr, "gah im-qq: 交互终端 → 启用 im-qq-tui(终端界面 + QQ 通道)")
@@ -227,6 +232,13 @@ func main() {
 		"services", c.ListServiceKeys(),
 	)
 
+	// 3.5 `gah im --status`:连接探活(打印状态 + 退出码;不进入回合/TUI)
+	if *imStatusFlag {
+		code := imStatusReport(c, *imChannelFl, *imStatusJSON)
+		reg.DisposeAll()
+		os.Exit(code)
+	}
+
 	// 4. headless 模式:跑一轮并输出模型回复;否则等待退出信号
 	if *inputFlag != "" {
 		if err := runHeadless(c, *inputFlag, logger); err != nil {
@@ -252,6 +264,28 @@ func main() {
 	case <-shutdown:
 	}
 	logger.Info("gah shutting down")
+}
+
+// extractIMStatusArgs `gah im --status [--json] [--channel x]` 的糖:把 --status/--json
+// 从参数里剥离并置位对应标志(这组参数不属于通用 flag 集,避免 flag.Parse 报未知标志)。
+func extractIMStatusArgs() {
+	kept := make([]string, 0, len(os.Args))
+	for i := 0; i < len(os.Args); i++ {
+		switch os.Args[i] {
+		case "--status", "-status":
+			*imStatusFlag = true
+		case "--json", "-json":
+			*imStatusJSON = true
+		case "--channel", "-channel":
+			if i+1 < len(os.Args) {
+				i++
+				*imChannelFl = os.Args[i]
+			}
+		default:
+			kept = append(kept, os.Args[i])
+		}
+	}
+	os.Args = kept
 }
 
 // runHeadless 注入 agentLoop 跑一轮,输出最后一个 assistant 回复。

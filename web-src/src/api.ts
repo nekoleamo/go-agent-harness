@@ -1,5 +1,5 @@
 // REST 客户端(上行)+ 工具函数。核心交互纯 REST,不绕模板渲染。
-import type { AttachmentView, CommandOptionsResp, CommandView, DocTree, DocView, IMChannelStatus, IMLoginQR, IMLoginState, Job, ModelsAllResp, PluginInfo, ProviderInfo, SessionInfo, StateView, WorkspaceInfo } from './types'
+import type { AttachmentView, CommandOptionsResp, CommandView, DocTree, DocView, IMChannelStatus, IMConnectSpec, IMConnectStatus, IMLoginQR, IMLoginState, Job, ModelsAllResp, PluginInfo, ProviderInfo, SessionInfo, StateView, WorkspaceInfo } from './types'
 
 const BASE = ''
 const json = {
@@ -70,6 +70,19 @@ export const api = {
   },
   imLoginState(): Promise<IMLoginState> {
     return req('/api/im/login/state')
+  },
+  // —— IM 连接(E0:统一扫码/表单契约;未装配 503) ——
+  imConnectSpec(): Promise<IMConnectSpec> {
+    return req('/api/im/connect/spec')
+  },
+  imConnectStart(): Promise<IMConnectStatus> {
+    return req('/api/im/connect/start', { method: 'POST', headers: json, body: '{}' })
+  },
+  imConnectSubmit(values: Record<string, string>): Promise<IMConnectStatus> {
+    return req('/api/im/connect/submit', { method: 'POST', headers: json, body: JSON.stringify({ values }) })
+  },
+  imConnectState(): Promise<IMConnectStatus> {
+    return req('/api/im/connect/state')
   },
   // —— 整体备份(M18) ——
   backups(): Promise<{ name: string; size: number; time: number }[]> {

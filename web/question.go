@@ -12,11 +12,11 @@ import (
 
 // QuestionRequest 提问弹层载荷(SSE FrameQuestion 的 payload;前端据此渲染)。
 type QuestionRequest struct {
-	ID       string             `json:"id"`                 // 弹层唯一 id(/api/question 回传)
-	Prompt   string             `json:"prompt"`             // 问题正文
-	Options  []sdk.QuestionOption `json:"options,omitempty"`  // 可选项(空 = 自由文本)
-	Multiple bool               `json:"multiple,omitempty"` // 多选
-	FreeText bool               `json:"free_text,omitempty"`// 允许自由文本作答
+	ID       string               `json:"id"`                  // 弹层唯一 id(/api/question 回传)
+	Prompt   string               `json:"prompt"`              // 问题正文
+	Options  []sdk.QuestionOption `json:"options,omitempty"`   // 可选项(空 = 自由文本)
+	Multiple bool                 `json:"multiple,omitempty"`  // 多选
+	FreeText bool                 `json:"free_text,omitempty"` // 允许自由文本作答
 }
 
 // QuestionService Web 版 sdk.QuestionPresenter 实现(经 EventHub 推送)。

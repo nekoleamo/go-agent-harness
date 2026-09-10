@@ -156,3 +156,91 @@ func LoginQRFromToken(ctx context.Context, baseURL, qrcode string, timeout time.
 		}
 	}
 }
+
+// QRProgress 扫码进度回调(相位 + 人类可读说明)。
+// 相位:waiting_scan(待扫)/ scanned(已扫待确认)/ expired_refresh(过期重取中)。
+type QRProgress func(phase, detail string)
+
+// LoginQRWithProgress 完整扫码登录(面板/TUI 用):
+//   - 相位经 onPhase 回调(waiting_scan → scanned → expired_refresh → …);
+//   - **过期自动重取二维码**(协议不下发有效期,只能轮询发现 expired)→ onQR 回调新码;
+//   - onQR/onPhase 可为 nil(纯静默调用)。
+//
+// 轮询窗口 35s(长轮询;本地超时视为继续等待,与 LoginQRFromToken 同纪律)。
+func LoginQRWithProgress(ctx context.Context, baseURL string, deadline time.Duration, onQR func(*QRResponse), onPhase QRProgress) (*Credentials, error) {
+	if baseURL == "" {
+		baseURL = DefaultBaseURL
+	}
+	if deadline <= 0 {
+		deadline = 10 * time.Minute
+	}
+	end := time.Now().Add(deadline)
+	qr, err := FetchQR(ctx, baseURL)
+	if err != nil {
+		return nil, err
+	}
+	if onQR != nil {
+		onQR(qr)
+	}
+	refreshes := 0
+	const maxRefresh = 5 // 防极端情况无限取码
+	for {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if time.Now().After(end) {
+			return nil, fmt.Errorf("ilink: 登录超时(%v),请重试", deadline)
+		}
+		pollCtx, cancel := context.WithTimeout(ctx, 35*time.Second)
+		st, err := PollQR(pollCtx, baseURL, qr.QRCode)
+		cancel()
+		if err != nil {
+			// 长轮询本地超时/网络抖动 = 继续等待(不判定失败)
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		switch st.Status {
+		case "wait":
+			if onPhase != nil {
+				onPhase("waiting_scan", "等待微信扫码")
+			}
+			time.Sleep(2 * time.Second)
+		case "scaned":
+			if onPhase != nil {
+				onPhase("scanned", "已扫码,请在手机上确认")
+			}
+			time.Sleep(2 * time.Second)
+		case "expired":
+			refreshes++
+			if refreshes > maxRefresh {
+				return nil, errors.New("ilink: 二维码多次过期,请稍后重试")
+			}
+			if onPhase != nil {
+				onPhase("expired_refresh", fmt.Sprintf("二维码过期,正在自动重取(第 %d 次)", refreshes))
+			}
+			nq, ferr := FetchQR(ctx, baseURL)
+			if ferr != nil {
+				time.Sleep(3 * time.Second)
+				continue
+			}
+			qr = nq
+			if onQR != nil {
+				onQR(qr)
+			}
+		case "confirmed":
+			if st.BotToken == "" {
+				return nil, errors.New("ilink: 登录确认但缺 bot_token")
+			}
+			if onPhase != nil {
+				onPhase("validating", "已确认,正在保存凭证")
+			}
+			base := st.BaseURL
+			if base == "" {
+				base = baseURL
+			}
+			return &Credentials{Token: st.BotToken, BaseURL: base, AccountID: st.ILinkBotID, UserID: st.ILinkUserID}, nil
+		default:
+			return nil, fmt.Errorf("ilink: 未知二维码状态 %q", st.Status)
+		}
+	}
+}
