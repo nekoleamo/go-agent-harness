@@ -2,10 +2,10 @@
 // 可视化设置抽屉(状态栏 ⚙ 入口;App 持有 open)。
 // 分组:模型/推理(thinking·sandbox)/历史与压缩/Provider/插件与指令。
 // 破坏性动作(删 provider、卸载插件、压缩)经全局确认条(askConfirm)。
-import { computed, inject, onMounted, ref, watch } from 'vue'
+import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
 import { api } from '../api'
 import { settingSections } from '../registry'
-import type { AskConfirm, IMChannelStatus, PluginInfo, ProviderInfo, ProviderModelGroup, StateView } from '../types'
+import type { AskConfirm, IMChannelStatus, IMLoginQR, IMLoginState, PluginInfo, ProviderInfo, ProviderModelGroup, StateView } from '../types'
 
 const props = defineProps<{
   open: boolean
@@ -125,6 +125,49 @@ async function applyCtl(body: { thinking?: string; sandbox?: string; approval?: 
 // —— 数据备份(M18) ——
 const backups = ref<{ name: string; size: number; time: number }[]>([])
 const imCh = ref<IMChannelStatus[]>([])
+// 扫码登录(微信):二维码图 + 进度轮询
+const imQR = ref<string>('')
+const imLogin = ref<IMLoginState | null>(null)
+let imTimer: number | undefined
+
+async function startIMLogin(): Promise<void> {
+  imQR.value = ''
+  imLogin.value = { phase: 'pending', detail: '正在获取二维码…' }
+  try {
+    const r: IMLoginQR = await api.imLoginStart()
+    imQR.value = r.png ?? ''
+    imLogin.value = { phase: 'pending', detail: '请用微信扫描二维码并在手机确认(5 分钟内)' }
+    pollIMLogin()
+  } catch (e) {
+    imLogin.value = { phase: 'failed', error: (e as Error).message }
+  }
+}
+
+function pollIMLogin(): void {
+  if (imTimer) clearInterval(imTimer)
+  imTimer = window.setInterval(async () => {
+    try {
+      const st = await api.imLoginState()
+      if (st.phase === 'done') {
+        if (imTimer) clearInterval(imTimer)
+        imLogin.value = { phase: 'done', detail: st.detail || '登录成功' }
+        imQR.value = ''
+        await loadIM()
+      } else if (st.phase === 'failed') {
+        if (imTimer) clearInterval(imTimer)
+        imLogin.value = { phase: 'failed', error: st.error || '登录失败' }
+      } else {
+        imLogin.value = st
+      }
+    } catch {
+      if (imTimer) clearInterval(imTimer)
+    }
+  }, 2000)
+}
+
+onUnmounted(() => {
+  if (imTimer) clearInterval(imTimer)
+})
 const backupMsg = ref('')
 async function loadIM(): Promise<void> {
   try {
@@ -438,6 +481,17 @@ watch(
             </div>
             <div class="dim small nowrap">授权 {{ ch.authorized }}</div>
           </div>
+          <div v-if="imCh.some((x) => x.channel === 'wechat')" class="row acts">
+            <button class="ghost" :disabled="imLogin?.phase === 'pending'" @click="startIMLogin">
+              {{ imLogin?.phase === 'pending' ? '登录中…' : '微信扫码登录 / 换号' }}
+            </button>
+          </div>
+          <div v-if="imQR" class="qr-wrap">
+            <img class="qr" :src="imQR" alt="微信登录二维码" />
+          </div>
+          <p v-if="imLogin" class="dim small">
+            {{ imLogin.phase === 'failed' ? '⚠ ' + (imLogin.error || '登录失败') : imLogin.detail }}
+          </p>
           <p class="dim">配置:QQ 用 <code>/qq login &lt;AppID&gt; &lt;AppSecret&gt;</code>;微信用 <code>/wechat login</code>(终端二维码,直显可扫)。融合 profile 下确认请求同时在 QQ/微信与本站弹层呈现。</p>
         </section>
 
@@ -538,6 +592,22 @@ watch(
 </template>
 
 <style scoped>
+/* 扫码登录二维码(白底保证可扫) */
+.qr-wrap {
+  display: flex;
+  justify-content: center;
+  margin: 10px 0 6px;
+}
+.qr {
+  width: 220px;
+  height: 220px;
+  padding: 6px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: var(--r-btn);
+  image-rendering: pixelated;
+}
+
 .mask {
   position: fixed;
   inset: 0;

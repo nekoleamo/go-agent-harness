@@ -1,5 +1,5 @@
 // REST 客户端(上行)+ 工具函数。核心交互纯 REST,不绕模板渲染。
-import type { AttachmentView, CommandView, IMChannelStatus, Job, ModelsAllResp, PluginInfo, ProviderInfo, SessionInfo, StateView, WorkspaceInfo } from './types'
+import type { AttachmentView, CommandView, IMChannelStatus, IMLoginQR, IMLoginState, Job, ModelsAllResp, PluginInfo, ProviderInfo, SessionInfo, StateView, WorkspaceInfo } from './types'
 
 const BASE = ''
 const json = {
@@ -55,6 +55,13 @@ export const api = {
   // —— IM 通道状态(P3 三端融合;未装配 503) ——
   imChannels(): Promise<IMChannelStatus[]> {
     return req('/api/im/channels')
+  },
+  // 面板扫码登录(P3;渠道不支持则 503)
+  imLoginStart(): Promise<IMLoginQR> {
+    return req('/api/im/login', { method: 'POST', headers: json, body: '{}' })
+  },
+  imLoginState(): Promise<IMLoginState> {
+    return req('/api/im/login/state')
   },
   // —— 整体备份(M18) ——
   backups(): Promise<{ name: string; size: number; time: number }[]> {

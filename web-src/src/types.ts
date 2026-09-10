@@ -29,6 +29,19 @@ export interface QuestionRequest {
   free_text?: boolean
 }
 
+// 面板扫码登录(POST /api/im/login 响应;GET /api/im/login/state 进度)
+export interface IMLoginQR {
+  channel: string
+  content: string
+  expires_at: string
+  png?: string // QR PNG data URI(后端渲染,前端直接 img)
+}
+export interface IMLoginState {
+  phase: string // idle | pending | done | failed
+  detail?: string
+  error?: string
+}
+
 // —— IM 通道状态(/api/im/channels;P3 三端融合面板)——
 export interface IMChannelStatus {
   channel: string // wechat | qq

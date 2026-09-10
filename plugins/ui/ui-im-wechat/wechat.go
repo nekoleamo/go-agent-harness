@@ -111,7 +111,8 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		tr.setLastError("未登录,自动发起扫码登录…")
 		go tr.autoLogin()
 	}
-	// ctx.imChannels:Web/桌面设置面板 IM 通道状态(P3 三端融合;只读展示)
+	// ctx.imChannels:Web/桌面设置面板 IM 通道状态 + 扫码登录(P3 三端融合;
+	// 适配器同时实现 sdk.IMLoginProvider → web /api/im/login 可用)
 	if err := c.Provide("ctx.imChannels", imChannelStatus{tr: tr, bridge: b}); err != nil {
 		return nil, err
 	}
@@ -223,6 +224,14 @@ func (a imChannelStatus) Status() []sdk.IMChannelStatus {
 	}}
 }
 
+// StartLogin sdk.IMLoginProvider 转发(web 面板经 ctx.imChannels 类型断言发现)。
+func (a imChannelStatus) StartLogin(ctx context.Context) (sdk.IMLoginQR, error) {
+	return a.tr.StartLogin(ctx)
+}
+
+// LoginState sdk.IMLoginProvider 转发。
+func (a imChannelStatus) LoginState() sdk.IMLoginState { return a.tr.LoginState() }
+
 // ticketEntry typing 票据缓存。
 type ticketEntry struct {
 	ticket    string
@@ -247,6 +256,7 @@ type wechatTransport struct {
 	tokens    map[string]string // userID → context_token(iLink 回显必须)
 	loginBusy bool
 	remainder map[string]string // chatID → 被截断的剩余文本(用户回 continue 时被动补发)
+	loginState sdk.IMLoginState // 面板扫码登录进度(P3 Web 面板)
 	typingCtl context.CancelFunc // 回合进行中的 typing 周期刷新控制器(回合结束取消)
 }
 
@@ -506,6 +516,62 @@ func (t *wechatTransport) handleInbound(msg *ilink.InboundMessage) {
 	_ = t.bridge.HandleInbound(context.Background(), im.Inbound{Route: route, MsgID: msgID, Text: text, Attachments: atts})
 }
 
+// StartLogin sdk.IMLoginProvider:面板发起扫码登录(等价 /wechat login 的二维码流程)。
+func (t *wechatTransport) StartLogin(ctx context.Context) (sdk.IMLoginQR, error) {
+	t.mu.Lock()
+	if t.loginBusy {
+		st := t.loginState
+		t.mu.Unlock()
+		return sdk.IMLoginQR{}, fmt.Errorf("登录进行中(%s);若二维码已过期请稍候重试", st.Detail)
+	}
+	t.mu.Unlock()
+	qr, err := ilink.FetchQR(ctx, t.baseURL)
+	if err != nil {
+		t.setLoginState(sdk.IMLoginState{Phase: "failed", Error: err.Error()})
+		return sdk.IMLoginQR{}, fmt.Errorf("获取二维码失败: %w", err)
+	}
+	t.mu.Lock()
+	t.loginBusy = true
+	t.loginState = sdk.IMLoginState{Phase: "pending", Detail: "二维码已生成,请用微信扫码并在手机确认(5 分钟内)"}
+	t.mu.Unlock()
+	go func() {
+		defer func() {
+			t.mu.Lock()
+			t.loginBusy = false
+			t.mu.Unlock()
+		}()
+		if err := t.finishLogin(qr); err != nil {
+			t.setLoginState(sdk.IMLoginState{Phase: "failed", Error: err.Error()})
+			return
+		}
+		t.setLoginState(sdk.IMLoginState{Phase: "done", Detail: "登录成功"})
+	}()
+	return sdk.IMLoginQR{Channel: t.name, Content: qr.QRCodeImg, ExpiresAt: time.Now().Add(5 * time.Minute)}, nil
+}
+
+// LoginState sdk.IMLoginProvider:当前登录进度(无进行中登录则按已登录态返回 idle/done)。
+func (t *wechatTransport) LoginState() sdk.IMLoginState {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.loginBusy {
+		return t.loginState
+	}
+	if t.creds != nil && t.creds.Token != "" {
+		return sdk.IMLoginState{Phase: "done", Detail: "已登录(如需换号请重新扫码)"}
+	}
+	if t.loginState.Phase == "failed" {
+		return t.loginState
+	}
+	return sdk.IMLoginState{Phase: "idle", Detail: "未登录"}
+}
+
+// setLoginState 写登录进度。
+func (t *wechatTransport) setLoginState(st sdk.IMLoginState) {
+	t.mu.Lock()
+	t.loginState = st
+	t.mu.Unlock()
+}
+
 // takeRemainder 取走并清空指定会话的截断剩余(continue 补发用)。
 func (t *wechatTransport) takeRemainder(userID string) string {
 	t.mu.Lock()
@@ -718,11 +784,12 @@ func (t *wechatTransport) autoLogin() {
 }
 
 // finishLogin 后台完成扫码登录:轮询确认 → 存凭证 → 授权扫码者 → 启动 poll。
-func (t *wechatTransport) finishLogin(qr *ilink.QRResponse) {
+// 返回错误供面板登录流程记录进度(旧调用方忽略)。
+func (t *wechatTransport) finishLogin(qr *ilink.QRResponse) error {
 	creds, err := ilink.LoginQRFromToken(context.Background(), t.baseURL, qr.QRCode, 5*time.Minute)
 	if err != nil {
 		t.setLastError("登录失败: " + err.Error())
-		return
+		return err
 	}
 	t.mu.Lock()
 	if !hasStr(t.creds.Allow, channelName+"\x00"+creds.UserID) && creds.UserID != "" {
@@ -736,13 +803,14 @@ func (t *wechatTransport) finishLogin(qr *ilink.QRResponse) {
 	if err := t.store.Save(t.creds); err != nil {
 		t.mu.Unlock()
 		t.setLastError("保存凭证失败: " + err.Error())
-		return
+		return err
 	}
 	t.client = ilink.New(t.creds.BaseURL, t.creds.Token)
 	t.mu.Unlock()
 	t.bridge.Access().Allow(channelName + "\x00" + creds.UserID)
 	t.setLastError("")
 	t.startPoll()
+	return nil
 }
 
 // statusText 状态文本。

@@ -179,3 +179,17 @@ func TestContinueTextAndRemainder(t *testing.T) {
 		t.Fatalf("取走后应清空: %q", got)
 	}
 }
+
+// TestChannelStatusImplementsLoginProvider 面板契约:ctx.imChannels 提供的适配器
+// 必须实现 sdk.IMLoginProvider(否则 Web 面板扫码入口 503)。
+func TestChannelStatusImplementsLoginProvider(t *testing.T) {
+	var v any = imChannelStatus{tr: &wechatTransport{name: channelName}}
+	if _, ok := v.(sdk.IMLoginProvider); !ok {
+		t.Fatal("imChannelStatus 应实现 sdk.IMLoginProvider")
+	}
+	// 未登录态查询应返回 idle
+	st := imChannelStatus{tr: &wechatTransport{name: channelName}}.LoginState()
+	if st.Phase != "idle" {
+		t.Fatalf("未登录应 idle: %+v", st)
+	}
+}

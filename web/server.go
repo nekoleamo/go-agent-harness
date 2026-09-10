@@ -90,6 +90,7 @@ type Server struct {
 	jobs     sdk.JobService        // 可选(后台任务)
 	pm       sdk.PluginManager     // 可选(插件启停)
 	imc      sdk.IMChannelService  // 可选(IM 通道状态 /api/im/channels;未装配 503)
+	imLogin  sdk.IMLoginProvider  // 可选(面板扫码登录 /api/im/login;渠道未实现则 503)
 	sp       sdk.SystemPromptService // 可选(/reload 指令热更)
 	tc       sdk.TurnControl       // 可选(回合取消 /api/control cancel;未装配 = 503)
 
@@ -136,6 +137,9 @@ func (s *Server) Inject(c sdk.Ctx) error {
 	_ = c.Inject("ctx.jobs", &s.jobs)
 	_ = c.Inject("ctx.pluginManager", &s.pm)
 	_ = c.Inject("ctx.imChannels", &s.imc) // 可选:未装配则 /api/im/channels 503
+	if lp, ok := s.imc.(sdk.IMLoginProvider); ok {
+		s.imLogin = lp // 渠道实现扫码登录(如 ui-im-wechat)时启用面板入口
+	}
 	_ = c.Inject("ctx.systemPrompt", &s.sp)
 	_ = c.Inject("ctx.turnControl", &s.tc)
 	// running 状态:随 agent/status 事件驱动(回合开始 running,结束 idle)
@@ -210,6 +214,8 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET /api/backup", s.handleBackup)
 	mux.HandleFunc("POST /api/backup", s.handleBackup)
 	mux.HandleFunc("GET /api/im/channels", s.handleIMChannels)
+	mux.HandleFunc("POST /api/im/login", s.handleIMLogin)
+	mux.HandleFunc("GET /api/im/login/state", s.handleIMLoginState)
 	mux.HandleFunc("POST /api/question", s.handleQuestion)
 	mux.Handle("/ui-plugins/", s.uiPluginsHandler())
 	mux.Handle("/attachments/", s.attachmentsHandler())
