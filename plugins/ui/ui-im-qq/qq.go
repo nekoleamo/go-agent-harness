@@ -92,8 +92,9 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		baseURL: baseURL, tokenURL: tokenURL, lastError: "未配置(执行 /qq login)",
 		budget:  newActiveQuota(quotaPath()),
 		replies: make(map[string]*replyCtx), seq: make(map[string]uint64),
-		ledger:    newDeliveryLedger(outboxPath()),
-		remainder: make(map[string]string)}
+		ledger:     newDeliveryLedger(outboxPath()),
+		remainder:  make(map[string]string),
+		mediaInfos: map[string]mediaInfoEntry{}}
 	b := im.New(c, loop, sessions, tr, im.Options{
 		Mode:        mode,
 		Allow:       creds.Allow,  // 已授权用户持久恢复
@@ -275,23 +276,26 @@ type qqTransport struct {
 	tokenURL string
 	bridge   *im.Bridge
 
-	mu        sync.Mutex
-	gateway   *qqbot.Gateway
-	client    *qqbot.Client
-	stop      context.CancelFunc // gateway Run 取消
-	running   bool
-	lastError string
-	botOpenID string // READY d.user.id(群 @ 过滤:mentions 需含机器人)
-	replies   map[string]*replyCtx
-	seq       map[string]uint64   // ChatID → msg_seq(与 msg_id 联合幂等,自增)
-	typingCtl context.CancelFunc  // 回合中 input_notify 周期刷新控制器(回合结束取消)
-	budget    *activeQuota        // 主动消息配额记账(私信主动 2 条/天/用户;落盘重启不超发)
-	ledger    *deliveryLedger     // 滞留 ledger(落盘重启不丢;被动失效/频控/配额耗尽时暂存,下次入站补发)
-	remainder map[string]string   // chatID → 被截断的剩余文本(用户回 continue 时被动续发)
-	diagRing  []string            // 最近入站诊断(环形;/qq status 展示 + GAH_QQ_DEBUG=1 打 stderr)
-	gen       int64               // 网关世代号:start/stop 递增;旧 goroutine 收尾仅当同世代才改状态(防覆盖)
-	evCounts  map[string]int      // 事件类型计数(诊断:平台是否推事件——群@=0 即平台侧未推)
-	conn      sdk.IMConnectStatus // E0/E2:连接卡相位(表单校验中/失败原因)
+	mu         sync.Mutex
+	gateway    *qqbot.Gateway
+	client     *qqbot.Client
+	stop       context.CancelFunc // gateway Run 取消
+	running    bool
+	lastError  string
+	botOpenID  string // READY d.user.id(群 @ 过滤:mentions 需含机器人)
+	replies    map[string]*replyCtx
+	seq        map[string]uint64         // ChatID → msg_seq(与 msg_id 联合幂等,自增)
+	typingCtl  context.CancelFunc        // 回合中 input_notify 周期刷新控制器(回合结束取消)
+	budget     *activeQuota              // 主动消息配额记账(私信主动 2 条/天/用户;落盘重启不超发)
+	ledger     *deliveryLedger           // 滞留 ledger(落盘重启不丢;被动失效/频控/配额耗尽时暂存,下次入站补发)
+	remainder  map[string]string         // chatID → 被截断的剩余文本(用户回 continue 时被动续发)
+	diagRing   []string                  // 最近入站诊断(环形;/qq status 展示 + GAH_QQ_DEBUG=1 打 stderr)
+	gen        int64                     // 网关世代号:start/stop 递增;旧 goroutine 收尾仅当同世代才改状态(防覆盖)
+	evCounts   map[string]int            // 事件类型计数(诊断:平台是否推事件——群@=0 即平台侧未推)
+	conn       sdk.IMConnectStatus       // E0/E2:连接卡相位(表单校验中/失败原因)
+	mediaInfos map[string]mediaInfoEntry // MED-2:file_info 缓存(TTL 内复用,避免重复上传)
+	// mediaAPIOverride 仅测试注入(生产 nil → 用 client)。
+	mediaAPIOverride qqMediaAPI
 }
 
 // maskedSentinel 前端提交"未改动"密钥时的哨兵值(不回显明文,沿用已配置值)。

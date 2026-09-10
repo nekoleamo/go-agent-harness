@@ -87,10 +87,10 @@ func (s *TokenSource) fetchLocked(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("qqbot: 换取 access_token http %d: %s", resp.StatusCode, truncate(string(raw), 200))
 	}
 	var out struct {
-		AccessToken string `json:"access_token"`
+		AccessToken string  `json:"access_token"`
 		ExpiresIn   flexInt `json:"expires_in"` // 官方实际返回字符串 "7200"(见 flexint.go)
 		Code        flexInt `json:"code"`
-		Message     string `json:"message"`
+		Message     string  `json:"message"`
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return "", fmt.Errorf("qqbot: access_token 响应解码失败: %w", err)
@@ -180,7 +180,7 @@ func (c *Client) doRetry(ctx context.Context, path string, body any, allowRetry 
 	// 业务错误以 body {code,message} 返回;HTTP 429 视为频控(无 body 也归类)。
 	var biz struct {
 		Code    flexInt `json:"code"`
-		Message string `json:"message"`
+		Message string  `json:"message"`
 	}
 	if err := json.Unmarshal(raw, &biz); err == nil && biz.Code != 0 {
 		return &APIError{Code: int(biz.Code), Message: biz.Message}

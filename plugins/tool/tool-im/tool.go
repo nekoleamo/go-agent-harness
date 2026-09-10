@@ -18,8 +18,9 @@ import (
 
 // 工具名(审批名单与文档引用同一常量)。
 const (
-	ToolSend   = "im_send"
-	ToolStatus = "im_status"
+	ToolSend     = "im_send"
+	ToolSendFile = "im_send_file"
+	ToolStatus   = "im_status"
 )
 
 // maxSendRunes 单次投递文本上限(rune;通道分块由通道预算层负责,此处防滥用/误用)。
@@ -39,17 +40,26 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	if err := c.Inject("ctx.tools", &tools); err != nil {
 		return nil, err
 	}
-	// 审批链自检:启用但没有把 im_send 接入工具级审批 → 记警告(不静默假设安全)
-	if gate, ok := approvalGate(c); ok && !gate.RequiresToolApproval(ToolSend) {
-		c.Logger().Warn("tool-im: im_send 已启用但未接入工具级审批;"+
-			"建议在 policy-guard 的 data.approval_tools 加入 \""+ToolSend+"\"",
-			"hint", "approval_tools")
+	// 审批链自检:启用但没有把副作用工具接入工具级审批 → 记警告(不静默假设安全)
+	if gate, ok := approvalGate(c); ok {
+		var missing []string
+		for _, name := range []string{ToolSend, ToolSendFile} {
+			if !gate.RequiresToolApproval(name) {
+				missing = append(missing, name)
+			}
+		}
+		if len(missing) > 0 {
+			c.Logger().Warn("tool-im: 已启用但未接入工具级审批(远程副作用)",
+				"tools", strings.Join(missing, ","), "hint", "policy-guard data.approval_tools")
+		}
 	}
 	d1 := tools.Register(&sendTool{c: c})
 	d2 := tools.Register(&statusTool{c: c})
+	d3 := tools.Register(&sendFileTool{c: c})
 	return func() {
 		d1()
 		d2()
+		d3()
 	}, nil
 }
 
@@ -148,6 +158,77 @@ func (t *sendTool) Execute(ctx context.Context, argsJSON string) (any, error) {
 		"target": target,
 		"chars":  len([]rune(text)),
 		"note":   "已投递(通道分块/配额规则由渠道决定;IM 侧可见完整内容)",
+	}, nil
+}
+
+// sendFileTool im_send_file:把**工作区内**的文件/图片投递到已授权目标(MED-2)。
+// 安全:D2 口径——先登记(RegisterArtifact:工作区 realpath 校验 + 大小上限 + 单次可用),
+// 再按登记 id 投递;通道未实现出站媒体 → 显式错误。
+type sendFileTool struct{ c sdk.Ctx }
+
+func (t *sendFileTool) Definition() sdk.ToolDefinition {
+	return sdk.ToolDefinition{
+		Name: ToolSendFile,
+		Description: "把一个**工作区内**的文件(图片/文档)发送到已授权的 IM 用户或群。" +
+			"仅在用户明确要求「把这个文件发给我/发到群里」时使用;" +
+			"target 必须取自 im_status 的 targets[].key;路径必须是当前工作区内的常规文件," +
+			"且受大小上限与审批策略约束(未登记/越界/超限会被拒绝)。",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"target": map[string]any{
+					"type":        "string",
+					"description": "目标标识(取自 im_status 的 targets[].key)",
+				},
+				"path": map[string]any{
+					"type":        "string",
+					"description": "待发送文件路径(当前工作区内;可用相对路径)",
+				},
+			},
+			"required": []string{"target", "path"},
+		},
+	}
+}
+
+func (t *sendFileTool) Execute(ctx context.Context, argsJSON string) (any, error) {
+	var in struct {
+		Target string `json:"target"`
+		Path   string `json:"path"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &in); err != nil {
+		return nil, fmt.Errorf("%s: 参数解析失败: %w", ToolSendFile, err)
+	}
+	target := strings.TrimSpace(in.Target)
+	if target == "" {
+		return nil, fmt.Errorf("%s: target 不能为空(用 im_status 查看可投目标)", ToolSendFile)
+	}
+	path := strings.TrimSpace(in.Path)
+	if path == "" {
+		return nil, fmt.Errorf("%s: path 不能为空", ToolSendFile)
+	}
+	svc, err := control(t.c)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", ToolSendFile, err)
+	}
+	att, ok := svc.(sdk.IMAttachmentService)
+	if !ok {
+		return nil, fmt.Errorf("%s: 该渠道不支持出站文件", ToolSendFile)
+	}
+	art, err := att.RegisterArtifact(ctx, path)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", ToolSendFile, err)
+	}
+	if err := att.SendArtifact(ctx, target, art.ID); err != nil {
+		return nil, fmt.Errorf("%s: %w", ToolSendFile, err)
+	}
+	return map[string]any{
+		"ok":          true,
+		"target":      target,
+		"name":        art.Name,
+		"bytes":       art.Bytes,
+		"kind":        art.Kind,
+		"artifact_id": art.ID,
+		"note":        "已投递(受大小上限与渠道平台限制;失败会如实报错,可重试)",
 	}, nil
 }
 

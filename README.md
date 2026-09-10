@@ -105,7 +105,7 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 - **连接方式**:Web/桌面面板「IM 通道」(侧栏徽标显示连接状态)→ **微信**扫码登录(二维码过期**自动重取**,无需重按);**QQ** 填 AppID/AppSecret(**官方无扫码鉴权**)+ 即时校验 + 平台外链引导;密钥不回显(只显示尾号)、不落日志、写盘 0600。
 - **凭证落位**:`$GAH_HOME/config/ilink-wechat.yaml`(微信)/ `qqbot.yaml`(QQ),随 `gah-data/` 整体迁移。
 - **授权默认拒绝**:连接成功 ≠ 任何人可用,须 `/im pair` 配对码或 allowlist(群维度 `/im allowg`)。
-- **可选:让模型主动发消息**:`tool-im` 提供 `im_send`/`im_status`,**默认不注册**;启用 = 插件条目 `enabled: true` + `data.enabled: true`(并把 `im_send` 加进 `policy-guard` 的 `data.approval_tools` 以获得逐次确认)。目标只能是**已授权**用户/群,未授权目标显式拒绝。
+- **可选:让模型主动发消息/发文件**:`tool-im` 提供 `im_send`(文本)/`im_send_file`(工作区内文件,先登记后投递)/`im_status`,**默认不注册**;启用 = 插件条目 `enabled: true` + `data.enabled: true`(并把两个副作用工具加进 `policy-guard` 的 `data.approval_tools` 以获得逐次确认)。目标只能是**已授权**用户/群;文件必须位于当前工作区内且 ≤ `data.media_max_mb`(默认 20MB)。
 - **远程命令**:`/new` `/status` `/sessionlist` `/session` `/history` `/stop` `/bg` 等;长回合自动转后台并回推结果。
 
 ### 使用真实大模型
@@ -207,7 +207,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `subagent` | 子代理委派(delegate/spawn/agents/agent_status/agent_kill/send_message/fork;独立上下文 ReAct,后台带句柄) |
 | `list_skills` / `read_skill` | 技能索引 / 按需加载 SKILL.md(项目 `.gah/skills/`、`$GAH_HOME/skills/`) |
 | `mcp_<server>_<工具>` | MCP 桥工具(GAH_MCP_COMMAND 单 / GAH_MCP_COMMANDS 多 server,见「MCP 接入」) |
-| `im_send` / `im_status` | **默认关闭**:向**已授权**的 IM 用户/群发消息与查询可控状态(远程回执/通知);启用需 `tool-im` 的 `enabled: true` + `data.enabled: true`,并把 `im_send` 加入 `policy-guard` 的 `data.approval_tools`(smart 档逐次确认) |
+| `im_send` / `im_send_file` / `im_status` | **默认关闭**:向**已授权**的 IM 用户/群发消息、发**工作区内文件**(先登记后投递,大小上限 `data.media_max_mb` 默认 20MB)与查询可控状态;启用需 `tool-im` 的 `enabled: true` + `data.enabled: true`,并把 `im_send`/`im_send_file` 加入 `policy-guard` 的 `data.approval_tools`(smart 档逐次确认) |
 
 ## 六、Web 使用(设置面板/REST)
 

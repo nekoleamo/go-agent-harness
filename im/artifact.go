@@ -241,6 +241,7 @@ func (b *Bridge) SendArtifact(ctx context.Context, target, artifactID string) er
 	payload := MediaPayload{
 		ArtifactID: art.ID, Kind: art.Kind, Path: art.Path,
 		Name: art.Name, Mime: art.Mime, Size: art.Size,
+		TimeUnixNano: art.ModTime.UnixNano(),
 	}
 	if err := sender.SendMedia(ctx, route, payload); err != nil {
 		b.arts.restore(art) // 失败可重试(条目还原)

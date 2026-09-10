@@ -104,7 +104,7 @@ entries:
   - id: tool-im
     # G-E5-3:IM 远程工具(im_send/im_status)。**默认不注册**(enabled/data.enabled 双关);
     # 启用步骤(两处都改):① 本条目 enabled: true + data.enabled: true;
-    # ② 把 im_send 加入下方 policy-guard 的 data.approval_tools(否则 smart 档不会弹确认,
+    # ② 把 im_send / im_send_file 加入下方 policy-guard 的 data.approval_tools(否则 smart 档不会弹确认,
     #    此时插件会在启动日志告警)。目标仅限已授权用户/群(未授权显式拒绝)。
     enabled: false
     data:

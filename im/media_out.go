@@ -26,6 +26,8 @@ type MediaPayload struct {
 	Name       string // 对外文件名(通道展示用;非宿主绝对路径)
 	Mime       string
 	Size       int64
+	// TimeUnixNano 源文件 mtime(通道用于 file_info 缓存键;登记时确定,发送前已复核一致性)。
+	TimeUnixNano int64
 }
 
 // MediaSender 可选能力:通道支持出站媒体。

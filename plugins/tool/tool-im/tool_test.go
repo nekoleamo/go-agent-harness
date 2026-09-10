@@ -76,6 +76,67 @@ func toolsOf(t *testing.T, c sdk.Ctx) sdk.ToolRegistry {
 	return tools
 }
 
+// fakeAttach 同时实现 IMAttachmentService(用于 im_send_file)。
+type fakeAttach struct {
+	fakeControl
+	registered []string
+	sent       []string
+	regErr     error
+	sendErr    error
+}
+
+func (f *fakeAttach) RegisterArtifact(_ context.Context, path string) (sdk.IMArtifact, error) {
+	if f.regErr != nil {
+		return sdk.IMArtifact{}, f.regErr
+	}
+	f.registered = append(f.registered, path)
+	return sdk.IMArtifact{ID: "art-x", Name: "chart.png", Kind: "image", Bytes: 7}, nil
+}
+
+func (f *fakeAttach) SendArtifact(_ context.Context, target, id string) error {
+	if f.sendErr != nil {
+		return f.sendErr
+	}
+	f.sent = append(f.sent, target+"|"+id)
+	return nil
+}
+
+func TestSendFileTool(t *testing.T) {
+	att := &fakeAttach{}
+	c := build(t, map[string]any{"enabled": true}, att, nil)
+	tools := toolsOf(t, c)
+	if _, ok := tools.Get(ToolSendFile); !ok {
+		t.Fatal("im_send_file 应注册")
+	}
+	res, err := tools.Execute(context.Background(), ToolSendFile, `{"target":"u1","path":"out/chart.png"}`)
+	if err != nil || res.Error != "" || !strings.Contains(res.Content, `"ok":true`) {
+		t.Fatalf("投递应成功: err=%v res=%+v", err, res)
+	}
+	if len(att.registered) != 1 || att.registered[0] != "out/chart.png" {
+		t.Fatalf("应先登记路径: %+v", att.registered)
+	}
+	if len(att.sent) != 1 || att.sent[0] != "u1|art-x" {
+		t.Fatalf("应按登记 id 投递: %+v", att.sent)
+	}
+	// 参数校验 + 失败透传
+	for _, args := range []string{`{"path":"a.png"}`, `{"target":"u1"}`, `{}`, `{`} {
+		if r, err := tools.Execute(context.Background(), ToolSendFile, args); err == nil && r.Error == "" {
+			t.Fatalf("args=%s 不应成功", args)
+		}
+	}
+	att.regErr = context.Canceled
+	r2, _ := tools.Execute(context.Background(), ToolSendFile, `{"target":"u1","path":"a.png"}`)
+	if r2 == nil || !strings.Contains(r2.Error+r2.Content, ToolSendFile+":") {
+		t.Fatalf("登记失败应带工具名前缀: %+v", r2)
+	}
+	// 渠道不支持出站文件(仅实现 IMControlService)→ 显式错误
+	c2 := build(t, map[string]any{"enabled": true}, &fakeControl{}, nil)
+	r3, _ := toolsOf(t, c2).Execute(context.Background(), ToolSendFile, `{"target":"u1","path":"a.png"}`)
+	if r3 == nil || !strings.Contains(r3.Error+r3.Content, "不支持出站文件") {
+		t.Fatalf("未实现附件面应显式报错: %+v", r3)
+	}
+}
+
 func TestDefaultOffRegistersNothing(t *testing.T) {
 	for _, data := range []map[string]any{nil, {}, {"enabled": false}, {"enabled": "false"}} {
 		c := build(t, data, &fakeControl{}, nil)
@@ -85,6 +146,9 @@ func TestDefaultOffRegistersNothing(t *testing.T) {
 		}
 		if _, ok := tools.Get(ToolStatus); ok {
 			t.Fatalf("默认不应注册 im_status(data=%v)", data)
+		}
+		if _, ok := tools.Get(ToolSendFile); ok {
+			t.Fatalf("默认不应注册 im_send_file(data=%v)", data)
 		}
 	}
 }
