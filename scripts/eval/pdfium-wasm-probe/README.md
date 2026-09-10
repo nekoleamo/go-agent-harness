@@ -54,7 +54,30 @@ pdftoppm -png -r 144 -f 1 -l 1 big.pdf ref    # 页码 ≥10 时输出 ref-01.pn
 ```
 
 参数:`-scale`(1=72dpi,2≈144dpi)、`-pages`(渲染页数)、`-png`(首页写出 PNG)、
-`-diff`/`-diffimg`(与参考 PNG 逐像素对照:差异像素占比 / 最大通道差 / 墨迹量 / 差异包围盒 / 标红叠加图)。
+`-diff`/`-diffimg`(与参考 PNG 逐像素对照:差异像素占比 / 最大通道差 / 墨迹量 / 差异包围盒 / 标红叠加图)、
+`-poison`(毒化 `invoke_*` 返回值,检验其结果是否被使用)。
+
+## 二轮实测(2026-10-11):多构建对比 + `invoke_*` 毒化实验
+
+```bash
+# 候选 3:pdfium-lib 官方 release 的 wasm 包(含 STANDALONE_WASM 构建 pdfium.std.wasm)
+curl -sSL -o pdflib-wasm.zip https://github.com/paulocoutinhox/pdfium-lib/releases/download/8046d/wasm.zip
+unzip -q pdflib-wasm.zip -d pdflib     # release/node/pdfium.std.wasm(宿主面最小:19 导入)
+./probe -wasm pdflib/release/node/pdfium.std.wasm -init PDFium_Init -pdf big.pdf -scale 2 -pages 10
+
+# invoke_* 毒化:把 trampoline 返回值改成哨兵值,若输出不变即证明结果未被使用
+./probe -wasm <wasm> -init <fn> -pdf doc.pdf -scale 2 -pages 1 -png clean.png
+./probe -wasm <wasm> -init <fn> -pdf doc.pdf -scale 2 -pages 1 -png poison.png -poison -diff clean.png
+```
+
+| 构建 | raw | gz | 导入面 | 备注 |
+|---|---|---|---|---|
+| `@embedpdf/pdfium` 2.15.0 | 4.42 MiB | **2.03 MiB** | env 30 + wasi 7 = 37 | 需真 `_emscripten_memcpy_js`(413 次)/`resize_heap`(15 次) |
+| `@hyzyla/pdfium` 2.1.13 | 3.80 MiB | 1.92 MiB | env 23 + wasi 7 = 30 | `invoke_*` 最频繁(10 页 63 次) |
+| `pdfium-lib` 8046d normal | 5.05 MiB | 2.36 MiB | env 26 + wasi 7 = 33 | 含 `_tzset_js`/`_abort_js` |
+| `pdfium-lib` 8046d **std** | 5.06 MiB | 2.36 MiB | **env 11 + wasi 8 = 19** | 无 memcpy_js/无 resize_heap;invoke 5 个 |
+
+**结论**:① `invoke_*` 在 wazero **无法忠实实现**(公开 API 无 table/函数引用调用),`-sSTANDALONE_WASM=1` 也不能消除(实测仍有 5 个);② 但其返回值**未被使用** —— 毒化后逐像素相同(0 px;目标为未导出小函数 43/109/439 字节,发布版无 name 段);③ 两个独立构建(embedpdf vs pdfium-lib std)渲染结果 **0 px(maxΔ3)**,与 poppler 的 5.6% 差异来自 poppler 侧字形/AA 策略;④ 编译期内存是主要开销(探针进程峰值 RSS:256 MiB / 594 MiB),生产应把 wazero compilation cache 落盘摊销。
 
 ## 探针实现要点
 

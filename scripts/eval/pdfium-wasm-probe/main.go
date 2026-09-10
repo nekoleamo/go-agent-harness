@@ -15,6 +15,9 @@ import (
 	"math"
 	"os"
 	"runtime"
+	"sort"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -23,6 +26,9 @@ import (
 )
 
 var (
+	invokeMu       sync.Mutex
+	poisonInvoke   bool
+	invokeArgs     = map[uint32]int64{}
 	invokeCalls    int64
 	syscallCalls   int64
 	abortCalls     int64
@@ -42,7 +48,9 @@ func main() {
 	pngOut := flag.String("png", "", "首页渲染结果写出 PNG(用于与 pdftoppm 像素对照)")
 	diffRef := flag.String("diff", "", "与参考 PNG(如 pdftoppm 产出)做像素对照")
 	diffImg := flag.String("diffimg", "", "把差异像素标红后写出对照图")
+	poison := flag.Bool("poison", false, "把 invoke_* 返回值毒化(0xdeadbeef)以检验其结果是否被使用")
 	flag.Parse()
+	poisonInvoke = *poison
 
 	wasmBytes, err := os.ReadFile(*wasmPath)
 	if err != nil {
@@ -267,6 +275,18 @@ func main() {
 		atomic.LoadInt64(&invokeCalls), atomic.LoadInt64(&syscallCalls), atomic.LoadInt64(&abortCalls),
 		atomic.LoadInt64(&resizeCalls), atomic.LoadInt64(&resizeFailures), atomic.LoadInt64(&memcpyCalls),
 		atomic.LoadInt64(&dateCalls))
+	{
+		idxs := make([]uint32, 0, len(invokeArgs))
+		for k := range invokeArgs {
+			idxs = append(idxs, k)
+		}
+		sort.Slice(idxs, func(i, j int) bool { return invokeArgs[idxs[i]] > invokeArgs[idxs[j]] })
+		parts := make([]string, 0, len(idxs))
+		for _, k := range idxs {
+			parts = append(parts, fmt.Sprintf("#%d×%d", k, invokeArgs[k]))
+		}
+		fmt.Printf("invoke target table idx: %s\n", strings.Join(parts, " "))
+	}
 	if nonWhite == 0 {
 		fmt.Println("WARN 渲染结果全白(可能未真正绘制)")
 	} else {
@@ -284,7 +304,25 @@ func stubEnv(ctx context.Context, name string, stack []uint64, results []api.Val
 	switch {
 	case len(name) > 7 && name[:7] == "invoke_": // Emscripten JS 侧函数指针 trampoline
 		atomic.AddInt64(&invokeCalls, 1)
+		idx := uint32(stack[0]) // 第 1 参 = 函数表下标(Emscripten 约定)
+		invokeMu.Lock()
+		invokeArgs[idx]++
+		invokeMu.Unlock()
 		zero()
+		if poisonInvoke { // 毒化返回值:结果被使用时输出必变
+			for i, rt := range results {
+				switch rt {
+				case api.ValueTypeI32:
+					stack[i] = 0xdeadbeef
+				case api.ValueTypeI64:
+					stack[i] = 0xdeadbeefdeadbeef
+				case api.ValueTypeF32:
+					stack[i] = uint64(math.Float32bits(-1.5))
+				case api.ValueTypeF64:
+					stack[i] = math.Float64bits(-1.5)
+				}
+			}
+		}
 	case len(name) > 9 && name[:9] == "__syscall": // 文件系统类:纯内存渲染不应触达
 		atomic.AddInt64(&syscallCalls, 1)
 		zero()
