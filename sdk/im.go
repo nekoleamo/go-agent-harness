@@ -36,6 +36,26 @@ type IMLoginState struct {
 	Error  string `json:"error,omitempty"`
 }
 
+// IMGroupEntry 群维度授权条目(G-E5-2:Web 面板「群授权」区段/审计)。
+// ChatID 为裸群 openid(不带渠道前缀);LastSeen 零值 = 从未收到该群消息。
+type IMGroupEntry struct {
+	Channel    string    `json:"channel,omitempty"`
+	ChatID     string    `json:"chat_id"`
+	Authorized bool      `json:"authorized"`
+	LastSeen   time.Time `json:"last_seen,omitempty"`
+	Source     string    `json:"source,omitempty"` // both | authorized | seen
+	Stale      bool      `json:"stale,omitempty"`  // 已授权但长期无活动(提示可清理,不自动撤销)
+}
+
+// IMGroupAccessService 可选能力:群维度授权的列举与授权/撤销(实现方=im.Bridge;G-E5-2)。
+// 未实现 = 面板隐藏「群授权」区段(不静默假装支持)。
+type IMGroupAccessService interface {
+	// Groups 群列表(已授权 ∪ 最近活动;授权群优先,其余按最近活动倒序)。
+	Groups() []IMGroupEntry
+	// SetGroupAccess 授权(allow=true)/撤销(allow=false)一个群;空键/未知群撤销显式报错。
+	SetGroupAccess(chatID string, allow bool) error
+}
+
 // IMLoginProvider 可选能力:渠道支持从面板发起扫码登录(当前 ui-im-wechat;
 // QQ 用 AppID/AppSecret 配置,无扫码)。ctx.imChannels 实现方按需同时实现本接口,
 // web 层经类型断言发现(未实现 = 面板不显示登录入口)。

@@ -35,6 +35,7 @@
   --tool: #d97706;
   /* 语义 soft 系(浅背景/浅边框/深字):组件统一引用,不散写裸色值 */
   --ok-soft: #e6f6ee;
+  --ok-line: #b9e3cd;
   --err-soft: #fdf3f3;
   --err-line: #f3c1c2;
   --tool-soft: #fef6ec;

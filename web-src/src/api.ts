@@ -1,5 +1,5 @@
 // REST 客户端(上行)+ 工具函数。核心交互纯 REST,不绕模板渲染。
-import type { AttachmentView, CommandOptionsResp, CommandView, DocTree, DocView, IMChannelStatus, IMConnectSpec, IMConnectStatus, IMLoginQR, IMLoginState, Job, ModelsAllResp, PluginInfo, ProviderInfo, SessionInfo, StateView, WorkspaceInfo } from './types'
+import type { AttachmentView, CommandOptionsResp, CommandView, DocTree, DocView, IMChannelStatus, IMConnectSpec, IMConnectStatus, IMGroupsResp, IMLoginQR, IMLoginState, Job, ModelsAllResp, PluginInfo, ProviderInfo, SessionInfo, StateView, WorkspaceInfo } from './types'
 
 const BASE = ''
 const json = {
@@ -99,6 +99,13 @@ export const api = {
   },
   imConnectState(): Promise<IMConnectStatus> {
     return req('/api/im/connect/state')
+  },
+  // —— IM 群维度授权(G-E5-2:未装配 IMGroupAccessService → 503) ——
+  imGroups(): Promise<IMGroupsResp> {
+    return req('/api/im/groups')
+  },
+  imGroupSet(chatID: string, allow: boolean): Promise<IMGroupsResp> {
+    return req('/api/im/groups', { method: 'POST', headers: json, body: JSON.stringify({ chat_id: chatID, allow }) })
   },
   // —— 整体备份(M18) ——
   backups(): Promise<{ name: string; size: number; time: number }[]> {

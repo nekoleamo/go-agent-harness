@@ -236,6 +236,8 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `POST /api/attachments` + `GET /attachments/...` | Attachment upload (20MB / type allowlist) / static preview |
 | `POST /api/reload` | Instruction-file hot reload |
 | `POST /api/shutdown` | Graceful shutdown (→ system/shutdown → DisposeAll; reused by desktop/ops) |
+| `GET /api/im/connect/spec`, `POST /api/im/connect/start`, `POST /api/im/connect/submit`, `GET /api/im/connect/state` | IM connection: spec (QR/form) / start / submit form / status (phase changes also pushed as `im/connect` SSE events) |
+| `GET /api/im/groups`, `POST /api/im/groups` | IM per-group authorization: group list (authorized ∪ recently active, with last-seen and long-idle markers) / grant or revoke (`{chat_id, allow}`; revoking an unknown group → 422) |
 | `GET /api/ui-plugins` + `/ui-plugins/` | UI-plugin aggregate view / static hosting |
 | `GET /api/doc/preview` `raw` `asset` `tree` `html`, `POST /api/doc/render` | Document preview (block-model JSON) / raw bytes (Range, `dl=1` download) / embedded assets (MIME allow-list) / file tree / sandboxed HTML (CSP) / markdown text → block model |
 

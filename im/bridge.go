@@ -82,6 +82,13 @@ type questionWait struct {
 const dedupWindow = 5 * time.Minute
 const dedupCap = 1024
 
+// 群维度授权账本参数(G-E5-2)。
+const (
+	seenCap         = 20                  // 群活动记录容量上限
+	seenTTL         = 7 * 24 * time.Hour  // 群活动记录保留窗口(过期裁剪)
+	staleGroupAfter = 30 * 24 * time.Hour // 授权群长期无活动 → Stale 标记(仅提示,不自动撤销)
+)
+
 // New 构造桥。loop/sessions/tr 为必需依赖(插件壳装配时注入)。
 func New(c sdk.Ctx, loop sdk.AgentLoop, sessions sdk.SessionLog, tr Transport, opt Options) *Bridge {
 	o := defaultOptions()
@@ -715,23 +722,24 @@ func (b *Bridge) imCmd(ctx context.Context, args []string) string {
 		return "该群未授权: " + args[1]
 	case "list":
 		out := "已授权用户:\n" + strings.Join(b.acc.List(), "\n")
-		if gs := b.acc.Groups(); len(gs) > 0 {
-			// 群 key 形如 "qq\x00<群openid>";展示时剥渠道前缀
-			out += "\n已授权群:\n"
-			for _, g := range gs {
-				out += "  " + b.stripChan(g) + "\n"
+		// G-E5-2:群列表含 last-seen 与长期无活动标记(单一实现:Groups() 账本)
+		var authLines, pending []string
+		for _, g := range b.Groups() {
+			if g.Authorized {
+				line := "  " + g.ChatID
+				if !g.LastSeen.IsZero() {
+					line += "(最近活动 " + g.LastSeen.Format("01-02 15:04") + ")"
+				}
+				if g.Stale {
+					line += " [长期无活动]"
+				}
+				authLines = append(authLines, line)
+				continue
 			}
+			pending = append(pending, fmt.Sprintf("  %s(最近活动 %s)", g.ChatID, g.LastSeen.Format("15:04")))
 		}
-		// 最近活动群(未授权也列出 → 可直接 /im allowg 选择)
-		auth := make(map[string]bool)
-		for _, g := range b.acc.Groups() {
-			auth[b.stripChan(g)] = true
-		}
-		var pending []string
-		for _, g := range b.seenGroups() {
-			if !auth[g.chatID] {
-				pending = append(pending, fmt.Sprintf("  %s(最近活动 %s)", g.chatID, g.at.Format("15:04")))
-			}
+		if len(authLines) > 0 {
+			out += "\n已授权群:\n" + strings.Join(authLines, "\n")
 		}
 		if len(pending) > 0 {
 			out += "\n最近活动群(未授权;可 /im allowg 授权):\n" + strings.Join(pending, "\n")
@@ -1039,7 +1047,9 @@ func (b *Bridge) chanKey(chatID string) string {
 	return b.tr.Name() + "\x00" + chatID
 }
 
-// noteGroup 记录群活动(去重保序、最新在前、上限 20)。
+// noteGroup 记录群活动(去重保序、最新在前、上限 20;超 TTL 的旧记录按龄裁剪)。
+// G-E5-2 清理策略:活动记录会过期(默认 7 天),**授权名单不自动过期**——
+// 撤销只能显式(/im revokeg 或 Web 面板),避免“静默失效”造成意外拒绝。
 func (b *Bridge) noteGroup(chatID string) {
 	if chatID == "" {
 		return
@@ -1053,15 +1063,29 @@ func (b *Bridge) noteGroup(chatID string) {
 		}
 	}
 	b.seen = append([]seenGroup{{chatID: chatID, at: time.Now()}}, b.seen...)
-	if len(b.seen) > 20 {
-		b.seen = b.seen[:20]
+	if len(b.seen) > seenCap {
+		b.seen = b.seen[:seenCap]
 	}
+	b.pruneSeenLocked(time.Now())
 }
 
-// seenGroups 已知群快照(最新在前)。
+// pruneSeenLocked 裁剪超过 TTL 的群活动记录(调用方持锁)。
+func (b *Bridge) pruneSeenLocked(now time.Time) {
+	cut := now.Add(-seenTTL)
+	kept := b.seen[:0]
+	for _, g := range b.seen {
+		if g.at.After(cut) {
+			kept = append(kept, g)
+		}
+	}
+	b.seen = kept
+}
+
+// seenGroups 已知群快照(最新在前;读取时再裁一次 TTL,兼顧长时间无入站的进程)。
 func (b *Bridge) seenGroups() []seenGroup {
 	b.seenMu.Lock()
 	defer b.seenMu.Unlock()
+	b.pruneSeenLocked(time.Now())
 	return append([]seenGroup(nil), b.seen...)
 }
 

@@ -351,6 +351,20 @@ export interface IMConnectSpec {
   hint?: string
   action?: string
 }
+// 群维度授权条目(G-E5-2;Web 面板「群授权」区段)
+export interface IMGroupEntry {
+  channel?: string
+  chat_id: string
+  authorized: boolean
+  last_seen?: string // ISO8601;空 = 从未收到该群消息
+  source?: 'both' | 'authorized' | 'seen'
+  stale?: boolean // 已授权但长期无活动(提示可撤销,不自动撤销)
+}
+
+export interface IMGroupsResp {
+  groups: IMGroupEntry[]
+}
+
 export interface IMConnectStatus {
   channel: string
   phase: string

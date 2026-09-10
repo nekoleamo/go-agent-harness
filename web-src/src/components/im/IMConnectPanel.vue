@@ -1,10 +1,10 @@
 <script setup lang="ts">
 // IM 连接卡(E 组 E1/E2/E3):渠道按 kind 渲染「二维码卡」或「表单卡」。
 // 状态来自 SSE `imconnect` 帧(imstore;零高频轮询),动作走 REST;密钥永不回显。
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { api } from '../../api'
 import { imSpec, imStatus, phaseLabel, upsertIMStatus } from '../../imstore'
-import type { IMConnectField } from '../../types'
+import type { IMConnectField, IMGroupEntry } from '../../types'
 
 const busy = ref(false)
 const err = ref('')
@@ -76,12 +76,57 @@ function fieldHint(f: IMConnectField): string {
   return (f.mask ? '已配置 ' + f.mask : '已配置') + (f.help ? ' · ' + f.help : '')
 }
 
+// —— 群维度授权(仅已连接时展示;未装配 IMGroupAccessService → 区段隐藏)——
+const groups = ref<IMGroupEntry[]>([])
+const groupsOn = ref(false)
+const groupBusy = ref('')
+const groupErr = ref('')
+
+async function loadGroups(): Promise<void> {
+  try {
+    groups.value = (await api.imGroups()).groups || []
+    groupsOn.value = true
+  } catch {
+    groupsOn.value = false // 未装配/未连接:静默隐藏(不假装支持)
+  }
+}
+
+async function setGroup(g: IMGroupEntry): Promise<void> {
+  groupBusy.value = g.chat_id
+  groupErr.value = ''
+  try {
+    groups.value = (await api.imGroupSet(g.chat_id, !g.authorized)).groups || []
+  } catch (e) {
+    groupErr.value = (e as Error).message
+  } finally {
+    groupBusy.value = ''
+  }
+}
+
+// 最近活动时间(空 = 从未收到该群消息)
+function seenText(g: IMGroupEntry): string {
+  if (!g.last_seen || g.last_seen.startsWith('0001-')) return '无活动记录'
+  const t = new Date(g.last_seen)
+  if (Number.isNaN(t.getTime())) return '无活动记录'
+  return '最近活动 ' + t.toLocaleString()
+}
+
 let timer: ReturnType<typeof setInterval> | null = null
 onMounted(async () => {
   await refresh()
   initForm()
+  if (connected.value) await loadGroups()
   // 兜底低频轮询(主路径是 SSE imconnect 帧;5s 仅防事件丢失)
   timer = setInterval(() => void refresh(), 5000)
+})
+
+// 连接成功后才列群授权(未连接时群列表无意义)
+watch(connected, (on) => {
+  if (on) void loadGroups()
+  else {
+    groups.value = []
+    groupsOn.value = false
+  }
 })
 onUnmounted(() => {
   if (timer) clearInterval(timer)
@@ -146,6 +191,30 @@ onUnmounted(() => {
     </div>
 
     <div v-else class="imc-note">该渠道不支持面板连接配置(请用通道命令)。</div>
+
+    <!-- 群维度授权(G-E5-2):已授权 ∪ 最近活动群;授权/撤销显式操作 -->
+    <div v-if="groupsOn" class="imc-groups">
+      <div class="gt">
+        <span>群授权</span>
+        <button class="btn tiny" :disabled="!!groupBusy" @click="loadGroups">刷新</button>
+      </div>
+      <div v-if="groupErr" class="imc-status err">{{ groupErr }}</div>
+      <ul v-if="groups.length" class="glist">
+        <li v-for="g in groups" :key="g.chat_id" class="gitem">
+          <span class="gid mono" :title="g.chat_id">{{ g.chat_id }}</span>
+          <span class="gmeta">
+            <span v-if="g.authorized" class="tag on">已授权<span v-if="g.stale"> · 长期无活动</span></span>
+            <span v-else class="tag">未授权</span>
+            <span class="gseen">{{ seenText(g) }}</span>
+          </span>
+          <button class="btn tiny" :disabled="groupBusy === g.chat_id" @click="setGroup(g)">
+            {{ g.authorized ? '撤销' : '授权' }}
+          </button>
+        </li>
+      </ul>
+      <div v-else class="imc-note">暂无群记录(群内 @ 机器人后出现;授权后群内成员免各自配对)。</div>
+      <div class="imc-note">授权名单不自动过期;活动记录保留 7 天。</div>
+    </div>
   </div>
 </template>
 
@@ -249,6 +318,76 @@ onUnmounted(() => {
 .btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+.btn.tiny {
+  font-size: 11.5px;
+  padding: 2px 8px;
+}
+.imc-groups {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.imc-groups .gt {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.glist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.gitem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-input);
+  padding: 5px 8px;
+}
+.gid {
+  font-size: 11.5px;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gmeta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  min-width: 0;
+}
+.tag {
+  font-size: 11px;
+  color: var(--fg-dim);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 1px 6px;
+  flex-shrink: 0;
+}
+.tag.on {
+  color: var(--ok);
+  border-color: var(--ok-line);
+  background: var(--ok-soft);
+}
+.gseen {
+  font-size: 11px;
+  color: var(--fg-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .link {
   color: var(--accent);

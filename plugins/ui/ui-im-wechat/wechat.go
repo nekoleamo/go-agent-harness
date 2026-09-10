@@ -249,6 +249,22 @@ func (a imChannelStatus) StartLogin(ctx context.Context) (sdk.IMLoginQR, error) 
 // LoginState sdk.IMLoginProvider 转发。
 func (a imChannelStatus) LoginState() sdk.IMLoginState { return a.tr.LoginState() }
 
+// Groups sdk.IMGroupAccessService 转发(G-E5-2:Web 面板「群授权」区段)。
+func (a imChannelStatus) Groups() []sdk.IMGroupEntry {
+	if a.bridge == nil {
+		return nil
+	}
+	return a.bridge.Groups()
+}
+
+// SetGroupAccess sdk.IMGroupAccessService 转发(授权/撤销一个群;未知群撤销显式报错)。
+func (a imChannelStatus) SetGroupAccess(chatID string, allow bool) error {
+	if a.bridge == nil {
+		return fmt.Errorf("im: 桥未装配")
+	}
+	return a.bridge.SetGroupAccess(chatID, allow)
+}
+
 // Disconnect sdk.IMDisconnectProvider 转发(E3-R /im logout)。
 func (a imChannelStatus) Disconnect(context.Context) error { return a.tr.disconnect() }
 
