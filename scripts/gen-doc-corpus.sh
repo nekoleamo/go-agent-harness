@@ -8,6 +8,8 @@
 #   - textutil(macOS):HTML → docx/odt/rtf/doc(Apple OOXML 写出器,独立实现)
 #   - cupsfilter(macOS):txt → pdf(CUPS texttopdf 滤镜,独立实现)
 #   - 系统真实 PDF:Homebrew 测试夹具 / CoreSimulator 设备 PDF(存在才拷)
+#   - 高级特性 xlsx(图表/透视/批注/内嵌图/文本框):本机无 xlsx 生产者,由
+#     scripts/gen-xlsx-advanced.py 以**纯标准库手工构造 OOXML** 补位(D6-3 判定件)
 #
 # 用法:
 #   bash scripts/gen-doc-corpus.sh [目标目录] [额外真实文件或目录 ...]
@@ -77,6 +79,19 @@ for src in \
     made=$((made+1))
   fi
 done
+
+# —— 3b) 高级特性 xlsx(D6-3 判定件;本机无 xlsx 生产者 → 纯标准库手工构造 OOXML) ——
+#   性质:合成容器(非第三方生产者输出),只用于驱动特性探针/抽取路径,见脚本头部说明。
+if command -v python3 >/dev/null 2>&1; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  if python3 "$SCRIPT_DIR/gen-xlsx-advanced.py" "$OUT"; then
+    made=$((made+3))
+  else
+    echo "  失败: gen-xlsx-advanced.py"
+  fi
+else
+  skip "python3 不存在(无法生成高级特性 xlsx)"
+fi
 
 # —— 4) 额外真实文档(用户/项目交付物;目录则递归) ——
 for extra in "$@"; do

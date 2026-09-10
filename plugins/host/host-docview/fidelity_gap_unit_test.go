@@ -54,19 +54,23 @@ func gapOf(t *testing.T, format sdk.DocFormat, files map[string]string) map[stri
 
 func TestGapProbeXLSX(t *testing.T) {
 	g := gapOf(t, sdk.DocFormatXLSX, map[string]string{
-		"[Content_Types].xml":                     `<Types/>`,
-		"xl/sharedStrings.xml":                    `<sst><si><t>a</t></si><si><r><t>b</t></r><r><t>c</t></r></si></sst>`,
-		"xl/worksheets/sheet1.xml":                `<worksheet><mergeCells><mergeCell ref="A1:B1"/></mergeCells><row r="1" hidden="1"><c r="A1"><f>SUM(B1:B2)</f><v>3</v></c></row><autoFilter ref="A1:B2"/><conditionalFormatting sqref="A1"/><dataValidation/></worksheet>`,
-		"xl/charts/chart1.xml":                    `<chart/>`,
-		"xl/pivotCache/pivotCacheDefinition1.xml": `<pivotCacheDefinition/>`,
-		"xl/comments1.xml":                        `<comments/>`,
-		"xl/media/image1.png":                     "PNG",
-		"xl/tables/table1.xml":                    `<table/>`,
+		"[Content_Types].xml":                      `<Types/>`,
+		"xl/sharedStrings.xml":                     `<sst><si><t>a</t></si><si><r><t>b</t></r><r><t>c</t></r></si></sst>`,
+		"xl/worksheets/sheet1.xml":                 `<worksheet><mergeCells><mergeCell ref="A1:B1"/></mergeCells><row r="1" hidden="1"><c r="A1"><f>SUM(B1:B2)</f><v>3</v></c></row><autoFilter ref="A1:B2"/><conditionalFormatting sqref="A1"/><dataValidation/></worksheet>`,
+		"xl/charts/chart1.xml":                     `<chart/>`,
+		"xl/pivotCache/pivotCacheDefinition1.xml":  `<pivotCacheDefinition/>`,
+		"xl/comments1.xml":                         `<comments/>`,
+		"xl/media/image1.png":                      "PNG",
+		"xl/tables/table1.xml":                     `<table/>`,
+		"xl/threadedComments/threadedComment1.xml": `<ThreadedComments><threadedComment ref="B2"><text>请复核</text></threadedComment></ThreadedComments>`,
+		"xl/drawings/drawing1.xml":                 `<xdr:wsDr><xdr:sp><xdr:txBody><a:p><a:r><a:t>文本框说明</a:t></a:r></a:p></xdr:txBody></xdr:sp></xdr:wsDr>`,
+		"xl/persons/person.xml":                    `<personList/>`, // 仅元数据,不该单独计入内容缺口
 	})
 	want := map[string]string{
 		"richTextCell": gapStyle, "conditionalFormatting": gapStyle, "dataValidation": gapStyle,
 		"autoFilter": gapStyle, "tableObject": gapStyle,
 		"chart": gapContent, "pivotTable": gapContent, "comments": gapContent, "image": gapContent,
+		"threadedComments": gapContent, "textBox": gapContent,
 		"formula": gapInfo, "hiddenRowCol": gapInfo, "mergeCell": gapInfo,
 	}
 	if len(g) != len(want) {
@@ -86,6 +90,18 @@ func TestGapProbeXLSX(t *testing.T) {
 	}
 	if g["mergeCell"].Ours != "supported" {
 		t.Fatalf("mergeCell 应标注 supported: %+v", g["mergeCell"])
+	}
+	if g["threadedComments"].Hits != 1 || g["textBox"].Hits != 1 {
+		t.Fatalf("现代批注/文本框应各计 1 次: %+v %+v", g["threadedComments"], g["textBox"])
+	}
+	if _, ok := g["person"]; ok {
+		t.Fatal("persons 仅元数据,不应单独报缺口")
+	}
+	// 表格线/普通 drawing(无 txBody)不该误报文本框
+	if g3 := gapOf(t, sdk.DocFormatXLSX, map[string]string{
+		"xl/drawings/drawing1.xml": `<xdr:wsDr><xdr:twoCellAnchor/></xdr:wsDr>`,
+	}); len(g3) != 0 {
+		t.Fatalf("无文本框的 drawing 不应报缺口: %v", keysOf(g3))
 	}
 	// 无高级特性 → 无报告
 	if g2 := gapOf(t, sdk.DocFormatXLSX, map[string]string{"xl/worksheets/sheet1.xml": `<worksheet><row r="1"><c r="A1"><v>1</v></c></row></worksheet>`}); len(g2) != 0 {

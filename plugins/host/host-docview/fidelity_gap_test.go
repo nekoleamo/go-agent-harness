@@ -151,6 +151,23 @@ func gapProbes(format sdk.DocFormat) []gapProbe {
 			{feature: "comments", severity: gapContent, ours: "absent", match: func(e map[string][]byte) []gapHit {
 				return nameHits(e, "xl/comments")
 			}},
+			// 现代「回复式批注」(Excel 2018+/WPS):与 legacy 批注同为独立部件承载,文字只在那里
+			{feature: "threadedComments", severity: gapContent, ours: "absent", match: func(e map[string][]byte) []gapHit {
+				return nameHits(e, "xl/threadedComments")
+			}},
+			// xlsx 文本框:文字只在 drawing 的 xdr:txBody 里(单元格中不存在)
+			{feature: "textBox", severity: gapContent, ours: "absent", match: func(e map[string][]byte) []gapHit {
+				var out []gapHit
+				for name, b := range e {
+					if !strings.Contains(name, "xl/drawings/") || !strings.HasSuffix(name, ".xml") {
+						continue
+					}
+					if n := len(regexp.MustCompile(`<xdr:txBody`).FindAllIndex(b, -1)); n > 0 {
+						out = append(out, gapHit{Part: name, Count: n})
+					}
+				}
+				return out
+			}},
 			{feature: "image", severity: gapContent, ours: "absent", match: func(e map[string][]byte) []gapHit {
 				return nameHits(e, "xl/media/")
 			}},
