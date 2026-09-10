@@ -153,8 +153,15 @@ func TestGapProbeDOCXSeverityByPart(t *testing.T) {
 		"word/header2.xml":        `<w:hdr><w:tbl><w:tbl><w:t>x</w:t></w:tbl></w:tbl></w:hdr>`,
 		"word/footnotes.xml":      `<w:footnotes><w:ins ><w:t>f</w:t></w:ins></w:footnotes>`,
 	})
-	if g4["chart"].Severity != gapContent || g4["smartArt"].Severity != gapContent {
-		t.Fatalf("正文图表/SmartArt 应报内容级: %+v %+v", g4["chart"], g4["smartArt"])
+	// DOC-3c 后:图表数据/ SmartArt 文字已提取 → info(不再是内容级缺口)
+	if g4["chart"].Severity != gapInfo || g4["smartArt"].Severity != gapInfo {
+		t.Fatalf("图表/SmartArt 应为 info: %+v %+v", g4["chart"], g4["smartArt"])
+	}
+	// 回归:docx 探测表不应再出现 content 档
+	for _, pr := range gapProbes(sdk.DocFormatDOCX) {
+		if pr.severity == gapContent {
+			t.Fatalf("docx 不应再有 content 档特性: %s", pr.feature)
+		}
 	}
 	if g4["trackedChanges"].Severity != gapInfo {
 		t.Fatalf("脚注内修订应降级: %+v", g4["trackedChanges"])
@@ -180,13 +187,21 @@ func TestGapProbePPTXAndSummary(t *testing.T) {
 		"ppt/embeddings/oleObject1.bin":   "BIN",
 		"ppt/media/image1.png":            "PNG",
 	})
+	// DOC-3c 后:图表/SmartArt 降为 info;仍为 content 的只有组合形状(视觉)与内嵌表(未解包)
 	for feat, sev := range map[string]string{
-		"groupedShape": gapContent, "chart": gapContent, "smartArt": gapContent, "embeddedSheet": gapContent,
+		"groupedShape": gapContent, "embeddedSheet": gapContent,
+		"chart": gapInfo, "smartArt": gapInfo,
 		"notes": gapInfo, "animation": gapInfo, "image": gapInfo,
 	} {
 		f, ok := g[feat]
 		if !ok || f.Severity != sev {
 			t.Fatalf("%s 应报 %s,得 %+v", feat, sev, f)
+		}
+	}
+	// 回归:pptx 剩余 content 档仅限组合形状与内嵌表(已登记接受/待办)
+	for _, pr := range gapProbes(sdk.DocFormatPPTX) {
+		if pr.severity == gapContent && pr.feature != "groupedShape" && pr.feature != "embeddedSheet" {
+			t.Fatalf("pptx 未预期的 content 档特性: %s", pr.feature)
 		}
 	}
 	// 汇总摘要:只列命中档位

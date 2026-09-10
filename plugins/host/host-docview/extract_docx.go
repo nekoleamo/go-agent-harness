@@ -164,7 +164,7 @@ func extractDOCX(ctx context.Context, s *Service, abs string, fi os.FileInfo, re
 
 	// DOC-3a:批注(legacy + 回复式)与文本框(此前静默丢失)。
 	// 须在 o.warnings 汇总**之前**调用:内部经 o.addWarning 记的告警需一并收进 v.Warnings。
-	extra, xwarns := docxAnnotations(o, main)
+	extra, xwarns := docxAnnotations(s, o, main)
 	v.Blocks = append(p.blocks, extra...)
 	v.Truncated = append(v.Truncated, p.truncated...)
 	v.Warnings = append(v.Warnings, xwarns...)

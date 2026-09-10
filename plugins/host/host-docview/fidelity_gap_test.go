@@ -203,9 +203,10 @@ func gapProbes(format sdk.DocFormat) []gapProbe {
 			// DOC-3a 已交付:正文文本框文字进 note 块(页眉/页脚内的由 headerFooter 告警覆盖,同为 info)
 			{feature: "textBox", severity: gapInfo, ours: "supported",
 				match: func(e map[string][]byte) []gapHit { return contentHits(e, `<w:txbxContent`) }},
-			{feature: "chart", severity: gapContent, ours: "absent", severityFor: downgradeAux(gapContent),
+			// DOC-3c 已交付:图表缓存数据 → 表格块;SmartArt 文字 → note(视觉版式仍不做)
+			{feature: "chart", severity: gapInfo, ours: "supported",
 				match: func(e map[string][]byte) []gapHit { return nameHits(e, "word/charts/") }},
-			{feature: "smartArt", severity: gapContent, ours: "absent", severityFor: downgradeAux(gapContent),
+			{feature: "smartArt", severity: gapInfo, ours: "supported",
 				match: func(e map[string][]byte) []gapHit { return nameHits(e, "word/diagrams/") }},
 			{feature: "field", severity: gapInfo, ours: "absent", severityFor: downgradeAux(gapInfo),
 				match: func(e map[string][]byte) []gapHit { return contentHits(e, `<w:fldSimple|<w:instrText`) }},
@@ -225,10 +226,11 @@ func gapProbes(format sdk.DocFormat) []gapProbe {
 			{feature: "notes", severity: gapInfo, ours: "supported", match: func(e map[string][]byte) []gapHit {
 				return nameHits(e, "ppt/notesSlides/")
 			}},
-			{feature: "chart", severity: gapContent, ours: "absent", match: func(e map[string][]byte) []gapHit {
+			// DOC-3c 已交付:图表缓存数据 → 表格块;SmartArt 文字 → note
+			{feature: "chart", severity: gapInfo, ours: "supported", match: func(e map[string][]byte) []gapHit {
 				return nameHits(e, "ppt/charts/")
 			}},
-			{feature: "smartArt", severity: gapContent, ours: "absent", match: func(e map[string][]byte) []gapHit {
+			{feature: "smartArt", severity: gapInfo, ours: "supported", match: func(e map[string][]byte) []gapHit {
 				return nameHits(e, "ppt/diagrams/")
 			}},
 			{feature: "groupedShape", severity: gapContent, ours: "absent", match: func(e map[string][]byte) []gapHit {

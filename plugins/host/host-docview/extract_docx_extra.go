@@ -32,8 +32,8 @@ type docxComment struct {
 	ParentID string // 由 commentsExtended.xml 回填
 }
 
-// docxAnnotations 抽取正文批注(legacy + 回复式)与文本框;返回追加块与警告。
-func docxAnnotations(o *ooxml, mainPart string) ([]sdk.DocBlock, []string) {
+// docxAnnotations 抽取正文批注(legacy + 回复式)、文本框与图形内容(图表数据/SmartArt 文字)。
+func docxAnnotations(s *Service, o *ooxml, mainPart string) ([]sdk.DocBlock, []string) {
 	var blocks []sdk.DocBlock
 	var warns []string
 
@@ -73,6 +73,11 @@ func docxAnnotations(o *ooxml, mainPart string) ([]sdk.DocBlock, []string) {
 	for _, t := range texts {
 		blocks = append(blocks, sdk.DocBlock{Kind: sdk.DocBlockNote, Text: "文本框: " + t})
 	}
+
+	// ③ DOC-3c:图表缓存数据(表格块)与 SmartArt 文字(note)
+	gblocks, gwarns := officeGraphicsBlocks(s, o, mainPart, "word/charts/", "word/diagrams/")
+	blocks = append(blocks, gblocks...)
+	warns = append(warns, gwarns...)
 	return blocks, warns
 }
 

@@ -211,6 +211,16 @@ func (p *pptxParser) parseSlide(ctx context.Context, part string, no int) {
 			p.addBlock(sdk.DocBlock{Kind: sdk.DocBlockNote, Text: fmt.Sprintf("备注(第 %d 张): %s", no, text)})
 		}
 	}
+	// DOC-3c:图表缓存数据(表格块)与 SmartArt 文字(note)
+	if gblocks, gwarns := officeGraphicsBlocks(p.s, p.o, part, "ppt/charts/", "ppt/diagrams/"); len(gblocks) > 0 || len(gwarns) > 0 {
+		for _, b := range gblocks {
+			b.Page = no
+			p.addBlock(b)
+		}
+		for _, w := range gwarns {
+			p.o.addWarning(fmt.Sprintf("第 %d 张:%s", no, w))
+		}
+	}
 	// 标题占位继承(仅标题):本张无标题时回退布局/母版
 	if p.v.Title == "" {
 		if t := p.inheritedTitle(part); t != "" {
