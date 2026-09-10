@@ -86,35 +86,42 @@ func (f *Fusion) QuestionChannels() []string {
 }
 
 // Ask sdk.QuestionService:广播提问给全部渠道,首答生效;无渠道显式报错(不静默假答)。
+// 事件化:补齐 Question.ID(事件与各端弹层共用同一 id)→ 广播 requested → resolved(带胜出渠道)。
 func (f *Fusion) Ask(ctx context.Context, q sdk.Question) (sdk.QuestionAnswer, error) {
+	if q.ID == "" {
+		q.ID = sdk.NewQuestionID()
+	}
 	f.emit(sdk.EventQuestionRequested, &sdk.QuestionEvent{Question: q})
-	ans, err := f.askInner(ctx, q)
-	f.emit(sdk.EventQuestionResolved, &sdk.QuestionEvent{Question: q, Answer: ans, Resolved: true, Err: errStr(err)})
+	ans, channel, err := f.askInner(ctx, q)
+	f.emit(sdk.EventQuestionResolved, &sdk.QuestionEvent{
+		Question: q, Answer: ans, Resolved: true, Channel: channel, Err: errStr(err),
+	})
 	return ans, err
 }
 
-// askInner 广播提问与竞速作答(事件包裹在 Ask)。
-func (f *Fusion) askInner(ctx context.Context, q sdk.Question) (sdk.QuestionAnswer, error) {
+// askInner 广播提问与竞速作答(事件包裹在 Ask);返回胜出渠道名(供事件审计)。
+func (f *Fusion) askInner(ctx context.Context, q sdk.Question) (sdk.QuestionAnswer, string, error) {
 	f.mu.Lock()
-	presenters := make([]sdk.QuestionPresenter, 0, len(f.questioners))
-	for _, p := range f.questioners {
-		presenters = append(presenters, p)
+	presenters := make([]namedQuestioner, 0, len(f.questioners))
+	for name, p := range f.questioners {
+		presenters = append(presenters, namedQuestioner{name: name, p: p})
 	}
 	f.mu.Unlock()
 	if len(presenters) == 0 {
-		return sdk.QuestionAnswer{}, fmt.Errorf("question: 无提问渠道(未注册 UI 呈现者)")
+		return sdk.QuestionAnswer{}, "", fmt.Errorf("question: 无提问渠道(未注册 UI 呈现者)")
 	}
 	type active struct {
+		name   string
 		ch     <-chan sdk.QuestionAnswer
 		cancel func()
 	}
 	var cases []active
-	for _, p := range presenters {
-		ch, cancel, err := p.PresentQuestion(ctx, q)
+	for _, np := range presenters {
+		ch, cancel, err := np.p.PresentQuestion(ctx, q)
 		if err != nil || ch == nil {
 			continue
 		}
-		cases = append(cases, active{ch: ch, cancel: cancel})
+		cases = append(cases, active{name: np.name, ch: ch, cancel: cancel})
 	}
 	defer func() {
 		for _, c := range cases {
@@ -122,17 +129,21 @@ func (f *Fusion) askInner(ctx context.Context, q sdk.Question) (sdk.QuestionAnsw
 		}
 	}()
 	if len(cases) == 0 {
-		return sdk.QuestionAnswer{}, fmt.Errorf("question: 全部渠道呈现失败")
+		return sdk.QuestionAnswer{}, "", fmt.Errorf("question: 全部渠道呈现失败")
 	}
 	if len(cases) == 1 {
 		select {
 		case a := <-cases[0].ch:
-			return a, nil
+			return a, cases[0].name, nil
 		case <-ctx.Done():
-			return sdk.QuestionAnswer{}, ctx.Err()
+			return sdk.QuestionAnswer{}, "", ctx.Err()
 		}
 	}
-	merged := make(chan sdk.QuestionAnswer, 1)
+	type won struct {
+		ans  sdk.QuestionAnswer
+		name string
+	}
+	merged := make(chan won, 1)
 	done := make(chan struct{})
 	var wg sync.WaitGroup
 	wg.Add(len(cases))
@@ -142,7 +153,7 @@ func (f *Fusion) askInner(ctx context.Context, q sdk.Question) (sdk.QuestionAnsw
 			select {
 			case a := <-ac.ch:
 				select {
-				case merged <- a:
+				case merged <- won{ans: a, name: ac.name}:
 				default:
 				}
 			case <-done:
@@ -152,11 +163,17 @@ func (f *Fusion) askInner(ctx context.Context, q sdk.Question) (sdk.QuestionAnsw
 	go func() { wg.Wait(); close(merged) }()
 	defer close(done)
 	select {
-	case a := <-merged:
-		return a, nil
+	case w := <-merged:
+		return w.ans, w.name, nil
 	case <-ctx.Done():
-		return sdk.QuestionAnswer{}, ctx.Err()
+		return sdk.QuestionAnswer{}, "", ctx.Err()
 	}
+}
+
+// namedQuestioner 渠道名 + 呈现者(注册表值拷贝,事件审计用)。
+type namedQuestioner struct {
+	name string
+	p    sdk.QuestionPresenter
 }
 
 // Register 注册渠道呈现者(Disposer 幂等撤销)。
@@ -193,8 +210,10 @@ func (f *Fusion) Channels() []string {
 // 无已注册渠道显式报错(策略侧应安全拒绝,不静默放行);ctx 取消按拒绝处理。
 func (f *Fusion) Confirm(ctx context.Context, prompt string) (bool, error) {
 	f.emit(sdk.EventConfirmRequested, &sdk.ConfirmEvent{Prompt: prompt})
-	ok, err := f.confirmInner(ctx, prompt)
-	f.emit(sdk.EventConfirmResolved, &sdk.ConfirmEvent{Prompt: prompt, OK: ok, Resolved: true, Err: errStr(err)})
+	ok, channel, err := f.confirmInner(ctx, prompt)
+	f.emit(sdk.EventConfirmResolved, &sdk.ConfirmEvent{
+		Prompt: prompt, OK: ok, Resolved: true, Channel: channel, Err: errStr(err),
+	})
 	return ok, err
 }
 
@@ -206,29 +225,30 @@ func errStr(err error) string {
 	return err.Error()
 }
 
-// confirmInner 呈现与竞速应答(事件包裹在 Confirm)。
-func (f *Fusion) confirmInner(ctx context.Context, prompt string) (bool, error) {
+// confirmInner 呈现与竞速应答(事件包裹在 Confirm);返回胜出渠道名(供事件审计)。
+func (f *Fusion) confirmInner(ctx context.Context, prompt string) (bool, string, error) {
 	f.mu.Lock()
-	presenters := make([]sdk.ConfirmPresenter, 0, len(f.presenters))
-	for _, p := range f.presenters {
-		presenters = append(presenters, p)
+	presenters := make([]namedConfirmer, 0, len(f.presenters))
+	for name, p := range f.presenters {
+		presenters = append(presenters, namedConfirmer{name: name, p: p})
 	}
 	f.mu.Unlock()
 	if len(presenters) == 0 {
-		return false, context.Canceled // 无确认通道:按取消(拒绝)处理
+		return false, "", context.Canceled // 无确认通道:按取消(拒绝)处理
 	}
 	// 每渠道一次 Present(prompt);失败渠道跳过(其 UI 不可用)
 	type active struct {
+		name   string
 		ch     <-chan bool
 		cancel func()
 	}
 	var cases []active
-	for _, p := range presenters {
-		ch, cancel, err := p.Present(ctx, prompt)
+	for _, np := range presenters {
+		ch, cancel, err := np.p.Present(ctx, prompt)
 		if err != nil || ch == nil {
 			continue
 		}
-		cases = append(cases, active{ch: ch, cancel: cancel})
+		cases = append(cases, active{name: np.name, ch: ch, cancel: cancel})
 	}
 	defer func() { // 结束路径统一清理各渠道呈现(幂等)
 		for _, c := range cases {
@@ -236,18 +256,22 @@ func (f *Fusion) confirmInner(ctx context.Context, prompt string) (bool, error) 
 		}
 	}()
 	if len(cases) == 0 {
-		return false, context.Canceled
+		return false, "", context.Canceled
 	}
 	// 竞速:任一渠道应答即返回(先答先得;多于一个渠道合并监听)
 	if len(cases) == 1 {
 		select {
 		case ok := <-cases[0].ch:
-			return ok, nil
+			return ok, cases[0].name, nil
 		case <-ctx.Done():
-			return false, ctx.Err()
+			return false, "", ctx.Err()
 		}
 	}
-	merged := make(chan bool, 1)
+	type won struct {
+		ok   bool
+		name string
+	}
+	merged := make(chan won, 1)
 	done := make(chan struct{})
 	var wg sync.WaitGroup
 	wg.Add(len(cases))
@@ -257,7 +281,7 @@ func (f *Fusion) confirmInner(ctx context.Context, prompt string) (bool, error) 
 			select {
 			case ok := <-ac.ch:
 				select {
-				case merged <- ok:
+				case merged <- won{ok: ok, name: ac.name}:
 				default:
 				}
 			case <-done:
@@ -267,9 +291,15 @@ func (f *Fusion) confirmInner(ctx context.Context, prompt string) (bool, error) 
 	go func() { wg.Wait(); close(merged) }()
 	defer close(done)
 	select {
-	case ok := <-merged:
-		return ok, nil
+	case w := <-merged:
+		return w.ok, w.name, nil
 	case <-ctx.Done():
-		return false, ctx.Err()
+		return false, "", ctx.Err()
 	}
+}
+
+// namedConfirmer 渠道名 + 呈现者(事件审计用)。
+type namedConfirmer struct {
+	name string
+	p    sdk.ConfirmPresenter
 }

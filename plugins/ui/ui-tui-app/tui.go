@@ -70,7 +70,8 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 			return nil, err
 		}
 		// 单 tui profile(无 fusion):App 自身提供结构化提问(问题入会话流,输入框作答)
-		if err := c.Provide("ctx.question", tuiQuestionService{app: app}); err != nil {
+		// G-E5-4:包装 ObservableQuestion → 单 profile 也广播 question/requested ↔ resolved
+		if err := c.Provide("ctx.question", sdk.ObservedQuestion(c, "tui", tuiQuestionService{app: app})); err != nil {
 			return nil, err
 		}
 	}
@@ -84,6 +85,36 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		}
 		return nil
 	})
+	// G-E5-4:交互事件观察面(多端并存时,其它渠道已处理的提问/审批 → 会话流提示)
+	interRegs := []sdk.Disposer{
+		c.Subscribe(sdk.EventQuestionResolved, func(_ context.Context, ev *sdk.Event) error {
+			qe, ok := sdk.QuestionEventOf(ev.Payload)
+			if !ok || qe.Channel == "" || qe.Channel == "tui" {
+				return nil
+			}
+			detail := sdk.AnswerSummary(qe.Answer)
+			if qe.Err != "" {
+				detail = "已取消/失败(" + qe.Err + ")"
+			}
+			app.NoteInteraction("提问已由其它渠道(" + qe.Channel + ")处理: " + detail)
+			return nil
+		}),
+		c.Subscribe(sdk.EventConfirmResolved, func(_ context.Context, ev *sdk.Event) error {
+			ce, ok := sdk.ConfirmEventOf(ev.Payload)
+			if !ok || ce.Channel == "" || ce.Channel == "tui" {
+				return nil
+			}
+			verdict := "已拒绝"
+			if ce.OK {
+				verdict = "已批准"
+			}
+			if ce.Err != "" && !ce.OK {
+				verdict = "已取消/失败(" + ce.Err + ")"
+			}
+			app.NoteInteraction("审批已由其它渠道(" + ce.Channel + ")处理: " + verdict)
+			return nil
+		}),
+	}
 	if err := app.Start(); err != nil {
 		docOpen()
 		confirmReg()
@@ -91,6 +122,9 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	}
 	return func() {
 		docOpen()
+		for _, d := range interRegs {
+			d()
+		}
 		confirmReg()
 		questionReg()
 		app.Close()

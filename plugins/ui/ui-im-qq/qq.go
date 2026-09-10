@@ -140,7 +140,8 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 			return nil, err
 		}
 		// 单 profile(无 fusion):桥自身提供结构化提问服务
-		if err := c.Provide("ctx.question", im.NewQuestionService(b)); err != nil {
+		// G-E5-4:包装 ObservableQuestion → 单 profile 也广播 question/requested ↔ resolved
+		if err := c.Provide("ctx.question", sdk.ObservedQuestion(c, "im-qq", im.NewQuestionService(b))); err != nil {
 			return nil, err
 		}
 	}
@@ -203,6 +204,8 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		}
 		return nil
 	}))
+	// G-E5-4:交互事件观察面(其它渠道已处理的提问/审批 → 回推提示;本渠道结论跳过)
+	ds = append(ds, b.WatchInteraction(c, "im-qq"))
 	return func() {
 		confirmReg()
 		questionReg()

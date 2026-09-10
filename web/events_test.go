@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
@@ -136,4 +137,56 @@ func TestHubDisposerIdempotent(t *testing.T) {
 	}
 	unsub()
 	unsub() // 幂等
+}
+
+// G-E5-4:question/confirm resolved 事件 → SSE done 帧(多端并存时前端关闭遗留弹层)。
+func TestInteractionResolvedFrames(t *testing.T) {
+	hub := NewHub()
+	c := newTestCtx()
+	dis, err := hub.Subscribe(c, &memLog{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dis()
+	ch, release := hub.Stream()
+	defer release()
+
+	c.fire(sdk.EventQuestionResolved, &sdk.QuestionEvent{
+		Question: sdk.Question{ID: "q-1"},
+		Answer:   sdk.QuestionAnswer{Values: []string{"prod"}},
+		Resolved: true, Channel: "im-qq",
+	})
+	select {
+	case f := <-ch:
+		if f.Type != FrameQuestionDone {
+			t.Fatalf("帧类型应为 %q,得 %q", FrameQuestionDone, f.Type)
+		}
+		done, ok := f.Payload.(*QuestionDone)
+		if !ok || done.ID != "q-1" || len(done.Answer.Values) != 1 {
+			t.Fatalf("questiondone 载荷异常: %#v", f.Payload)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("未收到 FrameQuestionDone")
+	}
+
+	c.fire(sdk.EventConfirmResolved, sdk.ConfirmEvent{Prompt: "危险?", OK: true, Resolved: true, Channel: "tui"})
+	select {
+	case f := <-ch:
+		if f.Type != FrameConfirmDone {
+			t.Fatalf("帧类型应为 %q,得 %q", FrameConfirmDone, f.Type)
+		}
+		done, ok := f.Payload.(*ConfirmDone)
+		if !ok || done.Prompt != "危险?" || !done.OK {
+			t.Fatalf("confirmdone 载荷异常: %#v", f.Payload)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("未收到 FrameConfirmDone")
+	}
+	// 无关载荷不产帧(类型不符 → 静默)
+	c.fire(sdk.EventQuestionResolved, "无关注载荷")
+	select {
+	case f := <-ch:
+		t.Fatalf("无关载荷不应产帧: %#v", f)
+	case <-time.After(50 * time.Millisecond):
+	}
 }

@@ -94,3 +94,46 @@ func TestQuestionCancelCleans(t *testing.T) {
 		t.Fatal("cancel 后应清理")
 	}
 }
+
+// G-E5-4:SingleChannel 适配 sdk.QuestionService(单 web profile 曾 Provide
+// QuestionPresenter → 工具侧 Inject 类型不符,ask_user_question 实际不可用)。
+func TestQuestionSingleChannelAdapter(t *testing.T) {
+	svc := NewQuestionService(NewHub())
+	var qs sdk.QuestionService = svc.SingleChannel()
+	done := make(chan sdk.QuestionAnswer, 1)
+	go func() {
+		a, err := qs.Ask(context.Background(), sdk.Question{ID: "q-9", Prompt: "选一个"})
+		if err == nil {
+			done <- a
+		}
+	}()
+	// 弹层 id 沿用调用方给的 q.ID(与事件同 id)
+	deadline := time.Now().Add(2 * time.Second)
+	for svc.PendingCount() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	svc.Answer("q-9", sdk.QuestionAnswer{Values: []string{"a"}})
+	select {
+	case a := <-done:
+		if len(a.Values) != 1 || a.Values[0] != "a" {
+			t.Fatalf("作答异常: %+v", a)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Ask 未返回")
+	}
+	// 未给 id 时回退生成(不接受未知 id 应答)
+	_, cancel, err := svc.PresentQuestion(context.Background(), sdk.Question{Prompt: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	if svc.PendingCount() != 1 {
+		t.Fatalf("应有 1 个未决: %d", svc.PendingCount())
+	}
+	svc.Answer("unknown-id", sdk.QuestionAnswer{Text: "n"})
+	if svc.PendingCount() != 1 {
+		t.Fatal("未知 id 应答应被忽略")
+	}
+	// RegisterQuestioner 单渠道空实现(Disposer 幂等)
+	qs.RegisterQuestioner("web", svc)()
+}

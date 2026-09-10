@@ -95,7 +95,9 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 			return nil, err
 		}
 		// 单 web profile(无 fusion):web 自身提供结构化提问
-		if err := c.Provide("ctx.question", srv.Question()); err != nil {
+		// G-E5-4:SingleChannel 适配 sdk.QuestionService(Ask),再包装 ObservedQuestion
+		// → 单 profile 也广播 question/requested ↔ question/resolved
+		if err := c.Provide("ctx.question", sdk.ObservedQuestion(c, "web", srv.Question().SingleChannel())); err != nil {
 			unsub()
 			return nil, err
 		}

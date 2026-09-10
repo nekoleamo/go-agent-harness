@@ -164,6 +164,17 @@ function rebuild(keepCursor: boolean): void {
   transport.on('question', (f) => {
     question.value = f.payload as QuestionRequest
   })
+  // G-E5-4:提问已解决(question/resolved 事件订阅面)——多端并存时本端弹层
+  // 可能还开着(已由其它渠道作答/超时)→ 按 id 关闭遗留弹层。
+  transport.on('questiondone', (f) => {
+    const p = f.payload as { id?: string }
+    if (p?.id && question.value && question.value.id === p.id) question.value = null
+  })
+  // G-E5-4:审批已裁决(confirm/resolved;Confirm 无端侧 id → 按 prompt 关联)
+  transport.on('confirmdone', (f) => {
+    const p = f.payload as { prompt?: string }
+    if (p?.prompt && confirm.value && confirm.value.prompt === p.prompt) confirm.value = null
+  })
   // 文档预览意图(D5:模型 doc_open / `/preview` 命令)→ 打开文档面板并定位文件
   transport.on('doc', (f) => {
     const d = f.payload as { path?: string }

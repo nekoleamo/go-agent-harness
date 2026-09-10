@@ -240,8 +240,32 @@ func TestInteractionEvents(t *testing.T) {
 	if lc == nil || !lc.Resolved || !lc.OK || lc.Prompt != "危险?" {
 		t.Fatalf("confirm resolved 载荷不符: %+v", lc)
 	}
+	if lc.Channel != "web" {
+		t.Fatalf("confirm 事件应标明作答渠道: %+v", lc)
+	}
 	if lq == nil || !lq.Resolved || len(lq.Answer.Values) != 1 || lq.Question.Prompt != "选环境" {
 		t.Fatalf("question resolved 载荷不符: %+v", lq)
+	}
+	if lq.Channel != "web" {
+		t.Fatalf("question 事件应标明作答渠道: %+v", lq)
+	}
+	// G-E5-4:Question.ID 由 Fusion 补齐(事件与各端弹层共用同一 id)
+	if lq.Question.ID == "" {
+		t.Fatalf("Fusion 应补齐 Question.ID: %+v", lq)
+	}
+	// 渠道显式给 id 时不覆盖(单渠道 Fusion,避开上例 web stub 的通道容量)
+	f3 := &Fusion{c: c, presenters: make(map[string]sdk.ConfirmPresenter), questioners: make(map[string]sdk.QuestionPresenter)}
+	qa2 := make(chan sdk.QuestionAnswer, 1)
+	qa2 <- sdk.QuestionAnswer{Text: "ok"}
+	f3.RegisterQuestioner("tui", &stubQuestioner{got: make(chan sdk.Question, 1), ans: qa2, done: make(chan struct{})})
+	if _, err := f3.Ask(context.Background(), sdk.Question{ID: "fixed-9", Prompt: "保留 id"}); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	lq2 := lastQuestion
+	mu.Unlock()
+	if lq2 == nil || lq2.Question.ID != "fixed-9" || lq2.Channel != "tui" {
+		t.Fatalf("显式 id/渠道追踪异常: %+v", lq2)
 	}
 	// 无渠道时 resolved 也应带错误(观察面可见失败);经 channel 传递避免回调重入锁
 	f2 := &Fusion{c: c, presenters: make(map[string]sdk.ConfirmPresenter), questioners: make(map[string]sdk.QuestionPresenter)}

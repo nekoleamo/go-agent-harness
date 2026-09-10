@@ -37,6 +37,10 @@ type confirmMsg struct{ prompt string }
 // questionMsg 结构化提问(P3 语义交互):问题与编号选项入会话流,输入框作答。
 type questionMsg struct{ q sdk.Question }
 
+// interactionMsg G-E5-4 交互审计行:confirm/question requested↔resolved 事件观察面
+// (多端并存时显示“已在其它渠道作答/取消”),只入会话流,不改模型可见事实。
+type interactionMsg struct{ text string }
+
 // Model 实现 tea.Model。
 type Model struct {
 	state *State
@@ -149,6 +153,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.state.ApplyConfirmPrompt(msg.prompt)
 	case questionMsg:
 		m.state.ApplyQuestionPrompt(msg.q)
+	case interactionMsg:
+		if msg.text != "" {
+			m.state.Lines = append(m.state.Lines, Line{Kind: "meta", Text: msg.text})
+			m.skipView = false
+		}
 	case spinnerMsg:
 		// 思考动画:仅回合运行中续发 tick(空闲停,不浪费重绘)
 		if m.state.Running {

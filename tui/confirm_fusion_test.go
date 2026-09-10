@@ -188,3 +188,28 @@ func TestModelSubmitQuestionAnswer(t *testing.T) {
 		t.Fatal("无法识别时应保留待答态")
 	}
 }
+
+// G-E5-4:交互审计行(interactionMsg → meta 行;NoteInteraction 无 program 时安全忽略)。
+func TestInteractionMsgAppendsMetaLine(t *testing.T) {
+	a := commandTestApp()
+	a.model.Update(interactionMsg{text: "提问已由其它渠道(web)处理: prod"})
+	lines := a.model.state.Lines
+	if len(lines) == 0 {
+		t.Fatal("应有审计行")
+	}
+	last := lines[len(lines)-1]
+	if last.Kind != "meta" || last.Text != "提问已由其它渠道(web)处理: prod" {
+		t.Fatalf("审计行异常: %+v", last)
+	}
+	// 空文本不入流
+	n := len(lines)
+	a.model.Update(interactionMsg{text: ""})
+	if len(a.model.state.Lines) != n {
+		t.Fatal("空文本不应追加行")
+	}
+	// 未启动(program=nil)时 NoteInteraction 安全忽略
+	a.NoteInteraction("x")
+	if len(a.model.state.Lines) != n {
+		t.Fatal("未启动时 NoteInteraction 不应入流")
+	}
+}

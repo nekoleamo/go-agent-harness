@@ -256,6 +256,15 @@ func (a *App) PresentQuestion(_ context.Context, q sdk.Question) (<-chan sdk.Que
 	return ch, cancel, nil
 }
 
+// NoteInteraction 追加一条交互审计行(G-E5-4):宿主/插件订阅 confirm|question 事件后落进会话流。
+// 典型用场:多端并存时告知“该审批/提问已在其它渠道处理”(只读展示,不影响会话事实)。
+func (a *App) NoteInteraction(text string) {
+	if text == "" || a.program == nil || !a.started.Load() {
+		return
+	}
+	a.program.Send(interactionMsg{text: text})
+}
+
 // answerQuestion 用户作答:广播给全部待答提问(通常 1 个)。
 func (a *App) answerQuestion(ans sdk.QuestionAnswer) {
 	a.askMu.Lock()

@@ -33,7 +33,27 @@ const (
 	// FrameDoc 文档预览意图(D 组 D5:模型 doc_open 工具 / `/preview` 命令发出 doc/open;
 	// 载荷 sdk.DocOpenEvent —— 前端打开文档面板并定位文件)。
 	FrameDoc = "doc"
+	// FrameQuestionDone 提问已解决(G-E5-4:question/resolved 事件订阅面;
+	// 多端并存时关闭本端遗留弹层 —— 已由其它渠道作答/超时)。载荷 *QuestionDone。
+	FrameQuestionDone = "questiondone"
+	// FrameConfirmDone 审批已裁决(G-E5-4:confirm/resolved 事件订阅面;
+	// 多端并存时关闭本端遗留弹层)。载荷 *ConfirmDone。
+	FrameConfirmDone = "confirmdone"
 )
+
+// QuestionDone 提问解决载荷(多端同步观察:按 id 关闭本端遗留弹层)。
+type QuestionDone struct {
+	ID     string             `json:"id"`               // 与弹层同一 id(Fusion 补齐 / ObservedQuestion 生成)
+	Answer sdk.QuestionAnswer `json:"answer,omitempty"` // 最终作答(空 = 取消/超时)
+	Err    string             `json:"err,omitempty"`
+}
+
+// ConfirmDone 审批裁决载荷(按 prompt 关闭本端遗留弹层;Confirm 无端侧 id)。
+type ConfirmDone struct {
+	Prompt string `json:"prompt"`
+	OK     bool   `json:"ok,omitempty"`
+	Err    string `json:"err,omitempty"`
+}
 
 // Frame 一条 SSE 帧(JSON 序列化后发往浏览器)。
 type Frame struct {
@@ -91,6 +111,29 @@ func (h *EventHub) Subscribe(c sdk.Ctx, sessions sdk.SessionLog) (disposer sdk.D
 		case *sdk.DocOpenEvent:
 			h.Push(Frame{Type: FrameDoc, Payload: p})
 		}
+		return nil
+	})
+	add(sdk.EventQuestionResolved, func(_ context.Context, ev *sdk.Event) error {
+		// G-E5-4:提问已解决(requested↔resolved 事件订阅面)。多端并存时本端弹层可能
+		// 仍开着(已由 web 之外的渠道作答)—— 推送 done 帧让前端按 id 关闭遗留弹层。
+		qe, ok := sdk.QuestionEventOf(ev.Payload)
+		if !ok {
+			return nil
+		}
+		h.Push(Frame{Type: FrameQuestionDone, Payload: &QuestionDone{
+			ID: qe.Question.ID, Answer: qe.Answer, Err: qe.Err,
+		}})
+		return nil
+	})
+	add(sdk.EventConfirmResolved, func(_ context.Context, ev *sdk.Event) error {
+		// G-E5-4:审批已裁决(同上;Confirm 无端侧 id,按 prompt 关联)。
+		ce, ok := sdk.ConfirmEventOf(ev.Payload)
+		if !ok {
+			return nil
+		}
+		h.Push(Frame{Type: FrameConfirmDone, Payload: &ConfirmDone{
+			Prompt: ce.Prompt, OK: ce.OK, Err: ce.Err,
+		}})
 		return nil
 	})
 	add(sdk.EventAgentStatus, func(_ context.Context, ev *sdk.Event) error {
