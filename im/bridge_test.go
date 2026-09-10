@@ -919,3 +919,40 @@ func TestQuestionPresentAndAnswer(t *testing.T) {
 		t.Fatalf("cancel 后应清理 pending,got %d", n2)
 	}
 }
+
+// TestImCommandGroupAllow /im allowg|revokeg|list:群维度授权经 IM 命令面生效。
+func TestImCommandGroupAllow(t *testing.T) {
+	b, loop, tr, sessions := buildTestBridge(t, Options{Mode: AccessPairing})
+	grp := Route{Channel: "mock", UserID: "member-1", ChatID: "GROUP-1"}
+	// 主机侧执行授权(IM 内未授权用户不能自助授权——命令面在 gate 之后,安全语义)
+	if out := b.imCmd(context.Background(), []string{"allowg", "GROUP-1"}); !strings.Contains(out, "已授权群") {
+		t.Fatalf("allowg 应回授权成功: %q", out)
+	}
+	// 群内成员消息放行(无需各自配对)
+	loop.onRun = finishText(sessions, "群回复")
+	if err := b.HandleInbound(context.Background(), Inbound{Route: grp, MsgID: "2", Text: "大家好"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(tr.sent(), "\n"), "群回复") {
+		t.Fatalf("群授权后应开回合: %+v", tr.sent())
+	}
+	// list 显示群
+	tr.reset()
+	if err := b.HandleInbound(context.Background(), Inbound{Route: grp, MsgID: "3", Text: "/im list"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(tr.sent(), "\n"); !strings.Contains(got, "已授权群") || !strings.Contains(got, "GROUP-1") {
+		t.Fatalf("list 应含群: %q", got)
+	}
+	// revokeg 撤销(主机侧)后回到配对(群消息回配对提示+群授权指引)
+	if out := b.imCmd(context.Background(), []string{"revokeg", "GROUP-1"}); !strings.Contains(out, "已撤销群授权") {
+		t.Fatalf("revokeg 应回撤销成功: %q", out)
+	}
+	tr.reset()
+	if err := b.HandleInbound(context.Background(), Inbound{Route: grp, MsgID: "5", Text: "再来"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(tr.sent(), "\n"); !strings.Contains(got, "未授权") || !strings.Contains(got, "allowg") {
+		t.Fatalf("撤销后群消息应回配对+群授权指引: %q", got)
+	}
+}

@@ -79,7 +79,8 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		sender: im.NewSender(&im.Budget{MaxChunk: wechatChunkLimit, MaxChunks: wechatMaxChunks, Gap: wechatChunkGap})}
 	b := im.New(c, loop, sessions, tr, im.Options{
 		Mode:  mode,
-		Allow: creds.Allow, // 已授权用户持久恢复
+		Allow:       creds.Allow,  // 已授权用户持久恢复
+		AllowGroups: creds.Groups, // 已授权群持久恢复(群维度授权)
 		// P1 会话绑定:chat→宿主会话映射落盘(重启恢复绑定)
 		SessionBindPath: sessionBindPath(),
 	})
@@ -88,8 +89,10 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	// 重启恢复——配对批准不再因重启丢失(P1 真机需求)。回调锁外触发,List 安全。
 	b.Access().SetOnChange(func() {
 		allow := b.Access().List()
+		groups := b.Access().Groups()
 		tr.mu.Lock()
 		tr.creds.Allow = allow
+		tr.creds.Groups = groups
 		err := tr.store.Save(tr.creds)
 		tr.mu.Unlock()
 		if err != nil {

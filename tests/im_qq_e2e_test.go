@@ -329,13 +329,18 @@ func buildQQEnv(t *testing.T, baseURL, mode string, script any) string {
 	home := t.TempDir()
 	t.Setenv("GAH_HOME", home)
 	allow := []string{}
-	if mode == "allowlist" {
+	groups := []string{}
+	switch mode {
+	case "allowlist":
 		allow = []string{"qq\x00OPENID1"}
-	} else {
+	case "group-grant":
+		// 群维度授权:整群放行,成员未单独授权(GRP1 内任意成员免配对)
+		groups = []string{"qq\x00GRP1"}
+	default: // allowlist-grp:成员级授权
 		allow = []string{"qq\x00MEMBER9"}
 	}
 	store := qqbot.NewStore(filepath.Join(home, "config", "qqbot.yaml"))
-	if err := store.Save(&qqbot.Credentials{AppID: "app-e2e", AppSecret: "sec-e2e", Allow: allow}); err != nil {
+	if err := store.Save(&qqbot.Credentials{AppID: "app-e2e", AppSecret: "sec-e2e", Allow: allow, Groups: groups}); err != nil {
 		t.Fatal(err)
 	}
 	logger := slog.New(slog.DiscardHandler)
@@ -1002,5 +1007,21 @@ func TestImQQAskQuestionE2E(t *testing.T) {
 	got := m.waitSend(t, "已选生产环境", 20*time.Second)
 	if !strings.Contains(got.bodyText(), "开始部署") {
 		t.Fatalf("收尾文本不符: %q", got.bodyText())
+	}
+}
+
+// TestImQQGroupGrantE2E 群维度授权:凭证 Groups 预置整群 → 群内成员(未单独 pair)@机器人即放行。
+func TestImQQGroupGrantE2E(t *testing.T) {
+	m, hs := newQQMock(t)
+	m.events = []map[string]any{{"op": 0, "t": qqbot.EventGroupAtMsg, "s": 2, "d": map[string]any{
+		"id": "grpmsg-g1", "author": map[string]any{"member_openid": "STRANGER7"},
+		"group_openid": "GRP1", "content": "@gah 群命令", "timestamp": "2026-10-01T00:00:00+08:00",
+		"mentions": []map[string]any{{"id": "BOTOPENID", "member_openid": "BOTMEMBER"}}}}}
+	buildQQEnv(t, hs.URL, "group-grant", qqScript)
+
+	// 群授权放行 → 群回复(成员 STRANGER7 无单独授权)
+	rec := m.waitSend(t, "远程命令已执行", 20*time.Second)
+	if rec.path != "/v2/groups/GRP1/messages" {
+		t.Fatalf("群内成员应被群授权放行: path=%q", rec.path)
 	}
 }

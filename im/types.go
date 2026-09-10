@@ -30,8 +30,17 @@ type Route struct {
 // Key 会话路由稳定标识(去重/会话绑定的键;与显示名无关)。
 func (r Route) Key() string { return r.Channel + "\x00" + r.ChatID }
 
-// SenderKey 发送方标识(访问控制键)。
+// SenderKey 发送方标识(访问控制键:用户维度)。
 func (r Route) SenderKey() string { return r.Channel + "\x00" + r.UserID }
+
+// ChatKey 聊天标识(访问控制键:群维度;私聊 = senderKey)。
+func (r Route) ChatKey() string {
+	c := r.ChatID
+	if c == "" {
+		c = r.UserID
+	}
+	return r.Channel + "\x00" + c
+}
 
 // Inbound 一条已解析的 IM 入站消息(transport 层解码后交给 Bridge)。
 // Attachments 媒体入站(P0-2c):transport 预下载/解密后填本地 Path;
@@ -67,6 +76,8 @@ type Options struct {
 	Mode AccessMode
 	// Allow 初始 allowlist(授权用户 SenderKey)。
 	Allow []string
+	// AllowGroups 初始群 allowlist(群维度授权 chatKey;群内成员免各自配对)。
+	AllowGroups []string
 	// PairingTTL 配对码有效期(默认 1h)。
 	PairingTTL time.Duration
 	// BusyReply 回合进行中收到普通消息且队列已满时的提示(空 = 默认文案)。
@@ -77,8 +88,9 @@ type Options struct {
 	AsyncNotice string
 	// SessionBindPath chat↔宿主会话绑定映射持久化路径(P1;空 = 仅内存不落盘)。
 	SessionBindPath string
-	// UnauthorizedReply pairing 模式向陌生用户回配对提示(allowlist/disabled 模式静默)。
-	PairingReply func(code string) string
+	// UnauthorizedReply pairing 模式向陌生用户回配对提示(allowlist/disabled 模式静默;
+	// route 供群场景提示群 ChatKey 与 /im allowg 指引)。
+	PairingReply func(code string, route Route) string
 }
 
 func defaultOptions() Options {
@@ -88,7 +100,12 @@ func defaultOptions() Options {
 		BusyReply:  "⏳ 队列已满,请稍候(可用 /stop 取消当前回合)。",
 		// AsyncAfter 默认 0 = 同步等待;通道层按平台被动窗口覆写(QQ 被动 5min)
 		AsyncNotice: "⏳ 任务较长,已转入后台执行;完成后自动推送结果(主动推送受平台额度限制)。",
-		PairingReply: func(code string) string {
+		PairingReply: func(code string, route Route) string {
+			if route.ChatID != "" && route.ChatID != route.UserID {
+				// 群场景:提示群维度授权(一次授权整群)
+				return fmt.Sprintf("⚠️ 未授权。配对码: %s —— 主机执行 /im pair %s(仅授权你)或 /im allowg %s(授权本群)后重试。",
+					code, code, route.ChatID)
+			}
 			return fmt.Sprintf("⚠️ 未授权。配对码: %s —— 请在主机执行 /im pair %s 授权后重试。", code, code)
 		},
 	}

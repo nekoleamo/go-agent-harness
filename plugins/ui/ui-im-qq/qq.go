@@ -88,7 +88,8 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		ledger:   newDeliveryLedger(outboxPath())}
 	b := im.New(c, loop, sessions, tr, im.Options{
 		Mode:  mode,
-		Allow: creds.Allow, // 已授权用户持久恢复
+		Allow:       creds.Allow,  // 已授权用户持久恢复
+		AllowGroups: creds.Groups, // 已授权群持久恢复(群维度授权)
 		// P1 会话绑定:chat→宿主会话映射落盘(重启恢复绑定)
 		SessionBindPath: sessionBindPath(),
 		// P2 §7.5:被动回复窗口 5min —— 回合超时即转后台通知,完成经门控投递
@@ -98,8 +99,10 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	// 授权变化持久化(/im pair 批准、allow/revoke):写回凭证 store,重启恢复。
 	b.Access().SetOnChange(func() {
 		allow := b.Access().List()
+		groups := b.Access().Groups()
 		tr.mu.Lock()
 		tr.creds.Allow = allow
+		tr.creds.Groups = groups
 		err := tr.store.Save(tr.creds)
 		tr.mu.Unlock()
 		if err != nil {

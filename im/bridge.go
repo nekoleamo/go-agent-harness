@@ -93,9 +93,12 @@ func New(c sdk.Ctx, loop sdk.AgentLoop, sessions sdk.SessionLog, tr Transport, o
 	if opt.Allow != nil {
 		o.Allow = opt.Allow
 	}
+	if opt.AllowGroups != nil {
+		o.AllowGroups = opt.AllowGroups
+	}
 	b := &Bridge{
 		c: c, loop: loop, sessions: sessions, tr: tr,
-		acc:     NewAccess(o.Mode, o.Allow, o.PairingTTL),
+		acc:     newAccessWith(o),
 		opt:     o,
 		pending:  make(map[string]*confirmWait),
 		qPending: make(map[string]*questionWait),
@@ -147,14 +150,14 @@ func (b *Bridge) HandleInbound(ctx context.Context, in Inbound) error {
 	}
 
 	// 1. 访问控制(gate;drop 静默,防枚举)
-	res, code := b.acc.Gate(r.SenderKey())
+	res, code := b.acc.Gate(r.SenderKey(), r.ChatKey())
 	switch res {
 	case gateDrop:
 		return nil
 	case gatePair:
 		msg := ""
 		if code != "" && b.opt.PairingReply != nil {
-			msg = b.opt.PairingReply(code)
+			msg = b.opt.PairingReply(code, r)
 		}
 		if msg != "" {
 			return b.sendText(ctx, r, msg)
@@ -634,10 +637,10 @@ func (b *Bridge) submitBG(r Route, task string) {
 	}
 }
 
-// imCmd /im 子命令(状态/配对;allow/revoke 由插件壳或主机直调 Access)。
+// imCmd /im 子命令(状态/配对/群授权;用户级 allow/revoke 由插件壳或主机直调 Access)。
 func (b *Bridge) imCmd(ctx context.Context, args []string) string {
 	if len(args) == 0 {
-		return "用法: /im status|pair <配对码>|list"
+		return "用法: /im status|pair <配对码>|allowg <群ChatID>|revokeg <群ChatID>|list"
 	}
 	switch args[0] {
 	case "status":
@@ -657,10 +660,33 @@ func (b *Bridge) imCmd(ctx context.Context, args []string) string {
 			return "✅ 配对成功,用户已授权。"
 		}
 		return "配对码无效或已过期。"
+	case "allowg":
+		if len(args) < 2 {
+			return "用法: /im allowg <群ChatID>(群授权:一次授权整群,群内成员免各自配对)"
+		}
+		key := b.chanKey(args[1])
+		b.acc.AllowGroup(key)
+		return "✅ 已授权群: " + args[1]
+	case "revokeg":
+		if len(args) < 2 {
+			return "用法: /im revokeg <群ChatID>"
+		}
+		if b.acc.RevokeGroup(b.chanKey(args[1])) {
+			return "✅ 已撤销群授权: " + args[1]
+		}
+		return "该群未授权: " + args[1]
 	case "list":
-		return "已授权:\n" + strings.Join(b.acc.List(), "\n")
+		out := "已授权用户:\n" + strings.Join(b.acc.List(), "\n")
+		if gs := b.acc.Groups(); len(gs) > 0 {
+			// 群 key 形如 "qq\x00<群openid>";展示时剥渠道前缀
+			out += "\n已授权群:\n"
+			for _, g := range gs {
+				out += "  " + b.stripChan(g) + "\n"
+			}
+		}
+		return strings.TrimRight(out, "\n")
 	default:
-		return "用法: /im status|pair <配对码>|list"
+		return "用法: /im status|pair <配对码>|allowg <群ChatID>|revokeg <群ChatID>|list"
 	}
 }
 
@@ -835,6 +861,22 @@ func truncateRunes(s string, n int) string {
 	return string(r[:n]) + "…"
 }
 
+// chanKey 由群 ChatID 拼访问控制键(渠道前缀与 transport 名一致)。
+func (b *Bridge) chanKey(chatID string) string {
+	if chatID == "" {
+		return ""
+	}
+	return b.tr.Name() + "\x00" + chatID
+}
+
+// stripChan 去掉访问控制键的渠道前缀(展示用)。
+func (b *Bridge) stripChan(key string) string {
+	if i := strings.Index(key, "\x00"); i >= 0 {
+		return key[i+1:]
+	}
+	return key
+}
+
 // RegisterCommands 向 ctx.commands 注册桥命令(/stop /im;TUI/Web/IM 全端可见)。
 // 返回 Disposer 随插件卸载撤销;同名冲突由宿主拒绝。
 func (b *Bridge) RegisterCommands(cmds sdk.CommandRegistry) (sdk.Disposer, error) {
@@ -859,7 +901,7 @@ func (b *Bridge) RegisterCommands(cmds sdk.CommandRegistry) (sdk.Disposer, error
 	ds = append(ds, d1)
 	d2, err := cmds.Register(sdk.CommandSpec{
 		Name:  "im",
-		Usage: "/im status|pair <配对码>|list",
+		Usage: "/im status|pair <配对码>|allowg|revokeg <群ChatID>|list",
 		Desc:  "IM 远程控制状态/配对(授权新用户)",
 		Run: func(args []string) (string, error) {
 			return b.imCmd(context.Background(), args), nil
@@ -869,14 +911,22 @@ func (b *Bridge) RegisterCommands(cmds sdk.CommandRegistry) (sdk.Disposer, error
 			{Options: func([]string) []sdk.Option {
 				return []sdk.Option{
 					{Value: "status", Desc: "通道状态(模式/已授权/忙闲)"},
-					{Value: "list", Desc: "已授权用户列表"},
+					{Value: "list", Desc: "已授权用户/群列表"},
 					{Value: "pair", Desc: "用配对码授权新用户"},
+					{Value: "allowg", Desc: "授权整群(群内成员免各自配对)"},
+					{Value: "revokeg", Desc: "撤销群授权"},
 				}
 			}},
 			{FreeArgs: func(picked []string) []string {
 				// picked = [命令名, 第一级值, ...](picked[0] 恒为命令名)
-				if len(picked) >= 2 && picked[1] == "pair" {
+				if len(picked) < 2 {
+					return nil
+				}
+				switch picked[1] {
+				case "pair":
 					return []string{"配对码"}
+				case "allowg", "revokeg":
+					return []string{"群ChatID"}
 				}
 				return nil
 			}},

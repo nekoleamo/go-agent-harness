@@ -84,7 +84,8 @@ type Credentials struct {
 	AppID     string   `yaml:"app_id"`
 	AppSecret string   `yaml:"app_secret"`
 	BaseURL   string   `yaml:"base_url,omitempty"` // OpenAPI 根(默认 https://api.bot.qq.com;沙箱联调可指 sandbox.api.sgroup.qq.com)
-	Allow     []string `yaml:"allow,omitempty"`    // 已授权 SenderKey(channel\0user),与 ilink 同构(T6 接线)
+	Allow     []string `yaml:"allow,omitempty"`     // 已授权 SenderKey(channel\0user),与 ilink 同构(T6 接线)
+	Groups    []string `yaml:"groups,omitempty"`    // 已授权群 chatKey(channel\0chatID;群维度授权,群内成员免配对)
 }
 
 // ---- WS gateway 帧(与官方 opcode 表一致)----

@@ -44,7 +44,8 @@ type Credentials struct {
 	AccountID string   `yaml:"account_id"`
 	UserID    string   `yaml:"user_id"`            // 扫码者 ilink_user_id(登录成功后自动授权)
 	SyncBuf   string   `yaml:"sync_buf,omitempty"` // getupdates 断点游标
-	Allow     []string `yaml:"allow,omitempty"`    // 已授权 SenderKey(channel\0user)持久化(当前配对等变化在 P1 闭环)
+	Allow     []string `yaml:"allow,omitempty"`     // 已授权 SenderKey(channel\0user)持久化(当前配对等变化在 P1 闭环)
+	Groups    []string `yaml:"groups,omitempty"`    // 已授权群 chatKey(channel\0chatID;群维度授权)
 }
 
 // Client iLink HTTP 客户端(无共享可变状态,可并发)。

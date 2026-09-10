@@ -39,7 +39,8 @@ type pendingPairing struct {
 type Access struct {
 	mu       sync.Mutex
 	mode     AccessMode
-	allow    map[string]bool           // senderKey → 授权
+	allow    map[string]bool           // senderKey → 授权(用户维度)
+	groups   map[string]bool           // chatKey → 授权(群维度:一次授权整群,群内成员免配对)
 	pending  map[string]pendingPairing // code → 记录
 	ttl      time.Duration
 	onChange func() // 授权集变化回调(插件壳接线做持久化;锁外调用,可 nil)
@@ -50,6 +51,7 @@ func NewAccess(mode AccessMode, allow []string, ttl time.Duration) *Access {
 	a := &Access{
 		mode:    mode,
 		allow:   make(map[string]bool),
+		groups:  make(map[string]bool),
 		pending: make(map[string]pendingPairing),
 		ttl:     ttl,
 	}
@@ -84,8 +86,9 @@ func (a *Access) SetMode(m AccessMode) {
 	}
 }
 
-// Gate 裁决一个发送方(惰性清理过期配对)。
-func (a *Access) Gate(senderKey string) (gateResult, string) {
+// Gate 裁决一个发送方(惰性清理过期配对)。chatKey 非空且已在群 allowlist → 直接放行
+// (群维度授权:一次授权整群,群内成员免各自配对;对齐 QQ 群/频道场景)。
+func (a *Access) Gate(senderKey, chatKey string) (gateResult, string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	now := time.Now()
@@ -94,7 +97,7 @@ func (a *Access) Gate(senderKey string) (gateResult, string) {
 			delete(a.pending, code)
 		}
 	}
-	if a.allow[senderKey] {
+	if a.allow[senderKey] || (chatKey != "" && a.groups[chatKey]) {
 		return gateDeliver, ""
 	}
 	switch a.mode {
@@ -139,6 +142,47 @@ func (a *Access) Allowed(senderKey string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.allow[senderKey]
+}
+
+// AllowGroup 授权一个群(chatKey = channel\x00chatID;幂等;回调持久化)。
+func (a *Access) AllowGroup(chatKey string) {
+	if chatKey == "" {
+		return
+	}
+	a.mu.Lock()
+	a.groups[chatKey] = true
+	cb := a.onChange
+	a.mu.Unlock()
+	if cb != nil {
+		cb()
+	}
+}
+
+// RevokeGroup 撤销群授权(不存在返回 false)。
+func (a *Access) RevokeGroup(chatKey string) bool {
+	a.mu.Lock()
+	if !a.groups[chatKey] {
+		a.mu.Unlock()
+		return false
+	}
+	delete(a.groups, chatKey)
+	cb := a.onChange
+	a.mu.Unlock()
+	if cb != nil {
+		cb()
+	}
+	return true
+}
+
+// Groups 已授权群(诊断/展示)。
+func (a *Access) Groups() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make([]string, 0, len(a.groups))
+	for k := range a.groups {
+		out = append(out, k)
+	}
+	return out
 }
 
 // List 授权用户(稳定顺序不可保证;小名单)。
@@ -196,4 +240,15 @@ func randCode(n int) string {
 		return "pair-unknown"
 	}
 	return hex.EncodeToString(b)
+}
+
+// newAccessWith 按 Options 构造访问控制(用户 + 群两类初始授权;群授权初始化不触发 onChange)。
+func newAccessWith(o Options) *Access {
+	a := NewAccess(o.Mode, o.Allow, o.PairingTTL)
+	for _, g := range o.AllowGroups {
+		if g != "" {
+			a.groups[g] = true
+		}
+	}
+	return a
 }
