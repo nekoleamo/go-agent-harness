@@ -374,7 +374,7 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 >
 > | 编号 | 项 | 现有 hook(已就绪的落点) | 缺什么 | 量级 | 触发 / 阻塞 |
 > |---|---|---|---|---|---|
-> | **D6-1(E1)** | pdfium-on-WASM 光栅 | ✅ **主力路径已由 RST-1 交付**(外部 pdftoppm:零体积、契约 `DocRasterService` 已就位);余下仅 **RST-2 IM 图片回推**(依赖 MED-1+通道 SendMedia)与 **SELF-1 自包含档**(需有网实测 pdfium.wasm 体积/内存 + `STANDALONE_WASM` 风险) | `MediaSender` 落地 + 有网实测 | M–L | 📊 **评测见上**;**TUI 位图明确不做**(无图形协议) | **评测(见下方「G 组剩余项评测分析」)**:被依赖阻塞 + 破体积门;TUI 无图形协议支持 → TUI 位图**新登记不做**;建议仅在 E-B/E-C 完成后评估 IM 缩略图分支
+> | **D6-1(E1)** | pdfium-on-WASM 光栅 | ✅ **主力路径已由 RST-1 交付**(外部 pdftoppm:零体积、契约 `DocRasterService` 已就位);余下仅 **SELF-1 自包含档**(需有网实测 pdfium.wasm 体积/内存 + `STANDALONE_WASM` 风险) | `MediaSender` 落地 + 有网实测 | M–L | 📊 **评测见上**;**TUI 位图明确不做**(无图形协议) | **评测(见下方「G 组剩余项评测分析」)**:被依赖阻塞 + 破体积门;TUI 无图形协议支持 → TUI 位图**新登记不做**;建议仅在 E-B/E-C 完成后评估 IM 缩略图分支
 > | ~~**D6-2(E2)**~~ ✅ | 外部转换器探测 | ✅ **已交付 2026-10-11**:`converter.go`(PATH 探测 soffice/libreoffice/pdftoppm;**默认关闭** `data.external_converters`)+ `--headless --convert-to pdf` → D4 PDF 抽取 + 产物落 `$GAH_HOME/cache/doc/`(sha1 复用名,7 天按龄清理,30s 超时,200MiB 上限)+ Web 原生查看器(资产端点放行 `application/pdf`)+ 失败显式回退 + `gah doc --convert` | — | ✅ 已收口 |
 > | **D6-3(E3)** | 引入 `excelize` 替代自研 xlsx | ✅ **判定能力已就绪(DOC-1,2026-10-11)**:GAP 探针给 content/style/info 三档结论 + `GAPSUMMARY`;**首轮真实语料 content_gaps=0** | 仅当真实样本出现 **content 级缺口**(图表/透视/批注/内嵌图整体丢失)才评估;引入前须有网实测依赖与体积(x/crypto·x/image 为新增) | M | ⏸ **当前不引入**(未证伪) | 📊 **评测**:触发条件当前**不可判定**(全仓无真实文档语料);依赖需新增 x/crypto·x/image(gah 现无)且本环境无外网无法实测体积;前置件 E-D
 > | ~~**D6-4**~~ ✅ | HTML 预览收口 | ① **HTML 源码视图块模型已交付**(`extract_html.go`:`<title>` 提取(实体解码/空白折叠/200 字上限)+ 单 `code` 块(零 HTML 通道)+ 含 `<script>`/内联事件时显式告警;`pending` 表清零)② **门控已交付**(DocPanel 默认源码,「沙箱预览」按钮显式点击才挂载 `sandbox=""` iframe;切文件/切工作区重置回源码) | — | ✅ 2026-10-11 已交付 |
@@ -439,6 +439,8 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 >
 > ✅ **MED-2 · QQ 出站文件(2026-10-11 已交付;官方契约字段级复核)**:① **协议层**(`qqbot/upload.go`):四步分片上传——`upload_prepare`(入:`file_type`/`file_size`**字符串**/`file_name`/`md5`/`sha1`/`md5_10m`;出:`upload_id`/`block_size`/`parts[]{index,presigned_url,block_size}`/`upload_config`)→ 分片 **PUT 预签名 URL(不带鉴权头)** → `upload_part_finish`(`{upload_id,part_index,block_size,md5}`,10 QPS)→ `files{file_type,upload_id}` → `{file_uuid,file_info,ttl}`;`SendMediaMessage` 发 `msg_type=7 + media.file_info`;单聊/群端点**严格分派**(不可互通);**`index` 一律以 prepare 响应为准**(社区存在 0/1 起分歧,不自行假设);**分片覆盖不足显式拒绝**(绝不静默上传截断文件);错误码分类 `850031/850019/850026/304080/40093001/40093002` + `IsMediaSizeOver/IsInvalidFileInfo/IsDailyCapacity/IsUploadRetryable`。② **通道层**(`plugins/ui/ui-im-qq/media.go`):`im.MediaSender` 实现——`Kind→file_type`(图片仅 png/jpg、视频仅 mp4、语音仅 silk,**超软限自动降级为文件**并记 `lastError`);`file_info` 按 (chat|路径|size|mtime|file_type) 缓存 TTL 内复用(容量 16,TTL 缺失回落 1h),`304080`/过期 → **重传一次**;被动窗口内带 `msg_id + 自增 seq`(不耗主动配额),无被动上下文走主动配额,**配额耗尽/频控显式报错**(媒体不入 ledger:桥回滚登记条目供重试,可见优于静默滞留)。③ **工具面**(`tool-im` 增 `im_send_file`):先 `RegisterArtifact`(工作区 realpath + 大小上限 + 单次可用)再 `SendArtifact`;D2 口径不变;审批自检同时覆盖 `im_send`/`im_send_file`。④ **测试**:`qqbot/upload_test.go`(四步请求形状与校验值、单聊/群分派、PUT 不带鉴权头、分片拼回原文与末片长度、part_finish 回传 prepare 的 index、空内容/超硬限本地拒绝、业务错误分类、PUT 5xx 显式报错、缺 upload_id、**分片覆盖不足拒绝**)+ `plugins/ui/ui-im-qq/media_test.go`(类型映射与软限降级表驱动、被动优先与 seq、file_info 缓存与失效重传、主动配额扣减与耗尽报错、群路由、上传/发送失败可见、缓存键与容量、TTL 回落)+ tool-im(im_send_file 注册/登记+投递顺序/参数与失败透传/未实现附件面报错)。全库 `go test ./... -race -count=1` 绿。**待真机**:`files` POST 的字段页在 bot.qq.com 404(已知 `file_type`+`upload_id` 可用),真机验收时核对响应字段。
 >
+> ✅ **RST-2 · IM 图片回推(2026-10-11 已交付)**:① **宿主侧路径**(`sdk.DocRaster.CachePath`,不进 JSON):光栅产物路径回传宿主编排层,模型/前端看不到宿主路径;`host-docview.Raster` 填充并测试存在性。② **窄白名单**(`im/artifact.go`):登记允许根 = 当前工作区 ∪ **`$GAH_HOME/cache/doc/raster`**(仅此一个子目录,realpath 归一后比较;GAH_HOME 其它路径(config/sessions/其它 cache)仍拒绝;无 GAH_HOME 时白名单失效)——光栅产物由 host-docview 从工作区文件生成,不是任意用户文件。③ **工具**(`tool-im` 增 `im_send_page`):`ctx.doc` 的 `DocRasterService` 渲染指定页(page 默认 1、dpi 透传 36–300)→ 登记光栅产物 → 投递到已授权目标;未启用光栅/非 PDF/无宿主路径/渠道不支持 → 各自明确错误;默认不注册与审批自检口径不变(三工具一并检查)。④ **测试**:host-docview(光栅结果带 CachePath 且文件存在、位于 cache/doc/raster)+ im(光栅缓存可登记,而同根其它路径仍拒绝、无 GAH_HOME 不放行)+ tool-im(参数透传与登记的是光栅产物、默认页码、能力错误矩阵)。全库 `go test ./... -race -count=1` 绿。**端到端**:`im_send_page` = 文档 → 图片 → 已授权 IM 目标(MED-2 通道);真机验收见 VERIFY。
+>
 > ### G 组剩余项实施方案(2026-10-11;分析后定稿,**待决策点确认即开工**)
 >
 > 前置件 E-A/E-C/E-D/E-E 已交付,下列方案的依赖与成本都已实测(证据见上方「评测分析」)。**优先级 = 依赖最少 × 风险最低 × 收益明确**。
@@ -451,7 +453,7 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 > | ~~**P2 · RST-1**~~ ✅ | 外部 pdftoppm 光栅 | ✅ **2026-10-11 已交付**(`DocRasterService` + `/api/doc/raster` + `gah doc --raster`;零二进制增量) | — | 已收口 | — |
 > | ~~**P3 · MED-2**~~ ✅ | QQ 分片上传 + `msg_type=7` + `im_send_file` | ✅ **2026-10-11 已交付**(协议/通道/工具三层 + 19 组新测试) | — | 已收口(真机核对 `files` 字段) | — |
 > | **P3 · MED-3** E-B 微信 | iLink 上传三段式(加密→CDN→媒体项) | MED-1 | M–L | **高**(仅第三方逆向证据;真机前标 beta) | 6 |
-> | **P3 · RST-2** D6-1b 图片回推 | IM 图片回推(光栅产物 → 通道) | MED-1 + RST-1 | S–M | 中 | 7 |
+> | ~~**P3 · RST-2**~~ ✅ | IM 图片回推 | ✅ **2026-10-11 已交付**(`im_send_page` + 光栅窄白名单;端到端闭环) | — | 已收口 | — |
 > | **P4 · SELF-1** D6-1c 自包含档 | pdfium-WASM + wazero 替换外部光栅 | 有网环境实测 + 体积决策 | M–L | 高(`STANDALONE_WASM` 上游未定;+3～5.5 MiB) | 8 |
 >
 > ---

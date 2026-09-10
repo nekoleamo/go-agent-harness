@@ -412,3 +412,24 @@ func TestServiceRaster(t *testing.T) {
 	// 契约自检
 	var _ sdk.DocRasterService = s
 }
+
+// RST-2:光栅结果应带宿主侧 CachePath(供 IM 图片回推登记),且该文件确实存在。
+func TestServiceRasterCachePath(t *testing.T) {
+	s, dir := newSvc(t, Budget{})
+	p := writeFile(t, dir, "doc.pdf", pdfWithText(t, "cache path"))
+	conv, _ := rasterStub(t, tinyPNG(t), nil)
+	s.conv = *conv
+	out, err := s.Raster(context.Background(), sdk.DocRequest{Path: p}, 1, 96)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.CachePath == "" {
+		t.Fatal("应带宿主侧 CachePath")
+	}
+	if _, err := os.Stat(out.CachePath); err != nil {
+		t.Fatalf("CachePath 应指向实际产物: %v", err)
+	}
+	if !strings.Contains(out.CachePath, filepath.Join("cache", "doc", "raster")) {
+		t.Fatalf("CachePath 应位于 cache/doc/raster: %s", out.CachePath)
+	}
+}

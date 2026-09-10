@@ -353,7 +353,7 @@ func (s *Service) Raster(ctx context.Context, req sdk.DocRequest, page, dpi int)
 	w, h := pngDims(data)
 	return &sdk.DocRaster{
 		Path: displayPath(req, abs), Page: page, DPI: d, W: w, H: h,
-		Bytes: int64(len(data)), Mime: "image/png", Data: data,
+		Bytes: int64(len(data)), Mime: "image/png", Data: data, CachePath: pngPath,
 	}, nil
 }
 

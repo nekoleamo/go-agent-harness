@@ -142,6 +142,9 @@ type DocRaster struct {
 	Bytes int64  `json:"bytes"`
 	Mime  string `json:"mime,omitempty"` // image/png
 	Data  []byte `json:"-"`
+	// CachePath 宿主侧光栅产物路径($GAH_HOME/cache/doc/raster/…;不进 JSON)。
+	// 供宿主工具登记为出站产物(IM 图片回推,RST-2);不暴露给模型/前端。
+	CachePath string `json:"-"`
 }
 
 // DocRasterService 可选能力:把 PDF 页光栅化为图片(实现方 = host-docview;

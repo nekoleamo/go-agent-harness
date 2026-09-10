@@ -20,6 +20,7 @@ import (
 const (
 	ToolSend     = "im_send"
 	ToolSendFile = "im_send_file"
+	ToolSendPage = "im_send_page"
 	ToolStatus   = "im_status"
 )
 
@@ -43,7 +44,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	// 审批链自检:启用但没有把副作用工具接入工具级审批 → 记警告(不静默假设安全)
 	if gate, ok := approvalGate(c); ok {
 		var missing []string
-		for _, name := range []string{ToolSend, ToolSendFile} {
+		for _, name := range []string{ToolSend, ToolSendFile, ToolSendPage} {
 			if !gate.RequiresToolApproval(name) {
 				missing = append(missing, name)
 			}
@@ -56,10 +57,12 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	d1 := tools.Register(&sendTool{c: c})
 	d2 := tools.Register(&statusTool{c: c})
 	d3 := tools.Register(&sendFileTool{c: c})
+	d4 := tools.Register(&sendPageTool{c: c})
 	return func() {
 		d1()
 		d2()
 		d3()
+		d4()
 	}, nil
 }
 
@@ -229,6 +232,90 @@ func (t *sendFileTool) Execute(ctx context.Context, argsJSON string) (any, error
 		"kind":        art.Kind,
 		"artifact_id": art.ID,
 		"note":        "已投递(受大小上限与渠道平台限制;失败会如实报错,可重试)",
+	}, nil
+}
+
+// sendPageTool im_send_page:把 PDF 指定页**渲染成图片**后投递(RST-2:扫描件/版式内容手机侧可直接看)。
+// 链路:ctx.doc 的 DocRasterService 光栅化(产物在 $GAH_HOME/cache/doc/raster)→ 登记 → 投递。
+type sendPageTool struct{ c sdk.Ctx }
+
+func (t *sendPageTool) Definition() sdk.ToolDefinition {
+	return sdk.ToolDefinition{
+		Name: ToolSendPage,
+		Description: "把 PDF 的某一页渲染成图片发送到已授权的 IM 用户或群(适合扫描件/版式内容)。" +
+			"仅在用户明确要求「把第 N 页发给我/发到群里」时使用;需要本机光栅能力(未启用会明确报错);" +
+			"target 取自 im_status;其余安全口径同 im_send_file。",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"target": map[string]any{"type": "string", "description": "目标标识(取自 im_status 的 targets[].key)"},
+				"path":   map[string]any{"type": "string", "description": "PDF 路径(工作区内)"},
+				"page":   map[string]any{"type": "integer", "description": "页码(从 1 开始;默认 1)"},
+				"dpi":    map[string]any{"type": "integer", "description": "渲染 DPI(默认 96;区间 36–300)"},
+			},
+			"required": []string{"target", "path"},
+		},
+	}
+}
+
+func (t *sendPageTool) Execute(ctx context.Context, argsJSON string) (any, error) {
+	var in struct {
+		Target string `json:"target"`
+		Path   string `json:"path"`
+		Page   int    `json:"page"`
+		DPI    int    `json:"dpi"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &in); err != nil {
+		return nil, fmt.Errorf("%s: 参数解析失败: %w", ToolSendPage, err)
+	}
+	target := strings.TrimSpace(in.Target)
+	if target == "" {
+		return nil, fmt.Errorf("%s: target 不能为空(用 im_status 查看可投目标)", ToolSendPage)
+	}
+	path := strings.TrimSpace(in.Path)
+	if path == "" {
+		return nil, fmt.Errorf("%s: path 不能为空", ToolSendPage)
+	}
+	if in.Page <= 0 {
+		in.Page = 1
+	}
+	if t.c == nil {
+		return nil, fmt.Errorf("%s: 宿主上下文不可用", ToolSendPage)
+	}
+	var doc sdk.DocService
+	if err := t.c.Inject("ctx.doc", &doc); err != nil || doc == nil {
+		return nil, fmt.Errorf("%s: 文档服务未装配(ctx.doc)", ToolSendPage)
+	}
+	rs, ok := doc.(sdk.DocRasterService)
+	if !ok {
+		return nil, fmt.Errorf("%s: 该环境未启用光栅(需 host-docview data.external_raster 与本机 poppler)", ToolSendPage)
+	}
+	png, err := rs.Raster(ctx, sdk.DocRequest{Path: path}, in.Page, in.DPI)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", ToolSendPage, err)
+	}
+	svc, err := control(t.c)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", ToolSendPage, err)
+	}
+	att, ok := svc.(sdk.IMAttachmentService)
+	if !ok {
+		return nil, fmt.Errorf("%s: 该渠道不支持出站文件", ToolSendPage)
+	}
+	if png.CachePath == "" {
+		return nil, fmt.Errorf("%s: 光栅产物无宿主路径,无法投递", ToolSendPage)
+	}
+	art, err := att.RegisterArtifact(ctx, png.CachePath)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", ToolSendPage, err)
+	}
+	if err := att.SendArtifact(ctx, target, art.ID); err != nil {
+		return nil, fmt.Errorf("%s: %w", ToolSendPage, err)
+	}
+	return map[string]any{
+		"ok": true, "target": target, "page": png.Page, "dpi": png.DPI,
+		"width": png.W, "height": png.H, "bytes": png.Bytes,
+		"note": "已以图片形式投递(扫描件/版式内容手机侧可视)",
 	}, nil
 }
 

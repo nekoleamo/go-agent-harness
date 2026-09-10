@@ -283,3 +283,46 @@ func TestSendArtifactUnsupportedChannel(t *testing.T) {
 		t.Fatalf("未实现 MediaSender 的通道应显式报错: %v", err)
 	}
 }
+
+// RST-2:光栅缓存目录是**窄白名单**(只放行 $GAH_HOME/cache/doc/raster,其余 GAH_HOME 路径仍拒绝)。
+func TestRegisterArtifactRasterCacheWhitelist(t *testing.T) {
+	ws := t.TempDir()
+	tr := &mediaTransport{}
+	b, _ := buildMediaBridge(t, tr, ws, 0)
+	home := os.Getenv("GAH_HOME") // buildMediaBridge 已设 GAH_HOME=temp
+	var svc sdk.IMAttachmentService = b
+
+	rasterDir := filepath.Join(home, "cache", "doc", "raster")
+	if err := os.MkdirAll(rasterDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	png := filepath.Join(rasterDir, "p1-96-abc.png")
+	if err := os.WriteFile(png, []byte("PNG"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.RegisterArtifact(context.Background(), png); err != nil {
+		t.Fatalf("光栅缓存产物应可登记: %v", err)
+	}
+	// 同一数据根下的其它路径仍拒绝(白名单窄化:不是「整个 GAH_HOME 放行」)
+	for _, p := range []string{
+		filepath.Join(home, "config", "ilink-wechat.yaml"),
+		filepath.Join(home, "cache", "doc", "conv-abc.pdf"),
+		filepath.Join(home, "sessions", "main.jsonl"),
+	} {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := svc.RegisterArtifact(context.Background(), p); err == nil ||
+			!strings.Contains(err.Error(), "工作区内") {
+			t.Fatalf("GAH_HOME 其它路径应拒绝(%s): %v", p, err)
+		}
+	}
+	// 无 GAH_HOME → 光栅白名单失效(仍只允许工作区)
+	t.Setenv("GAH_HOME", "")
+	if _, err := svc.RegisterArtifact(context.Background(), png); err == nil {
+		t.Fatal("无 GAH_HOME 时光栅缓存路径不应放行")
+	}
+}

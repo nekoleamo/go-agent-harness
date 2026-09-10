@@ -158,6 +158,29 @@ func realPathOrAbs(p string) string {
 	return abs
 }
 
+// pathWithin child 是否位于 root 内(root 为空 → false)。
+func pathWithin(root, child string) bool {
+	if root == "" {
+		return false
+	}
+	rel, err := filepath.Rel(root, child)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	return true
+}
+
+// rasterCacheDir 文档光栅缓存根($GAH_HOME/cache/doc/raster;RST-2 的窄白名单)。
+// 只放行这一个子目录:光栅产物由 host-docview 从**工作区文件**生成,不是任意用户文件。
+func rasterCacheDir() string {
+	home := os.Getenv("GAH_HOME")
+	if home == "" {
+		return ""
+	}
+	// 与登记路径同源归一(realpath):macOS /var → /private/var 等符号链接需一致比较。
+	return realPathOrAbs(filepath.Join(home, "cache", "doc", "raster"))
+}
+
 // mediaMaxBytes 出站媒体大小上限(Options 覆盖,默认 20 MB)。
 func (b *Bridge) mediaMaxBytes() int64 {
 	if b.mediaMaxMB > 0 {
@@ -184,8 +207,7 @@ func (b *Bridge) RegisterArtifact(_ context.Context, path string) (sdk.IMArtifac
 	if root == "" {
 		return sdk.IMArtifact{}, fmt.Errorf("im: 无法确定工作区根,拒绝登记")
 	}
-	rel, err := filepath.Rel(root, abs)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	if !pathWithin(root, abs) && !pathWithin(rasterCacheDir(), abs) {
 		return sdk.IMArtifact{}, fmt.Errorf("im: 仅允许发送当前工作区内的文件(越界: %s)", filepath.Base(abs))
 	}
 	max := b.mediaMaxBytes()
