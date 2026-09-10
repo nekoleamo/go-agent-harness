@@ -374,11 +374,11 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 >
 > | 编号 | 项 | 现有 hook(已就绪的落点) | 缺什么 | 量级 | 触发 / 阻塞 |
 > |---|---|---|---|---|---|
-> | **D6-1(E1)** | pdfium-on-WASM 光栅 | ✅ **主力路径已由 RST-1 交付**(外部 pdftoppm:零体积、契约 `DocRasterService` 已就位);余下仅 **SELF-1 自包含档**(需有网实测 pdfium.wasm 体积/内存 + `STANDALONE_WASM` 风险) | `MediaSender` 落地 + 有网实测 | M–L | 📊 **评测见上**;**TUI 位图明确不做**(无图形协议) | **评测(见下方「G 组剩余项评测分析」)**:被依赖阻塞 + 破体积门;TUI 无图形协议支持 → TUI 位图**新登记不做**;建议仅在 E-B/E-C 完成后评估 IM 缩略图分支
+> | **D6-1(E1)** | pdfium-on-WASM 光栅 | ✅ **主力路径已由 RST-1 交付**(外部 pdftoppm:零体积、契约 `DocRasterService` 已就位);余下仅 **SELF-1 自包含档**(⏸ 暂存)(需有网实测 pdfium.wasm 体积/内存 + `STANDALONE_WASM` 风险) | `MediaSender` 落地 + 有网实测 | M–L | 📊 **评测见上**;**TUI 位图明确不做**(无图形协议) | **评测(见下方「G 组剩余项评测分析」)**:被依赖阻塞 + 破体积门;TUI 无图形协议支持 → TUI 位图**新登记不做**;建议仅在 E-B/E-C 完成后评估 IM 缩略图分支
 > | ~~**D6-2(E2)**~~ ✅ | 外部转换器探测 | ✅ **已交付 2026-10-11**:`converter.go`(PATH 探测 soffice/libreoffice/pdftoppm;**默认关闭** `data.external_converters`)+ `--headless --convert-to pdf` → D4 PDF 抽取 + 产物落 `$GAH_HOME/cache/doc/`(sha1 复用名,7 天按龄清理,30s 超时,200MiB 上限)+ Web 原生查看器(资产端点放行 `application/pdf`)+ 失败显式回退 + `gah doc --convert` | — | ✅ 已收口 |
 > | **D6-3(E3)** | 引入 `excelize` 替代自研 xlsx | ✅ **判定能力已就绪(DOC-1,2026-10-11)**:GAP 探针给 content/style/info 三档结论 + `GAPSUMMARY`;**首轮真实语料 content_gaps=0** | 仅当真实样本出现 **content 级缺口**(图表/透视/批注/内嵌图整体丢失)才评估;引入前须有网实测依赖与体积(x/crypto·x/image 为新增) | M | ⏸ **当前不引入**(未证伪) | 📊 **评测**:触发条件当前**不可判定**(全仓无真实文档语料);依赖需新增 x/crypto·x/image(gah 现无)且本环境无外网无法实测体积;前置件 E-D
 > | ~~**D6-4**~~ ✅ | HTML 预览收口 | ① **HTML 源码视图块模型已交付**(`extract_html.go`:`<title>` 提取(实体解码/空白折叠/200 字上限)+ 单 `code` 块(零 HTML 通道)+ 含 `<script>`/内联事件时显式告警;`pending` 表清零)② **门控已交付**(DocPanel 默认源码,「沙箱预览」按钮显式点击才挂载 `sandbox=""` iframe;切文件/切工作区重置回源码) | — | ✅ 2026-10-11 已交付 |
-> | **E5-1(P0-2c)** | 出站文件回传 | `im.Sender` 预算层 + delivery ledger(♻️ 重投)+ `Route` 定向 | iLink 上传客户端 + QQ `file_info` 上传/发送(单聊与群上传**不互通**)+ 失败可见 | M | **卡真机**(上传接口须实测);盲写=假实现,不做 | 📊 **评测**:拆为 **E5-1a QQ(官方文档齐备,mock e2e 可交付)** 与 **E5-1b 微信 iLink(仅第三方逆向证据,高风险)**;前置件 E-B
+> | **E5-1(P0-2c)** | 出站文件回传 | ✅ **E5-1a QQ 已交付(MED-2,2026-10-11)**:四步分片上传 + `msg_type=7` + `im_send_file`/`im_send_page`;⏸ **E5-1b 微信暂存(MED-3)**:契约落档 §9.2,实施即标 beta | iLink 上传客户端(加密→CDN→媒体项)+ 真机验收 | M | ✅ QQ 侧已收口(真机核对 `files` 字段);⏸ 微信侧待真机 | 📊 **评测**:拆为 **E5-1a QQ(官方文档齐备,mock e2e 可交付)** 与 **E5-1b 微信 iLink(仅第三方逆向证据,高风险)**;前置件 E-B
 > | ~~**E5-2**~~ ✅ | 群维度授权完善 | ✅ **已交付 2026-10-11**:`sdk.IMGroupAccessService` + `Bridge.Groups/SetGroupAccess`(合并账本/授权幂等/撤销未知报错)+ 活动记录 TTL 7 天与容量 20(**授权名单不自动过期**,Stale 标记提示清理)+ `GET/POST /api/im/groups` + 面板「群授权」区段 + `/im list` 走同一账本 | — | ✅ 已收口 |
 > | ~~**E5-3**~~ ✅ | 可选模型工具 `im_send` / `im_status` | ✅ **已交付 2026-10-11(IM-1,D1 口径)**:`sdk.IMControlService` + `im.Bridge` 受控出站面 + `plugins/tool/tool-im`(**默认不注册**;目标仅已授权;未接入审批时启动 WARN),seed 17 | — | ✅ 已收口 | 📊 **评测**:风险低于原估——审批链现状只认 shell 命令模式,补 **E-A 工具级审批**(≈40 行,复用三档语义)后即可开工
 > | ~~**E5-4(IM-P3q)**~~ ✅ | question 完整 dsh 事件化 | ✅ **已交付 2026-10-11**:广播面补齐到全部 profile(`sdk.ObservedQuestion` + `NewQuestionID`,单 UI profile 亦广播)+ 事件 `Channel`/`ID` 可关联(Fusion 追踪胜出渠道)+ `sdk.QuestionEventOf/ConfirmEventOf/AnswerSummary` + 各端订阅:web `questiondone`/`confirmdone` 帧与前端关闭遗留弹层、TUI `NoteInteraction` 审计行、IM `WatchInteraction` 回推「已在其它渠道处理」;**顺带修复单 web profile `ctx.question` 类型不符(ask_user_question 不可用)** | — | ✅ 已收口 |
@@ -427,7 +427,7 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 > | ~~**E-D**~~ ✅ | 真实文档保真语料 + opt-in harness(`scripts/gen-doc-corpus.sh` + `TestFidelityCorpus`,poppler `pdftotext` 独立对照) | ✅ **已交付 2026-10-11**:首轮真实语料 8 件(docx 3 / pdf 4 / xlsx 1,含第三方产出的真实合同与模板)→ 硬性不变量全过 + 覆盖率对照;**首个真实缺口已修**(见下「E-D 发现」) | G-D6-3 **判定前提就绪**;D2–D4 回归盲区补齐 | 已收口 |
 > | ~~**E-E**~~ ✅ | 前端逻辑单测(**零新增依赖**:Node 内置 `node --test` + 类型剥离,替代 vitest)+ 引导判定纯函数化 | ✅ **已交付 2026-10-11**:`npm test` 24 项(sse 消费引擎 11 / 引导判定 7 / IM 状态通道 3 / 文档意图白名单 3);`guides.ts` 抽出 `shouldShowGuide` 纯函数;CI 加「前端逻辑单测」步 | G-X2 交互类断言可自动化 | 已收口(不再需要 vitest/E-E 原方案) |
 >
-> **建议结论(已执行)**:前置件 **E-A / E-C / E-D / E-E 已于 2026-10-11 全部交付**(见各行 ✅ 与下方交付行);**E-B 仍待**(它是 G-E5-1 与 G-D6-1 的共同前置)。下一步可选:G-E5-3(前置已齐,E→S 量级)、G-E5-1a QQ(E-B 后)、G-D6-3(语料已就绪,待用真实富格式样本判判定)、G-D6-1(E-B + 需 wazero/pdfium.wasm 有网实测);G-C2/C3 与 G-X1/X2 保持等外部条件。**明确不做(新登记)**:TUI 位图渲染(D6-1 的 TUI 分支:需从零实现图形协议探测与降级,而 Web 原生查看器已覆盖保真呈现)。
+> **本批收口(2026-10-11)**:前置件 **E-A / E-C / E-D / E-E** 与实施方案 **IM-1 / DOC-1 / MED-1 / RST-1 / MED-2 / RST-2** 共 **10 项全部交付**(逐项交付行见上,全部带单测/e2e 与实测证据;**8 项实施计划完成 6 项**)。**暂存 2 项**(已登记前置,随时可开工):**MED-3**(微信 iLink 三段式上传;契约已逐字段落档 §9.2 → 实施即标 beta,真机验收后转正)、**SELF-1**(pdfium-WASM 自包含档;需有网实测体积/内存 + E-C 体积门决策,仅在「零外部依赖部署」需求成立时做)。**非代码侧**:X-1/X-2 真机验收(人工)、C2/C3 发行(等 repo 公开 + 首个 tag)。验证基线:全库 `go test ./... -race -count=1` 绿 + `go vet` 干净 + 前端 `vue-tsc` 0 错/单测 24 项 + `scripts/size-check.sh` 通过(40.68 MiB / gz 27.15 MiB,门 ≤46/≤30)。 |
 >
 > ✅ **IM-1 · G-E5-3 远程工具(2026-10-11 已交付,D1 口径全部落实)**:① **契约**(`sdk/im.go`):`IMSendTarget`/`IMControlStatus`/`IMControlService{Status,Targets,SendText}` + 可选 `ApprovalToolGate`(供工具自检审批接入)。② **受控出站面**(`im/control.go`,由 `ui-im-*` Provide `ctx.imControl`):`Targets()` = 已授权用户 ∪ 已授权群(实时、稳定排序、剥离渠道前缀);`SendText` **仅接受 Targets() 内目标**(未授权/空目标/空文本 → 显式错误,不回落 LastRoute),投递复用通道 `SendText`(预算/配额/ledger 无旁路);`Status()` 只读(渠道/相位/模型/会话/忙闲/授权计数/目标)。新增 `Route.Group` 显式群标记(主动向群投递无成员上下文)——QQ 按 `Group || ChatID!=UserID` 派群端点,微信显式报「不支持群投递」。③ **工具插件** `plugins/tool/tool-im`(**默认不注册**:`data.enabled` 才注册;未启用零副作用):`im_send{target,text}`(校验空值/≤8000 字/底层错误带工具名前缀)、`im_status{}`(只读状态 + 可投目标);`ctx.imControl` **运行期现取**(装配顺序无耦合);启用但未接入审批 → 启动 **WARN** 提示加 `approval_tools`(不阻塞、不静默假设安全)。④ **登记/装配**:catalogue(base,Requires ctx.tools)+ plugins/README 行 + 两份 bundle-base **seed-version 16 → 17**(条目 `enabled: false` + `data.enabled: false`,注释给出启用两步);README 双语(工具表 + IM 小节启用说明)。⑤ **测试**:`plugins/tool/tool-im`(默认关零注册 ×4 组数据形态、启用注册两工具、im_status 透传、im_send 投递与 6 类参数错误、未装配控制面结构化错误、底层错误前缀、审批闸门 armed/unarmed/无闸门三态);`im/control_test.go`(仅枚举已授权/新授权即时出现、私聊与群 Route 标记、未授权与空值拒绝且零出站、状态只读不谎报连通/busy 联动);`tests/im_tools_e2e_test.go`(真实 base+im-qq+tool-im 装配:工具可见 → im_status 含 OPENID1 → im_send 经 QQ REST 投递且带被动 `msg_id` → 未授权目标拒绝且出站数不变;默认关闭时工具不可见)。全库 `go test ./... -race -count=1` 绿。
 >
@@ -441,7 +441,7 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 >
 > ✅ **RST-2 · IM 图片回推(2026-10-11 已交付)**:① **宿主侧路径**(`sdk.DocRaster.CachePath`,不进 JSON):光栅产物路径回传宿主编排层,模型/前端看不到宿主路径;`host-docview.Raster` 填充并测试存在性。② **窄白名单**(`im/artifact.go`):登记允许根 = 当前工作区 ∪ **`$GAH_HOME/cache/doc/raster`**(仅此一个子目录,realpath 归一后比较;GAH_HOME 其它路径(config/sessions/其它 cache)仍拒绝;无 GAH_HOME 时白名单失效)——光栅产物由 host-docview 从工作区文件生成,不是任意用户文件。③ **工具**(`tool-im` 增 `im_send_page`):`ctx.doc` 的 `DocRasterService` 渲染指定页(page 默认 1、dpi 透传 36–300)→ 登记光栅产物 → 投递到已授权目标;未启用光栅/非 PDF/无宿主路径/渠道不支持 → 各自明确错误;默认不注册与审批自检口径不变(三工具一并检查)。④ **测试**:host-docview(光栅结果带 CachePath 且文件存在、位于 cache/doc/raster)+ im(光栅缓存可登记,而同根其它路径仍拒绝、无 GAH_HOME 不放行)+ tool-im(参数透传与登记的是光栅产物、默认页码、能力错误矩阵)。全库 `go test ./... -race -count=1` 绿。**端到端**:`im_send_page` = 文档 → 图片 → 已授权 IM 目标(MED-2 通道);真机验收见 VERIFY。
 >
-> ### G 组剩余项实施方案(2026-10-11;分析后定稿,**待决策点确认即开工**)
+> ### G 组剩余项实施方案(2026-10-11;分析后定稿 → **本批 6/8 已交付,MED-3/SELF-1 暂存**)
 >
 > 前置件 E-A/E-C/E-D/E-E 已交付,下列方案的依赖与成本都已实测(证据见上方「评测分析」)。**优先级 = 依赖最少 × 风险最低 × 收益明确**。
 >
@@ -452,9 +452,9 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 > | ~~**P2 · MED-1**~~ ✅ | 出站媒体接口 + 产物登记 | ✅ **2026-10-11 已交付**(登记制/越界与限额拒绝/TTL+单次可用/失败回滚) | — | 已收口 | — |
 > | ~~**P2 · RST-1**~~ ✅ | 外部 pdftoppm 光栅 | ✅ **2026-10-11 已交付**(`DocRasterService` + `/api/doc/raster` + `gah doc --raster`;零二进制增量) | — | 已收口 | — |
 > | ~~**P3 · MED-2**~~ ✅ | QQ 分片上传 + `msg_type=7` + `im_send_file` | ✅ **2026-10-11 已交付**(协议/通道/工具三层 + 19 组新测试) | — | 已收口(真机核对 `files` 字段) | — |
-> | **P3 · MED-3** E-B 微信 | iLink 上传三段式(加密→CDN→媒体项) | MED-1 | M–L | **高**(仅第三方逆向证据;真机前标 beta) | 6 |
+> | **P3 · MED-3** E-B 微信 | iLink 上传三段式(加密→CDN→媒体项) | ✅ MED-1;✅ 契约已落档(§9.2) | M–L | ⏸ **暂存**:高(仅第三方逆向证据)→ **实现即标 beta + 真机前不宣称交付**;真机验收后转正 | 6 |
 > | ~~**P3 · RST-2**~~ ✅ | IM 图片回推 | ✅ **2026-10-11 已交付**(`im_send_page` + 光栅窄白名单;端到端闭环) | — | 已收口 | — |
-> | **P4 · SELF-1** D6-1c 自包含档 | pdfium-WASM + wazero 替换外部光栅 | 有网环境实测 + 体积决策 | M–L | 高(`STANDALONE_WASM` 上游未定;+3～5.5 MiB) | 8 |
+> | **P4 · SELF-1** D6-1c 自包含档 | pdfium-WASM + wazero 替换外部光栅 | ⏸ **暂存前置**:有网环境实测(pdfium.wasm 体积 / wazero 内存 / `STANDALONE_WASM` 可行性)+ E-C 体积门决策 | M–L | ⏸ **暂存**:高(`STANDALONE_WASM` 上游未定;#28);**仅当需要「零外部依赖部署」时才做**(当前外部 pdftoppm 路径已覆盖功能) | 8 |
 >
 > ---
 >
@@ -517,6 +517,20 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 > **验收**:真实 PDF 语料光栅化 + Web 缩略图;无 pdftoppm 环境下的结构化提示。
 >
 > ---
+>
+> **📦 本批交付汇总(2026-10-11;单一入口)**
+>
+> | 切片 | 提交 | 交付物 | 验证 |
+> |---|---|---|---|
+> | IM-1(G-E5-3) | `17cddde` | `sdk.IMControlService` + `tool-im`(`im_send`/`im_status`,默认不注册;seed 17) | tool-im/im/e2e 三层测试 |
+> | DOC-1(D6-3 判定) | `b0d4eae` | GAP 探针(xlsx 12/docx 11/pptx 7 特性 × content/style/info)+ GAPSUMMARY | 探针单测 + 首轮真实语料 content_gaps=0 |
+> | MED-1(E-B 接口) | `ba61328` | `im.MediaSender` + 产物登记账本(工作区内/限额/TTL/单次可用/失败回滚) | 8 组单测 |
+> | RST-1(D6-1a) | `9e9a52e` | `DocRasterService` + `/api/doc/raster` + `gah doc --raster`(外部 pdftoppm,零体积) | converter/service/web/CLI + 真机实测 PNG |
+> | MED-2(E5-1a) | `4d55751` | qqbot 四步分片上传 + `msg_type=7` + `im_send_file` | 协议/通道/工具 19 组测试 |
+> | RST-2(D6-1b) | `c87c015` | `im_send_page`(PDF 页 → 图片)+ 光栅窄白名单 | 3 包测试 + 端到端闭环 |
+> | 前置件 | `50a7aad`/`124b06d`/`1e3a7e0`/`1a4329b` | E-A 工具级审批、E-C 体积门重定基、E-D 真实语料 harness(+部首码位修正)、E-E 前端零依赖单测 | 见各自提交 |
+>
+> **暂存(可随时开工)**:MED-3(微信 iLink 三段式;beta+真机)、SELF-1(pdfium-WASM 自包含档;有网实测 + 体积决策)。
 >
 > **需拍板的决策点(开工前确认)**
 >
