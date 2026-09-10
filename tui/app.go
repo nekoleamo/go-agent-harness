@@ -36,6 +36,9 @@ type App struct {
 
 	pendMu  sync.Mutex   // 融合 Present 的待应答通道(P3:tui 作为 confirm presenter)
 	pending []chan bool  // 每次 Present 一个;确认结果广播并清理
+
+	askMu   sync.Mutex               // 提问待答通道(P3:tui 作为 question presenter)
+	qPend   []chan sdk.QuestionAnswer // 每次 PresentQuestion 一个;作答广播并清理
 	started atomic.Bool  // TUI 程序已启动(未启动时不向 program 发送,防测试/装配期阻塞)
 	subs      []sdk.Disposer
 	cmds      sdk.CommandRegistry // ctx.commands(可为 nil:未装配时命令不可用)
@@ -94,6 +97,7 @@ func NewApp(c sdk.Ctx, loop sdk.AgentLoop, llm sdk.LLMService, profile string, p
 	m.onSubmit = a.submit
 	m.onCommand = a.command
 	m.onConfirm = a.confirmResult
+	m.onQuestion = a.answerQuestion
 	m.onCancel = a.cancelCurrent
 	m.hints = a.suggestHints
 	m.levels = a.levels
@@ -175,6 +179,43 @@ func (a *App) confirmResult(ok bool) {
 	for _, ch := range pends {
 		select {
 		case ch <- ok:
+		default:
+		}
+	}
+}
+
+// PresentQuestion sdk.QuestionPresenter(P3 语义交互):问题与编号选项入会话流,
+// 返回作答通道;cancel 幂等撤销。
+func (a *App) PresentQuestion(_ context.Context, q sdk.Question) (<-chan sdk.QuestionAnswer, func(), error) {
+	ch := make(chan sdk.QuestionAnswer, 1)
+	a.askMu.Lock()
+	a.qPend = append(a.qPend, ch)
+	a.askMu.Unlock()
+	if a.program != nil && a.started.Load() {
+		a.program.Send(questionMsg{q: q})
+	}
+	cancel := func() {
+		a.askMu.Lock()
+		for i, c := range a.qPend {
+			if c == ch {
+				a.qPend = append(a.qPend[:i], a.qPend[i+1:]...)
+				break
+			}
+		}
+		a.askMu.Unlock()
+	}
+	return ch, cancel, nil
+}
+
+// answerQuestion 用户作答:广播给全部待答提问(通常 1 个)。
+func (a *App) answerQuestion(ans sdk.QuestionAnswer) {
+	a.askMu.Lock()
+	pends := a.qPend
+	a.qPend = nil
+	a.askMu.Unlock()
+	for _, ch := range pends {
+		select {
+		case ch <- ans:
 		default:
 		}
 	}

@@ -1515,3 +1515,56 @@ func (stubIMChannels) Status() []sdk.IMChannelStatus {
 		{Channel: "wechat", State: "configuring", Detail: "wechat: 未登录", Error: "未登录(执行 /wechat login)"},
 	}
 }
+
+// TestQuestionEndpoint POST /api/question:作答回传(未知 id 也 200 幂等)。
+func TestQuestionEndpoint(t *testing.T) {
+	s, _ := newTestServer()
+	hs := httptest.NewServer(s.handler())
+	defer hs.Close()
+
+	// 未知 id:幂等 200(不报错,防重放/超时后前端迟到提交)
+	body := `{"id":"unknown","values":["prod"],"text":""}`
+	resp, err := http.Post(hs.URL+"/api/question", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("未知 id 应 200 幂等,得 %d", resp.StatusCode)
+	}
+	// 缺 id:400
+	resp2, err := http.Post(hs.URL+"/api/question", "application/json", strings.NewReader(`{"values":["a"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusBadRequest {
+		t.Fatalf("缺 id 应 400,得 %d", resp2.StatusCode)
+	}
+	// 已登记提问 → 作答回填(先订阅再推送,对齐真实时序)
+	stream, release := s.hub.Stream()
+	defer release()
+	ch, cancel, err := s.Question().PresentQuestion(context.Background(), sdk.Question{
+		Prompt: "选环境", Options: []sdk.QuestionOption{{Value: "dev"}, {Value: "prod"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	f := <-stream
+	req, _ := f.Payload.(*QuestionRequest)
+	resp3, err := http.Post(hs.URL+"/api/question", "application/json",
+		strings.NewReader(`{"id":"`+req.ID+`","values":["prod"],"text":""}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp3.Body.Close()
+	select {
+	case ans := <-ch:
+		if len(ans.Values) != 1 || ans.Values[0] != "prod" {
+			t.Fatalf("作答应回填 prod: %+v", ans)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("作答未回填")
+	}
+}

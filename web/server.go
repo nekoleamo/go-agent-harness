@@ -71,10 +71,11 @@ type CommandResult struct {
 
 // Server Web UI 服务:持有宿主服务依赖 + 事件通道 + 确认服务。
 type Server struct {
-	cfg     Config
-	hub     *EventHub
-	confirm *ConfirmService
-	log     *slog.Logger
+	cfg      Config
+	hub      *EventHub
+	confirm  *ConfirmService
+	question *QuestionService
+	log      *slog.Logger
 
 	loop     sdk.AgentLoop
 	sessions sdk.SessionLog
@@ -106,8 +107,11 @@ type Server struct {
 
 // New 构造服务;依赖经插件装配层注入(Required 之外的可选注入失败即忽略)。
 func New(cfg Config, hub *EventHub, confirm *ConfirmService, log *slog.Logger) *Server {
-	return &Server{cfg: cfg, hub: hub, confirm: confirm, log: log}
+	return &Server{cfg: cfg, hub: hub, confirm: confirm, question: NewQuestionService(hub), log: log}
 }
+
+// Question Web 提问服务(P3;ui-web-app 用它注册渠道呈现者或 Provide ctx.question)。
+func (s *Server) Question() *QuestionService { return s.question }
 
 // Inject 注入宿主服务;required 缺失返回错误(显式失败),optional 缺失跳过。
 func (s *Server) Inject(c sdk.Ctx) error {
@@ -206,6 +210,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET /api/backup", s.handleBackup)
 	mux.HandleFunc("POST /api/backup", s.handleBackup)
 	mux.HandleFunc("GET /api/im/channels", s.handleIMChannels)
+	mux.HandleFunc("POST /api/question", s.handleQuestion)
 	mux.Handle("/ui-plugins/", s.uiPluginsHandler())
 	mux.Handle("/attachments/", s.attachmentsHandler())
 	mux.Handle("/", s.staticHandler())
@@ -1427,6 +1432,25 @@ func errString(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+// handleQuestion POST /api/question:结构化提问作答回传(前端弹层;未知 id 幂等忽略)。
+func (s *Server) handleQuestion(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ID     string   `json:"id"`
+		Values []string `json:"values"`
+		Text   string   `json:"text"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if body.ID == "" {
+		http.Error(w, "缺少弹层 id", http.StatusBadRequest)
+		return
+	}
+	s.question.Answer(body.ID, sdk.QuestionAnswer{Values: body.Values, Text: body.Text})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // handleIMChannels GET /api/im/channels:IM 通道状态(wechat/qq 登录态/授权/诊断;

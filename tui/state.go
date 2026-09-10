@@ -3,6 +3,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"time"
 	"unicode"
@@ -53,6 +54,7 @@ type State struct {
 	Sandbox        string         // 沙箱档位显示(read-only|workspace-write|full-access)
 	Approval       string         // 审批档位显示(open|smart|strict)
 	PendingConfirm string         // 非空 = 有待确认的危险操作(确认弹层)
+	PendingQuestion *sdk.Question // 非 nil = 有等待作答的结构化提问(P3;输入框作答)
 	Suggestions    []string       // 输入 / 前缀时的命令提示(注册表过滤结果,渲染于输入行下方)
 	Pick           *Pick          // 非空 = 交互式选择器激活(↑/↓ 移动,Enter 应用)
 	PickDismissed  bool           // Esc/断点后抑制自动激活,直至输入变化
@@ -238,6 +240,39 @@ func (s *State) ApplyConfirmPrompt(prompt string) {
 func (s *State) ResolveConfirm(ok bool) bool {
 	s.PendingConfirm = ""
 	return ok
+}
+
+// ApplyQuestionPrompt 记录待答提问并把问题与编号选项追加到会话流(输入框作答)。
+func (s *State) ApplyQuestionPrompt(q sdk.Question) {
+	s.PendingQuestion = &q
+	s.Lines = append(s.Lines, Line{Kind: "meta", Text: questionPromptText(q)})
+}
+
+// ResolveQuestion 作答完成后清除待答态。
+func (s *State) ResolveQuestion() {
+	s.PendingQuestion = nil
+}
+
+// questionPromptText 提问展示文本(❓ 问题 + 编号选项 + 作答指引)。
+func questionPromptText(q sdk.Question) string {
+	var b strings.Builder
+	b.WriteString("❓ " + q.Prompt)
+	for i, o := range q.Options {
+		d := o.Desc
+		if d == "" {
+			d = o.Value
+		}
+		b.WriteString(fmt.Sprintf("\n  %d) %s", i+1, d))
+	}
+	switch {
+	case len(q.Options) > 0 && q.Multiple:
+		b.WriteString("\n回复编号(多选可用逗号分隔)后回车")
+	case len(q.Options) > 0:
+		b.WriteString("\n回复编号或直接输入内容后回车")
+	default:
+		b.WriteString("\n请直接输入内容后回车")
+	}
+	return b.String()
 }
 
 func (s *State) SetError(msg string) {

@@ -2,7 +2,7 @@
 // 契约来源:web/server.go 的 SSE 帧与 REST 响应。
 
 // —— SSE 帧 ——
-export type FrameType = 'session' | 'status' | 'error' | 'confirm' | 'command'
+export type FrameType = 'session' | 'status' | 'error' | 'confirm' | 'command' | 'question'
 
 export interface Frame {
   id: number
@@ -18,6 +18,15 @@ export interface SessionEvent {
   Seq: number
   Payload: unknown
   TS: string
+}
+
+// 结构化提问弹层载荷(FrameQuestion payload;P3 语义交互)
+export interface QuestionRequest {
+  id: string
+  prompt: string
+  options?: { value: string; desc?: string }[]
+  multiple?: boolean
+  free_text?: boolean
 }
 
 // —— IM 通道状态(/api/im/channels;P3 三端融合面板)——

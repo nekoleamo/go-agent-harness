@@ -6,9 +6,10 @@ import type { AskConfirm } from './types'
 import { consume, isUsage, newModel, type StreamModel } from './sse'
 import { createTransport, type Transport } from './transport'
 import { extraPanel, slotComponent, type MetaLine } from './registry'
-import type { SessionEvent, StateView, ConfirmRequest, CommandResult } from './types'
+import type { SessionEvent, StateView, ConfirmRequest, CommandResult, QuestionRequest } from './types'
 import StatusBar from './components/StatusBar.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
+import QuestionDialog from './components/QuestionDialog.vue'
 import ConfirmBar from './components/ConfirmBar.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import JobsPanel from './components/JobsPanel.vue'
@@ -25,6 +26,7 @@ const state = ref<StateView>({
 const model = ref<StreamModel>(newModel())
 const metas = ref<MetaLine[]>([])
 const confirm = ref<ConfirmRequest | null>(null)
+const question = ref<QuestionRequest | null>(null)
 const connState = ref<'open' | 'reconnecting'>('open')
 const err = ref('')
 // 侧栏数据刷新信号:会话/工作区切换后 +1,Sidebar watch 重拉列表
@@ -157,6 +159,9 @@ function rebuild(keepCursor: boolean): void {
   transport.on('confirm', (f) => {
     confirm.value = f.payload as ConfirmRequest
   })
+  transport.on('question', (f) => {
+    question.value = f.payload as QuestionRequest
+  })
 }
 
 async function refreshStats(): Promise<void> {
@@ -191,6 +196,17 @@ function sessionChanged(): void {
   void refreshStats()
   rebuild(false)
   refreshKey.value++
+}
+
+async function onQuestionAnswer(values: string[], text: string): Promise<void> {
+  const req = question.value
+  if (!req) return
+  question.value = null
+  try {
+    await api.questionAnswer(req.id, values, text)
+  } catch (e) {
+    metas.value.push({ kind: 'error', text: '作答提交失败: ' + (e as Error).message })
+  }
 }
 
 async function onAnswer(ok: boolean): Promise<void> {
@@ -270,6 +286,9 @@ onUnmounted(() => {
     <section class="confirm-slot" data-ui-slot="confirm">
       <ConfirmDialog v-if="hasSlot('confirm')" :request="confirm" :on-answer="onAnswer" />
     </section>
+
+    <!-- 结构化提问弹层(P3 语义交互;宿主直挂,不经槽位覆盖) -->
+    <QuestionDialog :request="question" :on-answer="onQuestionAnswer" />
 
     <div v-if="err" class="err-banner">{{ err }}</div>
 

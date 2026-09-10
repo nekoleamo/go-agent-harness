@@ -69,6 +69,10 @@ export const api = {
   confirm(id: string, ok: boolean): Promise<void> {
     return req('/api/confirm', { method: 'POST', headers: json, body: JSON.stringify({ id, ok }) })
   },
+  // 结构化提问作答(P3;values=选项值,text=自由文本,二者可并存)
+  questionAnswer(id: string, values: string[], text: string): Promise<void> {
+    return req('/api/question', { method: 'POST', headers: json, body: JSON.stringify({ id, values, text }) })
+  },
   sessionSwitch(id: string): Promise<void> {
     return req('/api/sessions', { method: 'POST', headers: json, body: JSON.stringify({ action: 'switch', id }) })
   },

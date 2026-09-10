@@ -80,12 +80,25 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	// P3 融合:已装配 host-confirm-fusion(提供 ctx.confirmFusion)→ 注册为呈现者
 	// (与 IM 等渠道并存同卡),不再 Provide ctx.confirm;未装配 = 单 web profile 自提供。
 	var fusionReg sdk.Disposer = func() {}
+	var questionReg sdk.Disposer = func() {}
 	var fusion sdk.ConfirmFusion
 	if err := c.Inject("ctx.confirmFusion", &fusion); err == nil && fusion != nil {
 		fusionReg = fusion.Register("web", confirm)
-	} else if err := c.Provide("ctx.confirm", confirm); err != nil {
-		unsub()
-		return nil, err
+		// P3 语义交互:同一 web 服务作为提问呈现者注册(与确认同管道,首答生效)
+		var qs sdk.QuestionService
+		if err := c.Inject("ctx.question", &qs); err == nil && qs != nil {
+			questionReg = qs.RegisterQuestioner("web", srv.Question())
+		}
+	} else {
+		if err := c.Provide("ctx.confirm", confirm); err != nil {
+			unsub()
+			return nil, err
+		}
+		// 单 web profile(无 fusion):web 自身提供结构化提问
+		if err := c.Provide("ctx.question", srv.Question()); err != nil {
+			unsub()
+			return nil, err
+		}
 	}
 	go func() {
 		if err := srv.Start(); err != nil {
@@ -94,6 +107,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	}()
 	return func() {
 		fusionReg()
+		questionReg()
 		unsub()
 		srv.Shutdown()
 	}, nil

@@ -23,6 +23,8 @@ const (
 	FrameError = "error"
 	// FrameConfirm 审批弹层推送(载荷 *ConfirmRequest)。
 	FrameConfirm = "confirm"
+	// FrameQuestion 结构化提问弹层推送(载荷 *QuestionRequest;P3 语义交互)。
+	FrameQuestion = "question"
 	// FrameCommand 命令执行结果(载荷 *CommandResult)。
 	FrameCommand = "command"
 )

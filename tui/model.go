@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,6 +33,9 @@ type disarmQuitMsg struct{} // 双按退出武装超时解除(tea.Tick 单次延
 type barHideMsg struct{} // 滚动条 auto-hide:最近交互超时后触发重绘隐藏(tea.Tick 单次)
 
 type confirmMsg struct{ prompt string }
+
+// questionMsg 结构化提问(P3 语义交互):问题与编号选项入会话流,输入框作答。
+type questionMsg struct{ q sdk.Question }
 
 // Model 实现 tea.Model。
 type Model struct {
@@ -61,6 +65,7 @@ type Model struct {
 	onSubmit        func(input string)               // 普通输入提交(注入)
 	onCommand       func(cmd string) error           // 命令处理(注入)
 	onConfirm       func(ok bool)                    // 确认答复(注入;见 app.Confirm)
+	onQuestion      func(sdk.QuestionAnswer)        // 提问作答(注入;见 app.PresentQuestion)
 	onCancel        func()                           // 取消进行中的回合(注入;Esc 触发)
 	hints           func(prefix string) []sdk.Option // 命令选项(注入;前缀=去掉 / 后的输入)
 	levels          func(name string) []sdk.ArgLevel // 命令参数级定义(注入;枚举/自由级)
@@ -130,6 +135,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case confirmMsg:
 		m.state.ApplyConfirmPrompt(msg.prompt)
+	case questionMsg:
+		m.state.ApplyQuestionPrompt(msg.q)
 	case spinnerMsg:
 		// 思考动画:仅回合运行中续发 tick(空闲停,不浪费重绘)
 		if m.state.Running {
@@ -1136,6 +1143,11 @@ func (m *Model) syncHints() {
 // 用户可修改);空/纯空白(含仅换行/空格)不发起回合。
 func (m *Model) submit() {
 	input := m.state.Input
+	// P3 语义交互:有待答提问 → 本条输入作为作答(不发起回合)
+	if m.state.PendingQuestion != nil {
+		m.submitQuestionAnswer(input)
+		return
+	}
 	if m.freeContinue(input) {
 		return // 多值自由参数逐步向导推进(命令未执行,等待下一参数输入)
 	}
@@ -1163,6 +1175,73 @@ func (m *Model) submit() {
 		return
 	}
 	m.onSubmit(input)
+}
+
+// submitQuestionAnswer 提交提问作答:解析编号/自由文本 → 回填;无法识别则提示保留输入。
+func (m *Model) submitQuestionAnswer(input string) {
+	q := *m.state.PendingQuestion
+	ans, ok := parseTUIAnswer(q, input)
+	if !ok {
+		m.state.Lines = append(m.state.Lines, Line{Kind: "meta", Text: "无法识别作答,请回复编号或输入内容"})
+		return
+	}
+	m.state.ClearInput()
+	m.syncHints()
+	m.state.ResolveQuestion()
+	if m.onQuestion != nil {
+		m.onQuestion(ans)
+	}
+}
+
+// parseTUIAnswer 解析输入为作答:编号(1-based)/ 选项值 / 说明精确匹配;多选逗号分隔;
+// 允许自由文本时整段作为文本;否则不可用(false)。
+func parseTUIAnswer(q sdk.Question, input string) (sdk.QuestionAnswer, bool) {
+	t := strings.TrimSpace(input)
+	if t == "" {
+		return sdk.QuestionAnswer{}, false
+	}
+	if len(q.Options) == 0 {
+		return sdk.QuestionAnswer{Text: t}, true
+	}
+	parts := strings.FieldsFunc(t, func(r rune) bool {
+		return r == ',' || r == '，' || r == ' ' || r == '、' || r == ';' || r == '；'
+	})
+	var vals []string
+	seen := map[string]bool{}
+	all := true
+	for _, p := range parts {
+		m := ""
+		if n, err := strconv.Atoi(p); err == nil {
+			if n >= 1 && n <= len(q.Options) {
+				m = q.Options[n-1].Value
+			}
+		} else {
+			for _, o := range q.Options {
+				if o.Value == p || (o.Desc != "" && o.Desc == p) {
+					m = o.Value
+					break
+				}
+			}
+		}
+		if m == "" {
+			all = false
+			break
+		}
+		if !seen[m] {
+			seen[m] = true
+			vals = append(vals, m)
+		}
+	}
+	if all && len(vals) > 0 {
+		if !q.Multiple && len(vals) > 1 {
+			return sdk.QuestionAnswer{}, false
+		}
+		return sdk.QuestionAnswer{Values: vals}, true
+	}
+	if q.FreeText {
+		return sdk.QuestionAnswer{Text: t}, true
+	}
+	return sdk.QuestionAnswer{}, false
 }
 
 // submitQueuedNext 自动发送队列下一条(回合成功结束后调用;Running 由 onSubmit 置位)。

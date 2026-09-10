@@ -3,6 +3,7 @@
 package uitui
 
 import (
+	"context"
 	"os"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
@@ -53,11 +54,23 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	// 确认服务(审批弹层):单 profile 自 Provide;P3 融合(host-confirm-fusion 装配)
 	// 时注册为 tui 呈现者,与 web/im 同进程并存同卡(不再 Provide 防同名冲突)。
 	var confirmReg sdk.Disposer = func() {}
+	var questionReg sdk.Disposer = func() {}
 	var fusion sdk.ConfirmFusion
 	if err := c.Inject("ctx.confirmFusion", &fusion); err == nil && fusion != nil {
 		confirmReg = fusion.Register("tui", app)
-	} else if err := c.Provide("ctx.confirm", app); err != nil {
-		return nil, err
+		// P3 语义交互:同一 App 作为提问呈现者注册(与确认同管道,首答生效)
+		var qs sdk.QuestionService
+		if err := c.Inject("ctx.question", &qs); err == nil && qs != nil {
+			questionReg = qs.RegisterQuestioner("tui", app)
+		}
+	} else {
+		if err := c.Provide("ctx.confirm", app); err != nil {
+			return nil, err
+		}
+		// 单 tui profile(无 fusion):App 自身提供结构化提问(问题入会话流,输入框作答)
+		if err := c.Provide("ctx.question", tuiQuestionService{app: app}); err != nil {
+			return nil, err
+		}
 	}
 	if err := app.Start(); err != nil {
 		confirmReg()
@@ -65,8 +78,30 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	}
 	return func() {
 		confirmReg()
+		questionReg()
 		app.Close()
 	}, nil
+}
+
+// tuiQuestionService 单 tui profile 的提问服务适配:Ask 直连 App 呈现(cancel 清理)。
+type tuiQuestionService struct{ app *tui.App }
+
+func (s tuiQuestionService) Ask(ctx context.Context, q sdk.Question) (sdk.QuestionAnswer, error) {
+	ch, cancel, err := s.app.PresentQuestion(ctx, q)
+	if err != nil {
+		return sdk.QuestionAnswer{}, err
+	}
+	defer cancel()
+	select {
+	case a := <-ch:
+		return a, nil
+	case <-ctx.Done():
+		return sdk.QuestionAnswer{}, ctx.Err()
+	}
+}
+
+func (s tuiQuestionService) RegisterQuestioner(string, sdk.QuestionPresenter) sdk.Disposer {
+	return func() {}
 }
 
 // stdinIsTTY 检测 stdin 是否为交互终端(管道/重定向时降级文本)。
