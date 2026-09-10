@@ -133,6 +133,13 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 			Usage: "/wechat login|status",
 			Desc:  "微信 iLink 通道:扫码登录/状态",
 			Run:   func(args []string) (string, error) { return tr.wechatCmd(context.Background(), args) },
+			// 二级选项(status 查看 / login 扫码登录或重新登录;login 无额外参数)
+			Args: []sdk.ArgLevel{{Options: func([]string) []sdk.Option {
+				return []sdk.Option{
+					{Value: "status", Desc: "查看登录态(账号/token 尾号/轮询/已授权)"},
+					{Value: "login", Desc: "扫码登录(已登录则重新扫码并覆盖凭证)"},
+				}
+			}}},
 		})
 		if err != nil {
 			return nil, err

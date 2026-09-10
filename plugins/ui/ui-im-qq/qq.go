@@ -139,6 +139,21 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 			Usage: "/qq login|status",
 			Desc:  "QQ 官方 Bot 通道:配置(AppID/AppSecret)/状态",
 			Run:   func(args []string) (string, error) { return tr.qqCmd(context.Background(), args) },
+			// 二级选项:status 查看 / login 填凭证(login 再分两级输入 AppID、AppSecret)
+			Args: []sdk.ArgLevel{
+				{Options: func([]string) []sdk.Option {
+					return []sdk.Option{
+						{Value: "status", Desc: "查看配置/网关/已授权"},
+						{Value: "login", Desc: "填写 AppID/AppSecret 并启动网关"},
+					}
+				}},
+				{FreeArgs: func(picked []string) []string {
+					if len(picked) > 0 && picked[0] == "login" {
+						return []string{"AppID", "AppSecret"}
+					}
+					return nil // status:无参数,直接执行
+				}},
+			},
 		})
 		if err != nil {
 			return nil, err

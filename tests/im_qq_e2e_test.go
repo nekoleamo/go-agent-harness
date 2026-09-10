@@ -831,3 +831,81 @@ func TestImQQKeyboardConfirmE2E(t *testing.T) {
 		t.Fatalf("键盘批准后应执行: %q", got.bodyText())
 	}
 }
+
+// TestIMQQCommandSubLevels /qq 二级选项契约:status/login 枚举;login 路径再要求
+// AppID/AppSecret 两个自由参数(选择器逐级输入)。
+func TestIMQQCommandSubLevels(t *testing.T) {
+	m, hs := newQQMock(t)
+	_ = m // 仅需 mock 端点地址装配通道;命令契约断言不跑回合
+	c := mustQQEnvCtx(t, hs.URL)
+	var cmds sdk.CommandRegistry
+	if err := c.Inject("ctx.commands", &cmds); err != nil {
+		t.Fatal(err)
+	}
+	qc, ok := cmds.Get("qq")
+	if !ok {
+		t.Fatal("/qq 未注册")
+	}
+	if len(qc.Args) < 2 {
+		t.Fatal("/qq 应声明两级 Args(枚举 + 登录凭据)")
+	}
+	vals := map[string]bool{}
+	for _, o := range qc.Args[0].Options(nil) {
+		vals[o.Value] = true
+	}
+	if !vals["status"] || !vals["login"] {
+		t.Fatalf("/qq 二级选项应含 status/login: %+v", vals)
+	}
+	got := qc.Args[1].FreeArgs([]string{"login"})
+	if len(got) != 2 || got[0] != "AppID" || got[1] != "AppSecret" {
+		t.Fatalf("login 路径应要求 AppID/AppSecret: %+v", got)
+	}
+	if got := qc.Args[1].FreeArgs([]string{"status"}); got != nil {
+		t.Fatalf("status 路径不应有额外参数: %+v", got)
+	}
+}
+
+// mustQQEnvCtx 装配 base+im-qq 并返回 Ctx(命令契约断言用;不参与回合,无需 mock 事件)。
+func mustQQEnvCtx(t *testing.T, baseURL string) sdk.Ctx {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("GAH_HOME", home)
+	store := qqbot.NewStore(filepath.Join(home, "config", "qqbot.yaml"))
+	if err := store.Save(&qqbot.Credentials{AppID: "app-e2e", AppSecret: "sec-e2e", Allow: []string{"qq\x00OPENID1"}}); err != nil {
+		t.Fatal(err)
+	}
+	logger := slog.New(slog.DiscardHandler)
+	bus := event.New(logger)
+	c := ctx.New(logger, bus)
+	reg := plugin.New()
+	tree := config.NewTree()
+	tree.Apply([]config.Entry{
+		{ID: "host-session-log"},
+		{ID: "host-llm"},
+		{ID: "host-tools"},
+		{ID: "host-commands"},
+		{ID: "host-system-prompt"},
+		{ID: "llm-mock", Data: map[string]any{"script": qqScript}},
+		{ID: "host-agent-loop"},
+		{ID: "ui-im-qq", Data: map[string]any{
+			"mode": "allowlist", "base_url": baseURL, "token_url": baseURL + "/app/getAppAccessToken",
+		}},
+	})
+	if err := c.Provide("system.registry", reg); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Provide("system.catalogue", catalogueInfoForTest()); err != nil {
+		t.Fatal(err)
+	}
+	if err := baseb.RegisterAll(reg, tree); err != nil {
+		t.Fatal(err)
+	}
+	if err := imqqb.RegisterAll(reg, tree); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.StartSubset(c, enabledSetForTest(tree)); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { reg.DisposeAll() })
+	return c
+}

@@ -289,3 +289,49 @@ func TestImWechatAuthPersist(t *testing.T) {
 	}
 	_ = m
 }
+
+// TestIMCommandsSubLevels 通道命令二级选项契约(P:输入 /wechat 回车应有二级选择,
+// 而非直接执行)——命令注册须声明 Args 参数级;/im 同。
+func TestIMCommandsSubLevels(t *testing.T) {
+	c, _ := buildWechatEnv(t, "", "allowlist", false)
+	var cmds sdk.CommandRegistry
+	if err := c.Inject("ctx.commands", &cmds); err != nil {
+		t.Fatal(err)
+	}
+	// /wechat:二级枚举含 status/login
+	wc, ok := cmds.Get("wechat")
+	if !ok {
+		t.Fatal("/wechat 未注册")
+	}
+	if len(wc.Args) == 0 {
+		t.Fatal("/wechat 应声明 Args 二级选项(否则回车直接执行)")
+	}
+	vals := map[string]bool{}
+	for _, o := range wc.Args[0].Options(nil) {
+		vals[o.Value] = true
+	}
+	if !vals["status"] || !vals["login"] {
+		t.Fatalf("/wechat 二级选项应含 status/login: %+v", vals)
+	}
+	// /im:二级枚举含 status/list/pair;pair 路径再要求配对码(自由参数)
+	imCmd, ok := cmds.Get("im")
+	if !ok {
+		t.Fatal("/im 未注册")
+	}
+	if len(imCmd.Args) < 2 {
+		t.Fatal("/im 应声明两级 Args")
+	}
+	imVals := map[string]bool{}
+	for _, o := range imCmd.Args[0].Options(nil) {
+		imVals[o.Value] = true
+	}
+	if !imVals["status"] || !imVals["list"] || !imVals["pair"] {
+		t.Fatalf("/im 二级选项应含 status/list/pair: %+v", imVals)
+	}
+	if got := imCmd.Args[1].FreeArgs([]string{"pair"}); len(got) != 1 || got[0] != "配对码" {
+		t.Fatalf("pair 应要求配对码自由参数: %+v", got)
+	}
+	if got := imCmd.Args[1].FreeArgs([]string{"status"}); got != nil {
+		t.Fatalf("status 路径不应有额外参数: %+v", got)
+	}
+}

@@ -721,6 +721,22 @@ func (b *Bridge) RegisterCommands(cmds sdk.CommandRegistry) (sdk.Disposer, error
 		Run: func(args []string) (string, error) {
 			return b.imCmd(context.Background(), args), nil
 		},
+		// 二级选项:status/list 直接执行;pair 再输入配对码(自由参数)
+		Args: []sdk.ArgLevel{
+			{Options: func([]string) []sdk.Option {
+				return []sdk.Option{
+					{Value: "status", Desc: "通道状态(模式/已授权/忙闲)"},
+					{Value: "list", Desc: "已授权用户列表"},
+					{Value: "pair", Desc: "用配对码授权新用户"},
+				}
+			}},
+			{FreeArgs: func(picked []string) []string {
+				if len(picked) > 0 && picked[0] == "pair" {
+					return []string{"配对码"}
+				}
+				return nil
+			}},
+		},
 	})
 	if err != nil {
 		d1()
