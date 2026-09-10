@@ -374,7 +374,7 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 >
 > | 编号 | 项 | 现有 hook(已就绪的落点) | 缺什么 | 量级 | 触发 / 阻塞 |
 > |---|---|---|---|---|---|
-> | **D6-1(E1)** | pdfium-on-WASM 光栅 | ✅ **主力路径已由 RST-1 交付**(外部 pdftoppm:零体积、契约 `DocRasterService` 已就位);余下仅 **SELF-1 自包含档**(⏸ 暂存)(需有网实测 pdfium.wasm 体积/内存 + `STANDALONE_WASM` 风险) | `MediaSender` 落地 + 有网实测 | M–L | 📊 **评测见上**;**TUI 位图明确不做**(无图形协议) | **评测(见下方「G 组剩余项评测分析」)**:被依赖阻塞 + 破体积门;TUI 无图形协议支持 → TUI 位图**新登记不做**;建议仅在 E-B/E-C 完成后评估 IM 缩略图分支
+> | **D6-1(E1)** | pdfium-on-WASM 光栅 | ✅ **主力路径已由 RST-1 交付**(外部 pdftoppm:零体积、契约 `DocRasterService` 已就位);余下仅 **SELF-1 自包含档**(⏸ 暂存)(**有网实测已完成 2026-10-11**:功能可行、与 poppler 仅差抗锯齿;**+cost≈5.5 MiB 破当前体积门 + `invoke_*` 无法忠实实现**——见下方「SELF-1 前置实测」) | `MediaSender` 落地 + ~~有网实测~~(✅ 已完成);余阻塞 = 降体路径/体积门决策 | M–L | 📊 **评测见上**;**TUI 位图明确不做**(无图形协议) | **评测(见下方「G 组剩余项评测分析」)**:被依赖阻塞 + 破体积门;TUI 无图形协议支持 → TUI 位图**新登记不做**;建议仅在 E-B/E-C 完成后评估 IM 缩略图分支
 > | ~~**D6-2(E2)**~~ ✅ | 外部转换器探测 | ✅ **已交付 2026-10-11**:`converter.go`(PATH 探测 soffice/libreoffice/pdftoppm;**默认关闭** `data.external_converters`)+ `--headless --convert-to pdf` → D4 PDF 抽取 + 产物落 `$GAH_HOME/cache/doc/`(sha1 复用名,7 天按龄清理,30s 超时,200MiB 上限)+ Web 原生查看器(资产端点放行 `application/pdf`)+ 失败显式回退 + `gah doc --convert` | — | ✅ 已收口 |
 > | **D6-3(E3)** | 引入 `excelize` 替代自研 xlsx | ✅ **判定能力已就绪(DOC-1,2026-10-11)**:GAP 探针给 content/style/info 三档结论 + `GAPSUMMARY`;**首轮真实语料 content_gaps=0** | 仅当真实样本出现 **content 级缺口**(图表/透视/批注/内嵌图整体丢失)才评估;引入前须有网实测依赖与体积(x/crypto·x/image 为新增) | M | ⏸ **当前不引入**(未证伪) | 📊 **评测**:触发条件当前**不可判定**(全仓无真实文档语料);依赖需新增 x/crypto·x/image(gah 现无)且本环境无外网无法实测体积;前置件 E-D
 > | ~~**D6-4**~~ ✅ | HTML 预览收口 | ① **HTML 源码视图块模型已交付**(`extract_html.go`:`<title>` 提取(实体解码/空白折叠/200 字上限)+ 单 `code` 块(零 HTML 通道)+ 含 `<script>`/内联事件时显式告警;`pending` 表清零)② **门控已交付**(DocPanel 默认源码,「沙箱预览」按钮显式点击才挂载 `sandbox=""` iframe;切文件/切工作区重置回源码) | — | ✅ 2026-10-11 已交付 |
@@ -455,9 +455,20 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 > | ~~**P3 · MED-2**~~ ✅ | QQ 分片上传 + `msg_type=7` + `im_send_file` | ✅ **2026-10-11 已交付**(协议/通道/工具三层 + 19 组新测试) | — | 已收口(真机核对 `files` 字段) | — |
 > | ~~**P3 · MED-3**~~ ✅ E-B 微信 | iLink 上传三段式(加密→CDN→媒体项) | ✅ **2026-10-11 已交付(beta)**:`ilink/upload.go` 三段式 + ui-im-wechat `im.MediaSender`;契约逐字段对照 docs/IM_REMOTE §9.4 | M–L | ✅ **已实施**(仅第三方逆向证据 → 标记 beta;真机核对 `x-encrypted-param`/媒体项字段后转正) | 已收口(真机待验) |
 > | ~~**P3 · RST-2**~~ ✅ | IM 图片回推 | ✅ **2026-10-11 已交付**(`im_send_page` + 光栅窄白名单;端到端闭环) | — | 已收口 | — |
-> | **P4 · SELF-1** D6-1c 自包含档 | pdfium-WASM + wazero 替换外部光栅 | ⏸ **暂存前置**:有网环境实测(pdfium.wasm 体积 / wazero 内存 / `STANDALONE_WASM` 可行性)+ E-C 体积门决策 | M–L | ⏸ **暂存**:高(`STANDALONE_WASM` 上游未定;#28);**仅当需要「零外部依赖部署」时才做**(当前外部 pdftoppm 路径已覆盖功能) | 8 |
+> | **P4 · SELF-1** D6-1c 自包含档 | pdfium-WASM + wazero 替换外部光栅 | ✅ **实测已完成(2026-10-11,含 wazero 上跑通 + 与 poppler 像素对照)**;余 = ~~有网实测~~ + **体积门决策**(+5.5 MiB → ≈46.2 MiB 越门) | M | ⏸ **暂存**:残留风险 = `invoke_*`(wazero 无 table/函数引用 API,只能 stub)与体积门;**仅当需要「零外部依赖部署」时才做**(当前外部 pdftoppm 路径已覆盖功能) | 8 |
 >
 > ---
+>
+> #### SELF-1 前置实测(2026-10-11;有网实测,**结论 = 功能可行但仍暂存**)
+>
+> **做法**:评测探针 `scripts/eval/pdfium-wasm-probe/`(嵌套模块,不进主模块构建;`GOWORK=off` 构建)+ npm 候选 wasm + 本机 poppler `pdftoppm` 逐像素对照。候选与体积:`@embedpdf/pdfium` 2.15.0 = 4.42 MiB raw / **2.03 MiB gz**(env 30 + wasi 7 导入);`@hyzyla/pdfium` 2.1.13 = 3.80 / **1.92**(env 23 + wasi 7);`pdfium-wasm`(urish)0.0.2 = 旧式 asm.js 产物(**导入 memory/table/global**,自包含档不适用)。
+>
+> **实测结果(纯 Go 运行时 wazero v1.12,`@embedpdf` 版)**:① **跑通**:`初始化(1ms) → 载入(<1ms) → 渲染`;10 页 @144dpi(900×1120)= **23ms**;线性内存 17.75 MiB(基线)→ 41.38 MiB(10 页);进程峰值 RSS ≈256–294 MiB;编译冷 **828ms** / 命中 compilation cache 26ms(可落 `$GAH_HOME/cache`)。② **保真**:与 `pdftoppm -r 144` 逐像素对照 —— 合成 10 页文档 differing=**0.15%**/meanΔ 0.04(墨迹量差 0.1%)、iWork 图形页 **0.96%**/Δ0.22(墨迹量相同)、系统矢量+认证标志页 **5.62%**/meanΔ2.04(墨迹 +15%);**差异叠加图经视觉核验全部位于文字/图形/表格线的抗锯齿轮廓,无整块缺失或多余元素 → 无结构性差异**。③ **宿主面**:env 30 + WASI 7 个导入全部由 Go 提供(**Emscripten 的 WASI 为 32 位偏移变体,不能复用 wazero 标准 WASI 宿主**,签名须取自 `CompiledModule.ImportedFunctions()`);有语义者仅 4 个:`_emscripten_memcpy_js`(真内存拷贝,实测 413 次)、`emscripten_resize_heap`(对导出 memory `Grow`,15 次)、`emscripten_date_now`、`fd_write`(诊断转 stderr);`__syscall_*` 8 次(FS 探测,零值返回即可)。
+>
+> **残留风险(未解,必须随实施一并解决)**:Emscripten `invoke_*`(JS 侧函数指针 trampoline)在 wazero **无法忠实实现**——公开 API 无 table / function-reference 调用能力,只能空 stub;实测真实认证页触发 **6 次**,渲染经像素对照无可见影响,**但不能证明安全**(setjmp/longjmp 路径尤甚)。彻底解决 = 自行以 `-sSTANDALONE_WASM` / `-sSUPPORT_LONGJMP=wasm` 构建 pdfium(emsdk + depot_tools,重型,上游 #28)。
+>
+> **对决策的影响(硬数字)**:体积 **+3.46 MiB(wazero 运行时,实测 hello 1.12→probe 4.59 MiB「-s -w」)+ 2.03 MiB(wasm.gz)** ≈ **+5.5 MiB** → 二进制 40.72 → **≈46.2 MiB,超出当前 ≤46 MiB 门**;gz 27.16 → 29.2 MiB(门 ≤30,余量 0.8)。故 **SELF-1 不能单独上**,必须先做 E-C 登记的降体路径(外部插件协议去 gRPC 化 ≈ -14 MiB / extplugins 附包化 ≈ -20 MiB)或重定体积门。若实施,gz 后的 wasm 可**在内存解压**后交给 wazero(不走临时文件),能力面照 RST-1 契约挂在 `DocRasterService` 之后(pdftoppm 优先、自包含档兜底)。
+>
 >
 > #### P1-1 · IM-1 `im_send` / `im_status`(G-E5-3;**方案要点**)
 >
