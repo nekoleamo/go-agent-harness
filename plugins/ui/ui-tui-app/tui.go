@@ -50,14 +50,23 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		}
 	}
 	app := tui.NewApp(c, loop, llm, profile, palette)
-	// 确认服务(审批弹层)注册到宿主;未装配时 policy-guard 按安全默认拒绝
-	if err := c.Provide("ctx.confirm", app); err != nil {
+	// 确认服务(审批弹层):单 profile 自 Provide;P3 融合(host-confirm-fusion 装配)
+	// 时注册为 tui 呈现者,与 web/im 同进程并存同卡(不再 Provide 防同名冲突)。
+	var confirmReg sdk.Disposer = func() {}
+	var fusion sdk.ConfirmFusion
+	if err := c.Inject("ctx.confirmFusion", &fusion); err == nil && fusion != nil {
+		confirmReg = fusion.Register("tui", app)
+	} else if err := c.Provide("ctx.confirm", app); err != nil {
 		return nil, err
 	}
 	if err := app.Start(); err != nil {
+		confirmReg()
 		return nil, err
 	}
-	return func() { app.Close() }, nil
+	return func() {
+		confirmReg()
+		app.Close()
+	}, nil
 }
 
 // stdinIsTTY 检测 stdin 是否为交互终端(管道/重定向时降级文本)。

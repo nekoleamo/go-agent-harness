@@ -1,5 +1,6 @@
 # im-qq profile:QQ 官方 Bot v2 远程控制形态(IM 线 P0-2b-QQ)。
-# 用法:gah --profile im-qq(或 -profile im-qq;与 tui/web/im-wechat 互斥)。
+# 用法:gah --profile im-qq(或 gah im-qq)。本 profile 不含 UI 插件(headless);
+#   需要交互式配置/查状态请用融合 profile:gah --profile im-qq-tui(终端)或 im-qq-web(浏览器)。
 # 启动后执行 /qq login <AppID> <AppSecret>(或编辑 $GAH_HOME/config/qqbot.yaml),
 # QQ 私聊/群 @ 机器人即远程操作宿主(普通文本 = agent 回合;/stop 取消)。
 name: im-qq

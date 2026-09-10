@@ -49,16 +49,28 @@ func main() {
 		os.Args = append([]string{os.Args[0]}, os.Args[2:]...)
 		*profileFlag = "web"
 	}
-	// IM 线入口糖:gah im ≡ gah --profile im-wechat(微信个人号 iLink 远程控制;
-	// 启动未登录则自动扫码(二维码链接打印到 stderr),或登录态直接轮询);
-	// gah im-qq ≡ gah --profile im-qq(QQ 官方 Bot v2;启动后 /qq login 填 AppID/AppSecret)
+	// IM 线入口糖:gah im / gah im-qq。
+	// 交互终端(TTY)下自动选融合 profile(终端 TUI + 通道并存),这样 /wechat login、
+	// /wechat status、/qq login 等通道命令可用(否则 headless profile 无 UI,敲命令没反应);
+	// 非 TTY(管道/后台)保持 headless:gah im ≡ --profile im-wechat(未登录自动把二维码
+	// 打到 stderr)、gah im-qq ≡ --profile im-qq。显式 -profile 仍可覆盖。
 	if len(os.Args) > 1 && os.Args[1] == "im" {
 		os.Args = append([]string{os.Args[0]}, os.Args[2:]...)
-		*profileFlag = "im-wechat"
+		if isStdinTTY() {
+			*profileFlag = "im-wechat-tui"
+			fmt.Fprintln(os.Stderr, "gah im: 交互终端 → 启用 im-wechat-tui(终端界面 + 微信通道;纯后台请用 --profile im-wechat)")
+		} else {
+			*profileFlag = "im-wechat"
+		}
 	}
 	if len(os.Args) > 1 && os.Args[1] == "im-qq" {
 		os.Args = append([]string{os.Args[0]}, os.Args[2:]...)
-		*profileFlag = "im-qq"
+		if isStdinTTY() {
+			*profileFlag = "im-qq-tui"
+			fmt.Fprintln(os.Stderr, "gah im-qq: 交互终端 → 启用 im-qq-tui(终端界面 + QQ 通道)")
+		} else {
+			*profileFlag = "im-qq"
+		}
 	}
 	flag.Parse()
 	if !isStdinTTY() && *inputFlag == "" && *profileFlag == "tui" {

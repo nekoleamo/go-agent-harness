@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -30,7 +32,11 @@ type App struct {
 	c         sdk.Ctx
 	loop      sdk.AgentLoop
 	llm       sdk.LLMService
-	confirmCh chan bool // Confirm 阻塞等待用户答复
+	confirmCh chan bool // Confirm 阻塞等待用户答复(单通道,兼容旧路径)
+
+	pendMu  sync.Mutex   // 融合 Present 的待应答通道(P3:tui 作为 confirm presenter)
+	pending []chan bool  // 每次 Present 一个;确认结果广播并清理
+	started atomic.Bool  // TUI 程序已启动(未启动时不向 program 发送,防测试/装配期阻塞)
 	subs      []sdk.Disposer
 	cmds      sdk.CommandRegistry // ctx.commands(可为 nil:未装配时命令不可用)
 
@@ -119,21 +125,64 @@ func NewApp(c sdk.Ctx, loop sdk.AgentLoop, llm sdk.LLMService, profile string, p
 // Confirm 实现 sdk.ConfirmService:弹层询问用户 y/n。
 // 无 UI 运行(非 TTY 降级)时 UI 插件不装配本服务,策略拒绝(安全默认)。
 func (a *App) Confirm(ctx context.Context, prompt string) (bool, error) {
-	a.program.Send(confirmMsg{prompt})
+	ch, cancel, err := a.Present(ctx, prompt)
+	if err != nil {
+		return false, err
+	}
+	defer cancel()
 	select {
-	case ok := <-a.confirmCh:
+	case ok := <-ch:
 		return ok, nil
 	case <-ctx.Done():
 		return false, ctx.Err()
 	}
 }
 
+// Present 实现 sdk.ConfirmPresenter(P3 三端融合):弹层呈现并返回应答通道;
+// cancel 撤销本次待答(幂等)。融合场景(Fusion 广播)与 IM/Web 共用同一确认。
+func (a *App) Present(_ context.Context, prompt string) (<-chan bool, func(), error) {
+	ch := make(chan bool, 1)
+	a.pendMu.Lock()
+	a.pending = append(a.pending, ch)
+	a.pendMu.Unlock()
+	if a.program != nil && a.started.Load() { // 未启动(测试/装配期)仅登记待答,不 Send
+		a.program.Send(confirmMsg{prompt})
+	}
+	cancel := func() {
+		a.pendMu.Lock()
+		for i, c := range a.pending {
+			if c == ch {
+				a.pending = append(a.pending[:i], a.pending[i+1:]...)
+				break
+			}
+		}
+		a.pendMu.Unlock()
+	}
+	return ch, cancel, nil
+}
+
+// confirmResult 用户应答:广播给全部待答通道(融合场景各渠道独立通道;通常 1 个),
+// 并兼容旧 confirmCh(单通道路径)。
 func (a *App) confirmResult(ok bool) {
-	a.confirmCh <- ok
+	select {
+	case a.confirmCh <- ok:
+	default:
+	}
+	a.pendMu.Lock()
+	pends := a.pending
+	a.pending = nil
+	a.pendMu.Unlock()
+	for _, ch := range pends {
+		select {
+		case ch <- ok:
+		default:
+		}
+	}
 }
 
 // Start 启动 TUI(goroutine 跑 Run),挂接事件订阅。
 func (a *App) Start() error {
+	a.started.Store(true)
 	// 会话事件 → UI
 	d1 := a.c.Subscribe(sdk.EventSession, func(ctx context.Context, ev *sdk.Event) error {
 		if sev, ok := ev.Payload.(*sdk.SessionEvent); ok {
@@ -173,6 +222,7 @@ func (a *App) Start() error {
 
 // Close 撤销订阅并退出程序。
 func (a *App) Close() {
+	a.started.Store(false)
 	for _, d := range a.subs {
 		d()
 	}

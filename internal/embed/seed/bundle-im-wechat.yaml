@@ -1,7 +1,7 @@
 # seed-version: 1 # 样板版本:新增能力条目时 +1,老用户自动升级(备份后覆盖)
 # im-wechat bundle:微信个人号 iLink Bot 远程控制(IM 远程控制线 P0-2b;运行时 im/ + ilink/)。
-#   经 im.Bridge 接宿主 agent 能力面(回合/命令/审批);提供 ctx.confirm(IM 审批通道)。
-#   与 tui/web profile 互斥(ctx.confirm 唯一,profile 层保证)。
+#   经 im.Bridge 接宿主 agent 能力面(回合/命令/审批);ctx.confirm 条件提供(单 profile
+#   运行时自 Provide;装配 host-confirm-fusion 的融合 profile 时注册为呈现者与其它 UI 并存)。
 # data.mode:    访问模式 pairing(默认,登录后自动授权扫码者)|allowlist|disabled(静默拒)
 # data.base_url:iLink 端点(默认官方 ilinkai.weixin.qq.com;一般无需改)
 # 凭证:扫码登录自动写入 $GAH_HOME/config/ilink-wechat.yaml(0600,随目录迁移);
