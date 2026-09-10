@@ -120,7 +120,11 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		tr.startGateway()
 	}
 	// ctx.imChannels:Web/桌面设置面板 IM 通道状态(P3 三端融合;只读展示)
-	if err := c.Provide("ctx.imChannels", imChannelStatus{tr: tr, bridge: b}); err != nil {
+		// G-E5-3:受控出站面(im_send/im_status 经此投递;工具默认不注册,见 plugins/tool/tool-im)
+	if err := c.Provide("ctx.imControl", b); err != nil {
+		return nil, err
+	}
+if err := c.Provide("ctx.imChannels", imChannelStatus{tr: tr, bridge: b}); err != nil {
 		return nil, err
 	}
 	// ctx.confirm = IM 桥(单 profile 自提供;P3 融合:装配 host-confirm-fusion 时
@@ -641,7 +645,7 @@ func (t *qqTransport) SendText(ctx context.Context, to im.Route, text string) er
 	baseSeq := t.seq[to.ChatID]
 	baseMsgID := msgID
 	t.mu.Unlock()
-	isGroup := to.ChatID != to.UserID
+	isGroup := to.Group || to.ChatID != to.UserID
 
 	// 组装呈现清单(超限纯文本分块 / 富文本 markdown 单条 / 纯文本单条)
 	msgs := buildTextMessages(text)

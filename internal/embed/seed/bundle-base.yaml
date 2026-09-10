@@ -1,4 +1,4 @@
-# seed-version: 16 # 样板版本:新增 base 能力条目(host-* 等)时 +1,老用户自动升级(备份后覆盖)
+# seed-version: 17 # 样板版本:新增 base 能力条目(host-* 等)时 +1,老用户自动升级(备份后覆盖)
 # base bundle:对齐 dsh-base,一切功能皆插件的共享第一层。
 # M1 阶段条目仅记录意图;对应插件工厂在 M2 base bundle 落地。
 name: base
@@ -98,6 +98,14 @@ entries:
       read_limit: 2000
       max_output_kb: 50
       pdf_max_pages: 100
+  - id: tool-im
+    # G-E5-3:IM 远程工具(im_send/im_status)。**默认不注册**(enabled/data.enabled 双关);
+    # 启用步骤(两处都改):① 本条目 enabled: true + data.enabled: true;
+    # ② 把 im_send 加入下方 policy-guard 的 data.approval_tools(否则 smart 档不会弹确认,
+    #    此时插件会在启动日志告警)。目标仅限已授权用户/群(未授权显式拒绝)。
+    enabled: false
+    data:
+      enabled: false
   - id: tool-auto-plan
     # M11:auto_plan(规划模式)与 todo 同属工具,但需进程内规则注入(ctx.systemPrompt AddSection,
     # 外部进程无法注入)→ 装配进宿主(host-skills 同款),不进 tool-basic。

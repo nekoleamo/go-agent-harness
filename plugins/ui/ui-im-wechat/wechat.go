@@ -117,7 +117,11 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	}
 	// ctx.imChannels:Web/桌面设置面板 IM 通道状态 + 扫码登录(P3 三端融合;
 	// 适配器同时实现 sdk.IMLoginProvider → web /api/im/login 可用)
-	if err := c.Provide("ctx.imChannels", imChannelStatus{tr: tr, bridge: b}); err != nil {
+		// G-E5-3:受控出站面(im_send/im_status 经此投递;工具默认不注册,见 plugins/tool/tool-im)
+	if err := c.Provide("ctx.imControl", b); err != nil {
+		return nil, err
+	}
+if err := c.Provide("ctx.imChannels", imChannelStatus{tr: tr, bridge: b}); err != nil {
 		return nil, err
 	}
 	// ctx.confirm = IM 桥(单 profile 自提供;P3 融合:装配 host-confirm-fusion 时
@@ -357,6 +361,9 @@ func (t *wechatTransport) sendTypingNow(user string, show bool) {
 
 // SendText 回推文本(context_token 缺失无法发送,记诊断)。
 func (t *wechatTransport) SendText(ctx context.Context, to im.Route, text string) error {
+	if to.Group {
+		return fmt.Errorf("wechat: 该渠道不支持群投递(iLink 为单聊会话)")
+	}
 	t.mu.Lock()
 	cli := t.client
 	token := t.tokens[to.UserID]

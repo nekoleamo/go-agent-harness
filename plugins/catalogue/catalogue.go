@@ -32,6 +32,7 @@ import (
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-auto-plan"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-doc"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-files"
+	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-im"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-memory"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-shell"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-subagent"
@@ -118,6 +119,11 @@ var All = map[string]Def{
 		ID: "tool-ask", Type: "tool", APIVersion: ">=1.0,<2.0",
 		// P3 语义交互:ask_user_question 结构化提问(单选/多选/自由文本);
 		// 进程内装配(提问通道 ctx.question 运行期现取,由 host-confirm-fusion 提供)
+		Requires: []string{"ctx.tools"}}, Bundle: "base"},
+	"tool-im": {Factory: func() sdk.Plugin { return &toolim.Plugin{} }, Manifest: &sdk.Manifest{
+		ID: "tool-im", Type: "tool", APIVersion: ">=1.0,<2.0",
+		// G-E5-3:im_send/im_status(向**已授权**IM 目标发消息)。默认不注册(data.enabled);
+		// 目标与控制面经 ctx.imControl 运行期现取(由 ui-im-* Provide);建议接入工具级审批
 		Requires: []string{"ctx.tools"}}, Bundle: "base"},
 	"tool-todo": {Factory: func() sdk.Plugin { return &tooltodo.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "tool-todo", Type: "tool", APIVersion: ">=1.0,<2.0",

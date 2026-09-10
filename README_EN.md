@@ -104,6 +104,7 @@ Drive the agent from your phone: WeChat/QQ messages start turns, and dangerous o
 - **How to connect**: the Web/desktop panel's "IM channel" card (sidebar badge shows the state) — **WeChat** by QR scan (expired codes are **auto-refreshed**, no re-click); **QQ** by AppID/AppSecret (**the official bot API has no QR auth**) with instant validation and a platform link; secrets are never echoed (tail only), never logged, written 0600.
 - **Credentials**: `$GAH_HOME/config/ilink-wechat.yaml` / `qqbot.yaml`, migrating with `gah-data/`.
 - **Deny by default**: connecting is not authorizing — pair with `/im pair` or an allowlist (per-group `/im allowg`).
+- **Optional: let the model send messages**: `tool-im` provides `im_send`/`im_status`, **not registered by default**; enable with the plugin entry `enabled: true` + `data.enabled: true` (and add `im_send` to `policy-guard`'s `data.approval_tools` for per-call confirmation). Targets must be **authorized** users/groups; unauthorized targets are rejected explicitly.
 - **Remote commands**: `/new`, `/status`, `/sessionlist`, `/session`, `/history`, `/stop`, `/bg`; long turns move to the background and push the result back.
 
 ### Use a real model
@@ -205,6 +206,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `subagent` | Subagent delegation (delegate/spawn/agents/agent_status/agent_kill/send_message/fork; isolated ReAct contexts, background handles) |
 | `list_skills` / `read_skill` | Skill index / load SKILL.md on demand (project `.gah/skills/`, `$GAH_HOME/skills/`) |
 | `mcp_<server>_<tool>` | MCP bridge tools (GAH_MCP_COMMAND single / GAH_MCP_COMMANDS multi server; see "MCP" below) |
+| `im_send` / `im_status` | **Off by default**: send a message to an **authorized** IM user/group and query the controllable state (remote receipts / notifications). Enabling requires `enabled: true` + `data.enabled: true` on `tool-im` and adding `im_send` to `policy-guard`'s `data.approval_tools` (per-call confirmation in smart mode) |
 
 ## 6. Web usage (settings panel / REST)
 

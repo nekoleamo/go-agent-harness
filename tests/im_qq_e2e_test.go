@@ -341,7 +341,15 @@ func TestImQQGroupAtE2E(t *testing.T) {
 
 // buildQQEnv 装配 base+im-qq(mock QQ;预置凭证=已配置;llm-mock 脚本可指定)。
 // mode:"allowlist" → 放行 OPENID1(单聊);"allowlist-grp" → 放行 MEMBER9(群)。
+// buildQQEnv 兼容包装(既有用例):仅取 home。
 func buildQQEnv(t *testing.T, baseURL, mode string, script any) string {
+	t.Helper()
+	home, _, _ := buildQQEnvFull(t, baseURL, mode, script, nil)
+	return home
+}
+
+// buildQQEnvFull 装配 base + im-qq(可追加额外配置条目):返回 (home, ctx, registry)。
+func buildQQEnvFull(t *testing.T, baseURL, mode string, script any, extra []config.Entry) (string, sdk.Ctx, *plugin.Registry) {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("GAH_HOME", home)
@@ -380,6 +388,7 @@ func buildQQEnv(t *testing.T, baseURL, mode string, script any) string {
 			"token_url": baseURL + "/app/getAppAccessToken",
 		}},
 	})
+	tree.Apply(extra)
 	if err := c.Provide("system.registry", reg); err != nil {
 		t.Fatal(err)
 	}
@@ -396,7 +405,7 @@ func buildQQEnv(t *testing.T, baseURL, mode string, script any) string {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { reg.DisposeAll() })
-	return home
+	return home, c, reg
 }
 
 // qqMarkdownScript mock llm 富文本回复(列表 + 代码块;验证 markdown 渲染决策)。

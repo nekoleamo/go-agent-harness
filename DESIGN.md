@@ -380,7 +380,7 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 > | ~~**D6-4**~~ ✅ | HTML 预览收口 | ① **HTML 源码视图块模型已交付**(`extract_html.go`:`<title>` 提取(实体解码/空白折叠/200 字上限)+ 单 `code` 块(零 HTML 通道)+ 含 `<script>`/内联事件时显式告警;`pending` 表清零)② **门控已交付**(DocPanel 默认源码,「沙箱预览」按钮显式点击才挂载 `sandbox=""` iframe;切文件/切工作区重置回源码) | — | ✅ 2026-10-11 已交付 |
 > | **E5-1(P0-2c)** | 出站文件回传 | `im.Sender` 预算层 + delivery ledger(♻️ 重投)+ `Route` 定向 | iLink 上传客户端 + QQ `file_info` 上传/发送(单聊与群上传**不互通**)+ 失败可见 | M | **卡真机**(上传接口须实测);盲写=假实现,不做 | 📊 **评测**:拆为 **E5-1a QQ(官方文档齐备,mock e2e 可交付)** 与 **E5-1b 微信 iLink(仅第三方逆向证据,高风险)**;前置件 E-B
 > | ~~**E5-2**~~ ✅ | 群维度授权完善 | ✅ **已交付 2026-10-11**:`sdk.IMGroupAccessService` + `Bridge.Groups/SetGroupAccess`(合并账本/授权幂等/撤销未知报错)+ 活动记录 TTL 7 天与容量 20(**授权名单不自动过期**,Stale 标记提示清理)+ `GET/POST /api/im/groups` + 面板「群授权」区段 + `/im list` 走同一账本 | — | ✅ 已收口 |
-> | **E5-3** | 可选模型工具 `im_send` / `im_status` | ✅ **前置已齐(E-A 工具级审批 2026-10-11)**:`data.approval_tools: [im_send]` 即接入三档审批(open/smart/strict) | 工具定义 + 默认 disabled + 仅限已授权 SenderKey/群 + 额度与审计 | **S**(原 M 下调) | ✅ 可开工;不做=安全默认 | 📊 **评测**:风险低于原估——审批链现状只认 shell 命令模式,补 **E-A 工具级审批**(≈40 行,复用三档语义)后即可开工
+> | ~~**E5-3**~~ ✅ | 可选模型工具 `im_send` / `im_status` | ✅ **已交付 2026-10-11(IM-1,D1 口径)**:`sdk.IMControlService` + `im.Bridge` 受控出站面 + `plugins/tool/tool-im`(**默认不注册**;目标仅已授权;未接入审批时启动 WARN),seed 17 | — | ✅ 已收口 | 📊 **评测**:风险低于原估——审批链现状只认 shell 命令模式,补 **E-A 工具级审批**(≈40 行,复用三档语义)后即可开工
 > | ~~**E5-4(IM-P3q)**~~ ✅ | question 完整 dsh 事件化 | ✅ **已交付 2026-10-11**:广播面补齐到全部 profile(`sdk.ObservedQuestion` + `NewQuestionID`,单 UI profile 亦广播)+ 事件 `Channel`/`ID` 可关联(Fusion 追踪胜出渠道)+ `sdk.QuestionEventOf/ConfirmEventOf/AnswerSummary` + 各端订阅:web `questiondone`/`confirmdone` 帧与前端关闭遗留弹层、TUI `NoteInteraction` 审计行、IM `WatchInteraction` 回推「已在其它渠道处理」;**顺带修复单 web profile `ctx.question` 类型不符(ask_user_question 不可用)** | — | ✅ 已收口 |
 > | ~~**E3-R**~~ ✅ | TUI `/im` 能力感知聚合 | `/im` 无参/channels = 聚合总览(渠道·连接方式·相位·详情·账号·环境·错误·平台入口·授权用户/群·最近活动群·退出方式);`/im logout` = 断开并清凭证(新可选契约 `sdk.IMDisconnectProvider`,微信/QQ 各实现;授权名单保留) | — | ✅ 2026-10-11 已交付 |
 > | ~~**E3-R2**~~ ✅ | TUI IM 状态 widget | 注册 `● 微信(沙箱) 已连接 · ◐ QQ 运行中`(语义色分段);新增 `tui.RenderWidgetSegs` + ANSI 感知截断 `truncateVisible` | — | ✅ 2026-10-11 已交付 |
@@ -429,13 +429,15 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 >
 > **建议结论(已执行)**:前置件 **E-A / E-C / E-D / E-E 已于 2026-10-11 全部交付**(见各行 ✅ 与下方交付行);**E-B 仍待**(它是 G-E5-1 与 G-D6-1 的共同前置)。下一步可选:G-E5-3(前置已齐,E→S 量级)、G-E5-1a QQ(E-B 后)、G-D6-3(语料已就绪,待用真实富格式样本判判定)、G-D6-1(E-B + 需 wazero/pdfium.wasm 有网实测);G-C2/C3 与 G-X1/X2 保持等外部条件。**明确不做(新登记)**:TUI 位图渲染(D6-1 的 TUI 分支:需从零实现图形协议探测与降级,而 Web 原生查看器已覆盖保真呈现)。
 >
+> ✅ **IM-1 · G-E5-3 远程工具(2026-10-11 已交付,D1 口径全部落实)**:① **契约**(`sdk/im.go`):`IMSendTarget`/`IMControlStatus`/`IMControlService{Status,Targets,SendText}` + 可选 `ApprovalToolGate`(供工具自检审批接入)。② **受控出站面**(`im/control.go`,由 `ui-im-*` Provide `ctx.imControl`):`Targets()` = 已授权用户 ∪ 已授权群(实时、稳定排序、剥离渠道前缀);`SendText` **仅接受 Targets() 内目标**(未授权/空目标/空文本 → 显式错误,不回落 LastRoute),投递复用通道 `SendText`(预算/配额/ledger 无旁路);`Status()` 只读(渠道/相位/模型/会话/忙闲/授权计数/目标)。新增 `Route.Group` 显式群标记(主动向群投递无成员上下文)——QQ 按 `Group || ChatID!=UserID` 派群端点,微信显式报「不支持群投递」。③ **工具插件** `plugins/tool/tool-im`(**默认不注册**:`data.enabled` 才注册;未启用零副作用):`im_send{target,text}`(校验空值/≤8000 字/底层错误带工具名前缀)、`im_status{}`(只读状态 + 可投目标);`ctx.imControl` **运行期现取**(装配顺序无耦合);启用但未接入审批 → 启动 **WARN** 提示加 `approval_tools`(不阻塞、不静默假设安全)。④ **登记/装配**:catalogue(base,Requires ctx.tools)+ plugins/README 行 + 两份 bundle-base **seed-version 16 → 17**(条目 `enabled: false` + `data.enabled: false`,注释给出启用两步);README 双语(工具表 + IM 小节启用说明)。⑤ **测试**:`plugins/tool/tool-im`(默认关零注册 ×4 组数据形态、启用注册两工具、im_status 透传、im_send 投递与 6 类参数错误、未装配控制面结构化错误、底层错误前缀、审批闸门 armed/unarmed/无闸门三态);`im/control_test.go`(仅枚举已授权/新授权即时出现、私聊与群 Route 标记、未授权与空值拒绝且零出站、状态只读不谎报连通/busy 联动);`tests/im_tools_e2e_test.go`(真实 base+im-qq+tool-im 装配:工具可见 → im_status 含 OPENID1 → im_send 经 QQ REST 投递且带被动 `msg_id` → 未授权目标拒绝且出站数不变;默认关闭时工具不可见)。全库 `go test ./... -race -count=1` 绿。
+>
 > ### G 组剩余项实施方案(2026-10-11;分析后定稿,**待决策点确认即开工**)
 >
 > 前置件 E-A/E-C/E-D/E-E 已交付,下列方案的依赖与成本都已实测(证据见上方「评测分析」)。**优先级 = 依赖最少 × 风险最低 × 收益明确**。
 >
 > | 方案 | 交付物 | 依赖 | 量级 | 风险 | 建议顺位 |
 > |---|---|---|---|---|---|
-> | **P1 · IM-1** G-E5-3 远程工具 | `im_send`/`im_status`(默认不注册) | ✅ E-A 审批已就绪 | S | 低(默认关 + 授权目标 + 审批链) | **1** |
+> | ~~**P1 · IM-1**~~ ✅ | `im_send`/`im_status`(默认不注册) | ✅ **2026-10-11 已交付**(见上方交付行) | — | 已收口 | — |
 > | **P1 · DOC-1** D6-3 判定 | harness 高级特性 GAP 报告(纯测量) | ✅ E-D harness | S | 极低(不改抽取器) | **2** |
 > | **P2 · MED-1** E-B 接口 | `im.MediaSender` + 产物登记 + 失败可见(mock e2e) | — | M | 中(接口 + 安全口径) | 3 |
 > | **P2 · RST-1** D6-1a 光栅 | 外部 `pdftoppm` 光栅(零体积) | 本机 poppler(已实测可用) | S–M | 低(opt-in + 结构化失败) | 4 |

@@ -39,18 +39,27 @@ func (l *stubLoop) Run(ctx context.Context, input string) error {
 	return nil
 }
 
-// stubTransport 记录出站消息。
+// stubTransport 记录出站消息(含目标 Route:G-E5-3 出站断言用)。
 type stubTransport struct {
-	mu    sync.Mutex
-	sends []string
+	mu     sync.Mutex
+	sends  []string
+	routes []Route
 }
 
 func (t *stubTransport) Name() string { return "mock" }
-func (t *stubTransport) SendText(_ context.Context, _ Route, text string) error {
+func (t *stubTransport) SendText(_ context.Context, to Route, text string) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.sends = append(t.sends, text)
+	t.routes = append(t.routes, to)
 	return nil
+}
+
+// routesOf 出站目标快照。
+func (t *stubTransport) routesOf() []Route {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]Route(nil), t.routes...)
 }
 
 func (t *stubTransport) sent() []string {

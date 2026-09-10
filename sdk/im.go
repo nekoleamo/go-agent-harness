@@ -56,6 +56,52 @@ type IMGroupAccessService interface {
 	SetGroupAccess(chatID string, allow bool) error
 }
 
+// IMSendTarget 可投递目标(G-E5-3;D1 口径:**仅已授权者**,由实现方从访问账本枚举)。
+// Key 为投递标识(用户=裸 UserID;群=裸 group openid),与 /im allowg 的参数口径一致。
+type IMSendTarget struct {
+	Key     string `json:"key"`
+	Channel string `json:"channel,omitempty"`
+	Label   string `json:"label,omitempty"` // 展示名(如 "用户 u1"/"群 g1")
+	Group   bool   `json:"group,omitempty"`
+	UserID  string `json:"user_id,omitempty"`
+	ChatID  string `json:"chat_id,omitempty"`
+}
+
+// IMControlStatus 出站控制面只读状态(im_status 工具/诊断;不含凭证)。
+type IMControlStatus struct {
+	Channel    string         `json:"channel"`
+	Connected  bool           `json:"connected"`
+	Phase      string         `json:"phase,omitempty"`
+	Model      string         `json:"model,omitempty"`
+	Session    string         `json:"session,omitempty"` // 当前(绑定)会话 id
+	Busy       bool           `json:"busy"`
+	Authorized int            `json:"authorized_users"`
+	Groups     int            `json:"authorized_groups"`
+	Targets    []IMSendTarget `json:"targets,omitempty"`
+}
+
+// IMControlService 受控出站面(G-E5-3;实现方 = im.Bridge,由 ui-im-* Provide "ctx.imControl")。
+//
+// 纪律(与「不做隐式回落」一致):
+//   - **仅已授权目标**:SendText 的 target 必须 ∈ Targets(),否则显式报错(不回落 LastRoute);
+//   - 出站仍走通道既有预算层/主动配额/delivery ledger(不新增旁路);
+//   - 调用与结果进会话日志(模型可见即已记录);
+//   - 工具对模型的暴露由插件配置决定(默认不注册)。
+type IMControlService interface {
+	// Status 只读状态(连接/模型/会话/忙闲/授权计数/可投目标)。
+	Status() IMControlStatus
+	// Targets 可投递目标(仅已授权用户 ∪ 已授权群;稳定顺序)。
+	Targets() []IMSendTarget
+	// SendText 向已授权目标投递文本(未授权/空文本/未装配 → 显式错误)。
+	SendText(ctx context.Context, target, text string) error
+}
+
+// ApprovalToolGate 可选能力(实现方 = policy-guard):该工具是否需要逐次审批。
+// 供副作用工具在启动时自检"是否已接入审批链"(未接入 → 记警告,不静默假设安全)。
+type ApprovalToolGate interface {
+	RequiresToolApproval(name string) bool
+}
+
 // IMLoginProvider 可选能力:渠道支持从面板发起扫码登录(当前 ui-im-wechat;
 // QQ 用 AppID/AppSecret 配置,无扫码)。ctx.imChannels 实现方按需同时实现本接口,
 // web 层经类型断言发现(未实现 = 面板不显示登录入口)。

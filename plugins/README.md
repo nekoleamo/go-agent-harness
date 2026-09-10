@@ -39,6 +39,7 @@ plugins/
 | policy | policy-approval | 危险操作审批三档(M17):open 放行 / smart 弹确认(默认)/ strict 直接拒绝;ctx.approval 运行期切档,偏好持久化 | — |
 | tool | tool-shell / tool-files / tool-web / tool-workflow / tool-memory / tool-todo | 工具实现(默认关闭,已外部化);tool-web 含 web_fetch/web_search(M6.14,默认 Exa,data.provider 可换);tool-memory 含 memory(M10,remember/list/recall/forget);tool-todo 含 todo(M8,4 状态机 + blockedBy;T2 面板联动经 web /api/todo 演示插件 todo-panel) | ctx.tools(workflow 另需 ctx.fanout) |
 | tool | tool-doc | 文档阅读(D 组 D5):read_document(行号化+预算分页)/doc_open(发 `doc/open` 三端弹预览)/doc_list;经 ctx.doc 统一 resolver | ctx.tools + ctx.doc |
+| tool | tool-im | IM 远程工具(G-E5-3):im_send(向**已授权**用户/群投递文本)/im_status(连接·模型·会话·可投目标);**默认不注册**(data.enabled),目标经 ctx.imControl 校验(未授权拒绝,不隐式回落);建议配 policy-guard data.approval_tools: [im_send] | ctx.tools + ctx.imControl(运行期现取) |
 | tool | tool-auto-plan | 规划模式(M11):auto_plan(create/get/list/step/confirm/complete)+ 规则注入(enable_rule,进程内装配同 host-skills,需 ctx.systemPrompt);M11-T2 联动:确认后执行期由 todo 承接(检查清单转 todo.create,执行完回 complete 归档) | ctx.tools + ctx.systemPrompt |
 | tool | tool-subagent | 子代理委派(M9.1+9.2):subagent delegate/spawn/agents/agent_status/agent_kill;extplugins/tool-subagent 独立进程(回调宿主 ctx.fanout);spawn=后台带句柄不阻塞 | ctx.tools + ctx.fanout |
 | mcp | mcp-bridge / mcp-server | MCP 客户端桥 / MCP server 端 | ctx.tools |

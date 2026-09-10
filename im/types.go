@@ -25,6 +25,9 @@ type Route struct {
 	Channel string // 渠道名(wechat/qq/mock;诊断用)
 	UserID  string // 发送方用户 id(渠道内唯一)
 	ChatID  string // 回复目标聊天 id(空 = UserID)
+	// Group 显式标记群会话(G-E5-3 出站:主动向已授权群投递时无成员上下文,
+	// 不能靠 ChatID != UserID 推断)。未设时各通道仍按历史语义推断。
+	Group bool
 }
 
 // Key 会话路由稳定标识(去重/会话绑定的键;与显示名无关)。
