@@ -134,11 +134,11 @@ func New(o Options) *Service {
 		sdk.DocFormatDOCX:        extractDOCX,
 		sdk.DocFormatXLSX:        extractXLSX,
 		sdk.DocFormatPPTX:        extractPPTX,
+		sdk.DocFormatHTML:        extractHTML,
 		sdk.DocFormatUnsupported: extractUnsupported,
 	}
-	s.pending = map[sdk.DocFormat]string{
-		sdk.DocFormatHTML: "切片 D6(源码视图 + 沙箱 iframe)",
-	}
+	// 全部格式已有抽取器(D6-4 收口后 pending 为空);留空表以承载未来切片。
+	s.pending = map[sdk.DocFormat]string{}
 	return s
 }
 

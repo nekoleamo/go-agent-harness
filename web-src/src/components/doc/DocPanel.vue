@@ -19,6 +19,8 @@ const loading = ref(false)
 const page = ref(0)
 const sheet = ref(0)
 const wsKey = ref('')
+// HTML 呈现档:D6-4 收口 —— 默认源码,沙箱 iframe 由用户显式点击才加载
+const htmlMode = ref<'source' | 'frame'>('source')
 
 let stateTimer: ReturnType<typeof setInterval> | null = null
 
@@ -62,6 +64,7 @@ async function openFile(e: DocEntry): Promise<void> {
   curPath.value = e.path
   page.value = 0
   sheet.value = 0
+  htmlMode.value = 'source'
   await loadPreview()
 }
 
@@ -104,6 +107,7 @@ async function pollWorkspace(): Promise<void> {
       rootPath.value = '.'
       curPath.value = ''
       view.value = null
+      htmlMode.value = 'source'
       await loadTree()
     }
   } catch {
@@ -148,6 +152,7 @@ watch(
     curPath.value = p
     page.value = 0
     sheet.value = 0
+    htmlMode.value = 'source'
     await loadPreview()
   },
   { immediate: true },
@@ -231,10 +236,40 @@ const fmtSize = (n?: number): string => {
             <iframe class="dp-frame" :src="rawUrl(view.path || curPath)" title="PDF 预览"></iframe>
             <div class="dp-note">若此处空白(Linux 桌面壳 WebKitGTK 不支持内嵌 PDF),请用「下载」以本地查看器打开。</div>
           </template>
-          <!-- HTML:沙箱 iframe(CSP 已禁脚本;此处再禁 allow-scripts) -->
+          <!-- HTML:默认源码视图;沙箱 iframe(独立 CSP 路由)仅在用户显式点击后加载 -->
           <template v-else-if="isHTML">
-            <iframe class="dp-frame" sandbox="" :src="'/api/doc/html?path=' + encodeURIComponent(view.path || curPath)" title="HTML 预览"></iframe>
-            <div class="dp-note">HTML 以沙箱呈现(脚本/外联均被禁止);需要源码请查看下载文件。</div>
+            <div class="dp-modes" role="tablist" aria-label="HTML 呈现方式">
+              <button
+                class="dp-mode"
+                :class="{ on: htmlMode === 'source' }"
+                role="tab"
+                :aria-selected="htmlMode === 'source'"
+                @click="htmlMode = 'source'"
+              >
+                源码
+              </button>
+              <button
+                class="dp-mode"
+                :class="{ on: htmlMode === 'frame' }"
+                role="tab"
+                :aria-selected="htmlMode === 'frame'"
+                data-tip="沙箱 iframe:脚本与外联一律禁止"
+                @click="htmlMode = 'frame'"
+              >
+                沙箱预览
+              </button>
+            </div>
+            <iframe
+              v-if="htmlMode === 'frame'"
+              class="dp-frame"
+              sandbox=""
+              :src="'/api/doc/html?path=' + encodeURIComponent(view.path || curPath)"
+              title="HTML 沙箱预览"
+            ></iframe>
+            <DocBlocks v-else :blocks="view.blocks" :asset-base="assetBase(view.path || curPath)" />
+            <div class="dp-note">
+              默认只读源码;「沙箱预览」不执行任何脚本与外联请求,完整呈现以下载文件为准。
+            </div>
           </template>
           <template v-else-if="isImage">
             <img class="dp-img" :src="rawUrl(view.path || curPath)" :alt="view.name" />
@@ -391,6 +426,29 @@ const fmtSize = (n?: number): string => {
   flex-wrap: wrap;
   gap: 6px;
   margin-bottom: 8px;
+}
+.dp-modes {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.dp-mode {
+  background: var(--bg2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-input);
+  color: var(--fg-dim);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 3px 10px;
+}
+.dp-mode:hover {
+  border-color: var(--line-strong);
+  color: var(--fg);
+}
+.dp-mode.on {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 .dp-sheet {
   background: var(--bg2);

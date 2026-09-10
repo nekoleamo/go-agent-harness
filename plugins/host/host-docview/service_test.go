@@ -140,24 +140,30 @@ func TestPreviewUnsupportedFormat(t *testing.T) {
 	}
 }
 
-// 未交付格式(D1–D4)必须显式提示,不得假装完整。
-func TestPendingFormatExplicit(t *testing.T) {
+// 收口守护栏(D6-4 后 pending 清零):每个声明格式都必须有抽取器,绝不再静默降级为提示。
+func TestAllFormatsHaveExtractor(t *testing.T) {
 	s, dir := newSvc(t, Budget{})
-	for _, c := range []struct {
-		name string
-		f    sdk.DocFormat
-	}{{"a.html", sdk.DocFormatHTML}} {
-		p := writeFile(t, dir, c.name, []byte("x"))
-		v, err := s.Preview(context.Background(), sdk.DocRequest{Path: p})
-		if err != nil {
-			t.Fatalf("%s: %v", c.name, err)
+	if len(s.pending) != 0 {
+		t.Fatalf("全部格式应已交付,pending 应为空: %+v", s.pending)
+	}
+	for _, f := range []sdk.DocFormat{
+		sdk.DocFormatMarkdown, sdk.DocFormatText, sdk.DocFormatCSV, sdk.DocFormatCode,
+		sdk.DocFormatNotebook, sdk.DocFormatDOCX, sdk.DocFormatXLSX, sdk.DocFormatPPTX,
+		sdk.DocFormatPDF, sdk.DocFormatHTML, sdk.DocFormatImage, sdk.DocFormatBinary,
+		sdk.DocFormatUnsupported,
+	} {
+		if s.extractors[f] == nil {
+			t.Fatalf("格式 %s 无抽取器", f)
 		}
-		if v.Format != c.f {
-			t.Fatalf("%s: 格式应为 %q,得 %q", c.name, c.f, v.Format)
-		}
-		if len(v.Warnings) == 0 || !strings.Contains(v.Warnings[0], "尚未交付") {
-			t.Fatalf("%s: 应显式提示抽取器未交付: %+v", c.name, v.Warnings)
-		}
+	}
+	// HTML 走源码视图(不再是 pendingView 提示)
+	p := writeFile(t, dir, "a.html", []byte("<title>T</title>"))
+	v, err := s.Preview(context.Background(), sdk.DocRequest{Path: p})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Format != sdk.DocFormatHTML || v.Title != "T" || len(v.Warnings) != 0 {
+		t.Fatalf("HTML 应走源码视图: %+v", v)
 	}
 }
 
