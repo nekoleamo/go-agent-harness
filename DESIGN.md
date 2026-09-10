@@ -427,7 +427,7 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 > | ~~**E-D**~~ ✅ | 真实文档保真语料 + opt-in harness(`scripts/gen-doc-corpus.sh` + `TestFidelityCorpus`,poppler `pdftotext` 独立对照) | ✅ **已交付 2026-10-11**:首轮真实语料 8 件(docx 3 / pdf 4 / xlsx 1,含第三方产出的真实合同与模板)→ 硬性不变量全过 + 覆盖率对照;**首个真实缺口已修**(见下「E-D 发现」) | G-D6-3 **判定前提就绪**;D2–D4 回归盲区补齐 | 已收口 |
 > | ~~**E-E**~~ ✅ | 前端逻辑单测(**零新增依赖**:Node 内置 `node --test` + 类型剥离,替代 vitest)+ 引导判定纯函数化 | ✅ **已交付 2026-10-11**:`npm test` 24 项(sse 消费引擎 11 / 引导判定 7 / IM 状态通道 3 / 文档意图白名单 3);`guides.ts` 抽出 `shouldShowGuide` 纯函数;CI 加「前端逻辑单测」步 | G-X2 交互类断言可自动化 | 已收口(不再需要 vitest/E-E 原方案) |
 >
-> **本批收口(2026-10-11)**:前置件 **E-A / E-C / E-D / E-E** 与实施方案 **IM-1 / DOC-1 / MED-1 / RST-1 / MED-2 / RST-2** 共 **10 项交付**(逐项交付行见上,全部带单测/e2e 与实测证据)。**续交(2026-10-11)**:★**MED-3 微信出站媒体已交付(beta)**——iLink 三段式逐字段实装 + 单测/真实客户端全链路(假 CDN)/**装配级 e2e(`im_send_file` 闭环)** 全绿,真机核对后转正;**QQ 侧同步补齐同口径装配级 e2e(MED-2 四步分片上传闭环)**(交付行见下 + docs/IM_REMOTE §9.4);**8 项实施计划完成 7 项**。**暂存 1 项**(已登记前置,随时可开工):**SELF-1**(pdfium-WASM 自包含档;需有网实测体积/内存 + E-C 体积门决策,仅在「零外部依赖部署」需求成立时做)。**非代码侧**:X-1/X-2 真机验收(人工)、C2/C3 发行(等 repo 公开 + 首个 tag)。验证基线:全库 `go test ./... -race -count=1` 绿 + `go vet` 干净 + 前端 `vue-tsc` 0 错/单测 24 项 + `scripts/size-check.sh` 通过(DOC-3a 后本平台实测 40.77 MiB / gz 27.18 MiB,门 ≤46/≤30)。 |
+> **本批收口(2026-10-11)**:前置件 **E-A / E-C / E-D / E-E** 与实施方案 **IM-1 / DOC-1 / MED-1 / RST-1 / MED-2 / RST-2** 共 **10 项交付**(逐项交付行见上,全部带单测/e2e 与实测证据)。**续交(2026-10-11)**:★**MED-3 微信出站媒体已交付(beta)**——iLink 三段式逐字段实装 + 单测/真实客户端全链路(假 CDN)/**装配级 e2e(`im_send_file` 闭环)** 全绿,真机核对后转正;**QQ 侧同步补齐同口径装配级 e2e(MED-2 四步分片上传闭环)**(交付行见下 + docs/IM_REMOTE §9.4);**8 项实施计划完成 7 项**。**暂存 1 项**(已登记前置,随时可开工):**SELF-1**(pdfium-WASM 自包含档;需有网实测体积/内存 + E-C 体积门决策,仅在「零外部依赖部署」需求成立时做)。**非代码侧**:X-1/X-2 真机验收(人工)、C2/C3 发行(等 repo 公开 + 首个 tag)。验证基线:全库 `go test ./... -race -count=1` 绿 + `go vet` 干净 + 前端 `vue-tsc` 0 错/单测 24 项 + `scripts/size-check.sh` 通过(DOC-3c 后本平台实测 40.79 MiB / gz 27.19 MiB,门 ≤46/≤30)。 |
 >
 > ✅ **IM-1 · G-E5-3 远程工具(2026-10-11 已交付,D1 口径全部落实)**:① **契约**(`sdk/im.go`):`IMSendTarget`/`IMControlStatus`/`IMControlService{Status,Targets,SendText}` + 可选 `ApprovalToolGate`(供工具自检审批接入)。② **受控出站面**(`im/control.go`,由 `ui-im-*` Provide `ctx.imControl`):`Targets()` = 已授权用户 ∪ 已授权群(实时、稳定排序、剥离渠道前缀);`SendText` **仅接受 Targets() 内目标**(未授权/空目标/空文本 → 显式错误,不回落 LastRoute),投递复用通道 `SendText`(预算/配额/ledger 无旁路);`Status()` 只读(渠道/相位/模型/会话/忙闲/授权计数/目标)。新增 `Route.Group` 显式群标记(主动向群投递无成员上下文)——QQ 按 `Group || ChatID!=UserID` 派群端点,微信显式报「不支持群投递」。③ **工具插件** `plugins/tool/tool-im`(**默认不注册**:`data.enabled` 才注册;未启用零副作用):`im_send{target,text}`(校验空值/≤8000 字/底层错误带工具名前缀)、`im_status{}`(只读状态 + 可投目标);`ctx.imControl` **运行期现取**(装配顺序无耦合);启用但未接入审批 → 启动 **WARN** 提示加 `approval_tools`(不阻塞、不静默假设安全)。④ **登记/装配**:catalogue(base,Requires ctx.tools)+ plugins/README 行 + 两份 bundle-base **seed-version 16 → 17**(条目 `enabled: false` + `data.enabled: false`,注释给出启用两步);README 双语(工具表 + IM 小节启用说明)。⑤ **测试**:`plugins/tool/tool-im`(默认关零注册 ×4 组数据形态、启用注册两工具、im_status 透传、im_send 投递与 6 类参数错误、未装配控制面结构化错误、底层错误前缀、审批闸门 armed/unarmed/无闸门三态);`im/control_test.go`(仅枚举已授权/新授权即时出现、私聊与群 Route 标记、未授权与空值拒绝且零出站、状态只读不谎报连通/busy 联动);`tests/im_tools_e2e_test.go`(真实 base+im-qq+tool-im 装配:工具可见 → im_status 含 OPENID1 → im_send 经 QQ REST 投递且带被动 `msg_id` → 未授权目标拒绝且出站数不变;默认关闭时工具不可见)。全库 `go test ./... -race -count=1` 绿。
 >
@@ -457,7 +457,7 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 > | ~~**P3 · RST-2**~~ ✅ | IM 图片回推 | ✅ **2026-10-11 已交付**(`im_send_page` + 光栅窄白名单;端到端闭环) | — | 已收口 | — |
 > | **P4 · SELF-1** D6-1c 自包含档 | pdfium-WASM + wazero 替换外部光栅 | ✅ **实测已完成(2026-10-11,含 wazero 上跑通 + 与 poppler 像素对照)**;余 = ~~有网实测~~ + **体积门决策**(+5.5 MiB → ≈46.2 MiB 越门) | M | ⏸ **暂存**:残留风险 = `invoke_*`(wazero 无 table/函数引用 API,只能 stub)与体积门;**仅当需要「零外部依赖部署」时才做**(当前外部 pdftoppm 路径已覆盖功能) | 8 |
 > | ~~**P5 · DOC-2**~~ ✅ D6-3 窄修 | xlsx 批注(legacy+回复式)/文本框文本 → note + `xl/media/*` 复用 `DocAsset` + 隐藏行/列提示;探针档位同步 | ✅ **2026-10-11 已交付**:`extract_xlsx_extra.go` + 4 组单测;语料 strict 复验 `content_gaps=0` | 已收口(图表/透视的视觉性损失登记为接受) |
-> | **P6 · DOC-3** D6-3 同类剩余 | **DOC-3a** docx 批注(legacy+回复式)/文本框 + mc:Fallback 去重 → ✅ **已交付 2026-10-11**(`extract_docx_extra.go` + 5 组单测;语料 docx content_gaps=0);**DOC-3b** pptx 讲者备注 → ✅ **已交付 2026-10-11**(3 组单测);**DOC-3c** docx/pptx 图表与 SmartArt 数据提取 | 方案已定(2026-10-11,见「DOC-3 方案」) | DOC-3a/3b 已收口;DOC-3c S–M | 🧭 **DOC-3c 待批** |
+> | **P6 · DOC-3** D6-3 同类剩余 | **DOC-3a** docx 批注(legacy+回复式)/文本框 + mc:Fallback 去重 → ✅ **已交付 2026-10-11**(`extract_docx_extra.go` + 5 组单测;语料 docx content_gaps=0);**DOC-3b** pptx 讲者备注 → ✅ **已交付 2026-10-11**(3 组单测);**DOC-3c** 图表数据 + SmartArt 文字 → ✅ **已交付 2026-10-11**(4 组单测 + 语料 content_gaps=0);余 **pptx 内嵌表**未解包(登记接受/待办) | 方案已定(2026-10-11) | DOC-3a/3b/3c 全部收口 | ✅ 已收口(内嵌表缺口保留) |
 >
 > ---
 >
@@ -502,6 +502,7 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 >
 > ✅ **DOC-3a · docx 批注(legacy + 回复式)+ 文本框(2026-10-11 已交付;零依赖,与 DOC-2 同构)**:① **批注**(`extract_docx_extra.go`):解析 `word/comments.xml` 的 `<w:comment w:id w:author w:date>`(多 run/多段落文本拼接、首个段落 `w14:paraId` 记录),经 `word/commentsExtended.xml` 的 `w15:parentParaId` **合并回复线程**(根 + 「作者(回复)」串),`word/people.xml` 提供显示名回落 → note 块;`finish()` 不再把 comments.xml 列为未解析部件(**消除「含批注,本期不解析」的误导告警**)。② **文本框**:正文 `w:txbxContent` 内 `w:t` 经独立流式扫描(不动正文解析器状态机)→ 每个文本框一条 `文本框: …` note(Choice/Fallback 重复内容去重)。③ **顺带修复真实保真缺陷**:Word 的 `mc:AlternateContent` 会把同一内容写进 `mc:Choice`(现代)与 `mc:Fallback`(兼容),原实现**把文本框文字在正文里打印两遍**;主解析器新增 `skip` 子树机制 —— `w:txbxContent` 交 note 输出、`mc:Fallback` **仅在同层确有 `mc:Choice` 时**跳过(**纯 Fallback 内容必须保留**,含单测防回归)。④ **语料**:新增 `scripts/gen-docx-advanced.py`(纯标准库构造含批注线程/people/文本框的 docx —— `textutil` 无法写批注)并接入 `gen-doc-corpus.sh`。⑤ **测试**:新增 5 组(线程合并与显示名回落/文本框去重/普通文档零影响/坏部件容错/孤立 commentsExtended)+ AlternateContent 规则 2 例(双写只留一份、纯 Fallback 不丢);探针 docx `comments`/`textBox` 由 `content+absent/warned` 改为 **info + supported**。⑥ **复验**:`GAH_DOC_CORPUS_GAP_STRICT=1` **通过**(docx `content_gaps=0`;`advanced-comments.docx` blocks=6/note=3/chars=193/warnings=0)。**范围外**:pptx 备注(DOC-3b)、docx/pptx 图表与 SmartArt(DOC-3c,仍为 content 档)。
 > ✅ **DOC-3b · pptx 讲者备注(2026-10-11 已交付;零依赖)**:`extract_pptx_notes.go` 依幻灯片 rels 定位 `notesSlide` 部件,流式取各形状 `a:t`(多形状/多段落合并单行),**跳过 `p:ph type="sldNum"` 编号占位**(避免把页码当备注);`parseSlide` 的「含备注页,本期不解析」告警改为 note 块 `备注(第 N 张): …`(N = `sldIdLst` 展示顺序);部件缺失 → 显式告警,空备注 → 静默(无内容不等告警)。测试 3 组(文本合并与编号跳过/缺失或空/部件缺失告警 + 截断容错)+ 既有 deck 夹具升级(真实 notesSlide + sldNum)与 `TestExtractPPTX` 断言更新;探针 pptx `notes` → **info + supported**。**已知语料缺口**:本机无 pptx 生产者(textutil 只出 docx/odt),故 pptx 侧仅单测覆盖、不进语料 harness。
+> ✅ **DOC-3c · 图表数据 + SmartArt 文字(2026-10-11 已交付;零依赖)**:① **图表**(`extract_office_graphics.go`):流式取 `c:title`(→ note)与各 `c:ser` 的 `c:tx`/`c:cat`/`c:val` **缓存点**(`c:pt idx` 重排,兼容 num/str/multiLvl 缓存)→ **数据表格块**(首列类别 + 每系列一列,数值列 `Numeric` 标记,行列按 `Budget` 封顶并显式告警);**无缓存**(仅链接外部数据源)→ note 说明「未含缓存数据」而非静默。② **SmartArt**:`dgm:dataModel` 内 `a:t` 去重后「 / 」连接 → note。③ **定位**:部件优先经 rels(按 Id 排序 → 输出确定性),**rels 缺失时按部件前缀回退扫描**;docx 走 `docxAnnotations`,pptx 在 `parseSlide` 内(块带幻灯片号)。④ **明确不做**:图表/SmartArt **视觉还原**(阅读视图定位;真需视觉走 PDF/光栅路径)、**pptx 内嵌表**(`ppt/embeddings` OLE 未解包 —— 探针保持 content 档,登记为剩余缺口)。⑤ **探针**:docx/pptx `chart`、`smartArt` → **info + supported**,并加回归断言(docx 不得再有 content 档;pptx 剩余 content 档仅 `groupedShape`/`embeddedSheet`)。⑥ **测试**:新增 4 组(标题+两系列表格与 idx 乱序重排/无缓存 + rels 回退/行列预算截断/pptx 幻灯片级图表);语料 `gen-docx-advanced.py` 增图表(含缓存)与 SmartArt 部件 → `GAH_DOC_CORPUS_GAP_STRICT=1` **通过**(`advanced-comments.docx` blocks=9/note=5/table=2/chars=280,`content_gaps=0`)。
 > #### SELF-1 可能性分析(二轮,2026-10-11;多构建对比 + 保真交叉验证 + 四条落地路径)
 >
 > **目的**:一轮实测已证「wazero 上跑得动、与 poppler 仅差抗锯齿」,但留下两个未决问题(① `invoke_*` 能否忠实实现 ② 体积门怎么办)。二轮把这两问用**可核对证据**收口,并把落地方式算成四条路线。
@@ -533,7 +534,7 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 > **结论**:SELF-1 **技术上成立且保真达标**(残差仅「无法证明对未测文档绝对安全」+ 体积/内存成本),推荐 **路线 B**,并以「`invoke>0` 告警 + 语料像素门(有 poppler 时强制交叉核对)」作为验收纪律;是否开工仍取决于「零外部依赖部署」是否为真实需求(当前 pdftoppm 已覆盖功能)。
 >
 >
-> #### DOC-3 方案(docx/pptx 同类剩余项;2026-10-11 提出 → **DOC-3a/3b 已交付**,DOC-3c 待批)
+> #### DOC-3 方案(docx/pptx 同类剩余项;2026-10-11 提出 → **DOC-3a/3b/3c 已全部交付**;余 pptx 内嵌表未解包)
 >
 > **现状(DOC-2 后,探针声明档位)**:xlsx 侧已清零 content;docx/pptx 仍有**真丢文本**与**视觉性损失**两类——
 >
@@ -542,9 +543,10 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 > | ~~docx 批注(legacy)~~ | `word/comments.xml` | ✅ **DOC-3a 已交付**:文本+作者+日期 → note | — | ✅ 已收口 |
 > | ~~docx 回复式批注~~ | `word/commentsExtended.xml` + `word/people.xml` | ✅ **DOC-3a 已交付**:parentParaId 线程合并 + people 显示名 | — | ✅ 已收口 |
 > | ~~docx 文本框~~ | `w:txbxContent` | ✅ **DOC-3a 已交付**:note 块(且**修掉 mc:Choice/Fallback 双写导致的正文重复** —— 实测原输出把文本框文字打印两遍) | — | ✅ 已收口(页眉/页脚内仍属未解析告警) |
-> | docx 图表 / SmartArt | `word/charts/*`、`word/diagrams/*`(content) | 丢失 | 视觉 + 部分数据 | **DOC-3c**:图表可提 `c:numCache`/`c:strCache` 数据点(零依赖)映射为表格/note;SmartArt 文字在 `dgm:dataModel` 的 `a:t`;若提取不可靠 → 登记「视觉性损失,接受」 |
+> | ~~docx 图表 / SmartArt~~ | `word/charts/*`、`word/diagrams/*` | ✅ **DOC-3c 已交付**:图表缓存 → **数据表格块**(标题 note);SmartArt → note | — | ✅ 已收口 |
 > | ~~pptx 讲者备注~~ | `ppt/notesSlides/*` | ✅ **DOC-3b 已交付**:备注文本 → note(编号占位跳过) | — | ✅ 已收口 |
-> | pptx 图表 / SmartArt / 内嵌表 | `ppt/charts/*`、`ppt/diagrams/*`、`ppt/embeddings/*`(content) | 丢失 | 视觉 + 数据 | **DOC-3c**:同 docx 口径(提取数据/文本 or 登记接受);内嵌 xlsx 需先解包再走 xlsx 抽取器(复用既有 extractor) |
+> | ~~pptx 图表 / SmartArt~~ | `ppt/charts/*`、`ppt/diagrams/*` | ✅ **DOC-3c 已交付**(幻灯片级 rels → 表格/note) | — | ✅ 已收口 |
+| pptx **内嵌表** | `ppt/embeddings/*`(OLE,含内嵌 xlsx) | 未解包 | 数据(可能含幻灯片外的内容) | ⏸ **保留缺口**:需「解包 → 复用 xlsx 抽取器」的嵌套容器支持(非本批范围);探针保持 **content** 档,登记接受/待办 |
 >
 > **交付顺序与验收**:**DOC-3a**(docx 批注 + 文本框;零依赖、真丢文本、与 DOC-2 完全同构,预计 1 文件 + 3 组单测)→ **DOC-3b**(pptx 备注,小)→ **DOC-3c**(图表/SmartArt 数据提取,**先探针再决定**:若提取后 `GAPSUMMARY` 仅剩视觉性差异,则把 chart/smartArt 降为 style 并登记接受,与 DOC-2 的 chart/pivot 处理一致)。每步验收沿用同一口径:`GAH_DOC_CORPUS(_GAP_STRICT)` 复跑 + 探针 `ours`/severity 同步 + 回归断言(不得回退 content 档)。
 >
@@ -624,6 +626,7 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 > | DOC-2(D6-3 窄修) | `a4e27f4` | xlsx 批注(legacy+回复式)/文本框/内嵌图片/隐藏行列;探针档位同步 | 4 组单测 + 语料 strict 复验 content_gaps=0 |
 > | DOC-3a(D6-3 同类) | `badf601` | docx 批注(legacy+回复式)/文本框 → note + `mc:Fallback` 去重 | 5 组单测 + 语料 strict 复验 docx content_gaps=0 |
 > | DOC-3b(D6-3 同类) | `70d1248` | pptx 讲者备注 → note(编号占位跳过;替换原「本期不解析」告警) | 3 组单测 + 既有 deck 夹具/断言更新 |
+> | DOC-3c(D6-3 同类) | `2641987` | 图表缓存数据 → 表格块 + SmartArt 文字 → note(docx/pptx;rels 缺失回退) | 4 组单测 + 语料 strict 复验 content_gaps=0 |
 > | RST-2(D6-1b) | `c87c015` | `im_send_page`(PDF 页 → 图片)+ 光栅窄白名单 | 3 包测试 + 端到端闭环 |
 > | 前置件 | `50a7aad`/`124b06d`/`1e3a7e0`/`1a4329b` | E-A 工具级审批、E-C 体积门重定基、E-D 真实语料 harness(+部首码位修正)、E-E 前端零依赖单测 | 见各自提交 |
 >
