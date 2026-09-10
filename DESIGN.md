@@ -457,7 +457,7 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 > | ~~**P3 · RST-2**~~ ✅ | IM 图片回推 | ✅ **2026-10-11 已交付**(`im_send_page` + 光栅窄白名单;端到端闭环) | — | 已收口 | — |
 > | **P4 · SELF-1** D6-1c 自包含档 | pdfium-WASM + wazero 替换外部光栅 | ✅ **实测已完成(2026-10-11,含 wazero 上跑通 + 与 poppler 像素对照)**;余 = ~~有网实测~~ + **体积门决策**(+5.5 MiB → ≈46.2 MiB 越门) | M | ⏸ **暂存**:残留风险 = `invoke_*`(wazero 无 table/函数引用 API,只能 stub)与体积门;**仅当需要「零外部依赖部署」时才做**(当前外部 pdftoppm 路径已覆盖功能) | 8 |
 > | ~~**P5 · DOC-2**~~ ✅ D6-3 窄修 | xlsx 批注(legacy+回复式)/文本框文本 → note + `xl/media/*` 复用 `DocAsset` + 隐藏行/列提示;探针档位同步 | ✅ **2026-10-11 已交付**:`extract_xlsx_extra.go` + 4 组单测;语料 strict 复验 `content_gaps=0` | 已收口(图表/透视的视觉性损失登记为接受) |
-> | **P6 · DOC-3** D6-3 同类剩余 | **DOC-3a** docx 批注(legacy+回复式)/文本框 + mc:Fallback 去重 → ✅ **已交付 2026-10-11**(`extract_docx_extra.go` + 5 组单测;语料 docx content_gaps=0);**DOC-3b** pptx 讲者备注、**DOC-3c** docx/pptx 图表与 SmartArt 数据提取 | 方案已定(2026-10-11,见「DOC-3 方案」) | DOC-3a 已收口;DOC-3b/c S–M | 🧭 **DOC-3b/c 待批** |
+> | **P6 · DOC-3** D6-3 同类剩余 | **DOC-3a** docx 批注(legacy+回复式)/文本框 + mc:Fallback 去重 → ✅ **已交付 2026-10-11**(`extract_docx_extra.go` + 5 组单测;语料 docx content_gaps=0);**DOC-3b** pptx 讲者备注 → ✅ **已交付 2026-10-11**(3 组单测);**DOC-3c** docx/pptx 图表与 SmartArt 数据提取 | 方案已定(2026-10-11,见「DOC-3 方案」) | DOC-3a/3b 已收口;DOC-3c S–M | 🧭 **DOC-3c 待批** |
 >
 > ---
 >
@@ -501,6 +501,7 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 >
 >
 > ✅ **DOC-3a · docx 批注(legacy + 回复式)+ 文本框(2026-10-11 已交付;零依赖,与 DOC-2 同构)**:① **批注**(`extract_docx_extra.go`):解析 `word/comments.xml` 的 `<w:comment w:id w:author w:date>`(多 run/多段落文本拼接、首个段落 `w14:paraId` 记录),经 `word/commentsExtended.xml` 的 `w15:parentParaId` **合并回复线程**(根 + 「作者(回复)」串),`word/people.xml` 提供显示名回落 → note 块;`finish()` 不再把 comments.xml 列为未解析部件(**消除「含批注,本期不解析」的误导告警**)。② **文本框**:正文 `w:txbxContent` 内 `w:t` 经独立流式扫描(不动正文解析器状态机)→ 每个文本框一条 `文本框: …` note(Choice/Fallback 重复内容去重)。③ **顺带修复真实保真缺陷**:Word 的 `mc:AlternateContent` 会把同一内容写进 `mc:Choice`(现代)与 `mc:Fallback`(兼容),原实现**把文本框文字在正文里打印两遍**;主解析器新增 `skip` 子树机制 —— `w:txbxContent` 交 note 输出、`mc:Fallback` **仅在同层确有 `mc:Choice` 时**跳过(**纯 Fallback 内容必须保留**,含单测防回归)。④ **语料**:新增 `scripts/gen-docx-advanced.py`(纯标准库构造含批注线程/people/文本框的 docx —— `textutil` 无法写批注)并接入 `gen-doc-corpus.sh`。⑤ **测试**:新增 5 组(线程合并与显示名回落/文本框去重/普通文档零影响/坏部件容错/孤立 commentsExtended)+ AlternateContent 规则 2 例(双写只留一份、纯 Fallback 不丢);探针 docx `comments`/`textBox` 由 `content+absent/warned` 改为 **info + supported**。⑥ **复验**:`GAH_DOC_CORPUS_GAP_STRICT=1` **通过**(docx `content_gaps=0`;`advanced-comments.docx` blocks=6/note=3/chars=193/warnings=0)。**范围外**:pptx 备注(DOC-3b)、docx/pptx 图表与 SmartArt(DOC-3c,仍为 content 档)。
+> ✅ **DOC-3b · pptx 讲者备注(2026-10-11 已交付;零依赖)**:`extract_pptx_notes.go` 依幻灯片 rels 定位 `notesSlide` 部件,流式取各形状 `a:t`(多形状/多段落合并单行),**跳过 `p:ph type="sldNum"` 编号占位**(避免把页码当备注);`parseSlide` 的「含备注页,本期不解析」告警改为 note 块 `备注(第 N 张): …`(N = `sldIdLst` 展示顺序);部件缺失 → 显式告警,空备注 → 静默(无内容不等告警)。测试 3 组(文本合并与编号跳过/缺失或空/部件缺失告警 + 截断容错)+ 既有 deck 夹具升级(真实 notesSlide + sldNum)与 `TestExtractPPTX` 断言更新;探针 pptx `notes` → **info + supported**。**已知语料缺口**:本机无 pptx 生产者(textutil 只出 docx/odt),故 pptx 侧仅单测覆盖、不进语料 harness。
 > #### SELF-1 可能性分析(二轮,2026-10-11;多构建对比 + 保真交叉验证 + 四条落地路径)
 >
 > **目的**:一轮实测已证「wazero 上跑得动、与 poppler 仅差抗锯齿」,但留下两个未决问题(① `invoke_*` 能否忠实实现 ② 体积门怎么办)。二轮把这两问用**可核对证据**收口,并把落地方式算成四条路线。
@@ -532,7 +533,7 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 > **结论**:SELF-1 **技术上成立且保真达标**(残差仅「无法证明对未测文档绝对安全」+ 体积/内存成本),推荐 **路线 B**,并以「`invoke>0` 告警 + 语料像素门(有 poppler 时强制交叉核对)」作为验收纪律;是否开工仍取决于「零外部依赖部署」是否为真实需求(当前 pdftoppm 已覆盖功能)。
 >
 >
-> #### DOC-3 方案(docx/pptx 同类剩余项;2026-10-11 提出 → **DOC-3a 已交付**,DOC-3b/c 待批)
+> #### DOC-3 方案(docx/pptx 同类剩余项;2026-10-11 提出 → **DOC-3a/3b 已交付**,DOC-3c 待批)
 >
 > **现状(DOC-2 后,探针声明档位)**:xlsx 侧已清零 content;docx/pptx 仍有**真丢文本**与**视觉性损失**两类——
 >
@@ -542,7 +543,7 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 > | ~~docx 回复式批注~~ | `word/commentsExtended.xml` + `word/people.xml` | ✅ **DOC-3a 已交付**:parentParaId 线程合并 + people 显示名 | — | ✅ 已收口 |
 > | ~~docx 文本框~~ | `w:txbxContent` | ✅ **DOC-3a 已交付**:note 块(且**修掉 mc:Choice/Fallback 双写导致的正文重复** —— 实测原输出把文本框文字打印两遍) | — | ✅ 已收口(页眉/页脚内仍属未解析告警) |
 > | docx 图表 / SmartArt | `word/charts/*`、`word/diagrams/*`(content) | 丢失 | 视觉 + 部分数据 | **DOC-3c**:图表可提 `c:numCache`/`c:strCache` 数据点(零依赖)映射为表格/note;SmartArt 文字在 `dgm:dataModel` 的 `a:t`;若提取不可靠 → 登记「视觉性损失,接受」 |
-> | pptx 讲者备注 | `ppt/notesSlides/*`(info/**warned**) | 未抽文本 | 信息级 | **DOC-3b**:抽备注文本 → note(讲者意图常有价值) |
+> | ~~pptx 讲者备注~~ | `ppt/notesSlides/*` | ✅ **DOC-3b 已交付**:备注文本 → note(编号占位跳过) | — | ✅ 已收口 |
 > | pptx 图表 / SmartArt / 内嵌表 | `ppt/charts/*`、`ppt/diagrams/*`、`ppt/embeddings/*`(content) | 丢失 | 视觉 + 数据 | **DOC-3c**:同 docx 口径(提取数据/文本 or 登记接受);内嵌 xlsx 需先解包再走 xlsx 抽取器(复用既有 extractor) |
 >
 > **交付顺序与验收**:**DOC-3a**(docx 批注 + 文本框;零依赖、真丢文本、与 DOC-2 完全同构,预计 1 文件 + 3 组单测)→ **DOC-3b**(pptx 备注,小)→ **DOC-3c**(图表/SmartArt 数据提取,**先探针再决定**:若提取后 `GAPSUMMARY` 仅剩视觉性差异,则把 chart/smartArt 降为 style 并登记接受,与 DOC-2 的 chart/pivot 处理一致)。每步验收沿用同一口径:`GAH_DOC_CORPUS(_GAP_STRICT)` 复跑 + 探针 `ours`/severity 同步 + 回归断言(不得回退 content 档)。
@@ -622,6 +623,7 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 > | MED-3(E5-1b,beta) | `65e9677` | iLink 三段式上传(`getuploadurl`/AES-ECB/CDN/媒体项)+ ui-im-wechat `im.MediaSender` | ilink 8 组 + 通道 6 组(真实客户端全链路假 CDN)+ 装配级 e2e(`im_send_file` 闭环/越界零出站) |
 > | DOC-2(D6-3 窄修) | `a4e27f4` | xlsx 批注(legacy+回复式)/文本框/内嵌图片/隐藏行列;探针档位同步 | 4 组单测 + 语料 strict 复验 content_gaps=0 |
 > | DOC-3a(D6-3 同类) | `badf601` | docx 批注(legacy+回复式)/文本框 → note + `mc:Fallback` 去重 | 5 组单测 + 语料 strict 复验 docx content_gaps=0 |
+> | DOC-3b(D6-3 同类) | `70d1248` | pptx 讲者备注 → note(编号占位跳过;替换原「本期不解析」告警) | 3 组单测 + 既有 deck 夹具/断言更新 |
 > | RST-2(D6-1b) | `c87c015` | `im_send_page`(PDF 页 → 图片)+ 光栅窄白名单 | 3 包测试 + 端到端闭环 |
 > | 前置件 | `50a7aad`/`124b06d`/`1e3a7e0`/`1a4329b` | E-A 工具级审批、E-C 体积门重定基、E-D 真实语料 harness(+部首码位修正)、E-E 前端零依赖单测 | 见各自提交 |
 >
