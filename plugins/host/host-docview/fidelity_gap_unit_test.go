@@ -69,8 +69,9 @@ func TestGapProbeXLSX(t *testing.T) {
 	want := map[string]string{
 		"richTextCell": gapStyle, "conditionalFormatting": gapStyle, "dataValidation": gapStyle,
 		"autoFilter": gapStyle, "tableObject": gapStyle,
-		"chart": gapContent, "pivotTable": gapContent, "comments": gapContent, "image": gapContent,
-		"threadedComments": gapContent, "textBox": gapContent,
+		// DOC-2 已交付(批注/文本框/图片可见)+ 图表/透视降为 style(数据在单元格,视觉性损失)
+		"chart": gapStyle, "pivotTable": gapStyle,
+		"comments": gapInfo, "image": gapInfo, "threadedComments": gapInfo, "textBox": gapInfo,
 		"formula": gapInfo, "hiddenRowCol": gapInfo, "mergeCell": gapInfo,
 	}
 	if len(g) != len(want) {
@@ -185,12 +186,18 @@ func TestGapProbePPTXAndSummary(t *testing.T) {
 	if got := gapSummary(nil); got != "none" {
 		t.Fatalf("空汇总应为 none: %q", got)
 	}
-	// 排序:content 在前
+	// 排序:style 在 info 之前(DOC-2 后 xlsx 已无 content 档命中)
 	fs, _ := probeGaps(sdk.DocFormatXLSX, zipOf(t, map[string]string{
 		"xl/charts/chart1.xml": `<chart/>`, "xl/worksheets/s1.xml": `<mergeCells><mergeCell/></mergeCells>`,
 	}))
-	if len(fs) != 2 || fs[0].Severity != gapContent || fs[1].Severity != gapInfo {
+	if len(fs) != 2 || fs[0].Severity != gapStyle || fs[1].Severity != gapInfo {
 		t.Fatalf("应按严重度排序: %+v", fs)
+	}
+	// 回归:DOC-2 后 xlsx 探测表中不应再有 content 档(真丢文本者均已可见)
+	for _, p := range gapProbes(sdk.DocFormatXLSX) {
+		if p.severity == gapContent {
+			t.Fatalf("xlsx 不应再有 content 档特性: %s", p.feature)
+		}
 	}
 	// zip 不可读 → 结构化错误(不 panic)
 	if _, err := probeGaps(sdk.DocFormatXLSX, filepath.Join(t.TempDir(), "nope.xlsx")); err == nil {

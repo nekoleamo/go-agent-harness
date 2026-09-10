@@ -142,21 +142,24 @@ func gapProbes(format sdk.DocFormat) []gapProbe {
 			{feature: "autoFilter", severity: gapStyle, ours: "absent", match: func(e map[string][]byte) []gapHit {
 				return contentHits(e, `autoFilter`)
 			}},
-			{feature: "chart", severity: gapContent, ours: "absent", match: func(e map[string][]byte) []gapHit {
+			// 图表:视觉性损失,但数据在单元格可见(D6-3 实测)→ style 档(通常可接受),非内容缺口
+			{feature: "chart", severity: gapStyle, ours: "absent", match: func(e map[string][]byte) []gapHit {
 				return nameHits(e, "xl/charts/")
 			}},
-			{feature: "pivotTable", severity: gapContent, ours: "absent", match: func(e map[string][]byte) []gapHit {
+			// 透视表:透视结果本身也是单元格(可 --sheet 切换)、源数据在另一表(D6-3 实测)→ style 档
+			{feature: "pivotTable", severity: gapStyle, ours: "absent", match: func(e map[string][]byte) []gapHit {
 				return append(nameHits(e, "pivotCache"), nameHits(e, "pivotTable")...)
 			}},
-			{feature: "comments", severity: gapContent, ours: "absent", match: func(e map[string][]byte) []gapHit {
+			// DOC-2 已交付:批注文本进 note 块(与 docx「批注仅告警」不同,这里文本可见)
+			{feature: "comments", severity: gapInfo, ours: "supported", match: func(e map[string][]byte) []gapHit {
 				return nameHits(e, "xl/comments")
 			}},
 			// 现代「回复式批注」(Excel 2018+/WPS):与 legacy 批注同为独立部件承载,文字只在那里
-			{feature: "threadedComments", severity: gapContent, ours: "absent", match: func(e map[string][]byte) []gapHit {
+			{feature: "threadedComments", severity: gapInfo, ours: "supported", match: func(e map[string][]byte) []gapHit {
 				return nameHits(e, "xl/threadedComments")
 			}},
 			// xlsx 文本框:文字只在 drawing 的 xdr:txBody 里(单元格中不存在)
-			{feature: "textBox", severity: gapContent, ours: "absent", match: func(e map[string][]byte) []gapHit {
+			{feature: "textBox", severity: gapInfo, ours: "supported", match: func(e map[string][]byte) []gapHit {
 				var out []gapHit
 				for name, b := range e {
 					if !strings.Contains(name, "xl/drawings/") || !strings.HasSuffix(name, ".xml") {
@@ -168,13 +171,14 @@ func gapProbes(format sdk.DocFormat) []gapProbe {
 				}
 				return out
 			}},
-			{feature: "image", severity: gapContent, ours: "absent", match: func(e map[string][]byte) []gapHit {
+			// DOC-2 已交付:内嵌图片走 DocAsset(与 docx 同口径)
+			{feature: "image", severity: gapInfo, ours: "supported", match: func(e map[string][]byte) []gapHit {
 				return nameHits(e, "xl/media/")
 			}},
 			{feature: "formula", severity: gapInfo, ours: "cached-value-only", match: func(e map[string][]byte) []gapHit {
 				return contentHits(e, `<f[ >]`)
 			}},
-			{feature: "hiddenRowCol", severity: gapInfo, ours: "absent", match: func(e map[string][]byte) []gapHit {
+			{feature: "hiddenRowCol", severity: gapInfo, ours: "warned", match: func(e map[string][]byte) []gapHit {
 				return contentHits(e, `hidden="1"`)
 			}},
 			{feature: "mergeCell", severity: gapInfo, ours: "supported", match: func(e map[string][]byte) []gapHit {

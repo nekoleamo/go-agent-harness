@@ -81,14 +81,18 @@ func extractXLSX(ctx context.Context, s *Service, abs string, fi os.FileInfo, re
 	if idx < 0 || idx >= len(sheets) {
 		idx = 0
 	}
-	// 先建工作表元信息(需要每表行列数 → 轻量扫描标题行/维度)
+	// 先建工作表元信息(需要每表行列数 → 轻量扫描标题行/维度;顺带统计隐藏行/列)
+	hiddenRows, hiddenCols := 0, 0
 	for _, sh := range sheets {
 		part := xlsxSheetPart(o, sh)
-		rows, cols := xlsxSheetSize(o, part)
+		rows, cols, hr, hc := xlsxSheetSize(o, part)
 		v.Sheets = append(v.Sheets, sdk.DocSheet{
 			Name: sh.Name, Rows: rows, Cols: cols,
 			Hidden: strings.EqualFold(sh.State, "hidden") || strings.EqualFold(sh.State, "veryHidden"),
 		})
+		if sh.Name == sheets[idx].Name {
+			hiddenRows, hiddenCols = hr, hc
+		}
 	}
 	// 当前表:块模型
 	part := xlsxSheetPart(o, sheets[idx])
@@ -96,10 +100,14 @@ func extractXLSX(ctx context.Context, s *Service, abs string, fi os.FileInfo, re
 	if err != nil {
 		return nil, err
 	}
-	v.Blocks = blocks
+	// DOC-2:xlsx 批注(legacy + 回复式)/文本框/内嵌图片/隐藏行列(此前静默丢失)。
+	// 必须在 o.warnings 汇总**之前**调用:内部经 o.addWarning 记的告警需一并收进 v.Warnings。
+	extra, xwarns := xlsxSheetAnnotations(s, o, part, sheets[idx].Name, hiddenRows, hiddenCols)
+	v.Blocks = append(blocks, extra...)
 	v.Truncated = append(v.Truncated, trunc...)
 	v.Warnings = append(v.Warnings, warns...)
 	v.Warnings = append(v.Warnings, o.warnings...)
+	v.Warnings = append(v.Warnings, xwarns...)
 	if len(v.Sheets) > 1 {
 		v.Warnings = append(v.Warnings, fmt.Sprintf("工作簿共 %d 个工作表,当前显示第 %d 个(%s);其余表用 Web 面板/--sheet 切换", len(v.Sheets), idx+1, sheets[idx].Name))
 	}
@@ -143,11 +151,11 @@ func xlsxSheetPart(o *ooxml, sh xlsxSheet) string {
 	return "xl/worksheets/sheet1.xml"
 }
 
-// xlsxSheetSize 轻量扫描工作表取维度(仅读 sheetData 的行/列上界,受行列预算封顶)。
-func xlsxSheetSize(o *ooxml, part string) (rows, cols int) {
+// xlsxSheetSize 轻量扫描工作表取维度(仅读 sheetData 的行/列上界)+ 隐藏行/列统计(DOC-2)。
+func xlsxSheetSize(o *ooxml, part string) (rows, cols, hiddenRows, hiddenCols int) {
 	rc, err := o.reader(part)
 	if err != nil {
-		return 0, 0
+		return 0, 0, 0, 0
 	}
 	defer rc.Close()
 	dec := xml.NewDecoder(rc)
@@ -171,6 +179,13 @@ func xlsxSheetSize(o *ooxml, part string) (rows, cols int) {
 				}
 				inRow = true
 				rows++
+				if xmlBoolAttr(t, "hidden") {
+					hiddenRows++
+				}
+			case "col":
+				if xmlBoolAttr(t, "hidden") {
+					hiddenCols++
+				}
 			case "c":
 				if inRow {
 					rowCells++
@@ -186,7 +201,7 @@ func xlsxSheetSize(o *ooxml, part string) (rows, cols int) {
 			}
 		}
 	}
-	return rows, cols
+	return rows, cols, hiddenRows, hiddenCols
 }
 
 // xlsxLoadStyles 解析 styles.xml → 每个 cellXf 的日期/百分比判定。
