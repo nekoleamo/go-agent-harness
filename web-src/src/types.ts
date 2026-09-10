@@ -156,6 +156,13 @@ export interface SessionInfo {
   Preview: string // 会话内容省略版(首条用户消息截断;空 = 无内容)
   MTime: number
   Frames: number
+  // F 组 F0/F2/F3(omitempty:旧后端不返回则 undefined)
+  Pinned?: boolean
+  PinnedAt?: number
+  Summary?: string
+  SummaryTopics?: string[]
+  SummaryCoveredFrames?: number
+  SummaryState?: string // ready | stale | missing | unavailable
 }
 
 // 工作区(项目)历史项(/api/workspaces)

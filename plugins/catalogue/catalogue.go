@@ -19,6 +19,7 @@ import (
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-llm"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-plugin-manager"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-session-log"
+	"github.com/nekoleamo/go-agent-harness/plugins/host/host-session-summary"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-skills"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-system-prompt"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-tools"
@@ -135,6 +136,12 @@ var All = map[string]Def{
 		// 独立统计:只订阅 session/event 广播(session/usage 事件),零注入依赖;
 		// data.context_window 配置模型上下文窗口(默认 65536,展示上下文使用率)。
 		Provides: []string{"ctx.usageStats"}}, Bundle: "base"},
+	"host-session-summary": {Factory: func() sdk.Plugin { return &hostsummary.Plugin{} }, Manifest: &sdk.Manifest{
+		ID: "host-session-summary", Type: "host", APIVersion: ">=1.0,<2.0",
+		// F 组 F3 会话概述(LLM 总结):ctx.sessionSummary;ctx.llm 可选注入
+		//(缺失 → Summary 显式 unavailable);概述只落 meta.json,不进模型上下文
+		Provides: []string{"ctx.sessionSummary"},
+		Requires: []string{"ctx.cwdSessions"}}, Bundle: "base"},
 	"host-cwd-sessions": {Factory: func() sdk.Plugin { return &hostcwdsessions.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "host-cwd-sessions", Type: "host", APIVersion: ">=1.0,<2.0",
 		Provides: []string{"ctx.cwdSessions"},

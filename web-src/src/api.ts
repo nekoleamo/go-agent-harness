@@ -39,6 +39,22 @@ export const api = {
   sessions(): Promise<SessionInfo[]> {
     return req('/api/sessions')
   },
+  // F 组 F2:置顶/取消置顶(经 action 分派,不新增端点)
+  sessionPin(id: string, pinned: boolean): Promise<void> {
+    return req('/api/sessions', {
+      method: 'POST',
+      headers: json,
+      body: JSON.stringify({ action: pinned ? 'pin' : 'unpin', id }),
+    })
+  },
+  // F 组 F3:生成/取回会话概述(会调用模型;force = 忽略缓存)
+  sessionSummary(id: string, force = false): Promise<{ summary: { text: string; topics?: string[] }; auto: boolean }> {
+    return req('/api/sessions/summary', {
+      method: 'POST',
+      headers: json,
+      body: JSON.stringify({ id, force }),
+    })
+  },
   workspaces(): Promise<WorkspaceInfo[]> {
     return req('/api/workspaces')
   },

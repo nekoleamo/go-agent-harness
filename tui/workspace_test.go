@@ -18,18 +18,21 @@ type fakeCwdSessions struct {
 	recent      []sdk.ProjectInfo
 }
 
-func (f *fakeCwdSessions) Current() string                   { return "" }
-func (f *fakeCwdSessions) Path() string                      { return "" }
-func (f *fakeCwdSessions) List() []string                    { return nil }
-func (f *fakeCwdSessions) Sessions() []sdk.SessionInfo       { return nil }
-func (f *fakeCwdSessions) Open(string) error                 { return nil }
-func (f *fakeCwdSessions) CurrentSession() string            { return "" }
-func (f *fakeCwdSessions) New() (string, error)              { return "n1", nil }
-func (f *fakeCwdSessions) RecentProjects() []sdk.ProjectInfo { return f.recent }
-func (f *fakeCwdSessions) Rename(n string) error             { f.name = n; return nil }
-func (f *fakeCwdSessions) SessionName() string               { return f.name }
-func (f *fakeCwdSessions) Delete(string) error                { return nil }
-func (f *fakeCwdSessions) UnrecordProject(string) error       { return nil }
+func (f *fakeCwdSessions) Current() string                             { return "" }
+func (f *fakeCwdSessions) Path() string                                { return "" }
+func (f *fakeCwdSessions) List() []string                              { return nil }
+func (f *fakeCwdSessions) Sessions() []sdk.SessionInfo                 { return nil }
+func (f *fakeCwdSessions) SetPinned(string, bool) error                { return nil }
+func (f *fakeCwdSessions) SetName(string, string) error                { return nil }
+func (f *fakeCwdSessions) SetSummary(string, sdk.SessionSummary) error { return nil }
+func (f *fakeCwdSessions) Open(string) error                           { return nil }
+func (f *fakeCwdSessions) CurrentSession() string                      { return "" }
+func (f *fakeCwdSessions) New() (string, error)                        { return "n1", nil }
+func (f *fakeCwdSessions) RecentProjects() []sdk.ProjectInfo           { return f.recent }
+func (f *fakeCwdSessions) Rename(n string) error                       { f.name = n; return nil }
+func (f *fakeCwdSessions) SessionName() string                         { return f.name }
+func (f *fakeCwdSessions) Delete(string) error                         { return nil }
+func (f *fakeCwdSessions) UnrecordProject(string) error                { return nil }
 func (f *fakeCwdSessions) SwitchDir(dir string) (string, error) {
 	f.switchedKey = dir
 	return "sp1", nil

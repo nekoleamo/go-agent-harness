@@ -781,15 +781,48 @@ func (a *App) cmdSessions() (string, error) {
 	if err := a.c.Inject("ctx.cwdSessions", &cs); err != nil {
 		return "", errString("ctx.cwdSessions 未装配: " + err.Error())
 	}
-	rows := "当前会话: " + cs.Current() + "\n已有会话:"
-	list := cs.List()
-	if len(list) == 0 {
-		rows += " (无)"
+	// F 组:F2 置顶 ★ + F3 概述一行(只读缓存,不触发模型)
+	infos := cs.Sessions()
+	if len(infos) == 0 {
+		return "当前项目: " + cs.Current() + "\n已有会话: (无)", nil
 	}
-	for _, k := range list {
-		rows += "\n  " + k
+	var sb strings.Builder
+	sb.WriteString("当前项目: " + cs.Current() + "\n会话列表(★ = 置顶):")
+	cur := cs.CurrentSession()
+	for _, si := range infos {
+		mark := " "
+		if si.Pinned {
+			mark = "★"
+		}
+		now := ""
+		if si.ID == cur {
+			now = " ←当前"
+		}
+		label := orDefault(si.Name, orDefault(si.ID, "主会话"))
+		line := "\n" + mark + " " + label
+		if si.MTime > 0 {
+			line += " · " + time.Unix(si.MTime, 0).Format("01-02 15:04")
+		}
+		line += " · " + fmt.Sprint(si.Frames) + " 条" + now
+		if si.Summary != "" {
+			line += "\n    " + truncWidthRunes(si.Summary, 60)
+			if si.SummaryState == "stale" {
+				line += " (待更新)"
+			}
+		}
+		sb.WriteString(line)
 	}
-	return rows, nil
+	sb.WriteString("\n(/session summary 生成概述;/session pin|unpin 置顶)")
+	return sb.String(), nil
+}
+
+// truncWidthRunes 按 rune 截断(TUI 文本列;中文不切半字)。
+func truncWidthRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n-1]) + "…"
 }
 
 // cmdCompact /compact [指示词]:手动触发滚动摘要压缩(经会话日志 CompactService)。
@@ -941,16 +974,76 @@ func (a *App) cmdSession(args []string) (string, error) {
 		}
 		a.afterSessionSwitch(cs)
 		return "已切换到会话 " + orDefault(cs.CurrentSession(), "主会话"), nil
+	case "pin", "unpin":
+		// F 组 F2:置顶/取消置顶(缺 id = 当前会话;上限 8 显式报错)
+		id := cs.CurrentSession()
+		if len(args) >= 2 && args[1] != "" && args[1] != "current" {
+			id = args[1]
+			if id == "main" {
+				id = ""
+			}
+		}
+		if err := cs.SetPinned(id, args[0] == "pin"); err != nil {
+			return "", errString(err.Error())
+		}
+		if args[0] == "pin" {
+			return "已置顶会话 " + orDefault(labelOfSession(cs, id), "主会话") + "(列表顺序:置顶区在前)", nil
+		}
+		return "已取消置顶 " + orDefault(labelOfSession(cs, id), "主会话"), nil
+	case "summary":
+		// F 组 F3:生成/查看概述(会调用模型;force 语义 = 手动恒重新生成)
+		var ss sdk.SessionSummaryService
+		if err := a.c.Inject("ctx.sessionSummary", &ss); err != nil {
+			return "", errString("会话概述未装配(ctx.sessionSummary / host-session-summary): " + err.Error())
+		}
+		id := cs.CurrentSession()
+		if len(args) >= 2 && args[1] != "" && args[1] != "current" {
+			id = args[1]
+			if id == "main" {
+				id = ""
+			}
+		}
+		sum, err := ss.Summary(context.Background(), id, true)
+		if err != nil {
+			return "", errString("概述生成失败: " + err.Error())
+		}
+		out := "概述: " + sum.Text
+		if len(sum.Topics) > 0 {
+			out += "\n主题: " + strings.Join(sum.Topics, " / ")
+		}
+		if sum.Model != "" {
+			out += "\n(模型 " + sum.Model + ";仅展示,不进入后续上下文)"
+		}
+		return out, nil
 	default:
-		return "", errString("/session switch|new|current")
+		return "", errString("/session list|switch|new|current|pin|unpin|summary")
 	}
+}
+
+// labelOfSession 按 id 取展示名(名优先,回退 id/主会话)。
+func labelOfSession(cs sdk.CwdSessions, id string) string {
+	for _, si := range cs.Sessions() {
+		if si.ID == id {
+			if si.Name != "" {
+				return si.Name
+			}
+			break
+		}
+	}
+	return id
 }
 
 // sessionSwitchOptions /session switch 的二级动态枚举:当前项目会话列表。
 // 主会话用 main 标识(选择器选项 Value 非空);切换会话用其 id。
 func (a *App) sessionSwitchOptions(picked []string) []sdk.Option {
-	if len(picked) < 2 || picked[1] != "switch" {
-		return nil // 非 switch 分支无二级 → 直接执行
+	if len(picked) < 2 {
+		return nil
+	}
+	switch picked[1] {
+	case "switch", "pin", "unpin", "summary":
+		// 均以会话为二级目标
+	default:
+		return nil // 其它分支无二级 → 直接执行
 	}
 	var cs sdk.CwdSessions
 	if err := a.c.Inject("ctx.cwdSessions", &cs); err != nil {
@@ -1627,10 +1720,10 @@ func (a *App) registerInternalCommands() {
 			Args: []sdk.ArgLevel{{Options: a.forkSeqOptions, FreeArgs: func([]string) []string { return []string{"seq"} }}}},
 		{Name: "clone", Usage: "/clone", Desc: "复制当前会话(同一分支另一路演进)", Run: a.cmdClone},
 		{Name: "tree", Usage: "/tree", Desc: "会话分支树(会话 + 可 fork 的提问点)", Run: a.cmdTree},
-		{Name: "session", Usage: "/session list|switch|new|current", Desc: "会话管理:列出/切换/新建/查看", Run: a.cmdSession,
+		{Name: "session", Usage: "/session list|switch|new|current|pin|unpin|summary", Desc: "会话管理:列出/切换/新建/查看/置顶/概述", Run: a.cmdSession,
 			Args: []sdk.ArgLevel{
 				{Options: func([]string) []sdk.Option {
-					return []sdk.Option{{Value: "list", Desc: "列出已有会话文件"}, {Value: "switch", Desc: "切换到已有会话(二级选择)"}, {Value: "new", Desc: "新建会话(空历史)"}, {Value: "current", Desc: "查看当前会话"}}
+					return []sdk.Option{{Value: "list", Desc: "列出已有会话文件(★ = 置顶)"}, {Value: "switch", Desc: "切换到已有会话(二级选择)"}, {Value: "new", Desc: "新建会话(空历史)"}, {Value: "current", Desc: "查看当前会话"}, {Value: "pin", Desc: "置顶当前/指定会话"}, {Value: "unpin", Desc: "取消置顶"}, {Value: "summary", Desc: "生成/查看会话概述(调用模型)"}}
 				}},
 				// 二级:仅 switch 分支动态枚举会话列表;list/new/current 无二级直接执行
 				{Options: a.sessionSwitchOptions},

@@ -823,6 +823,13 @@ func (b *Bridge) sessionListText() string {
 		if s.ID == cur {
 			mark = "*"
 		}
+		// F 组 F2/F4:置顶 ★ 与当前 * 并列表达(★ 在前,状态而非操作)
+		if s.Pinned {
+			mark = "★"
+			if s.ID == cur {
+				mark = "★*"
+			}
+		}
 		name := s.ID
 		if name == "" {
 			name = "主会话"
@@ -830,13 +837,19 @@ func (b *Bridge) sessionListText() string {
 		if s.Name != "" {
 			name += "(" + s.Name + ")"
 		}
-		preview := ""
-		if s.Preview != "" {
-			preview = " · " + truncateRunes(s.Preview, 36)
+		// F 组 F3/F4:概述优先(降级链 summary → preview)
+		detail := ""
+		if s.Summary != "" {
+			detail = " · " + truncateRunes(s.Summary, 36)
+			if s.SummaryState == "stale" {
+				detail += "(待更新)"
+			}
+		} else if s.Preview != "" {
+			detail = " · " + truncateRunes(s.Preview, 36)
 		}
-		sb.WriteString(fmt.Sprintf(" %s %s%s\n", mark, name, preview))
+		sb.WriteString(fmt.Sprintf(" %s %s%s\n", mark, name, detail))
 	}
-	sb.WriteString("绑定: /session <id>;新建: /new;回主: /session main")
+	sb.WriteString("绑定: /session <id>;新建: /new;回主: /session main(★ = 置顶,可在 TUI/Web 置顶)")
 	return strings.TrimRight(sb.String(), "\n")
 }
 

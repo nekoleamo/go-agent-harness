@@ -35,6 +35,36 @@ function label(s: SessionInfo): string {
   if (s.Name) return s.Name
   return s.ID ? '#' + s.ID : '主会话'
 }
+
+// detailOf 展示行降级链(F3 §5.4):概述 → 内容预览 → （空会话）
+function detailOf(s: SessionInfo): string {
+  if (s.Summary) return s.Summary
+  return s.Preview || '（空会话）'
+}
+
+// togglePin 置顶/取消置顶(F2;无需二次确认——可逆且无副作用,列表即时刷新)
+async function togglePin(s: SessionInfo): Promise<void> {
+  try {
+    await api.sessionPin(s.ID, !s.Pinned)
+    await refresh()
+  } catch (e) {
+    err.value = (e as Error).message
+  }
+}
+
+// summarize 生成/更新概述(F3;会调用模型 → 二次确认提示隐私)
+function summarize(s: SessionInfo): void {
+  guard('生成会话概述会把该会话内容发送给当前模型,继续？', false, () => {
+    void (async () => {
+      try {
+        await api.sessionSummary(s.ID, true)
+        await refresh()
+      } catch (e) {
+        err.value = (e as Error).message
+      }
+    })()
+  })
+}
 function fmtDir(dir: string): string {
   const i = dir.lastIndexOf('/')
   return i >= 0 ? dir.slice(i + 1) : dir
@@ -183,13 +213,15 @@ defineExpose({ refresh })
           <div
             v-for="w in workspaces"
             :key="w.key"
-            class="item"
+            class="item ws-item"
             :class="{ cur: w.key === curKey }"
+            :aria-current="w.key === curKey ? 'location' : undefined"
             data-tip="切换到该工作区(需确认)"
             @click="switchWorkspace(w)"
           >
             <div class="row1">
               <span class="nm">{{ fmtDir(w.dir) || w.key }}</span>
+              <span v-if="w.key === curKey" class="ws-dot" aria-hidden="true" />
               <span class="ops">
                 <span class="op del" data-tip="删除记录(不动文件夹)" @click.stop="forgetWorkspace(w)">×</span>
               </span>
@@ -211,7 +243,8 @@ defineExpose({ refresh })
             v-for="s in sessions"
             :key="s.ID || '(main)'"
             class="item session-item"
-            :class="{ cur: (s.ID || '') === (curSession || '') }"
+            :class="{ cur: (s.ID || '') === (curSession || ''), pinned: s.Pinned }"
+            :aria-current="(s.ID || '') === (curSession || '') ? 'true' : undefined"
             data-tip="切换到该会话(需确认)"
             @click="switchSession(s)"
           >
@@ -227,18 +260,26 @@ defineExpose({ refresh })
                 @keydown.esc="editing = null"
                 @blur="editing = null"
               />
-              <span v-else class="nm">{{ label(s) }}</span>
+              <span v-else class="nm">
+                <span v-if="s.Pinned" class="pin-mark" data-tip="已置顶">★</span>{{ label(s) }}
+              </span>
               <span class="ops">
                 <span v-if="editing && editing.id === s.ID" class="op" data-tip="保存改名(需确认)" @click.stop="saveName(s)">✓</span>
                 <template v-else>
+                  <span class="op" :data-tip="s.Pinned ? '取消置顶' : '置顶会话'" @click.stop="togglePin(s)">{{ s.Pinned ? '☆' : '★' }}</span>
+                  <span class="op" data-tip="生成/更新概述(调用模型)" @click.stop="summarize(s)">⟳</span>
                   <span class="op" data-tip="修改会话名(需确认)" @click.stop="startEdit(s)">✎</span>
                   <span class="op" data-tip="导出会话 jsonl" @click.stop="exportSession(s)">⤓</span>
                   <span class="op del" data-tip="删除会话(仅删记录,需确认)" @click.stop="deleteSession(s)">×</span>
                 </template>
               </span>
             </div>
-            <div class="preview" :class="{ empty: !s.Preview }">{{ s.Preview || '（空会话）' }}</div>
-            <div class="sub mono">{{ fmtTime(s.MTime) }}</div>
+            <div class="preview" :class="{ empty: !detailOf(s) }">{{ detailOf(s) }}</div>
+            <div class="sub mono">
+              {{ fmtTime(s.MTime) }}<template v-if="s.Frames >= 0"> · {{ s.Frames }} 条</template>
+              <span v-if="s.SummaryState === 'stale'" class="stale"> · 待更新</span>
+              <span v-else-if="s.SummaryState === 'unavailable'" class="stale"> · 概述不可用</span>
+            </div>
           </div>
           <div v-if="!sessions.length" class="empty">无会话</div>
         </div>
@@ -387,21 +428,58 @@ defineExpose({ refresh })
   gap: 2px;
 }
 .item {
-  padding: 6px 8px 6px 10px;
-  border-radius: 6px;
+  position: relative;
+  padding: 7px 9px 7px 11px;
+  border-radius: 8px;
   cursor: pointer;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  box-shadow: inset 3px 0 0 transparent;
+  border: 1px solid transparent;
   transition: background 0.15s ease;
 }
 .item:hover {
-  background: var(--bg3);
+  background: var(--hover-bg);
 }
-.item.cur {
-  background: var(--accent-soft);
-  box-shadow: inset 3px 0 0 var(--accent);
+/* 会话:当前项 = 卡片(填充 + 描边)+ 圆角左边条;名称加粗(排版参与选中表达) */
+.session-item.cur {
+  background: var(--sel-bg);
+  border-color: var(--sel-border);
+  padding-left: 10px;
+}
+.session-item.cur::before,
+.ws-item.cur::before {
+  content: '';
+  position: absolute;
+  left: -1px;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  background: var(--sel-rail);
+  border-radius: 0 2px 2px 0;
+}
+.session-item.cur .nm {
+  font-weight: 600;
+}
+/* 工作区:当前项 = 身份标识(竖条 + 强调色 + 圆点),不铺底(与会话选中语义分离) */
+.ws-item.cur .nm {
+  color: var(--accent);
+  font-weight: 600;
+}
+.ws-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--sel-rail);
+  flex-shrink: 0;
+}
+/* 置顶:★ 常显(表达状态而非操作) */
+.pin-mark {
+  color: var(--tool-strong);
+  margin-right: 4px;
+}
+.stale {
+  color: var(--tool-strong);
 }
 .row1 {
   display: flex;
@@ -418,9 +496,7 @@ defineExpose({ refresh })
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.item.cur .nm {
-  font-weight: 500;
-}
+
 .name-input {
   flex: 1;
   min-width: 0;
@@ -459,10 +535,11 @@ defineExpose({ refresh })
   transition: opacity 0.12s ease;
 }
 .item:hover .ops,
-.item.cur .ops,
+.item:focus-within .ops,
 .name-input + .ops {
   opacity: 1;
 }
+/* 选中行不再常显操作图标(F1:行内噪声收敛;hover/focus 才出) */
 .op {
   background: none;
   border: none;

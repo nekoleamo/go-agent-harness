@@ -170,7 +170,9 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `/compact [hint]` | Manual rolling summary compaction (auto over-budget compaction unchanged; hint is only recorded) |
 | `/export [path]` | Export current session events (`.html` suffix = self-contained HTML, otherwise jsonl) |
 | `/workspace [dir]` | Switch workspace (project): pick from recent list or type a new dir; opens a new session, really chdirs tool processes, syncs sandbox root |
-| `/session list\|switch\|new\|current` | Session management: list / switch (picker with content preview + time) / new (empty history) / current |
+| `/session list\|switch\|new\|current` | Session management: list (★ = pinned, with summary) / switch (picker with content preview + time) / new (empty history) / current |
+| `/session pin\|unpin [id]` | Pin / unpin a session (defaults to the current one; pinned block sorts first, max 8) |
+| `/session summary [id]` | Generate/show the session summary (LLM: one-line + topics; **calls the model**) |
 | `/reload` | Hot-reload instruction files (AGENTS.md hierarchy/global/extra; external edits apply without restart) |
 | `/jobs list\|output <id>\|kill <id>` | Background jobs: list / output / kill (same source as workflow `background` and the Web jobs panel) |
 | `/backup [dest]\|list\|restore <name>` | Full GAH_HOME backup (config incl. keys/plugins/sessions/env.sh/prefs, excludes backups/ itself): no arg = back up now (default `$GAH_HOME/backups/`, external path allowed) / `list` (newest first) / `restore <name>` (**auto-backs-up the current state first**; fully effective after restart) |

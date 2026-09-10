@@ -22,6 +22,11 @@
   --fg-faint: #9aa0a6;
   /* 强调:DeepSeek 蓝单色 */
   --accent: #4176e6;
+  /* F 组 F1 选中态语义 token(与 hover 拉开两档:sel > hover > 常态) */
+  --sel-bg: #e4ecfc;
+  --sel-rail: #4176e6;
+  --sel-border: #cfdcfa;
+  --hover-bg: #f1f3f5;
   --accent-hover: #5590f0;
   --accent-soft: #eaf0fd;
   /* 语义色 */

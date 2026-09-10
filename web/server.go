@@ -81,21 +81,22 @@ type Server struct {
 	sessions sdk.SessionLog
 	llm      sdk.LLMService
 	sb       sdk.Sandbox
-	ap       sdk.ApprovalService     // 可选(审批档位 M17:未装配时 state 省略/control 400)
-	bk       sdk.BackupService       // 可选(整体备份 M18:未装配时 /api/backup 503)
-	us       sdk.UsageStatsService   // 可选
-	cs       sdk.CwdSessions         // 可选
-	cmds     sdk.CommandRegistry     // 可选(未装配 = / 命令不可用)
-	tools    sdk.ToolRegistry        // 可选(工具清单/调用/todo 面板)
-	jobs     sdk.JobService          // 可选(后台任务)
-	pm       sdk.PluginManager       // 可选(插件启停)
-	imc      sdk.IMChannelService    // 可选(IM 通道状态 /api/im/channels;未装配 503)
-	imLogin  sdk.IMLoginProvider     // 可选(面板扫码登录 /api/im/login;渠道未实现则 503)
-	imConn   sdk.IMConnectService    // 可选(E0:统一连接契约 /api/im/connect/*;懒解析见 imConnService)
-	sp       sdk.SystemPromptService // 可选(/reload 指令热更)
-	tc       sdk.TurnControl         // 可选(回合取消 /api/control cancel;未装配 = 503)
-	doc      sdk.DocService          // 可选(文档预览 D1:未装配 → /api/doc/* 503;懒解析见 docSvc)
-	ctx      sdk.Ctx                 // 宿主上下文(懒解析可选服务,避免装配顺序依赖)
+	ap       sdk.ApprovalService       // 可选(审批档位 M17:未装配时 state 省略/control 400)
+	bk       sdk.BackupService         // 可选(整体备份 M18:未装配时 /api/backup 503)
+	us       sdk.UsageStatsService     // 可选
+	cs       sdk.CwdSessions           // 可选
+	ss       sdk.SessionSummaryService // 可选(F3 会话概述;未装配则 summary 端点 503)
+	cmds     sdk.CommandRegistry       // 可选(未装配 = / 命令不可用)
+	tools    sdk.ToolRegistry          // 可选(工具清单/调用/todo 面板)
+	jobs     sdk.JobService            // 可选(后台任务)
+	pm       sdk.PluginManager         // 可选(插件启停)
+	imc      sdk.IMChannelService      // 可选(IM 通道状态 /api/im/channels;未装配 503)
+	imLogin  sdk.IMLoginProvider       // 可选(面板扫码登录 /api/im/login;渠道未实现则 503)
+	imConn   sdk.IMConnectService      // 可选(E0:统一连接契约 /api/im/connect/*;懒解析见 imConnService)
+	sp       sdk.SystemPromptService   // 可选(/reload 指令热更)
+	tc       sdk.TurnControl           // 可选(回合取消 /api/control cancel;未装配 = 503)
+	doc      sdk.DocService            // 可选(文档预览 D1:未装配 → /api/doc/* 503;懒解析见 docSvc)
+	ctx      sdk.Ctx                   // 宿主上下文(懒解析可选服务,避免装配顺序依赖)
 
 	running     atomic.Bool
 	http        *http.Server
@@ -135,6 +136,7 @@ func (s *Server) Inject(c sdk.Ctx) error {
 	_ = c.Inject("ctx.backup", &s.bk)   // 可选:未装配则 /api/backup 503
 	_ = c.Inject("ctx.usageStats", &s.us)
 	_ = c.Inject("ctx.cwdSessions", &s.cs)
+	_ = c.Inject("ctx.sessionSummary", &s.ss) // 可选:未装配则 /api/sessions/summary 503
 	_ = c.Inject("ctx.commands", &s.cmds)
 	_ = c.Inject("ctx.tools", &s.tools)
 	_ = c.Inject("ctx.jobs", &s.jobs)
@@ -197,6 +199,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST /api/sessions", s.handleSessions)
 	mux.HandleFunc("GET /api/sessions/{id}/export", s.handleSessionExport)
 	mux.HandleFunc("POST /api/sessions/rename", s.handleSessionRename)
+	mux.HandleFunc("POST /api/sessions/summary", s.handleSessionSummary)
 	mux.HandleFunc("GET /api/workspaces", s.handleWorkspaces)
 	mux.HandleFunc("DELETE /api/workspaces/{key}", s.handleWorkspaceDelete)
 	mux.HandleFunc("GET /api/tools", s.handleTools)
@@ -538,8 +541,8 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, list)
 	case http.MethodPost:
 		var req struct {
-			Action string `json:"action"` // switch | new | fork | clone
-			ID     string `json:"id"`     // switch 目标(空 = 主会话)
+			Action string `json:"action"` // switch | new | fork | clone | pin | unpin | delete
+			ID     string `json:"id"`     // switch/pin/unpin 目标(空 = 主会话)
 			Seq    uint64 `json:"seq"`    // fork 分支点(会话事件 seq)
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -566,6 +569,17 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 				s.us.Reset()
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id, "session": s.currentSessionV()})
+		case "pin", "unpin":
+			// F 组 F2:置顶/取消置顶(不新增端点,沿用 action 分派;上限 8 显式报错)
+			if err := s.cs.SetPinned(req.ID, req.Action == "pin"); err != nil {
+				http.Error(w, "置顶操作失败: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			list := s.cs.Sessions()
+			if list == nil {
+				list = []sdk.SessionInfo{}
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "sessions": list})
 		case "delete":
 			if err := s.cs.Delete(req.ID); err != nil {
 				http.Error(w, "删除失败: "+err.Error(), http.StatusBadRequest)

@@ -146,6 +146,7 @@ func (s *Service) Sessions() []sdk.SessionInfo {
 	root := SessionsRoot()
 	s.nmMu.Lock()
 	names := loadNames(filepath.Join(root, "names.json"))
+	meta := loadMeta(metaPath())
 	s.nmMu.Unlock()
 	entries, err := os.ReadDir(root)
 	if err != nil {
@@ -170,24 +171,30 @@ func (s *Service) Sessions() []sdk.SessionInfo {
 		default:
 			continue // 其他项目会话
 		}
-		info := sdk.SessionInfo{ID: id, Path: filepath.Join(root, name), Name: names[name]}
+		info := sdk.SessionInfo{ID: id, Path: filepath.Join(root, name)}
+		info.Name = metaName(meta, names, name)
 		if fi, err := e.Info(); err == nil {
 			info.MTime = fi.ModTime().Unix()
 			info.Frames = countLines(info.Path)
 		}
 		info.Preview = previewOf(info.Path, 48) // 内容省略版(首条用户消息截断)
+		// F0/F2/F3:置顶 + 概述(只读缓存;列表请求绝不触发模型)
+		if me, ok := meta[name]; ok {
+			info.Pinned, info.PinnedAt = me.Pinned, me.PinnedAt
+			info.Summary = ""
+			info.SummaryTopics = nil
+			if me.Summary != nil {
+				info.Summary = me.Summary.Text
+				info.SummaryTopics = me.Summary.Topics
+				info.SummaryCoveredFrames = me.Summary.CoveredFrames
+			}
+			info.SummaryState = summaryStateOf(me.Summary, info.Frames)
+		} else {
+			info.SummaryState = "missing"
+		}
 		out = append(out, info)
 	}
-	// 主会话(id 空)置顶;切换会话按修改时间倒序(最近在前)
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].ID == "" {
-			return true
-		}
-		if out[j].ID == "" {
-			return false
-		}
-		return out[i].MTime > out[j].MTime
-	})
+	sortSessionsByPinned(out)
 	return out
 }
 
@@ -245,12 +252,18 @@ func (s *Service) Delete(id string) error {
 	if err := os.Remove(path); err != nil {
 		return err
 	}
-	// 清理显示名索引(非关键路径,失败容忍)
+	// 清理显示名与元数据索引(非关键路径,失败容忍)
 	s.nmMu.Lock()
 	m := loadNames(sessionNamesPath())
 	if _, ok := m[file]; ok {
 		delete(m, file)
 		_ = saveNames(sessionNamesPath(), m)
+	}
+	if mm := loadMeta(metaPath()); len(mm) > 0 {
+		if _, ok := mm[file]; ok {
+			delete(mm, file) // 置顶/概述随会话一并移除(不留残留)
+			_ = saveMeta(metaPath(), mm)
+		}
 	}
 	s.nmMu.Unlock()
 	// 删除的若是当前打开会话 → 新建空会话承接
@@ -286,30 +299,22 @@ func (s *Service) UnrecordProject(key string) error {
 // 名写入 names.json(覆写式索引,key = 会话文件名),随会话文件持久,
 // 重启/切会话仍保留;非关键路径,写失败静默容忍(同 workspaces)。
 func (s *Service) Rename(name string) error {
-	s.nmMu.Lock()
-	defer s.nmMu.Unlock()
-	m := loadNames(sessionNamesPath())
-	if m == nil {
-		m = map[string]string{}
-	}
-	file := filepath.Base(s.path)
-	if name == "" {
-		delete(m, file)
-	} else {
-		m[file] = name
-	}
-	return saveNames(sessionNamesPath(), m)
+	return s.renameMeta(filepath.Base(s.path), name)
 }
 
 // SessionName 当前会话显示名(空 = 未命名)。
 func (s *Service) SessionName() string {
 	s.nmMu.Lock()
 	defer s.nmMu.Unlock()
+	file := filepath.Base(s.path)
+	if e, ok := loadMeta(metaPath())[file]; ok && e.Name != "" {
+		return e.Name
+	}
 	m := loadNames(sessionNamesPath())
 	if m == nil {
 		return ""
 	}
-	return m[filepath.Base(s.path)]
+	return m[file]
 }
 
 // SwitchProject 切换当前项目(key 重绑):

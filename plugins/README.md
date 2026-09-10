@@ -23,6 +23,7 @@ plugins/
 | host | host-commands | 斜杠命令注册表(ctx.commands) | — |
 | host | host-agent-loop | 默认 ReAct 回合循环(ctx.agentLoop) | ctx.sessions/ctx.llm/ctx.tools/ctx.systemPrompt |
 | host | host-cwd-sessions | 项目级会话隔离 + 多会话切换(ctx.cwdSessions) | ctx.sessions |
+| host | host-session-summary | 会话概述(F 组 F3):ctx.sessionSummary——LLM 生成「标题+一句话+主题词」,落 meta.json 缓存;回合后自动生成(默认开) + 全局单飞 + 每会话节流 | ctx.cwdSessions(;ctx.llm 可选) |
 | host | host-usage-stats | 会话 token 统计 + 模型窗口解析(ctx.usageStats) | — |
 | host | host-skills | 技能机制(SKILL.md 扫描) | ctx.tools/ctx.systemPrompt |
 | host | host-jobs | 后台任务(ctx.jobs) | ctx.tools |

@@ -1,7 +1,10 @@
 // 会话事件与 SessionLog 服务(对齐设计 §9:会话日志 = 追加式事件流,不变量“模型可见即已记录”)。
 package sdk
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // 持久会话事件 Kind(对齐 dsh 轮次流程的事件域)。
 const (
@@ -172,6 +175,36 @@ type SessionInfo struct {
 	Preview string // 会话内容省略版(首条用户消息截断;空 = 无内容)
 	MTime   int64  // 最后修改时间(unix 秒;0 = 未知/未落盘)
 	Frames  int    // 事件条数(-1 = 未统计)
+
+	// F 组会话体验(DESIGN §14.1 F0/F2/F3):置顶与概述(omitempty 向后兼容)。
+	Pinned        bool     `json:",omitempty"` // 是否置顶
+	PinnedAt      int64    `json:",omitempty"` // 置顶时间(unix 秒;置顶区按此倒序)
+	Summary       string   `json:",omitempty"` // 已生成概述(空 = 未生成)
+	SummaryTopics []string `json:",omitempty"` // 主题词(≤3)
+	// SummaryCoveredFrames 概述覆盖到的会话帧数(与 Frames 比较判定 stale)
+	SummaryCoveredFrames int `json:",omitempty"`
+	// SummaryState:ready(覆盖帧数 = 当前帧数)/ stale(已生成但会话又更新)/
+	// missing(未生成)/ unavailable(模型不可用)
+	SummaryState string `json:",omitempty"`
+}
+
+// SessionSummary 会话概述产物(F3:host-session-summary 生成,落 meta.json 缓存)。
+type SessionSummary struct {
+	Text          string   `json:"text"`
+	Topics        []string `json:"topics,omitempty"`
+	CoveredFrames int      `json:"covered_frames,omitempty"`
+	Model         string   `json:"model,omitempty"`
+	TS            int64    `json:"ts,omitempty"`
+	InputHash     string   `json:"input_hash,omitempty"`
+}
+
+// SessionSummaryService 会话概述服务(ctx.sessionSummary;host-session-summary 提供)。
+// 纪律:Summary 会调用模型(**列表请求绝不触发**);force = 忽略缓存重新生成。
+type SessionSummaryService interface {
+	// Summary 取回/生成指定会话概述(id 空 = 主会话)。
+	Summary(ctx context.Context, id string, force bool) (SessionSummary, error)
+	// AutoEnabled 「回合后自动生成」是否开启(默认开,可经插件 data 关闭)。
+	AutoEnabled() bool
 }
 
 // CwdSessions 服务(ctx.cwdSessions):项目级会话(host-cwd-sessions)。
@@ -189,6 +222,15 @@ type CwdSessions interface {
 	Open(id string) error
 	// CurrentSession 当前会话 id(空 = 主会话)。
 	CurrentSession() string
+	// SetName 设置指定会话显示名(id 空 = 主会话;name 空 = 清除)。
+	// 与 Rename 的区别:Rename 只作用于当前会话,本方法按 id 定位(F 组 F3 概述回填标题)。
+	SetName(id, name string) error
+	// SetSummary 写入指定会话的概述缓存(id 空 = 主会话;供 ctx.sessionSummary 回写)。
+	// 概述只落元数据(meta.json),**不落会话 jsonl、不进模型上下文**。
+	SetSummary(id string, sum SessionSummary) error
+	// SetPinned 置顶/取消置顶指定会话(id 空 = 主会话);幂等。
+	// 置顶上限 8(超出返回显式错误,不静默丢弃);置顶项不参与任何自动清理。
+	SetPinned(id string, pinned bool) error
 	// Rename 设置当前会话显示名(空 = 清除)。名随会话文件持久化,
 	// 状态栏/会话列表/切换选择器以名为优先展示,无名称回退 id/主会话。
 	Rename(name string) error

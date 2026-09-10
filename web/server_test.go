@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"mime/multipart"
@@ -80,25 +81,42 @@ func (s *stubStats) Reset()                { s.v = sdk.UsageStats{} }
 
 type stubCS struct {
 	sdk.CwdSessions
-	mu       sync.Mutex
-	infos    []sdk.SessionInfo
-	curID    string
-	curName  string
-	curKey   string
-	curPath  string
-	newCount int
-	opened   []string
-	projects []sdk.ProjectInfo
-	switched []string
-	forks    []uint64
-	clones   int
+	mu        sync.Mutex
+	infos     []sdk.SessionInfo
+	curID     string
+	curName   string
+	curKey    string
+	curPath   string
+	newCount  int
+	opened    []string
+	projects  []sdk.ProjectInfo
+	switched  []string
+	pinned    []string
+	summaries []string
+	renamed   []string
+	forks     []uint64
+	clones    int
 }
 
 func (s *stubCS) Sessions() []sdk.SessionInfo { return s.infos }
-func (s *stubCS) CurrentSession() string      { return s.curID }
-func (s *stubCS) SessionName() string         { return s.curName }
-func (s *stubCS) Current() string             { return s.curKey }
-func (s *stubCS) Path() string                { return s.curPath }
+func (s *stubCS) SetPinned(id string, pinned bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pinned = append(s.pinned, fmt.Sprintf("%s=%v", id, pinned))
+	return nil
+}
+func (s *stubCS) SetName(id, name string) error {
+	s.renamed = append(s.renamed, id+"="+name)
+	return nil
+}
+func (s *stubCS) SetSummary(id string, sum sdk.SessionSummary) error {
+	s.summaries = append(s.summaries, id+"="+sum.Text)
+	return nil
+}
+func (s *stubCS) CurrentSession() string { return s.curID }
+func (s *stubCS) SessionName() string    { return s.curName }
+func (s *stubCS) Current() string        { return s.curKey }
+func (s *stubCS) Path() string           { return s.curPath }
 func (s *stubCS) Open(id string) error {
 	s.mu.Lock()
 	s.opened = append(s.opened, id)

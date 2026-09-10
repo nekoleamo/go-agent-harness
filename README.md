@@ -171,7 +171,9 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `/compact [指示词]` | 手动滚动摘要压缩(立即折叠旧历史;自动超预算压缩不变;指示词仅记录) |
 | `/export [path]` | 导出当前会话事件序列(`.html` 结尾 = 自包含 HTML 渲染,否则 jsonl) |
 | `/workspace [目录]` | 切换工作区(项目):最近列表选择或输新目录;切换即开新会话、工具进程 cwd 真实切换、沙箱 root 同步 |
-| `/session list\|switch\|new\|current` | 会话管理:列出 / 切换(二级选择器带内容预览与时间)/ 新建(空历史)/ 查看当前 |
+| `/session list\|switch\|new\|current` | 会话管理:列出(★ = 置顶,带概述)/ 切换(二级选择器带内容预览与时间)/ 新建(空历史)/ 查看当前 |
+| `/session pin\|unpin [id]` | 置顶 / 取消置顶会话(缺 id = 当前;置顶区排在列表最前,上限 8) |
+| `/session summary [id]` | 生成/查看会话概述(LLM 总结:一句话 + 主题词;**会调用模型**) |
 | `/reload` | 热重载指令文件(AGENTS.md 层级/全局/附加;外部编辑即生效,免重启) |
 | `/jobs list\|output <id>\|kill <id>` | 后台任务列表 / 取输出 / 终止(与 workflow `background`、Web 任务面板同源) |
 | `/backup [dest]\|list\|restore <name>` | 整体备份 GAH_HOME(config 含密钥/plugins/sessions/env.sh/偏好,排除 backups/ 自身):无参=立即备份(默认存 `$GAH_HOME/backups/`,可指定外部路径)/ `list` 列出(时间倒序)/ `restore <name>` 恢复(**恢复前自动先备份当前态**,重启后完全生效) |
@@ -208,7 +210,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 `gah web` 起 http://127.0.0.1:2233(自动开浏览器;`GAH_WEB_OPEN=0` 关闭)。功能与 TUI 对等,另有可视化面板:
 
 - **设置面板**(状态栏 ⚙):模型下拉(聚合全部 provider)、思考/沙箱/**审批**分段控件、历史注入下拉 + 压缩按钮、Provider 管理(启用/删除/新增)、插件开关、指令重载、**数据备份**(立即备份 / 恢复备份——**二次确认**);全部设置退出即记(偏好持久化,gah-state.json 与 TUI 共享)。
-- **侧栏**:工作区固定区(切换 = 真实切目录) + 历史会话(名称/内容预览/时间,✎ 改名、× 删除——二次确认)、附件上传(按钮/拖放/粘贴,图片缩略图 + 模型看图)、会话导出(⤓ jsonl/HTML)。
+- **侧栏**:工作区固定区(切换 = 真实切目录) + 历史会话(名称/**概述或内容预览**/时间,★ 置顶、⟳ 生成概述(调用模型,二次确认)、✎ 改名、× 删除——改删需二次确认)、附件上传(按钮/拖放/粘贴,图片缩略图 + 模型看图)、会话导出(⤓ jsonl/HTML)。当前项为卡片式选中(左侧竖条 + 描边 + 名称加粗),与 hover 明确分档。
 - **状态栏**:连接状态(绿/橙)、模型/思维/沙箱/会话、上下文·缓存使用率、后台任务钮(运行徽标 + 列表/输出/终止)。
 - **文档预览面板**(侧栏「文档预览」):左侧工作区文件树(过滤/懒展开/工作区切换整树重置)+ 右侧预览(markdown 块渲染、代码/表格、docx/xlsx/pptx 块模型、PDF 浏览器原生查看器、图片、HTML 沙箱 iframe;截断与警告黄色提示条);工具结果行含可预览路径时出现「预览」按钮;会话流 assistant 文本走 markdown 块渲染(服务端解析,前端零 v-html)。
 - **WebSocket 通道**:`/api/events/ws`(与 SSE 同 payload,前端自动降级)。
@@ -232,6 +234,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `POST /api/compact`、`POST /api/settings/history` | 手动压缩 / 历史注入条数 |
 | `GET /api/todo` | 任务面板数据(todo 工具 list 透传) |
 | `GET /api/backup`、`POST /api/backup` | 备份列表 / `{action: backup\|restore, dest?, name?}` |
+| `POST /api/sessions`(`action: pin\|unpin`)、`POST /api/sessions/summary` | 会话置顶/取消置顶 · 生成/取回概述(会调用模型;列表请求只读缓存) |
 | `POST /api/attachments` + `GET /attachments/...` | 附件上传(20MB/类型白名单)/ 静态预览 |
 | `POST /api/reload` | 指令文件热更 |
 | `POST /api/shutdown` | 优雅停机(→ system/shutdown → DisposeAll 全回收;桌面壳/运维复用) |
