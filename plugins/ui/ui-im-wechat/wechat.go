@@ -83,7 +83,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		sender:    im.NewSender(&im.Budget{MaxChunk: wechatChunkLimit, MaxChunks: wechatMaxChunks, Gap: wechatChunkGap}),
 		remainder: make(map[string]string), autoRelogin: autoRelogin}
 	b := im.New(c, loop, sessions, tr, im.Options{
-		Mode:  mode,
+		Mode:        mode,
 		Allow:       creds.Allow,  // 已授权用户持久恢复
 		AllowGroups: creds.Groups, // 已授权群持久恢复(群维度授权)
 		// P1 会话绑定:chat→宿主会话映射落盘(重启恢复绑定)
@@ -167,6 +167,16 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		}
 		ds = append(ds, d2)
 	}
+	// D5:文档预览意图(doc/open)→ 通道文本降级回推(前 N 行 + 页事实;无活跃会话静默跳过)
+	ds = append(ds, c.Subscribe(sdk.EventDocOpen, func(_ context.Context, ev *sdk.Event) error {
+		switch p := ev.Payload.(type) {
+		case sdk.DocOpenEvent:
+			b.HandleDocOpen(context.Background(), p)
+		case *sdk.DocOpenEvent:
+			b.HandleDocOpen(context.Background(), *p)
+		}
+		return nil
+	}))
 	return func() {
 		confirmReg()
 		questionReg()
@@ -252,17 +262,17 @@ type wechatTransport struct {
 	client  *ilink.Client
 	sender  *im.Sender // 出站预算层(P1b):统一分块/截断/间隔
 
-	mu        sync.Mutex
-	polling   bool
-	stopCh    chan struct{}
-	lastError string
-	tickets   map[string]ticketEntry
-	tokens    map[string]string // userID → context_token(iLink 回显必须)
-	loginBusy bool
-	remainder map[string]string // chatID → 被截断的剩余文本(用户回 continue 时被动补发)
-	loginState sdk.IMLoginState // 面板扫码登录进度(P3 Web 面板)
-	autoRelogin bool            // 会话过期时自动清理失效凭证并发起重新扫码(data.auto_relogin,默认 true)
-	typingCtl context.CancelFunc // 回合进行中的 typing 周期刷新控制器(回合结束取消)
+	mu          sync.Mutex
+	polling     bool
+	stopCh      chan struct{}
+	lastError   string
+	tickets     map[string]ticketEntry
+	tokens      map[string]string // userID → context_token(iLink 回显必须)
+	loginBusy   bool
+	remainder   map[string]string  // chatID → 被截断的剩余文本(用户回 continue 时被动补发)
+	loginState  sdk.IMLoginState   // 面板扫码登录进度(P3 Web 面板)
+	autoRelogin bool               // 会话过期时自动清理失效凭证并发起重新扫码(data.auto_relogin,默认 true)
+	typingCtl   context.CancelFunc // 回合进行中的 typing 周期刷新控制器(回合结束取消)
 }
 
 func (t *wechatTransport) Name() string { return t.name }
@@ -351,8 +361,6 @@ func (t *wechatTransport) SendText(ctx context.Context, to im.Route, text string
 	}
 	return err
 }
-
-
 
 // typingTicket 取(缓存 ~20h;失败静默——typing 尽力而为)。
 func (t *wechatTransport) typingTicket(user string) string {
@@ -697,7 +705,6 @@ func (t *wechatTransport) mediaExtract(msg *ilink.InboundMessage) ([]sdk.Attachm
 	}
 	return atts, strings.Join(notes, "\n")
 }
-
 
 func (t *wechatTransport) setLastError(msg string) {
 	t.mu.Lock()

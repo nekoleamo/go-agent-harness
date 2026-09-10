@@ -17,12 +17,12 @@ import (
 
 // Budget 通道出站预算参数(per-channel;0 = 不限制对应维度)。
 type Budget struct {
-	MaxChunk   int           // 单条最大字符数
-	MaxChunks  int           // 一轮发送最大块数(0 = 不限;超限截断 + TruncHint)
-	Gap        time.Duration // 块间间隔(防连发触发短窗口截断)
-	Burst      int           // 窗口内最大条数(短窗口条数预算;0 = 不限)
-	BurstWin   time.Duration // burst 窗口时长(自首条起滑移)
-	TruncHint  string        // 截断提示文案(追加在末块后;空 = 仅截断)
+	MaxChunk  int           // 单条最大字符数
+	MaxChunks int           // 一轮发送最大块数(0 = 不限;超限截断 + TruncHint)
+	Gap       time.Duration // 块间间隔(防连发触发短窗口截断)
+	Burst     int           // 窗口内最大条数(短窗口条数预算;0 = 不限)
+	BurstWin  time.Duration // burst 窗口时长(自首条起滑移)
+	TruncHint string        // 截断提示文案(追加在末块后;空 = 仅截断)
 }
 
 // Sender 出站发送器(并发安全;每通道一个实例,回合串行下无竞争)。

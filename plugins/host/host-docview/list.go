@@ -30,6 +30,9 @@ var treeSkipDirs = map[string]bool{
 
 // List 有界目录列举(文件树)。depth ≤ 0 → 2;> 4 → 4。
 func (s *Service) List(_ context.Context, req sdk.DocRequest, depth int) (*sdk.DocTree, error) {
+	if strings.TrimSpace(req.Path) == "" {
+		req.Path = "." // 缺省 = 当前工作区根(模型 doc_list 无参调用)
+	}
 	abs, err := s.res.ResolveDir(req.Path, req.Strict)
 	if err != nil {
 		return nil, err

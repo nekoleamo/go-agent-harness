@@ -193,6 +193,16 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		}
 		ds = append(ds, d2)
 	}
+	// D5:文档预览意图(doc/open)→ 通道文本降级回推(前 N 行 + 页事实;无活跃会话静默跳过)
+	ds = append(ds, c.Subscribe(sdk.EventDocOpen, func(_ context.Context, ev *sdk.Event) error {
+		switch p := ev.Payload.(type) {
+		case sdk.DocOpenEvent:
+			b.HandleDocOpen(context.Background(), p)
+		case *sdk.DocOpenEvent:
+			b.HandleDocOpen(context.Background(), *p)
+		}
+		return nil
+	}))
 	return func() {
 		confirmReg()
 		questionReg()

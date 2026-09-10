@@ -34,6 +34,7 @@ func buildDocEnv(t *testing.T) (*corectx.Ctx, func()) {
 		{ID: "llm-mock"},
 		{ID: "host-agent-loop"},
 		{ID: "host-docview"}, // ctx.sandbox 未装配(可选):resolver 不设限,专测命令/事件通路
+		{ID: "tool-doc"},
 	})
 	if err := c.Provide("system.registry", reg); err != nil {
 		t.Fatal(err)
@@ -93,6 +94,54 @@ func TestDocServiceProvidedByBaseBundle(t *testing.T) {
 	}
 	if len(tree.Entries) != 1 || tree.Entries[0].Name != "a.md" {
 		t.Fatalf("目录列举异常: %+v", tree.Entries)
+	}
+}
+
+// D5:tool-doc 三工具进入工具清单,read_document 经 ctx.doc 真读文件。
+func TestToolDocRegisteredAndReads(t *testing.T) {
+	c, cleanup := buildDocEnv(t)
+	defer cleanup()
+
+	var tools sdk.ToolRegistry
+	if err := c.Inject("ctx.tools", &tools); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"read_document", "doc_open", "doc_list"} {
+		if _, ok := tools.Get(name); !ok {
+			t.Fatalf("工具清单缺少 %s(模型不可见)", name)
+		}
+	}
+	dir := t.TempDir()
+	md := filepath.Join(dir, "r.md")
+	if err := os.WriteFile(md, []byte("# T\n\n正文\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := tools.Execute(context.Background(), "read_document", `{"file_path":"`+md+`"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 工具结果应含行号化文本(服务端块模型 → 行号)
+	if !strings.Contains(res.Content, "正文") || !strings.Contains(res.Content, "1") {
+		t.Fatalf("read_document 结果异常: %s", res.Content)
+	}
+
+	// doc_open 工具 → doc/open 事件(与 /preview 命令同源)
+	var got []sdk.DocOpenEvent
+	dis := c.Subscribe(sdk.EventDocOpen, func(_ context.Context, ev *sdk.Event) error {
+		switch p := ev.Payload.(type) {
+		case sdk.DocOpenEvent:
+			got = append(got, p)
+		case *sdk.DocOpenEvent:
+			got = append(got, *p)
+		}
+		return nil
+	})
+	defer dis()
+	if _, err := tools.Execute(context.Background(), "doc_open", `{"file_path":"`+md+`"}`); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Path != md {
+		t.Fatalf("doc_open 应发出 doc/open: %+v", got)
 	}
 }
 

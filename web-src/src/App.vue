@@ -163,6 +163,11 @@ function rebuild(keepCursor: boolean): void {
   transport.on('question', (f) => {
     question.value = f.payload as QuestionRequest
   })
+  // 文档预览意图(D5:模型 doc_open / `/preview` 命令)→ 打开文档面板并定位文件
+  transport.on('doc', (f) => {
+    const d = f.payload as { path?: string }
+    if (d?.path) onOpenDoc(new CustomEvent(OPEN_DOC_EVENT, { detail: d.path }))
+  })
 }
 
 async function refreshStats(): Promise<void> {

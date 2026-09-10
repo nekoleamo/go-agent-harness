@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
@@ -372,3 +373,31 @@ func TestDocMissingPathParam(t *testing.T) {
 
 // fmtErr 包装哨兵错误(模拟真实错误文本)。
 func fmtErr(sentinel error) error { return fmt.Errorf("docview: %w", sentinel) }
+
+// doc/open 事件 → SSE FrameDoc(D5 三端联动:模型 doc_open / `/preview` 命令触发)。
+func TestDocOpenBroadcastsFrame(t *testing.T) {
+	hub := NewHub()
+	c := newTestCtx()
+	log := &memLog{}
+	dis, err := hub.Subscribe(c, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dis()
+	ch, release := hub.Stream()
+	defer release()
+
+	c.fire(sdk.EventDocOpen, sdk.DocOpenEvent{Path: "docs/a.md", Page: 2})
+	select {
+	case f := <-ch:
+		if f.Type != FrameDoc {
+			t.Fatalf("帧类型应为 %q,得 %q", FrameDoc, f.Type)
+		}
+		ev, ok := f.Payload.(sdk.DocOpenEvent)
+		if !ok || ev.Path != "docs/a.md" || ev.Page != 2 {
+			t.Fatalf("载荷异常: %#v", f.Payload)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("未收到 FrameDoc 帧")
+	}
+}

@@ -2,7 +2,7 @@
 // 契约来源:web/server.go 的 SSE 帧与 REST 响应。
 
 // —— SSE 帧 ——
-export type FrameType = 'session' | 'status' | 'error' | 'confirm' | 'command' | 'question'
+export type FrameType = 'session' | 'status' | 'error' | 'confirm' | 'command' | 'question' | 'doc'
 
 export interface Frame {
   id: number

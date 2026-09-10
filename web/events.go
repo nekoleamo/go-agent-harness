@@ -27,6 +27,9 @@ const (
 	FrameQuestion = "question"
 	// FrameCommand 命令执行结果(载荷 *CommandResult)。
 	FrameCommand = "command"
+	// FrameDoc 文档预览意图(D 组 D5:模型 doc_open 工具 / `/preview` 命令发出 doc/open;
+	// 载荷 sdk.DocOpenEvent —— 前端打开文档面板并定位文件)。
+	FrameDoc = "doc"
 )
 
 // Frame 一条 SSE 帧(JSON 序列化后发往浏览器)。
@@ -65,6 +68,16 @@ func (h *EventHub) Subscribe(c sdk.Ctx, sessions sdk.SessionLog) (disposer sdk.D
 			return nil
 		}
 		h.push(se)
+		return nil
+	})
+	add(sdk.EventDocOpen, func(_ context.Context, ev *sdk.Event) error {
+		// 文档预览意图(doc/open):广播给浏览器 → 前端打开文档面板并定位该文件
+		switch p := ev.Payload.(type) {
+		case sdk.DocOpenEvent:
+			h.Push(Frame{Type: FrameDoc, Payload: p})
+		case *sdk.DocOpenEvent:
+			h.Push(Frame{Type: FrameDoc, Payload: p})
+		}
 		return nil
 	})
 	add(sdk.EventAgentStatus, func(_ context.Context, ev *sdk.Event) error {

@@ -32,8 +32,12 @@ type Bridge struct {
 
 	mu       sync.Mutex
 	busy     bool
-	curRoute Route               // 当前回合归属会话(审批确认推送目标)
-	cmds     sdk.CommandRegistry // ctx.commands(可选;RegisterCommands 注入)
+	curRoute Route // 当前回合归属会话(审批确认推送目标)
+
+	lastMu    sync.Mutex
+	lastRoute Route // 最近一次通过 gate 的入站会话(宿主主动推送目标,见 doc.go)
+	hasLast   bool
+	cmds      sdk.CommandRegistry // ctx.commands(可选;RegisterCommands 注入)
 
 	qMu    sync.Mutex
 	queued []queuedInbound // P1 忙时队列(全局 FIFO 单槽;回合完成自动续跑)
@@ -192,6 +196,9 @@ func (b *Bridge) HandleInbound(ctx context.Context, in Inbound) error {
 		}
 		return nil
 	}
+
+	// 记录最近活跃会话(宿主主动推送:文档预览意图等;授权且去重通过后才算数)
+	b.setLastRoute(r)
 
 	// 2. 去重(通道消息 id;5min 窗口)
 	if in.MsgID != "" && !b.markSeen(r, in.MsgID) {

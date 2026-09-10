@@ -1,4 +1,4 @@
-# seed-version: 14 # 样板版本:新增 base 能力条目(host-* 等)时 +1,老用户自动升级(备份后覆盖)
+# seed-version: 15 # 样板版本:新增 base 能力条目(host-* 等)时 +1,老用户自动升级(备份后覆盖)
 # base bundle:对齐 dsh-base,一切功能皆插件的共享第一层。
 # M1 阶段条目仅记录意图;对应插件工厂在 M2 base bundle 落地。
 name: base
@@ -73,6 +73,14 @@ entries:
     # 问题经 ctx.question(host-confirm-fusion)广播 web/im/tui 渠道呈现,首答生效。
   - id: tool-todo
     enabled: false # M8 外部化:todo(create/start/complete/pend/delete/update/list/get)由 host-bridge 加载 extplugins/tool-basic;内嵌双轨同 tool-files
+  - id: tool-doc
+    # D 组文档预览:模型侧文档阅读三工具(read_document/doc_open/doc_list)。
+    # 预算默认集对齐 dsh-document(maxInputBytes 50MiB / readLimit 2000 行 /
+    # maxOutputBytes 50KiB / pdfMaxPages 100),可在此覆盖。
+    data:
+      read_limit: 2000
+      max_output_kb: 50
+      pdf_max_pages: 100
   - id: tool-auto-plan
     # M11:auto_plan(规划模式)与 todo 同属工具,但需进程内规则注入(ctx.systemPrompt AddSection,
     # 外部进程无法注入)→ 装配进宿主(host-skills 同款),不进 tool-basic。

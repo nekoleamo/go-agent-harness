@@ -29,6 +29,7 @@ import (
 	"github.com/nekoleamo/go-agent-harness/plugins/policy/policy-guard"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-ask"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-auto-plan"
+	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-doc"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-files"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-memory"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-shell"
@@ -104,6 +105,11 @@ var All = map[string]Def{
 	"tool-memory": {Factory: func() sdk.Plugin { return &toolmemory.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "tool-memory", Type: "tool", APIVersion: ">=1.0,<2.0",
 		Requires: []string{"ctx.tools"}}, Bundle: "base", Manage: "external"},
+	"tool-doc": {Factory: func() sdk.Plugin { return &tooldoc.Plugin{} }, Manifest: &sdk.Manifest{
+		ID: "tool-doc", Type: "tool", APIVersion: ">=1.0,<2.0",
+		// D 组文档预览(D5):read_document/doc_open/doc_list 三工具;
+		// 经 ctx.doc(host-docview)统一 resolver 读取,不绕沙箱
+		Requires: []string{"ctx.tools", "ctx.doc"}}, Bundle: "base"},
 	"tool-auto-plan": {Factory: func() sdk.Plugin { return &toolautoplan.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "tool-auto-plan", Type: "tool", APIVersion: ">=1.0,<2.0",
 		Requires: []string{"ctx.tools", "ctx.systemPrompt"}}, Bundle: "base"},
