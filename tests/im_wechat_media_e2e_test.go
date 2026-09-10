@@ -87,8 +87,8 @@ func buildWechatMediaEnv(t *testing.T, baseURL, root string, extra []config.Entr
 	return c, home
 }
 
-// sentFileItems 已发出的「文件项」媒体消息(item_list[0].file_item)。
-func (m *wechatMock) sentFileItems() []map[string]any {
+// sentMediaItems 已发出的媒体项消息(type 2 图片 / 4 文件;含所属 context_token 与拆解后的子对象)。
+func (m *wechatMock) sentMediaItems() []map[string]any {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var out []map[string]any
@@ -105,9 +105,18 @@ func (m *wechatMock) sentFileItems() []map[string]any {
 		if !ok {
 			continue
 		}
-		if fi, ok := it["file_item"].(map[string]any); ok {
-			out = append(out, map[string]any{"item": it, "file": fi, "context_token": msgv["context_token"]})
+		kind, _ := it["type"].(float64)
+		if int(kind) != ilink.ItemTypeImage && int(kind) != ilink.ItemTypeFile {
+			continue
 		}
+		rec := map[string]any{"item": it, "context_token": msgv["context_token"], "kind": int(kind)}
+		if fi, ok := it["file_item"].(map[string]any); ok {
+			rec["file"] = fi
+		}
+		if ii, ok := it["image_item"].(map[string]any); ok {
+			rec["image"] = ii
+		}
+		out = append(out, rec)
 	}
 	return out
 }
@@ -118,20 +127,22 @@ func (m *wechatMock) sendCount() int {
 	return len(m.sendMsgs)
 }
 
-// waitFileItem 等待文件项媒体消息到达。
-func (m *wechatMock) waitFileItem(t *testing.T, timeout time.Duration) map[string]any {
+// waitMediaItem 等待指定 type 的媒体项消息到达。
+func (m *wechatMock) waitMediaItem(t *testing.T, kind int, timeout time.Duration) map[string]any {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if items := m.sentFileItems(); len(items) > 0 {
-			return items[0]
+		for _, rec := range m.sentMediaItems() {
+			if rec["kind"] == kind {
+				return rec
+			}
 		}
 		select {
 		case <-m.notify:
 		case <-time.After(30 * time.Millisecond):
 		}
 	}
-	t.Fatalf("超时未收到文件项媒体消息(出站 %d 条)", m.sendCount())
+	t.Fatalf("超时未收到媒体项(type=%d;出站 %d 条)", kind, m.sendCount())
 	return nil
 }
 
@@ -174,7 +185,7 @@ func TestImWechatMediaE2E(t *testing.T) {
 	if err != nil || res.Error != "" {
 		t.Fatalf("im_send_file 应成功: err=%v res=%+v", err, res)
 	}
-	rec := m.waitFileItem(t, 15*time.Second)
+	rec := m.waitMediaItem(t, ilink.ItemTypeFile, 15*time.Second)
 
 	// 媒体项形状(§9.2 文件项)
 	item, _ := rec["item"].(map[string]any)
@@ -234,6 +245,37 @@ func TestImWechatMediaE2E(t *testing.T) {
 		t.Fatalf("CDN 密文应可解密回原文: %v %q", derr, back)
 	}
 
+	// 2) 图片(png)→ media_type=1 + image_item(mid_size;与文件项分支不同)
+	pngPath := filepath.Join(root, "chart.png")
+	png := append([]byte("\x89PNG\r\n\x1a\n"), []byte("chart-bytes-e2e")...)
+	if err := os.WriteFile(pngPath, png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r3, err3 := tools.Execute(context.Background(), "im_send_file",
+		fmt.Sprintf(`{"target":"user1","path":%q}`, pngPath))
+	if err3 != nil || r3.Error != "" {
+		t.Fatalf("im_send_file(图片)应成功: err=%v res=%+v", err3, r3)
+	}
+	irec := m.waitMediaItem(t, ilink.ItemTypeImage, 15*time.Second)
+	img, _ := irec["image"].(map[string]any)
+	if img == nil || img["mid_size"] != float64(ilink.PaddedSize(int64(len(png)))) {
+		t.Fatalf("图片项应带密文大小 mid_size: %+v", irec["item"])
+	}
+	imedia, _ := img["media"].(map[string]any)
+	if imedia == nil || imedia["encrypt_query_param"] != "enc-e2e" {
+		t.Fatalf("图片项 media 形状不符: %+v", img)
+	}
+	m.mu.Lock()
+	imgReq := m.uploadReqs[len(m.uploadReqs)-1]
+	imgBody := m.cdnBodies[len(m.cdnBodies)-1]
+	m.mu.Unlock()
+	if imgReq["media_type"] != float64(ilink.MediaTypeImage) {
+		t.Fatalf("图片应申请 media_type=1: %+v", imgReq)
+	}
+	if back2, e2 := ilink.DecryptMedia(imgBody, fmt.Sprint(imgReq["aeskey"])); e2 != nil || string(back2) != string(png) {
+		t.Fatalf("图片密文应可解密回原文: %v %q", e2, back2)
+	}
+
 	// 2) 越界路径(工作区外)→ 显式拒绝 + 零出站
 	outside := filepath.Join(t.TempDir(), "secret.txt")
 	if err := os.WriteFile(outside, []byte("x"), 0o644); err != nil {
@@ -255,7 +297,7 @@ func TestImWechatMediaE2E(t *testing.T) {
 	if n := m.sendCount(); n != before {
 		t.Fatalf("越界路径不应出站(%d → %d)", before, n)
 	}
-	// 3) 通道未支持出站文件的错误口径不应再出现(回归:MED-3 已实现 MediaSender)
+	// 4) 通道未支持出站文件的错误口径不应再出现(回归:MED-3 已实现 MediaSender)
 	if strings.Contains(msg, "不支持出站文件") {
 		t.Fatalf("微信已支持出站媒体,不应报不支持: %s", msg)
 	}

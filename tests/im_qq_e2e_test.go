@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -42,6 +43,13 @@ type qqMock struct {
 	sendQ     chan map[string]any // 待推送事件(预置 + 测试动态 pushEvent)
 	ackCh     chan struct{}       // 心跳 ack 转交写侧
 	wsURL     string              // /gateway/bot 返回(服务地址已知后回填)
+
+	// MED-2 出站文件四步上传采集(prepare 请求/PUT 分片字节/part_finish/完成请求)
+	mediaPrepares []map[string]any
+	mediaParts    [][]byte
+	mediaFinishes []map[string]any
+	mediaFiles    []map[string]any
+	mediaFileInfo string // files 响应 file_info(默认 fi-e2e)
 }
 
 type sendRec struct {
@@ -84,7 +92,43 @@ func newQQMock(t *testing.T) (*qqMock, *httptest.Server) {
 			}
 			m.serveWS(conn)
 		default:
-			if strings.HasPrefix(r.URL.Path, "/v2/") {
+			switch {
+			case strings.HasSuffix(r.URL.Path, "/upload_prepare"):
+				var body map[string]any
+				json.NewDecoder(r.Body).Decode(&body)
+				m.mu.Lock()
+				m.mediaPrepares = append(m.mediaPrepares, body)
+				m.mu.Unlock()
+				json.NewEncoder(w).Encode(map[string]any{
+					"upload_id": "up-e2e", "block_size": "5242880",
+					"parts":         []map[string]any{{"index": 0, "presigned_url": "http://" + r.Host + "/put/0", "block_size": "5242880"}},
+					"upload_config": map[string]any{"concurrency": 1},
+				})
+			case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/put/"):
+				b, _ := io.ReadAll(r.Body)
+				m.mu.Lock()
+				m.mediaParts = append(m.mediaParts, b)
+				m.mu.Unlock()
+				w.Write([]byte("ok"))
+			case strings.HasSuffix(r.URL.Path, "/upload_part_finish"):
+				var body map[string]any
+				json.NewDecoder(r.Body).Decode(&body)
+				m.mu.Lock()
+				m.mediaFinishes = append(m.mediaFinishes, body)
+				m.mu.Unlock()
+				w.Write([]byte(`{}`))
+			case strings.HasSuffix(r.URL.Path, "/files"):
+				var body map[string]any
+				json.NewDecoder(r.Body).Decode(&body)
+				m.mu.Lock()
+				m.mediaFiles = append(m.mediaFiles, body)
+				info := m.mediaFileInfo
+				m.mu.Unlock()
+				if info == "" {
+					info = "fi-e2e"
+				}
+				json.NewEncoder(w).Encode(map[string]any{"file_uuid": "fu-e2e", "file_info": info, "ttl": 3600})
+			case strings.HasPrefix(r.URL.Path, "/v2/"):
 				var body map[string]any
 				json.NewDecoder(r.Body).Decode(&body)
 				m.mu.Lock()
@@ -105,9 +149,9 @@ func newQQMock(t *testing.T) (*qqMock, *httptest.Server) {
 					return
 				}
 				json.NewEncoder(w).Encode(map[string]any{"id": "send-" + fmt.Sprint(len(m.sends)), "timestamp": time.Now().Format(time.RFC3339)})
-				return
+			default:
+				w.WriteHeader(404)
 			}
-			w.WriteHeader(404)
 		}
 	}))
 	t.Cleanup(hs.Close)
@@ -350,6 +394,11 @@ func buildQQEnv(t *testing.T, baseURL, mode string, script any) string {
 
 // buildQQEnvFull 装配 base + im-qq(可追加额外配置条目):返回 (home, ctx, registry)。
 func buildQQEnvFull(t *testing.T, baseURL, mode string, script any, extra []config.Entry) (string, sdk.Ctx, *plugin.Registry) {
+	return buildQQEnvFullSandbox(t, baseURL, mode, script, extra, "")
+}
+
+// buildQQEnvFullSandbox 同上 + 可选注入固定工作区根(出站产物登记需要;sandboxRoot="" 则不注入)。
+func buildQQEnvFullSandbox(t *testing.T, baseURL, mode string, script any, extra []config.Entry, sandboxRoot string) (string, sdk.Ctx, *plugin.Registry) {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("GAH_HOME", home)
@@ -394,6 +443,11 @@ func buildQQEnvFull(t *testing.T, baseURL, mode string, script any, extra []conf
 	}
 	if err := c.Provide("system.catalogue", catalogueInfoForTest()); err != nil {
 		t.Fatal(err)
+	}
+	if sandboxRoot != "" {
+		if err := c.Provide("ctx.sandbox", fixedSandbox{root: sandboxRoot}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := baseb.RegisterAll(reg, tree); err != nil {
 		t.Fatal(err)
