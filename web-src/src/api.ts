@@ -1,5 +1,5 @@
 // REST 客户端(上行)+ 工具函数。核心交互纯 REST,不绕模板渲染。
-import type { AttachmentView, CommandView, Job, ModelsAllResp, PluginInfo, ProviderInfo, SessionInfo, StateView, WorkspaceInfo } from './types'
+import type { AttachmentView, CommandView, IMChannelStatus, Job, ModelsAllResp, PluginInfo, ProviderInfo, SessionInfo, StateView, WorkspaceInfo } from './types'
 
 const BASE = ''
 const json = {
@@ -51,6 +51,10 @@ export const api = {
   // 状态栏级控制(模型/思考/沙箱/审批/工作区;M17 审批档位 open|smart|strict)
   control(body: { model?: string; thinking?: string; sandbox?: string; approval?: string; workspace?: string }): Promise<void> {
     return req('/api/control', { method: 'POST', headers: json, body: JSON.stringify(body) })
+  },
+  // —— IM 通道状态(P3 三端融合;未装配 503) ——
+  imChannels(): Promise<IMChannelStatus[]> {
+    return req('/api/im/channels')
   },
   // —— 整体备份(M18) ——
   backups(): Promise<{ name: string; size: number; time: number }[]> {

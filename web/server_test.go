@@ -1474,3 +1474,44 @@ func readAll(resp *http.Response) string {
 	_, _ = b.ReadFrom(resp.Body)
 	return b.String()
 }
+
+// TestIMChannelsEndpoint /api/im/channels:未装配 503;装配 stub 返回通道状态。
+func TestIMChannelsEndpoint(t *testing.T) {
+	s, _ := newTestServer()
+	hs := httptest.NewServer(s.handler())
+	resp, err := http.Get(hs.URL + "/api/im/channels")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("未装配应 503,得 %d", resp.StatusCode)
+	}
+	hs.Close()
+
+	s.imc = &stubIMChannels{}
+	hs2 := httptest.NewServer(s.handler())
+	defer hs2.Close()
+	resp, err = http.Get(hs2.URL + "/api/im/channels")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var st []sdk.IMChannelStatus
+	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != 200 || len(st) != 2 || st[0].Channel != "qq" || st[0].State != "online" || st[0].Authorized != 3 {
+		t.Fatalf("通道状态不符: %+v", st)
+	}
+}
+
+// stubIMChannels sdk.IMChannelService stub(状态端点测试)。
+type stubIMChannels struct{}
+
+func (stubIMChannels) Status() []sdk.IMChannelStatus {
+	return []sdk.IMChannelStatus{
+		{Channel: "qq", State: "online", Detail: "qq: 已配置(app-123) 网关=在线 已授权=3", Authorized: 3},
+		{Channel: "wechat", State: "configuring", Detail: "wechat: 未登录", Error: "未登录(执行 /wechat login)"},
+	}
+}

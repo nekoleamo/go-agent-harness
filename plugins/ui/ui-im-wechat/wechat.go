@@ -107,6 +107,10 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		tr.setLastError("未登录,自动发起扫码登录…")
 		go tr.autoLogin()
 	}
+	// ctx.imChannels:Web/桌面设置面板 IM 通道状态(P3 三端融合;只读展示)
+	if err := c.Provide("ctx.imChannels", imChannelStatus{tr: tr, bridge: b}); err != nil {
+		return nil, err
+	}
 	// ctx.confirm = IM 桥(单 profile 自提供;P3 融合:装配 host-confirm-fusion 时
 	// 注册呈现者与 web 并存,不 Provide 防同名冲突)
 	var confirmReg sdk.Disposer = func() {}
@@ -161,6 +165,38 @@ func sessionBindPath() string {
 		home = os.TempDir()
 	}
 	return filepath.Join(home, "config", "im-sessions.yaml")
+}
+
+// imChannelStatus sdk.IMChannelService 适配(web 面板 IM 通道状态)。
+type imChannelStatus struct {
+	tr     *wechatTransport
+	bridge *im.Bridge
+}
+
+// Status 聚合渠道状态(state:online>running>configuring>offline)。
+func (a imChannelStatus) Status() []sdk.IMChannelStatus {
+	tr := a.tr
+	tr.mu.Lock()
+	state := "offline"
+	if tr.polling {
+		state = "online"
+		if tr.creds == nil || tr.creds.Token == "" {
+			state = "configuring"
+		}
+	}
+	if tr.creds == nil || tr.creds.Token == "" {
+		state = "configuring"
+	}
+	lastErr := tr.lastError
+	tr.mu.Unlock()
+	detail := tr.statusText()
+	auth := 0
+	if a.bridge != nil {
+		auth = len(a.bridge.Access().List())
+	}
+	return []sdk.IMChannelStatus{{
+		Channel: tr.name, State: state, Detail: detail, Error: lastErr, Authorized: auth,
+	}}
 }
 
 // ticketEntry typing 票据缓存。

@@ -88,6 +88,7 @@ type Server struct {
 	tools    sdk.ToolRegistry      // 可选(工具清单/调用/todo 面板)
 	jobs     sdk.JobService        // 可选(后台任务)
 	pm       sdk.PluginManager     // 可选(插件启停)
+	imc      sdk.IMChannelService  // 可选(IM 通道状态 /api/im/channels;未装配 503)
 	sp       sdk.SystemPromptService // 可选(/reload 指令热更)
 	tc       sdk.TurnControl       // 可选(回合取消 /api/control cancel;未装配 = 503)
 
@@ -130,6 +131,7 @@ func (s *Server) Inject(c sdk.Ctx) error {
 	_ = c.Inject("ctx.tools", &s.tools)
 	_ = c.Inject("ctx.jobs", &s.jobs)
 	_ = c.Inject("ctx.pluginManager", &s.pm)
+	_ = c.Inject("ctx.imChannels", &s.imc) // 可选:未装配则 /api/im/channels 503
 	_ = c.Inject("ctx.systemPrompt", &s.sp)
 	_ = c.Inject("ctx.turnControl", &s.tc)
 	// running 状态:随 agent/status 事件驱动(回合开始 running,结束 idle)
@@ -203,6 +205,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET /api/todo", s.handleTodo)
 	mux.HandleFunc("GET /api/backup", s.handleBackup)
 	mux.HandleFunc("POST /api/backup", s.handleBackup)
+	mux.HandleFunc("GET /api/im/channels", s.handleIMChannels)
 	mux.Handle("/ui-plugins/", s.uiPluginsHandler())
 	mux.Handle("/attachments/", s.attachmentsHandler())
 	mux.Handle("/", s.staticHandler())
@@ -1424,4 +1427,14 @@ func errString(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+// handleIMChannels GET /api/im/channels:IM 通道状态(wechat/qq 登录态/授权/诊断;
+// P3 三端融合 Web 面板)。未装配(无 IM 插件)显式 503,不静默空。
+func (s *Server) handleIMChannels(w http.ResponseWriter, r *http.Request) {
+	if s.imc == nil {
+		http.Error(w, "IM 通道服务未装配(无 ui-im-* 插件)", http.StatusServiceUnavailable)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.imc.Status())
 }

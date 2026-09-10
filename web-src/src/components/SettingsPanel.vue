@@ -5,7 +5,7 @@
 import { computed, inject, onMounted, ref, watch } from 'vue'
 import { api } from '../api'
 import { settingSections } from '../registry'
-import type { AskConfirm, PluginInfo, ProviderInfo, ProviderModelGroup, StateView } from '../types'
+import type { AskConfirm, IMChannelStatus, PluginInfo, ProviderInfo, ProviderModelGroup, StateView } from '../types'
 
 const props = defineProps<{
   open: boolean
@@ -49,6 +49,7 @@ async function load(): Promise<void> {
     // 模型聚合/插件/provider 任一失败降级:非核心(如未装配 MultiProviderService → 501)
     const [m, pl, pr] = await Promise.allSettled([api.models(), api.plugins(), api.providers()])
     await loadBackups() // M18 备份列表(未装配降级静默)
+    await loadIM() // P3 IM 通道状态(未装配降级静默)
     if (m.status === 'fulfilled') models.value = m.value.providers ?? []
     if (pl.status === 'fulfilled') plugins.value = pl.value ?? []
     if (pr.status === 'fulfilled') providers.value = pr.value ?? []
@@ -123,7 +124,27 @@ async function applyCtl(body: { thinking?: string; sandbox?: string; approval?: 
 
 // —— 数据备份(M18) ——
 const backups = ref<{ name: string; size: number; time: number }[]>([])
+const imCh = ref<IMChannelStatus[]>([])
 const backupMsg = ref('')
+async function loadIM(): Promise<void> {
+  try {
+    imCh.value = (await api.imChannels()) ?? []
+  } catch {
+    imCh.value = [] // 未装配(无 ui-im-*):隐藏 IM 通道区
+  }
+}
+function stateLabel(st: string): string {
+  switch (st) {
+    case 'online':
+      return '在线'
+    case 'running':
+      return '运行中'
+    case 'configuring':
+      return '待配置'
+    default:
+      return '离线'
+  }
+}
 async function loadBackups(): Promise<void> {
   try {
     backups.value = (await api.backups()) ?? [] // ?? []:后端契约空数组,兜底防 null(渲染 .length 安全)
@@ -401,6 +422,23 @@ watch(
             <button class="ghost danger-text" :disabled="busy" @click="compactNow">压缩当前会话</button>
           </div>
           <p class="dim">压缩将最旧内容折叠为摘要(节省上下文),仅影响后续回合。</p>
+        </section>
+
+        <!-- IM 通道(P3 三端融合) -->
+        <section class="sec" v-if="imCh.length">
+          <h3 class="h">IM 通道</h3>
+          <div v-for="ch in imCh" :key="ch.channel" class="prow">
+            <div class="grow">
+              <div class="lab">
+                <span class="cap">{{ ch.channel === 'qq' ? 'QQ 机器人' : '微信 iLink' }}</span>
+                <span class="st-tag" :class="ch.state">{{ stateLabel(ch.state) }}</span>
+              </div>
+              <div class="dim mono small" v-if="ch.detail">{{ ch.detail }}</div>
+              <div class="dim small" v-if="ch.error">⚠ {{ ch.error }}</div>
+            </div>
+            <div class="dim small nowrap">授权 {{ ch.authorized }}</div>
+          </div>
+          <p class="dim">配置:QQ 用 <code>/qq login &lt;AppID&gt; &lt;AppSecret&gt;</code>;微信用 <code>/wechat login</code>(终端二维码,直显可扫)。融合 profile 下确认请求同时在 QQ/微信与本站弹层呈现。</p>
         </section>
 
         <!-- Provider -->

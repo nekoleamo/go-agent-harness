@@ -20,6 +20,15 @@ export interface SessionEvent {
   TS: string
 }
 
+// —— IM 通道状态(/api/im/channels;P3 三端融合面板)——
+export interface IMChannelStatus {
+  channel: string // wechat | qq
+  state: string // online | running | configuring | offline
+  detail: string // 通道状态全文(网关/授权等)
+  error: string // 最近诊断(空 = 无)
+  authorized: number // 已授权用户数
+}
+
 // —— 各 Kind 载荷 ——
 // 附件(随 UserMessage 会话 JSON 序列化:Go Attachment 字段原样)
 export interface AttachmentInfo {

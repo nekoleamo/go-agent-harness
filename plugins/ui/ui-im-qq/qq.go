@@ -113,6 +113,10 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	if creds.Configured() {
 		tr.startGateway()
 	}
+	// ctx.imChannels:Web/桌面设置面板 IM 通道状态(P3 三端融合;只读展示)
+	if err := c.Provide("ctx.imChannels", imChannelStatus{tr: tr, bridge: b}); err != nil {
+		return nil, err
+	}
 	// ctx.confirm = IM 桥(单 profile 自提供;P3 融合:装配 host-confirm-fusion 时
 	// 改为注册呈现者,与 web 等渠道并存同卡——不再 Provide 防同名冲突)
 	var confirmReg sdk.Disposer = func() {}
@@ -646,6 +650,38 @@ func (t *qqTransport) login(appID, secret string) error {
 	}
 	t.startGateway()
 	return nil
+}
+
+// imChannelStatus sdk.IMChannelService 适配(web 面板 IM 通道状态)。
+type imChannelStatus struct {
+	tr     *qqTransport
+	bridge *im.Bridge
+}
+
+// Status 聚合渠道状态(实时读取;state:online>running>configuring>offline)。
+func (a imChannelStatus) Status() []sdk.IMChannelStatus {
+	tr := a.tr
+	tr.mu.Lock() // statusText 内部自持锁,勿锁内调用——字段锁外组装
+	state := "offline"
+	if tr.running {
+		state = "running"
+		if tr.gateway != nil && tr.gateway.Online() {
+			state = "online"
+		}
+	}
+	if tr.creds == nil || !tr.creds.Configured() {
+		state = "configuring"
+	}
+	lastErr := tr.lastError
+	tr.mu.Unlock()
+	detail := tr.statusText() // 锁外取全文
+	auth := 0
+	if a.bridge != nil {
+		auth = len(a.bridge.Access().List())
+	}
+	return []sdk.IMChannelStatus{{
+		Channel: tr.name, State: state, Detail: detail, Error: lastErr, Authorized: auth,
+	}}
 }
 
 // statusText 状态文本。
