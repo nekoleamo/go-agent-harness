@@ -133,7 +133,7 @@ Then chat normally; use `/provider clear` to return to env-var config.
 
 ## 4. TUI commands
 
-> Commands register into the host `ctx.commands` and work from TUI/Web/headless with a `/` prefix; typing `/` pops the command palette (name+description, filterable). TUI-only commands (search/widgets/theme/help/exit/fork/clone/tree/name) are available in the TUI only.
+> Commands register into the host `ctx.commands` and work from TUI/Web/headless with a `/` prefix; typing `/` pops the command palette (name+description, filterable). **Every command supports step-by-step confirmation**: arguments cascade as declared (subcommand enums → dynamic candidates such as providers/sessions/plugins/jobs/backups/themes/IM groups; free-form args break into input prompts) — the TUI uses its picker, and Web uses the same registry-declared candidate list (click through the levels). TUI-only commands (search/widgets/theme/help/exit/fork/clone/tree/name) are available in the TUI only.
 
 | Command | Effect |
 |---|---|

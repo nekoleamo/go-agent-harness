@@ -134,7 +134,7 @@ export DEEPSEEK_API_KEY=sk-...            # 或 OPENAI_API_KEY / ANTHROPIC_API_K
 
 ## 四、TUI 命令
 
-> 命令注册进宿主 `ctx.commands`,TUI/Web/headless `/` 前缀通用;输入 `/` 弹出命令提示(名称+说明,可继续输入过滤)。TUI 专属命令(search/widgets/theme/help/exit/fork/clone/tree/name)仅 TUI 可用。
+> 命令注册进宿主 `ctx.commands`,TUI/Web/headless `/` 前缀通用;输入 `/` 弹出命令提示(名称+说明,可继续输入过滤)。**所有命令支持逐级确认**:参数按声明级联(子命令枚举 → 动态候选,如 provider/会话/插件/任务/备份/主题/群列表;需手输的走自由参数断点),TUI 用选择器、Web 用同一注册表声明的候选列表(点击逐级选)。TUI 专属命令(search/widgets/theme/help/exit/fork/clone/tree/name)仅 TUI 可用。
 
 | 命令 | 作用 |
 |---|---|
