@@ -2,6 +2,9 @@
 package hostconfirmfusion
 
 import (
+	"log/slog"
+	"github.com/nekoleamo/go-agent-harness/core/ctx"
+	"github.com/nekoleamo/go-agent-harness/core/event"
 	"context"
 	"sync"
 	"testing"
@@ -182,5 +185,85 @@ func TestFusionAskNoChannel(t *testing.T) {
 	d()
 	if _, err := f.Ask(context.Background(), sdk.Question{Prompt: "x"}); err == nil {
 		t.Fatal("注销后应报错")
+	}
+}
+
+// TestInteractionEvents 事件化:Confirm/Ask 广播 requested 与 resolved(载荷含结果/错误)。
+func TestInteractionEvents(t *testing.T) {
+	logger := slog.New(slog.DiscardHandler)
+	bus := event.New(logger)
+	c := ctx.New(logger, bus)
+	f := &Fusion{c: c, presenters: make(map[string]sdk.ConfirmPresenter), questioners: make(map[string]sdk.QuestionPresenter)}
+	if !f.EmitsEvents() {
+		t.Fatal("有 Ctx 时应广播事件")
+	}
+	var mu sync.Mutex
+	var got []string
+	var lastConfirm *sdk.ConfirmEvent
+	var lastQuestion *sdk.QuestionEvent
+	for _, name := range []string{sdk.EventConfirmRequested, sdk.EventConfirmResolved, sdk.EventQuestionRequested, sdk.EventQuestionResolved} {
+		n := name
+		c.Subscribe(n, func(_ context.Context, ev *sdk.Event) error {
+			mu.Lock()
+			got = append(got, n)
+			if e, ok := ev.Payload.(*sdk.ConfirmEvent); ok {
+				lastConfirm = e
+			}
+			if e, ok := ev.Payload.(*sdk.QuestionEvent); ok {
+				lastQuestion = e
+			}
+			mu.Unlock()
+			return nil
+		})
+	}
+	// confirm:渠道 stub 立即批准
+	ca := make(chan bool, 1)
+	ca <- true
+	f.Register("web", &stubPresenter{promptCh: make(chan string, 1), answer: ca})
+	if ok, err := f.Confirm(context.Background(), "危险?"); err != nil || !ok {
+		t.Fatalf("confirm 应批准: %v %v", ok, err)
+	}
+	// question:渠道 stub 作答
+	qa := make(chan sdk.QuestionAnswer, 1)
+	qa <- sdk.QuestionAnswer{Values: []string{"prod"}}
+	f.RegisterQuestioner("web", &stubQuestioner{got: make(chan sdk.Question, 1), ans: qa, done: make(chan struct{})})
+	if _, err := f.Ask(context.Background(), sdk.Question{Prompt: "选环境"}); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	n := len(got)
+	lc, lq := lastConfirm, lastQuestion
+	mu.Unlock()
+	if n != 4 {
+		t.Fatalf("应广播 4 个事件,got %d", n)
+	}
+	if lc == nil || !lc.Resolved || !lc.OK || lc.Prompt != "危险?" {
+		t.Fatalf("confirm resolved 载荷不符: %+v", lc)
+	}
+	if lq == nil || !lq.Resolved || len(lq.Answer.Values) != 1 || lq.Question.Prompt != "选环境" {
+		t.Fatalf("question resolved 载荷不符: %+v", lq)
+	}
+	// 无渠道时 resolved 也应带错误(观察面可见失败);经 channel 传递避免回调重入锁
+	f2 := &Fusion{c: c, presenters: make(map[string]sdk.ConfirmPresenter), questioners: make(map[string]sdk.QuestionPresenter)}
+	errCh := make(chan string, 4)
+	c.Subscribe(sdk.EventConfirmResolved, func(_ context.Context, ev *sdk.Event) error {
+		if e, ok := ev.Payload.(*sdk.ConfirmEvent); ok {
+			select {
+			case errCh <- e.Err:
+			default:
+			}
+		}
+		return nil
+	})
+	if _, err := f2.Confirm(context.Background(), "x"); err == nil {
+		t.Fatal("无渠道应报错")
+	}
+	select {
+	case e := <-errCh:
+		if e == "" {
+			t.Fatal("resolved 事件应带错误详情")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("未收到 resolved 事件")
 	}
 }
