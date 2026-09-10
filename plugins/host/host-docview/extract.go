@@ -182,15 +182,74 @@ func imageDims(path string) (int, int) {
 }
 
 // extractUnsupported 显式不支持:结构化说明 + 建议(E2 外部转换器),不假装支持。
-func extractUnsupported(_ context.Context, _ *Service, abs string, fi os.FileInfo, req sdk.DocRequest, format sdk.DocFormat) (*sdk.DocView, error) {
-	v := baseView(req, abs, fi.Size(), fi.ModTime().UnixNano(), format)
+// D6-2:旧二进制 Office(.doc/.xls/.ppt)+ 已启用外部转换器 + 本机有 soffice 时,
+// 先转 PDF 再走 D4 抽取器(高保真文本 + 缓存 PDF 作为资产供 Web 原生查看器)。
+func extractUnsupported(ctx context.Context, s *Service, abs string, fi os.FileInfo, req sdk.DocRequest, format sdk.DocFormat) (*sdk.DocView, error) {
 	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(abs), "."))
+	if legacyOfficeExts[ext] && s.conv.usable() {
+		if v, err := extractViaConverter(ctx, s, abs, fi, req); err == nil {
+			return v, nil
+		} else {
+			v2 := unsupportedView(req, abs, fi, format)
+			v2.Warnings = append(v2.Warnings, "外部转换器回退: "+err.Error())
+			return v2, nil
+		}
+	}
+	v := unsupportedView(req, abs, fi, format)
+	// 提示探测结果与启用方式(已就绪的 hook 显式告知,不静默)
+	switch {
+	case legacyOfficeExts[ext] && s.conv.available() && !s.conv.enabled:
+		v.Warnings = append(v.Warnings,
+			"已检测到 soffice,可在插件配置中启用 data.external_converters 以高保真预览旧版 Office")
+	case legacyOfficeExts[ext] && !s.conv.available():
+		v.Warnings = append(v.Warnings,
+			"未检测到 soffice/libreoffice;安装 LibreOffice 并启用 data.external_converters 后可高保真预览")
+	}
+	return v, nil
+}
+
+// extractViaConverter 转换 → PDF 抽取 → 源身份回写 + 转换产出入资产(Web 原生查看器用)。
+func extractViaConverter(ctx context.Context, s *Service, abs string, fi os.FileInfo, req sdk.DocRequest) (*sdk.DocView, error) {
+	pdfPath, err := s.conv.convertToPDF(ctx, abs, fi)
+	if err != nil {
+		return nil, err
+	}
+	pfi, err := os.Stat(pdfPath)
+	if err != nil {
+		return nil, fmt.Errorf("转换产物不可读: %w", err)
+	}
+	v, err := extractPDF(ctx, s, pdfPath, pfi, req, sdk.DocFormatPDF)
+	if err != nil {
+		return nil, fmt.Errorf("转换后的 PDF 解析失败: %w", err)
+	}
+	// 身份仍归源文件(.doc):Path/Name/Size/ModTime 以源为准,格式标记为未支持(避免前端
+	// 直接拿源字节当 PDF 内联渲染);块来自 PDF 抽取(文本/表格/页标记)。
+	v.Format = sdk.DocFormatUnsupported
+	v.Name = filepath.Base(abs)
+	v.Size = fi.Size()
+	v.ModTime = timeUnix(fi.ModTime().UnixNano())
+	if v.Meta == nil {
+		v.Meta = map[string]string{}
+	}
+	v.Meta["preview_via"] = "external-converter"
+	if id := s.RegisterFileAsset(abs, pdfPath, "application/pdf"); id != "" {
+		v.Meta["pdf_asset"] = id
+	}
+	v.Warnings = append(v.Warnings,
+		"已由外部转换器(soffice)转为 PDF 预览:文本来自转换结果,版式以转换器为准")
+	return v, nil
+}
+
+// unsupportedView 不支持格式的结构化提示视图(可下载/raw;绝不假装完整)。
+func unsupportedView(req sdk.DocRequest, abs string, fi os.FileInfo, format sdk.DocFormat) *sdk.DocView {
+	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(abs), "."))
+	v := baseView(req, abs, fi.Size(), fi.ModTime().UnixNano(), format)
 	v.Warnings = append(v.Warnings, fmt.Sprintf("格式 .%s 不支持在线预览(旧二进制 Office / 归档 / 音视频等一律不解析)", ext))
 	v.Blocks = []sdk.DocBlock{{
 		Kind: sdk.DocBlockUnsupported,
 		Text: fmt.Sprintf("%s:当前不支持预览(可下载后用本地应用打开;若安装了外部转换器可选高保真预览)", v.Name),
 	}}
-	return v, nil
+	return v
 }
 
 // magicOf 头部魔数的人类可读描述。

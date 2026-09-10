@@ -77,9 +77,13 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 // Options 构造选项。
 type Options struct {
 	Sandbox sdk.Sandbox
-	Home    string // GAH_HOME(附件目录与 config 拒绝判定用)
+	Home    string // GAH_HOME(附件目录、config 拒绝判定与转换缓存根)
 	Budget  Budget
 	Logger  *slog.Logger
+	// ExternalConverters 启用外部转换器(D6-2:soffice → PDF 高保真预览;默认关闭)。
+	ExternalConverters bool
+	// Converter 注入的转换器(单测用;零值 = 按 ExternalConverters + Home 探测)。
+	Converter *converter
 }
 
 // extractor 一个格式抽取器。abs 已过 resolver 与源大小预算;fi 为已 stat 的元信息。
@@ -105,6 +109,7 @@ type Service struct {
 
 	extractors map[sdk.DocFormat]extractor
 	pending    map[sdk.DocFormat]string // 未交付格式 → 计划切片(显式提示用)
+	conv       converter                // D6-2 外部转换器(默认关闭)
 
 	assets map[string]assetRef
 }
@@ -139,6 +144,12 @@ func New(o Options) *Service {
 	}
 	// 全部格式已有抽取器(D6-4 收口后 pending 为空);留空表以承载未来切片。
 	s.pending = map[sdk.DocFormat]string{}
+	// D6-2 外部转换器:显式注入优先(单测),否则按配置探测 PATH(探测不影响是否启用)。
+	if o.Converter != nil {
+		s.conv = *o.Converter
+	} else {
+		s.conv = newConverter(o.ExternalConverters, o.Home)
+	}
 	return s
 }
 
@@ -176,6 +187,15 @@ func (s *Service) applyData(data map[string]any) {
 		s.budget.Timeout = time.Duration(n) * time.Second
 	}
 	s.budget = s.budget.withDefaults()
+	// D6-2:外部转换器开关(默认关闭;仅在显式 data.external_converters=true 时启用)
+	if v, ok := data["external_converters"]; ok {
+		switch b := v.(type) {
+		case bool:
+			s.conv.enabled = b
+		case string:
+			s.conv.enabled = strings.EqualFold(strings.TrimSpace(b), "true")
+		}
+	}
 }
 
 // Budget 返回生效预算(web 端点/工具展示与单测用)。

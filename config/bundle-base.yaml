@@ -47,6 +47,9 @@ entries:
       max_input_mb: 50 # 源文件大小上限
       max_preview_kb: 1024 # 面板预览文本预算
       timeout_seconds: 10 # 单次抽取超时
+      # D6-2 可选高保真档(默认关闭):本机装有 LibreOffice(soffice)时,把旧二进制
+      # Office(.doc/.xls/.ppt)转 PDF 再抽取;产物落 $GAH_HOME/cache/doc/(7 天保留)。
+      # external_converters: true
   - id: host-usage-stats
     # 会话 token 统计(ctx.usageStats):状态栏显示上下文使用率/缓存命中率。
     # 上下文窗口解析链:data.context_window(统一覆盖)> data.model_windows(按模型名前缀覆盖,

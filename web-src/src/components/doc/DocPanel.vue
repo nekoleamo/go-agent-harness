@@ -30,6 +30,10 @@ function rawUrl(path: string, dl = false): string {
 function assetBase(path: string): string {
   return '/api/doc/asset?path=' + encodeURIComponent(path)
 }
+// 单个资产 URL(D6-2 转换产物 PDF 原生查看器用)
+function assetUrl(path: string, id: string): string {
+  return assetBase(path) + '&id=' + encodeURIComponent(id)
+}
 
 // 树渲染:仅按 path 段数缩进(前端不做二次目录模型,保持单一事实源在后端)
 function depthOf(e: DocEntry): number {
@@ -159,6 +163,8 @@ watch(
 )
 
 const isPDF = computed(() => view.value?.format === 'pdf')
+// D6-2:外部转换器产物(旧 Office 经 soffice 转 PDF)——有资产则用原生查看器呈现
+const convAsset = computed(() => (view.value?.meta?.pdf_asset ? view.value.meta.pdf_asset : ''))
 const isHTML = computed(() => view.value?.format === 'html')
 const isImage = computed(() => view.value?.format === 'image')
 const fmtSize = (n?: number): string => {
@@ -231,8 +237,14 @@ const fmtSize = (n?: number): string => {
             <div v-for="(w, i) in view.warnings" :key="i">{{ w }}</div>
           </div>
 
+          <!-- D6-2:外部转换器产物(旧 Office → PDF),用原生查看器呈现转换结果 -->
+          <template v-if="convAsset">
+            <iframe class="dp-frame" :src="assetUrl(view.path || curPath, convAsset)" title="转换后 PDF 预览"></iframe>
+            <div class="dp-note">由外部转换器(soffice)转换后预览,版式以转换器为准;「下载」仍给原始文件。</div>
+            <DocBlocks :blocks="view.blocks" :asset-base="assetBase(view.path || curPath)" compact />
+          </template>
           <!-- PDF:浏览器原生查看器(Range);挂载失败/不支持时下方下载入口恒在 -->
-          <template v-if="isPDF">
+          <template v-else-if="isPDF">
             <iframe class="dp-frame" :src="rawUrl(view.path || curPath)" title="PDF 预览"></iframe>
             <div class="dp-note">若此处空白(Linux 桌面壳 WebKitGTK 不支持内嵌 PDF),请用「下载」以本地查看器打开。</div>
           </template>

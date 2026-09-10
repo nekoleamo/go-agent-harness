@@ -155,7 +155,7 @@ func blockText(b *sdk.DocBlock) string {
 // renderDocText 摊平 + 单行截断 + offset/limit 分页 + 输出字节预算。
 func renderDocText(v *sdk.DocView, req sdk.DocRequest, b Budget) *sdk.DocText {
 	raw := renderLines(v)
-	out := &sdk.DocText{Path: v.Path, Format: v.Format, Offset: req.Offset, TotalLines: len(raw)}
+	out := &sdk.DocText{Path: v.Path, Format: v.Format, Offset: req.Offset, TotalLines: len(raw), Meta: v.Meta}
 
 	// 单行字符上限(超长行截断并标记,防单行撑爆预算)
 	lines := make([]string, len(raw))

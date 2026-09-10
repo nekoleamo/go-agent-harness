@@ -149,7 +149,18 @@ func isDangerousInline(mimeType string) bool {
 	return false
 }
 
-// handleDocAsset GET /api/doc/asset?path=&id=:docx/pptx 内嵌图 / markdown 同目录图。
+// docAssetInlineOK 资产端点可内联呈现的 MIME 白名单:图片(排除 svg)+ PDF。
+// PDF 与 /api/doc/raw 的内联查看同风险等级(浏览器原生查看器,无脚本执行面);
+// D6-2 外部转换器产物经此路径呈现(高保真预览档)。
+func docAssetInlineOK(mimeType string) bool {
+	m := strings.ToLower(mimeType)
+	if strings.Contains(m, "svg") || strings.Contains(m, "html") || strings.Contains(m, "javascript") {
+		return false
+	}
+	return strings.HasPrefix(m, "image/") || strings.HasPrefix(m, "application/pdf")
+}
+
+// handleDocAsset GET /api/doc/asset?path=&id=:docx/pptx 内嵌图 / markdown 同目录图 / 转换 PDF。
 func (s *Server) handleDocAsset(w http.ResponseWriter, r *http.Request) {
 	svc, ok := s.docSvc(w)
 	if !ok {
@@ -168,8 +179,8 @@ func (s *Server) handleDocAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rc.Close()
-	// 资产端点 MIME 白名单:仅图片
-	if !strings.HasPrefix(strings.ToLower(mimeType), "image/") || strings.Contains(strings.ToLower(mimeType), "svg") {
+	// 资产端点 MIME 白名单:图片(排除 svg)+ PDF
+	if !docAssetInlineOK(mimeType) {
 		http.Error(w, "资产类型不允许: "+mimeType, http.StatusUnsupportedMediaType)
 		return
 	}

@@ -152,6 +152,8 @@ Document reading subcommand (same level as `web`/`im`; zero assembly, read-only)
 ```bash
 gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B] [--tree] [--depth N]
 # exit codes: 0 ok / 2 usage / 3 unsupported format / 4 over budget / 5 parse failure
+# --convert (optional): with LibreOffice installed, converts legacy binary Office (.doc/.xls/.ppt)
+# to PDF first; artifacts land in $GAH_HOME/cache/doc/ (kept 7 days); failures fall back explicitly
 ```
 
 ## 4. TUI commands

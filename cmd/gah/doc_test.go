@@ -84,3 +84,27 @@ func TestRunDocCmdSuccessAndErrors(t *testing.T) {
 		t.Fatalf("解析失败应退出码 5,得 %d", code)
 	}
 }
+
+// D6-2:--convert 标志可解析(未安装 soffice 时仍显式回退,不静默)。
+func TestDocCmdConvertFlagParses(t *testing.T) {
+	// 文件不存在:应走错误路径(退出码 1),而不是用法错误(2)→ 说明标志被接受
+	if code := runDocCmd([]string{filepath.Join(t.TempDir(), "missing.doc"), "--convert"}); code != 1 {
+		t.Fatalf("--convert 应被接受并走到文件错误路径,得退出码 %d", code)
+	}
+	// 真正的旧 Office 文件:无 soffice 时给出结构化提示(退出码 0,块为提示;不静默失败)
+	dir := t.TempDir()
+	p := filepath.Join(dir, "old.doc")
+	if err := os.WriteFile(p, []byte{0xd0, 0xcf, 0x11, 0xe0}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// 本机通常无 soffice:回退为结构化提示 → 仍是「不支持」语义(退出码 3)。
+	// 若本机装有 LibreOffice 且转换成功,则应退出码 0(内容来自转换产物)。
+	code := runDocCmd([]string{p, "--convert"})
+	if code != 3 && code != 0 {
+		t.Fatalf("--convert 旧 Office 应退出 3(不可用)或 0(转换成功),得 %d", code)
+	}
+	// 未加 --convert:始终 3(默认不启用外部转换器)
+	if code := runDocCmd([]string{p}); code != 3 {
+		t.Fatalf("默认应退出 3,得 %d", code)
+	}
+}

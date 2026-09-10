@@ -153,6 +153,8 @@ export DEEPSEEK_API_KEY=sk-...            # 或 OPENAI_API_KEY / ANTHROPIC_API_K
 ```bash
 gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B] [--tree] [--depth N]
 # 退出码:0 成功 / 2 用法 / 3 不支持格式 / 4 超预算 / 5 解析失败
+# --convert(可选):本机装有 LibreOffice 时,把旧二进制 Office(.doc/.xls/.ppt)转 PDF 再抽取;
+# 产物落 $GAH_HOME/cache/doc/(7 天保留),转换失败显式回退为「不支持」提示
 ```
 
 ## 四、TUI 命令

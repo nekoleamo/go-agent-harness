@@ -169,6 +169,9 @@ type DocText struct {
 	TruncatedByBytes bool         `json:"truncatedByBytes,omitempty"`
 	PDF              *DocPDFFacts `json:"pdf,omitempty"`
 	Warnings         []string     `json:"warnings,omitempty"`
+	// Meta 端无关附加事实(D6-2:preview_via=external-converter 表示内容来自外部转换器
+	// 产物而非源格式本身,CLI 据此判定退出码)。
+	Meta map[string]string `json:"meta,omitempty"`
 }
 
 // DocEntry 文件树条目(工作台左侧树;目录条目也可预览其子项)。

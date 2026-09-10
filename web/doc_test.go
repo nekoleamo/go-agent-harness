@@ -229,13 +229,29 @@ func TestDocAssetMimeWhitelist(t *testing.T) {
 	d2 := &stubDoc{assetData: []byte("%PDF"), assetMime: "application/pdf"}
 	_, hs2 := docTestServer(d2)
 	defer hs2.Close()
-	resp2, err := http.Get(hs2.URL + "/api/doc/asset?path=a.docx&id=abc")
+	resp2, err := http.Get(hs2.URL + "/api/doc/asset?path=a.doc&id=abc")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp2.Body.Close()
-	if resp2.StatusCode != http.StatusUnsupportedMediaType {
-		t.Fatalf("非图片资产应 415,得 %d", resp2.StatusCode)
+	// D6-2:PDF 资产可内联(外部转换器产物走浏览器原生查看器;与 raw 内联同风险等级)
+	if resp2.StatusCode != http.StatusOK || resp2.Header.Get("Content-Type") != "application/pdf" {
+		t.Fatalf("PDF 资产应 200/application-pdf,得 %d/%s", resp2.StatusCode, resp2.Header.Get("Content-Type"))
+	}
+	if resp2.Header.Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatal("资产应带 nosniff")
+	}
+
+	d3 := &stubDoc{assetData: []byte("<svg/>"), assetMime: "image/svg+xml"}
+	_, hs3 := docTestServer(d3)
+	defer hs3.Close()
+	resp3, err := http.Get(hs3.URL + "/api/doc/asset?path=a.docx&id=abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp3.Body.Close()
+	if resp3.StatusCode != http.StatusUnsupportedMediaType {
+		t.Fatalf("svg 资产应 415,得 %d", resp3.StatusCode)
 	}
 }
 

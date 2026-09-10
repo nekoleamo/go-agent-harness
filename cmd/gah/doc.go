@@ -1,9 +1,11 @@
 // `gah doc` 文档阅读 CLI(D 组文档预览 D1;对齐 docs/DOC_PREVIEW_PLAN.md §6.3)。
 //
-//	gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-bytes B] [--tree] [--lines N]
+//	gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-bytes B] [--tree] [--lines N] [--convert]
 //
 // 退出码:0 成功 / 1 其它错误 / 2 用法 / 3 不支持格式 / 4 超预算 / 5 解析失败。
-// 不启动插件装配(纯读命令):直接构造 host-docview 服务(零写盘,不触碰数据根)。
+// 不启动插件装配(纯读命令):直接构造 host-docview 服务。
+// 默认零写盘;**--convert**(D6-2 可选高保真档)启用时,旧二进制 Office 会经本机
+// LibreOffice 转 PDF,产物落 $GAH_HOME/cache/doc/(便携纪律;超 7 天按龄清理)。
 package main
 
 import (
@@ -49,6 +51,7 @@ func runDocCmd(args []string) int {
 	maxInputBytes := fs.Int64("max-input-bytes", 0, "源文件大小上限(0 = 服务默认)")
 	lines := fs.Int("lines", 0, "输出行数上限(0 = 默认)")
 	depth := fs.Int("depth", 2, "--tree 时递归深度(1–4)")
+	convert := fs.Bool("convert", false, "旧二进制 Office(.doc/.xls/.ppt)经本机 LibreOffice 转 PDF 后抽取(需 soffice)")
 	// flag 包在首个位置参数处停止解析,而本命令习惯写 `gah doc <path> --json` →
 	// 预分离「标志(+其值)」与「位置参数」后统一交给 Parse(两类顺序均可)。
 	var flags, pos []string
@@ -76,7 +79,7 @@ func runDocCmd(args []string) int {
 	}
 	path := rest[0]
 
-	svc := hostdocview.New(hostdocview.Options{Home: os.Getenv("GAH_HOME")})
+	svc := hostdocview.New(hostdocview.Options{Home: os.Getenv("GAH_HOME"), ExternalConverters: *convert})
 	ctx := context.Background()
 
 	if *tree {
@@ -111,7 +114,7 @@ func runDocCmd(args []string) int {
 			fmt.Fprintln(os.Stderr, "gah doc:", err)
 			return 1
 		}
-		if v.Format == sdk.DocFormatUnsupported {
+		if v.Format == sdk.DocFormatUnsupported && !docConverted(v.Meta) {
 			fmt.Fprintln(os.Stderr, "gah doc: 不支持预览该格式")
 			return 3
 		}
@@ -137,11 +140,16 @@ func runDocCmd(args []string) int {
 	for _, warn := range tx.Warnings {
 		fmt.Fprintln(os.Stderr, "提示:", warn)
 	}
-	if tx.Format == sdk.DocFormatUnsupported {
+	if tx.Format == sdk.DocFormatUnsupported && !docConverted(tx.Meta) {
 		fmt.Fprintln(os.Stderr, "gah doc: 不支持预览该格式(退出码 3)")
 		return 3
 	}
 	return 0
+}
+
+// docConverted 内容是否来自外部转换器产物(D6-2:源格式仍 unsupported,但已有可读内容)。
+func docConverted(meta map[string]string) bool {
+	return meta != nil && meta["preview_via"] == "external-converter"
 }
 
 // fmtSizeCol 目录树右侧大小列(目录留空)。
