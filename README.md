@@ -207,7 +207,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `subagent` | 子代理委派(delegate/spawn/agents/agent_status/agent_kill/send_message/fork;独立上下文 ReAct,后台带句柄) |
 | `list_skills` / `read_skill` | 技能索引 / 按需加载 SKILL.md(项目 `.gah/skills/`、`$GAH_HOME/skills/`) |
 | `mcp_<server>_<工具>` | MCP 桥工具(GAH_MCP_COMMAND 单 / GAH_MCP_COMMANDS 多 server,见「MCP 接入」) |
-| `im_send` / `im_send_file` / `im_send_page` / `im_status` | **默认关闭**:向**已授权**的 IM 用户/群发消息、发**工作区内文件**(先登记后投递,大小上限 `data.media_max_mb` 默认 20MB)、把 **PDF 页渲染成图片**发送(需 `data.external_raster`)与查询可控状态;启用需 `tool-im` 的 `enabled: true` + `data.enabled: true`,并把 `im_send`/`im_send_file`/`im_send_page` 加入 `policy-guard` 的 `data.approval_tools`(smart 档逐次确认)。**出站文件**:QQ = 官方契约(已交付);微信 = iLink 三段式上传(**beta**,需对方先发过消息以取得 `context_token`;真机核对后转正) |
+| `im_send` / `im_send_file` / `im_send_page` / `im_status` | **默认关闭**:向**已授权**的 IM 用户/群发消息、发**工作区内文件**(先登记后投递,大小上限 `data.media_max_mb` 默认 20MB)、把 **PDF 页渲染成图片**发送(需 `data.external_raster`(本机 poppler)或 `data.selfcontained_raster`(内置 pdfium.wasm 兜底))与查询可控状态;启用需 `tool-im` 的 `enabled: true` + `data.enabled: true`,并把 `im_send`/`im_send_file`/`im_send_page` 加入 `policy-guard` 的 `data.approval_tools`(smart 档逐次确认)。**出站文件**:QQ = 官方契约(已交付);微信 = iLink 三段式上传(**beta**,需对方先发过消息以取得 `context_token`;真机核对后转正) |
 
 ## 六、Web 使用(设置面板/REST)
 
