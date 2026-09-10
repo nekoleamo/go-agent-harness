@@ -447,7 +447,7 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 > | ~~**P1 · DOC-1**~~ ✅ | D6-3 判定 GAP 报告 | ✅ **2026-10-11 已交付**(首轮真实语料 content_gaps=0 → 暂不引依赖) | — | 已收口 | — |
 > | ~~**P2 · MED-1**~~ ✅ | 出站媒体接口 + 产物登记 | ✅ **2026-10-11 已交付**(登记制/越界与限额拒绝/TTL+单次可用/失败回滚) | — | 已收口 | — |
 > | ~~**P2 · RST-1**~~ ✅ | 外部 pdftoppm 光栅 | ✅ **2026-10-11 已交付**(`DocRasterService` + `/api/doc/raster` + `gah doc --raster`;零二进制增量) | — | 已收口 | — |
-> | **P3 · MED-2** E-B QQ | 分片上传 + `msg_type=7` 出站文件 | MED-1 | M | 中(官方契约齐备,mock 可验;真机验收) | 5 |
+> | **P3 · MED-2** E-B QQ | 分片上传 + `msg_type=7` 出站文件 | ✅ MED-1;✅ 契约已复核(`upload_prepare` 字段齐) | M | 中(官方契约齐备,mock 可验;真机验收) | **5(下一步)** |
 > | **P3 · MED-3** E-B 微信 | iLink 上传三段式(加密→CDN→媒体项) | MED-1 | M–L | **高**(仅第三方逆向证据;真机前标 beta) | 6 |
 > | **P3 · RST-2** D6-1b 图片回推 | IM 图片回推(光栅产物 → 通道) | MED-1 + RST-1 | S–M | 中 | 7 |
 > | **P4 · SELF-1** D6-1c 自包含档 | pdfium-WASM + wazero 替换外部光栅 | 有网环境实测 + 体积决策 | M–L | 高(`STANDALONE_WASM` 上游未定;+3～5.5 MiB) | 8 |
