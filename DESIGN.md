@@ -429,6 +429,94 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 >
 > **建议结论(已执行)**:前置件 **E-A / E-C / E-D / E-E 已于 2026-10-11 全部交付**(见各行 ✅ 与下方交付行);**E-B 仍待**(它是 G-E5-1 与 G-D6-1 的共同前置)。下一步可选:G-E5-3(前置已齐,E→S 量级)、G-E5-1a QQ(E-B 后)、G-D6-3(语料已就绪,待用真实富格式样本判判定)、G-D6-1(E-B + 需 wazero/pdfium.wasm 有网实测);G-C2/C3 与 G-X1/X2 保持等外部条件。**明确不做(新登记)**:TUI 位图渲染(D6-1 的 TUI 分支:需从零实现图形协议探测与降级,而 Web 原生查看器已覆盖保真呈现)。
 >
+> ### G 组剩余项实施方案(2026-10-11;分析后定稿,**待决策点确认即开工**)
+>
+> 前置件 E-A/E-C/E-D/E-E 已交付,下列方案的依赖与成本都已实测(证据见上方「评测分析」)。**优先级 = 依赖最少 × 风险最低 × 收益明确**。
+>
+> | 方案 | 交付物 | 依赖 | 量级 | 风险 | 建议顺位 |
+> |---|---|---|---|---|---|
+> | **P1 · IM-1** G-E5-3 远程工具 | `im_send`/`im_status`(默认不注册) | ✅ E-A 审批已就绪 | S | 低(默认关 + 授权目标 + 审批链) | **1** |
+> | **P1 · DOC-1** D6-3 判定 | harness 高级特性 GAP 报告(纯测量) | ✅ E-D harness | S | 极低(不改抽取器) | **2** |
+> | **P2 · MED-1** E-B 接口 | `im.MediaSender` + 产物登记 + 失败可见(mock e2e) | — | M | 中(接口 + 安全口径) | 3 |
+> | **P2 · RST-1** D6-1a 光栅 | 外部 `pdftoppm` 光栅(零体积) | 本机 poppler(已实测可用) | S–M | 低(opt-in + 结构化失败) | 4 |
+> | **P3 · MED-2** E-B QQ | 分片上传 + `msg_type=7` 出站文件 | MED-1 | M | 中(官方契约齐备,mock 可验;真机验收) | 5 |
+> | **P3 · MED-3** E-B 微信 | iLink 上传三段式(加密→CDN→媒体项) | MED-1 | M–L | **高**(仅第三方逆向证据;真机前标 beta) | 6 |
+> | **P3 · RST-2** D6-1b 图片回推 | IM 图片回推(光栅产物 → 通道) | MED-1 + RST-1 | S–M | 中 | 7 |
+> | **P4 · SELF-1** D6-1c 自包含档 | pdfium-WASM + wazero 替换外部光栅 | 有网环境实测 + 体积决策 | M–L | 高(`STANDALONE_WASM` 上游未定;+3～5.5 MiB) | 8 |
+>
+> ---
+>
+> #### P1-1 · IM-1 `im_send` / `im_status`(G-E5-3;**方案要点**)
+>
+> **结构**:新增 `plugins/tool/tool-im`(**默认不注册**,`data.enabled: true` 才注册),不放在 `ui-im-*` 壳内(渠道无关、只依赖一个新的桥服务)。
+> **新服务**(`sdk/im.go` 扩展,可选能力经类型断言发现——对齐 `IMGroupAccessService` 先例):
+>
+> ```go
+> // IMSendTarget 可投递目标(仅已授权者;由实现方从 Access 账本枚举)
+> type IMSendTarget struct { RouteKey, Channel, UserID, ChatID, Label string; Group bool }
+> // IMControlService 供宿主工具/命令使用的受控出站面(实现方 = im.Bridge,由 ui-im-* Provide "ctx.imControl")
+> type IMControlService interface {
+>     Status() IMControlStatus              // 只读:渠道/相位/模型/绑定会话/忙闲/授权数/主动配额余量
+>     Targets() []IMSendTarget              // 仅已授权 SenderKey ∪ 已授权群
+>     SendText(ctx context.Context, target string, text string) (IMSendResult, error) // target 必须 ∈ Targets()
+> }
+> ```
+>
+> **安全口径(硬性)**:① 默认不注册工具(未启用 = 模型完全看不到);② 目标必须在 `Targets()` 内(未授权目标显式报错,不做隐式 fallback 到 `LastRoute`);③ 工具进 `data.approval_tools: [im_send]` → 三档审批默认生效(smart 弹确认含目标+摘要文本);④ 出站仍走通道既有预算层/主动配额/ledger(不新增旁路);⑤ 结果与调用进会话日志(模型可见即已记录)。
+> **切片**:IM-1a `ctx.imControl`(bridge 实现 `Status/Targets/SendText` + 单测:目标枚举只含已授权、未授权拒绝、忙时/去重语义不变);IM-1b `tool-im`(两个工具 + 默认关闭 + 参数校验 + e2e:模型 `im_send` → 目标未授权报错 / 已授权发出 / smart 档需确认);IM-1c 装配(im 系 profile 的 bundle 增 `tool-im` 条目 + `approval_tools` + seed bump;README 双语 + VERIFY)。
+> **验收**:`go test ./tests/ -run TestImSend` 全绿(未授权拒绝/已授权投递/审批拦截);真机:手机收到消息且 IM 侧可见审批卡。
+>
+> #### P1-2 · DOC-1 D6-3 判定(GAP 报告;**不改抽取器**)
+>
+> **做法**:`host-docview` 的保真 harness 增 `capabilityProbe`——**直接读源 OOXML**(zip)统计「源使用了哪些高级特性」,再对照我们输出块模型能表达的信号,打印 `GAP` 行:
+>
+> | 源特性(xlsx) | 探测点 | 我们现状 | 判定 |
+> |---|---|---|---|
+> | 富文本单元格 | `sharedStrings <si>` 内含 `<r>` | 合并为纯文本(丢样式) | 内容不丢,样式丢 → 通常可接受 |
+> | 条件格式 | `conditionalFormatting` | 不表达 | 不影响文本可读性 → 可接受 |
+> | 图表 / 透视 | `charts/*`, `pivotCache*` | 不表达 | **内容不可见的真缺口**(需用户判断) |
+> | 数据校验 / 批注 | `dataValidation`, `comments*` | 不表达 | 中 |
+> | 隐藏行列 / 自动筛选 | `<row hidden>`, `autoFilter` | 不表达 | 低 |
+>
+> docx/pptx 同法(页眉/页脚/批注/域/修订/嵌套表/文本框/OMML 公式/图表)。**输出**:每文件一行 `GAP file=… feature=chart source_hits=1 ours=absent` + 汇总。
+> **验收**:真实富格式样本目录跑一次 → 得到「是否有内容级缺口」的确定答案;据结果决定是否进 D6-3 引入 excelize(引入前须有网实测依赖与体积)。
+>
+> #### P2-1 · MED-1 出站媒体接口(E-B;**方案要点**)
+>
+> **接口**(`im` 运行时,可选能力,不破坏现有 `Transport`):
+>
+> ```go
+> type MediaKind string // image|video|voice|file
+> type MediaPayload struct { Kind MediaKind; Path, Name, Mime string; Size int64 }
+> // MediaSender 可选能力:通道支持出站媒体(未实现 = 工具/命令显式报「该渠道不支持出站文件」)
+> type MediaSender interface {
+>     SendMedia(ctx context.Context, to Route, m MediaPayload) error
+> }
+> ```
+> **产物登记(Artifact Provenance,IM_REMOTE §2 既定口径)**:`im.Bridge.RegisterArtifact(scope Route, absPath string) (id string, err error)`;登记约束 = 常规文件、位于**当前工作区根**内(realpath 前缀校验)、大小 ≤ 上限(`data.im_media_max_mb`,默认 20)、扩展名/MIME 白名单;登记记录 `{id, abs, size, mtime, scope, turnSeq, expires}` 单次可用 + 10 分钟 TTL;**`SendMedia` 只接受已登记 id**(模型不能凭路径外发任意文件)。临时/加密产物一律落 `$GAH_HOME/cache/im/`(便携纪律)。
+> **失败可见**:ledger 扩展为可承载媒体条目(`kind: text|media` + `artifact id` + attempts),被动窗口失效 → 滞留;配额耗尽 → 滞留 + `lastError`;重投带 `♻️ 可能重复`。
+> **切片**:MED-1a 接口 + 登记 + ledger 扩展 + mock 传输测试(未登记拒绝/超限拒绝/越界拒绝/TTL/失败滞留);MED-1b QQ(分片上传:`upload_prepare` → 分片 PUT → `upload_part_finish` → `files{upload_id}` → `msg_type=7 media.file_info`;`file_info` 按 (chat,path,size,mtime) 缓存至 TTL;错误码映射 850031/850019/850026/304080/40034004;单聊/群端点严格分派);MED-1c iLink(`getuploadurl`(filekey/media_type/rawsize/rawfilemd5/filesize/aeskey hex/no_need_thumb)→ AES-128-ECB+PKCS7 → `POST c2c/upload?encrypted_query_param&filekey` → `x-encrypted-param` → `sendmessage` 媒体项(`image_item{media{encrypt_query_param,aes_key=base64(hex),encrypt_type:1},mid_size}` / `file_item{media,file_name,md5,len}`);仅被动窗口内可发(必须有 `context_token`)→ 无 token 时显式失败,不假装成功)。
+> **验收**:两通道 mock e2e(上传请求体/鉴权头/媒体项字段逐一断言;AES 往返用既有 `ilink.DecryptMedia` 自证)+ 真机验收清单(微信/QQ 各 1 条)。
+>
+> #### P2-2 · RST-1 D6-1a 外部光栅(D6-1 的**推荐实现路径**)
+>
+> **分析结论**:D6-1 原本假定必须引 `wazero + pdfium.wasm`(+3～5.5 MiB、`STANDALONE_WASM` 上游未定、需有网实测);但 D6-2 的转换器链已探测 `pdftoppm`,本机实测 `pdftoppm -png -r 96 -f 1 -l 1 x.pdf` → 11.4 KB/页可用 PNG —— **零二进制增量、零新依赖**,保真优于逆向自研光栅。
+> **做法**:`host-docview` 增 `Raster(ctx, req, page, dpi)`(opt-in `data.external_raster: true`;pdftoppm 缺失 → 结构化 unsupported + 安装提示;产物落 `$GAH_HOME/cache/doc/raster/<sha1>-p<page>-<dpi>.png`,7 天按龄清理;超时/尺寸/页数上限);Web 增 `GET /api/doc/raster`(image/png,与 `/api/doc/asset` 同级白名单);**TUI 位图仍不做**(无图形协议,已登记);IM 图片回推见 RST-2。自包含档(SELF-1)仅在"必须零外部依赖部署"时再评估。
+> **验收**:真实 PDF 语料光栅化 + Web 缩略图;无 pdftoppm 环境下的结构化提示。
+>
+> ---
+>
+> **需拍板的决策点(开工前确认)**
+>
+> | # | 决策 | 选项与建议 |
+> |---|---|---|
+> | D1 | `im_send` 默认口径与授权范围 | 建议:**默认不注册**(`data.enabled` 显式开启)+ **仅已授权用户/群**;不做"任意 chatID" |
+> | D2 | 出站文件可投范围 | 建议:仅**本轮显式登记的产物** ∈ 工作区内 + 大小 ≤20 MB(可配)+ 类型白名单 |
+> | D3 | 光栅实现 | 建议:**外部 pdftoppm**(零体积,需本机装 poppler)优先;仅在需要零外部依赖时评估 pdfium-WASM |
+> | D4 | D6-3 门槛 | 建议:先只做 GAP 报告;**出现"内容级缺口"(图表/透视/批注等不可见内容)才引入 excelize** |
+>
+> **本方案明确不做**:TUI 位图渲染(无图形协议;Web 原生查看器 + IM 图片回推已覆盖保真需求)、出站文件"目录扫描式"自动外发(违背 Artifact Provenance 口径)、`im_send` 隐式回落到 `LastRoute`(越权风险)。
+>
 > **当前未实施清单:IM 远程控制线(P0–P3,2026-10-03 登记,规划正文见 docs/IM_REMOTE.md)绝大部分已交付 ✅(2026-10-10 批次,见下)**:P0-2c 微信媒体入站、P1b 出站预算层、P2 可靠投递一期(delivery ledger + 长回合自动转后台 + /bg)、P3 融合核心(confirm-fusion 仲裁 + web/im 并存 + Web 面板 IM 区段 + QQ 键盘 confirm)与 QQ T6 真机清单同批收口;剩余:**QQ T6/§7.8 真机验收(人工,需真实机器人)、P0-2c 出站文件回传(iLink 上传接口真机实测)、P3 ask_user_question 的**多选事件模型增强(question/requested ↔ answer/resolved 的完整 dsh 事件化;当前为工具 + 三端 presenter 管道)**(TUI fusion 接线与结构化提问三端已于 2026-10-10 交付)。
 > ✅ **IM-P0-1 宿主 seam(2026-10-03,IM 线第一步)已交付**:① **ctx.turnControl 回合控制**(host-agent-loop 提供,Provides 增 ctx.turnControl):Run 内部派生可取消 child ctx 并注册(token),回合结束注销;control 并发安全(注册表/快照后解锁调用/幂等);sdk.TurnControl{Running, Cancel};直接构造 Loop 无 tc 场景 nil 兼容(旧测试不破坏);② **job/done 终态事件**(host-jobs SetNotify → c.Emit;每任务完成恰一次,done/failed/killed;载荷 sdk.JobDoneEvent{ID,State},输出经 ctx.jobs.Output 取回不进载荷);③ **web /api/control 补 {cancel}**(经 ctx.turnControl;未装配 503;对齐其它可选服务)。测试:host-agent-loop TestTurnControlCancel(阻塞 LLM 挂起→Cancel→cancelled 收尾→Running 复位)+ TestTurnControlRegistry(注册/取消/注销/幂等);host-jobs TestJobDoneEventNotify(done/failed/killed 各恰一次);web TestControlCancel(200/503);go vet + 全库 `go test ./... -race -count=1` 全绿。动机:IM 远程控制线(P0)前提——此前回合取消无宿主服务(TUI 私藏 cancelFn、web 用 Background ctx 无法取消)、job 完成无事件(只能轮询);该 seam 任何 UI(TUI/Web/IM)共用受益。Web 前端取消按钮留 P1/Web 迭代(端点已可用)。
 > ✅ **IM-P0-2a im 运行时 + mock 全链路(2026-10-03,同批交付)**:新增根下运行时包 `im/`(web/ 先例,只 import sdk;非插件不入 catalogue)——① **域模型与 Transport**:Route(Channel/UserID/ChatID + Key/SenderKey)、Inbound(MsgID/Text)、Transport 接口(SendText 回推,入站逐条 HandleInbound);② **访问控制 Access**(三态 disabled 默认静默 / allowlist / pairing 配对码 1h 过期、同人复用、上限 32 防刷、ApprovePair/Allow/Revoke/List);③ **Bridge 入站管线**(gate → 去重(通道消息 id,5min 窗口)→ 交互归属判定(回合中确认回答先回填,防打断)→ 命令(/stop /im 自处理 + 宿主 ctx.commands 分发)→ 回合驱动(busy 串行回忙提示,queue 留 P1);回合内多步 assistant 经 SessionLog 回放按 seq0 游标聚合**最终一条文本**回推;回合取消经 ctx.turnControl(/stop));④ **IM ConfirmService**(实现 sdk.ConfirmService,plugin 壳 Provide ctx.confirm):确认推给当前回合归属用户 + pending 按会话归属,文字回答 y/批准/n/拒绝 回填,未识别词提示继续等待,ctx 超时安全拒绝;⑤ **RegisterCommands**(/stop、/im status|pair|list 注册进宿主 ctx.commands,Disposer 撤销);⑥ **配套修复:policy-guard ctx.confirm 注入时序 bug**——Start 一次性注入会因 ctx.confirm 由 UI/IM 插件后启动(拓扑无约束)恒为 nil,smart 档永远无通道拒绝;改 tools/pre-execute 每次现取(未装配仍安全拒绝,语义不变)。**测试**:im 单测 9 项(gate 静默/聚合/busy/confirm 批准拒绝与未识别提示/stop 转发/pairing 流程/去重/im status/词表)+ tests/im_e2e_test(真实宿主装配:ApproveFlow(危险命令确认→y→执行→回推)、DenyFlow(拒绝=veto 工具、tool/result Error 入会话、回合由模型继续——gah 语义)、UnknownUserBlocked、HostCommandsRegistered);policy 时序由 e2e 后注入 ctx.confirm 证明生效。**安全语义记录**:smart 档用户拒绝 = 该工具调用被 veto 且错误回传模型(模型可解释修正),不中断回合;硬中断由 strict 档承担。全库 `-race` 绿。真实通道(ilink/qqbot)与插件壳归 P0-2b。
