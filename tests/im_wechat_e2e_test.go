@@ -6,6 +6,7 @@ package tests
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -26,13 +27,19 @@ import (
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
-// wechatMock iLink 服务器:getupdates 可编程(首条入站);sendmessage/sendtyping 收集。
+// wechatMock iLink 服务器:getupdates 可编程(首条入站);sendmessage/sendtyping 收集;
+// MED-3:getuploadurl + c2c/upload 构成出站媒体三段式(假 CDN,回 upload_full_url 走 v2.1+ 分支)。
 type wechatMock struct {
 	mu          sync.Mutex
 	updates     []map[string]any
 	sendMsgs    []map[string]any
 	typingShows int           // sendtyping status=1(show)次数
 	notify      chan struct{} // sendmessage 到达通知
+
+	// MED-3 出站媒体收集(三段式第 1/2 步)
+	uploadReqs []map[string]any // getuploadurl 请求体(密文大小/密钥/md5 断言)
+	cdnBodies  [][]byte         // CDN 收到的密文
+	cdnQueries []string         // CDN 上传完整查询串(校验 upload_full_url 原样使用)
 }
 
 func newWechatMock(t *testing.T) (*wechatMock, *httptest.Server) {
@@ -64,6 +71,23 @@ func newWechatMock(t *testing.T) (*wechatMock, *httptest.Server) {
 			w.Write([]byte(`{"ret":0}`))
 		case "/ilink/bot/getconfig":
 			w.Write([]byte(`{"ret":0,"ilink_user_id":"u","typing_ticket":"tkt-e2e"}`))
+		case "/ilink/bot/getuploadurl":
+			var body map[string]any
+			json.NewDecoder(r.Body).Decode(&body)
+			m.mu.Lock()
+			m.uploadReqs = append(m.uploadReqs, body)
+			m.mu.Unlock()
+			// v2.1+ 形态:直接给完整上传 URL(避免 e2e 打真实 CDN)
+			host := r.Host
+			fmt.Fprintf(w, `{"ret":0,"upload_full_url":"http://%s/c2c/upload?token=e2e"}`, host)
+		case "/c2c/upload":
+			b, _ := io.ReadAll(r.Body)
+			m.mu.Lock()
+			m.cdnBodies = append(m.cdnBodies, b)
+			m.cdnQueries = append(m.cdnQueries, r.URL.RawQuery)
+			m.mu.Unlock()
+			w.Header().Set("x-encrypted-param", "enc-e2e")
+			w.Write([]byte("ok"))
 		case "/ilink/bot/sendtyping":
 			var bd struct {
 				Status int `json:"status"`
