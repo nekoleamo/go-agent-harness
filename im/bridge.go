@@ -874,7 +874,8 @@ func (b *Bridge) RegisterCommands(cmds sdk.CommandRegistry) (sdk.Disposer, error
 				}
 			}},
 			{FreeArgs: func(picked []string) []string {
-				if len(picked) > 0 && picked[0] == "pair" {
+				// picked = [命令名, 第一级值, ...](picked[0] 恒为命令名)
+				if len(picked) >= 2 && picked[1] == "pair" {
 					return []string{"配对码"}
 				}
 				return nil

@@ -328,10 +328,14 @@ func TestIMCommandsSubLevels(t *testing.T) {
 	if !imVals["status"] || !imVals["list"] || !imVals["pair"] {
 		t.Fatalf("/im 二级选项应含 status/list/pair: %+v", imVals)
 	}
-	if got := imCmd.Args[1].FreeArgs([]string{"pair"}); len(got) != 1 || got[0] != "配对码" {
+	// picked 语义 = [命令名, 第一级值, ...](回归:曾误用 picked[0])
+	if got := imCmd.Args[1].FreeArgs([]string{"im", "pair"}); len(got) != 1 || got[0] != "配对码" {
 		t.Fatalf("pair 应要求配对码自由参数: %+v", got)
 	}
-	if got := imCmd.Args[1].FreeArgs([]string{"status"}); got != nil {
+	if got := imCmd.Args[1].FreeArgs([]string{"im", "status"}); got != nil {
 		t.Fatalf("status 路径不应有额外参数: %+v", got)
+	}
+	if got := imCmd.Args[1].FreeArgs([]string{"im", "list"}); got != nil {
+		t.Fatalf("list 路径不应有额外参数: %+v", got)
 	}
 }

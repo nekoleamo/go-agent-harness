@@ -13,7 +13,9 @@ type CommandSpec struct {
 	// TimeoutMs 外部命令执行/枚举选项 RPC 超时(毫秒,M14 外部命令桥);0 = 宿主全局默认。
 	TimeoutMs int64
 	// Args 参数级联定义(交互式选择器):每级为枚举级(Options)或自由级
-	// (FreeArgs,需手动输入)之一;picked 为前几级已选值(运行时动态求值,
+	// (FreeArgs,需手动输入)之一;picked 为【命令名 + 前几级已选值】的切片,
+	// 即 picked[0] 恒为命令名、picked[1] 为第一级值、picked[2] 为第二级值……
+	// (运行时动态求值,
 	// 如插件/任务列表)。枚举选完 → 下一级;自由级 → 断点回输入框补参
 	// (提示继续输入);无定义级 → 直接执行。零值 = 无参数级。
 	Args []ArgLevel
@@ -26,9 +28,11 @@ type CommandSpec struct {
 // baseUrl/apiKey/model?):每 Enter 确认一个值并提示下一参数;名尾 '?' = 可选参数
 // (须为序列最后一项,空回车跳过);单个名保持一次性断点输入(旧行为)。
 type ArgLevel struct {
-	// Options 枚举选项(可空:该级非枚举);picked 为前几级已选值。
+	// Options 枚举选项(可空:该级非枚举);picked 见 CommandSpec.Args 说明
+	// (picked[0]=命令名,picked[1..]=前几级值)。
 	Options func(picked []string) []Option
-	// FreeArgs 自由参数名列表(可空);picked 同。非空 = 用户需手动输入这些参数。
+	// FreeArgs 自由参数名列表(可空);picked 同(见 CommandSpec.Args)。
+	// 非空 = 用户需手动输入这些参数;返回多个名 = 逐级输入序列(每 Enter 确认一个)。
 	FreeArgs func(picked []string) []string
 }
 

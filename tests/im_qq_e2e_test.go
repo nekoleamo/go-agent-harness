@@ -866,12 +866,16 @@ func TestIMQQCommandSubLevels(t *testing.T) {
 	if !vals["status"] || !vals["login"] {
 		t.Fatalf("/qq 二级选项应含 status/login: %+v", vals)
 	}
-	got := qc.Args[1].FreeArgs([]string{"login"})
+	// picked 语义 = [命令名, 第一级值, ...](回归:曾误用 picked[0] 致二级永不出现)
+	got := qc.Args[1].FreeArgs([]string{"qq", "login"})
 	if len(got) != 2 || got[0] != "AppID" || got[1] != "AppSecret" {
 		t.Fatalf("login 路径应要求 AppID/AppSecret: %+v", got)
 	}
-	if got := qc.Args[1].FreeArgs([]string{"status"}); got != nil {
+	if got := qc.Args[1].FreeArgs([]string{"qq", "status"}); got != nil {
 		t.Fatalf("status 路径不应有额外参数: %+v", got)
+	}
+	if got := qc.Args[1].FreeArgs([]string{"qq"}); got != nil {
+		t.Fatalf("仅命令名(未选级)不应返回参数: %+v", got)
 	}
 }
 

@@ -160,7 +160,8 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 					}
 				}},
 				{FreeArgs: func(picked []string) []string {
-					if len(picked) > 0 && picked[0] == "login" {
+					// picked = [命令名, 第一级值, ...](picked[0] 恒为命令名)
+					if len(picked) >= 2 && picked[1] == "login" {
 						return []string{"AppID", "AppSecret"}
 					}
 					return nil // status:无参数,直接执行
