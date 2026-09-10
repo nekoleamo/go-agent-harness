@@ -3,6 +3,7 @@
 //   - QR 登录:GET ilink/bot/get_bot_qrcode?bot_type=3 + GET ilink/bot/get_qrcode_status?qrcode=<t>
 //   - 收:POST ilink/bot/getupdates(HTTP 长轮询 ~35s,带 get_updates_buf 断点续传)
 //   - 发:POST ilink/bot/sendmessage(纯文本 item;context_token 回显;client_id 幂等去重)
+//   - 出站媒体(MED-3,beta):POST ilink/bot/getuploadurl → AES-128-ECB 加密上传 CDN → 媒体项 sendmessage(见 upload.go)
 //   - typing:POST ilink/bot/getconfig(取 typing_ticket)+ POST ilink/bot/sendtyping
 //
 // 鉴权头:AuthorizationType: ilink_bot_token + Authorization: Bearer <token> + X-WECHAT-UIN(base64 uint32)。
@@ -53,6 +54,7 @@ type Client struct {
 	BaseURL string
 	Token   string
 	HTTP    *http.Client // 零超时;每请求经 ctx 控制(长轮询需 ~35s)
+	CDNURL  string       // 媒体上传 CDN 端点(空 = DefaultCDNURL;见 upload.go)
 }
 
 // New 构造客户端。token 为空 = 未登录。

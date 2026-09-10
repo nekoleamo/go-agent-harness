@@ -2,7 +2,8 @@
 // 接入 im.Bridge——transport(poll loop:getupdates 长轮询 → im.HandleInbound;SendText → sendmessage,
 // context_token 按用户缓存回显) + 装配(注入 loop/sessions → im.New → Provide ctx.confirm +
 // 注册 /stop、/im(桥)+ /wechat login|status(通道命令))。凭证入 $GAH_HOME/config/ilink-wechat.yaml。
-// 安全:默认 pairing(登录成功自动授权扫码者);allowlist 经 store 持久。媒体 CDN 留 P0-2c。
+// 安全:默认 pairing(登录成功自动授权扫码者);allowlist 经 store 持久。
+// 入站媒体 CDN 下载已交付(P0-2c);出站媒体 MED-3(beta)见 media.go。
 package uimwechat
 
 import (
@@ -309,6 +310,8 @@ type wechatTransport struct {
 	conn        sdk.IMConnectStatus // E0/E1:连接卡相位 + 当前二维码(过期自动重取时刷新)
 	autoRelogin bool                // 会话过期时自动清理失效凭证并发起重新扫码(data.auto_relogin,默认 true)
 	typingCtl   context.CancelFunc  // 回合进行中的 typing 周期刷新控制器(回合结束取消)
+
+	mediaAPIOverride wechatMediaAPI // 出站媒体客户端替身(仅测试注入;MED-3)
 }
 
 func (t *wechatTransport) Name() string { return t.name }
