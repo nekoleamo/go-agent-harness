@@ -23,6 +23,7 @@ import (
 
 	pdf "github.com/Detective-XH/gopdf"
 
+	"github.com/nekoleamo/go-agent-harness/plugins/host/host-docview/pdfium"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -88,6 +89,13 @@ type Options struct {
 	ExternalConverters bool
 	// ExternalRaster 启用外部光栅(D6-1a/RST-1:pdftoppm → PNG;默认关闭)。
 	ExternalRaster bool
+	// SelfContainedRaster 启用自包含光栅(SELF-1 路线 B:pdfium.wasm + wazero 兜底;默认关闭)。
+	// pdftoppm 可用时优先走外部路径(结果与 poppler 交叉核对更可靠)。
+	SelfContainedRaster bool
+	// PDFiumWASMPath 本地 pdfium.wasm 路径(空 = 用 $GAH_HOME/cache/pdfium 缓存或按 URL 取件)。
+	PDFiumWASMPath string
+	// PDFiumWASMURL 取件地址(空 = pdfium.DefaultWASMURL;仅在缓存未命中时使用)。
+	PDFiumWASMURL string
 	// Converter 注入的转换器(单测用;零值 = 按 ExternalConverters + Home 探测)。
 	Converter *converter
 }
@@ -116,6 +124,7 @@ type Service struct {
 	extractors map[sdk.DocFormat]extractor
 	pending    map[sdk.DocFormat]string // 未交付格式 → 计划切片(显式提示用)
 	conv       converter                // D6-2 外部转换器(默认关闭)
+	self       *selfRaster              // SELF-1 自包含光栅(默认关闭)
 
 	assets map[string]assetRef
 }
@@ -159,6 +168,18 @@ func New(o Options) *Service {
 	if o.ExternalRaster {
 		s.conv.rasterOn = true
 	}
+	// SELF-1:自包含光栅后端(懒加载 wasm/运行时;缓存目录与 RST-1 同一根)
+	path := o.PDFiumWASMPath
+	if path == "" {
+		path = os.Getenv("GAH_PDFIUM_WASM")
+	}
+	url := o.PDFiumWASMURL
+	if url == "" {
+		url = os.Getenv("GAH_PDFIUM_WASM_URL")
+	}
+	s.self = &selfRaster{enabled: o.SelfContainedRaster || envBool("GAH_SELF_CONTAINED_RASTER"),
+		src:   pdfium.Source{Path: path, URL: url, Home: o.Home},
+		cache: filepath.Join(s.conv.cacheDir, "raster")}
 	return s
 }
 
@@ -207,14 +228,38 @@ func (s *Service) applyData(data map[string]any) {
 	}
 	// D6-1a/RST-1:外部光栅开关(默认关闭;data.external_raster=true 且本机有 pdftoppm 才可用)
 	if v, ok := data["external_raster"]; ok {
-		switch b := v.(type) {
-		case bool:
-			s.conv.rasterOn = b
-		case string:
-			s.conv.rasterOn = strings.EqualFold(strings.TrimSpace(b), "true")
+		s.conv.rasterOn = truthy(v)
+	}
+	// SELF-1:自包含光栅开关与取件配置(默认关闭;pdftoppm 可用时优先)
+	if s.self != nil {
+		if v, ok := data["selfcontained_raster"]; ok {
+			s.self.enabled = truthy(v)
+		}
+		if v, ok := data["pdfium_wasm_path"].(string); ok && strings.TrimSpace(v) != "" {
+			s.self.src.Path = strings.TrimSpace(v)
+		}
+		if v, ok := data["pdfium_wasm_url"].(string); ok && strings.TrimSpace(v) != "" {
+			s.self.src.URL = strings.TrimSpace(v)
 		}
 	}
 }
+
+// truthy 配置布尔宽容解析(bool / "true" / "1" / "yes")。
+func truthy(v any) bool {
+	switch b := v.(type) {
+	case bool:
+		return b
+	case string:
+		switch strings.ToLower(strings.TrimSpace(b)) {
+		case "true", "1", "yes", "on":
+			return true
+		}
+	}
+	return false
+}
+
+// envBool 环境变量布尔(仅显式真值;用于部署侧快捷开关)。
+func envBool(key string) bool { return truthy(os.Getenv(key)) }
 
 // Budget 返回生效预算(web 端点/工具展示与单测用)。
 func (s *Service) Budget() Budget { return s.budget }
@@ -325,8 +370,8 @@ func (s *Service) Raster(ctx context.Context, req sdk.DocRequest, page, dpi int)
 		return nil, fmt.Errorf("%w: 仅支持 PDF 光栅(当前 %s);旧 Office 可先用 external_converters 转 PDF",
 			sdk.ErrDocUnsupported, format)
 	}
-	if !s.conv.rasterUsable() {
-		return nil, fmt.Errorf("%w: 外部光栅未启用(需 data.external_raster=true 且本机安装 poppler pdftoppm)",
+	if !s.conv.rasterUsable() && !s.self.usable() {
+		return nil, fmt.Errorf("%w: 光栅未启用(需 data.external_raster=true 且本机安装 poppler pdftoppm,或 data.selfcontained_raster=true 使用内置 pdfium.wasm)",
 			sdk.ErrDocUnsupported)
 	}
 	if page <= 0 {
@@ -339,7 +384,15 @@ func (s *Service) Raster(ctx context.Context, req sdk.DocRequest, page, dpi int)
 		}
 	}
 	d := clampDPI(dpi)
-	pngPath, err := s.conv.rasterPDF(ctx, abs, fi.Size(), fi.ModTime().UnixNano(), page, d)
+	var pngPath, warn string
+	if s.conv.rasterUsable() {
+		pngPath, err = s.conv.rasterPDF(ctx, abs, fi.Size(), fi.ModTime().UnixNano(), page, d)
+	} else {
+		pngPath, warn, err = s.self.renderPDF(ctx, abs, fi.Size(), fi.ModTime().UnixNano(), page, d)
+		if warn != "" {
+			s.log.Warn("自包含光栅告警", "file", filepath.Base(abs), "page", page, "warn", warn)
+		}
+	}
 	if err != nil {
 		if strings.Contains(err.Error(), "过大") {
 			return nil, fmt.Errorf("%w: %v", sdk.ErrDocTooLarge, err)

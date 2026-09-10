@@ -57,6 +57,12 @@ entries:
       # D6-1a/RST-1 可选光栅档(默认关闭):本机装有 poppler(pdftoppm)时,把 PDF 页渲染成
       # PNG(Web /api/doc/raster、gah doc --raster);产物落 $GAH_HOME/cache/doc/raster/。
       # external_raster: true
+      # SELF-1 可选自包含光栅档(默认关闭):未装 poppler 的部署用内置 pdfium.wasm + wazero
+      # 兜底(pdftoppm 可用时仍优先外部路径)。wasm 取件顺序:pdfium_wasm_path → 本地
+      # $GAH_HOME/cache/pdfium/pdfium.wasm → 按 pdfium_wasm_url 下载(sha256 固定,一次性)。
+      # selfcontained_raster: true
+      # pdfium_wasm_path: /path/to/pdfium.wasm   # 随部署附带(离线)
+      # pdfium_wasm_url: https://...             # 默认 pdfium-lib release 的 wasm.zip
   - id: host-usage-stats
     # 会话 token 统计(ctx.usageStats):状态栏显示上下文使用率/缓存命中率。
     # 上下文窗口解析链:data.context_window(统一覆盖)> data.model_windows(按模型名前缀覆盖,

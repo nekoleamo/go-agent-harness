@@ -52,7 +52,8 @@ func runDocCmd(args []string) int {
 	lines := fs.Int("lines", 0, "输出行数上限(0 = 默认)")
 	depth := fs.Int("depth", 2, "--tree 时递归深度(1–4)")
 	convert := fs.Bool("convert", false, "旧二进制 Office(.doc/.xls/.ppt)经本机 LibreOffice 转 PDF 后抽取(需 soffice)")
-	raster := fs.Bool("raster", false, "PDF 页光栅化为 PNG(RST-1;需本机 poppler pdftoppm)")
+	raster := fs.Bool("raster", false, "PDF 页光栅化为 PNG(RST-1;优先本机 poppler pdftoppm)")
+	selfRaster := fs.Bool("raster-self", false, "PDF 页光栅化:未装 poppler 时用内置 pdfium.wasm 自包含兜底(SELF-1;可用 GAH_PDFIUM_WASM 指定本地 wasm)")
 	dpi := fs.Int("dpi", 0, "--raster 渲染 DPI(默认 96;区间 36–300)")
 	outPath := fs.String("o", "", "--raster 输出文件(默认写 stdout)")
 	// flag 包在首个位置参数处停止解析,而本命令习惯写 `gah doc <path> --json` →
@@ -84,6 +85,9 @@ func runDocCmd(args []string) int {
 
 	svc := hostdocview.New(hostdocview.Options{
 		Home: os.Getenv("GAH_HOME"), ExternalConverters: *convert, ExternalRaster: *raster,
+		SelfContainedRaster: *selfRaster || *raster, // 给 --raster 带上兜底:装 poppler 时优先外部路径
+		PDFiumWASMPath:      os.Getenv("GAH_PDFIUM_WASM"),
+		PDFiumWASMURL:       os.Getenv("GAH_PDFIUM_WASM_URL"),
 	})
 	ctx := context.Background()
 
@@ -107,7 +111,7 @@ func runDocCmd(args []string) int {
 	}
 
 	req := sdk.DocRequest{Path: path, Page: *page, Sheet: *sheet, MaxBytes: *maxBytes, MaxInputBytes: *maxInputBytes, Limit: *lines}
-	if *raster {
+	if *raster || *selfRaster {
 		rs, ok := any(svc).(sdk.DocRasterService)
 		if !ok {
 			fmt.Fprintln(os.Stderr, "gah doc: 光栅能力不可用")
