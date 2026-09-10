@@ -206,6 +206,19 @@ const fmtSize = (n?: number): string => {
             </span>
             <a class="t-dl" :href="rawUrl(view.path || curPath, true)" download>下载</a>
           </div>
+          <!-- xlsx 工作表标签(多表切换;隐藏表标注) -->
+          <div v-if="view.sheets && view.sheets.length > 1" class="dp-sheets">
+            <button
+              v-for="(s, si) in view.sheets"
+              :key="si"
+              class="dp-sheet"
+              :class="{ on: si === sheet }"
+              :data-tip="s.rows + ' 行 × ' + s.cols + ' 列'"
+              @click="sheet = si"
+            >
+              {{ s.name }}<span v-if="s.hidden" class="h">隐藏</span>
+            </button>
+          </div>
           <div v-if="view.truncated && view.truncated.length" class="dp-bar trunc">
             已按预算截断:{{ view.truncated.join(' , ') }}
           </div>
@@ -372,6 +385,35 @@ const fmtSize = (n?: number): string => {
 }
 .t-dl:hover {
   text-decoration: underline;
+}
+.dp-sheets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.dp-sheet {
+  background: var(--bg2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-input);
+  color: var(--fg-dim);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 3px 10px;
+}
+.dp-sheet:hover {
+  border-color: var(--line-strong);
+  color: var(--fg);
+}
+.dp-sheet.on {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.dp-sheet .h {
+  margin-left: 4px;
+  font-size: 10px;
+  color: var(--fg-faint);
 }
 .dp-bar {
   font-size: 12px;
