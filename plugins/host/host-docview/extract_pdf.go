@@ -143,7 +143,7 @@ func extractPDF(ctx context.Context, s *Service, abs string, fi os.FileInfo, req
 					if i >= s.budget.MaxTableCols {
 						break
 					}
-					txt := truncCell(c, s.budget.MaxCellChars)
+					txt := normalizeCJKRadicals(truncCell(c, s.budget.MaxCellChars))
 					tblByCell[strings.TrimSpace(txt)] = true
 					cells = append(cells, sdk.DocCell{Text: txt, Numeric: isNumeric(txt)})
 				}
@@ -186,7 +186,7 @@ func extractPDF(ctx context.Context, s *Service, abs string, fi os.FileInfo, req
 				if tblByCell[text] {
 					continue
 				}
-				blk := sdk.DocBlock{Kind: sdk.DocBlockParagraph, Page: pn, Text: normalizeNewlines(text)}
+				blk := sdk.DocBlock{Kind: sdk.DocBlockParagraph, Page: pn, Text: normalizeCJKRadicals(normalizeNewlines(text))}
 				if looksLikeHeading(b, domSize) {
 					blk.Kind = sdk.DocBlockHeading
 					blk.Level = 2 // 无版式语义时不猜级别(避免假 h1)
@@ -294,7 +294,7 @@ func appendTextBlock(blocks []sdk.DocBlock, s *Service, page int, text string, t
 		if p == "" || tblByCell[p] {
 			continue
 		}
-		blocks = append(blocks, sdk.DocBlock{Kind: sdk.DocBlockParagraph, Page: page, Text: p})
+		blocks = append(blocks, sdk.DocBlock{Kind: sdk.DocBlockParagraph, Page: page, Text: normalizeCJKRadicals(p)})
 		if len(blocks) >= s.budget.MaxBlocks {
 			break
 		}
