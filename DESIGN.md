@@ -376,7 +376,7 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 > |---|---|---|---|---|---|
 > | **D6-1(E1)** | pdfium-on-WASM 光栅 | ✅ **主力路径已由 RST-1 交付**(外部 pdftoppm:零体积、契约 `DocRasterService` 已就位);余下仅 **SELF-1 自包含档**(⏸ 暂存)(**有网实测已完成 2026-10-11**:功能可行、与 poppler 仅差抗锯齿;**+cost≈5.5 MiB 破当前体积门 + `invoke_*` 无法忠实实现**——见下方「SELF-1 前置实测」) | `MediaSender` 落地 + ~~有网实测~~(✅ 已完成);余阻塞 = 降体路径/体积门决策 | M–L | 📊 **评测见上**;**TUI 位图明确不做**(无图形协议) | **评测(见下方「G 组剩余项评测分析」)**:被依赖阻塞 + 破体积门;TUI 无图形协议支持 → TUI 位图**新登记不做**;建议仅在 E-B/E-C 完成后评估 IM 缩略图分支
 > | ~~**D6-2(E2)**~~ ✅ | 外部转换器探测 | ✅ **已交付 2026-10-11**:`converter.go`(PATH 探测 soffice/libreoffice/pdftoppm;**默认关闭** `data.external_converters`)+ `--headless --convert-to pdf` → D4 PDF 抽取 + 产物落 `$GAH_HOME/cache/doc/`(sha1 复用名,7 天按龄清理,30s 超时,200MiB 上限)+ Web 原生查看器(资产端点放行 `application/pdf`)+ 失败显式回退 + `gah doc --convert` | — | ✅ 已收口 |
-> | **D6-3(E3)** | 引入 `excelize` 替代自研 xlsx | ✅ **判定已定(2026-10-11,见下方「D6-3 判定实测」)**:高级特性语料跑出 content=5(**批注/回复式批注/文本框/内嵌图/图表/透视**);结论 = **不引入 excelize**,改为零依赖窄修(登记 **DOC-2**) | ~~仅当出现 content 级缺口才评估~~(✅ 已出现);引入前须有网实测依赖与体积 | M | ✅ **判定完成:不引入**(见下方实测);改为零依赖窄修 DOC-2 | 📊 **评测(2026-10-11 实测定论)**:触发条件**成立**(高级特性语料 content=5);但图表/透视属**视觉性损失而数据仍在单元格**(接受),真丢文本者=批注/回复式批注/文本框,可零依赖修;excelize 不渲染图表且需新增 x/crypto·x/image(体积门冲突)
+> | **D6-3(E3)** | 引入 `excelize` 替代自研 xlsx | ✅ **判定已定(2026-10-11,见下方「D6-3 判定实测」)**:高级特性语料跑出 content=5(**批注/回复式批注/文本框/内嵌图/图表/透视**);结论 = **不引入 excelize**,改为零依赖窄修(✅ **DOC-2 已交付 2026-10-11**,复验 content_gaps=0) | ~~仅当出现 content 级缺口才评估~~(✅ 已出现);引入前须有网实测依赖与体积 | M | ✅ **判定完成:不引入**(见下方实测);✅ **窄修 DOC-2 已交付**(content_gaps=0) | 📊 **评测(2026-10-11 实测定论)**:触发条件**成立**(高级特性语料 content=5);但图表/透视属**视觉性损失而数据仍在单元格**(接受),真丢文本者=批注/回复式批注/文本框,可零依赖修;excelize 不渲染图表且需新增 x/crypto·x/image(体积门冲突)
 > | ~~**D6-4**~~ ✅ | HTML 预览收口 | ① **HTML 源码视图块模型已交付**(`extract_html.go`:`<title>` 提取(实体解码/空白折叠/200 字上限)+ 单 `code` 块(零 HTML 通道)+ 含 `<script>`/内联事件时显式告警;`pending` 表清零)② **门控已交付**(DocPanel 默认源码,「沙箱预览」按钮显式点击才挂载 `sandbox=""` iframe;切文件/切工作区重置回源码) | — | ✅ 2026-10-11 已交付 |
 > | **E5-1(P0-2c)** | 出站文件回传 | ✅ **E5-1a QQ 已交付(MED-2,2026-10-11)**:四步分片上传 + `msg_type=7`;✅ **E5-1b 微信已交付(MED-3,beta,2026-10-11)**:iLink 三段式(`getuploadurl` → AES-128-ECB 加密上传 CDN → 媒体项 `sendmessage`) | iLink 上传客户端(加密→CDN→媒体项)+ 真机验收 | M | ✅ 两通道均已收口;⏸ 微信侧待真机(核对 `x-encrypted-param` 与媒体项字段) | 📊 **评测**:E5-1a QQ = 官方契约(可直接实现);E5-1b 微信 = 第三方逆向证据(已按 §9.2 逐字段实装,实施即标 beta)
 > | ~~**E5-2**~~ ✅ | 群维度授权完善 | ✅ **已交付 2026-10-11**:`sdk.IMGroupAccessService` + `Bridge.Groups/SetGroupAccess`(合并账本/授权幂等/撤销未知报错)+ 活动记录 TTL 7 天与容量 20(**授权名单不自动过期**,Stale 标记提示清理)+ `GET/POST /api/im/groups` + 面板「群授权」区段 + `/im list` 走同一账本 | — | ✅ 已收口 |
@@ -456,11 +456,12 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 > | ~~**P3 · MED-3**~~ ✅ E-B 微信 | iLink 上传三段式(加密→CDN→媒体项) | ✅ **2026-10-11 已交付(beta)**:`ilink/upload.go` 三段式 + ui-im-wechat `im.MediaSender`;契约逐字段对照 docs/IM_REMOTE §9.4 | M–L | ✅ **已实施**(仅第三方逆向证据 → 标记 beta;真机核对 `x-encrypted-param`/媒体项字段后转正) | 已收口(真机待验) |
 > | ~~**P3 · RST-2**~~ ✅ | IM 图片回推 | ✅ **2026-10-11 已交付**(`im_send_page` + 光栅窄白名单;端到端闭环) | — | 已收口 | — |
 > | **P4 · SELF-1** D6-1c 自包含档 | pdfium-WASM + wazero 替换外部光栅 | ✅ **实测已完成(2026-10-11,含 wazero 上跑通 + 与 poppler 像素对照)**;余 = ~~有网实测~~ + **体积门决策**(+5.5 MiB → ≈46.2 MiB 越门) | M | ⏸ **暂存**:残留风险 = `invoke_*`(wazero 无 table/函数引用 API,只能 stub)与体积门;**仅当需要「零外部依赖部署」时才做**(当前外部 pdftoppm 路径已覆盖功能) | 8 |
-> | **P5 · DOC-2** D6-3 窄修 | xlsx 批注(legacy+回复式)/文本框文本 → note + `xl/media/*` 复用 `DocAsset` + 隐藏行提示;探针 `ours` 同步 | ✅ D6-3 判定已完成(2026-10-11:内容级缺口确认 + 逐项研判) | S–M | 🧭 **待执行**(零依赖;完成后 harness content_gaps 应清零,仅余图表/透视的视觉性损失) |
+> | ~~**P5 · DOC-2**~~ ✅ D6-3 窄修 | xlsx 批注(legacy+回复式)/文本框文本 → note + `xl/media/*` 复用 `DocAsset` + 隐藏行/列提示;探针档位同步 | ✅ **2026-10-11 已交付**:`extract_xlsx_extra.go` + 4 组单测;语料 strict 复验 `content_gaps=0` | 已收口(图表/透视的视觉性损失登记为接受) |
 >
 > ---
 >
-> #### D6-3 判定实测(2026-10-11;结论 = **不引入 excelize**,改零依赖窄修 → 新登记 DOC-2)
+> ✅ **DOC-2 · xlsx 批注/文本框/内嵌图片/隐藏行列(2026-10-11 已交付;零依赖)**:① **批注**:`extract_xlsx_extra.go` 解析 legacy `xl/comments*.xml`(作者名经 `<authors>` 索引回填、多 run 文本拼接为一条)+ 现代回复式批注 `xl/threadedComments/*`(经 `xl/persons/person.xml` 显示名,同单元格回复串合并并标注「(回复)」)→ **note 块**(文本可见,与 docx「批注仅告警」不同)。② **文本框**:`xl/drawings/*.xml` 的 `xdr:txBody` 文字(同一文本框多段落合并)→ note 块。③ **内嵌图片**:`xl/media/*` → image 块 + `DocAsset`(**复用 docx 的资产预算链路**:张数/字节超限 → 占位 + 告警),尺寸经 `imageDims` 探测。④ **隐藏行/列**:`xlsxSheetSize` 扫描顺带统计(原签名 `(rows,cols)` → `(rows,cols,hiddenRows,hiddenCols)`)→ note + warning(此前内容照常显示但**无任何提示**)。⑤ **探针同步**:`chart`/`pivotTable` 由 content 降为 **style**(实测数据/结果仍在单元格,视觉性损失)、`comments`/`threadedComments`/`textBox`/`image` → `info+supported`、`hiddenRowCol` → `warned`,并加**回归断言**(xlsx 探测表不得再出现 content 档)。⑥ **测试**:新增 4 组(四类内容可见(含作者/多 run/多段落/尺寸/资产可取回)、仅当前表不串味、图片超预算占位、坏部件容错不 panic)+ 探针单测更新;语料复验 `GAH_DOC_CORPUS_GAP_STRICT=1` **通过**(`content_gaps=0`;`advanced-all.xlsx` 块数 2→6 / chars 97→207)。**范围外(未登记)**:docx/pptx 批注文本仍只告警、pptx 图表 SmartArt 等仍为 content 档。
+> #### D6-3 判定实测(2026-10-11;结论 = **不引入 excelize** → 零依赖窄修 DOC-2 **已交付**,复验 content_gaps=0)
 >
 > **为什么要有这轮实测**:D6-3 的触发条件写的是「真实样本出现 content 级缺口」,但首轮真实语料 content_gaps=0 是**因为语料里没有 xlsx 生产者**(本机无 openpyxl/xlsxwriter/LibreOffice;WPS 无脚本接口)——即**触发条件从未被真正测过**。
 >
@@ -480,9 +481,11 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 > | 透视表(`xl/pivotCache`/`pivotTables`) | content | 同上:透视结果本身也是**透视表工作表的单元格**,`--sheet` 可切;源数据在另一表 | 可接受取舍(登记不改) |
 > | 隐藏行/列 | info | 内容照常显示,**无任何提示**(探针 `ours=absent`) | 窄修③(一条 note,可选) |
 >
+> **交付后复验(2026-10-11)**:`GAH_DOC_CORPUS_GAP_STRICT=1` **通过** —— 三件 xlsx 语料 `content_gaps=0`(style/info 档仍在);`advanced-all.xlsx` 块数 2→6(chars 97→207)、`threaded-comments.xlsx` 3 块(chars 32→84)。
+>
 > **结论与理由(不引入 excelize)**:① **excelize 不渲染图表**——对「图表不可见」零收益,而它擅长的读写/改工作簿不是本仓目标(我们只要**阅读视图**:文本 + 资产);② 满足触发条件的项**恰好都是零依赖可修**的窄面(读 `comments*.xml`/`threadedComments`/`txBody`、复用 `DocAsset`),自研 XML 读取已具备;③ 引入成本 = x/crypto·x/image 等新依赖 + 体积增量,与 E-C 门(46/30 MiB)直接冲突(SELF-1 实测已表明余量很薄)。
 >
-> **窄修登记(DOC-2,零依赖;未实施)**:① `extract_xlsx.go` 增批注文本(legacy + threaded + persons 显示名)→ note 块(或单元格附注),与 docx「未解析部件显式提示」同口径;② `xl/media/*` 接既有 `DocAsset` 预算链路(与 docx 一致);③ drawing `xdr:txBody` 文本 → note 块;④ 隐藏行/列 → note;⑤ 同步把探针表 `ours` 由 `absent` 改 `supported/warned` 并用 harness 复验 content_gaps 归零(仅剩图表/透视的「视觉性损失」,单独登记为已接受)。预计 1 包改动 + 3 组测试 + 语料回归。
+> **窄修已交付(DOC-2,零依赖;2026-10-11,见下「DOC-2 交付行」)**:① `extract_xlsx.go` 增批注文本(legacy + threaded + persons 显示名)→ note 块(或单元格附注),与 docx「未解析部件显式提示」同口径;② `xl/media/*` 接既有 `DocAsset` 预算链路(与 docx 一致);③ drawing `xdr:txBody` 文本 → note 块;④ 隐藏行/列 → note;⑤ 同步把探针表 `ours` 由 `absent` 改 `supported/warned` 并用 harness 复验 content_gaps 归零(仅剩图表/透视的「视觉性损失」,单独登记为已接受)。预计 1 包改动 + 3 组测试 + 语料回归。
 >
 >
 > #### SELF-1 前置实测(2026-10-11;有网实测,**结论 = 功能可行但仍暂存**)
@@ -566,6 +569,7 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 > | RST-1(D6-1a) | `9e9a52e` | `DocRasterService` + `/api/doc/raster` + `gah doc --raster`(外部 pdftoppm,零体积) | converter/service/web/CLI + 真机实测 PNG |
 > | MED-2(E5-1a) | `4d55751` | qqbot 四步分片上传 + `msg_type=7` + `im_send_file` | 协议/通道/工具 19 组测试 + 装配级 e2e(`im_send_file` 闭环/越界零出站) |
 > | MED-3(E5-1b,beta) | `65e9677` | iLink 三段式上传(`getuploadurl`/AES-ECB/CDN/媒体项)+ ui-im-wechat `im.MediaSender` | ilink 8 组 + 通道 6 组(真实客户端全链路假 CDN)+ 装配级 e2e(`im_send_file` 闭环/越界零出站) |
+> | DOC-2(D6-3 窄修) | `a4e27f4` | xlsx 批注(legacy+回复式)/文本框/内嵌图片/隐藏行列;探针档位同步 | 4 组单测 + 语料 strict 复验 content_gaps=0 |
 > | RST-2(D6-1b) | `c87c015` | `im_send_page`(PDF 页 → 图片)+ 光栅窄白名单 | 3 包测试 + 端到端闭环 |
 > | 前置件 | `50a7aad`/`124b06d`/`1e3a7e0`/`1a4329b` | E-A 工具级审批、E-C 体积门重定基、E-D 真实语料 harness(+部首码位修正)、E-E 前端零依赖单测 | 见各自提交 |
 >
