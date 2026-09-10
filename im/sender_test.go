@@ -118,3 +118,29 @@ func TestBudgetDefaults(t *testing.T) {
 		t.Fatalf("qq 预算默认不符: %+v", q)
 	}
 }
+
+// TestSenderSendSplitRemainder 截断时返回未发送剩余(continue 自愈依据);未截断返回空。
+func TestSenderSendSplitRemainder(t *testing.T) {
+	s := NewSender(&Budget{MaxChunk: 10, MaxChunks: 2, TruncHint: "HINT"})
+	var got []string
+	// 25 字无边界 → 硬切 3 块(10/10/5);MaxChunks=2 → 发 2 块 + 提示,剩余第 3 块
+	long := strings.Repeat("字", 25)
+	rest, err := s.SendSplit(t.Context(), long, func(ch string) error {
+		got = append(got, ch)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 || got[2] != "HINT" {
+		t.Fatalf("应发 2 块+提示: %+v", got)
+	}
+	if rest != strings.Repeat("字", 5) {
+		t.Fatalf("剩余应为第 3 块(5 字),got %q", rest)
+	}
+	// 未截断 → 剩余为空
+	rest2, err := s.SendSplit(t.Context(), "短文本", func(string) error { return nil })
+	if err != nil || rest2 != "" {
+		t.Fatalf("未截断应无剩余: %q %v", rest2, err)
+	}
+}

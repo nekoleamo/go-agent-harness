@@ -76,7 +76,8 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	}
 	tr := &wechatTransport{name: channelName, store: store, creds: creds, baseURL: baseURL,
 		lastError: "未登录(执行 /wechat login)", tickets: make(map[string]ticketEntry),
-		sender: im.NewSender(&im.Budget{MaxChunk: wechatChunkLimit, MaxChunks: wechatMaxChunks, Gap: wechatChunkGap})}
+		sender:    im.NewSender(&im.Budget{MaxChunk: wechatChunkLimit, MaxChunks: wechatMaxChunks, Gap: wechatChunkGap}),
+		remainder: make(map[string]string)}
 	b := im.New(c, loop, sessions, tr, im.Options{
 		Mode:  mode,
 		Allow:       creds.Allow,  // 已授权用户持久恢复
@@ -245,6 +246,7 @@ type wechatTransport struct {
 	tickets   map[string]ticketEntry
 	tokens    map[string]string // userID → context_token(iLink 回显必须)
 	loginBusy bool
+	remainder map[string]string // chatID → 被截断的剩余文本(用户回 continue 时被动补发)
 	typingCtl context.CancelFunc // 回合进行中的 typing 周期刷新控制器(回合结束取消)
 }
 
@@ -320,9 +322,19 @@ func (t *wechatTransport) SendText(ctx context.Context, to im.Route, text string
 	}
 	// 出站预算层(im.Sender):rune 安全分块(单条 ~2000)+ 一轮 ≤10 块截断提示 +
 	// 块间间隔防连发触发短窗口截断(社区头号坑:hermes/cc-connect 长回复尾部静默丢失)。
-	return t.sender.Send(ctx, text, func(chunk string) error {
+	// 截断剩余暂存;用户回 continue/继续 时被动补发(continue 自愈)。
+	rest, err := t.sender.SendSplit(ctx, text, func(chunk string) error {
 		return cli.SendMessage(ctx, to.UserID, chunk, token, "")
 	})
+	if rest != "" {
+		t.mu.Lock()
+		if t.remainder == nil {
+			t.remainder = make(map[string]string)
+		}
+		t.remainder[to.UserID] = rest
+		t.mu.Unlock()
+	}
+	return err
 }
 
 
@@ -449,6 +461,22 @@ func (t *wechatTransport) handleInbound(msg *ilink.InboundMessage) {
 	if msg.MessageType != 1 || msg.FromUserID == "" {
 		return
 	}
+	// continue 自愈:用户回 continue/继续 且存在被截断剩余 → 直接被动补发(不走回合)
+	if isContinueText(msg.ExtractText()) {
+		if rest := t.takeRemainder(msg.FromUserID); rest != "" {
+			route := im.Route{Channel: t.name, UserID: msg.FromUserID, ChatID: msg.FromUserID}
+			t.mu.Lock()
+			if msg.ContextToken != "" {
+				if t.tokens == nil {
+					t.tokens = make(map[string]string)
+				}
+				t.tokens[msg.FromUserID] = msg.ContextToken
+			}
+			t.mu.Unlock()
+			_ = t.SendText(context.Background(), route, rest)
+			return
+		}
+	}
 	// 媒体入站(P0-2c):图片/文本文件预下载(CDN token 有有效期,即时取)并解密;
 	// 图片走附件视觉注入,文本文件内容并入正文,其它文件落盘 + 说明。
 	atts, mediaNote := t.mediaExtract(msg)
@@ -476,6 +504,24 @@ func (t *wechatTransport) handleInbound(msg *ilink.InboundMessage) {
 	h := sha256.Sum256([]byte(text))
 	msgID := fmt.Sprintf("%d-%s", msg.CreateTimeMs, hex.EncodeToString(h[:6]))
 	_ = t.bridge.HandleInbound(context.Background(), im.Inbound{Route: route, MsgID: msgID, Text: text, Attachments: atts})
+}
+
+// takeRemainder 取走并清空指定会话的截断剩余(continue 补发用)。
+func (t *wechatTransport) takeRemainder(userID string) string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	rest := t.remainder[userID]
+	delete(t.remainder, userID)
+	return rest
+}
+
+// isContinueText 是否"继续/续取"指令(截断剩余补发触发词;大小写不敏感)。
+func isContinueText(text string) bool {
+	switch strings.ToLower(strings.TrimSpace(text)) {
+	case "continue", "继续", "更多", "next", "more", "续":
+		return true
+	}
+	return false
 }
 
 // mediaExtract 媒体入站提取:下载+解密媒体项 → 附件(图片视觉)与正文说明(文本文件内容)。

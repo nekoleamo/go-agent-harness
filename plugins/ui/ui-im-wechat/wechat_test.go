@@ -158,3 +158,24 @@ func TestMediaExtractDownFail(t *testing.T) {
 		t.Fatal("应记录诊断")
 	}
 }
+
+// TestContinueTextAndRemainder 截断剩余暂存/取走 + continue 触发词识别。
+func TestContinueTextAndRemainder(t *testing.T) {
+	for _, kw := range []string{"continue", "继续", "Continue ", "更多", "next"} {
+		if !isContinueText(kw) {
+			t.Fatalf("%q 应识别为续取指令", kw)
+		}
+	}
+	for _, not := range []string{"你好", "continu", "", "再继续"} {
+		if isContinueText(not) {
+			t.Fatalf("%q 不应是续取指令", not)
+		}
+	}
+	tr := &wechatTransport{name: channelName, remainder: map[string]string{"u1": "剩余内容"}}
+	if got := tr.takeRemainder("u1"); got != "剩余内容" {
+		t.Fatalf("应取走剩余: %q", got)
+	}
+	if got := tr.takeRemainder("u1"); got != "" {
+		t.Fatalf("取走后应清空: %q", got)
+	}
+}

@@ -85,7 +85,8 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		baseURL: baseURL, tokenURL: tokenURL, lastError: "未配置(执行 /qq login)",
 		budget:  newActiveQuota(quotaPath()),
 		replies: make(map[string]*replyCtx), seq: make(map[string]uint64),
-		ledger:   newDeliveryLedger(outboxPath())}
+		ledger:    newDeliveryLedger(outboxPath()),
+		remainder: make(map[string]string)}
 	b := im.New(c, loop, sessions, tr, im.Options{
 		Mode:  mode,
 		Allow:       creds.Allow,  // 已授权用户持久恢复
@@ -245,6 +246,7 @@ type qqTransport struct {
 	typingCtl context.CancelFunc // 回合中 input_notify 周期刷新控制器(回合结束取消)
 	budget    *activeQuota       // 主动消息配额记账(私信主动 2 条/天/用户;落盘重启不超发)
 	ledger    *deliveryLedger // 滞留 ledger(落盘重启不丢;被动失效/频控/配额耗尽时暂存,下次入站补发)
+	remainder map[string]string // chatID → 被截断的剩余文本(用户回 continue 时被动续发)
 }
 
 func (t *qqTransport) Name() string { return t.name }
@@ -350,6 +352,9 @@ func (t *qqTransport) handleC2C(m *qqbot.C2CMessage) {
 	}
 	route := im.Route{Channel: t.name, UserID: m.Author.UserOpenID, ChatID: m.Author.UserOpenID}
 	t.cacheReply(route.ChatID, m.ID)
+	if t.flushRemainder(route, m.Content) {
+		return // continue 续取:不走回合
+	}
 	t.flushOutbox(context.Background(), route) // 滞留内容先被动补发(新 msg_id 窗口)
 	_ = t.bridge.HandleInbound(context.Background(), im.Inbound{Route: route, MsgID: "c2c:" + m.ID, Text: m.Content})
 }
@@ -369,6 +374,9 @@ func (t *qqTransport) handleGroup(m *qqbot.GroupAtMessage) {
 	}
 	route := im.Route{Channel: t.name, UserID: m.Author.MemberOpenID, ChatID: m.GroupOpenID}
 	t.cacheReply(route.ChatID, m.ID)
+	if t.flushRemainder(route, m.Content) {
+		return // continue 续取:不走回合
+	}
 	t.flushOutbox(context.Background(), route) // 滞留内容先被动补发(新 msg_id 窗口)
 	_ = t.bridge.HandleInbound(context.Background(), im.Inbound{Route: route, MsgID: "grp:" + m.ID, Text: m.Content})
 }
@@ -433,6 +441,19 @@ func (t *qqTransport) SendText(ctx context.Context, to im.Route, text string) er
 	}
 	trunc := len(msgs) > qqMaxChunks
 	if trunc {
+		// 截断剩余暂存:用户回 continue/继续 时被动续发(continue 自愈)
+		var rest []string
+		for _, m := range msgs[qqMaxChunks:] {
+			if m.Content != "" {
+				rest = append(rest, m.Content)
+			}
+		}
+		t.mu.Lock()
+		if t.remainder == nil {
+			t.remainder = make(map[string]string)
+		}
+		t.remainder[to.ChatID] = strings.Join(rest, "\n")
+		t.mu.Unlock()
 		msgs = msgs[:qqMaxChunks]
 	}
 	sendOne := func(msg qqbot.SendMessage, seq uint64, passive bool) error {
@@ -541,6 +562,24 @@ func activeOneMessage(text string) qqbot.SendMessage {
 
 // dupPrefix 重投提示(P2 二期):此前投递结果未确认,至少一次语义下可能已送达。
 const dupPrefix = "♻️ 可能重复(此前投递未确认):\n"
+
+// flushRemainder 用户回 continue/继续 且有被截断剩余 → 被动续发(返回 true = 已消费)。
+func (t *qqTransport) flushRemainder(route im.Route, text string) bool {
+	switch strings.ToLower(strings.TrimSpace(text)) {
+	case "continue", "继续", "更多", "next", "more", "续":
+	default:
+		return false
+	}
+	t.mu.Lock()
+	rest := t.remainder[route.ChatID]
+	delete(t.remainder, route.ChatID)
+	t.mu.Unlock()
+	if rest == "" {
+		return false // 无剩余:交给桥当普通消息处理(可能有意发 continue 给模型)
+	}
+	_ = t.SendText(context.Background(), route, rest)
+	return true
+}
 
 // stash 滞留整段文本(P2 delivery ledger:落盘重启不丢;下次该会话入站 flush 补发)。
 func (t *qqTransport) stash(chatID, text string) {

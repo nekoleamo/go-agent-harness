@@ -276,3 +276,22 @@ func TestQQStatusShowsBaseURL(t *testing.T) {
 		t.Fatalf("状态应含诊断行: %q", out)
 	}
 }
+
+// TestFlushRemainder continue 续发:有剩余 → 消费并清空(发送失败也清,防重复轰炸);
+// 无剩余/非续取词 → false(交给桥当普通消息)。
+func TestFlushRemainder(t *testing.T) {
+	tr := &qqTransport{name: channelName, remainder: map[string]string{"C1": "剩余文本"}}
+	route := im.Route{Channel: channelName, UserID: "U1", ChatID: "C1"}
+	if tr.flushRemainder(route, "你好") {
+		t.Fatal("非续取词不应消费")
+	}
+	if !tr.flushRemainder(route, "continue") {
+		t.Fatal("continue 且有剩余应消费")
+	}
+	if tr.remainder["C1"] != "" {
+		t.Fatalf("消费后应清空: %q", tr.remainder["C1"])
+	}
+	if tr.flushRemainder(route, "继续") {
+		t.Fatal("无剩余不应消费(交桥处理)")
+	}
+}

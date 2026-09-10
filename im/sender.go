@@ -39,23 +39,32 @@ func NewSender(b *Budget) *Sender {
 	return &Sender{b: b}
 }
 
-// Send 分块发送文本:整除 rune 安全块 → 逐块调 send(块间 Gap;burst 超限暂停至窗口滑移)。
-// 超 MaxChunks 截断并追加 TruncHint(自身也算一条)。send 返回错误即中止。
-func (s *Sender) Send(_ context.Context, text string, send func(chunk string) error) error {
+// Send 分块发送文本(丢弃截断剩余;兼容旧调用)。
+func (s *Sender) Send(ctx context.Context, text string, send func(chunk string) error) error {
+	_, err := s.SendSplit(ctx, text, send)
+	return err
+}
+
+// SendSplit 分块发送文本:整除 rune 安全块 → 逐块调 send(块间 Gap;burst 超限暂停至窗口滑移)。
+// 超 MaxChunks 截断并追加 TruncHint(自身也算一条);返回**未发送的剩余文本**供调用方暂存,
+// 用户回 continue 时可续取(出站预算 continue 自愈)。send 返回错误即中止。
+func (s *Sender) SendSplit(_ context.Context, text string, send func(chunk string) error) (string, error) {
 	if text == "" {
-		return nil
+		return "", nil
 	}
 	chunks := SplitText(text, s.b.MaxChunk)
 	trunc := s.b.MaxChunks > 0 && len(chunks) > s.b.MaxChunks // MaxChunks<=0 = 不限
+	remainder := ""
 	if trunc {
+		remainder = strings.Join(chunks[s.b.MaxChunks:], "\n")
 		chunks = chunks[:s.b.MaxChunks]
 	}
 	for i, ch := range chunks {
 		if err := s.awaitBurst(); err != nil {
-			return err
+			return remainder, err
 		}
 		if err := send(ch); err != nil {
-			return err
+			return remainder, err
 		}
 		if i < len(chunks)-1 && s.b.Gap > 0 {
 			time.Sleep(s.b.Gap)
@@ -63,15 +72,15 @@ func (s *Sender) Send(_ context.Context, text string, send func(chunk string) er
 	}
 	if trunc {
 		if err := s.awaitBurst(); err != nil {
-			return err
+			return remainder, err
 		}
 		hint := s.b.TruncHint
 		if hint == "" {
 			hint = "⚠️ 回复过长已截断;请回复 continue 获取剩余内容"
 		}
-		return send(hint)
+		return remainder, send(hint)
 	}
-	return nil
+	return "", nil
 }
 
 // awaitBurst burst 条数预算:窗口内已达上限则等待窗口滑移(不丢内容,只延后)。
