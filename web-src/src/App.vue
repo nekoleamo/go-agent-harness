@@ -8,6 +8,7 @@ import { createTransport, type Transport } from './transport'
 import { extraPanel, slotComponent, type MetaLine } from './registry'
 import { OPEN_DOC_EVENT, docRequest } from './docstore'
 import { OPEN_PANEL_EVENT, imStatus, upsertIMStatus } from './imstore'
+import { GUIDE_ID_DESKTOP_IM, shouldShowGuide } from './guides'
 import type { SessionEvent, StateView, ConfirmRequest, CommandResult, QuestionRequest } from './types'
 import StatusBar from './components/StatusBar.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
@@ -260,38 +261,34 @@ function onOpenDoc(ev: Event): void {
   openPanel.value = 'host-docview'
 }
 
-// —— 首启引导(G-E4-R):仅桌面壳(?shell=desktop)+ 有 IM 渠道 + 未连接 + 未关闭 ——
-const GUIDE_ID = 'desktop-im'
+// —— 首启引导(G-E4-R):判定逻辑在 guides.ts 纯函数(可单测),此处只做取数与副作用 ——
 const showGuide = ref(false)
 let guideChecked = false
-const isDesktopShell = (): boolean => new URLSearchParams(window.location.search).get('shell') === 'desktop'
 async function checkGuide(): Promise<void> {
-  if (guideChecked || !isDesktopShell()) return
+  if (guideChecked) return
+  const shell = new URLSearchParams(window.location.search).get('shell')
+  if (shell !== 'desktop') return
   try {
     await api.imConnectSpec() // 无 IM 渠道(503)→ 无引导
   } catch {
     return
   }
+  let dismissed: string[] | null = null
   try {
-    if ((await api.guides()).dismissed?.includes(GUIDE_ID)) {
-      guideChecked = true
-      return
-    }
+    dismissed = (await api.guides()).dismissed ?? []
   } catch {
-    /* 偏好不可得(旧宿主):仍提示一次 */
+    /* 偏好不可得(旧宿主):按未关闭处理,仍提示一次 */
   }
+  let phase: string | null = null
   try {
     const st = await api.imConnectState()
     upsertIMStatus(st)
-    if (st.phase === 'done') {
-      guideChecked = true
-      return
-    }
+    phase = st.phase
   } catch {
     /* 状态不可得:按未连接处理 */
   }
   guideChecked = true
-  showGuide.value = true
+  showGuide.value = shouldShowGuide({ shell, dismissed, specAvailable: true, phase })
 }
 function guideConnect(): void {
   showGuide.value = false
@@ -300,7 +297,7 @@ function guideConnect(): void {
 async function guideDismiss(): Promise<void> {
   showGuide.value = false
   try {
-    await api.dismissGuide(GUIDE_ID)
+    await api.dismissGuide(GUIDE_ID_DESKTOP_IM)
   } catch {
     /* 记录失败:下次仍提示(不静默假装已记) */
   }

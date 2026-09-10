@@ -1,5 +1,6 @@
 # CI:go vet + go test -race 全绿 + 体积门 + 裸机冒烟(对齐 AGENTS.md 与 DESIGN.md §15)。
-# 体积门(<40MB):外部插件 gzip embed 后单二进制交付(防止类似 M6.9 体积回归)。
+# 体积门:阈值与实现单一事实源 = scripts/size-check.sh(E-C 治理件;2026-10-11 按实测重定基:
+# 二进制 ≤46 MiB / gz 产物 ≤30 MiB;构成 = 基线 + 本平台 extplugins gz embed,归因由脚本打印)。
 name: ci
 on:
   push:
@@ -24,24 +25,21 @@ jobs:
         run: bash scripts/gen-extplugins.sh
       - name: 重建前端产物(M7:vue-tsc 类型检查 + vite build → web/dist,漏则 go:embed 编译失败)
         run: bash scripts/gen-web.sh
+      - name: 前端逻辑单测(node 内置运行器,零新增依赖;E-E)
+        run: cd web-src && npm test
       - name: go vet
         run: go vet ./...
       - name: go test -race
         run: go test -race ./...
       - name: 交叉编译矩阵(五目标+体积门+平台匹配)
         run: |
-          # P4:主包五目标交叉编译 + 每目标体积门(<40MB);embed 经 build-tag
-          # 只嵌本平台外部插件(产物平台匹配由下方单测在 linux/amd64 上校验,
+          # 体积门:五目标交叉编译 + 二进制/gz 双阈值(阈值只在 scripts/size-check.sh);
+          # embed 经 build-tag 只嵌本平台外部插件(产物平台匹配由下方单测在 linux/amd64 上校验,
           # 其余目标由 go build 能否取到对应 embed 目录保证)。
-          for t in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64; do
-            os=${t%/*}; arch=${t#*/}
-            GOOS=$os GOARCH=$arch CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "/tmp/gah-${os}-${arch}" ./cmd/gah
-            size=$(stat -c%s "/tmp/gah-${os}-${arch}")
-            echo "$t: $size bytes"
-            [ "$size" -lt 41943040 ] || { echo "体积门失败($t): $size >= 40MB"; exit 1; }
-          done
+          bash scripts/size-check.sh --all
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /tmp/gah-linux-amd64 ./cmd/gah
           go test ./internal/embed/ -run TestExtPluginsMatchPlatform -count=1
-          cp "/tmp/gah-linux-amd64" ./gah # 供后续裸机冒烟(体积门 step 并入矩阵后补产物)
+          cp /tmp/gah-linux-amd64 ./gah # 供后续裸机冒烟
       - name: 发行流水线冒烟(goreleaser snapshot 全链路)
         uses: goreleaser/goreleaser-action@v6
         with:

@@ -18,5 +18,8 @@
     "types": ["vite/client"]
   },
   "include": ["src/**/*.ts", "src/**/*.vue", "src/**/*.d.ts"],
+  // 逻辑单测(*.test.ts)走 Node 内置运行器(npm test,零新增依赖):其 node:test/node:assert
+  // 类型需 @types/node,离线环境不引入新 devDependency → 不参与浏览器侧类型检查。
+  "exclude": ["src/**/*.test.ts"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }
