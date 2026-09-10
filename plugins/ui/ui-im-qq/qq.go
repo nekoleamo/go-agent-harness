@@ -148,7 +148,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		ds = append(ds, d)
 		d2, err := cmds.Register(sdk.CommandSpec{
 			Name:  "qq",
-			Usage: "/qq login|status",
+			Usage: "/qq status|login|env",
 			Desc:  "QQ 官方 Bot 通道:配置(AppID/AppSecret)/状态",
 			Run:   func(args []string) (string, error) { return tr.qqCmd(context.Background(), args) },
 			// 二级选项:status 查看 / login 填凭证(login 再分两级输入 AppID、AppSecret)
@@ -157,6 +157,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 					return []sdk.Option{
 						{Value: "status", Desc: "查看配置/网关/已授权"},
 						{Value: "login", Desc: "填写 AppID/AppSecret 并启动网关"},
+						{Value: "env", Desc: "切换 OpenAPI 环境(未上架机器人联调用 sandbox)"},
 					}
 				}},
 				{FreeArgs: func(picked []string) []string {
@@ -254,6 +255,9 @@ func (t *qqTransport) startGateway() {
 	}
 	creds := *t.creds
 	baseURL, tokenURL := t.baseURL, t.tokenURL
+	if creds.BaseURL != "" { // 凭证显式设置(如 /qq env sandbox)优先
+		baseURL = creds.BaseURL
+	}
 	t.mu.Unlock()
 	ts := qqbot.NewTokenSource(creds.AppID, creds.AppSecret)
 	ts.URL = tokenURL
@@ -649,8 +653,11 @@ func (t *qqTransport) qqCmd(_ context.Context, args []string) (string, error) {
 	if len(args) == 0 || args[0] == "status" {
 		return t.statusText(), nil
 	}
+	if args[0] == "env" {
+		return t.envCmd(args)
+	}
 	if args[0] != "login" {
-		return "", fmt.Errorf("用法: /qq login|status")
+		return "", fmt.Errorf("用法: /qq status|login|env")
 	}
 	if len(args) >= 3 && args[1] != "" && args[2] != "" {
 		if err := t.login(args[1], args[2]); err != nil {
@@ -664,6 +671,44 @@ func (t *qqTransport) qqCmd(_ context.Context, args []string) (string, error) {
 		"  1) /qq login <AppID> <AppSecret>\n" +
 		"  2) 编辑配置文件: " + t.store.Path + "\n" +
 		"(凭证 0600 落盘随 $GAH_HOME 迁移;access_token 运行时换取不落盘)", nil
+}
+
+// envCmd /qq env:查看/切换 OpenAPI 根(未上架机器人需沙箱环境联调)。
+func (t *qqTransport) envCmd(args []string) (string, error) {
+	t.mu.Lock()
+	cur := t.baseURL
+	if t.creds != nil && t.creds.BaseURL != "" {
+		cur = t.creds.BaseURL
+	}
+	t.mu.Unlock()
+	if len(args) < 2 {
+		return fmt.Sprintf("当前 OpenAPI 根: %s\n切换: /qq env official|sandbox(或直接给 URL)", cur), nil
+	}
+	var u string
+	switch args[1] {
+	case "official":
+		u = qqbot.DefaultBaseURL
+	case "sandbox":
+		u = "https://sandbox.api.sgroup.qq.com"
+	default:
+		u = args[1]
+	}
+	t.mu.Lock()
+	if t.creds == nil {
+		t.creds = &qqbot.Credentials{}
+	}
+	t.creds.BaseURL = u
+	creds := *t.creds
+	store := t.store
+	t.mu.Unlock()
+	if err := store.Save(&creds); err != nil {
+		return "", fmt.Errorf("qq: 保存环境失败: %w", err)
+	}
+	t.stopGateway()
+	if creds.Configured() {
+		t.startGateway()
+	}
+	return "已切换 OpenAPI 根: " + u + "(网关已重启;状态查询 /qq status)", nil
 }
 
 // login 保存凭证并启动网关(AppSecret 属密钥,落盘收紧 0600)。
@@ -686,6 +731,21 @@ func (t *qqTransport) login(appID, secret string) error {
 		return fmt.Errorf("qq: 保存凭证失败: %w", err)
 	}
 	t.startGateway()
+	// 即时校验:换取一次 access_token,把失败原因直接返回(不再只落 lastError 静默)。
+	// tokenURL 为空(嵌入/单测未配置)则跳过校验——生产由插件壳恒设默认端点。
+	if t.tokenURL == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	ts := qqbot.NewTokenSource(appID, secret)
+	ts.URL = t.tokenURL
+	if _, err := ts.Token(ctx); err != nil {
+		return fmt.Errorf("凭证已保存,但校验 access_token 失败: %w\n"+
+			"排查:① AppID/AppSecret 抄错/被重置(开放平台 开发设置);"+
+			"② 机器人未上架时需沙箱环境 → /qq env sandbox;"+
+			"③ 网络可达 bots.qq.com", err)
+	}
 	return nil
 }
 
@@ -724,7 +784,7 @@ func (a imChannelStatus) Status() []sdk.IMChannelStatus {
 // statusText 状态文本。
 func (t *qqTransport) statusText() string {
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	gwPtr := t.gateway
 	cfg := "未配置"
 	appID := ""
 	if t.creds != nil && t.creds.Configured() {
@@ -745,7 +805,25 @@ func (t *qqTransport) statusText() string {
 	if t.bridge != nil {
 		allowed = len(t.bridge.Access().List())
 	}
-	return fmt.Sprintf("qq: %s(%s) 网关=%s 已授权=%d\n最近: %s", cfg, appID, gw, allowed, t.lastError)
+	if t.creds != nil && t.creds.BaseURL != "" {
+		cfg += "@" + t.creds.BaseURL
+	}
+	lastErr := t.lastError
+	t.mu.Unlock()
+	// gateway 内部诊断(断线/鉴权失败等)合并展示(锁外调用防锁序问题)
+	if gwPtr != nil {
+		if ge := gwPtr.LastError(); ge != "" {
+			if lastErr != "" {
+				lastErr = ge + " | " + lastErr
+			} else {
+				lastErr = ge
+			}
+		}
+	}
+	if lastErr == "" {
+		lastErr = "无"
+	}
+	return fmt.Sprintf("qq: %s(%s) 网关=%s 已授权=%d\n最近: %s", cfg, appID, gw, allowed, lastErr)
 }
 
 // mask 凭证掩码(前 4 位 + 长度,防全量泄露)。

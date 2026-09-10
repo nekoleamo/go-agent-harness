@@ -23,6 +23,7 @@ var (
 )
 
 // TokenProvider 鉴权 token 提供者:每次 Identify/Resume 时调用(access_token 2h 过期,
+// 返回裸 access_token 或已带 "QQBot " 前缀均可——内部经 IdentifyToken 幂等归一;
 // 长连接重连后需新 token);返回完整 token 串(如 "QQBot <access_token>")。
 type TokenProvider func(ctx context.Context) (string, error)
 
@@ -333,7 +334,8 @@ func (g *Gateway) fetchGatewayURL(ctx context.Context, token string) (string, er
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Authorization", "QQBot "+token)
+	// TokenProvider 契约:可返回裸 access_token 或已带 "QQBot " 前缀(IdentifyToken 幂等归一)——
+	req.Header.Set("Authorization", IdentifyToken(token))
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", err

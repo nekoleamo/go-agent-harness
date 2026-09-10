@@ -88,21 +88,21 @@ func (s *TokenSource) fetchLocked(ctx context.Context) (string, error) {
 	}
 	var out struct {
 		AccessToken string `json:"access_token"`
-		ExpiresIn   int    `json:"expires_in"`
-		Code        int    `json:"code"`
+		ExpiresIn   flexInt `json:"expires_in"` // 官方实际返回字符串 "7200"(见 flexint.go)
+		Code        flexInt `json:"code"`
 		Message     string `json:"message"`
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return "", fmt.Errorf("qqbot: access_token 响应解码失败: %w", err)
 	}
 	if out.Code != 0 {
-		return "", &APIError{Code: out.Code, Message: out.Message}
+		return "", &APIError{Code: int(out.Code), Message: out.Message}
 	}
 	if out.AccessToken == "" {
 		return "", fmt.Errorf("qqbot: access_token 响应缺字段: %s", truncate(string(raw), 200))
 	}
 	s.token = out.AccessToken
-	exp := time.Duration(out.ExpiresIn) * time.Second
+	exp := time.Duration(int(out.ExpiresIn)) * time.Second
 	if exp <= 0 {
 		exp = 7200 * time.Second
 	}
@@ -161,11 +161,11 @@ func (c *Client) doRetry(ctx context.Context, path string, body any, allowRetry 
 	}
 	// 业务错误以 body {code,message} 返回;HTTP 429 视为频控(无 body 也归类)。
 	var biz struct {
-		Code    int    `json:"code"`
+		Code    flexInt `json:"code"`
 		Message string `json:"message"`
 	}
 	if err := json.Unmarshal(raw, &biz); err == nil && biz.Code != 0 {
-		return &APIError{Code: biz.Code, Message: biz.Message}
+		return &APIError{Code: int(biz.Code), Message: biz.Message}
 	}
 	if resp.StatusCode == http.StatusTooManyRequests {
 		return &APIError{Code: CodeRateLimited, Message: "http 429"}

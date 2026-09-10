@@ -340,3 +340,32 @@ func TestGatewayNotConfigured(t *testing.T) {
 		t.Fatalf("应返回 ErrNotConfigured,got %v", err)
 	}
 }
+
+// TestFetchGatewayURLAuthHeader /gateway/bot 鉴权头必须单前缀(回归:TokenProvider 返回
+// 带 "QQBot " 前缀的 token 时,旧实现再拼一次 → "QQBot QQBot xxx" → 401 → 机器人永远连不上)。
+func TestFetchGatewayURLAuthHeader(t *testing.T) {
+	var auth string
+	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = r.Header.Get("Authorization")
+		w.Write([]byte(`{"url":"wss://api.sgroup.qq.com/websocket","shards":1}`))
+	}))
+	defer hs.Close()
+	g := NewGateway(func(context.Context) (string, error) { return "", nil }, func(Event) {})
+	g.BaseURL = hs.URL
+
+	// 带前缀 token(TokenProvider 常见返回形态)
+	u, err := g.fetchGatewayURL(context.Background(), "QQBot tk-abc")
+	if err != nil || u == "" {
+		t.Fatalf("取 gateway url 失败: %q %v", u, err)
+	}
+	if auth != "QQBot tk-abc" {
+		t.Fatalf("鉴权头应单前缀,得 %q(双前缀会导致 401)", auth)
+	}
+	// 裸 token 同样归一
+	if _, err := g.fetchGatewayURL(context.Background(), "tk-xyz"); err != nil {
+		t.Fatal(err)
+	}
+	if auth != "QQBot tk-xyz" {
+		t.Fatalf("裸 token 应自动加前缀,得 %q", auth)
+	}
+}

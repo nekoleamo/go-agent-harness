@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -292,5 +293,58 @@ func TestCredentialsStore(t *testing.T) {
 	fi, _ := os.Stat(s.Path)
 	if fi.Mode().Perm() != 0o600 {
 		t.Fatalf("凭证文件应 0600,got %v", fi.Mode().Perm())
+	}
+}
+
+// TestTokenExpiresInFlexible 官方 expires_in 实为字符串("7200",文档示例如此),
+// 数字与字符串都必须可解(回归:曾按 int 解析 → 解码失败 → 网关永远连不上)。
+func TestTokenExpiresInFlexible(t *testing.T) {
+	for _, body := range []string{
+		`{"access_token":"tk-1","expires_in":"7200"}`, // 官方实测形态(字符串)
+		`{"access_token":"tk-2","expires_in":7200}`,   // 数字形态(文档"类型"栏)
+	} {
+		hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte(body))
+		}))
+		ts := NewTokenSource("app", "sec")
+		ts.URL = hs.URL
+		tk, err := ts.Token(context.Background())
+		hs.Close()
+		if err != nil {
+			t.Fatalf("响应 %s 应可解析: %v", body, err)
+		}
+		if tk == "" {
+			t.Fatalf("响应 %s 应取到 token", body)
+		}
+	}
+}
+
+// TestTokenBizErrorStringCode code 为字符串时也应正确识别为业务错误。
+func TestTokenBizErrorStringCode(t *testing.T) {
+	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"code":"100007","message":"invalid appid or secret"}`))
+	}))
+	defer hs.Close()
+	ts := NewTokenSource("app", "sec")
+	ts.URL = hs.URL
+	if _, err := ts.Token(context.Background()); err == nil {
+		t.Fatal("业务错误应返回错误")
+	} else if !strings.Contains(err.Error(), "100007") {
+		t.Fatalf("应带业务错误码: %v", err)
+	}
+}
+
+// TestFlexInt 直接单测宽容解析。
+func TestFlexInt(t *testing.T) {
+	var v struct {
+		A flexInt `json:"a"`
+		B flexInt `json:"b"`
+		C flexInt `json:"c"`
+	}
+	if err := json.Unmarshal([]byte(`{"a":"7200","b":42,"c":null}`), &v); err != nil {
+		t.Fatal(err)
+	}
+	if v.A != 7200 || v.B != 42 || v.C != 0 {
+		t.Fatalf("解析不符: %+v", v)
 	}
 }

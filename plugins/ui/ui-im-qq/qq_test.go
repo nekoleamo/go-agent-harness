@@ -3,6 +3,8 @@
 package uimqq
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -193,5 +195,84 @@ func TestActiveOneMessage(t *testing.T) {
 	}
 	if !strings.Contains(msg.Content, "截断") {
 		t.Fatalf("截断应带提示: %q", msg.Content[len(msg.Content)-30:])
+	}
+}
+
+// TestQQLoginVerifyFail login 后即时校验 token:失败应返回明确原因(不再静默)。
+func TestQQLoginVerifyFail(t *testing.T) {
+	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"code":100007,"message":"invalid appid or secret"}`, http.StatusUnauthorized)
+	}))
+	defer hs.Close()
+	tr := &qqTransport{name: channelName, store: qqbot.NewStore(t.TempDir() + "/qqbot.yaml"),
+		baseURL: qqbot.DefaultBaseURL, tokenURL: hs.URL, lastError: ""}
+	err := tr.login("app-x", "sec-y")
+	if err == nil || !strings.Contains(err.Error(), "校验 access_token 失败") {
+		t.Fatalf("凭证无效应返回明确校验错误: %v", err)
+	}
+	if !strings.Contains(err.Error(), "sandbox") {
+		t.Fatalf("错误应含排查指引(沙箱等): %v", err)
+	}
+	// 凭证仍已保存(用户可改 env 后重启)
+	if c, lerr := tr.store.Load(); lerr != nil || c.AppID != "app-x" {
+		t.Fatalf("凭证应已保存: %+v %v", c, lerr)
+	}
+}
+
+// TestQQLoginVerifyOK 校验通过:无错误返回。
+func TestQQLoginVerifyOK(t *testing.T) {
+	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"access_token":"tk-1","expires_in":7200}`))
+	}))
+	defer hs.Close()
+	tr := &qqTransport{name: channelName, store: qqbot.NewStore(t.TempDir() + "/qqbot.yaml"),
+		baseURL: qqbot.DefaultBaseURL, tokenURL: hs.URL}
+	if err := tr.login("app-x", "sec-y"); err != nil {
+		t.Fatalf("校验通过不应报错: %v", err)
+	}
+	tr.stopGateway()
+}
+
+// TestQQEnvSwitch /qq env:查询当前 / 切沙箱(持久到凭证) / 切正式。
+func TestQQEnvSwitch(t *testing.T) {
+	tr := &qqTransport{name: channelName, store: qqbot.NewStore(t.TempDir() + "/qqbot.yaml"),
+		baseURL: qqbot.DefaultBaseURL, tokenURL: "http://127.0.0.1:1/unused"}
+	out, err := tr.envCmd([]string{"env"})
+	if err != nil || !strings.Contains(out, qqbot.DefaultBaseURL) {
+		t.Fatalf("应显示当前环境: %q %v", out, err)
+	}
+	if _, err := tr.envCmd([]string{"env", "sandbox"}); err != nil {
+		t.Fatal(err)
+	}
+	c, _ := tr.store.Load()
+	if c.BaseURL != "https://sandbox.api.sgroup.qq.com" {
+		t.Fatalf("沙箱应持久到凭证: %+v", c)
+	}
+	// startGateway 优先用凭证 BaseURL
+	tr.mu.Lock()
+	got := tr.creds.BaseURL
+	tr.mu.Unlock()
+	if got != "https://sandbox.api.sgroup.qq.com" {
+		t.Fatalf("transport 凭证应同步: %q", got)
+	}
+	if _, err := tr.envCmd([]string{"env", "official"}); err != nil {
+		t.Fatal(err)
+	}
+	if c2, _ := tr.store.Load(); c2.BaseURL != qqbot.DefaultBaseURL {
+		t.Fatalf("切回正式不符: %+v", c2)
+	}
+}
+
+// TestQQStatusShowsBaseURL 状态文本含环境标识(便于诊断沙箱/正式)。
+func TestQQStatusShowsBaseURL(t *testing.T) {
+	tr := &qqTransport{name: channelName, store: qqbot.NewStore(t.TempDir() + "/qqbot.yaml"),
+		baseURL: qqbot.DefaultBaseURL,
+		creds:   &qqbot.Credentials{AppID: "1234567890", AppSecret: "s", BaseURL: "https://sandbox.api.sgroup.qq.com"}}
+	out := tr.statusText()
+	if !strings.Contains(out, "sandbox.api.sgroup.qq.com") {
+		t.Fatalf("状态应显示当前环境: %q", out)
+	}
+	if !strings.Contains(out, "最近:") {
+		t.Fatalf("状态应含诊断行: %q", out)
 	}
 }
