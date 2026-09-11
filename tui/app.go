@@ -43,8 +43,10 @@ type App struct {
 	subs    []sdk.Disposer
 	cmds    sdk.CommandRegistry // ctx.commands(可为 nil:未装配时命令不可用)
 
-	cancelFn context.CancelFunc // 当前回合的取消函数(Esc 中断,见 model.onCancel)
-	widgets  []Widget           // P4-12 输入区 widget 行(宿主/插件经 AddWidget 注册)
+	// cancelFn 当前回合的取消函数(Esc 中断)。UI goroutine 读、回合 goroutine 写,
+	// 必须原子(普通字段是 data race:取消丢失或对已结束回合误调)。
+	cancelFn atomic.Pointer[context.CancelFunc]
+	widgets  []Widget // P4-12 输入区 widget 行(宿主/插件经 AddWidget 注册)
 
 	mFiles    []sdk.Option // @ 引用文件索引缓存(projectFiles;当前 cwd 下惰性构建)
 	mFilesDir string       // 缓存对应的 cwd(失效判据:workspace 切换后重建)
@@ -333,12 +335,12 @@ func (a *App) Close() {
 // 回合结束(agentDoneMsg)再回空闲。
 func (a *App) submit(input string) {
 	ctx, cancel := context.WithCancel(context.Background())
-	a.cancelFn = cancel
+	a.cancelFn.Store(&cancel)
 	a.model.state.Running = true
 	a.model.state.LastTool = ""
 	go func() {
 		err := a.loop.Run(ctx, input)
-		a.cancelFn = nil
+		a.cancelFn.Store(nil)
 		a.program.Send(agentDoneMsg{err})
 	}()
 }
@@ -370,8 +372,8 @@ func workspaceName() string {
 
 // cancelCurrent 取消进行中的回合(取消链:turn → LLM 流 → 工具进程,见设计 §8)。
 func (a *App) cancelCurrent() {
-	if a.cancelFn != nil {
-		a.cancelFn()
+	if c := a.cancelFn.Load(); c != nil {
+		(*c)()
 	}
 }
 
@@ -381,7 +383,7 @@ func (a *App) command(raw string) error {
 	if a.cmds == nil {
 		return errString("命令不可用: ctx.commands 未装配(host-commands)")
 	}
-	fields := strings.Fields(strings.TrimPrefix(raw, "/"))
+	fields := sdk.SplitArgs(strings.TrimPrefix(raw, "/"))
 	if len(fields) == 0 {
 		return nil
 	}
@@ -827,6 +829,9 @@ func (a *App) cmdSessions() (string, error) {
 
 // truncWidthRunes 按 rune 截断(TUI 文本列;中文不切半字)。
 func truncWidthRunes(s string, n int) string {
+	if n < 1 {
+		return ""
+	}
 	r := []rune(s)
 	if len(r) <= n {
 		return s
@@ -1691,7 +1696,7 @@ func (a *App) registerInternalCommands() {
 					}
 				}, FreeArgs: func([]string) []string { return []string{"条数(off|unlimited|数字)"} }},
 			}},
-		{Name: "export", Usage: "/export [path]", Desc: "导出会话(.html 结尾→自包含网页;否则 jsonl)", Run: a.cmdExport,
+		{Name: "export", Usage: "/export [path]", Desc: "导出会话为 jsonl 文本", Run: a.cmdExport,
 			// 自由级断点:回车直接执行(默认路径 jsonl);输入路径回车则导出到该路径
 			Args: []sdk.ArgLevel{{FreeArgs: func([]string) []string { return []string{"路径?"} }}}},
 		{Name: "compact", Usage: "/compact [指示词]", Desc: "手动滚动摘要压缩(立即折叠旧历史;指示词仅作记录)", Run: a.cmdCompact,

@@ -29,6 +29,15 @@ function toggle(v: string): void {
     submit()
   }
 }
+function onEnter(e: KeyboardEvent): void {
+  if (e.isComposing || e.keyCode === 229) return // 输入法组字中不提交(见 InputBar 同款说明)
+  submit()
+}
+// skip 跳过作答:回传空答案(后端按取消/超时语义处理并广播 questiondone),
+// 不强迫用户作答——此前弹层无关闭路径,只能等回合侧超时。
+function skip(): void {
+  props.onAnswer([], '')
+}
 function submit(): void {
   const values = props.request?.multiple ? picked.value : picked.value.slice(0, 1)
   if (values.length === 0 && !text.value.trim()) return // 无选择且无文本:不提交(等用户输入)
@@ -58,9 +67,10 @@ function submit(): void {
         v-model="text"
         class="inp free"
         :placeholder="request.free_text ? '也可直接输入作答…' : '请输入你的回答…'"
-        @keydown.enter="submit"
+        @keydown.enter="onEnter"
       />
       <div class="actions">
+        <button class="skip" @click="skip">跳过</button>
         <button class="go" :disabled="picked.length === 0 && !text.trim()" @click="submit">提交</button>
       </div>
     </div>
@@ -112,9 +122,9 @@ function submit(): void {
 .pick {
   width: 100%;
   text-align: left;
-  background: var(--bg-soft);
+  background: var(--bg2);
   border: 1px solid var(--line);
-  border-radius: var(--r-btn);
+  border-radius: var(--r-input);
   padding: 8px 12px;
   color: var(--fg);
   cursor: pointer;
@@ -129,9 +139,9 @@ function submit(): void {
 .inp {
   width: 100%;
   box-sizing: border-box;
-  background: var(--bg-soft);
+  background: var(--bg2);
   border: 1px solid var(--line);
-  border-radius: var(--r-btn);
+  border-radius: var(--r-input);
   padding: 8px 12px;
   color: var(--fg);
   margin-bottom: 12px;
@@ -139,12 +149,25 @@ function submit(): void {
 .actions {
   display: flex;
   justify-content: flex-end;
+  gap: 8px;
+}
+.skip {
+  background: transparent;
+  color: var(--fg-dim);
+  border: 1px solid var(--line);
+  border-radius: var(--r-input);
+  padding: 8px 16px;
+  cursor: pointer;
+}
+.skip:hover {
+  color: var(--fg);
+  border-color: var(--fg-dim);
 }
 .go {
   background: var(--accent);
-  color: var(--on-accent);
+  color: var(--fg-on-accent);
   border: none;
-  border-radius: var(--r-btn);
+  border-radius: var(--r-input);
   padding: 8px 16px;
   cursor: pointer;
 }

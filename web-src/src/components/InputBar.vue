@@ -206,6 +206,9 @@ function autoGrow(): void {
 // 全选删除:浏览器原生 Cmd/Ctrl+A + Backspace 已是 textarea 默认;此处确认不拦截即可。
 // 平台归一快捷键统一处理:Enter=发送(裸/Cmd/Ctrl);Esc=关会话抽屉→清空输入。
 function onKeydown(e: KeyboardEvent): void {
+  // 输入法组字中(中文/日文候选上屏)的 Enter 不是"提交":isComposing 或 keyCode 229
+  // 时直接放行,否则 CJK 用户按 Enter 上屏即被当发送,输入内容未完成就发出去。
+  if (e.isComposing || e.keyCode === 229) return
   const mod = e.ctrlKey || e.metaKey
   if (e.key === 'Enter' && !e.shiftKey && (mod || !e.altKey)) {
     // 裸 Enter(无修饰)=发送;Cmd/Ctrl+Enter=发送(mac/win 习惯);Shift+Enter=换行(原生)

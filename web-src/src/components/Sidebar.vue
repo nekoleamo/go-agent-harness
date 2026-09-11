@@ -128,6 +128,13 @@ async function doSaveName(s: SessionInfo): Promise<void> {
     err.value = (e as Error).message
   }
 }
+// onNameEnter 改名输入框 Enter 保存:输入法组字期间不触发(isComposing/keyCode 229),
+// 否则中文会话名上屏即被当保存。
+function onNameEnter(e: KeyboardEvent, s: SessionInfo): void {
+  if (e.isComposing || e.keyCode === 229) return
+  e.preventDefault()
+  saveName(s)
+}
 function saveName(s: SessionInfo): void {
   const v = editing.value?.val.trim() ?? ''
   if (!v) {
@@ -256,7 +263,7 @@ defineExpose({ refresh })
                 placeholder="会话名"
                 data-tip="Enter 保存(需确认)"
                 @click.stop
-                @keydown.enter.prevent="saveName(s)"
+                @keydown.enter="onNameEnter($event, s)"
                 @keydown.esc="editing = null"
                 @blur="editing = null"
               />

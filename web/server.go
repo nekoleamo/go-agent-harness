@@ -297,7 +297,10 @@ func (s *Server) consumeStream(after uint64, sink func(Frame) error, stop <-chan
 	}
 	for {
 		select {
-		case f := <-ch:
+		case f, ok := <-ch:
+			if !ok {
+				return // 流被 hub 摘除(丢帧不可静默):断开让客户端按 after 重连重放
+			}
 			if f.ID > 0 {
 				if f.ID <= seen {
 					continue // 重放已发(去重)
@@ -468,7 +471,11 @@ func (s *Server) runCommand(content string, w http.ResponseWriter) {
 		http.Error(w, "命令不可用: ctx.commands 未装配", http.StatusServiceUnavailable)
 		return
 	}
-	fields := strings.Fields(content)
+	fields := sdk.SplitArgs(content)
+	if len(fields) == 0 { // 空输入:显式报错,不索引越界
+		http.Error(w, "空命令", http.StatusBadRequest)
+		return
+	}
 	name := strings.TrimPrefix(fields[0], "/")
 	spec, ok := s.cmds.Get(name)
 	if !ok {

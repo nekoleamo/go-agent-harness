@@ -1046,7 +1046,7 @@ func (m *Model) enter() {
 	// 多值自由参数:断点建立逐步向导(序列 >1;单参数保持旧直接输入语义)
 	if res.Pick == nil {
 		if len(res.Free) > 1 {
-			if f := strings.Fields(strings.TrimPrefix(res.Input, "/")); len(f) > 0 {
+			if f := sdk.SplitArgs(strings.TrimPrefix(res.Input, "/")); len(f) > 0 {
 				m.state.Free = &freeStep{Cmd: f[0], Params: res.Free, Base: len(f), Done: 0}
 			}
 		} else {
@@ -1296,7 +1296,7 @@ func (m *Model) freeContinue(input string) bool {
 	if f == nil || len(f.Params) == 0 {
 		return false
 	}
-	fields := strings.Fields(strings.TrimPrefix(input, "/"))
+	fields := sdk.SplitArgs(strings.TrimPrefix(input, "/"))
 	if len(fields) == 0 || fields[0] != f.Cmd {
 		m.state.Free = nil // 命令已变更:脱离向导
 		return false

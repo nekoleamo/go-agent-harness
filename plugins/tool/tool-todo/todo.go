@@ -510,21 +510,10 @@ func (s *Store) path() (string, error) {
 	return filepath.Join(root, sdk.ProjectKeyFromCwd()+".jsonl"), nil
 }
 
-// appendLine O_APPEND 追加一行(单行 JSON,含换行)。
-func appendLine(path string, tk Task) error {
-	b, err := json.Marshal(tk)
-	if err != nil {
-		return fmt.Errorf("todo: 编码: %w", err)
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
-		return fmt.Errorf("todo: 追加: %w", err)
-	}
-	defer f.Close()
-	if _, err := f.Write(append(b, '\n')); err != nil {
-		return fmt.Errorf("todo: 写入: %w", err)
-	}
-	return nil
+// appendLine 追加一行单行 JSON(经 sdk.AppendJSONLine:含尾部残行修复,防止断电
+// 半写后与新记录粘成坏行导致两条记录同时被读侧跳过)。
+func appendLine(path string, Task Task) error {
+	return sdk.AppendJSONLine(path, Task)
 }
 
 // findTask 在重放结果中找任务(按 id;deleted 墓碑仍返回,便于状态判断)。

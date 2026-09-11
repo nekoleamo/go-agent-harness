@@ -116,26 +116,31 @@ func stripDefaultPort(h string) string {
 }
 
 // writeFrame 写一条服务端帧(无掩码);写侧加锁 + 写超时(慢/死客户端不永久阻塞推送)。
+// 长度头按 RFC 6455 §5.2 三分支实现(7 位/16 位/64 位):工具结果全文可远超 64 KiB,
+// 此前仅实现 16 位分支并在 >0xFFFF 时直接报错 → 读一个大文件就让整个事件流断开、
+// 前端反复重连失败后永久降级 SSE。浏览器侧对单帧长度无上限。
 func (c *wsConn) writeFrame(op byte, p []byte) error {
-	if len(p) > 0xFFFF {
-		return errors.New("ws frame too large")
-	}
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
 	_ = c.raw.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	var hdr [4]byte
+	var hdr [10]byte
 	hdr[0] = 0x80 | op // FIN + opcode
-	if len(p) < 126 {
+	var err error
+	switch {
+	case len(p) < 126:
 		hdr[1] = byte(len(p))
-		if _, err := c.rw.Write(hdr[:2]); err != nil {
-			return err
-		}
-	} else {
+		_, err = c.rw.Write(hdr[:2])
+	case len(p) <= 0xFFFF:
 		hdr[1] = 126
 		binary.BigEndian.PutUint16(hdr[2:], uint16(len(p)))
-		if _, err := c.rw.Write(hdr[:4]); err != nil {
-			return err
-		}
+		_, err = c.rw.Write(hdr[:4])
+	default:
+		hdr[1] = 127
+		binary.BigEndian.PutUint64(hdr[2:], uint64(len(p)))
+		_, err = c.rw.Write(hdr[:10])
+	}
+	if err != nil {
+		return err
 	}
 	if _, err := c.rw.Write(p); err != nil {
 		return err

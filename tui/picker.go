@@ -54,9 +54,9 @@ func AdvanceEnter(input string, pick *Pick, levels levelsFn) advanceResult {
 	if pick.Level == 0 {
 		picked = []string{v}
 	} else {
-		picked = append(strings.Fields(strings.TrimPrefix(input, "/")), v)
+		picked = append(sdk.SplitArgs(strings.TrimPrefix(input, "/")), v)
 	}
-	newInput := "/" + strings.Join(picked, " ")
+	newInput := "/" + sdk.JoinArgs(picked)
 
 	if pick.Level == 0 {
 		return advanceLevel0(newInput, picked, v, levels)
@@ -109,7 +109,7 @@ func advanceInto(newInput string, picked []string, lv []sdk.ArgLevel, idx int, l
 // freeStepHints 自由断点提示行:单参数保持既有文案(兼容);多参数按逐步向导显示当前步。
 func freeStepHints(input string, free []string, idx int) []string {
 	name := ""
-	if f := strings.Fields(strings.TrimPrefix(input, "/")); len(f) > 0 {
+	if f := sdk.SplitArgs(strings.TrimPrefix(input, "/")); len(f) > 0 {
 		name = f[0]
 	}
 	n := len(free)

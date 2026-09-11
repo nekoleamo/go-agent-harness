@@ -39,9 +39,20 @@ func TestWSWriteTextFrames(t *testing.T) {
 	if got[0] != 0x81 || got[1] != 126 || got[2] != 0 || got[3] != 200 || !bytes.Equal(got[4:], long) {
 		t.Fatalf("长帧字节不符: 头=% x", got[:4])
 	}
-	// 超限拒绝
-	if err := c.WriteText(make([]byte, 0x10000)); err == nil {
-		t.Fatal("超 0xFFFF 应拒绝")
+	// 64 位扩展长度(RFC 6455 §5.2):工具结果可远超 64 KiB,不得再直接报错
+	// (报错会断开整条事件流 → 前端反复重连失败后永久降级 SSE)。
+	b.Reset()
+	huge := bytes.Repeat([]byte("b"), 0x10002)
+	if err := c.WriteText(huge); err != nil {
+		t.Fatalf("超 64 KiB 应走 64 位长度头: %v", err)
+	}
+	got = b.Bytes()
+	want := []byte{0x81, 127, 0, 0, 0, 0, 0, 1, 0, 2}
+	if !bytes.Equal(got[:10], want) {
+		t.Fatalf("64 位长度头不符: 头=% x want=% x", got[:10], want)
+	}
+	if !bytes.Equal(got[10:], huge) {
+		t.Fatal("64 位长帧载荷不符")
 	}
 }
 

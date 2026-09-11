@@ -9,28 +9,53 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
+// 主题可变样式:全部为指针,rebuildStyles 按当前调色板**原地重建**。
+// 旧实现把 fg(...) 固化在包级 var(init 期求值),ApplyTheme 只改 active map →
+// /theme、data.palette、theme.yaml 对主要前景色完全无效(只有现场取值的
+// markdown/语法/diff 跟随)。指针 + 原地赋值保证既有引用立即看到新色。
 var (
-	styleUser   = lipgloss.NewStyle().Foreground(fg(TokUser)).Bold(true)
-	styleAsst   = lipgloss.NewStyle().Foreground(fg(TokAssistant))
-	styleTool   = lipgloss.NewStyle().Foreground(fg(TokTool))
-	styleToolOK = lipgloss.NewStyle().Foreground(fg(TokToolOK)) // 工具结果成功行(绿,与调用琥珀区分)
-	styleMeta   = lipgloss.NewStyle().Foreground(fg(TokMeta))
-	styleThink  = lipgloss.NewStyle().Foreground(fg(TokThinking)).Italic(true) // 思维块(灰斜体,弱化不抢正文)
-	styleError  = lipgloss.NewStyle().Foreground(fg(TokError))
-	stylePrompt = lipgloss.NewStyle().Foreground(fg(TokPrompt)).Bold(true)
-	styleStatus = lipgloss.NewStyle().Foreground(fg(TokStatus))
-	styleBusy   = lipgloss.NewStyle().Foreground(fg(TokBusy))              // 运行中状态高亮(琥珀色,醒目)
-	stylePick   = lipgloss.NewStyle().Foreground(fg(TokPick)).Bold(true)   // 选择器高亮行
-	styleCursor = lipgloss.NewStyle().Foreground(fg(TokCursor)).Bold(true) // 输入块光标(琥珀)
-	// 滚动条:滑块(琥珀)与轨道(灰)——会话流超过窗口时右侧显示,位置反映浏览进度
-	styleBarThumb = lipgloss.NewStyle().Foreground(fg(TokBarThumb))
-	styleBarTrack = lipgloss.NewStyle().Foreground(fg(TokBarTrack))
-	// 滚动条增强:悬停高亮(更亮琥珀)与回底指示(▼,浏览历史时底行显示,点击回最新)
-	styleBarHover = lipgloss.NewStyle().Foreground(fg(TokBarHover))
-	styleBarEnd   = lipgloss.NewStyle().Foreground(fg(TokBarEnd)).Bold(true)
-	// P4-12 widget 行:输入行上方动态信息(浅灰,次要信息不抢视点)
-	styleWidget = lipgloss.NewStyle().Foreground(fg(TokWidget))
+	styleUser     = &lipgloss.Style{}
+	styleAsst     = &lipgloss.Style{}
+	styleTool     = &lipgloss.Style{}
+	styleToolOK   = &lipgloss.Style{}
+	styleMeta     = &lipgloss.Style{}
+	styleThink    = &lipgloss.Style{}
+	styleError    = &lipgloss.Style{}
+	stylePrompt   = &lipgloss.Style{}
+	styleStatus   = &lipgloss.Style{}
+	styleBusy     = &lipgloss.Style{}
+	stylePick     = &lipgloss.Style{}
+	styleCursor   = &lipgloss.Style{}
+	styleBarThumb = &lipgloss.Style{}
+	styleBarTrack = &lipgloss.Style{}
+	styleBarHover = &lipgloss.Style{}
+	styleBarEnd   = &lipgloss.Style{}
+	styleWidget   = &lipgloss.Style{}
 )
+
+// init 与 ApplyTheme/ResetTheme 都要调:包级样式是指针,初始为空样式,不建则无颜色。
+func init() { rebuildStyles() }
+
+// rebuildStyles 重建全部包级样式(palette.go 的 ApplyTheme/ResetTheme 亦调用)。
+func rebuildStyles() {
+	*styleUser = lipgloss.NewStyle().Foreground(fg(TokUser)).Bold(true)
+	*styleAsst = lipgloss.NewStyle().Foreground(fg(TokAssistant))
+	*styleTool = lipgloss.NewStyle().Foreground(fg(TokTool))
+	*styleToolOK = lipgloss.NewStyle().Foreground(fg(TokToolOK))
+	*styleMeta = lipgloss.NewStyle().Foreground(fg(TokMeta))
+	*styleThink = lipgloss.NewStyle().Foreground(fg(TokThinking)).Italic(true)
+	*styleError = lipgloss.NewStyle().Foreground(fg(TokError))
+	*stylePrompt = lipgloss.NewStyle().Foreground(fg(TokPrompt)).Bold(true)
+	*styleStatus = lipgloss.NewStyle().Foreground(fg(TokStatus))
+	*styleBusy = lipgloss.NewStyle().Foreground(fg(TokBusy))
+	*stylePick = lipgloss.NewStyle().Foreground(fg(TokPick)).Bold(true)
+	*styleCursor = lipgloss.NewStyle().Foreground(fg(TokCursor)).Bold(true)
+	*styleBarThumb = lipgloss.NewStyle().Foreground(fg(TokBarThumb))
+	*styleBarTrack = lipgloss.NewStyle().Foreground(fg(TokBarTrack))
+	*styleBarHover = lipgloss.NewStyle().Foreground(fg(TokBarHover))
+	*styleBarEnd = lipgloss.NewStyle().Foreground(fg(TokBarEnd)).Bold(true)
+	*styleWidget = lipgloss.NewStyle().Foreground(fg(TokWidget))
+}
 
 const maxHintRows = 6
 

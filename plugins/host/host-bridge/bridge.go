@@ -417,6 +417,7 @@ func startPlugin(bin string, cbAddr, cbToken string) (*rpc.Client, func(), error
 	cmd.Env = sdk.SanitizedEnv(os.Environ())
 	cmd.Env = append(cmd.Env, "GAH_CB_ADDR="+cbAddr, "GAH_CB_TOKEN="+cbToken)
 	cmd.Env = append(cmd.Env, externalEnvPass()...)
+	cmd.SysProcAttr = pluginProcAttr() // 独立进程组:退出时可连插件派生的子进程一并回收
 	client := plugin.NewClient(&plugin.ClientConfig{
 		HandshakeConfig: handshake,
 		Plugins: map[string]plugin.Plugin{
@@ -442,6 +443,7 @@ func startPlugin(bin string, cbAddr, cbToken string) (*rpc.Client, func(), error
 	return tc.client, func() {
 		proto.Close()
 		client.Kill()
+		killPluginGroup(cmd) // 组杀残余后代(MCP server 等):仅杀插件本体不够
 	}, nil
 }
 

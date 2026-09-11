@@ -512,7 +512,7 @@ watch(
   padding: 6px;
   background: #fff;
   border: 1px solid var(--line);
-  border-radius: var(--r-btn);
+  border-radius: var(--r-input);
   image-rendering: pixelated;
 }
 

@@ -29,17 +29,17 @@ func scrollMetrics(total, win, offset int) (top, thumb int) {
 func styleForKind(kind string) lipgloss.Style {
 	switch kind {
 	case "user":
-		return styleUser
+		return *styleUser
 	case "assistant":
-		return styleAsst
+		return *styleAsst
 	case "tool":
-		return styleTool
+		return *styleTool
 	case "meta":
-		return styleMeta
+		return *styleMeta
 	case "thinking":
-		return styleThink // 思维块灰斜体(弱化,不抢正文)
+		return *styleThink // 思维块灰斜体(弱化,不抢正文)
 	case "error":
-		return styleError
+		return *styleError
 	default:
 		return lipgloss.NewStyle()
 	}
@@ -49,7 +49,7 @@ func styleForKind(kind string) lipgloss.Style {
 // 与调用行(琥珀)/失败行(error 红)区分——语义色差(P4-7)。其余按 kind。
 func rowBaseStyle(p physRow) lipgloss.Style {
 	if p.kind == "tool" && strings.HasPrefix(p.text, "✓") {
-		return styleToolOK
+		return *styleToolOK
 	}
 	return styleForKind(p.kind)
 }
@@ -368,7 +368,12 @@ func wrapToLines(text string, w int) []string {
 	return out
 }
 
-// wrapSegment 按终端列宽折一段无换行文本:双宽字符不跨行拆分;不可见控制字符丢弃。
+// tabStop 制表符展开宽度(8 列 tab stop,与终端/tabwriter 惯例一致)。
+const tabStop = 8
+
+// wrapSegment 按终端列宽折一段无换行文本:双宽字符不跨行拆分;不可见控制字符丢弃;
+// 制表符按 8 列 tab stop 展开为空格(不可丢弃——代码/补丁缩进全靠它,且整行仅由
+// \t 构成时丢弃会让物理行数变少、鼠标划选/滚动锚点错位)。
 func wrapSegment(seg string, w int) []string {
 	if w < 1 {
 		w = 1
@@ -377,6 +382,21 @@ func wrapSegment(seg string, w int) []string {
 	var b strings.Builder
 	cw := 0
 	for _, r := range seg {
+		if r == '\t' {
+			n := tabStop - cw%tabStop
+			if cw > 0 && cw+n > w {
+				out = append(out, b.String()) // 本行放不下:折行后从新行 0 列重新对齐
+				b.Reset()
+				cw = 0
+				n = tabStop
+			}
+			if n > w {
+				n = w
+			}
+			b.WriteString(strings.Repeat(" ", n))
+			cw += n
+			continue
+		}
 		rw := runeCols(r)
 		if rw == 0 {
 			continue

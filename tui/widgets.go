@@ -38,7 +38,7 @@ func widgetStyle(level string) lipgloss.Style {
 	case "off":
 		return lipgloss.NewStyle().Foreground(fg(TokMeta))
 	}
-	return styleWidget
+	return *styleWidget
 }
 
 // Widget 一条 widget 行:ID 标识,Text 每次渲染求值(返回空 = 该帧不显示)。

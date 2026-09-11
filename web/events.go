@@ -162,15 +162,34 @@ func (h *EventHub) push(se *sdk.SessionEvent) {
 	h.broadcast(f)
 }
 
-// broadcast 向全部活跃流投递帧(非阻塞;流缓冲由 server 层负责 drain)。
+// broadcast 向全部活跃流投递帧(非阻塞;调用方持 h.mu)。
+// 会话帧丢弃不能静默:游标 replay 只在连接重建时发生,而"只是慢"的连接不会断——
+// 被丢的帧会永久缺失(前端消息与后端会话日志漂移,直到手动切会话)。故丢会话帧即
+// 摘除并关闭该流(在锁内摘,不会再有人写),读侧见通道关闭 → 断开 → 客户端按
+// after 游标重连重放补齐。非会话帧(status 等)丢弃无害:下一帧即最新。
 func (h *EventHub) broadcast(f Frame) {
+	if f.Type != FrameSession {
+		for _, ch := range h.subs {
+			select {
+			case ch <- f:
+			default:
+			}
+		}
+		return
+	}
+	keep := h.subs[:0]
 	for _, ch := range h.subs {
 		select {
 		case ch <- f:
+			keep = append(keep, ch)
 		default:
-			// 慢消费者丢弃该帧(流层经会话 Replay 兜底,不阻塞事件总线)
+			close(ch) // 摘除:读侧收到关闭 → 断流重连重放
 		}
 	}
+	for i := len(keep); i < len(h.subs); i++ {
+		h.subs[i] = nil // 释放引用,防订阅者泄漏
+	}
+	h.subs = keep
 }
 
 // Stream 返回一个只接收新帧的流(调用方负责 Unsubscribe)。
@@ -184,6 +203,7 @@ func (h *EventHub) Stream() (<-chan Frame, func()) {
 		defer h.mu.Unlock()
 		for i, c := range h.subs {
 			if c == ch {
+				// 已因丢帧被摘除时不会命中(语义等价:流已关闭)
 				h.subs = append(h.subs[:i], h.subs[i+1:]...)
 				break
 			}

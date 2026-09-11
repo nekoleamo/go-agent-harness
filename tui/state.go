@@ -181,13 +181,11 @@ func (s *State) ApplySessionEvent(ev *sdk.SessionEvent) {
 			}
 			// 摘要行(S2.1 单行截断);完整内容存 Full(上限防爆,会话日志仍是事实源)。
 			// S2.2 折叠:结果行可点击展开/收起(见 state.foldOpen)。
-			sum := full
-			if len(sum) > 160 {
-				sum = sum[:160] + "…"
-			}
+			// 按 rune 截断:CJK/emoji 在字节切口会被切成半个 rune,渲染成 U+FFFD。
+			sum := truncWidthRunes(full, 160)
 			sum = strings.ReplaceAll(sum, "\n", " ") // 摘要强制单行(多段折行由展开查看)
-			if len(sum) > 160 {
-				sum = sum[:160] + "…"
+			if r := []rune(sum); len(r) > 160 {
+				sum = string(r[:159]) + "…"
 			}
 			// P5.2 工具耗时:调用到结果真实耗时段(>=100ms)挂结果行尾(重放毫秒级自然抑制;
 			// toolStart 零值 = 无前置 ToolCall(异常/重放起点),不显示)
@@ -196,9 +194,11 @@ func (s *State) ApplySessionEvent(ev *sdk.SessionEvent) {
 					sum += " (" + fmtDur(dur) + ")"
 				}
 			}
-			stored := full
-			if len(stored) > foldFullLimit {
-				stored = stored[:foldFullLimit] + "…(截断,完整见会话日志)"
+			stored := truncWidthRunes(full, foldFullLimit) + "(截断,完整见会话日志)"
+			if []rune(stored)[len([]rune(stored))-1:] != nil && len([]rune(full)) > foldFullLimit {
+				// 已截断:提示语接在省略号之后(truncWidthRunes 自带 "…")
+			} else {
+				stored = full // 未截断:无需提示后缀
 			}
 			s.Lines = append(s.Lines, Line{Kind: kind, Text: label + " " + r.Name + ": " + sum, Full: stored})
 		}
@@ -658,10 +658,7 @@ func (s *State) WordRight() {
 
 // toolCallText 工具调用展示行。
 func toolCallText(tc sdk.ToolCall) string {
-	args := tc.Arguments
-	if len(args) > 80 {
-		args = args[:80] + "…"
-	}
+	args := truncWidthRunes(tc.Arguments, 80) // 按 rune 截断(参数含中文字段名时不切裂)
 	return "⚙ " + tc.Name + " " + args
 }
 

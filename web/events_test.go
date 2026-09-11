@@ -190,3 +190,32 @@ func TestInteractionResolvedFrames(t *testing.T) {
 	case <-time.After(50 * time.Millisecond):
 	}
 }
+
+// TestSlowConsumerSessionDropClosesStream 慢消费者丢会话帧必须摘流(通道关闭),
+// 让读侧断开连接、客户端按 after 游标重连重放——静默丢弃会让前端永久少消息。
+func TestSlowConsumerSessionDropClosesStream(t *testing.T) {
+	h := NewHub()
+	ch, release := h.Stream()
+	defer release()
+	n := 0
+	for i := 0; i < 300; i++ {
+		h.Push(Frame{Type: FrameSession, ID: uint64(i + 1), Payload: &sdk.SessionEvent{Kind: sdk.EventUserMessage, Seq: uint64(i + 1)}})
+		n++
+	}
+	// 排空后可读到的帧数 < 推送总数(有丢弃),且通道最终关闭
+	drained := 0
+	for {
+		select {
+		case _, ok := <-ch:
+			if !ok {
+				if drained >= 300 {
+					t.Fatalf("通道关闭前不应丢帧: drained=%d", drained)
+				}
+				return
+			}
+			drained++
+		case <-time.After(2 * time.Second):
+			t.Fatal("丢帧后流应被摘除并关闭(不得静默丢弃)")
+		}
+	}
+}

@@ -151,11 +151,15 @@ func ApplyTheme(overrides map[string]string) error {
 	for name, v := range overrides {
 		active[Token(name)] = v
 	}
+	rebuildStyles() // 包级样式必须在改色后重建,否则主要前景色仍旧色(见 render.go 注释)
 	return nil
 }
 
 // ResetTheme 重置当前调色板 = DefaultPalette(/theme default 与测试隔离用)。
-func ResetTheme() { active = clonePalette(DefaultPalette) }
+func ResetTheme() {
+	active = clonePalette(DefaultPalette)
+	rebuildStyles()
+}
 
 // ThemeSnapshot 当前生效调色板快照(token → 色值;测试/展示用)。
 func ThemeSnapshot() map[Token]string { return clonePalette(active) }

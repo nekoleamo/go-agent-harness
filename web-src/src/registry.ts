@@ -3,10 +3,13 @@
 // 本注册表为宿主默认实现(优先级 0;插件以更高 priority 覆盖,同优先级安装序后者胜)。
 // 契约:槽位名 kebab-case 跨档不变;渲染层禁止 v-html(Vue 模板转义天然保证)。
 import type { Component } from 'vue'
-import type { SessionEvent, StateView, ConfirmRequest } from './types'
+import type { StateView, ConfirmRequest } from './types'
+import type { Msg } from './sse'
 
 // 槽位 Props(宿主注入,契约 v1;UI 插件组件必须兼容):
-// stream    → { frames: SessionEvent[]; metas: MetaLine[]; running: boolean }
+// stream    → { frames: Msg[]; metas: MetaLine[]; running: boolean }
+//             (frames 是宿主消费引擎产出的展示消息 Msg,非原始 SessionEvent;
+//              按 SessionEvent 实现槽位的插件会渲染空白——v1.1 已对齐)
 // input     → { disabled: boolean; onSubmit(text: string): void }
 // statusbar → { state: StateView }
 // confirm   → { request: ConfirmRequest | null; onAnswer(ok: boolean): void }
@@ -15,7 +18,7 @@ export interface MetaLine {
   text: string
 }
 export interface StreamProps {
-  frames: SessionEvent[]
+  frames: Msg[]
   metas: MetaLine[]
   running: boolean
 }
