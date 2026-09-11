@@ -262,10 +262,17 @@ func runExternal(ctx context.Context, bin string, args ...string) error {
 	cmd := exec.CommandContext(ctx, bin, args...)
 	// 凭据隔离:外部转换器(libreoffice/pdftoppm)只需基础运行环境,不继承宿主配置与凭据
 	cmd.Env = sdk.SanitizedChildEnv()
+	// 独立进程组 + WaitDelay:转换器(shell 脚本包装)派生的孙进程持住 stdout 管道时
+	// Run 会永久阻塞(预览请求挂死、ctx 超时也解不开);组杀 + 超时兜底。
+	setProcessGroup(cmd)
+	cmd.WaitDelay = 3 * time.Second
 	var buf strings.Builder
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
+	// 输出封顶:损坏文档可让转换器狂刷日志,只保留尾部一条错误信息所需量
+	lim := &limitedBuilder{b: &buf, limit: converterOutputLimit}
+	cmd.Stdout = lim
+	cmd.Stderr = lim
 	err := cmd.Run()
+	killProcessGroup(cmd) // 组内残留(孙进程)一并回收;已退出时静默
 	if err == nil {
 		return nil
 	}

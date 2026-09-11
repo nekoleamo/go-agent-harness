@@ -110,7 +110,11 @@ func (cb *Callback) jobsCall(ctx context.Context, method, raw string, reply *str
 		if err := json.Unmarshal([]byte(raw), &p); err != nil {
 			return err
 		}
-		*reply = cb.jobs.Kill(p.ID).Error()
+		// Kill 契约:成功返回 nil error → 直接取 .Error() 会在 nil 上解引用 panic,
+		// 而 net/rpc 不 recover handler panic(崩宿主)。
+		if err := cb.jobs.Kill(p.ID); err != nil {
+			*reply = err.Error()
+		}
 		return nil
 	case "run":
 		if cb.jobs == nil {

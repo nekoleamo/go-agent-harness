@@ -122,6 +122,9 @@ type Bridge struct {
 	lg      *slog.Logger        // P3 软降级日志(sdk.Ctx.Logger();nil 时兜底 slog.Default)
 	mu      sync.RWMutex
 	entries map[string]*extEntry // bin 绝对路径 → 条目
+	// closed 卸载标记:closeAll 之后不得再 respawn(否则崩溃重启与卸载撞车时,
+	// 外部进程与工具注册永久残留 → 违反"卸载即撤销")。
+	closed bool
 }
 
 // logErr 记录外部插件加载失败(P3 软降级:不拖垮 boot,但信息不丢失)。
@@ -305,14 +308,20 @@ func (b *Bridge) reload(path string) {
 	b.mu.Unlock()
 }
 
-// closeAll 关闭全部插件条目。
+// closeAll 关闭全部插件条目:先摘条目(短锁),再锁外 unreg/kill——
+// kill 是优雅等待(每插件最长 2s),持 b.mu 会让所有 clientFor 阻塞。
 func (b *Bridge) closeAll() {
 	b.mu.Lock()
-	defer b.mu.Unlock()
+	b.closed = true
+	ents := make([]*extEntry, 0, len(b.entries))
 	for p, e := range b.entries {
+		ents = append(ents, e)
+		delete(b.entries, p)
+	}
+	b.mu.Unlock()
+	for _, e := range ents {
 		e.unreg()
 		e.kill()
-		delete(b.entries, p)
 	}
 }
 
@@ -329,6 +338,10 @@ func (b *Bridge) clientFor(path string) *rpc.Client {
 // onDead 连接错误 → 标记并异步重建进程(60s 节流,防崩溃循环)。
 func (b *Bridge) onDead(path string) {
 	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return
+	}
 	e, ok := b.entries[path]
 	if !ok || !time.Now().After(e.respawnAt) {
 		b.mu.Unlock()
@@ -347,18 +360,30 @@ func (b *Bridge) respawn(path string) {
 		return
 	}
 	b.mu.Lock()
-	if old, ok := b.entries[path]; ok {
+	if b.closed { // 卸载与重建撞车:不留"复活"的进程与工具注册
+		b.mu.Unlock()
+		e.kill()
+		return
+	}
+	old := b.entries[path]
+	b.mu.Unlock()
+	if old != nil {
 		old.unreg()
 	}
-	b.mu.Unlock()
 	unreg := b.registerAll(e)
 	b.mu.Lock()
-	if old, ok := b.entries[path]; ok {
-		old.kill()
+	if b.closed { // 注册期间卸载:立即撤销本次注册与进程
+		b.mu.Unlock()
+		unreg()
+		e.kill()
+		return
 	}
 	e.unreg = unreg
 	b.entries[path] = e
 	b.mu.Unlock()
+	if old != nil {
+		old.kill()
+	}
 }
 
 // startPlugin 启动外部插件进程,返回 rpc client 与 kill 函数(崩溃隔离:死进程快速失败)。
@@ -495,47 +520,60 @@ func (t *toolRPCClient) Execute(ctx context.Context, args string) (any, error) {
 		return map[string]any{"error": "外部插件重建中(崩溃自动拉起)"}, nil
 	}
 	timeout := rpcTimeoutFor(t.def)
-	type rpcOut struct {
-		reply ExecReply
-		err   error
-	}
-	call := func(reply *ExecReply) error {
-		err := cl.Call("Plugin.ExecuteNamed", &ExecNamedArgs{Name: t.name, JSONArgs: args}, reply)
-		if err != nil && isMethodMissing(err) {
-			// 旧单工具协议回退
-			return cl.Call("Plugin.Execute", &ExecArgs{JSONArgs: args}, reply)
+	// 调用方 ctx 的截止时间收紧超时(不另起 goroutine 包装同步 Call:超时路径会
+	// 永久泄漏 goroutine——与 rpcCall 注释同一纪律)。
+	if dl, ok := ctx.Deadline(); ok {
+		if until := time.Until(dl); until > 0 && until < timeout {
+			timeout = until
 		}
-		return err
 	}
-	ch := make(chan rpcOut, 1)
-	go func() {
-		var reply ExecReply
-		err := call(&reply)
-		ch <- rpcOut{reply, err}
-	}()
-	var out rpcOut
-	select {
-	case out = <-ch:
-	case <-ctx.Done():
-		return map[string]any{"error": "外部插件调用取消 " + ctx.Err().Error()}, nil
-	case <-time.After(timeout):
-		return map[string]any{"error": "外部插件不可达(超时)"}, nil
+	if err := ctx.Err(); err != nil {
+		return map[string]any{"error": "外部插件调用取消 " + err.Error()}, nil
 	}
-	if isConnErr(out.err) {
-		t.br.onDead(t.path)
-		return map[string]any{"error": "外部插件不可达(进程崩溃,自动重建中): " + out.err.Error()}, nil
+	var reply ExecReply
+	err := rpcCall(cl, "Plugin.ExecuteNamed", &ExecNamedArgs{Name: t.name, JSONArgs: args}, &reply, timeout)
+	if err != nil && isMethodMissing(err) {
+		// 旧单工具协议回退
+		err = rpcCall(cl, "Plugin.Execute", &ExecArgs{JSONArgs: args}, &reply, timeout)
 	}
-	if out.err != nil {
-		return map[string]any{"error": "外部插件不可达: " + out.err.Error()}, nil
+	if err != nil {
+		if isTimeoutErr(err) {
+			return map[string]any{"error": fmt.Sprintf(
+				"外部插件调用超时(>%s;长耗时工具应声明 timeout_ms): %s", timeout, t.name)}, nil
+		}
+		if isConnErr(err) {
+			t.br.onDead(t.path)
+			return map[string]any{"error": "外部插件不可达(进程崩溃,自动重建中): " + err.Error()}, nil
+		}
+		return map[string]any{"error": "外部插件不可达: " + err.Error()}, nil
 	}
-	if out.reply.Error != "" {
-		return map[string]any{"error": out.reply.Error}, nil
+	if reply.Error != "" {
+		return map[string]any{"error": reply.Error}, nil
+	}
+	// 结果尺寸上限:gob 解码不受限,超大结果会全量进宿主内存(jobs 侧已有 1 MiB 先例)。
+	if len(reply.Content) > maxBridgeResult {
+		return map[string]any{"error": fmt.Sprintf(
+			"外部插件结果超限(%d 字节 > %d):请缩小返回内容", len(reply.Content), maxBridgeResult)}, nil
 	}
 	var val any
-	if err := json.Unmarshal([]byte(out.reply.Content), &val); err == nil {
+	if err := json.Unmarshal([]byte(reply.Content), &val); err == nil {
 		return val, nil
 	}
-	return out.reply.Content, nil
+	return reply.Content, nil
+}
+
+// maxBridgeResult 外部插件单次执行结果的字节上限(超出结构化报错,不进内存)。
+const maxBridgeResult = 8 << 20
+
+// isTimeoutErr 判定 rpcCall 的超时错误(与连接错误区分:前者不该触发崩溃重建)。
+func isTimeoutErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	return strings.Contains(err.Error(), "超时")
 }
 
 // commandRPCClient M14:外部命令的宿主侧代理(经 RPC 转发执行/枚举选项;

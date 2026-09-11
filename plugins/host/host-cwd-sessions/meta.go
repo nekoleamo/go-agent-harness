@@ -67,34 +67,48 @@ func saveMeta(path string, m map[string]sessionMeta) error {
 	if err != nil {
 		return err
 	}
+	return writeIndexAtomic(path, b, 0o600)
+}
+
+// writeIndexAtomic 覆写式索引文件原子落盘(同目录临时文件 + chmod + rename):
+// workspaces.json / names.json / fork-tree.json / meta.json 共用。这些索引读端按
+// "坏 json = 空表"容忍,一次半截覆写即让整表消失,故必须原子替换。
+func writeIndexAtomic(path string, raw []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(dir, ".meta-*.json")
+	tmp, err := os.CreateTemp(dir, ".idx-*.json")
 	if err != nil {
 		return err
 	}
 	tmpName := tmp.Name()
-	if _, err := tmp.Write(b); err != nil {
+	cleanup := func() { _ = os.Remove(tmpName) }
+	if _, err := tmp.Write(raw); err != nil {
 		_ = tmp.Close()
-		_ = os.Remove(tmpName)
+		cleanup()
 		return err
 	}
-	if err := tmp.Chmod(0o600); err != nil {
+	if err := tmp.Chmod(perm); err != nil {
 		_ = tmp.Close()
-		_ = os.Remove(tmpName)
+		cleanup()
 		return err
 	}
 	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName)
+		cleanup()
 		return err
 	}
 	if err := os.Rename(tmpName, path); err != nil {
-		_ = os.Remove(tmpName)
+		cleanup()
 		return err
 	}
 	return nil
+}
+
+// quarantineCorrupt 把解析失败的索引文件改名留存(.corrupt-<时间戳>),不静默丢弃也不
+// 让它被"空表覆写"抹掉;改名失败(权限等)不影响调用方的容忍语义。
+func quarantineCorrupt(path string) {
+	_ = os.Rename(path, fmt.Sprintf("%s.corrupt-%s", path, time.Now().Format("20060102-150405")))
 }
 
 // RenameMeta 设置某会话文件名的元数据(空名清除名字字段;保留置顶与概述)。
@@ -144,13 +158,13 @@ func metaName(m map[string]sessionMeta, names map[string]string, file string) st
 
 // SetName 按 id 设置会话显示名(id 空 = 主会话;双写 meta.json + names.json)。
 func (s *Service) SetName(id, name string) error {
-	file := filepath.Base(SessionPath(SessionsRoot(), s.key, id))
+	file := filepath.Base(SessionPath(SessionsRoot(), s.Current(), id))
 	return s.renameMeta(file, name)
 }
 
 // SetSummary 写入概述缓存(F3:host-session-summary 经 ctx.cwdSessions 回写)。
 func (s *Service) SetSummary(id string, sum sdk.SessionSummary) error {
-	file := filepath.Base(SessionPath(SessionsRoot(), s.key, id))
+	file := filepath.Base(SessionPath(SessionsRoot(), s.Current(), id))
 	if !fileExists(filepath.Join(SessionsRoot(), file)) {
 		return fmt.Errorf("cwdsessions: 会话不存在: %s", file)
 	}
@@ -162,7 +176,7 @@ func (s *Service) SetSummary(id string, sum sdk.SessionSummary) error {
 
 // SetPinned 置顶/取消置顶(id 空 = 主会话;幂等;置顶上限 8)。
 func (s *Service) SetPinned(id string, pinned bool) error {
-	file := filepath.Base(SessionPath(SessionsRoot(), s.key, id))
+	file := filepath.Base(SessionPath(SessionsRoot(), s.Current(), id))
 	s.nmMu.Lock()
 	defer s.nmMu.Unlock()
 	m := loadMeta(metaPath())

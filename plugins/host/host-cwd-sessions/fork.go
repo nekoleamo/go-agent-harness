@@ -79,9 +79,9 @@ func (s *Service) ForkAt(seq uint64) (string, error) {
 	if len(cut) == 0 {
 		return "", fmt.Errorf("cwdsessions: fork seq %d 无继承事件(超出历史范围?)", seq)
 	}
-	parent := s.current // Open 前取父(切换后 current=新 id)
+	parent := s.CurrentSession() // Open 前取父(切换后 current=新 id)
 	src := orName(parent, "主")
-	id, path, err := forkID(s.key)
+	id, path, err := forkID(s.Current())
 	if err != nil {
 		return "", err
 	}
@@ -98,10 +98,10 @@ func (s *Service) ForkAt(seq uint64) (string, error) {
 
 // CloneCurrent 复制当前会话全量到新会话文件(同一分支的另一路演进)。返回新会话 id。
 func (s *Service) CloneCurrent() (string, error) {
-	parent := s.current // Open 前取父(切换后 current=新 id)
+	parent := s.CurrentSession() // Open 前取父(切换后 current=新 id)
 	evs := s.sessions.Replay()
 	src := orName(parent, "主")
-	id, path, err := forkID(s.key)
+	id, path, err := forkID(s.Current())
 	if err != nil {
 		return "", err
 	}
@@ -118,7 +118,7 @@ func (s *Service) CloneCurrent() (string, error) {
 
 // ForkPoints 某会话文件(空 id = 主会话)的用户消息分支点列表(时间序,seq 供 /fork)。
 func (s *Service) ForkPoints(id string) ([]sdk.ForkPoint, error) {
-	path := SessionPath(SessionsRoot(), s.key, id)
+	path := SessionPath(SessionsRoot(), s.Current(), id)
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {

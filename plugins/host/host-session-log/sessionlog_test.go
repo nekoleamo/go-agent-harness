@@ -2,14 +2,33 @@
 package sessionlog
 
 import (
+	"context"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
+
+// captureCtx 最小 sdk.Ctx:捕获 session 事件载荷(验证广播回填 Seq/TS,不依赖 core)。
+type captureCtx struct{ got []sdk.SessionEvent }
+
+func (c *captureCtx) Provide(string, any) error                      { return nil }
+func (c *captureCtx) Inject(string, any) error                       { return nil }
+func (c *captureCtx) Subscribe(string, sdk.AnyListener) sdk.Disposer { return func() {} }
+func (c *captureCtx) Emit(_ context.Context, name string, payload any, _ sdk.DispatchMode) (any, error) {
+	if name == sdk.EventSession {
+		if ev, ok := payload.(*sdk.SessionEvent); ok {
+			c.got = append(c.got, *ev)
+		}
+	}
+	return nil, nil
+}
+func (c *captureCtx) Logger() *slog.Logger { return slog.New(slog.DiscardHandler) }
 
 // stubCompressor 测试压缩器:一次把水位后所有事件折叠为一条摘要(最简单折叠)。
 // 用于验证 host-session-log 的注入整合(水位推进/摘要置顶/完整日志留盘)。
@@ -364,5 +383,122 @@ func TestHistorySidecarPath(t *testing.T) {
 	got := historySidecar("/a/b/sess.jsonl")
 	if got != "/a/b/sess.jsonl.history" {
 		t.Fatalf("sidecar 路径: %q", got)
+	}
+}
+
+// TestAppendBroadcastStampsSeqTS 广播载荷必须已回填 Seq/TS(web/events.go 依赖它生成
+// 帧 id 与断线续传游标;曾广播未回填副本 → 帧 id/TS 恒 0、重连全量重放)。
+func TestAppendBroadcastStampsSeqTS(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.jsonl")
+	l := newLog(dir)
+	l.SetPath(path)
+	c := &captureCtx{}
+	l.ctx = c
+	if err := l.Append(sdk.SessionEvent{Kind: sdk.EventUserMessage, Payload: sdk.UserMessage{Content: "hi"}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(c.got) != 1 {
+		t.Fatalf("应广播 1 条 session 事件: %d", len(c.got))
+	}
+	if c.got[0].Seq == 0 {
+		t.Fatal("广播载荷 Seq 必须已回填(>0),否则 Web 帧 id 恒 0")
+	}
+	if c.got[0].TS.IsZero() {
+		t.Fatal("广播载荷 TS 必须已回填,否则前端时间戳为零值")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	line := strings.SplitN(strings.TrimRight(string(raw), "\n"), "\n", 2)[0]
+	var disk sdk.SessionEvent
+	if err := json.Unmarshal([]byte(line), &disk); err != nil {
+		t.Fatalf("落盘首行必须可解析: %v", err)
+	}
+	if disk.Seq != c.got[0].Seq {
+		t.Fatalf("广播 Seq(%d) 必须与落盘同源(%d)", c.got[0].Seq, disk.Seq)
+	}
+}
+
+// TestLoadRepairsTrailingPartialLine 尾部残行(断电半写)必须修复,否则下一条 Append
+// (O_APPEND)会与残行粘成一行坏行,残行与紧随的新事件双双静默丢失。
+func TestLoadRepairsTrailingPartialLine(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.jsonl")
+	good, err := json.Marshal(sdk.SessionEvent{Kind: sdk.EventUserMessage, Seq: 1, TS: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 完整行 + 半截行(无终止符且 json 不完整)
+	if err := os.WriteFile(path, append(append(good, '\n'), []byte(`{"kind":"user/message","seq":2,`)...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	l := newLog(dir)
+	if err := l.Load(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Append(sdk.SessionEvent{Kind: sdk.EventUserMessage, Payload: sdk.UserMessage{Content: "b"}}); err != nil {
+		t.Fatal(err)
+	}
+	// 重载:新事件必须仍在(未被残行粘坏丢弃)
+	l2 := newLog(dir)
+	if err := l2.Load(path); err != nil {
+		t.Fatal(err)
+	}
+	evs := l2.Replay()
+	if len(evs) != 2 {
+		t.Fatalf("残行修复后应保留 2 条事件(1 完整 + 1 新),实得 %d", len(evs))
+	}
+	if evs[1].Seq <= evs[0].Seq {
+		t.Fatalf("seq 必须递增: %d → %d", evs[0].Seq, evs[1].Seq)
+	}
+}
+
+// TestLoadKeepsCompleteTrailingLine 末行完整但缺终止符(崩溃前未写 \n)时补终止符,不丢事件。
+func TestLoadKeepsCompleteTrailingLine(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.jsonl")
+	good, err := json.Marshal(sdk.SessionEvent{Kind: sdk.EventUserMessage, Seq: 7, TS: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, good, 0o600); err != nil { // 无终止符
+		t.Fatal(err)
+	}
+	l := newLog(dir)
+	if err := l.Load(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Append(sdk.SessionEvent{Kind: sdk.EventUserMessage, Payload: sdk.UserMessage{Content: "next"}}); err != nil {
+		t.Fatal(err)
+	}
+	l2 := newLog(dir)
+	if err := l2.Load(path); err != nil {
+		t.Fatal(err)
+	}
+	if evs := l2.Replay(); len(evs) != 2 {
+		t.Fatalf("补终止符后应保留 2 条事件,实得 %d", len(evs))
+	}
+}
+
+// TestLoadFailureKeepsState 非 NotExist 的读失败不得改变现状(避免"已切路径 + 空历史"分叉)。
+func TestLoadFailureKeepsState(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.jsonl")
+	l := newLog(dir)
+	l.SetPath(path)
+	if err := l.Append(sdk.SessionEvent{Kind: sdk.EventUserMessage, Payload: sdk.UserMessage{Content: "keep"}}); err != nil {
+		t.Fatal(err)
+	}
+	// 目标为目录:EISDIR 类失败必须不改动现有历史与路径
+	if err := l.Load(dir); err == nil {
+		t.Fatal("读目录应显式失败")
+	}
+	if evs := l.Replay(); len(evs) != 1 {
+		t.Fatalf("失败后历史必须保持(%d)", len(evs))
+	}
+	if l.path != path {
+		t.Fatalf("失败后路径必须保持: %s", l.path)
 	}
 }

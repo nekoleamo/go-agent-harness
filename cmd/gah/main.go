@@ -187,13 +187,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	reg, c, err := bootWithRecovery(logger, tree, profilePath, bundleNames)
+	reg, c, tree, err := bootWithRecovery(logger, tree, profilePath, bundleNames)
 	if err != nil {
 		logger.Error("boot: 启动失败(已尝试回滚):", "err", err)
 		os.Exit(1)
 	}
 	defer reg.DisposeAll()
-	// 启动成功 → 备份当前生效配置(下次坏配置可回滚)
+	// 启动成功 → 备份**实际生效**的配置(自愈回滚后是备份树,不是启动失败的那棵;
+	// 若存的是失败树,第一次自愈就把唯一好备份换成坏配置 → 下次回滚必然失败,
+	// 自愈能力退化为一次性)。
 	if err := config.SaveBackup(tree, profilePath, 10); err != nil {
 		logger.Warn("boot: 配置备份失败", "err", err)
 	}
@@ -257,23 +259,27 @@ func runHeadless(c *ctx.Ctx, input string, logger *slog.Logger) error {
 }
 
 // bootWithRecovery 装配并启动插件;失败时回滚最近备份配置树重试一次。
-func bootWithRecovery(logger *slog.Logger, tree *config.Tree, profilePath string, bundleNames []string) (*plugin.Registry, *ctx.Ctx, error) {
+func bootWithRecovery(logger *slog.Logger, tree *config.Tree, profilePath string, bundleNames []string) (*plugin.Registry, *ctx.Ctx, *config.Tree, error) {
 	reg, c, err := assembleAndStart(logger, tree, profilePath, bundleNames)
 	if err == nil {
-		return reg, c, nil
+		return reg, c, tree, nil
 	}
 	// 自愈:尝试回滚最近正常备份
 	logger.Error("boot: 启动失败,尝试回滚上次正常配置", "err", err)
 	backup, berr := config.LoadLatestBackup(profilePath)
 	if berr != nil {
-		return nil, nil, fmt.Errorf("%v(且回滚读取失败: %v)", err, berr)
+		return nil, nil, nil, fmt.Errorf("%v(且回滚读取失败: %v)", err, berr)
 	}
 	if backup == nil {
-		return nil, nil, fmt.Errorf("%v(无备份可回滚)", err)
+		return nil, nil, nil, fmt.Errorf("%v(无备份可回滚)", err)
 	}
 	logger.Warn("boot: 已回滚到上次正常配置,重试启动")
 	reg2, c2, err2 := assembleAndStart(logger, backup, profilePath, bundleNames)
-	return reg2, c2, err2
+	if err2 != nil {
+		return nil, nil, nil, err2
+	}
+	// 回传实际生效的树:调用方据此写备份,避免把失败配置存成新回滚点。
+	return reg2, c2, backup, nil
 }
 
 // assembleAndStart 装配+启动(内部服务注入)。

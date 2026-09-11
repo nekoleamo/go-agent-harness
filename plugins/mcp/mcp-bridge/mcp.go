@@ -181,6 +181,12 @@ type mcpClient struct {
 	out    *bufio.Reader
 	nextID int
 	mu     sync.Mutex
+
+	// lines 后台读线程投递的 stdout 行(关闭 = 读结束,readErr 记原因);
+	// 阻塞读放在独立 goroutine,调用侧才能 select ctx.Done 真正中断
+	// (此前在持 m.mu 的情况下阻塞 ReadBytes:server 卡住即挂死整个回合且取消无效)。
+	lines   chan []byte
+	readErr error
 }
 
 func spawn(command string, args []string) (*mcpClient, error) {
@@ -199,7 +205,29 @@ func spawn(command string, args []string) (*mcpClient, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	return &mcpClient{cmd: cmd, stdin: stdin, out: bufio.NewReader(stdout)}, nil
+	m := &mcpClient{cmd: cmd, stdin: stdin, out: bufio.NewReader(stdout), lines: make(chan []byte, linesCap)}
+	m.startReader()
+	return m, nil
+}
+
+// linesCap 读线程投递缓冲(取消后无人消费时读线程最多阻塞在写入上,不无限占用内存)。
+const linesCap = 256
+
+// startReader 后台逐行读 stdout:read 侧永不在持锁路径阻塞。
+func (m *mcpClient) startReader() {
+	go func() {
+		for {
+			line, err := m.out.ReadBytes('\n')
+			if len(line) > 0 {
+				m.lines <- line
+			}
+			if err != nil {
+				m.readErr = err
+				close(m.lines)
+				return
+			}
+		}
+	}()
 }
 
 func (m *mcpClient) close() {
@@ -230,14 +258,19 @@ func (m *mcpClient) call(ctx context.Context, method string, params any, result 
 		return err
 	}
 	for {
+		var line []byte
 		select {
 		case <-ctx.Done():
+			// 中途取消:未读响应由后续调用按 id 跳过(JSON-RPC 有 id,不会错配)。
 			return ctx.Err()
-		default:
-		}
-		line, err := m.out.ReadBytes('\n')
-		if err != nil {
-			return err
+		case l, ok := <-m.lines:
+			if !ok {
+				if m.readErr != nil {
+					return m.readErr
+				}
+				return io.EOF
+			}
+			line = l
 		}
 		var resp rpcResp
 		if err := json.Unmarshal(line, &resp); err != nil {

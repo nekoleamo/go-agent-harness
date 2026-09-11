@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	pdf "github.com/Detective-XH/gopdf"
@@ -127,6 +128,9 @@ type Service struct {
 	self       *selfRaster              // SELF-1 自包含光栅(默认关闭)
 
 	assets map[string]assetRef
+	// assetsMu 保护 assets:Preview/Asset 由 web 每请求一 goroutine 并发调用,
+	// 无锁读写 map 触发 fatal error: concurrent map writes(运行时 throw,recover 无效)。
+	assetsMu sync.RWMutex
 }
 
 // New 构造文档服务(注册基线抽取器:text/code/binary/image/unsupported)。
@@ -278,7 +282,9 @@ func (s *Service) RegisterExtractor(f sdk.DocFormat, fn extractor) {
 func (s *Service) RegisterAsset(abs, part, mime string) string {
 	abs = realPathOrClean(abs)
 	id := assetID(abs, part)
+	s.assetsMu.Lock()
 	s.assets[id] = assetRef{kind: assetKindZip, doc: abs, abs: abs, part: part, mime: mime}
+	s.assetsMu.Unlock()
 	return id
 }
 
@@ -287,7 +293,9 @@ func (s *Service) RegisterFileAsset(doc, abs, mime string) string {
 	doc = realPathOrClean(doc)
 	abs = realPathOrClean(abs)
 	id := assetID(doc+"\x00"+abs, "")
+	s.assetsMu.Lock()
 	s.assets[id] = assetRef{kind: assetKindFile, doc: doc, abs: abs, mime: mime}
+	s.assetsMu.Unlock()
 	return id
 }
 
@@ -349,7 +357,9 @@ func (s *Service) Asset(ctx context.Context, req sdk.DocRequest, assetID string)
 	if err != nil {
 		return nil, "", err
 	}
+	s.assetsMu.RLock()
 	ref, ok := s.assets[assetID]
+	s.assetsMu.RUnlock()
 	if !ok || ref.doc != abs {
 		return nil, "", fmt.Errorf("%w: 未知内嵌资产 %s", sdk.ErrDocUnsupported, assetID)
 	}

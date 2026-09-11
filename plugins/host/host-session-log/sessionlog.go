@@ -73,10 +73,74 @@ func (l *Log) SetPath(path string) {
 	l.path = path
 }
 
-// Load 切换到指定会话:关闭当前落盘文件、清空内存事件、读入 path 的 jsonl
-// 已有事件(容忍坏行)并恢复序号(seq 接续;文件缺失/空 = 全新会话)。
-// path 空 = 纯内存会话。切换会话时由 host-cwd-sessions 调用。
+// Load 切换到指定会话:读入 path 的 jsonl 并恢复历史;path 空 = 置空(不落盘)。
+// 先读盘成局部状态,全部成功后再一次性提交(path/events/seq 同源)——非 NotExist 失败
+// (权限/目录/EIO)不改动现状,避免留下"已切路径 + 空历史"的分叉(Append 落到失败路径)。
 func (l *Log) Load(path string) error {
+	historyLimit := loadHistory(path)
+	var (
+		events []sdk.SessionEvent
+		maxSeq uint64
+	)
+	if path != "" {
+		f, err := os.Open(path)
+		if err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("sessionlog: load open %s: %w", path, err)
+		}
+		if err == nil {
+			// 单行上限 16MB:web_fetch 1MB 正文经 JSON 转义膨胀可到 ~2MB(实测 1.9MB),
+			// 旧上限 1MB 会让有效事件行触发 token too long 拖垮整个 boot——提高余量;
+			// 仍超限(>16MB 的极端单行)按坏行容忍跳过,不阻断历史恢复。
+			sc := bufio.NewScanner(f)
+			sc.Buffer(make([]byte, 0, 256*1024), 16*1024*1024)
+			var off, lastStart int64 // off 按"每行含 \n"累计;lastStart 末行起点
+			lastOK := false
+			for sc.Scan() {
+				line := sc.Bytes()
+				lastStart = off
+				off += int64(len(line)) + 1
+				if len(line) == 0 {
+					continue
+				}
+				var ev sdk.SessionEvent
+				if err := json.Unmarshal(line, &ev); err != nil {
+					lastOK = false
+					continue // 容忍坏行(旧格式/半写):不中断恢复
+				}
+				// Payload 还原:json 反序列化后 Payload 是 map[string]any,按 Kind 二次还原为
+				// 具体类型(展示层 ApplySessionEvent/投影 DeriveMessages 全靠类型断言;
+				// 不还原则重放 11179 事件投影 0 行——TUI 启动/切换会话历史不可见)。
+				ev.Payload = normalizePayload(&ev)
+				if ev.Seq > maxSeq {
+					maxSeq = ev.Seq
+				}
+				events = append(events, ev)
+				lastOK = true
+			}
+			serr := sc.Err()
+			size := int64(0)
+			if st, serr2 := f.Stat(); serr2 == nil {
+				size = st.Size()
+			}
+			f.Close()
+			if serr != nil && !errors.Is(serr, bufio.ErrTooLong) {
+				return fmt.Errorf("sessionlog: load read %s: %w", path, serr)
+			}
+			// 尾部残行(缺 \n = 崩溃/断电半写)修复:能解析 → 补终止符(完整事件只缺 \n);
+			// 解析失败 → 截断。否则下一条 Append(O_APPEND)会与残行粘成一行坏行,
+			// 残行与紧随其后的新事件双双静默丢失(破坏"模型可见即已记录")。
+			if serr == nil && size == off-1 {
+				if lastOK {
+					if fh, ferr := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600); ferr == nil {
+						_, _ = fh.Write([]byte("\n"))
+						fh.Close()
+					}
+				} else if terr := os.Truncate(path, lastStart); terr != nil {
+					return fmt.Errorf("sessionlog: 截断残行 %s: %w", path, terr)
+				}
+			}
+		}
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.file != nil {
@@ -84,56 +148,10 @@ func (l *Log) Load(path string) error {
 		l.file = nil
 	}
 	l.path = path
-	l.events = nil
+	l.events = events
 	l.compressedUntil = -1
-	// 恢复持久化历史注入条数(重启/切换会话后一致;无 sidecar → 0 = 全部)
-	l.historyLimit = loadHistory(path)
-	if path == "" {
-		return nil
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil // 新会话:无历史,继续从头记
-		}
-		return fmt.Errorf("sessionlog: load open %s: %w", path, err)
-	}
-	defer f.Close()
-	var maxSeq uint64
-	// 单行上限 16MB:web_fetch 1MB 正文经 JSON 转义膨胀可到 ~2MB(实测 1.9MB),
-	// 旧上限 1MB 会让有效事件行触发 token too long 拖垮整个 boot——提高余量;
-	// 仍超限(>16MB 的极端单行)按坏行容忍跳过,不阻断历史恢复。
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 256*1024), 16*1024*1024)
-	for sc.Scan() {
-		line := sc.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-		var ev sdk.SessionEvent
-		if err := json.Unmarshal(line, &ev); err != nil {
-			continue // 容忍坏行(旧格式/半写):不中断恢复
-		}
-		// Payload 还原:json 反序列化后 Payload 是 map[string]any,按 Kind 二次还原为
-		// 具体类型(展示层 ApplySessionEvent/投影 DeriveMessages 全靠类型断言;
-		// 不还原则重放 11179 事件投影 0 行——TUI 启动/切换会话历史不可见)。
-		ev.Payload = normalizePayload(&ev)
-		if ev.Seq > maxSeq {
-			maxSeq = ev.Seq
-		}
-		l.events = append(l.events, ev)
-	}
-	if err := sc.Err(); err != nil {
-		if errors.Is(err, bufio.ErrTooLong) {
-			// 极端单行(>16MB):丢弃该行及其后(Scanner 终止),恢复已读部分——
-			// 会话为追加日志,不阻断 boot;seq 接续到超限行前最后正常事件。
-			l.seq.Store(maxSeq)
-			return nil
-		}
-		return fmt.Errorf("sessionlog: load read %s: %w", path, err)
-	}
-	// 序号从历史顶续接(新事件 Seq 不复用)
-	l.seq.Store(maxSeq)
+	l.historyLimit = historyLimit
+	l.seq.Store(maxSeq) // 序号从历史顶续接(新事件 Seq 不复用)
 	return nil
 }
 
@@ -190,16 +208,19 @@ func (l *Log) RegisterCompressor(budget int, c sdk.SessionCompressor) {
 // Append 追加事件并落盘(jsonl;落盘失败仅记内存 + 返回错误,不丢事件)。
 func (l *Log) Append(ev sdk.SessionEvent) error {
 	l.mu.Lock()
-	err := l.appendLocked(ev)
+	stamped, err := l.appendLocked(ev)
 	l.mu.Unlock()
 	if err == nil && l.ctx != nil {
-		l.ctx.Emit(context.Background(), sdk.EventSession, &ev, sdk.Emit)
+		// 广播回填后的事件(与落盘同源):web/events.go 依赖载荷自带 Seq/TS 支撑
+		// Last-Event-ID 断线续传与前端时间戳;此前广播未回填的副本 → 帧 id/TS 恒为 0。
+		l.ctx.Emit(context.Background(), sdk.EventSession, &stamped, sdk.Emit)
 	}
 	return err
 }
 
-// appendLocked 锁内追加:事件入列 + 落盘(调用方持有 mu;summary 落盘等内部路径使用)。
-func (l *Log) appendLocked(ev sdk.SessionEvent) error {
+// appendLocked 锁内追加:回填 Seq/TS + 事件入列 + 落盘,返回回填后的事件
+// (调用方持有 mu;summary 落盘等内部路径使用)。
+func (l *Log) appendLocked(ev sdk.SessionEvent) (sdk.SessionEvent, error) {
 	ev.Seq = l.seq.Add(1)
 	if ev.TS.IsZero() {
 		ev.TS = time.Now()
@@ -207,16 +228,16 @@ func (l *Log) appendLocked(ev sdk.SessionEvent) error {
 	l.events = append(l.events, ev)
 	f := l.file
 	if err := l.ensureFileLocked(); err != nil && f == nil {
-		return err
+		return ev, err
 	}
 	if l.file != nil {
 		line, jerr := json.Marshal(ev)
 		if jerr == nil {
 			_, jerr = l.file.Write(append(line, '\n'))
 		}
-		return jerr
+		return ev, jerr
 	}
-	return nil
+	return ev, nil
 }
 
 func (l *Log) ensureFileLocked() error {
@@ -226,7 +247,7 @@ func (l *Log) ensureFileLocked() error {
 	if err := os.MkdirAll(filepath.Dir(l.path), 0o755); err != nil {
 		return fmt.Errorf("sessionlog: mkdir: %w", err)
 	}
-	f, err := os.OpenFile(l.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(l.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("sessionlog: open %s: %w", l.path, err)
 	}
@@ -266,7 +287,7 @@ func (l *Log) deriveLocked() []sdk.LLMMessage {
 	// 预算压缩:投影超限且已注册压缩器 → 滚动折叠最旧块,并以新水位重建投影
 	if l.budget > 0 && l.compressor != nil && approxChars(out) > l.budget {
 		l.compressedUntil = l.compressor.Fold(l.events, l.compressedUntil, l.budget,
-			func(s string) { _ = l.appendLocked(sdk.SessionEvent{Kind: sdk.EventSummary, Payload: s}) })
+			func(s string) { _, _ = l.appendLocked(sdk.SessionEvent{Kind: sdk.EventSummary, Payload: s}) })
 		out = l.projectLocked(l.compressedUntil)
 	}
 	return out
@@ -355,7 +376,7 @@ func (l *Log) persistHistory(path string, n int) {
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return
 	}
-	if err := os.WriteFile(p, []byte(fmt.Sprint(n)), 0o644); err != nil {
+	if err := os.WriteFile(p, []byte(fmt.Sprint(n)), 0o600); err != nil {
 		return
 	}
 }
@@ -399,7 +420,7 @@ func (l *Log) Compact(prompt string) (string, int, error) {
 	}
 	old := l.compressedUntil
 	w := l.compressor.Fold(l.events, l.compressedUntil, l.budget, func(s string) {
-		_ = l.appendLocked(sdk.SessionEvent{Kind: sdk.EventSummary, Payload: s})
+		_, _ = l.appendLocked(sdk.SessionEvent{Kind: sdk.EventSummary, Payload: s})
 	})
 	l.compressedUntil = w
 	folded := w - old

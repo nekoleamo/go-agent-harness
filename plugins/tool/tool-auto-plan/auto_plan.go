@@ -430,15 +430,8 @@ func (s *Store) genID(path string) string {
 func (s *Store) path() (string, error) {
 	root := s.root
 	if root == "" {
-		home := os.Getenv("GAH_HOME")
-		if home == "" {
-			uh, err := os.UserHomeDir()
-			if err != nil {
-				return "", err
-			}
-			home = filepath.Join(uh, ".gah")
-		}
-		root = filepath.Join(home, "plans")
+		// 数据根唯一经 sdk.Home()(不落 ~/.gah:便携纪律 + 解析链唯一)
+		root = filepath.Join(sdk.Home(), "plans")
 	}
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return "", err

@@ -36,10 +36,19 @@ func NewClient(command string, args []string) (*Client, error) {
 	for _, d := range defs {
 		name := "mcp_" + d.Name
 		c.names[name] = d.Name
-		c.defs = append(c.defs, sdk.ToolDefinition{Name: name, Description: d.Description, InputSchema: d.InputSchema})
+		// MCP server 不声明超时 → 桥默认 3s 会误杀浏览器/DB/代码执行类慢工具
+		// (且外部进程仍在跑并持锁,后续调用级联超时)。声明较长默认;宿主 ctx 仍可中断。
+		c.defs = append(c.defs, sdk.ToolDefinition{
+			Name: name, Description: d.Description, InputSchema: d.InputSchema,
+			TimeoutMs: mcpToolTimeoutMs,
+		})
 	}
 	return c, nil
 }
+
+// mcpToolTimeoutMs MCP 工具默认超时(毫秒):MCP server 不提供超时声明,
+// 桥默认 3s 对慢 server 过短,故统一声明一个较宽松的默认值。
+const mcpToolTimeoutMs = 120_000
 
 // Definitions 全部 MCP 工具定义(经桥协议暴露,命名 mcp_<name>)。
 func (c *Client) Definitions() []sdk.ToolDefinition { return c.defs }

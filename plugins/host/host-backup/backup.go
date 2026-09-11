@@ -320,10 +320,13 @@ func extractTarGz(arc, root string) error {
 			return fmt.Errorf("坏归档(tar 读取失败): %w", err)
 		}
 		name := filepath.FromSlash(hdr.Name)
-		if filepath.IsAbs(name) || strings.HasPrefix(name, ".."+string(filepath.Separator)) || name == ".." {
+		dst := filepath.Join(root, name)
+		// 越界防护:Join 会 Clean 掉中间 ".." 段("a/../../x"),只看前缀会漏;
+		// 归一化后按 Rel 判定必须仍在 root 内(含绝对路径与 Windows 盘符情形)。
+		if rel, rerr := filepath.Rel(root, dst); rerr != nil || filepath.IsAbs(name) ||
+			rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			return fmt.Errorf("归档含越界条目,已中止: %s", hdr.Name)
 		}
-		dst := filepath.Join(root, name)
 		switch hdr.Typeflag {
 		case tar.TypeDir:
 			if err := os.MkdirAll(dst, os.FileMode(hdr.Mode)); err != nil {

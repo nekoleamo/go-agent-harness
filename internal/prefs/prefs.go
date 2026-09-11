@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
 )
 
 // Prefs 偏好快照。字段零值 = 未设置(加载后保持默认)。
@@ -55,8 +56,32 @@ func Load() Prefs {
 	return p
 }
 
+// mu 进程内串行 read-modify-write:偏好是"整对象覆写",两个并发写者(web 每请求一
+// goroutine、TUI 与 Web 同进程)各持同一快照会互相抹掉字段(表现为偏好莫名回退)。
+var mu sync.Mutex
+
 // Save 覆写偏好(GAH_HOME 未设 = 跳过;目录自动创建;失败静默——非关键路径)。
 func Save(p Prefs) {
+	mu.Lock()
+	defer mu.Unlock()
+	saveLocked(p)
+}
+
+// Update 读-改-写偏好:进程内互斥 + 落盘前重读文件,只改回调涉及的字段,
+// 避免并发写者用共享快照整体覆写抹掉对方刚写入的偏好。
+func Update(fn func(*Prefs)) {
+	if fn == nil {
+		return
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	p := Load()
+	fn(&p)
+	saveLocked(p)
+}
+
+// saveLocked Save 的实现体(调用方持有 mu;不做加锁)。
+func saveLocked(p Prefs) {
 	path := Path()
 	if path == "" {
 		return
@@ -106,24 +131,9 @@ func writeFileAtomic(path string, raw []byte, perm os.FileMode) error {
 	return nil
 }
 
-// SetThinking / SetSandbox / SetHistory 便捷更新(读-改-写)。
-func SetThinking(v string) {
-	p := Load()
-	p.Thinking = v
-	Save(p)
-}
-func SetSandbox(v string) {
-	p := Load()
-	p.Sandbox = v
-	Save(p)
-}
-func SetHistory(n int) {
-	p := Load()
-	p.History = &n
-	Save(p)
-}
-func SetApproval(v string) {
-	p := Load()
-	p.Approval = v
-	Save(p)
-}
+// SetThinking / SetSandbox / SetHistory / SetApproval 便捷更新(全走 Update:
+// 读-改-写在锁内完成,不与他写者的字段互相覆盖)。
+func SetThinking(v string) { Update(func(p *Prefs) { p.Thinking = v }) }
+func SetSandbox(v string)  { Update(func(p *Prefs) { p.Sandbox = v }) }
+func SetHistory(n int)     { Update(func(p *Prefs) { p.History = &n }) }
+func SetApproval(v string) { Update(func(p *Prefs) { p.Approval = v }) }

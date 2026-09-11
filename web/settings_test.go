@@ -120,7 +120,7 @@ func TestPrefsPersistAndApply(t *testing.T) {
 
 	// 写入偏好(模拟用户退出时设置)
 	h := 20
-	savePrefs(prefs.Prefs{Thinking: "high", Sandbox: "full-access", History: &h})
+	prefs.Save(prefs.Prefs{Thinking: "high", Sandbox: "full-access", History: &h})
 	p := loadPrefs()
 	if p.Thinking != "high" || p.Sandbox != "full-access" || p.History == nil || *p.History != 20 {
 		t.Fatalf("roundtrip 不符: %+v", p)
@@ -145,7 +145,7 @@ func TestPrefsPersistAndApply(t *testing.T) {
 	}
 
 	// 非法 thinking 值不阻塞(跳过该条)
-	savePrefs(prefs.Prefs{Thinking: "nope"})
+	prefs.Save(prefs.Prefs{Thinking: "nope"})
 	s2, _ := newTestServer()
 	s2.llm = &thinkingLLM{}
 	s2.ApplyPrefs() // 不应 panic/不应 set

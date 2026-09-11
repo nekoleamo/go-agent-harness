@@ -4,6 +4,7 @@ package prefs
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -53,4 +54,22 @@ func TestPrefsLegacyMigrate(t *testing.T) {
 		t.Fatalf("无 GAH_HOME Load 应零值: %+v", l)
 	}
 	Save(Prefs{Thinking: "high"}) // no-op
+}
+
+// TestUpdateKeepsConcurrentFields 并发改不同字段必须都保留(Update 锁内读-改-写;
+// 旧实现 Load+Save 整对象覆写会让后写者抹掉先写者的字段)。
+func TestUpdateKeepsConcurrentFields(t *testing.T) {
+	t.Setenv("GAH_HOME", t.TempDir())
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(3)
+		go func(n int) { defer wg.Done(); Update(func(p *Prefs) { p.Thinking = "high" }) }(i)
+		go func(n int) { defer wg.Done(); Update(func(p *Prefs) { p.Sandbox = "workspace-write" }) }(i)
+		go func(n int) { defer wg.Done(); Update(func(p *Prefs) { p.Approval = "smart" }) }(i)
+	}
+	wg.Wait()
+	p := Load()
+	if p.Thinking != "high" || p.Sandbox != "workspace-write" || p.Approval != "smart" {
+		t.Fatalf("并发改不同字段出现互相覆盖: %+v", p)
+	}
 }

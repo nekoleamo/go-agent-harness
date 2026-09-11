@@ -239,3 +239,43 @@ func TestBackupViaService(t *testing.T) {
 		t.Fatal("List 应非空")
 	}
 }
+
+// writeEvilArchiveMiddle 构造中间段越界的归档条目("a/../../escape.txt"):只拦前缀
+// "../" 的实现会放行(Join 归一化后落到 root 之外)。
+func writeEvilArchiveMiddle(arc string) error {
+	f, err := os.Create(arc)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	gz := gzip.NewWriter(f)
+	tw := tar.NewWriter(gz)
+	hdr := &tar.Header{Name: "a/../../escape.txt", Mode: 0o644, Size: 5, Typeflag: tar.TypeReg}
+	if err := tw.WriteHeader(hdr); err != nil {
+		return err
+	}
+	if _, err := tw.Write([]byte("evil\n")); err != nil {
+		return err
+	}
+	if err := tw.Close(); err != nil {
+		return err
+	}
+	return gz.Close()
+}
+
+// TestRestoreRejectsMiddleTraversal 中间段 ".." 亦须拒绝(仅查前缀会漏)。
+func TestRestoreRejectsMiddleTraversal(t *testing.T) {
+	b := buildHome(t)
+	arc := filepath.Join(b.backupDir(), "gah-backup-evil2.tar.gz")
+	if err := writeEvilArchiveMiddle(arc); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Restore("gah-backup-evil2.tar.gz"); err == nil {
+		t.Fatal("中间段越界条目应中止恢复")
+	}
+	// 不得在 root 之外落文件
+	outside := filepath.Join(filepath.Dir(b.home), "escape.txt")
+	if _, err := os.Stat(outside); err == nil {
+		t.Fatalf("越界文件被写出: %s", outside)
+	}
+}

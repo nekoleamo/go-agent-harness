@@ -121,3 +121,29 @@ func TestCbFanoutProxySendFork(t *testing.T) {
 		t.Fatalf("fork 应回传句柄: id=%q forkIn=%q", id, st.forkIn)
 	}
 }
+
+// stubJobsNilErr Kill 成功返回 nil error(host-jobs 契约);回调层曾直接 .Error()
+// 解引用 → net/rpc handler panic 崩宿主。
+type stubJobsNilErr struct{ killed []string }
+
+func (s *stubJobsNilErr) Submit(string) (string, error)   { return "", nil }
+func (s *stubJobsNilErr) Run(sdk.JobFunc) (string, error) { return "", nil }
+func (s *stubJobsNilErr) List() []sdk.Job                 { return nil }
+func (s *stubJobsNilErr) Kill(id string) error {
+	s.killed = append(s.killed, id)
+	return nil
+}
+func (s *stubJobsNilErr) Output(string) (sdk.Job, bool) { return sdk.Job{}, false }
+
+// TestCallbackJobsKillNilError jobs.kill 成功路径(nil error)必须正常返回,不 panic。
+func TestCallbackJobsKillNilError(t *testing.T) {
+	cb := NewCallback(nil, &stubJobsNilErr{}, nil, "")
+	var reply string
+	err := cb.Call(CallArgs{Service: "jobs", Method: "kill", Args: `{"ID":"j1"}`}, &reply)
+	if err != nil {
+		t.Fatalf("回调不应报错: %v", err)
+	}
+	if reply != "" {
+		t.Fatalf("成功应返回空字符串,得 %q", reply)
+	}
+}

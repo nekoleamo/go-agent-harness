@@ -184,12 +184,12 @@ func SaveBackup(t *Tree, configDir string, maxKeep int) error {
 		return err
 	}
 	latest := filepath.Join(dir, "config.latest.yaml")
-	if err := os.WriteFile(latest, raw, 0o644); err != nil {
+	if err := writeFileAtomic(latest, raw, 0o644); err != nil {
 		return err
 	}
 	// 轮换保留
 	snap := filepath.Join(dir, fmt.Sprintf("config.%s.yaml", time.Now().Format("20060102-150405")))
-	if err := os.WriteFile(snap, raw, 0o644); err != nil {
+	if err := writeFileAtomic(snap, raw, 0o644); err != nil {
 		return err
 	}
 	entries, _ := os.ReadDir(dir)
@@ -204,6 +204,40 @@ func SaveBackup(t *Tree, configDir string, maxKeep int) error {
 		os.Remove(snaps[0])
 		snaps = snaps[1:]
 	}
+	return nil
+}
+
+// writeFileAtomic 同目录临时文件 + fsync + rename 原子落盘:备份文件被半截写坏会让
+// 自愈路径(LoadLatestBackup)解析失败而彻底失去回滚能力,故不能直接覆写。
+func writeFileAtomic(path string, raw []byte, perm os.FileMode) (err error) {
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer func() {
+		if name != "" {
+			_ = os.Remove(name)
+		}
+	}()
+	if _, err = tmp.Write(raw); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err = tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err = tmp.Close(); err != nil {
+		return err
+	}
+	if err = os.Chmod(name, perm); err != nil {
+		return err
+	}
+	if err = os.Rename(name, path); err != nil {
+		return err
+	}
+	name = ""
 	return nil
 }
 

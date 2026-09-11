@@ -1,4 +1,4 @@
-// Package providerfile 提供 LLM 提供商持久化层(~/.gah/config/provider.yaml)。
+// Package providerfile 提供 LLM 提供商持久化层($GAH_HOME/config/provider.yaml)。
 // v2 多 provider 并存:文件为 {active, providers[]}(每项 name/base_url/api_key/model);
 // 旧单对象格式(顶层 base_url/api_key/model)读取自动迁移视图(name=域短名/缺省 default),
 // 下次写操作落 v2。文件权限 0600,凭据不落其它可读位置、不进 seed/会话;
@@ -13,6 +13,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
 // Provider 一个提供商(base_url/api_key/model 三项;omitempty:逐项删除后不写出空字段)。
@@ -37,17 +39,10 @@ type legacy struct {
 	Model   string `yaml:"model"`
 }
 
-// Path 配置文件绝对路径(GAH_HOME 覆盖;默认 ~/.gah/config/provider.yaml)。
+// Path 配置文件绝对路径:数据根唯一经 sdk.Home()($GAH_HOME;嵌入/单测空则 TempDir),
+// 不落 ~/.gah —— 凭据必须随数据根迁移(便携纪律),且解析链全仓唯一。
 func Path() string {
-	home := os.Getenv("GAH_HOME")
-	if home == "" {
-		if uh, err := os.UserHomeDir(); err == nil {
-			home = filepath.Join(uh, ".gah")
-		} else {
-			home = os.TempDir()
-		}
-	}
-	return filepath.Join(home, "config", "provider.yaml")
+	return filepath.Join(sdk.Home(), "config", "provider.yaml")
 }
 
 // LoadFile 读取 v2 文件(旧单对象自动迁移为单 provider 视图,不改盘)。

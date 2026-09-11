@@ -15,9 +15,11 @@ import (
 // 宿主共享 $GAH_HOME/config/gah-state.json(经 internal/prefs,兼容旧 web-state.json;
 // GAH_HOME 未设 = 跳过持久化,纯内存行为)。model 经 providerfile 持久化,不在此文件。
 
-// loadPrefs / savePrefs 委托宿主共享 prefs 包(TUI 与 Web 同一偏好)。
-func loadPrefs() prefs.Prefs  { return prefs.Load() }
-func savePrefs(p prefs.Prefs) { prefs.Save(p) }
+// loadPrefs / updatePrefs 委托宿主共享 prefs 包(TUI 与 Web 同一偏好)。
+// 写入一律走 updatePrefs(锁内读-改-写):web 每个请求一个 goroutine,直接
+// Load+Save 会与并发请求互相抹掉字段。
+func loadPrefs() prefs.Prefs            { return prefs.Load() }
+func updatePrefs(fn func(*prefs.Prefs)) { prefs.Update(fn) }
 
 // ApplyPrefs 启动恢复:按上次退出偏好设置思考/沙箱/历史注入(Inject 后调用)。
 // 单条非法值跳过(不阻塞 boot);model 由 providerfile 链自行恢复。
@@ -95,8 +97,6 @@ func (s *Server) handleSettingsHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	s.sessions.SetHistory(req.N)
 	// 持久化历史注入偏好(退出即记,重启恢复)
-	p := loadPrefs()
-	p.History = &req.N
-	savePrefs(p)
+	updatePrefs(func(p *prefs.Prefs) { p.History = &req.N })
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "history": req.N})
 }

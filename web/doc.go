@@ -104,9 +104,12 @@ func (s *Server) handleDocPreview(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, msg, code)
 		return
 	}
-	// RawURL 供前端下载/原生查看器使用(自身路径,无宿主绝对路径)
-	v.RawURL = "/api/doc/raw?path=" + url.QueryEscape(req.Path)
-	writeJSON(w, http.StatusOK, v)
+	// RawURL 供前端下载/原生查看器使用(自身路径,无宿主绝对路径)。
+	// 浅拷贝后改:svc.Preview 可能返回缓存内的共享 *DocView,原地改写会与其他
+	// 并发请求竞争(同路径两个请求命中缓存时)。
+	out := *v
+	out.RawURL = "/api/doc/raw?path=" + url.QueryEscape(req.Path)
+	writeJSON(w, http.StatusOK, &out)
 }
 
 // handleDocRaw GET /api/doc/raw?path=&dl=1:原生字节,支持 Range(浏览器 PDF 查看器必需)。

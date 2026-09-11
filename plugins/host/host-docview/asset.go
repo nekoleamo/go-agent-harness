@@ -54,7 +54,10 @@ func (s *Service) openAsset(_ context.Context, ref assetRef) (io.ReadCloser, str
 			_ = zr.Close()
 			return nil, "", fmt.Errorf("%w: 读取资产 %s 失败: %v", sdk.ErrDocParse, ref.part, err)
 		}
-		return &assetReader{rc: rc, zr: zr}, ref.mime, nil
+		// 声明尺寸不可信:与 ooxml.reader 同口径对实际读取封顶(声明+1),
+		// 畸形 deflate 流不得无限膨胀后再进内存。
+		limit := int64(f.UncompressedSize64) + 1
+		return &assetReader{rc: &limitedReadCloser{rc: rc, lr: io.LimitReader(rc, limit)}, zr: zr}, ref.mime, nil
 	}
 	_ = zr.Close()
 	return nil, "", fmt.Errorf("%w: 容器中不存在资产 %s", sdk.ErrDocUnsupported, ref.part)

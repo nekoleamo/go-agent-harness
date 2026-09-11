@@ -61,6 +61,10 @@ type Fanout struct {
 // keepAgents 已完成子代理会话最多保留数(防长时间运行无限增长)。
 const keepAgents = 50
 
+// maxParallel 单次 Parallel 的并发宽度上限(模型/脚本可驱动的项数封顶:
+// 无上限时 1000 项 = 1000 个完整 ReAct 循环并发,内存/配额/上游限流雪崩)。
+const maxParallel = 8
+
 // agentSession 一个后台子代理会话。
 type agentSession struct {
 	handle sdk.AgentHandle
@@ -280,13 +284,25 @@ func (f *Fanout) Agent(ctx context.Context, input string) (string, error) {
 }
 
 // Parallel 并发扇出多个子代理并聚合(顺序与 inputs 对应)。
+// 并发宽度封顶 maxParallel:inputs 由模型/工作流脚本给出,不封顶时 1000 项即
+// 1000 个完整 ReAct 循环并发(内存/配额/上游限流雪崩);超限显式报错不静默截断。
 func (f *Fanout) Parallel(ctx context.Context, inputs []string) []sdk.FanoutResult {
 	results := make([]sdk.FanoutResult, len(inputs))
+	if len(inputs) > maxParallel {
+		for i, in := range inputs {
+			results[i] = sdk.FanoutResult{Input: in, Error: fmt.Sprintf(
+				"fanout: 并发项数 %d 超过上限 %d(请分批)", len(inputs), maxParallel)}
+		}
+		return results
+	}
+	sem := make(chan struct{}, maxParallel)
 	var wg sync.WaitGroup
 	for i, in := range inputs {
 		wg.Add(1)
+		sem <- struct{}{}
 		go func(i int, in string) {
 			defer wg.Done()
+			defer func() { <-sem }()
 			item := sdk.FanoutResult{Input: in}
 			res, err := f.runSubAgent(ctx, in)
 			if err != nil {

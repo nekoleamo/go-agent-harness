@@ -1645,3 +1645,60 @@ func TestCommandOptionsEndpoint(t *testing.T) {
 		t.Fatalf("未装配应 503,得 %d", resp.StatusCode)
 	}
 }
+
+// TestAttachmentsCleanupOnReject 上传被拒(类型不允许)时必须回收本批已落盘文件,
+// 否则 $GAH_HOME/attachments/<时间戳>/ 留下无引用孤儿文件。
+func TestAttachmentsCleanupOnReject(t *testing.T) {
+	s, _ := newTestServer()
+	dir := t.TempDir()
+	s.cfg.AttachmentsDir = dir
+	hs := httptest.NewServer(s.handler())
+	defer hs.Close()
+
+	// 两个 part:合法 png + 不允许类型(txt)→ 整批拒绝
+	var b bytes.Buffer
+	w := multipart.NewWriter(&b)
+	for _, p := range []struct{ ct, name, data string }{
+		{"image/png", "ok.png", "\x89PNG\r\n\x1a\nok"},
+		{"application/zip", "bad.zip", "nope"},
+	} {
+		h := make(textproto.MIMEHeader)
+		h.Set("Content-Disposition", `form-data; name="file"; filename="`+p.name+`"`)
+		h.Set("Content-Type", p.ct)
+		part, err := w.CreatePart(h)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := part.Write([]byte(p.data)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w.Close()
+
+	resp, err := http.Post(hs.URL+"/api/attachments", w.FormDataContentType(), &b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnsupportedMediaType {
+		t.Fatalf("不允许类型应 415,得 %d", resp.StatusCode)
+	}
+	// 目录内不得残留任何文件(已落盘的 png 被回收)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			sub, err := os.ReadDir(filepath.Join(dir, e.Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(sub) != 0 {
+				t.Fatalf("被拒上传留下孤儿文件: %s/%s", e.Name(), sub[0].Name())
+			}
+			continue
+		}
+		t.Fatalf("被拒上传留下孤儿文件: %s", e.Name())
+	}
+}

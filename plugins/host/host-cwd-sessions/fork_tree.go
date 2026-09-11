@@ -24,6 +24,7 @@ func readForkTree(path string) map[string]sdk.ForkNode {
 	}
 	var m map[string]sdk.ForkNode
 	if err := json.Unmarshal(b, &m); err != nil {
+		quarantineCorrupt(path)
 		return nil
 	}
 	return m
@@ -35,10 +36,7 @@ func saveForkTree(path string, m map[string]sdk.ForkNode) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(path, b, 0o600)
+	return writeIndexAtomic(path, b, 0o600)
 }
 
 // recordFork 记录派生关系(锁内 upsert;失败静默,树形缺失不阻断 fork 主路径)。

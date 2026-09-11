@@ -94,6 +94,7 @@ type Service struct {
 	path     string         // 当前会话落盘路径
 	current  string         // 当前会话 id(空 = 主会话)
 	sessions sdk.SessionLog // ctx.sessions(切换时 Load 恢复历史)
+	mu       sync.RWMutex   // key/path/current 读写锁(web 每请求一 goroutine,曾无锁读写)
 	wsMu     sync.Mutex     // workspaces 记录文件写锁
 	nmMu     sync.Mutex     // 会话显示名(names.json)读写锁
 	ftMu     sync.Mutex     // 分支树衍生记录(fork-tree.json)读写锁
@@ -106,9 +107,23 @@ type Service struct {
 	emitSession func(id string)
 }
 
-func (s *Service) Current() string        { return s.key }
-func (s *Service) Path() string           { return s.path }
-func (s *Service) CurrentSession() string { return s.current }
+func (s *Service) Current() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.key
+}
+
+func (s *Service) Path() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.path
+}
+
+func (s *Service) CurrentSession() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.current
+}
 
 // List 列出 sessions 目录下已有项目会话 key(按名称排序)。
 func (s *Service) List() []string {
@@ -142,7 +157,8 @@ func (s *Service) Sessions() []sdk.SessionInfo {
 	if err != nil {
 		return nil
 	}
-	prefix := s.key + "-"
+	key := s.Current()
+	prefix := key + "-"
 	var out []sdk.SessionInfo
 	for _, e := range entries {
 		if e.IsDir() {
@@ -154,7 +170,7 @@ func (s *Service) Sessions() []sdk.SessionInfo {
 		}
 		var id string
 		switch {
-		case name == s.key+".jsonl":
+		case name == key+".jsonl":
 			id = ""
 		case strings.HasPrefix(name, prefix):
 			id = strings.TrimSuffix(strings.TrimPrefix(name, prefix), ".jsonl")
@@ -191,14 +207,20 @@ func (s *Service) Sessions() []sdk.SessionInfo {
 // Open 切换当前会话:id 空 = 主会话;否则载入 <key>-<id>.jsonl。
 // 文件不存在 = 新建会话(空历史)。切换后历史经 ctx.sessions.Load 恢复,后续续记。
 func (s *Service) Open(id string) error {
-	path := SessionPath(SessionsRoot(), s.key, id)
+	if id != "" && !validSessionID(id) {
+		// 防穿越:filepath.Join 会 Clean 掉 ".." 段,未过滤的 id 可让会话落到数据根之外
+		return fmt.Errorf("cwdsessions: 非法会话 id")
+	}
+	path := SessionPath(SessionsRoot(), s.Current(), id)
 	if s.sessions != nil {
 		if err := s.sessions.Load(path); err != nil {
 			return err
 		}
 	}
+	s.mu.Lock()
 	s.path = path
 	s.current = id
+	s.mu.Unlock()
 	if s.emitSession != nil {
 		s.emitSession(id)
 	}
@@ -210,7 +232,7 @@ func (s *Service) New() (string, error) {
 	base := time.Now().Format("20060102-150405")
 	id := base
 	for n := 2; ; n++ {
-		if !fileExists(SessionPath(SessionsRoot(), s.key, id)) {
+		if !fileExists(SessionPath(SessionsRoot(), s.Current(), id)) {
 			break
 		}
 		id = fmt.Sprintf("%s-%d", base, n)
@@ -231,9 +253,10 @@ func (s *Service) Delete(id string) error {
 	if !validSessionID(id) {
 		return fmt.Errorf("cwdsessions: 非法会话 id")
 	}
-	file := s.key + ".jsonl"
+	key := s.Current()
+	file := key + ".jsonl"
 	if id != "" {
-		file = s.key + "-" + id + ".jsonl"
+		file = key + "-" + id + ".jsonl"
 	}
 	path := filepath.Join(SessionsRoot(), file)
 	if !fileExists(path) {
@@ -257,7 +280,7 @@ func (s *Service) Delete(id string) error {
 	}
 	s.nmMu.Unlock()
 	// 删除的若是当前打开会话 → 新建空会话承接
-	if s.current == id {
+	if s.CurrentSession() == id {
 		_, err := s.New()
 		return err
 	}
@@ -289,14 +312,14 @@ func (s *Service) UnrecordProject(key string) error {
 // 名写入 names.json(覆写式索引,key = 会话文件名),随会话文件持久,
 // 重启/切会话仍保留;非关键路径,写失败静默容忍(同 workspaces)。
 func (s *Service) Rename(name string) error {
-	return s.renameMeta(filepath.Base(s.path), name)
+	return s.renameMeta(filepath.Base(s.Path()), name)
 }
 
 // SessionName 当前会话显示名(空 = 未命名)。
 func (s *Service) SessionName() string {
 	s.nmMu.Lock()
 	defer s.nmMu.Unlock()
-	file := filepath.Base(s.path)
+	file := filepath.Base(s.Path())
 	if e, ok := loadMeta(metaPath())[file]; ok && e.Name != "" {
 		return e.Name
 	}
@@ -317,10 +340,14 @@ func (s *Service) SwitchProject(key string) (string, error) {
 		key = "default"
 	}
 	s.recordProject(key, currentDir())
+	s.mu.Lock()
 	if key == s.key {
-		return s.current, nil // 同项目:仅刷新最近使用时间
+		cur := s.current
+		s.mu.Unlock()
+		return cur, nil // 同项目:仅刷新最近使用时间
 	}
 	s.key = key
+	s.mu.Unlock()
 	if s.emitWS != nil {
 		s.emitWS(currentDir()) // 同 SwitchDir:广播通知宿主同步
 	}
@@ -340,10 +367,14 @@ func (s *Service) SwitchDir(dir string) (string, error) {
 	}
 	key := sdk.ProjectKey(dir)
 	s.recordProject(key, dir) // 真实目录(不随宿主 cwd 漂移)
+	s.mu.Lock()
 	if key == s.key {
-		return s.current, nil // 同项目:仅刷新最近使用时间
+		cur := s.current
+		s.mu.Unlock()
+		return cur, nil // 同项目:仅刷新最近使用时间
 	}
 	s.key = key
+	s.mu.Unlock()
 	if s.emitWS != nil {
 		s.emitWS(dir) // 通知宿主重启外部工具进程/同步沙箱 root,使真 cwd 生效
 	}
@@ -391,7 +422,8 @@ func sessionNamesPath() string {
 	return filepath.Join(SessionsRoot(), "names.json")
 }
 
-// loadNames 读显示名索引(缺文件/坏 json = 空 map,容忍;与 workspaces 同款)。
+// loadNames 读显示名索引(缺文件 = nil;坏 json = 隔离为 .corrupt-<时间戳> 后返回 nil,
+// 避免后续覆写把损坏内容当空表抹掉——用户可人工抢救该文件)。
 func loadNames(path string) map[string]string {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -399,24 +431,23 @@ func loadNames(path string) map[string]string {
 	}
 	var m map[string]string
 	if err := json.Unmarshal(b, &m); err != nil {
+		quarantineCorrupt(path)
 		return nil
 	}
 	return m
 }
 
 // saveNames 覆写显示名索引(目录自动建;失败静默——命名非关键路径)。
+// 原子写:半截文件会被读端判为损坏 → 整表丢失,故不能用 os.WriteFile 直接覆写。
 func saveNames(path string, m map[string]string) error {
 	b, err := json.Marshal(m)
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(path, b, 0o600)
+	return writeIndexAtomic(path, b, 0o600)
 }
 
-// loadWorkspaces 读记录(缺文件/坏 json = 空,容忍)。
+// loadWorkspaces 读记录(缺文件 = nil;坏 json = 隔离为 .corrupt-<时间戳> 后返回 nil)。
 func loadWorkspaces(path string) []sdk.ProjectInfo {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -424,21 +455,20 @@ func loadWorkspaces(path string) []sdk.ProjectInfo {
 	}
 	var recs []sdk.ProjectInfo
 	if err := json.Unmarshal(b, &recs); err != nil {
+		quarantineCorrupt(path)
 		return nil
 	}
 	return recs
 }
 
 // saveWorkspaces 覆写记录(目录自动建;失败静默——记录非关键路径)。
+// 原子写:半截文件会被读端判为损坏 → 整表丢失,故不能用 os.WriteFile 直接覆写。
 func saveWorkspaces(path string, recs []sdk.ProjectInfo) error {
 	b, err := json.Marshal(recs)
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(path, b, 0o600)
+	return writeIndexAtomic(path, b, 0o600)
 }
 
 // currentDir 当前工作目录(记录用;取不到 = 空,跳过记录)。

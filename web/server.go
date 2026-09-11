@@ -45,6 +45,7 @@ import (
 
 	"github.com/nekoleamo/go-agent-harness/internal/providerfile"
 
+	"github.com/nekoleamo/go-agent-harness/internal/prefs"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -781,9 +782,7 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 		}
 		s.llm.SetThinking(lvl)
 		// 持久化偏好(重启恢复)
-		p := loadPrefs()
-		p.Thinking = lvl.String()
-		savePrefs(p)
+		updatePrefs(func(p *prefs.Prefs) { p.Thinking = lvl.String() })
 	}
 	if req.Sandbox != "" {
 		switch sdk.SandboxMode(req.Sandbox) {
@@ -794,9 +793,7 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 		}
 		s.sb.SetMode(sdk.SandboxMode(req.Sandbox))
 		// 持久化偏好(重启恢复)
-		p := loadPrefs()
-		p.Sandbox = req.Sandbox
-		savePrefs(p)
+		updatePrefs(func(p *prefs.Prefs) { p.Sandbox = req.Sandbox })
 	}
 	if req.Approval != "" {
 		switch sdk.ApprovalMode(req.Approval) {
@@ -811,9 +808,7 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 		}
 		s.ap.SetMode(sdk.ApprovalMode(req.Approval))
 		// 持久化偏好(重启恢复)
-		p := loadPrefs()
-		p.Approval = req.Approval
-		savePrefs(p)
+		updatePrefs(func(p *prefs.Prefs) { p.Approval = req.Approval })
 	}
 	if req.Workspace != "" {
 		if s.cs == nil {
@@ -1036,15 +1031,26 @@ func (s *Server) handleAttachments(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var (
-		out   []AttachmentView
-		total int64
+		out     []AttachmentView
+		total   int64
+		written []string // 本次已落盘文件:任一失败分支统一回收(否则留孤儿文件堆积)
 	)
+	cleanup := func() {
+		for _, p := range written {
+			_ = os.Remove(p)
+		}
+		if len(written) > 0 {
+			_ = os.Remove(dir) // 目录空则可删(非空/失败忽略)
+		}
+		written = nil
+	}
 	for {
 		part, err := mr.NextPart()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
+			cleanup()
 			http.Error(w, "multipart 解析失败", http.StatusBadRequest)
 			return
 		}
@@ -1052,6 +1058,7 @@ func (s *Server) handleAttachments(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if len(out) >= maxAttachParts {
+			cleanup()
 			http.Error(w, "附件数量超限(最多 8 个)", http.StatusRequestEntityTooLarge)
 			return
 		}
@@ -1063,6 +1070,7 @@ func (s *Server) handleAttachments(w http.ResponseWriter, r *http.Request) {
 		}
 		ct := part.Header.Get("Content-Type")
 		if !allowedAttachType(ct) {
+			cleanup()
 			http.Error(w, "附件类型不允许: "+ct, http.StatusUnsupportedMediaType)
 			return
 		}
@@ -1076,25 +1084,30 @@ func (s *Server) handleAttachments(w http.ResponseWriter, r *http.Request) {
 			}
 			dst = fmt.Sprintf("%s-%d%s", stem, i, ext)
 		}
-		f, err := os.OpenFile(filepath.Join(dir, dst), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		dstPath := filepath.Join(dir, dst)
+		f, err := os.OpenFile(dstPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if err != nil {
 			s.log.Error("附件写入失败", "err", err)
+			cleanup()
 			http.Error(w, "附件写入失败", http.StatusInternalServerError)
 			return
 		}
+		written = append(written, dstPath)
 		n, cerr := io.Copy(f, io.LimitReader(part, maxAttachBytes+1))
 		f.Close()
 		if cerr != nil {
+			cleanup()
 			http.Error(w, "附件写入失败", http.StatusInternalServerError)
 			return
 		}
 		if n > maxAttachBytes {
-			_ = os.Remove(filepath.Join(dir, dst))
+			cleanup()
 			http.Error(w, "附件超限(单文件 ≤20MB)", http.StatusRequestEntityTooLarge)
 			return
 		}
 		total += n
 		if total > maxAttachTotal {
+			cleanup()
 			http.Error(w, "附件总量超限(≤32MB)", http.StatusRequestEntityTooLarge)
 			return
 		}
@@ -1107,6 +1120,7 @@ func (s *Server) handleAttachments(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	if len(out) == 0 {
+		cleanup()
 		http.Error(w, "无文件字段(field: file)", http.StatusBadRequest)
 		return
 	}

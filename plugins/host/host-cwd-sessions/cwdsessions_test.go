@@ -543,3 +543,93 @@ func TestSessionSwitchEmitted(t *testing.T) {
 		t.Fatalf("New 应广播新 id,got %v", got)
 	}
 }
+
+// TestOpenRejectsInvalidSessionID Open 必须校验会话 id:未过滤的 id 经 filepath.Join
+// 会 Clean 掉 ".." 段,让会话落到 $GAH_HOME 之外(Delete 早已校验,Open 曾漏同一防线)。
+func TestOpenRejectsInvalidSessionID(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GAH_HOME", home)
+	s := &Service{key: "k"}
+	for _, bad := range []string{"../../poc", "a/b", "..", "a.b", `x\y`} {
+		if err := s.Open(bad); err == nil {
+			t.Fatalf("非法会话 id 必须拒绝: %q", bad)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(home), "poc.jsonl")); err == nil {
+		t.Fatal("不得在数据根之外创建会话文件")
+	}
+	// 合法 id(时间戳形态)仍可用
+	if err := s.Open("20260101-000000"); err != nil {
+		t.Fatalf("合法 id 应可用: %v", err)
+	}
+	if s.CurrentSession() != "20260101-000000" {
+		t.Fatalf("切换后 current 应更新: %s", s.CurrentSession())
+	}
+	// 主会话(id 空)不受影响
+	if err := s.Open(""); err != nil {
+		t.Fatalf("主会话应可用: %v", err)
+	}
+}
+
+// TestCorruptIndexQuarantined 解析失败的覆写式索引须改名留存(.corrupt-*),
+// 不得被后续"空表覆写"静默抹掉。
+func TestCorruptIndexQuarantined(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GAH_HOME", home)
+	if err := os.MkdirAll(SessionsRoot(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bad := filepath.Join(SessionsRoot(), "workspaces.json")
+	if err := os.WriteFile(bad, []byte("{半截:{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := &Service{key: "k"}
+	if got := s.RecentProjects(); len(got) != 0 {
+		t.Fatalf("坏索引应容忍为空: %+v", got)
+	}
+	// 原文件已被隔离留存(可人工抢救),不会在读后覆写中丢失
+	if _, err := os.Stat(bad); err == nil {
+		t.Fatal("损坏索引应被改名留存,而非原地保留待覆写")
+	}
+	entries, err := os.ReadDir(SessionsRoot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "workspaces.json.corrupt-") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("未找到 .corrupt-* 隔离文件")
+	}
+}
+
+// TestIndexAtomicOverwrite 覆写式索引落盘后必须可完整读回(原子写:tmp+rename 不留半截)。
+func TestIndexAtomicOverwrite(t *testing.T) {
+	t.Setenv("GAH_HOME", t.TempDir())
+	s := &Service{key: "k"}
+	s.recordProject("k", "/tmp/proj")
+	recs := s.RecentProjects()
+	if len(recs) != 1 || recs[0].Key != "k" || recs[0].Dir != "/tmp/proj" {
+		t.Fatalf("记录往返不符: %+v", recs)
+	}
+	m := map[string]string{"k.jsonl": "名字"}
+	if err := saveNames(sessionNamesPath(), m); err != nil {
+		t.Fatal(err)
+	}
+	if got := loadNames(sessionNamesPath()); got["k.jsonl"] != "名字" {
+		t.Fatalf("显示名索引往返不符: %+v", got)
+	}
+	// 目录里不得残留临时文件
+	entries, err := os.ReadDir(SessionsRoot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".idx-") {
+			t.Fatalf("残留临时文件: %s", e.Name())
+		}
+	}
+}

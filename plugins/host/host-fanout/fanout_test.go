@@ -422,3 +422,22 @@ func containsStr(ss []string, want string) bool {
 	}
 	return false
 }
+
+// TestParallelWidthCapped 并发宽度必须封顶(maxParallel):大量输入不得生成
+// 等量并发子代理(内存/配额/上游限流雪崩)。
+func TestParallelWidthCapped(t *testing.T) {
+	svc := buildEnv(t)
+	inputs := make([]string, maxParallel+5)
+	for i := range inputs {
+		inputs[i] = fmt.Sprintf("任务 %d", i)
+	}
+	results := svc.Parallel(context.Background(), inputs)
+	if len(results) != len(inputs) {
+		t.Fatalf("结果数应与输入一致: %d", len(results))
+	}
+	for i, r := range results {
+		if r.Error == "" || !strings.Contains(r.Error, "超过上限") {
+			t.Fatalf("超限项应显式报错而非静默执行: %d %+v", i, r)
+		}
+	}
+}

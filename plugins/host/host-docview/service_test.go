@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -14,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
@@ -349,4 +351,52 @@ func pngBytes(t *testing.T, w, h int) []byte {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
+}
+
+// TestAssetConcurrentAccess assets 表由 web 每请求一 goroutine 并发读写;曾无锁
+// 触发 fatal error: concurrent map writes(运行时 throw,recover 无效 → 崩宿主)。
+// -race 下并发注册/取回必须干净。
+func TestAssetConcurrentAccess(t *testing.T) {
+	s, dir := newSvc(t, Budget{})
+	container := filepath.Join(dir, "concurrent.docx")
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for i := 0; i < 8; i++ {
+		name := fmt.Sprintf("word/media/i%d.png", i)
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte("PNGDATA")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(container, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ids := make([]string, 8)
+	for i := range ids {
+		ids[i] = s.RegisterAsset(container, fmt.Sprintf("word/media/i%d.png", i), "image/png")
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		wg.Add(2)
+		go func(i int) { // 读
+			defer wg.Done()
+			rc, _, err := s.Asset(context.Background(), sdk.DocRequest{Path: container}, ids[i%len(ids)])
+			if err == nil {
+				_, _ = io.Copy(io.Discard, rc)
+				_ = rc.Close()
+			}
+		}(i)
+		go func(i int) { // 写(同 key 覆写,模拟预览期反复注册)
+			defer wg.Done()
+			_ = s.RegisterAsset(container, fmt.Sprintf("word/media/i%d.png", i%len(ids)), "image/png")
+		}(i)
+	}
+	wg.Wait()
 }
