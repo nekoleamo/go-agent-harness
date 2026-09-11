@@ -5,6 +5,7 @@
 import { computed, inject, onMounted, ref, watch } from 'vue'
 import { api } from '../api'
 import { settingSections } from '../registry'
+import { uiPluginTrustNote } from '../plugins'
 import type { AskConfirm, PluginInfo, ProviderInfo, ProviderModelGroup, StateView } from '../types'
 
 const props = defineProps<{
@@ -457,6 +458,8 @@ watch(
         <!-- 插件与指令 -->
         <section class="sec">
           <h3 class="h">插件</h3>
+          <!-- UI 插件信任模型明示(文案由后端 /api/ui-plugins 下发,单一事实源) -->
+          <p v-if="uiPluginTrustNote" class="dim">UI 插件(ui-plugins):{{ uiPluginTrustNote }}</p>
           <div class="plist">
             <div v-for="p in plugins" :key="p.ID" class="prow">
               <div class="pmain">

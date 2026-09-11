@@ -8,14 +8,20 @@
 //   - 写命令的路径操作数(rm/rmdir/unlink/mv/mkdir/touch/truncate/shred/chmod/
 //     chown/chgrp/tee;cp/install/ln/rsync 的末位目标;sed -i;dd of=;
 //     tar 的 -C 与创建态 -f;unzip -d);
+//   - 输出型 flag 与安装目标(curl -o/--output、wget -O/--output-document、
+//     gcc/clang/cc/c++/g++/ld -o、go build|install -o、pip install -t/--target、
+//     npm install --prefix);
+//   - git clone 的位置目标(第二操作数;只给 URL 时落 cwd);
 //   - 一层嵌套(bash -c "..." / sh -c / zsh -c / dash -c / ksh -c / eval "...")。
 //
 // 无法裁决的写形态(变量/命令替换、cd 到工作区之外后的相对路径)显式拒绝,不做乐观放行;
 // 通配符按"首个通配段之前的前缀"裁决(前缀是目标的祖先目录,裁决安全)。
 //
 // 明确边界(不做过度宣称):
-//   - 间接写入不在覆盖内:编译器缓存与产物旗标(go build -o、gcc -o)、包管理器下载目录、
-//     工具自建临时目录、git clone 目标等 —— 这一层仍由审批档(危险模式 + 工具级名单)兜底;
+//   - 仍不在覆盖内:编译器/包管理器的**缓存根**(由 tool-shell 的环境 jail 收敛到
+//     $GAH_HOME/jail,见 plugins/tool/tool-shell/jail.go)、命令包装器(ccache/make 等)、
+//     解释器内部写(`python3 -c "open('/x','w')"`)、重定向到 cwd 的简写(`curl -O`)——
+//     这一层仍由审批档(危险模式 + 工具级名单)兜底;
 //   - 读路径只做凭据类判定(denyPath / 字面量段),**不做** workspace 归属限制:
 //     否则 `cat /etc/hosts`、编译器读 /usr/include、`ls /tmp` 之类常规操作会被大面积误拦;
 //   - 命令文本经变量间接构造(如 `CMD='rm -rf /tmp/x'; $CMD`)不在覆盖内:文本级危险模式审批仍有兜底;
@@ -205,9 +211,22 @@ func classifyShellCommand(words []string, root string, cwdOK bool, depth int) (b
 	case "rm", "rmdir", "unlink", "mkdir", "touch", "truncate", "shred",
 		"chmod", "chown", "chgrp", "tee", "mv":
 		return cwdOK, writePaths(operandWords(args), root, cwdOK)
+	case "curl":
+		return cwdOK, outputFlagPaths(args, root, cwdOK, "-o", "--output")
+	case "wget":
+		return cwdOK, outputFlagPaths(args, root, cwdOK, "-O", "--output-document")
+	case "gcc", "cc", "clang", "c++", "g++", "ld":
+		return cwdOK, outputFlagPaths(args, root, cwdOK, "-o", "--output")
+	case "go":
+		return cwdOK, goPaths(args, root, cwdOK)
+	case "pip", "pip3":
+		return cwdOK, installFlagPaths(args, pipInstallSubcmds, []string{"-t", "--target"}, root, cwdOK)
+	case "npm":
+		return cwdOK, installFlagPaths(args, npmInstallSubcmds, []string{"--prefix"}, root, cwdOK)
+	case "git":
+		return cwdOK, gitPaths(args, root, cwdOK)
 	}
-	// 其余命令(含 go/npm/git/grep/python3 等):路径操作数按读语义判定。
-	// 这些命令自身的写入(构建产物/缓存)属"间接写入",见文件头边界说明。
+	// 其余命令(含 grep/python3 等):路径操作数按读语义判定。
 	return cwdOK, readPaths(operandWords(args))
 }
 
@@ -531,6 +550,172 @@ func unzipPaths(args []string, root string, cwdOK bool) []shellPath {
 		}
 	}
 	return append(out, readPaths(operandWords(args))...)
+}
+
+// ---------- 输出型 flag / 安装目标 / git clone 位置目标 ----------
+
+// flagWritePaths 取输出型 flag 的写入目标:
+//   - 分离形态 `-o out` / `--output out`;
+//   - 紧贴形态 `-oout`(短 flag)/ `--output=out`;
+//   - 取值缺失(flag 在末尾)不产生目标,也不 panic。
+func flagWritePaths(args []string, root string, cwdOK bool, flags ...string) []shellPath {
+	set := make(map[string]bool, len(flags))
+	for _, f := range flags {
+		set[f] = true
+	}
+	var out []shellPath
+	add := func(v string) {
+		if pth, ok := makeShellPath(v, true, cwdOK, root); ok {
+			out = append(out, pth)
+		}
+	}
+	for i := 0; i < len(args); i++ {
+		w := args[i]
+		if w == "--" {
+			break // `--` 之后都是位置操作数,不再有 flag 取值
+		}
+		if long, val, ok := strings.Cut(w, "="); ok && set[long] {
+			add(val)
+			continue
+		}
+		if set[w] {
+			if i+1 < len(args) {
+				i++
+				add(args[i])
+			}
+			continue
+		}
+		if len(w) > 2 && w[0] == '-' && w[1] != '-' && set[w[:2]] {
+			add(w[2:]) // 短 flag 紧贴取值(gcc -oout)
+		}
+	}
+	return out
+}
+
+// outputFlagPaths 输出型 flag 的写目标 + 其余操作数按读语义。
+// 只增不减:不因新增写识别而放过原有的凭据读判定。
+func outputFlagPaths(args []string, root string, cwdOK bool, flags ...string) []shellPath {
+	return append(flagWritePaths(args, root, cwdOK, flags...), readPaths(operandWords(args))...)
+}
+
+// subcmdArgs 取子命令与其后的参数(跳过前置全局 flag;valueFlags = 前置取值型 flag)。
+func subcmdArgs(args []string, valueFlags map[string]bool) (string, []string) {
+	for i := 0; i < len(args); i++ {
+		w := args[i]
+		if isAssignment(w) {
+			continue
+		}
+		if strings.HasPrefix(w, "-") {
+			if valueFlags[w] {
+				i++ // 该 flag 的取值不是子命令(如 go -C dir build)
+			}
+			continue
+		}
+		return w, args[i+1:]
+	}
+	return "", nil
+}
+
+// flagValue 取前置 flag 的取值(紧贴形态 -C/path 或分离形态 -C /path);遇到首个位置操作数即停。
+func flagValue(args []string, flag string) (string, bool) {
+	for i := 0; i < len(args); i++ {
+		w := args[i]
+		if isAssignment(w) {
+			continue
+		}
+		if len(flag) == 2 && strings.HasPrefix(w, flag) && len(w) > len(flag) {
+			return strings.TrimPrefix(w, flag), true // 短 flag 紧贴取值(git -C/tmp)
+		}
+		if w == flag && i+1 < len(args) {
+			return args[i+1], true
+		}
+		if !strings.HasPrefix(w, "-") {
+			return "", false
+		}
+	}
+	return "", false
+}
+
+// localCwdOK 取前置 `-C <dir>` 之后的相对路径可定位性(`go -C` / `git -C` 等于换 cwd:
+// 相对目标会被记到别处,不保守处理就是漏判)。
+func localCwdOK(args []string, root string, cwdOK bool) bool {
+	v, ok := flagValue(args, "-C")
+	if !ok {
+		return cwdOK
+	}
+	return cdTargetInside([]string{v}, root, cwdOK)
+}
+
+// goPaths go build/install 的 -o 是产物写目标(go 自身缓存写由 tool-shell 的环境 jail 收敛)。
+func goPaths(args []string, root string, cwdOK bool) []shellPath {
+	sub, rest := subcmdArgs(args, map[string]bool{"-C": true})
+	if sub != "build" && sub != "install" {
+		return readPaths(operandWords(args))
+	}
+	return outputFlagPaths(rest, root, localCwdOK(args, root, cwdOK), "-o", "--output")
+}
+
+// pipInstallSubcmds / npmInstallSubcmds 安装类子命令:只有这些子命令的目标 flag 才有"装到哪"语义。
+var (
+	pipInstallSubcmds = map[string]bool{"install": true}
+	npmInstallSubcmds = map[string]bool{"install": true, "i": true, "ci": true, "add": true}
+)
+
+// installFlagPaths 安装类子命令的目标目录 flag(-t/--target、--prefix)取值为写目标;
+// 其它子命令保持原读语义(不新增判定面)。
+func installFlagPaths(args []string, subcmds map[string]bool, flags []string, root string, cwdOK bool) []shellPath {
+	if sub, _ := subcmdArgs(args, nil); !subcmds[sub] {
+		return readPaths(operandWords(args))
+	}
+	return outputFlagPaths(args, root, cwdOK, flags...)
+}
+
+// gitCloneValueFlags `git clone` 的取值型 flag:取值不是位置操作数(否则 --depth 的 1 会被当成目标目录)。
+var gitCloneValueFlags = map[string]bool{
+	"-b": true, "-o": true, "-j": true, "--branch": true, "--depth": true, "--origin": true,
+	"--reference": true, "--reference-if-able": true, "--separate-git-dir": true, "--template": true,
+	"--jobs": true, "--upload-pack": true, "--shallow-since": true, "--shallow-exclude": true,
+	"--filter": true, "--config": true, "--revision": true, "--server-option": true,
+}
+
+// gitPaths git clone 的位置目标是写(第二操作数;只给 URL 时落 cwd);其余子命令按读语义。
+func gitPaths(args []string, root string, cwdOK bool) []shellPath {
+	sub, rest := subcmdArgs(args, map[string]bool{
+		"-C": true, "-c": true, "--git-dir": true, "--work-tree": true,
+		"--namespace": true, "--config-env": true,
+	})
+	if sub != "clone" {
+		return readPaths(operandWords(args))
+	}
+	ops := cloneOperands(rest)
+	target := "." // 只有 URL:克隆到当前目录(相对目标,属工作区内)
+	if len(ops) >= 2 {
+		target = ops[len(ops)-1]
+	}
+	out := readPaths(operandWords(rest))
+	if pth, ok := makeShellPath(target, true, localCwdOK(args, root, cwdOK), root); ok {
+		out = append(out, pth)
+	}
+	return out
+}
+
+// cloneOperands 取 clone 的位置操作数(排除 flag 及其取值)。
+func cloneOperands(args []string) []string {
+	var out []string
+	for i := 0; i < len(args); i++ {
+		w := args[i]
+		if isAssignment(w) {
+			continue
+		}
+		if strings.HasPrefix(w, "-") {
+			if !strings.Contains(w, "=") && gitCloneValueFlags[w] {
+				i++
+			}
+			continue
+		}
+		out = append(out, w)
+	}
+	return out
 }
 
 // ---------- 词法/形态工具 ----------

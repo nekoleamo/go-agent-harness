@@ -194,6 +194,15 @@ const sandboxVal = computed(() => {
   const v = props.state?.sandbox || 'workspace-write'
   return SANDBOX_LABEL[v] ?? v
 })
+// 本按钮改的是**声明档**(点一下循环);实际生效档可能被审批档联动覆盖,
+// 故在图说里补一句,避免"设了工作区却仍可写"的静默矛盾。
+const sandboxTip = computed(() => {
+  const cur = '切换沙箱档位(当前 ' + sandboxVal.value
+  const eff = props.state?.sandbox_effective
+  if (!props.state?.sandbox_derived || !eff) return cur + ')'
+  const label = SANDBOX_LABEL[eff] ?? eff
+  return cur + ';实际 ' + label + ',随审批联动)'
+})
 
 // 多行生长(Shift+Enter 换行;裸 Enter 提交);封顶=40vh(至少 180px)防超高,
 // 超出后在输入框内滚动(overflow-y:auto 见 .field),内容可见可删改
@@ -431,7 +440,7 @@ defineExpose({ cycleThinking, cycleSandbox })
           <span class="ctl-n">思考</span>
           <span class="ctl-v">{{ thinkVal }}</span>
         </button>
-        <button class="ctl" :data-tip="'切换沙箱档位(当前 ' + sandboxVal + ')'" @click="cycleSandbox">
+        <button class="ctl" :data-tip="sandboxTip" @click="cycleSandbox">
           <span class="ctl-n">沙箱</span>
           <span class="ctl-v">{{ sandboxVal }}</span>
         </button>

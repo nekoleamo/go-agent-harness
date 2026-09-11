@@ -61,8 +61,8 @@ func TestCommandsExecuteSandbox(t *testing.T) {
 	if _, err := run(t, cmds, "sandbox", "bogus"); err == nil {
 		t.Fatal("非法档位应显式报错")
 	}
-	if _, err := run(t, cmds, "sandbox"); err == nil {
-		t.Fatal("缺参数应显式报错")
+	if out, err := run(t, cmds, "sandbox"); err != nil || !strings.Contains(out, "沙箱: ") {
+		t.Fatalf("无参应回显档位: out=%q err=%v", out, err)
 	}
 	if _, err := run(t, cmds, "sandbox", "ws"); err != nil {
 		t.Fatal(err)

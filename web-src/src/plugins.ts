@@ -2,6 +2,7 @@
 // 动态导入产物模块并按 priority 注册(registry.ts;同槽位 priority 降序,同优先级后注册者胜)。
 // 契约:v1 冻结槽位名;渲染层禁止 v-html(v-html 源码级拒装见 gah -install-ui);
 // 插件模块默认导出 Vue 组件(槽位 Props 兼容,见 registry.ts)。
+import { ref } from 'vue'
 import { registerSlot, registerSettingSection, registerSidebarAction, registerExtraPanel } from './registry'
 import type { SlotName } from './registry'
 import type { Component } from 'vue'
@@ -17,7 +18,14 @@ interface UIPlugin {
   id: string
   version: string
   slots: SlotDef[]
+  // 信任模型(后端 /api/ui-plugins 下发):UI 插件与宿主同源同权限,
+  // 调用方可据此向用户明示"安装即完全信任"。
+  trusted?: boolean
+  trust_note?: string
 }
+
+// uiPluginTrustNote 后端下发的 UI 插件信任模型文案(设置面板照显;空 = 未取到/无插件)。
+export const uiPluginTrustNote = ref('')
 
 // loadUIPlugins 拉取聚合清单并安装覆盖组件(失败静默:默认实现保持)。返回已加载插件数。
 export async function loadUIPlugins(): Promise<number> {
@@ -31,6 +39,8 @@ export async function loadUIPlugins(): Promise<number> {
   }
   const V1 = ['stream', 'input', 'statusbar', 'confirm'] as const
   const EXT = ['settings-section', 'sidebar-action', 'extra-panel'] as const
+  const note = list.find((p) => p.trust_note)?.trust_note
+  if (note) uiPluginTrustNote.value = note
   let loaded = 0
   for (const p of list) {
     for (const slot of p.slots) {

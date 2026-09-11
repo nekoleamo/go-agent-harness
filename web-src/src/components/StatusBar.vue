@@ -22,30 +22,21 @@ const ctx = computed(() => {
   return used > 0 ? `${k(used)} (窗口未知)` : '–'
 })
 
+const SANDBOX_ZH: Record<string, string> = { 'read-only': '只读', 'full-access': '完全', 'workspace-write': '工作区' }
+const APPROVAL_ZH: Record<string, string> = { open: '开放', smart: '智能', strict: '严格' }
+
+// sandboxLabel 显示**实际生效**档(approval 联动时后端给 sandbox_effective):
+// 只读 state.sandbox(声明档)会在 approval=open 时把"完全"显示成"工作区",与实际拦截行为不符。
 const sandboxLabel = computed(() => {
-  switch (props.state.sandbox) {
-    case 'read-only':
-      return '只读'
-    case 'full-access':
-      return '完全'
-    default:
-      return '工作区'
-  }
+  const eff = props.state.sandbox_effective || props.state.sandbox
+  const base = SANDBOX_ZH[eff] ?? '工作区'
+  if (!props.state.sandbox_derived || !props.state.sandbox_effective) return base
+  const src = APPROVAL_ZH[props.state.approval ?? '']
+  return src ? `${base}(随审批${src})` : `${base}(随审批联动)`
 })
 
 // 审批档位(M17 开放/智能/严格);未知不显示(保持状态栏简洁)。
-const approvalLabel = computed(() => {
-  switch (props.state.approval) {
-    case 'open':
-      return '开放'
-    case 'smart':
-      return '智能'
-    case 'strict':
-      return '严格'
-    default:
-      return ''
-  }
-})
+const approvalLabel = computed(() => APPROVAL_ZH[props.state.approval ?? ''] ?? '')
 </script>
 
 <template>

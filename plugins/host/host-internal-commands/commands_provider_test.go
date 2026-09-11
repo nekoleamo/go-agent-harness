@@ -1108,12 +1108,12 @@ func TestCommandsMissingServiceAndArgErrors(t *testing.T) {
 	if _, err := run(t, cmds, "thinking"); err == nil || !strings.Contains(err.Error(), "off|low") {
 		t.Fatalf("缺参应给用法: %v", err)
 	}
-	// 未装配审批服务
+	// 未装配审批服务(带参与无参都不能静默:"查看档位"同样需要服务)
 	if _, err := run(t, cmds, "approval", "open"); err == nil || !strings.Contains(err.Error(), "ctx.approval 未装配") {
 		t.Fatalf("未装配审批应显式报错: %v", err)
 	}
-	if _, err := run(t, cmds, "approval"); err == nil || !strings.Contains(err.Error(), "open|smart|strict") {
-		t.Fatalf("缺参应给用法: %v", err)
+	if _, err := run(t, cmds, "approval"); err == nil || !strings.Contains(err.Error(), "ctx.approval 未装配") {
+		t.Fatalf("未装配审批(查看档位)应显式报错: %v", err)
 	}
 	// 审批三档可用
 	ap := &stubApproval{}

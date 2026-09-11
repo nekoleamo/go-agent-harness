@@ -8,6 +8,7 @@ package toolshell
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -38,7 +39,12 @@ func (l *lockedWriter) Write(p []byte) (int, error) {
 // 返回 (输出, 是否超时)。
 func execPty(ctx context.Context, command, input string) (string, bool, error) {
 	cmd := exec.Command("sh", "-c", command)
-	cmd.Env = sdk.SanitizedEnv(os.Environ()) // 凭据隔离:滤除 *_API_KEY/*_TOKEN 等
+	// 凭据隔离在前、环境 jail 覆盖缓存根/临时根在后(见 jail.go);jail 建不起来→显式失败。
+	env, jerr := jailEnv(sdk.SanitizedEnv(os.Environ()))
+	if jerr != nil {
+		return "", false, fmt.Errorf("环境 jail 初始化失败: %w", jerr)
+	}
+	cmd.Env = env
 	// 不断设 Setpgid:pty.Start 内部会设 Setsid(子进程自成会话/进程组组长→ pgid==pid),
 	// 两个同设会在部分平台直接 EPERM;下面仍可用 killProcessGroup 整组终止。
 

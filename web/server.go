@@ -533,14 +533,19 @@ func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
 
 // StateView /api/state 快照(前端状态栏/首帧渲染)。
 type StateView struct {
-	Model    string         `json:"model"`
-	Thinking string         `json:"thinking"`
-	Sandbox  string         `json:"sandbox"`
-	Approval string         `json:"approval,omitempty"` // M17:审批档位(open|smart|strict;未装配省略)
-	Stats    sdk.UsageStats `json:"stats"`
-	Session  *SessionV      `json:"session,omitempty"`
-	Running  bool           `json:"running"`
-	Version  string         `json:"version"`
+	Model    string `json:"model"`
+	Thinking string `json:"thinking"`
+	Sandbox  string `json:"sandbox"`
+	// SandboxEffective 档位联动后的**有效**档(仅当与声明档不同时出现):
+	// policy-guard 在 sync=true 时按审批档覆盖(open → full-access;strict → read-only),
+	// 前端只看 sandbox 会与实际拦截行为不一致。
+	SandboxEffective string         `json:"sandbox_effective,omitempty"`
+	SandboxDerived   bool           `json:"sandbox_derived,omitempty"` // 有效档由审批档联动覆盖而来
+	Approval         string         `json:"approval,omitempty"`        // M17:审批档位(open|smart|strict;未装配省略)
+	Stats            sdk.UsageStats `json:"stats"`
+	Session          *SessionV      `json:"session,omitempty"`
+	Running          bool           `json:"running"`
+	Version          string         `json:"version"`
 }
 
 // SessionV 会话视图(host-cwd-sessions 未装配时省略)。
@@ -561,13 +566,20 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	if s.ap != nil {
 		approval = string(s.ap.Mode())
 	}
+	declared := string(s.sb.Mode())
 	v := StateView{
 		Model:    s.llm.Model(),
 		Thinking: names[lvl],
-		Sandbox:  string(s.sb.Mode()),
+		Sandbox:  declared,
 		Approval: approval,
 		Running:  s.running.Load(),
 		Version:  os.Getenv("GAH_VERSION"),
+	}
+	// 沙箱实现可选能力 sdk.EffectiveSandbox 时对齐"实际生效档"(未实现 = 无联动,字段省略)。
+	if es, ok := s.sb.(sdk.EffectiveSandbox); ok {
+		if eff := string(es.EffectiveMode()); eff != declared {
+			v.SandboxEffective, v.SandboxDerived = eff, true
+		}
 	}
 	if s.us != nil {
 		v.Stats = s.us.Stats()
@@ -934,11 +946,18 @@ func (s *Server) handleBackup(w http.ResponseWriter, r *http.Request) {
 
 // —— UI 插件(M7.2) ——
 
+// uiPluginTrustNote UI 插件的信任模型提示(单一文案源,经 /api/ui-plugins 下发;前端设置面板照显)。
+// 事实:UI 插件产物经动态 import() 进主页面,与主应用同源同 realm → 可调全部 API(含工具执行)。
+const uiPluginTrustNote = "UI 插件与宿主同源同权限:可调用全部 API(含工具执行),只安装你信任的插件"
+
 // UIPlugin 一个已安装 UI 插件的聚合视图(/api/ui-plugins;前端加载器用)。
 type UIPlugin struct {
 	ID      string    `json:"id"`
 	Version string    `json:"version"`
 	Slots   []SlotDef `json:"slots"`
+	// 信任模型明示(不改数组结构:前端插件加载器按 id/slots 消费,新增字段向后兼容)。
+	Trusted   bool   `json:"trusted"`
+	TrustNote string `json:"trust_note"`
 }
 
 // SlotDef 槽位覆盖声明(前端动态导入 module 后 registerSlot)。
@@ -993,7 +1012,7 @@ func (s *Server) scanUIPlugins() []UIPlugin {
 		if m.Slots == nil {
 			m.Slots = []SlotDef{}
 		}
-		out = append(out, UIPlugin{ID: m.ID, Version: m.Version, Slots: m.Slots})
+		out = append(out, UIPlugin{ID: m.ID, Version: m.Version, Slots: m.Slots, Trusted: true, TrustNote: uiPluginTrustNote})
 	}
 	return out
 }
@@ -1233,7 +1252,8 @@ func (s *Server) staticHandler() http.Handler {
 	}
 	// 静态资源不再自设 cookie:token 模式的凭据只经 POST /api/auth(引导页)下发,
 	// 缺凭据时由 authMiddleware 返回引导页(见 bootstrap.go)。
-	return http.FileServerFS(root)
+	// CSP 纵深:只加在 SPA 静态响应上(见 guard.go spaCSP)。
+	return withSPACSP(http.FileServerFS(root))
 }
 
 // authMiddleware 鉴权门(token 模式全表面,data.auth_token 非空时生效):

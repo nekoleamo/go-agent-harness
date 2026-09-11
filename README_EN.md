@@ -30,7 +30,7 @@ One source, three surfaces: the same gah binary hosts **TUI / Web / headless**; 
 | **ReAct loop** | dsh-style turns: pre-step → llm/stream → tool/call* → turn/end; AgentLoop itself is replaceable |
 | **Structured tools** | MCP-compatible JSON schema; execution pipeline pre-execute(veto) → execute → post-execute → result broadcast; structured errors fed back to the model |
 | **Unified LLM model** | Pure HTTP+SSE OpenAI-compatible adapter (DeepSeek/OpenAI/Ollama/vLLM/Kimi/llama.cpp) + Anthropic adapter (`claude-*` prefix routing) + mock adapter (CI without network); multiple providers coexist (`/provider`) |
-| **Sandbox tiers** | read-only / workspace-write (`../` traversal blocked) / full-access; switch at runtime via TUI `/sandbox` or the Web settings panel ; **unified write-path adjudication**: `file_*` arguments *and* the **explicit write targets of `shell` commands** must stay inside the mode's allowed scope (out-of-scope writes and unresolvable targets such as variable-built paths are rejected) — approving a prompt does **not** widen the mode; switch to full-access explicitly |
+| **Sandbox tiers** | read-only / workspace-write (`../` traversal blocked) / full-access; switch at runtime via TUI `/sandbox` or the Web settings panel ; **unified write-path adjudication**: `file_*` arguments *and* the write targets of `shell` commands (redirections, write commands, output flags such as `-o/-O/-C/-t/--target/--prefix`, `git clone` destination) must stay inside the mode's allowed scope (out-of-scope writes and unresolvable targets such as variable-built paths are rejected) — approving a prompt does **not** widen the mode; switch to full-access explicitly. **Tier linkage is visible**: approval `open`/`strict` overrides the *effective* sandbox tier (`full-access`/`read-only`), and `/sandbox`, `/approval`, the TUI status bar and the Web state all echo «declared → effective (source of the override)» instead of failing silently |
 | **Approval tiers** | Dangerous commands (rm -rf / git push -f / sudo / chmod 777…) follow a tier: open (allow) / smart (confirm dialog; safe-deny when no confirm channel; default) / strict (deny); preference persists |
 | **Credential isolation** | Tool subprocess env strips `*_API_KEY/_TOKEN/_SECRET`; dangerous operations safe-deny without a confirm channel |
 | **Session management** | Per-project isolation + multi-session switching + branch tree (`/fork` `/clone` `/tree` + naming); rolling summary compression over token budget (token-compress; full logs stay on disk) |
@@ -149,7 +149,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 |---|---|
 | `/model <name>` | Switch model (**dynamically enumerates all models of the current endpoint**, source annotated like `(siliconflow)`; auto-switches to that provider; manual input fallback when listing fails or no key) |
 | `/thinking off\|low\|medium\|high` | Thinking budget; **Shift+Tab cycles forward**; the status bar shows the thinking label (hidden when off) |
-| `/sandbox ro\|ws\|full` | Switch sandbox tier at runtime (read-only / workspace-write / full-access; live status bar; preference persists across restarts) |
+| `/sandbox ro\|ws\|full` | Switch sandbox tier at runtime (read-only / workspace-write / full-access; live status bar shows the *effective* tier and, when the approval tier overrides it, the source; preference persists across restarts) |
 | `/approval open\|smart\|strict` | Switch approval tier at runtime (open=allow dangerous cmds / smart=confirm dialog (default) / strict=deny; persists) |
 | `/provider show\|add\|use\|set\|unset\|clear` | Configure LLM providers (multi-provider): `show` list (active ★ credentials masked) / `add endpoint key [model]` (first becomes active) / `use <name>` switch / `set …` edit active / `unset field` remove one (env/sample fallback) / `clear` wipe & reset |
 | `/plugins list\|on\|off <id>` | Runtime plugin toggles (`on/off` persist; `default` restores the config-tree default) |
@@ -179,7 +179,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 
 | Tool | Description |
 |---|---|
-| `shell` | Run shell commands (sandbox/approval policies intercept; `data.pty` drives interactive processes; credential env stripped) ; explicit write targets are path-adjudicated (out-of-workspace writes denied under workspace-write, every write denied under read-only) |
+| `shell` | Run shell commands (sandbox/approval policies intercept; `data.pty` drives interactive processes; credential env stripped) ; write targets are path-adjudicated (out-of-workspace writes denied under workspace-write, every write denied under read-only) ; **env jail**: `TMPDIR`/`XDG_CACHE_HOME`/`GOCACHE`/`GOMODCACHE`/`npm_config_cache`/`PIP_CACHE_DIR` are always redirected to `$GAH_HOME/jail/**` (`HOME`/`GOPATH` are left alone; `GAH_SHELL_JAIL=0` disables) |
 | `file_read` / `file_write` / `file_append` / `file_edit` | Read/write/append/precise-edit files (sandbox path validation) |
 | `web_fetch` / `web_search` | Fetch URL content / web search (default Exa, `EXA_API_KEY`; `data.provider` swappable; 401/429/5xx structured errors) |
 | `workflow` / `workflow_collect` | Restricted starlark composing multi-step tool calls (natively sandboxed); `background` async + collect |
@@ -226,7 +226,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `POST /api/attachments` + `GET /attachments/...` | Attachment upload (20MB / type allowlist) / static preview |
 | `POST /api/reload` | Instruction-file hot reload |
 | `POST /api/shutdown` | Graceful shutdown (→ system/shutdown → DisposeAll; reused by desktop/ops) |
-| `GET /api/ui-plugins` + `/ui-plugins/` | UI-plugin aggregate view / static hosting |
+| `GET /api/ui-plugins` + `/ui-plugins/` | UI-plugin aggregate view / static hosting; aggregate items carry `trusted`/`trust_note` (UI plugins share the app's origin and therefore its privileges: they can call any API, including `/api/input` → tool execution; only install plugins you trust; the SPA ships a strict CSP that closes pure exfiltration) |
 | `GET /api/doc/preview` `raw` `asset` `tree` `html`, `POST /api/doc/render` | Document preview (block-model JSON) / raw bytes (Range, `dl=1` download) / embedded assets (MIME allow-list) / file tree / sandboxed HTML (CSP) / markdown text → block model |
 
 ## 7. Configuration & runtime directories
@@ -265,6 +265,7 @@ The data root is **the `gah-data/` sibling of the gah binary (the only one; auto
 | `GAH_WEB_ADDR` / `GAH_WEB_OPEN` / `GAH_WEB_STATIC` | Web listen address (default 127.0.0.1:2233) / auto-open browser / static dir override (dev HMR); the desktop shell additionally uses `GAH_WEB_TOKEN` to pass the token and navigate to the `#token=` URL (its readiness probe treats 401 as ready) |
 | `GAH_MCP_COMMAND` / `GAH_MCP_COMMANDS` | MCP bridge (single server `name=command` / multi server one per line `name=command args`; tools `mcp_<server>_<tool>`) |
 | `GAH_CB_ADDR` / `GAH_CB_TOKEN` | host-bridge callback channel (external plugins request tools/jobs/fanout from the host; auth token; **never leaked downstream** — `SanitizedEnv` strips it) |
+| `GAH_SHELL_JAIL` | `0` disables the shell **env jail** (enabled by default: redirects `TMPDIR`/`XDG_CACHE_HOME`/`GOCACHE`/`GOMODCACHE`/`npm_config_cache`/`PIP_CACHE_DIR` into `$GAH_HOME/jail/**` so build caches and temp files stop littering the user home directory; `HOME`/`GOPATH`/`CARGO_HOME`/`XDG_CONFIG_HOME` are deliberately preserved so git/ssh keep working) |
 | `GAH_EXT_ENV_PASS` | Explicit allow-list of env vars passed to external plugin processes (comma-separated): external plugins do **not** inherit host credentials by default (`*_API_KEY`/`*_TOKEN`/`AWS_*`/`GAH_CB_*` are stripped); name the ones a plugin genuinely needs (e.g. `EXA_API_KEY`), or use a config file (recommended: `$GAH_HOME/config/search.yaml`) |
 | `GAH_MCP_SERVE` / `GAH_PLUGIN` / `GAH_VERSION` | External tool-process entry params (serve/load plugin/version announcement; injected when host-bridge launches them) |
 | `DEEPSEEK_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | LLM keys (per-provider prefix routing; or write to provider.yaml via `/provider`) |

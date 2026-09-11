@@ -100,7 +100,13 @@ func (s *ShellTool) Execute(ctx context.Context, raw string) (any, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(dctx, "sh", "-c", a.Command)
-	cmd.Env = sdk.SanitizedEnv(os.Environ()) // 凭据隔离:滤除 *_API_KEY/*_TOKEN 等
+	// 凭据隔离(SanitizedEnv)在前,环境 jail 覆盖缓存根/临时根在后(见 jail.go):
+	// jail 建不起来时显式回结构化错误,不静默放行未受约束的命令。
+	env, jerr := jailEnv(sdk.SanitizedEnv(os.Environ()))
+	if jerr != nil {
+		return map[string]any{"error": "shell: 环境 jail 初始化失败: " + jerr.Error()}, nil
+	}
+	cmd.Env = env
 	// 后台孙进程(如 `sleep 300 &`)会持有 stdout 管道 → CombinedOutput 永不返回;
 	// 进程组 + WaitDelay 双保险:超时先杀直接子进程,WaitDelay 到点放弃 I/O 等待。
 	setProcessGroup(cmd)

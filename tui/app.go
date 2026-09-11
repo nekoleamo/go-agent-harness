@@ -63,10 +63,10 @@ func NewApp(c sdk.Ctx, loop sdk.AgentLoop, llm sdk.LLMService, profile string, p
 		Model:    llm.Model(),
 		Thinking: llm.Thinking().String(),
 	}
-	// 沙箱档位从服务读实际值(而非展示层写死 workspace-write)
+	// 沙箱档位从服务读实际值(而非展示层写死 workspace-write);联动覆盖时标注有效档
 	var sb sdk.Sandbox
 	if err := c.Inject("ctx.sandbox", &sb); err == nil && sb != nil {
-		state.Sandbox = string(sb.Mode())
+		state.Sandbox = sandboxDisplay(sb)
 	}
 	m := &Model{state: state}
 	a := &App{model: m, c: c, loop: loop, llm: llm, confirmCh: make(chan bool, 1)}
@@ -402,12 +402,12 @@ func (a *App) command(raw string) error {
 }
 
 func (a *App) cmdApproval(args []string) (string, error) {
-	if len(args) < 1 {
-		return "", errString("/approval open|smart|strict(开放|智能|严格)")
-	}
 	var ap sdk.ApprovalService
 	if err := a.c.Inject("ctx.approval", &ap); err != nil {
 		return "", errString("ctx.approval 未装配: " + err.Error())
+	}
+	if len(args) < 1 {
+		return approvalStatusText(ap.Mode(), a.sandboxOrNil()), nil
 	}
 	var mode sdk.ApprovalMode
 	switch args[0] {
@@ -422,17 +422,18 @@ func (a *App) cmdApproval(args []string) (string, error) {
 	}
 	ap.SetMode(mode)
 	a.model.state.Approval = string(mode)
+	a.refreshSandboxDisplay() // 审批档是沙箱有效档的权威来源:改档必须同步状态栏
 	prefs.SetApproval(string(mode))
-	return "", nil
+	return approvalStatusText(mode, a.sandboxOrNil()), nil
 }
 
 func (a *App) cmdSandbox(args []string) (string, error) {
-	if len(args) < 1 {
-		return "", errString("/sandbox ro|ws|full(read-only|workspace-write|full-access)")
-	}
 	var sb sdk.Sandbox
 	if err := a.c.Inject("ctx.sandbox", &sb); err != nil {
 		return "", errString("ctx.sandbox 未装配: " + err.Error())
+	}
+	if len(args) < 1 {
+		return sandboxStatusText(sb, a.approvalMode()), nil
 	}
 	var mode sdk.SandboxMode
 	switch args[0] {
@@ -446,9 +447,105 @@ func (a *App) cmdSandbox(args []string) (string, error) {
 		return "", errString("/sandbox ro|ws|full")
 	}
 	sb.SetMode(mode)
-	a.model.state.Sandbox = string(mode)
+	a.model.state.Sandbox = sandboxDisplay(sb)
 	prefs.SetSandbox(string(mode)) // 退出即记(与 Web 共享偏好)
-	return "", nil
+	return sandboxSetText(sb, a.approvalMode()), nil
+}
+
+// sandboxOrNil 宽松取沙箱服务(未装配返回 nil:档位回显可降级)。
+func (a *App) sandboxOrNil() sdk.Sandbox {
+	var sb sdk.Sandbox
+	if err := a.c.Inject("ctx.sandbox", &sb); err != nil {
+		return nil
+	}
+	return sb
+}
+
+// approvalMode 当前审批档(未装配返回空串;仅用于回显来源标注)。
+func (a *App) approvalMode() sdk.ApprovalMode {
+	var ap sdk.ApprovalService
+	if err := a.c.Inject("ctx.approval", &ap); err != nil || ap == nil {
+		return ""
+	}
+	return ap.Mode()
+}
+
+// refreshSandboxDisplay 刷新状态栏沙箱段(档位联动后有效档会变)。
+func (a *App) refreshSandboxDisplay() {
+	if sb := a.sandboxOrNil(); sb != nil {
+		a.model.state.Sandbox = sandboxDisplay(sb)
+	}
+}
+
+// sandboxDisplay 状态栏沙箱段:声明档;被联动覆盖时附有效档与来源标注。
+// 只读 Mode() 会把 approval=open 下的全放行说成 workspace-write(显示与行为不一致),
+// 故实现 sdk.EffectiveSandbox 时以有效档为准。
+func sandboxDisplay(sb sdk.Sandbox) string {
+	declared := string(sb.Mode())
+	es, ok := sb.(sdk.EffectiveSandbox)
+	if !ok {
+		return declared
+	}
+	eff := string(es.EffectiveMode())
+	if eff == declared {
+		return declared
+	}
+	return declared + "→" + eff + "(审批联动)"
+}
+
+// sandboxStatusText 沙箱档位回显(与 host-internal-commands 同文案):声明档 + 有效档。
+func sandboxStatusText(sb sdk.Sandbox, approval sdk.ApprovalMode) string {
+	declared := string(sb.Mode())
+	es, ok := sb.(sdk.EffectiveSandbox)
+	if !ok {
+		return "沙箱: " + declared
+	}
+	eff := string(es.EffectiveMode())
+	if eff == declared {
+		return "沙箱: " + declared + "(有效一致)"
+	}
+	return "沙箱: " + declared + ";有效: " + eff + "(联动来源 " + approvalSource(approval) + ")"
+}
+
+// sandboxSetText 切档回显:被联动覆盖时显式提示(不再静默失效)。
+func sandboxSetText(sb sdk.Sandbox, approval sdk.ApprovalMode) string {
+	declared := string(sb.Mode())
+	es, ok := sb.(sdk.EffectiveSandbox)
+	if !ok {
+		return "沙箱 -> " + declared
+	}
+	eff := string(es.EffectiveMode())
+	if eff == declared {
+		return "沙箱 -> " + declared
+	}
+	return "沙箱 -> " + declared + ";注意:联动覆盖生效,当前有效档 " + eff + "(" + approvalSource(approval) + "),该设置暂不生效"
+}
+
+// approvalSource 联动来源标注(approval=open → "approval=open";未装配 → "审批档联动")。
+// 只标注来源,不推断覆盖结果——覆盖结果以 EffectiveMode() 实报为准。
+func approvalSource(approval sdk.ApprovalMode) string {
+	if approval == "" {
+		return "审批档联动"
+	}
+	return "approval=" + string(approval)
+}
+
+// approvalStatusText 审批档回显:档位 + 它对沙箱有效档的影响。
+func approvalStatusText(mode sdk.ApprovalMode, sb sdk.Sandbox) string {
+	txt := "审批: " + string(mode)
+	if sb == nil {
+		return txt
+	}
+	if es, ok := sb.(sdk.EffectiveSandbox); ok {
+		return txt + ";沙箱有效: " + string(es.EffectiveMode())
+	}
+	switch mode {
+	case sdk.ApprovalOpen:
+		return txt + "(联动开启时沙箱有效档 = full-access)"
+	case sdk.ApprovalStrict:
+		return txt + "(联动开启时沙箱有效档 = read-only)"
+	}
+	return txt
 }
 
 func (a *App) cmdPlugins(args []string) (string, error) {
@@ -1262,6 +1359,7 @@ func (a *App) applyPrefs() {
 			a.model.state.Approval = p.Approval
 		}
 	}
+	a.refreshSandboxDisplay() // 沙箱/审批偏好都恢复后再统一刷新有效档(两者共同决定)
 	if p.History != nil {
 		var sess sdk.SessionLog
 		if err := a.c.Inject("ctx.sessions", &sess); err == nil && sess != nil {

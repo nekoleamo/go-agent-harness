@@ -348,6 +348,113 @@ func TestStateEndpoint(t *testing.T) {
 	}
 }
 
+// stubSBDerived 档位联动的沙箱替身:声明档与有效档不同(approval=open 时 policy-guard 即如此)。
+type stubSBDerived struct{ stubSB }
+
+func (s *stubSBDerived) EffectiveMode() sdk.SandboxMode { return sdk.SandboxFullAccess }
+
+// /api/state 必须报"实际生效档":只报 Mode() 会把联动后的 full-access 显示成 workspace-write。
+func TestStateEffectiveSandbox(t *testing.T) {
+	stateRaw := func(t *testing.T, s *Server) map[string]any {
+		t.Helper()
+		hs := httptest.NewServer(s.handler())
+		defer hs.Close()
+		resp, err := http.Get(hs.URL + "/api/state")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != 200 {
+			t.Fatalf("status %d", resp.StatusCode)
+		}
+		var raw map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+
+	// 未实现 sdk.EffectiveSandbox 的沙箱(旧替身/旧实现):不出现联动字段,客户端语义不变
+	s, _ := newTestServer()
+	raw := stateRaw(t, s)
+	if raw["sandbox"] != "workspace-write" {
+		t.Fatalf("sandbox 应为声明档,得 %v", raw["sandbox"])
+	}
+	if _, ok := raw["sandbox_effective"]; ok {
+		t.Fatalf("未实现 EffectiveSandbox 时不应下发 sandbox_effective:%v", raw["sandbox_effective"])
+	}
+	if _, ok := raw["sandbox_derived"]; ok {
+		t.Fatalf("未实现 EffectiveSandbox 时不应下发 sandbox_derived:%v", raw["sandbox_derived"])
+	}
+
+	// 实现有效能力且与声明档不同:两个字段都要出现,声明档保持原值(可对照)
+	s.sb = &stubSBDerived{stubSB{mode: sdk.SandboxWorkspace}}
+	raw = stateRaw(t, s)
+	if raw["sandbox"] != "workspace-write" || raw["sandbox_effective"] != "full-access" || raw["sandbox_derived"] != true {
+		t.Fatalf("联动字段不符: %v", raw)
+	}
+
+	// 有效档与声明档一致(如 approval=smart 不覆盖):不报冗余字段
+	s.sb = &stubSBSame{stubSB{mode: sdk.SandboxWorkspace}}
+	if raw = stateRaw(t, s); raw["sandbox_effective"] != nil || raw["sandbox_derived"] != nil {
+		t.Fatalf("有效档一致时不应下发联动字段: %v", raw)
+	}
+}
+
+// stubSBSame 实现有效能力但与声明档相同(smart 档不覆盖的等价形态)。
+type stubSBSame struct{ stubSB }
+
+func (s *stubSBSame) EffectiveMode() sdk.SandboxMode { return s.mode }
+
+// /api/ui-plugins 每项必须带信任模型明示:UI 插件与宿主同源同权限(安装即完全信任)。
+func TestUIPluginsTrustModel(t *testing.T) {
+	s, _ := newTestServer()
+	dir := t.TempDir()
+	plug := filepath.Join(dir, "demo")
+	if err := os.MkdirAll(plug, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{"id":"demo","version":"1.0.0","slots":[{"name":"statusbar","priority":5,"module":"./dist/plugin.js"}]}`
+	if err := os.WriteFile(filepath.Join(plug, "manifest.json"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s.cfg.UIPluginsDir = dir
+	hs := httptest.NewServer(s.handler())
+	defer hs.Close()
+
+	resp, err := http.Get(hs.URL + "/api/ui-plugins")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var list []UIPlugin
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("应扫到 1 个插件,得 %+v", list)
+	}
+	p := list[0]
+	if p.ID != "demo" || !p.Trusted || p.TrustNote != uiPluginTrustNote {
+		t.Fatalf("插件信任模型字段缺失:%+v", p)
+	}
+	if p.TrustNote == "" || !strings.Contains(p.TrustNote, "只安装你信任的插件") {
+		t.Fatalf("信任提示文案不符:%q", p.TrustNote)
+	}
+
+	// 目录缺 manifest 时仍返回合法空数组(前端加载器不遇 null)
+	s.cfg.UIPluginsDir = t.TempDir()
+	resp2, err := http.Get(hs.URL + "/api/ui-plugins")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	body, _ := io.ReadAll(resp2.Body)
+	if string(body) != "[]\n" {
+		t.Fatalf("空插件目录应返回 [],得 %q", body)
+	}
+}
+
 func TestInputConflict409(t *testing.T) {
 	s, _ := newTestServer()
 	hs := httptest.NewServer(s.handler())

@@ -75,6 +75,35 @@ func setSecurityHeaders(w http.ResponseWriter) {
 	h.Set("Referrer-Policy", "same-origin")
 }
 
+// spaCSP 前端主页面(静态 SPA)专属 CSP,由 staticHandler 逐响应设置(不影响 /api/*、
+// /attachments/、文档光栅端点——它们各自的自设 CSP 或全局头保持原样)。
+//
+// 为什么需要:UI 插件经动态 import() 进同源同 realm 的主页面,若无 CSP,已安装插件
+// 可把整个会话内容外发到任意主机。本 CSP 不改变插件能力(仍是同源可信代码,见 UIPlugin
+// 的 trust_note),只切断"不经服务端的外发"这一条通道。
+//
+// 逐项依据(改前先确认,勿凭习惯放宽):
+//   - default-src 'none'          未列举的一律不发(manifest/worker 等也归此)
+//   - script-src 'self'           index.html 无内联脚本,产物是外链模块;UI 插件动态 import 同源
+//   - style-src 'self' …'unsafe-inline'  Vue 的 :style 绑定与运行时注入样式
+//   - img-src/media-src blob:     附件图片预览用 URL.createObjectURL
+//   - connect-src 'self'          WS/EventSource 均同源(CSP3 下 'self' 覆盖同源 ws/wss)
+//   - frame-src 'self'            文档预览"同源 iframe"(DocPanel 的 PDF/转换产物/HTML 沙箱预览),
+//     不能用 'none'(会直接弄坏预览);跨源嵌套仍被挡
+//   - object-src 'none'           禁插件嵌入
+//   - base-uri/form-action 'none' 禁改 base 与表单外发(前端无 form/target,_blank)
+const spaCSP = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+	"img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self'; connect-src 'self'; " +
+	"frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+
+// withSPACSP 给静态 SPA 响应加 CSP(其余路径不经过它,故不受影响)。
+func withSPACSP(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Security-Policy", spaCSP)
+		next.ServeHTTP(w, r)
+	})
+}
+
 // isStateChanging 是否为可产生副作用的方法(CSRF 关注面)。
 func isStateChanging(method string) bool {
 	switch method {

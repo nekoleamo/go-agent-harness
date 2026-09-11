@@ -97,8 +97,19 @@ func (t *myTool) Definition() sdk.ToolDefinition {
 - 声明只走宿主↔插件协议(桥 `defDTO`/`serve.go` 已透传),**不下发模型**(适配层只取 Name/Description/InputSchema),零 token 成本。
 - 该裁决是**宿主侧兜底**:工具侧自己装配了沙箱(`sdk.Sandbox`)时两层都会校验,不冲突。
 
-**shell 命令的路径裁决(与声明无关,宿主统一施加)**:`shell` 工具的命令行会按词法扫描提取**显式写目标**(重定向 `>`/`>>`/`&>`、写命令表 `rm/mv/cp/mkdir/touch/truncate/sed -i/tee/dd of=/chmod/chown/ln/tar -x/rsync` 等、`bash -c` 递归一层),越界写被拒;含变量/命令替换/glob 的不可裁决写目标直接拒绝(提示改写为确定路径或切 `full-access`)。重要语义:**审批通过 ≠ 放开档位** —— 用户点「允许」不会让 workspace-write 档接受越界写(与 `file_*` 一致)。
-未覆盖(诚实边界,靠危险模式 + 审批档兜底):间接写入(构建缓存、`go build -o`/`gcc -o`/`curl -o`、包管理器、`git clone` 目标)、`run_code` 类工具、以及变量拼出的命令文本。所以**工具自己拼 shell 命令时,请把路径显式传给 `shell` 而不是塞进变量**。
+**shell 命令的路径裁决(与声明无关,宿主统一施加)**:`shell` 工具的命令行会按词法扫描提取**显式写目标**——重定向(`>`/`>>`/`&>`/`<>`,含 fd 前缀)、写命令表(`rm/mv/cp/mkdir/touch/truncate/sed -i/tee/dd of=/chmod/chown/ln/tar -x/rsync` 等)、`sudo`/`env`/`nohup`/`time`/`xargs`/`exec` 前缀剥离、`eval`/`bash -c` 递归一层、`~` 展开,以及**输出型 flag**(`curl -o|--output`、`wget -O`、`gcc/clang/cc -o`、`go build|install -o`、`tar -C`、`unzip -d`、`pip install -t|--target`、`npm install --prefix`、`git clone <repo> <dir>` 的位置目标):越界写被拒;含变量/命令替换/glob 的不可裁决写目标直接拒绝(提示改写为确定路径或切 `full-access`)。重要语义:**审批通过 ≠ 放开档位** —— 用户点「允许」不会让 workspace-write 档接受越界写(与 `file_*` 一致)。
+**环境 jail(档位无关,恒定生效)**:`shell` 执行把「缓存/临时根」重定向进数据根 —— `TMPDIR`/`TMP`/`TEMP`、`XDG_CACHE_HOME`、`GOCACHE`、`GOMODCACHE`、`npm_config_cache`、`PIP_CACHE_DIR` → `$GAH_HOME/jail/**`(`jail/cache/*` 复用、`jail/tmp` 每次顺带清 24h 前条目);`HOME`/`GOPATH`/`CARGO_HOME`/`XDG_CONFIG_HOME` **刻意不动**(git/ssh/gpg 要能读配置与凭据)。目录 0700,创建失败**显式报错**(安全机制不可用不静默放行);`GAH_SHELL_JAIL=0` 可整体关闭。
+未覆盖(诚实边界,靠危险模式 + 审批档兜底):命令包装器与构建系统内部的写(`ccache`/`make`/`cmake` 自选的落点)、解释器内部写(`python3 -c "open('/x','w')"`)、`go install` 无 `-o` 时装进 `GOPATH/bin`(`GOPATH` 刻意不重定向)、`curl -O`(按 URL 落 cwd,不越界)、变量拼出的命令文本(`CMD='rm …'; $CMD`),以及**外部进程**(MCP server 子进程、host-bridge 外部插件)的写 —— 当前沙箱是「工具边界的协作式控制」而非进程沙箱,内核级沙箱(macOS seatbelt / Linux Landlock)仍是规划项。所以**工具自己拼 shell 命令时,请把路径显式传给 `shell` 而不是塞进变量**。
+
+### 2.7 工具执行唯一入口(安全不变式,**所有调用工具的插件必读**)
+
+工具执行只有一条合法路径:**`ctx.tools`(`host-tools` registry)**。该 registry 是 `tools/pre-execute` 的**唯一发出点**,而 `policy-guard`(审批档 + 路径沙箱)只订阅它 —— 绕过 registry 就等于绕过全部策略。
+
+规则:
+- 插件不得私接工具实现、不得自建执行路径(禁止把别的插件的工具函数直接拿来调;插件间也不允许相互 import)。
+- 需要执行工具(子代理、workflow 嵌套调用、MCP server 暴露、外部插件回调等)一律经 `ctx.tools.Execute(ctx, name, args)`。
+- **新增任何「能触发工具执行的入口」必须在 `tests/policy_entries_e2e_test.go` 的入口矩阵中登记**(断言:该入口委派给注入的 registry、registry 必发 `tools/pre-execute`、veto 时工具**不产生副作用**)。当前已登记:agent-loop、host-fanout、tool-workflow、mcp-server、host-bridge 宿主侧 `toolsCall`、web `/api/tools/{name}`。
+- veto 语义:订阅者返回错误即「不执行」,由 registry 转成结构化 `blocked:` 结果回传模型(不中断回合)。
 
 ## 3. 开发步骤(七步)
 
@@ -218,6 +229,17 @@ func main() {
 - 单测参照 `plugins/host/host-bridge/bridge_test.go` 的 `buildExternalPlugin` 模式(测试内 `go build` 产物再装配断言崩溃隔离/软降级)。
 - 集成端到端见 `tests/external_test.go`(`releaseExt` 释放 + 真实回合走回调通道)。
 
+### 4.2 UI 插件(web 槽位)的信任模型
+
+UI 插件以 `$GAH_HOME/ui-plugins/<id>/` 落盘,manifest 声明槽位覆盖(stream/input/statusbar/confirm/settings-section/sidebar-action/extra-panel),前端经 `web-src/src/plugins.ts` 动态 `import()` 载入。
+
+**关键事实:UI 插件与主应用同源同 realm,因此拥有与主应用相同的权限** —— 可读取页面上的全部会话内容、可用 cookie 调全部 `/api/*`(含 `/api/input`,即向模型投喂 prompt → 经工具执行等同本地代码执行)。这与外部插件二进制「与宿主进程同权限」等价。
+
+- 安装 = 用户手工放产物;**只安装你信任的插件**(与「插件目录可写 = 用户可替换插件」同一信任域,设计如此)。
+- 纵深:SPA 响应带严格 CSP(`default-src 'none'` + 显式白名单,`connect-src 'self'`),切断「纯外发」通道(要绕过需注入,成本陡增);`/api/ui-plugins` 响应带 `trusted`/说明字段,设置页有同款提示。
+- 规划中(未实施):`iframe sandbox` + postMessage 能力桥 + manifest `permissions` 声明 —— 仅当 UI 插件成为**网络分发**面才值得做。
+- 开发约束不变:渲染层禁 `v-html`,组件不得散写裸色值(见 AGENTS.md「UI 规范」)。
+
 ## 5. 检查清单(提交前)
 - [ ] 只 import sdk;无 core/tui/其它插件 import
 - [ ] Start 返回的 Disposer 可逆且幂等(注册的每个副作用都有撤销)
@@ -226,6 +248,8 @@ func main() {
 - [ ] config 条目已加(含 enabled/data)
 - [ ] **便携纪律**(见 AGENTS.md「便携纪律」):任何写盘路径以 `$GAH_HOME` 为根(注意 GAH_HOME 是 boot 内部贯通变量,**数据根唯一 = 二进制同级 gah-data/**,用户不可经 env 指定);禁用硬编码 ~/.gah、cwd 相对写、系统根/散目录;密钥入 config/、env 入 gah-data/env.sh;新增路径 helper 可审计
 - [ ] 涉及文件路径的工具:已声明 `ToolDefinition.PathParams`(§2.6)
+- [ ] 工具执行只经 `ctx.tools`(§2.7);新增「可触发工具执行的入口」已登记入口矩阵测试
+- [ ] UI 插件型:未把「同源同权限」当作安全边界(§4.2)
 - [ ] 单测通过;-race 全绿
 - [ ] 错误回传模型(结构化 error),不 panic
 - [ ] 外部插件型:握手/协议/回调/退出语义(§4.1)已符合;产物已编入 scripts/gen-extplugins.sh 的 NAMES

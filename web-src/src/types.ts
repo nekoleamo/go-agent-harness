@@ -111,6 +111,10 @@ export interface StateView {
   model: string
   thinking: string
   sandbox: string
+  // 档位联动(approval 为权威档时覆盖沙箱):仅当有效档 != 声明档时后端下发;
+  // 展示"实际生效档"用 sandbox_effective ?? sandbox(旧后端无此字段时语义不变)
+  sandbox_effective?: string
+  sandbox_derived?: boolean
   approval?: string
   stats: UsageStats
   session?: SessionView

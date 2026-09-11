@@ -195,12 +195,13 @@ func (h *Host) cmdThinking(args []string) (string, error) {
 }
 
 func (h *Host) cmdApproval(args []string) (string, error) {
-	if len(args) < 1 {
-		return "", errString("/approval open|smart|strict(开放|智能|严格)")
-	}
 	var ap sdk.ApprovalService
 	if err := h.c.Inject("ctx.approval", &ap); err != nil {
 		return "", errString("ctx.approval 未装配: " + err.Error())
+	}
+	// 无参 = 查看当前档位与它对沙箱有效档的影响(档位联动,见 policy-guard link.go)
+	if len(args) < 1 {
+		return approvalStatusText(ap.Mode(), h.sandboxOrNil()), nil
 	}
 	var mode sdk.ApprovalMode
 	switch args[0] {
@@ -215,16 +216,17 @@ func (h *Host) cmdApproval(args []string) (string, error) {
 	}
 	ap.SetMode(mode)
 	prefs.SetApproval(string(mode)) // 退出即记(与 Web 共享偏好)
-	return "", nil
+	return approvalStatusText(mode, h.sandboxOrNil()), nil
 }
 
 func (h *Host) cmdSandbox(args []string) (string, error) {
-	if len(args) < 1 {
-		return "", errString("/sandbox ro|ws|full(read-only|workspace-write|full-access)")
-	}
 	var sb sdk.Sandbox
 	if err := h.c.Inject("ctx.sandbox", &sb); err != nil {
 		return "", errString("ctx.sandbox 未装配: " + err.Error())
+	}
+	// 无参 = 查看当前声明档与有效档(联动覆盖时不再静默)
+	if len(args) < 1 {
+		return sandboxStatusText(sb, h.approvalMode()), nil
 	}
 	var mode sdk.SandboxMode
 	switch args[0] {
@@ -239,7 +241,84 @@ func (h *Host) cmdSandbox(args []string) (string, error) {
 	}
 	sb.SetMode(mode)
 	prefs.SetSandbox(string(mode)) // 退出即记(与 Web 共享偏好)
-	return "", nil
+	return sandboxSetText(sb, h.approvalMode()), nil
+}
+
+// sandboxOrNil 宽松取沙箱服务(未装配返回 nil:档位回显可降级,命令主功能仍显式报错)。
+func (h *Host) sandboxOrNil() sdk.Sandbox {
+	var sb sdk.Sandbox
+	if err := h.c.Inject("ctx.sandbox", &sb); err != nil {
+		return nil
+	}
+	return sb
+}
+
+// approvalMode 当前审批档(未装配返回空串;仅用于回显来源标注,不影响命令语义)。
+func (h *Host) approvalMode() sdk.ApprovalMode {
+	var ap sdk.ApprovalService
+	if err := h.c.Inject("ctx.approval", &ap); err != nil || ap == nil {
+		return ""
+	}
+	return ap.Mode()
+}
+
+// sandboxStatusText 沙箱档位回显:声明档 + 联动后的有效档(不一致时标注联动来源)。
+// 只有实现 sdk.EffectiveSandbox 的沙箱(真实 policy-guard)能给出有效档;
+// 桩/旧实现只报声明档——否则就是把「没覆盖」说成「覆盖了」。
+// 有效档取自实现本身(而不是按 approval 推测),换实现也不会说错。
+func sandboxStatusText(sb sdk.Sandbox, approval sdk.ApprovalMode) string {
+	declared := string(sb.Mode())
+	es, ok := sb.(sdk.EffectiveSandbox)
+	if !ok {
+		return "沙箱: " + declared
+	}
+	eff := string(es.EffectiveMode())
+	if eff == declared {
+		return "沙箱: " + declared + "(有效一致)"
+	}
+	return "沙箱: " + declared + ";有效: " + eff + "(联动来源 " + approvalSource(approval) + ")"
+}
+
+// sandboxSetText 切档回显:设置结果落地,被联动覆盖时给出显式提示(不再静默失效)。
+func sandboxSetText(sb sdk.Sandbox, approval sdk.ApprovalMode) string {
+	declared := string(sb.Mode())
+	es, ok := sb.(sdk.EffectiveSandbox)
+	if !ok {
+		return "沙箱 -> " + declared
+	}
+	eff := string(es.EffectiveMode())
+	if eff == declared {
+		return "沙箱 -> " + declared
+	}
+	return "沙箱 -> " + declared + ";注意:联动覆盖生效,当前有效档 " + eff + "(" + approvalSource(approval) + "),该设置暂不生效"
+}
+
+// approvalSource 联动来源标注(approval=open → "approval=open";未装配 → "审批档联动")。
+// 只标注来源,不推断覆盖结果——覆盖结果以 EffectiveMode() 实报为准。
+func approvalSource(approval sdk.ApprovalMode) string {
+	if approval == "" {
+		return "审批档联动"
+	}
+	return "approval=" + string(approval)
+}
+
+// approvalStatusText 审批档回显:档位 + 它对沙箱有效档的影响。
+// 沙箱可给有效档时报真实值(覆盖了才显示被联动);否则给固定语义说明(不猜 sync 开关)。
+func approvalStatusText(mode sdk.ApprovalMode, sb sdk.Sandbox) string {
+	txt := "审批: " + string(mode)
+	if sb == nil {
+		return txt
+	}
+	if es, ok := sb.(sdk.EffectiveSandbox); ok {
+		return txt + ";沙箱有效: " + string(es.EffectiveMode())
+	}
+	switch mode {
+	case sdk.ApprovalOpen:
+		return txt + "(联动开启时沙箱有效档 = full-access)"
+	case sdk.ApprovalStrict:
+		return txt + "(联动开启时沙箱有效档 = read-only)"
+	}
+	return txt
 }
 
 func (h *Host) cmdPlugins(args []string) (string, error) {

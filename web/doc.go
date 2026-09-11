@@ -138,10 +138,21 @@ func (s *Server) handleDocRaw(w http.ResponseWriter, r *http.Request) {
 		disposition = "attachment"
 	}
 	disp := mime.FormatMediaType(disposition, map[string]string{"filename": name})
+	setDocInlineFrame(w)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Disposition", disp)
 	w.Header().Set("Content-Type", mimeType)
 	http.ServeContent(w, r, name, time.Time{}, rc)
+}
+
+// setDocInlineFrame 文档内联呈现端点(同源 iframe 承载):全局护栏给**所有**响应加
+// X-Frame-Options: DENY 与 CSP frame-ancestors 'none',而文档面板(raw PDF / 转换产物 /
+// HTML 预览)在守护栈(Handler()/Start())下正是用**同源** iframe 呈现 → 这三处显式收窄为
+// 「同源可嵌」。跨源嵌套仍被拒(防点击劫持);SPA 与其余 API 面的全局 DENY 不受影响。
+// 调用方若需自定 CSP,请在本函数之后再 Set(后者覆盖前者)。
+func setDocInlineFrame(w http.ResponseWriter) {
+	w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+	w.Header().Set("Content-Security-Policy", "frame-ancestors 'self'")
 }
 
 // isDangerousInline 不允许内联呈现的类型(HTML/SVG 等可执行文档内容)。
@@ -194,6 +205,7 @@ func (s *Server) handleDocAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", mimeType)
+	setDocInlineFrame(w)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "private, max-age=300")
 	_, _ = io.Copy(w, io.LimitReader(rc, 20<<20))
@@ -280,8 +292,9 @@ func (s *Server) handleDocHTML(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rc.Close()
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	setDocInlineFrame(w)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; img-src data:; style-src 'unsafe-inline'")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; img-src data:; style-src 'unsafe-inline'; frame-ancestors 'self'")
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = io.Copy(w, io.LimitReader(rc, 2<<20))
 }

@@ -537,3 +537,57 @@ func (stubDocNoRaster) List(context.Context, sdk.DocRequest, int) (*sdk.DocTree,
 func (stubDocNoRaster) Render(context.Context, string, int) (*sdk.DocView, error) {
 	return &sdk.DocView{}, nil
 }
+
+// TestDocInlineFrameHeadersGuarded 守护栈(Handler())下的文档内联呈现头:
+// 全局护栏给所有响应加 X-Frame-Options: DENY + CSP frame-ancestors 'none',而 DocPanel 用
+// **同源** iframe 承载 PDF / 转换产物 / HTML 预览 → 这三个端点必须显式收窄为「同源可嵌」,
+// 否则生产栈(gah web)里文档预览会被浏览器直接拦掉(既有单测走 handler() 不含护栏,看不见)。
+// 同时断言 SPA 面的全局 DENY 未被顺带放开。
+func TestDocInlineFrameHeadersGuarded(t *testing.T) {
+	d := &stubDoc{
+		raw:       []byte("%PDF-1.4 fake"),
+		rawMime:   "application/pdf",
+		assetData: []byte("%PDF-1.4 fake"),
+		assetMime: "application/pdf",
+	}
+	s, _ := docTestServer(d)
+	hs := httptest.NewServer(s.Handler()) // 守护栈 = guardMiddleware(authMiddleware(handler()))
+	defer hs.Close()
+
+	get := func(path string) *http.Response {
+		t.Helper()
+		resp, err := http.Get(hs.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		resp.Body.Close()
+		return resp
+	}
+
+	// 1) 三个内联呈现端点:同源可嵌
+	for _, path := range []string{
+		"/api/doc/raw?path=a.pdf",
+		"/api/doc/asset?path=a.pdf&id=x",
+		"/api/doc/html?path=a.html",
+	} {
+		resp := get(path)
+		if got := resp.Header.Get("X-Frame-Options"); got != "SAMEORIGIN" {
+			t.Fatalf("%s: 文档内联端点须 SAMEORIGIN(同源 iframe 预览),got %q", path, got)
+		}
+		csp := resp.Header.Get("Content-Security-Policy")
+		if !strings.Contains(csp, "frame-ancestors 'self'") {
+			t.Fatalf("%s: CSP 须允许同源嵌套,got %q", path, csp)
+		}
+		if strings.Contains(csp, "frame-ancestors 'none'") {
+			t.Fatalf("%s: 同源嵌套被全局 frame-ancestors 拦掉,got %q", path, csp)
+		}
+	}
+	// HTML 预览的沙箱策略不得被顺带放宽(脚本与外联仍禁)
+	if csp := get("/api/doc/html?path=a.html").Header.Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'none'") {
+		t.Fatalf("HTML 预览仍须 default-src 'none',got %q", csp)
+	}
+	// 2) SPA 面:全局点击劫持防护保持不变
+	if got := get("/").Header.Get("X-Frame-Options"); got != "DENY" {
+		t.Fatalf("SPA 面全局 X-Frame-Options 应保持 DENY,got %q", got)
+	}
+}

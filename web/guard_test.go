@@ -129,6 +129,50 @@ func TestGuardSecurityHeaders(t *testing.T) {
 	}
 }
 
+// SPA 静态响应的专属 CSP(切断"已安装 UI 插件把会话内容外发"的通道):
+// 只作用于静态面;/api/* 仍只带全局头(不被 SPA 指令覆盖)。
+func TestSPACSPOnStaticOnly(t *testing.T) {
+	_, hs := authServer(t, "")
+	for _, path := range []string{"/", "/index.html", "/app.js"} {
+		code, _, hdr := getBody(t, hs.URL+path, nil)
+		if code != http.StatusOK {
+			t.Fatalf("GET %s 应 200,得 %d", path, code)
+		}
+		csp := hdr.Get("Content-Security-Policy")
+		for _, want := range []string{
+			"default-src 'none'", "script-src 'self'", "style-src 'self' 'unsafe-inline'",
+			"img-src 'self' data: blob:", "connect-src 'self'", "object-src 'none'",
+			"base-uri 'none'", "form-action 'none'", "frame-ancestors 'none'",
+			// 文档预览是同源 iframe(DocPanel 的 PDF/转换产物/HTML 预览):
+			// 写成 'none' 会直接弄坏预览,这里钉住 'self'
+			"frame-src 'self'",
+		} {
+			if !strings.Contains(csp, want) {
+				t.Fatalf("%s 的 CSP 缺 %q,得 %q", path, want, csp)
+			}
+		}
+		// 放宽项必须不存在(防后续改动无声地把外发通道开回)
+		for _, bad := range []string{"unsafe-eval", "connect-src *", "connect-src http", "script-src 'unsafe-inline'", "frame-src *"} {
+			if strings.Contains(csp, bad) {
+				t.Fatalf("%s 的 CSP 不应含 %q:%q", path, bad, csp)
+			}
+		}
+	}
+	// API 不被 SPA CSP 替换:仍是全局头
+	code, _, hdr := getBody(t, hs.URL+"/api/state", nil)
+	if code != http.StatusOK {
+		t.Fatalf("GET /api/state 应 200,得 %d", code)
+	}
+	if csp := hdr.Get("Content-Security-Policy"); csp != "frame-ancestors 'none'" {
+		t.Fatalf("/api/* 的 CSP 应保持全局头,得 %q", csp)
+	}
+	// token 模式带凭据的入口页同样走 SPA CSP(引导页有自己的 CSP,不在此断)
+	_, tks := authServer(t, "tk")
+	if _, _, hdr := getBody(t, tks.URL+"/", &http.Cookie{Name: "gah_token", Value: "tk"}); !strings.Contains(hdr.Get("Content-Security-Policy"), "default-src 'none'") {
+		t.Fatalf("token 模式带凭据的入口页应带 SPA CSP,得 %q", hdr.Get("Content-Security-Policy"))
+	}
+}
+
 // Handler() 必须与 Start() 同栈(此前 Handler() 直返 handler(),外部挂载默认无鉴权/无护栏)。
 func TestHandlerIncludesGuard(t *testing.T) {
 	s := New(Config{AuthToken: "tk"}, NewHub(), NewConfirm(NewHub()), slog.Default())
