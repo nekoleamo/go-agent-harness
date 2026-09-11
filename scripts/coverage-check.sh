@@ -41,19 +41,19 @@ internal/install 60
 cmd/gah 50
 plugins/catalogue 70
 plugins/ui/ui-web-app 70
-web 65
-tui 62
-plugins/policy/policy-guard 80
+web 68
+tui 71
+plugins/policy/policy-guard 86
 plugins/host/host-agent-loop 72
-plugins/host/host-bridge 80
+plugins/host/host-bridge 84
 plugins/host/host-backup 80
 plugins/host/host-commands 76
 plugins/host/host-confirm-fusion 76
 plugins/host/host-cwd-sessions 76
 plugins/host/host-docview 72
 plugins/host/host-docview/pdfium 20
-plugins/host/host-fanout 72
-plugins/host/host-internal-commands 88
+plugins/host/host-fanout 77
+plugins/host/host-internal-commands 93
 plugins/host/host-jobs 88
 plugins/host/host-llm 60
 plugins/host/host-plugin-manager 76
@@ -61,11 +61,11 @@ plugins/host/host-session-log 76
 plugins/host/host-session-summary 74
 plugins/host/host-skills 76
 plugins/host/host-system-prompt 88
-plugins/host/host-tools 74
+plugins/host/host-tools 86
 plugins/host/host-usage-stats 60
 plugins/host/token-compress 84
 plugins/mcp/mcp-bridge 50
-plugins/mcp/mcp-server 80
+plugins/mcp/mcp-server 85
 plugins/adapter/llm-anthropic-compat 58
 plugins/adapter/llm-mock 55
 plugins/adapter/llm-openai-compat 66
@@ -74,11 +74,11 @@ plugins/tool/tool-auto-plan 58
 plugins/tool/tool-doc 72
 plugins/tool/tool-files 58
 plugins/tool/tool-memory 73
-plugins/tool/tool-shell 80
+plugins/tool/tool-shell 87
 plugins/tool/tool-subagent 56
 plugins/tool/tool-todo 75
 plugins/tool/tool-web 76
-plugins/tool/tool-workflow 66
+plugins/tool/tool-workflow 72
 EOF
 
 # —— 豁免表:无「语句覆盖」意义的包(必须写理由)。前缀匹配。——
