@@ -64,9 +64,7 @@ func TestObservedQuestionBroadcastsRequestedResolved(t *testing.T) {
 	if svc == nil {
 		t.Fatal("包装后不应为 nil")
 	}
-	if _, ok := svc.(QuestionService); !ok {
-		t.Fatal("包装后应实现 sdk.QuestionService")
-	}
+	var _ QuestionService = svc // 编译期保证包装结果实现 QuestionService(ObservedQuestion 返回类型已是该接口)
 	ans, err := svc.Ask(context.Background(), Question{Prompt: "部署到哪?"})
 	if err != nil || len(ans.Values) != 1 {
 		t.Fatalf("转发异常: %+v %v", ans, err)

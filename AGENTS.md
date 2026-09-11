@@ -46,6 +46,8 @@
 - 端到端:tests/ 包直接装配 base bundle + 注入 `system.*` 服务,验 round 流程与"模型可见即已记录"不变量。
 - 外部进程插件(host-bridge/mcp-bridge):测试内 `go build` 产物到临时目录再加载。
 - tests 卸载矩阵:关闭 llm-anthropic-compat(防打真实 API),按依赖序卸载(先 host-bridge 再 host-jobs/host-fanout)。
+- **覆盖率门**:`bash scripts/coverage-check.sh`(CI 同源;逐包棘轮 + 全局下限 + 零覆盖包禁止 + 豁免需理由,阈值只在脚本内)。回退即 CI 红;新增关键包请同步棘轮表(未能登记的棘轮包会被报"未出现在 profile")。
+- **sdk 是独立 module**(`sdk/go.mod` + `go.work`):`go vet/staticcheck/test ./...` 从根目录跑**不含它**,新增/改动 sdk 时必须 `cd sdk && …`(CI 三步已同步补齐)。
 
 ## 变更纪律
 - **新增插件必须**:登记 `plugins/catalogue` + 落位 `plugins/<类别>/`(host/adapter/policy/tool/mcp/ui,总览 plugins/README.md)+ 同步 config 与 internal/embed/seed 两份 bundle 样板。

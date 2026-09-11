@@ -27,14 +27,21 @@ jobs:
         run: bash scripts/gen-web.sh
       - name: 前端逻辑单测(node 内置运行器,零新增依赖;E-E)
         run: cd web-src && npm test
-      - name: go vet
-        run: go vet ./...
+      - name: go vet(sdk 为独立 module,go.work 下根目录 ./... 不含它,须单独跑)
+        run: |
+          go vet ./...
+          (cd sdk && go vet ./...)
       - name: staticcheck(静态分析;版本固定保证本地/CI 一致)
         run: |
           go install honnef.co/go/tools/cmd/staticcheck@2026.2.1
           "$(go env GOPATH)/bin/staticcheck" ./...
-      - name: go test -race
-        run: go test -race ./...
+          (cd sdk && "$(go env GOPATH)/bin/staticcheck" ./...)
+      - name: go test -race(含覆盖率 profile,供下一步复用;sdk module 单独跑)
+        run: |
+          go test -race -coverprofile=coverage.out -covermode=atomic ./...
+          (cd sdk && go test -race -coverprofile=../sdk-coverage.out -covermode=atomic ./...)
+      - name: 覆盖率门(逐包棘轮 + 全局下限;阈值只在 scripts/coverage-check.sh)
+        run: bash scripts/coverage-check.sh coverage.out sdk-coverage.out
       - name: 交叉编译矩阵(五目标+体积门+平台匹配)
         run: |
           # 体积门:五目标交叉编译 + 二进制/gz 双阈值(阈值只在 scripts/size-check.sh);
