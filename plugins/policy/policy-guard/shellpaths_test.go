@@ -488,3 +488,222 @@ func TestCheckShellCommandTildeAndDevices(t *testing.T) {
 		}
 	}
 }
+
+// TestShellCmdPathsSecondRoundWrites 第二轮写目标识别(工具专属输出旗标 / 写操作数 / find -exec)。
+// 断言的不变量:凡"命令行上能静态指认的落点"都必须被认成写目标(变量等不可裁决形态标注 w?)。
+func TestShellCmdPathsSecondRoundWrites(t *testing.T) {
+	cases := []struct {
+		name string
+		cmd  string
+		want string
+	}{
+		// 1. sort -o/--output
+		{"sort -o", `sort -o /tmp/o in.txt`, "w:/tmp/o"},
+		{"sort --output=", `sort --output=/tmp/o in.txt`, "w:/tmp/o"},
+		{"sort 无输出旗标不产生写", `sort in.txt`, ""},
+		// 2. patch -o / -d
+		{"patch -o 结果文件", `patch -o /tmp/o < p.diff`, "w:/tmp/o"},
+		{"patch -d 目录是落点", `patch -d /tmp -p1 < p.diff`, "w:/tmp"},
+		{"patch 无 -o 无 -d 不新增写", `patch -p1 < p.diff`, ""},
+		// 3. go test 的 profile/trace 旗标
+		{"go test -coverprofile= 形态", `go test -coverprofile=/tmp/c.out ./...`, "w:/tmp/c.out"},
+		{"go test -coverprofile 分离形态", `go test -coverprofile /tmp/c.out ./...`, "w:/tmp/c.out"},
+		{"go test -trace", `go test -trace /tmp/t.out ./...`, "w:/tmp/t.out"},
+		{"go test 无 profile 旗标不产生写", `go test ./...`, ""},
+		{"go test -o 仍是既有边界(未纳入)", `go test -o /tmp/a ./...`, ""},
+		// 4. cargo
+		{"cargo --target-dir 分离", `cargo build --target-dir /tmp/t`, "w:/tmp/t"},
+		{"cargo --target-dir= 前置形态", `cargo --target-dir=/tmp/t build`, "w:/tmp/t"},
+		{"cargo --root(install 落点)", `cargo install --root /tmp/r ripgrep`, "w:/tmp/r"},
+		// 5/6. npm --cache 与 pip 缓存/下载落点
+		{"npm install --cache", `npm install --cache /tmp/nc pkg`, "w:/tmp/nc"},
+		{"npm run --cache 同样是缓存根", `npm run build --cache /tmp/nc`, "w:/tmp/nc"},
+		{"pip install --cache-dir", `pip install --cache-dir /tmp/pc requests`, "w:/tmp/pc"},
+		{"pip download -d", `pip download -d /tmp/dl requests`, "w:/tmp/dl"},
+		{"pip download --dest=", `pip download --dest=/tmp/dl requests`, "w:/tmp/dl"},
+		{"pip install 无目标旗标不产生写", `pip install requests`, ""},
+		{"pip 非安装子命令只读", `pip freeze`, ""},
+		// 7. gcc -MF/-MJ(含紧贴取值)
+		{"gcc -MF 分离", `gcc -MF /tmp/d.d -c a.c`, "w:/tmp/d.d"},
+		{"gcc -MF 紧贴取值", `clang -MF/tmp/d.d -c a.c`, "w:/tmp/d.d"},
+		{"gcc -MJ 紧贴取值", `gcc -MJ/tmp/mj.json -c a.c`, "w:/tmp/mj.json"},
+		{"gcc -o 紧贴取值不被多字符规则抢", `gcc -o/tmp/a a.c`, "w:/tmp/a"},
+		// 8. find -exec / -delete / -fprint
+		{"find -exec 内部写目标", `find . -exec cp {} /tmp/ ;`, "w:/tmp/"},
+		{"find -exec 内部命令重定向", `find . -exec sh -c 'echo x > /tmp/o' ;`, "w:/tmp/o"},
+		{"find -execdir 内部写目标", `find . -execdir cp {} /tmp/ ;`, "w:/tmp/"},
+		{"find -delete 按搜索根裁决", `find /tmp -delete`, "w:/tmp"},
+		{"find -fprint 输出文件", `find . -fprint /tmp/lst ;`, "w:/tmp/lst"},
+		{"find -fls 输出文件", `find . -fls /tmp/ls`, "w:/tmp/ls"},
+		{"find -L 前置选项不干扰搜索根", `find -L . -exec rm -rf {} ;`, "w:."},
+		{"find -L 前置选项 + 绝对路径搜索根", `find -L /tmp -delete`, "w:/tmp"},
+		{"find 纯查询不产生写", `find . -name x -print`, ""},
+		// 9. mktemp
+		{"mktemp -p", `mktemp -p /tmp`, "w:/tmp"},
+		{"mktemp --tmpdir=", `mktemp --tmpdir=/tmp`, "w:/tmp"},
+		{"mktemp 模板含目录", `mktemp /tmp/x.XXXX`, "w:/tmp/x.XXXX"},
+		{"裸 mktemp 落 TMPDIR(jail)不判定", `mktemp`, ""},
+		{"mktemp -d 无模板不判定", `mktemp -d`, ""},
+		// 10. split 输出前缀(第二个操作数)
+		{"split --bytes= 形态", `split --bytes=1k f /tmp/part`, "w:/tmp/part"},
+		{"split 输出前缀", `split -b 1k f /tmp/part`, "w:/tmp/part"},
+		{"split 无前缀落当前目录", `split -b 1k f`, "w:."},
+		// 11. tar 旧式旗标簇
+		{"tar 旧式旗标簇创建态", `tar czf /tmp/a.tgz .`, "w:/tmp/a.tgz"},
+		{"tar 旧式旗标簇解包态是读", `tar xf a.tgz`, ""},
+		{"tar 旧式旗标簇 + -C 双落点", `tar cCf /tmp/dst /tmp/a.tgz .`, "w:/tmp/dst,w:/tmp/a.tgz"},
+		{"tar 首词含非字母不当旗标簇(不误认落点)", `tar /tmp/a.tgz`, ""},
+		// 12. zip / 7z
+		{"zip 归档是首个操作数", `zip -r /tmp/a.zip dir`, "w:/tmp/a.zip"},
+		{"zip 无选项", `zip /tmp/a.zip f`, "w:/tmp/a.zip"},
+		{"7z a 归档是写", `7z a /tmp/a.7z f`, "w:/tmp/a.7z"},
+		{"7z x 解包到 -o 目录", `7z x a.7z -o/tmp/u`, "w:/tmp/u"},
+		{"7z x 无 -o 落当前目录", `7z x a.7z`, "w:."},
+		// 13. cmake
+		{"cmake --prefix 是安装落点", `cmake --install build --prefix /tmp/p`, "w:/tmp/p"},
+		{"cmake -B 是构建目录", `cmake -B /tmp/b -S .`, "w:/tmp/b"},
+		{"cmake --build 是构建目录", `cmake --build /tmp/b`, "w:/tmp/b"},
+		{"cmake -S 源目录不是写", `cmake -S .`, ""},
+		// 不可裁决形态(变量):必须标注 w? 而不是漏判
+		{"sort 变量目标不可裁决", `sort -o $OUT in.txt`, "w?:$OUT"},
+		{"tar 旧式旗标簇变量归档不可裁决", `tar czf $F .`, "w?:$F"},
+		{"find -exec 内变量目标不可裁决", `find . -exec rm -rf $DIR ;`, "w?:$DIR"},
+		{"mktemp -p 变量目录不可裁决", `mktemp -p $D`, "w?:$D"},
+		{"zip 变量归档不可裁决", `zip $Z f`, "w?:$Z"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := fmtWrites(shellCmdPaths(tc.cmd)); got != tc.want {
+				t.Fatalf("shellCmdPaths(%q) 写目标 = %q, want %q", tc.cmd, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestShellCmdPathsFindExecPlaceholder find -exec 的 `{}` 占位符按**搜索根**代入:
+// 不代入就会把 `find . -exec rm -rf {} ;` 当成不可裁决写而误拦(最常见写法之一)。
+func TestShellCmdPathsFindExecPlaceholder(t *testing.T) {
+	cases := []struct {
+		name string
+		cmd  string
+		want string
+	}{
+		{"搜索根为当前目录", `find . -exec rm -rf {} ;`, "w:."},
+		{"搜索根为绕对路径", `find /tmp -exec rm {} ;`, "w:/tmp"},
+		{"搜索根为相对子目录", `find srv/data -exec rm {} ;`, "w:srv/data"},
+		{"占位符带后缀", `find . -exec rm -rf {}/sub ;`, "w:./sub"},
+		{"搜索根缺省为当前目录", `find -name x -exec rm {} ;`, "w:."},
+		{"+ 终止符", `find . -exec rm {} +`, "w:."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := fmtWrites(shellCmdPaths(tc.cmd)); got != tc.want {
+				t.Fatalf("shellCmdPaths(%q) 写目标 = %q, want %q", tc.cmd, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCheckShellCommandSecondRound workspace-write 档:第二轮写目标同样受限,且**不新增误拦**。
+func TestCheckShellCommandSecondRound(t *testing.T) {
+	ws := t.TempDir()
+	p := DefaultSandbox(ws)
+	inside := filepath.Join(ws, "out.bin")
+	cases := []struct {
+		name    string
+		cmd     string
+		wantErr bool
+	}{
+		// 越界写:必须拒
+		{"sort 越界", `sort -o /tmp/sort.out in.txt`, true},
+		{"patch -o 越界", `patch -o /tmp/p.out < p.diff`, true},
+		{"patch -d 越界", `patch -d /tmp -p1 < p.diff`, true},
+		{"go test profile 越界", `go test -coverprofile=/tmp/c.out ./...`, true},
+		{"go test -trace 越界", `go test -trace /tmp/t.out ./...`, true},
+		{"cargo --target-dir 越界", `cargo build --target-dir /tmp/t`, true},
+		{"cargo --root 越界", `cargo install --root /tmp/r pkg`, true},
+		{"npm --cache 越界", `npm install --cache /tmp/nc pkg`, true},
+		{"pip --cache-dir 越界", `pip install --cache-dir /tmp/pc requests`, true},
+		{"pip download -d 越界", `pip download -d /tmp/dl requests`, true},
+		{"gcc -MF 越界", `gcc -MF /tmp/d.d -c a.c`, true},
+		{"find -exec 内部命令越界写", `find . -exec cp {} /tmp/ ;`, true},
+		{"find -exec 内嵌套 shell 越界写", `find . -exec sh -c 'echo x > /tmp/o' ;`, true},
+		{"find -delete 越界搜索根", `find /tmp -delete`, true},
+		{"mktemp -p 越界", `mktemp -p /tmp`, true},
+		{"mktemp 模板越界", `mktemp /tmp/x.XXXX`, true},
+		{"split 输出前缀越界", `split -b 1k f /tmp/part`, true},
+		{"tar 旧式旗标簇归档越界", `tar czf /tmp/a.tgz .`, true},
+		{"zip 归档越界", `zip -r /tmp/a.zip dir`, true},
+		{"7z a 归档越界", `7z a /tmp/a.7z f`, true},
+		{"7z x -o 解包目录越界", `7z x a.7z -o/tmp/u`, true},
+		{"cmake --prefix 越界", `cmake --install build --prefix /tmp/p`, true},
+		{"cmake -B 越界", `cmake -B /tmp/b -S .`, true},
+		// 不可裁决写:必须拒(不能乐观放行)
+		{"sort 变量目标拒", `sort -o $OUT in.txt`, true},
+		{"tar 旧式旗标簇变量归档拒", `tar czf $F .`, true},
+		{"find -exec 内变量目标拒", `find . -exec rm -rf $DIR ;`, true},
+		{"mktemp -p 变量目录拒", `mktemp -p $D`, true},
+		// 工作区内:必须放行(否则常规命令不可用)
+		{"sort 工作区内", `sort -o out.txt in.txt`, false},
+		{"patch -o 工作区内", `patch -o ` + inside + ` < p.diff`, false},
+		{"patch -d 工作区内", `patch -d ./sub -p1 < p.diff`, false},
+		{"patch 无 -o 无 -d 放行", `patch -p1 < p.diff`, false},
+		{"go test profile 工作区内", `go test -coverprofile=cover.out ./...`, false},
+		{"cargo target-dir 工作区内", `cargo build --target-dir target`, false},
+		{"npm --cache 工作区内", `npm install --cache .npmcache pkg`, false},
+		{"pip --cache-dir 工作区内", `pip install --cache-dir .pipcache requests`, false},
+		{"gcc -MF 工作区内", `gcc -MF dep.d -c a.c`, false},
+		{"find -exec rm {} 工作区内(占位符代入搜索根)", `find . -exec rm -rf {} ;`, false},
+		{"find -delete 工作区内", `find . -name '*.log' -delete`, false},
+		{"find -exec 内嵌套 shell 工作区内", `find . -exec sh -c 'echo x > ` + inside + `' ;`, false},
+		{"find -fprint 工作区内", `find . -fprint list.txt`, false},
+		{"find -L 前缀选项工作区内", `find -L . -exec rm -rf {} ;`, false},
+		{"mktemp -d 落 jail/TMPDIR 放行", `mktemp -d`, false},
+		{"mktemp -p 工作区内", `mktemp -p .`, false},
+		{"mktemp 模板工作区内", `mktemp x.XXXX`, false},
+		{"split 无前缀落工作区放行", `split -b 1k f`, false},
+		{"split 前缀工作区内", `split -b 1k f part`, false},
+		{"tar 旧式旗标簇工作区内", `tar czf out.tgz .`, false},
+		{"tar 旧式旗标簇解包放行", `tar xf a.tgz`, false},
+		{"zip 归档工作区内", `zip -r out.zip dir`, false},
+		{"7z a 归档工作区内", `7z a out.7z f`, false},
+		{"7z x 无 -o 落当前目录放行", `7z x a.7z`, false},
+		{"cmake -B 工作区内", `cmake -S . -B build`, false},
+		{"cmake --prefix 工作区内", `cmake --install build --prefix out`, false},
+		{"cargo 无 target-dir 放行", `cargo build`, false},
+		{"find -exec 读入工作区内放行", `find . -exec cp {} ` + inside + ` ;`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := p.CheckShellCommand(tc.cmd)
+			if tc.wantErr && err == nil {
+				t.Fatalf("CheckShellCommand(%q) 应拒绍,却放行", tc.cmd)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("CheckShellCommand(%q) 应放行,却拒绍: %v", tc.cmd, err)
+			}
+		})
+	}
+}
+
+// TestJoinedFlagValue 单横线多字符 flag 的紧贴取值:必须取**最长**匹配,
+// 否则 `-MF/tmp/d.d` 会被 `-o` 抢走取值(落点就错了)。
+func TestJoinedFlagValue(t *testing.T) {
+	set := map[string]bool{"-o": true, "--output": true, "-MF": true}
+	if v, ok := joinedFlagValue("-MF/tmp/d.d", set); !ok || v != "/tmp/d.d" {
+		t.Fatalf("joinedFlagValue(-MF/tmp/d.d) = %q,%v", v, ok)
+	}
+	if _, ok := joinedFlagValue("-oout", set); ok {
+		t.Fatal("两字符 flag 的紧贴形态由短 flag 分支处理,不应由本函数重复认领")
+	}
+	if _, ok := joinedFlagValue("--output=/tmp/o", set); ok {
+		t.Fatal("长 flag(= 形态)不应走紧贴分支")
+	}
+	longest := map[string]bool{"-MF": true, "-MFX": true}
+	if v, ok := joinedFlagValue("-MFX/y", longest); !ok || v != "/y" {
+		t.Fatalf("joinedFlagValue 应取最长匹配:-MFX/y = %q,%v", v, ok)
+	}
+	if _, ok := joinedFlagValue("-M", set); ok {
+		t.Fatal("无取值不应返回 true")
+	}
+}

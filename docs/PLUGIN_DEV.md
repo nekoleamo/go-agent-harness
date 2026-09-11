@@ -99,7 +99,9 @@ func (t *myTool) Definition() sdk.ToolDefinition {
 
 **shell 命令的路径裁决(与声明无关,宿主统一施加)**:`shell` 工具的命令行会按词法扫描提取**显式写目标**——重定向(`>`/`>>`/`&>`/`<>`,含 fd 前缀)、写命令表(`rm/mv/cp/mkdir/touch/truncate/sed -i/tee/dd of=/chmod/chown/ln/tar -x/rsync` 等)、`sudo`/`env`/`nohup`/`time`/`xargs`/`exec` 前缀剥离、`eval`/`bash -c` 递归一层、`~` 展开,以及**输出型 flag**(`curl -o|--output`、`wget -O`、`gcc/clang/cc -o`、`go build|install -o`、`tar -C`、`unzip -d`、`pip install -t|--target`、`npm install --prefix`、`git clone <repo> <dir>` 的位置目标):越界写被拒;含变量/命令替换/glob 的不可裁决写目标直接拒绝(提示改写为确定路径或切 `full-access`)。重要语义:**审批通过 ≠ 放开档位** —— 用户点「允许」不会让 workspace-write 档接受越界写(与 `file_*` 一致)。
 **环境 jail(档位无关,恒定生效)**:`shell` 执行把「缓存/临时根」重定向进数据根 —— `TMPDIR`/`TMP`/`TEMP`、`XDG_CACHE_HOME`、`GOCACHE`、`GOMODCACHE`、`npm_config_cache`、`PIP_CACHE_DIR` → `$GAH_HOME/jail/**`(`jail/cache/*` 复用、`jail/tmp` 每次顺带清 24h 前条目);`HOME`/`GOPATH`/`CARGO_HOME`/`XDG_CONFIG_HOME` **刻意不动**(git/ssh/gpg 要能读配置与凭据)。目录 0700,创建失败**显式报错**(安全机制不可用不静默放行);`GAH_SHELL_JAIL=0` 可整体关闭。
-未覆盖(诚实边界,靠危险模式 + 审批档兜底):命令包装器与构建系统内部的写(`ccache`/`make`/`cmake` 自选的落点)、解释器内部写(`python3 -c "open('/x','w')"`)、`go install` 无 `-o` 时装进 `GOPATH/bin`(`GOPATH` 刻意不重定向)、`curl -O`(按 URL 落 cwd,不越界)、变量拼出的命令文本(`CMD='rm …'; $CMD`),以及**外部进程**(MCP server 子进程、host-bridge 外部插件)的写 —— 当前沙箱是「工具边界的协作式控制」而非进程沙箱,内核级沙箱(macOS seatbelt / Linux Landlock)仍是规划项。所以**工具自己拼 shell 命令时,请把路径显式传给 `shell` 而不是塞进变量**。
+未覆盖(**协作层**的诚实边界):命令包装器与构建系统内部的写(`ccache`/`make`/`cmake` 自选的落点)、解释器内部写(`python3 -c "open('/x','w')"`)、`cmake --install` 不给 `--prefix` 时的默认落点、`go install` 无 `-o` 时装进 `GOPATH/bin`(`GOPATH` 刻意不重定向)、`curl -O`(按 URL 落 cwd,不越界)、变量拼出的命令文本(`CMD='rm …'; $CMD`),以及**外部进程**(MCP server 子进程、host-bridge 外部插件)的写。这些靠危险模式 + 审批档兜底。
+**内核级沙箱(第 3 组,进程树层面)** 给上述边界兜底:宿主把**有效**档位经 `sdk.SandboxHint` 下发到执行入口,`shell` 在进程树级施加平台限制 —— macOS `/usr/bin/sandbox-exec`(seatbelt profile)、Linux **Landlock**(内核 ≥5.13;因 Landlock 对进程不可撤销,经**自举 helper 重新 exec** 自身后再 `syscall.Exec` 真实命令)。语义:只约束**文件写**(读与网络不限制,与协作层范围一致);白名单 = 有效档允许的 workspace 根 + `$GAH_HOME/jail/**`(+ `/dev/null`、`/dev/tty`、pty 等必要设备节点);路径先 `filepath.EvalSymlinks` 解析(macOS `/tmp`→`/private/tmp`,不解析则白名单会静默失效);read-only 档**保留 jail 可写**(否则 `TMPDIR`/`GOCACHE` 断裂会让命令大面积失败);能力缺失(无 `sandbox-exec`、无 Landlock、Windows 等)→ **一次性 stderr 告警 + 不施加包装**(明示降级,不静默);`GAH_SHELL_KERNEL_SANDBOX=0` 可关闭。
+**结论**:macOS/Linux 上「表判不出的写」已被内核层兜住(最坏只是错误信息不如协作层精确),**Windows 仍是纯协作式控制**。所以**工具自己拼 shell 命令时,请把路径显式传给 `shell` 而不是塞进变量**。
 
 ### 2.7 工具执行唯一入口(安全不变式,**所有调用工具的插件必读**)
 
@@ -110,6 +112,7 @@ func (t *myTool) Definition() sdk.ToolDefinition {
 - 需要执行工具(子代理、workflow 嵌套调用、MCP server 暴露、外部插件回调等)一律经 `ctx.tools.Execute(ctx, name, args)`。
 - **新增任何「能触发工具执行的入口」必须在 `tests/policy_entries_e2e_test.go` 的入口矩阵中登记**(断言:该入口委派给注入的 registry、registry 必发 `tools/pre-execute`、veto 时工具**不产生副作用**)。当前已登记:agent-loop、host-fanout、tool-workflow、mcp-server、host-bridge 宿主侧 `toolsCall`、web `/api/tools/{name}`。
 - veto 语义:订阅者返回错误即「不执行」,由 registry 转成结构化 `blocked:` 结果回传模型(不中断回合)。
+- **宿主会把有效沙箱档位注入执行 ctx**:`sdk.SandboxHint{Mode, Root}`(`sdk.WithSandboxHint`/`sdk.SandboxHintOf`)。执行入口(`ctx.tools`)在 `tools/pre-execute` 之后、真正执行之前注入**有效**档位(`EffectiveSandbox.EffectiveMode()`,即联动后的档;不是声明档),外部插件工具经协议随调用携带、在插件侧 ctx 里可读回。**档位/根为空 = 未知 → 按不可放行处理**(不得猜默认值);未注入 = 与改动前行为一致(旧对端不报错,只是不施加内核限制)。自带进程执行的工具(不限于 `shell`)应以该 hint 作为施加内核级限制的输入 —— 它是唯一能覆盖子进程树的控制点。
 
 ## 3. 开发步骤(七步)
 

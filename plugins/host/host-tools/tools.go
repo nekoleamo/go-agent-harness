@@ -112,7 +112,9 @@ func (r *reg) Execute(ctx context.Context, name, args string) (*sdk.ToolResult, 
 	}
 
 	// 2. 执行(包裹/超时策略在 M4 tools/execute 瀑布引入)
-	out, err := t.Execute(ctx, args)
+	// 有效沙箱档位随 ctx 下传(见 sdk.SandboxHint):工具侧——尤其是外部进程插件里的
+	// 工具,它们拿不到 ctx.sandbox 服务——据此施加与档位一致的内核级约束。
+	out, err := t.Execute(r.withSandboxHint(ctx), args)
 	var content string
 	var merr string
 	if err != nil {
@@ -142,6 +144,26 @@ func (r *reg) Execute(ctx context.Context, name, args string) (*sdk.ToolResult, 
 	// 4. tool/result:emit 广播结果
 	r.broadcastResult(ctx, name, res)
 	return res, nil
+}
+
+// withSandboxHint 把当前**有效**沙箱档位挂到 ctx(唯一执行入口注入,见 sdk.SandboxHint)。
+// 有效档位 = 审批联动后的档位:审批 open/strict 会覆盖沙箱声明档,只读 Mode() 会与
+// 实际拦截行为不一致;故优先取 sdk.EffectiveSandbox.EffectiveMode()。
+// 每次调用重新 Inject(档位运行期可变:/sandbox 切档、审批联动),不缓存。
+// 未装配沙箱 / 取不到 → 原样返回(不挂 hint:工具不得假定任何档位)。
+func (r *reg) withSandboxHint(ctx context.Context) context.Context {
+	var sb sdk.Sandbox
+	if err := r.c.Inject("ctx.sandbox", &sb); err != nil || sb == nil {
+		return ctx
+	}
+	mode := sb.Mode()
+	if es, ok := sb.(sdk.EffectiveSandbox); ok {
+		mode = es.EffectiveMode()
+	}
+	if mode == "" {
+		return ctx // 档位未知:不挂(不给工具可乘之机)
+	}
+	return sdk.WithSandboxHint(ctx, sdk.SandboxHint{Mode: mode, Root: sb.Root()})
 }
 
 // broadcastResult 广播工具结果(供 UI/日志/策略监听)。

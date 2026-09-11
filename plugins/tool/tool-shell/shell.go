@@ -99,7 +99,11 @@ func (s *ShellTool) Execute(ctx context.Context, raw string) (any, error) {
 	dctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(dctx, "sh", "-c", a.Command)
+	// 内核级沙箱(第 3 组 ①-E):按宿主注入的**有效**档位施加进程树级文件写限制(见 kernel.go)。
+	// 包装为空(未注入档位/全权档/平台不支持/开关关闭)时 argv 与原来一致。
+	pre := kernelWrapCtx(ctx)
+	argv := prefixedArgv(pre, "sh", "-c", a.Command)
+	cmd := exec.CommandContext(dctx, argv[0], argv[1:]...)
 	// 凭据隔离(SanitizedEnv)在前,环境 jail 覆盖缓存根/临时根在后(见 jail.go):
 	// jail 建不起来时显式回结构化错误,不静默放行未受约束的命令。
 	env, jerr := jailEnv(sdk.SanitizedEnv(os.Environ()))

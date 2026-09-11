@@ -605,13 +605,16 @@ func (t *toolRPCClient) Execute(ctx context.Context, args string) (any, error) {
 	var reply ExecReply
 	callID := nextCallID(t.path)
 	cancelFn := func() { cancelCall(cl, callID) }
+	// 有效档位随调用下传(见 sdk.SandboxHint):外部插件进程拿不到 ctx.sandbox 服务,
+	// 档位联动对它不可见 —— 无此字段则插件只能退回协作式控制。
+	sbMode, sbRoot := sandboxHintFields(ctx)
 	err := rpcCallCtx(ctx, cl, "Plugin.ExecuteNamed",
-		&ExecNamedArgs{Name: t.name, JSONArgs: args, CallID: callID, TimeoutMs: pluginSideTimeoutMs(timeout)},
+		&ExecNamedArgs{Name: t.name, JSONArgs: args, CallID: callID, TimeoutMs: pluginSideTimeoutMs(timeout), SandboxMode: sbMode, WorkspaceRoot: sbRoot},
 		&reply, timeout, cancelFn)
 	if err != nil && isMethodMissing(err) {
 		// 旧单工具协议回退(CallID 对旧插件无效:字段被忽略,行为不变)
 		err = rpcCallCtx(ctx, cl, "Plugin.Execute",
-			&ExecArgs{JSONArgs: args, CallID: callID, TimeoutMs: pluginSideTimeoutMs(timeout)},
+			&ExecArgs{JSONArgs: args, CallID: callID, TimeoutMs: pluginSideTimeoutMs(timeout), SandboxMode: sbMode, WorkspaceRoot: sbRoot},
 			&reply, timeout, cancelFn)
 	}
 	if err != nil {
@@ -644,6 +647,16 @@ func (t *toolRPCClient) Execute(ctx context.Context, args string) (any, error) {
 		return val, nil
 	}
 	return reply.Content, nil
+}
+
+// sandboxHintFields 把 ctx 上的**有效**沙箱档位转成协议字段(见 sdk.SandboxHint)。
+// 未注入 / 档位为空 → 两字段留空:对端(插件)按「未注入」处理,不得猜测档位。
+func sandboxHintFields(ctx context.Context) (mode, root string) {
+	h, ok := sdk.SandboxHintOf(ctx)
+	if !ok || h.Mode == "" {
+		return "", ""
+	}
+	return string(h.Mode), h.Root
 }
 
 // maxBridgeResult 外部插件单次执行结果的字节上限(超出结构化报错,不进内存)。

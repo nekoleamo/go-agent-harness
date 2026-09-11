@@ -108,7 +108,7 @@ func (s *toolServer) Execute(args *ExecArgs, reply *ExecReply) error {
 		return fmt.Errorf("多工具进程须用 ExecuteNamed(新协议)")
 	}
 	for _, t := range s.tools {
-		return s.exec(t, "", args.JSONArgs, reply, args.CallID, args.TimeoutMs)
+		return s.exec(t, "", args.JSONArgs, reply, callMetaOf(args.CallID, args.TimeoutMs, args.SandboxMode, args.WorkspaceRoot))
 	}
 	return nil
 }
@@ -120,7 +120,20 @@ func (s *toolServer) ExecuteNamed(args *ExecNamedArgs, reply *ExecReply) error {
 		reply.Error = fmt.Sprintf("外部插件无此工具 %q", args.Name)
 		return nil
 	}
-	return s.exec(t, args.Name, args.JSONArgs, reply, args.CallID, args.TimeoutMs)
+	return s.exec(t, args.Name, args.JSONArgs, reply, callMetaOf(args.CallID, args.TimeoutMs, args.SandboxMode, args.WorkspaceRoot))
+}
+
+// callMeta 一次外部调用的元信息(CallID/超时/有效沙箱档位)。
+// ExecArgs 与 ExecNamedArgs 共用这三项语义,集中传递免得参数表继续变长。
+type callMeta struct {
+	callID        string
+	timeoutMs     int64
+	sandboxMode   string
+	workspaceRoot string
+}
+
+func callMetaOf(callID string, timeoutMs int64, sandboxMode, workspaceRoot string) callMeta {
+	return callMeta{callID: callID, timeoutMs: timeoutMs, sandboxMode: sandboxMode, workspaceRoot: workspaceRoot}
 }
 
 // Cancel 执行取消(宿主回合取消 / 超时→协议级中断):按 CallID 中断运行中的调用。
@@ -169,10 +182,10 @@ func (s *toolServer) callContext(callID string, timeoutMs int64) (context.Contex
 }
 
 // exec 执行并写入结果(参数错误/工具错误 → 结构化 reply.Error)。
-func (s *toolServer) exec(t sdk.Tool, name, jsonArgs string, reply *ExecReply, callID string, timeoutMs int64) error {
-	ctx, done := s.callContext(callID, timeoutMs)
+func (s *toolServer) exec(t sdk.Tool, name, jsonArgs string, reply *ExecReply, cm callMeta) error {
+	ctx, done := s.callContext(cm.callID, cm.timeoutMs)
 	defer done()
-	res, err := t.Execute(ctx, jsonArgs)
+	res, err := t.Execute(withSandboxHint(ctx, cm), jsonArgs)
 	if err != nil {
 		reply.Error = fmt.Sprintf("%s: %v", name, err)
 		return nil
@@ -184,6 +197,15 @@ func (s *toolServer) exec(t sdk.Tool, name, jsonArgs string, reply *ExecReply, c
 	}
 	reply.Content = string(b)
 	return nil
+}
+
+// withSandboxHint 把宿主下传的**有效**沙箱档位挂到 ctx(见 sdk.SandboxHint)。
+// 档位为空 = 旧宿主/未注入 → 不挂 hint(不猜测档位:插件应退回自身兜底语义)。
+func withSandboxHint(ctx context.Context, cm callMeta) context.Context {
+	if cm.sandboxMode == "" {
+		return ctx
+	}
+	return sdk.WithSandboxHint(ctx, sdk.SandboxHint{Mode: sdk.SandboxMode(cm.sandboxMode), Root: cm.workspaceRoot})
 }
 
 // Commands 枚举命令定义(M14;JSON 数组,按名排序;无命令 = 空数组,宿主视为无命令)。

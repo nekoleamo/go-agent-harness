@@ -24,9 +24,9 @@ require (
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	golang.org/x/net v0.38.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.45.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20231106174013-bbf56f31fb17 // indirect
 	google.golang.org/grpc v1.61.0 // indirect
+	google.golang.org/protobuf v1.36.11 // indirect
 )
 
 require (
@@ -35,7 +35,6 @@ require (
 	github.com/Detective-XH/gopdf v0.8.7
 	github.com/creack/pty v1.1.24
 	github.com/fsnotify/fsnotify v1.10.1
-	github.com/gorilla/websocket v1.5.3
 	github.com/hashicorp/go-plugin v1.8.0
 	github.com/hashicorp/go-version v1.9.0
 	github.com/mattn/go-runewidth v0.0.23
@@ -43,10 +42,9 @@ require (
 	github.com/tetratelabs/wazero v1.12.0
 	github.com/yuin/goldmark v1.8.6
 	go.starlark.net v0.0.0-20260828210309-6dd8f160a37f
+	golang.org/x/sys v0.45.0
 	golang.org/x/text v0.37.0
-	google.golang.org/protobuf v1.36.11
 	gopkg.in/yaml.v3 v3.0.1
-	rsc.io/qr v0.2.0
 )
 
 replace github.com/nekoleamo/go-agent-harness/sdk => ./sdk

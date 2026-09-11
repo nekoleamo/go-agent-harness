@@ -38,7 +38,10 @@ func (l *lockedWriter) Write(p []byte) (int, error) {
 // execPty 在 pseudo-terminal 中执行命令并采集输出。
 // 返回 (输出, 是否超时)。
 func execPty(ctx context.Context, command, input string) (string, bool, error) {
-	cmd := exec.Command("sh", "-c", command)
+	// 内核级沙箱(第 3 组 ①-E):与普通路径同一套包装(见 kernel.go);pty 不改变 argv 语义。
+	pre := kernelWrapCtx(ctx)
+	argv := prefixedArgv(pre, "sh", "-c", command)
+	cmd := exec.Command(argv[0], argv[1:]...)
 	// 凭据隔离在前、环境 jail 覆盖缓存根/临时根在后(见 jail.go);jail 建不起来→显式失败。
 	env, jerr := jailEnv(sdk.SanitizedEnv(os.Environ()))
 	if jerr != nil {

@@ -53,6 +53,11 @@ type ExecArgs struct {
 	JSONArgs  string
 	CallID    string // 本次调用标识(空 = 不登记取消,旧宿主兼容)
 	TimeoutMs int64  // 插件侧执行超时(毫秒;0 = 不限,由宿主侧超时 + Cancel 兜底)
+	// SandboxMode/WorkspaceRoot 宿主下传的**有效**沙箱档位与 workspace 根
+	// (见 sdk.SandboxHint;空 = 未注入/旧宿主 → 插件不得假定档位;
+	// 工具侧据此施加与档位一致的内核级约束,见 plugins/tool/tool-shell)。
+	SandboxMode   string
+	WorkspaceRoot string
 }
 
 // ExecNamedArgs 新协议载荷:工具名 + 参数(含可中断契约,同 ExecArgs)。
@@ -61,6 +66,9 @@ type ExecNamedArgs struct {
 	JSONArgs  string
 	CallID    string
 	TimeoutMs int64
+	// SandboxMode/WorkspaceRoot 同 ExecArgs(有效档位下传)。
+	SandboxMode   string
+	WorkspaceRoot string
 }
 
 // CancelArgs 执行取消请求(宿主 → 外部插件;按 CallID 中断运行中的工具调用)。

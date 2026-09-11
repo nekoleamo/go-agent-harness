@@ -12,6 +12,11 @@
 //     gcc/clang/cc/c++/g++/ld -o、go build|install -o、pip install -t/--target、
 //     npm install --prefix);
 //   - git clone 的位置目标(第二操作数;只给 URL 时落 cwd);
+//   - 工具专属输出旗标与写操作数(第二轮扩展):sort -o、patch -o/-d、`go test` 的
+//     profile/-trace 系列、gcc/clang -MF|-MJ、pip --cache-dir 与 download -d/--dest、
+//     npm --cache、cargo --target-dir|--root、cmake -B|--build|--prefix、split 输出前缀、
+//     tar 旧式旗标簇(`tar czf <归档>`,无横线形态)、zip/7z 归档路径与 7z -o<dir>、
+//     mktemp -p|--tmpdir 与模板、find 的 -exec|-execdir 内部命令与 -delete|-fprint|-fls;
 //   - 一层嵌套(bash -c "..." / sh -c / zsh -c / dash -c / ksh -c / eval "...")。
 //
 // 无法裁决的写形态(变量/命令替换、cd 到工作区之外后的相对路径)显式拒绝,不做乐观放行;
@@ -20,8 +25,10 @@
 // 明确边界(不做过度宣称):
 //   - 仍不在覆盖内:编译器/包管理器的**缓存根**(由 tool-shell 的环境 jail 收敛到
 //     $GAH_HOME/jail,见 plugins/tool/tool-shell/jail.go)、命令包装器(ccache/make 等)、
-//     解释器内部写(`python3 -c "open('/x','w')"`)、重定向到 cwd 的简写(`curl -O`)——
-//     这一层仍由审批档(危险模式 + 工具级名单)兜底;
+//     解释器内部写(`python3 -c "open('/x','w')"`)、重定向到 cwd 的简写(`curl -O`)、
+//     环境变量指定的落点(GOPATH/CARGO_TARGET_DIR/XDG_* 等,由 jail 收敛)、
+//     构建系统自选落点(`make install`、`cmake --install` 不给 --prefix 时的 CMAKE_INSTALL_PREFIX)、
+//     find -exec 内再套包装器的落点 —— 这一层仍由审批档(危险模式 + 工具级名单)兜底;
 //   - 读路径只做凭据类判定(denyPath / 字面量段),**不做** workspace 归属限制:
 //     否则 `cat /etc/hosts`、编译器读 /usr/include、`ls /tmp` 之类常规操作会被大面积误拦;
 //   - 命令文本经变量间接构造(如 `CMD='rm -rf /tmp/x'; $CMD`)不在覆盖内:文本级危险模式审批仍有兜底;
@@ -215,16 +222,32 @@ func classifyShellCommand(words []string, root string, cwdOK bool, depth int) (b
 		return cwdOK, outputFlagPaths(args, root, cwdOK, "-o", "--output")
 	case "wget":
 		return cwdOK, outputFlagPaths(args, root, cwdOK, "-O", "--output-document")
-	case "gcc", "cc", "clang", "c++", "g++", "ld":
+	case "sort":
 		return cwdOK, outputFlagPaths(args, root, cwdOK, "-o", "--output")
+	case "gcc", "cc", "clang", "c++", "g++", "ld":
+		return cwdOK, outputFlagPaths(args, root, cwdOK, "-o", "--output", "-MF", "-MJ")
 	case "go":
 		return cwdOK, goPaths(args, root, cwdOK)
 	case "pip", "pip3":
-		return cwdOK, installFlagPaths(args, pipInstallSubcmds, []string{"-t", "--target"}, root, cwdOK)
+		return cwdOK, pipPaths(args, root, cwdOK)
 	case "npm":
-		return cwdOK, installFlagPaths(args, npmInstallSubcmds, []string{"--prefix"}, root, cwdOK)
+		return cwdOK, npmPaths(args, root, cwdOK)
+	case "cargo":
+		return cwdOK, cargoPaths(args, root, cwdOK)
+	case "cmake":
+		return cwdOK, cmakePaths(args, root, cwdOK)
 	case "git":
 		return cwdOK, gitPaths(args, root, cwdOK)
+	case "patch":
+		return cwdOK, patchPaths(args, root, cwdOK)
+	case "split":
+		return cwdOK, splitPaths(args, root, cwdOK)
+	case "mktemp":
+		return cwdOK, mktempPaths(args, root, cwdOK)
+	case "find":
+		return cwdOK, findPaths(args, root, cwdOK)
+	case "zip", "7z", "7za", "7zr":
+		return cwdOK, archiverPaths(name, args, root, cwdOK)
 	}
 	// 其余命令(含 grep/python3 等):路径操作数按读语义判定。
 	return cwdOK, readPaths(operandWords(args))
@@ -460,7 +483,9 @@ func ddPaths(args []string, root string, cwdOK bool) []shellPath {
 	return out
 }
 
-// tarPaths `-C/--directory` 是写目标;`-f/--file` 在创建态(-c/--create)是写,解包态是读。
+// tarPaths `-C/--directory` 是写目标;`-f/--file` 在创建态(-c/--create)是写,解包态是读;
+// 旧式**无横线旗标簇**(`tar czf a.tgz .`)同样按旗标处理(tar 的取值与旗标簇分词:
+// f=归档、C=目录,取簇后紧随的那个词)。
 func tarPaths(args []string, root string, cwdOK bool) []shellPath {
 	create := false
 	for _, w := range args {
@@ -469,6 +494,14 @@ func tarPaths(args []string, root string, cwdOK bool) []shellPath {
 			continue
 		}
 		if strings.HasPrefix(w, "-") && !strings.HasPrefix(w, "--") && strings.ContainsAny(w[1:], "c") {
+			create = true
+		}
+	}
+	// 旧式旗标簇:首位是不带横线的全字母词(tar 必须给旗标,故不会把普通文件名误当簇)。
+	bundleAt, bundle := -1, ""
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") && isAlphaWord(args[0]) {
+		bundleAt, bundle = 0, args[0]
+		if strings.ContainsRune(bundle, 'c') {
 			create = true
 		}
 	}
@@ -488,6 +521,19 @@ func tarPaths(args []string, root string, cwdOK bool) []shellPath {
 			return ""
 		}
 		switch {
+		case i == bundleAt:
+			for k := 0; k < len(bundle); k++ {
+				switch bundle[k] {
+				case 'f':
+					if v := next(); v != "" {
+						add(v, create)
+					}
+				case 'C':
+					if v := next(); v != "" {
+						add(v, true)
+					}
+				}
+			}
 		case w == "-C" || w == "--directory":
 			if v := next(); v != "" {
 				add(v, true)
@@ -556,7 +602,7 @@ func unzipPaths(args []string, root string, cwdOK bool) []shellPath {
 
 // flagWritePaths 取输出型 flag 的写入目标:
 //   - 分离形态 `-o out` / `--output out`;
-//   - 紧贴形态 `-oout`(短 flag)/ `--output=out`;
+//   - 紧贴形态 `-oout`(短 flag)/ `-MF/tmp/d.d`(单横线多字符 flag)/ `--output=out`;
 //   - 取值缺失(flag 在末尾)不产生目标,也不 panic。
 func flagWritePaths(args []string, root string, cwdOK bool, flags ...string) []shellPath {
 	set := make(map[string]bool, len(flags))
@@ -587,9 +633,34 @@ func flagWritePaths(args []string, root string, cwdOK bool, flags ...string) []s
 		}
 		if len(w) > 2 && w[0] == '-' && w[1] != '-' && set[w[:2]] {
 			add(w[2:]) // 短 flag 紧贴取值(gcc -oout)
+			continue
+		}
+		if tail, ok := joinedFlagValue(w, set); ok {
+			add(tail) // 单横线多字符 flag 紧贴取值(gcc -MF/tmp/d.d)
 		}
 	}
 	return out
+}
+
+// joinedFlagValue 单横线多字符 flag 的紧贴取值(`-MF/tmp/d.d`)。
+// 取**最长**匹配:否则 `-o` 会把 `-MF/tmp/d.d` 的值抢成 `F/tmp/d.d`(落点就错了)。
+func joinedFlagValue(w string, set map[string]bool) (string, bool) {
+	if len(w) < 4 || w[0] != '-' || w[1] == '-' {
+		return "", false
+	}
+	best := ""
+	for f := range set {
+		if len(f) <= 2 || strings.HasPrefix(f, "--") || !strings.HasPrefix(w, f) {
+			continue
+		}
+		if len(f) > len(best) {
+			best = f
+		}
+	}
+	if best == "" {
+		return "", false
+	}
+	return w[len(best):], true
 }
 
 // outputFlagPaths 输出型 flag 的写目标 + 其余操作数按读语义。
@@ -646,13 +717,24 @@ func localCwdOK(args []string, root string, cwdOK bool) bool {
 	return cdTargetInside([]string{v}, root, cwdOK)
 }
 
-// goPaths go build/install 的 -o 是产物写目标(go 自身缓存写由 tool-shell 的环境 jail 收敛)。
+// goPaths go build/install 的 -o 是产物写目标;`go test` 的 profile/-trace 旗标同理
+// (`go test -o` 仍未纳入:其语义是“写到文件”而非产物路径,且既有用例已固定该边界)。
+// go 自身缓存写由 tool-shell 的环境 jail 收敛。
 func goPaths(args []string, root string, cwdOK bool) []shellPath {
 	sub, rest := subcmdArgs(args, map[string]bool{"-C": true})
-	if sub != "build" && sub != "install" {
-		return readPaths(operandWords(args))
+	cwd := localCwdOK(args, root, cwdOK)
+	switch sub {
+	case "build", "install":
+		return outputFlagPaths(rest, root, cwd, "-o", "--output")
+	case "test":
+		return outputFlagPaths(rest, root, cwd, goTestProfileFlags...)
 	}
-	return outputFlagPaths(rest, root, localCwdOK(args, root, cwdOK), "-o", "--output")
+	return readPaths(operandWords(args))
+}
+
+// goTestProfileFlags `go test` 的**写文件**旗标(flag 包同时接受 `-flag value` 与 `-flag=value`)。
+var goTestProfileFlags = []string{
+	"-coverprofile", "-cpuprofile", "-memprofile", "-blockprofile", "-mutexprofile", "-trace",
 }
 
 // pipInstallSubcmds / npmInstallSubcmds 安装类子命令:只有这些子命令的目标 flag 才有"装到哪"语义。
@@ -660,6 +742,32 @@ var (
 	pipInstallSubcmds = map[string]bool{"install": true}
 	npmInstallSubcmds = map[string]bool{"install": true, "i": true, "ci": true, "add": true}
 )
+
+// pipInstallFlags / pipDownloadFlags:`pip install` 的安装目标与缓存根;
+// `pip download -d/--dest` 的下载落点。
+var (
+	pipInstallFlags  = []string{"-t", "--target", "--cache-dir"}
+	pipDownloadFlags = []string{"-d", "--dest"}
+)
+
+// pipPaths pip 的写目标(按子命令分派;其它子命令保持原读语义)。
+func pipPaths(args []string, root string, cwdOK bool) []shellPath {
+	sub, _ := subcmdArgs(args, nil)
+	switch sub {
+	case "install":
+		return installFlagPaths(args, pipInstallSubcmds, pipInstallFlags, root, cwdOK)
+	case "download":
+		return outputFlagPaths(args, root, cwdOK, pipDownloadFlags...)
+	}
+	return readPaths(operandWords(args))
+}
+
+// npmPaths npm 的写目标:`--cache` 是全局缓存根(任意子命令);
+// `--prefix` 只对安装类子命令有"装到哪"语义(非安装子命令的 --prefix 不是写目标,保持既有边界)。
+func npmPaths(args []string, root string, cwdOK bool) []shellPath {
+	out := flagWritePaths(args, root, cwdOK, "--cache")
+	return append(out, installFlagPaths(args, npmInstallSubcmds, []string{"--prefix"}, root, cwdOK)...)
+}
 
 // installFlagPaths 安装类子命令的目标目录 flag(-t/--target、--prefix)取值为写目标;
 // 其它子命令保持原读语义(不新增判定面)。
@@ -716,6 +824,222 @@ func cloneOperands(args []string) []string {
 		out = append(out, w)
 	}
 	return out
+}
+
+// ---------- 工具专属输出旗标与写操作数(第二轮扩展) ----------
+//
+// 共同的判定原那么:能静态指认“这个命令会往哪里写”就必须裁决;指认不了(变量/命令替换)
+// 那么拒绝。扩展只增拒绝面,不放松任何既有判定(尤其凭据类读判定)。
+
+// splitValueFlags / archiverValueFlags 取值型 flag 表(取值不是位置操作数)。
+var (
+	splitValueFlags = map[string]bool{
+		"-a": true, "-b": true, "-l": true, "-n": true, "-t": true,
+		"--bytes": true, "--lines": true, "--number": true, "--suffix-length": true,
+		"--additional-suffix": true, "--separator": true,
+	}
+	archiverValueFlags = map[string]bool{
+		"-x": true, "-i": true, "-P": true,
+		"--exclude": true, "--include": true, "--password": true,
+	}
+)
+
+// operandsSkippingValues 取位置操作数(跳过 flag 及其**取值**)。
+// 与 operandWords 的差异:后者不认取值,故 `split -b 1k f /tmp/part` 会把 `1k` 当操作数,
+// 输出前缀就错位到 `f` 上。取值型 flag 多的命令用本函数。
+func operandsSkippingValues(args []string, valueFlags map[string]bool) []string {
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		w := args[i]
+		if w == "--" {
+			continue
+		}
+		if strings.HasPrefix(w, "-") {
+			if long, _, ok := strings.Cut(w, "="); ok && valueFlags[long] {
+				continue // --flag=value 自带取值
+			}
+			if valueFlags[w] && i+1 < len(args) {
+				i++ // 该 flag 带独立取值
+			}
+			continue
+		}
+		out = append(out, w)
+	}
+	return out
+}
+
+// isAlphaWord 全字母词(tar 旧式旗标簇 `czf` / `xvzf` 的形态)。
+func isAlphaWord(w string) bool {
+	if w == "" {
+		return false
+	}
+	for i := 0; i < len(w); i++ {
+		c := w[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// patchPaths patch 的写目标:
+//   - `-o/--output <file>`:结果写到该文件(不再就地改);
+//   - `-d/--directory <dir>`:patch 先切到该目录,再从 **diff 头**取目标文件名就地改 ——
+//     目标名不在命令行上,故把**目录本身**当写目标裁决:目录在工作区内 → 其内写也都在
+//     工作区内;目录在外 → 拒绝。(不把 patch 一律拒绝:gnu patch 默认拒绍 diff 里的
+//     绝对路径与 `..`,误拦会打断正常的“在工作区内打补丁”工作流。)
+func patchPaths(args []string, root string, cwdOK bool) []shellPath {
+	out := flagWritePaths(args, root, cwdOK, "-o", "--output")
+	out = append(out, flagWritePaths(args, root, cwdOK, "-d", "--directory")...)
+	return append(out, readPaths(operandWords(args))...)
+}
+
+// splitPaths split 的操作数形态是 [INPUT [PREFIX]]:输入是读,输出前缀(第二个操作数)是写。
+// 缺前缀时落当前目录(裸 `split` 从 stdin 读、在当前目录产 xaa)—— cwd 不可定位时即不可裁决。
+func splitPaths(args []string, root string, cwdOK bool) []shellPath {
+	ops := operandsSkippingValues(args, splitValueFlags)
+	out := readPaths(ops)
+	prefix := "."
+	if len(ops) >= 2 {
+		prefix = ops[1]
+	}
+	if pth, ok := makeShellPath(prefix, true, cwdOK, root); ok {
+		out = append(out, pth)
+	}
+	return out
+}
+
+// mktempPaths mktemp 的落点:
+//   - `-p/--tmpdir <dir>`:显式临时目录(写目标);
+//   - 位置操作数 = 模板(可含目录,如 `mktemp /tmp/x.XXXXXX`),其目录是写目标;
+//   - 裸 mktemp 与 `-t` 落 TMPDIR(= tool-shell 环境 jail 的 $GAH_HOME/jail),不判定。
+func mktempPaths(args []string, root string, cwdOK bool) []shellPath {
+	out := flagWritePaths(args, root, cwdOK, "-p", "--tmpdir")
+	for _, w := range operandWords(args) {
+		if pth, ok := makeShellPath(w, true, cwdOK, root); ok {
+			out = append(out, pth)
+		}
+	}
+	return out
+}
+
+// archiverPaths zip/7z 系的归档路径:
+//   - `zip [opts] <archive> <files...>`:首个位置操作数是归档(创建/更新 → 写);
+//   - `7z <a|u|x|e|...> <archive> ...`:`a`/`u` 归档是写;`x`/`e` 是**解包**
+//     (落 `-o<dir>` 紧贴形态,缺省当前目录)。
+func archiverPaths(name string, args []string, root string, cwdOK bool) []shellPath {
+	ops := operandsSkippingValues(args, archiverValueFlags)
+	out := readPaths(ops)
+	if name == "zip" {
+		if len(ops) > 0 {
+			if pth, ok := makeShellPath(ops[0], true, cwdOK, root); ok {
+				out = append(out, pth)
+			}
+		}
+		return out
+	}
+	if len(ops) == 0 {
+		return out
+	}
+	sub, rest := ops[0], ops[1:]
+	switch sub {
+	case "a", "u":
+		if len(rest) > 0 {
+			if pth, ok := makeShellPath(rest[0], true, cwdOK, root); ok {
+				out = append(out, pth)
+			}
+		}
+	case "x", "e":
+		dest := "." // 缺 -o 时解到当前目录
+		for _, w := range args {
+			if strings.HasPrefix(w, "-o") && len(w) > 2 {
+				dest = w[2:]
+				break
+			}
+		}
+		if pth, ok := makeShellPath(dest, true, cwdOK, root); ok {
+			out = append(out, pth)
+		}
+	}
+	return out
+}
+
+// findPaths find 的写语义:
+//   - `-exec/-execdir/-ok/-okdir <cmd...> ;|+`:递归分类**内部命令**(含内部重定向与嵌套 sh -c);
+//     `{}` 占位符按**搜索根**代入 —— 被找到的文件都在搜索根之下,不代入就会把
+//     `find . -exec rm -rf {} ;` 这种最常见写法当成“不可裁决写”而误拦;
+//   - `-fprint/-fprint0/-fls/-fprintf <file>`:输出文件是写目标;
+//   - `-delete`:删除被找到的文件(均在搜索根之下)→ 搜索根按写目标裁决。
+func findPaths(args []string, root string, cwdOK bool) []shellPath {
+	search := findSearchRoot(args)
+	if search == "" {
+		search = "."
+	}
+	var out []shellPath
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-exec", "-execdir", "-ok", "-okdir":
+			var inner []string
+			j := i + 1
+			for ; j < len(args); j++ {
+				if args[j] == ";" || args[j] == "+" {
+					break // 参数终止符(";" 常已被词法层切成分隔符,此时自然到末尾)
+				}
+				inner = append(inner, args[j])
+			}
+			for k, w := range inner {
+				if strings.Contains(w, "{}") {
+					inner[k] = strings.ReplaceAll(w, "{}", search)
+				}
+			}
+			if len(inner) > 0 {
+				_, paths := classifyShellCommand(inner, root, cwdOK, 0)
+				out = append(out, paths...)
+			}
+			i = j - 1
+		case "-fprint", "-fprint0", "-fls", "-fprintf":
+			if i+1 < len(args) {
+				if pth, ok := makeShellPath(args[i+1], true, cwdOK, root); ok {
+					out = append(out, pth)
+				}
+				i++
+			}
+		case "-delete":
+			if pth, ok := makeShellPath(search, true, cwdOK, root); ok {
+				out = append(out, pth)
+			}
+		}
+	}
+	return append(out, readPaths(operandWords(args))...)
+}
+
+// findSearchRoot 取 find 的搜索根:find 的语法是 `find [起始路径...] [表达式]`,
+// 故搜索根是**表达式之前**的前导非 flag 词(取首个;缺省 ".")。
+// 不能在整串里找首个非 flag 词:`find -name x -exec rm {} ;` 的 `x` 是谓词取值,不是搜索根。
+func findSearchRoot(args []string) string {
+	for _, w := range args {
+		if w == "-L" || w == "-H" || w == "-P" {
+			continue // 前置于路径的符号链接选项
+		}
+		if w == "" || strings.HasPrefix(w, "-") {
+			return "" // 进入表达式:前面没有搜索根
+		}
+		return w
+	}
+	return ""
+}
+
+// cmakePaths cmake 的写目标:`-B <build>`(创建/写入构建目录)、`--build <dir>`、
+// `--prefix <dir>`(安装落点)。`--install <dir>` 的参数是**读**的构建目录(不是落点)。
+func cmakePaths(args []string, root string, cwdOK bool) []shellPath {
+	return outputFlagPaths(args, root, cwdOK, "-B", "--build", "--prefix")
+}
+
+// cargoPaths cargo 的写目标:`--target-dir <dir>`(产物/构建缓存)、`--root <dir>`(install 落点)。
+// 环境变量形态(CARGO_TARGET_DIR)不在命令行上,由环境 jail 与应用层约束兜底。
+func cargoPaths(args []string, root string, cwdOK bool) []shellPath {
+	return outputFlagPaths(args, root, cwdOK, "--target-dir", "--root")
 }
 
 // ---------- 词法/形态工具 ----------
