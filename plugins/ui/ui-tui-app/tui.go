@@ -51,10 +51,8 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		}
 	}
 	app := tui.NewApp(c, loop, llm, profile, palette)
-	// G-E3-R2:IM 状态 widget(懒解析 ctx.imChannels;未装配/无渠道 → 不显示)
-	app.AddWidget("im", imStatusWidget(c))
 	// 确认服务(审批弹层):单 profile 自 Provide;P3 融合(host-confirm-fusion 装配)
-	// 时注册为 tui 呈现者,与 web/im 同进程并存同卡(不再 Provide 防同名冲突)。
+	// 时注册为 tui 呈现者,与 web 同进程并存同卡(不再 Provide 防同名冲突)。
 	var confirmReg sdk.Disposer = func() {}
 	var questionReg sdk.Disposer = func() {}
 	var fusion sdk.ConfirmFusion
@@ -75,7 +73,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 			return nil, err
 		}
 	}
-	// 文档预览意图(doc/open;D 组 D1):TUI 本地打开 pager 浮层(与 Web/IM 同事件源)
+	// 文档预览意图(doc/open;D 组 D1):TUI 本地打开 pager 浮层(与 Web 同事件源)
 	docOpen := c.Subscribe(sdk.EventDocOpen, func(_ context.Context, ev *sdk.Event) error {
 		switch p := ev.Payload.(type) {
 		case sdk.DocOpenEvent:

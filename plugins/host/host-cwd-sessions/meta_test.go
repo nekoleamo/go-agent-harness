@@ -159,7 +159,7 @@ func TestMetaPinned(t *testing.T) {
 
 func TestMetaSummaryCache(t *testing.T) {
 	s, home := newMetaSvc(t)
-	sum := sdk.SessionSummary{Text: "修了 QQ 鉴权头", Topics: []string{"QQ", "鉴权"}, CoveredFrames: 2, Model: "deepseek-chat", TS: 123}
+	sum := sdk.SessionSummary{Text: "修了 provider 鉴权头", Topics: []string{"provider", "鉴权"}, CoveredFrames: 2, Model: "deepseek-chat", TS: 123}
 	if err := s.SetSummary("20260101-1000", sum); err != nil {
 		t.Fatal(err)
 	}

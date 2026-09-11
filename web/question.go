@@ -1,6 +1,6 @@
 // Web 结构化提问服务(P3 语义交互):问题弹层推送前端(SSE question 帧),
 // 经 REST POST /api/question 回传作答。与审批确认(confirm)同管道模式。
-// 融合场景经 host-confirm-fusion 注册为 web 渠道呈现者(与 IM/TUI 首答生效)。
+// 融合场景经 host-confirm-fusion 注册为 web 渠道呈现者(与 TUI 首答生效)。
 package web
 
 import (

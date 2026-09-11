@@ -10,7 +10,7 @@ type ConfirmService interface {
 	Confirm(ctx context.Context, prompt string) (bool, error)
 }
 
-// ConfirmPresenter 确认呈现者(P3 三端融合):单个 UI 渠道(web/tui/im)向用户呈现
+// ConfirmPresenter 确认呈现者(P3 三端融合):单个 UI 渠道(web/tui)向用户呈现
 // 一次确认并回传其应答通道。Fusion 广播给所有已注册 presenter,任一应答即生效
 // (双端同卡同决策;无原生控件渠道降级文字作答由 presenter 自行处理)。
 type ConfirmPresenter interface {

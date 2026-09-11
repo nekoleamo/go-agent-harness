@@ -7,8 +7,6 @@ import { consume, isUsage, newModel, type StreamModel } from './sse'
 import { createTransport, type Transport } from './transport'
 import { extraPanel, slotComponent, type MetaLine } from './registry'
 import { OPEN_DOC_EVENT, docRequest } from './docstore'
-import { OPEN_PANEL_EVENT, imStatus, upsertIMStatus } from './imstore'
-import { GUIDE_ID_DESKTOP_IM, shouldShowGuide } from './guides'
 import type { SessionEvent, StateView, ConfirmRequest, CommandResult, QuestionRequest } from './types'
 import StatusBar from './components/StatusBar.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
@@ -17,7 +15,6 @@ import ConfirmBar from './components/ConfirmBar.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import JobsPanel from './components/JobsPanel.vue'
 import Sidebar from './components/Sidebar.vue'
-import FirstRunGuide from './components/FirstRunGuide.vue'
 
 const state = ref<StateView>({
   model: '',
@@ -182,10 +179,6 @@ function rebuild(keepCursor: boolean): void {
     const d = f.payload as { path?: string }
     if (d?.path) onOpenDoc(new CustomEvent(OPEN_DOC_EVENT, { detail: d.path }))
   })
-  // IM 连接相位(E0:im/connect 事件推送,取代 2s 高额轮询)
-  transport.on('imconnect', (f) => {
-    upsertIMStatus(f.payload as never)
-  })
 }
 
 async function refreshStats(): Promise<void> {
@@ -248,7 +241,9 @@ async function onAnswer(ok: boolean): Promise<void> {
 const hasSlot = (n: 'stream' | 'input' | 'statusbar' | 'confirm') => slotComponent(n) !== null
 
 // 文档预览意图(工具行/侧栏):打开工作台抽屉并定位文件(单一入口,含 docRequest 赋值)
-// 侧栏徽标 → 打开附加面板抽屉(与 docstore 同型:窗口事件解耦)
+// 侧栏徽标 → 打开附加面板抽屉(通用机制:与 docstore 同型,窗口事件解耦)
+// 注:通用面板跳转经窗口事件解耦(不依赖具体面板实现)。
+const OPEN_PANEL_EVENT = 'gah:open-panel'
 function onOpenPanel(ev: Event): void {
   const key = (ev as CustomEvent<string>).detail
   if (key) openPanel.value = key
@@ -261,60 +256,10 @@ function onOpenDoc(ev: Event): void {
   openPanel.value = 'host-docview'
 }
 
-// —— 首启引导(G-E4-R):判定逻辑在 guides.ts 纯函数(可单测),此处只做取数与副作用 ——
-const showGuide = ref(false)
-let guideChecked = false
-async function checkGuide(): Promise<void> {
-  if (guideChecked) return
-  const shell = new URLSearchParams(window.location.search).get('shell')
-  if (shell !== 'desktop') return
-  try {
-    await api.imConnectSpec() // 无 IM 渠道(503)→ 无引导
-  } catch {
-    return
-  }
-  let dismissed: string[] | null = null
-  try {
-    dismissed = (await api.guides()).dismissed ?? []
-  } catch {
-    /* 偏好不可得(旧宿主):按未关闭处理,仍提示一次 */
-  }
-  let phase: string | null = null
-  try {
-    const st = await api.imConnectState()
-    upsertIMStatus(st)
-    phase = st.phase
-  } catch {
-    /* 状态不可得:按未连接处理 */
-  }
-  guideChecked = true
-  showGuide.value = shouldShowGuide({ shell, dismissed, specAvailable: true, phase })
-}
-function guideConnect(): void {
-  showGuide.value = false
-  openPanel.value = 'im-connect'
-}
-async function guideDismiss(): Promise<void> {
-  showGuide.value = false
-  try {
-    await api.dismissGuide(GUIDE_ID_DESKTOP_IM)
-  } catch {
-    /* 记录失败:下次仍提示(不静默假装已记) */
-  }
-}
-// 连接成功后自动收起(用户自己去了别处完成连接)
-watch(
-  () => imStatus.value?.phase,
-  (p) => {
-    if (p === 'done') showGuide.value = false
-  },
-)
-
 onMounted(async () => {
   window.addEventListener(OPEN_DOC_EVENT, onOpenDoc)
   window.addEventListener(OPEN_PANEL_EVENT, onOpenPanel)
   await refreshStats()
-  void checkGuide()
   rebuild(false)
   // 统计节流刷新(usage 事件外,兜底上下文/缓存显示)
   statsTimer = setInterval(() => void refreshStats(), 3000)
@@ -373,9 +318,6 @@ onUnmounted(() => {
         </section>
       </div>
     </div>
-
-    <!-- 首启引导(G-E4-R):桌面壳首次启动且 IM 未连接 -->
-    <FirstRunGuide :open="showGuide" @connect="guideConnect" @dismiss="guideDismiss" @later="showGuide = false" />
 
     <!-- 槽位:confirm(审批弹层) -->
     <section class="confirm-slot" data-ui-slot="confirm">

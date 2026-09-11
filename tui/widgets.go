@@ -16,7 +16,7 @@ type WidgetSeg struct {
 }
 
 // RenderWidgetSegs 组装一条 widget 行:每段独立着色,段间自动回落 widget 默认前景色。
-// 供宿主/插件构造语义色状态行(如「● 微信 已连接 · ● QQ(沙箱) 在线」);
+// 供宿主/插件构造语义色状态行(如「● web 已连接」);
 // 纯文本亦可用(Level 置空),输出与直接拼字符串一致(无 ANSI)。
 func RenderWidgetSegs(segs ...WidgetSeg) string {
 	var sb strings.Builder

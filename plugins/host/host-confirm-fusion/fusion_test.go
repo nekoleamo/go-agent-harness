@@ -2,10 +2,10 @@
 package hostconfirmfusion
 
 import (
-	"log/slog"
+	"context"
 	"github.com/nekoleamo/go-agent-harness/core/ctx"
 	"github.com/nekoleamo/go-agent-harness/core/event"
-	"context"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
@@ -42,7 +42,7 @@ func TestFusionBroadcastAndFirstWins(t *testing.T) {
 	a2 := make(chan bool, 1)
 	p2 := &stubPresenter{promptCh: make(chan string, 1), answer: a2, cancels: &cancels, cancelMu: &cmu}
 	d1 := f.Register("web", p1)
-	d2 := f.Register("qq", p2)
+	d2 := f.Register("tui", p2)
 	defer d1()
 	defer d2()
 
@@ -109,7 +109,7 @@ func TestFusionUnregister(t *testing.T) {
 func TestFusionChannelList(t *testing.T) {
 	f := &Fusion{presenters: make(map[string]sdk.ConfirmPresenter)}
 	f.Register("web", &stubPresenter{promptCh: make(chan string, 1)})
-	f.Register("im-qq", &stubPresenter{promptCh: make(chan string, 1)})
+	f.Register("tui", &stubPresenter{promptCh: make(chan string, 1)})
 	if got := len(f.Channels()); got != 2 {
 		t.Fatalf("Channels 应 2,got %d", got)
 	}
@@ -139,7 +139,7 @@ func TestFusionAskQuestion(t *testing.T) {
 	q1 := &stubQuestioner{got: make(chan sdk.Question, 1), ans: make(chan sdk.QuestionAnswer, 1), done: make(chan struct{})}
 	q2 := &stubQuestioner{got: make(chan sdk.Question, 1), ans: make(chan sdk.QuestionAnswer, 1), done: make(chan struct{})}
 	d1 := f.RegisterQuestioner("web", q1)
-	d2 := f.RegisterQuestioner("im-qq", q2)
+	d2 := f.RegisterQuestioner("tui", q2)
 	defer d1()
 	defer d2()
 

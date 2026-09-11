@@ -91,22 +91,6 @@ The data root is `gah-data/` next to the real binary (created on first run; a sy
 
 > `--ephemeral` puts all runtime data (incl. the external plugin dir) into a temp home that is deleted on exit — good for isolated CI smoke tests.
 
-### IM remote control (WeChat / QQ)
-
-Drive the agent from your phone: WeChat/QQ messages start turns, and dangerous operations are approved on the phone (`y`/`n`).
-
-```bash
-./gah im          # interactive: terminal UI + WeChat channel; non-TTY falls back to headless (QR goes to stderr)
-./gah im-qq       # same, over the official QQ bot channel
-./gah im --status [--channel wechat|qq] [--json]   # connectivity probe (exit 0 online / 3 not connected / 4 bad credentials / 5 not assembled)
-```
-
-- **How to connect**: the Web/desktop panel's "IM channel" card (sidebar badge shows the state) — **WeChat** by QR scan (expired codes are **auto-refreshed**, no re-click); **QQ** by AppID/AppSecret (**the official bot API has no QR auth**) with instant validation and a platform link; secrets are never echoed (tail only), never logged, written 0600.
-- **Credentials**: `$GAH_HOME/config/ilink-wechat.yaml` / `qqbot.yaml`, migrating with `gah-data/`.
-- **Deny by default**: connecting is not authorizing — pair with `/im pair` or an allowlist (per-group `/im allowg`).
-- **Optional: let the model send messages/files**: `tool-im` provides `im_send` (text), `im_send_file` (workspace file: registered then delivered) and `im_status`, **not registered by default**; enable with the plugin entry `enabled: true` + `data.enabled: true` (and add all three side-effect tools to `policy-guard`'s `data.approval_tools` for per-call confirmation). Targets must be **authorized** users/groups; files must live in the current workspace and be ≤ `data.media_max_mb` (default 20MB). **WeChat outbound files are beta** (reverse-engineered contract; promoted after real-device verification): the peer must have messaged first (`context_token` — WeChat has no push); the QQ side is additionally limited by the passive reply window / active quota.
-- **Remote commands**: `/new`, `/status`, `/sessionlist`, `/session`, `/history`, `/stop`, `/bg`; long turns move to the background and push the result back.
-
 ### Use a real model
 
 ```bash
@@ -206,7 +190,6 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `subagent` | Subagent delegation (delegate/spawn/agents/agent_status/agent_kill/send_message/fork; isolated ReAct contexts, background handles) |
 | `list_skills` / `read_skill` | Skill index / load SKILL.md on demand (project `.gah/skills/`, `$GAH_HOME/skills/`) |
 | `mcp_<server>_<tool>` | MCP bridge tools (GAH_MCP_COMMAND single / GAH_MCP_COMMANDS multi server; see "MCP" below) |
-| `im_send` / `im_send_file` / `im_send_page` / `im_status` | **Off by default**: send a message, send a **workspace file** (registered then delivered; size cap `data.media_max_mb`, default 20MB), send a **PDF page rendered as an image** (requires `data.external_raster` (local poppler) or `data.selfcontained_raster` (built-in pdfium.wasm fallback)) to an **authorized** IM user/group, and query the controllable state. Enabling requires `enabled: true` + `data.enabled: true` on `tool-im` and adding `im_send`/`im_send_file`/`im_send_page` to `policy-guard`'s `data.approval_tools` (per-call confirmation in smart mode). **Outbound files**: QQ = official contract (delivered); WeChat = iLink three-stage upload (**beta**; requires the peer to have messaged first so a `context_token` exists — promoted after real-device verification) |
 
 ## 6. Web usage (settings panel / REST)
 
@@ -240,9 +223,6 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `POST /api/attachments` + `GET /attachments/...` | Attachment upload (20MB / type allowlist) / static preview |
 | `POST /api/reload` | Instruction-file hot reload |
 | `POST /api/shutdown` | Graceful shutdown (→ system/shutdown → DisposeAll; reused by desktop/ops) |
-| `GET /api/guides`, `POST /api/guides` | First-run guide dismissal records (desktop shell `?shell=desktop` prompts IM connection on first run; "do not show again" persists in shared host prefs) |
-| `GET /api/im/connect/spec`, `POST /api/im/connect/start`, `POST /api/im/connect/submit`, `GET /api/im/connect/state` | IM connection: spec (QR/form) / start / submit form / status (phase changes also pushed as `im/connect` SSE events) |
-| `GET /api/im/groups`, `POST /api/im/groups` | IM per-group authorization: group list (authorized ∪ recently active, with last-seen and long-idle markers) / grant or revoke (`{chat_id, allow}`; revoking an unknown group → 422) |
 | `GET /api/ui-plugins` + `/ui-plugins/` | UI-plugin aggregate view / static hosting |
 | `GET /api/doc/preview` `raw` `asset` `tree` `html`, `POST /api/doc/render` | Document preview (block-model JSON) / raw bytes (Range, `dl=1` download) / embedded assets (MIME allow-list) / file tree / sandboxed HTML (CSP) / markdown text → block model |
 

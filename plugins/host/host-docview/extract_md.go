@@ -92,7 +92,7 @@ func mdWalk(s *Service, abs string, src []byte, req sdk.DocRequest) *mdCtx {
 	return m
 }
 
-// Render 把 markdown 文本直接转为块模型(会话流 md 渲染 / IM 降级;不触碰文件系统)。
+// Render 把 markdown 文本直接转为块模型(会话流 md 渲染;不触碰文件系统)。
 func (s *Service) Render(_ context.Context, text string, maxBlocks int) (*sdk.DocView, error) {
 	raw := []byte(text)
 	if int64(len(raw)) > s.budget.MaxPreviewBytes {

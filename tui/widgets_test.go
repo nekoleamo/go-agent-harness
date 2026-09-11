@@ -94,18 +94,18 @@ func TestWidgetsCommandToggle(t *testing.T) {
 	}
 }
 
-// G-E3-R2:widget 语义色分段(状态行「● 微信 已连接 · ● QQ(沙箱) 在线」)。
+// widget 语义色分段(状态行「● web 已连接 · ◐ tui 运行中」)。
 func TestRenderWidgetSegs(t *testing.T) {
 	out := RenderWidgetSegs(
 		WidgetSeg{Text: "●", Level: "ok"},
-		WidgetSeg{Text: " 微信"},
+		WidgetSeg{Text: " web"},
 		WidgetSeg{Text: " 已连接", Level: "ok"},
 		WidgetSeg{Text: " · "},
 		WidgetSeg{Text: "◐", Level: "warn"},
-		WidgetSeg{Text: " QQ(沙箱)"},
+		WidgetSeg{Text: " tui"},
 		WidgetSeg{Text: " 运行中", Level: "warn"},
 	)
-	if got := stripColor(out); got != "● 微信 已连接 · ◐ QQ(沙箱) 运行中" {
+	if got := stripColor(out); got != "● web 已连接 · ◐ tui 运行中" {
 		t.Fatalf("文本拼合异常: %q", got)
 	}
 	// 语义色确实写入 ANSI(ok=绿 / warn=琥珀 / 默认=widget 灰各不同)
@@ -123,9 +123,9 @@ func TestRenderWidgetSegs(t *testing.T) {
 		t.Fatal("未知档位应回落 widget 默认色")
 	}
 	// 接入 widgetLines:单行化与截断仍成立
-	s := &State{WidgetOn: true, Widgets: []Widget{{ID: "im", Text: func() string { return out }}}}
+	s := &State{WidgetOn: true, Widgets: []Widget{{ID: "demo", Text: func() string { return out }}}}
 	lines := widgetLines(s)
-	if len(lines) != 1 || stripColor(lines[0]) != "● 微信 已连接 · ◐ QQ(沙箱) 运行中" {
+	if len(lines) != 1 || stripColor(lines[0]) != "● web 已连接 · ◐ tui 运行中" {
 		t.Fatalf("widgetLines 应保留分段文本: %+v", lines)
 	}
 }

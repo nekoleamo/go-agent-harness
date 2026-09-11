@@ -1,9 +1,9 @@
-// host-confirm-fusion:审批确认融合仲裁(P3 三端融合)。Web/TUI/IM 同进程并存时
+// host-confirm-fusion:审批确认融合仲裁(多端融合)。Web/TUI 同进程并存时
 // ctx.confirm 提供方冲突(core/ctx 同名拒绝)——本插件统一 Provide ctx.confirm(Fusion
-// 实现),各 UI 插件改为经 ctx.confirmFusion.Register 注册呈现者(web 弹层/im 文字
+// 实现),各 UI 插件改为经 ctx.confirmFusion.Register 注册呈现者(web 弹层/tui 文字
 // y·n/tui 弹层),任一渠道应答即生效(双端同卡同决策)。
-// 装配了 Fusion 的 profile(base+web+im-qq+confirm-fusion)不再互斥;未装配 Fusion 的
-// 既有 profile(web-only/tui-only/im-only)保持各 UI 自 Provide ctx.confirm(向后兼容)。
+// 装配了 Fusion 的 profile(base+web+tui+confirm-fusion)不再互斥;未装配 Fusion 的
+// 既有 profile(web-only/tui-only)保持各 UI 自 Provide ctx.confirm(向后兼容)。
 package hostconfirmfusion
 
 import (

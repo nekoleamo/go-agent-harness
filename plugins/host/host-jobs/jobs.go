@@ -35,7 +35,7 @@ func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
 	if err := c.Provide("ctx.jobs", j); err != nil {
 		return nil, err
 	}
-	// 终态事件通知(job/done;IM/Web 订阅后可主动通知/联动,免轮询)。
+	// 终态事件通知(job/done;Web 订阅后可主动通知/联动,免轮询)。
 	j.SetNotify(func(ev sdk.JobDoneEvent) {
 		c.Emit(context.Background(), sdk.EventJobDone, &ev, sdk.Emit)
 	})
@@ -136,8 +136,8 @@ type Jobs struct {
 	mu     sync.Mutex
 	seq    uint64
 	jobs   map[string]*entry
-	sb     sdk.Sandbox // 可为 nil(未装配沙箱)
-	order  []string    // ID 顺序(末位最新),历史清理用
+	sb     sdk.Sandbox            // 可为 nil(未装配沙箱)
+	order  []string               // ID 顺序(末位最新),历史清理用
 	notify func(sdk.JobDoneEvent) // 终态通知(可 nil;host-jobs 装配时注入 job/done Emit)
 }
 
@@ -171,7 +171,7 @@ func (j *Jobs) Submit(cmdline string) (string, error) {
 	j.add(e)
 	go func() {
 		cmd := exec.Command("/bin/sh", "-c", cmdline)
-		setupCmdGroup(cmd) // 独立进程组(组杀可连带 sh -c 子进程,防孤儿)
+		setupCmdGroup(cmd)              // 独立进程组(组杀可连带 sh -c 子进程,防孤儿)
 		cmd.Env = sdk.SanitizedEnv(nil) // 凭据隔离:滤除 *_API_KEY/*_TOKEN/*_SECRET
 		var buf bytes.Buffer
 		cmd.Stdout = &buf

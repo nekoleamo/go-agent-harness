@@ -56,7 +56,7 @@ func TestMatchDangerous(t *testing.T) {
 	cases := map[string]bool{
 		`{"command":"ls -la"}`:                       false,
 		`{"command":"rm -rf /tmp/x"}`:                true,
-		`{"command":"rmdir /tmp/d"}`:                 true, // IM 真机反馈:rmdir 此前漏网
+		`{"command":"rmdir /tmp/d"}`:                 true, // 真机反馈:rmdir 此前漏网
 		`{"command":"rmdir -p a/b"}`:                 true,
 		`{"command":"rm -f /tmp/x"}`:                 true,
 		`{"command":"unlink /tmp/f"}`:                true,
@@ -76,7 +76,7 @@ func TestMatchDangerous(t *testing.T) {
 		`{"command":"chmod 644 f"}`:                  false,
 		`{"command":"chmod +x f"}`:                   false,
 		`{"command":"echo hi"}`:                      false,
-		`{"command":"rm -v /tmp/f"}`:                 true, // IM 反馈:rm -v 此前漏网
+		`{"command":"rm -v /tmp/f"}`:                 true, // 真机反馈:rm -v 此前漏网
 		`{"command":"rm data.txt"}`:                  true, // 裸 rm(任意形态删除均确认)
 	}
 	for args, want := range cases {

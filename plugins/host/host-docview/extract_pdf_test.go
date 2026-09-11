@@ -248,7 +248,7 @@ func TestExtractPDFPages(t *testing.T) {
 			t.Fatalf("缺少 %q:\n%s", want, text)
 		}
 	}
-	// 行号化文本(模型工具/IM 路径)含页标记
+	// 行号化文本(模型工具路径)含页标记
 	tx, err := s.Text(context.Background(), sdk.DocRequest{Path: p})
 	if err != nil {
 		t.Fatal(err)

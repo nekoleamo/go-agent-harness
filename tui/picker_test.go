@@ -165,11 +165,11 @@ func TestAdvanceDynamicLevel(t *testing.T) {
 	}
 }
 
-// TestAdvanceLevelOptionsWithFreeFallback 同一级同时声明 Options 与 FreeArgs(如 /qq 新形态):
+// TestAdvanceLevelOptionsWithFreeFallback 同一级同时声明 Options 与 FreeArgs(如某渠道的 login 子命令):
 // 命中枚举路径 → 出选项;Options 返回空 → 回退自由输入序列;两者皆空 → 直接执行。
 func TestAdvanceLevelOptionsWithFreeFallback(t *testing.T) {
 	levels := func(name string) []sdk.ArgLevel {
-		if name != "qq" {
+		if name != "demo" {
 			return nil
 		}
 		return []sdk.ArgLevel{
@@ -190,7 +190,7 @@ func TestAdvanceLevelOptionsWithFreeFallback(t *testing.T) {
 			},
 		}
 	}
-	res := AdvanceEnter("/", &Pick{Items: []sdk.Option{opt("qq", "QQ")}}, levels)
+	res := AdvanceEnter("/", &Pick{Items: []sdk.Option{opt("demo", "示例渠道")}}, levels)
 	if res.Pick == nil || res.Pick.Level != 1 || len(res.Pick.Items) != 3 {
 		t.Fatalf("应进入 L2 子命令枚举: %+v", res.Pick)
 	}
@@ -202,7 +202,7 @@ func TestAdvanceLevelOptionsWithFreeFallback(t *testing.T) {
 	}
 	res2.Pick.Cursor = 1
 	res3 := AdvanceEnter(res2.Input, res2.Pick, levels)
-	if !res3.Commit || res3.Input != "/qq env sandbox" {
+	if !res3.Commit || res3.Input != "/demo env sandbox" {
 		t.Fatalf("env 选完应执行: %q commit=%v", res3.Input, res3.Commit)
 	}
 	// login → Options 空 → 回退自由序列
@@ -214,7 +214,7 @@ func TestAdvanceLevelOptionsWithFreeFallback(t *testing.T) {
 	// status → 两者皆空 → 直接执行
 	res.Pick.Cursor = 0
 	res5 := AdvanceEnter(res.Input, res.Pick, levels)
-	if !res5.Commit || res5.Input != "/qq status" {
+	if !res5.Commit || res5.Input != "/demo status" {
 		t.Fatalf("status 应直接执行: %q commit=%v", res5.Input, res5.Commit)
 	}
 }

@@ -26,7 +26,7 @@ func (p *Plugin) Name() string { return "policy-guard" }
 //	sandbox:        read-only|workspace-write|full-access(默认 workspace-write,原 policy-sandbox mode)
 //	sync:           档位联动开关(默认 true:open → 沙箱有效 full-access;strict → 有效 read-only)
 //	approval_tools: 需逐次审批的工具名列表(默认空;E-A 工具级审批。远程/破坏性副作用工具
-//	                如 im_send 应入此表;支持列表或逗号/空白分隔字符串)
+//	                如远程发送/部署类副作用工具应入此表;支持列表或逗号/空白分隔字符串)
 func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	approvalMode, sandboxMode, sync := sdk.ApprovalSmart, sdk.SandboxWorkspace, true
 	var approvalTools map[string]bool
@@ -64,7 +64,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		if !ok {
 			return nil
 		}
-		// 确认通道每次现取(而非 Start 一次性注入):ctx.confirm 由 UI/IM 插件
+		// 确认通道每次现取(而非 Start 一次性注入):ctx.confirm 由 UI 插件
 		// Provide 且与本插件无拓扑顺序约束(可能后于本插件启动)——一次性注入会恒 nil,
 		// 使 smart 档永远“无通道拒绝”。未装配 = nil → 安全拒绝(语义不变)。
 		confirmOf := func() sdk.ConfirmService {

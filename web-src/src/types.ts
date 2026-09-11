@@ -2,7 +2,7 @@
 // 契约来源:web/server.go 的 SSE 帧与 REST 响应。
 
 // —— SSE 帧 ——
-export type FrameType = 'session' | 'status' | 'error' | 'confirm' | 'command' | 'question' | 'doc' | 'imconnect'
+export type FrameType = 'session' | 'status' | 'error' | 'confirm' | 'command' | 'question' | 'doc'
 
 export interface Frame {
   id: number
@@ -27,28 +27,6 @@ export interface QuestionRequest {
   options?: { value: string; desc?: string }[]
   multiple?: boolean
   free_text?: boolean
-}
-
-// 面板扫码登录(POST /api/im/login 响应;GET /api/im/login/state 进度)
-export interface IMLoginQR {
-  channel: string
-  content: string
-  expires_at: string
-  png?: string // QR PNG data URI(后端渲染,前端直接 img)
-}
-export interface IMLoginState {
-  phase: string // idle | pending | done | failed
-  detail?: string
-  error?: string
-}
-
-// —— IM 通道状态(/api/im/channels;P3 三端融合面板)——
-export interface IMChannelStatus {
-  channel: string // wechat | qq
-  state: string // online | running | configuring | offline
-  detail: string // 通道状态全文(网关/授权等)
-  error: string // 最近诊断(空 = 无)
-  authorized: number // 已授权用户数
 }
 
 // —— 各 Kind 载荷 ——
@@ -326,58 +304,4 @@ export interface DocTree {
   warnings?: string[]
 }
 
-// —— IM 连接(E 组 E0;与 sdk/imconnect.go 契约一致)—— 
-export interface IMConnectOption {
-  value: string
-  desc?: string
-}
-export interface IMConnectField {
-  key: string
-  label: string
-  secret?: boolean
-  placeholder?: string
-  help?: string
-  required?: boolean
-  options?: IMConnectOption[]
-  configured?: boolean
-  mask?: string
-}
-export interface IMConnectSpec {
-  channel: string
-  kind: 'qr' | 'form' | 'none'
-  fields?: IMConnectField[]
-  login_url?: string
-  docs_url?: string
-  hint?: string
-  action?: string
-}
-// 首启引导关闭状态(G-E4-R;gah-state.json 共享偏好)
-export interface GuidesResp {
-  dismissed: string[]
-}
 
-// 群维度授权条目(G-E5-2;Web 面板「群授权」区段)
-export interface IMGroupEntry {
-  channel?: string
-  chat_id: string
-  authorized: boolean
-  last_seen?: string // ISO8601;空 = 从未收到该群消息
-  source?: 'both' | 'authorized' | 'seen'
-  stale?: boolean // 已授权但长期无活动(提示可撤销,不自动撤销)
-}
-
-export interface IMGroupsResp {
-  groups: IMGroupEntry[]
-}
-
-export interface IMConnectStatus {
-  channel: string
-  phase: string
-  detail?: string
-  error?: string
-  qr_content?: string
-  qr_png?: string
-  expires_at?: string
-  account?: string
-  env?: string
-}

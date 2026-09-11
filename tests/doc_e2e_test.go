@@ -71,7 +71,7 @@ func TestDocServiceProvidedByBaseBundle(t *testing.T) {
 	if v.Format != sdk.DocFormatMarkdown || len(v.Blocks) < 2 {
 		t.Fatalf("预览结果异常: format=%q blocks=%d", v.Format, len(v.Blocks))
 	}
-	// 块模型 → 行号化文本(模型工具/IM 共用)
+	// 块模型 → 行号化文本(模型工具共用)
 	tx, err := doc.Text(context.Background(), sdk.DocRequest{Path: md})
 	if err != nil {
 		t.Fatal(err)

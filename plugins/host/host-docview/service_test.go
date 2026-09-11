@@ -50,7 +50,7 @@ func TestPreviewTextAndCode(t *testing.T) {
 		t.Fatalf("换行未归一化: %q", v.Blocks[0].Text)
 	}
 
-	// 行号化文本(CLI/模型/IM 共用渲染):文本族整体呈一个围栏代码块
+	// 行号化文本(CLI/模型共用渲染):文本族整体呈一个围栏代码块
 	tx, err := s.Text(context.Background(), sdk.DocRequest{Path: p})
 	if err != nil {
 		t.Fatal(err)

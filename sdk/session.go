@@ -27,10 +27,10 @@ const (
 	EventAgentStatus = "agent/status"
 	EventAgentError  = "agent/error"
 	// EventJobDone 后台任务终态事件(host-jobs 终态 done/failed/killed 发出;载荷 *sdk.JobDoneEvent)。
-	// 订阅方可主动通知(IM/Web 推送)或触发联动;output/result 经 ctx.jobs.Output 取回,不进载荷。
+	// 订阅方可主动通知(Web 推送)或触发联动;output/result 经 ctx.jobs.Output 取回,不进载荷。
 	EventJobDone = "job/done"
 	// EventDocOpen 文档预览意图事件(D 组文档预览):载荷 sdk.DocOpenEvent{Path, Page, Sheet}。
-	// 模型 doc_open 工具 / `/preview` 命令发出,各端 UI(TUI/Web/IM)订阅后本地打开预览——
+	// 模型 doc_open 工具 / `/preview` 命令发出,各端 UI(TUI/Web)订阅后本地打开预览——
 	// 对齐既有交互事件化先例(confirm/question requested↔resolved):只读观察面 + 各端 presenter。
 	EventDocOpen = "doc/open"
 )

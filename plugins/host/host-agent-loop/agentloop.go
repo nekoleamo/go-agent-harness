@@ -43,7 +43,7 @@ func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
 	if err := c.Provide("ctx.agentLoop", loop); err != nil {
 		return nil, err
 	}
-	// ctx.turnControl 回合控制(TUI Esc / Web /api/control / IM /stop 共用取消入口)。
+	// ctx.turnControl 回合控制(TUI Esc / Web /api/control 共用取消入口)。
 	if err := c.Provide("ctx.turnControl", loop.tc); err != nil {
 		return nil, err
 	}
@@ -114,7 +114,7 @@ func (l *Loop) Run(ctx context.Context, input string) error {
 
 // RunWithAttachments 处理一次用户输入(附件一期:图片随消息视觉注入,文件路径引用)。
 func (l *Loop) RunWithAttachments(ctx context.Context, input string, atts []sdk.Attachment) error {
-	// 回合级可取消 ctx:派生 child 并注册到 ctx.turnControl(TUI Esc/Web 取消/IM /stop 经
+	// 回合级可取消 ctx:派生 child 并注册到 ctx.turnControl(TUI Esc/Web 取消经
 	// Cancel() 取消同一回合);父 ctx 取消沿链生效;回合结束(任意返回路径)注销并释放。
 	runCtx, runCancel := context.WithCancel(ctx)
 	var tok uint64

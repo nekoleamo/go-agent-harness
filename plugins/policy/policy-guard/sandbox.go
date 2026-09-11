@@ -18,8 +18,8 @@ type SandboxPolicy struct {
 	mu       sync.RWMutex
 	mode     sdk.SandboxMode
 	root     string
-	sync     bool                      // 档位联动开关(data.sync)
-	approval func() sdk.ApprovalMode   // 联动读数(guard 注入;不 import 审批支路,保解耦)
+	sync     bool                    // 档位联动开关(data.sync)
+	approval func() sdk.ApprovalMode // 联动读数(guard 注入;不 import 审批支路,保解耦)
 }
 
 func (p *SandboxPolicy) Mode() sdk.SandboxMode {

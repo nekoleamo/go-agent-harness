@@ -54,30 +54,3 @@ func TestPrefsLegacyMigrate(t *testing.T) {
 	}
 	Save(Prefs{Thinking: "high"}) // no-op
 }
-
-// 首启引导关闭记录(G-E4-R):幂等、空 id 忽略、与其它偏好共存。
-func TestPrefsGuideDismissed(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("GAH_HOME", home)
-	if GuideDismissed("desktop-im") || GuideDismissed("") {
-		t.Fatal("初始不应为已关闭")
-	}
-	SetGuideDismissed("")
-	SetGuideDismissed("desktop-im")
-	SetGuideDismissed("desktop-im") // 幂等
-	if !GuideDismissed("desktop-im") {
-		t.Fatal("应记为已关闭")
-	}
-	SetGuideDismissed("other")
-	p := Load()
-	if len(p.DismissedGuides) != 2 {
-		t.Fatalf("应保留 2 条且不重复: %+v", p.DismissedGuides)
-	}
-	// 其它偏好不受影响(读-改-写共享同一文件)
-	SetThinking("high")
-	SetGuideDismissed("third")
-	got := Load()
-	if got.Thinking != "high" || len(got.DismissedGuides) != 3 || !GuideDismissed("desktop-im") {
-		t.Fatalf("共存异常: %+v", got)
-	}
-}

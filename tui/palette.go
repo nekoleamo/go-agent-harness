@@ -27,9 +27,9 @@ const (
 	TokError     Token = "error"     // 错误横幅:红
 
 	// —— 消息/工具背景块(P5-V2/V3,对齐 pi userMessageBg/toolPendingBg 语义)——
-	TokUserBg   Token = "user-bg"    // 用户消息整行背景(深灰,黑底上略提亮)
-	TokToolBg   Token = "tool-bg"    // 工具调用行(pending)背景:深灰
-	TokToolOKBg Token = "tool-ok-bg" // 工具成功结果行背景:中灰(结果比调用亮一档)
+	TokUserBg    Token = "user-bg"     // 用户消息整行背景(深灰,黑底上略提亮)
+	TokToolBg    Token = "tool-bg"     // 工具调用行(pending)背景:深灰
+	TokToolOKBg  Token = "tool-ok-bg"  // 工具成功结果行背景:中灰(结果比调用亮一档)
 	TokToolErrBg Token = "tool-err-bg" // 工具失败结果行背景:中灰(红字表语义)
 
 	// —— 输入/命令/选择器 ——
@@ -61,11 +61,11 @@ const (
 	TokMdCmt   Token = "md-cmt"   // 代码块内注释:灰
 
 	// —— 代码块精细语法着色(P5-V4,补 5 色对齐 gruvbox syntax 语义)——
-	TokSyntaxVar    Token = "syntax-var"    // 变量:textSoft 米白
-	TokSyntaxNum    Token = "syntax-num"    // 数字:orange
-	TokSyntaxType   Token = "syntax-type"   // 类型/常量:cyan
-	TokSyntaxOp     Token = "syntax-op"     // 运算符:accent2 绿
-	TokSyntaxPunct  Token = "syntax-punct"  // 标点:dim
+	TokSyntaxVar   Token = "syntax-var"   // 变量:textSoft 米白
+	TokSyntaxNum   Token = "syntax-num"   // 数字:orange
+	TokSyntaxType  Token = "syntax-type"  // 类型/常量:cyan
+	TokSyntaxOp    Token = "syntax-op"    // 运算符:accent2 绿
+	TokSyntaxPunct Token = "syntax-punct" // 标点:dim
 
 	// —— 输入区左缘竖线(P5-V5,按思考等级着色,对齐 pi thinking 边框色)——
 	TokThinkOff  Token = "think-off"  // 思考 off:灰

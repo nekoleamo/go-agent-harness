@@ -6,7 +6,7 @@
 // 分工(对齐 DOC_PREVIEW_PLAN §5.4):
 //   - 保真:Web/桌面 → `/api/doc/raw` + 浏览器原生查看器(翻页/缩放/文本层);Linux 桌面壳
 //     (WebKitGTK)不支持内嵌 PDF → K2 已锁:前端降级为「下载」,不引入 pdf.js;
-//   - 文本:TUI/CLI/IM/模型 → gopdf `Page.Blocks()`(列优先阅读序)+ `GetPlainText` 兜底;
+//   - 文本:TUI/CLI/模型 → gopdf `Page.Blocks()`(列优先阅读序)+ `GetPlainText` 兜底;
 //   - 页事实:`DocumentSummary()` → `Kind`(text/scanned/empty/mixed)+ `pages_needing_ocr`;
 //   - 表格:`Page.Tables()` 仅取全框线类,低置信度降级为文本并记 warning;
 //   - 内嵌图:只给元数据(`Page.Images()` 不解码;真图由浏览器查看器呈现);

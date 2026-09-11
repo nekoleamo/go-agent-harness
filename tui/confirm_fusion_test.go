@@ -103,7 +103,7 @@ func TestAppPresentCancel(t *testing.T) {
 	}
 }
 
-// TestParseTUIAnswer 提问作答解析(与 IM 侧同语义):编号/值/说明、多选、自由文本、非法。
+// TestParseTUIAnswer 提问作答解析:编号/值/说明、多选、自由文本、非法。
 func TestParseTUIAnswer(t *testing.T) {
 	q := sdk.Question{Prompt: "选", Options: []sdk.QuestionOption{{Value: "a", Desc: "甲"}, {Value: "b", Desc: "乙"}}}
 	if ans, ok := parseTUIAnswer(q, "2"); !ok || len(ans.Values) != 1 || ans.Values[0] != "b" {

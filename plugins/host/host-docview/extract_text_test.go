@@ -244,7 +244,7 @@ func TestExtractNotebook(t *testing.T) {
 	}
 }
 
-// markdown 渲染到行号化文本(D5 模型工具/IM 依赖的形态)。
+// markdown 渲染到行号化文本(D5 模型工具依赖的形态)。
 func TestMarkdownToTextRendering(t *testing.T) {
 	s, dir := newSvc(t, Budget{})
 	p := writeFile(t, dir, "r.md", []byte("# T\n\n- a\n\n| x |\n|---|\n| 1 |\n"))

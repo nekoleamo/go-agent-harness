@@ -1,7 +1,7 @@
 // Package toolask 提供 tool-ask 插件(P3 语义交互 seam):注册 ask_user_question 工具,
 // 让模型在需要用户决策时提出结构化问题(单选/多选/自由文本)并等待回答。
 // 进程内装配(同 tool-auto-plan 先例):问题经 ctx.question(host-confirm-fusion 提供,
-// 广播 web/im/tui 渠道,首答生效)呈现;未装配提问通道时工具显式报错(不静默假答)。
+// 广播 web/tui 渠道,首答生效)呈现;未装配提问通道时工具显式报错(不静默假答)。
 package toolask
 
 import (
@@ -70,10 +70,10 @@ func (t *Tool) Definition() sdk.ToolDefinition {
 // Execute 调用提问通道。
 func (t *Tool) Execute(ctx context.Context, argsJSON string) (any, error) {
 	var in struct {
-		Prompt   string             `json:"prompt"`
+		Prompt   string               `json:"prompt"`
 		Options  []sdk.QuestionOption `json:"options"`
-		Multiple bool               `json:"multiple"`
-		FreeText bool               `json:"free_text"`
+		Multiple bool                 `json:"multiple"`
+		FreeText bool                 `json:"free_text"`
 	}
 	if err := json.Unmarshal([]byte(argsJSON), &in); err != nil {
 		return nil, fmt.Errorf("ask_user_question: 参数解析失败: %w", err)

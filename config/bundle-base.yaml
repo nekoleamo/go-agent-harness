@@ -1,4 +1,4 @@
-# seed-version: 17 # 样板版本:新增 base 能力条目(host-* 等)时 +1,老用户自动升级(备份后覆盖)
+# seed-version: 18 # 样板版本:新增 base 能力条目(host-* 等)时 +1(18:移除已废弃的远程通道工具条目),老用户自动升级(备份后覆盖)
 # base bundle:对齐 dsh-base,一切功能皆插件的共享第一层。
 # M1 阶段条目仅记录意图;对应插件工厂在 M2 base bundle 落地。
 name: base
@@ -26,7 +26,7 @@ entries:
       sync: true # 档位联动:open → 沙箱有效 full-access;strict → 有效 read-only;smart 各自独立
       # E-A 工具级审批(默认空 = 行为零变化):列出的工具每次调用都按上表档位裁决
       # (open 放行 / smart 弹确认 / strict 拒绝)。远程或破坏性副作用的工具应入此表,
-      # 例如未来的 im_send。支持列表或逗号/空白分隔字符串。
+      # 例如联网抓取、向外部系统写入。支持列表或逗号/空白分隔字符串。
       approval_tools: []
   - id: host-skills
   - id: host-plugin-manager
@@ -45,7 +45,7 @@ entries:
       min_interval_seconds: 600
       input_budget_bytes: 8192
   - id: host-docview
-    # D 组文档预览:ctx.doc(sdk.DocService)——一个文档模型 + 四端呈现器(TUI/Web/headless/IM);
+    # D 组文档预览:ctx.doc(sdk.DocService)——一个文档模型 + 三端呈现器(TUI/Web/headless);
     # 解析器(沙箱/逃逸/deny-list)+ 预算 + 内存缓存 + 格式探测;后续切片扩 md/docx/xlsx/pptx/pdf。
     data:
       max_input_mb: 50 # 源文件大小上限
@@ -96,7 +96,7 @@ entries:
   - id: tool-ask
     # P3 语义交互:ask_user_question 结构化提问(单选/多选/自由文本)。
     # 进程内装配(同 tool-auto-plan:提问通道需 ctx.question 运行期注入,外部进程不可达);
-    # 问题经 ctx.question(host-confirm-fusion)广播 web/im/tui 渠道呈现,首答生效。
+    # 问题经 ctx.question(host-confirm-fusion)广播 web/tui 渠道呈现,首答生效。
   - id: tool-todo
     enabled: false # M8 外部化:todo(create/start/complete/pend/delete/update/list/get)由 host-bridge 加载 extplugins/tool-basic;内嵌双轨同 tool-files
   - id: tool-doc
@@ -107,14 +107,6 @@ entries:
       read_limit: 2000
       max_output_kb: 50
       pdf_max_pages: 100
-  - id: tool-im
-    # G-E5-3:IM 远程工具(im_send/im_status)。**默认不注册**(enabled/data.enabled 双关);
-    # 启用步骤(两处都改):① 本条目 enabled: true + data.enabled: true;
-    # ② 把 im_send / im_send_file 加入下方 policy-guard 的 data.approval_tools(否则 smart 档不会弹确认,
-    #    此时插件会在启动日志告警)。目标仅限已授权用户/群(未授权显式拒绝)。
-    enabled: false
-    data:
-      enabled: false
   - id: tool-auto-plan
     # M11:auto_plan(规划模式)与 todo 同属工具,但需进程内规则注入(ctx.systemPrompt AddSection,
     # 外部进程无法注入)→ 装配进宿主(host-skills 同款),不进 tool-basic。

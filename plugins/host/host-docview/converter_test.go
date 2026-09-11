@@ -413,7 +413,7 @@ func TestServiceRaster(t *testing.T) {
 	var _ sdk.DocRasterService = s
 }
 
-// RST-2:光栅结果应带宿主侧 CachePath(供 IM 图片回推登记),且该文件确实存在。
+// 光栅结果应带宿主侧 CachePath(供出站登记),且该文件确实存在。
 func TestServiceRasterCachePath(t *testing.T) {
 	s, dir := newSvc(t, Budget{})
 	p := writeFile(t, dir, "doc.pdf", pdfWithText(t, "cache path"))

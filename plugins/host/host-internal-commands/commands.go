@@ -165,6 +165,9 @@ func (h *Host) specs() []sdk.CommandSpec {
 				{Options: h.sessionSwitchOptions},
 			}},
 		{Name: "reload", Usage: "/reload", Desc: "热重载指令文件(AGENTS.md 层级/全局/附加;外部编辑即生效)", Run: h.cmdReload},
+		// 回合取消:通用命令 —— 任意 UI(TUI/Web/headless)
+		// 都能用 /stop 取消当前回合,与 TUI Esc、Web 取消按钮共用 ctx.turnControl。
+		{Name: "stop", Usage: "/stop", Desc: "取消当前回合(等价 TUI Esc / Web 取消按钮)", Run: h.cmdStop},
 	}
 }
 
@@ -389,6 +392,19 @@ func (h *Host) cmdReload(_ []string) (string, error) {
 		return "", errString("/reload 失败(旧值保留): " + err.Error())
 	}
 	return "已热重载指令文件(全局/项目层级/附加;下次回合的 system prompt 生效)", nil
+}
+
+// cmdStop 取消当前回合(经 ctx.turnControl;未装配/无运行中回合时给出明确回执)。
+func (h *Host) cmdStop(_ []string) (string, error) {
+	var tc sdk.TurnControl
+	if err := h.c.Inject("ctx.turnControl", &tc); err != nil || tc == nil {
+		return "", fmt.Errorf("回合取消服务未装配(ctx.turnControl):无 host-agent-loop 时不可用")
+	}
+	if !tc.Running() {
+		return "当前没有运行中的回合。", nil
+	}
+	tc.Cancel()
+	return "⏹ 已请求停止当前回合。", nil
 }
 
 func (h *Host) cmdExport(args []string) (string, error) {

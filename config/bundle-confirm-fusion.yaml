@@ -1,8 +1,8 @@
 # seed-version: 1 # 样板版本:新增能力条目时 +1,老用户自动升级(备份后覆盖)
-# confirm-fusion bundle:审批确认融合仲裁(P3 三端融合)。
-#   装配时 host-confirm-fusion 统一 Provide ctx.confirm(广播 web/im 呈现者,首答生效);
-#   web/im 插件检测到 ctx.confirmFusion 即注册呈现者,不再各自 Provide——同进程并存不再冲突。
-# 用法:融合 profile(如 im-qq + web 桌面并存)在 profile bundles 中引用本 bundle。
+# confirm-fusion bundle:审批确认融合仲裁(多端融合:web/tui)。
+#   装配时 host-confirm-fusion 统一 Provide ctx.confirm(广播 web/tui 呈现者,首答生效);
+#   web/tui 插件检测到 ctx.confirmFusion 即注册呈现者,不再各自 Provide——同进程并存不再冲突。
+# 用法:融合 profile(如 tui + web 桌面并存)在 profile bundles 中引用本 bundle。
 name: confirm-fusion
 entries:
   - id: host-confirm-fusion

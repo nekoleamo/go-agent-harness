@@ -238,7 +238,7 @@ func summaryStateOf(e *summaryEntry, frames int) string {
 }
 
 // sortSessionsByPinned 排序:置顶区(pinned_at 倒序)→ 主会话 → 其余(mtime 倒序)。
-// 单一实现(三端共用;TUI 选择器 / Web 列表 / IM /sessionlist 顺序一致)。
+// 单一实现(多端共用;TUI 选择器 / Web 列表顺序一致)。
 func sortSessionsByPinned(out []sdk.SessionInfo) {
 	sort.SliceStable(out, func(i, j int) bool {
 		a, b := out[i], out[j]

@@ -6,7 +6,7 @@
 //   - host-confirm-fusion 装配(多端并存):Fusion 自身广播(Question.ID 由 Fusion 补齐);
 //   - 单 UI profile(无 Fusion):ctx.question provider 经 ObservedQuestion 包装后广播。
 //
-// 事件 Channel 字段标明“作答/请求来自哪个渠道”(如 web/tui/im-qq),各端据此跳过自己。
+// 事件 Channel 字段标明“作答/请求来自哪个渠道”(如 web/tui),各端据此跳过自己。
 package sdk
 
 import (

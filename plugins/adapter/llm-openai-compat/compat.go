@@ -477,7 +477,7 @@ func wireContent(msg sdk.LLMMessage) any {
 			mime = "image/png"
 		}
 		parts = append(parts, map[string]any{
-			"type":     "image_url",
+			"type":      "image_url",
 			"image_url": map[string]any{"url": "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data)},
 		})
 	}

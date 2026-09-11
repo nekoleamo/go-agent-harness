@@ -191,8 +191,8 @@ func (a *App) Confirm(ctx context.Context, prompt string) (bool, error) {
 	}
 }
 
-// Present 实现 sdk.ConfirmPresenter(P3 三端融合):弹层呈现并返回应答通道;
-// cancel 撤销本次待答(幂等)。融合场景(Fusion 广播)与 IM/Web 共用同一确认。
+// Present 实现 sdk.ConfirmPresenter(多端融合):弹层呈现并返回应答通道;
+// cancel 撤销本次待答(幂等)。融合场景(Fusion 广播)与 Web 共用同一确认。
 func (a *App) Present(_ context.Context, prompt string) (<-chan bool, func(), error) {
 	ch := make(chan bool, 1)
 	a.pendMu.Lock()

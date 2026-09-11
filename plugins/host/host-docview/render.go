@@ -1,4 +1,4 @@
-// 块模型 → 行号化 Markdown(headless CLI + 模型工具 + IM 文本降级共用)。
+// 块模型 → 行号化 Markdown(headless CLI + 模型工具共用)。
 // 单一实现避免三端各写一套文本渲染;呈现端(TUI/Web)不走这里,直接读块模型。
 package hostdocview
 

@@ -123,9 +123,9 @@ func TestObservedQuestionErrorAndPassthrough(t *testing.T) {
 
 func TestInteractionEventAccessorsAndSummary(t *testing.T) {
 	// 值/指针兼容;nil 指针与无关载荷返回 false
-	qe := QuestionEvent{Question: Question{ID: "a"}, Channel: "im-qq"}
+	qe := QuestionEvent{Question: Question{ID: "a"}, Channel: "cli"}
 	for _, in := range []any{qe, &qe} {
-		if got, ok := QuestionEventOf(in); !ok || got.Channel != "im-qq" {
+		if got, ok := QuestionEventOf(in); !ok || got.Channel != "cli" {
 			t.Fatalf("QuestionEventOf(%T) 异常", in)
 		}
 	}

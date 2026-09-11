@@ -78,7 +78,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	}
 	// 确认服务注册到宿主(policy-guard 经此弹层;未装配时安全默认拒绝)。
 	// P3 融合:已装配 host-confirm-fusion(提供 ctx.confirmFusion)→ 注册为呈现者
-	// (与 IM 等渠道并存同卡),不再 Provide ctx.confirm;未装配 = 单 web profile 自提供。
+	// (与其它渠道并存同卡),不再 Provide ctx.confirm;未装配 = 单 web profile 自提供。
 	var fusionReg sdk.Disposer = func() {}
 	var questionReg sdk.Disposer = func() {}
 	var fusion sdk.ConfirmFusion

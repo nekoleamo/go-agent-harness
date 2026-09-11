@@ -1,4 +1,4 @@
-// 文档预览契约(D 组文档预览线 D0):一个文档模型 + 四个呈现器(TUI/Web/headless/IM)。
+// 文档预览契约(D 组文档预览线 D0):一个文档模型 + 三个呈现器(TUI/Web/headless)。
 //
 // 设计纪律(见 docs/DOC_PREVIEW_PLAN.md §4.2):
 //   - 本文件只声明接口与数据结构,零实现、零第三方依赖;
@@ -132,7 +132,7 @@ type DocView struct {
 }
 
 // DocRaster 光栅化结果(D6-1a;外部 pdftoppm 优先,RST-1)。
-// Data 为 PNG 字节(单页;上限由实现方预算约束),供 Web 端点 / IM 图片回推 / CLI 使用。
+// Data 为 PNG 字节(单页;上限由实现方预算约束),供 Web 端点 / CLI 使用。
 type DocRaster struct {
 	Path  string `json:"path"`
 	Page  int    `json:"page"` // 1-based
@@ -143,7 +143,7 @@ type DocRaster struct {
 	Mime  string `json:"mime,omitempty"` // image/png
 	Data  []byte `json:"-"`
 	// CachePath 宿主侧光栅产物路径($GAH_HOME/cache/doc/raster/…;不进 JSON)。
-	// 供宿主工具登记为出站产物(IM 图片回推,RST-2);不暴露给模型/前端。
+	// 宿主侧产物,不进模型输入/前端 JSON。
 	CachePath string `json:"-"`
 }
 
@@ -168,7 +168,7 @@ type DocRequest struct {
 	Pages         []int  `json:"pages,omitempty"`         // 显式页集(空 = 全部)
 	Sheet         int    `json:"sheet,omitempty"`         // xlsx 工作表(0 = 首表)
 	NoAssets      bool   `json:"noAssets,omitempty"`      // 只取结构,不抽内嵌资产
-	Strict        bool   `json:"strict,omitempty"`        // 严格路径策略(Web/IM 端;根集合收窄 + deny-list)
+	Strict        bool   `json:"strict,omitempty"`        // 严格路径策略(Web 端;根集合收窄 + deny-list)
 }
 
 // DocLine 行号化文本行(模型工具与 CLI 共用)。
@@ -184,7 +184,7 @@ type DocPDFFacts struct {
 	PagesNeedingOCR []int  `json:"pagesNeedingOcr,omitempty"`
 }
 
-// DocText 行号化 Markdown 文本(模型/IM/CLI 共用;预算分页)。
+// DocText 行号化 Markdown 文本(模型/CLI 共用;预算分页)。
 type DocText struct {
 	Path             string       `json:"path"`
 	Format           DocFormat    `json:"format"`
@@ -222,13 +222,13 @@ type DocTree struct {
 
 // DocService 文档预览服务(ctx.doc,由 host-docview 提供)。
 // 所有路径经统一 resolver(沙箱 + 逃逸校验 + deny-list);预算超限写 Truncated/Warnings,绝不静默。
-// 每个方法都在 DocRequest 中携带路径与 Strict(Web/IM 端更严的路径策略)。
+// 每个方法都在 DocRequest 中携带路径与 Strict(Web 端更严的路径策略)。
 type DocService interface {
 	// Detect 判定格式(仅扩展名 + %PDF- 魔数特例;未知扩展名时才读头部按 UTF-8 合法性兜底)。
 	Detect(ctx context.Context, req DocRequest) (DocFormat, error)
 	// Preview 富预览(结构化块模型 + 资产元数据)。
 	Preview(ctx context.Context, req DocRequest) (*DocView, error)
-	// Text 行号化 Markdown(模型工具/IM/CLI 用;Offset/Limit 分页)。
+	// Text 行号化 Markdown(模型工具/CLI 用;Offset/Limit 分页)。
 	Text(ctx context.Context, req DocRequest) (*DocText, error)
 	// Asset 取回内嵌资产(docx/pptx 的 media);mime 由实现给出。
 	Asset(ctx context.Context, req DocRequest, assetID string) (io.ReadCloser, string, error)
@@ -236,6 +236,6 @@ type DocService interface {
 	Raw(ctx context.Context, req DocRequest) (io.ReadSeekCloser, string, error)
 	// List 有界目录列举(工作台文件树;depth 1–4,条目数封顶)。
 	List(ctx context.Context, req DocRequest, depth int) (*DocTree, error)
-	// Render 把 markdown 文本直接转为块模型(会话流 md 渲染 / IM 降级;不触碰文件系统)。
+	// Render 把 markdown 文本直接转为块模型(会话流 md 渲染;不触碰文件系统)。
 	Render(ctx context.Context, text string, maxBlocks int) (*DocView, error)
 }

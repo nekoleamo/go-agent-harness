@@ -1,6 +1,6 @@
 // 统一路径解析器(DOC_PREVIEW_PLAN §8「路径」):相对路径锚定当前会话 workspace 根,
 // 绝对路径经 sdk.Sandbox 校验;realpath 归一后做前缀归属校验(防 symlink/`..` 逃逸);
-// Web/IM 端(strict)进一步收窄为 [workspace ∪ $GAH_HOME/attachments] 并叠加密钥 deny-list。
+// Web 端(strict)进一步收窄为 [workspace ∪ $GAH_HOME/attachments] 并叠加密钥 deny-list。
 package hostdocview
 
 import (
@@ -49,7 +49,7 @@ var denyBase = []string{
 var denyGlob = []string{"*.pem", "*.key", "*.p12", "*.pfx", "*.keystore", "*.jks", "*.ppk", "*_rsa", "*_ed25519"}
 
 // Resolve 解析并校验路径(要求为文件),返回可用的绝对路径(realpath)。
-// strict=true 时启用 Web/IM 端更严策略(根集合收窄 + deny-list + $GAH_HOME/config 拒绝)。
+// strict=true 时启用 Web 端更严策略(根集合收窄 + deny-list + $GAH_HOME/config 拒绝)。
 func (r *Resolver) Resolve(p string, strict bool) (string, error) {
 	return r.resolve(p, strict, false)
 }
@@ -112,7 +112,7 @@ func (r *Resolver) resolve(p string, strict, allowDir bool) (string, error) {
 	return real, nil
 }
 
-// checkStrict Web/IM 端:根集合收窄 + deny-list + $GAH_HOME/config 拒绝。
+// checkStrict Web 端:根集合收窄 + deny-list + $GAH_HOME/config 拒绝。
 func (r *Resolver) checkStrict(real, orig string) error {
 	if err := r.checkDeny(real); err != nil {
 		return err
@@ -131,7 +131,7 @@ func (r *Resolver) checkStrict(real, orig string) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("%w: %s 不在工作区/附件目录内(Web/IM 端不允许任意绝对路径)", sdk.ErrDocDenied, orig)
+	return fmt.Errorf("%w: %s 不在工作区/附件目录内(Web 端不允许任意绝对路径)", sdk.ErrDocDenied, orig)
 }
 
 // checkSandbox TUI/CLI:沿用沙箱三档语义(tool-files 同档)。

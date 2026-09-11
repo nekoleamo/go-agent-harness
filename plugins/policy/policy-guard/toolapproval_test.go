@@ -1,7 +1,7 @@
 // E-A 工具级审批单测:data.approval_tools 名单 + 三档语义(open/smart/strict)+ 未列出工具不受影响。
 //
 // 背景:审批链原先只识别 `shell` 的文本危险模式 → 非 shell 但有远程/破坏副作用的工具
-// (im_send 及同类)没有统一闸门。本文件锁定补齐后的语义与默认零影响。
+// (远程发送类副作用工具)没有统一闸门。本文件锁定补齐后的语义与默认零影响。
 package policyguard
 
 import (
@@ -33,7 +33,7 @@ type remoteSendImpl struct{}
 
 func (r *remoteSendImpl) Definition() sdk.ToolDefinition {
 	return sdk.ToolDefinition{
-		Name: "im_send", Description: "远程发送(测试替身)", InputSchema: map[string]any{"type": "object"},
+		Name: "deploy_tool", Description: "远程发送(测试替身)", InputSchema: map[string]any{"type": "object"},
 	}
 }
 
@@ -94,35 +94,35 @@ func execTool(t *testing.T, c sdk.Ctx, name, args string) *sdk.ToolResult {
 
 func TestToolApprovalGateAllModes(t *testing.T) {
 	const args = `{"to":"alice","text":"部署完成"}`
-	listed := map[string]any{"approval_tools": []any{"im_send"}}
+	listed := map[string]any{"approval_tools": []any{"deploy_tool"}}
 
 	// smart + 用户拒绝 → veto
 	rec := &recordingConfirm{resp: false}
-	c := buildTools(t, rec, map[string]any{"approval": "smart", "approval_tools": []any{"im_send"}})
-	if res := execTool(t, c, "im_send", args); res.Error == "" {
+	c := buildTools(t, rec, map[string]any{"approval": "smart", "approval_tools": []any{"deploy_tool"}})
+	if res := execTool(t, c, "deploy_tool", args); res.Error == "" {
 		t.Fatal("smart 档用户拒绝后应拦截工具调用")
 	}
 	// 确认提示应含工具名与参数摘要(用户据此判断要做什么)
-	if len(rec.prompts) != 1 || !strings.Contains(rec.prompts[0], "工具调用 [im_send") ||
+	if len(rec.prompts) != 1 || !strings.Contains(rec.prompts[0], "工具调用 [deploy_tool") ||
 		!strings.Contains(rec.prompts[0], "部署完成") {
 		t.Fatalf("确认提示应含工具名与参数摘要: %q", rec.prompts)
 	}
 
 	// smart + 用户批准 → 放行
-	c2 := buildTools(t, &recordingConfirm{resp: true}, map[string]any{"approval": "smart", "approval_tools": []any{"im_send"}})
-	if res := execTool(t, c2, "im_send", args); res.Error != "" {
+	c2 := buildTools(t, &recordingConfirm{resp: true}, map[string]any{"approval": "smart", "approval_tools": []any{"deploy_tool"}})
+	if res := execTool(t, c2, "deploy_tool", args); res.Error != "" {
 		t.Fatalf("smart 档批准后应放行,got %+v", res)
 	}
 
 	// strict + 有确认通道也直接拒绝
-	c3 := buildTools(t, &recordingConfirm{resp: true}, map[string]any{"approval": "strict", "approval_tools": []any{"im_send"}})
-	if res := execTool(t, c3, "im_send", args); res.Error == "" || !strings.Contains(res.Error, "严格档") {
+	c3 := buildTools(t, &recordingConfirm{resp: true}, map[string]any{"approval": "strict", "approval_tools": []any{"deploy_tool"}})
+	if res := execTool(t, c3, "deploy_tool", args); res.Error == "" || !strings.Contains(res.Error, "严格档") {
 		t.Fatalf("strict 档应直接拒绝: %+v", res)
 	}
 
 	// open + 用户拒绝也放行(开放档语义)
-	c4 := buildTools(t, &recordingConfirm{resp: false}, map[string]any{"approval": "open", "approval_tools": []any{"im_send"}})
-	if res := execTool(t, c4, "im_send", args); res.Error != "" {
+	c4 := buildTools(t, &recordingConfirm{resp: false}, map[string]any{"approval": "open", "approval_tools": []any{"deploy_tool"}})
+	if res := execTool(t, c4, "deploy_tool", args); res.Error != "" {
 		t.Fatalf("open 档应放行,got %+v", res)
 	}
 
@@ -132,7 +132,7 @@ func TestToolApprovalGateAllModes(t *testing.T) {
 		t.Fatal(err)
 	}
 	ap.SetMode(sdk.ApprovalOpen)
-	if res := execTool(t, c3, "im_send", args); res.Error != "" {
+	if res := execTool(t, c3, "deploy_tool", args); res.Error != "" {
 		t.Fatalf("切 open 后应放行,got %+v", res)
 	}
 	_ = listed
@@ -141,7 +141,7 @@ func TestToolApprovalGateAllModes(t *testing.T) {
 func TestToolApprovalDefaultOffAndUnlisted(t *testing.T) {
 	// 默认(无 data / 空名单):任意工具不受工具级审批影响
 	c := buildTools(t, nil, nil)
-	if res := execTool(t, c, "im_send", `{}`); res.Error != "" {
+	if res := execTool(t, c, "deploy_tool", `{}`); res.Error != "" {
 		t.Fatalf("默认名单为空时不应拦截: %+v", res)
 	}
 	var ap sdk.ApprovalService
@@ -150,7 +150,7 @@ func TestToolApprovalDefaultOffAndUnlisted(t *testing.T) {
 	}
 	// 名单只对列出的工具生效
 	c2 := buildTools(t, nil, map[string]any{"approval_tools": []any{"other_tool"}})
-	if res := execTool(t, c2, "im_send", `{}`); res.Error != "" {
+	if res := execTool(t, c2, "deploy_tool", `{}`); res.Error != "" {
 		t.Fatalf("未列出工具不应拦截: %+v", res)
 	}
 	// shell 危险模式与工具名单相互独立:名单含 shell 时普通命令也要审批
@@ -161,8 +161,8 @@ func TestToolApprovalDefaultOffAndUnlisted(t *testing.T) {
 }
 
 func TestToolApprovalNoConfirmChannelDenies(t *testing.T) {
-	c := buildTools(t, nil, map[string]any{"approval_tools": []any{"im_send"}})
-	res := execTool(t, c, "im_send", `{"to":"a"}`)
+	c := buildTools(t, nil, map[string]any{"approval_tools": []any{"deploy_tool"}})
+	res := execTool(t, c, "deploy_tool", `{"to":"a"}`)
 	if res.Error == "" || !strings.Contains(res.Error, "无确认通道") {
 		t.Fatalf("无确认通道应安全拒绝: %+v", res)
 	}
@@ -170,7 +170,7 @@ func TestToolApprovalNoConfirmChannelDenies(t *testing.T) {
 	if err := c.Inject("ctx.approval", &ap); err != nil {
 		t.Fatal(err)
 	}
-	if got := ap.(*ApprovalPolicy).ApprovalTools(); len(got) != 1 || got[0] != "im_send" {
+	if got := ap.(*ApprovalPolicy).ApprovalTools(); len(got) != 1 || got[0] != "deploy_tool" {
 		t.Fatalf("名单快照异常: %+v", got)
 	}
 	if ap.(*ApprovalPolicy).RequiresToolApproval("") {

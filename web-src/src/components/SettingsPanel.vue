@@ -2,10 +2,10 @@
 // 可视化设置抽屉(状态栏 ⚙ 入口;App 持有 open)。
 // 分组:模型/推理(thinking·sandbox)/历史与压缩/Provider/插件与指令。
 // 破坏性动作(删 provider、卸载插件、压缩)经全局确认条(askConfirm)。
-import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, inject, onMounted, ref, watch } from 'vue'
 import { api } from '../api'
 import { settingSections } from '../registry'
-import type { AskConfirm, IMChannelStatus, IMLoginQR, IMLoginState, PluginInfo, ProviderInfo, ProviderModelGroup, StateView } from '../types'
+import type { AskConfirm, PluginInfo, ProviderInfo, ProviderModelGroup, StateView } from '../types'
 
 const props = defineProps<{
   open: boolean
@@ -49,7 +49,6 @@ async function load(): Promise<void> {
     // 模型聚合/插件/provider 任一失败降级:非核心(如未装配 MultiProviderService → 501)
     const [m, pl, pr] = await Promise.allSettled([api.models(), api.plugins(), api.providers()])
     await loadBackups() // M18 备份列表(未装配降级静默)
-    await loadIM() // P3 IM 通道状态(未装配降级静默)
     if (m.status === 'fulfilled') models.value = m.value.providers ?? []
     if (pl.status === 'fulfilled') plugins.value = pl.value ?? []
     if (pr.status === 'fulfilled') providers.value = pr.value ?? []
@@ -124,70 +123,7 @@ async function applyCtl(body: { thinking?: string; sandbox?: string; approval?: 
 
 // —— 数据备份(M18) ——
 const backups = ref<{ name: string; size: number; time: number }[]>([])
-const imCh = ref<IMChannelStatus[]>([])
-// 扫码登录(微信):二维码图 + 进度轮询
-const imQR = ref<string>('')
-const imLogin = ref<IMLoginState | null>(null)
-let imTimer: number | undefined
-
-async function startIMLogin(): Promise<void> {
-  imQR.value = ''
-  imLogin.value = { phase: 'pending', detail: '正在获取二维码…' }
-  try {
-    const r: IMLoginQR = await api.imLoginStart()
-    imQR.value = r.png ?? ''
-    imLogin.value = { phase: 'pending', detail: '请用微信扫描二维码并在手机确认(5 分钟内)' }
-    pollIMLogin()
-  } catch (e) {
-    imLogin.value = { phase: 'failed', error: (e as Error).message }
-  }
-}
-
-function pollIMLogin(): void {
-  if (imTimer) clearInterval(imTimer)
-  imTimer = window.setInterval(async () => {
-    try {
-      const st = await api.imLoginState()
-      if (st.phase === 'done') {
-        if (imTimer) clearInterval(imTimer)
-        imLogin.value = { phase: 'done', detail: st.detail || '登录成功' }
-        imQR.value = ''
-        await loadIM()
-      } else if (st.phase === 'failed') {
-        if (imTimer) clearInterval(imTimer)
-        imLogin.value = { phase: 'failed', error: st.error || '登录失败' }
-      } else {
-        imLogin.value = st
-      }
-    } catch {
-      if (imTimer) clearInterval(imTimer)
-    }
-  }, 2000)
-}
-
-onUnmounted(() => {
-  if (imTimer) clearInterval(imTimer)
-})
 const backupMsg = ref('')
-async function loadIM(): Promise<void> {
-  try {
-    imCh.value = (await api.imChannels()) ?? []
-  } catch {
-    imCh.value = [] // 未装配(无 ui-im-*):隐藏 IM 通道区
-  }
-}
-function stateLabel(st: string): string {
-  switch (st) {
-    case 'online':
-      return '在线'
-    case 'running':
-      return '运行中'
-    case 'configuring':
-      return '待配置'
-    default:
-      return '离线'
-  }
-}
 async function loadBackups(): Promise<void> {
   try {
     backups.value = (await api.backups()) ?? [] // ?? []:后端契约空数组,兜底防 null(渲染 .length 安全)
@@ -465,34 +401,6 @@ watch(
             <button class="ghost danger-text" :disabled="busy" @click="compactNow">压缩当前会话</button>
           </div>
           <p class="dim">压缩将最旧内容折叠为摘要(节省上下文),仅影响后续回合。</p>
-        </section>
-
-        <!-- IM 通道(P3 三端融合) -->
-        <section class="sec" v-if="imCh.length">
-          <h3 class="h">IM 通道</h3>
-          <div v-for="ch in imCh" :key="ch.channel" class="prow">
-            <div class="grow">
-              <div class="lab">
-                <span class="cap">{{ ch.channel === 'qq' ? 'QQ 机器人' : '微信 iLink' }}</span>
-                <span class="st-tag" :class="ch.state">{{ stateLabel(ch.state) }}</span>
-              </div>
-              <div class="dim mono small" v-if="ch.detail">{{ ch.detail }}</div>
-              <div class="dim small" v-if="ch.error">⚠ {{ ch.error }}</div>
-            </div>
-            <div class="dim small nowrap">授权 {{ ch.authorized }}</div>
-          </div>
-          <div v-if="imCh.some((x) => x.channel === 'wechat')" class="row acts">
-            <button class="ghost" :disabled="imLogin?.phase === 'pending'" @click="startIMLogin">
-              {{ imLogin?.phase === 'pending' ? '登录中…' : '微信扫码登录 / 换号' }}
-            </button>
-          </div>
-          <div v-if="imQR" class="qr-wrap">
-            <img class="qr" :src="imQR" alt="微信登录二维码" />
-          </div>
-          <p v-if="imLogin" class="dim small">
-            {{ imLogin.phase === 'failed' ? '⚠ ' + (imLogin.error || '登录失败') : imLogin.detail }}
-          </p>
-          <p class="dim">配置:QQ 用 <code>/qq login &lt;AppID&gt; &lt;AppSecret&gt;</code>;微信用 <code>/wechat login</code>(终端二维码,直显可扫)。融合 profile 下确认请求同时在 QQ/微信与本站弹层呈现。</p>
         </section>
 
         <!-- Provider -->

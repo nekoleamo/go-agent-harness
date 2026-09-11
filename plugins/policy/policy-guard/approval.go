@@ -18,7 +18,7 @@ var dangerousPatterns = []struct {
 	name string
 	re   *regexp.Regexp
 }{
-	// 删除操作全形态(IM 真机反馈:rmdir/rm -f/rm -v 先后漏网 → 统一 rm/rmdir/unlink 全匹配;
+	// 删除操作全形态(真机反馈:rmdir/rm -f/rm -v 先后漏网 → 统一 rm/rmdir/unlink 全匹配;
 	// 文本级启发,命令文本含删除词的会保守触发确认,可拒绝)。
 	{"删除操作", regexp.MustCompile(`\brm\b|\brmdir\b|\bunlink\b`)},
 	// 删除增强:shred/truncate(覆写/清空)、find -delete(批量删)。
@@ -118,7 +118,7 @@ func (p *ApprovalPolicy) decide(ctx context.Context, confirm sdk.ConfirmService,
 	}
 }
 
-// toolArgPreviewRunes 工具参数摘要的字符上限(确认弹层/IM 文本均需短)。
+// toolArgPreviewRunes 工具参数摘要的字符上限(确认弹层文本需短)。
 const toolArgPreviewRunes = 120
 
 // argPreview 参数摘要:压空字符、去首尾、限长(超限截断带省略号)。

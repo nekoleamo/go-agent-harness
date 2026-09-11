@@ -27,9 +27,7 @@ const (
 	FrameQuestion = "question"
 	// FrameCommand 命令执行结果(载荷 *CommandResult)。
 	FrameCommand = "command"
-	// FrameIMConnect IM 连接相位变化(E 组 E0:im/connect;载荷 sdk.IMConnectStatus,
 	// 前端据此更新连接卡,取代 2s 轮询)。
-	FrameIMConnect = "imconnect"
 	// FrameDoc 文档预览意图(D 组 D5:模型 doc_open 工具 / `/preview` 命令发出 doc/open;
 	// 载荷 sdk.DocOpenEvent —— 前端打开文档面板并定位文件)。
 	FrameDoc = "doc"
@@ -91,16 +89,6 @@ func (h *EventHub) Subscribe(c sdk.Ctx, sessions sdk.SessionLog) (disposer sdk.D
 			return nil
 		}
 		h.push(se)
-		return nil
-	})
-	add(sdk.EventIMConnect, func(_ context.Context, ev *sdk.Event) error {
-		// IM 连接相位(E0):广播给浏览器(二维码 PNG 由 web 层补),前端零轮询
-		switch st := ev.Payload.(type) {
-		case sdk.IMConnectStatus:
-			h.Push(Frame{Type: FrameIMConnect, Payload: st})
-		case *sdk.IMConnectStatus:
-			h.Push(Frame{Type: FrameIMConnect, Payload: st})
-		}
 		return nil
 	})
 	add(sdk.EventDocOpen, func(_ context.Context, ev *sdk.Event) error {

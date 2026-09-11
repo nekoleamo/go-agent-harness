@@ -1,5 +1,5 @@
 // REST 客户端(上行)+ 工具函数。核心交互纯 REST,不绕模板渲染。
-import type { AttachmentView, CommandOptionsResp, CommandView, DocTree, DocView, GuidesResp, IMChannelStatus, IMConnectSpec, IMConnectStatus, IMGroupsResp, IMLoginQR, IMLoginState, Job, ModelsAllResp, PluginInfo, ProviderInfo, SessionInfo, StateView, WorkspaceInfo } from './types'
+import type { AttachmentView, CommandOptionsResp, CommandView, DocTree, DocView, Job, ModelsAllResp, PluginInfo, ProviderInfo, SessionInfo, StateView, WorkspaceInfo } from './types'
 
 const BASE = ''
 const json = {
@@ -76,44 +76,7 @@ export const api = {
   control(body: { model?: string; thinking?: string; sandbox?: string; approval?: string; workspace?: string }): Promise<void> {
     return req('/api/control', { method: 'POST', headers: json, body: JSON.stringify(body) })
   },
-  // —— IM 通道状态(P3 三端融合;未装配 503) ——
-  imChannels(): Promise<IMChannelStatus[]> {
-    return req('/api/im/channels')
-  },
-  // 面板扫码登录(P3;渠道不支持则 503)
-  imLoginStart(): Promise<IMLoginQR> {
-    return req('/api/im/login', { method: 'POST', headers: json, body: '{}' })
-  },
-  imLoginState(): Promise<IMLoginState> {
-    return req('/api/im/login/state')
-  },
-  // —— IM 连接(E0:统一扫码/表单契约;未装配 503) ——
-  imConnectSpec(): Promise<IMConnectSpec> {
-    return req('/api/im/connect/spec')
-  },
-  imConnectStart(): Promise<IMConnectStatus> {
-    return req('/api/im/connect/start', { method: 'POST', headers: json, body: '{}' })
-  },
-  imConnectSubmit(values: Record<string, string>): Promise<IMConnectStatus> {
-    return req('/api/im/connect/submit', { method: 'POST', headers: json, body: JSON.stringify({ values }) })
-  },
-  imConnectState(): Promise<IMConnectStatus> {
-    return req('/api/im/connect/state')
-  },
-  // —— 首启引导关闭记录(G-E4-R;宿主共享偏好 gah-state.json) ——
-  guides(): Promise<GuidesResp> {
-    return req('/api/guides')
-  },
-  dismissGuide(id: string): Promise<GuidesResp> {
-    return req('/api/guides', { method: 'POST', headers: json, body: JSON.stringify({ id }) })
-  },
-  // —— IM 群维度授权(G-E5-2:未装配 IMGroupAccessService → 503) ——
-  imGroups(): Promise<IMGroupsResp> {
-    return req('/api/im/groups')
-  },
-  imGroupSet(chatID: string, allow: boolean): Promise<IMGroupsResp> {
-    return req('/api/im/groups', { method: 'POST', headers: json, body: JSON.stringify({ chat_id: chatID, allow }) })
-  },
+
   // —— 整体备份(M18) ——
   backups(): Promise<{ name: string; size: number; time: number }[]> {
     return req('/api/backup')

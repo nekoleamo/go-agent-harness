@@ -32,15 +32,12 @@ import (
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-auto-plan"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-doc"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-files"
-	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-im"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-memory"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-shell"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-subagent"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-todo"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-web"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-workflow"
-	"github.com/nekoleamo/go-agent-harness/plugins/ui/ui-im-qq"
-	"github.com/nekoleamo/go-agent-harness/plugins/ui/ui-im-wechat"
 	"github.com/nekoleamo/go-agent-harness/plugins/ui/ui-tui-app"
 	"github.com/nekoleamo/go-agent-harness/plugins/ui/ui-web-app"
 	"github.com/nekoleamo/go-agent-harness/sdk"
@@ -120,11 +117,6 @@ var All = map[string]Def{
 		// P3 语义交互:ask_user_question 结构化提问(单选/多选/自由文本);
 		// 进程内装配(提问通道 ctx.question 运行期现取,由 host-confirm-fusion 提供)
 		Requires: []string{"ctx.tools"}}, Bundle: "base"},
-	"tool-im": {Factory: func() sdk.Plugin { return &toolim.Plugin{} }, Manifest: &sdk.Manifest{
-		ID: "tool-im", Type: "tool", APIVersion: ">=1.0,<2.0",
-		// G-E5-3:im_send/im_status(向**已授权**IM 目标发消息)。默认不注册(data.enabled);
-		// 目标与控制面经 ctx.imControl 运行期现取(由 ui-im-* Provide);建议接入工具级审批
-		Requires: []string{"ctx.tools"}}, Bundle: "base"},
 	"tool-todo": {Factory: func() sdk.Plugin { return &tooltodo.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "tool-todo", Type: "tool", APIVersion: ">=1.0,<2.0",
 		Requires: []string{"ctx.tools"}}, Bundle: "base", Manage: "external"},
@@ -198,20 +190,9 @@ var All = map[string]Def{
 		Requires: []string{"ctx.agentLoop", "ctx.sessions", "ctx.llm"}}, Bundle: "web"},
 	"host-confirm-fusion": {Factory: func() sdk.Plugin { return &hostconfirmfusion.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "host-confirm-fusion", Type: "host", APIVersion: ">=1.0,<2.0",
-		// P3 三端融合:统一 ctx.confirm(仲裁广播 web/tui/im 呈现者,首答生效);
-		// 装配本插件时 web/im 改为注册呈现者不 Provide,同进程并存不再冲突
+		// 多端融合:统一 ctx.confirm(仲裁广播 web/tui 呈现者,首答生效);
+		// 装配本插件时 web/tui 改为注册呈现者不 Provide,同进程并存不再冲突
 		Provides: []string{"ctx.confirm", "ctx.confirmFusion"}}, Bundle: "confirm-fusion"},
-	"ui-im-wechat": {Factory: func() sdk.Plugin { return &uimwechat.Plugin{} }, Manifest: &sdk.Manifest{
-		ID: "ui-im-wechat", Type: "ui", APIVersion: ">=1.0,<2.0",
-		// ctx.confirm 条件提供(运行时):单 profile 自 Provide;装配 host-confirm-fusion 时
-		// 改为注册呈现者(不声明 Provides——声明级与 fusion 冲突,装配层按声明检测)
-		// ctx.commands:/wechat、/stop、/im 命令注册(拓扑保证 host-commands 先行)
-		Requires: []string{"ctx.agentLoop", "ctx.commands", "ctx.sessions"}}, Bundle: "im-wechat", Manage: "scenario"},
-	"ui-im-qq": {Factory: func() sdk.Plugin { return &uimqq.Plugin{} }, Manifest: &sdk.Manifest{
-		ID: "ui-im-qq", Type: "ui", APIVersion: ">=1.0,<2.0",
-		// ctx.confirm 条件提供(运行时):单 profile 自 Provide;装配 fusion 时注册呈现者
-		// ctx.commands:/qq、/stop、/im 命令注册(拓扑保证 host-commands 先行)
-		Requires: []string{"ctx.agentLoop", "ctx.commands", "ctx.sessions"}}, Bundle: "im-qq", Manage: "scenario"},
 }
 
 // RegisterAll 把 bundle == name 的全部插件注册进 registry(不按 enabled 过滤;过滤在装配层)。

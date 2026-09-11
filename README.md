@@ -92,22 +92,6 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 
 > `--ephemeral` 将全部运行数据(含外部插件目录)放入临时 home,退出即焚,适合 CI 隔离冒烟。
 
-### IM 远程控制(微信 / QQ)
-
-把手机当远程终端:微信 / QQ 消息驱动 Agent 回合,危险操作在手机上审批(`y`/`n`)。
-
-```bash
-./gah im          # 交互终端:终端界面 + 微信通道并存(非 TTY 自动 headless,二维码打到 stderr)
-./gah im-qq       # 同上,QQ 官方 Bot 通道
-./gah im --status [--channel wechat|qq] [--json]   # 连接探活(退出码 0 在线 / 3 未连接 / 4 凭证无效 / 5 未装配)
-```
-
-- **连接方式**:Web/桌面面板「IM 通道」(侧栏徽标显示连接状态)→ **微信**扫码登录(二维码过期**自动重取**,无需重按);**QQ** 填 AppID/AppSecret(**官方无扫码鉴权**)+ 即时校验 + 平台外链引导;密钥不回显(只显示尾号)、不落日志、写盘 0600。
-- **凭证落位**:`$GAH_HOME/config/ilink-wechat.yaml`(微信)/ `qqbot.yaml`(QQ),随 `gah-data/` 整体迁移。
-- **授权默认拒绝**:连接成功 ≠ 任何人可用,须 `/im pair` 配对码或 allowlist(群维度 `/im allowg`)。
-- **可选:让模型主动发消息/发文件**:`tool-im` 提供 `im_send`(文本)/`im_send_file`(工作区内文件,先登记后投递)/`im_status`,**默认不注册**;启用 = 插件条目 `enabled: true` + `data.enabled: true`(并把三个副作用工具加进 `policy-guard` 的 `data.approval_tools` 以获得逐次确认)。目标只能是**已授权**用户/群;文件必须位于当前工作区内且 ≤ `data.media_max_mb`(默认 20MB)。**微信出站文件为 beta**(契约来自逆向整理,真机核对后转正):需对方先发过消息(`context_token`,微信无主动推送);QQ 侧另受被动窗口/主动配额限制。
-- **远程命令**:`/new` `/status` `/sessionlist` `/session` `/history` `/stop` `/bg` 等;长回合自动转后台并回推结果。
-
 ### 使用真实大模型
 
 ```bash
@@ -207,7 +191,6 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `subagent` | 子代理委派(delegate/spawn/agents/agent_status/agent_kill/send_message/fork;独立上下文 ReAct,后台带句柄) |
 | `list_skills` / `read_skill` | 技能索引 / 按需加载 SKILL.md(项目 `.gah/skills/`、`$GAH_HOME/skills/`) |
 | `mcp_<server>_<工具>` | MCP 桥工具(GAH_MCP_COMMAND 单 / GAH_MCP_COMMANDS 多 server,见「MCP 接入」) |
-| `im_send` / `im_send_file` / `im_send_page` / `im_status` | **默认关闭**:向**已授权**的 IM 用户/群发消息、发**工作区内文件**(先登记后投递,大小上限 `data.media_max_mb` 默认 20MB)、把 **PDF 页渲染成图片**发送(需 `data.external_raster`(本机 poppler)或 `data.selfcontained_raster`(内置 pdfium.wasm 兜底))与查询可控状态;启用需 `tool-im` 的 `enabled: true` + `data.enabled: true`,并把 `im_send`/`im_send_file`/`im_send_page` 加入 `policy-guard` 的 `data.approval_tools`(smart 档逐次确认)。**出站文件**:QQ = 官方契约(已交付);微信 = iLink 三段式上传(**beta**,需对方先发过消息以取得 `context_token`;真机核对后转正) |
 
 ## 六、Web 使用(设置面板/REST)
 
@@ -242,9 +225,6 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `POST /api/attachments` + `GET /attachments/...` | 附件上传(20MB/类型白名单)/ 静态预览 |
 | `POST /api/reload` | 指令文件热更 |
 | `POST /api/shutdown` | 优雅停机(→ system/shutdown → DisposeAll 全回收;桌面壳/运维复用) |
-| `GET /api/guides`、`POST /api/guides` | 首启引导关闭记录(桌面壳 `?shell=desktop` 首启提示 IM 连接;「不再提示」落宿主共享偏好) |
-| `GET /api/im/connect/spec`、`POST /api/im/connect/start`、`POST /api/im/connect/submit`、`GET /api/im/connect/state` | IM 连接:方式声明(扫码/表单)/ 发起 / 提交表单 / 状态(相位变化另有 `im/connect` SSE 事件推送) |
-| `GET /api/im/groups`、`POST /api/im/groups` | IM 群维度授权:群列表(已授权 ∪ 最近活动,含 last-seen 与长期无活动标记)/ 授权或撤销(`{chat_id, allow}`;未知群撤销 422) |
 | `GET /api/ui-plugins` + `/ui-plugins/` | UI 插件聚合视图 / 静态托管 |
 | `GET /api/doc/preview` `raw` `asset` `tree` `html`、`POST /api/doc/render` | 文档预览(块模型 JSON)/ 原生字节(Range,`dl=1` 下载)/ 内嵌资产(MIME 白名单)/ 文件树 / HTML 沙箱(CSP)/ markdown 文本→块模型 |
 

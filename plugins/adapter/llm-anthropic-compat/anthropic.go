@@ -99,8 +99,8 @@ type wireToolResult struct {
 
 // wireImage 图片视觉块(附件一期):base64 source。
 type wireImage struct {
-	Type   string            `json:"type"`
-	Source wireImageSource   `json:"source"`
+	Type   string          `json:"type"`
+	Source wireImageSource `json:"source"`
 }
 
 type wireImageSource struct {

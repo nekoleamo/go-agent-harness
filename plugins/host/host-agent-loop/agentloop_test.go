@@ -144,7 +144,7 @@ func (b *blockLLM) Complete(ctx context.Context, _ *sdk.LLMRequest, _ func(sdk.L
 }
 
 // TestTurnControlCancel 回合取消走 ctx.turnControl:运行中 Running、Cancel 后回合
-// 以 cancelled 结束、注销后非 Running(TUI Esc/Web cancel/IM /stop 共用入口)。
+// 以 cancelled 结束、注销后非 Running(TUI Esc/Web cancel 共用入口)。
 func TestTurnControlCancel(t *testing.T) {
 	e := buildEnv(t, `[{"text":"x","finish":"stop"}]`)
 	var tci sdk.TurnControl

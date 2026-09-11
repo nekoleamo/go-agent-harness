@@ -154,7 +154,7 @@ func TestInteractionResolvedFrames(t *testing.T) {
 	c.fire(sdk.EventQuestionResolved, &sdk.QuestionEvent{
 		Question: sdk.Question{ID: "q-1"},
 		Answer:   sdk.QuestionAnswer{Values: []string{"prod"}},
-		Resolved: true, Channel: "im-qq",
+		Resolved: true, Channel: "web",
 	})
 	select {
 	case f := <-ch:

@@ -1494,47 +1494,6 @@ func readAll(resp *http.Response) string {
 	return b.String()
 }
 
-// TestIMChannelsEndpoint /api/im/channels:未装配 503;装配 stub 返回通道状态。
-func TestIMChannelsEndpoint(t *testing.T) {
-	s, _ := newTestServer()
-	hs := httptest.NewServer(s.handler())
-	resp, err := http.Get(hs.URL + "/api/im/channels")
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("未装配应 503,得 %d", resp.StatusCode)
-	}
-	hs.Close()
-
-	s.imc = &stubIMChannels{}
-	hs2 := httptest.NewServer(s.handler())
-	defer hs2.Close()
-	resp, err = http.Get(hs2.URL + "/api/im/channels")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	var st []sdk.IMChannelStatus
-	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
-		t.Fatal(err)
-	}
-	if resp.StatusCode != 200 || len(st) != 2 || st[0].Channel != "qq" || st[0].State != "online" || st[0].Authorized != 3 {
-		t.Fatalf("通道状态不符: %+v", st)
-	}
-}
-
-// stubIMChannels sdk.IMChannelService stub(状态端点测试)。
-type stubIMChannels struct{}
-
-func (stubIMChannels) Status() []sdk.IMChannelStatus {
-	return []sdk.IMChannelStatus{
-		{Channel: "qq", State: "online", Detail: "qq: 已配置(app-123) 网关=在线 已授权=3", Authorized: 3},
-		{Channel: "wechat", State: "configuring", Detail: "wechat: 未登录", Error: "未登录(执行 /wechat login)"},
-	}
-}
-
 // TestQuestionEndpoint POST /api/question:作答回传(未知 id 也 200 幂等)。
 func TestQuestionEndpoint(t *testing.T) {
 	s, _ := newTestServer()
@@ -1594,7 +1553,7 @@ func TestCommandOptionsEndpoint(t *testing.T) {
 	s, _ := newTestServer()
 	cmds := newStubCmds()
 	_, err := cmds.Register(sdk.CommandSpec{
-		Name: "qq", Usage: "/qq status|login|env", Desc: "逐级测试",
+		Name: "demo", Usage: "/demo status|login|env", Desc: "逐级测试",
 		Run: func([]string) (string, error) { return "", nil },
 		Args: []sdk.ArgLevel{
 			{Options: func([]string) []sdk.Option {
@@ -1650,19 +1609,19 @@ func TestCommandOptionsEndpoint(t *testing.T) {
 	}
 
 	// 一级:命令自身声明候选(selected 为空)
-	if code, out := post("qq", `{"picked":[]}`); code != 200 || out.Level != 1 || len(out.Items) != 2 || out.Done {
+	if code, out := post("demo", `{"picked":[]}`); code != 200 || out.Level != 1 || len(out.Items) != 2 || out.Done {
 		t.Fatalf("一级应返回 2 个候选: code=%d %+v", code, out)
 	}
 	// 二级 env → 枚举 official/sandbox
-	if _, out := post("qq", `{"picked":["env"]}`); out.Level != 2 || len(out.Items) != 2 || out.Items[1].Value != "official" {
+	if _, out := post("demo", `{"picked":["env"]}`); out.Level != 2 || len(out.Items) != 2 || out.Items[1].Value != "official" {
 		t.Fatalf("env 二级候选不符: %+v", out)
 	}
 	// 二级 login → 自由参数提示(无枚举)
-	if _, out := post("qq", `{"picked":["login"]}`); len(out.Items) != 0 || len(out.FreeArgs) != 2 || out.FreeArgs[0] != "AppID" || out.Done {
+	if _, out := post("demo", `{"picked":["login"]}`); len(out.Items) != 0 || len(out.FreeArgs) != 2 || out.FreeArgs[0] != "AppID" || out.Done {
 		t.Fatalf("login 应返回自由参数提示: %+v", out)
 	}
 	// 越界(已到末级)→ done(前端不再提示,可直接执行)
-	if _, out := post("qq", `{"picked":["env","sandbox"]}`); !out.Done || len(out.Items) != 0 {
+	if _, out := post("demo", `{"picked":["env","sandbox"]}`); !out.Done || len(out.Items) != 0 {
 		t.Fatalf("末级应 done: %+v", out)
 	}
 	// 无参数级命令 → done

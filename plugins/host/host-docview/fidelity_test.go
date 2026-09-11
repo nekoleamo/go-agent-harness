@@ -121,7 +121,7 @@ func TestFidelityCorpus(t *testing.T) {
 			t.Logf("REPORT warn file=%s %s", rel, w)
 		}
 
-		// 文本投影自洽(CLI/IM/工具共用路径不得报错且行数一致)
+		// 文本投影自洽(CLI/工具共用路径不得报错且行数一致)
 		tx, err := s.Text(context.Background(), sdk.DocRequest{Path: f})
 		if err != nil {
 			t.Fatalf("%s: Text() 不应报错: %v", rel, err)

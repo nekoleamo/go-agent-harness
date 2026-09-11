@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	baseb "github.com/nekoleamo/go-agent-harness/bundles/base"
-	imqqb "github.com/nekoleamo/go-agent-harness/bundles/im-qq"
 	"github.com/nekoleamo/go-agent-harness/core/config"
 	"github.com/nekoleamo/go-agent-harness/core/ctx"
 	"github.com/nekoleamo/go-agent-harness/core/event"
@@ -17,7 +16,7 @@ import (
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
-// buildGuardCtx 装配 base + internal-commands/jobs/backup + im-qq(命令面最全的常规组合;
+// buildGuardCtx 装配 base + internal-commands/jobs/backup(命令面最全的常规组合;
 // 不启动回合,仅注册命令)。
 func buildGuardCtx(t *testing.T) sdk.Ctx {
 	t.Helper()
@@ -41,7 +40,6 @@ func buildGuardCtx(t *testing.T) sdk.Ctx {
 		{ID: "host-backup"},
 		{ID: "llm-mock", Data: map[string]any{"script": []any{map[string]any{"text": "ok", "finish": "stop"}}}},
 		{ID: "host-agent-loop"},
-		{ID: "ui-im-qq", Data: map[string]any{"mode": "allowlist", "base_url": "http://127.0.0.1:1", "token_url": "http://127.0.0.1:1/token"}},
 	})
 	if err := c.Provide("system.registry", reg); err != nil {
 		t.Fatal(err)
@@ -50,9 +48,6 @@ func buildGuardCtx(t *testing.T) sdk.Ctx {
 		t.Fatal(err)
 	}
 	if err := baseb.RegisterAll(reg, tree); err != nil {
-		t.Fatal(err)
-	}
-	if err := imqqb.RegisterAll(reg, tree); err != nil {
 		t.Fatal(err)
 	}
 	if err := reg.StartSubset(c, enabledSetForTest(tree)); err != nil {
@@ -84,7 +79,7 @@ func TestHostCommandsArgLevelsGuard(t *testing.T) {
 	for _, n := range []string{
 		"thinking", "model", "provider", "sandbox", "approval", "plugins",
 		"settings", "export", "compact", "workspace", "session", "reload",
-		"jobs", "backup", "qq", "im", "stop",
+		"jobs", "backup", "stop",
 	} {
 		if !seen[n] {
 			t.Errorf("命令 /%s 未注册(装配缺失?)", n)
@@ -118,16 +113,6 @@ func TestHostCommandsArgLevelsGuard(t *testing.T) {
 		svals[o.Value] = true
 	}
 	must("settings", svals["off"] && svals["unlimited"] && svals["50"], "二级应含 off/unlimited/数字(逐级选条数)")
-	qq := specOf(specs, "qq")
-	qvals := map[string]bool{}
-	for _, o := range qq.Args[1].Options([]string{"qq", "env"}) {
-		qvals[o.Value] = true
-	}
-	must("qq", qvals["official"] && qvals["sandbox"], "env 应出 official/sandbox 枚举")
-	wechat := specOf(specs, "wechat")
-	if wechat.Name != "" {
-		must("wechat", len(wechat.Args) >= 1 && len(wechat.Args[0].Options([]string{wechat.Name})) >= 2, "一级应有 login/status 枚举")
-	}
 }
 
 // specOf 按名取命令(缺省返回零值)。

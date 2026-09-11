@@ -1,5 +1,5 @@
 // Package host-docview(D 组文档预览线,host 插件):把任意格式归一化为 sdk.DocView,
-// 供 TUI / Web(+桌面壳)/ headless(CLI + 模型工具)/ IM 四端渲染同一个模型。
+// 供 TUI / Web(+桌面壳)/ headless(CLI + 模型工具)多端渲染同一个模型。
 //
 // 分层(见 docs/DOC_PREVIEW_PLAN.md §4.1):
 //
@@ -43,7 +43,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	if err := c.Provide("ctx.doc", svc); err != nil {
 		return nil, err
 	}
-	// /preview <路径>:发出 doc/open 意图事件,各端 UI(TUI/Web/IM)订阅后本地打开预览
+	// /preview <路径>:发出 doc/open 意图事件,各端 UI(TUI/Web)订阅后本地打开预览
 	// (命令不解锁任何读写能力,仅表达意图;真实访问仍经各端自己的 resolver 策略)。
 	var cmds sdk.CommandRegistry
 	if err := c.Inject("ctx.commands", &cmds); err != nil {
@@ -63,7 +63,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 				return "", fmt.Errorf("不支持预览的文件类型: %s", filepath.Base(p))
 			}
 			// 非 strict:本步只校验"可识别格式 + 路径可达"(TUI/CLI 语境);
-			// 各端真正打开时再按自身策略(Web/IM 经 /api/doc/* 的 strict 解析器)收窄根集合。
+			// 各端真正打开时再按自身策略(Web 经 /api/doc/* 的 strict 解析器)收窄根集合。
 			if _, err := svc.Detect(context.Background(), sdk.DocRequest{Path: p}); err != nil {
 				return "", err
 			}
@@ -334,7 +334,7 @@ func (s *Service) Preview(ctx context.Context, req sdk.DocRequest) (*sdk.DocView
 	return v, nil
 }
 
-// Text 行号化 Markdown(模型工具/IM/CLI)。
+// Text 行号化 Markdown(模型工具/CLI)。
 func (s *Service) Text(ctx context.Context, req sdk.DocRequest) (*sdk.DocText, error) {
 	v, err := s.Preview(ctx, req)
 	if err != nil {
