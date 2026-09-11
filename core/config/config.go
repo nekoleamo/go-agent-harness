@@ -9,6 +9,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"time"
@@ -211,11 +212,12 @@ func LoadLatestBackup(configDir string) (*Tree, error) {
 	p := filepath.Join(configDir, BackupDir, "config.latest.yaml")
 	raw, err := os.ReadFile(p)
 	if err != nil {
-		return nil, nil // 无备份(首次启动)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil // 无备份(首次启动)
+		}
+		// 备份存在但不可读(权限/EIO):不能当“无备份”,否则自愈路径静默降级。
+		return nil, fmt.Errorf("config: read backup %s: %w", p, err)
 	}
-	var b Patch
-	patch := &b
-	_ = patch
 	type treeShape struct {
 		Entries []Entry `yaml:"entries"`
 	}

@@ -505,15 +505,7 @@ func (s *Store) genID(path string) string {
 func (s *Store) path() (string, error) {
 	root := s.root
 	if root == "" {
-		home := os.Getenv("GAH_HOME")
-		if home == "" {
-			uh, err := os.UserHomeDir()
-			if err != nil {
-				return "", err
-			}
-			home = filepath.Join(uh, ".gah")
-		}
-		root = filepath.Join(home, "todos")
+		root = filepath.Join(sdk.Home(), "todos")
 	}
 	return filepath.Join(root, sdk.ProjectKeyFromCwd()+".jsonl"), nil
 }

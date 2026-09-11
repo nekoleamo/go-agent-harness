@@ -30,7 +30,17 @@ func (s *Server) ApplyPrefs() {
 		}
 	}
 	if p.Sandbox != "" && s.sb != nil {
-		s.sb.SetMode(sdk.SandboxMode(p.Sandbox))
+		switch sdk.SandboxMode(p.Sandbox) {
+		case sdk.SandboxReadOnly, sdk.SandboxWorkspace, sdk.SandboxFullAccess:
+			s.sb.SetMode(sdk.SandboxMode(p.Sandbox))
+		}
+	}
+	// 审批档位同样随偏好恢复(与 /api/control 的写入对称;此前只写不读 → 重启静默回退)
+	if p.Approval != "" && s.ap != nil {
+		switch sdk.ApprovalMode(p.Approval) {
+		case sdk.ApprovalOpen, sdk.ApprovalSmart, sdk.ApprovalStrict:
+			s.ap.SetMode(sdk.ApprovalMode(p.Approval))
+		}
 	}
 	if p.History != nil && s.sessions != nil {
 		s.sessions.SetHistory(*p.History)

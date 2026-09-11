@@ -379,7 +379,9 @@ func TestDocAuthRequired(t *testing.T) {
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("缺 token 应 401,得 %d", resp.StatusCode)
 	}
-	req, _ := http.NewRequest(http.MethodGet, hs.URL+"/api/doc/preview?path=a.md&token=secret", nil)
+	// ?token= 已弃用(会进浏览器历史/访问日志):改 Bearer 头;cookie 路径见 TestAuthCookie
+	req, _ := http.NewRequest(http.MethodGet, hs.URL+"/api/doc/preview?path=a.md", nil)
+	req.Header.Set("Authorization", "Bearer secret")
 	resp2, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)

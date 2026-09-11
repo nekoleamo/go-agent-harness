@@ -75,6 +75,7 @@ func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
 		disposers = append(disposers, d)
 	}
 	return func() {
+		j.Stop() // 先终止在跑任务(卸载即撤销),再注销工具/命令
 		for _, d := range disposers {
 			d()
 		}
@@ -136,6 +137,7 @@ type Jobs struct {
 	mu     sync.Mutex
 	seq    uint64
 	jobs   map[string]*entry
+	closed bool                   // 卸载后拒绝新提交
 	sb     sdk.Sandbox            // 可为 nil(未装配沙箱)
 	order  []string               // ID 顺序(末位最新),历史清理用
 	notify func(sdk.JobDoneEvent) // 终态通知(可 nil;host-jobs 装配时注入 job/done Emit)
@@ -150,6 +152,37 @@ type entry struct {
 
 const keepHistory = 20 // 完成后最多保留的任务数(防内存膨胀)
 
+// maxJobOutput 单任务输出缓冲上限(超长输出丢弃尾部并标记截断,防无限吃内存)。
+const maxJobOutput = 1 << 20 // 1 MiB
+
+// cappedBuffer 限长输出缓冲。
+type cappedBuffer struct {
+	buf       bytes.Buffer
+	truncated bool
+}
+
+func (b *cappedBuffer) Write(p []byte) (int, error) {
+	remain := maxJobOutput - b.buf.Len()
+	if remain <= 0 {
+		b.truncated = true
+		return len(p), nil // 丢弃但报写入成功(不让子进程因 EPIPE 变更行为)
+	}
+	if len(p) > remain {
+		_, _ = b.buf.Write(p[:remain])
+		b.truncated = true
+		return len(p), nil
+	}
+	return b.buf.Write(p)
+}
+
+func (b *cappedBuffer) String() string {
+	s := b.buf.String()
+	if b.truncated {
+		s += fmt.Sprintf("\n…(输出超 %d 字节已截断)", maxJobOutput)
+	}
+	return s
+}
+
 // New 构造任务服务。
 func New(sb sdk.Sandbox) *Jobs {
 	return &Jobs{jobs: make(map[string]*entry), sb: sb}
@@ -160,6 +193,9 @@ func (j *Jobs) SetNotify(fn func(sdk.JobDoneEvent)) { j.notify = fn }
 
 // Submit 提交 shell 命令后台执行(读沙箱模式下拒绝)。
 func (j *Jobs) Submit(cmdline string) (string, error) {
+	if err := j.accept(); err != nil {
+		return "", err
+	}
 	if err := j.checkExec(); err != nil {
 		return "", err
 	}
@@ -173,7 +209,7 @@ func (j *Jobs) Submit(cmdline string) (string, error) {
 		cmd := exec.Command("/bin/sh", "-c", cmdline)
 		setupCmdGroup(cmd)              // 独立进程组(组杀可连带 sh -c 子进程,防孤儿)
 		cmd.Env = sdk.SanitizedEnv(nil) // 凭据隔离:滤除 *_API_KEY/*_TOKEN/*_SECRET
-		var buf bytes.Buffer
+		var buf cappedBuffer
 		cmd.Stdout = &buf
 		cmd.Stderr = &buf
 		if err := cmd.Start(); err != nil {
@@ -198,6 +234,9 @@ func (j *Jobs) Submit(cmdline string) (string, error) {
 
 // Run 注册函数型后台任务(workflow background 对接)。
 func (j *Jobs) Run(fn sdk.JobFunc) (string, error) {
+	if err := j.accept(); err != nil {
+		return "", err
+	}
 	if err := j.checkExec(); err != nil {
 		return "", err
 	}
@@ -280,6 +319,33 @@ func (j *Jobs) checkExec() error {
 		return fmt.Errorf("sandbox: read-only 拒绝提交后台任务")
 	}
 	return nil
+}
+
+// accept 卸载后拒绝新提交(幂等:Stop 后可重复调用)。
+func (j *Jobs) accept() error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.closed {
+		return fmt.Errorf("host-jobs: 服务已卸载,拒绝提交新任务")
+	}
+	return nil
+}
+
+// Stop 取消全部运行中任务并拒绝新提交(插件卸载/宿主退出调用;幂等)。
+// 修复:此前 disposer 为空 → 卸载插件后已提交的后台任务继续跑(且进程组残留)。
+func (j *Jobs) Stop() {
+	j.mu.Lock()
+	j.closed = true
+	var cancels []context.CancelFunc
+	for _, e := range j.jobs {
+		if e.job.State == sdk.JobRunning {
+			cancels = append(cancels, e.cancel)
+		}
+	}
+	j.mu.Unlock()
+	for _, c := range cancels {
+		c() // 命令任务 → 杀进程组;函数任务 → ctx 取消
+	}
 }
 
 // add 注册条目并入队。

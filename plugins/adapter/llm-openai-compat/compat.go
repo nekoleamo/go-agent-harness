@@ -445,8 +445,6 @@ func findCall(calls *[]sdk.ToolCall, id string) int {
 	return len(*calls) - 1
 }
 
-func strPtr(s string) *string { return &s }
-
 // wireContent 构造消息 content:含可视觉注入的图片附件时输出结构化数组
 // (text + image_url[data URI]);否则纯文本 string(既有兼容)。
 func wireContent(msg sdk.LLMMessage) any {

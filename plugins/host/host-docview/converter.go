@@ -20,6 +20,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
 const (
@@ -258,6 +260,8 @@ func (c converter) pruneCache() {
 // runExternal 默认执行器:捕获输出,失败时把 stderr/stdout 尾巴带进错误。
 func runExternal(ctx context.Context, bin string, args ...string) error {
 	cmd := exec.CommandContext(ctx, bin, args...)
+	// 凭据隔离:外部转换器(libreoffice/pdftoppm)只需基础运行环境,不继承宿主配置与凭据
+	cmd.Env = sdk.SanitizedChildEnv()
 	var buf strings.Builder
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf

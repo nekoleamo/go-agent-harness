@@ -261,7 +261,8 @@ The data root is **the `gah-data/` sibling of the gah binary (the only one; auto
 | `GAH_PROFILE` / `GAH_NO_TUI` | Default profile / force TUI off (headless/CI) |
 | `GAH_WEB_ADDR` / `GAH_WEB_OPEN` / `GAH_WEB_STATIC` | Web listen address (default 127.0.0.1:2233) / auto-open browser / static dir override (dev HMR) |
 | `GAH_MCP_COMMAND` / `GAH_MCP_COMMANDS` | MCP bridge (single server `name=command` / multi server one per line `name=command args`; tools `mcp_<server>_<tool>`) |
-| `GAH_CB_ADDR` / `GAH_CB_TOKEN` | host-bridge callback channel (external plugins request tools/jobs/fanout from the host; auth token) |
+| `GAH_CB_ADDR` / `GAH_CB_TOKEN` | host-bridge callback channel (external plugins request tools/jobs/fanout from the host; auth token; **never leaked downstream** — `SanitizedEnv` strips it) |
+| `GAH_EXT_ENV_PASS` | Explicit allow-list of env vars passed to external plugin processes (comma-separated): external plugins do **not** inherit host credentials by default (`*_API_KEY`/`*_TOKEN`/`AWS_*`/`GAH_CB_*` are stripped); name the ones a plugin genuinely needs (e.g. `EXA_API_KEY`), or use a config file (recommended: `$GAH_HOME/config/search.yaml`) |
 | `GAH_MCP_SERVE` / `GAH_PLUGIN` / `GAH_VERSION` | External tool-process entry params (serve/load plugin/version announcement; injected when host-bridge launches them) |
 | `DEEPSEEK_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | LLM keys (per-provider prefix routing; or write to provider.yaml via `/provider`) |
 | `EXA_API_KEY` | web_search key (default provider; switch via `data.provider`) |

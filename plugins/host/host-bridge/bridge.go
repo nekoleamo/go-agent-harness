@@ -363,9 +363,35 @@ func (b *Bridge) respawn(path string) {
 
 // startPlugin 启动外部插件进程,返回 rpc client 与 kill 函数(崩溃隔离:死进程快速失败)。
 // 回调通道:宿主地址经 GAH_CB_ADDR 环境变量注入(外部进程 Dial 后请求宿主服务)。
+// externalEnvPass 显式放行的宿主 env 键(GAH_EXT_ENV_PASS,逗号分隔,大小写不敏感):
+// 凭据默认不下传外部插件;个别外部插件确需某凭据时(如 EXA_API_KEY 经 env 而非配置文件),
+// 由用户在 gah-data/env.sh 里点名放行——放行即视为用户明确把该凭据交给外部进程。
+func externalEnvPass() []string {
+	raw, ok := os.LookupEnv("GAH_EXT_ENV_PASS")
+	if !ok || strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var out []string
+	for _, name := range strings.Split(raw, ",") {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if v, ok := os.LookupEnv(name); ok {
+			out = append(out, name+"="+v)
+		}
+	}
+	return out
+}
+
 func startPlugin(bin string, cbAddr, cbToken string) (*rpc.Client, func(), error) {
 	cmd := exec.Command(bin)
-	cmd.Env = append(os.Environ(), "GAH_CB_ADDR="+cbAddr, "GAH_CB_TOKEN="+cbToken)
+	// 凭据隔离:外部插件进程不继承宿主凭据(滤除 *_API_KEY/*_TOKEN/AWS_* 等;GAH_* 宿主配置与
+	// PATH/HOME 等基础键保留),回调通道凭据 GAH_CB_* 仅注入给插件本体,由 sdk.SanitizedEnv 拦在下游。
+	// 确需凭据的插件由用户在 gah-data/env.sh 里经 GAH_EXT_ENV_PASS 显式点名放行。
+	cmd.Env = sdk.SanitizedEnv(os.Environ())
+	cmd.Env = append(cmd.Env, "GAH_CB_ADDR="+cbAddr, "GAH_CB_TOKEN="+cbToken)
+	cmd.Env = append(cmd.Env, externalEnvPass()...)
 	client := plugin.NewClient(&plugin.ClientConfig{
 		HandshakeConfig: handshake,
 		Plugins: map[string]plugin.Plugin{
@@ -416,14 +442,24 @@ func rpcTimeoutOf(ms int64) time.Duration {
 // rpcTimeoutFor 工具级超时覆写(P0-2):定义声明 timeout_ms 则用之,否则全局默认。
 func rpcTimeoutFor(def sdk.ToolDefinition) time.Duration { return rpcTimeoutOf(def.TimeoutMs) }
 
-// rpcCall 带超时的 RPC 调用(工具/命令共用;返回调用错误,连接类判定由调用方负责)。
+// rpcCall 带超时/可取消的 RPC 调用(工具/命令共用;返回调用错误,连接类判定由调用方负责)。
+// 用 net/rpc 异步 Go(自带 done channel)而非另起 goroutine 包同步 Call:
+// 后者在超时路径会把 goroutine 永久阻塞在 channel 上(泄漏到插件进程退出)。
 func rpcCall(cl *rpc.Client, method string, args any, reply any, timeout time.Duration) error {
-	ch := make(chan error, 1)
-	go func() { ch <- cl.Call(method, args, reply) }()
+	if cl == nil {
+		return fmt.Errorf("rpc 调用 %s: 连接不存在", method)
+	}
+	call := cl.Go(method, args, reply, make(chan *rpc.Call, 1))
+	if timeout <= 0 {
+		<-call.Done
+		return call.Error
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 	select {
-	case err := <-ch:
-		return err
-	case <-time.After(timeout):
+	case <-call.Done:
+		return call.Error
+	case <-timer.C:
 		return fmt.Errorf("rpc 调用 %s 超时(>%s)", method, timeout)
 	}
 }
@@ -615,16 +651,8 @@ func isConnErr(err error) bool {
 		strings.Contains(msg, "shut down")
 }
 
-// pluginHome 运行时 home(GAH_HOME 覆盖;默认 ~/.gah,与 boot 一致)。
-func pluginHome() string {
-	if h := os.Getenv("GAH_HOME"); h != "" {
-		return h
-	}
-	if uh, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(uh, ".gah")
-	}
-	return os.TempDir()
-}
+// pluginHome 运行时数据根(GAH_HOME 恒设;空仅嵌入/单测 → TempDir,~/.gah 兜底已弃用)。
+func pluginHome() string { return sdk.Home() }
 
 // randomToken M7:回调通道握手 token(本进程随机,防本机任意进程连回调)。
 func randomToken() string {

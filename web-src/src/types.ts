@@ -2,7 +2,18 @@
 // 契约来源:web/server.go 的 SSE 帧与 REST 响应。
 
 // —— SSE 帧 ——
-export type FrameType = 'session' | 'status' | 'error' | 'confirm' | 'command' | 'question' | 'doc'
+// 与 web/events.go FrameXxx 常量一一对应(新增帧类型必须两处同步;
+// 前端 transport 订阅表同样需要同步,否则新帧静默丢弃)。
+export type FrameType =
+  | 'session'
+  | 'status'
+  | 'error'
+  | 'confirm'
+  | 'command'
+  | 'question'
+  | 'doc'
+  | 'questiondone'
+  | 'confirmdone'
 
 export interface Frame {
   id: number

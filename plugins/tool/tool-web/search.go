@@ -168,6 +168,7 @@ func NewSearchTool(provider SearchProvider) sdk.Tool {
 func (t *SearchTool) Definition() sdk.ToolDefinition {
 	return sdk.ToolDefinition{
 		Name:        "web_search",
+		TimeoutMs:   35_000, // 覆盖 host-bridge 默认 3s 桥超时(http client 30s)
 		Description: "联网搜索:{query(必填), num_results(默认 5,上限 10)};返回标题/URL/摘要列表,需要原文正文时再调 web_fetch。",
 		InputSchema: map[string]any{
 			"type":     "object",

@@ -58,6 +58,7 @@ func (s *ShellTool) Definition() sdk.ToolDefinition {
 	return sdk.ToolDefinition{
 		Name:        "shell",
 		Description: "在用户的 shell 中执行一次命令(输出 stdout/stderr;错误时返回非零退出码信息)。",
+		TimeoutMs:   65_000, // 覆盖 host-bridge 默认 3s 桥超时(内部超时 60s 后返回结构化结果)
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -100,6 +101,11 @@ func (s *ShellTool) Execute(ctx context.Context, raw string) (any, error) {
 
 	cmd := exec.CommandContext(dctx, "sh", "-c", a.Command)
 	cmd.Env = sdk.SanitizedEnv(os.Environ()) // 凭据隔离:滤除 *_API_KEY/*_TOKEN 等
+	// 后台孙进程(如 `sleep 300 &`)会持有 stdout 管道 → CombinedOutput 永不返回;
+	// 进程组 + WaitDelay 双保险:超时先杀直接子进程,WaitDelay 到点放弃 I/O 等待。
+	setProcessGroup(cmd)
+	cmd.WaitDelay = 3 * time.Second
+	defer killProcessGroup(cmd) // 收尾杀掉组内残留(含后台孙进程)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return map[string]any{

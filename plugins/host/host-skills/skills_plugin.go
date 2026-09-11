@@ -62,16 +62,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 
 // defaultSkillDirs 全局 + 项目技能目录。
 func defaultSkillDirs() []string {
-	var dirs []string
-	home := os.Getenv("GAH_HOME")
-	if home == "" {
-		if uh, err := os.UserHomeDir(); err == nil {
-			home = filepath.Join(uh, ".gah")
-		}
-	}
-	if home != "" {
-		dirs = append(dirs, filepath.Join(home, "skills"))
-	}
+	dirs := []string{filepath.Join(sdk.Home(), "skills")} // GAH_HOME 恒设(空仅嵌入/单测 → TempDir)
 	if wd, err := os.Getwd(); err == nil {
 		dirs = append(dirs, filepath.Join(wd, ".gah", "skills"))
 	}

@@ -56,6 +56,7 @@ type WebTool struct {
 func (t *WebTool) Definition() sdk.ToolDefinition {
 	return sdk.ToolDefinition{
 		Name:        "web_fetch",
+		TimeoutMs:   35_000, // 覆盖 host-bridge 默认 3s 桥超时(http client 30s)
 		Description: "抓取 URL 内容(纯 Go HTTP,无外部依赖):{url};返回状态码与文本/JSON 内容。",
 		InputSchema: map[string]any{
 			"type":     "object",

@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"os/exec"
 	"sync"
 	"time"
@@ -184,6 +185,9 @@ type mcpClient struct {
 
 func spawn(command string, args []string) (*mcpClient, error) {
 	cmd := exec.Command(command, args...)
+	// 凭据隔离:第三方 MCP server 不继承宿主凭据(滤除 *_API_KEY/*_TOKEN/AWS_* 等),
+	// 也不继承 GAH_CB_*(宿主回调地址/token)。需要额外 env 的 server 请经启动命令显式配置。
+	cmd.Env = sdk.SanitizedEnv(os.Environ())
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err

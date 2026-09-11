@@ -90,7 +90,42 @@ func SaveFile(f File) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, raw, 0o600)
+	return writeFileAtomic(path, raw, 0o600)
+}
+
+// writeFileAtomic 同目录临时文件写入 + rename 原子替换(失败清理临时文件)。
+// 目的:读方(适配器启动解析、UI 查看)永不看到半截 YAML。
+func writeFileAtomic(path string, raw []byte, perm os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".provider-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	cleanup := func() { _ = os.Remove(tmpPath) }
+	if _, err := tmp.Write(raw); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return err
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		cleanup()
+		return err
+	}
+	return nil
 }
 
 // Load 活动 provider(旧 reader:adapter resolveConfig / UpdateModel / Unset 等)。

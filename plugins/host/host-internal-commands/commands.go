@@ -315,16 +315,8 @@ func (h *Host) persistPlugin(id string, enabled bool) error {
 	return install.EnsureProfileRef(h.pluginHome(), "patch-runtime.yaml")
 }
 
-// pluginHome 运行时 home(GAH_HOME 覆盖;默认 ~/.gah,与 boot 一致)。
-func (h *Host) pluginHome() string {
-	if hd := os.Getenv("GAH_HOME"); hd != "" {
-		return hd
-	}
-	if uh, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(uh, ".gah")
-	}
-	return os.TempDir()
-}
+// pluginHome 运行时数据根(GAH_HOME 恒设;空仅嵌入/单测 → TempDir,~/.gah 兜底已弃用)。
+func (h *Host) pluginHome() string { return sdk.Home() }
 
 func (h *Host) cmdSettings(args []string) (string, error) {
 	var sessions sdk.SessionLog

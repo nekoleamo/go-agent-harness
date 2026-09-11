@@ -3,6 +3,7 @@ package policyguard
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"sort"
@@ -23,13 +24,23 @@ var dangerousPatterns = []struct {
 	{"删除操作", regexp.MustCompile(`\brm\b|\brmdir\b|\bunlink\b`)},
 	// 删除增强:shred/truncate(覆写/清空)、find -delete(批量删)。
 	{"删除增强(shred/truncate/find -delete)", regexp.MustCompile(`\bshred\b|\btruncate\b|\bfind\b[^\n]*-delete\b`)},
-	// 强制推送(含 --force-with-lease 同属强推变体)。
-	{"强制推送", regexp.MustCompile(`\bgit\s+push.*\s-f\b|\bgit\s+push.*--force\b|\bgit\s+push.*--force-with-lease\b`)},
+	// 强制推送(含 --force-with-lease 同属强推变体;`git -C <repo> push -f`、`env git push --force`
+	// 等带前置参数的形态也命中——不再要求 `git push` 紧邻)。
+	{"强制推送", regexp.MustCompile(`\bgit\b[^\n]*\bpush\b[^\n]*(--force-with-lease|--force|-f\b)`)},
 	// git 破坏性操作:reset --hard(丢工作区)、clean -f(删未跟踪)。
 	{"git 破坏性操作(reset --hard/clean -f)", regexp.MustCompile(`\bgit\s+reset\s+--hard\b|\bgit\s+clean\s+-[a-zA-Z]*f[a-zA-Z]*\b`)},
 	{"磁盘擦写", regexp.MustCompile(`\b(dd|mkfs|fdisk|parted)\b`)},
-	// 权限后门:chmod 含 777(覆盖 -R 777 与参数顺序变体)。
-	{"权限后门(chmod 777)", regexp.MustCompile(`\bchmod\b[^\n]*\b777\b`)},
+	// 权限后门:chmod 任何人可写(777/0777/4777)或 a+rwx/ugo+rwx、setuid/setgid(+s);
+	// 刻意不命中 `chmod 644` / `chmod +x`(常规操作)。
+	{"权限后门(chmod 777)", regexp.MustCompile(`\bchmod\b[^\n]*(\b777\b|\b0777\b|\b[0-7][0-7][0-7]7\b|a\+rwx|ugo\+rwx|\+s\b)`)},
+	// 解释器内删除(非 rm 词形的删除路径)。
+	{"解释器删除(脚本内删除)", regexp.MustCompile(`os\.remove\b|os\.unlink\b|shutil\.rmtree\b|\brmtree\b|\.unlink\(\)|\bRemove-Item\b|\bdel\s+/[fqs]`)},
+	// 下载/编码内容直接管道进 shell(curl|sh、base64 -d | sh 等)。
+	{"管道执行(下载/编码内容进 shell)", regexp.MustCompile(`(\bcurl\b|\bwget\b|base64\s+(-d|--decode))[^\n]*\|\s*(sudo\s+)?(sh|bash|zsh|dash)\b`)},
+	// 覆写系统文件/块设备。
+	{"覆写系统文件或设备", regexp.MustCompile(`>\s*/dev/(sd|disk|nvme)|>\s*/etc/`)},
+	// 持久化后门(计划任务/服务注册/开机自启)。
+	{"持久化后门(cron/服务/自启)", regexp.MustCompile(`\bcrontab\b|/etc/cron|\bsystemctl\s+(enable|mask)\b|\bschtasks\b|LaunchAgents`)},
 	// 特权操作。
 	{"特权操作(sudo/pkexec)", regexp.MustCompile(`\bsudo\b|\bpkexec\b`)},
 }
@@ -58,8 +69,35 @@ func (p *ApprovalPolicy) SetMode(m sdk.ApprovalMode) {
 }
 
 // check 按档处理命中危险操作:open 放行 / smart 弹确认(无通道拒绝) / strict 直接拒绝。
-func (p *ApprovalPolicy) check(ctx context.Context, confirm sdk.ConfirmService, pattern string) error {
-	return p.decide(ctx, confirm, fmt.Sprintf("危险命令 [%s]", pattern))
+// command 为解出的真实命令文本(入确认弹层,避免"看不到命令就批准"的盲批)。
+func (p *ApprovalPolicy) check(ctx context.Context, confirm sdk.ConfirmService, pattern, command string) error {
+	label := fmt.Sprintf("危险命令 [%s]", pattern)
+	if pv := argPreview(command, commandPreviewRunes); pv != "" {
+		label += ": " + pv
+	}
+	return p.decide(ctx, confirm, label)
+}
+
+// commandPreviewRunes 确认弹层里命令文本的字符上限(长命令截断,保弹层可读)。
+const commandPreviewRunes = 200
+
+// shellCommand 从 shell 工具参数 JSON 解出真实命令文本再交给模式匹配:
+// 直接对原始 JSON 匹配会被转义绕过(`\u0072m -rf /` 文本里看不到 rm,
+// 执行侧解码后却是 rm)。解析失败时回落原文(宁可保守匹配,也不放过)。
+func shellCommand(raw string) string {
+	var a struct {
+		Command string `json:"command"`
+		Cmd     string `json:"cmd"`
+	}
+	if err := json.Unmarshal([]byte(raw), &a); err == nil {
+		if s := strings.TrimSpace(a.Command); s != "" {
+			return s
+		}
+		if s := strings.TrimSpace(a.Cmd); s != "" {
+			return s
+		}
+	}
+	return raw
 }
 
 // checkTool 工具级审批(E-A):对 data.approval_tools 列出的工具每次调用裁决。

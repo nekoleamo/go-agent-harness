@@ -191,8 +191,10 @@ var All = map[string]Def{
 	"host-confirm-fusion": {Factory: func() sdk.Plugin { return &hostconfirmfusion.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "host-confirm-fusion", Type: "host", APIVersion: ">=1.0,<2.0",
 		// 多端融合:统一 ctx.confirm(仲裁广播 web/tui 呈现者,首答生效);
-		// 装配本插件时 web/tui 改为注册呈现者不 Provide,同进程并存不再冲突
-		Provides: []string{"ctx.confirm", "ctx.confirmFusion"}}, Bundle: "confirm-fusion"},
+		// 装配本插件时 web/tui 改为注册呈现者不 Provide,同进程并存不再冲突。
+		// ctx.question:结构化提问服务(fusion 统一提供,tool-ask/auto-plan 运行期现取;
+		// 单 UI profile 无 fusion 时由 ui-* 插件 Provide,故不在各工具 Requires 中硬声明)。
+		Provides: []string{"ctx.confirm", "ctx.confirmFusion", "ctx.question"}}, Bundle: "confirm-fusion"},
 }
 
 // RegisterAll 把 bundle == name 的全部插件注册进 registry(不按 enabled 过滤;过滤在装配层)。

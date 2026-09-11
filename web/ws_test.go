@@ -7,6 +7,7 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"time"
 )
 
 // RFC 6455 4.2.2/5.1 官方示例向量。
@@ -67,5 +68,8 @@ func TestSameOrigin(t *testing.T) {
 type nilConn struct{ net.Conn }
 
 func (nilConn) Close() error { return nil }
+
+// SetWriteDeadline 哑连接无真实超时(写帧路径会调用)。
+func (nilConn) SetWriteDeadline(time.Time) error { return nil }
 
 var _ = strings.TrimSpace // keep strings referenced

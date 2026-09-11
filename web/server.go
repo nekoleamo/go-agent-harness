@@ -19,12 +19,14 @@
 //	POST /api/attachments 附件上传(multipart "file";流式/大小 20MB/类型白名单;落盘
 //	$GAH_HOME/attachments/<时间戳>/;GET /attachments/{...} 静态预览(仅本机/鉴权外))
 //
-// 安全:默认绑定 127.0.0.1:2233;data.auth_token 非空时全部 /api/* 需携带(Authorization: Bearer / ?token=)。
+// 安全:默认绑定 127.0.0.1:2233;全部 /api/* 经 guardMiddleware 做 Host 白名单 + 同源(Origin/Referer)
+// + 请求体类型校验(见 guard.go);data.auth_token 非空时另需携带 Authorization: Bearer / gah_token cookie。
 // 可选服务(Ctx 可选注入)未装配时对应端点返回 503/501 显式错误,不静默降级。
 package web
 
 import (
 	"context"
+	"crypto/subtle"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -37,6 +39,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -94,6 +97,7 @@ type Server struct {
 	tc       sdk.TurnControl           // 可选(回合取消 /api/control cancel;未装配 = 503)
 	doc      sdk.DocService            // 可选(文档预览 D1:未装配 → /api/doc/* 503;懒解析见 docSvc)
 	ctx      sdk.Ctx                   // 宿主上下文(懒解析可选服务,避免装配顺序依赖)
+	docMu    sync.Mutex                // doc 懒解析互斥(并发首请求防数据竞争)
 
 	running     atomic.Bool
 	http        *http.Server
@@ -163,7 +167,12 @@ func (s *Server) Start() error {
 	if err != nil {
 		return fmt.Errorf("web ui 监听失败: %w", err)
 	}
-	s.http = &http.Server{Handler: s.authMiddleware(s.handler())}
+	s.http = &http.Server{
+		Handler:           s.protected(),
+		ReadHeaderTimeout: 10 * time.Second, // 慢头攻击兜底
+		IdleTimeout:       120 * time.Second,
+		// 不设 WriteTimeout:SSE 长连接/慢客户端会被写超时截断
+	}
 	if s.OnReady != nil {
 		s.OnReady("http://" + s.cfg.Addr)
 	}
@@ -171,9 +180,15 @@ func (s *Server) Start() error {
 	return s.http.Serve(ln)
 }
 
-// Handler 导出路由(测试/外部挂载经 httptest 直挂)。
+// Handler 导出完整服务栈(护栏 + 鉴权 + 路由);外部挂载/httptest 直挂即受保护。
 func (s *Server) Handler() http.Handler {
-	return s.handler()
+	return s.protected()
+}
+
+// protected 生产与导出路径的中间件栈:安全头/来源护栏 → token 鉴权 → 路由。
+// 包内测试可直挂 handler()(不套护栏),护栏行为见 guard_test.go。
+func (s *Server) protected() http.Handler {
+	return s.guardMiddleware(s.authMiddleware(s.handler()))
 }
 
 // handler 组装路由(与鉴权解耦)。
@@ -354,10 +369,29 @@ func (s *Server) handleEventsWS(w http.ResponseWriter, r *http.Request) {
 		}
 		return conn.WriteText(raw)
 	}
-	// hijack 后 r.Context() 已取消(服务端接管连接):停止信号用永不关闭信道,
-	// 客户端断连由 WriteText 错误驱动退出(consumeStream 的 sink err 路径)。
-	never := make(chan struct{})
-	s.consumeStream(s.afterOf(r), wsc, never)
+	// 读泵 + ping 保活:客户端静默消失时(即使无事件可写)也能及时回收 goroutine/fd/订阅。
+	stop := make(chan struct{})
+	go func() {
+		conn.drain()
+		close(stop)
+	}()
+	go func() {
+		t := time.NewTicker(30 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-t.C:
+				if err := conn.WritePing(); err != nil {
+					return
+				}
+			case <-stop:
+				return
+			}
+		}
+	}()
+	// hijack 后 r.Context() 已取消(服务端接管连接):停止信号由读泵提供,
+	// 推送写失败同样驱动 consumeStream 退出。
+	s.consumeStream(s.afterOf(r), wsc, stop)
 }
 
 // —— REST ——
@@ -385,7 +419,8 @@ func (s *Server) handleInput(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// running 互斥(TUI 同语义:回合进行中拒绝再次提交)
+	// running 快速拒绝(TUI 同语义:回合进行中拒绝再次提交);权威占用在下方 CAS,
+	// 命令路径(/开头)不占 running。
 	if s.running.Load() {
 		http.Error(w, "回合进行中,等待完成或取消后再提交", http.StatusConflict)
 		return
@@ -405,7 +440,12 @@ func (s *Server) handleInput(w http.ResponseWriter, r *http.Request) {
 		s.runCommand(content, w)
 		return
 	}
-	s.running.Store(true)
+	// CAS 原子占用:Load+Store 分离时并发双击可同时通过快速检查,跑出两个回合
+	// (两个 goroutine 共享同一 Loop 的回合状态)。
+	if !s.running.CompareAndSwap(false, true) {
+		http.Error(w, "回合进行中,等待完成或取消后再提交", http.StatusConflict)
+		return
+	}
 	go func() {
 		defer s.running.Store(false)
 		var err error
@@ -746,6 +786,12 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 		savePrefs(p)
 	}
 	if req.Sandbox != "" {
+		switch sdk.SandboxMode(req.Sandbox) {
+		case sdk.SandboxReadOnly, sdk.SandboxWorkspace, sdk.SandboxFullAccess:
+		default:
+			http.Error(w, "未知沙箱档位(只读 read-only|工作区 workspace-write|全权 full-access)", http.StatusBadRequest)
+			return
+		}
 		s.sb.SetMode(sdk.SandboxMode(req.Sandbox))
 		// 持久化偏好(重启恢复)
 		p := loadPrefs()
@@ -753,6 +799,12 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 		savePrefs(p)
 	}
 	if req.Approval != "" {
+		switch sdk.ApprovalMode(req.Approval) {
+		case sdk.ApprovalOpen, sdk.ApprovalSmart, sdk.ApprovalStrict:
+		default:
+			http.Error(w, "未知审批档位(open|smart|strict)", http.StatusBadRequest)
+			return
+		}
 		if s.ap == nil {
 			http.Error(w, "审批服务未装配(ctx.approval)", http.StatusBadRequest)
 			return
@@ -1128,14 +1180,40 @@ func (s *Server) staticHandler() http.Handler {
 	var root fs.FS
 	if _, err := fs.Stat(sub, "index.html"); err == nil {
 		root = sub
+	} else if r, err := fs.Sub(sub, "dist"); err == nil {
+		root = r
 	} else {
-		root, _ = fs.Sub(sub, "dist")
+		// 不构造 nil fs.FS(http.FileServerFS(nil) 每个请求 panic):显式 500 并记错误
+		s.log.Error("web: 静态资源不可用(web/dist 缺失或 static_dir 无 index.html)", "err", err)
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "静态资源不可用: web/dist 未构建", http.StatusInternalServerError)
+		})
 	}
-	return http.FileServerFS(root)
+	fileSrv := http.FileServerFS(root)
+	if s.cfg.AuthToken == "" {
+		return fileSrv
+	}
+	// token 模式的浏览器引导:访问应用入口页时下发 SameSite=Strict + HttpOnly 会话 cookie。
+	// 理由:WebSocket 握手与 fetch 无法自定义头,若不给浏览器一个凭据通道,
+	// 开启 token 后整个 Web UI 会 401 不可用(此前只有 CLI 能带 Bearer)。
+	// 安全性:入口页仅静态 shell(不含敏感数据),cookie 不暴露给 JS;
+	// 跨站拿不到响应体读不到 cookie,且护栏的 Host 白名单拦 DNS rebinding、
+	// 变更类 /api/* 请求强制同源校验 —— token 仍拦住跨站/外部脚本调用。
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if p := r.URL.Path; p == "/" || p == "/index.html" {
+			http.SetCookie(w, &http.Cookie{ //nolint:gosec // token 模式下必需;
+				// HttpOnly+SameSite=Strict+（https 时）Secure;同机用户本就能读 config 里的 token
+				Name: "gah_token", Value: s.cfg.AuthToken, Path: "/",
+				HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: r.TLS != nil,
+			})
+		}
+		fileSrv.ServeHTTP(w, r)
+	})
 }
 
 // authMiddleware 可选鉴权:data.auth_token 非空时 /api/* 需匹配
-// (Authorization: Bearer <token> 或 ?token=<token>);静态资源不鉴权(仅本机绑定)。
+// (Authorization: Bearer <token> 或 gah_token cookie);静态资源不鉴权(Host/Origin 由护栏兜底)。
+// 不再接受 ?token=(会进浏览器历史/访问日志/Referer)。
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	tok := s.cfg.AuthToken
 	if tok == "" {
@@ -1149,12 +1227,10 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		given := ""
 		if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
 			given = strings.TrimPrefix(h, "Bearer ")
-		} else if q := r.URL.Query().Get("token"); q != "" {
-			given = q
 		} else if c, err := r.Cookie("gah_token"); err == nil {
 			given = c.Value // 多浏览器会话:前端登录后写 cookie,后续请求/WS 自动携带
 		}
-		if given != tok {
+		if subtle.ConstantTimeCompare([]byte(given), []byte(tok)) != 1 {
 			http.Error(w, "未授权", http.StatusUnauthorized)
 			return
 		}
@@ -1353,11 +1429,27 @@ func (s *Server) handleProviders(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "多 provider 能力未实现(MultiProviderService)", http.StatusNotImplemented)
 		return
 	}
+	// 不回传明文密钥(设置面板只需 name/base_url/model/active;编辑时手填新 key)。
+	// 此前直接 writeJSON(mp.Providers()) → 任何能访问 /api/providers 的页面/脚本
+	// 都能拿到全部 provider 的 API key 明文。
 	list := mp.Providers()
-	if list == nil {
-		list = []sdk.ProviderProfile{}
+	out := make([]sdk.ProviderProfile, 0, len(list))
+	for _, p := range list {
+		p.APIKey = maskKey(p.APIKey)
+		out = append(out, p)
 	}
-	writeJSON(w, http.StatusOK, list)
+	writeJSON(w, http.StatusOK, out)
+}
+
+// maskKey 密钥回显掩码(保留首 3/末 4 便于辨识;短 key 全掩)。
+func maskKey(k string) string {
+	if k == "" {
+		return ""
+	}
+	if len(k) <= 8 {
+		return "****"
+	}
+	return k[:3] + "****" + k[len(k)-4:]
 }
 
 // handleProviderAdd 新增/更新 provider(POST /api/providers;同名 upsert,首个自动激活)。

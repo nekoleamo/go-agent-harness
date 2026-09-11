@@ -244,11 +244,6 @@ func (l *Log) Close() {
 	}
 }
 
-// Append 便捷:构造并追加。
-func (l *Log) append(kind string, payload any) error {
-	return l.Append(sdk.SessionEvent{Kind: kind, Payload: payload})
-}
-
 // DeriveMessages 从事件流投影模型历史(不变量来源)。
 // 语义:历史注入(historyLimit)→ 累计摘要置顶 + 最近块 → 超预算时经压缩器折叠最旧块。
 // 完整日志仍留盘(events 原样),投影见“摘要(system) + 最近块”。

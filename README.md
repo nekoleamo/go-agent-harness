@@ -263,7 +263,8 @@ patch-*.yaml            # 按 id 替换/插入/启停条目(随时插拔)
 | `GAH_PROFILE` / `GAH_NO_TUI` | 默认 profile / 强制关闭 TUI(headless/CI) |
 | `GAH_WEB_ADDR` / `GAH_WEB_OPEN` / `GAH_WEB_STATIC` | Web 监听地址(默认 127.0.0.1:2233)/ 是否自动开浏览器 / 静态目录覆写(开发态 HMR) |
 | `GAH_MCP_COMMAND` / `GAH_MCP_COMMANDS` | MCP 桥接入(单 server `name=command` / 多 server 每行 `name=command args`,工具 `mcp_<server>_<工具>`) |
-| `GAH_CB_ADDR` / `GAH_CB_TOKEN` | host-bridge 回调通道(外部进程插件请求宿主 tools/jobs/fanout 服务;含鉴权 token) |
+| `GAH_CB_ADDR` / `GAH_CB_TOKEN` | host-bridge 回调通道(外部进程插件请求宿主 tools/jobs/fanout 服务;含鉴权 token;**不外泄**:`SanitizedEnv` 拦在下游) |
+| `GAH_EXT_ENV_PASS` | 显式放行给外部进程插件的环境变量(逗号分隔):外部插件默认**不继承宿主凭据**(`*_API_KEY`/`*_TOKEN`/`AWS_*`/`GAH_CB_*` 等已滤除),确需凭据的插件在此点名(如 `EXA_API_KEY`);或改用配置文件(推荐 `$GAH_HOME/config/search.yaml`) |
 | `GAH_MCP_SERVE` / `GAH_PLUGIN` / `GAH_VERSION` | 外部进程工具入口参数(serve/加载插件/版本通告;由 host-bridge 拉起时注入) |
 | `DEEPSEEK_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | LLM 密钥(可按 provider 前缀路由;或经 `/provider` 写入 provider.yaml) |
 | `EXA_API_KEY` | web_search 联网搜索密钥(默认提供商;也可 `data.provider` 换其它) |

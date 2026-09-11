@@ -73,8 +73,10 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 			return cf
 		}
 		if call.Name == "shell" {
-			if pattern, hit := matchDangerous(call.Arguments); hit {
-				if err := ap.check(ctx, confirmOf(), pattern); err != nil {
+			// 解出真实命令文本再判定:JSON 转义(`\u0072m`)与解释器删除等绕过在此收敛
+			cmd := shellCommand(call.Arguments)
+			if pattern, hit := matchDangerous(cmd); hit {
+				if err := ap.check(ctx, confirmOf(), pattern, cmd); err != nil {
 					return err
 				}
 			}
@@ -86,7 +88,12 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 				return err
 			}
 		}
-		return sp.CheckTool(call.Name)
+		if err := sp.CheckTool(call.Name); err != nil {
+			return err
+		}
+		// 宿主侧路径裁决(P0):默认发行态 file_* 由外部插件进程提供(sb 未注入),
+		// 仅靠工具侧沙箱会完全失效 —— 这里按工具名+参数统一裁决(插件零改动)。
+		return sp.CheckPathArgs(call.Name, call.Arguments)
 	})
 	// 工作区切换:沙箱 root 同步(host-cwd-sessions 广播,与原 policy-sandbox 一致)
 	d2 := c.Subscribe("cwd/workspace-switched", func(ctx context.Context, ev *sdk.Event) error {

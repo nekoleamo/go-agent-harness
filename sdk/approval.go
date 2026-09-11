@@ -20,7 +20,7 @@ type ConfirmPresenter interface {
 }
 
 // ConfirmFusion 融合仲裁服务(P3;Provide ctx.confirmFusion,由 host-confirm-fusion 提供)。
-// UI 插件(web/tui/im)注册 Presenter;policy-guard 经 ctx.confirm(Fusion 本身)确认。
+// UI 插件(web/tui)注册 Presenter;policy-guard 经 ctx.confirm(Fusion 本身)确认。
 // 装配了 Fusion 时 UI 不再 Provide ctx.confirm(由 Fusion 统一提供),同进程并存不再冲突。
 type ConfirmFusion interface {
 	// Register 注册渠道呈现者;返回 Disposer 随插件卸载撤销。

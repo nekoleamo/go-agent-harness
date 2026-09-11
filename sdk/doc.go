@@ -90,7 +90,7 @@ type DocAsset struct {
 	Bytes int64  `json:"bytes,omitempty"`
 }
 
-// DocBlock 结构化块模型(单一真相,四端同源渲染)。
+// DocBlock 结构化块模型(单一真相,tui/web/desktop 三端同源渲染)。
 type DocBlock struct {
 	Kind  DocBlockKind      `json:"kind"`
 	Level int               `json:"level,omitempty"` // heading 级别 / list 缩进 / slide 文本框层级

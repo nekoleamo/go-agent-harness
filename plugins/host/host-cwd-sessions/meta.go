@@ -198,15 +198,6 @@ func (s *Service) SetPinned(id string, pinned bool) error {
 	return saveMeta(metaPath(), m)
 }
 
-// summaryOf 取概述(meta.json 缓存)。
-func summaryOf(m map[string]sessionMeta, file string) *summaryEntry {
-	e, ok := m[file]
-	if !ok {
-		return nil
-	}
-	return e.Summary
-}
-
 // storeSummary 写概述缓存(F3 插件经 sdk 服务回写;此处由 Service 内部调用方使用)。
 func (s *Service) storeSummary(file string, sum *summaryEntry) error {
 	s.nmMu.Lock()

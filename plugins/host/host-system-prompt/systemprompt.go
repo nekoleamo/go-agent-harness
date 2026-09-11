@@ -74,7 +74,7 @@ func (s *Service) loadLocked() {
 func (s *Service) ReloadInstructions() error {
 	gi := s.globalInstr
 	lv := s.projectLevels
-	ex := s.extraInstr
+	var ex []string // 附加指令按 cfg 重建(旧值仅在错误时回滚保留;staticcheck SA4006 修)
 	if s.cfg.global {
 		raw, err := os.ReadFile(globalInstructionsPath())
 		if err != nil && !os.IsNotExist(err) {
@@ -92,7 +92,6 @@ func (s *Service) ReloadInstructions() error {
 			lv = projectLevelsWalk(wd)
 		}
 	}
-	ex = nil
 	for _, p := range s.cfg.extra {
 		raw, err := os.ReadFile(p)
 		if err != nil && !os.IsNotExist(err) {
@@ -116,19 +115,8 @@ type instrCfg struct {
 
 func defaultInstrCfg() instrCfg { return instrCfg{global: true, project: true} }
 
-// globalInstructionsPath $GAH_HOME/AGENTS.md(缺省 ~/.gah/AGENTS.md)。
-func globalInstructionsPath() string {
-	home := os.Getenv("GAH_HOME")
-	if home == "" {
-		uh, err := os.UserHomeDir()
-		if err == nil {
-			home = filepath.Join(uh, ".gah")
-		} else {
-			return ""
-		}
-	}
-	return filepath.Join(home, "AGENTS.md")
-}
+// globalInstructionsPath $GAH_HOME/AGENTS.md(空仅嵌入/单测 → TempDir,~/.gah 兜底已弃用)。
+func globalInstructionsPath() string { return filepath.Join(sdk.Home(), "AGENTS.md") }
 
 // projectLevel 一个层级目录的指令来源(近者覆盖远者;override 同级替换)。
 type projectLevel struct {

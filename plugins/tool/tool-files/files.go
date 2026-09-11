@@ -67,34 +67,53 @@ type FilesTool struct {
 }
 
 // resolve 解析路径(相对 → workspace 根)并校验访问权。
+// 校验统一委托沙箱(唯一裁决点):写经 ValidatePath、读经 ValidateRead(可选能力);
+// 未实现读校验能力时退回本插件三档兜底(单测/独立部署场景)。
 func (f *FilesTool) resolve(path string, write bool) (string, error) {
 	if strings.TrimSpace(path) == "" {
 		return "", fmt.Errorf("tool-files: 缺少 path 参数")
 	}
 	if f.sb == nil {
-		return path, nil // 未装配沙箱:不限制(单测/独立部署)
+		return path, nil // 未装配沙箱:不限制(单测/独立部署;宿主侧 pre-execute 仍会裁决)
 	}
 	abs := path
 	if !filepath.IsAbs(abs) {
 		abs = filepath.Join(f.sb.Root(), abs)
 	}
 	abs = filepath.Clean(abs)
-	mode := f.sb.Mode()
-	switch mode {
-	case sdk.SandboxFullAccess:
-		return abs, nil
-	case sdk.SandboxReadOnly:
-		if write {
-			return "", fmt.Errorf("sandbox: read-only 拒绝写文件")
+	if write {
+		if err := f.sb.ValidatePath(abs); err != nil {
+			return "", err
 		}
-		return abs, nil // 读允许
-	default: // workspace-write:读写均限 workspace 内(防 ../ 穿越与读外泄)
+		return abs, nil
+	}
+	if rv, ok := f.sb.(sdk.ReadValidator); ok {
+		if err := rv.ValidateRead(abs); err != nil {
+			return "", err
+		}
+		return abs, nil
+	}
+	// 兜底:沙箱未实现读校验能力 → 按**有效档位**判定(联动开启时 Mode() 不代表拦截行为)
+	switch effectiveSandboxMode(f.sb) {
+	case sdk.SandboxFullAccess, sdk.SandboxReadOnly:
+		return abs, nil // 读放行
+	default: // workspace-write:读限 workspace 内(防 ../ 穿越与读外泄)
 		root := filepath.Clean(f.sb.Root())
 		if abs != root && !strings.HasPrefix(abs, root+string(filepath.Separator)) {
 			return "", fmt.Errorf("sandbox: workspace-write 拒绝访问 workspace 之外: %s", path)
 		}
 		return abs, nil
 	}
+}
+
+// effectiveSandboxMode 优先取联动后的有效档(沙箱实现 sdk.EffectiveSandbox 时)。
+// 否则 policy-guard 的档位联动(sync)会被工具侧忽略:approval=strict 显示只读、
+// 工具仍按 workspace-write 放行。
+func effectiveSandboxMode(sb sdk.Sandbox) sdk.SandboxMode {
+	if es, ok := sb.(sdk.EffectiveSandbox); ok {
+		return es.EffectiveMode()
+	}
+	return sb.Mode()
 }
 
 // exec 统一工具执行(按工具名分发)。

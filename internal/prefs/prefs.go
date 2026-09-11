@@ -68,7 +68,42 @@ func Save(p Prefs) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return
 	}
-	_ = os.WriteFile(path, b, 0o644)
+	_ = writeFileAtomic(path, b, 0o600)
+}
+
+// writeFileAtomic 同目录临时文件写入 + rename 原子替换(失败清理临时文件)。
+// TUI 与 Web 可能同时写同一文件;原子替换保证读方不会读到半截 JSON 而整体丢偏好。
+func writeFileAtomic(path string, raw []byte, perm os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".gah-state-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	cleanup := func() { _ = os.Remove(tmpPath) }
+	if _, err := tmp.Write(raw); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return err
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		cleanup()
+		return err
+	}
+	return nil
 }
 
 // SetThinking / SetSandbox / SetHistory 便捷更新(读-改-写)。

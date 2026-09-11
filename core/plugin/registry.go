@@ -21,6 +21,25 @@ type Instance struct {
 
 	// disposers 按注册顺序累积,Dispose 逆序执行(可逆性):最后注册的副作用最先撤销。
 	disposers []sdk.Disposer
+
+	// provided 本实例经 Provide 注册的服务键(经 scopedCtx 记录);卸载时归还 ——
+	// 否则服务键永久残留,重载必报 "already provided"。
+	provided []string
+	ctx      sdk.Ctx // 启动时上下文(归还服务键用)
+}
+
+// scopedCtx 插件专属上下文视图:拦截 Provide 以记录本插件的服务键(装配层回收用)。
+type scopedCtx struct {
+	sdk.Ctx
+	provided []string
+}
+
+func (s *scopedCtx) Provide(key string, svc any) error {
+	if err := s.Ctx.Provide(key, svc); err != nil {
+		return err
+	}
+	s.provided = append(s.provided, key)
+	return nil
 }
 
 // Registry 管理插件装配与生命周期。
@@ -196,20 +215,55 @@ func (r *Registry) StartSubset(c sdk.Ctx, enabled map[string]bool) error {
 	return nil
 }
 
+// startOne 启动单个插件。
+// 锁纪律:插件代码(Start)在**锁外**执行(锁内取快照、锁外执行),
+// 否则 Start 内经 system.registry 回调会自锁死(sync.RWMutex 不可重入)。
 func (r *Registry) startOne(c sdk.Ctx, id string) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if _, ok := r.instances[id]; ok {
+		r.mu.Unlock()
 		return fmt.Errorf("plugin: %q already started", id)
 	}
-	f := r.factories[id]
+	f, ok := r.factories[id]
+	if !ok {
+		r.mu.Unlock()
+		return fmt.Errorf("plugin: %q not registered", id)
+	}
+	m := r.manifest[id]
+	r.mu.Unlock()
+
+	sc := &scopedCtx{Ctx: c}
 	p := f()
-	d, err := p.Start(c, r.manifest[id])
+	d, err := p.Start(sc, m)
 	if err != nil {
+		// 启动失败:归还已注册服务(否则重试必失败)
+		ctxUnprovide(c, sc.provided)
 		return err
 	}
-	r.instances[id] = &Instance{Manifest: r.manifest[id], Factory: f, Plugin: p, disposers: []sdk.Disposer{d}}
+	inst := &Instance{Manifest: m, Factory: f, Plugin: p, disposers: []sdk.Disposer{d}, provided: sc.provided, ctx: c}
+	r.mu.Lock()
+	if _, ok := r.instances[id]; ok { // 并发启动同 id:回滚本次
+		r.mu.Unlock()
+		for i := len(inst.disposers) - 1; i >= 0; i-- {
+			inst.disposers[i]()
+		}
+		ctxUnprovide(c, inst.provided)
+		return fmt.Errorf("plugin: %q already started", id)
+	}
+	r.instances[id] = inst
+	r.mu.Unlock()
 	return nil
+}
+
+// ctxUnprovide 归还服务键(仅 ctx.Ctx 实现提供;其它实现忽略)。
+func ctxUnprovide(c sdk.Ctx, keys []string) {
+	u, ok := c.(interface{ Unprovide(string) error })
+	if !ok {
+		return
+	}
+	for _, k := range keys {
+		_ = u.Unprovide(k)
+	}
 }
 
 // BlockedByLoaded 返回仍加载且依赖 id 所提供服务键的插件(运行期卸载防护)。
@@ -246,33 +300,32 @@ func (r *Registry) BlockedByLoaded(id string) []string {
 	return blocked
 }
 
-// Dispose 逆序执行某插件的全部 disposers(幂等)。
+// Dispose 逆序执行某插件的全部 disposers(幂等)并归还其服务键。
 func (r *Registry) Dispose(id string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.disposeOne(id)
 }
 
+// disposeOne 摘实例 → 锁外执行 disposer → 归还服务键。
+// 插件代码(disposer)与 ctx 回收都在锁外执行,避免与插件回调互相持有锁。
 func (r *Registry) disposeOne(id string) {
+	r.mu.Lock()
 	inst, ok := r.instances[id]
 	if !ok {
+		r.mu.Unlock()
 		return
 	}
 	delete(r.instances, id)
+	r.mu.Unlock()
 	for i := len(inst.disposers) - 1; i >= 0; i-- {
 		inst.disposers[i]() // 幂等性由各 disposer 自行保证
 	}
+	ctxUnprovide(inst.ctx, inst.provided)
 }
 
 // DisposeAll 逆序 dispose 全部已启动插件。
 func (r *Registry) DisposeAll() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	ids := make([]string, 0, len(r.instances))
-	for id := range r.instances {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
+	// 快照 id 后逐个 dispose(disposeOne 自行加锁,不能在持锁下调用)
+	ids := r.Snapshot()
 	for i := len(ids) - 1; i >= 0; i-- {
 		r.disposeOne(ids[i])
 	}

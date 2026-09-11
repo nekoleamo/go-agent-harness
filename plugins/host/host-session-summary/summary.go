@@ -31,17 +31,16 @@ func (p *Plugin) Name() string { return "host-session-summary" }
 
 // Options 生成策略(manifest data 覆盖)。
 type Options struct {
-	AutoSummary   bool  // 回合后自动生成(默认开;K3)
-	MinTurns      int   // 触发自动生成的最小用户轮数(默认 2)
-	StaleFrames   int   // 覆盖帧数落后多少触发(默认 8)
-	MinInterval   int   // 每会话节流秒数(默认 600)
-	InputBudget   int   // 输入字节预算(默认 8192)
-	FirstTurns    int   // 保留的最早轮数(默认 2)
-	LastTurns     int   // 保留的最近轮数(默认 6)
-	MaxRetries    int   // JSON 解析失败重试次数(默认 1)
-	SummaryTokens int   // 概述输出上限 token(默认 400)
-	DisableAutoAt bool  // 显式关闭自动档(等价 auto_summary=false)
-	unused        uint8 // 占位:保持结构体可扩展
+	AutoSummary   bool // 回合后自动生成(默认开;K3)
+	MinTurns      int  // 触发自动生成的最小用户轮数(默认 2)
+	StaleFrames   int  // 覆盖帧数落后多少触发(默认 8)
+	MinInterval   int  // 每会话节流秒数(默认 600)
+	InputBudget   int  // 输入字节预算(默认 8192)
+	FirstTurns    int  // 保留的最早轮数(默认 2)
+	LastTurns     int  // 保留的最近轮数(默认 6)
+	MaxRetries    int  // JSON 解析失败重试次数(默认 1)
+	SummaryTokens int  // 概述输出上限 token(默认 400)
+	DisableAutoAt bool // 显式关闭自动档(等价 auto_summary=false)
 }
 
 func defaultOptions() Options {

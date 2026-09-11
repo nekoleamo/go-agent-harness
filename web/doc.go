@@ -66,14 +66,20 @@ func docRequest(r *http.Request) sdk.DocRequest {
 }
 
 // docSvc 懒解析文档服务:每次请求现取并缓存(避免插件启动顺序依赖)。
+// 并发首请求需互斥:多个请求同时写 s.doc 会构成数据竞争(-race 可捕获)。
 func (s *Server) docSvc(w http.ResponseWriter) (sdk.DocService, bool) {
-	if s.doc != nil {
-		return s.doc, true
+	s.docMu.Lock()
+	cached := s.doc
+	s.docMu.Unlock()
+	if cached != nil {
+		return cached, true
 	}
 	if s.ctx != nil {
 		var d sdk.DocService
 		if err := s.ctx.Inject("ctx.doc", &d); err == nil && d != nil {
+			s.docMu.Lock()
 			s.doc = d
+			s.docMu.Unlock()
 			return d, true
 		}
 	}

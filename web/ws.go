@@ -14,9 +14,12 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 )
 
 // wsGUID RFC 6455 固定魔数。
@@ -31,11 +34,19 @@ func wsAcceptKey(key string) string {
 // errNotUpgrade 非 101 升级请求(调用方据此回退 SSE 语义)。
 var errNotUpgrade = errors.New("not a websocket upgrade")
 
-// wsConn 升级后的 WebSocket 连接(写侧文本帧)。
+// wsConn 升级后的 WebSocket 连接(写侧文本帧;写侧加锁以支持 ping 与事件推送并发)。
 type wsConn struct {
 	rw  *bufio.ReadWriter // hijack 后读写器(底层 net.Conn 经 rw.Reader/Writer 交互)
 	raw net.Conn
+	wmu sync.Mutex // 写侧互斥(ping 保活帧与事件帧不得交错)
 }
+
+// ws 帧操作码(RFC 6455 最小子集)。
+const (
+	wsOpText  = 0x1
+	wsOpClose = 0x8
+	wsOpPing  = 0x9
+)
 
 // newWSConn / 由 wsTryUpgrade 构造。
 
@@ -104,13 +115,16 @@ func stripDefaultPort(h string) string {
 	return strings.TrimSuffix(strings.TrimSuffix(h, ":80"), ":443")
 }
 
-// WriteText 发送一条文本帧(JSON Frame;<=125 内联长度,更大走 16 位扩展长度;服务端帧无掩码)。
-func (c *wsConn) WriteText(p []byte) error {
+// writeFrame 写一条服务端帧(无掩码);写侧加锁 + 写超时(慢/死客户端不永久阻塞推送)。
+func (c *wsConn) writeFrame(op byte, p []byte) error {
 	if len(p) > 0xFFFF {
 		return errors.New("ws frame too large")
 	}
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
+	_ = c.raw.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	var hdr [4]byte
-	hdr[0] = 0x81 // FIN + text(服务端帧,无掩码位)
+	hdr[0] = 0x80 | op // FIN + opcode
 	if len(p) < 126 {
 		hdr[1] = byte(len(p))
 		if _, err := c.rw.Write(hdr[:2]); err != nil {
@@ -127,6 +141,62 @@ func (c *wsConn) WriteText(p []byte) error {
 		return err
 	}
 	return c.rw.Flush()
+}
+
+// WriteText 发送一条文本帧(JSON Frame 载体)。
+func (c *wsConn) WriteText(p []byte) error { return c.writeFrame(wsOpText, p) }
+
+// WritePing 发送 ping 保活帧(浏览器自动回 pong)。
+func (c *wsConn) WritePing() error { return c.writeFrame(wsOpPing, nil) }
+
+// drain 读泵:消费客户端帧(本仓前端仅发 close/pong),兼作断连探测。
+// 读错误即返回,调用方据此关闭连接并停止推送(防 goroutine/fd/订阅泄漏)。
+func (c *wsConn) drain() {
+	for {
+		b0, err := c.rw.Reader.ReadByte()
+		if err != nil {
+			return
+		}
+		b1, err := c.rw.Reader.ReadByte()
+		if err != nil {
+			return
+		}
+		op := b0 & 0x0F
+		masked := b1&0x80 != 0
+		n := int64(b1 & 0x7F)
+		switch n {
+		case 126:
+			var ext [2]byte
+			if _, err := io.ReadFull(c.rw.Reader, ext[:]); err != nil {
+				return
+			}
+			n = int64(binary.BigEndian.Uint16(ext[:]))
+		case 127:
+			var ext [8]byte
+			if _, err := io.ReadFull(c.rw.Reader, ext[:]); err != nil {
+				return
+			}
+			n = int64(binary.BigEndian.Uint64(ext[:]))
+		}
+		if n > 1<<20 {
+			return // 上行帧超限:事件通道无需大帧,直接断开
+		}
+		if masked {
+			var mask [4]byte
+			if _, err := io.ReadFull(c.rw.Reader, mask[:]); err != nil {
+				return
+			}
+		}
+		if n > 0 {
+			if _, err := io.CopyN(io.Discard, c.rw.Reader, n); err != nil {
+				return
+			}
+		}
+		if op == wsOpClose {
+			_ = c.writeFrame(wsOpClose, nil)
+			return
+		}
+	}
 }
 
 // Close 关闭底层连接。

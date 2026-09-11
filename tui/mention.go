@@ -39,18 +39,6 @@ func mentionTokenAt(rs []rune, cursor int) (start int, ok bool) {
 	return 0, false
 }
 
-// mentionToken 当前 token 文本(含 @;nil mention 返回 "")。
-func (s *State) mentionToken() string {
-	if s.Mention == nil {
-		return ""
-	}
-	rs := []rune(s.Input)
-	if s.Mention.Start < 0 || s.Mention.Start > len(rs) || s.Cursor < s.Mention.Start || s.Cursor > len(rs) {
-		return ""
-	}
-	return string(rs[s.Mention.Start:s.Cursor])
-}
-
 // syncMention 输入/光标变化后刷新 @ 引用候选(纯状态,不改文本):
 // 触发条件 = 光标位于 @ 词段(见 mentionTokenAt)且非命令输入、无命令选择器/自由向导。
 // token 空(仅 "@")列出全部候选(供浏览/提示继续输入);token 变化按子串过滤(复用 filterOptions)。

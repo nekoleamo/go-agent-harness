@@ -4,6 +4,7 @@ package providerfile
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -16,7 +17,7 @@ func TestAddSaveLoadAndPerm(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := Path()
-	if !filepath.HasPrefix(path, home) {
+	if !strings.HasPrefix(path, home) { // 段边界由 GAH_HOME 拼接保证;filepath.HasPrefix 已弃用
 		t.Fatalf("路径应在 GAH_HOME 下: %s", path)
 	}
 	fi, err := os.Stat(path)

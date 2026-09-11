@@ -54,18 +54,8 @@ func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
 	return func() {}, nil
 }
 
-// SessionsRoot $GAH_HOME/sessions(缺省 ~/.gah/sessions)。
-func SessionsRoot() string {
-	home := os.Getenv("GAH_HOME")
-	if home == "" {
-		uh, err := os.UserHomeDir()
-		if err != nil {
-			uh = os.TempDir()
-		}
-		home = filepath.Join(uh, ".gah")
-	}
-	return filepath.Join(home, "sessions")
-}
+// SessionsRoot $GAH_HOME/sessions(boot 恒设 GAH_HOME;空仅嵌入/单测 → TempDir,~/.gah 兜底已弃用)。
+func SessionsRoot() string { return filepath.Join(sdk.Home(), "sessions") }
 
 // ProjectKeyFromCwd 当前工作目录 → 项目 key(绝对路径清洗)。
 func ProjectKeyFromCwd() string {

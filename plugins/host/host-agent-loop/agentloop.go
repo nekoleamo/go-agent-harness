@@ -102,9 +102,28 @@ type Loop struct {
 	llm      sdk.LLMService
 	sp       sdk.SystemPromptService
 	tc       *control // ctx.turnControl 实现(回合取消注册表)
-	finished bool     // 当前轮次是否应结束(step 内修改,单 goroutine 使用)
-	reminded bool     // 本回合已给过伪调用提醒(每回合最多 1 次,防无限修正循环)
-	reminder string   // 待注入下轮的提醒消息(伪调用检测触发)
+
+	// runMu 回合串行化:sessions 追加与 DeriveMessages 是单写者模型,
+	// 并发 Run(多路输入同时提交)会让回合互相交错、工具结果错位 → 显式串行不静默交错。
+	runMu sync.Mutex
+}
+
+// turn 单回合状态(每回合独立对象;修复:此前挂在 Loop 上被并发回合互相踩)。
+type turn struct {
+	finished bool   // 本轮是否应结束
+	reminded bool   // 本回合已给过伪调用提醒(每回合最多 1 次,防无限修正循环)
+	reminder string // 待注入下轮的提醒消息(伪调用检测触发)
+}
+
+// appendEvents 记录会话事件并返回首个错误。
+// 记录失败必须显式失败(此前全部忽略返回值 → 日志满/写盘失败时静默丢历史而模型仍继续)。
+func (l *Loop) appendEvents(evs ...sdk.SessionEvent) error {
+	for _, ev := range evs {
+		if err := l.sessions.Append(ev); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Run 处理一次用户输入直至一轮完成(无附件;等价 RunWithAttachments nil)。
@@ -114,6 +133,10 @@ func (l *Loop) Run(ctx context.Context, input string) error {
 
 // RunWithAttachments 处理一次用户输入(附件一期:图片随消息视觉注入,文件路径引用)。
 func (l *Loop) RunWithAttachments(ctx context.Context, input string, atts []sdk.Attachment) error {
+	// 回合串行化(见 runMu 注释)
+	l.runMu.Lock()
+	defer l.runMu.Unlock()
+
 	// 回合级可取消 ctx:派生 child 并注册到 ctx.turnControl(TUI Esc/Web 取消经
 	// Cancel() 取消同一回合);父 ctx 取消沿链生效;回合结束(任意返回路径)注销并释放。
 	runCtx, runCancel := context.WithCancel(ctx)
@@ -125,35 +148,48 @@ func (l *Loop) RunWithAttachments(ctx context.Context, input string, atts []sdk.
 	defer runCancel()
 
 	l.c.Emit(runCtx, "agent/status", "running", sdk.Emit)
-	// 回合级状态重置:伪调用提醒每回合至多一次
-	l.reminded = false
-	l.reminder = ""
-	if err := l.sessions.Append(sdk.SessionEvent{Kind: sdk.EventUserMessage, Payload: sdk.UserMessage{Content: input, Attachments: atts}}); err != nil {
-		return err
+	t := &turn{} // 回合级状态(伪调用提醒每回合至多一次)
+	if err := l.appendEvents(sdk.SessionEvent{Kind: sdk.EventUserMessage, Payload: sdk.UserMessage{Content: input, Attachments: atts}}); err != nil {
+		l.c.Emit(context.Background(), "agent/status", "idle", sdk.Emit)
+		return fmt.Errorf("session log: %w", err)
 	}
 	for step := 0; step < maxSteps; step++ {
-		if err := l.step(runCtx); err != nil {
+		if err := l.step(runCtx, t); err != nil {
 			if errors.Is(err, context.Canceled) {
-				l.sessions.Append(sdk.SessionEvent{Kind: sdk.EventTurnEnd, Payload: "cancelled"})
+				_ = l.appendEvents(sdk.SessionEvent{Kind: sdk.EventTurnEnd, Payload: "cancelled"})
 			} else {
 				l.c.Emit(runCtx, "agent/error", err, sdk.Emit)
 			}
 			l.c.Emit(context.Background(), "agent/status", "idle", sdk.Emit)
 			return err
 		}
-		if l.finished {
+		if t.finished {
 			break
 		}
 	}
-	l.sessions.Append(sdk.SessionEvent{Kind: sdk.EventTurnEnd, Payload: "done"})
+	if !t.finished {
+		// 步数耗尽:此前静默记为 "done" 并返回 nil —— 模型/用户都看不出"未收敛"。
+		// 现显式失败(maxSteps 保护仍生效,但事实不再被掩盖)。
+		err := fmt.Errorf("agent: 达到最大步数 %d 仍未完成(可能工具循环或模型未收敛)", maxSteps)
+		_ = l.appendEvents(sdk.SessionEvent{Kind: sdk.EventTurnEnd, Payload: "max_steps"})
+		l.c.Emit(context.Background(), "agent/error", err, sdk.Emit)
+		l.c.Emit(context.Background(), "agent/status", "idle", sdk.Emit)
+		return err
+	}
+	if err := l.appendEvents(sdk.SessionEvent{Kind: sdk.EventTurnEnd, Payload: "done"}); err != nil {
+		l.c.Emit(context.Background(), "agent/status", "idle", sdk.Emit)
+		return fmt.Errorf("session log: %w", err)
+	}
 	l.c.Emit(context.Background(), "agent/status", "idle", sdk.Emit)
 	return nil
 }
 
 // step 执行一轮 ReAct 迭代(单次模型请求 + 其工具调用)。
-func (l *Loop) step(ctx context.Context) error {
-	l.finished = false
-	l.sessions.Append(sdk.SessionEvent{Kind: sdk.EventStepStart})
+func (l *Loop) step(ctx context.Context, t *turn) error {
+	t.finished = false
+	if err := l.appendEvents(sdk.SessionEvent{Kind: sdk.EventStepStart}); err != nil {
+		return fmt.Errorf("session log: %w", err)
+	}
 
 	// agent/pre-step:waterfall 扩展点(M2 无监听器则直过;改写/拒绝留 policy 阶段)
 	if _, err := l.c.Emit(ctx, "agent/pre-step", nil, sdk.Waterfall); err != nil {
@@ -164,9 +200,9 @@ func (l *Loop) step(ctx context.Context) error {
 	tools := l.tools.List()
 	messages := l.sp.Assemble(history, tools)
 	// 伪调用提醒注入(上步检测到文本伪造工具调用;作为追加输入给模型修正机会)
-	if l.reminder != "" {
-		messages = append(messages, sdk.LLMMessage{Role: sdk.RoleUser, Content: l.reminder})
-		l.reminder = ""
+	if t.reminder != "" {
+		messages = append(messages, sdk.LLMMessage{Role: sdk.RoleUser, Content: t.reminder})
+		t.reminder = ""
 	}
 
 	var (
@@ -177,7 +213,9 @@ func (l *Loop) step(ctx context.Context) error {
 	onChunk := func(ev sdk.LLMStreamEvent) error {
 		if ev.Delta != "" {
 			content.WriteString(ev.Delta)
-			l.sessions.Append(sdk.SessionEvent{Kind: sdk.EventAssistantChunk, Payload: ev})
+			if err := l.appendEvents(sdk.SessionEvent{Kind: sdk.EventAssistantChunk, Payload: ev}); err != nil {
+				return fmt.Errorf("session log: %w", err)
+			}
 		}
 		if ev.ToolCallID != "" {
 			idx := findCall(&calls, ev.ToolCallID)
@@ -209,43 +247,59 @@ func (l *Loop) step(ctx context.Context) error {
 	}
 
 	// 持久记录 assistant/message(模型可见即已记录)
-	l.sessions.Append(sdk.SessionEvent{Kind: sdk.EventAssistantMessage,
-		Payload: sdk.AssistantMessage{Content: final.Message.Content, ToolCalls: final.Message.ToolCalls}})
+	if err := l.appendEvents(sdk.SessionEvent{Kind: sdk.EventAssistantMessage,
+		Payload: sdk.AssistantMessage{Content: final.Message.Content, ToolCalls: final.Message.ToolCalls}}); err != nil {
+		return fmt.Errorf("session log: %w", err)
+	}
 
 	// 记录本轮 token 消耗(session/usage;host-usage-stats 订阅累计;无 usage 数据不记)。
 	// 携带请求模型名(host-llm 已在 req.Model 填当前模型,统计按模型解析上下文窗口)。
 	if final.Usage.PromptTokens > 0 || final.Usage.CompletionTokens > 0 {
-		l.sessions.Append(sdk.SessionEvent{Kind: sdk.EventUsage,
-			Payload: sdk.UsageEvent{Model: req.Model, Usage: final.Usage}})
+		if err := l.appendEvents(sdk.SessionEvent{Kind: sdk.EventUsage,
+			Payload: sdk.UsageEvent{Model: req.Model, Usage: final.Usage}}); err != nil {
+			return fmt.Errorf("session log: %w", err)
+		}
 	}
 
 	if len(calls) == 0 {
 		// 无真实工具调用但正文含伪调用标记(如 <tool_calls>/<invoke>):给一次提醒修正机会
-		if !l.reminded && containsFakeToolCall(final.Message.Content) {
-			l.reminded = true
-			l.reminder = fakeToolCallReminder()
-			l.sessions.Append(sdk.SessionEvent{Kind: sdk.EventStepEnd})
+		if !t.reminded && containsFakeToolCall(final.Message.Content) {
+			t.reminded = true
+			t.reminder = fakeToolCallReminder()
+			if err := l.appendEvents(sdk.SessionEvent{Kind: sdk.EventStepEnd}); err != nil {
+				return fmt.Errorf("session log: %w", err)
+			}
 			return nil // 不结束:下一轮带提醒重新请求
 		}
-		l.finished = true
-		l.sessions.Append(sdk.SessionEvent{Kind: sdk.EventStepEnd})
+		t.finished = true
+		if err := l.appendEvents(sdk.SessionEvent{Kind: sdk.EventStepEnd}); err != nil {
+			return fmt.Errorf("session log: %w", err)
+		}
 		return nil
 	}
 
 	// 执行工具调用(结果经 tool/result 事件与流水线;日志派生 RoleTool 消息供下轮)
 	for _, call := range calls {
-		l.sessions.Append(sdk.SessionEvent{Kind: sdk.EventToolCall,
-			Payload: sdk.ToolCallEvent{ID: call.ID, Name: call.Name, Arguments: call.Arguments}})
+		if err := l.appendEvents(sdk.SessionEvent{Kind: sdk.EventToolCall,
+			Payload: sdk.ToolCallEvent{ID: call.ID, Name: call.Name, Arguments: call.Arguments}}); err != nil {
+			return fmt.Errorf("session log: %w", err)
+		}
 		res, err := l.tools.Execute(ctx, call.Name, call.Arguments)
 		if err != nil {
-			l.sessions.Append(sdk.SessionEvent{Kind: sdk.EventToolResult,
-				Payload: sdk.ToolResultEvent{CallID: call.ID, Name: call.Name, Error: err.Error()}})
+			if aerr := l.appendEvents(sdk.SessionEvent{Kind: sdk.EventToolResult,
+				Payload: sdk.ToolResultEvent{CallID: call.ID, Name: call.Name, Error: err.Error()}}); aerr != nil {
+				return fmt.Errorf("session log: %w", aerr)
+			}
 		} else if res != nil {
-			l.sessions.Append(sdk.SessionEvent{Kind: sdk.EventToolResult,
-				Payload: sdk.ToolResultEvent{CallID: call.ID, Name: call.Name, Content: res.Content, Error: res.Error}})
+			if aerr := l.appendEvents(sdk.SessionEvent{Kind: sdk.EventToolResult,
+				Payload: sdk.ToolResultEvent{CallID: call.ID, Name: call.Name, Content: res.Content, Error: res.Error}}); aerr != nil {
+				return fmt.Errorf("session log: %w", aerr)
+			}
 		}
 	}
-	l.sessions.Append(sdk.SessionEvent{Kind: sdk.EventStepEnd})
+	if err := l.appendEvents(sdk.SessionEvent{Kind: sdk.EventStepEnd}); err != nil {
+		return fmt.Errorf("session log: %w", err)
+	}
 	return nil
 }
 

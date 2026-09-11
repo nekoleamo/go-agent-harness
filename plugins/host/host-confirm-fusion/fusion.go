@@ -9,6 +9,7 @@ package hostconfirmfusion
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
@@ -182,7 +183,12 @@ func (f *Fusion) Register(channel string, p sdk.ConfirmPresenter) sdk.Disposer {
 	f.registerSeq++
 	key := channel
 	if _, dup := f.presenters[key]; dup {
-		// 同名渠道后注册覆盖(热重载/重复装配安全)
+		// 同名渠道后注册覆盖(热重载/重复装配安全):记 WARN 便于定位注册冲突
+		logger := slog.Default()
+		if f.c != nil && f.c.Logger() != nil {
+			logger = f.c.Logger()
+		}
+		logger.Warn("host-confirm-fusion: 渠道重复注册,覆盖既有呈现者", "channel", key)
 	}
 	f.presenters[key] = p
 	f.mu.Unlock()

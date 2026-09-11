@@ -34,19 +34,51 @@ func New(logger *slog.Logger, bus interface {
 
 // Provide 注册具名服务。同名重复注册返回错误(注册即副作用,不允许覆盖)。
 func (c *Ctx) Provide(key string, svc any) error {
+	_, err := c.provide(key, svc)
+	return err
+}
+
+// ProvideScoped 注册服务并返回撤销函数:撤销时**仅当该键仍指向本次注册的实例**才移除
+// (幂等;不误删后来者的注册)。装配层在插件卸载时用它归还服务键 —— 修复
+// “Provide 无注销路径 → unload 后 Load 恒失败、卸载残留服务仍可 Inject”。
+func (c *Ctx) ProvideScoped(key string, svc any) (sdk.Disposer, error) {
+	if _, err := c.provide(key, svc); err != nil {
+		return nil, err
+	}
+	return func() { c.unprovideIf(key, svc) }, nil
+}
+
+// Unprovide 移除服务键(不存在 = 无操作)。仅供装配层回收,插件不直接调用。
+func (c *Ctx) Unprovide(key string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.services, key)
+	return nil
+}
+
+func (c *Ctx) provide(key string, svc any) (any, error) {
 	if key == "" {
-		return fmt.Errorf("ctx: empty service key")
+		return nil, fmt.Errorf("ctx: empty service key")
 	}
 	if svc == nil {
-		return fmt.Errorf("ctx: nil service for %q", key)
+		return nil, fmt.Errorf("ctx: nil service for %q", key)
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if _, ok := c.services[key]; ok {
-		return fmt.Errorf("ctx: service %q already provided", key)
+		return nil, fmt.Errorf("ctx: service %q already provided", key)
 	}
 	c.services[key] = svc
-	return nil
+	return svc, nil
+}
+
+// unprovideIf 值同一才移除(防误删同键的后来注册)。
+func (c *Ctx) unprovideIf(key string, svc any) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if cur, ok := c.services[key]; ok && cur == svc {
+		delete(c.services, key)
+	}
 }
 
 // Inject 类型化取回服务。out 必须是 *T 指针。

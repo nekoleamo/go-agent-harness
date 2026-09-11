@@ -39,7 +39,8 @@ func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
 	if err := c.Provide("ctx.fanout", f); err != nil {
 		return nil, err
 	}
-	return func() {}, nil
+	// 卸载即撤销:终止全部在跑子代理(否则 goroutine/子会话永久残留)
+	return func() { f.Shutdown() }, nil
 }
 
 // Fanout 子代理编排实现。
@@ -53,8 +54,12 @@ type Fanout struct {
 	// 不随发起方 ctx 取消;由 KillAgent/宿主 shutdown 显式终止。
 	mu     sync.Mutex
 	agents map[string]*agentSession
+	order  []string // 创建顺序(末位最新),已完成历史清理用
 	seq    int
 }
+
+// keepAgents 已完成子代理会话最多保留数(防长时间运行无限增长)。
+const keepAgents = 50
 
 // agentSession 一个后台子代理会话。
 type agentSession struct {
@@ -103,23 +108,25 @@ func (f *Fanout) spawnBackground(input string, forkSeed bool) (string, error) {
 		seed = f.sessions.DeriveMessages()
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	f.mu.Lock()
-	f.seq++
-	id := fmt.Sprintf("ag%d", f.seq)
-	f.agents[id] = &agentSession{
-		handle: sdk.AgentHandle{ID: id, Input: strings.TrimSpace(input), State: sdk.AgentRunning,
+	ag := &agentSession{
+		handle: sdk.AgentHandle{ID: "", Input: strings.TrimSpace(input), State: sdk.AgentRunning,
 			CreatedAt: time.Now()},
 		cancel: cancel,
 		done:   make(chan struct{}),
 		inbox:  make(chan string, inboxCap),
 		seed:   seed,
 	}
+	f.mu.Lock()
+	f.seq++
+	id := fmt.Sprintf("ag%d", f.seq)
+	ag.handle.ID = id
+	f.agents[id] = ag
+	f.order = append(f.order, id)
 	f.mu.Unlock()
 	go func() {
-		result, err := f.runAgentLoop(ctx, input, f.agents[id])
+		// 注意:用局部 ag 而非 f.agents[id](后者需持锁,否则与 KillAgent/ListAgents 竞态)
+		result, err := f.runAgentLoop(ctx, input, ag)
 		f.mu.Lock()
-		defer f.mu.Unlock()
-		ag := f.agents[id]
 		if ctx.Err() != nil {
 			ag.handle.State = sdk.AgentKilled
 			ag.handle.Error = "任务被终止"
@@ -131,8 +138,49 @@ func (f *Fanout) spawnBackground(input string, forkSeed bool) (string, error) {
 			ag.handle.Result = result
 		}
 		close(ag.done)
+		f.pruneLocked()
+		f.mu.Unlock()
 	}()
 	return id, nil
+}
+
+// pruneLocked 清理已完成会话历史(保留最近 keepAgents 条;调用方持锁)。
+func (f *Fanout) pruneLocked() {
+	done := 0
+	for _, id := range f.order {
+		if ag, ok := f.agents[id]; ok && ag.handle.State != sdk.AgentRunning {
+			done++
+		}
+	}
+	for done > keepAgents && len(f.order) > 0 {
+		id := f.order[0]
+		ag, ok := f.agents[id]
+		if !ok { // 已清理条目:出队继续
+			f.order = f.order[1:]
+			continue
+		}
+		if ag.handle.State == sdk.AgentRunning { // 运行中的最旧条目不能删
+			break
+		}
+		f.order = f.order[1:]
+		delete(f.agents, id)
+		done--
+	}
+}
+
+// Shutdown 终止全部运行中会话(插件卸载/宿主退出;幂等)。
+func (f *Fanout) Shutdown() {
+	f.mu.Lock()
+	var cancels []context.CancelFunc
+	for _, ag := range f.agents {
+		if ag.handle.State == sdk.AgentRunning {
+			cancels = append(cancels, ag.cancel)
+		}
+	}
+	f.mu.Unlock()
+	for _, c := range cancels {
+		c()
+	}
 }
 
 // SendMessage 向运行中的后台子代理注入一条消息(M9.3):非阻塞投递到 inbox,

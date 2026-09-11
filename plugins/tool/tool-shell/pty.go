@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sync"
 	"time"
 
 	"github.com/creack/pty"
@@ -21,27 +22,55 @@ import (
 // ptyTimeout 交互命令兜底超时(进程不退出则终止,与 shell 普通路径一致)。
 const ptyTimeout = 60 * time.Second
 
+// lockedWriter 让超时路径读缓冲区时与 io.Copy 写入互斥(消数据竞争)。
+type lockedWriter struct {
+	mu *sync.Mutex
+	w  io.Writer
+}
+
+func (l *lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
+}
+
 // execPty 在 pseudo-terminal 中执行命令并采集输出。
 // 返回 (输出, 是否超时)。
 func execPty(ctx context.Context, command, input string) (string, bool, error) {
 	cmd := exec.Command("sh", "-c", command)
 	cmd.Env = sdk.SanitizedEnv(os.Environ()) // 凭据隔离:滤除 *_API_KEY/*_TOKEN 等
+	// 不断设 Setpgid:pty.Start 内部会设 Setsid(子进程自成会话/进程组组长→ pgid==pid),
+	// 两个同设会在部分平台直接 EPERM;下面仍可用 killProcessGroup 整组终止。
 
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
 		return "", false, err
 	}
+	// defer 逆序执行:先关 ptmx(唤醒接收 goroutine),再回收子进程(防僵尸)并杀组内残留。
+	defer func() {
+		killProcessGroup(cmd)
+		_ = cmd.Wait()
+	}()
 	defer ptmx.Close()
 
 	if input != "" {
-		go func() { io.WriteString(ptmx, input) }()
+		go func() { _, _ = io.WriteString(ptmx, input) }()
 	}
 
+	var mu sync.Mutex
 	var buf bytes.Buffer
+	snapshot := func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return buf.String()
+	}
 	done := make(chan error, 1)
-	go func() { _, err := io.Copy(&buf, ptmx); done <- err }()
+	go func() {
+		_, err := io.Copy(&lockedWriter{mu: &mu, w: &buf}, ptmx)
+		done <- err
+	}()
 
-	// 上下文取消/超时 → 终止进程(退出无 EOF 的交互进程兜底)
+	// 上下文取消/超时 → 终止整组(退出无 EOF 的交互进程兜底)
 	timeout := ptyTimeout
 	if deadline, ok := ctx.Deadline(); ok {
 		if left := time.Until(deadline); left < timeout {
@@ -52,19 +81,19 @@ func execPty(ctx context.Context, command, input string) (string, bool, error) {
 	select {
 	case <-done:
 	case <-ctx.Done():
-		_ = cmd.Process.Kill()
+		killProcessGroup(cmd)
 		timedOut = true
 		select {
 		case <-done:
 		case <-time.After(2 * time.Second):
 		}
 	case <-time.After(timeout):
-		_ = cmd.Process.Kill()
+		killProcessGroup(cmd)
 		timedOut = true
 		select {
 		case <-done:
 		case <-time.After(2 * time.Second):
 		}
 	}
-	return buf.String(), timedOut, nil
+	return snapshot(), timedOut, nil
 }
