@@ -29,6 +29,10 @@ jobs:
         run: cd web-src && npm test
       - name: go vet
         run: go vet ./...
+      - name: staticcheck(静态分析;版本固定保证本地/CI 一致)
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@2026.2.1
+          "$(go env GOPATH)/bin/staticcheck" ./...
       - name: go test -race
         run: go test -race ./...
       - name: 交叉编译矩阵(五目标+体积门+平台匹配)

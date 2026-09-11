@@ -9,16 +9,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func writeTemp(t *testing.T, name, content string) string {
-	t.Helper()
-	dir := t.TempDir()
-	p := filepath.Join(dir, name)
-	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	return p
-}
-
 func TestTreeApplyReplaceAndInsert(t *testing.T) {
 	tree := NewTree()
 	tree.Apply([]Entry{{ID: "a", Data: map[string]any{"v": 1}}, {ID: "b", Data: map[string]any{"v": 2}}})

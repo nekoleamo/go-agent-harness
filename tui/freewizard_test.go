@@ -35,8 +35,6 @@ func freeModel(input string, params []string, done int) (*Model, *[]string) {
 	return m, &executed
 }
 
-const p3 = "baseUrl, apiKey, model?" // 未用;参数直接用字面量
-
 func TestFreeWizardSteps(t *testing.T) {
 	params := []string{"baseUrl", "apiKey", "model?"}
 	m, exec := freeModel("/provider set ", params, 0)

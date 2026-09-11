@@ -1,10 +1,12 @@
 // Command tool-mcp MCP client 桥外部化进程(M6.8 工具类全外部化):连接外部 MCP server,
 // 工具注册为 mcp_<name>,经桥协议 Definitions/ExecuteNamed 暴露给宿主。
 // 配置(两者可并存,取并集):
-//   GAH_MCP_COMMAND  - 单 MCP server 启动命令(空格分隔参数),工具注册 mcp_<name>(兼容)。
-//   GAH_MCP_COMMANDS - 多 MCP server,每行 "name=command args"(# 开头为注释,空行忽略),
-//                      工具注册 mcp_<server>_<name>;server 连接失败记 stderr 跳过
-//                      (对齐宿主跳过失败插件语义,不静默降级:全部失败则 exit 1)。
+//
+//	GAH_MCP_COMMAND  - 单 MCP server 启动命令(空格分隔参数),工具注册 mcp_<name>(兼容)。
+//	GAH_MCP_COMMANDS - 多 MCP server,每行 "name=command args"(# 开头为注释,空行忽略),
+//	                   工具注册 mcp_<server>_<name>;server 连接失败记 stderr 跳过
+//	                   (对齐宿主跳过失败插件语义,不静默降级:全部失败则 exit 1)。
+//
 // 与内嵌 mcp-bridge 的 data.command 同语义;宿主侧由 host-bridge 扫描加载。
 package main
 

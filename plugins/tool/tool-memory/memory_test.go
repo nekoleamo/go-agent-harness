@@ -2,7 +2,7 @@
 package toolmemory
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,27 +17,6 @@ import (
 func newStore(t *testing.T) *Store {
 	t.Helper()
 	return NewStore(t.TempDir())
-}
-
-// entriesOf 读取文件全部行并解析(校验落盘内容)。
-func entriesOf(t *testing.T, path string) []Entry {
-	t.Helper()
-	b, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var out []Entry
-	for _, line := range strings.Split(strings.TrimRight(string(b), "\n"), "\n") {
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		var e Entry
-		if err := json.Unmarshal([]byte(line), &e); err != nil {
-			t.Fatalf("落盘行应可解析: %q: %v", line, err)
-		}
-		out = append(out, e)
-	}
-	return out
 }
 
 // TestRememberListLifecycle remember → list 可见(最新在前)→ forget 墓碑后不可见。
@@ -159,31 +138,31 @@ func TestToolExecute(t *testing.T) {
 	tl := &Tool{store: newStore(t)}
 
 	// remember:缺 text 报业务错误;带 tags 成功返回 id
-	if out, _ := tl.Execute(nil, `{"action":"remember"}`); out == nil {
+	if out, _ := tl.Execute(context.TODO(), `{"action":"remember"}`); out == nil {
 		t.Fatal("remember 缺 text 应返回业务错误")
 	} else if m, ok := out.(map[string]any); !ok || m["error"] == nil {
 		t.Fatalf("缺 text 应 error: %v", out)
 	}
-	out, err := tl.Execute(nil, `{"action":"remember","text":"记录一条测试","tags":["t"]}`)
+	out, err := tl.Execute(context.TODO(), `{"action":"remember","text":"记录一条测试","tags":["t"]}`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	id := out.(map[string]any)["id"].(string)
 
 	// recall / list / forget / 未知 action
-	if out, _ := tl.Execute(nil, `{"action":"recall","query":"测试"}`); len(out.([]Entry)) != 1 {
+	if out, _ := tl.Execute(context.TODO(), `{"action":"recall","query":"测试"}`); len(out.([]Entry)) != 1 {
 		t.Fatalf("recall 应命中 1 条: %v", out)
 	}
-	if out, _ := tl.Execute(nil, `{"action":"list"}`); len(out.([]Entry)) != 1 {
+	if out, _ := tl.Execute(context.TODO(), `{"action":"list"}`); len(out.([]Entry)) != 1 {
 		t.Fatalf("list 应 1 条: %v", out)
 	}
-	if out, _ := tl.Execute(nil, `{"action":"forget","id":"`+id+`"}`); out.(map[string]any)["forgotten"] != id {
+	if out, _ := tl.Execute(context.TODO(), `{"action":"forget","id":"`+id+`"}`); out.(map[string]any)["forgotten"] != id {
 		t.Fatalf("forget 应返回 id: %v", out)
 	}
-	if out, _ := tl.Execute(nil, `{"action":"recall","query":"测试"}`); len(out.([]Entry)) != 0 {
+	if out, _ := tl.Execute(context.TODO(), `{"action":"recall","query":"测试"}`); len(out.([]Entry)) != 0 {
 		t.Fatalf("forget 后 recall 应为空: %v", out)
 	}
-	if out, _ := tl.Execute(nil, `{"action":"noop"}`); out == nil {
+	if out, _ := tl.Execute(context.TODO(), `{"action":"noop"}`); out == nil {
 		t.Fatal("未知 action 应返回业务错误")
 	}
 	// Definition:工具名与 action 枚举

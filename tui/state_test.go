@@ -262,12 +262,12 @@ func TestScrollMetrics(t *testing.T) {
 		t.Fatalf("到顶不符: top=%d thumb=%d", top, thumb)
 	}
 	// 中间位置:滑块按比例
-	top, thumb = scrollMetrics(10, 3, 3)
+	top, _ = scrollMetrics(10, 3, 3)
 	if top != 1 {
 		t.Fatalf("中间位置 top 不符: %d", top)
 	}
 	// 窗口 0 防御
-	top, thumb = scrollMetrics(10, 0, 0)
+	_, thumb = scrollMetrics(10, 0, 0)
 	if thumb != 0 {
 		t.Fatalf("win<=0 应 0: %d", thumb)
 	}

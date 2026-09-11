@@ -163,7 +163,7 @@ func (s *State) ApplySessionEvent(ev *sdk.SessionEvent) {
 		}
 	case sdk.EventToolCall:
 		if tc, ok := ev.Payload.(sdk.ToolCallEvent); ok {
-			s.Lines = append(s.Lines, Line{Kind: "tool", Text: toolCallText(sdk.ToolCall{ID: tc.ID, Name: tc.Name, Arguments: tc.Arguments})})
+			s.Lines = append(s.Lines, Line{Kind: "tool", Text: toolCallText(sdk.ToolCall(tc))})
 			s.LastTool = tc.Name     // 状态栏"执行工具"提示
 			s.toolStart = time.Now() // 工具耗时起点(下次 Result 结算)
 		}

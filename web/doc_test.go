@@ -35,10 +35,9 @@ type stubDoc struct {
 	rasterErr  error
 	rasterPage int
 	rasterDPI  int
-	noRaster   bool // true = 不实现 DocRasterService(未启用场景)
 }
 
-// Raster 实现 sdk.DocRasterService(noRaster 时不参与类型断言——通过外层包装控制)。
+// Raster 实现 sdk.DocRasterService(不启用时由外层包装控制类型断言)。
 func (d *stubDoc) Raster(_ context.Context, _ sdk.DocRequest, page, dpi int) (*sdk.DocRaster, error) {
 	d.rasterPage, d.rasterDPI = page, dpi
 	if d.rasterErr != nil {

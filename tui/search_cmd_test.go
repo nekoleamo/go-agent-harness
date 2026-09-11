@@ -165,7 +165,7 @@ func TestSearchCommandFlowBreakThenCommit(t *testing.T) {
 	}
 
 	// 3. 输入搜索词后回车 → 提交 /search keyword → 进入搜索态(命中 2 行)
-	for _, r := range []rune("keyword") {
+	for _, r := range "keyword" {
 		m.state.InsertRune(r)
 	}
 	m.syncHints()

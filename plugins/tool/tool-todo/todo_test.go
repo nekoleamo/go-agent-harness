@@ -3,6 +3,7 @@
 package tooltodo
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -213,29 +214,29 @@ func sdkProjectKey() string {
 func TestToolExecute(t *testing.T) {
 	tl := &Tool{store: newStore(t)}
 	// 缺 subject
-	if out, _ := tl.Execute(nil, `{"action":"create"}`); out.(map[string]any)["error"] == nil {
+	if out, _ := tl.Execute(context.TODO(), `{"action":"create"}`); out.(map[string]any)["error"] == nil {
 		t.Fatalf("create 缺 subject 应 error: %v", out)
 	}
-	out, err := tl.Execute(nil, `{"action":"create","subject":"写单测"}`)
+	out, err := tl.Execute(context.TODO(), `{"action":"create","subject":"写单测"}`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	id := out.(map[string]any)["id"].(string)
 	// 未知 action
-	if out, _ := tl.Execute(nil, `{"action":"nope"}`); out.(map[string]any)["error"] == nil {
+	if out, _ := tl.Execute(context.TODO(), `{"action":"nope"}`); out.(map[string]any)["error"] == nil {
 		t.Fatal("未知 action 应 error")
 	}
 	// list 可见;start;get 详情;list status 过滤
-	if out, _ := tl.Execute(nil, `{"action":"list"}`); len(out.([]View)) != 1 {
+	if out, _ := tl.Execute(context.TODO(), `{"action":"list"}`); len(out.([]View)) != 1 {
 		t.Fatalf("list 应 1 条: %v", out)
 	}
-	if out, _ := tl.Execute(nil, `{"action":"start","id":"`+id+`"}`); out.(map[string]any)["status"] != StatusInProgress {
+	if out, _ := tl.Execute(context.TODO(), `{"action":"start","id":"`+id+`"}`); out.(map[string]any)["status"] != StatusInProgress {
 		t.Fatalf("start 应 in_progress: %v", out)
 	}
-	if out, _ := tl.Execute(nil, `{"action":"list","status":"in_progress"}`); len(out.([]View)) != 1 {
+	if out, _ := tl.Execute(context.TODO(), `{"action":"list","status":"in_progress"}`); len(out.([]View)) != 1 {
 		t.Fatalf("list 过滤 in_progress 应 1 条: %v", out)
 	}
-	if out, _ := tl.Execute(nil, `{"action":"get","id":"`+id+`"}`); out.(Task).Subject != "写单测" {
+	if out, _ := tl.Execute(context.TODO(), `{"action":"get","id":"`+id+`"}`); out.(Task).Subject != "写单测" {
 		t.Fatalf("get 应返回详情: %v", out)
 	}
 	// Definition

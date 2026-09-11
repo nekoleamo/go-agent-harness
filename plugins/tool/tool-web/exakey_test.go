@@ -2,6 +2,7 @@
 package toolweb
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -116,7 +117,7 @@ func TestExaKeyBadYAMLSearchFails(t *testing.T) {
 	if p.err == nil {
 		t.Fatal("坏 yaml 应记录配置错误")
 	}
-	if _, err := p.Search(nil, "x", 1); err == nil {
+	if _, err := p.Search(context.TODO(), "x", 1); err == nil {
 		t.Fatal("Search 应显式失败")
 	}
 }

@@ -281,7 +281,7 @@ func (l *Loop) step(ctx context.Context, t *turn) error {
 	// 执行工具调用(结果经 tool/result 事件与流水线;日志派生 RoleTool 消息供下轮)
 	for _, call := range calls {
 		if err := l.appendEvents(sdk.SessionEvent{Kind: sdk.EventToolCall,
-			Payload: sdk.ToolCallEvent{ID: call.ID, Name: call.Name, Arguments: call.Arguments}}); err != nil {
+			Payload: sdk.ToolCallEvent(call)}); err != nil {
 			return fmt.Errorf("session log: %w", err)
 		}
 		res, err := l.tools.Execute(ctx, call.Name, call.Arguments)

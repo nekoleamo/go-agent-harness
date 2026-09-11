@@ -329,10 +329,8 @@ func TestApplyDataBudget(t *testing.T) {
 // 插件装配:Provide ctx.doc + Inject 可用;兼容 sdk.DocService 接口注入。
 func TestPluginProvidesDocService(t *testing.T) {
 	svc := New(Options{})
-	var ds sdk.DocService = svc
-	if ds == nil {
-		t.Fatal("Service 应实现 sdk.DocService")
-	}
+	// 编译期断言:Service 必须实现 sdk.DocService(接口值来自具体类型,判 nil 恒假故不判)
+	var _ sdk.DocService = svc
 	if _, ok := FormatByName("a.md"); !ok {
 		t.Fatal("FormatByName 应识别 md")
 	}
