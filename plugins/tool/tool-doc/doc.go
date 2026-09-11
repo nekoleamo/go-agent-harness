@@ -105,7 +105,8 @@ func (x *tool) Definition() sdk.ToolDefinition {
 	switch x.name {
 	case "read_document":
 		return sdk.ToolDefinition{
-			Name: "read_document",
+			Name:       "read_document",
+			PathParams: []sdk.PathParam{{Arg: "file_path", Access: sdk.PathRead}},
 			Description: "读取文档并按行号返回文本(markdown/文本/代码/CSV/notebook/docx/xlsx/pptx/PDF)。" +
 				"PDF 走文本层抽取(扫描件只有页事实);用 offset/limit 分页、pages/sheet 指定页或工作表。" +
 				"返回 JSON:{path, format, offset, lines:[{number,text}], totalLines, truncatedByBytes, pdf?, warnings[]}。",
@@ -127,7 +128,8 @@ func (x *tool) Definition() sdk.ToolDefinition {
 		}
 	case "doc_open":
 		return sdk.ToolDefinition{
-			Name: "doc_open",
+			Name:       "doc_open",
+			PathParams: []sdk.PathParam{{Arg: "file_path", Access: sdk.PathRead}},
 			Description: "在用户界面打开文档预览(TUI pager / Web 文档面板并定位该文件)。" +
 				"用于需要用户亲眼看文档时;不要在只需要文本时用它(那种情况用 read_document)。",
 			InputSchema: map[string]any{
@@ -143,6 +145,7 @@ func (x *tool) Definition() sdk.ToolDefinition {
 	default:
 		return sdk.ToolDefinition{
 			Name:        "doc_list",
+			PathParams:  []sdk.PathParam{{Arg: "path", Access: sdk.PathRead, Optional: true}},
 			Description: "列出目录下可预览的文档(名称/格式/大小),用于发现工作区里有哪些文档。",
 			InputSchema: map[string]any{
 				"type": "object",

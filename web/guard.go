@@ -12,6 +12,9 @@
 //     (这两种都不是 CORS 简单类型,浏览器必须预检 → 跨站请求被浏览器先行拦下)
 //  4. 安全响应头          —— frame-ancestors/X-Frame-Options 禁 iframe 嵌套(审批弹层防点击劫持)、nosniff、同源 Referer
 //
+// 鉴权不在本文件:data.auth_token 非空时由 authMiddleware 对**全表面**判凭据(/api/* 缺凭据 401,
+// 其它路径返回引导页),见 server.go 与 bootstrap.go。
+//
 // 包内测试直挂 handler()(不套护栏),护栏行为由 guard_test.go 单测覆盖。
 package web
 
@@ -44,6 +47,7 @@ func (s *Server) guardMiddleware(next http.Handler) http.Handler {
 				return
 			}
 			if consumesBody(r.Method) && strings.HasPrefix(r.URL.Path, "/api/") &&
+				r.URL.Path != authPath && // 引导通道:凭据可仅走 Authorization 头(无 body);跨站仍被 Origin 校验拦下
 				!contentTypeAllowed(r.Header.Get("Content-Type")) {
 				// 强制浏览器预检:跨站 simple request(text/plain 等)在此被拒
 				http.Error(w, "请求体须为 application/json 或 multipart/form-data", http.StatusUnsupportedMediaType)

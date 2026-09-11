@@ -221,6 +221,14 @@ func (f *FilesTool) register(tools sdk.ToolRegistry) sdk.Disposer {
 }
 
 // fileTool 单个具名工具(定义与执行分发)。
+// fileAccess 工具名的读写意图(file_read 读;其余改写)。
+func fileAccess(name string) sdk.PathAccess {
+	if name == "file_read" {
+		return sdk.PathRead
+	}
+	return sdk.PathWrite
+}
+
 type fileTool struct {
 	name   string
 	f      *FilesTool
@@ -233,7 +241,11 @@ func (t *fileTool) Definition() sdk.ToolDefinition {
 		"file_write":  "写文件(覆盖):{path, content}",
 		"file_append": "追加文件:{path, content}",
 		"file_edit":   "替换文件中的片段:{path, old, new}"}[t.name]
-	return sdk.ToolDefinition{Name: t.name, Description: desc, InputSchema: t.schema}
+	return sdk.ToolDefinition{
+		Name: t.name, Description: desc, InputSchema: t.schema,
+		// 路径参数能力声明(宿主 pre-execute 路径沙箱据此裁决;外部插件经桥协议原样传递)
+		PathParams: []sdk.PathParam{{Arg: "path", Access: fileAccess(t.name)}},
+	}
 }
 
 func (t *fileTool) Execute(ctx context.Context, raw string) (any, error) {

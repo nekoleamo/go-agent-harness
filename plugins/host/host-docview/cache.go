@@ -1,5 +1,6 @@
 // 内存 LRU 缓存(对齐 DOC_PREVIEW_PLAN §8「缓存」):默认 32 条目 / 64MiB,默认不落盘。
 // key = (path, size, mtime, 参数签名);源文件变更(mtime/size)自动失效。
+// 与资产表(service.go 的 assets)联动:文档资产被窗口淘汰时同步 invalidatePath。
 package hostdocview
 
 import (
@@ -55,6 +56,25 @@ func (c *docCache) get(k cacheKey) (*sdk.DocView, bool) {
 	c.hits++
 	c.ll.MoveToFront(el)
 	return el.Value.(*cacheEntry).view, true
+}
+
+// invalidatePath 丢弃某文档的全部缓存视图(资产表按文档窗口淘汰时同步调用):
+// 否则缓存视图会引用已淘汰的资产 ID(资产取回 404)。重新抽取会以同一确定性
+// ID(路径+part 哈希)重新登记资产,故淘汰+重抽取后 ID 仍稳定。
+func (c *docCache) invalidatePath(path string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := 0
+	for k, el := range c.items {
+		if k.path != path {
+			continue
+		}
+		c.bytes -= el.Value.(*cacheEntry).size
+		c.ll.Remove(el)
+		delete(c.items, k)
+		n++
+	}
+	return n
 }
 
 func (c *docCache) put(k cacheKey, v *sdk.DocView) {

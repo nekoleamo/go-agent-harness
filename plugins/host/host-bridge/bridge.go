@@ -2,7 +2,7 @@
 // 扫描外部插件目录,加载 tool-* 二进制(go-plugin/gRPC),注册为 sdk.Tool;
 // P0:工具级超时(TimeOutMs 覆写全局 3s)+ 进程崩溃自动拉起(连接错误
 // → 节流重建进程,下次调用走新实例);多工具协议(ExecuteNamed/Definitions,
-// 旧单工具协议自动回退)。
+// 旧单工具协议自动回退);执行可中断(CallID + Plugin.Cancel,回合适时取消)。
 package hostbridge
 
 import (
@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hashicorp/go-plugin"
@@ -191,7 +192,7 @@ func (b *Bridge) loadOne(path string) (*extEntry, error) {
 			e.proto = 2
 			protoOK = true
 			for _, d := range multi {
-				def := sdk.ToolDefinition{Name: d.Name, Description: d.Description, InputSchema: d.InputSchema, TimeoutMs: d.TimeoutMs}
+				def := sdk.ToolDefinition{Name: d.Name, Description: d.Description, InputSchema: d.InputSchema, TimeoutMs: d.TimeoutMs, PathParams: d.PathParams}
 				e.tools[d.Name] = &toolRPCClient{br: b, path: path, name: d.Name, def: def}
 			}
 		}
@@ -388,7 +389,8 @@ func (b *Bridge) respawn(path string) {
 
 // startPlugin 启动外部插件进程,返回 rpc client 与 kill 函数(崩溃隔离:死进程快速失败)。
 // 回调通道:宿主地址经 GAH_CB_ADDR 环境变量注入(外部进程 Dial 后请求宿主服务)。
-// externalEnvPass 显式放行的宿主 env 键(GAH_EXT_ENV_PASS,逗号分隔,大小写不敏感):
+// externalEnvPass 显式放行的宿主 env 键(GAH_EXT_ENV_PASS,逗号分隔;键名大小写敏感,
+// 与 os.LookupEnv 语义一致,写错大小写即静默不放行):
 // 凭据默认不下传外部插件;个别外部插件确需某凭据时(如 EXA_API_KEY 经 env 而非配置文件),
 // 由用户在 gah-data/env.sh 里点名放行——放行即视为用户明确把该凭据交给外部进程。
 func externalEnvPass() []string {
@@ -424,6 +426,11 @@ func startPlugin(bin string, cbAddr, cbToken string) (*rpc.Client, func(), error
 			pluginName: &toolPluginBridge{},
 		},
 		Cmd: cmd,
+		// SkipHostEnv 必须为 true:go-plugin 默认会 `cmd.Env = append(cmd.Env, os.Environ()...)`,
+		// 即把我们过滤后的 SanitizedEnv **后面**再接一份完整宿主环境(同名后者胜)→ 凭据隔离被
+		// 静默绕过(实测子进程能看到 EXA_API_KEY/*_TOKEN)。置 true 后仅用上面的 cmd.Env;
+		// go-plugin 自己需要追加的 PLUGIN_* 握手键仍在之后单独 append,不受影响。
+		SkipHostEnv: true,
 	})
 	proto, err := client.Client()
 	if err != nil {
@@ -447,16 +454,44 @@ func startPlugin(bin string, cbAddr, cbToken string) (*rpc.Client, func(), error
 	}, nil
 }
 
-// defDTO 多工具协议的定义载荷。
+// defDTO 外部工具定义载荷(两侧共用:serve.go 序列化、bridge.go 反序列化——
+// 单一类型避免字段漂移;旧单工具协议则由 sdk.ToolDefinition 直接反序列化)。
 type defDTO struct {
-	Name        string         `json:"Name"`
-	Description string         `json:"Description"`
-	InputSchema map[string]any `json:"InputSchema"`
-	TimeoutMs   int64          `json:"TimeoutMs"`
+	Name        string          `json:"Name"`
+	Description string          `json:"Description"`
+	InputSchema map[string]any  `json:"InputSchema"`
+	TimeoutMs   int64           `json:"TimeoutMs"`
+	PathParams  []sdk.PathParam `json:"PathParams,omitempty"` // 路径参数能力声明(透传给宿主裁决)
 }
 
 // rpcTimeout 默认外部 RPC 调用超时(崩溃隔离:死进程快速失败而非死等)。
 const rpcTimeout = 3 * time.Second
+
+// cancelRPCTimeout 取消 RPC 自身的超时(取消是尽力而为:插件无响应也不能拖住调用方)。
+const cancelRPCTimeout = 2 * time.Second
+
+// callSeq 外部调用序号(CallID 组成部分;同插件内唯一即可,无需全局唯一)。
+var callSeq atomic.Uint64
+
+// nextCallID 生成本次调用标识:插件名 + 序号(插件侧登记/取消都只按字符串匹配)。
+func nextCallID(path string) string {
+	return fmt.Sprintf("%s#%d", filepath.Base(path), callSeq.Add(1))
+}
+
+// pluginSideTimeoutMs 传给插件侧的执行超时:取宿主超时的 ~80%,让插件在正常超时下
+// 先自行结束并回明确错误;宿主侧 100% 计时 + Cancel 兜底(处理忽略 ctx 的工具)。
+func pluginSideTimeoutMs(host time.Duration) int64 {
+	return int64(host/time.Millisecond) * 8 / 10
+}
+
+// cancelCall 尽力中断插件侧运行中的调用(旧插件无 Cancel 方法 → 方法缺失,静默忽略)。
+func cancelCall(cl *rpc.Client, callID string) {
+	if cl == nil || callID == "" {
+		return
+	}
+	var ok bool
+	_ = rpcCall(cl, "Plugin.Cancel", &CancelArgs{CallID: callID}, &ok, cancelRPCTimeout)
+}
 
 // rpcTimeoutOf 超时计算:声明毫秒 >0 用之,否则全局默认(工具/命令共用)。
 func rpcTimeoutOf(ms int64) time.Duration {
@@ -488,6 +523,41 @@ func rpcCall(cl *rpc.Client, method string, args any, reply any, timeout time.Du
 		return call.Error
 	case <-timer.C:
 		return fmt.Errorf("rpc 调用 %s 超时(>%s)", method, timeout)
+	}
+}
+
+// rpcCallCtx rpcCall 的可取消版本(⑥):ctx 取消 / 超时 → 先发 Cancel RPC 中断插件侧执行,
+// 再把取消/超时错误回传调用方。不等待插件回复(响应写入带缓冲的 done channel,不泄漏
+// goroutine——同 rpcCall 纪律);cancelFn 为 nil 时退化为纯超时(旧路径语义)。
+func rpcCallCtx(ctx context.Context, cl *rpc.Client, method string, args, reply any, timeout time.Duration, cancelFn func()) error {
+	if cl == nil {
+		return fmt.Errorf("rpc 调用 %s: 连接不存在", method)
+	}
+	abort := func(err error) error {
+		if cancelFn != nil {
+			cancelFn()
+		}
+		return err
+	}
+	if timeout <= 0 {
+		call := cl.Go(method, args, reply, make(chan *rpc.Call, 1))
+		select {
+		case <-call.Done:
+			return call.Error
+		case <-ctx.Done():
+			return abort(ctx.Err())
+		}
+	}
+	call := cl.Go(method, args, reply, make(chan *rpc.Call, 1))
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-call.Done:
+		return call.Error
+	case <-timer.C:
+		return abort(fmt.Errorf("rpc 调用 %s 超时(>%s)", method, timeout))
+	case <-ctx.Done():
+		return abort(ctx.Err())
 	}
 }
 
@@ -533,12 +603,24 @@ func (t *toolRPCClient) Execute(ctx context.Context, args string) (any, error) {
 		return map[string]any{"error": "外部插件调用取消 " + err.Error()}, nil
 	}
 	var reply ExecReply
-	err := rpcCall(cl, "Plugin.ExecuteNamed", &ExecNamedArgs{Name: t.name, JSONArgs: args}, &reply, timeout)
+	callID := nextCallID(t.path)
+	cancelFn := func() { cancelCall(cl, callID) }
+	err := rpcCallCtx(ctx, cl, "Plugin.ExecuteNamed",
+		&ExecNamedArgs{Name: t.name, JSONArgs: args, CallID: callID, TimeoutMs: pluginSideTimeoutMs(timeout)},
+		&reply, timeout, cancelFn)
 	if err != nil && isMethodMissing(err) {
-		// 旧单工具协议回退
-		err = rpcCall(cl, "Plugin.Execute", &ExecArgs{JSONArgs: args}, &reply, timeout)
+		// 旧单工具协议回退(CallID 对旧插件无效:字段被忽略,行为不变)
+		err = rpcCallCtx(ctx, cl, "Plugin.Execute",
+			&ExecArgs{JSONArgs: args, CallID: callID, TimeoutMs: pluginSideTimeoutMs(timeout)},
+			&reply, timeout, cancelFn)
 	}
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return map[string]any{"error": "外部插件调用已取消(context canceled): " + t.name}, nil
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return map[string]any{"error": fmt.Sprintf("外部插件调用超时(>%s): %s", timeout, t.name)}, nil
+		}
 		if isTimeoutErr(err) {
 			return map[string]any{"error": fmt.Sprintf(
 				"外部插件调用超时(>%s;长耗时工具应声明 timeout_ms): %s", timeout, t.name)}, nil

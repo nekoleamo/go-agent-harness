@@ -128,10 +128,20 @@ type Service struct {
 	self       *selfRaster              // SELF-1 自包含光栅(默认关闭)
 
 	assets map[string]assetRef
-	// assetsMu 保护 assets:Preview/Asset 由 web 每请求一 goroutine 并发调用,
-	// 无锁读写 map 触发 fatal error: concurrent map writes(运行时 throw,recover 无效)。
+	// assetsMu 保护 assets 与 previewDocs:Preview/Asset 由 web 每请求一 goroutine
+	// 并发调用,无锁读写 map 触发 fatal error: concurrent map writes(运行时 throw)。
 	assetsMu sync.RWMutex
+	// previewDocs 最近预览过的文档(前 = 最新,去重):资产表按此窗口淘汰(⑦)。
+	// 元素的键与资产归属键一致(RegisterFileAsset 的 doc / RegisterAsset 的 abs)。
+	previewDocs []string
 }
+
+// 资产表淘汰上限(⑦):资产是**元数据**(不含字节,读取时才按需打开文件),
+// 故窗口给得宽松——目标是"大量不同文档常驻到进程退出"的老问题,而非字节内存。
+const (
+	maxAssetDocs    = 8    // 保留最近预览的文档数(窗口外文档的资产整体淘汰)
+	maxAssetEntries = 2048 // 硬上限:超出则继续从最旧文档起淘汰(永不动最新一篇)
+)
 
 // New 构造文档服务(注册基线抽取器:text/code/binary/image/unsupported)。
 func New(o Options) *Service {
@@ -306,6 +316,47 @@ func realPathOrClean(abs string) string {
 	return filepath.Clean(abs)
 }
 
+// notePreview 标记文档为最近预览并淘汰窗口外的资产与缓存视图;返回被淘汰的文档(测试用)。
+// 锁序:先 assetsMu 后 cache.mu(cache 侧无反向持锁路径)。
+func (s *Service) notePreview(doc string) []string {
+	s.assetsMu.Lock()
+	s.previewDocs = promoteDoc(s.previewDocs, doc)
+	var dropped []string
+	for (len(s.previewDocs) > maxAssetDocs) ||
+		(len(s.assets) > maxAssetEntries && len(s.previewDocs) > 1) {
+		last := s.previewDocs[len(s.previewDocs)-1]
+		s.previewDocs = s.previewDocs[:len(s.previewDocs)-1]
+		dropped = append(dropped, last)
+		deleteDocAssetsLocked(s.assets, last)
+	}
+	s.assetsMu.Unlock()
+	for _, d := range dropped {
+		s.cache.invalidatePath(d) // 缓存视图与资产同生共死(防取回已淘汰的资产 ID)
+	}
+	return dropped
+}
+
+// promoteDoc 把 doc 移到窗口最前(已存在则去重上浮)。
+func promoteDoc(list []string, doc string) []string {
+	out := make([]string, 0, len(list)+1)
+	out = append(out, doc)
+	for _, d := range list {
+		if d != doc {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// deleteDocAssetsLocked 删除某文档的全部资产(调用方持 assetsMu)。
+func deleteDocAssetsLocked(assets map[string]assetRef, doc string) {
+	for id, ref := range assets {
+		if ref.doc == doc {
+			delete(assets, id)
+		}
+	}
+}
+
 // Detect 格式判定(经 resolver,仅扩展名 + %PDF- 魔数特例 + UTF-8 兜底)。
 func (s *Service) Detect(ctx context.Context, req sdk.DocRequest) (sdk.DocFormat, error) {
 	abs, _, err := s.prepare(req, false)
@@ -325,6 +376,8 @@ func (s *Service) Preview(ctx context.Context, req sdk.DocRequest) (*sdk.DocView
 		return nil, err
 	}
 	format := s.detect(abs, req)
+	// 资产窗口(⑦):本次预览的文档上浮到最新;顺带淘汰窗口外文档的资产与缓存视图。
+	s.notePreview(abs)
 	key := cacheKey{path: abs, size: fi.Size(), mtime: fi.ModTime().UnixNano(), params: paramSig(req)}
 	if v, ok := s.cache.get(key); ok {
 		return v, nil

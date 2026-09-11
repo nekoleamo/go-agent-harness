@@ -428,8 +428,16 @@ func (j *cbJobs) Output(id string) (sdk.Job, bool) {
 	return job, true
 }
 func (j *cbJobs) Kill(id string) error {
-	var s string
-	return j.cc.Call("jobs", "kill", map[string]string{"ID": id}, &s)
+	var e string
+	if err := j.cc.Call("jobs", "kill", map[string]string{"ID": id}, &e); err != nil {
+		return err
+	}
+	// 宿主把业务失败写进 reply(见宿主侧 jobsCall):空串 = 成功,非空 = 终止失败(如任务不在
+	// 运行中),必须回错 —— 否则外部插件会把「没杀掉」当成功(对齐 cbFanout.KillAgent)。
+	if e != "" {
+		return errors.New(e)
+	}
+	return nil
 }
 
 // cbFanout sdk.FanoutService 回调代理。

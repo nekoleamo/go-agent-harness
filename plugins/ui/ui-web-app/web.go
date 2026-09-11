@@ -63,12 +63,22 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		return nil, err
 	}
 	srv.ApplyPrefs() // 恢复上次退出偏好(思考/沙箱/历史;model 经 providerfile 自动恢复)
-	// 启动成功自动打开浏览器(data.open_browser 缺省 true;env GAH_WEB_OPEN=0/false 显式关)
-	if shouldOpenBrowser(m) {
-		srv.OnReady = func(url string) {
-			if err := OpenBrowser(url); err != nil {
-				c.Logger().Warn("ui-web-app: 自动打开浏览器失败(可手动访问)", "url", url, "err", err)
-			}
+	// 启动成功回调:始终打印访问地址(token 模式含引导 fragment),按配置自动打开浏览器
+	// (data.open_browser 缺省 true;env GAH_WEB_OPEN=0/false 显式关)。
+	// token 模式凭据置于 URL fragment:引导页用它换 cookie,而 fragment 不会发往服务端
+	// (不进访问日志/Referer);用户复制日志里的地址即可直接进入 UI。
+	srv.OnReady = func(url string) {
+		visit := web.FragmentURL(url, cfg.AuthToken)
+		if cfg.AuthToken != "" {
+			c.Logger().Info("ui-web-app: 访问地址(token 在 URL fragment 中,不会发往服务端)", "url", visit)
+		} else {
+			c.Logger().Info("ui-web-app: 访问地址", "url", visit)
+		}
+		if !shouldOpenBrowser(m) {
+			return
+		}
+		if err := OpenBrowser(visit); err != nil {
+			c.Logger().Warn("ui-web-app: 自动打开浏览器失败(可手动访问)", "url", visit, "err", err)
 		}
 	}
 	// 事件通道订阅(会话事件/运行状态/错误;对齐 TUI 订阅集)

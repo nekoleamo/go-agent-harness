@@ -24,6 +24,7 @@ const pluginName = "tool"
 type ToolServer interface {
 	Definitions(args struct{}, reply *string) error
 	ExecuteNamed(args *ExecNamedArgs, reply *ExecReply) error
+	Cancel(args *CancelArgs, reply *bool) error // 执行取消(按 CallID;旧宿主不调用)
 
 	Commands(args struct{}, reply *string) error              // 命令定义枚举(JSON 数组)
 	CommandOptions(args *CmdOptionsArgs, reply *string) error // 枚举级选项运行期求值
@@ -44,14 +45,27 @@ type RunCommandArgs struct {
 }
 
 // ExecArgs/ExecReply RPC 载荷。strings 传输(JSON),gob 可序列化。
+// CallID/TimeoutMs 为执行可中断契约(⑥):宿主为每次调用生成 CallID,插件按 CallID
+// 登记可取消 ctx —— 宿主回合取消 / 超时后经 Plugin.Cancel RPC 真正中断外部执行
+// (此前只传参数不传 ctx,长耗时外部工具只能靠宿主侧超时兜底,回合取消传不到插件)。
+// 旧插件忽略未知字段(gob 按名匹配),行为不变。
 type ExecArgs struct {
-	JSONArgs string
+	JSONArgs  string
+	CallID    string // 本次调用标识(空 = 不登记取消,旧宿主兼容)
+	TimeoutMs int64  // 插件侧执行超时(毫秒;0 = 不限,由宿主侧超时 + Cancel 兜底)
 }
 
-// ExecNamedArgs 新协议载荷:工具名 + 参数。
+// ExecNamedArgs 新协议载荷:工具名 + 参数(含可中断契约,同 ExecArgs)。
 type ExecNamedArgs struct {
-	Name     string
-	JSONArgs string
+	Name      string
+	JSONArgs  string
+	CallID    string
+	TimeoutMs int64
+}
+
+// CancelArgs 执行取消请求(宿主 → 外部插件;按 CallID 中断运行中的工具调用)。
+type CancelArgs struct {
+	CallID string
 }
 
 type ExecReply struct {

@@ -17,10 +17,12 @@
 //	GET/POST /api/providers … 多 provider;POST /api/reload 指令热更
 //	POST /api/shutdown 优雅停机(触发宿主 system/shutdown → DisposeAll;桌面壳/跨平台统一通道)
 //	POST /api/attachments 附件上传(multipart "file";流式/大小 20MB/类型白名单;落盘
-//	$GAH_HOME/attachments/<时间戳>/;GET /attachments/{...} 静态预览(仅本机/鉴权外))
+//	$GAH_HOME/attachments/<时间戳>/;GET /attachments/{...} 静态预览(同受鉴权门保护))
+//	POST /api/auth     token 引导通道:{token} 或 Bearer → 下发 gah_token cookie(204;见 bootstrap.go)
 //
-// 安全:默认绑定 127.0.0.1:2233;全部 /api/* 经 guardMiddleware 做 Host 白名单 + 同源(Origin/Referer)
-// + 请求体类型校验(见 guard.go);data.auth_token 非空时另需携带 Authorization: Bearer / gah_token cookie。
+// 安全:默认绑定 127.0.0.1:2233;全部请求经 guardMiddleware 做 Host 白名单 + 同源(Origin/Referer)
+// + 请求体类型校验(见 guard.go);data.auth_token 非空时**全表面**需凭据(Authorization: Bearer /
+// gah_token cookie):/api/* 缺凭据 401,其它路径(导航/静态/附件/UI 插件产物)返回引导页(见 bootstrap.go)。
 // 可选服务(Ctx 可选注入)未装配时对应端点返回 503/501 显式错误,不静默降级。
 package web
 
@@ -101,7 +103,9 @@ type Server struct {
 	docMu    sync.Mutex                // doc 懒解析互斥(并发首请求防数据竞争)
 
 	running     atomic.Bool
+	lifeMu      sync.Mutex // 守护 http/closed:Start(插件 goroutine)与 Shutdown(卸载)可并发
 	http        *http.Server
+	closed      bool         // 已 Shutdown:Start 若尚未发布 http 则放弃监听(不留孤儿)
 	unsubStatus sdk.Disposer // agent/status 订阅撤销(驱动 running 复位)
 
 	// OnReady 监听成功回调(参数=访问 URL;监听失败不触发,插件层据此自动打开浏览器)。
@@ -160,6 +164,8 @@ func (s *Server) Inject(c sdk.Ctx) error {
 
 // Start 启动监听(阻塞;外部 goroutine 调用,Shutdown 停止)。
 // 先实际监听成功(失败返回错误,不打 listening 日志),再回调 OnReady 并开始服务。
+// 与 Shutdown 并发安全:先建 http.Server 再发布(锁内),Shutdown 已发生则放弃监听
+// —— 否则会在卸载后留下无句柄的孤儿监听(端口泄漏)。
 func (s *Server) Start() error {
 	if s.cfg.Addr == "" {
 		s.cfg.Addr = "127.0.0.1:2233"
@@ -168,17 +174,25 @@ func (s *Server) Start() error {
 	if err != nil {
 		return fmt.Errorf("web ui 监听失败: %w", err)
 	}
-	s.http = &http.Server{
+	hs := &http.Server{
 		Handler:           s.protected(),
 		ReadHeaderTimeout: 10 * time.Second, // 慢头攻击兜底
 		IdleTimeout:       120 * time.Second,
 		// 不设 WriteTimeout:SSE 长连接/慢客户端会被写超时截断
 	}
+	s.lifeMu.Lock()
+	if s.closed {
+		s.lifeMu.Unlock()
+		_ = ln.Close()
+		return nil
+	}
+	s.http = hs
+	s.lifeMu.Unlock()
 	if s.OnReady != nil {
 		s.OnReady("http://" + s.cfg.Addr)
 	}
 	s.log.Info("web ui listening", "addr", s.cfg.Addr)
-	return s.http.Serve(ln)
+	return hs.Serve(ln)
 }
 
 // Handler 导出完整服务栈(护栏 + 鉴权 + 路由);外部挂载/httptest 直挂即受保护。
@@ -242,22 +256,29 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET /api/doc/html", s.handleDocHTML)
 	mux.HandleFunc("POST /api/doc/render", s.handleDocRender)
 	mux.HandleFunc("POST /api/question", s.handleQuestion)
+	mux.HandleFunc(authPath, s.handleAuth) // token 引导通道(唯一豁免鉴权门;护栏照常;非 POST 由处理器 405)
 	mux.Handle("/ui-plugins/", s.uiPluginsHandler())
 	mux.Handle("/attachments/", s.attachmentsHandler())
 	mux.Handle("/", s.staticHandler())
 	return mux
 }
 
-// Shutdown 停止服务并撤销状态订阅。
+// Shutdown 停止服务并撤销状态订阅。可在 Start 之前/并发调用:此时仅标记 closed,
+// 尚未发布的 Start 会自检并放弃监听。
 func (s *Server) Shutdown() {
 	if s.unsubStatus != nil {
 		s.unsubStatus()
 	}
-	if s.http != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		_ = s.http.Shutdown(ctx)
+	s.lifeMu.Lock()
+	s.closed = true
+	hs := s.http
+	s.lifeMu.Unlock()
+	if hs == nil {
+		return // 尚未开始监听:Start 侧自检 closed 后放弃(不会留孤儿)
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = hs.Shutdown(ctx)
 }
 
 // —— SSE ——
@@ -977,7 +998,7 @@ func (s *Server) scanUIPlugins() []UIPlugin {
 	return out
 }
 
-// uiPluginsHandler 静态托管 ui-plugins 目录(插件 vite 产物;仅本机/鉴权外静态资源)。
+// uiPluginsHandler 静态托管 ui-plugins 目录(插件 vite 产物;受鉴权门保护:token 模式缺凭据 → 引导页)。
 // 经 StripPrefix 将 /ui-plugins/<id>/... 映射到目录内 <id>/...(DirFS 根即 ui-plugins)。
 func (s *Server) uiPluginsHandler() http.Handler {
 	if s.cfg.UIPluginsDir == "" {
@@ -1210,30 +1231,18 @@ func (s *Server) staticHandler() http.Handler {
 			http.Error(w, "静态资源不可用: web/dist 未构建", http.StatusInternalServerError)
 		})
 	}
-	fileSrv := http.FileServerFS(root)
-	if s.cfg.AuthToken == "" {
-		return fileSrv
-	}
-	// token 模式的浏览器引导:访问应用入口页时下发 SameSite=Strict + HttpOnly 会话 cookie。
-	// 理由:WebSocket 握手与 fetch 无法自定义头,若不给浏览器一个凭据通道,
-	// 开启 token 后整个 Web UI 会 401 不可用(此前只有 CLI 能带 Bearer)。
-	// 安全性:入口页仅静态 shell(不含敏感数据),cookie 不暴露给 JS;
-	// 跨站拿不到响应体读不到 cookie,且护栏的 Host 白名单拦 DNS rebinding、
-	// 变更类 /api/* 请求强制同源校验 —— token 仍拦住跨站/外部脚本调用。
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if p := r.URL.Path; p == "/" || p == "/index.html" {
-			http.SetCookie(w, &http.Cookie{ //nolint:gosec // token 模式下必需;
-				// HttpOnly+SameSite=Strict+（https 时）Secure;同机用户本就能读 config 里的 token
-				Name: "gah_token", Value: s.cfg.AuthToken, Path: "/",
-				HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: r.TLS != nil,
-			})
-		}
-		fileSrv.ServeHTTP(w, r)
-	})
+	// 静态资源不再自设 cookie:token 模式的凭据只经 POST /api/auth(引导页)下发,
+	// 缺凭据时由 authMiddleware 返回引导页(见 bootstrap.go)。
+	return http.FileServerFS(root)
 }
 
-// authMiddleware 可选鉴权:data.auth_token 非空时 /api/* 需匹配
-// (Authorization: Bearer <token> 或 gah_token cookie);静态资源不鉴权(Host/Origin 由护栏兜底)。
+// authMiddleware 鉴权门(token 模式全表面,data.auth_token 非空时生效):
+//   - /api/* 缺凭据 → 401(WS 握手同此);
+//   - 其它路径(导航/静态资源/附件/UI 插件产物)缺凭据 → 引导页(不含任何业务内容,见 bootstrap.go);
+//   - 非 GET/HEAD 的非 API 路径缺凭据 → 401(引导页只服务浏览器导航)。
+//
+// 唯一豁免 = POST /api/auth(引导页用 fragment 里的 token 换 cookie;仍受 guardMiddleware 的
+// Host 白名单 + 同源校验约束)。凭据通道:Authorization: Bearer <token> 或 gah_token cookie;
 // 不再接受 ?token=(会进浏览器历史/访问日志/Referer)。
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	tok := s.cfg.AuthToken
@@ -1241,21 +1250,73 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.URL.Path, "/api/") {
+		if r.URL.Path == authPath {
+			next.ServeHTTP(w, r) // 引导通道:凭据在 body/Bearer,由 handleAuth 校验
+			return
+		}
+		if subtle.ConstantTimeCompare([]byte(s.credential(r)), []byte(tok)) == 1 {
 			next.ServeHTTP(w, r)
 			return
 		}
-		given := ""
-		if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
-			given = strings.TrimPrefix(h, "Bearer ")
-		} else if c, err := r.Cookie("gah_token"); err == nil {
-			given = c.Value // 多浏览器会话:前端登录后写 cookie,后续请求/WS 自动携带
-		}
-		if subtle.ConstantTimeCompare([]byte(given), []byte(tok)) != 1 {
+		if strings.HasPrefix(r.URL.Path, "/api/") ||
+			(r.Method != http.MethodGet && r.Method != http.MethodHead) {
 			http.Error(w, "未授权", http.StatusUnauthorized)
 			return
 		}
-		next.ServeHTTP(w, r)
+		writeBootstrap(w)
+	})
+}
+
+// credential 取请求携带的凭据(Authorization: Bearer 优先,其次 gah_token cookie)。
+func (s *Server) credential(r *http.Request) string {
+	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
+		return strings.TrimPrefix(h, "Bearer ")
+	}
+	if c, err := r.Cookie("gah_token"); err == nil {
+		return c.Value // 多浏览器会话:引导页换取后,后续请求/WS 握手自动携带
+	}
+	return ""
+}
+
+// handleAuth token 引导通道(POST /api/auth):凭据取自 body {"token":"..."} 或 Bearer 头,
+// constant-time 比对;成功 → 204 + gah_token cookie(HttpOnly/SameSite=Strict;https 加 Secure)。
+// 未启用鉴权(data.auth_token 空)→ 404(显式:无需引导)。失败不回显 token。
+func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "引导通道仅支持 POST", http.StatusMethodNotAllowed)
+		return
+	}
+	tok := s.cfg.AuthToken
+	if tok == "" {
+		http.Error(w, "未启用鉴权(data.auth_token 为空)", http.StatusNotFound)
+		return
+	}
+	given := ""
+	if r.Body != nil {
+		var b struct {
+			Token string `json:"token"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, authBodyLimit)).Decode(&b); err == nil {
+			given = strings.TrimSpace(b.Token)
+		}
+	}
+	if given == "" {
+		given = s.credential(r) // 仅凭 Bearer 头调用(无 body)的客户端
+	}
+	if subtle.ConstantTimeCompare([]byte(given), []byte(tok)) != 1 {
+		http.Error(w, "凭据无效", http.StatusUnauthorized)
+		return
+	}
+	s.setAuthCookie(w, r)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// setAuthCookie 下发会话 cookie(HttpOnly + SameSite=Strict;https 时 Secure)。
+func (s *Server) setAuthCookie(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // 会话凭据:HttpOnly+SameSite=Strict;同机用户本就能读 config 里的 token
+		Name: "gah_token", Value: s.cfg.AuthToken, Path: "/",
+		HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: r.TLS != nil,
 	})
 }
 

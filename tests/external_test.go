@@ -408,3 +408,43 @@ func mustJSON2(t *testing.T, v any) string {
 	}
 	return string(b)
 }
+
+// TestExternalPathCapabilityDeclared 能力化路径沙箱的**全链路**回归:
+// 外部 tool-basic(tool-files 四件套)→ 桥协议(defDTO)→ 宿主注册表声明 →
+// policy-guard 按声明 veto 越界写。任一环丢字段(声明不下发/注册表不带/guard 不读)
+// 这一步都会失败——此前登记的缺口正是"自定义名与表外工具不受路径沙箱约束"。
+func TestExternalPathCapabilityDeclared(t *testing.T) {
+	t.Parallel()
+	extDir := t.TempDir()
+	releaseExt(t, extDir, "tool-basic")
+	c, _ := buildExternalEnv(t, extDir, config.Entry{ID: "policy-guard"})
+
+	var tools sdk.ToolRegistry
+	if err := c.Inject("ctx.tools", &tools); err != nil {
+		t.Fatal(err)
+	}
+	// ① 外部插件自述的路径声明跨桥到达宿主注册表
+	def, ok := tools.Get("file_write")
+	if !ok {
+		t.Fatal("外部 file_write 应已注册")
+	}
+	if len(def.PathParams) == 0 {
+		t.Fatal("外部工具的路径参数声明未跨桥传递(能力化沙箱失效)")
+	}
+	if got := def.PathParams[0]; got.Arg != "path" || got.Access != sdk.PathWrite {
+		t.Fatalf("声明内容不符: %+v", got)
+	}
+	// ② 越界写按声明被宿主 pre-execute veto(工具未真正执行)
+	outside := filepath.Join(t.TempDir(), "leak.txt")
+	res, err := tools.Execute(context.Background(), "file_write",
+		mustJSON2(t, map[string]any{"path": outside, "content": "x"}))
+	if err != nil {
+		t.Fatalf("veto 应为结构化结果而非硬错误: %v", err)
+	}
+	if res.Error == "" {
+		t.Fatal("越界写应被路径沙箱 veto")
+	}
+	if _, statErr := os.Stat(outside); statErr == nil {
+		t.Fatal("被 veto 的写不应落盘")
+	}
+}

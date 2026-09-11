@@ -180,8 +180,9 @@ func TestConfirmDenyAndAllow(t *testing.T) {
 		t.Fatal("用户拒绝后应拦截")
 	}
 
-	// 用户允许
-	c2 := build(t, &fakeConfirm{resp: true}, map[string]any{"approval": "smart"})
+	// 用户允许(沙箱取 full-access 以隔离本用例的两层:审批层放行 ≠ 放开沙箱档位,
+	// 默认 workspace-write 下 /tmp 写目标会另被 shell 路径裁决拒绝,见 shellguard_test.go)
+	c2 := build(t, &fakeConfirm{resp: true}, map[string]any{"approval": "smart", "sandbox": "full-access"})
 	var tools2 sdk.ToolRegistry
 	if err := c2.Inject("ctx.tools", &tools2); err != nil {
 		t.Fatal(err)

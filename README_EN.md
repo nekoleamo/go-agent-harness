@@ -30,7 +30,7 @@ One source, three surfaces: the same gah binary hosts **TUI / Web / headless**; 
 | **ReAct loop** | dsh-style turns: pre-step → llm/stream → tool/call* → turn/end; AgentLoop itself is replaceable |
 | **Structured tools** | MCP-compatible JSON schema; execution pipeline pre-execute(veto) → execute → post-execute → result broadcast; structured errors fed back to the model |
 | **Unified LLM model** | Pure HTTP+SSE OpenAI-compatible adapter (DeepSeek/OpenAI/Ollama/vLLM/Kimi/llama.cpp) + Anthropic adapter (`claude-*` prefix routing) + mock adapter (CI without network); multiple providers coexist (`/provider`) |
-| **Sandbox tiers** | read-only / workspace-write (`../` traversal blocked) / full-access; switch at runtime via TUI `/sandbox` or the Web settings panel |
+| **Sandbox tiers** | read-only / workspace-write (`../` traversal blocked) / full-access; switch at runtime via TUI `/sandbox` or the Web settings panel ; **unified write-path adjudication**: `file_*` arguments *and* the **explicit write targets of `shell` commands** must stay inside the mode's allowed scope (out-of-scope writes and unresolvable targets such as variable-built paths are rejected) — approving a prompt does **not** widen the mode; switch to full-access explicitly |
 | **Approval tiers** | Dangerous commands (rm -rf / git push -f / sudo / chmod 777…) follow a tier: open (allow) / smart (confirm dialog; safe-deny when no confirm channel; default) / strict (deny); preference persists |
 | **Credential isolation** | Tool subprocess env strips `*_API_KEY/_TOKEN/_SECRET`; dangerous operations safe-deny without a confirm channel |
 | **Session management** | Per-project isolation + multi-session switching + branch tree (`/fork` `/clone` `/tree` + naming); rolling summary compression over token budget (token-compress; full logs stay on disk) |
@@ -179,7 +179,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 
 | Tool | Description |
 |---|---|
-| `shell` | Run shell commands (sandbox/approval policies intercept; `data.pty` drives interactive processes; credential env stripped) |
+| `shell` | Run shell commands (sandbox/approval policies intercept; `data.pty` drives interactive processes; credential env stripped) ; explicit write targets are path-adjudicated (out-of-workspace writes denied under workspace-write, every write denied under read-only) |
 | `file_read` / `file_write` / `file_append` / `file_edit` | Read/write/append/precise-edit files (sandbox path validation) |
 | `web_fetch` / `web_search` | Fetch URL content / web search (default Exa, `EXA_API_KEY`; `data.provider` swappable; 401/429/5xx structured errors) |
 | `workflow` / `workflow_collect` | Restricted starlark composing multi-step tool calls (natively sandboxed); `background` async + collect |
@@ -195,6 +195,8 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 
 `gah web` serves http://127.0.0.1:2233 (auto-opens the browser; disable with `GAH_WEB_OPEN=0`). Feature-equivalent to the TUI, plus visual panels:
 
+**Auth (token mode = non-empty `data.auth_token`)**: every surface is gated — API, static assets, `/attachments/` and `/ui-plugins/` all require a credential (previously only `/api/*` was protected). Open the `#token=<token>` URL printed in the startup log: the credential sits in the **URL fragment** (never sent to the server, absent from access logs/Referer), the bootstrap page exchanges it via `POST /api/auth` for an HttpOnly + SameSite=Strict `gah_token` cookie, then redirects into the UI. The desktop shell passes the same token via `GAH_WEB_TOKEN` (`?token=` is deprecated).
+
 - **Settings panel** (⚙ in the status bar): model dropdown (all providers aggregated), thinking/sandbox/**approval** segmented controls, history-injection dropdown + compact button, provider management (enable/delete/add), plugin toggles, instruction reload, **data backup** (back up now / restore — **double-confirmed**). Every change persists on exit (gah-state.json, shared with the TUI).
 - **Sidebar**: pinned workspaces (switching = real chdir) + session history (name/content preview/time; ✎ rename, × delete — double-confirmed), attachment upload (button/drag-drop/paste; image thumbnails + the model sees images), session export (⤓ jsonl/HTML).
 - **Status bar**: connection state (green/orange), model/thinking/sandbox/session, context·cache usage, background-jobs button (running badge + list/output/kill).
@@ -204,6 +206,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 
 | Method / path | Description |
 |---|---|
+| `POST /api/auth` | Bootstrap channel: `{"token":"…"}` (or `Authorization: Bearer`) → `gah_token` cookie (POST-only, 401 on a wrong token); the only path exempt from the auth gate, still under the Host allow-list + same-origin guard |
 | `GET /api/state` | State snapshot (model/thinking/sandbox/approval/stats/session/running/version) |
 | `POST /api/input` | Submit a turn; `/` prefix routes to commands; 409 while running |
 | `POST /api/confirm` | Approval reply `{id, ok}` |
@@ -259,7 +262,7 @@ The data root is **the `gah-data/` sibling of the gah binary (the only one; auto
 |---|---|
 | `GAH_HOME` | Internal plumbing variable (set by boot to the portable `gah-data/`; plugins/external processes derive subdirs from it); **user-set values are ignored** (the only data root is the sibling `gah-data/`, since 2026-09-16; a different user-set value logs a warning) |
 | `GAH_PROFILE` / `GAH_NO_TUI` | Default profile / force TUI off (headless/CI) |
-| `GAH_WEB_ADDR` / `GAH_WEB_OPEN` / `GAH_WEB_STATIC` | Web listen address (default 127.0.0.1:2233) / auto-open browser / static dir override (dev HMR) |
+| `GAH_WEB_ADDR` / `GAH_WEB_OPEN` / `GAH_WEB_STATIC` | Web listen address (default 127.0.0.1:2233) / auto-open browser / static dir override (dev HMR); the desktop shell additionally uses `GAH_WEB_TOKEN` to pass the token and navigate to the `#token=` URL (its readiness probe treats 401 as ready) |
 | `GAH_MCP_COMMAND` / `GAH_MCP_COMMANDS` | MCP bridge (single server `name=command` / multi server one per line `name=command args`; tools `mcp_<server>_<tool>`) |
 | `GAH_CB_ADDR` / `GAH_CB_TOKEN` | host-bridge callback channel (external plugins request tools/jobs/fanout from the host; auth token; **never leaked downstream** — `SanitizedEnv` strips it) |
 | `GAH_EXT_ENV_PASS` | Explicit allow-list of env vars passed to external plugin processes (comma-separated): external plugins do **not** inherit host credentials by default (`*_API_KEY`/`*_TOKEN`/`AWS_*`/`GAH_CB_*` are stripped); name the ones a plugin genuinely needs (e.g. `EXA_API_KEY`), or use a config file (recommended: `$GAH_HOME/config/search.yaml`) |

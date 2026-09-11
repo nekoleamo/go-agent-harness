@@ -11,6 +11,8 @@ import (
 	"net/rpc"
 	"os"
 	"sort"
+	"sync"
+	"time"
 
 	"github.com/hashicorp/go-plugin"
 
@@ -47,7 +49,7 @@ type toolServerBridge struct {
 }
 
 func (p *toolServerBridge) Server(*plugin.MuxBroker) (any, error) {
-	return &toolServer{tools: p.tools, commands: p.commands}, nil
+	return &toolServer{tools: p.tools, commands: p.commands, running: map[string]context.CancelFunc{}}, nil
 }
 func (p *toolServerBridge) Client(b *plugin.MuxBroker, c *rpc.Client) (any, error) {
 	return nil, fmt.Errorf("外部插件不需要 client 侧(宿主侧经 host-bridge)")
@@ -57,25 +59,24 @@ func (p *toolServerBridge) Client(b *plugin.MuxBroker, c *rpc.Client) (any, erro
 type toolServer struct {
 	tools    map[string]sdk.Tool
 	commands map[string]sdk.CommandSpec
+
+	// running 运行中的工具调用(CallID → cancel):宿主取消/超时经 Cancel RPC 中断。
+	mu      sync.Mutex
+	running map[string]context.CancelFunc
 }
 
 // Definitions 返回全部工具定义(JSON 数组;新协议,host 侧优先)。
 func (s *toolServer) Definitions(args struct{}, reply *string) error {
-	type td struct {
-		Name        string
-		Description string
-		InputSchema map[string]any
-		TimeoutMs   int64
-	}
+	// 两侧共用同一 DTO(bridge.go defDTO):字段名/标签只有一处事实源,防协议漂移。
 	names := make([]string, 0, len(s.tools))
 	for n := range s.tools {
 		names = append(names, n)
 	}
 	sort.Strings(names)
-	var defs []td
+	var defs []defDTO
 	for _, n := range names {
 		d := s.tools[n].Definition()
-		defs = append(defs, td{Name: d.Name, Description: d.Description, InputSchema: d.InputSchema, TimeoutMs: d.TimeoutMs})
+		defs = append(defs, defDTO{Name: d.Name, Description: d.Description, InputSchema: d.InputSchema, TimeoutMs: d.TimeoutMs, PathParams: d.PathParams})
 	}
 	b, err := json.Marshal(defs)
 	if err != nil {
@@ -107,7 +108,7 @@ func (s *toolServer) Execute(args *ExecArgs, reply *ExecReply) error {
 		return fmt.Errorf("多工具进程须用 ExecuteNamed(新协议)")
 	}
 	for _, t := range s.tools {
-		return s.exec(t, "", args.JSONArgs, reply)
+		return s.exec(t, "", args.JSONArgs, reply, args.CallID, args.TimeoutMs)
 	}
 	return nil
 }
@@ -119,12 +120,59 @@ func (s *toolServer) ExecuteNamed(args *ExecNamedArgs, reply *ExecReply) error {
 		reply.Error = fmt.Sprintf("外部插件无此工具 %q", args.Name)
 		return nil
 	}
-	return s.exec(t, args.Name, args.JSONArgs, reply)
+	return s.exec(t, args.Name, args.JSONArgs, reply, args.CallID, args.TimeoutMs)
+}
+
+// Cancel 执行取消(宿主回合取消 / 超时→协议级中断):按 CallID 中断运行中的调用。
+// 返回是否命中(已被取消或已结束 = false,不视为错误)。
+func (s *toolServer) Cancel(args *CancelArgs, reply *bool) error {
+	if reply == nil {
+		return nil
+	}
+	*reply = false // 契约:总是写回判定结果(未命中/已结束 = false)
+	if args == nil || args.CallID == "" {
+		return nil
+	}
+	s.mu.Lock()
+	cancel, ok := s.running[args.CallID]
+	s.mu.Unlock()
+	if !ok {
+		return nil
+	}
+	cancel() // 工具多返回 ctx.Err();登记项由 exec 的 defer 清理
+	*reply = true
+	return nil
+}
+
+// callContext 构造本次调用的 ctx:CallID 非空时登记可取消(宿主 Cancel 可中断);
+// TimeoutMs > 0 时插件侧自超时(宿主超时略大,正常情况插件先返回明确错误)。
+func (s *toolServer) callContext(callID string, timeoutMs int64) (context.Context, func()) {
+	base := context.Background()
+	var cancel context.CancelFunc
+	if timeoutMs > 0 {
+		base, cancel = context.WithTimeout(base, time.Duration(timeoutMs)*time.Millisecond)
+	} else {
+		base, cancel = context.WithCancel(base)
+	}
+	if callID == "" {
+		return base, cancel // 旧宿主:不登记,仍保留超时语义
+	}
+	s.mu.Lock()
+	s.running[callID] = cancel
+	s.mu.Unlock()
+	return base, func() {
+		s.mu.Lock()
+		delete(s.running, callID)
+		s.mu.Unlock()
+		cancel()
+	}
 }
 
 // exec 执行并写入结果(参数错误/工具错误 → 结构化 reply.Error)。
-func (s *toolServer) exec(t sdk.Tool, name, jsonArgs string, reply *ExecReply) error {
-	res, err := t.Execute(context.Background(), jsonArgs)
+func (s *toolServer) exec(t sdk.Tool, name, jsonArgs string, reply *ExecReply, callID string, timeoutMs int64) error {
+	ctx, done := s.callContext(callID, timeoutMs)
+	defer done()
+	res, err := t.Execute(ctx, jsonArgs)
 	if err != nil {
 		reply.Error = fmt.Sprintf("%s: %v", name, err)
 		return nil

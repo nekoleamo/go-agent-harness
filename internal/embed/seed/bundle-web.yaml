@@ -1,7 +1,9 @@
 # seed-version: 2 # 样板版本:新增能力条目时 +1,老用户自动升级(备份后覆盖)
 # web bundle:叠加 Web 界面(ui-web-app,运行时在 web/ 包)。
 # M7 Web UI:data.addr 监听地址(默认 127.0.0.1:2233,仅本机);
-#   data.auth_token 可选鉴权(全部 /api/* 需 Bearer 或 gah_token cookie;?token= 已废弃);留空 = 仅本机绑定;
+#   data.auth_token 可选鉴权(token 模式 = **全表面**鉴权:/api/* 与静态资源/附件/UI 插件产物均需凭据;
+#     浏览器用启动输出的 #token= 地址换取 HttpOnly+SameSite=Strict cookie,POST /api/auth 换发;?token= 已废弃);
+#     留空 = 不鉴权;始终仅本机绑定。
 #   data.static_dir 可选静态目录覆写(开发态 Vite HMR 直读 dist;缺省 embed 预编译产物);
 #   data.open_browser 启动成功自动打开浏览器(缺省 true;env GAH_WEB_OPEN=0/false 显式关)。
 # 与 tui bundle 互斥:profile-web 不叠加 ui-tui-app(ctx.confirm 唯一性由 profile 保证)。

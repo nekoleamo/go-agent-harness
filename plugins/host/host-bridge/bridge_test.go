@@ -3,11 +3,13 @@ package hostbridge
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -312,5 +314,37 @@ func TestCrashAutoRespawn(t *testing.T) {
 	}
 	if !recovered {
 		t.Fatal("崩溃后应自动拉起并恢复调用")
+	}
+}
+
+// TestPathParamsCrossBridge 能力声明必须跨桥协议两跳原样传递:
+// 外部侧(serve.go td)→ JSON → 宿主侧(bridge.go defDTO)→ 注册表 sdk.ToolDefinition。
+// 字段名/标签两端漂移会让声明静默丢失(路径沙箱随之失效),故以真实结构体往返锚定。
+func TestPathParamsCrossBridge(t *testing.T) {
+	want := []sdk.PathParam{
+		{Arg: "target", Access: sdk.PathWrite, Many: true},
+		{Arg: "dir", Access: sdk.PathRead, Optional: true},
+	}
+	raw, err := json.Marshal(defDTO{Name: "save_note", Description: "d", InputSchema: map[string]any{"type": "object"}, TimeoutMs: 5000, PathParams: want})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got defDTO
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.PathParams, want) {
+		t.Fatalf("能力声明未跨桥传递: %+v", got.PathParams)
+	}
+	if got.TimeoutMs != 5000 || got.Name != "save_note" {
+		t.Fatalf("既有字段受影响: %+v", got)
+	}
+	// 旧单工具协议:整份 JSON 反序列化进 sdk.ToolDefinition(声明天然携带)
+	var legacy sdk.ToolDefinition
+	if err := json.Unmarshal(raw, &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(legacy.PathParams, want) {
+		t.Fatalf("旧协议路径声明丢失: %+v", legacy.PathParams)
 	}
 }

@@ -209,3 +209,106 @@ func TestGuardVetoesFileToolsOutsideWorkspace(t *testing.T) {
 		t.Fatal("放行路径应真正执行")
 	}
 }
+
+// stubPathTool 可声明路径参数的工具(模拟第三方插件的自定义工具名)。
+type stubPathTool struct {
+	name   string
+	params []sdk.PathParam
+	called bool
+}
+
+func (s *stubPathTool) Definition() sdk.ToolDefinition {
+	return sdk.ToolDefinition{Name: s.name, Description: "stub", InputSchema: map[string]any{"type": "object"}, PathParams: s.params}
+}
+
+func (s *stubPathTool) Execute(_ context.Context, args string) (any, error) {
+	s.called = true
+	return map[string]any{"args": args}, nil
+}
+
+// TestGuardVetoesDeclaredPathOfCustomTool 能力驱动裁决:自定义工具名(不在内置名表)
+// 只要声明了路径参数,越界写同样被宿主 pre-execute 拦下 —— 这是此前登记的缺口
+// ("新插件自定义名不在表内即不受路径沙箱约束")。
+func TestGuardVetoesDeclaredPathOfCustomTool(t *testing.T) {
+	c := buildTools(t, nil, nil)
+	var tools sdk.ToolRegistry
+	if err := c.Inject("ctx.tools", &tools); err != nil {
+		t.Fatal(err)
+	}
+	tool := &stubPathTool{name: "save_note", params: []sdk.PathParam{{Arg: "target", Access: sdk.PathWrite}}}
+	tools.Register(tool)
+
+	abs := filepath.Join(t.TempDir(), "note.md")
+	if res := execTool(t, c, "save_note", `{"target":"`+abs+`"}`); res.Error == "" {
+		t.Fatal("自定义工具声明的写路径越界应被 veto")
+	}
+	if tool.called {
+		t.Fatal("被 veto 的工具不应真正执行")
+	}
+	if res := execTool(t, c, "save_note", `{"target":"in-ws.md","body":"x"}`); res.Error != "" {
+		t.Fatalf("workspace 内写应放行: %+v", res)
+	}
+	if !tool.called {
+		t.Fatal("放行路径应真正执行")
+	}
+}
+
+// TestGuardDeclaredManyAndOptional 数组参数逐元素裁决;可选参数缺省放行。
+func TestGuardDeclaredManyAndOptional(t *testing.T) {
+	c := buildTools(t, nil, nil)
+	var tools sdk.ToolRegistry
+	if err := c.Inject("ctx.tools", &tools); err != nil {
+		t.Fatal(err)
+	}
+	bulk := &stubPathTool{name: "bulk_import", params: []sdk.PathParam{{Arg: "files", Access: sdk.PathRead, Many: true}}}
+	tools.Register(bulk)
+	outside := filepath.Join(t.TempDir(), "a.txt")
+	if res := execTool(t, c, "bulk_import", `{"files":["in-ws.txt","`+outside+`"]}`); res.Error == "" {
+		t.Fatal("数组中的越界项应被 veto")
+	}
+	if res := execTool(t, c, "bulk_import", `{"files":["a.txt","b.txt"]}`); res.Error != "" {
+		t.Fatalf("workspace 内数组应放行: %+v", res)
+	}
+
+	lister := &stubPathTool{name: "list_notes", params: []sdk.PathParam{{Arg: "path", Access: sdk.PathRead, Optional: true}}}
+	tools.Register(lister)
+	if res := execTool(t, c, "list_notes", `{}`); res.Error != "" {
+		t.Fatalf("可选路径参数缺省应放行: %+v", res)
+	}
+	if res := execTool(t, c, "list_notes", `{"path":"`+outside+`"}`); res.Error == "" {
+		t.Fatal("可选参数给出越界值仍应被 veto")
+	}
+}
+
+// TestCheckToolCallUnit 裁决单元语义:声明优先、名表兜底、缺参数显式失败、
+// 未声明且不在名表的工具不受约束(诚实边界)。
+func TestCheckToolCallUnit(t *testing.T) {
+	ws := t.TempDir()
+	p := DefaultSandbox(ws)
+	outside := filepath.Join(t.TempDir(), "x.txt")
+
+	// 声明:自定义名 + 自定义参数名
+	decl := []sdk.PathParam{{Arg: "dst", Access: sdk.PathWrite}}
+	if err := p.CheckToolCall("save_note", `{"dst":"`+outside+`"}`, decl); err == nil {
+		t.Fatal("声明的写路径越界应被拒")
+	}
+	if err := p.CheckToolCall("save_note", `{"dst":"ok.txt"}`, decl); err != nil {
+		t.Fatalf("workspace 内应放行: %v", err)
+	}
+	// 声明的必填参数缺失 → 显式失败(不静默放行)
+	if err := p.CheckToolCall("save_note", `{"other":"x"}`, decl); err == nil {
+		t.Fatal("声明的必填路径参数缺失应显式失败")
+	}
+	// 名表兜底(无声明)
+	if err := p.CheckToolCall("file_write", `{"path":"`+outside+`"}`, nil); err == nil {
+		t.Fatal("名表兜底的越界写应被拒")
+	}
+	// 参数值类型不符 → 显式失败
+	if err := p.CheckToolCall("save_note", `{"dst":123}`, decl); err == nil {
+		t.Fatal("路径参数类型不符应显式失败")
+	}
+	// 既无声明也不在名表:不受路径约束(需插件声明;登记为能力化边界)
+	if err := p.CheckToolCall("unknown_tool", `{"whatever":"`+outside+`"}`, nil); err != nil {
+		t.Fatalf("未声明的未知工具不应被路径裁决拦截: %v", err)
+	}
+}

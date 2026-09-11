@@ -31,7 +31,7 @@ Go 实现的编程代理 Agent Harness:以**单静态二进制**交付全部能�
 | **ReAct 循环** | 对齐 dsh 轮次:pre-step → llm/stream → tool/call* → turn/end,AgentLoop 本身可替换 |
 | **结构化工具** | MCP 兼容 JSON schema;执行流水线 pre-execute(veto)→ execute → post-execute → result 广播;错误结构化回传模型 |
 | **LLM 统一域模型** | 纯 HTTP+SSE 的 OpenAI 兼容适配器(DeepSeek/OpenAI/Ollama/vLLM/Kimi/llama.cpp 通吃)+ Anthropic 适配器(`claude-*` 前缀路由)+ mock 适配器(CI 免外网);多 provider 并存(`/provider`) |
-| **沙箱三档** | read-only / workspace-write(防 `../` 穿越)/ full-access,TUI `/sandbox` 与 Web 设置面板运行期切换 |
+| **沙箱三档** | read-only / workspace-write(防 `../` 穿越)/ full-access,TUI `/sandbox` 与 Web 设置面板运行期切换;**写路径统一裁决**:`file_*` 参数与 `shell` 命令的**显式写目标**都必须落在档位允许范围内(`shell` 越界写 / 含变量等不可裁决写目标直接拒绝)——审批通过 ≠ 放开档位,需显式切 full-access |
 | **审批三档** | 危险命令(rm -rf / git push -f / sudo / chmod 777…)按档:开放 open(放行)/ 智能 smart(弹确认,无确认通道时安全拒绝,默认)/ 严格 strict(拒绝);偏好持久化 |
 | **凭据隔离** | 工具子进程 env 滤除 `*_API_KEY/_TOKEN/_SECRET`;危险操作无确认通道时安全拒绝 |
 | **会话管理** | 项目级隔离 + 多会话切换 + 分支树(`/fork` `/clone` `/tree` + 命名);超预算 token 滚动摘要压缩(token-compress,完整日志留盘) |
@@ -180,7 +180,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 
 | 工具 | 说明 |
 |---|---|
-| `shell` | 执行 shell 命令(沙箱/审批策略拦截;`data.pty` 可驱动交互式进程;凭据 env 滤除) |
+| `shell` | 执行 shell 命令(沙箱/审批策略拦截;显式写目标经路径裁决:workspace-write 下越界写被拒、只读档拒绝一切写;`data.pty` 可驱动交互式进程;凭据 env 滤除) |
 | `file_read` / `file_write` / `file_append` / `file_edit` | 文件读写/追加/精确编辑(经沙箱路径校验) |
 | `web_fetch` / `web_search` | 抓取 URL 正文 / 联网搜索(默认 Exa,`EXA_API_KEY`;`data.provider` 可换;401/429/5xx 结构化错误) |
 | `workflow` / `workflow_collect` | 受限 starlark 脚本组合多步工具调用(天然沙箱);`background` 异步 + 收集 |
@@ -196,6 +196,8 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 
 `gah web` 起 http://127.0.0.1:2233(自动开浏览器;`GAH_WEB_OPEN=0` 关闭)。功能与 TUI 对等,另有可视化面板:
 
+**鉴权(token 模式 = `data.auth_token` 非空)**:全表面鉴权——接口、静态资源、`/attachments/`(附件)、`/ui-plugins/` 一律需凭据(此前只有 `/api/*` 受保护)。浏览器请用启动日志里的 `#token=<token>` 地址打开:凭据在 **URL fragment** 中(不发往服务端,不进访问日志/Referer),引导页经 `POST /api/auth` 换取 HttpOnly + SameSite=Strict 的 `gah_token` cookie 后转入 UI;桌面壳经 `GAH_WEB_TOKEN` 传同一 token(`?token=` 已废弃)。
+
 - **设置面板**(状态栏 ⚙):模型下拉(聚合全部 provider)、思考/沙箱/**审批**分段控件、历史注入下拉 + 压缩按钮、Provider 管理(启用/删除/新增)、插件开关、指令重载、**数据备份**(立即备份 / 恢复备份——**二次确认**);全部设置退出即记(偏好持久化,gah-state.json 与 TUI 共享)。
 - **侧栏**:工作区固定区(切换 = 真实切目录) + 历史会话(名称/**概述或内容预览**/时间,★ 置顶、⟳ 生成概述(调用模型,二次确认)、✎ 改名、× 删除——改删需二次确认)、附件上传(按钮/拖放/粘贴,图片缩略图 + 模型看图)、会话导出(⤓ jsonl/HTML)。当前项为卡片式选中(左侧竖条 + 描边 + 名称加粗),与 hover 明确分档。
 - **状态栏**:连接状态(绿/橙)、模型/思维/沙箱/会话、上下文·缓存使用率、后台任务钮(运行徽标 + 列表/输出/终止)。
@@ -205,6 +207,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 
 | 方法 路径 | 说明 |
 |---|---|
+| `POST /api/auth` | 引导通道:`{"token":"…"}`(或 `Authorization: Bearer`)换 `gah_token` cookie(POST-only,错误 token 401);唯一豁免鉴权门的路径,仍受 Host 白名单 + 同源校验 |
 | `GET /api/state` | 状态快照(model/thinking/sandbox/approval/stats/session/running/version) |
 | `POST /api/input` | 提交回合;`/` 前缀走命令;running 时 409 |
 | `POST /api/confirm` | 审批应答 `{id, ok}` |
@@ -261,7 +264,7 @@ patch-*.yaml            # 按 id 替换/插入/启停条目(随时插拔)
 |---|---|
 | `GAH_HOME` | 内部贯通变量(boot 自动设为便携根 `gah-data/`,插件/外部进程经它派生子目录);**用户显式设置被忽略**(数据根唯一 = 二进制同级 `gah-data/`,2026-09-16 起,设不同值启动时告警) |
 | `GAH_PROFILE` / `GAH_NO_TUI` | 默认 profile / 强制关闭 TUI(headless/CI) |
-| `GAH_WEB_ADDR` / `GAH_WEB_OPEN` / `GAH_WEB_STATIC` | Web 监听地址(默认 127.0.0.1:2233)/ 是否自动开浏览器 / 静态目录覆写(开发态 HMR) |
+| `GAH_WEB_ADDR` / `GAH_WEB_OPEN` / `GAH_WEB_STATIC` | Web 监听地址(默认 127.0.0.1:2233)/ 是否自动开浏览器 / 静态目录覆写(开发态 HMR);桌面壳另用 `GAH_WEB_TOKEN` 传 token 并导航到 `#token=` 地址(就绪探测把 401 也视为已就绪) |
 | `GAH_MCP_COMMAND` / `GAH_MCP_COMMANDS` | MCP 桥接入(单 server `name=command` / 多 server 每行 `name=command args`,工具 `mcp_<server>_<工具>`) |
 | `GAH_CB_ADDR` / `GAH_CB_TOKEN` | host-bridge 回调通道(外部进程插件请求宿主 tools/jobs/fanout 服务;含鉴权 token;**不外泄**:`SanitizedEnv` 拦在下游) |
 | `GAH_EXT_ENV_PASS` | 显式放行给外部进程插件的环境变量(逗号分隔):外部插件默认**不继承宿主凭据**(`*_API_KEY`/`*_TOKEN`/`AWS_*`/`GAH_CB_*` 等已滤除),确需凭据的插件在此点名(如 `EXA_API_KEY`);或改用配置文件(推荐 `$GAH_HOME/config/search.yaml`) |

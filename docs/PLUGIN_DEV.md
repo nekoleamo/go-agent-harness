@@ -69,6 +69,37 @@ type Plugin interface {
 
 工具返回 `map[string]any{"error": "..."}` 会被 host-tools 提升为 `ToolResult.Error` 字段回传模型(不中断 turn)。错误必须回传模型,不得 panic。
 
+### 2.6 路径参数声明(能力化沙箱,**涉及文件路径的工具必读**)
+
+宿主 `policy-guard` 在 `tools/pre-execute` 统一做路径沙箱裁决(read-only / workspace-write / full-access)。
+裁决依据 = 工具**自述**的路径参数声明;未声明时回退内置工具名表(`file_read/file_write/file_append/file_edit` 等)。
+
+```go
+func (t *myTool) Definition() sdk.ToolDefinition {
+	return sdk.ToolDefinition{
+		Name: "save_note",
+		// 声明:哪些参数是路径、读写意图如何(顶层 JSON 字段名)
+		PathParams: []sdk.PathParam{
+			{Arg: "target", Access: sdk.PathWrite},                 // 越界写被拒
+			{Arg: "attachments", Access: sdk.PathRead, Many: true}, // 字符串数组:逐元素裁决
+			{Arg: "dir", Access: sdk.PathRead, Optional: true},     // 缺省跳过(如"默认工作区根")
+		},
+		InputSchema: map[string]any{/* ... */},
+	}
+}
+```
+
+规则:
+- **工具名不在内置表中(自定义名如 `save_note`)必须声明**,否则路径参数不受沙箱约束(未声明工具按"非路径工具"处理,不拦)。
+- 声明非空时**以声明为准**;声明为空/缺失才回退内置名表 —— 内置名工具无需改动,"声明空"也**无法**绕过已知工具的裁决。
+- 参数类型不符(路径给成数字)、必填路径参数缺失 → 显式报错 veto(非静默放行)。
+- 凭据类路径(`.env`/`id_rsa`/`provider.yaml`/`~/.ssh/**` 等)任何档位、任何工具都不放行。
+- 声明只走宿主↔插件协议(桥 `defDTO`/`serve.go` 已透传),**不下发模型**(适配层只取 Name/Description/InputSchema),零 token 成本。
+- 该裁决是**宿主侧兜底**:工具侧自己装配了沙箱(`sdk.Sandbox`)时两层都会校验,不冲突。
+
+**shell 命令的路径裁决(与声明无关,宿主统一施加)**:`shell` 工具的命令行会按词法扫描提取**显式写目标**(重定向 `>`/`>>`/`&>`、写命令表 `rm/mv/cp/mkdir/touch/truncate/sed -i/tee/dd of=/chmod/chown/ln/tar -x/rsync` 等、`bash -c` 递归一层),越界写被拒;含变量/命令替换/glob 的不可裁决写目标直接拒绝(提示改写为确定路径或切 `full-access`)。重要语义:**审批通过 ≠ 放开档位** —— 用户点「允许」不会让 workspace-write 档接受越界写(与 `file_*` 一致)。
+未覆盖(诚实边界,靠危险模式 + 审批档兜底):间接写入(构建缓存、`go build -o`/`gcc -o`/`curl -o`、包管理器、`git clone` 目标)、`run_code` 类工具、以及变量拼出的命令文本。所以**工具自己拼 shell 命令时,请把路径显式传给 `shell` 而不是塞进变量**。
+
 ## 3. 开发步骤(七步)
 
 ### 3.1 决策:是否插件?
@@ -165,7 +196,10 @@ func main() {
 
 **桥协议**
 - 多工具(新协议):`Definitions` 枚举 + `ExecuteNamed` 按名执行;旧单工具协议(`Definition`/`Execute`)宿主自动回退兼容。
-- 工具级超时:定义声明 `TimeoutMs`(毫秒),覆写宿主全局默认 3s。
+- 工具级超时:定义声明 `TimeoutMs`(毫秒),覆写宿主全局默认 3s;宿主同时把 ~80% 的该值下发插件侧作执行超时(插件先自行结束并回明确错误)。
+- **执行可中断(必读)**:宿主为每次调用生成 `CallID` 并下发(`ExecNamedArgs.CallID/TimeoutMs`);用户中断回合(Esc / Web 停止)或宿主超时时,宿主经 `Plugin.Cancel(CallID)` RPC 通知插件。插件侧由 `ServeTools` 自动登记可取消 ctx —— 因此
+  **`Execute(ctx, args)` 必须尊重 ctx**(长耗时/阻塞操作要 `select ctx.Done()`、把 ctx 传给子进程/网络调用),否则用户的取消只能等宿主超时兜底。
+  旧插件无 `Cancel` 方法:宿主忽略方法缺失,行为退化为"宿主侧超时"(不报错、不崩)。
 
 **宿主回调通道**(仅服务调用,不桥事件 veto)
 - 环境注入:`GAH_CB_ADDR`(宿主回调地址)+ `GAH_CB_TOKEN`(鉴权,回传校验)。
@@ -191,6 +225,7 @@ func main() {
 - [ ] catalogue 已登记(provides/requires/bundle 正确)
 - [ ] config 条目已加(含 enabled/data)
 - [ ] **便携纪律**(见 AGENTS.md「便携纪律」):任何写盘路径以 `$GAH_HOME` 为根(注意 GAH_HOME 是 boot 内部贯通变量,**数据根唯一 = 二进制同级 gah-data/**,用户不可经 env 指定);禁用硬编码 ~/.gah、cwd 相对写、系统根/散目录;密钥入 config/、env 入 gah-data/env.sh;新增路径 helper 可审计
+- [ ] 涉及文件路径的工具:已声明 `ToolDefinition.PathParams`(§2.6)
 - [ ] 单测通过;-race 全绿
 - [ ] 错误回传模型(结构化 error),不 panic
 - [ ] 外部插件型:握手/协议/回调/退出语义(§4.1)已符合;产物已编入 scripts/gen-extplugins.sh 的 NAMES

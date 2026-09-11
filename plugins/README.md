@@ -43,7 +43,7 @@ plugins/
 | tool | tool-subagent | 子代理委派(M9.1+9.2):subagent delegate/spawn/agents/agent_status/agent_kill;extplugins/tool-subagent 独立进程(回调宿主 ctx.fanout);spawn=后台带句柄不阻塞 | ctx.tools + ctx.fanout |
 | mcp | mcp-bridge / mcp-server | MCP 客户端桥 / MCP server 端 | ctx.tools |
 | ui | ui-tui-app | TUI 挂载 | ctx.agentLoop/ctx.llm |
-| ui | ui-web-app | Web UI 挂载(M7):SSE 下行 + REST 上行;会话/状态栏/命令/审批/会话切换;addr 默认 127.0.0.1:2233,auth_token 可选,static_dir 开发态(HMR);与 tui bundle 互斥 | ctx.agentLoop/ctx.sessions/ctx.llm + ctx.confirm(提供) |
+| ui | ui-web-app | Web UI 挂载(M7):SSE 下行 + REST 上行;会话/状态栏/命令/审批/会话切换;addr 默认 127.0.0.1:2233,auth_token 可选(设置后**全表面**鉴权:接口/静态/附件/UI 插件产物均需凭据,浏览器用启动日志的 #token= 地址经 POST /api/auth 换 cookie),static_dir 开发态(HMR);与 tui bundle 互斥 | ctx.agentLoop/ctx.sessions/ctx.llm + ctx.confirm(提供) |
 
 ## 维护约定
 

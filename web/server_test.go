@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/textproto"
@@ -1046,12 +1047,12 @@ func TestAuthToken(t *testing.T) {
 	ats.cfg.AuthToken = "tk"
 	hs := httptest.NewServer(ats.authMiddleware(ats.handler()))
 	defer hs.Close()
-	// 无 token → 401;静态不鉴权 → 200
+	// 无 token → 401;/api 之外的表面同样需凭据:返回引导页(200,但不含应用资源)
 	if code := mustGet(t, hs.URL+"/api/state"); code != 401 {
 		t.Fatalf("无 token 应 401,得 %d", code)
 	}
 	if code := mustGet(t, hs.URL+"/"); code != 200 {
-		t.Fatalf("静态不需 token,得 %d", code)
+		t.Fatalf("缺凭据导航应返回引导页(200),得 %d", code)
 	}
 	req, _ := http.NewRequest("GET", hs.URL+"/api/state", nil)
 	req.Header.Set("Authorization", "Bearer tk")
@@ -1700,5 +1701,61 @@ func TestAttachmentsCleanupOnReject(t *testing.T) {
 			continue
 		}
 		t.Fatalf("被拒上传留下孤儿文件: %s", e.Name())
+	}
+}
+
+// freeTestAddr 取本机空闲端口(先监听再释放;测试内单进程竞争可接受)。
+func freeTestAddr(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	if err := ln.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return addr
+}
+
+// TestShutdownBeforeStartLeavesNoOrphan 未监听即 Shutdown(插件启动 goroutine 与
+// 卸载并发)不得留下孤儿监听:Start 需自检 closed 放弃监听,端口保持可用。
+// 回归保护:此前 s.http 由 Start goroutine 无锁赋值,Shutdown 早于赋值时静默跳过 →
+// 服务在卸载后继续常驻(端口泄漏,见 -race 下的 data race 报告)。
+func TestShutdownBeforeStartLeavesNoOrphan(t *testing.T) {
+	addr := freeTestAddr(t)
+	s, _ := newTestServer()
+	s.cfg.Addr = addr
+	s.Shutdown() // 先卸载
+	if err := s.Start(); err != nil {
+		t.Fatalf("Shutdown 后 Start 应直接放弃监听,实得错误: %v", err)
+	}
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatalf("Shutdown 后端口仍被占用(孤儿监听): %v", err)
+	}
+	_ = ln.Close()
+}
+
+// TestStartShutdownConcurrent 启动与卸载并发(-race 下必须无数据竞争,
+// 且每轮结束后不得有孤儿监听)。
+func TestStartShutdownConcurrent(t *testing.T) {
+	for i := 0; i < 20; i++ {
+		addr := freeTestAddr(t)
+		s, _ := newTestServer()
+		s.cfg.Addr = addr
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_ = s.Start()
+		}()
+		s.Shutdown()
+		<-done
+		// 服务已停机或从未起监听:端口应可再次绑定
+		ln, err := net.Listen("tcp", addr)
+		if err != nil {
+			t.Fatalf("第 %d 轮端口仍被占用(孤儿监听): %v", i, err)
+		}
+		_ = ln.Close()
 	}
 }

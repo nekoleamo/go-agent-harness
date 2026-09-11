@@ -1,8 +1,10 @@
 // gah 桌面壳(P1 落地,可行性见 docs/DESKTOP_FEASIBILITY.md):
 // 启动 → spawn sidecar gah --profile web(GAH_WEB_OPEN=0;不传 GAH_HOME env——
 // 数据根唯一 = sidecar 二进制同级 gah-data/(便携,首启自动新建),见 cmd/gah homeDir)
-//      → 轮询 /api/state 就绪 → 主窗口 navigate http://127.0.0.1:2233
+//      → 轮询 /api/state 就绪(200;token 模式 401 亦视为就绪) → 主窗口 navigate http://127.0.0.1:2233
 // 单实例(多开 focus 现有窗口);托盘(打开/自启开关/退出);
+// token 模式(data.auth_token 非空):启动方经 GAH_WEB_TOKEN 传入 token,壳导航到 /#token=…
+// (web 侧引导页用它换取 SameSite=Strict cookie),手写 /api/* 请求一并带 gah_token cookie。
 // 回合完成通知(轮询 state.running 翻转);退出链:POST /api/shutdown → 等端口释放 →
 // 超时 SIGKILL 兜底;RunEvent::Exit 兜底 kill sidecar(信号强杀时 sidecar 变孤儿由
 // 启动探测接管:端口已占用则直接 navigate 现有实例)。
@@ -31,6 +33,44 @@ const GAH_URL_SHELL: &str = "http://127.0.0.1:2233/?shell=desktop";
 struct Sidecar(Mutex<Option<CommandChild>>);
 static READY: AtomicBool = AtomicBool::new(false);
 
+// web_token 桌面壳用的 Web 访问凭据(启动方经 GAH_WEB_TOKEN 传入;空 = 未开启 token 模式)。
+fn web_token() -> String {
+    std::env::var("GAH_WEB_TOKEN").unwrap_or_default()
+}
+
+// escape_fragment 按 RFC3986 unreserved 转义(引导页侧用 decodeURIComponent 还原,不用 + 语义)。
+fn escape_fragment(raw: &str) -> String {
+    let mut out = String::new();
+    for b in raw.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => out.push(b as char),
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
+}
+
+// cookie_header 裸 TCP 请求用的凭据头(token 模式下 /api/* 需要凭据;空 = 未开启)。
+fn cookie_header() -> String {
+    let t = web_token();
+    if t.is_empty() { String::new() } else { format!("Cookie: gah_token={t}\r\n") }
+}
+
+// shell_url 主窗口导航地址:token 模式把凭据放 URL fragment(不发往服务端;引导页换取 cookie)。
+fn shell_url() -> String {
+    let t = web_token();
+    if t.is_empty() { GAH_URL_SHELL.to_string() } else { format!("{GAH_URL_SHELL}#token={}", escape_fragment(&t)) }
+}
+
+// status_code 从裸 TCP 响应首行取状态码(解析失败 = 未就绪)。
+fn status_code(head: &[u8]) -> Option<u16> {
+    let text = String::from_utf8_lossy(head);
+    let mut parts = text.split_whitespace();
+    parts.next()?; // HTTP/1.1
+    parts.next()?.parse::<u16>().ok()
+}
+
+// httpProbe 探活:连接成功且状态码 200 或 401(token 模式已就绪)均视为就绪。
 fn httpProbe(path: &str, timeout: Duration) -> bool {
     let mut s = match TcpStream::connect_timeout(&GAH_ADDR.parse::<std::net::SocketAddr>().unwrap(), timeout) {
         Ok(s) => s,
@@ -38,14 +78,15 @@ fn httpProbe(path: &str, timeout: Duration) -> bool {
     };
     let _ = s.set_read_timeout(Some(Duration::from_millis(400)));
     let req = format!(
-        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n{}Connection: close\r\n\r\n",
+        cookie_header()
     );
     if s.write_all(req.as_bytes()).is_err() {
         return false;
     }
     let mut buf = [0u8; 64];
     match s.read(&mut buf) {
-        Ok(n) => buf[..n].windows(3).any(|w| w == b"200"),
+        Ok(n) => matches!(status_code(&buf[..n]), Some(200) | Some(401)),
         Err(_) => false,
     }
 }
@@ -118,7 +159,10 @@ fn stateRunning() -> bool {
         Err(_) => return false,
     };
     let _ = s.set_read_timeout(Some(Duration::from_millis(400)));
-    let req = format!("GET /api/state HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    let req = format!(
+        "GET /api/state HTTP/1.1\r\nHost: 127.0.0.1\r\n{}Connection: close\r\n\r\n",
+        cookie_header()
+    );
     if s.write_all(req.as_bytes()).is_err() {
         return false;
     }
@@ -246,8 +290,15 @@ fn main() {
                     if httpProbe("/api/state", Duration::from_millis(400)) {
                         READY.store(true, Ordering::SeqCst);
                         let _ = handle3.emit("sidecar-ready", GAH_URL);
-                        if let Some(w) = handle3.get_webview_window("main") {
-                            let _ = w.navigate(GAH_URL_SHELL.parse().unwrap());
+                        match shell_url().parse() {
+                            Ok(u) => {
+                                if let Some(w) = handle3.get_webview_window("main") {
+                                    let _ = w.navigate(u);
+                                }
+                            }
+                            Err(e) => {
+                                let _ = handle3.emit("sidecar-start-failed", format!("访问地址解析失败: {e}"));
+                            }
                         }
                         return;
                     }
@@ -256,7 +307,7 @@ fn main() {
                 let _ = handle3.emit("sidecar-start-failed", "gah 60×200ms 内未就绪");
                 // 失败指引:窗口不再停留在"正在启动",注入错误提示(数据根=gah-data,需与 gah 同目录且可写)
                 if let Some(w) = handle3.get_webview_window("main") {
-                    let _ = w.eval("document.body.innerHTML='<div style=\"font-family:-apple-system,sans-serif;padding:40px;max-width:560px\"><h2>gah 服务未能启动</h2><p>数据根为 gah 同目录的 gah-data/(需可写);升级 .app 会替换该目录,如需保留数据请先 /backup。</p><p>详细日志见终端输出。</p></div>'");
+                    let _ = w.eval("document.body.innerHTML='<div style=\"font-family:-apple-system,sans-serif;padding:40px;max-width:560px\"><h2>gah 服务未能启动</h2><p>数据根为 gah 同目录的 gah-data/(需可写);升级 .app 会替换该目录,如需保留数据请先 /backup。</p><p>若 config/bundle-web.yaml 里 data.auth_token 非空(token 模式),桌面壳需以环境变量 GAH_WEB_TOKEN 传入同一 token,否则 /api/* 会 401。</p><p>详细日志见终端输出。</p></div>'");
                 }
             });
 
@@ -311,7 +362,8 @@ fn quitApp(app: &AppHandle) {
         if let Ok(mut s) = TcpStream::connect_timeout(&GAH_ADDR.parse::<std::net::SocketAddr>().unwrap(), Duration::from_millis(500)) {
             let body = "{}";
             let req = format!(
-                "POST /api/shutdown HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                "POST /api/shutdown HTTP/1.1\r\nHost: 127.0.0.1\r\n{}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                cookie_header(),
                 body.len(),
                 body
             );

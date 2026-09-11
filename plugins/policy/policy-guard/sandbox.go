@@ -114,27 +114,130 @@ func (p *SandboxPolicy) ValidateRead(path string) error {
 	return fmt.Errorf("sandbox: 拒绝读 workspace 与数据根之外的路径: %s", path)
 }
 
+// CheckShellCommand shell 命令路径裁决(R10 ①,见 shellpaths.go):
+//   - full-access:放行(与 ValidatePath 的档位语义一致);
+//   - 写目标(重定向 / 写命令操作数)走 ValidatePath(档位 + 归属 + 凭据);
+//     无法裁决的写形态(变量/通配前缀不可知/cd 出工作区后的相对路径)显式拒绝;
+//   - 读目标只做凭据类判定,不做 workspace 归属限制(否则 shell 常规读被大面积误拦)。
+//
+// 危险模式审批不能替代本裁决:沙箱档位对 file_* 与 shell 一视同仁(审批"同意"不等于放开档位)。
+func (p *SandboxPolicy) CheckShellCommand(cmd string) error {
+	if strings.TrimSpace(cmd) == "" {
+		return nil
+	}
+	p.mu.RLock()
+	mode, root := p.effectiveMode(), p.root
+	p.mu.RUnlock()
+	if mode == sdk.SandboxFullAccess {
+		return nil
+	}
+	for _, pth := range shellCmdPathsRoot(cmd, 0, root) {
+		if !pth.Write {
+			if err := checkShellReadToken(root, pth.Path); err != nil {
+				return err
+			}
+			continue
+		}
+		if pth.Unresolvable {
+			return fmt.Errorf("sandbox: shell 命令含无法裁决的写目标 %q(含变量/命令替换,或切换出工作区后的相对路径);请改写为确定路径或切 /sandbox full", pth.Path)
+		}
+		if err := p.ValidatePath(pth.Path); err != nil {
+			return fmt.Errorf("sandbox: shell 命令写目标被拒(%s): %w", pth.Path, err)
+		}
+	}
+	return nil
+}
+
 // CheckPathArgs 宿主侧路径裁决(P0 修复):默认发行态下 file_* 工具由外部插件进程提供
 // (tool-files 未装配沙箱 → sb=nil),沙箱对其完全失效;此处按工具名+参数在 pre-execute
-// 统一裁决,与具体实现无关(外部插件零改动)。
+// 统一裁决,与具体实现无关(外部插件零改动)。仅用内置工具名表(向后兼容入口)。
 func (p *SandboxPolicy) CheckPathArgs(name, rawArgs string) error {
+	return p.CheckToolCall(name, rawArgs, nil)
+}
+
+// CheckToolCall 能力驱动裁决(params = 工具自述的路径参数声明,见 sdk.PathParam):
+// 声明非空用声明(支持自定义参数名/数组/可选参数),否则回退内置工具名表。
+// 声明优先的意义:新插件工具名不受内置表覆盖(此前 save_file 之类名字下越界写不拦);
+// 而内置名仍走表兜底,插件"声明为空"也无法借此绕过已知工具的裁决。
+func (p *SandboxPolicy) CheckToolCall(name, rawArgs string, params []sdk.PathParam) error {
+	if len(params) == 0 {
+		params = builtinPathParams(name)
+	}
+	if len(params) == 0 {
+		return nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(rawArgs), &m); err != nil {
+		return fmt.Errorf("sandbox: %s 参数无法解析出路径: %w", name, err)
+	}
+	for _, pa := range params {
+		raw, present := m[pa.Arg]
+		if !present || raw == nil {
+			if pa.Optional {
+				continue
+			}
+			return fmt.Errorf("sandbox: %s 缺少 %s 参数", name, pa.Arg)
+		}
+		paths, err := pathValues(name, pa, raw)
+		if err != nil {
+			return err
+		}
+		for _, path := range paths {
+			if strings.TrimSpace(path) == "" {
+				if pa.Optional {
+					continue
+				}
+				return fmt.Errorf("sandbox: %s 参数 %s 为空", name, pa.Arg)
+			}
+			if pa.Access == sdk.PathWrite {
+				err = p.ValidatePath(path)
+			} else {
+				err = p.ValidateRead(path)
+			}
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// pathValues 取参数值里的路径列表(字符串 / 字符串数组);类型不符显式报错。
+func pathValues(name string, pa sdk.PathParam, raw any) ([]string, error) {
+	switch v := raw.(type) {
+	case string:
+		return []string{v}, nil
+	case []any:
+		if !pa.Many {
+			return nil, fmt.Errorf("sandbox: %s 参数 %s 应为字符串", name, pa.Arg)
+		}
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			str, ok := item.(string)
+			if !ok {
+				return nil, fmt.Errorf("sandbox: %s 参数 %s 含非字符串元素", name, pa.Arg)
+			}
+			out = append(out, str)
+		}
+		return out, nil
+	case []string:
+		return v, nil
+	default:
+		return nil, fmt.Errorf("sandbox: %s 参数 %s 应为字符串(或字符串数组)", name, pa.Arg)
+	}
+}
+
+// builtinPathParams 内置工具名表 → 路径参数声明(未声明 PathParams 的工具走这条)。
+func builtinPathParams(name string) []sdk.PathParam {
 	kind, ok := fileToolKind(name)
 	if !ok {
 		return nil
 	}
-	var a struct {
-		Path string `json:"path"`
-	}
-	if err := json.Unmarshal([]byte(rawArgs), &a); err != nil {
-		return fmt.Errorf("sandbox: %s 参数无法解析出路径: %w", name, err)
-	}
-	if strings.TrimSpace(a.Path) == "" {
-		return fmt.Errorf("sandbox: %s 缺少 path 参数", name)
-	}
+	access := sdk.PathRead
 	if kind == "write" {
-		return p.ValidatePath(a.Path)
+		access = sdk.PathWrite
 	}
-	return p.ValidateRead(a.Path)
+	return []sdk.PathParam{{Arg: "path", Access: access}}
 }
 
 // fileToolKind 需宿主路径裁决的工具(name → read|write)。

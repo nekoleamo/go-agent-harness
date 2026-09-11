@@ -3,6 +3,7 @@
 package web
 
 import (
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -202,8 +203,8 @@ func TestControlRejectsUnknownModes(t *testing.T) {
 	}
 }
 
-// token 模式的浏览器引导:入口页下发 SameSite=Strict/HttpOnly cookie,
-// 之后前端 fetch 与 WS 握手自动携带(否则开启 token 后 Web UI 全 401 不可用)。
+// token 模式的浏览器引导链:入口页不再自设 cookie(旧行为=任何导航都能拿到 cookie),
+// 改为「引导页 → POST /api/auth(fragment 里的 token)→ cookie → 抹 fragment 重载」。
 func TestTokenBootstrapCookie(t *testing.T) {
 	s, _ := newTestServer()
 	s.cfg.AuthToken = "boot-tk"
@@ -211,7 +212,7 @@ func TestTokenBootstrapCookie(t *testing.T) {
 	hs := httptest.NewServer(s.Handler())
 	defer hs.Close()
 
-	// 无 cookie 时 /api/* 仍 401(token 未被静态资源旁路)
+	// 无 cookie 时 /api/* 401
 	resp, err := http.Get(hs.URL + "/api/state")
 	if err != nil {
 		t.Fatal(err)
@@ -221,30 +222,49 @@ func TestTokenBootstrapCookie(t *testing.T) {
 		t.Fatalf("无凭据 /api/state 应 401,得 %d", resp.StatusCode)
 	}
 
-	// 访问入口页 → 下发 cookie
+	// 访问入口页 → 引导页(不下发 cookie;旧行为正是本项要关的洞)
 	jar := &cookieJar{}
 	client := &http.Client{Jar: jar}
 	resp2, err := client.Get(hs.URL + "/")
 	if err != nil {
 		t.Fatal(err)
 	}
+	body, _ := io.ReadAll(resp2.Body)
 	resp2.Body.Close()
+	if !strings.Contains(string(body), authPath) {
+		t.Fatalf("入口页应是引导页(含 %s),得 %q", authPath, string(body))
+	}
+	if _, err := jar.cookie(hs.URL); err == nil {
+		t.Fatal("入口页不得自设会话 cookie(凭据只能经 POST /api/auth 换取)")
+	}
+
+	// 引导页换取 cookie(等价浏览器行为:POST /api/auth + JSON body)
+	req, _ := http.NewRequest(http.MethodPost, hs.URL+authPath, strings.NewReader(`{"token":"boot-tk"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp3, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp3.Body.Close()
+	if resp3.StatusCode != http.StatusNoContent {
+		t.Fatalf("正确凭据应 204,得 %d", resp3.StatusCode)
+	}
 	c, err := jar.cookie(hs.URL)
 	if err != nil {
-		t.Fatalf("入口页应下发会话 cookie: %v", err)
+		t.Fatalf("POST %s 应下发会话 cookie: %v", authPath, err)
 	}
 	if c.Value != "boot-tk" || !c.HttpOnly || c.SameSite != http.SameSiteStrictMode {
 		t.Fatalf("cookie 属性不符: %+v", c)
 	}
 
 	// 带 cookie 访问 /api/* → 200
-	resp3, err := client.Get(hs.URL + "/api/state")
+	resp4, err := client.Get(hs.URL + "/api/state")
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp3.Body.Close()
-	if resp3.StatusCode != http.StatusOK {
-		t.Fatalf("引导后 /api/state 应 200,得 %d", resp3.StatusCode)
+	resp4.Body.Close()
+	if resp4.StatusCode != http.StatusOK {
+		t.Fatalf("引导后 /api/state 应 200,得 %d", resp4.StatusCode)
 	}
 }
 
