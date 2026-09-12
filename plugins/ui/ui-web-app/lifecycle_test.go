@@ -252,6 +252,34 @@ func TestPluginStartLifecycleFusionBranch(t *testing.T) {
 	}
 }
 
+// TestPluginStartFailsFastOnPortTaken 端口被占用 → Start **同步**失败(fail-fast),
+// 且不留半截装配:
+// 修复前错误只落进后台 goroutine 的日志,Start 返回成功 → 进程挂着不动、没有可服务端口、
+// /api/shutdown 也到不了它(只能 kill,外部插件子进程一并残留)。
+func TestPluginStartFailsFastOnPortTaken(t *testing.T) {
+	t.Setenv("GAH_HOME", t.TempDir())
+	t.Setenv("GAH_WEB_OPEN", "0")
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	t.Setenv("GAH_WEB_ADDR", ln.Addr().String())
+
+	c := newStubCtx()
+	_, err = (&Plugin{}).Start(c, &sdk.Manifest{})
+	if err == nil {
+		t.Fatal("端口被占用应同步启动失败(fail-fast),却返回成功")
+	}
+	if !strings.Contains(err.Error(), "监听失败") {
+		t.Fatalf("错误应点明监听失败: %v", err)
+	}
+	// Listen 先于装配:失败时不得留下已注册服务
+	if c.has("ctx.confirm") || c.has("ctx.question") {
+		t.Fatalf("启动失败不应留下 ctx.confirm/ctx.question: %v", c.provided)
+	}
+}
+
 // TestPluginStartMissingSessions 未装配 ctx.sessions → 显式失败(不静默起半截服务)。
 func TestPluginStartMissingSessions(t *testing.T) {
 	t.Setenv("GAH_HOME", t.TempDir())

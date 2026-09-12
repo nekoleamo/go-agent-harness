@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
@@ -76,5 +78,59 @@ func TestRasterDisabledByDefault(t *testing.T) {
 	_, err := s.Raster(context.Background(), sdk.DocRequest{Path: p}, 1, 96)
 	if !errors.Is(err, sdk.ErrDocUnsupported) {
 		t.Fatalf("默认应报未启用: %v", err)
+	}
+}
+
+// TestRasterNoPopplerErrorNamesBackend 无 poppler + 内置兜底也失败 → 错误必须同时点明
+// 「外部后端为什么不可用」与「兜底为什么失败」。
+// 真机 RST-1 发现:修复前只有裸的 `pdfium: 下载读取失败: context deadline exceeded`,
+// 会被误读成纯网络问题,用户不知道装 poppler pdftoppm 即可绕开整条链。
+func TestRasterNoPopplerErrorNamesBackend(t *testing.T) {
+	dir := t.TempDir()
+	home := t.TempDir()
+	conv := newConverter(true, home)
+	conv.pdftoppm = "" // 模拟本机未安装 poppler(不依赖真实 PATH)
+	conv.rasterOn = true
+	s := New(Options{
+		Sandbox:             &fakeSandbox{mode: sdk.SandboxWorkspace, root: dir},
+		Home:                home,
+		ExternalRaster:      true,
+		SelfContainedRaster: true,
+		Converter:           &conv,
+		PDFiumWASMPath:      filepath.Join(home, "no-such-pdfium.wasm"), // 兜底必然失败(不触网)
+	})
+	p := writeFile(t, dir, "doc.pdf", pdfWithText(t, "no poppler"))
+	_, err := s.Raster(context.Background(), sdk.DocRequest{Path: p}, 1, 96)
+	if err == nil {
+		t.Fatal("两个光栅后端都不可用时应显式报错(不得静默)")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "poppler") {
+		t.Fatalf("错误应点明本机缺 poppler: %q", msg)
+	}
+	if !strings.Contains(msg, "pdfium") {
+		t.Fatalf("错误应说明内置兜底也失败: %q", msg)
+	}
+	if !errors.Is(err, sdk.ErrDocParse) {
+		t.Fatalf("应归为 ErrDocParse: %v", err)
+	}
+
+	// 另一条分支:外部光栅**未启用**(而非缺 poppler)。错误不得谎报「本机没装」,
+	// 应指向开关本身(rasterOn 关时的 pdftoppm 探测结果与可用性无关)。
+	conv2 := newConverter(true, home)
+	conv2.rasterOn = false
+	s2 := New(Options{
+		Sandbox:             &fakeSandbox{mode: sdk.SandboxWorkspace, root: dir},
+		Home:                home,
+		SelfContainedRaster: true,
+		Converter:           &conv2,
+		PDFiumWASMPath:      filepath.Join(home, "no-such-pdfium.wasm"),
+	})
+	_, err = s2.Raster(context.Background(), sdk.DocRequest{Path: p}, 1, 96)
+	if err == nil {
+		t.Fatal("外部未启用且兜底失败时应报错")
+	}
+	if msg := err.Error(); !strings.Contains(msg, "data.external_raster") || strings.Contains(msg, "本机未检测到 poppler") {
+		t.Fatalf("开关未启用时不得谎报本机缺 poppler,应指向开关: %q", msg)
 	}
 }

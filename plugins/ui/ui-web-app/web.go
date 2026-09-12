@@ -6,6 +6,8 @@ package uiweb
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -81,6 +83,14 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 			c.Logger().Warn("ui-web-app: 自动打开浏览器失败(可手动访问)", "url", visit, "err", err)
 		}
 	}
+	// fail-fast:监听必须在返回成功**之前**真做(见 web.Server.Listen),且**先于**一切
+	// 渠道注册/订阅 —— 端口被占用时不能留下半截装配。否则错误只落进后台 goroutine
+	// 的日志:进程挂着不动、没有可服务端口、/api/shutdown 也到不了它,只能被 kill
+	// (外部插件子进程一并残留)。
+	if err := srv.Listen(); err != nil {
+		srv.Shutdown() // 撤销 Inject 阶段的订阅(监听未成,不外泄半截服务)
+		return nil, err
+	}
 	// 事件通道订阅(会话事件/运行状态/错误;对齐 TUI 订阅集)
 	unsub, err := hub.Subscribe(c, sessions)
 	if err != nil {
@@ -113,8 +123,9 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		}
 	}
 	go func() {
-		if err := srv.Start(); err != nil {
-			c.Logger().Error("ui-web-app: 监听失败", "err", err)
+		// 此时监听已成功,Serve 返回错误只可能是停机时连接被关(正常)或运行时故障。
+		if err := srv.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			c.Logger().Error("ui-web-app: 服务退出", "err", err)
 		}
 	}()
 	return func() {

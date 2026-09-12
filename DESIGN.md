@@ -804,6 +804,20 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 | **构建** | `scripts/gen-desktop.sh`(本平台 triple sidecar go build → cargo build dev/release) | 脚本跑通 |
 | **登记** | .gitignore(desktop target/binaries;Cargo.lock/ui 保留入库) | — |
 
+## R11 真机清单实跑修复(VERIFY 交互类)✅ (2026-09-13)
+
+> 背景:跑 `docs/VERIFY.md` 真机清单(自动可跑子集全实跑,kitty 按键/浏览器/桌面壳类仍由人工验)。
+> 实跑暴露 4 个问题,本轮全部修复;回归 = 新增单测 + 全库 `-race` 绿。
+>
+| 模块 | 交付 | 验证 |
+|---|---|---|
+| **① 内核沙箱首条命令误拦(真 bug)** | 根因:`shell.go`/`pty.go` 曾**先**算 `kernelWrapCtx(ctx)`、**后**调 `jailEnv()` —— 全新数据根的首条命令执行时 `jailRoot()` 尚不存在,`resolvePath` 的 `EvalSymlinks` 失败并回退**未解析**路径;`GAH_HOME` 含软链组件(`/tmp`、`/var`、macOS TempDir)时 seatbelt 按真实路径匹配 → jail 白名单整条失效(首条 `go build`/`npm install` 报 operation not permitted,第二条起正常)。修法:两者**换序**(先建 jail 再算 profile,顺序注释锁定)+ `resolvePath` 加固:路径尚不存在时逐级向上找最近的存在祖先再拼回尾部(不再把软链前缀原样丢给 seatbelt;确实解析不出来才回退原路径,保守方向=少放行) | 新增 `TestShellToolFirstCommandWritesJailOnFreshSymlinkedHome`(软链 GAH_HOME + 全新数据根,走真 `ShellTool.Execute`;修复前必红,已实录)+ `TestResolvePathSymlinkedAncestorForMissingPath` |
+| **② 端口被占用不退出** | 根因:`ui-web-app` 在**返回成功之后**才在后台 goroutine 里 `srv.Start()`,监听失败只落一条日志 → 进程挂着不动、无可服务端口、`/api/shutdown` 也到不了它(只能 kill,外部插件子进程一并残留)。修法:`web.Server` 拆出 **`Listen()`**(幂等、失败显式返回)+ `Start()` 复用句柄;插件在**一切装配之前**(先于订阅/渠道注册)同步 `Listen()`,失败即启动失败(→ boot 失败 → exit 1);`Shutdown()` 兼顾「Listen 过但未 Serve」:就地关闭句柄不留孤儿端口 | `TestPluginStartFailsFastOnPortTaken`(占口 → Start 同步报错且无半截装配)+ `TestListenThenShutdownReleasesPort` / `TestListenFailsOnTakenPort`(web 包);§14.1 之外的真机验收:重建二进制后端口占用 → 启动即失败、无残留进程 |
+| **③ M16 计时口径过期** | 真机实测首跑 `go test ./... -count=1 -race` **91.98s**(干净缓存)/ 82.17s(预热);本轮后续两次全库跑 90.57s / 86.97s。原文档 ≈74s(基线 ~100s)已不符 | `docs/VERIFY.md` M16 条目重定基为 **85–95s**(实测四次均在带内),并注明干净/预热两口径;重复运行(带缓存)3.57s ≤ 5s |
+| **④ RST-1 无 poppler 错误不可读** | 外部光栅不可用而走内置兜底、兜底又失败时,原样抛出的只有裸 `pdfium: 下载读取失败: context deadline exceeded`,会被误读成纯网络问题。修法:`Service.Raster` 补上真实原因前缀 —— **两条分支分开说**(`rasterOn` 开着 = 「本机未检测到 poppler pdftoppm」;开关未开 = 「外部光栅未启用(data.external_raster=false)」,不能谎报本机没装)+ 内置 pdfium.wasm 兜底的原始错误 + 替代做法(装 pdftoppm 或 `data.pdfium_wasm_path` 离线部署) | 新增 `TestRasterNoPopplerErrorNamesBackend`(注入无 pdftoppm 的 converter + 不存在的 wasm 路径;两分支各验:含 poppler/pdfium 字样 + `ErrDocParse`、开关关时须提 `data.external_raster` 且不得声称缺 poppler) |
+| **⑤ 全库 -race 偶发红(顺带修复)** | 全库首轮 `-race` 在 `host-schedule.TestScheduleCommand` 偶发红:`TempDir RemoveAll cleanup: schedules: directory not empty`。根因(与本轮 4 项无关、预存):`/schedule run` 触发的是**后台** `execute`,用例在 `run` 后立即 `rm`/结束,而 `execute` 写完运行记录才 `savePlan` —— 高负载(全库并行跑)下写盘落在 teardown 之后,与 TempDir 清理竞态。修法(仅测试):`run` 后等**落盘文件**出现 `last_run_at` 再继续(rename 原子,读到即完整;不用内存 `LastRunAt` 观察,它写在 savePlan 之前) | `-count=8 -race` 单包 216 项全绿;随后全库 `-count=1 -race` 连跑两次:首轮 90.57s 但因此 flake 红(先于修复)/ 次轮全绿;修复后再跑单包 6 轮 ×TestScheduleCommand 全绿 |
+| **⑥ 清单回填 + 剩余任务归档** | `docs/VERIFY.md` 按实跑证据回填:`[x]` 从 78 → **95 条**(协议层/CLI/脚本/内核沙箱级),每项方括号注明证据来源并显式标出「视觉待验」的部分;文件头加回填图例;R6「桌面壳数据根(`~/Library/Application Support/gah`)」标注**已作废(被 R8 取代)**;文末新增「剩余验收任务」段:146 条未勾按「需要什么才能跑」分 6 类(TUI 键盘 42 / Web 交互 27 / 文档预览 11 / 桌面壳与 Windows 27+18(A 表)/ 其它真机与决策 18 / 未实施 21)+ 建议过场顺序 | 逐条复核:勾选项均有本轮实跑命令或单测出处;`docs/` 不入库(.gitignore),仅本地清单 |
+
 ## 15. 风险与权衡
 
 | 风险 | 缓解 |

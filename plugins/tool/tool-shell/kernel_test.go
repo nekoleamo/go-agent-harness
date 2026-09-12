@@ -157,6 +157,32 @@ func TestDarwinProfileResolvesSymlinksAndReadOnlyScope(t *testing.T) {
 	}
 }
 
+func TestResolvePathSymlinkedAncestorForMissingPath(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("本机不支持符号链接,跳过: %v", err)
+	}
+	realResolved, err := filepath.EvalSymlinks(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 目标不存在:软链前缀仍必须解析出来(否则 seatbelt 白名单形同不设)
+	got := resolvePath(filepath.Join(link, "missing", "jail"))
+	if want := filepath.Join(realResolved, "missing", "jail"); got != want {
+		t.Fatalf("未存在路径应解析软链前缀:\n got %s\nwant %s", got, want)
+	}
+	// 多级未存在:仍要拼在已解析的存在祖先上(不报错、不返回空)
+	got2 := resolvePath(filepath.Join(base, "ghost1", "ghost2"))
+	if want2 := filepath.Join(resolvePath(base), "ghost1", "ghost2"); got2 != want2 {
+		t.Fatalf("多级未存在路径应拼在已解析前缀上:\n got %s\nwant %s", got2, want2)
+	}
+}
+
 // sandbox-exec 缺失时的降级:不施加、不崩溃,并说明原因(不静默降级)。
 func TestDarwinMissingSandboxExecFallsBack(t *testing.T) {
 	if runtime.GOOS != "darwin" {
@@ -377,5 +403,63 @@ func TestExecPtyUnderKernelSandbox(t *testing.T) {
 	}
 	if _, err := os.Stat(target); err == nil {
 		t.Fatal("pty 下工作区外文件竟被创建")
+	}
+}
+
+// ---------- 回归:先建 jail,再算内核白名单(全新数据根 + 软链路径下的首条命令) ----------
+
+// TestShellToolFirstCommandWritesJailOnFreshSymlinkedHome 钉住 2026-09-12 真机发现的坑:
+// shell.go/pty.go 曾经**先**算 kernelWrapCtx、**后**调 jailEnv —— 全新数据根的首条命令
+// 执行时 jailRoot() 尚不存在,resolvePath 的 EvalSymlinks 失败并回退**未解析**路径;
+// GAH_HOME 含软链组件(/var、/tmp、macOS 的 os.TempDir)时 seatbelt 按真实路径匹配 →
+// jail 白名单整条失效 → 首条 go build / npm install 报 "operation not permitted"
+// (第二条起又正常,症状间歇、极难归因)。
+func TestShellToolFirstCommandWritesJailOnFreshSymlinkedHome(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("本机不支持符号链接,跳过: %v", err)
+	}
+	t.Setenv("GAH_HOME", filepath.Join(link, "gah-data")) // 经软链进入且目标尚不存在
+	t.Setenv("GAH_SHELL_JAIL", "1")
+	t.Setenv(kernelSandboxEnv, "1")
+	if !kernelSupportedHere() {
+		t.Skip("本机无内核级沙箱能力(无内核层则该坑不成立)")
+	}
+	if _, err := os.Stat(jailRoot()); err == nil {
+		t.Fatal("前置:此刻 jail 不应存在(验的就是首条命令)")
+	}
+	ws := filepath.Join(real, "ws")
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tool := &ShellTool{timeout: 30 * time.Second}
+	ctx := sdk.WithSandboxHint(context.Background(), sdk.SandboxHint{Mode: sdk.SandboxWorkspace, Root: ws})
+	res, err := tool.Execute(ctx, `{"command":"echo jail-ok > \"$TMPDIR/probe.txt\""}`)
+	if err != nil {
+		t.Fatalf("Execute 不应返回 go error(结构化回传): %v", err)
+	}
+	m, ok := res.(map[string]any)
+	if !ok {
+		t.Fatalf("结果形态异常: %#v", res)
+	}
+	if e, bad := m["exit_error"]; bad {
+		t.Fatalf("首条命令写 jail/tmp 应成功(内核白名单是否按未解析路径给出?): %v output=%v", e, m["output"])
+	}
+	probe := filepath.Join(jailRoot(), "tmp", "probe.txt")
+	if b, err := os.ReadFile(probe); err != nil || !strings.Contains(string(b), "jail-ok") {
+		t.Fatalf("jail/tmp 下应留下文件: %v (%q)", err, b)
+	}
+	// 越界写仍必须被拦(修复不得放松边界)
+	outside := filepath.Join(t.TempDir(), "escaped.txt")
+	if _, err := tool.Execute(ctx, `{"command":"echo x > `+outside+`"}`); err != nil {
+		t.Fatalf("Execute 不应返回 go error: %v", err)
+	}
+	if _, err := os.Stat(outside); err == nil {
+		t.Fatal("越界写竟成功(修复放松了内核边界)")
 	}
 }

@@ -42,15 +42,17 @@ func execPty(ctx context.Context, command, input string) (string, bool, error) {
 	if serr != nil {
 		return "", false, serr
 	}
-	// 内核级沙箱(第 3 组 ①-E):与普通路径同一套包装(见 kernel.go);pty 不改变 argv 语义。
-	pre := kernelWrapCtx(ctx)
-	argv := prefixedArgv(pre, sh, "-c", command)
-	cmd := exec.Command(argv[0], argv[1:]...)
+	// 环境 jail **先**建出,再算内核白名单(pty 与普通路径同一顺序理由,见 shell.go/jail.go):
+	// 否则全新数据根的首条命令会因 jailRoot() 未存在而拿到未解析的 seatbelt 白名单。
 	// 凭据隔离在前、环境 jail 覆盖缓存根/临时根在后(见 jail.go);jail 建不起来→显式失败。
 	env, jerr := jailEnv(sdk.SanitizedEnv(os.Environ()))
 	if jerr != nil {
 		return "", false, fmt.Errorf("环境 jail 初始化失败: %w", jerr)
 	}
+	// 内核级沙箱(第 3 组 ①-E):与普通路径同一套包装(见 kernel.go);pty 不改变 argv 语义。
+	pre := kernelWrapCtx(ctx)
+	argv := prefixedArgv(pre, sh, "-c", command)
+	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env = sdk.ShellExecEnv(env) // MSYS 路径转换开关(Windows;见 sdk/shellpath.go)
 	// 不断设 Setpgid:pty.Start 内部会设 Setsid(子进程自成会话/进程组组长→ pgid==pid),
 	// 两个同设会在部分平台直接 EPERM;下面仍可用 killProcessGroup 整组终止。

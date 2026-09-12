@@ -106,17 +106,22 @@ func (s *ShellTool) Execute(ctx context.Context, raw string) (any, error) {
 	dctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 
-	// 内核级沙箱(第 3 组 ①-E):按宿主注入的**有效**档位施加进程树级文件写限制(见 kernel.go)。
-	// 包装为空(未注入档位/全权档/平台不支持/开关关闭)时 argv 与原来一致。
-	pre := kernelWrapCtx(ctx)
-	argv := prefixedArgv(pre, sh, "-c", a.Command)
-	cmd := exec.CommandContext(dctx, argv[0], argv[1:]...)
+	// 环境 jail **先**建出(见 jail.go),再算内核白名单:kernelWrap 里的 resolvePath 要
+	// EvalSymlinks(jailRoot()),而全新数据根下 jail 目录此刻还不存在 —— 解析失败会回退
+	// 未解析路径,GAH_HOME 含软链组件(/tmp、/var)时 seatbelt 的白名单整条失效(首条命令
+	// 写缓存即报 operation not permitted,第二条起又正常)。顺序不可换。
 	// 凭据隔离(SanitizedEnv)在前,环境 jail 覆盖缓存根/临时根在后(见 jail.go):
 	// jail 建不起来时显式回结构化错误,不静默放行未受约束的命令。
 	env, jerr := jailEnv(sdk.SanitizedEnv(os.Environ()))
 	if jerr != nil {
 		return map[string]any{"error": "shell: 环境 jail 初始化失败: " + jerr.Error()}, nil
 	}
+
+	// 内核级沙箱(第 3 组 ①-E):按宿主注入的**有效**档位施加进程树级文件写限制(见 kernel.go)。
+	// 包装为空(未注入档位/全权档/平台不支持/开关关闭)时 argv 与原来一致。
+	pre := kernelWrapCtx(ctx)
+	argv := prefixedArgv(pre, sh, "-c", a.Command)
+	cmd := exec.CommandContext(dctx, argv[0], argv[1:]...)
 	cmd.Env = sdk.ShellExecEnv(env) // MSYS 路径转换开关(Windows;见 sdk/shellpath.go)
 	// 后台孙进程(如 `sleep 300 &`)会持有 stdout 管道 → CombinedOutput 永不返回;
 	// 进程组 + WaitDelay 双保险:超时先杀直接子进程,WaitDelay 到点放弃 I/O 等待。

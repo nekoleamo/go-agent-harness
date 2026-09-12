@@ -107,7 +107,8 @@ type Server struct {
 	docMu    sync.Mutex                // doc 懒解析互斥(并发首请求防数据竞争)
 
 	running     atomic.Bool
-	lifeMu      sync.Mutex // 守护 http/closed:Start(插件 goroutine)与 Shutdown(卸载)可并发
+	lifeMu      sync.Mutex // 守护 ln/http/closed:Listen/Start(插件)与 Shutdown(卸载)可并发
+	ln          net.Listener
 	http        *http.Server
 	closed      bool         // 已 Shutdown:Start 若尚未发布 http 则放弃监听(不留孤儿)
 	unsubStatus sdk.Disposer // agent/status 订阅撤销(驱动 running 复位)
@@ -168,17 +169,52 @@ func (s *Server) Inject(c sdk.Ctx) error {
 	return nil
 }
 
-// Start 启动监听(阻塞;外部 goroutine 调用,Shutdown 停止)。
-// 先实际监听成功(失败返回错误,不打 listening 日志),再回调 OnReady 并开始服务。
+// Listen 先实际占用监听端口(幂等;失败显式返回错误)。
+// 存在的意义:**启动期同步失败**(fail-fast)—— 插件在返回成功前就能把「端口被占用」
+// 变成启动失败,而不是把错误丢进后台 goroutine 只记日志:那样进程会挂着不动、没有可服务
+// 端口、也接不到 /api/shutdown(只能被 kill,外部插件子进程一并残留)。
+func (s *Server) Listen() error {
+	s.lifeMu.Lock()
+	if s.ln != nil || s.closed { // 已监听 / 已停机:幂等
+		s.lifeMu.Unlock()
+		return nil
+	}
+	addr := s.cfg.Addr
+	if addr == "" {
+		addr = "127.0.0.1:2233"
+		s.cfg.Addr = addr
+	}
+	s.lifeMu.Unlock()
+
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("web ui 监听失败: %w", err)
+	}
+	s.lifeMu.Lock()
+	if s.closed || s.ln != nil { // 并发 Listen/Shutdown:放弃本次句柄
+		s.lifeMu.Unlock()
+		_ = ln.Close()
+		return nil
+	}
+	s.ln = ln
+	s.lifeMu.Unlock()
+	return nil
+}
+
+// Start 启动服务(阻塞;外部 goroutine 调用,Shutdown 停止)。
+// 未 Listen 时自行监听(兼容原有调用方式);失败时**不打 listening 日志**(调用方据错误
+// 决定退出还是降级),成功后回调 OnReady(插件层据此自动打开浏览器)。
 // 与 Shutdown 并发安全:先建 http.Server 再发布(锁内),Shutdown 已发生则放弃监听
 // —— 否则会在卸载后留下无句柄的孤儿监听(端口泄漏)。
 func (s *Server) Start() error {
-	if s.cfg.Addr == "" {
-		s.cfg.Addr = "127.0.0.1:2233"
+	if err := s.Listen(); err != nil {
+		return err
 	}
-	ln, err := net.Listen("tcp", s.cfg.Addr)
-	if err != nil {
-		return fmt.Errorf("web ui 监听失败: %w", err)
+	s.lifeMu.Lock()
+	ln := s.ln
+	s.lifeMu.Unlock()
+	if ln == nil { // 已 Shutdown(无监听)
+		return nil
 	}
 	hs := &http.Server{
 		Handler:           s.protected(),
@@ -276,18 +312,21 @@ func (s *Server) handler() http.Handler {
 	return mux
 }
 
-// Shutdown 停止服务并撤销状态订阅。可在 Start 之前/并发调用:此时仅标记 closed,
-// 尚未发布的 Start 会自检并放弃监听。
+// Shutdown 停止服务并撤销状态订阅。可在 Listen/Start 之前/并发调用:此时仅标记 closed,
+// 已 Listen 未 Serve 的监听句柄就地关闭(不留孤儿端口)。
 func (s *Server) Shutdown() {
 	if s.unsubStatus != nil {
 		s.unsubStatus()
 	}
 	s.lifeMu.Lock()
 	s.closed = true
-	hs := s.http
+	hs, ln := s.http, s.ln
 	s.lifeMu.Unlock()
 	if hs == nil {
-		return // 尚未开始监听:Start 侧自检 closed 后放弃(不会留孤儿)
+		if ln != nil { // Listen 过但还没 Serve:关掉,否则端口一直占着
+			_ = ln.Close()
+		}
+		return // 尚未开始服务:Start 侧自检 closed 后放弃(不会留孤儿)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()

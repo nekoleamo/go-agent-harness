@@ -422,6 +422,7 @@ func (s *Service) Asset(ctx context.Context, req sdk.DocRequest, assetID string)
 
 // Raster 光栅化 PDF 页(D6-1a/RST-1;实现 sdk.DocRasterService)。
 // 未启用/无 pdftoppm → ErrDocUnsupported;页越界 → ErrDocNotFound;产物超限 → ErrDocTooLarge。
+// 外部后端缺失而走内置兜底时,兜底失败的错误会点明「缺 poppler」与替代做法(见下)。
 func (s *Service) Raster(ctx context.Context, req sdk.DocRequest, page, dpi int) (*sdk.DocRaster, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.budget.Timeout)
 	defer cancel()
@@ -452,6 +453,16 @@ func (s *Service) Raster(ctx context.Context, req sdk.DocRequest, page, dpi int)
 		pngPath, err = s.conv.rasterPDF(ctx, abs, fi.Size(), fi.ModTime().UnixNano(), page, d)
 	} else {
 		pngPath, warn, err = s.self.renderPDF(ctx, abs, fi.Size(), fi.ModTime().UnixNano(), page, d)
+		if err != nil && !strings.Contains(err.Error(), "过大") {
+			// 外部后端不可用时如实说清「为何不可用 + 内置兜底为何失败」:只报 pdfium
+			// 取件/渲染的原始错误(如 context deadline exceeded)会被误读成纯网络问题。
+			// 理由是两条,不能一句「缺 poppler」盖全:开关关掉时 poppler 可能就在机器上。
+			reason := "外部光栅未启用(data.external_raster=false)"
+			if s.conv.rasterOn {
+				reason = "本机未检测到 poppler pdftoppm(外部光栅不可用)"
+			}
+			err = fmt.Errorf("%s,内置 pdfium.wasm 兜底也失败: %v(可安装 poppler pdftoppm 并启用 data.external_raster,或用 data.pdfium_wasm_path 指定本地 wasm 离线部署)", reason, err)
+		}
 		if warn != "" {
 			s.log.Warn("自包含光栅告警", "file", filepath.Base(abs), "page", page, "warn", warn)
 		}

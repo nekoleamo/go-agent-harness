@@ -1297,6 +1297,50 @@ func TestAuthToken(t *testing.T) {
 	}
 }
 
+// TestListenThenShutdownReleasesPort 覆盖 Listen 提前占口(插件 fail-fast)引入的新生命周期:
+// ①Listen 幂等(重复调用不抢第二次端口);②Listen 后未 Start 就 Shutdown → 句柄就地关闭,
+// 端口释放(否则插件启动失败/卸载会在后台留一个孤口);③Shutdown 后 Start 不再监听(返回 nil)。
+func TestListenThenShutdownReleasesPort(t *testing.T) {
+	s := New(Config{Addr: "127.0.0.1:0"}, NewHub(), NewConfirm(NewHub()), slog.Default())
+	if err := s.Listen(); err != nil {
+		t.Fatalf("Listen 失败: %v", err)
+	}
+	if err := s.Listen(); err != nil { // 幂等
+		t.Fatalf("重复 Listen 应幂等: %v", err)
+	}
+	s.lifeMu.Lock()
+	ln := s.ln
+	s.lifeMu.Unlock()
+	if ln == nil {
+		t.Fatal("Listen 后应持有监听句柄")
+	}
+	url := "http://" + ln.Addr().String()
+	s.Shutdown() // 未 Start 即停机
+	if _, err := net.DialTimeout("tcp", ln.Addr().String(), 500*time.Millisecond); err == nil {
+		t.Fatalf("Shutdown 后端口应已释放(%s)", url)
+	}
+	if err := s.Start(); err != nil {
+		t.Fatalf("Shutdown 后 Start 应直接返回(不再监听): %v", err)
+	}
+}
+
+// TestListenFailsOnTakenPort Listen 层真报错(fail-fast 的上游保证)。
+func TestListenFailsOnTakenPort(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	s := New(Config{Addr: ln.Addr().String()}, NewHub(), NewConfirm(NewHub()), slog.Default())
+	err = s.Listen()
+	if err == nil {
+		t.Fatal("端口被占用时 Listen 应报错")
+	}
+	if !strings.Contains(err.Error(), "监听失败") || !strings.Contains(err.Error(), "address already in use") {
+		t.Fatalf("错误应可读地点明监听失败: %v", err)
+	}
+}
+
 func TestShutdownEndpoint(t *testing.T) {
 	// 未装配(OnShutdown nil)→ 503,不静默降级
 	s, _ := newTestServer()

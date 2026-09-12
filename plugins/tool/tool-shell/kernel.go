@@ -96,12 +96,26 @@ func kernelWrapCtx(ctx context.Context) []string {
 // resolvePath 解析软链;失败时保留原路径。
 // 为什么必须解析(darwin 实测踩到):macOS 上 /tmp 是 /private/tmp 的软链,seatbelt 按**真实路径**
 // 匹配,不解析则 (subpath "/tmp/x") 形同不设 —— 白名单看起来在、实际全放行。
-// 解析失败时不放行该路径(保守方向:少放行,而不是多放行)。
+// 路径**尚不存在**时(全新数据根的 jail、未创建的 workspace 子目录)逐级向上找到最近的存在
+// 祖先再拼回剩余部分:直接回退原始路径会把软链前缀(/tmp、/var)交给 seatbelt,白名单同样形同不设。
+// 确实解析不出来(整条链都不存在/权限不足)时回退原路径(保守方向:少放行,而不是多放行)。
 func resolvePath(p string) string {
 	if r, err := filepath.EvalSymlinks(p); err == nil && r != "" {
 		return r
 	}
-	return p
+	dir := filepath.Clean(p)
+	var tail []string
+	for {
+		parent := filepath.Dir(dir)
+		if parent == dir { // 已到根仍解析不出
+			return p
+		}
+		tail = append([]string{filepath.Base(dir)}, tail...)
+		dir = parent
+		if r, err := filepath.EvalSymlinks(dir); err == nil && r != "" {
+			return filepath.Join(append([]string{r}, tail...)...)
+		}
+	}
 }
 
 // prefixedArgv 拼接包装与真实命令(argv 用新底层数组,避免 append 复用原切片导致包装被覆写)。

@@ -5,6 +5,8 @@ package hostschedule
 import (
 	"context"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -549,6 +551,13 @@ func TestScheduleCommand(t *testing.T) {
 	if out, err = run([]string{"run", id}); err != nil || !strings.Contains(out, "已触发") {
 		t.Fatalf("run: %q %v", out, err)
 	}
+	// run 是**后台**执行:必须等运行记录真落盘再继续 —— 否则 execute 可能在 teardown 之后
+	// 才写计划文件,与 TempDir 清理竞态(全库 -race 高负载下偶发 "schedules: directory not empty")。
+	// 观察点用落盘文件本身(rename 原子,读到即完整),而不是内存里的 LastRunAt(写盘在其后)。
+	waitFor(t, 3*time.Second, func() bool {
+		b, rerr := os.ReadFile(filepath.Join(sdk.Home(), "schedules", id+".yaml"))
+		return rerr == nil && strings.Contains(string(b), "last_run_at")
+	})
 	if out, err = run([]string{"rm", id}); err != nil || !strings.Contains(out, "已删除") {
 		t.Fatalf("rm: %q %v", out, err)
 	}
