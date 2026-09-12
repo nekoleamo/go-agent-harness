@@ -227,6 +227,71 @@ func (s *stubJobs) Kill(id string) error {
 	return nil
 }
 
+// stubSched 定时计划服务替身(记录调用;ID/状态语义与真实实现一致)。
+type stubSched struct {
+	sdk.ScheduleService
+	mu     sync.Mutex
+	plans  []sdk.Schedule
+	runs   []string
+	errAdd error
+}
+
+func (s *stubSched) List() []sdk.Schedule {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]sdk.Schedule, len(s.plans))
+	copy(out, s.plans)
+	return out
+}
+
+func (s *stubSched) Add(p sdk.Schedule) (sdk.Schedule, error) {
+	if s.errAdd != nil {
+		return sdk.Schedule{}, s.errAdd
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p.ID = "sched-test0001"
+	s.plans = append(s.plans, p)
+	return p, nil
+}
+
+func (s *stubSched) Update(p sdk.Schedule) (sdk.Schedule, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, old := range s.plans {
+		if old.ID == p.ID {
+			p.CreatedAt = old.CreatedAt
+			s.plans[i] = p
+			return p, nil
+		}
+	}
+	return sdk.Schedule{}, errors.New("计划不存在: " + p.ID)
+}
+
+func (s *stubSched) Remove(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, old := range s.plans {
+		if old.ID == id {
+			s.plans = append(s.plans[:i], s.plans[i+1:]...)
+			return nil
+		}
+	}
+	return errors.New("计划不存在: " + id)
+}
+
+func (s *stubSched) RunNow(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, old := range s.plans {
+		if old.ID == id {
+			s.runs = append(s.runs, id)
+			return nil
+		}
+	}
+	return errors.New("计划不存在: " + id)
+}
+
 type stubPM struct {
 	sdk.PluginManager
 	list     []sdk.PluginInfo
@@ -1918,5 +1983,149 @@ func TestStartShutdownConcurrent(t *testing.T) {
 			t.Fatalf("第 %d 轮端口仍被占用(孤儿监听): %v", i, err)
 		}
 		_ = ln.Close()
+	}
+}
+
+// 定时计划 REST 面(NOND-W4):列表/新增/修改/删除/立即触发 + 未装配 503。
+func TestScheduleEndpoints(t *testing.T) {
+	s, _ := newTestServer()
+	sched := &stubSched{plans: []sdk.Schedule{{ID: "sched-test0001", Name: "对账", Cron: "0 8 * * *", Prompt: "跑", Enabled: true}}}
+	s.sched = sched
+	hs := httptest.NewServer(s.handler())
+	defer hs.Close()
+
+	// 列表
+	r, err := http.Get(hs.URL + "/api/schedules")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var list []sdk.Schedule
+	if r.StatusCode != 200 || json.NewDecoder(r.Body).Decode(&list) != nil {
+		t.Fatalf("列表应 200 且可解析,得 %d", r.StatusCode)
+	}
+	r.Body.Close()
+	if len(list) != 1 || list[0].ID != "sched-test0001" {
+		t.Fatalf("列表不符 %+v", list)
+	}
+
+	// 新增:未传 enabled 默认启用
+	r, err = http.Post(hs.URL+"/api/schedules", "application/json",
+		strings.NewReader(`{"name":"每周对账","cron":"0 8 * * 1","prompt":"生成上周对账"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var added sdk.Schedule
+	if r.StatusCode != 200 || json.NewDecoder(r.Body).Decode(&added) != nil {
+		t.Fatalf("新增应 200,得 %d", r.StatusCode)
+	}
+	r.Body.Close()
+	if added.ID == "" || !added.Enabled || added.Name != "每周对账" {
+		t.Fatalf("新增结果不符 %+v", added)
+	}
+
+	// 新增失败(校验错误)→ 400 且带原因(前端直接显示)
+	sched.errAdd = errors.New("计划名称不能为空")
+	r, err = http.Post(hs.URL+"/api/schedules", "application/json", strings.NewReader(`{"cron":"* * * * *"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(r.Body)
+	r.Body.Close()
+	sched.errAdd = nil
+	if r.StatusCode != 400 || !strings.Contains(string(b), "计划名称不能为空") {
+		t.Fatalf("校验失败应 400 + 原因,得 %d %q", r.StatusCode, string(b))
+	}
+
+	// 修改:仅覆盖传入字段(enabled=false 必须生效 —— 指针区分「未传」)
+	req, _ := http.NewRequest(http.MethodPatch, hs.URL+"/api/schedules/sched-test0001",
+		strings.NewReader(`{"enabled":false}`))
+	r, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var upd sdk.Schedule
+	if r.StatusCode != 200 || json.NewDecoder(r.Body).Decode(&upd) != nil {
+		t.Fatalf("修改应 200,得 %d", r.StatusCode)
+	}
+	r.Body.Close()
+	if upd.Enabled || upd.Name != "对账" || upd.Cron != "0 8 * * *" {
+		t.Fatalf("PATCH 应只改 enabled: %+v", upd)
+	}
+	// 未传 enabled 的 PATCH 不该把计划停掉
+	req, _ = http.NewRequest(http.MethodPatch, hs.URL+"/api/schedules/sched-test0001",
+		strings.NewReader(`{"enabled":true,"name":"改名"}`))
+	r, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.StatusCode != 200 || json.NewDecoder(r.Body).Decode(&upd) != nil || upd.Name != "改名" || !upd.Enabled {
+		t.Fatalf("PATCH 改名+启用失败 %d %+v", r.StatusCode, upd)
+	}
+	r.Body.Close()
+
+	// 未知 ID → 404(不是 400)
+	req, _ = http.NewRequest(http.MethodPatch, hs.URL+"/api/schedules/sched-nope0000", strings.NewReader(`{"name":"x"}`))
+	r, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Body.Close()
+	if r.StatusCode != 404 {
+		t.Fatalf("未知计划应 404,得 %d", r.StatusCode)
+	}
+
+	// 立即触发
+	r, err = http.Post(hs.URL+"/api/schedules/sched-test0001/run", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Body.Close()
+	if r.StatusCode != 200 || len(sched.runs) != 1 {
+		t.Fatalf("run 应 200 且记录一次,得 %d %v", r.StatusCode, sched.runs)
+	}
+	r, err = http.Post(hs.URL+"/api/schedules/sched-nope0000/run", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Body.Close()
+	if r.StatusCode != 400 || !strings.Contains("", "") { // 未知 ID 由服务返回错误 → 400
+		if r.StatusCode != 400 {
+			t.Fatalf("未知计划 run 应 400,得 %d", r.StatusCode)
+		}
+	}
+
+	// 删除
+	req, _ = http.NewRequest(http.MethodDelete, hs.URL+"/api/schedules/sched-test0001", nil)
+	r, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Body.Close()
+	if r.StatusCode != 200 || len(sched.List()) != 1 { // 表里只剩新增的那条
+		t.Fatalf("删除应 200,得 %d 剩 %d", r.StatusCode, len(sched.List()))
+	}
+
+	// 未装配 → 503(全部端点一致)
+	s2, _ := newTestServer()
+	hs2 := httptest.NewServer(s2.handler())
+	defer hs2.Close()
+	for _, c := range []struct {
+		method, path string
+	}{
+		{http.MethodGet, "/api/schedules"},
+		{http.MethodPost, "/api/schedules"},
+		{http.MethodPatch, "/api/schedules/sched-test0001"},
+		{http.MethodDelete, "/api/schedules/sched-test0001"},
+		{http.MethodPost, "/api/schedules/sched-test0001/run"},
+	} {
+		req, _ := http.NewRequest(c.method, hs2.URL+c.path, strings.NewReader("{}"))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusServiceUnavailable {
+			t.Fatalf("%s %s 未装配应 503,得 %d", c.method, c.path, resp.StatusCode)
+		}
 	}
 }

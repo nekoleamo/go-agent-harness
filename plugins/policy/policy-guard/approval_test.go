@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/nekoleamo/go-agent-harness/core/ctx"
@@ -224,3 +226,113 @@ func (e *echoToolImpl) Execute(ctx context.Context, args string) (any, error) {
 }
 
 var _ = errors.Is // 保留引用
+
+// countingConfirm 记录确认调用次数:无人值守时**必须一次都不问**(没人在场,
+// 问了也只是把拒绝拖到超时,还会在 UI 上弹一个没人看的窗)。
+type countingConfirm struct {
+	mu    sync.Mutex
+	calls int
+	resp  bool
+}
+
+func (c *countingConfirm) Confirm(context.Context, string) (bool, error) {
+	c.mu.Lock()
+	c.calls++
+	c.mu.Unlock()
+	return c.resp, nil
+}
+
+func (c *countingConfirm) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls
+}
+
+// TestUnattendedDeniesApprovalInAllModes NOND-W4:定时任务(无人值守)触发时,
+// 需审批的动作在三档下一律拒绝,且不弹确认;对照组证明「拒绝来自无人值守标记」。
+func TestUnattendedDeniesApprovalInAllModes(t *testing.T) {
+	const danger = `{"command":"rm -rf /tmp/x"}` // host-tools 前置到 echo 工具,不真执行
+	for _, mode := range []string{"open", "smart", "strict"} {
+		// 用 full-access 隔离沙箱层(默认 workspace-write 下 /tmp 写目标另会被路径裁决拒绝)
+		cf := &countingConfirm{resp: true}
+		c := build(t, cf, map[string]any{"approval": mode, "sandbox": "full-access"})
+		var tools sdk.ToolRegistry
+		if err := c.Inject("ctx.tools", &tools); err != nil {
+			t.Fatal(err)
+		}
+		res, err := tools.Execute(sdk.WithUnattended(context.Background()), "shell", danger)
+		if err != nil {
+			t.Fatalf("%s:流水线应吞 veto 为结构化结果,got %v", mode, err)
+		}
+		if res.Error == "" {
+			t.Fatalf("%s 档下无人值守的危险动作必须被拒", mode)
+		}
+		if !strings.Contains(res.Error, "无人值守") {
+			t.Fatalf("%s:错误应说明是无人值守导致,got %q", mode, res.Error)
+		}
+		if cf.count() != 0 {
+			t.Fatalf("%s 档下不得弹确认(无人值守没有应答者),调用了 %d 次", mode, cf.count())
+		}
+
+		// 对照:同一命令在有人值守时按档位既有语义(open/smart 放行、strict 拒绝)
+		cf2 := &countingConfirm{resp: true}
+		c2 := build(t, cf2, map[string]any{"approval": mode, "sandbox": "full-access"})
+		var tools2 sdk.ToolRegistry
+		if err := c2.Inject("ctx.tools", &tools2); err != nil {
+			t.Fatal(err)
+		}
+		res2, err := tools2.Execute(context.Background(), "shell", danger)
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch mode {
+		case "open":
+			if res2.Error != "" {
+				t.Fatalf("有人值守 open 档应放行,got %q", res2.Error)
+			}
+			if cf2.count() != 0 {
+				t.Fatal("open 档不应弹确认")
+			}
+		case "smart":
+			if res2.Error != "" {
+				t.Fatalf("有人值守 smart 档用户同意后应放行,got %q", res2.Error)
+			}
+			if cf2.count() != 1 {
+				t.Fatalf("smart 档应询问一次,got %d", cf2.count())
+			}
+		case "strict":
+			if res2.Error == "" || strings.Contains(res2.Error, "无人值守") {
+				t.Fatalf("有人值守 strict 档应按严格档拒绝,got %q", res2.Error)
+			}
+		}
+	}
+}
+
+// TestUnattendedAppliesToToolApproval 工具级审批(E-A)同样受无人值守约束。
+func TestUnattendedAppliesToToolApproval(t *testing.T) {
+	cf := &countingConfirm{resp: true}
+	c := build(t, cf, map[string]any{"approval": "open", "approval_tools": []any{"shell"}})
+	var tools sdk.ToolRegistry
+	if err := c.Inject("ctx.tools", &tools); err != nil {
+		t.Fatal(err)
+	}
+	// 有人值守 + open:工具在审批名单内,open 档直接放行
+	res, err := tools.Execute(context.Background(), "shell", `{"command":"echo hi"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Error != "" {
+		t.Fatalf("open 档下名单内工具应放行,got %q", res.Error)
+	}
+	// 无人值守:名单内工具即使 open 档也拒绝
+	res2, err := tools.Execute(sdk.WithUnattended(context.Background()), "shell", `{"command":"echo hi"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res2.Error == "" || !strings.Contains(res2.Error, "无人值守") {
+		t.Fatalf("无人值守下名单内工具应被拒并说明原因,got %q", res2.Error)
+	}
+	if cf.count() != 0 {
+		t.Fatalf("无人值守不得弹确认,got %d", cf.count())
+	}
+}

@@ -219,3 +219,34 @@ func TestSlowConsumerSessionDropClosesStream(t *testing.T) {
 		}
 	}
 }
+
+// 定时计划运行终态必须主动推给浏览器(NOND-W4):无人值守任务没有人在场,
+// 失败/跳过若只能靠轮询发现,用户第二天才知道。
+func TestHubScheduleFrame(t *testing.T) {
+	ctx := newTestCtx()
+	hub := NewHub()
+	unsub, err := hub.Subscribe(ctx, &memLog{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unsub()
+	ch, release := hub.Stream()
+	defer release()
+
+	ev := sdk.ScheduleRunEvent{ID: "sched-1", State: sdk.ScheduleRunFailed, Error: "模型调用失败"}
+	ctx.fire(sdk.EventScheduleRun, &ev)
+	f := <-ch
+	if f.Type != FrameSchedule {
+		t.Fatalf("期望计划帧,得 %+v", f)
+	}
+	got, ok := f.Payload.(*sdk.ScheduleRunEvent)
+	if !ok || got.ID != "sched-1" || got.State != sdk.ScheduleRunFailed {
+		t.Fatalf("计划帧载荷不符 %+v", f.Payload)
+	}
+	// 值载荷(非指针)同样应转发(事件派发两种姿势都合法)
+	ctx.fire(sdk.EventScheduleRun, ev)
+	f2 := <-ch
+	if f2.Type != FrameSchedule {
+		t.Fatalf("值载荷未转发: %+v", f2)
+	}
+}

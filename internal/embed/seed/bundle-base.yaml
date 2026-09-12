@@ -1,4 +1,4 @@
-# seed-version: 18 # 样板版本:新增 base 能力条目(host-* 等)时 +1(18:移除已废弃的远程通道工具条目),老用户自动升级(备份后覆盖)
+# seed-version: 19 # 样板版本:新增 base 能力条目(host-* 等)时 +1(19:新增 host-schedule 定时任务),老用户自动升级(备份后覆盖)
 # base bundle:对齐 dsh-base,一切功能皆插件的共享第一层。
 # M1 阶段条目仅记录意图;对应插件工厂在 M2 base bundle 落地。
 name: base
@@ -69,6 +69,12 @@ entries:
     # 新模型/文档更新无需改代码)> 内置窗口表(claude 1M/200K、deepseek 128K、gemini 1M 等,
     # 发行版本基线);未知/空模型窗口=0,状态栏只显示使用量(不显示总量/百分比)。
   - id: host-jobs
+  - id: host-schedule
+    # NOND-W4 定时任务(ctx.schedule):5 字段 cron 计划,到点经既有回合入口(agentLoop→tools)
+    # 跑一轮,仍受 policy 审批/沙箱裁决;无人值守运行 = 无确认通道 → 需审批的动作一律拒绝。
+    # 计划落 $GAH_HOME/schedules/*.yaml;busy_wait_seconds = 有回合在跑时的等待上限(超时记 skipped)。
+    data:
+      busy_wait_seconds: 60
   - id: host-fanout
     enabled: true # M6.2 拆分:子代理编排宿主服务(ctx.fanout),tool-workflow 依赖
   - id: host-bridge

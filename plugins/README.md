@@ -27,6 +27,7 @@ plugins/
 | host | host-usage-stats | 会话 token 统计 + 模型窗口解析(ctx.usageStats) | — |
 | host | host-skills | 技能机制(SKILL.md 扫描) | ctx.tools/ctx.systemPrompt |
 | host | host-jobs | 后台任务(ctx.jobs) | ctx.tools |
+| host | host-schedule | 定时任务(NOND-W4):ctx.schedule——5 字段 cron 计划(分 时 日 月 周),到点经既有回合入口(agentLoop→tools,仍受审批/沙箱裁决)跑一轮;计划落 $GAH_HOME/schedules/*.yaml;无人值守运行 = 无确认通道 → 需审批的动作一律拒绝 | ctx.agentLoop/ctx.commands(;ctx.turnControl 可选) |
 | host | host-fanout | 子代理编排(ctx.fanout) | ctx.llm/ctx.tools/ctx.systemPrompt |
 | host | host-plugin-manager | 运行期插拔(ctx.pluginManager) | — |
 | host | host-bridge | 外部插件桥(加载 home/plugins 外部进程,GAH_CB_ADDR 回调) | ctx.tools/ctx.jobs/ctx.fanout |

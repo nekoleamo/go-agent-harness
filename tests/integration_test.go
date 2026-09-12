@@ -302,8 +302,9 @@ func TestPluginUnloadMatrix(t *testing.T) {
 	// 2) 叶子/无依赖者逐个卸载:宿主存活 + 回合可继续(不 panic)
 	// 含无依赖者的宿主服务(agent-loop/plugin-manager/cwd-sessions 卸载无副作用,引用仍可用)
 	// M6.8:host-bridge 依赖 host-jobs/host-fanout → 卸载需自内向外(先卸 bridge 再卸其依赖者)
-	// 依赖序:先卸依赖者(host-session-summary 依赖 cwdSessions;tool-doc 依赖 host-docview)
-	leaves := []string{"policy-guard", "tool-shell", "host-skills", "mcp-bridge", "host-agent-loop",
+	// 依赖序:先卸依赖者(host-session-summary 依赖 cwdSessions;tool-doc 依赖 host-docview;
+	// NOND-W4 后 host-schedule 依赖 host-agent-loop → 必须先于 agent-loop 卸)
+	leaves := []string{"policy-guard", "tool-shell", "host-skills", "mcp-bridge", "host-schedule", "host-agent-loop",
 		"host-plugin-manager", "host-session-summary", "host-cwd-sessions", "tool-doc", "host-docview",
 		"token-compress", "host-bridge", "host-jobs", "host-fanout"}
 	for _, id := range leaves {

@@ -13,6 +13,7 @@
 //	GET  /api/commands 命令注册表;POST /api/commands/{name} {args} 直接执行
 //	POST /api/compact {prompt?} 手动滚动压缩(摘要+折叠数);POST /api/settings/history {n} 历史注入条数
 //	GET/POST /api/tools[/{name}] 工具清单/调用;GET /api/jobs… 后台任务
+//	GET/POST/PATCH/DELETE /api/schedules… 定时计划(NOND-W4;POST /{id}/run 立即触发一次)
 //	GET /api/plugins … 插件清单/加载/卸载;GET /api/models 聚合模型列表
 //	GET/POST /api/providers … 多 provider;POST /api/reload 指令热更
 //	POST /api/shutdown 优雅停机(触发宿主 system/shutdown → DisposeAll;桌面壳/跨平台统一通道)
@@ -95,6 +96,7 @@ type Server struct {
 	cmds     sdk.CommandRegistry       // 可选(未装配 = / 命令不可用)
 	tools    sdk.ToolRegistry          // 可选(工具清单/调用/todo 面板)
 	jobs     sdk.JobService            // 可选(后台任务)
+	sched    sdk.ScheduleService       // 可选(定时计划 NOND-W4;未装配 → /api/schedules 503)
 	pm       sdk.PluginManager         // 可选(插件启停)
 	sp       sdk.SystemPromptService   // 可选(/reload 指令热更)
 	tc       sdk.TurnControl           // 可选(回合取消 /api/control cancel;未装配 = 503)
@@ -146,6 +148,7 @@ func (s *Server) Inject(c sdk.Ctx) error {
 	_ = c.Inject("ctx.commands", &s.cmds)
 	_ = c.Inject("ctx.tools", &s.tools)
 	_ = c.Inject("ctx.jobs", &s.jobs)
+	_ = c.Inject("ctx.schedule", &s.sched)
 	_ = c.Inject("ctx.pluginManager", &s.pm)
 	_ = c.Inject("ctx.systemPrompt", &s.sp)
 	_ = c.Inject("ctx.turnControl", &s.tc)
@@ -227,6 +230,11 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET /api/jobs", s.handleJobs)
 	mux.HandleFunc("GET /api/jobs/{id}", s.handleJobGet)
 	mux.HandleFunc("POST /api/jobs/{id}/kill", s.handleJobKill)
+	mux.HandleFunc("GET /api/schedules", s.handleSchedules)
+	mux.HandleFunc("POST /api/schedules", s.handleScheduleAdd)
+	mux.HandleFunc("PATCH /api/schedules/{id}", s.handleScheduleUpdate)
+	mux.HandleFunc("DELETE /api/schedules/{id}", s.handleScheduleDelete)
+	mux.HandleFunc("POST /api/schedules/{id}/run", s.handleScheduleRun)
 	mux.HandleFunc("POST /api/commands/{name}", s.handleCommandRun)
 	mux.HandleFunc("POST /api/commands/{name}/options", s.handleCommandOptions)
 	mux.HandleFunc("GET /api/plugins", s.handlePlugins)
@@ -1423,6 +1431,123 @@ func (s *Server) handleJobKill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleSchedules 定时计划列表(GET /api/schedules;未装配 ctx.schedule → 503)。
+func (s *Server) handleSchedules(w http.ResponseWriter, _ *http.Request) {
+	if s.sched == nil {
+		http.Error(w, "定时计划服务未装配(ctx.schedule)", http.StatusServiceUnavailable)
+		return
+	}
+	list := s.sched.List()
+	if list == nil {
+		list = []sdk.Schedule{}
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+// scheduleReq 新增/修改计划的请求体(PATCH 为空字段 = 不改;Enabled 用指针区分“未传”与 false)。
+type scheduleReq struct {
+	Name    string `json:"name"`
+	Cron    string `json:"cron"`
+	Prompt  string `json:"prompt"`
+	Enabled *bool  `json:"enabled"`
+}
+
+// handleScheduleAdd 新增计划(POST /api/schedules)。
+func (s *Server) handleScheduleAdd(w http.ResponseWriter, r *http.Request) {
+	if s.sched == nil {
+		http.Error(w, "定时计划服务未装配(ctx.schedule)", http.StatusServiceUnavailable)
+		return
+	}
+	var req scheduleReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "坏请求体", http.StatusBadRequest)
+		return
+	}
+	enabled := true // 默认启用(新建即生效;停用需显式传 false)
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
+	p, err := s.sched.Add(sdk.Schedule{Name: req.Name, Cron: req.Cron, Prompt: req.Prompt, Enabled: enabled})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
+// handleScheduleUpdate 修改计划(PATCH /api/schedules/{id}):仅覆盖传入字段。
+func (s *Server) handleScheduleUpdate(w http.ResponseWriter, r *http.Request) {
+	if s.sched == nil {
+		http.Error(w, "定时计划服务未装配(ctx.schedule)", http.StatusServiceUnavailable)
+		return
+	}
+	id := r.PathValue("id")
+	cur, ok := findSchedule(s.sched.List(), id)
+	if !ok {
+		http.Error(w, "计划不存在: "+id, http.StatusNotFound)
+		return
+	}
+	var req scheduleReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "坏请求体", http.StatusBadRequest)
+		return
+	}
+	if req.Name != "" {
+		cur.Name = req.Name
+	}
+	if req.Cron != "" {
+		cur.Cron = req.Cron
+	}
+	if req.Prompt != "" {
+		cur.Prompt = req.Prompt
+	}
+	if req.Enabled != nil {
+		cur.Enabled = *req.Enabled
+	}
+	upd, err := s.sched.Update(cur)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusOK, upd)
+}
+
+// handleScheduleDelete 删除计划(DELETE /api/schedules/{id})。
+func (s *Server) handleScheduleDelete(w http.ResponseWriter, r *http.Request) {
+	if s.sched == nil {
+		http.Error(w, "定时计划服务未装配(ctx.schedule)", http.StatusServiceUnavailable)
+		return
+	}
+	if err := s.sched.Remove(r.PathValue("id")); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleScheduleRun 立即触发一次(POST /api/schedules/{id}/run;异步,状态回读列表)。
+func (s *Server) handleScheduleRun(w http.ResponseWriter, r *http.Request) {
+	if s.sched == nil {
+		http.Error(w, "定时计划服务未装配(ctx.schedule)", http.StatusServiceUnavailable)
+		return
+	}
+	if err := s.sched.RunNow(r.PathValue("id")); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// findSchedule 按 ID 取计划快照。
+func findSchedule(plans []sdk.Schedule, id string) (sdk.Schedule, bool) {
+	for _, p := range plans {
+		if p.ID == id {
+			return p, true
+		}
+	}
+	return sdk.Schedule{}, false
 }
 
 // handleCommandRun 直接执行命令(POST /api/commands/{name}):{args: ["..."]}。

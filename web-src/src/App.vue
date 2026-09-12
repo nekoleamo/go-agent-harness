@@ -52,6 +52,7 @@ async function refreshJobs(): Promise<void> {
   }
 }
 // 后台任务徽标轮询(实时信号:运行中任务数;面板本身另有 3s 轮询)
+const schedTick = ref(0) // 定时计划运行信号(schedule/run 帧 → 设置面板重拉状态)
 let jobsTimer: ReturnType<typeof setInterval> | null = null
 onMounted(() => {
   void refreshJobs()
@@ -205,6 +206,11 @@ function rebuild(keepCursor: boolean): void {
   transport.on('doc', (f) => {
     const d = f.payload as { path?: string }
     if (d?.path) onOpenDoc(new CustomEvent(OPEN_DOC_EVENT, { detail: d.path }))
+  })
+  // 定时计划跑完一轮(NOND-W4 schedule/run 帧):无人值守任务没人在场看到过程,
+  // 状态(上次运行/失败原因)必须主动刷新到设置面板。
+  transport.on('schedule', () => {
+    schedTick.value++
   })
 }
 
@@ -368,6 +374,7 @@ onUnmounted(() => {
       :open="settingsOpen"
       :state="state"
       :focus="focusProvider ? 'provider' : undefined"
+      :sched-tick="schedTick"
       @close="closeSettings"
       @changed="refreshStats"
     />

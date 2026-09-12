@@ -134,6 +134,12 @@ func (p *ApprovalPolicy) ApprovalTools() []string {
 
 // decide 三档裁决核心(命令支路与工具支路共用;label 描述待审批对象)。
 func (p *ApprovalPolicy) decide(ctx context.Context, confirm sdk.ConfirmService, label string) error {
+	// 无人值守(定时任务触发,NOND-W4):**没有在场的人**回答确认弹窗 ——
+	// 一律拒绝,连 open 档也不放行(open 的语义是「你在场时不用问」,
+	// 不是「没人问就等于同意」)。
+	if sdk.UnattendedOf(ctx) {
+		return fmt.Errorf("approval: 无人值守运行拒绝需审批的%s(定时任务没有确认通道;需人工确认的动作请手动执行)", label)
+	}
 	switch p.Mode() {
 	case sdk.ApprovalOpen:
 		return nil // 开放档:直接放行

@@ -1,5 +1,5 @@
 // REST 客户端(上行)+ 工具函数。核心交互纯 REST,不绕模板渲染。
-import type { AttachmentView, CommandOptionsResp, CommandView, DocTree, DocView, Job, ModelsAllResp, PluginInfo, ProviderInfo, SessionInfo, StateView, WorkspaceInfo } from './types'
+import type { AttachmentView, CommandOptionsResp, CommandView, DocTree, DocView, Job, ModelsAllResp, PluginInfo, ProviderInfo, Schedule, SessionInfo, StateView, WorkspaceInfo } from './types'
 
 const BASE = ''
 const json = {
@@ -164,6 +164,23 @@ export const api = {
   },
   jobKill(id: string): Promise<void> {
     return req('/api/jobs/' + encodeURIComponent(id) + '/kill', { method: 'POST', headers: json, body: '{}' })
+  },
+  // —— 定时计划(NOND-W4) ——
+  schedules(): Promise<Schedule[]> {
+    return req('/api/schedules')
+  },
+  scheduleAdd(p: { name: string; cron: string; prompt: string; enabled?: boolean }): Promise<Schedule> {
+    return req('/api/schedules', { method: 'POST', headers: json, body: JSON.stringify(p) })
+  },
+  // 仅覆盖传入字段(未传 = 不改;enabled 走 undefined 区分 false)
+  scheduleUpdate(id: string, p: { name?: string; cron?: string; prompt?: string; enabled?: boolean }): Promise<Schedule> {
+    return req('/api/schedules/' + encodeURIComponent(id), { method: 'PATCH', headers: json, body: JSON.stringify(p) })
+  },
+  scheduleDelete(id: string): Promise<void> {
+    return req('/api/schedules/' + encodeURIComponent(id), { method: 'DELETE', headers: json, body: '{}' })
+  },
+  scheduleRun(id: string): Promise<void> {
+    return req('/api/schedules/' + encodeURIComponent(id) + '/run', { method: 'POST', headers: json, body: '{}' })
   },
 }
 

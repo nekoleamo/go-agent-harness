@@ -18,6 +18,7 @@ import (
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-jobs"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-llm"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-plugin-manager"
+	"github.com/nekoleamo/go-agent-harness/plugins/host/host-schedule"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-session-log"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-session-summary"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-skills"
@@ -181,6 +182,15 @@ var All = map[string]Def{
 	"host-plugin-manager": {Factory: func() sdk.Plugin { return &hostplugmgr.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "host-plugin-manager", Type: "host", APIVersion: ">=1.0,<2.0",
 		Provides: []string{"ctx.pluginManager"}}, Bundle: "base"},
+	"host-schedule": {Factory: func() sdk.Plugin { return &hostschedule.Plugin{} }, Manifest: &sdk.Manifest{
+		ID: "host-schedule", Type: "host", APIVersion: ">=1.0,<2.0",
+		// NOND-W4 定时任务:ctx.schedule(List/Add/Update/Remove/RunNow) + /schedule 命令。
+		// ctx.agentLoop:到点**经既有回合入口**跑一轮(工具仍走 ctx.tools + policy 裁决,
+		// 仍落会话记录)——定时任务不是第二条执行路径。
+		// ctx.commands:命令注册依赖启动顺序(map 遍历随机),硬声明让拓扑保证 host-commands 先行。
+		// ctx.turnControl 可选注入(有回合在跑时等空闲,超时记 skipped)。
+		Provides: []string{"ctx.schedule"},
+		Requires: []string{"ctx.agentLoop", "ctx.commands"}}, Bundle: "base"},
 	"ui-tui-app": {Factory: func() sdk.Plugin { return &uitui.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "ui-tui-app", Type: "ui", APIVersion: ">=1.0,<2.0",
 		// ctx.commands:内部命令注册表(ui-tui-app 与宿主命令共表;判重跳过宿主已注册同名)

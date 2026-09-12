@@ -111,6 +111,7 @@ func (t *myTool) Definition() sdk.ToolDefinition {
 - 插件不得私接工具实现、不得自建执行路径(禁止把别的插件的工具函数直接拿来调;插件间也不允许相互 import)。
 - 需要执行工具(子代理、workflow 嵌套调用、MCP server 暴露、外部插件回调等)一律经 `ctx.tools.Execute(ctx, name, args)`。
 - **新增任何「能触发工具执行的入口」必须在 `tests/policy_entries_e2e_test.go` 的入口矩阵中登记**(断言:该入口委派给注入的 registry、registry 必发 `tools/pre-execute`、veto 时工具**不产生副作用**)。当前已登记:agent-loop、host-fanout、tool-workflow、mcp-server、host-bridge 宿主侧 `toolsCall`、web `/api/tools/{name}`。
+  - **NOND-W4 定时任务(host-schedule)**:不新增执行路径 —— 到点经 `ctx.agentLoop.Run` 提交一轮(即复用上表 agent-loop 入口),工具仍只经 `ctx.tools`。它的专属 e2e 在 `tests/schedule_e2e_test.go`(触发落会话记录 + 前缀 / **无人值守三档一律拒**需审批动作,含「有人值守必放行」灵敏度对照 / 重启保留计划 / 卸载无残留)。**新增定时/无人值守类入口时照此办理**:走 agent-loop + 在 `tests/schedule_e2e_test.go` 或同型文件里加对照用例,并补 `sdk.WithUnattended` 语义验证。
 - veto 语义:订阅者返回错误即「不执行」,由 registry 转成结构化 `blocked:` 结果回传模型(不中断回合)。
 - **宿主会把有效沙箱档位注入执行 ctx**:`sdk.SandboxHint{Mode, Root}`(`sdk.WithSandboxHint`/`sdk.SandboxHintOf`)。执行入口(`ctx.tools`)在 `tools/pre-execute` 之后、真正执行之前注入**有效**档位(`EffectiveSandbox.EffectiveMode()`,即联动后的档;不是声明档),外部插件工具经协议随调用携带、在插件侧 ctx 里可读回。**档位/根为空 = 未知 → 按不可放行处理**(不得猜默认值);未注入 = 与改动前行为一致(旧对端不报错,只是不施加内核限制)。自带进程执行的工具(不限于 `shell`)应以该 hint 作为施加内核级限制的输入 —— 它是唯一能覆盖子进程树的控制点。
 

@@ -7,12 +7,14 @@ import { api } from '../api'
 import { settingSections } from '../registry'
 import { uiPluginTrustNote } from '../plugins'
 import { PROVIDER_PRESETS, explainProbeError, type ProviderPreset } from '../providers'
-import type { AskConfirm, PluginInfo, ProviderInfo, ProviderModelGroup, StateView } from '../types'
+import { cronShapeError, fmtAbs, fmtNextRun, statusLabel } from '../schedule'
+import type { AskConfirm, PluginInfo, ProviderInfo, ProviderModelGroup, Schedule, StateView } from '../types'
 
 const props = defineProps<{
   open: boolean
   state: StateView
   focus?: string // 打开时定位到某一段(首启引导传 'provider')
+  schedTick?: number // 定时计划运行信号(App 收到 schedule/run 帧后 +1)
 }>()
 const emit = defineEmits<{ (e: 'close'): void; (e: 'changed'): void }>()
 
@@ -296,6 +298,81 @@ async function addProvider(): Promise<void> {
   }
 }
 
+// —— 定时计划(NOND-W4) ——
+const schedules = ref<Schedule[]>([])
+const schedErr = ref('') // 计划段独立错误提示(不污染全局 err,便于定位)
+const sf = ref({ name: '', cron: '', prompt: '' })
+const showSchedAdd = ref(false)
+const schedReady = ref(true) // 后端未装配(ctx.schedule 503)时整段只给提示
+async function loadSchedules(): Promise<void> {
+  try {
+    schedules.value = (await api.schedules()) ?? []
+    schedErr.value = ''
+    schedReady.value = true
+  } catch (e) {
+    // 503 = 宿主未装配 host-schedule:不是错误,静默隐藏本段
+    if ((e as Error).message.includes('503')) {
+      schedReady.value = false
+      return
+    }
+    schedErr.value = (e as Error).message
+  }
+}
+function schedCron(): string {
+  return sf.value.cron.trim().split(/\s+/).filter((s) => s.length > 0).join(' ')
+}
+async function addSchedule(): Promise<void> {
+  const cron = schedCron()
+  if (cronShapeError(cron)) {
+    schedErr.value = cronShapeError(cron)
+    return
+  }
+  if (!sf.value.prompt.trim()) {
+    schedErr.value = '请填写到点要执行的任务描述(它会作为输入发给模型)'
+    return
+  }
+  busy.value = true
+  try {
+    await api.scheduleAdd({ name: sf.value.name.trim(), cron, prompt: sf.value.prompt.trim() })
+    sf.value = { name: '', cron: '', prompt: '' }
+    showSchedAdd.value = false
+    schedErr.value = ''
+    showInfo('已创建计划')
+    await loadSchedules()
+  } catch (e) {
+    schedErr.value = (e as Error).message
+  } finally {
+    busy.value = false
+  }
+}
+async function toggleSchedule(s: Schedule): Promise<void> {
+  try {
+    await api.scheduleUpdate(s.id, { enabled: !s.enabled })
+    await loadSchedules()
+  } catch (e) {
+    schedErr.value = (e as Error).message
+  }
+}
+async function doScheduleRun(id: string): Promise<void> {
+  try {
+    await api.scheduleRun(id)
+    showInfo('已触发一次(结果在会话流与计划状态里)')
+    await loadSchedules()
+  } catch (e) {
+    schedErr.value = (e as Error).message
+  }
+}
+function deleteSchedule(s: Schedule): void {
+  guard('删除计划「' + s.name + '」?(定时触发从此消失)', true, async () => {
+    try {
+      await api.scheduleDelete(s.id)
+      await loadSchedules()
+    } catch (e) {
+      schedErr.value = (e as Error).message
+    }
+  })
+}
+
 // —— 插件开关(manage=external/scenario 为只读,web 侧不给启停;由外部进程/场景装配管理)——
 const MANAGE_META: Record<string, { label: string; tip: string }> = {
   host: { label: '宿主运行', tip: '' },
@@ -345,8 +422,16 @@ watch(
   (o) => {
     if (!o) return
     void load()
+    void loadSchedules()
     // 首启引导:直接滚到 Provider 段(面板内容比一屏长时否则看不到)
     if (props.focus === 'provider') void nextTick(() => provSec.value?.scrollIntoView({ block: 'start' }))
+  },
+)
+// 定时跑完一轮(schedule/run SSE 帧)→ 刷新计划状态(上次运行/下次触发已变)
+watch(
+  () => props.schedTick,
+  () => {
+    if (props.open) void loadSchedules()
   },
 )
 watch(
@@ -561,6 +646,59 @@ watch(
           <p v-if="backupMsg" class="dim ok">{{ backupMsg }}</p>
         </section>
 
+        <!-- 定时计划(NOND-W4,host-schedule 未装配时整段隐藏) -->
+        <section v-if="schedReady" class="sec">
+          <h3 class="h">
+            计划
+            <button class="link" data-tip="新增定时计划" @click="showSchedAdd = !showSchedAdd">
+              {{ showSchedAdd ? '收起' : '＋ 新增' }}
+            </button>
+          </h3>
+          <!-- 无人值守行为明示(方案 W4 要求:计划详情里说清楚会发生什么) -->
+          <p class="dim">到点自动把描述发给模型跑一轮(走与手动输入完全相同的回合入口)。无人值守运行:需审批的动作一律拒绝(没人在场回答确认),沙箱档位沿用当前设置。</p>
+          <div v-if="schedErr" class="serr">{{ schedErr }}</div>
+
+          <div v-if="showSchedAdd" class="add-form">
+            <label class="fld">
+              <span class="fld-lab">名称(可选,留空取描述开头)</span>
+              <input v-model="sf.name" class="inp" placeholder="每日对账" />
+            </label>
+            <label class="fld">
+              <span class="fld-lab">cron 表达式(分 时 日 月 周)</span>
+              <input v-model="sf.cron" class="inp mono" placeholder="0 8 * * *" />
+            </label>
+            <label class="fld">
+              <span class="fld-lab">到点做什么(作为输入发给模型)</span>
+              <textarea v-model="sf.prompt" class="inp" rows="2" placeholder="把昨天的订单导出成对账表"></textarea>
+            </label>
+            <p class="dim">每天 8 点 = 0 8 * * *;每周一 9 点 = 0 9 * * 1;每月 1 号 = 0 0 1 * *</p>
+            <div class="form-acts">
+              <button class="ghost solid" :disabled="busy" @click="addSchedule">保存计划</button>
+            </div>
+          </div>
+
+          <div class="plist">
+            <div v-for="s in schedules" :key="s.id" class="prow scrow" :class="{ off: !s.enabled }">
+              <div class="pmain">
+                <span class="sname">
+                  {{ s.name }}
+                  <span class="sstate" :class="'ss-' + (s.last_status || 'none')">{{ statusLabel(s.last_status) }}</span>
+                </span>
+                <span class="psub mono">{{ s.cron }}</span>
+                <span class="psub">下次:{{ s.enabled ? fmtNextRun(s.next_run) : '已停用' }}</span>
+                <span v-if="s.last_run_at" class="psub">上次:{{ fmtAbs(s.last_run_at) }}</span>
+                <span v-if="s.last_status === 'failed' && s.last_error" class="psub err-text">{{ s.last_error }}</span>
+              </div>
+              <div class="sacts">
+                <button class="ghost" data-tip="立即跑一次" :disabled="!s.enabled" @click="doScheduleRun(s.id)">运行</button>
+                <button class="ghost" data-tip="启用或停用" @click="toggleSchedule(s)">{{ s.enabled ? '停用' : '启用' }}</button>
+                <button class="ghost danger-text" data-tip="删除计划(需确认)" @click="deleteSchedule(s)">删除</button>
+              </div>
+            </div>
+            <p v-if="!schedules.length" class="dim">还没有计划:点上方「＋ 新增」写一条,如「每天 8 点整理昨日订单」。</p>
+          </div>
+        </section>
+
         <!-- 插件与指令 -->
         <section class="sec">
           <h3 class="h">插件</h3>
@@ -682,6 +820,69 @@ watch(
 .probe-raw {
   color: var(--fg-faint);
   word-break: break-all;
+}
+/* —— 定时计划(NOND-W4) —— */
+.serr {
+  color: var(--err);
+  background: var(--err-soft);
+  border: 1px solid var(--err-line);
+  border-radius: 6px;
+  font-size: 12px;
+  padding: 6px 8px;
+  margin-bottom: 8px;
+  word-break: break-word;
+}
+.scrow {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+.scrow.off .sname,
+.scrow.off .psub {
+  color: var(--fg-faint);
+}
+.sname {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fg);
+}
+.sstate {
+  font-size: 10px;
+  border-radius: 999px;
+  padding: 0 6px;
+  line-height: 1.5;
+  border: 1px solid var(--line);
+  color: var(--fg-faint);
+}
+.sstate.ss-ok {
+  color: var(--ok);
+  border-color: var(--ok-line);
+  background: var(--ok-soft);
+}
+.sstate.ss-failed {
+  color: var(--err);
+  border-color: var(--err-line);
+  background: var(--err-soft);
+}
+.sstate.ss-skipped {
+  color: var(--warn, var(--fg-dim));
+  border-color: var(--line-strong);
+}
+.sacts {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.err-text {
+  color: var(--err);
+}
+textarea.inp {
+  resize: vertical;
+  font-family: inherit;
+  line-height: 1.5;
 }
 
 .mask {

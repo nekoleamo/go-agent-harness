@@ -37,6 +37,10 @@ const (
 	// FrameConfirmDone 审批已裁决(G-E5-4:confirm/resolved 事件订阅面;
 	// 多端并存时关闭本端遗留弹层)。载荷 *ConfirmDone。
 	FrameConfirmDone = "confirmdone"
+	// FrameSchedule 定时计划运行终态(schedule/run;NOND-W4 无人值守任务):
+	// 前端据此刷新计划列表(上次运行时间/状态/下次触发已变),无需轮询。
+	// 载荷 sdk.ScheduleRunEvent。
+	FrameSchedule = "schedule"
 )
 
 // QuestionDone 提问解决载荷(多端同步观察:按 id 关闭本端遗留弹层)。
@@ -98,6 +102,17 @@ func (h *EventHub) Subscribe(c sdk.Ctx, sessions sdk.SessionLog) (disposer sdk.D
 			h.Push(Frame{Type: FrameDoc, Payload: p})
 		case *sdk.DocOpenEvent:
 			h.Push(Frame{Type: FrameDoc, Payload: p})
+		}
+		return nil
+	})
+	add(sdk.EventScheduleRun, func(_ context.Context, ev *sdk.Event) error {
+		// 定时计划跑到终态(ok/failed/skipped):广播给浏览器 → 前端刷新计划列表。
+		// 无人值守任务没有人在场,状态变化必须主动推到 UI,否则用户明天才看得到失败。
+		switch p := ev.Payload.(type) {
+		case sdk.ScheduleRunEvent:
+			h.Push(Frame{Type: FrameSchedule, Payload: p})
+		case *sdk.ScheduleRunEvent:
+			h.Push(Frame{Type: FrameSchedule, Payload: p})
 		}
 		return nil
 	})

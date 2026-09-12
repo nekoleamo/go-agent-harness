@@ -14,6 +14,7 @@ export type FrameType =
   | 'doc'
   | 'questiondone'
   | 'confirmdone'
+  | 'schedule'
 
 export interface Frame {
   id: number
@@ -230,6 +231,20 @@ export interface Job {
   error?: string
   created_at: string
   done_at?: string
+}
+
+// —— 定时计划(/api/schedules 契约,sdk.Schedule 原样 NOND-W4) ——
+export interface Schedule {
+  id: string
+  name: string
+  cron: string // 5 字段:分 时 日 月 周
+  prompt: string
+  enabled: boolean
+  created_at: string
+  last_run_at?: string
+  last_status?: string // ok | failed | skipped
+  last_error?: string
+  next_run?: string // 宿主机算;零值(未启用/无匹配时刻)序列化为零时刻字符串
 }
 
 // —— 文档预览(D1;/api/doc/* 契约,sdk.DocView 原样) ——

@@ -37,6 +37,7 @@ Go 实现的编程代理 Agent Harness:以**单静态二进制**交付全部能�
 | **会话管理** | 项目级隔离 + 多会话切换 + 分支树(`/fork` `/clone` `/tree` + 命名);超预算 token 滚动摘要压缩(token-compress,完整日志留盘) |
 | **模型工具** | shell / file_read-write-append-edit / web_fetch / web_search / workflow / subagent / todo / memory / auto_plan / job_* / 技能读取 / MCP 桥工具(详见「五、模型可用工具」) |
 | **后台任务** | host-jobs + workflow `background`:长任务异步提交/取回/终止,不阻塞回合 |
+| **定时任务** | host-schedule(`ctx.schedule`):5 字段 cron 计划(分 时 日 月 周)落 `$GAH_HOME/schedules/*.yaml`,到点**经既有回合入口**(agentLoop→tools,仍受审批/沙箱裁决、仍落会话记录)自动跑一轮;设置面板「计划」段管理(中文「下次运行时间」回显,不自研 cron 构造器);**无人值守 = 没有确认通道 → 需审批的动作一律拒绝(含 open 档)** |
 | **子代理 fanout** | `agent/parallel/pipeline` 独立上下文 ReAct 扇出并行聚合;`send_message`/`fork` 注入与会话派生 |
 | **starlark workflow** | 模型写受限 starlark 脚本组合多步工具调用(天然沙箱/无标准库),`background` 异步 |
 | **联网搜索** | web_search(默认 Exa,`EXA_API_KEY`;`data.provider` 可换)与 web_fetch 协作,错误结构化归一 |
@@ -170,6 +171,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `/session summary [id]` | 生成/查看会话概述(LLM 总结:一句话 + 主题词;**会调用模型**) |
 | `/reload` | 热重载指令文件(AGENTS.md 层级/全局/附加;外部编辑即生效,免重启) |
 | `/jobs list\|output <id>\|kill <id>` | 后台任务列表 / 取输出 / 终止(与 workflow `background`、Web 任务面板同源) |
+| `/schedule [list]\|add <cron> <描述>\|rm\|on\|off\|run <id>` | 定时任务:列出 / 新建(5 字段 cron,如 `0 8 * * *` = 每天 8 点)/ 删除 / 启停 / 立即跑一次(与设置面板「计划」段同源) |
 | `/backup [dest]\|list\|restore <name>` | 整体备份 GAH_HOME(config 含密钥/plugins/sessions/env.sh/偏好,排除 backups/ 自身):无参=立即备份(默认存 `$GAH_HOME/backups/`,可指定外部路径)/ `list` 列出(时间倒序)/ `restore <name>` 恢复(**恢复前自动先备份当前态**,重启后完全生效) |
 | `/preview <路径>` | 文档预览工作台:TUI 打开全屏 pager(↑↓/PgUp/PgDn 滚动、←→ 横移、`/` 搜索 n/N 跳转、q/Esc 关闭);Web 打开文档面板并定位该文件(markdown/文本/代码/CSV/notebook/docx/xlsx/pptx/PDF) |
 | `/search <词>` | 会话内搜索(命中高亮,n/N/F3 循环跳转,Esc 退出) |
@@ -205,7 +207,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 
 **鉴权(token 模式 = `data.auth_token` 非空)**:全表面鉴权——接口、静态资源、`/attachments/`(附件)、`/ui-plugins/` 一律需凭据(此前只有 `/api/*` 受保护)。浏览器请用启动日志里的 `#token=<token>` 地址打开:凭据在 **URL fragment** 中(不发往服务端,不进访问日志/Referer),引导页经 `POST /api/auth` 换取 HttpOnly + SameSite=Strict 的 `gah_token` cookie 后转入 UI;桌面壳经 `GAH_WEB_TOKEN` 传同一 token(`?token=` 已废弃)。
 
-- **设置面板**(状态栏 ⚙):模型下拉(聚合全部 provider)、思考/沙箱/**审批**分段控件、历史注入下拉 + 压缩按钮、Provider 管理(启用/删除/新增;**首启引导**:一个 provider 都没有时自动打开面板并给 DeepSeek/Kimi/智谱/千问/硅基流动/OpenRouter/OpenAI/Ollama **一键预设**,只需粘 api_key,保存后自动**连通性自检**并把 401/404/DNS 等端点错误翻译成人话与原始报错并列)、插件开关、指令重载、**数据备份**(立即备份 / 恢复备份——**二次确认**);全部设置退出即记(偏好持久化,gah-state.json 与 TUI 共享)。
+- **设置面板**(状态栏 ⚙):模型下拉(聚合全部 provider)、思考/沙箱/**审批**分段控件、历史注入下拉 + 压缩按钮、Provider 管理(启用/删除/新增;**首启引导**:一个 provider 都没有时自动打开面板并给 DeepSeek/Kimi/智谱/千问/硅基流动/OpenRouter/OpenAI/Ollama **一键预设**,只需粘 api_key,保存后自动**连通性自检**并把 401/404/DNS 等端点错误翻译成人话与原始报错并列)、**定时计划**(「计划」段:5 字段 cron + 中文「下次运行时间」回显,运行/停用/删除;无人值守语义在段内明示)、插件开关、指令重载、**数据备份**(立即备份 / 恢复备份——**二次确认**);全部设置退出即记(偏好持久化,gah-state.json 与 TUI 共享)。
 - **侧栏**:工作区固定区(切换 = 真实切目录) + 历史会话(名称/**概述或内容预览**/时间,★ 置顶、⟳ 生成概述(调用模型,二次确认)、✎ 改名、× 删除——改删需二次确认)、附件上传(按钮/拖放/粘贴,图片缩略图 + 模型看图)、会话导出(⤓ jsonl/HTML)。当前项为卡片式选中(左侧竖条 + 描边 + 名称加粗),与 hover 明确分档。
 - **状态栏**:连接状态(绿/橙)、模型/思维/沙箱/会话、上下文·缓存使用率、后台任务钮(运行徽标 + 列表/输出/终止)。
 - **文档预览面板**(侧栏「文档预览」):左侧工作区文件树(过滤/懒展开/工作区切换整树重置)+ 右侧预览(markdown 块渲染、代码/表格、docx/xlsx/pptx 块模型、PDF 浏览器原生查看器、图片、HTML **默认源码视图 + 点击才加载沙箱 iframe**;截断与警告黄色提示条);工具结果行含可预览路径时出现「预览」按钮;会话流 assistant 文本走 markdown 块渲染(服务端解析,前端零 v-html)。
@@ -225,6 +227,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `GET /api/commands`、`POST /api/commands/{name}` | 命令注册表 / 直接执行 `{args}` |
 | `GET /api/tools`、`POST /api/tools/{name}` | 工具清单 / 调用(参数 JSON 透传) |
 | `GET /api/jobs`、`GET/POST /api/jobs/{id}[/kill]` | 后台任务 |
+| `GET/POST /api/schedules`、`PATCH/DELETE /api/schedules/{id}`、`POST /api/schedules/{id}/run` | 定时计划:列表/新增/改(仅覆盖传入字段)/删/立即触发 |
 | `GET /api/plugins`、`POST /api/plugins/{id}/load\|unload` | 插件启停 |
 | `GET /api/models?all=1`、`GET/POST /api/providers...` | 模型聚合 / provider CRUD |
 | `POST /api/control` | 状态栏级控制 `{model?\|thinking?\|sandbox?\|approval?\|workspace?}`(偏好持久化) |

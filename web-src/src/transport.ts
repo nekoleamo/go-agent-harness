@@ -10,7 +10,7 @@ export interface Transport {
   onopen?: () => void
   onreconnecting?: () => void
   onclose?: () => void
-  // 按帧类型订阅(服务端 event 名):见 web/events.go FrameXxx(session|status|error|confirm|command|question|doc|questiondone|confirmdone)
+  // 按帧类型订阅(服务端 event 名):见 web/events.go FrameXxx(session|status|error|confirm|command|question|doc|questiondone|confirmdone|schedule)
   on(type: string, fn: TransportListener): void
   close(): void
 }
@@ -150,7 +150,7 @@ class EsTransport implements Transport {
     }
     // SSE 的 event: <type> 对应帧类型
     // 帧类型白名单:必须覆盖 web/events.go 全部 FrameXxx(漏项 = 该帧在 SSE 降级路径被静默丢弃)
-    for (const t of ['session', 'status', 'error', 'confirm', 'command', 'question', 'doc', 'questiondone', 'confirmdone']) {
+    for (const t of ['session', 'status', 'error', 'confirm', 'command', 'question', 'doc', 'questiondone', 'confirmdone', 'schedule']) {
       es.addEventListener(t, (e) => {
         try {
           const f = JSON.parse((e as MessageEvent).data) as Frame
