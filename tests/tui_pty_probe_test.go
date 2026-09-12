@@ -264,10 +264,7 @@ func tailS(s string, n int) string {
 // 测试自构造超窗会话(400 行事件,key 由 cwd 经 sdk.ProjectKey 推导)+ 当前源码构建二进制。
 func TestTUIProbeScrollbarAndArrow(t *testing.T) {
 	bin := buildGahCurrent(t) // 当前源码构建(消除仓库根旧二进制漂移)
-	cwd := "/Users/nekoleamo/Documents/Working/go-agent-harness"
-	if _, err := os.Stat(cwd); err != nil {
-		t.Skip("仓库路径不可用(本机专用探针): " + err.Error())
-	}
+	cwd := repoRoot(t)
 	dataRoot := probeDataDir(t, bin) // R8:数据根 = bin 同级 gah-data(GAH_HOME env 被忽略)
 	sessionsDir := filepath.Join(dataRoot, "sessions")
 	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
@@ -359,6 +356,18 @@ func buildGahCurrent(t *testing.T) string {
 	return out
 }
 
+// repoRoot 仓库根绝对路径(探针进程以它为 cwd,用于验证「会话按项目 cwd 隔离」)。
+// 不硬编码开发者机器路径:换机/容器里 cmd.Dir 指向不存在目录会得到
+// 「fork/exec …/gah: no such file or directory」(实测踩到,真因是 cwd 不存在而非二进制缺失)。
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	abs, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatalf("解析仓库根失败: %v", err)
+	}
+	return abs
+}
+
 // writeProbeSession 写一个超窗测试会话:path 下追加 n 条 user/message 事件(jsonl)。
 func writeProbeSession(path string, n int) {
 	f, err := os.Create(path)
@@ -419,7 +428,7 @@ func TestTUIProbeScrollSettle(t *testing.T) {
 		}
 	}
 	env := probeEnv()
-	ptmx, cmd, out := runTUIViaPtyWorkingDir(t, bin, env, "/Users/nekoleamo/Documents/Working/go-agent-harness")
+	ptmx, cmd, out := runTUIViaPtyWorkingDir(t, bin, env, repoRoot(t))
 	defer ptmx.Close()
 
 	drain(out, 10*time.Second) // boot + 首帧

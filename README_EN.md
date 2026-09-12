@@ -13,7 +13,7 @@ A programming-agent harness implemented in Go, shipping **all capabilities as a 
 
 **Removes the Node.js dependency that dsh carries**:
 
-- Single static binary (`CGO_ENABLED=0`, measured **36.8MB**): no node runtime, no node_modules distribution chain, no version manager;
+- Single static binary (`CGO_ENABLED=0`, **41–46 MiB** across five targets; compressed download ≈27–31 MiB; external plugins are embedded gzip, gate in `scripts/size-check.sh`): no node runtime, no node_modules distribution chain, no version manager;
 - `scp` one file to any machine and it works; runtime dependencies = 0 (boots fine under `env -i`);
 - Six-target cross-compilation (darwin/linux/windows × amd64/arm64);
 - Portable data root: `gah-data/` is auto-created next to the binary; the deployment directory (gah + gah-data) is self-contained; upgrades replace the single binary only.
@@ -396,7 +396,7 @@ One gah binary, three surfaces: the Web frontend is embedded; TUI/Web/headless a
 - `scripts/gen-extplugins.sh` builds external plugin artifacts for the matrix (darwin/linux × amd64/arm64 + windows/amd64), `gzip -9 -n` deterministic compression, embed split per platform (each target embeds only its own).
 - `goreleaser release --snapshot` produces all six target bundles directly; `.goreleaser.yaml` configures before hooks.
 
-Measured acceptance (DESIGN §7.6 / latest baseline): `CGO_ENABLED=0` static single file **36.8MB** (<40MB gate), six-target cross-compilation green, bare `env -i` boot OK, sha256 attached.
+Measured acceptance (DESIGN §7.6 / latest baseline): `CGO_ENABLED=0` static single file **41–46 MiB** across five targets (gate = `scripts/size-check.sh`, currently ≤48 MiB / gz ≤32 MiB), six-target cross-compilation green, bare `env -i` boot OK, sha256 attached.
 
 ## 11. License
 

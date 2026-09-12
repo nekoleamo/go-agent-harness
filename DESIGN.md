@@ -249,6 +249,7 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 |---|---|
 | `CGO_ENABLED=0` 静态编译 | ✅ `-trimpath -ldflags="-s -w -X main.version=v0.1.0"`;otool 仅系统库 |
 | 体积 <40MB | ✅ 31.9MB(darwin/arm64,M7 gzip embed 回归;M6.9 峰值曾达 83.5MB 已修复);基线(无插件)~18MB |
+| 体积复测(2026-11-14,矩阵) | ⚠️ 2026-10-11 的 46/30 门在 **2/5 目标已失败**(darwin/amd64 46.14 MiB·gz 30.30、windows/amd64 46.28 MiB·gz 30.50)→ 二轮重定基 **48/32**(余量 ~1.5–1.7 MiB),归因与降体路径登记在 `scripts/size-check.sh` 头 + 本节交付门行;40 MiB 时代的「31.9MB」读数已彻底过时 |
 | 体积复测(2026-10-11,矩阵) | ⚠️ 旧门(<40 MiB)在 **4/5 目标已失败**:darwin/amd64 43.47、windows/amd64 43.63、linux/amd64 42.38、darwin/arm64 40.59、linux/arm64 38.88 MiB;gz 产物 25.81–29.46 MiB。按实测**重定基**(E-C):二进制 ≤46 MiB / gz ≤30 MiB,阈值单一事实源 = `scripts/size-check.sh`(CI 同一脚本);构成 = 基线 19.3–22.3 MiB + 本平台 extplugins gz embed 19.6–21.6 MiB |
 | 版本注入 | ✅ `gah -version` → `gah v0.1.0 (github.com/nekoleamo/go-agent-harness)` |
 | 交叉编译六目标 | ✅ darwin/linux/windows × amd64/arm64(除 windows/arm64 视 pty) |
@@ -330,13 +331,13 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 | **完善 A 组**(已交付) | ✅ 会话持久化+项目隔离(host-cwd-sessions)+ ✅ LLM 断流指数退避重试(§11)+ ✅ TUI 回合取消(Esc→取消链) | 跨期共享隔离;断流自愈;可中断 |
 | **完善 B 组**(已交付) | ✅ apiVersion 语义化校验(SDK 兼容红线,go-version)+ ✅ /export 真导出(jsonl)+ ✅ 外部插件热重载接线(host-bridge watch→自动重载)+ ✅ go:embed 配置样板+home 首启释放+`--ephemeral` 落地(空目录发布实测通过) | 发布形态自包含;插件版本兼容强制;外部插件更新自动生效 |
 | **M6**(已交付) | M6.1–M6.21 已交付:host-jobs/fanout/外部化(M6.8/6.9)/MCP server/指令与技能/插件安装/命令注册表/会话与统计(M6.10)/目录分组(M6.11)/配置修复(M6.12)/伪调用兜底(M6.13)/web_search(M6.14)/TUI 滚动与会话启动(M6.15)/滚轮风暴根因(M6.16)/输入键语义与滚动条拖动(M6.17)/鼠标划选复制(M6.18)/滚动条增强(M6.19)/会话内搜索(M6.20)/search 交互修复(M6.21)——细表见 §14.1 交付行,交付总览以 AGENTS.md「会话状态」为准;M7 Web 线(M7/M7.2/M7.3/M8-T2)已交付,未实施清单清零 | 全库 -race 绿 |
-| **交付门**(已通过;**2026-10-11 E-C 重定基**) | 单二进制 ≤**46 MiB** 且 gz 产物 ≤**30 MiB**(旧「<40MB」已在 4/5 目标失败,按实测重定基并登记归因;降体路径:外部插件协议去 gRPC 化 / extplugins 附包化)/ `CGO_ENABLED=0` / 五目标交叉编译 / 裸机 scp 启动(首启释放插件后可用) | ✅ 实测数据见 §7.6;阈值与护栏 = `scripts/size-check.sh`(CI 调用,超门即失败) |
+| **交付门**(已通过;**2026-10-11 E-C 重定基 → 2026-11-14 二轮重定基**) | 单二进制 ≤**48 MiB** 且 gz 产物 ≤**32 MiB**(2026-10-11 定 46/30;2026-11-14 首个 Release 前 CI 复跑实证 46/30 再次被突破:<br>darwin/amd64 46.14 MiB·gz 30.30、windows/amd64 46.28 MiB·gz 30.50 超门 → 按实测重定基,余量 ~1.5–1.7 MiB;归因 = 基线 19.3–22.3 → 21.0–24.4 MiB(R10/M16.x/二期/M17–M18/host-schedule/MCP 代理等)+ extplugins gz embed 21.0–21.9 MiB(仍为主体:4 件 ×~5.4 MiB 的 go-plugin→gRPC 栈);**降体路径本轮未做,已登记体积债**:① 协议去 gRPC 化 ≈-14 MiB/插件 ② extplugins 附包化 ≈-20 MiB(破「单一静态二进制」承诺) ③ embed 换 xz/zstd 纯 Go 解码 ≈-3~5 MiB(需依赖评审)—— 新功能再破门时先执行其一,不第三次抬门)/ `CGO_ENABLED=0` / 五目标交叉编译 / 裸机 scp 启动(首启释放插件后可用) | ✅ 实测数据见 §7.6;阈值与护栏 = `scripts/size-check.sh`(CI 调用,超门即失败;阈值沿革与归因写在脚本头) |
 
 ### 14.1 未交付规划清单(M6,按需逐个实现)
 
 > **状态图例**:标题 `✅` = 已交付实施;标题 `⏳ 未实施` = 规划待执行、尚未开工(规划条目正文为完整方案,按切片实施)。
 >
-> **未实施清单:M17 审批等级三档 + M18 整体备份/恢复已交付 ✅(2026-09,见下方交付行)**;2026-09 二期(Web jobs 面板/会话 export/命令下沉宿主/mcp-bridge 看护/UI 槽位 v2)全交付 ✅(→ DESIGN 交付表与 docs/TODO_OVERVIEW.md)。其余远期增量(会话树 Web 可视化 M7.2.1、类型分发等)见 docs/ROADMAP.md。已交付 ✅:M6.1–M6.21、M8-T1、M10、M11-T1、M11-T2、**M9 子代理全交付(one-shot + 后台控制 + send_message/fork,见下交付行)**、M12 多 provider 并存(2026-09)、**M13 TUI 主题外部化(2026-09)**、**M14 外部命令桥(2026-09)**、**M15 TUI π 式默认样式(2026-09,见下交付表)**、**M7 Web UI 全交付(S1–S3,见下交付行)**、**M7.2 UI 槽位插件化(见下交付行)**、**M7.3 WebSocket 通道(见下交付行)**、**M8-T2 展示联动(见下交付行)**。TUI 线全交付 ✅(S1.1–S2.2 + 折叠交互 + M13 主题外部化;S3.1 决策方案 A 记录在案;S3.2 框架覆盖)。外部命令桥交付后,新命令插件不再需要重编译 gah(见 M14 行与 docs/PLUGIN_DEV.md §4.1)。
+> **未实施清单:M17 审批等级三档 + M18 整体备份/恢复已交付 ✅(2026-09,见下方交付行)**;2026-09 二期(Web jobs 面板/会话 export/命令下沉宿主/mcp-bridge 看护/UI 槽位 v2)全交付 ✅(→ DESIGN 交付表与 docs/TODO_OVERVIEW.md)。其余远期增量(会话树 Web 可视化 M7.2.1、类型分发等)见 docs/ROADMAP.md。**⏳ 体积债(SZ-1,2026-11-14 登记)**:extplugins 是 embed 主体(4 件 ×~5.4 MiB gz = 21.0–21.9 MiB,go-plugin→gRPC 栈),三条降体路径(① 协议去 gRPC 化 ≈-14 MiB/插件 ② extplugins 附包化 ≈-20 MiB,代价=打破「单一静态二进制」承诺 ③ embed 换 xz/zstd + 纯 Go 解码 ≈-3~5 MiB,代价=新增依赖)本轮均未做 —— 体积门已被两次抬升(<40 → 46 → 48 MiB),**下一次破门前必须先执行其一**,不再抬门;细则与实测表见 `scripts/size-check.sh` 头。已交付 ✅:M6.1–M6.21、M8-T1、M10、M11-T1、M11-T2、**M9 子代理全交付(one-shot + 后台控制 + send_message/fork,见下交付行)**、M12 多 provider 并存(2026-09)、**M13 TUI 主题外部化(2026-09)**、**M14 外部命令桥(2026-09)**、**M15 TUI π 式默认样式(2026-09,见下交付表)**、**M7 Web UI 全交付(S1–S3,见下交付行)**、**M7.2 UI 槽位插件化(见下交付行)**、**M7.3 WebSocket 通道(见下交付行)**、**M8-T2 展示联动(见下交付行)**。TUI 线全交付 ✅(S1.1–S2.2 + 折叠交互 + M13 主题外部化;S3.1 决策方案 A 记录在案;S3.2 框架覆盖)。外部命令桥交付后,新命令插件不再需要重编译 gah(见 M14 行与 docs/PLUGIN_DEV.md §4.1)。
 >
 > **体验改进(对比 pi 基线)**:P4 12 项**全部交付** ✅(2026-09 收口:P4-1 消息队列 · P4-2 @引用+Tab 补全 · P4-3 代码块高亮 · P4-4 会话命名 · P4-5 C6 多级上下文 · P4-6 多行输入/外部编辑器 · P4-7 工具视觉增强 · P4-8 /compact · P4-9 语义色 token 化 · P4-10 C1 会话树/分支(树可视化 UI 归 M7 后)· P4-11 /reload · P4-12 widget 槽位;细见 `docs/ROADMAP.md` P4 节)。
 >
@@ -406,7 +407,7 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 > | 编号 | 前置件 | 解锁 | 量级 | 风险 |
 > |---|---|---|---|---|
 > | ~~**E-A**~~ ✅ | 工具级审批:policy-guard `data.approval_tools` + `decide()` 三档复用 + 参数摘要 | ✅ **已交付 2026-10-11**:`RequiresToolApproval`/`checkTool`(+120 字参数摘要)/`parseApprovalTools`(列表或逗号字符串),默认空 = 行为零变化;seed 样板双份注释 | — | 已收口 |
-> | ~~**E-C**~~ ✅ | 体积门重定基 + `scripts/size-check.sh`(阈值单一事实源;二进制≤46 MiB / gz≤30 MiB)+ CI 改用脚本 + 增长归因输出 | ✅ **已交付 2026-10-11**:五目标实测表(40.59–43.63 MiB;旧门 40 MiB 已在 4/5 目标失败)+ 归因(基线 19.3–22.3 + extplugins 19.6–21.6 MiB gz)+ 降体路径(协议去 gRPC 化 ≈-14 MiB/插件 / 附包化 ≈-20 MiB)登记在脚本头与本节 | G-D6-1、G-D6-3 **已解锁(体积部分)** | 已收口 |
+> | ~~**E-C**~~ ✅ | 体积门重定基 + `scripts/size-check.sh`(阈值单一事实源;二进制≤46 MiB / gz≤30 MiB)+ CI 改用脚本 + 增长归因输出 | ✅ **已交付 2026-10-11**:五目标实测表(40.59–43.63 MiB;旧门 40 MiB 已在 4/5 目标失败)+ 归因(基线 19.3–22.3 + extplugins 19.6–21.6 MiB gz)+ 降体路径(协议去 gRPC 化 ≈-14 MiB/插件 / 附包化 ≈-20 MiB)登记在脚本头与本节;**2026-11-14 二轮重定基(48/32,首个 Release 前 CI 复跑实证)与体积债登记见交付门行** | G-D6-1、G-D6-3 **已解锁(体积部分)** | 已收口(阈值沿革持续登记) |
 > | ~~**E-D**~~ ✅ | 真实文档保真语料 + opt-in harness(`scripts/gen-doc-corpus.sh` + `TestFidelityCorpus`,poppler `pdftotext` 独立对照) | ✅ **已交付 2026-10-11**:首轮真实语料 8 件(docx 3 / pdf 4 / xlsx 1,含第三方产出的真实合同与模板)→ 硬性不变量全过 + 覆盖率对照;**首个真实缺口已修**(见下「E-D 发现」) | G-D6-3 **判定前提就绪**;D2–D4 回归盲区补齐 | 已收口 |
 > | ~~**E-E**~~ ✅ | 前端逻辑单测(**零新增依赖**:Node 内置 `node --test` + 类型剥离,替代 vitest)+ 引导判定纯函数化 | ✅ **已交付 2026-10-11**:`npm test` 14 项(sse 消费引擎 11 / 文档意图白名单 3);CI 加「前端逻辑单测」步 | G-X2 交互类断言可自动化 | 已收口(不再需要 vitest/E-E 原方案) |
 >

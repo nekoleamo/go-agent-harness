@@ -276,6 +276,41 @@ func TestKernelSandboxFullAccessUnwrapped(t *testing.T) {
 	}
 }
 
+// TestKernelSandboxWithoutGahHome(Linux 回归,CI 实证):GAH_HOME 为空(直连/嵌入形态)时,
+// jailEnv 会把子进程 TMPDIR 改到 <jail>/tmp,而 helper 是**重新 exec 的同一二进制** ——
+// 若它用 sdk.Home() 反推 jail,GAH_HOME 空时 Home() 回落到 TMPDIR,得到 <jail>/tmp/jail(自指、不存在)
+// → landlock_add_rule ENOENT → 自举失败 → **所有命令 exit 126**(CI 上 tests 包 e2e 就这样红的)。
+// 修法:jail 根由父进程经 argv 传给 helper。本用例按该形态真跑一条区内写,必须成功且内核层仍生效。
+func TestKernelSandboxWithoutGahHome(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("仅 Linux 有 Landlock 自举 helper(其它平台不重新 exec)")
+	}
+	base := t.TempDir()
+	t.Setenv("GAH_HOME", "") // 空 = sdk.Home() 回落 os.TempDir()(模拟嵌入/直连)
+	t.Setenv("TMPDIR", base) // 固定 TMPDIR,避免污染真实 /tmp/jail
+	t.Setenv("GAH_SHELL_JAIL", "1")
+	t.Setenv(kernelSandboxEnv, "1")
+	if !kernelSupportedHere() {
+		t.Skip("本机无内核级沙箱能力,跳过自举回归")
+	}
+	ws := t.TempDir()
+	in := filepath.Join(ws, "inside.txt")
+	if out, err := runWrapped(t, sdk.SandboxWorkspace, ws, "echo ok > "+in); err != nil {
+		t.Fatalf("GAH_HOME 为空时区内写应成功(自举 jail 根是否自指?): %v\n%s", err, out)
+	}
+	if _, err := os.Stat(in); err != nil {
+		t.Fatalf("区内文件应已创建: %v", err)
+	}
+	// 内核层仍必须生效(不能为了修自举而放行越界写)
+	outside := filepath.Join(t.TempDir(), "escaped.txt")
+	if out, err := runWrapped(t, sdk.SandboxWorkspace, ws, "echo x > "+outside); err == nil {
+		t.Fatalf("越界写竟成功(内核层未生效): %s", out)
+	}
+	if _, err := os.Stat(outside); err == nil {
+		t.Fatal("越界文件竟被创建")
+	}
+}
+
 // ---------- 接线验证:包装真的接在 shell.go / pty.go 上(而不只是 kernelWrap 正确) ----------
 
 func TestShellToolAppliesKernelSandbox(t *testing.T) {

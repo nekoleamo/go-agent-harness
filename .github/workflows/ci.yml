@@ -1,6 +1,7 @@
 # CI:go vet + go test -race 全绿 + 体积门 + 裸机冒烟(对齐 AGENTS.md 与 DESIGN.md §15)。
-# 体积门:阈值与实现单一事实源 = scripts/size-check.sh(E-C 治理件;2026-10-11 按实测重定基:
-# 二进制 ≤46 MiB / gz 产物 ≤30 MiB;构成 = 基线 + 本平台 extplugins gz embed,归因由脚本打印)。
+# 体积门:阈值与实现单一事实源 = scripts/size-check.sh(E-C 治理件;按实测两轮重定基 ——
+# 2026-10-11 46/30、2026-11-14 48/32 MiB;构成 = 基线 + 本平台 extplugins gz embed,
+# 归因与降体路径由脚本头打印)。
 name: ci
 on:
   push:

@@ -135,16 +135,21 @@ func platformWrap(mode sdk.SandboxMode, root string) []string {
 		warnUnavailable("无法定位自身可执行文件(自举 helper 需要): " + err.Error())
 		return nil
 	}
-	return []string{self, llExecFlag, string(mode), resolvePath(root)}
+	// jail 根在这里(父进程环境)解析并**随 argv 传给 helper**,不在 helper 内反推:
+	// helper 是重新 exec 的同一二进制,而 jailEnv 已把子进程 TMPDIR 改到 <jail>/tmp ——
+	// 若 helper 用 sdk.Home() 反推 jail(Join(Home(),"jail")),GAH_HOME 为空时 Home() 会回落到
+	// TMPDIR,得到 <jail>/tmp/jail(自指且不存在)→ landlock_add_rule ENOENT → 自举失败
+	// → 所有命令 exit 126(CI 实证:GAH_HOME 未设的直连/嵌入形态必现)。
+	return []string{self, llExecFlag, string(mode), resolvePath(root), resolvePath(jailRoot())}
 }
 
 // init 自举 helper 入口。仅在 argv 带魔数时生效 —— 正常启动(插件进程 / 宿主 gah)不受影响。
 // 任何失败都 os.Exit(126):绝不继续执行**未受约束**的命令(宁可失败,不静默放行)。
 func init() {
-	if len(os.Args) < 5 || os.Args[1] != llExecFlag {
+	if len(os.Args) < 6 || os.Args[1] != llExecFlag {
 		return
 	}
-	if err := landlockSelfAndExec(os.Args[2], os.Args[3], os.Args[4:]); err != nil {
+	if err := landlockSelfAndExec(os.Args[2], os.Args[3], os.Args[4], os.Args[5:]); err != nil {
 		fmt.Fprintln(os.Stderr, "gah tool-shell: 内核级沙箱自举失败: "+err.Error())
 	}
 	os.Exit(126) // Exec 成功则不会返回;返回即失败
@@ -168,7 +173,8 @@ func llAddPathRule(rulesetFD int, path string, allowed uint64) error {
 }
 
 // landlockSelfAndExec 施加 Landlock 后 exec 目标命令(argv[0] 经 PATH 解析)。
-func landlockSelfAndExec(modeStr, root string, argv []string) error {
+// jail 由调用方(父进程)经 argv 传入 —— helper 不从环境反推路径,见 platformWrap 注释。
+func landlockSelfAndExec(modeStr, root, jail string, argv []string) error {
 	mode := sdk.SandboxMode(modeStr)
 	switch mode {
 	case sdk.SandboxReadOnly, sdk.SandboxWorkspace:
@@ -181,7 +187,10 @@ func landlockSelfAndExec(modeStr, root string, argv []string) error {
 		return fmt.Errorf("内核不支持 Landlock(探测返回 %d)", abi)
 	}
 
-	allow := []string{jailRoot()}
+	if strings.TrimSpace(jail) == "" {
+		return fmt.Errorf("缺少 jail 白名单根参数(自举参数被破坏)")
+	}
+	allow := []string{jail}
 	if mode == sdk.SandboxWorkspace {
 		if strings.TrimSpace(root) == "" {
 			return fmt.Errorf("workspace 档位缺少 workspace 根")

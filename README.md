@@ -14,7 +14,7 @@ Go 实现的编程代理 Agent Harness:以**单静态二进制**交付全部能�
 
 **排除 dsh 因 Node.js 带来的依赖**:
 
-- 单一静态二进制(`CGO_ENABLED=0`,实测 **36.8MB**),无 node 运行时、无 node_modules 分发链、无版本管理器;
+- 单一静态二进制(`CGO_ENABLED=0`,五目标实测 **41–46 MiB**,压缩下载产物 ≈27–31 MiB;外部插件经 gzip 内嵌,体积门见 `scripts/size-check.sh`),无 node 运行时、无 node_modules 分发链、无版本管理器;
 - `scp` 一个文件到目标机即开箱可用,运行时依赖 = 0(裸环境 `env -i` 可直接启动);
 - 六目标交叉编译(darwin/linux/windows × amd64/arm64);
 - 便携数据根:`gah-data/` 随二进制同级自动创建,部署目录内 gah+gah-data 即完整,升级只替换单文件。
@@ -397,7 +397,7 @@ export GAH_MCP_COMMANDS="deja=/opt/homebrew/bin/deja\ncodegraph=codegraph serve 
 - `scripts/gen-extplugins.sh` 按发行矩阵(darwin/linux × amd64/arm64 + windows/amd64)构建外部插件产物,`gzip -9 -n` 确定性压缩,embed 按平台拆包(每目标只嵌本平台产物)。
 - `goreleaser release --snapshot` 可直接出六目标包;`.goreleaser.yaml` 已配置 before hooks。
 
-验收实测(DESIGN §7.6 / 最新基线):`CGO_ENABLED=0` 静态单文件 **36.8MB**(<40MB 体积门)、六目标交叉编译全绿、裸机 `env -i` 启动成功、sha256 附档。
+验收实测(DESIGN §7.6 / 最新基线):`CGO_ENABLED=0` 静态单文件 **41–46 MiB** 五目标(体积门 = `scripts/size-check.sh`,现值 ≤48 MiB / gz ≤32 MiB)、六目标交叉编译全绿、裸机 `env -i` 启动成功、sha256 附档。
 
 ## 十一、协议
 
