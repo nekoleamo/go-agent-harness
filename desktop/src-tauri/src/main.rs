@@ -271,6 +271,28 @@ fn summarize(s: &str, max: usize) -> String {
 }
 
 // stateRunning 服务是否在运行(/api/state)。
+// noticesScript 生成"壳侧提示"注入脚本(纯函数,便于单测)。
+//
+// 为什么必须注入 DOM:壳侧 emit 的 Tauri 事件只到得了壳自己的 webview 页面,而就绪后窗口
+// navigate 到 sidecar 的 http://127.0.0.1:2233(跨源)——事件到不了那边,`runtime-notice`
+// 也就成了没有听众的死信号。系统通知(notification().show())在 macOS/Windows 上可能被用户
+// 拒绝授权,于是"外置失败/迁移"这类**数据安全相关**的提示会彻底消失。
+// 这里用与失败页相同的 w.eval 通道把提示贴进页面(幂等:重复调用只更新同一个节点)。
+fn noticesScript(notices: &[String]) -> Option<String> {
+    if notices.is_empty() {
+        return None;
+    }
+    let text = serde_json::to_string(&notices.join("\n")).ok()?;
+    Some(format!(
+        r#"(function(){{var t={text};var id='gah-shell-notice';var el=document.getElementById(id);
+if(!el||!document.body){{if(!document.body)return;el=document.createElement('div');el.id=id;
+el.style.cssText='position:fixed;left:12px;right:12px;bottom:12px;z-index:99999;background:#fff8e6;border:1px solid #e0b34d;border-radius:8px;padding:10px 12px;font:13px/1.5 -apple-system,sans-serif;color:#3a2c05;white-space:pre-wrap;box-shadow:0 4px 14px rgba(0,0,0,.12)';
+var b=document.createElement('span');b.textContent='×';b.style.cssText='float:right;cursor:pointer;padding:0 4px;font-weight:600';
+b.onclick=function(){{el.remove()}};el.appendChild(b);document.body.appendChild(el);}}
+el.insertBefore(document.createTextNode(t+'\n'),el.firstChild);}})();"#
+    ))
+}
+
 fn stateRunning() -> bool {
     // /api/state JSON 含 "running":true|false;粗解析含子串即可
     let mut s = match TcpStream::connect_timeout(&GAH_ADDR.parse::<std::net::SocketAddr>().unwrap(), Duration::from_millis(300)) {
@@ -452,6 +474,7 @@ fn main() {
                 let _ = app.notification().builder().title("gah").body(n.clone()).show();
                 let _ = handle.emit("runtime-notice", n.clone());
             }
+            let notices_all = rt.notices.clone();
             let cmd = if rt.external {
                 app.shell().command(&rt.bin)
             } else {
@@ -483,6 +506,19 @@ fn main() {
                             Ok(u) => {
                                 if let Some(w) = handle3.get_webview_window("main") {
                                     let _ = w.navigate(u);
+                                }
+                                // 壳侧提示(外置失败/旧数据迁移/…):系统通知可能被拒绝授权,
+                                // 且 Tauri 事件跨不到 sidecar 页面 —— 直接贴进页面,重复调用幂等。
+                                if let Some(script) = noticesScript(&notices_all) {
+                                    let h = handle3.clone();
+                                    tauri::async_runtime::spawn(async move {
+                                        for _ in 0..6 {
+                                            std::thread::sleep(Duration::from_millis(500));
+                                            if let Some(w) = h.get_webview_window("main") {
+                                                let _ = w.eval(&script);
+                                            }
+                                        }
+                                    });
                                 }
                             }
                             Err(e) => {
@@ -689,6 +725,21 @@ mod main_tests {
     fn summarize_trims_and_keeps_short_text() {
         assert_eq!(summarize("  a b  ", 10), "a b");
         assert_eq!(summarize("abcdef", 3), "abc…");
+    }
+
+    #[test]
+    fn notices_script_is_none_when_empty_and_escapes_text() {
+        assert!(noticesScript(&[]).is_none());
+        let s = noticesScript(&["无法把运行文件放到用户数据目录(磁盘满)".into()]).unwrap();
+        assert!(s.contains("gah-shell-notice"), "应注入带 id 的节点: {s}");
+        assert!(s.contains("document.body"), "应在 body 可用后才落笔: {s}");
+        // 引号/换行/反斜杠必须经 JSON 编码,否则脚本自身会被文案破坏
+        let tricky = "路径 \"C:\\x\" 与 \' 单引号\n第二行";
+        let s2 = noticesScript(&[tricky.into()]).unwrap();
+        assert!(s2.contains(r#"\"C:\\x\""#), "应保留转义后的字面量: {s2}");
+        assert!(!s2.contains(r#"路径 "C:"#), "不得裸插引号: {s2}");
+        let s3 = noticesScript(&["a".into(), "b".into()]).unwrap();
+        assert!(s3.contains("a\\nb"), "多条应换行拼接: {s3}");
     }
 
     #[test]
