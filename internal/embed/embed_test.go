@@ -24,7 +24,7 @@ func TestEnsurePluginsUpgrade(t *testing.T) {
 	}
 	for _, n := range names {
 		if strings.HasSuffix(n, ".gz") {
-			dst = filepath.Join(home, "plugins", strings.TrimSuffix(n, ".gz"), strings.TrimSuffix(n, ".gz"))
+			dst = pluginDst(home, n)
 			break
 		}
 	}

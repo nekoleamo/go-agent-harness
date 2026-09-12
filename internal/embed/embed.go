@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -117,16 +118,39 @@ func diskVersion(path string) int {
 	return seedVersion(raw)
 }
 
-// EnsurePlugins 释放随包外部插件二进制到 home/plugins/<name>/<name>(方案 B 首启释放)。
+// EnsurePlugins 释放随包外部插件二进制到 home/plugins/<name>/<name[.exe]>(方案 B 首启释放)。
 // P0 体积门(M7):embed 存 gzip(.gz,压缩率约 50%),释放时解压落盘;
 // 自动升级:内容(sha256)与 embed 一致 → 跳过(幂等,同版/用户自装产物保留);
 // 内容不同 → 覆盖(插件产物必须与主程序版本匹配,旧版能力缺失有害,如缺 web_search)。
 // 不保留备份:plugins 扫描会加载任何 tool-* 前缀文件(host-bridge),同目录备份会被误加载;
 // 二进制随包可再生,无保留价值。
 // OpenExtPlugin 打开本平台外部插件 gzip 产物(只读;调用方负责 Close)。
+// name 为插件基名(tool-basic),平台扩展名由本函数补:调用方不必关心平台差异。
 // P4 平台匹配:build-tag 保证只取当前构建平台的产物(黑盒测试/工具链读取用)。
-func OpenExtPlugin(bin string) (io.ReadCloser, error) {
-	return extPlugins.Open(extPluginDir + "/" + bin + ".gz")
+func OpenExtPlugin(name string) (io.ReadCloser, error) {
+	return extPlugins.Open(extPluginDir + "/" + ExtPluginBinary(name) + ".gz")
+}
+
+// ExtPluginBinary 外部插件在**当前平台**的产物文件名(gzip 之前)。
+//
+// Windows 必须带 .exe:宿主用 exec.Command(绝对路径) 启动外部插件,而 os/exec 在 Windows
+// 上走 PATHEXT 补全,findExecutable 对**无扩展名**的文件不会 stat 字面路径
+// (Go 1.27 os/exec/lp_windows.go:hasExt 为假时只逐个试 exts)→ 无 .exe 的 PE 一律
+// ErrNotFound,外部插件在 Windows 上根本无法启动(而 isExternalPluginBin 只按前缀匹配,
+// 发现阶段看不出来)。生成侧对应 scripts/gen-extplugins.sh。
+func ExtPluginBinary(name string) string {
+	if runtime.GOOS == "windows" {
+		return name + ".exe"
+	}
+	return name
+}
+
+// pluginDst 产物在数据根中的落点:plugins/<目录名>/<文件名>。
+// 目录名去平台扩展名(plugins/tool-basic/tool-basic.exe):目录口径跨平台统一,
+// 文件名保留 .exe 以适配 Windows 的 PATHEXT 解析(见 ExtPluginBinary)。
+func pluginDst(home, gzName string) string {
+	bin := strings.TrimSuffix(gzName, ".gz")
+	return filepath.Join(home, "plugins", strings.TrimSuffix(bin, ".exe"), bin)
 }
 
 // readFileBytes 读文件内容(不存在/读失败 ok=false,与幂等跳过区分)。
@@ -151,8 +175,7 @@ func EnsurePlugins(home string) ([]string, error) {
 		if !strings.HasSuffix(n, ".gz") {
 			continue // 只处理 gzip 打包的外部插件
 		}
-		bin := strings.TrimSuffix(n, ".gz")
-		dst := filepath.Join(home, "plugins", bin, bin)
+		dst := pluginDst(home, n)
 		fgz, err := extPlugins.Open(extPluginDir + "/" + n)
 		if err != nil {
 			return nil, err

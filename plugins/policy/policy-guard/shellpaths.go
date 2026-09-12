@@ -39,8 +39,28 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
+
+// shellWinSemantics 命令文本按 Windows/MSYS 语义解释。变量而非常量:单测需在非 Windows
+// 机器上覆盖该分支(沿用 kernel.go 的 sandboxExec 惯例)。
+var shellWinSemantics = runtime.GOOS == "windows"
+
+// winRootRelativePath 判定 Windows 上的 **MSYS 根相对路径**(`/c/foo`、`/tmp/x`、`/usr/bin`)。
+//
+// 为什么必须单独处理:go 的 filepath 在 Windows 上把这些路径当**相对路径**
+// (无卷名 → IsAbs=false),`filepath.Join(root, "/tmp/x")` 会算成 `<root>\tmp\x` ——
+// 裁决层“以为”落在工作区内,而 MSYS 实际写到 `C:\Users\…\AppData\Local\Temp\x`,
+// 即最危险的静默击穿(判为区内 → 放行 → 实际写到区外)。
+// 处理:写语义下一律按**不可裁决**拒绝(与变量/命令替换同一处置);读语义不阻断。
+// UNC(`\\srv\share\x`)带卷名,不走本分支(真机需单独复核)。
+func winRootRelativePath(raw string) bool {
+	if !shellWinSemantics || filepath.VolumeName(raw) != "" {
+		return false
+	}
+	return strings.HasPrefix(raw, "/") || strings.HasPrefix(raw, "\\")
+}
 
 // shellPath 命令行中识别出的一个路径操作数。
 // Unresolvable 表示无法可靠解析:含变量/命令替换,或相对路径但当前目录已不可确定
@@ -158,6 +178,10 @@ func makeShellPath(raw string, write, cwdOK bool, root string) (shellPath, bool)
 			return shellPath{Path: raw, Write: true, Unresolvable: true}, true
 		}
 		raw = exp
+	}
+	if winRootRelativePath(raw) {
+		// Windows/MSYS 根相对路径:filepath 视为相对,但 MSYS 会解析到别的绝对位置(见函数注释)
+		return shellPath{Path: raw, Write: true, Unresolvable: true}, true
 	}
 	if !filepath.IsAbs(raw) && !cwdOK {
 		// 前置 cd 到工作区之外:相对路径落点未知 → 不乐观放行
@@ -1051,6 +1075,14 @@ func hasShellExpansion(s string) bool {
 
 // isDevicePath 伪设备(/dev/null、/dev/stdout、/dev/fd/N 等):写它不构成文件系统变更。
 func isDevicePath(p string) bool {
+	if shellWinSemantics {
+		// Windows 保留设备名(NUL 等等价 /dev/null):写它不产生文件系统变更。
+		// 只在 Windows 语义下豁免:POSIX 上一个真名叫 `nul` 的文件不应被跳过裁决。
+		switch strings.ToLower(strings.TrimSpace(p)) {
+		case "nul", "con", "prn", "aux":
+			return true
+		}
+	}
 	if !strings.HasPrefix(p, "/dev/") {
 		return false
 	}

@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -81,13 +82,21 @@ func resolveRealPath(p string) string {
 	}
 }
 
-// pathWithin 整段归属校验(realpath 归一;root 与 p 均先归一,防 symlink 逃逸与 /root2 误判)。
+// pathCaseFold 路径比较是否大小写不敏感(Windows 卷名/段名不区分大小写)。
+// 变量而非常量:单测需在非 Windows 机器上覆盖该分支(沿用 kernel.go 的 sandboxExec 惯例)。
+var pathCaseFold = runtime.GOOS == "windows"
+
+// pathWithin 整段归属校验(realpath 归一;root 与 p 均先归一,防 symlink 逃逸与 /root2 误判;
+// Windows 上大小写不敏感,否则 D:\Repo 与 d:\repo\sub 会被误判为“根之外”)。
 func pathWithin(root, p string) bool {
 	r := resolveRealPath(root)
 	if r == "" {
 		return false
 	}
 	t := resolveRealPath(p)
+	if pathCaseFold {
+		r, t = strings.ToLower(r), strings.ToLower(t)
+	}
 	if t == r {
 		return true
 	}

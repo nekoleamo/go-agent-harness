@@ -7,6 +7,8 @@
 # 产物缺失时主包构建失败(goreleaser before hook 调用,防漏)。
 # P0 体积门回归(M7):strip(-s -w)+ gzip(Go 二进制压缩率 ~50%);embed 存 .gz,
 # 宿主首启 EnsurePlugins 解压落盘。
+# Windows 产物带 .exe(os/exec 在 Windows 上按 PATHEXT 补扩展名,无扩展名的 PE 无法
+# exec;见 internal/embed/embed.go ExtPluginBinary 注释)。
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -69,10 +71,12 @@ for t in $TARGETS; do
   dir="$EMBED_DIR/$os-$arch"
   mkdir -p "$dir"
   for name in $NAMES; do
-    echo "build $t/$name"
-    GOOS=$os GOARCH=$arch CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "$dir/$name" "./extplugins/$name"
-    assert_arch "$dir/$name" "$os" "$arch"
-    gzip -9 -n -f "$dir/$name" # -n:不存 mtime/文件名,产物幂等(重跑无 diff)
+    bin="$name"
+    if [ "$os" = windows ]; then bin="$name.exe"; fi
+    echo "build $t/$bin"
+    GOOS=$os GOARCH=$arch CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "$dir/$bin" "./extplugins/$name"
+    assert_arch "$dir/$bin" "$os" "$arch"
+    gzip -9 -n -f "$dir/$bin" # -n:不存 mtime/文件名,产物幂等(重跑无 diff)
   done
 done
 echo "--- 产物清单 ---"

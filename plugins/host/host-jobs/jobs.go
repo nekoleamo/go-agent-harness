@@ -199,6 +199,12 @@ func (j *Jobs) Submit(cmdline string) (string, error) {
 	if err := j.checkExec(); err != nil {
 		return "", err
 	}
+	// POSIX shell 解析(Windows 需 Git Bash;不提供 cmd/PowerShell 回退,见 sdk/shellpath.go):
+	// 提交即失败,不留一个注定失败的后台任务。
+	sh, err := sdk.ResolvePOSIXShell()
+	if err != nil {
+		return "", err
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	e := &entry{done: make(chan struct{}), cancel: cancel}
 	e.job = sdk.Job{
@@ -206,9 +212,9 @@ func (j *Jobs) Submit(cmdline string) (string, error) {
 	}
 	j.add(e)
 	go func() {
-		cmd := exec.Command("/bin/sh", "-c", cmdline)
-		setupCmdGroup(cmd)              // 独立进程组(组杀可连带 sh -c 子进程,防孤儿)
-		cmd.Env = sdk.SanitizedEnv(nil) // 凭据隔离:滤除 *_API_KEY/*_TOKEN/*_SECRET
+		cmd := exec.Command(sh, "-c", cmdline)
+		setupCmdGroup(cmd)                                // 独立进程组(组杀可连带 sh -c 子进程,防孤儿)
+		cmd.Env = sdk.ShellExecEnv(sdk.SanitizedEnv(nil)) // 凭据隔离 + MSYS 路径转换开关(见 sdk/shellpath.go)
 		var buf cappedBuffer
 		cmd.Stdout = &buf
 		cmd.Stderr = &buf

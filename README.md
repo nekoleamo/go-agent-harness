@@ -76,6 +76,13 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 安装后任意目录直接: `gah` / `gah web` / `gah --profile headless -input "…"`。
 数据根 = 安装目录下 `gah-data/`(首次运行自动创建;符号链接启动亦解析到真实安装目录);会话/记忆/todo 按项目 cwd 自动隔离。升级 = 重跑脚本;卸载 = `--uninstall` / `-Uninstall`。
 
+> **Windows 前置**:`shell` 工具与后台任务经 POSIX shell 执行(`sh -c`),故 Windows 需安装
+> [Git for Windows](https://git-scm.com/download/win)(自带 `bash.exe`,自动探测
+> `%ProgramFiles%\Git\bin\bash.exe`、`%ProgramFiles(x86)%\Git\bin\bash.exe`、
+> `%LOCALAPPDATA%\Programs\Git\bin\bash.exe` 与 PATH 上的 `bash.exe`),
+> 或用 `GAH_SHELL_PATH` 显式指定。**不提供 cmd.exe/PowerShell 回退** —— 命令的写目标裁决按
+> POSIX 词法进行,换 shell 会让沙箱判定与实际执行脱节;缺失时工具**显式报错**(不静默降级)。
+
 **两种模式并存(同一二进制,模式 = 位置)**:① **全局共用**——install 后任意目录敲 `gah`,数据根统一在安装目录 `gah-data/`,会话/记忆按项目 cwd 自动隔离;② **便携单飞**——直接把 `gah` 复制/下载到任意目录即用,该目录自动建独立 `gah-data/`,与全局数据完全隔离(适合临时环境/隔离试验/分发)。两者互不影响,无需切换。
 
 ### 三种运行形态
@@ -180,7 +187,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 
 | 工具 | 说明 |
 |---|---|
-| `shell` | 执行 shell 命令(沙箱/审批策略拦截;写目标经路径裁决:workspace-write 下越界写被拒、只读档拒绝一切写;`data.pty` 可驱动交互式进程;凭据 env 滤除;**环境 jail**:`TMPDIR`/`XDG_CACHE_HOME`/`GOCACHE`/`GOMODCACHE`/`npm_config_cache`/`PIP_CACHE_DIR` 恒重定向到 `$GAH_HOME/jail/**`,`HOME`/`GOPATH` 等不动,`GAH_SHELL_JAIL=0` 可关;**内核级沙箱**(第 3 组):宿主把**有效**档位下发到执行入口,`shell` 在**进程树**层面限制文件写 —— macOS `/usr/bin/sandbox-exec`(seatbelt)、Linux **Landlock**(内核 ≥5.13,自举 helper 重新 exec 后施加);白名单 = 有效档允许的 workspace 根 + `$GAH_HOME/jail/**` + 必要设备节点(路径先解析软链),read-only 档仍保留 jail 可写;无能力平台(Windows 等)→ 一次性 stderr 告警 + 不施加包装,`GAH_SHELL_KERNEL_SANDBOX=0` 可关) |
+| `shell` | 执行 shell 命令(沙箱/审批策略拦截;写目标经路径裁决:workspace-write 下越界写被拒、只读档拒绝一切写;`data.pty` 可驱动交互式进程;凭据 env 滤除;**环境 jail**:`TMPDIR`/`XDG_CACHE_HOME`/`GOCACHE`/`GOMODCACHE`/`npm_config_cache`/`PIP_CACHE_DIR` 恒重定向到 `$GAH_HOME/jail/**`,`HOME`/`GOPATH` 等不动,`GAH_SHELL_JAIL=0` 可关;**内核级沙箱**(第 3 组):宿主把**有效**档位下发到执行入口,`shell` 在**进程树**层面限制文件写 —— macOS `/usr/bin/sandbox-exec`(seatbelt)、Linux **Landlock**(内核 ≥5.13,自举 helper 重新 exec 后施加);白名单 = 有效档允许的 workspace 根 + `$GAH_HOME/jail/**` + 必要设备节点(路径先解析软链),read-only 档仍保留 jail 可写;无能力平台(Windows 等)→ 一次性 stderr 告警 + 不施加包装,`GAH_SHELL_KERNEL_SANDBOX=0` 可关;**POSIX shell 解析**(`sdk/shellpath.go`):`GAH_SHELL_PATH` > Windows 上的 Git for Windows 常见安装位/PATH → `sh`,后台任务同源,缺失时显式报错不静默降级;Windows 下关闭 MSYS 参数路径转换(`MSYS_NO_PATHCONV`),防裁决路径与实际落点脱节) |
 | `file_read` / `file_write` / `file_append` / `file_edit` | 文件读写/追加/精确编辑(经沙箱路径校验) |
 | `web_fetch` / `web_search` | 抓取 URL 正文 / 联网搜索(默认 Exa,`EXA_API_KEY`;`data.provider` 可换;401/429/5xx 结构化错误) |
 | `workflow` / `workflow_collect` | 受限 starlark 脚本组合多步工具调用(天然沙箱);`background` 异步 + 收集 |

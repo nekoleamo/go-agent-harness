@@ -139,7 +139,7 @@ func (p *SandboxPolicy) CheckShellCommand(cmd string) error {
 			continue
 		}
 		if pth.Unresolvable {
-			return fmt.Errorf("sandbox: shell 命令含无法裁决的写目标 %q(含变量/命令替换,或切换出工作区后的相对路径);请改写为确定路径或切 /sandbox full", pth.Path)
+			return fmt.Errorf("sandbox: shell 命令含无法裁决的写目标 %q(含变量/命令替换、切换出工作区后的相对路径,或 Windows/MSYS 根相对路径如 /c/…、/tmp/…);请改写为确定路径或切 /sandbox full", pth.Path)
 		}
 		if err := p.ValidatePath(pth.Path); err != nil {
 			return fmt.Errorf("sandbox: shell 命令写目标被拒(%s): %w", pth.Path, err)

@@ -5,15 +5,24 @@
 //
 // 这里**不施加**任何内核约束,但**显式告警**(不静默降级):协作式控制(写目标裁决 + 环境 jail)
 // 仍在生效,只是拦不住解释器/构建系统内部的间接写。
+// 告警措辞区分「平台能力缺口」与「配置错误」:本文件的情况是前者,用户无从修复,
+// 故不复述开关(不同于 kernel.go 里由开关/档位导致的未生效)。
 package toolshell
 
-import "github.com/nekoleamo/go-agent-harness/sdk"
+import (
+	"runtime"
+
+	"github.com/nekoleamo/go-agent-harness/sdk"
+)
 
 func platformSupportNote() string {
+	if runtime.GOOS == "windows" {
+		return "Windows 没有等价的非特权文件写限制机制(非配置问题):内核级沙箱仅支持 macOS seatbelt 与 Linux Landlock"
+	}
 	return "当前平台无等价的文件写限制能力(内核级沙箱仅支持 macOS seatbelt 与 Linux Landlock)"
 }
 
 func platformWrap(sdk.SandboxMode, string) []string {
-	warnUnavailable("平台不支持(见提示)")
+	warnUnavailable("平台能力缺口(无 seatbelt/Landlock 等价机制)")
 	return nil
 }

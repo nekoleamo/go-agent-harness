@@ -75,6 +75,14 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 After install, run `gah` / `gah web` / `gah --profile headless -input "…"` from any directory.
 The data root is `gah-data/` next to the real binary (created on first run; a symlinked launch also resolves to the real install dir). Sessions/memory/todo are isolated per project by the current cwd. Upgrade = rerun the script; uninstall = `--uninstall` / `-Uninstall`.
 
+> **Windows prerequisite**: the `shell` tool and background jobs run through a POSIX shell (`sh -c`),
+> so Windows needs [Git for Windows](https://git-scm.com/download/win) (it ships `bash.exe`; probed at
+> `%ProgramFiles%\Git\bin\bash.exe`, `%ProgramFiles(x86)%\Git\bin\bash.exe`,
+> `%LOCALAPPDATA%\Programs\Git\bin\bash.exe`, then `bash.exe` on `PATH`), or set `GAH_SHELL_PATH`
+> explicitly. There is **no cmd.exe/PowerShell fallback** — write-target adjudication is POSIX-lexical,
+> and swapping the shell would decouple the sandbox decision from what actually runs; when no POSIX
+> shell is found the tool fails **explicitly** (never degrades silently).
+
 **Two modes coexist (same binary; the mode is the location)**: ① **Global/shared** — after install, run `gah` from any directory; the data root lives once under the install dir's `gah-data/`, with sessions/memory isolated per project by the cwd. ② **Portable single** — just copy/download `gah` into any directory and run it there; that directory auto-creates its own independent `gah-data/`, fully isolated from the global install. They never interfere; no switching needed.
 
 ### Three run forms
@@ -179,7 +187,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 
 | Tool | Description |
 |---|---|
-| `shell` | Run shell commands (sandbox/approval policies intercept; `data.pty` drives interactive processes; credential env stripped) ; write targets are path-adjudicated (out-of-workspace writes denied under workspace-write, every write denied under read-only) ; **env jail**: `TMPDIR`/`XDG_CACHE_HOME`/`GOCACHE`/`GOMODCACHE`/`npm_config_cache`/`PIP_CACHE_DIR` are always redirected to `$GAH_HOME/jail/**` (`HOME`/`GOPATH` are left alone; `GAH_SHELL_JAIL=0` disables) ; **kernel-level sandbox** (group 3): the host passes the *effective* tier down to the execution entry, and `shell` restricts file **writes at the process-tree level** — macOS `/usr/bin/sandbox-exec` (seatbelt), Linux **Landlock** (kernel >= 5.13, applied by a self re-exec helper since Landlock is irreversible); allow-list = the workspace root the effective tier permits + `$GAH_HOME/jail/**` + required device nodes (paths are symlink-resolved first), and `read-only` keeps the jail writable; platforms without the capability (e.g. Windows) get a one-time stderr warning and no wrapper; `GAH_SHELL_KERNEL_SANDBOX=0` disables) |
+| `shell` | Run shell commands (sandbox/approval policies intercept; `data.pty` drives interactive processes; credential env stripped) ; write targets are path-adjudicated (out-of-workspace writes denied under workspace-write, every write denied under read-only) ; **env jail**: `TMPDIR`/`XDG_CACHE_HOME`/`GOCACHE`/`GOMODCACHE`/`npm_config_cache`/`PIP_CACHE_DIR` are always redirected to `$GAH_HOME/jail/**` (`HOME`/`GOPATH` are left alone; `GAH_SHELL_JAIL=0` disables) ; **kernel-level sandbox** (group 3): the host passes the *effective* tier down to the execution entry, and `shell` restricts file **writes at the process-tree level** — macOS `/usr/bin/sandbox-exec` (seatbelt), Linux **Landlock** (kernel >= 5.13, applied by a self re-exec helper since Landlock is irreversible); allow-list = the workspace root the effective tier permits + `$GAH_HOME/jail/**` + required device nodes (paths are symlink-resolved first), and `read-only` keeps the jail writable; platforms without the capability (e.g. Windows) get a one-time stderr warning and no wrapper; `GAH_SHELL_KERNEL_SANDBOX=0` disables; **POSIX shell resolution** (`sdk/shellpath.go`): `GAH_SHELL_PATH` > Git for Windows common install locations / `PATH` on Windows > `sh`, shared with background jobs, explicit error when missing (no silent degradation), and MSYS argument path conversion is disabled on Windows (`MSYS_NO_PATHCONV`) so adjudicated paths match what actually runs) |
 | `file_read` / `file_write` / `file_append` / `file_edit` | Read/write/append/precise-edit files (sandbox path validation) |
 | `web_fetch` / `web_search` | Fetch URL content / web search (default Exa, `EXA_API_KEY`; `data.provider` swappable; 401/429/5xx structured errors) |
 | `workflow` / `workflow_collect` | Restricted starlark composing multi-step tool calls (natively sandboxed); `background` async + collect |

@@ -47,7 +47,8 @@ func releaseExt(t *testing.T, dir string, names ...string) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		dst := filepath.Join(dir, n)
+		// 写盘名带平台扩展名(os/exec 在 Windows 上按 PATHEXT 解析,见 embed.ExtPluginBinary)
+		dst := filepath.Join(dir, embed.ExtPluginBinary(n))
 		if err := os.WriteFile(dst, raw, 0o755); err != nil {
 			t.Fatal(err)
 		}
