@@ -2,15 +2,17 @@
 // 可视化设置抽屉(状态栏 ⚙ 入口;App 持有 open)。
 // 分组:模型/推理(thinking·sandbox)/历史与压缩/Provider/插件与指令。
 // 破坏性动作(删 provider、卸载插件、压缩)经全局确认条(askConfirm)。
-import { computed, inject, onMounted, ref, watch } from 'vue'
+import { computed, inject, nextTick, onMounted, ref, watch } from 'vue'
 import { api } from '../api'
 import { settingSections } from '../registry'
 import { uiPluginTrustNote } from '../plugins'
+import { PROVIDER_PRESETS, explainProbeError, type ProviderPreset } from '../providers'
 import type { AskConfirm, PluginInfo, ProviderInfo, ProviderModelGroup, StateView } from '../types'
 
 const props = defineProps<{
   open: boolean
   state: StateView
+  focus?: string // 打开时定位到某一段(首启引导传 'provider')
 }>()
 const emit = defineEmits<{ (e: 'close'): void; (e: 'changed'): void }>()
 
@@ -27,9 +29,19 @@ const providers = ref<ProviderInfo[]>([])
 const plugins = ref<PluginInfo[]>([])
 const histN = ref(0) // 0 全部 / N 最近 / -1 禁止
 
-// —— 操作表单(Provider 新增)——
+// —— 操作表单(Provider 新增)与 W3 首启引导 ——
 const showAdd = ref(false)
 const pf = ref({ name: '', base_url: '', api_key: '', model: '' })
+const presets = PROVIDER_PRESETS
+const provSec = ref<HTMLElement | null>(null)
+const keyInput = ref<HTMLInputElement | null>(null)
+const applied = ref<ProviderPreset | null>(null) // 最近选中的预设(用于「本地免 Key」提示)
+const lastSaved = ref('') // 刚保存的 provider(失败后「重新自检」用)
+const probe = ref<{ ok: boolean; text: string; raw?: string } | null>(null)
+// onboardHint 空状态引导的一句话:选中预设后给该预设的说明
+const onboardHint = computed(() =>
+  applied.value ? applied.value.note : '不知道选哪个就用 DeepSeek;不想花钱可选 Ollama 在本机跑模型。',
+)
 
 const THINK = ['off', 'low', 'medium', 'high'] as const
 const THINK_LABEL: Record<string, string> = { off: '关闭', low: '低', medium: '中', high: '高' }
@@ -53,6 +65,7 @@ async function load(): Promise<void> {
     if (m.status === 'fulfilled') models.value = m.value.providers ?? []
     if (pl.status === 'fulfilled') plugins.value = pl.value ?? []
     if (pr.status === 'fulfilled') providers.value = pr.value ?? []
+    if (!probe.value) refreshProbeFromActive() // 活跃 provider 拉不到模型时直接给出原因
   } catch (e) {
     err.value = (e as Error).message
   }
@@ -192,7 +205,52 @@ function compactNow(): void {
   guard('压缩当前会话历史(旧内容折叠为摘要,不可逆)?', true, () => void doCompact())
 }
 
-// —— Provider ——
+// —— Provider(含 W3 首启引导/自检) ——
+function toggleAdd(): void {
+  showAdd.value = !showAdd.value
+  if (showAdd.value) void nextTick(() => keyInput.value?.focus())
+}
+// applyPreset 一键填入预设(只给 name/base_url:模型名会过期,保存后从实时列表里选)
+function applyPreset(p: ProviderPreset): void {
+  applied.value = p
+  pf.value = { name: p.name, base_url: p.base_url, api_key: '', model: '' }
+  showAdd.value = true
+  err.value = ''
+  probe.value = null
+  void nextTick(() => keyInput.value?.focus())
+}
+// probeProvider 用刚刷新的聚合列表判断端点是否真通(失败给人话原因,不猜)
+function probeProvider(name: string): void {
+  const g = models.value.find((x) => x.Name === name)
+  if (!g) {
+    probe.value = { ok: false, text: '端点没出现在模型列表里:base_url 可能不可达或拼写有误' }
+    return
+  }
+  if (g.Err) {
+    probe.value = { ok: false, text: explainProbeError(g.Err), raw: g.Err }
+    return
+  }
+  const n = (g.Models ?? []).length
+  probe.value = {
+    ok: true,
+    text: n > 0 ? `已连通,拉到 ${n} 个模型:在上方「模型」下拉里选一个` : '已连通,但端点没返回模型:手动填模型名',
+  }
+}
+// refreshProbeFromActive 当前活跃 provider 拉模型失败时把原因摆出来(打开设置就能看到为什么没模型)
+function refreshProbeFromActive(): void {
+  const g = models.value.find((x) => x.Name === activeProvider()?.Name)
+  if (g?.Err) probe.value = { ok: false, text: explainProbeError(g.Err), raw: g.Err }
+}
+async function reprobe(): Promise<void> {
+  if (!lastSaved.value) return
+  busy.value = true
+  try {
+    await load()
+    probeProvider(lastSaved.value)
+  } finally {
+    busy.value = false
+  }
+}
 async function doProviderUse(name: string): Promise<void> {
   try {
     await api.providerUse(name)
@@ -218,14 +276,19 @@ async function addProvider(): Promise<void> {
     err.value = '名称与 base_url 必填'
     return
   }
+  const name = pf.value.name
   busy.value = true
   try {
     await api.providerAdd({ name: pf.value.name, base_url: pf.value.base_url, api_key: pf.value.api_key, model: pf.value.model || undefined })
     showAdd.value = false
     pf.value = { name: '', base_url: '', api_key: '', model: '' }
-    showInfo('已新增 provider(首个自动激活)')
+    applied.value = null
+    probe.value = null
+    lastSaved.value = name
+    showInfo('已保存 provider(首个自动激活)')
     emit('changed')
     await load()
+    probeProvider(name) // W3 连通性自检:失败给 401/404/DNS 人话
   } catch (e) {
     err.value = (e as Error).message
   } finally {
@@ -282,6 +345,8 @@ watch(
   (o) => {
     if (!o) return
     void load()
+    // 首启引导:直接滚到 Provider 段(面板内容比一屏长时否则看不到)
+    if (props.focus === 'provider') void nextTick(() => provSec.value?.scrollIntoView({ block: 'start' }))
   },
 )
 watch(
@@ -404,19 +469,60 @@ watch(
           <p class="dim">压缩将最旧内容折叠为摘要(节省上下文),仅影响后续回合。</p>
         </section>
 
-        <!-- Provider -->
-        <section class="sec">
+        <!-- Provider(W3:首启引导 + 预设 + 保存后连通性自检) -->
+        <section ref="provSec" class="sec">
           <h3 class="h">
             Provider
-            <button class="link" data-tip="新增/编辑 LLM 端点" @click="showAdd = !showAdd">{{ showAdd ? '收起' : '＋ 新增' }}</button>
+            <button class="link" data-tip="新增/编辑 LLM 端点" @click="toggleAdd">{{ showAdd ? '收起' : '＋ 新增' }}</button>
           </h3>
-          <div v-if="showAdd" class="add-form">
-            <input v-model="pf.name" class="inp" placeholder="名称(如 deepseek)" />
-            <input v-model="pf.base_url" class="inp mono" placeholder="base_url https://…" />
-            <input v-model="pf.api_key" class="inp mono" type="password" placeholder="api_key(可选)" />
-            <input v-model="pf.model" class="inp mono" placeholder="默认模型(可选)" />
-            <button class="ghost solid" :disabled="busy" @click="addProvider">保存 Provider</button>
+
+          <!-- 一个 Key 就能开始:没有 provider 时空状态本身就是入口 -->
+          <div v-if="!providers.length" class="onboard">
+            <p class="ob-lead">粘贴一个 API Key 就能开始,base_url 由预设填好。</p>
+            <div class="ob-row">
+              <button v-for="p in presets" :key="p.name" class="chip" :data-tip="p.note" @click="applyPreset(p)">
+                {{ p.label }}
+              </button>
+            </div>
+            <p class="dim">{{ onboardHint }}</p>
           </div>
+
+          <div v-if="showAdd" class="add-form">
+            <label class="fld">
+              <span class="fld-lab">名称</span>
+              <input v-model="pf.name" class="inp" placeholder="如 deepseek" />
+            </label>
+            <label class="fld">
+              <span class="fld-lab">base_url</span>
+              <input v-model="pf.base_url" class="inp mono" placeholder="https://api.deepseek.com/v1" />
+            </label>
+            <label class="fld">
+              <span class="fld-lab">api_key</span>
+              <input
+                ref="keyInput"
+                v-model="pf.api_key"
+                class="inp mono"
+                type="password"
+                autocomplete="off"
+                :placeholder="applied?.key_optional ? '本地端点留空即可' : 'sk-…'"
+              />
+            </label>
+            <label class="fld">
+              <span class="fld-lab">默认模型(可选)</span>
+              <input v-model="pf.model" class="inp mono" placeholder="留空则在保存后从模型下拉里选" />
+            </label>
+            <div class="form-acts">
+              <button class="ghost solid" :disabled="busy" @click="addProvider">保存 Provider</button>
+            </div>
+          </div>
+
+          <!-- 连通性自检:保存后自动跑;失败给人话 + 原始报错 + 重试 -->
+          <div v-if="probe" class="probe" :class="probe.ok ? 'ok' : 'bad'">
+            <span>{{ probe.text }}</span>
+            <span v-if="probe.raw" class="probe-raw mono">{{ probe.raw }}</span>
+            <button v-if="!probe.ok" class="link" :disabled="busy" @click="reprobe">重新自检</button>
+          </div>
+
           <div class="plist">
             <div v-for="p in providers" :key="p.Name" class="prow" :class="{ active: p.Active }">
               <div class="pmain">
@@ -430,7 +536,7 @@ watch(
                 <button class="ghost danger-text" data-tip="删除该 Provider(确认)" @click="deleteProvider(p)">删除</button>
               </div>
             </div>
-            <p v-if="!providers.length" class="dim">未配置 Provider(新增后首个自动激活)</p>
+            <p v-if="!providers.length" class="dim">还没有配置 Provider:点上方「＋ 新增」或直接选一个预设</p>
           </div>
         </section>
 
@@ -503,20 +609,79 @@ watch(
 </template>
 
 <style scoped>
-/* 扫码登录二维码(白底保证可扫) */
-.qr-wrap {
+/* —— W3 首启引导:空状态即入口 —— */
+.onboard {
   display: flex;
-  justify-content: center;
-  margin: 10px 0 6px;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 10px;
+  background: var(--accent-soft);
+  border: 1px solid var(--sel-border);
+  border-radius: var(--r-card);
 }
-.qr {
-  width: 220px;
-  height: 220px;
-  padding: 6px;
-  background: #fff;
-  border: 1px solid var(--line);
+.ob-lead {
+  margin: 0;
+  font-size: 13px;
+  color: var(--fg);
+}
+.ob-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.chip {
+  border: 1px solid var(--line-strong);
+  background: var(--bg);
+  color: var(--fg);
   border-radius: var(--r-input);
-  image-rendering: pixelated;
+  font-size: 12px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+.chip:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+/* 表单字段:标签在输入框上方(不以 placeholder 充当标签) */
+.fld {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.fld-lab {
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+.form-acts {
+  display: flex;
+  gap: 8px;
+  margin-top: 2px;
+}
+/* 连通性自检结果 */
+.probe {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border-radius: var(--r-card);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.probe.ok {
+  color: var(--ok);
+  background: var(--ok-soft);
+  border: 1px solid var(--ok-line);
+}
+.probe.bad {
+  color: var(--err);
+  background: var(--err-soft);
+  border: 1px solid var(--err-line);
+}
+.probe-raw {
+  color: var(--fg-faint);
+  word-break: break-all;
 }
 
 .mask {

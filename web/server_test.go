@@ -957,6 +957,60 @@ func TestPluginsEndpoints(t *testing.T) {
 	}
 }
 
+// errListingLLM 让聚合模型列表带 Err(验证 error 字段被转成可读字符串输出)。
+type errListingLLM struct{ stubLLM }
+
+func (e *errListingLLM) ListAllModels() []sdk.ProviderModelList {
+	return []sdk.ProviderModelList{
+		{Name: "ok", BaseURL: "https://api.example.com/v1", Models: []sdk.ModelInfo{{ID: "m1"}}},
+		{Name: "bad", BaseURL: "https://api.example.com/v1", Err: errors.New(strings.Repeat("很长的错误说明", 60))},
+	}
+}
+
+// TestModelsAllErrString /api/models?all=1 回传可读的失败原因(而非 `{}`)、Models 归一为空数组、
+// 错误文案按 rune 截断(W3 首启自检靠它给 401/404/DNS 人话提示)。
+func TestModelsAllErrString(t *testing.T) {
+	s, _ := newTestServer()
+	s.llm = &errListingLLM{}
+	hs := httptest.NewServer(s.handler())
+	defer hs.Close()
+
+	r, err := http.Get(hs.URL + "/api/models?all=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Body.Close()
+	if r.StatusCode != 200 {
+		t.Fatalf("应 200,得 %d", r.StatusCode)
+	}
+	var v struct {
+		Providers []struct {
+			Name   string          `json:"Name"`
+			Models []sdk.ModelInfo `json:"Models"`
+			Err    string          `json:"Err"`
+		} `json:"providers"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&v); err != nil {
+		t.Fatal(err)
+	}
+	if len(v.Providers) != 2 {
+		t.Fatalf("应 2 条: %+v", v.Providers)
+	}
+	okP, badP := v.Providers[0], v.Providers[1]
+	if okP.Err != "" || len(okP.Models) != 1 {
+		t.Fatalf("成功条目不应带 Err 且模型保留: %+v", okP)
+	}
+	if badP.Err == "" {
+		t.Fatalf("失败原因必须透出(error 接口直接序列化只会得到 {}): %+v", badP)
+	}
+	if n := len([]rune(badP.Err)); n > probeErrMaxRunes+1 {
+		t.Fatalf("错误文案应截断到 %d rune,得 %d", probeErrMaxRunes, n)
+	}
+	if badP.Models == nil {
+		t.Fatalf("Models 应为空数组而非 null: %+v", badP)
+	}
+}
+
 // 模型列表与 provider CRUD。
 func TestModelsAndProviders(t *testing.T) {
 	s, _ := newTestServer()

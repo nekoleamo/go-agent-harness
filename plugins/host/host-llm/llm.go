@@ -106,7 +106,7 @@ func (s *Service) Complete(ctx context.Context, req *sdk.LLMRequest, onChunk fun
 		s.mu.RUnlock()
 	}
 	if model == "" {
-		return nil, fmt.Errorf("llm: model not set (SetModel before first request)")
+		return nil, fmt.Errorf("llm: 还没有配置模型:先用 /provider 或 Web 的「设置 → Provider」配置一个端点与 API Key")
 	}
 	// 思考等级注入:请求未显式设置时用会话级(Tab 切换的等级;agent-loop 无需感知)
 	if req.Thinking == sdk.ThinkingOff {
@@ -185,6 +185,9 @@ func (s *Service) AddProvider(name, baseURL, apiKey, model string) error {
 	if err := providerfile.Add(providerfile.Provider{Name: name, BaseURL: baseURL, APIKey: apiKey, Model: model}); err != nil {
 		return err
 	}
+	// 新增/更新后必须清聚合缓存:否则首启自检(Web 保存后立即拉模型列表)
+	// 会在 10 分钟 TTL 内拿到「还没这个 provider」或旧 Key 的过期结果。
+	s.invalidateModelsCache()
 	f, err := providerfile.LoadFile()
 	if err != nil {
 		return err
@@ -240,7 +243,17 @@ func (s *Service) switchActive(p providerfile.Provider) error {
 	if p.Model != "" {
 		s.SetModel(p.Model)
 	}
+	s.invalidateModelsCache() // 端点已切:聚合缓存(含各端点 Err)同步失效
 	return nil
+}
+
+// invalidateModelsCache 清聚合模型缓存(provider 增删/切换后调用;TTL 缓存不能自己知道这些变更)。
+// 调用方不得持有 s.mu(本方法自行加锁)。
+func (s *Service) invalidateModelsCache() {
+	s.mu.Lock()
+	s.provModelsCache = nil
+	s.provModelsAt = time.Time{}
+	s.mu.Unlock()
 }
 
 // ListAllModels 聚合所有 provider 端点 /models(TTL 缓存;单条失败记入其 Err,不整体失败)。

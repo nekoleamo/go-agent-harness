@@ -175,6 +175,10 @@ func (a *Adapter) ListModels() ([]sdk.ModelInfo, error) {
 	baseURL := a.baseURL
 	key := a.apiKey
 	a.mu.RUnlock()
+	if baseURL == "" {
+		// 空端点会让 http.NewRequest 报 "missing protocol scheme"(对用户毫无信息量)
+		return nil, fmt.Errorf("llm-openai: 还没有配置模型端点:请在设置里 Provider 处粘贴 API Key")
+	}
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, baseURL+"/models", nil)
 	if err != nil {
@@ -295,6 +299,10 @@ func (a *Adapter) Complete(ctx context.Context, req *sdk.LLMRequest, onChunk fun
 	if model == "" {
 		model = a.model
 	}
+	if base, _ := a.ProviderInfo(); base == "" {
+		// 空端点会让 http.NewRequest 报 "missing protocol scheme"(对用户毫无信息量)
+		return nil, fmt.Errorf("llm-openai: 还没有配置模型端点:请在设置里 Provider 处粘贴 API Key(或用本地 Ollama)")
+	}
 	wire := wireReq{Model: model, Stream: true, MaxTokens: req.MaxTokens, Temperature: req.Temperature}
 	for _, msg := range req.Messages {
 		wm := wireMsg{Role: string(msg.Role)}
@@ -350,7 +358,11 @@ func (a *Adapter) Complete(ctx context.Context, req *sdk.LLMRequest, onChunk fun
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		err := fmt.Errorf("llm-openai: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+		msg := fmt.Sprintf("llm-openai: HTTP %d", resp.StatusCode)
+		if hint := sdk.HTTPStatusHint(resp.StatusCode); hint != "" {
+			msg += "(" + hint + ")" // 人话提示 + 原始响应体一并给出
+		}
+		err := fmt.Errorf("%s: %s", msg, strings.TrimSpace(string(raw)))
 		if resp.StatusCode >= 500 {
 			return nil, &sdk.RetryableError{Err: err} // 5xx 瞬态:可重试
 		}

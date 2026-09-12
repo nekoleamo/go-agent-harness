@@ -36,6 +36,9 @@ const refreshKey = ref(0)
 const settingsOpen = ref(false)
 const jobsOpen = ref(false)
 const openPanel = ref<string | null>(null)
+// W3 首启引导:无 provider 时自动打开设置并定位到 Provider 段(每个浏览器会话只自动弹一次)
+const focusProvider = ref(false)
+const providerCount = ref<number | null>(null)
 // v2 扩展点:附加面板(侧栏入口 → 右侧抽屉;组件经 App 渲染)
 const openPanelComp = computed(() => extraPanel(openPanel.value ?? '')?.component ?? null)
 const openPanelTitle = computed(() => extraPanel(openPanel.value ?? '')?.title ?? '面板')
@@ -53,10 +56,34 @@ let jobsTimer: ReturnType<typeof setInterval> | null = null
 onMounted(() => {
   void refreshJobs()
   jobsTimer = setInterval(() => void refreshJobs(), 5000)
+  void maybeOnboard()
 })
 onUnmounted(() => {
   if (jobsTimer) clearInterval(jobsTimer)
 })
+// ONBOARD_KEY 自动弹层标记(sessionStorage:同一标签页关掉后不再弹,刷新页也不骚扰)
+const ONBOARD_KEY = 'gah.onboard.auto'
+// maybeOnboard 一次都没配 provider → 直接落到「粘一个 Key」入口
+async function maybeOnboard(): Promise<void> {
+  if (sessionStorage.getItem(ONBOARD_KEY)) return
+  sessionStorage.setItem(ONBOARD_KEY, '1')
+  try {
+    const list = await api.providers()
+    providerCount.value = (list ?? []).length
+    if (providerCount.value === 0) openProviderSettings()
+  } catch {
+    /* 未装配多 provider(501):不做引导、不显示提示 */
+  }
+}
+// openProviderSettings 打开设置并定位到 Provider 段
+function openProviderSettings(): void {
+  focusProvider.value = true
+  settingsOpen.value = true
+}
+function closeSettings(): void {
+  settingsOpen.value = false
+  focusProvider.value = false
+}
 // 空状态(当前会话尚无消息且未运行):输入框居中 + 欢迎引导;有会话内容后沉底
 // 注:会话切换重建瞬间会短暂置空(欢迎闪现一次,可接受)
 const empty = computed(() => !state.value.running && model.value.msgs.length === 0 && metas.value.length === 0)
@@ -302,6 +329,10 @@ onUnmounted(() => {
         <div v-if="empty" class="welcome">
           <div class="w-title">Go Agent Harness</div>
           <p class="w-sub">向 Agent 描述任务,开启新会话</p>
+          <!-- W3:没有任何 provider 时,把「粘一个 Key」入口摆在首屏 -->
+          <p v-if="providerCount === 0" class="w-hint">
+            <button class="w-link" @click="openProviderSettings">还没有配置模型:点这里粘一个 API Key</button>
+          </p>
         </div>
 
         <!-- 槽位:input(空状态列内居中放大;有会话内容后右列底部) -->
@@ -333,7 +364,13 @@ onUnmounted(() => {
     <ConfirmBar :pending="askRef" @confirm="onAskConfirm" @cancel="onAskCancel" />
 
     <!-- 可视化设置抽屉 -->
-    <SettingsPanel :open="settingsOpen" :state="state" @close="settingsOpen = false" @changed="refreshStats" />
+    <SettingsPanel
+      :open="settingsOpen"
+      :state="state"
+      :focus="focusProvider ? 'provider' : undefined"
+      @close="closeSettings"
+      @changed="refreshStats"
+    />
 
     <!-- 后台任务面板 -->
     <JobsPanel :open="jobsOpen" @close="jobsOpen = false" />
@@ -510,6 +547,21 @@ onUnmounted(() => {
   margin: 8px 0 0;
   font-size: 13px;
   color: var(--fg-faint);
+}
+.w-hint {
+  margin: 14px 0 0;
+  font-size: 12px;
+}
+.w-link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 12px;
+}
+.w-link:hover {
+  text-decoration: underline;
 }
 .content.empty .input-slot {
   background: transparent;

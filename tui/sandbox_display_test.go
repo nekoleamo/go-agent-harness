@@ -175,22 +175,24 @@ func TestCmdApprovalStatusReportsSandboxEffect(t *testing.T) {
 	// 无有效档能力:按档位给固定说明(不凭空读有效档)
 	plain := &plainSandboxStub{mode: sdk.SandboxWorkspace}
 	a.c = &stubCtx{svc: map[string]any{"ctx.commands": newMemRegistry(), "ctx.sandbox": sdk.Sandbox(plain), "ctx.approval": sdk.ApprovalService(ap)}}
-	for mode, want := range map[string]string{
-		"open":   "(联动开启时沙箱有效档 = full-access)",
-		"strict": "(联动开启时沙箱有效档 = read-only)",
-		"smart":  "",
+	// 顺序固定(不用 map 迭代:Go 的 map 遍历顺序随机,曾导致此处 2/3 概率随机失败;
+	// smart 必须落最后,下方「smart 不覆盖」的断言才成立)
+	for _, tc := range []struct{ mode, want string }{
+		{"open", "(联动开启时沙箱有效档 = full-access)"},
+		{"strict", "(联动开启时沙箱有效档 = read-only)"},
+		{"smart", ""},
 	} {
-		if _, err := a.cmdApproval([]string{mode}); err != nil {
+		if _, err := a.cmdApproval([]string{tc.mode}); err != nil {
 			t.Fatal(err)
 		}
 		got, err := a.cmdApproval(nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(got, "审批: "+mode) || (want != "" && !strings.Contains(got, want)) {
-			t.Fatalf("approval=%s 回显: %q", mode, got)
+		if !strings.Contains(got, "审批: "+tc.mode) || (tc.want != "" && !strings.Contains(got, tc.want)) {
+			t.Fatalf("approval=%s 回显: %q", tc.mode, got)
 		}
-		if mode == "smart" && got != "审批: smart" {
+		if tc.mode == "smart" && got != "审批: smart" {
 			t.Fatalf("smart 不覆盖,应只回档位: %q", got)
 		}
 	}

@@ -187,6 +187,9 @@ export interface ModelInfo {
 export interface ProviderModelGroup {
   Name: string
   Models: ModelInfo[]
+  // W3:该端点拉模型失败时的原因(Go 侧 error → 字符串;成功时字段缺省)。
+  // 首启自检靠它给 401/404/DNS 人话提示(见 providers.ts explainProbeError)。
+  Err?: string
 }
 // /api/models?all=1 多 provider 聚合
 export interface ModelsAllResp {

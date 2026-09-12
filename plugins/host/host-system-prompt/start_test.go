@@ -6,6 +6,7 @@ package hostsystemprompt
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -226,7 +227,8 @@ func TestAddSectionDisposerIdempotent(t *testing.T) {
 	}
 }
 
-// TestAssembleOrderToolsAndHistory 组装顺序:引导/指令 → 片段 → 工具 schema;历史原样附于 system 之后。
+// TestAssembleOrderToolsAndHistory 组装顺序:引导/指令 → 片段 → 工具名清单;历史原样附于 system 之后。
+// 同时守护 M1 去重:提示词内**不得**出现工具 description/schema(结构化下发已含,重复即双重计费)。
 func TestAssembleOrderToolsAndHistory(t *testing.T) {
 	t.Setenv("GAH_HOME", t.TempDir())
 	t.Chdir(t.TempDir())
@@ -251,12 +253,45 @@ func TestAssembleOrderToolsAndHistory(t *testing.T) {
 	}
 	sys := msgs[0].Content
 	iSec := strings.Index(sys, "片段内容")
-	iTools := strings.Index(sys, "可用工具(schema 为 JSON Schema):")
+	iTools := strings.Index(sys, "可用工具:")
 	if iSec < 0 || iTools < 0 || iSec > iTools {
-		t.Fatalf("片段应先于工具清单:\n%s", sys)
+		t.Fatalf("片段应先于工具名清单:\n%s", sys)
 	}
-	if !strings.Contains(sys, "- read: 读文件") || !strings.Contains(sys, `"path":{"type":"string"}`) {
-		t.Fatalf("工具清单应含名称/描述与 JSON Schema:\n%s", sys)
+	if !strings.Contains(sys, "可用工具:read") {
+		t.Fatalf("工具名清单应含名称:\n%s", sys)
+	}
+	for _, dup := range []string{"inputSchema", "读文件", `"properties"`} {
+		if strings.Contains(sys, dup) {
+			t.Fatalf("工具 description/schema 不得写入提示词(已结构化下发,重复即双重计费),命中 %q:\n%s", dup, sys)
+		}
+	}
+}
+
+// TestAssemblePromptIndependentOfToolSchemaSize 提示词体积与工具 schema 体量解耦:
+// 同一工具名配微小/巨大 schema,system 内容必须逐字节相同(去重生效的硬证明)。
+func TestAssemblePromptIndependentOfToolSchemaSize(t *testing.T) {
+	t.Setenv("GAH_HOME", t.TempDir())
+	t.Chdir(t.TempDir())
+	svc, _ := startPrompt(t, nil)
+
+	fat := map[string]any{"type": "object"}
+	props := map[string]any{}
+	for i := 0; i < 200; i++ {
+		props[fmt.Sprintf("field_%d", i)] = map[string]any{
+			"type":        "string",
+			"description": strings.Repeat("冗长描述", 40),
+		}
+	}
+	fat["properties"] = props
+
+	lean := svc.Assemble(nil, []sdk.ToolDefinition{{Name: "t", InputSchema: map[string]any{"type": "object"}}})
+	heavy := svc.Assemble(nil, []sdk.ToolDefinition{{Name: "t", InputSchema: fat}})
+	if len(lean) != 1 || len(heavy) != 1 {
+		t.Fatalf("应各只有 system: %d/%d", len(lean), len(heavy))
+	}
+	if lean[0].Content != heavy[0].Content {
+		t.Fatalf("提示词随 schema 变长 → 去重未生效(lean %d 字节 / heavy %d 字节)",
+			len(lean[0].Content), len(heavy[0].Content))
 	}
 }
 

@@ -1,10 +1,12 @@
 // Package hostsystemprompt 提供 host-system-prompt 插件:ctx.systemPrompt 服务。
-// 组装模型可见消息:固定引导 + 全局/项目指令(AGENTS.md)+ 注册片段 + 工具 schema 清单 + 历史。
+// 组装模型可见消息:固定引导 + 全局/项目指令(AGENTS.md)+ 注册片段 + 工具名清单 + 历史。
+// **工具 schema 不写入提示词**:完整定义(schema)已由 agent-loop 经 `LLMRequest.Tools` 结构化下发,
+// 再以文本重复一份会让同一份 schema 计费两次(MCP 工具尤其昂贵)。此处只留一行纯名称清单
+// (约 20 工具 ~100 token),供模型快速总览"有什么工具",不再携带 description/schema 正文。
 // 指令注入对齐 pi 语义:全局 $GAH_HOME/AGENTS.md → 项目 <workspace>/AGENTS.md(后者优先,顺序即覆盖)。
 package hostsystemprompt
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -181,7 +183,8 @@ func (s *Service) AddSection(sec sdk.SystemPromptSection) sdk.Disposer {
 	}
 }
 
-// Assemble 组装消息:引导 → 全局指令 → 项目指令 → 附加 → 片段 → 工具 schema。
+// Assemble 组装消息:引导 → 全局指令 → 项目指令 → 附加 → 片段 → 工具名清单。
+// tools 只用于生成名称清单;完整定义由调用方经 LLMRequest.Tools 结构化下发(见包注释)。
 func (s *Service) Assemble(history []sdk.LLMMessage, tools []sdk.ToolDefinition) []sdk.LLMMessage {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -208,11 +211,14 @@ func (s *Service) Assemble(history []sdk.LLMMessage, tools []sdk.ToolDefinition)
 		sb.WriteString(sec.Content())
 	}
 	if len(tools) > 0 {
-		sb.WriteString("\n\n可用工具(schema 为 JSON Schema):\n")
+		// 仅名称,不带 description/schema(结构化下发已含全文;防双重计费,见包注释)。
+		names := make([]string, 0, len(tools))
 		for _, t := range tools {
-			schema, _ := json.Marshal(t.InputSchema)
-			sb.WriteString(fmt.Sprintf("- %s: %s\n  inputSchema: %s\n", t.Name, t.Description, schema))
+			names = append(names, t.Name)
 		}
+		sb.WriteString("\n\n可用工具:")
+		sb.WriteString(strings.Join(names, "、"))
+		sb.WriteString("(完整定义与参数见 API 的 tools 字段)")
 	}
 	system := sdk.LLMMessage{Role: sdk.RoleSystem, Content: sb.String()}
 	return append([]sdk.LLMMessage{system}, history...)

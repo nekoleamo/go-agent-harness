@@ -159,3 +159,57 @@ func TestListAllSingleFailureNotFatal(t *testing.T) {
 }
 
 var _ = context.Background
+
+// TestListAllModelsCacheInvalidatedOnProviderChange 新增/切换 provider 必须让聚合模型缓存失效:
+// 否则 Web 首启自检(保存后立即拉一次模型列表)会在 10 分钟 TTL 内读到旧结果 ——
+// 列表里没有刚保存的 provider,或还带着旧 Key 的 401。
+func TestListAllModelsCacheInvalidatedOnProviderChange(t *testing.T) {
+	s := multiSvc(t)
+
+	var hits int64
+	mux := http.NewServeMux()
+	mux.HandleFunc("/models", func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt64(&hits, 1)
+		_ = json.NewEncoder(w).Encode(struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}{Data: []struct {
+			ID string `json:"id"`
+		}{{ID: "remote-x"}}})
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	// a 首个 → 活跃(模型列表走 fake 适配器,不打网络);b 非活跃(直拉 httptest)
+	if err := s.AddProvider("a", ts.URL, "k-a", "m-a"); err != nil {
+		t.Fatal(err)
+	}
+	if all := s.ListAllModels(); len(all) != 1 {
+		t.Fatalf("初态应 1 条: %+v", all)
+	}
+	if err := s.AddProvider("b", ts.URL, "k-b", "m-b"); err != nil {
+		t.Fatal(err)
+	}
+	all := s.ListAllModels()
+	if len(all) != 2 {
+		t.Fatalf("新增后应立刻看到 2 条(缓存未失效): %+v", all)
+	}
+	if all[1].Name != "b" || len(all[1].Models) != 1 || all[1].Models[0].ID != "remote-x" {
+		t.Fatalf("新增 provider 应直拉端点: %+v", all[1])
+	}
+	// 切活跃同样失效:b 变活跃(走适配器),a 变非活跃(直拉端点)
+	if err := s.SetActiveProvider("b"); err != nil {
+		t.Fatal(err)
+	}
+	all = s.ListAllModels()
+	if len(all) != 2 || all[0].Name != "a" || all[1].Name != "b" {
+		t.Fatalf("切换后应 2 条且顺序按文件: %+v", all)
+	}
+	if len(all[0].Models) != 1 || all[0].Models[0].ID != "remote-x" {
+		t.Fatalf("原活跃应转为直拉: %+v", all[0])
+	}
+	if len(all[1].Models) != 2 || all[1].Models[0].ID != "deepseek-ai/DeepSeek-V3" {
+		t.Fatalf("新活跃应走适配器列表: %+v", all[1])
+	}
+}

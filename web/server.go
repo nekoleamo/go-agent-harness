@@ -1500,16 +1500,51 @@ func (s *Server) handlePluginAction(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+// providerModelsView 聚合模型列表的可序列化视图。
+// 为何不直接输出 sdk.ProviderModelList:`Err` 是 `error` 接口,JSON 只能序列化成 `{}` 或
+// 内嵌字段(前端永远拿不到失败原因),首启引导的「连通性自检」就无从给 401/404/DNS 人话提示。
+// 转字符串同时给长度上限(端点返回 HTML 错误页时不把整页塞进响应体)。
+type providerModelsView struct {
+	Name    string          `json:"Name"`
+	BaseURL string          `json:"BaseURL"`
+	Models  []sdk.ModelInfo `json:"Models"`
+	Err     string          `json:"Err,omitempty"`
+}
+
+// probeErrMaxRunes 单条探测错误的最大长度(超出截断并加省略号)。
+const probeErrMaxRunes = 300
+
+// truncateRunes 按 rune 截断(不切断多字节字符)。
+func truncateRunes(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max]) + "…"
+}
+
+// providerModelsViews 把聚合结果转为可序列化视图(Err → 字符串;Models 归一为非 nil 数组)。
+func providerModelsViews(list []sdk.ProviderModelList) []providerModelsView {
+	out := make([]providerModelsView, 0, len(list))
+	for _, p := range list {
+		v := providerModelsView{Name: p.Name, BaseURL: p.BaseURL, Models: p.Models}
+		if v.Models == nil {
+			v.Models = []sdk.ModelInfo{} // 前端 length/遍历安全(与 /api/models 单端点分支口径一致)
+		}
+		if p.Err != nil {
+			v.Err = truncateRunes(p.Err.Error(), probeErrMaxRunes)
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
 // handleModels 聚合模型列表(GET /api/models)。
 // 多 provider 存在 → 每端点聚合(单条失败记 error 不整体失败);否则当前适配器列表。
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("all") == "1" {
 		if mp, ok := s.llm.(sdk.MultiProviderService); ok {
-			list := mp.ListAllModels()
-			if list == nil {
-				list = []sdk.ProviderModelList{} // 无 provider 时 ListAllModels 为 nil → 契约给空数组(前端 length 安全)
-			}
-			writeJSON(w, http.StatusOK, map[string]any{"providers": list})
+			writeJSON(w, http.StatusOK, map[string]any{"providers": providerModelsViews(mp.ListAllModels())})
 			return
 		}
 	}

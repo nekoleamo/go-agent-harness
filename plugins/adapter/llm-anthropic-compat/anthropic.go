@@ -249,7 +249,11 @@ func (a *Adapter) Complete(ctx context.Context, req *sdk.LLMRequest, onChunk fun
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		err := fmt.Errorf("llm-anthropic: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+		msg := fmt.Sprintf("llm-anthropic: HTTP %d", resp.StatusCode)
+		if hint := sdk.HTTPStatusHint(resp.StatusCode); hint != "" {
+			msg += "(" + hint + ")"
+		}
+		err := fmt.Errorf("%s: %s", msg, strings.TrimSpace(string(raw)))
 		if resp.StatusCode >= 500 {
 			return nil, &sdk.RetryableError{Err: err}
 		}
