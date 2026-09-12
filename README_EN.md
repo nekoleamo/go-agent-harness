@@ -56,6 +56,32 @@ One source, three surfaces: the same gah binary hosts **TUI / Web / headless**; 
 
 ## 3. Quick start
 
+### Download and install (recommended for non-programmers)
+
+Grab the right file from [Releases](https://github.com/nekoleamo/go-agent-harness/releases/latest):
+
+| System | File | Notes |
+|---|---|---|
+| macOS (Apple silicon) | `gah_<version>_aarch64.dmg` | open, then drag gah into /Applications |
+| Windows (64-bit) | `gah_<version>_x64-setup.exe` | double-click to install (current user, no admin) |
+| CLI (any platform) | `gah_<version>_<os>_<arch>.tar.gz` | single binary, unzip and run |
+
+> **The first launch is blocked once by the OS** (the app ships without an Apple/Microsoft code-signing
+> certificate; the binary is fine, the system simply has not seen it before):
+> - **macOS** "cannot verify the developer" → in /Applications **right-click gah → Open → Open** (once;
+>   or run `xattr -dr com.apple.quarantine /Applications/gah.app`)
+> - **Windows** blue SmartScreen warning → click "**More info** → **Run anyway**" (once)
+
+After installing, just double-click: built-in chat UI plus a settings panel. On first use pick one model
+provider (DeepSeek / Kimi / Zhipu / Qwen / Ollama presets; paste an API key).
+
+> **Where the data lives / read before upgrading**: everything (sessions, memory, schedules, keys) lives in
+> the **`gah-data/` inside the app directory**. Desktop upgrades replace the whole app, so back up outside the
+> app directory first: run `/backup ~/gah-backup` in the chat, then `/backup restore <name>` after upgrading.
+> The desktop shell also **auto-backs up** to `~/gah-upgrade-backup/` before installing an update, and
+> **cancels the upgrade** if that backup fails. Uninstalling removes the install directory together with the
+> data. The CLI build is unaffected: upgrading replaces the single `gah` file and keeps `gah-data/` in place.
+
 ### Build (release form)
 
 ```bash

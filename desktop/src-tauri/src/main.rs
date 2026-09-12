@@ -93,12 +93,66 @@ fn httpProbe(path: &str, timeout: Duration) -> bool {
 
 // appDataHome 已移除(2026-09-16):数据根仅允许 sidecar 同级 gah-data/,不再用应用数据目录。
 
+// dataRootOfExe sidecar 同级数据根(与 cmd/gah homeDir 同口径:二进制同级 gah-data/)。
+// 桌面壳里 sidecar 位于 .app/Contents/MacOS(mac)或安装目录(win),故数据也在应用目录内。
+fn dataRootOfExe() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    Some(exe.parent()?.join("gah-data"))
+}
+
+// backupRoot 升级前备份的落地处:用户主目录下 —— 必须在应用目录之外(升级整包替换应用目录)。
+fn backupRoot() -> Option<std::path::PathBuf> {
+    let home = std::env::var("HOME").ok().or_else(|| std::env::var("USERPROFILE").ok())?;
+    if home.is_empty() { return None; }
+    Some(std::path::PathBuf::from(home).join("gah-upgrade-backup"))
+}
+
+// copyTree 递归复制目录(标准库;桌面壳不引新依赖)。
+fn copyTree(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let (from, to) = (entry.path(), dst.join(entry.file_name()));
+        if entry.file_type()?.is_dir() { copyTree(&from, &to)?; } else { std::fs::copy(&from, &to)?; }
+    }
+    Ok(())
+}
+
+// backupBeforeUpgrade 升级前把 gah-data 复制到用户主目录(时间戳子目录),返回落地路径。
+// 无数据(首次安装即升级)→ 返回空路径(无可备份);失败 → 错误(调用方中止升级)。
+fn backupBeforeUpgrade() -> Result<std::path::PathBuf, String> {
+    let data = dataRootOfExe().ok_or("解析 sidecar 目录失败")?;
+    if !data.exists() { return Ok(std::path::PathBuf::new()); }
+    let root = backupRoot().ok_or("未取到用户主目录(用于放升级前备份)")?;
+    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let dst = root.join(format!("{ts}"));
+    copyTree(&data, &dst.join("gah-data")).map_err(|e| format!("复制 {data:?} → {dst:?} 失败: {e}"))?;
+    Ok(dst)
+}
+
 // checkForUpdates 检查更新(tauri-plugin-updater;endpoint 见 tauri.conf plugins.updater):
 // 有更新 → 下载安装 + 通知后自动重启;无更新/失败 → 通知(失败不打断,便于未发布期开发)。
 async fn checkForUpdates(app: tauri::AppHandle) {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let updater = app.updater()?;
         if let Some(update) = updater.check().await? {
+            // 升级会整包替换应用目录 → 数据(gah-data 在应用目录内)会一起没掉:
+            // 先备份到用户主目录;备份失败则中止升级(绝不拿用户数据冒险)。
+            match backupBeforeUpgrade() {
+                Ok(p) if p.as_os_str().is_empty() => {}
+                Ok(p) => {
+                    let _ = app.notification().builder().title("gah 升级前备份").body(format!("数据已备份到:{}", p.display())).show();
+                }
+                Err(e) => {
+                    let _ = app
+                        .notification()
+                        .builder()
+                        .title("gah 升级已取消")
+                        .body(format!("升级前备份数据失败,为免丢失数据已取消升级:{e}\n请先在对话里执行 /backup(存到应用目录之外的路径),再重试检查更新。"))
+                        .show();
+                    return Err(format!("升级前备份失败,已取消升级:{e}").into());
+                }
+            }
             update.download_and_install(|_, _| {}, || {}).await?;
             let _ = app
                 .notification()
@@ -119,12 +173,14 @@ async fn checkForUpdates(app: tauri::AppHandle) {
     }
     .await;
     if let Err(e) = result {
-        let _ = app
-            .notification()
-            .builder()
-            .title("gah")
-            .body(format!("检查更新失败:{e}"))
-            .show();
+        let msg = e.to_string();
+        // 端点 404 = 线上还没有 Release(首次发版前/尚未同步),不是故障:给出明确说法
+        let body = if msg.contains("404") || msg.to_lowercase().contains("not found") {
+            "暂无可用更新(线上还没有发布版本)".to_string()
+        } else {
+            format!("检查更新未完成:{msg}")
+        };
+        let _ = app.notification().builder().title("gah").body(body).show();
     }
 }
 

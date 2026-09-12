@@ -28,3 +28,9 @@ archives:
       - LICENSE
 checksum:
   name_template: checksums.txt
+# 与桌面壳流水线(release-desktop.yml)共用同一个 tag 的 Release:已存在则只追加产物
+# (不覆盖正文、不报错);谁先跑完谁负责创建。draft=false 保证 releases/latest 立刻可用
+# (updater 端点取 releases/latest/download/latest.json)。
+release:
+  draft: false
+  mode: keep-existing

@@ -1,0 +1,46 @@
+# 命令行发行:tag `v*` → goreleaser 五目标(见 .goreleaser.yaml;体积门与交叉编译矩阵
+# 已在 ci.yml 每次 push 校验)构建 + 上传到该 tag 的 GitHub Release。
+# 与 release-desktop.yml 并行:两者共用同一个 Release(goreleaser release.mode=keep-existing),
+# 桌面壳流水线另加安装包与 latest.json;谁的产物先到都不影响另一方。
+name: release-cli
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # goreleaser 创建 Release 并上传产物
+
+jobs:
+  goreleaser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # goreleaser changelog 需要完整历史
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web-src/package-lock.json
+      - name: 预生成外部插件与前端产物(与 ci.yml 同源;goreleaser before hook 亦会重跑)
+        run: |
+          bash scripts/gen-extplugins.sh
+          bash scripts/gen-web.sh
+      - name: 校验发行配置(配置漂移即红,别等 tag 才发现)
+        run: goreleaser check
+      - name: 发行(tag 驱动;产物上传到该 tag 的 Release)
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: 产物抽查(五目标归档齐全)
+        run: |
+          for t in darwin_amd64 darwin_arm64 linux_amd64 linux_arm64 windows_amd64; do
+            ls dist/*${t}*.tar.gz >/dev/null || { echo "缺少 ${t} 归档"; exit 1; }
+          done
+          echo "release 产物 OK"
