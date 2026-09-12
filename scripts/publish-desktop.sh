@@ -60,6 +60,14 @@ fi
 export TAURI_SIGNING_PRIVATE_KEY="$(cat "$KEY")"   # 供 tauri-bundler 生成 updater 产物与 .sig
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}"
 
+# 0b. 图标前置检查(Windows 侧 tauri-build 需要 icons/icon.ico 生成资源文件,缺了报错很隐晦:
+#     「icons/icon.ico not found; required for generating a Windows Resource file」)
+if [ ! -f desktop/src-tauri/icons/icon.ico ]; then
+  echo "缺 desktop/src-tauri/icons/icon.ico" >&2
+  echo "  → cd desktop/src-tauri && npx -p @tauri-apps/cli@2 tauri icon icons/icon.png" >&2
+  exit 1
+fi
+
 # 1. sidecar(仓库源码 go build;改动 extplugins 需先 bash scripts/gen-extplugins.sh 重生成 embed)
 # Windows 侧 sidecar 必须带 .exe:tauri-bundler 找的是 binaries/gah-<triple>.exe
 # (CI 实测报 resource path `binaries\gah-x86_64-pc-windows-msvc.exe` doesn't exist),
@@ -106,7 +114,9 @@ case "$platform" in
     done
     ;;
   windows-x86_64)
-    upd_glob=("$BUNDLE/nsis"/*-setup.exe.zip) # updater 要的是 NSIS 安装器的 zip(tauri-plugin-updater 期望形态)
+    # updater 要的是 NSIS 安装器的 zip(tauri-plugin-updater 期望形态:
+    # `<product>_<version>_x64-setup.exe.zip`);这里用 *.zip 兜住命名变体(nsis 目录只出这一件)
+    upd_glob=("$BUNDLE/nsis"/*.zip)
     dist_glob=("$BUNDLE/nsis"/*-setup.exe)    # 人:双击 NSIS 安装器
     ;;
 esac

@@ -19,7 +19,7 @@
     "createUpdaterArtifacts": true,
     "active": true,
     "externalBin": ["binaries/gah"],
-    "icon": ["icons/icon.png"],
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
     "targets": ["app", "dmg", "nsis"],
     "macOS": {
       "minimumSystemVersion": "10.15"
