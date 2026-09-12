@@ -61,8 +61,13 @@ export TAURI_SIGNING_PRIVATE_KEY="$(cat "$KEY")"   # 供 tauri-bundler 生成 up
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}"
 
 # 1. sidecar(仓库源码 go build;改动 extplugins 需先 bash scripts/gen-extplugins.sh 重生成 embed)
-echo "[1/4] sidecar build: gah-$triple"
-CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$VERSION" -o "desktop/src-tauri/binaries/gah-$triple" ./cmd/gah
+# Windows 侧 sidecar 必须带 .exe:tauri-bundler 找的是 binaries/gah-<triple>.exe
+# (CI 实测报 resource path `binaries\gah-x86_64-pc-windows-msvc.exe` doesn't exist),
+# 同 gen-extplugins.sh 对 windows 外部插件产物的处理(无扩展名的 PE 也无法 exec)。
+SIDECAR="desktop/src-tauri/binaries/gah-$triple"
+case "$platform" in windows-*) SIDECAR="$SIDECAR.exe" ;; esac
+echo "[1/4] sidecar build: $(basename "$SIDECAR")"
+CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$VERSION" -o "$SIDECAR" ./cmd/gah
 
 # 2. 壳 release bundle(cargo tauri 优先,无则 npx 拉 @tauri-apps/cli)
 # 注:tauri-cli v2 的 build **默认就是 release**(只有 -d/--debug),没有 --release 参数 ——
