@@ -97,41 +97,46 @@ fi
 $TAURI_BUILD build --target "$triple" --config "{\"version\":\"$VERSION\"}"
 cd ../..
 
-# 3. 提取产物(updater 产物与「给人双击的安装包」必须分开:latest.json 只能指向 updater 产物,
-#    否则 updater 下到 .dmg/-setup.exe 会装不上;两者都随 Release 上传,人下载安装包)
+# 3. 提取产物(updater 产物与「给人双击的安装包」分开:latest.json 只能指向 updater 产物)
+#    - macOS:updater 要 *.app.tar.gz;人用 *.dmg(在 bundle/dmg/,注意排除 bundle_dmg.sh 的
+#      中间产物 rw.*.dmg,失败/中断的构建会留下 ~90 MB 读写镜像)
+#    - Windows:tauri 直接签 `*-setup.exe`(updater 的 extract_exe 分支接受裸 exe;若某版本改产
+#      zip,`infer::archive::is_zip` 分支同样接受,故优先 zip、回退 exe),人用同一个 exe
 echo "[3/4] 收集产物"
-# 注意子目录:.app.tar.gz 在 bundle/macos/,dmg 在 bundle/dmg/,nsis 两件都在 bundle/nsis/
 BUNDLE="desktop/src-tauri/target/$triple/release/bundle"
 mkdir -p "$OUT/$platform"
 case "$platform" in
   darwin-*)
-    upd_glob=("$BUNDLE/macos"/*.app.tar.gz) # updater 要的是整个 .app 的 tar.gz
-    # 人:双击 dmg 拖入 Applications;必须排除 bundle_dmg.sh 的中间产物 rw.*.dmg
-    # (失败/中断的构建会在同目录留下 ~90 MB 的读写镜像,裸 *.dmg 会把它们一起收走)
+    upd_candidates=("$BUNDLE/macos"/*.app.tar.gz)
     dist_glob=()
     for f in "$BUNDLE"/dmg/*.dmg; do
       case "$(basename "$f")" in rw.*) ;; *) dist_glob+=("$f") ;; esac
     done
     ;;
   windows-x86_64)
-    # updater 要的是 NSIS 安装器的 zip(tauri-plugin-updater 期望形态:
-    # `<product>_<version>_x64-setup.exe.zip`);这里用 *.zip 兜住命名变体(nsis 目录只出这一件)
-    upd_glob=("$BUNDLE/nsis"/*.zip)
-    dist_glob=("$BUNDLE/nsis"/*-setup.exe)    # 人:双击 NSIS 安装器
+    dist_glob=("$BUNDLE/nsis"/*-setup.exe)
+    upd_candidates=("$BUNDLE/nsis"/*.zip "${dist_glob[@]}")
     ;;
 esac
-upd_file="${upd_glob[0]}"
-if [ ! -f "$upd_file" ]; then
-  echo "缺 updater 产物:${upd_glob[*]}" >&2
-  echo "  → 检查 tauri.conf.json 的 bundle.createUpdaterArtifacts(=true)与 bundle.targets" >&2
-  exit 1
-fi
 if [ "${#dist_glob[@]}" -eq 0 ]; then
   echo "缺分发安装包(dmg / -setup.exe);检查 tauri.conf.json 的 bundle.targets" >&2
   exit 1
 fi
+upd_file=""
+for c in "${upd_candidates[@]}"; do
+  if [ -f "$c" ]; then upd_file="$c"; break; fi
+done
+if [ -z "$upd_file" ]; then
+  echo "缺 updater 产物(候选:${upd_candidates[*]})" >&2
+  echo "  → 检查 tauri.conf.json 的 bundle.createUpdaterArtifacts(=true)与签名私钥是否就位" >&2
+  exit 1
+fi
 cp "${dist_glob[@]}" "$OUT/$platform/"
-cp "$upd_file" "$OUT/$platform/"
+need_copy=1
+for f in "${dist_glob[@]}"; do
+  [ "$f" = "$upd_file" ] && need_copy=0
+done
+if [ "$need_copy" = 1 ]; then cp "$upd_file" "$OUT/$platform/"; fi
 ls -la "$OUT/$platform"
 
 # 4. latest.<平台>.json(签名优先取 tauri-bundler 自己产出的 .sig;缺失时回退 tauri signer)
