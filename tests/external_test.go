@@ -24,6 +24,7 @@ import (
 	"github.com/nekoleamo/go-agent-harness/core/event"
 	"github.com/nekoleamo/go-agent-harness/core/plugin"
 	"github.com/nekoleamo/go-agent-harness/internal/embed"
+	"github.com/nekoleamo/go-agent-harness/internal/mcpconfig"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -176,6 +177,7 @@ func TestExternalMCPBridge(t *testing.T) {
 	if err := runGoBuild(t, bin, "./mcpserver"); err != nil {
 		t.Fatalf("编译 mcpserver: %v", err)
 	}
+	t.Setenv("GAH_HOME", t.TempDir()) // 隔离真实数据根:tool-mcp 会读 $GAH_HOME/config/mcp.yaml
 	t.Setenv("GAH_MCP_COMMAND", bin)
 	c, _ := buildExternalEnv(t, extDir)
 
@@ -212,6 +214,7 @@ func TestExternalMCPBridgeMulti(t *testing.T) {
 	if err := runGoBuild(t, bin, "./mcpserver"); err != nil {
 		t.Fatalf("编译 mcpserver: %v", err)
 	}
+	t.Setenv("GAH_HOME", t.TempDir()) // 隔离真实数据根(同上)
 	t.Setenv("GAH_MCP_COMMANDS", "alpha="+bin+" -name alpha\nbeta="+bin+" -name beta")
 	c, _ := buildExternalEnv(t, extDir)
 
@@ -239,6 +242,93 @@ func TestExternalMCPBridgeMulti(t *testing.T) {
 			t.Fatalf("%s 应路由到 server %s: %+v", name, want, res)
 		}
 	}
+}
+
+// TestExternalMCPConfigFile tool-mcp 读 $GAH_HOME/config/mcp.yaml(NOND-M1 第 2 步):
+// direct 模式照旧全量注册;search 模式只暴露 mcp_search/mcp_call(工具清单不进固定前缀);
+// 停用与连接失败的 server 跳过不影响其余;改完配置经 ctx.extplugins.Reload 热生效;
+// 配置全坏 → 插件启动失败显式报错且宿主存活(旧工具已被撤销)。
+func TestExternalMCPConfigFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GAH_HOME", home)
+	t.Setenv("GAH_MCP_COMMANDS", "")
+	extDir := t.TempDir()
+	releaseExt(t, extDir, "tool-basic", "tool-mcp")
+	bin := filepath.Join(extDir, "mcpserver")
+	if err := runGoBuild(t, bin, "./mcpserver"); err != nil {
+		t.Fatalf("编译 mcpserver: %v", err)
+	}
+	off := false
+	if err := mcpconfig.Save([]mcpconfig.Server{
+		{Name: "alpha", Command: bin + " -name alpha"},
+		{Name: "big", Command: bin + " -name big", Mode: mcpconfig.ModeSearch},
+		{Name: "off", Command: bin + " -name off", Enabled: &off},
+		{Name: "dead", Command: filepath.Join(extDir, "no-such-server")},
+	}); err != nil {
+		t.Fatalf("写 mcp.yaml: %v", err)
+	}
+	c, _ := buildExternalEnv(t, extDir)
+
+	var tools sdk.ToolRegistry
+	if err := c.Inject("ctx.tools", &tools); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := tools.Get("mcp_alpha_greet"); !ok {
+		t.Fatalf("direct 模式应全量注册: %v", registryNamesForTest(tools))
+	}
+	if _, ok := tools.Get("mcp_big_greet"); ok {
+		t.Fatal("search 模式工具不得直接注册进工具表")
+	}
+	for _, n := range []string{"mcp_search", "mcp_call"} {
+		if _, ok := tools.Get(n); !ok {
+			t.Fatalf("search 模式应暴露 %s: %v", n, registryNamesForTest(tools))
+		}
+	}
+	// 空查询 = 全量清单,应只含 search 模式 server 的工具
+	res, err := tools.Execute(context.Background(), "mcp_search", `{"query":""}`)
+	if err != nil || res.Error != "" {
+		t.Fatalf("mcp_search 应可用: %v %+v", err, res)
+	}
+	if !strings.Contains(res.Content, "mcp_big_greet") || strings.Contains(res.Content, "mcp_alpha_greet") {
+		t.Fatalf("索引应只含 search 模式工具: %s", res.Content)
+	}
+	// 检索 → 调用:路由到 big 实例
+	res, err = tools.Execute(context.Background(), "mcp_call",
+		mustJSON2(t, map[string]any{"name": "mcp_big_greet", "arguments": map[string]any{"name": "世界"}}))
+	if err != nil || res.Error != "" {
+		t.Fatalf("mcp_call 应成功: %v %+v", err, res)
+	}
+	if !strings.Contains(res.Content, "(via big)") {
+		t.Fatalf("mcp_call 应路由到 search 模式 server: %s", res.Content)
+	}
+
+	// 热重载:改成只剩一个启动不了的 server → Reload 显式报错,宿主存活,旧工具已撤销
+	var extp sdk.ExternalPlugins
+	if err := c.Inject("ctx.extplugins", &extp); err != nil {
+		t.Fatal(err)
+	}
+	if err := mcpconfig.Save([]mcpconfig.Server{{Name: "dead", Command: filepath.Join(extDir, "no-such-server")}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := extp.Reload("tool-mcp"); err == nil {
+		t.Fatal("全部 server 不可用时重载应显式报错")
+	}
+	if _, ok := tools.Get("mcp_search"); ok {
+		t.Fatal("重载失败后旧工具应已撤销(不留半死状态)")
+	}
+	// 宿主仍可用(插件失败不影响宿主)
+	if _, ok := tools.Get("shell"); !ok {
+		t.Fatal("宿主工具不应受外部插件失败影响")
+	}
+}
+
+// registryNamesForTest 工具名清单(失败信息用)。
+func registryNamesForTest(tools sdk.ToolRegistry) []string {
+	var names []string
+	for _, d := range tools.List() {
+		names = append(names, d.Name)
+	}
+	return names
 }
 
 // TestExternalSubagent 外部 tool-subagent:子代理委派工具在独立进程注册(崩溃隔离),

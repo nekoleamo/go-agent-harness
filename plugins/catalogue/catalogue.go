@@ -173,7 +173,9 @@ var All = map[string]Def{
 		ID: "host-bridge", Type: "host", APIVersion: ">=1.0,<2.0",
 		// M6.8 回调通道:外部进程经 GAH_CB_ADDR 请求宿主 tools/jobs/fanout 服务
 		// ctx.commands:外部命令 spec 注册(经 / 提示与选择器共用注册表)
-		Requires: []string{"ctx.commands", "ctx.tools", "ctx.jobs", "ctx.fanout"}}, Bundle: "base"},
+		Requires: []string{"ctx.commands", "ctx.tools", "ctx.jobs", "ctx.fanout"},
+		// NOND-M1 第 3 步:外部插件控制面(按名重启进程 → 重读其配置;web 用它做 MCP 热重载)
+		Provides: []string{"ctx.extplugins"}}, Bundle: "base"},
 	"host-jobs": {Factory: func() sdk.Plugin { return &hostjobs.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "host-jobs", Type: "host", APIVersion: ">=1.0,<2.0",
 		Provides: []string{"ctx.jobs"},

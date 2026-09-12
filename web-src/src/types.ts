@@ -338,3 +338,27 @@ export interface DocTree {
 }
 
 
+
+// —— MCP server 配置(NOND-M1 第 2/3 步) ——
+export interface McpServer {
+  name: string
+  command: string
+  args?: string[]
+  enabled: boolean
+  // mode: direct(工具全量注册)/ search(只暴露 mcp_search + mcp_call)
+  mode: string
+  // source: file(配置文件,可编辑)/ env(GAH_MCP_COMMAND(S),只读)
+  source?: string
+  // 运行期状态:是否检测到该 server 已连接(工具已注册进索引/注册表)
+  loaded: boolean
+  tools: number
+}
+export interface McpView {
+  path: string
+  servers: McpServer[]
+  reload_available: boolean
+  plugin_loaded: boolean
+  reload_err?: string
+  notes?: string[]
+  search_total?: number
+}

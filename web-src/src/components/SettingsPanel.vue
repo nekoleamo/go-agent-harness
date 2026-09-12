@@ -8,7 +8,23 @@ import { settingSections } from '../registry'
 import { uiPluginTrustNote } from '../plugins'
 import { PROVIDER_PRESETS, explainProbeError, type ProviderPreset } from '../providers'
 import { cronShapeError, fmtAbs, fmtNextRun, statusLabel } from '../schedule'
-import type { AskConfirm, PluginInfo, ProviderInfo, ProviderModelGroup, Schedule, StateView } from '../types'
+import {
+  MCP_MODE_DIRECT,
+  MCP_MODE_SEARCH,
+  canEdit,
+  draftFrom,
+  draftKey,
+  fmtCommand,
+  modeHint,
+  modeLabel,
+  normalizeCommand,
+  serverStateLabel,
+  sourceLabel,
+  validateDraft,
+  viewNotices,
+  type McpDraft,
+} from '../mcp'
+import type { AskConfirm, McpServer, McpView, PluginInfo, ProviderInfo, ProviderModelGroup, Schedule, StateView } from '../types'
 
 const props = defineProps<{
   open: boolean
@@ -373,6 +389,78 @@ function deleteSchedule(s: Schedule): void {
   })
 }
 
+// —— MCP server 配置(NOND-M1 第 2/3 步) ——
+// 编辑态与磁盘态分离:改动全部落在本地草稿上,点「保存并重载」才写 mcp.yaml 并重启插件。
+const mcpView = ref<McpView | null>(null)
+const mcpDrafts = ref<McpDraft[]>([])
+const mcpBase = ref('') // 磁盘当前内容指纹(脏检测基准;保存成功后刷新)
+const mcpErr = ref('')
+const mcpMsg = ref('')
+const mcpDirty = computed(() => draftKey(mcpDrafts.value) !== mcpBase.value)
+// 环境变量来源的条目只读(来自 GAH_MCP_COMMAND(S),不在文件里)
+const mcpEnvRows = computed<McpServer[]>(() => (mcpView.value?.servers ?? []).filter((s) => !canEdit(s)))
+const mcpNotices = computed<string[]>(() => (mcpView.value ? viewNotices(mcpView.value) : []))
+
+async function loadMcp(): Promise<void> {
+  try {
+    const v = await api.mcp()
+    mcpView.value = v
+    mcpDrafts.value = v.servers.filter(canEdit).map(draftFrom)
+    mcpBase.value = draftKey(mcpDrafts.value)
+    mcpErr.value = ''
+  } catch (e) {
+    mcpErr.value = (e as Error).message
+  }
+}
+function mcpAdd(): void {
+  mcpDrafts.value.push({ name: '', command: '', enabled: true, mode: MCP_MODE_DIRECT })
+}
+function mcpRemove(i: number): void {
+  mcpDrafts.value.splice(i, 1)
+}
+// mcpRowState 草稿行的运行期状态(按 名称+模式 匹配当前视图;改了名字就是「未生效」)
+function mcpRowState(r: McpDraft): string {
+  const hit = (mcpView.value?.servers ?? []).find((s) => s.name === r.name.trim() && s.mode === r.mode)
+  if (!hit) return '未生效'
+  return serverStateLabel(hit)
+}
+function mcpRowStateClass(r: McpDraft): string {
+  const hit = (mcpView.value?.servers ?? []).find((s) => s.name === r.name.trim() && s.mode === r.mode)
+  if (!hit) return 'ss-none'
+  if (!hit.enabled) return 'ss-none'
+  return hit.loaded ? 'ss-ok' : 'ss-skipped'
+}
+async function saveMcp(): Promise<void> {
+  const bad = validateDraft(mcpDrafts.value)
+  if (bad) {
+    mcpErr.value = bad
+    return
+  }
+  busy.value = true
+  mcpMsg.value = ''
+  try {
+    // 整行命令交给后端按引号规则拆参数(与终端一致);args 不在这里拆
+    const v = await api.mcpSave(
+      mcpDrafts.value.map((r) => ({
+        name: r.name.trim(),
+        command: normalizeCommand(r.command),
+        enabled: r.enabled,
+        mode: r.mode,
+      })),
+    )
+    mcpView.value = v
+    mcpDrafts.value = v.servers.filter(canEdit).map(draftFrom)
+    mcpBase.value = draftKey(mcpDrafts.value)
+    mcpErr.value = ''
+    mcpMsg.value = v.reload_err ? v.reload_err : '已保存并重载:模型工具表已更新'
+    setTimeout(() => (mcpMsg.value = ''), 8000)
+  } catch (e) {
+    mcpErr.value = (e as Error).message
+  } finally {
+    busy.value = false
+  }
+}
+
 // —— 插件开关(manage=external/scenario 为只读,web 侧不给启停;由外部进程/场景装配管理)——
 const MANAGE_META: Record<string, { label: string; tip: string }> = {
   host: { label: '宿主运行', tip: '' },
@@ -415,6 +503,7 @@ function showInfo(s: string): void {
 
 onMounted(() => {
   void load()
+  void loadMcp()
 })
 // 打开时同步当前值与枚举
 watch(
@@ -423,6 +512,7 @@ watch(
     if (!o) return
     void load()
     void loadSchedules()
+    void loadMcp()
     // 首启引导:直接滚到 Provider 段(面板内容比一屏长时否则看不到)
     if (props.focus === 'provider') void nextTick(() => provSec.value?.scrollIntoView({ block: 'start' }))
   },
@@ -699,6 +789,78 @@ watch(
           </div>
         </section>
 
+        <!-- MCP server 配置(NOND-M1 第 2/3 步:配置 + 状态 + 保存即重载) -->
+        <section class="sec">
+          <h3 class="h">
+            MCP server
+            <button class="link" data-tip="新增一个 MCP server" @click="mcpAdd">＋ 添加</button>
+          </h3>
+          <p class="dim">
+            MCP 让模型用上外部工具(记忆、代码图谱、数据库等)。每行一条启动命令,与你终端里输入的一致。
+            <strong>全量注册</strong>适合工具少的 server;<strong>按需检索</strong>适合工具多的 server(工具不进每轮上下文,模型先 mcp_search 查、再 mcp_call 调)。
+          </p>
+          <div v-if="mcpErr" class="serr">{{ mcpErr }}</div>
+          <p v-if="mcpMsg" class="dim ok">{{ mcpMsg }}</p>
+          <div v-for="n in mcpNotices" :key="n" class="serr">{{ n }}</div>
+
+          <div class="plist">
+            <div v-for="(r, i) in mcpDrafts" :key="'mcp' + i" class="prow scrow" :class="{ off: !r.enabled }">
+              <div class="pmain">
+                <label class="fld">
+                  <span class="fld-lab">名称(决定工具前缀 mcp_&lt;名称&gt;_*,留空则不加前缀)</span>
+                  <input v-model="r.name" class="inp mono" placeholder="deja" />
+                </label>
+                <label class="fld">
+                  <span class="fld-lab">启动命令</span>
+                  <input v-model="r.command" class="inp mono" placeholder="npx -y @modelcontextprotocol/server-memory" />
+                </label>
+                <div class="mrow">
+                  <label class="chk">
+                    <input v-model="r.enabled" type="checkbox" />
+                    <span>启用</span>
+                  </label>
+                  <select v-model="r.mode" class="sel">
+                    <option :value="MCP_MODE_DIRECT">全量注册</option>
+                    <option :value="MCP_MODE_SEARCH">按需检索</option>
+                  </select>
+                </div>
+                <span class="psub">{{ modeHint(r.mode) }}</span>
+              </div>
+              <div class="sacts">
+                <span class="sstate" :class="mcpRowStateClass(r)">{{ mcpRowState(r) }}</span>
+                <button class="ghost danger-text" data-tip="从配置里移除" @click="mcpRemove(i)">删除</button>
+              </div>
+            </div>
+
+            <div v-for="s in mcpEnvRows" :key="'env' + s.name" class="prow scrow">
+              <div class="pmain">
+                <span class="sname">
+                  {{ s.name || '(未命名)' }}
+                  <span class="sstate ss-none">{{ sourceLabel(s.source) }}</span>
+                </span>
+                <span class="psub mono">{{ fmtCommand(s) }}</span>
+                <span class="psub">{{ modeLabel(s.mode) }} · {{ serverStateLabel(s) }}</span>
+              </div>
+              <div class="sacts">
+                <span class="dim">来自环境变量(env.sh),改后需重启 gah</span>
+              </div>
+            </div>
+
+            <p v-if="!mcpDrafts.length && !mcpEnvRows.length" class="dim">
+              还没有 MCP server:点上方「＋ 添加」写一条启动命令,保存后模型立刻能用上它的工具。
+            </p>
+          </div>
+
+          <div class="row acts">
+            <button class="ghost solid" :disabled="busy || !mcpDirty" @click="saveMcp">保存并重载</button>
+            <button class="ghost" :disabled="busy || !mcpDirty" @click="loadMcp">放弃修改</button>
+          </div>
+          <p v-if="mcpView" class="dim">
+            配置文件:{{ mcpView.path }}
+            <span v-if="!mcpView.reload_available">(当前构建不能热重载,改完需重启 gah)</span>
+          </p>
+        </section>
+
         <!-- 插件与指令 -->
         <section class="sec">
           <h3 class="h">插件</h3>
@@ -820,6 +982,22 @@ watch(
 .probe-raw {
   color: var(--fg-faint);
   word-break: break-all;
+}
+/* —— MCP server(NOND-M1)—— */
+.mrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.chk {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+.chk input {
+  accent-color: var(--accent);
 }
 /* —— 定时计划(NOND-W4) —— */
 .serr {

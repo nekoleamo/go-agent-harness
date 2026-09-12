@@ -1,5 +1,5 @@
 // REST 客户端(上行)+ 工具函数。核心交互纯 REST,不绕模板渲染。
-import type { AttachmentView, CommandOptionsResp, CommandView, DocTree, DocView, Job, ModelsAllResp, PluginInfo, ProviderInfo, Schedule, SessionInfo, StateView, WorkspaceInfo } from './types'
+import type { AttachmentView, CommandOptionsResp, CommandView, DocTree, DocView, Job, McpView, ModelsAllResp, PluginInfo, ProviderInfo, Schedule, SessionInfo, StateView, WorkspaceInfo } from './types'
 
 const BASE = ''
 const json = {
@@ -182,6 +182,22 @@ export const api = {
   scheduleRun(id: string): Promise<void> {
     return req('/api/schedules/' + encodeURIComponent(id) + '/run', { method: 'POST', headers: json, body: '{}' })
   },
+  // —— MCP server 配置(NOND-M1 第 2/3 步;保存 = 写 mcp.yaml + 重启 tool-mcp 插件) ——
+  mcp(): Promise<McpView> {
+    return req('/api/mcp')
+  },
+  mcpSave(servers: McpSaveServer[], reload = true): Promise<McpView> {
+    return req('/api/mcp', { method: 'POST', headers: json, body: JSON.stringify({ servers, reload }) })
+  },
+}
+
+// McpSaveServer 保存用的最小字段(command 为整行启动命令,后端按引号规则拆参数)。
+export interface McpSaveServer {
+  name: string
+  command: string
+  args?: string[]
+  enabled: boolean
+  mode: string
 }
 
 // 工具结果摘要:截断长文本(对齐 TUI 折叠语义)

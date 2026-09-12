@@ -348,3 +348,63 @@ func TestPathParamsCrossBridge(t *testing.T) {
 		t.Fatalf("旧协议路径声明丢失: %+v", legacy.PathParams)
 	}
 }
+
+// TestExternalPluginReloadByName ctx.extplugins.Reload(NOND-M1 第 3 步):
+// 按名重启外部插件(配置改完后重读)+ 未加载时的补加载 + 名字不存在显式报错。
+func TestExternalPluginReloadByName(t *testing.T) {
+	dir := t.TempDir()
+	buildExternalPlugin(t, dir)
+	c, _ := buildEnv(t, dir)
+	var tools sdk.ToolRegistry
+	if err := c.Inject("ctx.tools", &tools); err != nil {
+		t.Fatal(err)
+	}
+	var extp sdk.ExternalPlugins
+	if err := c.Inject("ctx.extplugins", &extp); err != nil {
+		t.Fatalf("host-bridge 应 Provide ctx.extplugins: %v", err)
+	}
+	if extp == nil {
+		t.Fatal("ctx.extplugins 不应为 nil")
+	}
+	// 已加载:重载成功且工具仍可用
+	if err := extp.Reload("tool-echo"); err != nil {
+		t.Fatalf("重载已加载插件应成功: %v", err)
+	}
+	res, err := tools.Execute(context.Background(), "echo", `{"text":"after-reload"}`)
+	if err != nil || res.Error != "" {
+		t.Fatalf("重载后调用应可用: %v %+v", err, res)
+	}
+	// 名字不存在:显式错误(不静默成功)
+	if err := extp.Reload("tool-nope"); err == nil || !strings.Contains(err.Error(), "未安装") {
+		t.Fatalf("不存在的插件名应显式报错: %v", err)
+	}
+	// 空名:显式错误
+	if err := extp.Reload("  "); err == nil {
+		t.Fatal("空名应报错")
+	}
+}
+
+// TestExternalPluginReloadLoadsNewBinary 启动时目录不存在(空插件集),
+// 之后放入二进制 → Reload 应补加载(用户新装插件/新加 MCP server 无需重启 gah)。
+func TestExternalPluginReloadLoadsNewBinary(t *testing.T) {
+	dir := t.TempDir()
+	c, _ := buildEnv(t, dir) // 目录为空:boot 期零外部插件
+	var tools sdk.ToolRegistry
+	if err := c.Inject("ctx.tools", &tools); err != nil {
+		t.Fatal(err)
+	}
+	if names := toolNames(tools); len(names) != 0 {
+		t.Fatalf("初始应无外部工具: %v", names)
+	}
+	buildExternalPlugin(t, dir) // 事后放入 tool-echo
+	var extp sdk.ExternalPlugins
+	if err := c.Inject("ctx.extplugins", &extp); err != nil {
+		t.Fatal(err)
+	}
+	if err := extp.Reload("tool-echo"); err != nil {
+		t.Fatalf("补加载应成功: %v", err)
+	}
+	if _, ok := tools.Get("echo"); !ok {
+		t.Fatalf("补加载后工具应可用: %v", toolNames(tools))
+	}
+}

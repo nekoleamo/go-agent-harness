@@ -111,9 +111,22 @@ func (t *myTool) Definition() sdk.ToolDefinition {
 - 插件不得私接工具实现、不得自建执行路径(禁止把别的插件的工具函数直接拿来调;插件间也不允许相互 import)。
 - 需要执行工具(子代理、workflow 嵌套调用、MCP server 暴露、外部插件回调等)一律经 `ctx.tools.Execute(ctx, name, args)`。
 - **新增任何「能触发工具执行的入口」必须在 `tests/policy_entries_e2e_test.go` 的入口矩阵中登记**(断言:该入口委派给注入的 registry、registry 必发 `tools/pre-execute`、veto 时工具**不产生副作用**)。当前已登记:agent-loop、host-fanout、tool-workflow、mcp-server、host-bridge 宿主侧 `toolsCall`、web `/api/tools/{name}`。
+  - **NOND-M1 第 2/3 步 MCP 配置端点与检索代理工具**:不新增执行路径 —— `mcp_search`/`mcp_call` 是外部插件进程内的工具实现,`mcp_call` 经插件内 `Conn.Execute` 转发 MCP JSON-RPC(不回调宿主执行其它工具);`GET /api/mcp` 的状态视图会经注入的 `ctx.tools` 调一次 `mcp_search`(**复用 web 入口**,`web/mcp_test.go` 断言它只经注入 registry;被 veto 时仅表现为工具计数缺失,无副作用);`POST /api/mcp` 只写 `$GAH_HOME/config/mcp.yaml` 并重启外部插件,不执行工具。
   - **NOND-W4 定时任务(host-schedule)**:不新增执行路径 —— 到点经 `ctx.agentLoop.Run` 提交一轮(即复用上表 agent-loop 入口),工具仍只经 `ctx.tools`。它的专属 e2e 在 `tests/schedule_e2e_test.go`(触发落会话记录 + 前缀 / **无人值守三档一律拒**需审批动作,含「有人值守必放行」灵敏度对照 / 重启保留计划 / 卸载无残留)。**新增定时/无人值守类入口时照此办理**:走 agent-loop + 在 `tests/schedule_e2e_test.go` 或同型文件里加对照用例,并补 `sdk.WithUnattended` 语义验证。
 - veto 语义:订阅者返回错误即「不执行」,由 registry 转成结构化 `blocked:` 结果回传模型(不中断回合)。
 - **宿主会把有效沙箱档位注入执行 ctx**:`sdk.SandboxHint{Mode, Root}`(`sdk.WithSandboxHint`/`sdk.SandboxHintOf`)。执行入口(`ctx.tools`)在 `tools/pre-execute` 之后、真正执行之前注入**有效**档位(`EffectiveSandbox.EffectiveMode()`,即联动后的档;不是声明档),外部插件工具经协议随调用携带、在插件侧 ctx 里可读回。**档位/根为空 = 未知 → 按不可放行处理**(不得猜默认值);未注入 = 与改动前行为一致(旧对端不报错,只是不施加内核限制)。自带进程执行的工具(不限于 `shell`)应以该 hint 作为施加内核级限制的输入 —— 它是唯一能覆盖子进程树的控制点。
+
+### 2.8 外部插件控制面(`ctx.extplugins`,NOND-M1)
+
+`host-bridge` 装配后 Provide `ctx.extplugins`(`sdk.ExternalPlugins{Reload(name string) error}`):按名重启一个外部插件进程(配置改完后重读)。名字 = 插件二进制**文件基名去平台扩展名**(`tool-mcp`;Windows 产物是 `tool-mcp.exe`,目录名仍是 `tool-mcp`),两种落点都支持:发布布局 `plugins/<名>/<名>` 与扁平布局 `plugins/<名>`。条目未加载时会尝试补加载(用户新装插件 / 新增 MCP server 无需重启 gah)。
+
+语义与边界:
+- 重载先撤销旧实例(工具 + 命令注册)再拉起新进程;**新进程启动失败 → 返回显式错误,且旧条目已撤销**(不假装成功,调用方必须把错误显示给用户);
+- 三处重载入口(插件目录文件监听、工作区切换、`ctx.extplugins`)经同一把锁串行化,防同路径双载造成进程泄漏与工具双注册残留;
+- 插件自己不感知被重载,不要在插件进程内缓存跨重载状态;
+- 外部进程读配置一律经 `sdk.Home()`(`$GAH_HOME`)派生路径(便携纪律),不从命令行参数猜路径。
+
+配置持久化可参考 `internal/mcpconfig`(MCP server 配置 `{name, command, args, enabled, mode}` 落 `$GAH_HOME/config/mcp.yaml`;写盘 0600 + 同目录临时文件 rename 原子替换 + 头部注释;**读盘与写盘共用同一条规范化** —— 名字净化、整行命令按 `sdk.SplitArgs` 拆分、`mode` 大小写容错;避免「GUI 写能跑、手抄进文件却跑不起来」)。
 
 ## 3. 开发步骤(七步)
 

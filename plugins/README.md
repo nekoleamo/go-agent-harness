@@ -30,7 +30,7 @@ plugins/
 | host | host-schedule | 定时任务(NOND-W4):ctx.schedule——5 字段 cron 计划(分 时 日 月 周),到点经既有回合入口(agentLoop→tools,仍受审批/沙箱裁决)跑一轮;计划落 $GAH_HOME/schedules/*.yaml;无人值守运行 = 无确认通道 → 需审批的动作一律拒绝 | ctx.agentLoop/ctx.commands(;ctx.turnControl 可选) |
 | host | host-fanout | 子代理编排(ctx.fanout) | ctx.llm/ctx.tools/ctx.systemPrompt |
 | host | host-plugin-manager | 运行期插拔(ctx.pluginManager) | — |
-| host | host-bridge | 外部插件桥(加载 home/plugins 外部进程,GAH_CB_ADDR 回调) | ctx.tools/ctx.jobs/ctx.fanout |
+| host | host-bridge | 外部插件桥(加载 home/plugins 外部进程,GAH_CB_ADDR 回调) | ctx.tools/ctx.jobs/ctx.fanout/ctx.extplugins |
 | host | host-backup | 整体备份/恢复(M18):ctx.backup + /backup 命令;备份目录 $GAH_HOME/backups(排除自身) | — |
 | host | host-docview | 文档预览(D 组):ctx.doc(sdk.DocService)——统一块模型 + 解析器/预算/缓存/格式探测 + markdown/CSV/notebook/PDF 抽取器;四端(TUI pager/Web 工作台/`gah doc`/IM)同源渲染;`/preview` 命令发 `doc/open` 事件 | ctx.commands;ctx.sandbox(可选) |
 | adapter | llm-openai-compat | OpenAI 兼容适配器(SSE + usage/缓存解析) | ctx.llm |

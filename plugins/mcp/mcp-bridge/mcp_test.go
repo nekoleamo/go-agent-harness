@@ -93,7 +93,7 @@ func TestMCPBridge(t *testing.T) {
 	}
 	def, ok := tools.Get("mcp_greet")
 	if !ok {
-		t.Fatalf("MCP 工具应注册为 mcp_greet,实际: %v", toolNames(tools))
+		t.Fatalf("MCP 工具应注册为 mcp_greet,实际: %v", registryToolNames(tools))
 	}
 	if !strings.Contains(def.Description, "问候") {
 		t.Fatalf("定义应来自 MCP server: %+v", def)
@@ -107,8 +107,8 @@ func TestMCPBridge(t *testing.T) {
 	}
 }
 
-// toolNames 辅助。
-func toolNames(tools sdk.ToolRegistry) []string {
+// registryToolNames 辅助(装配层测试另有 map 版 toolNames)。
+func registryToolNames(tools sdk.ToolRegistry) []string {
 	defs := tools.List()
 	out := make([]string, 0, len(defs))
 	for _, d := range defs {

@@ -36,6 +36,7 @@ core/config 65
 sdk 60
 internal/prefs 66
 internal/providerfile 72
+internal/mcpconfig 80
 internal/embed 70
 internal/install 60
 cmd/gah 50
@@ -65,7 +66,7 @@ plugins/host/host-system-prompt 88
 plugins/host/host-tools 88
 plugins/host/host-usage-stats 60
 plugins/host/token-compress 84
-plugins/mcp/mcp-bridge 50
+plugins/mcp/mcp-bridge 72
 plugins/mcp/mcp-server 85
 plugins/adapter/llm-anthropic-compat 58
 plugins/adapter/llm-mock 55

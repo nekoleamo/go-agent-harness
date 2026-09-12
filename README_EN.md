@@ -41,6 +41,7 @@ One source, three surfaces: the same gah binary hosts **TUI / Web / headless**; 
 | **starlark workflow** | Model writes a restricted starlark script composing multi-step tool calls (sandboxed, no stdlib); `background` for async |
 | **Web search** | web_search (default Exa, `EXA_API_KEY`; switch via `data.provider`) works with web_fetch; errors normalized |
 | **MCP both ways** | client bridge (attach external servers; tools `mcp_<server>_<name>`) and server side (expose all repository tools; launchable by Claude Desktop etc.) |
+| **MCP on-demand search** | per-server `mode`: `direct` (default, full tool set in context) or `search` (tools stay **out of the per-turn context**; only `mcp_search` to look them up and `mcp_call` to invoke). Config lives in `$GAH_HOME/config/mcp.yaml` (add/edit/remove in the settings panel's "MCP server" section; **saving writes the file and hot-reloads the plugin**, no restart). Env vars still work (file wins) |
 | **External plugin bridge** | host-bridge: out-of-process plugins (go-plugin); crash isolation (host survives a killed child); callback channel (GAH_CB_ADDR) so external processes can request tools/jobs/fanout; tools are 100% external (extplugins/) |
 | **Plugin install** | `gah -install <repo>[@version]` (external/bridge plugins) and `-install-ui <repo|dir>` (UI-slot plugins): one command, enabled immediately |
 | **Instruction files & skills** | Global/project AGENTS.md auto-injected (closer overrides; `/reload` hot reload); SKILL.md scanning with on-demand loading (`list_skills`/`read_skill`); ships the `gah-plugin-dev` skill |
@@ -199,7 +200,8 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `auto_plan` | Planning mode (create/get/list/step/confirm/complete; detects planning intent, outputs a structured plan first, zero side-effect tool calls before confirmation; `$GAH_HOME/plans/`) |
 | `subagent` | Subagent delegation (delegate/spawn/agents/agent_status/agent_kill/send_message/fork; isolated ReAct contexts, background handles) |
 | `list_skills` / `read_skill` | Skill index / load SKILL.md on demand (project `.gah/skills/`, `$GAH_HOME/skills/`) |
-| `mcp_<server>_<tool>` | MCP bridge tools (GAH_MCP_COMMAND single / GAH_MCP_COMMANDS multi server; see "MCP" below) |
+| `mcp_<server>_<tool>` | MCP bridge tools (`mode: direct`; see "MCP" below) |
+| `mcp_search` / `mcp_call` | MCP search-mode proxy tools (`mode: search`): search the tool list by keyword (empty query = all), then invoke by name |
 
 ## 6. Web usage (settings panel / REST)
 
@@ -207,7 +209,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 
 **Auth (token mode = non-empty `data.auth_token`)**: every surface is gated — API, static assets, `/attachments/` and `/ui-plugins/` all require a credential (previously only `/api/*` was protected). Open the `#token=<token>` URL printed in the startup log: the credential sits in the **URL fragment** (never sent to the server, absent from access logs/Referer), the bootstrap page exchanges it via `POST /api/auth` for an HttpOnly + SameSite=Strict `gah_token` cookie, then redirects into the UI. The desktop shell passes the same token via `GAH_WEB_TOKEN` (`?token=` is deprecated).
 
-- **Settings panel** (⚙ in the status bar): model dropdown (all providers aggregated), thinking/sandbox/**approval** segmented controls, history-injection dropdown + compact button, provider management (enable/delete/add; **first-run onboarding** auto-opens the panel when no provider exists and offers one-click presets for DeepSeek/Kimi/GLM/Qwen/SiliconFlow/OpenRouter/OpenAI/Ollama that need only an api_key, followed by a **connectivity self-check** that renders 401/404/DNS endpoint errors as plain language next to the raw response), **scheduled plans** ("Plans" section: 5-field cron + Chinese "next run time" read-back, run/enable/delete; the unattended-run semantics are stated in that section), plugin toggles, instruction reload, **data backup** (back up now / restore — **double-confirmed**). Every change persists on exit (gah-state.json, shared with the TUI).
+- **Settings panel** (⚙ in the status bar): model dropdown (all providers aggregated), thinking/sandbox/**approval** segmented controls, history-injection dropdown + compact button, provider management (enable/delete/add; **first-run onboarding** auto-opens the panel when no provider exists and offers one-click presets for DeepSeek/Kimi/GLM/Qwen/SiliconFlow/OpenRouter/OpenAI/Ollama that need only an api_key, followed by a **connectivity self-check** that renders 401/404/DNS endpoint errors as plain language next to the raw response), **scheduled plans** ("Plans" section: 5-field cron + Chinese "next run time" read-back, run/enable/delete; the unattended-run semantics are stated in that section), **MCP servers** ("MCP server" section: per-entry name/command/enable/mode (full registration or on-demand search), read-only rows for env-provided servers, per-row "loaded, N tools" state, and **Save and reload** for immediate effect), plugin toggles, instruction reload, **data backup** (back up now / restore — **double-confirmed**). Every change persists on exit (gah-state.json, shared with the TUI).
 - **Sidebar**: pinned workspaces (switching = real chdir) + session history (name/content preview/time; ✎ rename, × delete — double-confirmed), attachment upload (button/drag-drop/paste; image thumbnails + the model sees images), session export (⤓ jsonl/HTML).
 - **Status bar**: connection state (green/orange), model/thinking/sandbox/session, context·cache usage, background-jobs button (running badge + list/output/kill).
 - **Document preview panel** (sidebar "Document preview"): workspace file tree on the left (filter / lazy expand / whole tree resets on workspace switch) and preview on the right (markdown block rendering, code/tables, docx/xlsx/pptx block model, native in-browser PDF viewer, images, HTML **source view by default with a click-to-load sandboxed iframe**; truncation and warning strips); tool result rows with a previewable path get a "Preview" button; assistant text in the session stream is markdown-rendered server-side (zero `v-html` in the frontend).
@@ -228,6 +230,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `GET /api/tools`, `POST /api/tools/{name}` | Tool listing / invocation (JSON args pass-through) |
 | `GET /api/jobs`, `GET/POST /api/jobs/{id}[/kill]` | Background jobs |
 | `GET/POST /api/schedules`, `PATCH/DELETE /api/schedules/{id}`, `POST /api/schedules/{id}/run` | Scheduled plans: list / add / update (only the fields sent) / delete / run now |
+| `GET/POST /api/mcp` | MCP server config: GET returns the config plus per-entry runtime state (loaded / tool count); POST submits the full list = write `config/mcp.yaml` and restart the plugin (`reload:false` writes only; a save that succeeds while the reload fails returns 200 + `reload_err`) |
 | `GET /api/plugins`, `POST /api/plugins/{id}/load\|unload` | Plugin toggles |
 | `GET /api/models?all=1`, `GET/POST /api/providers...` | Model aggregation / provider CRUD |
 | `POST /api/control` | Status-bar-level control `{model?\|thinking?\|sandbox?\|approval?\|workspace?}` (persists) |
@@ -274,7 +277,7 @@ The data root is **the `gah-data/` sibling of the gah binary (the only one; auto
 | `GAH_HOME` | Internal plumbing variable (set by boot to the portable `gah-data/`; plugins/external processes derive subdirs from it); **user-set values are ignored** (the only data root is the sibling `gah-data/`, since 2026-09-16; a different user-set value logs a warning) |
 | `GAH_PROFILE` / `GAH_NO_TUI` | Default profile / force TUI off (headless/CI) |
 | `GAH_WEB_ADDR` / `GAH_WEB_OPEN` / `GAH_WEB_STATIC` | Web listen address (default 127.0.0.1:2233) / auto-open browser / static dir override (dev HMR); the desktop shell additionally uses `GAH_WEB_TOKEN` to pass the token and navigate to the `#token=` URL (its readiness probe treats 401 as ready) |
-| `GAH_MCP_COMMAND` / `GAH_MCP_COMMANDS` | MCP bridge (single server `name=command` / multi server one per line `name=command args`; tools `mcp_<server>_<tool>`) |
+| `GAH_MCP_COMMAND` / `GAH_MCP_COMMANDS` | MCP bridge (single server / multi server one per line `name=command args`); **`$GAH_HOME/config/mcp.yaml` wins** — same-name entries taken from the file (env-only entries show as read-only "env" rows in the settings panel) |
 | `GAH_CB_ADDR` / `GAH_CB_TOKEN` | host-bridge callback channel (external plugins request tools/jobs/fanout from the host; auth token; **never leaked downstream** — `SanitizedEnv` strips it) |
 | `GAH_SHELL_KERNEL_SANDBOX` | `0` disables the shell **kernel-level sandbox** (enabled by default: macOS `sandbox-exec` seatbelt / Linux Landlock restrict file writes at the process-tree level; writes only — reads and network are untouched; platforms without the capability warn once and degrade to the cooperative layer) |
 | `GAH_SHELL_JAIL` | `0` disables the shell **env jail** (enabled by default: redirects `TMPDIR`/`XDG_CACHE_HOME`/`GOCACHE`/`GOMODCACHE`/`npm_config_cache`/`PIP_CACHE_DIR` into `$GAH_HOME/jail/**` so build caches and temp files stop littering the user home directory; `HOME`/`GOPATH`/`CARGO_HOME`/`XDG_CONFIG_HOME` are deliberately preserved so git/ssh keep working) |
@@ -285,8 +288,19 @@ The data root is **the `gah-data/` sibling of the gah binary (the only one; auto
 
 ### MCP (bridge client / serve form)
 
+Two ways to configure (precedence: config file > env vars; the GUI writes the file):
+
+```yaml
+# $GAH_HOME/config/mcp.yaml (same source the settings panel writes)
+servers:
+  - name: deja
+    command: /opt/homebrew/bin/deja
+  - name: codegraph
+    command: codegraph serve --mcp
+    mode: search      # many tools? use search: the model only sees mcp_search/mcp_call
+```
 ```bash
-# As an MCP client attaching external servers (one per line; tools auto-register as mcp_<server>_<name>)
+# Env vars (startup surface, read-only; tools auto-register as mcp_<server>_<name>)
 export GAH_MCP_COMMANDS="deja=/opt/homebrew/bin/deja\ncodegraph=codegraph serve --mcp"
 ./gah --profile web
 

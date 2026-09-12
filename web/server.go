@@ -14,6 +14,7 @@
 //	POST /api/compact {prompt?} 手动滚动压缩(摘要+折叠数);POST /api/settings/history {n} 历史注入条数
 //	GET/POST /api/tools[/{name}] 工具清单/调用;GET /api/jobs… 后台任务
 //	GET/POST/PATCH/DELETE /api/schedules… 定时计划(NOND-W4;POST /{id}/run 立即触发一次)
+//	GET/POST /api/mcp MCP server 配置(NOND-M1 第 3 步:列表+状态 / 保存(=写 mcp.yaml)+重启插件重载)
 //	GET /api/plugins … 插件清单/加载/卸载;GET /api/models 聚合模型列表
 //	GET/POST /api/providers … 多 provider;POST /api/reload 指令热更
 //	POST /api/shutdown 优雅停机(触发宿主 system/shutdown → DisposeAll;桌面壳/跨平台统一通道)
@@ -97,6 +98,7 @@ type Server struct {
 	tools    sdk.ToolRegistry          // 可选(工具清单/调用/todo 面板)
 	jobs     sdk.JobService            // 可选(后台任务)
 	sched    sdk.ScheduleService       // 可选(定时计划 NOND-W4;未装配 → /api/schedules 503)
+	extp     sdk.ExternalPlugins       // 可选(外部插件控制面 NOND-M1;未装配 = 保存 MCP 配置后需重启)
 	pm       sdk.PluginManager         // 可选(插件启停)
 	sp       sdk.SystemPromptService   // 可选(/reload 指令热更)
 	tc       sdk.TurnControl           // 可选(回合取消 /api/control cancel;未装配 = 503)
@@ -149,6 +151,7 @@ func (s *Server) Inject(c sdk.Ctx) error {
 	_ = c.Inject("ctx.tools", &s.tools)
 	_ = c.Inject("ctx.jobs", &s.jobs)
 	_ = c.Inject("ctx.schedule", &s.sched)
+	_ = c.Inject("ctx.extplugins", &s.extp)
 	_ = c.Inject("ctx.pluginManager", &s.pm)
 	_ = c.Inject("ctx.systemPrompt", &s.sp)
 	_ = c.Inject("ctx.turnControl", &s.tc)
@@ -230,6 +233,8 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET /api/jobs", s.handleJobs)
 	mux.HandleFunc("GET /api/jobs/{id}", s.handleJobGet)
 	mux.HandleFunc("POST /api/jobs/{id}/kill", s.handleJobKill)
+	mux.HandleFunc("GET /api/mcp", s.handleMCPList)
+	mux.HandleFunc("POST /api/mcp", s.handleMCPSave)
 	mux.HandleFunc("GET /api/schedules", s.handleSchedules)
 	mux.HandleFunc("POST /api/schedules", s.handleScheduleAdd)
 	mux.HandleFunc("PATCH /api/schedules/{id}", s.handleScheduleUpdate)

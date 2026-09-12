@@ -186,6 +186,8 @@ type stubTools struct {
 	defs    map[string]sdk.ToolDefinition
 	called  []string
 	callErr error
+	// out 逐个工具指定 Execute 返回内容(缺省 "ok:<name>");MCP 端点需要解析 JSON 结果。
+	out map[string]string
 }
 
 func (s *stubTools) List() []sdk.ToolDefinition {
@@ -203,6 +205,9 @@ func (s *stubTools) Execute(_ context.Context, name, _ string) (*sdk.ToolResult,
 	s.called = append(s.called, name)
 	if s.callErr != nil {
 		return nil, s.callErr
+	}
+	if c, ok := s.out[name]; ok {
+		return &sdk.ToolResult{Content: c}, nil
 	}
 	return &sdk.ToolResult{Content: "ok:" + name}, nil
 }

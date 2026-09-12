@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -75,6 +76,12 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		b.reloadAll()
 		return nil
 	})
+	// NOND-M1 第 3 步:宿主侧外部插件控制面(配置改完后重读,免重启)。
+	// Provide 失败 = 装配层错误(键冲突),显式返回而非静默跳过。
+	if err := c.Provide("ctx.extplugins", sdk.ExternalPlugins(b)); err != nil {
+		cbClose()
+		return nil, err
+	}
 	var watchClose func()
 	if m != nil && m.Data != nil {
 		if w, ok := m.Data["watch"].(bool); ok && w {
@@ -123,6 +130,9 @@ type Bridge struct {
 	lg      *slog.Logger        // P3 软降级日志(sdk.Ctx.Logger();nil 时兜底 slog.Default)
 	mu      sync.RWMutex
 	entries map[string]*extEntry // bin 绝对路径 → 条目
+	// reloadMu 串行化 reload(文件监听 / 工作区切换 / ctx.extplugins.Reload 三处入口并发时,
+	// 同一路径不得双载:否则先载的实例被后载覆盖且永不回收 = 进程泄漏 + 工具双注册残留)。
+	reloadMu sync.Mutex
 	// closed 卸载标记:closeAll 之后不得再 respawn(否则崩溃重启与卸载撞车时,
 	// 外部进程与工具注册永久残留 → 违反"卸载即撤销")。
 	closed bool
@@ -256,6 +266,86 @@ func (b *Bridge) registerAll(e *extEntry) sdk.Disposer {
 	}
 }
 
+// Reload 按外部插件名重启进程(实现 sdk.ExternalPlugins;名字 = 外部插件目录名)。
+// 与文件监听热重载共用 reload 路径(同一把 reloadMu 串行化)。
+// 未加载但目录存在 = 从磁盘补加载(用户刚加的第一个 MCP server 无需重启即可生效)。
+func (b *Bridge) Reload(name string) error {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("host-bridge: 缺少外部插件名")
+	}
+	path, err := b.pluginPath(name)
+	if err != nil {
+		return err
+	}
+	b.mu.RLock()
+	_, loaded := b.entries[path]
+	b.mu.RUnlock()
+	if !loaded {
+		// 未加载:目录里没有(pluginPath 已报错)或上次加载失败(配置为空/崩溃);
+		// reload 对"不在 entries 里的路径"走 loadOne 补加载分支。
+		b.logErr("host-bridge: 外部插件尚未加载,按补加载处理", "name", name, "path", path)
+	}
+	b.reload(path)
+	b.mu.RLock()
+	_, ok := b.entries[path]
+	b.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("host-bridge: 重启 %s 失败(详见日志;多为配置为空或进程启动失败)", name)
+	}
+	return nil
+}
+
+// pluginPath 由外部插件名定位二进制(名字 = 文件基名去平台扩展名,如 "tool-mcp")。
+// 两种落点都支持:
+//   - 发布布局 plugins/<名>/<名>[.exe](internal/embed.pluginDst 释放);
+//   - 扁平布局 plugins/<名>[.exe](测试/手工摆放)。
+//
+// 不经名称硬编码扩展名 —— Windows 产物是 tool-mcp.exe,目录名仍是 tool-mcp。
+func (b *Bridge) pluginPath(name string) (string, error) {
+	// 1) 已加载条目优先(任意目录布局都能命中;不必猜落点)
+	b.mu.RLock()
+	for path := range b.entries {
+		if externalPluginName(path) == name {
+			b.mu.RUnlock()
+			return path, nil
+		}
+	}
+	b.mu.RUnlock()
+
+	// 2) 未加载:在两种落点里找(目录不存在/为空 = 未安装)
+	var cands []string
+	if ents, err := os.ReadDir(b.dir); err == nil {
+		for _, e := range ents {
+			if !e.IsDir() && isExternalPluginBin(e.Name()) && externalPluginName(e.Name()) == name {
+				cands = append(cands, filepath.Join(b.dir, e.Name()))
+			}
+		}
+	}
+	sub := filepath.Join(b.dir, name)
+	if ents, err := os.ReadDir(sub); err == nil {
+		for _, e := range ents {
+			if !e.IsDir() && isExternalPluginBin(e.Name()) {
+				cands = append(cands, filepath.Join(sub, e.Name()))
+			}
+		}
+	}
+	switch len(cands) {
+	case 0:
+		return "", fmt.Errorf("host-bridge: 外部插件 %q 未安装(在 %s 下找不到 %s[.exe] 或 %s/%s)",
+			name, b.dir, name, name, name)
+	case 1:
+		return cands[0], nil
+	default:
+		sort.Strings(cands)
+		return "", fmt.Errorf("host-bridge: 外部插件 %q 有多个候选 %v,请只保留一个", name, cands)
+	}
+}
+
+// externalPluginName 由二进制路径推外部插件名(文件基名去 .exe)。
+func externalPluginName(path string) string {
+	return strings.TrimSuffix(filepath.Base(path), ".exe")
+}
+
 // reload 二进制变更:dispose 旧进程并加载新实例(热重载接线)。
 // reloadAll 重启全部外部工具进程(工作区切换后:宿主 cwd 已变,新进程继承新 cwd)。
 // 逐个 reload(先注销+kill 再 loadOne+注册);失败条目记日志跳过(软降级,同热更新)。
@@ -272,6 +362,8 @@ func (b *Bridge) reloadAll() {
 }
 
 func (b *Bridge) reload(path string) {
+	b.reloadMu.Lock()
+	defer b.reloadMu.Unlock()
 	b.mu.Lock()
 	entry, ok := b.entries[path]
 	b.mu.Unlock()
