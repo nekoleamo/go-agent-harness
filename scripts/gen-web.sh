@@ -8,7 +8,10 @@ if ! command -v npm >/dev/null 2>&1; then
   echo "gen-web: 需要 npm(node) 才能构建前端产物(CI/开发机需安装 Node)" >&2
   exit 1
 fi
-npm install --no-audit --no-fund --silent
+# npm ci(不是 install):严格按 lockfile 安装且**绝不改写** package-lock.json ——
+# 发行路径(goreleaser release)要求工作树干净,npm install 在不同 npm 版本下会重排 lockfile,
+# 让 release 直接以「git is in a dirty state」失败(首个 tag 实测踩到)。
+npm ci --no-audit --no-fund --silent
 npm run build
 if [ ! -f ../web/dist/index.html ]; then
   echo "gen-web: 构建产物缺失 web/dist/index.html" >&2

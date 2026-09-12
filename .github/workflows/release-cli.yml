@@ -1,5 +1,7 @@
 # 命令行发行:tag `v*` → goreleaser 五目标(见 .goreleaser.yaml;体积门与交叉编译矩阵
 # 已在 ci.yml 每次 push 校验)构建 + 上传到该 tag 的 GitHub Release。
+# 干净树要求:发行路径只用**已入库**的 extplugins embed + 现生成的 web/dist(gitignore),
+# 不重生成入库产物(跨工具链字节不同 → goreleaser 拒绝发行);故 release 带 --skip=before。
 # 与 release-desktop.yml 并行:两者共用同一个 Release(goreleaser release.mode=keep-existing),
 # 桌面壳流水线另加安装包与 latest.json;谁的产物先到都不影响另一方。
 name: release-cli
@@ -35,10 +37,11 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: web-src/package-lock.json
-      - name: 预生成外部插件与前端产物(与 ci.yml 同源;goreleaser before hook 亦会重跑)
-        run: |
-          bash scripts/gen-extplugins.sh
-          bash scripts/gen-web.sh
+      - name: 预生成前端产物(web/dist 未入库,主包 go:embed 需要它)
+        # 注意:这一步**不**重生成 extplugins embed —— 那 20 件产物已入库,而跨工具链重建的
+        # gzip 字节必然有微小差异(build id),会让 goreleaser 以「git is in a dirty state」拒绝发行。
+        # 入库产物与源码是否一致由 ci.yml 每次 push 校验(gen-extplugins + 平台断言 + 体积门 + 测试)。
+        run: bash scripts/gen-web.sh
       - name: 校验发行配置(配置漂移即红,别等 tag 才发现)
         # 必须走 action(它负责安装 CLI);裸 `run: goreleaser check` 在 runner 上是 command not found
         uses: goreleaser/goreleaser-action@v6
@@ -47,7 +50,9 @@ jobs:
       - name: 发行(tag 驱动;产物上传到该 tag 的 Release)
         uses: goreleaser/goreleaser-action@v6
         with:
-          args: release --clean
+          # --skip=before:before hooks 里的 gen-extplugins.sh 会重建已入库的 embed 产物 → 脏树
+          # (ci.yml 走 --snapshot,允许脏树,所以这条只在真发行路径暴露)。go mod tidy 同理交给 ci.yml。
+          args: release --clean --skip=before
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # 手动补发时 github.ref 是分支,显式告诉 goreleaser 目标是哪个 tag
