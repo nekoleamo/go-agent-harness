@@ -34,3 +34,8 @@ checksum:
 release:
   draft: false
   mode: keep-existing
+# 正文归属:由 release-desktop 的 merge job 用 GitHub 自动 notes 生成(两个 workflow 并发,
+# 若 goreleaser 也写正文,谁后跑谁覆盖 → 结果不确定)。此处关掉自带 changelog,使最终正文
+# 恒为 GitHub notes(本仓提交历史与 DESIGN.md §14.1 已是完整变更记录)。
+changelog:
+  disable: true

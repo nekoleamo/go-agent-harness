@@ -5,14 +5,31 @@
 # merge latest.json → softprops 上传安装包 + latest.json 到该 tag 的 GitHub Release。
 # 说明:mac x86_64(老 Intel)暂未入矩阵,需要时加 macos-13 或交叉 job。
 name: release-desktop
+# 上传 Release 需要写权限(repo 默认 token 只读 → 实测 403 Resource not accessible by integration)
+permissions:
+  contents: write
 on:
   push:
     tags: ["v*"]
-  # 手动预演:只跑两个平台 job(产物进 artifact,不碰 Release)—— 首个 tag 前验证打包链
+  # 手动运行两种用法:
+  #  ① 什么都不填 = 打包预演:两个平台 job 照跑,产物进 artifact,不碰 Release(首个 tag 前验证用)
+  #  ② tag=vX.Y.Z(+ 可选 run_id)= 补发:只跑 merge job,把安装包/latest.json 传到该 tag 的 Release;
+  #     给了 run_id 就复用那次运行的打包 artifact(actions/download-artifact 的 run-id),不重新打包
+  #     —— 用于「tag 已推、平台 job 已绿、只有 merge 上传失败」这种场景,避免移动/重推已消费的 tag
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "补发目标 tag(如 v0.1.0);留空则只做打包预演"
+        required: false
+        type: string
+      run_id:
+        description: "复用哪次运行的打包 artifact(留空则本次重新打包)"
+        required: false
+        type: string
 
 jobs:
   desktop-mac-aarch64:
+    if: inputs.run_id == ''
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -45,6 +62,7 @@ jobs:
           if-no-files-found: error
 
   desktop-win-x86_64:
+    if: inputs.run_id == ''
     runs-on: windows-latest
     defaults:
       run:
@@ -81,19 +99,29 @@ jobs:
 
   merge-upload:
     needs: [desktop-mac-aarch64, desktop-win-x86_64]
-    # 只在 tag 上上传 Release;手动预演(workflow_dispatch)时两个平台 job 照跑、本 job 跳过
-    # (否则非 tag ref 下 action-gh-release 必然失败)
-    if: startsWith(github.ref, 'refs/tags/')
+    # tag 推送、或手动给了 tag 输入时才上传 Release(纯打包预演不碰 Release);平台 job 被跳过时
+    # 用 !cancelled() 放行本 job(needs 结果为 skipped)
+    if: ${{ !cancelled() && (startsWith(github.ref, 'refs/tags/') || inputs.tag != '') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ inputs.tag || github.ref }}
       - uses: actions/download-artifact@v4
+        if: inputs.run_id == ''
         with:
           pattern: dist-desktop-*
           merge-multiple: true
           path: dist-desktop
+      - uses: actions/download-artifact@v4
+        if: inputs.run_id != ''
+        with:
+          pattern: dist-desktop-*
+          merge-multiple: true
+          path: dist-desktop
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: 安装 jq 并合并 latest.json
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq jq >/dev/null
@@ -101,6 +129,10 @@ jobs:
       - name: 上传 Release(安装包 + latest.json)
         uses: softprops/action-gh-release@v2
         with:
+          # dispatch 补发时 github.ref 是分支,必须显式给 tag
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          # *-setup.exe.zip 是 Tauri 的 zip 变体;当前版本产的是直接签名的 -setup.exe,
+          # 该 pattern 不匹配只会打一行 warning(不失败),保留以兼容未来改名
           files: |
             dist-desktop/latest.json
             dist-desktop/**/*.app.tar.gz
