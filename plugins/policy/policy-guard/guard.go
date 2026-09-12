@@ -10,22 +10,45 @@ package policyguard
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
-// declaredPathParams 取工具自述的路径参数声明(ctx.tools 每次现取,同 ctx.confirm:
+// toolDef 取工具自述定义(ctx.tools 每次现取,同 ctx.confirm:
 // host-tools 与本插件无拓扑顺序约束,一次性注入会恒 nil)。
-func declaredPathParams(c sdk.Ctx, name string) []sdk.PathParam {
+func toolDef(c sdk.Ctx, name string) (sdk.ToolDefinition, bool) {
 	var tools sdk.ToolRegistry
 	if err := c.Inject("ctx.tools", &tools); err != nil || tools == nil {
-		return nil
+		return sdk.ToolDefinition{}, false
 	}
-	def, ok := tools.Get(name)
+	return tools.Get(name)
+}
+
+// declaredPathParams 取工具自述的路径参数声明。
+func declaredPathParams(c sdk.Ctx, name string) []sdk.PathParam {
+	def, ok := toolDef(c, name)
 	if !ok {
 		return nil
 	}
 	return def.PathParams
+}
+
+// approvalTarget 代理工具（声明了 ApprovalTargetParam）的真实目标名：
+// 如 MCP 检索模式的 `mcp_call{name:"mcp_srv_read"}` → 返回被代理的真实工具名。
+// 未声明/取不到 → 空串（视为无代理层，直接按工具自身名匹配）。
+func approvalTarget(c sdk.Ctx, name, args string) string {
+	def, ok := toolDef(c, name)
+	if !ok || def.ApprovalTargetParam == "" {
+		return ""
+	}
+	var m map[string]any
+	if json.Unmarshal([]byte(args), &m) != nil {
+		return ""
+	}
+	s, _ := m[def.ApprovalTargetParam].(string)
+	return strings.TrimSpace(s)
 }
 
 // Plugin 实现 policy-guard。
@@ -103,8 +126,15 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		}
 		// 工具级审批(E-A):data.approval_tools 列出的工具每次调用都按同一三档语义
 		// 裁决(与 shell 命令模式相互独立,可同时命中;默认空 = 行为零变化)。
-		if ap.RequiresToolApproval(call.Name) {
-			if err := ap.checkTool(ctx, confirmOf(), call.Name, call.Arguments); err != nil {
+		// 代理工具(声明了 ApprovalTargetParam,如 search 模式的 mcp_call)按其**真实目标名**
+		// 匹配:否则按单工具名写的规则会被一个间接名整体绕过(NOND-M1-3b)。
+		target := approvalTarget(c, call.Name, call.Arguments)
+		if ap.RequiresToolApproval(call.Name) || (target != "" && ap.RequiresToolApproval(target)) {
+			subj := call.Name
+			if target != "" {
+				subj = call.Name + " → " + target
+			}
+			if err := ap.checkTool(ctx, confirmOf(), subj, call.Arguments); err != nil {
 				return err
 			}
 		}

@@ -202,7 +202,7 @@ func (b *Bridge) loadOne(path string) (*extEntry, error) {
 			e.proto = 2
 			protoOK = true
 			for _, d := range multi {
-				def := sdk.ToolDefinition{Name: d.Name, Description: d.Description, InputSchema: d.InputSchema, TimeoutMs: d.TimeoutMs, PathParams: d.PathParams}
+				def := sdk.ToolDefinition{Name: d.Name, Description: d.Description, InputSchema: d.InputSchema, TimeoutMs: d.TimeoutMs, PathParams: d.PathParams, ApprovalTargetParam: d.ApprovalTargetParam}
 				e.tools[d.Name] = &toolRPCClient{br: b, path: path, name: d.Name, def: def}
 			}
 		}
@@ -554,6 +554,8 @@ type defDTO struct {
 	InputSchema map[string]any  `json:"InputSchema"`
 	TimeoutMs   int64           `json:"TimeoutMs"`
 	PathParams  []sdk.PathParam `json:"PathParams,omitempty"` // 路径参数能力声明(透传给宿主裁决)
+	// ApprovalTargetParam 代理工具的「真实目标参数名」(透传给宿主审批;NOND-M1-3b)。
+	ApprovalTargetParam string `json:"ApprovalTargetParam,omitempty"`
 }
 
 // rpcTimeout 默认外部 RPC 调用超时(崩溃隔离:死进程快速失败而非死等)。

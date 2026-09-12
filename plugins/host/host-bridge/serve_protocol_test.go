@@ -21,6 +21,7 @@ type serveStubTool struct {
 	err     error
 	timeout int64
 	paths   []sdk.PathParam
+	appr    string // ApprovalTargetParam(代理工具声明;NOND-M1-3b)
 	gotArgs string
 	ctxErr  error
 }
@@ -28,7 +29,8 @@ type serveStubTool struct {
 func (t *serveStubTool) Definition() sdk.ToolDefinition {
 	return sdk.ToolDefinition{
 		Name: t.name, Description: "测试工具", TimeoutMs: t.timeout, PathParams: t.paths,
-		InputSchema: map[string]any{"type": "object"},
+		ApprovalTargetParam: t.appr,
+		InputSchema:         map[string]any{"type": "object"},
 	}
 }
 
@@ -64,13 +66,14 @@ func newToolServer(tools map[string]sdk.Tool, commands map[string]sdk.CommandSpe
 }
 
 // TestToolServerDefinitionsSortedWithCapabilityDefinitions JSON 数组按名排序,
-// 且能力声明(PathParams/TimeoutMs)必须跨协议传递(路径裁决依赖它)。
+// 且能力声明(PathParams/ApprovalTargetParam/TimeoutMs)必须跨协议传递
+// (路径裁决与工具级审批都依赖它)。
 func TestToolServerDefinitionsSortedWithCapabilityDefinitions(t *testing.T) {
 	paths := []sdk.PathParam{{Arg: "target", Access: sdk.PathWrite, Many: true}}
 	srv := newToolServer(map[string]sdk.Tool{
 		"zeta": &serveStubTool{name: "zeta"},
 		"alpha": &serveStubTool{
-			name: "alpha", timeout: 4500, paths: paths, result: map[string]any{"ok": true},
+			name: "alpha", timeout: 4500, paths: paths, appr: "name", result: map[string]any{"ok": true},
 		},
 	}, nil)
 	var raw string
@@ -88,6 +91,9 @@ func TestToolServerDefinitionsSortedWithCapabilityDefinitions(t *testing.T) {
 		defs[0].PathParams[0].Arg != "target" || defs[0].PathParams[0].Access != sdk.PathWrite ||
 		!defs[0].PathParams[0].Many {
 		t.Fatalf("能力声明/超时未原样透传: %+v", defs[0])
+	}
+	if defs[0].ApprovalTargetParam != "name" {
+		t.Fatalf("代理目标声明未透传: %+v", defs[0])
 	}
 	if defs[0].InputSchema["type"] != "object" {
 		t.Fatalf("InputSchema 应透传: %+v", defs[0].InputSchema)

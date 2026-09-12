@@ -75,12 +75,15 @@ Grab the right file from [Releases](https://github.com/nekoleamo/go-agent-harnes
 After installing, just double-click: built-in chat UI plus a settings panel. On first use pick one model
 provider (DeepSeek / Kimi / Zhipu / Qwen / Ollama presets; paste an API key).
 
-> **Where the data lives / read before upgrading**: everything (sessions, memory, schedules, keys) lives in
-> the **`gah-data/` inside the app directory**. Desktop upgrades replace the whole app, so back up outside the
-> app directory first: run `/backup ~/gah-backup` in the chat, then `/backup restore <name>` after upgrading.
-> The desktop shell also **auto-backs up** to `~/gah-upgrade-backup/` before installing an update, and
-> **cancels the upgrade** if that backup fails. Uninstalling removes the install directory together with the
-> data. The CLI build is unaffected: upgrading replaces the single `gah` file and keeps `gah-data/` in place.
+> **Where the data lives / upgrading and uninstalling**: everything (sessions, memory, schedules, keys) lives in
+> `gah-data/`, next to the running binary. On first launch the desktop shell copies the binary into **your user
+> data directory** (Windows `%LOCALAPPDATA%\dev.gah.desktop\bin\`, macOS
+> `~/Library/Application Support/dev.gah.desktop/bin/`) and runs it from there, so the data sits **outside the
+> app directory**: **upgrading (whole-app replacement) keeps it, and uninstalling does not delete it**.
+> The desktop shell still auto-backs up to `~/gah-upgrade-backup/` before installing an update and **cancels the
+> upgrade** if that backup fails. For manual backups use `/backup <path outside the app dir>` and
+> `/backup restore <name>`. The CLI build is unaffected: upgrading replaces the single `gah` file and keeps
+> `gah-data/` in place.
 
 ### Build (release form)
 

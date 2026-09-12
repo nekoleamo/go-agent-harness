@@ -10,11 +10,15 @@
 // 启动探测接管:端口已占用则直接 navigate 现有实例)。
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::TcpStream;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
+
+mod stage;
 
 use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
@@ -31,6 +35,9 @@ const GAH_URL: &str = "http://127.0.0.1:2233";
 const GAH_URL_SHELL: &str = "http://127.0.0.1:2233/?shell=desktop";
 
 struct Sidecar(Mutex<Option<CommandChild>>);
+// DataRoot 本次运行的**真实**数据根(外置后 = `<用户数据目录>/bin/gah-data`,回退时 = 应用目录内)。
+// 升级前备份按它取数(见 backupBeforeUpgrade)。
+struct DataRoot(Mutex<Option<PathBuf>>);
 static READY: AtomicBool = AtomicBool::new(false);
 
 // web_token 桌面壳用的 Web 访问凭据(启动方经 GAH_WEB_TOKEN 传入;空 = 未开启 token 模式)。
@@ -91,14 +98,10 @@ fn httpProbe(path: &str, timeout: Duration) -> bool {
     }
 }
 
-// appDataHome 已移除(2026-09-16):数据根仅允许 sidecar 同级 gah-data/,不再用应用数据目录。
-
-// dataRootOfExe sidecar 同级数据根(与 cmd/gah homeDir 同口径:二进制同级 gah-data/)。
-// 桌面壳里 sidecar 位于 .app/Contents/MacOS(mac)或安装目录(win),故数据也在应用目录内。
-fn dataRootOfExe() -> Option<std::path::PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    Some(exe.parent()?.join("gah-data"))
-}
+// appDataHome 已移除(2026-09-16):数据根仅允许 sidecar 同级 gah-data/,不用应用数据目录承载
+// 数据(那时是「壳告诉 gah 去哪写」)。2026-11-14 换了解法:把 **sidecar 二进制**复制到用户
+// 数据目录后再运行,让既有的「二进制同级 gah-data/」规则自己得出应用目录之外的落点 ——
+// 数据根解析链一个字没改,但升级不再替换数据、卸装不再删数据(见 stage.rs)。
 
 // backupRoot 升级前备份的落地处:用户主目录下 —— 必须在应用目录之外(升级整包替换应用目录)。
 fn backupRoot() -> Option<std::path::PathBuf> {
@@ -107,26 +110,15 @@ fn backupRoot() -> Option<std::path::PathBuf> {
     Some(std::path::PathBuf::from(home).join("gah-upgrade-backup"))
 }
 
-// copyTree 递归复制目录(标准库;桌面壳不引新依赖)。
-fn copyTree(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let (from, to) = (entry.path(), dst.join(entry.file_name()));
-        if entry.file_type()?.is_dir() { copyTree(&from, &to)?; } else { std::fs::copy(&from, &to)?; }
-    }
-    Ok(())
-}
-
-// backupBeforeUpgrade 升级前把 gah-data 复制到用户主目录(时间戳子目录),返回落地路径。
+// backupBeforeUpgrade 升级前把数据根复制到用户主目录(时间戳子目录),返回落地路径。
+// 数据根来自本次运行实际使用的位置(外置后应在应用目录外,备份属额外保险)。
 // 无数据(首次安装即升级)→ 返回空路径(无可备份);失败 → 错误(调用方中止升级)。
-fn backupBeforeUpgrade() -> Result<std::path::PathBuf, String> {
-    let data = dataRootOfExe().ok_or("解析 sidecar 目录失败")?;
+fn backupBeforeUpgrade(data: &std::path::Path) -> Result<std::path::PathBuf, String> {
     if !data.exists() { return Ok(std::path::PathBuf::new()); }
     let root = backupRoot().ok_or("未取到用户主目录(用于放升级前备份)")?;
     let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let dst = root.join(format!("{ts}"));
-    copyTree(&data, &dst.join("gah-data")).map_err(|e| format!("复制 {data:?} → {dst:?} 失败: {e}"))?;
+    stage::copy_tree(data, &dst.join("gah-data")).map_err(|e| format!("复制 {:?} → {:?} 失败: {e}", data, dst))?;
     Ok(dst)
 }
 
@@ -136,9 +128,16 @@ async fn checkForUpdates(app: tauri::AppHandle) {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let updater = app.updater()?;
         if let Some(update) = updater.check().await? {
-            // 升级会整包替换应用目录 → 数据(gah-data 在应用目录内)会一起没掉:
-            // 先备份到用户主目录;备份失败则中止升级(绝不拿用户数据冒险)。
-            match backupBeforeUpgrade() {
+            // 升级整包替换应用目录:数据已外置到用户数据目录(见 stage.rs),正常不会再被替换;
+            // 这里仍先备份一次(额外保险,覆盖壳回退到应用目录内运行的极端情况)。
+            let data = app
+                .state::<DataRoot>()
+                .0
+                .lock()
+                .unwrap()
+                .clone()
+                .ok_or("数据根未初始化")?;
+            match backupBeforeUpgrade(&data) {
                 Ok(p) if p.as_os_str().is_empty() => {}
                 Ok(p) => {
                     let _ = app.notification().builder().title("gah 升级前备份").body(format!("数据已备份到:{}", p.display())).show();
@@ -207,6 +206,70 @@ fn httpGET(path: &str) -> String {
     String::from_utf8_lossy(&all).to_string()
 }
 
+// httpGETAuth 带凭据的最小 GET(token 模式必须带 cookie,否则 401 → 空串)。
+fn httpGETAuth(path: &str) -> String {
+    let mut s = match TcpStream::connect_timeout(&GAH_ADDR.parse::<std::net::SocketAddr>().unwrap(), Duration::from_millis(300)) {
+        Ok(s) => s,
+        Err(_) => return String::new(),
+    };
+    let _ = s.set_read_timeout(Some(Duration::from_millis(800)));
+    let req = format!(
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n{}Connection: close\r\n\r\n",
+        cookie_header()
+    );
+    if s.write_all(req.as_bytes()).is_err() {
+        return String::new();
+    }
+    let mut all = Vec::new();
+    let mut buf = [0u8; 1024];
+    loop {
+        match s.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => all.extend_from_slice(&buf[..n]),
+        }
+    }
+    let text = String::from_utf8_lossy(&all).to_string();
+    match text.find("\r\n\r\n") {
+        Some(i) => text[i + 4..].to_string(),
+        None => String::new(),
+    }
+}
+
+// newScheduleFailures 从 /api/schedules 正文里挑出**新出现的**失败(NOND-W4 无人值守主动通知)。
+// seen = id → "last_run_at|last_status" 快照;first=true(启动后第一次轮询)只记不发,
+// 避免把启动前就存在的旧失败当新闻推送。返回 (计划名, 错误摘要)。
+fn newScheduleFailures(body: &str, seen: &mut HashMap<String, String>, first: bool) -> Vec<(String, String)> {
+    let arr: Vec<serde_json::Value> = serde_json::from_str(body).unwrap_or_default();
+    let mut out = Vec::new();
+    for it in arr {
+        let id = it["id"].as_str().unwrap_or("").to_string();
+        if id.is_empty() {
+            continue;
+        }
+        let status = it["last_status"].as_str().unwrap_or("");
+        let run_at = it["last_run_at"].as_str().unwrap_or("");
+        let key = format!("{run_at}|{status}");
+        let prev = seen.insert(id, key.clone());
+        if first || status != "failed" || prev.as_deref() == Some(key.as_str()) {
+            continue;
+        }
+        let name = it["name"].as_str().filter(|s| !s.is_empty()).unwrap_or("(未命名计划)");
+        let err = it["last_error"].as_str().unwrap_or("");
+        out.push((name.to_string(), summarize(err, 200)));
+    }
+    out
+}
+
+// summarize 摘要(字符级截断,附省略号;避免系统通知里塞整段报错)。
+fn summarize(s: &str, max: usize) -> String {
+    let t = s.trim();
+    if t.chars().count() <= max {
+        return t.to_string();
+    }
+    let head: String = t.chars().take(max).collect();
+    format!("{head}…")
+}
+
 // stateRunning 服务是否在运行(/api/state)。
 fn stateRunning() -> bool {
     // /api/state JSON 含 "running":true|false;粗解析含子串即可
@@ -238,6 +301,67 @@ fn stateRunning() -> bool {
     false
 }
 
+// Runtime 本次运行的落点:要 spawn 的二进制 + 数据根。
+// 数据根恒为「二进制同级 gah-data/」(规则不变),只是二进制可能在用户数据目录里。
+struct Runtime {
+    bin: PathBuf,
+    data_root: PathBuf,
+    /// true = 已外置到用户数据目录(升级整包替换 / 卸载都不会碰数据)。
+    external: bool,
+    /// 必须让用户看到的告警(系统通知;不做静默降级)。
+    notices: Vec<String>,
+}
+
+// siblingDataRoot 随包 sidecar 同级的数据根(= 应用目录内,回退路径的落点)。
+fn siblingDataRoot(bin: &std::path::Path) -> PathBuf {
+    bin.parent().map(|d| d.join("gah-data")).unwrap_or_else(|| PathBuf::from("gah-data"))
+}
+
+// resolveRuntime 决定从哪里跑 sidecar(NOND-W2b-α):
+//  ① 正常:复制到 `<用户数据目录>/bin/gah` 再运行 → 「二进制同级 gah-data/」自然落在应用目录外;
+//  ② 任一步失败:回退到随包 sidecar(数据仍在应用目录内)并给**显式**告警,绝不静默降级。
+fn resolveRuntime(app: &AppHandle) -> Runtime {
+    let src = match stage::bundled_sidecar() {
+        Ok(p) => p,
+        Err(e) => {
+            return Runtime {
+                bin: PathBuf::new(),
+                data_root: PathBuf::from("gah-data"),
+                external: false,
+                notices: vec![format!("未找到随包运行文件:{e}")],
+            }
+        }
+    };
+    let home = match app.path().app_local_data_dir() {
+        Ok(p) => p,
+        Err(e) => {
+            return Runtime {
+                data_root: siblingDataRoot(&src),
+                bin: src,
+                external: false,
+                notices: vec![format!(
+                    "取用户数据目录失败({e});数据将留在应用目录内,升级或卸载前请先在对话里执行 /backup"
+                )],
+            }
+        }
+    };
+    let mut notices = Vec::new();
+    match stage::migrate_legacy(&home) {
+        Ok(Some(p)) => notices.push(format!("旧数据已复制到新位置(旧副本保留):{}", p.display())),
+        Ok(None) => {}
+        Err(e) => notices.push(format!("旧数据迁移失败(数据未丢失,仍在应用目录内):{e}")),
+    }
+    match stage::stage_sidecar(&src, &home, env!("CARGO_PKG_VERSION")) {
+        Ok(o) => Runtime { bin: o.bin, data_root: stage::data_root(&home), external: true, notices },
+        Err(e) => {
+            notices.push(format!(
+                "无法把运行文件放到用户数据目录({e});本次退回应用目录内运行 —— 升级或卸载可能影响数据,请先 /backup"
+            ));
+            Runtime { data_root: siblingDataRoot(&src), bin: src, external: false, notices }
+        }
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -254,6 +378,7 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Sidecar(Mutex::new(None)))
+        .manage(DataRoot(Mutex::new(None)))
         .setup(|app| {
             let handle = app.handle().clone();
             // —— 托盘:打开窗口 / 开机自启开关 / 退出 ——
@@ -319,12 +444,20 @@ fn main() {
                 .expect("托盘构建失败");
             let _ = handle.emit("tray-ready", ());
 
-            // —— spawn sidecar gah --profile web(数据根 = sidecar 同级 gah-data/,便携;不传 GAH_HOME env) ——
-            let cmd = app
-                .shell()
-                .sidecar("gah")
-                .expect("externalBin 缺失: 先运行 scripts/gen-desktop.sh")
-                .env("GAH_WEB_OPEN", "0");
+            // —— 数据外置 + spawn sidecar(数据根 = 二进制同级 gah-data/,便携;不传 GAH_HOME env) ——
+            let rt = resolveRuntime(app.handle());
+            *app.state::<DataRoot>().0.lock().unwrap() = Some(rt.data_root.clone());
+            let _ = handle.emit("runtime-data-root", rt.data_root.display().to_string());
+            for n in &rt.notices {
+                let _ = app.notification().builder().title("gah").body(n.clone()).show();
+                let _ = handle.emit("runtime-notice", n.clone());
+            }
+            let cmd = if rt.external {
+                app.shell().command(&rt.bin)
+            } else {
+                app.shell().sidecar("gah").expect("externalBin 缺失: 先运行 scripts/gen-desktop.sh")
+            }
+            .env("GAH_WEB_OPEN", "0");
             let (mut rx, child) = cmd
                 .args(["--profile", "web"])
                 .spawn()
@@ -361,9 +494,22 @@ fn main() {
                     std::thread::sleep(Duration::from_millis(200));
                 }
                 let _ = handle3.emit("sidecar-start-failed", "gah 60×200ms 内未就绪");
-                // 失败指引:窗口不再停留在"正在启动",注入错误提示(数据根=gah-data,需与 gah 同目录且可写)
+                // 失败指引:窗口不再停留在"正在启动",注入错误提示(路径经 JSON 编码,避免 Windows 反斜杠/引号破坏 JS)
+                let root = handle3
+                    .state::<DataRoot>()
+                    .0
+                    .lock()
+                    .ok()
+                    .and_then(|g| g.clone())
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "gah-data".into());
                 if let Some(w) = handle3.get_webview_window("main") {
-                    let _ = w.eval("document.body.innerHTML='<div style=\"font-family:-apple-system,sans-serif;padding:40px;max-width:560px\"><h2>gah 服务未能启动</h2><p>数据根为 gah 同目录的 gah-data/(需可写);升级 .app 会替换该目录,如需保留数据请先 /backup。</p><p>若 config/bundle-web.yaml 里 data.auth_token 非空(token 模式),桌面壳需以环境变量 GAH_WEB_TOKEN 传入同一 token,否则 /api/* 会 401。</p><p>详细日志见终端输出。</p></div>'");
+                    let html = format!(
+                        "<div style=\"font-family:-apple-system,sans-serif;padding:40px;max-width:560px\"><h2>gah 服务未能启动</h2><p>数据根:{root}(需可写)。</p><p>若 config/bundle-web.yaml 里 data.auth_token 非空(token 模式),桌面壳需以环境变量 GAH_WEB_TOKEN 传入同一 token,否则 /api/* 会 401。</p><p>详细日志见终端输出。</p></div>"
+                    );
+                    if let Ok(lit) = serde_json::to_string(&html) {
+                        let _ = w.eval(&format!("document.body.innerHTML={lit}"));
+                    }
                 }
             });
 
@@ -381,6 +527,33 @@ fn main() {
                             .show();
                     }
                     prev = cur;
+                }
+            });
+
+            // —— 无人值守失败通知:轮询 /api/schedules,出现**新的** failed 终态就弹系统通知
+            //    (窗口在托盘里时也能看到;计划失败本体仍只在会话记录与计划列表里)——
+            let handle5 = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let mut seen: HashMap<String, String> = HashMap::new();
+                let mut first = true;
+                loop {
+                    std::thread::sleep(Duration::from_secs(5));
+                    if !READY.load(Ordering::SeqCst) {
+                        continue;
+                    }
+                    let body = httpGETAuth("/api/schedules");
+                    if body.is_empty() {
+                        continue; // 未装配 ctx.schedule(503)/网络异常:不当作失败
+                    }
+                    for (name, err) in newScheduleFailures(&body, &mut seen, first) {
+                        let mut msg = format!("计划「{name}」执行失败");
+                        if !err.is_empty() {
+                            msg.push_str(&format!(":{err}"));
+                        }
+                        msg.push_str("\n详情见会话记录与「定时任务」列表。");
+                        let _ = handle5.notification().builder().title("gah 定时任务失败").body(msg).show();
+                    }
+                    first = false;
                 }
             });
 
@@ -444,4 +617,85 @@ fn quitApp(app: &AppHandle) {
         }
         app.exit(0);
     });
+}
+
+#[cfg(test)]
+mod main_tests {
+    use super::*;
+
+    const SAMPLE: &str = r#"[
+      {"id":"sched-a","name":"每日备份","last_run_at":"2026-09-12T09:00:00Z","last_status":"failed","last_error":"模型调用超时: dial tcp 10.0.0.1:443: i/o timeout"},
+      {"id":"sched-b","name":"周报","last_run_at":"2026-09-12T09:00:00Z","last_status":"ok"},
+      {"id":"sched-c","name":"空闲","enabled":true}
+    ]"#;
+
+    #[test]
+    fn first_poll_records_without_notifying() {
+        let mut seen = HashMap::new();
+        assert!(newScheduleFailures(SAMPLE, &mut seen, true).is_empty());
+        assert_eq!(seen.len(), 3, "三条计划都要进快照(含未运行过的)");
+    }
+
+    #[test]
+    fn same_failure_is_not_reported_twice() {
+        let mut seen = HashMap::new();
+        let _ = newScheduleFailures(SAMPLE, &mut seen, true);
+        assert!(newScheduleFailures(SAMPLE, &mut seen, false).is_empty(), "同一次失败只报一次");
+    }
+
+    #[test]
+    fn new_failure_after_bootstrap_notifies() {
+        let mut seen = HashMap::new();
+        let _ = newScheduleFailures(SAMPLE, &mut seen, true);
+        let next = r#"[{"id":"sched-a","name":"每日备份","last_run_at":"2026-09-13T09:00:00Z","last_status":"failed","last_error":"401 未授权"}]"#;
+        let got = newScheduleFailures(next, &mut seen, false);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].0, "每日备份");
+        assert_eq!(got[0].1, "401 未授权");
+    }
+
+    #[test]
+    fn ok_and_skipped_states_never_notify() {
+        let mut seen = HashMap::new();
+        let _ = newScheduleFailures(SAMPLE, &mut seen, false);
+        for st in ["ok", "skipped", ""] {
+            let body = format!(r#"[{{"id":"sched-b","name":"周报","last_run_at":"2026-09-14T09:00:00Z","last_status":"{st}"}}]"#);
+            assert!(newScheduleFailures(&body, &mut seen, false).is_empty(), "状态 {st} 不该通知");
+        }
+    }
+
+    #[test]
+    fn bad_body_is_ignored_not_panicking() {
+        let mut seen = HashMap::new();
+        assert!(newScheduleFailures("", &mut seen, false).is_empty());
+        assert!(newScheduleFailures("定时计划服务未装配", &mut seen, false).is_empty());
+        assert!(newScheduleFailures("{\"not\":\"array\"}", &mut seen, false).is_empty());
+        assert!(seen.is_empty());
+    }
+
+    #[test]
+    fn unnamed_schedule_and_long_error_are_handled() {
+        let mut seen = HashMap::new();
+        let long = "错".repeat(300);
+        let body = format!(r#"[{{"id":"sched-x","last_run_at":"t1","last_status":"failed","last_error":"{long}"}}]"#);
+        let got = newScheduleFailures(&body, &mut seen, false);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].0, "(未命名计划)");
+        assert!(got[0].1.ends_with('…'));
+        assert_eq!(got[0].1.chars().count(), 201);
+    }
+
+    #[test]
+    fn summarize_trims_and_keeps_short_text() {
+        assert_eq!(summarize("  a b  ", 10), "a b");
+        assert_eq!(summarize("abcdef", 3), "abc…");
+    }
+
+    #[test]
+    fn sibling_data_root_sits_next_to_bin() {
+        assert_eq!(
+            siblingDataRoot(std::path::Path::new("/opt/gah/gah")),
+            std::path::PathBuf::from("/opt/gah/gah-data")
+        );
+    }
 }

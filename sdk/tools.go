@@ -17,6 +17,13 @@ type ToolDefinition struct {
 	// 否则不受路径沙箱约束(见 docs/PLUGIN_DEV.md「路径参数声明」)。
 	// 只在宿主与插件协议间流转,不下发模型(适配层仅取 Name/Description/InputSchema)。
 	PathParams []PathParam `json:"PathParams,omitempty"`
+
+	// ApprovalTargetParam 可选**能力声明**:本工具是「代理工具」—— 一次调用代表对**另一个
+	// 工具**的调用(如 MCP 检索模式的 mcp_call:name 参数承载真实工具名)。
+	// 声明后宿主审批把 approval_tools 里针对**真实工具名**的规则作用到本次调用
+	// (否则逐工具规则会被一个间接名整体绕过),确认弹层也显示「代理工具 → 真实工具」。
+	// 只在宿主与插件协议间流转,不下发模型。
+	ApprovalTargetParam string `json:"ApprovalTargetParam,omitempty"`
 }
 
 // PathAccess 工具对某个路径参数的访问意图(能力声明用)。

@@ -76,7 +76,7 @@ func (s *toolServer) Definitions(args struct{}, reply *string) error {
 	var defs []defDTO
 	for _, n := range names {
 		d := s.tools[n].Definition()
-		defs = append(defs, defDTO{Name: d.Name, Description: d.Description, InputSchema: d.InputSchema, TimeoutMs: d.TimeoutMs, PathParams: d.PathParams})
+		defs = append(defs, defDTO{Name: d.Name, Description: d.Description, InputSchema: d.InputSchema, TimeoutMs: d.TimeoutMs, PathParams: d.PathParams, ApprovalTargetParam: d.ApprovalTargetParam})
 	}
 	b, err := json.Marshal(defs)
 	if err != nil {

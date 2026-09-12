@@ -141,6 +141,13 @@ func TestAssembleSearchModeHidesTools(t *testing.T) {
 	if len(big.calls) != 1 || big.calls[0] != `mcp_recall {"q":"x"}` {
 		t.Fatalf("转发参数: %v", big.calls)
 	}
+	// 代理工具的审批声明(NOND-M1-3b):宿主据此把 approval_tools 的逐工具规则作用到真实目标名
+	if got := tools["mcp_call"].Definition().ApprovalTargetParam; got != "name" {
+		t.Fatalf("mcp_call 必须声明 ApprovalTargetParam=name(否则逐工具审批被代理层绕过),得到 %q", got)
+	}
+	if got := tools["mcp_search"].Definition().ApprovalTargetParam; got != "" {
+		t.Fatalf("mcp_search 不是代理调用,不应声明目标: %q", got)
+	}
 }
 
 // TestAssembleMixedModesAndSkips 混合:direct + search 并存;停用/连接失败跳过且不影响其余。

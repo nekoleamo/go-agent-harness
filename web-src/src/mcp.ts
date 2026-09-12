@@ -87,7 +87,7 @@ export function modeLabel(mode?: string): string {
 // modeHint 模式选择的影响面(帮非程序员判断该选哪个)。
 export function modeHint(mode?: string): string {
   if (mode === MCP_MODE_SEARCH) {
-    return '只给模型两个工具(mcp_search 查、mcp_call 调),省固定前缀;代价:不能按单个工具名设审批规则'
+    return '只给模型两个工具(mcp_search 查、mcp_call 调),省固定前缀;按工具名设的审批规则照样生效(会作用到真实工具)'
   }
   return '全部工具直接进模型工具表,模型一上手就能用;代价:工具多时每轮都占上下文'
 }

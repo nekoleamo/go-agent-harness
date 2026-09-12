@@ -5,8 +5,11 @@
 // 需要时先搜再调 —— 工具清单的代价从"每轮固定"变成"用到才付"。
 //
 // 可达集合的取舍:mcp_call **只**能调本索引里的工具(search 模式 server),不代调
-// direct 模式工具 —— 保持"搜到的 = 能调的"一一对应,且不让工具名到审批规则
-// (data.approval_tools 按名匹配)的映射被一个间接名绕过。
+// direct 模式工具 —— 保持"搜到的 = 能调的"一一对应。
+//
+// 审批映射:mcp_call 声明 sdk.ToolDefinition.ApprovalTargetParam = "name",宿主审批据此把
+// data.approval_tools 里按**真实工具名**写的规则作用到代理调用上(2026-11-14 补,
+// NOND-M1-3b)—— 逐工具规则不再被代理层绕过。
 package mcpbridge
 
 import (
@@ -200,6 +203,8 @@ func (t *callTool) Definition() sdk.ToolDefinition {
 		Name: "mcp_call",
 		Description: "调用 search 模式的 MCP 工具。name 取 mcp_search 返回的名字(形如 mcp_<server>_<工具>);" +
 			"arguments 为该工具的入参对象(见其 inputSchema)。",
+		// 审批主体 = 被代理的真实工具名(宿主按 approval_tools 逐工具匹配;见 sdk.ToolDefinition)。
+		ApprovalTargetParam: "name",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
