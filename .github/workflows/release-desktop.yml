@@ -126,6 +126,16 @@ jobs:
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq jq >/dev/null
           bash scripts/publish-desktop.sh merge
+      - name: 发布正文 = tag 注解(注解为空则回退 changelog 链接)
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          mkdir -p dist-desktop
+          git tag -l --format='%(contents)' "$TAG" > dist-desktop/release-body.md
+          if [ ! -s dist-desktop/release-body.md ]; then
+            printf '**Full Changelog**: https://github.com/%s/commits/%s\n' \
+              "$GITHUB_REPOSITORY" "$TAG" > dist-desktop/release-body.md
+          fi
       - name: 上传 Release(安装包 + latest.json)
         uses: softprops/action-gh-release@v2
         with:
@@ -141,4 +151,6 @@ jobs:
             dist-desktop/**/*-setup.exe.zip
           draft: false
           prerelease: false
-          generate_release_notes: true
+          # 正文来自 tag 注解(人工写的发行说明);不用 GitHub 自动 notes —— 两个 workflow 并发时
+          # 正文归属必须唯一(见 .goreleaser.yaml changelog.disable 的说明)
+          body_path: dist-desktop/release-body.md

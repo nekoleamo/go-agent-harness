@@ -64,7 +64,7 @@ Grab the right file from [Releases](https://github.com/nekoleamo/go-agent-harnes
 |---|---|---|
 | macOS (Apple silicon) | `gah_<version>_aarch64.dmg` | open, then drag gah into /Applications |
 | Windows (64-bit) | `gah_<version>_x64-setup.exe` | double-click to install (current user, no admin) |
-| CLI (any platform) | `gah_<version>_<os>_<arch>.tar.gz` | single binary, unzip and run |
+| CLI (any platform) | `go-agent-harness_<version>_<os>_<arch>.tar.gz` | single binary, unzip and run (also `.zip` + `checksums.txt`) |
 
 > **The first launch is blocked once by the OS** (the app ships without an Apple/Microsoft code-signing
 > certificate; the binary is fine, the system simply has not seen it before):
