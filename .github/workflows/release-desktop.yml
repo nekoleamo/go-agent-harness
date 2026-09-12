@@ -8,6 +8,8 @@ name: release-desktop
 on:
   push:
     tags: ["v*"]
+  # 手动预演:只跑两个平台 job(产物进 artifact,不碰 Release)—— 首个 tag 前验证打包链
+  workflow_dispatch:
 
 jobs:
   desktop-mac-aarch64:
@@ -20,11 +22,18 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web-src/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin
-      - name: 重建外部插件 embed(改动时;sidecar go build 依赖)
-        run: bash scripts/gen-extplugins.sh
+      - name: 重建外部插件与前端产物(sidecar go build 依赖两者:embed extplugins + web/dist)
+        run: |
+          bash scripts/gen-extplugins.sh
+          bash scripts/gen-web.sh
       - name: 桌面发行(aarch64)
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -48,11 +57,18 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web-src/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
-      - name: 重建外部插件 embed
-        run: bash scripts/gen-extplugins.sh
+      - name: 重建外部插件与前端产物(sidecar go build 依赖两者)
+        run: |
+          bash scripts/gen-extplugins.sh
+          bash scripts/gen-web.sh
       - name: 桌面发行(win x86_64;NSIS 由 tauri-cli 自动拉取)
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -65,6 +81,9 @@ jobs:
 
   merge-upload:
     needs: [desktop-mac-aarch64, desktop-win-x86_64]
+    # 只在 tag 上上传 Release;手动预演(workflow_dispatch)时两个平台 job 照跑、本 job 跳过
+    # (否则非 tag ref 下 action-gh-release 必然失败)
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -87,6 +106,7 @@ jobs:
             dist-desktop/**/*.app.tar.gz
             dist-desktop/**/*.dmg
             dist-desktop/**/*-setup.exe
+            dist-desktop/**/*-setup.exe.zip
           draft: false
           prerelease: false
           generate_release_notes: true

@@ -16,6 +16,7 @@
     "security": { "csp": null }
   },
   "bundle": {
+    "createUpdaterArtifacts": true,
     "active": true,
     "externalBin": ["binaries/gah"],
     "icon": ["icons/icon.png"],

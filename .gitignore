@@ -1,6 +1,7 @@
 # 构建产物
 /bin/
 /dist/
+/dist-desktop/
 /gah
 
 # codegraph 本地索引(MCP 知识图谱,不随仓库)
