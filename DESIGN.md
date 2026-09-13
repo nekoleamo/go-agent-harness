@@ -833,6 +833,8 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 | **⑤ tooltip 遮挡/越界** | 根因:`[data-tip]:hover::after` 伪元素挂在触发器**内部**,祖先 `overflow:hidden`(设置抽屉/侧栏滚动区/输入外壳)直接裁掉;居中定位在视口边缘又横向溢出。修法:删伪元素,改**单例 fixed 层**(新 `web-src/src/tip.ts`,`main.ts` 挂载前 `installTips()`):按触发器 rect 定位 → 视口夹取 → 上方不够翻下方 → 滚动重算 / 尺寸变化与点按收起;文案一律 `textContent`(不解析 HTML) | 构建产物核对:dist CSS 含 `.gah-tip` 且**无**旧 `[data-tip]:hover::after`;Win 端人工目视 |
 | **⑥ 无切换工作区入口** | `Sidebar.vue`「工作区」区原本只有列表/切换/删记录,**没有「打开文件夹」**。修法:区标题加「＋ 打开」→ 内联绝对路径输入(回车/打开/取消,Esc 取消,自动剥掉资源管理器「复制路径」的引号)→ 经全局确认条 → `POST /api/control{workspace}`(后端 `SwitchDir`:Chdir + 记入工作区历史 + 新建会话 + 通知宿主同步沙箱 root)→ 刷新列表 + 重建 SSE。**不用原生文件夹选择器**:浏览器安全模型拿不到绝对路径,且离线环境无法加 `tauri-plugin-dialog`(crates 缓存无该包) | 真机:切换 200 且 `GET /api/workspaces` 立即含新目录 `…/wsdemo`;[非移动端通用:浏览器/桌面同一实现] |
 
+> **发布**:v0.1.1(2026-09-13)已出 —— macOS `gah_0.1.1_aarch64.dmg`(34.18 MiB)+ Windows `gah_0.1.1_x64-setup.exe`(31.59 MiB)+ updater `gah.app.tar.gz`/`latest.json`(实测 `releases/latest/download/latest.json` HTTP 200,`version=0.1.1`,双平台签名齐备)+ 命令行五目标归档与 `checksums.txt`;三个 workflow(`ci`/`release-cli`/`release-desktop`)全绿,流程与产物清单见 `docs/RELEASE.md`「发布记录:v0.1.1」。
+
 ### 未实施 / 待人工验(诚实登记)
 
 | 项 | 状态 |
