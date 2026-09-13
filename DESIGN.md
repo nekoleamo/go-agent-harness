@@ -856,7 +856,7 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 | 模块 | 交付 | 验证 |
 |---|---|---|
 | **修法** | 新增 `desktop/src-tauri/nsis/hooks.nsh` + `tauri.conf.json` `bundle.windows.nsis.installerHooks`:`NSIS_HOOK_POSTINSTALL` **无条件**建 `$DESKTOP\${PRODUCTNAME}.lnk` → `$INSTDIR\${MAINBINARYNAME}.exe`(主程序 `gah-desktop.exe`,**不是** sidecar `gah.exe`),并复用模板 `SetLnkAppUserModelId`(任务栏分组/固定行为一致);`NSIS_HOOK_POSTUNINSTALL` 按 `IsShortcutTarget` 判定后删除(卸载兜底,不动用户改过目标的快捷方式)。`${...}` 在宏**插入点**展开,故 hooks 先于 `!define` 的 include 顺序不影响 | 配置键对本地 `@tauri-apps/cli` 自带 `config.schema.json`(2.11.4)逐层校验通过(`NsisConfig` 允许键集 = {installMode, installerHooks});NSIS 实际编译在 release-desktop 的 windows job 内完成;真机验收 = docs/VERIFY.md **B-5 第 159 条** |
-| **发行** | 走 tag 驱动发 v0.1.2(不改 `tauri.conf.json` 的 version;不移动已发布的 v0.1.1 标签) | `release-desktop` 三 job 全绿 + `releases/latest/download/latest.json` = 0.1.2 |
+| **发行** | 走 tag 驱动发 v0.1.2(不改 `tauri.conf.json` 的 version;不移动已发布的 v0.1.1 标签) | ✅ 2026-09-13:三个 workflow(`ci`/`release-cli`/`release-desktop`)全绿;`desktop-win-x86_64` 内 NSIS 编译通过(= hooks 路径能被 bundler `canonicalize` 到且 `!include` 成功);Release 含 `gah_0.1.2_x64-setup.exe`(33,140,083 B)/ `gah_0.1.2_aarch64.dmg` / `latest.json`;`releases/latest/download/latest.json` 实测 **0.1.2**(win sig 412) |
 
 ## 15. 风险与权衡
 
