@@ -843,6 +843,21 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 | 原生文件夹选择器(桌面端) | ⏳ 需网络加 `tauri-plugin-dialog`(现已用路径输入覆盖同一能力) |
 | 拖放非附件文件(图片直贴等)到窗口的其它落点 | ⏳ 本轮只放开 WebView 拖放,业务落点仍仅输入区 |
 
+## R13 Windows 安装包桌面快捷方式缺失 ✅ (2026-09-14)
+
+> 用户反馈:Windows 安装后**桌面没有图标**(开始菜单快捷方式正常)。
+>
+> 根因(读上游 tauri v2 模板 `installer.nsi`,与本地 CLI 2.11.4 / tauri-utils 2.9.3 核对):
+> ① 桌面图标只在**完成页复选框**被勾选时创建(`MUI_FINISHPAGE_SHOWREADME_FUNCTION = CreateOrUpdateDesktopShortcut`);
+> ② 该函数内部还有守卫 —— `$UpdateMode = 1`(覆盖安装/升级)或 `$NoShortcutMode = 1`(`/NS`)**直接 return**:
+>    因此「先装 0.1.0 再装 0.1.1」的机器桌面无图标,而开始菜单快捷方式不受这两个守卫影响(所以只缺桌面);
+> ③ 静默/被动安装(updater 走这条)模板会自动建,故不是全场景缺失。
+>
+| 模块 | 交付 | 验证 |
+|---|---|---|
+| **修法** | 新增 `desktop/src-tauri/nsis/hooks.nsh` + `tauri.conf.json` `bundle.windows.nsis.installerHooks`:`NSIS_HOOK_POSTINSTALL` **无条件**建 `$DESKTOP\${PRODUCTNAME}.lnk` → `$INSTDIR\${MAINBINARYNAME}.exe`(主程序 `gah-desktop.exe`,**不是** sidecar `gah.exe`),并复用模板 `SetLnkAppUserModelId`(任务栏分组/固定行为一致);`NSIS_HOOK_POSTUNINSTALL` 按 `IsShortcutTarget` 判定后删除(卸载兜底,不动用户改过目标的快捷方式)。`${...}` 在宏**插入点**展开,故 hooks 先于 `!define` 的 include 顺序不影响 | 配置键对本地 `@tauri-apps/cli` 自带 `config.schema.json`(2.11.4)逐层校验通过(`NsisConfig` 允许键集 = {installMode, installerHooks});NSIS 实际编译在 release-desktop 的 windows job 内完成;真机验收 = docs/VERIFY.md **B-5 第 159 条** |
+| **发行** | 走 tag 驱动发 v0.1.2(不改 `tauri.conf.json` 的 version;不移动已发布的 v0.1.1 标签) | `release-desktop` 三 job 全绿 + `releases/latest/download/latest.json` = 0.1.2 |
+
 ## 15. 风险与权衡
 
 | 风险 | 缓解 |
