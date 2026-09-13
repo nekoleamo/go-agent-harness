@@ -30,10 +30,27 @@ interface PendingFile {
   file: File
   view: string // 本地预览(objectURL,仅图片)
   state: 'pending' | 'done' | 'err'
-  path?: string
+  path?: string // 上传返回的绝对路径(仅展示/诊断)
+  ref?: string // 提交时回传的附件标识 /attachments/<rel>(跨平台免路径语义)
 }
 const attachments = ref<PendingFile[]>([])
 const attErr = ref('')
+// 附件错误提示是瞬时态(超限/类型/上传失败):10s 自动消失,也可点 × 立即关闭。
+// 此前常驻在输入区上方,按提示换了文件后旧提示仍挂着。
+let attErrTimer: ReturnType<typeof setTimeout> | null = null
+function setAttErr(msg: string): void {
+  attErr.value = msg
+  if (attErrTimer) clearTimeout(attErrTimer)
+  attErrTimer = setTimeout(() => {
+    attErr.value = ''
+    attErrTimer = null
+  }, 10000)
+}
+function clearAttErr(): void {
+  if (attErrTimer) clearTimeout(attErrTimer)
+  attErrTimer = null
+  attErr.value = ''
+}
 const uploading = ref(false)
 const dragging = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
@@ -79,11 +96,11 @@ function onPaste(e: ClipboardEvent): void {
 function collectFiles(files: File[]): void {
   for (const f of files) {
     if (attachments.value.length >= MAX_ATT) {
-      attErr.value = `附件最多 ${MAX_ATT} 个`
+      setAttErr(`附件最多 ${MAX_ATT} 个`)
       break
     }
     if (f.size > MAX_ATT_BYTES) {
-      attErr.value = `「${f.name}」超过 20MB 已跳过`
+      setAttErr(`「${f.name}」超过 20MB 已跳过(单文件上限 20MB)`)
       continue
     }
     attachments.value.push({
@@ -97,6 +114,7 @@ function removeAtt(i: number): void {
   const a = attachments.value[i]
   if (a.view) URL.revokeObjectURL(a.view)
   attachments.value.splice(i, 1)
+  clearAttErr() // 移除后旧提示不再适用(用户已在改附件)
 }
 function fmtSize(n: number): string {
   if (n < 1024) return n + ' B'
@@ -106,23 +124,26 @@ function fmtSize(n: number): string {
 
 // 提交前上传全部待传附件(pending/done 复用;失败停止并保留)
 async function uploadAll(): Promise<string[]> {
-  const paths: string[] = []
+  const ids: string[] = []
   for (const a of attachments.value) {
-    if (a.state === 'done' && a.path) {
-      paths.push(a.path)
+    if (a.state === 'done' && a.ref) {
+      ids.push(a.ref)
       continue
     }
     try {
       const v: AttachmentView = await api.upload(a.file)
       a.state = 'done'
       a.path = v.path
-      paths.push(v.path)
+      // 提交用相对标识 /attachments/<rel>:由服务端按自己的附件根解析,
+      // 免去跨平台路径分隔符/大小写/数据根漂移带来的「附件路径非法」误判
+      a.ref = v.url
+      ids.push(v.url)
     } catch (e) {
       a.state = 'err'
       throw e
     }
   }
-  return paths
+  return ids
 }
 
 // 全局二次确认(会话切换/新建经确认条防误操作)
@@ -242,10 +263,10 @@ async function submit(): Promise<void> {
   const t = text.value.trim()
   if (!t || props.disabled || uploading.value) return
   if (attachments.value.length && t.startsWith('/')) {
-    attErr.value = '命令消息不支持附件'
+    setAttErr('命令消息不支持附件')
     return
   }
-  attErr.value = ''
+  clearAttErr()
   const had = attachments.value.length > 0
   if (had) {
     uploading.value = true
@@ -256,7 +277,7 @@ async function submit(): Promise<void> {
       for (const a of attachments.value) if (a.view) URL.revokeObjectURL(a.view)
       attachments.value = []
     } catch (e) {
-      attErr.value = '附件上传失败: ' + (e as Error).message
+      setAttErr('附件上传失败: ' + (e as Error).message)
       uploading.value = false
       return
     }
@@ -350,6 +371,9 @@ onMounted(() => {
   window.addEventListener('gah:sessions-changed', onSessionsChanged)
 })
 onUnmounted(() => window.removeEventListener('gah:sessions-changed', onSessionsChanged))
+onUnmounted(() => {
+  if (attErrTimer) clearTimeout(attErrTimer)
+})
 function onSessionsChanged(): void {
   if (showPicker.value) showPicker.value = false
 }
@@ -400,7 +424,10 @@ defineExpose({ cycleThinking, cycleSandbox })
 
     <!-- 附件 chip 区(位于输入区与工具条之间) -->
     <div v-if="attachments.length || attErr" class="atts">
-      <div v-if="attErr" class="att-err">{{ attErr }}</div>
+      <div v-if="attErr" class="att-err">
+        <span class="att-err-t">{{ attErr }}</span>
+        <button class="att-err-x" data-tip="关闭提示" aria-label="关闭提示" @click="clearAttErr">×</button>
+      </div>
       <div v-for="(a, i) in attachments" :key="i" class="att" :class="{ up: a.state === 'done', err: a.state === 'err' }">
         <img v-if="a.view" class="thumb" :src="a.view" alt="" />
         <svg v-else class="file-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -571,6 +598,31 @@ defineExpose({ cycleThinking, cycleSandbox })
   font-size: 12px;
   color: var(--err);
   width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  line-height: 1.5;
+}
+.att-err-t {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+/* 提示可手动关闭(另有 10s 自动消失);按钮区不抢眼 */
+.att-err-x {
+  flex: none;
+  border: 0;
+  background: none;
+  color: inherit;
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 4px;
+  opacity: 0.7;
+}
+.att-err-x:hover {
+  opacity: 1;
+  background: var(--accent-soft);
 }
 /* 拖放高亮:附件落入外壳时 accent 边框 */
 .shell.dragging {

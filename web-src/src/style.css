@@ -71,30 +71,31 @@ code,
   font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
 }
 
-/* 统一工具提示(data-tip 属性;鼠标停留即时显示,替代原生 title 延迟) */
+/* 统一工具提示:定位层在 web-src/src/tip.ts(单例 fixed 层)。
+   不再用 ::after 伪元素 —— 伪元素挂在触发器内部,会被祖先 overflow:hidden 裁掉,
+   列表/设置/输入区里的提示都看不见;贴边时还会横向溢出视口。 */
 [data-tip] {
-  position: relative;
   cursor: pointer;
 }
-[data-tip]:hover::after {
-  content: attr(data-tip);
-  position: absolute;
-  bottom: calc(100% + 6px);
-  left: 50%;
-  transform: translateX(-50%);
+
+/* 提示层本体(由 tip.ts 按触发器 rect 定位并夹进视口;pointer-events:none 不阻断点按) */
+.gah-tip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  display: none;
+  z-index: 90;
+  width: max-content;
   background: #2d2f33;
   color: #ffffff;
   font-size: 12px;
   line-height: 1.4;
   padding: 4px 9px;
   border-radius: 6px;
-  /* 限宽自动换行,防长文案撑出横向滚动条(nowrap 的长 tooltip 会溢出视口) */
   max-width: min(70vw, 300px);
-  width: max-content;
   white-space: normal;
   overflow-wrap: break-word;
   text-align: center;
-  z-index: 50;
   pointer-events: none;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.16);
 }

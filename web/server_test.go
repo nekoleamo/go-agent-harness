@@ -1516,6 +1516,43 @@ func TestAttachmentsEndpoint(t *testing.T) {
 		t.Fatalf("附件引用未注入: %q", got)
 	}
 
+	// 附件标识兼容:① `/attachments/<rel>` 相对标识(前端默认发这个;跨平台免路径语义)→ 202
+	if p, err := s.resolveAttachment(av.URL); err != nil || filepath.Clean(p) != filepath.Clean(av.Path) {
+		t.Fatalf("相对标识应解析为 %q,得 %q err=%v", av.Path, p, err)
+	}
+	inRel, _ := json.Marshal(map[string]any{"content": "相对标识提交", "attachments": []string{av.URL}})
+	resp, err = http.Post(hs.URL+"/api/input", "application/json", strings.NewReader(string(inRel)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 202 {
+		t.Fatalf("相对标识提交应 202,得 %d", resp.StatusCode)
+	}
+
+	// 拒绝面:越界相对标识 / 空 / 附件根自身 / 不存在的相对路径 → 均不可解析
+	for _, badRef := range []string{"/attachments/../server_test.go", "/attachments/", "", dir, "/attachments/sub-不存在"} {
+		if p, err := s.resolveAttachment(badRef); err == nil {
+			t.Fatalf("应拒绝 %q,实际得 %q", badRef, p)
+		}
+	}
+	// 归属判定(段级 + Windows 大小写折叠;该分支在 ubuntu CI 上无法直跑,故显式覆盖)
+	if !attachmentWithinRootFold(dir, filepath.Join(dir, "20260914-000000", "a.png"), true) {
+		t.Fatal("根内路径应判为归属(折叠大小写)")
+	}
+	if !attachmentWithinRootFold(dir, strings.ToUpper(filepath.Join(dir, "20260914-000000", "A.PNG")), true) {
+		t.Fatal("Windows:大小写不同不应判越界")
+	}
+	if attachmentWithinRootFold(dir, strings.ToUpper(filepath.Join(dir, "a.png")), false) {
+		t.Fatal("区分大小写平台:大写路径不应判归属")
+	}
+	if attachmentWithinRootFold(dir, filepath.Join(dir, "..", "x.png"), true) {
+		t.Fatal("越界路径不应判归属")
+	}
+	if attachmentWithinRootFold(dir, dir, true) {
+		t.Fatal("附件根自身不应判归属")
+	}
+
 	// attachmentList:png→image+相对 rel;txt→file;非附件目录外 rel 还原
 	atts := attachmentList(dir, []string{filepath.Join(dir, "20260906-000000", "a.png")})
 	if len(atts) != 1 || atts[0].Kind != sdk.AttachmentImage || atts[0].MimeType != "image/png" {

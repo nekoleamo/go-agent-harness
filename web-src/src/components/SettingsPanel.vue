@@ -2,7 +2,7 @@
 // 可视化设置抽屉(状态栏 ⚙ 入口;App 持有 open)。
 // 分组:模型/推理(thinking·sandbox)/历史与压缩/Provider/插件与指令。
 // 破坏性动作(删 provider、卸载插件、压缩)经全局确认条(askConfirm)。
-import { computed, inject, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { api } from '../api'
 import { settingSections } from '../registry'
 import { uiPluginTrustNote } from '../plugins'
@@ -504,7 +504,17 @@ function showInfo(s: string): void {
 onMounted(() => {
   void load()
   void loadMcp()
+  window.addEventListener('keydown', onEsc, true)
 })
+onUnmounted(() => window.removeEventListener('keydown', onEsc, true))
+// 关闭语义(Win 端反馈):**只能手动关闭** —— 遮罩点击不再关闭(误触会丢正在编辑的表单),
+// 出口只有 ✕ 按钮与 Esc。Esc 用捕获阶段并阻止冒泡,避免同时触发输入框的「Esc 清空」(草稿丢失)。
+function onEsc(e: KeyboardEvent): void {
+  if (!props.open || e.key !== 'Escape') return
+  e.preventDefault()
+  e.stopPropagation()
+  emit('close')
+}
 // 打开时同步当前值与枚举
 watch(
   () => props.open,
@@ -536,7 +546,8 @@ watch(
 </script>
 
 <template>
-  <div v-if="open" class="mask" @click.self="emit('close')">
+  <!-- 遮罩点击不关闭(只能手动关闭:✕ / Esc);见 onEsc 注释 -->
+  <div v-if="open" class="mask">
     <aside class="panel" role="dialog" aria-label="设置">
       <header class="head">
         <h2 class="title">设置</h2>

@@ -11,7 +11,13 @@
   },
   "app": {
     "windows": [
-      { "label": "main", "title": "gah", "width": 1200, "height": 800 }
+      {
+        "label": "main",
+        "title": "gah",
+        "width": 1200,
+        "height": 800,
+        "dragDropEnabled": false
+      }
     ],
     "security": { "csp": null }
   },

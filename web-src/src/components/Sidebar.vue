@@ -2,7 +2,7 @@
 // 左侧抽屉:工作区固定展示(顶部独立区,不归类到历史)+ 会话历史(内容省略版预览)。
 // 全部增删改操作(切换会话/工作区、新建、改名、删除)经全局确认条二次确认(inject askConfirm)。
 // 切换/删除/改名后 emit session-changed(宿主重建 SSE 重放);列表经 refreshKey 或手动刷新重拉。
-import { inject, onMounted, ref, watch } from 'vue'
+import { inject, nextTick, onMounted, ref, watch } from 'vue'
 import { api } from '../api'
 import { extraPanels, sidebarActions } from '../registry'
 import type { ExtensionReg } from '../registry'
@@ -195,6 +195,37 @@ function forgetWorkspace(w: WorkspaceInfo): void {
   guard('删除工作区记录「' + (fmtDir(w.dir) || w.key) + '」？(不删文件夹)', true, () => void doForgetWorkspace(w))
 }
 
+// —— 打开文件夹作为工作区(桌面/Web 通用) ——
+// 浏览器安全模型下 <input type=file> 只能拿到文件名拿不到绝对路径,所以这里用路径输入;
+// 后端 SwitchDir 会 os.Chdir + 记入工作区历史 + 新建空会话 + 通知宿主同步沙箱 root。
+const addingWs = ref(false)
+const wsPath = ref('')
+const wsInput = ref<HTMLInputElement | null>(null)
+function startAddWs(): void {
+  addingWs.value = true
+  wsPath.value = ''
+  void nextTick(() => wsInput.value?.focus())
+}
+function cancelAddWs(): void {
+  addingWs.value = false
+  wsPath.value = ''
+}
+function submitAddWs(): void {
+  const dir = wsPath.value.trim().replace(/^"(.*)"$/, '$1') // 资源管理器「复制路径」带引号
+  if (!dir) return
+  guard('打开工作区「' + dir + '」？(会切换到该目录并新建会话)', false, () => void doAddWs(dir))
+}
+async function doAddWs(dir: string): Promise<void> {
+  try {
+    await api.control({ workspace: dir })
+    cancelAddWs()
+    await refresh()
+    emit('session-changed')
+  } catch (e) {
+    err.value = (e as Error).message
+  }
+}
+
 onMounted(() => {
   void refresh()
 })
@@ -214,7 +245,27 @@ defineExpose({ refresh })
       <div class="sec ws-sec">
         <div class="sec-h">
           <span>工作区</span>
-          <span class="act" data-tip="刷新列表" @click="refresh">↻</span>
+          <span class="acts">
+            <span class="act" data-tip="打开文件夹作为工作区(输入绝对路径)" @click="startAddWs">＋ 打开</span>
+            <span class="act" data-tip="刷新列表" @click="refresh">↻</span>
+          </span>
+        </div>
+        <!-- 打开文件夹:输入绝对路径 → 切换工作区(浏览器拿不到文件夹路径,故不用选择器) -->
+        <div v-if="addingWs" class="ws-add">
+          <input
+            ref="wsInput"
+            v-model="wsPath"
+            class="ws-input"
+            type="text"
+            spellcheck="false"
+            placeholder="文件夹绝对路径,如 D:\work\proj"
+            @keydown.enter="submitAddWs"
+            @keydown.esc="cancelAddWs"
+          />
+          <div class="ws-add-ops">
+            <button class="ws-btn" @click="submitAddWs">打开</button>
+            <button class="ws-btn ghost" @click="cancelAddWs">取消</button>
+          </div>
         </div>
         <div class="items">
           <div
@@ -428,6 +479,54 @@ defineExpose({ refresh })
   font-weight: 400;
   font-size: 12px;
   letter-spacing: 0;
+}
+/* 分组标题右侧动作区(多个 act 并排,不再被 space-between 拆到两端) */
+.acts {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+/* 打开文件夹:路径输入 + 打开/取消(内联在「工作区」区内) */
+.ws-add {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 2px 8px 8px;
+}
+.ws-input {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm, 6px);
+  padding: 5px 8px;
+  font-size: 12px;
+  font-family: inherit;
+}
+.ws-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+.ws-add-ops {
+  display: flex;
+  gap: 6px;
+}
+.ws-btn {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  border-radius: var(--r-sm, 6px);
+  font-size: 12px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+.ws-btn.ghost {
+  background: none;
+  color: var(--fg-faint);
+  border-color: var(--line);
 }
 .items {
   display: flex;

@@ -33,6 +33,7 @@ import (
 	"crypto/subtle"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -41,6 +42,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -474,8 +476,11 @@ func (s *Server) handleEventsWS(w http.ResponseWriter, r *http.Request) {
 // —— REST ——
 
 type inputReq struct {
-	Content     string   `json:"content"`
-	Attachments []string `json:"attachments"` // 附件本地路径(/api/attachments 返回的 Path;须位于附件目录内)
+	Content string `json:"content"`
+	// Attachments 附件标识(两种写法均接受):
+	//   ① `/attachments/<rel>`(`/api/attachments` 返回的 url,前端默认用这个);
+	//   ② 附件目录内的绝对路径(该接口返回的 path,供旧客户端/脚本兼容)。
+	Attachments []string `json:"attachments"`
 }
 
 func (s *Server) handleInput(w http.ResponseWriter, r *http.Request) {
@@ -489,12 +494,16 @@ func (s *Server) handleInput(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "空输入", http.StatusBadRequest)
 		return
 	}
-	// 附件校验(须位于附件目录且存在;防注入任意路径)
+	// 附件校验与解析(必须落在附件根内且为已存在文件;防注入任意路径)
+	resolved := make([]string, 0, len(req.Attachments))
 	for _, a := range req.Attachments {
-		if !s.validAttachment(a) {
-			http.Error(w, "附件路径非法或不可访问: "+a, http.StatusBadRequest)
+		p, aerr := s.resolveAttachment(a)
+		if aerr != nil {
+			s.log.Warn("web: 附件不可用", "input", a, "err", aerr)
+			http.Error(w, "附件不可用: "+a+"("+aerr.Error()+")", http.StatusBadRequest)
 			return
 		}
+		resolved = append(resolved, p)
 	}
 	// running 快速拒绝(TUI 同语义:回合进行中拒绝再次提交);权威占用在下方 CAS,
 	// 命令路径(/开头)不占 running。
@@ -503,7 +512,7 @@ func (s *Server) handleInput(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 附件引用文本注入:模型可见附件路径(文本类可经 file 工具读取;图片另走 A2 结构化视觉)
-	atts := attachmentList(s.cfg.AttachmentsDir, req.Attachments)
+	atts := attachmentList(s.cfg.AttachmentsDir, resolved)
 	if len(atts) > 0 {
 		var b strings.Builder
 		b.WriteString(content)
@@ -1244,7 +1253,7 @@ var attachmentMimeByExt = map[string]string{
 	".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp", ".svg": "image/svg+xml",
 }
 
-// attachmentList 将已校验的附件路径转为 sdk.Attachment(图片按扩展名标记视觉)。
+// attachmentList 将已解析的附件绝对路径转为 sdk.Attachment(图片按扩展名标记视觉)。
 // Rel=相对附件根(会话 jsonl 便携);Path=绝对路径(适配器读取视觉内容)。
 func attachmentList(root string, paths []string) []sdk.Attachment {
 	out := make([]sdk.Attachment, 0, len(paths))
@@ -1264,19 +1273,61 @@ func attachmentList(root string, paths []string) []sdk.Attachment {
 	return out
 }
 
-// validAttachment 校验提交路径位于附件目录内且为文件(防注入任意路径/目录穿越)。
-func (s *Server) validAttachment(p string) bool {
+// resolveAttachment 把提交的附件标识解析为附件根内的绝对路径(供模型读取/视觉注入)。
+// 接受两种形式:① `/attachments/<rel>` 相对标识(前端默认:与平台路径语义无关,
+// 服务端按自己的附件根解析,不受分隔符/大小写/数据根漂移影响);② 绝对路径(兼容旧客户端)。
+// 两种形式都必须落在附件根内且为已存在的普通文件(防注入任意路径/目录穿越)。
+func (s *Server) resolveAttachment(a string) (string, error) {
 	root := filepath.Clean(s.cfg.AttachmentsDir)
-	if root == "" {
+	if s.cfg.AttachmentsDir == "" || root == "." {
+		return "", errors.New("附件目录未配置")
+	}
+	if strings.TrimSpace(a) == "" {
+		return "", errors.New("空路径")
+	}
+	var p string
+	if rest, ok := strings.CutPrefix(a, "/attachments/"); ok {
+		// 相对标识:必须是纯相对路径(反斜杠/绝对路径前缀一律拒)
+		if rest == "" || strings.ContainsAny(rest, `\:`) {
+			return "", errors.New("非法相对标识")
+		}
+		p = filepath.Join(root, filepath.FromSlash(rest))
+	} else {
+		p = filepath.Clean(a)
+	}
+	if !attachmentWithinRoot(root, p) {
+		return "", errors.New("不在附件目录内")
+	}
+	fi, err := os.Stat(p)
+	if err != nil {
+		return "", errors.New("文件不存在或不可访问")
+	}
+	if fi.IsDir() {
+		return "", errors.New("是目录而不是文件")
+	}
+	return p, nil
+}
+
+// attachmentWithinRoot 判断 p 是否位于 root 之内(段级归属判定,防 `..` 越界)。
+// Windows 路径大小写不敏感(见 attachmentWithinRootFold)。
+func attachmentWithinRoot(root, p string) bool {
+	return attachmentWithinRootFold(root, p, runtime.GOOS == "windows")
+}
+
+// attachmentWithinRootFold 带显式大小写折叠开关的归属判定(便于在非 Windows 上覆盖该分支)。
+func attachmentWithinRootFold(root, p string, foldCase bool) bool {
+	r, c := filepath.Clean(root), filepath.Clean(p)
+	if foldCase {
+		r, c = strings.ToLower(r), strings.ToLower(c)
+	}
+	rel, err := filepath.Rel(r, c)
+	if err != nil {
 		return false
 	}
-	cle := filepath.Clean(p)
-	rel, err := filepath.Rel(root, cle)
-	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
-		return false
+	if rel == "." {
+		return false // 附件根目录自身不是可提交的附件
 	}
-	fi, err := os.Stat(cle)
-	return err == nil && !fi.IsDir()
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // staticHandler 静态托管:data.static_dir(开发态)优先,否则 embed dist。

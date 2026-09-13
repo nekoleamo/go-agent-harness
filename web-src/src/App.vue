@@ -76,6 +76,21 @@ async function maybeOnboard(): Promise<void> {
     /* 未装配多 provider(501):不做引导、不显示提示 */
   }
 }
+// refreshProviders 重拉 provider 数量(设置面板里增删 provider 后,首屏「还没配置模型」入口
+// 必须同步消失 —— 此前只在 maybeOnboard 里取一次,用户加完 provider 后提示仍挂着)。
+async function refreshProviders(): Promise<void> {
+  try {
+    const list = await api.providers()
+    providerCount.value = (list ?? []).length
+  } catch {
+    /* 未装配多 provider(501):不做引导、不显示提示 */
+  }
+}
+// onSettingsChanged 设置面板「已改」统一入口:状态与 provider 数一起刷新
+function onSettingsChanged(): void {
+  void refreshStats()
+  void refreshProviders()
+}
 // openProviderSettings 打开设置并定位到 Provider 段
 function openProviderSettings(): void {
   focusProvider.value = true
@@ -376,7 +391,7 @@ onUnmounted(() => {
       :focus="focusProvider ? 'provider' : undefined"
       :sched-tick="schedTick"
       @close="closeSettings"
-      @changed="refreshStats"
+      @changed="onSettingsChanged"
     />
 
     <!-- 后台任务面板 -->

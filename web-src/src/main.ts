@@ -1,6 +1,7 @@
 import { createApp } from 'vue'
 import App from './App.vue'
 import './style.css'
+import { installTips } from './tip'
 import {
   registerDefault,
   registerExtraPanel,
@@ -29,6 +30,9 @@ async function registerDocPanel(): Promise<void> {
     /* 未装配文档服务:隐藏入口(不影响其它面板) */
   }
 }
+
+// data-tip 提示层(单例 fixed 层,防 overflow 裁剪/视口溢出)
+installTips()
 
 // 装配期加载外部 UI 插件(M7.2;失败静默保持默认实现,不阻塞界面)
 void Promise.all([loadUIPlugins(), registerDocPanel()]).then(() => {

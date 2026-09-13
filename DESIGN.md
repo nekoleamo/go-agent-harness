@@ -818,6 +818,29 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 | **⑤ 全库 -race 偶发红(顺带修复)** | 全库首轮 `-race` 在 `host-schedule.TestScheduleCommand` 偶发红:`TempDir RemoveAll cleanup: schedules: directory not empty`。根因(与本轮 4 项无关、预存):`/schedule run` 触发的是**后台** `execute`,用例在 `run` 后立即 `rm`/结束,而 `execute` 写完运行记录才 `savePlan` —— 高负载(全库并行跑)下写盘落在 teardown 之后,与 TempDir 清理竞态。修法(仅测试):`run` 后等**落盘文件**出现 `last_run_at` 再继续(rename 原子,读到即完整;不用内存 `LastRunAt` 观察,它写在 savePlan 之前) | `-count=8 -race` 单包 216 项全绿;随后全库 `-count=1 -race` 连跑两次:首轮 90.57s 但因此 flake 红(先于修复)/ 次轮全绿;修复后再跑单包 6 轮 ×TestScheduleCommand 全绿 |
 | **⑥ 清单回填 + 剩余任务归档** | `docs/VERIFY.md` 按实跑证据回填:`[x]` 从 78 → **95 条**(协议层/CLI/脚本/内核沙箱级),每项方括号注明证据来源并显式标出「视觉待验」的部分;文件头加回填图例;R6「桌面壳数据根(`~/Library/Application Support/gah`)」标注**已作废(被 R8 取代)**;文末新增「剩余验收任务」段:146 条未勾按「需要什么才能跑」分 6 类(TUI 键盘 42 / Web 交互 27 / 文档预览 11 / 桌面壳与 Windows 27+18(A 表)/ 其它真机与决策 18 / 未实施 21)+ 建议过场顺序 | 逐条复核:勾选项均有本轮实跑命令或单测出处;`docs/` 不入库(.gitignore),仅本地清单 |
 
+## R12 Windows 桌面端反馈六修 ✅ (2026-09-14)
+
+> 背景:Windows 真机使用反馈 6 条(设置误关 / 首启提示不消 / 附件拖入无效与提交 400 / 超限提示常驻 / tooltip 遮挡越界 / 无法切换工作区)。
+> 约束:网页端改动依 `design-taste-frontend`(不引入裸色值,复用 token);桌面壳不新增 Rust 依赖(离线环境无 dialog 插件)。
+> 回归:web-src `vue-tsc`+`npm test`(38)+`vite build`、Go 全库 `-count=1 -race`(1489 / 66 包)、`coverage-check` COVERAGE_OK、`size-check --all` 五目标 OK(win/amd64 46.29 MiB)、真机 HTTP 探针 9/9。
+>
+| 模块 | 交付 | 验证 |
+|---|---|---|
+| **① 设置误关** | 唯一入口语义:删掉 `SettingsPanel.vue` 遮罩上的 `@click.self="emit('close')"`(点空白不再关),出口只剩 ✕ 与 **Esc**;Esc 用**捕获阶段 + stopPropagation**,避免同按触发输入框「Esc 清空」把草稿一起清掉 | 类型检查 + 静态复核(`grep @click.self` 无残留);Win 端人工 |
+| **② 首启提示不同步** | `providerCount` 原先只在 `maybeOnboard`(每会话一次)取过,设置里加完 provider 主界面仍挂「还没有配置模型」。修法:`App.vue` 新增 `refreshProviders()`(读 `/api/providers` 计数,501 静默),设置面板 `@changed` 改走 `onSettingsChanged` = `refreshStats` + `refreshProviders` | 真机 `GET /api/providers` 200;Win 端人工确认提示消失 |
+| **③ 附件(拖入 + 400)** | 两处独立根因:(a) **拖入无效** = Tauri v2 默认 `drag_drop_enabled:true` 在 WebView 层注册 OS 级拖放,HTML5 drop 事件到不了前端 → `tauri.conf.json` windows[0] 加 `"dragDropEnabled": false`(键名按 tauri-utils 2.9.3 `WindowConfig.drag_drop_enabled` 核对);(b) **提交 400「路径非法」** = 前端原样回传绝对路径,`validAttachment` 用 `filepath.Rel` 做归属判定,**Windows 大小写不敏感路径会因大小写差异被判越界**(另叠加分隔符/数据根漂移风险)。修法:前端提交改用**相对标识** `/attachments/<rel>`(`AttachmentView.url`;绝对路径仍兼容),服务端新增 `resolveAttachment()` —— 两种形式都解析成附件根内绝对路径,归属判定加 `attachmentWithinRootFold()`(Windows 折叠大小写),失败按原因分档回 400 且**服务端日志留详情**(越界/不存在/是目录/空路径) | 上传 + 相对标识提交 **202**、绝对路径兼容 **202**、越界 `/attachments/../etc/passwd` **400**(信息 `附件不可用: …(不在附件目录内)`)—— 均为重建二进制 + 真实数据根的真机 HTTP 探针;新增 `resolveAttachment` 边界断言 + `attachmentWithinRootFold` 大小写两分支(ubuntu CI 也可回归) |
+| **④ 超限提示常驻** | `InputBar.attErr` 只是纯文本行,无关闭也无超时,换完文件旧提示还挂着。修法:`setAttErr()`(写入即起 **10s** 自动消失定时器)+ `clearAttErr()`(× 按钮/移除附件/提交成功/卸载时清),提示行右侧加关闭按钮(样式沿用 token) | 类型检查 + 前端构建;Win 端人工 |
+| **⑤ tooltip 遮挡/越界** | 根因:`[data-tip]:hover::after` 伪元素挂在触发器**内部**,祖先 `overflow:hidden`(设置抽屉/侧栏滚动区/输入外壳)直接裁掉;居中定位在视口边缘又横向溢出。修法:删伪元素,改**单例 fixed 层**(新 `web-src/src/tip.ts`,`main.ts` 挂载前 `installTips()`):按触发器 rect 定位 → 视口夹取 → 上方不够翻下方 → 滚动重算 / 尺寸变化与点按收起;文案一律 `textContent`(不解析 HTML) | 构建产物核对:dist CSS 含 `.gah-tip` 且**无**旧 `[data-tip]:hover::after`;Win 端人工目视 |
+| **⑥ 无切换工作区入口** | `Sidebar.vue`「工作区」区原本只有列表/切换/删记录,**没有「打开文件夹」**。修法:区标题加「＋ 打开」→ 内联绝对路径输入(回车/打开/取消,Esc 取消,自动剥掉资源管理器「复制路径」的引号)→ 经全局确认条 → `POST /api/control{workspace}`(后端 `SwitchDir`:Chdir + 记入工作区历史 + 新建会话 + 通知宿主同步沙箱 root)→ 刷新列表 + 重建 SSE。**不用原生文件夹选择器**:浏览器安全模型拿不到绝对路径,且离线环境无法加 `tauri-plugin-dialog`(crates 缓存无该包) | 真机:切换 200 且 `GET /api/workspaces` 立即含新目录 `…/wsdemo`;[非移动端通用:浏览器/桌面同一实现] |
+
+### 未实施 / 待人工验(诚实登记)
+
+| 项 | 状态 |
+|---|---|
+| Windows 真机 6 项人工复核 | ⏳ 需 Win 机器(清单见 `docs/VERIFY.md` 文末「剩余验收任务」B 段) |
+| 原生文件夹选择器(桌面端) | ⏳ 需网络加 `tauri-plugin-dialog`(现已用路径输入覆盖同一能力) |
+| 拖放非附件文件(图片直贴等)到窗口的其它落点 | ⏳ 本轮只放开 WebView 拖放,业务落点仍仅输入区 |
+
 ## 15. 风险与权衡
 
 | 风险 | 缓解 |
