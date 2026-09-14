@@ -194,3 +194,92 @@ jobs:
           : > desktop/src-tauri/binaries/gah-x86_64-pc-windows-msvc.exe
       - name: cargo check(桌面壳;Windows 是本项目真机主战场)
         run: cd desktop/src-tauri && cargo check --locked
+
+  # macOS 平台自动化。此前只在 ubuntu / windows 上跑,macOS 零覆盖 —— 而 macOS 有
+  # 独有的内核级沙箱实现(seatbelt / sandbox-exec,plugins/tool/tool-shell/kernel_darwin.go)
+  # 与独有的路径语义(/var → /private/var 符号链接),且维护机本身就是 macOS。
+  # 刻意不跑:覆盖率门与体积门(阈值按 linux/amd64 基线定,平台分支差异会误报)。
+  test-macos:
+    runs-on: macos-14 # Apple Silicon(arm64),与 release-desktop.yml 的打包机一致
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web-src/package-lock.json
+      - name: 重建外部插件(gzip embed;darwin/arm64 在发行矩阵内)
+        run: bash scripts/gen-extplugins.sh
+      - name: 重建前端产物(vue-tsc + vite build → web/dist,漏则 go:embed 编译失败)
+        run: bash scripts/gen-web.sh
+      - name: 前端逻辑单测(node 内置运行器,零新增依赖)
+        run: cd web-src && npm test
+      - name: go vet(sdk 为独立 module,go.work 下根目录 ./... 不含它,须单独跑)
+        run: |
+          go vet ./...
+          (cd sdk && go vet ./...)
+      - name: staticcheck(与 ubuntu job 同版本,保证本地/CI 一致)
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@2026.2.1
+          "$(go env GOPATH)/bin/staticcheck" ./...
+          (cd sdk && "$(go env GOPATH)/bin/staticcheck" ./...)
+      - name: go test -race(macOS 自带 clang,-race 无需额外工具链)
+        run: |
+          go test -race ./...
+          (cd sdk && go test -race ./...)
+      - name: 构建 darwin/arm64 主包并校验架构
+        run: |
+          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o gah ./cmd/gah
+          # Mach-O 64 位:前 4 字节 magic(cf fa ed fe)+ cputype@4(arm64 = 0c 00 00 01)。
+          # od 会用双空格对齐列,先去空白再做紧凑匹配。
+          head -c 8 gah | od -An -tx1 | tr -d ' \n' | grep -q 'cffaedfe0c000001' \
+            || { echo "darwin/arm64 主包 cputype 不符"; head -c 8 gah | od -An -tx1; exit 1; }
+          echo "darwin/arm64 主包架构 OK"
+      - name: 裸机冒烟(env -i 纯净环境启动)
+        run: |
+          env -i HOME="$(mktemp -d)" PATH="$PATH" ./gah --profile headless --ephemeral --dump-config >/dev/null
+          echo "macOS 裸机启动 OK"
+      - name: 裸机真实回合(覆盖 kernel_darwin.go 的 seatbelt 包装)
+        run: |
+          # seatbelt 是 macOS 独有分支:platformWrap 生成 sandbox-exec profile。
+          # sandbox-exec 不可用时走 warnUnavailable 告警路径(不阻断),所以这里只断言
+          # 真实回合能跑完,不断言包装一定生效。
+          env -i HOME="$(mktemp -d)" PATH="$PATH" ./gah --profile headless --ephemeral -input "hi" >/dev/null
+          echo "macOS headless 真实回合 OK"
+      - name: WebSocket 通道冒烟(M7.3:WS 事件载体 + 会话帧)
+        run: |
+          env -i HOME="$(mktemp -d)" PATH="$PATH" GAH_WEB_OPEN=0 ./gah --profile web --ephemeral &
+          GAH_PID=$!
+          sleep 2
+          go run ./scripts/ws-smoke.go
+          kill $GAH_PID 2>/dev/null || true
+          echo "macOS WS 通道冒烟 OK"
+
+  desktop-shell-macos:
+    # 与 windows 侧 desktop-shell 对称:此前桌面壳只在 windows-latest 上编译,macOS 侧
+    # 编译错误要等 tag 触发 release-desktop.yml 才暴露。只 cargo check。
+    runs-on: macos-14
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+      - name: 移除项目级 cargo 镜像(海外 runner 走仓库内的清华 git 镜像反而慢/易超时,回官方 sparse)
+        run: rm -f desktop/.cargo/config.toml
+      - name: 占位 sidecar(tauri-build 的 build.rs 会 copy_binaries 校验 externalBin,缺失直接失败)
+        run: |
+          mkdir -p desktop/src-tauri/binaries
+          : > desktop/src-tauri/binaries/gah-aarch64-apple-darwin
+      - name: cargo check(桌面壳;macOS 侧编译门)
+        run: cd desktop/src-tauri && cargo check --locked
