@@ -214,6 +214,12 @@ func (j *Jobs) Submit(cmdline string) (string, error) {
 	go func() {
 		cmd := exec.Command(sh, "-c", cmdline)
 		setupCmdGroup(cmd)                                // 独立进程组(组杀可连带 sh -c 子进程,防孤儿)
+		// WaitDelay:命令进程退出后若它派生的子进程还开着 stdout/stderr 管道
+		// (典型 sh -c "sleep 30" —— sh 被杀而 sleep 还活着),cmd.Wait 会阻塞在 I/O
+		// 上永不返回,Jobs.Kill 等满 8s 超时也拿不到 e.done。3s 兜底后强制关管道
+		// 并返回。Windows 侧 killCmdGroup 已用 taskkill /T 尽力杀树,这里是不依赖
+		// 它成功的最后一道保险;POSIX 组杀通常瞬间完成,WaitDelay 不生效。
+		cmd.WaitDelay = 3 * time.Second
 		cmd.Env = sdk.ShellExecEnv(sdk.SanitizedEnv(nil)) // 凭据隔离 + MSYS 路径转换开关(见 sdk/shellpath.go)
 		var buf cappedBuffer
 		cmd.Stdout = &buf

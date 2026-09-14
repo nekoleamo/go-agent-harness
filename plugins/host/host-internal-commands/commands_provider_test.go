@@ -822,9 +822,11 @@ func TestCommandsExecuteWorkspace(t *testing.T) {
 	if !strings.Contains(out, "已切换工作区 → "+base) {
 		t.Fatalf("哨兵应被剥离: %q", out)
 	}
-	// ~ 展开
+	// ~ 展开测试的假家:Windows 上 os.UserHomeDir 读 USERPROFILE 而不是 HOME,
+	// 只设 HOME 会拿到真实用户目录(C:\Users\runneradmin),两条都要设。
 	uh := t.TempDir()
 	t.Setenv("HOME", uh)
+	t.Setenv("USERPROFILE", uh)
 	out, err = run(t, cmds, "workspace", "~")
 	if err != nil {
 		t.Fatal(err)
