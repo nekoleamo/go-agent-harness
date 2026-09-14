@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nekoleamo/go-agent-harness/internal/testutil"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -573,7 +574,7 @@ func TestBridgeReloadAddsAndIgnoresPaths(t *testing.T) {
 	}
 
 	buildExternalPlugin(t, dir) // 运行期新落地的 tool-echo
-	path := filepath.Join(dir, "tool-echo")
+	path := filepath.Join(dir, testutil.ExeName("tool-echo"))
 	b.reload(path)
 	if b.entries[path] == nil {
 		t.Fatal("reload 应加载新出现的插件二进制")
@@ -692,11 +693,11 @@ func main() {
 	run := func(t *testing.T, pass string) string {
 		t.Helper()
 		dir := t.TempDir()
-		src, err := os.ReadFile(filepath.Join(bin, "tool-envdump"))
+		src, err := os.ReadFile(filepath.Join(bin, testutil.ExeName("tool-envdump")))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, "tool-envdump"), src, 0o755); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, testutil.ExeName("tool-envdump")), src, 0o755); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.Remove(dump); err != nil && !os.IsNotExist(err) {

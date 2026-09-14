@@ -111,7 +111,7 @@ func TestExternalPluginHotReload(t *testing.T) {
 		t.Fatalf("初始调用失败: %v %+v", err, res)
 	}
 	// touch 触发 watcher(fsnotify write 事件 → debounce → 重载)
-	if err := os.Chtimes(filepath.Join(dir, "tool-echo"), time.Now(), time.Now()); err != nil {
+	if err := os.Chtimes(filepath.Join(dir, testutil.ExeName("tool-echo")), time.Now(), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	// 等待重载完成(300ms debounce + 新进程启动),工具应仍可用
@@ -282,7 +282,7 @@ func TestCrashAutoRespawn(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(b.closeAll)
-	path := filepath.Join(dir, "tool-echo")
+	path := filepath.Join(dir, testutil.ExeName("tool-echo"))
 
 	res, err := tools.Execute(context.Background(), "echo", `{"text":"before"}`)
 	if err != nil || res.Error != "" {

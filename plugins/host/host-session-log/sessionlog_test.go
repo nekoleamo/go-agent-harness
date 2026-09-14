@@ -381,7 +381,8 @@ func TestHistorySidecarPath(t *testing.T) {
 		t.Fatalf("内存会话无 sidecar: %q", got)
 	}
 	got := historySidecar("/a/b/sess.jsonl")
-	if got != "/a/b/sess.jsonl.history" {
+	// sidecar 由 filepath 派生,Windows 上分隔符是 \,期望值同理比较。
+	if got != filepath.FromSlash("/a/b/sess.jsonl.history") {
 		t.Fatalf("sidecar 路径: %q", got)
 	}
 }

@@ -65,7 +65,8 @@ func TestFileReadWrite(t *testing.T) {
 	}
 	// 相对路径落在 workspace 内
 	p := out["path"].(string)
-	if !strings.HasPrefix(p, ws) || !strings.HasSuffix(p, "a/b.txt") {
+	// 后缀要按平台分隔符比:Windows 上落盘路径是 a\b.txt,直接比 "a/b.txt" 会失败。
+	if !strings.HasPrefix(p, ws) || !strings.HasSuffix(p, filepath.FromSlash("a/b.txt")) {
 		t.Fatalf("路径应解析到 workspace 内: %s", p)
 	}
 	out, err = call(t, c, "file_read", `{"path":"a/b.txt"}`)

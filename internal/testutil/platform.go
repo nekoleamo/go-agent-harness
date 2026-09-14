@@ -61,3 +61,22 @@ func SkipNoPTY(t *testing.T) {
 		t.Skip("Windows 未实现 PTY(产品侧显式 unsupported;windows/arm64 发行待 PTY 进度)")
 	}
 }
+
+// SkipNoPosixPath 跳过用 POSIX 绝对路径表达「工作区外」的用例。
+//
+// 与 SkipNoPTY 的区别:这是**测试无法表达意图**,不是产品缺能力。
+// Windows 的 filepath 不把 "/tmp/x" 当绝对路径(没有盘符),而这类用例正是用
+// "/tmp/x"(或 "/c/x"、"/usr/bin/x")来构造「根外写目标」。
+// withWinSemantics(false) 只能翻转产品侧**显式检查**的语义,翻不动 stdlib 的
+// filepath —— 于是同一命令在 Windows 上判定为「相对路径、必在根内」而放行,
+// 与用例期望的「绝对路径、越界、拒绝」正好相反。
+//
+// 这是平台固有差异,不是回归;POSIX 语义的完整覆盖由 ubuntu job 承担,
+// Windows 专有语义(MSYS 根相对路径 /c/x、大小写折叠)由
+// shellpaths_winsemantics_test.go 与 pathpolicy_win_test.go 在 Windows 上真跑。
+func SkipNoPosixPath(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("用例用 POSIX 绝对路径表达「工作区外」,Windows 的 filepath 不认其为绝对路径")
+	}
+}

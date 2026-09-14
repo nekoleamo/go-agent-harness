@@ -6,6 +6,8 @@ package policyguard
 import (
 	"strings"
 	"testing"
+
+	"github.com/nekoleamo/go-agent-harness/internal/testutil"
 )
 
 // withWinSemantics 临时切换 Windows 命令语义开关(测试结束自动还原)。
@@ -14,6 +16,20 @@ func withWinSemantics(t *testing.T, on bool) {
 	old := shellWinSemantics
 	shellWinSemantics = on
 	t.Cleanup(func() { shellWinSemantics = old })
+}
+
+// posixSemantics 组合「固定 POSIX 语义 + Windows 上跳过」:用于以 "/tmp/x"、"/etc/passwd"
+// 这类 POSIX 绝对路径表达「工作区外」的用例。
+//
+// 为什么必须跳过而不是只翻转开关:Windows 的 filepath 不把 "/tmp/x" 当绝对路径(没有
+// 盘符),而 withWinSemantics(false) 只能翻转产品侧**显式检查**,翻不动 stdlib ——
+// 同一命令于是被判成「根内相对路径」而放行,与用例期望正好相反。这是平台固有差异,
+// 不是回归:POSIX 语义由 ubuntu job 完整覆盖,而 Windows 专有语义(MSYS 根相对路径
+// /c/x、大小写折叠)由本文件与 pathpolicy_win_test.go 在 Windows 上真跑。
+func posixSemantics(t *testing.T) {
+	t.Helper()
+	testutil.SkipNoPosixPath(t)
+	withWinSemantics(t, false)
 }
 
 // TestWinRootRelativePath 只有「Windows 语义 + 无卷名 + 前导斜杠」才算 MSYS 根相对路径。

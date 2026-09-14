@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/nekoleamo/go-agent-harness/internal/testutil"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -82,6 +83,8 @@ func TestValidateReadDeniesCredentials(t *testing.T) {
 // TestCheckPathArgsGating:宿主侧按工具名 + path 参数裁决。
 func TestCheckPathArgsGating(t *testing.T) {
 	withCaseFold(t, false)
+	// 用例用 /abs 这类 POSIX 绝对路径表达「workspace 外」;Windows 的 filepath 不认其为绝对路径。
+	testutil.SkipNoPosixPath(t)
 	ws := t.TempDir()
 	p := DefaultSandbox(ws)
 	if err := p.CheckPathArgs("file_write", `{"path":"/etc/passwd","content":"x"}`); err == nil {
@@ -182,6 +185,8 @@ func (s *stubFileTool) Execute(_ context.Context, args string) (any, error) {
 // extplugins/tool-basic 的 NewTools() 硬编码 sb=nil)。
 func TestGuardVetoesFileToolsOutsideWorkspace(t *testing.T) {
 	withCaseFold(t, false)
+	// 用例用 /etc/passwd 表达「workspace 外」,理由同 TestCheckPathArgsGating。
+	testutil.SkipNoPosixPath(t)
 	c := buildTools(t, nil, nil) // 默认:smart + workspace-write
 	var tools sdk.ToolRegistry
 	if err := c.Inject("ctx.tools", &tools); err != nil {

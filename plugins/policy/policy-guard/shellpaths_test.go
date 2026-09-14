@@ -46,7 +46,7 @@ func fmtReads(ps []shellPath) string {
 
 // TestShellCmdPathsWrites 写目标识别(重定向 / 写命令 / 嵌套 / 无法裁决形态)。
 func TestShellCmdPathsWrites(t *testing.T) {
-	withWinSemantics(t, false)
+	posixSemantics(t)
 	cases := []struct {
 		name string
 		cmd  string
@@ -122,7 +122,7 @@ func TestShellCmdPathsReads(t *testing.T) {
 
 // TestCheckShellCommandWorkspaceWrite workspace-write 档:写目标限工作区内 + 关键误拦豁免。
 func TestCheckShellCommandWorkspaceWrite(t *testing.T) {
-	withWinSemantics(t, false)
+	posixSemantics(t)
 	ws := t.TempDir()
 	p := DefaultSandbox(ws)
 	inside := filepath.Join(ws, "out.txt")
@@ -208,7 +208,7 @@ func TestCheckShellCommandModes(t *testing.T) {
 
 // TestCheckShellCommandUnresolvableMessage 不可裁决写的报错要说清原因与出路(可操作)。
 func TestCheckShellCommandUnresolvableMessage(t *testing.T) {
-	withWinSemantics(t, false)
+	posixSemantics(t)
 	p := DefaultSandbox(t.TempDir())
 	err := p.CheckShellCommand(`echo x > $HOME/f`)
 	if err == nil {
@@ -225,7 +225,7 @@ func TestCheckShellCommandUnresolvableMessage(t *testing.T) {
 
 // TestShellCmdPathsOutputFlags 输出型 flag / 安装目标 / git clone 位置目标的写识别(R10 ① 收尾)。
 func TestShellCmdPathsOutputFlags(t *testing.T) {
-	withWinSemantics(t, false)
+	posixSemantics(t)
 	cases := []struct {
 		name string
 		cmd  string
@@ -285,7 +285,7 @@ func TestShellCmdPathsOutputFlags(t *testing.T) {
 
 // TestCheckShellCommandOutputFlags workspace-write 档:输出型写目标同样受限,且不放松原有判定。
 func TestCheckShellCommandOutputFlags(t *testing.T) {
-	withWinSemantics(t, false)
+	posixSemantics(t)
 	ws := t.TempDir()
 	p := DefaultSandbox(ws)
 	inside := filepath.Join(ws, "out.bin")
@@ -418,7 +418,7 @@ func TestShellCmdPathsNestedAndPrefixes(t *testing.T) {
 
 // TestShellCmdPathsCdState cd 后的相对路径可定位性(唯一依据:是否可能离开工作区)。
 func TestShellCmdPathsCdState(t *testing.T) {
-	withWinSemantics(t, false)
+	posixSemantics(t)
 	cases := []struct {
 		name string
 		cmd  string
@@ -621,7 +621,7 @@ func TestShellCmdPathsFindExecPlaceholder(t *testing.T) {
 
 // TestCheckShellCommandSecondRound workspace-write 档:第二轮写目标同样受限,且**不新增误拦**。
 func TestCheckShellCommandSecondRound(t *testing.T) {
-	withWinSemantics(t, false)
+	posixSemantics(t)
 	ws := t.TempDir()
 	p := DefaultSandbox(ws)
 	inside := filepath.Join(ws, "out.bin")

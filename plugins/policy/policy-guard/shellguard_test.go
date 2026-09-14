@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nekoleamo/go-agent-harness/internal/testutil"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -53,7 +54,9 @@ func TestGuardShellWriteOutsideWorkspaceVetoed(t *testing.T) {
 	withWinSemantics(t, false)
 	outside := filepath.Join(t.TempDir(), "out.txt")
 	c, sh := buildShellEnv(t, nil, nil) // smart 档且无确认通道:`echo` 不命中危险模式
-	res := execTool(t, c, "shell", shellArgs("echo hi > "+outside))
+	// 路径必须经 ShellPath 再拼进命令:Windows 上反斜杠是 shell 转义符
+	// (`> C:\Users\a` 会被写成 `C:Usersa`),正斜杠在 Git Bash 下同等可用。
+	res := execTool(t, c, "shell", shellArgs("echo hi > "+testutil.ShellPath(outside)))
 	if res.Error == "" || !strings.Contains(res.Error, "写目标被拒") {
 		t.Fatalf("越界写应被路径层拒绝,got %+v", res)
 	}
@@ -73,7 +76,7 @@ func TestGuardShellWriteOutsideWorkspaceVetoed(t *testing.T) {
 
 // TestGuardShellWriteMatrixApproved 审批已批准(危险模式层放行)后,路径层仍独立裁决。
 func TestGuardShellWriteMatrixApproved(t *testing.T) {
-	withWinSemantics(t, false)
+	posixSemantics(t)
 	cases := []struct {
 		name    string
 		cmd     string
