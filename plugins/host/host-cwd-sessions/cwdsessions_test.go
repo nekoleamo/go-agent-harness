@@ -468,6 +468,11 @@ func TestUnrecordProject(t *testing.T) {
 
 func TestSwitchDir(t *testing.T) {
 	orig, _ := os.Getwd()
+	// 用裸 os.Chdir + defer 而不是 t.Chdir 还原 cwd:t.Chdir 内部会 os.Open(".")
+	// 并把这个目录句柄保留到测试 cleanup —— Windows 上「被打开的目录」不能删,
+	// t.TempDir() 的 RemoveAll 会对 proj-a 报 unlinkat Access is denied。
+	// defer 在测试函数返回时执行,先于 t.Cleanup,所以还原肯定赶在删目录之前。
+	defer func() { _ = os.Chdir(orig) }()
 	tmp := t.TempDir()
 	if err := os.Setenv("GAH_HOME", tmp); err != nil {
 		t.Fatal(err)
@@ -517,7 +522,6 @@ func TestSwitchDir(t *testing.T) {
 	if len(emitted) != 1 {
 		t.Fatalf("同项目切换不应重复广播,got %v", emitted)
 	}
-	t.Chdir(orig) // 中途恢复原 cwd(下方"同项目 touch"还会再切回 proj-a)
 	recs := svc.RecentProjects()
 	if len(recs) != 1 || recs[0].Dir != rp {
 		t.Fatalf("记录 dir 应为归一化真实路径: %+v", recs)
@@ -526,12 +530,6 @@ func TestSwitchDir(t *testing.T) {
 	if _, err := svc.SwitchDir(filepath.Join(tmp, "no-such-dir")); err == nil {
 		t.Fatalf("不存在目录应显式失败")
 	}
-
-	// 结束前必须把 cwd 还原:SwitchDir 头一行就无条件 os.Chdir(dir),上面那次
-	// 「同项目 touch」又把 cwd 切回了 proj-a —— Windows 不允许删除当前工作目录,
-	// 不复原会让 t.TempDir() 清理时报 unlinkat Access is denied(POSIX 无此限制)。
-	// 放在最后注册,cleanup 的 LIFO 顺序保证它先于 TempDir 的 RemoveAll 执行。
-	t.Chdir(orig)
 }
 
 // TestSessionSwitchEmitted Open/New 广播 cwd/session-switched(B3 命令下沉 UI 刷新驱动)。
