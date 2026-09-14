@@ -170,3 +170,27 @@ jobs:
             exit 1
           fi
           echo "WS 通道 + 优雅停机 OK"
+
+  desktop-shell:
+    # 桌面壳(Rust)编译门:此前只有 tag 触发的 release-desktop.yml 才编译它,日常 push 不会
+    # 发现 Rust 侧编译错误(排查 Windows 真机托盘/升级问题时踩到过)。只 cargo check:足以
+    # 拦住编译错误,耗时远低于完整 bundle。踩过的两个坑都写在步骤注释里。
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+      - name: 移除项目级 cargo 镜像(海外 runner 走仓库内的清华 git 镜像反而慢/易超时,回官方 sparse)
+        run: rm -f desktop/.cargo/config.toml
+      - name: 占位 sidecar(tauri-build 的 build.rs 会 copy_binaries 校验 externalBin,缺失直接失败)
+        # 只 check 不打包,占位内容无关紧要;真实侧车由 release-desktop.yml / gen-desktop.sh 产出
+        run: |
+          mkdir -p desktop/src-tauri/binaries
+          : > desktop/src-tauri/binaries/gah-x86_64-pc-windows-msvc.exe
+      - name: cargo check(桌面壳;Windows 是本项目真机主战场)
+        run: cd desktop/src-tauri && cargo check --locked
