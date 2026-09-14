@@ -87,9 +87,15 @@ func TestConverterLegacyOfficeHighFidelity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PDF 资产应可取回: %v", err)
 	}
-	defer rc.Close()
 	if mimeType != "application/pdf" {
 		t.Fatalf("资产 MIME 应为 PDF: %s", mimeType)
+	}
+	// 立即关掉:下面要让同源第二次转换覆盖这个缓存产物,而 Windows 不允许
+	// os.Rename 替换已被打开的文件 —— 挂在 defer 上会活到测试结束,第二次预览就
+	// 退化成「外部转换器回退」,pdf_asset 丢失(POSIX 允许 rename 覆盖已打开文件,
+	// 所以本地永远看不到)。
+	if err := rc.Close(); err != nil {
+		t.Fatal(err)
 	}
 	// 缓存复用:同源同 mtime → 同一产物路径(不重转)
 	first := v.Meta["pdf_asset"]

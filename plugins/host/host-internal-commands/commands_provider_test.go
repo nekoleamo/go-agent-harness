@@ -515,11 +515,17 @@ func TestCommandsExecuteModel(t *testing.T) {
 	if ms.curModel != "deepseek-chat" {
 		t.Fatalf("纯模型名应生效: %q", ms.curModel)
 	}
-	// 持久化失败不致命:返回提示而非错误(provider.yaml 目录被占为文件)
-	if err := os.RemoveAll(filepath.Join(home, "config")); err != nil {
+	// 持久化失败不致命:返回提示而非错误(provider.yaml 被占为目录 → 读也失败)。
+	//
+	// 不用「把 config 目录换成文件」那种造法:Windows 上读它下面的路径回
+	// ERROR_PATH_NOT_FOUND,os.IsNotExist 为真 → LoadFile 把它当成「文件不存在」
+	// 返回空 File → UpdateModel 命中 idx<0 的静默分支,提示就消失了(POSIX 回
+	// ENOTDIR,IsNotExist 为假,所以本地一直过)。占成目录两条平台都是硬错误。
+	cfgDir := filepath.Join(home, "config")
+	if err := os.RemoveAll(cfgDir); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(home, "config"), []byte("x"), 0o644); err != nil {
+	if err := os.MkdirAll(filepath.Join(cfgDir, "provider.yaml"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	out, err := run(t, cmds, "model", "m2")
