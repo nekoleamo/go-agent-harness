@@ -19,6 +19,7 @@ import (
 	"github.com/nekoleamo/go-agent-harness/core/ctx"
 	"github.com/nekoleamo/go-agent-harness/core/event"
 	"github.com/nekoleamo/go-agent-harness/core/plugin"
+	"github.com/nekoleamo/go-agent-harness/internal/testutil"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-commands"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-tools"
 	"github.com/nekoleamo/go-agent-harness/sdk"
@@ -317,7 +318,7 @@ func buildTempCmdPlugin(t *testing.T, dir, bin, body string) {
 	if err := os.WriteFile(src, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("go", "build", "-o", filepath.Join(dir, bin), src)
+	cmd := exec.Command("go", "build", "-o", filepath.Join(dir, testutil.ExeName(bin)), src)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("编译临时命令插件失败: %v\n%s", err, out)

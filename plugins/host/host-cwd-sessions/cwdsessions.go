@@ -362,6 +362,12 @@ func (s *Service) SwitchDir(dir string) (string, error) {
 	if dir == "" {
 		return "", fmt.Errorf("cwdsessions: 缺工作区目录")
 	}
+	// 归一化符号链接与 Windows 8.3 短名(同 tui /workspace):下方 key 由本路径派生,
+	// 不归一化会让同一目录在不同形态下产生两个 key(工作区历史重复)。
+	// 解析失败回退原值,由 Chdir 报出具体错误。
+	if r, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = r
+	}
 	if err := os.Chdir(dir); err != nil {
 		return "", fmt.Errorf("cwdsessions: 工作区目录不可用 %s: %w", dir, err)
 	}

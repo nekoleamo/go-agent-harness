@@ -3,6 +3,7 @@ package toolfiles
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -104,11 +105,11 @@ func TestSandboxWorkspaceEscape(t *testing.T) {
 	outside := t.TempDir()
 	c := buildEnv(t, ws, sdk.SandboxWorkspace)
 
-	out, _ := call(t, c, "file_write", `{"path":"`+filepath.Join(outside, "o.txt")+`","content":"x"}`)
+	out, _ := call(t, c, "file_write", fmt.Sprintf(`{"path":%q,"content":"x"}`, filepath.Join(outside, "o.txt")))
 	if out["error"] == nil {
 		t.Fatalf("写 workspace 外应被拒绝: %v", out)
 	}
-	out, _ = call(t, c, "file_read", `{"path":"`+filepath.Join(outside, "o.txt")+`","content":"x"}`)
+	out, _ = call(t, c, "file_read", fmt.Sprintf(`{"path":%q,"content":"x"}`, filepath.Join(outside, "o.txt")))
 	if out["error"] == nil {
 		t.Fatal("读 workspace 外应被拒绝")
 	}
@@ -143,7 +144,7 @@ func TestSandboxReadOnly(t *testing.T) {
 func TestFullAccess(t *testing.T) {
 	outside := t.TempDir()
 	c := buildEnv(t, t.TempDir(), sdk.SandboxFullAccess)
-	out, err := call(t, c, "file_write", `{"path":"`+filepath.Join(outside, "f.txt")+`","content":"any"}`)
+	out, err := call(t, c, "file_write", fmt.Sprintf(`{"path":%q,"content":"any"}`, filepath.Join(outside, "f.txt")))
 	if err != nil || out["error"] != nil {
 		t.Fatalf("full-access 写外部应放行: %v %v", err, out)
 	}

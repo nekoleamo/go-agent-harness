@@ -17,6 +17,7 @@ import (
 
 	"github.com/creack/pty"
 
+	"github.com/nekoleamo/go-agent-harness/internal/testutil"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -28,6 +29,8 @@ func runTUIViaPty(t *testing.T, bin string, env []string) (*os.File, *exec.Cmd, 
 // runTUIViaPtyArgs 带启动参数(如 --profile tui)的 pty 启动。
 func runTUIViaPtyArgs(t *testing.T, bin string, env []string, args ...string) (*os.File, *exec.Cmd, chan string) {
 	t.Helper()
+	// Windows 未实现 PTY(creack/pty 在该平台返回 unsupported)→ 平台化跳过
+	testutil.SkipNoPTY(t)
 	cmd := exec.Command(bin, args...)
 	cmd.Env = env
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 80})
@@ -347,7 +350,7 @@ func probeDataDir(t *testing.T, bin string) string {
 // 构建缓存命中后重复调用近乎零成本。
 func buildGahCurrent(t *testing.T) string {
 	t.Helper()
-	out := filepath.Join(t.TempDir(), "gah")
+	out := filepath.Join(t.TempDir(), testutil.ExeName("gah"))
 	cmd := exec.Command("go", "build", "-o", out, "../cmd/gah")
 	cmd.Dir = "."
 	if b, err := cmd.CombinedOutput(); err != nil {
@@ -388,6 +391,7 @@ func writeProbeSession(path string, n int) {
 // runTUIViaPtyWorkingDir 指定工作目录启动 pty。
 func runTUIViaPtyWorkingDir(t *testing.T, bin string, env []string, dir string) (*os.File, *exec.Cmd, chan string) {
 	t.Helper()
+	testutil.SkipNoPTY(t)
 	cmd := exec.Command(bin)
 	cmd.Env = env
 	cmd.Dir = dir

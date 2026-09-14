@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nekoleamo/go-agent-harness/internal/testutil"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -208,7 +209,7 @@ func TestKernelSandboxBlocksIndirectWrites(t *testing.T) {
 	outside := t.TempDir()
 
 	// ① 工作区内写:放行(内核沙箱不能把正常开发流也拦掉)
-	if out, err := runWrapped(t, sdk.SandboxWorkspace, ws, "echo x > "+ws+"/in.txt"); err != nil {
+	if out, err := runWrapped(t, sdk.SandboxWorkspace, ws, "echo x > "+testutil.ShellPath(filepath.Join(ws, "in.txt"))); err != nil {
 		t.Fatalf("工作区内写应放行,却失败: %v\n%s", err, out)
 	}
 	if _, err := os.Stat(filepath.Join(ws, "in.txt")); err != nil {
@@ -217,7 +218,7 @@ func TestKernelSandboxBlocksIndirectWrites(t *testing.T) {
 
 	// ② 工作区外写:拒绝且文件不存在
 	target := filepath.Join(outside, "out.txt")
-	if out, err := runWrapped(t, sdk.SandboxWorkspace, ws, "echo x > "+target); err == nil {
+	if out, err := runWrapped(t, sdk.SandboxWorkspace, ws, "echo x > "+testutil.ShellPath(target)); err == nil {
 		t.Fatalf("工作区外写应被拒,却成功:%s", out)
 	}
 	if _, err := os.Stat(target); err == nil {
@@ -241,7 +242,7 @@ func TestKernelSandboxBlocksIndirectWrites(t *testing.T) {
 	if herr == nil && home != "" {
 		probe := filepath.Join(home, ".gah_kernel_probe_"+strconv.Itoa(os.Getpid()))
 		t.Cleanup(func() { _ = os.Remove(probe) })
-		if out, err := runWrapped(t, sdk.SandboxWorkspace, ws, "echo x > "+probe); err == nil {
+		if out, err := runWrapped(t, sdk.SandboxWorkspace, ws, "echo x > "+testutil.ShellPath(probe)); err == nil {
 			t.Fatalf("家目录写应被拒,却成功:%s", out)
 		}
 		if _, err := os.Stat(probe); err == nil {
@@ -271,7 +272,7 @@ func TestKernelSandboxReadOnlyMode(t *testing.T) {
 	}
 
 	// ① 工作区内写:read-only 档一律拒
-	if out, err := runWrapped(t, sdk.SandboxReadOnly, ws, "echo x > "+ws+"/ro.txt"); err == nil {
+	if out, err := runWrapped(t, sdk.SandboxReadOnly, ws, "echo x > "+testutil.ShellPath(filepath.Join(ws, "ro.txt"))); err == nil {
 		t.Fatalf("read-only 档工作区内写应被拒,却成功:%s", out)
 	}
 	if _, err := os.Stat(filepath.Join(ws, "ro.txt")); err == nil {
@@ -294,7 +295,7 @@ func TestKernelSandboxFullAccessUnwrapped(t *testing.T) {
 	kernelTestEnv(t)
 	outside := t.TempDir()
 	target := filepath.Join(outside, "full.txt")
-	if out, err := runWrapped(t, sdk.SandboxFullAccess, t.TempDir(), "echo x > "+target); err != nil {
+	if out, err := runWrapped(t, sdk.SandboxFullAccess, t.TempDir(), "echo x > "+testutil.ShellPath(target)); err != nil {
 		t.Fatalf("full-access 档应放行任意写: %v\n%s", err, out)
 	}
 	if _, err := os.Stat(target); err != nil {
@@ -329,7 +330,7 @@ func TestKernelSandboxWithoutGahHome(t *testing.T) {
 	}
 	// 内核层仍必须生效(不能为了修自举而放行越界写)
 	outside := filepath.Join(t.TempDir(), "escaped.txt")
-	if out, err := runWrapped(t, sdk.SandboxWorkspace, ws, "echo x > "+outside); err == nil {
+	if out, err := runWrapped(t, sdk.SandboxWorkspace, ws, "echo x > "+testutil.ShellPath(outside)); err == nil {
 		t.Fatalf("越界写竟成功(内核层未生效): %s", out)
 	}
 	if _, err := os.Stat(outside); err == nil {
@@ -350,7 +351,7 @@ func TestShellToolAppliesKernelSandbox(t *testing.T) {
 
 	tool := &ShellTool{timeout: 10 * time.Second}
 	ctx := sdk.WithSandboxHint(context.Background(), sdk.SandboxHint{Mode: sdk.SandboxWorkspace, Root: ws})
-	res, err := tool.Execute(ctx, `{"command":"echo x > `+target+`"}`)
+	res, err := tool.Execute(ctx, fmt.Sprintf(`{"command":%q}`, "echo x > "+testutil.ShellPath(target)))
 	if err != nil {
 		t.Fatalf("Execute 不应返回 go error(结构化回传): %v", err)
 	}
@@ -366,7 +367,7 @@ func TestShellToolAppliesKernelSandbox(t *testing.T) {
 	}
 
 	// 工作区内写仍可用(接线没有把正常用法拦掉)
-	if _, err := tool.Execute(ctx, `{"command":"echo x > `+ws+`/ok.txt"}`); err != nil {
+	if _, err := tool.Execute(ctx, fmt.Sprintf(`{"command":%q}`, "echo x > "+testutil.ShellPath(filepath.Join(ws, "ok.txt")))); err != nil {
 		t.Fatalf("工作区内写失败: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(ws, "ok.txt")); err != nil {
@@ -397,7 +398,7 @@ func TestExecPtyUnderKernelSandbox(t *testing.T) {
 	// pty 下工作区外写同样被拒
 	outside := t.TempDir()
 	target := filepath.Join(outside, "pty-wired.txt")
-	_, _, perr := execPty(ctx, "echo x > "+target, "")
+	_, _, perr := execPty(ctx, "echo x > "+testutil.ShellPath(target), "")
 	if perr != nil {
 		t.Fatalf("pty 执行返回错误(应为命令自身失败): %v", perr)
 	}
@@ -456,7 +457,7 @@ func TestShellToolFirstCommandWritesJailOnFreshSymlinkedHome(t *testing.T) {
 	}
 	// 越界写仍必须被拦(修复不得放松边界)
 	outside := filepath.Join(t.TempDir(), "escaped.txt")
-	if _, err := tool.Execute(ctx, `{"command":"echo x > `+outside+`"}`); err != nil {
+	if _, err := tool.Execute(ctx, fmt.Sprintf(`{"command":%q}`, "echo x > "+testutil.ShellPath(outside))); err != nil {
 		t.Fatalf("Execute 不应返回 go error: %v", err)
 	}
 	if _, err := os.Stat(outside); err == nil {

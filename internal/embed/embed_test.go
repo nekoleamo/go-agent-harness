@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -75,10 +76,15 @@ func TestEnsurePlugins(t *testing.T) {
 	if len(written) == 0 {
 		t.Fatal("应有随包插件释放")
 	}
-	// 产物可执行文件存在
+	// 产物可执行文件存在。可执行位是 POSIX 概念:Windows 无 Unix 权限位,
+	// .exe 的 Mode() 恒不含 0o111,故只在非 Windows 校验(存在性两侧都校验)。
 	for _, w := range written {
-		if fi, err := os.Stat(w); err != nil || fi.Mode()&0o111 == 0 {
-			t.Fatalf("产物应存在且可执行: %s %v", w, err)
+		fi, err := os.Stat(w)
+		if err != nil {
+			t.Fatalf("产物应存在: %s %v", w, err)
+		}
+		if runtime.GOOS != "windows" && fi.Mode()&0o111 == 0 {
+			t.Fatalf("产物应可执行: %s mode=%v", w, fi.Mode())
 		}
 	}
 	// 幂等:二次释放不写、不覆盖

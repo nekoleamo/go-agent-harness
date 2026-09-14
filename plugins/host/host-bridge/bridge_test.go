@@ -17,6 +17,7 @@ import (
 	"github.com/nekoleamo/go-agent-harness/core/ctx"
 	"github.com/nekoleamo/go-agent-harness/core/event"
 	"github.com/nekoleamo/go-agent-harness/core/plugin"
+	"github.com/nekoleamo/go-agent-harness/internal/testutil"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-tools"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
@@ -24,7 +25,7 @@ import (
 // buildExternalPlugin 编译 tool-echo 到 dir。
 func buildExternalPlugin(t *testing.T, dir string) {
 	t.Helper()
-	cmd := exec.Command("go", "build", "-o", filepath.Join(dir, "tool-echo"), "../../../extplugins/tool-echo")
+	cmd := exec.Command("go", "build", "-o", filepath.Join(dir, testutil.ExeName("tool-echo")), "../../../extplugins/tool-echo")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("编译外部插件失败: %v\n%s", err, out)

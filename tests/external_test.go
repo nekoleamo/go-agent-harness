@@ -25,6 +25,7 @@ import (
 	"github.com/nekoleamo/go-agent-harness/core/plugin"
 	"github.com/nekoleamo/go-agent-harness/internal/embed"
 	"github.com/nekoleamo/go-agent-harness/internal/mcpconfig"
+	"github.com/nekoleamo/go-agent-harness/internal/testutil"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -173,7 +174,7 @@ func TestExternalMCPBridge(t *testing.T) {
 	extDir := t.TempDir()
 	releaseExt(t, extDir, "tool-basic", "tool-mcp")
 	// 编译迷你 MCP server(tests/mcpserver)
-	bin := filepath.Join(extDir, "mcpserver")
+	bin := filepath.Join(extDir, testutil.ExeName("mcpserver"))
 	if err := runGoBuild(t, bin, "./mcpserver"); err != nil {
 		t.Fatalf("编译 mcpserver: %v", err)
 	}
@@ -210,7 +211,7 @@ func TestExternalMCPBridge(t *testing.T) {
 func TestExternalMCPBridgeMulti(t *testing.T) {
 	extDir := t.TempDir()
 	releaseExt(t, extDir, "tool-basic", "tool-mcp")
-	bin := filepath.Join(extDir, "mcpserver")
+	bin := filepath.Join(extDir, testutil.ExeName("mcpserver"))
 	if err := runGoBuild(t, bin, "./mcpserver"); err != nil {
 		t.Fatalf("编译 mcpserver: %v", err)
 	}
@@ -254,7 +255,7 @@ func TestExternalMCPConfigFile(t *testing.T) {
 	t.Setenv("GAH_MCP_COMMANDS", "")
 	extDir := t.TempDir()
 	releaseExt(t, extDir, "tool-basic", "tool-mcp")
-	bin := filepath.Join(extDir, "mcpserver")
+	bin := filepath.Join(extDir, testutil.ExeName("mcpserver"))
 	if err := runGoBuild(t, bin, "./mcpserver"); err != nil {
 		t.Fatalf("编译 mcpserver: %v", err)
 	}

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nekoleamo/go-agent-harness/internal/testutil"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 	"gopkg.in/yaml.v3"
 )
@@ -34,12 +35,12 @@ func TestStoreRoundTrip(t *testing.T) {
 	path := filepath.Join(home, "schedules", p.ID+".yaml")
 	if fi, err := os.Stat(path); err != nil {
 		t.Fatalf("计划文件应存在: %v", err)
-	} else if fi.Mode().Perm() != 0o600 {
+	} else if testutil.PosixPerm() && fi.Mode().Perm() != 0o600 {
 		t.Fatalf("计划文件权限应为 0600,得 %v", fi.Mode().Perm())
 	}
 	if fi, err := os.Stat(filepath.Join(home, "schedules")); err != nil {
 		t.Fatal(err)
-	} else if fi.Mode().Perm() != 0o700 {
+	} else if testutil.PosixPerm() && fi.Mode().Perm() != 0o700 {
 		t.Fatalf("计划目录权限应为 0700,得 %v", fi.Mode().Perm())
 	}
 	raw, err := os.ReadFile(path)

@@ -4,6 +4,7 @@ package tests
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -116,7 +117,7 @@ func TestToolDocRegisteredAndReads(t *testing.T) {
 	if err := os.WriteFile(md, []byte("# T\n\n正文\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	res, err := tools.Execute(context.Background(), "read_document", `{"file_path":"`+md+`"}`)
+	res, err := tools.Execute(context.Background(), "read_document", fmt.Sprintf(`{"file_path":%q}`, md))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +138,7 @@ func TestToolDocRegisteredAndReads(t *testing.T) {
 		return nil
 	})
 	defer dis()
-	if _, err := tools.Execute(context.Background(), "doc_open", `{"file_path":"`+md+`"}`); err != nil {
+	if _, err := tools.Execute(context.Background(), "doc_open", fmt.Sprintf(`{"file_path":%q}`, md)); err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 1 || got[0].Path != md {

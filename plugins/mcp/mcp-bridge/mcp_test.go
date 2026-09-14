@@ -12,6 +12,7 @@ import (
 
 	"github.com/nekoleamo/go-agent-harness/core/ctx"
 	"github.com/nekoleamo/go-agent-harness/core/event"
+	"github.com/nekoleamo/go-agent-harness/internal/testutil"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-tools"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
@@ -19,7 +20,7 @@ import (
 // buildMiniServer 编译迷你 MCP server。
 func buildMiniServer(t *testing.T, dir string) string {
 	t.Helper()
-	bin := filepath.Join(dir, "mcpserver")
+	bin := filepath.Join(dir, testutil.ExeName("mcpserver"))
 	cmd := exec.Command("go", "build", "-o", bin, "../../../tests/mcpserver")
 	out, err := cmd.CombinedOutput()
 	if err != nil {

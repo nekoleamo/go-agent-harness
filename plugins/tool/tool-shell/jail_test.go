@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nekoleamo/go-agent-harness/internal/testutil"
 )
 
 // envValue 取环境切片里 key 的值(dup=true 表示出现多次)。
@@ -125,7 +127,7 @@ func TestJailEnvDirModeAndTTL(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if perm := info.Mode().Perm(); perm != 0o700 {
+		if perm := info.Mode().Perm(); testutil.PosixPerm() && perm != 0o700 {
 			t.Fatalf("%s 权限 = %o, want 700", d, perm)
 		}
 	}

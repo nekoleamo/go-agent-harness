@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/nekoleamo/go-agent-harness/internal/testutil"
 )
 
 // setupHome 隔离数据根(便携纪律:所有写盘必须落 GAH_HOME 下)。
@@ -56,7 +58,7 @@ func TestSaveLoadRoundTripAndPerm(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm() != 0o600 {
+	if testutil.PosixPerm() && fi.Mode().Perm() != 0o600 {
 		t.Fatalf("mcp.yaml 权限应为 0600, got %o", fi.Mode().Perm())
 	}
 	raw, _ := os.ReadFile(Path())

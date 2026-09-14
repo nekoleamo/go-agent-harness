@@ -487,23 +487,26 @@ func TestSwitchDir(t *testing.T) {
 	if err := svc.Open(""); err != nil {
 		t.Fatal(err)
 	}
+	// SwitchDir 内部归一化符号链接与 Windows 8.3 短名,key/广播/记录统一用归一化路径:
+	// 否则同一目录在不同形态下(macOS /var 与 /private/var、Windows 短名与长名)
+	// 会派生两个 key(工作区历史重复),且与 SwitchProject(currentDir 派生)不一致。
+	rp, err := filepath.EvalSymlinks(proj)
+	if err != nil {
+		t.Fatal(err)
+	}
 	// 切换到真实目录:key 派生 + 新建空会话 + 记录 dir 为真实目录 + 广播事件
 	id, err := svc.SwitchDir(proj)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if id == "" || svc.Current() != sdk.ProjectKey(proj) || svc.CurrentSession() != id {
+	if id == "" || svc.Current() != sdk.ProjectKey(rp) || svc.CurrentSession() != id {
 		t.Fatalf("切换后 key/会话不符: key=%s current=%s", svc.Current(), svc.CurrentSession())
 	}
-	if cwd, _ := os.Getwd(); cwd != proj {
-		// macOS /var 为 /private/var 符号链接:归一化后比较
-		rp, _ := filepath.EvalSymlinks(proj)
-		if cwd != rp {
-			t.Fatalf("进程 cwd 应切到 %s,实际 %s", proj, cwd)
-		}
+	if cwd, _ := os.Getwd(); cwd != rp {
+		t.Fatalf("进程 cwd 应切到 %s,实际 %s", rp, cwd)
 	}
-	if len(emitted) != 1 || emitted[0] != proj {
-		t.Fatalf("切换应广播 cwd/workspace-switched(dir=%s),got %v", proj, emitted)
+	if len(emitted) != 1 || emitted[0] != rp {
+		t.Fatalf("切换应广播 cwd/workspace-switched(dir=%s),got %v", rp, emitted)
 	}
 	// 同项目再次切换(touch):不发事件(无实际目录变化)
 	_ = emitted
@@ -515,8 +518,8 @@ func TestSwitchDir(t *testing.T) {
 	}
 	t.Chdir(tmp) // 恢复(cwd 已被本进程改掉)
 	recs := svc.RecentProjects()
-	if len(recs) != 1 || recs[0].Dir != proj {
-		t.Fatalf("记录 dir 应为真实目录: %+v", recs)
+	if len(recs) != 1 || recs[0].Dir != rp {
+		t.Fatalf("记录 dir 应为归一化真实路径: %+v", recs)
 	}
 	// 目录不可用 → 显式失败(不静默)
 	if _, err := svc.SwitchDir(filepath.Join(tmp, "no-such-dir")); err == nil {

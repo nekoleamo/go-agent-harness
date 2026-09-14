@@ -4,6 +4,7 @@ package policyguard
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -14,6 +15,7 @@ import (
 // TestValidatePathSymlinkEscape:workspace 内的 symlink 指向外部 → Clean+HasPrefix
 // 判定会放行,realpath 判定必须拒绝。
 func TestValidatePathSymlinkEscape(t *testing.T) {
+	withCaseFold(t, false)
 	ws := t.TempDir()
 	outside := t.TempDir()
 	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("s"), 0o600); err != nil {
@@ -46,6 +48,7 @@ func TestValidatePathSymlinkEscape(t *testing.T) {
 
 // TestValidateReadDeniesCredentials:凭据类路径任何档位均拒(防 API key 进模型上下文)。
 func TestValidateReadDeniesCredentials(t *testing.T) {
+	withCaseFold(t, false)
 	ws := t.TempDir()
 	home := t.TempDir()
 	t.Setenv("GAH_HOME", home)
@@ -78,6 +81,7 @@ func TestValidateReadDeniesCredentials(t *testing.T) {
 
 // TestCheckPathArgsGating:宿主侧按工具名 + path 参数裁决。
 func TestCheckPathArgsGating(t *testing.T) {
+	withCaseFold(t, false)
 	ws := t.TempDir()
 	p := DefaultSandbox(ws)
 	if err := p.CheckPathArgs("file_write", `{"path":"/etc/passwd","content":"x"}`); err == nil {
@@ -86,7 +90,7 @@ func TestCheckPathArgsGating(t *testing.T) {
 	if err := p.CheckPathArgs("file_append", `{"path":"../x","content":"x"}`); err == nil {
 		t.Error(".. 穿越写应被拒")
 	}
-	if err := p.CheckPathArgs("file_read", `{"path":"`+filepath.Join(t.TempDir(), "s.txt")+`"}`); err == nil {
+	if err := p.CheckPathArgs("file_read", fmt.Sprintf(`{"path":%q}`, filepath.Join(t.TempDir(), "s.txt"))); err == nil {
 		t.Error("workspace 外读应被拒")
 	}
 	if err := p.CheckPathArgs("file_write", `{"path":"a.txt","content":"x"}`); err != nil {
@@ -108,6 +112,7 @@ func TestCheckPathArgsGating(t *testing.T) {
 
 // TestEffectiveModeLinked:联动后的有效档可被工具侧读到(修复 strict 显示只读却按 workspace-write 放行)。
 func TestEffectiveModeLinked(t *testing.T) {
+	withCaseFold(t, false)
 	ap := &ApprovalPolicy{mode: sdk.ApprovalStrict}
 	p := &SandboxPolicy{root: t.TempDir(), mode: sdk.SandboxFullAccess, sync: true, approval: ap.Mode}
 	if got := p.EffectiveMode(); got != sdk.SandboxReadOnly {
@@ -121,6 +126,7 @@ func TestEffectiveModeLinked(t *testing.T) {
 
 // TestShellCommandDecode:JSON 转义绕过(文本级看不到 rm)必须被解码后的命令文本拦住。
 func TestShellCommandDecode(t *testing.T) {
+	withCaseFold(t, false)
 	escaped := `{"command":"\u0072m -rf /tmp/x"}`
 	if _, hit := matchDangerous(escaped); hit {
 		t.Fatal("前置条件:原始 JSON 文本不应命中(否则用例无法证明解码必要性)")
@@ -175,6 +181,7 @@ func (s *stubFileTool) Execute(_ context.Context, args string) (any, error) {
 // 宿主 pre-execute 必须拦下越界路径(默认发行态即此形态:tool-files 关闭、
 // extplugins/tool-basic 的 NewTools() 硬编码 sb=nil)。
 func TestGuardVetoesFileToolsOutsideWorkspace(t *testing.T) {
+	withCaseFold(t, false)
 	c := buildTools(t, nil, nil) // 默认:smart + workspace-write
 	var tools sdk.ToolRegistry
 	if err := c.Inject("ctx.tools", &tools); err != nil {
@@ -193,7 +200,7 @@ func TestGuardVetoesFileToolsOutsideWorkspace(t *testing.T) {
 		t.Fatal("被 veto 的工具不应真正执行")
 	}
 
-	res = execTool(t, c, "file_read", `{"path":"`+filepath.Join(t.TempDir(), "secret.txt")+`"}`)
+	res = execTool(t, c, "file_read", fmt.Sprintf(`{"path":%q}`, filepath.Join(t.TempDir(), "secret.txt")))
 	if res.Error == "" {
 		t.Fatal("workspace 外读应被宿主侧沙箱 veto")
 	}
@@ -230,6 +237,7 @@ func (s *stubPathTool) Execute(_ context.Context, args string) (any, error) {
 // 只要声明了路径参数,越界写同样被宿主 pre-execute 拦下 —— 这是此前登记的缺口
 // ("新插件自定义名不在表内即不受路径沙箱约束")。
 func TestGuardVetoesDeclaredPathOfCustomTool(t *testing.T) {
+	withCaseFold(t, false)
 	c := buildTools(t, nil, nil)
 	var tools sdk.ToolRegistry
 	if err := c.Inject("ctx.tools", &tools); err != nil {
@@ -239,7 +247,7 @@ func TestGuardVetoesDeclaredPathOfCustomTool(t *testing.T) {
 	tools.Register(tool)
 
 	abs := filepath.Join(t.TempDir(), "note.md")
-	if res := execTool(t, c, "save_note", `{"target":"`+abs+`"}`); res.Error == "" {
+	if res := execTool(t, c, "save_note", fmt.Sprintf(`{"target":%q}`, abs)); res.Error == "" {
 		t.Fatal("自定义工具声明的写路径越界应被 veto")
 	}
 	if tool.called {
@@ -255,6 +263,7 @@ func TestGuardVetoesDeclaredPathOfCustomTool(t *testing.T) {
 
 // TestGuardDeclaredManyAndOptional 数组参数逐元素裁决;可选参数缺省放行。
 func TestGuardDeclaredManyAndOptional(t *testing.T) {
+	withCaseFold(t, false)
 	c := buildTools(t, nil, nil)
 	var tools sdk.ToolRegistry
 	if err := c.Inject("ctx.tools", &tools); err != nil {
@@ -263,7 +272,7 @@ func TestGuardDeclaredManyAndOptional(t *testing.T) {
 	bulk := &stubPathTool{name: "bulk_import", params: []sdk.PathParam{{Arg: "files", Access: sdk.PathRead, Many: true}}}
 	tools.Register(bulk)
 	outside := filepath.Join(t.TempDir(), "a.txt")
-	if res := execTool(t, c, "bulk_import", `{"files":["in-ws.txt","`+outside+`"]}`); res.Error == "" {
+	if res := execTool(t, c, "bulk_import", fmt.Sprintf(`{"files":["in-ws.txt",%q]}`, outside)); res.Error == "" {
 		t.Fatal("数组中的越界项应被 veto")
 	}
 	if res := execTool(t, c, "bulk_import", `{"files":["a.txt","b.txt"]}`); res.Error != "" {
@@ -275,7 +284,7 @@ func TestGuardDeclaredManyAndOptional(t *testing.T) {
 	if res := execTool(t, c, "list_notes", `{}`); res.Error != "" {
 		t.Fatalf("可选路径参数缺省应放行: %+v", res)
 	}
-	if res := execTool(t, c, "list_notes", `{"path":"`+outside+`"}`); res.Error == "" {
+	if res := execTool(t, c, "list_notes", fmt.Sprintf(`{"path":%q}`, outside)); res.Error == "" {
 		t.Fatal("可选参数给出越界值仍应被 veto")
 	}
 }
@@ -283,13 +292,14 @@ func TestGuardDeclaredManyAndOptional(t *testing.T) {
 // TestCheckToolCallUnit 裁决单元语义:声明优先、名表兜底、缺参数显式失败、
 // 未声明且不在名表的工具不受约束(诚实边界)。
 func TestCheckToolCallUnit(t *testing.T) {
+	withCaseFold(t, false)
 	ws := t.TempDir()
 	p := DefaultSandbox(ws)
 	outside := filepath.Join(t.TempDir(), "x.txt")
 
 	// 声明:自定义名 + 自定义参数名
 	decl := []sdk.PathParam{{Arg: "dst", Access: sdk.PathWrite}}
-	if err := p.CheckToolCall("save_note", `{"dst":"`+outside+`"}`, decl); err == nil {
+	if err := p.CheckToolCall("save_note", fmt.Sprintf(`{"dst":%q}`, outside), decl); err == nil {
 		t.Fatal("声明的写路径越界应被拒")
 	}
 	if err := p.CheckToolCall("save_note", `{"dst":"ok.txt"}`, decl); err != nil {
@@ -300,7 +310,7 @@ func TestCheckToolCallUnit(t *testing.T) {
 		t.Fatal("声明的必填路径参数缺失应显式失败")
 	}
 	// 名表兜底(无声明)
-	if err := p.CheckToolCall("file_write", `{"path":"`+outside+`"}`, nil); err == nil {
+	if err := p.CheckToolCall("file_write", fmt.Sprintf(`{"path":%q}`, outside), nil); err == nil {
 		t.Fatal("名表兜底的越界写应被拒")
 	}
 	// 参数值类型不符 → 显式失败
@@ -308,7 +318,7 @@ func TestCheckToolCallUnit(t *testing.T) {
 		t.Fatal("路径参数类型不符应显式失败")
 	}
 	// 既无声明也不在名表:不受路径约束(需插件声明;登记为能力化边界)
-	if err := p.CheckToolCall("unknown_tool", `{"whatever":"`+outside+`"}`, nil); err != nil {
+	if err := p.CheckToolCall("unknown_tool", fmt.Sprintf(`{"whatever":%q}`, outside), nil); err != nil {
 		t.Fatalf("未声明的未知工具不应被路径裁决拦截: %v", err)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/nekoleamo/go-agent-harness/internal/testutil"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -50,7 +51,7 @@ func TestMetaRenameDoubleWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm() != 0o600 {
+	if testutil.PosixPerm() && fi.Mode().Perm() != 0o600 {
 		t.Fatalf("meta.json 权限应为 0600,得 %v", fi.Mode().Perm())
 	}
 	// SessionName 读 meta

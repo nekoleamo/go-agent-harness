@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+
+	"github.com/nekoleamo/go-agent-harness/internal/testutil"
 )
 
 // —— 行工具:segLines / cursorLineCol ——
@@ -261,14 +263,28 @@ func TestRenderMultiLineInputLayout(t *testing.T) {
 
 func TestEditorCommandResolution(t *testing.T) {
 	// VISUAL 优先;支持参数;不可执行跳过;回退 nano/全无 nil。
+	// "存在的可执行文件"用测试进程自身的副本(t.TempDir() 不含空格):POSIX 的
+	// /bin/cat、/bin/echo 在 Windows 上不存在,会让该平台假失败。
+	src, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exe := filepath.Join(t.TempDir(), testutil.ExeName("ed"))
+	if err := os.WriteFile(exe, body, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("VISUAL", "")
-	t.Setenv("EDITOR", "/bin/cat -x")
-	if ed := editorCommand(); len(ed) != 2 || ed[0] != "/bin/cat" || ed[1] != "-x" {
+	t.Setenv("EDITOR", exe+" -x")
+	if ed := editorCommand(); len(ed) != 2 || ed[0] != exe || ed[1] != "-x" {
 		t.Fatalf("EDITOR 带参应解析: %v", ed)
 	}
-	t.Setenv("VISUAL", "/bin/echo")
-	t.Setenv("EDITOR", "/bin/cat")
-	if ed := editorCommand(); ed[0] != "/bin/echo" {
+	t.Setenv("VISUAL", exe)
+	t.Setenv("EDITOR", "definitely-not-a-real-editor-xyz")
+	if ed := editorCommand(); len(ed) != 1 || ed[0] != exe {
 		t.Fatalf("VISUAL 应优先: %v", ed)
 	}
 	t.Setenv("VISUAL", "definitely-not-a-real-editor-xyz")

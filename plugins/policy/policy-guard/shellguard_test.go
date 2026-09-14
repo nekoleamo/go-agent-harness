@@ -50,6 +50,7 @@ func buildShellEnv(t *testing.T, confirm sdk.ConfirmService, data map[string]any
 
 // TestGuardShellWriteOutsideWorkspaceVetoed 主证明:不命中危险模式的越界写被路径层拦下。
 func TestGuardShellWriteOutsideWorkspaceVetoed(t *testing.T) {
+	withWinSemantics(t, false)
 	outside := filepath.Join(t.TempDir(), "out.txt")
 	c, sh := buildShellEnv(t, nil, nil) // smart 档且无确认通道:`echo` 不命中危险模式
 	res := execTool(t, c, "shell", shellArgs("echo hi > "+outside))
@@ -72,6 +73,7 @@ func TestGuardShellWriteOutsideWorkspaceVetoed(t *testing.T) {
 
 // TestGuardShellWriteMatrixApproved 审批已批准(危险模式层放行)后,路径层仍独立裁决。
 func TestGuardShellWriteMatrixApproved(t *testing.T) {
+	withWinSemantics(t, false)
 	cases := []struct {
 		name    string
 		cmd     string
@@ -122,6 +124,7 @@ func TestGuardShellWriteMatrixApproved(t *testing.T) {
 
 // TestGuardShellReadChecksAreNotOverbroad 读语义只做凭据判定,不因"工作区之外"误拦常规读。
 func TestGuardShellReadChecksAreNotOverbroad(t *testing.T) {
+	withWinSemantics(t, false)
 	c, sh := buildShellEnv(t, nil, nil)
 	for _, cmd := range []string{
 		"cat /etc/passwd",
@@ -145,6 +148,7 @@ func TestGuardShellReadChecksAreNotOverbroad(t *testing.T) {
 
 // TestGuardShellModeInteraction read-only 拒执行器 / full-access 放行写目标。
 func TestGuardShellModeInteraction(t *testing.T) {
+	withWinSemantics(t, false)
 	// read-only:执行器类工具整体拒绝(既有语义,先于路径裁决)
 	c, sh := buildShellEnv(t, nil, map[string]any{"sandbox": "read-only"})
 	if res := execTool(t, c, "shell", shellArgs("echo hi > ./x.txt")); res.Error == "" ||

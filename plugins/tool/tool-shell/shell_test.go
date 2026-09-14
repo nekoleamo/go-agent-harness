@@ -10,12 +10,14 @@ import (
 
 	"github.com/nekoleamo/go-agent-harness/core/ctx"
 	"github.com/nekoleamo/go-agent-harness/core/event"
+	"github.com/nekoleamo/go-agent-harness/internal/testutil"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-tools"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
 // TestExecPtyInteractive 交互式会话:sh 挂 pty,输入命令后退出,输出被采集。
 func TestExecPtyInteractive(t *testing.T) {
+	testutil.SkipNoPTY(t)
 	out, timedOut, err := execPty(context.Background(), "sh", "echo pty-ok\nexit\n")
 	if err != nil {
 		t.Fatal(err)
@@ -30,6 +32,7 @@ func TestExecPtyInteractive(t *testing.T) {
 
 // TestExecPtyTimeout 无输入不退出 → 上下文 deadline 兜底终止,返回已捕获输出。
 func TestExecPtyTimeout(t *testing.T) {
+	testutil.SkipNoPTY(t)
 	dctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	out, timedOut, err := execPty(dctx, "sh", "") // sh 等待输入不退出
@@ -44,6 +47,7 @@ func TestExecPtyTimeout(t *testing.T) {
 
 // TestShellPtyTool pty 开关开启后,shell 工具经 pty 执行并采输入结果。
 func TestShellPtyTool(t *testing.T) {
+	testutil.SkipNoPTY(t)
 	logger := slog.New(slog.DiscardHandler)
 	bus := event.New(logger)
 	c := ctx.New(logger, bus)

@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/nekoleamo/go-agent-harness/internal/testutil"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -62,7 +63,8 @@ func TestOpenBrowserCmd(t *testing.T) {
 			t.Errorf("linux 应为 xdg-open <url>,got %v", cmd.Args)
 		}
 	case "windows":
-		if filepath.Base(cmd.Path) != "rundll32" ||
+		// cmd.Path 由 exec.LookPath 解析,Windows 上带 .exe 后缀(rundll32.exe)
+		if filepath.Base(cmd.Path) != testutil.ExeName("rundll32") ||
 			cmd.Args[1] != "url.dll,FileProtocolHandler" ||
 			cmd.Args[2] != "http://127.0.0.1:2233" {
 			t.Errorf("windows 应为 rundll32 url.dll,FileProtocolHandler <url>,got %v", cmd.Args)

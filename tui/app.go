@@ -1307,6 +1307,13 @@ func (a *App) cmdWorkspace(args []string) (string, error) {
 		target = abs
 	}
 	target = filepath.Clean(target)
+	// 归一化符号链接与 Windows 8.3 短名:C:\Users\RUNNER~1\... 与
+	// C:\Users\runneradmin\... 指向同一目录,但 os.Getwd 会原样返回 chdir 时的形态
+	// → 同一目录派生出两个 ProjectKey(工作区历史重复、判等失败)。
+	// 解析失败(不存在/无权限)回退原值,由下方 Stat 给出具体错误。
+	if r, err := filepath.EvalSymlinks(target); err == nil {
+		target = r
+	}
 	fi, err := os.Stat(target)
 	if err != nil {
 		return "", errString("/workspace: 目录不存在或不可访问: " + target)

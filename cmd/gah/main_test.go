@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/nekoleamo/go-agent-harness/internal/testutil"
 )
 
 func TestPortableRootCreatesWhenMissing(t *testing.T) {
@@ -58,6 +60,10 @@ func TestPortableRootReadonlyDir(t *testing.T) {
 	if os.Geteuid() == 0 {
 		// root 不受权限位约束(容器里常以 root 跑测试):只读目录照样可写,用例前提不成立
 		t.Skip("以 root 运行:只读位不生效,跳过")
+	}
+	if testutil.IsWindows() {
+		// Windows 目录的可写性由 ACL 决定,os.Chmod 0o500 不会阻止在其下建文件
+		t.Skip("Windows 目录只读语义由 ACL 决定,Chmod 0o500 不阻止写入")
 	}
 	base := t.TempDir()
 	binDir := filepath.Join(base, "ro-bin")

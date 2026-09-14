@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/nekoleamo/go-agent-harness/internal/testutil"
 )
 
 func TestAddSaveLoadAndPerm(t *testing.T) {
@@ -24,7 +26,7 @@ func TestAddSaveLoadAndPerm(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm() != 0o600 {
+	if testutil.PosixPerm() && fi.Mode().Perm() != 0o600 {
 		t.Fatalf("provider.yaml 权限应为 0600, got %o", fi.Mode().Perm())
 	}
 	f, err := LoadFile()

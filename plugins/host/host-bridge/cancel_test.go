@@ -8,6 +8,7 @@ package hostbridge
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -92,7 +93,7 @@ func TestToolServerCancelSemantics(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = srv.ExecuteNamed(&ExecNamedArgs{Name: "slow", JSONArgs: `{"dir":"` + dir + `"}`, CallID: "c1"}, reply)
+		_ = srv.ExecuteNamed(&ExecNamedArgs{Name: "slow", JSONArgs: fmt.Sprintf(`{"dir":%q}`, dir), CallID: "c1"}, reply)
 	}()
 	if !waitFile(t, filepath.Join(dir, "started"), 5*time.Second) {
 		t.Fatal("工具未开始执行")
@@ -120,7 +121,7 @@ func TestToolServerTimeoutPropagates(t *testing.T) {
 	srv := &toolServer{tools: map[string]sdk.Tool{"slow": ctxToolLocal{dir: dir}}, running: map[string]context.CancelFunc{}}
 	reply := &ExecReply{}
 	start := time.Now()
-	if err := srv.ExecuteNamed(&ExecNamedArgs{Name: "slow", JSONArgs: `{"dir":"` + dir + `"}`, CallID: "t1", TimeoutMs: 150}, reply); err != nil {
+	if err := srv.ExecuteNamed(&ExecNamedArgs{Name: "slow", JSONArgs: fmt.Sprintf(`{"dir":%q}`, dir), CallID: "t1", TimeoutMs: 150}, reply); err != nil {
 		t.Fatal(err)
 	}
 	if d := time.Since(start); d > 5*time.Second {

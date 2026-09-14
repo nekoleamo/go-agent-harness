@@ -46,6 +46,7 @@ func fmtReads(ps []shellPath) string {
 
 // TestShellCmdPathsWrites 写目标识别(重定向 / 写命令 / 嵌套 / 无法裁决形态)。
 func TestShellCmdPathsWrites(t *testing.T) {
+	withWinSemantics(t, false)
 	cases := []struct {
 		name string
 		cmd  string
@@ -96,6 +97,7 @@ func TestShellCmdPathsWrites(t *testing.T) {
 
 // TestShellCmdPathsReads 读目标识别(仅用于凭据类判定,不做 workspace 归属限制)。
 func TestShellCmdPathsReads(t *testing.T) {
+	withWinSemantics(t, false)
 	cases := []struct {
 		name string
 		cmd  string
@@ -120,6 +122,7 @@ func TestShellCmdPathsReads(t *testing.T) {
 
 // TestCheckShellCommandWorkspaceWrite workspace-write 档:写目标限工作区内 + 关键误拦豁免。
 func TestCheckShellCommandWorkspaceWrite(t *testing.T) {
+	withWinSemantics(t, false)
 	ws := t.TempDir()
 	p := DefaultSandbox(ws)
 	inside := filepath.Join(ws, "out.txt")
@@ -177,6 +180,7 @@ func TestCheckShellCommandWorkspaceWrite(t *testing.T) {
 
 // TestCheckShellCommandModes read-only 与 full-access 档语义。
 func TestCheckShellCommandModes(t *testing.T) {
+	withWinSemantics(t, false)
 	ws := t.TempDir()
 	p := DefaultSandbox(ws)
 
@@ -204,6 +208,7 @@ func TestCheckShellCommandModes(t *testing.T) {
 
 // TestCheckShellCommandUnresolvableMessage 不可裁决写的报错要说清原因与出路(可操作)。
 func TestCheckShellCommandUnresolvableMessage(t *testing.T) {
+	withWinSemantics(t, false)
 	p := DefaultSandbox(t.TempDir())
 	err := p.CheckShellCommand(`echo x > $HOME/f`)
 	if err == nil {
@@ -220,6 +225,7 @@ func TestCheckShellCommandUnresolvableMessage(t *testing.T) {
 
 // TestShellCmdPathsOutputFlags 输出型 flag / 安装目标 / git clone 位置目标的写识别(R10 ① 收尾)。
 func TestShellCmdPathsOutputFlags(t *testing.T) {
+	withWinSemantics(t, false)
 	cases := []struct {
 		name string
 		cmd  string
@@ -279,6 +285,7 @@ func TestShellCmdPathsOutputFlags(t *testing.T) {
 
 // TestCheckShellCommandOutputFlags workspace-write 档:输出型写目标同样受限,且不放松原有判定。
 func TestCheckShellCommandOutputFlags(t *testing.T) {
+	withWinSemantics(t, false)
 	ws := t.TempDir()
 	p := DefaultSandbox(ws)
 	inside := filepath.Join(ws, "out.bin")
@@ -319,6 +326,7 @@ func TestCheckShellCommandOutputFlags(t *testing.T) {
 
 // TestShellPathHelpersUnit 输出型 flag / 子命令解析的边界(赋值形态词、无位置操作数):不 panic、不误判。
 func TestShellPathHelpersUnit(t *testing.T) {
+	withWinSemantics(t, false)
 	// subcmdArgs:赋值形态词不是子命令;取值型 flag 的取值不是子命令;全 flag → 无子命令。
 	if sub, rest := subcmdArgs([]string{"FOO=1", "build", "-o", "out"}, nil); sub != "build" || len(rest) != 2 {
 		t.Fatalf("subcmdArgs 应跳过赋值形态词: %q %v", sub, rest)
@@ -352,6 +360,7 @@ func TestShellPathHelpersUnit(t *testing.T) {
 
 // TestShellCmdPathsQuotingAndOperators 引号/转义/运算符形态:引用文本不得误当命令，真重定向不得漏。
 func TestShellCmdPathsQuotingAndOperators(t *testing.T) {
+	withWinSemantics(t, false)
 	cases := []struct {
 		name string
 		cmd  string
@@ -383,6 +392,7 @@ func TestShellCmdPathsQuotingAndOperators(t *testing.T) {
 
 // TestShellCmdPathsNestedAndPrefixes 嵌套 shell 只展开一层 + 前缀命令剥离。
 func TestShellCmdPathsNestedAndPrefixes(t *testing.T) {
+	withWinSemantics(t, false)
 	cases := []struct {
 		name string
 		cmd  string
@@ -408,6 +418,7 @@ func TestShellCmdPathsNestedAndPrefixes(t *testing.T) {
 
 // TestShellCmdPathsCdState cd 后的相对路径可定位性(唯一依据:是否可能离开工作区)。
 func TestShellCmdPathsCdState(t *testing.T) {
+	withWinSemantics(t, false)
 	cases := []struct {
 		name string
 		cmd  string
@@ -433,6 +444,7 @@ func TestShellCmdPathsCdState(t *testing.T) {
 
 // TestShellCmdPathsArchives tar/unzip 取值形态(含长 flag 与紧贴取值)。
 func TestShellCmdPathsArchives(t *testing.T) {
+	withWinSemantics(t, false)
 	cases := []struct {
 		name string
 		cmd  string
@@ -458,6 +470,7 @@ func TestShellCmdPathsArchives(t *testing.T) {
 
 // TestCheckShellCommandTildeAndDevices `~` 展开与伪设备豁免(误拦豁免必须成立,否则常规命令不可用)。
 func TestCheckShellCommandTildeAndDevices(t *testing.T) {
+	withWinSemantics(t, false)
 	ws := t.TempDir()
 	p := DefaultSandbox(ws)
 	deny := []string{
@@ -492,6 +505,7 @@ func TestCheckShellCommandTildeAndDevices(t *testing.T) {
 // TestShellCmdPathsSecondRoundWrites 第二轮写目标识别(工具专属输出旗标 / 写操作数 / find -exec)。
 // 断言的不变量:凡"命令行上能静态指认的落点"都必须被认成写目标(变量等不可裁决形态标注 w?)。
 func TestShellCmdPathsSecondRoundWrites(t *testing.T) {
+	withWinSemantics(t, false)
 	cases := []struct {
 		name string
 		cmd  string
@@ -583,6 +597,7 @@ func TestShellCmdPathsSecondRoundWrites(t *testing.T) {
 // TestShellCmdPathsFindExecPlaceholder find -exec 的 `{}` 占位符按**搜索根**代入:
 // 不代入就会把 `find . -exec rm -rf {} ;` 当成不可裁决写而误拦(最常见写法之一)。
 func TestShellCmdPathsFindExecPlaceholder(t *testing.T) {
+	withWinSemantics(t, false)
 	cases := []struct {
 		name string
 		cmd  string
@@ -606,6 +621,7 @@ func TestShellCmdPathsFindExecPlaceholder(t *testing.T) {
 
 // TestCheckShellCommandSecondRound workspace-write 档:第二轮写目标同样受限,且**不新增误拦**。
 func TestCheckShellCommandSecondRound(t *testing.T) {
+	withWinSemantics(t, false)
 	ws := t.TempDir()
 	p := DefaultSandbox(ws)
 	inside := filepath.Join(ws, "out.bin")
@@ -689,6 +705,7 @@ func TestCheckShellCommandSecondRound(t *testing.T) {
 // TestJoinedFlagValue 单横线多字符 flag 的紧贴取值:必须取**最长**匹配,
 // 否则 `-MF/tmp/d.d` 会被 `-o` 抢走取值(落点就错了)。
 func TestJoinedFlagValue(t *testing.T) {
+	withWinSemantics(t, false)
 	set := map[string]bool{"-o": true, "--output": true, "-MF": true}
 	if v, ok := joinedFlagValue("-MF/tmp/d.d", set); !ok || v != "/tmp/d.d" {
 		t.Fatalf("joinedFlagValue(-MF/tmp/d.d) = %q,%v", v, ok)

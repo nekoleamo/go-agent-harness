@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nekoleamo/go-agent-harness/internal/testutil"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -727,7 +728,7 @@ func TestControlWorkspace(t *testing.T) {
 
 	dir := t.TempDir() // 真实目录(dir 语义)
 	resp, err := http.Post(hs.URL+"/api/control", "application/json",
-		strings.NewReader(`{"workspace":"`+dir+`"}`))
+		strings.NewReader(fmt.Sprintf(`{"workspace":%q}`, dir)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1336,8 +1337,15 @@ func TestListenFailsOnTakenPort(t *testing.T) {
 	if err == nil {
 		t.Fatal("端口被占用时 Listen 应报错")
 	}
-	if !strings.Contains(err.Error(), "监听失败") || !strings.Contains(err.Error(), "address already in use") {
+	msg := err.Error()
+	if !strings.Contains(msg, "监听失败") {
 		t.Fatalf("错误应可读地点明监听失败: %v", err)
+	}
+	// 端口占用的底层文案随平台不同:linux "address already in use",
+	// windows "Only one usage of each socket address ... is normally permitted"。
+	low := strings.ToLower(msg)
+	if !strings.Contains(low, "already in use") && !strings.Contains(low, "only one usage") {
+		t.Fatalf("错误应点明端口已被占用: %v", err)
 	}
 }
 
@@ -1543,7 +1551,9 @@ func TestAttachmentsEndpoint(t *testing.T) {
 	if !attachmentWithinRootFold(dir, strings.ToUpper(filepath.Join(dir, "20260914-000000", "A.PNG")), true) {
 		t.Fatal("Windows:大小写不同不应判越界")
 	}
-	if attachmentWithinRootFold(dir, strings.ToUpper(filepath.Join(dir, "a.png")), false) {
+	// foldCase=false 模拟"区分大小写平台":Windows 上 filepath.Rel 自身即大小写
+	// 不敏感,该平台无法模拟此语义 → 仅在与平台一致时断言。
+	if !testutil.IsWindows() && attachmentWithinRootFold(dir, strings.ToUpper(filepath.Join(dir, "a.png")), false) {
 		t.Fatal("区分大小写平台:大写路径不应判归属")
 	}
 	if attachmentWithinRootFold(dir, filepath.Join(dir, "..", "x.png"), true) {
@@ -1845,7 +1855,7 @@ func TestQuestionEndpoint(t *testing.T) {
 	f := <-stream
 	req, _ := f.Payload.(*QuestionRequest)
 	resp3, err := http.Post(hs.URL+"/api/question", "application/json",
-		strings.NewReader(`{"id":"`+req.ID+`","values":["prod"],"text":""}`))
+		strings.NewReader(fmt.Sprintf(`{"id":%q,"values":["prod"],"text":""}`, req.ID)))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -4,13 +4,18 @@ package policyguard
 
 import "testing"
 
+// withCaseFold 临时切换路径大小写折叠开关(测试结束自动还原)。
+func withCaseFold(t *testing.T, on bool) {
+	t.Helper()
+	old := pathCaseFold
+	pathCaseFold = on
+	t.Cleanup(func() { pathCaseFold = old })
+}
+
 // TestPathWithinCaseFold Windows 上路径比较大小写不敏感(盘符与段名),
 // 否则 D:\Repo 与 d:\repo\sub 互为「根之外」而误拒。
 func TestPathWithinCaseFold(t *testing.T) {
-	old := pathCaseFold
-	t.Cleanup(func() { pathCaseFold = old })
-
-	pathCaseFold = true
+	withCaseFold(t, true)
 	if !pathWithin("/a/B", "/a/b/c") {
 		t.Fatal("大小写不敏感平台应判为在根内")
 	}
@@ -20,7 +25,7 @@ func TestPathWithinCaseFold(t *testing.T) {
 	if pathWithin("/a/B", "/a/bb/c") {
 		t.Fatal("前缀段不完整不应误判(/a/bb 不是 /a/b 的子路径)")
 	}
-	pathCaseFold = false
+	withCaseFold(t, false)
 	if pathWithin("/a/B", "/a/b/c") {
 		t.Fatal("大小写敏感平台保持原语义(不得放松)")
 	}
