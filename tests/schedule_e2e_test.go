@@ -26,6 +26,7 @@ import (
 	"github.com/nekoleamo/go-agent-harness/core/ctx"
 	"github.com/nekoleamo/go-agent-harness/core/event"
 	"github.com/nekoleamo/go-agent-harness/core/plugin"
+	"github.com/nekoleamo/go-agent-harness/internal/testutil"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -192,7 +193,8 @@ func TestScheduleUnattendedDeniesDangerousAction(t *testing.T) {
 	home2 := t.TempDir()
 	victimB := filepath.Join(t.TempDir(), "victim-b.txt")
 	writeFileT(t, victimB, "keep")
-	cmdB := "rm -rf " + victimB
+	// 进 shell 命令的路径必须过 ShellPath(Windows 反斜杠会被 sh 当转义符)。
+	cmdB := "rm -rf " + testutil.ShellPath(victimB)
 	c2, _ := buildScheduleEnv(t, home2, "open", []any{
 		map[string]any{"tool": map[string]any{"name": "shell", "args": `{"command":` + jsonString(cmdB) + `}`}},
 		map[string]any{"text": "已处理", "finish": "stop"},

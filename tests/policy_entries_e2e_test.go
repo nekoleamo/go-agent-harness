@@ -23,6 +23,7 @@ import (
 	"github.com/nekoleamo/go-agent-harness/core/ctx"
 	"github.com/nekoleamo/go-agent-harness/core/event"
 	"github.com/nekoleamo/go-agent-harness/core/plugin"
+	"github.com/nekoleamo/go-agent-harness/internal/testutil"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -64,7 +65,9 @@ func buildScriptEnv(t *testing.T, script []any) sdk.Ctx {
 // 切 full-access 后同命令放行(拦截来源归因验证)。
 func TestShellPathVetoThroughAgentLoop(t *testing.T) {
 	outside := filepath.Join(t.TempDir(), "outside.txt")
-	cmd := "echo leaked > " + outside
+	// 进 shell 命令的路径必须过 ShellPath:Windows 反斜杠会被 sh 当转义符,
+	// `echo leaked > C:\Users\a` 实写 `C:Usersa` —— 命令就绕开了越界判定。
+	cmd := "echo leaked > " + testutil.ShellPath(outside)
 
 	c := buildScriptEnv(t, []any{
 		map[string]any{"tool": map[string]any{"name": "shell", "args": `{"command":` + jsonString(cmd) + `}`}},

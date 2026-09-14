@@ -45,7 +45,10 @@ func mustWrite(t *testing.T, p, content string) {
 func TestBackupCmdTildeExpand(t *testing.T) {
 	b := buildHome(t)
 	uh := t.TempDir()
+	// Windows 上 os.UserHomeDir 读 USERPROFILE(而非 HOME),POSIX 读 HOME。两边都设,
+	// 让「~ 展开到本测试的临时家目录」这一前提在双平台都成立(设无关变量无副作用)。
 	t.Setenv("HOME", uh)
+	t.Setenv("USERPROFILE", uh)
 	out, err := backupCmd([]string{"~/mybackup.tar.gz"}, b)
 	if err != nil {
 		t.Fatal(err)

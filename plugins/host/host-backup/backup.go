@@ -395,7 +395,10 @@ func backupCmd(args []string, b *Backup) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		if strings.HasPrefix(dest, "/") || strings.HasPrefix(dest, "~") {
+		// 绝对路径判定用 filepath.IsAbs:Windows 的绝对路径以盘符开头(C:\…),
+		// 只比 "/" 会漏判 —— 展开后的 ~/… 同理。保留 "/" 前缀是因为 Windows 上
+		// filepath.IsAbs("/tmp/x") 为 false 而 MSYS 风格 /c/… 与 POSIX /tmp/x 都应算外部路径。
+		if filepath.IsAbs(dest) || strings.HasPrefix(dest, "/") || strings.HasPrefix(dest, "~") {
 			return "已整体备份 GAH_HOME → " + name, nil
 		}
 		return "已整体备份 GAH_HOME → " + filepath.Join(b.backupDir(), name), nil

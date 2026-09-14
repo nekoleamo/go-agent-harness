@@ -131,13 +131,16 @@ func TestResolveWithoutSandbox(t *testing.T) {
 
 // within 前缀匹配不得把 /root2 误判为 /root 内。
 func TestWithinPrefix(t *testing.T) {
-	if within("/a/root", "/a/root2/x") {
+	// within 用 filepath.Separator 拼前缀,故域值也按平台构造:Windows 上分隔符是 \,
+	// 硬编码 "/a/root/x" 会因前缀不匹配而误判「不在内」。
+	root := filepath.FromSlash("/a/root")
+	if within(root, filepath.FromSlash("/a/root2/x")) {
 		t.Fatal("同前缀不同目录段不得判为在内")
 	}
-	if !within("/a/root", "/a/root/x") {
+	if !within(root, filepath.FromSlash("/a/root/x")) {
 		t.Fatal("子路径应判为在内")
 	}
-	if !within("/a/root", "/a/root") {
+	if !within(root, root) {
 		t.Fatal("自身应判为在内")
 	}
 }

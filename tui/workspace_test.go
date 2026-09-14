@@ -192,7 +192,10 @@ func TestWorkspacePickerCascade(t *testing.T) {
 	}
 	// 高亮历史项(第 0 项)回车 → 直接执行
 	res2 := AdvanceEnter(res.Input, res.Pick, a.levels)
-	if !res2.Commit || res2.Input != "/workspace "+projA {
+	// 用 sdk.JoinArgs 构造期望:它会给含特殊字符的参数加引号(Windows 路径分隔符 \),
+	// 与 AdvanceEnter 内部同一套规则 —— 硬拼 "/workspace "+projA 在 Windows 上必然不等。
+	want := "/" + sdk.JoinArgs([]string{"workspace", projA})
+	if !res2.Commit || res2.Input != want {
 		t.Fatalf("选历史应直接执行: %q commit=%v", res2.Input, res2.Commit)
 	}
 	// 高亮哨兵回车 → 断点(继续输入路径)

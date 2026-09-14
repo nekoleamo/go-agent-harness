@@ -790,9 +790,14 @@ func TestCommandsExecuteWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 	wd, _ := os.Getwd()
+	// 两边都要归一:macOS 上临时目录经 /var → /private/var 符号链接;Windows 上
+	// t.TempDir() 给的是 8.3 短名(RUNNER~1),而 os.Getwd() 回长名(runneradmin)。
+	if link, err := filepath.EvalSymlinks(wd); err == nil {
+		wd = link
+	}
 	resolved := target
 	if link, err := filepath.EvalSymlinks(target); err == nil {
-		resolved = link // macOS 临时目录经 /var → /private/var 符号链接
+		resolved = link
 	}
 	if wd != resolved {
 		t.Fatalf("应 chdir 到目标: got %q want %q", wd, resolved)
