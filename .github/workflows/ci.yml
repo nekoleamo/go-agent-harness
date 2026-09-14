@@ -98,3 +98,75 @@ jobs:
           go run ./scripts/ws-smoke.go
           kill $GAH_PID 2>/dev/null || true
           echo "WS 通道冒烟 OK"
+
+  # Windows 平台自动化。此前 ci.yml 仅 ubuntu-latest,Windows 零覆盖 —— 而 Windows 恰是
+  # 平台分支最多的目标(无内核级沙箱 / POSIX shell 经 Git for Windows / 无 SIGTERM)。
+  # 覆盖 README 列明的 Windows 特有机制:posix shell 探测(sdk/shellpath.go)、
+  # MSYS_NO_PATHCONV、无内核沙箱的软降级、优雅停机 POST /api/shutdown。
+  # 刻意不跑:覆盖率门与体积门(阈值按 linux/amd64 基线定,平台分支差异会误报)。
+  test-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web-src/package-lock.json
+      - name: 重建外部插件(gzip embed;发行矩阵含 windows/amd64)
+        run: bash scripts/gen-extplugins.sh
+      - name: 重建前端产物(vue-tsc + vite build → web/dist,漏则 go:embed 编译失败)
+        run: bash scripts/gen-web.sh
+      - name: go vet(sdk 为独立 module,须单独跑)
+        run: |
+          go vet ./...
+          (cd sdk && go vet ./...)
+      - name: go test(-race 需 cgo/gcc,有则跑,无则降级并明示)
+        run: |
+          if command -v gcc >/dev/null 2>&1; then
+            echo "gcc 可用 → 全库 -race"
+            go test -race ./...
+            (cd sdk && go test -race ./...)
+          else
+            echo "无 gcc → 降级为无 -race(race detector 在 windows 需 cgo)"
+            go test ./...
+            (cd sdk && go test ./...)
+          fi
+      - name: 构建 windows/amd64 主包
+        run: CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o gah.exe ./cmd/gah
+      - name: 裸机冒烟(env -i 纯净环境启动)
+        run: |
+          # 不用 env -i:Windows 原生程序依赖 SystemRoot/TEMP 等系统变量,清空环境会引发难查的路径失败;
+          # runner 本身无 GAH_* 污染,只隔离 HOME 即可(“纯净环境启动”的完整验证由 ubuntu job 承担)。
+          HOME="$(mktemp -d)" ./gah.exe --profile headless --ephemeral --dump-config >/dev/null
+          echo "Windows 裸机启动 OK"
+      - name: 裸机真实回合(覆盖 tool-basic shell → Git for Windows 的 sh 探测)
+        run: |
+          HOME="$(mktemp -d)" ./gah.exe --profile headless --ephemeral -input "hi" >/dev/null 2>win-round.log
+          echo "Windows headless 真实回合 OK"
+          echo "--- 无内核级沙箱软降级观测(README:无能力平台 → 一次性 stderr 告警 + 不施加包装)---"
+          grep -i "sandbox" win-round.log || echo "(本轮 stderr 未匹配 sandbox 字样,仅作观测不做断言)"
+      - name: WebSocket 通道冒烟 + 优雅停机(POST /api/shutdown;Windows 无 SIGTERM)
+        run: |
+          # Windows 无法靠 SIGTERM 停机,停机通道即 POST /api/shutdown —— 此处同时验证 WS 事件载体
+          # 与优雅停机:先冒烟收发,再走 shutdown 断言进程确实自行退出(而非被 kill)。
+          HOME="$(mktemp -d)" GAH_WEB_OPEN=0 ./gah.exe --profile web --ephemeral &
+          GAH_PID=$!
+          sleep 3
+          go run ./scripts/ws-smoke.go
+          code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:2233/api/shutdown)
+          echo "shutdown HTTP $code"
+          for _ in $(seq 1 10); do kill -0 $GAH_PID 2>/dev/null || break; sleep 1; done
+          if kill -0 $GAH_PID 2>/dev/null; then
+            echo "::error::优雅停机后进程仍在(DisposeAll 未走完或 shutdown 通道未生效)"
+            kill $GAH_PID 2>/dev/null || true
+            exit 1
+          fi
+          echo "WS 通道 + 优雅停机 OK"
