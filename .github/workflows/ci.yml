@@ -161,8 +161,16 @@ jobs:
           GAH_PID=$!
           sleep 3
           go run ./scripts/ws-smoke.go
-          code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:2233/api/shutdown)
+          # 状态变更接口受 CSRF 护栏约束(web/guard.go:POST 必须带 application/json 或
+          # multipart/form-data),裸 -X POST 会被挡回 415 —— 必须显式带上 header。
+          code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+            -H 'Content-Type: application/json' -d '{}' \
+            http://127.0.0.1:2233/api/shutdown)
           echo "shutdown HTTP $code"
+          if [ "$code" != "200" ]; then
+            echo "::error::/api/shutdown 回 $code(期望 200)"
+            exit 1
+          fi
           for _ in $(seq 1 10); do kill -0 $GAH_PID 2>/dev/null || break; sleep 1; done
           if kill -0 $GAH_PID 2>/dev/null; then
             echo "::error::优雅停机后进程仍在(DisposeAll 未走完或 shutdown 通道未生效)"
