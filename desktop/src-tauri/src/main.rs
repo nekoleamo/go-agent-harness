@@ -122,65 +122,109 @@ fn backupBeforeUpgrade(data: &std::path::Path) -> Result<std::path::PathBuf, Str
     Ok(dst)
 }
 
-// checkForUpdates 检查更新(tauri-plugin-updater;endpoint 见 tauri.conf plugins.updater):
-// 有更新 → 下载安装 + 通知后自动重启;无更新/失败 → 通知(失败不打断,便于未发布期开发)。
-async fn checkForUpdates(app: tauri::AppHandle) {
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let updater = app.updater()?;
-        if let Some(update) = updater.check().await? {
-            // 升级整包替换应用目录:数据已外置到用户数据目录(见 stage.rs),正常不会再被替换;
-            // 这里仍先备份一次(额外保险,覆盖壳回退到应用目录内运行的极端情况)。
-            let data = app
-                .state::<DataRoot>()
-                .0
-                .lock()
-                .unwrap()
-                .clone()
-                .ok_or("数据根未初始化")?;
-            match backupBeforeUpgrade(&data) {
-                Ok(p) if p.as_os_str().is_empty() => {}
-                Ok(p) => {
-                    let _ = app.notification().builder().title("gah 升级前备份").body(format!("数据已备份到:{}", p.display())).show();
-                }
-                Err(e) => {
-                    let _ = app
-                        .notification()
-                        .builder()
-                        .title("gah 升级已取消")
-                        .body(format!("升级前备份数据失败,为免丢失数据已取消升级:{e}\n请先在对话里执行 /backup(存到应用目录之外的路径),再重试检查更新。"))
-                        .show();
-                    return Err(format!("升级前备份失败,已取消升级:{e}").into());
-                }
-            }
-            update.download_and_install(|_, _| {}, || {}).await?;
-            let _ = app
-                .notification()
-                .builder()
-                .title("gah")
-                .body("更新已安装,即将重启")
-                .show();
-            app.restart();
-        } else {
-            let _ = app
-                .notification()
-                .builder()
-                .title("gah")
-                .body("已是最新版本")
-                .show();
+// UpdateOutcome 检查更新的结果:托盘菜单把它转成系统通知(托盘点击后唯一的反馈
+// 渠道),界面内入口(invoke check_update)把它原样交给前端 —— 一条逻辑两个出口。
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateOutcome {
+    /// upToDate(已最新) | installed(已装待重启) | failed(检查/安装失败)
+    status: &'static str,
+    /// 可用/已装版本号(installed 时有值)
+    version: Option<String>,
+    /// 面向用户的中文说明:界面直接展示,托盘转成通知正文
+    message: String,
+}
+
+impl UpdateOutcome {
+    fn new(status: &'static str, version: Option<String>, message: String) -> Self {
+        Self {
+            status,
+            version,
+            message,
         }
-        Ok(())
     }
-    .await;
-    if let Err(e) = result {
-        let msg = e.to_string();
-        // 端点 404 = 线上还没有 Release(首次发版前/尚未同步),不是故障:给出明确说法
-        let body = if msg.contains("404") || msg.to_lowercase().contains("not found") {
-            "暂无可用更新(线上还没有发布版本)".to_string()
-        } else {
-            format!("检查更新未完成:{msg}")
-        };
-        let _ = app.notification().builder().title("gah").body(body).show();
+}
+
+// checkForUpdates 检查更新(tauri-plugin-updater;endpoint 见 tauri.conf plugins.updater):
+// 有更新 → 备份数据 + 下载安装,随后延时重启;无更新/失败 → 返回结果交给调用方呈现。
+// 这里不发通知:托盘与界面两个入口的呈现方式不同。
+async fn checkForUpdates(app: &tauri::AppHandle) -> UpdateOutcome {
+    let outcome = checkForUpdatesInner(app).await;
+    // 安装完必须重启才生效。延时一小会儿:界面内入口(前端 invoke)才有机会先把
+    // 「已安装」这个结果拿到并渲染出来,否则窗口会在响应返回前就被干掉。
+    if outcome.status == "installed" {
+        let h = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(1500));
+            h.restart();
+        });
     }
+    outcome
+}
+
+async fn checkForUpdatesInner(app: &tauri::AppHandle) -> UpdateOutcome {
+    let updater = match app.updater() {
+        Ok(u) => u,
+        Err(e) => return UpdateOutcome::new("failed", None, format!("检查更新未完成:{e}")),
+    };
+    let update = match updater.check().await {
+        Ok(Some(u)) => u,
+        Ok(None) => return UpdateOutcome::new("upToDate", None, "已是最新版本".into()),
+        Err(e) => return UpdateOutcome::new("failed", None, explainUpdateError(&e.to_string())),
+    };
+    let version = update.version.clone();
+    // 升级整包替换应用目录:数据已外置到用户数据目录(见 stage.rs),正常不会再被替换;
+    // 这里仍先备份一次(额外保险,覆盖壳回退到应用目录内运行的极端情况)。
+    let data = match app.state::<DataRoot>().0.lock().unwrap().clone() {
+        Some(d) => d,
+        None => {
+            return UpdateOutcome::new("failed", Some(version), "数据根未初始化,已取消升级".into())
+        }
+    };
+    let backup_note = match backupBeforeUpgrade(&data) {
+        Ok(p) if p.as_os_str().is_empty() => String::new(),
+        Ok(p) => format!("(升级前数据已备份到 {})", p.display()),
+        Err(e) => {
+            return UpdateOutcome::new(
+                "failed",
+                Some(version),
+                format!(
+                    "升级前备份数据失败,为免丢失数据已取消升级:{e}\n请先在对话里执行 /backup(存到应用目录之外的路径),再重试检查更新。"
+                ),
+            );
+        }
+    };
+    if let Err(e) = update.download_and_install(|_, _| {}, || {}).await {
+        return UpdateOutcome::new("failed", Some(version), format!("下载安装未完成:{e}"));
+    }
+    UpdateOutcome::new(
+        "installed",
+        Some(version.clone()),
+        format!("更新 {version} 已安装,即将重启生效{backup_note}"),
+    )
+}
+
+// explainUpdateError 把端点错误翻译成人话:404 = 线上还没有 Release(首次发版前/
+// 尚未同步),属正常状态而非故障。
+fn explainUpdateError(msg: &str) -> String {
+    if msg.contains("404") || msg.to_lowercase().contains("not found") {
+        "暂无可用更新(线上还没有发布版本)".to_string()
+    } else {
+        format!("检查更新未完成:{msg}")
+    }
+}
+
+// notifyUpdate 托盘场景的呈现:系统通知是托盘点击后唯一的反馈渠道。
+fn notifyUpdate(app: &tauri::AppHandle, o: &UpdateOutcome) {
+    let _ = app.notification().builder().title("gah").body(&o.message).show();
+}
+
+// check_update 界面内升级入口(设置面板调用)。
+// 桌面壳此前没有任何 invoke 通道,升级只能靠托盘菜单 —— 菜单弹不出来就等于完全
+// 没有升级入口(Windows 真机反馈),所以补上这条通道,让 UI 能自己触发并展示结果。
+#[tauri::command]
+async fn check_update(app: AppHandle) -> UpdateOutcome {
+    checkForUpdates(&app).await
 }
 
 // httpGET 取一个 GET 响应体的粗文本(裸 TCP;壳只做轻量探活,不引 HTTP 库)。
@@ -401,6 +445,9 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Sidecar(Mutex::new(None)))
         .manage(DataRoot(Mutex::new(None)))
+        // 界面内升级入口:桌面壳此前没有 invoke 通道,升级只能靠托盘菜单,
+        // 菜单弹不出来就等于完全没有升级入口(Windows 真机反馈)。
+        .invoke_handler(tauri::generate_handler![check_update])
         .setup(|app| {
             let handle = app.handle().clone();
             // —— 托盘:打开窗口 / 开机自启开关 / 退出 ——
@@ -426,8 +473,20 @@ fn main() {
                 ])
                 .build()
                 .unwrap();
+            // 托盘图标必须显式给:TrayIconBuilder 不会自动回退到 default_window_icon。
+            // 没有图标时 tray-icon 不设置 NIF_ICON 标志,Shell_NotifyIcon 依然返回成功,
+            // 但托盘区留下一个没有图标的空白占位 —— 在 Windows 上就表现为「看不到图标」。
+            // Windows 目标下 tauri-codegen 从 bundle.icon 里挑 .ico 嵌入(多尺寸,
+            // 高 DPI 下也清晰),Unix 挑第一个 .png,所以这里一定拿得到。
+            let tray_icon = app.default_window_icon().cloned().expect(
+                "缺少应用图标:tauri.conf.json 的 bundle.icon 需含 .ico(Windows)/.png(Unix)",
+            );
             let _tray = TrayIconBuilder::new()
+                .icon(tray_icon)
                 .menu(&menu)
+                // 显式声明左键也弹菜单:Windows 用户点一下托盘就想看到菜单,
+                // 而升级入口只在菜单里(界面上没有),左键不弹 = 找不到升级。
+                .show_menu_on_left_click(true)
                 .tooltip("gah")
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => {
@@ -446,22 +505,23 @@ fn main() {
                         }
                     }
                     "check_update" => {
-                        // 托盘「检查更新」:异步检查 → 有更新下载安装并重启;结果经系统通知反馈
+                        // 托盘「检查更新」:异步检查 → 有更新则下载安装并重启;结果经系统通知反馈
                         let h = app.clone();
-                        tauri::async_runtime::spawn(async move { checkForUpdates(h).await });
+                        tauri::async_runtime::spawn(async move {
+                            let outcome = checkForUpdates(&h).await;
+                            notifyUpdate(&h, &outcome);
+                        });
                     }
                     "quit" => quitApp(app),
                     _ => {}
                 })
-                .on_tray_icon_event(|tray, event| {
-                    use tauri::tray::TrayIconEvent;
-                    if let TrayIconEvent::Click { .. } = event {
-                        if let Some(w) = tray.app_handle().get_webview_window("main") {
-                            let _ = w.show();
-                            let _ = w.set_focus();
-                        }
-                    }
-                })
+                // 不监听 on_tray_icon_event:窗口打开走菜单里的「显示窗口」项(跨平台一致)。
+                // 曾经的实现在托盘点击回调里 show()+set_focus(),而 Windows 的托盘菜单走
+                // TrackPopupMenu —— 菜单只在自身保持前台时才展开,一旦被别的窗口抢走前台就
+                // 立即关闭,于是表现为「左键/右键点了都不弹菜单」(升级入口就在菜单里,
+                // 菜单不弹 = 找不到升级)。
+                // 顺带:TrayIconEvent::DoubleClick 是 Windows-only,不能拿它当跨平台的
+                // 「打开窗口」通道。
                 .build(app)
                 .expect("托盘构建失败");
             let _ = handle.emit("tray-ready", ());

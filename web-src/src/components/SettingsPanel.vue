@@ -35,6 +35,40 @@ const props = defineProps<{
 const emit = defineEmits<{ (e: 'close'): void; (e: 'changed'): void }>()
 
 const ask = inject<(a: AskConfirm) => void>('askConfirm')
+
+// 桌面壳专属能力:壳经 withGlobalTauri 把 Tauri API 挂到 window.__TAURI__,
+// 浏览器直连 127.0.0.1:2233 时不存在 —— 用它是为了零新前端依赖。
+type TauriInvoke = (cmd: string, args?: Record<string, unknown>) => Promise<unknown>
+const tauriInvoke: TauriInvoke | undefined = (
+  globalThis as unknown as { __TAURI__?: { core?: { invoke?: TauriInvoke } } }
+).__TAURI__?.core?.invoke
+const isDesktop = typeof tauriInvoke === 'function'
+const updBusy = ref(false)
+const updMsg = ref('')
+const updOk = ref(false)
+
+// doCheckUpdate 桌面版检查更新:壳侧走同一条 checkForUpdates(与托盘菜单同一实现,
+// 结果回传到这里展示)。有更新时壳会自动下载安装并重启。
+async function doCheckUpdate() {
+  if (!tauriInvoke) {
+    updOk.value = false
+    updMsg.value = '当前环境不支持检查更新(需桌面版)'
+    return
+  }
+  updBusy.value = true
+  updMsg.value = '正在检查…'
+  updOk.value = false
+  try {
+    const r = (await tauriInvoke('check_update')) as { status?: string; message?: string } | undefined
+    updOk.value = r?.status === 'upToDate' || r?.status === 'installed'
+    updMsg.value = String(r?.message ?? '检查完成')
+  } catch (e) {
+    updOk.value = false
+    updMsg.value = '检查更新失败:' + (e instanceof Error ? e.message : String(e))
+  } finally {
+    updBusy.value = false
+  }
+}
 // v2 扩展点:设置面板区段(每次渲染求值,保持实时)
 const panelSections = settingSections()
 const err = ref('')
@@ -910,6 +944,20 @@ watch(
             <button class="ghost" @click="doReload">重载指令文件</button>
           </div>
         </section>
+
+        <!-- 桌面壳专属:升级入口(浏览器直连时整段隐藏)。此前升级只在托盘菜单里,
+             菜单弹不出来就等于没有入口,故补到界面上。 -->
+        <section v-if="isDesktop" class="sec">
+          <h3 class="h">关于 gah</h3>
+          <div class="row acts">
+            <button class="ghost" :disabled="updBusy" @click="doCheckUpdate()">
+              {{ updBusy ? '检查中…' : '检查更新' }}
+            </button>
+          </div>
+          <p v-if="updMsg" class="dim" :class="{ ok: updOk }">{{ updMsg }}</p>
+          <p v-else class="dim">桌面版:检查 GitHub Release 上的新版本,有更新会自动下载安装并重启</p>
+        </section>
+
         <!-- v2 扩展点:设置面板区段(插件注入,每插件一节) -->
         <section v-for="s in panelSections" :key="s.key" class="sec">
           <component :is="s.component" />
