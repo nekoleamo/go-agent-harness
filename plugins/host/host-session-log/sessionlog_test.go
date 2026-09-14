@@ -92,8 +92,20 @@ func itoa(n int) string {
 }
 
 // TestDeriveAttachments 附件随 UserMessage 传递到 LLMMessage(附件一期)。
+// newTestLog 建 Log 并登记测试结束自动关闭。
+//
+// 为什么必须显式回收:Windows 不允许删除仍被打开的文件,t.TempDir() 清理会以
+// "Access is denied" 失败并让测试报错;POSIX 允许删已打开文件,所以漏回收在
+// macOS/Linux 上无症状。Close 幂等(file 置 nil 后再调无副作用),POSIX 同样走本 helper。
+func newTestLog(t *testing.T, dir string) *Log {
+	t.Helper()
+	lg := newLog(dir)
+	t.Cleanup(lg.Close)
+	return lg
+}
+
 func TestDeriveAttachments(t *testing.T) {
-	l := newLog("")
+	l := newTestLog(t, "")
 	atts := []sdk.Attachment{{Kind: sdk.AttachmentImage, Name: "a.png", MimeType: "image/png", Rel: "20260906-000000/a.png"}}
 	if err := l.Append(sdk.SessionEvent{Kind: sdk.EventUserMessage, Payload: sdk.UserMessage{Content: "看图", Attachments: atts}}); err != nil {
 		t.Fatal(err)
@@ -109,7 +121,7 @@ func TestDeriveAttachments(t *testing.T) {
 
 // TestFullProjectionNoCompressor 未注册压缩器:全量投影,行为与旧版一致。
 func TestFullProjectionNoCompressor(t *testing.T) {
-	l := newLog("")
+	l := newTestLog(t, "")
 	for i := 1; i <= 5; i++ {
 		appendTurn(l, i)
 	}
@@ -121,7 +133,7 @@ func TestFullProjectionNoCompressor(t *testing.T) {
 
 // TestCompressorInjectIntegrate 压缩器注入整合:超预算触发 Fold,摘要置顶、压缩块跳过、完整日志留盘。
 func TestCompressorInjectIntegrate(t *testing.T) {
-	l := newLog("")
+	l := newTestLog(t, "")
 	for i := 1; i <= 6; i++ {
 		appendTurn(l, i)
 	}
@@ -161,7 +173,7 @@ func TestCompressorInjectIntegrate(t *testing.T) {
 
 // TestCompressorWithinBudget 预算充足:不触发折叠,无摘要。
 func TestCompressorWithinBudget(t *testing.T) {
-	l := newLog("")
+	l := newTestLog(t, "")
 	for i := 1; i <= 3; i++ {
 		appendTurn(l, i)
 	}
@@ -180,7 +192,7 @@ func TestCompressorWithinBudget(t *testing.T) {
 
 // TestHistoryInjection 历史注入:-1 禁止 / N 最近 N 条消息(与压缩器无关的基础语义)。
 func TestHistoryInjection(t *testing.T) {
-	l := newLog("")
+	l := newTestLog(t, "")
 	for i := 1; i <= 3; i++ {
 		appendTurn(l, i)
 	}
@@ -197,7 +209,7 @@ func TestHistoryInjection(t *testing.T) {
 
 // TestSummaryEventProjection 摘要事件消费:水位内摘要恒置顶(令牌压缩后多次投影稳定)。
 func TestSummaryEventProjection(t *testing.T) {
-	l := newLog("")
+	l := newTestLog(t, "")
 	for i := 1; i <= 4; i++ {
 		appendTurn(l, i)
 	}
@@ -227,14 +239,14 @@ func min(a, b int) int {
 // TestLoadRestoresHistory Load 恢复:jsonl 事件读入、seq 从历史顶续接(新事件不复用序号)。
 func TestLoadRestoresHistory(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sess.jsonl")
-	l := newLog(path)
+	l := newTestLog(t, path)
 	// 先写两轮事件(seq 1,2,3:用户/助手/轮末)
 	appendTurn(l, 1)
 	l.Flush()
 	l.Close()
 
 	// 新 Log(模拟重启)→ Load 恢复
-	l2 := newLog("")
+	l2 := newTestLog(t, "")
 	if err := l2.Load(path); err != nil {
 		t.Fatal(err)
 	}
@@ -255,7 +267,7 @@ func TestLoadRestoresHistory(t *testing.T) {
 
 // TestLoadMissingFile 文件不存在 = 新会话(幂等,不报错)。
 func TestLoadMissingFile(t *testing.T) {
-	l := newLog("")
+	l := newTestLog(t, "")
 	path := filepath.Join(t.TempDir(), "none.jsonl")
 	if err := l.Load(path); err != nil {
 		t.Fatal(err)
@@ -273,7 +285,7 @@ func TestLoadToleratesBadLines(t *testing.T) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	l := newLog("")
+	l := newTestLog(t, "")
 	if err := l.Load(path); err != nil {
 		t.Fatal(err)
 	}
@@ -297,7 +309,7 @@ func TestLoadLongLineRestores(t *testing.T) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	l := newLog("")
+	l := newTestLog(t, "")
 	if err := l.Load(path); err != nil {
 		t.Fatalf("超长有效行应恢复: %v", err)
 	}
@@ -324,7 +336,7 @@ func TestLoadOversizeLineTolerated(t *testing.T) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	l := newLog("")
+	l := newTestLog(t, "")
 	if err := l.Load(path); err != nil {
 		t.Fatalf("超限行应容忍不报错: %v", err)
 	}
@@ -337,10 +349,10 @@ func TestLoadOversizeLineTolerated(t *testing.T) {
 // TestHistoryPersistence SetHistory 持久化 sidecar:重启(新 Log Load)后恢复。
 func TestHistoryPersistence(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sess.jsonl")
-	l := newLog(path)
+	l := newTestLog(t, path)
 	l.SetHistory(5) // 落盘 sidecar
 	// 模拟重启:新 Log Load → historyLimit 恢复为 5
-	l2 := newLog("")
+	l2 := newTestLog(t, "")
 	if err := l2.Load(path); err != nil {
 		t.Fatal(err)
 	}
@@ -352,7 +364,7 @@ func TestHistoryPersistence(t *testing.T) {
 	}
 	// 再次修改 → 覆盖持久化;Load 反映新值
 	l2.SetHistory(2)
-	l3 := newLog("")
+	l3 := newTestLog(t, "")
 	if err := l3.Load(path); err != nil {
 		t.Fatal(err)
 	}
@@ -363,7 +375,7 @@ func TestHistoryPersistence(t *testing.T) {
 		t.Fatalf("覆盖后应恢复 2,got %d", got)
 	}
 	// 无 sidecar(新会话):默认 0 = 全部
-	l4 := newLog("")
+	l4 := newTestLog(t, "")
 	if err := l4.Load(filepath.Join(t.TempDir(), "none.jsonl")); err != nil {
 		t.Fatal(err)
 	}
@@ -392,7 +404,7 @@ func TestHistorySidecarPath(t *testing.T) {
 func TestAppendBroadcastStampsSeqTS(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "s.jsonl")
-	l := newLog(dir)
+	l := newTestLog(t, dir)
 	l.SetPath(path)
 	c := &captureCtx{}
 	l.ctx = c
@@ -435,7 +447,7 @@ func TestLoadRepairsTrailingPartialLine(t *testing.T) {
 	if err := os.WriteFile(path, append(append(good, '\n'), []byte(`{"kind":"user/message","seq":2,`)...), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	l := newLog(dir)
+	l := newTestLog(t, dir)
 	if err := l.Load(path); err != nil {
 		t.Fatal(err)
 	}
@@ -443,7 +455,7 @@ func TestLoadRepairsTrailingPartialLine(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 重载:新事件必须仍在(未被残行粘坏丢弃)
-	l2 := newLog(dir)
+	l2 := newTestLog(t, dir)
 	if err := l2.Load(path); err != nil {
 		t.Fatal(err)
 	}
@@ -467,14 +479,14 @@ func TestLoadKeepsCompleteTrailingLine(t *testing.T) {
 	if err := os.WriteFile(path, good, 0o600); err != nil { // 无终止符
 		t.Fatal(err)
 	}
-	l := newLog(dir)
+	l := newTestLog(t, dir)
 	if err := l.Load(path); err != nil {
 		t.Fatal(err)
 	}
 	if err := l.Append(sdk.SessionEvent{Kind: sdk.EventUserMessage, Payload: sdk.UserMessage{Content: "next"}}); err != nil {
 		t.Fatal(err)
 	}
-	l2 := newLog(dir)
+	l2 := newTestLog(t, dir)
 	if err := l2.Load(path); err != nil {
 		t.Fatal(err)
 	}
@@ -487,7 +499,7 @@ func TestLoadKeepsCompleteTrailingLine(t *testing.T) {
 func TestLoadFailureKeepsState(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "s.jsonl")
-	l := newLog(dir)
+	l := newTestLog(t, dir)
 	l.SetPath(path)
 	if err := l.Append(sdk.SessionEvent{Kind: sdk.EventUserMessage, Payload: sdk.UserMessage{Content: "keep"}}); err != nil {
 		t.Fatal(err)

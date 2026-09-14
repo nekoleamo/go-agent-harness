@@ -467,6 +467,7 @@ func TestUnrecordProject(t *testing.T) {
 }
 
 func TestSwitchDir(t *testing.T) {
+	orig, _ := os.Getwd()
 	tmp := t.TempDir()
 	if err := os.Setenv("GAH_HOME", tmp); err != nil {
 		t.Fatal(err)
@@ -516,7 +517,8 @@ func TestSwitchDir(t *testing.T) {
 	if len(emitted) != 1 {
 		t.Fatalf("同项目切换不应重复广播,got %v", emitted)
 	}
-	t.Chdir(tmp) // 恢复(cwd 已被本进程改掉)
+	t.Chdir(orig) // 恢复原 cwd(而不是 tmp):Windows 不允许删除当前工作目录,
+	// 切到 tmp 会让 t.TempDir() 清理时 unlinkat 报 Access is denied。
 	recs := svc.RecentProjects()
 	if len(recs) != 1 || recs[0].Dir != rp {
 		t.Fatalf("记录 dir 应为归一化真实路径: %+v", recs)

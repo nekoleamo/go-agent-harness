@@ -82,11 +82,16 @@ func TestMCPBridge(t *testing.T) {
 	}
 
 	bin := buildMiniServer(t, t.TempDir())
-	if _, err := (&Plugin{}).Start(c, &sdk.Manifest{Data: map[string]any{
+	// Start 返回的 cleanup 必须登记:它负责终止 mcpserver 子进程。
+	// 丢了 cleanup → 子进程存活 → Windows 上 t.TempDir() 删 mcpserver.exe 报
+	// Access is denied(POSIX 允许删运行中的可执行文件,所以本地无症状)。
+	stop, err := (&Plugin{}).Start(c, &sdk.Manifest{Data: map[string]any{
 		"command": bin,
-	}}); err != nil {
+	}})
+	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(stop)
 
 	var tools sdk.ToolRegistry
 	if err := c.Inject("ctx.tools", &tools); err != nil {
