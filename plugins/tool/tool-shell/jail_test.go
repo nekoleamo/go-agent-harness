@@ -187,18 +187,22 @@ func TestShellToolJailAppliesToChild(t *testing.T) {
 	root := filepath.Join(home, "jail")
 
 	out := runShell(t, `printf '%s;%s' "$TMPDIR" "$GOCACHE"`)
-	if !strings.HasPrefix(out, root+string(filepath.Separator)) {
-		t.Fatalf("子进程 TMPDIR 应在 jail 内, got %q (root=%s)", out, root)
-	}
 	tmp, cache, ok := strings.Cut(out, ";")
 	if !ok {
 		t.Fatalf("输出格式不符: %q", out)
 	}
-	if !strings.HasPrefix(cache, filepath.Join(root, "cache", "go-build")) {
-		t.Fatalf("子进程 GOCACHE 应在 jail 内, got %q", cache)
-	}
 	if tmp == "" || cache == "" {
 		t.Fatalf("两个变量都必须可见: %q", out)
+	}
+	// 断言用归一后的尾部而不是 root 前缀:Windows 上 Git Bash 把 TMPDIR 设成
+	// POSIX 表示(/tmp 映射到 %TEMP%),与 root 的原生 Windows 表示(C:\Users\…)
+	// 前缀不同却指向同一位置 —— 前缀比较在 Windows 上恒失败。尾部 jail/tmp 与
+	// jail/cache/go-build 同时覆盖两种表示,语义仍是「必须落在 jail 内」。
+	if !strings.HasSuffix(filepath.ToSlash(strings.ToLower(tmp)), "jail/tmp") {
+		t.Fatalf("子进程 TMPDIR 应在 jail 内, got %q (root=%s)", tmp, root)
+	}
+	if !strings.HasSuffix(filepath.ToSlash(strings.ToLower(cache)), "jail/cache/go-build") {
+		t.Fatalf("子进程 GOCACHE 应在 jail 内, got %q", cache)
 	}
 }
 

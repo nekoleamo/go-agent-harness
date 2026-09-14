@@ -442,8 +442,10 @@ func (s *Service) Raster(ctx context.Context, req sdk.DocRequest, page, dpi int)
 		page = 1
 	}
 	// 页数校验(越界显式报错,不做静默回退)
-	if r, err := openPDFFile(abs, fi.Size()); err == nil {
-		if total := r.NumPage(); total > 0 && page > total {
+	if r, closer, err := openPDFFile(abs, fi.Size()); err == nil {
+		total := r.NumPage()
+		closer() // 读完立即释放句柄(否则 Windows 上源文件在测试清理时被占用)
+		if total > 0 && page > total {
 			return nil, fmt.Errorf("%w: 页码越界(共 %d 页)", sdk.ErrDocNotFound, total)
 		}
 	}
@@ -485,12 +487,20 @@ func (s *Service) Raster(ctx context.Context, req sdk.DocRequest, page, dpi int)
 }
 
 // openPDFFile 打开 PDF 读取器(仅用于页数校验;失败不致命,由后续步骤报错)。
-func openPDFFile(abs string, size int64) (*pdf.Reader, error) {
+// openPDFFile 打开并解析 PDF。调用方用完 Reader 后必须调 closer:
+// gopdf 的 Reader 持有 io.ReaderAt 做惰性读,文件要活到读结束;但一旦读完就丢
+// 就会漏句柄 —— Windows 上表现为删不掉源文件(Access is denied),POSIX 无症状。
+func openPDFFile(abs string, size int64) (*pdf.Reader, func(), error) {
 	f, err := os.Open(abs)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return openPDF(f, size)
+	r, err := openPDF(f, size)
+	if err != nil {
+		f.Close()
+		return nil, nil, err
+	}
+	return r, func() { f.Close() }, nil
 }
 
 // pngDims 读 PNG 宽高(失败返回 0,0;不影响光栅成功)。

@@ -194,16 +194,57 @@ func Normalize(s Server) (Server, error) {
 	return s, nil
 }
 
+// splitCommand 按空白拆分命令行,双/单引号内的空白保留(路径含空格请写
+// `"/Applications/My App/bin/x" --serve`),不做反斜杠转义。
+//
+// 为什么不用 sdk.SplitArgs:那个按 POSIX shell 语义把 \ 当转义符消费,而本字段的
+// 首项是**直接 exec 的 argv[0]**,不是 shell 表达式。Windows 路径(C:\Users\…)
+// 经它一拆就变成 C:Users…,server 起不来(表现为整组 mcp_<name>_* 工具缺席)。
+// POSIX 路径不含反斜杠,所以两种实现在那边等价。
+func splitCommand(s string) []string {
+	var out []string
+	var cur []rune
+	started := false
+	var quote rune // 0 = 未在引号内
+	for _, r := range s {
+		if quote != 0 {
+			if r == quote {
+				quote = 0
+				continue
+			}
+			cur = append(cur, r)
+			continue
+		}
+		switch {
+		case r == '\'' || r == '"':
+			quote = r
+			started = true
+		case r == ' ' || r == '\t' || r == '\n' || r == '\r':
+			if started {
+				out = append(out, string(cur))
+				cur = cur[:0]
+				started = false
+			}
+		default:
+			cur = append(cur, r)
+			started = true
+		}
+	}
+	if started {
+		out = append(out, string(cur))
+	}
+	return out
+}
+
 // normalizeLenient 无需校验的规范化(读盘与写盘两条路径共用,保证语义单一):
 // name → CleanName;mode → 小写 trim(写错大小写不算错,非法值仍由 Normalize 拒);
-// command → trim,含空白且 args 为空时按 sdk.SplitArgs 拆出 command+args
-// (引号内空格保留:路径含空格请写 "/Applications/My App/bin/x" --serve)。
+// command → trim,含空白且 args 为空时按 splitCommand 拆出 command+args。
 func normalizeLenient(s Server) Server {
 	s.Name = CleanName(s.Name)
 	s.Mode = strings.ToLower(strings.TrimSpace(s.Mode))
 	s.Command = strings.TrimSpace(s.Command)
 	if len(s.Args) == 0 && strings.ContainsAny(s.Command, " \t") {
-		if parts := sdk.SplitArgs(s.Command); len(parts) > 0 {
+		if parts := splitCommand(s.Command); len(parts) > 0 {
 			s.Command, s.Args = parts[0], parts[1:]
 		}
 	}
@@ -219,7 +260,7 @@ func ParseEnv(single, multi string) ([]Server, []string) {
 	var out []Server
 	var notes []string
 	if strings.TrimSpace(single) != "" {
-		parts := strings.Fields(single)
+		parts := splitCommand(single)
 		out = append(out, Server{Command: parts[0], Args: parts[1:], Source: SourceEnv, Mode: ModeDirect})
 	}
 	seen := map[string]bool{}
@@ -240,7 +281,7 @@ func ParseEnv(single, multi string) ([]Server, []string) {
 			continue
 		}
 		seen[name] = true
-		parts := strings.Fields(cmd)
+		parts := splitCommand(cmd)
 		out = append(out, Server{Name: name, Command: parts[0], Args: parts[1:], Source: SourceEnv, Mode: ModeDirect})
 	}
 	return out, notes
