@@ -62,6 +62,21 @@ func buildEnv(t *testing.T, dir string) (sdk.Ctx, *plugin.Registry) {
 	return c, reg
 }
 
+// waitUnlocked 轮询等到 path 不再被占用(Windows 进程退出后文件锁滞后释放)。
+//
+// 直接尝试 os.Remove:能删就说明锁已释放(删掉也无妨,t.TempDir() 的 RemoveAll 对
+// 不存在的子项不报错)。最多等 5 秒。超时不报错 —— 真正的删除失败仍由 TempDir 的
+// cleanup 报出,这里只负责给它创造收敛条件;非 Windows 上通常第一次就成功。
+func waitUnlocked(t *testing.T, path string) {
+	t.Helper()
+	for i := 0; i < 50; i++ {
+		if err := os.Remove(path); err == nil || os.IsNotExist(err) {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 func toolNames(tools sdk.ToolRegistry) []string {
 	defs := tools.List()
 	out := make([]string, 0, len(defs))
@@ -395,6 +410,12 @@ func TestExternalPluginReloadByName(t *testing.T) {
 // 之后放入二进制 → Reload 应补加载(用户新装插件/新加 MCP server 无需重启 gah)。
 func TestExternalPluginReloadLoadsNewBinary(t *testing.T) {
 	dir := t.TempDir()
+	// Windows:插件进程退出后 exe 的文件锁由内核异步释放,而 buildExternalPlugin 把
+	// tool-echo.exe 编译在 t.TempDir() 里 —— DisposeAll 一返回就 RemoveAll 会撞上还没
+	// 释放的锁,报 unlinkat ... Access is denied(go-plugin 日志里的
+	// "TerminateProcess: Access is denied." 是它对已经自行退出的进程再补一刀的无害噪声,
+	// 不代表进程没死)。本 cleanup 注册在 TempDir 之后 → LIFO 先执行 → 等到 exe 可删。
+	t.Cleanup(func() { waitUnlocked(t, filepath.Join(dir, testutil.ExeName("tool-echo"))) })
 	c, _ := buildEnv(t, dir) // 目录为空:boot 期零外部插件
 	var tools sdk.ToolRegistry
 	if err := c.Inject("ctx.tools", &tools); err != nil {
