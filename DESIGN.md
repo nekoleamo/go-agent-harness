@@ -862,6 +862,24 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 | **修法** | 新增 `desktop/src-tauri/nsis/hooks.nsh` + `tauri.conf.json` `bundle.windows.nsis.installerHooks`:`NSIS_HOOK_POSTINSTALL` **无条件**建 `$DESKTOP\${PRODUCTNAME}.lnk` → `$INSTDIR\${MAINBINARYNAME}.exe`(主程序 `gah-desktop.exe`,**不是** sidecar `gah.exe`),并复用模板 `SetLnkAppUserModelId`(任务栏分组/固定行为一致);`NSIS_HOOK_POSTUNINSTALL` 按 `IsShortcutTarget` 判定后删除(卸载兜底,不动用户改过目标的快捷方式)。`${...}` 在宏**插入点**展开,故 hooks 先于 `!define` 的 include 顺序不影响 | 配置键对本地 `@tauri-apps/cli` 自带 `config.schema.json`(2.11.4)逐层校验通过(`NsisConfig` 允许键集 = {installMode, installerHooks});NSIS 实际编译在 release-desktop 的 windows job 内完成;真机验收 = docs/VERIFY.md **B-5 第 159 条** |
 | **发行** | 走 tag 驱动发 v0.1.2(不改 `tauri.conf.json` 的 version;不移动已发布的 v0.1.1 标签) | ✅ 2026-09-13:三个 workflow(`ci`/`release-cli`/`release-desktop`)全绿;`desktop-win-x86_64` 内 NSIS 编译通过(= hooks 路径能被 bundler `canonicalize` 到且 `!include` 成功);Release 含 `gah_0.1.2_x64-setup.exe`(33,140,083 B)/ `gah_0.1.2_aarch64.dmg` / `latest.json`;`releases/latest/download/latest.json` 实测 **0.1.2**(win sig 412) |
 
+## R14 v0.1.3 发行实证 ✅ (2026-09-15)
+
+> 用户要求:Windows 平台修复全部收敛后发一版。HEAD = `d0aa248`(`ci` **5/5 绿**:`test` / `test-windows` / `test-macos` / `desktop-shell` / `desktop-shell-macos`)。
+>
+> 本版相对 v0.1.2 共 **18 个提交**,其中产品代码改动 **10 个文件**(其余为测试适配 / CI / 文档):桌面壳托盘与升级入口 3 件(`main.rs` / `tauri.conf.json` / `SettingsPanel.vue`)、Windows 真 bug 6 件(`host-docview` 句柄泄漏、`host-jobs` 进程树终止与 `WaitDelay`、`internal/mcpconfig` 命令拆词、`host-backup` 绝对路径判定、`host-cwd-sessions` + `tui/app.go` 短长名归一)。这是**首个包含「托盘图标可见 / 菜单可弹 / 界面内升级入口」的版本** —— 那三个症状正是 Windows 真机试装 v0.1.2 时报出的。
+
+| 项 | 证据 |
+|---|---|
+| **tag** | `v0.1.3`(annotated;正文即 Release notes —— `.goreleaser.yaml` `changelog.disable: true` 保证两个 workflow 并发时正文归属唯一)。版本号**不手改任何文件**:goreleaser 镜像 / sidecar `-X main.version` / tauri bundle version 三处均由 tag 注入;两份 README 的下载链接都是 `/releases/latest` 动态链接,亦无需改 |
+| **release-cli** | run `34938346058` ✅ —— goreleaser 十件归档(darwin/linux/windows × amd64/arm64 × tar.gz/zip)+ `checksums.txt`(1,073 B) |
+| **release-desktop** | run `34938346051` ✅ —— `desktop-mac-aarch64` / `desktop-win-x86_64` / **`merge-upload`** 三 job 全 success(这次 `merge-upload` **真的上传成功**;对比 v0.1.0 首发时它因缺 `permissions: contents: write` 报 403 `Resource not accessible by integration`,已修补) |
+| **Release 内容** | `draft=false` / `prerelease=false`;15 个 asset:`gah_0.1.3_x64-setup.exe`(33,152,441 B)、`gah_0.1.3_aarch64.dmg`(35,852,557 B)、`gah.app.tar.gz`(35,745,661 B)、10 件命令行归档、`checksums.txt`、`latest.json`(1,215 B) |
+| **updater 端点** | `gh api …/releases/latest` → **v0.1.3**;`latest.json` 内 `darwin-aarch64` → `gah.app.tar.gz`、`windows-x86_64` → `gah_0.1.3_x64-setup.exe`,两条的**签名内联在 json 字符串里**(故 Release 里没有独立 `.sig` 属正常,不是漏传);签名注释的 `file:` 字段与 asset 名逐字一致 |
+
+**关于「Windows 侧缺 `*-setup.exe.zip`」的判定(本轮核实,非缺陷)**:`scripts/publish-desktop.sh:103` 的注释与 `release-desktop.yml` 上传段的 pattern 都保留 `*-setup.exe.zip` 只为兼容未来改名;当前 tauri 版本**直接签裸 `-setup.exe`**(`tauri-plugin-updater` 的 `extract_exe` 分支接受它),`latest.json` 指向的也正是裸 exe —— **自洽,无需补传**。DESIGN.md 早前 v0.1.0 记录里「Windows updater 只认 zip 变体」的说法在当前版本已不适用,以此条为准。
+
+**未闭环(诚实标注)**:① **真机验收仍未做** —— 本轮的验收止于「打包链全绿 + 产物齐全」,托盘与 GUI 观感必须装机复验(`docs/VERIFY.md` 剩余人工项);② macOS 侧只做了产物与签名核对,未挂载实跑(上一次挂载实跑是 v0.1.0);③ **自动升级的端到端未验证** —— 「从 v0.1.2 点检查更新升到 v0.1.3」这条路径需真机跑。
+
 ## 15. 风险与权衡
 
 | 风险 | 缓解 |
