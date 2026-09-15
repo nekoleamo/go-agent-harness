@@ -367,6 +367,38 @@ fn stateRunning() -> bool {
     false
 }
 
+// shellLogPath 壳侧诊断日志的落点(<用户数据目录>/gah-shell.log)。
+// 取不到用户数据目录时退回系统临时目录 —— 诊断文件写不出去绝不该反过来弄坏启动。
+fn shellLogPath(app: &AppHandle) -> PathBuf {
+    let dir = app
+        .path()
+        .app_local_data_dir()
+        .unwrap_or_else(|_| std::env::temp_dir());
+    dir.join("gah-shell.log")
+}
+
+// shellLog 追加一行壳侧诊断(时间戳 + 内容)。
+//
+// 为何需要:Windows 桌面版没有终端,stderr 无处可去 —— 壳在 setup 里失败时用户只看到
+// 「窗口白闪一下就没了」,而机器上不留下任何痕迹,只能靠读代码猜。2026-09-15 v0.1.3 真机
+// 白屏就是这样:代码面全部排查无果、机器上取不到证据。写失败一律忽略。
+fn shellLog(app: &AppHandle, msg: &str) {
+    let path = shellLogPath(app);
+    if let Some(d) = path.parent() {
+        if std::fs::create_dir_all(d).is_err() {
+            return;
+        }
+    }
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        use std::io::Write;
+        let _ = writeln!(f, "[{ts}] {msg}");
+    }
+}
+
 // Runtime 本次运行的落点:要 spawn 的二进制 + 数据根。
 // 数据根恒为「二进制同级 gah-data/」(规则不变),只是二进制可能在用户数据目录里。
 struct Runtime {
@@ -450,6 +482,14 @@ fn main() {
         .invoke_handler(tauri::generate_handler![check_update])
         .setup(|app| {
             let handle = app.handle().clone();
+            shellLog(
+                app.handle(),
+                &format!(
+                    "setup 开始: 版本 {} 主程序 {}",
+                    env!("CARGO_PKG_VERSION"),
+                    std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "?".into())
+                ),
+            );
             // —— 托盘:打开窗口 / 开机自启开关 / 退出 ——
             let show_item = MenuItemBuilder::with_id("show", "显示窗口")
                 .build(app)
@@ -476,13 +516,11 @@ fn main() {
             // 托盘图标必须显式给:TrayIconBuilder 不会自动回退到 default_window_icon。
             // 没有图标时 tray-icon 不设置 NIF_ICON 标志,Shell_NotifyIcon 依然返回成功,
             // 但托盘区留下一个没有图标的空白占位 —— 在 Windows 上就表现为「看不到图标」。
-            // Windows 目标下 tauri-codegen 从 bundle.icon 里挑 .ico 嵌入(多尺寸,
-            // 高 DPI 下也清晰),Unix 挑第一个 .png,所以这里一定拿得到。
-            let tray_icon = app.default_window_icon().cloned().expect(
-                "缺少应用图标:tauri.conf.json 的 bundle.icon 需含 .ico(Windows)/.png(Unix)",
-            );
-            let _tray = TrayIconBuilder::new()
-                .icon(tray_icon)
+            // 图标与托盘构建失败都**不能是致命错误**(见下方 match):托盘只是便利入口,
+            // 界面才是主体;而 setup 一旦 panic 整个进程就退出,可窗口在 setup **之前**
+            // 就已创建(tauri 的 app.rs 是先建窗口、再跑 setup),于是用户看到的就是
+            // 「窗口白闪一下就没了」—— 界面连一次启动机会都没有(2026-09-15 真机白屏报告)。
+            let mut tray_builder = TrayIconBuilder::new()
                 .menu(&menu)
                 // 显式声明左键也弹菜单:Windows 用户点一下托盘就想看到菜单,
                 // 而升级入口只在菜单里(界面上没有),左键不弹 = 找不到升级。
@@ -514,7 +552,7 @@ fn main() {
                     }
                     "quit" => quitApp(app),
                     _ => {}
-                })
+                });
                 // 不监听 on_tray_icon_event:窗口打开走菜单里的「显示窗口」项(跨平台一致)。
                 // 曾经的实现在托盘点击回调里 show()+set_focus(),而 Windows 的托盘菜单走
                 // TrackPopupMenu —— 菜单只在自身保持前台时才展开,一旦被别的窗口抢走前台就
@@ -522,12 +560,38 @@ fn main() {
                 // 菜单不弹 = 找不到升级)。
                 // 顺带:TrayIconEvent::DoubleClick 是 Windows-only,不能拿它当跨平台的
                 // 「打开窗口」通道。
-                .build(app)
-                .expect("托盘构建失败");
-            let _ = handle.emit("tray-ready", ());
+            // 图标条件性加上:缺了也只是没有图标,不该让启动失败。
+            // (Windows 目标下 tauri-codegen 会从 bundle.icon 挑 .ico 嵌入,Unix 挑 .png,
+            // 所以正常情况下一定拿得到;这里只是不再把「拿不到」当成致命的。)
+            match app.default_window_icon().cloned() {
+                Some(ic) => tray_builder = tray_builder.icon(ic),
+                None => shellLog(app.handle(), "未取到应用图标(bundle.icon 需含 .ico/.png),托盘将没有图标"),
+            }
+            // 托盘构建失败只记日志:它坏掉不应该让整个应用起不来。
+            let _tray = match tray_builder.build(app) {
+                Ok(t) => {
+                    shellLog(app.handle(), "托盘已就绪");
+                    let _ = handle.emit("tray-ready", ());
+                    Some(t)
+                }
+                Err(e) => {
+                    shellLog(app.handle(), &format!("托盘不可用(已跳过,界面不受影响):{e}"));
+                    None
+                }
+            };
 
             // —— 数据外置 + spawn sidecar(数据根 = 二进制同级 gah-data/,便携;不传 GAH_HOME env) ——
             let rt = resolveRuntime(app.handle());
+            shellLog(
+                app.handle(),
+                &format!(
+                    "运行落点: bin={} data_root={} external={} notices={:?}",
+                    rt.bin.display(),
+                    rt.data_root.display(),
+                    rt.external,
+                    rt.notices
+                ),
+            );
             *app.state::<DataRoot>().0.lock().unwrap() = Some(rt.data_root.clone());
             let _ = handle.emit("runtime-data-root", rt.data_root.display().to_string());
             for n in &rt.notices {
@@ -541,10 +605,25 @@ fn main() {
                 app.shell().sidecar("gah").expect("externalBin 缺失: 先运行 scripts/gen-desktop.sh")
             }
             .env("GAH_WEB_OPEN", "0");
-            let (mut rx, child) = cmd
-                .args(["--profile", "web"])
-                .spawn()
-                .expect("spawn gah sidecar 失败");
+            let (mut rx, child) = match cmd.args(["--profile", "web"]).spawn() {
+                Ok(v) => v,
+                Err(e) => {
+                    // 同样不做 panic:窗口留着把失败原因显示出来,远比白屏闪退有用。
+                    shellLog(app.handle(), &format!("sidecar 启动失败: {e}"));
+                    if let Some(w) = app.get_webview_window("main") {
+                        let html = format!(
+                            "<div style=\"font-family:-apple-system,sans-serif;padding:40px;max-width:620px\"><h2>gah 服务未能启动</h2><p>启动运行文件失败:{e}</p><p>数据根:{}</p><p>诊断日志:{}</p></div>",
+                            rt.data_root.display(),
+                            shellLogPath(app.handle()).display()
+                        );
+                        if let Ok(lit) = serde_json::to_string(&html) {
+                            let _ = w.eval(&format!("document.body.innerHTML={lit}"));
+                        }
+                    }
+                    return Ok(());
+                }
+            };
+            shellLog(app.handle(), &format!("sidecar 已启动: {}", rt.bin.display()));
             *app.state::<Sidecar>().0.lock().unwrap() = Some(child);
             let handle2 = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -561,6 +640,7 @@ fn main() {
                 for _ in 0..60 {
                     if httpProbe("/api/state", Duration::from_millis(400)) {
                         READY.store(true, Ordering::SeqCst);
+                        shellLog(&handle3, "sidecar 探活就绪,准备 navigate");
                         let _ = handle3.emit("sidecar-ready", GAH_URL);
                         match shell_url().parse() {
                             Ok(u) => {
@@ -589,6 +669,7 @@ fn main() {
                     }
                     std::thread::sleep(Duration::from_millis(200));
                 }
+                shellLog(&handle3, "sidecar 在 60×200ms 内未就绪(注入失败页)");
                 let _ = handle3.emit("sidecar-start-failed", "gah 60×200ms 内未就绪");
                 // 失败指引:窗口不再停留在"正在启动",注入错误提示(路径经 JSON 编码,避免 Windows 反斜杠/引号破坏 JS)
                 let root = handle3
