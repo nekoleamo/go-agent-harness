@@ -227,29 +227,6 @@ async fn check_update(app: AppHandle) -> UpdateOutcome {
     checkForUpdates(&app).await
 }
 
-// httpGET 取一个 GET 响应体的粗文本(裸 TCP;壳只做轻量探活,不引 HTTP 库)。
-// 失败返回空串(未就绪/未装配/连不上都归"无数据")。
-fn httpGET(path: &str) -> String {
-    let mut s = match TcpStream::connect_timeout(&GAH_ADDR.parse::<std::net::SocketAddr>().unwrap(), Duration::from_millis(300)) {
-        Ok(s) => s,
-        Err(_) => return String::new(),
-    };
-    let _ = s.set_read_timeout(Some(Duration::from_millis(500)));
-    let req = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
-    if s.write_all(req.as_bytes()).is_err() {
-        return String::new();
-    }
-    let mut all = Vec::new();
-    let mut buf = [0u8; 512];
-    loop {
-        match s.read(&mut buf) {
-            Ok(0) | Err(_) => break,
-            Ok(n) => all.extend_from_slice(&buf[..n]),
-        }
-    }
-    String::from_utf8_lossy(&all).to_string()
-}
-
 // httpGETAuth 带凭据的最小 GET(token 模式必须带 cookie,否则 401 → 空串)。
 fn httpGETAuth(path: &str) -> String {
     let mut s = match TcpStream::connect_timeout(&GAH_ADDR.parse::<std::net::SocketAddr>().unwrap(), Duration::from_millis(300)) {
@@ -450,7 +427,17 @@ fn resolveRuntime(app: &AppHandle) -> Runtime {
         Err(e) => notices.push(format!("旧数据迁移失败(数据未丢失,仍在应用目录内):{e}")),
     }
     match stage::stage_sidecar(&src, &home, env!("CARGO_PKG_VERSION")) {
-        Ok(o) => Runtime { bin: o.bin, data_root: stage::data_root(&home), external: true, notices },
+        Ok(o) => {
+            shellLog(
+                app,
+                &format!(
+                    "运行文件{}: {}",
+                    if o.staged { "已更新" } else { "已是最新" },
+                    o.bin.display()
+                ),
+            );
+            Runtime { bin: o.bin, data_root: stage::data_root(&home), external: true, notices }
+        }
         Err(e) => {
             notices.push(format!(
                 "无法把运行文件放到用户数据目录({e});本次退回应用目录内运行 —— 升级或卸载可能影响数据,请先 /backup"
@@ -599,6 +586,13 @@ fn main() {
                 let _ = handle.emit("runtime-notice", n.clone());
             }
             let notices_all = rt.notices.clone();
+            // 2233 已被别的进程服务?典型两种:旧版 gah 还驻留在托盘(关窗口 ≠ 退出),
+            // 或用户自己开着 `gah --profile web`。这时新起的 sidecar 抢不到端口,界面显示的会是
+            // **旧实例** —— 现象极易被误读成「升级没生效」。只记一行日志、不动行为:有它就不必再猜。
+            // (连接被拒是立即返回的,不会拖慢正常启动。)
+            if httpProbe("/api/state", Duration::from_millis(1200)) {
+                shellLog(app.handle(), "注意: 2233 端口已在服务(可能是另一个 gah 实例);若界面显示的是旧实例,请先结束旧进程再重启");
+            }
             let cmd = if rt.external {
                 app.shell().command(&rt.bin)
             } else {

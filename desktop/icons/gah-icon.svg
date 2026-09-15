@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- gah 图标(扁平 / 极简):终端提示符 >_ ,配色同 web-src 的 --accent。
+       本文件由 gen-icon.mjs 生成,改几何请改脚本里的常量后重跑,别只改这里。 -->
+  <rect x="51" y="51" width="922" height="922" rx="205" fill="#4176e6"/>
+  <g fill="none" stroke="#ffffff" stroke-width="110" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M210 301 L463 512 L210 723"/>
+    <path d="M636 723 L815 723"/>
+  </g>
+</svg>
