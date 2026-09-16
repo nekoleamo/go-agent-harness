@@ -4,7 +4,7 @@
 // 破坏性动作(删 provider、卸载插件、压缩)经全局确认条(askConfirm)。
 import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { api } from '../api'
-import { checkUpdate, isDesktop } from '../desktop'
+import { autostartState, checkUpdate, isDesktop } from '../desktop'
 import { currentModelValue, modelOptionValue, withCurrentModel } from '../modelsel'
 import { settingSections } from '../registry'
 import { uiPluginTrustNote } from '../plugins'
@@ -66,6 +66,14 @@ async function doCheckUpdate() {
     updBusy.value = false
   }
 }
+// 开机自启的实际状态(「关于 gah」展示)。托盘勾选态可能与系统实际状态不同步,故直接问系统。
+// 2026-09-17 真机反馈:「勾选开机自启后,关于 gah 的内容未有变化」—— 因为那段里根本没有自启信息。
+const autoState = ref<'' | 'on' | 'off'>('')
+async function refreshAutostart(): Promise<void> {
+  if (!isDesktop) return
+  autoState.value = await autostartState()
+}
+
 // v2 扩展点:设置面板区段(每次渲染求值,保持实时)
 const panelSections = settingSections()
 const err = ref('')
@@ -149,6 +157,17 @@ const filteredModels = computed(() => {
   const f = modelFilter.value.trim().toLowerCase()
   if (!f) return modelOptions.value
   return modelOptions.value.filter((o) => o.label.toLowerCase().includes(f) || o.value.toLowerCase().includes(f))
+})
+// curModelLabel 当前生效模型的可读标签(输入框占位 + 「当前生效」行)。
+// 真源是 state.model(运行时真正在用的),不是筛选框内容 —— 真机上「当前模型」标签后面
+// 就是个空筛选框,用户会读成「已选了模型但当前模型没显示」,故把当前值显式摆出来。
+const curModelLabel = computed(() => {
+  const hit = modelOptions.value.find((o) => o.value === modelVal.value)
+  if (hit) return hit.label
+  const m = (props.state.model ?? '').trim()
+  if (!m) return ''
+  const p = activeProvider()
+  return p?.Name ? p.Name + ' · ' + m : m
 })
 // 列表点选:记录选中并应用(与原生 select @change 同语义;选中后清空筛选恢复可视)
 function pickModel(o: { label: string; value: string }): void {
@@ -574,6 +593,14 @@ watch(
   },
   { immediate: true, deep: true },
 )
+// 打开面板即刷新开机自启状态:用户刚从托盘勾完回来,这里要能看到变化。
+watch(
+  () => props.open,
+  (open) => {
+    if (open) void refreshAutostart()
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
@@ -598,10 +625,13 @@ watch(
               id="set-model"
               v-model="modelFilter"
               class="inp grow"
-              placeholder="筛选模型名/Provider"
+              :placeholder="curModelLabel ? '当前:' + curModelLabel + ' · 输入以筛选' : '筛选模型名/Provider'"
               :disabled="busy"
             />
           </div>
+          <!-- 当前生效单独一行:上面那个输入框是筛选框,用户会把它当成「当前模型」的显示位,
+               真机上因此得出「已选了模型但当前模型显示为空」的结论。 -->
+          <p class="dim" data-testid="cur-model">当前生效:{{ curModelLabel || '(未设置)' }}</p>
           <div class="m-list">
             <div
               v-for="o in filteredModels"
@@ -946,6 +976,9 @@ watch(
              菜单弹不出来就等于没有入口,故补到界面上。 -->
         <section v-if="isDesktop" class="sec">
           <h3 class="h">关于 gah</h3>
+          <p class="dim" data-testid="about-autostart">
+            开机自启:{{ autoState === 'on' ? '已启用' : autoState === 'off' ? '未启用' : '未知' }}
+          </p>
           <div class="row acts">
             <button class="ghost" :disabled="updBusy" @click="doCheckUpdate()">
               {{ updBusy ? '检查中…' : '检查更新' }}

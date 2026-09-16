@@ -2,6 +2,7 @@
 // 根组件:SSE 消费(历史重放 + 实时)+ REST 上行 + 四槽位装配(registry.ts 契约 v1)。
 import { computed, nextTick, onMounted, onUnmounted, provide, ref, watch } from 'vue'
 import { api } from './api'
+import { probeAsync } from './desktop'
 import type { AskConfirm } from './types'
 import { consume, isUsage, newModel, type StreamModel } from './sse'
 import { createTransport, type Transport } from './transport'
@@ -307,6 +308,9 @@ function onOpenDoc(ev: Event): void {
 onMounted(async () => {
   window.addEventListener(OPEN_DOC_EVENT, onOpenDoc)
   window.addEventListener(OPEN_PANEL_EVENT, onOpenPanel)
+  // 桌面壳:启动时探一次异步命令通道(结果只写壳日志,见 desktop.ts 的 probeAsync)。
+  // 真机上出现过 async 命令连函数体都没进,这一行是分辨「任务没被调度」与「请求没到」的证据。
+  probeAsync()
   await refreshStats()
   rebuild(false)
   // 统计节流刷新(usage 事件外,兜底上下文/缓存显示)
