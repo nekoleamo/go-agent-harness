@@ -1053,6 +1053,8 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 | `web/server.go` 工作区切换日志 | 开始 / 完成(耗时)/ 失败(耗时 + 原因)——「请求挂住」与「请求立刻报错」在日志里长得完全不同 |
 | sidecar stderr 滤 `[DEBUG]` 后落盘 | 服务端错误可取回,但 go-plugin 的噪音清掉(一次切换几十行,会把 `showShellDiag` 要展示的日志尾部挤满) |
 
+附带溯源:自检里长期存在的 `rejection: notification.is_permission_granted not allowed` **不是本项目的前端调用**,而是 `tauri-plugin-notification` 自己注入的 init 脚本在页面加载时做权限自检(`src/init-iife.js`);它只在非 Windows 上会发这条 invoke(源码里是 `"default" !== Notification.permission || __TEMPLATE_windows__ ? ... : invoke(...)`,Windows 直接短路)。最小权限面下它必然被拒 —— 想让它消失就得给页面 `notification:default`(页面并不需要),所以保留为已知无害噪音,不再当待查项。
+
 ### 本轮验证
 
 本机(macOS)端到端实跑:切换 `HTTP 200` + 日志「web: 切换工作区完成 …… 耗时=42.6ms」;不存在目录 `HTTP 400` + 「web: 切换工作区失败 …… err=chdir … no such file or directory」;前端 `npm test` **57 pass**(`vue-tsc` 0 error;新增 `desktop.shell.test.ts` 3 条、`wsdir.test.ts` 3 条);`cargo check --locked` 0 error;`go build ./...` + `gofmt -l` 干净。
