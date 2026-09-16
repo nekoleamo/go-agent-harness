@@ -4,6 +4,8 @@
 // 破坏性动作(删 provider、卸载插件、压缩)经全局确认条(askConfirm)。
 import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { api } from '../api'
+import { checkUpdate, isDesktop } from '../desktop'
+import { currentModelValue, modelOptionValue, withCurrentModel } from '../modelsel'
 import { settingSections } from '../registry'
 import { uiPluginTrustNote } from '../plugins'
 import { PROVIDER_PRESETS, explainProbeError, type ProviderPreset } from '../providers'
@@ -36,20 +38,8 @@ const emit = defineEmits<{ (e: 'close'): void; (e: 'changed'): void }>()
 
 const ask = inject<(a: AskConfirm) => void>('askConfirm')
 
-// 桌面壳专属能力:壳的 init 脚本总会注入 __TAURI_INTERNALS__(IPC 通道本体),
-// 但不会注入 __TAURI__ 全局 —— 后者只在 withGlobalTauri 打开时才有。此处刻意不开它:
-// 打开意味着把整个 Tauri API 连同各插件的 JS 全局都塞进 sidecar 页面(实测会带来一些
-// 必然被 ACL 拒掉的无谓请求),而这里只需要一个 invoke。
-type TauriInvoke = (cmd: string, args?: Record<string, unknown>) => Promise<unknown>
-const tauriInvoke: TauriInvoke | undefined = (
-  globalThis as unknown as {
-    __TAURI_INTERNALS__?: { invoke?: TauriInvoke }
-    __TAURI__?: { core?: { invoke?: TauriInvoke } }
-  }
-).__TAURI_INTERNALS__?.invoke ?? (
-  globalThis as unknown as { __TAURI__?: { core?: { invoke?: TauriInvoke } } }
-).__TAURI__?.core?.invoke
-const isDesktop = typeof tauriInvoke === 'function'
+// 桌面壳专属能力:判定与调用都收在 ../desktop(配了单测 —— 那条判定错了就会表现为
+// 「桌面版里没有桌面功能」,而页面上无从自证)。
 const updBusy = ref(false)
 const updMsg = ref('')
 const updOk = ref(false)
@@ -57,7 +47,7 @@ const updOk = ref(false)
 // doCheckUpdate 桌面版检查更新:壳侧走同一条 checkForUpdates(与托盘菜单同一实现,
 // 结果回传到这里展示)。有更新时壳会自动下载安装并重启。
 async function doCheckUpdate() {
-  if (!tauriInvoke) {
+  if (!isDesktop) {
     updOk.value = false
     updMsg.value = '当前环境不支持检查更新(需桌面版)'
     return
@@ -66,7 +56,7 @@ async function doCheckUpdate() {
   updMsg.value = '正在检查…'
   updOk.value = false
   try {
-    const r = (await tauriInvoke('check_update')) as { status?: string; message?: string } | undefined
+    const r = await checkUpdate()
     updOk.value = r?.status === 'upToDate' || r?.status === 'installed'
     updMsg.value = String(r?.message ?? '检查完成')
   } catch (e) {
@@ -145,14 +135,12 @@ const modelOptions = ref<{ label: string; value: string }[]>([])
 function buildModelOptions(): void {
   const opts: { label: string; value: string }[] = []
   for (const g of models.value) {
-    for (const md of g.Models) opts.push({ label: g.Name + ' · ' + md.ID, value: g.Name + '|' + md.ID })
+    for (const md of g.Models) opts.push({ label: g.Name + ' · ' + md.ID, value: modelOptionValue(g.Name, md.ID) })
   }
-  // 当前活跃 provider 的模型(可能不在枚举中)
-  const ap = activeProvider()
-  if (ap && ap.Model && !opts.some((o) => o.value === ap.Name + '|' + ap.Model)) {
-    opts.unshift({ label: ap.Name + ' · ' + ap.Model + '(当前)', value: ap.Name + '|' + ap.Model })
-  }
-  modelOptions.value = opts
+  // 当前模型可能不在枚举里(手填/provider 未列全):补一条「(当前)」,保证高亮总有落点。
+  // 真源只有一个 —— state.model(运行时真正在用的),不是 provider 配置里的 Model 默认值:
+  // 旧实现两者混用,不一致时高亮永远匹配不上(见 modelsel.ts 顶部注释)。
+  modelOptions.value = withCurrentModel(opts, props.state.model, activeProvider()?.Name ?? '')
 }
 const modelVal = ref('')
 // 模型选择:输入筛选(modelFilter 实时过滤选项,provider·模型名均可匹配;命中即点选)
@@ -576,11 +564,13 @@ watch(
   },
 )
 watch(
-  () => [providers.value, models.value],
+  // state.model 必须在监听源里:选完模型后 state 才更新,漏掉它就会出现
+  // 「已选了模型但当前模型不显示」(2026-09-16 真机)。
+  () => [providers.value, models.value, props.state.model],
   () => {
-    const ap = activeProvider()
-    modelVal.value = ap && props.state.model ? ap.Name + '|' + props.state.model : ''
+    // 先重建选项(可能要补「(当前)」行),再算高亮 —— 顺序反了首轮就匹配不上
     buildModelOptions()
+    modelVal.value = currentModelValue(modelOptions.value, props.state.model, activeProvider()?.Name ?? '')
   },
   { immediate: true, deep: true },
 )

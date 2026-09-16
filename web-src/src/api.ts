@@ -66,11 +66,19 @@ export const api = {
       body: JSON.stringify({ content, attachments: attachments ?? [] }),
     })
   },
-  // 附件上传(multipart;返回落盘视图;后端大小/类型/数量白名单)
-  upload(file: File): Promise<AttachmentView> {
+  // 附件上传(multipart;返回落盘视图;后端大小/类型/数量白名单)。
+  // 线上响应是 {ok, attachments:[视图]}(见 web/server.go handleAttachments),**不是单个视图**
+  // —— 直接当视图用会读到 undefined 的 url,提交时 JSON.stringify 把 undefined 变 null,
+  // 服务端解成空串,于是提交被拒:「附件不可用: (空路径)」(2026-09-16 Windows 真机)。
+  // 拆包只放在这一处:调用方不必知道包装层。
+  async upload(file: File): Promise<AttachmentView> {
     const fd = new FormData()
     fd.append('file', file)
-    return req('/api/attachments', { method: 'POST', body: fd })
+    const r = await req<{ attachments?: AttachmentView[] }>('/api/attachments', { method: 'POST', body: fd })
+    const v = r?.attachments?.[0]
+    // 缺 url 必须显式失败:否则又会退化成「提交时才发现」的隐性错误
+    if (!v || !v.url) throw new Error('附件上传响应异常(缺少 url)')
+    return v
   },
   // 状态栏级控制(模型/思考/沙箱/审批/工作区;M17 审批档位 open|smart|strict)
   control(body: { model?: string; thinking?: string; sandbox?: string; approval?: string; workspace?: string }): Promise<void> {

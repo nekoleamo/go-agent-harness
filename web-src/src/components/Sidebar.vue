@@ -4,6 +4,7 @@
 // 切换/删除/改名后 emit session-changed(宿主重建 SSE 重放);列表经 refreshKey 或手动刷新重拉。
 import { inject, nextTick, onMounted, ref, watch } from 'vue'
 import { api } from '../api'
+import { isDesktop, pickDirectory } from '../desktop'
 import { extraPanels, sidebarActions } from '../registry'
 import type { ExtensionReg } from '../registry'
 import type { AskConfirm, SessionInfo, WorkspaceInfo } from '../types'
@@ -195,13 +196,21 @@ function forgetWorkspace(w: WorkspaceInfo): void {
   guard('删除工作区记录「' + (fmtDir(w.dir) || w.key) + '」？(不删文件夹)', true, () => void doForgetWorkspace(w))
 }
 
-// —— 打开文件夹作为工作区(桌面/Web 通用) ——
-// 浏览器安全模型下 <input type=file> 只能拿到文件名拿不到绝对路径,所以这里用路径输入;
+// —— 打开文件夹作为工作区 ——
+// 桌面壳里直接开系统文件夹选择器(plugin:dialog);Web 形态只能手输绝对路径 ——
+// 浏览器安全模型下 <input type=file> 拿不到绝对路径,这是壳能补、页面补不了的能力。
 // 后端 SwitchDir 会 os.Chdir + 记入工作区历史 + 新建空会话 + 通知宿主同步沙箱 root。
 const addingWs = ref(false)
 const wsPath = ref('')
 const wsInput = ref<HTMLInputElement | null>(null)
 function startAddWs(): void {
+  if (isDesktop) {
+    void browseAddWs()
+    return
+  }
+  openWsInput()
+}
+function openWsInput(): void {
   addingWs.value = true
   wsPath.value = ''
   void nextTick(() => wsInput.value?.focus())
@@ -210,10 +219,22 @@ function cancelAddWs(): void {
   addingWs.value = false
   wsPath.value = ''
 }
+// browseAddWs 桌面壳:开系统文件夹选择器(用户取消返回 null,什么都不做)
+async function browseAddWs(): Promise<void> {
+  try {
+    const dir = await pickDirectory()
+    if (dir) askAddWs(dir)
+  } catch (e) {
+    err.value = (e as Error).message
+  }
+}
+function askAddWs(dir: string): void {
+  guard('打开工作区「' + dir + '」？(会切换到该目录并新建会话)', false, () => void doAddWs(dir))
+}
 function submitAddWs(): void {
   const dir = wsPath.value.trim().replace(/^"(.*)"$/, '$1') // 资源管理器「复制路径」带引号
   if (!dir) return
-  guard('打开工作区「' + dir + '」？(会切换到该目录并新建会话)', false, () => void doAddWs(dir))
+  askAddWs(dir)
 }
 async function doAddWs(dir: string): Promise<void> {
   try {
@@ -246,11 +267,12 @@ defineExpose({ refresh })
         <div class="sec-h">
           <span>工作区</span>
           <span class="acts">
-            <span class="act" data-tip="打开文件夹作为工作区(输入绝对路径)" @click="startAddWs">＋ 打开</span>
+            <span class="act" :data-tip="isDesktop ? '用系统文件夹选择器打开工作区' : '打开文件夹作为工作区(输入绝对路径)'" @click="startAddWs">＋ 打开</span>
+            <span v-if="isDesktop" class="act" data-tip="手动输入绝对路径" @click="openWsInput">✎ 路径</span>
             <span class="act" data-tip="刷新列表" @click="refresh">↻</span>
           </span>
         </div>
-        <!-- 打开文件夹:输入绝对路径 → 切换工作区(浏览器拿不到文件夹路径,故不用选择器) -->
+        <!-- 打开文件夹:桌面壳可用系统选择器(「＋ 打开」直接弹),这里保留手输与「浏览…」 -->
         <div v-if="addingWs" class="ws-add">
           <input
             ref="wsInput"
@@ -263,6 +285,7 @@ defineExpose({ refresh })
             @keydown.esc="cancelAddWs"
           />
           <div class="ws-add-ops">
+            <button v-if="isDesktop" class="ws-btn ghost" data-tip="用系统文件夹选择器选目录" @click="browseAddWs">浏览…</button>
             <button class="ws-btn" @click="submitAddWs">打开</button>
             <button class="ws-btn ghost" @click="cancelAddWs">取消</button>
           </div>
