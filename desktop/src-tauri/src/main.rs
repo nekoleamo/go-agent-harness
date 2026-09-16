@@ -83,6 +83,27 @@ struct TrayCheck(Mutex<Option<MenuItem<tauri::Wry>>>);
 // 检查更新项的两种文字(集中一处,免得改文案漏掉一边)
 const CHECK_IDLE_TEXT: &str = "检查更新…";
 const CHECK_BUSY_TEXT: &str = "检查更新中…";
+// PickSlot 文件夹选择器的一次运行状态(begin 置位,poll 取结果并复位)。
+//
+// 为什么不直接用 async 命令 await blocking_pick_folder(2026-09-17 真机):那台机器上
+// async 命令**从未进入函数体**(壳日志里连入口行都没有),前端 await 永久挂起 —— 表现就是
+// 「点 ＋ 打开 / 浏览… 没反应」。同步命令(shell_probe/shell_log)同机是通的,于是改成
+// 「同步命令 + 独立线程 + 轮询」:只依赖已被真机验证的通道,阻塞的也是自建线程,
+// 不再占 async 运行时的工作线程(那正是怀疑中的连环卡死源:一个卡住全卡)。
+#[derive(Default)]
+struct PickSlot {
+    running: bool,
+    done: bool,
+    path: Option<String>,
+}
+struct PickState(Mutex<PickSlot>);
+// 检查更新的「轮次」与「完成水位」:看门狗按轮次判断自己那一轮是否真的回来了。
+static CHECK_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static CHECK_DONE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+// sidecar stdout 已落日志的行数上限(它是 go-plugin 的二进制 RPC 通道,只兜「文本日志」)。
+static STDOUT_LOGGED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+// panic 钩子用的日志路径(钩子拿不到 AppHandle,只能在 setup 里提前塞进来)。
+static LOG_PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 // DataRoot 本次运行的**真实**数据根(外置后 = `<用户数据目录>/bin/gah-data`,回退时 = 应用目录内)。
 // 升级前备份按它取数(见 backupBeforeUpgrade)。
 struct DataRoot(Mutex<Option<PathBuf>>);
@@ -277,10 +298,23 @@ fn notifyUpdate(app: &tauri::AppHandle, o: &UpdateOutcome) {
 // 没有升级入口(Windows 真机反馈),所以补上这条通道,让 UI 能自己触发并展示结果。
 #[tauri::command]
 async fn check_update(app: AppHandle) -> UpdateOutcome {
-    checkForUpdates(&app).await
+    let seq = CHECK_SEQ.fetch_add(1, Ordering::SeqCst) + 1;
+    shellLog(&app, &format!("web: 检查更新开始(第 {seq} 轮)"));
+    let t0 = std::time::Instant::now();
+    let o = checkForUpdates(&app).await;
+    shellLog(
+        &app,
+        &format!(
+            "web: 检查更新返回 status={} 耗时={}ms",
+            o.status,
+            t0.elapsed().as_millis()
+        ),
+    );
+    CHECK_DONE.fetch_max(seq, Ordering::SeqCst);
+    o
 }
 
-// shell_probe 自检用的最小命令:验证前端经 withGlobalTauri 究竟能不能调进壳。
+// shell_probe / probe_async 自检用的最小命令:验证前端经 withGlobalTauri 究竟能不能调进壳。
 //
 // 为何需要:本项目没有任何 capabilities/ 文件,而 plugins 的 JS 全局 API 在页面上是活的
 // (withGlobalTauri 注入),拿它一调就是 ACL 拒绝(实测到 notification.is_permission_granted
@@ -291,26 +325,105 @@ fn shell_probe() -> String {
     "ok".to_string()
 }
 
-// pick_folder 系统文件夹选择器(界面「＋ 打开」/「浏览…」调用),返回绝对路径或 null(取消)。
+// probe_async 异步命令通道探针:只写一行「函数体已执行」并回 ok。
 //
-// 为什么不走 plugin:dialog|open 的 JS 通道:真机(2026-09-17 Windows)点击后毫无反应,
-// 页面上也没有可见报错 —— 同类的 JS 插件全局 API 此前已被 ACL 拒过一次
-// (notification.is_permission_granted),而壳自有命令通道在同机实测是通的(shell_probe → ipc: ok)。
-// 更关键的是:Rust 侧这条 dialog 路径与托盘「关于 gah」用的是同一个实现,那条路真机已验证能弹出。
-//
-// 进出都写壳日志:用户说「点了没反应」时,唯一能自证「选择器到底弹没弹、选了什么」的就是这两行。
-// blocking_pick_folder 只能在非主线程调用(async 命令跑在 async 运行时的工作线程上,正是文档用法)。
+// 为何单独要它:2026-09-17 真机上 async 命令(pick_folder)连入口日志都没留下,而同步命令
+// 全通。到底是「异步任务没被调度」还是「请求没到处理函数」,只能靠这一行区分 ——
+// 页面启动时自检里调一次,日志里有没有这行就是答案。
 #[tauri::command]
-async fn pick_folder(app: AppHandle, title: Option<String>) -> Option<String> {
+async fn probe_async(app: AppHandle) -> String {
+    shellLog(&app, "web: probe_async 函数体已执行(异步命令通道可达)");
+    "ok".to_string()
+}
+
+// pick_folder_begin / pick_folder_poll 系统文件夹选择器(界面「＋ 打开」/「浏览…」调用)。
+//
+// 为什么是三条命令而不是一条 async 命令(2026-09-17 真机实测):
+//   ① 走 plugin:dialog|open 的 JS 插件通道 —— 点击毫无反应,页面上也无可见报错;
+//   ② 改走壳自有 async 命令 pick_folder —— 依旧无反应,而且壳日志里**连入口行都没有**
+//      (函数体没执行过),前端 await 永久挂起。同机同步命令(shell_probe/shell_log)全通;
+//   ③ 于是改为同步命令 + 独立线程 + 轮询:begin 起线程做阻塞选择,poll 取结果。
+// 全程写日志:用户说「点了没反应」时,这几行是唯一能自证「到底走到哪一步」的证据。
+#[tauri::command]
+fn pick_folder_begin(app: AppHandle, title: Option<String>) -> String {
     let title = title.unwrap_or_else(|| "选择工作区目录".to_string());
-    shellLog(&app, "web: 打开文件夹选择器");
-    let picked = app.dialog().file().set_title(title).blocking_pick_folder();
-    let out = picked.map(|p| p.to_string());
-    shellLog(
-        &app,
-        &format!("web: 文件夹选择器返回 {}", out.clone().unwrap_or_else(|| "(取消)".into())),
-    );
-    out
+    {
+        let st = app.state::<PickState>();
+        let mut g = st.0.lock().unwrap();
+        if g.running {
+            shellLog(&app, "web: 选择器已在进行中,忽略重复点击");
+            return "busy".to_string();
+        }
+        *g = PickSlot {
+            running: true,
+            ..Default::default()
+        };
+    }
+    shellLog(&app, "web: 文件夹选择器线程启动");
+    let h = app.clone();
+    // 独立线程里做阻塞式选择:blocking_pick_folder 的官方约束正是「不得在主线程调用」,
+    // 普通线程是它期望的位置(内部走 run_on_main_thread 弹原生框)。
+    std::thread::spawn(move || {
+        let picked = h.dialog().file().set_title(title).blocking_pick_folder();
+        let out = picked.map(|p| p.to_string());
+        shellLog(
+            &h,
+            &format!(
+                "web: 文件夹选择器返回 {}",
+                out.clone().unwrap_or_else(|| "(取消)".into())
+            ),
+        );
+        let mut g = h.state::<PickState>();
+        let mut g = g.0.lock().unwrap();
+        g.running = false;
+        g.done = true;
+        g.path = out;
+    });
+    "started".to_string()
+}
+
+// pickJson 把一次选择结果编码成前端契约的 JSON。
+// 单独成函数并配单测:这串字符串是「选择器能不能用」的唯一接口,形状错了在界面上
+// 只表现为「点了没反应」;Windows 路径的反斜杠必须经 JSON 转义。
+fn pickJson(done: bool, path: Option<&str>) -> String {
+    if !done {
+        return "{\"status\":\"pending\"}".to_string();
+    }
+    match path {
+        Some(p) => {
+            let lit = serde_json::to_string(p).unwrap_or_else(|_| "\"\"".to_string());
+            format!("{{\"status\":\"done\",\"path\":{lit}}}")
+        }
+        None => "{\"status\":\"cancel\"}".to_string(),
+    }
+}
+
+// pick_folder_poll 取选择器结果(JSON,避免依赖结构体序列化的边界行为):
+//   {"status":"pending"} | {"status":"done","path":"C:\\x"} | {"status":"cancel"}
+// 取到终态即复位,下一次 begin 从干净状态开始。
+#[tauri::command]
+fn pick_folder_poll(app: AppHandle) -> String {
+    let st = app.state::<PickState>();
+    let mut g = st.0.lock().unwrap();
+    if !g.done {
+        return pickJson(false, None);
+    }
+    let json = pickJson(true, g.path.as_deref());
+    *g = PickSlot::default();
+    json
+}
+
+// autostart_state 查询开机自启的实际状态(设置面板「关于 gah」展示)。
+// 托盘勾选态与系统实际状态可能不同步(用户从系统设置里改过),这里直接问系统。
+#[tauri::command]
+fn autostart_state(app: AppHandle) -> String {
+    let on = app.autolaunch().is_enabled().unwrap_or(false);
+    shellLog(&app, &format!("web: 查询开机自启 = {on}"));
+    if on {
+        "on".to_string()
+    } else {
+        "off".to_string()
+    }
 }
 
 // shell_log 让页面把诊断写进壳日志(前缀 web:,与壳侧、sidecar stderr 同一份文件)。
@@ -477,13 +590,8 @@ fn shellLogPath(app: &AppHandle) -> PathBuf {
     dir.join("gah-shell.log")
 }
 
-// shellLog 追加一行壳侧诊断(时间戳 + 内容)。
-//
-// 为何需要:Windows 桌面版没有终端,stderr 无处可去 —— 壳在 setup 里失败时用户只看到
-// 「窗口白闪一下就没了」,而机器上不留下任何痕迹,只能靠读代码猜。2026-09-15 v0.1.3 真机
-// 白屏就是这样:代码面全部排查无果、机器上取不到证据。写失败一律忽略。
-fn shellLog(app: &AppHandle, msg: &str) {
-    let path = shellLogPath(app);
+// logLine 按显式路径追加一行(panic 钩子用:钩子函数拿不到 AppHandle)。写失败一律忽略。
+fn logLine(path: &std::path::Path, msg: &str) {
     if let Some(d) = path.parent() {
         if std::fs::create_dir_all(d).is_err() {
             return;
@@ -493,10 +601,59 @@ fn shellLog(app: &AppHandle, msg: &str) {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
         use std::io::Write;
         let _ = writeln!(f, "[{ts}] {msg}");
     }
+}
+
+// installPanicLog 装 panic 钩子:任何线程 panic 都写进壳日志,然后交回原钩子。
+//
+// 为何必须:Windows 桌面版是 GUI 子系统,没有终端 —— panic 随进程消失,机器上不留痕迹。
+// 更隐蔽的是 async 任务里的 panic:没有响应者,前端 await 永久挂起,用户看到的就是
+// 「点了没反应」(2026-09-17 真机:两个入口全部无反应却查无实据)。装了它之后,
+// 「任务没被调度」与「任务跑了但崩了」在日志上立刻可分。
+fn installPanicLog(path: PathBuf) {
+    let _ = LOG_PATH.set(path);
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if let Some(p) = LOG_PATH.get() {
+            let loc = info
+                .location()
+                .map(|l| format!("{}:{}", l.file(), l.line()))
+                .unwrap_or_else(|| "(未知位置)".to_string());
+            let msg = info
+                .payload()
+                .downcast_ref::<&str>()
+                .map(|s| (*s).to_string())
+                .or_else(|| info.payload().downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "(非字符串 panic)".to_string());
+            logLine(p, &format!("panic @ {loc}: {msg}"));
+        }
+        prev(info);
+    }));
+}
+
+// isTextLogLine 判断一段输出是否像「人读的日志行」而非 go-plugin 的协议帧:
+// 无控制字符(除 tab)、不含 UTF-8 解码失败留下的替换字符、长度合理。
+fn isTextLogLine(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() < 2000
+        && !s.contains('\u{FFFD}')
+        && !s.chars().any(|c| c.is_control() && c != '\t')
+}
+
+// shellLog 追加一行壳侧诊断(时间戳 + 内容)。
+//
+// 为何需要:Windows 桌面版没有终端,stderr 无处可去 —— 壳在 setup 里失败时用户只看到
+// 「窗口白闪一下就没了」,而机器上不留下任何痕迹,只能靠读代码猜。2026-09-15 v0.1.3 真机
+// 白屏就是这样:代码面全部排查无果、机器上取不到证据。写失败一律忽略。
+fn shellLog(app: &AppHandle, msg: &str) {
+    logLine(&shellLogPath(app), msg);
 }
 
 // shellLogTail 取壳侧日志最后 n 行(诊断面板要把现场直接摆到用户眼前)。
@@ -530,6 +687,31 @@ fn showShellDiag(app: &AppHandle, title: &str, lines: &[String]) {
             "document.body.style.background='#fff';document.body.innerHTML={lit}"
         ));
     }
+}
+
+// startCheckWatchdog 检查更新的兜底看门狗:75 秒后若那一轮还没有结果,说明 async 任务没回来
+// (真机出现过「一直停在检查更新中…」,连 45 秒超时都没触发 ⇒ 超时那层自己也没跑)。
+// 兜底三件:写日志(自证) + 解除进行中状态(菜单不再卡死) + 弹框告知用户。
+fn startCheckWatchdog(app: &AppHandle, seq: u64) {
+    let h = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(75));
+        if CHECK_DONE.load(Ordering::SeqCst) >= seq {
+            return;
+        }
+        shellLog(
+            &h,
+            &format!("托盘: 检查更新第 {seq} 轮 75 秒无结果 —— async 任务没有返回(超时也没触发)"),
+        );
+        CHECK_DONE.fetch_max(seq, Ordering::SeqCst);
+        setCheckBusy(&h, false);
+        let o = UpdateOutcome::new(
+            "failed",
+            None,
+            "检查更新在 75 秒内没有任何结果:壳的异步任务没有返回(连 45 秒超时都没触发)。这通常不是网络问题,请把壳日志发给开发者。".into(),
+        );
+        notifyUpdate(&h, &o);
+    });
 }
 
 // setCheckBusy 把托盘「检查更新…」切成进行中(文字 + 禁用),并顺手发一条「正在检查更新…」。
@@ -583,6 +765,20 @@ const JS_SELFCHECK: &str = r#"(function () {
     }, function (e) {
       window.__gahIpc = 'denied: ' + String(e);
     });
+    // 通道矩阵:除同步探针外,异步命令 / 选择器轮询 / 开机自启查询各探一次。
+    // 2026-09-17 真机上出现过「async 命令连函数体都没进(日志无入口行)」,
+    // 没有这一格就只能靠猜 —— 而这三个命令正是用户点得最多的入口。
+    window.__gahChan = {};
+    var one = function (name, args) {
+      inv(name, args).then(function (r) {
+        window.__gahChan[name] = String(r).slice(0, 60);
+      }, function (e) {
+        window.__gahChan[name] = 'ERR: ' + String(e).slice(0, 80);
+      });
+    };
+    one('probe_async');
+    one('pick_folder_poll');
+    one('autostart_state');
   }
   if (!mounted && location.hostname === '127.0.0.1' && !window.__gahPanel) {
     window.__gahPanel = 1;
@@ -598,6 +794,7 @@ const JS_SELFCHECK: &str = r#"(function () {
         + '   typeof __TAURI__=' + (typeof window.__TAURI__)
         + '\n  前端错误: ' + JSON.stringify(window.__gahErr || [])
         + '\n  前端→壳 IPC: ' + (window.__gahIpc || 'n/a')
+        + '\n  通道矩阵: ' + JSON.stringify(window.__gahChan || {})
         + '\n  __TAURI_INTERNALS__.invoke: ' + typeof ((window.__TAURI_INTERNALS__ || {}).invoke)
         + '\n  正文前 200 字: ' + (document.body && document.body.innerText || '').slice(0, 200);
       document.body.innerHTML = '';
@@ -613,6 +810,7 @@ const JS_SELFCHECK: &str = r#"(function () {
     tauri: typeof window.__TAURI__,
     title: document.title,
     ipc: window.__gahIpc || 'n/a',
+    chan: window.__gahChan || {},
     errs: window.__gahErr || [],
     text: document.body && document.body.innerText ? document.body.innerText.slice(0, 200) : ''
   });
@@ -785,16 +983,23 @@ fn main() {
         .manage(DataRoot(Mutex::new(None)))
         .manage(TrayAutostart(Mutex::new(None)))
         .manage(TrayCheck(Mutex::new(None)))
+        // 文件夹选择器的一次运行状态(begin/poll 三条命令共用)。
+        .manage(PickState(Mutex::new(PickSlot::default())))
         // 界面内升级入口:桌面壳此前没有 invoke 通道,升级只能靠托盘菜单,
         // 菜单弹不出来就等于完全没有升级入口(Windows 真机反馈)。
         .invoke_handler(tauri::generate_handler![
             check_update,
             shell_probe,
-            pick_folder,
+            probe_async,
+            pick_folder_begin,
+            pick_folder_poll,
+            autostart_state,
             shell_log
         ])
         .setup(|app| {
             let handle = app.handle().clone();
+            // 最早装 panic 钩子:此后任何线程的 panic 都会落进壳日志(桌面版没有终端)。
+            installPanicLog(shellLogPath(app.handle()));
             shellLog(
                 app.handle(),
                 &format!(
@@ -877,9 +1082,16 @@ fn main() {
                         // 托盘「检查更新」:先给**立刻可见的进行中反馈**,再异步检查(45 秒封顶),
                         // 结果经通知 + 原生对话框反馈。封顶很关键:网络到不了更新端点时,没有超时就是
                         // 无限期「没反应」。
+                        // 另加一层看门狗(75 秒):真机上出现过「一直停在检查更新中…」—— 那说明
+                        // async 任务根本没回来(超时也没触发),这类「任务没回来」必须自证并兜底。
+                        let seq = CHECK_SEQ.fetch_add(1, Ordering::SeqCst) + 1;
+                        shellLog(app, &format!("托盘: 检查更新开始(第 {seq} 轮)"));
                         setCheckBusy(app, true);
+                        startCheckWatchdog(app, seq);
                         let h = app.clone();
                         tauri::async_runtime::spawn(async move {
+                            shellLog(&h, "托盘: 检查更新任务体已开始执行");
+                            let t0 = std::time::Instant::now();
                             let outcome = match tokio::time::timeout(
                                 Duration::from_secs(45),
                                 checkForUpdates(&h),
@@ -893,6 +1105,15 @@ fn main() {
                                     "检查更新超时(45 秒未返回):多半是网络到不了更新端点。可配好代理后重试,或直接到 GitHub Releases 手动下载安装包。".into(),
                                 ),
                             };
+                            shellLog(
+                                &h,
+                                &format!(
+                                    "托盘: 检查更新结束 status={} 耗时={}ms",
+                                    outcome.status,
+                                    t0.elapsed().as_millis()
+                                ),
+                            );
+                            CHECK_DONE.fetch_max(seq, Ordering::SeqCst);
                             setCheckBusy(&h, false);
                             notifyUpdate(&h, &outcome);
                         });
@@ -907,8 +1128,14 @@ fn main() {
                             .and_then(|g| g.clone())
                             .map(|p| p.display().to_string())
                             .unwrap_or_else(|| "(未就绪)".into());
+                        // 开机自启按**系统实际状态**展示(勾选态可能与系统不同步)。
+                        let autostart = if app.autolaunch().is_enabled().unwrap_or(false) {
+                            "已启用"
+                        } else {
+                            "未启用"
+                        };
                         let txt = format!(
-                            "gah 桌面版 {}\n\nWeb 地址:{}\n数据根:{root}\n日志:{}",
+                            "gah 桌面版 {}\n\nWeb 地址:{}\n数据根:{root}\n开机自启:{autostart}\n日志:{}",
                             app.package_info().version,
                             web_url(),
                             shellLogPath(app).display()
@@ -1005,6 +1232,9 @@ fn main() {
             *app.state::<Sidecar>().0.lock().unwrap() = Some(child);
             let handle2 = app.handle().clone();
             tauri::async_runtime::spawn(async move {
+                // 这行是「async 运行时到底跑不跑任务」的自证:真机上若日志有「sidecar 已启动」
+                // 却没有这一行,说明 async 任务根本没被调度(而不是事件源没数据)。
+                shellLog(&handle2, "sidecar 事件循环已启动");
                 while let Some(ev) = rx.recv().await {
                     match ev {
                         tauri_plugin_shell::process::CommandEvent::Stderr(line) => {
@@ -1017,6 +1247,25 @@ fn main() {
                             for one in text.lines().filter(|l| !l.contains("[DEBUG]")) {
                                 shellLog(&handle2, &format!("sidecar: {one}"));
                             }
+                            let _ = handle2.emit("sidecar-log", text);
+                        }
+                        // Stdout 也收,但只兜「看起来是给人读的日志行」:sidecar 的 stdout 同时是
+                        // go-plugin 的二进制 RPC 通道,协议帧绝不能倒进日志(会把文件撑爆且不可读)。
+                        // 真机上 stderr 一条都没有时,靠这里判断「日志其实被写到了 stdout」。
+                        tauri_plugin_shell::process::CommandEvent::Stdout(line) => {
+                            let text = String::from_utf8_lossy(&line).trim().to_string();
+                            let mut n = STDOUT_LOGGED.load(Ordering::Relaxed);
+                            for one in text.lines() {
+                                if n >= 200 {
+                                    break;
+                                }
+                                if one.contains("[DEBUG]") || !isTextLogLine(one) {
+                                    continue;
+                                }
+                                n += 1;
+                                shellLog(&handle2, &format!("sidecar(out): {one}"));
+                            }
+                            STDOUT_LOGGED.store(n, Ordering::Relaxed);
                             let _ = handle2.emit("sidecar-log", text);
                         }
                         // sidecar 提前死掉 ⇒ 界面必然停在启动页(用户看到的就是白屏)。以前要干等
@@ -1321,6 +1570,18 @@ mod main_tests {
         assert_eq!(
             siblingDataRoot(std::path::Path::new("/opt/gah/gah")),
             std::path::PathBuf::from("/opt/gah/gah-data")
+        );
+    }
+
+    // 选择器结果 JSON 的形状是前后端唯一接口:形状错了在界面上只表现为「点了没反应」。
+    #[test]
+    fn pick_json_shapes_and_windows_escaping() {
+        assert_eq!(pickJson(false, None), "{\"status\":\"pending\"}");
+        assert_eq!(pickJson(true, None), "{\"status\":\"cancel\"}");
+        // Windows 路径的反斜杠必须转义,否则前端 JSON.parse 直接抛(表现为没反应)
+        assert_eq!(
+            pickJson(true, Some("D:\\work\\我的 项目")),
+            "{\"status\":\"done\",\"path\":\"D:\\\\work\\\\我的 项目\"}"
         );
     }
 }
