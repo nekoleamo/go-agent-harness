@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
@@ -126,6 +127,54 @@ func TestResolveWithoutSandbox(t *testing.T) {
 	}
 	if _, err := r.Resolve(filepath.Join(outside, "secret.txt"), true); err == nil {
 		t.Fatal("strict 无沙箱仍应收窄根集合")
+	}
+}
+
+// 附件路径回退(2026-09-17 真机):模型拿到的路径可能少一层「附件根」,或直接用
+// 前端标识 `/attachments/<rel>`。两种都必须能解析 —— 否则用户看到的是
+// 「docview: 文件不存在: 20260916-213605」这种把目录名当文件名的报错。
+func TestResolveAttachmentFallback(t *testing.T) {
+	_, outside, home := newFixture(t)
+	rel := filepath.Join("20260916-213605", "report.pdf")
+	want := filepath.Join(home, "attachments", rel)
+	if err := os.MkdirAll(filepath.Dir(want), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(want, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := NewResolver(nil, home)
+	// 期望值过一遍 EvalSymlinks:macOS 上 /var → /private/var,解析结果必是真实路径
+	// (解析器本身就做这一步,测试不能拿未归一的路径去比)。
+	realWant, err := filepath.EvalSymlinks(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// ① 相对附件根(模型把目录名当路径那种写法)
+	got, err := r.Resolve(filepath.ToSlash(rel), true)
+	if err != nil {
+		t.Fatalf("相对附件根形式应能解析: %v", err)
+	}
+	if got != realWant {
+		t.Fatalf("解析结果 = %q,想要 %q", got, realWant)
+	}
+	// ② 前端标识形式
+	got, err = r.Resolve("/attachments/"+filepath.ToSlash(rel), true)
+	if err != nil {
+		t.Fatalf("/attachments/<rel> 形式应能解析: %v", err)
+	}
+	if got != realWant {
+		t.Fatalf("解析结果 = %q,想要 %q", got, realWant)
+	}
+	// ③ 绝对路径不抽奖:workspace 外仍被拒
+	if _, err := r.Resolve(filepath.Join(outside, "secret.txt"), true); !errors.Is(err, sdk.ErrDocDenied) {
+		t.Fatalf("绝对路径越界应仍被拒,得到 %v", err)
+	}
+	// ④ 真的不存在时,报错里的路径仍是用户给的那串(便于对照)
+	_, err = r.Resolve("20990101-000000/nope.pdf", true)
+	if !errors.Is(err, sdk.ErrDocNotFound) || !strings.Contains(err.Error(), "20990101-000000/nope.pdf") {
+		t.Fatalf("不存在的文件应报 ErrDocNotFound 且保留原路径,得到 %v", err)
 	}
 }
 

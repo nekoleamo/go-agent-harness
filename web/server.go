@@ -518,7 +518,10 @@ func (s *Server) handleInput(w http.ResponseWriter, r *http.Request) {
 		b.WriteString(content)
 		b.WriteString("\n\n[附件]\n")
 		for i, a := range atts {
-			b.WriteString(fmt.Sprintf("%d. %s(路径 %s)\n", i+1, a.Name, a.Rel))
+			// 同时给「绝对路径」与「附件标识」两种写法:只给相对附件根的形式时,模型看到的是
+			// 一个没有根的路径 —— 真机上出现过它把目录名当文件名去 doc_open
+			// (「docview: 文件不存在: 20260916-213605」)。
+			b.WriteString(fmt.Sprintf("%d. %s(文件路径 %s;附件标识 /attachments/%s)\n", i+1, a.Name, a.Path, filepath.ToSlash(a.Rel)))
 		}
 		content = b.String()
 	}

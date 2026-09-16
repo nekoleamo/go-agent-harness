@@ -84,7 +84,18 @@ func (r *Resolver) resolve(p string, strict, allowDir bool) (string, error) {
 	}
 	abs = filepath.Clean(abs)
 
-	real, err := filepath.EvalSymlinks(abs)
+	real, err := r.statPath(abs)
+	// 回退:相对路径在 workspace 下找不到时,再按附件根试一次。
+	// 真机上模型确实把「<时间戳>/<名>」当路径传进 doc_open(docview: 文件不存在: 20260916-213605),
+	// 而那串正是附件目录的「相对附件根」形式;`/attachments/<rel>` 则是前端给模型的标识写法。
+	// 两种都兜住:模型少写一层根,不该以「文件不存在」收场。
+	if err != nil && os.IsNotExist(err) {
+		if alt, ok := r.fallback(p); ok {
+			if rr, err2 := r.statPath(alt); err2 == nil {
+				real, err = rr, nil
+			}
+		}
+	}
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", fmt.Errorf("%w: %s", sdk.ErrDocNotFound, p)
@@ -110,6 +121,41 @@ func (r *Resolver) resolve(p string, strict, allowDir bool) (string, error) {
 		return "", err
 	}
 	return real, nil
+}
+
+// statPath EvalSymlinks + Clean(仅做存在性与可解析性检查;目录/文件语义由调用方判)。
+// 回退候选也走这里:路径规范化与逃逸校验只有一套。
+func (r *Resolver) statPath(abs string) (string, error) {
+	real, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(real); err != nil {
+		return "", err
+	}
+	return filepath.Clean(real), nil
+}
+
+// fallback 把「相对附件根」与「/attachments/<rel>」两种写法映射回附件根下的绝对路径。
+// 只处理相对形式:绝对路径必须是真路径,不能靠猜。
+func (r *Resolver) fallback(orig string) (string, bool) {
+	if len(r.extra) == 0 {
+		return "", false
+	}
+	slash := filepath.ToSlash(orig)
+	var rel string
+	switch {
+	case strings.HasPrefix(slash, "/attachments/"):
+		rel = strings.TrimPrefix(slash, "/attachments/")
+	case !filepath.IsAbs(orig):
+		rel = slash
+	default:
+		return "", false
+	}
+	if rel == "" {
+		return "", false
+	}
+	return filepath.Join(r.extra[0], filepath.FromSlash(rel)), true
 }
 
 // checkStrict Web 端:根集合收窄 + deny-list + $GAH_HOME/config 拒绝。
