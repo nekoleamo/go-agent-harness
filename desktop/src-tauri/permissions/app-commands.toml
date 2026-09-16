@@ -16,5 +16,6 @@ commands.allow = [
     "pick_folder_begin",
     "pick_folder_poll",
     "autostart_state",
+    "update_state",
     "shell_log",
 ]

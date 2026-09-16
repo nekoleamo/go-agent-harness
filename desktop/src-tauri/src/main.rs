@@ -293,6 +293,74 @@ fn notifyUpdate(app: &tauri::AppHandle, o: &UpdateOutcome) {
     let _ = app.dialog().message(&o.message).title("gah 检查更新").show(|_| {});
 }
 
+// UpdateSnapshot 检查更新的当前状态 —— 托盘与设置面板两个视图的**单一真源**。
+//
+// 为何要它:2026-09-17 真机反馈「设置界面开着时,从托盘勾开机自启或点检查更新,设置界面
+// 不同步」。根因是两个视图各拿各的局部状态。这里把「进行中 / 第几轮 / 结论」记在壳里,
+// 页面开着时轮询 `update_state` 即可与托盘动作实时对齐。
+#[derive(Clone)]
+struct UpdateSnapshot {
+    busy: bool,
+    seq: u64,
+    status: &'static str,
+    message: String,
+    version: Option<String>,
+}
+
+static UPDATE_STATE: Mutex<UpdateSnapshot> = Mutex::new(UpdateSnapshot {
+    busy: false,
+    seq: 0,
+    status: "",
+    message: String::new(),
+    version: None,
+});
+
+// updateJson 把快照编码成前端契约的 JSON。单独成函数并配单测:它是两个视图的对齐接口,
+// 形状错了只会表现为「界面没反应」。
+fn updateJson(s: &UpdateSnapshot) -> String {
+    let msg = serde_json::to_string(&s.message).unwrap_or_else(|_| "\"\"".to_string());
+    let ver = match s.version.as_deref() {
+        Some(v) => serde_json::to_string(v).unwrap_or_else(|_| "null".to_string()),
+        None => "null".to_string(),
+    };
+    format!(
+        "{{\"busy\":{},\"seq\":{},\"status\":\"{}\",\"message\":{},\"version\":{}}}",
+        s.busy, s.seq, s.status, msg, ver
+    )
+}
+
+fn setUpdateBusy(busy: bool) {
+    if let Ok(mut g) = UPDATE_STATE.lock() {
+        g.busy = busy;
+    }
+}
+
+// recordUpdate 记一次检查的结论(托盘路径与命令路径共用)。
+fn recordUpdate(seq: u64, o: &UpdateOutcome) {
+    if let Ok(mut g) = UPDATE_STATE.lock() {
+        g.busy = false;
+        g.seq = seq;
+        g.status = o.status;
+        g.message = o.message.clone();
+        g.version = o.version.clone();
+    }
+}
+
+// update_state 前端轮询用(设置面板开着时每 1.5 秒一次):同步命令、不写日志(轮询会刷屏)。
+#[tauri::command]
+fn update_state() -> String {
+    match UPDATE_STATE.lock() {
+        Ok(g) => updateJson(&g),
+        Err(_) => updateJson(&UpdateSnapshot {
+            busy: false,
+            seq: 0,
+            status: "failed",
+            message: "壳内更新状态锁不可用".into(),
+            version: None,
+        }),
+    }
+}
+
 // check_update 界面内升级入口(设置面板调用)。
 // 桌面壳此前没有任何 invoke 通道,升级只能靠托盘菜单 —— 菜单弹不出来就等于完全
 // 没有升级入口(Windows 真机反馈),所以补上这条通道,让 UI 能自己触发并展示结果。
@@ -300,6 +368,9 @@ fn notifyUpdate(app: &tauri::AppHandle, o: &UpdateOutcome) {
 async fn check_update(app: AppHandle) -> UpdateOutcome {
     let seq = CHECK_SEQ.fetch_add(1, Ordering::SeqCst) + 1;
     shellLog(&app, &format!("web: 检查更新开始(第 {seq} 轮)"));
+    setUpdateBusy(true);
+    // 命令路径同样挂看门狗:任务不回来时至少能解除进行中并给出结论(与托盘路径一致)。
+    startCheckWatchdog(&app, seq);
     let t0 = std::time::Instant::now();
     let o = checkForUpdates(&app).await;
     shellLog(
@@ -311,6 +382,7 @@ async fn check_update(app: AppHandle) -> UpdateOutcome {
         ),
     );
     CHECK_DONE.fetch_max(seq, Ordering::SeqCst);
+    recordUpdate(seq, &o);
     o
 }
 
@@ -415,11 +487,10 @@ fn pick_folder_poll(app: AppHandle) -> String {
 
 // autostart_state 查询开机自启的实际状态(设置面板「关于 gah」展示)。
 // 托盘勾选态与系统实际状态可能不同步(用户从系统设置里改过),这里直接问系统。
+// 设置面板开着时会轮询本命令(1.5 秒一次),故**不写日志**;启动自检的通道矩阵已报过一次。
 #[tauri::command]
 fn autostart_state(app: AppHandle) -> String {
-    let on = app.autolaunch().is_enabled().unwrap_or(false);
-    shellLog(&app, &format!("web: 查询开机自启 = {on}"));
-    if on {
+    if app.autolaunch().is_enabled().unwrap_or(false) {
         "on".to_string()
     } else {
         "off".to_string()
@@ -710,6 +781,7 @@ fn startCheckWatchdog(app: &AppHandle, seq: u64) {
             None,
             "检查更新在 75 秒内没有任何结果:壳的异步任务没有返回(连 45 秒超时都没触发)。这通常不是网络问题,请把壳日志发给开发者。".into(),
         );
+        recordUpdate(seq, &o);
         notifyUpdate(&h, &o);
     });
 }
@@ -719,6 +791,7 @@ fn startCheckWatchdog(app: &AppHandle, seq: u64) {
 // 反馈。此处的两条通道职责不同:通知立刻到手(但系统可能不弹),菜单文字必然可见(但要再点开
 // 托盘菜单才看得到)。
 fn setCheckBusy(app: &tauri::AppHandle, busy: bool) {
+    setUpdateBusy(busy);
     if let Some(item) = app.state::<TrayCheck>().0.lock().unwrap().as_ref() {
         let _ = item.set_text(if busy { CHECK_BUSY_TEXT } else { CHECK_IDLE_TEXT });
         let _ = item.set_enabled(!busy);
@@ -779,6 +852,7 @@ const JS_SELFCHECK: &str = r#"(function () {
     one('probe_async');
     one('pick_folder_poll');
     one('autostart_state');
+    one('update_state');
   }
   if (!mounted && location.hostname === '127.0.0.1' && !window.__gahPanel) {
     window.__gahPanel = 1;
@@ -994,6 +1068,7 @@ fn main() {
             pick_folder_begin,
             pick_folder_poll,
             autostart_state,
+            update_state,
             shell_log
         ])
         .setup(|app| {
@@ -1115,6 +1190,7 @@ fn main() {
                             );
                             CHECK_DONE.fetch_max(seq, Ordering::SeqCst);
                             setCheckBusy(&h, false);
+                            recordUpdate(seq, &outcome);
                             notifyUpdate(&h, &outcome);
                         });
                     }
@@ -1571,6 +1647,35 @@ mod main_tests {
             siblingDataRoot(std::path::Path::new("/opt/gah/gah")),
             std::path::PathBuf::from("/opt/gah/gah-data")
         );
+    }
+
+    // 检查更新状态的 JSON 形状是托盘与设置面板两个视图的对齐接口。
+    #[test]
+    fn update_json_carries_busy_seq_and_escaped_message() {
+        let mut s = UpdateSnapshot {
+            busy: true,
+            seq: 3,
+            status: "",
+            message: String::new(),
+            version: None,
+        };
+        assert_eq!(
+            updateJson(&s),
+            "{\"busy\":true,\"seq\":3,\"status\":\"\",\"message\":\"\",\"version\":null}"
+        );
+        s.busy = false;
+        s.status = "installed";
+        s.message = "更新 0.1.4 已安装,换行\n与引号\"都在".into();
+        s.version = Some("0.1.4".into());
+        let j = updateJson(&s);
+        assert!(j.contains("\"busy\":false"), "{j}");
+        assert!(j.contains("\"version\":\"0.1.4\""), "{j}");
+        assert!(j.contains("\\n"), "换行必须转义:{j}");
+        assert!(j.contains("\\\""), "引号必须转义:{j}");
+        // 编码出来的必须能被 JSON 解析回去(前端 JSON.parse 的硬要求)
+        let back: serde_json::Value = serde_json::from_str(&j).expect("合法 JSON");
+        assert_eq!(back["seq"], 3);
+        assert_eq!(back["status"], "installed");
     }
 
     // 选择器结果 JSON 的形状是前后端唯一接口:形状错了在界面上只表现为「点了没反应」。
