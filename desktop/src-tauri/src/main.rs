@@ -376,6 +376,125 @@ fn shellLog(app: &AppHandle, msg: &str) {
     }
 }
 
+// shellLogTail 取壳侧日志最后 n 行(诊断面板要把现场直接摆到用户眼前)。
+fn shellLogTail(app: &AppHandle, n: usize) -> String {
+    let txt = std::fs::read_to_string(shellLogPath(app)).unwrap_or_default();
+    let lines: Vec<&str> = txt.lines().collect();
+    lines[lines.len().saturating_sub(n)..].join("\n")
+}
+
+// JS_SELFCHECK 交给页面的自检脚本,`@@DIAG@@` 会被替换成诊断文本的 JSON 字符串字面量。
+//
+// 同步返回一份页面自述(href / readyState / #app 子节点数 / typeof __TAURI__),并在
+// 「已经在 sidecar 页面上、却连 #app 都没挂上」时延迟 2.5 秒把诊断面板铺满窗口 —— 宁可难看,
+// 也不要让用户对着一片白屏只能报「白屏」。
+// 判定前先看 hostname:splash 是 tauri://localhost,它本来就没有 #app,不能误伤。
+const JS_SELFCHECK: &str = r#"(function () {
+  var app = document.getElementById('app');
+  var mounted = !!(app && app.childElementCount > 0);
+  if (!mounted && location.hostname === '127.0.0.1' && !window.__gahPanel) {
+    window.__gahPanel = 1;
+    setTimeout(function () {
+      var a2 = document.getElementById('app');
+      if (a2 && a2.childElementCount > 0) return;
+      var pre = document.createElement('pre');
+      pre.style.cssText = 'margin:0;padding:24px;min-height:100%;box-sizing:border-box;background:#fff;color:#171a1f;font:12px/1.7 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap';
+      pre.textContent = @@DIAG@@ + '\n\n页面自述: ' + location.href
+        + '\n  readyState=' + document.readyState
+        + '   title=' + document.title
+        + '   #app 子节点=' + (a2 ? a2.childElementCount : -1)
+        + '   typeof __TAURI__=' + (typeof window.__TAURI__)
+        + '\n  正文前 200 字: ' + (document.body && document.body.innerText || '').slice(0, 200);
+      document.body.innerHTML = '';
+      document.body.appendChild(pre);
+    }, 2500);
+  }
+  return JSON.stringify({
+    href: location.href,
+    ready: document.readyState,
+    mounted: mounted,
+    appChildren: app ? app.childElementCount : -1,
+    bodyLen: document.body ? document.body.innerHTML.length : -1,
+    tauri: typeof window.__TAURI__,
+    title: document.title,
+    text: document.body && document.body.innerText ? document.body.innerText.slice(0, 200) : ''
+  });
+})()"#;
+
+// selfcheckScript 把诊断文本填进自检脚本。
+fn selfcheckScript(diag: &str) -> String {
+    let lit = serde_json::to_string(diag).unwrap_or_else(|_| "\"\"".into());
+    JS_SELFCHECK.replace("@@DIAG@@", &lit)
+}
+
+// spawnSelfCheck 导航后自检(两轮,跨「导航到达前后」两个文档)。
+//
+// 为何必须做(2026-09-15 Windows 真机白屏):壳里原先没有任何一处会留下痕迹 ——
+// `let _ = w.navigate(u)` 吞掉错误、取不到 main 窗口是静默的、WebView2 渲染进程死掉更是无声,
+// 于是只能靠读代码猜。而前端页面已在本机用 CDP 实测过能正常挂载(#app 有子节点,注入
+// __TAURI__ 桩后也一样),所以问题只可能在壳侧或 WebView2 —— 那就必须让它们说话。
+//
+// 判据:两轮都拿不到回话 ⇒ 渲染进程不可用(白屏直接成因);回话里 href 仍是 tauri:// ⇒ 导航
+// 没生效;href 是 127.0.0.1 而 mounted=false ⇒ 页面送达了却没渲染出来。
+fn spawnSelfCheck(h: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let data_root = h
+            .state::<DataRoot>()
+            .0
+            .lock()
+            .ok()
+            .and_then(|g| g.clone())
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "?".into());
+        let diag = format!(
+            "gah {} 桌面壳自检\n主程序: {}\n数据根: {}\n导航目标: {}\n\n壳侧日志(尾部):\n{}",
+            env!("CARGO_PKG_VERSION"),
+            std::env::current_exe()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| "?".into()),
+            data_root,
+            shell_url(),
+            shellLogTail(&h, 24),
+        );
+        let script = selfcheckScript(&diag);
+        for round in 0..2 {
+            std::thread::sleep(Duration::from_secs(if round == 0 { 3 } else { 4 }));
+            let Some(w) = h.get_webview_window("main") else {
+                shellLog(&h, "自检: 取不到 label=main 的窗口,界面无法被导航");
+                return;
+            };
+            match w.url() {
+                Ok(u) => shellLog(&h, &format!("自检[{round}]: 当前 URL={u}")),
+                Err(e) => shellLog(&h, &format!("自检[{round}]: 读 URL 失败: {e}")),
+            }
+            let done = std::sync::Arc::new(AtomicBool::new(false));
+            let (d2, h2) = (done.clone(), h.clone());
+            if let Err(e) = w.eval_with_callback(script.clone(), move |v| {
+                d2.store(true, Ordering::SeqCst);
+                shellLog(&h2, &format!("自检[{round}]: 页面自述 = {v}"));
+            }) {
+                shellLog(
+                    &h,
+                    &format!("自检[{round}]: eval 失败({e}) —— WebView2 渲染进程不可用,界面无法渲染"),
+                );
+                return;
+            }
+            for _ in 0..16 {
+                if done.load(Ordering::SeqCst) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(500));
+            }
+            if !done.load(Ordering::SeqCst) {
+                shellLog(
+                    &h,
+                    &format!("自检[{round}]: 页面 8 秒内无回话 —— WebView2 渲染进程无响应(白屏直接成因)"),
+                );
+            }
+        }
+    });
+}
+
 // Runtime 本次运行的落点:要 spawn 的二进制 + 数据根。
 // 数据根恒为「二进制同级 gah-data/」(规则不变),只是二进制可能在用户数据目录里。
 struct Runtime {
@@ -638,8 +757,17 @@ fn main() {
                         let _ = handle3.emit("sidecar-ready", GAH_URL);
                         match shell_url().parse() {
                             Ok(u) => {
-                                if let Some(w) = handle3.get_webview_window("main") {
-                                    let _ = w.navigate(u);
+                                // 导航失败必须留痕:此处原本是 `let _ = w.navigate(u)`,错误被吞掉,
+                                // 真机白屏时根本无从判断「到底有没有导航过去」。
+                                match handle3.get_webview_window("main") {
+                                    Some(w) => match w.navigate(u) {
+                                        Ok(()) => shellLog(&handle3, "导航已受理"),
+                                        Err(e) => shellLog(&handle3, &format!("navigate 失败: {e}")),
+                                    },
+                                    None => shellLog(
+                                        &handle3,
+                                        "致命: 取不到 label=main 的窗口,界面无法被导航",
+                                    ),
                                 }
                                 // 壳侧提示(外置失败/旧数据迁移/…):系统通知可能被拒绝授权,
                                 // 且 Tauri 事件跨不到 sidecar 页面 —— 直接贴进页面,重复调用幂等。
@@ -654,6 +782,9 @@ fn main() {
                                         }
                                     });
                                 }
+                                // 导航后的自检:把「页面到底挂上了没」写进日志,并在真没挂上时
+                                // 把诊断面板铺到窗口上(见 spawnSelfCheck 说明)。
+                                spawnSelfCheck(handle3.clone());
                             }
                             Err(e) => {
                                 let _ = handle3.emit("sidecar-start-failed", format!("访问地址解析失败: {e}"));
