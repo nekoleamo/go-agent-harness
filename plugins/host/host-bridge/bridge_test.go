@@ -65,15 +65,17 @@ func buildEnv(t *testing.T, dir string) (sdk.Ctx, *plugin.Registry) {
 // waitUnlocked 轮询等到 path 不再被占用(Windows 进程退出后文件锁滞后释放)。
 //
 // 直接尝试 os.Remove:能删就说明锁已释放(删掉也无妨,t.TempDir() 的 RemoveAll 对
-// 不存在的子项不报错)。最多等 5 秒。超时不报错 —— 真正的删除失败仍由 TempDir 的
+// 不存在的子项不报错)。最多等 30 秒 —— Windows CI 上观测到新建的 exe 会被实时扫描/
+// 杀软短暂持有(甚至超过 5 秒),窗口太短就会以「TempDir RemoveAll: Access is denied」
+// 这种与断言无关的清理失败结束用例。超时不报错 —— 真正的删除失败仍由 TempDir 的
 // cleanup 报出,这里只负责给它创造收敛条件;非 Windows 上通常第一次就成功。
 func waitUnlocked(t *testing.T, path string) {
 	t.Helper()
-	for i := 0; i < 50; i++ {
+	for i := 0; i < 150; i++ {
 		if err := os.Remove(path); err == nil || os.IsNotExist(err) {
 			return
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 	}
 }
 

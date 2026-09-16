@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/nekoleamo/go-agent-harness/internal/testutil"
 )
 
 // assertNoTempLeftovers 断言目录里没留下写产物的临时文件(残留意味着 rename 没成)。
@@ -49,9 +51,10 @@ func TestEnsurePluginsUpgrade(t *testing.T) {
 	if err := os.WriteFile(dst, []byte("stale-plugin-binary"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// 记下覆盖前的文件身份:覆盖必须换 inode —— macOS 上旧 inode 会被 taskgated
-	// 判「Code Signature Invalid」SIGKILL(详见 DESIGN R23)。os.SameFile 跨平台比较
-	// Unix 的 dev+ino / Windows 的文件索引,不必引 syscall。
+	// 覆盖前记下文件身份:覆盖必须走「临时文件 + rename」换 inode —— macOS 上旧 inode 会被
+	// taskgated 判「Code Signature Invalid」SIGKILL(详见 DESIGN R23)。
+	// Windows 没有 inode 语义(os.SameFile 比的是卷序列号+文件索引,rename 后可能判定相同),
+	// 故这条断言只在 POSIX 上断言;Windows 上仍校验内容已换 + 无临时残留。
 	oldFi, err := os.Stat(dst)
 	if err != nil {
 		t.Fatal(err)
@@ -77,8 +80,10 @@ func TestEnsurePluginsUpgrade(t *testing.T) {
 	if string(raw) == "stale-plugin-binary" {
 		t.Fatal("旧内容应被覆盖")
 	}
-	if newFi, err := os.Stat(dst); err == nil && os.SameFile(oldFi, newFi) {
-		t.Fatal("覆盖必须换文件身份(旧文件在 macOS 上可能被 taskgated 杀)")
+	if !testutil.IsWindows() {
+		if newFi, err := os.Stat(dst); err == nil && os.SameFile(oldFi, newFi) {
+			t.Fatal("覆盖必须换文件身份(旧文件在 macOS 上可能被 taskgated 杀)")
+		}
 	}
 	assertNoTempLeftovers(t, filepath.Dir(dst))
 	// 第三次:内容已一致 → 跳过

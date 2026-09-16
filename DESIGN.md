@@ -1229,7 +1229,10 @@ v0.1.3 及之前只核对过 dmg 产物与签名,**从未挂载实跑**(上一�
 
 ⇒ 结论:**与产物字节无关,是旧 inode 上的“出身”标记让 macOS 拒绝执行**;删掉 `plugins/` 重新释放后 4 条降到 **1 条**(另外 3 个恢复正常),印证该判断。
 
-处置:`EnsurePlugins` 改为**写临时文件 + `os.Rename` 覆盖**(而不是 `os.WriteFile` 截断重写)—— 顺带得到两处好处:覆盖变原子的(插件扫描不会撞上半截产物)、临时名以点开头且不带 `tool-` 前缀(残留也不会被当产物加载)。回归测试用 `os.SameFile` 断言「覆盖换了文件身份」+ 无临时残留(`syscall` 依赖不进测试,Windows 也能编译)。
+处置:`EnsurePlugins` 改为**写临时文件 + `os.Rename` 覆盖**(而不是 `os.WriteFile` 截断重写)—— 顺带得到两处好处:覆盖变原子的(插件扫描不会撞上半截产物)、临时名以点开头且不带 `tool-` 前缀(残留也不会被当产物加载)。回归测试用 `os.SameFile` 断言「覆盖换了文件身份」+ 无临时残留(`syscall` 依赖不进测试,Windows 也能编译);
+该 inode 断言**只在 POSIX 上断言**(Windows 无 inode 语义,`os.SameFile` 比的是卷序列号+文件索引)。
+顺带把 `host-bridge` 的 `waitUnlocked` 窗口从 5 秒放宽到 30 秒 —— Windows CI 上新建 exe 会被实时扫描
+短暂持有,窗口太短就会以「TempDir RemoveAll: Access is denied」这种与断言无关的清理失败结束用例(首现于本次 CI 重跑)。
 
 ### 仍未闭环(诚实标注)
 
