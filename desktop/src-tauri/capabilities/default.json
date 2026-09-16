@@ -1,6 +1,6 @@
 {
   "identifier": "default",
-  "description": "gah 桌面壳的最小权限面:主窗口 + sidecar 页面(127.0.0.1 任意端口)只能调应用自有命令,外加系统文件夹选择器。",
+  "description": "gah 桌面壳的最小权限面:主窗口 + sidecar 页面(127.0.0.1 任意端口)只能调应用自有命令。",
   "windows": [
     "main"
   ],
@@ -11,7 +11,6 @@
   },
   "permissions": [
     "core:default",
-    "allow-app-commands",
-    "dialog:allow-open"
+    "allow-app-commands"
   ]
 }

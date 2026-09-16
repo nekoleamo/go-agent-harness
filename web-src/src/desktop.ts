@@ -25,14 +25,21 @@ export const tauriInvoke = sniffTauriInvoke(globalThis)
 export const isDesktop = typeof tauriInvoke === 'function'
 
 // pickDirectory 调系统文件夹选择器(桌面壳专属;用户取消或非壳环境返回 null)。
-// 浏览器拿不到本地路径,所以 Web 形态只能手输绝对路径 —— 这里正是桌面壳该补上的能力。
+//
+// 走壳自有命令 pick_folder,不走 plugin:dialog|open:真机(2026-09-17 Windows)测到 JS 插件
+// 通道点击后毫无反应且页面上无错,而自有命令通道在同机实测是通的(shell_probe → ipc: ok);
+// 且 Rust 侧 pick_folder 与真机已验证能弹出的「关于 gah」用的是同一个 dialog 实现。
 export async function pickDirectory(title = '选择工作区目录'): Promise<string | null> {
   if (!tauriInvoke) return null
-  const r = (await tauriInvoke('plugin:dialog|open', {
-    options: { directory: true, multiple: false, title },
-  })) as string | string[] | null | undefined
-  if (!r) return null
-  return Array.isArray(r) ? (r[0] ?? null) : r
+  const r = await tauriInvoke('pick_folder', { title })
+  return typeof r === 'string' && r.length > 0 ? r : null
+}
+
+// shellLog 把页面侧诊断写进壳日志(gah-shell.log,与壳侧/sidecar stderr 同一份文件)。
+// 桌面版没有终端:失败必须自证,否则真机上只剩「点了没反应」。非壳环境静默丢弃。
+export function shellLog(msg: string): void {
+  if (!tauriInvoke) return
+  void Promise.resolve(tauriInvoke('shell_log', { msg })).catch(() => {})
 }
 
 // checkUpdate 壳侧检查更新(与托盘菜单同一实现);有更新时壳自己下载安装并重启。

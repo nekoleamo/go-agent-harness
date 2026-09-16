@@ -291,6 +291,37 @@ fn shell_probe() -> String {
     "ok".to_string()
 }
 
+// pick_folder 系统文件夹选择器(界面「＋ 打开」/「浏览…」调用),返回绝对路径或 null(取消)。
+//
+// 为什么不走 plugin:dialog|open 的 JS 通道:真机(2026-09-17 Windows)点击后毫无反应,
+// 页面上也没有可见报错 —— 同类的 JS 插件全局 API 此前已被 ACL 拒过一次
+// (notification.is_permission_granted),而壳自有命令通道在同机实测是通的(shell_probe → ipc: ok)。
+// 更关键的是:Rust 侧这条 dialog 路径与托盘「关于 gah」用的是同一个实现,那条路真机已验证能弹出。
+//
+// 进出都写壳日志:用户说「点了没反应」时,唯一能自证「选择器到底弹没弹、选了什么」的就是这两行。
+// blocking_pick_folder 只能在非主线程调用(async 命令跑在 async 运行时的工作线程上,正是文档用法)。
+#[tauri::command]
+async fn pick_folder(app: AppHandle, title: Option<String>) -> Option<String> {
+    let title = title.unwrap_or_else(|| "选择工作区目录".to_string());
+    shellLog(&app, "web: 打开文件夹选择器");
+    let picked = app.dialog().file().set_title(title).blocking_pick_folder();
+    let out = picked.map(|p| p.to_string());
+    shellLog(
+        &app,
+        &format!("web: 文件夹选择器返回 {}", out.clone().unwrap_or_else(|| "(取消)".into())),
+    );
+    out
+}
+
+// shell_log 让页面把诊断写进壳日志(前缀 web:,与壳侧、sidecar stderr 同一份文件)。
+//
+// 桌面版没有终端:页面侧的失败(IPC 调用被拒、后端返回错误)在真机上不留任何痕迹,
+// 于是「点了没反应」只能靠猜。把失败原因交给这条通道,一次日志就能定位。
+#[tauri::command]
+fn shell_log(app: AppHandle, msg: String) {
+    shellLog(&app, &format!("web: {msg}"));
+}
+
 // httpGETAuth 带凭据的最小 GET(token 模式必须带 cookie,否则 401 → 空串)。
 fn httpGETAuth(path: &str) -> String {
     let mut s = match TcpStream::connect_timeout(&web_sockaddr(), Duration::from_millis(300)) {
@@ -406,6 +437,34 @@ fn stateRunning() -> bool {
         return rest.starts_with("true");
     }
     false
+}
+
+// defaultWorkspace 交给 sidecar 的初始工作目录(None = 不设,沿用壳自己的 cwd)。
+//
+// 为何需要:Windows 真机日志里 agent 的默认工作区是 C:\WINDOWS\system32 —— 壳被自启/
+// 快捷方式拉起时 cwd 由进程管理器给定,于是整个会话的默认落点跑到系统目录上,
+// 既不是用户想要的,让 agent 在那儿写文件也不安全。
+// 只有「壳自己被人从某个项目目录里手工拉起」才沿用那个 cwd(那是明确的意图),
+// 判断依据是 cwd 是否落在系统目录里(Windows 用 %SystemRoot%,类 Unix 用 / 与 /System、/usr)。
+fn defaultWorkspace() -> Option<PathBuf> {
+    if let Ok(cwd) = std::env::current_dir() {
+        let is_system = match std::env::var("SystemRoot").ok().map(PathBuf::from) {
+            Some(root) => cwd.starts_with(root),
+            None => {
+                cwd == std::path::Path::new("/")
+                    || cwd.starts_with("/System")
+                    || cwd.starts_with("/usr")
+            }
+        };
+        if !is_system {
+            return Some(cwd);
+        }
+    }
+    let home = std::env::var("USERPROFILE")
+        .ok()
+        .or_else(|| std::env::var("HOME").ok())
+        .map(PathBuf::from)?;
+    home.is_dir().then_some(home)
 }
 
 // shellLogPath 壳侧诊断日志的落点(<用户数据目录>/gah-shell.log)。
@@ -586,7 +645,7 @@ fn spawnSelfCheck(h: AppHandle) {
             .unwrap_or_else(|| "?".into());
         let diag = format!(
             "gah {} 桌面壳自检\n主程序: {}\n数据根: {}\n导航目标: {}\n\n壳侧日志(尾部):\n{}",
-            env!("CARGO_PKG_VERSION"),
+            h.package_info().version,
             std::env::current_exe()
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|_| "?".into()),
@@ -683,7 +742,7 @@ fn resolveRuntime(app: &AppHandle) -> Runtime {
         Ok(None) => {}
         Err(e) => notices.push(format!("旧数据迁移失败(数据未丢失,仍在应用目录内):{e}")),
     }
-    match stage::stage_sidecar(&src, &home, env!("CARGO_PKG_VERSION")) {
+    match stage::stage_sidecar(&src, &home, &app.package_info().version.to_string()) {
         Ok(o) => {
             shellLog(
                 app,
@@ -728,14 +787,19 @@ fn main() {
         .manage(TrayCheck(Mutex::new(None)))
         // 界面内升级入口:桌面壳此前没有 invoke 通道,升级只能靠托盘菜单,
         // 菜单弹不出来就等于完全没有升级入口(Windows 真机反馈)。
-        .invoke_handler(tauri::generate_handler![check_update, shell_probe])
+        .invoke_handler(tauri::generate_handler![
+            check_update,
+            shell_probe,
+            pick_folder,
+            shell_log
+        ])
         .setup(|app| {
             let handle = app.handle().clone();
             shellLog(
                 app.handle(),
                 &format!(
                     "setup 开始: 版本 {} 主程序 {}",
-                    env!("CARGO_PKG_VERSION"),
+                    app.package_info().version,
                     std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "?".into())
                 ),
             );
@@ -911,6 +975,14 @@ fn main() {
             // 父死子死:壳被强杀/崩溃时 sidecar 靠 stdin EOF 自己退出(不会留下占着
             // 数据根的孤儿 —— 那正是「升级后界面还是旧的」的成因)
             .env("GAH_WEB_PARENT_WATCH", "1");
+            // 初始工作区见 defaultWorkspace(真机上壳的 cwd 是 C:\WINDOWS\system32)
+            let cmd = match defaultWorkspace() {
+                Some(w) => {
+                    shellLog(app.handle(), &format!("sidecar 初始工作目录: {}", w.display()));
+                    cmd.current_dir(w)
+                }
+                None => cmd,
+            };
             let (mut rx, child) = match cmd.args(["--profile", "web"]).spawn() {
                 Ok(v) => v,
                 Err(e) => {
@@ -939,8 +1011,11 @@ fn main() {
                             let text = String::from_utf8_lossy(&line).trim().to_string();
                             // 服务端错误(如「附件不可用」400、端口占用)原先只在事件窗口一闪而过,
                             // 落不到真机上能取回的文件里 —— 追加进壳日志,发一个文件就能定位。
-                            if !text.is_empty() {
-                                shellLog(&handle2, &format!("sidecar: {text}"));
+                            // 滤掉 go-plugin 的 [DEBUG] 噪音:一次工作区切换就会刷出几十行
+                            // (插件启停/RPC 地址),而 showShellDiag 摆给用户看的正是日志尾部,
+                            // 噪声会把真正的原因挤出屏幕。INFO/WARN/ERROR 一律保留。
+                            for one in text.lines().filter(|l| !l.contains("[DEBUG]")) {
+                                shellLog(&handle2, &format!("sidecar: {one}"));
                             }
                             let _ = handle2.emit("sidecar-log", text);
                         }
