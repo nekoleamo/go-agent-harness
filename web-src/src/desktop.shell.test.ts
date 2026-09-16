@@ -13,6 +13,7 @@ import assert from 'node:assert/strict'
 const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
 let beginResult: unknown = 'started'
 let pollQueue: string[] = []
+let updateReply: unknown = '{"busy":false,"seq":1,"status":"upToDate","message":"已是最新版本","version":null}'
 
 ;(globalThis as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {
   invoke: (cmd: string, args?: Record<string, unknown>) => {
@@ -21,6 +22,7 @@ let pollQueue: string[] = []
     if (cmd === 'pick_folder_poll') return Promise.resolve(pollQueue.shift() ?? '{"status":"pending"}')
     if (cmd === 'probe_async') return Promise.resolve('ok')
     if (cmd === 'autostart_state') return Promise.resolve('on')
+    if (cmd === 'update_state') return Promise.resolve(updateReply)
     // shell_log 故意失败:诊断通道坏掉绝不能让页面自己炸
     if (cmd === 'shell_log') return Promise.reject(new Error('壳拒绝了 shell_log'))
     if (cmd === 'check_update') return new Promise(() => {}) // 永不返回:测超时兜底
@@ -91,4 +93,27 @@ test('probeAsync / autostartState 走壳命令且不抛', async () => {
 test('checkUpdate 壳侧不返回时按超时给结论(不让用户永远停在「检查中…」)', async () => {
   const { checkUpdate } = await mod()
   await assert.rejects(() => checkUpdate(30), /75 秒没有响应/)
+})
+
+// 设置面板开着时轮询壳侧状态:托盘勾开机自启 / 点检查更新,面板必须自己跟上
+// (真机反馈「要重新打开设置菜单才同步」)。
+test('updateState 解析壳侧快照,形状不对返回 null 而不猜', async () => {
+  const { updateState, parseUpdateState } = await mod()
+  updateReply = '{"busy":true,"seq":7,"status":"","message":"","version":null}'
+  assert.deepEqual(await updateState(), {
+    busy: true,
+    seq: 7,
+    status: '',
+    message: '',
+    version: null,
+  })
+  // 壳回了非 JSON / 缺字段:返回 null —— 面板宁可不动,也不能显示假状态
+  updateReply = 'not json'
+  assert.equal(await updateState(), null)
+  updateReply = '{"seq":1}'
+  assert.equal(await updateState(), null)
+  assert.equal(parseUpdateState(undefined), null)
+  assert.equal(parseUpdateState('{"busy":false,"seq":2}')?.seq, 2)
+  // 对象直传(壳若改成结构体返回也能用)
+  assert.equal(parseUpdateState({ busy: false, seq: 3, status: 'installed' })?.status, 'installed')
 })

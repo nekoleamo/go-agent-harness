@@ -4,7 +4,7 @@
 // 破坏性动作(删 provider、卸载插件、压缩)经全局确认条(askConfirm)。
 import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { api } from '../api'
-import { autostartState, checkUpdate, isDesktop } from '../desktop'
+import { autostartState, checkUpdate, isDesktop, updateState, type UpdateSnapshot } from '../desktop'
 import { currentModelValue, modelOptionValue, withCurrentModel } from '../modelsel'
 import { settingSections } from '../registry'
 import { uiPluginTrustNote } from '../plugins'
@@ -69,9 +69,34 @@ async function doCheckUpdate() {
 // 开机自启的实际状态(「关于 gah」展示)。托盘勾选态可能与系统实际状态不同步,故直接问系统。
 // 2026-09-17 真机反馈:「勾选开机自启后,关于 gah 的内容未有变化」—— 因为那段里根本没有自启信息。
 const autoState = ref<'' | 'on' | 'off'>('')
-async function refreshAutostart(): Promise<void> {
-  if (!isDesktop) return
+// lastUpdSeq 面板已经展示过的检查轮次:轮询只贴更新的轮次,不把面板自己刚给出的结论冲掉。
+const lastUpdSeq = ref(0)
+let stateTimer: ReturnType<typeof setInterval> | undefined
+
+// applyUpdateSnapshot 把壳侧检查更新快照贴到面板上。进行中始终跟随(busy 由壳侧真源定);
+// 结束时只认比本地见过的更新的那一轮 —— 否则轮询会把面板自己刚写的错误提示覆盖回去。
+function applyUpdateSnapshot(u: UpdateSnapshot): void {
+  if (u.busy) {
+    updBusy.value = true
+    updOk.value = false
+    updMsg.value = '正在检查…'
+    return
+  }
+  if (u.seq <= lastUpdSeq.value) return
+  lastUpdSeq.value = u.seq
+  updBusy.value = false
+  updOk.value = u.status === 'upToDate' || u.status === 'installed'
+  updMsg.value = u.message || '检查完成'
+}
+
+// refreshDesktopState 面板打开期间轮询壳侧状态(开机自启 + 检查更新)。
+// 为何要轮询:托盘与设置面板是两个视图。真机反馈「设置界面开着时从托盘勾开机自启/点检查
+// 更新,面板要重新打开才同步」—— 现在托盘动作改的是壳侧状态,面板 1.5 秒内跟上。
+// 走已验证的同步命令通道,不用事件通道(插件事件通道在真机上静默失败过)。
+async function refreshDesktopState(): Promise<void> {
   autoState.value = await autostartState()
+  const u = await updateState()
+  if (u) applyUpdateSnapshot(u)
 }
 
 // v2 扩展点:设置面板区段(每次渲染求值,保持实时)
@@ -554,7 +579,10 @@ onMounted(() => {
   void loadMcp()
   window.addEventListener('keydown', onEsc, true)
 })
-onUnmounted(() => window.removeEventListener('keydown', onEsc, true))
+onUnmounted(() => {
+  if (stateTimer) clearInterval(stateTimer)
+  window.removeEventListener('keydown', onEsc, true)
+})
 // 关闭语义(Win 端反馈):**只能手动关闭** —— 遮罩点击不再关闭(误触会丢正在编辑的表单),
 // 出口只有 ✕ 按钮与 Esc。Esc 用捕获阶段并阻止冒泡,避免同时触发输入框的「Esc 清空」(草稿丢失)。
 function onEsc(e: KeyboardEvent): void {
@@ -593,11 +621,17 @@ watch(
   },
   { immediate: true, deep: true },
 )
-// 打开面板即刷新开机自启状态:用户刚从托盘勾完回来,这里要能看到变化。
+// 打开面板即对齐开机自启与检查更新状态,并在开着期间持续跟随(托盘那边随时可能改)。
 watch(
   () => props.open,
   (open) => {
-    if (open) void refreshAutostart()
+    if (stateTimer) {
+      clearInterval(stateTimer)
+      stateTimer = undefined
+    }
+    if (!open) return
+    void refreshDesktopState()
+    stateTimer = setInterval(() => void refreshDesktopState(), 1500)
   },
   { immediate: true },
 )
@@ -625,7 +659,7 @@ watch(
               id="set-model"
               v-model="modelFilter"
               class="inp grow"
-              :placeholder="curModelLabel ? '当前:' + curModelLabel + ' · 输入以筛选' : '筛选模型名/Provider'"
+              :placeholder="'筛选模型名/Provider'"
               :disabled="busy"
             />
           </div>

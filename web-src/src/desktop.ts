@@ -102,6 +102,48 @@ export async function autostartState(): Promise<'on' | 'off' | ''> {
   }
 }
 
+// UpdateSnapshot 壳侧检查更新的当前状态。托盘与设置面板是两个视图,状态只有一个源。
+export interface UpdateSnapshot {
+  busy: boolean
+  seq: number
+  status: string
+  message: string
+  version: string | null
+}
+
+// parseUpdateState 解析壳侧 `update_state` 的 JSON(纯函数,配单测)。
+// 形状不对时返回 null 而不是猜:猜错了会让面板显示假状态。
+export function parseUpdateState(raw: unknown): UpdateSnapshot | null {
+  let v: unknown = raw
+  if (typeof raw === 'string') {
+    try {
+      v = JSON.parse(raw)
+    } catch {
+      return null
+    }
+  }
+  if (!v || typeof v !== 'object') return null
+  const o = v as Record<string, unknown>
+  if (typeof o.busy !== 'boolean' || typeof o.seq !== 'number') return null
+  return {
+    busy: o.busy,
+    seq: o.seq,
+    status: typeof o.status === 'string' ? o.status : '',
+    message: typeof o.message === 'string' ? o.message : '',
+    version: typeof o.version === 'string' ? o.version : null,
+  }
+}
+
+// updateState 读一次壳侧更新状态(设置面板开着时轮询;失败返回 null)。
+export async function updateState(): Promise<UpdateSnapshot | null> {
+  if (!tauriInvoke) return null
+  try {
+    return parseUpdateState(await tauriInvoke('update_state'))
+  } catch {
+    return null
+  }
+}
+
 // checkUpdate 壳侧检查更新(与托盘菜单同一实现);有更新时壳自己下载安装并重启。
 // 前端也加超时:真机上出现过壳侧异步任务不返回、界面永远停在「检查中…」——
 // 宁可给出「没有结果」的结论,也不让用户空等。
