@@ -198,7 +198,18 @@ func EnsurePlugins(home string) ([]string, error) {
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			return nil, err
 		}
-		if err := os.WriteFile(dst, raw, 0o755); err != nil {
+		// 写临时文件再 rename 覆盖,而不是直接 WriteFile 截断重写:
+		//   ① 覆盖变成原子的(插件扫描不会撞上半截产物);
+		//   ② macOS 上必须换 inode —— 实测同一份字节留在旧 inode 里会被 taskgated
+		//      判「Code Signature Invalid」直接 SIGKILL(codesign -vvv 却说 valid),
+		//      而 rename 出来的新 inode 同一份字节就能跑。详见 DESIGN R23。
+		//   临时名以点开头且不带 tool- 前缀,即使残留也不会被插件扫描误当产物加载。
+		tmp := filepath.Join(filepath.Dir(dst), ".gah-tmp-"+filepath.Base(dst))
+		if err := os.WriteFile(tmp, raw, 0o755); err != nil {
+			return nil, err
+		}
+		if err := os.Rename(tmp, dst); err != nil {
+			os.Remove(tmp)
 			return nil, err
 		}
 		written = append(written, dst)
