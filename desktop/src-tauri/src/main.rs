@@ -20,21 +20,64 @@ use std::time::Duration;
 
 mod stage;
 
-use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem};
+use tauri::menu::{CheckMenuItem, CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WindowEvent};
 use tauri_plugin_autostart::MacosLauncher;
+use tauri_plugin_autostart::ManagerExt;
+use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_updater::UpdaterExt;
 use tauri_plugin_shell::process::CommandChild;
 use tauri_plugin_shell::ShellExt;
 
+// 默认 Web 地址:仅在「挑不到空闲端口」时兜底。桌面壳正常走自己挑的私有端口(见 pick_free_port),
+// 因为固定 2233 会撞上**别人的**实例 —— 白屏崩溃留下的孤儿 sidecar、用户自己开的 `gah web`,
+// 都能让壳连上去,于是「装的明明是新版,界面却没有新功能」(2026-09-16 真机:升级后设置里
+// 找不到「关于 gah」,实际是窗口显示着旧实例的页面)。sidecar 侧由 GAH_WEB_ADDR 覆写
+// (plugins/ui/ui-web-app/web.go 早已预留这个口,只是壳一直没用)。
 const GAH_ADDR: &str = "127.0.0.1:2233";
-const GAH_URL: &str = "http://127.0.0.1:2233";
 // 桌面壳标记:web UI 依 `?shell=desktop` 走桌面壳布局(浏览器端不受影响)。
-const GAH_URL_SHELL: &str = "http://127.0.0.1:2233/?shell=desktop";
+const GAH_SHELL_PATH: &str = "/?shell=desktop";
+
+// WEB_ADDR 本次运行的 Web 地址,setup 早期写入一次(此后只读,故用 OnceLock)。
+static WEB_ADDR: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+// web_addr 本次运行的 Web 地址(未写入时回退默认端口)。
+fn web_addr() -> String {
+    WEB_ADDR.get().cloned().unwrap_or_else(|| GAH_ADDR.to_string())
+}
+
+// web_url 本次运行的 Web 根地址。
+fn web_url() -> String {
+    format!("http://{}", web_addr())
+}
+
+// web_sockaddr 本次运行的 Web 地址(供裸 TCP 探活/关机请求用)。
+fn web_sockaddr() -> std::net::SocketAddr {
+    web_addr()
+        .parse()
+        .unwrap_or_else(|_| GAH_ADDR.parse().expect("默认地址常量必须可解析"))
+}
+
+// pick_free_port 向内核要一个空闲端口(绑 127.0.0.1:0 读回实际端口后立即释放)。
+// 与真正绑定之间有极小的竞态窗口,可接受:真被抢也只是这次启动失败、重开一次。
+fn pick_free_port() -> String {
+    let Ok(l) = std::net::TcpListener::bind("127.0.0.1:0") else {
+        return GAH_ADDR.to_string();
+    };
+    let addr = l
+        .local_addr()
+        .map(|a| a.to_string())
+        .unwrap_or_else(|_| GAH_ADDR.to_string());
+    drop(l);
+    addr
+}
 
 struct Sidecar(Mutex<Option<CommandChild>>);
+// TrayAutostart 托盘里的「开机自启」勾选项:切换后必须把勾选态回写成实际状态,
+// 否则用户点完看不出任何变化(=「点了没反应」)。
+struct TrayAutostart(Mutex<Option<CheckMenuItem<tauri::Wry>>>);
 // DataRoot 本次运行的**真实**数据根(外置后 = `<用户数据目录>/bin/gah-data`,回退时 = 应用目录内)。
 // 升级前备份按它取数(见 backupBeforeUpgrade)。
 struct DataRoot(Mutex<Option<PathBuf>>);
@@ -65,8 +108,9 @@ fn cookie_header() -> String {
 
 // shell_url 主窗口导航地址:token 模式把凭据放 URL fragment(不发往服务端;引导页换取 cookie)。
 fn shell_url() -> String {
+    let base = format!("{}{}", web_url(), GAH_SHELL_PATH);
     let t = web_token();
-    if t.is_empty() { GAH_URL_SHELL.to_string() } else { format!("{GAH_URL_SHELL}#token={}", escape_fragment(&t)) }
+    if t.is_empty() { base } else { format!("{base}#token={}", escape_fragment(&t)) }
 }
 
 // status_code 从裸 TCP 响应首行取状态码(解析失败 = 未就绪)。
@@ -79,7 +123,7 @@ fn status_code(head: &[u8]) -> Option<u16> {
 
 // httpProbe 探活:连接成功且状态码 200 或 401(token 模式已就绪)均视为就绪。
 fn httpProbe(path: &str, timeout: Duration) -> bool {
-    let mut s = match TcpStream::connect_timeout(&GAH_ADDR.parse::<std::net::SocketAddr>().unwrap(), timeout) {
+    let mut s = match TcpStream::connect_timeout(&web_sockaddr(), timeout) {
         Ok(s) => s,
         Err(_) => return false,
     };
@@ -214,9 +258,13 @@ fn explainUpdateError(msg: &str) -> String {
     }
 }
 
-// notifyUpdate 托盘场景的呈现:系统通知是托盘点击后唯一的反馈渠道。
+// notifyUpdate 托盘场景的呈现:系统通知 + 原生对话框双通道。
+// 系统通知可能根本不来(未授权/被系统设置拦/专注模式),而托盘里点「检查更新…」之后
+// 「什么都没发生」是最糟的反馈 —— 真机反馈正是如此(2026-09-16)。对话框必然可见,
+// 通知作为余量保留(窗口最小化时它更轻)。
 fn notifyUpdate(app: &tauri::AppHandle, o: &UpdateOutcome) {
     let _ = app.notification().builder().title("gah").body(&o.message).show();
+    let _ = app.dialog().message(&o.message).title("gah 检查更新").show(|_| {});
 }
 
 // check_update 界面内升级入口(设置面板调用)。
@@ -240,7 +288,7 @@ fn shell_probe() -> String {
 
 // httpGETAuth 带凭据的最小 GET(token 模式必须带 cookie,否则 401 → 空串)。
 fn httpGETAuth(path: &str) -> String {
-    let mut s = match TcpStream::connect_timeout(&GAH_ADDR.parse::<std::net::SocketAddr>().unwrap(), Duration::from_millis(300)) {
+    let mut s = match TcpStream::connect_timeout(&web_sockaddr(), Duration::from_millis(300)) {
         Ok(s) => s,
         Err(_) => return String::new(),
     };
@@ -327,7 +375,7 @@ el.insertBefore(document.createTextNode(t+'\n'),el.firstChild);}})();"#
 
 fn stateRunning() -> bool {
     // /api/state JSON 含 "running":true|false;粗解析含子串即可
-    let mut s = match TcpStream::connect_timeout(&GAH_ADDR.parse::<std::net::SocketAddr>().unwrap(), Duration::from_millis(300)) {
+    let mut s = match TcpStream::connect_timeout(&web_sockaddr(), Duration::from_millis(300)) {
         Ok(s) => s,
         Err(_) => return false,
     };
@@ -626,8 +674,12 @@ fn main() {
         ))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // 原生对话框:托盘「关于 gah」/检查更新的结果反馈,以及界面里的文件夹选择器
+        // (plugin:dialog|open)都走它 —— 系统通知不一定来,而模态框必然可见。
+        .plugin(tauri_plugin_dialog::init())
         .manage(Sidecar(Mutex::new(None)))
         .manage(DataRoot(Mutex::new(None)))
+        .manage(TrayAutostart(Mutex::new(None)))
         // 界面内升级入口:桌面壳此前没有 invoke 通道,升级只能靠托盘菜单,
         // 菜单弹不出来就等于完全没有升级入口(Windows 真机反馈)。
         .invoke_handler(tauri::generate_handler![check_update, shell_probe])
@@ -641,14 +693,26 @@ fn main() {
                     std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "?".into())
                 ),
             );
+            // 本次运行的 Web 地址:挑一个空闲端口。不能沿用固定 2233 —— 那是 `gah web` 的默认
+            // 端口,撞上孤儿 sidecar 或用户自己的 web 实例时,壳会连到**别人的**实例,
+            // 界面显示的就不是本次进程(真机表现:装了新版却没有新功能)。
+            let web = pick_free_port();
+            let _ = WEB_ADDR.set(web.clone());
+            shellLog(app.handle(), &format!("本次 Web 地址: http://{web}"));
             // —— 托盘:打开窗口 / 开机自启开关 / 退出 ——
             let show_item = MenuItemBuilder::with_id("show", "显示窗口")
                 .build(app)
                 .unwrap();
-            let autostart_item = MenuItemBuilder::with_id("autostart", "开机自启")
+            // 开机自启用勾选项而不是普通项:这里本来就是它唯一的「状态显示器」,
+            // 旧实现点完既不报错也不变化,用户只能认为「点了没反应」(2026-09-16 真机)。
+            let autostart_item = CheckMenuItemBuilder::with_id("autostart", "开机自启")
+                .checked(app.autolaunch().is_enabled().unwrap_or(false))
                 .build(app)
                 .unwrap();
             let check_item = MenuItemBuilder::with_id("check_update", "检查更新…")
+                .build(app)
+                .unwrap();
+            let about_item = MenuItemBuilder::with_id("about", "关于 gah")
                 .build(app)
                 .unwrap();
             let quit_item = MenuItemBuilder::with_id("quit", "退出 gah")
@@ -659,11 +723,14 @@ fn main() {
                     &show_item,
                     &autostart_item,
                     &check_item,
+                    &about_item,
                     &PredefinedMenuItem::separator(app).unwrap(),
                     &quit_item,
                 ])
                 .build()
                 .unwrap();
+            // 交出所有权供事件回写勾选态(菜单已在上一步自己留了引用)
+            *app.state::<TrayAutostart>().0.lock().unwrap() = Some(autostart_item);
             // 托盘图标必须显式给:TrayIconBuilder 不会自动回退到 default_window_icon。
             // 没有图标时 tray-icon 不设置 NIF_ICON 标志,Shell_NotifyIcon 依然返回成功,
             // 但托盘区留下一个没有图标的空白占位 —— 在 Windows 上就表现为「看不到图标」。
@@ -685,21 +752,41 @@ fn main() {
                         }
                     }
                     "autostart" => {
-                        use tauri_plugin_autostart::ManagerExt;
                         let m = app.autolaunch();
-                        if m.is_enabled().unwrap_or(false) {
-                            let _ = m.disable();
-                        } else {
-                            let _ = m.enable();
+                        let before = m.is_enabled().unwrap_or(false);
+                        let res = if before { m.disable() } else { m.enable() };
+                        // 以**实际状态**回写勾选态(不假设切换一定成功);日志留痕便于真机排查
+                        let now = m.is_enabled().unwrap_or(before);
+                        shellLog(app, &format!("开机自启:{before} → {now}(err={:?})", res.err()));
+                        if let Some(item) = app.state::<TrayAutostart>().0.lock().unwrap().as_ref() {
+                            let _ = item.set_checked(now);
                         }
                     }
                     "check_update" => {
-                        // 托盘「检查更新」:异步检查 → 有更新则下载安装并重启;结果经系统通知反馈
+                        // 托盘「检查更新」:异步检查 → 有更新则下载安装并重启;结果经通知 + 对话框反馈
                         let h = app.clone();
                         tauri::async_runtime::spawn(async move {
                             let outcome = checkForUpdates(&h).await;
                             notifyUpdate(&h, &outcome);
                         });
+                    }
+                    "about" => {
+                        // 托盘也要能看到版本与落点:窗口缩在托盘里时,用户最先够到的就是这个菜单
+                        let root = app
+                            .state::<DataRoot>()
+                            .0
+                            .lock()
+                            .ok()
+                            .and_then(|g| g.clone())
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_else(|| "(未就绪)".into());
+                        let txt = format!(
+                            "gah 桌面版 {}\n\nWeb 地址:{}\n数据根:{root}\n日志:{}",
+                            app.package_info().version,
+                            web_url(),
+                            shellLogPath(app).display()
+                        );
+                        let _ = app.dialog().message(txt).title("关于 gah").show(|_| {});
                     }
                     "quit" => quitApp(app),
                     _ => {}
@@ -750,19 +837,17 @@ fn main() {
                 let _ = handle.emit("runtime-notice", n.clone());
             }
             let notices_all = rt.notices.clone();
-            // 2233 已被别的进程服务?典型两种:旧版 gah 还驻留在托盘(关窗口 ≠ 退出),
-            // 或用户自己开着 `gah --profile web`。这时新起的 sidecar 抢不到端口,界面显示的会是
-            // **旧实例** —— 现象极易被误读成「升级没生效」。只记一行日志、不动行为:有它就不必再猜。
-            // (连接被拒是立即返回的,不会拖慢正常启动。)
-            if httpProbe("/api/state", Duration::from_millis(1200)) {
-                shellLog(app.handle(), "注意: 2233 端口已在服务(可能是另一个 gah 实例);若界面显示的是旧实例,请先结束旧进程再重启");
-            }
             let cmd = if rt.external {
                 app.shell().command(&rt.bin)
             } else {
                 app.shell().sidecar("gah").expect("externalBin 缺失: 先运行 scripts/gen-desktop.sh")
             }
-            .env("GAH_WEB_OPEN", "0");
+            .env("GAH_WEB_OPEN", "0")
+            // 把本次挑到的端口交给 sidecar(web 侧读 GAH_WEB_ADDR 覆写 data.addr)
+            .env("GAH_WEB_ADDR", web_addr())
+            // 父死子死:壳被强杀/崩溃时 sidecar 靠 stdin EOF 自己退出(不会留下占着
+            // 数据根的孤儿 —— 那正是「升级后界面还是旧的」的成因)
+            .env("GAH_WEB_PARENT_WATCH", "1");
             let (mut rx, child) = match cmd.args(["--profile", "web"]).spawn() {
                 Ok(v) => v,
                 Err(e) => {
@@ -787,19 +872,25 @@ fn main() {
             tauri::async_runtime::spawn(async move {
                 while let Some(ev) = rx.recv().await {
                     if let tauri_plugin_shell::process::CommandEvent::Stderr(line) = ev {
-                        let _ = handle2.emit("sidecar-log", String::from_utf8_lossy(&line).trim().to_string());
+                        let text = String::from_utf8_lossy(&line).trim().to_string();
+                        // 服务端错误(如「附件不可用」400、端口占用)原先只在事件窗口一闪而过,
+                        // 落不到真机上能取回的文件里 —— 追加进壳日志,发一个文件就能定位。
+                        if !text.is_empty() {
+                            shellLog(&handle2, &format!("sidecar: {text}"));
+                        }
+                        let _ = handle2.emit("sidecar-log", text);
                     }
                 }
             });
 
-            // —— 轮询就绪 → navigate;端口已占用(另一实例在跑)时直接连接接管 ——
+            // —— 轮询就绪 → navigate(端口是本次私有端口,不存在「接管别人实例」) ——
             let handle3 = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 for _ in 0..60 {
                     if httpProbe("/api/state", Duration::from_millis(400)) {
                         READY.store(true, Ordering::SeqCst);
                         shellLog(&handle3, "sidecar 探活就绪,准备 navigate");
-                        let _ = handle3.emit("sidecar-ready", GAH_URL);
+                        let _ = handle3.emit("sidecar-ready", web_url());
                         match shell_url().parse() {
                             Ok(u) => {
                                 // 导航失败必须留痕:此处原本是 `let _ = w.navigate(u)`,错误被吞掉,
@@ -934,9 +1025,10 @@ fn main() {
         .run(|app, event| {
             if let RunEvent::Exit = event {
                 if let Some(c) = app.state::<Sidecar>().0.lock().unwrap().take() {
-                    if !READY.load(Ordering::SeqCst) {
-                        let _ = c.kill(); // 未就绪(启动失败路径):强杀
-                    }
+                    // 无条件回收:正常退出本该由 /api/shutdown 让 sidecar 自杀,但壳崩溃或被强退
+                    // 时子进程会变孤儿 —— 真机(白屏那次)就留下了占着 2233 的旧实例,后遗症是
+                    // 「升级了但界面还是旧的」。已退出的进程再 kill 一次无害。
+                    let _ = c.kill();
                 }
             }
         });
@@ -946,9 +1038,9 @@ fn main() {
 fn quitApp(app: &AppHandle) {
     let app = app.clone();
     let _ = std::thread::spawn(move || {
-        let target = format!("http://{}/api/shutdown", GAH_ADDR);
+        let target = format!("{}/api/shutdown", web_url());
         // 用 shell 插件 child 无关的最小 HTTP POST(TcpStream 手写)
-        if let Ok(mut s) = TcpStream::connect_timeout(&GAH_ADDR.parse::<std::net::SocketAddr>().unwrap(), Duration::from_millis(500)) {
+        if let Ok(mut s) = TcpStream::connect_timeout(&web_sockaddr(), Duration::from_millis(500)) {
             let body = "{}";
             let req = format!(
                 "POST /api/shutdown HTTP/1.1\r\nHost: 127.0.0.1\r\n{}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",

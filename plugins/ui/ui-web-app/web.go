@@ -7,12 +7,14 @@ package uiweb
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
 	"github.com/nekoleamo/go-agent-harness/web"
@@ -60,6 +62,21 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	// 回收插件/外部进程)。桌面壳/运维跨平台优雅停机通道(Windows 无 SIGTERM)。
 	srv.OnShutdown = func() {
 		_, _ = c.Emit(context.Background(), "system/shutdown", nil, sdk.Emit)
+	}
+	// GAH_WEB_PARENT_WATCH=1(桌面壳专设):父进程一死就跟着退,走与 /api/shutdown 同一条路。
+	// 壳与 sidecar 之间只有 stdin 这根管道是「父活则通」的 —— 壳被强杀/崩溃时写端随之关闭,
+	// 这里读到 EOF 就知道自己已成孤儿。没有它,壳异常退出会留下占着数据根和监听口的孤儿
+	// sidecar,而下一个壳连上去看到的是旧实例(真机 2026-09-16:升级后界面没有新功能)。
+	// 只在壳显式设置时启用:手工 `gah web` 的 stdin 是终端,读了会抢用户输入。
+	if os.Getenv("GAH_WEB_PARENT_WATCH") == "1" {
+		go func() {
+			_, _ = io.Copy(io.Discard, os.Stdin)
+			c.Logger().Warn("ui-web-app: 父进程已退出,随父退出")
+			srv.OnShutdown()
+			time.Sleep(5 * time.Second) // 优雅退出卡住时的兜底:留下孤儿比退得不优雅麻烦得多
+			c.Logger().Warn("ui-web-app: 优雅退出超时,强制结束")
+			os.Exit(0)
+		}()
 	}
 	if err := srv.Inject(c); err != nil {
 		return nil, err
