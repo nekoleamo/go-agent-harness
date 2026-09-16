@@ -213,7 +213,7 @@ func (j *Jobs) Submit(cmdline string) (string, error) {
 	j.add(e)
 	go func() {
 		cmd := exec.Command(sh, "-c", cmdline)
-		setupCmdGroup(cmd)                                // 独立进程组(组杀可连带 sh -c 子进程,防孤儿)
+		setupCmdGroup(cmd) // 独立进程组(组杀可连带 sh -c 子进程,防孤儿)
 		// WaitDelay:命令进程退出后若它派生的子进程还开着 stdout/stderr 管道
 		// (典型 sh -c "sleep 30" —— sh 被杀而 sleep 还活着),cmd.Wait 会阻塞在 I/O
 		// 上永不返回,Jobs.Kill 等满 8s 超时也拿不到 e.done。3s 兜底后强制关管道
