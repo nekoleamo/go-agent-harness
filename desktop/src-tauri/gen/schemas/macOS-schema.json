@@ -387,6 +387,12 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "允许前端(gah 壳内的 sidecar 页面)调用壳的应用自有命令。",
+          "type": "string",
+          "const": "allow-app-commands",
+          "markdownDescription": "允许前端(gah 壳内的 sidecar 页面)调用壳的应用自有命令。"
+        },
+        {
           "description": "This permission set configures if your\napplication can enable or disable auto\nstarting the application on boot.\n\n#### Granted Permissions\n\nIt allows all to check, enable and\ndisable the automatic start on boot.\n\n\n#### This default permission set includes:\n\n- `allow-enable`\n- `allow-disable`\n- `allow-is-enabled`",
           "type": "string",
           "const": "autostart:default",

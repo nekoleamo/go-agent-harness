@@ -36,10 +36,17 @@ const emit = defineEmits<{ (e: 'close'): void; (e: 'changed'): void }>()
 
 const ask = inject<(a: AskConfirm) => void>('askConfirm')
 
-// 桌面壳专属能力:壳经 withGlobalTauri 把 Tauri API 挂到 window.__TAURI__,
-// 浏览器直连 127.0.0.1:2233 时不存在 —— 用它是为了零新前端依赖。
+// 桌面壳专属能力:壳的 init 脚本总会注入 __TAURI_INTERNALS__(IPC 通道本体),
+// 但不会注入 __TAURI__ 全局 —— 后者只在 withGlobalTauri 打开时才有。此处刻意不开它:
+// 打开意味着把整个 Tauri API 连同各插件的 JS 全局都塞进 sidecar 页面(实测会带来一些
+// 必然被 ACL 拒掉的无谓请求),而这里只需要一个 invoke。
 type TauriInvoke = (cmd: string, args?: Record<string, unknown>) => Promise<unknown>
 const tauriInvoke: TauriInvoke | undefined = (
+  globalThis as unknown as {
+    __TAURI_INTERNALS__?: { invoke?: TauriInvoke }
+    __TAURI__?: { core?: { invoke?: TauriInvoke } }
+  }
+).__TAURI_INTERNALS__?.invoke ?? (
   globalThis as unknown as { __TAURI__?: { core?: { invoke?: TauriInvoke } } }
 ).__TAURI__?.core?.invoke
 const isDesktop = typeof tauriInvoke === 'function'

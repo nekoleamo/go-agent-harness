@@ -898,6 +898,27 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 
 **未闭环(诚实标注)**:① 三条修复**都还没在 Windows 真机复验** —— 白屏那条目前只能说「不再可能由托盘 panic 引起」,暂存那条要看到降级告警消失,图标那条要看托盘与桌面快捷方式的实际观感;② 白屏的**首要嫌疑**(Windows 上托盘 `build()` 失败)在 macOS 上无法验证,本轮是靠「把可失败点变成可观测」收敛的,**不是靠复现**;③ 若真机仍白屏,`gah-shell.log` 会指出死在哪一步 —— 那才是根因判定的依据。
 
+## R16 白屏二次排查 / 壳侧自检 / ACL 修复 (2026-09-16,真机复验待做)
+
+> 用户报「装了带图标与暂存修复的诊断包后**又变成白屏**」。本轮先穷尽本机能做的排除,再把壳里的黑盒全部照亮,并顺手挖出并修掉一个**用户明确要的功能其实是坏的**的真缺陷。
+
+**已排除(都有硬证据,不是推理)**:① **前端**——本机 CDP 驱动 headless Chrome 直取真实 DOM:`/` 与 `/?shell=desktop`(注入 `__TAURI__` 桩)的 `#app` 均有子节点、`mounted=true`;前端根本不读 `?shell=desktop`(壳的注释说「web UI 依 shell=desktop 走桌面布局」并不成立);`web-src/src` 全仓无 `isPermissionGranted`,bundle 里只有一处 `toSorted`(ES2023)且不在启动路径,而 v0.1.3 前端新增的 48 行全是 ES2020 以内语法(`?.`/`??`/`globalThis`),vite `build.target` 已锁 `es2020`;清点本机 `web/dist` 的 mtime 与内容(含「检查更新」字样)**确认测的就是 v0.1.3 的产物**,不是旧包。② **sidecar**——本机 `go build` 后 `nohup gah --profile web` 实测 `/`、`/?shell=desktop`、`/?x=1`、`/?shell=web` 全 200/602B 且不崩。③ **壳的启动链路**——`scripts/gen-desktop.sh` 产出与发行同一形态的产物,**在本机 macOS 上把桌面壳完整跑起来**:`external=true`、staged 副本 `bin/gah-0.1.0-5ceb9286`、`lsof` 确认**持有 2233 的正是这个 staged 二进制本身**、导航后自述 `mounted=true / title="gah Web" / bodyLen=22707`。⇒ **白屏在 macOS 上复现不了,是 Windows 特有现象**;第一次跑还意外复现了「旧实例占着 2233、探活命中的是旧实例」这个极易误读的场景,证明新增的端口占用日志正是为它准备的。
+
+**壳侧黑盒全部照亮(本轮真正的产出)**:① `let _ = w.navigate(u)` 吞错误 → 改为记录 navigate 结果、单独记录「取不到 main 窗口」;② 新增 `spawnSelfCheck`:**导航后两轮(3s/7s)用 `eval_with_callback` 向当前文档索要一份自述** —— `href`/`readyState`/`title`/`#app` 子节点数/`typeof __TAURI__`/未捕获异常/前端→壳 IPC 结果/正文前 200 字,写进 `gah-shell.log`;两轮都拿不到回话 ⇒ WebView2 渲染进程不可用(白屏的直接成因,应用内无法自救),`href` 仍停在 `tauri://` ⇒ 导航没生效,`href` 是 `127.0.0.1` 而 `#app` 为空 ⇒ 页面送达却没渲染。用 `eval_with_callback` 而非 IPC,**不需要改前端、不需要新命令**;③ 早期错误捕获钩子(导航后 30×150ms 小剂量重注入):ESM 延迟执行,命中新文档的那次能赶在 bundle 之前装上监听器,于是前端任何未捕获异常都能被下一轮自检读出来(带 300 字栈);④ 兜底面板:已连上 `127.0.0.1` 却连 `#app` 都没挂上时,2.5s 后把「版本+数据根+导航目标+壳侧日志尾部+页面正文+前端错误」直接铺满窗口 —— **宁可难看,也不要让用户对着一片白屏只能报「白屏」**。判定前先看 `hostname`:splash 是 `tauri://localhost`,它本来就没有 `#app`,不能误伤。
+
+**挖出的真缺陷:桌面壳从未有任何 capabilities/permissions,于是前端→壳的命令一律被 ACL 拒掉** —— 错误捕获钩子当场捞到 `shell_probe not allowed. Plugin not found`,并同时捞到一条插件全局 API 的 `notification.is_permission_granted` 被拒。**后果是用户上一轮明确要的「界面内升级入口」其实一直不通**(按钮点下去只会拿到拒绝)。修法:Tauri v2 的应用自有命令要用 `permissions/*.toml` 声明(`commands.allow` 里写命令原名),再在 capability 里按**标识符**引用 —— 命令名 `check_update` 含下划线不能直接当标识符(这是最初报错的原因),故新建 `permissions/app-commands.toml`(标识符 `allow-app-commands`)+ `capabilities/default.json`(`windows:["main"]`、`remote.urls:["http://127.0.0.1:2233"]`、`core:default`)。**实测 `ipc: ok: ok`** ⇒ 该功能首次端到端打通。
+
+**顺手做的 A/B:`withGlobalTauri` 关掉**。它是 v0.1.2→v0.1.3 **唯一**的配置差异(`tauri.conf.json` 整个 diff 只有这一行;main.rs 那 192 行里没有任何能造成白屏的东西,已逐行过)。关掉后前端改走 `__TAURI_INTERNALS__.invoke`(壳的 init 脚本**总会**注入它,它本来就是 IPC 通道本体;`__TAURI__` 只在 `withGlobalTauri` 打开时才有)。好处:sidecar 页面不再被塞进整套 Tauri API 与各插件的 JS 全局(实测那会带来必然被 ACL 拒掉的无谓请求)。**实测:`tauri: undefined`(全局确实没了)而 `ipc: ok: ok`(通道照通)** ⇒ 关掉不损失功能。若白屏真凶就是这次注入,则下一版直接可用;若不是,日志会给出结论。
+
+| 项 | 证据 |
+|---|---|
+| **本机端到端(macOS)** | 全链路:端口清空 → staged 副本 → spawn → 探活 → navigate → 自述 `mounted=true`;`lsof` 证实 2233 由 staged 二进制持有 |
+| **ACL 修复** | 修复前 `ipc: denied: shell_probe not allowed. Plugin not found` → 修复后 **`ipc: ok: ok`**;`gen/schemas/acl-manifests.json` 收录 `allow-app-commands`/`shell_probe` |
+| **A/B** | `tauri: undefined` + `ipc: ok: ok` + `mounted=true` ⇒ 关掉 `withGlobalTauri` 不损失功能 |
+| **回归** | `cargo check --locked` 0 error / `cargo test --locked` 19 passed;前端 `npm test` **38 pass / 0 fail**;`go build ./...` 通过 |
+
+**未闭环(诚实标注)**:① **白屏根因仍未确定** —— 本轮只做到「本机无法复现 + 日志已具备定位能力」,`withGlobalTauri` 只是唯一剩下的变量、**不是已证实的病因**;② 上述全部证据来自 macOS,Windows 上的托盘/WebView2/x64-on-ARM64 归因**无法在本机验证**;③ `notification.is_permission_granted` 被拒仍会出现在每个页面(关掉 `withGlobalTauri` 也在,说明调用方不是插件全局 JS 而是更底层的东西),**已确认无害**(v0.1.2 路径里同样存在且页面正常),故本轮不动它 —— 记为待查;④ 还没在真机上验证过下载安装、托盘观感、检查更新按钮的实际点击效果。
+
 ## 15. 风险与权衡
 
 | 风险 | 缓解 |

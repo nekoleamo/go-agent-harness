@@ -1,0 +1,12 @@
+# 应用自有命令的 ACL 声明。
+#
+# 为何需要:此前本项目没有任何 permissions/capabilities,于是 Tauri v2 的 ACL 把
+# 前端发来的命令一律拒掉(实测 "shell_probe not allowed. Plugin not found")——
+# 界面上的「检查更新」正好走这条通道,等于用户要的升级入口根本没通。
+#
+# 注意标识符只能用「小写 + 连字符」:命令名 check_update 含下划线,不能直接当标识符,
+# 所以在这里用 allow-app-commands 这个标识符把命令列出来(commands.allow 里才是命令原名)。
+[[permission]]
+identifier = "allow-app-commands"
+description = "允许前端(gah 壳内的 sidecar 页面)调用壳的应用自有命令。"
+commands.allow = ["check_update", "shell_probe"]

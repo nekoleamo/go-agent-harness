@@ -227,6 +227,17 @@ async fn check_update(app: AppHandle) -> UpdateOutcome {
     checkForUpdates(&app).await
 }
 
+// shell_probe 自检用的最小命令:验证前端经 withGlobalTauri 究竟能不能调进壳。
+//
+// 为何需要:本项目没有任何 capabilities/ 文件,而 plugins 的 JS 全局 API 在页面上是活的
+// (withGlobalTauri 注入),拿它一调就是 ACL 拒绝(实测到 notification.is_permission_granted
+// 被拒)。应用自有命令是否同样被拦,只能实测 —— 而界面上的「检查更新」走的正是这条通道。
+// 不调 check_update 本体去探测,是因为那会真的发网络请求、甚至真去装更新。
+#[tauri::command]
+fn shell_probe() -> String {
+    "ok".to_string()
+}
+
 // httpGETAuth 带凭据的最小 GET(token 模式必须带 cookie,否则 401 → 空串)。
 fn httpGETAuth(path: &str) -> String {
     let mut s = match TcpStream::connect_timeout(&GAH_ADDR.parse::<std::net::SocketAddr>().unwrap(), Duration::from_millis(300)) {
@@ -383,6 +394,22 @@ fn shellLogTail(app: &AppHandle, n: usize) -> String {
     lines[lines.len().saturating_sub(n)..].join("\n")
 }
 
+// JS_ERRHOOK 尽早装上前端错误捕获。
+//
+// 为何要装:纯白页最需要的就是「前端到底报了什么错」这一句话,而模块脚本(ESM)是延迟执行的 ——
+// 导航后立即注入的监听器通常仍早于 bundle 开跑,于是未捕获异常能被下一轮自检读出来。
+// 幂等,可反复注入。
+const JS_ERRHOOK: &str = r#"if (!window.__gahErr) { window.__gahErr = [];
+  var cap = function (s) { return String(s).slice(0, 300); };
+  window.addEventListener('error', function (e) {
+    window.__gahErr.push(cap((e.message || e.error || 'error') + ' @ ' + (e.filename || '?') + ':' + (e.lineno || 0))
+      + (e.error && e.error.stack ? '\n' + cap(e.error.stack) : ''));
+  });
+  window.addEventListener('unhandledrejection', function (e) {
+    window.__gahErr.push('rejection: ' + cap(e.reason) + (e.reason && e.reason.stack ? '\n' + cap(e.reason.stack) : ''));
+  });
+}"#;
+
 // JS_SELFCHECK 交给页面的自检脚本,`@@DIAG@@` 会被替换成诊断文本的 JSON 字符串字面量。
 //
 // 同步返回一份页面自述(href / readyState / #app 子节点数 / typeof __TAURI__),并在
@@ -392,6 +419,19 @@ fn shellLogTail(app: &AppHandle, n: usize) -> String {
 const JS_SELFCHECK: &str = r#"(function () {
   var app = document.getElementById('app');
   var mounted = !!(app && app.childElementCount > 0);
+  // 壳能力探测:前端到底能不能调进壳(由 capabilities/ACL 决定)。结果异步,留给下一轮自检读。
+  // 这不是摆设 —— 界面上的「检查更新」走的正是这条通道。
+  // 用 __TAURI_INTERNALS__(init 脚本总会注入)而非 __TAURI__:后者只在 withGlobalTauri 打开时有。
+  var inv = (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke)
+    || (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke);
+  if (!window.__gahIpc && inv) {
+    window.__gahIpc = 'pending';
+    inv('shell_probe').then(function (r) {
+      window.__gahIpc = 'ok: ' + String(r);
+    }, function (e) {
+      window.__gahIpc = 'denied: ' + String(e);
+    });
+  }
   if (!mounted && location.hostname === '127.0.0.1' && !window.__gahPanel) {
     window.__gahPanel = 1;
     setTimeout(function () {
@@ -404,6 +444,9 @@ const JS_SELFCHECK: &str = r#"(function () {
         + '   title=' + document.title
         + '   #app 子节点=' + (a2 ? a2.childElementCount : -1)
         + '   typeof __TAURI__=' + (typeof window.__TAURI__)
+        + '\n  前端错误: ' + JSON.stringify(window.__gahErr || [])
+        + '\n  前端→壳 IPC: ' + (window.__gahIpc || 'n/a')
+        + '\n  __TAURI_INTERNALS__.invoke: ' + typeof ((window.__TAURI_INTERNALS__ || {}).invoke)
         + '\n  正文前 200 字: ' + (document.body && document.body.innerText || '').slice(0, 200);
       document.body.innerHTML = '';
       document.body.appendChild(pre);
@@ -417,6 +460,8 @@ const JS_SELFCHECK: &str = r#"(function () {
     bodyLen: document.body ? document.body.innerHTML.length : -1,
     tauri: typeof window.__TAURI__,
     title: document.title,
+    ipc: window.__gahIpc || 'n/a',
+    errs: window.__gahErr || [],
     text: document.body && document.body.innerText ? document.body.innerText.slice(0, 200) : ''
   });
 })()"#;
@@ -585,7 +630,7 @@ fn main() {
         .manage(DataRoot(Mutex::new(None)))
         // 界面内升级入口:桌面壳此前没有 invoke 通道,升级只能靠托盘菜单,
         // 菜单弹不出来就等于完全没有升级入口(Windows 真机反馈)。
-        .invoke_handler(tauri::generate_handler![check_update])
+        .invoke_handler(tauri::generate_handler![check_update, shell_probe])
         .setup(|app| {
             let handle = app.handle().clone();
             shellLog(
@@ -768,6 +813,19 @@ fn main() {
                                         &handle3,
                                         "致命: 取不到 label=main 的窗口,界面无法被导航",
                                     ),
+                                }
+                                // 抢在 bundle 之前装错误捕获:ESM 是延迟执行的,而导航刚受理时注入很可能
+                                // 仍落在旧文档(splash)上 —— 所以密集小剂量重试,命中新文档的那一次就生效。
+                                {
+                                    let h = handle3.clone();
+                                    tauri::async_runtime::spawn(async move {
+                                        for _ in 0..30 {
+                                            if let Some(w) = h.get_webview_window("main") {
+                                                let _ = w.eval(JS_ERRHOOK);
+                                            }
+                                            std::thread::sleep(Duration::from_millis(150));
+                                        }
+                                    });
                                 }
                                 // 壳侧提示(外置失败/旧数据迁移/…):系统通知可能被拒绝授权,
                                 // 且 Tauri 事件跨不到 sidecar 页面 —— 直接贴进页面,重复调用幂等。

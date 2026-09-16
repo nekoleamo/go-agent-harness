@@ -1,1 +1,1 @@
-{}
+{"default":{"identifier":"default","description":"gah 桌面壳的最小权限面:主窗口 + sidecar 页面(127.0.0.1:2233)只能调应用自有命令。","remote":{"urls":["http://127.0.0.1:2233"]},"local":true,"windows":["main"],"permissions":["core:default","allow-app-commands"]}}
