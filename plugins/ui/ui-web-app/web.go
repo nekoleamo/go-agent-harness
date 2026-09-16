@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
@@ -68,9 +69,17 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	// 这里读到 EOF 就知道自己已成孤儿。没有它,壳异常退出会留下占着数据根和监听口的孤儿
 	// sidecar,而下一个壳连上去看到的是旧实例(真机 2026-09-16:升级后界面没有新功能)。
 	// 只在壳显式设置时启用:手工 `gah web` 的 stdin 是终端,读了会抢用户输入。
+	var webReady atomic.Bool
 	if os.Getenv("GAH_WEB_PARENT_WATCH") == "1" {
 		go func() {
 			_, _ = io.Copy(io.Discard, os.Stdin)
+			if !webReady.Load() {
+				// 【不能在这里退出】启动期 EOF 与「父进程已死」无法区分:平台上句柄行为若有差异
+				// (Windows),立刻退出会让服务在刚起来时就自杀 —— 而界面永远停在启动页,真机上
+				// 完全看不出原因。宁可留下一个孤儿,也不能杀掉一个正在启动的服务。
+				c.Logger().Warn("ui-web-app: stdin 在就绪前 EOF,父进程监视不生效(不退出)")
+				return
+			}
 			c.Logger().Warn("ui-web-app: 父进程已退出,随父退出")
 			srv.OnShutdown()
 			time.Sleep(5 * time.Second) // 优雅退出卡住时的兜底:留下孤儿比退得不优雅麻烦得多
@@ -87,6 +96,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	// token 模式凭据置于 URL fragment:引导页用它换 cookie,而 fragment 不会发往服务端
 	// (不进访问日志/Referer);用户复制日志里的地址即可直接进入 UI。
 	srv.OnReady = func(url string) {
+		webReady.Store(true)
 		visit := web.FragmentURL(url, cfg.AuthToken)
 		if cfg.AuthToken != "" {
 			c.Logger().Info("ui-web-app: 访问地址(token 在 URL fragment 中,不会发往服务端)", "url", visit)

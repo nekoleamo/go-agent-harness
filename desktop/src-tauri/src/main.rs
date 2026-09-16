@@ -20,7 +20,7 @@ use std::time::Duration;
 
 mod stage;
 
-use tauri::menu::{CheckMenuItem, CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder, PredefinedMenuItem};
+use tauri::menu::{CheckMenuItem, CheckMenuItemBuilder, MenuBuilder, MenuItem, MenuItemBuilder, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WindowEvent};
 use tauri_plugin_autostart::MacosLauncher;
@@ -78,6 +78,11 @@ struct Sidecar(Mutex<Option<CommandChild>>);
 // TrayAutostart 托盘里的「开机自启」勾选项:切换后必须把勾选态回写成实际状态,
 // 否则用户点完看不出任何变化(=「点了没反应」)。
 struct TrayAutostart(Mutex<Option<CheckMenuItem<tauri::Wry>>>);
+// TrayCheck 托盘里的「检查更新…」项:检查期间要能立刻变成「检查更新中…」并禁用。
+struct TrayCheck(Mutex<Option<MenuItem<tauri::Wry>>>);
+// 检查更新项的两种文字(集中一处,免得改文案漏掉一边)
+const CHECK_IDLE_TEXT: &str = "检查更新…";
+const CHECK_BUSY_TEXT: &str = "检查更新中…";
 // DataRoot 本次运行的**真实**数据根(外置后 = `<用户数据目录>/bin/gah-data`,回退时 = 应用目录内)。
 // 升级前备份按它取数(见 backupBeforeUpgrade)。
 struct DataRoot(Mutex<Option<PathBuf>>);
@@ -442,6 +447,46 @@ fn shellLogTail(app: &AppHandle, n: usize) -> String {
     lines[lines.len().saturating_sub(n)..].join("\n")
 }
 
+// esc 最小 HTML 转义:日志原文要摆进页面,`<`/`&` 不能被当成标签。
+fn esc(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+// showShellDiag 把「出了什么事」直接铺到窗口上,不再把用户留在启动页/白屏里。
+// 失败过去只写日志:真机上窗口白着、机器上没痕迹,只能读代码猜(2026-09-15/16 两轮白屏)。
+// 面板附壳日志尾部 —— sidecar 的 stderr 现在也落在里面,原因通常就在那几行。
+fn showShellDiag(app: &AppHandle, title: &str, lines: &[String]) {
+    let body = lines.iter().map(|l| esc(l)).collect::<Vec<_>>().join("<br>");
+    let html = format!(
+        "<div style=\"font-family:system-ui,-apple-system,Segoe UI,sans-serif;padding:36px;max-width:720px;line-height:1.7\">\
+<h2 style=\"margin:0 0 12px\">{}</h2><p>{body}</p>\
+<p style=\"color:#666\">日志文件:{}</p>\
+<pre style=\"white-space:pre-wrap;background:#f5f5f5;padding:12px;border-radius:6px;font-size:12px\">{}</pre></div>",
+        esc(title),
+        esc(&shellLogPath(app).display().to_string()),
+        esc(&shellLogTail(app, 16)),
+    );
+    if let (Some(w), Ok(lit)) = (app.get_webview_window("main"), serde_json::to_string(&html)) {
+        let _ = w.eval(&format!(
+            "document.body.style.background='#fff';document.body.innerHTML={lit}"
+        ));
+    }
+}
+
+// setCheckBusy 把托盘「检查更新…」切成进行中(文字 + 禁用),并顺手发一条「正在检查更新…」。
+// 检查要走网络,网络不通时可能几十秒没任何动静 —— 「点了没反应」是 2026-09-16 连续两轮的真机
+// 反馈。此处的两条通道职责不同:通知立刻到手(但系统可能不弹),菜单文字必然可见(但要再点开
+// 托盘菜单才看得到)。
+fn setCheckBusy(app: &tauri::AppHandle, busy: bool) {
+    if let Some(item) = app.state::<TrayCheck>().0.lock().unwrap().as_ref() {
+        let _ = item.set_text(if busy { CHECK_BUSY_TEXT } else { CHECK_IDLE_TEXT });
+        let _ = item.set_enabled(!busy);
+    }
+    if busy {
+        let _ = app.notification().builder().title("gah").body("正在检查更新…").show();
+    }
+}
+
 // JS_ERRHOOK 尽早装上前端错误捕获。
 //
 // 为何要装:纯白页最需要的就是「前端到底报了什么错」这一句话,而模块脚本(ESM)是延迟执行的 ——
@@ -680,6 +725,7 @@ fn main() {
         .manage(Sidecar(Mutex::new(None)))
         .manage(DataRoot(Mutex::new(None)))
         .manage(TrayAutostart(Mutex::new(None)))
+        .manage(TrayCheck(Mutex::new(None)))
         // 界面内升级入口:桌面壳此前没有 invoke 通道,升级只能靠托盘菜单,
         // 菜单弹不出来就等于完全没有升级入口(Windows 真机反馈)。
         .invoke_handler(tauri::generate_handler![check_update, shell_probe])
@@ -709,7 +755,7 @@ fn main() {
                 .checked(app.autolaunch().is_enabled().unwrap_or(false))
                 .build(app)
                 .unwrap();
-            let check_item = MenuItemBuilder::with_id("check_update", "检查更新…")
+            let check_item = MenuItemBuilder::with_id("check_update", CHECK_IDLE_TEXT)
                 .build(app)
                 .unwrap();
             let about_item = MenuItemBuilder::with_id("about", "关于 gah")
@@ -729,8 +775,9 @@ fn main() {
                 ])
                 .build()
                 .unwrap();
-            // 交出所有权供事件回写勾选态(菜单已在上一步自己留了引用)
+            // 交出所有权供事件回写状态(菜单已在上一步自己留了引用)
             *app.state::<TrayAutostart>().0.lock().unwrap() = Some(autostart_item);
+            *app.state::<TrayCheck>().0.lock().unwrap() = Some(check_item);
             // 托盘图标必须显式给:TrayIconBuilder 不会自动回退到 default_window_icon。
             // 没有图标时 tray-icon 不设置 NIF_ICON 标志,Shell_NotifyIcon 依然返回成功,
             // 但托盘区留下一个没有图标的空白占位 —— 在 Windows 上就表现为「看不到图标」。
@@ -763,10 +810,26 @@ fn main() {
                         }
                     }
                     "check_update" => {
-                        // 托盘「检查更新」:异步检查 → 有更新则下载安装并重启;结果经通知 + 对话框反馈
+                        // 托盘「检查更新」:先给**立刻可见的进行中反馈**,再异步检查(45 秒封顶),
+                        // 结果经通知 + 原生对话框反馈。封顶很关键:网络到不了更新端点时,没有超时就是
+                        // 无限期「没反应」。
+                        setCheckBusy(app, true);
                         let h = app.clone();
                         tauri::async_runtime::spawn(async move {
-                            let outcome = checkForUpdates(&h).await;
+                            let outcome = match tokio::time::timeout(
+                                Duration::from_secs(45),
+                                checkForUpdates(&h),
+                            )
+                            .await
+                            {
+                                Ok(o) => o,
+                                Err(_) => UpdateOutcome::new(
+                                    "failed",
+                                    None,
+                                    "检查更新超时(45 秒未返回):多半是网络到不了更新端点。可配好代理后重试,或直接到 GitHub Releases 手动下载安装包。".into(),
+                                ),
+                            };
+                            setCheckBusy(&h, false);
                             notifyUpdate(&h, &outcome);
                         });
                     }
@@ -871,14 +934,33 @@ fn main() {
             let handle2 = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 while let Some(ev) = rx.recv().await {
-                    if let tauri_plugin_shell::process::CommandEvent::Stderr(line) = ev {
-                        let text = String::from_utf8_lossy(&line).trim().to_string();
-                        // 服务端错误(如「附件不可用」400、端口占用)原先只在事件窗口一闪而过,
-                        // 落不到真机上能取回的文件里 —— 追加进壳日志,发一个文件就能定位。
-                        if !text.is_empty() {
-                            shellLog(&handle2, &format!("sidecar: {text}"));
+                    match ev {
+                        tauri_plugin_shell::process::CommandEvent::Stderr(line) => {
+                            let text = String::from_utf8_lossy(&line).trim().to_string();
+                            // 服务端错误(如「附件不可用」400、端口占用)原先只在事件窗口一闪而过,
+                            // 落不到真机上能取回的文件里 —— 追加进壳日志,发一个文件就能定位。
+                            if !text.is_empty() {
+                                shellLog(&handle2, &format!("sidecar: {text}"));
+                            }
+                            let _ = handle2.emit("sidecar-log", text);
                         }
-                        let _ = handle2.emit("sidecar-log", text);
+                        // sidecar 提前死掉 ⇒ 界面必然停在启动页(用户看到的就是白屏)。以前要干等
+                        // 探活超 12 秒才提一句,现在立刻留痕并把原因铺到窗口上。
+                        tauri_plugin_shell::process::CommandEvent::Terminated(payload) => {
+                            shellLog(&handle2, &format!("sidecar 已退出: {payload:?}"));
+                            if !READY.load(Ordering::SeqCst) {
+                                showShellDiag(
+                                    &handle2,
+                                    "gah 服务进程已退出",
+                                    &[
+                                        "后台服务在界面就绪前就退出了。下方日志里 `sidecar:` 开头的行是它自己的输出。"
+                                            .into(),
+                                        format!("退出详情: {payload:?}"),
+                                    ],
+                                );
+                            }
+                        }
+                        _ => {}
                     }
                 }
             });
@@ -943,9 +1025,8 @@ fn main() {
                     }
                     std::thread::sleep(Duration::from_millis(200));
                 }
-                shellLog(&handle3, "sidecar 在 60×200ms 内未就绪(注入失败页)");
-                let _ = handle3.emit("sidecar-start-failed", "gah 60×200ms 内未就绪");
-                // 失败指引:窗口不再停留在"正在启动",注入错误提示(路径经 JSON 编码,避免 Windows 反斜杠/引号破坏 JS)
+                shellLog(&handle3, "sidecar 在 12 秒内未就绪(注入失败页)");
+                let _ = handle3.emit("sidecar-start-failed", "gah 12 秒内未就绪");
                 let root = handle3
                     .state::<DataRoot>()
                     .0
@@ -954,14 +1035,16 @@ fn main() {
                     .and_then(|g| g.clone())
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|| "gah-data".into());
-                if let Some(w) = handle3.get_webview_window("main") {
-                    let html = format!(
-                        "<div style=\"font-family:-apple-system,sans-serif;padding:40px;max-width:560px\"><h2>gah 服务未能启动</h2><p>数据根:{root}(需可写)。</p><p>若 config/bundle-web.yaml 里 data.auth_token 非空(token 模式),桌面壳需以环境变量 GAH_WEB_TOKEN 传入同一 token,否则 /api/* 会 401。</p><p>详细日志见终端输出。</p></div>"
-                    );
-                    if let Ok(lit) = serde_json::to_string(&html) {
-                        let _ = w.eval(&format!("document.body.innerHTML={lit}"));
-                    }
-                }
+                showShellDiag(
+                    &handle3,
+                    "gah 服务未能启动",
+                    &[
+                        format!("数据根: {root}(需可写)。"),
+                        "下方是壳日志尾部:`sidecar:` 开头的行是后台服务自己的输出。".into(),
+                        "若 config/bundle-web.yaml 的 data.auth_token 非空(token 模式),桌面壳需以 GAH_WEB_TOKEN 传入同一 token,否则 /api/* 一律 401。"
+                            .into(),
+                    ],
+                );
             });
 
             // —— 回合完成通知:轮询 state.running 翻转(running→idle 发通知) ——
