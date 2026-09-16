@@ -53,7 +53,7 @@ Go 实现的编程代理 Agent Harness:以**单静态二进制**交付全部能�
 | **Web 附件+多模态** | 输入框传图片/文件(按钮+拖放+粘贴),芯片预览/删除;图片经 openai/anthropic 适配器结构化注入(模型看图),文本附件路径引用;落盘 `$GAH_HOME/attachments/` |
 | **文档预览** | 一个块模型 + 四端同源渲染(markdown/文本/代码/CSV/notebook + PDF 页事实):Web 预览工作台(文件树/PDF 原生查看器/HTML 源码视图+沙箱)、TUI `/preview` pager(滚动/搜索/横移)、`gah doc` CLI、会话流 markdown 渲染;路径经沙箱+逃逸校验+密钥 deny-list,零 v-html |
 | **优雅停机** | `POST /api/shutdown` → DisposeAll 全回收(Windows 无 SIGTERM 的统一停机通道;桌面壳/运维复用) |
-| **桌面壳(P1)** | `desktop/` Tauri v2 壳:sidecar gah + 窗口直连本地服务;托盘/通知/自启/单实例;**零成本发行**(updater ed25519 自持签名 + CI 矩阵 + 无签名首次启动指引) |
+| **桌面壳(P1)** | `desktop/` Tauri v2 壳:sidecar gah + 窗口直连本地服务;托盘(关于/检查更新/开机自启)/ 通知 / 单实例 / 系统文件夹选择器;**零成本发行**(updater ed25519 自持签名 + CI 矩阵 + 无签名首次启动指引) |
 
 ## 三、快速开始
 
@@ -304,7 +304,7 @@ patch-*.yaml            # 按 id 替换/插入/启停条目(随时插拔)
 |---|---|
 | `GAH_HOME` | 内部贯通变量(boot 自动设为便携根 `gah-data/`,插件/外部进程经它派生子目录);**用户显式设置被忽略**(数据根唯一 = 二进制同级 `gah-data/`,2026-09-16 起,设不同值启动时告警) |
 | `GAH_PROFILE` / `GAH_NO_TUI` | 默认 profile / 强制关闭 TUI(headless/CI) |
-| `GAH_WEB_ADDR` / `GAH_WEB_OPEN` / `GAH_WEB_STATIC` | Web 监听地址(默认 127.0.0.1:2233)/ 是否自动开浏览器 / 静态目录覆写(开发态 HMR);桌面壳另用 `GAH_WEB_TOKEN` 传 token 并导航到 `#token=` 地址(就绪探测把 401 也视为已就绪) |
+| `GAH_WEB_ADDR` / `GAH_WEB_OPEN` / `GAH_WEB_STATIC` | Web 监听地址(默认 127.0.0.1:2233)/ 是否自动开浏览器 / 静态目录覆写(开发态 HMR);桌面壳另用 `GAH_WEB_TOKEN` 传 token 并导航到 `#token=` 地址(就绪探测把 401 也视为已就绪),并**自己挑一个空闲端口**以 `GAH_WEB_ADDR` 覆写监听地址(固定端口会连上别的实例:孤儿 sidecar 或用户自己的 `gah web`),同时置 `GAH_WEB_PARENT_WATCH=1`:父进程一死 sidecar 即自行优雅退出(不留占着数据根的孤儿) |
 | `GAH_MCP_COMMAND` / `GAH_MCP_COMMANDS` | MCP 桥接入(单 server / 多 server 每行 `name=command args`);**`$GAH_HOME/config/mcp.yaml` 优先**,同名以文件为准(env 独有条目在设置面板标「环境变量」只读) |
 | `GAH_CB_ADDR` / `GAH_CB_TOKEN` | host-bridge 回调通道(外部进程插件请求宿主 tools/jobs/fanout 服务;含鉴权 token;**不外泄**:`SanitizedEnv` 拦在下游) |
 | `GAH_SHELL_KERNEL_SANDBOX` | `0` = 关闭 shell 的**内核级沙箱**(默认开启:macOS `sandbox-exec` seatbelt / Linux Landlock 在进程树层面限制文件写;仅约束写,读与网络不限;能力缺失平台会自动告警并降级为纯协作式控制) |
