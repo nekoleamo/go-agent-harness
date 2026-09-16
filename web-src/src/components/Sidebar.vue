@@ -4,7 +4,8 @@
 // 切换/删除/改名后 emit session-changed(宿主重建 SSE 重放);列表经 refreshKey 或手动刷新重拉。
 import { inject, nextTick, onMounted, ref, watch } from 'vue'
 import { api } from '../api'
-import { isDesktop, pickDirectory } from '../desktop'
+import { isDesktop, pickDirectory, shellLog } from '../desktop'
+import { sameDir } from '../wsdir'
 import { extraPanels, sidebarActions } from '../registry'
 import type { ExtensionReg } from '../registry'
 import type { AskConfirm, SessionInfo, WorkspaceInfo } from '../types'
@@ -197,10 +198,11 @@ function forgetWorkspace(w: WorkspaceInfo): void {
 }
 
 // —— 打开文件夹作为工作区 ——
-// 桌面壳里直接开系统文件夹选择器(plugin:dialog);Web 形态只能手输绝对路径 ——
+// 桌面壳里直接开系统文件夹选择器(壳自有命令 pick_folder);Web 形态只能手输绝对路径 ——
 // 浏览器安全模型下 <input type=file> 拿不到绝对路径,这是壳能补、页面补不了的能力。
 // 后端 SwitchDir 会 os.Chdir + 记入工作区历史 + 新建空会话 + 通知宿主同步沙箱 root。
 const addingWs = ref(false)
+const wsBusy = ref(false)
 const wsPath = ref('')
 const wsInput = ref<HTMLInputElement | null>(null)
 function startAddWs(): void {
@@ -219,13 +221,17 @@ function cancelAddWs(): void {
   addingWs.value = false
   wsPath.value = ''
 }
-// browseAddWs 桌面壳:开系统文件夹选择器(用户取消返回 null,什么都不做)
+// browseAddWs 桌面壳:开系统文件夹选择器(用户取消返回 null,什么都不做)。
+// 进出都记壳日志:真机上「点了没反应」时,日志里有没有这两行就是「选择器究竟弹没弹」的唯一证据。
 async function browseAddWs(): Promise<void> {
   try {
+    shellLog('点击「＋ 打开/浏览…」:开系统文件夹选择器')
     const dir = await pickDirectory()
+    shellLog('文件夹选择器返回: ' + (dir ?? '(取消)'))
     if (dir) askAddWs(dir)
   } catch (e) {
     err.value = (e as Error).message
+    shellLog('文件夹选择器失败: ' + (e as Error).message)
   }
 }
 function askAddWs(dir: string): void {
@@ -236,14 +242,55 @@ function submitAddWs(): void {
   if (!dir) return
   askAddWs(dir)
 }
+// waitWorkspace 轮询「目标目录是否已出现在工作区历史里」。
+// 为何以列表为准:后端 SwitchDir 的顺序是 chdir → 记历史 → 新建会话 → 重启外部工具进程,
+// 列表是最早能反映成功的证据;重启那一步在 Windows 上可能很慢(真机 2026-09-17
+// 出现过「确认后界面一直不变,点 ↻ 才出来」),干等响应会让界面一直停在旧状态。
+async function waitWorkspace(dir: string, ms: number): Promise<boolean> {
+  const t0 = Date.now()
+  while (Date.now() - t0 < ms) {
+    await new Promise((r) => setTimeout(r, 1200))
+    try {
+      await refresh()
+    } catch {
+      continue // 切换过程中后端可能短暂不可用,下一轮再试
+    }
+    if (workspaces.value.some((w) => sameDir(w.dir, dir))) return true
+  }
+  return false
+}
+
+// doAddWs 切换工作区:请求结果与「列表里出现目标目录」赛跑,谁先到谁定论。
+// 失败留下面板(用户好改路径),但列表与当前会话无论如何都重拉一次 ——
+// 后端失败也可能已经 chdir + 记了历史,界面必须跟着机器走。
 async function doAddWs(dir: string): Promise<void> {
+  wsBusy.value = true
+  const req = api
+    .control({ workspace: dir })
+    .then(() => 'ok' as const, (e: Error) => e)
   try {
-    await api.control({ workspace: dir })
-    cancelAddWs()
-    await refresh()
-    emit('session-changed')
-  } catch (e) {
-    err.value = (e as Error).message
+    const r = await Promise.race([
+      req,
+      waitWorkspace(dir, 60000).then((hit) => (hit ? ('ok' as const) : ('timeout' as const))),
+    ])
+    if (r instanceof Error) {
+      err.value = r.message
+      shellLog('切换工作区失败: ' + dir + ' → ' + r.message)
+    } else if (r === 'timeout') {
+      err.value = '切换工作区超时(60 秒未完成):后端可能正卡在重启外部工具进程。'
+      shellLog('切换工作区超时: ' + dir)
+    } else {
+      shellLog('切换工作区成功: ' + dir)
+      cancelAddWs()
+    }
+  } finally {
+    wsBusy.value = false
+    try {
+      await refresh()
+      emit('session-changed')
+    } catch {
+      // 刷新失败不覆盖上面的错误信息
+    }
   }
 }
 
@@ -286,9 +333,11 @@ defineExpose({ refresh })
           />
           <div class="ws-add-ops">
             <button v-if="isDesktop" class="ws-btn ghost" data-tip="用系统文件夹选择器选目录" @click="browseAddWs">浏览…</button>
-            <button class="ws-btn" @click="submitAddWs">打开</button>
+            <button class="ws-btn" :disabled="wsBusy" @click="submitAddWs">{{ wsBusy ? '切换中…' : '打开' }}</button>
             <button class="ws-btn ghost" @click="cancelAddWs">取消</button>
           </div>
+          <!-- 错误就地显示:侧栏底部的 .err 常在屏幕外,而用户此刻正看着这个输入框 -->
+          <div v-if="err" class="err">{{ err }}</div>
         </div>
         <div class="items">
           <div
@@ -550,6 +599,10 @@ defineExpose({ refresh })
   background: none;
   color: var(--fg-faint);
   border-color: var(--line);
+}
+.ws-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 .items {
   display: flex;

@@ -917,12 +917,22 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// workspace = 真实目录(dir 语义,对齐 TUI /workspace):SwitchDir 内部
-		// os.Chdir + key 派生 + 新建空会话,工作区记录以真实 dir 落盘
+		// os.Chdir + key 派生 + 新建空会话,工作区记录以真实 dir 落盘。
+		//
+		// 进出都记日志(时间 + 结果):这段会重启外部工具进程并同步沙箱 root,真机上
+		// 出现过「确认后界面一直不变、没有任何报错」(2026-09-17)—— 失败原因必须能在
+		// 壳日志(它现在收集 sidecar stderr)里直接读到,而不是只给前端一句 400。
+		s.log.Info("web: 切换工作区", "dir", req.Workspace)
+		switchStart := time.Now()
 		id, err := s.cs.SwitchDir(req.Workspace)
 		if err != nil {
+			s.log.Warn("web: 切换工作区失败", "dir", req.Workspace,
+				"耗时", time.Since(switchStart).String(), "err", err)
 			http.Error(w, "切换失败: "+err.Error(), http.StatusBadRequest)
 			return
 		}
+		s.log.Info("web: 切换工作区完成", "dir", req.Workspace,
+			"id", id, "耗时", time.Since(switchStart).String())
 		if s.us != nil {
 			s.us.Reset()
 		}
