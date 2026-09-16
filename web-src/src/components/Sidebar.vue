@@ -232,6 +232,9 @@ async function browseAddWs(): Promise<void> {
   } catch (e) {
     err.value = (e as Error).message
     shellLog('文件夹选择器失败: ' + (e as Error).message)
+    // 选择器用不了就把输入面板打开:否则「＋ 打开」这条路失败后,错误只能落在屏幕外那行 .err 上,
+    // 用户看到的仍然是「点了没反应」—— 打开面板至少把原因摆在眼前,还能直接手输路径。
+    openWsInput()
   }
 }
 function askAddWs(dir: string): void {
@@ -246,12 +249,16 @@ function submitAddWs(): void {
 // 为何以列表为准:后端 SwitchDir 的顺序是 chdir → 记历史 → 新建会话 → 重启外部工具进程,
 // 列表是最早能反映成功的证据;重启那一步在 Windows 上可能很慢(真机 2026-09-17
 // 出现过「确认后界面一直不变,点 ↻ 才出来」),干等响应会让界面一直停在旧状态。
-async function waitWorkspace(dir: string, ms: number): Promise<boolean> {
+//
+// 只重拉工作区列表、不调 refresh():refresh 会清空 err,而轮询期间用户正需要留着失败信息。
+// stopped 由调用方在「请求已定论」时置位 —— 否则失败后它还会白刷一分钟。
+async function waitWorkspace(dir: string, ms: number, stopped: () => boolean): Promise<boolean> {
   const t0 = Date.now()
-  while (Date.now() - t0 < ms) {
+  while (Date.now() - t0 < ms && !stopped()) {
     await new Promise((r) => setTimeout(r, 1200))
+    if (stopped()) return false
     try {
-      await refresh()
+      workspaces.value = await api.workspaces()
     } catch {
       continue // 切换过程中后端可能短暂不可用,下一轮再试
     }
@@ -265,13 +272,14 @@ async function waitWorkspace(dir: string, ms: number): Promise<boolean> {
 // 后端失败也可能已经 chdir + 记了历史,界面必须跟着机器走。
 async function doAddWs(dir: string): Promise<void> {
   wsBusy.value = true
+  let settled = false
   const req = api
     .control({ workspace: dir })
     .then(() => 'ok' as const, (e: Error) => e)
   try {
     const r = await Promise.race([
       req,
-      waitWorkspace(dir, 60000).then((hit) => (hit ? ('ok' as const) : ('timeout' as const))),
+      waitWorkspace(dir, 60000, () => settled).then((hit) => (hit ? ('ok' as const) : ('timeout' as const))),
     ])
     if (r instanceof Error) {
       err.value = r.message
@@ -284,13 +292,16 @@ async function doAddWs(dir: string): Promise<void> {
       cancelAddWs()
     }
   } finally {
+    settled = true
     wsBusy.value = false
+    const keep = err.value // refresh() 会清空 err,刚写上的失败信息必须留住
     try {
       await refresh()
       emit('session-changed')
     } catch {
       // 刷新失败不覆盖上面的错误信息
     }
+    if (keep) err.value = keep
   }
 }
 
