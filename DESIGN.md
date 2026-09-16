@@ -1192,6 +1192,51 @@ R21 两样都给了(占位符显示当前值 + 单独一行),用户选后者。�
 2. 面板开着时托盘检查更新 → 面板同步显示 ✅;
 3. 模型区去掉占位符、保留「当前生效」行 ✅。
 
+## R23 v0.1.4 发行实证 ✅ (2026-09-17) —— 含 macOS 首次挂载实跑与一处 macOS 专用缺陷
+
+> 用户要求:「都已修复,同步任务,完善文档,最后发布新版本 0.1.4」。tag 指向 `f8d6d36`(其上 `ci` 5/5 绿);本版相对 v0.1.3 共 **26 个提交**(产品代码 ~46 个非文档文件,其余为测试/CI/文档)。版本号仍**不手改任何文件**(tag 注入三处:goreleaser 镜像 / `-X main.version` / tauri bundle version)。
+
+| 项 | 证据 |
+|---|---|
+| **tag** | `v0.1.4`(annotated;正文即 Release notes) |
+| **release-cli** | run `35123132927` ✅ —— goreleaser 十件归档 + `checksums.txt`(10 行) |
+| **release-desktop** | run `35123132826` ✅ —— `desktop-mac-aarch64` / `desktop-win-x86_64` / **`merge-upload`(真上传)** 三 job 全 success |
+| **Release 内容** | `draft=false` / `prerelease=false`;**15 个 asset**:`gah_0.1.4_x64-setup.exe`(33,325,551 B)、`gah_0.1.4_aarch64.dmg`(35,296,211 B)、`gah.app.tar.gz`(35,622,769 B)、10 件命令行归档、`checksums.txt`、`latest.json`(1,215 B) |
+| **updater 端点** | `gh api …/releases/latest` → **v0.1.4**;`latest.json` 内 `windows-x86_64` → `…/download/v0.1.4/gah_0.1.4_x64-setup.exe`、`darwin-aarch64` → `gah.app.tar.gz`;签名内联,**两份签名的 `file:` 字段与 asset 名逐字一致**(本轮实测核对) |
+| **产物同一性** | 从 Release 下载的 `-setup.exe` sha256 `f5aed2c3…` 与 workflow artifact `dist-desktop-win-x86_64` 内的 **逐字节相同**(Release 上传未二次加工) |
+
+### macOS 首次挂载实跑(R14 遗留项②,本轮闭环 ✅)
+
+v0.1.3 及之前只核对过 dmg 产物与签名,**从未挂载实跑**(上一次是 v0.1.0)。本轮把 dmg 挂上、把 `gah.app` 拷出运行:
+
+| 项 | 实测 |
+|---|---|
+| 版本注入 | `Info.plist` `CFBundleShortVersionString` / `CFBundleVersion` = **0.1.4** |
+| shell 启动日志 | `setup 开始: 版本 0.1.4` ✅ |
+| **暂存文件名** | `运行文件已更新: …/bin/gah-0.1.4-d33b1323` ✅ —— R20 修的「关于 gah 说 0.1.3、文件却叫 `gah-0.1.0-*`」在**发行产物上**得到确认 |
+| 数据外置 | `运行落点: … data_root=…/gah-data external=true` ✅ |
+| 页面自述 | `mounted:true / appChildren:1 / bodyLen:23990 / ipc:"ok: ok" / errs:[]` ＋ 通道矩阵 `update_state/autostart_state/probe_async/pick_folder_poll` 全有回包 ✅(非白屏) |
+| 旧副本清理 | `bin/` 下只剩新版 + `gah-data/`(`prune_stale` 生效 ✅) |
+
+### 附带发现并修掉:macOS 上外置插件可能被 taskgated 杀(非本版引入)
+
+实跑时日志出现 **4 条** `host-bridge: 跳过加载失败的外部插件`。逐步取证:
+
+1. 手工运行那个插件 ⇒ **`Killed: 9`**;崩溃报告写明 `EXC_CRASH / SIGKILL (Code Signature Invalid)`、`namespace: CODESIGNING`、`indicator: Taskgated Invalid Signature`;
+2. 但同一份字节 `cp` 到别的目录 ⇒ **正常运行**;`codesign -vvv` 对它也报 `valid on disk / satisfies its Designated Requirement`;
+3. 把同一份字节分别拷到数据根内、`~/Documents`、`~/Library/Caches`、`/tmp` 五处 ⇒ **全部正常**(排除了路径/隔离属性/权限);
+4. **同 inode 原地重写 ⇒ 仍被杀;写临时文件 + rename(新 inode)⇒ 正常**。
+
+⇒ 结论:**与产物字节无关,是旧 inode 上的“出身”标记让 macOS 拒绝执行**;删掉 `plugins/` 重新释放后 4 条降到 **1 条**(另外 3 个恢复正常),印证该判断。
+
+处置:`EnsurePlugins` 改为**写临时文件 + `os.Rename` 覆盖**(而不是 `os.WriteFile` 截断重写)—— 顺带得到两处好处:覆盖变原子的(插件扫描不会撞上半截产物)、临时名以点开头且不带 `tool-` 前缀(残留也不会被当产物加载)。回归测试用 `os.SameFile` 断言「覆盖换了文件身份」+ 无临时残留(`syscall` 依赖不进测试,Windows 也能编译)。
+
+### 仍未闭环(诚实标注)
+
+1. **A17 装机自动升级**:`v0.1.3` → `v0.1.4` 的端到端升级仍未跑过(自 R14 起挂着)。低成本自查:在新装机上点一次「检查更新…」应回「已是最新版本」——这能同时证明更新端点可达、签名校验通过、版本比较正确。
+2. **`tool-mcp` 在本机 macOS 上仍加载失败**(仅它一个;`tool-basic/subagent/workflow` 已正常)。**属旧有问题**,与本版无关:本次发布前的开发构建日志里**恰好也只有它一条**同一报错。已登记待单独排查(不影响 Windows 侧,用户四轮真机反馈里 MCP 工具链未见异常)。
+3. **VERIFY.md 的 Windows B 表其余行**(shell/沙箱/文档面板/MCP/定时任务/卸载/退出残留/单实例)与 macOS B 表、C/D 表状态不变 —— 本轮只确认了 R15–R22 的交互项。
+
 ## 15. 风险与权衡
 
 | 风险 | 缓解 |
