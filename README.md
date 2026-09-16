@@ -53,7 +53,7 @@ Go 实现的编程代理 Agent Harness:以**单静态二进制**交付全部能�
 | **Web 附件+多模态** | 输入框传图片/文件(按钮+拖放+粘贴),芯片预览/删除;图片经 openai/anthropic 适配器结构化注入(模型看图),文本附件路径引用;落盘 `$GAH_HOME/attachments/` |
 | **文档预览** | 一个块模型 + 四端同源渲染(markdown/文本/代码/CSV/notebook + PDF 页事实):Web 预览工作台(文件树/PDF 原生查看器/HTML 源码视图+沙箱)、TUI `/preview` pager(滚动/搜索/横移)、`gah doc` CLI、会话流 markdown 渲染;路径经沙箱+逃逸校验+密钥 deny-list,零 v-html |
 | **优雅停机** | `POST /api/shutdown` → DisposeAll 全回收(Windows 无 SIGTERM 的统一停机通道;桌面壳/运维复用) |
-| **桌面壳(P1)** | `desktop/` Tauri v2 壳:sidecar gah + 窗口直连本地服务;托盘(关于/检查更新/开机自启)/ 通知 / 单实例 / 系统文件夹选择器;**零成本发行**(updater ed25519 自持签名 + CI 矩阵 + 无签名首次启动指引) |
+| **桌面壳(P1)** | `desktop/` Tauri v2 壳:sidecar gah + 窗口直连本地服务;托盘(关于/检查更新/开机自启)/ 通知 / 单实例 / 系统文件夹选择器;**诊断**:壳日志 `<用户数据目录>/gah-shell.log` 同时收录壳侧事件、sidecar stderr(滤掉 go-plugin 的 `[DEBUG]`)与页面侧错误(前端经 `shell_log` 上报);**零成本发行**(updater ed25519 自持签名 + CI 矩阵 + 无签名首次启动指引) |
 
 ## 三、快速开始
 

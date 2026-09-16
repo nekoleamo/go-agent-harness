@@ -1009,6 +1009,61 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 
 `cargo check --locked` 0 error;`go build ./...` + `ui-web-app` 包测试 15 passed;`gofmt` 干净;新增 tokio(time) 依赖(tauri 运行时本就是 tokio,不引入新版本)。
 
+## R20 交互四项缺陷:选择器无反应 / 切换不刷新 / 初始工作区 / 版本号 (2026-09-17,真机复验待做)
+
+> 用户原文:**「＋ 打开和浏览… 点击无反应;通过输入路径切换,确认之后实际切换了,但是界面没变化,点击刷新后新切换的路径才显示,输入路径的界面未消失,之前输入的路径仍然显示」**,并附启动日志与截图。
+
+### 首先:R19 的白屏第三次回归确认不复现 ✅
+
+用户提供的日志证明本轮包正常:随机端口 `http://127.0.0.1:61170`、sidecar 外置暂存、`托盘已就绪`、`导航已受理`、自检 `mounted:true / appChildren:1 / bodyLen:22740`、`ipc:"ok: ok"`、`errs:[]`,且上一轮的 `notification.is_permission_granted not allowed` 也不再出现。R19 补的失败可见化没有触发 —— 说明那三种失败路径本轮都没走到。
+
+### 缺陷一:「＋ 打开」「浏览…」点击无反应(已修)
+
+症状是**页面侧静默失败**:`pickDirectory` 走的是 `plugin:dialog|open`(JS 插件通道),真机上既不弹选择器、页面上也没有可见报错(错误只落在侧栏底部那行 `.err`,而它在屏幕外)。
+
+处置:改走**壳自有命令** `pick_folder`,三条理由 ——
+
+1. 自有命令通道**在同一台机器上实测是通的**(`shell_probe` → `ipc: ok`),而 JS 插件通道此前已被 ACL 拒过一次;
+2. Rust 侧 `pick_folder` 与**真机已验证能弹出来的**「关于 gah」用的是同一个 dialog 实现;
+3. 顺带把「有没有弹、选了什么」写进壳日志 —— 选择器是否真的弹出,只有它能自证。
+
+`pick_folder` / `shell_log` 已入 `permissions/app-commands.toml` 的 `allow-app-commands`(capability 随之**撤掉**不再需要的 `dialog:allow-open`,保持最小权限)。本机实测:探针调用后壳日志出现 `web: 打开文件夹选择器` ⇒ 命令已穿过 ACL 到达 Rust 并开始弹选择器。
+
+### 缺陷二:切换成功但界面不刷新(已修)
+
+后端 `SwitchDir` 的顺序是 **`os.Chdir` → 记工作区历史 → 新建空会话 → 通知宿主重启外部工具进程并同步沙箱 root**。也就是说「成功」有很多中间态,而前端只认那一个 HTTP 响应:响应慢或失败时界面就停在旧状态(用户只好点 ↻)。本机实测这段在 macOS 上是 42 ms,但**重启外部工具进程在 Windows 上可能慢得多**。
+
+处置:**以机器状态为准** —— 请求结果与「目标目录出现在工作区列表里」赛跑,谁先到谁定论;无论结果如何都在 `finally` 重拉列表并广播 `session-changed`。目录比较用新抽出的 `sameDir`(归一分隔符/大小写/尾分隔符,配单测);失败信息就地显示在输入面板里,不再只出现在屏幕外那一行。
+
+### 缺陷三:初始工作区落在 `C:\WINDOWS\system32`(已修)
+
+壳被自启/快捷方式拉起时 cwd 由进程管理器给定 —— 真机日志里就是 system32,于是 agent 的默认工作区落在系统目录上(既不是用户想要的,让 agent 在那儿写文件也不安全)。处置:`defaultWorkspace()` 在 **cwd 属于系统目录时**改用用户主目录(Windows 判 `%SystemRoot%`,类 Unix 判 `/`、`/System`、`/usr`);手工从某个项目目录拉起时仍沿用那个目录(那是明确的意图)。本机实测日志:`sidecar 初始工作目录: /Users/nekoleamo`。
+
+### 缺陷四:版本号自相矛盾(已修)
+
+「关于 gah」用的是 `package_info().version`(tauri 配置版本,发布时由 tag 注入),而**暂存文件名**用的是 `env!("CARGO_PKG_VERSION")` = Cargo.toml 里永不跟版本的 `0.1.0`(Cargo.toml 与 tauri.conf.json 都停在 0.1.0,靠 `--config` 覆盖 tauri 那份)。于是真机上出现「关于 gah 说 0.1.3、文件却叫 `gah-0.1.0-a7625a51.exe`」。统一到产品版本。
+
+附带发现:CI 浅克隆没有 tag 时 `git describe` 会失败并回落 `0.1.0`,所以**诊断包的版本号只看安装包文件名**(NSIS 用 `--config` 注入的那份)。
+
+### 本轮新增的观测能力(为下一轮定位服务)
+
+| 新增 | 作用 |
+|---|---|
+| `shell_log` 命令 + 前端 `shellLog()` | 页面侧失败首次能落进壳日志(桌面版没有终端,这是唯一取证通道) |
+| `web/server.go` 工作区切换日志 | 开始 / 完成(耗时)/ 失败(耗时 + 原因)——「请求挂住」与「请求立刻报错」在日志里长得完全不同 |
+| sidecar stderr 滤 `[DEBUG]` 后落盘 | 服务端错误可取回,但 go-plugin 的噪音清掉(一次切换几十行,会把 `showShellDiag` 要展示的日志尾部挤满) |
+
+### 本轮验证
+
+本机(macOS)端到端实跑:切换 `HTTP 200` + 日志「web: 切换工作区完成 …… 耗时=42.6ms」;不存在目录 `HTTP 400` + 「web: 切换工作区失败 …… err=chdir … no such file or directory」;前端 `npm test` **57 pass**(`vue-tsc` 0 error;新增 `desktop.shell.test.ts` 3 条、`wsdir.test.ts` 3 条);`cargo check --locked` 0 error;`go build ./...` + `gofmt -l` 干净。
+
+### 待真机确认(下一轮)
+
+1. 「＋ 打开」/「浏览…」是否弹出系统选择器(日志里应有 `web: 打开文件夹选择器` + `web: 文件夹选择器返回 …`);
+2. 输入路径切换后面板是否自动收掉、列表是否自动更新;
+3. 初始工作区是否落在用户主目录;
+4. R18 遗留的观察项:检查更新进行中提示、开机自启勾选、当前模型显示、附件上传不再报空路径。
+
 ## 15. 风险与权衡
 
 | 风险 | 缓解 |
