@@ -38,7 +38,7 @@ const settingsOpen = ref(false)
 const jobsOpen = ref(false)
 const openPanel = ref<string | null>(null)
 // W3 首启引导:无 provider 时自动打开设置并定位到 Provider 段(每个浏览器会话只自动弹一次)
-const focusProvider = ref(false)
+const focusSection = ref<'provider' | 'about' | null>(null)
 const providerCount = ref<number | null>(null)
 // v2 扩展点:附加面板(侧栏入口 → 右侧抽屉;组件经 App 渲染)
 const openPanelComp = computed(() => extraPanel(openPanel.value ?? '')?.component ?? null)
@@ -94,12 +94,17 @@ function onSettingsChanged(): void {
 }
 // openProviderSettings 打开设置并定位到 Provider 段
 function openProviderSettings(): void {
-  focusProvider.value = true
+  focusSection.value = 'provider'
+  settingsOpen.value = true
+}
+// openAboutSettings 底栏版本号 → 「关于 gah」(升级入口;与托盘菜单同一实现)
+function openAboutSettings(): void {
+  focusSection.value = 'about'
   settingsOpen.value = true
 }
 function closeSettings(): void {
   settingsOpen.value = false
-  focusProvider.value = false
+  focusSection.value = null
 }
 // 空状态(当前会话尚无消息且未运行):输入框居中 + 欢迎引导;有会话内容后沉底
 // 注:会话切换重建瞬间会短暂置空(欢迎闪现一次,可接受)
@@ -328,7 +333,7 @@ onUnmounted(() => {
   <div class="app" :class="{ empty }">
     <!-- 槽位:statusbar(含连接状态与设置入口) -->
     <section class="statusbar-slot" data-ui-slot="statusbar">
-      <StatusBar v-if="hasSlot('statusbar')" :state="state" :conn="connState" />
+      <StatusBar v-if="hasSlot('statusbar')" :state="state" :conn="connState" @open-about="openAboutSettings" />
       <button class="gear" data-tip="设置(模型/Provider/插件/历史)" :aria-expanded="settingsOpen" @click="settingsOpen = !settingsOpen">设置</button>
       <button class="gear" data-tip="后台任务(运行中 {{ runningJobs }})" :aria-expanded="jobsOpen" @click="jobsOpen = !jobsOpen">任务<span v-if="runningJobs" class="jobs-badge">{{ runningJobs }}</span></button>
     </section>
@@ -392,7 +397,7 @@ onUnmounted(() => {
     <SettingsPanel
       :open="settingsOpen"
       :state="state"
-      :focus="focusProvider ? 'provider' : undefined"
+      :focus="focusSection ?? undefined"
       :sched-tick="schedTick"
       @close="closeSettings"
       @changed="onSettingsChanged"

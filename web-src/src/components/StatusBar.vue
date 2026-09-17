@@ -1,10 +1,14 @@
 <script setup lang="ts">
-// 状态栏(槽位 statusbar):重点突出运行状态与上下文用量,次要信息(模型/思考/沙箱/会话/版本)降级淡显。
-// 对齐 TUI 状态栏语义;空值显示占位(不假精确:窗口未知仅显示量)。
+// 状态栏(槽位 statusbar):只放**别处没有的只读环境事实** —— 运行状态 / 沙箱生效档 / 连接 /
+// 上下文用量 / 版本。2026-09-17 去重:模型、思考档、审批档各自已有唯一交互位(输入框工具条、
+// 设置面板),底栏再镜像一遍既是重复显示又把一行挤变形;命名会话也不在这里重复(看侧栏高亮),
+// 版本号改成「关于 gah」入口。对齐 TUI 状态栏语义;空值显示占位(不假精确:窗口未知仅显示量)。
 import { computed } from 'vue'
 import type { StateView } from '../types'
 
 const props = defineProps<{ state: StateView; conn?: 'open' | 'reconnecting' }>()
+// 版本号点击 → 「关于 gah」。用插槽替换底栏的一方不发这个事件也不影响(监听是可选的)。
+const emit = defineEmits<{ (e: 'open-about'): void }>()
 
 function k(n: number): string {
   if (n < 1024) return String(n)
@@ -23,10 +27,13 @@ const ctx = computed(() => {
 })
 
 const SANDBOX_ZH: Record<string, string> = { 'read-only': '只读', 'full-access': '完全', 'workspace-write': '工作区' }
+// 审批档位中文名:只服务下面的 sandboxLabel(拼"随审批联动"的出处);审批档本身不在底栏显示
+// —— 它已有唯一交互位(设置面板「审批」分段按钮)。
 const APPROVAL_ZH: Record<string, string> = { open: '开放', smart: '智能', strict: '严格' }
-
 // sandboxLabel 显示**实际生效**档(approval 联动时后端给 sandbox_effective):
 // 只读 state.sandbox(声明档)会在 approval=open 时把"完全"显示成"工作区",与实际拦截行为不符。
+// 保留原因:输入框工具条显示的是**声明档**(生效档只在它的图说里),底栏是唯一常驻显示生效档的位置,
+// 删掉会让「随审批联动」在界面上不可见 —— 去重不能以丢掉安全相关状态为代价。
 const sandboxLabel = computed(() => {
   const eff = props.state.sandbox_effective || props.state.sandbox
   const base = SANDBOX_ZH[eff] ?? '工作区'
@@ -35,8 +42,13 @@ const sandboxLabel = computed(() => {
   return src ? `${base}(随审批${src})` : `${base}(随审批联动)`
 })
 
-// 审批档位(M17 开放/智能/严格);未知不显示(保持状态栏简洁)。
-const approvalLabel = computed(() => APPROVAL_ZH[props.state.approval ?? ''] ?? '')
+// 会话标识只在**未命名**时显示(命名会话侧栏有高亮、输入框也有「会话」按钮,底栏再显一次纯重复,
+// 且长会话名会把底栏一行挤变形);它唯一的真实价值是"这条消息进的是哪条"。
+const anonSession = computed(() => {
+  const s = props.state.session
+  if (!s || s.name) return ''
+  return s.id ? ' #' + s.id : ' (主)'
+})
 </script>
 
 <template>
@@ -45,12 +57,8 @@ const approvalLabel = computed(() => APPROVAL_ZH[props.state.approval ?? ''] ?? 
       <span v-if="state.running" class="dot" />
       {{ state.running ? '运行中' : '就绪' }}
     </span>
-    <span class="it">模型 {{ state.model || '未设置' }}</span>
-    <span class="it faint">[{{ state.thinking }}] 沙箱 {{ sandboxLabel }}</span>
-    <span v-if="approvalLabel" class="it faint">审批 {{ approvalLabel }}</span>
-    <span v-if="state.session" class="it faint">
-      会话{{ state.session.name ? '「' + state.session.name + '」' : state.session.id ? '#' + state.session.id : '(主)' }}
-    </span>
+    <span class="it faint">沙箱 {{ sandboxLabel }}</span>
+    <span v-if="anonSession" class="it faint">未命名会话{{ anonSession }}</span>
     <span class="spacer" />
     <span class="conn" :class="props.conn">
       <span class="conn-dot" />
@@ -58,7 +66,9 @@ const approvalLabel = computed(() => APPROVAL_ZH[props.state.approval ?? ''] ?? 
       <span v-else class="conn-text">已连接</span>
     </span>
     <span class="ctx mono">{{ ctx }}</span>
-    <span class="it faint mono">v{{ state.version || 'dev' }}</span>
+    <button class="ver mono" data-tip="关于 gah(版本 / 检查更新)" @click="emit('open-about')">
+      v{{ state.version || 'dev' }}
+    </button>
   </div>
 </template>
 
@@ -136,5 +146,18 @@ const approvalLabel = computed(() => APPROVAL_ZH[props.state.approval ?? ''] ?? 
 }
 .mono {
   font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+/* 版本号 = 「关于 gah」入口:清掉按钮默认样式,只留底栏的淡显文本外观 */
+.ver {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--fg-faint);
+  font-size: 12px;
+  cursor: pointer;
+}
+.ver:hover {
+  color: var(--fg-dim);
+  text-decoration: underline;
 }
 </style>

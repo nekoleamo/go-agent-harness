@@ -116,6 +116,7 @@ const showAdd = ref(false)
 const pf = ref({ name: '', base_url: '', api_key: '', model: '' })
 const presets = PROVIDER_PRESETS
 const provSec = ref<HTMLElement | null>(null)
+const aboutSec = ref<HTMLElement | null>(null) // 底栏版本号 → 「关于 gah」(focus='about')
 const keyInput = ref<HTMLInputElement | null>(null)
 const applied = ref<ProviderPreset | null>(null) // 最近选中的预设(用于「本地免 Key」提示)
 const lastSaved = ref('') // 刚保存的 provider(失败后「重新自检」用)
@@ -601,6 +602,8 @@ watch(
     void loadMcp()
     // 首启引导:直接滚到 Provider 段(面板内容比一屏长时否则看不到)
     if (props.focus === 'provider') void nextTick(() => provSec.value?.scrollIntoView({ block: 'start' }))
+    // 底栏版本号点进来:滚到「关于 gah」(浏览器形态整段不渲染 ⇒ ref 为 null,静默跳过)
+    if (props.focus === 'about') void nextTick(() => aboutSec.value?.scrollIntoView({ block: 'start' }))
   },
 )
 // 定时跑完一轮(schedule/run SSE 帧)→ 刷新计划状态(上次运行/下次触发已变)
@@ -1008,7 +1011,7 @@ watch(
 
         <!-- 桌面壳专属:升级入口(浏览器直连时整段隐藏)。此前升级只在托盘菜单里,
              菜单弹不出来就等于没有入口,故补到界面上。 -->
-        <section v-if="isDesktop" class="sec">
+        <section v-if="isDesktop" ref="aboutSec" class="sec">
           <h3 class="h">关于 gah</h3>
           <p class="dim" data-testid="about-autostart">
             开机自启:{{ autoState === 'on' ? '已启用' : autoState === 'off' ? '未启用' : '未知' }}
