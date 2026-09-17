@@ -1413,3 +1413,30 @@ tauri 官方 NSIS 模板(删数据的门槛 = 用户勾选 `DeleteAppDataCheckbo
   在**开着 watcher** 的 Bridge 上显式调 `Reload`,而 watcher 300ms 去抖后会对同一路径再「撤销并重载」一次 ——
   实测「Reload 返回时工具表为空、900ms 后才回来」,断言全凭时序(HEAD 上稳定、加日志/加 trace 就翻)。修法:
   该用例改用 `buildEnvWatch(..., watch=false)`,watch 通路由其它用例覆盖 ⇒ 10/10 稳定。
+
+## R26 桌面端底栏去重(Web UI 信息架构微调) ✅ (2026-09-17)
+
+底栏原本一行 8 项(运行态 / 模型 / 思考+沙箱 / 审批 / 会话 / 连接 / 上下文 / 版本),其中 4 项在别处已有唯一
+交互位或显示位 ⇒ 既是重复显示,又把一行挤变形(`.bar` 无 `flex-wrap`,长会话名会压缩 ctx 与版本)。
+按「同一信息只在一个地方显示」收敛:
+
+| 底栏项 | 处理 | 去处(唯一交互/显示位) |
+|---|---|---|
+| 模型 | 删 | 设置面板「当前生效: …」(配置位;底栏镜像无操作价值) |
+| 思考档 | 删 | 输入框工具条「思考 值」(可点循环) |
+| 审批档 | 删 | 设置面板「审批」分段按钮 |
+| 会话(命名) | 降级 | 侧栏列表高亮 + 输入框「会话」按钮;底栏只在**未命名**会话时显示 `#id`/`(主)` |
+| 沙箱 | **保留** | 底栏是唯一**常驻显示实际生效档**的位置(输入框显示的是声明档,生效档只在它的图说里)——
+删掉会让「随审批联动」在界面上不可见。去重不能以丢安全相关状态为代价。|
+| 版本号 | 改为入口 | 点击 → 设置面板「关于 gah」:`SettingsPanel` 加 `aboutSec` + `focus='about'` 分支,
+`App` 的 `focusProvider: boolean` 泛化为 `focusSection: 'provider'\|'about'\|null` |
+
+**真实渲染实测**(headless Chrome + CDP 抓 `.bar`,`gah --profile web`):
+`就绪 | 沙箱 工作区 | 未命名会话 #2026… | 已连接 | – | vdev`;
+「模型 / 思考 / 审批 / 会话「…」」字样全部消失;版本号为 `BUTTON`(tip「关于 gah(版本 / 检查更新)」)且点击后面板打开;
+子元素 9 → 7(命名会话时 6)。
+
+涉及:`components/StatusBar.vue`(去重 + 新入口 + 清掉随之无用的 `approvalLabel`,保留 `APPROVAL_ZH` 供
+`sandboxLabel` 拼「随审批联动」)、`components/SettingsPanel.vue`、`App.vue`、README 双语状态栏描述同步。
+验证:`vue-tsc --noEmit` 通过、前端 `node --test` **61 passed**、`npm run build` 成功。
+约定未动:数据源仍是壳侧单一真源(R22);底栏插槽契约只**新增可选事件** `open-about`(替换方不监听也不受影响)。
