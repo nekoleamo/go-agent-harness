@@ -6,6 +6,7 @@
 package hostbridge
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -187,7 +188,7 @@ func (b *Bridge) loadEntries() error {
 
 // loadOne 启动外部插件进程并组装条目(定义枚举 + 协议探测)。
 func (b *Bridge) loadOne(path string) (*extEntry, error) {
-	cl, killFn, err := startPlugin(path, b.cbAddr, b.cbToken)
+	cl, killFn, se, err := startPlugin(path, b.cbAddr, b.cbToken)
 	if err != nil {
 		return nil, err
 	}
@@ -235,7 +236,9 @@ func (b *Bridge) loadOne(path string) (*extEntry, error) {
 	}
 	if !protoOK && !cmdOK {
 		killFn()
-		return nil, fmt.Errorf("host-bridge: 插件未按桥协议暴露工具或命令 %s", path)
+		// 带上插件自己的 stderr:插件在握手前就退出时,go-plugin 只会说
+		// "Failed to read any lines from plugin's stdout",真正的原因在它 stderr 里。
+		return nil, decorateStderr(fmt.Errorf("host-bridge: 插件未按桥协议暴露工具或命令 %s", path), se)
 	}
 	return e, nil
 }
@@ -503,7 +506,7 @@ func externalEnvPass() []string {
 	return out
 }
 
-func startPlugin(bin string, cbAddr, cbToken string) (*rpc.Client, func(), error) {
+func startPlugin(bin string, cbAddr, cbToken string) (*rpc.Client, func(), *pluginStderr, error) {
 	cmd := exec.Command(bin)
 	// 凭据隔离:外部插件进程不继承宿主凭据(滤除 *_API_KEY/*_TOKEN/AWS_* 等;GAH_* 宿主配置与
 	// PATH/HOME 等基础键保留),回调通道凭据 GAH_CB_* 仅注入给插件本体,由 sdk.SanitizedEnv 拦在下游。
@@ -512,12 +515,17 @@ func startPlugin(bin string, cbAddr, cbToken string) (*rpc.Client, func(), error
 	cmd.Env = append(cmd.Env, "GAH_CB_ADDR="+cbAddr, "GAH_CB_TOKEN="+cbToken)
 	cmd.Env = append(cmd.Env, externalEnvPass()...)
 	cmd.SysProcAttr = pluginProcAttr() // 独立进程组:退出时可连插件派生的子进程一并回收
+	// 插件子进程的 stderr 默认被 go-plugin 丢进 io.Discard(实测 client.go:402),
+	// 于是插件自己说的原因(缺配置/端口占用/权限)全部丢失。这里接到环形缓冲上:
+	// 成功时不影响任何输出,失败时拼进错误上报。
+	se := &pluginStderr{}
 	client := plugin.NewClient(&plugin.ClientConfig{
 		HandshakeConfig: handshake,
 		Plugins: map[string]plugin.Plugin{
 			pluginName: &toolPluginBridge{},
 		},
-		Cmd: cmd,
+		Cmd:    cmd,
+		Stderr: se,
 		// SkipHostEnv 必须为 true:go-plugin 默认会 `cmd.Env = append(cmd.Env, os.Environ()...)`,
 		// 即把我们过滤后的 SanitizedEnv **后面**再接一份完整宿主环境(同名后者胜)→ 凭据隔离被
 		// 静默绕过(实测子进程能看到 EXA_API_KEY/*_TOKEN)。置 true 后仅用上面的 cmd.Env;
@@ -527,23 +535,98 @@ func startPlugin(bin string, cbAddr, cbToken string) (*rpc.Client, func(), error
 	proto, err := client.Client()
 	if err != nil {
 		client.Kill()
-		return nil, nil, err
+		return nil, nil, se, decorateStderr(fmt.Errorf("host-bridge: 启动外部插件失败 %s", bin), se)
 	}
 	raw, err := proto.Dispense(pluginName)
 	if err != nil {
 		client.Kill()
-		return nil, nil, err
+		return nil, nil, se, decorateStderr(fmt.Errorf("host-bridge: 插件握手失败 %s", bin), se)
 	}
 	tc, ok := raw.(*rpcClientOnly)
 	if !ok {
 		client.Kill()
-		return nil, nil, fmt.Errorf("host-bridge: 意外的插件类型 %T", raw)
+		return nil, nil, se, fmt.Errorf("host-bridge: 意外的插件类型 %T", raw)
 	}
 	return tc.client, func() {
 		proto.Close()
 		client.Kill()
 		killPluginGroup(cmd) // 组杀残余后代(MCP server 等):仅杀插件本体不够
-	}, nil
+	}, se, nil
+}
+
+// pluginStderrLines / pluginStderrBytes 保留插件 stderr 的尾部上限(行数 + 字符数)。
+const (
+	pluginStderrLines = 8
+	pluginStderrBytes = 600
+)
+
+// pluginStderr 捕获外部插件子进程 stderr 的尾部(go-plugin 默认丢弃它)。
+// 插件在 go-plugin 握手之前退出时,宿主只能看到「Failed to read any lines from
+// plugin's stdout」这类谜语 —— 而原因(缺配置/端口占用/权限)正是它写在 stderr 的第一行。
+// 并发写自查(go-plugin 单 goroutine 转写,仍然加锁以防未来变动)。
+// 桌面版没有终端,这是插件类故障唯一的现场。
+type pluginStderr struct {
+	mu    sync.Mutex
+	lines []string
+	part  []byte // 未收行的残留(xattr:插件可能不换行就退出)
+}
+
+func (p *pluginStderr) Write(b []byte) (int, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.part = append(p.part, b...)
+	for {
+		i := bytes.IndexByte(p.part, '\n')
+		if i < 0 {
+			break
+		}
+		p.push(string(p.part[:i]))
+		p.part = p.part[i+1:]
+	}
+	if len(p.part) > pluginStderrBytes { // 超长不换行的输出不能无限涨
+		p.push(string(p.part))
+		p.part = nil
+	}
+	return len(b), nil
+}
+
+// push 只保留最近 pluginStderrLines 行(调用方持锁)。
+func (p *pluginStderr) push(line string) {
+	line = strings.TrimRight(line, "\r")
+	if strings.TrimSpace(line) == "" {
+		return
+	}
+	p.lines = append(p.lines, line)
+	if len(p.lines) > pluginStderrLines {
+		p.lines = p.lines[len(p.lines)-pluginStderrLines:]
+	}
+}
+
+// tail 返回可拼进错误的尾部文本(含尚未换行的残留),超长则截断。
+func (p *pluginStderr) tail() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	lines := p.lines
+	if s := strings.TrimSpace(string(p.part)); s != "" {
+		lines = append(append([]string{}, lines...), s)
+	}
+	out := strings.Join(lines, " | ")
+	if len(out) > pluginStderrBytes {
+		out = "…" + out[len(out)-pluginStderrBytes:]
+	}
+	return out
+}
+
+// decorateStderr 把插件自身 stderr 的尾部拼进宿主错误;没有输出则原样返回。
+func decorateStderr(err error, se *pluginStderr) error {
+	if se == nil {
+		return err
+	}
+	t := se.tail()
+	if t == "" {
+		return err
+	}
+	return fmt.Errorf("%w;插件自身输出: %s", err, t)
 }
 
 // defDTO 外部工具定义载荷(两侧共用:serve.go 序列化、bridge.go 反序列化——

@@ -225,6 +225,60 @@ func TestWatchMissingDirNoFail(t *testing.T) {
 	}
 }
 
+// TestPluginStderrCapture 环形缓冲:只留尾部若干行(含未换行的残留),超长截断。
+func TestPluginStderrCapture(t *testing.T) {
+	p := &pluginStderr{}
+	for i := 1; i <= pluginStderrLines+5; i++ {
+		fmt.Fprintf(p, "第 %d 行\n", i)
+	}
+	tail := p.tail()
+	if strings.Contains(tail, "第 1 行") {
+		t.Fatalf("应只保留尾部 %d 行: %s", pluginStderrLines, tail)
+	}
+	if !strings.Contains(tail, fmt.Sprintf("第 %d 行", pluginStderrLines+5)) {
+		t.Fatalf("尾部最新行必须在: %s", tail)
+	}
+	// 未换行的残留也要收(插件可能不换行就退出)
+	p2 := &pluginStderr{}
+	fmt.Fprint(p2, "没有换行的最后一句")
+	if got := p2.tail(); !strings.Contains(got, "没有换行的最后一句") {
+		t.Fatalf("未换行残留应收进尾部: %q", got)
+	}
+	// 只有空白 ⇒ 视为无输出(避免给错误拼上无意义的空白)
+	p3 := &pluginStderr{}
+	fmt.Fprint(p3, "  \n \r\n")
+	if got := p3.tail(); got != "" {
+		t.Fatalf("纯空白不应上报: %q", got)
+	}
+	// 超长不换行的输出不得无限涨
+	p4 := &pluginStderr{}
+	fmt.Fprint(p4, strings.Repeat("x", pluginStderrBytes*3))
+	if got := p4.tail(); len(got) > pluginStderrBytes+4 {
+		t.Fatalf("超长输出应截断,现长 %d", len(got))
+	}
+}
+
+// TestPluginStderrSurfacesInLoadError 真实故障场景(对齐真机 tool-mcp):插件在 go-plugin
+// 握手之前就退出时,宿主此前只能报 "Failed to read any lines from plugin's stdout" 这种谜语;
+// 现在必须把插件自己写的 stderr 一并报出 —— 桌面版没有终端,这是唯一的现场。
+func TestPluginStderrSurfacesInLoadError(t *testing.T) {
+	if testutil.IsWindows() {
+		t.Skip("用 shell 脚本构造「握手前退出」:Windows 无 sh(捕获逻辑本身与平台无关)")
+	}
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "tool-exit-before-handshake")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\necho 'tool-mcp: 未配置任何 MCP server(设置面板「MCP」分区)' >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, err := startPlugin(bin, "127.0.0.1:1", "tok")
+	if err == nil {
+		t.Fatal("握手前退出的插件应报错")
+	}
+	if !strings.Contains(err.Error(), "未配置任何 MCP server") {
+		t.Fatalf("错误必须带上插件自身 stderr(否则用户只能看到 go-plugin 谜语): %v", err)
+	}
+}
+
 // TestBadPluginDoesNotBreakBoot P3 首启健壮性:目录含无法启动的坏插件(缺配置/
 // 崩溃/不可执行)时,boot 不得整体失败——坏插件记 ERROR 跳过,好插件正常加载。
 func TestBadPluginDoesNotBreakBoot(t *testing.T) {
