@@ -37,9 +37,12 @@ func main() {
 		os.Exit(1)
 	}
 	if len(specs) == 0 {
-		fmt.Fprintln(os.Stderr, "tool-mcp: 未配置任何 MCP server(设置面板「MCP」分区或",
-			mcpconfig.Path(), "或 GAH_MCP_COMMANDS)")
-		os.Exit(1)
+		// 自述空闲:没有配置任何 server = 没用上这个功能,不是故障。声明标记后以 0 退出,
+		// 宿主记 INFO 跳过 —— 否则用户每次启动都会看到一条「外部插件加载失败」的 ERROR。
+		// (配了 server 但全部连不上仍走下面的 exit 1:那才是真失败,不静默降级。)
+		fmt.Fprintln(os.Stderr, bridge.IdleMarker+"未配置任何 MCP server(设置面板「MCP server」段或 "+
+			mcpconfig.Path()+" 或 GAH_MCP_COMMANDS)")
+		os.Exit(0)
 	}
 	tools, notes, err := mcpbridge.Assemble(specs)
 	for _, n := range notes {

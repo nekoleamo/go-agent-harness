@@ -148,6 +148,16 @@ func (b *Bridge) logErr(msg string, kv ...any) {
 	lg.Error(msg, kv...)
 }
 
+// logInfo 记录非故障事件(插件自述空闲等)。与 logErr 分开:未使用某功能不是错误,
+// 不该在用户看到的启动日志里呈现为失败。
+func (b *Bridge) logInfo(msg string, kv ...any) {
+	lg := b.lg
+	if lg == nil {
+		lg = slog.Default()
+	}
+	lg.Info(msg, kv...)
+}
+
 // loadEntries 扫描目录并加载 tool-* 二进制。P3 软降级:
 // - 目录不存在 = 空插件集(未安装/已卸载),WARN 跳过,boot 继续;
 // - 目录存在但不可读 = 装配层错误,显式失败;
@@ -174,6 +184,12 @@ func (b *Bridge) loadEntries() error {
 		}
 		e, lerr := b.loadOne(path)
 		if lerr != nil {
+			if errors.Is(lerr, errPluginIdle) {
+				// 插件自述空闲(如 tool-mcp 未配置任何 server):记 INFO 跳过。
+				// 「没用到某功能」不是故障,启动日志不该为它报 ERROR。
+				b.logInfo("host-bridge: 外部插件未参与(自述空闲)", "path", path, "reason", lerr)
+				return nil
+			}
 			b.logErr("host-bridge: 跳过加载失败的外部插件", "path", path, "err", lerr)
 			return nil
 		}
@@ -238,7 +254,7 @@ func (b *Bridge) loadOne(path string) (*extEntry, error) {
 		killFn()
 		// 带上插件自己的 stderr:插件在握手前就退出时,go-plugin 只会说
 		// "Failed to read any lines from plugin's stdout",真正的原因在它 stderr 里。
-		return nil, decorateStderr(fmt.Errorf("host-bridge: 插件未按桥协议暴露工具或命令 %s", path), se)
+		return nil, idleOr(decorateStderr(fmt.Errorf("host-bridge: 插件未按桥协议暴露工具或命令 %s", path), se), se)
 	}
 	return e, nil
 }
@@ -284,16 +300,21 @@ func (b *Bridge) Reload(name string) error {
 	_, loaded := b.entries[path]
 	b.mu.RUnlock()
 	if !loaded {
-		// 未加载:目录里没有(pluginPath 已报错)或上次加载失败(配置为空/崩溃);
+		// 未加载:目录里没有(pluginPath 已报错)或上次加载失败/自述空闲;
 		// reload 对"不在 entries 里的路径"走 loadOne 补加载分支。
-		b.logErr("host-bridge: 外部插件尚未加载,按补加载处理", "name", name, "path", path)
+		// 记 INFO 而非 ERROR:用户刚加第一个 MCP server 走的就是这条路,不是故障。
+		b.logInfo("host-bridge: 外部插件尚未加载,按补加载处理", "name", name, "path", path)
 	}
-	b.reload(path)
+	rerr := b.reload(path)
+	if errors.Is(rerr, errPluginIdle) {
+		// 自述空闲(未配置任何 server)不是重启失败:配置已保存,只是没有要加载的东西。
+		return nil
+	}
 	b.mu.RLock()
 	_, ok := b.entries[path]
 	b.mu.RUnlock()
 	if !ok {
-		return fmt.Errorf("host-bridge: 重启 %s 失败(详见日志;多为配置为空或进程启动失败)", name)
+		return fmt.Errorf("host-bridge: 重启 %s 失败(详见日志;多为进程启动失败或握手拒绝)", name)
 	}
 	return nil
 }
@@ -364,7 +385,7 @@ func (b *Bridge) reloadAll() {
 	}
 }
 
-func (b *Bridge) reload(path string) {
+func (b *Bridge) reload(path string) error {
 	b.reloadMu.Lock()
 	defer b.reloadMu.Unlock()
 	b.mu.Lock()
@@ -373,17 +394,23 @@ func (b *Bridge) reload(path string) {
 	if !ok {
 		if isExternalPluginBin(filepath.Base(path)) {
 			e, err := b.loadOne(path)
-			if err == nil {
+			switch {
+			case err == nil:
 				unreg := b.registerAll(e)
 				b.mu.Lock()
 				e.unreg = unreg
 				b.entries[path] = e
 				b.mu.Unlock()
-			} else {
+			case errors.Is(err, errPluginIdle):
+				// 自述空闲(如 tool-mcp 未配置 server):没用到这个功能,不是故障。
+				b.logInfo("host-bridge: 外部插件未参与(自述空闲)", "path", path, "reason", err)
+				return errPluginIdle
+			default:
 				b.logErr("host-bridge: 热重载加载新插件失败", "path", path, "err", err)
+				return err
 			}
 		}
-		return
+		return nil
 	}
 	b.mu.Lock()
 	entry.unreg()
@@ -394,14 +421,20 @@ func (b *Bridge) reload(path string) {
 		b.mu.Lock()
 		delete(b.entries, path)
 		b.mu.Unlock()
+		if errors.Is(err, errPluginIdle) {
+			// 配置被清空等 ⇒ 插件自述空闲:旧条目已正常撤销,只是不再参与(不是失败)。
+			b.logInfo("host-bridge: 外部插件未参与(自述空闲)", "path", path, "reason", err)
+			return errPluginIdle
+		}
 		b.logErr("host-bridge: 热重载更新失败,条目已撤销", "path", path, "err", err)
-		return
+		return err
 	}
 	unreg := b.registerAll(e)
 	b.mu.Lock()
 	e.unreg = unreg
 	b.entries[path] = e
 	b.mu.Unlock()
+	return nil
 }
 
 // closeAll 关闭全部插件条目:先摘条目(短锁),再锁外 unreg/kill——
@@ -535,12 +568,12 @@ func startPlugin(bin string, cbAddr, cbToken string) (*rpc.Client, func(), *plug
 	proto, err := client.Client()
 	if err != nil {
 		client.Kill()
-		return nil, nil, se, decorateStderr(fmt.Errorf("host-bridge: 启动外部插件失败 %s", bin), se)
+		return nil, nil, se, idleOr(decorateStderr(fmt.Errorf("host-bridge: 启动外部插件失败 %s", bin), se), se)
 	}
 	raw, err := proto.Dispense(pluginName)
 	if err != nil {
 		client.Kill()
-		return nil, nil, se, decorateStderr(fmt.Errorf("host-bridge: 插件握手失败 %s", bin), se)
+		return nil, nil, se, idleOr(decorateStderr(fmt.Errorf("host-bridge: 插件握手失败 %s", bin), se), se)
 	}
 	tc, ok := raw.(*rpcClientOnly)
 	if !ok {
@@ -615,6 +648,27 @@ func (p *pluginStderr) tail() string {
 		out = "…" + out[len(out)-pluginStderrBytes:]
 	}
 	return out
+}
+
+// errPluginIdle 插件自述「本轮不参与」(未配置后端等)。不是故障:boot 不该为它记 ERROR。
+var errPluginIdle = errors.New("外部插件未参与本次加载(自述空闲)")
+
+// idleOr 插件 stderr 里出现 IdleMarker ⇒ 归类为 errPluginIdle(拿掉 go-plugin 那层谜语),
+// 否则原样返回。调用方用 errors.Is 分流:空闲记 INFO,失败记 ERROR。
+func idleOr(err error, se *pluginStderr) error {
+	if se == nil {
+		return err
+	}
+	t := se.tail()
+	i := strings.Index(t, IdleMarker)
+	if i < 0 {
+		return err
+	}
+	reason := strings.TrimSpace(t[i+len(IdleMarker):])
+	if j := strings.Index(reason, " | "); j >= 0 { // tail 用 " | " 连接多行:只取标记那一行
+		reason = reason[:j]
+	}
+	return fmt.Errorf("%w: %s", errPluginIdle, reason)
 }
 
 // decorateStderr 把插件自身 stderr 的尾部拼进宿主错误;没有输出则原样返回。

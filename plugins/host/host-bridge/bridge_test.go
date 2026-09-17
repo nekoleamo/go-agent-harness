@@ -2,8 +2,10 @@
 package hostbridge
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -35,7 +37,21 @@ func buildExternalPlugin(t *testing.T, dir string) {
 // buildEnv:host-tools + host-bridge(dir)。
 func buildEnv(t *testing.T, dir string) (sdk.Ctx, *plugin.Registry) {
 	t.Helper()
-	logger := slog.New(slog.DiscardHandler)
+	return buildEnvWith(t, dir, slog.New(slog.DiscardHandler))
+}
+
+// buildEnvWith 同 buildEnv,但可注入日志器(要断言「启动日志里没有 ERROR」时用)。
+func buildEnvWith(t *testing.T, dir string, logger *slog.Logger) (sdk.Ctx, *plugin.Registry) {
+	t.Helper()
+	return buildEnvWatch(t, dir, logger, true)
+}
+
+// buildEnvWatch 再开一个旋钮:是否监听插件目录(watch)。
+// 关掉 watcher 的场景:测试自己要显式调 Reload —— 否则 300ms 去抖的 watcher 会
+// 在 Reload 返回之后紧跟着「撤销并重载」同一个路径,把刚注册的工具短暂撤下来
+// (观测到:Reload 返回时工具表还是空的,900ms 后才又有 —— 测试断言全凭时序)。
+func buildEnvWatch(t *testing.T, dir string, logger *slog.Logger, watch bool) (sdk.Ctx, *plugin.Registry) {
+	t.Helper()
 	bus := event.New(logger)
 	c := ctx.New(logger, bus)
 	reg := plugin.New()
@@ -46,7 +62,7 @@ func buildEnv(t *testing.T, dir string) (sdk.Ctx, *plugin.Registry) {
 		data map[string]any
 	}{
 		{"host-tools", func() sdk.Plugin { return &hosttools.Plugin{} }, &sdk.Manifest{ID: "host-tools", APIVersion: ">=1.0,<2.0", Provides: []string{"ctx.tools"}}, nil},
-		{"host-bridge", func() sdk.Plugin { return &Plugin{} }, &sdk.Manifest{ID: "host-bridge", APIVersion: ">=1.0,<2.0", Requires: []string{"ctx.tools"}}, map[string]any{"dir": dir, "watch": true}},
+		{"host-bridge", func() sdk.Plugin { return &Plugin{} }, &sdk.Manifest{ID: "host-bridge", APIVersion: ">=1.0,<2.0", Requires: []string{"ctx.tools"}}, map[string]any{"dir": dir, "watch": watch}},
 	}
 	for _, d := range defs {
 		mm := *d.m
@@ -279,6 +295,58 @@ func TestPluginStderrSurfacesInLoadError(t *testing.T) {
 	}
 }
 
+// TestPluginIdleMarkerIsNotAnError 插件自述空闲(工具类插件未配置后端)= 「没用到这个功能」,
+// 不是故障:宿主必须记 INFO 跳过,启动日志里不能出现 ERROR(真机:每次启都会看到一条
+// 「跳过加载失败的外部插件 tool-mcp」,用户合理理解成「装坏了」)。
+func TestPluginIdleMarkerIsNotAnError(t *testing.T) {
+	if testutil.IsWindows() {
+		t.Skip("用 shell 脚本构造「自述空闲后退出」:Windows 无 sh(归类逻辑本身与平台无关)")
+	}
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "tool-idle")
+	script := "#!/bin/sh\necho 'GAH_PLUGIN_IDLE: 未配置任何 MCP server(设置面板「MCP server」段)' >&2\nexit 0\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// 归类:必须能被 errors.Is 认出来,且自述原因保留(供日志给出「去哪配」)
+	_, _, _, err := startPlugin(bin, "127.0.0.1:1", "tok")
+	if err == nil || !errors.Is(err, errPluginIdle) {
+		t.Fatalf("自述空闲应归类为 errPluginIdle,得 %v", err)
+	}
+	if !strings.Contains(err.Error(), "未配置任何 MCP server") {
+		t.Fatalf("应保留插件自述的原因: %v", err)
+	}
+	// 整条启动路径:同一个目录里放空闲插件 + 正常插件,boot 不失败且日志无 ERROR
+	buildExternalPlugin(t, dir)
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	c, _ := buildEnvWith(t, dir, logger)
+	var tools sdk.ToolRegistry
+	if err := c.Inject("ctx.tools", &tools); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := tools.Get("echo"); !ok {
+		t.Fatal("空闲插件存在时,正常插件 echo 仍应注册")
+	}
+	logged := buf.String()
+	if strings.Contains(logged, "level=ERROR") {
+		t.Fatalf("自述空闲不得上报 ERROR,日志:\n%s", logged)
+	}
+	if !strings.Contains(logged, "自述空闲") || !strings.Contains(logged, "未配置任何 MCP server") {
+		t.Fatalf("应记 INFO 并带上自述原因,日志:\n%s", logged)
+	}
+	// 重载路径同理:用户把 MCP 配置清空并点「保存并重载」⇒ tool-mcp 自述空闲。
+	// 这不是「重启失败」(旧代码在这里返回错误 + ERROR,面板会报「重载失败」)。
+	var extp2 sdk.ExternalPlugins
+	c2, _ := buildEnvWatch(t, dir, slog.New(slog.DiscardHandler), false)
+	if err := c2.Inject("ctx.extplugins", &extp2); err != nil {
+		t.Fatal(err)
+	}
+	if err := extp2.Reload("tool-idle"); err != nil {
+		t.Fatalf("自述空闲的重载不应报错(配置已保存,只是没有要加载的东西): %v", err)
+	}
+}
+
 // TestBadPluginDoesNotBreakBoot P3 首启健壮性:目录含无法启动的坏插件(缺配置/
 // 崩溃/不可执行)时,boot 不得整体失败——坏插件记 ERROR 跳过,好插件正常加载。
 func TestBadPluginDoesNotBreakBoot(t *testing.T) {
@@ -472,7 +540,9 @@ func TestExternalPluginReloadLoadsNewBinary(t *testing.T) {
 	// "TerminateProcess: Access is denied." 是它对已经自行退出的进程再补一刀的无害噪声,
 	// 不代表进程没死)。本 cleanup 注册在 TempDir 之后 → LIFO 先执行 → 等到 exe 可删。
 	t.Cleanup(func() { waitUnlocked(t, filepath.Join(dir, testutil.ExeName("tool-echo"))) })
-	c, _ := buildEnv(t, dir) // 目录为空:boot 期零外部插件
+	c, _ := buildEnvWatch(t, dir, slog.New(slog.DiscardHandler), false) // 目录为空:boot 期零外部插件
+	// 不启用 watcher:本用例要验的是「显式 Reload 能补加载」,watcher 同时抢同一个
+	// 路径会让断言变成看时序(它会在 Reload 之后又撤销+重载一次)。watch 通路另有用例覆盖。
 	var tools sdk.ToolRegistry
 	if err := c.Inject("ctx.tools", &tools); err != nil {
 		t.Fatal(err)

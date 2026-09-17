@@ -21,14 +21,19 @@ import (
 var errReloadBoom = errors.New("重启外部进程超时")
 
 // stubExtPlugins 外部插件控制面替身(记录重载请求)。
+// afterReload 用于模拟「重载后工具面变了」—— 保存响应必须反映重载后的状态。
 type stubExtPlugins struct {
 	sdk.ExternalPlugins
-	reloads []string
-	err     error
+	reloads     []string
+	err         error
+	afterReload func()
 }
 
 func (s *stubExtPlugins) Reload(name string) error {
 	s.reloads = append(s.reloads, name)
+	if s.err == nil && s.afterReload != nil {
+		s.afterReload()
+	}
 	return s.err
 }
 
@@ -218,6 +223,27 @@ func TestMCPSaveAndReload(t *testing.T) {
 		t.Fatalf("reload:false 不应重载: %d %v", code, extp.reloads)
 	}
 	_ = v2
+
+	// 回归(真机现象):保存响应必须反映**重载后**的工具面。此前视图在重载前组装,
+	// 面板点「保存并重载」会看到「0 个工具/未生效」 ⇒ 用户当成保存失败(而日志里
+	// 插件其实已连上并报了「已连接:N 个工具」)。
+	extp.reloads = nil
+	extp.afterReload = func() {
+		s.tools = &stubTools{defs: map[string]sdk.ToolDefinition{"mcp_solo_y": {Name: "mcp_solo_y"}}}
+	}
+	code, v3 := postMCP(t, hs.URL+"/api/mcp", `{"servers":[{"name":"solo","command":"/bin/solo"}]}`)
+	if code != http.StatusOK {
+		t.Fatalf("保存应 200,得 %d", code)
+	}
+	solo := mcpServerView{}
+	for _, sv := range v3.Servers {
+		if sv.Name == "solo" {
+			solo = sv
+		}
+	}
+	if !solo.Loaded || solo.Tools != 1 {
+		t.Fatalf("保存响应应给出重载后的状态(loaded/1 个工具),得 %+v", solo)
+	}
 }
 
 // TestMCPSaveValidation 参数校验与部分失败报告。

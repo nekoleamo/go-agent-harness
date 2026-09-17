@@ -57,17 +57,23 @@ func (s *Server) handleMCPSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reload := req.Reload == nil || *req.Reload
+	reloadErr := ""
+	if reload {
+		if s.extp == nil {
+			reloadErr = "未装配外部插件控制面(ctx.extplugins):配置已保存,重启 gah 后生效"
+		} else if rerr := s.extp.Reload(mcpPluginName); rerr != nil {
+			reloadErr = "配置已保存,但重载 " + mcpPluginName + " 失败: " + rerr.Error()
+		}
+	}
+	// 视图必须在重载**之后**组装:重载前取到的是旧工具面,面板会显示「已保存但 0 个工具/未生效」,
+	// 用户会当成保存失败(实机实测:保存后插件其实已连上,日志里有「已连接:1 个工具」)。
 	view, err := s.mcpView()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if reload {
-		if s.extp == nil {
-			view["reload_err"] = "未装配外部插件控制面(ctx.extplugins):配置已保存,重启 gah 后生效"
-		} else if rerr := s.extp.Reload(mcpPluginName); rerr != nil {
-			view["reload_err"] = "配置已保存,但重载 " + mcpPluginName + " 失败: " + rerr.Error()
-		}
+	if reloadErr != "" {
+		view["reload_err"] = reloadErr
 	}
 	writeJSON(w, http.StatusOK, view)
 }
