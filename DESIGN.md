@@ -1345,3 +1345,71 @@ Go 全量 **1498 passed**(67 包,0 失败,6 跳过;新增 `TestPluginStderrCaptu
 >
 > 待确认后从 M1 微内核开始实施。
 >
+
+## R25 设置面板 MCP 配置可用性 与 数据持久性三方取证 ✅ (2026-09-17)
+
+### 一、设置面板「MCP server」:面板早已存在,坏的是两处链路
+
+真机反馈「设置面板加一个 MCP 配置,确保没有报错」。查证:面板**早在 v0.1.4 就有**
+(`web-src/src/components/SettingsPanel.vue` 的 MCP server 段:＋添加/删除/启用/模式选择/状态标签/
+「保存并重载」,后端 `GET|POST /api/mcp`,配置落 `gah-data/config/mcp.yaml`,2026-09-12 的 `f7aa419`
+引入)。所以问题不是「没这个功能」,而是**它给出的反馈让人读成失败**。两处链路缺陷:
+
+| # | 症状(用户看到) | 根因 | 修法 |
+|---|---|---|---|
+| 1 | 点「保存并重载」后行状态显示**未生效 / 0 个工具**,像是没保存 | `handleMCPSave` 在**重载之前**就组装了视图(`mcpView()` 取的是旧工具面),而面板是**直接采用 POST 响应**渲染的(`mcpView.value = v`),所以显示的一直是重载前的快照 | 视图改到**重载之后**组装,再把 `reload_err` 贴上去(`web/mcp.go`) |
+| 2 | 每次启动都有一条 `level=ERROR host-bridge: 跳过加载失败的外部插件 …tool-mcp…` | 没配置任何 MCP server 时 `tool-mcp` 在握手前就 `exit 1`(不静默降级的原意),宿主只能当它是加载失败 | 引入**自述空闲**协议(见下),未配置 ⇒ 记 INFO、不算失败 |
+
+**自述空闲协议**(插件与宿主共用单一真源 `hostbridge.IdleMarker = "GAH_PLUGIN_IDLE:"`):
+插件本轮主动不参与(如工具类插件还没配置后端)时,把标记 + 原因写 stderr 并 `exit 0`;
+宿主在**三条失败路径**(启动失败/握手失败/没暴露工具或命令)与**两条重载路径**(补加载/已加载重载)上
+先过 `idleOr()`,命中即归类 `errPluginIdle` ⇒ 记 `INFO 外部插件未参与(自述空闲)` 并**跳过**,
+不再往启动日志里丢 ERROR。`tool-mcp` 未配置时即走这条路。
+
+**语义边界(重要)**:这不等于「插件失败被吞掉」。判定只认插件**自己的自述标记**;
+配了 server 但全部连不上、崩溃、握手拒绝——**仍然是非 0 退出 + ERROR**,不静默降级。
+`ServeTools` 的空集守卫没动。
+
+**实测(全新数据根,真实 `tool-mcp` 二进制)**:
+
+```
+① 未配置启动            level=ERROR 条数 = 0;INFO「外部插件未参与(自述空闲)」+ 原因(去哪配)
+② POST 一个 server      → 200 reload_err=(无)  servers[0]={loaded:true, tools:1}   ← 面板立刻显示已生效
+③ POST 清空(全删)       → 200 reload_err=(无)  servers=[]                          ← 之前这里报「重载失败」
+④ 面板轮询 GET          plugin_loaded:false servers=[]  (与③一致)
+⑤ 全程 ERROR 条数 = 0,空闲 INFO = 2
+```
+
+**回归测试**:`TestMCPSaveAndReload` 增加「重载后工具面变了」的断言(反证过:把视图改回重载前取,
+该用例即以 `Loaded:false Tools:0` 失败);`TestPluginIdleMarkerIsNotAnError` 断言 boot 与 reload 两条路径
+(含「启动日志里不得出现 level=ERROR」)。
+
+### 二、覆盖安装 / 卸载重装 会不会删配置:三方取证
+
+数据根的唯一规则没变:**二进制同级 `gah-data/`**。桌面壳首启把运行文件复制到**用户数据目录**再跑,
+数据因此落在应用目录之外:
+
+| 平台 | 运行文件/数据落点 | 覆盖安装(升级) | 卸载 | 删掉数据目录 |
+|---|---|---|---|---|
+| macOS | `~/Library/Application Support/dev.gah.desktop/bin/{gah-*, gah-data/}` | 保留(dmg 整包替换 app,dmg/app 内不含数据) | 保留(拖废纸篓只删 app) | 丢失 |
+| Windows | `%LOCALAPPDATA%\dev.gah.desktop\bin\{gah-*.exe, gah-data\}` | 保留(NSIS `UpdateMode=1` 时**跳过**数据删除逻辑) | 默认保留;**但卸载页有「Delete app data」勾选框,勾了会 `RmDir /r` 掉 `%LOCALAPPDATA%\dev.gah.desktop`(正是数据根所在)** | 丢失 |
+| Linux | CLI:`gah` 同目录 `gah-data/`(**无桌面安装包**:bundle targets 只有 app/dmg/nsis) | 解压覆盖到同一目录 ⇒ 保留;整目录换掉 ⇒ 丢失(归档里不含 `gah-data/`) | 无安装器,删目录即删数据 | 丢失 |
+
+依据:`desktop/src-tauri/src/stage.rs`(`data_root` = `<app_local_data_dir>/bin/gah-data`,注释「目录一律不碰:
+同级 gah-data/ 是用户数据」)、`tauri.conf.json`(`installMode: currentUser`;未设 `deleteAppDataOnUninstall`)、
+tauri 官方 NSIS 模板(删数据的门槛 = 用户勾选 `DeleteAppDataCheckbox` **且** `$UpdateMode <> 1`)、
+`.goreleaser.yaml`(归档只含二进制 + 三份 md)。桌面壳另在升级前把数据根备份到 `~/gah-upgrade-backup/<时间戳>/`
+(`backupBeforeUpgrade`,备份失败即取消升级)。
+
+**结论**:macOS/Windows/Linux 的**覆盖安装都不会动配置**;卸载默认也不动(macOS 天然、Windows 不勾那个框)。
+唯一会丢数据的是「**自己删数据目录**」与「**Windows 卸载时勾了 Delete app data**」——README 双语已把后者写进
+安装说明(这一条是把人吓到的唯一入口)。
+
+### 三、验证
+
+- Go 全量测试通过;`gofmt -l` / `go vet` 干净;前端 `node --test src/*.test.ts` **61 passed**。
+- 外部插件二进制按发行纪律重新生成(`scripts/gen-extplugins.sh`,goreleaser before-hook 同款)并入库。
+- 排查中发现的一处**测试自身竞态**(与本轮功能无关,未改产品语义):`TestExternalPluginReloadLoadsNewBinary`
+  在**开着 watcher** 的 Bridge 上显式调 `Reload`,而 watcher 300ms 去抖后会对同一路径再「撤销并重载」一次 ——
+  实测「Reload 返回时工具表为空、900ms 后才回来」,断言全凭时序(HEAD 上稳定、加日志/加 trace 就翻)。修法:
+  该用例改用 `buildEnvWatch(..., watch=false)`,watch 通路由其它用例覆盖 ⇒ 10/10 稳定。

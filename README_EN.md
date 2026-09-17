@@ -93,6 +93,11 @@ provider (DeepSeek / Kimi / Zhipu / Qwen / Ollama presets; paste an API key).
 > upgrade** if that backup fails. For manual backups use `/backup <path outside the app dir>` and
 > `/backup restore <name>`. The CLI build is unaffected: upgrading replaces the single `gah` file and keeps
 > `gah-data/` in place.
+> **Two exceptions (the only ways to lose your config)**: ① the Windows uninstaller page has a
+> \"Delete app data\" checkbox — ticking it also removes `%LOCALAPPDATA%\dev.gah.desktop` (where the data root
+> lives). It is **unchecked by default**; leave it unchecked to keep your data. ② Linux ships as a CLI
+> tarball only: the data sits next to `gah`, so **extracting the new version over the same directory** keeps
+> it, while replacing the whole directory loses it. Full matrix: `DESIGN.md` R25.
 
 ### Build (release form)
 
