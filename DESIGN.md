@@ -1240,6 +1240,73 @@ v0.1.3 及之前只核对过 dmg 产物与签名,**从未挂载实跑**(上一�
 2. **`tool-mcp` 在本机 macOS 上仍加载失败**(仅它一个;`tool-basic/subagent/workflow` 已正常)。**属旧有问题**,与本版无关:本次发布前的开发构建日志里**恰好也只有它一条**同一报错。已登记待单独排查(不影响 Windows 侧,用户四轮真机反馈里 MCP 工具链未见异常)。
 3. **VERIFY.md 的 Windows B 表其余行**(shell/沙箱/文档面板/MCP/定时任务/卸载/退出残留/单实例)与 macOS B 表、C/D 表状态不变 —— 本轮只确认了 R15–R22 的交互项。
 
+## R24 macOS「已损坏」订正 与 tool-mcp 加载失败定性 ✅ (2026-09-17)
+
+> 用户真机反馈:**「mac 端提示已损坏」**,并选定两项后续:① README 写清 ② 查 `tool-mcp`。
+
+### 一、「已损坏」不是包坏了
+
+| 检查 | 实测 |
+|---|---|
+| 签名 | `Signature=adhoc, linker-signed`、`TeamIdentifier=not set` —— 只有本地临时签名,**没有 Apple Developer ID、也没公证** |
+| quarantine | 下载后整包带 `com.apple.quarantine`(含 `Contents/MacOS/gah-desktop`) |
+| 完整性 | `codesign -vvv` 报 valid、sha256 与 CI 产物逐字节一致 ⇒ **产物没问题**,是 Gatekeeper 拒绝放行 |
+
+macOS 对「未公证 + 来自网络」的应用统一说「**已损坏,无法打开,您应该将它移到废纸篓**」——
+**右键打开对它无效**(那只对「未识别的开发者」有效),必须清隔离属性:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/gah.app
+```
+
+清掉后 `spctl -a` 报 `accepted`,实跑正常(`setup 开始: 版本 0.1.4` / 托盘就绪 / 页面
+`mounted:true … ipc:"ok: ok"`,非白屏)。
+
+**README 双语订正**:原文只写了「无法验证开发者」并让人右键打开兜底 —— 与用户实际看到的提示不符。
+现改为并列两种提示并写明区别(哪种右键可解、哪种必须走 `xattr`)。
+
+**取舍登记**:根治需 Apple Developer Program($99/年)做 Developer ID 签名 + 公证;当前不做,
+故这一句命令是 macOS 安装的**固定环节**,不是临时绕行。
+
+### 二、tool-mcp 加载失败:不是坏了,是「没配置就退出」
+
+现场(本机数据根):
+
+```
+GAH_PLUGIN=gah-external-tool .../plugins/tool-mcp/tool-mcp
+→ stdout 0 字节
+→ stderr「tool-mcp: 未配置任何 MCP server(设置面板「MCP」分区或 …/config/mcp.yaml 或 GAH_MCP_COMMANDS)」
+→ exit 1
+```
+
+`extplugins/tool-mcp/main.go` 的启动顺序是「校验握手标识 → 载入配置 → **无 server 即 `os.Exit(1)`** →
+装配 → `bridge.ServeTools`」,而 go-plugin 的握手行只有走到最后一步才写 stdout ⇒ 宿主读不到握手 ⇒
+报 `Unrecognized remote plugin message: Failed to read any lines from plugin's stdout` ⇒ 「跳过加载失败」。
+本机 `config/mcp.yaml` 不存在,与该分支完全一致。**不是 inode / 权限 / 架构问题**(手工运行退出码与文案都对,`codesign -vvv` valid)。
+
+### 三、修的是「看不见原因」,不是「不该退出」
+
+`go-plugin` 默认把插件子进程 stderr 丢进 `io.Discard`(实测 `client.go:402-403`)⇒ 插件自己说的原因
+从来看不到,只剩谜语。修法:宿主侧捕获插件 stderr 尾部,失败时拼进错误上报。
+
+- 新增 `pluginStderr`(环形缓冲:最近 8 行 / 600 字节,含未换行残留,tail 超长截断);
+- `startPlugin` 把它接到 `ClientConfig.Stderr`(成功时不影响任何输出,不添噪音),并在**三条失败路径**
+  拼进错误:启动失败、握手失败、未按桥协议暴露工具或命令;
+- 实测同一台机器同一条插件:`err="host-bridge: 启动外部插件失败 …;插件自身输出: tool-mcp: 未配置任何 MCP server(设置面板「MCP」分区或 …/config/mcp.yaml 或 GAH_MCP_COMMANDS)"` ✅
+  —— 从谜语变成「原因 + 去哪配」。
+
+**保持不动的语义**:`tool-mcp` 在「未配置任何 server」时仍 `exit 1`(对齐注释里「全部不可用则 exit 1」
+的不静默降级取向),现在只是**原因可见**。若要改成「未配置即安静空载」,需同时放宽 `ServeTools` 的空集
+守卫(`len(tools)==0 && len(commands)==0 → log.Fatal`)—— 属产品语义改动,待确认。
+
+**给用户的验证路径**:设置面板「MCP」分区配一个 server(或写 `gah-data/config/mcp.yaml`)后,该插件即正常加载。
+
+### 四、验证
+
+Go 全量 **1498 passed**(67 包,0 失败,6 跳过;新增 `TestPluginStderrCapture`、
+`TestPluginStderrSurfacesInLoadError` —— 后者用 shell 脚本构造「握手前退出」,故在 Windows 上跳过;
+捕获逻辑本身与平台无关)· `gofmt` / `go vet` 干净 · CI 结果见本轮 run。
+
 ## 15. 风险与权衡
 
 | 风险 | 缓解 |

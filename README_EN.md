@@ -66,10 +66,19 @@ Grab the right file from [Releases](https://github.com/nekoleamo/go-agent-harnes
 | Windows (64-bit) | `gah_<version>_x64-setup.exe` | double-click to install (current user, no admin) |
 | CLI (any platform) | `go-agent-harness_<version>_<os>_<arch>.tar.gz` | single binary, unzip and run (also `.zip` + `checksums.txt`) |
 
-> **The first launch is blocked once by the OS** (the app ships without an Apple/Microsoft code-signing
-> certificate; the binary is fine, the system simply has not seen it before):
-> - **macOS** "cannot verify the developer" → in /Applications **right-click gah → Open → Open** (once;
->   or run `xattr -dr com.apple.quarantine /Applications/gah.app`)
+> **The first launch is blocked once by the OS** (the app ships without an Apple Developer
+> certificate / Microsoft code-signing certificate — the binaries are fine, the system simply has not
+> seen them before):
+>
+> **macOS** has two different messages, and they need different handling:
+> - "**cannot verify the developer**" → in /Applications **right-click gah → Open → Open** (once).
+> - "**is damaged and can't be opened. You should move it to the Bin**" → **the app is not damaged.**
+>   That is macOS's fixed wording for an unsigned/unnotarized app downloaded from the internet (it only
+>   carries an ad-hoc local signature). **Right-click → Open does not help here**; run this once in
+>   Terminal (after dragging the app into Applications; repeat it after an upgrade if it appears again):
+>   ```bash
+>   xattr -dr com.apple.quarantine /Applications/gah.app
+>   ```
 > - **Windows** blue SmartScreen warning → click "**More info** → **Run anyway**" (once)
 
 After installing, just double-click: built-in chat UI plus a settings panel. On first use pick one model
