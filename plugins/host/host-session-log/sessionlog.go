@@ -192,6 +192,13 @@ func normalizePayload(ev *sdk.SessionEvent) any {
 		if err := json.Unmarshal(raw, &v); err == nil {
 			return v
 		}
+	case sdk.EventFileChange:
+		// S-P1-1:改动审计带 patch 文本(可能数十 KB),落盘再回放必须还原为具体类型,
+		// 否则 /diff 读回的是 map → 打不开
+		var v sdk.FileChangeEvent
+		if err := json.Unmarshal(raw, &v); err == nil {
+			return v
+		}
 	}
 	return m // 未识别/二次解析失败:保留 map(消费者自行容忍)
 }

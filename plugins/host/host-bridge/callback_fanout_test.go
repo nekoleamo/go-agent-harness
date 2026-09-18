@@ -3,6 +3,7 @@ package hostbridge
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -145,5 +146,82 @@ func TestCallbackJobsKillNilError(t *testing.T) {
 	}
 	if reply != "" {
 		t.Fatalf("成功应返回空字符串,得 %q", reply)
+	}
+}
+
+// isoFanoutForBridge 具备隔离能力的 fanout 替身(S-P1-4)。
+type isoFanoutForBridge struct {
+	stubFanoutForBridge
+	req sdk.WorktreeRun
+}
+
+func (s *isoFanoutForBridge) RunInWorktree(_ context.Context, req sdk.WorktreeRun) (sdk.WorktreeRunResult, error) {
+	s.req = req
+	return sdk.WorktreeRunResult{
+		Worktree: sdk.Worktree{ID: "repo-wt1", Path: "/gah/worktrees/repo-wt1", Branch: "gah/repo-wt1", Base: "abc"},
+		Text:     "隔离完成",
+		Handle:   sdk.AgentHandle{ID: "ag5", State: sdk.AgentRunning},
+	}, nil
+}
+
+var _ sdk.IsolatedFanout = (*isoFanoutForBridge)(nil)
+
+// TestCallbackFanoutWorktreeRunDispatch 宿主侧分发:worktree_run → IsolatedFanout,
+// 请求透传 + 结果(含 worktree 路径)JSON 回传。
+func TestCallbackFanoutWorktreeRunDispatch(t *testing.T) {
+	iso := &isoFanoutForBridge{}
+	cb := NewCallback(nil, nil, iso, "")
+	var reply string
+	raw := `{"Input":"实现 X","Fork":true,"Sync":false,"Label":"任务A"}`
+	if err := cb.fanoutCall(context.Background(), "worktree_run", raw, &reply); err != nil {
+		t.Fatal(err)
+	}
+	if iso.req.Input != "实现 X" || !iso.req.Fork || iso.req.Sync || iso.req.Label != "任务A" {
+		t.Fatalf("请求应原样透传: %+v", iso.req)
+	}
+	var res sdk.WorktreeRunResult
+	if err := json.Unmarshal([]byte(reply), &res); err != nil {
+		t.Fatalf("回包应为 WorktreeRunResult JSON: %v (%s)", err, reply)
+	}
+	if res.Worktree.Path != "/gah/worktrees/repo-wt1" || res.Handle.ID != "ag5" {
+		t.Fatalf("回包应含 worktree 与句柄: %+v", res)
+	}
+	// 宿主 fanout 不支持隔离 → 显式报错(不得静默退化为非隔离)
+	cbPlain := NewCallback(nil, nil, &stubFanoutForBridge{}, "")
+	if err := cbPlain.fanoutCall(context.Background(), "worktree_run", raw, &reply); err == nil ||
+		!strings.Contains(err.Error(), "不支持 worktree 隔离") {
+		t.Fatalf("未实现 IsolatedFanout 应显式回错: %v", err)
+	}
+}
+
+// TestCbFanoutProxyWorktreeRun 外部代理:RunInWorktree 经 RPC 打到宿主并回传结果。
+func TestCbFanoutProxyWorktreeRun(t *testing.T) {
+	iso := &isoFanoutForBridge{}
+	cb := NewCallback(nil, nil, iso, "tok")
+	addr, closeFn, err := serveCallback(cb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeFn()
+	t.Setenv("GAH_CB_TOKEN", "tok")
+	cc, err := DialCallback(addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cc.Close()
+
+	proxy, ok := CbFanout(cc).(sdk.IsolatedFanout)
+	if !ok {
+		t.Fatal("cbFanout 应实现 sdk.IsolatedFanout(外部 tool-subagent 的 isolate 入口)")
+	}
+	res, err := proxy.RunInWorktree(context.Background(), sdk.WorktreeRun{Input: "隔离改 X", Sync: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if iso.req.Input != "隔离改 X" || !iso.req.Sync {
+		t.Fatalf("宿主应收到隔离请求: %+v", iso.req)
+	}
+	if res.Worktree.Branch != "gah/repo-wt1" || res.Text != "隔离完成" {
+		t.Fatalf("代理应回传结果: %+v", res)
 	}
 }

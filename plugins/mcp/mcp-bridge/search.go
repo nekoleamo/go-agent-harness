@@ -8,7 +8,7 @@
 // direct 模式工具 —— 保持"搜到的 = 能调的"一一对应。
 //
 // 审批映射:mcp_call 声明 sdk.ToolDefinition.ApprovalTargetParam = "name",宿主审批据此把
-// data.approval_tools 里按**真实工具名**写的规则作用到代理调用上(2026-11-14 补,
+// data.approval_tools 里按**真实工具名**写的规则作用到代理调用上(2026-09-12 补,
 // NOND-M1-3b)—— 逐工具规则不再被代理层绕过。
 package mcpbridge
 

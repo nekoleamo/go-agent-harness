@@ -164,3 +164,68 @@ func TestAppend(t *testing.T) {
 		t.Fatalf("追加结果不符: %v", out)
 	}
 }
+
+// callCtx 同 call,但由调用方给定 ctx(用于 S-P1-4 隔离运行:WithWorkRoot 覆盖工作根)。
+func callCtx(t *testing.T, c sdk.Ctx, ctx context.Context, name, args string) (map[string]any, error) {
+	t.Helper()
+	var tools sdk.ToolRegistry
+	if err := c.Inject("ctx.tools", &tools); err != nil {
+		t.Fatal(err)
+	}
+	res, err := tools.Execute(ctx, name, args)
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(res.Content), &out); err != nil {
+		t.Fatalf("结果应为 JSON: %s(%v)", res.Content, err)
+	}
+	return out, nil
+}
+
+// TestFileToolsIsolatedWorkRoot S-P1-4:调用级工作根覆盖后,相对路径写在 worktree 内解析,
+// 写主 workspace 被拒(隔离运行的核心不变量:两个并行子代理写同名文件不互相覆盖)。
+func TestFileToolsIsolatedWorkRoot(t *testing.T) {
+	ws, wt := t.TempDir(), t.TempDir()
+	c := buildEnv(t, ws, sdk.SandboxWorkspace)
+	ictx := sdk.WithWorkRoot(context.Background(), wt)
+
+	out, err := callCtx(t, c, ictx, "file_write", `{"path":"same.txt","content":"wt"}`)
+	if err != nil || out["error"] != nil {
+		t.Fatalf("隔离运行相对写应成功: out=%v err=%v", out, err)
+	}
+	if _, err := os.Stat(filepath.Join(wt, "same.txt")); err != nil {
+		t.Fatalf("相对写应落在工作根内: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "same.txt")); err == nil {
+		t.Fatal("相对写不得落回主 workspace(命名冲突即互相覆盖)")
+	}
+	// 主 workspace 相对路径(默认未隔离)仍照旧
+	if out, err = call(t, c, "file_write", `{"path":"same.txt","content":"ws"}`); err != nil || out["error"] != nil {
+		t.Fatalf("未隔离写应成功: %v %v", out, err)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "same.txt")); err != nil {
+		t.Fatalf("未隔离写应落在 workspace: %v", err)
+	}
+	// 隔离运行写主 workspace 绝对路径 = 显式拒绝(不静默改道)
+	out, err = callCtx(t, c, ictx, "file_write",
+		fmt.Sprintf(`{"path":%q,"content":"x"}`, filepath.Join(ws, "escape.txt")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out["error"] == nil {
+		t.Fatalf("隔离运行写 workspace 应被拒: %v", out)
+	}
+	if !strings.Contains(fmt.Sprint(out["error"]), "工作根") {
+		t.Fatalf("拒绝消息应指明工作根: %v", out["error"])
+	}
+	// 读:隔离运行下仍可读主 workspace(只收窄写)
+	if err := os.WriteFile(filepath.Join(ws, "readable.txt"), []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err = callCtx(t, c, ictx, "file_read",
+		fmt.Sprintf(`{"path":%q}`, filepath.Join(ws, "readable.txt")))
+	if err != nil || out["content"] != "hi" {
+		t.Fatalf("隔离运行应可读主 workspace 文件: out=%v err=%v", out, err)
+	}
+}

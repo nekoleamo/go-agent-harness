@@ -149,7 +149,12 @@ func (l *Loop) RunWithAttachments(ctx context.Context, input string, atts []sdk.
 
 	l.c.Emit(runCtx, "agent/status", "running", sdk.Emit)
 	t := &turn{} // 回合级状态(伪调用提醒每回合至多一次)
-	if err := l.appendEvents(sdk.SessionEvent{Kind: sdk.EventUserMessage, Payload: sdk.UserMessage{Content: input, Attachments: atts}}); err != nil {
+	// turn/start:回合起点标记(与 turn/end 配对;此前只声明未发出,S-P0-1 轨迹视图需要
+	// 权威回合边界)。nil 载荷不参与 DeriveMessages 投影,旧会话缺该帧也能正常工作。
+	if err := l.appendEvents(
+		sdk.SessionEvent{Kind: sdk.EventTurnStart},
+		sdk.SessionEvent{Kind: sdk.EventUserMessage, Payload: sdk.UserMessage{Content: input, Attachments: atts}},
+	); err != nil {
 		l.c.Emit(context.Background(), "agent/status", "idle", sdk.Emit)
 		return fmt.Errorf("session log: %w", err)
 	}

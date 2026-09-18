@@ -17,6 +17,8 @@ type Prefs struct {
 	Sandbox  string `json:"sandbox,omitempty"`
 	Approval string `json:"approval,omitempty"`
 	History  *int   `json:"history,omitempty"`
+	// Statusline TUI 状态栏项集合与顺序(/statusline;空 = 基线默认顺序)。
+	Statusline []string `json:"statusline,omitempty"`
 }
 
 // Path 偏好文件路径(GAH_HOME 未设 = 空,表示跳过持久化——测试/无 home 场景纯内存)。
@@ -137,3 +139,14 @@ func SetThinking(v string) { Update(func(p *Prefs) { p.Thinking = v }) }
 func SetSandbox(v string)  { Update(func(p *Prefs) { p.Sandbox = v }) }
 func SetHistory(n int)     { Update(func(p *Prefs) { p.History = &n }) }
 func SetApproval(v string) { Update(func(p *Prefs) { p.Approval = v }) }
+
+// SetStatusline 状态栏项集合与顺序(nil/空 = 回基线默认)。
+func SetStatusline(items []string) {
+	Update(func(p *Prefs) {
+		if len(items) == 0 {
+			p.Statusline = nil
+			return
+		}
+		p.Statusline = append([]string(nil), items...)
+	})
+}

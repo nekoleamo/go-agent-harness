@@ -109,6 +109,13 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 			_ = c.Inject("ctx.confirm", &cf)
 			return cf
 		}
+		// S-P1-4:本次调用的工作根(隔离子代理 = 受管 worktree)。pre-execute 早于宿主执行入口
+		// 注入 SandboxHint,所以这里从 ctx 直接读覆盖值;写范围/相对路径基准以它为准,
+		// 否则子代理的写会被按主 workspace 裁决(要么误拒、要么落错地方)。
+		callRoot := ""
+		if dir, ok := sdk.WorkRootOf(ctx); ok {
+			callRoot = dir
+		}
 		if call.Name == "shell" {
 			// 解出真实命令文本再判定:JSON 转义(`\u0072m`)与解释器删除等绕过在此收敛
 			cmd := shellCommand(call.Arguments)
@@ -120,7 +127,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 			// 路径裁决(R10 ①,顺序在审批之后、与 file_* 一致):显式写目标必须落在档位允许范围
 			// 内。审批通过不代表放开档位(workspace-write 下 `rm -rf /tmp/x` 即便人工同意仍被拒),
 			// 需要放开请显式切 /sandbox full。
-			if err := sp.CheckShellCommand(cmd); err != nil {
+			if err := sp.CheckShellCommandAt(callRoot, cmd); err != nil {
 				return err
 			}
 		}
@@ -144,7 +151,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		// 宿主侧路径裁决(P0):默认发行态 file_* 由外部插件进程提供(sb 未注入),
 		// 仅靠工具侧沙箱会完全失效 —— 这里按工具名+参数统一裁决(插件零改动)。
 		// 若工具自述了路径参数(sdk.ToolDefinition.PathParams),以声明为准。
-		return sp.CheckToolCall(call.Name, call.Arguments, declaredPathParams(c, call.Name))
+		return sp.CheckToolCallAt(callRoot, call.Name, call.Arguments, declaredPathParams(c, call.Name))
 	})
 	// 工作区切换:沙箱 root 同步(host-cwd-sessions 广播,与原 policy-sandbox 一致)
 	d2 := c.Subscribe("cwd/workspace-switched", func(ctx context.Context, ev *sdk.Event) error {

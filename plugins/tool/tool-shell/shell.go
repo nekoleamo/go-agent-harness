@@ -70,6 +70,18 @@ func (s *ShellTool) Definition() sdk.ToolDefinition {
 	}
 }
 
+// workdirOf 取本次调用的工作根(sdk.SandboxHint.Root,宿主执行入口合成):
+//   - 普通调用 = workspace 根(与宿主进程 cwd 一致,显式传递避免依赖进程状态);
+//   - 隔离子代理 = 受管 worktree(相对路径写入必须落在这里,否则两个并行子代理仍互相覆盖);
+//   - 无 hint(旧宿主/直连测试)= 空 → 子进程继承宿主 cwd(原行为)。
+func workdirOf(ctx context.Context) string {
+	h, ok := sdk.SandboxHintOf(ctx)
+	if !ok {
+		return ""
+	}
+	return h.Root
+}
+
 // Execute 执行命令(结构化错误回传模型,不中断 turn)。
 func (s *ShellTool) Execute(ctx context.Context, raw string) (any, error) {
 	var a args
@@ -85,7 +97,7 @@ func (s *ShellTool) Execute(ctx context.Context, raw string) (any, error) {
 		if a.Command == "" {
 			return nil, fmt.Errorf("shell: 缺少 command 参数")
 		}
-		out, timedOut, perr := execPty(ctx, a.Command, a.Input)
+		out, timedOut, perr := execPty(ctx, workdirOf(ctx), a.Command, a.Input)
 		if perr != nil {
 			return map[string]any{"error": "shell: pty 启动失败: " + perr.Error()}, nil
 		}
@@ -122,6 +134,7 @@ func (s *ShellTool) Execute(ctx context.Context, raw string) (any, error) {
 	pre := kernelWrapCtx(ctx)
 	argv := prefixedArgv(pre, sh, "-c", a.Command)
 	cmd := exec.CommandContext(dctx, argv[0], argv[1:]...)
+	cmd.Dir = workdirOf(ctx)        // 本次调用工作根(S-P1-4:隔离子代理 = 受管 worktree);空 = 继承宿主 cwd
 	cmd.Env = sdk.ShellExecEnv(env) // MSYS 路径转换开关(Windows;见 sdk/shellpath.go)
 	// 后台孙进程(如 `sleep 300 &`)会持有 stdout 管道 → CombinedOutput 永不返回;
 	// 进程组 + WaitDelay 双保险:超时先杀直接子进程,WaitDelay 到点放弃 I/O 等待。

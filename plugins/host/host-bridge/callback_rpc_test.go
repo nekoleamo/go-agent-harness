@@ -453,3 +453,87 @@ func TestDialCallbackRequiresAddr(t *testing.T) {
 		t.Fatal("连接失败应报错")
 	}
 }
+
+// —— 文件改动回传(change.record,S-P1-1 外部化补齐) ——
+
+// cbChangesEnv 起回调通道并注入落账 sink(记录收到的 FileChangeEvent)。
+type cbChangesEnv struct {
+	*callbackEnv
+	sink []sdk.FileChangeEvent
+}
+
+func newChangesEnv(t *testing.T, token string, fail bool) *cbChangesEnv {
+	t.Helper()
+	e := newCallbackEnv(t, token)
+	env := &cbChangesEnv{callbackEnv: e}
+	e.cb.SetChangeSink(func(ev sdk.FileChangeEvent) error {
+		if fail {
+			return errors.New("账本写失败")
+		}
+		env.sink = append(env.sink, ev)
+		return nil
+	})
+	return env
+}
+
+// TestCallbackChangeRecordProxy 外部侧 CbChanges ↔ 宿主 change.record 对账(真 RPC 往返)。
+func TestCallbackChangeRecordProxy(t *testing.T) {
+	env := newChangesEnv(t, "tok", false)
+	rec := CbChanges(env.cc)
+	if _, ok := rec.(sdk.FileChangeRecorder); !ok {
+		t.Fatal("CbChanges 应实现 sdk.FileChangeRecorder")
+	}
+	ev := sdk.BuildFileChange("/ws/a.txt", "", "write", "file_write", true, "", "hi\n")
+	if err := rec.RecordChange(ev); err != nil {
+		t.Fatalf("回传应成功: %v", err)
+	}
+	if len(env.sink) != 1 {
+		t.Fatalf("宿主应收到 1 条,得到 %d 条", len(env.sink))
+	}
+	got := env.sink[0]
+	if got.Path != "/ws/a.txt" || got.Op != "write" || got.Added != 1 || !strings.Contains(got.Diff, "+hi") {
+		t.Fatalf("跨桥后事件内容不符: %+v", got)
+	}
+	if got.Rel != "" {
+		t.Fatalf("Rel 由宿主侧组装层补算,回调层应原样透传: %q", got.Rel)
+	}
+}
+
+// TestCallbackChangeRecordErrors 未装配 sink / 落账失败 / 方法名错 → 全部显式报错(不静默丢审计)。
+func TestCallbackChangeRecordErrors(t *testing.T) {
+	// 未注入 sink
+	plain := newCallbackEnv(t, "")
+	rec := CbChanges(plain.cc)
+	if err := rec.RecordChange(sdk.FileChangeEvent{Path: "/ws/a.txt"}); err == nil || !strings.Contains(err.Error(), "未装配") {
+		t.Fatalf("未装配 sink 应显式报错: %v", err)
+	}
+	// 落账失败:错误要经 reply 传回外部侧(不能当成功)
+	failing := newChangesEnv(t, "", true)
+	if err := CbChanges(failing.cc).RecordChange(sdk.FileChangeEvent{Path: "/ws/a.txt"}); err == nil || !strings.Contains(err.Error(), "落账失败") {
+		t.Fatalf("落账失败应回错: %v", err)
+	}
+	// 方法名错 / 缺 path
+	ok := newChangesEnv(t, "", false)
+	var reply string
+	if err := ok.cb.changeCall(context.Background(), "delete", "{}", &reply); err == nil || !strings.Contains(err.Error(), "未知方法") {
+		t.Fatalf("未知方法应报错: %v", err)
+	}
+	if err := ok.cb.changeCall(context.Background(), "record", "{}", &reply); err == nil || !strings.Contains(err.Error(), "缺 path") {
+		t.Fatalf("缺 path 应报错: %v", err)
+	}
+	if err := ok.cb.changeCall(context.Background(), "record", "{bad json", &reply); err == nil || !strings.Contains(err.Error(), "解析失败") {
+		t.Fatalf("坏 JSON 应报错: %v", err)
+	}
+	if len(ok.sink) != 0 {
+		t.Fatalf("报错路径不应落账: %d 条", len(ok.sink))
+	}
+}
+
+// TestCallbackUnknownService 未知服务仍报错(新增 change 服务后不改变既有契约)。
+func TestCallbackUnknownService(t *testing.T) {
+	e := newCallbackEnv(t, "")
+	var reply string
+	if err := e.cb.Call(CallArgs{Service: "theme", Method: "set"}, &reply); err == nil || !strings.Contains(err.Error(), "未知服务") {
+		t.Fatalf("未知服务应报错: %v", err)
+	}
+}

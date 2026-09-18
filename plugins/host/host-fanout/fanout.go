@@ -35,7 +35,7 @@ func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
 	_ = c.Inject("ctx.systemPrompt", &sp) // 同上
 	var sessions sdk.SessionLog
 	_ = c.Inject("ctx.sessions", &sessions) // fork 需要(ctx.sessions 未装配时 Fork 显式报错)
-	f := &Fanout{tools: tools, llm: llm, sp: sp, sessions: sessions, agents: map[string]*agentSession{}}
+	f := &Fanout{c: c, tools: tools, llm: llm, sp: sp, sessions: sessions, agents: map[string]*agentSession{}}
 	if err := c.Provide("ctx.fanout", f); err != nil {
 		return nil, err
 	}
@@ -45,6 +45,7 @@ func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
 
 // Fanout 子代理编排实现。
 type Fanout struct {
+	c        sdk.Ctx // 惰性服务读取(ctx.worktrees 可能后于本插件启动)
 	tools    sdk.ToolRegistry
 	llm      sdk.LLMService
 	sp       sdk.SystemPromptService
@@ -98,23 +99,36 @@ func (f *Fanout) Fork(_ context.Context, input string) (string, error) {
 
 // spawnBackground 后台启动公共路径:forkSeed=true 时种入父会话历史。
 func (f *Fanout) spawnBackground(input string, forkSeed bool) (string, error) {
+	h, err := f.spawnWorker(input, forkSeed, nil)
+	if err != nil {
+		return "", err
+	}
+	return h.ID, nil
+}
+
+// spawnWorker 后台启动(含句柄):workRoot 非空 = 隔离子代理(所有工具调用的工作根)。
+func (f *Fanout) spawnWorker(input string, forkSeed bool, workRoot *sdk.Worktree) (sdk.AgentHandle, error) {
 	if f.llm == nil || f.sp == nil {
-		return "", fmt.Errorf("子代理编排需要 ctx.llm / ctx.systemPrompt(未装配)")
+		return sdk.AgentHandle{}, fmt.Errorf("子代理编排需要 ctx.llm / ctx.systemPrompt(未装配)")
 	}
 	if strings.TrimSpace(input) == "" {
-		return "", fmt.Errorf("子代理任务为空")
+		return sdk.AgentHandle{}, fmt.Errorf("子代理任务为空")
 	}
 	var seed []sdk.LLMMessage
 	if forkSeed {
 		if f.sessions == nil {
-			return "", fmt.Errorf("fork 需要 ctx.sessions(host-session-log 未装配)")
+			return sdk.AgentHandle{}, fmt.Errorf("fork 需要 ctx.sessions(host-session-log 未装配)")
 		}
 		seed = f.sessions.DeriveMessages()
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	if workRoot != nil {
+		// 隔离运行:工作根随 ctx 下传,子代理的每个工具调用(cwd/相对路径/沙箱写范围)都据此
+		ctx = sdk.WithWorkRoot(ctx, workRoot.Path)
+	}
 	ag := &agentSession{
 		handle: sdk.AgentHandle{ID: "", Input: strings.TrimSpace(input), State: sdk.AgentRunning,
-			CreatedAt: time.Now()},
+			CreatedAt: time.Now(), Worktree: workRoot},
 		cancel: cancel,
 		done:   make(chan struct{}),
 		inbox:  make(chan string, inboxCap),
@@ -126,6 +140,7 @@ func (f *Fanout) spawnBackground(input string, forkSeed bool) (string, error) {
 	ag.handle.ID = id
 	f.agents[id] = ag
 	f.order = append(f.order, id)
+	handle := f.snapshot(ag)
 	f.mu.Unlock()
 	go func() {
 		// 注意:用局部 ag 而非 f.agents[id](后者需持锁,否则与 KillAgent/ListAgents 竞态)
@@ -145,7 +160,7 @@ func (f *Fanout) spawnBackground(input string, forkSeed bool) (string, error) {
 		f.pruneLocked()
 		f.mu.Unlock()
 	}()
-	return id, nil
+	return handle, nil
 }
 
 // pruneLocked 清理已完成会话历史(保留最近 keepAgents 条;调用方持锁)。
@@ -281,6 +296,66 @@ func (f *Fanout) KillAgent(id string) error {
 // Agent 单子代理一轮 ReAct:独立历史(不写主会话),返回最终 assistant 文本。
 func (f *Fanout) Agent(ctx context.Context, input string) (string, error) {
 	return f.runSubAgent(ctx, input)
+}
+
+// RunInWorktree 在受管 git worktree 内隔离运行子代理(S-P1-4;实现 sdk.IsolatedFanout)。
+//
+// 流程:host-worktrees 建 worktree(非 git 仓库→显式报错)→ 子代理 ctx 携带工作根
+// (sdk.WithWorkRoot:工具的相对路径基准 + 沙箱写范围)→ 首条输入注入目录/分支说明 →
+// 运行 → 回传 worktree(路径/分支必须让父级看到,否则改动“消失了”:既不在主工作区也无从合并)。
+//
+// 回收策略:默认保留(失败/中断也保留 —— 半成品比删干净更有用),回收靠 /worktree rm。
+func (f *Fanout) RunInWorktree(ctx context.Context, req sdk.WorktreeRun) (sdk.WorktreeRunResult, error) {
+	task := strings.TrimSpace(req.Input)
+	if task == "" {
+		return sdk.WorktreeRunResult{}, fmt.Errorf("子代理任务为空")
+	}
+	wts := f.worktreeService()
+	if wts == nil {
+		return sdk.WorktreeRunResult{}, fmt.Errorf("worktree 隔离需要 ctx.worktrees(host-worktrees 未装配/未启用)")
+	}
+	wt, err := wts.Create(ctx, req.Label)
+	if err != nil {
+		return sdk.WorktreeRunResult{}, err
+	}
+	input := worktreeNote(wt) + task
+	if req.Sync {
+		text, err := f.runAgentLoop(sdk.WithWorkRoot(ctx, wt.Path), input, nil)
+		return sdk.WorktreeRunResult{Worktree: wt, Text: text}, err
+	}
+	h, err := f.spawnWorker(input, req.Fork, &wt)
+	if err != nil {
+		return sdk.WorktreeRunResult{Worktree: wt}, err
+	}
+	return sdk.WorktreeRunResult{Worktree: wt, Handle: h}, nil
+}
+
+// worktreeService 惰性取 ctx.worktrees(可能后于本插件启动;卸载后立即失效)。
+func (f *Fanout) worktreeService() sdk.WorktreeService {
+	if f.c == nil {
+		return nil
+	}
+	var wts sdk.WorktreeService
+	if err := f.c.Inject("ctx.worktrees", &wts); err != nil {
+		return nil
+	}
+	return wts
+}
+
+// worktreeNote 隔离子代理的首条输入前缀:目录与分支必须让子代理看见 —— 否则它会以为
+// 自己在主工作区(用相对路径写“本来该改的文件”时不会发现问题,直到父级合并时才发现)。
+func worktreeNote(wt sdk.Worktree) string {
+	return fmt.Sprintf("[隔离运行]你的工作目录是 %s(git worktree;分支 %s;基线 %s)。"+
+		"改动只落在此目录、不进主工作区;完成后由父级决定合并或丢弃。\n\n",
+		wt.Path, wt.Branch, shortSHA(wt.Base))
+}
+
+// shortSHA 基线摘要(空基线的旧记录不留尾雪)。
+func shortSHA(s string) string {
+	if len(s) <= 8 {
+		return s
+	}
+	return s[:8]
 }
 
 // Parallel 并发扇出多个子代理并聚合(顺序与 inputs 对应)。

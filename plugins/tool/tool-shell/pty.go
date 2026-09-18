@@ -36,8 +36,9 @@ func (l *lockedWriter) Write(p []byte) (int, error) {
 }
 
 // execPty 在 pseudo-terminal 中执行命令并采集输出。
+// dir = 本次调用工作根(空 = 继承宿主 cwd;见 workdirOf/shell.go)。
 // 返回 (输出, 是否超时)。
-func execPty(ctx context.Context, command, input string) (string, bool, error) {
+func execPty(ctx context.Context, dir, command, input string) (string, bool, error) {
 	sh, serr := sdk.ResolvePOSIXShell() // Windows 需 Git Bash,不提供 cmd/PowerShell 回退(见 sdk/shellpath.go)
 	if serr != nil {
 		return "", false, serr
@@ -53,6 +54,7 @@ func execPty(ctx context.Context, command, input string) (string, bool, error) {
 	pre := kernelWrapCtx(ctx)
 	argv := prefixedArgv(pre, sh, "-c", command)
 	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Dir = dir                   // 本次调用工作根(S-P1-4 隔离运行);pty 与普通路径同语义
 	cmd.Env = sdk.ShellExecEnv(env) // MSYS 路径转换开关(Windows;见 sdk/shellpath.go)
 	// 不断设 Setpgid:pty.Start 内部会设 Setsid(子进程自成会话/进程组组长→ pgid==pid),
 	// 两个同设会在部分平台直接 EPERM;下面仍可用 killProcessGroup 整组终止。

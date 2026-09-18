@@ -264,7 +264,7 @@ func TestExecPtyJailFailure(t *testing.T) {
 	}
 	t.Setenv("GAH_HOME", file)
 
-	if _, _, err := execPty(context.Background(), "echo hi", ""); err == nil {
+	if _, _, err := execPty(context.Background(), "", "echo hi", ""); err == nil {
 		t.Fatal("pty 路径 jail 不可用应报错")
 	} else if !strings.Contains(err.Error(), "jail") {
 		t.Fatalf("报错应指明 jail, got %v", err)

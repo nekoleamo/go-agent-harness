@@ -66,6 +66,9 @@ func kernelWrap(hint sdk.SandboxHint, ok bool) []string {
 		return nil // 旧宿主/直连测试:不猜档位
 	}
 	mode := hint.Mode
+	if mode == "" {
+		return nil // 只下传了工作根(无沙箱宿主):档位未知 → 不猜测、不施加
+	}
 	switch mode {
 	case sdk.SandboxFullAccess:
 		return nil // 全权档:协作层也不拦,内核层无需施加

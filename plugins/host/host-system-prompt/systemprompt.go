@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
@@ -189,8 +190,7 @@ func (s *Service) Assemble(history []sdk.LLMMessage, tools []sdk.ToolDefinition)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var sb strings.Builder
-	sb.WriteString("你是 gah(Go Agent Harness)中的编程代理。遵循用户的指令完成任务。")
-	sb.WriteString("\n\n规则:\n- 需要外部信息或操作时,调用可用工具,不要猜测。\n- 工具调用必须通过 API 的结构化 tool_calls 字段发起;禁止在回复正文中书写工具调用标签/标记(如 <tool_calls>、<invoke>、<antml:invoke> 等)——正文中的调用不会被 gah 执行。\n- 工具结果以 JSON 呈现,仅依赖结果内容,不臆造。\n- 若工具返回错误,分析错误后调整策略重试,或明确告知无法完成。\n- 若没有可用工具能完成任务,直接如实说明;不得假装已调用工具或编造调用结果。")
+	sb.WriteString(guidanceText)
 	s.writeInstrBlock(&sb, s.globalInstr, "\n\n全局指令(AGENTS.md,用户级):\n")
 	if len(s.projectLevels) > 0 {
 		// 多级(P4-5):根 → cwd 逐级注入,近者放后覆盖远者;每级标明来源目录
@@ -222,6 +222,63 @@ func (s *Service) Assemble(history []sdk.LLMMessage, tools []sdk.ToolDefinition)
 	}
 	system := sdk.LLMMessage{Role: sdk.RoleSystem, Content: sb.String()}
 	return append([]sdk.LLMMessage{system}, history...)
+}
+
+// guidanceText 固定引导段(身份 + 规则)。抽为常量使 Assemble 与 Breakdown 共用同一份
+// 事实源,避免诊断口径与真实组装漂移。
+const guidanceText = "你是 gah(Go Agent Harness)中的编程代理。遵循用户的指令完成任务。" +
+	"\n\n规则:\n- 需要外部信息或操作时,调用可用工具,不要猜测。" +
+	"\n- 工具调用必须通过 API 的结构化 tool_calls 字段发起;禁止在回复正文中书写工具调用标签/标记" +
+	"(如 <tool_calls>、<invoke>、<antml:invoke> 等)——正文中的调用不会被 gah 执行。" +
+	"\n- 工具结果以 JSON 呈现,仅依赖结果内容,不臆造。" +
+	"\n- 若工具返回错误,分析错误后调整策略重试,或明确告知无法完成。" +
+	"\n- 若没有可用工具能完成任务,直接如实说明;不得假装已调用工具或编造调用结果。"
+
+// Breakdown 实现 sdk.SystemPromptInspector(S-P0-4 /context 成本分解)。
+// 顺序与 Assemble 一致;空块跳过(Assemble 的 writeInstrBlock 对空内容也是 no-op)。
+// 只读诊断:不执行模型请求,不修改组装语义。
+func (s *Service) Breakdown(tools []sdk.ToolDefinition) []sdk.PromptPart {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	part := func(label, text string) sdk.PromptPart {
+		return sdk.PromptPart{Label: label, Chars: utf8.RuneCountInString(text), Bytes: len(text)}
+	}
+	parts := []sdk.PromptPart{part("固定引导(身份+规则)", guidanceText)}
+	if strings.TrimSpace(s.globalInstr) != "" {
+		parts = append(parts, part("全局指令(用户级 AGENTS.md)", s.globalInstr))
+	}
+	if len(s.projectLevels) > 0 {
+		for _, lv := range s.projectLevels {
+			if strings.TrimSpace(lv.content) == "" {
+				continue
+			}
+			parts = append(parts, part(fmt.Sprintf("项目指令 %s/%s", lv.dir, lv.file), lv.content))
+		}
+	} else if strings.TrimSpace(s.projectInstr) != "" {
+		parts = append(parts, part("项目指令(项目级 AGENTS.md)", s.projectInstr))
+	}
+	for i, e := range s.extraInstr {
+		if strings.TrimSpace(e) == "" {
+			continue
+		}
+		parts = append(parts, part(fmt.Sprintf("附加指令 %d", i+1), e))
+	}
+	for _, sec := range s.sections {
+		content := sec.Content()
+		if strings.TrimSpace(content) == "" {
+			continue
+		}
+		parts = append(parts, part("片段 "+sec.Name, sec.Name+":\n"+content))
+	}
+	if len(tools) > 0 {
+		names := make([]string, 0, len(tools))
+		for _, t := range tools {
+			names = append(names, t.Name)
+		}
+		parts = append(parts, part(fmt.Sprintf("工具名清单(%d 个)", len(tools)),
+			"可用工具:"+strings.Join(names, "、")+"(完整定义与参数见 API 的 tools 字段)"))
+	}
+	return parts
 }
 
 func (s *Service) writeInstrBlock(sb *strings.Builder, content, header string) {

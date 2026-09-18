@@ -1,7 +1,9 @@
 // callback.go:宿主回调通道(外部进程 → 宿主服务,最小双向 IPC,M6.8 外部化扩展)。
 // 方向与桥主协议相反:外部进程持 GAH_CB_ADDR,经 net/rpc Dial 宿主回调端口,
-// 请求宿主服务(tools.list/execute、jobs.run/output、fanout.agent/parallel/pipeline)。
-// 用途:tool-workflow/tool-mcp 等需要宿主服务的工具类插件外部化后仍可组合执行。
+// 请求宿主服务(tools.list/execute、jobs.run/output、fanout.agent/parallel/pipeline、
+// change.record 写盘审计回传)。
+// 用途:tool-workflow/tool-mcp 等需要宿主服务的工具类插件外部化后仍可组合执行;
+// tool-basic 的文件工具外部化后经 change.record 把 file/change 事件交宿主落账(S-P1-1)。
 // 设计取舍:仅桥“纯函数服务”(工具执行/任务/子代理),不桥事件 veto(与 P2 边界一致)。
 package hostbridge
 
@@ -9,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/rpc"
 	"os"
@@ -26,18 +29,26 @@ type CallArgs struct {
 	Token   string // M7 鉴权:宿主注入 GAH_CB_TOKEN,外部进程回传
 }
 
-// Callback 宿主侧回调服务(tools/jobs/fanout,经 Ctx 注入)。
+// Callback 宿主侧回调服务(tools/jobs/fanout/change,经 Ctx 注入)。
 type Callback struct {
 	tools  sdk.ToolRegistry
 	jobs   sdk.JobService
 	fanout sdk.FanoutService
 	token  string // 本进程回调通道 token(空 = 鉴权关闭,兼容旧外部二进制)
+	// change 文件改动落账出口(S-P1-1 外部化补齐):外部进程工具没有宿主 Ctx,写盘后经
+	// change.record 回传;宿主按自己的沙箱根补 Rel 并 Append 账本。nil = 未装配(显式报错)。
+	change func(ev sdk.FileChangeEvent) error
 }
 
 // NewCallback 构造回调服务(jobs/fanout 可为 nil;对应方法返回显式错误)。
 func NewCallback(tools sdk.ToolRegistry, jobs sdk.JobService, fanout sdk.FanoutService, token string) *Callback {
 	return &Callback{tools: tools, jobs: jobs, fanout: fanout, token: token}
 }
+
+// SetChangeSink 注入 file/change 落账出口(宿主侧:构造 sdk.FileChangeEvent 并 Append 到
+// 会话账本 + 补 Rel)。由装配层(host-bridge Start)从 ctx.sessions/ctx.sandbox 组装,
+// 未注入时 change.record 返回显式错误(外部工具的改动不会被静默丢弃)。
+func (cb *Callback) SetChangeSink(fn func(ev sdk.FileChangeEvent) error) { cb.change = fn }
 
 // Call 执行一次宿主服务调用(校验 token,结果 JSON 写入 reply)。
 func (cb *Callback) Call(args CallArgs, reply *string) error {
@@ -52,8 +63,34 @@ func (cb *Callback) Call(args CallArgs, reply *string) error {
 		return cb.jobsCall(ctx, args.Method, args.Args, reply)
 	case "fanout":
 		return cb.fanoutCall(ctx, args.Method, args.Args, reply)
+	case "change":
+		return cb.changeCall(ctx, args.Method, args.Args, reply)
 	}
 	return errors.New("callback: 未知服务 " + args.Service)
+}
+
+// changeCall change.record(外部进程工具的写盘审计回传)。
+// 载荷 = 外部工具用 sdk.BuildFileChange 构造好的事件(统计/diff 口径与内嵌路径完全同源);
+// 宿主只补它取不到的 Rel(相对工作区路径),再 Append 账本 —— 账本 Append 会广播 session/event,
+// 三端与断线重放因此同源同全(与内嵌路径一致)。
+func (cb *Callback) changeCall(_ context.Context, method, raw string, reply *string) error {
+	if method != "record" {
+		return errors.New("callback: change 未知方法 " + method)
+	}
+	if cb.change == nil {
+		return errors.New("callback: 宿主未装配文件改动记录(ctx.sessions/装配缺失),外部工具的改动无法落账")
+	}
+	var ev sdk.FileChangeEvent
+	if err := json.Unmarshal([]byte(raw), &ev); err != nil {
+		return fmt.Errorf("callback: change.record 解析失败: %w", err)
+	}
+	if ev.Path == "" {
+		return errors.New("callback: change.record 缺 path")
+	}
+	if err := cb.change(ev); err != nil {
+		return fmt.Errorf("callback: change.record 落账失败: %w", err)
+	}
+	return nil
 }
 
 // toolsCall tools.list/tools.execute(工具定义与执行,经全流水线)。
@@ -290,6 +327,25 @@ func (cb *Callback) fanoutCall(ctx context.Context, method, raw string, reply *s
 		}
 		*reply = ""
 		return nil
+	case "worktree_run": // S-P1-4 受管 worktree 内隔离运行(可选能力:宿主 fanout 未实现则显式报错)
+		iso, ok := cb.fanout.(sdk.IsolatedFanout)
+		if !ok {
+			return errors.New("callback: 宿主 fanout 不支持 worktree 隔离(IsolatedFanout 未实现)")
+		}
+		var p sdk.WorktreeRun
+		if err := json.Unmarshal([]byte(raw), &p); err != nil {
+			return err
+		}
+		res, err := iso.RunInWorktree(ctx, p)
+		if err != nil {
+			return err
+		}
+		b, merr := json.Marshal(res)
+		if merr != nil {
+			return merr
+		}
+		*reply = string(b)
+		return nil
 	}
 	return errors.New("callback: 未知 fanout 方法 " + method)
 }
@@ -352,6 +408,24 @@ func (cc *CallbackClient) Call(service, method string, args any, reply *string) 
 
 // Close 关闭回调连接。
 func (cc *CallbackClient) Close() error { return cc.cl.Close() }
+
+// cbChanges sdk.FileChangeRecorder 的回调代理(外部进程工具写盘审计出口)。
+type cbChanges struct{ cc *CallbackClient }
+
+// CbChanges 构造文件改动回传代理(供外部进程工具注入,见 toolfiles.NewToolsWith)。
+func CbChanges(cc *CallbackClient) sdk.FileChangeRecorder { return &cbChanges{cc: cc} }
+
+// RecordChange 把构造好的 file/change 事件回传宿主落账(Rel 由宿主按其沙箱根补算)。
+func (c *cbChanges) RecordChange(ev sdk.FileChangeEvent) error {
+	var e string
+	if err := c.cc.Call("change", "record", ev, &e); err != nil {
+		return err
+	}
+	if e != "" { // 宿主把业务失败写进 reply(与 jobs.kill 同惯例)
+		return errors.New(e)
+	}
+	return nil
+}
 
 // cbTools sdk.ToolRegistry 的回调代理(外部引擎只读使用;Register 为 no-op)。
 type cbTools struct{ cc *CallbackClient }
@@ -440,11 +514,25 @@ func (j *cbJobs) Kill(id string) error {
 	return nil
 }
 
-// cbFanout sdk.FanoutService 回调代理。
+// cbFanout sdk.FanoutService 回调代理(同时实现 sdk.IsolatedFanout:S-P1-4)。
 type cbFanout struct{ cc *CallbackClient }
 
 // CbFanout 构造子代理编排回调代理。
 func CbFanout(cc *CallbackClient) sdk.FanoutService { return &cbFanout{cc: cc} }
+
+// RunInWorktree 隔离运行回调代理(S-P1-4):宿主 host-fanout 建 worktree 并在其中跑子代理。
+// 宿主未实现 IsolatedFanout / host-worktrees 未装配 时返回显式错误(不静默退化为非隔离)。
+func (f *cbFanout) RunInWorktree(_ context.Context, req sdk.WorktreeRun) (sdk.WorktreeRunResult, error) {
+	var s string
+	if err := f.cc.Call("fanout", "worktree_run", req, &s); err != nil {
+		return sdk.WorktreeRunResult{}, err
+	}
+	var res sdk.WorktreeRunResult
+	if err := json.Unmarshal([]byte(s), &res); err != nil {
+		return sdk.WorktreeRunResult{}, errors.New("回调 worktree_run 解析失败: " + err.Error())
+	}
+	return res, nil
+}
 
 func (f *cbFanout) Agent(_ context.Context, input string) (string, error) {
 	var s string

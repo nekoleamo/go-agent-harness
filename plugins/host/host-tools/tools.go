@@ -151,19 +151,35 @@ func (r *reg) Execute(ctx context.Context, name, args string) (*sdk.ToolResult, 
 // 实际拦截行为不一致;故优先取 sdk.EffectiveSandbox.EffectiveMode()。
 // 每次调用重新 Inject(档位运行期可变:/sandbox 切档、审批联动),不缓存。
 // 未装配沙箱 / 取不到 → 原样返回(不挂 hint:工具不得假定任何档位)。
+// 工作根(S-P1-4):ctx 上的调用级覆盖(sdk.WithWorkRoot,隔离子代理 = 受管 worktree)优先于
+// 沙箱自身 root —— 合并到同一个 hint.Root 但不改档位(调用方不能借覆盖放宽档位)。
 func (r *reg) withSandboxHint(ctx context.Context) context.Context {
+	root := ""
+	if dir, ok := sdk.WorkRootOf(ctx); ok {
+		root = dir
+	}
 	var sb sdk.Sandbox
 	if err := r.c.Inject("ctx.sandbox", &sb); err != nil || sb == nil {
-		return ctx
+		if root == "" {
+			return ctx
+		}
+		// 无沙箱但有工作根:只下传路径基准(Mode 留空 = 工具不得假定档位)
+		return sdk.WithSandboxHint(ctx, sdk.SandboxHint{Root: root})
 	}
 	mode := sb.Mode()
 	if es, ok := sb.(sdk.EffectiveSandbox); ok {
 		mode = es.EffectiveMode()
 	}
 	if mode == "" {
-		return ctx // 档位未知:不挂(不给工具可乘之机)
+		if root == "" {
+			return ctx // 档位未知:不挂(不给工具可乘之机)
+		}
+		return sdk.WithSandboxHint(ctx, sdk.SandboxHint{Root: root})
 	}
-	return sdk.WithSandboxHint(ctx, sdk.SandboxHint{Mode: mode, Root: sb.Root()})
+	if root == "" {
+		root = sb.Root()
+	}
+	return sdk.WithSandboxHint(ctx, sdk.SandboxHint{Mode: mode, Root: root})
 }
 
 // broadcastResult 广播工具结果(供 UI/日志/策略监听)。

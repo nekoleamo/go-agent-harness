@@ -384,7 +384,7 @@ func TestExecPtyUnderKernelSandbox(t *testing.T) {
 	ctx := sdk.WithSandboxHint(context.Background(), sdk.SandboxHint{Mode: sdk.SandboxWorkspace, Root: ws})
 
 	// pty 下输出可采集:验证 /dev/ttys[N] 白名单正确(缺了它 pty 会静默无输出)
-	out, timedOut, err := execPty(ctx, "echo pty-kernel-ok", "")
+	out, timedOut, err := execPty(ctx, "", "echo pty-kernel-ok", "")
 	if err != nil {
 		t.Fatalf("pty 启动失败: %v", err)
 	}
@@ -398,7 +398,7 @@ func TestExecPtyUnderKernelSandbox(t *testing.T) {
 	// pty 下工作区外写同样被拒
 	outside := t.TempDir()
 	target := filepath.Join(outside, "pty-wired.txt")
-	_, _, perr := execPty(ctx, "echo x > "+testutil.ShellPath(target), "")
+	_, _, perr := execPty(ctx, "", "echo x > "+testutil.ShellPath(target), "")
 	if perr != nil {
 		t.Fatalf("pty 执行返回错误(应为命令自身失败): %v", perr)
 	}

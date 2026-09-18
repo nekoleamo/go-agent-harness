@@ -165,6 +165,16 @@ func (h *Host) specs() []sdk.CommandSpec {
 				{Options: h.sessionSwitchOptions},
 			}},
 		{Name: "reload", Usage: "/reload", Desc: "热重载指令文件(AGENTS.md 层级/全局/附加;外部编辑即生效)", Run: h.cmdReload},
+		// S 组三端优化(2026-09-18):只读诊断命令,宿主实现 → TUI/Web/headless 同源可用。
+		{Name: "context", Usage: "/context [all]", Desc: "上下文占用分解(真实 token + 本地估算;不发模型请求)", Run: h.cmdContext,
+			Args: []sdk.ArgLevel{{Options: func([]string) []sdk.Option {
+				return []sdk.Option{{Value: "all", Desc: "展开逐工具 schema 成本"}}
+			}}}},
+		{Name: "recap", Usage: "/recap", Desc: "本地会话速览(轮数/工具/文件/最近问答;纯本地不调模型)", Run: h.cmdRecap},
+		// S-P1-1 变更审查面:数据来自捕获的写操作(tool-files 落 file/change),不依赖 git。
+		// 自由参数级断点:回车直接看清单;输入路径回车看该文件逐行 diff。
+		{Name: "diff", Usage: "/diff [路径]", Desc: "本会话文件改动清单与逐行 diff(来自捕获的写操作,不依赖 git)", Run: h.cmdDiff,
+			Args: []sdk.ArgLevel{{FreeArgs: func([]string) []string { return []string{"路径?"} }}}},
 		// 回合取消:通用命令 —— 任意 UI(TUI/Web/headless)
 		// 都能用 /stop 取消当前回合,与 TUI Esc、Web 取消按钮共用 ctx.turnControl。
 		{Name: "stop", Usage: "/stop", Desc: "取消当前回合(等价 TUI Esc / Web 取消按钮)", Run: h.cmdStop},

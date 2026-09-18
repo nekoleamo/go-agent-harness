@@ -83,7 +83,8 @@ func TestBridgeClientWithoutHintSendsEmptyFields(t *testing.T) {
 	}
 }
 
-// 空档位 = 未知:即使 hint 存在也不下传(否则插件会按空档位误判)。
+// 空档位 = 未知档位:Mode 不下传;但**工作根**必须照旧下传(S-P1-4:无沙箱宿主/子代理
+// 隔离开关下,Root 是外部插件工具唯一能拿到的相对路径基准 —— 没它就只能按插件进程 cwd 解析)。
 func TestSandboxHintFieldsEmptyMode(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -92,7 +93,7 @@ func TestSandboxHintFieldsEmptyMode(t *testing.T) {
 		wantRoot string
 	}{
 		{"无 hint", context.Background(), "", ""},
-		{"空档位", sdk.WithSandboxHint(context.Background(), sdk.SandboxHint{Root: "/ws"}), "", ""},
+		{"空档位+工作根", sdk.WithSandboxHint(context.Background(), sdk.SandboxHint{Root: "/ws"}), "", "/ws"},
 		{"只读档", sdk.WithSandboxHint(context.Background(), sdk.SandboxHint{Mode: sdk.SandboxReadOnly}), "read-only", ""},
 		{"workspace+root", sdk.WithSandboxHint(context.Background(), sdk.SandboxHint{Mode: sdk.SandboxWorkspace, Root: "/ws"}), "workspace-write", "/ws"},
 	}
@@ -160,11 +161,17 @@ func TestToolServerEmptySandboxModeNoHint(t *testing.T) {
 	}
 }
 
-// withSandboxHint 单元契约:空档位不改 ctx;非空档位置入可读回的值。
+// withSandboxHint 单元契约:两字段皆空不改 ctx;只给工作根时挂 Root 不挂档位;非空档位置入可读回的值。
 func TestWithSandboxHintHelper(t *testing.T) {
 	base := context.Background()
 	if got := withSandboxHint(base, callMeta{}); sdkHintOK(got) {
-		t.Fatal("空档位不应挂 hint")
+		t.Fatal("两字段皆空不应挂 hint")
+	}
+
+	// 只下传工作根(无沙箱宿主):相对路径基准要能到达外部插件,档位仍为空
+	rootOnly := withSandboxHint(base, callMeta{workspaceRoot: "/ws/root-only"})
+	if h, ok := sdk.SandboxHintOf(rootOnly); !ok || h.Root != "/ws/root-only" || h.Mode != "" {
+		t.Fatalf("只给工作根时应挂 Root、档位留空,got ok=%v %+v", ok, h)
 	}
 
 	got := withSandboxHint(base, callMeta{sandboxMode: string(sdk.SandboxWorkspace), workspaceRoot: "/ws/h"})

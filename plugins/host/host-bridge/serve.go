@@ -207,9 +207,10 @@ func (s *toolServer) exec(t sdk.Tool, name, jsonArgs string, reply *ExecReply, c
 }
 
 // withSandboxHint 把宿主下传的**有效**沙箱档位挂到 ctx(见 sdk.SandboxHint)。
-// 档位为空 = 旧宿主/未注入 → 不挂 hint(不猜测档位:插件应退回自身兜底语义)。
+// 档位为空但工作根非空 → 只挂 Root(相对路径基准;无沙箱宿主,工具不得假定档位)。
+// 两者皆空 = 旧宿主/未注入 → 不挂 hint(不猜测档位:插件应退回自身兜底语义)。
 func withSandboxHint(ctx context.Context, cm callMeta) context.Context {
-	if cm.sandboxMode == "" {
+	if cm.sandboxMode == "" && cm.workspaceRoot == "" {
 		return ctx
 	}
 	return sdk.WithSandboxHint(ctx, sdk.SandboxHint{Mode: sdk.SandboxMode(cm.sandboxMode), Root: cm.workspaceRoot})

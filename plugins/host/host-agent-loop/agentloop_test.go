@@ -125,10 +125,14 @@ func TestTurnToolThenText(t *testing.T) {
 		t.Fatal(err)
 	}
 	k := kinds(e.log)
-	for _, want := range []string{"user/message", "step/start", "step/end", "assistant/message", "tool/call", "tool/result", "turn/end"} {
+	// turn/start 与 turn/end 成对(S-P0-1 轨迹视图依赖权威回合边界;此前该常量只声明未发出)
+	for _, want := range []string{"turn/start", "user/message", "step/start", "step/end", "assistant/message", "tool/call", "tool/result", "turn/end"} {
 		if !strings.Contains(k, want) {
 			t.Fatalf("流程应记录 %s: %s", want, k)
 		}
+	}
+	if !strings.HasPrefix(k, sdk.EventTurnStart+","+sdk.EventUserMessage) {
+		t.Fatalf("回合应以 turn/start → user/message 起头: %s", k)
 	}
 	if !strings.HasSuffix(k, "turn/end") {
 		t.Fatalf("回合应以 turn/end 收尾: %s", k)

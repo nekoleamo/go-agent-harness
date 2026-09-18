@@ -62,7 +62,25 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	_ = c.Inject("ctx.jobs", &jobs)
 	_ = c.Inject("ctx.fanout", &fanout)
 	cbToken := randomToken() // M7 鉴权:本进程随机 token,经 GAH_CB_TOKEN 注入外部进程
-	cbAddr, cbClose, err := serveCallback(NewCallback(tools, jobs, fanout, cbToken))
+	cb := NewCallback(tools, jobs, fanout, cbToken)
+	// S-P1-1 外部化补齐:外部进程的文件工具没有宿主 Ctx,写盘审计经 change.record 回传。
+	// 未装配 ctx.sessions(极简 profile)时保持 nil → 回调显式报错(不静默丢审计)。
+	var sess sdk.SessionLog
+	_ = c.Inject("ctx.sessions", &sess)
+	if sess != nil {
+		cb.SetChangeSink(func(ev sdk.FileChangeEvent) error {
+			// Rel 外部进程取不到(它没有沙箱根),宿主按自己的工作区根补算。
+			// 沙箱**现取**:policy-guard 可能晚于本插件启动(装配顺序无保证)。
+			if ev.Rel == "" {
+				var sbx sdk.Sandbox
+				if c.Inject("ctx.sandbox", &sbx) == nil {
+					ev.Rel = relToRoot(sbx, ev.Path)
+				}
+			}
+			return sess.Append(sdk.SessionEvent{Kind: sdk.EventFileChange, Payload: ev})
+		})
+	}
+	cbAddr, cbClose, err := serveCallback(cb)
 	if err != nil {
 		return nil, err
 	}
@@ -881,10 +899,11 @@ func (t *toolRPCClient) Execute(ctx context.Context, args string) (any, error) {
 }
 
 // sandboxHintFields 把 ctx 上的**有效**沙箱档位转成协议字段(见 sdk.SandboxHint)。
-// 未注入 / 档位为空 → 两字段留空:对端(插件)按「未注入」处理,不得猜测档位。
+// Mode 为空但有 Root(无沙箱宿主下的调用级工作根)→ 只下传路径基准:对端不得假定档位。
+// 两者皆空 → 两字段留空:对端按「未注入」处理。
 func sandboxHintFields(ctx context.Context) (mode, root string) {
 	h, ok := sdk.SandboxHintOf(ctx)
-	if !ok || h.Mode == "" {
+	if !ok {
 		return "", ""
 	}
 	return string(h.Mode), h.Root
@@ -1027,4 +1046,18 @@ func randomToken() string {
 		return fmt.Sprintf("tok-%d", time.Now().UnixNano()) // 兜底:时间戳(非安全场景足够)
 	}
 	return hex.EncodeToString(b)
+}
+
+// relToRoot 相对工作区路径(与 tool-files.relPath 同口径:取不到/在根外回退空串)。
+// 外部进程工具没有沙箱根,Rel 只能由宿主补算;空串时呈现端回落用绝对路径。
+func relToRoot(sb sdk.Sandbox, p string) string {
+	if sb == nil || sb.Root() == "" || p == "" {
+		return ""
+	}
+	root := filepath.Clean(sb.Root())
+	rel, err := filepath.Rel(root, filepath.Clean(p))
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return ""
+	}
+	return filepath.ToSlash(rel)
 }

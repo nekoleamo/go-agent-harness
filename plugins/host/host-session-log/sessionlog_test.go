@@ -515,3 +515,38 @@ func TestLoadFailureKeepsState(t *testing.T) {
 		t.Fatalf("失败后路径必须保持: %s", l.path)
 	}
 }
+
+// TestLoadRestoresFileChangePayload S-P1-1:改动审计带 patch 文本,落盘 → Load 回放必须
+// 还原为 sdk.FileChangeEvent(否则 /diff 读回 map,逐行 diff 打不开)。
+func TestLoadRestoresFileChangePayload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fc.jsonl")
+	l := newTestLog(t, path)
+	want := sdk.FileChangeEvent{
+		Path: "/w/a.go", Rel: "a.go", Op: "edit", Tool: "file_edit",
+		Added: 2, Removed: 1, Diff: "@@ -1,1 +1,2 @@\n-x\n+y\n+z\n", Bytes: 8,
+	}
+	if err := l.Append(sdk.SessionEvent{Kind: sdk.EventFileChange, Payload: want}); err != nil {
+		t.Fatal(err)
+	}
+	l.Flush()
+	l.Close()
+
+	l2 := newTestLog(t, "")
+	if err := l2.Load(path); err != nil {
+		t.Fatal(err)
+	}
+	var got sdk.FileChangeEvent
+	found := false
+	for _, ev := range l2.Replay() {
+		if ev.Kind != sdk.EventFileChange {
+			continue
+		}
+		got, found = sdk.FileChangeFrom(ev.Payload)
+	}
+	if !found {
+		t.Fatalf("回放应按 Kind 还原为具体类型: %T", l2.Replay()[0].Payload)
+	}
+	if got != want {
+		t.Fatalf("字段往返丢失:\n want %+v\n  got %+v", want, got)
+	}
+}

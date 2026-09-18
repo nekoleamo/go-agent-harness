@@ -300,3 +300,110 @@ func TestNoFanoutBackend(t *testing.T) {
 
 // 编译期:stubFanout 实现 sdk.FanoutService。
 var _ sdk.FanoutService = (*stubFanout)(nil)
+
+// isoFanout 具备隔离能力的 fanout 替身(记录请求,回传固定 worktree)。
+type isoFanout struct {
+	stubFanout
+	reqs []sdk.WorktreeRun
+}
+
+func (s *isoFanout) RunInWorktree(_ context.Context, req sdk.WorktreeRun) (sdk.WorktreeRunResult, error) {
+	s.reqs = append(s.reqs, req)
+	wt := sdk.Worktree{ID: "repo-wt1", Path: "/gah/worktrees/repo-wt1", Branch: "gah/repo-wt1", Base: "abc12345def"}
+	return sdk.WorktreeRunResult{Worktree: wt, Text: "隔离完成:已改 X",
+		Handle: sdk.AgentHandle{ID: "ag7", State: sdk.AgentRunning}}, nil
+}
+
+// 编译期:isoFanout 同时满足两个能力接口。
+var (
+	_ sdk.FanoutService  = (*isoFanout)(nil)
+	_ sdk.IsolatedFanout = (*isoFanout)(nil)
+)
+
+// TestIsolateWorktree 隔离运行:delegate/spawn/fork 三 action 映射到 RunInWorktree 语义,
+// 回包必须含 worktree 路径/分支(父级据此合并或回收)。
+func TestIsolateWorktree(t *testing.T) {
+	iso := &isoFanout{}
+	tool := NewTool(iso).(*Tool)
+
+	out, err := tool.Execute(context.Background(), `{"action":"delegate","task":"实现 X","isolate":"worktree"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := out.(map[string]any)
+	if m["worktree"] != "/gah/worktrees/repo-wt1" || m["branch"] != "gah/repo-wt1" || m["isolated"] != true {
+		t.Fatalf("隔离回包应含 worktree/branch: %+v", m)
+	}
+	if m["result"] != "隔离完成:已改 X" {
+		t.Fatalf("同步隔离应回传子代理文本: %+v", m)
+	}
+	if len(iso.reqs) != 1 || !iso.reqs[0].Sync || iso.reqs[0].Fork {
+		t.Fatalf("delegate 应映射 Sync=true: %+v", iso.reqs)
+	}
+	if iso.reqs[0].Label == "" {
+		t.Fatalf("应自动生成 worktree 标签(便于 /worktree list 辨认): %+v", iso.reqs[0])
+	}
+
+	// spawn:后台(不 Sync),回包带 agent_id/worktree
+	out, _ = tool.Execute(context.Background(), `{"action":"spawn","task":"后台改 X","isolate":"worktree"}`)
+	m = out.(map[string]any)
+	if m["agent_id"] != "ag7" || m["state"] != "running" {
+		t.Fatalf("spawn 应回句柄: %+v", m)
+	}
+	if iso.reqs[1].Sync || iso.reqs[1].Fork {
+		t.Fatalf("spawn 应映射 Sync=false: %+v", iso.reqs[1])
+	}
+
+	// fork:后台 + 父上下文
+	out, _ = tool.Execute(context.Background(), `{"action":"fork","task":"带上下文改 X","isolate":"worktree"}`)
+	if iso.reqs[2].Sync || !iso.reqs[2].Fork {
+		t.Fatalf("fork 应映射 Fork=true: %+v", iso.reqs[2])
+	}
+	_ = out
+}
+
+// TestIsolateUnsupported 宿主 fanout 不支持隔离 → 显式报错(不静默退化为主工作区执行)。
+func TestIsolateUnsupported(t *testing.T) {
+	tool := NewTool(&stubFanout{}).(*Tool)
+	for _, a := range []string{
+		`{"action":"delegate","task":"x","isolate":"worktree"}`,
+		`{"action":"spawn","task":"x","isolate":"worktree"}`,
+		`{"action":"fork","task":"x","isolate":"worktree"}`,
+	} {
+		out, err := tool.Execute(context.Background(), a)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out.(map[string]any)["error"].(string), "不支持 worktree 隔离") {
+			t.Fatalf("%s 应显式报不支持: %+v", a, out)
+		}
+	}
+}
+
+// TestIsolateInvalidValue isolate 取值非法/用错 action → 结构化错误(防拼错静默不隔离)。
+func TestIsolateInvalidValue(t *testing.T) {
+	iso := &isoFanout{}
+	tool := NewTool(iso).(*Tool)
+	out, _ := tool.Execute(context.Background(), `{"action":"delegate","task":"x","isolate":"sandbox"}`)
+	if !strings.Contains(out.(map[string]any)["error"].(string), "isolate 仅支持") {
+		t.Fatalf("非法 isolate 应报错: %+v", out)
+	}
+	out, _ = tool.Execute(context.Background(), `{"action":"agents","isolate":"worktree"}`)
+	if !strings.Contains(out.(map[string]any)["error"].(string), "仅适用于") {
+		t.Fatalf("用错 action 应报错: %+v", out)
+	}
+	if len(iso.reqs) != 0 {
+		t.Fatalf("非法入参不得触发隔离运行: %+v", iso.reqs)
+	}
+}
+
+// TestWorktreeLabel 标签取任务首行前 12 个字符(目录名可读且不超长)。
+func TestWorktreeLabel(t *testing.T) {
+	if got := worktreeLabel("实现 X\n第二行"); got != "实现 X" {
+		t.Fatalf("应取首行: %q", got)
+	}
+	long := strings.Repeat("字", 30)
+	if got := worktreeLabel(long); len([]rune(got)) != 12 {
+		t.Fatalf("应截断到 12 字符: %q", got)
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -46,26 +47,23 @@ func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
 	// 命令注册(可选注入:未装配 ctx.commands/无 TUI 时跳过,不报错——与沙箱同模式)
 	var cmds sdk.CommandRegistry
 	_ = c.Inject("ctx.commands", &cmds)
+	// 可选的子代理服务(S-P0-3:/jobs 统一视图把后台任务与子代理列在一起;
+	// host-fanout 未装配时退化为纯任务视图,不报错)
+	var fo sdk.FanoutService
+	_ = c.Inject("ctx.fanout", &fo)
 	if cmds != nil {
 		d, err := cmds.Register(sdk.CommandSpec{
 			Name:  "jobs",
 			Usage: "/jobs list|output <id>|kill <id>",
-			Desc:  "后台任务",
-			Run:   func(args []string) (string, error) { return jobsCmd(args, j) },
+			Desc:  "后台任务与子代理",
+			Run:   func(args []string) (string, error) { return jobsCmd(args, j, fo) },
 			// 交互式选择器级联:一级 list/output/kill;二级动态枚举任务 ID(output/kill 时)
 			Args: []sdk.ArgLevel{
 				{Options: func([]string) []sdk.Option {
-					return []sdk.Option{{Value: "list", Desc: "列出全部任务"}, {Value: "output", Desc: "取任务输出"}, {Value: "kill", Desc: "终止任务"}}
+					return []sdk.Option{{Value: "list", Desc: "列出后台任务与子代理(运行中优先)"}, {Value: "output", Desc: "取任务/子代理输出"}, {Value: "kill", Desc: "终止运行中的任务/子代理"}}
 				}},
 				{Options: func(picked []string) []sdk.Option {
-					if len(picked) < 2 || picked[1] == "list" {
-						return nil // list 无二级 → 选完直接执行
-					}
-					var opts []sdk.Option
-					for _, jb := range j.List() {
-						opts = append(opts, sdk.Option{Value: jb.ID, Desc: jb.Command})
-					}
-					return opts
+					return jobsIDOptions(j, fo, picked)
 				}},
 			},
 		})
@@ -82,49 +80,29 @@ func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
 	}, nil
 }
 
-// jobsCmd /jobs 命令实现(输出文本由 TUI 显示;错误带用法)。
-func jobsCmd(args []string, j *Jobs) (string, error) {
-	if len(args) < 1 {
-		return "", errString("/jobs list|output <id>|kill <id>")
+// jobsCmd /jobs 命令实现(输出文本由 TUI/Web 显示;错误带用法)。
+// 视图逻辑在 jobs_view.go(统一任务 + 子代理;fo 为 nil 时退化为纯任务视图)。
+// 无参等价 list(裸 /jobs 即可看全貌,无需先记子命令)。
+func jobsCmd(args []string, j *Jobs, fo sdk.FanoutService) (string, error) {
+	action := "list"
+	if len(args) > 0 && strings.TrimSpace(args[0]) != "" {
+		action = strings.TrimSpace(args[0])
 	}
-	switch args[0] {
+	switch action {
 	case "list":
-		rows := "后台任务:"
-		for _, jb := range j.List() {
-			rows += fmt.Sprintf("\n  %s [%s] %s", jb.ID, jb.State, jb.Command)
-			if jb.Result != nil {
-				rows += fmt.Sprintf(" → %v", jb.Result)
-			}
-		}
-		return rows, nil
+		return jobsListView(j, fo), nil
 	case "output":
 		if len(args) < 2 {
 			return "", errString("/jobs output <id>")
 		}
-		jb, ok := j.Output(args[1])
-		if !ok {
-			return "", errString("任务不存在: " + args[1])
-		}
-		text := fmt.Sprintf("%s [%s] 命令: %s\n", jb.ID, jb.State, jb.Command)
-		if jb.Output != "" {
-			text += jb.Output
-		} else if jb.Result != nil {
-			text += fmt.Sprintf("%v", jb.Result)
-		}
-		if jb.Error != "" {
-			text += "错误: " + jb.Error
-		}
-		return text, nil
+		return jobsOutputView(j, fo, strings.TrimSpace(args[1]))
 	case "kill":
 		if len(args) < 2 {
 			return "", errString("/jobs kill <id>")
 		}
-		if err := j.Kill(args[1]); err != nil {
-			return "", errString(err.Error())
-		}
-		return "已终止 " + args[1], nil
+		return jobsKillView(j, fo, strings.TrimSpace(args[1]))
 	default:
-		return "", errString("/jobs list|output|kill")
+		return "", errString("/jobs list|output|kill <id>")
 	}
 }
 

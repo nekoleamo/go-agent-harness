@@ -347,8 +347,9 @@ func TestJobsCmdBranches(t *testing.T) {
 	j := c.jobsService(t)
 	spec, _ := c.cmds.Get("jobs")
 
-	if _, err := spec.Run(nil); err == nil || !strings.Contains(err.Error(), "/jobs list") {
-		t.Fatalf("无参数应给用法: %v", err)
+	// 无参 = list(S-P0-3:裸 /jobs 即可看全貌,不必先记子命令)
+	if out, err := spec.Run(nil); err != nil || !strings.Contains(out, "后台任务与子代理") {
+		t.Fatalf("无参数应等价 list: %v %q", err, out)
 	}
 	if _, err := spec.Run([]string{"nope"}); err == nil || !strings.Contains(err.Error(), "/jobs list|output|kill") {
 		t.Fatalf("未知子命令应给用法: %v", err)
@@ -364,7 +365,7 @@ func TestJobsCmdBranches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "后台任务:") || !strings.Contains(out, runID) || !strings.Contains(out, "map[ok:true]") {
+	if !strings.Contains(out, "后台任务与子代理") || !strings.Contains(out, runID) || !strings.Contains(out, "map[ok:true]") {
 		t.Fatalf("列表应含任务与结果摘要: %q", out)
 	}
 
@@ -372,7 +373,7 @@ func TestJobsCmdBranches(t *testing.T) {
 		t.Fatalf("output 缺 id 应给用法: %v", err)
 	}
 	if _, err := spec.Run([]string{"output", "job_不存在"}); err == nil ||
-		!strings.Contains(err.Error(), "任务不存在") {
+		!strings.Contains(err.Error(), "未找到任务/子代理") {
 		t.Fatalf("output 未知任务应报错: %v", err)
 	}
 	out, err = spec.Run([]string{"output", runID})
@@ -398,7 +399,7 @@ func TestJobsCmdBranches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "已终止 "+slowID) {
+	if !strings.Contains(out, "已终止任务 "+slowID) {
 		t.Fatalf("kill 成功应回确认: %q", out)
 	}
 	if st := waitDone(t, j, slowID); st.State != sdk.JobKilled {
