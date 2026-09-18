@@ -34,15 +34,17 @@ One source, three surfaces: the same gah binary hosts **TUI / Web / headless**; 
 | **Approval tiers** | Dangerous commands (rm -rf / git push -f / sudo / chmod 777…) follow a tier: open (allow) / smart (confirm dialog; safe-deny when no confirm channel; default) / strict (deny); preference persists |
 | **Credential isolation** | Tool subprocess env strips `*_API_KEY/_TOKEN/_SECRET`; dangerous operations safe-deny without a confirm channel |
 | **Session management** | Per-project isolation + multi-session switching + branch tree (`/fork` `/clone` `/tree` + naming); rolling summary compression over token budget (token-compress; full logs stay on disk) |
-| **Model tools** | shell / file_read-write-append-edit / web_fetch / web_search / workflow / subagent / todo / memory / auto_plan / job_* / skill reader / MCP bridge tools (see §5) |
+| **Model tools** | shell / file_read-write-append-edit / web_fetch / web_search / workflow / subagent / todo / memory / auto_plan / session_search / job_* / skill reader / MCP bridge tools (see §5) |
 | **Background jobs** | host-jobs + workflow `background`: async submit/fetch/kill long tasks without blocking a turn |
+| **Parallel isolation** | host-worktrees (`ctx.worktrees` + `/worktree`): managed git worktrees live under `$GAH_HOME/worktrees/` (never inside your repo); a subagent run with `subagent(isolate="worktree")` works in its own directory and branch, so two parallel subagents editing the same files never clobber each other. **Isolation is enforced, not advisory**: the sandbox write scope is narrowed to that worktree, so relative and absolute writes both stay out of the main workspace. Non-git repos fail explicitly instead of degrading; worktrees are kept by default and reclaimed with `/worktree rm` (branch preserved) |
 | **Scheduled tasks** | host-schedule (`ctx.schedule`): 5-field cron plans (min hour dom month dow) stored in `$GAH_HOME/schedules/*.yaml`; when due they run a turn **through the existing turn entry** (agentLoop to tools, still subject to approval/sandbox policy and still written to the session log); managed in the settings panel "Plans" section (Chinese "next run time" read-back, no self-built cron builder); **unattended = no confirmation channel, so actions needing approval are always refused (including in open mode)** |
 | **Subagent fanout** | `agent/parallel/pipeline` ReAct fan-out in isolated contexts, results aggregated; `send_message`/`fork` inject messages and derive sessions |
 | **starlark workflow** | Model writes a restricted starlark script composing multi-step tool calls (sandboxed, no stdlib); `background` for async |
 | **Web search** | web_search (default Exa, `EXA_API_KEY`; switch via `data.provider`) works with web_fetch; errors normalized |
 | **MCP both ways** | client bridge (attach external servers; tools `mcp_<server>_<name>`) and server side (expose all repository tools; launchable by Claude Desktop etc.) |
 | **MCP on-demand search** | per-server `mode`: `direct` (default, full tool set in context) or `search` (tools stay **out of the per-turn context**; only `mcp_search` to look them up and `mcp_call` to invoke). Config lives in `$GAH_HOME/config/mcp.yaml` (add/edit/remove in the settings panel's "MCP server" section; **saving writes the file and hot-reloads the plugin**, no restart). Env vars still work (file wins) |
-| **External plugin bridge** | host-bridge: out-of-process plugins (go-plugin); crash isolation (host survives a killed child); callback channel (GAH_CB_ADDR) so external processes can request tools/jobs/fanout; tools are 100% external (extplugins/) |
+| **ACP agent side** | `gah acp`: run as a first-class agent over **ACP v1** (Agent Client Protocol, Linux Foundation) inside editors (Zed, Neovim, ...). Sessions, streaming replies, tool progress and approval prompts all travel over ACP, on the **same data** as TUI/Web (same session ledger, same sandbox/approval decisions; not a second runtime). Editor permission buttons only map to `allow_once`/`reject_once` (never always: one click should not permanently relax dangerous operations); interactive questions and image input are not supported (explicit errors, answer in TUI/Web) |
+| **External plugin bridge** | out-of-process plugins (go-plugin); crash isolation (host survives a killed child); callback channel (GAH_CB_ADDR) so external processes can request tools/jobs/fanout; tools are 100% external (extplugins/) |
 | **Plugin install** | `gah -install <repo>[@version]` (external/bridge plugins) and `-install-ui <repo|dir>` (UI-slot plugins): one command, enabled immediately |
 | **Instruction files & skills** | Global/project AGENTS.md auto-injected (closer overrides; `/reload` hot reload); SKILL.md scanning with on-demand loading (`list_skills`/`read_skill`); ships the `gah-plugin-dev` skill |
 | **Externalized themes** | `$GAH_HOME/config/themes/*.yaml` + `/theme` runtime switching — reskin without recompiling |
@@ -135,6 +137,7 @@ The data root is `gah-data/` next to the real binary (created on first run; a sy
 ```bash
 ./gah                                        # TUI (default tui profile; auto-falls back to text when non-TTY)
 ./gah web                                    # Web UI (≡ --profile web), http://127.0.0.1:2233, opens browser
+./gah acp                                    # ACP agent form (launched over stdio by an editor such as Zed; ≡ --profile acp)
 ./gah --profile headless --input "run echo hi"        # one headless turn (CI/scripts; mock model needs no key)
 ./gah --profile mcp-serve                    # MCP-server form (launched over stdio by an external MCP client)
 ./gah --profile dev --dump-config            # print the merged config tree (any entry is patchable)
@@ -176,7 +179,7 @@ Then chat normally; use `/provider clear` to return to env-var config.
 
 | Flag | Effect |
 |---|---|
-| `-profile <name>` | profile (tui/headless/dev/web/mcp-serve/custom) |
+| `-profile <name>` | profile (tui/headless/dev/web/acp/mcp-serve/custom) |
 | `-input <text>` | headless single input: run one turn, print the reply, exit |
 | `-dump-config` | print the merged config tree and exit |
 | `-ephemeral` | throwaway data root |
@@ -196,7 +199,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 
 ## 4. TUI commands
 
-> Commands register into the host `ctx.commands` and work from TUI/Web/headless with a `/` prefix; typing `/` pops the command palette (name+description, filterable). **Every command supports step-by-step confirmation**: arguments cascade as declared (subcommand enums → dynamic candidates such as providers/sessions/plugins/jobs/backups/themes/IM groups; free-form args break into input prompts) — the TUI uses its picker, and Web uses the same registry-declared candidate list (click through the levels). TUI-only commands (search/widgets/theme/help/exit/fork/clone/tree/name) are available in the TUI only.
+> Commands register into the host `ctx.commands` and work from TUI/Web/headless with a `/` prefix; typing `/` pops the command palette (name+description, filterable). **Every command supports step-by-step confirmation**: arguments cascade as declared (subcommand enums → dynamic candidates such as providers/sessions/plugins/jobs/backups/themes/IM groups; free-form args break into input prompts) — the TUI uses its picker, and Web uses the same registry-declared candidate list (click through the levels). TUI-only commands (search/widgets/statusline/theme/help/exit/fork/clone/tree/name) are available in the TUI only.
 
 | Command | Effect |
 |---|---|
@@ -214,7 +217,12 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `/session pin\|unpin [id]` | Pin / unpin a session (defaults to the current one; pinned block sorts first, max 8) |
 | `/session summary [id]` | Generate/show the session summary (LLM: one-line + topics; **calls the model**) |
 | `/reload` | Hot-reload instruction files (AGENTS.md hierarchy/global/extra; external edits apply without restart) |
-| `/jobs list\|output <id>\|kill <id>` | Background jobs: list / output / kill (same source as workflow `background` and the Web jobs panel) |
+| `/context [all]` | Context-usage breakdown: **real** tokens (cumulative input/output/cache hits/window bar) listed separately from **local estimates** (fixed guidance, global+project instructions, extra instructions, prompt sections, tool-name list, tool-schema JSON cost, projected history), with the basis labelled explicitly; `all` also lists each tool's schema bytes and rough tokens (**fully local, no model request**) |
+| `/diff [path]` | Change review: no arg = files changed in this session (+/~ lines, aggregated by path); with a path = per-line diff of that file (TUI opens the pager, Web switches to the changes view). Built from before/after content captured at write time, so it **does not depend on git** (no repo, or other uncommitted edits, change nothing about the basis); oversize/invalid cases (32 KiB budget, binary, huge input) are labelled explicitly |
+| `/recap` | Session recap (turns / top tools with failures / files touched / last Q&A / model / span; **local stats only, no model call**) |
+| `/answer [index\|text\|skip]` | Answer a structured question (TUI): no args returns to answering mode; multiple pending questions are answered in arrival order; `skip` skips; `Esc` leaves answering mode (question and draft kept) |
+| `/jobs [list]\|output <id>\|kill <id>` | Unified view of background jobs **and subagents**: no arg = list (running first, with duration/summary) / output / kill (kill needs `running`; same source as workflow `background` and the Web jobs panel; the TUI status bar also shows a persistent fold line "N running"; press **F6** in the TUI to expand the live dock) |
+| `/worktree [list]\|rm <id> [force]` | Managed worktrees (the working directory of isolated subagents): no args = list (branch/base/path + reclaim hint) / `rm` reclaims the directory (**branch is preserved**, since unmerged work still lives on it; refused without `force` when there are untracked changes, so work is never silently dropped) |
 | `/schedule [list]\|add <cron> <description>\|rm\|on\|off\|run <id>` | Scheduled tasks: list / add (5-field cron, e.g. `0 8 * * *` = daily at 08:00) / remove / enable-disable / run once now (same source as the settings panel "Plans" section) |
 | `/backup [dest]\|list\|restore <name>` | Full GAH_HOME backup (config incl. keys/plugins/sessions/env.sh/prefs, excludes backups/ itself): no arg = back up now (default `$GAH_HOME/backups/`, external path allowed) / `list` (newest first) / `restore <name>` (**auto-backs-up the current state first**; fully effective after restart) |
 | `/preview <path>` | Open the document preview workbench: TUI shows a full-screen pager (`↑↓`/`PgUp`/`PgDn` scroll, `←→` horizontal, `/` search with `n/N`, `q`/`Esc` close); Web opens the document panel at that file (markdown/text/code/CSV/notebook/docx/xlsx/pptx/PDF) |
@@ -225,9 +233,12 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `/tree` | Session branch tree (full picture + forkable question points) |
 | `/name <display name>` | Give the current session a display name (`-` clears; takes priority in the status bar / switch list) |
 | `/widgets on\|off` | Toggle the widget strip above the input (dynamic host-registered info lines) |
+| `/statusline [items...]\|reset` | Status bar item set and order (TUI): no arg = show the current layout plus available items (`state/queue/questions/dock/last/workspace/sandbox/approval/session`); passing items renders them in that order (turn-state items joined with `·`, sections with `|`), `reset` restores the F15.3 baseline; the preference persists in `gah-state.json` and applies on restart |
 | `/help` `/exit` | Help / quit (**press Ctrl+C twice**, anti-misfire) |
 
-> **Key cheat-sheet**: a single `Ctrl+C` while typing only clears the input (does not quit); with empty input you must press `Ctrl+C` **twice within 2s** to quit — the first press highlights a "press again" hint, and the timer resets on timeout or any other key; `Esc` cancels the running turn; `Shift+Tab` cycles thinking levels; `Ctrl+T` folds/expands thinking blocks; `Ctrl+O` folds the latest tool result; `Ctrl+↑/↓` jumps to the earliest user line / back to bottom; `Ctrl+A` select-all (delete = clear / typing = replace), `Ctrl+B/F` move left/right, `Ctrl+Y` redo, `Alt+P` yank-paste, `Alt+←/→` word-wise move.
+> **`!` shell passthrough**: an input starting with `!` (e.g. `!git status`) runs that shell command immediately (**through the same sandbox/approval pipeline as model tools** — there is no "hand-typed means unchecked" bypass) and echoes the output inline; long commands can be interrupted with `Esc`. The result stays **local and never enters the model context** (an orphan tool message would break the projection). Let the model call a tool when you need the output in context.
+>
+> **Key cheat-sheet**: a single `Ctrl+C` while typing only clears the input (does not quit); with empty input you must press `Ctrl+C` **twice within 2s** to quit — the first press highlights a "press again" hint, and the timer resets on timeout or any other key; `Esc` cancels the running turn; `Shift+Tab` cycles thinking levels; `Ctrl+T` folds/expands thinking blocks; `Ctrl+O` folds the latest tool result; `Ctrl+↑/↓` jumps to the earliest user line / back to bottom; `Ctrl+A` select-all (delete = clear / typing = replace), `Ctrl+B/F` move left/right, `Ctrl+Y` redo, `Alt+P` yank-paste, `Alt+←/→` word-wise move; `F6` expands/collapses the background dock (↑/↓ select, `Enter` view output, `s` steer, `x` kill with a second press to confirm, `Esc` collapse).
 
 ## 5. Model-callable tools (invoked by the model, no interaction)
 
@@ -241,7 +252,8 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `memory` | Cross-session memory (remember/list/recall/forget; `$GAH_HOME/memory/<project>.jsonl`, human-editable) |
 | `todo` | Task list (create/start/complete/pend/delete/update/list; 4-state machine + blockedBy deps; `$GAH_HOME/todos/`) |
 | `auto_plan` | Planning mode (create/get/list/step/confirm/complete; detects planning intent, outputs a structured plan first, zero side-effect tool calls before confirmation; `$GAH_HOME/plans/`) |
-| `subagent` | Subagent delegation (delegate/spawn/agents/agent_status/agent_kill/send_message/fork; isolated ReAct contexts, background handles) |
+| `session_search` | Cross-session search (queries the historical session ledger: `{query, limit, scope?}` returns matched snippets plus session id/time; searches the **current workspace** by default, `scope="all"` widens it to other projects; read-only, no index files, and hits are **historical records**, not current facts) |
+| `subagent` | Subagent delegation (delegate/spawn/agents/agent_status/agent_kill/send_message/fork; isolated ReAct contexts, background handles); `isolate="worktree"` (valid for delegate/spawn/fork) = **isolated run**: the subagent works inside a managed git worktree, so its changes land only there and never in the main workspace, and the reply carries the worktree path/branch (the parent decides whether to merge or discard). Non-git repos or a missing host-worktrees plugin fail explicitly instead of silently degrading to a non-isolated run |
 | `list_skills` / `read_skill` | Skill index / load SKILL.md on demand (project `.gah/skills/`, `$GAH_HOME/skills/`) |
 | `mcp_<server>_<tool>` | MCP bridge tools (`mode: direct`; see "MCP" below) |
 | `mcp_search` / `mcp_call` | MCP search-mode proxy tools (`mode: search`): search the tool list by keyword (empty query = all), then invoke by name |
@@ -254,9 +266,16 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 
 - **Settings panel** (⚙ in the status bar): model dropdown (all providers aggregated), thinking/sandbox/**approval** segmented controls, history-injection dropdown + compact button, provider management (enable/delete/add; **first-run onboarding** auto-opens the panel when no provider exists and offers one-click presets for DeepSeek/Kimi/GLM/Qwen/SiliconFlow/OpenRouter/OpenAI/Ollama that need only an api_key, followed by a **connectivity self-check** that renders 401/404/DNS endpoint errors as plain language next to the raw response), **scheduled plans** ("Plans" section: 5-field cron + Chinese "next run time" read-back, run/enable/delete; the unattended-run semantics are stated in that section), **MCP servers** ("MCP server" section: per-entry name/command/enable/mode (full registration or on-demand search), read-only rows for env-provided servers, per-row "loaded, N tools" state, and **Save and reload** for immediate effect), plugin toggles, instruction reload, **data backup** (back up now / restore — **double-confirmed**). Every change persists on exit (gah-state.json, shared with the TUI).
 - **Sidebar**: pinned workspaces (switching = real chdir) + session history (name/content preview/time; ✎ rename, × delete — double-confirmed), attachment upload (button/drag-drop/paste; image thumbnails + the model sees images), session export (⤓ jsonl/HTML).
-- **Status bar** (only read-only facts that live nowhere else): idle/running, **effective sandbox tier**, unnamed-session id, connection state (green/orange), context·cache usage, and the version number (**click → "About gah"**, i.e. the update entry). Model/thinking/approval each have their single control elsewhere (input toolbar, settings panel) and are no longer mirrored here; the background-jobs button sits in the top-right corner (running badge + list/output/kill).
+- **Status bar** (only read-only facts that live nowhere else): idle/running, **effective sandbox tier**, unnamed-session id, connection state (green/orange/red), context·cache usage, and the version number (**click → "About gah"**, i.e. the update entry). Model/thinking/approval each have their single control elsewhere (input toolbar, settings panel) and are no longer mirrored here; the background-jobs button sits in the top-right corner (running badge + list/output/kill).
 - **Document preview panel** (sidebar "Document preview"): workspace file tree on the left (filter / lazy expand / whole tree resets on workspace switch) and preview on the right (markdown block rendering, code/tables, docx/xlsx/pptx block model, native in-browser PDF viewer, images, HTML **source view by default with a click-to-load sandboxed iframe**; truncation and warning strips); tool result rows with a previewable path get a "Preview" button; assistant text in the session stream is markdown-rendered server-side (zero `v-html` in the frontend).
-- **WebSocket channel**: `/api/events/ws` (same payload as SSE; the frontend degrades automatically).
+- **Structured questions**: the `ask_user_question` tool opens a dialog with the prompt and options; it can be collapsed into a **badge above the input** ("answer later") without blocking the conversation, and clicking the badge returns to the dialog. Multiple pending questions are answered in arrival order.
+- **Trajectory view** (status-bar "轨迹/会话流" toggle, remembered): aggregates the same session event ledger into **turn → step → tool** to inspect process and cost: a sticky overview (turns, total duration, cumulative tokens and cache share, plus clickable turn chips that jump to that turn), turn status badges (done/cancelled/step limit/running), per-step tool rows (name, args, duration, **output bytes**, ok/fail with the error text inline) and per-turn token breakdown. **Durations come only from event timestamps; an in-flight turn/step/tool always shows "进行中"** instead of a fabricated duration. When the loaded window is incomplete (older history of a long session not loaded / folded away) the overview is relabelled "窗口内 token" and states that it only covers the current window.
+- **Changes view** (status-bar cycle: stream → trajectory → changes → board, remembered): shows only **files this session actually changed through tools**: a sticky overview (file count, +lines/−lines, change count, plus clickable file chips that jump to a file), collapsible per-file blocks (new/binary/truncated badges, ops and ± counts), and an expanded per-line coloured patch where each hunk carries a `#seq op time` header to locate it against the session stream, along with explicit degradation notes. It is built from before/after content captured at write time, so the basis is deliberately **not git** (it is not "working tree vs HEAD"); `/diff <path>` jumps straight to one file.
+- **Board view** (fourth projection, cycled from the status bar): aggregates data already in hand into a single information surface with **five cards** — usage (cumulative input/output, cache hit share, request count, context fill), turns (completed turns, total duration, tool calls and failures, average tokens), background jobs (running, record count, most recent), file changes (files, ±lines, change count) and scheduled plans (enabled count, next run, last outcome). Cards can be **hidden / reordered**, reset to defaults, and the layout is remembered in the browser (new cards are appended automatically); card actions jump straight to the matching view or drawer (trajectory / changes / jobs panel / the settings plan section). **Each card states its own basis**: usage is session-cumulative, the turn count includes the in-flight turn, and changes come from the tool write path (not git). Everything is derived from the local event ledger and existing endpoints: no executable content, no new backend contract.
+- **Sidebar dock** (opened from the status bar, remembered): docks the changes / board / jobs panels **beside the conversation stream** instead of making you choose between "switch away from the stream to see changes" and "let the jobs panel cover the conversation". Panels switch via the dock's tabs; the width is **draggable** (focus the separator and use `←/→`, double-click to reset) and the layout is stored in the browser. **The width yields to the conversation**: when the viewport is tight the dock gives way first (min 280 / max 720 / always keep 520 for the stream), and below 900px it degrades to an overlay drawer. Zero backend contract: the dock reuses the existing view components, so the data pipeline is unchanged.
+- **Long-session window** (first-frame baseline + scroll-up paging): opening a very long session no longer replays all history. The first connect replays only a **tail window** (about 400 events, turn-aligned) and sends a **baseline** frame first to tell the frontend the window boundaries and whether older history exists; scrolling near the top (or clicking the top button) fetches one earlier page by cursor and prepends it (deduplicated by sequence, **scroll position stays put**). While reading at the bottom the oldest messages are folded away (cap 800, shown as `已折叠 N 条更早消息`) and can be fetched back by scrolling up, so DOM and memory do not grow with session length. The trajectory/changes views label their scope explicitly when the window is incomplete instead of presenting window totals as session totals.
+- **WebSocket channel**: `/api/events/ws` (same payload as SSE; the frontend degrades automatically; both paths carry the `after` cursor on reconnect).
+- **Disconnection behaviour** (explicit three states: connected / reconnecting / **disconnected**): when the link is lost a red banner with a "retry" button appears above the input, **submitting and approving/answering are blocked while the draft, attachments and dialogs stay exactly as they were** (nothing local is thrown away before it is delivered; you resend manually after recovery, there is no automatic queue replay). On recovery the server snapshot takes over and stale completion frames are discarded. The disconnected verdict only uses observable facts (browser `navigator.onLine`, EventSource giving up, failed probe) instead of guessing from "how long since the last frame"; returning to the foreground or waking from sleep (clock jump > 20s) re-handshakes once.
 - **General REST surface** (callable by the frontend or scripts; missing services return explicit 503/501):
 
 | Method / path | Description |
@@ -265,7 +284,8 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `GET /api/state` | State snapshot (model/thinking/sandbox/approval/stats/session/running/version) |
 | `POST /api/input` | Submit a turn; `/` prefix routes to commands; 409 while running |
 | `POST /api/confirm` | Approval reply `{id, ok}` |
-| `GET /api/events` + `GET /api/events/ws` | Event stream (SSE replay on reconnect / WS) |
+| `GET /api/events` + `GET /api/events/ws` | Event stream (SSE replay on reconnect / WS; first connect sends the `baseline` frame plus the tail window, reconnects replay the `after` delta) |
+| `GET /api/session/events` | Session event paging (`?before=<seq>&limit=<n>`): load older history in long sessions; windows are turn-aligned and return `has_more` |
 | `GET /api/sessions`, `POST /api/sessions` | Session list / `{action: switch\|new\|fork\|clone\|delete}` |
 | `POST /api/sessions/rename`, `GET /api/sessions/{id}/export` | Rename / export jsonl |
 | `GET /api/workspaces`, `DELETE /api/workspaces/{key}` | Workspace history / delete record (keeps the folder) |
@@ -350,6 +370,23 @@ export GAH_MCP_COMMANDS="deja=/opt/homebrew/bin/deja\ncodegraph=codegraph serve 
 # As an MCP server exposing all repository tools (launchable by Claude Desktop etc. over stdio)
 ./gah --profile mcp-serve
 ```
+
+### ACP integration (editor <-> gah)
+
+`gah acp` lets an editor launch gah as an ACP agent (needs `$GAH_HOME/config/profile-acp.yaml`, shipped in the seed; `gah acp` ≡ `gah --profile acp`, bundles = base + confirm-fusion).
+
+```jsonc
+// Zed (~/.config/zed/settings.json): the agent_servers section
+{
+  "agent_servers": {
+    "gah": { "command": "/path/to/gah", "args": ["acp"] }
+  }
+}
+```
+
+What the editor gets: new sessions (workspace = the `session/new` cwd), streaming replies and thinking blocks, tool calls and results (including file-change patches), a command menu (`/` runs gah's own host commands, without a model turn), and approval prompts for dangerous commands (answers go straight back into gah's approval pipeline).
+One process serves **one workspace** (bound by the cwd of the first `session/new`; start another agent instance for another directory) and runs **one turn at a time** (concurrent prompts return busy; send `session/cancel` first).
+If `ctx.confirmFusion` is missing (profile without the confirm-fusion bundle) the plugin **refuses to start** with the reason: nothing would answer approvals, so dangerous operations would all be denied silently.
 
 ### Plugin install (capability expansion beyond TUI/Web)
 

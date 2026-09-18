@@ -1,7 +1,7 @@
 #!/bin/bash
 # 覆盖率门(单一事实源:阈值只在本脚本;CI 与本地共用)。E-C 治理件。
 #
-# 背景(2026-11-14 建立):
+# 背景(2026-09-12 建立):
 #   项目已有一批高价值单测与端到端不变量测试,但**没有覆盖率门**:新增零测试包、
 #   重构把已覆盖分支改成死代码、或某包覆盖率大幅回退都不会被发现(staticcheck 只查
 #   静态问题,`-race` 只看跑到的用例是否绿)。本脚本把「当前水位」固化成棘轮:
@@ -56,7 +56,7 @@ web 68
 tui 71
 plugins/policy/policy-guard 89
 plugins/host/host-agent-loop 72
-plugins/host/host-bridge 85
+plugins/host/host-bridge 86
 plugins/host/host-backup 80
 plugins/host/host-commands 76
 plugins/host/host-confirm-fusion 76
@@ -74,19 +74,22 @@ plugins/host/host-session-summary 74
 plugins/host/host-skills 76
 plugins/host/host-system-prompt 88
 plugins/host/host-tools 88
+plugins/host/host-worktrees 74
 plugins/host/host-usage-stats 60
 plugins/host/token-compress 84
 plugins/mcp/mcp-bridge 72
 plugins/mcp/mcp-server 85
+plugins/mcp/acp-server 86
 plugins/adapter/llm-anthropic-compat 58
 plugins/adapter/llm-mock 55
 plugins/adapter/llm-openai-compat 66
 plugins/tool/tool-ask 80
 plugins/tool/tool-auto-plan 58
 plugins/tool/tool-doc 72
-plugins/tool/tool-files 58
+plugins/tool/tool-files 70
 plugins/tool/tool-memory 73
 plugins/tool/tool-shell 90
+plugins/tool/tool-session-search 88
 plugins/tool/tool-shell@linux 58
 plugins/tool/tool-subagent 56
 plugins/tool/tool-todo 75

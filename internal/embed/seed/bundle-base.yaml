@@ -1,4 +1,4 @@
-# seed-version: 19 # 样板版本:新增 base 能力条目(host-* 等)时 +1(19:新增 host-schedule 定时任务),老用户自动升级(备份后覆盖)
+# seed-version: 22 # 样板版本:新增 base 能力条目(host-* 等)时 +1(22:新增 tool-session-search 跨会话检索),老用户自动升级(备份后覆盖)
 # base bundle:对齐 dsh-base,一切功能皆插件的共享第一层。
 # M1 阶段条目仅记录意图;对应插件工厂在 M2 base bundle 落地。
 name: base
@@ -77,6 +77,10 @@ entries:
       busy_wait_seconds: 60
   - id: host-fanout
     enabled: true # M6.2 拆分:子代理编排宿主服务(ctx.fanout),tool-workflow 依赖
+  - id: host-worktrees
+    # S-P1-4 隔离运行:ctx.worktrees 受管 git worktree(Create/List/Remove + /worktree 命令)。
+    # 子代理以此隔离出独立工作目录与分支(subagent 工具 isolate=worktree),改动不落主工作区;
+    # worktree 落 $GAH_HOME/worktrees/(不污染用户仓库),非 git 仓库显式报错;默认保留 + 显式回收。
   - id: host-bridge
     # P1 方案B:默认启用,dir 缺省指向 home/plugins(首启随包释放 tool-basic)
     # M6.8 外部化:同时释放 tool-workflow/tool-mcp;回调通道 GAH_CB_ADDR 注入外部进程
@@ -90,6 +94,8 @@ entries:
     enabled: false # M6.8 外部化:内嵌实现停用,由 host-bridge 加载 extplugins/tool-mcp(GAH_MCP_COMMAND 单 / GAH_MCP_COMMANDS 多 server)
   - id: mcp-server
     enabled: false # MCP server 端(二期已交付):默认关闭,serve/headless 场景启用(gah 作 MCP server 被拉起)
+  - id: acp-server
+    enabled: false # S-P2-3:ACP agent 端(编辑器集成,如 Zed):默认关闭,gah acp / profile-acp 启用(需叠 confirm-fusion bundle)
   - id: tool-shell
     enabled: false # P1 外部化:内嵌实现停用,由 host-bridge 加载 home/plugins 外部进程
   - id: tool-files
@@ -119,6 +125,8 @@ entries:
     # data.enable_rule:规则注入开关(默认开;与 AGENTS.md 全局“操作确认”规则重复冗余时可关)
     data:
       enable_rule: true
+  - id: tool-session-search
+    enabled: false # S-P2-5 外部化:session_search(跨会话检索,只读)由 host-bridge 加载 extplugins/tool-basic;内嵌双轨同 tool-files
   - id: tool-subagent
     enabled: false # M9.1 外部化:内嵌实现停用,由 host-bridge 加载 extplugins/tool-subagent(独立进程,回调宿主 fanout)
   - id: tool-workflow

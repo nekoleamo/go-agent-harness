@@ -1,0 +1,6 @@
+# S-P2-3:ACP agent 形态补丁(叠加在 profile-acp 之上)。
+entries:
+  - id: acp-server
+    enabled: true
+  - id: host-session-summary
+    enabled: false # 编辑器侧自管会话标题:不给 ACP 回合叠加隐藏总结请求(省 token、少一次请求)

@@ -35,14 +35,16 @@ Go 实现的编程代理 Agent Harness:以**单静态二进制**交付全部能�
 | **审批三档** | 危险命令(rm -rf / git push -f / sudo / chmod 777…)按档:开放 open(放行)/ 智能 smart(弹确认,无确认通道时安全拒绝,默认)/ 严格 strict(拒绝);偏好持久化 |
 | **凭据隔离** | 工具子进程 env 滤除 `*_API_KEY/_TOKEN/_SECRET`;危险操作无确认通道时安全拒绝 |
 | **会话管理** | 项目级隔离 + 多会话切换 + 分支树(`/fork` `/clone` `/tree` + 命名);超预算 token 滚动摘要压缩(token-compress,完整日志留盘) |
-| **模型工具** | shell / file_read-write-append-edit / web_fetch / web_search / workflow / subagent / todo / memory / auto_plan / job_* / 技能读取 / MCP 桥工具(详见「五、模型可用工具」) |
+| **模型工具** | shell / file_read-write-append-edit / web_fetch / web_search / workflow / subagent / todo / memory / auto_plan / session_search / job_* / 技能读取 / MCP 桥工具(详见「五、模型可用工具」) |
 | **后台任务** | host-jobs + workflow `background`:长任务异步提交/取回/终止,不阻塞回合 |
+| **并行隔离** | host-worktrees(`ctx.worktrees` + `/worktree`):受管 git worktree 落 `$GAH_HOME/worktrees/`(不污染用户仓库),子代理经 `subagent(isolate="worktree")` 在独立目录与分支内工作 —— 两个并行子代理改同一批文件互不覆盖;**隔离是强制的**:相对写/绝对写都进不了主工作区(沙箱写范围收窄到该 worktree);非 git 仓库显式报错不降级;worktree 默认保留,回收走 `/worktree rm`(分支保留) |
 | **定时任务** | host-schedule(`ctx.schedule`):5 字段 cron 计划(分 时 日 月 周)落 `$GAH_HOME/schedules/*.yaml`,到点**经既有回合入口**(agentLoop→tools,仍受审批/沙箱裁决、仍落会话记录)自动跑一轮;设置面板「计划」段管理(中文「下次运行时间」回显,不自研 cron 构造器);**无人值守 = 没有确认通道 → 需审批的动作一律拒绝(含 open 档)** |
 | **子代理 fanout** | `agent/parallel/pipeline` 独立上下文 ReAct 扇出并行聚合;`send_message`/`fork` 注入与会话派生 |
 | **starlark workflow** | 模型写受限 starlark 脚本组合多步工具调用(天然沙箱/无标准库),`background` 异步 |
 | **联网搜索** | web_search(默认 Exa,`EXA_API_KEY`;`data.provider` 可换)与 web_fetch 协作,错误结构化归一 |
 | **MCP 双向** | client 桥(接外部 server,工具 `mcp_<server>_<name>`)与 server 端(对外暴露本仓全部工具,可被 Claude Desktop 等拉起) |
 | **MCP 按需检索** | 每个 MCP server 可选 `mode`: `direct`(默认,工具全量进上下文)/ `search`(工具**不进每轮上下文**,只暴露 `mcp_search` 查清单 + `mcp_call` 按名调用);配置落 `$GAH_HOME/config/mcp.yaml`(设置面板「MCP server」段可视化增删改,**保存即写盘并热重载**,无需重启),env 照旧生效(文件优先) |
+| **ACP agent 端** | `gah acp`:以 **ACP v1**(Agent Client Protocol,Linux Foundation)被编辑器(Zed / Neovim 等)当一等 agent 拉起 —— 会话、流式回复、工具进度、审批弹层全走 ACP,数据与 TUI/Web **同源**(同一会话账本、同一沙箱/审批裁决,不是另一套运行时);编辑器的权限按钮只映射 `allow_once`/`reject_once`(不给 always:一次点击不该永久放宽危险操作),交互式提问与图片输入暂不支持(显式报错,去 TUI/Web 作答) |
 | **外部插件桥** | host-bridge:独立进程插件(go-plugin),崩溃隔离(外部进程被杀宿主存活);宿主回调通道(GAH_CB_ADDR)供外部进程请求 tools/jobs/fanout 服务;工具类 100% 外部化(extplugins/) |
 | **插件安装** | `gah -install <repo>[@version]`(外部/桥插件)与 `-install-ui <repo|目录>`(UI 槽位插件)一条命令装完即启用 |
 | **指令文件与技能** | 全局/项目 AGENTS.md 自动注入(近者覆盖;`/reload` 热更);SKILL.md 技能扫描 + 模型按需加载(`list_skills`/`read_skill`);仓库自注册 `gah-plugin-dev` 技能 |
@@ -130,6 +132,7 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 ```bash
 ./gah                                          # TUI(默认 tui profile;非 TTY 自动降级文本)
 ./gah web                                      # Web UI(≡ --profile web),http://127.0.0.1:2233,自动开浏览器
+./gah acp                                      # ACP agent 形态(被编辑器如 Zed 经 stdio 拉起,≡ --profile acp)
 ./gah --profile headless --input "帮我执行 echo hi"   # headless 一轮(CI/脚本/dev 用 mock 模型免 key)
 ./gah --profile mcp-serve                      # MCP server 形态(被外部 MCP client 经 stdio 拉起)
 ./gah --profile dev --dump-config              # 查看合并后的配置树(任一条目可被自己 patch 替换)
@@ -171,7 +174,7 @@ export DEEPSEEK_API_KEY=sk-...            # 或 OPENAI_API_KEY / ANTHROPIC_API_K
 
 | 参数 | 作用 |
 |---|---|
-| `-profile <名>` | profile(tui/headless/dev/web/mcp-serve/自定义) |
+| `-profile <名>` | profile(tui/headless/dev/web/acp/mcp-serve/自定义) |
 | `-input <文本>` | headless 一次输入,跑一轮输出回复并退出 |
 | `-dump-config` | 输出合并后的配置树并退出 |
 | `-ephemeral` | 临时数据根,退出即焚 |
@@ -191,7 +194,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 
 ## 四、TUI 命令
 
-> 命令注册进宿主 `ctx.commands`,TUI/Web/headless `/` 前缀通用;输入 `/` 弹出命令提示(名称+说明,可继续输入过滤)。**所有命令支持逐级确认**:参数按声明级联(子命令枚举 → 动态候选,如 provider/会话/插件/任务/备份/主题/群列表;需手输的走自由参数断点),TUI 用选择器、Web 用同一注册表声明的候选列表(点击逐级选)。TUI 专属命令(search/widgets/theme/help/exit/fork/clone/tree/name)仅 TUI 可用。
+> 命令注册进宿主 `ctx.commands`,TUI/Web/headless `/` 前缀通用;输入 `/` 弹出命令提示(名称+说明,可继续输入过滤)。**所有命令支持逐级确认**:参数按声明级联(子命令枚举 → 动态候选,如 provider/会话/插件/任务/备份/主题/群列表;需手输的走自由参数断点),TUI 用选择器、Web 用同一注册表声明的候选列表(点击逐级选)。TUI 专属命令(search/widgets/statusline/theme/help/exit/fork/clone/tree/name)仅 TUI 可用。
 
 | 命令 | 作用 |
 |---|---|
@@ -209,7 +212,12 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `/session pin\|unpin [id]` | 置顶 / 取消置顶会话(缺 id = 当前;置顶区排在列表最前,上限 8) |
 | `/session summary [id]` | 生成/查看会话概述(LLM 总结:一句话 + 主题词;**会调用模型**) |
 | `/reload` | 热重载指令文件(AGENTS.md 层级/全局/附加;外部编辑即生效,免重启) |
-| `/jobs list\|output <id>\|kill <id>` | 后台任务列表 / 取输出 / 终止(与 workflow `background`、Web 任务面板同源) |
+| `/context [all]` | 上下文占用分解:**真实** token(累计输入/输出/缓存命中/窗口占用条)与**本地估算**分段(固定引导/全局与项目指令/附加指令/各片段/工具名清单 + 工具 schema JSON 开销/会话投影历史)分列,口径显式标注;`all` 再逐项列出每个工具 schema 的字节与粗估 token(**纯本地,不发模型请求**) |
+| `/diff [路径]` | 变更审查面:无参 = 本会话改过的文件清单(+/− 行数,按路径聚合);有参 = 该文件本次会话的逐行 diff(TUI 弹 pager / Web 切到变更视图)。数据来自工具写盘时捕获的前后内容,**不依赖 git**(工作区不是仓库、还有未提交改动都不影响口径);超 32 KiB / 二进制 / 超大输入三种情况显式标注降级 |
+| `/recap` | 会话速览(轮数/工具 Top 与失败数/涉及文件/最近一问一答/模型/跨度;**纯本地统计,不调模型**) |
+| `/answer [编号\|内容\|skip]` | 作答结构化提问(TUI):无参=回到作答态;多问并存按到达顺序逐个答;`skip` 跳过;`Esc` 退出作答态(提问与草稿都保留) |
+| `/jobs [list]\|output <id>\|kill <id>` | 后台任务**与子代理**统一视图:无参=list(运行中优先,带耗时/摘要)/ 取输出 / 终止(Kill 需 running;与 workflow `background`、Web 任务面板同源;TUI 状态栏另有常驻折叠行「后台 N 运行中」;TUI 按 **F6** 展开实时坞) |
+| `/worktree [list]\|rm <id> [force]` | 受管 worktree(隔离子代理的工作目录):无参=list(带分支/基线/路径 + 回收提示)/ `rm` 回收目录(**分支保留** —— 未合并的改动仍在分支上;有未跟踪改动时非 `force` 拒绝,防静默丢活) |
 | `/schedule [list]\|add <cron> <描述>\|rm\|on\|off\|run <id>` | 定时任务:列出 / 新建(5 字段 cron,如 `0 8 * * *` = 每天 8 点)/ 删除 / 启停 / 立即跑一次(与设置面板「计划」段同源) |
 | `/backup [dest]\|list\|restore <name>` | 整体备份 GAH_HOME(config 含密钥/plugins/sessions/env.sh/偏好,排除 backups/ 自身):无参=立即备份(默认存 `$GAH_HOME/backups/`,可指定外部路径)/ `list` 列出(时间倒序)/ `restore <name>` 恢复(**恢复前自动先备份当前态**,重启后完全生效) |
 | `/preview <路径>` | 文档预览工作台:TUI 打开全屏 pager(↑↓/PgUp/PgDn 滚动、←→ 横移、`/` 搜索 n/N 跳转、q/Esc 关闭);Web 打开文档面板并定位该文件(markdown/文本/代码/CSV/notebook/docx/xlsx/pptx/PDF) |
@@ -220,9 +228,12 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `/tree` | 会话分支树(会话全貌 + 可 fork 的提问点) |
 | `/name <显示名>` | 给当前会话加显示名(`-` 清除;状态栏/切换列表名优先) |
 | `/widgets on\|off` | 输入区上方 widget 区开关(宿主注册的动态信息行) |
+| `/statusline [项...]\|reset` | 状态栏项集合与顺序(TUI):无参=查看当前与可用项(`state/queue/questions/dock/last/workspace/sandbox/approval/session`);给项即按序渲染(回合态项之间 `·`、其余 `|`),`reset` 恢复 F15.3 基线;偏好持久化(`gah-state.json`)重启生效 |
 | `/help` `/exit` | 帮助 / 退出(**Ctrl+C 连按两次**,防误触) |
 
-> **键位速记**:输入中单次 `Ctrl+C` 仅清空输入(不退出);输入为空时需**连按两次** `Ctrl+C`(2 秒窗口内)才彻底退出,第一次按下会高亮提示再按一次,超时或按其他键自动解除;`Esc` 取消进行中的回合;`Shift+Tab` 循环思考等级;`Ctrl+T` 折叠/展开思维块;`Ctrl+O` 折叠最近工具结果;`Ctrl+↑/↓` 跳到最早用户行/回底;`Ctrl+A` 全选(删除=清空/输入=替换)、`Ctrl+B/F` 左右移动、`Ctrl+Y` redo、`Alt+P` yank 粘贴、`Alt+←/→` 按词移动。
+> **`!` shell 直通**:输入以 `!` 开头(如 `!git status`)= 立刻执行该 shell 命令(**走与模型工具同一条沙箱/审批管线**,不存在手敲免检旁路),输出就地回显、长命令可 `Esc` 中断;结果**只本地留痕,不进模型上下文**(避免孤立 tool 消息破坏投影)。需要模型看到输出时请让模型调用工具。
+>
+> **键位速记**:输入中单次 `Ctrl+C` 仅清空输入(不退出);输入为空时需**连按两次** `Ctrl+C`(2 秒窗口内)才彻底退出,第一次按下会高亮提示再按一次,超时或按其他键自动解除;`Esc` 取消进行中的回合;`Shift+Tab` 循环思考等级;`Ctrl+T` 折叠/展开思维块;`Ctrl+O` 折叠最近工具结果;`Ctrl+↑/↓` 跳到最早用户行/回底;`Ctrl+A` 全选(删除=清空/输入=替换)、`Ctrl+B/F` 左右移动、`Ctrl+Y` redo、`Alt+P` yank 粘贴、`Alt+←/→` 按词移动;`F6` 展开/收起后台坞(↑/↓ 选择、`Enter` 看输出、`s` 定向、`x` 停止需二次确认、`Esc` 收起)。
 
 ## 五、模型可用工具(由模型调用,无需交互)
 
@@ -236,7 +247,8 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `memory` | 跨会话记忆(remember/list/recall/forget;`$GAH_HOME/memory/<project>.jsonl`,人工可编辑) |
 | `todo` | 任务清单(create/start/complete/pend/delete/update/list;4 状态机 + blockedBy 依赖;`$GAH_HOME/todos/`) |
 | `auto_plan` | 规划模式(create/get/list/step/confirm/complete;检测规划意图先输出结构化规划,确认前零副作用工具调用;`$GAH_HOME/plans/`) |
-| `subagent` | 子代理委派(delegate/spawn/agents/agent_status/agent_kill/send_message/fork;独立上下文 ReAct,后台带句柄) |
+| `session_search` | 跨会话检索(查历史会话账本:`{query, limit, scope?}` → 命中片段 + 会话 id/时间;默认只搜**当前工作区**,`scope="all"` 才跨项目;纯只读、无索引文件、命中是**历史记录**非当前事实) |
+| `subagent` | 子代理委派(delegate/spawn/agents/agent_status/agent_kill/send_message/fork;独立上下文 ReAct,后台带句柄);`isolate="worktree"`(可配 delegate/spawn/fork)= **隔离运行**:子代理在受管 git worktree 内工作,改动只落该目录、不进主工作区,回包含 worktree 路径/分支(父级据此合并或回收);非 git 仓库/未启用 host-worktrees 显式报错(不静默退化为非隔离) |
 | `list_skills` / `read_skill` | 技能索引 / 按需加载 SKILL.md(项目 `.gah/skills/`、`$GAH_HOME/skills/`) |
 | `mcp_<server>_<工具>` | MCP 桥工具(`mode: direct`,见「MCP 接入」) |
 | `mcp_search` / `mcp_call` | MCP 检索模式代理工具(`mode: search`):按关键词查工具清单(空查询 = 全量),再按名调用 |
@@ -249,9 +261,16 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 
 - **设置面板**(状态栏 ⚙):模型下拉(聚合全部 provider)、思考/沙箱/**审批**分段控件、历史注入下拉 + 压缩按钮、Provider 管理(启用/删除/新增;**首启引导**:一个 provider 都没有时自动打开面板并给 DeepSeek/Kimi/智谱/千问/硅基流动/OpenRouter/OpenAI/Ollama **一键预设**,只需粘 api_key,保存后自动**连通性自检**并把 401/404/DNS 等端点错误翻译成人话与原始报错并列)、**定时计划**(「计划」段:5 字段 cron + 中文「下次运行时间」回显,运行/停用/删除;无人值守语义在段内明示)、**MCP server**(「MCP server」段:逐项名称/启动命令/启停/模式(全量注册或按需检索)、环境变量来源只读对照、逐行「已加载 N 个工具」状态、**保存并重载**即时生效)、插件开关、指令重载、**数据备份**(立即备份 / 恢复备份——**二次确认**);全部设置退出即记(偏好持久化,gah-state.json 与 TUI 共享)。
 - **侧栏**:工作区固定区(切换 = 真实切目录) + 历史会话(名称/**概述或内容预览**/时间,★ 置顶、⟳ 生成概述(调用模型,二次确认)、✎ 改名、× 删除——改删需二次确认)、附件上传(按钮/拖放/粘贴,图片缩略图 + 模型看图)、会话导出(⤓ jsonl/HTML)。当前项为卡片式选中(左侧竖条 + 描边 + 名称加粗),与 hover 明确分档。
-- **状态栏**(只放别处没有的只读事实):就绪/运行中、**沙箱生效档**、未命名会话标识、连接状态(绿/橙)、上下文·缓存使用率、版本号(**点开「关于 gah」**= 升级入口)。模型/思考/审批各有唯一交互位(输入框工具条、设置面板),不在底栏重复显示;后台任务钮在右上角(运行徽标 + 列表/输出/终止)。
+- **状态栏**(只放别处没有的只读事实):就绪/运行中、**沙箱生效档**、未命名会话标识、连接状态(绿/橙/红三态)、上下文·缓存使用率、版本号(**点开「关于 gah」**= 升级入口)。模型/思考/审批各有唯一交互位(输入框工具条、设置面板),不在底栏重复显示;后台任务钮在右上角(运行徽标 + 列表/输出/终止)。
 - **文档预览面板**(侧栏「文档预览」):左侧工作区文件树(过滤/懒展开/工作区切换整树重置)+ 右侧预览(markdown 块渲染、代码/表格、docx/xlsx/pptx 块模型、PDF 浏览器原生查看器、图片、HTML **默认源码视图 + 点击才加载沙箱 iframe**;截断与警告黄色提示条);工具结果行含可预览路径时出现「预览」按钮;会话流 assistant 文本走 markdown 块渲染(服务端解析,前端零 v-html)。
-- **WebSocket 通道**:`/api/events/ws`(与 SSE 同 payload,前端自动降级)。
+- **结构化提问**:模型 `ask_user_question` 弹层展示问题与选项;**可「稍后作答」收起为输入区上方角标**(不阻塞继续对话,点角标回到作答);多问并存按到达顺序逐个答。
+- **轨迹视图**(状态栏右上「轨迹」切换,记忆偏好):把同一份会话事件按**回合 → 步骤 → 工具**聚合,专看过程与成本 —— 粘顶固定概览(回合数/总时长/累计 token 与缓存占比 + 可点击回跳的回合胶囊)、回合状态徽标(完成/已取消/步数上限/进行中)、每步工具行(名称/参数/耗时/**出参字节**/成功失败,失败展开错误原文)与回合级 token 分解;**时长只取事件时间戳,进行中的回合/步骤/工具一律显「进行中」**(不编造时长);窗口不完整(长会话更早历史未加载/已折叠)时概览改标「窗口内 token」并说明仅覆盖当前窗口。
+- **变更视图**(状态栏右上循环切换:会话流 → 轨迹 → 变更 → 看板,记忆偏好):只看**本次会话经工具改过的文件** —— 粘顶概览(文件数/+行/−行/改动次数 + 可点击回跳的文件胶囊)、逐文件折叠块(新建/二进制/已截断 徽标、操作与 ± 计数)、展开后逐行着色 patch(每段带 `#序号 操作 时间` 头,便于对着会话流定位)与降级说明。数据来自写盘时捕获的前后内容,口径明确**不依赖 git**,不是「工作区当前 vs HEAD」;`/diff <路径>` 可从命令直接定位到某个文件。
+- **看板视图**(第四种投影,状态栏右上循环切换):把已在手的数据聚合成一屏信息面,**五张卡片** —— 用量(累计输入/输出/缓存命中率/请求数/上下文占用)、回合(已完成回合数、总时长、工具调用与失败数、平均 token)、后台任务(运行中/记录数/最近一条)、文件变更(文件数/±行/改动次数)、定时计划(启用数/下次运行/最近终态)。卡片可**隐藏 / 上下移动顺序**、可「恢复默认」,布局记忆在浏览器(新增卡片自动补到尾部);卡片动作直达对应视图或抽屉(轨迹 / 变更 / 任务面板 / 设置的计划段)。**口径写在卡上**:用量是会话累计、回合数含进行中、变更来自工具写盘旁路(不依赖 git);数据全部来自本机事件账本与既有接口,不引入可执行内容、无新增后端契约。
+- **侧栏停靠区**(状态栏「侧栏」展开,记忆偏好):把变更 / 看板 / 任务三个面板**停靠在对话流右侧并排显示** —— 不用在「切走会话流看变更」和「让任务面板盖住对话」之间二选一;面板在停靠区顶部标签间切换,宽度可**拖拽**(也可聚焦分隔线用 `←/→`,双击复位),布局落浏览器存储。**宽度给对话流让位**:视口不足时停靠区先让步(下限 280 / 上限 720 / 至少给对话留 520);窄屏(<900px)自动退化为覆盖式抽屉。零后端契约:面板内容复用既有视图组件,数据管道不变。
+- **长会话窗口**(首帧基线 + 上滚分页):打开一个很长的会话不再重放全部历史 —— 首连只回放**尾部窗口**(约 400 条事件,回合对齐),并先发一帧 **基线** 告诉前端窗口边界与「更早历史是否还有」;向上滚到接近顶部(或点顶部按钮)即自动按游标拉更早一页拼在前面(按序号去重、拼接后**滚动位置不动**)。贴底阅读时自动折叠最老的消息(上限 800 条,`已折叠 N 条更早消息`),被折叠的内容上滚可重新取回 —— DOM 与内存不随会话长度增长;轨迹/变更视图在窗口不完整时显式标注口径,不把窗口内合计说成会话全程累计。
+- **WebSocket 通道**:`/api/events/ws`(与 SSE 同 payload,前端自动降级;两条路断线续传都带 `after` 游标)。
+- **断连行为**(显式三态:已连接/重连中/**已断开**):连接丢失时输入区上方出现红色横幅与「重试连接」,**提交与审批/作答一律拦截且草稿、附件、弹层原样保留**(未送达不许挥掉本地状态,恢复后手动重发,不做队列自动重放);恢复时以服务端快照接管状态并丢弃陈旧完成帧。断连判定只依据可观测事实(浏览器 `navigator.onLine`、EventSource 已放弃、探活失败),不用「多久没收到帧」猜测;切回前台/睡眠唤醒(时钟跳变 >20s)会主动重握一次。
 - **通用 REST 能力面**(前端/脚本均可直接调用,未装配服务 503/501 显式):
 
 | 方法 路径 | 说明 |
@@ -260,7 +279,8 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `GET /api/state` | 状态快照(model/thinking/sandbox/approval/stats/session/running/version) |
 | `POST /api/input` | 提交回合;`/` 前缀走命令;running 时 409 |
 | `POST /api/confirm` | 审批应答 `{id, ok}` |
-| `GET /api/events` + `GET /api/events/ws` | 事件流(SSE 断线重放 / WS) |
+| `GET /api/events` + `GET /api/events/ws` | 事件流(SSE 断线重放 / WS;首连发 `baseline` 基线 + 尾部窗口,续传按 `after` 补差集) |
+| `GET /api/session/events` | 会话事件分页(`?before=<seq>&limit=<n>`):长会话上滚加载更早历史,窗口回合对齐、返回 `has_more` |
 | `GET /api/sessions`、`POST /api/sessions` | 会话列表 / `{action: switch\|new\|fork\|clone\|delete}` |
 | `POST /api/sessions/rename`、`GET /api/sessions/{id}/export` | 会话改名 / 导出 jsonl |
 | `GET /api/workspaces`、`DELETE /api/workspaces/{key}` | 工作区历史 / 删除记录(不动文件夹) |
@@ -346,6 +366,23 @@ export GAH_MCP_COMMANDS="deja=/opt/homebrew/bin/deja\ncodegraph=codegraph serve 
 # 作为 MCP server 对外提供本仓全部工具(可被 Claude Desktop 等外部 client 经 stdio 拉起)
 ./gah --profile mcp-serve
 ```
+
+### ACP 接入(编辑器 ↔ gah)
+
+`gah acp` 让编辑器把 gah 当 ACP agent 拉起(需 `$GAH_HOME/config/profile-acp.yaml`,出厂已带;`gah acp` ≡ `gah --profile acp`,bundle = base + confirm-fusion)。
+
+```jsonc
+// Zed(~/.config/zed/settings.json):agent_servers 段
+{
+  "agent_servers": {
+    "gah": { "command": "/path/to/gah", "args": ["acp"] }
+  }
+}
+```
+
+编辑器里可用的:新会话(工作区 = `session/new` 的 cwd)、流式回复与思考块、工具调用与结果(含文件改动 patch)、命令菜单(`/` 前缀走 gah 自身的宿主命令,不经模型)、危险命令的审批弹层(应答直接回到 gah 的审批管线)。
+单进程**只服务一个工作区**(首个 `session/new` 的 cwd 即绑定;换目录请另起一个 agent 实例)、**一次只跑一个回合**(并发提示返回 busy,可先 `session/cancel`)。
+缺 `ctx.confirmFusion`(profile 未含 confirm-fusion bundle)时**拒绝启动**并给出原因:审批无人应答会让危险操作一律被拒,不该静默跑下去。
 
 ### 插件安装(TUI/Web 之外的能力扩展)
 

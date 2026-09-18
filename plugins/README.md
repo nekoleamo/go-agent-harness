@@ -29,6 +29,7 @@ plugins/
 | host | host-jobs | 后台任务(ctx.jobs) | ctx.tools |
 | host | host-schedule | 定时任务(NOND-W4):ctx.schedule——5 字段 cron 计划(分 时 日 月 周),到点经既有回合入口(agentLoop→tools,仍受审批/沙箱裁决)跑一轮;计划落 $GAH_HOME/schedules/*.yaml;无人值守运行 = 无确认通道 → 需审批的动作一律拒绝 | ctx.agentLoop/ctx.commands(;ctx.turnControl 可选) |
 | host | host-fanout | 子代理编排(ctx.fanout) | ctx.llm/ctx.tools/ctx.systemPrompt |
+| host | host-worktrees | 受管 git worktree(S-P1-4):ctx.worktrees——建立/列出/回收独立工作目录(落 $GAH_HOME/worktrees/,不污染用户仓库)+ `/worktree` 命令;供子代理隔离运行(沙箱写范围收窄到该 worktree);非 git 仓库显式报错,worktree 默认保留、回收时分支保留 | ctx.commands(可选)/ctx.sandbox(可选,均惰性注入) |
 | host | host-plugin-manager | 运行期插拔(ctx.pluginManager) | — |
 | host | host-bridge | 外部插件桥(加载 home/plugins 外部进程,GAH_CB_ADDR 回调) | ctx.tools/ctx.jobs/ctx.fanout/ctx.extplugins |
 | host | host-backup | 整体备份/恢复(M18):ctx.backup + /backup 命令;备份目录 $GAH_HOME/backups(排除自身) | — |
@@ -38,11 +39,11 @@ plugins/
 | adapter | llm-mock | 假适配器(dev/CI 无外网) | ctx.llm |
 | policy | policy-sandbox | 沙箱三档(ctx.sandbox) | — |
 | policy | policy-approval | 危险操作审批三档(M17):open 放行 / smart 弹确认(默认)/ strict 直接拒绝;ctx.approval 运行期切档,偏好持久化 | — |
-| tool | tool-shell / tool-files / tool-web / tool-workflow / tool-memory / tool-todo | 工具实现(默认关闭,已外部化);tool-web 含 web_fetch/web_search(M6.14,默认 Exa,data.provider 可换);tool-memory 含 memory(M10,remember/list/recall/forget);tool-todo 含 todo(M8,4 状态机 + blockedBy;T2 面板联动经 web /api/todo 演示插件 todo-panel) | ctx.tools(workflow 另需 ctx.fanout) |
+| tool | tool-shell / tool-files / tool-web / tool-workflow / tool-memory / tool-todo / tool-session-search | 工具实现(默认关闭,已外部化);tool-web 含 web_fetch/web_search(M6.14,默认 Exa,data.provider 可换);tool-memory 含 memory(M10,remember/list/recall/forget);tool-todo 含 todo(M8,4 状态机 + blockedBy;T2 面板联动经 web /api/todo 演示插件 todo-panel);tool-session-search 含 session_search(S-P2-5 跨会话检索,只读会话账本、无索引文件、默认同工作区) | ctx.tools(workflow 另需 ctx.fanout) |
 | tool | tool-doc | 文档阅读(D 组 D5):read_document(行号化+预算分页)/doc_open(发 `doc/open` 三端弹预览)/doc_list;经 ctx.doc 统一 resolver | ctx.tools + ctx.doc |
 | tool | tool-auto-plan | 规划模式(M11):auto_plan(create/get/list/step/confirm/complete)+ 规则注入(enable_rule,进程内装配同 host-skills,需 ctx.systemPrompt);M11-T2 联动:确认后执行期由 todo 承接(检查清单转 todo.create,执行完回 complete 归档) | ctx.tools + ctx.systemPrompt |
 | tool | tool-subagent | 子代理委派(M9.1+9.2):subagent delegate/spawn/agents/agent_status/agent_kill;extplugins/tool-subagent 独立进程(回调宿主 ctx.fanout);spawn=后台带句柄不阻塞 | ctx.tools + ctx.fanout |
-| mcp | mcp-bridge / mcp-server | MCP 客户端桥 / MCP server 端 | ctx.tools |
+| mcp | mcp-bridge / mcp-server / acp-server | MCP 客户端桥 / MCP server 端 / ACP agent 端(`gah acp`:编辑器经 stdio 拉起,协议 v1) | ctx.tools / ctx.agentLoop + ctx.cwdSessions |
 | ui | ui-tui-app | TUI 挂载 | ctx.agentLoop/ctx.llm |
 | ui | ui-web-app | Web UI 挂载(M7):SSE 下行 + REST 上行;会话/状态栏/命令/审批/会话切换;addr 默认 127.0.0.1:2233,auth_token 可选(设置后**全表面**鉴权:接口/静态/附件/UI 插件产物均需凭据,浏览器用启动日志的 #token= 地址经 POST /api/auth 换 cookie),static_dir 开发态(HMR);与 tui bundle 互斥 | ctx.agentLoop/ctx.sessions/ctx.llm + ctx.confirm(提供) |
 

@@ -25,7 +25,9 @@ import (
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-system-prompt"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-tools"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-usage-stats"
+	"github.com/nekoleamo/go-agent-harness/plugins/host/host-worktrees"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/token-compress"
+	"github.com/nekoleamo/go-agent-harness/plugins/mcp/acp-server"
 	"github.com/nekoleamo/go-agent-harness/plugins/mcp/mcp-bridge"
 	"github.com/nekoleamo/go-agent-harness/plugins/mcp/mcp-server"
 	"github.com/nekoleamo/go-agent-harness/plugins/policy/policy-guard"
@@ -34,6 +36,7 @@ import (
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-doc"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-files"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-memory"
+	toolsessionsearch "github.com/nekoleamo/go-agent-harness/plugins/tool/tool-session-search"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-shell"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-subagent"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-todo"
@@ -121,12 +124,24 @@ var All = map[string]Def{
 	"tool-todo": {Factory: func() sdk.Plugin { return &tooltodo.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "tool-todo", Type: "tool", APIVersion: ">=1.0,<2.0",
 		Requires: []string{"ctx.tools"}}, Bundle: "base", Manage: "external"},
+	"tool-session-search": {Factory: func() sdk.Plugin { return &toolsessionsearch.Plugin{} }, Manifest: &sdk.Manifest{
+		ID: "tool-session-search", Type: "tool", APIVersion: ">=1.0,<2.0",
+		// S-P2-5:跨会话检索(session_search)。只读会话账本,不建索引、不写盘。
+		// 与 tool-todo 同模式:内嵌实现默认停用(enabled: false),由 extplugins/tool-basic 提供。
+		Requires: []string{"ctx.tools"}}, Bundle: "base", Manage: "external"},
 	"mcp-bridge": {Factory: func() sdk.Plugin { return &mcpbridge.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "mcp-bridge", Type: "host", APIVersion: ">=1.0,<2.0",
 		Requires: []string{"ctx.tools"}}, Bundle: "base", Manage: "external"},
 	"mcp-server": {Factory: func() sdk.Plugin { return &mcpserver.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "mcp-server", Type: "host", APIVersion: ">=1.0,<2.0",
 		Requires: []string{"ctx.tools"}}, Bundle: "base", Manage: "scenario"},
+	"acp-server": {Factory: func() sdk.Plugin { return &acpserver.Plugin{} }, Manifest: &sdk.Manifest{
+		ID: "acp-server", Type: "host", APIVersion: ">=1.0,<2.0",
+		// S-P2-3:ACP agent 端(编辑器集成,如 Zed)经 stdio 暴露会话/回合/工具进度/权限请求。
+		// ctx.confirmFusion 是运行期必需(审批/提问的送达通道)但不在此硬声明:它属
+		// confirm-fusion bundle,硬声明会把插件绑死到那个 bundle 归属;Start 里显式校验
+		// 并给出可操作错误(缺 fusion 时审批一律被拒,必须让人看见原因)。
+		Requires: []string{"ctx.agentLoop", "ctx.cwdSessions"}}, Bundle: "base", Manage: "scenario"},
 	"token-compress": {Factory: func() sdk.Plugin { return &tokencompress.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "token-compress", Type: "host", APIVersion: ">=1.0,<2.0",
 		Requires: []string{"ctx.sessions"}}, Bundle: "base"},
@@ -181,6 +196,12 @@ var All = map[string]Def{
 		Provides: []string{"ctx.jobs"},
 		// ctx.commands:/jobs 命令注册(需 host-commands 先行);ctx.tools:任务执行依赖
 		Requires: []string{"ctx.commands", "ctx.tools"}}, Bundle: "base"},
+	"host-worktrees": {Factory: func() sdk.Plugin { return &hostworktrees.Plugin{} }, Manifest: &sdk.Manifest{
+		ID: "host-worktrees", Type: "host", APIVersion: ">=1.0,<2.0",
+		Provides: []string{"ctx.worktrees"},
+		// 无可选依赖声明:ctx.commands(注册 /worktree)与 ctx.sandbox(工作区根)均**惰性注入** ——
+		// 硬 requires 会导致「不装 host-commands 就起不来」,而 worktree 服务的核心能力与 UI 无关。
+	}, Bundle: "base"},
 	"host-plugin-manager": {Factory: func() sdk.Plugin { return &hostplugmgr.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "host-plugin-manager", Type: "host", APIVersion: ">=1.0,<2.0",
 		Provides: []string{"ctx.pluginManager"}}, Bundle: "base"},

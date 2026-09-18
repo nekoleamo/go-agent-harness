@@ -1,0 +1,14 @@
+# acp profile:ACP agent 形态(S-P2-3):gah 经 stdio 作为 ACP agent 供编辑器(如 Zed)拉起。
+# 入口糖命令:gah acp ≡ gah --profile acp。
+#
+# 与 mcp-serve 的区别:mcp-serve 只把工具暴露成 MCP server(不跑循环);
+# 本 profile 跑完整 agent 回合(编辑器发 session/prompt)。
+# 与 tui/web 的区别:没有内建界面(界面在编辑器侧),故**必须**叠 confirm-fusion:
+#   审批与提问经 session/request_permission 反向请求送达编辑器;
+#   缺 fusion 时 acp-server 显式拒绝启动(否则危险操作会静默一律被拒)。
+name: acp
+bundles:
+  - base
+  - confirm-fusion
+patches:
+  - patch-acp.yaml

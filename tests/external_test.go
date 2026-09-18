@@ -540,3 +540,80 @@ func TestExternalPathCapabilityDeclared(t *testing.T) {
 		t.Fatal("被 veto 的写不应落盘")
 	}
 }
+
+// TestExternalFileChangeLandsInLedger 变更审查面的**发行态**全链路回归(S-P1-1 缺口):
+// 默认装配里 tool-files 是外部进程(enabled:false,由 tool-basic 提供)→ 它没有宿主 Ctx,
+// file/change 只能经回调通道(change.record)回传。这条链断了不会报任何错,只会让
+// 变更视图 / `/diff` / Web 变更卡**恒为空**(2026-09-18 实测踩到)—— 故用真实 embed 产物钉住:
+// 外部 file_write → 桥回传 → 宿主账本(含宿主补算的 Rel 与 patch 统计)。
+func TestExternalFileChangeLandsInLedger(t *testing.T) {
+	t.Parallel()
+	extDir := t.TempDir()
+	releaseExt(t, extDir, "tool-basic")
+	// policy-guard 提供 ctx.sandbox(工作区根);host-session-log 已在 buildExternalEnv 装好
+	c, _ := buildExternalEnv(t, extDir, config.Entry{ID: "policy-guard"})
+
+	ws := t.TempDir()
+	if _, err := c.Emit(context.Background(), "cwd/workspace-switched", ws, sdk.Emit); err != nil {
+		t.Fatal(err)
+	}
+	var tools sdk.ToolRegistry
+	if err := c.Inject("ctx.tools", &tools); err != nil {
+		t.Fatal(err)
+	}
+	var sess sdk.SessionLog
+	if err := c.Inject("ctx.sessions", &sess); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(ws, "note.txt")
+	res, err := tools.Execute(context.Background(), "file_write",
+		mustJSON2(t, map[string]any{"path": target, "content": "第一行\n第二行\n"}))
+	if err != nil {
+		t.Fatalf("外部 file_write 执行失败: %v", err)
+	}
+	if res.Error != "" {
+		t.Fatalf("外部 file_write 应成功: %s", res.Error)
+	}
+	// 回传是同步 RPC(写盘工具在返回前调用),写盘结果拿到时事件应已在账本里
+	var got []sdk.FileChangeEvent
+	for _, ev := range sess.Replay() {
+		if ev.Kind != sdk.EventFileChange {
+			continue
+		}
+		fc, ok := sdk.FileChangeFrom(ev.Payload)
+		if !ok {
+			t.Fatalf("file/change 载荷类型不符: %T", ev.Payload)
+		}
+		got = append(got, fc)
+	}
+	if len(got) != 1 {
+		t.Fatalf("账本应有 1 条 file/change(外部工具改动经桥落账),得到 %d 条", len(got))
+	}
+	fc := got[0]
+	if fc.Path != target || fc.Op != "write" || fc.Tool != "file_write" {
+		t.Fatalf("事件字段不符: %+v", fc)
+	}
+	if fc.Rel != "note.txt" {
+		t.Fatalf("宿主应按自己的沙箱根补算 Rel: %q", fc.Rel)
+	}
+	if !fc.Created || fc.Added != 2 || fc.Removed != 0 {
+		t.Fatalf("新建文件统计不符: %+v", fc)
+	}
+	if !strings.Contains(fc.Diff, "+第一行") || fc.Bytes != len("第一行\n第二行\n") {
+		t.Fatalf("patch/字节数不符: %+v", fc)
+	}
+	// 二次改动:同一文件再写一次 → 追加第二条(审查视图按路径聚合)
+	if _, err := tools.Execute(context.Background(), "file_write",
+		mustJSON2(t, map[string]any{"path": target, "content": "第一行\n改过的第二行\n"})); err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, ev := range sess.Replay() {
+		if ev.Kind == sdk.EventFileChange {
+			n++
+		}
+	}
+	if n != 2 {
+		t.Fatalf("同文件二次改动应再记一条(不是覆盖): %d 条", n)
+	}
+}

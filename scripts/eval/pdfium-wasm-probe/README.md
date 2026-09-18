@@ -2,7 +2,7 @@
 
 评测件,**不参与主模块构建**(本目录自带 `go.mod`,主模块 `go build ./...` 不会包含它)。
 
-## 结论摘要(2026-10-11 实测)
+## 结论摘要(2026-09-11 实测)
 
 **功能可行**:`@embedpdf/pdfium` 的 `pdfium.wasm` 在**纯 Go 运行时 wazero** 上完成
 `初始化 → 载入 PDF → 渲染位图`,与 poppler `pdftoppm` 逐像素对照**只差抗锯齿/字形边缘**,
@@ -57,7 +57,7 @@ pdftoppm -png -r 144 -f 1 -l 1 big.pdf ref    # 页码 ≥10 时输出 ref-01.pn
 `-diff`/`-diffimg`(与参考 PNG 逐像素对照:差异像素占比 / 最大通道差 / 墨迹量 / 差异包围盒 / 标红叠加图)、
 `-poison`(毒化 `invoke_*` 返回值,检验其结果是否被使用)。
 
-## 二轮实测(2026-10-11):多构建对比 + `invoke_*` 毒化实验
+## 二轮实测(2026-09-11):多构建对比 + `invoke_*` 毒化实验
 
 ```bash
 # 候选 3:pdfium-lib 官方 release 的 wasm 包(含 STANDALONE_WASM 构建 pdfium.std.wasm)

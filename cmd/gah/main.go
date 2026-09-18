@@ -49,6 +49,11 @@ func main() {
 		os.Args = append([]string{os.Args[0]}, os.Args[2:]...)
 		*profileFlag = "web"
 	}
+	// S-P2-3 入口糖:gah acp ≡ gah --profile acp(ACP agent 形态,stdio 供编辑器如 Zed 拉起)
+	if len(os.Args) > 1 && os.Args[1] == "acp" {
+		os.Args = append([]string{os.Args[0]}, os.Args[2:]...)
+		*profileFlag = "acp"
+	}
 	// 文档阅读 CLI(D1):`gah doc <path> …` 纯读命令,不装配插件(零副作用,直连 host-docview)
 	if isDocSubcommand(os.Args) {
 		os.Exit(runDocCmd(os.Args[2:]))
