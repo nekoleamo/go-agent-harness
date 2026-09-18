@@ -1,4 +1,4 @@
-# seed-version: 23 # 样板版本:新增 base 能力条目(host-* 等)时 +1(23:新增 host-notices 提示通道),老用户自动升级(备份后覆盖)
+# seed-version: 24 # 样板版本:新增 base 能力条目(host-* 等)时 +1(24:新增 tool-schedule 定时计划工具;23:host-notices 提示通道),老用户自动升级(备份后覆盖)
 # base bundle:对齐 dsh-base,一切功能皆插件的共享第一层。
 # M1 阶段条目仅记录意图;对应插件工厂在 M2 base bundle 落地。
 name: base
@@ -129,6 +129,10 @@ entries:
     # data.enable_rule:规则注入开关(默认开;与 AGENTS.md 全局“操作确认”规则重复冗余时可关)
     data:
       enable_rule: true
+  - id: tool-schedule
+    enabled: false # NOND-W4b:模型侧定时计划工具(list/add/update/remove/run)。默认停用 =
+    # 行为零变化(不新增 base 默认能力);要用的人显式打开。触发仍走既有回合入口
+    # (受沙箱/审批裁决、仍落会话记录),无人值守时需审批的动作一律拒绝。
   - id: tool-session-search
     enabled: false # S-P2-5 外部化:session_search(跨会话检索,只读)由 host-bridge 加载 extplugins/tool-basic;内嵌双轨同 tool-files
   - id: tool-subagent

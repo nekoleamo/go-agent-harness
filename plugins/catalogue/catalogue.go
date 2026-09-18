@@ -37,6 +37,7 @@ import (
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-doc"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-files"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-memory"
+	toolschedule "github.com/nekoleamo/go-agent-harness/plugins/tool/tool-schedule"
 	toolsessionsearch "github.com/nekoleamo/go-agent-harness/plugins/tool/tool-session-search"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-shell"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-subagent"
@@ -125,6 +126,11 @@ var All = map[string]Def{
 	"tool-todo": {Factory: func() sdk.Plugin { return &tooltodo.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "tool-todo", Type: "tool", APIVersion: ">=1.0,<2.0",
 		Requires: []string{"ctx.tools"}}, Bundle: "base", Manage: "external"},
+	"tool-schedule": {Factory: func() sdk.Plugin { return &toolschedule.Plugin{} }, Manifest: &sdk.Manifest{
+		ID: "tool-schedule", Type: "tool", APIVersion: ">=1.0,<2.0",
+		// NOND-W4b:模型侧定时计划(list/add/update/remove/run)。**默认停用**(bundle 条目
+		// enabled: false)= 行为零变化;开启后触发仍走既有回合入口(无人值守 = 需审批动作全拒)。
+		Requires: []string{"ctx.tools", "ctx.schedule"}}, Bundle: "base"},
 	"tool-session-search": {Factory: func() sdk.Plugin { return &toolsessionsearch.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "tool-session-search", Type: "tool", APIVersion: ">=1.0,<2.0",
 		// S-P2-5:跨会话检索(session_search)。只读会话账本,不建索引、不写盘。

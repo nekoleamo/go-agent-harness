@@ -90,6 +90,7 @@ plugins/tool/tool-doc 72
 plugins/tool/tool-files 70
 plugins/tool/tool-memory 73
 plugins/tool/tool-shell 90
+plugins/tool/tool-schedule 85
 plugins/tool/tool-session-search 88
 plugins/tool/tool-shell@linux 58
 plugins/tool/tool-subagent 56
