@@ -21,14 +21,25 @@
 #   纯 Go 解码,预计 -3~5 MiB 但需新增依赖评审)—— 任何一条都比继续抬门正确,
 #   只是都在首个 Release 之后再做;新功能若再破门,先执行其一而不是第三次抬门。
 #
+#   2026-09-18 **三轮重定基(向下,体积债结清)**:执行降体路径 ① —— 外部插件传输层
+#   由 hashicorp/go-plugin(整栈拉入 gRPC/protobuf/yamux/hclog)改为**自建 stdio + net/rpc**
+#   (见 plugins/host/host-bridge/transport.go;协议方法面不变,传输层版本 1→2)。
+#   实测(A/B 同批工具包):带桥 13.39 MiB / gz 5.04 → 4.11 / 1.75(每插件省 9.28 MiB
+#   二进制 / 3.29 gz,源于 go-plugin 的 gRPC 栈);宿主本体另省 ~1.5–3 MiB(同栈)。
+#   五目标实测:二进制 30.19–33.82 / gz 18.07–20.62(此前 41.31–46.28 / 26.72–30.50),
+#   embed 10.81–12.38 MiB(此前 21.0–21.9)。按最差目标(darwin/amd64 33.53·windows/amd64
+#   33.82 / gz 20.62)重定基为 **二进制 ≤36 MiB / gz ≤23 MiB**(余量 ~2.2–5.8 MiB)。
+#   剩余降体路径(未做,不再需要):② 附包化 ③ embed 换 xz/zstd。
+#   **纪律不变:下一次破门前先执行剩余路径之一,不抬门。**
+#
 # 用法:
 #   bash scripts/size-check.sh              # 本平台(darwin/arm64 等)
 #   bash scripts/size-check.sh --all        # 发行矩阵五目标(交叉编译,离线可跑)
-#   GAH_SIZE_MAX_BIN_MIB=48 GAH_SIZE_MAX_GZ_MIB=32 bash scripts/size-check.sh --all
+#   GAH_SIZE_MAX_BIN_MIB=36 GAH_SIZE_MAX_GZ_MIB=23 bash scripts/size-check.sh --all
 set -euo pipefail
 
-MAX_BIN_MIB="${GAH_SIZE_MAX_BIN_MIB:-48}"
-MAX_GZ_MIB="${GAH_SIZE_MAX_GZ_MIB:-32}"
+MAX_BIN_MIB="${GAH_SIZE_MAX_BIN_MIB:-36}"
+MAX_GZ_MIB="${GAH_SIZE_MAX_GZ_MIB:-23}"
 ALL=0
 [ "${1:-}" = "--all" ] && ALL=1
 
@@ -75,8 +86,9 @@ if [ -d "internal/embed/extplugins/${host_os}-${host_arch}" ]; then
 else
   echo "(本平台无 embed 目录)"
 fi
-echo "提示:归因项固定为「基线依赖」与「extplugins 外部插件(每件 ~5 MiB gz,源自 go-plugin/gRPC 栈)」;"
-echo "      降体路径见本脚本头部注释(协议去 gRPC 化 / 附包化),不在 CI 自动执行。"
+echo "提示:归因项固定为「基线依赖」与「extplugins 外部插件(每件 ~2.5–4 MiB gz,2026-09-18 起走"
+echo "      自建 stdio + net/rpc,不再拉 gRPC/protobuf 栈)」;剩余降体路径(附包化 / xz 压缩)"
+echo "      见本脚本头部注释,不在 CI 自动执行。"
 
 if [ "$fail" -ne 0 ]; then
   echo "体积门失败:超出阈值(调阈值须同步 DESIGN §14.1 交付门行并说明归因)" >&2

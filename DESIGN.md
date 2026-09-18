@@ -60,7 +60,7 @@
 ### 2.3 插件形态决策(区别于 dsc)
 
 - **核心:进程内 Go 接口插件**(`Plugin` interface + 服务注入 + 事件订阅)。Cordis 语义(可逆副作用、同步回调、服务引用)只在进程内成立。
-- **外部插件桥(可选,M5)**:gRPC + go-plugin,面向崩溃隔离/多语言扩展。
+- **外部插件桥(可选,M5)**:独立进程 + 行握手 stdio RPC(2026-09-18 SZ-1 前为 gRPC + go-plugin),面向崩溃隔离/多语言扩展。
 - **热重载**:进程内 `fsnotify` + dispose/reload;外部插件 reattach。
 - 权衡:进程内插件崩溃拖垮宿主 → MVP 期接受,M5 桥缓解。
 
@@ -155,7 +155,7 @@ ctx.Emit("agent/request", &ev, Waterfall)
 | 事件系统 | 自研 EventBus(5 种分发) | 无现成库 |
 | 配置 | `yaml.v3` + 自研 profile→patch 层 | 对齐 cordis.patch.yml |
 | 热重载 | `fsnotify` + dispose/reload | 进程内 |
-| 外部插件桥 | `hashicorp/go-plugin` + gRPC(**M5 启用**) | 崩溃隔离/多语言 |
+| 外部插件桥 | 自建 stdio + `net/rpc`(gob;2026-09-18 SZ-1 前为 `hashicorp/go-plugin` + gRPC) | 崩溃隔离/多语言 |
 
 ### 5.2 LLM 统一域模型(替代捆绑官方 SDK)
 
@@ -250,6 +250,7 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 |---|---|
 | `CGO_ENABLED=0` 静态编译 | ✅ `-trimpath -ldflags="-s -w -X main.version=v0.1.0"`;otool 仅系统库 |
 | 体积 <40MB | ✅ 31.9MB(darwin/arm64,M7 gzip embed 回归;M6.9 峰值曾达 83.5MB 已修复);基线(无插件)~18MB |
+| 体积复测(2026-09-18,矩阵;SZ-1 体积债结清) | ✅ 执行降体路径 ①(外部插件传输层去 go-plugin/gRPC → 自建 stdio + net/rpc)后五目标二进制 **30.19–33.82 MiB** / gz **18.07–20.62 MiB**(embed 10.81–12.38,此前 21.0–21.9),门**向下**重定基为 **36/23 MiB**(余量 ~2.2–5.8 MiB);详见 §14.1「SZ-1 体积债结清」交付记录 |
 | 体积复测(2026-09-12,矩阵) | ⚠️ 2026-09-11 的 46/30 门在 **2/5 目标已失败**(darwin/amd64 46.14 MiB·gz 30.30、windows/amd64 46.28 MiB·gz 30.50)→ 二轮重定基 **48/32**(余量 ~1.5–1.7 MiB),归因与降体路径登记在 `scripts/size-check.sh` 头 + 本节交付门行;40 MiB 时代的「31.9MB」读数已彻底过时 |
 | 体积复测(2026-09-11,矩阵) | ⚠️ 旧门(<40 MiB)在 **4/5 目标已失败**:darwin/amd64 43.47、windows/amd64 43.63、linux/amd64 42.38、darwin/arm64 40.59、linux/arm64 38.88 MiB;gz 产物 25.81–29.46 MiB。按实测**重定基**(E-C):二进制 ≤46 MiB / gz ≤30 MiB,阈值单一事实源 = `scripts/size-check.sh`(CI 同一脚本);构成 = 基线 19.3–22.3 MiB + 本平台 extplugins gz embed 19.6–21.6 MiB |
 | 版本注入 | ✅ `gah -version` → `gah v0.1.0 (github.com/nekoleamo/go-agent-harness)` |
@@ -334,13 +335,13 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 | **完善 A 组**(已交付) | ✅ 会话持久化+项目隔离(host-cwd-sessions)+ ✅ LLM 断流指数退避重试(§11)+ ✅ TUI 回合取消(Esc→取消链) | 跨期共享隔离;断流自愈;可中断 |
 | **完善 B 组**(已交付) | ✅ apiVersion 语义化校验(SDK 兼容红线,go-version)+ ✅ /export 真导出(jsonl)+ ✅ 外部插件热重载接线(host-bridge watch→自动重载)+ ✅ go:embed 配置样板+home 首启释放+`--ephemeral` 落地(空目录发布实测通过) | 发布形态自包含;插件版本兼容强制;外部插件更新自动生效 |
 | **M6**(已交付) | M6.1–M6.21 已交付:host-jobs/fanout/外部化(M6.8/6.9)/MCP server/指令与技能/插件安装/命令注册表/会话与统计(M6.10)/目录分组(M6.11)/配置修复(M6.12)/伪调用兜底(M6.13)/web_search(M6.14)/TUI 滚动与会话启动(M6.15)/滚轮风暴根因(M6.16)/输入键语义与滚动条拖动(M6.17)/鼠标划选复制(M6.18)/滚动条增强(M6.19)/会话内搜索(M6.20)/search 交互修复(M6.21)——细表见 §14.1 交付行,交付总览以 AGENTS.md「会话状态」为准;M7 Web 线(M7/M7.2/M7.3/M8-T2)已交付,未实施清单清零 | 全库 -race 绿 |
-| **交付门**(已通过;**2026-09-11 E-C 重定基 → 2026-09-12 二轮重定基**) | 单二进制 ≤**48 MiB** 且 gz 产物 ≤**32 MiB**(2026-09-11 定 46/30;2026-09-12 首个 Release 前 CI 复跑实证 46/30 再次被突破:<br>darwin/amd64 46.14 MiB·gz 30.30、windows/amd64 46.28 MiB·gz 30.50 超门 → 按实测重定基,余量 ~1.5–1.7 MiB;归因 = 基线 19.3–22.3 → 21.0–24.4 MiB(R10/M16.x/二期/M17–M18/host-schedule/MCP 代理等)+ extplugins gz embed 21.0–21.9 MiB(仍为主体:4 件 ×~5.4 MiB 的 go-plugin→gRPC 栈);**降体路径本轮未做,已登记体积债**:① 协议去 gRPC 化 ≈-14 MiB/插件 ② extplugins 附包化 ≈-20 MiB(破「单一静态二进制」承诺) ③ embed 换 xz/zstd 纯 Go 解码 ≈-3~5 MiB(需依赖评审)—— 新功能再破门时先执行其一,不第三次抬门)/ `CGO_ENABLED=0` / 五目标交叉编译 / 裸机 scp 启动(首启释放插件后可用) | ✅ 实测数据见 §7.6;阈值与护栏 = `scripts/size-check.sh`(CI 调用,超门即失败;阈值沿革与归因写在脚本头) |
+| **交付门**(已通过;**2026-09-11 E-C 重定基 → 2026-09-12 二轮重定基 → 2026-09-18 三轮向下重定基(SZ-1 结清)**) | 单二进制 ≤**36 MiB** 且 gz 产物 ≤**23 MiB**(2026-09-18 SZ-1 体积债结清:外部插件传输层去 go-plugin/gRPC → 自建 stdio + net/rpc,五目标实测 30.19–33.82 MiB / gz 18.07–20.62 MiB,按最差目标定 36/23;<br>沿革:2026-09-11 定 46/30;2026-09-12 首个 Release 前 CI 复跑实证 46/30 再次被突破:<br>darwin/amd64 46.14 MiB·gz 30.30、windows/amd64 46.28 MiB·gz 30.50 超门 → 按实测重定基为 48/32,余量 ~1.5–1.7 MiB;归因 = 基线 19.3–22.3 → 21.0–24.4 MiB(R10/M16.x/二期/M17–M18/host-schedule/MCP 代理等)+ extplugins gz embed 21.0–21.9 MiB(主体:4 件 ×~5.4 MiB 的 go-plugin→gRPC 栈);**该体积债已于 2026-09-18 由降体路径 ① 结清**;剩余降体路径 ② extplugins 附包化 ≈-20 MiB(破「单一静态二进制」承诺)、③ embed 换 xz/zstd ≈-3~5 MiB(需依赖评审)—— **新功能再破门时先执行其一,不抬门**)/ `CGO_ENABLED=0` / 五目标交叉编译 / 裸机 scp 启动(首启释放插件后可用) | ✅ 实测数据见 §7.6;阈值与护栏 = `scripts/size-check.sh`(CI 调用,超门即失败;阈值沿革与归因写在脚本头) |(2026-09-11 定 46/30;2026-09-12 首个 Release 前 CI 复跑实证 46/30 再次被突破:<br>darwin/amd64 46.14 MiB·gz 30.30、windows/amd64 46.28 MiB·gz 30.50 超门 → 按实测重定基,余量 ~1.5–1.7 MiB;归因 = 基线 19.3–22.3 → 21.0–24.4 MiB(R10/M16.x/二期/M17–M18/host-schedule/MCP 代理等)+ extplugins gz embed 21.0–21.9 MiB(仍为主体:4 件 ×~5.4 MiB 的 go-plugin→gRPC 栈);**降体路径本轮未做,已登记体积债**:① 协议去 gRPC 化 ≈-14 MiB/插件 ② extplugins 附包化 ≈-20 MiB(破「单一静态二进制」承诺) ③ embed 换 xz/zstd 纯 Go 解码 ≈-3~5 MiB(需依赖评审)—— 新功能再破门时先执行其一,不第三次抬门)/ `CGO_ENABLED=0` / 五目标交叉编译 / 裸机 scp 启动(首启释放插件后可用) | ✅ 实测数据见 §7.6;阈值与护栏 = `scripts/size-check.sh`(CI 调用,超门即失败;阈值沿革与归因写在脚本头) |
 
 ### 14.1 未交付规划清单(M6,按需逐个实现)
 
 > **状态图例**:标题 `✅` = 已交付实施;标题 `⏳ 未实施` = 规划待执行、尚未开工(规划条目正文为完整方案,按切片实施)。
 >
-> **未实施清单:M17 审批等级三档 + M18 整体备份/恢复已交付 ✅(2026-09,见下方交付行)**;2026-09 二期(Web jobs 面板/会话 export/命令下沉宿主/mcp-bridge 看护/UI 槽位 v2)全交付 ✅(→ DESIGN 交付表与 docs/TODO_OVERVIEW.md)。其余远期增量(会话树 Web 可视化 M7.2.1、类型分发等)见 docs/ROADMAP.md。**⏳ 体积债(SZ-1,2026-09-12 登记)**:extplugins 是 embed 主体(4 件 ×~5.4 MiB gz = 21.0–21.9 MiB,go-plugin→gRPC 栈),三条降体路径(① 协议去 gRPC 化 ≈-14 MiB/插件 ② extplugins 附包化 ≈-20 MiB,代价=打破「单一静态二进制」承诺 ③ embed 换 xz/zstd + 纯 Go 解码 ≈-3~5 MiB,代价=新增依赖)本轮均未做 —— 体积门已被两次抬升(<40 → 46 → 48 MiB),**下一次破门前必须先执行其一**,不再抬门;细则与实测表见 `scripts/size-check.sh` 头。已交付 ✅:M6.1–M6.21、M8-T1、M10、M11-T1、M11-T2、**M9 子代理全交付(one-shot + 后台控制 + send_message/fork,见下交付行)**、M12 多 provider 并存(2026-09)、**M13 TUI 主题外部化(2026-09)**、**M14 外部命令桥(2026-09)**、**M15 TUI π 式默认样式(2026-09,见下交付表)**、**M7 Web UI 全交付(S1–S3,见下交付行)**、**M7.2 UI 槽位插件化(见下交付行)**、**M7.3 WebSocket 通道(见下交付行)**、**M8-T2 展示联动(见下交付行)**。TUI 线全交付 ✅(S1.1–S2.2 + 折叠交互 + M13 主题外部化;S3.1 决策方案 A 记录在案;S3.2 框架覆盖)。外部命令桥交付后,新命令插件不再需要重编译 gah(见 M14 行与 docs/PLUGIN_DEV.md §4.1)。
+> **未实施清单:M17 审批等级三档 + M18 整体备份/恢复已交付 ✅(2026-09,见下方交付行)**;2026-09 二期(Web jobs 面板/会话 export/命令下沉宿主/mcp-bridge 看护/UI 槽位 v2)全交付 ✅(→ DESIGN 交付表与 docs/TODO_OVERVIEW.md)。其余远期增量(会话树 Web 可视化 M7.2.1、类型分发等)见 docs/ROADMAP.md。**✅ 体积债(SZ-1,2026-09-12 登记 → 2026-09-18 结清)**:执行降体路径 ①(**外部插件传输层去 go-plugin/gRPC** → 自建 stdio + net/rpc),extplugins 由 4 件 ×~5.4 MiB gz 降至 ~2.5–4 MiB(embed 21.0–21.9 → 10.81–12.38 MiB),五目标 30.19–33.82 MiB / gz 18.07–20.62 MiB,门**向下**重定基 36/23 MiB;剩余降体路径(② extplugins 附包化 ≈-20 MiB,代价=打破「单一静态二进制」承诺 ③ embed 换 xz/zstd + 纯 Go 解码 ≈-3~5 MiB,代价=新增依赖)仍登记在册,**下一次破门前必须先执行其一**,不再抬门;细则与实测表见 `scripts/size-check.sh` 头。已交付 ✅:M6.1–M6.21、M8-T1、M10、M11-T1、M11-T2、**M9 子代理全交付(one-shot + 后台控制 + send_message/fork,见下交付行)**、M12 多 provider 并存(2026-09)、**M13 TUI 主题外部化(2026-09)**、**M14 外部命令桥(2026-09)**、**M15 TUI π 式默认样式(2026-09,见下交付表)**、**M7 Web UI 全交付(S1–S3,见下交付行)**、**M7.2 UI 槽位插件化(见下交付行)**、**M7.3 WebSocket 通道(见下交付行)**、**M8-T2 展示联动(见下交付行)**。TUI 线全交付 ✅(S1.1–S2.2 + 折叠交互 + M13 主题外部化;S3.1 决策方案 A 记录在案;S3.2 框架覆盖)。外部命令桥交付后,新命令插件不再需要重编译 gah(见 M14 行与 docs/PLUGIN_DEV.md §4.1)。
 >
 > **体验改进(对比 pi 基线)**:P4 12 项**全部交付** ✅(2026-09 收口:P4-1 消息队列 · P4-2 @引用+Tab 补全 · P4-3 代码块高亮 · P4-4 会话命名 · P4-5 C6 多级上下文 · P4-6 多行输入/外部编辑器 · P4-7 工具视觉增强 · P4-8 /compact · P4-9 语义色 token 化 · P4-10 C1 会话树/分支(树可视化 UI 归 M7 后)· P4-11 /reload · P4-12 widget 槽位;细见 `docs/ROADMAP.md` P4 节)。
 >
@@ -410,7 +411,7 @@ go-agent-harness/            # module: github.com/nekoleamo/go-agent-harness,二
 > | 编号 | 前置件 | 解锁 | 量级 | 风险 |
 > |---|---|---|---|---|
 > | ~~**E-A**~~ ✅ | 工具级审批:policy-guard `data.approval_tools` + `decide()` 三档复用 + 参数摘要 | ✅ **已交付 2026-09-11**:`RequiresToolApproval`/`checkTool`(+120 字参数摘要)/`parseApprovalTools`(列表或逗号字符串),默认空 = 行为零变化;seed 样板双份注释 | — | 已收口 |
-> | ~~**E-C**~~ ✅ | 体积门重定基 + `scripts/size-check.sh`(阈值单一事实源;二进制≤46 MiB / gz≤30 MiB)+ CI 改用脚本 + 增长归因输出 | ✅ **已交付 2026-09-11**:五目标实测表(40.59–43.63 MiB;旧门 40 MiB 已在 4/5 目标失败)+ 归因(基线 19.3–22.3 + extplugins 19.6–21.6 MiB gz)+ 降体路径(协议去 gRPC 化 ≈-14 MiB/插件 / 附包化 ≈-20 MiB)登记在脚本头与本节;**2026-09-12 二轮重定基(48/32,首个 Release 前 CI 复跑实证)与体积债登记见交付门行** | G-D6-1、G-D6-3 **已解锁(体积部分)** | 已收口(阈值沿革持续登记) |
+> | ~~**E-C**~~ ✅ | 体积门重定基 + `scripts/size-check.sh`(阈值单一事实源;二进制≤46 MiB / gz≤30 MiB)+ CI 改用脚本 + 增长归因输出 | ✅ **已交付 2026-09-11**:五目标实测表(40.59–43.63 MiB;旧门 40 MiB 已在 4/5 目标失败)+ 归因(基线 19.3–22.3 + extplugins 19.6–21.6 MiB gz)+ 降体路径(协议去 gRPC 化 ≈-14 MiB/插件 / 附包化 ≈-20 MiB)登记在脚本头与本节;**2026-09-12 二轮重定基(48/32,首个 Release 前 CI 复跑实证)与体积债登记见交付门行**;**2026-09-18 三轮向下重定基(36/23)见交付门行与 §14.1「SZ-1 体积债结清」** | G-D6-1、G-D6-3 **已解锁(体积部分)** | 已收口(阈值沿革持续登记) |
 > | ~~**E-D**~~ ✅ | 真实文档保真语料 + opt-in harness(`scripts/gen-doc-corpus.sh` + `TestFidelityCorpus`,poppler `pdftotext` 独立对照) | ✅ **已交付 2026-09-11**:首轮真实语料 8 件(docx 3 / pdf 4 / xlsx 1,含第三方产出的真实合同与模板)→ 硬性不变量全过 + 覆盖率对照;**首个真实缺口已修**(见下「E-D 发现」) | G-D6-3 **判定前提就绪**;D2–D4 回归盲区补齐 | 已收口 |
 > | ~~**E-E**~~ ✅ | 前端逻辑单测(**零新增依赖**:Node 内置 `node --test` + 类型剥离,替代 vitest)+ 引导判定纯函数化 | ✅ **已交付 2026-09-11**:`npm test` 14 项(sse 消费引擎 11 / 文档意图白名单 3);CI 加「前端逻辑单测」步 | G-X2 交互类断言可自动化 | 已收口(不再需要 vitest/E-E 原方案) |
 >
@@ -1316,7 +1317,7 @@ Go 全量 **1498 passed**(67 包,0 失败,6 跳过;新增 `TestPluginStderrCaptu
 
 > **交付与提交(收口)**:14 项全部交付或明确不做。落地提交按**依赖拓扑**切为 4 笔(每笔依赖闭包自足、可逐笔独立构建):`31fb1ae` sdk 契约层 → `f66afc8` 宿主与工具面 → `65d1b9e` TUI/Web 端 → `1d4f521` 装配产物与文档;另 1 笔文档收口 `8e061e9`(**共 5 笔**)。早前的 12 笔「批次叙事」链**已按要求丢弃**(不复存在;其前 7 笔因文件内容均为最终态、被后续批次文件引用而无法逐笔构建,故无保留价值),逐项交付以本文件下方交付记录为唯一事实源。**收口后追加切片(第十三批)**:S-P0-1 的 TUI 端(`/traj`)—— 表内原写「Web(后 TUI)」,该端在收口时补齐为三端同源口径(见 S-P0-1 节「TUI 端交付」)。
 > **日期口径(2026-09-18 订正)**:本仓 2026-09-18 之前写下的若干文档曾把 **2026-09-11 / 2026-09-12** 的工作错标为 `2026-10-11` / `2026-11-14`(写盘时日期漂移),已按对应提交日期全仓订正(依据:`124b06d` E-C 体积门重定基、`9d9ac3e` F 组 = 2026-09-11;`db28e8f` R10 审计线、`c64f438` IM 线放弃、`275ef2a` 体积门二轮重定基、`c78e9e4` host-schedule、`c81bdeb` NOND-W2b-α/M1-3b、`549aab5` R10 第 2/3 组 = 2026-09-12)。仅测试夹具里的合成日期(如 docx/xlsx 语料的 `w:date="2026-10-11T…"`、前端 schedule 用例的 `2026-11-14`)保持原样。
-> **原则**:优化重心 = 「把已有事件数据变成信息面」+「三端对称」,**不补广度**(体积门已两次抬升 <40→46→48 MiB,下次破门前必须先执行降体路径之一);
+> **原则**:优化重心 = 「把已有事件数据变成信息面」+「三端对称」,**不补广度**(体积门沿革 <40→46→48→36 MiB:2026-09-18 已由 SZ-1 执行降体路径 ① 并**向下**重定基 36/23,下次破门前仍须先执行剩余路径之一);
 > 新增能力优先走 **UI 插件 / 前端产物**(不占二进制);Go 侧新增依赖单独评审。
 > **数据基础(已具备,展示层未用)**:`sdk` 已广播 `turn/start|end`(注:`turn/start` 于 2026-09-18 才真正发出,此前仅声明)、`step/start|end`、`tool/call|result`、`session/usage` 事件,会话 jsonl 即完整事件账本。
 
@@ -1518,6 +1519,19 @@ Go 全量 **1498 passed**(67 包,0 失败,6 跳过;新增 `TestPluginStderrCaptu
 ~~`S-P0-4` → `S-P0-5` → `S-P0-3`~~ ✅ → ~~`S-P2-4`~~ ✅(`!` 直通 + `/statusline` 均已交付)→ ~~`S-P0-2`~~ ✅ → ~~`S-P0-1`~~ ✅ → ~~`S-P1-3`~~ ✅ → ~~`S-P1-1`~~ ✅ → ~~`S-P1-2`~~ ✅ → ~~`S-P1-4`~~ ✅ → ~~`S-P2-2`(轻量版)~~ ✅ → ~~`S-P2-3` ACP server~~ ✅ → ~~`S-P2-5 session_search`~~ ✅ → ~~`S-P2-1`(轻量版:Web 侧栏停靠区)~~ ✅。**S 组 P0–P2 至此全部交付或明确不做**;`S-P2-1` 的 v3 本体(根布局注册表 / 插件停靠布局 / 双侧停靠)仍**未实施**,留待收集真实使用后再评估(见节内 ①)。
 
 > **纪律**:每项交付需 ① 全库 `go test ./... -race` 绿;② 前端改动 `vue-tsc --noEmit` 0 错 + `node --test`;③ 新增 base 插件/bundle 条目必须登记 `plugins/catalogue` 并 bump `# seed-version` 两份同步;④ 新增写盘路径必须经 `$GAH_HOME` 派生。
+
+#### 交付记录(2026-09-18,第十四批:SZ-1 体积债结清 = 外部插件传输层自建 stdio + net/rpc)
+
+> **共同纪律**:`gofmt -l` 干净、`go vet ./...` 干净(含 `cd sdk`)、全库 `go test ./... -race -count=1` 绿、`coverage-check.sh` COVERAGE_OK、`scripts/size-check.sh --all` 五目标通过;**未新增插件/bundle 条目**(协议升级不动 catalogue,`seed-version` 不变)、**未新增写盘路径**、**未新增后端契约**(RPC 方法面与 DTO 逐字不变)、前端未改(无需 `vite build`);go.mod **净减 11 个模块**。
+
+- ✅ **降体路径 ①(外部插件协议去 gRPC 化)执行完毕**:`plugins/host/host-bridge/transport.go`(新)自建进程传输层 —— 宿主注入 `GAH_PLUGIN=gah-external-tool`,插件启动后**先写一行** `GAH-PLUGIN|2|stdio` 到 stdout,随后 stdin/stdout 即 `net/rpc`(gob)双向流,服务名固定 `Plugin`(与旧协议逐字一致)。`serve.go`/`proto.go`/`bridge.go` 三处 go-plugin 触点重写:服务端 `plugin.Serve`+`toolServerBridge.Server/Client` 钩子 → `ServeRPC(svc)`;客户端 `plugin.NewClient`+`Dispense(pluginName)` → `startPluginRPC(cmd, stderr)`,直接拿 `*rpc.Client`。**语义逐条对齐旧协议**:独立进程崩溃隔离、组杀(`pluginProcAttr`/`killPluginGroup`)、stderr 环形缓冲归因(`pluginStderr`)、`IdleMarker` 空闲退出、`GAH_CB_*` 回调通道(独立于本传输层,未动)。
+- ✅ **实测(A/B 同批工具包,决定性证据)**:同一组工具包编译两次 —— 带桥(旧)13.39 MiB / gz 5.04,不带桥 4.11 MiB / 1.75 ⇒ **每插件 9.28 MiB 二进制 / 3.29 MiB gz 全是 go-plugin 的 gRPC/protobuf/yamux/hclog 栈**(`go tool nm -size` 聚合被判定不可靠,以 A/B 为准;`net/rpc` 模式下 proto.go 本来就免 protoc,该栈纯死重量)。宿主本体同栈另省 ~1.5–3 MiB(基线 21.0–24.4 → 19.38–21.44 MiB)。
+- ✅ **五目标实测(前后对比;bin / gz MiB)**:darwin/amd64 46.14·30.30(FAIL)→ **33.53·20.35**;darwin/arm64 43.10·28.05 → **31.22·18.80**;linux/amd64 44.99·29.69 → **32.89·20.08**;linux/arm64 41.31·26.72 → **30.19·18.07**;windows/amd64 46.28·30.50(FAIL)→ **33.82·20.62**。embed 21.0–21.9 → **10.81–12.38 MiB**(单件 gz 2.5–4.1)。**门向下重定基为二进制 ≤36 MiB / gz ≤23 MiB**(按最差目标 + ~2.2–5.8 MiB 余量;`scripts/size-check.sh` 默认值与脚本头沿革同步)。原本两目标(amd64)已在 48/32 下超门的债,现在有 ~12 MiB 余量。
+- ✅ **顺带消除两个安全/健壮性隐患**:① 旧版依赖的 `SkipHostEnv: true` 是为堵 go-plugin「`cmd.Env = append(cmd.Env, os.Environ()...)` 会在过滤后的 `SanitizedEnv` **之后**再接一份完整宿主环境(同名后者胜)」的凭据隔离漏洞 —— 自建传输层只 `append` 一个握手键,该漏洞**结构性消失**;② `cmd.Wait()` 由传输层 goroutine 负责(go-plugin 藏在 `Kill()` 里),长命宿主不再累积 defunct 插件进程。
+- ✅ **测试与产物**:`host-bridge` **97 tests 全绿**(含 `buildExternalPlugin` 真实 `go build tool-echo` + `startPlugin` 端到端、命令桥、取消、回调、沙箱提示);`serve_protocol_test.go` 两个 go-plugin 钩子测试改为传输层断言(`TestHandshakeIdentity` 覆盖握手行/协议版本/三类失败诊断,`TestToolServerConstructedWithRunningTable` 覆盖单一构造点与 `running` 表初始化,测试侧重复的 `newToolServer` 副本删除以消除「测试与生产构造不一致」);`tests/external_test.go` 经 embed 发行产物 e2e;`extplugins/tool-echo` 改为 `bridge.ServeRPC`,不再 import go-plugin。`scripts/gen-extplugins.sh` 重跑(20 次 `assert_arch` 全 OK,`gzip -9 -n` 幂等)。
+- **踩坑/发现**:① **握手行读过的 `bufio.Reader` 必须交给 RPC 读端** —— 握手行之后缓冲里可能已躺着首个 gob 帧,换新 Reader 会吃掉它(症状是「握手成功但首个 RPC 永不返回」);② **`Wait()` 不能省**:go-plugin 的 `Kill()` 内做了 `Process.Kill()+Wait()`,自建后若只 kill 不 wait,长命宿主每次重载插件都留一个 defunct;③ `protoVersion` 1→2 是**唯一的版本判别位**(传输层换了、方法面没换),握手行前缀 `GAH-PLUGIN|` 与 go-plugin 的 `<core>|<app>|tcp|…` 天然区分,故三类失败(旧版产物 / 版本不符 / 无法识别)都能给**可操作**错误而不是笼统「握手失败」;④ 随包产物升级路径本就按 sha256 覆盖(`EnsurePlugins`),不会新旧混用;但**用户自装插件必须重新编译**(见 `docs/PLUGIN_DEV.md` §4.1),这条已在错误文案里写明;⑤ 插件仍**不得往 stdout 写任何非握手内容**(gob 流会被污染)——与旧协议同一约束,已写进包注释与开发文档。
+- **文档同步**:`scripts/size-check.sh`(阈值 48/32 → **36/23** + 脚本头三轮沿革与 A/B 归因 + 归因提示行)、`DESIGN.md`(本节记录 + §7.6 体积复测行 + 交付门行 + 未实施清单 SZ-1 → 已结清 + E-C 行指针 + S 组原则行)、`.github/workflows/ci.yml` 头注释、`docs/TODO_OVERVIEW.md`(SZ-1 → ✅)、`docs/VERIFY.md`(E-C 段阈值 + SZ-1 人工清单)、`docs/PLUGIN_DEV.md` §4.1(传输层/握手/stdout 纪律/自装插件需重编译)、`.gah/skills/gah-plugin-dev/SKILL.md`、`scripts/eval/pdfium-wasm-probe/README.md`(降体路径 ① 已完成)、README 双语(体积读数 41–46 → **30–34 MiB**,门 48/32 → 36/23)。
+- **下一批**:剩余降体路径(② extplugins 附包化 ≈-20 MiB,代价=打破「单一静态二进制」承诺;③ embed 换 xz/zstd ≈-3~5 MiB,代价=新增依赖评审)**仍登记在册但不做**——**下一次破门前必须先执行其一,不抬门**;backlog 继续 = NOND-N1 通知能力层等(见 `docs/TODO_OVERVIEW.md`)。
 
 #### 交付记录(2026-09-18,第十三批:S-P0-1 的 TUI 端 = `/traj`)
 

@@ -451,7 +451,7 @@ One gah binary, three surfaces: the Web frontend is embedded; TUI/Web/headless a
 - `scripts/gen-extplugins.sh` builds external plugin artifacts for the matrix (darwin/linux × amd64/arm64 + windows/amd64), `gzip -9 -n` deterministic compression, embed split per platform (each target embeds only its own).
 - `goreleaser release --snapshot` produces all six target bundles directly; `.goreleaser.yaml` configures before hooks.
 
-Measured acceptance (DESIGN §7.6 / latest baseline): `CGO_ENABLED=0` static single file **41–46 MiB** across five targets (gate = `scripts/size-check.sh`, currently ≤48 MiB / gz ≤32 MiB), six-target cross-compilation green, bare `env -i` boot OK, sha256 attached.
+Measured acceptance (DESIGN §7.6 / latest baseline): `CGO_ENABLED=0` static single file **30–34 MiB** across five targets (gate = `scripts/size-check.sh`, currently ≤36 MiB / gz ≤23 MiB), six-target cross-compilation green, bare `env -i` boot OK, sha256 attached.
 
 ## 11. License
 

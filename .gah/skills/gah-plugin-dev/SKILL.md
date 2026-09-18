@@ -140,7 +140,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 ## 4. 生命周期与热重载
 - 卸载 = Disposer 链逆序执行(后注册先撤销)。
 - 运行期插拔:`host-plugin-manager` 提供 Load/Unload;TUI `/plugins on|off`。
-- 外部进程插件(崩溃隔离):host-bridge(go-plugin net/rpc)/ mcp-bridge(MCP stdio),见各自包注释与测试。
+- 外部进程插件(崩溃隔离):host-bridge(自建 stdio + net/rpc;握手行 `GAH-PLUGIN|2|stdio`,stdout 只能写这一行)/ mcp-bridge(MCP stdio),见各自包注释与测试。
 
 ## 5. 检查清单(提交前)
 - [ ] 只 import sdk;无 core/tui/其它插件 import

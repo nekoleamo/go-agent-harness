@@ -448,7 +448,7 @@ export GAH_MCP_COMMANDS="deja=/opt/homebrew/bin/deja\ncodegraph=codegraph serve 
 - `scripts/gen-extplugins.sh` 按发行矩阵(darwin/linux × amd64/arm64 + windows/amd64)构建外部插件产物,`gzip -9 -n` 确定性压缩,embed 按平台拆包(每目标只嵌本平台产物)。
 - `goreleaser release --snapshot` 可直接出六目标包;`.goreleaser.yaml` 已配置 before hooks。
 
-验收实测(DESIGN §7.6 / 最新基线):`CGO_ENABLED=0` 静态单文件 **41–46 MiB** 五目标(体积门 = `scripts/size-check.sh`,现值 ≤48 MiB / gz ≤32 MiB)、六目标交叉编译全绿、裸机 `env -i` 启动成功、sha256 附档。
+验收实测(DESIGN §7.6 / 最新基线):`CGO_ENABLED=0` 静态单文件 **30–34 MiB** 五目标(体积门 = `scripts/size-check.sh`,现值 ≤36 MiB / gz ≤23 MiB)、六目标交叉编译全绿、裸机 `env -i` 启动成功、sha256 附档。
 
 ## 十一、协议
 

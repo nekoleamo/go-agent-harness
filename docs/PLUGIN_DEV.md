@@ -193,7 +193,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 - 运行期插拔:`host-plugin-manager`(plugins/manager.go)提供 Load/Unload;TUI `/plugins on|off`。
 - **结构性防护**:卸载被已加载插件依赖的插件会被拒绝(`BlockedByLoaded`,显式报错:先卸依赖者或走配置切换)——结构性服务(host-tools 等)建议配置层切换(重启生效)。
 - **工具同名注册**被忽略并记录警告(不静默):替换同名工具 = 先关闭旧提供者插件,再启用新插件。
-- 外部进程插件(崩溃隔离):host-bridge(go-plugin net/rpc)/ mcp-bridge(MCP stdio),见各自包注释与测试。
+- 外部进程插件(崩溃隔离):host-bridge(自建 stdio + net/rpc,见 §4.1)/ mcp-bridge(MCP stdio),见各自包注释与测试。
 
 ### 4.1 外部插件开发(外部化形态)
 
@@ -212,7 +212,11 @@ func main() {
 }
 ```
 - 唯一入口 `ServeTools(tools, commands...)`(外部进程服务端;宿主同仓库编译,import `plugins/host/host-bridge` 的 serve.go 符号或按 extplugins 现有写法)。
-- 握手标识 `GAH_PLUGIN=gah-external-tool` 缺失即拒启(防误跑)。
+- **传输层自建(SZ-1,2026-09-18)**:stdio + net/rpc(gob),不再依赖 hashicorp/go-plugin(旧版把 gRPC/protobuf/yamux/hclog 整栈拉进每个插件)。协议方法面不变,只有两点要遵守:
+  - 握手:宿主注入 `GAH_PLUGIN=gah-external-tool`,插件启动后**先向 stdout 写一行** `GAH-PLUGIN|2|stdio`(由 `ServeTools`/`ServeRPC` 自动完成),随后 stdin/stdout 即 RPC 流。
+  - **除握手行外不得往 stdout 写任何东西**(会污染 gob 流);插件日志一律走 stderr(宿主的加载失败错误会把它带出来)。
+  - 自定义 RPC 服务实现(非 `sdk.Tool` 表,如 `extplugins/tool-echo`)直接 `hostbridge.ServeRPC(&myServer{})`,服务名固定 `Plugin`(宿主调用 `Plugin.ExecuteNamed` 等)。
+  - **旧版(go-plugin 时代)插件产物无法握手**,宿主会报明确错误(含升级指引):随包产物由首启 sha256 覆盖升级,自装插件需按本节重新编译。
 
 **外部命令桥(M14,免编译加命令)**:外部插件声明的命令经 host-bridge 自动转注册进 `ctx.commands`(与进程内插件命令同表),**新命令插件丢进 `$GAH_HOME/plugins/` 即生效,无需重编译 gah**(目录 fsnotify 热重载、崩溃自动拉起复用既有机制)。语义:
 - 声明即注册:Args 级联照常(枚举级 `Options` 运行期经桥 RPC 求值、自由级 `FreeArgs` 触发断点向导);执行 `Run` 在外部进程内完成,输出文本+error 回宿主 TUI meta 行。

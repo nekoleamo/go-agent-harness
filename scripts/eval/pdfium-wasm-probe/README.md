@@ -27,8 +27,12 @@
 `invoke_*`,渲染结果经像素对照无可见差异,但**不可证明安全**。彻底解决需自行以
 `-sSTANDALONE_WASM` / `-sSUPPORT_LONGJMP=wasm` 构建 pdfium(emsdk + depot_tools,重型)。
 
-**判定**:SELF-1 仍**暂存**——仅当「零外部依赖部署」成为硬需求时实施,且需先执行降体路径
-(外部插件协议去 gRPC 化 ≈ -14 MiB / extplugins 附包化 ≈ -20 MiB)或重定体积门。
+**判定**:SELF-1 仍**暂存**——仅当「零外部依赖部署」成为硬需求时实施,且需先执行剩余降体路径
+(extplugins 附包化 ≈ -20 MiB / embed 换 xz/zstd ≈ -3~5 MiB)或重定体积门。
+
+**2026-09-18 更新(SZ-1 体积债结清)**:降体路径 ①(外部插件协议去 gRPC 化)已执行 ——
+换自建 stdio + net/rpc 后五目标 30.19–33.82 MiB / gz 18.07–20.62 MiB,门重定基为 36/23 MiB。
++wazero 路线的空间约束比本档撰写时宽松约 12 MiB。
 
 ## 用法
 
