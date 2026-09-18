@@ -8,13 +8,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"net/rpc"
-	"os"
 	"sort"
 	"sync"
 	"time"
-
-	"github.com/hashicorp/go-plugin"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
@@ -26,40 +22,25 @@ import (
 // 真故障(配了但全连不上/崩溃)仍然以非 0 退出,照旧算失败。
 const IdleMarker = "GAH_PLUGIN_IDLE:"
 
-// ServeTools 启动外部插件进程(gRPC 桥服务端),tools 为工具名→实现表。
+// ServeTools 启动外部插件进程(stdio 桥服务端),tools 为工具名→实现表。
 // 可选变参 commands(命令名→实现,M14 外部命令桥):外部插件可同时提供工具与命令;
 // 不传命令 = 纯工具插件(旧行为不变)。
-// 握手标识 GAH_PLUGIN=gah-external-tool 缺失即拒绝启动(防误跑)。
+// 握手标识 GAH_PLUGIN=gah-external-tool 缺失即拒绝启动(防误跑;由 ServeRPC 校验)。
 func ServeTools(tools map[string]sdk.Tool, commands ...map[string]sdk.CommandSpec) {
-	if v, ok := os.LookupEnv("GAH_PLUGIN"); !ok || v != "gah-external-tool" {
-		log.Fatalf("外部插件缺少握手标识 GAH_PLUGIN(gah-external-tool)")
-	}
 	if len(tools) == 0 && len(commands) == 0 {
 		log.Fatal("外部插件未提供任何工具或命令")
 	}
-	tb := &toolServerBridge{tools: tools}
+	var cmds map[string]sdk.CommandSpec
 	if len(commands) > 0 {
-		tb.commands = commands[0]
+		cmds = commands[0]
 	}
-	plugin.Serve(&plugin.ServeConfig{
-		HandshakeConfig: handshake,
-		Plugins: map[string]plugin.Plugin{
-			pluginName: tb,
-		},
-	})
+	ServeRPC(newToolServer(tools, cmds))
 }
 
-// toolServerBridge go-plugin 服务端:Server() 返回 net/rpc server 实现。
-type toolServerBridge struct {
-	tools    map[string]sdk.Tool
-	commands map[string]sdk.CommandSpec
-}
-
-func (p *toolServerBridge) Server(*plugin.MuxBroker) (any, error) {
-	return &toolServer{tools: p.tools, commands: p.commands, running: map[string]context.CancelFunc{}}, nil
-}
-func (p *toolServerBridge) Client(b *plugin.MuxBroker, c *rpc.Client) (any, error) {
-	return nil, fmt.Errorf("外部插件不需要 client 侧(宿主侧经 host-bridge)")
+// newToolServer 构造协议服务端(单一构造点:running 表必须在这里初始化,
+// 否则宿主 Cancel RPC 会写 nil map panic)。
+func newToolServer(tools map[string]sdk.Tool, commands map[string]sdk.CommandSpec) *toolServer {
+	return &toolServer{tools: tools, commands: commands, running: map[string]context.CancelFunc{}}
 }
 
 // toolServer 桥协议服务端(net/rpc 方法签名对齐桥约定)。

@@ -5,35 +5,15 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"net/rpc"
-	"os"
 	"strings"
-
-	"github.com/hashicorp/go-plugin"
 
 	bridge "github.com/nekoleamo/go-agent-harness/plugins/host/host-bridge"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
 func main() {
-	// 握手校验(go-plugin 惯例:环境变量)
-	if v, ok := os.LookupEnv("GAH_PLUGIN"); !ok || v != "gah-external-tool" {
-		fmt.Fprintln(os.Stderr, "外部插件缺少握手标识 GAH_PLUGIN")
-		os.Exit(1)
-	}
-	plugin.Serve(&plugin.ServeConfig{
-		HandshakeConfig: bridge.Handshake(),
-		Plugins: map[string]plugin.Plugin{
-			"tool": &echoPlugin{},
-		},
-	})
-}
-
-type echoPlugin struct{}
-
-func (p *echoPlugin) Server(*plugin.MuxBroker) (any, error) { return &echoRPCServer{}, nil }
-func (p *echoPlugin) Client(b *plugin.MuxBroker, c *rpc.Client) (any, error) {
-	return nil, fmt.Errorf("外部插件不需要 client 侧")
+	// 握手标识校验在 bridge.ServeRPC 里(环境变量 GAH_PLUGIN,缺失即拒绝启动)。
+	bridge.ServeRPC(&echoRPCServer{})
 }
 
 // echoRPCServer 实现桥协议(net/rpc 方法签名对齐 bridge.ToolServer)。

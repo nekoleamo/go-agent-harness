@@ -1,5 +1,5 @@
 // Package hostbridge 提供 host-bridge 插件:外部进程插件桥(宿主侧,崩溃隔离)。
-// 扫描外部插件目录,加载 tool-* 二进制(go-plugin/gRPC),注册为 sdk.Tool;
+// 扫描外部插件目录,加载 tool-* 二进制(自建 stdio + net/rpc 传输,见 transport.go),注册为 sdk.Tool;
 // P0:工具级超时(TimeOutMs 覆写全局 3s)+ 进程崩溃自动拉起(连接错误
 // → 节流重建进程,下次调用走新实例);多工具协议(ExecuteNamed/Definitions,
 // 旧单工具协议自动回退);执行可中断(CallID + Plugin.Cancel,回合适时取消)。
@@ -24,8 +24,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/hashicorp/go-plugin"
 
 	coreplugin "github.com/nekoleamo/go-agent-harness/core/plugin"
 	"github.com/nekoleamo/go-agent-harness/sdk"
@@ -562,46 +560,22 @@ func startPlugin(bin string, cbAddr, cbToken string) (*rpc.Client, func(), *plug
 	// 凭据隔离:外部插件进程不继承宿主凭据(滤除 *_API_KEY/*_TOKEN/AWS_* 等;GAH_* 宿主配置与
 	// PATH/HOME 等基础键保留),回调通道凭据 GAH_CB_* 仅注入给插件本体,由 sdk.SanitizedEnv 拦在下游。
 	// 确需凭据的插件由用户在 gah-data/env.sh 里经 GAH_EXT_ENV_PASS 显式点名放行。
+	// 握手键 GAH_PLUGIN 由传输层(startPluginRPC)追加 —— 与旧版 go-plugin 的 magic cookie
+	// 等价,且**不**会把整份宿主环境再 append 一遍(旧版 SkipHostEnv 栏掉的正是这个洞)。
 	cmd.Env = sdk.SanitizedEnv(os.Environ())
 	cmd.Env = append(cmd.Env, "GAH_CB_ADDR="+cbAddr, "GAH_CB_TOKEN="+cbToken)
 	cmd.Env = append(cmd.Env, externalEnvPass()...)
 	cmd.SysProcAttr = pluginProcAttr() // 独立进程组:退出时可连插件派生的子进程一并回收
-	// 插件子进程的 stderr 默认被 go-plugin 丢进 io.Discard(实测 client.go:402),
-	// 于是插件自己说的原因(缺配置/端口占用/权限)全部丢失。这里接到环形缓冲上:
-	// 成功时不影响任何输出,失败时拼进错误上报。
+	// 插件子进程的 stderr 接到环形缓冲上(旧版 go-plugin 默认丢进 io.Discard,插件自己说的
+	// 原因——缺配置/端口占用/权限——全部丢失)。成功时不影响任何输出,失败时拼进错误上报。
 	se := &pluginStderr{}
-	client := plugin.NewClient(&plugin.ClientConfig{
-		HandshakeConfig: handshake,
-		Plugins: map[string]plugin.Plugin{
-			pluginName: &toolPluginBridge{},
-		},
-		Cmd:    cmd,
-		Stderr: se,
-		// SkipHostEnv 必须为 true:go-plugin 默认会 `cmd.Env = append(cmd.Env, os.Environ()...)`,
-		// 即把我们过滤后的 SanitizedEnv **后面**再接一份完整宿主环境(同名后者胜)→ 凭据隔离被
-		// 静默绕过(实测子进程能看到 EXA_API_KEY/*_TOKEN)。置 true 后仅用上面的 cmd.Env;
-		// go-plugin 自己需要追加的 PLUGIN_* 握手键仍在之后单独 append,不受影响。
-		SkipHostEnv: true,
-	})
-	proto, err := client.Client()
+	client, err := startPluginRPC(cmd, se)
 	if err != nil {
-		client.Kill()
 		return nil, nil, se, idleOr(decorateStderr(fmt.Errorf("host-bridge: 启动外部插件失败 %s", bin), se), se)
 	}
-	raw, err := proto.Dispense(pluginName)
-	if err != nil {
-		client.Kill()
-		return nil, nil, se, idleOr(decorateStderr(fmt.Errorf("host-bridge: 插件握手失败 %s", bin), se), se)
-	}
-	tc, ok := raw.(*rpcClientOnly)
-	if !ok {
-		client.Kill()
-		return nil, nil, se, fmt.Errorf("host-bridge: 意外的插件类型 %T", raw)
-	}
-	return tc.client, func() {
-		proto.Close()
-		client.Kill()
-		killPluginGroup(cmd) // 组杀残余后代(MCP server 等):仅杀插件本体不够
+	return client, func() {
+		client.Close()       // 关读写端 → 插件侧 stdin EOF → ServeRPC 自行退出
+		killPluginGroup(cmd) // 组杀残余后代(MCP server 等)与未退出的插件本体
 	}, se, nil
 }
 
@@ -810,18 +784,8 @@ func rpcCallCtx(ctx context.Context, cl *rpc.Client, method string, args, reply 
 	}
 }
 
-// toolPluginBridge 桥插件:连接 net/rpc,Client() 返回 gob 转发客户端。
-type toolPluginBridge struct{}
-
-func (p *toolPluginBridge) Server(*plugin.MuxBroker) (any, error) {
-	return nil, fmt.Errorf("server 侧由外部插件提供")
-}
-func (p *toolPluginBridge) Client(b *plugin.MuxBroker, c *rpc.Client) (any, error) {
-	return &rpcClientOnly{client: c}, nil
-}
-
-// rpcClientOnly 占位(go-plugin Client() 钩子:宿主侧取回 *rpc.Client)。
-type rpcClientOnly struct{ client *rpc.Client }
+// rpcClientOnly 已随传输层自建而移除:startPluginRPC 直接返回 *rpc.Client(旧版经
+// go-plugin 的 Client() 钩子取回同一对象)。
 
 // toolRPCClient 实现 sdk.Tool(经 RPC 转发;连接错误触发自动拉起)。def 为注册时快照。
 type toolRPCClient struct {

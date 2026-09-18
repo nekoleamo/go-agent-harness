@@ -57,13 +57,8 @@ func (t *chanTool) Execute(context.Context, string) (any, error) {
 	return make(chan int), nil
 }
 
-// newToolServer 组装直调服务端(与 toolServerBridge.Server 同形)。
-func newToolServer(tools map[string]sdk.Tool, commands map[string]sdk.CommandSpec) *toolServer {
-	if commands == nil {
-		commands = map[string]sdk.CommandSpec{}
-	}
-	return &toolServer{tools: tools, commands: commands, running: map[string]context.CancelFunc{}}
-}
+// 直调服务端统一用生产构造器 newToolServer(serve.go):测试不再另起一份副本,
+// 免得「构造点漏初始化 running 表」这类缺陷只能靠宿主 Cancel RPC 在真机上暴露。
 
 // TestToolServerDefinitionsSortedWithCapabilityDefinitions JSON 数组按名排序,
 // 且能力声明(PathParams/ApprovalTargetParam/TimeoutMs)必须跨协议传递
@@ -322,44 +317,68 @@ func TestToolServerRunCommand(t *testing.T) {
 	}
 }
 
-// TestBridgePluginsServerClientHooks 两侧 go-plugin 钩子的边界:
-// 宿主侧重试由外部插件提供 Server(显式报错);外部插件侧不提供 Client(显式报错);
-// 外部侧 Server 返回的 toolServer 必须已初始化 running 表(否则 Cancel 会写 nil map panic)。
-func TestBridgePluginsServerClientHooks(t *testing.T) {
-	hostSide := &toolPluginBridge{}
-	if _, err := hostSide.Server(nil); err == nil || !strings.Contains(err.Error(), "外部插件提供") {
-		t.Fatalf("宿主侧 Server 应显式报错: %v", err)
+// TestToolServerConstructedWithRunningTable 协议服务端构造入口的边界:
+// running 表必须在构造时初始化(否则宿主 Cancel RPC → 写 nil map panic),
+// 命令表透传(纯工具插件 = nil 命令表,Commands 回空数组)。
+func TestToolServerConstructedWithRunningTable(t *testing.T) {
+	ts := newToolServer(map[string]sdk.Tool{"x": &serveStubTool{name: "x"}},
+		map[string]sdk.CommandSpec{"c": {Name: "c"}})
+	if ts.running == nil {
+		t.Fatal("running 表必须初始化(Cancel 会写它)")
 	}
-	if _, err := hostSide.Client(nil, nil); err != nil {
-		t.Fatalf("宿主侧 Client 应回 rpc 转发客户端: %v", err)
+	var hit bool
+	if err := ts.Cancel(&CancelArgs{CallID: "x"}, &hit); err != nil {
+		t.Fatalf("running 表已初始化,Cancel 不应出错: %v", err)
 	}
-
-	extSide := &toolServerBridge{tools: map[string]sdk.Tool{"x": &serveStubTool{name: "x"}},
-		commands: map[string]sdk.CommandSpec{"c": {Name: "c"}}}
-	svc, err := extSide.Server(nil)
-	if err != nil {
-		t.Fatal(err)
+	var raw string
+	if err := ts.Commands(struct{}{}, &raw); err != nil || !strings.Contains(raw, "\"c\"") {
+		t.Fatalf("命令表应透传: %q/%v", raw, err)
 	}
-	ts, ok := svc.(*toolServer)
-	if !ok || ts.running == nil {
-		t.Fatalf("外部侧 Server 应返回初始化过的 toolServer: %#v", svc)
+	pure := newToolServer(map[string]sdk.Tool{"x": &serveStubTool{name: "x"}}, nil)
+	raw = "unset"
+	if err := pure.Commands(struct{}{}, &raw); err != nil {
+		t.Fatalf("纯工具插件的命令枚举不应报错: %v", err)
 	}
-	var ok2 bool
-	if err := ts.Cancel(&CancelArgs{CallID: "x"}, &ok2); err != nil {
-		t.Fatalf("running 表已初始化,Cancel 不应 panic: %v", err)
+	var cmds []CommandDTO
+	if raw != "" {
+		if err := json.Unmarshal([]byte(raw), &cmds); err != nil {
+			t.Fatalf("命令枚举应为 JSON 数组/空: %q (%v)", raw, err)
+		}
 	}
-	if _, err := extSide.Client(nil, nil); err == nil || !strings.Contains(err.Error(), "host-bridge") {
-		t.Fatalf("外部侧 Client 应显式报错: %v", err)
+	if len(cmds) != 0 {
+		t.Fatalf("纯工具插件不应有命令: %+v", cmds)
 	}
 }
 
-// TestHandshakeIdentity 握手标识是两侧协议一致性的唯一凭据(漂移 ⇒ 外部插件全部加载失败)。
+// TestHandshakeIdentity 握手标识/协议版本是两侧一致性的唯一凭据(漂移 ⇒ 外部插件全部加载失败),
+// 且不匹配时必须给**可操作**的诊断(旧版 go-plugin 产物 / 版本不符 / 无法识别)。
 func TestHandshakeIdentity(t *testing.T) {
-	h := Handshake()
-	if h.MagicCookieKey != "GAH_PLUGIN" || h.MagicCookieValue != "gah-external-tool" || h.ProtocolVersion != 1 {
-		t.Fatalf("握手配置不符: %+v", h)
+	if HandshakeKey != "GAH_PLUGIN" || HandshakeValue != "gah-external-tool" {
+		t.Fatalf("握手标识不符: %s=%s", HandshakeKey, HandshakeValue)
 	}
-	if h != handshake {
-		t.Fatal("Handshake() 必须返回协议包内同一配置(单一事实源)")
+	if protoVersion != 2 {
+		t.Fatalf("传输层协议版本应为 2(stdio),得到 %d", protoVersion)
+	}
+	if got, want := handshakeLine(), "GAH-PLUGIN|2|stdio\n"; got != want {
+		t.Fatalf("握手行 = %q,期望 %q", got, want)
+	}
+	if err := classifyHandshake(handshakeLine()); err != nil {
+		t.Fatalf("本版本握手行应通过: %v", err)
+	}
+
+	// 旧版 go-plugin 握手行 → 指名道姓的升级指引(而不是笼统的「握手失败」)
+	err := classifyHandshake("1|1|tcp|127.0.0.1:53219|grpc\n")
+	if err == nil || !strings.Contains(err.Error(), "go-plugin") || !strings.Contains(err.Error(), "重新编译") {
+		t.Fatalf("旧版产物应给可操作错误: %v", err)
+	}
+	// 版本不符 → 报两侧版本
+	err = classifyHandshake("GAH-PLUGIN|9|stdio\n")
+	if err == nil || !strings.Contains(err.Error(), "9") || !strings.Contains(err.Error(), "协议版本不匹配") {
+		t.Fatalf("版本不符应报两侧版本: %v", err)
+	}
+	// 其它输出(插件往 stdout 打了别的东西)→ 报原文并给期望格式
+	err = classifyHandshake("hello world\n")
+	if err == nil || !strings.Contains(err.Error(), "hello world") || !strings.Contains(err.Error(), "GAH-PLUGIN|") {
+		t.Fatalf("无法识别应报原文 + 期望格式: %v", err)
 	}
 }
