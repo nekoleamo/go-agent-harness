@@ -1399,6 +1399,7 @@ func (a *App) afterSessionSwitch(cs sdk.CwdSessions) {
 		a.model.state.Stats = sdk.UsageStats{}
 	}
 	a.model.state.Lines = nil
+	a.model.state.Traj.Reset() // S-P0-1:轨迹随会话重置(随后 ApplyReplay 从头重建)
 	a.model.state.LastTool = ""
 	a.model.state.ClearQueue() // P4-1:切会话丢弃旧队列(防错发到新会话上下文)
 	var sessions sdk.SessionLog
@@ -1593,6 +1594,23 @@ func (a *App) cmdStatusline(args []string) (string, error) {
 	prefs.SetStatusline(toks)
 	a.model.state.Statusline = toks
 	return "状态栏已更新: " + strings.Join(toks, " ") + "(重启后仍生效;/statusline reset 恢复默认)", nil
+}
+
+// cmdTraj /traj:TUI 侧轨迹/可观测视图(S-P0-1 TUI 端)。数据全部来自本进程已收到的
+// 会话事件(与 Web 轨迹视图同源同口径),只呈现过程与成本(回合 → 步 → 工具 + 时长/用量),
+// 不复制会话正文——看内容请回会话流视图。复用文本 pager 呈现(与 /jobs output、/diff 同款浮层)。
+func (a *App) cmdTraj(args []string) (string, error) {
+	if st := a.model.state.Traj.Overview(); st.Turns == 0 {
+		return "暂无轨迹:本会话还没有回合事件(跑一个回合后再试)", nil
+	}
+	// Run 在 UI 循环内被调(与 command 的 meta 行同路),此处只赋模型状态,不经 program.Send。
+	a.model.state.Doc = NewTextPager(TextPagerSpec{
+		Title:  "轨迹 · 可观测",
+		Format: "text",
+		Status: "本机事件账本派生:时长只取事件时间戳(进行中不给时长)",
+		Lines:  a.model.state.Traj.Render(),
+	})
+	return "轨迹已打开(浮层内 ↑/↓/PgUp/PgDn 滚动,q/Esc 关闭)", nil
 }
 
 // parseStatuslineArgs 解析 /statusline 参数(空格/逗号分隔,忽略空项)。
@@ -2062,6 +2080,7 @@ func (a *App) registerInternalCommands() {
 				return []string{"项(reset? | 空格分隔的多项)"}
 			}}},
 			Run: a.cmdStatusline},
+		{Name: "traj", Usage: "/traj", Desc: "轨迹/可观测视图(回合 → 步 → 工具 + 时长/用量;本机会话事件派生)", Run: a.cmdTraj},
 		{Name: "search", Usage: "/search <词>", Desc: "会话内搜索(命中高亮,n/N/F3 循环跳转,Esc 退出)",
 			// 自由级断点:选中后光标停留输入框提示继续输入,输入词回车才执行——
 			// 否则选中即提交(无参报错),再输入的文字会误走普通消息发给大模型。

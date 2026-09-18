@@ -80,6 +80,10 @@ type State struct {
 	// S-P2-4 状态栏项集合与顺序(/statusline;空 = F15.3 基线默认;详见 chrome.go)。
 	Statusline []string
 
+	// S-P0-1 轨迹/可观测视图模型(/traj;由同一份会话事件账本聚合,详见 traj.go)。
+	// 纯展示派生:不落盘、不影响会话日志,只服务 TUI 端呈现。
+	Traj Traj
+
 	// P5 回合耗时:turnStart 运行起点(ApplyStatus running 首设),turnDur 上次回合耗时
 	// (ApplyStatus idle 结算;状态栏空闲态展示)。私有,渲染层同包可读。
 	turnStart time.Time
@@ -152,6 +156,7 @@ type ustep struct {
 
 // ApplySessionEvent 把会话事件推进到展示状态(纯逻辑,可测)。
 func (s *State) ApplySessionEvent(ev *sdk.SessionEvent) {
+	s.Traj.Push(ev) // S-P0-1 轨迹聚合(与展示行互不影响;重放二次进入按 seq 去重)
 	switch ev.Kind {
 	case sdk.EventUserMessage:
 		if u, ok := ev.Payload.(sdk.UserMessage); ok {
@@ -741,6 +746,9 @@ func (s *State) foldOpenOf(lineIdx int) bool {
 // 多轮结构:跨轮时插一条细分隔线(轻量 meta,替代全宽“轮次结束”行——重放几十轮
 // 若每轮都铺全宽分隔仍显吵;细线只标轮界,实时回合保留原“轮次结束”分隔感)。
 func (s *State) ApplyReplay(ev *sdk.SessionEvent) {
+	// 轨迹先吃帧:重放下 turn/end 被展示层跳过(不铺"轮次结束"行),但轨迹必须看到它
+	// 才能结算回合时长——去重由 Traj.Push 按 seq 负责(随后的 ApplySessionEvent 会再进一次)。
+	s.Traj.Push(ev)
 	if ev.Kind == sdk.EventTurnEnd {
 		return
 	}

@@ -194,7 +194,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 
 ## 四、TUI 命令
 
-> 命令注册进宿主 `ctx.commands`,TUI/Web/headless `/` 前缀通用;输入 `/` 弹出命令提示(名称+说明,可继续输入过滤)。**所有命令支持逐级确认**:参数按声明级联(子命令枚举 → 动态候选,如 provider/会话/插件/任务/备份/主题/群列表;需手输的走自由参数断点),TUI 用选择器、Web 用同一注册表声明的候选列表(点击逐级选)。TUI 专属命令(search/widgets/statusline/theme/help/exit/fork/clone/tree/name)仅 TUI 可用。
+> 命令注册进宿主 `ctx.commands`,TUI/Web/headless `/` 前缀通用;输入 `/` 弹出命令提示(名称+说明,可继续输入过滤)。**所有命令支持逐级确认**:参数按声明级联(子命令枚举 → 动态候选,如 provider/会话/插件/任务/备份/主题/群列表;需手输的走自由参数断点),TUI 用选择器、Web 用同一注册表声明的候选列表(点击逐级选)。TUI 专属命令(search/widgets/statusline/traj/theme/help/exit/fork/clone/tree/name)仅 TUI 可用。
 
 | 命令 | 作用 |
 |---|---|
@@ -229,6 +229,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `/name <显示名>` | 给当前会话加显示名(`-` 清除;状态栏/切换列表名优先) |
 | `/widgets on\|off` | 输入区上方 widget 区开关(宿主注册的动态信息行) |
 | `/statusline [项...]\|reset` | 状态栏项集合与顺序(TUI):无参=查看当前与可用项(`state/queue/questions/dock/last/workspace/sandbox/approval/session`);给项即按序渲染(回合态项之间 `·`、其余 `|`),`reset` 恢复 F15.3 基线;偏好持久化(`gah-state.json`)重启生效 |
+| `/traj` | 轨迹/可观测视图(TUI):以文本浮层呈现同一份会话事件账本的**回合 → 步 → 工具**投影(概览:回合数/总时长/累计 token 与缓存占比;逐回合倒序:时长与结束原因、步数与工具数、失败/未回填计数、token、模型名;工具行:状态/耗时/出参体积/错误原文/参数摘要)。只呈现过程与成本,不铺出参与正文;**时长只取事件时间戳,进行中的回合/步/工具一律显「进行中」**(概览改显「计算中」),不拿本地时钟补齐;浮层复用文本 pager(滚动/横移/搜索/`q` 关闭),Web 侧对应轨迹视图按钮 |
 | `/help` `/exit` | 帮助 / 退出(**Ctrl+C 连按两次**,防误触) |
 
 > **`!` shell 直通**:输入以 `!` 开头(如 `!git status`)= 立刻执行该 shell 命令(**走与模型工具同一条沙箱/审批管线**,不存在手敲免检旁路),输出就地回显、长命令可 `Esc` 中断;结果**只本地留痕,不进模型上下文**(避免孤立 tool 消息破坏投影)。需要模型看到输出时请让模型调用工具。

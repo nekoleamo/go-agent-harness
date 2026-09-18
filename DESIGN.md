@@ -1314,7 +1314,7 @@ Go 全量 **1498 passed**(67 包,0 失败,6 跳过;新增 `TestPluginStderrCaptu
 
 > **数据基础(已具备,展示层未用)**:`sdk` 已广播 `turn/start|end`(注:`turn/start` 于 2026-09-18 才真正发出,此前仅声明)、`step/start|end`、`tool/call|result`、`session/usage` 事件,会话 jsonl 即完整事件账本。
 
-> **交付与提交(收口)**:14 项全部交付或明确不做,无遗留实施项。落地提交按**依赖拓扑**切为 4 笔(每笔依赖闭包自足、可逐笔独立构建):`31fb1ae` sdk 契约层 → `f66afc8` 宿主与工具面 → `65d1b9e` TUI/Web 端 → `1d4f521` 装配产物与文档。早前的 12 笔「批次叙事」链**已按要求丢弃**(不复存在;其前 7 笔因文件内容均为最终态、被后续批次文件引用而无法逐笔构建,故无保留价值),逐项交付以本文件下方 12 条交付记录为唯一事实源。
+> **交付与提交(收口)**:14 项全部交付或明确不做。落地提交按**依赖拓扑**切为 4 笔(每笔依赖闭包自足、可逐笔独立构建):`31fb1ae` sdk 契约层 → `f66afc8` 宿主与工具面 → `65d1b9e` TUI/Web 端 → `1d4f521` 装配产物与文档;另 1 笔文档收口 `8e061e9`(**共 5 笔**)。早前的 12 笔「批次叙事」链**已按要求丢弃**(不复存在;其前 7 笔因文件内容均为最终态、被后续批次文件引用而无法逐笔构建,故无保留价值),逐项交付以本文件下方交付记录为唯一事实源。**收口后追加切片(第十三批)**:S-P0-1 的 TUI 端(`/traj`)—— 表内原写「Web(后 TUI)」,该端在收口时补齐为三端同源口径(见 S-P0-1 节「TUI 端交付」)。
 > **日期口径(2026-09-18 订正)**:本仓 2026-09-18 之前写下的若干文档曾把 **2026-09-11 / 2026-09-12** 的工作错标为 `2026-10-11` / `2026-11-14`(写盘时日期漂移),已按对应提交日期全仓订正(依据:`124b06d` E-C 体积门重定基、`9d9ac3e` F 组 = 2026-09-11;`db28e8f` R10 审计线、`c64f438` IM 线放弃、`275ef2a` 体积门二轮重定基、`c78e9e4` host-schedule、`c81bdeb` NOND-W2b-α/M1-3b、`549aab5` R10 第 2/3 组 = 2026-09-12)。仅测试夹具里的合成日期(如 docx/xlsx 语料的 `w:date="2026-10-11T…"`、前端 schedule 用例的 `2026-11-14`)保持原样。
 > **原则**:优化重心 = 「把已有事件数据变成信息面」+「三端对称」,**不补广度**(体积门已两次抬升 <40→46→48 MiB,下次破门前必须先执行降体路径之一);
 > 新增能力优先走 **UI 插件 / 前端产物**(不占二进制);Go 侧新增依赖单独评审。
@@ -1324,7 +1324,7 @@ Go 全量 **1498 passed**(67 包,0 失败,6 跳过;新增 `TestPluginStderrCaptu
 
 | 编号 | 项 | 端 | 量级 | 数据源 | 状态 |
 |---|---|---|---|---|---|
-| **S-P0-1** | 轨迹/可观测视图(turn 感知步骤行 + 行内 inspector + 固定 Overview 时间线) | Web(后 TUI) | M | turn/step/tool/usage 事件 | ✅ 2026-09-18(`traj.ts` + `TrajectoryView.vue` + 视图切换;时长只取事件 TS,进行中不编造) |
+| **S-P0-1** | 轨迹/可观测视图(turn 感知步骤行 + 行内 inspector + 固定 Overview 时间线) | Web + TUI | M | turn/step/tool/usage 事件 | ✅ 2026-09-18(`traj.ts` + `TrajectoryView.vue` + 视图切换;TUI 端 `/traj` 文本 pager 补齐同源口径;时长只取事件 TS,进行中不编造) |
 | **S-P0-2** | 异步提问 + 问题栈(非阻塞、建议答案、skip/queue、断连只恢复状态) | TUI + Web | M | `question/requested\|resolved` + `ctx.question` | ✅ 2026-09-18(TUI 栈 + `/answer` + Esc 退出作答;Web 收起角标;`Ask` 同步语义未动) |
 | **S-P0-3** | TUI 任务/子代理实时坞(自动出现、选中看日志、定向、停止) | TUI | S–M | `ctx.jobs` / `ctx.fanout` / `job/done` | ✅ 2026-09-18(坞折叠行 + `/jobs` 统一视图 + **F6 展开列表**:↑/↓ 选择 / Enter 看输出(复用 `/jobs output`) / `s` 定向(草稿经 `ctx.fanout.SendMessage`) / `x` 停止(二次确认)) |
 | **S-P0-4** | 上下文占用分解视图(`/context`:分类 token 表 + 组件成本) | 三端(命令) | S | `ctx.usageStats` + 本地估算 | ✅ 2026-09-18 |
@@ -1342,10 +1342,12 @@ Go 全量 **1498 passed**(67 包,0 失败,6 跳过;新增 `TestPluginStderrCaptu
 
 #### 实施方案
 
-##### S-P0-1 轨迹/可观测视图(Web 优先)✅(2026-09-18 交付)
+##### S-P0-1 轨迹/可观测视图(Web 优先,TUI 端补齐)✅(2026-09-18 交付,收口后追加 TUI 切片)
 - **对标**:dsh `ui-trajectory`(事件账本 → turn 感知 + 步骤标记行、嵌套 subtool、行内 inspector(tokens/耗时/IO/时序)、虚拟化 + 上滚分页不打断 tail 流、固定 Overview 时间线、进行中不编造时长)。
 - **数据源**:会话事件账本(`turn/end`、`step/start`、`step/end`、`tool/call`、`tool/result`、`session/usage`、`user/message`、`assistant/message`);Web 侧经 `EventHub` SSE 逐帧下发且**重放全量**(`ReplayAfter` 不过滤 Kind),故刷新/重连后轨迹与实时同源同全。
 - **交付内容**:① 新增 `web-src/src/traj.ts` **纯逻辑聚合器**(零运行时依赖、只 type-only 引入 —— `src/` 下逻辑模块须自包含:`node` 直跑 `*.test.ts` 无法解析无扩展名相对导入,而 `vue-tsc` 不允许带 `.ts` 扩展名导入):帧序列 → `TrajModel{turns, cur}`,三层结构 turn → step → tool + 每层度量;turn 边界由 `user/message`(起点)与 `turn/end`(终点)派生(`turn/start` 在账本里**从未被发出**、仅旧式声明,故不作为必要输入,仅有过程帧时开隐式回合);工具归属所在 step(事件无更细嵌套,**不臆造层级**),无 step 的工具调用补隐式 step 防归属丢失;结果帧晚到/回合已结束 → 跨回合回溯定位,结果先于调用到达 → 不臆造工具行;`session/usage` 按「归属当前回合」聚合(prompt/completion/cached/requests/model)。② **度量纪律**:`turnMs/stepMs/toolMs` 只用事件自带 TS 相减,**进行中的 turn/step/tool 一律返回 undefined → 视图显示「进行中」**(不拿本地时钟补齐:dsh 的「进行中不编造时长」);`trajOverview` 在存在未结束回合时总时长同样留空。③ 新增 `web-src/src/components/TrajectoryView.vue`:粘顶**固定概览条**(回合数 / 总时长 / 累计 token / 缓存占比 + 可点击的回合胶囊,点击滚到该回合并展开)+ 回合块(状态徽标「完成/已取消/步数上限/进行中」、用户消息摘要、步数/工具数/失败数/token/时长一行,折叠展开)+ 步骤行(步骤 N / 时长 / 工具次数,无工具时显式标「直接作答」)+ 工具行(名称 / 参数摘要 / 时长 / **出参字节** / 状态徽标,失败展开错误原文)+ 回合级 usage inspector;左缩进发丝线表达归属层级(不画卡片)。④ `App.vue`:内建视图**切换按钮**(状态栏「轨迹 / 会话流」,`localStorage` 记忆),两视图并行消费同一帧流(`consume` 与 `trajPush` 各自投影、互不影响),轨迹模式下不干扰流视图滚动位置、切回流视图自动回底;轨迹视图走内建组件、**不接管槽位 `stream`**(UI 插件对该槽位的覆盖仍是流视图的实现)。
+- **TUI 端交付(`/traj`,第十三批)**:① 新增 `tui/traj.go` **纯逻辑聚合器**(与 `traj.ts` 同源同口径:回合边界/step 归属/跨回合结果回溯/`session/usage` 归当前回合/隐式回合与隐式 step/`turn/end` 原因),`Turns []*TrajTurn` 用指针切片保证 `cur` 跨 append 稳定;② 度量同纪律:`TurnMS/StepMS/ToolMS` 返回 `(ms, ok)`,进行中 `ok=false` → 报告显「进行中」,**不拿本地时钟补齐**;`Overview()` 在存在未结束回合时 `HasMS=false` → 概览显「计算中(有回合未结束)」;③ **接线**:`State.ApplySessionEvent` 与 `State.ApplyReplay` 两路都喂轨迹(`turn/end` 在重放里被展示层跳过 —— 不铺「轮次结束」行,但轨迹必须看到它才能结算时长),去重由 `Traj.Push` 按会话 `seq` 单调负责(重放二次进入不重复计数);`afterSessionSwitch` 随会话 `Reset` 后由 `ApplyReplay` 重建;④ 新增 TUI 本地命令 **`/traj`** → 渲染文本报告(概览 + 逐回合倒序 + 提问摘要 + 步与工具行:状态/耗时/出参体积/错误原文/参数摘要)经**既有文本 pager**(`/jobs output`、`/diff` 同款浮层)呈现,复用全屏滚动/搜索/横移,不新做渲染路径;⑤ 报告只呈现**过程与成本**,不铺工具出参正文与会话正文(见「有意不做」);⑥ **测试**:新增 `tui/traj_test.go` 19 项(回合边界派生、`turn/start` 先行回填、隐式回合/隐式步、工具归属与结果回填、时长只取事件 TS、进行中不给时长、用量归回合与回合外不记账、晚到结果跨回合回溯、`turn/end` 四种载荷、重复 `seq` 去重、assistant 累积、`Reset` 后重计账、概览与缓存占比、报告渲染(空态/进行中/无出参正文)、格式化口径、`State` 两路入口接线(含重放跳过的 `turn/end`)、`/traj` 命令空态与 pager 构造)——`go test ./tui/ -race` 全绿。
+- **TUI 端有意不做/取舍**:不做 per-step token、不做终端内联图表、不把轨迹做成 TUI 的第二个会话流(终端下回合/步骤树的信息密度不及滚动会话流,故只给按需打开的报告,不做常驻视图);数字口径沿用本端既有 `fmtK`(状态栏同源,1024 进制),与 Web `fmtTok`(1000 进制)各随本端,不另起第三套。
 - **有意不做**:不做 per-step token 拆分(`session/usage` 每次请求一条,归属回合即可,拆到 step 需后端加字段);不做虚拟化/上滚分页(S-P1-2 专项);不把轨迹视图做成第二个会话流(此处只呈现过程与成本,内容仍看流视图)。
 - **验收达成**:`node --test`(79,新增 18 项:`traj.test.ts` 覆盖 turn 边界派生、step/tool 归属、度量只取事件 TS、进行中不给时长、usage 汇总、turnStats 口径、assistant 多步累积、结果先到/晚到、隐式 step、隐式回合、`turn/start` 不重复开回合、`turn/start` 先行时用户消息回填同一回合(不产生空回合)、`cancelled/max_steps` 载荷、概览聚合、格式化口径、重放一致、`args` 与 `sse.argsSummary` 同源不漂移);`vue-tsc --noEmit` 0 错;`vite build` 通过;全库 `go test ./... -race -count=1` 绿 + `coverage-check.sh` COVERAGE_OK + `size-check.sh` 通过。
 
@@ -1516,6 +1518,15 @@ Go 全量 **1498 passed**(67 包,0 失败,6 跳过;新增 `TestPluginStderrCaptu
 ~~`S-P0-4` → `S-P0-5` → `S-P0-3`~~ ✅ → ~~`S-P2-4`~~ ✅(`!` 直通 + `/statusline` 均已交付)→ ~~`S-P0-2`~~ ✅ → ~~`S-P0-1`~~ ✅ → ~~`S-P1-3`~~ ✅ → ~~`S-P1-1`~~ ✅ → ~~`S-P1-2`~~ ✅ → ~~`S-P1-4`~~ ✅ → ~~`S-P2-2`(轻量版)~~ ✅ → ~~`S-P2-3` ACP server~~ ✅ → ~~`S-P2-5 session_search`~~ ✅ → ~~`S-P2-1`(轻量版:Web 侧栏停靠区)~~ ✅。**S 组 P0–P2 至此全部交付或明确不做**;`S-P2-1` 的 v3 本体(根布局注册表 / 插件停靠布局 / 双侧停靠)仍**未实施**,留待收集真实使用后再评估(见节内 ①)。
 
 > **纪律**:每项交付需 ① 全库 `go test ./... -race` 绿;② 前端改动 `vue-tsc --noEmit` 0 错 + `node --test`;③ 新增 base 插件/bundle 条目必须登记 `plugins/catalogue` 并 bump `# seed-version` 两份同步;④ 新增写盘路径必须经 `$GAH_HOME` 派生。
+
+#### 交付记录(2026-09-18,第十三批:S-P0-1 的 TUI 端 = `/traj`)
+
+> **共同纪律**:`gofmt -l` 干净、`go vet ./...` 干净、全库 `go test ./... -race -count=1` 绿、`coverage-check.sh` COVERAGE_OK;未新增插件/bundle 条目、未新增写盘路径、未新增后端契约(纯 TUI 展示层:同一份会话事件账本的另一个 presenter);前端未改(无需 `vite build`)。
+
+- ✅ **S-P0-1 TUI 端轨迹视图(`/traj`)**:详细交付内容见上「S-P0-1 轨迹/可观测视图」的「TUI 端交付」条。要点回顾:① `tui/traj.go` 纯聚合(与 Web `traj.ts` 同口径,含隐式回合/隐式 step/跨回合结果回溯/`turn/end` 原因);② 进行中不给时长(`ok` 语义)+ 概览显「计算中」;③ `State` 两路入口(`ApplySessionEvent`/`ApplyReplay`)都喂轨迹、`seq` 去重、会话切换 `Reset` 后重建;④ `/traj` → 文本报告经既有 pager 呈现(复用滚动/搜索/横移)。
+- **踩坑/发现**:① **重放路径的早退陷阱** —— `ApplyReplay` 对 `turn/end` 提前 `return`(不铺「轮次结束」行),若只在 `ApplySessionEvent` 里喂轨迹,重放出的回合会**永远停在「进行中」**;解法 = 两路都喂 + 按 `seq` 单调去重(重放会二次进入同一帧)。② Go 侧不能照搬 JS 的「对象引用 + 原地改」:`Turns []*TrajTurn` 必须用指针切片,否则 `cur` 指针对 `append` 后的旧底层数组失效(值切片会静默丢掉正在进行的回合)。③ 工具行排版把**名称放在状态之后、指标之前**(错误原文较长时仍能左端定位工具),超宽交给 pager 的 `truncWidth`/横移。
+- **文档同步**:`DESIGN.md`(优先级表端列 `Web(后 TUI)` → `Web + TUI` + 本节 TUI 条 + 本记录)、`docs/VERIFY.md`(S-P0-1 段补 TUI 人工清单)、`docs/TODO_OVERVIEW.md`(S-P0-1 行补 TUI 侧)、`docs/TUI_OPTIMIZE.md` §4.6(原「TUI 侧暂不做」→ 已补)、README 双语(TUI 专属命令列表 + 命令表新增 `/traj` 行)。
+- **下一批**:无(S 组已全部交付);体积债 SZ-1 与 NOND 未实施项见 `docs/TODO_OVERVIEW.md`。
 
 #### 交付记录(2026-09-18,第十二批:S-P2-1 轻量版 = Web 侧栏停靠区)
 
