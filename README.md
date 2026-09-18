@@ -35,11 +35,11 @@ Go 实现的编程代理 Agent Harness:以**单静态二进制**交付全部能�
 | **审批三档** | 危险命令(rm -rf / git push -f / sudo / chmod 777…)按档:开放 open(放行)/ 智能 smart(弹确认,无确认通道时安全拒绝,默认)/ 严格 strict(拒绝);偏好持久化 |
 | **凭据隔离** | 工具子进程 env 滤除 `*_API_KEY/_TOKEN/_SECRET`;危险操作无确认通道时安全拒绝 |
 | **会话管理** | 项目级隔离 + 多会话切换 + 分支树(`/fork` `/clone` `/tree` + 命名);超预算 token 滚动摘要压缩(token-compress,完整日志留盘) |
-| **模型工具** | shell / file_read-write-append-edit / web_fetch / web_search / workflow / subagent / todo / memory / auto_plan / session_search / job_* / 技能读取 / MCP 桥工具(详见「五、模型可用工具」) |
+| **模型工具** | shell / file_read-write-append-edit / web_fetch / web_search / workflow / subagent / todo / memory / auto_plan / session_search / schedule(默认停用) / job_* / 技能读取 / MCP 桥工具(详见「五、模型可用工具」) |
 | **后台任务** | host-jobs + workflow `background`:长任务异步提交/取回/终止,不阻塞回合 |
 | **并行隔离** | host-worktrees(`ctx.worktrees` + `/worktree`):受管 git worktree 落 `$GAH_HOME/worktrees/`(不污染用户仓库),子代理经 `subagent(isolate="worktree")` 在独立目录与分支内工作 —— 两个并行子代理改同一批文件互不覆盖;**隔离是强制的**:相对写/绝对写都进不了主工作区(沙箱写范围收窄到该 worktree);非 git 仓库显式报错不降级;worktree 默认保留,回收走 `/worktree rm`(分支保留) |
 | **定时任务** | host-schedule(`ctx.schedule`):5 字段 cron 计划(分 时 日 月 周)落 `$GAH_HOME/schedules/*.yaml`,到点**经既有回合入口**(agentLoop→tools,仍受审批/沙箱裁决、仍落会话记录)自动跑一轮;设置面板「计划」段管理(中文「下次运行时间」回显,不自研 cron 构造器);**无人值守 = 没有确认通道 → 需审批的动作一律拒绝(含 open 档)** |
-| **提示通道** | host-notices(`ctx.notices`,NOND-N1):插件/宿主向**人**发提示(作业终态/计划失败或跳过/回合出错),**不进会话记录、不计 token**;进程内环形缓冲(200)+ `id` 增量回填(`GET /api/notices?since=` / SSE `notice` 帧),Web 右下 toast、TUI 状态栏项与 `/notice`;同 `Key` 60s 去重防刷屏;系统级通知(OS 响铃/桌面通知)登记为 NOND-N2 |
+| **提示通道** | host-notices(`ctx.notices`,NOND-N1):插件/宿主向**人**发提示(作业终态/计划失败或跳过/回合出错),**不进会话记录、不计 token**;进程内环形缓冲(200)+ `id` 增量回填(`GET /api/notices?since=` / SSE `notice` 帧),Web 右下 toast、TUI 状态栏项与 `/notice`;同 `Key` 60s 去重防刷屏;系统级通知已交付(NOND-N2):TUI 按终端能力逐级降级发 OSC 99/777/9 或响铃(`GAH_TUI_NOTIFY=auto\|osc\|bell\|off`,`/notify test` 自测,写 `/dev/tty`),桌面壳改为**单条 2s 轮询消费提示流**(`warn`/`error` → 桌面通知),不再按场景各写一个轮询器 |
 | **子代理 fanout** | `agent/parallel/pipeline` 独立上下文 ReAct 扇出并行聚合;`send_message`/`fork` 注入与会话派生 |
 | **starlark workflow** | 模型写受限 starlark 脚本组合多步工具调用(天然沙箱/无标准库),`background` 异步 |
 | **联网搜索** | web_search(默认 Exa,`EXA_API_KEY`;`data.provider` 可换)与 web_fetch 协作,错误结构化归一 |
@@ -232,9 +232,10 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `/statusline [项...]\|reset` | 状态栏项集合与顺序(TUI):无参=查看当前与可用项(`state/queue/questions/dock/notice/last/workspace/sandbox/approval/session`);给项即按序渲染(回合态项之间 `·`、其余 `|`),`reset` 恢复 F15.3 基线;偏好持久化(`gah-state.json`)重启生效 |
 | `/traj` | 轨迹/可观测视图(TUI):以文本浮层呈现同一份会话事件账本的**回合 → 步 → 工具**投影(概览:回合数/总时长/累计 token 与缓存占比;逐回合倒序:时长与结束原因、步数与工具数、失败/未回填计数、token、模型名;工具行:状态/耗时/出参体积/错误原文/参数摘要)。只呈现过程与成本,不铺出参与正文;**时长只取事件时间戳,进行中的回合/步/工具一律显「进行中」**(概览改显「计算中」),不拿本地时钟补齐;浮层复用文本 pager(滚动/横移/搜索/`q` 关闭),Web 侧对应轨迹视图按钮 |
 | `/notice` | 查看最近的提示(TUI,NOND-N1):以浮层列出进程内提示缓冲(最新在前:级别/时刻/来源 + 标题 + 正文),并显示缓冲 gap 与去重计数;未装配提示通道时显式报错 |
+| `/notify [test\|auto\|osc\|bell\|off]` | 系统级通知开关与自测(TUI,NOND-N2):无参=回显**当前会怎么发**(落点与原因)与用法;`test` 发一条测试通知;`auto` 按终端能力探测(kitty OSC 99 / WezTerm·VTE OSC 777 / iTerm2 等 OSC 9 / 响铃 / 未附着终端则只留状态栏)、`osc` 强制转义、`bell` 只响铃、`off` 关闭(零输出);`GAH_TUI_NOTIFY` 是持久开关(未设或写错值回落 `auto`)。**只有 `warn`/`error` 会打扰人**,`info` 只更新状态栏 |
 | `/help` `/exit` | 帮助 / 退出(**Ctrl+C 连按两次**,防误触) |
 
-> **提示通道(`ctx.notices`,NOND-N1)**:插件与宿主可向**人**发一条提示(后台作业终态、定时任务失败/跳过、回合出错),不依赖盯屏。**提示不是会话内容** —— 不落 `jsonl`、不进模型上下文、不计 token,而是进程内环形缓冲(200 条)+ `id` 增量回填(`GET /api/notices?since=`;SSE `notice` 帧),所以重连/刷新不丢已发提示。三端各自决定呈现强度:Web 右下 toast(`info` 6s 自动消失、`warn`/`error` 常驻待关,超出可见上限显式计数)、TUI 状态栏 `notice` 项(无提示时零占位,逐字符不改变基线)+ `/notice` 浮层看详情;去重限频为同 `Key` 60s 内只出一条,避免重试风暴刷屏。**尚未做**系统级通知(OS 响铃/桌面通知,登记为 NOND-N2,需真机矩阵)。
+> **提示通道(`ctx.notices`,NOND-N1)**:插件与宿主可向**人**发一条提示(后台作业终态、定时任务失败/跳过、回合出错),不依赖盯屏。**提示不是会话内容** —— 不落 `jsonl`、不进模型上下文、不计 token,而是进程内环形缓冲(200 条)+ `id` 增量回填(`GET /api/notices?since=`;SSE `notice` 帧),所以重连/刷新不丢已发提示。三端各自决定呈现强度:Web 右下 toast(`info` 6s 自动消失、`warn`/`error` 常驻待关,超出可见上限显式计数)、TUI 状态栏 `notice` 项(无提示时零占位,逐字符不改变基线)+ `/notice` 浮层看详情;去重限频为同 `Key` 60s 内只出一条,避免重试风暴刷屏。**系统级通知(NOND-N2,已交付)**:Web 之外的两端可在人不在窗口前时把人叫回来 —— TUI 按**终端能力逐级降级**发 OSC 99/777/9 或响铃(探测而非写死支持矩阵:公开矩阵里 Windows Terminal / VTE 的结论互相矛盾,写死等于静默失效),写 `/dev/tty` 而非 stdout(否则重定向/被 hook 捕获时不算终端),未附着终端时静默降级为「仅状态栏」并在 `/notify` 里**如实回显原因**;正文按不可信输入处理(剥控制符,防提前终止转义序列),kitty 分块、tmux/screen 用 DCS 包裹。桌面壳从「每个场景一个轮询器」收敛为**单条 2s 轮询消费提示流**(判据只留在宿主一处,新类别自动进来),仅 `warn`/`error` 弹桌面通知。**真机核对**:本机已覆盖 kitty / Terminal.app / tmux 三种落点,iTerm2·GNOME VTE·WezTerm·Windows Terminal 待对应真机各跑一次 `/notify test`。
 
 > **`!` shell 直通**:输入以 `!` 开头(如 `!git status`)= 立刻执行该 shell 命令(**走与模型工具同一条沙箱/审批管线**,不存在手敲免检旁路),输出就地回显、长命令可 `Esc` 中断;结果**只本地留痕,不进模型上下文**(避免孤立 tool 消息破坏投影)。需要模型看到输出时请让模型调用工具。
 >
@@ -253,6 +254,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `todo` | 任务清单(create/start/complete/pend/delete/update/list;4 状态机 + blockedBy 依赖;`$GAH_HOME/todos/`) |
 | `auto_plan` | 规划模式(create/get/list/step/confirm/complete;检测规划意图先输出结构化规划,确认前零副作用工具调用;`$GAH_HOME/plans/`) |
 | `session_search` | 跨会话检索(查历史会话账本:`{query, limit, scope?}` → 命中片段 + 会话 id/时间;默认只搜**当前工作区**,`scope="all"` 才跨项目;纯只读、无索引文件、命中是**历史记录**非当前事实) |
+| `schedule` | 定时计划管理(list/add/update/remove/run;经 `ctx.schedule` 委托 host-schedule,与 `/schedule` 同源)。触发时**无人值守 = 没有确认通道**,故计划里需审批的动作会被直接拒绝;`update` 为部分更新(只改给到的字段)。**该工具默认停用**(`bundle-base.yaml` 里 `tool-schedule` 条目 `enabled: false`),要用需先在配置层打开 |
 | `subagent` | 子代理委派(delegate/spawn/agents/agent_status/agent_kill/send_message/fork;独立上下文 ReAct,后台带句柄);`isolate="worktree"`(可配 delegate/spawn/fork)= **隔离运行**:子代理在受管 git worktree 内工作,改动只落该目录、不进主工作区,回包含 worktree 路径/分支(父级据此合并或回收);非 git 仓库/未启用 host-worktrees 显式报错(不静默退化为非隔离) |
 | `list_skills` / `read_skill` | 技能索引 / 按需加载 SKILL.md(项目 `.gah/skills/`、`$GAH_HOME/skills/`) |
 | `mcp_<server>_<工具>` | MCP 桥工具(`mode: direct`,见「MCP 接入」) |
