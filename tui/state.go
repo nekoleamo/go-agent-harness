@@ -344,15 +344,17 @@ func (s *State) SetError(msg string) {
 
 // ApplyNotice 收到一条用户提示(NOND-N1):留最近一条给状态栏,等待人回来。
 // 只认比当前更新的 id(乱序/重放不得把更新的提示顶掉)。
-func (s *State) ApplyNotice(n *sdk.Notice) {
+// 返回是否被接纳 —— NOND-N2 据此决定要不要再发系统级通知(重复的不再打扰)。
+func (s *State) ApplyNotice(n *sdk.Notice) bool {
 	if n == nil || n.ID == 0 {
-		return
+		return false
 	}
 	if s.Notice != nil && s.Notice.ID >= n.ID {
-		return
+		return false
 	}
 	cp := *n
 	s.Notice = &cp
+	return true
 }
 
 // ConsumeNotice 用户提交输入 = 人已回到终端:清掉提示(下一次提示重新亮起)。

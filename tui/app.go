@@ -53,6 +53,7 @@ type App struct {
 	mFilesDir string       // 缓存对应的 cwd(失效判据:workspace 切换后重建)
 
 	themeBase map[string]string // M13 启动活动覆盖链(data.palette+theme.yaml),/theme default 重置目标
+	notifier  *notifier         // NOND-N2 系统级通知落点(探测 + 逐级降级;/notify 可查/可切)
 }
 
 // NewApp 构造 TUI 应用。命令注册表(ctx.commands,host-commands 提供)注入:
@@ -90,7 +91,8 @@ func NewApp(c sdk.Ctx, loop sdk.AgentLoop, llm sdk.LLMService, profile string, p
 		}
 	}
 	a.themeBase = base
-	a.syncDisplay() // 状态栏模型 + 来源(provider 域名缩写)拉实际生效值
+	a.notifier = newDefaultNotifier() // NOND-N2:探测终端能力(失败 = 仅状态栏,不报错)
+	a.syncDisplay()                   // 状态栏模型 + 来源(provider 域名缩写)拉实际生效值
 	var reg sdk.CommandRegistry
 	if err := c.Inject("ctx.commands", &reg); err != nil {
 		// host-commands 未装配:命令分发/提示不可用(不阻塞 TUI)
@@ -117,6 +119,7 @@ func NewApp(c sdk.Ctx, loop sdk.AgentLoop, llm sdk.LLMService, profile string, p
 	}
 	m.onDock = a.dockInfo
 	m.onDockOutput = a.dockOutputCmd
+	m.onNotice = a.systemNotify // NOND-N2 提示 → 系统级落点(终端的活,warn/error 才发)
 	m.onDockKill = a.dockKillCmd
 	m.onDockSteer = a.dockSteer
 	a.registerInternalCommands()
@@ -1669,6 +1672,56 @@ func (a *App) cmdNotice(args []string) (string, error) {
 	return "提示已打开（浮层内 ↑/↓/PgUp/PgDn 滚动，q/Esc 关闭）", nil
 }
 
+// systemNotify NOND-N2 提示 → 系统级通知:只在 warn/error 时发(info 只更新状态栏),
+// 写控制终端(/dev/tty)。失败静默降级 —— 应用内落点(状态栏)本身还在,不值得报错;
+// 到底会不会发、发到哪,用 /notify 查。
+func (a *App) systemNotify(n *sdk.Notice) {
+	if n == nil || a.notifier == nil || !notifyLevelAllows(n.Level) {
+		return
+	}
+	a.notifier.emit(n.Title, n.Body, n.ID)
+}
+
+// cmdNotify /notify:系统级通知落点的探测结果/测试/运行期开关(NOND-N2)。
+// 无参 = 回显会怎么发;test = 真发一条(真机矩阵靠它逐环境手动跑);
+// auto|osc|bell|off = 本次会话切模式(不持久化:env GAH_TUI_NOTIFY 是唯一持久开关)。
+func (a *App) cmdNotify(args []string) (string, error) {
+	if a.notifier == nil {
+		return "系统级通知: 未装配(仅状态栏)", nil
+	}
+	if len(args) == 0 {
+		return a.notifier.statusText(), nil
+	}
+	switch strings.ToLower(strings.TrimSpace(args[0])) {
+	case "test":
+		if !a.notifier.emit("gah 通知测试", "看到这条(或听到响铃)说明系统级通知可用", 0) {
+			return "未发出:" + a.notifier.statusText(), nil
+		}
+		return "已发出(落点 " + a.notifierTargetText() + ");未看到/未听到说明该终端不认这个序列 —— " +
+			"可换 /notify bell 或 /notify osc 再试", nil
+	case "auto", "osc", "bell", "off":
+		a.notifier.setMode(ParseNotifyMode(args[0]))
+		return "系统级通知模式 -> " + string(a.notifier.mode) + "(本次会话;持久开关 = env " + NotifyEnv + ")", nil
+	default:
+		return "", errString("/notify [test|auto|osc|bell|off]")
+	}
+}
+
+// notifierTargetText 当前模式下的实际落点文案(off/bell 下探测值无意义,如实区分)。
+func (a *App) notifierTargetText() string {
+	switch a.notifier.mode {
+	case NotifyOff:
+		return "off(零输出)"
+	case NotifyBell:
+		return "bell"
+	case NotifyOSC:
+		if a.notifier.target == targetNone || a.notifier.target == targetBell {
+			return "OSC 9(强制)"
+		}
+	}
+	return a.notifier.target.String()
+}
+
 // parseStatuslineArgs 解析 /statusline 参数(空格/逗号分隔,忽略空项)。
 func parseStatuslineArgs(args []string) []string {
 	var out []string
@@ -2138,6 +2191,16 @@ func (a *App) registerInternalCommands() {
 			Run: a.cmdStatusline},
 		{Name: "traj", Usage: "/traj", Desc: "轨迹/可观测视图(回合 → 步 → 工具 + 时长/用量;本机会话事件派生)", Run: a.cmdTraj},
 		{Name: "notice", Usage: "/notice", Desc: "提示详情(NOND-N1):无人值守场景的主动提示(后台任务终态/计划失败/回合报错)", Run: a.cmdNotice},
+		{Name: "notify", Usage: "/notify [test|auto|osc|bell|off]", Desc: "系统级通知(NOND-N2):探测落点/发测试/切模式;env GAH_TUI_NOTIFY 持久生效", Run: a.cmdNotify,
+			Args: []sdk.ArgLevel{{Options: func([]string) []sdk.Option {
+				return []sdk.Option{
+					{Value: "test", Desc: "发一条测试通知"},
+					{Value: "auto", Desc: "按探测结果发(默认)"},
+					{Value: "osc", Desc: "强制 OSC 序列"},
+					{Value: "bell", Desc: "只响铃"},
+					{Value: "off", Desc: "零输出(状态栏仍显示提示)"},
+				}
+			}}}},
 		{Name: "search", Usage: "/search <词>", Desc: "会话内搜索(命中高亮,n/N/F3 循环跳转,Esc 退出)",
 			// 自由级断点:选中后光标停留输入框提示继续输入,输入词回车才执行——
 			// 否则选中即提交(无参报错),再输入的文字会误走普通消息发给大模型。

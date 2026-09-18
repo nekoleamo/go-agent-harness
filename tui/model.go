@@ -83,6 +83,7 @@ type Model struct {
 	onWidgets       func() []Widget                                       // P4-12 widget 行注入(渲染帧拉取;App widgets 集合)
 	onThinkingCycle func(dir int)                                         // Tab/Shift+Tab 思考等级循环(注入:dir=1 前进,-1 后退)
 	onStats         func() sdk.UsageStats                                 // 会话 token 统计拉取(注入;回合结束刷新状态栏)
+	onNotice        func(n *sdk.Notice)                                   // NOND-N2 系统级通知落点(注入;只给新接纳的提示)
 	onOpenDoc       func(path string, page, sheet int) (*DocPager, error) // 文档预览加载(注入;ctx.doc)
 	onDock          func() DockInfo                                       // S-P0-3 后台坞拉取(注入;App 读 ctx.jobs/ctx.fanout)
 	onDockOutput    func(id string) (*DocPager, error)                    // 坞面板看输出(注入;走宿主 /jobs output)
@@ -156,7 +157,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case statusMsg:
 		m.state.ApplyStatus(msg.status)
 	case noticeMsg:
-		m.state.ApplyNotice(msg.n)
+		// 状态栏承接 + NOND-N2 系统级通知(只给新提示;warn/error 才打扰,见 onNotice)
+		if m.state.ApplyNotice(msg.n) && m.onNotice != nil {
+			m.onNotice(msg.n)
+		}
 	case agentDoneMsg:
 		// 回合结束:刷新 token 统计(上下文使用率/缓存命中率,状态栏)
 		if m.onStats != nil {
