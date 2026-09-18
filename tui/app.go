@@ -420,7 +420,18 @@ func (a *App) Start() error {
 		a.onSessionSwitched()
 		return nil
 	})
-	a.subs = []sdk.Disposer{d1, d2, d3, d4}
+	// NOND-N1 提示 → 状态栏(订阅回调在总线 goroutine,经 program.Send 递进 UI 循环)
+	d5 := a.c.Subscribe(sdk.EventNotice, func(_ context.Context, ev *sdk.Event) error {
+		switch p := ev.Payload.(type) {
+		case *sdk.Notice:
+			a.program.Send(noticeMsg{p})
+		case sdk.Notice:
+			n := p
+			a.program.Send(noticeMsg{&n})
+		}
+		return nil
+	})
+	a.subs = []sdk.Disposer{d1, d2, d3, d4, d5}
 
 	go func() {
 		_, err := a.program.Run()
@@ -1613,6 +1624,51 @@ func (a *App) cmdTraj(args []string) (string, error) {
 	return "轨迹已打开(浮层内 ↑/↓/PgUp/PgDn 滚动,q/Esc 关闭)", nil
 }
 
+// cmdNotice /notice:提示详情浮层(NOND-N1;状态栏 notice 项只放标题,正文在这里)。
+// 数据源 = ctx.notices.List(0)(与 Web `/api/notices?since=0` 同一接口、同一缓冲),
+// 不另搵开一个 TUI 专属缓存 —— 提示的单一事实源在 host-notices。
+func (a *App) cmdNotice(args []string) (string, error) {
+	var ns sdk.NoticeService
+	if err := a.c.Inject("ctx.notices", &ns); err != nil || ns == nil {
+		return "", errString("/notice 需要 host-notices 插件(ctx.notices 未装配),提示通道不可用")
+	}
+	page := ns.List(0)
+	if len(page.Items) == 0 {
+		return "暂无提示。提示面向「需要人回来的时刻」:后台任务终态 / 定时计划失败或跳过 / 回合报错", nil
+	}
+	// 最新在前(与 Web toast 同口径):先看当下最急的,历史往下翻。
+	lines := []string{"提示共 " + fmt.Sprint(len(page.Items)) + " 条(本进程内缓冲,不落盘、不进会话记录)"}
+	if page.Gap {
+		lines = append(lines, "更早的提示已被缓冲丢弃:下方列表不完整（服务端环形缓冲上限）")
+	}
+	if page.Suppressed > 0 {
+		lines = append(lines, "另有 "+fmt.Sprint(page.Suppressed)+" 条重复提示已被去重（同一 Key 60s 窗口内）")
+	}
+	lines = append(lines, "")
+	for i := len(page.Items) - 1; i >= 0; i-- {
+		n := page.Items[i]
+		head := "[" + string(n.Level) + "] " + n.TS.Format("01-02 15:04:05")
+		if n.Source != "" && n.Source != "unknown" {
+			head += "  " + n.Source
+		}
+		lines = append(lines, head, n.Title)
+		if n.Body != "" {
+			for _, bl := range strings.Split(n.Body, "\n") {
+				lines = append(lines, "    "+bl)
+			}
+		}
+		lines = append(lines, "")
+	}
+	// Run 在 UI 循环内被调,此处只赋模型状态,不经 program.Send(与 /traj 同纪律)。
+	a.model.state.Doc = NewTextPager(TextPagerSpec{
+		Title:  "提示(NOND-N1)",
+		Format: "text",
+		Status: "来自 ctx.notices(与 Web toast / 桌面壳通知同一事实源);Esc/q 关闭",
+		Lines:  lines,
+	})
+	return "提示已打开（浮层内 ↑/↓/PgUp/PgDn 滚动，q/Esc 关闭）", nil
+}
+
 // parseStatuslineArgs 解析 /statusline 参数(空格/逗号分隔,忽略空项)。
 func parseStatuslineArgs(args []string) []string {
 	var out []string
@@ -2081,6 +2137,7 @@ func (a *App) registerInternalCommands() {
 			}}},
 			Run: a.cmdStatusline},
 		{Name: "traj", Usage: "/traj", Desc: "轨迹/可观测视图(回合 → 步 → 工具 + 时长/用量;本机会话事件派生)", Run: a.cmdTraj},
+		{Name: "notice", Usage: "/notice", Desc: "提示详情(NOND-N1):无人值守场景的主动提示(后台任务终态/计划失败/回合报错)", Run: a.cmdNotice},
 		{Name: "search", Usage: "/search <词>", Desc: "会话内搜索(命中高亮,n/N/F3 循环跳转,Esc 退出)",
 			// 自由级断点:选中后光标停留输入框提示继续输入,输入词回车才执行——
 			// 否则选中即提交(无参报错),再输入的文字会误走普通消息发给大模型。

@@ -21,6 +21,9 @@ type sessionEventMsg struct{ ev *sdk.SessionEvent }
 
 type statusMsg struct{ status string }
 
+// noticeMsg 用户提示推送(NOND-N1;sdk.EventNotice 广播 → 状态栏 notice 项)。
+type noticeMsg struct{ n *sdk.Notice }
+
 // mouseEventMsg 鼠标事件转发消息。⚠️ View.OnMouse 不能原样返回 MouseMsg:
 // MouseWheelMsg/MouseClickMsg 等实现 MouseMsg 接口,tea 系统层 case MouseMsg 会再次捕获
 // 同一个消息→无限重发死循环(实测 24 万/秒滚轮风暴、界面失控)。必须包装成自定义类型。
@@ -152,6 +155,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.skipView = false
 	case statusMsg:
 		m.state.ApplyStatus(msg.status)
+	case noticeMsg:
+		m.state.ApplyNotice(msg.n)
 	case agentDoneMsg:
 		// 回合结束:刷新 token 统计(上下文使用率/缓存命中率,状态栏)
 		if m.onStats != nil {
@@ -1260,6 +1265,8 @@ func (m *Model) submit() {
 	if strings.TrimSpace(input) == "" {
 		return // 空/纯空白:不发起回合
 	}
+	// NOND-N1:用户开口 = 人已回到终端,提示已达成使命(状态栏清场;下一条提示重新亮起)。
+	m.state.ConsumeNotice()
 	if strings.HasPrefix(input, "/") {
 		m.state.RecordCmd(input) // S1.3:斜杠命令入输入历史(不入会话 Lines)
 		if err := m.onCommand(input); err != nil {

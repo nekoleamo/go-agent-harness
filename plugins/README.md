@@ -31,6 +31,7 @@ plugins/
 | host | host-fanout | 子代理编排(ctx.fanout) | ctx.llm/ctx.tools/ctx.systemPrompt |
 | host | host-worktrees | 受管 git worktree(S-P1-4):ctx.worktrees——建立/列出/回收独立工作目录(落 $GAH_HOME/worktrees/,不污染用户仓库)+ `/worktree` 命令;供子代理隔离运行(沙箱写范围收窄到该 worktree);非 git 仓库显式报错,worktree 默认保留、回收时分支保留 | ctx.commands(可选)/ctx.sandbox(可选,均惰性注入) |
 | host | host-plugin-manager | 运行期插拔(ctx.pluginManager) | — |
+| host | host-notices | 提示通道(NOND-N1):ctx.notices——「需要人回来的时刻」主动提示(后台任务终态/定时计划失败或跳过/回合报错),一人发多端收(Web toast / TUI 状态行 / 桌面壳系统通知);进程内环形缓冲不落盘、不进会话记录,重连靠 List(sinceID) 回填(丢弃显式标 gap) | —(ctx.jobs/ctx.schedule 惰性注入,用于提示文案) |
 | host | host-bridge | 外部插件桥(加载 home/plugins 外部进程,GAH_CB_ADDR 回调) | ctx.tools/ctx.jobs/ctx.fanout/ctx.extplugins |
 | host | host-backup | 整体备份/恢复(M18):ctx.backup + /backup 命令;备份目录 $GAH_HOME/backups(排除自身) | — |
 | host | host-docview | 文档预览(D 组):ctx.doc(sdk.DocService)——统一块模型 + 解析器/预算/缓存/格式探测 + markdown/CSV/notebook/PDF 抽取器;四端(TUI pager/Web 工作台/`gah doc`/IM)同源渲染;`/preview` 命令发 `doc/open` 事件 | ctx.commands;ctx.sandbox(可选) |

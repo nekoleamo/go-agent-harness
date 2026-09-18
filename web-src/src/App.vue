@@ -57,8 +57,17 @@ import type {
   Frame,
   Baseline,
   Job,
+  Notice,
+  NoticePage,
   Schedule,
 } from './types'
+import {
+  applyPage,
+  dismiss as dismissToast,
+  newToasts,
+  pushNotice,
+  type ToastState,
+} from './notices'
 import StatusBar from './components/StatusBar.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import QuestionDialog from './components/QuestionDialog.vue'
@@ -70,6 +79,7 @@ import TrajectoryView from './components/TrajectoryView.vue'
 import ChangesView from './components/ChangesView.vue'
 import BoardView from './components/BoardView.vue'
 import DockView from './components/DockView.vue'
+import ToastStack from './components/ToastStack.vue'
 
 const state = ref<StateView>({
   model: '',
@@ -124,6 +134,12 @@ function nextView(): ViewName {
 const VIEW_LABEL: Record<ViewName, string> = { stream: '会话流', traj: '轨迹', changes: '变更', board: '看板' }
 const viewTargetLabel = computed(() => VIEW_LABEL[nextView()])
 const metas = ref<MetaLine[]>([])
+// NOND-N1 提示 toast(状态机在 notices.ts):实时 `notice` 帧 + 连接后 /api/notices 回填,
+// 两路按 id 去重。提示不进会话流 —— 它是「需要人回来」的信号,不是对话内容。
+const toasts = ref<ToastState>(newToasts())
+function onDismissToast(id: number): void {
+  dismissToast(toasts.value, id)
+}
 const confirm = ref<ConfirmRequest | null>(null)
 const question = ref<QuestionRequest | null>(null)
 // S-P0-2:提问弹层可收起(收起=角标,不阻塞继续对话)。新提问/换提问一律回到展开态。
@@ -572,6 +588,26 @@ function rebuild(keepCursor: boolean): void {
     schedTick.value++
     if (view.value === 'board') void refreshPlan()
   }))
+  // NOND-N1 提示帧:立即弹 toast(处理与去重在 notices.ts)。
+  transport.on('notice', gate((f) => {
+    pushNotice(toasts.value, f.payload as Notice, Date.now())
+  }))
+  // 提示不进会话记录 → 通道建立后必须回填「上次看到之后」错过的几条。
+  // 放在建连之后(不阻塞首屏):回填与实时帧按 id 去重,谁先到都不会重复弹。
+  void backfillNotices(gen)
+}
+
+// backfillNotices 拉取错过的提示(页面加载 / 重连 / 重新可见时调用)。
+// 代际守门与帧一致:旧连接的迟到响应不得写进新一轮状态。
+// gap=true 时如实标记「回填不完整」(不谎报完整):服务端环形缓冲丢过一段。
+async function backfillNotices(gen: number): Promise<void> {
+  try {
+    const page: NoticePage = await api.notices(toasts.value.since)
+    if (gen !== connGen) return
+    applyPage(toasts.value, page, Date.now())
+  } catch {
+    /* 提示回填是锦上添花:失败不打扰用户(实时帧仍可送达) */
+  }
 }
 
 async function refreshStats(): Promise<void> {
@@ -596,6 +632,7 @@ function applyConn(ev: ConnEv): void {
   // 不靠本地推算(对齐「以服务端事实接管」的语义),并让侧栏重拉列表。
   if (wasOffline && next.state !== 'offline') {
     void refreshStats()
+    void backfillNotices(connGen) // 断连期间错过的提示:恢复后补上(按 id 去重)
     refreshKey.value++
   }
 }
@@ -905,6 +942,9 @@ onUnmounted(() => {
         <JobsPanel v-else :open="true" docked @close="toggleDock" />
       </DockView>
     </div>
+
+    <!-- NOND-N1 提示 toast 层(宿主直挂,不经槽位覆盖) -->
+    <ToastStack :state="toasts" :on-dismiss="onDismissToast" />
 
     <!-- 槽位:confirm(审批弹层) -->
     <section class="confirm-slot" data-ui-slot="confirm">

@@ -17,6 +17,7 @@ export type FrameType =
   | 'schedule'
   | 'diff'
   | 'baseline'
+  | 'notice'
 
 export interface Frame {
   id: number
@@ -24,6 +25,29 @@ export interface Frame {
   ts?: number
   payload: unknown
   replay?: boolean
+}
+
+// 用户提示(NOND-N1;FrameNotice payload / GET /api/notices?since=<id> 同载荷)。
+// 与 Go 侧 sdk.Notice 字段名逐字对应(id/level/title/body/source/ts/key);**不进会话记录**,
+// 因此刷新后的历史只能靠 /api/notices 回填,前端按 id 单调去重(实时帧与回填可能重叠)。
+export interface Notice {
+  id: number
+  level: 'info' | 'warn' | 'error'
+  title: string
+  body?: string
+  source?: string
+  ts: string
+  key?: string // 服务端去重键(客户端不使用,只随帧透传)
+}
+
+// 提示回填页(GET /api/notices):gap=true 表示 since 之后有提示已被服务端环形缓冲丢弃,
+// 本次回填不完整 —— 前端须如实标注,不得谎报完整。
+// suppressed = 进程启动以来被服务端按 Key 去重的条数(同一种错误 60s 内只提示一次)。
+export interface NoticePage {
+  items: Notice[]
+  max_id: number
+  gap?: boolean
+  suppressed?: number
 }
 
 // 首帧基线(FrameBaseline payload;S-P1-2 长会话):首连时服务端只回放**尾部窗口**,

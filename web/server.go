@@ -101,6 +101,7 @@ type Server struct {
 	tools    sdk.ToolRegistry          // 可选(工具清单/调用/todo 面板)
 	jobs     sdk.JobService            // 可选(后台任务)
 	sched    sdk.ScheduleService       // 可选(定时计划 NOND-W4;未装配 → /api/schedules 503)
+	notices  sdk.NoticeService         // 可选(提示通道 NOND-N1;未装配 → /api/notices 503)
 	extp     sdk.ExternalPlugins       // 可选(外部插件控制面 NOND-M1;未装配 = 保存 MCP 配置后需重启)
 	pm       sdk.PluginManager         // 可选(插件启停)
 	sp       sdk.SystemPromptService   // 可选(/reload 指令热更)
@@ -155,6 +156,7 @@ func (s *Server) Inject(c sdk.Ctx) error {
 	_ = c.Inject("ctx.tools", &s.tools)
 	_ = c.Inject("ctx.jobs", &s.jobs)
 	_ = c.Inject("ctx.schedule", &s.sched)
+	_ = c.Inject("ctx.notices", &s.notices)
 	_ = c.Inject("ctx.extplugins", &s.extp)
 	_ = c.Inject("ctx.pluginManager", &s.pm)
 	_ = c.Inject("ctx.systemPrompt", &s.sp)
@@ -277,6 +279,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET /api/mcp", s.handleMCPList)
 	mux.HandleFunc("POST /api/mcp", s.handleMCPSave)
 	mux.HandleFunc("GET /api/schedules", s.handleSchedules)
+	mux.HandleFunc("GET /api/notices", s.handleNotices)
 	mux.HandleFunc("POST /api/schedules", s.handleScheduleAdd)
 	mux.HandleFunc("PATCH /api/schedules/{id}", s.handleScheduleUpdate)
 	mux.HandleFunc("DELETE /api/schedules/{id}", s.handleScheduleDelete)
@@ -1582,6 +1585,31 @@ func (s *Server) handleJobKill(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleSchedules 定时计划列表(GET /api/schedules;未装配 ctx.schedule → 503)。
+// handleNotices GET /api/notices?since=<id> —— 提示回填(NOND-N1)。
+// 提示不落盘、不进会话记录,是**瞬时信号**:页面刷新/重连后只能靠这个端点补上
+// 「离开期间错过的那几条」。返回 NoticePage{items,max_id,gap} —— gap=true 表示 since 之后
+// 确有提示被环形缓冲丢弃,回填不完整(前端须如实标注,不得谎报完整)。
+func (s *Server) handleNotices(w http.ResponseWriter, r *http.Request) {
+	if s.notices == nil {
+		http.Error(w, "提示通道未装配(ctx.notices)", http.StatusServiceUnavailable)
+		return
+	}
+	var since uint64
+	if raw := r.URL.Query().Get("since"); raw != "" {
+		v, err := strconv.ParseUint(raw, 10, 64)
+		if err != nil {
+			http.Error(w, "since 需为非负整数", http.StatusBadRequest)
+			return
+		}
+		since = v
+	}
+	page := s.notices.List(since)
+	if page.Items == nil {
+		page.Items = []sdk.Notice{}
+	}
+	writeJSON(w, http.StatusOK, page)
+}
+
 func (s *Server) handleSchedules(w http.ResponseWriter, _ *http.Request) {
 	if s.sched == nil {
 		http.Error(w, "定时计划服务未装配(ctx.schedule)", http.StatusServiceUnavailable)

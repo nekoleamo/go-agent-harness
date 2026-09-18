@@ -17,6 +17,7 @@ import (
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-internal-commands"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-jobs"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-llm"
+	"github.com/nekoleamo/go-agent-harness/plugins/host/host-notices"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-plugin-manager"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-schedule"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-session-log"
@@ -214,6 +215,13 @@ var All = map[string]Def{
 		// ctx.turnControl 可选注入(有回合在跑时等空闲,超时记 skipped)。
 		Provides: []string{"ctx.schedule"},
 		Requires: []string{"ctx.agentLoop", "ctx.commands"}}, Bundle: "base"},
+	"host-notices": {Factory: func() sdk.Plugin { return &hostnotices.Plugin{} }, Manifest: &sdk.Manifest{
+		ID: "host-notices", Type: "host", APIVersion: ">=1.0,<2.0",
+		// NOND-N1 提示通道:ctx.notices(Publish/List)—— 「需要人回来的时刻」的主动提示,
+		// 不落盘、不进会话记录;Web toast / TUI 状态行 / 桌面壳通知各自订阅 sdk.EventNotice。
+		// 自动生产来源(ctx.jobs / ctx.schedule)**惰性注入**:不装这两个插件则对应来源缺席,
+		// 提示通道本身仍可用(硬 requires 会让「没装定时任务就没有提示能力」)。
+		Provides: []string{"ctx.notices"}}, Bundle: "base"},
 	"ui-tui-app": {Factory: func() sdk.Plugin { return &uitui.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "ui-tui-app", Type: "ui", APIVersion: ">=1.0,<2.0",
 		// ctx.commands:内部命令注册表(ui-tui-app 与宿主命令共表;判重跳过宿主已注册同名)

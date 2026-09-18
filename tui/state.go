@@ -84,6 +84,10 @@ type State struct {
 	// 纯展示派生:不落盘、不影响会话日志,只服务 TUI 端呈现。
 	Traj Traj
 
+	// NOND-N1 提示:最近一条未消费的用户提示(ctx.notices → notice 事件;状态栏项 notice 渲染)。
+	// 保留到下一次用户提交(人已回到终端 = 提示已送达)——不是会话内容,不进 Lines/账本。
+	Notice *sdk.Notice
+
 	// P5 回合耗时:turnStart 运行起点(ApplyStatus running 首设),turnDur 上次回合耗时
 	// (ApplyStatus idle 结算;状态栏空闲态展示)。私有,渲染层同包可读。
 	turnStart time.Time
@@ -336,6 +340,24 @@ func questionPromptText(q sdk.Question, answering bool) string {
 func (s *State) SetError(msg string) {
 	s.Error = msg
 	s.Lines = append(s.Lines, Line{Kind: "error", Text: msg})
+}
+
+// ApplyNotice 收到一条用户提示(NOND-N1):留最近一条给状态栏,等待人回来。
+// 只认比当前更新的 id(乱序/重放不得把更新的提示顶掉)。
+func (s *State) ApplyNotice(n *sdk.Notice) {
+	if n == nil || n.ID == 0 {
+		return
+	}
+	if s.Notice != nil && s.Notice.ID >= n.ID {
+		return
+	}
+	cp := *n
+	s.Notice = &cp
+}
+
+// ConsumeNotice 用户提交输入 = 人已回到终端:清掉提示(下一次提示重新亮起)。
+func (s *State) ConsumeNotice() {
+	s.Notice = nil
 }
 
 // appendThinking 思维增量累积:紧邻上一行同为 thinking 则续写,否则新起一行(kind=thinking)。

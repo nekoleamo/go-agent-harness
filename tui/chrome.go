@@ -172,13 +172,16 @@ var statuslineCluster = map[string]bool{
 }
 
 // defaultStatusline 基线默认项顺序(F15.3;不配置时逐字符等价旧输出)。
-var defaultStatusline = []string{"state", "queue", "questions", "dock", "last", "workspace", "sandbox", "approval", "session"}
+// NOND-N1:notice 置首 —— 提示是「需要人回来」的信号,无提示时该项渲染空串,
+// 输出与旧基线逐字符一致。
+var defaultStatusline = []string{"notice", "state", "queue", "questions", "dock", "last", "workspace", "sandbox", "approval", "session"}
 
 // statuslineTokens 全部合法项(顺序无关;/statusline 错误提示与校验用)。
-var statuslineTokens = []string{"state", "queue", "questions", "dock", "last", "workspace", "sandbox", "approval", "session"}
+var statuslineTokens = []string{"notice", "state", "queue", "questions", "dock", "last", "workspace", "sandbox", "approval", "session"}
 
 // statuslineTokenDesc 项说明(/statusline 无参与错误提示用)。
 var statuslineTokenDesc = map[string]string{
+	"notice":    "最近一条提示(NOND-N1;详情 /notice)",
 	"state":     "回合状态(思考中/执行工具;运行中带 Esc 提示)",
 	"queue":     "待发消息计数(P4-1)",
 	"questions": "待答提问计数(S-P0-2)",
@@ -193,6 +196,21 @@ var statuslineTokenDesc = map[string]string{
 // statuslineItem 渲染单项(空串 = 该项当前无内容,拼接时跳过)。
 func statuslineItem(s *State, token string) string {
 	switch token {
+	case "notice":
+		// NOND-N1:只显示标题(正文在 /notice 浮层);级别决定颜色与标记。
+		// 标题裁到 40 列:提示占满整条状态栏会把其它实时信号挤没。
+		if s.Notice == nil {
+			return ""
+		}
+		txt := truncWidthRunes(s.Notice.Title, 40)
+		switch s.Notice.Level {
+		case sdk.NoticeError:
+			return styleError.Render("✗ " + txt + " (/notice)")
+		case sdk.NoticeWarn:
+			return styleBusy.Render("⚠ " + txt + " (/notice)")
+		default:
+			return styleStatus.Render("提示: " + txt)
+		}
 	case "state":
 		if s.Running {
 			frame := spinnerFrame(s.SpinnerIdx)

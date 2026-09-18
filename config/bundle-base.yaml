@@ -1,4 +1,4 @@
-# seed-version: 22 # 样板版本:新增 base 能力条目(host-* 等)时 +1(22:新增 tool-session-search 跨会话检索),老用户自动升级(备份后覆盖)
+# seed-version: 23 # 样板版本:新增 base 能力条目(host-* 等)时 +1(23:新增 host-notices 提示通道),老用户自动升级(备份后覆盖)
 # base bundle:对齐 dsh-base,一切功能皆插件的共享第一层。
 # M1 阶段条目仅记录意图;对应插件工厂在 M2 base bundle 落地。
 name: base
@@ -75,6 +75,10 @@ entries:
     # 计划落 $GAH_HOME/schedules/*.yaml;busy_wait_seconds = 有回合在跑时的等待上限(超时记 skipped)。
     data:
       busy_wait_seconds: 60
+  - id: host-notices
+    # NOND-N1 提示通道(ctx.notices):「需要人回来的时刻」的主动提示(后台任务终态/定时计划
+    # 失败或跳过/回合报错),一人发多端收(Web toast / TUI 状态行 / 桌面壳系统通知)。
+    # 提示不落盘、不进会话记录(瞬时信号,进程内环形缓冲;重连靠 List(sinceID) 回填)。
   - id: host-fanout
     enabled: true # M6.2 拆分:子代理编排宿主服务(ctx.fanout),tool-workflow 依赖
   - id: host-worktrees

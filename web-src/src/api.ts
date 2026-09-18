@@ -1,5 +1,5 @@
 // REST 客户端(上行)+ 工具函数。核心交互纯 REST,不绕模板渲染。
-import type { AttachmentView, CommandOptionsResp, CommandView, DocTree, DocView, Job, McpView, ModelsAllResp, PluginInfo, ProviderInfo, Schedule, SessionEventsPage, SessionInfo, StateView, WorkspaceInfo } from './types'
+import type { AttachmentView, CommandOptionsResp, CommandView, DocTree, DocView, Job, McpView, ModelsAllResp, NoticePage, PluginInfo, ProviderInfo, Schedule, SessionEventsPage, SessionInfo, StateView, WorkspaceInfo } from './types'
 
 const BASE = ''
 const json = {
@@ -176,6 +176,11 @@ export const api = {
   },
   jobKill(id: string): Promise<void> {
     return req('/api/jobs/' + encodeURIComponent(id) + '/kill', { method: 'POST', headers: json, body: '{}' })
+  },
+  // NOND-N1 提示回填:提示不进会话记录 → 页面加载/重连后靠这个端点补上错过的那几条
+  // (since=0 = 取服务端环形缓冲内的全部;返回值带 max_id 与 gap,前端按 id 去重)。
+  notices(since = 0): Promise<NoticePage> {
+    return req('/api/notices?since=' + encodeURIComponent(String(since)))
   },
   // —— 定时计划(NOND-W4) ——
   schedules(): Promise<Schedule[]> {
