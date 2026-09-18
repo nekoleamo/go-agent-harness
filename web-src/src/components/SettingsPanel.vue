@@ -7,7 +7,8 @@ import { api } from '../api'
 import { autostartState, checkUpdate, isDesktop, updateState, type UpdateSnapshot } from '../desktop'
 import { currentModelValue, modelOptionValue, withCurrentModel } from '../modelsel'
 import { settingSections } from '../registry'
-import { uiPluginTrustNote } from '../plugins'
+import { uiPluginDigests, uiPluginTrustNote } from '../plugins'
+import { digestLine } from '../plugininfo'
 import { PROVIDER_PRESETS, explainProbeError, type ProviderPreset } from '../providers'
 import { cronShapeError, fmtAbs, fmtNextRun, statusLabel } from '../schedule'
 import {
@@ -978,6 +979,14 @@ watch(
           <h3 class="h">插件</h3>
           <!-- UI 插件信任模型明示(文案由后端 /api/ui-plugins 下发,单一事实源) -->
           <p v-if="uiPluginTrustNote" class="dim">UI 插件(ui-plugins):{{ uiPluginTrustNote }}</p>
+          <!-- 产物完整性提示(R10 ⑤-3):sha256 覆盖范围与降级原因如实显示;值供人比对,
+               本面板不做"通过/不通过"判断(同源页面自证不构成安全边界) -->
+          <details v-if="uiPluginDigests.length" class="dim">
+            <summary>产物校验值(sha256,{{ uiPluginDigests.length }} 个 UI 插件;可与发布方公布的比对)</summary>
+            <ul class="digests">
+              <li v-for="d in uiPluginDigests" :key="d.id" :title="d.sha256 || '无摘要'">{{ digestLine(d) }}</li>
+            </ul>
+          </details>
           <div class="plist">
             <div v-for="p in plugins" :key="p.ID" class="prow">
               <div class="pmain">
@@ -1483,6 +1492,19 @@ textarea.inp {
   font-size: 12px;
   color: var(--fg-faint);
   margin: 4px 0;
+}
+/* 产物校验值列表(R10 ⑤-3):等宽字体便于逐字符比对;折行不裁剪(哈希截断会误导) */
+.digests {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.digests li {
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11px;
+  overflow-wrap: anywhere;
 }
 /* 模型筛选列表:输入框下匹配项,超出滚动;当前模型高亮 */
 .m-list {

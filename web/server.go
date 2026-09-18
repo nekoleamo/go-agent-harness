@@ -31,8 +31,10 @@ package web
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -44,6 +46,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1075,6 +1078,12 @@ type UIPlugin struct {
 	// 信任模型明示(不改数组结构:前端插件加载器按 id/slots 消费,新增字段向后兼容)。
 	Trusted   bool   `json:"trusted"`
 	TrustNote string `json:"trust_note"`
+	// 产物摘要(R10 ⑤-3 完整性提示):sha256 覆盖范围见 HashScope —— 用户可拿它与发布方
+	// 公布的校验值比对。**这不是安全边界**(能改插件目录的人也能改这里显示的哈希),
+	// 但能让"与公布值不符"变成可见事实,而不是靠人肉翻目录。
+	SHA256    string `json:"sha256,omitempty"`
+	HashScope string `json:"hash_scope,omitempty"` // full(全部文件)/ entry(仅入口,超预算)/ none(不可读)
+	HashNote  string `json:"hash_note,omitempty"`  // 降级原因(scope != full 时必填,不静默)
 }
 
 // SlotDef 槽位覆盖声明(前端动态导入 module 后 registerSlot)。
@@ -1129,9 +1138,128 @@ func (s *Server) scanUIPlugins() []UIPlugin {
 		if m.Slots == nil {
 			m.Slots = []SlotDef{}
 		}
-		out = append(out, UIPlugin{ID: m.ID, Version: m.Version, Slots: m.Slots, Trusted: true, TrustNote: uiPluginTrustNote})
+		h := digestPluginDir(filepath.Join(dir, e.Name()), m.Slots)
+		out = append(out, UIPlugin{ID: m.ID, Version: m.Version, Slots: m.Slots, Trusted: true, TrustNote: uiPluginTrustNote,
+			SHA256: h.Sum, HashScope: h.Scope, HashNote: h.Note})
 	}
 	return out
+}
+
+// —— UI 插件产物摘要(R10 ⑤-3) ——
+
+const (
+	// pluginHashBudget 全量摘要的产物总字节预算:超预算只摘要入口产物并在 Note 里说明
+	// (插件是 vite 产物,正常几十~几百 KB;预算触顶说明该目录不是普通构建产物)。
+	pluginHashBudget = 4 << 20
+	// pluginHashMaxFile 单文件上限:超过则跳过该文件并计入 Note(不静默漏掉;防一次性读巨物进内存)。
+	pluginHashMaxFile = 1 << 20
+)
+
+// pluginDigest 一份产物摘要。
+type pluginDigest struct {
+	Sum   string // 十六进制 sha256(空 = 无可摘要产物)
+	Scope string // full / entry / none
+	Note  string // 降级原因与跳过项说明(scope=full 时为空)
+}
+
+// digestPluginDir 计算插件产物目录摘要(确定性:相对路径排序 + 逐文件 sha256 → 汇总)。
+// 摘要输入含文件路径与长度(防"挪内容改名字"撞出同一值)。
+// scope 语义严格对齐实际覆盖范围:任何降级(超预算/文件过大/读失败)都写进 Note ——
+// 摘要最忌讳"看着是校验值,其实只盖了一半"。
+func digestPluginDir(dir string, slots []SlotDef) pluginDigest {
+	var files []string
+	total := int64(0)
+	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		rel, rerr := filepath.Rel(dir, p)
+		if rerr != nil || strings.HasPrefix(filepath.Base(rel), ".") {
+			return nil // 点文件(含 .DS_Store)不参与:不改变产物语义
+		}
+		files = append(files, rel)
+		if info, ierr := d.Info(); ierr == nil {
+			total += info.Size()
+		}
+		return nil
+	})
+	if len(files) == 0 {
+		return pluginDigest{Scope: "none", Note: "产物目录无文件"}
+	}
+	sort.Strings(files)
+	overflow := total > pluginHashBudget
+	// 超预算时只摘要「入口产物 + manifest」:manifest 定义了槽位指向,漏了它就能靠改指向
+	// 绕过校验;两者都很小,加起来不会再把预算顶穿。
+	entry := entryModules(slots)
+	entry["manifest.json"] = true
+	sum := sha256.New()
+	covered, skipped, coveredBytes := 0, 0, int64(0)
+	for _, rel := range files {
+		if overflow && !entry[filepath.ToSlash(rel)] {
+			skipped++
+			continue // 超预算:只盖入口,其余计入 skipped(见 Note)
+		}
+		full := filepath.Join(dir, rel)
+		info, err := os.Stat(full)
+		if err != nil {
+			skipped++
+			continue
+		}
+		if info.Size() > pluginHashMaxFile {
+			skipped++
+			continue
+		}
+		raw, err := os.ReadFile(full)
+		if err != nil {
+			skipped++
+			continue
+		}
+		coveredBytes += int64(len(raw))
+		fmt.Fprintf(sum, "%s\x00%d\x00", filepath.ToSlash(rel), len(raw))
+		sum.Write(raw)
+		covered++
+	}
+	scope := "full"
+	var notes []string
+	if overflow {
+		scope = "entry"
+		notes = append(notes, fmt.Sprintf("产物共 %s,超出摘要预算 %s:仅摘要入口产物与 manifest",
+			humanBytes(total), humanBytes(pluginHashBudget)))
+	}
+	if skipped > 0 && !overflow {
+		notes = append(notes, fmt.Sprintf("%d 个文件因过大或读失败未摘要", skipped))
+	}
+	if covered == 0 {
+		return pluginDigest{Scope: "none", Note: strings.Join(append(notes, "无文件可摘要"), ";")}
+	}
+	if skipped > 0 {
+		notes = append(notes, fmt.Sprintf("覆盖 %d/%d 个文件 %s", covered, len(files), humanBytes(coveredBytes)))
+	}
+	return pluginDigest{Sum: hex.EncodeToString(sum.Sum(nil)), Scope: scope, Note: strings.Join(notes, ";")}
+}
+
+// entryModules 槽位声明的入口产物集合(相对插件目录,规范化成 "./x" 与 "x" 都能命中)。
+func entryModules(slots []SlotDef) map[string]bool {
+	out := map[string]bool{}
+	for _, sl := range slots {
+		m := strings.TrimPrefix(filepath.ToSlash(strings.TrimSpace(sl.Module)), "./")
+		if m != "" {
+			out[m] = true
+		}
+	}
+	return out
+}
+
+// humanBytes 人读体积(摘要降级说明用;1 位小数足够)。
+func humanBytes(n int64) string {
+	switch {
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1f MiB", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.1f KiB", float64(n)/(1<<10))
+	default:
+		return fmt.Sprintf("%d B", n)
+	}
 }
 
 // uiPluginsHandler 静态托管 ui-plugins 目录(插件 vite 产物;受鉴权门保护:token 模式缺凭据 → 引导页)。

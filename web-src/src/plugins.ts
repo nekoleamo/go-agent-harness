@@ -6,6 +6,8 @@ import { ref } from 'vue'
 import { registerSlot, registerSettingSection, registerSidebarAction, registerExtraPanel } from './registry'
 import type { SlotName } from './registry'
 import type { Component } from 'vue'
+import { trustNoteOf, digestRows, toDigest } from './plugininfo'
+import type { UIPluginDigest } from './plugininfo'
 
 interface SlotDef {
   name: string // v1 四槽位 或 v2 扩展点(settings-section/sidebar-action/extra-panel)
@@ -22,10 +24,18 @@ interface UIPlugin {
   // 调用方可据此向用户明示"安装即完全信任"。
   trusted?: boolean
   trust_note?: string
+  // 产物摘要(R10 ⑤-3):覆盖范围与降级原因随值一起下发,展示层照实转述
+  sha256?: string
+  hash_scope?: string
+  hash_note?: string
 }
 
 // uiPluginTrustNote 后端下发的 UI 插件信任模型文案(设置面板照显;空 = 未取到/无插件)。
 export const uiPluginTrustNote = ref('')
+
+// uiPluginDigests 已安装 UI 插件的产物摘要行(设置面板显示;空 = 无插件/未取到)。
+// 只放展示所需字段:面板不做任何"校验通过/不通过"的判断 —— 值由人拿去与发布方比对。
+export const uiPluginDigests = ref<UIPluginDigest[]>([])
 
 // loadUIPlugins 拉取聚合清单并安装覆盖组件(失败静默:默认实现保持)。返回已加载插件数。
 export async function loadUIPlugins(): Promise<number> {
@@ -39,8 +49,11 @@ export async function loadUIPlugins(): Promise<number> {
   }
   const V1 = ['stream', 'input', 'statusbar', 'confirm'] as const
   const EXT = ['settings-section', 'sidebar-action', 'extra-panel'] as const
-  const note = list.find((p) => p.trust_note)?.trust_note
+  // 边界映射一次到位:API 是 snake_case,展示层是 camelCase(直接混用会静默丢字段)
+  const digests = digestRows(list.map(toDigest))
+  const note = trustNoteOf(digests)
   if (note) uiPluginTrustNote.value = note
+  uiPluginDigests.value = digests
   let loaded = 0
   for (const p of list) {
     for (const slot of p.slots) {
