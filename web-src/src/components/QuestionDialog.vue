@@ -1,12 +1,15 @@
 <script setup lang="ts">
 // 结构化提问弹层(P3 语义交互):question 帧出现时展示问题与选项,
 // 单选点击即提交;多选/自由文本经提交按钮回传 REST /api/question。
+// S-P0-2:支持「稍后作答」收起(不阻塞操作)——收起后由 App 侧角标挂出,点角标回到本弹层。
 import { ref, watch } from 'vue'
 import type { QuestionRequest } from '../types'
 
 const props = defineProps<{
   request: QuestionRequest | null
+  minimized?: boolean
   onAnswer: (values: string[], text: string) => void
+  onMinimize?: () => void
 }>()
 
 const picked = ref<string[]>([])
@@ -46,7 +49,7 @@ function submit(): void {
 </script>
 
 <template>
-  <div v-if="request" class="mask">
+  <div v-if="request && !minimized" class="mask">
     <div class="dialog">
       <div class="title">需要你的选择</div>
       <pre class="prompt">{{ request.prompt }}</pre>
@@ -70,6 +73,10 @@ function submit(): void {
         @keydown.enter="onEnter"
       />
       <div class="actions">
+        <button v-if="onMinimize" class="later" data-tip="收起弹层,稍后再答(不影响继续对话)" @click="onMinimize()">
+          稍后作答
+        </button>
+        <span class="spacer" />
         <button class="skip" @click="skip">跳过</button>
         <button class="go" :disabled="picked.length === 0 && !text.trim()" @click="submit">提交</button>
       </div>
@@ -150,6 +157,20 @@ function submit(): void {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+.spacer {
+  flex: 1;
+}
+.later {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--line);
+  border-radius: var(--r-input);
+  padding: 8px 16px;
+  cursor: pointer;
+}
+.later:hover {
+  border-color: var(--accent);
 }
 .skip {
   background: transparent;

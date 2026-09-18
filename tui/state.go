@@ -50,23 +50,35 @@ type State struct {
 
 	// selectAll 全选输入态(Ctrl+A):下一次 Backspace/Delete = 清空,插入 = 替换;
 	// 其它导航/编辑动作自动复位。实现"选中一次性删除/全选替换"(TUI 无渲染选区)。
-	selectAll       bool
-	Sandbox         string         // 沙箱档位显示(read-only|workspace-write|full-access)
-	Approval        string         // 审批档位显示(open|smart|strict)
-	PendingConfirm  string         // 非空 = 有待确认的危险操作(确认弹层)
-	PendingQuestion *sdk.Question  // 非 nil = 有等待作答的结构化提问(P3;输入框作答)
-	Suggestions     []string       // 输入 / 前缀时的命令提示(注册表过滤结果,渲染于输入行下方)
-	Pick            *Pick          // 非空 = 交互式选择器激活(↑/↓ 移动,Enter 应用)
-	PickDismissed   bool           // Esc/断点后抑制自动激活,直至输入变化
-	Mention         *Mention       // 非空 = @ 文件引用补全激活(↑/↓ 移动,Tab/Enter 应用;见 mention.go)
-	Doc             *DocPager      // 非空 = 文档预览 pager 浮层激活(全屏模态;见 docview.go)
-	Free            *freeStep      // 多值自由参数逐步向导(/provider set 等;断点建立,submit 前步进)。nil = 未启用
-	QuitArmed       bool           // 双按退出武装中:第一次 Ctrl+C(输入为空)后待第二次确认(输入行提示)
-	SpinnerIdx      int            // 思考动画帧索引(回合运行中 tick 推进)
-	Workspace       string         // 当前工作区显示(启动时 cwd 目录名)
-	Thinking        string         // 思考等级显示(off 空;Tab/Shift+Tab 切换)
-	Session         string         // 当前会话标签(显示名优先,无名称回退 id;空 = 未命名主会话;状态栏)
-	Stats           sdk.UsageStats // 会话 token 统计(回合结束刷新;状态栏显示使用率/缓存命中率)
+	selectAll      bool
+	Sandbox        string         // 沙箱档位显示(read-only|workspace-write|full-access)
+	Approval       string         // 审批档位显示(open|smart|strict)
+	PendingConfirm string         // 非空 = 有待确认的危险操作(确认弹层)
+	Questions      []PendingQ     // S-P0-2 待答提问栈(到达顺序,栈首=当前作答对象;空=无待答)
+	Answering      bool           // 输入框处于作答态(Enter=作答;Esc 退出作答态,提问仍在栈内)
+	Suggestions    []string       // 输入 / 前缀时的命令提示(注册表过滤结果,渲染于输入行下方)
+	Pick           *Pick          // 非空 = 交互式选择器激活(↑/↓ 移动,Enter 应用)
+	PickDismissed  bool           // Esc/断点后抑制自动激活,直至输入变化
+	Mention        *Mention       // 非空 = @ 文件引用补全激活(↑/↓ 移动,Tab/Enter 应用;见 mention.go)
+	Doc            *DocPager      // 非空 = 文档预览 pager 浮层激活(全屏模态;见 docview.go)
+	Free           *freeStep      // 多值自由参数逐步向导(/provider set 等;断点建立,submit 前步进)。nil = 未启用
+	QuitArmed      bool           // 双按退出武装中:第一次 Ctrl+C(输入为空)后待第二次确认(输入行提示)
+	SpinnerIdx     int            // 思考动画帧索引(回合运行中 tick 推进)
+	Workspace      string         // 当前工作区显示(启动时 cwd 目录名)
+	Thinking       string         // 思考等级显示(off 空;Tab/Shift+Tab 切换)
+	Session        string         // 当前会话标签(显示名优先,无名称回退 id;空 = 未命名主会话;状态栏)
+	Stats          sdk.UsageStats // 会话 token 统计(回合结束刷新;状态栏显示使用率/缓存命中率)
+	Dock           DockInfo       // S-P0-3 后台坞:后台任务/子代理计数与最新一条(状态栏折叠行;详见 dock.go)
+
+	// S-P0-3 坞展开态(F6):DockOpen 面板开;DockRows/DockSel 当前列表与选区(面板同帧渲);
+	// DockArm 停止武装(第一次 x 提示、第二次 x/Enter 真发 kill;任意其它键解除)。
+	DockOpen bool
+	DockRows []DockRow
+	DockSel  int
+	DockArm  bool
+
+	// S-P2-4 状态栏项集合与顺序(/statusline;空 = F15.3 基线默认;详见 chrome.go)。
+	Statusline []string
 
 	// P5 回合耗时:turnStart 运行起点(ApplyStatus running 首设),turnDur 上次回合耗时
 	// (ApplyStatus idle 结算;状态栏空闲态展示)。私有,渲染层同包可读。
@@ -243,19 +255,54 @@ func (s *State) ResolveConfirm(ok bool) bool {
 	return ok
 }
 
-// ApplyQuestionPrompt 记录待答提问并把问题与编号选项追加到会话流(输入框作答)。
-func (s *State) ApplyQuestionPrompt(q sdk.Question) {
-	s.PendingQuestion = &q
-	s.Lines = append(s.Lines, Line{Kind: "meta", Text: questionPromptText(q)})
+// PendingQ 一个待答提问(S-P0-2 问题栈元素;ID 由 host-confirm-fusion 生成,作答按 id 定向回填)。
+type PendingQ struct {
+	ID string
+	Q  sdk.Question
 }
 
-// ResolveQuestion 作答完成后清除待答态。
-func (s *State) ResolveQuestion() {
-	s.PendingQuestion = nil
+// ApplyQuestionPrompt 待答提问入栈(不覆盖既有待答问题)+ 问题与编号选项追加到会话流。
+// 返回是否自动进入作答态:输入框为空时进入(零摩擦作答);**输入框有草稿则不打断**——
+// 问题在栈内等待(statusbar 显示待答数),用户经 /answer 进入作答(草稿仍可整体发出)。
+func (s *State) ApplyQuestionPrompt(q sdk.Question) bool {
+	s.Questions = append(s.Questions, PendingQ{ID: q.ID, Q: q})
+	if strings.TrimSpace(s.Input) == "" {
+		s.Answering = true
+	}
+	s.Lines = append(s.Lines, Line{Kind: "meta", Text: questionPromptText(q, s.Answering)})
+	return s.Answering
 }
 
-// questionPromptText 提问展示文本(❓ 问题 + 编号选项 + 作答指引)。
-func questionPromptText(q sdk.Question) string {
+// ActiveQuestion 当前作答对象(栈首 = 最早到达的待答提问);无待答返回 nil。
+func (s *State) ActiveQuestion() *PendingQ {
+	if len(s.Questions) == 0 {
+		return nil
+	}
+	return &s.Questions[0]
+}
+
+// ResolveQuestion 按 id 出栈(作答完成/跳过/其它渠道已答/超时);返回是否确有移除(幂等)。
+// 出栈后栈空即退出作答态;仍有待答时保持作答态(继续答下一个)。
+func (s *State) ResolveQuestion(id string) bool {
+	removed := false
+	for i, p := range s.Questions {
+		if p.ID == id || id == "" {
+			s.Questions = append(s.Questions[:i], s.Questions[i+1:]...)
+			removed = true
+			break
+		}
+	}
+	if len(s.Questions) == 0 {
+		s.Answering = false
+	}
+	return removed
+}
+
+// ExitAnswering 退出作答态(保留输入框草稿;提问留在栈内,/answer 可返回)。
+func (s *State) ExitAnswering() { s.Answering = false }
+
+// questionPromptText 提问展示文本(❓ 问题 + 编号选项 + 作答指引);answering=是否已进入作答态。
+func questionPromptText(q sdk.Question, answering bool) string {
 	var b strings.Builder
 	b.WriteString("❓ " + q.Prompt)
 	for i, o := range q.Options {
@@ -272,6 +319,11 @@ func questionPromptText(q sdk.Question) string {
 		b.WriteString("\n回复编号或直接输入内容后回车")
 	default:
 		b.WriteString("\n请直接输入内容后回车")
+	}
+	if answering {
+		b.WriteString(" (Esc 退出作答;/ 开头仍走命令)")
+	} else {
+		b.WriteString(" (输入框有草稿,未打断;/answer 进入作答)")
 	}
 	return b.String()
 }

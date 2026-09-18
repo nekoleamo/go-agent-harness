@@ -10,7 +10,9 @@ import type { Msg } from './sse'
 // stream    → { frames: Msg[]; metas: MetaLine[]; running: boolean }
 //             (frames 是宿主消费引擎产出的展示消息 Msg,非原始 SessionEvent;
 //              按 SessionEvent 实现槽位的插件会渲染空白——v1.1 已对齐)
-// input     → { disabled: boolean; onSubmit(text: string): void }
+// input     → { disabled: boolean; onSubmit(text: string): boolean | void; disabledHint?: string }
+//             (onSubmit 返回 false = 未受理(断连/提交失败)→ 输入框保留草稿与附件;
+//              S-P1-3;旧插件不返回值仍按已受理处理)
 // statusbar → { state: StateView }
 // confirm   → { request: ConfirmRequest | null; onAnswer(ok: boolean): void }
 export interface MetaLine {
@@ -24,12 +26,17 @@ export interface StreamProps {
 }
 export interface InputProps {
   disabled: boolean
-  onSubmit: (text: string) => void
+  // onSubmit 返回 false = 未受理(断连/上游失败):输入框保留草稿与附件供重发(S-P1-3)。
+  onSubmit: (text: string, attachments: string[]) => unknown
   // v1.1 可选扩展:真实运行状态(state.thinking/sandbox 驱动档位标签与循环);未实现不传也可
   state?: StateView
+  // v1.2 可选扩展:禁用原因文案(如断连),覆盖默认的「回合进行中…」占位(S-P1-3)
+  disabledHint?: string
 }
 export interface StatusbarProps {
   state: StateView
+  // v1.2 可选扩展:链路三态(S-P1-3);旧插件不声明即可(attrs 透传无害,仅失去连接指示)
+  conn?: 'open' | 'reconnecting' | 'offline'
 }
 export interface ConfirmProps {
   request: ConfirmRequest | null

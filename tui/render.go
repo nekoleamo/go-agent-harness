@@ -202,7 +202,9 @@ func Render(s *State, width, height int) string {
 	inputExtra := strings.Count(inputContent, "\n")
 	// P4-12 widget 槽位:输入行上方动态信息行(开关关=0),同样扣主区
 	widgetRows := widgetLines(s)
-	mainH := height - 8 - hintRows - inputExtra - len(widgetRows)
+	// S-P0-3 坞展开(F6):面板行同样扣主区(收起 = nil,零几何变化)
+	dockPanel := dockPanelLines(s, width)
+	mainH := height - 8 - hintRows - inputExtra - len(widgetRows) - len(dockPanel)
 	if mainH < 1 {
 		mainH = 1
 	}
@@ -301,6 +303,8 @@ func Render(s *State, width, height int) string {
 	for i := 1; i < len(bottom); i++ {
 		bottom[i] = styleWidget.Render("◇ " + widgetRows[i-1]) // 输入区上方动态信息(前缀区分)
 	}
+	// S-P0-3 坞展开面板:F6 展开时占位(在分隔线/widget 下、输入区上方;收起无行)
+	bottom = append(bottom, dockPanel...)
 	bottom = append(bottom, inputStr)
 	bottom = append(bottom, renderHintLines(s, hintItems, hintRows)...)
 	bottom = append(bottom, "") // F15.5:状态栏/指标行与输入/提示区留空隙行

@@ -41,6 +41,13 @@ const (
 	// 前端据此刷新计划列表(上次运行时间/状态/下次触发已变),无需轮询。
 	// 载荷 sdk.ScheduleRunEvent。
 	FrameSchedule = "schedule"
+	// FrameDiff 变更审查意图(S-P1-1:`/diff` 命令发 diff/open;载荷 sdk.DiffOpenEvent)。
+	// 前端切到变更视图;Path/Diff 非空时定位到该文件(内容本就可从事件账本重建,不依赖 git)。
+	FrameDiff = "diff"
+	// FrameBaseline 首帧基线(S-P1-2):**首连的第一帧**,描述本次回放的事件窗口
+	// (载荷 Baseline)。前端据此知道「更早历史还没加载」,从而显示上滚入口并按需分页。
+	// 只在全新连接(after==0)发送:断线续传是差集补齐,不描述窗口(前端保留自己的窗口状态)。
+	FrameBaseline = "baseline"
 )
 
 // QuestionDone 提问解决载荷(多端同步观察:按 id 关闭本端遗留弹层)。
@@ -55,6 +62,16 @@ type ConfirmDone struct {
 	Prompt string `json:"prompt"`
 	OK     bool   `json:"ok,omitempty"`
 	Err    string `json:"err,omitempty"`
+}
+
+// Baseline 首帧基线载荷(S-P1-2:长会话的首帧窗口描述)。
+// From/To 是本窗口的事件 Seq 边界(实时帧从 To 之后续接);HasMore = 窗口前还有更早事件。
+type Baseline struct {
+	From    uint64 `json:"from"`     // 窗口最老事件 Seq(空会话 = 0)
+	To      uint64 `json:"to"`       // 窗口最新事件 Seq
+	Count   int    `json:"count"`    // 窗口内事件条数
+	HasMore bool   `json:"has_more"` // 更早历史存在(前端显示「上滚加载」)
+	Window  int    `json:"window"`   // 服务端窗口口径(条数;供前端解释为何看不到更早内容)
 }
 
 // Frame 一条 SSE 帧(JSON 序列化后发往浏览器)。
@@ -102,6 +119,16 @@ func (h *EventHub) Subscribe(c sdk.Ctx, sessions sdk.SessionLog) (disposer sdk.D
 			h.Push(Frame{Type: FrameDoc, Payload: p})
 		case *sdk.DocOpenEvent:
 			h.Push(Frame{Type: FrameDoc, Payload: p})
+		}
+		return nil
+	})
+	add(sdk.EventDiffOpen, func(_ context.Context, ev *sdk.Event) error {
+		// 变更审查意图(diff/open):广播给浏览器 → 前端切到变更视图(可选定位单文件)
+		switch p := ev.Payload.(type) {
+		case sdk.DiffOpenEvent:
+			h.Push(Frame{Type: FrameDiff, Payload: p})
+		case *sdk.DiffOpenEvent:
+			h.Push(Frame{Type: FrameDiff, Payload: p})
 		}
 		return nil
 	})
@@ -233,8 +260,8 @@ func (h *EventHub) LastSeq() uint64 {
 	return h.lastSeq
 }
 
-// ReplayAfter 取会话全量事件中 seq 严格大于 after 的帧(连接建立/断线续传;
-// after=0 = 全量历史重放)。帧标记 Replay=true。
+// ReplayAfter 取会话全量事件中 seq 严格大于 after 的帧(**断线续传差集**;
+// 首连历史重放不走这里 —— 见 consumeStream 的尾部窗口 + Baseline 基线)。帧标记 Replay=true。
 func (h *EventHub) ReplayAfter(sessions sdk.SessionLog, after uint64) []Frame {
 	evs := sessions.Replay()
 	out := make([]Frame, 0, len(evs))
@@ -245,6 +272,24 @@ func (h *EventHub) ReplayAfter(sessions sdk.SessionLog, after uint64) []Frame {
 		out = append(out, Frame{ID: ev.Seq, Type: FrameSession, TS: ev.TS.UnixMilli(), Payload: &ev, Replay: true})
 	}
 	return out
+}
+
+// ReplayTail 取会话事件**尾部窗口**的帧 + 窗口基线(首连重放;S-P1-2)。
+// 窗口回合对齐(S-P1-2 见 web/paging.go 头部);更早历史由前端上滚经 /api/session/events 分页拉取。
+func (h *EventHub) ReplayTail(sessions sdk.SessionLog) (frames []Frame, base Baseline) {
+	evs := sessions.Replay()
+	page, hasMore := pageEvents(evs, 0, SessionTailEvents)
+	frames = make([]Frame, 0, len(page))
+	for i := range page {
+		ev := page[i]
+		frames = append(frames, Frame{ID: ev.Seq, Type: FrameSession, TS: ev.TS.UnixMilli(), Payload: &ev, Replay: true})
+	}
+	base = Baseline{Count: len(page), HasMore: hasMore, Window: SessionTailEvents}
+	if len(page) > 0 {
+		base.From = page[0].Seq
+		base.To = page[len(page)-1].Seq
+	}
+	return frames, base
 }
 
 // Push 进程内主动投递一帧(confirm/command 结果;广播全部活跃流)。

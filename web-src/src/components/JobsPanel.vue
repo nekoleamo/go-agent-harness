@@ -3,9 +3,12 @@
 // 开窗时 3s 轮询(关窗停止,组件常驻、v-if 控显);状态色:running=强调蓝、done=成功绿、failed/killed=错误红。
 import { onUnmounted, ref, watch } from 'vue'
 import { api } from '../api'
+import { jobStateLabel } from '../board'
 import type { Job } from '../types'
 
-const props = defineProps<{ open: boolean }>()
+// docked = 在侧栏停靠区里渲染(S-P2-1):去掉固定定位与自身标题行(标签由停靠区提供),
+// 其余行为(3s 轮询/展开输出/终止)完全一致 —— 同一份任务视图,不另造一套。
+const props = defineProps<{ open: boolean; docked?: boolean }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
 
 const jobs = ref<Job[]>([])
@@ -27,9 +30,6 @@ function toggle(j: Job): void {
 function fmtTime(ts: string): string {
   const d = new Date(ts)
   return isNaN(d.getTime()) ? '' : d.toLocaleTimeString('zh-CN', { hour12: false })
-}
-function stateLabel(s: string): string {
-  return { running: '运行中', done: '完成', failed: '失败', killed: '已终止' }[s] ?? s
 }
 async function kill(j: Job): Promise<void> {
   try {
@@ -59,8 +59,8 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div v-if="open" class="jobs-panel">
-    <div class="jp-head">
+  <div v-if="open" class="jobs-panel" :class="{ docked }">
+    <div v-if="!docked" class="jp-head">
       <span class="jp-title">后台任务</span>
       <span class="jp-close" data-tip="关闭" @click="emit('close')">×</span>
     </div>
@@ -68,7 +68,7 @@ onUnmounted(() => {
     <div v-if="!jobs.length" class="jp-empty">暂无后台任务</div>
     <div v-for="j in jobs" :key="j.id" class="jp-item">
       <div class="jp-row1">
-        <span class="jp-state" :class="'st-' + j.state">{{ stateLabel(j.state) }}</span>
+        <span class="jp-state" :class="'st-' + j.state">{{ jobStateLabel(j.state) }}</span>
         <span class="jp-cmd mono">{{ j.command || j.id }}</span>
         <span v-if="j.state === 'running'" class="jp-kill" data-tip="终止任务(需确认)" @click="kill(j)">终止</span>
       </div>
@@ -93,6 +93,15 @@ onUnmounted(() => {
   flex-direction: column;
   z-index: 30;
   animation: jp-in var(--dur-base) var(--ease-out);
+}
+/* 停靠模式:填满停靠区(无固定定位/无阴影/无入场动画,边框由停靠区提供) */
+.jobs-panel.docked {
+  position: static;
+  width: 100%;
+  height: 100%;
+  border-left: none;
+  box-shadow: none;
+  animation: none;
 }
 @keyframes jp-in {
   from {

@@ -1,5 +1,5 @@
 // REST 客户端(上行)+ 工具函数。核心交互纯 REST,不绕模板渲染。
-import type { AttachmentView, CommandOptionsResp, CommandView, DocTree, DocView, Job, McpView, ModelsAllResp, PluginInfo, ProviderInfo, Schedule, SessionInfo, StateView, WorkspaceInfo } from './types'
+import type { AttachmentView, CommandOptionsResp, CommandView, DocTree, DocView, Job, McpView, ModelsAllResp, PluginInfo, ProviderInfo, Schedule, SessionEventsPage, SessionInfo, StateView, WorkspaceInfo } from './types'
 
 const BASE = ''
 const json = {
@@ -24,6 +24,10 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   state(): Promise<StateView> {
     return req('/api/state')
+  },
+  // S-P1-2 会话事件分页:上滚加载更早历史(before = 已加载的最老事件 Seq;0 = 尾部窗口)
+  sessionEvents(before: number, limit: number): Promise<SessionEventsPage> {
+    return req(`/api/session/events?before=${before}&limit=${limit}`)
   },
   commands(): Promise<CommandView[]> {
     return req('/api/commands')

@@ -9,6 +9,7 @@ package tui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -24,6 +25,9 @@ type DocOpenMsg struct {
 	Sheet int
 }
 
+// PagerMsg 直接送入已构造好的浮层(diff/open 等由 host 载荷一次成型的内容)。
+type PagerMsg struct{ Pager *DocPager }
+
 // DocPager 文档 pager 浮层状态。
 type DocPager struct {
 	Title  string   // 标题(文件名)
@@ -38,8 +42,55 @@ type DocPager struct {
 	Width  int      // 最近一次渲染宽度(水平滚动用)
 	Height int      // 最近一次渲染高度
 
+	// Diff 标记「内容是 unified diff」:行首 +/-/@@ 轻染色(与工具结果行的 diffColors 同一套词色)。
+	// 非 diff 文本浮层(/diff 之外的未来使用者)置 false 即回普通弱化样式。
+	Diff bool
+
 	searching bool   // / 搜索输入中(键入进 searchBuf)
 	searchBuf string // 搜索输入缓冲
+}
+
+// TextPagerSpec 纯文本 pager 构造参数(S-P1-1:`/diff` 拼好的 patch 原样送进来,TUI 侧不重算 diff)。
+type TextPagerSpec struct {
+	Title  string
+	Format string
+	Lines  []string
+	Status string
+	Diff   bool
+}
+
+// NewTextPager 纯文本 pager(与 NewDocPager 同一渲染路径:滚动/搜索/横移/全屏浮层复用,
+// 不新增渲染栈)。空内容给显式占位行,不留空白屏。
+func NewTextPager(spec TextPagerSpec) *DocPager {
+	p := &DocPager{Title: spec.Title, Format: spec.Format, Status: spec.Status, Diff: spec.Diff}
+	p.Lines = spec.Lines
+	if len(p.Lines) == 0 {
+		p.Lines = []string{"(无内容)"}
+	}
+	return p
+}
+
+// NewDiffPager 由 host `diff/open` 载荷构造浮层(S-P1-1)。
+// 无 patch(Diff 空)= 纯清单意图 → 返回 nil,由调用方决定不弹窗(命令文本已在会话流里)。
+func NewDiffPager(p sdk.DiffOpenEvent) *DocPager {
+	if p.Diff == "" {
+		return nil
+	}
+	title := p.Title
+	if title == "" {
+		title = p.Path
+	}
+	status := "来自捕获的写操作(不依赖 git)"
+	if n := p.Changes; n > 1 {
+		status = strconv.Itoa(n) + " 次改动 · " + status
+	}
+	if p.Truncated {
+		status = "patch 已截断 · " + status
+	}
+	return NewTextPager(TextPagerSpec{
+		Title: title, Format: "diff", Status: status, Diff: true,
+		Lines: strings.Split(strings.TrimRight(p.Diff, "\n"), "\n"),
+	})
 }
 
 // NewDocPager 由 DocView 构造 pager(纯文本摊平;不引入新渲染路径)。
@@ -445,15 +496,21 @@ func (p *DocPager) Render(w, h int) string {
 	return b.String()
 }
 
-// renderLine 单行(水平偏移 + 搜索高亮)。
+// renderLine 单行(水平偏移 + 搜索高亮;diff 内容额外轻染色)。
 func (p *DocPager) renderLine(i, w int) string {
 	line := p.Lines[i]
 	if p.HOff > 0 {
 		line = sliceWidth(line, p.HOff)
 	}
 	line = truncWidth(line, w)
+	// 搜索命中优先(用户显式意图),其次 diff 染色(与工具结果行一致:命中回落到普通样式)
 	if p.Search != "" && strings.Contains(p.Lines[i], p.Search) {
 		return highlightAll(line, p.Search)
+	}
+	if p.Diff {
+		if styled := diffToolRow(line); styled != "" {
+			return styled
+		}
 	}
 	return styleMeta.Render(line)
 }

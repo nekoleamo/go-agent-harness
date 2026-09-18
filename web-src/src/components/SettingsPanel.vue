@@ -117,6 +117,7 @@ const pf = ref({ name: '', base_url: '', api_key: '', model: '' })
 const presets = PROVIDER_PRESETS
 const provSec = ref<HTMLElement | null>(null)
 const aboutSec = ref<HTMLElement | null>(null) // 底栏版本号 → 「关于 gah」(focus='about')
+const schedSec = ref<HTMLElement | null>(null) // 看板「管理计划」→ 「计划」段(focus='schedule')
 const keyInput = ref<HTMLInputElement | null>(null)
 const applied = ref<ProviderPreset | null>(null) // 最近选中的预设(用于「本地免 Key」提示)
 const lastSaved = ref('') // 刚保存的 provider(失败后「重新自检」用)
@@ -604,6 +605,8 @@ watch(
     if (props.focus === 'provider') void nextTick(() => provSec.value?.scrollIntoView({ block: 'start' }))
     // 底栏版本号点进来:滚到「关于 gah」(浏览器形态整段不渲染 ⇒ ref 为 null,静默跳过)
     if (props.focus === 'about') void nextTick(() => aboutSec.value?.scrollIntoView({ block: 'start' }))
+    // 看板「管理计划」:滚到「计划」段(host-schedule 未装配 ⇒ 整段不渲染、ref 为 null,静默跳过)
+    if (props.focus === 'schedule') void nextTick(() => schedSec.value?.scrollIntoView({ block: 'start' }))
   },
 )
 // 定时跑完一轮(schedule/run SSE 帧)→ 刷新计划状态(上次运行/下次触发已变)
@@ -846,7 +849,7 @@ watch(
         </section>
 
         <!-- 定时计划(NOND-W4,host-schedule 未装配时整段隐藏) -->
-        <section v-if="schedReady" class="sec">
+        <section v-if="schedReady" ref="schedSec" class="sec">
           <h3 class="h">
             计划
             <button class="link" data-tip="新增定时计划" @click="showSchedAdd = !showSchedAdd">

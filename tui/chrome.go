@@ -105,6 +105,8 @@ func renderInputLine(s *State, width int, maxRows ...int) string {
 		}
 		if i > 0 { // 续行缩进(与提示符 ❯ 同 2 列宽;窗口滚动后窗口首行非逻辑首行,同样续行对齐)
 			sb.WriteString("  ")
+		} else if s.Answering { // S-P0-2:作答态提示符换形(单列宽:❓ 与 ❯ 同为 2 列),输入归属一眼可辨
+			sb.WriteString(styleBusy.Render("❓ "))
 		} else {
 			sb.WriteString(stylePrompt.Render("❯ "))
 		}
@@ -156,45 +158,120 @@ func approvalLabel(mode string) string {
 	}
 }
 
-// renderStatusLine 状态栏(M15 pi 式精简 + F15.3 去 gah 标识):回合状态(思考/执行工具,
-// 前置滚动动画帧)+ 工作区 + 沙箱 + 审批 + 会话;模型/思维/上下文在末行指标行。
-// 宽度填充防行尾锯齿。
-func renderStatusLine(s *State, width int) string {
-	// 回合运行中前置像素循环 logo(旋转帧)高亮显示“思考中/执行工具”,
-	// 提交回车即置 Running → 立即可见(不依赖事件广播时序);空闲灰字。
-	state := "空闲"
-	runningStyle := styleStatus
-	if s.Running {
-		frame := spinnerFrame(s.SpinnerIdx)
-		if s.LastTool != "" {
-			state = frame + " 执行工具: " + s.LastTool
-		} else {
-			state = frame + " 思考中"
-		}
-		state += " (Esc 取消)"
-		runningStyle = styleBusy // 运行态高亮(醒目,一眼看到当前状态)
-	}
-	state = runningStyle.Render(state)
-	// P4-1 消息队列:有待发消息时显示计数与取回键(空闲时亦提示,队列由回合结束/取消后保留)
-	if n := len(s.Queue); n > 0 {
-		state += " " + styleBusy.Render(fmt.Sprintf("· 待发 %d (Alt+Up 取回)", n))
-	}
-	// P5 回合耗时:空闲态展示上次回合用时(运行态不显示,状态位已表达)
-	if !s.Running && s.turnDur > 0 {
-		state += " " + styleStatus.Render("· 上一回合 "+fmtDur(s.turnDur))
-	}
-	sess := ""
-	if s.Session != "" {
-		sess = " | 会话: " + s.Session
-	}
-	// 审批档位(M17):开放/智能/严格,空值省略段(与会话段一致)。
-	apv := ""
-	if s.Approval != "" {
-		apv = " | 审批: " + approvalLabel(s.Approval)
-	}
-	// 模型/思维/上下文指标在输入行右侧(renderInputRight),状态栏不再重复。
-	return styleStatus.Render(fmt.Sprintf(
-		" %s | 工作区: %s | 沙箱: %s%s%s%s",
-		state, orDefault(s.Workspace, "?"), orDefault(s.Sandbox, string(sdk.SandboxWorkspace)), apv, sess, strings.Repeat(" ", width),
-	))
+// —— S-P2-4 可配置状态栏(/statusline) ——
+//
+// 设计:F15.3 基线（回合态集群 + 工作区/沙箱/审批/会话 四段）不变为**默认**;
+// 用户可改集合与顺序。渲染拆成「逐项取值 + 按配置拼接」：
+//   - 回合态集群(state/queue/questions/dock/last)组内以 " · " 连接(同一信息块);
+//   - 其余段(workspace/sandbox/approval/session)以 " | " 连接(并列分区)。
+// 空值项一律不渲染(不留悬空分隔符)。
+
+// statuslineCluster 回合态集群:组内 " · "、与分区段 " | "。
+var statuslineCluster = map[string]bool{
+	"state": true, "queue": true, "questions": true, "dock": true, "last": true,
 }
+
+// defaultStatusline 基线默认项顺序(F15.3;不配置时逐字符等价旧输出)。
+var defaultStatusline = []string{"state", "queue", "questions", "dock", "last", "workspace", "sandbox", "approval", "session"}
+
+// statuslineTokens 全部合法项(顺序无关;/statusline 错误提示与校验用)。
+var statuslineTokens = []string{"state", "queue", "questions", "dock", "last", "workspace", "sandbox", "approval", "session"}
+
+// statuslineTokenDesc 项说明(/statusline 无参与错误提示用)。
+var statuslineTokenDesc = map[string]string{
+	"state":     "回合状态(思考中/执行工具;运行中带 Esc 提示)",
+	"queue":     "待发消息计数(P4-1)",
+	"questions": "待答提问计数(S-P0-2)",
+	"dock":      "后台任务/子代理坞(S-P0-3)",
+	"last":      "上一回合耗时",
+	"workspace": "工作区",
+	"sandbox":   "沙箱档位",
+	"approval":  "审批档位",
+	"session":   "会话名",
+}
+
+// statuslineItem 渲染单项(空串 = 该项当前无内容,拼接时跳过)。
+func statuslineItem(s *State, token string) string {
+	switch token {
+	case "state":
+		if s.Running {
+			frame := spinnerFrame(s.SpinnerIdx)
+			if s.LastTool != "" {
+				return styleBusy.Render(frame + " 执行工具: " + s.LastTool + " (Esc 取消)")
+			}
+			return styleBusy.Render(frame + " 思考中 (Esc 取消)")
+		}
+		return styleStatus.Render("空闲")
+	case "queue":
+		if n := len(s.Queue); n > 0 {
+			return styleBusy.Render(fmt.Sprintf("待发 %d (Alt+Up 取回)", n))
+		}
+	case "questions":
+		if n := len(s.Questions); n > 0 {
+			hint := "❓ 待答"
+			if n > 1 {
+				hint = fmt.Sprintf("❓ 待答 %d", n)
+			}
+			if s.Answering {
+				hint += "(Esc 退出作答)"
+			} else {
+				hint += "(/answer 作答)"
+			}
+			return styleBusy.Render(hint)
+		}
+	case "dock":
+		if lbl := dockLabel(s.Dock); lbl != "" {
+			if s.Dock.Running > 0 {
+				return styleBusy.Render(lbl) // 有东西在跑 = 显眼信号
+			}
+			return styleStatus.Render(lbl)
+		}
+	case "last":
+		if !s.Running && s.turnDur > 0 {
+			return styleStatus.Render("上一回合 " + fmtDur(s.turnDur))
+		}
+	case "workspace":
+		return styleStatus.Render("工作区: " + orDefault(s.Workspace, "?"))
+	case "sandbox":
+		return styleStatus.Render("沙箱: " + orDefault(s.Sandbox, string(sdk.SandboxWorkspace)))
+	case "approval":
+		if s.Approval != "" {
+			return styleStatus.Render("审批: " + approvalLabel(s.Approval))
+		}
+	case "session":
+		if s.Session != "" {
+			return styleStatus.Render("会话: " + s.Session)
+		}
+	}
+	return ""
+}
+
+// renderStatusLine 状态栏(/statusline 可配置;未配置 = F15.3 基线)。
+// 宽度填充防行尾锯齿(旧版空白仍在尾部)。
+func renderStatusLine(s *State, width int) string {
+	items := s.Statusline
+	if len(items) == 0 {
+		items = defaultStatusline
+	}
+	out := ""
+	prevCluster := false
+	for _, tok := range items {
+		txt := statuslineItem(s, tok)
+		if txt == "" {
+			continue
+		}
+		if out != "" {
+			if statuslineCluster[tok] && prevCluster {
+				out += " · "
+			} else {
+				out += " | "
+			}
+		}
+		out += txt
+		prevCluster = statuslineCluster[tok]
+	}
+	return styleStatus.Render(" " + out + strings.Repeat(" ", width))
+}
+
+// statuslineNames 合法项名列表(错误提示/无参输出用)。
+func statuslineNames() []string { return append([]string(nil), statuslineTokens...) }

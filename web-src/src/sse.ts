@@ -23,15 +23,29 @@ export interface Msg {
 }
 
 // Cursor 渲染游标(重建流时续接:仅展示新建帧)
+// S-P1-2 窗口状态:from = 已加载的最老**事件** Seq(上滚分页游标);hasMore = 服务端/本地
+// 是否还有更早事件;trimmed = 本次连接已折叠的消息条数(贴底阅读时裁剪头部,避免长会话
+// DOM/内存随会话长度线性增长)。三者共同描述「当前窗口」,视图须据此标注口径而非谎报全量。
 export interface StreamModel {
   msgs: Msg[]
   pending: string // 进行中 assistant 文本(chunk 增量)
   pendingTool?: ToolRow // 进行中工具(等待 result)
   step: number
+  from: number
+  hasMore: boolean
+  trimmed: number
 }
 
 export function newModel(): StreamModel {
-  return { msgs: [], pending: '', step: 0 }
+  return { msgs: [], pending: '', step: 0, from: 0, hasMore: false, trimmed: 0 }
+}
+
+// 一批事件 → 消息(一次性、独立模型)。用于 S-P1-2 上滚分页:必须整页喂进 consume,
+// 因为助手消息的工具行要靠**后续** tool/result 事件回填,逐事件拼会丢工具行。
+export function msgsOfEvents(events: SessionEvent[]): Msg[] {
+  const m = newModel()
+  for (const ev of events) consume(m, ev)
+  return m.msgs
 }
 
 // 工具参数摘要:JSON 对象取键值对截断;非 JSON 截断原样

@@ -15,6 +15,8 @@ export type FrameType =
   | 'questiondone'
   | 'confirmdone'
   | 'schedule'
+  | 'diff'
+  | 'baseline'
 
 export interface Frame {
   id: number
@@ -22,6 +24,25 @@ export interface Frame {
   ts?: number
   payload: unknown
   replay?: boolean
+}
+
+// 首帧基线(FrameBaseline payload;S-P1-2 长会话):首连时服务端只回放**尾部窗口**,
+// 本帧描述窗口边界(From/To/HasMore)。前端据此显示「上滚加载更早」。
+export interface Baseline {
+  from: number
+  to: number
+  count: number
+  has_more: boolean
+  window: number
+}
+
+// 会话事件分页响应(GET /api/session/events;上滚加载更早历史)。
+export interface SessionEventsPage {
+  events: SessionEvent[]
+  from: number
+  to: number
+  count: number
+  has_more: boolean
 }
 
 // 会话事件(JSON 序列化后的 sdk.SessionEvent;Kind/Seq/Payload/TS 字段名保持 Go 原样)

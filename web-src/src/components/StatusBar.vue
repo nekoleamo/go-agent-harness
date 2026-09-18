@@ -4,11 +4,14 @@
 // 设置面板),底栏再镜像一遍既是重复显示又把一行挤变形;命名会话也不在这里重复(看侧栏高亮),
 // 版本号改成「关于 gah」入口。对齐 TUI 状态栏语义;空值显示占位(不假精确:窗口未知仅显示量)。
 import { computed } from 'vue'
+import { connLabel } from '../conn'
 import type { StateView } from '../types'
 
-const props = defineProps<{ state: StateView; conn?: 'open' | 'reconnecting' }>()
+const props = defineProps<{ state: StateView; conn?: 'open' | 'reconnecting' | 'offline' }>()
 // 版本号点击 → 「关于 gah」。用插槽替换底栏的一方不发这个事件也不影响(监听是可选的)。
 const emit = defineEmits<{ (e: 'open-about'): void }>()
+// connText 连接状态短标签:口径来自 conn.ts(宿主与插件覆盖槽位共用同一定义)
+const connText = computed(() => connLabel(props.conn ?? 'open'))
 
 function k(n: number): string {
   if (n < 1024) return String(n)
@@ -62,8 +65,7 @@ const anonSession = computed(() => {
     <span class="spacer" />
     <span class="conn" :class="props.conn">
       <span class="conn-dot" />
-      <span v-if="props.conn === 'reconnecting'" class="conn-text">重连中</span>
-      <span v-else class="conn-text">已连接</span>
+      <span class="conn-text">{{ connText }}</span>
     </span>
     <span class="ctx mono">{{ ctx }}</span>
     <button class="ver mono" data-tip="关于 gah(版本 / 检查更新)" @click="emit('open-about')">
@@ -137,12 +139,19 @@ const anonSession = computed(() => {
   background: var(--tool);
   animation: pulse 1.1s ease-in-out infinite;
 }
+.conn.offline .conn-dot {
+  background: var(--err);
+}
 .conn-text {
   color: var(--fg-dim);
 }
 .conn.reconnecting .conn-text {
   color: var(--tool);
   font-weight: 500;
+}
+.conn.offline .conn-text {
+  color: var(--err);
+  font-weight: 600;
 }
 .mono {
   font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;

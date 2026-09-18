@@ -63,8 +63,8 @@ func TestConsumeStreamGapNoLossNoDup(t *testing.T) {
 
 	stop := make(chan struct{})
 	var mu sync.Mutex
-	var got []uint64
-	sink := func(f Frame) error { mu.Lock(); got = append(got, f.ID); mu.Unlock(); return nil }
+	var got []Frame
+	sink := func(f Frame) error { mu.Lock(); got = append(got, f); mu.Unlock(); return nil }
 	done := make(chan struct{})
 	go func() { defer close(done); s.consumeStream(0, sink, stop) }()
 
@@ -91,8 +91,23 @@ func TestConsumeStreamGapNoLossNoDup(t *testing.T) {
 	<-done
 	mu.Lock()
 	defer mu.Unlock()
+	// 首帧 = 基线(S-P1-2:告诉前端本次回放的窗口边界;不是会话帧,ID=0)
+	if got[0].Type != FrameBaseline {
+		t.Fatalf("首帧应为 %q 基线,得 %q", FrameBaseline, got[0].Type)
+	}
+	base, ok := got[0].Payload.(Baseline)
+	if !ok {
+		t.Fatalf("基线载荷类型: %T", got[0].Payload)
+	}
+	if base.From != 1 || base.To != 3 || base.Count != 3 || base.HasMore {
+		t.Fatalf("基线应覆盖全窗口且无更早历史: %+v", base)
+	}
+	ids := make([]uint64, 0, len(got)-1)
+	for _, f := range got[1:] {
+		ids = append(ids, f.ID)
+	}
 	want := []uint64{1, 2, 3, 0} // 会话帧各恰一次 + 状态帧透传
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("帧序应 %v(切换窗口不重不漏),得 %v", want, got)
+	if !reflect.DeepEqual(ids, want) {
+		t.Fatalf("基线之后的帧序应 %v(切换窗口不重不漏),得 %v", want, ids)
 	}
 }

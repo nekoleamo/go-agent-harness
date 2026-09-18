@@ -83,6 +83,17 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		}
 		return nil
 	})
+	// S-P1-1 变更审查面:host 拼好的 patch(diff/open,带 Diff 的才弹 pager;
+	// 无 Path/Diff 的「清单意图」由命令文本自身呈现,不重复弹窗)
+	diffOpen := c.Subscribe(sdk.EventDiffOpen, func(_ context.Context, ev *sdk.Event) error {
+		switch p := ev.Payload.(type) {
+		case sdk.DiffOpenEvent:
+			app.OpenPager(tui.NewDiffPager(p))
+		case *sdk.DiffOpenEvent:
+			app.OpenPager(tui.NewDiffPager(*p))
+		}
+		return nil
+	})
 	// G-E5-4:交互事件观察面(多端并存时,其它渠道已处理的提问/审批 → 会话流提示)
 	interRegs := []sdk.Disposer{
 		c.Subscribe(sdk.EventQuestionResolved, func(_ context.Context, ev *sdk.Event) error {
@@ -115,11 +126,13 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	}
 	if err := app.Start(); err != nil {
 		docOpen()
+		diffOpen()
 		confirmReg()
 		return nil, err
 	}
 	return func() {
 		docOpen()
+		diffOpen()
 		for _, d := range interRegs {
 			d()
 		}

@@ -129,10 +129,10 @@ func TestParseTUIAnswer(t *testing.T) {
 	}
 }
 
-// TestAppPresentQuestion 提问待答登记 → answerQuestion 广播 → 通道收到;cancel 清理。
+// TestAppPresentQuestion 提问待答登记 → answerQuestion 定向回填 → 通道收到;cancel 清理。
 func TestAppPresentQuestion(t *testing.T) {
 	a := commandTestApp()
-	ch, cancel, err := a.PresentQuestion(context.Background(), sdk.Question{Prompt: "选环境"})
+	ch, cancel, err := a.PresentQuestion(context.Background(), sdk.Question{ID: "q1", Prompt: "选环境"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,16 +142,16 @@ func TestAppPresentQuestion(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("应登记 1 个待答提问,got %d", n)
 	}
-	a.answerQuestion(sdk.QuestionAnswer{Values: []string{"prod"}})
+	a.answerQuestion("q1", sdk.QuestionAnswer{Values: []string{"prod"}})
 	select {
 	case ans := <-ch:
 		if len(ans.Values) != 1 || ans.Values[0] != "prod" {
 			t.Fatalf("作答不符: %+v", ans)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("作答未广播")
+		t.Fatal("作答未回填")
 	}
-	// cancel 幂等(已广播后清理无副作用)
+	// cancel 幂等(已回填后清理无副作用)
 	cancel()
 	a.askMu.Lock()
 	n = len(a.qPend)
@@ -161,12 +161,72 @@ func TestAppPresentQuestion(t *testing.T) {
 	}
 }
 
-// TestModelSubmitQuestionAnswer 提交拦截:待答提问时输入作为作答,不发起回合。
+// TestAnswerQuestionRoutesByID S-P0-2:多问并存时作答按 id 定向(不误答其他提问)。
+func TestAnswerQuestionRoutesByID(t *testing.T) {
+	a := commandTestApp()
+	ch1, _, err := a.PresentQuestion(context.Background(), sdk.Question{ID: "q1", Prompt: "一问"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch2, _, err := a.PresentQuestion(context.Background(), sdk.Question{ID: "q2", Prompt: "二问"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.answerQuestion("q2", sdk.QuestionAnswer{Text: "答二"})
+	select {
+	case ans := <-ch2:
+		if ans.Text != "答二" {
+			t.Fatalf("q2 作答不符: %+v", ans)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("q2 未回填")
+	}
+	select { // q1 不得提前收到作答
+	case ans := <-ch1:
+		t.Fatalf("q1 不应被误答: %+v", ans)
+	case <-time.After(50 * time.Millisecond):
+	}
+	a.askMu.Lock()
+	rest := len(a.qPend)
+	a.askMu.Unlock()
+	if rest != 1 {
+		t.Fatalf("定向回填后应仅剩 q1,got %d", rest)
+	}
+}
+
+// TestAppPresentQuestionNoID 无 id 提问(直调 presenter):本地兜底编号 → 仍可定向回填。
+func TestAppPresentQuestionNoID(t *testing.T) {
+	a := commandTestApp()
+	ch, _, err := a.PresentQuestion(context.Background(), sdk.Question{Prompt: "无 id"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.askMu.Lock()
+	id := a.qPend[0].id
+	a.askMu.Unlock()
+	if id == "" {
+		t.Fatal("无 id 提问应生成兜底编号")
+	}
+	a.answerQuestion(id, sdk.QuestionAnswer{Text: "ok"})
+	select {
+	case ans := <-ch:
+		if ans.Text != "ok" {
+			t.Fatalf("作答不符: %+v", ans)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("未回填")
+	}
+}
+
+// TestModelSubmitQuestionAnswer 作答态下输入作为作答(不发起回合);Esc 退出后输入回归普通消息。
 func TestModelSubmitQuestionAnswer(t *testing.T) {
 	a := commandTestApp()
 	got := make(chan sdk.QuestionAnswer, 1)
-	a.model.onQuestion = func(ans sdk.QuestionAnswer) { got <- ans }
-	a.model.state.ApplyQuestionPrompt(sdk.Question{Prompt: "部署到哪?", Options: []sdk.QuestionOption{{Value: "dev", Desc: "开发"}, {Value: "prod", Desc: "生产"}}})
+	a.model.onQuestion = func(_ string, ans sdk.QuestionAnswer) { got <- ans }
+	a.model.state.ApplyQuestionPrompt(sdk.Question{ID: "q1", Prompt: "部署到哪?", Options: []sdk.QuestionOption{{Value: "dev", Desc: "开发"}, {Value: "prod", Desc: "生产"}}})
+	if !a.model.state.Answering {
+		t.Fatal("输入框为空时到达提问应自动进入作答态")
+	}
 	a.model.state.Input = "2"
 	a.model.submit()
 	select {
@@ -177,15 +237,132 @@ func TestModelSubmitQuestionAnswer(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("作答未回填")
 	}
-	if a.model.state.PendingQuestion != nil {
-		t.Fatal("作答后应清除待答态")
+	if a.model.state.ActiveQuestion() != nil {
+		t.Fatal("作答后应出栈")
 	}
 	// 无法识别:提示且保留待答态
-	a.model.state.ApplyQuestionPrompt(sdk.Question{Prompt: "再选", Options: []sdk.QuestionOption{{Value: "x"}}})
+	a.model.state.ApplyQuestionPrompt(sdk.Question{ID: "q2", Prompt: "再选", Options: []sdk.QuestionOption{{Value: "x"}}})
 	a.model.state.Input = "乱输入"
 	a.model.submit()
-	if a.model.state.PendingQuestion == nil {
+	if a.model.state.ActiveQuestion() == nil {
 		t.Fatal("无法识别时应保留待答态")
+	}
+}
+
+// TestQuestionStackDraftNotStolen S-P0-2:输入框有草稿时提问到达不劫持输入(草稿可照常发出)。
+func TestQuestionStackDraftNotStolen(t *testing.T) {
+	a := commandTestApp()
+	sent := make(chan string, 1)
+	a.model.onSubmit = func(s string) { sent <- s }
+	a.model.state.Input = "草稿:先问这个"
+	a.model.state.ApplyQuestionPrompt(sdk.Question{ID: "q1", Prompt: "选环境", Options: []sdk.QuestionOption{{Value: "a"}}})
+	if a.model.state.Answering {
+		t.Fatal("有草稿时不应抢占输入框进入作答态")
+	}
+	if n := len(a.model.state.Questions); n != 1 {
+		t.Fatalf("提问应入栈等待,got %d", n)
+	}
+	a.model.submit() // 草稿照常作为回合消息发出
+	select {
+	case s := <-sent:
+		if s != "草稿:先问这个" {
+			t.Fatalf("草稿应原样发出,got %q", s)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("草稿未发出(被提问劫持)")
+	}
+	if a.model.state.ActiveQuestion() == nil {
+		t.Fatal("提问应仍在栈内(等待 /answer)")
+	}
+}
+
+// TestQuestionStackFIFO S-P0-2:多问入栈不互相覆盖,按到达顺序逐个作答。
+func TestQuestionStackFIFO(t *testing.T) {
+	a := commandTestApp()
+	var got []string
+	a.model.onQuestion = func(id string, _ sdk.QuestionAnswer) { got = append(got, id) }
+	a.model.state.ApplyQuestionPrompt(sdk.Question{ID: "q1", Prompt: "一问", Options: []sdk.QuestionOption{{Value: "a"}}})
+	a.model.state.ApplyQuestionPrompt(sdk.Question{ID: "q2", Prompt: "二问", Options: []sdk.QuestionOption{{Value: "b"}}})
+	if n := len(a.model.state.Questions); n != 2 {
+		t.Fatalf("两问应并存,got %d", n)
+	}
+	if p := a.model.state.ActiveQuestion(); p == nil || p.ID != "q1" {
+		t.Fatalf("栈首应为最早到达的 q1: %+v", p)
+	}
+	a.model.state.Input = "1"
+	a.model.submit() // 答 q1
+	a.model.state.Input = "1"
+	a.model.submit() // 答 q2
+	if len(got) != 2 || got[0] != "q1" || got[1] != "q2" {
+		t.Fatalf("应按到达顺序逐个作答,got %v", got)
+	}
+	if n := len(a.model.state.Questions); n != 0 {
+		t.Fatalf("答完应清空栈,got %d", n)
+	}
+	if a.model.state.Answering {
+		t.Fatal("栈空应退出作答态")
+	}
+}
+
+// TestAnswerCommand /answer:无参进入作答态、编号/内容/skip 作答、无待答报错。
+func TestAnswerCommand(t *testing.T) {
+	a := commandTestApp()
+	if msg, err := a.cmdAnswer(nil); err != nil || msg == "" {
+		t.Fatalf("无待答提问应给提示(非错误),got %q %v", msg, err)
+	}
+	got := make(chan sdk.QuestionAnswer, 1)
+	a.model.onQuestion = func(_ string, ans sdk.QuestionAnswer) { got <- ans }
+	a.model.state.ApplyQuestionPrompt(sdk.Question{ID: "q1", Prompt: "选", Options: []sdk.QuestionOption{{Value: "a", Desc: "甲"}, {Value: "b", Desc: "乙"}}})
+	if _, err := a.cmdAnswer(nil); err != nil {
+		t.Fatalf("/answer 无参应进入作答态: %v", err)
+	}
+	if !a.model.state.Answering {
+		t.Fatal("应处于作答态")
+	}
+	if _, err := a.cmdAnswer([]string{"2"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case ans := <-got:
+		if len(ans.Values) != 1 || ans.Values[0] != "b" {
+			t.Fatalf("编号 2 应解析为 b: %+v", ans)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("未回填")
+	}
+	// skip:回填空作答(不强迫作答)
+	a.model.state.ApplyQuestionPrompt(sdk.Question{ID: "q2", Prompt: "再选"})
+	if _, err := a.cmdAnswer([]string{"skip"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case ans := <-got:
+		if !ans.Empty() {
+			t.Fatalf("skip 应回填空作答: %+v", ans)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("skip 未回填")
+	}
+	// 无法识别作答:报错且不出栈
+	a.model.state.ApplyQuestionPrompt(sdk.Question{ID: "q3", Prompt: "三", Options: []sdk.QuestionOption{{Value: "x"}}})
+	if _, err := a.cmdAnswer([]string{"乱"}); err == nil {
+		t.Fatal("不允许自由文本时应报错")
+	}
+	if a.model.state.ActiveQuestion() == nil {
+		t.Fatal("报错时提问应保留")
+	}
+}
+
+// TestAnswerOptions 选择器选项:编号 + 跳过;无待答返回空。
+func TestAnswerOptions(t *testing.T) {
+	a := commandTestApp()
+	if opts := a.answerOptions(nil); len(opts) != 0 {
+		t.Fatalf("无待答应无选项,got %v", opts)
+	}
+	a.model.state.ApplyQuestionPrompt(sdk.Question{ID: "q1", Prompt: "选", Options: []sdk.QuestionOption{{Value: "a", Desc: "甲"}, {Value: "b"}}})
+	opts := a.answerOptions(nil)
+	if len(opts) != 3 || opts[0].Value != "1" || opts[0].Desc != "甲" || opts[1].Desc != "b" || opts[2].Value != answerSkipValue {
+		t.Fatalf("选项不符: %+v", opts)
 	}
 }
 

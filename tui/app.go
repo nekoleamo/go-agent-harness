@@ -37,9 +37,10 @@ type App struct {
 	pendMu  sync.Mutex  // 融合 Present 的待应答通道(P3:tui 作为 confirm presenter)
 	pending []chan bool // 每次 Present 一个;确认结果广播并清理
 
-	askMu   sync.Mutex                // 提问待答通道(P3:tui 作为 question presenter)
-	qPend   []chan sdk.QuestionAnswer // 每次 PresentQuestion 一个;作答广播并清理
-	started atomic.Bool               // TUI 程序已启动(未启动时不向 program 发送,防测试/装配期阻塞)
+	askMu   sync.Mutex   // 提问待答通道(P3:tui 作为 question presenter)
+	qPend   []pendingQ   // 每次 PresentQuestion 一个(按 id 定向回填,见 answerQuestion)
+	qSeq    atomic.Int64 // 无 id 提问(直调 presenter/测试)的本地编号源
+	started atomic.Bool  // TUI 程序已启动(未启动时不向 program 发送,防测试/装配期阻塞)
 	subs    []sdk.Disposer
 	cmds    sdk.CommandRegistry // ctx.commands(可为 nil:未装配时命令不可用)
 
@@ -114,6 +115,10 @@ func NewApp(c sdk.Ctx, loop sdk.AgentLoop, llm sdk.LLMService, profile string, p
 		}
 		return us.Stats()
 	}
+	m.onDock = a.dockInfo
+	m.onDockOutput = a.dockOutputCmd
+	m.onDockKill = a.dockKillCmd
+	m.onDockSteer = a.dockSteer
 	a.registerInternalCommands()
 	a.applyPrefs() // 恢复上次退出偏好(思考/沙箱/历史;与 Web 共享 gah-state.json)
 	// 启动即新会话(host-cwd-sessions 启动时 New):模型上下文与展示层均从空开始,
@@ -129,6 +134,76 @@ func NewApp(c sdk.Ctx, loop sdk.AgentLoop, llm sdk.LLMService, profile string, p
 	return a
 }
 
+// dockInfo S-P0-3 后台坞拉取:汇总 ctx.jobs 与 ctx.fanout 的计数、最新一条运行中任务,
+// 以及展开列表的行快照(薄投影,见 dockRows)。
+// 只读拉取(渲染帧调用,不写状态);两服务均未装配时返回零值(折叠行不占位)。
+// 明细动作(看输出/定向/终止)走宿主命令 /jobs 与 ctx.fanout,与 TUI/Web 同源。
+func (a *App) dockInfo() DockInfo {
+	var info DockInfo
+	// Inject 失败/类型不符时目标保持零值(nil),dockRows 容忍 nil(仅取到多少算多少)。
+	// 不用 `if ... == nil && s != nil` 的旧写法:计数与列表行必须同一份快照,避免两遍遍历。
+	var js sdk.JobService
+	_ = a.c.Inject("ctx.jobs", &js)
+	var fo sdk.FanoutService
+	_ = a.c.Inject("ctx.fanout", &fo)
+	info.Rows = dockRows(js, fo)
+	for _, r := range info.Rows {
+		info.Total++
+		if r.running {
+			info.Running++
+			if info.Latest == "" {
+				info.Latest = r.Summary
+			}
+		}
+	}
+	return info
+}
+
+// dockOutputCmd / dockKillCmd 坞面板动作:转调宿主命令 /jobs(单一事实源),
+// 不在 TUI 重复实现输出渲染与终止逻辑。命令未装配(无 host-jobs)→ 显式错误。
+func (a *App) dockOutputCmd(id string) (*DocPager, error) {
+	spec, ok := a.cmds.Get("jobs")
+	if !ok || spec.Run == nil {
+		return nil, errString("/jobs 命令未装配(需 host-jobs 插件),无法查看后台输出")
+	}
+	text, err := spec.Run([]string{"output", id})
+	if err != nil {
+		return nil, err
+	}
+	return NewTextPager(TextPagerSpec{
+		Title:  "后台输出 " + id,
+		Format: "text",
+		Status: "来自 /jobs output(与 TUI/Web 命令同源)",
+		Lines:  strings.Split(text, "\n"),
+	}), nil
+}
+
+func (a *App) dockKillCmd(id string) (string, error) {
+	spec, ok := a.cmds.Get("jobs")
+	if !ok || spec.Run == nil {
+		return "", errString("/jobs 命令未装配(需 host-jobs 插件),无法停止后台任务")
+	}
+	return spec.Run([]string{"kill", id})
+}
+
+// dockSteer 定向:仅后台子代理支持(ctx.fanout.SendMessage);任务行/未运行/未装配均显式报错。
+// 先在列表里定位行种类:job 不支持注入消息(与 Hermes 坞同语义,只对子代理定向)。
+func (a *App) dockSteer(id, msg string) error {
+	for _, r := range a.model.state.DockRows {
+		if r.ID == id && r.Kind != "agent" {
+			return errString("定向仅适用于子代理(选中项是后台任务;任务无会话可注入)")
+		}
+	}
+	var fo sdk.FanoutService
+	if err := a.c.Inject("ctx.fanout", &fo); err != nil || fo == nil {
+		return errString("ctx.fanout 未装配(需 host-fanout),无法定向")
+	}
+	if err := fo.SendMessage(id, msg); err != nil {
+		return errString("定向失败: " + err.Error())
+	}
+	return nil
+}
+
 // OpenDoc 请求打开文档预览(host `doc/open` 事件 / 工具行 / 命令;异步投递到 UI 循环)。
 func (a *App) OpenDoc(path string, page, sheet int) {
 	if path == "" {
@@ -142,6 +217,20 @@ func (a *App) OpenDoc(path string, page, sheet int) {
 	if p, err := a.loadDocPager(path, page, sheet); err == nil && p != nil {
 		a.model.state.Doc = p
 	}
+}
+
+// OpenPager 打开已构造好的浮层(S-P1-1 diff/open:内容由 host 侧成型,端侧只渲染)。
+// nil 不入栈(清单意图不弹窗)。
+func (a *App) OpenPager(p *DocPager) {
+	if p == nil {
+		return
+	}
+	if a.program != nil && a.started.Load() {
+		a.program.Send(PagerMsg{Pager: p})
+		return
+	}
+	// 未启动/测试:直接入栈(不阻塞)
+	a.model.state.Doc = p
 }
 
 // loadDocPager 经 ctx.doc 加载文档并构造 pager(TUI 侧不到 Web 端点,直连服务)。
@@ -236,26 +325,40 @@ func (a *App) confirmResult(ok bool) {
 }
 
 // PresentQuestion sdk.QuestionPresenter(P3 语义交互):问题与编号选项入会话流,
-// 返回作答通道;cancel 幂等撤销。
+// 返回作答通道;cancel 幂等撤销。**同一问题可并存**:作答按 id 定向回填(不误答栈内其它提问)。
 func (a *App) PresentQuestion(_ context.Context, q sdk.Question) (<-chan sdk.QuestionAnswer, func(), error) {
 	ch := make(chan sdk.QuestionAnswer, 1)
+	if q.ID == "" { // 直调 presenter(未经 host-confirm-fusion 补 id)时本地兜底编号
+		q.ID = fmt.Sprintf("tui-%d", a.qSeq.Add(1))
+	}
 	a.askMu.Lock()
-	a.qPend = append(a.qPend, ch)
+	a.qPend = append(a.qPend, pendingQ{id: q.ID, ch: ch})
 	a.askMu.Unlock()
 	if a.program != nil && a.started.Load() {
 		a.program.Send(questionMsg{q: q})
 	}
 	cancel := func() {
 		a.askMu.Lock()
-		for i, c := range a.qPend {
-			if c == ch {
+		for i, p := range a.qPend {
+			if p.ch == ch {
 				a.qPend = append(a.qPend[:i], a.qPend[i+1:]...)
 				break
 			}
 		}
 		a.askMu.Unlock()
+		// 呈现者撤销 = 该提问不再可答(其它渠道已答/超时/回合取消)→ 待答栈同步出栈,
+		// 否则状态栏会永久显示“待答 N”而输入框做着无效作答。
+		if a.program != nil && a.started.Load() {
+			a.program.Send(questionGoneMsg{id: q.ID})
+		}
 	}
 	return ch, cancel, nil
+}
+
+// pendingQ 一个待答通道(与提问 id 绑定;定向回填用)。
+type pendingQ struct {
+	id string
+	ch chan sdk.QuestionAnswer
 }
 
 // NoteInteraction 追加一条交互审计行(G-E5-4):宿主/插件订阅 confirm|question 事件后落进会话流。
@@ -267,13 +370,22 @@ func (a *App) NoteInteraction(text string) {
 	a.program.Send(interactionMsg{text: text})
 }
 
-// answerQuestion 用户作答:广播给全部待答提问(通常 1 个)。
-func (a *App) answerQuestion(ans sdk.QuestionAnswer) {
+// answerQuestion 用户作答(S-P0-2):按提问 id 定向回填对应通道(空 id = 回填全部,兼容旧调用),
+// 并出栈清理。多问并存时不会把同一作答发给其它提问。
+func (a *App) answerQuestion(id string, ans sdk.QuestionAnswer) {
 	a.askMu.Lock()
-	pends := a.qPend
-	a.qPend = nil
+	var hit []chan sdk.QuestionAnswer
+	rest := a.qPend[:0]
+	for _, p := range a.qPend {
+		if p.id == id || id == "" {
+			hit = append(hit, p.ch)
+			continue
+		}
+		rest = append(rest, p)
+	}
+	a.qPend = rest
 	a.askMu.Unlock()
-	for _, ch := range pends {
+	for _, ch := range hit {
 		select {
 		case ch <- ans:
 		default:
@@ -334,6 +446,17 @@ func (a *App) Close() {
 // 提交瞬间同步置运行态(状态栏立即显示旋转 logo + 思考中,不等 agent/status 事件广播),
 // 回合结束(agentDoneMsg)再回空闲。
 func (a *App) submit(input string) {
+	// S-P2-4 「!」shell 直通:以 ! 开头 → 沙箱/策略管线内执行并就地回显,不起模型回合
+	// (不进上下文、不写会话账本;见 shell.go 文件头的三条硬约束)。
+	if cmdStr, ok := isShellPassthrough(input); ok {
+		// 注册取消句柄:长命令可 Esc 中断(与回合同一条取消链;进程被杀)
+		ctx, cancel := context.WithCancel(context.Background())
+		a.cancelFn.Store(&cancel)
+		a.model.state.Running = true // 状态栏显示进行中(便于察觉长命令)
+		a.model.state.LastTool = shellPassthroughTool
+		a.runShellPassthrough(ctx, cmdStr)
+		return
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	a.cancelFn.Store(&cancel)
 	a.model.state.Running = true
@@ -1005,6 +1128,56 @@ func (a *App) cmdWidgets(args []string) (string, error) {
 	return fmt.Sprintf("widget 区已开启(%d 条已注册,输入行上方显示)", len(a.widgets)), nil
 }
 
+// answerSkipValue 选择器“跳过作答”哨兵值(与选项 Value 不可能撞车;命令面亦接受字面量 skip)。
+const answerSkipValue = "__skip__"
+
+// cmdAnswer S-P0-2 作答命令(无参 = 回到作答态并展示当前提问):
+//
+//	/answer          → 进入作答态(栈首提问;选项由选择器列出,亦可直接输入内容)
+//	/answer <编号|值|说明> → 直接作答(解析同输入框作答;多选逗号分隔)
+//	/answer skip     → 跳过(回填空作答,不强迫作答)
+//
+// 多问并存时按栈序逐个作答(栈首 = 最早到达的阻塞提问),不提供乱序跳答(保持语义简单)。
+func (a *App) cmdAnswer(args []string) (string, error) {
+	p := a.model.state.ActiveQuestion()
+	if p == nil {
+		return "当前没有待答提问", nil
+	}
+	if len(args) == 0 {
+		a.model.state.Answering = true
+		return "进入作答态(回车提交;Esc 退出,提问保持等待)", nil
+	}
+	arg := strings.Join(args, " ")
+	if arg == "skip" || arg == answerSkipValue {
+		a.model.resolveQuestion(p.ID, sdk.QuestionAnswer{})
+		return fmt.Sprintf("已跳过作答(待答 %d 条)", len(a.model.state.Questions)), nil
+	}
+	ans, ok := parseTUIAnswer(p.Q, arg)
+	if !ok {
+		return "", fmt.Errorf("无法识别作答(%q):回复编号/选项值或直接输入内容", arg)
+	}
+	a.model.resolveQuestion(p.ID, ans)
+	return "已作答", nil
+}
+
+// answerOptions 作答选择器选项(栈首提问的编号选项 + 跳过);无待答返回 nil。
+func (a *App) answerOptions([]string) []sdk.Option {
+	p := a.model.state.ActiveQuestion()
+	if p == nil {
+		return nil
+	}
+	opts := make([]sdk.Option, 0, len(p.Q.Options)+1)
+	for i, o := range p.Q.Options {
+		d := o.Desc
+		if d == "" {
+			d = o.Value
+		}
+		opts = append(opts, sdk.Option{Value: fmt.Sprint(i + 1), Desc: d})
+	}
+	opts = append(opts, sdk.Option{Value: answerSkipValue, Desc: "跳过(空作答,不强迫作答)"})
+	return opts
+}
+
 func (a *App) cmdExport(args []string) (string, error) {
 	var sessions sdk.SessionLog
 	if err := a.c.Inject("ctx.sessions", &sessions); err != nil {
@@ -1346,6 +1519,11 @@ func (a *App) cmdWorkspace(args []string) (string, error) {
 func (a *App) applyPrefs() {
 	defer func() { _ = recover() }() // 偏好恢复非关键:测试/极简宿主缺实现时兜底不崩
 	p := prefs.Load()
+	// S-P2-4 状态栏项(纯本地状态赋值,放最前:后面沙箱/审批恢复失败也不影响它)
+	// 过滤未知/重复项:设置时已严格校验,此处兼容手改偏好文件的旧值。
+	if items := filterStatusline(p.Statusline); len(items) > 0 {
+		a.model.state.Statusline = items
+	}
 	if p.Thinking != "" {
 		if lvl := sdk.ParseThinking(p.Thinking); lvl.String() == p.Thinking {
 			a.llm.SetThinking(lvl)
@@ -1373,6 +1551,73 @@ func (a *App) applyPrefs() {
 			sess.SetHistory(*p.History)
 		}
 	}
+}
+
+// cmdStatusline /statusline [项...]|reset:状态栏项集合与顺序(持久化偏好,重启生效)。
+// 无参 = 查看当前生效项与可用项清单(可发现性:项名不自猜)。
+func (a *App) cmdStatusline(args []string) (string, error) {
+	toks := parseStatuslineArgs(args)
+	if len(toks) == 0 {
+		cur := a.model.state.Statusline
+		src := ""
+		if len(cur) == 0 {
+			cur, src = defaultStatusline, "(基线默认)"
+		}
+		var b strings.Builder
+		b.WriteString("状态栏: " + strings.Join(cur, " ") + src + "\n")
+		b.WriteString("可用项(按配置顺序渲染;回合态项之间用 · 、其余用 | 分隔):\n")
+		for _, t := range statuslineTokens {
+			b.WriteString(fmt.Sprintf("  %-10s %s\n", t, statuslineTokenDesc[t]))
+		}
+		b.WriteString("用法: /statusline <项...>(空格或逗号分隔,如 `state workspace session`);reset 恢复基线默认")
+		return b.String(), nil
+	}
+	if toks[0] == "reset" {
+		if len(toks) > 1 { // 不静默忽略多余参数(用户以为配了项,实际被 reset 吃掉)
+			return "", errString(fmt.Sprintf("reset 不接受附加项(收到 %s)", strings.Join(toks[1:], " ")))
+		}
+		prefs.SetStatusline(nil)
+		a.model.state.Statusline = nil
+		return "状态栏已恢复基线默认: " + strings.Join(defaultStatusline, " "), nil
+	}
+	seen := map[string]bool{}
+	for _, t := range toks {
+		if statuslineTokenDesc[t] == "" {
+			return "", errString(fmt.Sprintf("未知项 %q;可用项: %s", t, strings.Join(statuslineTokens, " ")))
+		}
+		if seen[t] {
+			return "", errString(fmt.Sprintf("项 %q 重复(每项只能出现一次)", t))
+		}
+		seen[t] = true
+	}
+	prefs.SetStatusline(toks)
+	a.model.state.Statusline = toks
+	return "状态栏已更新: " + strings.Join(toks, " ") + "(重启后仍生效;/statusline reset 恢复默认)", nil
+}
+
+// parseStatuslineArgs 解析 /statusline 参数(空格/逗号分隔,忽略空项)。
+func parseStatuslineArgs(args []string) []string {
+	var out []string
+	for _, raw := range args {
+		for _, t := range strings.FieldsFunc(raw, func(r rune) bool { return r == ' ' || r == ',' || r == '\t' }) {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// filterStatusline 过滤未知/重复项(加载偏好时 fail-soft:坏项丢弃,不因一个拼错整条失效)。
+func filterStatusline(items []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, t := range items {
+		if statuslineTokenDesc[t] == "" || seen[t] {
+			continue
+		}
+		seen[t] = true
+		out = append(out, t)
+	}
+	return out
 }
 
 func (a *App) cmdThinking(args []string) (string, error) {
@@ -1811,6 +2056,12 @@ func (a *App) registerInternalCommands() {
 				return []sdk.Option{{Value: "on", Desc: "显示 widget 行"}, {Value: "off", Desc: "隐藏 widget 行"}}
 			}}}},
 		{Name: "reload", Usage: "/reload", Desc: "热重载指令文件(AGENTS.md 层级/全局/附加;外部编辑即生效)", Run: a.cmdReload},
+		{Name: "statusline", Usage: "/statusline [项...]|reset", Desc: "状态栏项集合与顺序(无参=查看当前与可用项;reset=恢复基线默认)",
+			// 自由级断点:选中后输入项名回车执行(可多项空格分隔;同 /search 语义)
+			Args: []sdk.ArgLevel{{FreeArgs: func([]string) []string {
+				return []string{"项(reset? | 空格分隔的多项)"}
+			}}},
+			Run: a.cmdStatusline},
 		{Name: "search", Usage: "/search <词>", Desc: "会话内搜索(命中高亮,n/N/F3 循环跳转,Esc 退出)",
 			// 自由级断点:选中后光标停留输入框提示继续输入,输入词回车才执行——
 			// 否则选中即提交(无参报错),再输入的文字会误走普通消息发给大模型。
@@ -1870,6 +2121,8 @@ func (a *App) registerInternalCommands() {
 			}},
 		{Name: "theme", Usage: "/theme <主题名|default>", Desc: "切换配色主题(config/themes/*.yaml;default=恢复启动活动覆盖链)",
 			Run: a.cmdTheme, Args: []sdk.ArgLevel{{Options: themeOptions}}},
+		{Name: "answer", Usage: "/answer [编号|内容|skip]", Desc: "作答结构化提问(无参=回到作答态;多问按栈序逐个答)",
+			Run: a.cmdAnswer, Args: []sdk.ArgLevel{{Options: a.answerOptions}}},
 		{Name: "help", Usage: "/help", Desc: "命令帮助", Run: a.cmdHelp},
 		{Name: "exit", Usage: "/exit", Desc: "退出", Run: func([]string) (string, error) {
 			a.program.Quit()
@@ -1924,6 +2177,9 @@ func (a *App) cmdHelp([]string) (string, error) {
 	for _, spec := range a.cmds.List() {
 		b.WriteString("\n  " + spec.Usage + " — " + spec.Desc)
 	}
+	// S-P2-4:! 直通不是注册命令(不走命令表),故在 help 里显式列出
+	b.WriteString("\n  ! <命令> — 直接执行 shell 命令(走沙箱与审批管线;结果本地回显,不进模型上下文)")
+	b.WriteString("\n(快捷键:Tab 思维级 / Ctrl+T 思维块 / Ctrl+O 折叠工具 / Ctrl+P·N 历史 / Ctrl+G 外部编辑器 / F3 会话内搜索 / F6 后台坞 / Esc 取消)")
 	return b.String(), nil
 }
 

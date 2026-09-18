@@ -8,11 +8,15 @@ import type { AskConfirm, AttachmentView, CommandView, SessionInfo, StateView } 
 
 const props = defineProps<{
   disabled: boolean
-  onSubmit: (text: string, attachments: string[]) => void
+  // onSubmit 返回 false = 未受理(断连/提交失败):输入框**保留草稿与附件**供重发
+  // (S-P1-3);返回 true/undefined 视为已受理,清空草稿(旧插件不返回值 → 行为不变)。
+  onSubmit: (text: string, attachments: string[]) => unknown
   // 真实运行状态(state.thinking/sandbox 驱动按钮标签与循环起点,与设置面板/状态栏一致)
   state?: StateView
   // 空状态居中放大形态(会话前中央大输入框);有会话后为底部常规形态
   centered?: boolean
+  // disabledHint 禁用原因(如断连):优先于「回合进行中」占位文案,不改变任何状态
+  disabledHint?: string
 }>()
 // 会话切换/新建成功后通知宿主;控制(思考/沙箱)变更后通知宿主刷新 state
 const emit = defineEmits<{ (e: 'session-changed'): void; (e: 'changed'): void }>()
@@ -268,23 +272,34 @@ async function submit(): Promise<void> {
   }
   clearAttErr()
   const had = attachments.value.length > 0
+  let paths: string[] = []
   if (had) {
     uploading.value = true
     try {
-      const paths = await uploadAll()
-      text.value = ''
-      props.onSubmit(t, paths)
-      for (const a of attachments.value) if (a.view) URL.revokeObjectURL(a.view)
-      attachments.value = []
+      paths = await uploadAll()
     } catch (e) {
       setAttErr('附件上传失败: ' + (e as Error).message)
       uploading.value = false
-      return
+      return // 草稿与附件保留(上传失败可原地重试)
     }
     uploading.value = false
-  } else {
-    text.value = ''
-    props.onSubmit(t, [])
+  }
+  // 受理判定:宿主返回 false 表示未送达(断连/上游失败)→ 草稿与附件原样保留
+  let ok: unknown = true
+  try {
+    ok = await props.onSubmit(t, paths)
+  } catch {
+    ok = false
+  }
+  if (ok === false) {
+    setAttErr('未发送:草稿与附件已保留,可直接重试')
+    void nextTick(() => ta.value && ta.value.focus())
+    return
+  }
+  text.value = ''
+  if (had) {
+    for (const a of attachments.value) if (a.view) URL.revokeObjectURL(a.view)
+    attachments.value = []
   }
   void nextTick(() => {
     if (ta.value) ta.value.style.height = 'auto'
@@ -447,7 +462,7 @@ defineExpose({ cycleThinking, cycleSandbox })
       class="field"
       rows="1"
       :disabled="disabled"
-      :placeholder="disabled ? '回合进行中…' : '输入消息,以 / 开头使用命令(Enter 发送 · Shift+Enter 换行 · Esc 清空)'"
+      :placeholder="disabled ? (props.disabledHint || '回合进行中…') : '输入消息,以 / 开头使用命令(Enter 发送 · Shift+Enter 换行 · Esc 清空)'"
       @input="autoGrow"
       @keydown="onKeydown"
       @paste="onPaste"

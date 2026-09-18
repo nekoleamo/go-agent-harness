@@ -34,8 +34,11 @@ type barHideMsg struct{} // 滚动条 auto-hide:最近交互超时后触发重�
 
 type confirmMsg struct{ prompt string }
 
-// questionMsg 结构化提问(P3 语义交互):问题与编号选项入会话流,输入框作答。
+// questionMsg 结构化提问(P3 语义交互):问题与编号选项入会话流,作答态下输入框作答(S-P0-2 栈)。
 type questionMsg struct{ q sdk.Question }
+
+// questionGoneMsg 提问已结束(呈现者 cancel:其它渠道已答/超时/回合取消)→ 出栈。
+type questionGoneMsg struct{ id string }
 
 // interactionMsg G-E5-4 交互审计行:confirm/question requested↔resolved 事件观察面
 // (多端并存时显示“已在其它渠道作答/取消”),只入会话流,不改模型可见事实。
@@ -69,7 +72,7 @@ type Model struct {
 	onSubmit        func(input string)                                    // 普通输入提交(注入)
 	onCommand       func(cmd string) error                                // 命令处理(注入)
 	onConfirm       func(ok bool)                                         // 确认答复(注入;见 app.Confirm)
-	onQuestion      func(sdk.QuestionAnswer)                              // 提问作答(注入;见 app.PresentQuestion)
+	onQuestion      func(id string, ans sdk.QuestionAnswer)               // 提问作答(注入;按 id 定向;见 app.answerQuestion)
 	onCancel        func()                                                // 取消进行中的回合(注入;Esc 触发)
 	hints           func(prefix string) []sdk.Option                      // 命令选项(注入;前缀=去掉 / 后的输入)
 	levels          func(name string) []sdk.ArgLevel                      // 命令参数级定义(注入;枚举/自由级)
@@ -78,6 +81,11 @@ type Model struct {
 	onThinkingCycle func(dir int)                                         // Tab/Shift+Tab 思考等级循环(注入:dir=1 前进,-1 后退)
 	onStats         func() sdk.UsageStats                                 // 会话 token 统计拉取(注入;回合结束刷新状态栏)
 	onOpenDoc       func(path string, page, sheet int) (*DocPager, error) // 文档预览加载(注入;ctx.doc)
+	onDock          func() DockInfo                                       // S-P0-3 后台坞拉取(注入;App 读 ctx.jobs/ctx.fanout)
+	onDockOutput    func(id string) (*DocPager, error)                    // 坞面板看输出(注入;走宿主 /jobs output)
+	onDockKill      func(id string) (string, error)                       // 坞面板停止(注入;走宿主 /jobs kill)
+	onDockSteer     func(id, msg string) error                            // 坞面板定向(注入;ctx.fanout SendMessage)
+	dockTicking     bool                                                  // 坞刷新链在跑(防重复链;Update 单 goroutine 访问)
 }
 
 // spinInterval 思考动画帧间隔。
@@ -126,8 +134,22 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.skipView = false
+	case PagerMsg:
+		// 已构造好的文本浮层(host diff/open,如 /diff 的 patch)
+		if msg.Pager != nil {
+			m.state.Doc = msg.Pager
+		}
+		m.skipView = false
 	case sessionEventMsg:
 		m.state.ApplySessionEvent(msg.ev)
+	case dockTickMsg:
+		// S-P0-3 后台坞节拍:刷新计数/摘要;条件满足才续拍(空闲且无任务 → 链自然停)
+		if m.refreshDock() {
+			cmd = dockTick()
+		} else {
+			m.dockTicking = false
+		}
+		m.skipView = false
 	case statusMsg:
 		m.state.ApplyStatus(msg.status)
 	case agentDoneMsg:
@@ -144,15 +166,29 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.state.Running = false
+		// S-P0-3 后台坞:回合结束立即刷一帧(回合中提交的任务可能仍在跑;
+		// 折叠行不能因回合结束就停更)。链自身在无运行中任务时收敛停。
+		m.refreshDock()
+		m.skipView = false
 		// P4-1 消息队列:回合成功结束且有排队 → 自动发下一条(每次一条,保证会话串行)。
 		// 取消(Esc)与回合失败不续发——用户意图停止/需先处理,队列保留供 Alt+Up/Esc 取回。
 		if msg.err == nil && len(m.state.Queue) > 0 && m.onSubmit != nil {
 			m.submitQueuedNext()
 		}
+	case shellDoneMsg:
+		// S-P2-4 「!」shell 直通结果(本地回显;不进模型上下文,见 shell.go 文件头)
+		cmd = m.handleShellMsg(msg)
 	case confirmMsg:
 		m.state.ApplyConfirmPrompt(msg.prompt)
 	case questionMsg:
 		m.state.ApplyQuestionPrompt(msg.q)
+	case questionGoneMsg:
+		// S-P0-2:提问已结束(其它渠道作答/超时/回合取消)→ 出栈;若仍在栈内则提示
+		// (TUI 自己作答的路径已在作答时出栈,cancel 兜底不重复提示)
+		if m.state.ResolveQuestion(msg.id) {
+			m.state.Lines = append(m.state.Lines, Line{Kind: "meta",
+				Text: fmt.Sprintf("❓ 提问已结束(其它渠道作答或已取消);待答 %d 条", len(m.state.Questions))})
+		}
 	case interactionMsg:
 		if msg.text != "" {
 			m.state.Lines = append(m.state.Lines, Line{Kind: "meta", Text: msg.text})
@@ -162,7 +198,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// 思考动画:仅回合运行中续发 tick(空闲停,不浪费重绘)
 		if m.state.Running {
 			m.state.SpinnerIdx++
-			return m, tea.Every(spinInterval, func(time.Time) tea.Msg { return spinnerMsg{} })
+			dock := m.startDockTick() // S-P0-3:回合开始顺手起后台坞刷新链(幂等)
+			spin := tea.Every(spinInterval, func(time.Time) tea.Msg { return spinnerMsg{} })
+			if dock != nil {
+				return m, tea.Batch(spin, dock)
+			}
+			return m, spin
 		}
 	case tea.PasteMsg:
 		// bracketed paste:整段插入(终端 Cmd+V/中键粘贴);与字符输入同语义
@@ -744,6 +785,11 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	}
 	// 武装期间按其他任意键:待退出状态解除(不退出;后续按键语义照常,如 Esc 照常取消回合)
 	m.disarmQuit()
+	// S-P0-3 坞展开态(F6):模态——全部按键归坞(草稿文本保留在 s.Input,收起后可继续编辑)。
+	// 放在 Ctrl 组合键/输入分支之前:面板内 s/x/j/k 不能被当成普通字符打进输入框。
+	if m.state.DockOpen {
+		return m.handleDockKey(k)
+	}
 	// S1.3 输入增强组合键(选择器未激活时;组合键 Text 为空,不会误入文本分支):
 	// Ctrl+P/N 历史、Ctrl+Z/Ctrl+Shift+Z undo/redo、Ctrl+K/U kill、Alt+←/→ 按词移动。
 	if m.state.Pick == nil && k.Mod&tea.ModCtrl != 0 {
@@ -950,6 +996,18 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 				m.searchJump(true)
 			}
 		}
+	case tea.KeyF6:
+		// S-P0-3 后台坞展开/收起(Hermes F6;Ctrl+T 已被思维块折叠占用)。
+		// 收起→展开:立即拉一帧(不等 1s 节拍)并起链(展开态必须持续刷新)。
+		m.state.DockOpen = !m.state.DockOpen
+		m.state.DockArm = false
+		m.state.DockSel = 0
+		if m.state.DockOpen {
+			m.refreshDock()
+			if cmd := m.startDockTick(); cmd != nil {
+				return cmd
+			}
+		}
 	case tea.KeyTab:
 		// Tab:@ 引用补全激活时应用当前高亮项(无匹配退出);否则 Shift+Tab 循环思考等级
 		if m.state.Mention != nil {
@@ -971,6 +1029,11 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		} else if m.state.Pick != nil {
 			m.state.Pick = nil
 			m.state.PickDismissed = true // 退出选择:保留文本,回普通输入
+		} else if m.state.Answering {
+			// S-P0-2:Esc 退出作答态(输入框草稿与待答提问均保留;/answer 可返回;不中断回合)
+			m.state.ExitAnswering()
+			m.state.Lines = append(m.state.Lines, Line{Kind: "meta",
+				Text: fmt.Sprintf("已退出作答态(待答 %d 条仍在;/answer 返回;提问保持等待)", len(m.state.Questions))})
 		} else if m.state.SearchQuery != "" {
 			// 搜索激活:Esc 退出搜索(清除高亮/命中;不中断回合)
 			m.state.SearchQuery = ""
@@ -1178,8 +1241,9 @@ func (m *Model) syncHints() {
 // 用户可修改);空/纯空白(含仅换行/空格)不发起回合。
 func (m *Model) submit() {
 	input := m.state.Input
-	// P3 语义交互:有待答提问 → 本条输入作为作答(不发起回合)
-	if m.state.PendingQuestion != nil {
+	// S-P0-2 异步提问:仅**作答态**下把非命令输入作为作答(命令优先——/answer、/jobs 等在作答态照常执行,
+	// Esc 亦可退出作答态);非作答态下提问不劫持输入框(栈内等待,见 state.ApplyQuestionPrompt)。
+	if m.state.Answering && input != "" && !strings.HasPrefix(input, "/") {
 		m.submitQuestionAnswer(input)
 		return
 	}
@@ -1212,19 +1276,28 @@ func (m *Model) submit() {
 	m.onSubmit(input)
 }
 
-// submitQuestionAnswer 提交提问作答:解析编号/自由文本 → 回填;无法识别则提示保留输入。
+// submitQuestionAnswer 提交提问作答:解析编号/自由文本 → 定向回填回答通道;无法识别则提示保留输入。
+// 作答对象 = 栈首(最早到达的待答提问);成功后出栈,仍有待答则继续作答态。
 func (m *Model) submitQuestionAnswer(input string) {
-	q := *m.state.PendingQuestion
-	ans, ok := parseTUIAnswer(q, input)
+	p := m.state.ActiveQuestion()
+	if p == nil {
+		return
+	}
+	ans, ok := parseTUIAnswer(p.Q, input)
 	if !ok {
 		m.state.Lines = append(m.state.Lines, Line{Kind: "meta", Text: "无法识别作答,请回复编号或输入内容"})
 		return
 	}
 	m.state.ClearInput()
 	m.syncHints()
-	m.state.ResolveQuestion()
+	m.resolveQuestion(p.ID, ans)
+}
+
+// resolveQuestion 出栈并回填作答(id 定向:只回答对应提问,不误答栈内其它提问)。
+func (m *Model) resolveQuestion(id string, ans sdk.QuestionAnswer) {
+	m.state.ResolveQuestion(id)
 	if m.onQuestion != nil {
-		m.onQuestion(ans)
+		m.onQuestion(id, ans)
 	}
 }
 

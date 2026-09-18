@@ -2,7 +2,8 @@
 // 路由:
 //
 //	GET  /             静态前端(embed web/dist;data.static_dir 覆写=开发态 Vite HMR)
-//	GET  /api/events   SSE 流(?after=<seq> 断线续传;全量历史重放 + 实时帧)
+//	GET  /api/events   SSE 流(?after=<seq> 断线续传;首连回放尾部窗口 + baseline 首帧)
+//	GET  /api/session/events?before=<seq>&limit=<n> 会话事件分页(长会话上滚加载更早历史)
 //	POST /api/input    {content};running 时 409;"/" 前缀走 ctx.commands,其余注入 agentLoop
 //	POST /api/confirm  {id, ok} 审批应答
 //	GET  /api/state    状态快照(model/thinking/sandbox/stats/session/running/version)
@@ -260,6 +261,8 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET /api/state", s.handleState)
 	mux.HandleFunc("POST /api/control", s.handleControl)
 	mux.HandleFunc("GET /api/sessions", s.handleSessions)
+	// 会话事件分页(S-P1-2 长会话上滚加载更早历史;窗口回合对齐,见 web/paging.go)
+	mux.HandleFunc("GET /api/session/events", s.handleSessionEvents)
 	mux.HandleFunc("POST /api/sessions", s.handleSessions)
 	mux.HandleFunc("GET /api/sessions/{id}/export", s.handleSessionExport)
 	mux.HandleFunc("POST /api/sessions/rename", s.handleSessionRename)
@@ -354,14 +357,31 @@ func (s *Server) afterOf(r *http.Request) uint64 {
 }
 
 // consumeStream 通道消费(通道 seam:SSE 与 WS 共用):先订阅实时(弥合
-// 重放快照与订阅建立之间的广播 gap)→ 历史重放(seq > after,经 seen 去重
-// ——重放期间已入实时流的新帧不重复发)→ 实时转发。sink 返回错误
+// 重放快照与订阅建立之间的广播 gap)→ 历史重放 → 实时转发。sink 返回错误
 // (载体写失败=客户端断连)即退;stop 为请求上下文取消。
+//
+// 历史重放分两种口径(S-P1-2):
+//   - after == 0(全新连接,含页面刷新/切会话):只回放**尾部窗口**(回合对齐),
+//     并以 FrameBaseline 作首帧告知窗口边界与「更早历史是否还有」。全量重放会让
+//     首帧延迟随会话长度线性增长(万帧级会话每次打开重放万帧);
+//   - after > 0(断线续传):回放差集。这是真有缺口的场景,必须补齐不能截断。
+//
+// seen 游标去重保证「重放期间已入实时流的帧」不双发。
 func (s *Server) consumeStream(after uint64, sink func(Frame) error, stop <-chan struct{}) {
 	ch, unsub := s.hub.Stream()
 	defer unsub()
 	seen := after // 已消费会话游标(会话帧按 Seq 全局递增;非会话帧 ID=0 不参与去重)
-	for _, f := range s.hub.ReplayAfter(s.sessions, after) {
+	var replay []Frame
+	if after == 0 {
+		frames, base := s.hub.ReplayTail(s.sessions)
+		if err := sink(Frame{Type: FrameBaseline, Payload: base}); err != nil {
+			return
+		}
+		replay = frames
+	} else {
+		replay = s.hub.ReplayAfter(s.sessions, after)
+	}
+	for _, f := range replay {
 		if f.ID > 0 && f.ID <= seen {
 			continue // 已被实时流抢先(重放期间新帧入 ch 排队,seq 去重防双发)
 		}
@@ -652,6 +672,26 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		v.Session = &SessionV{ID: s.cs.CurrentSession(), Name: s.cs.SessionName(), Path: s.cs.Path(), Key: s.cs.Current()}
 	}
 	writeJSON(w, http.StatusOK, v)
+}
+
+// handleSessionEvents 会话事件分页(GET /api/session/events?before=<seq>&limit=<n>)。
+// 上滚加载更早历史的唯一入口:before 缺省/0 = 尾部窗口(与首连基线同口径),limit 可调小不可调大。
+// 事件带完整载荷(前端用 consume 重建消息),与 SSE 实时帧同源 —— 两条路同一份账本事实。
+func (s *Server) handleSessionEvents(w http.ResponseWriter, r *http.Request) {
+	before, _ := strconv.ParseUint(r.URL.Query().Get("before"), 10, 64)
+	limit := 0
+	if q := r.URL.Query().Get("limit"); q != "" {
+		v, err := strconv.Atoi(q)
+		if err != nil || v < 0 {
+			http.Error(w, "limit 需为非负整数", http.StatusBadRequest)
+			return
+		}
+		limit = v
+	}
+	if limit > SessionPageLimitMax {
+		limit = SessionPageLimitMax
+	}
+	writeJSON(w, http.StatusOK, pageOf(s.sessions.Replay(), before, limit))
 }
 
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
