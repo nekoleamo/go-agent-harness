@@ -39,6 +39,31 @@ type AgentHandle struct {
 	Error     string         `json:"error,omitempty"`
 	CreatedAt time.Time      `json:"created_at"`
 	Messages  []AgentMessage `json:"messages,omitempty"`
+	// Worktree 隔离运行的工作区(S-P1-4;非隔离运行 = nil)。路径/分支供父级合并与回收。
+	Worktree *Worktree `json:"worktree,omitempty"`
+}
+
+// WorktreeRun 隔离运行请求(S-P1-4)。
+type WorktreeRun struct {
+	Input string // 子代理任务(必填)
+	Fork  bool   // true = 种入父会话已发生的历史(对齐 Fork)
+	Sync  bool   // true = 同步等子代理完成并返回文本(对齐 Agent/delegate)
+	Label string // worktree 标签(空 = 实现自取;仅标识/展示)
+}
+
+// WorktreeRunResult 隔离运行结果。两种模式都回传 Worktree(路径/分支必须能被父级看到 ——
+// 否则改动“消失了”:既不在主工作区,也无从合并)。
+type WorktreeRunResult struct {
+	Worktree Worktree    // 本次运行的工作区
+	Text     string      // Sync=true:子代理最终文本
+	Handle   AgentHandle // Sync=false:后台句柄(已含 Worktree)
+}
+
+// IsolatedFanout 可选能力(ctx.fanout 的扩展):在受管 git worktree 内隔离运行子代理。
+// 未实现 = 宿主不支持隔离:消费方必须**显式报错**,不得静默退回非隔离运行
+// (静默降级 = 用户以为隔离了而实际没有,比不支持更糟)。
+type IsolatedFanout interface {
+	RunInWorktree(ctx context.Context, req WorktreeRun) (WorktreeRunResult, error)
 }
 
 // FanoutService 服务(ctx.fanout):子代理编排(独立会话历史,不写主会话)。

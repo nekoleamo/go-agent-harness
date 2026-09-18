@@ -31,6 +31,22 @@ type SystemPromptService interface {
 	Assemble(history []LLMMessage, tools []ToolDefinition) []LLMMessage
 }
 
+// PromptPart 系统提示一个组成块的体积(诊断用,不含 token 语义)。
+type PromptPart struct {
+	Label string // 块名(如「全局指令(用户级 AGENTS.md)」「片段 skills」)
+	Chars int    // 字符数(rune)
+	Bytes int    // 字节数(UTF-8);与 Chars 联合可区分宽字符与 ASCII
+}
+
+// SystemPromptInspector 可选扩展:系统提示服务额外实现时,可给出组成分解。
+// 供 /context 做本地上限估算(S-P0-4);未实现时调用方回退为「仅总量」。
+// 只读诊断:不得改变组装语义,也不得发模型请求。
+type SystemPromptInspector interface {
+	// Breakdown 返回各组成块体积,顺序与 Assemble 组装顺序一致
+	// (引导 → 指令文件各级 → 注册片段 → 工具名清单)。
+	Breakdown(tools []ToolDefinition) []PromptPart
+}
+
 // TurnControl 服务(ctx.turnControl):回合运行控制(/stop 命令、Web 取消、TUI Esc 共用)。
 // 由 host-agent-loop 提供:每次 Run 内部派生可取消 ctx 并注册,回合结束自动注销。
 // 实现必须并发安全(允许多回合并发注册,各自独立取消)。

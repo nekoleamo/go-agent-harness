@@ -33,7 +33,61 @@ const (
 	// 模型 doc_open 工具 / `/preview` 命令发出,各端 UI(TUI/Web)订阅后本地打开预览——
 	// 对齐既有交互事件化先例(confirm/question requested↔resolved):只读观察面 + 各端 presenter。
 	EventDocOpen = "doc/open"
+	// EventFileChange 文件改动事件(S-P1-1 变更审查面):载荷 FileChangeEvent。
+	// 工具写盘成功后由工具自身追加(经 ctx.sessions):审计信息属会话事实 → 落账本 + 广播,
+	// 三端(TUI/Web/headless)与断线重放同源同全。
+	// 纪律:diff 来自**捕获的写操作**(写盘前后自取),不伪造 git HEAD、不读 git 工作区 ——
+	// 工作区无 git 仓库时同样可用,也不会把用户未提交的改动混进来。
+	EventFileChange = "file/change"
+	// EventDiffOpen 变更审查意图(S-P1-1):`/diff [路径]` 命令发出。
+	// 载荷 DiffOpenEvent:Path 空 = 只请求打开审查视图(清单);Path 非空 = 定位到该文件。
+	// TUI 订阅后弹 pager 浮层,Web 订阅后切到变更视图 —— 命令不解锁任何能力,只表达意图。
+	EventDiffOpen = "diff/open"
 )
+
+// FileChangeEvent 一次文件改动事实(EventFileChange 载荷)。
+// 一次工具调用产生一条;同一文件多次改动 = 多条事件(审查视图按路径聚合)。
+type FileChangeEvent struct {
+	Path string `json:"path"`           // 写入目标(绝对路径;运行时定位用)
+	Rel  string `json:"rel,omitempty"`  // 相对工作区路径(展示/聚合主键;取不到回退 Path)
+	Op   string `json:"op"`             // write|append|edit
+	Tool string `json:"tool,omitempty"` // 工具名(file_write/file_append/file_edit)
+
+	Added   int  `json:"added"`             // 新增行数
+	Removed int  `json:"removed"`           // 删除行数
+	Created bool `json:"created,omitempty"` // 目标原不存在(新建文件)
+	Binary  bool `json:"binary,omitempty"`  // 二进制/无逐行 diff(只记统计)
+	Bytes   int  `json:"bytes,omitempty"`   // 写后文件字节数
+
+	// Diff unified diff 正文(无文件头,从 @@ 起;Binary 或超预算时为空/截断)
+	Diff      string `json:"diff,omitempty"`
+	Truncated bool   `json:"truncated,omitempty"` // Diff 超预算已截断
+	Coarse    bool   `json:"coarse,omitempty"`    // 差异段过大 → 整段替换(未逐行对齐)
+}
+
+// DiffOpenEvent 变更审查意图载荷(EventDiffOpen)。
+type DiffOpenEvent struct {
+	Path      string `json:"path,omitempty"`      // 定位到的文件(空 = 只打开清单视图)
+	Title     string `json:"title,omitempty"`     // 呈现端标题(已含文件名的短标题)
+	Diff      string `json:"diff,omitempty"`      // 逐行 patch 文本(命令按预算截断后的成品)
+	Added     int    `json:"added,omitempty"`     // 命中文件累计新增行数
+	Removed   int    `json:"removed,omitempty"`   // 命中文件累计删除行数
+	Changes   int    `json:"changes,omitempty"`   // 命中文件的改动条数
+	Truncated bool   `json:"truncated,omitempty"` // Diff 被截断(呈现端需明示)
+}
+
+// FileChangeFrom 从事件载荷取 FileChangeEvent(值/指针兼容;取不到返回 false)。
+func FileChangeFrom(payload any) (FileChangeEvent, bool) {
+	switch p := payload.(type) {
+	case FileChangeEvent:
+		return p, true
+	case *FileChangeEvent:
+		if p != nil {
+			return *p, true
+		}
+	}
+	return FileChangeEvent{}, false
+}
 
 // DocOpenEvent 文档预览意图载荷(EventDocOpen)。
 type DocOpenEvent struct {
