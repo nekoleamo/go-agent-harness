@@ -66,6 +66,7 @@ plugins/host/host-docview/pdfium 20
 plugins/host/host-fanout 77
 plugins/host/host-internal-commands 93
 plugins/host/host-jobs 88
+plugins/host/host-notices 70
 plugins/host/host-schedule 76
 plugins/host/host-llm 60
 plugins/host/host-plugin-manager 76

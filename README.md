@@ -39,6 +39,7 @@ Go 实现的编程代理 Agent Harness:以**单静态二进制**交付全部能�
 | **后台任务** | host-jobs + workflow `background`:长任务异步提交/取回/终止,不阻塞回合 |
 | **并行隔离** | host-worktrees(`ctx.worktrees` + `/worktree`):受管 git worktree 落 `$GAH_HOME/worktrees/`(不污染用户仓库),子代理经 `subagent(isolate="worktree")` 在独立目录与分支内工作 —— 两个并行子代理改同一批文件互不覆盖;**隔离是强制的**:相对写/绝对写都进不了主工作区(沙箱写范围收窄到该 worktree);非 git 仓库显式报错不降级;worktree 默认保留,回收走 `/worktree rm`(分支保留) |
 | **定时任务** | host-schedule(`ctx.schedule`):5 字段 cron 计划(分 时 日 月 周)落 `$GAH_HOME/schedules/*.yaml`,到点**经既有回合入口**(agentLoop→tools,仍受审批/沙箱裁决、仍落会话记录)自动跑一轮;设置面板「计划」段管理(中文「下次运行时间」回显,不自研 cron 构造器);**无人值守 = 没有确认通道 → 需审批的动作一律拒绝(含 open 档)** |
+| **提示通道** | host-notices(`ctx.notices`,NOND-N1):插件/宿主向**人**发提示(作业终态/计划失败或跳过/回合出错),**不进会话记录、不计 token**;进程内环形缓冲(200)+ `id` 增量回填(`GET /api/notices?since=` / SSE `notice` 帧),Web 右下 toast、TUI 状态栏项与 `/notice`;同 `Key` 60s 去重防刷屏;系统级通知(OS 响铃/桌面通知)登记为 NOND-N2 |
 | **子代理 fanout** | `agent/parallel/pipeline` 独立上下文 ReAct 扇出并行聚合;`send_message`/`fork` 注入与会话派生 |
 | **starlark workflow** | 模型写受限 starlark 脚本组合多步工具调用(天然沙箱/无标准库),`background` 异步 |
 | **联网搜索** | web_search(默认 Exa,`EXA_API_KEY`;`data.provider` 可换)与 web_fetch 协作,错误结构化归一 |
@@ -228,9 +229,12 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `/tree` | 会话分支树(会话全貌 + 可 fork 的提问点) |
 | `/name <显示名>` | 给当前会话加显示名(`-` 清除;状态栏/切换列表名优先) |
 | `/widgets on\|off` | 输入区上方 widget 区开关(宿主注册的动态信息行) |
-| `/statusline [项...]\|reset` | 状态栏项集合与顺序(TUI):无参=查看当前与可用项(`state/queue/questions/dock/last/workspace/sandbox/approval/session`);给项即按序渲染(回合态项之间 `·`、其余 `|`),`reset` 恢复 F15.3 基线;偏好持久化(`gah-state.json`)重启生效 |
+| `/statusline [项...]\|reset` | 状态栏项集合与顺序(TUI):无参=查看当前与可用项(`state/queue/questions/dock/notice/last/workspace/sandbox/approval/session`);给项即按序渲染(回合态项之间 `·`、其余 `|`),`reset` 恢复 F15.3 基线;偏好持久化(`gah-state.json`)重启生效 |
 | `/traj` | 轨迹/可观测视图(TUI):以文本浮层呈现同一份会话事件账本的**回合 → 步 → 工具**投影(概览:回合数/总时长/累计 token 与缓存占比;逐回合倒序:时长与结束原因、步数与工具数、失败/未回填计数、token、模型名;工具行:状态/耗时/出参体积/错误原文/参数摘要)。只呈现过程与成本,不铺出参与正文;**时长只取事件时间戳,进行中的回合/步/工具一律显「进行中」**(概览改显「计算中」),不拿本地时钟补齐;浮层复用文本 pager(滚动/横移/搜索/`q` 关闭),Web 侧对应轨迹视图按钮 |
+| `/notice` | 查看最近的提示(TUI,NOND-N1):以浮层列出进程内提示缓冲(最新在前:级别/时刻/来源 + 标题 + 正文),并显示缓冲 gap 与去重计数;未装配提示通道时显式报错 |
 | `/help` `/exit` | 帮助 / 退出(**Ctrl+C 连按两次**,防误触) |
+
+> **提示通道(`ctx.notices`,NOND-N1)**:插件与宿主可向**人**发一条提示(后台作业终态、定时任务失败/跳过、回合出错),不依赖盯屏。**提示不是会话内容** —— 不落 `jsonl`、不进模型上下文、不计 token,而是进程内环形缓冲(200 条)+ `id` 增量回填(`GET /api/notices?since=`;SSE `notice` 帧),所以重连/刷新不丢已发提示。三端各自决定呈现强度:Web 右下 toast(`info` 6s 自动消失、`warn`/`error` 常驻待关,超出可见上限显式计数)、TUI 状态栏 `notice` 项(无提示时零占位,逐字符不改变基线)+ `/notice` 浮层看详情;去重限频为同 `Key` 60s 内只出一条,避免重试风暴刷屏。**尚未做**系统级通知(OS 响铃/桌面通知,登记为 NOND-N2,需真机矩阵)。
 
 > **`!` shell 直通**:输入以 `!` 开头(如 `!git status`)= 立刻执行该 shell 命令(**走与模型工具同一条沙箱/审批管线**,不存在手敲免检旁路),输出就地回显、长命令可 `Esc` 中断;结果**只本地留痕,不进模型上下文**(避免孤立 tool 消息破坏投影)。需要模型看到输出时请让模型调用工具。
 >

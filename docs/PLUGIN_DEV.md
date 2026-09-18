@@ -52,6 +52,7 @@ type Plugin interface {
 | `ctx.sandbox` | policy-sandbox | 三档沙箱(ro/ws/full) |
 | `ctx.pluginManager` | host-plugin-manager | 运行期插拔(Load/Unload) |
 | `ctx.confirm` | ui-tui-app | 危险操作 y/n 确认(无实现 = 安全拒绝)
+| `ctx.notices` | host-notices | 提示通道(见 §2.9):发布/回填用户提示,不进会话记录 |
 | `ctx.commands` | host-commands | 斜杠命令注册表:Register/List/Get;TUI 提示/分发/help 动态来自本表 |
 
 **给插件加斜杠命令**(如 host-jobs 注册 `/jobs`):Start 内**可选注入** `_ = c.Inject("ctx.commands", &cmds)`(未装配=无 TUI 场景,跳过不报错——与沙箱可选注入同模式),随后 `cmds.Register(CommandSpec{Name, Usage, Desc, Run})`;Run 返回**输出文本 + error**(输出由 TUI 显示为 meta 行);返回 Disposer 随插件卸载撤销命令;**同名冲突被拒绝**(先到先得,非静默)。插件命令自动进入 `/` 选项列表与 `/help`。
@@ -127,6 +128,32 @@ func (t *myTool) Definition() sdk.ToolDefinition {
 - 外部进程读配置一律经 `sdk.Home()`(`$GAH_HOME`)派生路径(便携纪律),不从命令行参数猜路径。
 
 配置持久化可参考 `internal/mcpconfig`(MCP server 配置 `{name, command, args, enabled, mode}` 落 `$GAH_HOME/config/mcp.yaml`;写盘 0600 + 同目录临时文件 rename 原子替换 + 头部注释;**读盘与写盘共用同一条规范化** —— 名字净化、整行命令按 `sdk.SplitArgs` 拆分、`mode` 大小写容错;避免「GUI 写能跑、手抄进文件却跑不起来」)。
+
+### 2.9 提示通道(`ctx.notices`,NOND-N1)
+
+想让**人**(而非模型)注意某事时用它 —— 比如后台作业失败、定时任务跳过、需要人回来的时刻。
+
+```go
+var notices sdk.NoticeService
+if err := c.Inject("ctx.notices", &notices); err == nil { // 可选注入:未装配则跳过
+	notices.Publish(sdk.Notice{
+		Level:  sdk.NoticeError, // info|warn|error(非法值归一 info)
+		Title:  "备份失败",       // 一句话(折叠单行;空则回落正文首行)
+		Body:   err.Error(),    // 细节(可空)
+		Source: "host-backup",  // 发布者(缺失填 unknown)
+		Key:    "backup:" + id, // 可选去重键:同 Key 60s 内只出一条
+	})
+}
+```
+
+纪律(不是风格偏好,是这套通道能成立的前提):
+- **不进会话记录**:不落 `jsonl`、不进模型上下文、不计 token。它与 `ctx.sessions.Append` 是两个正交的概念(持久事实 vs 瞬时信号)。
+- **`Publish` 返回 `0` = 被去重丢弃**(不是失败);被去重的条数经 `NoticePage.Suppressed` 与 debug 日志可见 —— 不静默压掉。
+- **同一件事用同一个 `Key`**,不同事件必须不同 `Key`(否则会被误当重复丢掉);`Key` 取事件 id/错误首行,不要取时间戳(那样永远不去重)。
+- **不要用它当第二条命令通道**:端只订阅 `sdk.EventNotice` 事件 / 拉 `GET /api/notices`,不要各端各写一份旁路逻辑。
+- **噪音纪律**:自动化高频路径上只在「人需要回来」的时刻发(如 `schedule/run` 只报 failed/skipped —— 每次成功都发会退化成每日噪音)。
+- **呈现强度由端各自决定**:同一份载荷在 Web 是右下 toast、在 TUI 是状态栏项(`notice`)/`/notice` 浮层;不要假设接收端会怎么显示,也不要在这里做端特定格式化(标题请自带一句人话)。
+- 提示是**进程内环形缓冲**(200 条),重启即空;**不保证回放**,端按 `id` 去重与续传。
 
 ## 3. 开发步骤(七步)
 

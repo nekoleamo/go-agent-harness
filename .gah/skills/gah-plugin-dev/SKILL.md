@@ -67,13 +67,14 @@ type Plugin interface {
 | `ctx.sandbox` | policy-sandbox | 三档沙箱(ro/ws/full) |
 | `ctx.pluginManager` | host-plugin-manager | 运行期插拔(Load/Unload) |
 | `ctx.confirm` | ui-tui-app | 危险操作 y/n 确认(无实现 = 安全拒绝) |
+| `ctx.notices` | host-notices | 提示通道(可选注入):`Publish(Notice)`/`List(sinceID)`;提示**不进会话记录**,端各自决定呈现强度 |
 | `system.registry` / `system.catalogue` | boot 注入 | 宿主内部服务(插件不可自行 import) |
 
 ### 2.4 事件命名与语义
 
 - 名称点分:`agent/pre-step`、`tools/pre-execute`、`session/event`(会话事件广播)。
 - 扩展点优先 **Waterfall**(返回 error = veto/拦截)。
-- 持久事实用 `ctx.sessions.Append`(可回放);实时通知用 `Emit`。
+- 持久事实用 `ctx.sessions.Append`(可回放);实时通知用 `Emit`;**要人注意某事**用 `ctx.notices.Publish`(瞬时信号,不落盘不计数;`Key` 去重 60s;可选注入 — 未装配就跳过)。完整纪律见 `docs/PLUGIN_DEV.md` §2.9。
 
 ### 2.5 结构化错误契约
 
