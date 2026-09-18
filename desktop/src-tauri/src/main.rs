@@ -5,12 +5,13 @@
 // 单实例(多开 focus 现有窗口);托盘(打开/自启开关/退出);
 // token 模式(data.auth_token 非空):启动方经 GAH_WEB_TOKEN 传入 token,壳导航到 /#token=…
 // (web 侧引导页用它换取 SameSite=Strict cookie),手写 /api/* 请求一并带 gah_token cookie。
-// 回合完成通知(轮询 state.running 翻转);退出链:POST /api/shutdown → 等端口释放 →
+// 通知(NOND-N1/N2):单条 2s 轮询消费宿主提示流 /api/notices(warn/error → 系统通知),
+// 同一轮询里看 state.running 翻转发「回合已完成」(宿主不发这类提示,见 notice.rs 注释);
+// 退出链:POST /api/shutdown → 等端口释放 →
 // 超时 SIGKILL 兜底;RunEvent::Exit 兜底 kill sidecar(信号强杀时 sidecar 变孤儿由
 // 启动探测接管:端口已占用则直接 navigate 现有实例)。
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
@@ -18,6 +19,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
+mod notice;
 mod stage;
 
 use tauri::menu::{CheckMenuItem, CheckMenuItemBuilder, MenuBuilder, MenuItem, MenuItemBuilder, PredefinedMenuItem};
@@ -535,42 +537,13 @@ fn httpGETAuth(path: &str) -> String {
     }
 }
 
-// newScheduleFailures 从 /api/schedules 正文里挑出**新出现的**失败(NOND-W4 无人值守主动通知)。
-// seen = id → "last_run_at|last_status" 快照;first=true(启动后第一次轮询)只记不发,
-// 避免把启动前就存在的旧失败当新闻推送。返回 (计划名, 错误摘要)。
-fn newScheduleFailures(body: &str, seen: &mut HashMap<String, String>, first: bool) -> Vec<(String, String)> {
-    let arr: Vec<serde_json::Value> = serde_json::from_str(body).unwrap_or_default();
-    let mut out = Vec::new();
-    for it in arr {
-        let id = it["id"].as_str().unwrap_or("").to_string();
-        if id.is_empty() {
-            continue;
-        }
-        let status = it["last_status"].as_str().unwrap_or("");
-        let run_at = it["last_run_at"].as_str().unwrap_or("");
-        let key = format!("{run_at}|{status}");
-        let prev = seen.insert(id, key.clone());
-        if first || status != "failed" || prev.as_deref() == Some(key.as_str()) {
-            continue;
-        }
-        let name = it["name"].as_str().filter(|s| !s.is_empty()).unwrap_or("(未命名计划)");
-        let err = it["last_error"].as_str().unwrap_or("");
-        out.push((name.to_string(), summarize(err, 200)));
-    }
-    out
-}
-
-// summarize 摘要(字符级截断,附省略号;避免系统通知里塞整段报错)。
-fn summarize(s: &str, max: usize) -> String {
-    let t = s.trim();
-    if t.chars().count() <= max {
-        return t.to_string();
-    }
-    let head: String = t.chars().take(max).collect();
-    format!("{head}…")
-}
-
 // stateRunning 服务是否在运行(/api/state)。
+// 复用 httpGETAuth(原先这里有一份重复的手写 socket 代码):读不到/超时 → 空串 → false,
+// 与旧实现在「连不上就当没在跑」上语义一致。
+fn stateRunning() -> bool {
+    httpGETAuth("/api/state").contains("\"running\":true")
+}
+
 // noticesScript 生成"壳侧提示"注入脚本(纯函数,便于单测)。
 //
 // 为什么必须注入 DOM:壳侧 emit 的 Tauri 事件只到得了壳自己的 webview 页面,而就绪后窗口
@@ -591,36 +564,6 @@ var b=document.createElement('span');b.textContent='×';b.style.cssText='float:r
 b.onclick=function(){{el.remove()}};el.appendChild(b);document.body.appendChild(el);}}
 el.insertBefore(document.createTextNode(t+'\n'),el.firstChild);}})();"#
     ))
-}
-
-fn stateRunning() -> bool {
-    // /api/state JSON 含 "running":true|false;粗解析含子串即可
-    let mut s = match TcpStream::connect_timeout(&web_sockaddr(), Duration::from_millis(300)) {
-        Ok(s) => s,
-        Err(_) => return false,
-    };
-    let _ = s.set_read_timeout(Some(Duration::from_millis(400)));
-    let req = format!(
-        "GET /api/state HTTP/1.1\r\nHost: 127.0.0.1\r\n{}Connection: close\r\n\r\n",
-        cookie_header()
-    );
-    if s.write_all(req.as_bytes()).is_err() {
-        return false;
-    }
-    let mut all = Vec::new();
-    let mut buf = [0u8; 256];
-    loop {
-        match s.read(&mut buf) {
-            Ok(0) | Err(_) => break,
-            Ok(n) => all.extend_from_slice(&buf[..n]),
-        }
-    }
-    let text = String::from_utf8_lossy(&all);
-    if let Some(idx) = text.find("\"running\":") {
-        let rest = &text[idx + 10..];
-        return rest.starts_with("true");
-    }
-    false
 }
 
 // defaultWorkspace 交给 sidecar 的初始工作目录(None = 不设,沿用壳自己的 cwd)。
@@ -1447,47 +1390,40 @@ fn main() {
                 );
             });
 
-            // —— 回合完成通知:轮询 state.running 翻转(running→idle 发通知) ——
+            // —— 提示流 + 回合结束:一条轮询、两个信号源(NOND-N2) ——
+            //
+            // 取代原先两条各睡各的循环(2s 轮询 state.running 翻转 + 5s 轮询 /api/schedules
+            // 挑 failed)。判据不再复制到壳里:壳只把宿主下发的提示(warn/error)转成系统通知,
+            // 于是新类别(后台任务终态、回合报错)自动进来,不必再改壳。
+            // 回合结束仍在壳侧 —— 宿主**不发**这类提示(它不是"需要人回来的时刻"),
+            // 故保留 running→idle 翻转检测,与提示流共用同一条 2s 轮询。
             let handle4 = app.handle().clone();
             tauri::async_runtime::spawn(async move {
+                let mut consumer = notice::Consumer::new();
                 let mut prev = stateRunning();
                 loop {
                     std::thread::sleep(Duration::from_secs(2));
-                    let cur = stateRunning();
-                    if prev && !cur && READY.load(Ordering::SeqCst) {
-                        let _ = handle4.notification().builder()
-                            .title("gah")
-                            .body("回合已完成")
-                            .show();
-                    }
-                    prev = cur;
-                }
-            });
-
-            // —— 无人值守失败通知:轮询 /api/schedules,出现**新的** failed 终态就弹系统通知
-            //    (窗口在托盘里时也能看到;计划失败本体仍只在会话记录与计划列表里)——
-            let handle5 = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                let mut seen: HashMap<String, String> = HashMap::new();
-                let mut first = true;
-                loop {
-                    std::thread::sleep(Duration::from_secs(5));
                     if !READY.load(Ordering::SeqCst) {
                         continue;
                     }
-                    let body = httpGETAuth("/api/schedules");
-                    if body.is_empty() {
-                        continue; // 未装配 ctx.schedule(503)/网络异常:不当作失败
-                    }
-                    for (name, err) in newScheduleFailures(&body, &mut seen, first) {
-                        let mut msg = format!("计划「{name}」执行失败");
-                        if !err.is_empty() {
-                            msg.push_str(&format!(":{err}"));
+                    // 1) 宿主提示(与 Web toast / TUI 状态栏同一事实源):只 warn/error 弹通知
+                    let path = format!("/api/notices?since={}", consumer.since());
+                    if let Some(feed) = notice::parseFeed(&httpGETAuth(&path)) {
+                        for n in consumer.accept(&feed) {
+                            let _ = handle4
+                                .notification()
+                                .builder()
+                                .title(notice::notifyTitle(&n))
+                                .body(notice::notifyBody(&n))
+                                .show();
                         }
-                        msg.push_str("\n详情见会话记录与「定时任务」列表。");
-                        let _ = handle5.notification().builder().title("gah 定时任务失败").body(msg).show();
                     }
-                    first = false;
+                    // 2) 回合结束(壳侧独有信号)
+                    let cur = stateRunning();
+                    if prev && !cur {
+                        let _ = handle4.notification().builder().title("gah").body("回合已完成").show();
+                    }
+                    prev = cur;
                 }
             });
 
@@ -1557,74 +1493,6 @@ fn quitApp(app: &AppHandle) {
 #[cfg(test)]
 mod main_tests {
     use super::*;
-
-    const SAMPLE: &str = r#"[
-      {"id":"sched-a","name":"每日备份","last_run_at":"2026-09-12T09:00:00Z","last_status":"failed","last_error":"模型调用超时: dial tcp 10.0.0.1:443: i/o timeout"},
-      {"id":"sched-b","name":"周报","last_run_at":"2026-09-12T09:00:00Z","last_status":"ok"},
-      {"id":"sched-c","name":"空闲","enabled":true}
-    ]"#;
-
-    #[test]
-    fn first_poll_records_without_notifying() {
-        let mut seen = HashMap::new();
-        assert!(newScheduleFailures(SAMPLE, &mut seen, true).is_empty());
-        assert_eq!(seen.len(), 3, "三条计划都要进快照(含未运行过的)");
-    }
-
-    #[test]
-    fn same_failure_is_not_reported_twice() {
-        let mut seen = HashMap::new();
-        let _ = newScheduleFailures(SAMPLE, &mut seen, true);
-        assert!(newScheduleFailures(SAMPLE, &mut seen, false).is_empty(), "同一次失败只报一次");
-    }
-
-    #[test]
-    fn new_failure_after_bootstrap_notifies() {
-        let mut seen = HashMap::new();
-        let _ = newScheduleFailures(SAMPLE, &mut seen, true);
-        let next = r#"[{"id":"sched-a","name":"每日备份","last_run_at":"2026-09-13T09:00:00Z","last_status":"failed","last_error":"401 未授权"}]"#;
-        let got = newScheduleFailures(next, &mut seen, false);
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].0, "每日备份");
-        assert_eq!(got[0].1, "401 未授权");
-    }
-
-    #[test]
-    fn ok_and_skipped_states_never_notify() {
-        let mut seen = HashMap::new();
-        let _ = newScheduleFailures(SAMPLE, &mut seen, false);
-        for st in ["ok", "skipped", ""] {
-            let body = format!(r#"[{{"id":"sched-b","name":"周报","last_run_at":"2026-09-14T09:00:00Z","last_status":"{st}"}}]"#);
-            assert!(newScheduleFailures(&body, &mut seen, false).is_empty(), "状态 {st} 不该通知");
-        }
-    }
-
-    #[test]
-    fn bad_body_is_ignored_not_panicking() {
-        let mut seen = HashMap::new();
-        assert!(newScheduleFailures("", &mut seen, false).is_empty());
-        assert!(newScheduleFailures("定时计划服务未装配", &mut seen, false).is_empty());
-        assert!(newScheduleFailures("{\"not\":\"array\"}", &mut seen, false).is_empty());
-        assert!(seen.is_empty());
-    }
-
-    #[test]
-    fn unnamed_schedule_and_long_error_are_handled() {
-        let mut seen = HashMap::new();
-        let long = "错".repeat(300);
-        let body = format!(r#"[{{"id":"sched-x","last_run_at":"t1","last_status":"failed","last_error":"{long}"}}]"#);
-        let got = newScheduleFailures(&body, &mut seen, false);
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].0, "(未命名计划)");
-        assert!(got[0].1.ends_with('…'));
-        assert_eq!(got[0].1.chars().count(), 201);
-    }
-
-    #[test]
-    fn summarize_trims_and_keeps_short_text() {
-        assert_eq!(summarize("  a b  ", 10), "a b");
-        assert_eq!(summarize("abcdef", 3), "abc…");
-    }
 
     #[test]
     fn notices_script_is_none_when_empty_and_escapes_text() {
