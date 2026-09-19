@@ -1619,6 +1619,32 @@ Go 全量 **1498 passed**(67 包,0 失败,6 跳过;新增 `TestPluginStderrCaptu
 **11. pdfium TUI 位图** —— **锁死理由**:SELF-1 有网实测体积 **+≈5.5 MiB → 破体积门**(当时门 46/30,现在更紧的 36/23 下更无空间);TUI **无图形协议**支持 → 位图 = 新子系统(布局、缩放、终端矩阵、性能);而主力光栅路径已由 **RST-1** 交付(外部 `pdftoppm` + `sdk.DocRasterService` + `/api/doc/raster`)。**重启条件 = 降体路径先腾出空间(②/③)且「零外部依赖部署」需求成立** —— 注意这一条与上面第 6 项的「终端内联图片」不同:此项即使有图形协议也仍受体积门约束。
 **12. OSC 9;4 进度通知** —— **锁死理由**(本次分析补充):OSC 9;4 的支持面窄(Windows Terminal、WezTerm 等为主),在未知终端上属于**纯静默失效** —— 与「静默失效不可接受」的红线直接冲突;而进度语义在 TUI 已有落点:状态栏 + 坞折叠行「后台 N 运行中: <摘要>」(1s 节拍,仅在有任务时续拍)。**重启条件 = 需要终端级任务栏进度**(例如长任务在最小化窗口里也要可见)成为明确需求,且探测可依赖。
 
+#### 交付记录(2026-09-19,第二十三批:本机验收阶段 6(UI 槽位插件化 / WS 通道 / todo-panel 联动)+ 5 处真缺陷修复)
+
+> **来路**:代码类待办仍被门禁卡住,继续推进 **A 本机 109 条**。本批取 A-2 中**依赖 UI 插件夹具**的 7 条(#55/56/57/59/60/61/62),新开阶段 6 脚本(`~/gah-acceptance/{run-ui.sh,ui.mjs}`;真机 10 项检查 **10/10 PASS**,控制台/网络异常 0)。
+
+| 检查 | 真机证据 |
+|---|---|
+| **A-2#57 消息经 WS 到达(非 SSE)** | `/api/events/ws` 建立 + 事件帧 **15** 帧送达 + 全程 **SSE 请求 0**;流内文本出现,`/api/todo` 条数 1 |
+| **A-2#55 状态栏插件徽标** | 装 `statusbar-demo` → 重载页面:插件组件替换宿主默认状态栏(徽标 **3ms** 出现,`UI-PLUGIN:mock-model`,默认状态栏残留 **false**) |
+| **A-2#60 todo-panel 面板出现** | 右下角面板 **3ms** 出现;首屏读到宿主 `/api/todo` 已建任务 **1ms**;✓/▶ 计数在位 |
+| **A-2#56a 同槽位 priority 降序** | `todo-panel`(120) 覆盖 `statusbar-demo`(100) → 120 生效,低优实现**无残留** |
+| **A-2#61a 模型回合建单 → 面板轮询内反映** | 账本基准 1 → 落账 **2ms** → 面板反映 **4253ms**(阈值 9000ms;面板轮询 5s) |
+| **A-2#61b activeForm 随 in_progress** | 面板 **5771ms** 内出现「进行中」+ activeForm 文案 |
+| **A-2#62 同槽位冲突回退** | 卸载 `todo-panel` → **3ms** 回退到下一高优 `statusbar-demo` |
+| **A-2#56b 同优先级后注册者胜** | 聚合顺序 `[statusbar-demo, statusbar-demo2]` → `UI-PLUGIN2` 生效,先注册者无残留 |
+| **A-2#59 B5 三槽位视觉** | 设置抽屉「插件区段」**1ms** + 侧栏「插件动作」1 区 1 按钮 + 附加面板入口 1 个,**抽屉标题 = manifest.title「示例面板」** |
+
+**本批逮到并修掉的真缺陷(5 处;其中 3 处属「静默失效」,门禁全绿也发现不了)**:
+
+1. **UI 插件 `statusbar`/`confirm` 槽位覆盖永不生效(宿主模板写死默认组件)** —— `App.vue` 里 `statusbar` 渲染的是 `<StatusBar v-if="hasSlot('statusbar')">`、`confirm` 同理:注册/聚合/registry 优先级选择三层都对,但模板**硬编码默认组件**,于是插件的槽位覆盖全被丢弃 —— 这正好是 M7.2/M8-T2 示例与 `docs/VERIFY.md` 的主演示路径。而 `hasSlot()` 恒真(默认实现早已注册),连 `v-if` 都不起作用,所以「看起来渲染了」但不报任何错。修法:两处统一改 `<component :is="slotComponent(name) || 默认组件">`(与 `stream`/`input` 槽位既有写法一致),删掉会误导后人的 `hasSlot` helper 并留注释说明 **槽位一律走 `slotComponent`**。
+2. **`-install-ui` 落位 manifest 丢 `slot.title` + `/api/ui-plugins` 的 `SlotDef` 无该字段** —— B5 v2 三个扩展点(`settings-section`/`sidebar-action`/`extra-panel`)的展示文案由 manifest 声明,但 `internal/install/uiinstall.go` 的 `UISlot` 结构体没有 `Title` 字段 → 落位 `json.MarshalIndent` 直接把它丢掉;即便补上,`web/server.go` 的 `SlotDef` 也无该字段 → 聚合下发再丢一次。结果:插件的区段名/动作文案/面板标题全部退化为宿主默认值(`示例面板` → `面板`),而 `priority`/`module` 一切正常 —— 真机表现为「插件装了、按钮在、标题不对」。修法:两处结构体各加 `Title string \`json:"title,omitempty"\``,并各补一条**落位/下发序列化断言**(`internal/install` 断言落位 manifest 含 `"title":"示例面板"`;`web` 断言 `/api/ui-plugins` 下发该项)。
+3. **示例 UI 插件产物残留未替换的 `process.env.NODE_ENV`** —— vite **lib 模式**不替换 `process.env`(只处理 `import.meta.env`),三个示例的 `dist` 里带着裸 `process.env.NODE_ENV` → 浏览器 `import` 时抛 `ReferenceError: process is not defined`;而前端加载器**设计为失败静默**(保持宿主默认实现、不阻塞界面),只在控制台留一行 warn → 表现得像「插件没生效」。修法:① 三个示例 `vite.config.ts` 加 `define: { 'process.env.NODE_ENV': JSON.stringify('production') }` 并重建产物;② `internal/install/uiinstall.go` 增加**产物护栏 `scanBareProcessEnv`** —— 安装时扫 `dist` 内 `.js`,见到裸 `process.env` 即**显式拒绝安装并给出修法**(把这条静默失效在**入口**拦住,而不是等用户对着空白状态栏猜);③ 补护栏单测。
+4. **`tool-todo` 在干净数据根建单失败 + `/api/todo` 空账本返 `null`** —— ① `todo.go` 的 `appendLine` 从不 `MkdirAll` 父目录 → 全新 `$GAH_HOME/todos/` 下**第一次**建单就报 `no such file or directory`(已有账本的机器永远碰不到);② `web/server.go handleTodo` 在账本为空时把 `nil` 直接序列化 → `/api/todo` 返回 `null`,前端面板按数组用 → 首屏渲染异常而非「暂无任务」。修法:补目录创建 + 单测 `TestCreateWithMissingParentDir`;`handleTodo` 空值收敛为 `[]any{}`,测试桩补 `content` 字段并断言**空账本必须返回 `[]`**。
+5. **验收基建自身的坑(脚本侧,已修)**:面板首屏 `refresh` **首次会拉起外部工具桥**(子进程冷启,可能数秒)→ 断言若在重载后立即取值,会把「正在加载」误判成缺陷;#61 的「5s 轮询内反映」也改为**以服务端账本 +1 时刻为基准**测面板延迟(而不是从发消息起算,那会把模型/工具耗时混进轮询指标)。两条口径已写进阶段 6 脚本注释,后续验收批次沿用。
+
+**门禁(改前端 + Go(web/install/tool-todo)+ 重生成 extplugins,无 sdk 接口变更)**:`gofmt -l` 干净 · `go vet ./...`(含 `sdk`)干净 · `go test ./... -race -count=1` **58 包全绿** · `coverage-check.sh` **COVERAGE_OK**(总覆盖 79.2%,全局下限 65%)· `size-check.sh` 通过(darwin/arm64 **31.33 MiB / gz 18.84**,与上批持平)· `vue-tsc --noEmit` 0 错 + `vite build` 通过 + `node --test` **157 pass** · **`gen-extplugins.sh` 已重跑**(sdk 自二十一批以来的累积变更 → 20 个 `.gz` 更新;**两次生成字节一致**,确定性无回归)。
+
 #### 交付记录(2026-09-19,第二十二批:本机验收阶段 5(断连续传/退避降级/备份面/static_dir)+ 备份区段字段失配缺陷修复)
 
 > **来路**:代码类待办仍全被门禁卡住(#43 拍板 / #44 外机 / #45 门禁 / #46-50 待评估),按既定判据继续推进 **A 本机 109 条**。本批取 A-2 余项中**不依赖 UI 插件夹具**的 6 条,新开阶段 5 脚本(`~/gah-acceptance/{run-wq.sh,wq.mjs}`,7 检查 **7/7 PASS**,控制台/网络异常 0;故障注入窗口内 43 条网络失败已单独记账不计为异常)。

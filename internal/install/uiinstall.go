@@ -5,6 +5,7 @@
 package install
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -25,9 +26,12 @@ type UIManifest struct {
 
 // UISlot 单个槽位覆盖。
 type UISlot struct {
-	Name     string `json:"name"` // stream | input | statusbar | confirm
+	Name     string `json:"name"` // stream | input | statusbar | confirm | settings-section | sidebar-action | extra-panel
 	Priority int    `json:"priority"`
 	Module   string `json:"module"` // 如 ./dist/plugin.js
+	// Title v2 扩展点的展示文案(区段名/面板标题)。落位 manifest 必须原样保留:
+	// 丢掉它会让插件声明的标题退化为宿主默认文案(2026-09-19 本机验收遯到)。
+	Title string `json:"title,omitempty"`
 }
 
 // UIResult 安装结果摘要。
@@ -112,6 +116,14 @@ func InstallUI(spec, home string) (*UIResult, error) {
 			rel := strings.TrimPrefix(s.Module, "./")
 			return nil, fmt.Errorf("install-ui: 槽位 %s 的 module 产物缺失 %s(构建输出目录=%s)", s.Name, rel, outDir)
 		}
+	}
+	// 产物运行时护栏(2026-09-19 本机验收遯到):vite lib 模式默认保留
+	// process.env.NODE_ENV,而产物是在浏览器里 import 的——没有 process,
+	// 微一引用就 ReferenceError: process is not defined,整个插件静默失效(只留 console.warn)。
+	// 在装的时候拒绝,别让用户到浏览器控制台里猜。
+	if f, ok := scanBareProcessEnv(filepath.Join(src, outDir)); ok {
+		rel, _ := filepath.Rel(src, f)
+		return nil, fmt.Errorf("install-ui: 产物 %s 含未替换的 process.env(浏览器无 process,import 即 ReferenceError)→ 在 vite.config 加 define: { 'process.env.NODE_ENV': JSON.stringify('production') } 后重新构建", rel)
 	}
 
 	// 落 home/ui-plugins/<id>/(manifest 同步;装配即时生效,前端重载页面即换)
@@ -199,6 +211,32 @@ func scanVHTML(dir string) (string, bool) {
 			return nil
 		}
 		if strings.Contains(strings.ToLower(string(b)), "v-html=") {
+			found = p
+		}
+		return nil
+	})
+	return found, found != ""
+}
+
+// scanBareProcessEnv 扫构建产物里残留的裸 process.env 引用(浏览器无 process ⇒ import 即
+// ReferenceError)。只扫 .js 产物,限总量预算防扫爆;命中即返回首个文件名。
+func scanBareProcessEnv(dir string) (string, bool) {
+	const budget = 4 << 20
+	var left = int64(budget)
+	found := ""
+	_ = filepath.Walk(dir, func(p string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() || found != "" || left <= 0 {
+			return nil
+		}
+		if !strings.HasSuffix(strings.ToLower(p), ".js") || info.Size() > left {
+			return nil
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return nil
+		}
+		left -= int64(len(b))
+		if bytes.Contains(b, []byte("process.env.")) {
 			found = p
 		}
 		return nil

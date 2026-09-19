@@ -760,8 +760,8 @@ async function onAnswer(ok: boolean): Promise<void> {
 }
 
 // 槽位:默认组件(registry 可被 UI 插件覆盖;宿主直挂渲染避免绕模板)
-const hasSlot = (n: 'stream' | 'input' | 'statusbar' | 'confirm') => slotComponent(n) !== null
-
+// 注:槽位渲染一律走 `<component :is="slotComponent(name) || 默认组件">` ——
+// 用 hasSlot() 布尔值配写死组件会让插件覆盖永不生效(statusbar/confirm 曾如此)。
 // 文档预览意图(工具行/侧栏):打开工作台抽屉并定位文件(单一入口,含 docRequest 赋值)
 // 侧栏徽标 → 打开附加面板抽屉(通用机制:与 docstore 同型,窗口事件解耦)
 // 注:通用面板跳转经窗口事件解耦(不依赖具体面板实现)。
@@ -809,9 +809,10 @@ onUnmounted(() => {
 
 <template>
   <div class="app" :class="{ empty }">
-    <!-- 槽位:statusbar(含连接状态与设置入口) -->
+    <!-- 槽位:statusbar(含连接状态与设置入口)。覆盖走 slotComponent:
+         此前写死 <StatusBar> 使 M7.2 的 statusbar 插件覆盖永不生效(2026-09-19 本机验收遯到) -->
     <section class="statusbar-slot" data-ui-slot="statusbar">
-      <StatusBar v-if="hasSlot('statusbar')" :state="state" :conn="conn.state" @open-about="openAboutSettings" />
+      <component :is="slotComponent('statusbar') || StatusBar" :state="state" :conn="conn.state" @open-about="openAboutSettings" />
       <button class="gear" data-tip="设置(模型/Provider/插件/历史)" :aria-expanded="settingsOpen" @click="settingsOpen = !settingsOpen">设置</button>
       <button
         class="gear"
@@ -963,9 +964,9 @@ onUnmounted(() => {
     <!-- NOND-N1 提示 toast 层(宿主直挂,不经槽位覆盖) -->
     <ToastStack :state="toasts" :on-dismiss="onDismissToast" />
 
-    <!-- 槽位:confirm(审批弹层) -->
+    <!-- 槽位:confirm(审批弹层;覆盖走 slotComponent,同理不再写死默认组件) -->
     <section class="confirm-slot" data-ui-slot="confirm">
-      <ConfirmDialog v-if="hasSlot('confirm')" :request="confirm" :on-answer="onAnswer" />
+      <component :is="slotComponent('confirm') || ConfirmDialog" :request="confirm" :on-answer="onAnswer" />
     </section>
 
     <!-- 结构化提问弹层(P3 语义交互;宿主直挂,不经槽位覆盖;S-P0-2 可收起) -->

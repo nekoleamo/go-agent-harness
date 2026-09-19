@@ -3,6 +3,7 @@
 package install
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,19 +45,46 @@ func TestScanVHTML(t *testing.T) {
 	}
 }
 
+func TestScanBareProcessEnv(t *testing.T) {
+	// 命中:vite lib 模式未替换 process.env.NODE_ENV 的产物
+	d1 := t.TempDir()
+	writeT(t, d1, "dist/plugin.js", "const K = process.env.NODE_ENV !== 'production' ? {} : {};")
+	if f, ok := scanBareProcessEnv(d1); !ok || !strings.Contains(f, "plugin.js") {
+		t.Fatalf("含裸 process.env 的产物应命中,得 %q ok=%v", f, ok)
+	}
+	// 不命中:已替换(define)/ 非 .js / 无引用
+	d2 := t.TempDir()
+	writeT(t, d2, "dist/plugin.js", `const K = "production" !== "production" ? {} : {};`)
+	writeT(t, d2, "dist/readme.txt", "process.env.NODE_ENV")
+	if f, ok := scanBareProcessEnv(d2); ok {
+		t.Fatalf("已替换产物不应命中,得 %q", f)
+	}
+}
+
 func TestReadUIManifestAndErrors(t *testing.T) {
 	dir := t.TempDir()
 	// 缺 manifest → 错误
 	if _, err := readUIManifest(dir); err == nil {
 		t.Fatal("缺 manifest 应报错")
 	}
-	writeT(t, dir, "manifest.json", `{"id":"demo","version":"0.1.0","slots":[{"name":"stream","priority":10,"module":"./dist/plugin.js"}]}`)
+	writeT(t, dir, "manifest.json", `{"id":"demo","version":"0.1.0","slots":[{"name":"stream","priority":10,"module":"./dist/plugin.js"},{"name":"extra-panel","priority":10,"module":"./dist/panel.js","title":"示例面板"}]}`)
 	m, err := readUIManifest(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m.ID != "demo" || len(m.Slots) != 1 || m.Slots[0].Name != "stream" {
+	if m.ID != "demo" || len(m.Slots) != 2 || m.Slots[0].Name != "stream" {
 		t.Fatalf("manifest 解析不符 %+v", m)
+	}
+	// v2 扩展点 title 必须落到结构体并在落位 manifest 里保留(丢了标题就退化为宿主默认文案)
+	if m.Slots[1].Title != "示例面板" {
+		t.Fatalf("slot title 未解析: %+v", m.Slots[1])
+	}
+	raw, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"title":"示例面板"`) {
+		t.Fatalf("落位 manifest 丢失 slot title: %s", raw)
 	}
 }
 

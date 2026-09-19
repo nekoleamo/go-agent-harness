@@ -385,10 +385,18 @@ func (s *stubTurnControl) Cancel() {
 
 // newTestServer 组装一个可测试的 Server(直接注入字段,不经 sdk.Ctx)。
 // stubTodoTools 供 TestTodoEndpoint(todo 面板端点:固定返回任务列表)。
-type stubTodoTools struct{ sdk.ToolRegistry }
+// content 可覆盖返回值(空 = 默认单条任务):用于验「空账本回空数组」等边界。
+type stubTodoTools struct {
+	sdk.ToolRegistry
+	content string
+}
 
 func (s *stubTodoTools) Execute(_ context.Context, name, args string) (*sdk.ToolResult, error) {
-	return &sdk.ToolResult{Content: "[{\"id\":\"t1\",\"subject\":\"研究方案\",\"status\":\"in_progress\"}]", Error: ""}, nil
+	c := s.content
+	if c == "" {
+		c = `[{"id":"t1","subject":"研究方案","status":"in_progress"}]`
+	}
+	return &sdk.ToolResult{Content: c, Error: ""}, nil
 }
 
 func newTestServer() (*Server, *memLog) {
@@ -1678,6 +1686,20 @@ func TestTodoEndpoint(t *testing.T) {
 	}
 	if len(list) != 1 || list[0].Subject != "研究方案" || list[0].Status != "in_progress" {
 		t.Fatalf("todo 列表不符 %+v", list)
+	}
+	// 空账本:工具 list 序列化为 null → 端点回空数组(前端 Array.isArray/length 安全,
+	// 否则面板把 null 当错误渲染;与 /api/backup 同规)
+	s.tools = &stubTodoTools{content: "null"}
+	hs3 := httptest.NewServer(s.handler())
+	defer hs3.Close()
+	resp3, err := http.Get(hs3.URL + "/api/todo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp3.Body)
+	resp3.Body.Close()
+	if resp3.StatusCode != 200 || strings.TrimSpace(string(b)) != "[]" {
+		t.Fatalf("空账本应回 []，得 code=%d body=%q", resp3.StatusCode, b)
 	}
 }
 

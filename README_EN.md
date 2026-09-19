@@ -402,7 +402,7 @@ If `ctx.confirmFusion` is missing (profile without the confirm-fusion bundle) th
 ```bash
 ./gah -install <repo>[@version]     # external plugin (go-plugin bridge): git clone → build → $GAH_HOME/plugins/<id>/ → idempotent register; enabled right away
 ./gah -install mcp:<id>:<command>   # MCP plugin registered through the same entry
-./gah -install-ui <repo|local dir>  # UI plugin (manifest.json slot overrides; v-html directive scan rejects)
+./gah -install-ui <repo|local dir>  # UI plugin (manifest.json slot overrides; two reject guards: v-html directive scan + build output containing an unreplaced bare process.env)
 ./gah -list-plugins / -uninstall <id>
 ./gah -list-ui-plugins / -uninstall-ui <id>
 ```

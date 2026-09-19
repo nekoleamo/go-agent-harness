@@ -5,6 +5,9 @@ import vue from '@vitejs/plugin-vue'
 // 不引宿主 node_modules;槽位 Props 契约见宿主 web-src/src/registry.ts)。
 export default defineConfig({
   plugins: [vue()],
+  // lib 模式默认**保留** process.env.NODE_ENV(vite 面向库消费者);产物是在浏览器里 import 的,
+  // 没有 process → "process is not defined" 把插件整个拖死(只留 console.warn 静默失效)。
+  define: { 'process.env.NODE_ENV': JSON.stringify('production') },
   build: {
     lib: { entry: 'src/plugin.ts', formats: ['es'], fileName: () => 'plugin.js' },
     outDir: 'dist',

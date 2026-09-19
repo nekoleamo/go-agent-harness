@@ -1,4 +1,4 @@
-import { h as e } from "./vue.runtime.esm-bundler-CtrlPn7D.js";
+import { h as e } from "./runtime-core.esm-bundler-Czyje2aP.js";
 const o = {
   name: "ExtSectionDemo",
   render() {

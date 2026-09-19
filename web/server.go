@@ -1037,6 +1037,9 @@ func (s *Server) handleTodo(w http.ResponseWriter, r *http.Request) {
 	// list 结果为任务 View 数组(JSON 文本);透传供面板渲染
 	var out any
 	if json.Unmarshal([]byte(res.Content), &out) == nil {
+		if out == nil {
+			out = []any{} // 空账本 list 序列化为 null → 契约给空数组(前端 Array.isArray 判定,与 /api/backup 同规)
+		}
 		writeJSON(w, http.StatusOK, out)
 		return
 	}
@@ -1118,6 +1121,9 @@ type SlotDef struct {
 	Name     string `json:"name"` // v1:stream|input|statusbar|confirm;v2 扩展:settings-section/sidebar-action/extra-panel
 	Priority int    `json:"priority"`
 	Module   string `json:"module"` // 相对插件目录的产物入口(如 ./dist/plugin.js)
+	// Title v2 扩展点展示文案(区段名/动作/面板标题);聚合时原样下发,
+	// 丢失会让插件声明的标题退化为宿主默认文案(2026-09-19 本机验收遯到)。
+	Title string `json:"title,omitempty"`
 }
 
 // handleUIPlugins 聚合全部已安装 UI 插件(每次读盘;安装/卸载即时生效,重载页面即换)。

@@ -398,7 +398,7 @@ export GAH_MCP_COMMANDS="deja=/opt/homebrew/bin/deja\ncodegraph=codegraph serve 
 ```bash
 ./gah -install <repo>[@version]     # 外部插件(go-plugin 桥/gRPC):git 拉取 → 构建 → 落 $GAH_HOME/plugins/<id>/ → 幂等登记,装完即启用
 ./gah -install mcp:<id>:<command>   # MCP 插件经同一入口登记桥配置
-./gah -install-ui <repo|本地目录>   # UI 插件(manifest.json 声明槽位覆盖;v-html 指令扫描拒装)
+./gah -install-ui <repo|本地目录>   # UI 插件(manifest.json 声明槽位覆盖;两重拒装护栏:v-html 指令扫描 + 产物含未替换裸 process.env)
 ./gah -list-plugins / -uninstall <id>
 ./gah -list-ui-plugins / -uninstall-ui <id>
 ```

@@ -182,3 +182,37 @@ func TestUIPluginsDigestIncludesManifest(t *testing.T) {
 		t.Fatal("manifest 变更应改变摘要(否则可改指向而校验值不变)")
 	}
 }
+
+// TestUIPluginsCarriesSlotTitle:v2 扩展点的 title 必须随聚合下发 —— 丢掉它,
+// 插件的区段/动作/面板标题在宿主里只能显示默认文案(2026-09-19 本机验收逮到:
+// 落位的 manifest 带 title,但 SlotDef 无该字段 → 前端 p.title 为 undefined)。
+func TestUIPluginsCarriesSlotTitle(t *testing.T) {
+	s, _ := newTestServer()
+	dir := t.TempDir()
+	plug := filepath.Join(dir, "demo")
+	if err := os.MkdirAll(filepath.Join(plug, "dist"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	man := `{"id":"demo","version":"1.0.0","slots":[{"name":"extra-panel","priority":10,"module":"./dist/panel.js","title":"示例面板"}]}`
+	if err := os.WriteFile(filepath.Join(plug, "manifest.json"), []byte(man), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(plug, "dist", "panel.js"), []byte("export default {}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s.cfg.UIPluginsDir = dir
+	hs := httptest.NewServer(s.handler())
+	defer hs.Close()
+	resp, err := http.Get(hs.URL + "/api/ui-plugins")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var list []UIPlugin
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || len(list[0].Slots) != 1 || list[0].Slots[0].Title != "示例面板" {
+		t.Fatalf("slot title 未随聚合下发: %+v", list)
+	}
+}

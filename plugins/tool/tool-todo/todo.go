@@ -513,6 +513,12 @@ func (s *Store) path() (string, error) {
 // appendLine 追加一行单行 JSON(经 sdk.AppendJSONLine:含尾部残行修复,防止断电
 // 半写后与新记录粘成坏行导致两条记录同时被读侧跳过)。
 func appendLine(path string, Task Task) error {
+	// 干净数据根下 $GAH_HOME/todos/ 尚不存在:sdk.AppendJSONLine 只追加不建目录
+	// (与 tool-memory 同规矩:调用方负责建父目录),漏掉会让首次建单报
+	// "no such file or directory"(2026-09-19 本机验收逮到),/api/todo 空态也随之是 null。
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("todo: 创建目录: %w", err)
+	}
 	return sdk.AppendJSONLine(path, Task)
 }
 

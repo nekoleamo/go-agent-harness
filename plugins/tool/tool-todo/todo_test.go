@@ -17,6 +17,24 @@ import (
 
 func newStore(t *testing.T) *Store { return NewStore(t.TempDir()) }
 
+// TestCreateWithMissingParentDir 干净数据根(仅 GAH_HOME 存在,todos/ 尚未建):
+// 首次建单必须自建父目录 —— sdk.AppendJSONLine 只追加不建目录,
+// 漏建即报 "no such file or directory"(2026-09-19 本机验收在空数据根上逮到)。
+func TestCreateWithMissingParentDir(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "todos", "nested")
+	s := NewStore(root)
+	tk, err := s.Create("首次建单", "", "跑验收", "", nil, nil)
+	if err != nil {
+		t.Fatalf("父目录不存在时建单应自建目录并成功,得 %v", err)
+	}
+	if tk.ID == "" || tk.Status != StatusPending {
+		t.Fatalf("建单结果不符: %+v", tk)
+	}
+	if got := s.List(""); len(got) != 1 || got[0].Subject != "首次建单" {
+		t.Fatalf("回读不符: %+v", got)
+	}
+}
+
 func mustCreate(t *testing.T, s *Store, subject string, blockedBy ...string) string {
 	t.Helper()
 	tk, err := s.Create(subject, "", "", "", nil, blockedBy)

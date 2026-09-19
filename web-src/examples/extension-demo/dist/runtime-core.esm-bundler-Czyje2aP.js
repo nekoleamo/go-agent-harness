@@ -3,15 +3,15 @@
 * (c) 2018-present Yuxi (Evan) You and Vue contributors
 * @license MIT
 **/
-const z = (t) => t.charCodeAt(0) === 111 && t.charCodeAt(1) === 110 && // uppercase letter
-(t.charCodeAt(2) > 122 || t.charCodeAt(2) < 97), O = (t) => t.startsWith("onUpdate:"), E = Object.assign, f = Array.isArray, m = (t) => typeof t == "function", a = (t) => typeof t == "string", w = (t) => typeof t == "symbol", g = (t) => t !== null && typeof t == "object";
-let A;
-const T = () => A || (A = typeof globalThis < "u" ? globalThis : typeof self < "u" ? self : typeof window < "u" ? window : typeof global < "u" ? global : {});
+const O = (t) => t.charCodeAt(0) === 111 && t.charCodeAt(1) === 110 && // uppercase letter
+(t.charCodeAt(2) > 122 || t.charCodeAt(2) < 97), w = (t) => t.startsWith("onUpdate:"), E = Object.assign, f = Array.isArray, m = (t) => typeof t == "function", a = (t) => typeof t == "string", M = (t) => typeof t == "symbol", g = (t) => t !== null && typeof t == "object";
+let I;
+const T = () => I || (I = typeof globalThis < "u" ? globalThis : typeof self < "u" ? self : typeof window < "u" ? window : typeof global < "u" ? global : {});
 function N(t) {
   if (f(t)) {
     const e = {};
     for (let n = 0; n < t.length; n++) {
-      const l = t[n], s = a(l) ? M(l) : N(l);
+      const l = t[n], s = a(l) ? K(l) : N(l);
       if (s)
         for (const i in s)
           e[i] = s[i];
@@ -20,12 +20,12 @@ function N(t) {
   } else if (a(t) || g(t))
     return t;
 }
-const U = /;(?![^(]*\))/g, D = /:([^]+)/, L = /\/\*[^]*?\*\//g;
-function M(t) {
+const U = /;(?![^(]*\))/g, B = /:([^]+)/, D = /\/\*[^]*?\*\//g;
+function K(t) {
   const e = {};
-  return t.replace(L, "").split(U).forEach((n) => {
+  return t.replace(D, "").split(U).forEach((n) => {
     if (n) {
-      const l = n.split(D);
+      const l = n.split(B);
       l.length > 1 && (e[l[0].trim()] = l[1].trim());
     }
   }), e;
@@ -50,14 +50,14 @@ function h(t) {
 * @license MIT
 **/
 new Set(
-  /* @__PURE__ */ Object.getOwnPropertyNames(Symbol).filter((t) => t !== "arguments" && t !== "caller").map((t) => Symbol[t]).filter(w)
+  /* @__PURE__ */ Object.getOwnPropertyNames(Symbol).filter((t) => t !== "arguments" && t !== "caller").map((t) => Symbol[t]).filter(M)
 );
 // @__NO_SIDE_EFFECTS__
-function k(t) {
+function V(t) {
   return t ? !!t.__v_raw : !1;
 }
 // @__NO_SIDE_EFFECTS__
-function P(t) {
+function L(t) {
   return t ? t.__v_isRef === !0 : !1;
 }
 /**
@@ -65,22 +65,22 @@ function P(t) {
 * (c) 2018-present Yuxi (Evan) You and Vue contributors
 * @license MIT
 **/
-let b = null, B = null;
-const I = (t) => t.__isTeleport;
+let b = null, P = null;
+const A = (t) => t.__isTeleport;
 function G(t) {
   let e = t[0];
   if (t.length > 1) {
     for (const n of t)
-      if (n.type !== d) {
+      if (n.type !== x) {
         e = n;
         break;
       }
   }
   return e;
 }
-function K(t) {
-  if (!W(t))
-    return I(t.type) && t.children ? G(t.children) : t;
+function q(t) {
+  if (!H(t))
+    return A(t.type) && t.children ? G(t.children) : t;
   if (t.component)
     return t.component.subTree;
   const { shapeFlag: e, children: n } = t;
@@ -91,36 +91,36 @@ function K(t) {
       return n.default();
   }
 }
-function x(t, e) {
+function k(t, e) {
   if (t.shapeFlag & 6 && t.component) {
     t.transition = e;
     const n = t.component.subTree;
-    x(
-      I(n.type) && K(n) || n,
+    k(
+      A(n.type) && q(n) || n,
       e
     );
   } else t.shapeFlag & 128 ? (t.ssContent.transition = e.clone(t.ssContent), t.ssFallback.transition = e.clone(t.ssFallback)) : t.transition = e;
 }
 T().requestIdleCallback;
 T().cancelIdleCallback;
-const W = (t) => t.type.__isKeepAlive, q = /* @__PURE__ */ Symbol.for("v-ndc"), H = {}, R = (t) => Object.getPrototypeOf(t) === H, Y = (t) => t.__isSuspense, V = /* @__PURE__ */ Symbol.for("v-fgt"), $ = /* @__PURE__ */ Symbol.for("v-txt"), d = /* @__PURE__ */ Symbol.for("v-cmt");
-function C(t) {
+const H = (t) => t.type.__isKeepAlive, W = /* @__PURE__ */ Symbol.for("v-ndc"), Y = {}, R = (t) => Object.getPrototypeOf(t) === Y, $ = (t) => t.__isSuspense, j = /* @__PURE__ */ Symbol.for("v-fgt"), d = /* @__PURE__ */ Symbol.for("v-txt"), x = /* @__PURE__ */ Symbol.for("v-cmt");
+function p(t) {
   return t ? t.__v_isVNode === !0 : !1;
 }
-const j = ({ key: t }) => t ?? null, _ = ({
+const z = ({ key: t }) => t ?? null, _ = ({
   ref: t,
   ref_key: e,
   ref_for: n
-}) => (typeof t == "number" && (t = "" + t), t != null ? a(t) || /* @__PURE__ */ P(t) || m(t) ? { i: b, r: t, k: e, f: !!n } : t : null);
-function J(t, e = null, n = null, l = 0, s = null, i = t === V ? 0 : 1, c = !1, r = !1) {
+}) => (typeof t == "number" && (t = "" + t), t != null ? a(t) || /* @__PURE__ */ L(t) || m(t) ? { i: b, r: t, k: e, f: !!n } : t : null);
+function J(t, e = null, n = null, l = 0, s = null, i = t === j ? 0 : 1, c = !1, r = !1) {
   const o = {
     __v_isVNode: !0,
     __v_skip: !0,
     type: t,
     props: e,
-    key: e && j(e),
+    key: e && z(e),
     ref: e && _(e),
-    scopeId: B,
+    scopeId: P,
     slotScopeIds: null,
     children: n,
     component: null,
@@ -146,7 +146,7 @@ function J(t, e = null, n = null, l = 0, s = null, i = t === V ? 0 : 1, c = !1, 
 }
 const u = Q;
 function Q(t, e = null, n = null, l = 0, s = null, i = !1) {
-  if ((!t || t === q) && (t = d), C(t)) {
+  if ((!t || t === W) && (t = x), p(t)) {
     const r = F(
       t,
       e,
@@ -158,9 +158,9 @@ function Q(t, e = null, n = null, l = 0, s = null, i = !1) {
   if (tt(t) && (t = t.__vccOpts), e) {
     e = X(e);
     let { class: r, style: o } = e;
-    r && !a(r) && (e.class = h(r)), g(o) && (/* @__PURE__ */ k(o) && !f(o) && (o = E({}, o)), e.style = N(o));
+    r && !a(r) && (e.class = h(r)), g(o) && (/* @__PURE__ */ V(o) && !f(o) && (o = E({}, o)), e.style = N(o));
   }
-  const c = a(t) ? 1 : Y(t) ? 128 : I(t) ? 64 : g(t) ? 4 : m(t) ? 2 : 0;
+  const c = a(t) ? 1 : $(t) ? 128 : A(t) ? 64 : g(t) ? 4 : m(t) ? 2 : 0;
   return J(
     t,
     e,
@@ -173,15 +173,15 @@ function Q(t, e = null, n = null, l = 0, s = null, i = !1) {
   );
 }
 function X(t) {
-  return t ? /* @__PURE__ */ k(t) || R(t) ? E({}, t) : t : null;
+  return t ? /* @__PURE__ */ V(t) || R(t) ? E({}, t) : t : null;
 }
 function F(t, e, n = !1, l = !1) {
-  const { props: s, ref: i, patchFlag: c, children: r, transition: o } = t, p = e ? v(s || {}, e) : s, S = {
+  const { props: s, ref: i, patchFlag: c, children: r, transition: o } = t, S = e ? v(s || {}, e) : s, C = {
     __v_isVNode: !0,
     __v_skip: !0,
     type: t.type,
-    props: p,
-    key: p && j(p),
+    props: S,
+    key: S && z(S),
     ref: e && e.ref ? (
       // #2078 in the case of <component :is="vnode" ref="extra"/>
       // if the vnode itself already has a ref, cloneVNode will need to merge
@@ -200,7 +200,7 @@ function F(t, e, n = !1, l = !1) {
     // existing patch flag to be reliable and need to add the FULL_PROPS flag.
     // note: preserve flag for fragments since they use the flag for children
     // fast paths only.
-    patchFlag: e && t.type !== V ? c === -1 ? 16 : c | 16 : c,
+    patchFlag: e && t.type !== j ? c === -1 ? 16 : c | 16 : c,
     dynamicProps: t.dynamicProps,
     dynamicChildren: t.dynamicChildren,
     appContext: t.appContext,
@@ -220,13 +220,13 @@ function F(t, e, n = !1, l = !1) {
     ctx: t.ctx,
     ce: t.ce
   };
-  return o && l && x(
-    S,
-    o.clone(S)
-  ), S;
+  return o && l && k(
+    C,
+    o.clone(C)
+  ), C;
 }
 function Z(t = " ", e = 0) {
-  return u($, null, t, e);
+  return u(d, null, t, e);
 }
 function y(t, e) {
   let n = 0;
@@ -261,11 +261,11 @@ function v(...t) {
         e.class !== l.class && (e.class = h([e.class, l.class]));
       else if (s === "style")
         e.style = N([e.style, l.style]);
-      else if (z(s)) {
+      else if (O(s)) {
         const i = e[s], c = l[s];
         c && i !== c && !(f(i) && i.includes(c)) ? e[s] = i ? [].concat(i, c) : c : c == null && i == null && // mergeProps({ 'onUpdate:modelValue': undefined }) should not retain
         // the model listener.
-        !O(s) && (e[s] = c);
+        !w(s) && (e[s] = c);
       } else s !== "" && (e[s] = l[s]);
   }
   return e;
@@ -291,33 +291,10 @@ function tt(t) {
 function et(t, e, n) {
   try {
     const l = arguments.length;
-    return l === 2 ? g(e) && !f(e) ? C(e) ? u(t, null, [e]) : u(t, e) : u(t, null, e) : (l > 3 ? n = Array.prototype.slice.call(arguments, 2) : l === 3 && C(n) && (n = [n]), u(t, e, n));
+    return l === 2 ? g(e) && !f(e) ? p(e) ? u(t, null, [e]) : u(t, e) : u(t, null, e) : (l > 3 ? n = Array.prototype.slice.call(arguments, 2) : l === 3 && p(n) && (n = [n]), u(t, e, n));
   } finally {
   }
 }
-const nt = {
-  name: "StatusbarDemo",
-  props: {
-    state: { type: Object, default: () => ({}) }
-  },
-  render() {
-    const t = this.state ?? {};
-    return et(
-      "span",
-      {
-        style: {
-          background: t.running ? "#d4a25c" : "#2a2e36",
-          color: "#0c1015",
-          padding: "1px 8px",
-          borderRadius: "10px",
-          fontWeight: 600,
-          fontSize: "11px"
-        }
-      },
-      "UI-PLUGIN:" + (t.model ?? "(未设置)")
-    );
-  }
-};
 export {
-  nt as default
+  et as h
 };
