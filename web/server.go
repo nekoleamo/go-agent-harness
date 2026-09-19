@@ -629,13 +629,16 @@ type StateView struct {
 	// SandboxEffective 档位联动后的**有效**档(仅当与声明档不同时出现):
 	// policy-guard 在 sync=true 时按审批档覆盖(open → full-access;strict → read-only),
 	// 前端只看 sandbox 会与实际拦截行为不一致。
-	SandboxEffective string         `json:"sandbox_effective,omitempty"`
-	SandboxDerived   bool           `json:"sandbox_derived,omitempty"` // 有效档由审批档联动覆盖而来
-	Approval         string         `json:"approval,omitempty"`        // M17:审批档位(open|smart|strict;未装配省略)
-	Stats            sdk.UsageStats `json:"stats"`
-	Session          *SessionV      `json:"session,omitempty"`
-	Running          bool           `json:"running"`
-	Version          string         `json:"version"`
+	SandboxEffective string `json:"sandbox_effective,omitempty"`
+	SandboxDerived   bool   `json:"sandbox_derived,omitempty"` // 有效档由审批档联动覆盖而来
+	// SandboxSync 审批档→沙箱有效档 的联动开关(R10 ②-2;仅沙箱实现 sdk.SandboxSync 时出现)。
+	// 与 SandboxDerived 是两件事:sync=false 时"有效档 == 声明档"不再等于"没有联动概念"。
+	SandboxSync *bool          `json:"sandbox_sync,omitempty"`
+	Approval    string         `json:"approval,omitempty"` // M17:审批档位(open|smart|strict;未装配省略)
+	Stats       sdk.UsageStats `json:"stats"`
+	Session     *SessionV      `json:"session,omitempty"`
+	Running     bool           `json:"running"`
+	Version     string         `json:"version"`
 }
 
 // SessionV 会话视图(host-cwd-sessions 未装配时省略)。
@@ -664,6 +667,11 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		Approval: approval,
 		Running:  s.running.Load(),
 		Version:  os.Getenv("GAH_VERSION"),
+	}
+	// 联动开关(可选能力):设置面板据此渲染勾选态;未实现 = 省略(面板不显示该项)。
+	if sc, ok := s.sb.(sdk.SandboxSync); ok {
+		on := sc.SyncEnabled()
+		v.SandboxSync = &on
 	}
 	// 沙箱实现可选能力 sdk.EffectiveSandbox 时对齐"实际生效档"(未实现 = 无联动,字段省略)。
 	if es, ok := s.sb.(sdk.EffectiveSandbox); ok {
@@ -899,12 +907,14 @@ func (s *Server) handleCommands(w http.ResponseWriter, r *http.Request) {
 // 核心交互纯 REST(槽位契约:不绕模板渲染);命令式路径仍经 ctx.commands(host 插件命令)。
 func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Model     string `json:"model"`
-		Thinking  string `json:"thinking"`
-		Sandbox   string `json:"sandbox"`
-		Approval  string `json:"approval"`
-		Workspace string `json:"workspace"`
-		Cancel    bool   `json:"cancel"` // 取消运行中回合(经 ctx.turnControl;未装配 503)
+		Model    string `json:"model"`
+		Thinking string `json:"thinking"`
+		Sandbox  string `json:"sandbox"`
+		Approval string `json:"approval"`
+		// SandboxSync 联动开关(指针:区分"没给"与"显式 false")—— R10 ②-2。
+		SandboxSync *bool  `json:"sandbox_sync"`
+		Workspace   string `json:"workspace"`
+		Cancel      bool   `json:"cancel"` // 取消运行中回合(经 ctx.turnControl;未装配 503)
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "坏请求体", http.StatusBadRequest)
@@ -944,6 +954,15 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 		s.sb.SetMode(sdk.SandboxMode(req.Sandbox))
 		// 持久化偏好(重启恢复)
 		updatePrefs(func(p *prefs.Prefs) { p.Sandbox = req.Sandbox })
+	}
+	if req.SandboxSync != nil {
+		sc, ok := s.sb.(sdk.SandboxSync)
+		if !ok {
+			http.Error(w, "该沙箱不支持联动开关(仅声明档)", http.StatusBadRequest)
+			return
+		}
+		sc.SetSyncEnabled(*req.SandboxSync)
+		updatePrefs(func(p *prefs.Prefs) { p.SandboxSync = req.SandboxSync })
 	}
 	if req.Approval != "" {
 		switch sdk.ApprovalMode(req.Approval) {

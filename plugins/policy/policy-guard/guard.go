@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"strings"
 
+	"github.com/nekoleamo/go-agent-harness/internal/prefs"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -61,7 +62,9 @@ func (p *Plugin) Name() string { return "policy-guard" }
 //
 //	approval:       open|smart|strict(默认 smart,原 policy-approval mode)
 //	sandbox:        read-only|workspace-write|full-access(默认 workspace-write,原 policy-sandbox mode)
-//	sync:           档位联动开关(默认 true:open → 沙箱有效 full-access;strict → 有效 read-only)
+//	sync:           档位联动开关的**默认值**(默认 true:open → 沙箱有效 full-access;
+//	                strict → 有效 read-only)。用户经 /sandbox sync on|off 或 Web 设置面板
+//	                显式选择过时,以 prefs 里的用户选择为准(R10 ②-2:配置是默认、用户选择是覆盖)。
 //	approval_tools: 需逐次审批的工具名列表(默认空;E-A 工具级审批。远程/破坏性副作用工具
 //	                如远程发送/部署类副作用工具应入此表;支持列表或逗号/空白分隔字符串)
 func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
@@ -80,6 +83,13 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		if v, ok := m.Data["approval_tools"]; ok {
 			approvalTools = parseApprovalTools(v)
 		}
+	}
+
+	// 用户显式选择覆盖配置默认(启动恢复;/sandbox sync 与设置面板写同一 prefs)。
+	// 在这里读而不是在各端启动时读:headless/定时任务也走同一 Start,否则「关掉联动」
+	// 这个安全相关选择会在无人值守场景静默失效。
+	if v := prefs.Load().SandboxSync; v != nil {
+		sync = *v
 	}
 
 	var confirm sdk.ConfirmService

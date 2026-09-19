@@ -23,6 +23,9 @@ import (
 var syncedHelpers = []string{
 	"sandboxStatusText",
 	"sandboxSetText",
+	"sandboxSyncText",
+	"sandboxSyncSetText",
+	"sandboxSyncLevel",
 	"approvalSource",
 	"approvalStatusText",
 }

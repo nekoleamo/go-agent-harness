@@ -4,6 +4,7 @@ package prefs
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -30,6 +31,37 @@ func TestPrefsRoundtrip(t *testing.T) {
 	// 文件确实写在新名 gah-state.json
 	if _, err := os.Stat(filepath.Join(home, "config", "gah-state.json")); err != nil {
 		t.Fatalf("应写 gah-state.json: %v", err)
+	}
+}
+
+// TestSandboxSyncPrefsTriState 联动开关是**三态**:nil = 未设置(用插件 config 默认)、
+// true/false = 用户显式选择。零值不能与"显式 false"混淆,否则「关掉联动」会被当成没设置。
+func TestSandboxSyncPrefsTriState(t *testing.T) {
+	t.Setenv("GAH_HOME", t.TempDir())
+	if v := Load().SandboxSync; v != nil {
+		t.Fatalf("初始应为 nil(未设置),got %v", *v)
+	}
+	SetSandboxSync(false)
+	v := Load().SandboxSync
+	if v == nil || *v {
+		t.Fatalf("显式 false 应被记住,got %v", v)
+	}
+	// 与其它字段互不干扰(Update 是读-改-写,不整体覆写)
+	SetApproval("strict")
+	if v := Load().SandboxSync; v == nil || *v {
+		t.Fatal("写别的字段不得抹掉 sandbox_sync")
+	}
+	SetSandboxSync(true)
+	if v := Load().SandboxSync; v == nil || !*v {
+		t.Fatalf("显式 true 应被记住,got %v", v)
+	}
+	// 序列化形状:显式 false 必须落进 JSON(omitempty 不该吃掉 false)
+	raw, err := os.ReadFile(filepath.Join(os.Getenv("GAH_HOME"), "config", "gah-state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"sandbox_sync":true`) {
+		t.Fatalf("应落 JSON 字段: %s", raw)
 	}
 }
 

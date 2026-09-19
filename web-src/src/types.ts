@@ -161,6 +161,8 @@ export interface StateView {
   // 展示"实际生效档"用 sandbox_effective ?? sandbox(旧后端无此字段时语义不变)
   sandbox_effective?: string
   sandbox_derived?: boolean
+  // 审批档→沙箱有效档 的联动开关(R10 ②-2;后端未实现 sdk.SandboxSync 时省略 = 不显示该项)
+  sandbox_sync?: boolean
   approval?: string
   stats: UsageStats
   session?: SessionView

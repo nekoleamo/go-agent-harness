@@ -220,7 +220,11 @@ async function applyModel(): Promise<void> {
     busy.value = false
   }
 }
-async function applyCtl(body: { thinking?: string; sandbox?: string; approval?: string }): Promise<void> {
+// onSyncToggle 联动开关勾选(R10 ②-2):模板里不写类型断言,取 checked 的脏活留在脚本里。
+function onSyncToggle(e: Event): void {
+  applyCtl({ sandbox_sync: (e.target as HTMLInputElement).checked })
+}
+async function applyCtl(body: { thinking?: string; sandbox?: string; approval?: string; sandbox_sync?: boolean }): Promise<void> {
   try {
     await api.control(body)
     emit('changed')
@@ -736,6 +740,22 @@ watch(
                 {{ s.label }}
               </button>
             </div>
+          </div>
+          <!-- 联动开关(R10 ②-2):默认开启时审批档会覆盖沙箱档(开放 → 完全访问、
+               严格 → 只读),于是"改了沙箱档却不生效";关掉后沙箱档独立生效。
+               后端不支持时该字段缺失 → 整行不显示(不摆一个点了没反应的开关)。 -->
+          <div v-if="props.state.sandbox_sync !== undefined" class="row">
+            <span class="lab-inline">档位联动</span>
+            <label class="chk" :data-tip="'审批档联动沙箱:开启时开放档 → 完全访问、严格档 → 只读'">
+              <input
+                type="checkbox"
+                :checked="props.state.sandbox_sync"
+                :disabled="busy"
+                @change="onSyncToggle"
+              />
+              <span>审批档覆盖沙箱档</span>
+            </label>
+            <span class="dim grow">{{ props.state.sandbox_sync ? '开启' : '关闭(沙箱档独立生效)' }}</span>
           </div>
         </section>
 

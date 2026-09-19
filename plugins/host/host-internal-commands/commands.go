@@ -99,10 +99,14 @@ func (h *Host) specs() []sdk.CommandSpec {
 				}},
 				{Options: h.providerLevel2, FreeArgs: h.providerFree2},
 			}},
-		{Name: "sandbox", Usage: "/sandbox ro|ws|full", Desc: "运行期切沙箱档", Run: h.cmdSandbox,
-			Args: []sdk.ArgLevel{{Options: func([]string) []sdk.Option {
-				return []sdk.Option{{Value: "ro", Desc: "只读"}, {Value: "ws", Desc: "工作区写入"}, {Value: "full", Desc: "完全访问"}}
-			}}}},
+		{Name: "sandbox", Usage: "/sandbox ro|ws|full|sync [on|off]", Desc: "运行期切沙箱档/切换审批档联动", Run: h.cmdSandbox,
+			Args: []sdk.ArgLevel{
+				{Options: func([]string) []sdk.Option {
+					return []sdk.Option{{Value: "ro", Desc: "只读"}, {Value: "ws", Desc: "工作区写入"}, {Value: "full", Desc: "完全访问"},
+						{Value: "sync", Desc: "审批档联动开关(off = 沙箱档位独立生效)"}}
+				}},
+				{Options: sandboxSyncLevel},
+			}},
 		{Name: "approval", Usage: "/approval open|smart|strict", Desc: "运行期切审批档", Run: h.cmdApproval,
 			Args: []sdk.ArgLevel{{Options: func([]string) []sdk.Option {
 				return []sdk.Option{{Value: "open", Desc: "开放:危险操作直接放行"}, {Value: "smart", Desc: "智能:命中危险模式弹确认"}, {Value: "strict", Desc: "严格:危险操作直接拒绝"}}
@@ -238,6 +242,12 @@ func (h *Host) cmdSandbox(args []string) (string, error) {
 	if len(args) < 1 {
 		return sandboxStatusText(sb, h.approvalMode()), nil
 	}
+	// /sandbox sync [on|off]:审批档 → 沙箱有效档 的联动开关(R10 ②-2)。
+	// 无参只回显;开关关掉后沙箱档位独立生效,不再被 approval 覆盖(可见性由 ②-1 解决,
+	// 这里解决可控性:此前只能改 config 重启)。
+	if args[0] == "sync" {
+		return h.sandboxSync(args[1:])
+	}
 	var mode sdk.SandboxMode
 	switch args[0] {
 	case "ro":
@@ -247,11 +257,38 @@ func (h *Host) cmdSandbox(args []string) (string, error) {
 	case "full":
 		mode = sdk.SandboxFullAccess
 	default:
-		return "", errString("/sandbox ro|ws|full")
+		return "", errString("/sandbox ro|ws|full|sync [on|off]")
 	}
 	sb.SetMode(mode)
 	prefs.SetSandbox(string(mode)) // 退出即记(与 Web 共享偏好)
 	return sandboxSetText(sb, h.approvalMode()), nil
+}
+
+// sandboxSync 联动开关子命令(无参回显 / on|off 切换 + 退出即记偏好)。
+func (h *Host) sandboxSync(args []string) (string, error) {
+	sb := h.sandboxOrNil()
+	if sb == nil {
+		return "", errString("ctx.sandbox 未装配: 无法查看联动开关")
+	}
+	sc, ok := sb.(sdk.SandboxSync)
+	if !ok {
+		return "", errString("该沙箱不支持联动开关(仅声明档)")
+	}
+	if len(args) < 1 {
+		return sandboxSyncText(sb, h.approvalMode()), nil
+	}
+	var on bool
+	switch args[0] {
+	case "on":
+		on = true
+	case "off":
+		on = false
+	default:
+		return "", errString("/sandbox sync on|off")
+	}
+	sc.SetSyncEnabled(on)
+	prefs.SetSandboxSync(on) // 退出即记(与 Web 共享偏好)
+	return sandboxSyncSetText(sb, on, h.approvalMode()), nil
 }
 
 // sandboxOrNil 宽松取沙箱服务(未装配返回 nil:档位回显可降级,命令主功能仍显式报错)。
@@ -270,6 +307,45 @@ func (h *Host) approvalMode() sdk.ApprovalMode {
 		return ""
 	}
 	return ap.Mode()
+}
+
+// sandboxSyncLevel /sandbox 二级参数(sync → on|off;其它子命令无二级,选完即执行)。
+func sandboxSyncLevel(picked []string) []sdk.Option {
+	if len(picked) < 2 || picked[1] != "sync" {
+		return nil
+	}
+	return []sdk.Option{{Value: "on", Desc: "开启联动:审批档覆盖沙箱有效档"}, {Value: "off", Desc: "关闭联动:沙箱档位独立生效"}}
+}
+
+// sandboxSyncText 联动开关回显:开关状态 + 它此刻是否真在覆盖。
+// 覆盖与否以 EffectiveMode() 实报为准(不按 approval 猜),语义与沙箱档位回显同一纪律。
+func sandboxSyncText(sb sdk.Sandbox, approval sdk.ApprovalMode) string {
+	sc, ok := sb.(sdk.SandboxSync)
+	if !ok {
+		return "沙箱联动: 该沙箱不支持联动开关(仅声明档)"
+	}
+	if !sc.SyncEnabled() {
+		return "沙箱联动: off;沙箱档位独立生效,不被审批档覆盖(当前有效档 " + string(sb.Mode()) + ")"
+	}
+	if es, ok := sb.(sdk.EffectiveSandbox); ok {
+		if eff := string(es.EffectiveMode()); eff != string(sb.Mode()) {
+			return "沙箱联动: on;当前有效档 " + eff + "(" + approvalSource(approval) + ")"
+		}
+	}
+	return "沙箱联动: on"
+}
+
+// sandboxSyncSetText 联动开关切换回显(切完立刻报当前有效档:生效与否一眼可见)。
+func sandboxSyncSetText(sb sdk.Sandbox, on bool, approval sdk.ApprovalMode) string {
+	if !on {
+		return "沙箱联动 -> off;沙箱档位独立生效(当前有效档 " + string(sb.Mode()) + ")"
+	}
+	if es, ok := sb.(sdk.EffectiveSandbox); ok {
+		if eff := string(es.EffectiveMode()); eff != string(sb.Mode()) {
+			return "沙箱联动 -> on;当前有效档 " + eff + "(" + approvalSource(approval) + ")"
+		}
+	}
+	return "沙箱联动 -> on"
 }
 
 // sandboxStatusText 沙箱档位回显:声明档 + 联动后的有效档(不一致时标注联动来源)。

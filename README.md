@@ -31,7 +31,7 @@ Go 实现的编程代理 Agent Harness:以**单静态二进制**交付全部能�
 | **ReAct 循环** | 对齐 dsh 轮次:pre-step → llm/stream → tool/call* → turn/end,AgentLoop 本身可替换 |
 | **结构化工具** | MCP 兼容 JSON schema;执行流水线 pre-execute(veto)→ execute → post-execute → result 广播;错误结构化回传模型 |
 | **LLM 统一域模型** | 纯 HTTP+SSE 的 OpenAI 兼容适配器(DeepSeek/OpenAI/Ollama/vLLM/Kimi/llama.cpp 通吃)+ Anthropic 适配器(`claude-*` 前缀路由)+ mock 适配器(CI 免外网);多 provider 并存(`/provider`) |
-| **沙箱三档** | read-only / workspace-write(防 `../` 穿越)/ full-access,TUI `/sandbox` 与 Web 设置面板运行期切换;**写路径统一裁决**:`file_*` 参数与 `shell` 命令的写目标(重定向、写命令、输出旗标 `-o/-O/-C/-t/--target/--prefix`、`git clone` 目标)都必须落在档位允许范围内(`shell` 越界写 / 含变量等不可裁决写目标直接拒绝)——审批通过 ≠ 放开档位,需显式切 full-access;**档位联动可见**:审批档 `open`/`strict` 会覆盖沙箱有效档(`full-access`/`read-only`),`/sandbox`、`/approval`、TUI 状态栏与 Web 状态均回显「声明档 → 有效档(联动来源)」,不再静默失效;**内核级沙箱(第 3 组)**:macOS seatbelt / Linux Landlock 在**子进程树**层面兜住「写目标判不出来」的写(解释器内部写、`ccache`/`make` 包装器、`go install`、`curl -O` 等),并把**写目标表**继续补全(第 2 组:`sort -o`、`patch -o/-d`、`cargo --target-dir`、`npm --cache`、`pip --cache-dir/-d`、`gcc -MF/-MJ`、`go test -coverprofile/-trace`、`find -exec/-delete/-fprint`、`mktemp -p`、`split`、`tar czf`、`zip`/`7z`、`cmake --prefix`);**Windows 仍只有协作层**(无等价无特权机制) |
+| **沙箱三档** | read-only / workspace-write(防 `../` 穿越)/ full-access,TUI `/sandbox` 与 Web 设置面板运行期切换;**写路径统一裁决**:`file_*` 参数与 `shell` 命令的写目标(重定向、写命令、输出旗标 `-o/-O/-C/-t/--target/--prefix`、`git clone` 目标)都必须落在档位允许范围内(`shell` 越界写 / 含变量等不可裁决写目标直接拒绝)——审批通过 ≠ 放开档位,需显式切 full-access;**档位联动可见且可控**:审批档 `open`/`strict` 会覆盖沙箱有效档(`full-access`/`read-only`),`/sandbox`、`/approval`、TUI 状态栏与 Web 状态均回显「声明档 → 有效档(联动来源)」,不再静默失效;要「开着 open 但仍守住沙箱档」就关掉联动 —— **`/sandbox sync off`** 或 Web 设置面板「档位联动」勾选框(两者同一偏好,重启恢复;关掉后沙箱档独立生效、拦截行为跟着变);**内核级沙箱(第 3 组)**:macOS seatbelt / Linux Landlock 在**子进程树**层面兜住「写目标判不出来」的写(解释器内部写、`ccache`/`make` 包装器、`go install`、`curl -O` 等),并把**写目标表**继续补全(第 2 组:`sort -o`、`patch -o/-d`、`cargo --target-dir`、`npm --cache`、`pip --cache-dir/-d`、`gcc -MF/-MJ`、`go test -coverprofile/-trace`、`find -exec/-delete/-fprint`、`mktemp -p`、`split`、`tar czf`、`zip`/`7z`、`cmake --prefix`);**Windows 仍只有协作层**(无等价无特权机制) |
 | **审批三档** | 危险命令(rm -rf / git push -f / sudo / chmod 777…)按档:开放 open(放行)/ 智能 smart(弹确认,无确认通道时安全拒绝,默认)/ 严格 strict(拒绝);偏好持久化 |
 | **凭据隔离** | 工具子进程 env 滤除 `*_API_KEY/_TOKEN/_SECRET`;危险操作无确认通道时安全拒绝 |
 | **会话管理** | 项目级隔离 + 多会话切换 + 分支树(`/fork` `/clone` `/tree` + 命名);超预算 token 滚动摘要压缩(token-compress,完整日志留盘) |
@@ -202,6 +202,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `/model <名>` | 切换模型(**动态枚举当前端点全部模型**,来源括号备注如 `(siliconflow)`;选中自动切所属 provider;列表失败/无 key 回退手动输入) |
 | `/thinking off\|low\|medium\|high` | 思考等级(推理预算);**快捷键 Shift+Tab 循环前进**;状态栏显示 `思维: <等级>`(off 隐藏) |
 | `/sandbox ro\|ws\|full` | 运行期切沙箱档(只读/工作区写入/完全访问;状态栏实时显示,偏好持久化重启恢复) |
+| `/sandbox sync [on\|off]` | 审批档→沙箱有效档 的**联动开关**(无参=回显开关与当前有效档):`off` 后沙箱档独立生效,不再被 `open`/`strict` 覆盖(例:审批 `open` 想少弹确认、又不想放开越界写);用户选择持久化(`gah-state.json`),重启与无人值守场景都按它恢复;沙箱实现没有该能力时显式报不支持 |
 | `/approval open\|smart\|strict` | 运行期切审批档(开放=危险命令直接放行 / 智能=命中弹确认(默认)/ 严格=直接拒绝;偏好持久化重启恢复) |
 | `/provider show\|add\|use\|set\|unset\|clear` | 配置 LLM 提供商(多 provider 并存):`show` 列出(活跃★凭据打码)/ `add 端点 key [model]` 新增(首个自动活跃)/ `use <名>` 切换 / `set 端点 key [model]` 编辑活跃 / `unset 字段` 逐项删(回退 env/样板)/ `clear` 全清并复位 |
 | `/plugins list\|on\|off <id>` | 运行期插拔插件(`on/off` 持久化开关,重启仍生效;`default` 恢复配置树默认) |
@@ -283,7 +284,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | 方法 路径 | 说明 |
 |---|---|
 | `POST /api/auth` | 引导通道:`{"token":"…"}`(或 `Authorization: Bearer`)换 `gah_token` cookie(POST-only,错误 token 401);唯一豁免鉴权门的路径,仍受 Host 白名单 + 同源校验 |
-| `GET /api/state` | 状态快照(model/thinking/sandbox/approval/stats/session/running/version) |
+| `GET /api/state` | 状态快照(model/thinking/sandbox/sandbox_effective/sandbox_sync/approval/stats/session/running/version) |
 | `POST /api/input` | 提交回合;`/` 前缀走命令;running 时 409 |
 | `POST /api/confirm` | 审批应答 `{id, ok}` |
 | `GET /api/events` + `GET /api/events/ws` | 事件流(SSE 断线重放 / WS;首连发 `baseline` 基线 + 尾部窗口,续传按 `after` 补差集) |

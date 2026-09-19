@@ -1,6 +1,8 @@
 // Package prefs 宿主共享运行偏好(思考/沙箱/历史注入)持久化:TUI 与 Web 双端
 // 读写同一 $GAH_HOME/config/gah-state.json(退出即记,启动恢复)。
-// 运行时包(web/、tui/)可用;插件(plugins/)不得 import(仅 import sdk 红线)。
+// 写入方:运行时包(web/、tui/)与**宿主内置插件**(plugins/host/、plugins/policy/:随单二进制
+// 编译、非插件包依赖,不构成 import 环,如 host-internal-commands 的命令回写)。外部插件
+// (extplugins/,独立 module 的外部二进制)不在此列 —— 它们只 import sdk。
 // model 走 providerfile 持久化,不在此文件。
 package prefs
 
@@ -17,6 +19,9 @@ type Prefs struct {
 	Sandbox  string `json:"sandbox,omitempty"`
 	Approval string `json:"approval,omitempty"`
 	History  *int   `json:"history,omitempty"`
+	// SandboxSync 档位联动开关(审批档 → 沙箱有效档)的用户选择:R10 ②-2。
+	// nil = 未设置(用插件 config 的 data.sync 默认值);非 nil = 用户显式选择,覆盖 config。
+	SandboxSync *bool `json:"sandbox_sync,omitempty"`
 	// Statusline TUI 状态栏项集合与顺序(/statusline;空 = 基线默认顺序)。
 	Statusline []string `json:"statusline,omitempty"`
 }
@@ -133,12 +138,15 @@ func writeFileAtomic(path string, raw []byte, perm os.FileMode) error {
 	return nil
 }
 
-// SetThinking / SetSandbox / SetHistory / SetApproval 便捷更新(全走 Update:
+// SetThinking / SetSandbox / SetHistory / SetApproval / SetSandboxSync 便捷更新(全走 Update:
 // 读-改-写在锁内完成,不与他写者的字段互相覆盖)。
 func SetThinking(v string) { Update(func(p *Prefs) { p.Thinking = v }) }
 func SetSandbox(v string)  { Update(func(p *Prefs) { p.Sandbox = v }) }
 func SetHistory(n int)     { Update(func(p *Prefs) { p.History = &n }) }
 func SetApproval(v string) { Update(func(p *Prefs) { p.Approval = v }) }
+
+// SetSandboxSync 档位联动开关(/sandbox sync on|off 与 Web 设置面板同一偏好)。
+func SetSandboxSync(v bool) { Update(func(p *Prefs) { p.SandboxSync = &v }) }
 
 // SetStatusline 状态栏项集合与顺序(nil/空 = 回基线默认)。
 func SetStatusline(items []string) {

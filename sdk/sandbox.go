@@ -48,6 +48,21 @@ type RootScoped interface {
 	ValidateReadAt(root, p string) error
 }
 
+// SandboxSync 可选能力:档位联动开关(审批档 → 沙箱有效档)的读取与运行期切换。
+//
+// 为什么需要它:联动是 policy-guard 的设计(approval=open → 有效 full-access),但
+// 「联动着开、我改了沙箱档却没生效」是个安全相关的意外 —— 声明档与行为不一致。
+// 可见性已由 EffectiveSandbox 解决(如实显示有效档),本接口解决**可控性**:
+// 关掉联动后,沙箱档位独立生效、不再被审批档覆盖。
+//
+// 未实现该接口 = 该沙箱没有联动概念(`/sandbox sync` 显式报「不支持」,不假装成功)。
+type SandboxSync interface {
+	// SyncEnabled 联动是否开启(默认由实现/配置决定)。
+	SyncEnabled() bool
+	// SetSyncEnabled 运行期切换联动(调用方负责持久化用户选择)。
+	SetSyncEnabled(on bool)
+}
+
 // EffectiveSandbox 可选能力:返回档位联动后的**有效**档位。
 // approval 为权威档位时(open → full-access;strict → read-only),工具侧/状态展示
 // 若只读 Mode() 会与实际拦截行为不一致;实现此接口即可对齐。

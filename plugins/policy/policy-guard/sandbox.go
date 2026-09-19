@@ -50,6 +50,21 @@ func (p *SandboxPolicy) Root() string {
 	return p.root
 }
 
+// SyncEnabled / SetSyncEnabled 档位联动开关(实现 sdk.SandboxSync;R10 ②-2)。
+// 运行期切换不持久化 —— 持久化是调用方的事(命令/设置面板写 prefs),本类型只管语义。
+func (p *SandboxPolicy) SyncEnabled() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.sync
+}
+
+// SetSyncEnabled 切换联动开关(联动关掉后 effectiveMode() 直接回声明档)。
+func (p *SandboxPolicy) SetSyncEnabled(on bool) {
+	p.mu.Lock()
+	p.sync = on
+	p.mu.Unlock()
+}
+
 // effectiveMode 由 link.go 定义(调用方须持读锁)。
 
 // EffectiveMode 档位联动后的有效档(实现 sdk.EffectiveSandbox;工具侧与状态展示对齐用)。

@@ -85,7 +85,7 @@ export const api = {
     return v
   },
   // 状态栏级控制(模型/思考/沙箱/审批/工作区;M17 审批档位 open|smart|strict)
-  control(body: { model?: string; thinking?: string; sandbox?: string; approval?: string; workspace?: string }): Promise<void> {
+  control(body: { model?: string; thinking?: string; sandbox?: string; approval?: string; sandbox_sync?: boolean; workspace?: string }): Promise<void> {
     return req('/api/control', { method: 'POST', headers: json, body: JSON.stringify(body) })
   },
 
