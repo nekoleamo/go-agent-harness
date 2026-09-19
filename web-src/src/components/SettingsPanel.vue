@@ -234,7 +234,8 @@ async function applyCtl(body: { thinking?: string; sandbox?: string; approval?: 
 }
 
 // —— 数据备份(M18) ——
-const backups = ref<{ name: string; size: number; time: number }[]>([])
+// 字段名与 sdk.BackupInfo 序列化一致(无 json tag → 大写);小写读会导致空名 + NaN KB。
+const backups = ref<{ Name: string; Size: number; Time: number }[]>([])
 const backupMsg = ref('')
 async function loadBackups(): Promise<void> {
   try {
@@ -257,7 +258,7 @@ async function doBackupNow(): Promise<void> {
   }
 }
 function doBackupRestore(): void {
-  const name = backups.value[0]?.name ?? ''
+  const name = backups.value[0]?.Name ?? ''
   if (!name) return
   guard('恢复备份 ' + name + '?(覆盖当前数据;恢复前自动先备份当前态)', true, async () => {
     busy.value = true
@@ -864,13 +865,13 @@ watch(
               v-if="backups.length"
               class="ghost danger-text"
               :disabled="busy"
-              :data-tip="'恢复 ' + backups[0].name"
+              :data-tip="'恢复 ' + backups[0].Name"
               @click="doBackupRestore()"
             >
               恢复最新备份
             </button>
           </div>
-          <p v-if="backups.length" class="dim">最近备份:{{ backups[0].name }} · {{ fmtSize(backups[0].size) }}
+          <p v-if="backups.length" class="dim">最近备份:{{ backups[0].Name }} · {{ fmtSize(backups[0].Size) }}
             <span v-if="backups.length > 1">(共 {{ backups.length }} 份)</span></p>
           <p v-else class="dim">暂无备份(/backup 或立即备份创建第一份)</p>
           <p v-if="backupMsg" class="dim ok">{{ backupMsg }}</p>

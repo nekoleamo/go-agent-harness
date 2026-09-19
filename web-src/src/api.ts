@@ -90,7 +90,9 @@ export const api = {
   },
 
   // —— 整体备份(M18) ——
-  backups(): Promise<{ name: string; size: number; time: number }[]> {
+  // 列表项 = sdk.BackupInfo(无 json tag → 序列化为 Go 原样大写,与 ProviderInfo/PluginInfo 同规则)。
+  // 曾按小写读取 → 面板行渲染成「最近备份: · NaN KB」(第二十二批验收逮到并修)。
+  backups(): Promise<{ Name: string; Size: number; Time: number }[]> {
     return req('/api/backup')
   },
   backupNow(dest?: string): Promise<{ ok: true; name: string }> {

@@ -1708,12 +1708,25 @@ func TestBackupEndpoint(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Fatalf("backup 列表应 200,得 %d", resp.StatusCode)
 	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var list []sdk.BackupInfo
-	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+	if err := json.Unmarshal(body, &list); err != nil {
 		t.Fatal(err)
 	}
 	if len(list) != 1 || list[0].Name != "gah-backup-test.tar.gz" {
 		t.Fatalf("backup 列表不符 %+v", list)
+	}
+
+	// wire 契约护栏:字段名必须与前端读取的一致(web-src/src/api.ts backups())。
+	// 解码进 []sdk.BackupInfo 对键名大小写完全不敏感 —— 第二十二批验收就是靠真机
+	// 发现前端按小写读、面板渲染成「最近备份: · NaN KB」的(此处锁原始 key)。
+	for _, k := range []string{"\"Name\"", "\"Size\"", "\"Time\""} {
+		if !strings.Contains(string(body), k) {
+			t.Fatalf("backup 列表 wire 缺字段 %s(前端按此读取): %s", k, body)
+		}
 	}
 
 	resp, err = http.Post(hs2.URL+"/api/backup", "application/json",
