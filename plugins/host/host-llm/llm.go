@@ -218,6 +218,39 @@ func (s *Service) SetActiveProvider(name string) error {
 	return s.switchActive(p)
 }
 
+// RemoveProvider 删除一个 provider(provider.yaml 为单一事实源:先落盘再同步运行时)。
+// 删非活跃只掉列表;删活跃则活跃顺延到剩余首个并立即 Configure 生效;删空回退 env/样板。
+func (s *Service) RemoveProvider(name string) error {
+	f, err := providerfile.LoadFile()
+	if err != nil {
+		return err
+	}
+	if _, ok := findProvider(f, name); !ok {
+		return fmt.Errorf("provider: 不存在 %q(/provider show 查看)", name)
+	}
+	wasActive := f.Active == name
+	if err := providerfile.Remove(name); err != nil {
+		return err
+	}
+	// 聚合缓存必须同步失效:否则被删端点在 /model 下拉里滞留到 TTL 到期(删了还在)。
+	s.invalidateModelsCache()
+	if !wasActive {
+		return nil
+	}
+	next, err := providerfile.LoadFile()
+	if err != nil {
+		return err
+	}
+	if next.Active == "" {
+		return s.ResetProvider() // 删空:回退启动默认(env/样板)
+	}
+	p, ok := findProvider(next, next.Active)
+	if !ok {
+		return nil
+	}
+	return s.switchActive(p)
+}
+
 // findProvider 从文件视图按名取 provider。
 func findProvider(f providerfile.File, name string) (providerfile.Provider, bool) {
 	for _, p := range f.Providers {

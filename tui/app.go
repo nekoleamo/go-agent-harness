@@ -1829,11 +1829,12 @@ func (a *App) cmdThinking(args []string) (string, error) {
 	return "思考等级 -> " + args[0], nil
 }
 
-// cmdProvider /provider show|set|clear:LLM 提供商运行时配置(TUI 入口)。
-// set 写 provider.yaml(0600)并立即生效;重启后 env 显式优先、其次本文件。
+// cmdProvider /provider show|set|remove|clear:LLM 提供商运行时配置(TUI 入口)。
+// 注:标准 bundle 下 host-internal-commands 已下沉同名命令(判重跳过本副本),
+// 本副本仅服务未装配 host-internal-commands 的极简宿主;两处行为必须保持一致。
 func (a *App) cmdProvider(args []string) (string, error) {
 	if len(args) < 1 {
-		return "", errString("/provider show|add|use|set|unset|clear")
+		return "", errString("/provider show|add|use|set|unset|remove|clear")
 	}
 	switch args[0] {
 	case "show":
@@ -1846,6 +1847,8 @@ func (a *App) cmdProvider(args []string) (string, error) {
 		return a.providerSet(args[1:])
 	case "unset":
 		return a.providerUnset(args[1:])
+	case "remove":
+		return a.providerRemove(args[1:])
 	case "clear":
 		if err := providerfile.Clear(); err != nil {
 			return "", errString("清除失败: " + err.Error())
@@ -1856,7 +1859,7 @@ func (a *App) cmdProvider(args []string) (string, error) {
 		a.syncDisplay()
 		return "已清除全部 provider 并复位运行期(回退 env/样板)", nil
 	default:
-		return "", errString("/provider show|add|use|set|unset|clear")
+		return "", errString("/provider show|add|use|set|unset|remove|clear")
 	}
 }
 
@@ -2034,13 +2037,39 @@ func (a *App) providerUnset(args []string) (string, error) {
 	return "已删除 " + args[0] + "(持久化与运行期均已回退)", nil
 }
 
-// providerLevel2 /provider 二级:use → 枚举现有 provider 名;unset → 字段枚举。
+// providerRemove 删除单条 provider(与 host-internal-commands 的 /provider remove 同语义:
+// 删活跃则活跃顺延剩余首个并重切;删空回退 env/样板)。
+func (a *App) providerRemove(args []string) (string, error) {
+	if len(args) < 1 {
+		return "", errString("/provider remove <名>(枚举现有;/provider show 查看)")
+	}
+	ms, err := a.multiSvc()
+	if err != nil {
+		return "", errString(err.Error())
+	}
+	name := args[0]
+	oldActive := providerfile.Active()
+	if err := ms.RemoveProvider(name); err != nil {
+		return "", errString(err.Error())
+	}
+	a.syncDisplay()
+	switch newActive := providerfile.Active(); {
+	case newActive == "":
+		return "已删除 " + name + "(已是最后一个,运行期回退 env/样板)", nil
+	case newActive != oldActive:
+		return "已删除 " + name + ",活跃已顺延为 " + newActive, nil
+	default:
+		return "已删除 " + name + "(非活跃,运行期未变)", nil
+	}
+}
+
+// providerLevel2 /provider 二级:use/remove → 枚举现有 provider 名;unset → 字段枚举。
 func (a *App) providerLevel2(picked []string) []sdk.Option {
 	if len(picked) < 2 {
 		return nil
 	}
 	switch picked[1] {
-	case "use":
+	case "use", "remove":
 		f, err := providerfile.LoadFile()
 		if err != nil {
 			return nil
@@ -2188,7 +2217,7 @@ func (a *App) registerInternalCommands() {
 			}
 			return "", nil
 		}},
-		{Name: "provider", Usage: "/provider show|add|use|set|unset|clear", Desc: "配置 LLM 提供商(多 provider 并存/show|add|use|set|unset|clear)", Run: a.cmdProvider,
+		{Name: "provider", Usage: "/provider show|add|use|set|unset|remove|clear", Desc: "配置 LLM 提供商(多 provider 并存/show|add|use|set|unset|remove|clear)", Run: a.cmdProvider,
 			Args: []sdk.ArgLevel{
 				{Options: func([]string) []sdk.Option {
 					return []sdk.Option{
@@ -2197,6 +2226,7 @@ func (a *App) registerInternalCommands() {
 						{Value: "use", Desc: "切换活跃(枚举现有)"},
 						{Value: "set", Desc: "编辑当前活跃的端点/凭据/模型(立即生效+持久化)"},
 						{Value: "unset", Desc: "逐项删除活跃字段(恢复 env/样板)"},
+						{Value: "remove", Desc: "删除单条(枚举现有;删活跃自动顺延,删空回退 env/样板)"},
 						{Value: "clear", Desc: "全部清除+运行时复位"},
 					}
 				}},

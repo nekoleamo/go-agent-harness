@@ -46,7 +46,16 @@ func (f *fakeMultiLLM) AddProvider(name, baseURL, apiKey, model string) error {
 	f.activeName = name
 	return nil
 }
-func (f *fakeMultiLLM) SetActiveProvider(name string) error    { f.activeName = name; return nil }
+func (f *fakeMultiLLM) SetActiveProvider(name string) error { f.activeName = name; return nil }
+func (f *fakeMultiLLM) RemoveProvider(name string) error {
+	for _, p := range f.providers {
+		if p.Name == name {
+			// 镜像 host-llm:provider.yaml 为单一事实源(删活跃时活跃顺延/删空清文件)
+			return providerfile.Remove(name)
+		}
+	}
+	return errString("provider: 不存在 " + name)
+}
 func (f *fakeMultiLLM) ListAllModels() []sdk.ProviderModelList { return f.lists }
 
 // TestModelOptionsAggregate 聚合:Value = provider|模型(选中后可解析来源);
@@ -102,6 +111,10 @@ func TestProviderLevel2Use(t *testing.T) {
 	if len(opts) != 2 || opts[0].Value != "a" || opts[1].Value != "b" {
 		t.Fatalf("use 二级应枚举 provider: %+v", opts)
 	}
+	// remove 与 use 同枚举(按名删单条)
+	if rm := a.providerLevel2([]string{"provider", "remove"}); len(rm) != 2 || rm[0].Value != "a" {
+		t.Fatalf("remove 二级应枚举 provider: %+v", rm)
+	}
 	// 其它分支不枚举(选中即执行/走自由参数)
 	if u := a.providerLevel2([]string{"provider", "unset"}); len(u) != 3 {
 		t.Fatalf("unset 二级应三字段: %+v", u)
@@ -115,5 +128,42 @@ func TestProviderLevel2Use(t *testing.T) {
 	}
 	if a.providerFree2([]string{"provider", "use"}) != nil {
 		t.Fatal("use 无自由参数")
+	}
+}
+
+// TestAppProviderRemove TUI 副本 /provider remove(host-internal-commands 未装配时的回退路径):
+// 缺参/不存在显式报错,删非活跃不动活跃,删活跃顺延。
+func TestAppProviderRemove(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GAH_HOME", home)
+	for _, p := range []providerfile.Provider{
+		{Name: "a", BaseURL: "https://a/v1", APIKey: "k-a", Model: "m-a"},
+		{Name: "b", BaseURL: "https://b/v1", APIKey: "k-b", Model: "m-b"},
+	} {
+		if err := providerfile.Add(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fake := &fakeMultiLLM{providers: []sdk.ProviderProfile{{Name: "a", Active: true}, {Name: "b"}}}
+	a := &App{llm: fake, model: &Model{state: &State{}}}
+	if _, err := a.cmdProvider([]string{"remove"}); err == nil {
+		t.Fatal("缺参应报错")
+	}
+	if _, err := a.cmdProvider([]string{"remove", "ghost"}); err == nil {
+		t.Fatal("删不存在应报错")
+	}
+	out, err := a.cmdProvider([]string{"remove", "b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "非活跃") || providerfile.Active() != "a" {
+		t.Fatalf("删非活跃: %q active=%q", out, providerfile.Active())
+	}
+	out, err = a.cmdProvider([]string{"remove", "a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "最后一个") || providerfile.Active() != "" {
+		t.Fatalf("删空: %q active=%q", out, providerfile.Active())
 	}
 }

@@ -51,7 +51,13 @@ func (l *stubLoop) last() string {
 	return l.inputs[len(l.inputs)-1]
 }
 
-type stubLLM struct{ sdk.LLMService }
+type stubLLM struct {
+	sdk.LLMService
+	removed []string // RemoveProvider 调用记录(删除路径断言)
+}
+
+// errStubMissingProvider 删除不存在 provider 时的显式错误(对齐 host-llm 语义)。
+var errStubMissingProvider = errors.New("provider: 不存在 (\"/provider show\" 查看)")
 
 func (s *stubLLM) Model() string               { return "deepseek-chat" }
 func (s *stubLLM) Thinking() sdk.ThinkingLevel { return sdk.ThinkingMedium }
@@ -65,6 +71,13 @@ func (s *stubLLM) Providers() []sdk.ProviderProfile {
 }
 func (s *stubLLM) AddProvider(name, baseURL, apiKey, model string) error { return nil }
 func (s *stubLLM) SetActiveProvider(name string) error                   { return nil }
+func (s *stubLLM) RemoveProvider(name string) error {
+	if name == "missing" { // 不存在:显式报错分支断言
+		return errStubMissingProvider
+	}
+	s.removed = append(s.removed, name)
+	return nil
+}
 func (s *stubLLM) ListAllModels() []sdk.ProviderModelList {
 	return []sdk.ProviderModelList{{Name: "demo", BaseURL: "http://x", Models: []sdk.ModelInfo{{ID: "deepseek-chat"}}}}
 }
@@ -1151,15 +1164,27 @@ func TestModelsAndProviders(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Fatalf("use 应 200,得 %d", resp.StatusCode)
 	}
-	// 删除:接口无 Remove(M12 决策)→ 501 显式
+	// 删除:真删除(第二十一批结清 M12 TODO)→ 200;不存在 → 400 显式报错
 	req2, _ := http.NewRequest(http.MethodDelete, hs.URL+"/api/providers/p2", nil)
 	r, err = http.DefaultClient.Do(req2)
 	if err != nil {
 		t.Fatal(err)
 	}
 	r.Body.Close()
-	if r.StatusCode != http.StatusNotImplemented {
-		t.Fatalf("delete 应 501,得 %d", r.StatusCode)
+	if r.StatusCode != 200 {
+		t.Fatalf("delete 应 200,得 %d", r.StatusCode)
+	}
+	if stub, ok := s.llm.(*stubLLM); !ok || len(stub.removed) != 1 || stub.removed[0] != "p2" {
+		t.Fatalf("delete 应下传 RemoveProvider(p2),得 %+v", s.llm)
+	}
+	req3, _ := http.NewRequest(http.MethodDelete, hs.URL+"/api/providers/missing", nil)
+	r, err = http.DefaultClient.Do(req3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Body.Close()
+	if r.StatusCode != http.StatusBadRequest {
+		t.Fatalf("删除不存在应 400,得 %d", r.StatusCode)
 	}
 	// name 必填
 	resp, err = http.Post(hs.URL+"/api/providers", "application/json", strings.NewReader(`{"name":""}`))

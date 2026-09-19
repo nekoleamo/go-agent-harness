@@ -160,6 +160,7 @@ export DEEPSEEK_API_KEY=sk-...            # 或 OPENAI_API_KEY / ANTHROPIC_API_K
 /provider set <baseUrl> <apiKey> [model]     # 立即生效并持久化(provider.yaml, 0600)
 /provider show                               # 查看当前端点/模型/凭据(打码)
 /provider unset base_url|api_key|model       # 逐项删除(该项回退 env/样板,其余保留)
+/provider remove <名>                        # 删除单条(删活跃自动顺延到剩余首个,删空回退 env/样板)
 /provider clear                              # 全部清除+运行时立即复位
 ```
 
@@ -204,7 +205,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `/sandbox ro\|ws\|full` | 运行期切沙箱档(只读/工作区写入/完全访问;状态栏实时显示,偏好持久化重启恢复) |
 | `/sandbox sync [on\|off]` | 审批档→沙箱有效档 的**联动开关**(无参=回显开关与当前有效档):`off` 后沙箱档独立生效,不再被 `open`/`strict` 覆盖(例:审批 `open` 想少弹确认、又不想放开越界写);用户选择持久化(`gah-state.json`),重启与无人值守场景都按它恢复;沙箱实现没有该能力时显式报不支持 |
 | `/approval open\|smart\|strict` | 运行期切审批档(开放=危险命令直接放行 / 智能=命中弹确认(默认)/ 严格=直接拒绝;偏好持久化重启恢复) |
-| `/provider show\|add\|use\|set\|unset\|clear` | 配置 LLM 提供商(多 provider 并存):`show` 列出(活跃★凭据打码)/ `add 端点 key [model]` 新增(首个自动活跃)/ `use <名>` 切换 / `set 端点 key [model]` 编辑活跃 / `unset 字段` 逐项删(回退 env/样板)/ `clear` 全清并复位 |
+| `/provider show\|add\|use\|set\|unset\|remove\|clear` | 配置 LLM 提供商(多 provider 并存):`show` 列出(活跃★凭据打码)/ `add 端点 key [model]` 新增(首个自动活跃)/ `use <名>` 切换 / `set 端点 key [model]` 编辑活跃 / `unset 字段` 逐项删(回退 env/样板)/ `remove <名>` 删除单条(删活跃顺延到下一条)/ `clear` 全清并复位 |
 | `/plugins list\|on\|off <id>` | 运行期插拔插件(`on/off` 持久化开关,重启仍生效;`default` 恢复配置树默认) |
 | `/settings history N\|off\|unlimited` | 会话历史注入条数(`off` 禁止 / `unlimited` 全部 / N 最近 N 条;全局偏好跨会话) |
 | `/compact [指示词]` | 手动滚动摘要压缩(立即折叠旧历史;自动超预算压缩不变;指示词仅记录) |
@@ -298,7 +299,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `GET/POST /api/schedules`、`PATCH/DELETE /api/schedules/{id}`、`POST /api/schedules/{id}/run` | 定时计划:列表/新增/改(仅覆盖传入字段)/删/立即触发 |
 | `GET/POST /api/mcp` | MCP server 配置:GET 返回配置 + 逐项运行期状态(是否已加载/工具数);POST 提交整表 = 写 `config/mcp.yaml` 并重启插件(`reload:false` 只写盘;写盘成功但重载失败 → 200 + `reload_err`) |
 | `GET /api/plugins`、`POST /api/plugins/{id}/load\|unload` | 插件启停 |
-| `GET /api/models?all=1`、`GET/POST /api/providers...` | 模型聚合 / provider CRUD |
+| `GET /api/models?all=1`、`GET/POST/DELETE /api/providers...` | 模型聚合 / provider 增删改(删除同步运行期与持久化) |
 | `POST /api/control` | 状态栏级控制 `{model?\|thinking?\|sandbox?\|approval?\|workspace?}`(偏好持久化) |
 | `POST /api/compact`、`POST /api/settings/history` | 手动压缩 / 历史注入条数 |
 | `GET /api/todo` | 任务面板数据(todo 工具 list 透传) |

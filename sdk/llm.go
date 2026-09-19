@@ -268,6 +268,9 @@ type MultiProviderService interface {
 	AddProvider(name, baseURL, apiKey, model string) error
 	// SetActiveProvider 切换活跃 provider(校验存在;立即 Configure 适配器并 SetModel)。
 	SetActiveProvider(name string) error
+	// RemoveProvider 删除一个 provider(校验存在;不存在显式报错不静默)。
+	// 删的是活跃时活跃顺延到剩余首个并立即生效;删空则回退 env/样板(同 /provider clear)。
+	RemoveProvider(name string) error
 	// ListAllModels 聚合所有 provider 端点 /models 列表(TTL 缓存;单条失败记 Err 不整体失败)。
 	ListAllModels() []ProviderModelList
 }

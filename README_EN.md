@@ -165,6 +165,7 @@ Any OpenAI-compatible endpoint (DeepSeek/SiliconFlow/Ollama/vLLM/Kimi…) needs 
 /provider set <baseUrl> <apiKey> [model]    # effective + persisted immediately (provider.yaml, 0600)
 /provider show                              # show current endpoint/model/credentials (masked)
 /provider unset base_url|api_key|model      # remove one field (falls back to env/sample; keeps the rest)
+/provider remove <name>                    # delete one provider (active one falls back to the next; last one falls back to env/sample)
 /provider clear                             # wipe everything + reset at runtime
 ```
 
@@ -209,7 +210,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `/sandbox ro\|ws\|full` | Switch sandbox tier at runtime (read-only / workspace-write / full-access; live status bar shows the *effective* tier and, when the approval tier overrides it, the source; preference persists across restarts) |
 | `/sandbox sync [on\|off]` | Toggle the approval → effective-sandbox **tier linkage** (no argument = show the switch plus the current effective tier). With `off` the sandbox tier stands alone instead of being overridden by `open`/`strict` (e.g. keep `open` approval for fewer prompts but refuse out-of-workspace writes). The choice persists in `gah-state.json` and is restored on restart and in unattended runs; a sandbox without this capability reports it explicitly |
 | `/approval open\|smart\|strict` | Switch approval tier at runtime (open=allow dangerous cmds / smart=confirm dialog (default) / strict=deny; persists) |
-| `/provider show\|add\|use\|set\|unset\|clear` | Configure LLM providers (multi-provider): `show` list (active ★ credentials masked) / `add endpoint key [model]` (first becomes active) / `use <name>` switch / `set …` edit active / `unset field` remove one (env/sample fallback) / `clear` wipe & reset |
+| `/provider show\|add\|use\|set\|unset\|remove\|clear` | Configure LLM providers (multi-provider): `show` list (active ★ credentials masked) / `add endpoint key [model]` (first becomes active) / `use <name>` switch / `set …` edit active / `unset field` remove one (env/sample fallback) / `remove <name>` delete one provider (active one hands over to the next) / `clear` wipe & reset |
 | `/plugins list\|on\|off <id>` | Runtime plugin toggles (`on/off` persist; `default` restores the config-tree default) |
 | `/settings history N\|off\|unlimited` | Session-history injection count (off=disabled / unlimited=all / N=recent N; global preference) |
 | `/compact [hint]` | Manual rolling summary compaction (auto over-budget compaction unchanged; hint is only recorded) |
@@ -303,7 +304,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `GET/POST /api/schedules`, `PATCH/DELETE /api/schedules/{id}`, `POST /api/schedules/{id}/run` | Scheduled plans: list / add / update (only the fields sent) / delete / run now |
 | `GET/POST /api/mcp` | MCP server config: GET returns the config plus per-entry runtime state (loaded / tool count); POST submits the full list = write `config/mcp.yaml` and restart the plugin (`reload:false` writes only; a save that succeeds while the reload fails returns 200 + `reload_err`) |
 | `GET /api/plugins`, `POST /api/plugins/{id}/load\|unload` | Plugin toggles |
-| `GET /api/models?all=1`, `GET/POST /api/providers...` | Model aggregation / provider CRUD |
+| `GET /api/models?all=1`, `GET/POST/DELETE /api/providers...` | Model aggregation / provider add-edit-delete (delete syncs persistence and runtime) |
 | `POST /api/control` | Status-bar-level control `{model?\|thinking?\|sandbox?\|approval?\|workspace?}` (persists) |
 | `POST /api/compact`, `POST /api/settings/history` | Manual compaction / history-injection count |
 | `GET /api/todo` | Todo panel data (pass-through of the todo tool list) |

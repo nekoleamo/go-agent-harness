@@ -34,6 +34,7 @@ type stubMultiLLM struct {
 	reset           bool
 	addErr          error
 	useErr          error
+	removeErr       error
 	addNameOverride string // 非空 = AddProvider 用此名落盘(模拟名称归一化)
 }
 
@@ -87,6 +88,32 @@ func (s *stubMultiLLM) SetActiveProvider(name string) error {
 	if !found {
 		return fmt.Errorf("provider: 不存在 %q", name)
 	}
+	return nil
+}
+
+func (s *stubMultiLLM) RemoveProvider(name string) error {
+	if s.removeErr != nil {
+		return s.removeErr
+	}
+	if err := providerfile.Remove(name); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]sdk.ProviderProfile, 0, len(s.providers))
+	found := false
+	for _, p := range s.providers {
+		if p.Name == name {
+			found = true
+			continue
+		}
+		out = append(out, p)
+	}
+	if !found {
+		return fmt.Errorf("provider: 不存在 %q", name)
+	}
+	s.providers = out
+	s.active = providerfile.Active() // 活跃顺延(与 host-llm switchActive 同步语义一致)
 	return nil
 }
 
@@ -414,7 +441,7 @@ func TestCommandsExecuteProviderBadSubcommand(t *testing.T) {
 	startCmds(t, c)
 	for _, args := range [][]string{{}, {"bogus"}} {
 		if _, err := run(t, cmds, "provider", args...); err == nil ||
-			!strings.Contains(err.Error(), "show|add|use|set|unset|clear") {
+			!strings.Contains(err.Error(), "show|add|use|set|unset|remove|clear") {
 			t.Fatalf("应给用法提示(%v): %v", args, err)
 		}
 	}
@@ -457,6 +484,10 @@ func TestProviderSelectorOptions(t *testing.T) {
 	use := spec.Args[1].Options([]string{"provider", "use"})
 	if len(use) != 1 || use[0].Value != "siliconflow" || use[0].Desc != "https://api.siliconflow.cn/v1" {
 		t.Fatalf("use 应枚举现有 provider: %+v", use)
+	}
+	// remove 与 use 同枚举(按名删单条)
+	if rm := spec.Args[1].Options([]string{"provider", "remove"}); len(rm) != 1 || rm[0].Value != "siliconflow" {
+		t.Fatalf("remove 应枚举现有 provider: %+v", rm)
 	}
 	unset := spec.Args[1].Options([]string{"provider", "unset"})
 	if len(unset) != 3 || unset[0].Value != "base_url" {
@@ -1337,5 +1368,76 @@ func TestPluginsPersistFailure(t *testing.T) {
 	if _, err := run(t, cmds, "plugins", "off", "tool-shell"); err == nil ||
 		!strings.Contains(err.Error(), "已卸载,但持久化失败") {
 		t.Fatalf("off 持久化失败应显式回报: %v", err)
+	}
+}
+
+// TestCommandsExecuteProviderRemove /provider remove <名>:缺参/不存在显式报错/删非活跃/
+// 删活跃顺延/删空回退(结清 M12「单条删除」TODO)。
+func TestCommandsExecuteProviderRemove(t *testing.T) {
+	providerHome(t)
+	c, cmds := buildEnv(t)
+	ms := &stubMultiLLM{}
+	if err := c.Provide("ctx.llm", sdk.LLMService(ms)); err != nil {
+		t.Fatal(err)
+	}
+	startCmds(t, c)
+	if _, err := run(t, cmds, "provider", "remove"); err == nil || !strings.Contains(err.Error(), "/provider remove") {
+		t.Fatalf("缺参应给用法: %v", err)
+	}
+	if _, err := run(t, cmds, "provider", "remove", "ghost"); err == nil || !strings.Contains(err.Error(), "不存在") {
+		t.Fatalf("删不存在应显式报错: %v", err)
+	}
+	if _, err := run(t, cmds, "provider", "add", "https://api.deepseek.com/v1", "sk-aaaabbbb", "deepseek-chat"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run(t, cmds, "provider", "add", "https://api.siliconflow.cn/v1", "sk-ccccdddd", "m-b"); err != nil {
+		t.Fatal(err)
+	}
+	// 删非活跃:列表掉一条,活跃不变
+	out, err := run(t, cmds, "provider", "remove", "siliconflow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "非活跃") {
+		t.Fatalf("删非活跃文案: %q", out)
+	}
+	if ps := ms.Providers(); len(ps) != 1 || ps[0].Name != "deepseek" {
+		t.Fatalf("删后列表: %+v", ps)
+	}
+	if providerfile.Active() != "deepseek" {
+		t.Fatalf("活跃不应变: %q", providerfile.Active())
+	}
+	// 删活跃(还有剩余):活跃顺延并同步运行期
+	if _, err := run(t, cmds, "provider", "add", "https://api.siliconflow.cn/v1", "sk-ccccdddd", "m-b"); err != nil {
+		t.Fatal(err)
+	}
+	out, err = run(t, cmds, "provider", "remove", "deepseek")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "顺延为 siliconflow") {
+		t.Fatalf("删活跃文案: %q", out)
+	}
+	if providerfile.Active() != "siliconflow" || ms.active != "siliconflow" {
+		t.Fatalf("应顺延 siliconflow: file=%q runtime=%q", providerfile.Active(), ms.active)
+	}
+	// 删空:回退 env/样板
+	out, err = run(t, cmds, "provider", "remove", "siliconflow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "最后一个") {
+		t.Fatalf("删空文案: %q", out)
+	}
+	if providerfile.Active() != "" || len(ms.Providers()) != 0 {
+		t.Fatalf("删空后应为空: active=%q ps=%+v", providerfile.Active(), ms.Providers())
+	}
+	// 运行期失败:持久化已删但同步失败要给显式错误(不静默)
+	if _, err := run(t, cmds, "provider", "add", "https://api.deepseek.com/v1", "sk-aaaabbbb"); err != nil {
+		t.Fatal(err)
+	}
+	ms.removeErr = fmt.Errorf("boom")
+	if _, err := run(t, cmds, "provider", "remove", "deepseek"); err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("运行期失败应透传: %v", err)
 	}
 }

@@ -361,13 +361,20 @@ async function doProviderUse(name: string): Promise<void> {
 async function doProviderDelete(p: ProviderInfo): Promise<void> {
   try {
     await api.providerDelete(p.Name)
+    probe.value = null // 被删端点的自检结论一并作废(不留别人的旧结论)
+    showInfo('已删除 provider「' + p.Name + '」')
+    emit('changed') // 首屏/状态栏/模型下拉同步刷新
     await load()
   } catch (e) {
     err.value = (e as Error).message
   }
 }
 function deleteProvider(p: ProviderInfo): void {
-  guard('删除 provider「' + p.Name + '」?(运行时复位)', true, () => void doProviderDelete(p))
+  guard(
+    '删除 Provider「' + p.Name + '」?删除后不可恢复;若它是当前活跃的,会自动切到剩下的第一个,全部删完则回退环境变量/样板配置。',
+    true,
+    () => void doProviderDelete(p)
+  )
 }
 async function addProvider(): Promise<void> {
   if (!pf.value.name || !pf.value.base_url) {
@@ -841,7 +848,7 @@ watch(
               </div>
               <div class="pops">
                 <button v-if="!p.Active" class="ghost" data-tip="切换为活跃" @click="doProviderUse(p.Name)">启用</button>
-                <button class="ghost danger-text" data-tip="删除该 Provider(确认)" @click="deleteProvider(p)">删除</button>
+                <button class="ghost danger-text" data-tip="删除该 Provider(不可恢复)" @click="deleteProvider(p)">删除</button>
               </div>
             </div>
             <p v-if="!providers.length" class="dim">还没有配置 Provider:点上方「＋ 新增」或直接选一个预设</p>

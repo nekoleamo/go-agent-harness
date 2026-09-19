@@ -2088,13 +2088,19 @@ func (s *Server) handleProviderUse(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleProviderDelete 删除 provider(DELETE /api/providers/{name})。
-// 当前接口无 Remove(M12 决策:单条删除不做,upsert 覆盖/全清走 unset/clear)→ 显式 501。
+// 单条删除已实现(第二十一批,结清 M12 记的 TODO):删活跃则活跃顺延剩余首个,删空回退 env/样板;
+// 不存在显式 400(不静默成功)。
 func (s *Server) handleProviderDelete(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.llm.(sdk.MultiProviderService); !ok {
+	mp, ok := s.llm.(sdk.MultiProviderService)
+	if !ok {
 		http.Error(w, "多 provider 能力未实现(MultiProviderService)", http.StatusNotImplemented)
 		return
 	}
-	http.Error(w, "删除暂不支持: upsert 覆盖即可(参考 M12 范围决策)", http.StatusNotImplemented)
+	if err := mp.RemoveProvider(r.PathValue("name")); err != nil {
+		http.Error(w, "删除失败: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // handleSessionRename 会话改名(POST /api/sessions/rename)。

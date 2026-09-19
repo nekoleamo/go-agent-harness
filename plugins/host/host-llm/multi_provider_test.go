@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -211,5 +213,85 @@ func TestListAllModelsCacheInvalidatedOnProviderChange(t *testing.T) {
 	}
 	if len(all[1].Models) != 2 || all[1].Models[0].ID != "deepseek-ai/DeepSeek-V3" {
 		t.Fatalf("新活跃应走适配器列表: %+v", all[1])
+	}
+}
+
+// TestMultiRemoveProvider 单条删除:不存在显式报错 / 删非活跃不动运行时 / 删活跃顺延并切适配器 / 删空回退。
+func TestMultiRemoveProvider(t *testing.T) {
+	s := multiSvc(t)
+	gen := s.adapters["generic"].(*providerAdapter)
+	if err := s.AddProvider("a", "https://api.deepseek.com/v1", "sk-a", "deepseek-chat"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddProvider("b", "https://api.siliconflow.cn/v1", "sk-b", "m-b"); err != nil {
+		t.Fatal(err)
+	}
+	// 不存在:显式报错且不改列表(不静默 no-op)
+	if err := s.RemoveProvider("zzz"); err == nil || !strings.Contains(err.Error(), "不存在") {
+		t.Fatalf("删不存在应报错: %v", err)
+	}
+	if len(s.Providers()) != 2 {
+		t.Fatalf("失败不得动列表: %+v", s.Providers())
+	}
+	// 删非活跃:列表掉一条,活跃与运行时不动
+	if err := s.RemoveProvider("b"); err != nil {
+		t.Fatal(err)
+	}
+	ps := s.Providers()
+	if len(ps) != 1 || ps[0].Name != "a" || !ps[0].Active || providerfile.Active() != "a" {
+		t.Fatalf("删非活跃后视图: %+v active=%q", ps, providerfile.Active())
+	}
+	if gen.configuredURL != "https://api.deepseek.com/v1" {
+		t.Fatalf("删非活跃不应切运行时: %s", gen.configuredURL)
+	}
+	// 删活跃:活跃顺延剩余首个并立即 Configure/SetModel
+	if err := s.AddProvider("b", "https://api.siliconflow.cn/v1", "sk-b", "m-b"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RemoveProvider("a"); err != nil {
+		t.Fatal(err)
+	}
+	if providerfile.Active() != "b" || gen.configuredURL != "https://api.siliconflow.cn/v1" ||
+		gen.configuredKey != "sk-b" || s.Model() != "m-b" {
+		t.Fatalf("删活跃应顺延 b 并切适配器: active=%q url=%s model=%s",
+			providerfile.Active(), gen.configuredURL, s.Model())
+	}
+	// 删空:provider.yaml 移除 + 运行时回退启动默认
+	if err := s.RemoveProvider("b"); err != nil {
+		t.Fatal(err)
+	}
+	if providerfile.Active() != "" || len(s.Providers()) != 0 {
+		t.Fatalf("删空后应无 provider: %+v", s.Providers())
+	}
+	if _, err := os.Stat(providerfile.Path()); !os.IsNotExist(err) {
+		t.Fatalf("删空应移除 provider.yaml: %v", err)
+	}
+	if gen.baseURL != "" || gen.key != "" { // Reset → defaultURL/defaultKey(构造器未设,故空)
+		t.Fatalf("删空应复位适配器: %q %q", gen.baseURL, gen.key)
+	}
+}
+
+// TestMultiRemoveInvalidatesModelsCache 删除后聚合列表立即反映(不在 TTL 内残留被删端点)。
+func TestMultiRemoveInvalidatesModelsCache(t *testing.T) {
+	s := multiSvc(t)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[{"id":"remote-x"}]}`))
+	}))
+	defer ts.Close()
+	if err := s.AddProvider("a", "https://api.siliconflow.cn/v1", "k-a", "m-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddProvider("b", ts.URL, "k-b", "m-b"); err != nil {
+		t.Fatal(err)
+	}
+	if all := s.ListAllModels(); len(all) != 2 {
+		t.Fatalf("初态应 2 条: %+v", all)
+	}
+	if err := s.RemoveProvider("b"); err != nil {
+		t.Fatal(err)
+	}
+	all := s.ListAllModels()
+	if len(all) != 1 || all[0].Name != "a" {
+		t.Fatalf("删除后应立刻只剩 a(缓存已失效): %+v", all)
 	}
 }

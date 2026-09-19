@@ -85,7 +85,7 @@ func (h *Host) specs() []sdk.CommandSpec {
 			}
 			return "", nil
 		}},
-		{Name: "provider", Usage: "/provider show|add|use|set|unset|clear", Desc: "配置 LLM 提供商(多 provider 并存/show|add|use|set|unset|clear)", Run: h.cmdProvider,
+		{Name: "provider", Usage: "/provider show|add|use|set|unset|remove|clear", Desc: "配置 LLM 提供商(多 provider 并存/show|add|use|set|unset|remove|clear)", Run: h.cmdProvider,
 			Args: []sdk.ArgLevel{
 				{Options: func([]string) []sdk.Option {
 					return []sdk.Option{
@@ -94,6 +94,7 @@ func (h *Host) specs() []sdk.CommandSpec {
 						{Value: "use", Desc: "切换活跃(枚举现有)"},
 						{Value: "set", Desc: "编辑当前活跃的端点/凭据/模型(立即生效+持久化)"},
 						{Value: "unset", Desc: "逐项删除活跃字段(恢复 env/样板)"},
+						{Value: "remove", Desc: "删除单条(枚举现有;删活跃自动顺延,删空回退 env/样板)"},
 						{Value: "clear", Desc: "全部清除+运行时复位"},
 					}
 				}},
@@ -778,7 +779,7 @@ func (h *Host) cmdWorkspace(args []string) (string, error) {
 
 func (h *Host) cmdProvider(args []string) (string, error) {
 	if len(args) < 1 {
-		return "", errString("/provider show|add|use|set|unset|clear")
+		return "", errString("/provider show|add|use|set|unset|remove|clear")
 	}
 	switch args[0] {
 	case "show":
@@ -791,6 +792,8 @@ func (h *Host) cmdProvider(args []string) (string, error) {
 		return h.providerSet(args[1:])
 	case "unset":
 		return h.providerUnset(args[1:])
+	case "remove":
+		return h.providerRemove(args[1:])
 	case "clear":
 		if err := providerfile.Clear(); err != nil {
 			return "", errString("清除失败: " + err.Error())
@@ -804,7 +807,7 @@ func (h *Host) cmdProvider(args []string) (string, error) {
 		}
 		return "已清除全部 provider 并复位运行期(回退 env/样板)", nil
 	default:
-		return "", errString("/provider show|add|use|set|unset|clear")
+		return "", errString("/provider show|add|use|set|unset|remove|clear")
 	}
 }
 
@@ -938,6 +941,30 @@ func (h *Host) switchAddAsSet(name, base, key, model string) error {
 	return h.switchProvider(name)
 }
 
+// providerRemove 删除单条 provider(provider.yaml 与运行期同步;删活跃顺延/删空回退)。
+func (h *Host) providerRemove(args []string) (string, error) {
+	if len(args) < 1 {
+		return "", errString("/provider remove <名>(枚举现有;/provider show 查看)")
+	}
+	ms, err := h.multiSvc()
+	if err != nil {
+		return "", errString(err.Error())
+	}
+	name := args[0]
+	oldActive := providerfile.Active()
+	if err := ms.RemoveProvider(name); err != nil {
+		return "", errString(err.Error())
+	}
+	switch newActive := providerfile.Active(); {
+	case newActive == "":
+		return "已删除 " + name + "(已是最后一个,运行期回退 env/样板)", nil
+	case newActive != oldActive:
+		return "已删除 " + name + ",活跃已顺延为 " + newActive, nil
+	default:
+		return "已删除 " + name + "(非活跃,运行期未变)", nil
+	}
+}
+
 func (h *Host) providerUnset(args []string) (string, error) {
 	if len(args) < 1 {
 		return "", errString("/provider unset base_url|api_key|model")
@@ -962,13 +989,13 @@ func (h *Host) providerUnset(args []string) (string, error) {
 	return "已删除 " + args[0] + "(持久化与运行期均已回退)", nil
 }
 
-// providerLevel2 /provider 二级:use → 枚举现有 provider 名;unset → 字段枚举。
+// providerLevel2 /provider 二级:use/remove → 枚举现有 provider 名;unset → 字段枚举。
 func (h *Host) providerLevel2(picked []string) []sdk.Option {
 	if len(picked) < 2 {
 		return nil
 	}
 	switch picked[1] {
-	case "use":
+	case "use", "remove":
 		f, err := providerfile.LoadFile()
 		if err != nil {
 			return nil
