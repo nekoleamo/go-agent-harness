@@ -1619,6 +1619,30 @@ Go 全量 **1498 passed**(67 包,0 失败,6 跳过;新增 `TestPluginStderrCaptu
 **11. pdfium TUI 位图** —— **锁死理由**:SELF-1 有网实测体积 **+≈5.5 MiB → 破体积门**(当时门 46/30,现在更紧的 36/23 下更无空间);TUI **无图形协议**支持 → 位图 = 新子系统(布局、缩放、终端矩阵、性能);而主力光栅路径已由 **RST-1** 交付(外部 `pdftoppm` + `sdk.DocRasterService` + `/api/doc/raster`)。**重启条件 = 降体路径先腾出空间(②/③)且「零外部依赖部署」需求成立** —— 注意这一条与上面第 6 项的「终端内联图片」不同:此项即使有图形协议也仍受体积门约束。
 **12. OSC 9;4 进度通知** —— **锁死理由**(本次分析补充):OSC 9;4 的支持面窄(Windows Terminal、WezTerm 等为主),在未知终端上属于**纯静默失效** —— 与「静默失效不可接受」的红线直接冲突;而进度语义在 TUI 已有落点:状态栏 + 坞折叠行「后台 N 运行中: <摘要>」(1s 节拍,仅在有任务时续拍)。**重启条件 = 需要终端级任务栏进度**(例如长任务在最小化窗口里也要可见)成为明确需求,且探测可依赖。
 
+#### 交付记录(2026-09-19,第二十五批:本机验收阶段 8(A-3 文档预览全格式 + A-5 审批/危险命令/LAN 访问残余)+ 文档面板窄栏塔陷修复)
+
+> **来路**:继续推进 **A 本机 109 条**。仓库内**零 pdf/docx/xlsx/pptx 语料**,本批先造语料(Chrome 打印 CJK 3 页 / `sips` 扫描件 / `pypdf` RC4-128 加密件 / 手写 OOXML 三件 / 12 列宽表 md / 带脚本与外联的 html),再验 A-3 文档面(21 项 **21/21 PASS**)与 A-5 残余(6 项 **6/6 PASS**);脚本 `~/gah-acceptance/{mkpdf.mjs,mkcorpus.py,run-doc.sh,doc.mjs,run-appr.sh,appr.mjs}`。
+
+| 检查 | 真机证据 |
+|---|---|
+| **A-3#73 CLI 中文 PDF** | 中文逐字可读(标题 + 末页哨兵 `ZZ-END-3` + `--- 第 3 页 ---`);**扫描件**无文本层 → 显式提示需 OCR,不静默 |
+| **A-3#74 加密 PDF** | 无口令/错口令 → **exit 3** + `需口令(经 GAH_PDF_PASSWORD 提供…)`;口令正确 → 正文可读 |
+| **A-3#78 未装 LibreOffice** | `.doc` 与 `--convert` 均 **exit 3** + `未检测到 soffice/libreoffice…`;#77(装有 LO)本机无 soffice 不可验,登记原因 |
+| **A-5#110 自包含光栅** | CJK 第 2 页 795×1124、A2 大页 1589×2246、扫描件 1654×2339(≤4000 上限) |
+| **A-3#73 c/d/e API 契约** | `/api/doc/preview`→`{format:pdf,pages:3}`;`/api/doc/raw`→`%PDF` 头 + `Content-Disposition: inline`;**工作区外路径 → 403** |
+| **A-3#76a / #118 HTML 沙箱路由** | `/api/doc/html` 自带 CSP `default-src 'none'; img-src data:; style-src 'unsafe-inline'; frame-ancestors 'self'` |
+| **A-3#70b / #117 生产栈面板** | 真实二进制嵌入 `web/dist` 下 `iframe[src=/api/doc/raw]` 可见;**修复前仅 17px** |
+| **A-3#72 a/b/c 三视觉** | xlsx 两标签切页 223ms 后出第二页哨兵;docx 内嵌图 `/api/doc/asset` 真解码(160×60,`naturalWidth>0`);pptx 文本顺序 顺序一 < 顺序二 < 顺序三 |
+| **A-3#70c/70d/70e/76b** | 文件树 13 条目 + 「根目录」复位;md 12 列 `th=12/tr=4`;HTML 默认源码 → 点「沙箱预览」才 `sandbox=""`,内联脚本未执行、外联被阻断 |
+| **A-3#75 a/b** | `read_document(offset=2,limit=3)` → 恰 3 行(totalLines 17)并入账本;`doc_open` → 面板自动切到 `deck.pptx` |
+| **A-5#108 a/b/c** | prompt = `确认执行工具调用 [file_write {"path":"ok1.txt",…}]? y/n` → 允许落盘 / 拒绝不落盘+原因入账本;strict 档**不弹窗**直拒,文案含工具名与参数摘要 |
+| **A-5#114 a/b** | 危险命令点「**允许**」后**仍**被沙箱拒(`rm -rf /tmp/appr-danger` 被拦、目录仍在)→ 切 `/sandbox full` 后同一命令放行、目录真删;`/api/state.sandbox=full-access` |
+| **A-5#124 LAN IP 访问** | `http://192.168.1.66:2250/`(0.0.0.0 监听)功能正常;**`requestPermission` 0 次**、控制台 0 报错、`GET /api/notices` 200、模型错误以页内文本出现 |
+
+**真缺陷(本批 1 处)**:文档面板在**侧栏停靠区**下视图塌陷 —— `.dp-tree` 写死 `width:280px; flex:0 0 280px`,380px 停靠区减去 gap 后文档视图只剩 **17px**(面板等于不可用,阶段 8A 首次以度量捕获)。修法:`.doc-panel` 做容器查询(`container-type: inline-size`),窄容器(≤620px)下树改**顶部限高条**(`max-height:34%`)、视图吃满宽;宽容器下树仍可收缩(`flex:0 1 280px; min-width:140px`)。web dist 已重建。
+
+**口径与不假勾**:① **#124 只过半**:「不申请权限/不报错/页内提示通道」✓,「localhost 下可授权**系统通知**」未实现(web 前端零 `Notification` 代码,系统通知仅在 Tauri 壳)→ 登记未交付待拍板;② **#109** 属决策项(门向下重定基 36/23 MiB + 破门前先走降体路径),无本机动作;③ **#71** 与 `/preview`/`doc_open` 的 TUI 侧归 A-1;**#77** 无 LibreOffice;**#79/#80** 需真实 producer。
+
 #### 交付记录(2026-09-19,第二十四批:本机验收阶段 7(沙箱/审批档可见性 · shell jail · CSP · 负例)+ 回合错误载荷不可读缺陷修复)
 
 > **来路**:继续推进 **A 本机 109 条**。本批取 A-5「其它本机可做」中**命令面 + 浏览器可验**的 9 条(#111/112/113/115/116/118/119/122/123),新开阶段 7 脚本(`~/gah-acceptance/{run-sbx.sh,sbx.mjs}`;**四实例各持独立数据根** —— 主 / `GAH_SHELL_JAIL=0` / provider 黑洞 / 只读根 → 11 项检查 **11/11 PASS**)。

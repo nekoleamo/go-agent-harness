@@ -300,6 +300,7 @@ const fmtSize = (n?: number): string => {
 
 <style scoped>
 .doc-panel {
+  container-type: inline-size;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -355,7 +356,8 @@ const fmtSize = (n?: number): string => {
 }
 .dp-tree {
   width: 280px;
-  flex: 0 0 280px;
+  flex: 0 1 280px;
+  min-width: 140px;
   overflow: auto;
   border-right: 1px solid var(--line);
   padding-right: 8px;
@@ -501,6 +503,26 @@ const fmtSize = (n?: number): string => {
   background: var(--tool-soft);
   border: 1px solid var(--tool-line);
   color: var(--tool-strong);
+}
+@container (max-width: 620px) {
+  /* 侧栏停靠区宽度有限(默认 380/最小 280):树改为顶部限高条,视图占满剩余宽度。
+     不这样做时固定 280px 的树会把文档视图挤到几十像素宽(M7.2 面板实测 17px)。 */
+  .dp-body {
+    flex-direction: column;
+    gap: 8px;
+  }
+  .dp-tree {
+    width: auto;
+    flex: 0 0 auto;
+    max-height: 34%;
+    min-width: 0;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    padding: 0 0 6px;
+  }
+  .dp-frame {
+    height: 58vh;
+  }
 }
 .dp-frame {
   width: 100%;
