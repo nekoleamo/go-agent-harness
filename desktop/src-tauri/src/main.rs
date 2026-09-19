@@ -388,6 +388,64 @@ async fn check_update(app: AppHandle) -> UpdateOutcome {
     o
 }
 
+// spawnAutoCheck 升级冒烟缝:GAH_SHELL_UPDATE_AUTOCHECK=<秒> 时,启动后自动跑一次「检查更新」,
+// 走与托盘菜单/界面按钮**完全同一条**代码路径(checkForUpdates → 备份 → download_and_install →
+// 延时重启),因此能把「发出去的包到底能不能升级」从「只能靠人点托盘」变成一条可脚本化的命令。
+//
+// 为何需要(2026-09-18):updater 的真机路径此前每次都要人手点、且点完还得人肉确认版本与数据 ——
+// 「装机自动升级端到端」因此长期挂在待办里。加这条缝之后,冒烟可以这样跑(见 docs/RELEASE.md):
+//
+//   RELEASE_VERSION=0.1.3 GAH_DESKTOP_DEBUG=1 bash scripts/publish-desktop.sh darwin-aarch64
+//   GAH_SHELL_UPDATE_AUTOCHECK=5 "<旧版>/gah.app/Contents/MacOS/gah-desktop"
+//
+// 默认关闭:没设这个变量时一行代码都不多跑。装完新版后会重启:若环境变量被一并继承(重启沿用当前
+// env),下一轮调到的已经是**新版自身**,而那一轮远端已是「已是最新」→ 不会再装,不存在自升级死循环。
+fn spawnAutoCheck(app: AppHandle) {
+    let Ok(raw) = std::env::var("GAH_SHELL_UPDATE_AUTOCHECK") else {
+        return;
+    };
+    if raw.is_empty() || raw == "0" {
+        return;
+    }
+    let secs: u64 = raw.parse().unwrap_or(3);
+    shellLog(
+        &app,
+        &format!("升级冒烟:GAH_SHELL_UPDATE_AUTOCHECK={raw}({secs} 秒后自动检查更新)"),
+    );
+    let _ = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(secs));
+        let seq = CHECK_SEQ.fetch_add(1, Ordering::SeqCst) + 1;
+        shellLog(&app, &format!("升级冒烟: 检查更新开始(第 {seq} 轮)"));
+        setCheckBusy(&app, true);
+        // 刻意**不挂 75 秒看门狗**:真实下载 30+ MB 可能超过它,那只会在冒烟里造成
+        // 「看门狗先报失败」的假警报(托盘路径的 45 秒超时同理放宽到 300 秒)。
+        let h = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let t0 = std::time::Instant::now();
+            let outcome = match tokio::time::timeout(Duration::from_secs(300), checkForUpdates(&h))
+                .await
+            {
+                Ok(o) => o,
+                Err(_) => UpdateOutcome::new("failed", None, "检查更新超时(300 秒未返回)".into()),
+            };
+            shellLog(
+                &h,
+                &format!(
+                    "升级冒烟: 检查更新结束 status={} version={:?} 耗时={}ms msg={}",
+                    outcome.status,
+                    outcome.version,
+                    t0.elapsed().as_millis(),
+                    outcome.message
+                ),
+            );
+            CHECK_DONE.fetch_max(seq, Ordering::SeqCst);
+            setCheckBusy(&h, false);
+            recordUpdate(seq, &outcome);
+            // 装完的延时重启由 checkForUpdates 自己发起(与托盘/界面路径一致),这里不再插手。
+        });
+    });
+}
+
 // shell_probe / probe_async 自检用的最小命令:验证前端经 withGlobalTauri 究竟能不能调进壳。
 //
 // 为何需要:本项目没有任何 capabilities/ 文件,而 plugins 的 JS 全局 API 在页面上是活的
@@ -1426,6 +1484,9 @@ fn main() {
                     prev = cur;
                 }
             });
+
+            // —— 升级冒烟缝(默认关:只有 GAH_SHELL_UPDATE_AUTOCHECK 设了才动) ——
+            spawnAutoCheck(app.handle().clone());
 
             Ok(())
         })

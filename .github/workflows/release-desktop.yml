@@ -55,6 +55,10 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: bash scripts/publish-desktop.sh darwin-aarch64
+      # 上传前自校验:签名必须是用仓库登记的那把钥匙签的、包内版本必须与 latest.json 一致。
+      # 这两类错上传后**只能靠人发现**(更新器拿到 404 会显示成「暂无可用更新」),故前移到本地检查。
+      - name: 校验本平台产物(签名 + 包内版本)
+        run: node scripts/verify-release.mjs --local dist-desktop --platform darwin-aarch64
       - uses: actions/upload-artifact@v4
         with:
           name: dist-desktop-mac-aarch64
@@ -91,6 +95,9 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: bash scripts/publish-desktop.sh windows-x86_64
+      # 上传前自校验(同 mac 侧;Windows 无 plutil,包内版本自查自动跳过)
+      - name: 校验本平台产物(签名)
+        run: node scripts/verify-release.mjs --local dist-desktop --platform windows-x86_64
       - uses: actions/upload-artifact@v4
         with:
           name: dist-desktop-win-x86_64
@@ -154,3 +161,10 @@ jobs:
           # 正文来自 tag 注解(人工写的发行说明);不用 GitHub 自动 notes —— 两个 workflow 并发时
           # 正文归属必须唯一(见 .goreleaser.yaml changelog.disable 的说明)
           body_path: dist-desktop/release-body.md
+      # 发布后回查线上清单:平台矩阵是否**完整**(缺一个平台 = 该平台更新器拿到 404,而壳里
+      # 那句「暂无可用更新」与「已是最新」长得一样)、签名是否出自登记的公钥、版本号是否可解析。
+      # 这一步是「发布漏了平台」这类静默失效的唯一自动出口。
+      - name: 回查线上 latest.json(矩阵完整 + 密钥指纹)
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: node scripts/verify-release.mjs --tag "$TAG" --skip-artifacts

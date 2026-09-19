@@ -4,15 +4,21 @@
 #   合并:   bash scripts/publish-desktop.sh merge               # 读 dist-desktop/latest.<平台>.json 合成 latest.json
 # 产物:dist-desktop/<平台>/(安装包 + updater 产物 + latest.<平台>.json);merge 后 latest.json 上传 GitHub Release,
 #       updater endpoint 固定取 https://github.com/<repo>/releases/latest/download/latest.json
-# 版本:RELEASE_VERSION=vX.Y.Z(缺省读 tauri.conf version;发布时由 git tag 驱动)
+# 版本:RELEASE_VERSION=vX.Y.Z(缺省取最近 git tag;发布时由 git tag 驱动)
+# 调试/升级冒烟:GAH_DESKTOP_DEBUG=1 走 cargo 的 debug profile(只编壳,不做发行),
+#   产物落 target/<triple>/debug/bundle —— 给「旧版 → 线上新版」的真机升级冒烟当旧版用
+#   (见 README/docs/RELEASE.md「升级冒烟」)。
 # 密钥:TAURI_SIGNING_PRIVATE_KEY_PATH(缺省 ~/.tauri/gah.key)或 TAURI_SIGNING_PRIVATE_KEY 字符串
 # 前置:Go + Rust(target triple 已 rustup add)+ Xcode CLT(mac)/无(win runner);node(经 npx 调 tauri-cli,免 cargo install)
 # 无签名分发说明:mac 首启需「右键→打开」或 xattr 去隔离;win 首启 SmartScreen「仍要运行」——见 docs/RELEASE.md
 set -euo pipefail
 cd "$(dirname "$0")/.."
 REPO="${GAH_REPO:-nekoleamo/go-agent-harness}"
-VERSION="$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || true)"
+VERSION="${RELEASE_VERSION:-$(git describe --tags --abbrev=0 2>/dev/null || true)}"
+VERSION="${VERSION#v}"   # 允许带 v 前缀(RELEASE_VERSION=v0.1.3)
 [ -z "$VERSION" ] && VERSION="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' desktop/src-tauri/tauri.conf.json | head -1)"
+PROFILE_DIR=release
+[ "${GAH_DESKTOP_DEBUG:-0}" = "1" ] && PROFILE_DIR=debug
 OUT="dist-desktop"
 mkdir -p "$OUT"
 
@@ -80,8 +86,10 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$VERSION" -o "$
 # 2. 壳 release bundle(cargo tauri 优先,无则 npx 拉 @tauri-apps/cli)
 # 注:tauri-cli v2 的 build **默认就是 release**(只有 -d/--debug),没有 --release 参数 ——
 #     v1 语义的 `build --release` 在 v2 会直接报 unexpected argument(本地实测踩到)。
-echo "[2/4] tauri build --target $triple (release,version=$VERSION)"
+echo "[2/4] tauri build --target $triple ($PROFILE_DIR,version=$VERSION)"
 cd desktop/src-tauri
+DEBUG_FLAG=""
+[ "$PROFILE_DIR" = debug ] && DEBUG_FLAG="--debug"   # tauri-cli v2:release 是默认,debug 才要显式给
 TAURI_BUILD=""
 if command -v cargo-tauri >/dev/null 2>&1 || command -v tauri >/dev/null 2>&1; then
   TAURI_BUILD="tauri"
@@ -94,7 +102,7 @@ else
   echo "缺 tauri-cli: 安装 cargo-tauri 或用 npx(@tauri-apps/cli)"; exit 1
 fi
 # shellcheck disable=SC2086
-$TAURI_BUILD build --target "$triple" --config "{\"version\":\"$VERSION\"}"
+$TAURI_BUILD build --target "$triple" --config "{\"version\":\"$VERSION\"}" $DEBUG_FLAG
 cd ../..
 
 # 3. 提取产物(updater 产物与「给人双击的安装包」分开:latest.json 只能指向 updater 产物)
@@ -103,7 +111,7 @@ cd ../..
 #    - Windows:tauri 直接签 `*-setup.exe`(updater 的 extract_exe 分支接受裸 exe;若某版本改产
 #      zip,`infer::archive::is_zip` 分支同样接受,故优先 zip、回退 exe),人用同一个 exe
 echo "[3/4] 收集产物"
-BUNDLE="desktop/src-tauri/target/$triple/release/bundle"
+BUNDLE="desktop/src-tauri/target/$triple/$PROFILE_DIR/bundle"
 mkdir -p "$OUT/$platform"
 case "$platform" in
   darwin-*)
