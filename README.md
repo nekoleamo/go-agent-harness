@@ -435,7 +435,7 @@ export GAH_MCP_COMMANDS="deja=/opt/homebrew/bin/deja\ncodegraph=codegraph serve 
 ├── tests/            # 端到端 + 迷你 MCP server(卸载矩阵见 AGENTS.md)
 ├── internal/         # embed(seed 样板/外部分发)/ install(插件安装)/ prefs(偏好持久化)/ providerfile
 ├── config/           # profile/bundle/patch 样板(seed-version 与 internal/embed/seed 同步)
-├── scripts/          # gen.sh(统一构建)/ gen-web.sh / gen-extplugins.sh / gen-desktop.sh / publish-desktop.sh(桌面零成本发行)/ ws-smoke.go
+├── scripts/          # gen.sh(统一构建)/ gen-web.sh / gen-extplugins.sh / gen-desktop.sh / publish-desktop.sh(桌面零成本发行)/ verify-release.mjs(发版后校验:平台矩阵/签名/包内版本)/ ws-smoke.go
 ├── desktop/          # 桌面壳 P1(Tauri v2 + sidecar gah;零成本发行:updater+CI 见 docs/RELEASE.md)
 ├── .gah/skills/      # 自注册技能(gah-plugin-dev)
 └── docs/             # 本地设计文档(随仓库分发仅 PLUGIN_DEV.md;其余设计/排期/清单为本地资料)

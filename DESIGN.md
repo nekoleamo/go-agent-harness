@@ -1240,7 +1240,7 @@ v0.1.3 及之前只核对过 dmg 产物与签名,**从未挂载实跑**(上一�
 
 ### 仍未闭环(诚实标注)
 
-1. **A17 装机自动升级**:`v0.1.3` → `v0.1.4` 的端到端升级仍未跑过(自 R14 起挂着)。低成本自查:在新装机上点一次「检查更新…」应回「已是最新版本」——这能同时证明更新端点可达、签名校验通过、版本比较正确。
+1. **A17 装机自动升级**:**✅ 已闭环(2026-09-18,第十八批)** —— 真机 `0.1.3` → `0.1.4` 端到端**自动**跑通(零点击):旧端 = 本地按 `0.1.3` 版本号构建的包,新端 = **线上真实 v0.1.4 产物**(安装后包内 sidecar 的 sha256 与线上 `gah.app.tar.gz` 内的一致),10.4 秒完成「检查 → 下载 34 MB → 验签 → 整包替换 → 重启」,数据根外置未变、升级前备份落地 `~/gah-upgrade-backup/<ts>/`。机制(冒烟缝 `GAH_SHELL_UPDATE_AUTOCHECK` + 发布校验门 `scripts/verify-release.mjs`)与逐条证据见 §14.1 第十八批交付记录。**仍需人工的只剩**「在用户那台已装 v0.1.3 的机器上点一次托盘检查更新」(可选复现,非机制缺口)。
 2. **`tool-mcp` 在本机 macOS 上仍加载失败**(仅它一个;`tool-basic/subagent/workflow` 已正常)。**属旧有问题**,与本版无关:本次发布前的开发构建日志里**恰好也只有它一条**同一报错。已登记待单独排查(不影响 Windows 侧,用户四轮真机反馈里 MCP 工具链未见异常)。
 3. **VERIFY.md 的 Windows B 表其余行**(shell/沙箱/文档面板/MCP/定时任务/卸载/退出残留/单实例)与 macOS B 表、C/D 表状态不变 —— 本轮只确认了 R15–R22 的交互项。
 
@@ -1519,6 +1519,28 @@ Go 全量 **1498 passed**(67 包,0 失败,6 跳过;新增 `TestPluginStderrCaptu
 ~~`S-P0-4` → `S-P0-5` → `S-P0-3`~~ ✅ → ~~`S-P2-4`~~ ✅(`!` 直通 + `/statusline` 均已交付)→ ~~`S-P0-2`~~ ✅ → ~~`S-P0-1`~~ ✅ → ~~`S-P1-3`~~ ✅ → ~~`S-P1-1`~~ ✅ → ~~`S-P1-2`~~ ✅ → ~~`S-P1-4`~~ ✅ → ~~`S-P2-2`(轻量版)~~ ✅ → ~~`S-P2-3` ACP server~~ ✅ → ~~`S-P2-5 session_search`~~ ✅ → ~~`S-P2-1`(轻量版:Web 侧栏停靠区)~~ ✅。**S 组 P0–P2 至此全部交付或明确不做**;`S-P2-1` 的 v3 本体(根布局注册表 / 插件停靠布局 / 双侧停靠)仍**未实施**,留待收集真实使用后再评估(见节内 ①)。
 
 > **纪律**:每项交付需 ① 全库 `go test ./... -race` 绿;② 前端改动 `vue-tsc --noEmit` 0 错 + `node --test`;③ 新增 base 插件/bundle 条目必须登记 `plugins/catalogue` 并 bump `# seed-version` 两份同步;④ 新增写盘路径必须经 `$GAH_HOME` 派生。
+
+#### 交付记录(2026-09-18,第十八批:发布产物校验门 `verify-release` + 装机升级自动冒烟(结清 A17 端到端))
+
+> **共同纪律**:本批**零 Go 改动、零前端改动、零新依赖、零新增插件、零新增写盘路径**(改动面 = 一个新 node 脚本 + 桌面壳 Rust 一处默认关闭的可选钩子 + 发版脚本两处参数 + CI 两步),故全库门禁照跑不变:`gofmt -l` 干净、`go vet ./...` 干净(含 `cd sdk`)、全库 `go test ./... -race -count=1` **58 包 ok / 0 FAIL**、`cd sdk && go test ./... -race` 绿、`coverage-check.sh` **COVERAGE_OK**(总 **79.1%**,棘轮全维持)、`scripts/size-check.sh` 通过(darwin/arm64 **31.32 MiB / gz 18.84**,与上一批持平;版本 `v0.1.4-25-gef5fbda`)、Rust 侧 `cargo check --locked` **0 错**(35 条既有 camelCase 警告)与 `cargo test --locked` **25 项绿**(含 stage/migrate 用例)、`node --check scripts/verify-release.mjs` 通过、新增代码本身 `cargo fmt --check` 干净(仓库既有 38 处格式差异未动,CI 不跑 rustfmt)。
+
+- ✅ **① `scripts/verify-release.mjs` —— 发布产物校验门(新,可本地/CI 跑)**:发布链此前只产不验,而**漏一个平台的后果是静默的** —— 该平台更新器拿到 404,壳里 `explainUpdateError` 把它翻成「暂无可用更新(线上还没有发布版本)」,与「已是最新」长得一模一样(用户视角零差异)。脚本按「能装才算过」逐层校验:① manifest 结构(`version` 语义化、`pub_date` 可解析、每个平台 `url` 为 https + `signature` 非空;空 `platforms` 直接判死 —— 那等于所有平台都「已是最新」);② **平台矩阵完整**(期望 = 发行矩阵 `darwin-aarch64` + `windows-x86_64`,缺任一条即 FAIL 并写明后果;矩阵外平台只提示);③ **密钥指纹**:逐条解 minisign 文件,`keyid` 必须等于 `desktop/src-tauri/tauri.conf.json` 里登记的公钥(用别的钥匙签 = 装不上);④ **产物签名验证**:下载产物 → `Ed`(纯签名)/`ED`(BLAKE2b-512 预哈希,tauri 实际口径)分支 → `ed25519` 验证;⑤ **包内容自查**(macOS):解 `gah.app.tar.gz` 读 `Info.plist` 版本与 `CFBundleIdentifier`、执行内嵌 sidecar 取 `--version`,三者必须与 manifest 一致;⑥ **已装版本不回退**(线上 latest < 本机 `/Applications/gah.app` 版本 = 装完降级);⑦ `checksums.txt` 覆盖面(桌面产物未登记仅提示 —— 签名已验)。模式:`--tag` / `--local <dir>`(发布前干跑)/ `--all` / `--platform` / `--skip-artifacts`(零下载)。**如实标注的部分**:minisign 第三条 `global signature` tauri 更新器不消费、构造口径未公开,脚本只报存在性并标「未校验」,**不假装验过**。**灵敏度验证(去掉任一检查即失败,4/4 命中)**:产物翻一字节 → FAIL 签名验证失败;manifest 删 `windows-x86_64` → FAIL 矩阵;公钥材料改一字节 → FAIL 签名验证失败(keyid 相同也能抓到);公钥指纹改一字节 → FAIL 指纹不匹配。**线上实测**:`releases/latest/download/latest.json`(v0.1.4,`darwin-aarch64` 34.0 MiB)签名通过、包内 0.1.4、sidecar `gah 0.1.4`、与本机已装版本一致 → 11 通过 / 0 失败;`--local` 单平台模式(模拟 CI 平台 job)与 `--skip-artifacts` 亦各自实测通过。
+- ✅ **② 装机升级自动冒烟缝 `GAH_SHELL_UPDATE_AUTOCHECK=<秒>`(桌面壳,默认关)**:把「检查更新」从**只能人手点托盘**变成可脚本化一步 —— 设了变量时启动 N 秒后走与托盘/设置面板**完全同一条**代码路径(`checkForUpdates` → 升级前备份 → `download_and_install` → 延时重启),结论照常落壳日志。两处刻意的判断:不挂 75 秒看门狗(真实下载 30+ MB 会超过它,只会在冒烟里造成假警报)、超时放宽到 300 秒。这不是「测试期才有的第二套逻辑」,而是给生产代码留的可观测入口(与既有 `GAH_SHELL_NOTICE_ADDR` 同一先例)。
+- ✅ **③ `scripts/publish-desktop.sh` 两处补强**:`RELEASE_VERSION` **真正生效**(脚本头早已写「版本:RELEASE_VERSION=vX.Y.Z」而代码从未读它 —— 文档与实现不符,顺带修掉;也支持 `v` 前缀)+ `GAH_DESKTOP_DEBUG=1` 走 debug profile(产物落 `target/<triple>/debug/bundle`),于是「造一个旧版本包」不再需要改 `tauri.conf.json` 或重建 release。
+- ✅ **④ CI 接入(`release-desktop.yml`,三步)**:平台 job **上传前** `node scripts/verify-release.mjs --local dist-desktop --platform <平台>`(签名必须出自登记的公钥、包内版本必须等于 `latest.json` —— 这类错一旦上传就只剩人眼能发现);merge job **上传后** `--tag "$TAG" --skip-artifacts` 回查线上清单(矩阵完整/指纹/结构)—— 「发布漏了平台」这类静默失效至此有了唯一自动出口。为支持按平台分别校验,矩阵期望在 `--local` 单平台模式下收窄到被点名的平台。
+- ✅ **⑤ A17 装机自动升级:真机 `0.1.3` → `0.1.4` 端到端跑通(全自动、零点击)**
+
+| 步骤 | 实测证据 |
+|---|---|
+| 造旧端 | `RELEASE_VERSION=0.1.3 GAH_DESKTOP_DEBUG=1 bash scripts/publish-desktop.sh darwin-aarch64` → 包内 `Info.plist 0.1.3`、sidecar `gah 0.1.3`(与线上 v0.1.3 同为 0.1.3 语义的旧端) |
+| 启动冒烟 | `GAH_SHELL_UPDATE_AUTOCHECK=5 <app>/Contents/MacOS/gah-desktop` → 壳日志 `升级冒烟:GAH_SHELL_UPDATE_AUTOCHECK=5(5 秒后自动检查更新)` → `检查更新开始(第 1 轮)` |
+| 下载安装 | `status=installed version=Some("0.1.4") 耗时=10405ms`,msg = `更新 0.1.4 已安装,即将重启生效(升级前数据已备份到 /Users/nekoleamo/gah-upgrade-backup/1789821732)` |
+| 整包替换 | ≤20 秒内包内 `Info.plist → 0.1.4`、`CFBundleIdentifier=dev.gah.desktop`、sidecar `gah 0.1.4`;该 sidecar sha256 **与线上 v0.1.4 `gah.app.tar.gz` 内的逐字节一致** ⇒ 装上去的就是**真正发布的产物**,不是本地构建 |
+| 重启与数据 | 重启后新进程落点 `bin=gah-0.1.4-fd720f37 data_root=…/bin/gah-data external=true`(数据根**仍在应用目录之外**,未被整包替换带走);`bin/gah-data` 文件数 31 = 升级前备份 `~/gah-upgrade-backup/1789821732/gah-data` 文件数 31 |
+| 后端一致性 | 同轮 `verify-release` 对线上 latest.json 的校验 11 通过 / 0 失败(签名 + 包内版本 + 侧车版本 + 已装版本对比) |
+
+- **文档**:本节 + R16「仍未闭环」第 1 条(A17 标 ✅ 闭环并写明剩余人工项)+ 本地未入库 `docs/RELEASE.md`(新增「发布后校验 + 升级冒烟」命令段;含「漏平台 = 静默 404」的风险说明)、`docs/VERIFY.md`(A17 由「未跑」改为「自动冒烟已跑 + 证据」)、`docs/TODO_OVERVIEW.md`(装机自动升级端到端标 ✅ 收口)。
+- ⏳ **未实施/诚实标注**:Windows 侧真机升级(**卡机器**,本批只能在 macOS 真机跑;Windows 侧的签名/结构与包内版本已由 CI 上传前 + 上传后两步覆盖);用户那台「手动装了 v0.1.3 dmg」的机器上点一次托盘(可选复现,机制已由 ⑤ 覆盖);minisign `global signature` 未校验(见 ① 的如实标注);`verify-release` 目前**不比对** `checksums.txt`(线上签名已是更强证据,只做覆盖提示)。
 
 #### 交付记录(2026-09-18,第十七批:R10 ②-2 = `/sandbox sync` 运行期联动开关)
 

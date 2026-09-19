@@ -438,7 +438,7 @@ Red lines: plugins import **only `sdk/`** — never core/tui/other plugins; regi
 ├── tests/            # e2e + mini MCP server (unload matrix per AGENTS.md)
 ├── internal/         # embed (seed samples/external plugins) / install / prefs / providerfile
 ├── config/           # profile/bundle/patch samples (seed-version kept in sync with internal/embed/seed)
-├── scripts/          # gen.sh (unified build)/ gen-web.sh / gen-extplugins.sh / gen-desktop.sh / ws-smoke.go / publish-desktop.sh
+├── scripts/          # gen.sh (unified build)/ gen-web.sh / gen-extplugins.sh / gen-desktop.sh / publish-desktop.sh / verify-release.mjs (post-release checks: platform matrix / signature / bundled version)/ ws-smoke.go
 ├── desktop/          # desktop shell P1 (Tauri v2 + sidecar gah; zero-cost release: updater+CI)
 ├── .gah/skills/      # self-registered skills (gah-plugin-dev)
 └── docs/             # local design docs (only PLUGIN_DEV.md ships with the repo; the rest are local materials)
