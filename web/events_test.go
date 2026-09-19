@@ -3,7 +3,10 @@ package web
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -248,5 +251,45 @@ func TestHubScheduleFrame(t *testing.T) {
 	f2 := <-ch
 	if f2.Type != FrameSchedule {
 		t.Fatalf("值载荷未转发: %+v", f2)
+	}
+}
+
+// TestErrorFramePayloadIsReadable 回合错误帧必须携带**可读文本**。
+// 回归护栏:载荷在同进程内是 error 值(TUI 直接 Error()),但经 JSON 序列化会变成 {}
+// → 前端 String(payload) 只显示 "[object Object]"(2026-09-19 阶段 7 真机逮到)。
+func TestErrorFramePayloadIsReadable(t *testing.T) {
+	ctx := newTestCtx()
+	hub := NewHub()
+	unsub, err := hub.Subscribe(ctx, &memLog{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unsub()
+	ch, release := hub.Stream()
+	defer release()
+
+	ctx.fire(sdk.EventAgentError, errors.New("dial tcp 127.0.0.1:9: connect: connection refused"))
+	f := <-ch
+	if f.Type != FrameError {
+		t.Fatalf("期望错误帧,得 %+v", f)
+	}
+	s, ok := f.Payload.(string)
+	if !ok || !strings.Contains(s, "connection refused") {
+		t.Fatalf("错误帧载荷应为可读文本,得 %#v", f.Payload)
+	}
+	// 下发形态(JSON)同样必须可读 —— 前端拿到的就是它
+	b, err := json.Marshal(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), `"payload":{}`) {
+		t.Fatalf("JSON 载荷不可读: %s", b)
+	}
+	// 字符串载荷与其它类型同样兜住
+	if got := errorTextOf("直接文本"); got != "直接文本" {
+		t.Fatalf("字符串载荷应原样: %q", got)
+	}
+	if got := errorTextOf(nil); got != "" {
+		t.Fatalf("nil 载荷应为空串: %q", got)
 	}
 }

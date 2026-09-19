@@ -548,7 +548,9 @@ function rebuild(keepCursor: boolean): void {
     }
   }))
   transport.on('error', gate((f) => {
-    metas.value.push({ kind: 'error', text: String(f.payload) })
+    // 后端已把 agent/error 载荷归一为文本;这里再兜一层:对象载荷不再渲染成 "[object Object]"
+    const p = f.payload as unknown
+    metas.value.push({ kind: 'error', text: typeof p === 'string' ? p : JSON.stringify(p) })
   }))
   transport.on('confirm', gate((f) => {
     confirm.value = f.payload as ConfirmRequest

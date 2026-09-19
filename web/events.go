@@ -8,6 +8,7 @@ package web
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
@@ -191,7 +192,10 @@ func (h *EventHub) Subscribe(c sdk.Ctx, sessions sdk.SessionLog) (disposer sdk.D
 	add(sdk.EventAgentError, func(_ context.Context, ev *sdk.Event) error {
 		h.mu.Lock()
 		defer h.mu.Unlock()
-		f := Frame{Type: FrameError, Payload: ev.Payload}
+		// 载荷归一为**文本**再下发:同一事件在 TUI 内是 error 值(可直接 Error()),
+		// 但 error 经 HTTP/JSON 序列化为 `{}` → 前端 String(payload) 只能显示
+		// "[object Object]"(2026-09-19 阶段 7 真机逮到:断网回合"错误可读"不达标)。
+		f := Frame{Type: FrameError, Payload: errorTextOf(ev.Payload)}
 		h.broadcast(f)
 		return nil
 	})
@@ -312,4 +316,21 @@ func (h *EventHub) Push(f Frame) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.broadcast(f)
+}
+
+// errorTextOf 把回合错误载荷归一为可读文本。
+// 生产路径上 err 是 error 值(TUI 订阅方直接类型断言 Error()),而 web 帧要过 JSON ——
+// error 无导出字段 → `{}` → 前端 String(payload) 得到 "[object Object]"。
+// 故在 web 面统一转文本(字符串/其它形态同样兜住,不因载荷形态变化再退化)。
+func errorTextOf(p any) string {
+	switch v := p.(type) {
+	case nil:
+		return ""
+	case error:
+		return v.Error()
+	case string:
+		return v
+	default:
+		return fmt.Sprint(v)
+	}
 }

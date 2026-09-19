@@ -1619,6 +1619,32 @@ Go 全量 **1498 passed**(67 包,0 失败,6 跳过;新增 `TestPluginStderrCaptu
 **11. pdfium TUI 位图** —— **锁死理由**:SELF-1 有网实测体积 **+≈5.5 MiB → 破体积门**(当时门 46/30,现在更紧的 36/23 下更无空间);TUI **无图形协议**支持 → 位图 = 新子系统(布局、缩放、终端矩阵、性能);而主力光栅路径已由 **RST-1** 交付(外部 `pdftoppm` + `sdk.DocRasterService` + `/api/doc/raster`)。**重启条件 = 降体路径先腾出空间(②/③)且「零外部依赖部署」需求成立** —— 注意这一条与上面第 6 项的「终端内联图片」不同:此项即使有图形协议也仍受体积门约束。
 **12. OSC 9;4 进度通知** —— **锁死理由**(本次分析补充):OSC 9;4 的支持面窄(Windows Terminal、WezTerm 等为主),在未知终端上属于**纯静默失效** —— 与「静默失效不可接受」的红线直接冲突;而进度语义在 TUI 已有落点:状态栏 + 坞折叠行「后台 N 运行中: <摘要>」(1s 节拍,仅在有任务时续拍)。**重启条件 = 需要终端级任务栏进度**(例如长任务在最小化窗口里也要可见)成为明确需求,且探测可依赖。
 
+#### 交付记录(2026-09-19,第二十四批:本机验收阶段 7(沙箱/审批档可见性 · shell jail · CSP · 负例)+ 回合错误载荷不可读缺陷修复)
+
+> **来路**:继续推进 **A 本机 109 条**。本批取 A-5「其它本机可做」中**命令面 + 浏览器可验**的 9 条(#111/112/113/115/116/118/119/122/123),新开阶段 7 脚本(`~/gah-acceptance/{run-sbx.sh,sbx.mjs}`;**四实例各持独立数据根** —— 主 / `GAH_SHELL_JAIL=0` / provider 黑洞 / 只读根 → 11 项检查 **11/11 PASS**)。
+
+| 检查 | 真机证据 |
+|---|---|
+| **#119 前半 仅切审批档前** | smart 档下区外写被拒(账本:`shell 命令写目标被拒(/tmp/sbx-out.txt)`),文件**未落盘** |
+| **#119 后半 同一条命令在只切 `open` 档后** | **即放行**(文件落盘)→ 证明下发的是**有效档位**,不是“设置没生效” |
+| **#111 `/sandbox` 无参** | `沙箱: workspace-write;有效: full-access(联动来源 approval=open)`;Web 底栏 `沙箱 完全(随审批开放)` |
+| **#113 `/approval` 回显** | `审批: open;沙箱有效: full-access` |
+| **#115 环境 jail** | `GOCACHE`→`gah-data/jail/cache/go-build`、`GOMODCACHE`→`cache/go-mod`、`TMPDIR`→`jail/tmp`;`HOME` **未被改**;`~/Library/Caches/go-build` mtime **未变** |
+| **#112 `/sandbox ro`** | 回显含「联动覆盖生效…该设置暂不生效」;随后写操作**仍放行**(证是联动覆盖而非设置失败) |
+| **#116 `GAH_SHELL_JAIL=0`** | `gah-data/jail` 目录**不存在**;`GOCACHE`/`TMPDIR` 回落系统默认 |
+| **#122 只读数据根** | `/api/state` **200**(服务照常可用)+ 启动期 **3 条** WARN/ERROR(非静默) |
+| **#118 CSP 零违规** | `securitypolicyviolation` **0**、控制台 CSP 报错 **0**(含设置抽屉/侧栏面板/WS/SSE 遍历) |
+| **#123 断网(模型不可达)** | `/api/state` 立即可用;发消息后 **3.2s** 入流可读错误文本 |
+
+**本批逮到并修掉的真缺陷(1 处,属「静默失效」类)**:回合错误**经 HTTP 退化为 `[object Object]`** —— `agent-loop` 发 `agent/error` 时载荷是 **error 值**(同进程内 TUI 直接 `Payload.(error).Error()`,一直正常),而 web 侧要过 JSON:error 无导出字段 → 序列化成 `{}` → 前端 `String(payload)` 只能显 `[object Object]`。结果:**断网/模型失败时界面上看不出任何原因**,且 TUI 同事件偏偏是好 —— 门禁也照不到(单测断言的是同进程对象,永不经历 JSON)。修法(**不动 sdk、不动 TUI 路径**):① `web/events.go` 的 `EventAgentError` 订阅统一经 `errorTextOf` 归一为文本;② 前端 `App.vue` 兜一层(对象载荷不再渲染成 `[object Object]`);③ 回归护栏 `TestErrorFramePayloadIsReadable`(断言帧载荷为字符串 + JSON 形态不含 `"payload":{}`)。
+
+**口径订正与记录在案(不假勾)**:
+1. **A-5#125(只读数据根页内提示条)未交付** —— 前端无该提示条组件,壳侧也无「退回应用目录内运行」逻辑;现状 = 启动期显式 WARN/ERROR + 服务照常可用(即 #122 的真机口径)。是否补提示条属**新能力**,登记待拍板(不硬勾)。
+2. C 段「用户数据目录不可写 → 壳给系统通知」按**壳面**归 A-4(本批只验 CLI/Web 面)。
+3. 验收脚本自身两处口径修正(已写进注释):`go env TMPDIR` **不是有效键**(输出空行,看起来像“没注入”)→ 改用 `echo $TMPDIR`;工具结果 `Content` 是 JSON 包装、换行是**字面** `\n` → 断言前必须反转义(否则恒不匹配,会把好实现判为缺陷)。
+
+**门禁(改 web + 前端,无 sdk 接口变更)**:`gofmt -l` 干净 · `go vet ./...`(含 `sdk`)干净 · `go test ./... -race -count=1` **58 包全绿** · `coverage-check.sh` **COVERAGE_OK** · `size-check.sh` 通过(darwin/arm64 **31.33 MiB / gz 18.84**,与上批持平)· `vue-tsc --noEmit` 0 错 + `vite build` 通过 + `node --test` **157 pass** · **未改 sdk → 未重跑 `gen-extplugins.sh`**。
+
 #### 交付记录(2026-09-19,第二十三批:本机验收阶段 6(UI 槽位插件化 / WS 通道 / todo-panel 联动)+ 5 处真缺陷修复)
 
 > **来路**:代码类待办仍被门禁卡住,继续推进 **A 本机 109 条**。本批取 A-2 中**依赖 UI 插件夹具**的 7 条(#55/56/57/59/60/61/62),新开阶段 6 脚本(`~/gah-acceptance/{run-ui.sh,ui.mjs}`;真机 10 项检查 **10/10 PASS**,控制台/网络异常 0)。
