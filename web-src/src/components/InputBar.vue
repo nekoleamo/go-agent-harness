@@ -166,6 +166,10 @@ const levelCmd = ref('') // 正在逐级选择的命令名('' = 命令级)
 const levelPath = ref<string[]>([]) // 已选参数值(不含命令名)
 const levelItems = ref<CommandView[]>([]) // 当前级候选(复用渲染形状)
 const levelFree = ref('') // 自由参数提示(无枚举时)
+// levelText = 逐级流程自己写下的命令文本:只有它才算「仍在逐级」——
+// 用户手工改写命令文本(如从“备份到自定义路径”改成“/backup restore”)必须退出逐级态,
+// 否则会留一个陈旧的“继续输入…”提示,把命令当成的参数级候选(提示与实际参数不符)。
+const levelText = ref('')
 
 const hints = computed(() => {
   if (levelItems.value.length) return levelItems.value
@@ -180,6 +184,7 @@ function resetLevel(): void {
   levelPath.value = []
   levelItems.value = []
   levelFree.value = ''
+  levelText.value = ''
 }
 
 async function loadLevel(): Promise<void> {
@@ -187,8 +192,11 @@ async function loadLevel(): Promise<void> {
   if (!name) return
   try {
     const resp = await api.commandOptions(name, levelPath.value)
-    levelItems.value = resp.items.map((i) => ({ name: i.value, usage: '', desc: i.desc }))
-    levelFree.value = resp.items.length === 0 && !resp.done ? resp.freeArgs.join(' | ') : ''
+    // 空枚举/空自由参数可能是 [] 也可能是 null(旧后端/未归零的响应)→ 一律按数组消费,
+    // 否则 items.map 抛错被 catch 吞掉 → 自由参数提示整级消失(命令链静默断掉)。
+    const items = resp.items ?? []
+    levelItems.value = items.map((i) => ({ name: i.value, usage: '', desc: i.desc }))
+    levelFree.value = items.length === 0 && !resp.done ? (resp.freeArgs ?? []).join(' | ') : ''
   } catch {
     levelItems.value = []
     levelFree.value = ''
@@ -197,13 +205,14 @@ async function loadLevel(): Promise<void> {
 
 async function pickLevel(value: string): Promise<void> {
   levelPath.value = [...levelPath.value, value]
-  text.value = '/' + levelCmd.value + ' ' + levelPath.value.join(' ') + ' '
+  levelText.value = '/' + levelCmd.value + ' ' + levelPath.value.join(' ') + ' '
+  text.value = levelText.value
   await loadLevel()
 }
 
-// 手工改写命令文本(如换成别的命令)→ 退出逐级态,避免陈旧候选
+// 手工改写命令文本(换成别的命令/别的参数)→ 退出逐级态,避免陈旧候选
 watch(text, (v) => {
-  if (levelCmd.value && !v.startsWith('/' + levelCmd.value + ' ')) resetLevel()
+  if (levelCmd.value && v !== levelText.value) resetLevel()
 })
 
 const THINK = ['off', 'low', 'medium', 'high'] as const
@@ -314,6 +323,7 @@ function pickHint(name: string): void {
   resetLevel()
   levelCmd.value = name
   text.value = '/' + name + ' '
+  levelText.value = text.value // 命令级文本也属逐级流程(否则 watch 立刻把 levelCmd 清掉)
   void loadLevel() // 命令级:拉取该命令的参数级候选
 }
 

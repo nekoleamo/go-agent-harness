@@ -888,6 +888,14 @@ func (s *Server) handleCommandOptions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	resp.Done = len(resp.Items) == 0 && len(resp.FreeArgs) == 0
+	// 空枚举/空自由参数若下发 null,前端逐级链会直接断掉(客户端按数组消费:
+	// `resp.items.map(...)` 抛错 → 被 catch 吞掉 → 自由参数提示整级不显示)。统一归零为 []。
+	if resp.Items == nil {
+		resp.Items = []CommandOptionView{}
+	}
+	if resp.FreeArgs == nil {
+		resp.FreeArgs = []string{}
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 

@@ -482,6 +482,9 @@ let transport: Transport | null = null
 // connGen 链路代际号(rebuild 时 +1):旧连接的状态回调与迟到帧按代际丢弃。
 let connGen = 0
 let statsTimer: ReturnType<typeof setInterval> | null = null
+// streamSessionId = 会话流当前绑定的会话 id('' = 未校准:首次快照或刚由本地切换)。
+// 用于发现「服务端当前会话 ≠ 界面所绑会话」(命令切会话、别的端切走)→ 重放新会话。
+let streamSessionId = ''
 
 function rebuild(keepCursor: boolean): void {
   // 会话切换/全新连接:清流重放全量(通道按 after 游标差集重放)
@@ -614,6 +617,19 @@ async function refreshStats(): Promise<void> {
   try {
     state.value = await api.state()
     lastTick = Date.now() // 活跃心跳(睡眠检测基准)
+    // 会话被**命令**切走(如 `/session new`、`/session switch`)时前端收不到任何信号:
+    // SSE 订阅还挂在旧会话上 → 用户后续输入的消息服务端已记录,界面上却一个帧都不来(静默丢显示)。
+    // 故以服务端快照为事实:监到当前会话 id 与流所绑定的不一致 → 重放全量(与侧栏切换同一条路径)。
+    const sid = state.value.session?.id ?? ''
+    if (sid && sid !== streamSessionId) {
+      if (streamSessionId === '') {
+        streamSessionId = sid // 首次快照 / 本地刚切换(见 sessionChanged)→ 只校准,不重放
+      } else {
+        streamSessionId = sid
+        rebuild(false)
+        refreshKey.value++
+      }
+    }
   } catch (e) {
     // S-P1-3:网络层失败(非 HTTP 状态错误)= 链路事实 → 据实降级,不等用户发现。
     // HTTP 4xx/5xx 说明服务可达(请求本身被拒),不当作断连。
@@ -702,6 +718,7 @@ async function onSubmit(text: string, attachments?: string[]): Promise<boolean> 
 
 // 会话切换/新建(侧栏/抽屉):刷新状态 + 重建 SSE(全量重放新会话历史)+ 侧栏列表刷新
 function sessionChanged(): void {
+  streamSessionId = '' // 本地已切换:下一次 refreshStats 只校准 id,不重复重放
   void refreshStats()
   rebuild(false)
   refreshKey.value++

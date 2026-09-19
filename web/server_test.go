@@ -1939,9 +1939,21 @@ func TestCommandOptionsEndpoint(t *testing.T) {
 	if _, out := post("demo", `{"picked":["env"]}`); out.Level != 2 || len(out.Items) != 2 || out.Items[1].Value != "official" {
 		t.Fatalf("env 二级候选不符: %+v", out)
 	}
-	// 二级 login → 自由参数提示(无枚举)
+	// 二级 login → 自由参数提示(无枚举);items 必须是 [] 而不是 null
+	// (前端按数组消费:`resp.items.map(…)` 遇 null 抛错 → 被 catch 吞 → 自由参数整级不显示)
 	if _, out := post("demo", `{"picked":["login"]}`); len(out.Items) != 0 || len(out.FreeArgs) != 2 || out.FreeArgs[0] != "AppID" || out.Done {
 		t.Fatalf("login 应返回自由参数提示: %+v", out)
+	}
+	{
+		resp, err := http.Post(hs.URL+"/api/commands/demo/options", "application/json", strings.NewReader(`{"picked":["login"]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if !strings.Contains(string(raw), `"items":[]`) {
+			t.Fatalf("自由参数级的 items 应为空数组而非 null: %s", raw)
+		}
 	}
 	// 越界(已到末级)→ done(前端不再提示,可直接执行)
 	if _, out := post("demo", `{"picked":["env","sandbox"]}`); !out.Done || len(out.Items) != 0 {

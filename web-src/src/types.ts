@@ -184,8 +184,9 @@ export interface CommandOption {
 }
 export interface CommandOptionsResp {
   level: number
-  items: CommandOption[]
-  freeArgs: string[]
+  // 空枚举/空自由参数可能为 null(后端已归零为 [],这里兼容旧响应)
+  items: CommandOption[] | null
+  freeArgs: string[] | null
   done: boolean
 }
 
