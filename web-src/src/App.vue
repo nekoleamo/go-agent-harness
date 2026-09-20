@@ -68,6 +68,8 @@ import {
   pushNotice,
   type ToastState,
 } from './notices'
+// A-5#124 系统通知(按来源降级):localhost 才申请权限,LAN IP 访问下静默走页内 toast。
+import { createNotifier } from './notify'
 import StatusBar from './components/StatusBar.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import QuestionDialog from './components/QuestionDialog.vue'
@@ -140,6 +142,21 @@ const toasts = ref<ToastState>(newToasts())
 function onDismissToast(id: number): void {
   dismissToast(toasts.value, id)
 }
+// A-5#124 通知降级:能否弹**系统通知**只看来源与级别(判定逻辑在 notify.ts);
+// 页内提示与来源无关(始终由上面的 toast 承担),所以 LAN IP 访问时什么都不会丢。
+// 权限只在用户手势里申请(浏览器策略),且整个会话只申请一次。
+const notifier = createNotifier({
+  hostname: typeof location === 'undefined' ? '' : location.hostname,
+  api: typeof Notification === 'undefined' ? undefined : Notification,
+  ctor: typeof Notification === 'undefined' ? undefined : (title, opts) => new Notification(title, opts),
+})
+function onFirstGesture(): void {
+  notifier.maybeRequest()
+}
+// A-5#125 数据根只读提示条:只读时写入全失败(会话/配置不保存),必须显式告知;
+// 关闭只在本次会话生效 —— 刷新后重判(只读通常要人去修权限,不该被一次关闭永久遮掉)。
+const rootBarClosed = ref(false)
+const rootReadOnly = computed(() => state.value?.data_root_writable === false && !rootBarClosed.value)
 const confirm = ref<ConfirmRequest | null>(null)
 const question = ref<QuestionRequest | null>(null)
 // S-P0-2:提问弹层可收起(收起=角标,不阻塞继续对话)。新提问/换提问一律回到展开态。
@@ -595,7 +612,9 @@ function rebuild(keepCursor: boolean): void {
   }))
   // NOND-N1 提示帧:立即弹 toast(处理与去重在 notices.ts)。
   transport.on('notice', gate((f) => {
-    pushNotice(toasts.value, f.payload as Notice, Date.now())
+    const n = f.payload as Notice
+    pushNotice(toasts.value, n, Date.now())
+    notifier.fire(n) // 仅 warn/error 且本机来源已授权时才真弹系统通知(否那么是空操作)
   }))
   // 提示不进会话记录 → 通道建立后必须回填「上次看到之后」错过的几条。
   // 放在建连之后(不阻塞首屏):回填与实时帧按 id 去重,谁先到都不会重复弹。
@@ -792,12 +811,16 @@ onMounted(async () => {
   // 桌面壳:启动时探一次异步命令通道(结果只写壳日志,见 desktop.ts 的 probeAsync)。
   // 真机上出现过 async 命令连函数体都没进,这一行是分辨「任务没被调度」与「请求没到」的证据。
   probeAsync()
+  // A-5#124:系统通知权限只在**用户手势**里申请(无手势的自动请求会被浏览器静默拒),
+  // 首次交互触发一次;非本机来源内部直接跳过(不弹权限条、不报错)。
+  window.addEventListener('pointerdown', onFirstGesture, { once: true, capture: true })
   await refreshStats() // 首帧就探活:服务端本就不在时立刻显离线横幅(非「安静会话」误判)
   rebuild(false)
   // 统计节流刷新(usage 事件外,兜底上下文/缓存显示)
   statsTimer = setInterval(() => void refreshStats(), 3000)
 })
 onUnmounted(() => {
+  window.removeEventListener('pointerdown', onFirstGesture, { capture: true })
   window.removeEventListener(OPEN_DOC_EVENT, onOpenDoc)
   window.removeEventListener(OPEN_PANEL_EVENT, onOpenPanel)
   window.removeEventListener('online', onNetOnline)
@@ -1011,6 +1034,15 @@ onUnmounted(() => {
     <button v-if="showNewest" class="newest" data-tip="回到最新消息" @click="goNewest">
       ↓ 新消息
     </button>
+
+    <!-- A-5#125 数据根只读:写入全失败且**只**落启动日志时用户看不到(表现=发消息没反应)。
+         颜色用语义 token(--tool-* 橙系),可关闭;只读多半在壳/容器里,故文案给路径与下一步。 -->
+    <div v-if="rootReadOnly" class="root-bar" role="alert" data-ui-root-readonly>
+      <span class="rb-text">
+        数据目录不可写:{{ state?.data_root }} —— 会话与配置修改**无法保存**,请修复权限后重启(或把数据目录挪到可写位置)
+      </span>
+      <button class="rb-x" data-tip="关闭本条提示" aria-label="关闭提示条" @click="rootBarClosed = true">×</button>
+    </div>
   </div>
 </template>
 
@@ -1019,6 +1051,38 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   height: 100%;
+}
+/* A-5#125 只读数据根提示条:贴在会话区底部(状态栏在最上、输入框在下,这条要显眼但不挡操作) */
+.root-bar {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0 14px 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--tool-line);
+  border-radius: var(--r-card);
+  background: var(--tool-soft);
+  color: var(--tool-strong);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.rb-text {
+  flex: 1;
+  word-break: break-all;
+}
+.rb-x {
+  flex: 0 0 auto;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: var(--r-input);
+}
+.rb-x:hover {
+  background: color-mix(in srgb, var(--tool) 18%, transparent);
 }
 .statusbar-slot {
   display: flex;

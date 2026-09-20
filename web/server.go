@@ -633,12 +633,17 @@ type StateView struct {
 	SandboxDerived   bool   `json:"sandbox_derived,omitempty"` // 有效档由审批档联动覆盖而来
 	// SandboxSync 审批档→沙箱有效档 的联动开关(R10 ②-2;仅沙箱实现 sdk.SandboxSync 时出现)。
 	// 与 SandboxDerived 是两件事:sync=false 时"有效档 == 声明档"不再等于"没有联动概念"。
-	SandboxSync *bool          `json:"sandbox_sync,omitempty"`
-	Approval    string         `json:"approval,omitempty"` // M17:审批档位(open|smart|strict;未装配省略)
-	Stats       sdk.UsageStats `json:"stats"`
-	Session     *SessionV      `json:"session,omitempty"`
-	Running     bool           `json:"running"`
-	Version     string         `json:"version"`
+	SandboxSync *bool  `json:"sandbox_sync,omitempty"`
+	Approval    string `json:"approval,omitempty"` // M17:审批档位(open|smart|strict;未装配省略)
+	// DataRoot/DataRootWritable:A-5#125 数据根可写性 —— 只读时前端出**页内提示条**
+	// (此前只有启动期 WARN/ERROR 日志,浏览器/壳里的用户看不到)。
+	// GAH_HOME 未注入(嵌入/单测)时两者都省略,不谎报可写。
+	DataRoot         string         `json:"data_root,omitempty"`
+	DataRootWritable *bool          `json:"data_root_writable,omitempty"`
+	Stats            sdk.UsageStats `json:"stats"`
+	Session          *SessionV      `json:"session,omitempty"`
+	Running          bool           `json:"running"`
+	Version          string         `json:"version"`
 }
 
 // SessionV 会话视图(host-cwd-sessions 未装配时省略)。
@@ -667,6 +672,10 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		Approval: approval,
 		Running:  s.running.Load(),
 		Version:  os.Getenv("GAH_VERSION"),
+	}
+	// A-5#125 数据根可写性:每次请求现探(用户改完权限**无需重启**就能看到提示条消失)。
+	if root := dataRootPath(); root != "" {
+		v.DataRoot, v.DataRootWritable = root, probeWritable(root)
 	}
 	// 联动开关(可选能力):设置面板据此渲染勾选态;未实现 = 省略(面板不显示该项)。
 	if sc, ok := s.sb.(sdk.SandboxSync); ok {

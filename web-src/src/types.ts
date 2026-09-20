@@ -164,6 +164,9 @@ export interface StateView {
   // 审批档→沙箱有效档 的联动开关(R10 ②-2;后端未实现 sdk.SandboxSync 时省略 = 不显示该项)
   sandbox_sync?: boolean
   approval?: string
+  // A-5#125 数据根可写性(后端 GAH_HOME 未注入时省略):false → 页面出只读提示条
+  data_root?: string
+  data_root_writable?: boolean
   stats: UsageStats
   session?: SessionView
   running: boolean
