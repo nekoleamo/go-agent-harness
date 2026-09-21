@@ -1621,6 +1621,17 @@ Go 全量 **1498 passed**(67 包,0 失败,6 跳过;新增 `TestPluginStderrCaptu
 **11. pdfium TUI 位图** —— **锁死理由**:SELF-1 有网实测体积 **+≈5.5 MiB → 破体积门**(当时门 46/30,现在更紧的 36/23 下更无空间);TUI **无图形协议**支持 → 位图 = 新子系统(布局、缩放、终端矩阵、性能);而主力光栅路径已由 **RST-1** 交付(外部 `pdftoppm` + `sdk.DocRasterService` + `/api/doc/raster`)。**重启条件 = 降体路径先腾出空间(②/③)且「零外部依赖部署」需求成立** —— 注意这一条与上面第 6 项的「终端内联图片」不同:此项即使有图形协议也仍受体积门约束。
 **12. OSC 9;4 进度通知** —— **锁死理由**(本次分析补充):OSC 9;4 的支持面窄(Windows Terminal、WezTerm 等为主),在未知终端上属于**纯静默失效** —— 与「静默失效不可接受」的红线直接冲突;而进度语义在 TUI 已有落点:状态栏 + 坞折叠行「后台 N 运行中: <摘要>」(1s 节拍,仅在有任务时续拍)。**重启条件 = 需要终端级任务栏进度**(例如长任务在最小化窗口里也要可见)成为明确需求,且探测可依赖。
 
+#### 交付记录(2026-09-21,第三十七批:A-1 #86「壳内通知端到端」减外部条件版 —— 真产物喂壳,逮到第 15 处真缺陷)
+
+**做法(不依赖 GUI、不装东西)**:把宿主**真产物**固化成可复现 fixture,再让桌面壳用真产物跑判定链。
+- **Go 侧生成器** `tests/notice_feed_fixture_test.go`:经**真事件总线**触发 `job/done(失败)`、`schedule/run(跳过)`、`agent/error` → `host-notices` **自动生产** → 走**真 HTTP** `GET /api/notices?since=0` 取正文 → 归一(仅 `ts` 置零,时钟不可复现;壳判定链不读 ts)→ 落 `desktop/src-tauri/fixtures/notices-feed.json`(`GAH_UPDATE_NOTICE_FIXTURE=1` 重生成,默认比对,不一致即红)。
+- **Rust 侧消费** `notice.rs` 新增 `host_generated_feed_drives_notification_chain`:fixture 驱动 `parseFeed` / `shouldNotify` / `notifyTitle` / `notifyBody` / `Consumer.accept` 全链,并钉住「来源标识符 = 壳分类依据」这条契约。
+
+**逮到的真缺陷(第 15 处)**:`notifyTitle` 只按**裸名**匹配(`schedule` / `job` / `agent|host-agent`),而宿主真实 `source` 是**带前缀的插件名** `host-jobs` / `host-schedule` / `host-agent-loop` → 前两类**掉进「提示」兜底**(托盘/通知中心里分不清是"计划失败"还是"后台任务失败")。修法:先剥 `host-` 前缀再分类(裸名兼容保留)。**证明**:临时还原修复前逻辑 → 新断言必红(`assertion failed: notifyTitle(&f.items[0]).starts_with("gah 后台任务:…")`),恢复后 12/12 绿。
+**为什么此前看不见**:Rust 侧样点 `REAL_SAMPLE` 是**手抄**的(`source:"schedule"`/`"job"` 裸名),与宿主实际输出之间没有任何回归约束 —— 这正是 #86 要消灭的东西。
+
+**口径**:#86 自动化半边收口(真产物 → 壳解析 → 判定链);"GUI 里是否真弹系统通知"仍属人眼。Rust `cargo test --offline` = **26 passed**(+1)。
+
 #### 交付记录(2026-09-21,第三十六批:A-1 #88 通知矩阵端到端 + 减外部条件首件)
 
 **① #88 通知矩阵的本地化验证**:不装 tmux、不切三个真终端,只换环境变量走真 pty(`/notify test`),断言实际写出的序列:
