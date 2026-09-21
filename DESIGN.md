@@ -1621,6 +1621,20 @@ Go 全量 **1498 passed**(67 包,0 失败,6 跳过;新增 `TestPluginStderrCaptu
 **11. pdfium TUI 位图** —— **锁死理由**:SELF-1 有网实测体积 **+≈5.5 MiB → 破体积门**(当时门 46/30,现在更紧的 36/23 下更无空间);TUI **无图形协议**支持 → 位图 = 新子系统(布局、缩放、终端矩阵、性能);而主力光栅路径已由 **RST-1** 交付(外部 `pdftoppm` + `sdk.DocRasterService` + `/api/doc/raster`)。**重启条件 = 降体路径先腾出空间(②/③)且「零外部依赖部署」需求成立** —— 注意这一条与上面第 6 项的「终端内联图片」不同:此项即使有图形协议也仍受体积门约束。
 **12. OSC 9;4 进度通知** —— **锁死理由**(本次分析补充):OSC 9;4 的支持面窄(Windows Terminal、WezTerm 等为主),在未知终端上属于**纯静默失效** —— 与「静默失效不可接受」的红线直接冲突;而进度语义在 TUI 已有落点:状态栏 + 坞折叠行「后台 N 运行中: <摘要>」(1s 节拍,仅在有任务时续拍)。**重启条件 = 需要终端级任务栏进度**(例如长任务在最小化窗口里也要可见)成为明确需求,且探测可依赖。
 
+#### 交付记录(2026-09-21,第三十九批:A-1 #41 端到端打通 —— 连逮两处真缺陷(第 16/17),含一处"工具静默不跑")
+
+**背景**:#41 原登记为"anthropic thinking blocks 适配后置(人工)"。第三十五批补了适配层的 `thinking_delta` 解析,但端到端一直做不了 —— 原因是 anthropic 适配器**不吃 provider.yaml**(只认插件 data/env),而 TUI/Web 的端点配置全走 provider.yaml。本批把这条链打通并跑真 pty。
+
+**第 16 处真缺陷(运行期 provider 配置错位)**:`llm-anthropic-compat` 未实现 `sdk.ProviderAdapter`,且完全不读 provider.yaml → 用户把 provider 切到 anthropic 兼容端点(Claude Code 系)时:`/provider` 只配到了**通用(openai)适配器**,claude 模型的请求仍打**静态默认端点** —— 切了等于没切,且无任何报错。修:① 适配器补 `Configure/Unset/Reset/ProviderInfo`(+`mu` 保护,`Complete` 走快照读);② 新增 `resolveConfig`(env > provider.yaml[**仅当活跃 provider 的模型归属本适配器路由范围**,否则会把 openai 端点错配进来] > data 样板 > 内置默认);③ host-llm 新增 `providerAdapterFor(model)`:按模型前缀选"真正服务该模型"的可配置适配器(命中却不支持运行时配置 → **显式报错**,不偷偷配到别的适配器)。
+
+**第 17 处真缺陷(工具静默不跑,最严重的一类)**:**`host-agent-loop` 只认"增量累积"的 tool_calls**(`calls` 切片,来自 `ToolCallID` 增量事件),而 anthropic 适配器是按 content block 在**响应体内部**累积的 → 这类响应被当成"**没有工具调用**"直接收尾:**正文照出、工具一个都不跑、回合提前结束,且全程无报错**。修:增量累积为空时用 `final.Message.ToolCalls` 兜底。**证明**:临时禁用兜底 → 单测必红(`工具执行后应有第二趟请求,实际 1`);已有 OpenAI 路径因走增量事件而不受影响,故此前从未暴露。
+
+**#41 端到端验收**(`tests/tui_accept_anthropic_test.go`):真 pty + **假 Anthropic Messages 端点**(经 provider.yaml 配置,顺带验证第 16 处的修复),一条响应里 `thinking` 块 → `tool_use` 块 → **后置 text 块**:思维块可见(先想一下甲)、工具真跑(echo 输出甲四十一)、后置正文不丢(工具之后的正文乙)、第二趟回复追加(第四十一项完成丙)。
+
+**门禁**:`gofmt`/`go vet` 干净 · 非 e2e 全包 `-race` 绿 · `tests/ -run TUIAccept` 全绿 · `COVERAGE_OK` · 体积门通过 · Rust `cargo test --offline` 26 passed。
+
+**口径**:A-1 #41 由"人工"转为**全验**(适配层 + 端到端);A 表 **已跑 101 / 剩 4**(剩:#39 人眼 · #42 人眼 · #82/#85 Gatekeeper 人工 · #86 GUI 弹窗人工 · #88 真机弹窗人工 —— 均为人眼/人工项)。
+
 #### 交付记录(2026-09-21,第三十八批:A-1 #77 真 exec 契约(PATH 假 soffice)+ #82/#85 重新分析(实测"不作数"的原因))
 
 **① #77 LibreOffice 转换(减外部条件版,不装 ≈700MB)**:既有用例走 `run` 钩子注入 stub,**绕过了真进程/PATH 探测**。新增 `TestConverterRealExecPATHShim`:PATH 前置假 `soffice` 脚本,覆盖真 exec 链的六面 ——
