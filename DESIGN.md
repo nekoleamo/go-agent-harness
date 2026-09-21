@@ -1621,6 +1621,39 @@ Go 全量 **1498 passed**(67 包,0 失败,6 跳过;新增 `TestPluginStderrCaptu
 **11. pdfium TUI 位图** —— **锁死理由**:SELF-1 有网实测体积 **+≈5.5 MiB → 破体积门**(当时门 46/30,现在更紧的 36/23 下更无空间);TUI **无图形协议**支持 → 位图 = 新子系统(布局、缩放、终端矩阵、性能);而主力光栅路径已由 **RST-1** 交付(外部 `pdftoppm` + `sdk.DocRasterService` + `/api/doc/raster`)。**重启条件 = 降体路径先腾出空间(②/③)且「零外部依赖部署」需求成立** —— 注意这一条与上面第 6 项的「终端内联图片」不同:此项即使有图形协议也仍受体积门约束。
 **12. OSC 9;4 进度通知** —— **锁死理由**(本次分析补充):OSC 9;4 的支持面窄(Windows Terminal、WezTerm 等为主),在未知终端上属于**纯静默失效** —— 与「静默失效不可接受」的红线直接冲突;而进度语义在 TUI 已有落点:状态栏 + 坞折叠行「后台 N 运行中: <摘要>」(1s 节拍,仅在有任务时续拍)。**重启条件 = 需要终端级任务栏进度**(例如长任务在最小化窗口里也要可见)成为明确需求,且探测可依赖。
 
+#### 交付记录(2026-09-21,第四十批:全平台自测(本地全量)与两处修复)
+
+**命令矩阵与结果**(基线 `81617b6` → 修复提交 `b1877be`;环境 go1.27.1 / node 26.8.1 / cargo 1.98.1 / macOS 26.7 arm64):
+
+| 面 | 命令 | 结果 |
+| --- | --- | --- |
+| 格式/静态 | `gofmt -l .`(排除 node_modules) | 干净 |
+| 静态 | `go vet ./...`(darwin) / `GOOS=windows+linux go vet ./...` | 全干净(含矩阵外目标) |
+| 静态 | `staticcheck ./...` | **6 项**(见 F3) |
+| 构建 | `CGO_ENABLED=0 go build ./...` × {darwin,linux,windows}×{amd64,arm64} + linux/386 + freebsd/amd64 | 8/8 OK(**修复前 windows/arm64 失败**,见 F1) |
+| 发布形态 | `-trimpath -ldflags "-s -w"` | 32.9MB;体积门通过 |
+| 单测 | `go test $(go list ./... \| grep -v /tests$) -race` | 57 包全绿 |
+| 端到端 | `go test ./tests/ -count=1`(含 TUI pty 全量) | **ok 323.8s**,83 个用例 0 失败 |
+| sdk module | `cd sdk && gofmt/vet/staticcheck/test -race` | 干净/1 项(SA1012)/47 用例全绿 |
+| 覆盖率 | `scripts/coverage-check.sh` | **COVERAGE_OK**,总覆盖 79.4%(下限 65%),4 包豁免 |
+| 外部插件 | `scripts/gen-extplugins.sh`(重生成 + 幂等) | 两次生成 md5 一致;产物内 vcs 计数 = 0(**修复前带 VCS 戳**,见 F2) |
+| 平台护栏 | `go test ./internal/embed/`(P4 平台匹配) | 通过 |
+| Web | `npm test`(node --test) / `vue-tsc --noEmit` / `vite build` | 164 用例全绿 / 0 错误 / 构建成功(index 203.7KB→gzip 74.6KB) |
+| 桌面壳 | `cargo test --offline` / `cargo check --locked` / `cargo clippy` | 26 全绿 / 0 error 35 warning / 40 条(见 F4) |
+| 验收脚本(10 个) | `~/gah-acceptance/run-{a2,ui,wb,sbx,notify,appr,doc,wq,prov,r12}.sh` | **121 条 PASS / 0 FAIL**(8、10、6、11、5、6、21、14、6、9) |
+
+**F1 矩阵外平台编译失败(已修)**:`windows/arm64`、`linux/386` 等发行矩阵外目标 `go build` 报 `undefined: extPlugins/extPluginDir`(不知所云)。补 `internal/embed/extplugins_unsupported.go`(build-tag 覆盖矩阵外)+ `embed.go` 的 `checkPlatformEmbedded()`:`extPluginDir == ""` → 显式报出发行矩阵并提示"自行放 plugins/"。矩阵外目标现在**可构建**,缺能力在运行期显式失败(不静默降级成"没有插件")。
+
+**F2 外部插件产物不可复现(已修)**:`gen-extplugins.sh` 默认带 VCS 戳(`vcs=git`/`vcs.revision`/`vcs.time`/`vcs.modified`),产物随 **git 状态**变化 —— 实测同源码同工具链、脏树重生成与提交版**字节不同而大小相同**(文件大小 9151106 一致,仅戳不同),所以"重跑无 diff"只在 HEAD+脏标记完全一致时成立。加 `-buildvcs=false` 后两次生成 md5 一致、产物内 `vcs` 计数为 0;产物同步重生成(20 个)。
+
+**F3 staticcheck 7 项(仅记录,未改)**:根 module 6 项 —— 生产死代码 1 处(`tui/chrome.go:295 statuslineNames` 未使用)、`tui/app.go:1802` S1011(手写循环可换 `append(...)`)、测试内未使用 3 处(`host-internal-commands/context_test.go` 字段、`acp-server/acp_test.go` 方法、`tool-session-search/search_test.go` 函数)、`host-bridge/callback_rpc_test.go:483` S1040(同型断言);sdk 1 项 `worktree_test.go:17` SA1012(传 nil Context)。均非功能缺陷,建议单独一次清理提交(改完需重跑门禁)。
+
+**F4 clippy 40 条(仅记录)**:34 条为 `non_snake_case` 函数名(Tauri 命令名刻意 camelCase,与前端调用同名,属有意风格)+ 6 条杂项(tabs in doc comments、多余 `mut`、unit let-binding、多余借用)。`cargo check --locked` **0 error**,与 CI 一致。
+
+**F5 工具链坑(建议写进文档)**:`desktop/.cargo/config.toml`(镜像配置)按 **cwd** 解析 —— 在仓库根用 `cargo test --offline --manifest-path desktop/src-tauri/Cargo.toml` 会以 `no matching package named serde` 失败(误导性;实为没读到该 config)。必须在 `desktop/` 下执行(CI 已是 `cd desktop/src-tauri && cargo check --locked`)。
+
+**未覆盖(诚实声明)**:① 非 macOS 真机运行(本轮只做交叉**编译** + windows 目标 vet,未在真机跑);② 人眼/人工项 #39/#42/#82/#85/#86/#88(前批已登记理由);③ `scripts/verify-release.mjs`(发布 gate,需线上 latest.json,本轮无发布产物)。
+
 #### 交付记录(2026-09-21,第三十九批:A-1 #41 端到端打通 —— 连逮两处真缺陷(第 16/17),含一处"工具静默不跑")
 
 **背景**:#41 原登记为"anthropic thinking blocks 适配后置(人工)"。第三十五批补了适配层的 `thinking_delta` 解析,但端到端一直做不了 —— 原因是 anthropic 适配器**不吃 provider.yaml**(只认插件 data/env),而 TUI/Web 的端点配置全走 provider.yaml。本批把这条链打通并跑真 pty。
