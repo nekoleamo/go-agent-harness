@@ -1619,6 +1619,20 @@ Go 全量 **1498 passed**(67 包,0 失败,6 跳过;新增 `TestPluginStderrCaptu
 **11. pdfium TUI 位图** —— **锁死理由**:SELF-1 有网实测体积 **+≈5.5 MiB → 破体积门**(当时门 46/30,现在更紧的 36/23 下更无空间);TUI **无图形协议**支持 → 位图 = 新子系统(布局、缩放、终端矩阵、性能);而主力光栅路径已由 **RST-1** 交付(外部 `pdftoppm` + `sdk.DocRasterService` + `/api/doc/raster`)。**重启条件 = 降体路径先腾出空间(②/③)且「零外部依赖部署」需求成立** —— 注意这一条与上面第 6 项的「终端内联图片」不同:此项即使有图形协议也仍受体积门约束。
 **12. OSC 9;4 进度通知** —— **锁死理由**(本次分析补充):OSC 9;4 的支持面窄(Windows Terminal、WezTerm 等为主),在未知终端上属于**纯静默失效** —— 与「静默失效不可接受」的红线直接冲突;而进度语义在 TUI 已有落点:状态栏 + 坞折叠行「后台 N 运行中: <摘要>」(1s 节拍,仅在有任务时续拍)。**重启条件 = 需要终端级任务栏进度**(例如长任务在最小化窗口里也要可见)成为明确需求,且探测可依赖。
 
+#### 交付记录(2026-09-20,第三十二批:A-1 补验跨渠道提问提示(#43)—— 同进程 TUI+Web 并存)
+
+> **来路**:#43 原登记人工("需多端并存环境")。仓库里其实有现成 seam:**`confirm-fusion` bundle** —— `host-confirm-fusion` 统一 Provide `ctx.confirm`/`ctx.question` 并广播各端呈现者(首答生效),两 UI 插件检测到 fusion 就只注册呈现者,同进程并存不再抢 Provide。于是 **TUI 与 Web 同行一个 `gah` 进程**即可真机验。
+
+| 步 | 结果 |
+|---|---|
+| profile | `accx` = bundles `[base, tui, web, confirm-fusion]` + patch(关 `llm-openai-compat`、开 `llm-mock` 脚本:先调 `ask_user_question` 再收尾文本;`ui-web-app.data.addr` 指本测试抢的空闲端口、`open_browser: false`) |
+| TUI 呈现 | 测试发一句 → 状态栏 `执行工具: ask_user_question … · ❓ 待答(Esc 退出作答)`,提问正文 `跨渠道提问:选一个` 可见 |
+| Web 作答 | 测试连 `GET /api/events`(SSE)抓到 `question/requested` 帧,**取到与 TUI 同一提问 id**(`9d2cfcddb996c88d`)→ `POST /api/question {"id":…,"values":["甲"]}` |
+| TUI 提示 | 出现 **`提问已由其它渠道(web)处理: …`**(来自 ui-tui-app 订阅 `question/resolved` 且 `channel != tui`) |
+| 生效 | 紧跟出现 mock 的收尾文本 `跨渠道回答已生效。` —— 说明该作答**真的回填到工具结果、回合继续**,不只是提示 |
+
+**工程价值**:这条把"多端融合"从设计文档变成**可复跑的自动探针**(同进程双 UI + SSE 取 id + HTTP 作答),后续跨渠道审批(confirm)可照抄同一套路。
+
 #### 交付记录(2026-09-20,第三十一批:A-1 补验滚动摘要压缩(#12/#13)—— spy provider 证"真生效")
 
 > **来路**:#13(压缩后滚动摘要生效)此前登记人工,理由是"需长会话语料"。本批换掉思路:不追长语料,而是**把 token 预算压到 80 字符**,短会话一样超限;再自建 **spy provider(记录每个请求体)** —— 证明"生效"的硬证据不是 TUI 回显一句话,而是**后续请求的模型上下文里真的出现了滚动摘要**。
