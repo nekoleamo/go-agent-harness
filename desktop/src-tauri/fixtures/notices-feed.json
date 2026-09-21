@@ -1,0 +1,32 @@
+{
+  "items": [
+    {
+      "id": 1,
+      "level": "error",
+      "title": "后台任务失败",
+      "body": "任务 job-1",
+      "source": "host-jobs",
+      "ts": "0001-01-01T00:00:00Z",
+      "key": "job:job-1"
+    },
+    {
+      "id": 2,
+      "level": "warn",
+      "title": "计划「plan-1」本轮跳过",
+      "body": "到点时有回合在跑(未排队,可调 busy_wait_seconds 或错开时间)",
+      "source": "host-schedule",
+      "ts": "0001-01-01T00:00:00Z",
+      "key": "schedule:plan-1:skipped"
+    },
+    {
+      "id": 3,
+      "level": "error",
+      "title": "回合出错",
+      "body": "context deadline exceeded",
+      "source": "host-agent-loop",
+      "ts": "0001-01-01T00:00:00Z",
+      "key": "agent/error:context deadline exceeded"
+    }
+  ],
+  "max_id": 3
+}

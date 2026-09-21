@@ -80,13 +80,16 @@ pub fn shouldNotify(n: &Notice) -> bool {
 
 /// notifyTitle 系统通知标题(带类别前缀:托盘里一眼能分清是"计划失败"还是"回合报错")。
 pub fn notifyTitle(n: &Notice) -> String {
-    // 前缀匹配而非精确相等:宿主侧 source 是"谁发的"(如 host-agent-loop),将来加子类
-    // 不该在壳里退化成"提示"这种没信息量的类别。
-    let kind = if n.source.starts_with("schedule") {
+    // 前缀匹配而非精确相等:宿主侧 source 是"谁发的",且**真实值是带 host- 前缀的插件名**
+    // (host-schedule / host-jobs / host-agent-loop,见 fixtures/notices-feed.json 真产物)。
+    // 故先剥 `host-` 再比,否则 host-jobs/host-schedule 会掉进"提示"这个没信息量的兜底
+    // (2026-09-21 真产物喂壳时逮到:此前只按 schedule/job 裸名写,漏了真实前缀)。
+    let src = n.source.trim().trim_start_matches("host-");
+    let kind = if src.starts_with("schedule") || src.starts_with("cron") {
         "定时任务"
-    } else if n.source.starts_with("job") {
+    } else if src.starts_with("job") {
         "后台任务"
-    } else if n.source.starts_with("agent") || n.source.starts_with("host-agent") {
+    } else if src.starts_with("agent") {
         "回合"
     } else {
         "提示"
@@ -202,6 +205,40 @@ mod tests {
         assert_eq!(f.items[0].source, "schedule");
         assert!(shouldNotify(&f.items[0]) && shouldNotify(&f.items[1]));
         assert_eq!(notifyTitle(&f.items[0]), "gah 定时任务:计划「每日备份」执行失败");
+    }
+
+    /// 宿主**真产物**驱动壳的判定链:fixture 由 Go 侧真事件总线生产
+    /// (`GAH_UPDATE_NOTICE_FIXTURE=1 go test ./tests/ -run TestNoticeFeedFixture`),
+    /// 宿主改字段/改形状/改 source 命名 → 这里红。
+    #[test]
+    fn host_generated_feed_drives_notification_chain() {
+        let raw = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/fixtures/notices-feed.json"
+        ))
+        .expect("真产物 fixture 应由 Go 侧生成并入库");
+        let f = parseFeed(&raw).expect("宿主真产物必须能解析");
+        assert_eq!(f.max_id, 3, "三条真事件各生产一条提示");
+        assert_eq!(f.items.len(), 3);
+        let sources: Vec<&str> = f.items.iter().map(|n| n.source.as_str()).collect();
+        assert_eq!(
+            sources,
+            vec!["host-jobs", "host-schedule", "host-agent-loop"],
+            "来源标识符即壳分类依据,变了就要同步 notifyTitle"
+        );
+        for n in &f.items {
+            assert!(shouldNotify(n), "真产物全是 warn/error:{}", n.level);
+        }
+        // 类别前缀:host-* 必须都被识别(此前 host-jobs/host-schedule 掉进"提示")
+        assert!(notifyTitle(&f.items[0]).starts_with("gah 后台任务:后台任务失败"));
+        assert!(notifyTitle(&f.items[1]).starts_with("gah 定时任务:计划「plan-1」本轮跳过"));
+        assert!(notifyTitle(&f.items[2]).starts_with("gah 回合:回合出错"));
+        // 正文:真产物正文非空 → 附"详情见会话记录。"
+        assert!(notifyBody(&f.items[1]).ends_with("详情见会话记录。"));
+        assert!(notifyBody(&f.items[1]).contains("到点时有回合在跑"));
+        // 游标:首次 accept 只定位不补发,其后才放行(真产物含 3 条也不该在首连时炸一屏)
+        let mut c = Consumer::default();
+        assert!(c.accept(&f).is_empty(), "首次应答只定位游标");
     }
 
     #[test]
