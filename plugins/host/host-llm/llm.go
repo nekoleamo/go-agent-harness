@@ -261,12 +261,56 @@ func findProvider(f providerfile.File, name string) (providerfile.Provider, bool
 	return providerfile.Provider{}, false
 }
 
-// switchActive 同步通用适配器到活跃 provider 端点/模型(Configure + SetModel;零重启)。
+// switchActive 同步适配器到活跃 provider 端点/模型(Configure + SetModel;零重启)。
+// currentModel 当前模型名(锁内读)。
+func (s *Service) currentModel() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.model
+}
+
+// matchedAdapter 按模型前缀找出真正会服务该模型的适配器(同 completeAdapter 的匹配口径)。
+func (s *Service) matchedAdapter(model string) sdk.LLMAdapter {
+	if model == "" {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, a := range s.adapters {
+		r, ok := a.(sdk.ModelRouter)
+		if !ok {
+			continue
+		}
+		for _, m := range r.Models() {
+			if model == m || strings.HasPrefix(model, m+"-") {
+				return a
+			}
+		}
+	}
+	return nil
+}
+
+// providerAdapterFor 选「真正会服务该模型」的可配置适配器:
+// 模型前缀命中且实现 ProviderAdapter → 用它;未命中 → 通用适配器。
+// 命中却不支持运行时配置 → 显式报错(不偷偷配到别的适配器上)。
+// 2026-09-21 修:此前一律配通用适配器 → claude 走 anthropic 适配器、base_url 却配在 openai 适配器上
+// (运行期切换对 claude 模型静默失效)。
+func (s *Service) providerAdapterFor(model string) (sdk.ProviderAdapter, error) {
+	if a := s.matchedAdapter(model); a != nil {
+		pa, ok := a.(sdk.ProviderAdapter)
+		if !ok {
+			return nil, fmt.Errorf("llm: 适配器 %s 不支持运行时 provider 配置(未实现 sdk.ProviderAdapter)", a.Name())
+		}
+		return pa, nil
+	}
+	return s.genericProvider()
+}
+
 func (s *Service) switchActive(p providerfile.Provider) error {
 	if p.BaseURL == "" {
 		return fmt.Errorf("provider: %s 未配置 base_url(请 /provider set 补齐)", p.Name)
 	}
-	pa, err := s.genericProvider()
+	pa, err := s.providerAdapterFor(p.Model)
 	if err != nil {
 		return err
 	}
@@ -359,7 +403,7 @@ func (s *Service) genericProvider() (sdk.ProviderAdapter, error) {
 
 // SetProvider 运行时切换端点与凭据(TUI /provider set;零重启)。
 func (s *Service) SetProvider(baseURL, apiKey string) error {
-	pa, err := s.genericProvider()
+	pa, err := s.providerAdapterFor(s.currentModel())
 	if err != nil {
 		return err
 	}
@@ -368,7 +412,7 @@ func (s *Service) SetProvider(baseURL, apiKey string) error {
 
 // UnsetProvider 逐项删除配置(TUI /provider unset;该项恢复启动默认)。
 func (s *Service) UnsetProvider(field string) error {
-	pa, err := s.genericProvider()
+	pa, err := s.providerAdapterFor(s.currentModel())
 	if err != nil {
 		return err
 	}
@@ -377,7 +421,7 @@ func (s *Service) UnsetProvider(field string) error {
 
 // ResetProvider 恢复全部字段为启动默认(TUI /provider clear)。
 func (s *Service) ResetProvider() error {
-	pa, err := s.genericProvider()
+	pa, err := s.providerAdapterFor(s.currentModel())
 	if err != nil {
 		return err
 	}
@@ -386,7 +430,7 @@ func (s *Service) ResetProvider() error {
 
 // ListModels 当前通用适配器端点可用模型列表(TUI /model 动态枚举)。
 func (s *Service) ListModels() ([]sdk.ModelInfo, error) {
-	pa, err := s.genericProvider()
+	pa, err := s.providerAdapterFor(s.currentModel())
 	if err != nil {
 		return nil, err
 	}

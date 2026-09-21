@@ -261,3 +261,59 @@ func TestCompleteStreamsThinkingAndTextAfterTool(t *testing.T) {
 		t.Errorf("stop_reason=tool_use 应映射为工具调用结束: %v", resp.FinishReason)
 	}
 }
+
+// Configure 运行时切换端点/凭据(补 ProviderAdapter 前本适配器不参与 /provider:
+// claude 模型仍打静态端点、base_url 被配到别的适配器上)。这里验"真打到新端点 + 新凭据 + 可恢复"。
+func TestConfigureSwitchesEndpointAndKey(t *testing.T) {
+	var gotPath, gotKey string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotKey = r.URL.Path, r.Header.Get("x-api-key")
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, l := range []string{
+			`{"type":"message_start","message":{"usage":{"input_tokens":1,"output_tokens":0}}}`,
+			`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"新端点"}}`,
+			`{"type":"message_delta","delta":{"stop_reason":"end_turn"}}`,
+			`{"type":"message_stop"}`,
+		} {
+			fmt.Fprintf(w, "data: %s\n\n", l)
+		}
+	}))
+	defer srv.Close()
+
+	a := &Adapter{client: srv.Client(), baseURL: "https://api.anthropic.com/v1", model: "claude-x", maxTokens: 100,
+		defaultBaseURL: "https://api.anthropic.com/v1", defaultAPIKey: "default-key", defaultModel: "claude-x"}
+	if err := a.Configure(srv.URL+"/v1/", "sk-new"); err != nil {
+		t.Fatal(err)
+	}
+	if b, k := a.ProviderInfo(); b != srv.URL+"/v1" || k != "sk-new" {
+		t.Fatalf("Configure 应去掉尾斜杠并生效,得 %q/%q", b, k)
+	}
+	resp, err := a.Complete(context.Background(), &sdk.LLMRequest{Model: "claude-x"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/v1/messages" {
+		t.Errorf("请求应打到配置后的端点路径,得 %q", gotPath)
+	}
+	if gotKey != "sk-new" {
+		t.Errorf("应带新凭据,得 %q", gotKey)
+	}
+	if resp.Message.Content != "新端点" {
+		t.Errorf("响应内容不符: %q", resp.Message.Content)
+	}
+	if err := a.Configure("ftp://x", "k"); err == nil {
+		t.Error("非 http(s) 前缀应拒绝")
+	}
+	if err := a.Unset("base_url"); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := a.ProviderInfo(); b != "https://api.anthropic.com/v1" {
+		t.Errorf("Unset 应恢复启动默认,得 %q", b)
+	}
+	if err := a.Reset(); err != nil {
+		t.Fatal(err)
+	}
+	if b, k := a.ProviderInfo(); b != "https://api.anthropic.com/v1" || k != "default-key" {
+		t.Errorf("Reset 应恢复全部默认,得 %q/%q", b, k)
+	}
+}

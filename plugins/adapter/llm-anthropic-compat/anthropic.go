@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
@@ -57,24 +58,81 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	if err := c.Inject("ctx.llm", &llm); err != nil {
 		return nil, err
 	}
+	a.defaultBaseURL, a.defaultAPIKey, a.defaultModel = a.baseURL, a.apiKey, a.model
 	d := llm.RegisterAdapter(a)
 	// 默认模型仍是 openai 插件设置;仅当用户 /model claude-* 时路由到本适配器
 	return d, nil
 }
 
-// Adapter 实现 sdk.LLMAdapter + sdk.ModelRouter。
+// Adapter 实现 sdk.LLMAdapter + sdk.ModelRouter + sdk.ProviderAdapter(/provider 运行时切换)。
 type Adapter struct {
 	client    *http.Client
+	mu        sync.RWMutex // 保护 baseURL/apiKey/model(Configure 写 / Complete 读)
 	baseURL   string
 	model     string
 	apiKey    string
 	maxTokens int
+	// 启动默认快照(Unset/Reset 恢复用:env/样板 的生效值)
+	defaultBaseURL, defaultAPIKey, defaultModel string
 }
 
 func (a *Adapter) Name() string { return "llm-anthropic-compat" }
 
 // Models 声明支持的模型前缀(路由:模型名以 claude 开头 → 本适配器)。
 func (a *Adapter) Models() []string { return []string{"claude"} }
+
+// Configure 运行时切换端点与凭据(校验 http(s) 前缀;原子生效,零重启)。
+// 2026-09-21 补齐:此前本适配器未实现 ProviderAdapter → 只有 openai 适配器吃 /provider,
+// claude 模型仍打静态端点(base_url 配到了错的适配器上)。
+func (a *Adapter) Configure(baseURL, apiKey string) error {
+	if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
+		return fmt.Errorf("provider: base_url 须为 http(s):// 前缀: %q", baseURL)
+	}
+	a.mu.Lock()
+	a.baseURL = strings.TrimSuffix(baseURL, "/")
+	a.apiKey = apiKey
+	a.mu.Unlock()
+	return nil
+}
+
+// ProviderInfo 当前端点与凭据(展示用)。
+func (a *Adapter) ProviderInfo() (string, string) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.baseURL, a.apiKey
+}
+
+// Unset 删除某一字段配置,该项恢复启动默认;其余保持。
+func (a *Adapter) Unset(field string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	switch field {
+	case "base_url":
+		a.baseURL = a.defaultBaseURL
+	case "api_key":
+		a.apiKey = a.defaultAPIKey
+	case "model":
+		a.model = a.defaultModel
+	default:
+		return fmt.Errorf("provider: 未知字段 %q(可选 base_url|api_key|model)", field)
+	}
+	return nil
+}
+
+// Reset 恢复全部字段为启动默认。
+func (a *Adapter) Reset() error {
+	a.mu.Lock()
+	a.baseURL, a.apiKey, a.model = a.defaultBaseURL, a.defaultAPIKey, a.defaultModel
+	a.mu.Unlock()
+	return nil
+}
+
+// snapshot 读一次一致的端点/凭据/模型(Complete 期间 Configure 可能并发改)。
+func (a *Adapter) snapshot() (string, string, string, int) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.baseURL, a.apiKey, a.model, a.maxTokens
+}
 
 // —— wire 结构(Messages API)——
 
@@ -163,11 +221,12 @@ type wireEvent struct {
 
 // Complete 发起流式请求(Messages API + SSE)。
 func (a *Adapter) Complete(ctx context.Context, req *sdk.LLMRequest, onChunk func(ev sdk.LLMStreamEvent) error) (*sdk.LLMResponse, error) {
+	baseURL, apiKey, defModel, maxTokens := a.snapshot()
 	model := req.Model
 	if model == "" {
-		model = a.model
+		model = defModel
 	}
-	wire := wireReq{Model: model, MaxTokens: a.maxTokens, Stream: true, Temperature: req.Temperature}
+	wire := wireReq{Model: model, MaxTokens: maxTokens, Stream: true, Temperature: req.Temperature}
 	// 思考等级映射(low/medium/high → thinking.budget_tokens;off 不发送,兼容不支持端点)
 	switch req.Thinking {
 	case sdk.ThinkingLow:
@@ -229,15 +288,15 @@ func (a *Adapter) Complete(ctx context.Context, req *sdk.LLMRequest, onChunk fun
 	if err != nil {
 		return nil, err
 	}
-	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost, a.baseURL+"/messages", bytes.NewReader(body))
+	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/messages", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	hreq.Header.Set("Content-Type", "application/json")
 	hreq.Header.Set("Accept", "text/event-stream")
 	hreq.Header.Set("anthropic-version", "2023-06-01")
-	if a.apiKey != "" {
-		hreq.Header.Set("x-api-key", a.apiKey)
+	if apiKey != "" {
+		hreq.Header.Set("x-api-key", apiKey)
 	}
 
 	resp, err := a.client.Do(hreq)
