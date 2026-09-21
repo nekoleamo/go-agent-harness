@@ -34,8 +34,10 @@ func TestTUIAcceptTwoQuestionsStack(t *testing.T) {
 		t.Fatal("首帧未就绪")
 	}
 	s.send("两个问题\r")
-	if !s.waitRaw("待答 2", 45*time.Second) {
-		t.Fatalf("条目 16:状态栏未出现「待答 2」(两问未共存);尾段 %q", stripANSI(tailS(s.rawText(), 400)))
+	// 状态栏这类"当前态"读**屏幕**(差分重绘下 raw 里 `待答 2` 会被提问块插写拆断:
+	// 只见 `待答(` + `2(Esc 退出作答)`,实测约半数假阴);「出现过」类才用 raw。
+	if !s.waitScreen("待答 2", 45*time.Second) {
+		t.Fatalf("条目 16:状态栏未出现「待答 2」(两问未共存);屏=%q", stripANSI(s.screen()))
 	}
 	for _, q := range []string{"聚合第一问", "聚合第二问"} {
 		if !s.waitRaw(q, 10*time.Second) {

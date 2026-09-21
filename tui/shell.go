@@ -92,9 +92,11 @@ func (a *App) runShellPassthrough(ctx context.Context, cmd string) {
 }
 
 // sendShellDone 回投结果到 UI 线程(未启动时直接写状态,兼容测试/装配期)。
+// 经 sendToUI 而非直接 program.Send:本函数也会在 UI 循环内被调(注册表失败的
+// 同步分支),直接 Send 会自阻塞死锁(同 app.go sendToUI 注释)。
 func (a *App) sendShellDone(msg shellDoneMsg) {
 	if a.started.Load() {
-		a.program.Send(msg)
+		a.sendToUI(msg)
 		return
 	}
 	a.model.appendShellResult(msg)

@@ -98,6 +98,40 @@ func TestDocPagerScrollAndClose(t *testing.T) {
 	}
 }
 
+// TestDocPagerCaseKeysRealShape 真机按键形状回归(bubbletea v2):字母键的 Code 恒为
+// 【小写】,大小写信息只在 Text —— 按 Code 判会把 G 当 g、N 当 n(第 41 批 pty 验收实测抓到)。
+func TestDocPagerCaseKeysRealShape(t *testing.T) {
+	p := NewDocPager(sampleView(), 0, 0)
+	p.Lines = make([]string, 100)
+	for i := range p.Lines {
+		p.Lines[i] = "l" + strconv.Itoa(i)
+	}
+	// G:真形状 Code='g' + Text="G" → 末行
+	p.HandleKey(docKey('g', "G"), 80, 24)
+	if p.Off != 99 {
+		t.Fatalf("真形状 G 应到底, off=%d", p.Off)
+	}
+	// g:同 Code,Text 小写 → 回首行
+	p.HandleKey(docKey('g', "g"), 80, 24)
+	if p.Off != 0 {
+		t.Fatalf("真形状 g 应回顶, off=%d", p.Off)
+	}
+	// n/N:真形状 Code='n',大小写只在 Text
+	p.SetSearch("l9") // 命中 l9、l90…l99
+	if len(p.Hits) < 3 {
+		t.Fatalf("命中数不足: %v", p.Hits)
+	}
+	first := p.Hits[0]
+	p.HandleKey(docKey('n', "N"), 80, 24)
+	if p.Off != p.Hits[len(p.Hits)-1] {
+		t.Fatalf("真形状 N 应反向跳转(回绕到末命中), off=%d hits=%v", p.Off, p.Hits)
+	}
+	p.HandleKey(docKey('n', "n"), 80, 24)
+	if p.Off != first {
+		t.Fatalf("真形状 n 应正向回绕到首命中, off=%d hits=%v", p.Off, p.Hits)
+	}
+}
+
 func TestDocPagerSearch(t *testing.T) {
 	p := NewDocPager(&sdk.DocView{Name: "a.txt", Blocks: []sdk.DocBlock{{Kind: sdk.DocBlockCode, Text: "alpha\nbeta\nalpha again"}}}, 0, 0)
 	// 进入搜索输入模式

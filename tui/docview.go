@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/mattn/go-runewidth"
@@ -359,42 +360,58 @@ func (p *DocPager) HandleKey(k tea.Key, w, h int) bool {
 		p.clamp()
 		return false
 	}
-	switch k.Code {
-	case tea.KeyEscape, 'q':
+	ch := keyChar(k)
+	switch {
+	case k.Code == tea.KeyEscape || ch == "q":
 		return true
-	case tea.KeyDown:
+	case k.Code == tea.KeyDown:
 		p.scrollBy(1)
-	case tea.KeyUp:
+	case k.Code == tea.KeyUp:
 		p.scrollBy(-1)
-	case tea.KeyPgDown:
+	case k.Code == tea.KeyPgDown:
 		p.scrollBy(page)
-	case tea.KeyPgUp:
+	case k.Code == tea.KeyPgUp:
 		p.scrollBy(-page)
-	case tea.KeyHome:
+	case k.Code == tea.KeyHome:
 		p.Off = 0
-	case tea.KeyEnd:
+	case k.Code == tea.KeyEnd:
 		p.Off = max0(len(p.Lines) - 1)
-	case tea.KeyRight:
+	case k.Code == tea.KeyRight:
 		p.HOff += 4
-	case tea.KeyLeft:
+	case k.Code == tea.KeyLeft:
 		if p.HOff > 0 {
 			p.HOff -= 4
 		}
-	case 'g':
+	case ch == "g":
 		p.Off = 0
-	case 'G':
+	case ch == "G":
 		p.Off = max0(len(p.Lines) - 1)
-	case 'n':
+	case ch == "n":
 		p.nextHit(1)
-	case 'N':
+	case ch == "N":
 		p.nextHit(-1)
-	case '/':
+	case ch == "/":
 		p.searching = true
 		p.searchBuf = ""
 	}
 	_ = w
 	p.clamp()
 	return false
+}
+
+// keyChar 取按键字符(大小写敏感)。
+// bubbletea v2 对字母键的 Key.Code 恒为【小写】(大小写信息只在 Key.Text),
+// 故 g/G、n/N 这类大小写不同动作的键位必须按 Text 判定(按 Code 会把 G 当 g);
+// Text 为空(方向/翻页等非字符键、或单测直构造)时退回 Code,带修饰键的
+// 组合键(如 Ctrl+G)不算字符,避免误触发。
+func keyChar(k tea.Key) string {
+	if k.Text != "" {
+		return k.Text
+	}
+	if k.Mod == 0 && k.Code > 0 && k.Code < utf8.RuneSelf {
+		return string(rune(k.Code))
+	}
+	return ""
 }
 
 // ScrollWheel 滚轮滚动(正 = 向上)。

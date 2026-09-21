@@ -41,6 +41,8 @@ type App struct {
 	qPend   []pendingQ   // 每次 PresentQuestion 一个(按 id 定向回填,见 answerQuestion)
 	qSeq    atomic.Int64 // 无 id 提问(直调 presenter/测试)的本地编号源
 	started atomic.Bool  // TUI 程序已启动(未启动时不向 program 发送,防测试/装配期阻塞)
+	uiOnce  sync.Once    // 投递队列初始化一次(见 sendToUI)
+	uiQueue chan tea.Msg // UI 投递队列(缓冲;UI 循环内外调用均不阻塞)
 	subs    []sdk.Disposer
 	cmds    sdk.CommandRegistry // ctx.commands(可为 nil:未装配时命令不可用)
 
@@ -207,13 +209,43 @@ func (a *App) dockSteer(id, msg string) error {
 	return nil
 }
 
+// uiQueueCap UI 投递队列容量(突发缓冲;满则退化为单次异步投递,绝不阻塞调用方)。
+const uiQueueCap = 64
+
+// sendToUI 向 UI 循环投递消息(**app 内唯一入口**,替代直接 program.Send)。
+//
+// 为什么不直接 program.Send:bubbletea 的 msgs 通道无缓冲,Send 必须等到 UI 循环读取;
+// 而命令 Run 就在 UI 循环内执行(/preview → host-docview Emit(doc/open) → 本 App 订阅回调
+// → Send),同一 goroutine 等自己读 = 死锁,TUI 假死(实测栈:eventLoop → Update → handleKey
+// → command → Ctx.Emit → subscriber → OpenDoc → Program.Send)。经队列 + 专职 goroutine
+// 转发后,UI 循环内外调用都安全,且保持投递顺序。
+func (a *App) sendToUI(msg tea.Msg) {
+	p := a.program
+	if p == nil || !a.started.Load() {
+		return
+	}
+	a.uiOnce.Do(func() {
+		a.uiQueue = make(chan tea.Msg, uiQueueCap)
+		go func() {
+			for m := range a.uiQueue {
+				p.Send(m)
+			}
+		}()
+	})
+	select {
+	case a.uiQueue <- msg:
+	default:
+		go p.Send(msg) // 队列打满(极端突发):异步兜底,不阻塞 UI 循环
+	}
+}
+
 // OpenDoc 请求打开文档预览(host `doc/open` 事件 / 工具行 / 命令;异步投递到 UI 循环)。
 func (a *App) OpenDoc(path string, page, sheet int) {
 	if path == "" {
 		return
 	}
 	if a.program != nil && a.started.Load() {
-		a.program.Send(DocOpenMsg{Path: path, Page: page, Sheet: sheet})
+		a.sendToUI(DocOpenMsg{Path: path, Page: page, Sheet: sheet})
 		return
 	}
 	// 未启动/测试:直接构造(不阻塞)
@@ -229,7 +261,7 @@ func (a *App) OpenPager(p *DocPager) {
 		return
 	}
 	if a.program != nil && a.started.Load() {
-		a.program.Send(PagerMsg{Pager: p})
+		a.sendToUI(PagerMsg{Pager: p})
 		return
 	}
 	// 未启动/测试:直接入栈(不阻塞)
@@ -293,7 +325,7 @@ func (a *App) Present(_ context.Context, prompt string) (<-chan bool, func(), er
 	a.pending = append(a.pending, ch)
 	a.pendMu.Unlock()
 	if a.program != nil && a.started.Load() { // 未启动(测试/装配期)仅登记待答,不 Send
-		a.program.Send(confirmMsg{prompt})
+		a.sendToUI(confirmMsg{prompt})
 	}
 	cancel := func() {
 		a.pendMu.Lock()
@@ -338,7 +370,7 @@ func (a *App) PresentQuestion(_ context.Context, q sdk.Question) (<-chan sdk.Que
 	a.qPend = append(a.qPend, pendingQ{id: q.ID, ch: ch})
 	a.askMu.Unlock()
 	if a.program != nil && a.started.Load() {
-		a.program.Send(questionMsg{q: q})
+		a.sendToUI(questionMsg{q: q})
 	}
 	cancel := func() {
 		a.askMu.Lock()
@@ -352,7 +384,7 @@ func (a *App) PresentQuestion(_ context.Context, q sdk.Question) (<-chan sdk.Que
 		// 呈现者撤销 = 该提问不再可答(其它渠道已答/超时/回合取消)→ 待答栈同步出栈,
 		// 否则状态栏会永久显示“待答 N”而输入框做着无效作答。
 		if a.program != nil && a.started.Load() {
-			a.program.Send(questionGoneMsg{id: q.ID})
+			a.sendToUI(questionGoneMsg{id: q.ID})
 		}
 	}
 	return ch, cancel, nil
@@ -370,7 +402,7 @@ func (a *App) NoteInteraction(text string) {
 	if text == "" || a.program == nil || !a.started.Load() {
 		return
 	}
-	a.program.Send(interactionMsg{text: text})
+	a.sendToUI(interactionMsg{text: text})
 }
 
 // answerQuestion 用户作答(S-P0-2):按提问 id 定向回填对应通道(空 id = 回填全部,兼容旧调用),
@@ -402,14 +434,14 @@ func (a *App) Start() error {
 	// 会话事件 → UI
 	d1 := a.c.Subscribe(sdk.EventSession, func(ctx context.Context, ev *sdk.Event) error {
 		if sev, ok := ev.Payload.(*sdk.SessionEvent); ok {
-			a.program.Send(sessionEventMsg{sev})
+			a.sendToUI(sessionEventMsg{sev})
 		}
 		return nil
 	})
 	// agent/status → UI 状态栏
 	d2 := a.c.Subscribe(sdk.EventAgentStatus, func(ctx context.Context, ev *sdk.Event) error {
 		if s, ok := ev.Payload.(string); ok {
-			a.program.Send(statusMsg{s})
+			a.sendToUI(statusMsg{s})
 		}
 		return nil
 	})
@@ -423,14 +455,14 @@ func (a *App) Start() error {
 		a.onSessionSwitched()
 		return nil
 	})
-	// NOND-N1 提示 → 状态栏(订阅回调在总线 goroutine,经 program.Send 递进 UI 循环)
+	// NOND-N1 提示 → 状态栏(订阅回调可能在总线 goroutine,也可能在 UI 循环内,统一经 sendToUI 递进)
 	d5 := a.c.Subscribe(sdk.EventNotice, func(_ context.Context, ev *sdk.Event) error {
 		switch p := ev.Payload.(type) {
 		case *sdk.Notice:
-			a.program.Send(noticeMsg{p})
+			a.sendToUI(noticeMsg{p})
 		case sdk.Notice:
 			n := p
-			a.program.Send(noticeMsg{&n})
+			a.sendToUI(noticeMsg{&n})
 		}
 		return nil
 	})
@@ -478,7 +510,7 @@ func (a *App) submit(input string) {
 	go func() {
 		err := a.loop.Run(ctx, input)
 		a.cancelFn.Store(nil)
-		a.program.Send(agentDoneMsg{err})
+		a.sendToUI(agentDoneMsg{err})
 	}()
 }
 

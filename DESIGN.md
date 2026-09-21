@@ -1621,6 +1621,23 @@ Go 全量 **1498 passed**(67 包,0 失败,6 跳过;新增 `TestPluginStderrCaptu
 **11. pdfium TUI 位图** —— **锁死理由**:SELF-1 有网实测体积 **+≈5.5 MiB → 破体积门**(当时门 46/30,现在更紧的 36/23 下更无空间);TUI **无图形协议**支持 → 位图 = 新子系统(布局、缩放、终端矩阵、性能);而主力光栅路径已由 **RST-1** 交付(外部 `pdftoppm` + `sdk.DocRasterService` + `/api/doc/raster`)。**重启条件 = 降体路径先腾出空间(②/③)且「零外部依赖部署」需求成立** —— 注意这一条与上面第 6 项的「终端内联图片」不同:此项即使有图形协议也仍受体积门约束。
 **12. OSC 9;4 进度通知** —— **锁死理由**(本次分析补充):OSC 9;4 的支持面窄(Windows Terminal、WezTerm 等为主),在未知终端上属于**纯静默失效** —— 与「静默失效不可接受」的红线直接冲突;而进度语义在 TUI 已有落点:状态栏 + 坞折叠行「后台 N 运行中: <摘要>」(1s 节拍,仅在有任务时续拍)。**重启条件 = 需要终端级任务栏进度**(例如长任务在最小化窗口里也要可见)成为明确需求,且探测可依赖。
 
+#### 交付记录(2026-09-21,第四十二批:A-1 条目 71(TUI `/preview` pager 全键位)pty 验收 + 2 处真缺陷)
+
+**口径订正**:第四十一批登记「#71 属可自动化但未做」→ 本批补验完成:A 本机 109 条 **已跑 102 / 剩 4 条纯人工**(#39 导出 HTML 观感 · #42 P5 整体视觉 · #82/#85 Gatekeeper 首放行与不再弹层 · #86 GUI 内端到端 + #88 真机弹窗);3 项卡外部条件不变(#77 LibreOffice · Windows 真机 27+A 表 18 · Linux 真机 2)。**可自动化项清零**。
+
+**新增验收**:`tests/tui_accept_preview_test.go`(真文件 + 真按键,80×24 pty,profile `acctui`)—— 键位全量:↑/↓ 单行、PgDn 整页(h-4=20 确定性:1→21→41)、PgUp(-20)、Home/End、`g`/`G` 首尾、SGR 滚轮(±3)、`/` 搜索输入态 + Enter 应用(报 `2 命中`)+ `n`/`N` 双向跳转、`←`/`→` 横移(超宽行第 88 列标记:20 列偏移前不可见 → 之后渲染出来 → 回 0 又消失)、`Esc` 与 `q` 两条关闭路径 + 关闭后输入框焦点回归。宽表**对齐量化**在单元层(`tui/docview_test.go TestAsciiTableCJKAndBudget`),**观感**归 A-1a 人眼。
+
+| # | 真缺陷 | 症状 | 根因 | 修法 |
+| --- | --- | --- | --- | --- |
+| **#18** | TUI `/preview <文件>` **假死**(输入不再响应,只能外部 kill) | bubbletea `Program.Send` 在 **UI 循环 goroutine** 上被调用 → 等自己读无缓冲 `msgs` 通道。SIGQUIT 实测栈:`Program.eventLoop → Model.Update → handleKey → enter → submit → App.command → host-docview.Run → Ctx.Emit → Bus.invoke → ui-tui-app 订阅回调 → App.OpenDoc → Program.Send` | `tui/app.go` 新增 **`sendToUI`**(缓冲队列 64 + 专职转发 goroutine;保序,UI 循环内外调用都安全);app.go 11 处 Send 全改走它,`tui/shell.go sendShellDone` 同步改(其同步分支也在 UI 循环内) |
+| **#19** | pager 内 `G`(末行)被当成 `g`(首行)、`N`(上一命中)被当成 `n`(下一命中) | bubbletea v2 的 `Key.Code` 对字母键**恒为小写**,大小写只在 `Key.Text` → `docview.go` 按 `Code` 判 `'G'`/`'N'` 永不命中 | 新增 `keyChar()`(优先 `Text`;`Text` 空且无修饰键时退回 `Code`,避免 Ctrl+G 误触发);`g/G`、`n/N`、`q`、`/` 改按字符判定。回归:`tui/docview_test.go TestDocPagerCaseKeysRealShape`(真形状 `Code='g'`+`Text="G"`) |
+
+**护栏**:`tests/tui_send_guard_test.go` 扫 `tui/*.go` 生产代码,禁止直接 `program.Send`(只允许 `sendToUI` 内的局部转发)—— 这类死锁只在 pty 真机暴露,review 抓不住。
+
+**测试假阴订正(非产品缺陷)**:① `tests/tui_accept_ask_test.go` 条目 16 的「待答 2」原用 `waitRaw`(累积原始流)判定 → 实测约半数假阴(差分重绘会把状态栏文本拆断成 `待答(` + `2(Esc 退出作答)`);改 `waitScreen`(当前态)后 5/5 稳。② pager 偏移断言同因改读屏幕:实测 PgDn 后 raw 只到 `21/52` 而屏幕已是 `41/52`;状态行正则容忍屏幕模型多画的 `1//52`。
+
+**门禁(全绿)**:`gofmt -l .` 空 · `go vet ./...` 空 · `staticcheck ./...` 0 · 非 e2e `-race` 全 ok · `go test ./tests/ -count=1` **100 passed** · `go test ./tui/` **317 passed** · `scripts/coverage-check.sh` COVERAGE_OK(79.4%)· `scripts/size-check.sh` 体积门通过。
+
 #### 交付记录(2026-09-21,第四十一批:任务与文档同步 + 人工验证清单)
 
 **A 本机验收终局口径**:109 条 **已跑 101 / 剩 4 条纯人工**(#39 导出 HTML 观感 · #42 P5 整体视觉 · #82/#85 Gatekeeper 首放行与不再弹层 · #86 GUI 内端到端 + #88 真机弹窗);另 **3 项卡外部条件**(#77 需 LibreOffice · Windows 真机 27+A 表 18 行 · Linux 真机 2 条),**#71(`/preview` pager 键位)属可自动化但未做**(非人工)。本轮把 A 表逐条回填(#4/#16/#18/#19/#28/#38/#40/#41/#43/#86/#88/#125 等由 `[ ]/[~]` 改为已验并附测试名),并把「人工验证清单」写成**一页式**:每项给「前置 → 做什么 → 看什么 → 判据 → 失败长什么样」,按 **A 本机 4 条 / B 需其它机器 4 组 / C 可自动化未做 2 项** 分列,权威全文在 `docs/VERIFY.md §人工验证清单(2026-09-21)`(docs/ 不入库,故清单骨架同时在本批记录):
