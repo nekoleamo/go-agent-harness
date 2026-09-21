@@ -101,13 +101,23 @@ func TestTUIAcceptInput(t *testing.T) {
 	defer ptmx.Close()
 	_ = cwd
 
+	// 屏幕模型累积器:内容类断言看「当前屏幕」而非增量 diff(差分重绘会把文本拆成多次输出,
+	// 高负载/-race 下再叠加采样窗口丢失,原始 diff 的 Contains 判定会假阴)。
+	var stream strings.Builder
+	dm := func(d time.Duration) string {
+		b := drain(out, d)
+		stream.WriteString(b)
+		return b
+	}
+
 	// 条目 1:Shift+Enter 续行(kitty CSI-u:`\x1b[13;2u`)→ 两行都在输入区
 	io.WriteString(ptmx, "第一行文字")
 	io.WriteString(ptmx, "\x1b[13;2u")
 	io.WriteString(ptmx, "第二行文字")
-	multi := drain(out, 1500*time.Millisecond)
-	hasL1 := strings.Contains(multi, "第一行文字")
-	hasL2 := strings.Contains(multi, "第二行文字")
+	multi := dm(1500 * time.Millisecond)
+	scr := screenTextOf(stream.String())
+	hasL1 := strings.Contains(scr, "第一行文字")
+	hasL2 := strings.Contains(scr, "第二行文字")
 	t.Logf("条目 1 Shift+Enter 续行: L1=%v L2=%v(输出 %d 字节)", hasL1, hasL2, len(multi))
 	if !hasL1 || !hasL2 {
 		t.Errorf("条目 1 失败:Shift+Enter 后两行应同时在输入区渲染;尾段 %q", firstN(tailS(multi, 400), 400))
@@ -115,9 +125,9 @@ func TestTUIAcceptInput(t *testing.T) {
 
 	// 条目 2:多行内 ↑/↓ 逐行移动(渲染应有响应且不丢文本)
 	io.WriteString(ptmx, "\x1b[A")
-	upDiff := drain(out, 800*time.Millisecond)
+	upDiff := dm(800 * time.Millisecond)
 	io.WriteString(ptmx, "\x1b[B")
-	downDiff := drain(out, 800*time.Millisecond)
+	downDiff := dm(800 * time.Millisecond)
 	t.Logf("条目 2 ↑/↓ 多行内移动: up=%d 字节 down=%d 字节", len(upDiff), len(downDiff))
 	if len(upDiff) == 0 || len(downDiff) == 0 {
 		t.Errorf("条目 2 失败:多行态 ↑/↓ 应有渲染响应(up=%d down=%d)", len(upDiff), len(downDiff))
@@ -125,35 +135,36 @@ func TestTUIAcceptInput(t *testing.T) {
 
 	// 条目 3:清空后单行态,↑/↓ 归头/尾(不换行、不越位)
 	io.WriteString(ptmx, "\x15") // Ctrl+U 清行
-	drain(out, 600*time.Millisecond)
+	dm(600 * time.Millisecond)
 	io.WriteString(ptmx, "单行文本")
-	drain(out, 600*time.Millisecond)
+	dm(600 * time.Millisecond)
 	io.WriteString(ptmx, "\x1b[A")
-	afterUp := drain(out, 700*time.Millisecond)
+	afterUp := dm(700 * time.Millisecond)
 	io.WriteString(ptmx, "\x1b[B")
-	afterDown := drain(out, 700*time.Millisecond)
+	afterDown := dm(700 * time.Millisecond)
 	t.Logf("条目 3 单行 ↑/↓: up=%d down=%d 字节", len(afterUp), len(afterDown))
 	// 单行态 ↑/↓ 归头/尾:有渲染响应且文本完整(不可把单行撑成多行或丢内容)
-	if len(afterUp) == 0 || len(afterDown) == 0 || !strings.Contains(afterUp+afterDown, "单行文本") {
-		t.Errorf("条目 3 失败:单行态 ↑/↓ 应移光标且保留文本(up=%d down=%d);尾段 %q",
-			len(afterUp), len(afterDown), firstN(tailS(afterUp+afterDown, 300), 300))
+	if len(afterUp) == 0 || len(afterDown) == 0 || !strings.Contains(screenTextOf(stream.String()), "单行文本") {
+		t.Errorf("条目 3 失败:单行态 ↑/↓ 应移光标且保留文本(up=%d down=%d);屏尾 %q",
+			len(afterUp), len(afterDown), firstN(tailS(screenTextOf(stream.String()), 300), 300))
 	}
 
 	// 条目 36:Ctrl+A 全选 → 输入即替换
 	io.WriteString(ptmx, "\x01") // Ctrl+A
-	drain(out, 400*time.Millisecond)
+	dm(400 * time.Millisecond)
 	io.WriteString(ptmx, "替换后文本")
-	replaced := drain(out, 900*time.Millisecond)
-	t.Logf("条目 36 Ctrl+A 全选后输入: 含新文本=%v 含旧文本=%v", strings.Contains(replaced, "替换后文本"), strings.Contains(replaced, "单行文本"))
-	if !strings.Contains(replaced, "替换后文本") {
-		t.Errorf("条目 36 失败:Ctrl+A 后输入应替换全文;尾段 %q", firstN(tailS(replaced, 300), 300))
+	_ = dm(900 * time.Millisecond)
+	scrSel := screenTextOf(stream.String())
+	t.Logf("条目 36 Ctrl+A 全选后输入: 含新文本=%v 含旧文本=%v", strings.Contains(scrSel, "替换后文本"), strings.Contains(scrSel, "单行文本"))
+	if !strings.Contains(scrSel, "替换后文本") || strings.Contains(scrSel, "单行文本") {
+		t.Errorf("条目 36 失败:Ctrl+A 后输入应替换全文;屏尾 %q", firstN(tailS(scrSel, 300), 300))
 	}
 
 	// 条目 36:Ctrl+Y redo(先 Ctrl+Z 撤销刚才的替换,再 Ctrl+Y 恢复)
 	io.WriteString(ptmx, "\x1a") // Ctrl+Z undo
-	drain(out, 600*time.Millisecond)
+	dm(600 * time.Millisecond)
 	io.WriteString(ptmx, "\x19") // Ctrl+Y redo
-	redo := drain(out, 800*time.Millisecond)
+	redo := dm(800 * time.Millisecond)
 	t.Logf("条目 36 Ctrl+Z/Ctrl+Y: redo 输出 %d 字节", len(redo))
 	if len(redo) == 0 {
 		t.Errorf("条目 36 失败:Ctrl+Y redo 应有渲染响应")
@@ -161,9 +172,9 @@ func TestTUIAcceptInput(t *testing.T) {
 
 	// 条目 36:Ctrl+B/F 光标移动(渲染应有响应)
 	io.WriteString(ptmx, "\x02")
-	bDiff := drain(out, 500*time.Millisecond)
+	bDiff := dm(500 * time.Millisecond)
 	io.WriteString(ptmx, "\x06")
-	fDiff := drain(out, 500*time.Millisecond)
+	fDiff := dm(500 * time.Millisecond)
 	t.Logf("条目 36 Ctrl+B/F: b=%d f=%d 字节", len(bDiff), len(fDiff))
 	if len(bDiff) == 0 || len(fDiff) == 0 {
 		t.Errorf("条目 36 失败:Ctrl+B/Ctrl+F 应有渲染响应(b=%d f=%d)", len(bDiff), len(fDiff))

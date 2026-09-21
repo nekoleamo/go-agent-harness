@@ -34,6 +34,15 @@ type tuiScreen struct {
 	pend []byte // 未消费完的转义序列(跨 read 边界)
 }
 
+// screenTextOf 把一段原始 pty 流灌进屏幕模型,返回当前屏幕文本。
+// 供旧探针用:差分重绘会把同一段文本拆成多次输出(逐键重绘),且机器忙时部分帧可能
+// 落在采样窗口之外 —— 原始 diff 上做 Contains 会假阴;"当前屏幕"与读到多少帧无关。
+func screenTextOf(raw string) string {
+	sc := newTuiScreen()
+	sc.feed([]byte(raw))
+	return sc.text()
+}
+
 func newTuiScreen() *tuiScreen {
 	s := &tuiScreen{}
 	s.buf = make([][]rune, scrRows)

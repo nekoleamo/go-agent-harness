@@ -1630,6 +1630,8 @@ Go 全量 **1498 passed**(67 包,0 失败,6 跳过;新增 `TestPluginStderrCaptu
 | **#8 切会话清空队列** | ✅ | 队列非空时 `/session new` → 旧队列消息**未**被发出(与 `/session switch` 同走 `ClearQueue`,见 `tui/app.go` 切会话处) |
 | **#11 `/workspace` 后 @ 候选刷新** | ✅ | 工作区 A(仅 `ws-a-only.txt`)→ `/workspace <B>` → `@` 候选出现 `ws-b-only.txt` 且**不含** `ws-a-only.txt` |
 
+**同批加固(旧探针 -race 假阴)**:条目 1/3/36 原用「增量 diff 里 Contains 文本」判定,差分重绘会把同一段文本拆成多次输出,机器忙时(-race 全量跑)某些帧还会落在采样窗口外 → 假阴。改为**把原始流灌进屏幕模型**(`screenTextOf`,见 `tests/tui_screen_test.go`)后按「当前屏幕」判定:`go test ./tests/ ./tui/ -race -count=1` → **398 passed**。
+
 **探针新增文件**:`tests/tui_accept_queue_test.go`(慢 SSE 夹具 + 三条队列用例);`tests/tui_screen_test.go` 增 `statusLineWith` 辅助。
 
 **方法论订正(值得记一条)**:pty 断言要分清三种"包含" —— **原始流是累计缓冲**(出现过就永远 Contains,不能判"消失")、**整屏 Contains 会被就地重绘留下的旧行骗到**、**实时状态要看"包含某关键词的最后一行"行内内容**。队列计数"是否消失"最初就栽在第一种上(误判为未取回),改用第三种后判定稳定。
