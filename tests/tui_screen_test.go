@@ -405,6 +405,31 @@ func (s *tuiSess) waitRaw(sub string, d time.Duration) bool {
 	return strings.Contains(s.rawText(), sub)
 }
 
+// waitScreenGone 轮询直到屏幕上**不再**出现 sub(用于"队列已清空/提示已消失"类断言;
+// 原始流是累计缓冲,出现过就永远 Contains,不能用来判消失)。
+func (s *tuiSess) waitScreenGone(sub string, d time.Duration) bool {
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		if !s.scr.contains(sub) {
+			return true
+		}
+		time.Sleep(80 * time.Millisecond)
+	}
+	return !s.scr.contains(sub)
+}
+
+// statusLineWith 屏幕上包含 sub 的那一行(取最后一行:状态栏是就地重绘,旧行可能仍留在
+// 屏模型里 —— 判"实时状态"要看最新那行行内内容,而不是整屏 Contains)。
+func (s *tuiSess) statusLineWith(sub string) string {
+	lines := strings.Split(s.screen(), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.Contains(lines[i], sub) {
+			return lines[i]
+		}
+	}
+	return ""
+}
+
 // screen 当前屏幕文本。
 func (s *tuiSess) screen() string { return s.scr.text() }
 

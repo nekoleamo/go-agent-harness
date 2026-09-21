@@ -571,3 +571,32 @@ func TestTUIAcceptApprovalDialog(t *testing.T) {
 		t.Errorf("条目 31:拒绝后回合未收束;尾部 %s", stripANSI(tailS(s.rawText(), 500)))
 	}
 }
+
+// TestTUIAcceptWorkspaceMention 条目 11:/workspace 切走工作区后 @ 候选随新工作区刷新。
+func TestTUIAcceptWorkspaceMention(t *testing.T) {
+	bin, env, _, _ := tuiAcceptSetup(t)
+	dirA := t.TempDir()
+	dirB := t.TempDir()
+	writeAcceptFile(t, dirA, "ws-a-only.txt", "A\n")
+	writeAcceptFile(t, dirB, "ws-b-only.txt", "B\n")
+
+	s := newTuiSessIn(t, bin, env, dirA, "--profile", "acctui")
+	defer s.quit()
+	if !s.boot() {
+		t.Fatal("首帧未就绪")
+	}
+	// 切到 dirB(带自由参数:若自由向导要确认,补一个回车)
+	s.send("/workspace " + dirB + "\r")
+	time.Sleep(1200 * time.Millisecond)
+	s.send("\r")
+	time.Sleep(1200 * time.Millisecond)
+	s.send("@")
+	ok := s.waitRaw("ws-b-only.txt", 8*time.Second)
+	t.Logf("条目 11:新工作区候选命中=%v;屏尾 %q", ok, firstN(tailS(s.screen(), 300), 300))
+	if !ok {
+		t.Errorf("条目 11 失败:@ 候选未随 /workspace 刷新到新工作区文件")
+	}
+	if strings.Contains(s.rawText(), "ws-a-only.txt") {
+		t.Errorf("条目 11 失败:候选里仍有旧工作区文件")
+	}
+}
