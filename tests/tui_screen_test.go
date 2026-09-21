@@ -427,6 +427,26 @@ func (s *tuiSess) waitScreenGone(sub string, d time.Duration) bool {
 	return !s.scr.contains(sub)
 }
 
+// waitIdle 轮询到"回合结束"(状态栏最下方那行含 空闲 而非 思考中/执行工具)。
+// 判据取「最后一个含 空闲/思考中 的行」——就地重绘会留旧行,越靠下越新。
+func (s *tuiSess) waitIdle(d time.Duration) bool {
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		lines := strings.Split(s.screen(), "\n")
+		for i := len(lines) - 1; i >= 0; i-- {
+			l := lines[i]
+			if strings.Contains(l, "思考中") || strings.Contains(l, "执行工具") {
+				break
+			}
+			if strings.Contains(l, "空闲") {
+				return true
+			}
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+	return false
+}
+
 // inputLine 输入框那行(`│ ❯ … │`);取最后一行匹配(就地重绘会留旧行)。
 func (s *tuiSess) inputLine() string {
 	lines := strings.Split(s.screen(), "\n")
