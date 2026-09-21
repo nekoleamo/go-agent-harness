@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -436,5 +437,70 @@ func TestContainsFakeToolCall(t *testing.T) {
 		if got := containsFakeToolCall(c.text); got != c.want {
 			t.Errorf("containsFakeToolCall(%q) = %v,want %v", c.text, got, c.want)
 		}
+	}
+}
+
+// sleepTool 记录启动时刻并睡一会儿(并行/串行判定用)。
+type sleepTool struct {
+	name   string
+	dur    time.Duration
+	mu     *sync.Mutex
+	starts *[]time.Time
+}
+
+func (s sleepTool) Definition() sdk.ToolDefinition {
+	return sdk.ToolDefinition{Name: s.name, Description: s.name, InputSchema: map[string]any{"type": "object"}}
+}
+
+func (s sleepTool) Execute(_ context.Context, _ string) (any, error) {
+	s.mu.Lock()
+	*s.starts = append(*s.starts, time.Now())
+	s.mu.Unlock()
+	time.Sleep(s.dur)
+	return map[string]any{"ok": s.name}, nil
+}
+
+// TestTurnParallelToolCalls 一轮多个 tool_calls 必须**并发**执行,且事件落序仍按调用序
+// (串行时 ask_user_question 这类等作答的工具会互等阻塞 → 问题栈/「待答 N」永不成立)。
+func TestTurnParallelToolCalls(t *testing.T) {
+	e := buildEnv(t, `[{"tools":[{"name":"slow1","args":"{}"},{"name":"slow2","args":"{}"}]},{"text":"完成"}]`)
+	var mu sync.Mutex
+	var starts []time.Time
+	e.tools.Register(sleepTool{name: "slow1", dur: 300 * time.Millisecond, mu: &mu, starts: &starts})
+	e.tools.Register(sleepTool{name: "slow2", dur: 300 * time.Millisecond, mu: &mu, starts: &starts})
+
+	t0 := time.Now()
+	if err := e.loop.Run(context.Background(), "任务"); err != nil {
+		t.Fatal(err)
+	}
+	elapsed := time.Since(t0)
+
+	var seq []string
+	for _, ev := range e.log.Replay() {
+		switch ev.Kind {
+		case sdk.EventToolCall:
+			if c, ok := ev.Payload.(sdk.ToolCallEvent); ok {
+				seq = append(seq, "call:"+c.Name)
+			}
+		case sdk.EventToolResult:
+			if r, ok := ev.Payload.(sdk.ToolResultEvent); ok {
+				seq = append(seq, "result:"+r.Name)
+			}
+		}
+	}
+	if got, want := strings.Join(seq, ","), "call:slow1,call:slow2,result:slow1,result:slow2"; got != want {
+		t.Errorf("并行调用的会话日志顺序应固定为调用序:\n got %s\nwant %s", got, want)
+	}
+	mu.Lock()
+	n, gap := len(starts), time.Duration(0)
+	if n == 2 {
+		gap = starts[1].Sub(starts[0])
+	}
+	mu.Unlock()
+	if n != 2 {
+		t.Fatalf("两个工具都应执行: %d", n)
+	}
+	if gap > 250*time.Millisecond || elapsed > 550*time.Millisecond {
+		t.Errorf("工具调用未并行:启动间隔 %v 总耗时 %v(串行约 600ms)", gap, elapsed)
 	}
 }

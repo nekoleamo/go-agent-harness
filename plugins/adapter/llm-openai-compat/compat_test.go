@@ -188,3 +188,29 @@ func TestHTTPErrorSurfaced(t *testing.T) {
 		t.Fatalf("错误应包含状态码,got %v", err)
 	}
 }
+
+// TestCompleteParallelToolCalls 并行 tool_calls(index 0 与 1,B 调用首块后不再带 id):
+// 旧实现只看 id + lastCallID,B 的参数增量会被并进 A(工具收到坏参数)。
+func TestCompleteParallelToolCalls(t *testing.T) {
+	_, a := sseServer(t,
+		`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_A","type":"function","function":{"name":"shell","arguments":""}}]},"finish_reason":null}]}`,
+		`{"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_B","type":"function","function":{"name":"ask_user_question","arguments":""}}]},"finish_reason":null}]}`,
+		`{"choices":[{"delta":{"tool_calls":[{"index":0,"type":"function","function":{"arguments":"{\"command\":\"ls\"}"}}]},"finish_reason":null}]}`,
+		`{"choices":[{"delta":{"tool_calls":[{"index":1,"type":"function","function":{"arguments":"{\"prompt\":\"选哪个?\"}"}}]},"finish_reason":"tool_calls"}]}`,
+	)
+	resp, err := a.Complete(context.Background(), &sdk.LLMRequest{Model: "test-model"}, func(ev sdk.LLMStreamEvent) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Message.ToolCalls) != 2 {
+		t.Fatalf("应聚合 2 个并行调用: %+v", resp.Message.ToolCalls)
+	}
+	if got := resp.Message.ToolCalls[0]; got.Name != "shell" || got.Arguments != `{"command":"ls"}` {
+		t.Errorf("调用 A 聚合不符: %+v", got)
+	}
+	if got := resp.Message.ToolCalls[1]; got.Name != "ask_user_question" || got.Arguments != `{"prompt":"选哪个?"}` {
+		t.Errorf("调用 B 参数被串到 A(索引记账缺失): %+v", got)
+	}
+}

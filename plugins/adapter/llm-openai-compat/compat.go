@@ -247,6 +247,7 @@ type wireMsg struct {
 
 type wireToolCall struct {
 	ID       string `json:"id"`
+	Index    int    `json:"index"` // 并行 tool_calls 的槽位下标(此前未解析 → 多调用只能靠 id/lastCallID 猜,参数会串)
 	Type     string `json:"type"`
 	Function struct {
 		Name      string `json:"name"`
@@ -371,7 +372,8 @@ func (a *Adapter) Complete(ctx context.Context, req *sdk.LLMRequest, onChunk fun
 
 	var content strings.Builder
 	var calls []sdk.ToolCall
-	var lastCallID string // 兼容后续 chunk 不带 id 的流(常见推理模型只带 index/tool 类型):沿用首个非空 id
+	var lastCallID string        // 兼容后续 chunk 不带 id 的流(常见推理模型只带 index/tool 类型):沿用首个非空 id
+	toolCallIdx := map[int]int{} // 流内 index → calls 下标(并行 tool_calls 必须按 index 记账,不能只看 id)
 	finish := sdk.FinishReasonStop
 	usage := sdk.Usage{}
 	sc := bufio.NewScanner(resp.Body)
@@ -398,18 +400,35 @@ func (a *Adapter) Complete(ctx context.Context, req *sdk.LLMRequest, onChunk fun
 		for _, ch := range ck.Choices {
 			ev := sdk.LLMStreamEvent{Delta: ch.Delta.Content, Thinking: ch.Delta.ReasoningContent}
 			if len(ch.Delta.ToolCalls) > 0 {
-				tc := ch.Delta.ToolCalls[0]
-				if tc.ID == "" {
-					tc.ID = lastCallID // id 只出现在首个工具调用 chunk 时,后续 chunk 沿用（否则 arguments 增量丢失,工具收到空参数）
-				} else {
-					lastCallID = tc.ID
+				// 可能一次给多个调用(并行 tool_calls):逐个按 **index** 记账。
+				// 只用 id + lastCallID 会把第二个调用的参数增量并进第一个(工具收到坏参数)。
+				for i, tc := range ch.Delta.ToolCalls {
+					pos, seen := toolCallIdx[tc.Index]
+					if seen && tc.ID != "" && calls[pos].ID != "" && calls[pos].ID != tc.ID {
+						// 端点复用了 index(或压根不给 index)但 id 变了:是新调用 → 另起一条
+						pos = findCall(&calls, tc.ID)
+						toolCallIdx[tc.Index] = pos
+					} else if !seen {
+						pos = findCall(&calls, tc.ID)
+						toolCallIdx[tc.Index] = pos
+					}
+					if calls[pos].ID == "" {
+						calls[pos].ID = tc.ID
+					}
+					if tc.ID != "" {
+						lastCallID = tc.ID
+					}
+					calls[pos].Name += tc.Function.Name
+					calls[pos].Arguments += tc.Function.Arguments
+					if i == 0 { // 流事件是单调用形态:报本条 chunk 首个条目归属的调用
+						ev.ToolCallID = calls[pos].ID
+						ev.ToolCallName = tc.Function.Name
+						ev.ToolCallArgs = tc.Function.Arguments
+					}
 				}
-				ev.ToolCallID = tc.ID
-				ev.ToolCallName = tc.Function.Name
-				ev.ToolCallArgs = tc.Function.Arguments
-				idx := findCall(&calls, tc.ID)
-				calls[idx].Name += tc.Function.Name
-				calls[idx].Arguments += tc.Function.Arguments
+				if ev.ToolCallID == "" {
+					ev.ToolCallID = lastCallID
+				}
 			}
 			if ch.FinishReason != nil {
 				switch *ch.FinishReason {

@@ -16,6 +16,9 @@ import (
 // maxSteps 单轮最大 ReAct 迭代(防死循环)。
 const maxSteps = 10
 
+// maxParallelToolCalls 同轮并行工具调用的并发上限(防模型一口气给几十个调用打爆资源)。
+const maxParallelToolCalls = 4
+
 // Plugin 实现 host-agent-loop。requires ctx.sessions/ctx.tools/ctx.llm/ctx.systemPrompt。
 type Plugin struct{}
 
@@ -283,23 +286,57 @@ func (l *Loop) step(ctx context.Context, t *turn) error {
 		return nil
 	}
 
-	// 执行工具调用(结果经 tool/result 事件与流水线;日志派生 RoleTool 消息供下轮)
+	// 执行工具调用(结果经 tool/result 事件与流水线;日志派生 RoleTool 消息供下轮)。
+	// 一轮可含多个调用(OpenAI/Anthropic 均支持并行 tool_calls):**并发执行** —— 串行会互等阻塞,
+	// 典型是 ask_user_question 这类等用户作答的工具(第一问阻塞时第二问永远到不了,
+	// 问题栈/「待答 N」无法成立)。事件落序固定为调用序(先全部 tool/call,再按序 tool/result),
+	// 会话日志重放语义与串行时完全一致;单调用仍走原同步路径,行为零变化。
 	for _, call := range calls {
 		if err := l.appendEvents(sdk.SessionEvent{Kind: sdk.EventToolCall,
 			Payload: sdk.ToolCallEvent(call)}); err != nil {
 			return fmt.Errorf("session log: %w", err)
 		}
-		res, err := l.tools.Execute(ctx, call.Name, call.Arguments)
-		if err != nil {
-			if aerr := l.appendEvents(sdk.SessionEvent{Kind: sdk.EventToolResult,
-				Payload: sdk.ToolResultEvent{CallID: call.ID, Name: call.Name, Error: err.Error()}}); aerr != nil {
-				return fmt.Errorf("session log: %w", aerr)
+	}
+	type toolOutcome struct{ content, errText string }
+	outcomes := make([]toolOutcome, len(calls))
+	runOne := func(i int) {
+		defer func() { // 并行分支:单工具 panic 不得带走整个进程(转为结构化错误回传模型)
+			if r := recover(); r != nil {
+				outcomes[i] = toolOutcome{errText: fmt.Sprintf("工具 %q panic: %v", calls[i].Name, r)}
 			}
-		} else if res != nil {
-			if aerr := l.appendEvents(sdk.SessionEvent{Kind: sdk.EventToolResult,
-				Payload: sdk.ToolResultEvent{CallID: call.ID, Name: call.Name, Content: res.Content, Error: res.Error}}); aerr != nil {
-				return fmt.Errorf("session log: %w", aerr)
-			}
+		}()
+		res, err := l.tools.Execute(ctx, calls[i].Name, calls[i].Arguments)
+		switch {
+		case err != nil:
+			outcomes[i] = toolOutcome{errText: err.Error()}
+		case res != nil:
+			outcomes[i] = toolOutcome{content: res.Content, errText: res.Error}
+		}
+	}
+	switch {
+	case len(calls) == 1:
+		runOne(0)
+	case len(calls) > 1:
+		sem := make(chan struct{}, maxParallelToolCalls)
+		var wg sync.WaitGroup
+		for i := range calls {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				runOne(i)
+			}(i)
+		}
+		wg.Wait()
+	}
+	for i, call := range calls {
+		if outcomes[i].content == "" && outcomes[i].errText == "" {
+			continue // 与串行路径一致:结果为 nil 且无错时不落事件
+		}
+		if aerr := l.appendEvents(sdk.SessionEvent{Kind: sdk.EventToolResult,
+			Payload: sdk.ToolResultEvent{CallID: call.ID, Name: call.Name, Content: outcomes[i].content, Error: outcomes[i].errText}}); aerr != nil {
+			return fmt.Errorf("session log: %w", aerr)
 		}
 	}
 	if err := l.appendEvents(sdk.SessionEvent{Kind: sdk.EventStepEnd}); err != nil {

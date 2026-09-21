@@ -28,9 +28,13 @@ type tool struct {
 }
 
 type step struct {
-	Text   string `json:"text"`
-	Tool   *tool  `json:"tool"`
-	Finish string `json:"finish"`
+	Text string `json:"text"`
+	Tool *tool  `json:"tool"`
+	// Tools 一轮多调用(并行 tool_calls):与 Tool 同时给出时 Tool 在前。
+	Tools []tool `json:"tools"`
+	// Thinking 思维增量(推理模型 reasoning_content/thinking;用于验思维块渲染)。
+	Thinking string `json:"thinking"`
+	Finish   string `json:"finish"`
 }
 
 // Start 注册适配器到 ctx.llm。
@@ -115,17 +119,30 @@ func (a *Adapter) Complete(ctx context.Context, _ *sdk.LLMRequest, onChunk func(
 	}
 	s := a.steps[idx]
 
+	if s.Thinking != "" && onChunk != nil {
+		if err := onChunk(sdk.LLMStreamEvent{Thinking: s.Thinking}); err != nil {
+			return nil, err
+		}
+	}
+
+	listed := s.Tools
 	if s.Tool != nil {
-		id := fmt.Sprintf("mock_call_%d", requestSeq.Add(1))
-		call := sdk.ToolCall{ID: id, Name: s.Tool.Name, Arguments: s.Tool.Args}
-		ev := sdk.LLMStreamEvent{ToolCallID: id, ToolCallName: call.Name, ToolCallArgs: call.Arguments}
-		if onChunk != nil {
-			if err := onChunk(ev); err != nil {
-				return nil, err
+		listed = append([]tool{*s.Tool}, listed...)
+	}
+	if len(listed) > 0 {
+		calls := make([]sdk.ToolCall, 0, len(listed))
+		for _, one := range listed {
+			id := fmt.Sprintf("mock_call_%d", requestSeq.Add(1))
+			call := sdk.ToolCall{ID: id, Name: one.Name, Arguments: one.Args}
+			calls = append(calls, call)
+			if onChunk != nil {
+				if err := onChunk(sdk.LLMStreamEvent{ToolCallID: id, ToolCallName: call.Name, ToolCallArgs: call.Arguments}); err != nil {
+					return nil, err
+				}
 			}
 		}
 		done := sdk.LLMStreamEvent{Done: true, FinishReason: sdk.FinishReasonToolCalls}
-		done.Message = sdk.LLMMessage{Role: sdk.RoleAssistant, ToolCalls: []sdk.ToolCall{call}}
+		done.Message = sdk.LLMMessage{Role: sdk.RoleAssistant, ToolCalls: calls}
 		if onChunk != nil {
 			if err := onChunk(done); err != nil {
 				return nil, err
