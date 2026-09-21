@@ -1637,6 +1637,8 @@ Go 全量 **1498 passed**(67 包,0 失败,6 跳过;新增 `TestPluginStderrCaptu
 
 **复跑**:`GAH_EYE_DIR=~/gah-acceptance/human-eye go test ./tests/ -run TestTUIAcceptHumanEyeMaterials -count=1 -v`(实测 8s)。素材落在 `~/gah-acceptance/human-eye/`,结论回填 `docs/VERIFY.md` A 表 #39/#42 行。
 
+**同步文档与任务**:① 新增**可勾选一页版** `~/gah-acceptance/人工验证清单.md`(A 本机 4 条 / B 外机 4 组 / C 非人工待外部 1 项,每组给前置-做什么-判据-失败长相 + 勾选表 + 复跑命令),`~/gah-acceptance/README.md` 顶部加指引;② `docs/VERIFY.md` 人工清单段指向该文件并把 A-1b 的导出口径写准(`/export <路径>.html`,`.html` 结尾即自包含网页)、把"复现素材"首选改为第四十三批生成器;③ 口径全仓对齐 **已跑 102 / 剩 4 条纯人工**(DESIGN 第四十二批订正 + VERIFY 快照/结论 + `docs/TODO_OVERVIEW.md` G-X2 + `docs/ROADMAP.md` G-X2 + 真缺陷计数 17 → 19);④ todo 侧:#33(#71 用例)/#34(人眼素材)/#26(全平台自测)勾完,#20 更到 102,#32 去掉已完成的 #71。
+
 **测试窗口订正(非产品缺陷)**:`tests/tui_accept_queue_test.go` 条目 7 的 Alt+Up 取回原轮询 3s,首次在全量套件(344s 级负载)下出现一次假阴(退出码报「取回后待发计数消失=false」,单跑 3/3 通过)。根因是 UI 循环在 Esc 取消后可能仍在同步收尾(`App.command` 跑在 UI 循环内 —— 与 #18 同族的既有性质),负载高时超过 3s。处置:**放宽轮询窗口到 6s 并记录耗时**(产品语义不变),随后连续两次全量套件绿。
 
 **门禁**:`gofmt`/`go vet` 干净 · `go test ./tests/ -count=1` 连续 2 次 **ok(344.7s / 345.6s)**。
