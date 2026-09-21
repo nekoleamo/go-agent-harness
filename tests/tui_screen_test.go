@@ -427,6 +427,17 @@ func (s *tuiSess) waitScreenGone(sub string, d time.Duration) bool {
 	return !s.scr.contains(sub)
 }
 
+// inputLine 输入框那行(`│ ❯ … │`);取最后一行匹配(就地重绘会留旧行)。
+func (s *tuiSess) inputLine() string {
+	lines := strings.Split(s.screen(), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.Contains(lines[i], "❯") && strings.Contains(lines[i], "│") {
+			return lines[i]
+		}
+	}
+	return ""
+}
+
 // statusLineWith 屏幕上包含 sub 的那一行(取最后一行:状态栏是就地重绘,旧行可能仍留在
 // 屏模型里 —— 判"实时状态"要看最新那行行内内容,而不是整屏 Contains)。
 func (s *tuiSess) statusLineWith(sub string) string {

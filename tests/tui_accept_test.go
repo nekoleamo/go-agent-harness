@@ -611,3 +611,78 @@ func TestTUIAcceptWorkspaceMention(t *testing.T) {
 		t.Errorf("条目 11 失败:候选里仍有旧工作区文件")
 	}
 }
+
+// TestTUIAcceptExternalEditor 条目 4:Ctrl+G 打开外部编辑器(Ctrl+G 整段编辑),
+// 保存退出后把编辑器内容回填输入框。用假编辑器脚本(EDITOR=脚本)自动验。
+func TestTUIAcceptExternalEditor(t *testing.T) {
+	bin, env, _, _ := tuiAcceptSetup(t)
+	dir := t.TempDir()
+	script := filepath.Join(dir, "fake-editor.sh")
+	writeAcceptFile(t, dir, "fake-editor.sh", "#!/bin/sh\nprintf '%s' '外部编辑内容' >> \"$1\"\n")
+	if err := os.Chmod(script, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env = append(env, "EDITOR="+script, "VISUAL=") // VISUAL 优先,须显式清空
+	s := newTuiSess(t, bin, env, "--profile", "acctui")
+	defer s.quit()
+	if !s.boot() {
+		t.Fatal("首帧未就绪")
+	}
+	s.send("原有草稿")
+	if !s.waitScreen("原有草稿", 8*time.Second) {
+		t.Fatal("条目 4:输入未回显")
+	}
+	s.send("\x07") // Ctrl+G
+	ok := s.waitScreen("外部编辑内容", 20*time.Second)
+	t.Logf("条目 4:编辑器回填=%v;输入行=%q", ok, s.inputLine())
+	if !ok {
+		t.Errorf("条目 4:Ctrl+G 未回填编辑器结果;屏 %q", firstN(s.screen(), 300))
+	}
+	if got := s.inputLine(); !strings.Contains(got, "原有草稿外部编辑内容") {
+		t.Errorf("条目 4:回填应保留原输入并与编辑器内容拼合;输入行=%q", got)
+	}
+}
+
+// TestTUIAcceptYankAltP 条目 38(部分):Alt+P 粘贴 kill-ring 最近删段(md 链接点击仍人工)。
+func TestTUIAcceptYankAltP(t *testing.T) {
+	bin, env, _, _ := tuiAcceptSetup(t)
+	s := newTuiSess(t, bin, env, "--profile", "acctui")
+	defer s.quit()
+	if !s.boot() {
+		t.Fatal("首帧未就绪")
+	}
+	s.send("剪切内容")
+	if !s.waitScreen("剪切内容", 8*time.Second) {
+		t.Fatal("条目 38:输入未回显")
+	}
+	s.send("\x15") // Ctrl+U kill 到行首(光标在行尾)→ 进 kill-ring
+	killed := false
+	for i := 0; i < 20; i++ {
+		time.Sleep(200 * time.Millisecond)
+		if !strings.Contains(s.inputLine(), "剪切内容") {
+			killed = true
+			break
+		}
+	}
+	t.Logf("条目 38:Ctrl+U 后输入行=%q", s.inputLine())
+	if !killed {
+		t.Fatalf("条目 38:Ctrl+U 未清空输入(输入行=%q)", s.inputLine())
+	}
+	s.send("\x1bp") // Alt+P(kitty/legacy 变体)
+	yanked := false
+	for i := 0; i < 20 && !yanked; i++ {
+		time.Sleep(200 * time.Millisecond)
+		yanked = strings.Contains(s.inputLine(), "剪切内容")
+	}
+	if !yanked {
+		s.send("\x1b[1;3p")
+		for i := 0; i < 20 && !yanked; i++ {
+			time.Sleep(200 * time.Millisecond)
+			yanked = strings.Contains(s.inputLine(), "剪切内容")
+		}
+	}
+	t.Logf("条目 38:Alt+P 粘贴=%v;输入行=%q", yanked, s.inputLine())
+	if !yanked {
+		t.Errorf("条目 38:Alt+P 未粘贴 kill-ring 内容;输入行=%q", s.inputLine())
+	}
+}
