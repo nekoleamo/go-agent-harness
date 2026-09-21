@@ -1619,6 +1619,22 @@ Go 全量 **1498 passed**(67 包,0 失败,6 跳过;新增 `TestPluginStderrCaptu
 **11. pdfium TUI 位图** —— **锁死理由**:SELF-1 有网实测体积 **+≈5.5 MiB → 破体积门**(当时门 46/30,现在更紧的 36/23 下更无空间);TUI **无图形协议**支持 → 位图 = 新子系统(布局、缩放、终端矩阵、性能);而主力光栅路径已由 **RST-1** 交付(外部 `pdftoppm` + `sdk.DocRasterService` + `/api/doc/raster`)。**重启条件 = 降体路径先腾出空间(②/③)且「零外部依赖部署」需求成立** —— 注意这一条与上面第 6 项的「终端内联图片」不同:此项即使有图形协议也仍受体积门约束。
 **12. OSC 9;4 进度通知** —— **锁死理由**(本次分析补充):OSC 9;4 的支持面窄(Windows Terminal、WezTerm 等为主),在未知终端上属于**纯静默失效** —— 与「静默失效不可接受」的红线直接冲突;而进度语义在 TUI 已有落点:状态栏 + 坞折叠行「后台 N 运行中: <摘要>」(1s 节拍,仅在有任务时续拍)。**重启条件 = 需要终端级任务栏进度**(例如长任务在最小化窗口里也要可见)成为明确需求,且探测可依赖。
 
+#### 交付记录(2026-09-20,第二十八批:A-4 macOS 桌面壳验收 —— 壳面 4 条全验 / 1 条部分 / 3 条需公证 dmg)
+
+> **来路**:A 本机 109 条的第 2 项(A-4 壳面 8 条)。壳工程在仓库内(`desktop/src-tauri`,Tauri v2),故本批**不靠 GUI 手动点**而是用手法三件套:① Rust 单测(`cargo test --offline` → **25 passed**,stage 10 + notice 11 + main 4);② 本机**文件级观测**(构建产物 bundle 布局 + 真实 staging 目录);③ **staging 布局模拟**(临时目录复刻 `bin/{gah-<版本>, gah-data/}`,走"首装 → 换版本 → 删二进制")。
+
+| 项 | 结论 | 依据 |
+|---|---|---|
+| **#81 R8 数据根位置** | ✅ **设计已变更并按新设计验** | 不再在壳内塞 `gah-data`:壳把 sidecar 复制到 `<用户数据目录>/bin/gah-<版本>` 再运行,「二进制同级 gah-data/」自然落在应用目录之外 —— **数据根解析规则一个字没改**(`stage.rs` 文件头即写此权衡)。实测 `gah.app/Contents/MacOS/` 仅 `gah` + `gah-desktop` |
+| **#83 B2 数据落用户目录** | ✅ | `~/Library/Application Support/dev.gah.desktop/bin/gah-0.1.4-fd720f37`(45208162 B,与 bundle 内 sidecar 同尺寸)+ `gah-data/{config,plugins,sessions}` |
+| **#84 B3 升级/卸载数据仍在** | ✅ | 模拟:换版本后同一 `gah-data/` 复用(标记存活);删二进制后数据仍在。Rust:`prune_never_touches_the_data_directory` / `migrate_from_copies_once_and_never_deletes_legacy` |
+| **#87 B6 search 模式逐工具审批** | ✅(宿主侧机制) | `toolapproval_proxy_test.go`(代理工具按**真实目标名**命中 `approval_tools`,防"间接名整体绕过")+ `toolapproval_test.go`(三档/未列名不打扰/无通道安全拒);壳内复用同一 Web 审批管线 |
+| **#86 B5 定时任务失败通知** | 🔶 半条 | 壳侧通知链路单测 11 项(只转发 warn/error、游标单调不回退、非 JSON 不假装空、来源名映射可读);"壳内跑失败定时任务 → 系统通知"端到端需 GUI,人工 |
+| **#82/#85 Gatekeeper** | ⛔ 人工(不做假) | 本机产物 `codesign -dv` = **adhoc, linker-signed**(无 Developer ID/公证);首放行与"不再弹层"是**下载产物 quarantine** 触发的行为,本地构建复现等于作假 |
+| **#88 通知矩阵** | ⛔ 人工 | 需 iTerm2 / Terminal.app / tmux 三环境;本机未装 tmux |
+
+**顺带订正**:A-3 的 **#71**(TUI `/preview` pager 全键位)在阶段 8 被归入 A-1,但 A-1 的 43 条清单里没有它 → 本批明确登记为**人工/后续 pty 补验**项,不计入 A-1 已跑的 26 条(避免"看起来跑了 44 条"的错账)。
+
 #### 交付记录(2026-09-20,第二十七批:A-1 TUI 键盘/渲染 pty 真机验收 —— 26 条全验 / 6 条部分覆盖 / 11 条人工,并修复 1 处真缺陷)
 
 > **来路**:继续推进 **A 本机 109 条** 的第 1 项(A-1 TUI 42 条 + 43)。本机**未装 tmux**,故用**仓库原生 Go pty 探针**(复用既有 `tests/tui_pty_probe_test.go` 基建),探针随 `go test -race` 进 CI 门禁。
