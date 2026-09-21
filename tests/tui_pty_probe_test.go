@@ -54,6 +54,34 @@ func runTUIViaPtyArgs(t *testing.T, bin string, env []string, args ...string) (*
 	return ptmx, cmd, out
 }
 
+// runTUIViaPtyDirArgs 指定工作目录 + 启动参数的 pty 启动(工作区=目录,沙箱写权限据此判定)。
+func runTUIViaPtyDirArgs(t *testing.T, bin string, env []string, dir string, args ...string) (*os.File, *exec.Cmd, chan string) {
+	t.Helper()
+	testutil.SkipNoPTY(t)
+	cmd := exec.Command(bin, args...)
+	cmd.Env = env
+	cmd.Dir = dir
+	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 80})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := make(chan string, 512)
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, err := ptmx.Read(buf)
+			if n > 0 {
+				out <- string(buf[:n])
+			}
+			if err != nil {
+				close(out)
+				return
+			}
+		}
+	}()
+	return ptmx, cmd, out
+}
+
 // drain 在 timeout 内累计读取输出(channel 关闭停止)。
 func drain(out chan string, d time.Duration) string {
 	var sb strings.Builder

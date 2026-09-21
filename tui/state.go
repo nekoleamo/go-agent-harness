@@ -253,9 +253,12 @@ func (s *State) ApplyStatus(status string) {
 }
 
 // SetError 设置错误(输入处理失败等)。
-// ApplyConfirmPrompt 显示确认弹层。
+// ApplyConfirmPrompt 显示待确认态:置裁决字段(y/n 按键用)**并**把确认内容写进会话流。
+// 只置字段不够 —— 视图层没有任何地方渲染 PendingConfirm,用户只会看到"执行工具: xxx"的
+// 忙碌指示,既看不到在确认什么、也不知道要按 y/n(A-1 条目 31 pty 探针实测)。
 func (s *State) ApplyConfirmPrompt(prompt string) {
 	s.PendingConfirm = prompt
+	s.Lines = append(s.Lines, Line{Kind: "meta", Text: "⚠ " + prompt})
 }
 
 // ResolveConfirm 用户答复后清除弹层,返回决定。
