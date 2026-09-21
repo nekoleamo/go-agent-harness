@@ -1621,6 +1621,18 @@ Go 全量 **1498 passed**(67 包,0 失败,6 跳过;新增 `TestPluginStderrCaptu
 **11. pdfium TUI 位图** —— **锁死理由**:SELF-1 有网实测体积 **+≈5.5 MiB → 破体积门**(当时门 46/30,现在更紧的 36/23 下更无空间);TUI **无图形协议**支持 → 位图 = 新子系统(布局、缩放、终端矩阵、性能);而主力光栅路径已由 **RST-1** 交付(外部 `pdftoppm` + `sdk.DocRasterService` + `/api/doc/raster`)。**重启条件 = 降体路径先腾出空间(②/③)且「零外部依赖部署」需求成立** —— 注意这一条与上面第 6 项的「终端内联图片」不同:此项即使有图形协议也仍受体积门约束。
 **12. OSC 9;4 进度通知** —— **锁死理由**(本次分析补充):OSC 9;4 的支持面窄(Windows Terminal、WezTerm 等为主),在未知终端上属于**纯静默失效** —— 与「静默失效不可接受」的红线直接冲突;而进度语义在 TUI 已有落点:状态栏 + 坞折叠行「后台 N 运行中: <摘要>」(1s 节拍,仅在有任务时续拍)。**重启条件 = 需要终端级任务栏进度**(例如长任务在最小化窗口里也要可见)成为明确需求,且探测可依赖。
 
+#### 交付记录(2026-09-21,第三十八批:A-1 #77 真 exec 契约(PATH 假 soffice)+ #82/#85 重新分析(实测"不作数"的原因))
+
+**① #77 LibreOffice 转换(减外部条件版,不装 ≈700MB)**:既有用例走 `run` 钩子注入 stub,**绕过了真进程/PATH 探测**。新增 `TestConverterRealExecPATHShim`:PATH 前置假 `soffice` 脚本,覆盖真 exec 链的六面 ——
+argv 契约(`--headless --norestore --convert-to pdf --outdir <dir> <src>`)· 产物落位 = 派生缓存键(调用方据此判命中复用)· 源 mtime 变化 → 键变化(不误用旧缓存)· 非 0 退出 → 显式错误 · **stderr 尾部透出到错误文本**(否则用户只看到"转换失败"没法排查)· 退出 0 但无产物 → 显式错误。缓存 7 天裁剪与面板另有既有覆盖(phase 8A)。
+
+**② #82/#85(首次放行 / 不再弹层)重新分析 → 实测确认"本机不作数",维持人工**:
+- `xattr -w com.apple.quarantine "0083;…;Safari;"` → `xattr -l` 可见该属性;**`xattr -dr com.apple.quarantine` 确实清除**(只剩系统自带的 `com.apple.provenance`,与放行无关)→ **文档里的放行步骤可执行、语义正确**;
+- 但 `spctl --status` = **assessments disabled**(macOS 26.7 本机),`spctl -a -t exec -vvv` 恒回 `accepted / override=security disabled` → **本地根本无法复现 Gatekeeper 拦截与放行弹层**,做出来的"accepted"是机器状态而非产物属性 ⇒ 用本地构建冒充 = 作假(前批结论得到证据支撑);
+- 已实现的一半:`desktop/src-tauri/src/stage.rs:217 strip_mark_of_transfer` **已清内层 sidecar 的 quarantine**(内层不再被拦),外层 `.app` 的首次放行仍需用户手动 —— 而**首启提示做不到**(OS 在进程启动前就拦下了,应用内无任何代码执行机会),这属于分发/文档侧(docs/RELEASE.md 已有 `xattr -dr` 指引)。
+
+**口径**:#77 自动化收口;A 表 **已跑 100 / 剩 5**。
+
 #### 交付记录(2026-09-21,第三十七批:A-1 #86「壳内通知端到端」减外部条件版 —— 真产物喂壳,逮到第 15 处真缺陷)
 
 **做法(不依赖 GUI、不装东西)**:把宿主**真产物**固化成可复现 fixture,再让桌面壳用真产物跑判定链。
