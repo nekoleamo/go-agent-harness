@@ -128,7 +128,19 @@ func diskVersion(path string) int {
 // name 为插件基名(tool-basic),平台扩展名由本函数补:调用方不必关心平台差异。
 // P4 平台匹配:build-tag 保证只取当前构建平台的产物(黑盒测试/工具链读取用)。
 func OpenExtPlugin(name string) (io.ReadCloser, error) {
+	if err := checkPlatformEmbedded(); err != nil {
+		return nil, err
+	}
 	return extPlugins.Open(extPluginDir + "/" + ExtPluginBinary(name) + ".gz")
+}
+
+// checkPlatformEmbedded 平台内置产物可用性(发行矩阵外 → 显式错误,不静默返回空/不存在)。
+func checkPlatformEmbedded() error {
+	if extPluginDir == "" {
+		return fmt.Errorf("internal/embed: 本平台不在内置外部插件发行矩阵内(darwin/linux × amd64/arm64 + windows/amd64);"+
+			"当前 %s/%s 请自行把插件二进制放入数据根 plugins/(矩阵见 scripts/gen-extplugins.sh)", runtime.GOOS, runtime.GOARCH)
+	}
+	return nil
 }
 
 // ExtPluginBinary 外部插件在**当前平台**的产物文件名(gzip 之前)。
@@ -166,6 +178,9 @@ func readFileBytes(path string) ([]byte, bool) {
 // 每平台文件定义同名 extPlugins/extPluginDir;主包每目标只嵌本平台产物,
 // 体积门不变,发行产物平台匹配——P4 交叉编译矩阵回归)。
 func EnsurePlugins(home string) ([]string, error) {
+	if err := checkPlatformEmbedded(); err != nil {
+		return nil, err
+	}
 	names, err := listNames(extPlugins, extPluginDir)
 	if err != nil {
 		return nil, err

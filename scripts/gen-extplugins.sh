@@ -74,7 +74,10 @@ for t in $TARGETS; do
     bin="$name"
     if [ "$os" = windows ]; then bin="$name.exe"; fi
     echo "build $t/$bin"
-    GOOS=$os GOARCH=$arch CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "$dir/$bin" "./extplugins/$name"
+    # -buildvcs=false:默认会写入 vcs.revision/vcs.time/vcs.modified → 产物随 **git 状态**变化,
+    # "重跑无 diff" 只在 HEAD+脏标记完全一致时成立(实测:同一源码、同一工具链,脏树重生成
+    # 与提交版字节不同但大小相同,只是这几个字段)。剥掉 VCS 戳后产物只由源码决定。
+    GOOS=$os GOARCH=$arch CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags "-s -w" -o "$dir/$bin" "./extplugins/$name"
     assert_arch "$dir/$bin" "$os" "$arch"
     gzip -9 -n -f "$dir/$bin" # -n:不存 mtime/文件名,产物幂等(重跑无 diff)
   done
