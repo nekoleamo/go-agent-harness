@@ -504,3 +504,24 @@ func TestTurnParallelToolCalls(t *testing.T) {
 		t.Errorf("工具调用未并行:启动间隔 %v 总耗时 %v(串行约 600ms)", gap, elapsed)
 	}
 }
+
+// TestTurnThinkingChunkIsLogged 思维增量必须落流:此前 onChunk 只在 Delta 非空时落
+// assistant/chunk,推理模型的 thinking 增量整段丢失(TUI 思维块/HTML 思考块/ACP 拿不到内容)。
+func TestTurnThinkingChunkIsLogged(t *testing.T) {
+	e := buildEnv(t, `[{"thinking":"先推理甲。","text":"结论乙。"}]`)
+	if err := e.loop.Run(context.Background(), "任务"); err != nil {
+		t.Fatal(err)
+	}
+	var think string
+	for _, ev := range e.log.Replay() {
+		if ev.Kind != sdk.EventAssistantChunk {
+			continue
+		}
+		if c, ok := ev.Payload.(sdk.LLMStreamEvent); ok {
+			think += c.Thinking
+		}
+	}
+	if think != "先推理甲。" {
+		t.Fatalf("思维增量未落流: %q", think)
+	}
+}

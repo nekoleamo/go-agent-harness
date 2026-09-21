@@ -221,6 +221,10 @@ func (l *Loop) step(ctx context.Context, t *turn) error {
 	onChunk := func(ev sdk.LLMStreamEvent) error {
 		if ev.Delta != "" {
 			content.WriteString(ev.Delta)
+		}
+		// 思维增量也必须落流(仅正文落流会让推理模型的 thinking 增量整段丢失 →
+		// TUI 思维块 / 导出 HTML 思考块 / ACP thinking 永远为空,只剩键位可验)。
+		if ev.Delta != "" || ev.Thinking != "" {
 			if err := l.appendEvents(sdk.SessionEvent{Kind: sdk.EventAssistantChunk, Payload: ev}); err != nil {
 				return fmt.Errorf("session log: %w", err)
 			}
