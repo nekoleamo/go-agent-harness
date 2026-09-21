@@ -366,19 +366,6 @@ func (h *harness) awaitUpdate(sessionID, kind string) map[string]any {
 	return nil
 }
 
-// collectUpdates 读若干条 update(最多 n 条),返回按到达顺序的变体列表。
-func (h *harness) collectUpdates(n int) []map[string]any {
-	h.t.Helper()
-	var out []map[string]any
-	for i := 0; i < n; i++ {
-		m := h.next()
-		params, _ := m["params"].(map[string]any)
-		upd, _ := params["update"].(map[string]any)
-		out = append(out, upd)
-	}
-	return out
-}
-
 // replyPermission 应答一次 session/request_permission(选中 optionID 或 cancelled)。
 func (h *harness) replyPermission(id any, optionID string) {
 	outcome := map[string]any{"outcome": "cancelled"}

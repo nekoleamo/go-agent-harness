@@ -1799,9 +1799,7 @@ func (a *App) notifierTargetText() string {
 func parseStatuslineArgs(args []string) []string {
 	var out []string
 	for _, raw := range args {
-		for _, t := range strings.FieldsFunc(raw, func(r rune) bool { return r == ' ' || r == ',' || r == '\t' }) {
-			out = append(out, t)
-		}
+		out = append(out, strings.FieldsFunc(raw, func(r rune) bool { return r == ' ' || r == ',' || r == '\t' })...)
 	}
 	return out
 }

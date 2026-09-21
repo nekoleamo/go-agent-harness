@@ -479,10 +479,8 @@ func newChangesEnv(t *testing.T, token string, fail bool) *cbChangesEnv {
 // TestCallbackChangeRecordProxy 外部侧 CbChanges ↔ 宿主 change.record 对账(真 RPC 往返)。
 func TestCallbackChangeRecordProxy(t *testing.T) {
 	env := newChangesEnv(t, "tok", false)
-	rec := CbChanges(env.cc)
-	if _, ok := rec.(sdk.FileChangeRecorder); !ok {
-		t.Fatal("CbChanges 应实现 sdk.FileChangeRecorder")
-	}
+	// 编译期契约外显:CbChanges 的返回值必须可用作 sdk.FileChangeRecorder(签名已保证,这里钉住意图)。
+	var rec sdk.FileChangeRecorder = CbChanges(env.cc)
 	ev := sdk.BuildFileChange("/ws/a.txt", "", "write", "file_write", true, "", "hi\n")
 	if err := rec.RecordChange(ev); err != nil {
 		t.Fatalf("回传应成功: %v", err)

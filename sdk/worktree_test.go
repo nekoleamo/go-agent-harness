@@ -14,6 +14,7 @@ func TestWorkRootCarrier(t *testing.T) {
 	if _, ok := WorkRootOf(ctx); ok {
 		t.Fatal("未设置时不应有工作根")
 	}
+	//lint:ignore SA1012 有意传 nil:WorkRootOf 必须对 nil ctx 容错(不能 panic)
 	if _, ok := WorkRootOf(nil); ok {
 		t.Fatal("nil ctx 不应有工作根")
 	}

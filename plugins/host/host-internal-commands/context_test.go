@@ -83,7 +83,6 @@ func (s *stubTools) Execute(context.Context, string, string) (*sdk.ToolResult, e
 type stubInspector struct {
 	text  string
 	parts []sdk.PromptPart
-	tools []sdk.ToolDefinition
 }
 
 func (s *stubInspector) AddSection(sdk.SystemPromptSection) sdk.Disposer { return func() {} }

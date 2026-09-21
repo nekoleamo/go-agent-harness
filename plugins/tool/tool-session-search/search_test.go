@@ -33,9 +33,8 @@ func ev(kind string, seq int, ts string, payload any) string {
 	return string(b)
 }
 
-func userMsg(text string) any     { return map[string]any{"Content": text} }
-func asstMsg(text string) any     { return map[string]any{"Content": text, "ToolCalls": nil} }
-func callEv(name, arg string) any { return map[string]any{"ID": "c1", "Name": name, "Arguments": arg} }
+func userMsg(text string) any { return map[string]any{"Content": text} }
+func asstMsg(text string) any { return map[string]any{"Content": text, "ToolCalls": nil} }
 func resultEv(name, content, errText string) any {
 	return map[string]any{"CallID": "c1", "Name": name, "Content": content, "Error": errText}
 }

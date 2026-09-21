@@ -290,6 +290,3 @@ func renderStatusLine(s *State, width int) string {
 	}
 	return styleStatus.Render(" " + out + strings.Repeat(" ", width))
 }
-
-// statuslineNames 合法项名列表(错误提示/无参输出用)。
-func statuslineNames() []string { return append([]string(nil), statuslineTokens...) }

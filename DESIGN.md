@@ -1646,9 +1646,9 @@ Go 全量 **1498 passed**(67 包,0 失败,6 跳过;新增 `TestPluginStderrCaptu
 
 **F2 外部插件产物不可复现(已修)**:`gen-extplugins.sh` 默认带 VCS 戳(`vcs=git`/`vcs.revision`/`vcs.time`/`vcs.modified`),产物随 **git 状态**变化 —— 实测同源码同工具链、脏树重生成与提交版**字节不同而大小相同**(文件大小 9151106 一致,仅戳不同),所以"重跑无 diff"只在 HEAD+脏标记完全一致时成立。加 `-buildvcs=false` 后两次生成 md5 一致、产物内 `vcs` 计数为 0;产物同步重生成(20 个)。
 
-**F3 staticcheck 7 项(仅记录,未改)**:根 module 6 项 —— 生产死代码 1 处(`tui/chrome.go:295 statuslineNames` 未使用)、`tui/app.go:1802` S1011(手写循环可换 `append(...)`)、测试内未使用 3 处(`host-internal-commands/context_test.go` 字段、`acp-server/acp_test.go` 方法、`tool-session-search/search_test.go` 函数)、`host-bridge/callback_rpc_test.go:483` S1040(同型断言);sdk 1 项 `worktree_test.go:17` SA1012(传 nil Context)。均非功能缺陷,建议单独一次清理提交(改完需重跑门禁)。
+**F3 staticcheck 7 项(已清理)**:根 module 6 项 —— 生产死代码 1 处(`tui/chrome.go` 未使用的 `statuslineNames` **删除**)、`tui/app.go` S1011(手写双层循环 → `append(fields...)`)、测试内未使用 3 处(`host-internal-commands/context_test.go` 字段、`acp-server/acp_test.go` 方法、`tool-session-search/search_test.go` 函数 —— **删除**)、`host-bridge/callback_rpc_test.go` S1040(冗余同型断言 → 改写为 `var rec sdk.FileChangeRecorder = CbChanges(...)`,把"返回类型即契约"显式钉住而不是删掉断言意图);sdk 1 项 `worktree_test.go` SA1012(有意传 nil 验容错 → 加 `//lint:ignore SA1012` 说明理由,不牺牲用例意图)。清理后**根 module 与 sdk 的 staticcheck 均 0 项**。
 
-**F4 clippy 40 条(仅记录)**:34 条为 `non_snake_case` 函数名(Tauri 命令名刻意 camelCase,与前端调用同名,属有意风格)+ 6 条杂项(tabs in doc comments、多余 `mut`、unit let-binding、多余借用)。`cargo check --locked` **0 error**,与 CI 一致。
+**F4 clippy 40 条(已清理为 0)**:34 条 `non_snake_case` 是**整表述的命名风格**(壳内 Rust 函数一律 camelCase:`#[tauri::command]` 的符号名就是前端 `invoke("name")` 的字符串,内部辅助函数跟随以保持前后端/日志同名),故在 crate 级加 `#![allow(non_snake_case)]` **并写清理由**,不逐函数挂 allow、也不把 34 个函数改名制造无行为收益的大 diff;6 条杂项逐处修掉(多余 `mut`、2 处 unit let-binding、2 处多余借用、doc comment 里的 tab)。清理后 `cargo clippy --all-targets` **No issues found**,`cargo check --locked` 0 error,`cargo test` 26 全绿;`cargo fmt --check` 差异数编辑前后同为 38(仓库整体未走 rustfmt,**本轮不引入格式化 diff**)。
 
 **F5 工具链坑(建议写进文档)**:`desktop/.cargo/config.toml`(镜像配置)按 **cwd** 解析 —— 在仓库根用 `cargo test --offline --manifest-path desktop/src-tauri/Cargo.toml` 会以 `no matching package named serde` 失败(误导性;实为没读到该 config)。必须在 `desktop/` 下执行(CI 已是 `cd desktop/src-tauri && cargo check --locked`)。
 
