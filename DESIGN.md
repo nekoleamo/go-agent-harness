@@ -1621,6 +1621,16 @@ Go 全量 **1498 passed**(67 包,0 失败,6 跳过;新增 `TestPluginStderrCaptu
 **11. pdfium TUI 位图** —— **锁死理由**:SELF-1 有网实测体积 **+≈5.5 MiB → 破体积门**(当时门 46/30,现在更紧的 36/23 下更无空间);TUI **无图形协议**支持 → 位图 = 新子系统(布局、缩放、终端矩阵、性能);而主力光栅路径已由 **RST-1** 交付(外部 `pdftoppm` + `sdk.DocRasterService` + `/api/doc/raster`)。**重启条件 = 降体路径先腾出空间(②/③)且「零外部依赖部署」需求成立** —— 注意这一条与上面第 6 项的「终端内联图片」不同:此项即使有图形协议也仍受体积门约束。
 **12. OSC 9;4 进度通知** —— **锁死理由**(本次分析补充):OSC 9;4 的支持面窄(Windows Terminal、WezTerm 等为主),在未知终端上属于**纯静默失效** —— 与「静默失效不可接受」的红线直接冲突;而进度语义在 TUI 已有落点:状态栏 + 坞折叠行「后台 N 运行中: <摘要>」(1s 节拍,仅在有任务时续拍)。**重启条件 = 需要终端级任务栏进度**(例如长任务在最小化窗口里也要可见)成为明确需求,且探测可依赖。
 
+#### 交付记录(2026-09-21,第三十五批:A-1 #41「anthropic thinking blocks 适配后置」适配层接入)
+
+> 该项原本登记为「anthropic thinking blocks 适配后置(人工)」—— 即**响应侧思考块一直没接**。本批按「要做」处理:
+
+**① 适配层(已交付并单测)**:`plugins/adapter/llm-anthropic-compat/anthropic.go` —— `wireEvent.Delta` 增 `thinking` 字段 + 新增 `thinking_delta` 分支 → `sdk.LLMStreamEvent.Thinking`(正文聚合仍只吃 `text_delta`,思维段不进正文)。新增 `TestCompleteStreamsThinkingAndTextAfterTool`:同一响应里 **thinking 块 → tool_use 块 → 后置 text 块** 三者共存,断言 ① 思维增量转成 `Thinking`;② 工具块**之后**的文本块仍完整聚合为正文;③ 工具调用参数与 `stop_reason=tool_use` 均正确。这同时覆盖 #41 的两层含义(思考块接入 + 内容块后置)。
+
+**② 端到端(TUI 走真 anthropic 流)未跑,已登记原因**:anthropic 适配器**没有实现 `Configure`**(不接 `provider.yaml` 的 `base_url`,只吃插件 `data.base_url`)——故 TUI 端到端需经**插件 data** 把 base_url 指向本地假端点(而非 provider.yaml 通道,与 openai-compat 的既有夹具不同),留待下一轮;当前口径 = **适配层已验,TUI 端到端待补**。
+
+**门禁**:`gofmt`/`go vet` 干净 · `plugins/...` `-race` 绿。
+
 #### 交付记录(2026-09-21,第三十四批:A-1 #18 / #40 补验 + 1 处真缺陷(思维增量未落流))
 
 **① A-1 #18(P4-5 多级上下文)另一半 —— 上层 AGENTS.md 层级块**。结论:层级块**本来就有观测点**(`/context` 的「本地上限估算」逐层列 `项目指令 <目录>/<文件>` + 字符/token),此前只是没人验。新增 `tests/tui_accept_context_test.go` 双路取证:
