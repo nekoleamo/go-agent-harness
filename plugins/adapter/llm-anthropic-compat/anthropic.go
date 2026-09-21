@@ -150,6 +150,7 @@ type wireEvent struct {
 	Delta *struct {
 		Type        string `json:"type"`
 		Text        string `json:"text"`
+		Thinking    string `json:"thinking"` // 扩展思考块增量(thinking_delta;此前未解析 → Anthropic 思维块整段丢弃)
 		PartialJSON string `json:"partial_json"`
 		StopReason  string `json:"stop_reason"`
 	} `json:"delta"`
@@ -292,6 +293,13 @@ func (a *Adapter) Complete(ctx context.Context, req *sdk.LLMRequest, onChunk fun
 				content.WriteString(ev.Delta.Text)
 				if onChunk != nil {
 					if err := onChunk(sdk.LLMStreamEvent{Delta: ev.Delta.Text}); err != nil {
+						return nil, err
+					}
+				}
+			case ev.Delta != nil && ev.Delta.Type == "thinking_delta" && ev.Delta.Thinking != "":
+				// 扩展思考块(Anthropic thinking):与正文互斥下发,计入思维段(不进正文聚合)
+				if onChunk != nil {
+					if err := onChunk(sdk.LLMStreamEvent{Thinking: ev.Delta.Thinking}); err != nil {
 						return nil, err
 					}
 				}

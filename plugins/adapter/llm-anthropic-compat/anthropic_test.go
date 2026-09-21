@@ -215,3 +215,49 @@ func TestHTTPErrorSurfaced(t *testing.T) {
 		t.Fatalf("错误应包含状态码: %v", err)
 	}
 }
+
+// TestCompleteStreamsThinkingAndTextAfterTool 条目 41「anthropic blocks 后置」:
+// ① 扩展思考块(thinking_delta)必须转成 sdk.LLMStreamEvent.Thinking(此前未解析 → 整段丢弃);
+// ② 内容块**后置**:tool_use 块之后再出 text 块,正文仍应完整聚合,且 stop_reason 仍识别为工具调用。
+func TestCompleteStreamsThinkingAndTextAfterTool(t *testing.T) {
+	_, a, _ := sseServer(t,
+		`{"type":"message_start","message":{"usage":{"input_tokens":8,"output_tokens":0}}}`,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"thinking"}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"先看需求。"}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"再定方案。"}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"shell"}}`,
+		`{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"command\":\"ls\"}"}}`,
+		`{"type":"content_block_stop","index":1}`,
+		`{"type":"content_block_start","index":2,"content_block":{"type":"text"}}`,
+		`{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"工具之后的正文。"}}`,
+		`{"type":"content_block_stop","index":2}`,
+		`{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"input_tokens":8,"output_tokens":9}}`,
+		`{"type":"message_stop"}`,
+	)
+	var think, text string
+	resp, err := a.Complete(context.Background(), &sdk.LLMRequest{Model: "test-model"}, func(ev sdk.LLMStreamEvent) error {
+		think += ev.Thinking
+		text += ev.Delta
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if think != "先看需求。再定方案。" {
+		t.Errorf("思维块增量应转成 Thinking: %q", think)
+	}
+	if text != "工具之后的正文。" {
+		t.Errorf("工具块之后的文本块应仍聚合为正文: %q", text)
+	}
+	if resp.Message.Content != "工具之后的正文。" {
+		t.Errorf("聚合响应正文不符: %q", resp.Message.Content)
+	}
+	if len(resp.Message.ToolCalls) != 1 || resp.Message.ToolCalls[0].Name != "shell" ||
+		resp.Message.ToolCalls[0].Arguments != `{"command":"ls"}` {
+		t.Errorf("工具调用聚合不符: %+v", resp.Message.ToolCalls)
+	}
+	if resp.FinishReason != sdk.FinishReasonToolCalls {
+		t.Errorf("stop_reason=tool_use 应映射为工具调用结束: %v", resp.FinishReason)
+	}
+}
