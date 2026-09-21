@@ -110,21 +110,24 @@ func TestTUIAcceptQueueRecall(t *testing.T) {
 	if line := s.statusLineWith("空闲"); !strings.Contains(line, "待发") {
 		t.Errorf("条目 7:Esc 后队列被清空(应保留供取回);空闲行=%q", line)
 	}
-	// Alt+Up 取回(kitty 变体为主,xterm 变体兜底)
+	// Alt+Up 取回(kitty 变体为主,xterm 变体兜底)。
+	// 轮询窗口 6s:UI 循环在 Esc 取消后可能仍在同步收尾(命令跑在 UI 循环内),
+	// 全量套件并发负载下实测会超过 3s —— 单跑 3/3 通过、全量偶发假阴,故放宽等待而非改产品。
 	s.send("\x1b[1;3A")
 	queueGone := false
-	for i := 0; i < 12 && !queueGone; i++ {
+	t0 := time.Now()
+	for i := 0; i < 24 && !queueGone; i++ {
 		time.Sleep(250 * time.Millisecond)
 		queueGone = !strings.Contains(s.statusLineWith("空闲"), "待发")
 	}
 	if !queueGone {
 		s.send("\x1b\x1b[A")
-		for i := 0; i < 12 && !queueGone; i++ {
+		for i := 0; i < 24 && !queueGone; i++ {
 			time.Sleep(250 * time.Millisecond)
 			queueGone = !strings.Contains(s.statusLineWith("空闲"), "待发")
 		}
 	}
-	t.Logf("条目 7:取回后待发计数消失=%v;空闲行=%q", queueGone, s.statusLineWith("空闲"))
+	t.Logf("条目 7:取回后待发计数消失=%v(耗时 %v);空闲行=%q", queueGone, time.Since(t0).Round(time.Millisecond), s.statusLineWith("空闲"))
 	if !queueGone {
 		t.Errorf("条目 7:Alt+Up 未取回队列(实时状态栏仍有待发计数)")
 	}
