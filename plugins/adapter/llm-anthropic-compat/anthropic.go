@@ -18,6 +18,8 @@ import (
 	"os"
 	"strings"
 	"sync"
+
+	"github.com/nekoleamo/go-agent-harness/internal/providerfile"
 	"time"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
@@ -31,28 +33,10 @@ func (p *Plugin) Name() string { return "llm-anthropic-compat" }
 // Start 注册适配器到 ctx.llm(模型前缀 claude 路由)。
 func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	a := &Adapter{client: &http.Client{Timeout: 5 * time.Minute}, maxTokens: 4096}
-	if m != nil && m.Data != nil {
-		if u, ok := m.Data["base_url"].(string); ok && u != "" {
-			a.baseURL = strings.TrimSuffix(u, "/")
-		}
-		if mod, ok := m.Data["model"].(string); ok && mod != "" {
-			a.model = mod
-		}
-		if mt, ok := m.Data["max_tokens"].(int); ok && mt > 0 {
-			a.maxTokens = mt
-		}
+	explicit, err := resolveConfig(a, m)
+	if err != nil {
+		return nil, err
 	}
-	if a.baseURL == "" {
-		a.baseURL = "https://api.anthropic.com/v1"
-	}
-	if a.model == "" {
-		if v := os.Getenv("ANTHROPIC_MODEL"); v != "" {
-			a.model = v
-		} else {
-			a.model = "claude-sonnet-4-5"
-		}
-	}
-	a.apiKey = os.Getenv("ANTHROPIC_API_KEY")
 
 	var llm sdk.LLMService
 	if err := c.Inject("ctx.llm", &llm); err != nil {
@@ -60,8 +44,79 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	}
 	a.defaultBaseURL, a.defaultAPIKey, a.defaultModel = a.baseURL, a.apiKey, a.model
 	d := llm.RegisterAdapter(a)
-	// 默认模型仍是 openai 插件设置;仅当用户 /model claude-* 时路由到本适配器
+	if explicit {
+		// 配置显式指向本适配器(env / 活跃 provider 的模型是 claude-* / 插件 data):
+		// 全局模型也要设上,否则 anthropic-only 装配下"没有模型"直接跑不起来。
+		llm.SetModel(a.model)
+	}
+	// 未显式指向时保持默认模型由 openai 插件设置;用户 /model claude-* 时前缀路由到本适配器。
 	return d, nil
+}
+
+// firstEnv 取第一个非空环境变量。
+func firstEnv(keys ...string) string {
+	for _, k := range keys {
+		if v := os.Getenv(k); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// resolveConfig 配置解析链(每字段独立):env 显式 > provider.yaml(仅当活跃 provider 属于
+// 本适配器路由范围)> data 样板 > 内置默认。返回 explicit = 有明确的"归属本适配器"来源。
+//
+// 2026-09-21 补:此前本适配器完全不看 provider.yaml(只吃 data/env)→ /provider 配好的
+// anthropic 兼容端点对 claude 模型无效(静默打回默认端点)。
+func resolveConfig(a *Adapter, m *sdk.Manifest) (explicit bool, err error) {
+	base := firstEnv("ANTHROPIC_BASE_URL")
+	key := firstEnv("ANTHROPIC_API_KEY")
+	mod := firstEnv("ANTHROPIC_MODEL")
+	if base != "" || key != "" || mod != "" {
+		explicit = true
+	}
+	pv, perr := providerfile.Load()
+	if perr != nil {
+		return false, fmt.Errorf("llm-anthropic: 读取 provider.yaml 失败: %w", perr)
+	}
+	// 只在活跃 provider 属于本适配器路由范围(model 空 = 未定,或 claude-*)时采用;
+	// 否则会把 openai 端点错配到本适配器上(路由到谁由 host-llm 按模型前缀决定)。
+	if pv.Model == "" || strings.HasPrefix(pv.Model, "claude") {
+		if pv.BaseURL != "" || pv.APIKey != "" || pv.Model != "" {
+			if base == "" {
+				base = strings.TrimSuffix(pv.BaseURL, "/")
+			}
+			if key == "" {
+				key = pv.APIKey
+			}
+			if mod == "" {
+				mod = pv.Model
+			}
+			if pv.Model != "" {
+				explicit = true
+			}
+		}
+	}
+	if m != nil && m.Data != nil {
+		if u, ok := m.Data["base_url"].(string); ok && base == "" && u != "" {
+			base = strings.TrimSuffix(u, "/")
+		}
+		if md, ok := m.Data["model"].(string); ok && mod == "" && md != "" {
+			mod = md
+			explicit = true
+		}
+		if mt, ok := m.Data["max_tokens"].(int); ok && mt > 0 {
+			a.maxTokens = mt
+		}
+	}
+	if base == "" {
+		base = "https://api.anthropic.com/v1"
+	}
+	if mod == "" {
+		mod = "claude-sonnet-4-5"
+	}
+	a.baseURL, a.apiKey, a.model = base, key, mod
+	return explicit, nil
 }
 
 // Adapter 实现 sdk.LLMAdapter + sdk.ModelRouter + sdk.ProviderAdapter(/provider 运行时切换)。

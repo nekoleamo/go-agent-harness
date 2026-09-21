@@ -265,6 +265,7 @@ func TestToolErrorStructured(t *testing.T) {
 // scriptedLLM 脚本化 LLM(capture):按请求序号依次返回固定文本,记录每次请求的完整消息。
 type scriptedLLM struct {
 	steps    []string
+	calls    [][]sdk.ToolCall // 按步给"响应体内累积的 tool_calls"(模拟 anthropic 适配器)
 	n        int
 	requests [][]sdk.LLMMessage
 	toolSets [][]sdk.ToolDefinition // 每次请求的 tools 下发(结构化调用依赖)
@@ -280,7 +281,32 @@ func (s *scriptedLLM) Complete(_ context.Context, req *sdk.LLMRequest, _ func(sd
 	if i >= len(s.steps) {
 		i = len(s.steps) - 1
 	}
-	return &sdk.LLMResponse{Message: sdk.LLMMessage{Role: sdk.RoleAssistant, Content: s.steps[i]}, FinishReason: sdk.FinishReasonStop}, nil
+	var tc []sdk.ToolCall
+	if i < len(s.calls) {
+		tc = s.calls[i]
+	}
+	finish := sdk.FinishReasonStop
+	if len(tc) > 0 {
+		finish = sdk.FinishReasonToolCalls
+	}
+	return &sdk.LLMResponse{Message: sdk.LLMMessage{Role: sdk.RoleAssistant, Content: s.steps[i], ToolCalls: tc}, FinishReason: finish}, nil
+}
+
+// TestTurnExecutesResponseBodyToolCalls 工具调用在**响应体内**累积(anthropic 适配器的做法:
+// 按 content block 累积,不发增量 ToolCallID 事件)时也必须执行。
+// 此前 loop 只认增量累积的 calls → 这类响应被当成"无工具调用"直接收尾:正文照出、工具静默不跑。
+func TestTurnExecutesResponseBodyToolCalls(t *testing.T) {
+	e, llm := buildEnvScripted(t, []string{"", "收尾"})
+	llm.calls = [][]sdk.ToolCall{{{ID: "toolu_1", Name: "echo", Arguments: `{"text":"甲"}`}}}
+	if err := e.loop.Run(context.Background(), "任务"); err != nil {
+		t.Fatal(err)
+	}
+	if len(llm.requests) != 2 {
+		t.Fatalf("工具执行后应有第二趟请求(证明工具真跑了),实际 %d", len(llm.requests))
+	}
+	if n := countKind(e.log, sdk.EventToolResult); n != 1 {
+		t.Errorf("应有 1 条 tool/result,实际 %d:%s", n, kinds(e.log))
+	}
 }
 
 // buildEnvScripted 装配(host-llm + scripted adapter 注入;替换 mock),返回 env + adapter。

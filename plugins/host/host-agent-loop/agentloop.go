@@ -253,6 +253,11 @@ func (l *Loop) step(ctx context.Context, t *turn) error {
 	}
 	if len(calls) > 0 {
 		final.Message.ToolCalls = calls
+	} else if len(final.Message.ToolCalls) > 0 {
+		// 适配器内部累积的 tool_calls(如 anthropic:它按 content block 累积,不发增量
+		// ToolCallID 事件)。此前只认增量累积 → anthropic 侧的工具调用**永不执行**:
+		// 回合被当成"无工具调用"直接结束(正文照出,工具静默不跑)。
+		calls = final.Message.ToolCalls
 	}
 	if final.Message.Content == "" {
 		final.Message.Content = content.String()
