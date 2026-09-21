@@ -333,7 +333,7 @@ mod tests {
 
     /// 真机冒烟(默认跳过):对**活着的** gah web 实例拉一次 /api/notices。
     ///
-    ///	GAH_SHELL_NOTICE_ADDR=127.0.0.1:2233 cargo test --offline live_notice
+    ///     GAH_SHELL_NOTICE_ADDR=127.0.0.1:2233 cargo test --offline live_notice
     ///
     /// 验的是 Rust 侧解析/分类与真宿主字节的契约(不是 fixture 自说自话)。
     #[test]

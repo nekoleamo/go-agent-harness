@@ -11,6 +11,11 @@
 // 超时 SIGKILL 兜底;RunEvent::Exit 兜底 kill sidecar(信号强杀时 sidecar 变孤儿由
 // 启动探测接管:端口已占用则直接 navigate 现有实例)。
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// 命名风格:本壳的 Rust 函数名一律 camelCase —— `#[tauri::command]` 的符号名即前端
+// `invoke("name")` 的字符串,沿用它能让前后端/日志/报错里的名字保持同一个;内部辅助函数
+// 与之一致(只有 tauri::command 边界被 JS 强约束,但那不是"部分 snake_case、部分 camelCase"
+// 的理由)。clippy 的 non_snake_case 因此整表述合忽略(34 条),不再逐函数挂 allow。
+#![allow(non_snake_case)]
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -292,7 +297,7 @@ fn explainUpdateError(msg: &str) -> String {
 // 通知作为余量保留(窗口最小化时它更轻)。
 fn notifyUpdate(app: &tauri::AppHandle, o: &UpdateOutcome) {
     let _ = app.notification().builder().title("gah").body(&o.message).show();
-    let _ = app.dialog().message(&o.message).title("gah 检查更新").show(|_| {});
+    app.dialog().message(&o.message).title("gah 检查更新").show(|_| {});
 }
 
 // UpdateSnapshot 检查更新的当前状态 —— 托盘与设置面板两个视图的**单一真源**。
@@ -505,7 +510,7 @@ fn pick_folder_begin(app: AppHandle, title: Option<String>) -> String {
                 out.clone().unwrap_or_else(|| "(取消)".into())
             ),
         );
-        let mut g = h.state::<PickState>();
+        let g = h.state::<PickState>();
         let mut g = g.0.lock().unwrap();
         g.running = false;
         g.done = true;
@@ -755,7 +760,7 @@ fn showShellDiag(app: &AppHandle, title: &str, lines: &[String]) {
         esc(&shellLogTail(app, 16)),
     );
     if let (Some(w), Ok(lit)) = (app.get_webview_window("main"), serde_json::to_string(&html)) {
-        let _ = w.eval(&format!(
+        let _ = w.eval(format!(
             "document.body.style.background='#fff';document.body.innerHTML={lit}"
         ));
     }
@@ -1217,7 +1222,7 @@ fn main() {
                             web_url(),
                             shellLogPath(app).display()
                         );
-                        let _ = app.dialog().message(txt).title("关于 gah").show(|_| {});
+                        app.dialog().message(txt).title("关于 gah").show(|_| {});
                     }
                     "quit" => quitApp(app),
                     _ => {}
@@ -1299,7 +1304,7 @@ fn main() {
                             shellLogPath(app.handle()).display()
                         );
                         if let Ok(lit) = serde_json::to_string(&html) {
-                            let _ = w.eval(&format!("document.body.innerHTML={lit}"));
+                            let _ = w.eval(format!("document.body.innerHTML={lit}"));
                         }
                     }
                     return Ok(());
