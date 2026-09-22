@@ -4,6 +4,7 @@ package hostagentloop
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -65,6 +66,12 @@ func (e *errLLM) Thinking() sdk.ThinkingLevel                   { return sdk.Thi
 // buildEnv 装配 sessions/tools/llm(mock)/systemPrompt + 本插件(llmScript 非法时走失败路径)。
 func buildEnv(t *testing.T, llmScript string) *env {
 	t.Helper()
+	return buildEnvData(t, llmScript, nil)
+}
+
+// buildEnvData 同上,但给 host-agent-loop 插件传 data(如 max_steps)。
+func buildEnvData(t *testing.T, llmScript string, loopData map[string]any) *env {
+	t.Helper()
 	logger := slog.New(slog.DiscardHandler)
 	bus := event.New(logger)
 	c := ctx.New(logger, bus)
@@ -93,7 +100,7 @@ func buildEnv(t *testing.T, llmScript string) *env {
 	if _, err := (&hostsystemprompt.Plugin{}).Start(c, &sdk.Manifest{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := (&Plugin{}).Start(c, &sdk.Manifest{}); err != nil {
+	if _, err := (&Plugin{}).Start(c, &sdk.Manifest{Data: loopData}); err != nil {
 		t.Fatal(err)
 	}
 	var loop sdk.AgentLoop
@@ -549,5 +556,67 @@ func TestTurnThinkingChunkIsLogged(t *testing.T) {
 	}
 	if think != "先推理甲。" {
 		t.Fatalf("思维增量未落流: %q", think)
+	}
+}
+
+// TestMaxStepsFromManifest data.max_steps 解析:只认数值;缺省/类型不符 = 不限(0)。
+func TestMaxStepsFromManifest(t *testing.T) {
+	cases := []struct {
+		name string
+		m    *sdk.Manifest
+		want int
+	}{
+		{"nil manifest", nil, 0},
+		{"未配置", &sdk.Manifest{Data: map[string]any{}}, 0},
+		{"int", &sdk.Manifest{Data: map[string]any{"max_steps": 7}}, 7},
+		{"float64(yaml 数字)", &sdk.Manifest{Data: map[string]any{"max_steps": 12.0}}, 12},
+		{"0 = 不限", &sdk.Manifest{Data: map[string]any{"max_steps": 0}}, 0},
+		{"负数 = 不限", &sdk.Manifest{Data: map[string]any{"max_steps": -1}}, -1},
+		{"类型不符按缺省", &sdk.Manifest{Data: map[string]any{"max_steps": "10"}}, 0},
+	}
+	for _, c := range cases {
+		if got := maxStepsFromManifest(c.m); got != c.want {
+			t.Errorf("%s: got %d want %d", c.name, got, c.want)
+		}
+	}
+}
+
+// mockSteps 造 n 步工具调用 + 一步文本收尾的 mock 脚本。
+func mockSteps(n int) string {
+	steps := make([]string, 0, n+1)
+	for i := 0; i < n; i++ {
+		steps = append(steps, fmt.Sprintf(`{"tool":{"name":"echo","args":"{\"i\":%d}"}}`, i))
+	}
+	steps = append(steps, `{"text":"完成","finish":"stop"}`)
+	return "[" + strings.Join(steps, ",") + "]"
+}
+
+// TestTurnDefaultHasNoStepCap 缺省不再有 10 步硬上限:12 步工具调用应跑完而不是报"达到最大步数"。
+// 老口径(const maxSteps = 10)下这条必然失败,是本次真机反馈(长任务撞线)的回归锁。
+func TestTurnDefaultHasNoStepCap(t *testing.T) {
+	e := buildEnv(t, mockSteps(12))
+	if err := e.loop.Run(context.Background(), "长任务"); err != nil {
+		t.Fatalf("缺省不应有步数上限: %v", err)
+	}
+	if calls := strings.Count(kinds(e.log), "tool/call"); calls != 12 {
+		t.Fatalf("应执行 12 次工具调用: %d", calls)
+	}
+	if k := kinds(e.log); !strings.HasSuffix(k, "turn/end") || strings.Contains(k, "max_steps") {
+		t.Fatalf("回合应以 done 收尾: %s", k)
+	}
+}
+
+// TestTurnMaxStepsConfigured 配了 data.max_steps 仍显式失败(阈值生效,且事实不被掩盖)。
+func TestTurnMaxStepsConfigured(t *testing.T) {
+	e := buildEnvData(t, mockSteps(5), map[string]any{"max_steps": 2})
+	err := e.loop.Run(context.Background(), "会撞线")
+	if err == nil || !strings.Contains(err.Error(), "达到最大步数 2") {
+		t.Fatalf("应报步数上限错误: %v", err)
+	}
+	if calls := strings.Count(kinds(e.log), "tool/call"); calls != 2 {
+		t.Fatalf("应在第 2 步停下: %d", calls)
+	}
+	if k := kinds(e.log); !strings.Contains(k, sdk.EventTurnEnd) || !strings.HasSuffix(k, sdk.EventTurnEnd) {
+		t.Fatalf("撞线也必须有 turn/end 收尾: %s", k)
 	}
 }

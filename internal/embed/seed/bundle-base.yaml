@@ -1,4 +1,4 @@
-# seed-version: 26 # 样板版本:新增 base 能力条目(host-* 等)时 +1(26:token-compress 阈值改按窗口比例(trigger_ratio/max_tokens/chars_per_token);25:host-internal-commands 增 export_open_browser;24:新增 tool-schedule 定时计划工具),老用户自动升级(备份后覆盖)
+# seed-version: 27 # 样板版本:新增 base 能力条目(host-* 等)时 +1(27:host-agent-loop 增 data.max_steps(缺省 0 = 不限,此前硬编码 10);26:token-compress 阈值改按窗口比例(trigger_ratio/max_tokens/chars_per_token);25:host-internal-commands 增 export_open_browser;24:新增 tool-schedule 定时计划工具),老用户自动升级(备份后覆盖)
 # base bundle:对齐 dsh-base,一切功能皆插件的共享第一层。
 # M1 阶段条目仅记录意图;对应插件工厂在 M2 base bundle 落地。
 name: base
@@ -29,6 +29,10 @@ entries:
     data:
       export_open_browser: true # /export 出 .html 后自动打开浏览器(缺省 true;env GAH_EXPORT_OPEN=0 / data 置 false 关)
   - id: host-agent-loop
+    data:
+      # 单轮最大 ReAct 步数(0 = 不限;此前硬编码 10,长任务太容易撞线,2026-09-22 真机反馈)。
+      # 不限不等于没护栏:用户随时可取消(TUI Esc / POST /api/control),工具各自带超时。
+      max_steps: 0
   - id: policy-guard # M19 融合:policy-approval + policy-sandbox 统一策略插件(对外契约不变)
     data:
       approval: smart # 审批档位:open 放行 / smart 弹确认(默认) / strict 拒绝;运行期 /approval 切换

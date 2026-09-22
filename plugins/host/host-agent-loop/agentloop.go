@@ -13,8 +13,12 @@ import (
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
-// maxSteps 单轮最大 ReAct 迭代(防死循环)。
-const maxSteps = 10
+// maxStepsDefault 单轮最大 ReAct 迭代缺省值:`0` = 不设上限。
+// 由插件 data.max_steps 覆盖:正数 = 上限(超出即显式失败),0/负 = 不限。
+// 老口径是硬编码 10 步 —— 真机反馈「长任务太容易撞线」(2026-09-22:连续几次
+// 回合都死在「达到最大步数 10」,同一个回合换个问法就能跑完,说明是阈值不够而非死循环)。
+// 不设上限仍不是死循环:用户随时可取消(TUI Esc / POST /api/control),工具各自带超时。
+const maxStepsDefault = 0
 
 // maxParallelToolCalls 同轮并行工具调用的并发上限(防模型一口气给几十个调用打爆资源)。
 const maxParallelToolCalls = 4
@@ -25,7 +29,7 @@ type Plugin struct{}
 func (p *Plugin) Name() string { return "host-agent-loop" }
 
 // Start 注入依赖并注册 ctx.agentLoop 服务。
-func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
+func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	var sessions sdk.SessionLog
 	var tools sdk.ToolRegistry
 	var llm sdk.LLMService
@@ -42,7 +46,7 @@ func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
 	if err := c.Inject("ctx.systemPrompt", &sp); err != nil {
 		return nil, err
 	}
-	loop := &Loop{c: c, sessions: sessions, tools: tools, llm: llm, sp: sp, tc: newTurnControl()}
+	loop := &Loop{c: c, sessions: sessions, tools: tools, llm: llm, sp: sp, tc: newTurnControl(), maxSteps: maxStepsFromManifest(m)}
 	if err := c.Provide("ctx.agentLoop", loop); err != nil {
 		return nil, err
 	}
@@ -105,6 +109,7 @@ type Loop struct {
 	llm      sdk.LLMService
 	sp       sdk.SystemPromptService
 	tc       *control // ctx.turnControl 实现(回合取消注册表)
+	maxSteps int      // 单轮最大步数(<=0 = 不限;见 maxStepsDefault)
 
 	// runMu 回合串行化:sessions 追加与 DeriveMessages 是单写者模型,
 	// 并发 Run(多路输入同时提交)会让回合互相交错、工具结果错位 → 显式串行不静默交错。
@@ -161,7 +166,7 @@ func (l *Loop) RunWithAttachments(ctx context.Context, input string, atts []sdk.
 		l.c.Emit(context.Background(), "agent/status", "idle", sdk.Emit)
 		return fmt.Errorf("session log: %w", err)
 	}
-	for step := 0; step < maxSteps; step++ {
+	for step := 0; l.maxSteps <= 0 || step < l.maxSteps; step++ {
 		if err := l.step(runCtx, t); err != nil {
 			if errors.Is(err, context.Canceled) {
 				_ = l.appendEvents(sdk.SessionEvent{Kind: sdk.EventTurnEnd, Payload: "cancelled"})
@@ -176,9 +181,9 @@ func (l *Loop) RunWithAttachments(ctx context.Context, input string, atts []sdk.
 		}
 	}
 	if !t.finished {
-		// 步数耗尽:此前静默记为 "done" 并返回 nil —— 模型/用户都看不出"未收敛"。
-		// 现显式失败(maxSteps 保护仍生效,但事实不再被掩盖)。
-		err := fmt.Errorf("agent: 达到最大步数 %d 仍未完成(可能工具循环或模型未收敛)", maxSteps)
+		// 步数耗尽(仅在配了 data.max_steps > 0 时可达):此前静默记为 "done" 并返回 nil ——
+		// 模型/用户都看不出"未收敛"。现显式失败,但事实不再被掩盖。
+		err := fmt.Errorf("agent: 达到最大步数 %d 仍未完成(可能工具循环或模型未收敛;data.max_steps 放宽或设 0 取消上限)", l.maxSteps)
 		_ = l.appendEvents(sdk.SessionEvent{Kind: sdk.EventTurnEnd, Payload: "max_steps"})
 		l.c.Emit(context.Background(), "agent/error", err, sdk.Emit)
 		l.c.Emit(context.Background(), "agent/status", "idle", sdk.Emit)
@@ -393,4 +398,20 @@ func findCall(calls *[]sdk.ToolCall, id string) int {
 	}
 	*calls = append(*calls, sdk.ToolCall{ID: id})
 	return len(*calls) - 1
+}
+
+// maxStepsFromManifest 读插件 data.max_steps(缺省 maxStepsDefault = 不限)。
+// 只认 yaml 解析出的 int;写错类型(如字符串)按缺省处理并留日志级别的事实即可 ——
+// 这里不静默降级为"某个神秘上限":数据不对就等于没配。
+func maxStepsFromManifest(m *sdk.Manifest) int {
+	if m == nil {
+		return maxStepsDefault
+	}
+	switch v := m.Data["max_steps"].(type) {
+	case int:
+		return v
+	case float64:
+		return int(v)
+	}
+	return maxStepsDefault
 }
