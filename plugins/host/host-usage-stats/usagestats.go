@@ -14,6 +14,7 @@ package hostusagestats
 
 import (
 	"context"
+	"strings"
 	"sync"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
@@ -116,7 +117,7 @@ func (s *Service) LearnWindowFromError(model, msg string) {
 	if s.learned == nil {
 		s.learned = make(map[string]int)
 	}
-	s.learned[model] = w
+	s.learned[strings.ToLower(model)] = w
 }
 
 // add 累计一笔 usage 并刷新模型。

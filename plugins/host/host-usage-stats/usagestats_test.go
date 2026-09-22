@@ -91,6 +91,12 @@ func TestWindowForModel(t *testing.T) {
 		{"qwen2.5-coder-7b", 32 * 1024},  // qwen2.5- 命中
 		{"unknown-model-xyz", 0},         // 未知 → 兜底
 		{"", 0},                          // 空 → 兜底
+		// 大小写不敏感:同一端点会写 deepseek-ai/DeepSeek-V4-Flash 或 DeepSeek-V4-Flash-0731,
+		// 大小写敏感会让后者漏进内置表(窗口未知 ⇒ 压缩阈值退化为绝对上限、展示层不显示占用比)。
+		{"DeepSeek-V4-Flash-0731", 128 * 1024},
+		{"deepseek-ai/DeepSeek-V4-Flash", 128 * 1024},
+		{"GLM-5.3", 1024 * 1024},
+		{"Claude-Sonnet-5", 1024 * 1024},
 	}
 	for _, c := range cases {
 		if got := (&Service{}).windowForModel(c.model); got != c.want {
@@ -111,6 +117,12 @@ func TestExtraWindowsOverlay(t *testing.T) {
 	s2.HandleSessionEvent(usageEvent("claude-sonnet-4-5", sdk.Usage{PromptTokens: 1}))
 	if st := s2.Stats(); st.Window != 200*1024 {
 		t.Fatalf("未覆盖模型应走内置表: %+v", st)
+	}
+	// 配置键与模型名同样大小写不敏感
+	s4 := &Service{extraWindows: map[string]int{"MiniMax-": 512 * 1024}}
+	s4.HandleSessionEvent(usageEvent("minimax-m2", sdk.Usage{PromptTokens: 1}))
+	if st := s4.Stats(); st.Window != 512*1024 {
+		t.Fatalf("配置层覆盖应大小写不敏感: %+v", st)
 	}
 	// 显式 context_window 仍最优先
 	s3 := &Service{windowOverride: 32768, extraWindows: map[string]int{"deepseek-": 1024 * 1024}}

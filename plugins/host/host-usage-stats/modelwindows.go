@@ -66,11 +66,12 @@ var modelWindows = []modelEntry{
 	{"glm", 128 * 1024},
 }
 
-// matchWindow 前缀匹配取最长命中(辅助;空模型名/未命中 → 0)。
+// matchWindow 前缀匹配取最长命中(辅助;空模型名/未命中 → 0;大小写不敏感,见 windowForModel)。
 func matchWindow(model string, tbl []modelEntry) int {
 	best, bestLen := 0, 0
+	m := strings.ToLower(model)
 	for _, e := range tbl {
-		if strings.HasPrefix(model, e.prefix) && len(e.prefix) > bestLen {
+		if strings.HasPrefix(m, strings.ToLower(e.prefix)) && len(e.prefix) > bestLen {
 			bestLen, best = len(e.prefix), e.window
 		}
 	}
@@ -79,19 +80,22 @@ func matchWindow(model string, tbl []modelEntry) int {
 
 // windowForModel 按模型名解析窗口:配置层覆盖(data.model_windows)> 错误驱动学习(learned)> 内置表 > 0(未知)。
 // 未知/空模型返回 0 → 展示层只显示使用量,不显示总量/百分比(避免假精确误导)。
+// **匹配统一按小写**(模型名大小写不统一:同一端点会写 deepseek-ai/DeepSeek-V4-Flash 或
+// DeepSeek-V4-Flash-0731;大小写敏感会让后者漏进内置表 = 窗口未知)。
 func (s *Service) windowForModel(model string) int {
+	m := strings.ToLower(model)
 	// 配置层覆盖(最优先)
 	best, bestLen := 0, 0
 	for p, w := range s.extraWindows {
-		if strings.HasPrefix(model, p) && len(p) > bestLen {
+		if strings.HasPrefix(m, strings.ToLower(p)) && len(p) > bestLen {
 			bestLen, best = len(p), w
 		}
 	}
 	if best > 0 {
 		return best
 	}
-	// 错误驱动学习:该模型实测窗口(精确匹配;新模型自动获取优先于内置表)
-	if w, ok := s.learned[model]; ok && w > 0 {
+	// 错误驱动学习:该模型实测窗口(新模型自动获取优先于内置表)
+	if w, ok := s.learned[strings.ToLower(model)]; ok && w > 0 {
 		return w
 	}
 	return matchWindow(model, modelWindows)
