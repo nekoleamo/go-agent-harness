@@ -13,6 +13,8 @@
 //   node scripts/verify-release.mjs --all              # 逐平台下载产物验签(慢:每平台 20~40 MiB)
 //   node scripts/verify-release.mjs --tag v0.1.4       # 校验指定 tag
 //   node scripts/verify-release.mjs --local dist-desktop  # 发布前干跑:校验本地 latest.json 与产物
+//   node scripts/verify-release.mjs --local dist-desktop --platform darwin-aarch64
+//     # 单平台构建后(只有 latest.<平台>.json)校验该平台:自动回退读平台级表,CI 平台 job 用这个形态
 //   node scripts/verify-release.mjs --skip-artifacts   # 只查结构/矩阵/密钥指纹(零下载)
 //
 // 校验口径:签名 = minisign(tauri updater 消费的那一条);哈希 = BLAKE2b-512(`ED` 档)
@@ -271,13 +273,19 @@ try {
   let manifest
   let via
   if (opts.local) {
-    const p = join(resolve(opts.local), 'latest.json')
+    const dir = resolve(opts.local)
+    // CI 平台 job 只跑单平台构建(dist-desktop/latest.<平台>.json),总表 latest.json 要等 merge job 才生成;
+    // 平台 job 里的「上传前自校验」因此不能要求总表 —— 被点名平台时回退读平台级表(两者 schema 相同,
+    // merge 只是把各平台的 platforms 合并),否则会在 tag 发布时必然失败(2026-09-22 实测)。
+    let p = join(dir, 'latest.json')
+    if (!existsSync(p) && opts.platforms.length > 0) p = join(dir, `latest.${opts.platforms[0]}.json`)
     if (!existsSync(p)) {
-      fail('latest.json', `本地不存在:${p}(先跑 publish-desktop.sh merge)`)
+      fail('latest.json', `本地不存在:${p}(先跑 publish-desktop.sh merge,或单平台构建 + --platform)`)
       throw new Error('no manifest')
     }
     manifest = JSON.parse(readFileSync(p, 'utf8'))
     via = p
+    if (!via.endsWith('latest.json')) info('manifest 来源', `平台级表 ${via}(单平台构建尚未 merge,已按 --platform 收窄)`)
   } else {
     const r = await fetchManifest(slug, opts.tag, tmp)
     manifest = r.json
