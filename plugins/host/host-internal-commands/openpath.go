@@ -1,6 +1,7 @@
 package hostintcmd
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"runtime"
@@ -28,14 +29,27 @@ func shouldOpenExportBrowser(m *sdk.Manifest) bool {
 	return true
 }
 
-// openPath 用系统默认程序打开本地文件(异步:只 Start 不 Wait,浏览器的生命周期与 gah 无关)。
-func openPath(path string) error { return openPathCmd(path).Start() }
+// openPath 用系统默认程序打开本地文件。
+// **同步**(等命令自身返回,不等应用退出:macOS `open` / `xdg-open` / `rundll32` 都是立即返回)
+// 并带上 stderr —— 否则“打开失败”只能是静默失败,用户与日志都查不出原因。
+func openPath(path string) error {
+	out, err := openPathCmd(path).CombinedOutput()
+	if err != nil {
+		if msg := strings.TrimSpace(string(out)); msg != "" {
+			return fmt.Errorf("%w: %s", err, msg)
+		}
+		return err
+	}
+	return nil
+}
 
 // openPathCmd 平台命令构造(包级变量:测试替换它,避免真的拉起浏览器)。
+// darwin 用**绝对路径** /usr/bin/open:PATH 被外部壳(桌面端 sidecar / 服务管理器)精简时
+// 仍能可靠打开,xdg-open 与 rundll32 所在目录不在 POSIX 保证之列,保留查 PATH。
 var openPathCmd = func(path string) *exec.Cmd {
 	switch runtime.GOOS {
 	case "darwin":
-		return exec.Command("open", path)
+		return exec.Command("/usr/bin/open", path)
 	case "linux":
 		return exec.Command("xdg-open", path)
 	case "windows":
