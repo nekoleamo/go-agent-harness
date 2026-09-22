@@ -215,6 +215,9 @@ function onKey(ev: KeyboardEvent): void {
   overflow-y: auto;
   /* 内容型面板(变更/看板)的横向 gutter 由容器给:贴边会让文字顶到面板边框上 */
   padding: 8px 12px 16px;
+  /* 停靠区底色是 --bg2(比主视图白底深一档):面板内容的“脚下”配色跟着这里走,
+     吸附条之类的遮罩才不会有白块 */
+  --surface: var(--bg2);
 }
 /* 列表型面板(后台任务)自带内距,且分隔线要通宽 ⇒ 容器不留 gutter */
 .dk-body-flush {

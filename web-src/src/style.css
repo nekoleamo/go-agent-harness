@@ -13,6 +13,10 @@
   --bg: #ffffff;
   --bg2: #f7f8fa;
   --bg3: #f1f3f5;
+  /* 内容块“脚下”的底色(卡片/横条之间的背景):主视图是 --bg,停靠区是 --bg2。
+     内容型组件当自己的遮罩色用它(吸附条、圆角缺口遮挡),不硬写 --bg —— 否则在灰色
+     停靠区里会露出白块。停靠区各容器在 DockView 里覆盖。 */
+  --surface: var(--bg);
   --line-faint: #f0f2f5;
   --line: #e8eaee;
   --line-strong: #dfe2e8;

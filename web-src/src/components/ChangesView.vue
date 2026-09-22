@@ -153,7 +153,10 @@ function degrade(h: FileChange['hunks'][number]): string {
   gap: 14px;
   padding: 8px 0;
   margin-bottom: 6px;
-  background: var(--bg);
+  /* 底色/遮挡色跟容器(主视图白、停靠区灰):硬写 --bg 会在灰色停靠区里露白块;
+     向上 12px 的同色方块盖住 scrollport 内距带(否则卷上去的内容会从条上方露头) */
+  background: var(--surface);
+  box-shadow: 0 -12px 0 0 var(--surface);
   border-bottom: 1px solid var(--line);
 }
 .ov-i {

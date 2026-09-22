@@ -119,9 +119,10 @@ function canMove(id: string, dir: -1 | 1): boolean {
   margin-bottom: 10px; /* 与 .grid 卡片间距一致 */
   /* 内层是圆角块 ⇒ 两层遮挡都由外层出:同色背景 + 向上 12px 的同色方块
      (吸附时 scrollport 内距带里会露出被卷上去的内容,而 sticky 被夹在内容盒顶,
-      只能用阴影带往上补;阴影不参与布局,所以静止位置与原来一致) */
-  background: var(--bg);
-  box-shadow: 0 -12px 0 0 var(--bg);
+      只能用阴影带往上补;阴影不参与布局,所以静止位置与原来一致)。
+     色用 --surface 而不是 --bg:停靠区底色是灰的,硬写白底会在卡片四周露白块。 */
+  background: var(--surface);
+  box-shadow: 0 -12px 0 0 var(--surface);
 }
 .ov {
   display: flex;
