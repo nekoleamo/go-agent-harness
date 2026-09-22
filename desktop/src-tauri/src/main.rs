@@ -291,12 +291,32 @@ fn explainUpdateError(msg: &str) -> String {
     }
 }
 
+// notifyNative 发一条系统通知,**失败写壳日志**。
+//
+// 为何不继续用 `let _ = ...show()`:通知不弹的两种主因(macOS 未授权、应用未注册进
+// 通知中心)在静默写法下长得完全一样 —— 页面上「什么都没发生」,机器上也没有证据。
+// 定位过同类问题(通知被拒)之后,失败必须留痕:写入 gah-shell.log,与 sidecar 日志同一份。
+fn notifyNative(app: &tauri::AppHandle, title: &str, body: &str) {
+    if let Err(e) = app.notification().builder().title(title).body(body).show() {
+        shellLog(app, &format!("系统通知失败({title}): {e}"));
+    }
+}
+
+// logNotifyPermission 启动时把通知授权状况记进壳日志。
+// 桌面版没有终端,"为什么没弹"只能靠这条:未授权时通知是静默丢弃的。
+fn logNotifyPermission(app: &tauri::AppHandle) {
+    match app.notification().permission_state() {
+        Ok(st) => shellLog(app, &format!("系统通知权限: {st:?}")),
+        Err(e) => shellLog(app, &format!("系统通知权限查询失败: {e}")),
+    }
+}
+
 // notifyUpdate 托盘场景的呈现:系统通知 + 原生对话框双通道。
 // 系统通知可能根本不来(未授权/被系统设置拦/专注模式),而托盘里点「检查更新…」之后
 // 「什么都没发生」是最糟的反馈 —— 真机反馈正是如此(2026-09-16)。对话框必然可见,
 // 通知作为余量保留(窗口最小化时它更轻)。
 fn notifyUpdate(app: &tauri::AppHandle, o: &UpdateOutcome) {
-    let _ = app.notification().builder().title("gah").body(&o.message).show();
+    notifyNative(app, "gah", &o.message);
     app.dialog().message(&o.message).title("gah 检查更新").show(|_| {});
 }
 
@@ -803,7 +823,7 @@ fn setCheckBusy(app: &tauri::AppHandle, busy: bool) {
         let _ = item.set_enabled(!busy);
     }
     if busy {
-        let _ = app.notification().builder().title("gah").body("正在检查更新…").show();
+        notifyNative(app, "gah", "正在检查更新…");
     }
 }
 
@@ -1095,6 +1115,8 @@ fn main() {
             let web = pick_free_port();
             let _ = WEB_ADDR.set(web.clone());
             shellLog(app.handle(), &format!("本次 Web 地址: http://{web}"));
+            // 通知授权状况先落日志:未授权时系统通知是静默丢弃的,"为什么不弹"必须有据可查。
+            logNotifyPermission(app.handle());
             // —— 托盘:打开窗口 / 开机自启开关 / 退出 ——
             let show_item = MenuItemBuilder::with_id("show", "显示窗口")
                 .build(app)
@@ -1269,7 +1291,7 @@ fn main() {
             *app.state::<DataRoot>().0.lock().unwrap() = Some(rt.data_root.clone());
             let _ = handle.emit("runtime-data-root", rt.data_root.display().to_string());
             for n in &rt.notices {
-                let _ = app.notification().builder().title("gah").body(n.clone()).show();
+                notifyNative(app.handle(), "gah", n);
                 let _ = handle.emit("runtime-notice", n.clone());
             }
             let notices_all = rt.notices.clone();
@@ -1473,18 +1495,13 @@ fn main() {
                     let path = format!("/api/notices?since={}", consumer.since());
                     if let Some(feed) = notice::parseFeed(&httpGETAuth(&path)) {
                         for n in consumer.accept(&feed) {
-                            let _ = handle4
-                                .notification()
-                                .builder()
-                                .title(notice::notifyTitle(&n))
-                                .body(notice::notifyBody(&n))
-                                .show();
+                            notifyNative(&handle4, &notice::notifyTitle(&n), &notice::notifyBody(&n));
                         }
                     }
                     // 2) 回合结束(壳侧独有信号)
                     let cur = stateRunning();
                     if prev && !cur {
-                        let _ = handle4.notification().builder().title("gah").body("回合已完成").show();
+                        notifyNative(&handle4, "gah", "回合已完成");
                     }
                     prev = cur;
                 }

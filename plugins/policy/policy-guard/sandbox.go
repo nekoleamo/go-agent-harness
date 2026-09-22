@@ -83,6 +83,13 @@ func (p *SandboxPolicy) ValidatePath(path string) error {
 // ValidatePathAt 以显式 root 为写范围校验(S-P1-4 隔离运行:root = 本次调用工作根/受管 worktree)。
 // root 空 → 退回自身 root(未隔离调用行为不变)。
 func (p *SandboxPolicy) ValidatePathAt(root, path string) error {
+	// URL 当路径:模型会把网页地址交给写工具(含 shell 重定向),于是在 cwd 下长出
+	// `https:/host/docs/…` 空目录树(2026-09-22 真机)。
+	// **必须在拼 root 之前判原始入参** —— 相对形态经 filepath.Join 后 URL 前缀就没了(只剩 <root>/https:/…)。
+	// 放在档位判定之前:full-access 同样拦 —— 这不是策略松紧,而是 URL 永远不是本地路径。
+	if sdk.LooksLikeURLPath(path) {
+		return fmt.Errorf("sandbox: 拒绝把 URL 当成文件路径: %s(抓网页请用 web 工具)", path)
+	}
 	p.mu.RLock()
 	mode, own := p.effectiveMode(), p.root
 	p.mu.RUnlock()

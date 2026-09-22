@@ -88,6 +88,11 @@ func (f *FilesTool) resolve(ctx context.Context, path string, write bool) (strin
 	if strings.TrimSpace(path) == "" {
 		return "", fmt.Errorf("tool-files: 缺少 path 参数")
 	}
+	// URL 不是路径:模型偶发把网页地址交给文件工具(真机:工作目录里长出 https:/host/docs/… 空目录树)。
+	// 沙箱层(policy-guard)也拦;这里再拦一道,是因为**未装配沙箱**时(单测/独立部署)resolve 会直接放行。
+	if sdk.LooksLikeURLPath(path) {
+		return "", fmt.Errorf("tool-files: path 是 URL 而不是本地文件路径: %s(抓网页请用 web 工具)", path)
+	}
 	base := ""
 	if h, ok := sdk.SandboxHintOf(ctx); ok {
 		base = h.Root

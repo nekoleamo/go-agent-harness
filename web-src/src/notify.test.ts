@@ -95,3 +95,35 @@ test('无 Notification 能力(旧浏览器/非安全上下文):全部安全空�
   assert.equal(n.fire(notice('error')), 0)
   assert.equal(n.enabled(), false)
 })
+
+test('fireEvent:不做级别过滤(回合结束不是 warn/error),但来源与授权门槛照旧', () => {
+  // 本机 + 已授权 → 真弹
+  const local = fakeNotification('granted')
+  const n1 = createNotifier({ hostname: '127.0.0.1', api: local.api, ctor: local.ctor })
+  assert.equal(n1.fireEvent('gah 回合已完成', '切回来看结果'), 1)
+  assert.deepEqual(local.calls.fired, [{ title: 'gah 回合已完成', body: '切回来看结果' }])
+
+  // 无 body 时不传 opts(与 fire 同款)
+  const local2 = fakeNotification('granted')
+  const n2 = createNotifier({ hostname: 'localhost', api: local2.api, ctor: local2.ctor })
+  assert.equal(n2.fireEvent('gah 需要你确认'), 1)
+  assert.deepEqual(local2.calls.fired, [{ title: 'gah 需要你确认', body: undefined }])
+
+  // 非本机来源(LAN IP 访问):静默不弹,且不申请权限
+  const lan = fakeNotification('granted')
+  const n3 = createNotifier({ hostname: '192.168.1.66', api: lan.api, ctor: lan.ctor })
+  assert.equal(n3.fireEvent('gah 回合已完成'), 0)
+  assert.equal(lan.calls.fired.length, 0)
+  assert.equal(lan.calls.request, 0)
+
+  // 未授权:不弹(权限只能靠用户手势后的 maybeRequest 拿到)
+  const def = fakeNotification('default')
+  const n4 = createNotifier({ hostname: '127.0.0.1', api: def.api, ctor: def.ctor })
+  assert.equal(n4.fireEvent('gah 回合已完成'), 0)
+  assert.equal(def.calls.fired.length, 0)
+
+  // 无 Notification 能力(桌面壳 WKWebView / 非安全上下文):安全空操作
+  const n5 = createNotifier({ hostname: '127.0.0.1', api: undefined, ctor: undefined })
+  assert.equal(n5.fireEvent('gah 回合已完成'), 0)
+  assert.equal(n5.enabled(), false)
+})

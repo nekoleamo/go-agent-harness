@@ -45,6 +45,10 @@ export interface Notifier {
   maybeRequest(): void
   // 收到一条提示时调用:满足全部条件才真弹系统通知;返回 1/0(便于确定性断言)。
   fire(n: Notice): number
+  // 弹一条**非提示流**的系统通知(回合结束 / 需要人确认)。
+  // 与 fire 的差别:不按级别过滤 —— 它不是 warn/error。权限与来源判定同 fire。
+  // 调用纪律:只在页面**不可见**时调 —— 用户正看着界面时弹系统通知纯属噪音。
+  fireEvent(title: string, body?: string): number
   // 当前是否真的会弹系统通知(诊断/测试用)。
   enabled(): boolean
 }
@@ -83,15 +87,25 @@ export function createNotifier(deps: NotifierDeps): Notifier {
       })
   }
 
-  const fire = (n: Notice): number => {
-    if (!wantsSystemNotify(n.level) || !enabled()) return 0
+  // emit 真正弹一条系统通知(权限/来源判定已在调用点过完)。失败不影响页内提示。
+  const emit = (title: string, body?: string): number => {
     try {
-      deps.ctor!(n.title, n.body ? { body: n.body } : undefined)
+      deps.ctor!(title, body ? { body } : undefined)
       return 1
     } catch {
-      return 0 // 系统通知失败不影响页内 toast(已经弹过了)
+      return 0
     }
   }
 
-  return { maybeRequest, fire, enabled }
+  const fire = (n: Notice): number => {
+    if (!wantsSystemNotify(n.level) || !enabled()) return 0
+    return emit(n.title, n.body || undefined)
+  }
+
+  const fireEvent = (title: string, body?: string): number => {
+    if (!enabled()) return 0
+    return emit(title, body)
+  }
+
+  return { maybeRequest, fire, fireEvent, enabled }
 }

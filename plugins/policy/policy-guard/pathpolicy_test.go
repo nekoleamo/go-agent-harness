@@ -327,3 +327,25 @@ func TestCheckToolCallUnit(t *testing.T) {
 		t.Fatalf("未声明的未知工具不应被路径裁决拦截: %v", err)
 	}
 }
+
+// TestValidatePathRejectsURL 把 URL 当路径写:任何档位都拒(含 full-access)。
+// 真机事故:工作目录里长出 https:/host/docs/… 的空目录树。
+func TestValidatePathRejectsURL(t *testing.T) {
+	ws := t.TempDir()
+	for _, mode := range []sdk.SandboxMode{sdk.SandboxReadOnly, sdk.SandboxWorkspace, sdk.SandboxFullAccess} {
+		p := &SandboxPolicy{root: ws, mode: mode}
+		for _, u := range []string{"https://example.com/docs/a.md", "https:/example.com/docs/a.md", "http://x/y"} {
+			if err := p.ValidatePath(u); err == nil {
+				t.Fatalf("档位 %v 下 URL 当路径应被拒: %s", mode, u)
+			}
+		}
+		// 正常相对/绝对路径不受影响(read-only 本就拒一切写,只看非 read-only)
+		err := p.ValidatePath(filepath.Join(ws, "a.md"))
+		if mode == sdk.SandboxReadOnly {
+			continue
+		}
+		if err != nil {
+			t.Fatalf("档位 %v 下正常路径不应误伤: %v", mode, err)
+		}
+	}
+}

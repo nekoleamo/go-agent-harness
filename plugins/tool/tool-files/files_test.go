@@ -229,3 +229,24 @@ func TestFileToolsIsolatedWorkRoot(t *testing.T) {
 		t.Fatalf("隔离运行应可读主 workspace 文件: out=%v err=%v", out, err)
 	}
 }
+
+// TestFileWriteRejectsURLPath 文件工具把 URL 挡在写盘之前(未装配沙箱时也要挡)。
+func TestFileWriteRejectsURLPath(t *testing.T) {
+	ws := t.TempDir()
+	c := buildEnv(t, ws, sdk.SandboxFullAccess)
+	out, err := call(t, c, "file_write", `{"path":"https://example.com/docs/a.md","content":"x"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg, _ := out["error"].(string); !strings.Contains(msg, "URL") {
+		t.Fatalf("应显式拒绝 URL 路径,得到: %+v", out)
+	}
+	if entries, _ := os.ReadDir(ws); len(entries) != 0 {
+		t.Fatalf("工作区不应被写进任何东西: %v", entries)
+	}
+	// 未装配沙箱的独立部署路径同样要挡住
+	tool := &FilesTool{}
+	if _, err := tool.resolve(context.Background(), "https://example.com/a.md", true); err == nil {
+		t.Fatal("无沙箱时也应拒绝 URL 路径")
+	}
+}

@@ -554,7 +554,12 @@ function rebuild(keepCursor: boolean): void {
     if (isUsage(se)) refreshStats()
   }))
   transport.on('status', gate((f) => {
+    const was = state.value.running
     state.value.running = f.payload === 'running'
+    // NOND-N3 后台完成提醒:回合在**后台**跑完时给一条系统通知。
+    // 为何在 web 侧做:宿主不发这类提示(TUI/桌面壳各自负责自己的“人不在场”信号),
+    // 只按提示流通知的话,切到别的标签等结果的人什么也收不到。
+    if (was && !state.value.running && hidden()) notifier.fireEvent('gah 回合已完成', '切回来看结果')
   }))
   transport.on('command', gate((f) => {
     const r = f.payload as CommandResult
@@ -570,11 +575,16 @@ function rebuild(keepCursor: boolean): void {
     metas.value.push({ kind: 'error', text: typeof p === 'string' ? p : JSON.stringify(p) })
   }))
   transport.on('confirm', gate((f) => {
-    confirm.value = f.payload as ConfirmRequest
+    const req = f.payload as ConfirmRequest
+    confirm.value = req
+    // 审批在后台弹出来 = 回合一直阻塞到超时:这是真正“需要人回来”的时刻。
+    if (hidden()) notifier.fireEvent('gah 需要你确认', (req?.prompt || '').slice(0, 120))
   }))
   transport.on('question', gate((f) => {
-    question.value = f.payload as QuestionRequest
+    const req = f.payload as QuestionRequest
+    question.value = req
     questionMin.value = false
+    if (hidden()) notifier.fireEvent('gah 需要你作答', (req?.prompt || '').slice(0, 120))
   }))
   // G-E5-4:提问已解决(question/resolved 事件订阅面)——多端并存时本端弹层
   // 可能还开着(已由其它渠道作答/超时)→ 按 id 关闭遗留弹层。
@@ -715,6 +725,12 @@ function onWake(): void {
 function onVisibility(): void {
   if (document.visibilityState !== 'visible') return
   onWake()
+}
+
+// hidden 页面是否在后台(切标签 / 最小化 / 壳窗口隐藏)。
+// 后台才有系统通知的意义:前台自有界面反馈,再弹通知只是噪音(与 TUI `/notify auto` 同口径)。
+function hidden(): boolean {
+  return typeof document !== 'undefined' && document.visibilityState !== 'visible'
 }
 
 // onSubmit 提交回合;返回 false = 未受理(离线/失败)→ 调用方**保留草稿与附件**。

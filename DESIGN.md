@@ -1621,6 +1621,21 @@ Go 全量 **1498 passed**(67 包,0 失败,6 跳过;新增 `TestPluginStderrCaptu
 **11. pdfium TUI 位图** —— **锁死理由**:SELF-1 有网实测体积 **+≈5.5 MiB → 破体积门**(当时门 46/30,现在更紧的 36/23 下更无空间);TUI **无图形协议**支持 → 位图 = 新子系统(布局、缩放、终端矩阵、性能);而主力光栅路径已由 **RST-1** 交付(外部 `pdftoppm` + `sdk.DocRasterService` + `/api/doc/raster`)。**重启条件 = 降体路径先腾出空间(②/③)且「零外部依赖部署」需求成立** —— 注意这一条与上面第 6 项的「终端内联图片」不同:此项即使有图形协议也仍受体积门约束。
 **12. OSC 9;4 进度通知** —— **锁死理由**(本次分析补充):OSC 9;4 的支持面窄(Windows Terminal、WezTerm 等为主),在未知终端上属于**纯静默失效** —— 与「静默失效不可接受」的红线直接冲突;而进度语义在 TUI 已有落点:状态栏 + 坞折叠行「后台 N 运行中: <摘要>」(1s 节拍,仅在有任务时续拍)。**重启条件 = 需要终端级任务栏进度**(例如长任务在最小化窗口里也要可见)成为明确需求,且探测可依赖。
 
+#### 交付记录(2026-09-22,第四十六批:两条反馈 —— 写盘层拒绝 URL 形态路径 + 后台(web/桌面壳)通知补齐)
+
+**来源**:用户两条实测反馈 —— ①“agent 把网址当文件路径写,仓库根长出空目录”;②“桌面端和 web 端如果在后台,无法收到通知”。
+
+1. **URL 当路径的护栏(实测现场:仓库根反复被写成 `https:/interview.poetries.top/…` 空目录树)**
+   - 判定 `sdk.LooksLikeURLPath`(新文件 + 单测):首个 `:` 切出 scheme,须命中白名单(`http/https/ftp/ftps/file/ws/wss/sftp/ssh/smb/gopher`)且其余为空或以 `/` 开头 —— 同时盖住 `https://host/x` 与 `filepath.Clean` 之后的 `https:/host/x`;Windows 盘符 `C:/…`、`a.txt:12` 不误伤。`data:`/`mailto:` 刻意不进白名单:它们不是可抓取的 URL,收了反而误伤正常冒号串。
+   - 落点两处(都是既有唯一裁决点):`policy-guard.ValidatePathAt`(在**拼 root 之前**判**原始入参** —— 相对形态经 `filepath.Join` 后 `https://` 已变成 `<root>/https:/…`,前缀丢失就拦不住;且放在档位判定之前 ⇒ **full-access 同样拦**:URL 永远不是本地路径,与策略松紧无关)+ `tool-files.resolve`(插件外部化/无 policy 装配时的本地兜底)。
+   - 测试:`pathpolicy_test` 三档位循环(read-only 本就拒一切写,断言按档位分支);`files_test` 经 buildEnv/call 走真写调用。
+2. **后台收不到通知(用户反馈)**
+   - web:`notify.ts` 增 `fireEvent(title, body)`(不按级别过滤 —— 回合结束不是 warn/error;来源/授权门槛照旧),`emit` 抽出复用;`App.vue` 三处接线:**回合结束**(running true→false 且 `document.visibilityState !== 'visible'`)/**待确认**(审批在后台弹出 = 回合阻塞到超时,是真正“需要人回来”的时刻)/**待作答**;前台一律不弹 —— 前台自有界面反馈,再弹系统通知只是噪音。
+   - 桌面壳:`notifyNative()` 取代 4 处 `let _ = …show()`,失败写 `gah-shell.log`(未授权 / 未注册进通知中心 / 专注模式在静默写法下长得完全一样:界面无反应、机器上零证据),并在 setup 记一行通知权限状态。
+   - **未做(待真机日志定位)**:macOS 未授权场景的首次请求授权路径。
+
+**测试/验证**:`go test ./plugins/policy/policy-guard/ ./plugins/tool/tool-files/ ./sdk/... -count=1` **400 passed**(policy-guard 381 + tool-files …)、gofmt/vet 干净;`sdk` 独立 module 单独 `go vet` 干净;`web-src` `npm test` **165 passed** + `vue-tsc --noEmit` 干净;`desktop cargo check` 通过。
+
 #### 交付记录(2026-09-22,第四十五批:A 组人眼项实测反馈 —— 1 处真缺陷(kitty 通知被自己抑制)+ `/export` 自动打开 + 桌面端 0.1.5 本地构建)
 
 **来源**:用户跑 A 组人工项后的三条实测反馈(A-1a 键位 / A-1b 浏览器未自动打开 / A-2 kitty 下 `/notify` 无反应)。
