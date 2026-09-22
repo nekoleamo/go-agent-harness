@@ -128,3 +128,30 @@ func TestPlannerFoldDelegates(t *testing.T) {
 		t.Fatal("应有摘要回调")
 	}
 }
+
+// TestPlannerOverflowSubmit 溢出兜底:端点已报超窗 ⇒ 必须给出压缩量(哪怕常规估算说"没到阈值"),
+// 且目标取阈值的一半(折到恰好阈值会下一轮立刻再撞线)。
+func TestPlannerOverflowSubmit(t *testing.T) {
+	p := &Planner{triggerRatio: 0.8, maxTokens: 200000, fallbackChars: 40960, cpt: 2}
+	// 窗口 128K → 阈值 102400(半阈值 51200);实测 60K token、投影 120K 字符
+	in := sdk.CompressInput{LastPromptTokens: 60000, LastProjectChars: 120000, Window: 128000, ProjectChars: 200000}
+	// 常规口径:预测 100000 < 阈值 102400 ⇒ 不压
+	if d := p.Plan(in); d.BudgetChars != 0 || d.TrimChars != 0 {
+		t.Fatalf("常规路径未到阈值不应压: %+v", d)
+	}
+	// 同一输入 + Overflow:折到半阈值 ⇒ 腾出 (100000-51200)×2 = 97600 字符
+	in.Overflow = true
+	d := p.Plan(in)
+	want := 200000 - int(math.Ceil((100000-51200)*2))
+	if d.BudgetChars != want || d.TrimChars != want {
+		t.Fatalf("溢出兜底应折到 %d(得 %+v)", want, d)
+	}
+	// 无实测用量/窗口未知:保守折掉一半投影
+	if d := p.Plan(sdk.CompressInput{ProjectChars: 100000, Overflow: true}); d.BudgetChars != 50000 {
+		t.Fatalf("无用量应折一半投影: %+v", d)
+	}
+	// 极短投影也保底 minBudgetChars(折完还得能装下系统提示)
+	if d := p.Plan(sdk.CompressInput{ProjectChars: 100, Overflow: true}); d.BudgetChars != minBudgetChars {
+		t.Fatalf("应落到预算下限 %d: %+v", minBudgetChars, d)
+	}
+}

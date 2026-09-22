@@ -195,6 +195,11 @@ type CompressInput struct {
 	Window int
 	// ProjectChars 当前投影字符数(这一次要发出去的历史部分)。
 	ProjectChars int
+	// Overflow 模型端点已报超窗(宿主经 sdk.IsContextOverflowError 判定)。
+	// 置位时策略层必须**强制**给出压缩量 —— 不能再沿用“估算未到阈值 ⇒ 本轮不压”
+	// (端点已经拒了,估算准不准不再重要),并且要留滞回余量:折到恰好阈值会下一轮
+	// 立刻再撞线(估算本来就偏乐观)。
+	Overflow bool
 }
 
 // CompressDecision 压缩器给出的本轮处置。
@@ -247,6 +252,22 @@ type CompactService interface {
 	// (token-compress 为抽取式引擎,不消费其内容,仅作记录);返回最新累计摘要文本
 	// 与本次被摘要覆盖的事件跨度(0 = 无可折叠/未发生)。
 	Compact(prompt string) (summary string, folded int, err error)
+}
+
+// OverflowCompactor 溢出兜底压缩(可选实现 —— host-session-log 实现;类型断言发现,
+// 与 CompactService 同一“不改变 ctx.sessions 接口”的纪律)。
+//
+// 与 CompactService 的分工:手动 /compact 是“用户要求的压缩”;这里是“端点已经拒了,
+// 必须马上腾地方” —— 不看估算是否到阈值,直接按策略层的应急口径折一次。
+// 调用方(host-agent-loop)只在**同一回合第一次**因超窗失败时调用一次,硬上限 1 次,
+// 避免与自动压缩/重试形成环。
+//
+// 未实现时不报错也不假装压过:调用方应把“自动压缩不可用”写进错误文案,让用户知道
+// 该自己 /compact。
+type OverflowCompactor interface {
+	// CompressForOverflow 强制压缩一次;返回本次被摘要覆盖的事件跨度
+	// (0 = 无可折叠 —— 例如水位不得越过最后一个用户轮,那种长单轮靠投影层应急截断兜底)。
+	CompressForOverflow() (folded int, err error)
 }
 
 // UsageEvent 一轮 LLM 请求的 token 消耗(session/usage 载荷):模型名 + Usage。

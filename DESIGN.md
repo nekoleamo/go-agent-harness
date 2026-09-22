@@ -845,6 +845,19 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 
 > **发布**:v0.1.1(2026-09-13)已出 —— macOS `gah_0.1.1_aarch64.dmg`(34.18 MiB)+ Windows `gah_0.1.1_x64-setup.exe`(31.59 MiB)+ updater `gah.app.tar.gz`/`latest.json`(实测 `releases/latest/download/latest.json` HTTP 200,`version=0.1.1`,双平台签名齐备)+ 命令行五目标归档与 `checksums.txt`;三个 workflow(`ci`/`release-cli`/`release-desktop`)全绿,流程与产物清单见 `docs/RELEASE.md`「发布记录:v0.1.1」。
 
+### 第五十六批 · 溢出兜底压缩 + 四项裁决(LibreOffice / 公证 / Linux / Windows)(2026-09-22)
+
+1. **溢出兜底压缩(交付)**:此前只有「按窗口比例预防」(第五十批前的 `2bcb99f`)+ 手动 `/compact`;端点真的拒了就没有第二次机会,用户只能自己折叠再重问。现在补上最后一环:模型端报上下文超窗 ⇒ **强制压缩历史后重试同一回合,硬上限 1 次**(防重试环/重复计费)。
+   - **判定层**(`sdk/errors.go` `IsContextOverflowError`):分层识别 —— ① 强特征(与作用域无关);② 弱特征 + 作用域词(必须同现);③ HTTP 413;并**显式排除** `context.Canceled` / `DeadlineExceeded`(取消不是超窗)。作用域词刻意**不收** `token` / `message`:输出参数上限(`max_tokens is too large`)与适配层错误串包装里的 `"message"` 键都会带来假阳性 —— 单测当场抓到并钉住(测试即护栏)。
+   - **压缩层**:`sdk.OverflowCompactor`(`CompressForOverflow`)由 `host-session-log` 实现(**可选接口,类型断言发现**,不改 `SessionService`);`token-compress` 的 `Plan` 增 `CompressInput.Overflow` 分支 —— **在 `LastPromptTokens<=0` 提前返回之前**判,目标 = 阈值的一半(折到恰好阈值 ⇒ 下一轮立刻再撞线),下限同 `minBudgetChars`;未装 token-compress(非预算规划器)时折半个预算。
+   - **应急截断**:折叠够不着长单轮时挂 `emergencyTrim`,由**下一次实测 `EventUsage` 清除**(否则一次溢出会永久削减后续每一轮投影)。
+   - **回路层**(`host-agent-loop`):`assemble` 闭包复用(重试必须发压缩后的历史;伪调用提醒只注入一次,不重复追加);`compressOnOverflow` 不支持时**如实报错**并写进失败文案(`…(自动压缩不可用(<原因>):可先 /compact,或换用窗口更大的模型)`);压过后在提示通道留痕(`info` 级:人可见、不打断,桌面壳只对 warn/error 弹通知)。
+   - **测试**:`sdk/errors_test.go`(正/反例表 + Unwrap 链 + nil)、`token-compress/planner_test.go`(溢出折半 / 无用量 / 下限 / 常规不压)、`host-session-log/sessionlog_test.go`(无压缩器报错 / 强制折叠 / 应急阈值随 usage 清零)、`host-agent-loop/agentloop_test.go`(压缩后重试成功且投影更短、用户消息不重复、持续超窗只重试一次、无压缩器不盲目重试、普通错误不触发压缩)。全库 `-race` 绿 + 覆盖率门 `COVERAGE_OK`。
+2. **LibreOffice 转换链:放弃验证,代码保留(零改动)**:放弃的是「装 ≈700MB 做真机验证」这一步,不是能力本身 —— 故不删代码,只把文档里的验证承诺改为诚实登记(见上表末行)。
+3. **不做 dmg 公证(用户拍板,口径同步)**:发行继续「零成本」(ed25519 自持更新签名 + 无签名首次启动指引)。连带结论:**A-3 系统横幅在 macOS 常态不呈现属预期**(系统收下不弹),代码侧已做到「投递 + 可观测 + Dock 弹跳兜底」,不再列为待修缺陷;B-1 的「另一台机器首放行后不再弹层」从「待外部条件」降为**明确不做**。
+4. **Linux 真机:登记暂缓**(用户拍板):C 段 120/121 保留在册,不在近期计划内。
+5. **Windows 真机清单:产出独立文档** `/Users/nekoleamo/Documents/Plan/gah-Windows真机测试清单.md`(27 条 + A 表 18 行,按「必须先跑 / 无 Git 与装 Git 两份环境 / 通知与沙箱 / 便携与升级卸载」分组,每条给判据与取证位置);`docs/VERIFY.md` §B 仍是逐条权威定义。
+
 ### 第五十五批 · 布局护栏完善:检测器自检 / 横向不变量 / 小窗与首启态 / 失败取证(2026-09-22)
 
 > 用户拍板「不用放弃(那条 dev-only 的 13M 测试依赖),完善后实施」⇒ 五项补强,全部落地并验证。
@@ -963,10 +976,13 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 
 | 项 | 状态 |
 |---|---|
-| 模型报超窗时的**压缩重试**(溢出兜底) | ⏳ **未实施**(2026-09-22 对照 pi 后登记):gah 有按窗口比例自动压缩(第五十批前的 `2bcb99f`)+ 手动 `/compact`,但**没有**「模型返回 context_length 类错误 → 压缩后重试本回合」这条兜底——阈值算得再准也有估偏的时候(长单轮/图像/非均勾 token 分布)。改法、优先级与风险见 `/Users/nekoleamo/Documents/Plan/gah-上下文占用对照-pi.md` |
-| macOS 系统通知的**呈现** | ⏳ 卡签名/公证(与 B-1 同源):代码已保证投递且可观测,但 ad-hoc 签名的构建会被系统「收下不弹」⇒ 需 Developer ID 签名 + 公证;届时横幅自动回来,代码无需再改 |
+| 模型报超窗时的**压缩重试**(溢出兜底) | ✅ **已交付**(2026-09-22 第五十六批):端点报上下文超窗 ⇒ `sdk.IsContextOverflowError` 判定 → `host-session-log.CompressForOverflow()` 强制折叠(目标 = 阈值一半,长单轮挂应急截断)→ `host-agent-loop` 重新组装请求**重试同一回合,硬上限 1 次**;仍失败则文案如实说明已试过什么并给 `/compact`、换大窗口两条出路。判定/压缩/回路三层单测 + 全库 `-race` 绿;方案与风险对照见 `/Users/nekoleamo/Documents/Plan/gah-上下文占用对照-pi.md` |
+| macOS 系统通知的**呈现** | ❌ **明确不做**(2026-09-22 用户拍板:本项目不做 dmg 公证,见第五十六批):macOS 只给签名/公证过的 app 呈现横幅,ad-hoc 构建**系统收下不弹** —— 这是**预期行为**,不再列为待修缺陷。代码侧已做到「投递 + 可观测 + Dock 弹跳兜底」,应用内仍有提示通道;若将来购证书签名公证,横幅自动回来、代码无需再改 |
 | 布局护栏在 **CI 首次实跑** | ⏳ 非人工、待 CI 环境(2026-09-22 第五十五批登记):本机没有 ubuntu runner(也没有 CJK 字体场景),护栏的 Linux 沙箱兜底与两个 job 的实跑只能由 CI 证实;判据 = `test` / `test-macos` 的「布局回归护栏」步绿;红则看该步上传的 artifact(`layout-artifacts-*`,失败用例截图)+ 报错点名的元素几何 |
-| Windows 真机 6 项人工复核 | ⏳ 需 Win 机器(清单见 `docs/VERIFY.md` 文末「剩余验收任务」B 段) |
+| Windows 真机复核 | ⏳ 需 Win 机器:**27 条 + A 表 18 行**(2026-09-22 起有独立清单)`/Users/nekoleamo/Documents/Plan/gah-Windows真机测试清单.md`(按「必须先跑 / 无 Git 与装 Git 两份环境 / 通知与沙箱 / 便携与升级卸载」分组,每条给判据与取证位置);逐条权威定义仍在 `docs/VERIFY.md` §B,R15–R22 四轮已闭环项写在同文件「Windows 桌面壳真机复验记录」 |
+| Linux 真机(Landlock / 无内核沙箱告警) | ⏸ **暂缓**(2026-09-22 用户拍板):C 段 120/121 保留在册,不在本轮与近期真机计划内;本机可覆盖的分支(未启用告警、`GAH_SHELL_KERNEL_SANDBOX=0` 静默)已有自动证据 |
+| LibreOffice 转换链真机验证 | ❌ **放弃验证**(2026-09-22 用户拍板:不装 ≈700MB LibreOffice),**代码零改动、能力保留** —— `data.external_converters` / `--convert` 是可选且缺省关的增强(未装时显式报「未检测到 soffice/libreoffice」+ 退出码 3,离线桩单测已覆盖);删代码只会把 `.doc/.xls/.ppt` 从「装了就能用」退化成「永远不能用」 |
+| dmg 公证 / Apple 代码签名 | ❌ **明确不做**(2026-09-22 用户拍板):发行继续走 `docs/RELEASE.md` 的零成本口径(ed25519 自持更新签名 + 无签名首次启动指引:右键打开 / 「已损坏」时 `xattr -dr com.apple.quarantine`);连带 A-3 横幅与 B-1「首放行后不再弹层」两条从「待外部条件」降为**不做**(见本表上方两行) |
 | 原生文件夹选择器(桌面端) | ⏳ 需网络加 `tauri-plugin-dialog`(现已用路径输入覆盖同一能力) |
 | 拖放非附件文件(图片直贴等)到窗口的其它落点 | ⏳ 本轮只放开 WebView 拖放,业务落点仍仅输入区 |
 | Web 设置面板「删除 provider」是死按钮 | ✅ **已交付**(2026-09-19 第二十一批):分析与拍板取**方案 B(真删除)**,非「删掉按钮」——`providerfile.Remove` 与单测 `TestSetActiveNotFoundAndRemove` 早已存在(仅被 `Unset` 删空路径触达),缺的只是**运行时一层 + REST/命令面**;选 B 的理由:Web 端只有 add/upsert/use,删按钮等于让 Web-only 用户永远无法移除误配端点(TUI 的 unset 删空语义在 Web 不可达 = 另一种能力静默缺失)。落点:`sdk.MultiProviderService += RemoveProvider` → `host-llm` 删除/活跃顺延/删空回退/聚合缓存失效 → Web `DELETE` 真删除(不存在 400 显式)→ TUI(宿主命令 `/provider remove` + 判重跳过的 TUI 副本同步)→ 面板文案产品化 + 成功后 `emit('changed')`。真机 `prov.mjs` **8/8**,兼作 M12「/provider 单条删除记 TODO」的结清凭据 |
@@ -1882,10 +1898,11 @@ Go 全量 **1498 passed**(67 包,0 失败,6 跳过;新增 `TestPluginStderrCaptu
 | A-1b | #39 导出 HTML 观感 | 含思考块+工具+长输出的会话 | 与 TUI 同色系、**思考块不丢**、长输出不溢出、中文无乱码 |
 | A-2 | #88 真机通知弹窗 | iTerm2 / Terminal.app / tmux(需装+passthrough) | iTerm2 弹 OSC 9;其余不弹属预期;**四环境状态行都必须更新** |
 | A-3 | #86 壳内端到端 | `gah.app` + 必然失败的定时任务 | 切窗口后弹系统通知,标题 `gah 后台任务:…`,正文含任务 id 与「详情见会话记录。」 |
-| B-1 | #82/#85(2 条) | **另一台**带 quarantine 的已公证 dmg | 首放行一次 + **不再弹层** + 那台机器 `spctl -a` accepted(Notarized Developer ID) |
-| B-2 | #77(1 条) | 装 LibreOffice | `.doc` 面板出 PDF、`--convert` exit 0、缓存 7 天清理 |
-| B-3 | Windows 真机(27+A18) | Win x64 | 安装/首启 SmartScreen/对话/数据落点/代理审批/升级保数据/卸载留数据 |
-| B-4 | Linux 真机(2 条) | Linux | Landlock 真跑 + 无内核层显式告警 |
+| B-1 | ~~#82/#85(2 条)~~ | — | ❌ **不做**(2026-09-22 用户拍板:不做 dmg 公证,见第五十六批)。原判据需付费证书 + 公证;发行改走零成本口径(`docs/RELEASE.md`) |
+| B-2 | ~~#77(1 条)~~ | — | ❌ **放弃验证**(2026-09-22 用户拍板:不装 ≈700MB LibreOffice),**能力与代码保留**(可选、缺省关,离线桩单测在册) |
+| B-3 | Windows 真机(27 条 + A 表 18 行) | Win x64(含无 Git 与装 Git 两份环境) | **清单见 `/Users/nekoleamo/Documents/Plan/gah-Windows真机测试清单.md`**:安装/首启 SmartScreen/对话/数据落点/代理审批/失败通知/升级保数据/卸载留数据 + W1/W2/W3 便携与路径语义 + R12/R13 交互回归 + 布局固定与导出(0.1.5 新面) |
+| B-4 | ~~Linux 真机(2 条)~~ | — | ⏸ **暂缓**(2026-09-22 用户拍板):C 段 120/121 保留在册,不在近期计划内 |
+> **口径订正(2026-09-22 第五十六批)**:上表 B 组由「4 组待其它机器」改为 **1 组待真机(Windows)+ 1 条明确不做(公证)+ 1 条放弃验证(LibreOffice)+ 1 条暂缓(Linux)**;A 本机方面 #86 系统横幅与 B-1 同源,已随「不做公证」转为**预期不呈现**(代码侧投递/可观测/Dock 弹跳兜底已交付)。
 
 **文档同步**:`docs/VERIFY.md` 快照更至终局口径并新增人工清单;`docs/TODO_OVERVIEW.md` G-X2 与 `docs/ROADMAP.md` P9/G-X2 行同口径(98→101/剩 4 人工 + 3 卡外部);todo 侧把 4 条人工项拆成可勾条目 + 1 条 B 组汇总。
 
@@ -2078,7 +2095,7 @@ argv 契约(`--headless --norestore --convert-to pdf --outdir <dir> <src>`)· �
 | **#84 B3 升级/卸载数据仍在** | ✅ | 模拟:换版本后同一 `gah-data/` 复用(标记存活);删二进制后数据仍在。Rust:`prune_never_touches_the_data_directory` / `migrate_from_copies_once_and_never_deletes_legacy` |
 | **#87 B6 search 模式逐工具审批** | ✅(宿主侧机制) | `toolapproval_proxy_test.go`(代理工具按**真实目标名**命中 `approval_tools`,防"间接名整体绕过")+ `toolapproval_test.go`(三档/未列名不打扰/无通道安全拒);壳内复用同一 Web 审批管线 |
 | **#86 B5 定时任务失败通知** | 🔶 半条 | 壳侧通知链路单测 11 项(只转发 warn/error、游标单调不回退、非 JSON 不假装空、来源名映射可读);"壳内跑失败定时任务 → 系统通知"端到端需 GUI,人工 |
-| **#82/#85 Gatekeeper** | ⛔ 人工(不做假) | 本机产物 `codesign -dv` = **adhoc, linker-signed**(无 Developer ID/公证);首放行与"不再弹层"是**下载产物 quarantine** 触发的行为,本地构建复现等于作假 |
+| **#82/#85 Gatekeeper** | ❌ **明确不做**(2026-09-22 用户拍板:不做 dmg 公证) | 本机产物 `codesign -dv` = **adhoc, linker-signed**(无 Developer ID/公证);首放行与"不再弹层"是**下载产物 quarantine** 触发的行为,本地构建复现等于作假 —— 既然决定不购证书、不做公证,该项即**撤销**(发行指引以 `docs/RELEASE.md` 零成本口径为准,用户侧按 README「首次打开会被系统拦一下」操作) |
 | **#88 通知矩阵** | ⛔ 人工 | 需 iTerm2 / Terminal.app / tmux 三环境;本机未装 tmux |
 
 **顺带订正**:A-3 的 **#71**(TUI `/preview` pager 全键位)在阶段 8 被归入 A-1,但 A-1 的 43 条清单里没有它 → 本批明确登记为**人工/后续 pty 补验**项,不计入 A-1 已跑的 26 条(避免"看起来跑了 44 条"的错账)。

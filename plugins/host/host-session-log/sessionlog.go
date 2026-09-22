@@ -78,6 +78,10 @@ type Log struct {
 	// 不是“上次请求”。
 	pairedProjectChars int
 	pairedUsageSeq     uint64
+	// emergencyTrim 溢出兜底的应急截断阈值(模型侧已报超窗时设):折叠够不着最近用户轮
+	// (长单轮)时,截断最旧工具结果是唯一能立刻降占用的手段。粘到下一次实测 usage 为止 ——
+	// 那时估算有了新基线,常规口径自动接管。
+	emergencyTrim int
 }
 
 func newLog(dir string) *Log {
@@ -210,6 +214,11 @@ func (l *Log) appendLocked(ev sdk.SessionEvent) (sdk.SessionEvent, error) {
 		ev.TS = time.Now()
 	}
 	l.events = append(l.events, ev)
+	if ev.Kind == sdk.EventUsage {
+		// 新的实测用量 = 新的估算基线:应急截断阈值退出(常规口径重新接管)。
+		// 不清就会让一次溢出永久性削减后续每一轮的投影。
+		l.emergencyTrim = 0
+	}
 	f := l.file
 	if err := l.ensureFileLocked(); err != nil && f == nil {
 		return ev, err
@@ -269,7 +278,7 @@ func (l *Log) deriveLocked() []sdk.LLMMessage {
 		out = out[len(out)-l.historyLimit:]
 	}
 	// 预算:压缩器可自行按真实占用裁量(BudgetPlanner);否则用注册的固定字符预算。
-	budget, trim := l.planLocked(out)
+	budget, trim := l.planLocked(out, false)
 	if l.compressor != nil && budget > 0 && approxChars(out) > budget {
 		l.compressedUntil = l.compressor.Fold(l.events, l.compressedUntil, budget,
 			func(s string) { _, _ = l.appendLocked(sdk.SessionEvent{Kind: sdk.EventSummary, Payload: s}) })
@@ -279,6 +288,10 @@ func (l *Log) deriveLocked() []sdk.LLMMessage {
 		}
 	}
 	// 长单轮善后:水位不得越过最后一个用户轮,单轮内工具结果折叠不掉 ⇒ 截断最旧的(日志不动)。
+	// 溢出兜底(端点已拒)时取应急阈值 —— 折叠到不了的地方只能靠截断腾地方。
+	if l.emergencyTrim > trim {
+		trim = l.emergencyTrim
+	}
 	if trim > 0 {
 		out = clipOldToolResults(out, trim)
 	}
@@ -287,10 +300,16 @@ func (l *Log) deriveLocked() []sdk.LLMMessage {
 }
 
 // planLocked 本轮预算与尾巴截断阀值:压缩器实现 BudgetPlanner 则由它裁量,否则用固定预算。
-func (l *Log) planLocked(out []sdk.LLMMessage) (budget, trim int) {
+// overflow = 端点已报超窗(溢出兜底路径):策略层据此强制给出压缩量而不是“未到阈值不压”。
+func (l *Log) planLocked(out []sdk.LLMMessage, overflow bool) (budget, trim int) {
 	budget = l.budget
 	p, ok := l.compressor.(sdk.BudgetPlanner)
 	if !ok {
+		if overflow && budget > 0 {
+			// 无策略层也要“折一半 + 截尾”:原样重发只会撞同一堵墙。
+			budget /= 2
+			return budget, budget
+		}
 		return budget, 0
 	}
 	tokens, seq := l.lastUsageLocked()
@@ -310,6 +329,7 @@ func (l *Log) planLocked(out []sdk.LLMMessage) (budget, trim int) {
 		LastProjectChars: lastProject,
 		Window:           l.window,
 		ProjectChars:     approxChars(out),
+		Overflow:         overflow,
 	})
 	return d.BudgetChars, d.TrimChars
 }
@@ -522,7 +542,7 @@ func (l *Log) Compact(prompt string) (string, int, error) {
 		return "", 0, errors.New("压缩预算关闭(data.token_budget_chars=0;自动压缩亦不生效)")
 	}
 	old := l.compressedUntil
-	budget, _ := l.planLocked(l.projectLocked(l.compressedUntil))
+	budget, _ := l.planLocked(l.projectLocked(l.compressedUntil), false)
 	if budget <= 0 {
 		return "", 0, errors.New("压缩预算关闭(data.token_budget_chars=0;自动压缩亦不生效)")
 	}
@@ -544,6 +564,37 @@ func (l *Log) Compact(prompt string) (string, int, error) {
 		}
 	}
 	return summary, folded, nil
+}
+
+// CompressForOverflow 实现 sdk.OverflowCompactor(溢出兜底):模型侧报超窗时**强制**压缩一次。
+//
+// 与 Compact 的区别:不看估算是否到阈值(端点已经拒了),按策略层的应急口径折到约阈值一半;
+// 折叠够不着最近用户轮时(水位不得越过最后一个用户轮)把应急截断阈值挂上,由下一次投影执行
+// clipOldToolResults。失败原因必须如实返回 —— 调用方要把“自动压缩不可用”写进错误文案,
+// 不能静默假装压过。
+func (l *Log) CompressForOverflow() (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.compressor == nil {
+		return 0, errors.New("压缩器未注册(token-compress 未装配)")
+	}
+	old := l.compressedUntil
+	budget, trim := l.planLocked(l.projectLocked(l.compressedUntil), true)
+	if budget <= 0 {
+		return 0, errors.New("压缩预算关闭(data.token_budget_chars=0)")
+	}
+	w := l.compressor.Fold(l.events, l.compressedUntil, budget, func(s string) {
+		_, _ = l.appendLocked(sdk.SessionEvent{Kind: sdk.EventSummary, Payload: s})
+	})
+	l.compressedUntil = w
+	if trim > 0 {
+		l.emergencyTrim = trim
+	}
+	folded := w - old
+	if folded < 0 {
+		folded = 0
+	}
+	return folded, nil
 }
 
 // Flush 落盘(os.Sync)。

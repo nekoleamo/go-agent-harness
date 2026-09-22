@@ -550,3 +550,37 @@ func TestLoadRestoresFileChangePayload(t *testing.T) {
 		t.Fatalf("字段往返丢失:\n want %+v\n  got %+v", want, got)
 	}
 }
+
+// TestCompressForOverflow 溢出兜底:强制折叠(不看到不到阈值)、无压缩器时如实报错、
+// 应急截断阈值随下一次实测 usage 退出(否则一次溢出会永久削减后续每一轮投影)。
+func TestCompressForOverflow(t *testing.T) {
+	l := newLog("")
+	if _, err := l.CompressForOverflow(); err == nil {
+		t.Fatal("压缩器未注册应显式报错(调用方要写进失败文案)")
+	}
+	sc := &stubCompressor{}
+	l.RegisterCompressor(2000, sc)
+	// 两轮用户消息:折叠只能吃掉第一轮(水位不得越过最后一个用户轮)
+	_ = l.Append(sdk.SessionEvent{Kind: sdk.EventUserMessage, Payload: sdk.UserMessage{Content: strings.Repeat("旧", 300)}})
+	_ = l.Append(sdk.SessionEvent{Kind: sdk.EventAssistantMessage, Payload: sdk.AssistantMessage{Content: "旧答"}})
+	_ = l.Append(sdk.SessionEvent{Kind: sdk.EventUserMessage, Payload: sdk.UserMessage{Content: "新问题"}})
+	before := l.compressedUntil
+	folded, err := l.CompressForOverflow()
+	if err != nil {
+		t.Fatalf("应能强制压缩: %v", err)
+	}
+	if sc.calls != 1 || folded <= 0 {
+		t.Fatalf("应恰好折叠一次: calls=%d folded=%d", sc.calls, folded)
+	}
+	if l.compressedUntil <= before {
+		t.Fatalf("水位应推进: %d → %d", before, l.compressedUntil)
+	}
+	if l.emergencyTrim <= 0 {
+		t.Fatal("应挂上应急截断阈值(长单轮时折叠够不着,只能靠截断)")
+	}
+	// 下一次实测用量 = 新的估算基线 ⇒ 应急阈值退出
+	_ = l.Append(sdk.SessionEvent{Kind: sdk.EventUsage, Payload: sdk.UsageEvent{Model: "m", Usage: sdk.Usage{PromptTokens: 1234}}})
+	if l.emergencyTrim != 0 {
+		t.Fatalf("新用量后应急阈值应清零: %d", l.emergencyTrim)
+	}
+}

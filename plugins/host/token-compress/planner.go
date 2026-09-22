@@ -45,6 +45,27 @@ func (p *Planner) Fold(evs []sdk.SessionEvent, watermark, budget int, summary fu
 // Plan 实现 sdk.BudgetPlanner:给出"本轮折到多少字符"与"尾巴截断阈值"。
 func (p *Planner) Plan(in sdk.CompressInput) sdk.CompressDecision {
 	p.calibrate(in)
+	// 溢出兜底(第五十六批):端点已报超窗 ⇒ 估算准不准不再重要,**必须**给出压缩量。
+	// 目标取阈值的一半(而不是恰好阈值):折到阈值会下一轮立刻再撞线 —— 估算本来就偏乐观,
+	// 而且折完还有固定的系统提示 + 工具 schema 开销没算进去。
+	if in.Overflow {
+		target := in.ProjectChars / 2 // 无实测用量/窗口未知:保守折一半
+		if in.LastPromptTokens > 0 && p.maxTokens > 0 {
+			if threshold := p.thresholdTokens(in.Window); threshold > 0 {
+				half := threshold / 2
+				growth := float64(in.ProjectChars-in.LastProjectChars) / p.cpt
+				if growth < 0 {
+					growth = 0
+				}
+				predicted := float64(in.LastPromptTokens) + growth
+				target = in.ProjectChars - int(math.Ceil((predicted-float64(half))*p.cpt))
+			}
+		}
+		if target < minBudgetChars {
+			target = minBudgetChars
+		}
+		return sdk.CompressDecision{BudgetChars: target, TrimChars: target}
+	}
 	if in.LastPromptTokens <= 0 {
 		// 尚无实测用量(新会话/首轮):退回字符口径,不猜。
 		return sdk.CompressDecision{BudgetChars: p.fallbackChars}

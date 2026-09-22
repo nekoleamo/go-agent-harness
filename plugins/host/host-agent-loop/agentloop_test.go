@@ -620,3 +620,182 @@ func TestTurnMaxStepsConfigured(t *testing.T) {
 		t.Fatalf("撞线也必须有 turn/end 收尾: %s", k)
 	}
 }
+
+// ---------- 溢出兜底压缩(第五十六批)----------
+
+// overflowLLM 首次 Complete 报端点超窗(用适配层真实错误串形状),之后成功;记录每次请求投影,
+// 供断言"重试发出去的是压缩后的历史"。嵌入 errLLM 复用其余接口方法。
+type overflowLLM struct {
+	errLLM
+	calls  int
+	always bool
+	reqs   [][]sdk.LLMMessage
+}
+
+func (o *overflowLLM) Complete(_ context.Context, req *sdk.LLMRequest, _ func(sdk.LLMStreamEvent) error) (*sdk.LLMResponse, error) {
+	o.calls++
+	o.reqs = append(o.reqs, req.Messages)
+	if o.always || o.calls == 1 {
+		return nil, errors.New(`llm-openai: HTTP 400: {"error":{"code":"context_length_exceeded","message":"This model's maximum context length is 8192 tokens. However, your messages resulted in 9000 tokens."}}`)
+	}
+	return &sdk.LLMResponse{
+		Message:      sdk.LLMMessage{Role: sdk.RoleAssistant, Content: "压缩后完成"},
+		FinishReason: sdk.FinishReasonStop,
+	}, nil
+}
+
+// foldAllCompressor 测试用压缩引擎:把水位后、最后一条用户消息之前的全部事件折成摘要
+// (与真实引擎"水位不得越过最后一个用户轮"一致)。不消费预算 —— 溢出兜底路径本来就不看预算。
+type foldAllCompressor struct{ calls int }
+
+func (c *foldAllCompressor) Fold(evs []sdk.SessionEvent, watermark, _ int, summary func(string)) int {
+	c.calls++
+	last := -1
+	for i, ev := range evs {
+		if ev.Kind == sdk.EventUserMessage {
+			last = i
+		}
+	}
+	end := last - 1
+	if end <= watermark {
+		return watermark
+	}
+	summary("【累计摘要】" + strings.Repeat("旧", 200))
+	return end
+}
+
+// recNotices 记录发布过的提示(不依赖 host-notices 插件)。
+type recNotices struct{ got []sdk.Notice }
+
+func (r *recNotices) Publish(n sdk.Notice) uint64 {
+	r.got = append(r.got, n)
+	return uint64(len(r.got))
+}
+func (r *recNotices) List(uint64) sdk.NoticePage { return sdk.NoticePage{} }
+
+// projChars 投影总字符(断言"重试更短"用)。
+func projChars(msgs []sdk.LLMMessage) int {
+	n := 0
+	for _, m := range msgs {
+		n += len([]rune(m.Content))
+	}
+	return n
+}
+
+// countUser 投影里某条用户消息出现的次数(断言"重试不重复计入用户消息")。
+func countUser(msgs []sdk.LLMMessage, text string) int {
+	n := 0
+	for _, m := range msgs {
+		if m.Role == sdk.RoleUser && m.Content == text {
+			n++
+		}
+	}
+	return n
+}
+
+// TestTurnOverflowCompactsAndRetries 端点报超窗 ⇒ 压缩历史后重试同一回合:
+// 只重试一次、重试发出去的是压缩后的历史、提示通道可见、用户消息不重复。
+func TestTurnOverflowCompactsAndRetries(t *testing.T) {
+	e := buildEnv(t, `[{"text":"unused"}]`)
+	// 先造一段可折叠的历史(长输入,让"压缩后更短"有可观测差异)
+	if err := e.loop.Run(context.Background(), "第一轮很长的问题"+strings.Repeat("长", 2000)); err != nil {
+		t.Fatal(err)
+	}
+	comp := &foldAllCompressor{}
+	e.log.RegisterCompressor(1_000_000, comp) // 预算给足:确保不是自动路径折的,而是溢出兜底折的
+	llm := &overflowLLM{}
+	notices := &recNotices{}
+	loop := &Loop{c: e.c, sessions: e.sessions, tools: e.tools, llm: llm, sp: e.sp, notices: notices}
+	if err := loop.Run(context.Background(), "第二轮问题"); err != nil {
+		t.Fatalf("压缩后应能完成: %v", err)
+	}
+	if llm.calls != 2 {
+		t.Fatalf("应请求两次(原请求 + 压缩后重试一次): %d", llm.calls)
+	}
+	if comp.calls != 1 {
+		t.Fatalf("重试前必须压缩一次: %d", comp.calls)
+	}
+	if len(notices.got) != 1 {
+		t.Fatalf("提示通道应恰好一条(压缩是用户看不见的输入改写,至少露面一次): %+v", notices.got)
+	}
+	if n := notices.got[0]; n.Level != sdk.NoticeInfo || n.Title != "已自动压缩上下文" || !strings.Contains(n.Body, "折叠 ") {
+		t.Fatalf("提示内容不对(需 info 级 + 标题 + 折叠帧数): %+v", n)
+	}
+	first, second := llm.reqs[0], llm.reqs[1]
+	if projChars(second) >= projChars(first) {
+		t.Fatalf("重试投影应更短: %d → %d", projChars(first), projChars(second))
+	}
+	if !strings.Contains(projCharsAll(second), "累计摘要") {
+		t.Fatalf("重试投影应带压缩摘要: %s", projCharsAll(second))
+	}
+	if n := countUser(second, "第二轮问题"); n != 1 {
+		t.Fatalf("用户消息应恰好 1 条(重试不得重复计入): %d", n)
+	}
+	if k := kinds(e.log); !strings.HasSuffix(k, sdk.EventTurnEnd) {
+		t.Fatalf("应正常收尾: %s", k)
+	}
+}
+
+// projCharsAll 投影全文(断言摘要出现用)。
+func projCharsAll(msgs []sdk.LLMMessage) string {
+	var b strings.Builder
+	for _, m := range msgs {
+		b.WriteString(m.Content)
+	}
+	return b.String()
+}
+
+// TestTurnOverflowRetriesAtMostOnce 端点持续报超窗:只重试一次,失败文案如实说明"已试过自动压缩"
+// 并给出人话出路 —— 不静默把原始报错丢给用户,也不形成重试环/重复计费。
+func TestTurnOverflowRetriesAtMostOnce(t *testing.T) {
+	e := buildEnv(t, `[{"text":"unused"}]`)
+	e.log.RegisterCompressor(1_000_000, &foldAllCompressor{})
+	llm := &overflowLLM{always: true}
+	loop := &Loop{c: e.c, sessions: e.sessions, tools: e.tools, llm: llm, sp: e.sp}
+	err := loop.Run(context.Background(), "问题")
+	if err == nil {
+		t.Fatal("端点持续超窗应显式失败")
+	}
+	if llm.calls != 2 {
+		t.Fatalf("只应重试一次(硬上限): %d", llm.calls)
+	}
+	for _, want := range []string{"已自动压缩上下文后重试仍超窗", "/compact"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("失败文案应含 %q,得: %v", want, err)
+		}
+	}
+}
+
+// TestTurnOverflowWithoutCompactor 没有压缩能力(未装配 token-compress)时:不盲目重试,
+// 如实说明"自动压缩不可用"。
+func TestTurnOverflowWithoutCompactor(t *testing.T) {
+	e := buildEnv(t, `[{"text":"unused"}]`)
+	llm := &overflowLLM{}
+	loop := &Loop{c: e.c, sessions: e.sessions, tools: e.tools, llm: llm, sp: e.sp}
+	err := loop.Run(context.Background(), "问题")
+	if err == nil {
+		t.Fatal("应失败")
+	}
+	if llm.calls != 1 {
+		t.Fatalf("压缩不可用时不该原样重试: %d", llm.calls)
+	}
+	if !strings.Contains(err.Error(), "自动压缩不可用") {
+		t.Fatalf("文案应说明原因: %v", err)
+	}
+}
+
+// TestTurnPlainErrorDoesNotCompress 普通错误(非超窗)不得触发压缩:用户取消/网络断流/限额
+// 与上下文无关,压了反而白丢上下文。
+func TestTurnPlainErrorDoesNotCompress(t *testing.T) {
+	e := buildEnv(t, `[{"text":"unused"}]`)
+	comp := &foldAllCompressor{}
+	e.log.RegisterCompressor(1_000_000, comp)
+	loop := &Loop{c: e.c, sessions: e.sessions, tools: e.tools, llm: &errLLM{}, sp: e.sp}
+	err := loop.Run(context.Background(), "问题")
+	if err == nil || !strings.Contains(err.Error(), "llm 流中断") {
+		t.Fatalf("应原样失败: %v", err)
+	}
+	if comp.calls != 0 {
+		t.Fatalf("普通错误不得触发压缩: %d", comp.calls)
+	}
+}

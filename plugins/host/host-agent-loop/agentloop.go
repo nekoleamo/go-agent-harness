@@ -46,7 +46,11 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	if err := c.Inject("ctx.systemPrompt", &sp); err != nil {
 		return nil, err
 	}
-	loop := &Loop{c: c, sessions: sessions, tools: tools, llm: llm, sp: sp, tc: newTurnControl(), maxSteps: maxStepsFromManifest(m)}
+	// 提示通道(可选:未装配就跳过 —— 同 web/server.go 口径,不阻断自身启动)。
+	// 溢出兜底压缩会改写模型看到的输入,属于“用户看不见的输入改写”,至少要在状态栏/toast 露面。
+	var notices sdk.NoticeService
+	_ = c.Inject("ctx.notices", &notices)
+	loop := &Loop{c: c, sessions: sessions, tools: tools, llm: llm, sp: sp, notices: notices, tc: newTurnControl(), maxSteps: maxStepsFromManifest(m)}
 	if err := c.Provide("ctx.agentLoop", loop); err != nil {
 		return nil, err
 	}
@@ -108,8 +112,9 @@ type Loop struct {
 	tools    sdk.ToolRegistry
 	llm      sdk.LLMService
 	sp       sdk.SystemPromptService
-	tc       *control // ctx.turnControl 实现(回合取消注册表)
-	maxSteps int      // 单轮最大步数(<=0 = 不限;见 maxStepsDefault)
+	notices  sdk.NoticeService // 可选(ctx.notices 未装配 = nil:跳过提示,不阻断)
+	tc       *control          // ctx.turnControl 实现(回合取消注册表)
+	maxSteps int               // 单轮最大步数(<=0 = 不限;见 maxStepsDefault)
 
 	// runMu 回合串行化:sessions 追加与 DeriveMessages 是单写者模型,
 	// 并发 Run(多路输入同时提交)会让回合互相交错、工具结果错位 → 显式串行不静默交错。
@@ -118,9 +123,10 @@ type Loop struct {
 
 // turn 单回合状态(每回合独立对象;修复:此前挂在 Loop 上被并发回合互相踩)。
 type turn struct {
-	finished bool   // 本轮是否应结束
-	reminded bool   // 本回合已给过伪调用提醒(每回合最多 1 次,防无限修正循环)
-	reminder string // 待注入下轮的提醒消息(伪调用检测触发)
+	finished        bool   // 本轮是否应结束
+	reminded        bool   // 本回合已给过伪调用提醒(每回合最多 1 次,防无限修正循环)
+	reminder        string // 待注入下轮的提醒消息(伪调用检测触发)
+	overflowRetried bool   // 本回合已因“端点报超窗”强制压缩并重试过(硬上限 1 次,防形成重试环)
 }
 
 // appendEvents 记录会话事件并返回首个错误。
@@ -209,13 +215,19 @@ func (l *Loop) step(ctx context.Context, t *turn) error {
 		return fmt.Errorf("pre-step rejected: %w", err)
 	}
 
-	history := l.sessions.DeriveMessages()
-	tools := l.tools.List()
-	messages := l.sp.Assemble(history, tools)
-	// 伪调用提醒注入(上步检测到文本伪造工具调用;作为追加输入给模型修正机会)
-	if t.reminder != "" {
-		messages = append(messages, sdk.LLMMessage{Role: sdk.RoleUser, Content: t.reminder})
-		t.reminder = ""
+	// assemble 组装本轮请求(历史投影 + 工具 schema + 伪调用提醒)。
+	// 抽成函数供溢出兜底路径重新组装:强制压缩会改写投影,重试必须用压缩后的历史;
+	// 提醒只注入一次(首次组装已消费 t.reminder),重试不得重复追加。
+	assemble := func() *sdk.LLMRequest {
+		history := l.sessions.DeriveMessages()
+		tools := l.tools.List()
+		messages := l.sp.Assemble(history, tools)
+		// 伪调用提醒注入(上步检测到文本伪造工具调用;作为追加输入给模型修正机会)
+		if t.reminder != "" {
+			messages = append(messages, sdk.LLMMessage{Role: sdk.RoleUser, Content: t.reminder})
+			t.reminder = ""
+		}
+		return &sdk.LLMRequest{Messages: messages, Tools: tools}
 	}
 
 	var (
@@ -246,9 +258,32 @@ func (l *Loop) step(ctx context.Context, t *turn) error {
 	}
 
 	// 结构化 tool_calls 依赖 tools 下发(此前只注入系统提示文本,模型无法走 API 结构化调用,只能正文伪调用 → 工具永不执行)
-	req := &sdk.LLMRequest{Messages: messages, Tools: tools}
+	req := assemble()
 	resp, err := l.llm.Complete(ctx, req, onChunk)
+	// 溢出兜底(第五十六批):端点报超窗时**强制压缩后重试同一回合** —— 硬上限 1 次。
+	// 为何必需:阈值再准也有估偏来源(非均匀 token 分布/CJK/图片/长单轮几十个工具结果/
+	// cpt 未收敛),一旦端点真的拒了,当前实现没有第二次机会 —— 用户只能自己 /compact 再重问。
+	// 为何必须先压缩:原样重发只会撞同一堆墙。
+	overflowHint := ""
+	if err != nil && !t.overflowRetried && sdk.IsContextOverflowError(err) {
+		t.overflowRetried = true // 无论折叠成败,同一回合不再试第二次(防重试环/重复计费)
+		if folded, ferr := l.compressOnOverflow(); ferr == nil {
+			content.Reset() // 失败尝试已落流的部分增量不得混进重试结果
+			calls = nil
+			final = sdk.LLMResponse{}
+			overflowHint = "已自动压缩上下文后重试仍超窗"
+			l.publishOverflowNotice(folded)
+			req = assemble() // 折叠立即生效:重试发出去的是压缩后的历史
+			resp, err = l.llm.Complete(ctx, req, onChunk)
+		} else {
+			overflowHint = "自动压缩不可用(" + ferr.Error() + ")"
+		}
+	}
 	if err != nil {
+		if overflowHint != "" && !errors.Is(err, context.Canceled) {
+			// 如实告知已经试过什么,并给两条人话出路(不静默把失败原样丢给用户)。
+			err = fmt.Errorf("%w(%s:可先 /compact,或换用窗口更大的模型)", err, overflowHint)
+		}
 		// 包装模型名(host-usage-stats 经 agent/error 解析错误文本学习窗口;
 		// Unwrap 保留,重试/取消 errors.Is 判定不变)
 		return &sdk.LLMError{Model: req.Model, Err: err}
@@ -387,6 +422,30 @@ func containsFakeToolCall(text string) bool {
 func fakeToolCallReminder() string {
 	return "【系统提醒】你的上一条回复包含文本形式的工具调用标记(如 <tool_calls>/<invoke>/<antml:invoke> 等),但 gah 不会执行正文中的调用——它只执行 API 结构化 tool_calls 字段里的工具调用。" +
 		"若确实需要调用工具,请改用工具调用功能重新发起;若当前没有可用工具或调用未实际执行,请直接给出结论或如实说明,不要编造调用与结果。"
+}
+
+// compressOnOverflow 走 sdk.OverflowCompactor(host-session-log 实现):强制压缩一次。
+// 未实现(旧装配/纯内存日志)⇒ 如实返回错误,让调用方把原因写进失败文案 ——
+// 不能静默假装压过(那会让用户以为“已经帮我压了”而实际什么都没做)。
+func (l *Loop) compressOnOverflow() (int, error) {
+	oc, ok := l.sessions.(sdk.OverflowCompactor)
+	if !ok {
+		return 0, errors.New("会话日志未提供溢出压缩能力")
+	}
+	return oc.CompressForOverflow()
+}
+
+// publishOverflowNotice 把“已自动压缩后重试”写进提示通道(ctx.notices 未装配则跳过)。
+// 级别 info:自动恢复的好消息,不该打断人(桌面壳只对 warn/error 弹通知)。
+func (l *Loop) publishOverflowNotice(folded int) {
+	if l.notices == nil {
+		return
+	}
+	body := "模型端点报上下文超窗,已压缩历史后重试本回合"
+	if folded > 0 {
+		body += fmt.Sprintf("(折叠 %d 帧为摘要)", folded)
+	}
+	l.notices.Publish(sdk.Notice{Level: sdk.NoticeInfo, Source: "host-agent-loop", Title: "已自动压缩上下文", Body: body})
 }
 
 // findCall 按 ToolCallID 定位或追加(流式增量聚合)。
