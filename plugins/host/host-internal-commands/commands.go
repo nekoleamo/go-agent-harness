@@ -619,6 +619,9 @@ func (h *Host) cmdExport(args []string) (string, error) {
 		} else {
 			msg += "(已在浏览器打开)"
 		}
+	} else if len(args) > 0 {
+		// 显式给了非 .html 路径:想要网页的人往往以为“导出=自动打开”,直接告诉他怎么拿到。
+		msg += "(非 .html 后缀按 jsonl 导出,不会打开浏览器;要看网页请用 <路径>.html)"
 	}
 	return msg, nil
 }

@@ -166,6 +166,10 @@ func TestCommandsExecuteExport(t *testing.T) {
 	if len(opened) != 0 {
 		t.Fatalf("jsonl 导出不应触发打开: %v", opened)
 	}
+	// 非 .html 后缀要明确告诉用户"这样拿不到网页",否则会被当成"自动打开失效"
+	if !strings.Contains(out, "不会打开浏览器") {
+		t.Fatalf("jsonl 导出应提示后缀口径: %q", out)
+	}
 	// .html → 自包含网页(渲染器输出含 html 结构),且默认**自动打开**(回执里说明)
 	hp := filepath.Join(dir, "out.html")
 	out, err = run(t, cmds, "export", hp)
