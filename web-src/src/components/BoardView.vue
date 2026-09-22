@@ -30,13 +30,17 @@ function canMove(id: string, dir: -1 | 1): boolean {
 
 <template>
   <div class="board">
-    <!-- 固定概览条(与其他视图同款:滚动时始终可复位布局) -->
-    <div class="ov">
-      <span class="ov-t">看板</span>
-      <span class="ov-src">全会话聚合 · 数据来自事件账本与既有接口</span>
-      <span class="spacer" />
-      <span v-if="layout.hidden.length > 0" class="ov-hidden">已隐藏 {{ layout.hidden.length }}/{{ total }}</span>
-      <button class="ov-btn" data-tip="恢复默认:全部卡片按默认顺序显示" @click="emit('reset')">恢复默认</button>
+    <!-- 固定概览条(与其他视图同款:滚动时始终可复位布局)。吸附与背景由外层承担:
+         内层做成与卡片同形的块(圆角/边框/内距),外层用同色方块盖住圆角缺口与容器内距 ——
+         否则内容滚过圆角时会在缺口里露头。 -->
+    <div class="ov-bar">
+      <div class="ov">
+        <span class="ov-t">看板</span>
+        <span class="ov-src">全会话聚合 · 数据来自事件账本与既有接口</span>
+        <span class="spacer" />
+        <span v-if="layout.hidden.length > 0" class="ov-hidden">已隐藏 {{ layout.hidden.length }}/{{ total }}</span>
+        <button class="ov-btn" data-tip="恢复默认:全部卡片按默认顺序显示" @click="emit('reset')">恢复默认</button>
+      </div>
     </div>
 
     <p v-if="cards.length === 0" class="empty">
@@ -106,19 +110,28 @@ function canMove(id: string, dir: -1 | 1): boolean {
   padding: 0 2px;
 }
 
-/* —— 固定概览条(与轨迹/变更视图同款) —— */
-.ov {
+/* —— 固定概览条:吸附层 + 与卡片同形的标题块(其他视图仍是发丝线横条:那是列表型
+     工作台密度的口径,看板是卡片型,标题跟着卡片走) —— */
+.ov-bar {
   position: sticky;
   top: 0;
   z-index: 2;
+  margin-bottom: 10px; /* 与 .grid 卡片间距一致 */
+  /* 内层是圆角块 ⇒ 两层遮挡都由外层出:同色背景 + 向上 12px 的同色方块
+     (吸附时 scrollport 内距带里会露出被卷上去的内容,而 sticky 被夹在内容盒顶,
+      只能用阴影带往上补;阴影不参与布局,所以静止位置与原来一致) */
+  background: var(--bg);
+  box-shadow: 0 -12px 0 0 var(--bg);
+}
+.ov {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 10px;
-  padding: 8px 0;
-  margin-bottom: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
   background: var(--bg);
-  border-bottom: 1px solid var(--line);
 }
 .ov-t {
   font-size: 13px;
