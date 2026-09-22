@@ -845,6 +845,25 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 
 > **发布**:v0.1.1(2026-09-13)已出 —— macOS `gah_0.1.1_aarch64.dmg`(34.18 MiB)+ Windows `gah_0.1.1_x64-setup.exe`(31.59 MiB)+ updater `gah.app.tar.gz`/`latest.json`(实测 `releases/latest/download/latest.json` HTTP 200,`version=0.1.1`,双平台签名齐备)+ 命令行五目标归档与 `checksums.txt`;三个 workflow(`ci`/`release-cli`/`release-desktop`)全绿,流程与产物清单见 `docs/RELEASE.md`「发布记录:v0.1.1」。
 
+### 第五十三批 · 布局回归护栏进 CI:把「整页可滚」这类事故钉成红灯(2026-09-22)
+
+> 背景:第五十二批的缺陷(`v-else` 绑错 `v-if`)是**用户实测刷出来的** —— 仓库里没有任何自动化门禁会发现它。用户拍板「需要做」⇒ 补上护栏。
+
+1. **为什么非得真渲染**:jsdom 一类不算布局(元素高度全 0,量不出"文档被撑高");静态 AST 也判不出来 —— `v-else` 绑到邻近的另一个 `v-if` 对 Vue **完全合法**(编译器不报警),意图只有渲染结果知道。所以护栏必须用真浏览器量盒模型。
+2. **实现** `web-src/test/layout.test.mjs`(`node --test` + `playwright-core` + 本机 Chrome;零容器、零服务):
+   - 起一个只读静态服务端 `web/dist`(SPA 兜底 `index.html`);`/api/**` 走 `page.route` 桩壳(形状取自 `src/types.ts`,会话列表给 **40 条**——当年长列表把越界放大到 521 个元素)。
+   - 用例:**4 视口**(1200×800 / 1440×1000 / 1000×620 / 820×560)× **4 停靠态**(收起/变更/看板/任务)+ 1 条侧栏开合语义用例。
+3. **断言 = 四条不变量**(与人工探针同一套判定,故本地量到的结论与 CI 同源):
+   - 文档不被撑高:`document.scrollingElement.scrollHeight <= clientHeight + 1`;
+   - `scrollTo(0,500)` 后 `scrollTop === 0`(外壳不接受整页滚动);
+   - **没有任何「无裁剪祖先」的元素越出视口**(= 既没被滚出去、也没被裁掉;报错直接点名元素与几何);
+   - 骨架在场且在第一屏内(侧栏 / 输入区 `.input-slot` / 状态栏 `.statusbar-slot`),侧栏开合语义正确(展开 `handle=0 / panel=1`,收起 `handle=1 / panel=0`)。
+4. **反例验证(护栏有效的唯一凭据)**:把 `Sidebar.vue` 的 `v-if="!open"` **改回 `v-else`** + `vite build` ⇒ 护栏 **17/17 全红**,报错直指 `button.handle top=800 bottom=1569 h=769`(正是用户截图那次的几何);还原后 **17/17 绿**。另验三条分支:缺 `web/dist` ⇒ 跳过且 exit 0;`GAH_LAYOUT_REQUIRE=1` ⇒ **exit 1**(不允许静默通过);正常 ⇒ 17 pass。
+5. **新增依赖(需评审,已登记)**:`playwright-core@^1.63.0` —— 仅 `devDependencies`/测试期用,不打进 `web/dist`、不进二进制;**复用系统 Chrome,不下载浏览器包**;找不到 Chrome 就跳过(人机友好),`GAH_LAYOUT_CHROME=/path/to/chrome` 可指定。否决 jsdom/vitest 方案:算不出布局,对这类事故天然无效。
+6. **CI**:`test`(ubuntu)与 `test-macos` 两个 job 各加一步「布局回归护栏」(需 `web/dist`,已在同 job 前序步构建);若因环境无浏览器被跳过,打 `::warning::` 显式告警(不静默)。`npm test` **保持**「前端逻辑单测、零新增依赖」语义不变(`src/*.test.ts` 168 项),布局护栏单独走 `npm run test:layout` —— 两者职责不混。
+
+**验证**:`npm test` 168/168、`npm run test:layout` 17/17、`npm run typecheck` 干净;反例与三条分支见上;`ci.yml` 经 YAML 解析校验。
+
 ### 第五十二批 · 主界面被整页滚动(用户实测):`v-else` 绑错 `v-if` 多渲染了一个按钮(2026-09-22)
 
 > 用户反馈(附截图):「界面有问题,可以向下滚动,主界面应固定」—— 桌面壳窗口里整页能往下滑,输入框被顶到屏幕中部、下方一片空白。

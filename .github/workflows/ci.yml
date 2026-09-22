@@ -29,6 +29,11 @@ jobs:
         run: bash scripts/gen-web.sh
       - name: 前端逻辑单测(node 内置运行器,零新增依赖;E-E)
         run: cd web-src && npm test
+      - name: 布局回归护栏(真渲染:整页永不滚动 + 侧栏开合语义;需 Chrome,缺失则跳过并告警)
+        run: |
+          set -o pipefail
+          (cd web-src && npm run test:layout) 2>&1 | tee /tmp/layout-guard.log
+          grep -q '跳过:' /tmp/layout-guard.log && echo "::warning::布局护栏被跳过(无 Chrome/Chromium):runner 请装 chrome 或设 GAH_LAYOUT_CHROME=/path/to/chrome,并设 GAH_LAYOUT_REQUIRE=1 强制要求" || true
       - name: go vet(sdk 为独立 module,go.work 下根目录 ./... 不含它,须单独跑)
         run: |
           go vet ./...
@@ -230,6 +235,11 @@ jobs:
         run: bash scripts/gen-web.sh
       - name: 前端逻辑单测(node 内置运行器,零新增依赖)
         run: cd web-src && npm test
+      - name: 布局回归护栏(真渲染:整页永不滚动 + 侧栏开合语义;需 Chrome,缺失则跳过并告警)
+        run: |
+          set -o pipefail
+          (cd web-src && npm run test:layout) 2>&1 | tee /tmp/layout-guard.log
+          grep -q '跳过:' /tmp/layout-guard.log && echo "::warning::布局护栏被跳过(无 Chrome/Chromium)" || true
       - name: go vet(sdk 为独立 module,go.work 下根目录 ./... 不含它,须单独跑)
         run: |
           go vet ./...
