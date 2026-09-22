@@ -2,9 +2,9 @@
 // 左侧抽屉:工作区固定展示(顶部独立区,不归类到历史)+ 会话历史(内容省略版预览)。
 // 全部增删改操作(切换会话/工作区、新建、改名、删除)经全局确认条二次确认(inject askConfirm)。
 // 切换/删除/改名后 emit session-changed(宿主重建 SSE 重放);列表经 refreshKey 或手动刷新重拉。
-import { inject, nextTick, onMounted, ref, watch } from 'vue'
-import { api } from '../api'
-import { isDesktop, pickDirectory, shellLog } from '../desktop'
+import { inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { api, sessionExportName, sessionExportUrl } from '../api'
+import { isDesktop, pickDirectory, saveExport, shellLog } from '../desktop'
 import { sameDir } from '../wsdir'
 import { extraPanels, sidebarActions } from '../registry'
 import type { ExtensionReg } from '../registry'
@@ -22,6 +22,8 @@ const open = ref(true)
 const sessions = ref<SessionInfo[]>([])
 const workspaces = ref<WorkspaceInfo[]>([])
 const err = ref('')
+// 中性提示行(导出落盘路径等成功信息;不用 err —— 那是红字失败通道)
+const note = ref('')
 // 会话名内联编辑态({ id, val });保存仍走确认条
 const editing = ref<{ id: string; val: string } | null>(null)
 const ask = inject<(a: AskConfirm) => void>('askConfirm')
@@ -158,14 +160,57 @@ async function doDeleteSession(s: SessionInfo): Promise<void> {
     err.value = (e as Error).message
   }
 }
-function exportSession(s: SessionInfo): void {
-  // 会话导出:后端原始 jsonl 下载(a.download 配合 Content-Disposition)
-  const a = document.createElement('a')
-  a.href = '/api/sessions/' + encodeURIComponent(s.ID || '') + '/export'
-  a.download = 'session-' + (s.ID || 'main') + '.jsonl'
-  document.body.appendChild(a)
-  a.click()
-  a.remove()
+function exportSession(id: string, fmt: 'html' | 'jsonl'): void {
+  closeExportMenu()
+  void (async () => {
+    const url = sessionExportUrl(id, fmt)
+    const name = sessionExportName(id, fmt)
+    // 浏览器:直接下载(Content-Disposition 定文件名,a.download 给建议名)。
+    if (!isDesktop) {
+      const a = document.createElement('a')
+      a.href = url
+      a.download = name
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      return
+    }
+    // 桌面壳:WebView 没有下载通道(Tauri 未注册 on_download ⇒ wry 不建下载委托),
+    // 取内容交壳落盘到下载目录;网页额外用系统默认程序打开(对齐 TUI /export)。
+    note.value = ''
+    try {
+      const resp = await fetch(url)
+      if (!resp.ok) throw new Error('HTTP ' + resp.status)
+      const path = await saveExport(name, await resp.text(), fmt === 'html')
+      if (!path) throw new Error('壳未能落盘(详见壳日志 gah-shell.log)')
+      note.value = '已导出到 ' + path
+    } catch (e) {
+      err.value = '导出失败:' + (e as Error).message
+      shellLog('导出失败 ' + url + ': ' + (e as Error).message)
+    }
+  })()
+}
+
+// —— 导出菜单(⤓ 展开两项:自包含网页 / 原始 jsonl)——
+// 用 fixed 定位:侧栏滚动区与抽屉的 overflow 会把行内绝对定位弹层裁掉(tip.ts 踩过同坑)。
+const exportMenu = ref<{ id: string; label: string; top: number; right: number } | null>(null)
+
+function openExportMenu(ev: MouseEvent, s: SessionInfo): void {
+  const r = (ev.currentTarget as HTMLElement).getBoundingClientRect()
+  exportMenu.value = {
+    id: s.ID || '',
+    label: label(s),
+    top: Math.round(r.bottom + 4),
+    right: Math.round(window.innerWidth - r.right),
+  }
+}
+
+function closeExportMenu(): void {
+  exportMenu.value = null
+}
+
+function onExportMenuKey(ev: KeyboardEvent): void {
+  if (ev.key === 'Escape') closeExportMenu()
 }
 function deleteSession(s: SessionInfo): void {
   // 删除当前会话时后端自动新建空会话承接(删除后界面干净无旧内容回放)
@@ -307,6 +352,16 @@ async function doAddWs(dir: string): Promise<void> {
 
 onMounted(() => {
   void refresh()
+  // 导出菜单的关闭通道:点别处/按 Esc/任何滚动都收起(打开按钮与菜单项都 .stop,
+  // 所以这里的 document 监听不会把刚打开的菜单立刻关掉)。
+  document.addEventListener('click', closeExportMenu)
+  document.addEventListener('keydown', onExportMenuKey)
+  window.addEventListener('scroll', closeExportMenu, true)
+})
+onUnmounted(() => {
+  document.removeEventListener('click', closeExportMenu)
+  document.removeEventListener('keydown', onExportMenuKey)
+  window.removeEventListener('scroll', closeExportMenu, true)
 })
 watch(() => props.refreshKey, () => void refresh())
 defineExpose({ refresh })
@@ -410,7 +465,7 @@ defineExpose({ refresh })
                   <span class="op" :data-tip="s.Pinned ? '取消置顶' : '置顶会话'" @click.stop="togglePin(s)">{{ s.Pinned ? '☆' : '★' }}</span>
                   <span class="op" data-tip="生成/更新概述(调用模型)" @click.stop="summarize(s)">⟳</span>
                   <span class="op" data-tip="修改会话名(需确认)" @click.stop="startEdit(s)">✎</span>
-                  <span class="op" data-tip="导出会话 jsonl" @click.stop="exportSession(s)">⤓</span>
+                  <span class="op" data-tip="导出会话(网页 / jsonl)" @click.stop="openExportMenu($event, s)">⤓</span>
                   <span class="op del" data-tip="删除会话(仅删记录,需确认)" @click.stop="deleteSession(s)">×</span>
                 </template>
               </span>
@@ -456,7 +511,24 @@ defineExpose({ refresh })
         </div>
       </div>
 
+      <div v-if="note" class="note">{{ note }}</div>
       <div v-if="err" class="err">{{ err }}</div>
+    </div>
+
+    <!-- 导出菜单:fixed 层(见 openExportMenu 注释) -->
+    <div
+      v-if="exportMenu"
+      class="xmenu"
+      role="menu"
+      :style="{ top: exportMenu.top + 'px', right: exportMenu.right + 'px' }"
+    >
+      <div class="xm-t">{{ exportMenu.label }}</div>
+      <div class="xm-i" role="menuitem" @click.stop="exportSession(exportMenu.id, 'html')">
+        导出网页<span class="xm-s">.html 自包含</span>
+      </div>
+      <div class="xm-i" role="menuitem" @click.stop="exportSession(exportMenu.id, 'jsonl')">
+        导出 jsonl<span class="xm-s">原始事件</span>
+      </div>
     </div>
 
     <button v-else class="handle" data-tip="展开侧栏" @click="open = true">☰</button>
@@ -755,6 +827,50 @@ defineExpose({ refresh })
   color: var(--fg-faint);
   font-size: 12px;
   padding: 4px 8px;
+}
+/* 导出菜单:fixed 层(侧栏滚动区/抽屉的 overflow 会裁掉行内弹层) */
+.xmenu {
+  position: fixed;
+  z-index: 40;
+  min-width: 148px;
+  padding: 4px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+  box-shadow: var(--shadow-pop);
+}
+.xm-t {
+  color: var(--fg-faint);
+  font-size: 11px;
+  padding: 2px 6px 4px;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.xm-i {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 5px 6px;
+  border-radius: var(--r-input);
+  color: var(--fg);
+  font-size: 12px;
+  cursor: pointer;
+}
+.xm-i:hover {
+  background: var(--bg2);
+  color: var(--accent);
+}
+.xm-s {
+  color: var(--fg-faint);
+  font-size: 11px;
+}
+.note {
+  color: var(--fg-dim);
+  font-size: 12px;
+  padding: 4px 8px;
+  word-break: break-all;
 }
 .err {
   color: var(--err);

@@ -224,3 +224,17 @@ export function summarize(text: string, max = 600): string {
   if (text.length <= max) return text
   return text.slice(0, max) + '\n…'
 }
+
+// sessionExportUrl 会话导出地址(浏览器下载 href)。format 缺省 jsonl(后端缺省同此)。
+// id 空 = 主会话:走无 id 路由(/api/sessions/export)——空段的 /api/sessions//export
+// 不匹配任何路由(404),主会话导出曾因此静默失败。
+export function sessionExportUrl(id: string, format: 'html' | 'jsonl' = 'jsonl'): string {
+  const q = format === 'html' ? '?format=html' : ''
+  if (!id) return '/api/sessions/export' + q
+  return '/api/sessions/' + encodeURIComponent(id) + '/export' + q
+}
+
+// sessionExportName 导出的建议文件名(与后端 Content-Disposition 同名)。
+export function sessionExportName(id: string, format: 'html' | 'jsonl'): string {
+  return 'session-' + (id || 'main') + '.' + format
+}

@@ -591,6 +591,81 @@ fn shell_log(app: AppHandle, msg: String) {
     shellLog(&app, &format!("web: {msg}"));
 }
 
+// save_export 导出落盘:把页面取到的导出内容写进用户下载目录,返回绝对路径(失败回空串)。
+//
+// 为什么不让 WebView 自己下载:壳的主窗口来自 tauri.conf.json,没有注册 wry 的 on_download
+// 回调 ⇒ WKWebView 的下载委托根本不存在,`<a download>` 点了什么都不会发生 —— 这就是侧栏
+// 导出在桌面端静默失效的根因(Tauri 只在注册了回调时才建委托)。改走「页面取字节 → 交壳落盘
+// → 系统默认程序打开」,行为与 TUI `/export <路径>.html` 对齐(文件落地 + 自动打开)。
+//
+// name 只取安全字符集(防目录穿越);重名自动加 (n) 后缀。
+#[tauri::command]
+fn save_export(app: AppHandle, name: String, text: String, open: bool) -> String {
+    let dir = match app.path().download_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            shellLog(&app, &format!("save_export: 取下载目录失败 {e}"));
+            return String::new();
+        }
+    };
+    let path = match writeExportInto(&dir, &name, &text) {
+        Ok(p) => p,
+        Err(e) => {
+            shellLog(&app, &format!("save_export: 写盘失败 {}: {e}", e));
+            return String::new();
+        }
+    };
+    shellLog(&app, &format!("save_export: 已导出 {} ({} 字节)", path.display(), text.len()));
+    if open {
+        if let Err(e) = openWithDefaultApp(&path) {
+            shellLog(&app, &format!("save_export: 打开失败 {}: {e}", path.display()));
+        }
+    }
+    path.to_string_lossy().to_string()
+}
+
+// writeExportInto 把导出内容写进目录(供 save_export 与单测共用):
+// 文件名过滤到安全字符集(防 `../` 穿越)、空名用缺省名、重名接 `(n)` 后缀。
+fn writeExportInto(dir: &std::path::Path, name: &str, text: &str) -> Result<PathBuf, String> {
+    let safe: String = name
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+        .collect();
+    let safe = if safe.trim_matches('.').is_empty() { "session-export".to_string() } else { safe };
+    let (stem, ext) = match safe.rsplit_once('.') {
+        Some((b, e)) => (b.to_string(), format!(".{e}")),
+        None => (safe.clone(), String::new()),
+    };
+    let mut path = dir.join(&safe);
+    let mut n = 1;
+    while path.exists() {
+        path = dir.join(format!("{stem} ({n}){ext}"));
+        n += 1;
+    }
+    std::fs::write(&path, text.as_bytes()).map_err(|e| e.to_string())?;
+    Ok(path)
+}
+
+// openWithDefaultApp 用系统默认程序打开路径(与 TUI /export 的自动打开同语义)。
+#[cfg(target_os = "macos")]
+fn openWithDefaultApp(p: &std::path::Path) -> std::io::Result<()> {
+    std::process::Command::new("open").arg(p).spawn().map(|_| ())
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn openWithDefaultApp(p: &std::path::Path) -> std::io::Result<()> {
+    std::process::Command::new("xdg-open").arg(p).spawn().map(|_| ())
+}
+
+#[cfg(target_os = "windows")]
+fn openWithDefaultApp(p: &std::path::Path) -> std::io::Result<()> {
+    std::process::Command::new("cmd")
+        .args(["/C", "start", ""])
+        .arg(p)
+        .spawn()
+        .map(|_| ())
+}
+
 // httpGETAuth 带凭据的最小 GET(token 模式必须带 cookie,否则 401 → 空串)。
 fn httpGETAuth(path: &str) -> String {
     let mut s = match TcpStream::connect_timeout(&web_sockaddr(), Duration::from_millis(300)) {
@@ -1095,7 +1170,8 @@ fn main() {
             pick_folder_poll,
             autostart_state,
             update_state,
-            shell_log
+            shell_log,
+            save_export
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -1639,5 +1715,52 @@ mod main_tests {
             pickJson(true, Some("D:\\work\\我的 项目")),
             "{\"status\":\"done\",\"path\":\"D:\\\\work\\\\我的 项目\"}"
         );
+    }
+}
+
+// —— save_export 的落盘逻辑单测(纯函数部分;IPC/系统打开需真机点一次) ——
+#[cfg(test)]
+mod save_export_tests {
+    use super::*;
+
+    fn tmpdir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("gah-save-export-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn writes_content_with_suggested_name() {
+        let d = tmpdir("basic");
+        let p = writeExportInto(&d, "session-abc.html", "<html>x</html>").unwrap();
+        assert_eq!(p.file_name().unwrap().to_string_lossy(), "session-abc.html");
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "<html>x</html>");
+    }
+
+    #[test]
+    fn sanitizes_traversal_and_empty_names() {
+        let d = tmpdir("safe");
+        // `../` 与其它非安全字符被剔掉:只可能落在目标目录内
+        let p = writeExportInto(&d, "../../etc/passwd.html", "x").unwrap();
+        assert_eq!(p.parent().unwrap(), d.as_path());
+        assert!(!p.file_name().unwrap().to_string_lossy().contains('/'));
+        // 全是点/空名 → 缺省名(不产生 `.` 或 `..`)
+        let p2 = writeExportInto(&d, "..", "x").unwrap();
+        assert_eq!(p2.file_name().unwrap().to_string_lossy(), "session-export");
+        let p3 = writeExportInto(&d, "", "x").unwrap();
+        assert_eq!(p3.file_name().unwrap().to_string_lossy(), "session-export (1)");
+    }
+
+    #[test]
+    fn adds_counter_suffix_on_collision() {
+        let d = tmpdir("dup");
+        let a = writeExportInto(&d, "s.jsonl", "1").unwrap();
+        let b = writeExportInto(&d, "s.jsonl", "2").unwrap();
+        let c = writeExportInto(&d, "s.jsonl", "3").unwrap();
+        assert_eq!(a.file_name().unwrap().to_string_lossy(), "s.jsonl");
+        assert_eq!(b.file_name().unwrap().to_string_lossy(), "s (1).jsonl");
+        assert_eq!(c.file_name().unwrap().to_string_lossy(), "s (2).jsonl");
+        assert_eq!(std::fs::read_to_string(&c).unwrap(), "3");
     }
 }

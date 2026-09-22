@@ -56,6 +56,8 @@ import (
 	"github.com/nekoleamo/go-agent-harness/internal/providerfile"
 
 	"github.com/nekoleamo/go-agent-harness/internal/prefs"
+	"github.com/nekoleamo/go-agent-harness/internal/sessionevents"
+	"github.com/nekoleamo/go-agent-harness/internal/sessionhtml"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -273,6 +275,9 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET /api/session/events", s.handleSessionEvents)
 	mux.HandleFunc("POST /api/sessions", s.handleSessions)
 	mux.HandleFunc("GET /api/sessions/{id}/export", s.handleSessionExport)
+	// 主会话导出(id 空):/api/sessions//export 这种空段路径不匹配任何模式(实测 404),
+	// 所以主会话另走一条无 id 路由 —— 侧栏「主会话」行的导出走这里。
+	mux.HandleFunc("GET /api/sessions/export", s.handleSessionExport)
 	mux.HandleFunc("POST /api/sessions/rename", s.handleSessionRename)
 	mux.HandleFunc("POST /api/sessions/summary", s.handleSessionSummary)
 	mux.HandleFunc("GET /api/workspaces", s.handleWorkspaces)
@@ -2144,8 +2149,12 @@ func (s *Server) handleSessionRename(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session": s.currentSessionV()})
 }
 
-// handleSessionExport 会话导出(GET /api/sessions/{id}/export):原始 jsonl 下载落盘。
-// id 空 = 主会话;匹配失败显式 404(不静默)。
+// handleSessionExport 会话导出(GET /api/sessions/{id}/export、GET /api/sessions/export):
+//
+//	?format=jsonl(缺省)原始 jsonl 下载;?format=html 自包含 HTML 下载
+//	(渲染器与 TUI `/export <路径>.html` 同一实现,见 internal/sessionhtml)。
+//
+// id 空(含无 id 路由)= 主会话;匹配失败显式 404(不静默)。
 func (s *Server) handleSessionExport(w http.ResponseWriter, r *http.Request) {
 	if s.cs == nil {
 		http.Error(w, "会话服务未装配(ctx.cwdSessions)", http.StatusServiceUnavailable)
@@ -2170,12 +2179,27 @@ func (s *Server) handleSessionExport(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "会话文件不可读", http.StatusInternalServerError)
 		return
 	}
-	fname := "session-main.jsonl"
+	fname := "session-main"
 	if id != "" {
-		fname = "session-" + id + ".jsonl"
+		fname = "session-" + id
+	}
+	if r.URL.Query().Get("format") == "html" {
+		// 会话文件 → 类型化事件 → HTML:与 /export *.html 同一条链(sessionevents 还原
+		// 载荷,渲染器在 internal/sessionhtml)。不切当前会话,纯读。
+		evs, err := sessionevents.ReadFile(path)
+		if err != nil {
+			s.log.Error("导出读事件失败", "path", path, "err", err)
+			http.Error(w, "会话文件不可读", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Content-Disposition", `attachment; filename="`+fname+`.html"`)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(sessionhtml.Render(evs)))
+		return
 	}
 	w.Header().Set("Content-Type", "application/x-ndjson")
-	w.Header().Set("Content-Disposition", `attachment; filename="`+fname+`"`)
+	w.Header().Set("Content-Disposition", `attachment; filename="`+fname+`.jsonl"`)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(data)
 }

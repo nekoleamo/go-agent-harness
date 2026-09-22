@@ -845,6 +845,26 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 
 > **发布**:v0.1.1(2026-09-13)已出 —— macOS `gah_0.1.1_aarch64.dmg`(34.18 MiB)+ Windows `gah_0.1.1_x64-setup.exe`(31.59 MiB)+ updater `gah.app.tar.gz`/`latest.json`(实测 `releases/latest/download/latest.json` HTTP 200,`version=0.1.1`,双平台签名齐备)+ 命令行五目标归档与 `checksums.txt`;三个 workflow(`ci`/`release-cli`/`release-desktop`)全绿,流程与产物清单见 `docs/RELEASE.md`「发布记录:v0.1.1」。
 
+### 第五十批 · 侧栏导出菜单落地(2026-09-22)
+
+> 承接第四十九批 ③:用户拍板选 **(b) `⤓` 点开小菜单(导出网页 / 导出 jsonl)**。顺带查出并修掉两个此前一直没人报的真缺陷。
+
+1. **主会话导出一直 404(真缺陷)**:路由只注册了 `GET /api/sessions/{id}/export`,而“主会话”的 id 是空串 ⇒ 前端拼出 `/api/sessions//export`,**空段路径不匹配任何模式**(Go ServeMux 直接 404)—— 侧栏第一行(主会话)的导出按下去得到的是一个 404 页面。修法:补一条无 id 路由 `GET /api/sessions/export` 指向同一 handler(处理器本来就写着“id 空 = 主会话”,只是 HTTP 面到不了);前端 `sessionExportUrl` 空 id 走新路由。测试补断言(200 + 内容)。
+2. **后端 `?format=html`(自包含网页)**:`GET /api/sessions/{id}/export?format=html` 返回同一份 HTML 渲染结果(缺省仍是 jsonl,向后兼容)。为此把两处**共享**逻辑抽成 internal 包 —— 插件不得互相 import,web 侧若抄一份模板必然漂移:
+   - `internal/sessionhtml`:`Render(evs)` 唯一渲染实现,`host-internal-commands` 的 `/export <路径>.html` 与 web 端点共用(命令插件留一层包内名包装,调用点与旧测试不动);
+   - `internal/sessionevents`:`NormalizePayload`(从 `host-session-log` **移**过来,不是拷贝)+ 新增只读 `ReadFile`(容忍空行/坏行,不做尾部残行修复 —— 修复属于写入方)。web 端点是**纯读**:读文件 → 还原载荷 → 渲染,不切换当前会话(侧栏导出任意会话都不会动到“正在跑的那条”)。
+3. **桌面端 WebView 根本没有下载通道(根因)**:壳主窗口来自 `tauri.conf.json`,而 wry 只在**注册了** `on_download` 回调时才创建下载委托(`WryDownloadDelegate` 只在 `download_started_handler.is_some()` 时构造)⇒ WKWebView 里 `<a download>` 点了什么都不会发生 —— 这才是“桌面侧栏『导出』建议”背后的实情(它一直静默失效,和格式无关)。修法:壳新增命令 `save_export(name, text, open)`(写用户下载目录,重名自动加 `(n)`,安全字符集过滤防穿越;`open=true` 用系统默认程序打开,与 TUI `/export` 的自动打开同语义),前端桌面分支改成 `fetch(导出URL) → 交壳落盘 → 侧栏显示「已导出到 <路径>」`;浏览器端保持直接下载。
+4. **菜单 UI**:`⤓` 展开两项(`导出网页` / `.html 自包含`、`导出 jsonl` / `原始事件`),fixed 定位(侧栏滚动区与抽屉的 overflow 会裁掉行内绝对定位弹层,`tip.ts` 2026-09-14 踩过同一坑),点别处/按 Esc/任何滚动都收起;配色形状走 token(`--bg`/`--line`/`--r-card`/`--shadow-pop`),无 emoji、无 em-dash。
+5. **文档**:README 双语同步(侧栏行描述 + `/api/sessions/{id}/export` API 行,含无 id 路由说明)。
+
+**验证**:
+- Go:导出端点(html 文档头/转义后的正文/下载名 `.html`、缺省 jsonl、主会话无 id 路由)全绿;`internal/sessionhtml`/`internal/sessionevents` 各带单测并**登记棘轮**(92;实测 100%);`gofmt`/`go vet` 干净。
+- 前端:168 全绿(`node:test`,新增 URL/文件名构造断言)+ `vue-tsc` 干净 + 构建通过。
+- 真机(Playwright + Chrome,`~/gah-acceptance/export-menu.mjs`):菜单 2 项、位置在触发点下方且不越界、点第一项得到 **`session-main.html` 4.6 MB 且以 `<!DOCTYPE html>` 开头**、点第二项得到 **`session-main.jsonl` 8.2 MB 首行原样**、选完菜单自动关闭。
+- 壳:`cargo check` 干净。
+
+**待人工验**:桌面端菜单点「导出网页」→ 文件落到下载目录并自动打开(壳日志应出现 `save_export: 已导出 <路径>` 行)。
+
 ### 第四十九批 · 用户四条实测反馈(2026-09-22)
 
 > 背景:用户把四件事一起抛过来 —— ① `shell` 被拒“凭据类文件 search.yaml”;② 长会话下底部输入框/状态栏被挤出屏幕、上滑逐渐露出;③ 桌面侧栏「导出」要不要改;④ `/export <URL>` 的回执看着像“没自动打开”。
@@ -856,7 +876,7 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
    - 新增 `tui/geometry_test.go`:把“每行宽 ≤ 终端宽、总行数 ≤ 屏幕高、输入行/状态栏在场”定为**渲染不变量**,覆盖长会话 + 全角 widget + 长输入/空会话/长错误横幅/坞展开,尺寸 80×24~120×40 及 80×8(极小屏)。
    - **诚实边界**:上述不变量是“包底”,它保证不再顶出屏幕,但**没能定位到用户那一次到底是哪条行漏算**(手上没有他那一路的行内容;实测重放需要 pty + 那份会话)。若他重启后仍复现,需拿一帧真终端截图/会话材料再定位根因。
 3. **④ `/export <URL>` 静默长垃圾目录树(真缺陷)**(`host-internal-commands/commands.go`):用户执行 `/export https://feinterview.poetries.top/docs/docs/base/high-frequency` ⇒ `filepath.Clean` 把 `//` 折成 `/` ⇒ 在工作区造出 `https:/feinterview.poetries.top/docs/docs/base/high-frequency`(jsonl),回执还说“已导出 N 条事件” ⇒ 用户看着像“没自动打开”。回执里“非 .html 后缀按 jsonl 导出”那句是对的(**A-1b 的定性:不是自动打开失效,是路径压根不是本地路径**)。修法:写盘前用**同一裁决点** `sdk.LooksLikeURLPath` 拦(与 `tool-files`/`policy-guard` 一致),显式报错 `导出目标是网址形态,不是本地路径:…(要导出网页请给 <路径>.html)`;测试补 URL 正反例 + 断言工作区不落 `https:/`。工作区里已生成的垃圾目录树已清理。
-4. **③ 桌面侧栏「导出」建议**:现为 `GET /api/sessions/{id}/export` 原始 jsonl 下载。建议**默认出 HTML**(与 TUI `/export *.html` 同一渲染器)并自动打开,jsonl 降为次要入口 —— 理由见下方回复(桌面端面向“能看能分享”,jsonl 对它是噪音);待用户拍板。
+4. **③ 桌面侧栏「导出」建议**:现为 `GET /api/sessions/{id}/export` 原始 jsonl 下载。建议**默认出 HTML**(与 TUI `/export *.html` 同一渲染器)并自动打开,jsonl 降为次要入口 —— 理由见下方回复(桌面端面向“能看能分享”,jsonl 对它是噪音);**2026-09-22 用户拍板选 (b) 两项菜单**,落地见上「第五十批」。
 
 **验证**:`go test ./tui/ -count=1` 320 全绿(含新增几何不变量);`./plugins/host/... ./web/ ./internal/... ./plugins/policy/... ./plugins/tool/...` 1600 全绿;`gofmt`/`go vet` 干净。
 
@@ -1635,6 +1655,21 @@ Go 全量 **1498 passed**(67 包,0 失败,6 跳过;新增 `TestPluginStderrCaptu
 **10. OpenClaw dashboard 整套布局动词 + SQLite 存储** —— **锁死理由**:OpenClaw 的 dashboard 价值由三件套构成 —— ① widget 跑在**专用 origin 的 sandbox iframe**(= 新的分发与信任模型,见 R10 ⑤);② 数据在 **agent SQLite**(= 新增依赖 + 新的持久层,与 `$GAH_HOME` 的单根可读账本相反);③ 跨设备可见(= 要求服务端)。整体引入 = 把三条红线一次全碰。gah 只**吸收最小语义**(侧栏停靠区/看板:`S-P2-2` 轻量版 + `S-P2-1` 轻量版),持久层复用人类可读的会话账本(`sessions/*.jsonl` + `meta.json`,已实测线性扫 26 会话 12 MB 仅 80 ms,`session_search` 因此**不建索引、不引 FTS5**)。**重启条件 = 上述三条被逐条重议**,而不是「做个好看的看板」。
 **11. pdfium TUI 位图** —— **锁死理由**:SELF-1 有网实测体积 **+≈5.5 MiB → 破体积门**(当时门 46/30,现在更紧的 36/23 下更无空间);TUI **无图形协议**支持 → 位图 = 新子系统(布局、缩放、终端矩阵、性能);而主力光栅路径已由 **RST-1** 交付(外部 `pdftoppm` + `sdk.DocRasterService` + `/api/doc/raster`)。**重启条件 = 降体路径先腾出空间(②/③)且「零外部依赖部署」需求成立** —— 注意这一条与上面第 6 项的「终端内联图片」不同:此项即使有图形协议也仍受体积门约束。
 **12. OSC 9;4 进度通知** —— **锁死理由**(本次分析补充):OSC 9;4 的支持面窄(Windows Terminal、WezTerm 等为主),在未知终端上属于**纯静默失效** —— 与「静默失效不可接受」的红线直接冲突;而进度语义在 TUI 已有落点:状态栏 + 坞折叠行「后台 N 运行中: <摘要>」(1s 节拍,仅在有任务时续拍)。**重启条件 = 需要终端级任务栏进度**(例如长任务在最小化窗口里也要可见)成为明确需求,且探测可依赖。
+
+#### 交付记录(2026-09-22,第五十批:侧栏导出菜单 —— 主会话导出 404 修复 / `?format=html` / 桌面壳落盘命令)
+
+**来源**:第四十九批 ③ 用户拍板选 (b)「`⤓` 点开小菜单(导出网页 / 导出 jsonl)」。
+
+1. **主会话导出 404(顺手查出的真缺陷)**:路由只有 `GET /api/sessions/{id}/export`,主会话 id 为空 ⇒ 前端拼出 `/api/sessions//export`,空段不匹配任何模式(Go ServeMux 404)。补无 id 路由 `GET /api/sessions/export` 指向同一 handler;前端 `sessionExportUrl` 空 id 走新路由(测试钉住 200 + 内容)。
+2. **`?format=html`**:与 TUI `/export <路径>.html` **同一渲染器**。为此抽出两个共享包(插件不得互相 import,web 侧抄一份模板必然漂移):`internal/sessionhtml`(`Render` 唯一实现,命令插件留包内名包装)、`internal/sessionevents`(`NormalizePayload` 从 `host-session-log` **移**过来 + 新增只读 `ReadFile`,不做残行修复)。web 端点是**纯读**:不切换当前会话,导出任意会话都不影响在跑的那条。
+3. **桌面端 WebView 没有下载通道(根因)**:壳主窗口来自 `tauri.conf.json`,wry 只在注册了 `on_download` 回调时才建 `WryDownloadDelegate` ⇒ WKWebView 里 `<a download>` 什么都下不来(与格式无关,jsonl 同样静默失效)。修法:壳新增 `save_export(name, text, open)`(写用户下载目录,重名加 `(n)`,字符集过滤防穿越;`open=true` 用系统默认程序打开);前端桌面分支 `fetch → 交壳落盘 → 提示「已导出到 <路径>」`,浏览器端仍直接下载。
+4. **菜单 UI**:两项菜单 + fixed 定位(滚动区/抽屉 overflow 会裁行内弹层,`tip.ts` 踩过同坑),点别处/Esc/滚动关闭;token 配色(`--bg`/`--line`/`--r-card`/`--shadow-pop`)。
+
+**验证**:Go(端点三类断言)全绿;两个新 internal 包单测 + 棘轮登记 92(实测 100%);前端 168 全绿 + `vue-tsc` + 构建;真机 Playwright 实得 `session-main.html` 4.6 MB(`<!DOCTYPE html>` 开头)与 `session-main.jsonl` 8.2 MB、菜单位置/关闭行为正常;`cargo check` 干净。
+
+**待人工验**:桌面端点「导出网页」→ 落盘 + 自动打开(壳日志 `save_export: 已导出 …`)。
+
+---
 
 #### 交付记录(2026-09-22,第四十九批:用户四条实测反馈 —— 凭据拒绝文案 / TUI 帧几何夹紧 + 截断改显示列 / `/export` 拒 URL 形态路径)
 

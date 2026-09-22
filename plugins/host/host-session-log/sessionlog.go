@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/nekoleamo/go-agent-harness/internal/sessionevents"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -128,7 +129,7 @@ func (l *Log) Load(path string) error {
 				// Payload 还原:json 反序列化后 Payload 是 map[string]any,按 Kind 二次还原为
 				// 具体类型(展示层 ApplySessionEvent/投影 DeriveMessages 全靠类型断言;
 				// 不还原则重放 11179 事件投影 0 行——TUI 启动/切换会话历史不可见)。
-				ev.Payload = normalizePayload(&ev)
+				ev.Payload = sessionevents.NormalizePayload(&ev)
 				if ev.Seq > maxSeq {
 					maxSeq = ev.Seq
 				}
@@ -176,54 +177,6 @@ func (l *Log) Load(path string) error {
 	l.historyLimit = historyLimit
 	l.seq.Store(maxSeq) // 序号从历史顶续接(新事件 Seq 不复用)
 	return nil
-}
-
-// normalizePayload 把 json 反序列化后的 map Payload 按 Kind 还原为具体类型
-// (与实时 Append 的对象同型(值类型);未识别 Kind 原样保留 map)。
-func normalizePayload(ev *sdk.SessionEvent) any {
-	m, ok := ev.Payload.(map[string]any)
-	if !ok {
-		return ev.Payload // 非 map(空/string):原样
-	}
-	raw, err := json.Marshal(m)
-	if err != nil {
-		return m
-	}
-	switch ev.Kind {
-	case sdk.EventUserMessage:
-		var v sdk.UserMessage
-		if err := json.Unmarshal(raw, &v); err == nil {
-			return v
-		}
-	case sdk.EventAssistantChunk:
-		var v sdk.LLMStreamEvent
-		if err := json.Unmarshal(raw, &v); err == nil {
-			return v
-		}
-	case sdk.EventAssistantMessage:
-		var v sdk.AssistantMessage
-		if err := json.Unmarshal(raw, &v); err == nil {
-			return v
-		}
-	case sdk.EventToolCall:
-		var v sdk.ToolCallEvent
-		if err := json.Unmarshal(raw, &v); err == nil {
-			return v
-		}
-	case sdk.EventToolResult:
-		var v sdk.ToolResultEvent
-		if err := json.Unmarshal(raw, &v); err == nil {
-			return v
-		}
-	case sdk.EventFileChange:
-		// S-P1-1:改动审计带 patch 文本(可能数十 KB),落盘再回放必须还原为具体类型,
-		// 否则 /diff 读回的是 map → 打不开
-		var v sdk.FileChangeEvent
-		if err := json.Unmarshal(raw, &v); err == nil {
-			return v
-		}
-	}
-	return m // 未识别/二次解析失败:保留 map(消费者自行容忍)
 }
 
 // RegisterCompressor 注册滚动摘要压缩器与预算(token-compress 注入;budget<=0 关闭)。

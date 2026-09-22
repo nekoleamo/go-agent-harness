@@ -1654,6 +1654,60 @@ func TestSessionExportEndpoint(t *testing.T) {
 	if code := mustGet(t, hs.URL+"/api/sessions/nope/export"); code != 404 {
 		t.Fatalf("未知会话应 404,得 %d", code)
 	}
+
+	// format=html:自包含 HTML 下载(解码 jsonl 还原载荷 → 渲染器;坏行容忍)
+	fp2 := filepath.Join(dir, "s2.jsonl")
+	lines := `{"Kind":"user/message","Seq":1,"TS":"2026-09-22T15:43:26+08:00","Payload":{"Content":"<b>hi</b> 你好"}}` + "\n" + "坏行不入库\n"
+	if err := os.WriteFile(fp2, []byte(lines), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s.cs.(*stubCS).infos = append(s.cs.(*stubCS).infos, sdk.SessionInfo{ID: "s2", Path: fp2})
+	resp2, err := http.Get(hs.URL + "/api/sessions/s2/export?format=html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b2, _ := io.ReadAll(resp2.Body)
+	resp2.Body.Close()
+	if resp2.StatusCode != 200 {
+		t.Fatalf("html 导出应 200,得 %d body=%q", resp2.StatusCode, b2)
+	}
+	if ct := resp2.Header.Get("Content-Type"); ct != "text/html; charset=utf-8" {
+		t.Fatalf("content-type 应 html,got %s", ct)
+	}
+	if cd := resp2.Header.Get("Content-Disposition"); !strings.Contains(cd, "session-s2.html") {
+		t.Fatalf("下载名应 .html,got %s", cd)
+	}
+	if !strings.HasPrefix(string(b2), "<!DOCTYPE html>") {
+		t.Fatalf("html 导出应是完整文档,got %q", string(b2)[:min(len(b2), 40)])
+	}
+	if !strings.Contains(string(b2), "&lt;b&gt;hi&lt;/b&gt; 你好") {
+		t.Fatalf("jsonl 载荷应还原并转义进 html: %q", b2)
+	}
+	// 缺省仍是 jsonl(向后兼容)
+	if ct := mustCT(t, hs.URL+"/api/sessions/s2/export"); ct != "application/x-ndjson" {
+		t.Fatalf("缺省应 jsonl,got %s", ct)
+	}
+	// 主会话导出:走无 id 路由(空段路径 /api/sessions//export 不匹配任何模式 ⇒ 曾 404)
+	resp3, err := http.Get(hs.URL + "/api/sessions/export")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b3, _ := io.ReadAll(resp3.Body)
+	resp3.Body.Close()
+	if resp3.StatusCode != 200 || string(b3) != "main\n" {
+		t.Fatalf("主会话导出应 200 + 内容,得 code=%d body=%q", resp3.StatusCode, b3)
+	}
+}
+
+// mustCT 取响应的 Content-Type(导出格式判定用)。
+func mustCT(t *testing.T, url string) string {
+	t.Helper()
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	return resp.Header.Get("Content-Type")
 }
 
 func TestTodoEndpoint(t *testing.T) {

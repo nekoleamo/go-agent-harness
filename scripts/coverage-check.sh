@@ -49,6 +49,8 @@ internal/providerfile 72
 internal/mcpconfig 80
 internal/embed 70
 internal/install 60
+internal/sessionevents 92
+internal/sessionhtml 92
 cmd/gah 50
 plugins/catalogue 70
 plugins/ui/ui-web-app 70

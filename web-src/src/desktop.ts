@@ -144,6 +144,20 @@ export async function updateState(): Promise<UpdateSnapshot | null> {
   }
 }
 
+// saveExport 导出落盘(壳侧 save_export):把导出内容写进用户下载目录,返回绝对路径。
+// 为什么不让 WebView 自己下载:壳的窗口来自 tauri.conf.json,没注册 wry 的 on_download
+// 回调 ⇒ 下载委托根本不存在,`<a download>` 点了什么都不会发生(桌面端导出静默失效的根因)。
+// 失败回空串(调用方据此报错)。
+export async function saveExport(name: string, text: string, open: boolean): Promise<string> {
+  if (!tauriInvoke) return ''
+  try {
+    const raw = await tauriInvoke('save_export', { name, text, open })
+    return typeof raw === 'string' ? raw : ''
+  } catch {
+    return ''
+  }
+}
+
 // checkUpdate 壳侧检查更新(与托盘菜单同一实现);有更新时壳自己下载安装并重启。
 // 前端也加超时:真机上出现过壳侧异步任务不返回、界面永远停在「检查中…」——
 // 宁可给出「没有结果」的结论,也不让用户空等。

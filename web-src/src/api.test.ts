@@ -5,7 +5,7 @@
 // 后端契约在 web/server.go handleAttachments,这里只盯前端的拆包与失败路径。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { api } from './api.ts'
+import { api, sessionExportName, sessionExportUrl } from './api.ts'
 
 // stubFetch 用一次性桩替换 globalThis.fetch,返回还原函数。
 function stubFetch(handler: (url: string, init?: RequestInit) => Response): () => void {
@@ -57,4 +57,22 @@ test('upload:非 2xx 透出服务端错误文本(便于用户看到真实原因)
   } finally {
     restore()
   }
+})
+
+// 会话导出地址:两种格式与 id 空/需转义 的口径(侧栏导出菜单与桌面壳保存共用同一构造)。
+test('sessionExportUrl:缺省 jsonl,format=html 才带查询参数', () => {
+  assert.equal(sessionExportUrl('abc', 'jsonl'), '/api/sessions/abc/export')
+  assert.equal(sessionExportUrl('abc'), '/api/sessions/abc/export')
+  assert.equal(sessionExportUrl('abc', 'html'), '/api/sessions/abc/export?format=html')
+})
+
+test('sessionExportUrl:id 空 = 主会话,特殊字符转义', () => {
+  assert.equal(sessionExportUrl('', 'html'), '/api/sessions/export?format=html')
+  assert.equal(sessionExportUrl('', 'jsonl'), '/api/sessions/export')
+  assert.equal(sessionExportUrl('a/b c', 'jsonl'), '/api/sessions/a%2Fb%20c/export')
+})
+
+test('sessionExportName:与后端 Content-Disposition 同名', () => {
+  assert.equal(sessionExportName('s1', 'html'), 'session-s1.html')
+  assert.equal(sessionExportName('', 'jsonl'), 'session-main.jsonl')
 })

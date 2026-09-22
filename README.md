@@ -269,7 +269,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 **鉴权(token 模式 = `data.auth_token` 非空)**:全表面鉴权——接口、静态资源、`/attachments/`(附件)、`/ui-plugins/` 一律需凭据(此前只有 `/api/*` 受保护)。浏览器请用启动日志里的 `#token=<token>` 地址打开:凭据在 **URL fragment** 中(不发往服务端,不进访问日志/Referer),引导页经 `POST /api/auth` 换取 HttpOnly + SameSite=Strict 的 `gah_token` cookie 后转入 UI;桌面壳经 `GAH_WEB_TOKEN` 传同一 token(`?token=` 已废弃)。
 
 - **设置面板**(状态栏 ⚙):模型下拉(聚合全部 provider)、思考/沙箱/**审批**分段控件、历史注入下拉 + 压缩按钮、Provider 管理(启用/删除/新增;**首启引导**:一个 provider 都没有时自动打开面板并给 DeepSeek/Kimi/智谱/千问/硅基流动/OpenRouter/OpenAI/Ollama **一键预设**,只需粘 api_key,保存后自动**连通性自检**并把 401/404/DNS 等端点错误翻译成人话与原始报错并列)、**定时计划**(「计划」段:5 字段 cron + 中文「下次运行时间」回显,运行/停用/删除;无人值守语义在段内明示)、**MCP server**(「MCP server」段:逐项名称/启动命令/启停/模式(全量注册或按需检索)、环境变量来源只读对照、逐行「已加载 N 个工具」状态、**保存并重载**即时生效)、插件开关、指令重载、**数据备份**(立即备份 / 恢复备份——**二次确认**);全部设置退出即记(偏好持久化,gah-state.json 与 TUI 共享)。
-- **侧栏**:工作区固定区(切换 = 真实切目录) + 历史会话(名称/**概述或内容预览**/时间,★ 置顶、⟳ 生成概述(调用模型,二次确认)、✎ 改名、× 删除——改删需二次确认)、附件上传(按钮/拖放/粘贴,图片缩略图 + 模型看图)、会话导出(⤓ jsonl/HTML)。当前项为卡片式选中(左侧竖条 + 描边 + 名称加粗),与 hover 明确分档。
+- **侧栏**:工作区固定区(切换 = 真实切目录) + 历史会话(名称/**概述或内容预览**/时间,★ 置顶、⟳ 生成概述(调用模型,二次确认)、✎ 改名、× 删除——改删需二次确认)、附件上传(按钮/拖放/粘贴,图片缩略图 + 模型看图)、会话导出(⤓ 展开菜单:自包含网页 / 原始 jsonl;浏览器端直接下载,桌面端落盘到下载目录、网页自动打开)。当前项为卡片式选中(左侧竖条 + 描边 + 名称加粗),与 hover 明确分档。
 - **状态栏**(只放别处没有的只读事实):就绪/运行中、**沙箱生效档**、未命名会话标识、连接状态(绿/橙/红三态)、上下文·缓存使用率、版本号(**点开「关于 gah」**= 升级入口)。模型/思考/审批各有唯一交互位(输入框工具条、设置面板),不在底栏重复显示;后台任务钮在右上角(运行徽标 + 列表/输出/终止)。
 - **文档预览面板**(侧栏「文档预览」):左侧工作区文件树(过滤/懒展开/工作区切换整树重置)+ 右侧预览(markdown 块渲染、代码/表格、docx/xlsx/pptx 块模型、PDF 浏览器原生查看器、图片、HTML **默认源码视图 + 点击才加载沙箱 iframe**;截断与警告黄色提示条);工具结果行含可预览路径时出现「预览」按钮;会话流 assistant 文本走 markdown 块渲染(服务端解析,前端零 v-html)。
 - **结构化提问**:模型 `ask_user_question` 弹层展示问题与选项;**可「稍后作答」收起为输入区上方角标**(不阻塞继续对话,点角标回到作答);多问并存按到达顺序逐个答。
@@ -291,7 +291,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `GET /api/events` + `GET /api/events/ws` | 事件流(SSE 断线重放 / WS;首连发 `baseline` 基线 + 尾部窗口,续传按 `after` 补差集) |
 | `GET /api/session/events` | 会话事件分页(`?before=<seq>&limit=<n>`):长会话上滚加载更早历史,窗口回合对齐、返回 `has_more` |
 | `GET /api/sessions`、`POST /api/sessions` | 会话列表 / `{action: switch\|new\|fork\|clone\|delete}` |
-| `POST /api/sessions/rename`、`GET /api/sessions/{id}/export` | 会话改名 / 导出 jsonl |
+| `POST /api/sessions/rename`、`GET /api/sessions/{id}/export` | 会话改名 / 导出会话(`?format=html` = 自包含网页,缺省 jsonl;无 id 路径 = 主会话) |
 | `GET /api/workspaces`、`DELETE /api/workspaces/{key}` | 工作区历史 / 删除记录(不动文件夹) |
 | `GET /api/commands`、`POST /api/commands/{name}` | 命令注册表 / 直接执行 `{args}` |
 | `GET /api/tools`、`POST /api/tools/{name}` | 工具清单 / 调用(参数 JSON 透传) |
