@@ -845,6 +845,20 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 
 > **发布**:v0.1.1(2026-09-13)已出 —— macOS `gah_0.1.1_aarch64.dmg`(34.18 MiB)+ Windows `gah_0.1.1_x64-setup.exe`(31.59 MiB)+ updater `gah.app.tar.gz`/`latest.json`(实测 `releases/latest/download/latest.json` HTTP 200,`version=0.1.1`,双平台签名齐备)+ 命令行五目标归档与 `checksums.txt`;三个 workflow(`ci`/`release-cli`/`release-desktop`)全绿,流程与产物清单见 `docs/RELEASE.md`「发布记录:v0.1.1」。
 
+### 第五十四批 · 验证并打开 CI 的 `GAH_LAYOUT_REQUIRE=1`(布局护栏不再允许静默跳过)(2026-09-22)
+
+> 用户问:CI 里能不能把 `GAH_LAYOUT_REQUIRE=1` 打开(更严)?下面是把「能不能」逐项查到事实、把风险当场解掉之后**已经打开**。
+
+1. **两个 job 的 runner 上浏览器都在场(查镜像清单,不靠猜)**:`ubuntu-latest` = Ubuntu 24.04,镜像 "Browsers and Drivers" 段列 **Google Chrome 152.0.7977.82 + Chromium 152**;`macos-14` 的 macOS 镜像同样预装 Chrome(152.x)。
+2. **路径也对得上**:本地读 `playwright-core` 自带 channel 表(`lib/coreBundle.js`)—— `chrome` 就是 linux `/opt/google/chrome/chrome`、darwin `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`(与 runner 镜像的安装位置一致);护栏候选路径表已覆盖这两个,另加 `/usr/bin/google-chrome`。
+3. **真正的坑不在「有没有浏览器」而在 Linux 沙箱**:Ubuntu 23.10+/24.04 默认用 AppArmor 限制非特权 user namespace,Chrome 内建沙箱直接报 **"No usable sandbox!"**(Chromium 官方 apparmor-userns 文档 / puppeteer#12818 / playwright#34251 同因)—— 不管这个就开 `REQUIRE=1`,ubuntu job 必红。对策(已实现):首次启动失败且文案含 `sandbox|namespace` 时,**带 `--no-sandbox --disable-dev-shm-usage` 重试一次**;只对这种失败重试,其余(浏览器没装/路径不对/版本不匹配)**原样暴露**,不让重试掩盖真错。`GAH_LAYOUT_NO_SANDBOX=1` 可直接走该参数(便于 CI 上调试)。
+4. **字体差异也排掉了**:ubuntu 镜像只带 `fonts-noto-color-emoji`,**无 CJK 字体** ⇒ 中文会渲成豆腐块、字形宽度差异可能污染几何断言 ⇒ 桩数据**全改 ASCII**(应用自身的中文文案仍在,但其所在容器都有裁剪/滚动归属,本就在判定之外)。
+5. **CI 改动**:`test`(ubuntu)与 `test-macos` 两步都加 `env: GAH_LAYOUT_REQUIRE: "1"`;删掉原先「跳过就打 `::warning::`」的胶水 —— 现在跳过即红灯,且失败信息自带修法(runner 装 Chrome / 设 `GAH_LAYOUT_CHROME` / 确属环境不可用再撤掉该 `env`)。
+6. **本地验证(4 条)**:① 标准参数 **18/18 绿** 并打印 `布局护栏浏览器:153.0.8010.53(标准参数)`(CI 日志里直接能看到用的哪个浏览器);② `GAH_LAYOUT_NO_SANDBOX=1`(就是 Linux CI 那套参数)**18/18 绿**;③ `GAH_LAYOUT_REQUIRE=1` + `GAH_LAYOUT_CHROME=/usr/bin/false` ⇒ **exit 1** + 可操作提示(不静默通过);④ `GAH_LAYOUT_REQUIRE=1` 在本机 **18/18 绿**。另加一条纯函数用例钉住「什么失败该重试」:三条沙箱/namespace 真实文案 → 重试,两条浏览器缺失/ENOENT → 不重试 —— **这用例当场抓出我自己把判定写窄了**(`Failed to move to new namespace` 没被匹配上),已修。
+7. **残余风险(诚实)**:本机没有 Linux/macOS runner,「CI 上能否真的跑通」只有 CI 自己说了算;**最坏情况是 ubuntu job 红 ⇒ 一行回退**(删掉该步 `env` 或改成 `"0"`),不会退化成静默放过。
+
+**验证**:`npm run test:layout` 18/18(标准参数 / `--no-sandbox` 参数 / `REQUIRE=1` 三种跑法);缺陷反例见第五十三批(改回 `v-else` ⇒ 全红且点名 `button.handle`);`ci.yml` 经 YAML 解析校验(两个 job 的 `env` 就位)。
+
 ### 第五十三批 · 布局回归护栏进 CI:把「整页可滚」这类事故钉成红灯(2026-09-22)
 
 > 背景:第五十二批的缺陷(`v-else` 绑错 `v-if`)是**用户实测刷出来的** —— 仓库里没有任何自动化门禁会发现它。用户拍板「需要做」⇒ 补上护栏。
@@ -860,7 +874,7 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
    - 骨架在场且在第一屏内(侧栏 / 输入区 `.input-slot` / 状态栏 `.statusbar-slot`),侧栏开合语义正确(展开 `handle=0 / panel=1`,收起 `handle=1 / panel=0`)。
 4. **反例验证(护栏有效的唯一凭据)**:把 `Sidebar.vue` 的 `v-if="!open"` **改回 `v-else`** + `vite build` ⇒ 护栏 **17/17 全红**,报错直指 `button.handle top=800 bottom=1569 h=769`(正是用户截图那次的几何);还原后 **17/17 绿**。另验三条分支:缺 `web/dist` ⇒ 跳过且 exit 0;`GAH_LAYOUT_REQUIRE=1` ⇒ **exit 1**(不允许静默通过);正常 ⇒ 17 pass。
 5. **新增依赖(需评审,已登记)**:`playwright-core@^1.63.0` —— 仅 `devDependencies`/测试期用,不打进 `web/dist`、不进二进制;**复用系统 Chrome,不下载浏览器包**;找不到 Chrome 就跳过(人机友好),`GAH_LAYOUT_CHROME=/path/to/chrome` 可指定。否决 jsdom/vitest 方案:算不出布局,对这类事故天然无效。
-6. **CI**:`test`(ubuntu)与 `test-macos` 两个 job 各加一步「布局回归护栏」(需 `web/dist`,已在同 job 前序步构建);若因环境无浏览器被跳过,打 `::warning::` 显式告警(不静默)。`npm test` **保持**「前端逻辑单测、零新增依赖」语义不变(`src/*.test.ts` 168 项),布局护栏单独走 `npm run test:layout` —— 两者职责不混。
+6. **CI**:`test`(ubuntu)与 `test-macos` 两个 job 各加一步「布局回归护栏」(需 `web/dist`,已在同 job 前序步构建);CI 侧用 **`GAH_LAYOUT_REQUIRE=1` 直接红灯**(能不能这么开、怎么开见第五十四批的可行性验证;本地默认仍是「环境不满足就跳过」)。`npm test` **保持**「前端逻辑单测、零新增依赖」语义不变(`src/*.test.ts` 168 项),布局护栏单独走 `npm run test:layout` —— 两者职责不混。
 
 **验证**:`npm test` 168/168、`npm run test:layout` 17/17、`npm run typecheck` 干净;反例与三条分支见上;`ci.yml` 经 YAML 解析校验。
 

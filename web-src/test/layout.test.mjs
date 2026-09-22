@@ -48,6 +48,8 @@ function startStatic(root) {
 
 // apiStub 给页面喂最小可用数据:40 条会话(长列表正是当年把越界放大到 521 个元素的场景),
 // 其余端点给空壳。渲染不出内容不影响判定 —— 这里断言的是外壳几何,不是业务数据。
+// 桩文案一律 ASCII:CI 的 ubuntu 镜像只带 fonts-noto-color-emoji(**没有 CJK 字体**),
+// 中文会渲成豆腐块 —— 字体差异不是我们要测的东西,别让它污染几何断言。
 function apiStub(route) {
   const url = new URL(route.request().url())
   const p = url.pathname
@@ -69,8 +71,8 @@ function apiStub(route) {
       Array.from({ length: 40 }, (_, i) => ({
         ID: i === 0 ? '' : `layout-${i}`,
         Path: `/tmp/layout-${i}.jsonl`,
-        Name: i === 0 ? '主会话' : `会话 ${i}`,
-        Preview: `第 ${i} 条会话的预览文本,用来撑出真实内容高度。`.repeat(3),
+        Name: i === 0 ? 'main' : `session ${i}`,
+        Preview: `Session ${i} preview text, long enough to wrap into several lines. `.repeat(3),
         MTime: Math.floor((now - i * 3600_000) / 1000),
         Frames: 100 + i,
       })),
@@ -88,8 +90,10 @@ function apiStub(route) {
   return json([])
 }
 
-// launchOpts 依次尝试:显式路径 → 系统 Chrome → 常见 Linux 路径 → Playwright 默认 chromium。
-function launchOpts() {
+// launchOpts args 非空时一并带上(重试路径用)。依次尝试:显式路径 → 系统 Chrome → 常见 Linux 路径
+// → 交给 Playwright 的 channel 解析(它自己的表就是 linux `/opt/google/chrome/chrome`、
+// darwin `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome` —— 与 CI 镜像给的位置一致)。
+function launchOpts(args) {
   const cands = [
     process.env.GAH_LAYOUT_CHROME,
     '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -100,7 +104,33 @@ function launchOpts() {
     '/usr/bin/chromium-browser',
   ].filter(Boolean)
   const found = cands.find((c) => fs.existsSync(c))
-  return found ? { executablePath: found } : { channel: 'chrome' }
+  const opts = found ? { executablePath: found } : { channel: 'chrome' }
+  if (args.length) opts.args = args
+  return opts
+}
+
+// UBUNTU_SANDBOX_ARGS:Ubuntu 23.10+ 用 AppArmor 限制非特权 user namespace,Chrome 内建沙箱起不来
+// (报 "No usable sandbox!")。CI 的 ubuntu-latest 就是 24.04 ⇒ 首次失败后带这两个参数重试一次
+// (仅测试期的自渲染,风险可忽略);GAH_LAYOUT_NO_SANDBOX=1 可直接走这条参数。
+const UBUNTU_SANDBOX_ARGS = ['--no-sandbox', '--disable-dev-shm-usage']
+
+// shouldRetryWithoutSandbox 只对「沙箱 / user namespace」类失败重试 —— 其余错误(浏览器没装、
+// 路径不对、版本不匹配)必须原样暴露,不能被重试掩盖。两种失败都拿真实报错文案验过(见文末用例)。
+function shouldRetryWithoutSandbox(msg) {
+  return /sandbox|namespace/i.test(String(msg))
+}
+
+// launchBrowser 先按标准参数启动;若失败且形如沙箱问题,再带 --no-sandbox 重试一次。
+async function launchBrowser(chromium) {
+  const forced = process.env.GAH_LAYOUT_NO_SANDBOX === '1'
+  try {
+    const browser = await chromium.launch(launchOpts(forced ? UBUNTU_SANDBOX_ARGS : []))
+    return { browser, how: forced ? 'GAH_LAYOUT_NO_SANDBOX=1 指定 --no-sandbox' : '标准参数' }
+  } catch (e) {
+    if (forced || !shouldRetryWithoutSandbox(e.message)) throw e
+    console.log(`  首次启动失败(疑似沙箱限制),带 --no-sandbox 重试:${String(e.message).split('\n')[0]}`)
+    return { browser: await chromium.launch(launchOpts(UBUNTU_SANDBOX_ARGS)), how: '--no-sandbox 重试' }
+  }
 }
 
 // 共享上下文:一个浏览器一个静态服务,跑完统一收摊。
@@ -114,7 +144,12 @@ let skipWhy = ''
 function unavailable(why) {
   skip = true
   skipWhy = why
-  if (REQUIRE) throw new Error(`GAH_LAYOUT_REQUIRE=1 但布局护栏跑不了:${why}`)
+  if (REQUIRE) {
+    throw new Error(
+      `GAH_LAYOUT_REQUIRE=1 但布局护栏跑不了:${why}\n` +
+        '  runner 上装 Chrome 或设 GAH_LAYOUT_CHROME=/path/to/chrome;确属环境不可用再撤掉 CI 那步的 GAH_LAYOUT_REQUIRE。',
+    )
+  }
 }
 
 const ready = (async () => {
@@ -127,7 +162,9 @@ const ready = (async () => {
   })
   if (!chromium) return
   try {
-    browser = await chromium.launch(launchOpts())
+    const r = await launchBrowser(chromium)
+    browser = r.browser
+    console.log(`  布局护栏浏览器:${browser.version()}(${r.how})`)
   } catch (e) {
     // 本机没 Chrome:跳过(不拦人);CI 用 GAH_LAYOUT_REQUIRE=1 把它变成失败。
     return unavailable(`未找到可用 Chrome/Chromium(${String(e.message).split('\n')[0]})`)
@@ -268,4 +305,14 @@ describe('布局护栏:整页永不滚动(第五十二/五十三批)', { skip: s
 
 test('布局护栏:跳过原因(仅在没有浏览器/产物时输出)', { skip: !skip }, () => {
   console.log(`  跳过:${skipWhy}`)
+})
+
+// CI 的 ubuntu-latest(24.04)那两个参数能不能救场,本地验不了;但"什么失败该重试"这个判定
+// 是纯函数,拿两种真实报错文案钉住 —— 既不让沙箱失败白挂,也不让装错浏览器被重试掩盖。
+test('无沙箱重试判定:只对沙箱/namespace 类失败生效(ubuntu-latest 24.04 的 AppArmor)', () => {
+  assert.ok(shouldRetryWithoutSandbox('No usable sandbox! If you are running on Ubuntu 23.10+ or another Linux distro...'))
+  assert.ok(shouldRetryWithoutSandbox('Failed to move to new namespace: PID namespaces supported, Network namespace supported'))
+  assert.ok(shouldRetryWithoutSandbox('Running as root without --no-sandbox is not supported'))
+  assert.ok(!shouldRetryWithoutSandbox("Chromium distribution 'chrome' is not found at /opt/google/chrome/chrome"))
+  assert.ok(!shouldRetryWithoutSandbox('spawn /usr/bin/google-chrome ENOENT'))
 })
