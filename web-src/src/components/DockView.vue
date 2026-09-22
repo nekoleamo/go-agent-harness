@@ -13,13 +13,22 @@
 import { ref } from 'vue'
 import type { DockPanel } from '../dock'
 
-const props = defineProps<{
-  panels: DockPanel[]
-  panel: string
-  width: number
-  /** 窄屏:退化为覆盖式抽屉(无拖拽手柄)。 */
-  narrow: boolean
-}>()
+const props = withDefaults(
+  defineProps<{
+    panels: DockPanel[]
+    panel: string
+    width: number
+    /** 窄屏:退化为覆盖式抽屉(无拖拽手柄)。 */
+    narrow: boolean
+    /**
+     * 内容区是否由停靠区提供内边距(缺省 true)。
+     * 内容型面板(变更/看板)自己只有纵向内距,横向 gutter 归容器;而列表型面板(后台任务)
+     * 的分隔线与悬停底色必须通宽,内距自带 ⇒ 由调用方显式关掉。
+     */
+    bodyPad?: boolean
+  }>(),
+  { bodyPad: true },
+)
 
 const emit = defineEmits<{
   (e: 'select', id: string): void
@@ -94,7 +103,7 @@ function onKey(ev: KeyboardEvent): void {
       </button>
       <span class="dk-close" data-tip="收起侧栏(对话流恢复满宽)" @click="emit('close')">收起</span>
     </div>
-    <div class="dk-body">
+    <div class="dk-body" :class="{ 'dk-body-flush': !bodyPad }">
       <slot />
     </div>
   </aside>
@@ -204,5 +213,11 @@ function onKey(ev: KeyboardEvent): void {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  /* 内容型面板(变更/看板)的横向 gutter 由容器给:贴边会让文字顶到面板边框上 */
+  padding: 8px 12px 16px;
+}
+/* 列表型面板(后台任务)自带内距,且分隔线要通宽 ⇒ 容器不留 gutter */
+.dk-body-flush {
+  padding: 0;
 }
 </style>

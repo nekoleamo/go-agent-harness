@@ -976,6 +976,7 @@ onUnmounted(() => {
         :panel="dock.panel"
         :width="dock.width"
         :narrow="dockNarrow"
+        :body-pad="dock.panel !== 'jobs'"
         @select="selectDockPanel"
         @close="toggleDock"
         @resize="onDockResize"
