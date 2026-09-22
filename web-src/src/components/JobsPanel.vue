@@ -94,7 +94,8 @@ onUnmounted(() => {
   z-index: 30;
   animation: jp-in var(--dur-base) var(--ease-out);
 }
-/* 停靠模式:填满停靠区(无固定定位/无阴影/无入场动画,边框由停靠区提供) */
+/* 停靠模式:填满停靠区(无固定定位/无阴影/无入场动画,边框由停靠区提供;
+   底色跟停靠区走 —— 白底会在灰面板上切出一块白) */
 .jobs-panel.docked {
   position: static;
   width: 100%;
@@ -102,6 +103,15 @@ onUnmounted(() => {
   border-left: none;
   box-shadow: none;
   animation: none;
+  background: var(--surface);
+}
+/* 灰底上原来的发丝线(--line-faint)几乎看不见 ⇒ 分隔线升一档;输出块改白底当“卡片面”
+   (它在白底模式下用 --bg2,在灰底上会与底色同化) */
+.jobs-panel.docked .jp-item {
+  border-bottom-color: var(--line);
+}
+.jobs-panel.docked .jp-out {
+  background: var(--bg);
 }
 @keyframes jp-in {
   from {
