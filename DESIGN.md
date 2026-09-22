@@ -845,6 +845,14 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 
 > **发布**:v0.1.1(2026-09-13)已出 —— macOS `gah_0.1.1_aarch64.dmg`(34.18 MiB)+ Windows `gah_0.1.1_x64-setup.exe`(31.59 MiB)+ updater `gah.app.tar.gz`/`latest.json`(实测 `releases/latest/download/latest.json` HTTP 200,`version=0.1.1`,双平台签名齐备)+ 命令行五目标归档与 `checksums.txt`;三个 workflow(`ci`/`release-cli`/`release-desktop`)全绿,流程与产物清单见 `docs/RELEASE.md`「发布记录:v0.1.1」。
 
+### 第五十七批附 · v0.1.5 发版实况:CI 首跑结果 + 发行自校验顺序缺陷(2026-09-22)
+
+1. **CI 首跑(推送 58 个本地提交后,run `35748175010`)**:`desktop-shell` / `desktop-shell-macos` / `test-macos` 三个 job ✅;**布局回归护栏在 `ubuntu-latest` 与 `macos-14` 双绿**(失败截图步 skipped)—— 挂了很久的「CI 布局护栏首跑」就此闭环(本地 26 用例 ⟷ runner 真渲染一致)。
+2. **两处 CI 红,均非本批引入(已登记待定位)**:
+   - `test`(ubuntu)唯一失败 = `plugins/host/host-bridge` 的 `TestPluginIdleMarkerIsNotAnError`(「自述空闲的重载不应报错」);**本机 `-count=5` 全过** ⇒ CI 环境专属,待定位。
+   - `test-windows` 一批失败(`host-worktrees` `TestListAndRemove`/`TestCmdWorktree`、`policy-guard` `TestCheckShellCommandAtIsolated`、`tool-shell` `TestShellUsesCallWorkRoot`、`host-docview` `TestConverterRealExecPATHShim`、`tests` `TestSandboxSyncE2ECommandRoundTrip` 等、`web` `TestProbeWritableReadOnly`);**2026-09-19 的 ci run(`35450763588`)同批同样测试同样失败** ⇒ 稳定复现的平台差异,与 58 个提交无关,待单开一批定位(PATH shim / worktree / shell 工作目录 / 可写探测四类语义)。
+3. **发行自校验顺序缺陷(真缺陷,已修 `a357c0f`)**:`release-desktop.yml` 两个平台 job 的「上传前自校验」调 `verify-release.mjs --local dist-desktop --platform <p>`,而该步**硬要求 `dist-desktop/latest.json`** —— 总表要 merge job 才生成,平台 job 手上只有 `latest.<平台>.json` ⇒ **tag 一推这两个 job 必然红**(该步是 v0.1.4 之后才加的,今天首次真跑 tag 就撞上;v0.1.4 及以前没有这步)。修法:`--local` 且被 `--platform` 点名时**回退读平台级表**(两者 schema 相同,merge 只合并 `platforms`),并补 INFO 说明来源;无点名平台时仍是原来的清晰报错。本地三分支验证:① 只平台表 + `--platform` ⇒ 9 通过(含签名、包内 `gah.app 0.1.5`、sidecar 版本);② 无平台表无总表 ⇒ 退出码 1 + 指引;③ merge 后走总表 ⇒ 通过。补发走 `gh workflow run release-desktop.yml -f tag=v0.1.5`(run_id 留空 = 重新打包)。
+
 ### 第五十七批 · 文档同步:README 双语按 0.1.5 现状回填 + 本地文档状态订正(2026-09-22)
 
 > 起因:用户要求「所有文档同步,尤其是 README,根据最新版本优化(当前 0.1.5)」。核查结论:README 里**没有**任何版本号字面量(下载走 Releases/latest + `<版本>` 占位),所以「按最新版本优化」= 把近期交付与四条裁决在**读者可见口径**上补齐,而不是改版本数字(已 grep 确认 `0\.1\.[0-9]` 零命中)。
