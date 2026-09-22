@@ -29,10 +29,18 @@ jobs:
         run: bash scripts/gen-web.sh
       - name: 前端逻辑单测(node 内置运行器,零新增依赖;E-E)
         run: cd web-src && npm test
-      - name: 布局回归护栏(真渲染:整页永不滚动 + 侧栏开合语义;REQUIRE=1 ⇒ 环境不满足直接红灯)
+      - name: 布局回归护栏(真渲染:整页不滚 + 开合语义 + 检测器自检;REQUIRE=1 ⇒ 环境不满足直接红灯)
         env:
           GAH_LAYOUT_REQUIRE: "1"
+          GAH_LAYOUT_ARTIFACTS: ${{ runner.temp }}/gah-layout
         run: cd web-src && npm run test:layout
+      - name: 布局护栏失败截图(仅在护栏失败时上传,便于排查画面)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: layout-artifacts-${{ runner.os }}
+          path: ${{ runner.temp }}/gah-layout
+          if-no-files-found: ignore
       - name: go vet(sdk 为独立 module,go.work 下根目录 ./... 不含它,须单独跑)
         run: |
           go vet ./...
@@ -234,10 +242,18 @@ jobs:
         run: bash scripts/gen-web.sh
       - name: 前端逻辑单测(node 内置运行器,零新增依赖)
         run: cd web-src && npm test
-      - name: 布局回归护栏(真渲染:整页永不滚动 + 侧栏开合语义;REQUIRE=1 ⇒ 环境不满足直接红灯)
+      - name: 布局回归护栏(真渲染:整页不滚 + 开合语义 + 检测器自检;REQUIRE=1 ⇒ 环境不满足直接红灯)
         env:
           GAH_LAYOUT_REQUIRE: "1"
+          GAH_LAYOUT_ARTIFACTS: ${{ runner.temp }}/gah-layout
         run: cd web-src && npm run test:layout
+      - name: 布局护栏失败截图(仅在护栏失败时上传,便于排查画面)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: layout-artifacts-${{ runner.os }}
+          path: ${{ runner.temp }}/gah-layout
+          if-no-files-found: ignore
       - name: go vet(sdk 为独立 module,go.work 下根目录 ./... 不含它,须单独跑)
         run: |
           go vet ./...

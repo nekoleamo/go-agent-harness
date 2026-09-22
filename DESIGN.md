@@ -845,6 +845,20 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 
 > **发布**:v0.1.1(2026-09-13)已出 —— macOS `gah_0.1.1_aarch64.dmg`(34.18 MiB)+ Windows `gah_0.1.1_x64-setup.exe`(31.59 MiB)+ updater `gah.app.tar.gz`/`latest.json`(实测 `releases/latest/download/latest.json` HTTP 200,`version=0.1.1`,双平台签名齐备)+ 命令行五目标归档与 `checksums.txt`;三个 workflow(`ci`/`release-cli`/`release-desktop`)全绿,流程与产物清单见 `docs/RELEASE.md`「发布记录:v0.1.1」。
 
+### 第五十五批 · 布局护栏完善:检测器自检 / 横向不变量 / 小窗与首启态 / 失败取证(2026-09-22)
+
+> 用户拍板「不用放弃(那条 dev-only 的 13M 测试依赖),完善后实施」⇒ 五项补强,全部落地并验证。
+
+1. **检测器自检(canary)**:每轮往 DOM 注入一个与事故同形的越界元素(侧栏末尾 `height:100%`),断言不变量**必须开火**,再删掉、断言必须恢复干净 —— 「护栏自己失效(全绿但什么都没测)」是最危险的失败模式,现在它自己也被测了。
+2. **新增「首启态」用例**(桩里 provider 为空 ⇒ `App.vue maybeOnboard` 自动弹设置面板遮罩;2 视口):这是新用户第一眼看到的画面,遮罩压在主视图上时外壳同样不许滚、不许被挤。
+3. **判定从纵向扩到横向**:加 `scrollWidth <= clientWidth + 1` 与 `scrollLeft === 0`;越界检测同时看 `left/right`,裁切柜判定同时看 `overflow-x/y`(只算中间祖先,html/body 的 `overflow:hidden` **不算**裁切柜 —— 否则第五十二批那种「被 body 裁掉但实际越界」的元素会漏检)。实测应用当前横向也干净 ⇒ 零误报。
+4. **不再用固定 sleep**:改 `waitForFunction` 等骨架(侧栏两种形态之一 + 输入区 + 状态栏)落定 ⇒ 用例 18 → **26**(5 视口 × 4 停靠态 + 开合语义 + 首启 ×2 + 自检 + 重试判定 + 跳过报告),耗时反而 **25s → 11.8s**;新增小窗视口 **700×460**。
+5. **失败取证**:`GAH_LAYOUT_ARTIFACTS=<dir>` 时失败用例自动截图落盘;CI 传 `${{ runner.temp }}/gah-layout` 并在 `if: failure()` 上传 `actions/upload-artifact@v4`(与 `release-desktop.yml` 同版本)⇒ CI 红了直接看画面,不用猜。
+
+**验证**:① 本机全绿 `tests 26 / pass 25 / fail 0`(恒 SKIP 的那个是「跳过原因」报告用例);`GAH_LAYOUT_REQUIRE=1` 同样 25/25 绿。② 反例(把 `v-if="!open"` 改回 `v-else` + `vite build`)⇒ **24/26 红**,报错点名 `button.handle axis=v top=800 bottom=1569 left=0 right=264`;还原后 25/25 绿。③ 失败取证实测:干净跑 + `GAH_LAYOUT_ARTIFACTS` ⇒ **0 文件**(不瞎写);缺陷态 ⇒ **24 张截图**(如 `1000x620_停靠-变更.png` 77,307 B)。④ `ci.yml` 经 YAML 解析校验(两个 job 的 `env` 与失败上传步都在)。
+
+**成本不变**:仍只有 dev-only 的 `playwright-core` 13M(仓库/发行产物 0 影响、不下载浏览器,详见前一批的存储核算)。
+
 ### 第五十四批 · 验证并打开 CI 的 `GAH_LAYOUT_REQUIRE=1`(布局护栏不再允许静默跳过)(2026-09-22)
 
 > 用户问:CI 里能不能把 `GAH_LAYOUT_REQUIRE=1` 打开(更严)?下面是把「能不能」逐项查到事实、把风险当场解掉之后**已经打开**。

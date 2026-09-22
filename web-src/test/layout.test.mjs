@@ -1,14 +1,16 @@
-// 布局回归护栏(第五十三批):把"主界面被整页滚走"这类事故钉死在 CI 里。
+// 布局回归护栏(第五十三批;第五十四批打开 CI 严档;第五十五批完善)
 //
 // 为什么需要浏览器:这类缺陷(2026-09-22 用户实测那次)是**真实布局**的结果 ——
 // Sidebar 里 `v-else` 绑错 `v-if` 多渲染了一个 height:100% 的 ☰ 按钮,它按 block 流排在
 // 769px 高的 .panel 之后,把文档撑到 1573px。jsdom 之类不算布局(得 0 高度),静态 AST
 // 也判不出来(v-else 绑到邻近的另一个 v-if 对 Vue 完全合法),所以只有真渲染才验得了。
 //
-// 跑法:`cd web-src && npm test`(已并入默认前端测试;需先有 web/dist —— scripts/gen-web.sh)。
-// 依赖:本机 Chrome/Chromium;找不到就**跳过**(不拦人)。CI 想强制设 GAH_LAYOUT_REQUIRE=1。
-//   GAH_LAYOUT_CHROME=/path/to/chrome  指定可执行文件(否则按常见路径 + channel:'chrome' 依次试)
-import { after, before, describe, test } from 'node:test'
+// 跑法:`cd web-src && npm run test:layout`(需先有 web/dist —— scripts/gen-web.sh)。
+// 依赖:本机 Chrome/Chromium;找不到就**跳过**(不拦人)。CI 用 GAH_LAYOUT_REQUIRE=1 变红灯。
+//   GAH_LAYOUT_CHROME=/path/to/chrome   指定可执行文件(否则按常见路径 + channel:'chrome' 依次试)
+//   GAH_LAYOUT_NO_SANDBOX=1             直接带 --no-sandbox --disable-dev-shm-usage(CI 调试用)
+//   GAH_LAYOUT_ARTIFACTS=/dir           失败时把该用例的截图落盘(CI 传 runner.temp 便于排查)
+import { after, describe, test } from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import fs from 'node:fs'
@@ -18,6 +20,7 @@ import { fileURLToPath } from 'node:url'
 const WEB_SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const DIST = path.resolve(WEB_SRC, '..', 'web', 'dist')
 const REQUIRE = process.env.GAH_LAYOUT_REQUIRE === '1'
+const ARTIFACTS = process.env.GAH_LAYOUT_ARTIFACTS || ''
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -46,53 +49,61 @@ function startStatic(root) {
   return new Promise((ok) => server.listen(0, '127.0.0.1', () => ok(server)))
 }
 
-// apiStub 给页面喂最小可用数据:40 条会话(长列表正是当年把越界放大到 521 个元素的场景),
-// 其余端点给空壳。渲染不出内容不影响判定 —— 这里断言的是外壳几何,不是业务数据。
-// 桩文案一律 ASCII:CI 的 ubuntu 镜像只带 fonts-noto-color-emoji(**没有 CJK 字体**),
-// 中文会渲成豆腐块 —— 字体差异不是我们要测的东西,别让它污染几何断言。
-function apiStub(route) {
-  const url = new URL(route.request().url())
-  const p = url.pathname
-  const json = (v, status = 200) =>
-    route.fulfill({ status, contentType: 'application/json; charset=utf-8', body: JSON.stringify(v) })
-  if (p === '/api/state') {
-    return json({
-      model: 'layout-guard/model',
-      thinking: 'off',
-      sandbox: 'full',
-      stats: { prompt_tokens: 1200, completion_tokens: 300, cached_tokens: 0, requests: 3, window: 200000 },
-      running: false,
-      version: 'layout-guard',
-    })
+// apiStub 给页面喂最小可用数据(形状取自 src/types.ts):会话列表给 40 条,长列表正是当年把
+// 越界放大到 521 个元素的场景。渲染不出内容不影响判定 —— 这里断言的是外壳几何,不是业务数据。
+// 文案一律 ASCII:CI 的 ubuntu 镜像只带 fonts-noto-color-emoji(**没有 CJK 字体**),中文会渲成
+// 豆腐块 —— 字形宽度差异不是我们要测的东西,别让它污染几何断言。
+function makeStub(withProviders) {
+  return (route) => {
+    const url = new URL(route.request().url())
+    const p = url.pathname
+    const json = (v, status = 200) =>
+      route.fulfill({ status, contentType: 'application/json; charset=utf-8', body: JSON.stringify(v) })
+    if (p === '/api/state') {
+      return json({
+        model: 'layout-guard/model',
+        thinking: 'off',
+        sandbox: 'full',
+        stats: { prompt_tokens: 1200, completion_tokens: 300, cached_tokens: 0, requests: 3, window: 200000 },
+        running: false,
+        version: 'layout-guard',
+      })
+    }
+    if (p === '/api/sessions') {
+      const now = Date.now()
+      return json(
+        Array.from({ length: 40 }, (_, i) => ({
+          ID: i === 0 ? '' : `layout-${i}`,
+          Path: `/tmp/layout-${i}.jsonl`,
+          Name: i === 0 ? 'main' : `session ${i}`,
+          Preview: `Session ${i} preview text, long enough to wrap into several lines. `.repeat(3),
+          MTime: Math.floor((now - i * 3600_000) / 1000),
+          Frames: 100 + i,
+        })),
+      )
+    }
+    if (p === '/api/notices') return json({ items: [], max_id: 0 })
+    if (p === '/api/session/events') return json({ events: [], from: 0, to: 0, count: 0, has_more: false })
+    // provider 数为 0 时首屏会自动弹设置面板(App.vue maybeOnboard)—— 那也是要覆盖的真实状态,
+    // 所以不是一律给 1 个(见「首启态」用例)。
+    if (p === '/api/providers') {
+      return json(
+        withProviders
+          ? [{ Name: 'layout', BaseURL: 'http://127.0.0.1:1/v1', APIKey: 'sk-layout', Model: 'layout-guard/model', Active: true }]
+          : [],
+      )
+    }
+    if (p === '/api/models') return json({ providers: [] })
+    if (p === '/api/mcp') return json({ path: '', servers: [], reload_available: false, plugin_loaded: false })
+    if (p === '/api/doc/tree') return json({ entries: [] })
+    return json([])
   }
-  if (p === '/api/sessions') {
-    const now = Date.now()
-    return json(
-      Array.from({ length: 40 }, (_, i) => ({
-        ID: i === 0 ? '' : `layout-${i}`,
-        Path: `/tmp/layout-${i}.jsonl`,
-        Name: i === 0 ? 'main' : `session ${i}`,
-        Preview: `Session ${i} preview text, long enough to wrap into several lines. `.repeat(3),
-        MTime: Math.floor((now - i * 3600_000) / 1000),
-        Frames: 100 + i,
-      })),
-    )
-  }
-  if (p === '/api/notices') return json({ items: [], max_id: 0 })
-  if (p === '/api/session/events') return json({ events: [], from: 0, to: 0, count: 0, has_more: false })
-  // 配一个 provider:provider 数为 0 时首屏会自动弹设置面板(App.vue maybeOnboard),
-  // 那层 .mask 会盖住侧栏(点不动 .toggle)且不反映真实布局。
-  if (p === '/api/providers') return json([{ Name: 'layout', BaseURL: 'http://127.0.0.1:1/v1', APIKey: 'sk-layout', Model: 'layout-guard/model', Active: true }])
-  // 各端点的空壳形状取自 src/types.ts;形状不对会让 Vue 渲染中途抛错(页面半渲染 ⇒ 断言失效)。
-  if (p === '/api/models') return json({ providers: [] })
-  if (p === '/api/mcp') return json({ path: '', servers: [], reload_available: false, plugin_loaded: false })
-  if (p === '/api/doc/tree') return json({ entries: [] })
-  return json([])
 }
+const apiStub = makeStub(true)
 
 // launchOpts args 非空时一并带上(重试路径用)。依次尝试:显式路径 → 系统 Chrome → 常见 Linux 路径
 // → 交给 Playwright 的 channel 解析(它自己的表就是 linux `/opt/google/chrome/chrome`、
-// darwin `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome` —— 与 CI 镜像给的位置一致)。
+// darwin `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`,与 CI 镜像给的位置一致)。
 function launchOpts(args) {
   const cands = [
     process.env.GAH_LAYOUT_CHROME,
@@ -115,7 +126,7 @@ function launchOpts(args) {
 const UBUNTU_SANDBOX_ARGS = ['--no-sandbox', '--disable-dev-shm-usage']
 
 // shouldRetryWithoutSandbox 只对「沙箱 / user namespace」类失败重试 —— 其余错误(浏览器没装、
-// 路径不对、版本不匹配)必须原样暴露,不能被重试掩盖。两种失败都拿真实报错文案验过(见文末用例)。
+// 路径不对、版本不匹配)必须原样暴露,不能被重试掩盖。
 function shouldRetryWithoutSandbox(msg) {
   return /sandbox|namespace/i.test(String(msg))
 }
@@ -180,6 +191,50 @@ after(async () => {
   if (server) await server.close()
 })
 
+// shoot 失败取证:把该用例当帧截图落盘(仅在 GAH_LAYOUT_ARTIFACTS 指定时;CI 传 runner.temp)。
+async function shoot(page, name) {
+  if (!ARTIFACTS || !page) return
+  try {
+    fs.mkdirSync(ARTIFACTS, { recursive: true })
+    const file = path.join(ARTIFACTS, name.replace(/[^\w.\u4e00-\u9fa5-]+/g, '_') + '.png')
+    await page.screenshot({ path: file })
+    console.log(`  失败快照:${file}`)
+  } catch (e) {
+    console.log(`  失败快照写入失败:${String(e.message).slice(0, 120)}`)
+  }
+}
+
+// waitSkeleton 等骨架 DOM 出现(不再靠固定 sleep):侧栏两种形态之一 + 输入区 + 状态栏。
+// 之后给一帧时间让样式/字体落定。
+async function waitSkeleton(page) {
+  await page.waitForFunction(
+    () =>
+      !!document.querySelector('.sidebar') &&
+      (!!document.querySelector('.sidebar .panel') || !!document.querySelector('.sidebar .handle')) &&
+      !!document.querySelector('.input-slot') &&
+      !!document.querySelector('.statusbar-slot'),
+    null,
+    { timeout: 10_000 },
+  )
+  await page.waitForTimeout(250)
+}
+
+// open 统一开页:注布局偏好 → 桩 API → 加载 → 等骨架稳定。
+async function open(ctx, stub, dock) {
+  await ctx.addInitScript(
+    ([k, v]) => {
+      window.localStorage.setItem(k, v)
+      window.sessionStorage.setItem('gah.onboard.auto', '1') // 首屏引导标记:默认不自动弹设置面板
+    },
+    ['gah.dock', JSON.stringify(dock)],
+  )
+  const page = await ctx.newPage()
+  await page.route('**/api/**', stub)
+  await page.goto(baseURL(), { waitUntil: 'load' })
+  await waitSkeleton(page)
+  return page
+}
+
 // measure 在页面里量三个不变量(与人工验收用的探针同一套判定):
 //   ① 文档不被撑高(外壳永不滚:html/body overflow:hidden + 无越界子元素)
 //   ② 关键骨架在视口内(输入区/状态栏在场且不越界)
@@ -189,12 +244,19 @@ async function measure(page) {
     const se = document.scrollingElement
     window.scrollTo(0, 500)
     const scrolled = se.scrollTop
+    window.scrollTo(500, 0)
+    const scrolledX = se.scrollLeft
     window.scrollTo(0, 0)
     const vh = window.innerHeight
+    const vw = window.innerWidth
+    // clip:该元素上方有没有裁切柜(垂直或水平任一侧都算 —— 只要有一侧不 visible,
+    // 另一侧在 CSS 上也会计算成 auto)。走链到 body 为止:html/body 的 overflow:hidden
+    // **不算裁切柜**,否则 2026-09-22 那种"被 body 裁掉但实际越界"的元素就漏检了。
+    const HIDES = ['auto', 'scroll', 'hidden']
     const clip = (el) => {
       for (let a = el.parentElement; a && a !== document.body; a = a.parentElement) {
-        const oy = getComputedStyle(a).overflowY
-        if (oy === 'auto' || oy === 'scroll' || oy === 'hidden') return true
+        const cs = getComputedStyle(a)
+        if (HIDES.includes(cs.overflowY) || HIDES.includes(cs.overflowX)) return true
       }
       return false
     }
@@ -206,8 +268,18 @@ async function measure(page) {
     for (const el of document.querySelectorAll('body *')) {
       const bb = el.getBoundingClientRect()
       if (bb.width === 0 && bb.height === 0) continue
-      if ((bb.bottom > vh + 1 || bb.top < -1) && !clip(el)) {
-        outside.push({ el: name(el), top: Math.round(bb.top), bottom: Math.round(bb.bottom), h: Math.round(bb.height) })
+      const offV = bb.bottom > vh + 1 || bb.top < -1
+      const offH = bb.right > vw + 1 || bb.left < -1
+      if ((offV || offH) && !clip(el)) {
+        outside.push({
+          el: name(el),
+          axis: offV && offH ? 'vh' : offV ? 'v' : 'h',
+          top: Math.round(bb.top),
+          bottom: Math.round(bb.bottom),
+          left: Math.round(bb.left),
+          right: Math.round(bb.right),
+          h: Math.round(bb.height),
+        })
       }
     }
     const box = (sel) => {
@@ -219,13 +291,18 @@ async function measure(page) {
     return {
       scrollHeight: se.scrollHeight,
       clientHeight: se.clientHeight,
+      scrollWidth: se.scrollWidth,
+      clientWidth: se.clientWidth,
       scrolled,
+      scrolledX,
       innerHeight: vh,
+      innerWidth: vw,
       outside: outside.slice(0, 6),
       outsideTotal: outside.length,
       panels: document.querySelectorAll('.sidebar .panel').length,
       handles: document.querySelectorAll('.sidebar .handle').length,
-      sidebar: !!document.querySelector('.sidebar'),
+      hasSidebar: !!document.querySelector('.sidebar'),
+      hasSettings: !!document.querySelector('[aria-label="设置"]'),
       composer: box('.input-slot'),
       statusbar: box('.statusbar-slot'),
     }
@@ -237,9 +314,14 @@ function assertInvariants(m) {
     m.scrollHeight <= m.clientHeight + 1,
     `文档被撑高(整页可滚):scrollHeight=${m.scrollHeight} > clientHeight=${m.clientHeight};越界元素=${JSON.stringify(m.outside)}`,
   )
-  assert.equal(m.scrolled, 0, `页面能滚动(scrollTo 生效),越界元素=${JSON.stringify(m.outside)}`)
+  assert.equal(m.scrolled, 0, `页面能竖向滚动(scrollTo 生效),越界元素=${JSON.stringify(m.outside)}`)
+  assert.ok(
+    m.scrollWidth <= m.clientWidth + 1,
+    `文档被撑宽(能横向滚):scrollWidth=${m.scrollWidth} > clientWidth=${m.clientWidth};越界元素=${JSON.stringify(m.outside)}`,
+  )
+  assert.equal(m.scrolledX, 0, `页面能横向滚动,越界元素=${JSON.stringify(m.outside)}`)
   assert.equal(m.outsideTotal, 0, `有元素越出视口且未被裁剪:${JSON.stringify(m.outside)}`)
-  assert.ok(m.sidebar, '侧栏未渲染')
+  assert.ok(m.hasSidebar, '侧栏未渲染')
   assert.ok(m.composer && m.composer.inside, `输入区不在视口内:${JSON.stringify(m.composer)}`)
   assert.ok(m.statusbar && m.statusbar.inside, `状态栏不在视口内:${JSON.stringify(m.statusbar)}`)
 }
@@ -249,6 +331,7 @@ const viewports = [
   { w: 1440, h: 1000 },
   { w: 1000, h: 620 },
   { w: 820, h: 560 },
+  { w: 700, h: 460 },
 ]
 const docks = [
   { tag: '停靠收起', dock: { open: false, panel: 'changes', width: 392 } },
@@ -260,18 +343,15 @@ const docks = [
 describe('布局护栏:整页永不滚动(第五十二/五十三批)', { skip: skip && skipWhy }, () => {
   for (const vp of viewports) {
     for (const d of docks) {
-      test(`${vp.w}x${vp.h} ${d.tag}`, async () => {
+      test(`${vp.w}x${vp.h} ${d.tag}`, async (t) => {
         const ctx = await browser.newContext({ viewport: { width: vp.w, height: vp.h } })
+        let page = null
         try {
-          await ctx.addInitScript(([k, v]) => {
-            window.localStorage.setItem(k, v)
-            window.sessionStorage.setItem('gah.onboard.auto', '1') // 首屏引导标记:不自动弹设置面板
-          }, ['gah.dock', JSON.stringify(d.dock)])
-          const page = await ctx.newPage()
-          await page.route('**/api/**', apiStub)
-          await page.goto(baseURL(), { waitUntil: 'load' })
-          await page.waitForTimeout(1200)
+          page = await open(ctx, apiStub, d.dock)
           assertInvariants(await measure(page))
+        } catch (e) {
+          await shoot(page, t.name)
+          throw e
         } finally {
           await ctx.close()
         }
@@ -279,28 +359,85 @@ describe('布局护栏:整页永不滚动(第五十二/五十三批)', { skip: s
     }
   }
 
-  test('侧栏开合语义:展开只有 .panel,收起只有 .handle', async () => {
+  test('侧栏开合语义:展开只有 .panel,收起只有 .handle', async (t) => {
     const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+    let page = null
     try {
-      await ctx.addInitScript(() => window.sessionStorage.setItem('gah.onboard.auto', '1'))
-      const page = await ctx.newPage()
-      await page.route('**/api/**', apiStub)
-      await page.goto(baseURL(), { waitUntil: 'load' })
-      await page.waitForTimeout(1200)
-      const open = await measure(page)
-      assertInvariants(open)
-      assert.equal(open.handles, 0, '侧栏展开时不该有收起态 ☰ 按钮(第五十二批事故:多渲染了一个 height:100% 的按钮把文档撑到 1573px)')
-      assert.equal(open.panels, 1, '侧栏展开时应恰好一个 .panel')
+      page = await open(ctx, apiStub, docks[1].dock)
+      const openState = await measure(page)
+      assertInvariants(openState)
+      assert.equal(
+        openState.handles,
+        0,
+        '侧栏展开时不该有收起态 ☰ 按钮(第五十二批事故:多渲染了一个 height:100% 的按钮把文档撑到 1573px)',
+      )
+      assert.equal(openState.panels, 1, '侧栏展开时应恰好一个 .panel')
       await page.click('.sidebar .toggle')
       await page.waitForTimeout(400)
-      const closed = await measure(page)
-      assertInvariants(closed)
-      assert.equal(closed.panels, 0, '侧栏收起时不该有 .panel')
-      assert.equal(closed.handles, 1, '侧栏收起时应恰好一个 ☰ 按钮')
+      const closedState = await measure(page)
+      assertInvariants(closedState)
+      assert.equal(closedState.panels, 0, '侧栏收起时不该有 .panel')
+      assert.equal(closedState.handles, 1, '侧栏收起时应恰好一个 ☰ 按钮')
+    } catch (e) {
+      await shoot(page, t.name)
+      throw e
     } finally {
       await ctx.close()
     }
   })
+
+  // 首启态(没配过 provider ⇒ App.vue 自动弹设置面板):遮罩层叠在主视图上时,外壳同样不许滚、
+  // 不许有元素被挤出视口 —— 这是新用户第一眼看到的画面,也是最容易"没人测到"的状态。
+  for (const vp of [{ w: 1200, h: 800 }, { w: 820, h: 560 }]) {
+    test(`${vp.w}x${vp.h} 首启态(设置面板遮罩)`, async (t) => {
+      const ctx = await browser.newContext({ viewport: { width: vp.w, height: vp.h } })
+      let page = null
+      try {
+        await ctx.addInitScript(() => window.localStorage.setItem('gah.dock', JSON.stringify(docks[1].dock)))
+        page = await ctx.newPage()
+        await page.route('**/api/**', makeStub(false))
+        await page.goto(baseURL(), { waitUntil: 'load' })
+        await waitSkeleton(page)
+        await page.waitForTimeout(400)
+        const m = await measure(page)
+        assert.ok(m.hasSettings, '首启态没弹出设置面板(桩没生效或引导逻辑变了)')
+        assertInvariants(m)
+      } catch (e) {
+        await shoot(page, t.name)
+        throw e
+      } finally {
+        await ctx.close()
+      }
+    })
+  }
+})
+
+// 仪器自检:护栏本身失效是最危险的失败模式(全绿但什么都没测)。这里注入一个与 2026-09-22 事故
+// 同形的越界元素(侧栏末尾 height:100% —— `.sidebar`/`.app` 无 overflow,故必须被检测到),
+// 断言不变量**必须开火**;删掉后必须恢复干净。
+test('检测器自检:注入越界元素必须被抓到,移除后必须恢复', { skip: skip && skipWhy }, async (t) => {
+  const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+  let page = null
+  try {
+    page = await open(ctx, apiStub, docks[1].dock)
+    await page.evaluate(() => {
+      const el = document.createElement('div')
+      el.className = 'canary-stray'
+      el.style.height = '100%'
+      el.textContent = 'canary'
+      document.querySelector('.sidebar').appendChild(el)
+    })
+    const dirty = await measure(page)
+    const fired = dirty.scrollHeight > dirty.clientHeight + 1 || dirty.scrolled !== 0 || dirty.outsideTotal > 0
+    assert.ok(fired, `检测器没开火 —— 护栏本身失效:${JSON.stringify(dirty)}`)
+    await page.evaluate(() => document.querySelector('.canary-stray')?.remove())
+    assertInvariants(await measure(page))
+  } catch (e) {
+    await shoot(page, t.name)
+    throw e
+  } finally {
+    await ctx.close()
+  }
 })
 
 test('布局护栏:跳过原因(仅在没有浏览器/产物时输出)', { skip: !skip }, () => {
@@ -308,7 +445,7 @@ test('布局护栏:跳过原因(仅在没有浏览器/产物时输出)', { skip:
 })
 
 // CI 的 ubuntu-latest(24.04)那两个参数能不能救场,本地验不了;但"什么失败该重试"这个判定
-// 是纯函数,拿两种真实报错文案钉住 —— 既不让沙箱失败白挂,也不让装错浏览器被重试掩盖。
+// 是纯函数,拿真实报错文案钉住 —— 既不让沙箱失败白挂,也不让装错浏览器被重试掩盖。
 test('无沙箱重试判定:只对沙箱/namespace 类失败生效(ubuntu-latest 24.04 的 AppArmor)', () => {
   assert.ok(shouldRetryWithoutSandbox('No usable sandbox! If you are running on Ubuntu 23.10+ or another Linux distro...'))
   assert.ok(shouldRetryWithoutSandbox('Failed to move to new namespace: PID namespaces supported, Network namespace supported'))
