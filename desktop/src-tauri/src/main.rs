@@ -291,14 +291,78 @@ fn explainUpdateError(msg: &str) -> String {
     }
 }
 
-// notifyNative 发一条系统通知,**失败写壳日志**。
+// notifyNative 发一条系统通知,**成败都写壳日志**。
 //
 // 为何不继续用 `let _ = ...show()`:通知不弹的两种主因(macOS 未授权、应用未注册进
 // 通知中心)在静默写法下长得完全一样 —— 页面上「什么都没发生」,机器上也没有证据。
 // 定位过同类问题(通知被拒)之后,失败必须留痕:写入 gah-shell.log,与 sidecar 日志同一份。
+// 成功也留痕(2026-09-22 真机反馈「只有 app 内卡片、没有系统通知」):只记失败时,
+// 「壳没发」与「系统收了但没弹」在日志上无法区分,定位只能靠猜。
 fn notifyNative(app: &tauri::AppHandle, title: &str, body: &str) {
-    if let Err(e) = app.notification().builder().title(title).body(body).show() {
-        shellLog(app, &format!("系统通知失败({title}): {e}"));
+    let state = app
+        .notification()
+        .permission_state()
+        .map(|s| format!("{s:?}"))
+        .unwrap_or_else(|e| format!("查询失败({e})"));
+    // 为何直调 notify-rust 而不经 tauri-plugin-notification:
+    // 后者的 show() 把投递丢进 async 任务且丢弃错误(`let _ = ...show()`),返回的 Ok 什么也不证明;
+    // 它的 permission_state() 在桌面端更是写死的 `Granted`。真机后果 = 日志写「已发」而屏幕无弹窗。
+    // 直调时 show() 会等 ObjC 投递回调,失败能给真实原因。
+    let mut n = notify_rust::Notification::new();
+    n.summary(title).body(body);
+    let id = app.config().identifier.clone();
+    #[cfg(target_os = "macos")]
+    let _ = notify_rust::set_application(&id);
+    let _ = id;
+    // 标题/正文克隆一份交给通知线程(它会阻塞到投递回调)。
+    let (t, b, app2) = (title.to_string(), body.to_string(), app.clone());
+    std::thread::spawn(move || match n.show() {
+        Ok(_) => shellLog(
+            &app2,
+            &format!("系统通知已投递(plugin 权限态 {state}): {t} | {}", b.replace('\n', " ")),
+        ),
+        Err(e) => shellLog(&app2, &format!("系统通知投递失败(plugin 权限态 {state}, {t}): {e}")),
+    });
+}
+
+// notifyNotice 提示流 → 系统通知(带失焦门控)。
+//
+// 为何要门控:macOS 对**前台**应用的通知只投递到通知中心、不弹横幅(Apple 行为)。
+// 窗口在前台时弹不出来是正常的,但调用方无法从返回值区分「被抑制」与「真失败」,
+// 于是「没弹」永远是笔糊涂账。壳自己判一层:ss
+//   - 窗口可见且聚焦 → 跳过(此时界面上的 toast 卡片已经在场,不缺反馈),记一行 skip;
+//   - 其余情况(失焦/最小化/托盘后台)→ 发,并记成功行。
+// 这样日志里「没弹」有明确成因,而不是靠猜。
+fn notifyNotice(app: &tauri::AppHandle, title: &str, body: &str) {
+    let focused = app
+        .get_webview_window("main")
+        .map(|w| w.is_focused().unwrap_or(false))
+        .unwrap_or(false);
+    if focused {
+        shellLog(app, &format!("系统通知跳过(窗口在前台,系统不弹横幅): {title}"));
+        return;
+    }
+    notifyNative(app, title, body);
+    bounceDock(app);
+}
+
+// bounceDock 用 Dock 图标弹跳补一个"不看 app 也能知道"的信号。
+//
+// 为何要它(2026-09-22 真机实测结论):macOS 只给"签名/公证过的"app 呈现系统通知。
+// 证据链:同样的通知用 /usr/bin/osascript 发就弹横幅(它在「系统设置→通知」列表里),
+// 我们的(ad-hoc 签名,codesign 显示 TeamIdentifier=not set)请求确实进了通知中心库
+// (usernoted 的 record 表有行、delivered_date 已写),但 style=0、presented=0,一条也没弹,
+// 且 app 不出现在「系统设置→通知」列表里 —— 即被系统静默收下但不呈现。
+// 焦点模式已排除(同一分钟的对照横幅正常弹)。
+// Dock 弹跳不依赖签名,是 macOS 标准的"要求用户注意"机制,因此在此兜底;
+// 将来用 Developer ID 签名 + 公证后横幅会自己回来(代码无需再改)。
+fn bounceDock(app: &tauri::AppHandle) {
+    let Some(w) = app.get_webview_window("main") else {
+        return;
+    };
+    match w.request_user_attention(Some(tauri::UserAttentionType::Critical)) {
+        Ok(()) => shellLog(app, "Dock 图标弹跳(补一个不依赖签名的外部信号)"),
+        Err(e) => shellLog(app, &format!("Dock 图标弹跳失败: {e}")),
     }
 }
 
@@ -309,6 +373,12 @@ fn logNotifyPermission(app: &tauri::AppHandle) {
         Ok(st) => shellLog(app, &format!("系统通知权限: {st:?}")),
         Err(e) => shellLog(app, &format!("系统通知权限查询失败: {e}")),
     }
+    // 诚实登记一句(2026-09-22 实测):桌面端的 permission_state 是写死的 Granted,
+    // 而真能否弹出取决于系统是否认可这个 app 的身份(签名/公证)。
+    shellLog(
+        app,
+        "系统通知口径: 未签名/未公证的构建, macOS 会收下通知但不呈现(只在 app 内看到卡片);壳另有 Dock 弹跳兑底。",
+    );
 }
 
 // notifyUpdate 托盘场景的呈现:系统通知 + 原生对话框双通道。
@@ -425,6 +495,28 @@ async fn check_update(app: AppHandle) -> UpdateOutcome {
 //
 // 默认关闭:没设这个变量时一行代码都不多跑。装完新版后会重启:若环境变量被一并继承(重启沿用当前
 // env),下一轮调到的已经是**新版自身**,而那一轮远端已是「已是最新」→ 不会再装,不存在自升级死循环。
+// spawnNotifyTest 真机自测缝(默认关:只有 GAH_SHELL_NOTIFY_TEST 设了才动)。
+//
+// 为何要这条缝:通知不弹的成因分三层(壳没发 / 系统在前台抑制 / 系统收了但没弹),
+// 而"发一条系统通知"在真机上只能等一个真实 warn/error 提示撞上来,无法按需复现。
+// 起了它就能直接测通不通:
+//   open --env GAH_SHELL_NOTIFY_TEST=1 -a <app路径>(要在启动前设;已运行则先退出)
+// 约定延迟 12 秒:给用户把窗口切走的时间(macOS 对前台应用只投递到通知中心,不弹横幅)。
+fn spawnNotifyTest(app: AppHandle) {
+    let Ok(raw) = std::env::var("GAH_SHELL_NOTIFY_TEST") else {
+        return;
+    };
+    if raw.is_empty() || raw == "0" {
+        return;
+    }
+    shellLog(&app, "自测: GAH_SHELL_NOTIFY_TEST 已设,12 秒后发一条测试系统通知");
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(12)).await;
+        // 故意走 notifyNotice(而非 notifyNative):把前台门控 + 通知 + Dock 弹跳整条真路径跑一遍。
+        notifyNotice(&app, "gah", "自测通知:看到这条说明外部提醒通。窗口在前台时会跳过。");
+    });
+}
+
 fn spawnAutoCheck(app: AppHandle) {
     let Ok(raw) = std::env::var("GAH_SHELL_UPDATE_AUTOCHECK") else {
         return;
@@ -1206,6 +1298,12 @@ fn main() {
             let check_item = MenuItemBuilder::with_id("check_update", CHECK_IDLE_TEXT)
                 .build(app)
                 .unwrap();
+            // 「测试系统通知」:真机排查「通知不弹」的定性入口。
+            // 点一下就能分清是「壳没发」(日志无行)、「系统抑制」(日志有跳过行)
+            // 还是「系统收了但没弹」(日志有已发行 → 查系统设置/专注模式)。
+            let notify_item = MenuItemBuilder::with_id("test_notify", "测试系统通知")
+                .build(app)
+                .unwrap();
             let about_item = MenuItemBuilder::with_id("about", "关于 gah")
                 .build(app)
                 .unwrap();
@@ -1217,6 +1315,7 @@ fn main() {
                     &show_item,
                     &autostart_item,
                     &check_item,
+                    &notify_item,
                     &about_item,
                     &PredefinedMenuItem::separator(app).unwrap(),
                     &quit_item,
@@ -1245,6 +1344,10 @@ fn main() {
                             let _ = w.show();
                             let _ = w.set_focus();
                         }
+                    }
+                    "test_notify" => {
+                        shellLog(app, "托盘: 测试系统通知");
+                        notifyNative(app, "gah", "测试通知:看到这条说明系统通知通了。");
                     }
                     "autostart" => {
                         let m = app.autolaunch();
@@ -1571,7 +1674,7 @@ fn main() {
                     let path = format!("/api/notices?since={}", consumer.since());
                     if let Some(feed) = notice::parseFeed(&httpGETAuth(&path)) {
                         for n in consumer.accept(&feed) {
-                            notifyNative(&handle4, &notice::notifyTitle(&n), &notice::notifyBody(&n));
+                            notifyNotice(&handle4, &notice::notifyTitle(&n), &notice::notifyBody(&n));
                         }
                     }
                     // 2) 回合结束(壳侧独有信号)
@@ -1585,6 +1688,7 @@ fn main() {
 
             // —— 升级冒烟缝(默认关:只有 GAH_SHELL_UPDATE_AUTOCHECK 设了才动) ——
             spawnAutoCheck(app.handle().clone());
+            spawnNotifyTest(app.handle().clone());
 
             Ok(())
         })

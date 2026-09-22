@@ -1217,6 +1217,7 @@ dependencies = [
 name = "gah-desktop"
 version = "0.1.0"
 dependencies = [
+ "notify-rust",
  "serde",
  "serde_json",
  "tauri",

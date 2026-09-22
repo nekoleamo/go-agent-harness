@@ -12,6 +12,11 @@ tauri-plugin-shell = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-autostart = "2"
 tauri-plugin-notification = "2"
+# notify-rust 与 tauri-plugin-notification 同源(已在依赖树内,版本取树内一致值)。
+# 为何直调它:插件的 show() 把通知丢进 async 任务并丢弃错误(`let _ = ...show()`),
+# 于是"成功"是个无意义的返回值 —— 2026-09-22 真机的事就是它:日志写"已发"、屏幕什么都没有。
+# 直调后 show() 会等 ObjC 投递回调,能拿到真实结果与错误原因(未授权/未注册进通知中心等)。
+notify-rust = "4"
 tauri-plugin-updater = "2"
 tauri-plugin-dialog = "2"
 tokio = { version = "1", features = ["time"] }

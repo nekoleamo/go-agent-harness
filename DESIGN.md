@@ -845,6 +845,22 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 
 > **发布**:v0.1.1(2026-09-13)已出 —— macOS `gah_0.1.1_aarch64.dmg`(34.18 MiB)+ Windows `gah_0.1.1_x64-setup.exe`(31.59 MiB)+ updater `gah.app.tar.gz`/`latest.json`(实测 `releases/latest/download/latest.json` HTTP 200,`version=0.1.1`,双平台签名齐备)+ 命令行五目标归档与 `checksums.txt`;三个 workflow(`ci`/`release-cli`/`release-desktop`)全绿,流程与产物清单见 `docs/RELEASE.md`「发布记录:v0.1.1」。
 
+### 第五十一批 · 步数上限改可配 / 桌面壳系统通知定位与兜底 / 上下文占用对照 pi(2026-09-22)
+
+> 用户三问:① gah 的上下文占用展示与查询能不能参考本机 pi agent;② A-1a/A-1b/A-2/A-5 已验过,**A-3 只有 app 内卡片、没有系统横幅**(缺陷);③ 回合动辄报「达到最大步数 10 仍未完成」,上限太紧。
+
+1. **步数上限改可配(③)**:`plugins/host/host-agent-loop/agentloop.go` 原是硬编码 `const maxSteps = 10`,现改为 `data.max_steps` 可配、**缺省 0 = 不限**(`maxStepsFromManifest` 只认 int/float64,非法值走缺省)。理由:上限本是给「工具死循环」兜底的启发式,不该由 harness 替用户定死 10;而**不限 ≠ 无护栏** —— 回合可随时取消、工具各有超时、压缩链路正常。耗尽时的错误文案改为指明 `data.max_steps` 放宽/置 0。测试:`TestTurnDefaultHasNoStepCap`(12 步工具调用跑到完成 = 回归锁)、`TestTurnMaxStepsConfigured`(配 2 必报「达到最大步数 2」且正常收尾)、`TestMaxStepsFromManifest`。种子 `host-agent-loop` 条目加 `data: max_steps: 0`,两份 `bundle-base.yaml` **seed-version 26 → 27**(base 能力条目变更,老用户落盘自动备份后覆盖)。
+2. **A-3 系统通知:先定位,再修(②)**。三条实测证据(2026-09-22,本机 macOS 26.7):
+   - **旧实现的「已发」是假的**:`tauri-plugin-notification` 的 `show()` 把投递丢进 async 任务并 `let _ = …show()`,错误被吞;桌面端 `permission_state()` 更是写死的 `Granted`(源码级确认)。
+   - **通知其实进了系统**:通知中心库(`usernoted` 的 `record` 表)有我们的行、`delivered_date` 已写,但 `style=0`、`presented=0`,**横幅一条没弹**,且 app **不出现在「系统设置 → 通知」列表**里。
+   - **反向对照**:同一分钟用 `/usr/bin/osascript` 发 → **横幅正常弹**(`style=1`,在通知列表里);焦点/勿扰已排除(对照横幅是同一环境下弹的)。
+   - **结论**:macOS 只给**签名/公证过**的 app 呈现系统通知。我们的构建是 ad-hoc 签名(`codesign` 显示 `flags=adhoc,linker-signed`、`TeamIdentifier=not set`)⇒ 系统**收下但不呈现**。与既有 B-1 卡点同源。
+   - **代码侧能做的三件(已落地)**:① `notifyNative` 改**直调 notify-rust**(投递结果与错误真实可见,不再有假 Ok)+ 成败都写壳日志;② `notifyNotice` 加**前台门控**(窗口在前台时跳过并记一行 —— 前台横幅本来不会弹);③ `bounceDock`(`request_user_attention(Critical)`)作**不依赖签名**的兜底外部信号。另加 `GAH_SHELL_NOTIFY_TEST`(默认关;`open --env … -a gah.app` 起了就 12 秒后自走一遍真路径)+ 托盘「测试系统通知」。
+   - **待外部条件**:Developer ID 签名 + 公证后横幅会自动回来,代码无需再改(见「未实施」表)。
+3. **上下文占用对照 pi(①)**:结论 = **展示面 gah 已不弱于 pi、查询面更强,真缺口是「溢出兜底压缩」**。逐项对照、优先级与改法见 `/Users/nekoleamo/Documents/Plan/gah-上下文占用对照-pi.md`;缺口已登记进下方「未实施」表。
+
+**验证**:agent-loop 单测 3 条新增全绿(含 12 步不限步回归);`go test ./internal/embed/ ./plugins/host/host-plugin-manager/` 13 项(种子同步护栏);壳 `cargo check` 干净,真机重开 `/Applications` 与 repo 两处构建,壳日志实测行:`自测: GAH_SHELL_NOTIFY_TEST 已设…` → `系统通知已投递(plugin 权限态 Granted)` → `Dock 图标弹跳(补一个不依赖签名的外部信号)`(失焦)与前台门控跳过分支各一次。
+
 ### 第五十批 · 侧栏导出菜单落地(2026-09-22)
 
 > 承接第四十九批 ③:用户拍板选 **(b) `⤓` 点开小菜单(导出网页 / 导出 jsonl)**。顺带查出并修掉两个此前一直没人报的真缺陷。
@@ -884,6 +900,8 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 
 | 项 | 状态 |
 |---|---|
+| 模型报超窗时的**压缩重试**(溢出兜底) | ⏳ **未实施**(2026-09-22 对照 pi 后登记):gah 有按窗口比例自动压缩(第五十批前的 `2bcb99f`)+ 手动 `/compact`,但**没有**「模型返回 context_length 类错误 → 压缩后重试本回合」这条兜底——阈值算得再准也有估偏的时候(长单轮/图像/非均勾 token 分布)。改法、优先级与风险见 `/Users/nekoleamo/Documents/Plan/gah-上下文占用对照-pi.md` |
+| macOS 系统通知的**呈现** | ⏳ 卡签名/公证(与 B-1 同源):代码已保证投递且可观测,但 ad-hoc 签名的构建会被系统「收下不弹」⇒ 需 Developer ID 签名 + 公证;届时横幅自动回来,代码无需再改 |
 | Windows 真机 6 项人工复核 | ⏳ 需 Win 机器(清单见 `docs/VERIFY.md` 文末「剩余验收任务」B 段) |
 | 原生文件夹选择器(桌面端) | ⏳ 需网络加 `tauri-plugin-dialog`(现已用路径输入覆盖同一能力) |
 | 拖放非附件文件(图片直贴等)到窗口的其它落点 | ⏳ 本轮只放开 WebView 拖放,业务落点仍仅输入区 |
