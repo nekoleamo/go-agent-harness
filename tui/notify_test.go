@@ -56,23 +56,27 @@ func TestDetectNotifyTarget(t *testing.T) {
 // TestNotifyPayloads 逐字节断言各落点的转义序列(含 kitty 分块与 d=1 收尾)。
 func TestNotifyPayloads(t *testing.T) {
 	cases := []struct {
-		target notifyTarget
-		title  string
-		body   string
-		want   string
+		target   notifyTarget
+		title    string
+		body     string
+		want     string
+		suppress bool
 	}{
 		// 只有标题时必须 d=1(否则 kitty 一直等后续分块,永远不弹)。
-		{targetOSC99, "标题", "", "\x1b]99;i=gah-7:o=unfocused:d=1;标题\x1b\\"},
+		{targetOSC99, "标题", "", "\x1b]99;i=gah-7:o=unfocused:d=1;标题\x1b\\", true},
 		// 有正文 = 两块:标题 d=0(未完)→ 正文 d=1:p=body(完)。
 		{targetOSC99, "标题", "正文", "\x1b]99;i=gah-7:o=unfocused:d=0;标题\x1b\\" +
-			"\x1b]99;i=gah-7:o=unfocused:d=1:p=body;正文\x1b\\"},
-		{targetOSC777, "标题", "正文", "\x1b]777;notify;标题;正文\x07"},
-		{targetOSC9, "标题", "正文", "\x1b]9;标题: 正文\x07"},
-		{targetBell, "标题", "正文", "\x07"},
-		{targetNone, "标题", "正文", ""},
+			"\x1b]99;i=gah-7:o=unfocused:d=1:p=body;正文\x1b\\", true},
+		{targetOSC777, "标题", "正文", "\x1b]777;notify;标题;正文\x07", true},
+		{targetOSC9, "标题", "正文", "\x1b]9;标题: 正文\x07", true},
+		{targetBell, "标题", "正文", "\x07", true},
+		// suppress=false = `/notify test`:不带 o=unfocused,按协议默认 o=always 必显示。
+		{targetOSC99, "标题", "正文", "\x1b]99;i=gah-7:d=0;标题\x1b\\" +
+			"\x1b]99;i=gah-7:d=1:p=body;正文\x1b\\", false},
+		{targetNone, "标题", "正文", "", true},
 	}
 	for _, c := range cases {
-		if got := notifyPayload(c.target, c.title, c.body, 7); got != c.want {
+		if got := notifyPayload(c.target, c.title, c.body, 7, c.suppress); got != c.want {
 			t.Fatalf("%v 载荷 = %q,期望 %q", c.target, got, c.want)
 		}
 	}
@@ -120,45 +124,45 @@ func TestNotifierEmit(t *testing.T) {
 	kitty := map[string]string{"KITTY_WINDOW_ID": "1", "TERM": "xterm-kitty"}
 	var buf bytes.Buffer
 	n := newNotifier(NotifyAuto, envOf(kitty), &buf, nil)
-	if !n.emit("标题", "正文", 3) {
+	if !n.emit("标题", "正文", 3, true) {
 		t.Fatal("kitty 环境应能发出")
 	}
-	if got := buf.String(); got != notifyPayload(targetOSC99, "标题", "正文", 3) {
+	if got := buf.String(); got != notifyPayload(targetOSC99, "标题", "正文", 3, true) {
 		t.Fatalf("写入内容与载荷不符: %q", got)
 	}
 
 	// off:零输出(可断言:一个字节都不写)。
 	buf.Reset()
 	n.setMode(NotifyOff)
-	if n.emit("标题", "", 4) || buf.Len() != 0 {
+	if n.emit("标题", "", 4, true) || buf.Len() != 0 {
 		t.Fatalf("off 模式必须零输出: %q", buf.String())
 	}
 
 	// bell:无条件响铃(模式优先于探测)。
 	buf.Reset()
 	n.setMode(NotifyBell)
-	if !n.emit("标题", "", 5) || buf.String() != "\x07" {
+	if !n.emit("标题", "", 5, true) || buf.String() != "\x07" {
 		t.Fatalf("bell 模式应只写 \\a: %q", buf.String())
 	}
 
 	// osc:探测为 bell(Terminal.app)时强制升级成 OSC 9(用户的显式逃生口)。
 	buf.Reset()
 	n2 := newNotifier(NotifyOSC, envOf(map[string]string{"TERM_PROGRAM": "Apple_Terminal", "TERM": "xterm-256color"}), &buf, nil)
-	if !n2.emit("标题", "", 6) || !strings.HasPrefix(buf.String(), "\x1b]9;") {
+	if !n2.emit("标题", "", 6, true) || !strings.HasPrefix(buf.String(), "\x1b]9;") {
 		t.Fatalf("osc 模式应强制 OSC 9: %q", buf.String())
 	}
 
 	// 探测不到且非强制 → 不发(仅状态栏),不报错。
 	buf.Reset()
 	n3 := newNotifier(NotifyAuto, envOf(map[string]string{}), &buf, nil)
-	if n3.emit("标题", "", 7) || buf.Len() != 0 {
+	if n3.emit("标题", "", 7, true) || buf.Len() != 0 {
 		t.Fatalf("无落点时应不发: %q", buf.String())
 	}
 
 	// 未附着控制终端(stdout 被重定向)→ 不发,但状态行里说明原因。
 	buf.Reset()
 	n4 := newNotifier(NotifyAuto, envOf(kitty), nil, nil)
-	if n4.emit("标题", "", 8) {
+	if n4.emit("标题", "", 8, true) {
 		t.Fatal("无写端时不应发")
 	}
 	if !strings.Contains(n4.statusText(), "未附着") {
@@ -168,7 +172,7 @@ func TestNotifierEmit(t *testing.T) {
 	// tmux 里发:包装生效。
 	buf.Reset()
 	n5 := newNotifier(NotifyAuto, envOf(map[string]string{"TMUX": "x", "KITTY_WINDOW_ID": "1", "TERM": "xterm-kitty"}), &buf, nil)
-	n5.emit("标题", "", 9)
+	n5.emit("标题", "", 9, true)
 	if !strings.HasPrefix(buf.String(), "\x1bPtmux;\x1b\x1b]99;") {
 		t.Fatalf("tmux 内应包 DCS: %q", buf.String())
 	}
@@ -279,7 +283,7 @@ func TestNotifyRealTTY(t *testing.T) {
 	}
 	n := newNotifier(mode, os.Getenv, out, nil)
 	t.Log("探测结果:", n.statusText())
-	if !n.emit("gah 真机冒烟", "若你看到这条通知,说明 "+n.target.String()+" 在本终端生效", 1) {
+	if !n.emit("gah 真机冒烟", "若你看到这条通知,说明 "+n.target.String()+" 在本终端生效", 1, true) {
 		t.Fatalf("附着终端时应发出(模式 %s,落点 %s)", n.mode, n.target)
 	}
 }

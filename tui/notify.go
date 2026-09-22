@@ -184,7 +184,10 @@ func openNotifyTTY() (io.Writer, error) {
 func (n *notifier) setMode(m NotifyMode) { n.mode = m }
 
 // emit 发一条系统级通知。返回是否真的写出(供 `/notify test` 回显,不静默)。
-func (n *notifier) emit(title, body string, id uint64) bool {
+// suppress = OSC 99 带 o=unfocused(仅终端**未聚焦**时显示,避免打断当前工作):
+// 真实通知用 true;`/notify test` 必须用 false —— 否则用户在自己聚焦的窗口里按测试键
+// 必然什么都看不到,测试入口自己把自己抑制掉了(2026-09-22 kitty 实测踩到)。
+func (n *notifier) emit(title, body string, id uint64, suppress bool) bool {
 	if n == nil || n.mode == NotifyOff || n.out == nil {
 		return false
 	}
@@ -201,7 +204,7 @@ func (n *notifier) emit(title, body string, id uint64) bool {
 	if target == targetNone {
 		return false
 	}
-	payload := notifyPayload(target, sanitizeNotifyText(title, notifyTitleMax), sanitizeNotifyText(body, notifyBodyMax), id)
+	payload := notifyPayload(target, sanitizeNotifyText(title, notifyTitleMax), sanitizeNotifyText(body, notifyBodyMax), id, suppress)
 	if payload == "" {
 		return false
 	}
@@ -249,12 +252,17 @@ func notifyLevelAllows(l sdk.NoticeLevel) bool {
 }
 
 // notifyPayload 落点 → 实际转义序列(纯函数,便于逐字节断言)。
-func notifyPayload(t notifyTarget, title, body string, id uint64) string {
+// suppress 只对 OSC 99 有意义(见 emit);其余落点没有在场抑制概念,忽略该参数。
+func notifyPayload(t notifyTarget, title, body string, id uint64, suppress bool) string {
 	switch t {
 	case targetOSC99:
 		// kitty 协议:标题与正文**分块**传(d=0 未完 / d=1 完,不置 d=1 终端会一直等下去);
-		// o=unfocused 让**终端**做在场抑制 —— 应用判不出自己是否前台,交给终端才不误判。
-		meta := "i=gah-" + strconv.FormatUint(id, 10) + ":o=unfocused:"
+		// o=unfocused 让**终端**做在场抑制 —— 应用判不出自己是否前台,交给终端才不误判;
+		// 省略 o 时按协议默认 o=always(必显示),这正是 `/notify test` 要的。
+		meta := "i=gah-" + strconv.FormatUint(id, 10) + ":"
+		if suppress {
+			meta += "o=unfocused:"
+		}
 		if body == "" {
 			return "\x1b]99;" + meta + "d=1;" + title + "\x1b\\"
 		}

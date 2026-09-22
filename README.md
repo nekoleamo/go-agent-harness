@@ -345,6 +345,7 @@ patch-*.yaml            # 按 id 替换/插入/启停条目(随时插拔)
 | `GAH_HOME` | 内部贯通变量(boot 自动设为便携根 `gah-data/`,插件/外部进程经它派生子目录);**用户显式设置被忽略**(数据根唯一 = 二进制同级 `gah-data/`,2026-09-16 起,设不同值启动时告警) |
 | `GAH_PROFILE` / `GAH_NO_TUI` | 默认 profile / 强制关闭 TUI(headless/CI) |
 | `GAH_WEB_ADDR` / `GAH_WEB_OPEN` / `GAH_WEB_STATIC` | Web 监听地址(默认 127.0.0.1:2233)/ 是否自动开浏览器 / 静态目录覆写(开发态 HMR);桌面壳另用 `GAH_WEB_TOKEN` 传 token 并导航到 `#token=` 地址(就绪探测把 401 也视为已就绪),并**自己挑一个空闲端口**以 `GAH_WEB_ADDR` 覆写监听地址(固定端口会连上别的实例:孤儿 sidecar 或用户自己的 `gah web`),同时置 `GAH_WEB_PARENT_WATCH=1`:父进程一死 sidecar 即自行优雅退出(不留占着数据根的孤儿) |
+| `GAH_EXPORT_OPEN` | `/export <路径>.html` 导出后是否自动用系统默认程序打开(默认**开**;`0`/`false` 关;等价于 config 里 `host-internal-commands` 条目的 `data.export_open_browser`) |
 | `GAH_MCP_COMMAND` / `GAH_MCP_COMMANDS` | MCP 桥接入(单 server / 多 server 每行 `name=command args`);**`$GAH_HOME/config/mcp.yaml` 优先**,同名以文件为准(env 独有条目在设置面板标「环境变量」只读) |
 | `GAH_CB_ADDR` / `GAH_CB_TOKEN` | host-bridge 回调通道(外部进程插件请求宿主 tools/jobs/fanout 服务;含鉴权 token;**不外泄**:`SanitizedEnv` 拦在下游) |
 | `GAH_SHELL_KERNEL_SANDBOX` | `0` = 关闭 shell 的**内核级沙箱**(默认开启:macOS `sandbox-exec` seatbelt / Linux Landlock 在进程树层面限制文件写;仅约束写,读与网络不限;能力缺失平台会自动告警并降级为纯协作式控制) |

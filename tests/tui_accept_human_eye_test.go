@@ -135,6 +135,8 @@ func TestTUIAcceptHumanEyeMaterials(t *testing.T) {
 	save("03-CtrlT-思维块-屏幕.txt", stripANSI(s.screen()))
 
 	// /export 真产物(自包含 HTML;浏览器直接打开看观感)
+	// 关掉自动打开:素材用例只产出文件给人工看,跑测试不该真拉起浏览器窗口。
+	t.Setenv("GAH_EXPORT_OPEN", "0")
 	htmlPath := filepath.Join(eyeDir, "04-会话导出.html")
 	s.send("/export " + htmlPath + "\r")
 	if !s.waitRaw("已导出", 15*time.Second) {

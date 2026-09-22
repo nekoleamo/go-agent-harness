@@ -1621,6 +1621,17 @@ Go 全量 **1498 passed**(67 包,0 失败,6 跳过;新增 `TestPluginStderrCaptu
 **11. pdfium TUI 位图** —— **锁死理由**:SELF-1 有网实测体积 **+≈5.5 MiB → 破体积门**(当时门 46/30,现在更紧的 36/23 下更无空间);TUI **无图形协议**支持 → 位图 = 新子系统(布局、缩放、终端矩阵、性能);而主力光栅路径已由 **RST-1** 交付(外部 `pdftoppm` + `sdk.DocRasterService` + `/api/doc/raster`)。**重启条件 = 降体路径先腾出空间(②/③)且「零外部依赖部署」需求成立** —— 注意这一条与上面第 6 项的「终端内联图片」不同:此项即使有图形协议也仍受体积门约束。
 **12. OSC 9;4 进度通知** —— **锁死理由**(本次分析补充):OSC 9;4 的支持面窄(Windows Terminal、WezTerm 等为主),在未知终端上属于**纯静默失效** —— 与「静默失效不可接受」的红线直接冲突;而进度语义在 TUI 已有落点:状态栏 + 坞折叠行「后台 N 运行中: <摘要>」(1s 节拍,仅在有任务时续拍)。**重启条件 = 需要终端级任务栏进度**(例如长任务在最小化窗口里也要可见)成为明确需求,且探测可依赖。
 
+#### 交付记录(2026-09-22,第四十五批:A 组人眼项实测反馈 —— 1 处真缺陷(kitty 通知被自己抑制)+ `/export` 自动打开 + 桌面端 0.1.5 本地构建)
+
+**来源**:用户跑 A 组人工项后的三条实测反馈(A-1a 键位 / A-1b 浏览器未自动打开 / A-2 kitty 下 `/notify` 无反应)。
+
+1. **A-1a 键位口径(非缺陷)** —— `Ctrl+O` = 最近一条**工具结果行**折叠(`toggleLastFold`),`Ctrl+T` = **思维块**折叠(`ThinkingFull`),两者分工不同且都真实存在;`Ctrl+O` 在“当前没有工具结果行”时本来就无事可做(纯对话回合里按它没反应是预期)。清单里两者均已写明,本次只补上“前提”一句。
+2. **A-2 真缺陷:kitty 下 `/notify test` 永远看不到东西** —— 根因:OSC 99 载荷固定带 `o=unfocused`(把在场抑制交给终端:窗口聚焦时不弹),而 `/notify test` 照抄了它 ⇒ 用户在**自己聚焦的窗口**里按测试键必然毫无反应(实测 `TERM=xterm-kitty`,探测落点 `OSC 99(kitty)` 正确)。这是“测试入口被自己的产品语义抑制”的典型缺陷。修:`notifier.emit` 增 `suppress bool` —— 真实通知传 true(保留抑制,不打断当前工作),`/notify test` 传 false(省略 `o` ⇒ 按 kitty 协议默认 `o=always`,必显示);测试回执补一句“kitty/iTerm2 等还须在系统通知设置里允许该终端”(终端被禁用通知时同样不弹,不能误判为 gah 缺陷)。
+3. **A-1b 体验缺口已补:`/export <路径>.html` 成功后默认自动打开** —— 此前只写文件、只回显路径(用户反馈“浏览器未自动打开”属实)。改:`host-internal-commands` 的 `cmdExport` 在 `.html` 分支写盘后调 `openPath`(平台 `open`/`xdg-open`/`rundll32`,只 Start 不 Wait);开关优先级 **env `GAH_EXPORT_OPEN`**(`0`/`false` 关) > manifest `data.export_open_browser` > 缺省 **true**;打不开只提示不报错 —— 文件已写好,SSH/无桌面场景不该把成功的导出变成失败。样板 `config/bundle-base.yaml` 与 seed 两份同步加 `data.export_open_browser: true`,**seed-version 24 → 25**。
+4. **桌面端 0.1.5 本地构建**(用户要“本地最新版本桌面端”做壳面测试):`RELEASE_VERSION=0.1.5 bash scripts/publish-desktop.sh darwin-aarch64` → `gah_0.1.5_aarch64.dmg`(24.4 MiB)+ 已签 `gah.app.tar.gz` + `latest.darwin-aarch64.json`,落 `dist-desktop/darwin-aarch64/`;sidecar 为本批改动的 CLI 构建(线上 v0.1.4 不含这些修复)。
+
+**测试/验证**:notify 载荷新增 `suppress=false` 逐字节断言(无 `o=unfocused`);`openpath_test` 表驱动 8 例(env/data/缺省三级优先级 + 非布尔值不静默当 false);`commands_exec_test` 的 export 用例注入 `openPathCmd` 并断言“jsonl 不打开 / html 打开一次且路径一致”。`go test ./plugins/host/host-internal-commands/ ./tui/ ./internal/embed/ ./plugins/catalogue/ -count=1` **417 passed**;gofmt 干净。README 中/英 env 表同步增 `GAH_EXPORT_OPEN`。
+
 #### 交付记录(2026-09-22,第四十四批:异常退出的残留收口 —— 孤儿插件进程清理 + Web 端口占用可诊断)
 
 **起于一次真实现场**:`gah --profile web` 报 `listen tcp 127.0.0.1:2233: bind: address already in use`,同时日志里 `tool-mcp` 因缺 MCP 配置 exit 1(两件事各有各的原因)。

@@ -26,12 +26,12 @@ type Plugin struct{}
 func (p *Plugin) Name() string { return "host-internal-commands" }
 
 // Start 注册内部命令进 ctx.commands(同名已存在则跳过:防与 TUI 双注册冲突,先到先得)。
-func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
+func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	var cmds sdk.CommandRegistry
 	if err := c.Inject("ctx.commands", &cmds); err != nil {
 		return func() {}, nil // 无命令注册表:跳过(命令不可用,不静默报错于装配)
 	}
-	h := &Host{c: c}
+	h := &Host{c: c, m: m}
 	disposers := []sdk.Disposer{}
 	for _, spec := range h.specs() {
 		if _, ok := cmds.Get(spec.Name); ok {
@@ -51,7 +51,11 @@ func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
 }
 
 // Host 命令执行器:经 Ctx 逐次注入服务(与 TUI 原实现同款,去 UI 状态耦合)。
-type Host struct{ c sdk.Ctx }
+// m 只用于读 data 配置(如 export_open_browser),为空时全走缺省值。
+type Host struct {
+	c sdk.Ctx
+	m *sdk.Manifest
+}
 
 // specs 命令定义(与 TUI registerInternalCommands 同源;仅执行层去 UI 同步)。
 func (h *Host) specs() []sdk.CommandSpec {
@@ -584,8 +588,9 @@ func (h *Host) cmdExport(args []string) (string, error) {
 		return "会话事件数: " + fmt.Sprint(len(evs)), nil
 	}
 	// B2:path 以 .html 结尾 → 自包含 HTML 渲染(对齐 pi /export HTML);否则 jsonl(既有语义)
+	htmlOut := strings.HasSuffix(strings.ToLower(path), ".html")
 	var out []byte
-	if strings.HasSuffix(strings.ToLower(path), ".html") {
+	if htmlOut {
 		out = []byte(renderSessionHTML(evs))
 	} else {
 		var sb strings.Builder
@@ -605,7 +610,17 @@ func (h *Host) cmdExport(args []string) (string, error) {
 	if err := os.WriteFile(path, out, 0o644); err != nil {
 		return "", errString("导出失败: " + err.Error())
 	}
-	return fmt.Sprintf("已导出 %d 条事件 → %s", len(evs), path), nil
+	msg := fmt.Sprintf("已导出 %d 条事件 → %s", len(evs), path)
+	// 导出 HTML 后默认自动打开(缺省开:导出的下一步必然是打开它;env GAH_EXPORT_OPEN=0 /
+	// data.export_open_browser=false 关)。打不开只提示不报错 —— 文件已写好,导出本身是成功的。
+	if htmlOut && shouldOpenExportBrowser(h.m) {
+		if err := openPath(path); err != nil {
+			msg += "(自动打开浏览器失败:" + err.Error() + ";可手动打开)"
+		} else {
+			msg += "(已在浏览器打开)"
+		}
+	}
+	return msg, nil
 }
 
 func (h *Host) cmdSession(args []string) (string, error) {

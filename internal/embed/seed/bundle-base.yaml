@@ -1,4 +1,4 @@
-# seed-version: 24 # 样板版本:新增 base 能力条目(host-* 等)时 +1(24:新增 tool-schedule 定时计划工具;23:host-notices 提示通道),老用户自动升级(备份后覆盖)
+# seed-version: 25 # 样板版本:新增 base 能力条目(host-* 等)时 +1(25:host-internal-commands 增 export_open_browser;24:新增 tool-schedule 定时计划工具;23:host-notices 提示通道),老用户自动升级(备份后覆盖)
 # base bundle:对齐 dsh-base,一切功能皆插件的共享第一层。
 # M1 阶段条目仅记录意图;对应插件工厂在 M2 base bundle 落地。
 name: base
@@ -18,6 +18,8 @@ entries:
       base_url: https://api.anthropic.com/v1 # model=claude-* 时经模型前缀路由到本适配器
   - id: host-commands # 斜杠命令注册表(ctx.commands):插件命令自动进入 TUI 提示
   - id: host-internal-commands # B3 命令下沉:内部命令(thinking/model/provider/…/reload)宿主注册,web/TUI / 通用
+    data:
+      export_open_browser: true # /export 出 .html 后自动打开浏览器(缺省 true;env GAH_EXPORT_OPEN=0 / data 置 false 关)
   - id: host-agent-loop
   - id: policy-guard # M19 融合:policy-approval + policy-sandbox 统一策略插件(对外契约不变)
     data:

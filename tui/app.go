@@ -1784,7 +1784,7 @@ func (a *App) systemNotify(n *sdk.Notice) {
 	if n == nil || a.notifier == nil || !notifyLevelAllows(n.Level) {
 		return
 	}
-	a.notifier.emit(n.Title, n.Body, n.ID)
+	a.notifier.emit(n.Title, n.Body, n.ID, true)
 }
 
 // cmdNotify /notify:系统级通知落点的探测结果/测试/运行期开关(NOND-N2)。
@@ -1799,11 +1799,13 @@ func (a *App) cmdNotify(args []string) (string, error) {
 	}
 	switch strings.ToLower(strings.TrimSpace(args[0])) {
 	case "test":
-		if !a.notifier.emit("gah 通知测试", "看到这条(或听到响铃)说明系统级通知可用", 0) {
+		// suppress=false:测试必须**强制可见** —— 真实通知带 OSC 99 的在场抑制(聚焦时不弹),
+		// 测试若照抄就会在用户自己聚焦的窗口里"什么都看不到"(kitty 实测踩到)。
+		if !a.notifier.emit("gah 通知测试", "看到这条(或听到响铃)说明系统级通知可用", 0, false) {
 			return "未发出:" + a.notifier.statusText(), nil
 		}
 		return "已发出(落点 " + a.notifierTargetText() + ");未看到/未听到说明该终端不认这个序列 —— " +
-			"可换 /notify bell 或 /notify osc 再试", nil
+			"可换 /notify bell 或 /notify osc 再试;kitty/iTerm2 等还须在系统通知设置里允许该终端", nil
 	case "auto", "osc", "bell", "off":
 		a.notifier.setMode(ParseNotifyMode(args[0]))
 		return "系统级通知模式 -> " + string(a.notifier.mode) + "(本次会话;持久开关 = env " + NotifyEnv + ")", nil

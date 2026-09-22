@@ -5,6 +5,7 @@ package hostintcmd
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -135,6 +136,15 @@ func TestCommandsExecuteExport(t *testing.T) {
 	}
 	cmds := startCmds(t, c)
 
+	// HTML 导出默认会自动打开浏览器:测试里替换 openPathCmd —— 既不真拉浏览器,又能断言确实开了。
+	var opened []string
+	origOpen := openPathCmd
+	openPathCmd = func(path string) *exec.Cmd {
+		opened = append(opened, path)
+		return exec.Command("true")
+	}
+	defer func() { openPathCmd = origOpen }()
+
 	dir := t.TempDir()
 	jl := filepath.Join(dir, "out.jsonl")
 	out, err := run(t, cmds, "export", jl)
@@ -153,10 +163,17 @@ func TestCommandsExecuteExport(t *testing.T) {
 	if err := json.Unmarshal([]byte(lines[0]), &back); err != nil || back.Seq != 1 {
 		t.Fatalf("jsonl 首行不可回解: %v %+v", err, back)
 	}
-	// .html → 自包含网页(渲染器输出含 html 结构)
+	if len(opened) != 0 {
+		t.Fatalf("jsonl 导出不应触发打开: %v", opened)
+	}
+	// .html → 自包含网页(渲染器输出含 html 结构),且默认**自动打开**(回执里说明)
 	hp := filepath.Join(dir, "out.html")
-	if _, err := run(t, cmds, "export", hp); err != nil {
+	out, err = run(t, cmds, "export", hp)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if !strings.Contains(out, "已在浏览器打开") || len(opened) != 1 || opened[0] != hp {
+		t.Fatalf("html 导出应自动打开: out=%q opened=%v", out, opened)
 	}
 	html, herr := os.ReadFile(hp)
 	if herr != nil {
