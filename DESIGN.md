@@ -1639,6 +1639,7 @@ Go 全量 **1498 passed**(67 包,0 失败,6 跳过;新增 `TestPluginStderrCaptu
 **改造前的三处实证问题**(本机 55 会话 / 205 请求实测):① 触发口径是固定**字符**预算 `token_budget_chars: 40960`(≈15K token),**与模型窗口无关** —— 200K 窗口里只占 ~7%,细节丢得太早;② 管不住**长单轮**:实测 prompt ≥100K token 出现 **8 次**(118404 / 185789 / 256565 / 844162),而折叠**不越过最近一条用户消息**,事后折叠追不上;③ `Load` 把 `compressedUntil` 重置为 `-1` + `projectLocked` 恒注入最新摘要 ⇒ 加载后投影 = **摘要 + 已被摘要覆盖的原文**(重复)。
 
 1. **窗口怎么到压缩器**:装配顺序上 `host-session-log`(#6)/`token-compress`(#7)都早于 `host-usage-stats`(#68),而 `ctx.Inject` 是一次性的 ⇒ 不注入服务、不改装配序,改走**事件**:新增 `sdk.EventUsageWindow`(载荷 `int`),由 `host-usage-stats` 在每次 `session/usage` 后广播窗口快照(窗口解析链只此一处:配置 `data.model_windows` > 错误驱动学习 > 内置表)。
+   - **连带修复(本功能的前提)**:窗口解析改为**大小写不敏感**(配置键/学习缓存/内置表)。实测日志里同一端点会写 `deepseek-ai/DeepSeek-V4-Flash` 与 `DeepSeek-V4-Flash-0731`、`DeepSeek-V4.1-Flash`,大小写敏感时后者漏进内置 128K 表 ⇒ 窗口 0 ⇒ 比例阈值退化为绝对上限、展示层也不显示占用比。
 2. **阈值与预算**(`token-compress/planner.go`,新 `sdk.BudgetPlanner` 接口):阈值 = `min(窗口 × trigger_ratio(0.8), max_tokens(200000))`;预测 prompt = 上次**实测** `PromptTokens` + 投影增量 / 字符每 token(**增量口径自动抵消固定开销** —— system prompt 与工具 schema 不参与估算);字符/token 自校准(EMA,钳 [0.4, 8],缺省 2.0);预算 = 投影字符 − 超阈值的 token × 换算值,下限 `4096` 字符;`token_budget_chars` 降级为**无实测用量时的回落口径**(该键置 0 = 关自动压缩,语义不变)。
 3. **配对陷阱(本轮实测踩到)**:一轮内 `DeriveMessages` 会被调**多次**(ReAct 每步一次)⇒ 拿「最近一次派生」当「上次请求的投影」会把增量算成一轮的量、永远到不了阈值(测试红)。改为按「产出该次 usage 的那份投影」配对(`pairedProjectChars` + `pairedUsageSeq`);重启后首次不估增量(直接用实测值),避免误折一刀。
 4. **长单轮截断**:折叠后仍超预算 ⇒ **投影层**掐最旧工具结果(head 1200 + tail 300,标记 `…[截断 N 字符]…`),**只掐工具结果、永不掐最后一条、消息不丢**(保住 tool_call 与结果的配对),会话账本一行不动。
@@ -1647,7 +1648,7 @@ Go 全量 **1498 passed**(67 包,0 失败,6 跳过;新增 `TestPluginStderrCaptu
 
 **测试/验证**:`token-compress` planner 表驱动 6 组 15 例 + 宿主侧 4 组(含 **token 口径端到端触发**:窗口 5000 ⇒ 阈值 4000、实测 3900,投影再涨 ≈100 token 即折,字符口径关闭仍触发)+ `planner.Fold` 委托不退化;全库 `go test ./... -race -count=1` **58 包 ok**;`bash scripts/coverage-check.sh` **COVERAGE_OK**(总 79.5%);`gofmt`/`go vet` 干净(含 `sdk` 独立 module 单独跑)。
 
-**未做/注意**:自定义模型(如 `DeepSeek-V4-Flash`)需在 `data.model_windows` 登记窗口才能拿到比例阈值;窗口未知时阈值 = `max_tokens`(行为仍优于固定字符口径)。
+**未做/注意**:自定义/未在表内的模型需在 `data.model_windows` 登记窗口才能拿到比例阈值(大小写不敏感);窗口未知时阈值 = `max_tokens`(行为仍优于固定字符口径)。
 
 #### 交付记录(2026-09-22,第四十六批:两条反馈 —— 写盘层拒绝 URL 形态路径 + 后台(web/桌面壳)通知补齐)
 
