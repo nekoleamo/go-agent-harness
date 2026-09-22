@@ -29,7 +29,9 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 			budget = b
 		}
 	}
-	sessions.RegisterCompressor(budget, &Engine{})
+	// 策略(阈值口径)与预算一起注册:压缩器实现了 sdk.BudgetPlanner,故 host-session-log
+	// 每轮投影前会先问 Plan(见 planner.go);budget 仍作为"无实测用量/未启用"时的回落口径。
+	sessions.RegisterCompressor(budget, newPlanner(m, budget))
 	return func() {}, nil
 }
 

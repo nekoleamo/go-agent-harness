@@ -26,6 +26,12 @@ const (
 	EventUsage       = "session/usage"
 	EventAgentStatus = "agent/status"
 	EventAgentError  = "agent/error"
+	// EventUsageWindow 当前模型上下文窗口快照(载荷 int,单位 token;0 = 未知)。
+	// 由 host-usage-stats 在每次 usage 事件后广播:窗口解析链(context_window 配置 > 按模型名
+	// 前缀覆盖 > 错误驱动学习 > 内置表)只在那里;消费方(压缩阈值按窗口比例派生)在**运行期**
+	// 取这个值,而非 Start 期 Inject 服务 —— 服务在装配顺序上拿不到(bundle 里 host-session-log
+	// 排在 host-usage-stats 之前,Provide/Inject 无晚绑定)。
+	EventUsageWindow = "usage/window"
 	// EventJobDone 后台任务终态事件(host-jobs 终态 done/failed/killed 发出;载荷 *sdk.JobDoneEvent)。
 	// 订阅方可主动通知(Web 推送)或触发联动;output/result 经 ctx.jobs.Output 取回,不进载荷。
 	EventJobDone = "job/done"
@@ -167,6 +173,37 @@ type SessionCompressor interface {
 	// 直至估算投影回预算内或无可折叠;返回已被摘要覆盖的最大事件索引(水位)。
 	// watermark -1 表示尚未压缩;summary 回调幂等可多次调用。
 	Fold(evs []SessionEvent, watermark int, budget int, summary func(string)) int
+}
+
+// BudgetPlanner 可选接口:压缩器不只“按预算折”,还能按**真实上下文占用**裁量本轮预算。
+// host-session-log 每次投影前调用 Plan(未实现则退回 RegisterCompressor 的固定字符预算)。
+// 为何需要:字符预算与模型窗口没有对应关系(实测语料约 2.8 字符/token,固定 40960 字符在
+// 200K 窗口上约 7% 使用率就开始丢细节);而 token 占用有实测来源(session/usage 的
+// PromptTokens),按窗口比例定阈值才准。
+type BudgetPlanner interface {
+	Plan(in CompressInput) CompressDecision
+}
+
+// CompressInput 交给压缩器的观测事实(策略不在这里:值全由 host-session-log 给出)。
+type CompressInput struct {
+	// LastPromptTokens 最近一次请求的实测 prompt token(0 = 尚无用量事件)。
+	LastPromptTokens int
+	// LastProjectChars 那次请求投影的字符数。与 LastPromptTokens 配套 ⇒ 两者之差即
+	// 固定开销(系统提示 + 工具 schema)的占用,不必单独估算。
+	LastProjectChars int
+	// Window 最近一次请求时的模型上下文窗口(token;0 = 未知;经 usage/window 事件下发)。
+	Window int
+	// ProjectChars 当前投影字符数(这一次要发出去的历史部分)。
+	ProjectChars int
+}
+
+// CompressDecision 压缩器给出的本轮处置。
+type CompressDecision struct {
+	// BudgetChars 本轮投影字符预算(<=0 = 本轮不压)。
+	BudgetChars int
+	// TrimChars 折叠后投影仍超此字符数时,由宿主截断**最旧的工具结果**(<=0 = 不截断)。
+	// 用途:水位不得越过最后一个用户轮,长单轮(一轮内几十次工具调用)只能这样收。
+	TrimChars int
 }
 
 // ForkPoint 会话历史中可作分支点的用户消息(seq + 摘要;供 /fork 定位与 /tree 展示)。

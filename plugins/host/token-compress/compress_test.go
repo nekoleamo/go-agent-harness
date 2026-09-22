@@ -2,6 +2,7 @@
 package tokencompress
 
 import (
+	"context"
 	"log/slog"
 	"strings"
 	"testing"
@@ -181,4 +182,70 @@ func TestNoSummaryWhenBudgetOff(t *testing.T) {
 			t.Fatal("预算关闭不应有摘要事件")
 		}
 	}
+}
+
+// buildEnvCtx 同 buildEnv,但把 Ctx 也返回(需要发 usage/window 事件时用)。
+func buildEnvCtx(t *testing.T, data map[string]any) (sdk.Ctx, sdk.SessionLog) {
+	t.Helper()
+	logger := slog.New(slog.DiscardHandler)
+	c := ctx.New(logger, event.New(logger))
+	if _, err := (&sessionlog.Plugin{}).Start(c, &sdk.Manifest{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&Plugin{}).Start(c, &sdk.Manifest{Data: data}); err != nil {
+		t.Fatal(err)
+	}
+	var sessions sdk.SessionLog
+	if err := c.Inject("ctx.sessions", &sessions); err != nil {
+		t.Fatal(err)
+	}
+	return c, sessions
+}
+
+// TestTokenThresholdTrigger 阈值按窗口比例 + 实测 token 增量触发(与字符口径解耦的端到端)。
+//
+// 口径(token_budget_chars: 0 = 回落口径关闭)⇒ 任何折叠都只能来自 token 阈值:
+// 窗口 5000 × 0.8 = 4000 token,上次实测 3900 ⇒ 投影再长约 200 字符(≈100 token @2 字符/token)即到阈值。
+func TestTokenThresholdTrigger(t *testing.T) {
+	c, l := buildEnvCtx(t, map[string]any{
+		"token_budget_chars": 0,
+		"trigger_ratio":      0.8,
+		"max_tokens":         10000,
+		"chars_per_token":    2, // 固定换算值,让断言确定(不靠自校准)
+	})
+	if _, err := c.Emit(context.Background(), sdk.EventUsageWindow, 5000, sdk.Emit); err != nil {
+		t.Fatal(err)
+	}
+	// 一条 2 万字符的工具结果:投影远大于预算下限,折叠真的能压下来
+	_ = l.Append(sdk.SessionEvent{Kind: sdk.EventUserMessage, Payload: sdk.UserMessage{Content: "读个大文件"}})
+	_ = l.Append(sdk.SessionEvent{Kind: sdk.EventToolResult, Payload: sdk.ToolResultEvent{
+		CallID: "c1", Name: "read", Content: strings.Repeat("x", 20000)}})
+	l.DeriveMessages() // 记录上次投影字符
+	_ = l.Append(sdk.SessionEvent{Kind: sdk.EventUsage, Payload: sdk.UsageEvent{
+		Model: "m", Usage: sdk.Usage{PromptTokens: 3900}}})
+	l.DeriveMessages()
+
+	// 再长一轮(≈126 字符 ≈63 token):3900+63 < 4000,不该折
+	appendTurn(l, 2)
+	l.DeriveMessages()
+	if n := summaryEvents(l); n != 0 {
+		t.Fatalf("未到阈值不该折叠: %d 条摘要", n)
+	}
+	// 再长一轮:3900+126 > 4000 ⇒ 应折叠
+	appendTurn(l, 3)
+	l.DeriveMessages()
+	if n := summaryEvents(l); n == 0 {
+		t.Fatal("到阈值应按 token 口径折叠(与字符预算无关)")
+	}
+}
+
+// summaryEvents 统计日志里的摘要事件数。
+func summaryEvents(l sdk.SessionLog) int {
+	n := 0
+	for _, ev := range l.Replay() {
+		if ev.Kind == sdk.EventSummary {
+			n++
+		}
+	}
+	return n
 }

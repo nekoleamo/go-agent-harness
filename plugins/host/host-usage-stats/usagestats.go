@@ -49,6 +49,12 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		if sev, ok := ev.Payload.(*sdk.SessionEvent); ok {
 			svc.HandleSessionEvent(sev)
 		}
+		// 窗口快照广播(每轮 usage 后):压缩阈值要按窗口比例定,而窗口解析链只在本插件。
+		// 走事件而非 Inject:订阅回调不在锁内(总线分发前已拷出监听器),嵌套 Emit 安全;
+		// 且消费方与本插件的装配顺序无关。
+		if sev, ok := ev.Payload.(*sdk.SessionEvent); ok && sev.Kind == sdk.EventUsage {
+			_, _ = c.Emit(ctx, sdk.EventUsageWindow, svc.currentWindow(), sdk.Emit)
+		}
 		return nil
 	})
 	// 错误驱动学习:LLM 请求超窗口失败时,错误文本携带该模型窗口数字,

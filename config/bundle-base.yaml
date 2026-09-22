@@ -1,12 +1,20 @@
-# seed-version: 25 # 样板版本:新增 base 能力条目(host-* 等)时 +1(25:host-internal-commands 增 export_open_browser;24:新增 tool-schedule 定时计划工具;23:host-notices 提示通道),老用户自动升级(备份后覆盖)
+# seed-version: 26 # 样板版本:新增 base 能力条目(host-* 等)时 +1(26:token-compress 阈值改按窗口比例(trigger_ratio/max_tokens/chars_per_token);25:host-internal-commands 增 export_open_browser;24:新增 tool-schedule 定时计划工具),老用户自动升级(备份后覆盖)
 # base bundle:对齐 dsh-base,一切功能皆插件的共享第一层。
 # M1 阶段条目仅记录意图;对应插件工厂在 M2 base bundle 落地。
 name: base
 entries:
   - id: host-session-log
   - id: token-compress
+    # 压缩阈值口径(2026-09-22 改):**按真实 token 占用与模型窗口比例**,不再是固定字符数。
+    # 阈值 = min(窗口 × trigger_ratio, max_tokens)(token);占用取 session/usage 的实测
+    # PromptTokens(每次投影前由 host-session-log 喂给策略),两次请求之间按投影字符增量换算
+    # (字符/token 自校准 —— 中文近 1、代码/英文约 2.8,固定换算值必然偏)。
+    # 到阈值即折叠最旧块;水位不得越过最后一个用户轮,故单轮内工具结果由"截断最旧"兜底。
     data:
-      token_budget_chars: 40960 # M6.5 拆分:独立插件,投影字符预算,超限滚动摘要压缩(0 = 关闭)
+      trigger_ratio: 0.8 # 窗口占比阈值(0 = 不用窗口派生)
+      max_tokens: 200000 # 阈值上限(token):大窗口与未知窗口都按这条绝对线
+      chars_per_token: 2 # 字符/token 起算值(取小更保守=更早触发),运行时按实测增量自校准
+      token_budget_chars: 40960 # 回落口径:无实测用量(新会话首轮)时的投影字符预算(0 = 关闭)
   - id: host-tools
   - id: host-system-prompt
   - id: host-llm

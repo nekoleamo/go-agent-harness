@@ -40,7 +40,17 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	if err := c.Provide("ctx.sessions", lg); err != nil {
 		return nil, err
 	}
-	return func() { lg.Close() }, nil
+	// 窗口快照:压缩阈值按窗口比例派生(host-usage-stats 每轮 usage 后广播)。
+	// 启动期拿不到那个服务(bundle 里本插件排在它前面,Provide/Inject 无晚绑定),运行期拿值就够。
+	dw := c.Subscribe(sdk.EventUsageWindow, func(_ context.Context, ev *sdk.Event) error {
+		if w, ok := ev.Payload.(int); ok {
+			lg.mu.Lock()
+			lg.window = w
+			lg.mu.Unlock()
+		}
+		return nil
+	})
+	return func() { dw(); lg.Close() }, nil
 }
 
 // Log 是会话日志实现。事件并发追加,jsonl 落盘(按项目 key 一个文件)。
@@ -49,20 +59,28 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 // 投影超预算时回调压缩器折叠最旧块为 session/summary 摘要事件,
 // 原始事件保留(留盘完整),投影见“累计摘要 + 最近块”。
 type Log struct {
-	mu              sync.Mutex
-	events          []sdk.SessionEvent
-	seq             atomic.Uint64
-	file            *os.File
-	path            string
-	ctx             sdk.Ctx
-	historyLimit    int // -1 禁止 / 0 全部 / N>0 最近 N 条
-	budget          int // 投影字符预算(0 = 关闭压缩;由 token-compress 注册时设置)
-	compressor      sdk.SessionCompressor
-	compressedUntil int // 已被摘要覆盖的 events 索引水位(-1 = 未压缩)
+	mu               sync.Mutex
+	events           []sdk.SessionEvent
+	seq              atomic.Uint64
+	file             *os.File
+	path             string
+	ctx              sdk.Ctx
+	historyLimit     int // -1 禁止 / 0 全部 / N>0 最近 N 条
+	budget           int // 投影字符预算(0 = 关闭压缩;由 token-compress 注册时设置)
+	compressor       sdk.SessionCompressor
+	compressedUntil  int // 已被摘要覆盖的 events 索引水位(-1 = 未压缩)
+	window           int // 当前模型上下文窗口(token;0 = 未知;经 usage/window 事件下发)
+	lastProjectChars int // 最近一次派生出去的投影字符数
+	// pairedProjectChars 产生 pairedUsageSeq 那次请求所发的投影字符数(-1 = 未知):
+	// 与实测 PromptTokens 配套才能算“投影涨了多少 ⇒ prompt 涨了多少”(增量口径抵消固定开销)。
+	// 不能直接用 lastProjectChars —— 一轮内多次派生(ReAct 每步一次),那拿到的是“上次派生”,
+	// 不是“上次请求”。
+	pairedProjectChars int
+	pairedUsageSeq     uint64
 }
 
 func newLog(dir string) *Log {
-	return &Log{path: dir, compressedUntil: -1}
+	return &Log{path: dir, compressedUntil: -1, pairedProjectChars: -1}
 }
 
 // SetPath 设置落盘路径(项目级会话隔离在 host-cwd-sessions 中调用;
@@ -149,7 +167,12 @@ func (l *Log) Load(path string) error {
 	}
 	l.path = path
 	l.events = events
-	l.compressedUntil = -1
+	// 水位从**最后一个摘要事件的索引**恢复,而不是恒 -1:摘要事件本身就在日志里,
+	// 恒 -1 会让下一次投影把“最新摘要 + 已被该摘要覆盖的全部原始事件”一起发出去
+	// (同一段内容重复占位),再靠一次大折叠收回。
+	l.compressedUntil = lastSummaryIndex(events)
+	l.pairedProjectChars, l.pairedUsageSeq = -1, 0 // 重启后首次:不估算投影增长,直接用实测值
+	l.lastProjectChars = 0
 	l.historyLimit = historyLimit
 	l.seq.Store(maxSeq) // 序号从历史顶续接(新事件 Seq 不复用)
 	return nil
@@ -209,7 +232,8 @@ func (l *Log) RegisterCompressor(budget int, c sdk.SessionCompressor) {
 	defer l.mu.Unlock()
 	l.budget = budget
 	l.compressor = c
-	l.compressedUntil = -1
+	l.compressedUntil = lastSummaryIndex(l.events)
+	l.pairedProjectChars, l.pairedUsageSeq = -1, 0
 }
 
 // Append 追加事件并落盘(jsonl;落盘失败仅记内存 + 返回错误,不丢事件)。
@@ -291,13 +315,131 @@ func (l *Log) deriveLocked() []sdk.LLMMessage {
 	if l.historyLimit > 0 && len(out) > l.historyLimit {
 		out = out[len(out)-l.historyLimit:]
 	}
-	// 预算压缩:投影超限且已注册压缩器 → 滚动折叠最旧块,并以新水位重建投影
-	if l.budget > 0 && l.compressor != nil && approxChars(out) > l.budget {
-		l.compressedUntil = l.compressor.Fold(l.events, l.compressedUntil, l.budget,
+	// 预算:压缩器可自行按真实占用裁量(BudgetPlanner);否则用注册的固定字符预算。
+	budget, trim := l.planLocked(out)
+	if l.compressor != nil && budget > 0 && approxChars(out) > budget {
+		l.compressedUntil = l.compressor.Fold(l.events, l.compressedUntil, budget,
 			func(s string) { _, _ = l.appendLocked(sdk.SessionEvent{Kind: sdk.EventSummary, Payload: s}) })
 		out = l.projectLocked(l.compressedUntil)
+		if l.historyLimit > 0 && len(out) > l.historyLimit {
+			out = out[len(out)-l.historyLimit:]
+		}
+	}
+	// 长单轮善后:水位不得越过最后一个用户轮,单轮内工具结果折叠不掉 ⇒ 截断最旧的(日志不动)。
+	if trim > 0 {
+		out = clipOldToolResults(out, trim)
+	}
+	l.lastProjectChars = approxChars(out)
+	return out
+}
+
+// planLocked 本轮预算与尾巴截断阀值:压缩器实现 BudgetPlanner 则由它裁量,否则用固定预算。
+func (l *Log) planLocked(out []sdk.LLMMessage) (budget, trim int) {
+	budget = l.budget
+	p, ok := l.compressor.(sdk.BudgetPlanner)
+	if !ok {
+		return budget, 0
+	}
+	tokens, seq := l.lastUsageLocked()
+	if seq != l.pairedUsageSeq {
+		l.pairedUsageSeq = seq
+		// lastProjectChars > 0 ⇒ 本进程已经派生过一份投影,那就是这次请求发出去的历史部分。
+		if l.lastProjectChars > 0 {
+			l.pairedProjectChars = l.lastProjectChars
+		}
+	}
+	lastProject := l.pairedProjectChars
+	if lastProject < 0 {
+		lastProject = approxChars(out) // 未知:不减估算增长 ⇒ 预测就是实测值本身
+	}
+	d := p.Plan(sdk.CompressInput{
+		LastPromptTokens: tokens,
+		LastProjectChars: lastProject,
+		Window:           l.window,
+		ProjectChars:     approxChars(out),
+	})
+	return d.BudgetChars, d.TrimChars
+}
+
+// lastUsageLocked 最近一次实测用量(倒扫 session/usage:Model 与 Usage;无则 0)。返回其 Seq 供配对。
+func (l *Log) lastUsageLocked() (promptTokens int, seq uint64) {
+	for i := len(l.events) - 1; i >= 0; i-- {
+		ev := l.events[i]
+		if ev.Kind != sdk.EventUsage {
+			continue
+		}
+		switch p := ev.Payload.(type) {
+		case sdk.UsageEvent:
+			return p.Usage.PromptTokens, ev.Seq
+		case sdk.Usage:
+			return p.PromptTokens, ev.Seq
+		}
+	}
+	return 0, 0
+}
+
+// lastSummaryIndex 最后一条摘要事件的索引(-1 = 无):它就是已被摘要覆盖的水位。
+func lastSummaryIndex(evs []sdk.SessionEvent) int {
+	last := -1
+	for i, ev := range evs {
+		if ev.Kind == sdk.EventSummary {
+			last = i
+		}
+	}
+	return last
+}
+
+// 截断保留的头/尾字符数(头部是命令/结果开头,尾部常带错误与退出状态)。
+const (
+	clipHeadChars = 1200
+	clipTailChars = 300
+)
+
+// clipOldToolResults 投影层截断(日志一字不动):从**最旧**的工具结果起改写成“头 + 省略标记 + 尾”,
+// 直到总字符回到 target 内;最近一条工具结果永不截(它大概率是模型接下来要看的东西)。
+// 只截 Content 而不丢消息 —— tool_call 与 tool 结果必须成对,丢一条就破坏协议。
+func clipOldToolResults(msgs []sdk.LLMMessage, target int) []sdk.LLMMessage {
+	total := approxChars(msgs)
+	if total <= target || target <= 0 {
+		return msgs
+	}
+	lastTool := -1
+	for i, m := range msgs {
+		if m.Role == sdk.RoleTool {
+			lastTool = i
+		}
+	}
+	out := append([]sdk.LLMMessage(nil), msgs...)
+	for i := range out {
+		if total <= target {
+			break
+		}
+		if out[i].Role != sdk.RoleTool || i == lastTool {
+			continue
+		}
+		clipped, saved := clipContent(out[i].Content, clipHeadChars, clipTailChars)
+		if saved <= 0 {
+			continue
+		}
+		out[i].Content = clipped
+		total -= saved
 	}
 	return out
+}
+
+// clipContent 保留头部 head 与尾部 tail 个字符,中间换成省略标记;返回新文本与被去掉的字符数。
+// 已是够短的不动(返回 saved=0)。
+func clipContent(s string, head, tail int) (string, int) {
+	r := []rune(s)
+	if len(r) <= head+tail+64 {
+		return s, 0
+	}
+	dropped := len(r) - head - tail
+	kept := make([]rune, 0, head+tail+32)
+	kept = append(kept, r[:head]...)
+	kept = append(kept, []rune(fmt.Sprintf("\n…[截断 %d 字符]…\n", dropped))...)
+	kept = append(kept, r[len(r)-tail:]...)
+	return string(kept), dropped
 }
 
 // projectLocked 从事件流重建投影:累计摘要(system)置顶 + 水位后的未压缩块。
@@ -422,11 +564,16 @@ func (l *Log) Compact(prompt string) (string, int, error) {
 	if l.compressor == nil {
 		return "", 0, errors.New("压缩器未注册(token-compress 未装配)")
 	}
-	if l.budget <= 0 {
+	_, planned := l.compressor.(sdk.BudgetPlanner)
+	if l.budget <= 0 && !planned {
 		return "", 0, errors.New("压缩预算关闭(data.token_budget_chars=0;自动压缩亦不生效)")
 	}
 	old := l.compressedUntil
-	w := l.compressor.Fold(l.events, l.compressedUntil, l.budget, func(s string) {
+	budget, _ := l.planLocked(l.projectLocked(l.compressedUntil))
+	if budget <= 0 {
+		return "", 0, errors.New("压缩预算关闭(data.token_budget_chars=0;自动压缩亦不生效)")
+	}
+	w := l.compressor.Fold(l.events, l.compressedUntil, budget, func(s string) {
 		_, _ = l.appendLocked(sdk.SessionEvent{Kind: sdk.EventSummary, Payload: s})
 	})
 	l.compressedUntil = w
