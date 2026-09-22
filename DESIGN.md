@@ -845,6 +845,14 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 
 > **发布**:v0.1.1(2026-09-13)已出 —— macOS `gah_0.1.1_aarch64.dmg`(34.18 MiB)+ Windows `gah_0.1.1_x64-setup.exe`(31.59 MiB)+ updater `gah.app.tar.gz`/`latest.json`(实测 `releases/latest/download/latest.json` HTTP 200,`version=0.1.1`,双平台签名齐备)+ 命令行五目标归档与 `checksums.txt`;三个 workflow(`ci`/`release-cli`/`release-desktop`)全绿,流程与产物清单见 `docs/RELEASE.md`「发布记录:v0.1.1」。
 
+### 第五十七批 · 文档同步:README 双语按 0.1.5 现状回填 + 本地文档状态订正(2026-09-22)
+
+> 起因:用户要求「所有文档同步,尤其是 README,根据最新版本优化(当前 0.1.5)」。核查结论:README 里**没有**任何版本号字面量(下载走 Releases/latest + `<版本>` 占位),所以「按最新版本优化」= 把近期交付与四条裁决在**读者可见口径**上补齐,而不是改版本数字(已 grep 确认 `0\.1\.[0-9]` 零命中)。
+
+1. **README.md / README_EN.md(双语逐项同步,9 + 8 处)**:① `ReAct 循环` 行补**步数上限可配**(`data.max_steps`,缺省不限 —— 上限是启发式,不该由 harness 替用户定);② `提示通道` 行补**macOS 未签名/未公证构建不呈现横幅属预期**(系统收下不弹:**壳 Dock 弹跳兜底 + 日志如实记录**,应用内提示通道与状态栏不受影响)—— 把 A-3 的裁决写进用户可见文档,免得被当 bug 反复报;③ `文档预览` 行补旧二进制 Office(`.doc/.xls/.ppt`)**可选**外部转换(`data.external_converters` / `gah doc --convert`,需本机 LibreOffice、缺省关、缺装显式提示);④ `桌面壳` 行补**侧栏会话导出走壳命令落盘**(HTML/jsonl → 下载目录,网页自动打开,侧栏回执路径);⑤ `/export` 行补「成功后**默认自动打开**(`GAH_EXPORT_OPEN=0` 关)+ Web/桌面端 `⤓` 菜单为等价入口」;⑥ `/compact` 行补**溢出兜底:端点报超窗时自动压缩并重试本回合一次**;⑦ Web 停靠区行补**外壳永不整页滚动**(每个滚动区各有归属:会话流 / 侧栏列表 / 抽屉);⑧ 「十、构建与发行」新增**门禁清单**行(`go vet` + 全库 `-race` + 覆盖率门 + 体积门 ≤36/≤23 MiB + 前端逻辑单测 + **真浏览器布局回归 `npm run test:layout`**,CI 带 `GAH_LAYOUT_REQUIRE=1` 不允许静默跳过,并注明 `sdk/` 是独立 module);⑨ 项目结构注释中指向**不入库**的 `docs/RELEASE.md` 的引用改为自指本节(公开仓库点开即 404)。
+2. **本地文档状态订正(`docs/` 除 PLUGIN_DEV.md 外均不入库,属本地资料)**:`docs/README.md` 把 `WEB_ATTACHMENTS_PLAN` / `SESSION_UX_PLAN` 标为**已交付 ✅** 并在 VERIFY 行补 Windows 清单入口;`docs/TODO_OVERVIEW.md` 增「2026-09-22(第五十六批)」条目 + G 组「2026-09-22 裁决」块(公证不做 / LibreOffice 放弃验证 / Linux 暂缓 / Windows 独立清单);`docs/ROADMAP.md` P9 行按裁决改写(D6 各项状态、发行不作公证、真机验收入口);`docs/DOC_PREVIEW_PLAN.md` D6-2 状态列补「**真机验证放弃**,能力与代码保留」;`docs/SESSION_UX_PLAN.md` 与 `docs/WEB_ATTACHMENTS_PLAN.md` 的状态头从「规划定稿(未开工)」「已确认待执行」订正为**已交付**(留作规划与验收口径记录,消除自我矛盾);`docs/NONDEV_ROADMAP.md` 补「Windows 线已部分落地 + 真机清单入口」。
+3. **验证**:本批**无 Go / 前端代码改动** ⇒ 门禁无需重跑(上一批 `-race` 全绿 + `COVERAGE_OK` 79.7% 仍成立);一致性口径:`grep -n '0\.1\.[0-9]' README.md README_EN.md` 零命中、README 与 README_EN 的改动逐条对照(命令表 / 特性表 / 构建节 / 结构注释四处均双侧同步)。
+
 ### 第五十六批 · 溢出兜底压缩 + 四项裁决(LibreOffice / 公证 / Linux / Windows)(2026-09-22)
 
 1. **溢出兜底压缩(交付)**:此前只有「按窗口比例预防」(第五十批前的 `2bcb99f`)+ 手动 `/compact`;端点真的拒了就没有第二次机会,用户只能自己折叠再重问。现在补上最后一环:模型端报上下文超窗 ⇒ **强制压缩历史后重试同一回合,硬上限 1 次**(防重试环/重复计费)。

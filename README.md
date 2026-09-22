@@ -28,7 +28,7 @@ Go 实现的编程代理 Agent Harness:以**单静态二进制**交付全部能�
 | **微内核** | `core/` 仅含 ctx 服务容器 / 5 分发 EventBus / 插件注册表(拓扑+热重载)/ 配置层(profile→bundle→patch);零业务 |
 | **一切皆插件** | 会话日志、LLM 路由、工具流水线、沙箱、审批、Agent 循环、界面,全部是插件;配置层 + 运行期 `/plugins` 随时插拔,卸载即撤销副作用 |
 | **双界面** | TUI(bubbletea v2)与 Web(Vue3,默认自动开浏览器)能力对等,同一 `$GAH_HOME`;另有无 UI 的 headless 一次性形态(CI/脚本) |
-| **ReAct 循环** | 对齐 dsh 轮次:pre-step → llm/stream → tool/call* → turn/end,AgentLoop 本身可替换 |
+| **ReAct 循环** | 对齐 dsh 轮次:pre-step → llm/stream → tool/call* → turn/end,AgentLoop 本身可替换;**步数上限可配**(bundle 条目 `data.max_steps`,**缺省不限** —— 上限本是启发式,不该由 harness 替用户定;设 N 即硬上限,耗尽时错误文案直接给出放宽方式) |
 | **结构化工具** | MCP 兼容 JSON schema;执行流水线 pre-execute(veto)→ execute → post-execute → result 广播;错误结构化回传模型 |
 | **LLM 统一域模型** | 纯 HTTP+SSE 的 OpenAI 兼容适配器(DeepSeek/OpenAI/Ollama/vLLM/Kimi/llama.cpp 通吃)+ Anthropic 适配器(`claude-*` 前缀路由)+ mock 适配器(CI 免外网);多 provider 并存(`/provider`) |
 | **沙箱三档** | read-only / workspace-write(防 `../` 穿越)/ full-access,TUI `/sandbox` 与 Web 设置面板运行期切换;**写路径统一裁决**:`file_*` 参数与 `shell` 命令的写目标(重定向、写命令、输出旗标 `-o/-O/-C/-t/--target/--prefix`、`git clone` 目标)都必须落在档位允许范围内(`shell` 越界写 / 含变量等不可裁决写目标直接拒绝)——审批通过 ≠ 放开档位,需显式切 full-access;**档位联动可见且可控**:审批档 `open`/`strict` 会覆盖沙箱有效档(`full-access`/`read-only`),`/sandbox`、`/approval`、TUI 状态栏与 Web 状态均回显「声明档 → 有效档(联动来源)」,不再静默失效;要「开着 open 但仍守住沙箱档」就关掉联动 —— **`/sandbox sync off`** 或 Web 设置面板「档位联动」勾选框(两者同一偏好,重启恢复;关掉后沙箱档独立生效、拦截行为跟着变);**内核级沙箱(第 3 组)**:macOS seatbelt / Linux Landlock 在**子进程树**层面兜住「写目标判不出来」的写(解释器内部写、`ccache`/`make` 包装器、`go install`、`curl -O` 等),并把**写目标表**继续补全(第 2 组:`sort -o`、`patch -o/-d`、`cargo --target-dir`、`npm --cache`、`pip --cache-dir/-d`、`gcc -MF/-MJ`、`go test -coverprofile/-trace`、`find -exec/-delete/-fprint`、`mktemp -p`、`split`、`tar czf`、`zip`/`7z`、`cmake --prefix`);**Windows 仍只有协作层**(无等价无特权机制) |
@@ -39,7 +39,7 @@ Go 实现的编程代理 Agent Harness:以**单静态二进制**交付全部能�
 | **后台任务** | host-jobs + workflow `background`:长任务异步提交/取回/终止,不阻塞回合 |
 | **并行隔离** | host-worktrees(`ctx.worktrees` + `/worktree`):受管 git worktree 落 `$GAH_HOME/worktrees/`(不污染用户仓库),子代理经 `subagent(isolate="worktree")` 在独立目录与分支内工作 —— 两个并行子代理改同一批文件互不覆盖;**隔离是强制的**:相对写/绝对写都进不了主工作区(沙箱写范围收窄到该 worktree);非 git 仓库显式报错不降级;worktree 默认保留,回收走 `/worktree rm`(分支保留) |
 | **定时任务** | host-schedule(`ctx.schedule`):5 字段 cron 计划(分 时 日 月 周)落 `$GAH_HOME/schedules/*.yaml`,到点**经既有回合入口**(agentLoop→tools,仍受审批/沙箱裁决、仍落会话记录)自动跑一轮;设置面板「计划」段管理(中文「下次运行时间」回显,不自研 cron 构造器);**无人值守 = 没有确认通道 → 需审批的动作一律拒绝(含 open 档)** |
-| **提示通道** | host-notices(`ctx.notices`,NOND-N1):插件/宿主向**人**发提示(作业终态/计划失败或跳过/回合出错),**不进会话记录、不计 token**;进程内环形缓冲(200)+ `id` 增量回填(`GET /api/notices?since=` / SSE `notice` 帧),Web 右下 toast、TUI 状态栏项与 `/notice`;同 `Key` 60s 去重防刷屏;系统级通知已交付(NOND-N2):TUI 按终端能力逐级降级发 OSC 99/777/9 或响铃(`GAH_TUI_NOTIFY=auto\|osc\|bell\|off`,`/notify test` 自测,写 `/dev/tty`),桌面壳改为**单条 2s 轮询消费提示流**(`warn`/`error` → 桌面通知),不再按场景各写一个轮询器 |
+| **提示通道** | host-notices(`ctx.notices`,NOND-N1):插件/宿主向**人**发提示(作业终态/计划失败或跳过/回合出错),**不进会话记录、不计 token**;进程内环形缓冲(200)+ `id` 增量回填(`GET /api/notices?since=` / SSE `notice` 帧),Web 右下 toast、TUI 状态栏项与 `/notice`;同 `Key` 60s 去重防刷屏;系统级通知已交付(NOND-N2):TUI 按终端能力逐级降级发 OSC 99/777/9 或响铃(`GAH_TUI_NOTIFY=auto\|osc\|bell\|off`,`/notify test` 自测,写 `/dev/tty`),桌面壳改为**单条 2s 轮询消费提示流**(`warn`/`error` → 桌面通知),不再按场景各写一个轮询器;**macOS 上未签名/未公证的构建系统不呈现横幅**(系统收下不弹,属预期非缺陷:壳额外用 Dock 弹跳兜底,并在壳日志如实记录投递结果);应用内提示通道与状态栏不受影响 |
 | **子代理 fanout** | `agent/parallel/pipeline` 独立上下文 ReAct 扇出并行聚合;`send_message`/`fork` 注入与会话派生 |
 | **starlark workflow** | 模型写受限 starlark 脚本组合多步工具调用(天然沙箱/无标准库),`background` 异步 |
 | **联网搜索** | web_search(默认 Exa,`EXA_API_KEY`;`data.provider` 可换)与 web_fetch 协作,错误结构化归一 |
@@ -54,9 +54,9 @@ Go 实现的编程代理 Agent Harness:以**单静态二进制**交付全部能�
 | **配置自愈** | 启动失败自动回滚最近正常备份重试一次,坏配置不卡死 |
 | **pty 交互** | tool-shell `data.pty` 开关:驱动 REPL / git 编辑器等交互进程 |
 | **Web 附件+多模态** | 输入框传图片/文件(按钮+拖放+粘贴),芯片预览/删除;图片经 openai/anthropic 适配器结构化注入(模型看图),文本附件路径引用;落盘 `$GAH_HOME/attachments/` |
-| **文档预览** | 一个块模型 + 四端同源渲染(markdown/文本/代码/CSV/notebook + PDF 页事实):Web 预览工作台(文件树/PDF 原生查看器/HTML 源码视图+沙箱)、TUI `/preview` pager(滚动/搜索/横移)、`gah doc` CLI、会话流 markdown 渲染;路径经沙箱+逃逸校验+密钥 deny-list,零 v-html |
+| **文档预览** | 一个块模型 + 四端同源渲染(markdown/文本/代码/CSV/notebook + PDF 页事实):Web 预览工作台(文件树/PDF 原生查看器/HTML 源码视图+沙箱)、TUI `/preview` pager(滚动/搜索/横移)、`gah doc` CLI、会话流 markdown 渲染;路径经沙箱+逃逸校验+密钥 deny-list,零 v-html;旧二进制 Office(`.doc/.xls/.ppt`)走**可选**外部转换(`data.external_converters` / `gah doc --convert`,需本机 LibreOffice,缺省关,未装时显式提示不静默) |
 | **优雅停机** | `POST /api/shutdown` → DisposeAll 全回收(Windows 无 SIGTERM 的统一停机通道;桌面壳/运维复用) |
-| **桌面壳(P1)** | `desktop/` Tauri v2 壳:sidecar gah + 窗口直连本地服务;托盘(关于/检查更新/开机自启)/ 通知 / 单实例 / 系统文件夹选择器(与设置面板状态同源:面板开着时托盘操作 1.5 秒内同步);**诊断**:壳日志 `<用户数据目录>/gah-shell.log` 同时收录壳侧事件、sidecar stderr(滤掉 go-plugin 的 `[DEBUG]`)、sidecar 文本 stdout、页面侧错误(前端经 `shell_log` 上报)、**启动自检的通道矩阵**(同步/异步/选择器/自启四条通道各探一次)与**任何线程的 panic**(`panic @ 文件:行`);**零成本发行**(updater ed25519 自持签名 + CI 矩阵 + 无签名首次启动指引) |
+| **桌面壳(P1)** | `desktop/` Tauri v2 壳:sidecar gah + 窗口直连本地服务;托盘(关于/检查更新/开机自启)/ 通知 / 单实例 / 系统文件夹选择器(与设置面板状态同源:面板开着时托盘操作 1.5 秒内同步);**诊断**:壳日志 `<用户数据目录>/gah-shell.log` 同时收录壳侧事件、sidecar stderr(滤掉 go-plugin 的 `[DEBUG]`)、sidecar 文本 stdout、页面侧错误(前端经 `shell_log` 上报)、**启动自检的通道矩阵**(同步/异步/选择器/自启四条通道各探一次)与**任何线程的 panic**(`panic @ 文件:行`);**零成本发行**(updater ed25519 自持签名 + CI 矩阵 + 无签名首次启动指引);**侧栏会话导出走壳命令落盘**(HTML/jsonl 写入下载目录,网页自动打开,侧栏回执路径) |
 
 ## 三、快速开始
 
@@ -208,8 +208,8 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `/provider show\|add\|use\|set\|unset\|remove\|clear` | 配置 LLM 提供商(多 provider 并存):`show` 列出(活跃★凭据打码)/ `add 端点 key [model]` 新增(首个自动活跃)/ `use <名>` 切换 / `set 端点 key [model]` 编辑活跃 / `unset 字段` 逐项删(回退 env/样板)/ `remove <名>` 删除单条(删活跃顺延到下一条)/ `clear` 全清并复位 |
 | `/plugins list\|on\|off <id>` | 运行期插拔插件(`on/off` 持久化开关,重启仍生效;`default` 恢复配置树默认) |
 | `/settings history N\|off\|unlimited` | 会话历史注入条数(`off` 禁止 / `unlimited` 全部 / N 最近 N 条;全局偏好跨会话) |
-| `/compact [指示词]` | 手动滚动摘要压缩(立即折叠旧历史;自动超预算压缩不变;指示词仅记录) |
-| `/export [path]` | 导出当前会话事件序列(`.html` 结尾 = 自包含 HTML 渲染,否则 jsonl) |
+| `/compact [指示词]` | 手动滚动摘要压缩(立即折叠旧历史;自动超预算压缩不变;指示词仅记录);端点报上下文超窗时会**自动**压缩后重试本回合(溢出兜底,只重试一次),无需手动 |
+| `/export [path]` | 导出当前会话事件序列(`.html` 结尾 = 自包含 HTML 渲染,否则 jsonl;**导出成功后默认自动用系统默认程序打开**,`GAH_EXPORT_OPEN=0` 关闭);Web/桌面端等价入口 = 侧栏会话行 `⤓` 菜单(桌面端落盘到下载目录) |
 | `/workspace [目录]` | 切换工作区(项目):最近列表选择或输新目录;切换即开新会话、工具进程 cwd 真实切换、沙箱 root 同步 |
 | `/session list\|switch\|new\|current` | 会话管理:列出(★ = 置顶,带概述)/ 切换(二级选择器带内容预览与时间)/ 新建(空历史)/ 查看当前 |
 | `/session pin\|unpin [id]` | 置顶 / 取消置顶会话(缺 id = 当前;置顶区排在列表最前,上限 8) |
@@ -276,7 +276,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 - **轨迹视图**(状态栏右上「轨迹」切换,记忆偏好):把同一份会话事件按**回合 → 步骤 → 工具**聚合,专看过程与成本 —— 粘顶固定概览(回合数/总时长/累计 token 与缓存占比 + 可点击回跳的回合胶囊)、回合状态徽标(完成/已取消/步数上限/进行中)、每步工具行(名称/参数/耗时/**出参字节**/成功失败,失败展开错误原文)与回合级 token 分解;**时长只取事件时间戳,进行中的回合/步骤/工具一律显「进行中」**(不编造时长);窗口不完整(长会话更早历史未加载/已折叠)时概览改标「窗口内 token」并说明仅覆盖当前窗口。
 - **变更视图**(状态栏右上循环切换:会话流 → 轨迹 → 变更 → 看板,记忆偏好):只看**本次会话经工具改过的文件** —— 粘顶概览(文件数/+行/−行/改动次数 + 可点击回跳的文件胶囊)、逐文件折叠块(新建/二进制/已截断 徽标、操作与 ± 计数)、展开后逐行着色 patch(每段带 `#序号 操作 时间` 头,便于对着会话流定位)与降级说明。数据来自写盘时捕获的前后内容,口径明确**不依赖 git**,不是「工作区当前 vs HEAD」;`/diff <路径>` 可从命令直接定位到某个文件。
 - **看板视图**(第四种投影,状态栏右上循环切换):把已在手的数据聚合成一屏信息面,**五张卡片** —— 用量(累计输入/输出/缓存命中率/请求数/上下文占用)、回合(已完成回合数、总时长、工具调用与失败数、平均 token)、后台任务(运行中/记录数/最近一条)、文件变更(文件数/±行/改动次数)、定时计划(启用数/下次运行/最近终态)。卡片可**隐藏 / 上下移动顺序**、可「恢复默认」,布局记忆在浏览器(新增卡片自动补到尾部);卡片动作直达对应视图或抽屉(轨迹 / 变更 / 任务面板 / 设置的计划段)。**口径写在卡上**:用量是会话累计、回合数含进行中、变更来自工具写盘旁路(不依赖 git);数据全部来自本机事件账本与既有接口,不引入可执行内容、无新增后端契约。
-- **侧栏停靠区**(状态栏「侧栏」展开,记忆偏好):把变更 / 看板 / 任务三个面板**停靠在对话流右侧并排显示** —— 不用在「切走会话流看变更」和「让任务面板盖住对话」之间二选一;面板在停靠区顶部标签间切换,宽度可**拖拽**(也可聚焦分隔线用 `←/→`,双击复位),布局落浏览器存储。**宽度给对话流让位**:视口不足时停靠区先让步(下限 280 / 上限 720 / 至少给对话留 520);窄屏(<900px)自动退化为覆盖式抽屉。零后端契约:面板内容复用既有视图组件,数据管道不变。
+- **侧栏停靠区**(状态栏「侧栏」展开,记忆偏好):把变更 / 看板 / 任务三个面板**停靠在对话流右侧并排显示** —— 不用在「切走会话流看变更」和「让任务面板盖住对话」之间二选一;面板在停靠区顶部标签间切换,宽度可**拖拽**(也可聚焦分隔线用 `←/→`,双击复位),布局落浏览器存储。**宽度给对话流让位**:视口不足时停靠区先让步(下限 280 / 上限 720 / 至少给对话留 520);窄屏(<900px)自动退化为覆盖式抽屉。零后端契约:面板内容复用既有视图组件,数据管道不变。**外壳永不整页滚动**(每个滚动区各有归属:会话流 / 侧栏列表 / 抽屉),这条纪律有真浏览器布局回归门禁守着(见「十」)。
 - **长会话窗口**(首帧基线 + 上滚分页):打开一个很长的会话不再重放全部历史 —— 首连只回放**尾部窗口**(约 400 条事件,回合对齐),并先发一帧 **基线** 告诉前端窗口边界与「更早历史是否还有」;向上滚到接近顶部(或点顶部按钮)即自动按游标拉更早一页拼在前面(按序号去重、拼接后**滚动位置不动**)。贴底阅读时自动折叠最老的消息(上限 800 条,`已折叠 N 条更早消息`),被折叠的内容上滚可重新取回 —— DOM 与内存不随会话长度增长;轨迹/变更视图在窗口不完整时显式标注口径,不把窗口内合计说成会话全程累计。
 - **WebSocket 通道**:`/api/events/ws`(与 SSE 同 payload,前端自动降级;两条路断线续传都带 `after` 游标)。
 - **断连行为**(显式三态:已连接/重连中/**已断开**):连接丢失时输入区上方出现红色横幅与「重试连接」,**提交与审批/作答一律拦截且草稿、附件、弹层原样保留**(未送达不许挥掉本地状态,恢复后手动重发,不做队列自动重放);恢复时以服务端快照接管状态并丢弃陈旧完成帧。断连判定只依据可观测事实(浏览器 `navigator.onLine`、EventSource 已放弃、探活失败),不用「多久没收到帧」猜测;切回前台/睡眠唤醒(时钟跳变 >20s)会主动重握一次。
@@ -438,7 +438,7 @@ export GAH_MCP_COMMANDS="deja=/opt/homebrew/bin/deja\ncodegraph=codegraph serve 
 ├── internal/         # embed(seed 样板/外部分发)/ install(插件安装)/ prefs(偏好持久化)/ providerfile
 ├── config/           # profile/bundle/patch 样板(seed-version 与 internal/embed/seed 同步)
 ├── scripts/          # gen.sh(统一构建)/ gen-web.sh / gen-extplugins.sh / gen-desktop.sh / publish-desktop.sh(桌面零成本发行)/ verify-release.mjs(发版后校验:平台矩阵/签名/包内版本)/ ws-smoke.go
-├── desktop/          # 桌面壳 P1(Tauri v2 + sidecar gah;零成本发行:updater+CI 见 docs/RELEASE.md)
+├── desktop/          # 桌面壳 P1(Tauri v2 + sidecar gah;零成本发行:updater ed25519 自持签名 + CI 矩阵,见「三」)
 ├── .gah/skills/      # 自注册技能(gah-plugin-dev)
 └── docs/             # 本地设计文档(随仓库分发仅 PLUGIN_DEV.md;其余设计/排期/清单为本地资料)
 ```
@@ -456,6 +456,8 @@ export GAH_MCP_COMMANDS="deja=/opt/homebrew/bin/deja\ncodegraph=codegraph serve 
 
 - `scripts/gen-extplugins.sh` 按发行矩阵(darwin/linux × amd64/arm64 + windows/amd64)构建外部插件产物,`gzip -9 -n` 确定性压缩,embed 按平台拆包(每目标只嵌本平台产物)。
 - `goreleaser release --snapshot` 可直接出六目标包;`.goreleaser.yaml` 已配置 before hooks。
+
+- **门禁(CI 与本地同源)**:`go vet` + 全库 `go test -race` + `bash scripts/coverage-check.sh`(逐包棘轮 + 全局下限,豁免需理由)+ `scripts/size-check.sh`(体积门 ≤36 MiB / gz ≤23 MiB)+ 前端 `npm test`(逻辑单测)+ **`npm run test:layout`**(真浏览器布局回归:5 视口 × 4 停靠态,断言整页不滚 / 无越界元素 / 骨架在场,并含**检测器自检**;CI 上带 `GAH_LAYOUT_REQUIRE=1`,环境不满足即红灯而不是静默跳过)。`sdk/` 是独立 module(`go.work`),三步需单独跑。
 
 验收实测(DESIGN §7.6 / 最新基线):`CGO_ENABLED=0` 静态单文件 **30–34 MiB** 五目标(体积门 = `scripts/size-check.sh`,现值 ≤36 MiB / gz ≤23 MiB)、六目标交叉编译全绿、裸机 `env -i` 启动成功、sha256 附档。
 
