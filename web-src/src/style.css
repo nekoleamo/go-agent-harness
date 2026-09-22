@@ -64,10 +64,21 @@ body,
   height: 100%;
   margin: 0;
 }
+/* 视口永不滚动:根元素(html)的 overflow 决定视口能不能滚,只在 body 上写 hidden
+   仍会留下"文档可取几像素"的口子(实测残留 4px,鼠标滚一下就抖一下)。 */
+html {
+  overflow: hidden;
+}
 body {
   background: var(--bg);
   color: var(--fg);
   font: 14px/1.6 -apple-system, 'PingFang SC', 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif;
+  /* 应用外壳:整页永不滚动(视口固定)。
+     每个滚动都各有归属 —— .stream-slot(会话流)/ Sidebar .items(工作区、历史会话)各自内滚;
+     而任何**一个**越出视口的子元素(哪怕只是个折叠态按钮、提示条)都会把文档撑高,
+     让"主界面"跟着上下滑走 —— 2026-09-22 用户实测即此(元凶:Sidebar 里 v-else 绑错 v-if
+     多渲染的 ☰ 按钮,已单独修)。这里从外壳上把这类事故关掉。 */
+  overflow: hidden;
 }
 pre,
 code,

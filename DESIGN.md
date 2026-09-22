@@ -845,6 +845,22 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 
 > **发布**:v0.1.1(2026-09-13)已出 —— macOS `gah_0.1.1_aarch64.dmg`(34.18 MiB)+ Windows `gah_0.1.1_x64-setup.exe`(31.59 MiB)+ updater `gah.app.tar.gz`/`latest.json`(实测 `releases/latest/download/latest.json` HTTP 200,`version=0.1.1`,双平台签名齐备)+ 命令行五目标归档与 `checksums.txt`;三个 workflow(`ci`/`release-cli`/`release-desktop`)全绿,流程与产物清单见 `docs/RELEASE.md`「发布记录:v0.1.1」。
 
+### 第五十二批 · 主界面被整页滚动(用户实测):`v-else` 绑错 `v-if` 多渲染了一个按钮(2026-09-22)
+
+> 用户反馈(附截图):「界面有问题,可以向下滚动,主界面应固定」—— 桌面壳窗口里整页能往下滑,输入框被顶到屏幕中部、下方一片空白。
+
+1. **根因(Playwright 像素/盒模型实测定位,非目测)**:`Sidebar.vue` 模板里收起态的展开按钮写的是 `<button v-else class="handle">` —— `v-else` 绑的是**最近的前一个 `v-if`**,而第五十批把侧栏导出菜单(`v-if="exportMenu"`)插到了面板(`v-if="open"`)与这个按钮之间 ⇒ 按钮的开关条件被**静默换成“没有导出菜单时渲染”**。后果:侧栏展开时也渲染这个 `height:100%` 的按钮,它按 block 流排在 769px 高的 `.panel` 之后(实测 `top=800, height=769`)⇒ 文档高度 1573px,整页可上下滚。
+2. **修法两层**:
+   - 语义层:条件改为显式 `v-if="!open"`(`v-else` 的绑定对象会随插入节点静默改变,这里不再依赖它),并写注解说清事故。
+   - 外壳层:**`html { overflow: hidden }`**(与 `body` 一起),从根上关掉“整页可滚”这类事故 —— 之前只在 body 上写 hidden 仍会残留回测到的 4px 可取滚动(实际无任何元素越出视口)。每个滚动都各有归属:`.stream-slot`(会话流)、Sidebar 两个 `.items`(工作区/历史会话)、抽屉 `.dk-body` 自行内滚。
+3. **回归锁**:仓库内无 DOM 渲染测试基座(前端 *测试是 node:test 逻辑层),故**未加自动化回归**(诚实登记);改用真机多视口探针常驻 `~/gah-acceptance/layout-fixed-probe.mjs`(4 视口 × 4 停靠态 + 侧栏开合,断言 `document.scrollingElement.scrollHeight == clientHeight` 且 `scrollTo` 不生效、内部各区仍可滚)。若后续要自动化,得先在 CI 里引入无头浏览器(成本需评估)。
+
+**验证**:
+- 修复前(同一探针):`doc=1573 / client=800`,`scrollable=true`,越界元凶 `button.handle top=800 h=769`。
+- 修复后:4 视口(1200×800 / 1440×1000 / 1000×620 / 820×560)× 4 停靠态(收起/变更/看板/任务)= **16/16 全绿**(`doc == client`、滚动不生效、内滚仍在:`.items`、`textarea.field`、`.dk-body`);侧栏收起态 `handle=1/panel=0`、展开态 `handle=0/panel=1`(语义正确)。
+- **桌面壳真机复核**(sidecar 55741,Playwright 直连壳内页面):`{doc:800, client:800, moved:false, handle:0, panel:1}` ✅;重建后 app 已重开(PID 81361)。
+- 前端无新增依赖(`npm test` 168 全绿 + `vue-tsc` 干净)。
+
 ### 第五十一批 · 步数上限改可配 / 桌面壳系统通知定位与兜底 / 上下文占用对照 pi(2026-09-22)
 
 > 用户三问:① gah 的上下文占用展示与查询能不能参考本机 pi agent;② A-1a/A-1b/A-2/A-5 已验过,**A-3 只有 app 内卡片、没有系统横幅**(缺陷);③ 回合动辄报「达到最大步数 10 仍未完成」,上限太紧。

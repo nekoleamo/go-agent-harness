@@ -531,7 +531,12 @@ defineExpose({ refresh })
       </div>
     </div>
 
-    <button v-else class="handle" data-tip="展开侧栏" @click="open = true">☰</button>
+    <!-- 收起态的展开按钮:条件**必须显式写 `!open`**,不得写成 `v-else`。
+         v-else 绑的是「最近的前一个 v-if」—— 2026-09-22 侧栏导出菜单(`v-if="exportMenu"`)插到中间后,
+         它被静默绑到了导出菜单上,于是侧栏**展开时也渲染**这个 height:100% 的按钮;
+         它排在 769px 高的 .panel 之后(block 流),把文档撑到 1573px ⇒ 整页可上下滚动,
+         主界面不再固定(用户实测截图反馈)。插入新节点就会静默改变 v-else 的语义,这里不依赖它。 -->
+    <button v-if="!open" class="handle" data-tip="展开侧栏" @click="open = true">☰</button>
   </div>
 </template>
 
