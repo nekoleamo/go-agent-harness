@@ -12,4 +12,19 @@ if [ -f gah-data/env.sh ]; then
   source gah-data/env.sh
 fi
 
+# 孤儿外部插件进程清理:插件是本进程的子进程,宿主一死(PPID 变 1)就无主 —— 它们占着
+# 内存与端口,还会让 web 监听失败(用户只看到 bind: address already in use)。
+# 新版二进制靠 stdin EOF 自退(宿主被 kill -9 也会退),残留主要来自旧版或被强杀时卡住的进程。
+# 只清插件,且按 **argv[0] 精确匹配** —— 命令行里只是出现过该路径的无关进程(编辑器、tail、
+# 甚至本次排障用的 shell)不该被杀。PPID=1 的 **gah 主进程**正是用户有意后台常驻的实例,不动它。
+# GAH_NO_REAP=1 跳过。
+if [ "${GAH_NO_REAP:-0}" != "1" ]; then
+  orph=$(ps -eo pid=,ppid=,command= 2>/dev/null | awk '$2==1 && $3 ~ /gah-data\/plugins\/[^\/]+\/[^\/]+$/ {print $1}' || true)
+  if [ -n "$orph" ]; then
+    # shellcheck disable=SC2086
+    kill $orph 2>/dev/null || true
+    echo "[start.sh] 清理孤儿插件进程: $(echo $orph | tr '\n' ' ')" >&2
+  fi
+fi
+
 exec ./gah "$@"

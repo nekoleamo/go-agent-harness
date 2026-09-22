@@ -196,7 +196,10 @@ func (s *Server) Listen() error {
 
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		return fmt.Errorf("web ui 监听失败: %w", err)
+		// 真实世界里监听失败几乎都是端口被占,且多半不是「本机没空闲端口」而是**上一个 gah 实例
+		// 还活着**(后台常驻的 gah web,或旧版二进制被强杀后留下的残留)。底层文案跨平台不可读
+		// (linux: address already in use / windows: Only one usage ...),这里补出可操作的两条路。
+		return fmt.Errorf("web ui 监听失败: %w(该端口可能被残留的 gah 实例占用:换端口用 GAH_WEB_ADDR,或先清理残留实例)", err)
 	}
 	s.lifeMu.Lock()
 	if s.closed || s.ln != nil { // 并发 Listen/Shutdown:放弃本次句柄

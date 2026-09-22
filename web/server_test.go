@@ -1380,6 +1380,10 @@ func TestListenFailsOnTakenPort(t *testing.T) {
 	if !strings.Contains(low, "already in use") && !strings.Contains(low, "only one usage") {
 		t.Fatalf("错误应点明端口已被占用: %v", err)
 	}
+	// 可操作指引:真实世界的占用几乎都是「上一个 gah 实例还没死」,只报 bind 错误等于让用户没法下手。
+	if !strings.Contains(msg, "GAH_WEB_ADDR") {
+		t.Fatalf("错误应给出换端口这条可操作指引: %v", err)
+	}
 }
 
 func TestShutdownEndpoint(t *testing.T) {
