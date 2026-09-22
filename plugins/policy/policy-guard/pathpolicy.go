@@ -33,30 +33,35 @@ var denyGlob = []string{"*.pem", "*.key", "*.p12", "*.pfx", "*.keystore", "*.jks
 // denyDir 目录前缀 deny-list(相对用户的 HOME 判定).
 var denyDir = []string{".ssh", ".gnupg", ".aws", ".config/gcloud"}
 
+// denySuffix 凭据拒绝的统一尾注:说明这是**设计而非故障**,并让模型别再换工具重试。
+// 真机事故(2026-09-22):模型想改 search.yaml,被拒后连试 file_write/shell/file_read/file_write
+// 四种工具都撞同一墙 —— 只报“拒绝访问”会让它以为换个入口就行。
+const denySuffix = "(凭据不进模型上下文:与沙箱档位无关,换工具重试也没用;需要改配置请让用户自己编辑)"
+
 // denyPath 密钥类路径判定(基准名 / 后缀 glob / 用户密钥目录 / $GAH_HOME/config)。
 // 与沙箱档位无关:凭据永不进入模型可见面。
 func denyPath(abs string) error {
 	base := strings.ToLower(filepath.Base(abs))
 	for _, d := range denyBase {
 		if base == d {
-			return fmt.Errorf("sandbox: 拒绝访问凭据类文件 %s", filepath.Base(abs))
+			return fmt.Errorf("sandbox: 拒绝访问凭据类文件 %s%s", filepath.Base(abs), denySuffix)
 		}
 	}
 	for _, g := range denyGlob {
 		if ok, _ := filepath.Match(g, base); ok {
-			return fmt.Errorf("sandbox: 拒绝访问凭据类文件 %s", filepath.Base(abs))
+			return fmt.Errorf("sandbox: 拒绝访问凭据类文件 %s%s", filepath.Base(abs), denySuffix)
 		}
 	}
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		real := resolveRealPath(abs)
 		for _, d := range denyDir {
 			if pathWithin(filepath.Join(home, d), real) {
-				return fmt.Errorf("sandbox: 拒绝访问用户密钥目录 %s", d)
+				return fmt.Errorf("sandbox: 拒绝访问用户密钥目录 %s%s", d, denySuffix)
 			}
 		}
 	}
 	if h := sandboxGahHome(); h != "" && pathWithin(filepath.Join(h, "config"), resolveRealPath(abs)) {
-		return fmt.Errorf("sandbox: 拒绝访问数据根配置目录 config/")
+		return fmt.Errorf("sandbox: 拒绝访问数据根配置目录 config/%s", denySuffix)
 	}
 	return nil
 }

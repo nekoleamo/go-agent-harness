@@ -588,6 +588,12 @@ func (h *Host) cmdExport(args []string) (string, error) {
 		return "会话事件数: " + fmt.Sprint(len(evs)), nil
 	}
 	// B2:path 以 .html 结尾 → 自包含 HTML 渲染(对齐 pi /export HTML);否则 jsonl(既有语义)
+	// 写盘层先拒 URL 形态路径(与 tool-files / policy-guard 同一裁决点 sdk.LooksLikeURLPath):
+	// 真机事故:模型把网页地址当文件路径交给 /export,filepath.Clean 把 `//` 折成 `/`,
+	// 于是在工作区里长出 `https:/host/docs/…` 垃圾目录树。不给静默产物,显式失败。
+	if sdk.LooksLikeURLPath(path) {
+		return "", errString("导出目标是网址形态,不是本地路径:" + path + "(要导出网页请给 <路径>.html)")
+	}
 	htmlOut := strings.HasSuffix(strings.ToLower(path), ".html")
 	var out []byte
 	if htmlOut {

@@ -310,5 +310,33 @@ func Render(s *State, width, height int) string {
 	bottom = append(bottom, "") // F15.5:状态栏/指标行与输入/提示区留空隙行
 	bottom = append(bottom, renderStatusLine(s, width))
 	bottom = append(bottom, renderMetricLine(s)) // 最底行:模型/思维/上下文(最后一行下面)
-	return lipgloss.JoinVertical(lipgloss.Left, main, strings.Join(bottom, "\n"))
+	return clampFrame(lipgloss.JoinVertical(lipgloss.Left, main, strings.Join(bottom, "\n")), width, height)
+}
+
+// clampFrame 几何夹紧(渲染的**最后一道保险**):每行截到终端列宽、总行数封到终端高度。
+//
+// 为什么需要兜底:上面的几何是“按行数算账”(mainH = height - 8 - 各行占用),任何一处
+// 渲染出的物理行比假设宽(未过截断的插件行、CJK/emoji 按显示列算差一倍、异常长的单行),
+// 终端就会把它**折成两行** ⇒ 帧比屏幕高、光标定位错位 ⇒ 输入区/状态栏被顶出屏幕,
+// 滚一下又逐渐露出来(2026-09-22 用户实测反馈)。这里宁可截掉一列也不再让终端折行。
+// 行数超限时从**顶部**(会话流)裁:底部的输入区/状态栏必须在屏内。
+func clampFrame(view string, width, height int) string {
+	if width <= 0 || height <= 0 {
+		return view
+	}
+	lines := strings.Split(view, "\n")
+	for i, ln := range lines {
+		if lipgloss.Width(ln) <= width {
+			continue // 恰好满宽的行(输入框边框等)原样保留,别把末字符换成省略号
+		}
+		cut := truncateVisible(ln, width) // 超宽才动:结果 ≤ width
+		if strings.Contains(ln, "\x1b") {
+			cut += "\x1b[0m" // 本函数已不在 lipgloss 样式内,截在着色行中间要自己收尾(防颜色溢到后面)
+		}
+		lines[i] = cut
+	}
+	if len(lines) > height {
+		lines = lines[len(lines)-height:]
+	}
+	return strings.Join(lines, "\n")
 }

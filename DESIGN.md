@@ -845,6 +845,21 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 
 > **发布**:v0.1.1(2026-09-13)已出 —— macOS `gah_0.1.1_aarch64.dmg`(34.18 MiB)+ Windows `gah_0.1.1_x64-setup.exe`(31.59 MiB)+ updater `gah.app.tar.gz`/`latest.json`(实测 `releases/latest/download/latest.json` HTTP 200,`version=0.1.1`,双平台签名齐备)+ 命令行五目标归档与 `checksums.txt`;三个 workflow(`ci`/`release-cli`/`release-desktop`)全绿,流程与产物清单见 `docs/RELEASE.md`「发布记录:v0.1.1」。
 
+### 第四十九批 · 用户四条实测反馈(2026-09-22)
+
+> 背景:用户把四件事一起抛过来 —— ① `shell` 被拒“凭据类文件 search.yaml”;② 长会话下底部输入框/状态栏被挤出屏幕、上滑逐渐露出;③ 桌面侧栏「导出」要不要改;④ `/export <URL>` 的回执看着像“没自动打开”。
+
+1. **① 凭据拒绝是设计,不是故障 —— 但文案当时说不清**(`policy-guard/pathpolicy.go`):`denyBase`/`denyGlob`/`denyDir`/`$GAH_HOME/config` 四道 deny 与沙箱档位无关(有单测锁死:full-access 也拦),因为“凭据永不进模型可见面”。用户那侧的实际损失是**模型原地打转**:真会话日志里它连试 `file_write` → `shell` → `file_read` → `file_write` 四种入口撞同一堵墙(只报“拒绝访问”让它以为换个工具就行)。修法**不动判定**,只在拒绝文案后统一加尾注 `(凭据不进模型上下文:与沙箱档位无关,换工具重试也没用;需要改配置请让用户自己编辑)`(`denySuffix` 常量,四处共用)—— 同时告诉模型“别重试”和告诉用户“自己改文件”。
+2. **② TUI 帧比屏幕高(输入区/状态栏被顶出屏幕)—— 根因是按 rune 数截断**(`tui/widgets.go`):底部区(`widgetLines` 的 widget 行、`dock.go` 的坞行/hint 行)用 `truncateVisible` 截断,而旧实现按 **rune 数**算长度、又没夹到终端宽度 ⇒ 一条 100 rune 的中文行是 **200 列** ⇒ 80/100 列终端把它**折成 2 行**,而几何是按“一行”记账的(`mainH = height - 8 - 各行占用`)⇒ 帧逐行变高、最后把底部两块顶出屏幕;滚一下换了窗口里的行、折行数变了 ⇒ “逐渐露出来”。修法两层:
+   - `truncateVisible` 改**按显示列**截断(CJK/emoji 算 2 列,逐 rune 用 `lipgloss.Width` 累加;ANSI CSI 整体跳过不切);旧测试里 `len([]rune(...)) != 100` 的断言就是把这个 bug 锁在里面的原因,同步改为列宽口径(`dock_test.go` / `widgets_test.go`)。
+   - 渲染最后加 `clampFrame`:每行超宽才截到终端宽(恰好满宽的行不动,免得把输入框边框末字符换成省略号),总行数超屏高**从顶部裁**(底部输入区/状态栏必须在屏内)。这是“不管哪一处漏算都不会再顶出屏幕”的保险,截在着色行中间时自己补 `ESC[0m` 防颜色溢出。
+   - 新增 `tui/geometry_test.go`:把“每行宽 ≤ 终端宽、总行数 ≤ 屏幕高、输入行/状态栏在场”定为**渲染不变量**,覆盖长会话 + 全角 widget + 长输入/空会话/长错误横幅/坞展开,尺寸 80×24~120×40 及 80×8(极小屏)。
+   - **诚实边界**:上述不变量是“包底”,它保证不再顶出屏幕,但**没能定位到用户那一次到底是哪条行漏算**(手上没有他那一路的行内容;实测重放需要 pty + 那份会话)。若他重启后仍复现,需拿一帧真终端截图/会话材料再定位根因。
+3. **④ `/export <URL>` 静默长垃圾目录树(真缺陷)**(`host-internal-commands/commands.go`):用户执行 `/export https://feinterview.poetries.top/docs/docs/base/high-frequency` ⇒ `filepath.Clean` 把 `//` 折成 `/` ⇒ 在工作区造出 `https:/feinterview.poetries.top/docs/docs/base/high-frequency`(jsonl),回执还说“已导出 N 条事件” ⇒ 用户看着像“没自动打开”。回执里“非 .html 后缀按 jsonl 导出”那句是对的(**A-1b 的定性:不是自动打开失效,是路径压根不是本地路径**)。修法:写盘前用**同一裁决点** `sdk.LooksLikeURLPath` 拦(与 `tool-files`/`policy-guard` 一致),显式报错 `导出目标是网址形态,不是本地路径:…(要导出网页请给 <路径>.html)`;测试补 URL 正反例 + 断言工作区不落 `https:/`。工作区里已生成的垃圾目录树已清理。
+4. **③ 桌面侧栏「导出」建议**:现为 `GET /api/sessions/{id}/export` 原始 jsonl 下载。建议**默认出 HTML**(与 TUI `/export *.html` 同一渲染器)并自动打开,jsonl 降为次要入口 —— 理由见下方回复(桌面端面向“能看能分享”,jsonl 对它是噪音);待用户拍板。
+
+**验证**:`go test ./tui/ -count=1` 320 全绿(含新增几何不变量);`./plugins/host/... ./web/ ./internal/... ./plugins/policy/... ./plugins/tool/...` 1600 全绿;`gofmt`/`go vet` 干净。
+
 ### 未实施 / 待人工验(诚实登记)
 
 | 项 | 状态 |
@@ -1621,7 +1636,7 @@ Go 全量 **1498 passed**(67 包,0 失败,6 跳过;新增 `TestPluginStderrCaptu
 **11. pdfium TUI 位图** —— **锁死理由**:SELF-1 有网实测体积 **+≈5.5 MiB → 破体积门**(当时门 46/30,现在更紧的 36/23 下更无空间);TUI **无图形协议**支持 → 位图 = 新子系统(布局、缩放、终端矩阵、性能);而主力光栅路径已由 **RST-1** 交付(外部 `pdftoppm` + `sdk.DocRasterService` + `/api/doc/raster`)。**重启条件 = 降体路径先腾出空间(②/③)且「零外部依赖部署」需求成立** —— 注意这一条与上面第 6 项的「终端内联图片」不同:此项即使有图形协议也仍受体积门约束。
 **12. OSC 9;4 进度通知** —— **锁死理由**(本次分析补充):OSC 9;4 的支持面窄(Windows Terminal、WezTerm 等为主),在未知终端上属于**纯静默失效** —— 与「静默失效不可接受」的红线直接冲突;而进度语义在 TUI 已有落点:状态栏 + 坞折叠行「后台 N 运行中: <摘要>」(1s 节拍,仅在有任务时续拍)。**重启条件 = 需要终端级任务栏进度**(例如长任务在最小化窗口里也要可见)成为明确需求,且探测可依赖。
 
-#### 交付记录(2026-09-22,第四十八批:停靠区内容型面板补内边距 + 看板概览条改卡片形 + 底色改为 `--surface`(用户三轮实测反馈:侧栏文字贴边 / 看板标题缺圆角与内距 / 背景里有一小块白色))
+#### 交付记录(2026-09-22,第四十九批:用户四条实测反馈 —— 凭据拒绝文案 / TUI 帧几何夹紧 + 截断改显示列 / `/export` 拒 URL 形态路径)
 
 **来源**:用户反馈「桌面端和 web 端侧栏的变更 / 看板界面文字贴边」。
 

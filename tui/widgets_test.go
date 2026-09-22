@@ -4,6 +4,8 @@ package tui
 import (
 	"strings"
 	"testing"
+
+	"charm.land/lipgloss/v2"
 )
 
 func TestWidgetLinesRendering(t *testing.T) {
@@ -34,8 +36,8 @@ func TestWidgetLinesTruncate(t *testing.T) {
 	long := strings.Repeat("长", 200)
 	s := &State{WidgetOn: true, Widgets: []Widget{{ID: "l", Text: func() string { return long }}}}
 	lines := widgetLines(s)
-	if len([]rune(lines[0])) > 100 {
-		t.Fatalf("超长应截断: %d", len([]rune(lines[0])))
+	if w := lipgloss.Width(lines[0]); w > 100 {
+		t.Fatalf("超长应截断(按显示列): %d", w)
 	}
 	if !strings.HasSuffix(lines[0], "…") {
 		t.Fatalf("截断应带省略号: %q", lines[0])
@@ -130,24 +132,35 @@ func TestRenderWidgetSegs(t *testing.T) {
 	}
 }
 
-// truncateVisible:按可见字符截断(ANSI 颜色码不计长、不被切断)。
+// truncateVisible:按**显示列**截断(ANSI 颜色码不计长、不被切断;CJK 双列计长)。
+// 旧实现按 rune 数算 ⇒ 100 rune 的中文行在 80 列终端里折成 2 行,把输入区/状态栏顶出屏幕。
 func TestTruncateVisible(t *testing.T) {
 	if got := truncateVisible("abc", 100); got != "abc" {
 		t.Fatalf("短文本应原样: %q", got)
 	}
-	long := strings.Repeat("长", 200)
-	got := truncateVisible(long, 100)
-	if n := len([]rune(got)); n != 100 || !strings.HasSuffix(got, "…") {
-		t.Fatalf("无 ANSI 截断异常: %d %q", n, got[len(got)-3:])
+	// 半角:100 列 ⇒ 99 字符 + 省略号
+	if got := truncateVisible(strings.Repeat("a", 200), 100); lipgloss.Width(got) != 100 || !strings.HasSuffix(got, "…") {
+		t.Fatalf("半角截断应满列: 宽 %d %q", lipgloss.Width(got), got)
+	}
+	// 全角:每字 2 列 ⇒ 100 列放不下 50 字,须按显示列算
+	got := truncateVisible(strings.Repeat("长", 200), 100)
+	if w := lipgloss.Width(got); w > 100 {
+		t.Fatalf("全角截断超列: %d(必须 ≤ 100)", w)
+	}
+	if s := stripColor(got); s != strings.Repeat("长", 49)+"…" {
+		t.Fatalf("全角截断内容异常(应 49 字 + …): %q", s)
 	}
 	// 语义色文本:颜色码不计长(若按 rune 计数会被提前截断)
 	colored := RenderWidgetSegs(WidgetSeg{Text: strings.Repeat("字", 120), Level: "ok"})
 	tr := truncateVisible(colored, 100)
-	if got := stripColor(tr); got != strings.Repeat("字", 99)+"…" {
-		t.Fatalf("ANSI 截断异常(可见 %d 字): %q", len([]rune(got)), got)
+	if w := lipgloss.Width(tr); w > 100 {
+		t.Fatalf("ANSI 截断后不得超列: %d", w)
 	}
 	if !strings.Contains(tr, "\x1b[38;5;114m") {
 		t.Fatalf("应保留颜色前缀: %q", tr)
+	}
+	if !strings.HasSuffix(stripColor(tr), "…") {
+		t.Fatalf("截断应带省略号: %q", tr)
 	}
 	if n := truncateVisible("abcdef", 1); n != "…" {
 		t.Fatalf("max<=1 应只留省略号: %q", n)

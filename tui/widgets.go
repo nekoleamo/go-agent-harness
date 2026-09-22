@@ -63,17 +63,18 @@ func widgetLines(s *State) []string {
 		if txt == "" {
 			continue
 		}
-		out = append(out, truncateVisible(txt, widgetMaxRunes))
+		out = append(out, truncateVisible(txt, widgetMaxCols))
 	}
 	return out
 }
 
-// widgetMaxRunes widget 行可见字符上限(防撑屏;超长内容由会话流滚动查看)。
-const widgetMaxRunes = 100
+// widgetMaxCols widget 行显示列上限(防撑屏;超长内容由会话流滚动查看)。
+const widgetMaxCols = 100
 
-// truncateVisible 按可见字符数截断:ANSI 转义序列整体跨过(不计长、不切断),
-// 截断时末尾追加省略号。语义色分段文本必须走本函数(直接按 rune 计数会把颜色码算进去)。
-// 不主动补 reset:调用方(lipgloss Render)会在行尾闭合样式,不会溢出到相邻内容。
+// truncateVisible 按**显示列**截断(不是 rune 数):ANSI 转义序列整体跨过(不计长、不切断),
+// CJK/emoji 等宽字符按 2 列计,截断时末尾追加省略号。CJK 行按 rune 计数会漏算一倍
+// —— 一条“未超限”的 100 rune 中文行在 80 列终端里折成 2 行,把输入区/状态栏顶出屏幕。
+// 不主动补 reset:调用方(lipgloss Render)会在行尾闭合样式(clampFrame 是例外,自己补)。
 func truncateVisible(s string, max int) string {
 	if max <= 1 {
 		return "…"
@@ -94,12 +95,13 @@ func truncateVisible(s string, max int) string {
 			i = j
 			continue
 		}
-		if n >= max-1 {
+		w := lipgloss.Width(string(rs[i]))
+		if n+w > max-1 {
 			cut = true
 			break
 		}
 		sb.WriteRune(rs[i])
-		n++
+		n += w
 		i++
 	}
 	if cut {

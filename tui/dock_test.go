@@ -9,6 +9,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
@@ -28,10 +29,10 @@ func TestDockLabel(t *testing.T) {
 			t.Errorf("dockLabel(%+v) = %q, want %q", c.in, got, c.want)
 		}
 	}
-	// 超长摘要截断(不撑爆状态栏)
+	// 超长摘要截断(不撑爆状态栏;按显示列算:中文每字 2 列)
 	long := dockLabel(DockInfo{Total: 1, Running: 1, Latest: strings.Repeat("命令参数", 10)})
-	if !strings.HasSuffix(long, "…") || len([]rune(long)) > len([]rune("后台 1 运行中: "))+22 {
-		t.Errorf("长摘要应截断: %q", long)
+	if !strings.HasSuffix(long, "…") || lipgloss.Width(long) > lipgloss.Width("后台 1 运行中: ")+22 {
+		t.Errorf("长摘要应截断: %q(宽 %d)", long, lipgloss.Width(long))
 	}
 }
 

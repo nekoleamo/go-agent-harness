@@ -196,6 +196,15 @@ func TestCommandsExecuteExport(t *testing.T) {
 	if _, err := run(t, cmds2, "export", filepath.Join(dir, "x.jsonl")); err == nil {
 		t.Fatal("ctx.sessions 未装配应显式报错")
 	}
+	// URL 形态被当路径交进来:必须显式拒(真机:/export https://… 在工作区造出 https:/host/… 垃圾目录树)
+	if _, err := run(t, cmds, "export", "https://feinterview.poetries.top/docs/base"); err == nil {
+		t.Fatal("URL 形态导出目标应显式报错")
+	} else if !strings.Contains(err.Error(), "网址") {
+		t.Fatalf("报错应说清是网址形态: %v", err)
+	}
+	if _, serr := os.Stat("https:"); serr == nil {
+		t.Fatal("不得落下 URL 形态的目录/文件(工作目录下出现 https:/… )")
+	}
 }
 
 // TestCommandsExecuteStop /stop:无运行回合给明确回执;有运行回合触发取消。
