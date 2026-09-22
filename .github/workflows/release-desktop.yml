@@ -114,7 +114,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ inputs.tag || github.ref }}
+          # 补发(带了 tag 输入)时取**默认分支**的脚本:publish-desktop.sh / verify-release.mjs 的修复
+          # 应当立即生效,而不是让已消费的 tag 把旧脚本一起搬回来(2026-09-22 实测:tag 上的旧脚本
+          # 让补发回查误报);tag push 触发时仍取该 tag 自身。tags 由 fetch-depth: 0 一并取到,
+          # 下面的「发布正文 = tag 注解」步照旧可用。
+          ref: ${{ (inputs.tag != '' && github.event.repository.default_branch) || github.ref }}
       - uses: actions/download-artifact@v4
         if: inputs.run_id == ''
         with:

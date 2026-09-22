@@ -319,7 +319,11 @@ try {
   // 3) 产物逐字节验签
   const want = opts.platforms?.length > 0 ? opts.platforms : opts.all ? ['*'] : [hostPlatform()]
   const selected = opts.skipArtifacts ? [] : Object.keys(manifest.platforms ?? {}).filter((k) => want.includes('*') || want.includes(k))
-  for (const k of want.filter((x) => x !== '*' && !(k_has(manifest, x)))) fail('平台选择', `--platform ${k} 不在线上清单里`)
+  // 只做结构/矩阵/指纹检查时(--skip-artifacts,CI merge job 回查线上清单用)**不按运行主机**选平台:
+  // 回查的是「线上桌面清单覆盖了哪些平台」,与跑校验的机器无关 —— ubuntu runner 的主机平台是
+  // linux-x86_64,拿它去比桌面清单必然误报(2026-09-22 实测:本机 macOS 刚好在清单里所以本地通过)。
+  // 矩阵完整性仍由上面的 checkMatrix(env 感知)负责。
+  if (!opts.skipArtifacts) for (const k of want.filter((x) => x !== '*' && !(k_has(manifest, x)))) fail('平台选择', `--platform ${k} 不在线上清单里`)
   if (opts.skipArtifacts) info('产物验签', '--skip-artifacts:只做结构/矩阵/指纹检查')
   else if (selected.length === 0) info('产物验签', `本机平台 ${JSON.stringify(hostPlatform())} 不在清单内;需要时用 --platform <键> / --all`)
   for (const k of selected) {
