@@ -102,6 +102,7 @@ func NewApp(c sdk.Ctx, loop sdk.AgentLoop, llm sdk.LLMService, profile string, p
 	}
 	a.cmds = reg
 	m.onSubmit = a.submit
+	m.onSteer = a.steer
 	m.onCommand = a.command
 	m.onConfirm = a.confirmResult
 	m.onQuestion = a.answerQuestion
@@ -466,7 +467,14 @@ func (a *App) Start() error {
 		}
 		return nil
 	})
-	a.subs = []sdk.Disposer{d1, d2, d3, d4, d5}
+	// 回合结束时未注入的转向消息回吐(宿主 agent/steer-dropped)→ 还回待发队列
+	d6 := a.c.Subscribe("agent/steer-dropped", func(_ context.Context, ev *sdk.Event) error {
+		if msgs, ok := ev.Payload.([]string); ok {
+			a.sendToUI(steerDroppedMsg{msgs: msgs})
+		}
+		return nil
+	})
+	a.subs = []sdk.Disposer{d1, d2, d3, d4, d5, d6}
 
 	go func() {
 		_, err := a.program.Run()
@@ -486,6 +494,26 @@ func (a *App) Close() {
 		d()
 	}
 	a.program.Quit()
+}
+
+// steer 把回合运行中提交的输入注入当前回合(宿主 ctx.turnControl 的转向能力)。
+// 返回 false = 未装配该能力 / 当前无运行回合 / 落账失败(错误已显示)→ 调用方回落排队。
+// 不静默吞:一条不丢是硬约束(见 emitDroppedSteers)。
+func (a *App) steer(input string) bool {
+	var tc sdk.TurnControl
+	if err := a.c.Inject("ctx.turnControl", &tc); err != nil || tc == nil {
+		return false
+	}
+	st, ok := tc.(sdk.TurnSteerer)
+	if !ok {
+		return false
+	}
+	injected, err := st.Steer(input)
+	if err != nil {
+		a.model.state.SetError("转向注入失败(已转为待发): " + err.Error())
+		return false
+	}
+	return injected
 }
 
 // submit 普通输入:异步跑一轮(持有取消句柄,Esc 中断)。

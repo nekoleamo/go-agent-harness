@@ -47,6 +47,10 @@ type questionGoneMsg struct{ id string }
 // (多端并存时显示“已在其它渠道作答/取消”),只入会话流,不改模型可见事实。
 type interactionMsg struct{ text string }
 
+// steerDroppedMsg 回合结束时未注入的转向消息回吐(宿主 agent/steer-dropped):
+// 还回待发队列,不静默丢。
+type steerDroppedMsg struct{ msgs []string }
+
 // Model 实现 tea.Model。
 type Model struct {
 	state *State
@@ -73,6 +77,7 @@ type Model struct {
 	cacheW, cacheH int
 
 	onSubmit        func(input string)                                    // 普通输入提交(注入)
+	onSteer         func(input string) bool                               // 转向注入(回合运行中;false = 回落排队)
 	onCommand       func(cmd string) error                                // 命令处理(注入)
 	onConfirm       func(ok bool)                                         // 确认答复(注入;见 app.Confirm)
 	onQuestion      func(id string, ans sdk.QuestionAnswer)               // 提问作答(注入;按 id 定向;见 app.answerQuestion)
@@ -201,6 +206,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case interactionMsg:
 		if msg.text != "" {
 			m.state.Lines = append(m.state.Lines, Line{Kind: "meta", Text: msg.text})
+			m.skipView = false
+		}
+	case steerDroppedMsg:
+		// 回合结束时仍有未注入的转向消息(取消/失败):还回待发队列,不静默丢。
+		if len(msg.msgs) > 0 {
+			m.state.RequeueFront(msg.msgs)
+			m.state.Lines = append(m.state.Lines, Line{Kind: "meta",
+				Text: fmt.Sprintf("↩ 回合已结束,%d 条转向消息未及注入,已转为待发(Alt+Up 取回)", len(msg.msgs))})
 			m.skipView = false
 		}
 	case spinnerMsg:
@@ -1278,9 +1291,14 @@ func (m *Model) submit() {
 		}
 		return
 	}
-	// P4-1:回合运行中普通消息不启动新回合 → 入队(状态栏显“待发 N”,回合结束自动发送);
-	// 空闲 Enter 正常提交。命令不入队(即时执行保持现状)。
+	// Enter 的落点:回合运行中优先**注入当前回合**(转向:模型下一次请求就会看到),
+	// 无法注入(无运行回合/未装配该能力/落账失败)→ 回落排队,回合结束后续发。
+	// 命令不入队,即时执行(保持现状)。
 	if m.state.Running {
+		if m.onSteer != nil && m.onSteer(input) {
+			m.state.SteerCount++
+			return
+		}
 		m.state.Enqueue(input)
 		return
 	}

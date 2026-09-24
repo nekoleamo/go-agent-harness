@@ -1,4 +1,8 @@
-// A-1 条目 6/7/8(P4-1 消息队列)的 pty 真机验收。
+// A-1 条目 6/7/8 pty 真机验收:回合运行中 Enter 的两条落点。
+//
+// 语义(第五十八批):宿主提供转向能力时,回合中 Enter **注入当前回合**(「转向 N」,
+// 模型下一次请求就能看到);无法注入时回落排队(「待发 N」,回合结束后续发)。
+// 回合结束时仍未注入的插话由宿主 agent/steer-dropped 回吐 → TUI 转为待发。
 //
 // 要点:队列只在「回合进行中」才有意义,而 llm-mock 没有慢响应旋钮 —— 故本批自建
 // **慢 SSE 的 OpenAI 兼容端点**(首 token 前延迟),把它写进 provider.yaml 制造稳定窗口。
@@ -60,8 +64,9 @@ func tuiAcceptSetupSlow(t *testing.T, baseURL string) (bin string, env []string,
 	return bin, probeEnv(), root
 }
 
-// TestTUIAcceptQueueDuringTurn 条目 6:回合中输入 →「待发 N」→ 回合结束自动续发。
-func TestTUIAcceptQueueDuringTurn(t *testing.T) {
+// TestTUIAcceptSteerDuringTurn 条目 6:回合中输入 →「转向 N」→ 消息注入**本回合**
+// (作为用户消息落账并出现在会话流),不是排到回合结束后另起一回合。
+func TestTUIAcceptSteerDuringTurn(t *testing.T) {
 	base := slowProvider(t, 3*time.Second)
 	bin, env, _ := tuiAcceptSetupSlow(t, base)
 	s := newTuiSess(t, bin, env, "--profile", "acctui")
@@ -74,17 +79,18 @@ func TestTUIAcceptQueueDuringTurn(t *testing.T) {
 		t.Fatalf("条目 6:首轮未被提交;尾部 %s", stripANSI(tailS(s.rawText(), 400)))
 	}
 	time.Sleep(700 * time.Millisecond) // 回合已在跑(慢端点 3s 才回)
-	s.send("排队一\r")
-	if !s.waitRaw("待发 1", 6*time.Second) {
-		t.Errorf("条目 6:回合中入队未显示「待发 1」;尾部 %s", stripANSI(tailS(s.rawText(), 500)))
+	s.send("插话一\r")
+	if !s.waitRaw("转向 1", 6*time.Second) {
+		t.Errorf("条目 6:回合中插话未显示「转向 1」;尾部 %s", stripANSI(tailS(s.rawText(), 500)))
 	}
-	// 回合结束后应自动续发:排队消息作为**用户消息**出现在会话流(前缀 ❯)
-	if !s.waitRaw("❯ 排队一", 25*time.Second) {
-		t.Errorf("条目 6:回合结束后未自动续发排队消息;尾部 %s", stripANSI(tailS(s.rawText(), 500)))
+	// 注入即落账(不变量:模型可见即已记录):插话作为用户消息出现在会话流。
+	if !s.waitRaw("❯ 插话一", 25*time.Second) {
+		t.Errorf("条目 6:插话未注入当前回合;尾部 %s", stripANSI(tailS(s.rawText(), 500)))
 	}
 }
 
-// TestTUIAcceptQueueRecall 条目 7:Esc 取消后队列保留,Alt+Up 取回可继续编辑。
+// TestTUIAcceptQueueRecall 条目 7:回合中插话后 Esc 取消 → 未注入的插话**回吐**为待发
+// (不静默丢,也不冒充历史),Alt+Up 取回可继续编辑并重发。
 func TestTUIAcceptQueueRecall(t *testing.T) {
 	base := slowProvider(t, 4*time.Second)
 	bin, env, _ := tuiAcceptSetupSlow(t, base)
@@ -98,17 +104,20 @@ func TestTUIAcceptQueueRecall(t *testing.T) {
 		t.Fatal("首轮未提交")
 	}
 	time.Sleep(600 * time.Millisecond)
-	s.send("排队二\r")
-	if !s.waitRaw("待发 1", 6*time.Second) {
-		t.Fatalf("条目 7:入队未生效")
+	s.send("插入三\r")
+	if !s.waitRaw("转向 1", 6*time.Second) {
+		t.Fatalf("条目 7:插话未生效")
 	}
-	s.send("\x1b") // Esc 取消当前回合(队列应保留)
+	s.send("\x1b") // Esc 取消:插话尚未注入(慢端点还没回)→ 回吐为待发
+	if !s.waitRaw("已转为待发", 10*time.Second) {
+		t.Fatalf("条目 7:未回吐未注入的插话;尾部 %s", stripANSI(tailS(s.rawText(), 500)))
+	}
 	if !s.waitScreen("空闲", 10*time.Second) {
 		t.Fatalf("条目 7:Esc 未结束回合;屏 %q", firstN(s.screen(), 300))
 	}
 	// 队列保留:判**实时状态栏那行**(整屏 Contains 会被就地重绘留下的旧行骗到)
 	if line := s.statusLineWith("空闲"); !strings.Contains(line, "待发") {
-		t.Errorf("条目 7:Esc 后队列被清空(应保留供取回);空闲行=%q", line)
+		t.Errorf("条目 7:Esc 后回吐消息未进待发队列;空闲行=%q", line)
 	}
 	// Alt+Up 取回(kitty 变体为主,xterm 变体兜底)。
 	// 轮询窗口 6s:UI 循环在 Esc 取消后可能仍在同步收尾(命令跑在 UI 循环内),
@@ -133,12 +142,13 @@ func TestTUIAcceptQueueRecall(t *testing.T) {
 	}
 	// 取回的文本在输入行:直接回车应作为用户消息发出
 	s.send("\r")
-	if !s.waitRaw("❯ 排队二", 25*time.Second) {
+	if !s.waitRaw("❯ 插入三", 25*time.Second) {
 		t.Errorf("条目 7:取回后未能作为用户消息发出;尾部 %s", stripANSI(tailS(s.rawText(), 400)))
 	}
 }
 
 // TestTUIAcceptQueueClearedOnSessionSwitch 条目 8:切会话丢弃旧队列(防错发到新会话)。
+// 队列经「插话 + Esc 回吐」产生(与条目 7 同路)。
 func TestTUIAcceptQueueClearedOnSessionSwitch(t *testing.T) {
 	base := slowProvider(t, 4*time.Second)
 	bin, env, _ := tuiAcceptSetupSlow(t, base)
@@ -152,14 +162,21 @@ func TestTUIAcceptQueueClearedOnSessionSwitch(t *testing.T) {
 		t.Fatal("首轮未提交")
 	}
 	time.Sleep(600 * time.Millisecond)
-	s.send("排队三\r")
-	if !s.waitRaw("待发 1", 6*time.Second) {
-		t.Fatalf("条目 8:入队未生效")
+	s.send("插入四\r")
+	if !s.waitRaw("转向 1", 6*time.Second) {
+		t.Fatalf("条目 8:插话未生效")
+	}
+	s.send("\x1b")
+	if !s.waitRaw("已转为待发", 10*time.Second) {
+		t.Fatalf("条目 8:未回吐未注入的插话;尾部 %s", stripANSI(tailS(s.rawText(), 500)))
+	}
+	if !s.waitScreen("空闲", 10*time.Second) {
+		t.Fatalf("条目 8:Esc 未结束回合;屏 %q", firstN(s.screen(), 300))
 	}
 	s.send("/session new\r") // 切会话(与 /session switch 同走 ClearQueue)
-	// 慢端点这一轮结束 + 一段时间后,排队消息**不应**被发出
+	// 慢端点这一轮结束 + 一段时间后,队列消息**不应**被发出
 	time.Sleep(9 * time.Second)
-	if strings.Contains(s.rawText(), "❯ 排队三") {
+	if strings.Contains(s.rawText(), "❯ 插入四") {
 		t.Errorf("条目 8:切会话后仍把旧队列消息发到了新会话")
 	}
 	t.Logf("条目 8:尾部 %s", stripANSI(tailS(s.rawText(), 300)))

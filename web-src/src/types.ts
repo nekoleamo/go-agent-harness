@@ -18,6 +18,7 @@ export type FrameType =
   | 'diff'
   | 'baseline'
   | 'notice'
+  | 'steer_dropped'
 
 export interface Frame {
   id: number

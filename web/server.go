@@ -539,9 +539,14 @@ func (s *Server) handleInput(w http.ResponseWriter, r *http.Request) {
 		}
 		resolved = append(resolved, p)
 	}
-	// running 快速拒绝(TUI 同语义:回合进行中拒绝再次提交);权威占用在下方 CAS,
-	// 命令路径(/开头)不占 running。
+	// 回合进行中:普通消息改**注入当前回合**(转向:模型下一次请求就会看到,对齐 TUI);
+	// 命令路径(/开头)保持拒收(命令即时执行,不经回合),未装配转向能力时同样回落 409。
+	// 权威占用在下方 CAS。
 	if s.running.Load() {
+		if !strings.HasPrefix(content, "/") && s.steer(content) {
+			writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "accepted": "steer"})
+			return
+		}
 		http.Error(w, "回合进行中,等待完成或取消后再提交", http.StatusConflict)
 		return
 	}
@@ -566,6 +571,11 @@ func (s *Server) handleInput(w http.ResponseWriter, r *http.Request) {
 	// CAS 原子占用:Load+Store 分离时并发双击可同时通过快速检查,跑出两个回合
 	// (两个 goroutine 共享同一 Loop 的回合状态)。
 	if !s.running.CompareAndSwap(false, true) {
+		// 竞态:另一请求刚起回合 → 同样按转向处理(不静默丢用户输入)
+		if s.steer(content) {
+			writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "accepted": "steer"})
+			return
+		}
 		http.Error(w, "回合进行中,等待完成或取消后再提交", http.StatusConflict)
 		return
 	}
@@ -581,7 +591,26 @@ func (s *Server) handleInput(w http.ResponseWriter, r *http.Request) {
 			s.hub.Push(Frame{Type: FrameError, Payload: err.Error()})
 		}
 	}()
-	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true})
+	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "accepted": "turn"})
+}
+
+// steer 把输入注入运行中的回合(宿主 ctx.turnControl 实现 sdk.TurnSteerer)。
+// 返回 false = 未装配该能力 / 无运行回合 / 落账失败 → 调用方按旧行为回落(409),
+// 不静默把用户的输入吃掉。已注入的消息由回合落账,并经事件流回到前端渲染。
+func (s *Server) steer(content string) bool {
+	if s.tc == nil {
+		return false
+	}
+	st, ok := s.tc.(sdk.TurnSteerer)
+	if !ok {
+		return false
+	}
+	injected, err := st.Steer(content)
+	if err != nil {
+		s.log.Warn("web: 转向注入失败(回落 409)", "err", err)
+		return false
+	}
+	return injected
 }
 
 // runCommand 斜杠命令经 ctx.commands 同步执行(输出回 SSE 帧)。

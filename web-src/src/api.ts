@@ -62,7 +62,8 @@ export const api = {
   workspaces(): Promise<WorkspaceInfo[]> {
     return req('/api/workspaces')
   },
-  // 提交输入(回合)或斜杠命令;running 时后端 409 拒绝;attachments=附件本地路径(/api/attachments 返回)
+  // 提交输入(回合)或斜杠命令;回合运行中普通消息**注入当前回合**(转向,响应 accepted=steer),
+  // 无法注入时后端 409 拒绝;attachments=附件本地路径(/api/attachments 返回)
   input(content: string, attachments?: string[]): Promise<void> {
     return req('/api/input', {
       method: 'POST',

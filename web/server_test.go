@@ -383,6 +383,34 @@ func (s *stubTurnControl) Cancel() {
 	}
 }
 
+// stubTurnSteerer 实现 sdk.TurnSteerer 的回合控制 stub(记录转向消息;ok=false 模拟无运行回合)。
+type stubTurnSteerer struct {
+	stubTurnControl
+	mu     sync.Mutex
+	steers []string
+	ok     bool
+	err    error
+}
+
+func (s *stubTurnSteerer) Steer(text string) (bool, error) {
+	if s.err != nil {
+		return false, s.err
+	}
+	if !s.ok {
+		return false, nil
+	}
+	s.mu.Lock()
+	s.steers = append(s.steers, text)
+	s.mu.Unlock()
+	return true, nil
+}
+
+func (s *stubTurnSteerer) texts() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.steers...)
+}
+
 // newTestServer 组装一个可测试的 Server(直接注入字段,不经 sdk.Ctx)。
 // stubTodoTools 供 TestTodoEndpoint(todo 面板端点:固定返回任务列表)。
 // content 可覆盖返回值(空 = 默认单条任务):用于验「空账本回空数组」等边界。
@@ -547,6 +575,8 @@ func TestUIPluginsTrustModel(t *testing.T) {
 	}
 }
 
+// TestInputConflict409 turnControl 未实现 sdk.TurnSteerer(旧装配/第三方实现)→ 回落 409,
+// 不静默吃掉用户输入。
 func TestInputConflict409(t *testing.T) {
 	s, _ := newTestServer()
 	hs := httptest.NewServer(s.handler())
@@ -560,6 +590,76 @@ func TestInputConflict409(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("running 时应 409,得 %d", resp.StatusCode)
+	}
+}
+
+// TestInputSteerWhileRunning 回合运行中再次提交:不 409,而是注入当前回合(转向),
+// 响应标 accepted=steer(前端/客户端据此区分「已注入本回合」与「已开新回合」)。
+func TestInputSteerWhileRunning(t *testing.T) {
+	s, _ := newTestServer()
+	tc := &stubTurnSteerer{ok: true}
+	s.tc = tc
+	hs := httptest.NewServer(s.handler())
+	defer hs.Close()
+	s.running.Store(true)
+
+	resp, err := http.Post(hs.URL+"/api/input", "application/json", strings.NewReader(`{"content":"别查了,改 B 方案"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("运行中提交应 202(转向),得 %d", resp.StatusCode)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body["accepted"] != "steer" {
+		t.Fatalf("响应应标 accepted=steer: %#v", body)
+	}
+	if got := tc.texts(); len(got) != 1 || got[0] != "别查了,改 B 方案" {
+		t.Fatalf("转向消息应交给 turnControl: %#v", got)
+	}
+}
+
+// TestInputSteerUnavailableFallsBackTo409 有 turnControl 但不实现 TurnSteerer → 仍 409。
+func TestInputSteerUnavailableFallsBackTo409(t *testing.T) {
+	s, _ := newTestServer()
+	s.tc = &stubTurnControl{cancelled: make(chan struct{}, 1)}
+	hs := httptest.NewServer(s.handler())
+	defer hs.Close()
+	s.running.Store(true)
+
+	resp, err := http.Post(hs.URL+"/api/input", "application/json", strings.NewReader(`{"content":"hi"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("无转向能力时应 409,得 %d", resp.StatusCode)
+	}
+}
+
+// TestInputSteerNotUsedForCommands 命令路径(/开头)不转向:命令即时执行,不经回合。
+func TestInputSteerNotUsedForCommands(t *testing.T) {
+	s, _ := newTestServer()
+	tc := &stubTurnSteerer{ok: true}
+	s.tc = tc
+	hs := httptest.NewServer(s.handler())
+	defer hs.Close()
+	s.running.Store(true)
+
+	resp, err := http.Post(hs.URL+"/api/input", "application/json", strings.NewReader(`{"content":"/help"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("运行中命令应 409(不转向),得 %d", resp.StatusCode)
+	}
+	if got := tc.texts(); len(got) != 0 {
+		t.Fatalf("命令不应进转向通道: %#v", got)
 	}
 }
 

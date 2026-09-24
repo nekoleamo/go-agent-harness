@@ -11,6 +11,81 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
+func TestRunningEnterSteersWhenAvailable(t *testing.T) {
+	var steered []string
+	m := &Model{state: &State{Running: true}}
+	m.onSubmit = func(string) { t.Error("转向成功时不应开新回合") }
+	m.onSteer = func(s string) bool { steered = append(steered, s); return true }
+
+	for _, r := range "改 B 方案" {
+		m.state.InsertRune(r)
+	}
+	if _, _ = m.Update(keyPress(tea.KeyEnter, 0)); len(steered) != 1 || steered[0] != "改 B 方案" {
+		t.Fatalf("应注入当前回合: %#v", steered)
+	}
+	if len(m.state.Queue) != 0 {
+		t.Fatalf("已注入的消息不应再入队: %v", m.state.Queue)
+	}
+	if m.state.SteerCount != 1 {
+		t.Fatalf("转向计数应为 1: %d", m.state.SteerCount)
+	}
+	// 回落:宿主拒给注入(无运行回合 / 落账失败)→ 入队,一条不丢
+	m.onSteer = func(string) bool { return false }
+	for _, r := range "兜底" {
+		m.state.InsertRune(r)
+	}
+	if _, _ = m.Update(keyPress(tea.KeyEnter, 0)); len(m.state.Queue) != 1 || m.state.Queue[0] != "兜底" {
+		t.Fatalf("注入失败应回落排队: %v", m.state.Queue)
+	}
+}
+
+func TestStatusLineSteerAndQueue(t *testing.T) {
+	s := &State{Running: true, SteerCount: 2, Queue: []string{"x"}}
+	out := stripColor(renderStatusLine(s, 120))
+	if !strings.Contains(out, "转向 2") || !strings.Contains(out, "待发 1") {
+		t.Fatalf("状态栏应同时显示转向与待发: %q", out)
+	}
+	s.ApplyStatus("idle")
+	out = stripColor(renderStatusLine(s, 120))
+	if strings.Contains(out, "转向") {
+		t.Fatalf("回合结束应清零转向计数: %q", out)
+	}
+	if !strings.Contains(out, "待发 1") {
+		t.Fatalf("待发队列应保留(回合结束不丢): %q", out)
+	}
+}
+
+func TestRequeueFrontSteers(t *testing.T) {
+	s := &State{Queue: []string{"原有"}}
+	s.RequeueFront([]string{"先", "后"})
+	want := []string{"先", "后", "原有"}
+	if len(s.Queue) != len(want) {
+		t.Fatalf("队首插回应保留既有队列: %v", s.Queue)
+	}
+	for i, w := range want {
+		if s.Queue[i] != w {
+			t.Fatalf("顺序应为 %v,得 %v", want, s.Queue)
+		}
+	}
+}
+
+func TestSteerDroppedMsgRequeues(t *testing.T) {
+	m := &Model{state: &State{}}
+	_, _ = m.Update(steerDroppedMsg{msgs: []string{"没赶上"}})
+	if len(m.state.Queue) != 1 || m.state.Queue[0] != "没赶上" {
+		t.Fatalf("应回吐到待发队列: %v", m.state.Queue)
+	}
+	var found bool
+	for _, l := range m.state.Lines {
+		if strings.Contains(l.Text, "转向消息未及注入") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("应有提示行说明已转为待发(不静默)")
+	}
+}
+
 func TestQueueMethods(t *testing.T) {
 	s := &State{}
 	if s.Dequeue() != "" || s.PopQueued() != "" {

@@ -29,3 +29,12 @@ func (s *State) PopQueued() string {
 
 // ClearQueue 清空队列(会话/工作区切换时丢弃旧队列,防错发到新会话)。
 func (s *State) ClearQueue() { s.Queue = nil }
+
+// RequeueFront 把未注入的转向消息按原序放回队首(回合取消/失败时回吐)。
+// 放队首:它们发生在既有排队消息之前,先发生先发。
+func (s *State) RequeueFront(msgs []string) {
+	if len(msgs) == 0 {
+		return
+	}
+	s.Queue = append(append([]string(nil), msgs...), s.Queue...)
+}

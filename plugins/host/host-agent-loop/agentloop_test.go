@@ -199,7 +199,7 @@ func TestTurnControlRegistry(t *testing.T) {
 		t.Fatal("空注册表应非 Running")
 	}
 	ctx0, cancel := context.WithCancel(context.Background())
-	tok := c.register(cancel)
+	tok := c.register(cancel, &turn{})
 	if !c.Running() {
 		t.Fatal("注册后应 Running")
 	}
@@ -213,6 +213,170 @@ func TestTurnControlRegistry(t *testing.T) {
 		t.Fatal("注销后应非 Running")
 	}
 	c.unregister(tok) // 幂等注销
+}
+
+// pokeTool 执行时注入一条转向消息(轮内注入测试的同步点:工具执行期间人按了 Enter)。
+type pokeTool struct{ onExec func() }
+
+func (p pokeTool) Definition() sdk.ToolDefinition {
+	return sdk.ToolDefinition{Name: "poke", Description: "注入", InputSchema: map[string]any{"type": "object"}}
+}
+
+func (p pokeTool) Execute(context.Context, string) (any, error) {
+	if p.onExec != nil {
+		p.onExec()
+	}
+	return map[string]any{"ok": true}, nil
+}
+
+// TestTurnControlSteer control.Steer 语义:无回合回落 false / 空消息报错 / 投出后进回合队列。
+func TestTurnControlSteer(t *testing.T) {
+	c := newTurnControl()
+	if ok, err := c.Steer("插话"); ok || err != nil {
+		t.Fatalf("无运行回合应返回 false/无错: ok=%v err=%v", ok, err)
+	}
+	if _, err := c.Steer("   "); err == nil {
+		t.Fatal("空消息应报错")
+	}
+	tt := &turn{}
+	tok := c.register(func() {}, tt)
+	ok, err := c.Steer("插话")
+	if !ok || err != nil {
+		t.Fatalf("运行中应投出: ok=%v err=%v", ok, err)
+	}
+	if msgs := tt.takeSteers(); len(msgs) != 1 || msgs[0] != "插话" {
+		t.Fatalf("消息应进回合队列: %#v", msgs)
+	}
+	c.unregister(tok)
+	if ok, _ := c.Steer("再来"); ok {
+		t.Fatal("注销后应回落 false")
+	}
+}
+
+// TestTurnSteerInjectsInSameTurn 回合运行中 Enter 的插话在下一次模型请求组装之前落账并参与
+// **本回合**(同一 turn/start..turn/end),模型因此能在本轮内响应 —— 而不是排到下一回合。
+func TestTurnSteerInjectsInSameTurn(t *testing.T) {
+	e := buildEnv(t, `[
+		{"tool":{"name":"poke","args":"{}"}},
+		{"text":"看到插话后的回答","finish":"stop"}
+	]`)
+	var tc sdk.TurnControl
+	if err := e.c.Inject("ctx.turnControl", &tc); err != nil {
+		t.Fatal(err)
+	}
+	sr, ok := tc.(sdk.TurnSteerer)
+	if !ok {
+		t.Fatal("ctx.turnControl 应实现 sdk.TurnSteerer")
+	}
+	e.tools.Register(pokeTool{onExec: func() {
+		if ok, err := sr.Steer("别查了,直接改 B 方案"); !ok || err != nil {
+			t.Errorf("工具执行期间应能注入: ok=%v err=%v", ok, err)
+		}
+	}})
+	if err := e.loop.Run(context.Background(), "初始任务"); err != nil {
+		t.Fatal(err)
+	}
+	k := kinds(e.log)
+	if n := strings.Count(k, sdk.EventTurnStart); n != 1 {
+		t.Fatalf("插话应留在本回合(1 个 turn/start): %d 次\n%s", n, k)
+	}
+	if n := strings.Count(k, sdk.EventUserMessage); n != 2 {
+		t.Fatalf("应有 2 条 user/message(初始 + 插话): %d 次\n%s", n, k)
+	}
+	if n := strings.Count(k, sdk.EventAssistantMessage); n != 2 {
+		t.Fatalf("模型应对插话再答一次(2 条 assistant/message): %d 次\n%s", n, k)
+	}
+	firstAssistant := strings.Index(k, sdk.EventAssistantMessage)
+	if firstAssistant < 0 || !strings.Contains(k[firstAssistant:], sdk.EventUserMessage) {
+		t.Fatalf("插话应排在首次 assistant/message 之后(中途插入,不是开头): %s", k)
+	}
+	var found bool
+	for _, m := range e.sessions.DeriveMessages() {
+		if strings.Contains(m.Content, "别查了") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("插话文本应进派生历史(模型可见即已记录)")
+	}
+}
+
+// TestTurnSteerKeepsTurnAlive 模型已无工具调用但插话还在等 → 本回合不收尾,下个 step
+// 注入后继续(否则用户的插话石沉大海)。
+func TestTurnSteerKeepsTurnAlive(t *testing.T) {
+	e := buildEnv(t, `[
+		{"text":"第一版回答","finish":"stop"},
+		{"text":"照插话改过的回答","finish":"stop"}
+	]`)
+	var tc sdk.TurnControl
+	if err := e.c.Inject("ctx.turnControl", &tc); err != nil {
+		t.Fatal(err)
+	}
+	sr := tc.(sdk.TurnSteerer)
+	// 在首次流式正文期间插话:此时本 step 开头的注入点已过 → 收尾时必须发现它还等着。
+	steered := false
+	unsub := e.c.Subscribe(sdk.EventSession, func(_ context.Context, ev *sdk.Event) error {
+		sev, ok := ev.Payload.(*sdk.SessionEvent)
+		if !ok || sev.Kind != sdk.EventAssistantChunk || steered {
+			return nil
+		}
+		steered = true
+		if ok, err := sr.Steer("换个说法"); !ok || err != nil {
+			t.Errorf("流式期间应能注入: ok=%v err=%v", ok, err)
+		}
+		return nil
+	})
+	defer unsub()
+	if err := e.loop.Run(context.Background(), "初始任务"); err != nil {
+		t.Fatal(err)
+	}
+	if !steered {
+		t.Fatal("未观察到 assistant/chunk(测试同步点失效)")
+	}
+	k := kinds(e.log)
+	if n := strings.Count(k, sdk.EventAssistantMessage); n != 2 {
+		t.Fatalf("有插话待注入时不得收尾(应 2 条 assistant/message): %d 次\n%s", n, k)
+	}
+	if n := strings.Count(k, sdk.EventTurnStart); n != 1 {
+		t.Fatalf("仍是同一回合(1 个 turn/start): %d 次\n%s", n, k)
+	}
+}
+
+// TestTurnSteerDroppedOnCancel 回合取消时未注入的插话不丢也不冒充历史:
+// 经 agent/steer-dropped 交回发起端(TUI 回待发队列 / Web 推回输入框)。
+func TestTurnSteerDroppedOnCancel(t *testing.T) {
+	e := buildEnv(t, `[
+		{"tool":{"name":"poke","args":"{}"}},
+		{"text":"不该到达","finish":"stop"}
+	]`)
+	var tc sdk.TurnControl
+	if err := e.c.Inject("ctx.turnControl", &tc); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	unsub := e.c.Subscribe("agent/steer-dropped", func(_ context.Context, ev *sdk.Event) error {
+		if msgs, ok := ev.Payload.([]string); ok {
+			got = append(got, msgs...)
+		}
+		return nil
+	})
+	defer unsub()
+	e.tools.Register(pokeTool{onExec: func() {
+		tc.Cancel() // 人在工具跑的时候按了 Esc
+		if ok, err := tc.(sdk.TurnSteerer).Steer("这条没赶上"); !ok || err != nil {
+			t.Errorf("取消瞬间注入应仍被受理: ok=%v err=%v", ok, err)
+		}
+	}})
+	err := e.loop.Run(context.Background(), "初始任务")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("取消应返回 context.Canceled: %v", err)
+	}
+	if len(got) != 1 || got[0] != "这条没赶上" {
+		t.Fatalf("应回吐未注入的插话: %#v", got)
+	}
+	if n := strings.Count(kinds(e.log), sdk.EventUserMessage); n != 1 {
+		t.Fatalf("未注入的插话不得进历史(1 条 user/message): %d 条\n%s", n, kinds(e.log))
+	}
 }
 
 // TestTurnCancelled 上下文取消:回合以 cancelled 结束并返回错误。

@@ -56,3 +56,14 @@ type TurnControl interface {
 	// Cancel 取消全部运行中的回合(无运行回合 = no-op;幂等,重复调用无害)。
 	Cancel()
 }
+
+// TurnSteerer 可选扩展:ctx.turnControl 的实现者额外支持「回合运行中注入一条用户消息」
+// (steering:消息在下一次模型请求组装之前参与**当前**回合,而不是排到本回合之后)。
+// 未实现该接口时调用方各自回落旧行为(TUI 入队、Web 409),不静默降级。
+// 回合结束(完成/取消/失败)时仍未注入的消息经事件 "agent/steer-dropped" 交回发起端。
+type TurnSteerer interface {
+	// Steer 把 text 注入当前运行中的回合。
+	// 返回 false = 当前无运行回合(调用方自行回落:排队或拒绝),此时 err 为 nil。
+	// err 非空 = 已受理但未能投递/落账,调用方按「一条不丢」处理(回落排队)。
+	Steer(text string) (bool, error)
+}

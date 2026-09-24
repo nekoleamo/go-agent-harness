@@ -845,6 +845,53 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 
 > **发布**:v0.1.1(2026-09-13)已出 —— macOS `gah_0.1.1_aarch64.dmg`(34.18 MiB)+ Windows `gah_0.1.1_x64-setup.exe`(31.59 MiB)+ updater `gah.app.tar.gz`/`latest.json`(实测 `releases/latest/download/latest.json` HTTP 200,`version=0.1.1`,双平台签名齐备)+ 命令行五目标归档与 `checksums.txt`;三个 workflow(`ci`/`release-cli`/`release-desktop`)全绿,流程与产物清单见 `docs/RELEASE.md`「发布记录:v0.1.1」。
 
+### 第五十八批 · 回合内转向(steering):运行中 Enter 加入当前回合(2026-09-24)
+
+需求:会话进行中再次输入 + Enter,消息应**加入当前回合**(模型在本轮内就能看到),而不是
+等本回合结束另起一回合。
+
+1. **口径(与参照实现对齐)**:运行中 Enter 的落点取 steering 语义 —— "Delivered after the
+   current assistant turn finishes executing its tool calls, **before the next LLM call**"
+   (`pi dist/core/agent-session.js:88-97` 的 `_steeringMessages`;`steeringMode` 缺省
+   `one-at-a-time`)。本批**不做** `steeringMode` 开关:gah 的 step 粒度就是「一次模型请求 +
+   它的工具调用」,一次 step 边界注入全部待发即可,逐条注入只多花模型调用换「逐句回应」,
+   不值得开一个配置面(升级路径:在 `injectSteers` 加 limit,不动上层)。
+2. **sdk**:新增**可选**接口 `TurnSteerer { Steer(text string) (bool, error) }`(照
+   `OverflowCompactor` 先例,**不动** `TurnControl`)。`false` = 无运行回合(调用方回落);
+   `err` = 已受理未投递,调用方按「一条不丢」处理(回落排队/拒收)。
+3. **host-agent-loop(核心)**:`turn` 增 `steerMu/steers` + `pushSteer/takeSteers/hasSteers`;
+   `control` 增 `turns` 并实现 `Steer` —— 投给**最近注册**的回合(同刻正常只有一个交互回合:
+   定时任务回合由 host-schedule 的 `waitIdle` 保证不与人回合并发);`step()` 在 `agent/pre-step`
+   之后、`assemble()` **之前** `injectSteers`(逐条落 `EventUserMessage` —— 必须先落账再组装,
+   否则 `DeriveMessages` 读不到,违反「模型可见即已记录」);收尾判据加「**且无待注入插话**」
+   (否则人的插话石沉大海);`step()` 开头加 `ctx.Err()` 早返回(已取消不再消费 pending,
+   留给回吐)。注:只发 `turn/start` 一次 —— 插话留在同一回合内。
+4. **一条不丢**:回合结束(完成/取消/失败)时仍未注入的插话经事件 `agent/steer-dropped`
+   (载荷 `[]string`)回吐 —— TUI 还回「待发」队列(meta 行「已转为待发」),Web 推
+   `steer_dropped` 帧弹常驻 toast(原文可复制);**已注入的属于历史,不撤回**(Esc = 打断模型,
+   不是撤销我说过的话)。
+5. **三端提交路径**:TUI `Model.submit` 运行中先试注入(`App.steer` 经宿主 `ctx.turnControl`)→
+   失败回落 `Queue`;状态栏 `queue` 项分层显示「转向 N(已注入本回合)」/「待发 N (Alt+Up 取回)」,
+   `SteerCount` 随 `agent/status idle` 归零。Web `POST /api/input` 运行中**不再 409**,改走转向
+   (响应加 `accepted: "steer"|"turn"`);命令路径(`/` 开头)仍 409(命令即时执行不经回合);
+   未装配转向能力时同样回落 409。两端私有的 running 标志只做回落判定,权威通道 = 宿主
+   `ctx.turnControl`(单一事实源)。
+6. **ACP 一期不接**:`session/prompt` 生命周期是协议契约(编辑器自己渲染 user 消息顺序),
+   擅自变转向会让编辑器视图与 gah 视图不一致 ⇒ 保持现状(第二条 prompt 在 `runMu` 上串行
+   排队),登记为诚实边界。
+7. **测试**:`sdk`(接口契约);`host-agent-loop` 四例 —— `TestTurnControlSteer` /
+   `TestTurnSteerInjectsInSameTurn`(1 个 turn/start + 2 条 user/message,插话排在首次
+   assistant/message 之后)/ `TestTurnSteerKeepsTurnAlive`(无工具调用但有待注入 ⇒ 不收尾)/
+   `TestTurnSteerDroppedOnCancel`(取消 ⇒ 回吐事件 + 插话**不**进历史);同步点用 poke 工具执行期
+   与 `assistant/chunk` 事件期,**不靠 sleep**。`tui` 四例(转向计数/回落入队/状态栏分层/回吐插回队首)、
+   `web` 四例(转向 202 + `accepted=steer` / 有 tc 但未实现 ⇒ 409 / 命令不转向 / 旧 409 语义保留)。
+   `tests` 三条 pty 验收改写:条目 6 = 转向 →「转向 1」+ 插话作为用户消息落账;条目 7/8 改为
+   「插话 → Esc 回吐 → Alt+Up 取回重发 / 切会话丢弃」(真机三例全绿)。
+8. **验证**:全库 `-race` 绿 + `COVERAGE_OK`(79.7%);前端 `npm test` 168 + `npm run test:layout` 26 绿、
+   `vue-tsc` 干净;`gofmt`/`go vet` 干净。
+9. **诚实边界**:Web 端回吐**不**自动回填输入框(输入栏在槽位内,App 拿不到其内部状态,自建跨槽位
+   状态通道不值当)→ 以常驻 toast 呈现原文 + 「请重新发送」,与 TUI 的「自动转为待发」不等价。
+
 ### 第五十七批附 · v0.1.5 发版实况:CI 首跑结果 + 发行自校验顺序缺陷(2026-09-22)
 
 1. **CI 首跑(推送 58 个本地提交后,run `35748175010`)**:`desktop-shell` / `desktop-shell-macos` / `test-macos` 三个 job ✅;**布局回归护栏在 `ubuntu-latest` 与 `macos-14` 双绿**(失败截图步 skipped)—— 挂了很久的「CI 布局护栏首跑」就此闭环(本地 26 用例 ⟷ runner 真渲染一致)。

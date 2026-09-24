@@ -183,7 +183,7 @@ var statuslineTokens = []string{"notice", "state", "queue", "questions", "dock",
 var statuslineTokenDesc = map[string]string{
 	"notice":    "最近一条提示(NOND-N1;详情 /notice)",
 	"state":     "回合状态(思考中/执行工具;运行中带 Esc 提示)",
-	"queue":     "待发消息计数(P4-1)",
+	"queue":     "转向/待发计数(转向 = 已注入本回合;待发 = 回告后自动续发)",
 	"questions": "待答提问计数(S-P0-2)",
 	"dock":      "后台任务/子代理坞(S-P0-3)",
 	"last":      "上一回合耗时",
@@ -221,8 +221,17 @@ func statuslineItem(s *State, token string) string {
 		}
 		return styleStatus.Render("空闲")
 	case "queue":
+		// 转向(已注入本回合,模型下一次请求就会看到)与待发(回合结束后续发)语义不同,
+		// 分开展示:不分开用户会以为自己的话排到了下一回合。
+		var parts []string
+		if s.SteerCount > 0 {
+			parts = append(parts, fmt.Sprintf("转向 %d(已注入本回合)", s.SteerCount))
+		}
 		if n := len(s.Queue); n > 0 {
-			return styleBusy.Render(fmt.Sprintf("待发 %d (Alt+Up 取回)", n))
+			parts = append(parts, fmt.Sprintf("待发 %d (Alt+Up 取回)", n))
+		}
+		if len(parts) > 0 {
+			return styleBusy.Render(strings.Join(parts, " · "))
 		}
 	case "questions":
 		if n := len(s.Questions); n > 0 {

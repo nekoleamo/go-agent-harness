@@ -626,6 +626,20 @@ function rebuild(keepCursor: boolean): void {
     pushNotice(toasts.value, n, Date.now())
     notifier.fire(n) // 仅 warn/error 且本机来源已授权时才真弹系统通知(否那么是空操作)
   }))
+  // 回合结束时未注入的转向消息(agent/steer-dropped):本端输入栏在槽位内,拿不到它的
+  // 内部状态,所以不自动回填 —— 但原文必须让人看见(不静默丢),TUI 侧同帧语义是「转为待发」。
+  transport.on('steer_dropped', gate((f) => {
+    const msgs = Array.isArray(f.payload) ? (f.payload as string[]) : []
+    if (!msgs.length) return
+    pushNotice(toasts.value, {
+      id: -Date.now(), // 负数避开服务端正数 id,不干扰回填去重集
+      level: 'warn',
+      title: `回合已结束,${msgs.length} 条转向消息未及注入`,
+      body: msgs.join(' / ') + '(请重新发送)',
+      source: 'web',
+      ts: new Date().toISOString(),
+    }, Date.now())
+  }))
   // 提示不进会话记录 → 通道建立后必须回填「上次看到之后」错过的几条。
   // 放在建连之后(不阻塞首屏):回填与实时帧按 id 去重,谁先到都不会重复弹。
   void backfillNotices(gen)

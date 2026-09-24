@@ -31,11 +31,17 @@ type State struct {
 	Cursor   int
 	LastTool string
 
-	// Queue 消息队列(P4-1):回合运行中提交的普通消息按序暂存(回合串行——空闲 Enter
-	// 直接开新回合,运行中 Enter 排队),当前回合成功结束后自动逐条发送(每次一条,
-	// 保证会话串行);回合取消/失败不自动续发,队列保留供 Alt+Up/Esc 取回编辑。
-	// 命令(/ 前缀)不入队(即时执行,保持现状);会话切换清空。见 queue.go。
+	// Queue 消息队列(P4-1):无法即时注入的普通消息按序暂存,当前回合成功结束后自动
+	// 逐条发送(每次一条,保证会话串行);回合取消/失败不自动续发,队列保留供
+	// Alt+Up/Esc 取回编辑。命令(/ 前缀)不入队(即时执行,保持现状);会话切换清空。
+	// 注:运行中 Enter 的默认落点已不是这里 —— 宿主提供 sdk.TurnSteerer 时消息**注入
+	// 当前回合**(转向,见 SteerCount),本队列接手回落场景(未装配该能力)与回合结束后的续发。
+	// 见 queue.go。
 	Queue []string
+
+	// SteerCount 本回合已注入的转向消息条数(状态栏「转向 N」;回合结束归零)。
+	// 与 Queue 分开显示:转向 = 模型下一步就会看到,待发 = 要等本回合结束。
+	SteerCount int
 
 	// Widgets + WidgetOn(P4-12 T5):输入行上方可注册的动态信息行(宿主/未来插件
 	// 经 App.AddWidget 注入,渲染帧求值);/widgets on|off 开关。见 widgets.go。
@@ -245,6 +251,7 @@ func (s *State) ApplyStatus(status string) {
 		}
 	case "idle":
 		s.Running = false
+		s.SteerCount = 0 // 回合结束:转向计数归零(下回合重新计)
 		if !s.turnStart.IsZero() {
 			s.turnDur = time.Since(s.turnStart)
 			s.turnStart = time.Time{}

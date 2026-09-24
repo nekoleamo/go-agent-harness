@@ -53,6 +53,10 @@ const (
 	// 面向「需要人回来的时刻」(后台任务终态/定时计划失败或跳过/回合报错):前端弹离散 toast
 	// (不占用会话流)。提示不进会话记录 → 刷新/重连后靠 `GET /api/notices?since=<id>` 回填。
 	FrameNotice = "notice"
+	// FrameSteerDropped 回合结束时未注入的转向消息(宿主 agent/steer-dropped;载荷 []string)。
+	// 用户在本端插了话而回合却结束了(取消/失败):前端把内容还回输入框并提示,
+	// 不静默丢 —— 与 TUI 侧「转为待发」同语义。
+	FrameSteerDropped = "steer_dropped"
 )
 
 // QuestionDone 提问解决载荷(多端同步观察:按 id 关闭本端遗留弹层)。
@@ -149,7 +153,6 @@ func (h *EventHub) Subscribe(c sdk.Ctx, sessions sdk.SessionLog) (disposer sdk.D
 		return nil
 	})
 	add(sdk.EventNotice, func(_ context.Context, ev *sdk.Event) error {
-		// 用户提示(NOND-N1):立即推给浏览器 → 前端弹 toast(离散、不进会话流)。
 		// 事件与回填端点同源(ctx.notices.List),两者给的是同一份载荷。
 		switch p := ev.Payload.(type) {
 		case *sdk.Notice:

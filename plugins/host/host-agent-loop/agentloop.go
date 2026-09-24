@@ -64,19 +64,24 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 // control 实现 sdk.TurnControl:并发安全的回合取消注册表。
 // 每次 Run 派生可取消 ctx 并 register 拿到 token,回合结束(任意路径)defer unregister。
 // Cancel 先摘快照再解锁调用(回调可能触发 unregister,防自锁);CancelFunc 幂等。
+// 同时实现 sdk.TurnSteerer:Steer 把消息投给运行中的回合(见 Steer)。
 type control struct {
 	mu      sync.Mutex
 	seq     uint64
 	cancels map[uint64]context.CancelFunc
+	turns   map[uint64]*turn // 与 cancels 同键(tok):Steer 定向用
 }
 
-func newTurnControl() *control { return &control{cancels: make(map[uint64]context.CancelFunc)} }
+func newTurnControl() *control {
+	return &control{cancels: map[uint64]context.CancelFunc{}, turns: map[uint64]*turn{}}
+}
 
-// register 注册一个回合取消函数,返回注销 token。
-func (c *control) register(fn context.CancelFunc) uint64 {
+// register 注册一个回合(取消函数 + 回合状态),返回注销 token。
+func (c *control) register(fn context.CancelFunc, t *turn) uint64 {
 	c.mu.Lock()
 	c.seq++
 	c.cancels[c.seq] = fn
+	c.turns[c.seq] = t
 	c.mu.Unlock()
 	return c.seq
 }
@@ -84,7 +89,35 @@ func (c *control) register(fn context.CancelFunc) uint64 {
 func (c *control) unregister(tok uint64) {
 	c.mu.Lock()
 	delete(c.cancels, tok)
+	delete(c.turns, tok)
 	c.mu.Unlock()
+}
+
+// Steer 实现 sdk.TurnSteerer:把 text 投给最近注册的运行中回合,返回是否投出。
+// 为何取最近:同一时刻正常只有一个交互回合(TUI/Web 各自串行化提交,定时任务回合由
+// host-schedule 的 waitIdle 保证不与人回合并发),取最近 = 取那个唯一回合。
+// 投递本身不阻塞(消息进回合队列),实际注入与落账发生在下一次模型请求组装之前。
+func (c *control) Steer(text string) (bool, error) {
+	if strings.TrimSpace(text) == "" {
+		return false, errors.New("agentloop: 转向消息为空")
+	}
+	c.mu.Lock()
+	var latest uint64
+	var t *turn
+	for tok, tt := range c.turns {
+		if tt == nil {
+			continue
+		}
+		if t == nil || tok > latest {
+			latest, t = tok, tt
+		}
+	}
+	c.mu.Unlock()
+	if t == nil {
+		return false, nil // 无运行回合:调用方回落(TUI 入队 / Web 409)
+	}
+	t.pushSteer(text)
+	return true, nil
 }
 
 func (c *control) Running() bool {
@@ -127,6 +160,39 @@ type turn struct {
 	reminded        bool   // 本回合已给过伪调用提醒(每回合最多 1 次,防无限修正循环)
 	reminder        string // 待注入下轮的提醒消息(伪调用检测触发)
 	overflowRetried bool   // 本回合已因“端点报超窗”强制压缩并重试过(硬上限 1 次,防形成重试环)
+
+	// steers 本回合中用户插进来的消息(人在模型跑工具链时按 Enter)。
+	// 投递点 = 下一次模型请求组装之前(step 开头 drain)→ 模型在**本回合内**看到并响应,
+	// 而不是等本回合结束另起一回合(口径:Enter 加入当前会话)。
+	// 加锁:Steer 来自事件回调/其它 goroutine,drain 在回合 goroutine。
+	steerMu sync.Mutex
+	steers  []string
+}
+
+// pushSteer 暂存一条转向消息(等下一次 step 边界注入)。
+func (t *turn) pushSteer(text string) {
+	t.steerMu.Lock()
+	t.steers = append(t.steers, text)
+	t.steerMu.Unlock()
+}
+
+// takeSteers 取走全部待注入转向消息(原序;无则 nil)。
+func (t *turn) takeSteers() []string {
+	t.steerMu.Lock()
+	defer t.steerMu.Unlock()
+	if len(t.steers) == 0 {
+		return nil
+	}
+	out := t.steers
+	t.steers = nil
+	return out
+}
+
+// hasSteers 是否还有未注入的转向消息(回合收尾判据:有则本回合不结束)。
+func (t *turn) hasSteers() bool {
+	t.steerMu.Lock()
+	defer t.steerMu.Unlock()
+	return len(t.steers) > 0
 }
 
 // appendEvents 记录会话事件并返回首个错误。
@@ -138,6 +204,33 @@ func (l *Loop) appendEvents(evs ...sdk.SessionEvent) error {
 		}
 	}
 	return nil
+}
+
+// injectSteers 把待注入的转向消息逐条落账为 EventUserMessage(原序、逐条独立帧:
+// 导出/轨迹视图的分隔与用户实际发送一致,不合并成一段文本)。
+// 必须在 assemble 之前调用:assemble 经 DeriveMessages 读日志,只推内存队列模型看不到
+// (不变量:模型可见即已记录)。
+func (l *Loop) injectSteers(t *turn) error {
+	msgs := t.takeSteers()
+	for _, m := range msgs {
+		if err := l.appendEvents(sdk.SessionEvent{Kind: sdk.EventUserMessage,
+			Payload: sdk.UserMessage{Content: m}}); err != nil {
+			return fmt.Errorf("session log: %w", err)
+		}
+	}
+	return nil
+}
+
+// emitDroppedSteers 回合结束(任意路径:完成/取消/失败)时把仍未注入的转向消息经事件
+// 交回发起端(TUI 回「待发」队列 / Web 推回输入框)。
+// 已注入的已落账(属于历史)不在此列 —— 语义是「你的话没被模型看到,还给你」,
+// 不是「撤回你说过的话」。不静默丢:事件名 agent/steer-dropped,载荷 []string。
+func (l *Loop) emitDroppedSteers(t *turn) {
+	left := t.takeSteers()
+	if len(left) == 0 {
+		return
+	}
+	l.c.Emit(context.Background(), "agent/steer-dropped", left, sdk.Emit)
 }
 
 // Run 处理一次用户输入直至一轮完成(无附件;等价 RunWithAttachments nil)。
@@ -154,15 +247,17 @@ func (l *Loop) RunWithAttachments(ctx context.Context, input string, atts []sdk.
 	// 回合级可取消 ctx:派生 child 并注册到 ctx.turnControl(TUI Esc/Web 取消经
 	// Cancel() 取消同一回合);父 ctx 取消沿链生效;回合结束(任意返回路径)注销并释放。
 	runCtx, runCancel := context.WithCancel(ctx)
+	defer runCancel()
+	t := &turn{} // 回合级状态(伪调用提醒每回合至多一次;转向注入见 turn.steers)
+	// 回吐:取消/失败时仍未注入的转向消息不得静默丢(见 emitDroppedSteers)
+	defer l.emitDroppedSteers(t)
 	var tok uint64
 	if l.tc != nil { // 直接构造的 Loop(旧测试/无 turnControl 场景)跳过注册
-		tok = l.tc.register(runCancel)
+		tok = l.tc.register(runCancel, t)
 		defer l.tc.unregister(tok)
 	}
-	defer runCancel()
 
 	l.c.Emit(runCtx, "agent/status", "running", sdk.Emit)
-	t := &turn{} // 回合级状态(伪调用提醒每回合至多一次)
 	// turn/start:回合起点标记(与 turn/end 配对;此前只声明未发出,S-P0-1 轨迹视图需要
 	// 权威回合边界)。nil 载荷不参与 DeriveMessages 投影,旧会话缺该帧也能正常工作。
 	if err := l.appendEvents(
@@ -206,6 +301,11 @@ func (l *Loop) RunWithAttachments(ctx context.Context, input string, atts []sdk.
 // step 执行一轮 ReAct 迭代(单次模型请求 + 其工具调用)。
 func (l *Loop) step(ctx context.Context, t *turn) error {
 	t.finished = false
+	// 回合已被取消:不再开新步骤(否则会消费掉待注入的插话,并写一个没有 step/end 的
+	// step/start)。待注入消息留给 emitDroppedSteers 交回发起端。
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := l.appendEvents(sdk.SessionEvent{Kind: sdk.EventStepStart}); err != nil {
 		return fmt.Errorf("session log: %w", err)
 	}
@@ -213,6 +313,12 @@ func (l *Loop) step(ctx context.Context, t *turn) error {
 	// agent/pre-step:waterfall 扩展点(M2 无监听器则直过;改写/拒绝留 policy 阶段)
 	if _, err := l.c.Emit(ctx, "agent/pre-step", nil, sdk.Waterfall); err != nil {
 		return fmt.Errorf("pre-step rejected: %w", err)
+	}
+
+	// 转向注入:上一步的工具结果已落账,下一次模型请求组装之前把用户中途插进来的
+	// 消息补成 EventUserMessage(见 injectSteers;必须在 assemble 之前)。
+	if err := l.injectSteers(t); err != nil {
+		return err
 	}
 
 	// assemble 组装本轮请求(历史投影 + 工具 schema + 伪调用提醒)。
@@ -327,6 +433,13 @@ func (l *Loop) step(ctx context.Context, t *turn) error {
 				return fmt.Errorf("session log: %w", err)
 			}
 			return nil // 不结束:下一轮带提醒重新请求
+		}
+		// 用户在本回合中插了话(尚未注入)→ 不收尾:下一 step 开头注入后继续本回合。
+		if t.hasSteers() {
+			if err := l.appendEvents(sdk.SessionEvent{Kind: sdk.EventStepEnd}); err != nil {
+				return fmt.Errorf("session log: %w", err)
+			}
+			return nil // 不结束:下一轮带转向消息继续
 		}
 		t.finished = true
 		if err := l.appendEvents(sdk.SessionEvent{Kind: sdk.EventStepEnd}); err != nil {
