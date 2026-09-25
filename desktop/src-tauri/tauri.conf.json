@@ -42,6 +42,7 @@
     "updater": {
       "active": true,
       "endpoints": [
+        "https://gitee.com/null_593_5354/go-agent-harness/raw/master/latest.json",
         "https://github.com/nekoleamo/go-agent-harness/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDFGNzNFNDNGOEQzNjE0RkEKUldUNkZEYU5QK1J6SDdKSHFFM2dRbTZsd0dJek5hTU9VSmxSVHd3WXpzRFdVVDV4Vld4eVNZbE0K"

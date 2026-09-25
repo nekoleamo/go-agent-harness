@@ -26,6 +26,7 @@ use std::time::Duration;
 
 mod notice;
 mod stage;
+mod update_source;
 
 use tauri::menu::{CheckMenuItem, CheckMenuItemBuilder, MenuBuilder, MenuItem, MenuItemBuilder, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
@@ -240,14 +241,34 @@ async fn checkForUpdates(app: &tauri::AppHandle) -> UpdateOutcome {
 }
 
 async fn checkForUpdatesInner(app: &tauri::AppHandle) -> UpdateOutcome {
-    let updater = match app.updater() {
-        Ok(u) => u,
+    // 升级源自动切换:两个端点按「Gitee 优先、上次失败的源垫底」交给 updater,
+    // 它内部会按序回退(`for url in &self.endpoints`),端点不可达就自动换下一个源。
+    let (endpoints, primary) = update_source::select();
+    shellLog(
+        app,
+        &format!(
+            "检查更新:端点顺序 {:?}(首选源 {:?})",
+            endpoints.iter().map(|u| u.as_str()).collect::<Vec<_>>(),
+            primary.unwrap_or("-")
+        ),
+    );
+    let updater = match app.updater_builder().endpoints(endpoints) {
+        Ok(builder) => match builder.build() {
+            Ok(u) => u,
+            Err(e) => return UpdateOutcome::new("failed", None, format!("检查更新未完成:{e}")),
+        },
         Err(e) => return UpdateOutcome::new("failed", None, format!("检查更新未完成:{e}")),
     };
     let update = match updater.check().await {
         Ok(Some(u)) => u,
-        Ok(None) => return UpdateOutcome::new("upToDate", None, "已是最新版本".into()),
-        Err(e) => return UpdateOutcome::new("failed", None, explainUpdateError(&e.to_string())),
+        Ok(None) => {
+            update_source::note_success();
+            return UpdateOutcome::new("upToDate", None, "已是最新版本".into());
+        }
+        Err(e) => {
+            update_source::note_failure(primary);
+            return UpdateOutcome::new("failed", None, explainUpdateError(&e.to_string()));
+        }
     };
     let version = update.version.clone();
     // 升级整包替换应用目录:数据已外置到用户数据目录(见 stage.rs),正常不会再被替换;
@@ -272,8 +293,12 @@ async fn checkForUpdatesInner(app: &tauri::AppHandle) -> UpdateOutcome {
         }
     };
     if let Err(e) = update.download_and_install(|_, _| {}, || {}).await {
+        // 表取到了但包下不下来:通常是这一跳被拦(国内直连 GitHub 资产的典型症状)。
+        // 记下来,下次检查时把该源排到最后,换另一个源试。
+        update_source::note_failure(primary);
         return UpdateOutcome::new("failed", Some(version), format!("下载安装未完成:{e}"));
     }
+    update_source::note_success();
     UpdateOutcome::new(
         "installed",
         Some(version.clone()),

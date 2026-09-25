@@ -13,6 +13,7 @@
 #     ↑ 本机已把 SSH 公钥加到 Gitee 时用这条(不需要令牌)
 #
 # 环境:GITEE_REPO(缺省 null_593_5354/go-agent-harness)/ GITEE_TOKEN / GITEE_URL / GITEE_BRANCH
+#       GAH_EXTRA_FILES(逗号分隔的 `源:目标` 对,一并写进快照,例如把 latest.json 放仓库根)
 #
 # 注意:每次快照都会在 Gitee 侧新增 git 对象(约 66MB 未压缩),长期累积可能触及 500MB 上限;
 # 触线时删除并重建 Gitee 仓库、再跑一次本脚本即可(它不依赖远端已有历史)。
@@ -43,6 +44,19 @@ GitHub 是唯一事实源(nekoleamo/go-agent-harness);本仓库是最新代码�
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 git archive HEAD | tar -x -C "$tmp"
+# 额外文件注入(逗号分隔的 `源:目标` 对)。用途:把 dist-desktop/gitee/latest.json 作为
+# latest.json 一起提交 —— 客户端从 Gitee raw 通道读的就是它。
+if [ -n "${GAH_EXTRA_FILES:-}" ]; then
+  IFS=',' read -r -a pairs <<< "$GAH_EXTRA_FILES"
+  for pair in "${pairs[@]}"; do
+    extra_src="${pair%%:*}"
+    extra_dst="${pair#*:}"
+    [ -f "$extra_src" ] || { echo "GAH_EXTRA_FILES 里的源文件不存在:$extra_src" >&2; exit 1; }
+    mkdir -p "$tmp/$(dirname "$extra_dst")"
+    cp "$extra_src" "$tmp/$extra_dst"
+    echo "注入 $extra_src → $extra_dst"
+  done
+fi
 (
   cd "$tmp"
   git init -q -b "$BRANCH"

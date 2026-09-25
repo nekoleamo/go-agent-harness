@@ -220,23 +220,43 @@ jobs:
       - name: 上传产物到 Gitee Release(同名附件先删后传,幂等)
         if: steps.gate.outputs.skip != '1'
         run: bash scripts/mirror-gitee.sh upload "${{ inputs.tag }}" dist-desktop/up
-      - name: 代码快照同步到 Gitee 仓库
+      - name: 代码快照 + Gitee 版表同步到 Gitee 仓库
         if: steps.gate.outputs.skip != '1'
-        run: bash scripts/sync-gitee.sh
-      - name: latest.json 换基址到 Gitee 并回传(回查直链与签名)
+        run: |
+          set -euo pipefail
+          # 上一步已生成 dist-desktop/gitee/latest.json(下载地址全部指向 Gitee 直链),
+          # 把它作为仓库根的 latest.json 一起提交 —— 客户端从 raw 通道读的就是这份表。
+          GAH_EXTRA_FILES=dist-desktop/gitee/latest.json:latest.json bash scripts/sync-gitee.sh
+      - name: 回查 Gitee 版表(匿名 raw;CDN 缓存 60 秒,所以重试)
+        if: steps.gate.outputs.skip != '1'
+        run: |
+          set -euo pipefail
+          url="https://gitee.com/${GITEE_REPO}/raw/master/latest.json"
+          for i in 1 2 3 4 5 6; do
+            body="$(curl -fsS --max-time 30 "$url" || true)"
+            if printf '%s' "$body" | jq -e --arg b "https://gitee.com/${GITEE_REPO}/releases/download/" \
+                 '[.platforms[].url | startswith($b)] | all' >/dev/null 2>&1; then
+              echo "Gitee 表已生效(第 $i 次尝试)"
+              exit 0
+            fi
+            echo "尚未生效(CDN 缓存 60 秒),15 秒后重试…"
+            sleep 15
+          done
+          echo "::error::Gitee raw 表未在预期时间内生效"
+          exit 1
+      - name: GitHub 表换到加速前缀(兼容存量 0.1.5)并回传
         if: steps.gate.outputs.skip != '1'
         run: |
           set -euo pipefail
           cp dist-desktop/up/latest.json dist-desktop/latest.json
-          bash scripts/publish-desktop.sh rewrite-url "gitee:${GITEE_REPO}"
+          bash scripts/publish-desktop.sh rewrite-url https://gh-proxy.com/
           gh release upload "${{ inputs.tag }}" dist-desktop/latest.json -R "$GITHUB_REPOSITORY" --clobber
           rm -rf /tmp/live && mkdir -p /tmp/live
           gh release download "${{ inputs.tag }}" -p latest.json -D /tmp/live --clobber
-          jq -e --arg b "https://gitee.com/${GITEE_REPO}/releases/download/" \
-            '[.platforms[].url | startswith($b)] | all' /tmp/live/latest.json >/dev/null
+          jq -e --arg b "https://gh-proxy.com/" '[.platforms[].url | startswith($b)] | all' /tmp/live/latest.json >/dev/null
           diff <(jq -S '.platforms | map_values(.signature)' dist-desktop/up/latest.json) \
                <(jq -S '.platforms | map_values(.signature)' /tmp/live/latest.json)
-          echo "线上 latest.json 已指向 Gitee,签名逐平台未变"
+          echo "线上 latest.json 已指向加速前缀(存量 0.1.5 走这跳),签名逐平台未变"
 
   rewrite-mirror:
     if: ${{ inputs.tag != '' && inputs.mirror_base != '' }}

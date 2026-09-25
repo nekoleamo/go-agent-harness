@@ -20,6 +20,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 REPO="${GITEE_REPO:-${GAH_GITEE_REPO:-null_593_5354/go-agent-harness}}"
+OUT_DIR="${GAH_DIST_DIR:-dist-desktop}"
 API="https://gitee.com/api/v5/repos/$REPO"
 SITE="https://gitee.com/$REPO"
 TOKEN="${GITEE_TOKEN:-}"
@@ -102,7 +103,26 @@ case "$cmd" in
     done <<< "$(collect)"
     echo "上传完成,回查匿名直链:"
     verify || exit 1
-    echo "→ 下一步:bash scripts/publish-desktop.sh rewrite-url gitee:$REPO"
+    # 生成 Gitee 版 latest.json:把每个平台的下载地址换到 Gitee 直链(取原 URL 最后两段
+    # tag/文件名 ⇒ 与源无关,输入是不是已被加速前缀包过都成)。壳从 raw 通道读这份表。
+    if [ -f "$dir/latest.json" ]; then
+      mkdir -p "$OUT_DIR/gitee"
+      jq --arg g "https://gitee.com/$REPO/releases/download/" \
+        '.platforms |= with_entries(.value |= (.url = ($g + (.url | split("/") | .[-2:] | join("/")))))' \
+        "$dir/latest.json" > "$OUT_DIR/gitee/latest.json"
+      # 自检:平台集合与签名必须与原表逐平台一致(换源可以,改签名不行)
+      diff <(jq -S '.platforms | map_values(.signature)' "$dir/latest.json") \
+           <(jq -S '.platforms | map_values(.signature)' "$OUT_DIR/gitee/latest.json") \
+        || { echo "自检失败:Gitee 版表的签名与原表不一致" >&2; rm -rf "$OUT_DIR/gitee"; exit 1; }
+      jq -e --arg b "https://gitee.com/$REPO/releases/download/" \
+        '[.platforms[].url | startswith($b)] | all' "$OUT_DIR/gitee/latest.json" >/dev/null \
+        || { echo "自检失败:仍有下载地址未指向 Gitee" >&2; rm -rf "$OUT_DIR/gitee"; exit 1; }
+      echo "已生成 Gitee 版表:$OUT_DIR/gitee/latest.json"
+      echo "→ 随代码快照提交:GAH_EXTRA_FILES=$OUT_DIR/gitee/latest.json:latest.json bash scripts/sync-gitee.sh"
+    else
+      echo "警告:$dir/latest.json 不存在,跳过 Gitee 版表生成(客户端将只能走 GitHub 表)" >&2
+    fi
+    echo "→ 客户端取表地址:https://gitee.com/$REPO/raw/master/latest.json"
     ;;
   verify)
     [ -n "$dir" ] && [ -d "$dir" ] || usage

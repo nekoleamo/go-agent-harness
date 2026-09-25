@@ -845,6 +845,59 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 
 > **发布**:v0.1.1(2026-09-13)已出 —— macOS `gah_0.1.1_aarch64.dmg`(34.18 MiB)+ Windows `gah_0.1.1_x64-setup.exe`(31.59 MiB)+ updater `gah.app.tar.gz`/`latest.json`(实测 `releases/latest/download/latest.json` HTTP 200,`version=0.1.1`,双平台签名齐备)+ 命令行五目标归档与 `checksums.txt`;三个 workflow(`ci`/`release-cli`/`release-desktop`)全绿,流程与产物清单见 `docs/RELEASE.md`「发布记录:v0.1.1」。
 
+### 第六十批 · 升级源自动切换(0.1.6 起)(2026-09-25)
+
+背景:用户问「能否保证国内国外都能顺利升级、根据网络环境自动切换」。判定 0.1.5 **做不到**:
+`tauri.conf.json` 的 `plugins.updater.endpoints` 是单条、写在编译产物里,且 updater 下载"只有表里
+那一条 URL"。据此把升级拆成两跳定位:
+
+```
+第1跳 取表 latest.json    ← 0.1.5 写死 github.com,改不了
+第2跳 按表里的 url 下载包  ← 可换源(gh-proxy / Gitee)
+```
+
+换源只治第 2 跳。本机实测同一 release:表(小文件、github.com 域)直连能过,而资产
+(`release-assets.githubusercontent.com`)**直连失败** ⇒ 国内报的「升级一直失败」更可能是第 2 跳。
+
+**方案(零成本、零新增依赖)**:让客户端同时持两个源,并让两份表`url`各自指向本源的包 —— 于是
+"选源"一次解决两跳。
+
+1. **两份表**:· Gitee 版(`url` → Gitee 直链),由 `scripts/mirror-gitee.sh` 生成并随代码快照提交到
+   Gitee 仓库根,客户端从 **raw 通道**读(`https://gitee.com/null_593_5354/go-agent-harness/raw/master/latest.json`);
+   · GitHub 版(`url` → 加速前缀),CI 发布时改写后回传 Release(**存量 0.1.5 靠这份升到 0.1.6**)。
+2. **壳内选路**(`desktop/src-tauri/src/update_source.rs`):默认 **Gitee 优先**,把两个端点按序交给
+   updater;`Updater::check()` 内部是 `for url in &self.endpoints`,取不到表就试下一个(= 端点不可达时
+   自动换源,不需要我们探测)。再加一层**失败记忆**:某源「表能取到、包下不下来」时记下并垫到最后,
+   下次先试另一个源(覆盖第一层管不到的另一半路)。`note_success()` 清记忆,默认优先级恢复。
+3. **端点写进配置**:`tauri.conf.json` 的 `endpoints` 改为两条(Gitee raw 在前、GitHub 在后),
+   作为编译期兵底;运行期由 `app.updater_builder().endpoints(...).build()` 按记忆顺序覆盖。
+
+**验证(逐条实测,不靠推测)**:
+
+| 假设 | 证据 |
+|---|---|
+| updater 会按序回退端点 | 读 `tauri-plugin-updater-2.11.0/src/updater.rs`:`check()` 内 `let mut last_error… for url in &self.endpoints` |
+| 不显式传 pubkey 也不会丢 | `UpdaterBuilder::new(app, config)` 把 `config` 存入 `context`;`.endpoints(..) -> Result<Self>`、`.build() -> Result<Updater>` |
+| `Url` 类型可用且不需新依赖 | `tauri-2.11.5/src/lib.rs:83 pub use url::Url;` |
+| Gitee raw 匿名可读 | `.../raw/master/AGENTS.md` ⇒ 200 / `text/plain` |
+| Gitee raw 的时效 | 响应头 `cache-control: public, max-age=60` ⇒ 发版后最多 60 秒生效 |
+| Gitee API 可取 latest | `GET /api/v5/repos/<o>/<r>/releases/latest` ⇒ 200(备用路径) |
+| Gitee **无** latest 直链语义 | `releases/latest/download/<file>` ⇒ 404(所以才走 raw) |
+| 表生成与注入链路 | 本地 bare 仓库跑 `GAH_EXTRA_FILES=…:latest.json bash scripts/sync-gitee.sh`,回读确认表已在仓库根 |
+| 壳代码能编译、单测绿 | `cd desktop/src-tauri && cargo test --offline` ⇒ **34 passed** |
+
+4. **否决的方案(附理由)**:
+   · **主动测速选源**:需引入 HTTP 客户端(加 `reqwest` 后 `cargo check` 去 crates.io 拉 `quinn` 超时失败),
+     而收益仅为「海外用户从可用但慢变快」⇒ 不值;要加就在 `ordered()` 前插一层探测,形状已留。
+   · **自己实现下载 + 换源重试**:Tauri 内建下载只用表里那一条 URL,绕过需自实现下载与 minisign 验签安装,
+     跳平台风险高 ⇒ 不做。两端点回退 + 失败记忆已覆盖主要场景。
+   · **服务端按 IP 分发**:需域名/服务器(要花钱)⇒ 与"零成本"口径冲突。
+5. **机制与内容解耦**:端点固定为 raw 路径 ⇒ **已装的 0.1.6 客户端无需再更新**;等 Gitee 附件/表就位
+   (需 `GITEE_TOKEN`),存量 0.1.6 立即受益。
+6. **诚实边界**:· Gitee 附件匿名直链没找到第三方样本(18 个公开仓库均无自定义附件),待令牌到位首次上传时
+   由脚本自校验(HEAD 应 200,否则脚本直接报错退出);· 不做主动测速 ⇒ 海外用户默认也走 Gitee(可用但慢于 GitHub);
+   · 两源同时不可达时仍会失败,只能手动下载安装包(README 已给 Gitee 直链)。
+
 ### 第五十九批 · 国内升级通路:下载 URL 可换源(零成本)(2026-09-24)
 
 背景:国内用户报告「通过 GitHub 升级一直失败」。判定升级链有两跳 —— ① 取 `latest.json`、

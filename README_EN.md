@@ -99,13 +99,19 @@ provider (DeepSeek / Kimi / Zhipu / Qwen / Ollama presets; paste an API key).
 >
 > **Upgrading from mainland China (when GitHub is flaky)**: an upgrade needs only two things — `latest.json` and the installer — and both can be re-sourced through a GitHub acceleration prefix: just concatenate the original link after the prefix, e.g. `https://gh-proxy.com/https://github.com/nekoleamo/go-agent-harness/releases/download/v0.1.5/gah_0.1.5_aarch64.dmg` (Windows: `gah_0.1.5_x64-setup.exe`; same idea for the CLI archive). **Auto-update re-sourcing**: one release-side command prefixes every download URL in `latest.json` — `bash scripts/publish-desktop.sh rewrite-url https://gh-proxy.com/` (revert with `… rewrite-url none`) — or run the `release-desktop` workflow via `workflow_dispatch { tag, mirror_base }`. **No re-release needed, and it applies to already-installed builds.** **Re-sourcing does not weaken security**: the updater's ed25519 signature covers the **file contents**, not the URL, so a mirror swapping the payload is rejected outright (the script self-checks that every platform's `signature` is untouched, and rolls back otherwise). Public proxies are community services with no availability guarantee — if one dies, try another prefix or `none` to restore the direct link; a self-hosted mirror (CNB free object storage / Gitee Release assets) can be wired in once an account is available.
 >
-> **Self-hosted mirror now live (Gitee, still zero cost)**: release artifacts and a code snapshot are also published to
-> `https://gitee.com/null_593_5354/go-agent-harness`, and the auto-update download URLs point at it (no third-party
-> proxy involved): macOS `https://gitee.com/null_593_5354/go-agent-harness/releases/download/v0.1.5/gah_0.1.5_aarch64.dmg`,
-> Windows the same prefix with `gah_0.1.5_x64-setup.exe`; the source snapshot lives on the repo page. Gitee carries only
-> the **latest code snapshot** (no history) plus the desktop installers — full history and the per-platform CLI archives
-> stay on GitHub. Revert to the direct GitHub link with `bash scripts/publish-desktop.sh rewrite-url none`
-> (or `workflow_dispatch { tag, mirror_base: none }` in CI).
+> **Automatic update-source switching (0.1.6 onward)**: the desktop app holds two sources at once — the Gitee
+> mirror (direct from mainland China) and the GitHub Release (globally reachable). Gitee is tried first; if its
+> manifest cannot be fetched, the other source is used automatically. **A source that serves the manifest but
+> cannot serve the payload is remembered and demoted to last**, so the next check tries the other one first.
+> Each source publishes its own `latest.json` whose download URLs point at that source's installers, so picking
+> the source decides both hops at once. There is still exactly one signature set (ed25519 verifies file
+> **contents**, not URLs, so re-sourcing does not weaken anything). Existing 0.1.5 users go through the GitHub
+> manifest, whose download URLs already point at an acceleration prefix, so they can upgrade from mainland China too.
+> Manual download (Gitee mirror): `https://gitee.com/null_593_5354/go-agent-harness/releases/download/<tag>/gah_<version>_aarch64.dmg`
+> (Windows: `gah_<version>_x64-setup.exe`); the code snapshot lives at `https://gitee.com/null_593_5354/go-agent-harness`.
+> Gitee carries only the **latest code snapshot** (no history) plus the desktop installers — full history and the
+> per-platform CLI archives stay on GitHub. Revert to the direct GitHub link with
+> `bash scripts/publish-desktop.sh rewrite-url none` (or `workflow_dispatch { tag, mirror_base: none }` in CI).
 > **Two exceptions (the only ways to lose your config)**: ① the Windows uninstaller page has a
 > \"Delete app data\" checkbox — ticking it also removes `%LOCALAPPDATA%\dev.gah.desktop` (where the data root
 > lives). It is **unchecked by default**; leave it unchecked to keep your data. ② Linux ships as a CLI
