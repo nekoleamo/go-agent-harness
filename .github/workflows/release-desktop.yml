@@ -187,6 +187,57 @@ jobs:
   # 原理:updater 的 ed25519 签名只对**文件内容**验签,URL 不参与 ⇒ 换源不降低安全强度,
   #   而且对**存量客户端**立即生效(不需重编重发)。GitHub Release 仍是唯一事实源,
   #   这里只替换同一个 asset,不动 tag、不动包。
+  # 把桌面产物与代码快照镜像到 Gitee(国内直连;零成本自控镜像,不依赖第三方代理)。
+  # GitHub 仍是唯一事实源;本 job 失败不影响主发布,但会在 run 里变红以示可见。
+  # 需要 secret:GITEE_TOKEN(Gitee 私人令牌,projects 权限);未配置则告警跳过。
+  # 回退到直链:workflow_dispatch { tag, mirror_base: none }
+  mirror-gitee:
+    needs: [merge-upload]
+    if: ${{ !cancelled() && inputs.mirror_base == '' && inputs.tag != '' && needs.merge-upload.result == 'success' }}
+    runs-on: ubuntu-latest
+    env:
+      GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+      GITEE_REPO: ${{ vars.GITEE_REPO || 'null_593_5354/go-agent-harness' }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: 未配置 GITEE_TOKEN 则跳过
+        id: gate
+        run: |
+          if [ -z "${GITEE_TOKEN}" ]; then
+            echo "::warning::GITEE_TOKEN 未配置,跳过 Gitee 镜像(发布不受影响)"
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.gate.outputs.skip != '1'
+        uses: actions/checkout@v4
+      - name: 取回本次 Release 的产物与表
+        if: steps.gate.outputs.skip != '1'
+        run: |
+          set -euo pipefail
+          mkdir -p dist-desktop/up
+          gh release download "${{ inputs.tag }}" -R "$GITHUB_REPOSITORY" \
+            -p '*.dmg' -p '*-setup.exe' -p '*.app.tar.gz' -p 'latest.json' -D dist-desktop/up
+          ls -l dist-desktop/up
+      - name: 上传产物到 Gitee Release(同名附件先删后传,幂等)
+        if: steps.gate.outputs.skip != '1'
+        run: bash scripts/mirror-gitee.sh upload "${{ inputs.tag }}" dist-desktop/up
+      - name: 代码快照同步到 Gitee 仓库
+        if: steps.gate.outputs.skip != '1'
+        run: bash scripts/sync-gitee.sh
+      - name: latest.json 换基址到 Gitee 并回传(回查直链与签名)
+        if: steps.gate.outputs.skip != '1'
+        run: |
+          set -euo pipefail
+          cp dist-desktop/up/latest.json dist-desktop/latest.json
+          bash scripts/publish-desktop.sh rewrite-url "gitee:${GITEE_REPO}"
+          gh release upload "${{ inputs.tag }}" dist-desktop/latest.json -R "$GITHUB_REPOSITORY" --clobber
+          rm -rf /tmp/live && mkdir -p /tmp/live
+          gh release download "${{ inputs.tag }}" -p latest.json -D /tmp/live --clobber
+          jq -e --arg b "https://gitee.com/${GITEE_REPO}/releases/download/" \
+            '[.platforms[].url | startswith($b)] | all' /tmp/live/latest.json >/dev/null
+          diff <(jq -S '.platforms | map_values(.signature)' dist-desktop/up/latest.json) \
+               <(jq -S '.platforms | map_values(.signature)' /tmp/live/latest.json)
+          echo "线上 latest.json 已指向 Gitee,签名逐平台未变"
+
   rewrite-mirror:
     if: ${{ inputs.tag != '' && inputs.mirror_base != '' }}
     runs-on: ubuntu-latest

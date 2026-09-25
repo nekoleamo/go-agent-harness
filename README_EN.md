@@ -98,6 +98,14 @@ provider (DeepSeek / Kimi / Zhipu / Qwen / Ollama presets; paste an API key).
 > `gah-data/` in place.
 >
 > **Upgrading from mainland China (when GitHub is flaky)**: an upgrade needs only two things — `latest.json` and the installer — and both can be re-sourced through a GitHub acceleration prefix: just concatenate the original link after the prefix, e.g. `https://gh-proxy.com/https://github.com/nekoleamo/go-agent-harness/releases/download/v0.1.5/gah_0.1.5_aarch64.dmg` (Windows: `gah_0.1.5_x64-setup.exe`; same idea for the CLI archive). **Auto-update re-sourcing**: one release-side command prefixes every download URL in `latest.json` — `bash scripts/publish-desktop.sh rewrite-url https://gh-proxy.com/` (revert with `… rewrite-url none`) — or run the `release-desktop` workflow via `workflow_dispatch { tag, mirror_base }`. **No re-release needed, and it applies to already-installed builds.** **Re-sourcing does not weaken security**: the updater's ed25519 signature covers the **file contents**, not the URL, so a mirror swapping the payload is rejected outright (the script self-checks that every platform's `signature` is untouched, and rolls back otherwise). Public proxies are community services with no availability guarantee — if one dies, try another prefix or `none` to restore the direct link; a self-hosted mirror (CNB free object storage / Gitee Release assets) can be wired in once an account is available.
+>
+> **Self-hosted mirror now live (Gitee, still zero cost)**: release artifacts and a code snapshot are also published to
+> `https://gitee.com/null_593_5354/go-agent-harness`, and the auto-update download URLs point at it (no third-party
+> proxy involved): macOS `https://gitee.com/null_593_5354/go-agent-harness/releases/download/v0.1.5/gah_0.1.5_aarch64.dmg`,
+> Windows the same prefix with `gah_0.1.5_x64-setup.exe`; the source snapshot lives on the repo page. Gitee carries only
+> the **latest code snapshot** (no history) plus the desktop installers — full history and the per-platform CLI archives
+> stay on GitHub. Revert to the direct GitHub link with `bash scripts/publish-desktop.sh rewrite-url none`
+> (or `workflow_dispatch { tag, mirror_base: none }` in CI).
 > **Two exceptions (the only ways to lose your config)**: ① the Windows uninstaller page has a
 > \"Delete app data\" checkbox — ticking it also removes `%LOCALAPPDATA%\dev.gah.desktop` (where the data root
 > lives). It is **unchecked by default**; leave it unchecked to keep your data. ② Linux ships as a CLI

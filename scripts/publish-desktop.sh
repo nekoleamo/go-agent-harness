@@ -65,26 +65,60 @@ if [ "${rewrite:-0}" = 1 ]; then
   # 幂等:第一次运行把原表另存为 latest.github.json,之后一律以它为改写源。
   command -v jq >/dev/null || { echo "需 jq"; exit 1; }
   base="${2:-}"
-  [ -n "$base" ] || { echo "用法: $0 rewrite-url <URL 前缀|none>(如 https://ghproxy.net/)"; exit 1; }
+  [ -n "$base" ] || { echo "用法: $0 rewrite-url <URL 前缀|gitee:owner/repo|none>"; exit 1; }
   [ -f "$OUT/latest.json" ] || { echo "无 $OUT/latest.json(先跑 merge,或从 Release 取回 latest.json)"; exit 1; }
   src="$OUT/latest.github.json"
   # 归一化:从 URL 里抽出最后的 GitHub 直链(幂等 —— 即使输入是**已被前缀过的**表也能正确留档,
   # 否则 CI 侧重新拉线上的表再改写会变成双重前缀)
   norm='.platforms |= with_entries(.value |= (.url = ((.url | capture("(?<gh>https://github\\.com/.*)$") | .gh) // .url)))'
+  # 目标基址先解析(供幂等短路与自检使用):
+  #   none|github ⇒ 还原;gitee:owner/repo ⇒ 换基址(Gitee 直链与 GitHub 同 tag、同文件名,
+  #   只差 host 与仓库路径 ⇒ 正则换基址,而不是前置拼接);其它 ⇒ 视为前缀,强制补尾斜杠
+  #   (否则会拼出 host**https://** 这种非法 URL)
+  case "$base" in
+    none|github) ;;
+    gitee:*)
+      gpath="${base#gitee:}"; gpath="${gpath#/}"; gpath="${gpath%/}"
+      case "$gpath" in */*) ;; *) echo "gitee: 后需给 owner/repo(如 gitee:null_593_5354/go-agent-harness)" >&2; exit 1 ;; esac
+      base="https://gitee.com/$gpath/releases/download/"
+      rebase=1 ;;
+    */) ;;
+    *) base="$base/" ;;
+  esac
+  # 幂等短路:当前表已经全部指向目标基址 ⇒ 无事可做(补发/重跑时线上表可能已换过源)。
+  # 没有这一步,「拿已换源的表再改一次」会在下面被当成非法输入拒掉。
+  if [ "$base" != "none" ] && [ "$base" != "github" ] \
+     && jq -e --arg b "$base" '[.platforms[].url | startswith($b)] | all' "$OUT/latest.json" >/dev/null 2>&1; then
+    echo "已是目标下载地址,无需改写:$OUT/latest.json"
+    exit 0
+  fi
   if [ ! -f "$src" ]; then
     jq "$norm" "$OUT/latest.json" > "$src"
     echo "已留档原始表(GitHub 直链)→ $src"
   fi
-  jq -e '[.platforms[].url | startswith("https://github.com/")] | all' "$src" >/dev/null \
-    || { echo "留档表里找不到可识别的 GitHub 直链,拒绝改写:$src" >&2; exit 1; }
+  # 留档表必须含 GitHub 直链(否则改写无从谈起)。若留档不可用但**当前表**是干净的 GitHub 直链
+  # (补发场景:线上表已换成镜像源),就用当前表刷新留档。
+  if ! jq -e '[.platforms[].url | startswith("https://github.com/")] | all' "$src" >/dev/null 2>&1; then
+    if jq -e '[.platforms[].url | startswith("https://github.com/")] | all' "$OUT/latest.json" >/dev/null 2>&1; then
+      cp "$OUT/latest.json" "$src"
+      echo "留档不可用,已用当前表的 GitHub 直链刷新:$src"
+    else
+      echo "拒绝改写:既没有可用的留档表,当前表也不是 GitHub 直链" >&2
+      exit 1
+    fi
+  fi
   if [ "$base" = "none" ] || [ "$base" = "github" ]; then
     cp "$src" "$OUT/latest.json"
     echo "已还原为 GitHub 直链 → $OUT/latest.json"
   else
-    case "$base" in */) ;; *) base="$base/" ;; esac   # 前缀必须带尾斜杠,否则会拼出 host**https://** 这种非法 URL
-    jq --arg b "$base" '.platforms |= with_entries(.value |= (.url = ($b + .url)))' "$src" > "$OUT/latest.json.tmp"
+    if [ "${rebase:-0}" = 1 ]; then
+      jq --arg b "$base" '.platforms |= with_entries(.value |= (.url = (.url | sub("^https://github\\.com/[^/]+/[^/]+/releases/download/"; $b))))' \
+        "$src" > "$OUT/latest.json.tmp"
+    else
+      jq --arg b "$base" '.platforms |= with_entries(.value |= (.url = ($b + .url)))' "$src" > "$OUT/latest.json.tmp"
+    fi
     mv "$OUT/latest.json.tmp" "$OUT/latest.json"
-    echo "已前置镜像前缀 $base → $OUT/latest.json"
+    echo "已改写下载地址(基址 → $base)→ $OUT/latest.json"
   fi
   # 自检 1:平台集合与 signature 必须与原始表**逐平台一致**(换源不许动签名)
   if ! jq -e --slurpfile a "$src" \
@@ -95,7 +129,7 @@ if [ "${rewrite:-0}" = 1 ]; then
     cp "$src" "$OUT/latest.json"
     exit 1
   fi
-  # 自检 2:每个 URL 都以给的前缀开头(还原模式跳过)
+  # 自检 2:每个 URL 都以给的前缀开头(还原模式跳过);gitee 模式则要求全部指向 gitee
   if [ "$base" != "none" ] && [ "$base" != "github" ]; then
     jq -e --arg b "$base" '[.platforms[].url | startswith($b)] | all' "$OUT/latest.json" >/dev/null \
       || { echo "自检失败:URL 前缀不符 —— 已回滚" >&2; cp "$src" "$OUT/latest.json"; exit 1; }

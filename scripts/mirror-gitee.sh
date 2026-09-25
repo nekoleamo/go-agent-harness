@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# 把发布产物镜像到 Gitee Release(国内加速;零成本自控镜像,不依赖公益代理)。
+#
+# 用法:
+#   GITEE_TOKEN=xxx bash scripts/mirror-gitee.sh upload <tag> <产物目录>
+#   bash scripts/mirror-gitee.sh verify <tag> <产物目录>     # 只回查匿名直链(不需令牌)
+#   GITEE_TOKEN=xxx bash scripts/mirror-gitee.sh list <tag>
+#
+# 做什么(upload):
+#   1. 创建(或复用)Gitee 上同名 tag 的 Release;
+#   2. 上传桌面产物(dmg / *-setup.exe / *.app.tar.gz);同名附件**先删后传**,所以可重复跑;
+#   3. 回查匿名直链(HEAD 跟随重定向后 200)并打印 —— 这是「镜像真的能下」的唯一自动出口。
+#
+# 之后由调用方决定是否把 latest.json 的下载地址换成 Gitee(GitHub 与 Gitee 的直链同形:
+# 同 tag、同文件名,只差 host 与仓库路径):
+#   bash scripts/publish-desktop.sh rewrite-url gitee:<owner/repo>
+#
+# 令牌:Gitee → 设置 → 私人令牌,勾选 projects 权限。只经 env 传入,不落盘、不入库
+# (Gitee API 用 `access_token` 查询参数,故会出现在本机进程列表里;CI 上由 GitHub 打码)。
+set -euo pipefail
+cd "$(dirname "$0")/.."
+REPO="${GITEE_REPO:-${GAH_GITEE_REPO:-null_593_5354/go-agent-harness}}"
+API="https://gitee.com/api/v5/repos/$REPO"
+SITE="https://gitee.com/$REPO"
+TOKEN="${GITEE_TOKEN:-}"
+
+usage() {
+  cat >&2 <<EOF
+用法:
+  GITEE_TOKEN=xxx bash scripts/mirror-gitee.sh upload <tag> <产物目录>
+  bash scripts/mirror-gitee.sh verify <tag> <产物目录>
+  GITEE_TOKEN=xxx bash scripts/mirror-gitee.sh list <tag>
+环境:GAH_GITEE_REPO 或 GITEE_REPO(缺省 $REPO)、GITEE_TOKEN
+EOF
+  exit 1
+}
+
+cmd="${1:-}"; tag="${2:-}"; dir="${3:-}"
+[ -n "$cmd" ] && [ -n "$tag" ] || usage
+command -v curl >/dev/null || { echo "需 curl"; exit 1; }
+command -v jq >/dev/null || { echo "需 jq"; exit 1; }
+
+api_json() { curl -fsS --max-time 60 "$@"; }
+need_token() {
+  [ -n "$TOKEN" ] || { echo "缺 GITEE_TOKEN(Gitee → 设置 → 私人令牌,勾选 projects)" >&2; exit 1; }
+}
+
+# 产物清单:只镜像「给人装的包」与「updater 要的包」三类
+collect() {
+  find "$dir" -type f \( -name '*.dmg' -o -name '*-setup.exe' -o -name '*.app.tar.gz' \) 2>/dev/null | sort
+}
+
+# 找 Release id(tag 不存在则创建)
+release_id() {
+  local id
+  id="$(api_json "$API/releases/tags/$tag?access_token=$TOKEN" | jq -r '.id' 2>/dev/null || true)"
+  if [ -z "$id" ] || [ "$id" = "null" ]; then
+    id="$(api_json -X POST "$API/releases" \
+            -d "access_token=$TOKEN" -d "tag_name=$tag" -d "name=gah $tag" \
+            -d "body=自动镜像自 GitHub Release $tag(GitHub 仍是唯一事实源)。" \
+            -d "target_commitish=master" | jq -r '.id')"
+    echo "已在 Gitee 创建 Release $tag(id=$id)" >&2
+  fi
+  [ -n "$id" ] && [ "$id" != "null" ] || { echo "取不到 Release id(令牌权限不足?需 projects)" >&2; exit 1; }
+  printf '%s' "$id"
+}
+
+attachment_id_of() { # <release_id> <文件名>
+  api_json "$API/releases/$1/attach_files?access_token=$TOKEN" \
+    | jq -r --arg n "$2" '.[] | select(.name == $n or (.name | endswith($2))) | .id' | head -1
+}
+
+link_of() { printf '%s/releases/download/%s/%s' "$SITE" "$tag" "$1"; }
+
+verify() {
+  local f name code fail=0
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    name="$(basename "$f")"
+    code="$(curl -sS -L -o /dev/null -w '%{http_code}' --max-time 120 "$(link_of "$name")" || echo 000)"
+    printf '  %s  %s\n' "$code" "$(link_of "$name")"
+    [ "$code" = "200" ] || fail=1
+  done <<< "$(collect)"
+  [ "$fail" = 0 ] || { echo "有附件匿名直链拿不到 200 —— 检查仓库是否公开、附件是否上传成功" >&2; return 1; }
+}
+
+case "$cmd" in
+  upload)
+    need_token
+    [ -n "$dir" ] && [ -d "$dir" ] || usage
+    id="$(release_id)"
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      name="$(basename "$f")"
+      old="$(attachment_id_of "$id" "$name" || true)"
+      if [ -n "$old" ]; then
+        api_json -X DELETE "$API/releases/$id/attach_files/$old?access_token=$TOKEN" >/dev/null
+        echo "  旧附件已删除:$name"
+      fi
+      echo "  上传 $name($(wc -c < "$f" | tr -d ' ') 字节)…"
+      api_json -X POST "$API/releases/$id/attach_files?access_token=$TOKEN" -F "file=@$f" >/dev/null
+    done <<< "$(collect)"
+    echo "上传完成,回查匿名直链:"
+    verify || exit 1
+    echo "→ 下一步:bash scripts/publish-desktop.sh rewrite-url gitee:$REPO"
+    ;;
+  verify)
+    [ -n "$dir" ] && [ -d "$dir" ] || usage
+    verify
+    ;;
+  list)
+    need_token
+    id="$(api_json "$API/releases/tags/$tag?access_token=$TOKEN" | jq -r '.id')"
+    api_json "$API/releases/$id/attach_files?access_token=$TOKEN" | jq -r '.[] | "\(.id)\t\(.name)"'
+    ;;
+  *) usage ;;
+esac

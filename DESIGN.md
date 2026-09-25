@@ -885,7 +885,24 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
    `merge-upload` 会把**直链表**重传上去盖掉换源结果)⇒ 两个平台 job 与 merge job 都加
    `inputs.mirror_base == ''` 前提,使只改写模式独占(提交 `a8c83da`;本地 `ruby -ryaml` 校验
    四个 job 的 `if` 表达式)。
-9. **方案文档**:`/Users/nekoleamo/Documents/Plan/gah-国内升级镜像方案.md`(含方案矩阵、镜像落点对比、
+9. **自控镜像(Gitee,仍零成本)—— 用户提供仓库 `null_593_5354/go-agent-harness`**:
+   · **配额约束(决定形态)**:Gitee 免费版单仓库 **500MB**(超限会**锁定推拉**)/ 单文件 50MB;
+     Release 附件单文件 100MB、单仓库附件总量 **1GB**。本仓库 `.git` 约 1.8GB(历史含产物)
+     ⇒ **不能推全历史**,只能推快照。
+   · `scripts/sync-gitee.sh`:`git archive HEAD` 单次快照(705 文件 / 62MB 对象)force-push 到 Gitee
+     master,仓库侧是**单个提交**、不带历史(commit message 记 tag 与 GitHub sha);凭据用
+     `GITEE_TOKEN`(HTTPS)或 `GITEE_URL`(本机 SSH)。**已实测**:`fa0617c`、SSH 认证 `nekoleamo(@null_593_5354)`。
+   · `scripts/mirror-gitee.sh`:Gitee API 创建/复用 Release → 上传桌面三件(dmg / `*-setup.exe` /
+     `*.app.tar.gz`;同名附件先删后传 ⇒ 幂等)→ **匿名回查直链 HEAD 200**(这是「镜像真能下」的唯一自动出口)。
+   · `publish-desktop.sh rewrite-url gitee:<owner/repo>`:换基址改写(Gitee 直链与 GitHub 同 tag、同文件名,
+     只差 host 与仓库路径)。顺带修两个缺陷:「拿已换源的表再改一次」原本被拒 ⇒ 加**幂等短路**;
+     「留档表被换源污染、当前表才是干净直链」(补发场景)原本拒 ⇒ 改用当前表**刷新留档**。
+   · CI 新增 job `mirror-gitee`(`needs: merge-upload`,仅 tag 发布时跑;未配 `GITEE_TOKEN` 则
+     **告警跳过、不阻断发布**):取回产物 → 上传 Gitee → 推代码快照 → 把 latest.json 换基址到 Gitee 并回传
+     → 回查「全部 URL 指向 Gitee」+「签名逐平台未变」。
+   · **体积纪律**:附件只放桌面三件(约 75MB/版)⇒ 1GB 约容 13 版;快照每次新增约 66MB 对象,
+     累积触线时删除旧 Release 附件或重建 Gitee 仓库(脚本不依赖远端已有历史)。
+10. **方案文档**:`/Users/nekoleamo/Documents/Plan/gah-国内升级镜像方案.md`(含方案矩阵、镜像落点对比、
    V1–V8 验证清单;用户口径:不额外花钱 ⇒ 排除对象存储与第三方付费平台)。
 
 ### 第五十八批 · 回合内转向(steering):运行中 Enter 加入当前回合(2026-09-24)
