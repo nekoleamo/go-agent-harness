@@ -845,6 +845,42 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 
 > **发布**:v0.1.1(2026-09-13)已出 —— macOS `gah_0.1.1_aarch64.dmg`(34.18 MiB)+ Windows `gah_0.1.1_x64-setup.exe`(31.59 MiB)+ updater `gah.app.tar.gz`/`latest.json`(实测 `releases/latest/download/latest.json` HTTP 200,`version=0.1.1`,双平台签名齐备)+ 命令行五目标归档与 `checksums.txt`;三个 workflow(`ci`/`release-cli`/`release-desktop`)全绿,流程与产物清单见 `docs/RELEASE.md`「发布记录:v0.1.1」。
 
+### 第六十一批 · 发版 v0.1.6 收口:双源上线 + CI 红定位(2026-09-25)
+
+**发版实况**(`tag v0.1.6` → `release-cli` `36150695339` / `release-desktop` `36150695312`):
+
+| 面 | 结果 |
+|---|---|
+| GitHub Release | **v0.1.6 = Latest**,15 件 asset(桌面三件 + CLI 5 目标×2 格式 + checksums + latest.json) |
+| GitHub 那份表 | 已指向 `gh-proxy` 加速前缀,**签名逐平台未变** ⇒ 存量 0.1.5 可国内升级 |
+| Gitee Release | 三件套上传完成,**匿名直链实测 200**(`releases/download/<tag>/<file>`) |
+| Gitee 那份表 | `raw/master/latest.json` 200(经 302 → `raw.giteeusercontent.com`),`url` 全部指向 Gitee 直链,**签名与 GitHub 表逐平台一致** |
+| 桌面三件套 | 下载后 **sha256 与 GitHub 官方 digest 全部一致**(上传 Gitee 前先校验) |
+
+⇒ **双源自动切换闭环**:0.1.6 客户端默认 Gitee 优先、端点不可达自动回退、失败源下次垫底。
+
+**途中修掉 4 处缺陷**(都是首发实测暴露的):
+
+1. `mirror-gitee` 在 **tag push 时被整个跳过** —— 条件写成 `inputs.tag != ''`,而 tag 触发时它是空的 ⇒ 改为
+   `startsWith(github.ref,'refs/tags/') || inputs.tag != ''`,job 内统一用 `env.TAG = inputs.tag || github.ref_name`。
+2. `mirror-gitee.sh` 的 jq 把 **shell 位置参数 `$2`** 当成 jq 变量 ⇒ compile error,「删除同名附件」那步静默失败。
+3. 上传沿用 `api_json` 的 **60 秒上限** ⇒ GitHub runner(海外)→ Gitee 传 25MB 附件 **60 秒 0 字节超时**,三件套 75MB 更不可能。
+4. `verify` 回查把**整个 25MB 附件下载回来** ⇒ 改 `-r 0-0` 只取首字节(200/206 都算通)。
+
+**一处设计裁决**:第 3 条不是脚本能绕的 —— 链路方向决定的。CI 的 `mirror-gitee` 撤下,改为 `accelerate`
+(只做「发布后把 GitHub 表换加速前缀 + 回查签名」,必成、~30 秒);Gitee 镜像改由**国内机器**跑
+`mirror-gitee.sh` + `sync-gitee.sh`(本次即如此完成)。
+
+**CI 两处红定位**(此前记为「预存红」,实际一个是本批引入):
+
+| job | 根因 | 处置 |
+|---|---|---|
+| `test`(ubuntu) | `TestTUIAcceptQueueRecall` 断言踩三坑:状态栏按段渲染(pty 窄时「待发」不在「空闲」行)、回吐提示行自身就含「已转为待发」、回吐后状态栏那一帧还没画 ⇒ 本地与 CI 同因红。改用「待发 + 数字」匹配整屏 + 轮询等待 | ✅ 已修(`aa68d39`) |
+| `test-windows` | 7 处平台适配失败:`host-worktrees` 2(worktree id 在 Windows 解析成 `---wt1`)、`policy-guard` 1(隔离下未拒写主 workspace)、`tool-shell` 1(cwd 断言见了 MSYS `/tmp` 形态)、`tests` 3(`/tmp` 硬编码、沙箱 E2E、通知夹具超时)、`web` 1(`chmod 0555` 在 Windows 不产生只读语义) | ⏳ 独立一批(见未实施表) |
+
+顺带:`desktop-shell` job 从 `cargo check` 改成 **`cargo test`** —— 升级源选路(`update_source.rs`)是有回归价值的逻辑,
+而 `release-desktop.yml` 只编译不跑单测,日常 push 这里是唯一出口。
+
 ### 第六十批 · 升级源自动切换(0.1.6 起)(2026-09-25)
 
 背景:用户问「能否保证国内国外都能顺利升级、根据网络环境自动切换」。判定 0.1.5 **做不到**:
@@ -1180,6 +1216,9 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 | 本机验收余项(TUI 42 / Web 9 / 文档 11 / 壳 8 / 其它 16) | ✅ **2026-09-22 收口订正**:A 本机 109 条已跑 **102** / 剩 **4 条纯人工**(#39 导出 HTML 观感 · #42 TUI P5 视觉 · #88 通知矩阵人眼段 · #86 壳端到端横幅)+ 本表下方「待人工验」各条(B 组 4 项卡外部条件,权威清单见 `docs/VERIFY.md` §剩余任务快照);其中 A-1a / A-1b / A-2 / A-5 已由用户实测通过(2026-09-22) |
 | `/api/models` 不支持列举时返 **501 + 纯文本** | ⏳ 前端 `req()` 对非 JSON 响应 → 报 JSON 解析错误而非服务端人话。影响仅错误文案(能力缺失本身已显式);改法:错误一律走 JSON `{error}` 或前端按 content-type 兜底。登记自第二十二批验收副产品 |
 | Web 侧 `#65 概述节流/截断`、`#66 跨渠道提问提示` | ⏳ 不可从外部观测/属 TUI 能力(理由见 §14.1 第二十二批口径订正 2、3):#65 以 `host-session-summary` 单测为准;#66 归 A-1 TUI 批 |
+| Windows CI(`test-windows`)**7 处平台适配失败** | ⏳ **已定位、未修**(2026-09-25 第六十一批):清单与根因见该批表格。分两类 —— ① 测试自身平台化不足(`/tmp` 硬编码、`chmod 0555` 只读语义、cwd 断言按 git-bash 路径形态、隔离拒写的期望值);② 可能含真缺陷(`host-worktrees` 把 worktree id 解析成 `---wt1`,Windows 路径分隔符处理)。修法建议:先按 ① 改写测试并给 Windows 明确期望,再单独查 ② 是否产品问题 |
+| Rust 侧**没有 rustfmt 门禁** | ⏳ 现状:`cargo fmt --check` 对 `main.rs` 有 50+ 处 diff(**早于本批**,不是新债),但 CI 只跑 `cargo check/test`,无人发现也无人在意。两个选项:① 全量 `cargo fmt` 一次并给 CI 加门禁(代价是一个纯格式大 diff);② 明确不启用。建议 ①,但排在 Windows CI 批次之后(避免同时改大量 Rust 行) |
+| 0.1.6 桌面端**选源真机验证** | ⏳ 需已装 0.1.6 的机器点一次「检查更新」:壳日志 `~/Library/Application Support/dev.gah.desktop/gah-shell.log` 应出现「检查更新:端点顺序 [gitee…, github…](首选源 \"gitee\")」;判据与三种场景(正常 / Gitee 不可达 / 表可取但包不可达)已写进 `docs/VERIFY.md` |
 
 ## R13 Windows 安装包桌面快捷方式缺失 ✅ (2026-09-14)
 
