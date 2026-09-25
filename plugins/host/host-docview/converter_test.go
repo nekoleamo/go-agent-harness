@@ -11,6 +11,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -443,6 +444,13 @@ func TestServiceRasterCachePath(t *testing.T) {
 // 条目 77:真 exec 路径(PATH 探测 → 真进程 → argv → 退出码 → 产物发现/缓存落位)。
 // 用 PATH 前置**假 soffice** 覆盖,不装 ≈700MB 的 LibreOffice:契约(参数/命名/退出语义)照查。
 func TestConverterRealExecPATHShim(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// 两个不可移的直接原因:① 无扩展名 shim 不会被 Hit —— Windows 的 LookPath 按 PATHEXT
+		// 解析,只认 .exe/.com/.bat/.cmd;② 本用例覆盖的是 sh 脚本契约(argv 日志格式、退出码、
+		// 产物命名),换成 cmd 版就得再写一套参数解析与日志格式 ⇒ 断言失去同构意义。
+		// 探测段本身走 exec.LookPath(标准库,跨平台语义一致),已由本包其它用例覆盖。
+		t.Skip("真 exec 契约用 sh shim 覆盖;Windows 需 cmd 版 shim(已登记待办)")
+	}
 	shimDir, logFile := t.TempDir(), filepath.Join(t.TempDir(), "argv.log")
 	script := "#!/bin/sh\n" +
 		"printf '%s\\n' \"$*\" >> '" + logFile + "'\n" +

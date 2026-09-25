@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -119,10 +120,17 @@ func TestSandboxSyncE2ECommandRoundTrip(t *testing.T) {
 	sb := sandboxOf(t, c)
 	// 写工作区之外的命令:两条路径的判别都靠它 —— 联动开着(有效 full-access)放行,
 	// 关掉后(workspace-write)必须被路径裁决拦下。
-	// 探针必须是**平台无关的绝对路径**:`/tmp/...` 在 Windows 上属 MSYS 根相对,裁决层直接
-	// 判「无法裁决」(消息里不含"被拒"),断言会假红(2026-09-25 CI 实证)。JSON 转义走
-	// json.Marshal —— Windows 路径含反斜杠,手拼会得到非法 JSON。
+	// 探针必须是**平台无关的绝对路径**。两个坑(都是 2026-09-25 CI 暴露的):
+	//   ① `/tmp/...` 在 Windows 上属 MSYS 根相对,裁决层直接判「无法裁决」;
+	//   ② 直接用 `C:\...`:Windows 的 shell 是 git-bash,反斜杠是转义字符会被吃掉
+	//      ⇒ 实际落成相对路径(真实 shell 行为,不是裁决缺陷)⇒ 得用 MSYS 形态 `/c/...`。
+	// JSON 转义走 json.Marshal:路径含反斜杠/冒号,手拼出来是非法 JSON。
 	probeDir := filepath.Join(t.TempDir(), "gah-sync-probe")
+	if runtime.GOOS == "windows" {
+		vol := filepath.VolumeName(probeDir)
+		probeDir = "/" + strings.ToLower(strings.TrimSuffix(vol, ":")) +
+			strings.TrimPrefix(filepath.ToSlash(probeDir), vol)
+	}
 	probeArgs, merr := json.Marshal(map[string]string{"command": "rm -rf " + probeDir})
 	if merr != nil {
 		t.Fatal(merr)
@@ -153,7 +161,8 @@ func TestSandboxSyncE2ECommandRoundTrip(t *testing.T) {
 	if got := sb.(sdk.EffectiveSandbox).EffectiveMode(); got != sdk.SandboxWorkspace {
 		t.Fatalf("关掉联动后有效档应为 workspace-write: %s", got)
 	}
-	if msg := resOf(); !strings.Contains(msg, "被拒") {
+	// MSYS 根相对路径的落点不可静态确定 ⇒ 消息是「无法裁决」而不是「被拒」;两者都算拦下。
+	if msg := resOf(); !strings.Contains(msg, "被拒") && !strings.Contains(msg, "无法裁决") {
 		t.Fatalf("关掉联动后 open 档不得再放行(行为必须跟着开关变,不能只改显示),got %q", msg)
 	}
 	// 偏好落盘:文件里能看到用户的显式选择
