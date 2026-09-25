@@ -877,6 +877,7 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 |---|---|---|
 | `test`(ubuntu) | `TestTUIAcceptQueueRecall` 断言踩三坑:状态栏按段渲染(pty 窄时「待发」不在「空闲」行)、回吐提示行自身就含「已转为待发」、回吐后状态栏那一帧还没画 ⇒ 本地与 CI 同因红。改用「待发 + 数字」匹配整屏 + 轮询等待 | ✅ 已修(`aa68d39`) |
 | `test`(ubuntu) | 同一 job 修完后暴露出第二个:`TestPluginStderrSurfacesInLoadError` 偶发失败,**是产品缺陷不是测试问题** —— `cmd.Stderr` 为 `io.Writer` 时 exec 内部起 copier goroutine,`Wait` 才等它结束,而握手失败常在它收尾前返回 ⇒ 插件写在 stderr 的原因(桌面版没有终端,这是唯一现场)**被丢掉**。修根因:`startPluginRPC` 的 fail 路径等 `Wait` 落地(300ms 兜底) | ✅ 已修(连跑 10 次稳定、整包 97 passed) |
+| `test`(ubuntu) | 第三个红:**计时回归护栏**报 325s > 150s —— 不是测试失败,是**护栏口径过期**:steering 批新增的 pty 验收用例(每条十秒级交互)把 `tests` 包从 M16 时的 84s 推到 **347s**(本地)/277s(CI),而阈值按旧基线 74s 定、且把该包算在内 ⇒ 必然红。拆为「核心包 73 个带 ≤150s 计时门(本地 40s)」+「`tests` 包单独一步、不设时长门」(它的耗时随用例数线性增长,做回归判据无意义) | ✅ 已修 |
 | `test-windows` | 7 处平台适配失败:`host-worktrees` 2(worktree id 在 Windows 解析成 `---wt1`)、`policy-guard` 1(隔离下未拒写主 workspace)、`tool-shell` 1(cwd 断言见了 MSYS `/tmp` 形态)、`tests` 3(`/tmp` 硬编码、沙箱 E2E、通知夹具超时)、`web` 1(`chmod 0555` 在 Windows 不产生只读语义) | ⏳ 独立一批(见未实施表) |
 
 顺带:`desktop-shell` job 从 `cargo check` 改成 **`cargo test`** —— 升级源选路(`update_source.rs`)是有回归价值的逻辑,
@@ -1218,6 +1219,7 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 | `/api/models` 不支持列举时返 **501 + 纯文本** | ⏳ 前端 `req()` 对非 JSON 响应 → 报 JSON 解析错误而非服务端人话。影响仅错误文案(能力缺失本身已显式);改法:错误一律走 JSON `{error}` 或前端按 content-type 兜底。登记自第二十二批验收副产品 |
 | Web 侧 `#65 概述节流/截断`、`#66 跨渠道提问提示` | ⏳ 不可从外部观测/属 TUI 能力(理由见 §14.1 第二十二批口径订正 2、3):#65 以 `host-session-summary` 单测为准;#66 归 A-1 TUI 批 |
 | Windows CI(`test-windows`)**7 处平台适配失败** | ⏳ **已定位、未修**(2026-09-25 第六十一批):清单与根因见该批表格。分两类 —— ① 测试自身平台化不足(`/tmp` 硬编码、`chmod 0555` 只读语义、cwd 断言按 git-bash 路径形态、隔离拒写的期望值);② 可能含真缺陷(`host-worktrees` 把 worktree id 解析成 `---wt1`,Windows 路径分隔符处理)。修法建议:先按 ① 改写测试并给 Windows 明确期望,再单独查 ② 是否产品问题 |
+| `tests` 包 `-race` 单跑 **347s**(本地)/277s(CI) | ⏳ 已定位未优化(2026-09-25 第六十一批):耗时几乎全在 pty 交互验收用例的 sleep 之和(每条约十秒级),M16 时为 84s。护栏已按口径拆开(不再拿它当时长回归信号),但**开发体验**仍差。可行方向:给互不干扰的 pty 用例加 `t.Parallel()`(风险:pty 探针吃 CPU 与时序,并行易引 flaky,需先量单核负载下的稳定性)、或按门类拆成两三个包分开计时。优先级低于 Windows CI 批次 |
 | Rust 侧**没有 rustfmt 门禁** | ⏳ 现状:`cargo fmt --check` 对 `main.rs` 有 50+ 处 diff(**早于本批**,不是新债),但 CI 只跑 `cargo check/test`,无人发现也无人在意。两个选项:① 全量 `cargo fmt` 一次并给 CI 加门禁(代价是一个纯格式大 diff);② 明确不启用。建议 ①,但排在 Windows CI 批次之后(避免同时改大量 Rust 行) |
 | 0.1.6 桌面端**选源真机验证** | ⏳ 需已装 0.1.6 的机器点一次「检查更新」:壳日志 `~/Library/Application Support/dev.gah.desktop/gah-shell.log` 应出现「检查更新:端点顺序 [gitee…, github…](首选源 \"gitee\")」;判据与三种场景(正常 / Gitee 不可达 / 表可取但包不可达)已写进 `docs/VERIFY.md` |
 

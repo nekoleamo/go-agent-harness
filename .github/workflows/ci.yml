@@ -91,15 +91,21 @@ jobs:
           # headless 默认 llm-mock(无外网)跑完整回合(调 tool-basic shell)。
           env -i HOME="$(mktemp -d)" PATH="$PATH" ./gah --profile headless --ephemeral -input "hi" >/dev/null
           echo "headless 真实回合 OK"
-      - name: 全库 -race 计时回归护栏(M16 T3:改动后首跑 ≤150s;本地实测 74s)
+      - name: 全库 -race 计时回归护栏(M16 T3:核心包首跑 ≤150s;本地实测 40s)
         run: |
+          # 为什么排除 tests 包:那是 pty 端到端验收,耗时由交互 sleep 之和决定
+          # (本地 347s / CI 277s),拿墙钟做回归判据没有意义 —— 它只会随用例数量线性增长。
+          # 本步骤要抓的是「核心包编译/初始化变慢」这类真回归(基线 40s)。
           start=$(date +%s)
-          go test ./... -count=1 -race
+          go test $(go list ./... | grep -v '/tests$') -count=1 -race
           code=$?
           end=$(date +%s)
-          echo "full race first-run: $((end-start))s"
+          echo "core race first-run: $((end-start))s"
           [ $code -eq 0 ] || exit $code
-          [ $((end-start)) -le 150 ] || { echo "计时回归:首次全库 -race 超 150s(此前基线 74s)"; exit 1; }
+          [ $((end-start)) -le 150 ] || { echo "计时回归:核心包首次全库 -race 超 150s(此前基线 40s)"; exit 1; }
+
+      - name: 端到端验收 -race(tests 包:pty 交互;不设时长门)
+        run: go test ./tests/ -count=1 -race
 
       - name: WebSocket 通道冒烟(M7.3:WS 事件载体 + 会话帧)
         run: |
