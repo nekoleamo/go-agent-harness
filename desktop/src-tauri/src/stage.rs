@@ -66,7 +66,8 @@ fn staged_file_name(version: &str, fingerprint: &str) -> String {
 /// staged_bin 外置副本的路径(`<home>/bin/gah-<版本>-<指纹>[.exe]`)。
 /// **数据根是它的同级 `gah-data/`** —— 与副本叫什么名字无关。
 fn staged_bin(home: &Path, version: &str, fingerprint: &str) -> PathBuf {
-    home.join("bin").join(staged_file_name(version, fingerprint))
+    home.join("bin")
+        .join(staged_file_name(version, fingerprint))
 }
 
 /// data_root 外置后的数据根 = **二进制同级** `gah-data/`(与 cmd/gah homeDir 同口径)。
@@ -119,12 +120,17 @@ pub fn stage_sidecar(src: &Path, home: &Path, version: &str) -> Result<StageOutc
     // 同名 + 同大小 ⇒ 就是我们要的那一份(rename 是原子的,不存在半成品)。
     let have_ok = dst.exists() && std::fs::metadata(&dst).map(|m| m.len()).unwrap_or(0) == src_len;
     if have_ok {
-        return Ok(StageOutcome { bin: dst, staged: false });
+        return Ok(StageOutcome {
+            bin: dst,
+            staged: false,
+        });
     }
     // 临时名也带上指纹:不会和上一轮崩溃残留的半成品撞名。
     let tmp = bin_dir.join(format!(
         "{}.new",
-        dst.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
+        dst.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default()
     ));
     if tmp.exists() {
         let _ = std::fs::remove_file(&tmp);
@@ -135,7 +141,10 @@ pub fn stage_sidecar(src: &Path, home: &Path, version: &str) -> Result<StageOutc
     strip_mark_of_transfer(&tmp);
     // 目标名按内容定,此刻必然不存在 ⇒ rename 不可能撞上「正在运行的旧副本」的文件锁。
     std::fs::rename(&tmp, &dst).map_err(|e| format!("放下 {} 失败: {e}", dst.display()))?;
-    Ok(StageOutcome { bin: dst, staged: true })
+    Ok(StageOutcome {
+        bin: dst,
+        staged: true,
+    })
 }
 
 /// prune_stale 尽力清掉 `bin/` 里的历史外置副本(旧版本、旧命名、未完成的 `.new`、旧标记)。
@@ -262,7 +271,10 @@ mod tests {
         let bin = staged_bin(&home, "1.2.3", "fp");
         assert_eq!(bin.parent().unwrap(), home.join("bin"));
         // 副本名带版本与指纹(内容寻址),平台后缀正确
-        assert_eq!(bin.file_name().unwrap().to_string_lossy(), staged_file_name("1.2.3", "fp"));
+        assert_eq!(
+            bin.file_name().unwrap().to_string_lossy(),
+            staged_file_name("1.2.3", "fp")
+        );
         let name = bin.file_name().unwrap().to_string_lossy().to_string();
         assert!(name.starts_with("gah-1.2.3-"), "{name}");
         assert_eq!(name.ends_with(".exe"), cfg!(windows), "{name}");
@@ -313,21 +325,34 @@ mod tests {
         let src = fake_sidecar(&base, b"v1");
         let home = base.join("home");
         let bin_dir = home.join("bin");
-        let tmp_of = |p: &Path| bin_dir.join(format!("{}.new", p.file_name().unwrap().to_string_lossy()));
+        let tmp_of =
+            |p: &Path| bin_dir.join(format!("{}.new", p.file_name().unwrap().to_string_lossy()));
 
         let first = stage_sidecar(&src, &home, "0.1.0").unwrap();
         assert!(!tmp_of(&first.bin).exists(), "不得留下 .new 半成品");
 
         // 升级(换版本)→ 新副本落地,旧的被清掉(按内容命名不会自己覆盖,必须主动清)
         let second = stage_sidecar(&src, &home, "0.2.0").unwrap();
-        assert!(!first.bin.exists(), "旧版本副本应被清理: {}", first.bin.display());
+        assert!(
+            !first.bin.exists(),
+            "旧版本副本应被清理: {}",
+            first.bin.display()
+        );
         assert!(!tmp_of(&second.bin).exists());
 
         let names: Vec<String> = std::fs::read_dir(&bin_dir)
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
             .collect();
-        assert_eq!(names, vec![second.bin.file_name().unwrap().to_string_lossy().to_string()]);
+        assert_eq!(
+            names,
+            vec![second
+                .bin
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .to_string()]
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -342,7 +367,10 @@ mod tests {
 
         stage_sidecar(&src, &home, "0.1.0").unwrap();
         stage_sidecar(&src, &home, "0.2.0").unwrap();
-        assert!(data.join("sessions/a.json").exists(), "清理绝不能碰到 gah-data/");
+        assert!(
+            data.join("sessions/a.json").exists(),
+            "清理绝不能碰到 gah-data/"
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -384,7 +412,11 @@ mod tests {
         let home = base.join("home");
         let out = stage_sidecar(&src, &home, "0.1.0").unwrap();
         let mode = std::fs::metadata(&out.bin).unwrap().permissions().mode();
-        assert_eq!(mode & 0o111, 0o111, "暂存二进制必须可执行,实际模式 {mode:o}");
+        assert_eq!(
+            mode & 0o111,
+            0o111,
+            "暂存二进制必须可执行,实际模式 {mode:o}"
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -397,7 +429,10 @@ mod tests {
         let home = base.join("home");
 
         let moved = migrate_from(&legacy, &home).unwrap().expect("应迁移");
-        assert_eq!(std::fs::read(moved.join("config/provider.yaml")).unwrap(), b"key: k");
+        assert_eq!(
+            std::fs::read(moved.join("config/provider.yaml")).unwrap(),
+            b"key: k"
+        );
         assert!(legacy.exists(), "旧副本必须保留(只复制不删除)");
 
         // 已有新数据 → 不再迁移(不覆盖)

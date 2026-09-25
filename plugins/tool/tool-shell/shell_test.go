@@ -136,7 +136,9 @@ func TestShellUsesCallWorkRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Error != "" || !strings.Contains(res.Content, wt) {
+	// Windows 的 shell 是 git-bash(MSYS):`pwd` 返回 `/tmp/...` 形态,与 Go 侧的 `C:\...`
+	// 不同,整串比对会假红;按**末段目录名**判定 cwd(测试用的 temp 末段唯一)。
+	if res.Error != "" || !strings.Contains(res.Content, filepath.Base(wt)) {
 		t.Fatalf("shell 应在工作根内执行: err=%s content=%s want cwd=%s", res.Error, res.Content, wt)
 	}
 	// 相对写落点与工作根一致(内核沙箱若不可用也不影响 cwd 语义)

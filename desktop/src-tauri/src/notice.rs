@@ -70,7 +70,10 @@ pub fn parseFeed(body: &str) -> Option<Feed> {
 }
 
 fn str_of(v: &Value, key: &str) -> String {
-    v.get(key).and_then(|x| x.as_str()).unwrap_or("").to_string()
+    v.get(key)
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string()
 }
 
 /// shouldNotify 是否值得弹系统通知:与 TUI 的 `notifyLevelAllows` 同口径(只 warn/error)。
@@ -204,7 +207,10 @@ mod tests {
         assert_eq!(f.items.len(), 2);
         assert_eq!(f.items[0].source, "schedule");
         assert!(shouldNotify(&f.items[0]) && shouldNotify(&f.items[1]));
-        assert_eq!(notifyTitle(&f.items[0]), "gah 定时任务:计划「每日备份」执行失败");
+        assert_eq!(
+            notifyTitle(&f.items[0]),
+            "gah 定时任务:计划「每日备份」执行失败"
+        );
     }
 
     /// 宿主**真产物**驱动壳的判定链:fixture 由 Go 侧真事件总线生产
@@ -302,7 +308,8 @@ mod tests {
         let mut c = Consumer::new();
         c.accept(&parseFeed(SAMPLE).unwrap());
         // 乱序/重复应答(更小的 max_id)不得把游标拉回去,否则旧提示会重弹
-        let stale = parseFeed(r#"{"items":[{"id":3,"level":"error","title":"旧"}],"max_id":3}"#).unwrap();
+        let stale =
+            parseFeed(r#"{"items":[{"id":3,"level":"error","title":"旧"}],"max_id":3}"#).unwrap();
         assert!(c.accept(&stale).is_empty());
         assert_eq!(c.since(), 9);
     }
@@ -323,7 +330,13 @@ mod tests {
 
     #[test]
     fn real_source_names_map_to_readable_kinds() {
-        let mk = |source: &str| Notice { id: 1, level: "error".into(), title: "t".into(), body: String::new(), source: source.into() };
+        let mk = |source: &str| Notice {
+            id: 1,
+            level: "error".into(),
+            title: "t".into(),
+            body: String::new(),
+            source: source.into(),
+        };
         assert_eq!(notifyTitle(&mk("host-agent-loop")), "gah 回合:t");
         assert_eq!(notifyTitle(&mk("schedule")), "gah 定时任务:t");
         assert_eq!(notifyTitle(&mk("schedule-run")), "gah 定时任务:t");
@@ -348,17 +361,28 @@ mod tests {
         assert!(c.accept(&feed).is_empty(), "首次只定位游标");
         assert_eq!(c.since(), feed.max_id);
         for n in &feed.items {
-            println!("level={} title={} body={}", n.level, notifyTitle(n), notifyBody(n));
+            println!(
+                "level={} title={} body={}",
+                n.level,
+                notifyTitle(n),
+                notifyBody(n)
+            );
         }
     }
 
     #[test]
     fn titles_and_bodies_are_labelled() {
         let f = parseFeed(SAMPLE).unwrap();
-        assert_eq!(notifyTitle(&f.items[0]), "gah 定时任务:计划「每日备份」执行失败");
+        assert_eq!(
+            notifyTitle(&f.items[0]),
+            "gah 定时任务:计划「每日备份」执行失败"
+        );
         assert_eq!(notifyTitle(&f.items[2]), "gah 后台任务:后台任务失败");
         assert!(notifyBody(&f.items[0]).starts_with("模型调用超时"));
-        assert!(notifyBody(&f.items[1]).starts_with("详情见会话记录。"), "空正文不留空行");
+        assert!(
+            notifyBody(&f.items[1]).starts_with("详情见会话记录。"),
+            "空正文不留空行"
+        );
         let long = Notice {
             id: 1,
             level: "error".into(),
@@ -366,9 +390,18 @@ mod tests {
             body: "错".repeat(400),
             source: "agent".into(),
         };
-        assert_eq!(notifyBody(&long).lines().next().unwrap().chars().count(), 301);
         assert_eq!(
-            notifyTitle(&Notice { id: 1, level: "warn".into(), title: "  ".into(), body: String::new(), source: "x".into() }),
+            notifyBody(&long).lines().next().unwrap().chars().count(),
+            301
+        );
+        assert_eq!(
+            notifyTitle(&Notice {
+                id: 1,
+                level: "warn".into(),
+                title: "  ".into(),
+                body: String::new(),
+                source: "x".into()
+            }),
             "gah 提示",
             "空标题不该拼出「gah 提示:gah」"
         );

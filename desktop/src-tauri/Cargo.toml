@@ -1,5 +1,8 @@
 [package]
 name = "gah-desktop"
+# 注意:这里的版本号与发布 tag **有意不一致**(发 v0.1.6 时它是 0.1.0)。
+# 真实版本由 release-desktop.yml 在构建时经 `--config` 覆盖(桌面壳版本跟着发版号走),
+# 所以不是漏改;改这里不会影响发行,也无需随每次发版同步。
 version = "0.1.0"
 edition = "2021"
 

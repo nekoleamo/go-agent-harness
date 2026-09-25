@@ -845,6 +845,27 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 
 > **发布**:v0.1.1(2026-09-13)已出 —— macOS `gah_0.1.1_aarch64.dmg`(34.18 MiB)+ Windows `gah_0.1.1_x64-setup.exe`(31.59 MiB)+ updater `gah.app.tar.gz`/`latest.json`(实测 `releases/latest/download/latest.json` HTTP 200,`version=0.1.1`,双平台签名齐备)+ 命令行五目标归档与 `checksums.txt`;三个 workflow(`ci`/`release-cli`/`release-desktop`)全绿,流程与产物清单见 `docs/RELEASE.md`「发布记录:v0.1.1」。
 
+### 第六十二批 · Windows CI 平台适配 + 桌面壳格式门禁(2026-09-25)
+
+`test-windows` 长期 7 处红,本批逐条定位并改完(此前只登记为「预存红」):
+
+| # | 用例 | 根因 | 修法 |
+|---|---|---|---|
+| 1-2 | `host-worktrees` `TestListAndRemove` / `TestCmdWorktree` | **产品缺陷**:`Create` 存的是 `filepath.Join` 的反斜杠路径(经 realPath),`List` 直接用 git porcelain 输出的正斜杠路径 ⇒ 同一 worktree 两种写法(TUI 显示不一致、`list[0].Path != wt.Path` 类比较失效) | 抽出 `normalizePath`(先 `filepath.FromSlash` 再 realPath),创建与列表共用同一口径 |
+| 3 | `policy-guard` `TestCheckShellCommandAtIsolated` | 测试用 `C:\...` 表达绝对路径,而 Windows 的 shell 是 git-bash:反斜杠是转义字符会被吃掉,命令实际落到相对位置(**与真实 shell 行为一致,不是裁决缺陷**) | 测试加 `shellAbs()` 助手:Windows 改用 MSYS 形态 `/c/...`(落点不可静态确定 ⇒ 同样必须被拒) |
+| 4 | `tool-shell` `TestShellUsesCallWorkRoot` | `pwd` 在 git-bash 下返回 MSYS 形态 `/tmp/...`,与 Go 侧 `C:\...` 整串比对必然不等 | 按末段目录名判定 cwd(测试 temp 末段唯一) |
+| 5 | `tests` `TestNoticeFeedFixtureForDesktopShell` | **字节比较失败,但两侧内容打印完全一致** ⇒ 唯一不可见差异是 `\r`:Windows 检出把文本转成 CRLF(仓库内为 LF) | 新增 `.gitattributes`:`desktop/src-tauri/fixtures/* text eol=lf` |
+| 6 | `tests` `TestSandboxSyncE2ECommandRoundTrip` | 探针用 `/tmp/...`,Windows 上属 MSYS 根相对 ⇒ 裁决层判「无法裁决」(消息不含「被拒」) | 探针改 `t.TempDir()` 下的绝对路径,JSON 走 `json.Marshal` 转义(Windows 路径含反斜杠,手拼是非法 JSON) |
+| 7 | `tests` `TestTUIAcceptContextAgentsHierarchy` | `os.MkdirTemp("/tmp", …)` 硬编码:Windows 无 `/tmp` | 平台化(Windows 退系统 temp)+ Windows 跳过 ② 的屏幕路径比对(临时目录路径超 TUI 行宽会被截断;① 已覆盖层级逻辑) |
+| 8 | `web` `TestProbeWritableReadOnly` | `chmod 0555` 在 Windows 不产生只读语义(走 ACL),构造不出只读目录 | Windows 上 skip(与 root 场景同样处理) |
+
+教训写在这里比写在注释里耐久:**「内容一致但比较失败」几乎总是不可见字符**(行尾/BOM),不要先去怀疑 JSON 形状。
+
+**顺带(桌面壳 Rust 侧)**:
+- 新增 `cargo fmt --check` CI 门禁并**一次性 format**(`main.rs`/`notice.rs`/`stage.rs`,608 行 diff;此前无门禁、`main.rs` 早已偏离 rustfmt 输出)。
+- `desktop-shell` job 从 `cargo check` 改 `cargo test`(上一批),本批再补 fmt 检查 ⇒ Rust 侧有了「编译 + 单测 + 格式」三道。
+- `Cargo.toml` 的 `version = "0.1.0"` 与发布 tag(**0.1.6**)不一致是**有意**的(发布时由 `release-desktop.yml` 的 `--config` 覆盖),已在注释里写明,避免后来者误读为漏改。
+
 ### 第六十一批 · 发版 v0.1.6 收口:双源上线 + CI 红定位(2026-09-25)
 
 **发版实况**(`tag v0.1.6` → `release-cli` `36150695339` / `release-desktop` `36150695312`):
@@ -1218,9 +1239,9 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 | 本机验收余项(TUI 42 / Web 9 / 文档 11 / 壳 8 / 其它 16) | ✅ **2026-09-22 收口订正**:A 本机 109 条已跑 **102** / 剩 **4 条纯人工**(#39 导出 HTML 观感 · #42 TUI P5 视觉 · #88 通知矩阵人眼段 · #86 壳端到端横幅)+ 本表下方「待人工验」各条(B 组 4 项卡外部条件,权威清单见 `docs/VERIFY.md` §剩余任务快照);其中 A-1a / A-1b / A-2 / A-5 已由用户实测通过(2026-09-22) |
 | `/api/models` 不支持列举时返 **501 + 纯文本** | ⏳ 前端 `req()` 对非 JSON 响应 → 报 JSON 解析错误而非服务端人话。影响仅错误文案(能力缺失本身已显式);改法:错误一律走 JSON `{error}` 或前端按 content-type 兜底。登记自第二十二批验收副产品 |
 | Web 侧 `#65 概述节流/截断`、`#66 跨渠道提问提示` | ⏳ 不可从外部观测/属 TUI 能力(理由见 §14.1 第二十二批口径订正 2、3):#65 以 `host-session-summary` 单测为准;#66 归 A-1 TUI 批 |
-| Windows CI(`test-windows`)**7 处平台适配失败** | ⏳ **已定位、未修**(2026-09-25 第六十一批):清单与根因见该批表格。分两类 —— ① 测试自身平台化不足(`/tmp` 硬编码、`chmod 0555` 只读语义、cwd 断言按 git-bash 路径形态、隔离拒写的期望值);② 可能含真缺陷(`host-worktrees` 把 worktree id 解析成 `---wt1`,Windows 路径分隔符处理)。修法建议:先按 ① 改写测试并给 Windows 明确期望,再单独查 ② 是否产品问题 |
-| `tests` 包 `-race` 单跑 **347s**(本地)/277s(CI) | ⏳ 已定位未优化(2026-09-25 第六十一批):耗时几乎全在 pty 交互验收用例的 sleep 之和(每条约十秒级),M16 时为 84s。护栏已按口径拆开(不再拿它当时长回归信号),但**开发体验**仍差。可行方向:给互不干扰的 pty 用例加 `t.Parallel()`(风险:pty 探针吃 CPU 与时序,并行易引 flaky,需先量单核负载下的稳定性)、或按门类拆成两三个包分开计时。优先级低于 Windows CI 批次 |
-| Rust 侧**没有 rustfmt 门禁** | ⏳ 现状:`cargo fmt --check` 对 `main.rs` 有 50+ 处 diff(**早于本批**,不是新债),但 CI 只跑 `cargo check/test`,无人发现也无人在意。两个选项:① 全量 `cargo fmt` 一次并给 CI 加门禁(代价是一个纯格式大 diff);② 明确不启用。建议 ①,但排在 Windows CI 批次之后(避免同时改大量 Rust 行) |
+| Windows CI(`test-windows`)**7 处平台适配失败** | ✅ **已交付,待 CI 复核**(2026-09-25 第六十二批):逐条根因与修法见该批表格 —— 1 处是**产品缺陷**(host-worktrees 同一 worktree 两种路径写法),1 处是**测试用错 shell 语义**(git-bash 反斜杠转义),其余为平台适配(`/tmp` 硬编码、CRLF 检出、MSYS 路径形态、`chmod` 语义)。本地不可验 Windows ⇒ 判据是 `test-windows` job 转绿 |
+| `tests` 包 `-race` 单跑 **347s**(本地)/277s(CI) | ⏸ **本批评估后不做**(2026-09-25 第六十二批):大头是 pty 端到端用例的固定 sleep;加 `t.Parallel()` 会在共享 runner 上放大时序 flaky(pty 探针对 CPU 负载敏感),CI 按文件拆 job 也只是把 6 分钟摊成两个 job(总成本不降、多付一份 setup)。护栏已按口径拆开(不再拿它当回归信号),记录在案 |
+| Rust 侧 **rustfmt 门禁** | ✅ **已交付**(2026-09-25 第六十二批):一次性 `cargo fmt` + CI 加 `cargo fmt --check`(`cargo fmt --check` 现已干净、`cargo test --offline` 34 passed) |
 | 0.1.6 桌面端**选源真机验证** | ⏳ 需已装 0.1.6 的机器点一次「检查更新」:壳日志 `~/Library/Application Support/dev.gah.desktop/gah-shell.log` 应出现「检查更新:端点顺序 [gitee…, github…](首选源 \"gitee\")」;判据与三种场景(正常 / Gitee 不可达 / 表可取但包不可达)已写进 `docs/VERIFY.md` |
 
 ## R13 Windows 安装包桌面快捷方式缺失 ✅ (2026-09-14)

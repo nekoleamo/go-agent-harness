@@ -28,16 +28,18 @@ mod notice;
 mod stage;
 mod update_source;
 
-use tauri::menu::{CheckMenuItem, CheckMenuItemBuilder, MenuBuilder, MenuItem, MenuItemBuilder, PredefinedMenuItem};
+use tauri::menu::{
+    CheckMenuItem, CheckMenuItemBuilder, MenuBuilder, MenuItem, MenuItemBuilder, PredefinedMenuItem,
+};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WindowEvent};
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_notification::NotificationExt;
-use tauri_plugin_updater::UpdaterExt;
 use tauri_plugin_shell::process::CommandChild;
 use tauri_plugin_shell::ShellExt;
+use tauri_plugin_updater::UpdaterExt;
 
 // 默认 Web 地址:仅在「挑不到空闲端口」时兜底。桌面壳正常走自己挑的私有端口(见 pick_free_port),
 // 因为固定 2233 会撞上**别人的**实例 —— 白屏崩溃留下的孤儿 sidecar、用户自己开的 `gah web`,
@@ -53,7 +55,10 @@ static WEB_ADDR: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 // web_addr 本次运行的 Web 地址(未写入时回退默认端口)。
 fn web_addr() -> String {
-    WEB_ADDR.get().cloned().unwrap_or_else(|| GAH_ADDR.to_string())
+    WEB_ADDR
+        .get()
+        .cloned()
+        .unwrap_or_else(|| GAH_ADDR.to_string())
 }
 
 // web_url 本次运行的 Web 根地址。
@@ -127,7 +132,9 @@ fn escape_fragment(raw: &str) -> String {
     let mut out = String::new();
     for b in raw.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => out.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(b as char)
+            }
             _ => out.push_str(&format!("%{:02X}", b)),
         }
     }
@@ -137,14 +144,22 @@ fn escape_fragment(raw: &str) -> String {
 // cookie_header 裸 TCP 请求用的凭据头(token 模式下 /api/* 需要凭据;空 = 未开启)。
 fn cookie_header() -> String {
     let t = web_token();
-    if t.is_empty() { String::new() } else { format!("Cookie: gah_token={t}\r\n") }
+    if t.is_empty() {
+        String::new()
+    } else {
+        format!("Cookie: gah_token={t}\r\n")
+    }
 }
 
 // shell_url 主窗口导航地址:token 模式把凭据放 URL fragment(不发往服务端;引导页换取 cookie)。
 fn shell_url() -> String {
     let base = format!("{}{}", web_url(), GAH_SHELL_PATH);
     let t = web_token();
-    if t.is_empty() { base } else { format!("{base}#token={}", escape_fragment(&t)) }
+    if t.is_empty() {
+        base
+    } else {
+        format!("{base}#token={}", escape_fragment(&t))
+    }
 }
 
 // status_code 从裸 TCP 响应首行取状态码(解析失败 = 未就绪)。
@@ -183,8 +198,12 @@ fn httpProbe(path: &str, timeout: Duration) -> bool {
 
 // backupRoot 升级前备份的落地处:用户主目录下 —— 必须在应用目录之外(升级整包替换应用目录)。
 fn backupRoot() -> Option<std::path::PathBuf> {
-    let home = std::env::var("HOME").ok().or_else(|| std::env::var("USERPROFILE").ok())?;
-    if home.is_empty() { return None; }
+    let home = std::env::var("HOME")
+        .ok()
+        .or_else(|| std::env::var("USERPROFILE").ok())?;
+    if home.is_empty() {
+        return None;
+    }
     Some(std::path::PathBuf::from(home).join("gah-upgrade-backup"))
 }
 
@@ -192,11 +211,17 @@ fn backupRoot() -> Option<std::path::PathBuf> {
 // 数据根来自本次运行实际使用的位置(外置后应在应用目录外,备份属额外保险)。
 // 无数据(首次安装即升级)→ 返回空路径(无可备份);失败 → 错误(调用方中止升级)。
 fn backupBeforeUpgrade(data: &std::path::Path) -> Result<std::path::PathBuf, String> {
-    if !data.exists() { return Ok(std::path::PathBuf::new()); }
+    if !data.exists() {
+        return Ok(std::path::PathBuf::new());
+    }
     let root = backupRoot().ok_or("未取到用户主目录(用于放升级前备份)")?;
-    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     let dst = root.join(format!("{ts}"));
-    stage::copy_tree(data, &dst.join("gah-data")).map_err(|e| format!("复制 {:?} → {:?} 失败: {e}", data, dst))?;
+    stage::copy_tree(data, &dst.join("gah-data"))
+        .map_err(|e| format!("复制 {:?} → {:?} 失败: {e}", data, dst))?;
     Ok(dst)
 }
 
@@ -344,9 +369,15 @@ fn notifyNative(app: &tauri::AppHandle, title: &str, body: &str) {
     std::thread::spawn(move || match n.show() {
         Ok(_) => shellLog(
             &app2,
-            &format!("系统通知已投递(plugin 权限态 {state}): {t} | {}", b.replace('\n', " ")),
+            &format!(
+                "系统通知已投递(plugin 权限态 {state}): {t} | {}",
+                b.replace('\n', " ")
+            ),
         ),
-        Err(e) => shellLog(&app2, &format!("系统通知投递失败(plugin 权限态 {state}, {t}): {e}")),
+        Err(e) => shellLog(
+            &app2,
+            &format!("系统通知投递失败(plugin 权限态 {state}, {t}): {e}"),
+        ),
     });
 }
 
@@ -364,7 +395,10 @@ fn notifyNotice(app: &tauri::AppHandle, title: &str, body: &str) {
         .map(|w| w.is_focused().unwrap_or(false))
         .unwrap_or(false);
     if focused {
-        shellLog(app, &format!("系统通知跳过(窗口在前台,系统不弹横幅): {title}"));
+        shellLog(
+            app,
+            &format!("系统通知跳过(窗口在前台,系统不弹横幅): {title}"),
+        );
         return;
     }
     notifyNative(app, title, body);
@@ -412,7 +446,10 @@ fn logNotifyPermission(app: &tauri::AppHandle) {
 // 通知作为余量保留(窗口最小化时它更轻)。
 fn notifyUpdate(app: &tauri::AppHandle, o: &UpdateOutcome) {
     notifyNative(app, "gah", &o.message);
-    app.dialog().message(&o.message).title("gah 检查更新").show(|_| {});
+    app.dialog()
+        .message(&o.message)
+        .title("gah 检查更新")
+        .show(|_| {});
 }
 
 // UpdateSnapshot 检查更新的当前状态 —— 托盘与设置面板两个视图的**单一真源**。
@@ -534,11 +571,18 @@ fn spawnNotifyTest(app: AppHandle) {
     if raw.is_empty() || raw == "0" {
         return;
     }
-    shellLog(&app, "自测: GAH_SHELL_NOTIFY_TEST 已设,12 秒后发一条测试系统通知");
+    shellLog(
+        &app,
+        "自测: GAH_SHELL_NOTIFY_TEST 已设,12 秒后发一条测试系统通知",
+    );
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_secs(12)).await;
         // 故意走 notifyNotice(而非 notifyNative):把前台门控 + 通知 + Dock 弹跳整条真路径跑一遍。
-        notifyNotice(&app, "gah", "自测通知:看到这条说明外部提醒通。窗口在前台时会跳过。");
+        notifyNotice(
+            &app,
+            "gah",
+            "自测通知:看到这条说明外部提醒通。窗口在前台时会跳过。",
+        );
     });
 }
 
@@ -732,10 +776,20 @@ fn save_export(app: AppHandle, name: String, text: String, open: bool) -> String
             return String::new();
         }
     };
-    shellLog(&app, &format!("save_export: 已导出 {} ({} 字节)", path.display(), text.len()));
+    shellLog(
+        &app,
+        &format!(
+            "save_export: 已导出 {} ({} 字节)",
+            path.display(),
+            text.len()
+        ),
+    );
     if open {
         if let Err(e) = openWithDefaultApp(&path) {
-            shellLog(&app, &format!("save_export: 打开失败 {}: {e}", path.display()));
+            shellLog(
+                &app,
+                &format!("save_export: 打开失败 {}: {e}", path.display()),
+            );
         }
     }
     path.to_string_lossy().to_string()
@@ -748,7 +802,11 @@ fn writeExportInto(dir: &std::path::Path, name: &str, text: &str) -> Result<Path
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
         .collect();
-    let safe = if safe.trim_matches('.').is_empty() { "session-export".to_string() } else { safe };
+    let safe = if safe.trim_matches('.').is_empty() {
+        "session-export".to_string()
+    } else {
+        safe
+    };
     let (stem, ext) = match safe.rsplit_once('.') {
         Some((b, e)) => (b.to_string(), format!(".{e}")),
         None => (safe.clone(), String::new()),
@@ -766,12 +824,18 @@ fn writeExportInto(dir: &std::path::Path, name: &str, text: &str) -> Result<Path
 // openWithDefaultApp 用系统默认程序打开路径(与 TUI /export 的自动打开同语义)。
 #[cfg(target_os = "macos")]
 fn openWithDefaultApp(p: &std::path::Path) -> std::io::Result<()> {
-    std::process::Command::new("open").arg(p).spawn().map(|_| ())
+    std::process::Command::new("open")
+        .arg(p)
+        .spawn()
+        .map(|_| ())
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
 fn openWithDefaultApp(p: &std::path::Path) -> std::io::Result<()> {
-    std::process::Command::new("xdg-open").arg(p).spawn().map(|_| ())
+    std::process::Command::new("xdg-open")
+        .arg(p)
+        .spawn()
+        .map(|_| ())
 }
 
 #[cfg(target_os = "windows")]
@@ -954,14 +1018,20 @@ fn shellLogTail(app: &AppHandle, n: usize) -> String {
 
 // esc 最小 HTML 转义:日志原文要摆进页面,`<`/`&` 不能被当成标签。
 fn esc(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 // showShellDiag 把「出了什么事」直接铺到窗口上,不再把用户留在启动页/白屏里。
 // 失败过去只写日志:真机上窗口白着、机器上没痕迹,只能读代码猜(2026-09-15/16 两轮白屏)。
 // 面板附壳日志尾部 —— sidecar 的 stderr 现在也落在里面,原因通常就在那几行。
 fn showShellDiag(app: &AppHandle, title: &str, lines: &[String]) {
-    let body = lines.iter().map(|l| esc(l)).collect::<Vec<_>>().join("<br>");
+    let body = lines
+        .iter()
+        .map(|l| esc(l))
+        .collect::<Vec<_>>()
+        .join("<br>");
     let html = format!(
         "<div style=\"font-family:system-ui,-apple-system,Segoe UI,sans-serif;padding:36px;max-width:720px;line-height:1.7\">\
 <h2 style=\"margin:0 0 12px\">{}</h2><p>{body}</p>\
@@ -1011,7 +1081,11 @@ fn startCheckWatchdog(app: &AppHandle, seq: u64) {
 fn setCheckBusy(app: &tauri::AppHandle, busy: bool) {
     setUpdateBusy(busy);
     if let Some(item) = app.state::<TrayCheck>().0.lock().unwrap().as_ref() {
-        let _ = item.set_text(if busy { CHECK_BUSY_TEXT } else { CHECK_IDLE_TEXT });
+        let _ = item.set_text(if busy {
+            CHECK_BUSY_TEXT
+        } else {
+            CHECK_IDLE_TEXT
+        });
         let _ = item.set_enabled(!busy);
     }
     if busy {
@@ -1162,7 +1236,9 @@ fn spawnSelfCheck(h: AppHandle) {
             }) {
                 shellLog(
                     &h,
-                    &format!("自检[{round}]: eval 失败({e}) —— WebView2 渲染进程不可用,界面无法渲染"),
+                    &format!(
+                        "自检[{round}]: eval 失败({e}) —— WebView2 渲染进程不可用,界面无法渲染"
+                    ),
                 );
                 return;
             }
@@ -1175,7 +1251,9 @@ fn spawnSelfCheck(h: AppHandle) {
             if !done.load(Ordering::SeqCst) {
                 shellLog(
                     &h,
-                    &format!("自检[{round}]: 页面 8 秒内无回话 —— WebView2 渲染进程无响应(白屏直接成因)"),
+                    &format!(
+                        "自检[{round}]: 页面 8 秒内无回话 —— WebView2 渲染进程无响应(白屏直接成因)"
+                    ),
                 );
             }
         }
@@ -1195,7 +1273,9 @@ struct Runtime {
 
 // siblingDataRoot 随包 sidecar 同级的数据根(= 应用目录内,回退路径的落点)。
 fn siblingDataRoot(bin: &std::path::Path) -> PathBuf {
-    bin.parent().map(|d| d.join("gah-data")).unwrap_or_else(|| PathBuf::from("gah-data"))
+    bin.parent()
+        .map(|d| d.join("gah-data"))
+        .unwrap_or_else(|| PathBuf::from("gah-data"))
 }
 
 // resolveRuntime 决定从哪里跑 sidecar(NOND-W2b-α):
@@ -1221,8 +1301,8 @@ fn resolveRuntime(app: &AppHandle) -> Runtime {
                 bin: src,
                 external: false,
                 notices: vec![format!(
-                    "取用户数据目录失败({e});数据将留在应用目录内,升级或卸载前请先在对话里执行 /backup"
-                )],
+                "取用户数据目录失败({e});数据将留在应用目录内,升级或卸载前请先在对话里执行 /backup"
+            )],
             }
         }
     };
@@ -1238,17 +1318,31 @@ fn resolveRuntime(app: &AppHandle) -> Runtime {
                 app,
                 &format!(
                     "运行文件{}: {}",
-                    if o.staged { "已更新" } else { "已是最新" },
+                    if o.staged {
+                        "已更新"
+                    } else {
+                        "已是最新"
+                    },
                     o.bin.display()
                 ),
             );
-            Runtime { bin: o.bin, data_root: stage::data_root(&home), external: true, notices }
+            Runtime {
+                bin: o.bin,
+                data_root: stage::data_root(&home),
+                external: true,
+                notices,
+            }
         }
         Err(e) => {
             notices.push(format!(
                 "无法把运行文件放到用户数据目录({e});本次退回应用目录内运行 —— 升级或卸载可能影响数据,请先 /backup"
             ));
-            Runtime { data_root: siblingDataRoot(&src), bin: src, external: false, notices }
+            Runtime {
+                data_root: siblingDataRoot(&src),
+                bin: src,
+                external: false,
+                notices,
+            }
         }
     }
 }
@@ -1878,7 +1972,10 @@ mod save_export_tests {
         let p2 = writeExportInto(&d, "..", "x").unwrap();
         assert_eq!(p2.file_name().unwrap().to_string_lossy(), "session-export");
         let p3 = writeExportInto(&d, "", "x").unwrap();
-        assert_eq!(p3.file_name().unwrap().to_string_lossy(), "session-export (1)");
+        assert_eq!(
+            p3.file_name().unwrap().to_string_lossy(),
+            "session-export (1)"
+        );
     }
 
     #[test]

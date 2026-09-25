@@ -8,6 +8,7 @@ package tests
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -20,8 +21,14 @@ func TestTUIAcceptContextAgentsHierarchy(t *testing.T) {
 	base, spy := newSpyProvider(t, "层级验证答复。", 0)
 	bin, env, _ := tuiAcceptSetupSlow(t, base)
 
-	// 短路径:长路径会被行宽截断,短路径能完整看到 `项目指令 <目录>/<文件>`
-	root, err := os.MkdirTemp("/tmp", "gqh")
+	// 临时根:**短路径是有意的** —— 长路径会被 TUI 行宽截断,断言就看不到完整路径。
+	// macOS/Linux 用 /tmp;Windows 无 /tmp(报 GetFileAttributesEx /tmp 不存在)⇒ 退系统 temp,
+	// 代价是路径超行宽,所以下面 ② 的屏幕逐字比对在 Windows 跳过(① 已覆盖层级逻辑本身)。
+	tmpRoot := "/tmp"
+	if runtime.GOOS == "windows" {
+		tmpRoot = ""
+	}
+	root, err := os.MkdirTemp(tmpRoot, "gqh")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,6 +69,9 @@ func TestTUIAcceptContextAgentsHierarchy(t *testing.T) {
 	}
 
 	// ② TUI 侧:层级块有观测点
+	if runtime.GOOS == "windows" {
+		return // 见上:临时目录路径超行宽,`项目指令 <绝对路径>` 会被截断,屏幕比对不成立
+	}
 	s.send("/context\r")
 	time.Sleep(900 * time.Millisecond)
 	s.send("\r")

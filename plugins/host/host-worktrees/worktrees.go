@@ -151,8 +151,9 @@ func (w *Worktrees) Create(_ context.Context, label string) (sdk.Worktree, error
 	}
 	branch := branchPrefix + id
 	// 路径 realpath 归一(与 git 记录一致:macOS 上 /tmp 是 /private/tmp 软链,不归一化会出现
-	// “创建时是 /tmp/...、列表/回收时是 /private/tmp/...”两个事实源)
-	path = realPath(path)
+	// “创建时是 /tmp/...、列表/回收时是 /private/tmp/...”两个事实源);Windows 上 git 输出的
+	// 是正斜杠 + 可能 8.3 短名,所以统一走 normalizePath 并与 List 共用同一个口径。
+	path = normalizePath(path)
 	if _, err := runGit(repo, "worktree", "add", "-b", branch, path, base); err != nil {
 		return sdk.Worktree{}, fmt.Errorf("host-worktrees: 创建 worktree 失败: %w", err)
 	}
@@ -194,7 +195,14 @@ func (w *Worktrees) listLocked() []sdk.Worktree {
 				branch = strings.TrimPrefix(strings.TrimSpace(strings.TrimPrefix(line, "branch ")), "refs/heads/")
 			}
 		}
-		if path == "" || !within(root, path) {
+		if path == "" {
+			continue
+		}
+		// 与 Create 用同一个归一口径:否则 Windows 上 git 返回正斜杠路径、创建时存的是
+		// filepath.Join 的反斜杠路径 ⇒ 同一 worktree 在列表里有两种写法(TUI 显示乱、
+		// `list[0].Path != wt.Path` 类比较失效)。
+		path = normalizePath(path)
+		if !within(root, path) {
 			continue // 只管数据根内的受管 worktree(用户自建的不动)
 		}
 		name := filepath.Base(path)
@@ -341,6 +349,11 @@ func within(root, p string) bool {
 	root, p = realPath(root), realPath(p)
 	return p != root && strings.HasPrefix(p, root+string(filepath.Separator))
 }
+
+// normalizePath 路径归一(创建与列表共用):先把 git 风格的正斜杠翻成本地分隔符
+// (Windows 上 `git worktree list --porcelain` 输出 `C:/...`,直接与 filepath.Join 的结果
+// 比较永远不等),再交给 realPath 解析软链/短名。
+func normalizePath(p string) string { return realPath(filepath.FromSlash(p)) }
 
 // realPath 解析软链;路径尚不存在时逐级上溯到最近的存在祖先再拼回剩余部分
 // (与 tool-shell/kernel.go resolvePath 同口径:解析不出则回退原路径)。

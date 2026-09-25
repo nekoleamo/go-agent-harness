@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -118,7 +119,15 @@ func TestSandboxSyncE2ECommandRoundTrip(t *testing.T) {
 	sb := sandboxOf(t, c)
 	// 写工作区之外的命令:两条路径的判别都靠它 —— 联动开着(有效 full-access)放行,
 	// 关掉后(workspace-write)必须被路径裁决拦下。
-	probe := `{"command":"rm -rf /tmp/gah-sync-probe"}`
+	// 探针必须是**平台无关的绝对路径**:`/tmp/...` 在 Windows 上属 MSYS 根相对,裁决层直接
+	// 判「无法裁决」(消息里不含"被拒"),断言会假红(2026-09-25 CI 实证)。JSON 转义走
+	// json.Marshal —— Windows 路径含反斜杠,手拼会得到非法 JSON。
+	probeDir := filepath.Join(t.TempDir(), "gah-sync-probe")
+	probeArgs, merr := json.Marshal(map[string]string{"command": "rm -rf " + probeDir})
+	if merr != nil {
+		t.Fatal(merr)
+	}
+	probe := string(probeArgs)
 	resOf := func() string {
 		res, err := tools.Execute(t.Context(), "shell", probe)
 		if err != nil {

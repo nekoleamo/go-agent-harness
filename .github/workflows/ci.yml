@@ -224,6 +224,9 @@ jobs:
         # 而 tag 触发的 release-desktop.yml 只编译不跑单测 —— 日常 push 这里是唯一出口。
         run: cd desktop/src-tauri && cargo test --locked
 
+      - name: cargo fmt --check(格式门禁;2026-09-25 起 Rust 侧纳入)
+        run: cd desktop/src-tauri && cargo fmt --check
+
   # macOS 平台自动化。此前只在 ubuntu / windows 上跑,macOS 零覆盖 —— 而 macOS 有
   # 独有的内核级沙箱实现(seatbelt / sandbox-exec,plugins/tool/tool-shell/kernel_darwin.go)
   # 与独有的路径语义(/var → /private/var 符号链接),且维护机本身就是 macOS。

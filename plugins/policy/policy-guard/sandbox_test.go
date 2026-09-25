@@ -3,6 +3,7 @@ package policyguard
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -154,6 +155,19 @@ func TestCheckToolCallAtIsolated(t *testing.T) {
 	}
 }
 
+// shellAbs 把本地绝对路径写成该平台 shell 能表达的绝对形态。
+// Windows 上 shell 是 git-bash(MSYS):`C:\...` 里的反斜杠是转义字符会被吃掉,
+// 命令实际落到相对位置(与真实 shell 行为一致,不是裁决层缺陷)⇒ 用 `/c/...` 表达;
+// 该形态是 MSYS 根相对、落点不可静态确定,同样必须被拒。
+func shellAbs(p string) string {
+	if runtime.GOOS != "windows" {
+		return p
+	}
+	vol := filepath.VolumeName(p)
+	rest := strings.TrimPrefix(filepath.ToSlash(p), vol)
+	return "/" + strings.ToLower(strings.TrimSuffix(vol, ":")) + rest
+}
+
 // shell 命令:相对写目标以本次工作根为基准(与工具侧 cmd.Dir 同基准)。
 func TestCheckShellCommandAtIsolated(t *testing.T) {
 	root, wt := t.TempDir(), t.TempDir()
@@ -161,7 +175,7 @@ func TestCheckShellCommandAtIsolated(t *testing.T) {
 	if err := p.CheckShellCommandAt(wt, "echo hi > out.txt"); err != nil {
 		t.Fatalf("隔离运行下相对写应放行,got %v", err)
 	}
-	if err := p.CheckShellCommandAt(wt, "echo hi > "+filepath.Join(root, "out.txt")); err == nil {
+	if err := p.CheckShellCommandAt(wt, "echo hi > "+shellAbs(filepath.Join(root, "out.txt"))); err == nil {
 		t.Fatal("隔离运行下写主 workspace 应被拒")
 	}
 	if err := p.CheckShellCommand("echo hi > out.txt"); err != nil {
