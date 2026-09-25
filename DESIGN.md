@@ -845,6 +845,38 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 
 > **发布**:v0.1.1(2026-09-13)已出 —— macOS `gah_0.1.1_aarch64.dmg`(34.18 MiB)+ Windows `gah_0.1.1_x64-setup.exe`(31.59 MiB)+ updater `gah.app.tar.gz`/`latest.json`(实测 `releases/latest/download/latest.json` HTTP 200,`version=0.1.1`,双平台签名齐备)+ 命令行五目标归档与 `checksums.txt`;三个 workflow(`ci`/`release-cli`/`release-desktop`)全绿,流程与产物清单见 `docs/RELEASE.md`「发布记录:v0.1.1」。
 
+### 第五十九批 · 国内升级通路:下载 URL 可换源(零成本)(2026-09-24)
+
+背景:国内用户报告「通过 GitHub 升级一直失败」。判定升级链有两跳 —— ① 取 `latest.json`、
+② 下载安装包(实际文件在 `release-assets.githubusercontent.com`)。**本机实测直连该资产亦偶发
+`socket closed`**,而同资产的公共加速代理返回 206 + 正确总长(25,943,227 B),两个代理的 2MiB 前缀
+哈希完全一致。⇒ 第二跳是主要阻断点,且这是「平台语义差异」而非本机网络問題。
+
+1. **口径**:updater 的 ed25519 签名只对**文件内容**验签、URL 不参与 ⇒ **换源不降低安全强度**,
+   而且能对**存量客户端**立即生效(不需重编重发)。据此把「只改写 `latest.json` 的下载 URL 前缀」
+   定为零成本第一档。
+2. **`scripts/publish-desktop.sh` 新增 `rewrite-url <前缀|none>`**:只在 URL 前拼前缀,其余字段
+   (尤其 `signature`)一字不动;首次运行把原表留档为 `latest.github.json`;幂等 —— 留档时用正则
+   从任意形态 URL 抽出 GitHub 直链,所以即使输入是**已被前缀过的**表也不会双重前缀;前缀自动补尾斜杠;
+   两道自检(平台集合与 `signature` 逐平台必须与原表一致 / 每个 URL 必须以前缀开头),任一不过
+   **回滚并退出 1**;留档表里找不到 GitHub 直链则**拒绝改写**(防呆)。
+3. **`.github/workflows/release-desktop.yml`**:新增 `workflow_dispatch` 输入 `mirror_base` + job
+   `rewrite-mirror` —— 从 Release 取回 `latest.json` → 改写 → `gh release upload --clobber` 重传同名 asset
+   → 回查线上表(版本 / 平台集合 / 签名非空 / 前缀)。**不重建包、不动 tag、不动签名**,GitHub Release
+   仍是唯一事实源;`none` 可还原。
+4. **本地验证(6 个正向场景 + 2 个反例)**:前置前缀 / 幂等(二次运行仍是单前缀)/ 无尾斜杠自动补 /
+   `none` 还原 / 签名逐平台一致 / 参数缺失明确报错;反例:「模拟线上表已被前缀」⇒ 仍得单前缀、
+   「表里无 GitHub 直链」⇒ 拒改 + 退出 1。
+5. **代理实测(2026-09-24,本机)**:`gh-proxy.com` 1.6s、`ghfast.top` 10.3s(均 206 + 正确总长 +
+   相同 2MiB 哈希);`ghproxy.net` 小文件 200 但 2MiB range 超时;`github.akams.cn` / `moeyy.cn` 404;
+   `ghgo.xyz` / `hub.gitmirror.com` 连接失败;**直连 GitHub 同一资产在本机也失败**。
+6. **诚实边界**:公共代理是公益服务,可用性不保证 ⇒ **不写死单一代理**,文档给「换前缀 / `none` 还原 /
+   手动下载」三条路;换源对**存量 0.1.5** 生效的前提是「第 1 跳(取 `latest.json`)能通」,若两跳都不通
+   只能手动覆盖安装(语义已安全:整包替换、`gah-data/` 不动、升级前自动备份)。自控镜像(CNB 免费对象存储
+   100GiB / Gitee Release 1GiB)留作第二档,待账号就绪后接入。
+7. **方案文档**:`/Users/nekoleamo/Documents/Plan/gah-国内升级镜像方案.md`(含方案矩阵、镜像落点对比、
+   V1–V8 验证清单;用户口径:不额外花钱 ⇒ 排除对象存储与第三方付费平台)。
+
 ### 第五十八批 · 回合内转向(steering):运行中 Enter 加入当前回合(2026-09-24)
 
 需求:会话进行中再次输入 + Enter,消息应**加入当前回合**(模型在本轮内就能看到),而不是

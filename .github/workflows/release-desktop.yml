@@ -26,6 +26,10 @@ on:
         description: "复用哪次运行的打包 artifact(留空则本次重新打包)"
         required: false
         type: string
+      mirror_base:
+        description: "国内加速:只改写 latest.json 的下载 URL 前缀(如 https://gh-proxy.com/;取 none 还原)。需同时给 tag"
+        required: false
+        type: string
 
 jobs:
   desktop-mac-aarch64:
@@ -175,3 +179,52 @@ jobs:
           # 不声明就会把「linux 不在桌面清单里」判成失败(2026-09-22 实测)。
           GAH_RELEASE_PLATFORMS: darwin-aarch64,windows-x86_64
         run: node scripts/verify-release.mjs --tag "$TAG" --skip-artifacts
+
+  # 国内加速:改写 latest.json 的下载 URL 前缀(不重建包、不动签名、不移动 tag)。
+  #   用法:workflow_dispatch { tag: vX.Y.Z, mirror_base: https://gh-proxy.com/ };填 none 还原直链。
+  # 原理:updater 的 ed25519 签名只对**文件内容**验签,URL 不参与 ⇒ 换源不降低安全强度,
+  #   而且对**存量客户端**立即生效(不需重编重发)。GitHub Release 仍是唯一事实源,
+  #   这里只替换同一个 asset,不动 tag、不动包。
+  rewrite-mirror:
+    if: ${{ inputs.tag != '' && inputs.mirror_base != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 同 merge job:脚本修复应立即生效,而不是被已消费的 tag 上的旧副本盖回去
+          ref: ${{ github.event.repository.default_branch }}
+      - name: 取回线上 latest.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq jq >/dev/null
+          mkdir -p dist-desktop
+          gh release download "$TAG" -p latest.json -D dist-desktop --clobber
+          jq -r '"当前版本 \(.version);平台 \(.platforms|keys|join(","))"' dist-desktop/latest.json
+      - name: 改写下载前缀(内部自检:签名逐平台未被改动)
+        env:
+          MIRROR: ${{ inputs.mirror_base }}
+        run: bash scripts/publish-desktop.sh rewrite-url "$MIRROR"
+      - name: 重传同名 asset(GitHub 仍是唯一事实源)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: gh release upload "$TAG" dist-desktop/latest.json --clobber
+      - name: 回查线上表(版本 + 平台集合 + 签名 + 前缀)
+        env:
+          TAG: ${{ inputs.tag }}
+          MIRROR: ${{ inputs.mirror_base }}
+        run: |
+          for i in 1 2 3 4 5; do
+            if got="$(curl -fsSL "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/latest.json")"; then break; fi
+            sleep 5
+          done
+          [ -n "${got:-}" ] || { echo "线上表取不回来"; exit 1; }
+          echo "$got" | jq .
+          echo "$got" | jq -e '.version and (.platforms | length > 0) and ([.platforms[].signature | length > 0] | all)' >/dev/null \
+            || { echo "线上表结构不完整"; exit 1; }
+          if [ "$MIRROR" != "none" ] && [ "$MIRROR" != "github" ]; then
+            echo "$got" | jq -e --arg m "$MIRROR" '[.platforms[].url | startswith($m)] | all' >/dev/null \
+              || { echo "线上表 URL 前缀不是 $MIRROR"; exit 1; }
+          fi

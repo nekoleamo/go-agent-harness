@@ -2,6 +2,10 @@
 # 桌面壳零成本发行(无 Apple/Windows 代码签名,updater ed25519 自持签名):
 #   单平台:bash scripts/publish-desktop.sh darwin-aarch64      # 或 darwin-x86_64 / windows-x86_64
 #   合并:   bash scripts/publish-desktop.sh merge               # 读 dist-desktop/latest.<平台>.json 合成 latest.json
+#   国内加速:bash scripts/publish-desktop.sh rewrite-url https://ghproxy.net/
+#           # 把 latest.json 里各平台的下载 URL 前置镜像前缀(updater 签名只对文件内容验签,
+#           # URL 不参与 ⇒ 换源不降低安全强度);`rewrite-url none` 还原成 GitHub 直链。
+#           首次运行会把原表另存为 latest.github.json,之后一律以它为改写源(幂等)。
 # 产物:dist-desktop/<平台>/(安装包 + updater 产物 + latest.<平台>.json);merge 后 latest.json 上传 GitHub Release,
 #       updater endpoint 固定取 https://github.com/<repo>/releases/latest/download/latest.json
 # 版本:RELEASE_VERSION=vX.Y.Z(缺省取最近 git tag;发布时由 git tag 驱动)
@@ -29,7 +33,8 @@ case "$platform" in
   darwin-x86_64)   triple=x86_64-apple-darwin;    updkey=darwin-x86_64;   bdir=macos ;;
   windows-x86_64)  triple=x86_64-pc-windows-msvc; updkey=windows-x86_64;  bdir=nsis ;;
   merge) merge=1 ;;
-  *) echo "用法: $0 {darwin-aarch64|darwin-x86_64|windows-x86_64|merge}"; exit 1 ;;
+  rewrite-url) rewrite=1 ;;
+  *) echo "用法: $0 {darwin-aarch64|darwin-x86_64|windows-x86_64|merge|rewrite-url}"; exit 1 ;;
 esac
 
 if [ "${merge:-0}" = 1 ]; then
@@ -49,6 +54,52 @@ if [ "${merge:-0}" = 1 ]; then
     platforms: (reduce .[].platforms as $p ({}; . + $p))
   }' "${files[@]}" > "$OUT/latest.json"
   echo "merged → $OUT/latest.json"
+  jq . "$OUT/latest.json"
+  exit 0
+fi
+
+if [ "${rewrite:-0}" = 1 ]; then
+  # 改写 latest.json 的下载 URL 前缀(国内网络加速)。
+  # 为什么安全:updater 的 ed25519 签名只对**文件内容**验签,URL 不参与 ⇒ 换源不降低校验强度;
+  #   镜像/代理换包会被签名直接拒掉。也因此对存量客户端立即生效(不需重编/重发)。
+  # 幂等:第一次运行把原表另存为 latest.github.json,之后一律以它为改写源。
+  command -v jq >/dev/null || { echo "需 jq"; exit 1; }
+  base="${2:-}"
+  [ -n "$base" ] || { echo "用法: $0 rewrite-url <URL 前缀|none>(如 https://ghproxy.net/)"; exit 1; }
+  [ -f "$OUT/latest.json" ] || { echo "无 $OUT/latest.json(先跑 merge,或从 Release 取回 latest.json)"; exit 1; }
+  src="$OUT/latest.github.json"
+  # 归一化:从 URL 里抽出最后的 GitHub 直链(幂等 —— 即使输入是**已被前缀过的**表也能正确留档,
+  # 否则 CI 侧重新拉线上的表再改写会变成双重前缀)
+  norm='.platforms |= with_entries(.value |= (.url = ((.url | capture("(?<gh>https://github\\.com/.*)$") | .gh) // .url)))'
+  if [ ! -f "$src" ]; then
+    jq "$norm" "$OUT/latest.json" > "$src"
+    echo "已留档原始表(GitHub 直链)→ $src"
+  fi
+  jq -e '[.platforms[].url | startswith("https://github.com/")] | all' "$src" >/dev/null \
+    || { echo "留档表里找不到可识别的 GitHub 直链,拒绝改写:$src" >&2; exit 1; }
+  if [ "$base" = "none" ] || [ "$base" = "github" ]; then
+    cp "$src" "$OUT/latest.json"
+    echo "已还原为 GitHub 直链 → $OUT/latest.json"
+  else
+    case "$base" in */) ;; *) base="$base/" ;; esac   # 前缀必须带尾斜杠,否则会拼出 host**https://** 这种非法 URL
+    jq --arg b "$base" '.platforms |= with_entries(.value |= (.url = ($b + .url)))' "$src" > "$OUT/latest.json.tmp"
+    mv "$OUT/latest.json.tmp" "$OUT/latest.json"
+    echo "已前置镜像前缀 $base → $OUT/latest.json"
+  fi
+  # 自检 1:平台集合与 signature 必须与原始表**逐平台一致**(换源不许动签名)
+  if ! jq -e --slurpfile a "$src" \
+      '.platforms as $p | ($a[0].platforms) as $q | ($p | keys) == ($q | keys)
+       and ([$p | keys[] as $k | $p[$k].signature == $q[$k].signature] | all)' \
+      "$OUT/latest.json" >/dev/null; then
+    echo "自检失败:平台集合或签名被改写破坏 —— 已回滚" >&2
+    cp "$src" "$OUT/latest.json"
+    exit 1
+  fi
+  # 自检 2:每个 URL 都以给的前缀开头(还原模式跳过)
+  if [ "$base" != "none" ] && [ "$base" != "github" ]; then
+    jq -e --arg b "$base" '[.platforms[].url | startswith($b)] | all' "$OUT/latest.json" >/dev/null \
+      || { echo "自检失败:URL 前缀不符 —— 已回滚" >&2; cp "$src" "$OUT/latest.json"; exit 1; }
+  fi
   jq . "$OUT/latest.json"
   exit 0
 fi
