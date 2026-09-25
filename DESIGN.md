@@ -876,6 +876,7 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 | job | 根因 | 处置 |
 |---|---|---|
 | `test`(ubuntu) | `TestTUIAcceptQueueRecall` 断言踩三坑:状态栏按段渲染(pty 窄时「待发」不在「空闲」行)、回吐提示行自身就含「已转为待发」、回吐后状态栏那一帧还没画 ⇒ 本地与 CI 同因红。改用「待发 + 数字」匹配整屏 + 轮询等待 | ✅ 已修(`aa68d39`) |
+| `test`(ubuntu) | 同一 job 修完后暴露出第二个:`TestPluginStderrSurfacesInLoadError` 偶发失败,**是产品缺陷不是测试问题** —— `cmd.Stderr` 为 `io.Writer` 时 exec 内部起 copier goroutine,`Wait` 才等它结束,而握手失败常在它收尾前返回 ⇒ 插件写在 stderr 的原因(桌面版没有终端,这是唯一现场)**被丢掉**。修根因:`startPluginRPC` 的 fail 路径等 `Wait` 落地(300ms 兜底) | ✅ 已修(连跑 10 次稳定、整包 97 passed) |
 | `test-windows` | 7 处平台适配失败:`host-worktrees` 2(worktree id 在 Windows 解析成 `---wt1`)、`policy-guard` 1(隔离下未拒写主 workspace)、`tool-shell` 1(cwd 断言见了 MSYS `/tmp` 形态)、`tests` 3(`/tmp` 硬编码、沙箱 E2E、通知夹具超时)、`web` 1(`chmod 0555` 在 Windows 不产生只读语义) | ⏳ 独立一批(见未实施表) |
 
 顺带:`desktop-shell` job 从 `cargo check` 改成 **`cargo test`** —— 升级源选路(`update_source.rs`)是有回归价值的逻辑,

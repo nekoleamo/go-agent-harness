@@ -53,6 +53,9 @@ const (
 
 	// handshakeTimeout 握手行等待上限(插件启动即写;超时 = 疑似卡在自身初始化)。
 	handshakeTimeout = 30 * time.Second
+	// stderrDrainTimeout 握手失败后等 stderr 转写落地的上限:cmd.Stderr 是 io.Writer 时
+	// exec 内部起 copier goroutine,Wait 才等它结束;握手失败常在它收尾之前发生。
+	stderrDrainTimeout = 300 * time.Millisecond
 )
 
 // handshakeLine 本版本插件应写出的握手行(含换行)。
@@ -129,11 +132,22 @@ func startPluginRPC(cmd *exec.Cmd, stderr io.Writer) (*rpc.Client, error) {
 	// 回收进程(防僵尸):宿主机是长命进程,插件退出后必须回收,否则 fs/proc 里不断
 	// 累积 defunct。Wait 在进程退出后关闭管道——读取侧本来就会拿到 EOF/ErrClosed,
 	// 对 rpc 客户端而言同样是「连接断开」。
-	go func() { _ = cmd.Wait() }()
+	// waitDone 另外承担一个职责:cmd.Stderr 是 io.Writer 时 exec 内部起 copier goroutine,
+	// 而 Wait 会等它结束 —— 下面 fail() 靠它等 stderr 落地。
+	waitDone := make(chan struct{})
+	go func() { _ = cmd.Wait(); close(waitDone) }()
 	// 握手不成功时插件进程可能还活着(卡在自身初始化/根本不说协议)——必须杀掉,
 	// 否则失败重试会不断遗下孤儿进程(旧版由 go-plugin client.Kill() 兼顾)。
 	fail := func(err error) (*rpc.Client, error) {
 		killPluginGroup(cmd)
+		// 等 stderr 转写落地再返回:握手失败常在 copier 收尾**之前**发生,此时插件写的
+		// 原因(缺配置/端口占用/权限 —— 桌面版没有终端,这是唯一现场)尚未进环形缓冲,
+		// 直接读会拿到空内容(2026-09-25 CI 实测偶发丢)。进程已被杀,Wait 很快返回;
+		// 超时兵底防止极端情况下卡住。
+		select {
+		case <-waitDone:
+		case <-time.After(stderrDrainTimeout):
+		}
 		return nil, err
 	}
 	br := bufio.NewReader(stdout)
