@@ -33,7 +33,9 @@ on:
 
 jobs:
   desktop-mac-aarch64:
-    if: inputs.run_id == ''
+    # mirror_base 模式 = 只改写线上 latest.json,不与打包/发布路径并发
+    # (否则 merge job 会把直链表重传上去,把换源结果覆盖掉)
+    if: inputs.run_id == '' && inputs.mirror_base == ''
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -70,7 +72,7 @@ jobs:
           if-no-files-found: error
 
   desktop-win-x86_64:
-    if: inputs.run_id == ''
+    if: inputs.run_id == '' && inputs.mirror_base == ''
     runs-on: windows-latest
     defaults:
       run:
@@ -112,7 +114,7 @@ jobs:
     needs: [desktop-mac-aarch64, desktop-win-x86_64]
     # tag 推送、或手动给了 tag 输入时才上传 Release(纯打包预演不碰 Release);平台 job 被跳过时
     # 用 !cancelled() 放行本 job(needs 结果为 skipped)
-    if: ${{ !cancelled() && (startsWith(github.ref, 'refs/tags/') || inputs.tag != '') }}
+    if: ${{ !cancelled() && inputs.mirror_base == '' && (startsWith(github.ref, 'refs/tags/') || inputs.tag != '') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
