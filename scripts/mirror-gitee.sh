@@ -67,8 +67,10 @@ release_id() {
 }
 
 attachment_id_of() { # <release_id> <文件名>
+  # 注意:匹配串要作为 jq 变量传入 —— 直接写 $2 是 shell 位置参数,jq 会报 compile error
+  # (2026-09-25 首发实测:删除同名附件那步静默失败)。
   api_json "$API/releases/$1/attach_files?access_token=$TOKEN" \
-    | jq -r --arg n "$2" '.[] | select(.name == $n or (.name | endswith($2))) | .id' | head -1
+    | jq -r --arg n "$2" '.[] | select(.name == $n or (.name | contains($n))) | .id' | head -1
 }
 
 link_of() { printf '%s/releases/download/%s/%s' "$SITE" "$tag" "$1"; }
@@ -78,11 +80,13 @@ verify() {
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     name="$(basename "$f")"
-    code="$(curl -sS -L -o /dev/null -w '%{http_code}' --max-time 120 "$(link_of "$name")" || echo 000)"
+    # 只取首字节(-r 0-0 ⇒ 206):回查要回答的问题是「匿名能不能下到」,
+    # 不是「把这个 25MB 全下回来」。CDN 不支持 Range 时会退成 200,两种都算通过。
+    code="$(curl -sS -L -r 0-0 -o /dev/null -w '%{http_code}' --max-time 60 "$(link_of "$name")" || echo 000)"
     printf '  %s  %s\n' "$code" "$(link_of "$name")"
-    [ "$code" = "200" ] || fail=1
+    case "$code" in 200|206) ;; *) fail=1 ;; esac
   done <<< "$(collect)"
-  [ "$fail" = 0 ] || { echo "有附件匿名直链拿不到 200 —— 检查仓库是否公开、附件是否上传成功" >&2; return 1; }
+  [ "$fail" = 0 ] || { echo "有附件匿名直链拿不到 200/206 —— 检查仓库是否公开、附件是否上传成功" >&2; return 1; }
 }
 
 case "$cmd" in
@@ -99,7 +103,19 @@ case "$cmd" in
         echo "  旧附件已删除:$name"
       fi
       echo "  上传 $name($(wc -c < "$f" | tr -d ' ') 字节)…"
-      api_json -X POST "$API/releases/$id/attach_files?access_token=$TOKEN" -F "file=@$f" >/dev/null
+      # 上传大文件(25MB 级)不能用 api_json 的 60 秒上限:家里上行与 CI 海外链路都可能更久。
+      # 2026-09-25 实测:GitHub runner(海外)传到 Gitee 60 秒 0 字节超时 ⇒ 这里放宽到 15 分钟
+      # 并重试三次。注意该链路天生不利,正式镜像建议在国内机器上跑。
+      ok=0
+      for attempt in 1 2 3; do
+        if curl -fsS --max-time 900 --connect-timeout 30 -X POST \
+             "$API/releases/$id/attach_files?access_token=$TOKEN" -F "file=@$f" >/dev/null; then
+          ok=1; break
+        fi
+        echo "  第 $attempt 次上传失败,重试…" >&2
+        sleep 5
+      done
+      [ "$ok" = 1 ] || { echo "上传失败:$name(三次都未成功)" >&2; exit 1; }
     done <<< "$(collect)"
     echo "上传完成,回查匿名直链:"
     verify || exit 1
