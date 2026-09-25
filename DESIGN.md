@@ -847,7 +847,10 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 
 ### 第六十二批 · Windows CI 平台适配 + 桌面壳格式门禁(2026-09-25)
 
-`test-windows` 长期 7 处红,本批逐条定位并改完(此前只登记为「预存红」):
+`test-windows` 长期报红(首次抓取 7 处,抓全后实数 **9 处**),本批逐条定位并改完,**失败数 9 → 2 → 0**(run `36170038615` 五个 job 全绿):
+
+> 过程记录:第一轮修完后剩 2 处 —— 1 处是上一轮未抓全的既有失败(host-docview),
+> 1 处是第一轮未改对(sandbox 探针在 Windows 上得用 MSYS 形态表达绝对路径)⇒ 第二轮清空。
 
 | # | 用例 | 根因 | 修法 |
 |---|---|---|---|
@@ -855,11 +858,12 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 | 3 | `policy-guard` `TestCheckShellCommandAtIsolated` | 测试用 `C:\...` 表达绝对路径,而 Windows 的 shell 是 git-bash:反斜杠是转义字符会被吃掉,命令实际落到相对位置(**与真实 shell 行为一致,不是裁决缺陷**) | 测试加 `shellAbs()` 助手:Windows 改用 MSYS 形态 `/c/...`(落点不可静态确定 ⇒ 同样必须被拒) |
 | 4 | `tool-shell` `TestShellUsesCallWorkRoot` | `pwd` 在 git-bash 下返回 MSYS 形态 `/tmp/...`,与 Go 侧 `C:\...` 整串比对必然不等 | 按末段目录名判定 cwd(测试 temp 末段唯一) |
 | 5 | `tests` `TestNoticeFeedFixtureForDesktopShell` | **字节比较失败,但两侧内容打印完全一致** ⇒ 唯一不可见差异是 `\r`:Windows 检出把文本转成 CRLF(仓库内为 LF) | 新增 `.gitattributes`:`desktop/src-tauri/fixtures/* text eol=lf` |
-| 6 | `tests` `TestSandboxSyncE2ECommandRoundTrip` | 探针用 `/tmp/...`,Windows 上属 MSYS 根相对 ⇒ 裁决层判「无法裁决」(消息不含「被拒」) | 探针改 `t.TempDir()` 下的绝对路径,JSON 走 `json.Marshal` 转义(Windows 路径含反斜杠,手拼是非法 JSON) |
+| 6 | `tests` `TestSandboxSyncE2ECommandRoundTrip` | 探针用 `/tmp/...`,Windows 上属 MSYS 根相对 ⇒ 裁决层判「无法裁决」(消息不含「被拒」)。**第一轮只改了一半**(改成 Go 绝对路径 `C:\...`)⇒ 仍红:**git-bash 把 `\` 当转义吃掉** ⇒ 实际变成相对路径、放行本身是正确行为 | 探针在 Windows 上用 MSYS 形态 `/c/...` 表达工作区外绝对位置,JSON 走 `json.Marshal` 转义(路径含反斜杠,手拼是非法 JSON);断言放宽为「被拒 或 无法裁决」 |
 | 7 | `tests` `TestTUIAcceptContextAgentsHierarchy` | `os.MkdirTemp("/tmp", …)` 硬编码:Windows 无 `/tmp` | 平台化(Windows 退系统 temp)+ Windows 跳过 ② 的屏幕路径比对(临时目录路径超 TUI 行宽会被截断;① 已覆盖层级逻辑) |
 | 8 | `web` `TestProbeWritableReadOnly` | `chmod 0555` 在 Windows 不产生只读语义(走 ACL),构造不出只读目录 | Windows 上 skip(与 root 场景同样处理) |
+| 9 | `host-docview` `TestConverterRealExecPATHShim` | shim 写成无扩展名的 shell 脚本,而 Windows 的 `LookPath` 按 PATHEXT 只认 `.exe/.com/.bat/.cmd` ⇒ 探测命中不上 | Windows 上 skip + 登记待办(换 cmd 版 shim 就得重写一套参数解析与日志格式,断言失去同构意义;探测段本身走标准库 `LookPath`,跨平台语义一致) |
 
-教训写在这里比写在注释里耐久:**「内容一致但比较失败」几乎总是不可见字符**(行尾/BOM),不要先去怀疑 JSON 形状。
+教训写在这里比写在注释里更耐久 —— 上表第 5 条是典型:**两侧内容逐字一样却比较失败,唯一差异是 `\r`**(Windows 检出转 CRLF)。先去查不可见字符,别怀疑 JSON 形状。
 
 **顺带(桌面壳 Rust 侧)**:
 - 新增 `cargo fmt --check` CI 门禁并**一次性 format**(`main.rs`/`notice.rs`/`stage.rs`,608 行 diff;此前无门禁、`main.rs` 早已偏离 rustfmt 输出)。
@@ -1239,7 +1243,8 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 | 本机验收余项(TUI 42 / Web 9 / 文档 11 / 壳 8 / 其它 16) | ✅ **2026-09-22 收口订正**:A 本机 109 条已跑 **102** / 剩 **4 条纯人工**(#39 导出 HTML 观感 · #42 TUI P5 视觉 · #88 通知矩阵人眼段 · #86 壳端到端横幅)+ 本表下方「待人工验」各条(B 组 4 项卡外部条件,权威清单见 `docs/VERIFY.md` §剩余任务快照);其中 A-1a / A-1b / A-2 / A-5 已由用户实测通过(2026-09-22) |
 | `/api/models` 不支持列举时返 **501 + 纯文本** | ⏳ 前端 `req()` 对非 JSON 响应 → 报 JSON 解析错误而非服务端人话。影响仅错误文案(能力缺失本身已显式);改法:错误一律走 JSON `{error}` 或前端按 content-type 兜底。登记自第二十二批验收副产品 |
 | Web 侧 `#65 概述节流/截断`、`#66 跨渠道提问提示` | ⏳ 不可从外部观测/属 TUI 能力(理由见 §14.1 第二十二批口径订正 2、3):#65 以 `host-session-summary` 单测为准;#66 归 A-1 TUI 批 |
-| Windows CI(`test-windows`)**7 处平台适配失败** | ✅ **已交付,待 CI 复核**(2026-09-25 第六十二批):逐条根因与修法见该批表格 —— 1 处是**产品缺陷**(host-worktrees 同一 worktree 两种路径写法),1 处是**测试用错 shell 语义**(git-bash 反斜杠转义),其余为平台适配(`/tmp` 硬编码、CRLF 检出、MSYS 路径形态、`chmod` 语义)。本地不可验 Windows ⇒ 判据是 `test-windows` job 转绿 |
+| Windows CI(`test-windows`)**9 处平台适配失败** | ✅ **已交付并 CI 复核通过**(2026-09-25 第六十二批):失败数 9 → 2 → **0**,run `36170038615` 五个 job **全绿**。逐条根因与修法见该批表格 —— 1 处是**产品缺陷**(host-worktrees 同一 worktree 两种路径写法),1 处是**测试用错 shell 语义**(git-bash 反斜杠转义),其余为平台适配(`/tmp` 硬编码、CRLF 检出、MSYS 路径形态、`chmod` 语义、PATHEXT) |
+| Windows 上**真 exec 契约**无等价覆盖 | ⏳ 待办(2026-09-25 第六十二批):`TestConverterRealExecPATHShim` 用 **sh 脚本**当假 `soffice` 覆盖「PATH 探测 → 真进程 → argv → 退出码 → 产物发现」,**Windows 上如实 skip** —— ① 无扩展名 shim 不会被 `LookPath` 命中(按 PATHEXT 只认 `.exe/.com/.bat/.cmd`);② 换 cmd 版 shim 要再写一套参数解析与日志格式,断言失去同构意义。影响:Windows 上「探测到 soffice ⇒ 真调用其契约」无误覆盖(探测段本身走 `exec.LookPath`,跨平台语义一致且已被包内其它用例覆盖)|
 | `tests` 包 `-race` 单跑 **347s**(本地)/277s(CI) | ⏸ **本批评估后不做**(2026-09-25 第六十二批):大头是 pty 端到端用例的固定 sleep;加 `t.Parallel()` 会在共享 runner 上放大时序 flaky(pty 探针对 CPU 负载敏感),CI 按文件拆 job 也只是把 6 分钟摊成两个 job(总成本不降、多付一份 setup)。护栏已按口径拆开(不再拿它当回归信号),记录在案 |
 | Rust 侧 **rustfmt 门禁** | ✅ **已交付**(2026-09-25 第六十二批):一次性 `cargo fmt` + CI 加 `cargo fmt --check`(`cargo fmt --check` 现已干净、`cargo test --offline` 34 passed) |
 | 0.1.6 桌面端**选源真机验证** | ⏳ 需已装 0.1.6 的机器点一次「检查更新」:壳日志 `~/Library/Application Support/dev.gah.desktop/gah-shell.log` 应出现「检查更新:端点顺序 [gitee…, github…](首选源 \"gitee\")」;判据与三种场景(正常 / Gitee 不可达 / 表可取但包不可达)已写进 `docs/VERIFY.md` |
