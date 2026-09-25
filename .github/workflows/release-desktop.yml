@@ -187,81 +187,39 @@ jobs:
   # 原理:updater 的 ed25519 签名只对**文件内容**验签,URL 不参与 ⇒ 换源不降低安全强度,
   #   而且对**存量客户端**立即生效(不需重编重发)。GitHub Release 仍是唯一事实源,
   #   这里只替换同一个 asset,不动 tag、不动包。
-  # 把桌面产物与代码快照镜像到 Gitee(国内直连;零成本自控镜像,不依赖第三方代理)。
-  # GitHub 仍是唯一事实源;本 job 失败不影响主发布,但会在 run 里变红以示可见。
-  # 需要 secret:GITEE_TOKEN(Gitee 私人令牌,projects 权限);未配置则告警跳过。
-  # 回退到直链:workflow_dispatch { tag, mirror_base: none }
-  mirror-gitee:
+  # 发布后把 GitHub 上的 latest.json 换成加速前缀(存量客户端立即受益,无需重编)。
+  # 为什么 CI 不做 Gitee 镜像:runner 在海外,往 Gitee 传 25MB 级附件实测 60 秒 0 字节超时
+  # (2026-09-25 首发)。Gitee 侧改由国内机器跑 scripts/mirror-gitee.sh + sync-gitee.sh 完成。
+  accelerate:
     needs: [merge-upload]
-    # tag 推送时就跑(此时 inputs.tag 为空,必须用 github.ref 判),或手动给了 tag;
-    # mirror_base 模式(只改写线上表)与它互斥。
     if: ${{ !cancelled() && inputs.mirror_base == '' && (startsWith(github.ref, 'refs/tags/') || inputs.tag != '') && needs.merge-upload.result == 'success' }}
     runs-on: ubuntu-latest
     env:
-      GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
-      GITEE_REPO: ${{ vars.GITEE_REPO || 'null_593_5354/go-agent-harness' }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      # tag 推送时 inputs.tag 为空 ⇒ 统一从 ref_name 取;publish-desktop.sh 的 rewrite-url
-      # 与 gh release 命令都读这个变量,避免两处取值不一致。
       TAG: ${{ inputs.tag || github.ref_name }}
     steps:
-      - name: 未配置 GITEE_TOKEN 则跳过
-        id: gate
-        run: |
-          if [ -z "${GITEE_TOKEN}" ]; then
-            echo "::warning::GITEE_TOKEN 未配置,跳过 Gitee 镜像(发布不受影响)"
-            echo "skip=1" >> "$GITHUB_OUTPUT"
-          fi
-      - if: steps.gate.outputs.skip != '1'
-        uses: actions/checkout@v4
-      - name: 取回本次 Release 的产物与表
-        if: steps.gate.outputs.skip != '1'
+      - uses: actions/checkout@v4
+        with:
+          # 同 merge job:脚本修复应立即生效,而不是被已消费的 tag 上的旧副本盖回去
+          ref: ${{ (inputs.tag != '' && github.event.repository.default_branch) || github.ref }}
+      - name: 取回线上表并换到加速前缀
         run: |
           set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq jq >/dev/null
           mkdir -p dist-desktop/up
-          gh release download "$TAG" -R "$GITHUB_REPOSITORY" \
-            -p '*.dmg' -p '*-setup.exe' -p '*.app.tar.gz' -p 'latest.json' -D dist-desktop/up
-          ls -l dist-desktop/up
-      - name: 上传产物到 Gitee Release(同名附件先删后传,幂等)
-        if: steps.gate.outputs.skip != '1'
-        run: bash scripts/mirror-gitee.sh upload "$TAG" dist-desktop/up
-      - name: 代码快照 + Gitee 版表同步到 Gitee 仓库
-        if: steps.gate.outputs.skip != '1'
-        run: |
-          set -euo pipefail
-          # 上一步已生成 dist-desktop/gitee/latest.json(下载地址全部指向 Gitee 直链),
-          # 把它作为仓库根的 latest.json 一起提交 —— 客户端从 raw 通道读的就是这份表。
-          GAH_EXTRA_FILES=dist-desktop/gitee/latest.json:latest.json bash scripts/sync-gitee.sh
-      - name: 回查 Gitee 版表(匿名 raw;CDN 缓存 60 秒,所以重试)
-        if: steps.gate.outputs.skip != '1'
-        run: |
-          set -euo pipefail
-          url="https://gitee.com/${GITEE_REPO}/raw/master/latest.json"
-          for i in 1 2 3 4 5 6; do
-            body="$(curl -fsS --max-time 30 "$url" || true)"
-            if printf '%s' "$body" | jq -e --arg b "https://gitee.com/${GITEE_REPO}/releases/download/" \
-                 '[.platforms[].url | startswith($b)] | all' >/dev/null 2>&1; then
-              echo "Gitee 表已生效(第 $i 次尝试)"
-              exit 0
-            fi
-            echo "尚未生效(CDN 缓存 60 秒),15 秒后重试…"
-            sleep 15
-          done
-          echo "::error::Gitee raw 表未在预期时间内生效"
-          exit 1
-      - name: GitHub 表换到加速前缀(兼容存量 0.1.5)并回传
-        if: steps.gate.outputs.skip != '1'
-        run: |
-          set -euo pipefail
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p latest.json -D dist-desktop/up --clobber
           cp dist-desktop/up/latest.json dist-desktop/latest.json
           bash scripts/publish-desktop.sh rewrite-url https://gh-proxy.com/
+      - name: 重传同名 asset 并回查(签名逐平台未变 + 前缀正确)
+        run: |
+          set -euo pipefail
           gh release upload "$TAG" dist-desktop/latest.json -R "$GITHUB_REPOSITORY" --clobber
           rm -rf /tmp/live && mkdir -p /tmp/live
-          gh release download "${{ inputs.tag }}" -p latest.json -D /tmp/live --clobber
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p latest.json -D /tmp/live --clobber
           jq -e --arg b "https://gh-proxy.com/" '[.platforms[].url | startswith($b)] | all' /tmp/live/latest.json >/dev/null
           diff <(jq -S '.platforms | map_values(.signature)' dist-desktop/up/latest.json) \
                <(jq -S '.platforms | map_values(.signature)' /tmp/live/latest.json)
-          echo "线上 latest.json 已指向加速前缀(存量 0.1.5 走这跳),签名逐平台未变"
+          echo "线上 latest.json 已指向加速前缀,签名逐平台未变"
 
   rewrite-mirror:
     if: ${{ inputs.tag != '' && inputs.mirror_base != '' }}

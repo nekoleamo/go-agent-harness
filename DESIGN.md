@@ -897,6 +897,12 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 6. **诚实边界**:· Gitee 附件匿名直链没找到第三方样本(18 个公开仓库均无自定义附件),待令牌到位首次上传时
    由脚本自校验(HEAD 应 200,否则脚本直接报错退出);· 不做主动测速 ⇒ 海外用户默认也走 Gitee(可用但慢于 GitHub);
    · 两源同时不可达时仍会失败,只能手动下载安装包(README 已给 Gitee 直链)。
+7. **CI 与本地分工**(2026-09-25 v0.1.6 首发实测):原 `mirror-gitee` job 从 CI 撤下 —— GitHub runner 在海外,
+   往 Gitee 传 25MB 级附件 **60 秒 0 字节超时**(三件套 75MB 更不可能)。CI 只留 `accelerate`
+   (发布后把 GitHub 表换成加速前缀,必成、~30 秒);Gitee 侧改由**国内机器**跑
+   `scripts/mirror-gitee.sh upload <tag> <目录>` + `GAH_EXTRA_FILES=…/latest.json:latest.json bash scripts/sync-gitee.sh`。
+   同一轮修掉脚本自身三处缺陷:jq 里误用 shell 位置参数 `$2`(删同名附件静默失败)、上传沿用 60 秒上限、
+   回查把整个 25MB 附件拉回来(改 `-r 0-0` 只取首字节)。
 
 ### 第五十九批 · 国内升级通路:下载 URL 可换源(零成本)(2026-09-24)
 
