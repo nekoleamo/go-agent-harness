@@ -101,7 +101,7 @@ Go 实现的编程代理 Agent Harness:以**单静态二进制**交付全部能�
 > 时会被记住并垫到最后**,下次检查先试另一个源。两份 `latest.json` 各自把安装包地址指向自己的源,
 > 所以选源同时决定了取表与下载两跳。签名始终只有一套(ed25519 只对**文件内容**验签,换源不降低强度)。
 > 存量 0.1.5 用户走 GitHub 那份表(其中下载地址已指向加速前缀),因此国内也能升到 0.1.6。
-> 手动下载(Gitee 镜像):`https://gitee.com/null_593_5354/go-agent-harness/releases/download/<tag>/gah_<版本>_aarch64.dmg`
+> 手动下载(Gitee 镜像,**附件随各版本同步上传**;若某个 tag 下尚未出现,请用 GitHub Release 里的链接):`https://gitee.com/null_593_5354/go-agent-harness/releases/download/<tag>/gah_<版本>_aarch64.dmg`
 > (Windows 换 `gah_<版本>_x64-setup.exe`);代码快照在 `https://gitee.com/null_593_5354/go-agent-harness`。
 > Gitee 侧只放**最新代码快照**(无历史)与桌面安装包,完整历史与 CLI 各平台归档仍在 GitHub。
 > 换回 GitHub 直链:`bash scripts/publish-desktop.sh rewrite-url none`(或 CI 里 `workflow_dispatch { tag, mirror_base: none }`)。

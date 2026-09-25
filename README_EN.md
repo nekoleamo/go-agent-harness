@@ -107,7 +107,8 @@ provider (DeepSeek / Kimi / Zhipu / Qwen / Ollama presets; paste an API key).
 > the source decides both hops at once. There is still exactly one signature set (ed25519 verifies file
 > **contents**, not URLs, so re-sourcing does not weaken anything). Existing 0.1.5 users go through the GitHub
 > manifest, whose download URLs already point at an acceleration prefix, so they can upgrade from mainland China too.
-> Manual download (Gitee mirror): `https://gitee.com/null_593_5354/go-agent-harness/releases/download/<tag>/gah_<version>_aarch64.dmg`
+> Manual download (Gitee mirror; **attachments are uploaded with each release** — if a given tag has none yet,
+> use the links on the GitHub Release page): `https://gitee.com/null_593_5354/go-agent-harness/releases/download/<tag>/gah_<version>_aarch64.dmg`
 > (Windows: `gah_<version>_x64-setup.exe`); the code snapshot lives at `https://gitee.com/null_593_5354/go-agent-harness`.
 > Gitee carries only the **latest code snapshot** (no history) plus the desktop installers — full history and the
 > per-platform CLI archives stay on GitHub. Revert to the direct GitHub link with
