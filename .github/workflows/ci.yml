@@ -213,8 +213,10 @@ jobs:
         run: |
           mkdir -p desktop/src-tauri/binaries
           : > desktop/src-tauri/binaries/gah-x86_64-pc-windows-msvc.exe
-      - name: cargo check(桌面壳;Windows 是本项目真机主战场)
-        run: cd desktop/src-tauri && cargo check --locked
+      - name: cargo test(桌面壳;含升级源选路的单测。test 隐含编译,故不再单跑 check)
+        # 为什么从 check 改成 test:选源顺序(update_source.rs)是可回归的逻辑,
+        # 而 tag 触发的 release-desktop.yml 只编译不跑单测 —— 日常 push 这里是唯一出口。
+        run: cd desktop/src-tauri && cargo test --locked
 
   # macOS 平台自动化。此前只在 ubuntu / windows 上跑,macOS 零覆盖 —— 而 macOS 有
   # 独有的内核级沙箱实现(seatbelt / sandbox-exec,plugins/tool/tool-shell/kernel_darwin.go)

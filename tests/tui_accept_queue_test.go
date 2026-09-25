@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -115,9 +116,22 @@ func TestTUIAcceptQueueRecall(t *testing.T) {
 	if !s.waitScreen("空闲", 10*time.Second) {
 		t.Fatalf("条目 7:Esc 未结束回合;屏 %q", firstN(s.screen(), 300))
 	}
-	// 队列保留:判**实时状态栏那行**(整屏 Contains 会被就地重绘留下的旧行骗到)
-	if line := s.statusLineWith("空闲"); !strings.Contains(line, "待发") {
-		t.Errorf("条目 7:Esc 后回吐消息未进待发队列;空闲行=%q", line)
+	// 队列保留:判**状态栏的计数**。三个坑都会让断言骗人(2026-09-25 本地与 CI 同时
+	// 红在这句):
+	//   ① 状态栏按段渲染,pty 宽度不够时「待发」会落到「空闲」以外的行 —— 查单行会漏判;
+	//   ② 回吐提示行本身就含「已转为待发(Alt+Up 取回)」,只查「待发」两字会被它骗成通过;
+	//   ③ 回吐事件先出提示行,状态栏那一帧可能还没画出来,必须等而不是立即断言。
+	// 所以用「待发 + 数字」匹配(提示行是「已转为待发(」,不匹配),并轮询等它出现。
+	pendingCount := regexp.MustCompile(`待发 \d`)
+	queued := false
+	for i := 0; i < 40 && !queued; i++ {
+		queued = pendingCount.MatchString(s.screen())
+		if !queued {
+			time.Sleep(250 * time.Millisecond)
+		}
+	}
+	if !queued {
+		t.Errorf("条目 7:Esc 后回吐消息未进待发队列;屏 %q", firstN(s.screen(), 400))
 	}
 	// Alt+Up 取回(kitty 变体为主,xterm 变体兜底)。
 	// 轮询窗口 6s:UI 循环在 Esc 取消后可能仍在同步收尾(命令跑在 UI 循环内),
@@ -127,16 +141,16 @@ func TestTUIAcceptQueueRecall(t *testing.T) {
 	t0 := time.Now()
 	for i := 0; i < 24 && !queueGone; i++ {
 		time.Sleep(250 * time.Millisecond)
-		queueGone = !strings.Contains(s.statusLineWith("空闲"), "待发")
+		queueGone = !pendingCount.MatchString(s.screen())
 	}
 	if !queueGone {
 		s.send("\x1b\x1b[A")
 		for i := 0; i < 24 && !queueGone; i++ {
 			time.Sleep(250 * time.Millisecond)
-			queueGone = !strings.Contains(s.statusLineWith("空闲"), "待发")
+			queueGone = !pendingCount.MatchString(s.screen())
 		}
 	}
-	t.Logf("条目 7:取回后待发计数消失=%v(耗时 %v);空闲行=%q", queueGone, time.Since(t0).Round(time.Millisecond), s.statusLineWith("空闲"))
+	t.Logf("条目 7:取回后待发计数消失=%v(耗时 %v);屏尾=%q", queueGone, time.Since(t0).Round(time.Millisecond), firstN(s.screen(), 300))
 	if !queueGone {
 		t.Errorf("条目 7:Alt+Up 未取回队列(实时状态栏仍有待发计数)")
 	}
