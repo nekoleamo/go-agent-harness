@@ -193,12 +193,17 @@ jobs:
   # 回退到直链:workflow_dispatch { tag, mirror_base: none }
   mirror-gitee:
     needs: [merge-upload]
-    if: ${{ !cancelled() && inputs.mirror_base == '' && inputs.tag != '' && needs.merge-upload.result == 'success' }}
+    # tag 推送时就跑(此时 inputs.tag 为空,必须用 github.ref 判),或手动给了 tag;
+    # mirror_base 模式(只改写线上表)与它互斥。
+    if: ${{ !cancelled() && inputs.mirror_base == '' && (startsWith(github.ref, 'refs/tags/') || inputs.tag != '') && needs.merge-upload.result == 'success' }}
     runs-on: ubuntu-latest
     env:
       GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
       GITEE_REPO: ${{ vars.GITEE_REPO || 'null_593_5354/go-agent-harness' }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # tag 推送时 inputs.tag 为空 ⇒ 统一从 ref_name 取;publish-desktop.sh 的 rewrite-url
+      # 与 gh release 命令都读这个变量,避免两处取值不一致。
+      TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - name: 未配置 GITEE_TOKEN 则跳过
         id: gate
@@ -214,12 +219,12 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist-desktop/up
-          gh release download "${{ inputs.tag }}" -R "$GITHUB_REPOSITORY" \
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" \
             -p '*.dmg' -p '*-setup.exe' -p '*.app.tar.gz' -p 'latest.json' -D dist-desktop/up
           ls -l dist-desktop/up
       - name: 上传产物到 Gitee Release(同名附件先删后传,幂等)
         if: steps.gate.outputs.skip != '1'
-        run: bash scripts/mirror-gitee.sh upload "${{ inputs.tag }}" dist-desktop/up
+        run: bash scripts/mirror-gitee.sh upload "$TAG" dist-desktop/up
       - name: 代码快照 + Gitee 版表同步到 Gitee 仓库
         if: steps.gate.outputs.skip != '1'
         run: |
@@ -250,7 +255,7 @@ jobs:
           set -euo pipefail
           cp dist-desktop/up/latest.json dist-desktop/latest.json
           bash scripts/publish-desktop.sh rewrite-url https://gh-proxy.com/
-          gh release upload "${{ inputs.tag }}" dist-desktop/latest.json -R "$GITHUB_REPOSITORY" --clobber
+          gh release upload "$TAG" dist-desktop/latest.json -R "$GITHUB_REPOSITORY" --clobber
           rm -rf /tmp/live && mkdir -p /tmp/live
           gh release download "${{ inputs.tag }}" -p latest.json -D /tmp/live --clobber
           jq -e --arg b "https://gh-proxy.com/" '[.platforms[].url | startswith($b)] | all' /tmp/live/latest.json >/dev/null
