@@ -874,7 +874,18 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
    手动下载」三条路;换源对**存量 0.1.5** 生效的前提是「第 1 跳(取 `latest.json`)能通」,若两跳都不通
    只能手动覆盖安装(语义已安全:整包替换、`gah-data/` 不动、升级前自动备份)。自控镜像(CNB 免费对象存储
    100GiB / Gitee Release 1GiB)留作第二档,待账号就绪后接入。
-7. **方案文档**:`/Users/nekoleamo/Documents/Plan/gah-国内升级镜像方案.md`(含方案矩阵、镜像落点对比、
+7. **线上已换源(2026-09-25,run `36143379656`)**:用户确认后跑 `workflow_dispatch { tag: v0.1.5,
+   mirror_base: https://gh-proxy.com/ }` —— `rewrite-mirror` job 16s 全绿,平台与 merge job 正确跳过。
+   线上 `v0.1.5/latest.json` 现在两个平台的 `url` 均前置 `https://gh-proxy.com/`,版本与 `pub_date`
+   未变、`signature` 未变(长度 420/432,前缀 `dW50cnVzdGVkIGNvbW1lbnQ6`),直连与代理读到同一份表,
+   表内 URL 实测 206 + 正确总长(25,943,227 B);**经代理全量下载的 sha256 与 GitHub 官方 asset digest
+   字节级一致**(`8601e73d…4e0f`)⇒ 内容未被改动,updater 的 ed25519 校验必然通过。⇒ **存量 0.1.5
+   点「检查更新」即走国内代理下载,不需重发版本**。回滚:`mirror_base=none`。
+8. **顺带修掉的并发缝隙**:`mirror_base` 模式原本会与打包/发布路径并发跑(平台 job 会重新打包、
+   `merge-upload` 会把**直链表**重传上去盖掉换源结果)⇒ 两个平台 job 与 merge job 都加
+   `inputs.mirror_base == ''` 前提,使只改写模式独占(提交 `a8c83da`;本地 `ruby -ryaml` 校验
+   四个 job 的 `if` 表达式)。
+9. **方案文档**:`/Users/nekoleamo/Documents/Plan/gah-国内升级镜像方案.md`(含方案矩阵、镜像落点对比、
    V1–V8 验证清单;用户口径:不额外花钱 ⇒ 排除对象存储与第三方付费平台)。
 
 ### 第五十八批 · 回合内转向(steering):运行中 Enter 加入当前回合(2026-09-24)
