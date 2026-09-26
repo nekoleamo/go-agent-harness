@@ -54,6 +54,7 @@ type Plugin interface {
 | `ctx.confirm` | ui-tui-app | 危险操作 y/n 确认(无实现 = 安全拒绝)
 | `ctx.notices` | host-notices | 提示通道(见 §2.9):发布/回填用户提示,不进会话记录 |
 | `ctx.commands` | host-commands | 斜杠命令注册表:Register/List/Get;TUI 提示/分发/help 动态来自本表 |
+| `ctx.turnControl` | host-agent-loop | 回合控制:取消(Esc / `/api/control` 共用入口)+ **转向**。转向走**可选能力接口** `sdk.TurnSteerer`(`Steer(text) bool`):实现了才能注入,未实现则调用方回落「排队待发」—— 与 `SandboxSync` / `MultiProviderService` 同一种能力探测模式,插件不应 import 提供方 |
 
 **给插件加斜杠命令**(如 host-jobs 注册 `/jobs`):Start 内**可选注入** `_ = c.Inject("ctx.commands", &cmds)`(未装配=无 TUI 场景,跳过不报错——与沙箱可选注入同模式),随后 `cmds.Register(CommandSpec{Name, Usage, Desc, Run})`;Run 返回**输出文本 + error**(输出由 TUI 显示为 meta 行);返回 Disposer 随插件卸载撤销命令;**同名冲突被拒绝**(先到先得,非静默)。插件命令自动进入 `/` 选项列表与 `/help`。
 
