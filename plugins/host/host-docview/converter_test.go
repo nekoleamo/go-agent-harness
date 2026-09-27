@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nekoleamo/go-agent-harness/internal/kernelsandbox"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -494,7 +495,8 @@ func TestConverterRealExecPATHShim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"--headless", "--norestore", "--convert-to pdf", "--outdir", src} {
+	for _, want := range []string{"--headless", "--norestore", "--convert-to pdf", "--outdir", src,
+		"-env:UserInstallation=file://"} {
 		if !strings.Contains(string(argv), want) {
 			t.Errorf("argv 应含 %q,实际 %q", want, strings.TrimSpace(string(argv)))
 		}
@@ -533,5 +535,46 @@ func TestConverterRealExecPATHShim(t *testing.T) {
 	if _, err := conv.convertToPDF(context.Background(), src, fi); err == nil ||
 		!strings.Contains(err.Error(), "未产出 PDF") {
 		t.Errorf("无产物应显式报错,得 %v", err)
+	}
+}
+
+// TestConverterSandboxSpec 转换器内核包装的判据(档位/白名单/开关),不依赖平台能力。
+func TestConverterSandboxSpec(t *testing.T) {
+	sp := converterSandboxSpec("/tmp/x-cache")
+	if sp.Mode != sdk.SandboxReadOnly {
+		t.Errorf("档位应为 read-only(只需写自己缓存),得 %q", sp.Mode)
+	}
+	if sp.Switch != docConverterSandboxEnv {
+		t.Errorf("关闭开关名应为 %q,得 %q", docConverterSandboxEnv, sp.Switch)
+	}
+	if sp.Jail == "" {
+		t.Error("缺 jail 锚点 ⇒ Linux 侧整包装会失败")
+	}
+	if len(sp.RW) == 0 || sp.RW[0] != "/tmp/x-cache" {
+		t.Errorf("转换缓存目录必须在白名单首位(它是唯一属于本模块的写落点),得 %v", sp.RW)
+	}
+	// 显式关闭:不施加(其他四道门由 internal/kernelsandbox 的测试钉住)
+	t.Setenv(docConverterSandboxEnv, "0")
+	if pre := converterSandboxPrefix("/tmp/x-cache"); len(pre) != 0 {
+		t.Errorf("开关置 0 时应不施加,得 %v", pre)
+	}
+	// darwin 上默认应真的施加(否则就是静默降级);已在内核沙箱内(祖先施加)时按设计放行不施加。
+	t.Setenv(docConverterSandboxEnv, "")
+	if runtime.GOOS == "darwin" && !kernelsandbox.Marked() {
+		if pre := converterSandboxPrefix("/tmp/x-cache"); len(pre) == 0 {
+			t.Error("darwin 上未施加内核包装(检查 /usr/bin/sandbox-exec 是否可用)")
+		}
+	}
+}
+
+// TestLoProfileURL -env:UserInstallation 的 URI 形态(Windows 盘符需多一个斜杠)。
+func TestLoProfileURL(t *testing.T) {
+	if got := loProfileURL(filepath.Join(string(filepath.Separator), "tmp", "lo")); got != "file:///tmp/lo" {
+		t.Errorf("POSIX 形态应为 file:///…,得 %q", got)
+	}
+	if runtime.GOOS == "windows" {
+		if got := loProfileURL(`C:\Users\x\lo`); got != "file:///C:/Users/x/lo" {
+			t.Errorf("Windows 应为 file:///C:/…,得 %q", got)
+		}
 	}
 }

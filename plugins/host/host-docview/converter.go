@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nekoleamo/go-agent-harness/internal/kernelsandbox"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -29,6 +30,9 @@ const (
 	converterMaxOut  = 200 << 20 // 转换产物上限(超过视为异常,拒绝)
 	converterKeepFor = 7 * 24 * time.Hour
 	converterLogTail = 400 // 失败时带入的 stderr 尾巴长度
+
+	// docConverterSandboxEnv 文档转换器内核沙箱的关闭开关(默认开;C1-a)。
+	docConverterSandboxEnv = "GAH_DOC_CONVERTER_SANDBOX"
 
 	// RST-1 光栅预算:DPI 安全区间 + 单页 PNG 上限。
 	rasterMinDPI   = 36
@@ -59,13 +63,46 @@ func cacheDirPath(home string) string {
 
 // newConverter 探测 PATH 可用转换器(enabled 仅决定是否允许调用,不影响探测)。
 func newConverter(enabled bool, home string) converter {
-	return converter{
+	cdir := cacheDirPath(home)
+	c := converter{
 		enabled:  enabled,
 		soffice:  findExecutable("soffice", "libreoffice"),
 		pdftoppm: findExecutable("pdftoppm"),
-		cacheDir: cacheDirPath(home),
-		run:      runExternal,
+		cacheDir: cdir,
 	}
+	// 默认执行器绑定转换缓存目录:它是内核白名单里唯一属于本模块的写落点。
+	c.run = func(ctx context.Context, bin string, args ...string) error {
+		return runExternal(ctx, cdir, bin, args...)
+	}
+	return c
+}
+
+// converterSandboxSpec 转换器的内核包装判据(单独成函数便于平台无关断言;与 mcp-bridge 的
+// kernelSpec/mcpArgv 拆分同形)。档位固定 read-only:RW 里的路径在任何档位都可写
+// (darwinProfile 的写白名单与档位无关),而转换器只需要"写自己缓存 + 系统临时",
+// 把 workspace 根放进来没有必要(也不该 —— 它不往那里写)。
+func converterSandboxSpec(cacheDir string) kernelsandbox.Spec {
+	return kernelsandbox.Spec{
+		Mode:   sdk.SandboxReadOnly,
+		Jail:   kernelsandbox.EnsureJailDir(),
+		RW:     append([]string{cacheDir}, kernelsandbox.DefaultRWPaths()...),
+		Switch: docConverterSandboxEnv,
+		Label:  "文档转换器",
+	}
+}
+
+// converterSandboxPrefix 文档转换器的内核包装前缀(空 = 本次不施加)。
+func converterSandboxPrefix(cacheDir string) []string {
+	return kernelsandbox.Wrap(converterSandboxSpec(cacheDir))
+}
+
+// loProfileURL LibreOffice 的 `-env:UserInstallation` 取值(必须是 file:// URI)。
+func loProfileURL(dir string) string {
+	p := filepath.ToSlash(dir)
+	if len(p) > 1 && p[1] == ':' { // Windows 盘符:C:/… → file:///C:/…
+		return "file:///" + p
+	}
+	return "file://" + p
 }
 
 // findExecutable 在 PATH 中找第一个可用可执行文件(找不到返回空)。
@@ -194,7 +231,12 @@ func (c converter) convertToPDF(ctx context.Context, abs string, fi os.FileInfo)
 
 	cctx, cancel := context.WithTimeout(ctx, converterTimeout)
 	defer cancel()
+	profile := filepath.Join(tmp, "lo-profile")
 	if err := c.run(cctx, c.soffice,
+		// LibreOffice 必须有可写的用户配置目录,默认落 $HOME/Library|.config —— 包装下会被内核拒
+		// ("User installation could not be completed")。指到本次转换的临时目录(随 tmp 一起删),
+		// 顺带避开与用户自己在跑的 LibreOffice 抢单实例锁。
+		"-env:UserInstallation="+loProfileURL(profile),
 		"--headless", "--norestore", "--convert-to", "pdf", "--outdir", tmp, abs); err != nil {
 		return "", fmt.Errorf("soffice 转换失败: %w", err)
 	}
@@ -258,10 +300,22 @@ func (c converter) pruneCache() {
 }
 
 // runExternal 默认执行器:捕获输出,失败时把 stderr/stdout 尾巴带进错误。
-func runExternal(ctx context.Context, bin string, args ...string) error {
-	cmd := exec.CommandContext(ctx, bin, args...)
+//
+// 内核层(2026-09-27 审计 C1-a):LibreOffice/pdftoppm 吃的是**不可信文档**(网页下载/附件),
+// 却是 `exec.CommandContext` 直起 ⇒ 落在路径裁决面之外(与 A3/A3b 的 MCP server / 外部插件同构)。
+// 故同口径套 kernelsandbox.Wrap:白名单 = 本模块转换缓存 + $GAH_HOME/jail + 系统临时/包管理器缓存;
+// 不可用时告警降级(只靠协作层),排障可 GAH_DOC_CONVERTER_SANDBOX=0 关。
+func runExternal(ctx context.Context, cacheDir, bin string, args ...string) error {
+	pre := converterSandboxPrefix(cacheDir)
+	argv := kernelsandbox.PrefixedArgv(pre, bin, args...)
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	// 凭据隔离:外部转换器(libreoffice/pdftoppm)只需基础运行环境,不继承宿主配置与凭据
 	cmd.Env = sdk.SanitizedChildEnv()
+	if len(pre) > 0 {
+		// 标记已在内核沙箱内:转换器自己再起的子进程(LibreOffice 会 fork)不得重复施加
+		// (seatbelt/Landlock 均不可嵌套)。
+		cmd.Env = append(cmd.Env, kernelsandbox.MarkerEnv+"=1")
+	}
 	// 独立进程组 + WaitDelay:转换器(shell 脚本包装)派生的孙进程持住 stdout 管道时
 	// Run 会永久阻塞(预览请求挂死、ctx 超时也解不开);组杀 + 超时兜底。
 	setProcessGroup(cmd)

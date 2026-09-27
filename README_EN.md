@@ -385,6 +385,7 @@ The data root is **the `gah-data/` sibling of the gah binary (the only one; auto
 | `DEEPSEEK_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | LLM keys (per-provider prefix routing; or write to provider.yaml via `/provider`) |
 | `EXA_API_KEY` | web_search key (default provider; switch via `data.provider`) |
 | `GAH_WEB_ALLOW_PRIVATE` | `1` allows `web_fetch` to reach **private/loopback/link-local** addresses (denied by default: the URL comes from the model, so this blocks model-induced reads of unauthenticated local services and the cloud metadata endpoint `169.254.169.254`; turn it on for local dev servers or when your egress **is a local HTTP proxy** — the guard then sees the proxy address and does not exempt it) |
+| `GAH_DOC_CONVERTER_SANDBOX` | `0` disables the **kernel sandbox around the document-converter subprocess** (LibreOffice/`pdftoppm`; on by default because it consumes untrusted documents — downloads and attachments; allow-list = the conversion cache + `$GAH_HOME/jail/**` + system temp, tier fixed at read-only. External converters themselves are off by default: see `data.external_converters`) |
 
 ### MCP (bridge client / serve form)
 

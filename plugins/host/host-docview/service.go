@@ -276,6 +276,16 @@ func truthy(v any) bool {
 func envBool(key string) bool { return truthy(os.Getenv(key)) }
 
 // Budget 返回生效预算(web 端点/工具展示与单测用)。
+// guardPanic 把解析/渲染期的 panic 转成显式错误(2026-09-27 审计 C1-c)。
+//
+// 工具执行外层本来就有 recover(agentloop),但那只保证“工具不可用”且丢掉上下文;
+// 文档解析面(10k+ 行 zip/xml/wasm,输入全是不可信字节)值得在这里就把崩溃收成可解释错误。
+func guardPanic(op string, errp *error) {
+	if p := recover(); p != nil {
+		*errp = fmt.Errorf("文档%s内部错误(已拦截崩溃,请上报):%v", op, p)
+	}
+}
+
 func (s *Service) Budget() Budget { return s.budget }
 
 // Resolver 返回路径解析器(UI 层文件树复用同一策略)。
@@ -367,7 +377,8 @@ func (s *Service) Detect(ctx context.Context, req sdk.DocRequest) (sdk.DocFormat
 }
 
 // Preview 富预览(带缓存)。
-func (s *Service) Preview(ctx context.Context, req sdk.DocRequest) (*sdk.DocView, error) {
+func (s *Service) Preview(ctx context.Context, req sdk.DocRequest) (view *sdk.DocView, err error) {
+	defer guardPanic("预览", &err) // C1-c:第三方文档解析面(10k+ 行 zip/xml/wasm)不允许 panic 逃逸
 	ctx, cancel := context.WithTimeout(ctx, s.budget.Timeout)
 	defer cancel()
 
@@ -423,7 +434,8 @@ func (s *Service) Asset(ctx context.Context, req sdk.DocRequest, assetID string)
 // Raster 光栅化 PDF 页(D6-1a/RST-1;实现 sdk.DocRasterService)。
 // 未启用/无 pdftoppm → ErrDocUnsupported;页越界 → ErrDocNotFound;产物超限 → ErrDocTooLarge。
 // 外部后端缺失而走内置兜底时,兜底失败的错误会点明「缺 poppler」与替代做法(见下)。
-func (s *Service) Raster(ctx context.Context, req sdk.DocRequest, page, dpi int) (*sdk.DocRaster, error) {
+func (s *Service) Raster(ctx context.Context, req sdk.DocRequest, page, dpi int) (rast *sdk.DocRaster, err error) {
+	defer guardPanic("光栅化", &err) // C1-c:同 Preview(解析 + wasm/pdfium 两面)
 	ctx, cancel := context.WithTimeout(ctx, s.budget.Timeout)
 	defer cancel()
 	abs, fi, err := s.prepare(req, true)

@@ -376,6 +376,7 @@ patch-*.yaml            # 按 id 替换/插入/启停条目(随时插拔)
 | `DEEPSEEK_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | LLM 密钥(可按 provider 前缀路由;或经 `/provider` 写入 provider.yaml) |
 | `EXA_API_KEY` | web_search 联网搜索密钥(默认提供商;也可 `data.provider` 换其它) |
 | `GAH_WEB_ALLOW_PRIVATE` | `1` = 放行 `web_fetch` 抓**内网/环回/链路本地**地址(默认**拒**:抓取的 URL 来自模型,防它被诱导去读本机未鉴权服务与云元数据端点 `169.254.169.254`;本地开发服务或**经本地 HTTP 代理**上网时需要打开——后者守卫看到的拨号目标是代理地址,不豁免) |
+| `GAH_DOC_CONVERTER_SANDBOX` | `0` = 关闭**文档转换器(LibreOffice/pdftoppm)子进程的内核级沙箱**(默认开启:它吃的是不可信文档——网页下载/附件;白名单 = 转换缓存 + `$GAH_HOME/jail/**` + 系统临时目录,档位固定 read-only;外部转换器本身默认关:见 `data.external_converters`) |
 
 ### MCP 接入(桥 client / serve 形态)
 

@@ -400,3 +400,21 @@ func TestAssetConcurrentAccess(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestGuardPanic 解析/渲染期的 panic 必须被转成显式错误(C1-c;把 recover 删掉即红)。
+func TestGuardPanic(t *testing.T) {
+	var err error
+	func() {
+		defer guardPanic("预览", &err)
+		panic("boom")
+	}()
+	if err == nil || !strings.Contains(err.Error(), "已拦截崩溃") {
+		t.Fatalf("panic 应被转成显式错误,得 %v", err)
+	}
+	// 无 panic 时不得污染返回值
+	err = nil
+	func() { defer guardPanic("预览", &err) }()
+	if err != nil {
+		t.Fatalf("无 panic 时不应产生错误,得 %v", err)
+	}
+}

@@ -39,6 +39,13 @@ var initExports = []string{"PDFiumExt_Init", "PDFium_Init", "FPDF_InitLibrary"}
 // ErrNotPDFium 传入字节不是 pdfium wasm(缺关键导出)。
 var ErrNotPDFium = errors.New("pdfium: 缺少必要导出(FPDF_LoadMemDocument/FPDF_RenderPageBitmap)")
 
+// pdfiumMemLimitPages wasm 内存页上限(1 页 = 64 KiB)。
+//
+// 取 4096 页 = 256 MiB:足够放下 8192×8192 的 RGBA 位图(67M px × 4 B ≈ 268 MB 会正好撞上限,
+// 故常规页面 + ≤300 dpi(见 rasterMaxDPI)远在额度内),同时把"畸形文档把宿主推到 4 GiB 后被 OOM
+// 杀掉"变成"渲染显式失败"。上限是硬限:超了报错,不静默降级。
+const pdfiumMemLimitPages = 4096
+
 // Renderer 一个已初始化(库 Init 已调用)的 pdfium 实例。
 // 非并发安全:调用方(host-docview)以互斥方式串行使用。
 type Renderer struct {
@@ -57,7 +64,12 @@ type Renderer struct {
 // New 编译 + 实例化 + 初始化 pdfium wasm。
 func New(ctx context.Context, wasm []byte) (*Renderer, error) {
 	r := &Renderer{fn: map[string]api.Function{}}
-	rt := wazero.NewRuntime(ctx)
+	// 上下文取消 + 内存上限(2026-09-27 审计 C1-b):默认 `NewRuntime(ctx)` 只绑定 ctx 而**不**
+	// 中断 guest(wazero 默认 ensureTermination=false)—— 恶意/畸形 PDF 让 wasm 内死循环/超长渲染时,
+	// ctx 超时形同虚设;内存侧默认是 wasm32 全地址空间 4 GiB。两者都是不可信文档能直接推到极值的量。
+	rt := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfig().
+		WithCloseOnContextDone(true).
+		WithMemoryLimitPages(pdfiumMemLimitPages))
 	r.rt = rt
 	compiled, err := rt.CompileModule(ctx, wasm)
 	if err != nil {
