@@ -369,6 +369,9 @@ patch-*.yaml            # 按 id 替换/插入/启停条目(随时插拔)
 | `GAH_EXT_KERNEL_SANDBOX` | `0` = 关闭**MCP server 的内核级沙箱**(默认开启:MCP server 是第三方代码,只经工具参数的无路径裁决对它毫无约束——它自己选定的 DB/缓存/临时文件落点完全看不见;故起进程时按同一套 seatbelt/Landlock 包装限制文件写,白名单 = 有效档允许的 workspace 根 + `$GAH_HOME/jail/**` + 包管理器缓存与系统临时目录) |
 | `GAH_EXT_RW_PATHS` | 追加给 MCP server 的**可写路径**(冒号分隔):server 需要写自己的数据目录(如 `~/Library/Application Support/<app>`)时在此点名;默认白名单只含缓存与临时区,不猜应用数据目录 |
 | `GAH_EXT_CRED_READ_DENY` | `1` = 开启**MCP server 的内核层凭据读拒绝**(默认**关**:读凭据目录是 server 的正当职责,默认拒会大面积打断;只拒目录不拒文件,同 `GAH_SHELL_CRED_READ_KERNEL`,仅 macOS 有等价能力) |
+| `GAH_EXT_PLUGIN_SANDBOX` | `0` = 关闭**外部插件进程的内核级沙箱**(默认开启:插件进程是独立代码,协作层只看得见经工具参数传入的路径,它自己选定的写落点看不见;白名单 = 有效档允许的 workspace 根 + `$GAH_HOME/jail/**` + 包管理器缓存与系统临时目录 + 插件**自报**的数据目录) |
+| `GAH_EXT_PLUGIN_RW_PATHS` | 追加给**外部插件进程**的可写路径(冒号分隔):第三方插件要写自己的数据目录/DB 时在此点名;自研插件请改用能力自报(`DataWrites`) |
+| `GAH_EXT_PLUGIN_CRED_READ_DENY` | `1` = 开启**外部插件进程的内核层凭据读拒绝**(默认**关**,同 MCP server 那一条的理由;仅 macOS 有等价能力) |
 | `GAH_MCP_SERVE` / `GAH_PLUGIN` / `GAH_VERSION` | 外部进程工具入口参数(serve/加载插件/版本通告;由 host-bridge 拉起时注入) |
 | `DEEPSEEK_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | LLM 密钥(可按 provider 前缀路由;或经 `/provider` 写入 provider.yaml) |
 | `EXA_API_KEY` | web_search 联网搜索密钥(默认提供商;也可 `data.provider` 换其它) |
@@ -376,6 +379,8 @@ patch-*.yaml            # 按 id 替换/插入/启停条目(随时插拔)
 ### MCP 接入(桥 client / serve 形态)
 
 > **MCP server 按内核沙箱起**(2026-09-27 审计 A3):server 是第三方代码,而路径裁决只看得到经 `mcp_*` 工具传入的参数 —— 它自己选定的 DB/缓存/临时落点完全看不见。故宿主按**当前有效档位**把它起在 seatbelt(macOS)/Landlock(Linux)包装里:白名单 = 有效档允许的 workspace 根 + `$GAH_HOME/jail/**` + 包管理器缓存与系统临时目录(实测:`npx` 类 server 少了缓存白名单会直接起不来)。需要写自己的数据目录时 `GAH_EXT_RW_PATHS=/path/a:/path/b` 点名;`GAH_EXT_KERNEL_SANDBOX=0` 整体关闭;`GAH_EXT_CRED_READ_DENY=1` 额外拒凭据目录的读(默认关)。
+>
+> **外部插件进程同样在作用面内**(2026-09-27 审计 A3b):`tool-mcp`/`tool-workflow`/`tool-subagent` 与第三方插件进程整体被包装(同一套白名单 + 插件**自报**的数据目录),插件自己再起的子进程继承该 profile(不再重复施加 —— 内核沙箱不可嵌套)。插件若**自己按调用施加**内核沙箱(如 `tool-basic`:它每次调用给 shell 套),必须经 `bridge.ServeToolsWith(..., Capabilities{SandboxProvider:true})` 声明,宿主据此**不**包裹它(套上会让它按调用再套时失败);已加载插件在档位/工作根变更后,**下一次调用会被显式拒绝并触发按新档位重建**(不拿旧 profile 继续跑)。声明方式与可写集见 `docs/PLUGIN_DEV.md`。
 
 两种配法(优先级:配置文件 > 环境变量;GUI 改的是配置文件):
 

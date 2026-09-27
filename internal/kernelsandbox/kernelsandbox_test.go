@@ -143,3 +143,22 @@ func TestMarkerSemantics(t *testing.T) {
 		t.Fatal("MarkerEnv=0 不应视为已在内核沙箱内")
 	}
 }
+
+// TestEnsureJailDirCreatesAnchor Linux 侧 bootstrap 把 jail 当“硬边界”路径(不存在 → add_rule 失败
+// → 整个包装失败),所以独立进程入口(MCP server / 外部插件)必须能在 jail 尚未存在时把它建出来。
+func TestEnsureJailDirCreatesAnchor(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GAH_HOME", home)
+	got := EnsureJailDir()
+	if want := filepath.Join(home, "jail"); got != want {
+		t.Fatalf("应返回数据根下的 jail: got=%s want=%s", got, want)
+	}
+	fi, err := os.Stat(got)
+	if err != nil || !fi.IsDir() {
+		t.Fatalf("jail 应被建出来: err=%v", err)
+	}
+	// 幂等:已存在时再次调用仍返回同一路径且不报错
+	if again := EnsureJailDir(); again != got {
+		t.Fatalf("重复调用不应改变结果: %s", again)
+	}
+}

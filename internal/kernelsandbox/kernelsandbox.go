@@ -129,6 +129,23 @@ func Wrap(spec Spec) []string {
 	return platformWrap(spec)
 }
 
+// EnsureJailDir 确保临时区锚点存在并返回它。
+//
+// 为何单独一个函数:Linux 侧 bootstrap 把 jail 当"硬边界"加入规则,路径不存在 →
+// `landlock_add_rule` 失败 → 整个包装失败(进程 exit 126)。而**独立进程**入口
+// (MCP server / 外部插件)可能在 jail 首次使用前就启动(干净数据根),不能把"目录还没建"
+// 当成配置错。shell 路径不靠它:shell 自己有 jailEnv(先建好再包),且"首条命令才建 jail"
+// 是一条被测试钉住的语义(见 tool-shell kernel_test)。
+//
+// 失败只返回路径不报错:是否致命交给平台分支的硬规则判定(单一判据点)。
+func EnsureJailDir() string {
+	d := sdk.JailDir()
+	if strings.TrimSpace(d) != "" {
+		_ = os.MkdirAll(d, 0o700)
+	}
+	return d
+}
+
 // PrefixedArgv 拼接包装与真实命令。
 //
 // 必须用新底层数组:`append(pre, name)` 会在 pre 有余量时就地覆写调用方持有的切片 ——

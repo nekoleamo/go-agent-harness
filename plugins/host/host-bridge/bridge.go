@@ -134,18 +134,24 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 //
 // 现取不缓存:policy-guard 可能晚于本插件启动(装配顺序无保证),且档位运行中可变。
 func (b *Bridge) sandboxEnv() []string {
-	if b.hostCtx == nil {
-		return nil
-	}
-	var sbx sdk.Sandbox
-	if err := b.hostCtx.Inject("ctx.sandbox", &sbx); err != nil || sbx == nil {
-		return nil
-	}
-	mode := string(sbx.Mode())
+	mode, root := b.sandboxModeRoot()
 	if mode == "" {
 		return nil
 	}
-	return []string{"GAH_EXT_SANDBOX_MODE=" + mode, "GAH_EXT_SANDBOX_ROOT=" + sbx.Root()}
+	return []string{"GAH_EXT_SANDBOX_MODE=" + mode, "GAH_EXT_SANDBOX_ROOT=" + root}
+}
+
+// sandboxModeRoot 当前有效档位与工作根(无沙箱宿主/未联动 → 双双为空)。
+// 现取不缓存 —— 启动注入与调用前陈旧性判定共用同一事实源(见 pluginsandbox.go)。
+func (b *Bridge) sandboxModeRoot() (mode, root string) {
+	if b.hostCtx == nil {
+		return "", ""
+	}
+	var sbx sdk.Sandbox
+	if err := b.hostCtx.Inject("ctx.sandbox", &sbx); err != nil || sbx == nil {
+		return "", ""
+	}
+	return string(sbx.Mode()), sbx.Root()
 }
 
 // extEntry 一个外部插件进程条目(可承载多工具 + 多命令)。
@@ -157,6 +163,13 @@ type extEntry struct {
 	client    *rpc.Client
 	proto     int // 0 未知 / 1 旧单工具协议 / 2 新多工具协议
 	respawnAt time.Time
+	// wrapped 本进程是否被内核沙箱包装 + 包装时的档位/根快照:运行期档位变化时
+	// 必须重载(profile 是启动时静态串),见 sandboxStale。
+	wrapped  bool
+	wrapMode string
+	wrapRoot string
+	// reloadAt 档位变更触发的重载节流(与 respawnAt 同一纪律:防抖动风暴)。
+	reloadAt time.Time
 }
 
 // Bridge 外部插件目录管理(扫描/重载/关闭/崩溃拉起)。
@@ -243,11 +256,24 @@ func (b *Bridge) loadEntries() error {
 
 // loadOne 启动外部插件进程并组装条目(定义枚举 + 协议探测)。
 func (b *Bridge) loadOne(path string) (*extEntry, error) {
-	cl, killFn, se, err := startPlugin(path, b.cbAddr, b.cbToken, b.sandboxEnv())
+	// 能力自报探测必须在 exec **之前**(包装 argv 只能那时定):探到 SandboxProvider 就不套,
+	// 否则套上会让它自己按调用施加时嵌套失败(阻断 ①)。探测失败 = 未声明 = 按普通插件包装。
+	caps, capsKnown := probeCapabilities(path)
+	dataWrites := b.validDataWrites(path, caps.DataWrites)
+	argv, extraEnv, wrapped := b.wrapPluginArgv(path, caps, capsKnown, dataWrites)
+	wrapMode, wrapRoot := b.sandboxModeRoot()
+	switch {
+	case capsKnown && caps.SandboxProvider:
+		b.logInfo("host-bridge: 外部插件自报内核沙箱提供者(按调用自施加),宿主不包裹", "path", path)
+	case wrapped:
+		b.logInfo("host-bridge: 外部插件已施加内核沙箱", "path", path, "mode", sbDesc(wrapMode))
+	}
+	cl, killFn, se, err := startPlugin(argv, b.cbAddr, b.cbToken, append(b.sandboxEnv(), extraEnv...))
 	if err != nil {
 		return nil, err
 	}
-	e := &extEntry{client: cl, kill: killFn, unreg: func() {}, tools: map[string]*toolRPCClient{}}
+	e := &extEntry{client: cl, kill: killFn, unreg: func() {}, tools: map[string]*toolRPCClient{},
+		wrapped: wrapped, wrapMode: wrapMode, wrapRoot: wrapRoot}
 	// 协议探测:新协议(Definitions)优先,旧单工具协议回退;
 	// 纯命令插件(cmd-*,无工具)可经 Commands 单独满足加载条件
 	raw := ""
@@ -578,8 +604,10 @@ func externalEnvPass() []string {
 	return out
 }
 
-func startPlugin(bin string, cbAddr, cbToken string, extraEnv []string) (*rpc.Client, func(), *pluginStderr, error) {
-	cmd := exec.Command(bin)
+func startPlugin(argv []string, cbAddr, cbToken string, extraEnv []string) (*rpc.Client, func(), *pluginStderr, error) {
+	// argv[0] = 插件本体(可能已被内核沙箱包装器包着,见 pluginsandbox.go)。
+	bin := argv[0]
+	cmd := exec.Command(bin, argv[1:]...)
 	// 凭据隔离:外部插件进程不继承宿主凭据(滤除 *_API_KEY/*_TOKEN/AWS_* 等;GAH_* 宿主配置与
 	// PATH/HOME 等基础键保留),回调通道凭据 GAH_CB_* 仅注入给插件本体,由 sdk.SanitizedEnv 拦在下游。
 	// 确需凭据的插件由用户在 gah-data/env.sh 里经 GAH_EXT_ENV_PASS 显式点名放行。
@@ -829,6 +857,11 @@ func (t *toolRPCClient) Definition() sdk.ToolDefinition {
 }
 
 func (t *toolRPCClient) Execute(ctx context.Context, args string) (any, error) {
+	// 档位陈旧 = fail-closed:插件进程的 profile 是启动时静态串,档位/根变了必须先重载
+	// (见 pluginsandbox.go)。放在最前:拿不拿得到 client 都要先把"旧档不跑"说清楚。
+	if msg, stale := t.br.sandboxStale(t.path); stale {
+		return map[string]any{"error": msg}, nil
+	}
 	cl := t.br.clientFor(t.path)
 	if cl == nil {
 		return map[string]any{"error": "外部插件重建中(崩溃自动拉起)"}, nil
@@ -941,6 +974,10 @@ func (c *commandRPCClient) spec() sdk.CommandSpec {
 // run 命令执行(宿主 TUI 线程同步 + RPC 超时保护:死进程/慢命令不阻塞 UI;
 // 输出文本+结构化错误,连接错误触发自动拉起)。
 func (c *commandRPCClient) run(args []string) (string, error) {
+	// 与工具调用同一口径:被包装的插件档位变了就先重载并拒绝本次(见 pluginsandbox.go)。
+	if msg, stale := c.br.sandboxStale(c.path); stale {
+		return "", errors.New(msg)
+	}
 	cl := c.br.clientFor(c.path)
 	if cl == nil {
 		return "", errors.New("外部命令插件重建中(崩溃自动拉起)")

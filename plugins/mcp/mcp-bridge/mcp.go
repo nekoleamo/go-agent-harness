@@ -213,7 +213,7 @@ func kernelSpec() kernelsandbox.Spec {
 	spec := kernelsandbox.Spec{
 		Mode:           sdk.SandboxMode(os.Getenv("GAH_EXT_SANDBOX_MODE")),
 		Root:           os.Getenv("GAH_EXT_SANDBOX_ROOT"),
-		Jail:           sdk.JailDir(),
+		Jail:           kernelsandbox.EnsureJailDir(),
 		RW:             append(kernelsandbox.DefaultRWPaths(), kernelsandbox.RWPathsFromEnv(extRWPathsEnv)...),
 		Switch:         extKernelSandboxEnv,
 		Label:          "mcp-bridge(MCP server)",

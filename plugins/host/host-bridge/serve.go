@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"sort"
 	"sync"
 	"time"
@@ -26,7 +27,30 @@ const IdleMarker = "GAH_PLUGIN_IDLE:"
 // 可选变参 commands(命令名→实现,M14 外部命令桥):外部插件可同时提供工具与命令;
 // 不传命令 = 纯工具插件(旧行为不变)。
 // 握手标识 GAH_PLUGIN=gah-external-tool 缺失即拒绝启动(防误跑;由 ServeRPC 校验)。
+//
+// 能力自报(2026-09-27 审计 A3):需要声明能力时用 ServeToolsWith —— 这是**唯一**让宿主
+// 知道「要不要/能不能套沙箱」的通道(宿主不能靠猜:套错就是全插件不可用)。
 func ServeTools(tools map[string]sdk.Tool, commands ...map[string]sdk.CommandSpec) {
+	ServeToolsWith(tools, Capabilities{}, commands...)
+}
+
+// ServeToolsWith 同 ServeTools,但顺带声明能力(2026-09-27 审计 A3)。
+//
+// 为何是两个函数而不是给 ServeTools 再加一个变参:`commands` 本身已是变参 map,
+// 再添一个变参会让 `ServeTools(tools, cmds, caps)` 的写法可能被误读成「两个命令表」。
+// 不声明能力的插件继续用 ServeTools(与既有二进制/文档兼容)。
+//
+// Capabilities 经宿主 `Plugin.Capabilities` RPC 读取;旧宿主不会调该 RPC —— 不影响插件自身行为。
+func ServeToolsWith(tools map[string]sdk.Tool, caps Capabilities, commands ...map[string]sdk.CommandSpec) {
+	// 能力自报探测(宿主在 exec 前跑):打印 JSON 即退出,不进 RPC、不建回调、不注册工具。
+	// 必须在一切初始化**之前**判断 —— 探测进程不是真身,不应产生副作用。
+	for _, a := range os.Args[1:] {
+		if a == CapsFlag {
+			b, _ := json.Marshal(caps)
+			os.Stdout.Write(b)
+			os.Exit(0)
+		}
+	}
 	if len(tools) == 0 && len(commands) == 0 {
 		log.Fatal("外部插件未提供任何工具或命令")
 	}
@@ -34,7 +58,23 @@ func ServeTools(tools map[string]sdk.Tool, commands ...map[string]sdk.CommandSpe
 	if len(commands) > 0 {
 		cmds = commands[0]
 	}
-	ServeRPC(newToolServer(tools, cmds))
+	s := newToolServer(tools, cmds)
+	s.caps = caps
+	ServeRPC(s)
+}
+
+// Capabilities 外部插件对宿主自报的能力(与宿主侧 pluginCaps 字段一一对应)。
+//
+// 字段**故意只有两个**:多一个旋钮就多一处漂移。两项都是「声明即事实」,宿主负责校验
+// (DataWrites 来自被约束方,越权声明必须被丢弃,见 bridge.validDataWrites)。
+type Capabilities struct {
+	// SandboxProvider = 「我自己按调用施加内核沙箱」(典型:shell 提供者)。
+	// 宿主要因此**不**包装本进程:seatbelt/Landlock 不可嵌套,套上会让本插件按调用再套时
+	// `sandbox_apply: Operation not permitted` → 整个插件不可用(2026-09-27 spike 实证)。
+	SandboxProvider bool `json:"sandbox_provider,omitempty"`
+	// DataWrites 需要直接写的数据根**直接子目录名**(如 `memory`/`todos`;相对 sdk.Home())。
+	// 只允许直接子目录名且不得落在保留集(config/plugins/ui-plugins),否则宿主丢弃该项。
+	DataWrites []string `json:"data_writes,omitempty"`
 }
 
 // newToolServer 构造协议服务端(单一构造点:running 表必须在这里初始化,
@@ -47,6 +87,8 @@ func newToolServer(tools map[string]sdk.Tool, commands map[string]sdk.CommandSpe
 type toolServer struct {
 	tools    map[string]sdk.Tool
 	commands map[string]sdk.CommandSpec
+	// caps 插件自报能力(零值 = 未声明):宿主经 Capabilities RPC 读取。
+	caps Capabilities
 
 	// running 运行中的工具调用(CallID → cancel):宿主取消/超时经 Cancel RPC 中断。
 	mu      sync.Mutex

@@ -270,10 +270,15 @@ func main() {
 - 环境注入:`GAH_CB_ADDR`(宿主回调地址)+ `GAH_CB_TOKEN`(鉴权,回传校验)。
 - 可用:tools.execute/list、jobs.run/output、fanout.agent/parallel/pipeline;宿主未装配对应服务时返回显式错误(不静默)。
 
-**沙箱上下文注入(内核级写限制,2026-09-27 审计 A3)**
-- 环境注入:`GAH_EXT_SANDBOX_MODE`(宿主**有效**档位)+ `GAH_EXT_SANDBOX_ROOT`(工作区根);宿主未装配沙箱或无档位时**不注入**(插件必须按"未注入"处理,不得假定档位)。
-- 用途:插件进程拿不到 `ctx.sandbox` 服务,而它内部起的子进程需要这个信息才能施加内核沙箱 —— 典型是 MCP server(`mcp-bridge` 即经此施加 seatbelt/Landlock,见 `internal/kernelsandbox`)。
-- 纪律:宿主对**插件进程本身**目前**不施加**内核包装(两条结构性阻断见 `DESIGN.md` R10 ①),所以"自己会起子进程"的插件应主动按这两个变量处理子进程;裁决是**写**侧(读与网络不限),档位语义与 `sdk.SandboxMode` 一致。
+**沙箱上下文注入(内核级写限制,2026-09-27 审计 A3 / A3b)**
+- 环境注入:`GAH_EXT_SANDBOX_MODE`(宿主**有效**档位)+ `GAH_EXT_SANDBOX_ROOT`(工作区根);宿主未装配沙箱或无档位时**不注入**(插件必须按"未注入"处理,不得假定档位)。宿主也会给**被包装**的插件进程注入 `GAH_KERNEL_SANDBOXED=1` 作为"已在内核沙箱内"标记(后代不得重复施加)。
+- **宿主对插件进程本身施加内核包装(默认开,A3b)**:按当前有效档位把插件进程起在 seatbelt(macOS)/Landlock(Linux)里,白名单 = 有效档允许的 workspace 根 + `$GAH_HOME/jail/**` + 包管理器缓存与系统临时目录 + **插件自报**的数据目录;读与网络不限。开关:`GAH_EXT_PLUGIN_SANDBOX=0` 全局关、`GAH_EXT_PLUGIN_RW_PATHS` 追加写路径、`GAH_EXT_PLUGIN_CRED_READ_DENY=1` 开凭据读拒(默认关)。
+- **两种自报能力(`bridge.ServeToolsWith`)**:
+  - `SandboxProvider: true` —— "我自己按调用施加内核沙箱"(典型:shell 提供者)。宿主据此**不**包装本进程:内核沙箱不可嵌套,套上会让插件按调用再套时 `sandbox_apply: Operation not permitted` → 整个插件不可用。**自己会套子进程的插件必须声明这条**。
+  - `DataWrites: ["memory", "todos"]` —— 需要**直写**的数据根**直接子目录名**(相对 `$GAH_HOME`)。宿主校验后并入白名单:只接受直接子目录名,`config`/`plugins`/`ui-plugins`/绝对路径/`..`/嵌套一律**丢弃并记 ERROR**(声明来自被约束方,不能让它自行申请 `provider.yaml` 的写权)。不声明就只能写缓存/临时区/workspace;需要别的目录时用户用 `GAH_EXT_PLUGIN_RW_PATHS` 点名。
+  - 声明怎么被读到:宿主在 `exec` **之前**跑一次 `插件 --gah-caps`(短命探测,打印能力 JSON 后即退,不建 RPC/不调回调)—— 包装 argv 必须在 exec 前定下来,而 RPC 只能在进程起来后。**不实现 `--gah-caps` 也没关系**:探测失败 = 未声明 = 按普通插件包装(安全侧默认;旧插件不受影响)。
+- **档位/工作根变更 = fail-closed 重载**:被包装插件的 profile 是启动时的静态串,所以宿主在每次工具/命令调用前比较启动快照与当前档位/根;不一致就异步重建插件并**拒绝本次调用**(拿旧 profile 接着跑 = 宽切严时的一次真实越权写)。插件作者无需处理,但要知道:**切档/切工作区后对该插件的第一次调用会回一条"沙箱上下文已变更,请重新调用"**。
+- 纪律:裁决是**写**侧(读与网络不限),档位语义与 `sdk.SandboxMode` 一致;未声明能力的**第三方插件**需要白名单外的写时,只能由用户经 `GAH_EXT_PLUGIN_RW_PATHS` 点名;不提供 deny-list 型弱沙箱(与 A3 立意相反)。
 - 不可嵌套:被施加包装的进程会拿到 `GAH_KERNEL_SANDBOXED=1`,后代**不得**重复施加(seatbelt/Landlock 均不可嵌套,实测 `sandbox_apply: Operation not permitted`)——`internal/kernelsandbox.Wrap` 已内置该判定。
 
 **错误与退出语义(P3 软降级)**
@@ -283,7 +288,7 @@ func main() {
 
 **平台与构建(P4)**
 - 插件二进制必须与宿主同平台;`scripts/gen-extplugins.sh` 按发行矩阵(darwin/linux × amd64/arm64 + windows/amd64)构建,embed 分平台打包(主包每目标只嵌本平台产物)。
-- 需要限制子进程写入的插件:用根模块的 `internal/kernelsandbox`(**仅进程内插件可用**;外部插件只 import `sdk`,故只能自己实现或按上文的沙箱上下文变量处理)。
+- 需要限制子进程写入的插件:用根模块的 `internal/kernelsandbox`(**仅进程内插件可用**;外部插件只 import `sdk`,故只能经上文的沙箱上下文变量 + 自己实现——`tool-basic` 就是这样给 shell 施加的,并用 `SandboxProvider` 自报)。
 - 新增外部插件:加进脚本的 NAMES 列表 + catalogue 登记;构建链产物缺失时主包构建失败(防漏,勿手动删除 embed 产物目录)。
 
 **验收路径**
