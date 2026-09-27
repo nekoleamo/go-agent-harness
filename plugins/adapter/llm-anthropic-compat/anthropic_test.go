@@ -317,3 +317,18 @@ func TestConfigureSwitchesEndpointAndKey(t *testing.T) {
 		t.Errorf("Reset 应恢复全部默认,得 %q/%q", b, k)
 	}
 }
+
+// TestCompleteStreamSizeCap 端点无限推流时显式中止(安全审计 F5,与 openai 适配器同口径)。
+func TestCompleteStreamSizeCap(t *testing.T) {
+	var lines []string
+	chunk := strings.Repeat("x", 64<<10)
+	lines = append(lines, `{"type":"content_block_start","index":0,"content_block":{"type":"text"}}`)
+	for i := 0; i < 80; i++ { // 80 × 64 KiB = 5 MiB > maxCompletionSize(4 MiB)
+		lines = append(lines, fmt.Sprintf(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":%q}}`, chunk))
+	}
+	_, a, _ := sseServer(t, lines...)
+	_, err := a.Complete(context.Background(), &sdk.LLMRequest{Model: "test-model"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "上限") {
+		t.Fatalf("超限应显式报错,实际: %v", err)
+	}
+}

@@ -15,7 +15,7 @@ import (
 
 // NewTool 外部化工厂(P1):外部进程入口的工具实例。
 func NewTool() sdk.Tool {
-	return &WebTool{client: newHTTPClient()}
+	return &WebTool{client: newFetchClient()}
 }
 
 // Plugin 实现 tool-web。requires ctx.tools。
@@ -31,7 +31,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		return nil, err
 	}
 	client := newHTTPClient()
-	d1 := tools.Register(&WebTool{client: client})
+	d1 := tools.Register(&WebTool{client: newFetchClient()}) // 守卫只在 fetch 侧(见 httpclient.go)
 	name, _ := m.Data["provider"].(string)
 	if name == "" {
 		name = resolveFileProvider() // search.yaml 兜底(不依赖 bundle data)
@@ -55,9 +55,10 @@ type WebTool struct {
 
 func (t *WebTool) Definition() sdk.ToolDefinition {
 	return sdk.ToolDefinition{
-		Name:        "web_fetch",
-		TimeoutMs:   35_000, // 覆盖 host-bridge 默认 3s 桥超时(http client 30s)
-		Description: "抓取 URL 内容(纯 Go HTTP,无外部依赖):{url};返回状态码与文本/JSON 内容。",
+		Name:      "web_fetch",
+		TimeoutMs: 35_000, // 覆盖 host-bridge 默认 3s 桥超时(http client 30s)
+		Description: "抓取 URL 内容(纯 Go HTTP,无外部依赖):{url};返回状态码与文本/JSON 内容。" +
+			"默认拒绝环回/私网/链路本地地址(防 SSRF)。",
 		InputSchema: map[string]any{
 			"type":     "object",
 			"required": []any{"url"},
@@ -96,7 +97,7 @@ func (t *WebTool) Execute(ctx context.Context, raw string) (any, error) {
 	}
 	out := map[string]any{
 		"status": resp.StatusCode,
-		"url":    req.URL.String(),
+		"url":    finalURL(req, resp),
 	}
 	if ct := resp.Header.Get("Content-Type"); ct != "" {
 		out["content_type"] = ct
@@ -112,4 +113,16 @@ func (t *WebTool) Execute(ctx context.Context, raw string) (any, error) {
 		out["truncated"] = true // 超过 1MB 上限截断
 	}
 	return out, nil
+}
+
+// finalURL 返回最终落地 URL(重定向后可能已不是请求时的 URL)。
+// 安全审计 F3 附带项:只回显初始 URL 时,用户看不出内容真正来自哪里。
+func finalURL(req *http.Request, resp *http.Response) string {
+	if resp != nil && resp.Request != nil && resp.Request.URL != nil {
+		return resp.Request.URL.String()
+	}
+	if req != nil && req.URL != nil {
+		return req.URL.String()
+	}
+	return ""
 }

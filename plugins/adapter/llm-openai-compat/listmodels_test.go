@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -75,3 +76,26 @@ func TestListModelsHTTPError(t *testing.T) {
 var _ sdk.ModelLister = (*Adapter)(nil)
 var _ context.Context // 占位防误删 import(适配器 Complete 需用)
 var _ = http.MethodGet
+
+// TestListModelsBodyCap 端点返回超大响应时显式报错(安全审计 F5):
+// 成功路径此前无上限,被劫持/配错的端点可把进程内存推爆。
+func TestListModelsBodyCap(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"object":"list","data":[{"id":"`))
+		pad := make([]byte, 1<<20)
+		for i := range pad {
+			pad[i] = 'a'
+		}
+		for i := 0; i < 9; i++ { // 9 MiB > modelsMaxBody(8 MiB)
+			w.Write(pad)
+		}
+		w.Write([]byte(`"}]}`))
+	}))
+	defer ts.Close()
+	a := &Adapter{client: ts.Client(), baseURL: ts.URL, apiKey: "sk-test"}
+	_, err := a.ListModels()
+	if err == nil || !strings.Contains(err.Error(), "上限") {
+		t.Fatalf("超限应显式报错,实际: %v", err)
+	}
+}

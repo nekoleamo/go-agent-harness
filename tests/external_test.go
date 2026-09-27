@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -92,6 +94,39 @@ func buildExternalEnv(t *testing.T, dir string, extra ...config.Entry) (*ctx.Ctx
 	}
 	t.Cleanup(func() { reg.DisposeAll() })
 	return c, reg
+}
+
+// TestExternalWebFetchPrivateGuard 内网守卫在整个**发布路径**上生效(2026-09-27 安全审计 F3):
+// web_fetch 由外部插件进程(tool-basic,**embed 里的真实产物**)实现,所以这条 e2e 同时钉住
+// 「守卫在插件进程里也在」与「重生成的 embed 与源码一致」——单元测试只覆盖进程内路径。
+func TestExternalWebFetchPrivateGuard(t *testing.T) {
+	t.Parallel()
+	extDir := t.TempDir()
+	releaseExt(t, extDir, "tool-basic")
+	c, _ := buildExternalEnv(t, extDir)
+
+	var tools sdk.ToolRegistry
+	if err := c.Inject("ctx.tools", &tools); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := tools.Get("web_fetch"); !ok {
+		t.Fatal("外部工具 web_fetch 应已注册")
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("INTERNAL-SECRET"))
+	}))
+	defer srv.Close()
+
+	res, err := tools.Execute(context.Background(), "web_fetch", `{"url":"`+srv.URL+`"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(res.Content, "INTERNAL-SECRET") {
+		t.Fatalf("外部插件进程内的 web_fetch 必须也受守卫: %s", res.Content)
+	}
+	if !strings.Contains(res.Content, "拒绝访问内网") {
+		t.Fatalf("应给出可读的拒绝原因: %s", res.Content)
+	}
 }
 
 // TestExternalWorkflow 外部 tool-workflow:starlark 引擎在外部进程,脚本内工具调用经

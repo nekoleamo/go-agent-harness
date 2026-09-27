@@ -375,6 +375,7 @@ patch-*.yaml            # 按 id 替换/插入/启停条目(随时插拔)
 | `GAH_MCP_SERVE` / `GAH_PLUGIN` / `GAH_VERSION` | 外部进程工具入口参数(serve/加载插件/版本通告;由 host-bridge 拉起时注入) |
 | `DEEPSEEK_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | LLM 密钥(可按 provider 前缀路由;或经 `/provider` 写入 provider.yaml) |
 | `EXA_API_KEY` | web_search 联网搜索密钥(默认提供商;也可 `data.provider` 换其它) |
+| `GAH_WEB_ALLOW_PRIVATE` | `1` = 放行 `web_fetch` 抓**内网/环回/链路本地**地址(默认**拒**:抓取的 URL 来自模型,防它被诱导去读本机未鉴权服务与云元数据端点 `169.254.169.254`;本地开发服务或**经本地 HTTP 代理**上网时需要打开——后者守卫看到的拨号目标是代理地址,不豁免) |
 
 ### MCP 接入(桥 client / serve 形态)
 

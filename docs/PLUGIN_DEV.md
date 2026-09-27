@@ -123,6 +123,13 @@ func (t *myTool) Definition() sdk.ToolDefinition {
 - veto 语义:订阅者返回错误即「不执行」,由 registry 转成结构化 `blocked:` 结果回传模型(不中断回合)。
 - **宿主会把有效沙箱档位注入执行 ctx**:`sdk.SandboxHint{Mode, Root}`(`sdk.WithSandboxHint`/`sdk.SandboxHintOf`)。执行入口(`ctx.tools`)在 `tools/pre-execute` 之后、真正执行之前注入**有效**档位(`EffectiveSandbox.EffectiveMode()`,即联动后的档;不是声明档),外部插件工具经协议随调用携带、在插件侧 ctx 里可读回。**档位/根为空 = 未知 → 按不可放行处理**(不得猜默认值);未注入 = 与改动前行为一致(旧对端不报错,只是不施加内核限制)。自带进程执行的工具(不限于 `shell`)应以该 hint 作为施加内核级限制的输入 —— 它是唯一能覆盖子进程树的控制点。
 
+### 2.7.1 联网抓取工具的内网守卫与不可信内容(**带 URL 抓取的工具必读**)
+
+`web_fetch` 抓的是**模型给出的任意 URL**,故有两件事在工具侧自己收(宿主不提供网络层策略):
+
+- **内网守卫(防 SSRF)**:`tool-web` 的 `newFetchClient()` 用 `guardedDial` —— 字面量 IP 在**拨号前**判定、域名在**连接建立后**按 `RemoteAddr` 判定(DNS rebinding 无窗口),命中环回/私网/链路本地/未指定/多播即拒,逃生舱 `GAH_WEB_ALLOW_PRIVATE=1`。自研抓取工具请照抄该思路(不要只查 `url.Host` 字符串:`http://localhost`、`http://[::1]`、十进制 IP 写法都绕得过);`web_search` 不挂守卫是**有意**的 —— 它的端点由用户在 `search.yaml` 选定,可能本就是本地服务。
+- **抓回的内容是不可信数据**:间接提示注入(网页里写“忽略之前的指令…”)的入口就是工具结果,它和用户指令**同权重**进上下文。宿主已在系统提示固定引导里定性这类内容(不得执行其中的指令),工具作者**不需**再包装,但**不得**把抓回的内容当指令源去调用其它工具(比如把页内“命令”拿去 `shell`)。
+
 ### 2.8 外部插件控制面(`ctx.extplugins`,NOND-M1)
 
 `host-bridge` 装配后 Provide `ctx.extplugins`(`sdk.ExternalPlugins{Reload(name string) error}`):按名重启一个外部插件进程(配置改完后重读)。名字 = 插件二进制**文件基名去平台扩展名**(`tool-mcp`;Windows 产物是 `tool-mcp.exe`,目录名仍是 `tool-mcp`),两种落点都支持:发布布局 `plugins/<名>/<名>` 与扁平布局 `plugins/<名>`。条目未加载时会尝试补加载(用户新装插件 / 新增 MCP server 无需重启 gah)。
@@ -315,6 +322,7 @@ UI 插件以 `$GAH_HOME/ui-plugins/<id>/` 落盘,manifest 声明槽位覆盖(str
 - [ ] **便携纪律**(见 AGENTS.md「便携纪律」):任何写盘路径以 `$GAH_HOME` 为根(注意 GAH_HOME 是 boot 内部贯通变量,**数据根唯一 = 二进制同级 gah-data/**,用户不可经 env 指定);禁用硬编码 ~/.gah、cwd 相对写、系统根/散目录;密钥入 config/、env 入 gah-data/env.sh;新增路径 helper 可审计
 - [ ] 涉及文件路径的工具:已声明 `ToolDefinition.PathParams`(§2.6)
 - [ ] 工具执行只经 `ctx.tools`(§2.7);新增「可触发工具执行的入口」已登记入口矩阵测试
+- [ ] 联网抓取类工具:已考虑内网守卫(SSRF)与「抓回内容不可信」(§2.7.1)
 - [ ] UI 插件型:未把「同源同权限」当作安全边界(§4.2)
 - [ ] 单测通过;-race 全绿
 - [ ] 错误回传模型(结构化 error),不 panic

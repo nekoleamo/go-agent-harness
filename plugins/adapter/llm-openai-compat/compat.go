@@ -26,6 +26,13 @@ import (
 // Plugin 实现 llm-openai-compat。
 type Plugin struct{}
 
+// 响应体上限(安全审计 F5):端点被劫持/配错时不能无界吃内存。
+// 错误路径的 4 KiB 是刻意截断的摘要;成功路径同样要有天花板。
+const (
+	modelsMaxBody     = 8 << 20 // /models 列表
+	maxCompletionSize = 4 << 20 // 流式累积(正文 + 工具参数)
+)
+
 func (p *Plugin) Name() string { return "llm-openai-compat" }
 
 // Start 注册适配器到 ctx.llm。
@@ -197,8 +204,15 @@ func (a *Adapter) ListModels() ([]sdk.ModelInfo, error) {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("llm-openai: models HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, modelsMaxBody+1))
+	if err != nil {
+		return nil, fmt.Errorf("llm-openai: models 读取失败: %w", err)
+	}
+	if len(raw) > modelsMaxBody {
+		return nil, fmt.Errorf("llm-openai: models 响应超过 %d MiB 上限", modelsMaxBody>>20)
+	}
 	var mr modelsResp
-	if err := json.NewDecoder(resp.Body).Decode(&mr); err != nil {
+	if err := json.Unmarshal(raw, &mr); err != nil {
 		return nil, fmt.Errorf("llm-openai: models 解析失败: %w", err)
 	}
 	infos := make([]sdk.ModelInfo, 0, len(mr.Data))
@@ -376,6 +390,7 @@ func (a *Adapter) Complete(ctx context.Context, req *sdk.LLMRequest, onChunk fun
 	toolCallIdx := map[int]int{} // 流内 index → calls 下标(并行 tool_calls 必须按 index 记账,不能只看 id)
 	finish := sdk.FinishReasonStop
 	usage := sdk.Usage{}
+	acc := 0 // 累积字节上限(正文 + 工具参数),防端点无限推流
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for sc.Scan() {
@@ -420,6 +435,7 @@ func (a *Adapter) Complete(ctx context.Context, req *sdk.LLMRequest, onChunk fun
 					}
 					calls[pos].Name += tc.Function.Name
 					calls[pos].Arguments += tc.Function.Arguments
+					acc += len(tc.Function.Name) + len(tc.Function.Arguments)
 					if i == 0 { // 流事件是单调用形态:报本条 chunk 首个条目归属的调用
 						ev.ToolCallID = calls[pos].ID
 						ev.ToolCallName = tc.Function.Name
@@ -442,6 +458,10 @@ func (a *Adapter) Complete(ctx context.Context, req *sdk.LLMRequest, onChunk fun
 			}
 			if ev.Delta != "" {
 				content.WriteString(ev.Delta)
+				acc += len(ev.Delta)
+				if acc > maxCompletionSize {
+					return nil, fmt.Errorf("llm-openai: 响应超过 %d MiB 上限,已中止", maxCompletionSize>>20)
+				}
 			}
 			if onChunk != nil {
 				if err := onChunk(ev); err != nil {

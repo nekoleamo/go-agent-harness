@@ -28,6 +28,10 @@ import (
 // Plugin 实现 llm-anthropic-compat。
 type Plugin struct{}
 
+// maxCompletionSize 流式累积上限(正文 + 工具参数):端点被劫持/配错时不能无界吃内存
+// (安全审计 F5,与 llm-openai-compat 同口径)。
+const maxCompletionSize = 4 << 20
+
 func (p *Plugin) Name() string { return "llm-anthropic-compat" }
 
 // Start 注册适配器到 ctx.llm(模型前缀 claude 路由)。
@@ -380,6 +384,7 @@ func (a *Adapter) Complete(ctx context.Context, req *sdk.LLMRequest, onChunk fun
 	toolIdx := map[int]int{} // SSE block index → calls 切片下标
 	finish := sdk.FinishReasonStop
 	usage := sdk.Usage{}
+	acc := 0 // 累积字节上限(正文 + 工具参数),防端点无限推流(安全审计 F5)
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for sc.Scan() {
@@ -405,6 +410,10 @@ func (a *Adapter) Complete(ctx context.Context, req *sdk.LLMRequest, onChunk fun
 			switch {
 			case ev.Delta != nil && ev.Delta.Type == "text_delta" && ev.Delta.Text != "":
 				content.WriteString(ev.Delta.Text)
+				acc += len(ev.Delta.Text)
+				if acc > maxCompletionSize {
+					return nil, fmt.Errorf("llm-anthropic: 响应超过 %d MiB 上限,已中止", maxCompletionSize>>20)
+				}
 				if onChunk != nil {
 					if err := onChunk(sdk.LLMStreamEvent{Delta: ev.Delta.Text}); err != nil {
 						return nil, err
@@ -420,6 +429,10 @@ func (a *Adapter) Complete(ctx context.Context, req *sdk.LLMRequest, onChunk fun
 			case ev.Delta != nil && ev.Delta.Type == "input_json_delta" && ev.Delta.PartialJSON != "":
 				if idx, ok := toolIdx[ev.Index]; ok {
 					calls[idx].Arguments += ev.Delta.PartialJSON
+					acc += len(ev.Delta.PartialJSON)
+					if acc > maxCompletionSize {
+						return nil, fmt.Errorf("llm-anthropic: 响应超过 %d MiB 上限,已中止", maxCompletionSize>>20)
+					}
 				}
 			}
 		case "message_delta":

@@ -214,3 +214,18 @@ func TestCompleteParallelToolCalls(t *testing.T) {
 		t.Errorf("调用 B 参数被串到 A(索引记账缺失): %+v", got)
 	}
 }
+
+// TestCompleteStreamSizeCap 端点无限推流时显式中止(安全审计 F5):
+// 不是静默截断,而是带可读原因的错误,免得下游把半截回复当完整回复。
+func TestCompleteStreamSizeCap(t *testing.T) {
+	var lines []string
+	chunk := strings.Repeat("x", 64<<10)
+	for i := 0; i < 80; i++ { // 80 × 64 KiB = 5 MiB > maxCompletionSize(4 MiB)
+		lines = append(lines, fmt.Sprintf(`{"choices":[{"delta":{"content":%q}}]}`, chunk))
+	}
+	_, a := sseServer(t, lines...)
+	_, err := a.Complete(context.Background(), &sdk.LLMRequest{Model: "test-model"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "上限") {
+		t.Fatalf("超限应显式报错,实际: %v", err)
+	}
+}
