@@ -168,8 +168,6 @@ type extEntry struct {
 	wrapped  bool
 	wrapMode string
 	wrapRoot string
-	// reloadAt 档位变更触发的重载节流(与 respawnAt 同一纪律:防抖动风暴)。
-	reloadAt time.Time
 }
 
 // Bridge 外部插件目录管理(扫描/重载/关闭/崩溃拉起)。
@@ -256,17 +254,15 @@ func (b *Bridge) loadEntries() error {
 
 // loadOne 启动外部插件进程并组装条目(定义枚举 + 协议探测)。
 func (b *Bridge) loadOne(path string) (*extEntry, error) {
-	// 能力自报探测必须在 exec **之前**(包装 argv 只能那时定):探到 SandboxProvider 就不套,
-	// 否则套上会让它自己按调用施加时嵌套失败(阻断 ①)。探测失败 = 未声明 = 按普通插件包装。
+	// 能力自报探测必须在 exec **之前**(包装 argv 只能那时定)。探测失败 = 未声明 = 按普通
+	// 插件包装(安全侧默认)。自报项只影响**策略面**(数据根白名单/凭据读拒),不再影响包不包。
 	caps, capsKnown := probeCapabilities(path)
 	dataWrites := b.validDataWrites(path, caps.DataWrites)
 	argv, extraEnv, wrapped := b.wrapPluginArgv(path, caps, capsKnown, dataWrites)
 	wrapMode, wrapRoot := b.sandboxModeRoot()
-	switch {
-	case capsKnown && caps.SandboxProvider:
-		b.logInfo("host-bridge: 外部插件自报内核沙箱提供者(按调用自施加),宿主不包裹", "path", path)
-	case wrapped:
-		b.logInfo("host-bridge: 外部插件已施加内核沙箱", "path", path, "mode", sbDesc(wrapMode))
+	if wrapped {
+		b.logInfo("host-bridge: 外部插件已施加内核沙箱", "path", path, "mode", sbDesc(wrapMode),
+			"cred_read_deny", (capsKnown && caps.CredentialReadDeny) || os.Getenv(pluginCredReadDenyEnv) == "1")
 	}
 	cl, killFn, se, err := startPlugin(argv, b.cbAddr, b.cbToken, append(b.sandboxEnv(), extraEnv...))
 	if err != nil {
@@ -435,7 +431,7 @@ func externalPluginName(path string) string {
 	return strings.TrimSuffix(filepath.Base(path), ".exe")
 }
 
-// reload 二进制变更:dispose 旧进程并加载新实例(热重载接线)。
+// reload 二进制变更/档位变更:dispose 旧进程并加载新实例(热重载接线)。
 // reloadAll 重启全部外部工具进程(工作区切换后:宿主 cwd 已变,新进程继承新 cwd)。
 // 逐个 reload(先注销+kill 再 loadOne+注册);失败条目记日志跳过(软降级,同热更新)。
 func (b *Bridge) reloadAll() {
@@ -453,6 +449,12 @@ func (b *Bridge) reloadAll() {
 func (b *Bridge) reload(path string) error {
 	b.reloadMu.Lock()
 	defer b.reloadMu.Unlock()
+	return b.reloadLocked(path)
+}
+
+// reloadLocked 同 reload,但要求调用方**已持** reloadMu。
+// 拆出来是因为档位变更路径要“持锁重检后再决定要不要重建”(见 pluginsandbox.go 的 sandboxStale)。
+func (b *Bridge) reloadLocked(path string) error {
 	b.mu.Lock()
 	entry, ok := b.entries[path]
 	b.mu.Unlock()
@@ -857,8 +859,9 @@ func (t *toolRPCClient) Definition() sdk.ToolDefinition {
 }
 
 func (t *toolRPCClient) Execute(ctx context.Context, args string) (any, error) {
-	// 档位陈旧 = fail-closed:插件进程的 profile 是启动时静态串,档位/根变了必须先重载
-	// (见 pluginsandbox.go)。放在最前:拿不拿得到 client 都要先把"旧档不跑"说清楚。
+	// 档位/根陈旧:插件进程的 profile 是启动时静态串 ⇒ **先同步重建**再执行(见
+	// pluginsandbox.go);重建不了才 fail-closed 拒绝本次。放在最前:拿不拿得到 client
+	// 都要先把"旧档不跑"说清楚。
 	if msg, stale := t.br.sandboxStale(t.path); stale {
 		return map[string]any{"error": msg}, nil
 	}
@@ -974,7 +977,8 @@ func (c *commandRPCClient) spec() sdk.CommandSpec {
 // run 命令执行(宿主 TUI 线程同步 + RPC 超时保护:死进程/慢命令不阻塞 UI;
 // 输出文本+结构化错误,连接错误触发自动拉起)。
 func (c *commandRPCClient) run(args []string) (string, error) {
-	// 与工具调用同一口径:被包装的插件档位变了就先重载并拒绝本次(见 pluginsandbox.go)。
+	// 与工具调用同一口径:被包装的插件档位/根变了就先同步重建,重建不了才拒绝本次
+	// (见 pluginsandbox.go)。
 	if msg, stale := c.br.sandboxStale(c.path); stale {
 		return "", errors.New(msg)
 	}

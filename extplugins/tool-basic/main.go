@@ -44,13 +44,15 @@ func main() {
 	tools["memory"] = toolmemory.NewTool()                                   // M10:跨会话操作记忆
 	tools["todo"] = tooltodo.NewTool()                                       // M8:任务清单(4 状态机/blockedBy)
 	tools["session_search"] = toolsessionsearch.NewTool()                    // S-P2-5:跨会话检索(只读)
-	// 能力自报(2026-09-27 审计 A3):本插件是 **shell 提供者** —— shell/pty 每次调用自己
-	// 施加内核沙箱(见 internal/kernelsandbox)。宿主若再包本进程,嵌套会直接失败
-	// (`sandbox_apply: Operation not permitted`)→ 必须明说它不要包。
-	// DataWrites 是数据根写声明:本插件进程内直写 $GAH_HOME/{memory,todos}(file 工具另走
-	// 协作层路径裁决)。当前因 SandboxProvider 而不包,该声明是为"将来若改为包裹"预留的事实。
+	// 能力自报(2026-09-27 审计 A3/A6):本插件是 **shell 提供者**。
+	// 宿主会整体包装本进程(in-process 直写因此进内核层);本插件内部的 shell/pty 再施加时由
+	// MarkerEnv 自动跳过(不可嵌套由标记解决,不再需要宿主豁免) —— 见 internal/kernelsandbox。
+	// CredentialReadDeny 声明:shell 提供者被外层包装后自己那份凭据读拒不生效,靠这条延续
+	// (默认关的 GAH_EXT_PLUGIN_CRED_READ_DENY 不管默认档)。
+	// DataWrites 是数据根写声明:本插件进程内直写 $GAH_HOME/{memory,todos}
+	// (file 工具另走协作层路径裁决)。
 	bridge.ServeToolsWith(tools, bridge.Capabilities{
-		SandboxProvider: true,
-		DataWrites:      []string{"memory", "todos"},
+		CredentialReadDeny: true,
+		DataWrites:         []string{"memory", "todos"},
 	})
 }

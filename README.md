@@ -381,7 +381,7 @@ patch-*.yaml            # 按 id 替换/插入/启停条目(随时插拔)
 
 > **MCP server 按内核沙箱起**(2026-09-27 审计 A3):server 是第三方代码,而路径裁决只看得到经 `mcp_*` 工具传入的参数 —— 它自己选定的 DB/缓存/临时落点完全看不见。故宿主按**当前有效档位**把它起在 seatbelt(macOS)/Landlock(Linux)包装里:白名单 = 有效档允许的 workspace 根 + `$GAH_HOME/jail/**` + 包管理器缓存与系统临时目录(实测:`npx` 类 server 少了缓存白名单会直接起不来)。需要写自己的数据目录时 `GAH_EXT_RW_PATHS=/path/a:/path/b` 点名;`GAH_EXT_KERNEL_SANDBOX=0` 整体关闭;`GAH_EXT_CRED_READ_DENY=1` 额外拒凭据目录的读(默认关)。
 >
-> **外部插件进程同样在作用面内**(2026-09-27 审计 A3b):`tool-mcp`/`tool-workflow`/`tool-subagent` 与第三方插件进程整体被包装(同一套白名单 + 插件**自报**的数据目录),插件自己再起的子进程继承该 profile(不再重复施加 —— 内核沙箱不可嵌套)。插件若**自己按调用施加**内核沙箱(如 `tool-basic`:它每次调用给 shell 套),必须经 `bridge.ServeToolsWith(..., Capabilities{SandboxProvider:true})` 声明,宿主据此**不**包裹它(套上会让它按调用再套时失败);已加载插件在档位/工作根变更后,**下一次调用会被显式拒绝并触发按新档位重建**(不拿旧 profile 继续跑)。声明方式与可写集见 `docs/PLUGIN_DEV.md`。
+> **外部插件进程同样在作用面内**(2026-09-27 审计 A3b + A6):`tool-mcp`/`tool-workflow`/`tool-subagent` 与第三方插件进程整体被包装(同一套白名单 + 插件**自报**的数据目录),插件自己再起的子进程继承该 profile(不再重复施加 —— 内核沙箱不可嵌套)。`tool-basic` 也一样被包装:它内部给 shell 按调用施加的那层会因 `GAH_KERNEL_SANDBOXED` 标记自动跳过,由外层 profile 统一生效(故无需"自己会套就别包我"这类豁免口);它经 `bridge.ServeToolsWith(..., Capabilities{CredentialReadDeny:true})` 声明"进程内会跑 shell 命令",宿主据此默认开凭据目录读拒(延续 F1 的保护)。已加载插件在档位/工作根变更后**先同步按新档位重建再执行本次调用**(绝不拿旧 profile 跑,也不会让切工作区后的第一次调用失败)。声明方式与可写集见 `docs/PLUGIN_DEV.md`。
 
 两种配法(优先级:配置文件 > 环境变量;GUI 改的是配置文件):
 

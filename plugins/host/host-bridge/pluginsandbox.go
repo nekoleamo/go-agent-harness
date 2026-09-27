@@ -3,19 +3,21 @@
 // 背景:A3 先把内核沙箱抽到 internal/kernelsandbox 并覆盖 MCP server;插件进程本身当时延后,
 // 因为有两条结构性阻断(均已实证,见 DESIGN R10 ①):
 //
-//	① 嵌套不可能:tool-basic 就是 shell 提供者(import toolshell),宿主套它 → 它按调用再套
+//	① 嵌套曾不可能:tool-basic 就是 shell 提供者(import toolshell),宿主套它 → 它按调用再套
 //	   `sandbox-exec` → `sandbox_apply: Operation not permitted`(整个插件不可用);
 //	② 档位会在插件启动时刻被冻结:profile 是启动时的静态串,而档位/工作根运行期会变
 //	   (`/sandbox` 切档、`/ws` 切工作区、审批联动)。
 //
 // 本文件是这两条的解法:
 //
-//	① → **能力自报**:插件用 ServeToolsWith(Capabilities{SandboxProvider:true}) 明说"我自己按调用施加",
-//	   宿主据此不包装(而不是靠猜或靠名字表)。
+//	① → **标记免嵌套**(A6):宿主给被包装进程打 `GAH_KERNEL_SANDBOXED`,插件进程内再调
+//	   `kernelsandbox.Wrap` 时看见标记直接返回 nil ⇒ 包装与自施加可叠加,shell 提供者也被
+//	   外层包装(其 in-process 直写因此进内核层)。A3b 当年的 `SandboxProvider:true`(宿主
+//	   据此不包装)已撤除;插件自报项只影响**策略面**(数据根白名单、凭据读拒)。
 //	② → **fail-closed 重载**:被包装的插件记住启动时的档位/根;每次调用前与当前有效值比较,
 //	   不一致 → 触发重载 + 本次调用拒绝(不拿旧 profile 继续跑,免得"档位已切严但仍按旧档写")。
 //
-// 未被包装的插件(自报提供者、全权档、显式关闭、宿主自己就在内核沙箱内)沿各自原路径工作,行为不变。
+// 未被包装的插件(全权档、显式关闭、宿主自己就在内核沙箱内、平台不支持)沿各自原路径工作。
 package hostbridge
 
 import (
@@ -118,7 +120,7 @@ func (b *Bridge) validDataWrites(path string, decl []string) []string {
 //
 // 档位来源:宿主自己的 ctx.sandbox(**现取**,不缓存 —— 装配顺序无保证,插件可能先于 sandbox 加载;
 // 档位为空 = 无沙箱宿主/未联动 → Mode 空 → Wrap 不施加且不告警)。
-func (b *Bridge) pluginSandboxSpec(dataWrites []string) kernelsandbox.Spec {
+func (b *Bridge) pluginSandboxSpec(dataWrites []string, credReadDeny bool) kernelsandbox.Spec {
 	mode, root := b.sandboxModeRoot()
 	rw := append([]string{}, kernelsandbox.DefaultRWPaths()...)
 	rw = append(rw, kernelsandbox.RWPathsFromEnv(pluginRWPathsEnv)...)
@@ -135,7 +137,11 @@ func (b *Bridge) pluginSandboxSpec(dataWrites []string) kernelsandbox.Spec {
 	// 刻意**不**接 GAH_SHELL_JAIL:那个开关的语义是 "shell 的临时区重定向关掉",
 	// 与"插件进程白名单锚点是否可用"不是同一件事(锚点目录仍在,只是 shell 不往里写)。
 	// 插件侧的关闭口径只有 GAH_EXT_PLUGIN_SANDBOX=0。
-	if os.Getenv(pluginCredReadDenyEnv) == "1" {
+	// 读拒绝的两个来源:插件自报「进程内会跑用户 shell 命令」(CredentialReadDeny)一声明即
+	// 默认开(与 shell 的 GAH_SHELL_CRED_READ_KERNEL 默认一致),或用户显式点开关。
+	// 为何插件侧要有这一条:shell 提供者被外层包装后,它自己施加时会被 MarkerEnv 跳过 →
+	// 没有这条就等于把 F1 的凭据读拒静默失效(A6 的开关语义决策)。
+	if credReadDeny || os.Getenv(pluginCredReadDenyEnv) == "1" {
 		spec.ReadDeny = sdk.CredentialDenyDirs()
 	}
 	return spec
@@ -145,13 +151,14 @@ func (b *Bridge) pluginSandboxSpec(dataWrites []string) kernelsandbox.Spec {
 //
 // 第二个返回值 = 若施加了内核沙箱,要追加给**插件进程**的环境(打 MarkerEnv);
 // 第三个返回值 = 是否真的施加了(供 extEntry 记录,决定要不要做档位陈旧检查)。
+//
+// 不再有「自报内核沙箱提供者 ⇒ 不包装」这条分支(2026-09-27 审计 A6):免嵌套由 MarkerEnv
+// 承担 —— 被包装的插件进程内再调 Wrap 时看到标记直接返回 nil(不施加),不会出现
+// `sandbox_apply: Operation not permitted`。于是 shell 提供者(tool-basic)也能被外层
+// 包装,它的 in-process 直写(memory/todos/file 工具)一并进内核层。
+// 自报的读拒绝经 Caps 传入(caps 零值 = 探测失败/未声明 ⇒ 默认关)。
 func (b *Bridge) wrapPluginArgv(bin string, caps Capabilities, capsKnown bool, dataWrites []string) ([]string, []string, bool) {
-	if capsKnown && caps.SandboxProvider {
-		// 自报内核沙箱提供者(如 tool-basic:它的 shell 每次调用自己套)。套上会**嵌套失败**,
-		// 让整个插件不可用(阻断 ①)—— 这是"自报"而不是宿主按名字猜的原因。
-		return []string{bin}, nil, false
-	}
-	pre := kernelsandbox.Wrap(b.pluginSandboxSpec(dataWrites))
+	pre := kernelsandbox.Wrap(b.pluginSandboxSpec(dataWrites, capsKnown && caps.CredentialReadDeny))
 	if len(pre) == 0 {
 		return []string{bin}, nil, false
 	}
@@ -161,43 +168,53 @@ func (b *Bridge) wrapPluginArgv(bin string, caps Capabilities, capsKnown bool, d
 
 // sandboxStale 判定被包装插件的**启动档位/根**是否已过期(阻断 ②)。
 //
-// 返回非空消息 = 已触发异步重载,调用方必须 fail-closed 拒绝本次调用。
+// 返回非空消息 = 已尝试重建但仍不可安全执行,调用方必须 fail-closed 拒绝本次调用。
 // 比较两侧都取 b.sandboxModeRoot()(不是调用方 ctx 的 hint):profile 就是用它构建的,
 // 同源比较才是同构的;命令类调用拿不到 ctx hint,同源也让工具/命令两条路径共用一份实现。
 //
-// 语义取舍:不拿旧 profile 继续跑 —— 档位从宽切严时,"先按旧档执行完再重载"就是一次真实的越权写;
-// 从严切宽同理会让插件按旧档失败(表现为莫名其妙的功能坏),统一重载最可解释。
+// 语义(2026-09-27 审计 A6 修正为「先重建再执行」):A3b 当时是“一律拒一次 + 异步重载”,
+// 方向对(绝不拿旧 profile 继续跑)但代价错:`tool-basic` 一被包装,`/ws` 切根后的
+// 第一次 shell/file 调用就必失败(e2e `TestExternalFileChangeLandsInLedger` 抓到)。
+// 现在改为：档位/根变了 ⇒ **同步重建**(持 reloadMu 重建,并发的另一路会串行等完)、
+// 就绪后本次调用照常执行。等不到(重建失败/条目被撤)才拒绝 —— 安全性不降(执行的
+// 始终是新 profile)。
 func (b *Bridge) sandboxStale(path string) (string, bool) {
-	b.mu.RLock()
-	e, ok := b.entries[path]
-	b.mu.RUnlock()
-	if !ok || !e.wrapped {
-		return "", false
-	}
 	mode, root := b.sandboxModeRoot()
-	if mode == e.wrapMode && root == e.wrapRoot {
+	if !b.wrappedStale(path, mode, root) {
 		return "", false
 	}
-	b.requestReload(path)
-	return fmt.Sprintf("外部插件沙箱上下文已变更(档位 %s→%s,根 %s→%s):已按新档位重建,请重新调用",
+	if err := b.reloadForSandbox(path, mode, root); err != nil && !errors.Is(err, errPluginIdle) {
+		b.logErr("host-bridge: 档位/根变更后的重载失败(条目已撤销,下次加载重试)", "path", path, "err", err)
+	}
+	if !b.wrappedStale(path, mode, root) {
+		return "", false // 已按新档位重建:本次调用照常执行
+	}
+	b.mu.RLock()
+	e := b.entries[path]
+	b.mu.RUnlock()
+	if e == nil {
+		return "外部插件重建中或已撤销:请重新调用", true
+	}
+	return fmt.Sprintf("外部插件沙箱上下文已变更(档位 %s→%s,根 %s→%s):重建未落地,请重新调用",
 		sbDesc(e.wrapMode), sbDesc(mode), sbDesc(e.wrapRoot), sbDesc(root)), true
 }
 
-// requestReload 触发一次异步重载(节流:重载完成前连续调用不重复建进程)。
-func (b *Bridge) requestReload(path string) {
-	b.mu.Lock()
+// wrappedStale 该条目是否被包装、且启动档位/根与当前有效值不一致。
+func (b *Bridge) wrappedStale(path, mode, root string) bool {
+	b.mu.RLock()
 	e, ok := b.entries[path]
-	if !ok || time.Now().Before(e.reloadAt) {
-		b.mu.Unlock()
-		return
+	b.mu.RUnlock()
+	return ok && e.wrapped && (mode != e.wrapMode || root != e.wrapRoot)
+}
+
+// reloadForSandbox 为档位/根变更做一次重建(持 reloadMu,重检后决定,避免并发调用各自重启一遍)。
+func (b *Bridge) reloadForSandbox(path, mode, root string) error {
+	b.reloadMu.Lock()
+	defer b.reloadMu.Unlock()
+	if !b.wrappedStale(path, mode, root) {
+		return nil // 别的调用已经重建好了
 	}
-	e.reloadAt = time.Now().Add(5 * time.Second)
-	b.mu.Unlock()
-	go func() {
-		if err := b.reload(path); err != nil && !errors.Is(err, errPluginIdle) {
-			b.logErr("host-bridge: 档位变更后的重载失败(条目已撤销,下次加载重试)", "path", path, "err", err)
-		}
-	}()
+	return b.reloadLocked(path)
 }
 
 // sbDesc 档位/根的日志展示(空 = 未注入,别打印成空串让人误以为"没有档位")。

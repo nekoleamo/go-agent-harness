@@ -28,8 +28,8 @@ const IdleMarker = "GAH_PLUGIN_IDLE:"
 // 不传命令 = 纯工具插件(旧行为不变)。
 // 握手标识 GAH_PLUGIN=gah-external-tool 缺失即拒绝启动(防误跑;由 ServeRPC 校验)。
 //
-// 能力自报(2026-09-27 审计 A3):需要声明能力时用 ServeToolsWith —— 这是**唯一**让宿主
-// 知道「要不要/能不能套沙箱」的通道(宿主不能靠猜:套错就是全插件不可用)。
+// 能力自报(2026-09-27 审计 A3/A6):需要声明能力时用 ServeToolsWith —— 这是宿主认识
+// 「本插件进程的正当写落点(shell 语义)」的唯一通道(宿主不能靠猜:漏声明 = 正常功能被内核拒)。
 func ServeTools(tools map[string]sdk.Tool, commands ...map[string]sdk.CommandSpec) {
 	ServeToolsWith(tools, Capabilities{}, commands...)
 }
@@ -67,11 +67,18 @@ func ServeToolsWith(tools map[string]sdk.Tool, caps Capabilities, commands ...ma
 //
 // 字段**故意只有两个**:多一个旋钮就多一处漂移。两项都是「声明即事实」,宿主负责校验
 // (DataWrites 来自被约束方,越权声明必须被丢弃,见 bridge.validDataWrites)。
+//
+// 为何没有「自施加内核沙箱」这一条(A3b 曾有 SandboxProvider,2026-09-27 审计 A6 撤除):
+// 宿主包装与插件自施加的**嵌套**由标记承担 —— `kernelsandbox.Wrap` 见到
+// `GAH_KERNEL_SANDBOXED`(宿主给被包装进程打的)即返回 nil,故插件进程内再套不会
+// `sandbox_apply: Operation not permitted`。于是「我会自己套」不需要、也不应该让宿主
+// 放弃包装(shell 提供者被外层包装后,它的 in-process 直写才真正进内核层)。
 type Capabilities struct {
-	// SandboxProvider = 「我自己按调用施加内核沙箱」(典型:shell 提供者)。
-	// 宿主要因此**不**包装本进程:seatbelt/Landlock 不可嵌套,套上会让本插件按调用再套时
-	// `sandbox_apply: Operation not permitted` → 整个插件不可用(2026-09-27 spike 实证)。
-	SandboxProvider bool `json:"sandbox_provider,omitempty"`
+	// CredentialReadDeny 声明「本插件进程内会执行用户 shell 命令」:宿主据此默认给该插件
+	// 进程开凭据目录读拒绝(与 shell 自己的 GAH_SHELL_CRED_READ_KERNEL 默认一致 ——
+	// shell 提供者被外层包装后,它自己那份读拒绝不生效,靠这条延续。2026-09-27 审计 A6)。
+	// 不声明时,读拒绝只由 `GAH_EXT_PLUGIN_CRED_READ_DENY=1` 显式开启。
+	CredentialReadDeny bool `json:"credential_read_deny,omitempty"`
 	// DataWrites 需要直接写的数据根**直接子目录名**(如 `memory`/`todos`;相对 sdk.Home())。
 	// 只允许直接子目录名且不得落在保留集(config/plugins/ui-plugins),否则宿主丢弃该项。
 	DataWrites []string `json:"data_writes,omitempty"`
