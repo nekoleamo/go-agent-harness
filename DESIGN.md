@@ -903,6 +903,8 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 
 **已知 flaky(诚实登记,本轮观测一次)**:负载很高时(核心包全库测试与 `./tests/` 并行跑)`TestTUIAcceptTwoQuestionsStack` 会在 `waitScreen("待答 2", 45s)` 处超时(pty 交互在重载下变慢);单跑 `-count=3` 全过、`tui` 包本身全绿 ⇒ 与本批改动无关(该用例原本就有 45s 轮询阀值,不再往上抬 —— 抬阀值只会把重载假红掩盖得更久)。
 
+**发布 v0.1.7(2026-09-26)**:`master` 推送 + tag `v0.1.7` 触发三条流水线 —— `ci` ✅、`release-cli` ✅(命令行归档 + `checksums.txt`)、`release-desktop` ✅(两平台打包 / merge-upload / accelerate 五 job 全绿);Release 共 **15 件 asset + `latest.json`**(版本 0.1.7,两平台下载 URL 已由 `accelerate` 前置 `gh-proxy.com` 前缀)。发布产物校验门 `node scripts/verify-release.mjs --tag v0.1.7`:**10 通过 / 0 失败 / 1 提示**(结构 / 平台矩阵 / ed25519 密钥指纹 / mac 产物签名与包内容 `gah.app 0.1.7` + sidecar `gah 0.1.7`;提示项为 `checksums.txt` 未登记桌面产物,既有行为)。Gitee 自控镜像待国内机跑 `mirror-gitee.sh upload v0.1.7 <产物目录>` + `publish-desktop.sh rewrite-url gitee:…`(需 `GITEE_TOKEN`,本机未设)。
+
 ### 第六十三批 · 设置面板横向滚动条 + 变更视图劫持恢复(web,2026-09-26)
 
 真机反馈:**打开设置面板会出现一条横向滚动条**。三层根因叠加:
