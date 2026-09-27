@@ -146,6 +146,8 @@ export interface UsageStats {
   CompletionTokens: number
   CachedTokens: number
   Requests: number
+  // LastPromptTokens 最近一次请求的实测输入 token(= 当前上下文占用;累计量不能当水位)
+  LastPromptTokens: number
   Window: number
 }
 export interface SessionView {

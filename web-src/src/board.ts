@@ -81,7 +81,9 @@ export function jobStateLabel(s: string): string {
 export function boardCards(inp: BoardInput): BoardCard[] {
   const s = inp.state
   const st = s.stats
-  const used = st.PromptTokens + st.CompletionTokens
+  // 上下文占用 = 最近一次请求的实测 prompt(LastPromptTokens)。累计 PromptTokens 是多轮之和,
+  // 拿它当水位会越跑越离谱(多轮后出现「5000K/128K」)。下面输入/输出/缓存/请求仍是累计口径。
+  const ctxUsed = st.LastPromptTokens
   const cachePct = pct(st.CachedTokens, st.PromptTokens)
   const avgTok = inp.traj.turns > 0 ? Math.round(inp.traj.tokens / inp.traj.turns) : 0
 
@@ -98,14 +100,14 @@ export function boardCards(inp: BoardInput): BoardCard[] {
           label: '上下文',
           value:
             st.Window > 0
-              ? `${fmtTok(used)}/${fmtTok(st.Window)} · ${pct(used, st.Window)}%`
-              : used > 0
-                ? `${fmtTok(used)}(窗口未知)`
+              ? `${fmtTok(ctxUsed)}/${fmtTok(st.Window)} · ${pct(ctxUsed, st.Window)}%`
+              : ctxUsed > 0
+                ? `${fmtTok(ctxUsed)}(窗口未知)`
                 : '–',
-          level: st.Window > 0 && pct(used, st.Window) >= 90 ? 'warn' : undefined,
+          level: st.Window > 0 && pct(ctxUsed, st.Window) >= 90 ? 'warn' : undefined,
         },
       ],
-      note: '累计口径(整个会话);缓存 = 命中缓存的输入占比',
+      note: '输入/输出/缓存/请求为累计口径(整场会话);上下文 = 最近一次请求的实测输入 token',
     },
     {
       id: 'turns',

@@ -87,7 +87,7 @@ const state = ref<StateView>({
   model: '',
   thinking: 'off',
   sandbox: '',
-  stats: { PromptTokens: 0, CompletionTokens: 0, CachedTokens: 0, Requests: 0, Window: 0 },
+  stats: { PromptTokens: 0, CompletionTokens: 0, CachedTokens: 0, Requests: 0, LastPromptTokens: 0, Window: 0 },
   running: false,
   version: '',
 })
@@ -596,9 +596,14 @@ function rebuild(keepCursor: boolean): void {
     }
   }))
   // G-E5-4:审批已裁决(confirm/resolved;Confirm 无端侧 id → 按 prompt 关联)
+  // err 非空 = 未等到应答(回合被停止/取消,或配了 confirm_timeout_sec 后到期):
+  // 弹层由服务端主动关掉,这里同步说明一声 —— 否则用户以为界面吞了他的决定。
   transport.on('confirmdone', gate((f) => {
-    const p = f.payload as { prompt?: string }
+    const p = f.payload as { prompt?: string; err?: string }
     if (p?.prompt && confirm.value && confirm.value.prompt === p.prompt) confirm.value = null
+    if (p?.err) {
+      metas.value.push({ kind: 'status', text: '审批未等到应答(' + p.err + '),该动作未执行' })
+    }
   }))
   // 文档预览意图(D5:模型 doc_open / `/preview` 命令)→ 打开文档面板并定位文件
   transport.on('doc', gate((f) => {
@@ -747,6 +752,17 @@ function hidden(): boolean {
   return typeof document !== 'undefined' && document.visibilityState !== 'visible'
 }
 
+// stopTurn 中止运行中的回合(输入区「停止」按钮)。
+// 为何必须有这个出口:审批现在默认**不限时地等**(policy-guard),没有中止入口时用户只剩
+// 「拒绝」一招 —— 而拒绝只是让这一步失败,模型会换个方式再试,不是他要的「停下来」。
+async function stopTurn(): Promise<void> {
+  try {
+    await api.control({ cancel: true })
+  } catch (e) {
+    metas.value.push({ kind: 'error', text: '停止失败:' + (e as Error).message })
+  }
+}
+
 // onSubmit 提交回合;返回 false = 未受理(离线/失败)→ 调用方**保留草稿与附件**。
 // S-P1-3 纪律:断连期间不提交(宁可让用户等,也不要把输入掷进不可达的链路后丢掉)。
 async function onSubmit(text: string, attachments?: string[]): Promise<boolean> {
@@ -757,7 +773,17 @@ async function onSubmit(text: string, attachments?: string[]): Promise<boolean> 
     return false
   }
   try {
-    await api.input(t, attachments ?? [])
+    const r = await api.input(t, attachments ?? [])
+    // 回合进行中的追加消息:宿主把它**注入当前回合**(转向),模型下一次请求即可见,
+    // 不是新回合。回执里说清楚,否则用户以为输入掉进了黑洞(真机反馈)。
+    if (r?.accepted === 'steer') {
+      metas.value.push({ kind: 'status', text: '已注入当前回合(模型下一次请求即可见)' })
+    }
+    // 提交成功即把主视图切回会话流。为何:视图是全屏切换的,而 `/diff` 会把视图永久切到
+    // 「变更」且此后没有任何逻辑切回 —— 用户接着发消息,回复全进了看不见的「会话流」,
+    // 屏幕上是「变更」的空态文案。真机反馈正是如此:「让它查 skill/MCP、甚至只说你好,
+    // 返回的都是『本会话还没有捕获到文件改动』」。人发了消息就该看到回复。
+    if (view.value !== 'stream') view.value = 'stream'
     return true
   } catch (e) {
     metas.value.push({ kind: 'error', text: '未发送:' + (e as Error).message + '。草稿已保留。' })
@@ -912,6 +938,16 @@ onUnmounted(() => {
 
       <!-- 右侧列:会话流 + 输入框(左右分割;输入框只在右侧底部,不横跨侧栏) -->
       <div class="content" :class="{ empty }">
+        <!-- 非会话流视图的常驻提醒(真机反馈):视图是全屏切换的,切到轨迹/变更/看板后,
+             新消息与回复都落在看不见的会话流里 —— 不给提示就会被误读成「agent 什么也没返回」
+             (原话:「让它查 skill 或 MCP,返回的总是『本会话还没有捕获到文件改动』」)。
+             提醒必须在**任何**非流视图可见,不能只写在变更视图的空态里。 -->
+        <div v-if="view !== 'stream'" class="vbar" role="status">
+          <span class="vbar-text">
+            当前是「{{ VIEW_LABEL[view] }}」视图 —— 新消息与回复都显示在「会话流」里
+          </span>
+          <button class="vbar-btn" data-tip="切回会话流视图" @click="view = 'stream'">回到会话流</button>
+        </div>
         <!-- 槽位:stream(会话流 + meta 行) -->
         <section ref="streamEl" class="stream-slot" data-ui-slot="stream" @scroll="onStreamScroll">
           <!-- 轨迹模式走内建视图(不接管槽位 stream:UI 插件对该槽位的覆盖仍是流视图的实现) -->
@@ -972,7 +1008,9 @@ onUnmounted(() => {
         <section class="input-slot" :class="{ centered: empty }" data-ui-slot="input">
           <component
             :is="slotComponent('input') || 'div'"
-            :disabled="state.running || offline"
+            :disabled="offline"
+            :busy="state.running"
+            :on-cancel="stopTurn"
             :disabled-hint="offline ? '连接已断开:草稿与附件已保留,恢复后请重新发送' : ''"
             :on-submit="onSubmit"
             :state="state"
@@ -1264,6 +1302,40 @@ onUnmounted(() => {
   flex: 1;
   overflow-y: auto;
   padding: 12px 36px 20px; /* 左右对称留白:消息流占满右列不贴侧栏也不缩窄居中 */
+}
+/* 非会话流视图的常驻提醒条(单强调色,不抢消息流):与看板动作同色系 —— --accent 单色 */
+.vbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 36px 0;
+  padding: 7px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--accent-soft);
+  font-size: 12px;
+}
+.vbar-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--fg);
+}
+.vbar-btn {
+  margin-left: auto;
+  flex: none;
+  padding: 3px 10px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: none;
+  color: var(--accent);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background var(--dur-fast) ease;
+}
+.vbar-btn:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--fg-on-accent);
 }
 .input-slot {
   padding: 10px 24px 12px;

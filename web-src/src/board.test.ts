@@ -84,19 +84,25 @@ test('卡片集合与顺序固定(看板顺序 = 规范顺序)', () => {
   )
 })
 
-test('用量卡:累计口径 + 缓存占比 + 窗口未知不假精确', () => {
+test('用量卡:上下文=最近一次请求占用(累计量不当水位) + 缓存占比 + 窗口未知不假精确', () => {
   const inp = input({
-    state: st({ PromptTokens: 12000, CompletionTokens: 3000, CachedTokens: 6000, Requests: 7, Window: 0 }),
+    state: st({ PromptTokens: 12000, CompletionTokens: 3000, CachedTokens: 6000, Requests: 7, Window: 0, LastPromptTokens: 15000 }),
   })
   assert.equal(row('usage', '输入', inp), '12.0K')
   assert.equal(row('usage', '输出', inp), '3.0K')
   assert.equal(row('usage', '缓存', inp), '6.0K · 50%')
   assert.equal(row('usage', '请求', inp), '7')
   assert.equal(row('usage', '上下文', inp), '15.0K(窗口未知)')
-  const withWin = input({ state: st({ PromptTokens: 12000, CompletionTokens: 3000, Window: 128000 }) })
+  const withWin = input({ state: st({ LastPromptTokens: 15000, Window: 128000 }) })
   assert.equal(row('usage', '上下文', withWin), '15.0K/128.0K · 12%')
+  // 回归钉住(2026-09-26 真机):多轮累计已到 5M 时,上下文仍按最近一次请求显示 ——
+  // 旧口径会把上下文行写成「5.00M/128.0K · 100%」。
+  const manyTurns = input({
+    state: st({ PromptTokens: 5000000, CompletionTokens: 300000, Requests: 40, LastPromptTokens: 15000, Window: 128000 }),
+  })
+  assert.equal(row('usage', '上下文', manyTurns), '15.0K/128.0K · 12%')
   // 窗口占用 ≥90% 才给提醒档
-  const full = input({ state: st({ PromptTokens: 118000, Window: 128000 }) })
+  const full = input({ state: st({ LastPromptTokens: 118000, Window: 128000 }) })
   const ctx = card('usage', full).rows.find((r) => r.label === '上下文')
   assert.equal(ctx?.level, 'warn')
 })

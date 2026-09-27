@@ -100,8 +100,8 @@ func TestStatusLineFields(t *testing.T) {
 
 // TestMetricLine F15.1:模型/思维/上下文独立指标行(固定于输入区上方,不随输入移动)。
 func TestMetricLine(t *testing.T) {
-	// 模型 + 来源 + 上下文使用率
-	s := &State{Model: "deepseek", ModelSrc: "local", Stats: sdk.UsageStats{Requests: 1, PromptTokens: 1024, Window: 4096}}
+	// 模型 + 来源 + 上下文使用率(分子 = 最近一次请求的 prompt)
+	s := &State{Model: "deepseek", ModelSrc: "local", Stats: sdk.UsageStats{Requests: 1, LastPromptTokens: 1024, Window: 4096}}
 	out := stripColor(renderMetricLine(s))
 	// F15.4:前导空格与状态栏左缘对齐(模型不顶格)
 	if !strings.HasPrefix(out, " 模型:") {
@@ -111,6 +111,11 @@ func TestMetricLine(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("指标行应含 %q: %q", want, out)
 		}
+	}
+	// 回归钉住(2026-09-26 真机):累计量再大也不能当水位 —— 多轮后曾显示成 5000K/128K。
+	sBig := &State{Stats: sdk.UsageStats{Requests: 40, PromptTokens: 5_000_000, LastPromptTokens: 1024, Window: 4096}}
+	if out := stripColor(renderMetricLine(sBig)); !strings.Contains(out, "上下文 1.0K/4.0K (25%)") {
+		t.Fatalf("上下文应按最近一次请求显示: %q", out)
 	}
 	// 缓存命中率
 	s2 := &State{Stats: sdk.UsageStats{Requests: 1, PromptTokens: 1024, CachedTokens: 512, Window: 4096}}

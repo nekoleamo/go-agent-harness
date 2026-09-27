@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
@@ -18,7 +19,7 @@ type Resolver struct {
 	gahHome  string
 	extra    []string // 额外允许根(realpath 后比较),默认 $GAH_HOME/attachments
 	homeDir  string   // ~ 展开用(仅用户显式输入的路径;不参与 gah 运行数据落盘)
-	workRoot string   // 无沙箱时的相对路径根(默认 cwd)
+	workRoot string   // 构造时的工作根快照;只作 workRootOf 的兜底(正常路径都现取)
 }
 
 // NewResolver 构造解析器。
@@ -34,6 +35,22 @@ func NewResolver(sb sdk.Sandbox, gahHome string) *Resolver {
 		r.workRoot = cwd
 	}
 	return r
+}
+
+// workRootOf 当前工作根(**动态**)。
+// 为何不能只在构造时取一次:切工作区只改沙箱 root(host-cwd-sessions 广播 → SetRoot)与
+// 进程 cwd,而 resolver 是插件 Start 时构造的 —— 快照一次就等于把切换后的新工作区
+// 整个判成「不在工作区/附件目录内」→ **打开工作区内的文件返回 403**(真机反馈)。
+func (r *Resolver) workRootOf() string {
+	if r.sb != nil {
+		if root := r.sb.Root(); root != "" {
+			return root
+		}
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		return cwd
+	}
+	return r.workRoot // 兜底:构造时快照(Getwd 失败极罕见)
 }
 
 // denyBase 密钥类文件名 deny-list(strict 模式生效;对齐全局规则「不读取含密钥的配置文件」)。
@@ -80,7 +97,7 @@ func (r *Resolver) resolve(p string, strict, allowDir bool) (string, error) {
 
 	abs := p
 	if !filepath.IsAbs(abs) {
-		abs = filepath.Join(r.workRoot, abs)
+		abs = filepath.Join(r.workRootOf(), abs)
 	}
 	abs = filepath.Clean(abs)
 
@@ -164,7 +181,7 @@ func (r *Resolver) checkStrict(real, orig string) error {
 		return err
 	}
 	roots := make([]string, 0, 1+len(r.extra))
-	if wr := r.realRoot(r.workRoot); wr != "" {
+	if wr := r.realRoot(r.workRootOf()); wr != "" {
 		roots = append(roots, wr)
 	}
 	for _, e := range r.extra {
@@ -235,9 +252,19 @@ func (r *Resolver) realRoot(root string) string {
 }
 
 // within 前缀归属校验(整段匹配,防 /root2 误判为 /root 内)。
+// Windows 上路径大小写不敏感(盘符与目录名大小写由模型/shell 拼出,不一定与
+// workspace 配置一致),纯字符串比较会把合法路径判成「不在根内」→ 403。
 func within(root, p string) bool {
+	return withinFold(root, p, runtime.GOOS == "windows")
+}
+
+// withinFold 带显式大小写折叠开关(便于在非 Windows 上覆盖该分支)。
+func withinFold(root, p string, foldCase bool) bool {
 	if root == "" {
 		return false
+	}
+	if foldCase {
+		root, p = strings.ToLower(root), strings.ToLower(p)
 	}
 	if p == root {
 		return true

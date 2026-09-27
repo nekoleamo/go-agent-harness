@@ -27,7 +27,9 @@ func renderInputRight(s *State) string {
 	}
 	stats := "上下文 -"
 	if s.Stats.Requests > 0 {
-		used := s.Stats.PromptTokens
+		// 上下文占用用**最近一次请求的实测 prompt**(LastPromptTokens),不是累计 PromptTokens ——
+		// 累计是多轮之和,多轮后会显示成 5000K/128K 这种越跑越大的假数字。
+		used := s.Stats.LastPromptTokens
 		if w := s.Stats.Window; w > 0 {
 			stats = fmt.Sprintf("上下文 %s/%s (%d%%)", fmtK(used), fmtK(w), used*100/w)
 		} else {

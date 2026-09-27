@@ -117,10 +117,15 @@ type Usage struct {
 
 // UsageStats 会话级 token 消耗统计(ctx.usageStats,host-usage-stats 累计)。
 type UsageStats struct {
-	PromptTokens     int // 累计输入 token
-	CompletionTokens int // 累计输出 token
+	PromptTokens     int // 累计输入 token(整场会话求和)
+	CompletionTokens int // 累计输出 token(整场会话求和)
 	CachedTokens     int // 累计缓存命中输入 token
 	Requests         int // 累计请求数
+	// LastPromptTokens 最近一次请求的实测输入 token。
+	// 为何单列:它才是**当前上下文占用**(这一次真正发出去的历史+系统提示),
+	// 而累计 PromptTokens 是多轮之和 —— 拿它比窗口会越跑越离谱(多轮后出现
+	// 「5000K/128K」)。展示层的「上下文 xx/xx%」一律用本字段;累计量只用于总量统计。
+	LastPromptTokens int
 	Window           int // 模型上下文窗口(token;context_window 配置,默认 65536)
 }
 

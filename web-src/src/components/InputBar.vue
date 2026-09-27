@@ -17,6 +17,13 @@ const props = defineProps<{
   centered?: boolean
   // disabledHint 禁用原因(如断连):优先于「回合进行中」占位文案,不改变任何状态
   disabledHint?: string
+  // busy 回合进行中。**不是 disabled**:输入框照旧可编辑、回车即提交,宿主把消息
+  // 注入当前回合(转向,模型下一次请求即可见);只是不能新挂附件(转向通道不带附件)。
+  // 为何分开:此前把运行中当作 disabled 传给输入框,运行时 textarea 直接锁死,
+  // 用户按 Enter 什么也不会发生 —— 而宿主侧早已支持注入(真机反馈)。
+  busy?: boolean
+  // onCancel 中止运行中的回合(可选;不传则不显示「停止」按钮)
+  onCancel?: () => void
 }>()
 // 会话切换/新建成功后通知宿主;控制(思考/沙箱)变更后通知宿主刷新 state
 const emit = defineEmits<{ (e: 'session-changed'): void; (e: 'changed'): void }>()
@@ -56,6 +63,15 @@ function clearAttErr(): void {
   attErr.value = ''
 }
 const uploading = ref(false)
+// noAttach 附件入口统一闸门:断连(disabled)或回合进行中(busy)都不放行。
+// 为何运行时也不放附件:宿主转向通道只带文本(带附件的提交会回落 409),
+// 若这里放行,用户会以为附件发出去了。
+const noAttach = computed(() => props.disabled || !!props.busy)
+const placeholder = computed(() => {
+  if (props.disabled) return props.disabledHint || '输入不可用'
+  if (props.busy) return '回合进行中:Enter 把消息注入当前回合(模型下一次请求可见);附件等回合结束'
+  return '输入消息,以 / 开头使用命令(Enter 发送 · Shift+Enter 换行 · Esc 清空)'
+})
 const dragging = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
 
@@ -98,6 +114,10 @@ function onPaste(e: ClipboardEvent): void {
   }
 }
 function collectFiles(files: File[]): void {
+  if (noAttach.value) {
+    setAttErr(props.disabled ? props.disabledHint || '当前不可添加附件' : '回合进行中:附件要等回合结束(追加消息只支持文本)')
+    return
+  }
   for (const f of files) {
     if (attachments.value.length >= MAX_ATT) {
       setAttErr(`附件最多 ${MAX_ATT} 个`)
@@ -472,17 +492,17 @@ defineExpose({ cycleThinking, cycleSandbox })
       class="field"
       rows="1"
       :disabled="disabled"
-      :placeholder="disabled ? (props.disabledHint || '回合进行中…') : '输入消息,以 / 开头使用命令(Enter 发送 · Shift+Enter 换行 · Esc 清空)'"
+      :placeholder="placeholder"
       @input="autoGrow"
       @keydown="onKeydown"
       @paste="onPaste"
     />
 
-    <input ref="fileInput" type="file" multiple class="hidden-file" :accept="ATT_ACCEPT" :disabled="disabled" @change="onFileChange" />
+    <input ref="fileInput" type="file" multiple class="hidden-file" :accept="ATT_ACCEPT" :disabled="noAttach" @change="onFileChange" />
 
     <div class="bar">
       <div class="tools">
-        <button class="ctl" data-tip="添加附件(文件/图片;支持拖入与 Ctrl/Cmd+V 粘贴)" :disabled="disabled || uploading" @click="openPicker">
+        <button class="ctl" data-tip="添加附件(文件/图片;支持拖入与 Ctrl/Cmd+V 粘贴)" :disabled="noAttach || uploading" @click="openPicker">
           <svg class="att-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48" />
           </svg>
@@ -501,6 +521,14 @@ defineExpose({ cycleThinking, cycleSandbox })
         </button>
       </div>
       <div class="sp" />
+      <button
+        v-if="busy && props.onCancel"
+        class="stop"
+        data-tip="停止当前回合(会一并中止正在等待的审批与工具执行)"
+        @click="props.onCancel?.()"
+      >
+        停止
+      </button>
       <button class="send" data-tip="发送(Enter)" :disabled="disabled || uploading" @click="submit">
         <span class="send-arrow" />
       </button>
@@ -711,6 +739,22 @@ defineExpose({ cycleThinking, cycleSandbox })
 .ctl:hover .ctl-n,
 .ctl:hover .ctl-v {
   color: var(--accent);
+}
+/* 「停止」只在回合进行中出现(M15 以后的回合控制):审批/长工具执行时的唯一出口 */
+.stop {
+  height: 34px;
+  padding: 0 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: none;
+  color: var(--fg-dim);
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color var(--dur-fast) ease, color var(--dur-fast) ease;
+}
+.stop:hover {
+  border-color: var(--err);
+  color: var(--err);
 }
 .send {
   background: var(--accent);

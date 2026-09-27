@@ -70,9 +70,14 @@ func (p *Plugin) Name() string { return "policy-guard" }
 func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	approvalMode, sandboxMode, sync := sdk.ApprovalSmart, sdk.SandboxWorkspace, true
 	var approvalTools map[string]bool
+	confirmTimeout := confirmTimeoutDefault
 	if m != nil && m.Data != nil {
 		if v, ok := m.Data["approval"].(string); ok && v != "" {
 			approvalMode = sdk.ApprovalMode(v)
+		}
+		// 审批等待上限(秒):0/缺项 = 不限时(等到用户答复,见 approval.go 的默认说明)。
+		if v, ok := m.Data["confirm_timeout_sec"]; ok {
+			confirmTimeout = parseConfirmTimeout(v)
 		}
 		if v, ok := m.Data["sandbox"].(string); ok && v != "" {
 			sandboxMode = sdk.SandboxMode(v)
@@ -95,7 +100,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	var confirm sdk.ConfirmService
 	_ = c.Inject("ctx.confirm", &confirm) // 未装配:smart 档按无通道安全拒绝
 
-	ap := &ApprovalPolicy{mode: approvalMode, tools: approvalTools}
+	ap := &ApprovalPolicy{mode: approvalMode, tools: approvalTools, confirmTimeout: confirmTimeout}
 	sp := &SandboxPolicy{root: workspaceRoot(), mode: sandboxMode, sync: sync, approval: ap.Mode}
 	if err := c.Provide("ctx.approval", ap); err != nil {
 		return nil, err

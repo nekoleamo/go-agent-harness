@@ -27,6 +27,11 @@ func TestAccumulateFromUsageEvents(t *testing.T) {
 	if st.Requests != 2 || st.PromptTokens != 150 || st.CompletionTokens != 30 || st.CachedTokens != 90 {
 		t.Fatalf("累计不符: %+v", st)
 	}
+	// 上下文占用口径 = **最近一次**请求的 prompt(不是累计 150)。累计量当水位会在多轮后
+	// 显示成 5000K/128K(2026-09-26 真机)。
+	if st.LastPromptTokens != 50 {
+		t.Fatalf("LastPromptTokens 应取最近一次(50): %+v", st)
+	}
 	if st.Window != 128*1024 {
 		t.Fatalf("deepseek-chat 窗口应为 128K: %+v", st)
 	}
@@ -38,7 +43,7 @@ func TestReset(t *testing.T) {
 	s.HandleSessionEvent(usageEvent("claude-sonnet-4-5", sdk.Usage{PromptTokens: 999}))
 	s.Reset()
 	st := s.Stats()
-	if st.Requests != 0 || st.PromptTokens != 0 || st.CachedTokens != 0 {
+	if st.Requests != 0 || st.PromptTokens != 0 || st.CachedTokens != 0 || st.LastPromptTokens != 0 {
 		t.Fatalf("Reset 应归零: %+v", st)
 	}
 	if st.Window != 0 {

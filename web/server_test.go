@@ -623,6 +623,48 @@ func TestInputSteerWhileRunning(t *testing.T) {
 	}
 }
 
+// TestInputSteerRefusesAttachments 回合运行中带附件的提交必须回落 409:
+// 转向通道只带文本(host-agent-loop 的 Steer),若走 steer 分支附件就被静默丢掉了 ——
+// 宁可让用户等回合结束,也不能假装收下附件。
+func TestInputSteerRefusesAttachments(t *testing.T) {
+	s, _ := newTestServer()
+	s.cfg.AttachmentsDir = t.TempDir()
+	tc := &stubTurnSteerer{ok: true}
+	s.tc = tc
+	hs := httptest.NewServer(s.handler())
+	defer hs.Close()
+
+	body, ctype := multipartBody(t, "image/png", "photo.png", "\x89PNG\r\n\x1a\nxx")
+	resp, err := http.Post(hs.URL+"/api/attachments", ctype, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var up struct {
+		Attachments []AttachmentView `json:"attachments"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&up); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if len(up.Attachments) != 1 {
+		t.Fatalf("上传响应异常: %+v", up)
+	}
+
+	s.running.Store(true)
+	in, _ := json.Marshal(map[string]any{"content": "看下这张图", "attachments": []string{up.Attachments[0].URL}})
+	resp, err = http.Post(hs.URL+"/api/input", "application/json", strings.NewReader(string(in)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("运行中带附件应 409(不静默丢附件),得 %d", resp.StatusCode)
+	}
+	if got := tc.texts(); len(got) != 0 {
+		t.Fatalf("带附件的提交不得进转向通道: %#v", got)
+	}
+}
+
 // TestInputSteerUnavailableFallsBackTo409 有 turnControl 但不实现 TurnSteerer → 仍 409。
 func TestInputSteerUnavailableFallsBackTo409(t *testing.T) {
 	s, _ := newTestServer()

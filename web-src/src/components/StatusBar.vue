@@ -18,9 +18,11 @@ function k(n: number): string {
   return (n / 1024).toFixed(1) + 'K'
 }
 
+// ctx 上下文占用:分子用**最近一次请求的实测 prompt**(LastPromptTokens),不用累计 PromptTokens
+// —— 累计是多轮之和,多轮后会变成「5000K/128K」这种越跑越大的假数字。缓存仍是累计命中率。
 const ctx = computed(() => {
   const s = props.state.stats
-  const used = s.PromptTokens + s.CompletionTokens
+  const used = s.LastPromptTokens
   if (s.Window > 0) {
     const pct = Math.min(100, Math.round((used / s.Window) * 100))
     const cachePct = s.PromptTokens > 0 ? Math.round((s.CachedTokens / s.PromptTokens) * 100) : 0

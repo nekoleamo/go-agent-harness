@@ -147,12 +147,18 @@ func TestDocPreviewErrorMapping(t *testing.T) {
 	cases := []struct {
 		err  error
 		want int
+		body string // 期望响应体(空 = 只校状态码)
 	}{
-		{fmtErr(sdk.ErrDocDenied), http.StatusForbidden},
-		{fmtErr(sdk.ErrDocNotFound), http.StatusNotFound},
-		{fmtErr(sdk.ErrDocTooLarge), http.StatusRequestEntityTooLarge},
-		{fmtErr(sdk.ErrDocParse), http.StatusUnprocessableEntity},
-		{fmtErr(sdk.ErrDocUnsupported), http.StatusUnsupportedMediaType},
+		// 403 必须把 resolver 的具体原因带出来:只说「路径不被允许」时用户无法自助排查
+		// (真机反馈「让 agent 打开的 excel 返回 403,不知道为什么」)。
+		{fmt.Errorf("%w: %s 不在工作区/附件目录内(Web 端不允许任意绝对路径)", sdk.ErrDocDenied, "C:/tmp/a.xlsx"),
+			http.StatusForbidden, "路径不被允许:C:/tmp/a.xlsx 不在工作区/附件目录内(Web 端不允许任意绝对路径)"},
+		{fmt.Errorf("%w: 拒绝访问密钥类文件 id_rsa", sdk.ErrDocDenied), http.StatusForbidden, "路径不被允许:拒绝访问密钥类文件 id_rsa"},
+		{fmtErr(sdk.ErrDocDenied), http.StatusForbidden, "路径不被允许"}, // 哨兵被再包一层/无补充原因 → 只用概述
+		{fmtErr(sdk.ErrDocNotFound), http.StatusNotFound, "文件不存在"},
+		{fmtErr(sdk.ErrDocTooLarge), http.StatusRequestEntityTooLarge, "超出字节预算"},
+		{fmtErr(sdk.ErrDocParse), http.StatusUnprocessableEntity, "解析失败"},
+		{fmtErr(sdk.ErrDocUnsupported), http.StatusUnsupportedMediaType, "不支持的格式"},
 	}
 	for _, c := range cases {
 		d := &stubDoc{previewErr: c.err}
@@ -166,6 +172,9 @@ func TestDocPreviewErrorMapping(t *testing.T) {
 		hs.Close()
 		if resp.StatusCode != c.want {
 			t.Fatalf("%v 应映射 %d,得 %d(%s)", c.err, c.want, resp.StatusCode, body)
+		}
+		if c.body != "" && strings.TrimSpace(string(body)) != c.body {
+			t.Fatalf("%v 的响应体应为 %q,得 %q", c.err, c.body, body)
 		}
 	}
 }

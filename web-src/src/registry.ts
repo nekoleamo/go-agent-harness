@@ -32,6 +32,13 @@ export interface InputProps {
   state?: StateView
   // v1.2 可选扩展:禁用原因文案(如断连),覆盖默认的「回合进行中…」占位(S-P1-3)
   disabledHint?: string
+  // v1.3 可选扩展:回合进行中。**不是 disabled** —— 运行时输入框照旧可编辑、回车即提交,
+  // 宿主会把消息注入当前回合(转向);只是不能新挂附件(转向通道不带附件)。
+  busy?: boolean
+  // v1.3 可选扩展:中止运行中的回合(API 调 /api/control {cancel:true})。
+  // 为何必须给一个出口:审批现在默认**不限时地等**,没有中止入口时用户只剩「拒绝」
+  // 一招(而拒绝会让模型换个方式再试,不是他要的「停下来」)。
+  onCancel?: () => void
 }
 export interface StatusbarProps {
   state: StateView

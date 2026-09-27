@@ -1176,7 +1176,10 @@ watch(
   margin-bottom: 8px;
   word-break: break-word;
 }
-.scrow {
+/* .prow.scrow 提高特异性:.prow 的 align-items:center 在样式表里更靠后,会盖掉这里的 stretch ——
+   而 scrow 的堆叠布局全靠 stretch(cross 轴不被 stretch 时,flex item 宽 = 内容 min-content,
+   长计划名/长错误文本会把面板撑出横向滚动)。 */
+.prow.scrow {
   flex-direction: column;
   align-items: stretch;
   gap: 6px;
@@ -1192,6 +1195,8 @@ watch(
   font-size: 13px;
   font-weight: 500;
   color: var(--fg);
+  /* 计划名可能是一整段无空格文本:不断行就会溢出面板,把设置页拉出横向滚动条。 */
+  overflow-wrap: anywhere;
 }
 .sstate {
   font-size: 10px;
@@ -1493,6 +1498,8 @@ textarea.inp {
   font-size: 13px;
   color: var(--fg);
   font-weight: 500;
+  /* 插件 ID / 用户自定义的 provider 名同样是单段无空格文本:与 .dim 同理，不断行就溢出面板。 */
+  overflow-wrap: anywhere;
 }
 .pbadge {
   align-self: flex-start;
@@ -1520,6 +1527,9 @@ textarea.inp {
   font-size: 12px;
   color: var(--fg-faint);
   margin: 4px 0;
+  /* 这句里的路径/URL/命令常是一整段无空格文本(如 mcp 配置文件路径):不断行就溢出面板,
+     而 .body 的 overflow-y:auto 会把 overflow-x 也算成 auto ⇒ 设置页多出一条横向滚动条。 */
+  overflow-wrap: anywhere;
 }
 /* 产物校验值列表(R10 ⑤-3):等宽字体便于逐字符比对;折行不裁剪(哈希截断会误导) */
 .digests {

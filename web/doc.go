@@ -23,11 +23,14 @@ import (
 // docMaxRenderBytes /api/doc/render 请求体上限(会话流单条文本)。
 const docMaxRenderBytes = 256 << 10
 
-// docErrStatus 把 sdk 哨兵错误映射为 HTTP 状态码。
+// docErrStatus 把 sdk 哨兵错误映射为 HTTP 状态码 + 文案。
+// 文案**带上哨兵之后的具体原因**:403 只说「路径不被允许」时用户没法自助排查
+// (真机反馈「让 agent 打开的 excel 返回 403,不知道为什么」)—— resolver 那条链
+// 已经把原因写得很具体(不在工作区/附件目录内、密钥类文件、相对路径不得含 .. 等)。
 func docErrStatus(err error) (int, string) {
 	switch {
 	case errors.Is(err, sdk.ErrDocDenied):
-		return http.StatusForbidden, "路径不被允许"
+		return http.StatusForbidden, withDetail("路径不被允许", err, sdk.ErrDocDenied)
 	case errors.Is(err, sdk.ErrDocNotFound):
 		return http.StatusNotFound, "文件不存在"
 	case errors.Is(err, sdk.ErrDocTooLarge):
@@ -39,6 +42,15 @@ func docErrStatus(err error) (int, string) {
 	default:
 		return http.StatusBadRequest, "请求无效"
 	}
+}
+
+// withDetail 拼出「概述 + 具体原因」;原因取哨兵文本之后的片段(无原因则只用概述)。
+func withDetail(base string, err error, sentinel error) string {
+	d := strings.TrimSpace(strings.TrimPrefix(err.Error(), sentinel.Error()+":"))
+	if d == "" || d == err.Error() {
+		return base
+	}
+	return base + ":" + d
 }
 
 // docRequest 从查询参数构造请求(strict 恒真:Web 端不允许任意绝对路径)。

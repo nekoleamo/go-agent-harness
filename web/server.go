@@ -385,6 +385,16 @@ func (s *Server) consumeStream(after uint64, sink func(Frame) error, stop <-chan
 	ch, unsub := s.hub.Stream()
 	defer unsub()
 	seen := after // 已消费会话游标(会话帧按 Seq 全局递增;非会话帧 ID=0 不参与去重)
+	// 未决审批弹层补推(只推给本连接):confirm 帧是实时广播、不落账本,而审批现在默认
+	// **不限时地等** —— 用户刷新/重开页面期间推出去的弹层就丢了,不补推他会永远等下去。
+	// 其它已连着的前端早就收到过同一帧,所以只推本连接,不用广播。
+	if s.confirm != nil {
+		for _, p := range s.confirm.Pending() {
+			if err := sink(Frame{Type: FrameConfirm, Payload: p}); err != nil {
+				return
+			}
+		}
+	}
 	var replay []Frame
 	if after == 0 {
 		frames, base := s.hub.ReplayTail(s.sessions)
@@ -541,9 +551,11 @@ func (s *Server) handleInput(w http.ResponseWriter, r *http.Request) {
 	}
 	// 回合进行中:普通消息改**注入当前回合**(转向:模型下一次请求就会看到,对齐 TUI);
 	// 命令路径(/开头)保持拒收(命令即时执行,不经回合),未装配转向能力时同样回落 409。
+	// **带附件也不走转向**:转向通道只带文本(见 host-agent-loop 的 Steer),放进去等于
+	// 把附件静默丢掉 —— 宁可 409 让用户等回合结束,也不假装收下了。
 	// 权威占用在下方 CAS。
 	if s.running.Load() {
-		if !strings.HasPrefix(content, "/") && s.steer(content) {
+		if !strings.HasPrefix(content, "/") && len(resolved) == 0 && s.steer(content) {
 			writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "accepted": "steer"})
 			return
 		}
@@ -571,8 +583,9 @@ func (s *Server) handleInput(w http.ResponseWriter, r *http.Request) {
 	// CAS 原子占用:Load+Store 分离时并发双击可同时通过快速检查,跑出两个回合
 	// (两个 goroutine 共享同一 Loop 的回合状态)。
 	if !s.running.CompareAndSwap(false, true) {
-		// 竞态:另一请求刚起回合 → 同样按转向处理(不静默丢用户输入)
-		if s.steer(content) {
+		// 竞态:另一请求刚起回合 → 同样按转向处理(不静默丢用户输入);
+		// 带附件同样不走转向(理由见上面的闸门)。
+		if len(resolved) == 0 && s.steer(content) {
 			writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "accepted": "steer"})
 			return
 		}

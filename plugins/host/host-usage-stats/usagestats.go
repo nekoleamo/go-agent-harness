@@ -80,6 +80,7 @@ type Service struct {
 	learned            map[string]int // 错误驱动学习缓存(模型精确名 → 实测窗口)
 	model              string
 	prompt, completion int
+	lastPrompt         int // 最近一次请求的实测输入 token(上下文占用口径,不是累计)
 	cached             int
 	requests           int
 }
@@ -129,6 +130,7 @@ func (s *Service) add(model string, u sdk.Usage) {
 	}
 	s.prompt += u.PromptTokens
 	s.completion += u.CompletionTokens
+	s.lastPrompt = u.PromptTokens // 上下文占用 = 最近一次发出去的 prompt,与累计量无关
 	s.cached += u.CachedTokens
 	s.requests++
 }
@@ -151,6 +153,7 @@ func (s *Service) Stats() sdk.UsageStats {
 		CompletionTokens: s.completion,
 		CachedTokens:     s.cached,
 		Requests:         s.requests,
+		LastPromptTokens: s.lastPrompt,
 		Window:           s.currentWindow(),
 	}
 }
@@ -160,5 +163,6 @@ func (s *Service) Reset() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.prompt, s.completion, s.cached, s.requests = 0, 0, 0, 0
+	s.lastPrompt = 0
 	s.model = ""
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -175,6 +176,62 @@ func TestResolveAttachmentFallback(t *testing.T) {
 	_, err = r.Resolve("20990101-000000/nope.pdf", true)
 	if !errors.Is(err, sdk.ErrDocNotFound) || !strings.Contains(err.Error(), "20990101-000000/nope.pdf") {
 		t.Fatalf("不存在的文件应报 ErrDocNotFound 且保留原路径,得到 %v", err)
+	}
+}
+
+// 切工作区后 resolver 必须用**新**工作根:沙箱 root 与进程 cwd 都会变,而 resolver 是
+// 插件 Start 时构造的 —— 冻结快照会把新工作区整个判成「不在工作区/附件目录内」→ 403
+// (真机反馈:打开工作区内的文件返回 403)。
+func TestResolveFollowsWorkspaceSwitch(t *testing.T) {
+	ws, _, home := newFixture(t)
+	ws2 := filepath.Join(filepath.Dir(ws), "workspace2")
+	if err := os.MkdirAll(ws2, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f2 := filepath.Join(ws2, "book.xlsx")
+	if err := os.WriteFile(f2, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sb := &fakeSandbox{mode: sdk.SandboxFullAccess, root: ws}
+	r := NewResolver(sb, home)
+	if _, err := r.Resolve(filepath.Join(ws, "note.md"), true); err != nil {
+		t.Fatalf("初始工作区内的文件应放行: %v", err)
+	}
+
+	sb.root = ws2 // 切工作区(host-cwd-sessions → SandboxPolicy.SetRoot)
+	if _, err := r.Resolve(f2, true); err != nil {
+		t.Fatalf("切工作区后新工作区内的文件应放行,得: %v", err)
+	}
+	// 相对路径也得以新根锤定(返回值是 realpath,macOS 上 t.TempDir() 走 /var → /private/var)
+	if got, err := r.Resolve("book.xlsx", true); err != nil {
+		t.Fatalf("相对路径应以新工作根锤定: %v", err)
+	} else if want, werr := filepath.EvalSymlinks(f2); werr == nil && got != filepath.Clean(want) {
+		t.Fatalf("相对路径解成 %q,期望 %q", got, want)
+	}
+}
+
+// within 大小写折叠分支:Windows 上 C:\WS 与 c:\ws 是同一个目录,纯字符串比较
+// 会把合法路径判成「不在根内」→ 403(在非 Windows 上显式开启该分支也能验)。
+func TestWithinFold(t *testing.T) {
+	root := filepath.FromSlash("/a/WS")
+	p := filepath.FromSlash("/a/ws/sub/a.xlsx")
+	if withinFold(root, p, false) {
+		t.Fatal("折叠关闭时大小写不同不得判为在内(否则非 Windows 会放宽归属)")
+	}
+	if !withinFold(root, p, true) {
+		t.Fatal("折叠开启时应判为在内")
+	}
+	// 折叠不允许把同前缀的另一个目录也算进来
+	if withinFold(root, filepath.FromSlash("/a/ws2/x"), true) {
+		t.Fatal("同前缀不同目录段不得因折叠而被判为在内")
+	}
+	if withinFold("", p, true) {
+		t.Fatal("空根不得判为在内")
+	}
+	// 平台默认值:折叠只在 Windows 打开(在其它平台白开折叠 = 静默放宽归属判定)
+	if runtime.GOOS != "windows" && within(root, p) {
+		t.Fatal("非 Windows 平台 within 不得折叠大小写")
 	}
 }
 

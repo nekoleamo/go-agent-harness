@@ -64,7 +64,9 @@ export const api = {
   },
   // 提交输入(回合)或斜杠命令;回合运行中普通消息**注入当前回合**(转向,响应 accepted=steer),
   // 无法注入时后端 409 拒绝;attachments=附件本地路径(/api/attachments 返回)
-  input(content: string, attachments?: string[]): Promise<void> {
+  // input 提交回合。回执 accepted:'turn' = 开了新回合;'steer' = 回合进行中,
+  // 消息已注入当前回合(转向,模型下一次请求可见)。
+  input(content: string, attachments?: string[]): Promise<{ ok?: boolean; accepted?: string }> {
     return req('/api/input', {
       method: 'POST',
       headers: json,
@@ -86,7 +88,16 @@ export const api = {
     return v
   },
   // 状态栏级控制(模型/思考/沙箱/审批/工作区;M17 审批档位 open|smart|strict)
-  control(body: { model?: string; thinking?: string; sandbox?: string; approval?: string; sandbox_sync?: boolean; workspace?: string }): Promise<void> {
+  // cancel 中止运行中的回合(经 ctx.turnControl)
+  control(body: {
+    model?: string
+    thinking?: string
+    sandbox?: string
+    approval?: string
+    sandbox_sync?: boolean
+    workspace?: string
+    cancel?: boolean
+  }): Promise<void> {
     return req('/api/control', { method: 'POST', headers: json, body: JSON.stringify(body) })
   },
 

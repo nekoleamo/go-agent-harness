@@ -79,6 +79,7 @@ function degrade(h: FileChange['hunks'][number]): string {
     <div v-if="files.length === 0" class="empty">
       本会话还没有捕获到文件改动
       <div class="empty-sub">只记录经工具写盘的操作(file_write / file_append / file_edit);不读 git 状态</div>
+      <div class="empty-sub">这里是「变更」视图 —— 对话内容在「会话流」视图(点状态栏的视图按钮切换)</div>
     </div>
     <template v-else>
       <div v-if="props.partial" class="ov-partial">更早历史未加载(在会话流上滚加载);以下仅本次窗口捕获的改动</div>

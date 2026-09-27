@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -45,7 +46,14 @@ var dangerousPatterns = []struct {
 	{"特权操作(sudo/pkexec)", regexp.MustCompile(`\bsudo\b|\bpkexec\b`)},
 }
 
-const confirmTimeout = 2 * time.Minute
+// confirmTimeoutDefault 审批等待上限默认值:**0 = 不限时**。
+// 为何改默认:原先硬编 2 分钟,人一离开(倒杯水/开会)回合就按「安全默认拒绝」往下走了,
+// 而弹层还挂在界面上 —— 用户回来后既不知道已经拒了、也已经晚了(真机反馈:
+// 「超时系统默认失败,继续进行」「应等到操作结果再继续,无结果不继续后续操作」)。
+// 现在默认一直等到用户答复;终止只剩两条路:用户应答、或 ctx 被取消(界面按停止/Esc,
+// 回合被取消 —— 取消本身就不会继续后续操作)。
+// 需要「无人守候也不卡住」的场景用 data.confirm_timeout_sec 显式给一个 >0 的秒数。
+const confirmTimeoutDefault time.Duration = 0
 
 // ApprovalPolicy 实现 sdk.ApprovalService(带锁,运行期可切档)。
 // 除「危险命令模式」(shell 文本启发)外,还承载**工具级审批名单**(E-A):
@@ -54,6 +62,9 @@ type ApprovalPolicy struct {
 	mu    sync.RWMutex
 	mode  sdk.ApprovalMode
 	tools map[string]bool // 需审批工具名(不可变集,Start 时定下)
+	// confirmTimeout 等待用户答复的上限(0 = 不限,见 confirmTimeoutDefault)。
+	// 不可变集:Start 时从 data.confirm_timeout_sec 定下。
+	confirmTimeout time.Duration
 }
 
 func (p *ApprovalPolicy) Mode() sdk.ApprovalMode {
@@ -146,10 +157,14 @@ func (p *ApprovalPolicy) decide(ctx context.Context, confirm sdk.ConfirmService,
 	case sdk.ApprovalStrict:
 		return fmt.Errorf("approval: 严格档拒绝需审批的%s", label)
 	default: // smart(默认,现状行为)
-		cl, cancel := context.WithTimeout(ctx, confirmTimeout)
-		defer cancel()
 		if confirm == nil {
 			return fmt.Errorf("approval: 检测到需审批的%s,无确认通道,已拒绝", label)
+		}
+		cl := ctx
+		if p.confirmTimeout > 0 {
+			var cancel context.CancelFunc
+			cl, cancel = context.WithTimeout(ctx, p.confirmTimeout)
+			defer cancel()
 		}
 		ok, err := confirm.Confirm(cl, fmt.Sprintf("确认执行%s? y/n", label))
 		if err != nil {
@@ -160,6 +175,24 @@ func (p *ApprovalPolicy) decide(ctx context.Context, confirm sdk.ConfirmService,
 		}
 		return nil
 	}
+}
+
+// parseConfirmTimeout 解析 data.confirm_timeout_sec(秒;<=0/缺项 = 不限时)。
+// 宽容取值:yaml 解出来可能是 int / int64 / float64,也可能是字符串数字。
+func parseConfirmTimeout(v any) time.Duration {
+	switch t := v.(type) {
+	case int:
+		return time.Duration(t) * time.Second
+	case int64:
+		return time.Duration(t) * time.Second
+	case float64:
+		return time.Duration(t * float64(time.Second))
+	case string:
+		if n, err := strconv.ParseFloat(strings.TrimSpace(t), 64); err == nil {
+			return time.Duration(n * float64(time.Second))
+		}
+	}
+	return 0
 }
 
 // toolArgPreviewRunes 工具参数摘要的字符上限(确认弹层文本需短)。

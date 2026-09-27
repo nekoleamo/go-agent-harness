@@ -53,7 +53,7 @@ function startStatic(root) {
 // 越界放大到 521 个元素的场景。渲染不出内容不影响判定 —— 这里断言的是外壳几何,不是业务数据。
 // 文案一律 ASCII:CI 的 ubuntu 镜像只带 fonts-noto-color-emoji(**没有 CJK 字体**),中文会渲成
 // 豆腐块 —— 字形宽度差异不是我们要测的东西,别让它污染几何断言。
-function makeStub(withProviders) {
+function makeStub(withProviders, longTokens = false, running = false) {
   return (route) => {
     const url = new URL(route.request().url())
     const p = url.pathname
@@ -64,8 +64,10 @@ function makeStub(withProviders) {
         model: 'layout-guard/model',
         thinking: 'off',
         sandbox: 'full',
-        stats: { prompt_tokens: 1200, completion_tokens: 300, cached_tokens: 0, requests: 3, window: 200000 },
-        running: false,
+        // stats 内层字段不带 json tag(直接用 sdk.UsageStats 字段名)——必须 PascalCase,
+        // 写成 snake_case 前端读不到(上下文会显示 '–',桩就与真实契约不一致了)。
+        stats: { PromptTokens: 1200, CompletionTokens: 300, CachedTokens: 0, Requests: 3, LastPromptTokens: 1200, Window: 200000 },
+        running,
         version: 'layout-guard',
       })
     }
@@ -87,14 +89,52 @@ function makeStub(withProviders) {
     // provider 数为 0 时首屏会自动弹设置面板(App.vue maybeOnboard)—— 那也是要覆盖的真实状态,
     // 所以不是一律给 1 个(见「首启态」用例)。
     if (p === '/api/providers') {
-      return json(
-        withProviders
-          ? [{ Name: 'layout', BaseURL: 'http://127.0.0.1:1/v1', APIKey: 'sk-layout', Model: 'layout-guard/model', Active: true }]
-          : [],
-      )
+      if (!withProviders) return json([])
+      // longTokens:provider 名与插件 ID 都是「用户/打包决定、可能出现无空格长 token」的字段。
+      const pname = longTokens ? 'provider-name-without-any-break-0123456789abcdef' : 'layout'
+      return json([{ Name: pname, BaseURL: 'http://127.0.0.1:1/v1', APIKey: 'sk-layout', Model: 'layout-guard/model', Active: true }])
+    }
+    if (p === '/api/plugins' && longTokens) {
+      return json([{ ID: 'host-plugin-with-a-very-long-identifier-0123456789abcdef', Type: 'host', State: 'loaded', manage: 'external' }])
     }
     if (p === '/api/models') return json({ providers: [] })
-    if (p === '/api/mcp') return json({ path: '', servers: [], reload_available: false, plugin_loaded: false })
+    if (p === '/api/mcp') {
+      if (!longTokens) return json({ path: '', servers: [], reload_available: false, plugin_loaded: false })
+      // 长 token 场景照搬真机形状:Windows 配置路径与 MCP 启动命令都是一整段无空格文本,正是
+      // 「设置面板多出一条横向滚动条」的触发器(见下方专门用例)。
+      return json({
+        path: 'C:\\Users\\nekole\\AppData\\Local\\dev.gah.desktop\\bin\\gah-data\\config\\mcp.json',
+        servers: [
+          {
+            name: 'deja',
+            command: 'npx -y @modelcontextprotocol/server-memory --registry=https://registry.npmmirror.com',
+            enabled: true,
+            mode: 'direct',
+          },
+        ],
+        reload_available: true,
+        plugin_loaded: true,
+      })
+    }
+    if (p === '/api/schedules' && longTokens) {
+      return json([
+        {
+          id: 's1',
+          name: '每日对账',
+          cron: '0 8 * * *',
+          prompt: 'x',
+          enabled: true,
+          next_run: 1_900_000_000,
+          last_run_at: 1_900_000_000,
+          last_status: 'failed',
+          last_error: 'connect ECONNREFUSED 127.0.0.1:11434',
+        },
+      ])
+    }
+    if (p === '/api/input') {
+      // 运行中的提交回 accepted=steer(宿主把消息注入当前回合);否则 turn(开新回合)。
+      return json({ ok: true, accepted: running ? 'steer' : 'turn' })
+    }
     if (p === '/api/doc/tree') return json({ entries: [] })
     return json([])
   }
@@ -358,6 +398,110 @@ describe('布局护栏:整页永不滚动(第五十二/五十三批)', { skip: s
       })
     }
   }
+
+  // 设置面板内部不许出现横向滚动条(第六十三批真机反馈)。
+  // 为何整页护栏查不到:.body 的 overflow-y:auto 会把 overflow-x 也算成 auto ⇒ 面板里任何一处
+  // 不换行的长 token(Windows 配置路径、MCP 启动命令、计划报错)都会在面板底部多出一条横向滚动条;
+  // 而 measure() 的 clip() 把带 auto/hidden 的祖先当裁切柜 —— .body 恰好就是。只能单测面板内部。
+  for (const vp of [{ w: 1200, h: 800 }, { w: 820, h: 560 }]) {
+    test(`${vp.w}x${vp.h} 设置面板内不出现横向滚动条(长路径/长命令)`, async (t) => {
+      const ctx = await browser.newContext({ viewport: { width: vp.w, height: vp.h } })
+      let page = null
+      try {
+        page = await open(ctx, makeStub(true, true), docks[1].dock)
+        await page.click('.gear')
+        await page.waitForSelector('[aria-label="设置"]')
+        await page.waitForTimeout(300)
+        const m = await page.evaluate(() => {
+          const panel = document.querySelector('[aria-label="设置"]')
+          const body = panel.querySelector('.body')
+          const br = body.getBoundingClientRect()
+          const nm = (el) =>
+            el.tagName.toLowerCase() +
+            (typeof el.className === 'string' && el.className ? '.' + el.className.trim().split(/\s+/).slice(0, 2).join('.') : '')
+          const off = []
+          for (const el of panel.querySelectorAll('*')) {
+            const bb = el.getBoundingClientRect()
+            if (bb.width === 0 && bb.height === 0) continue
+            if (bb.right > br.right + 1 || bb.left < br.left - 1) off.push(nm(el))
+          }
+          return { scrollW: body.scrollWidth, clientW: body.clientWidth, off: off.slice(0, 6) }
+        })
+        assert.ok(
+          m.scrollW <= m.clientW + 1,
+          `设置面板被撑出横向滚动条:scrollWidth=${m.scrollW} > clientWidth=${m.clientW};越界元素=${JSON.stringify(m.off)}`,
+        )
+      } catch (e) {
+        await shoot(page, t.name)
+        throw e
+      } finally {
+        await ctx.close()
+      }
+    })
+  }
+
+  // 发消息必须能看见回复:视图是全屏切换的,而 `/diff` 会把视图切到「变更」且此前没有
+  // 任何逻辑切回 —— 真机反馈的「说什么都返回『本会话还没有捕获到文件改动』」就是它
+  // (那是变更视图的空态,回复全进了看不见的会话流)。
+  test('发消息自动切回会话流(变更视图不吞掉回复)', async (t) => {
+    const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+    let page = null
+    try {
+      page = await open(ctx, makeStub(true, false), docks[0].dock)
+      // 视图按钮循环:会话流 → 轨迹 → 变更。用空态里的「变更」自述确认确实切过去了。
+      await page.click('[data-tip^="切换视图"]')
+      await page.click('[data-tip^="切换视图"]')
+      await page.waitForSelector('.chg .empty', { timeout: 5000 })
+      // 非会话流视图必须常驻提醒「消息在会话流」(这条才是真机误判的根治:光靠发消息切回,
+      // 切过来之后那一段时间依然看不到回复)。
+      const bar = await page.textContent('.vbar-text')
+      assert.ok(bar?.includes('会话流'), `非会话流视图应提示消息在会话流: ${bar}`)
+      // 发一条消息(桥的 /api/input 走桖的 200 空数组即可 —— 判的是视图,不是回合内容)
+      await page.fill('.input-slot textarea', 'hello')
+      await page.keyboard.press('Enter')
+      await page.waitForFunction(() => !document.querySelector('.chg .empty') && !document.querySelector('.vbar'), null, { timeout: 5000 })
+      assertInvariants(await measure(page))
+    } catch (e) {
+      await shoot(page, t.name)
+      throw e
+    } finally {
+      await ctx.close()
+    }
+  })
+
+  // 回合进行中输入框不得锁死:宿主早已支持把消息注入当前回合(转向),前端一旦把
+  // running 当 disabled 传下去,用户按 Enter 什么都不会发生 —— 真机反馈正是
+  // 「会话进行时,输入框无法输入」。
+  test('回合进行中可输入并 Enter 注入当前回合', async (t) => {
+    const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+    let page = null
+    try {
+      page = await open(ctx, makeStub(true, false, true), docks[0].dock)
+      const ta = '.input-slot textarea'
+      assert.equal(await page.isDisabled(ta), false, '回合进行中输入框不应被禁用')
+      await page.fill(ta, '改成 B 方案')
+      await page.keyboard.press('Enter')
+      await page.waitForFunction(
+        () => (document.querySelector('.stream-slot')?.textContent || '').includes('已注入当前回合'),
+        null,
+        { timeout: 5000 },
+      )
+      assert.equal(await page.inputValue(ta), '', '已受理的注入应清空草稿')
+      // 运行中必须有中止出口:审批默认不限时等待,没有它就只剩「拒绝」一招。
+      assert.ok(await page.isVisible('.stop'), '回合进行中应显示「停止」按钮')
+      const [req] = await Promise.all([
+        page.waitForRequest((r) => r.url().includes('/api/control')),
+        page.click('.stop'),
+      ])
+      assert.ok((req.postData() || '').includes('"cancel":true'), '停止应发 cancel:true')
+      assertInvariants(await measure(page))
+    } catch (e) {
+      await shoot(page, t.name)
+      throw e
+    } finally {
+      await ctx.close()
+    }
+  })
 
   test('侧栏开合语义:展开只有 .panel,收起只有 .handle', async (t) => {
     const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })

@@ -7,12 +7,25 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/nekoleamo/go-agent-harness/core/ctx"
 	"github.com/nekoleamo/go-agent-harness/core/event"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-tools"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
+
+// blockingConfirm 阻塞到 ctx 结束(模拟「人在,但还没答」)。
+type blockingConfirm struct{ released chan bool }
+
+func (b *blockingConfirm) Confirm(ctx context.Context, _ string) (bool, error) {
+	select {
+	case ok := <-b.released:
+		return ok, nil
+	case <-ctx.Done():
+		return false, ctx.Err()
+	}
+}
 
 // fakeConfirm 可编程确认实现。
 type fakeConfirm struct {
@@ -137,6 +150,53 @@ func TestApprovalModes(t *testing.T) {
 	ap3.SetMode(sdk.ApprovalOpen)
 	if res := exec(c3); res.Error != "" {
 		t.Fatalf("切 open 档后应放行,got %+v", res)
+	}
+}
+
+// TestConfirmTimeoutDefaultUnlimited 审批等待默认**不限时**(confirmTimeout=0)。
+// 原先硬编 2 分钟:人一离开,回合就按「安全默认拒绝」往下走了,弹层还挂在界面上
+// (真机反馈「超时系统默认失败,继续进行」「应等到操作结果再继续」)。
+// 这里直接钉住配置解析:缺项 = 0(不限),显式给秒数才启用超时。
+func TestConfirmTimeoutDefaultUnlimited(t *testing.T) {
+	c := build(t, &fakeConfirm{resp: true})
+	var ap sdk.ApprovalService
+	if err := c.Inject("ctx.approval", &ap); err != nil {
+		t.Fatal(err)
+	}
+	if got := ap.(*ApprovalPolicy).confirmTimeout; got != 0 {
+		t.Fatalf("默认应不限时(0),得 %v", got)
+	}
+	c2 := build(t, &fakeConfirm{resp: true}, map[string]any{"confirm_timeout_sec": 90})
+	var ap2 sdk.ApprovalService
+	if err := c2.Inject("ctx.approval", &ap2); err != nil {
+		t.Fatal(err)
+	}
+	if got := ap2.(*ApprovalPolicy).confirmTimeout; got != 90*time.Second {
+		t.Fatalf("显式配置应生效(90s),得 %v", got)
+	}
+}
+
+// TestConfirmTimeoutConfiguredRejects 显式配了超时:到点按安全默认拒绝(不再无限等)。
+// 与上一条配成对:默认不限时是给人留时间,不是把「无人守候也不卡住」这个能力去掉。
+func TestConfirmTimeoutConfiguredRejects(t *testing.T) {
+	cf := &blockingConfirm{released: make(chan bool, 1)}
+	c := build(t, cf, map[string]any{"approval": "smart", "sandbox": "full-access", "confirm_timeout_sec": 1})
+	var tools sdk.ToolRegistry
+	if err := c.Inject("ctx.tools", &tools); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	start := time.Now()
+	res, err := tools.Execute(ctx, "shell", `{"command":"rm -rf /tmp/x"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Error == "" {
+		t.Fatal("超时后应拦截(安全默认拒绝)")
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("应在配置的 1s 左右超时,实际 %v", d)
 	}
 }
 

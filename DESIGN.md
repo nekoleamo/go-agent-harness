@@ -845,6 +845,95 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 
 > **发布**:v0.1.1(2026-09-13)已出 —— macOS `gah_0.1.1_aarch64.dmg`(34.18 MiB)+ Windows `gah_0.1.1_x64-setup.exe`(31.59 MiB)+ updater `gah.app.tar.gz`/`latest.json`(实测 `releases/latest/download/latest.json` HTTP 200,`version=0.1.1`,双平台签名齐备)+ 命令行五目标归档与 `checksums.txt`;三个 workflow(`ci`/`release-cli`/`release-desktop`)全绿,流程与产物清单见 `docs/RELEASE.md`「发布记录:v0.1.1」。
 
+### 第六十四批 · 运行中可继续输入(转向)+ 审批等待不再超时(web + policy,2026-09-26)
+
+真机反馈两条,合在 `running` 生命周期里:**「会话进行时输入框无法输入」**、**「审批超时后系统默认失败继续,但弹窗仍留在界面上 —— 应等到操作结果再继续」**。
+
+**一 · 运行中输入框锁死**
+
+| # | 根因 | 说明 |
+|---|---|---|
+| 1 | `App.vue` 传 `:disabled="state.running \|\| offline"` | 运行时 textarea 直接 disabled —— 但**宿主早已支持转向**(`web/server.go` `handleInput`:running 时非 `/` 开头消息 → `s.steer(content)` → 202 `{accepted:"steer"}`;`agentloop.go` 的 `pushSteer`/`injectSteers` 把消息落账为 `EventUserMessage` → 会话流可见)。能力做完了、入口把自己关上了 |
+| 2 | 转向通道**不带附件** | `Steer` 只收文本;前端旧行为会把附件一并 PUT 走 |
+
+修法:**busy ≠ disabled**。`InputBar` 新增可选 `busy` prop(`disabled || busy` → 附件入口与上传失败,textarea 仍可编辑可提交;placeholder 三态提示),`App.vue` 改 `:disabled="offline"` + `:busy="state.running"`;`api.input()` 回传 `accepted` → `steer` 时向会话流插一条 `已注入当前回合(模型下一次请求即可见)` 的状态行(注入必须可见,否则用户以为没发出去)。
+
+**宿主侧防线**:`server.go` 两处 steer 分支都加 `len(resolved) == 0` —— 带附件的提交回落 **409**,绝不静默丢附件(前端漏判也不丢数据);配 `TestInputSteerRefusesAttachments`(上传 png + `running=true` → 409 且 `tc.texts()` 为空)。
+
+**二 · 审批等待不再超时**
+
+| # | 根因 | 说明 |
+|---|---|---|
+| 1 | `policy-guard/approval.go` `const confirmTimeout = 2 * time.Minute` | 硬编 2 分钟:人离开一下回合就按「安全默认拒绝」往下走 —— **后续操作照做**了,而用户要的是「无结果不继续」 |
+| 2 | `web/confirm.go` 的 `ctx.Done()` 只清 pending、**不推任何帧** | 单 profile 是 web 自己 `Provide("ctx.confirm")`,不经 `host-confirm-fusion` ⇒ 没有 `confirm/resolved` 事件可订阅 ⇒ 前端收不到 `confirmdone` ⇒ **弹层永远留在界面上**(融合路径由 Fusion 统一广播,早就没这问题) |
+| 3 | 无限等待的配套缺口(改默认值才暴露) | ① confirm 帧是实时广播、**不落账本**,刷新/重开页面后弹层丢失 ⇒ 没人应答的回合会**真的永久挂住**;② 前端**没有中止回合的入口**(`/api/control {cancel:true}` 在 Go 侧早就有,web 前端从未调用) —— 没有出口时用户只剩「拒绝」一招,而拒绝只是让这一步失败、模型会换个方式再试,不是他要的「停下来」 |
+
+修法:
+- **默认不限时**(`confirmTimeoutDefault = 0`):只有用户应答或 ctx 取消(回合停止/进程退出)才结束;要保留旧能力则显式配 `data.confirm_timeout_sec`(经 `parseConfirmTimeout` 解析 int/float/string 秒)。
+- **超时/取消也推裁决帧**:`web/confirm.go` 的 `ctx.Done()` 分支推 `FrameConfirmDone{Err: ctx.Err()}`;前端 `confirmdone` 带 `err` 时插一条 `审批未等到应答(…),该动作未执行`。
+- **新连接补推未决弹层**:`ConfirmService` 记 `pendingConfirm{prompt}` + `Pending()`(按 id 升序),`consumeStream` 建立连接时**只向本连接**补推 `FrameConfirm`(其它已连着的端早就收到过)。
+- **给用户一个出口**:`InputProps` 新增可选 `onCancel`,`InputBar` 在 `busy` 时显示「停止」按钮(`App.vue` → `api.control({cancel:true})`);审批弹层加一行说明「回合会一直等你答复(不会自动超时);想中止可按输入区的「停止」」。
+- 无人值守语义**不变**(`sdk.UnattendedOf` 下需审批动作一律直拒且绝不弹确认)。
+
+**护栏**:
+- `policy-guard/approval_test.go`:`TestConfirmTimeoutDefaultUnlimited`(缺项 ⇒ `confirmTimeout==0`;`confirm_timeout_sec: 90` ⇒ 90s)+ `TestConfirmTimeoutConfiguredRejects`(配 1s + 阻塞确认 ⇒ 拦截且 <5s;配成对证明「默认不限时」不是把「无人守候也不卡住」这个能力去掉)。
+- `web/confirm_test.go`:`TestConfirmCancelRejects` 改为**必须收到 `confirmdone` 帧**(带 prompt + 非空 err),挡的就是「弹层残留」这条真机现象;`TestPendingConfirmReplayedOnConnect`(新连接补推未决弹层 + 应答后不再补推)。
+- `web-src/test/layout.test.mjs`:桩加 `/api/input` 分支(`running` 时回 `accepted:'steer'`)与第三个参数 `running`;用例「回合进行中可输入并 Enter 注入当前回合」断言 textarea 未 disabled、注入提示出现、草稿清空、`.stop` 可见且点击发出 `cancel:true`。
+
+**反例验证(三条,均先变红再复原)**:① 删掉 `confirm.go` 那句 `hub.Push(FrameConfirmDone…)` ⇒ `TestConfirmCancelRejects` 红(`取消后未收到 confirmdone 帧(弹层会残留)`);② 把 `InputBar` 的停止按钮 `v-if` 注成 false ⇒ `npm run build` 出 dist 后布局用例红(`回合进行中应显示「停止」按钮`);③ 把 `:disabled` 改回 `offline || state.running` ⇒ 注入用例红。
+
+**三 · 「打开工作区内的文件返回 403」(真机,2026-09-26)**
+
+用户补的信息很关键:**是工作区内的文件**(不是工作区外 —— 那就不是「设计如此」,而是真 bug);同时确认「检查更新」功能正常,该条关闭。
+
+**真根因(冻结的工作根)**:`plugins/host/host-docview/resolver.go` 的 `Resolver.workRoot` 是**构造时快照**(插件 `Start` 时刻的 `sb.Root()` 或进程 cwd),而**切工作区只更新别处** —— `cwd/workspace-switched` 广播 → `SandboxPolicy.SetRoot(dir)` + `os.Chdir`。快照没跟着走 ⇒ Web 端(strict)的根集合仍是旧工作区 ⇒ **新工作区里的任何文件都被判「不在工作区/附件目录内」→ 403**(相对路径锚定也锤到旧根,两端都中)。
+
+**为何难自查**:`web/doc.go` 的 `docErrStatus` 把 `sdk.ErrDocDenied` 一律映成「路径不被允许」,而 resolver 早就写了具体原因(不在工作区/附件目录内、密钥类文件、相对路径不得含 `..`……)—— **原因被丢在映射层**,用户拿到 403 也看不出是根不匹配。
+
+修法三条:
+1. **工作根改动态求值**:`Resolver.workRootOf()`(沙箱 `Root()` → 进程 cwd → 构造时快照兜底),`resolve` 的相对路径锚定与 `checkStrict` 的根集合都改用它。
+2. **403 带出具体原因**:`docErrStatus` 经 `withDetail` 拼上哨兵文本之后的片段(哨兵被再包一层/无原因时退回概述)。
+3. **Windows 大小写折叠**:`within` → `withinFold(root, p, foldCase)`,平台默认且**仅 Windows** 折叠(非 Windows 白开折叠 = 静默放宽归属判定);同类坑已有先例(`web/server.go` 的 `attachmentWithinRootFold`)。
+
+**护栏**:`resolver_test.go` 新增 `TestResolveFollowsWorkspaceSwitch`(同一 resolver,`sb.root` 改指新工作区后:新根下文件放行 + 相对路径以新根锤定)、`TestWithinFold`(折叠开/关两支 + `/a/ws2` 不得因折叠被判为 `/a/ws` 内 + 空根 + 平台默认值只在 Windows 折叠);`web/doc_test.go` 的 `TestDocPreviewErrorMapping` 改为带 `body` 期望(原因原样透出、无原因时只用概述、非 403 不得带 403 原因)。
+
+**反例验证(三条,均先变红再复原)**:① `workRootOf` 直接 `return r.workRoot` ⇒ `TestResolveFollowsWorkspaceSwitch` 红,错的就是真机上那句 `… 不在工作区/附件目录内(Web 端不允许任意绝对路径)`;② `within` 恒折叠 ⇒ `TestWithinFold` 红(`非 Windows 平台 within 不得折叠大小写`);③ `withDetail` 直接返回 base ⇒ 响应体用例红。
+
+**验证**:核心包(`go list ./... | grep -v '/tests$'`)全绿;`plugins/... web tui internal` **1729 通过**(55 包)、`cd sdk && go test ./...` 49 通过、`go vet ./...` 干净、`scripts/coverage-check.sh` **COVERAGE_OK**(总覆盖 79.7%);`npm run build`(含 `vue-tsc`)0 错、`npm test` 168 通过、`npm run test:layout` 30 条(29 通过 1 跳过)。
+
+**已知 flaky(诚实登记,本轮观测一次)**:负载很高时(核心包全库测试与 `./tests/` 并行跑)`TestTUIAcceptTwoQuestionsStack` 会在 `waitScreen("待答 2", 45s)` 处超时(pty 交互在重载下变慢);单跑 `-count=3` 全过、`tui` 包本身全绿 ⇒ 与本批改动无关(该用例原本就有 45s 轮询阀值,不再往上抬 —— 抬阀值只会把重载假红掩盖得更久)。
+
+### 第六十三批 · 设置面板横向滚动条 + 变更视图劫持恢复(web,2026-09-26)
+
+真机反馈:**打开设置面板会出现一条横向滚动条**。三层根因叠加:
+
+| # | 根因 | 说明 |
+|---|---|---|
+| 1 | `.body { overflow-y: auto }` ⇒ `overflow-x` 按计算值也是 auto | 面板里**任何一点**横向溢出都会长出横向滚动条;而 `.body` 自己就是裁切柜,整页布局护栏的 `clip()` 视它如无物 —— 这就是它一路漏到真机的原因 |
+| 2 | `.dim` 里的长 token 不换行 | MCP 配置文件路径(Windows 形态 `C:\Users\…\gah-data\config\mcp.json`)、URL/命令/报错都是一整段无空格文本 ⇒ 桩数据复现 **367 > 359**(8px 溢出) |
+| 3 | `.prow.scrow` 的 `align-items: stretch` 被覆盖 | 样式表里 `.prow { align-items: center }` 更靠后、特异性相同 ⇒ scrow 行的 `.pmain` 退化为 fit-content,长 token 时被 min-content 撑到 **1546px**(宽 360 的面板) |
+
+修法(最小面):`.dim`/`.sname`/`.pname` 加 `overflow-wrap: anywhere`;`.scrow` → `.prow.scrow` 提高特异性让 stretch 生效。
+
+**护栏**:`web-src/test/layout.test.mjs` 新增两条用例(1200×800 / 820×560,桩数据含 Windows 长路径 + 长 MCP 命令 + 长 provider 名/插件 ID),断言 `.body` 的 `scrollWidth <= clientWidth`。**反例验证**:去掉那句 `overflow-wrap` 立刻变红(`scrollWidth=367 > clientWidth=359`),护栏确有效力。
+
+**验证**:`npm run test:layout` **28 通过**(含新增 3 条:设置面板长路径 1200×800 / 820×560 + 发消息切回视图);`npm test` 168 通过;`vue-tsc --noEmit` 0 错。
+
+**同批 · “说什么都返回『本会话还没有捕获到文件改动』”(Windows 真机,2026-09-26)**
+
+现象:Windows 端不管让 agent 查 `list_skills`/MCP、还是只说一句「你好」,屏幕上返回的都是 `本会话还没有捕获到文件改动`;mac 端正常。
+
+定位(先排除“模型/工具返回值”这条):那句文案在全仓库只有两个出处 —— `plugins/host/host-internal-commands/diff.go:143`(`/diff` 清单空态)与 `web-src/src/components/ChangesView.vue`(变更视图空态);**没有任何工具(list_skills / read_skill / mcp_search / mcp_call)会产出它**。因此用户看到的是 UI 的「变更」区域,不是查询结果。
+
+触发链:**`/diff` 把主视图切到「变更」**(`App.vue` 的 `transport.on('diff')` → `view.value='changes'`),而**此后没有任何逻辑切回** —— 用户接着发消息,回复全进了看不见的「会话流」,屏幕上一直是那句空态 ⇒ 逐条消息都“返回”同一句。mac 端只是没人触发过 `/diff`。
+
+修法(对事件而不是对个案):
+- `App.vue` `onSubmit`:**提交成功后切回会话流**(`view.value !== 'stream'` 时切回)。人发了消息就该看到回复,不依赖后台是否发过 diff 帧。
+- `ChangesView.vue`:变更视图空态补一句自述「这里是「变更」视图 —— 对话内容在「会话流」视图」,即使真卡住也不再被误读为工具返回。
+- 真机反馈「提醒更直观」⇒ `App.vue` 加**非会话流视图的常驻提醒条** `.vbar`(`v-if="view !== 'stream'"`,带「回到会话流」按钮):空态是“事后解释”,提醒条是“当下可见”,两条互补。
+
+**护栏**:`layout.test.mjs` 新增「发消息自动切回会话流(变更视图不吞掉回复)」——点两次视图按钮进入变更 → 输入框发一条消息 → 断言变更空态消失、提醒条 `.vbar` 也已收起、整页不变量保持。**反例验证**:注掉那句切回后该用例 5s 超时变红。
+
 ### 第六十二批 · Windows CI 平台适配 + 桌面壳格式门禁(2026-09-25)
 
 `test-windows` 长期报红(首次抓取 7 处,抓全后实数 **9 处**),本批逐条定位并改完,**失败数 9 → 2 → 0**(run `36170038615` 五个 job 全绿):
@@ -2074,7 +2163,7 @@ Go 全量 **1498 passed**(67 包,0 失败,6 跳过;新增 `TestPluginStderrCaptu
    - 落点两处(都是既有唯一裁决点):`policy-guard.ValidatePathAt`(在**拼 root 之前**判**原始入参** —— 相对形态经 `filepath.Join` 后 `https://` 已变成 `<root>/https:/…`,前缀丢失就拦不住;且放在档位判定之前 ⇒ **full-access 同样拦**:URL 永远不是本地路径,与策略松紧无关)+ `tool-files.resolve`(插件外部化/无 policy 装配时的本地兜底)。
    - 测试:`pathpolicy_test` 三档位循环(read-only 本就拒一切写,断言按档位分支);`files_test` 经 buildEnv/call 走真写调用。
 2. **后台收不到通知(用户反馈)**
-   - web:`notify.ts` 增 `fireEvent(title, body)`(不按级别过滤 —— 回合结束不是 warn/error;来源/授权门槛照旧),`emit` 抽出复用;`App.vue` 三处接线:**回合结束**(running true→false 且 `document.visibilityState !== 'visible'`)/**待确认**(审批在后台弹出 = 回合阻塞到超时,是真正“需要人回来”的时刻)/**待作答**;前台一律不弹 —— 前台自有界面反馈,再弹系统通知只是噪音。
+   - web:`notify.ts` 增 `fireEvent(title, body)`(不按级别过滤 —— 回合结束不是 warn/error;来源/授权门槛照旧),`emit` 抽出复用;`App.vue` 三处接线:**回合结束**(running true→false 且 `document.visibilityState !== 'visible'`)/**待确认**(审批在后台弹出 = 回合停在这里等人,是真正“需要人回来”的时刻;2026-09-26 第六十四批起审批默认不再超时,详见该批)/**待作答**;前台一律不弹 —— 前台自有界面反馈,再弹系统通知只是噪音。
    - 桌面壳:`notifyNative()` 取代 4 处 `let _ = …show()`,失败写 `gah-shell.log`(未授权 / 未注册进通知中心 / 专注模式在静默写法下长得完全一样:界面无反应、机器上零证据),并在 setup 记一行通知权限状态。
    - **未做(待真机日志定位)**:macOS 未授权场景的首次请求授权路径。
 

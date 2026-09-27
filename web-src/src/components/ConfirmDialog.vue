@@ -14,6 +14,7 @@ defineProps<{
     <div class="dialog">
       <div class="title">操作确认</div>
       <pre class="prompt">{{ request.prompt }}</pre>
+      <div class="hint">回合会一直等你答复(不会自动超时);想中止可按输入区的「停止」</div>
       <div class="actions">
         <button class="deny" data-tip="拒绝该操作" @click="onAnswer(false)">拒绝</button>
         <button class="allow" data-tip="允许该操作" @click="onAnswer(true)">允许</button>
@@ -47,10 +48,15 @@ defineProps<{
   margin-bottom: 10px;
 }
 .prompt {
-  margin: 0 0 16px;
+  margin: 0 0 10px;
   white-space: pre-wrap;
   color: var(--fg-dim);
   font-size: 13px;
+}
+.hint {
+  margin: 0 0 14px;
+  color: var(--fg-faint);
+  font-size: 12px;
 }
 .actions {
   display: flex;

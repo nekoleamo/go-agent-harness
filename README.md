@@ -33,7 +33,7 @@ Go 实现的编程代理 Agent Harness:以**单静态二进制**交付全部能�
 | **结构化工具** | MCP 兼容 JSON schema;执行流水线 pre-execute(veto)→ execute → post-execute → result 广播;错误结构化回传模型 |
 | **LLM 统一域模型** | 纯 HTTP+SSE 的 OpenAI 兼容适配器(DeepSeek/OpenAI/Ollama/vLLM/Kimi/llama.cpp 通吃)+ Anthropic 适配器(`claude-*` 前缀路由)+ mock 适配器(CI 免外网);多 provider 并存(`/provider`) |
 | **沙箱三档** | read-only / workspace-write(防 `../` 穿越)/ full-access,TUI `/sandbox` 与 Web 设置面板运行期切换;**写路径统一裁决**:`file_*` 参数与 `shell` 命令的写目标(重定向、写命令、输出旗标 `-o/-O/-C/-t/--target/--prefix`、`git clone` 目标)都必须落在档位允许范围内(`shell` 越界写 / 含变量等不可裁决写目标直接拒绝)——审批通过 ≠ 放开档位,需显式切 full-access;**档位联动可见且可控**:审批档 `open`/`strict` 会覆盖沙箱有效档(`full-access`/`read-only`),`/sandbox`、`/approval`、TUI 状态栏与 Web 状态均回显「声明档 → 有效档(联动来源)」,不再静默失效;要「开着 open 但仍守住沙箱档」就关掉联动 —— **`/sandbox sync off`** 或 Web 设置面板「档位联动」勾选框(两者同一偏好,重启恢复;关掉后沙箱档独立生效、拦截行为跟着变);**内核级沙箱(第 3 组)**:macOS seatbelt / Linux Landlock 在**子进程树**层面兜住「写目标判不出来」的写(解释器内部写、`ccache`/`make` 包装器、`go install`、`curl -O` 等),并把**写目标表**继续补全(第 2 组:`sort -o`、`patch -o/-d`、`cargo --target-dir`、`npm --cache`、`pip --cache-dir/-d`、`gcc -MF/-MJ`、`go test -coverprofile/-trace`、`find -exec/-delete/-fprint`、`mktemp -p`、`split`、`tar czf`、`zip`/`7z`、`cmake --prefix`);**Windows 仍只有协作层**(无等价无特权机制) |
-| **审批三档** | 危险命令(rm -rf / git push -f / sudo / chmod 777…)按档:开放 open(放行)/ 智能 smart(弹确认,无确认通道时安全拒绝,默认)/ 严格 strict(拒绝);偏好持久化 |
+| **审批三档** | 危险命令(rm -rf / git push -f / sudo / chmod 777…)按档:开放 open(放行)/ 智能 smart(弹确认,**等你答复到底 —— 默认不超时**,无确认通道时安全拒绝,默认)/ 严格 strict(拒绝);等待期间回合停在那里不继续后续步骤(要设上限就配 `policy-guard` 的 `confirm_timeout_sec`,到点按安全默认拒绝);偏好持久化 |
 | **凭据隔离** | 工具子进程 env 滤除 `*_API_KEY/_TOKEN/_SECRET`;危险操作无确认通道时安全拒绝 |
 | **会话管理** | 项目级隔离 + 多会话切换 + 分支树(`/fork` `/clone` `/tree` + 命名);超预算 token 滚动摘要压缩(token-compress,完整日志留盘);**模型端报上下文超窗时自动压缩后重试本回合**(溢出兜底:判定分层、只重试一次、提示通道留痕;仍失败则给 `/compact` 与人话出路) |
 | **模型工具** | shell / file_read-write-append-edit / web_fetch / web_search / workflow / subagent / todo / memory / auto_plan / session_search / schedule(默认停用) / job_* / 技能读取 / MCP 桥工具(详见「五、模型可用工具」) |
@@ -292,6 +292,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 - **侧栏停靠区**(状态栏「侧栏」展开,记忆偏好):把变更 / 看板 / 任务三个面板**停靠在对话流右侧并排显示** —— 不用在「切走会话流看变更」和「让任务面板盖住对话」之间二选一;面板在停靠区顶部标签间切换,宽度可**拖拽**(也可聚焦分隔线用 `←/→`,双击复位),布局落浏览器存储。**宽度给对话流让位**:视口不足时停靠区先让步(下限 280 / 上限 720 / 至少给对话留 520);窄屏(<900px)自动退化为覆盖式抽屉。零后端契约:面板内容复用既有视图组件,数据管道不变。**外壳永不整页滚动**(每个滚动区各有归属:会话流 / 侧栏列表 / 抽屉),这条纪律有真浏览器布局回归门禁守着(见「十」)。
 - **长会话窗口**(首帧基线 + 上滚分页):打开一个很长的会话不再重放全部历史 —— 首连只回放**尾部窗口**(约 400 条事件,回合对齐),并先发一帧 **基线** 告诉前端窗口边界与「更早历史是否还有」;向上滚到接近顶部(或点顶部按钮)即自动按游标拉更早一页拼在前面(按序号去重、拼接后**滚动位置不动**)。贴底阅读时自动折叠最老的消息(上限 800 条,`已折叠 N 条更早消息`),被折叠的内容上滚可重新取回 —— DOM 与内存不随会话长度增长;轨迹/变更视图在窗口不完整时显式标注口径,不把窗口内合计说成会话全程累计。
 - **WebSocket 通道**:`/api/events/ws`(与 SSE 同 payload,前端自动降级;两条路断线续传都带 `after` 游标)。
+- **回合运行中可继续说话**(转向):回合没结束时输入框**依然可编辑可回车** —— 普通消息注入当前回合(模型下一次请求即可见,会话流插一条「已注入当前回合」),带附件的提交会被拒(409:转向通道只带文本,不静默丢附件);同时输入区出现**「停止」按钮**(中止回合,审批正等着你答复时也用它退出)。
 - **断连行为**(显式三态:已连接/重连中/**已断开**):连接丢失时输入区上方出现红色横幅与「重试连接」,**提交与审批/作答一律拦截且草稿、附件、弹层原样保留**(未送达不许挥掉本地状态,恢复后手动重发,不做队列自动重放);恢复时以服务端快照接管状态并丢弃陈旧完成帧。断连判定只依据可观测事实(浏览器 `navigator.onLine`、EventSource 已放弃、探活失败),不用「多久没收到帧」猜测;切回前台/睡眠唤醒(时钟跳变 >20s)会主动重握一次。
 - **通用 REST 能力面**(前端/脚本均可直接调用,未装配服务 503/501 显式):
 
@@ -299,7 +300,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 |---|---|
 | `POST /api/auth` | 引导通道:`{"token":"…"}`(或 `Authorization: Bearer`)换 `gah_token` cookie(POST-only,错误 token 401);唯一豁免鉴权门的路径,仍受 Host 白名单 + 同源校验 |
 | `GET /api/state` | 状态快照(model/thinking/sandbox/sandbox_effective/sandbox_sync/approval/stats/session/running/version) |
-| `POST /api/input` | 提交回合;`/` 前缀走命令;回合运行中普通消息**注入当前回合**(转向,响应带 `accepted:"steer"`);无法注入时(未装配转向能力)与命令路径仍 409 |
+| `POST /api/input` | 提交回合;`/` 前缀走命令;回合运行中普通消息**注入当前回合**(转向,响应带 `accepted:"steer"`);**带附件的提交回落 409**(转向通道只带文本,不静默丢附件);无法注入时(未装配转向能力)与命令路径仍 409 |
 | `POST /api/confirm` | 审批应答 `{id, ok}` |
 | `GET /api/events` + `GET /api/events/ws` | 事件流(SSE 断线重放 / WS;首连发 `baseline` 基线 + 尾部窗口,续传按 `after` 补差集) |
 | `GET /api/session/events` | 会话事件分页(`?before=<seq>&limit=<n>`):长会话上滚加载更早历史,窗口回合对齐、返回 `has_more` |
@@ -313,7 +314,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `GET/POST /api/mcp` | MCP server 配置:GET 返回配置 + 逐项运行期状态(是否已加载/工具数);POST 提交整表 = 写 `config/mcp.yaml` 并重启插件(`reload:false` 只写盘;写盘成功但重载失败 → 200 + `reload_err`) |
 | `GET /api/plugins`、`POST /api/plugins/{id}/load\|unload` | 插件启停 |
 | `GET /api/models?all=1`、`GET/POST/DELETE /api/providers...` | 模型聚合 / provider 增删改(删除同步运行期与持久化) |
-| `POST /api/control` | 状态栏级控制 `{model?\|thinking?\|sandbox?\|approval?\|workspace?}`(偏好持久化) |
+| `POST /api/control` | 状态栏级控制 `{model?\|thinking?\|sandbox?\|approval?\|workspace?\|cancel?}`(偏好持久化;`cancel:true` = 中止运行中的回合,Web 输入区的「停止」用的就是它) |
 | `POST /api/compact`、`POST /api/settings/history` | 手动压缩 / 历史注入条数 |
 | `GET /api/todo` | 任务面板数据(todo 工具 list 透传) |
 | `GET /api/backup`、`POST /api/backup` | 备份列表 / `{action: backup\|restore, dest?, name?}` |

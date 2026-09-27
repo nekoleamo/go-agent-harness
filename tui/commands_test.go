@@ -135,7 +135,7 @@ func TestStatusBarUsageStats(t *testing.T) {
 		t.Fatalf("无请求应显示 上下文 -:\n%s", out)
 	}
 	// 有统计:使用率 + 缓存命中率;窗口来自 Stats.Window
-	s.Stats = sdk.UsageStats{PromptTokens: 16384, CachedTokens: 8192, Requests: 3, Window: 65536}
+	s.Stats = sdk.UsageStats{LastPromptTokens: 16384, PromptTokens: 16384, CachedTokens: 8192, Requests: 3, Window: 65536}
 	out2 := Render(s, 80, 24)
 	if !strings.Contains(out2, "上下文 16.0K/64.0K (25%)") {
 		t.Fatalf("应显示上下文使用率: 16.0K/64.0K (25%%):\n%s", out2)
@@ -144,7 +144,7 @@ func TestStatusBarUsageStats(t *testing.T) {
 		t.Fatalf("应显示缓存命中率 50%%:\n%s", out2)
 	}
 	// 缓存为 0:不显示缓存段(避免误导 0%)
-	s.Stats = sdk.UsageStats{PromptTokens: 1000, Requests: 1, Window: 65536}
+	s.Stats = sdk.UsageStats{LastPromptTokens: 1000, PromptTokens: 1000, Requests: 1, Window: 65536}
 	out3 := Render(s, 80, 24)
 	if strings.Contains(out3, "缓存") {
 		t.Fatalf("无缓存命中不应显示缓存段:\n%s", out3)
@@ -165,7 +165,7 @@ func TestStatusBarUsageStats(t *testing.T) {
 
 // TestUsageStatsZeroWindow 窗口未配置(0)时使用率不除零崩溃,显示 -。
 func TestUsageStatsZeroWindow(t *testing.T) {
-	s := &State{Profile: "tui", Stats: sdk.UsageStats{PromptTokens: 100, Requests: 1}}
+	s := &State{Profile: "tui", Stats: sdk.UsageStats{LastPromptTokens: 100, Requests: 1}}
 	out := Render(s, 80, 24)
 	if strings.Contains(out, "(NaN%)") || strings.Contains(out, "(+Inf%)") {
 		t.Fatalf("窗口 0 不应出现 NaN/Inf:\n%s", out)
@@ -174,7 +174,8 @@ func TestUsageStatsZeroWindow(t *testing.T) {
 
 // TestUsageStatsUnknownWindow 窗口未知(0,未知/空模型):仅显示使用量,不显示总量/百分比。
 func TestUsageStatsUnknownWindow(t *testing.T) {
-	s := &State{Profile: "tui", Stats: sdk.UsageStats{PromptTokens: 1234, Requests: 1, Window: 0}}
+	// 上下文占用取最近一次请求的 prompt(LastPromptTokens);累计量不当水位。
+	s := &State{Profile: "tui", Stats: sdk.UsageStats{LastPromptTokens: 1234, Requests: 1, Window: 0}}
 	out := Render(s, 80, 24)
 	if !strings.Contains(out, "上下文 1.2K") {
 		t.Fatalf("未知窗口应仅显示使用量 1.2K:\n%s", out)
@@ -186,7 +187,7 @@ func TestUsageStatsUnknownWindow(t *testing.T) {
 		t.Fatalf("未知窗口不应显示百分比:(%%)附近:\n%s", out)
 	}
 	// 窗口已知时显示 使用量/总量 (百分比)
-	s.Stats = sdk.UsageStats{PromptTokens: 1234, Requests: 1, Window: 65536}
+	s.Stats = sdk.UsageStats{LastPromptTokens: 1234, Requests: 1, Window: 65536}
 	out2 := Render(s, 80, 24)
 	if !strings.Contains(out2, "1.2K/64.0K (1%)") {
 		t.Fatalf("窗口已知应显示总量与百分比:\n%s", out2)
