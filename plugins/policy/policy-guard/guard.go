@@ -210,6 +210,11 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		if err := sp.CheckTool(call.Name); err != nil {
 			return err
 		}
+		// A7(2026-09-27 安全审计):网页抓取的**出口审批**(域名级 TOFU)。位置在工具级审批之后、
+		// 路径裁决之前 —— 它决定的是"访问哪个域名",与文件路径无关;非抓取工具直接放行。
+		if err := checkWebToolFetch(ctx, confirmOf(), call.Name, call.Arguments); err != nil {
+			return err
+		}
 		// 宿主侧路径裁决(P0):默认发行态 file_* 由外部插件进程提供(sb 未注入),
 		// 仅靠工具侧沙箱会完全失效 —— 这里按工具名+参数统一裁决(插件零改动)。
 		// 依据 = 工具自述声明 → 内置名表 → 按定义推断 → 值级兜底(见 CheckToolCallAt);

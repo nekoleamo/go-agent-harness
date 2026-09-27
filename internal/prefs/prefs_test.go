@@ -105,3 +105,35 @@ func TestUpdateKeepsConcurrentFields(t *testing.T) {
 		t.Fatalf("并发改不同字段出现互相覆盖: %+v", p)
 	}
 }
+
+// TestAddWebAllowHost A7 的 TOFU 白名单写入:小写归一、幂等、0600、与并发写者不互抹。
+func TestAddWebAllowHost(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GAH_HOME", home)
+
+	AddWebAllowHost("Docs.Example.COM")
+	AddWebAllowHost("docs.example.com") // 幂等(大小写归一后同一条)
+	AddWebAllowHost("  ")
+	AddWebAllowHost("api.test")
+	got := Load().WebAllowHosts
+	if len(got) != 2 || got[0] != "docs.example.com" || got[1] != "api.test" {
+		t.Fatalf("应小写归一且幂等,得 %v", got)
+	}
+	// 只动自己的字段:其它偏好不被抹掉(Update 的落盘前重读)
+	SetSandbox("read-only")
+	AddWebAllowHost("third.test")
+	if got := Load(); got.Sandbox != "read-only" || len(got.WebAllowHosts) != 3 {
+		t.Fatalf("追加白名单不应丢其它字段: %+v", got)
+	}
+	// 白名单是可写面:文件权限保持 0600
+	fi, err := os.Stat(filepath.Join(home, "config", "gah-state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := fi.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("权限应为 0600,得 %o", perm)
+	}
+	// 无 GAH_HOME = 纯内存跳过(不 panic、不落盘)
+	t.Setenv("GAH_HOME", "")
+	AddWebAllowHost("nowhere.test")
+}

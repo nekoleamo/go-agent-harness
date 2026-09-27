@@ -375,6 +375,8 @@ patch-*.yaml            # 按 id 替换/插入/启停条目(随时插拔)
 | `GAH_MCP_SERVE` / `GAH_PLUGIN` / `GAH_VERSION` | 外部进程工具入口参数(serve/加载插件/版本通告;由 host-bridge 拉起时注入) |
 | `DEEPSEEK_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | LLM 密钥(可按 provider 前缀路由;或经 `/provider` 写入 provider.yaml) |
 | `EXA_API_KEY` | web_search 联网搜索密钥(默认提供商;也可 `data.provider` 换其它) |
+| `GAH_WEB_APPROVE` | `web_fetch` 的**出口审批档位**:`off`(不管)/ `new-host`(默认:每个新域名首次访问弹一次确认,批准后加入白名单)/ `query`(每次访问都确认,不落白名单)。动因:`web_fetch` 默认不在 `approval_tools` 里,「把数据塞进 URL query 外发」此前没有审批出口 |
+| `GAH_WEB_ALLOW_HOSTS` | `web_fetch` 的**静态域名白名单**(逗号分隔的精确 host;`*.suffix.com` 匹配其子域):无人值守/无确认通道场景的事前放行手段(批准过的域名另记在 `$GAH_HOME/config/gah-state.json` 的 `web_allow_hosts`) |
 | `GAH_WEB_ALLOW_PRIVATE` | `1` = 放行 `web_fetch` 抓**内网/环回/链路本地**地址(默认**拒**:抓取的 URL 来自模型,防它被诱导去读本机未鉴权服务与云元数据端点 `169.254.169.254`;本地开发服务或**经本地 HTTP 代理**上网时需要打开——后者守卫看到的拨号目标是代理地址,不豁免) |
 | `GAH_DOC_CONVERTER_SANDBOX` | `0` = 关闭**文档转换器(LibreOffice/pdftoppm)子进程的内核级沙箱**(默认开启:它吃的是不可信文档——网页下载/附件;白名单 = 转换缓存 + `$GAH_HOME/jail/**` + 系统临时目录,档位固定 read-only;外部转换器本身默认关:见 `data.external_converters`) |
 

@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -24,6 +25,9 @@ type Prefs struct {
 	SandboxSync *bool `json:"sandbox_sync,omitempty"`
 	// Statusline TUI 状态栏项集合与顺序(/statusline;空 = 基线默认顺序)。
 	Statusline []string `json:"statusline,omitempty"`
+	// WebAllowHosts web_fetch 的 TOFU 域名白名单(A7 出口审批):用户批准过的**精确 host**,
+	// 小写。与 GAH_WEB_ALLOW_HOSTS(静态名单,不落盘)互补:静态名单用于无人值守事前放行。
+	WebAllowHosts []string `json:"web_allow_hosts,omitempty"`
 }
 
 // Path 偏好文件路径(GAH_HOME 未设 = 空,表示跳过持久化——测试/无 home 场景纯内存)。
@@ -61,6 +65,24 @@ func Load() Prefs {
 		}
 	}
 	return p
+}
+
+// AddWebAllowHost 把一个 host 追加进 TOFU 白名单(小写、幂等;GAH_HOME 未设 = 纯内存无效写)。
+//
+// 为何不用 Save:并发写者(web 每请求一 goroutine)各持快照会互抹字段 —— Update 会落盘前重读。
+func AddWebAllowHost(host string) {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" {
+		return
+	}
+	Update(func(p *Prefs) {
+		for _, h := range p.WebAllowHosts {
+			if strings.EqualFold(strings.TrimSpace(h), host) {
+				return
+			}
+		}
+		p.WebAllowHosts = append(p.WebAllowHosts, host)
+	})
 }
 
 // mu 进程内串行 read-modify-write:偏好是"整对象覆写",两个并发写者(web 每请求一
