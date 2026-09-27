@@ -76,10 +76,22 @@ func TestCheckToolCallUndeclaredConvergence(t *testing.T) {
 	if err := p.CheckPathArgs("mcp_srv_write_file", fmt.Sprintf(`{"files":[%q]}`, filepath.Join(outside, "a.txt"))); err == nil {
 		t.Fatal("字符串数组里的越界路径应被拒")
 	}
-	// ③ 无 schema 入口(CheckPathArgs):array of object 的值级兜底仍**不递归** —— 递归会在大 JSON
-	// 参数里误判;有 schema 的工具走 ② 推断的 Nested 路径裁决(见 TestCheckToolCallNestedPaths)。
-	if err := p.CheckPathArgs("mcp_srv_write_file", fmt.Sprintf(`{"files":[{"path":%q}]}`, filepath.Join(outside, "a.txt"))); err != nil {
-		t.Fatalf("无 schema 的 array of object 不做值级递归(登记为保守边界): %v", err)
+	// ③ A8(2026-09-27):值级兜底**递归**(此前是“array of object 不递归”的保守边界)——
+	// 嵌套里的越界路径现在也会被拒。上限:深度 ≤ 4 / 每对象键 ≤ 64 / 数组项 ≤ 64(超限停并提醒一次)。
+	if err := p.CheckPathArgs("mcp_srv_write_file", fmt.Sprintf(`{"files":[{"path":%q}]}`, filepath.Join(outside, "a.txt"))); err == nil {
+		t.Fatal("array of object 里的越界路径应被值级递归拒")
+	}
+	// 灵敏度反证:同一嵌套形状 + 工作区内路径 → 放行(拒的是越界,不是“形状可疑”)
+	if err := p.CheckPathArgs("mcp_srv_write_file", fmt.Sprintf(`{"files":[{"path":%q}]}`, filepath.Join(ws, "a.txt"))); err != nil {
+		t.Fatalf("嵌套的工作区内路径不应被拒: %v", err)
+	}
+	// A8 的两条反向豁免同深生效:内容类参数名下的非凭据路径仍不裁
+	if err := p.CheckPathArgs("mcp_srv_write_file", fmt.Sprintf(`{"options":{"query":%q}}`, "/etc/hosts")); err != nil {
+		t.Fatalf("内容类参数名(嵌套)应仍豁免: %v", err)
+	}
+	// ……但凭据路径例外照旧(内容名 + 嵌套都拦)
+	if err := p.CheckPathArgs("mcp_srv_write_file", fmt.Sprintf(`{"options":{"query":%q}}`, filepath.Join(keyDir, "id_rsa"))); err == nil {
+		t.Fatal("嵌套 + 内容参数名下的凭据路径仍应被拒")
 	}
 
 	// ② 推断:schema 的路径型参数名 + 工具名动词
@@ -333,5 +345,62 @@ func TestGuardProxyAdjudicatesInnerArgs(t *testing.T) {
 	// 没有内层参数对象 → 不构造路径面,不得凭空拒
 	if res := execTool(t, c, "mcp_call", `{"name":"mcp_srv_write_file"}`); res.Error != "" {
 		t.Fatalf("无内层参数对象应放行: %+v", res)
+	}
+}
+
+// TestSniffPathParamsRecursion A8:值级兜底的递归形态、上限与去重(纯判据)。
+func TestSniffPathParamsRecursion(t *testing.T) {
+	// 嵌套对象 + 数组下钻(路径用 `*` 表示"穿过一层数组",与 sdk.InferPathParams 同约定);
+	// 同一嵌套路径被多个数组元素命中 → 去重成一条
+	m := map[string]any{
+		"options": map[string]any{"files": []any{
+			map[string]any{"path": "/etc/hosts"},
+			map[string]any{"path": "/etc/passwd"},
+		}},
+		"files": []any{"/etc/hosts", "/etc/passwd"},
+	}
+	got := sniffPathParams("mcp_x_write", m)
+	var keys []string
+	for _, p := range got {
+		keys = append(keys, sniffKey(p))
+	}
+	want := []string{"files|", "options|options.files.*.path"}
+	if len(keys) != len(want) {
+		t.Fatalf("递归结果应为 %v,得 %v", want, keys)
+	}
+	for i := range want {
+		if keys[i] != want[i] {
+			t.Fatalf("递归结果应为 %v,得 %v", want, keys)
+		}
+	}
+
+	// 深度边界:嵌套**第 4 层**的键仍在裁决内,第 5 层起停(上限 4 = 被遍历 map 的层号)
+	if got := sniffPathParams("mcp_x_write", map[string]any{"a": map[string]any{"b": map[string]any{"c": map[string]any{"d": "/etc/hosts"}}}}); len(got) != 1 {
+		t.Fatalf("第 4 层路径应在裁决内,得 %v", got)
+	}
+	if got := sniffPathParams("mcp_x_write", map[string]any{"a": map[string]any{"b": map[string]any{"c": map[string]any{"d": map[string]any{"e": "/etc/hosts"}}}}}); len(got) != 0 {
+		t.Fatalf("第 5 层路径应停在上限外,得 %v", got)
+	}
+
+	// 上限:每对象键 ≤ 64(全部键都是路径 → 恰好收集 64 条)
+	wide := map[string]any{}
+	for i := 0; i < 70; i++ {
+		wide[fmt.Sprintf("k%02d", i)] = "/etc/hosts"
+	}
+	if got := sniffPathParams("mcp_x_write", wide); len(got) != sniffMaxKeys {
+		t.Fatalf("键上限应为 %d,得 %d", sniffMaxKeys, len(got))
+	}
+	// 上限:数组项 ≤ 64(用互不相同的键名,避免去重掩盖截断)
+	big := make([]any, 0, 70)
+	for i := 0; i < 70; i++ {
+		big = append(big, map[string]any{fmt.Sprintf("p%d", i): "/etc/hosts"})
+	}
+	if got := sniffPathParams("mcp_x_write", map[string]any{"items": big}); len(got) != sniffMaxItems {
+		t.Fatalf("数组项上限应为 %d,得 %d", sniffMaxItems, len(got))
+	}
+
+	// 执行器类仍整体豁免(递归不能把这条推翻)
+	if got := sniffPathParams("shell", map[string]any{"a": map[string]any{"b": "/etc/hosts"}}); got != nil {
+		t.Fatalf("执行器类应整体豁免,得 %v", got)
 	}
 }

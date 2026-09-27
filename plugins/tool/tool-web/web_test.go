@@ -228,3 +228,58 @@ func portOf(t *testing.T, raw string) string {
 	}
 	return u.Port()
 }
+
+// TestProxyEgressNotBlocked A10:走代理时不得把代理地址(常见 127.0.0.1)当内网目标拒掉;
+// 同时对**逻辑目标**的判定仍在(内网字面量 IP / localhost 经代理也拒)。
+//
+// 测试手法:直接构造 fetchTransport 并注入 Proxy 函数 —— 不用 t.Setenv(HTTP_PROXY),因为
+// http.ProxyFromEnvironment 有进程级一次性 env 缓存,同进程里改 env 不可靠(已登记限制)。
+func TestProxyEgressNotBlocked(t *testing.T) {
+	t.Setenv(allowPrivateEnv, "")
+	proxyURL, _ := neturl.Parse("http://127.0.0.1:7890")
+
+	// ① 拨号层:ctx 带代理标记 → 127.0.0.1 不再被判为内网(否则本地代理用户全线不可用)
+	marked := context.WithValue(context.Background(), proxyDialMark{}, true)
+	if _, err := guardedDial(marked, "tcp", "127.0.0.1:7890"); err != nil && strings.Contains(err.Error(), "拒绝访问内网") {
+		t.Fatalf("带代理标记的拨号不应被内网守卫拒: %v", err)
+	}
+	// 灵敏度反证:同样的地址不带标记 → 拒(证明上面的"没拒"来自标记,不是守卫失效)
+	if _, err := guardedDial(context.Background(), "tcp", "127.0.0.1:7890"); err == nil ||
+		!strings.Contains(err.Error(), "拒绝访问内网") {
+		t.Fatalf("不带标记时 127.0.0.1 应被拒: %v", err)
+	}
+
+	// ② 逻辑目标:代理模式下公开域名放行(真实拨号目标是代理由 ① 覆盖)
+	base := http.DefaultTransport.(*http.Transport).Clone()
+	base.Proxy = func(*http.Request) (*neturl.URL, error) { return proxyURL, nil }
+	tr := &fetchTransport{base: base}
+	req, _ := http.NewRequest(http.MethodGet, "http://example.invalid/x", nil)
+	// 真去拨代理(可能成功也可能连不上),但**失败原因不能是内网守卫**
+	if _, err := tr.RoundTrip(req); err != nil && strings.Contains(err.Error(), "拒绝访问内网") {
+		t.Fatalf("经代理的公开目标不应被内网守卫拒: %v", err)
+	}
+
+	// ③ 逻辑目标仍是内网字面量/localhost → 经代理也拒
+	for _, u := range []string{"http://169.254.169.254/latest/meta-data/", "http://localhost:9200/", "http://127.0.0.1:9200/"} {
+		req, _ := http.NewRequest(http.MethodGet, u, nil)
+		if _, err := tr.RoundTrip(req); err == nil || !strings.Contains(err.Error(), "拒绝访问") {
+			t.Fatalf("%s 经代理也应被拒: %v", u, err)
+		}
+	}
+	// ④ 纯函数:端口/大小写/空值
+	if err := guardLogicalHost("LocalHost"); err == nil {
+		t.Fatal("LocalHost 应被拒")
+	}
+	if err := guardLogicalHost("example.com"); err != nil {
+		t.Fatalf("公开域名不应被拒: %v", err)
+	}
+	if err := guardLogicalHost(""); err != nil {
+		t.Fatalf("空 host 应放行(由 http 层自己报错): %v", err)
+	}
+	// ⑤ 逃生舱对代理路径同样有效
+	t.Setenv(allowPrivateEnv, "1")
+	req, _ = http.NewRequest(http.MethodGet, "http://127.0.0.1:9200/", nil)
+	if _, err := tr.RoundTrip(req); err != nil && strings.Contains(err.Error(), "拒绝访问") {
+		t.Fatalf("逃生舱应放行: %v", err)
+	}
+}

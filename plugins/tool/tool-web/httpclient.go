@@ -6,8 +6,13 @@
 // 逃生舱 GAH_WEB_ALLOW_PRIVATE=1. 守卫只作用于 web_fetch:web_search 的端点
 // 是用户在 search.yaml 选定的,可能就是本地搜索服务。
 //
-// 经代理(HTTP(S)_PROXY)时守卫看到的是代理地址(本地代理常为 127.0.0.1):
-// 不豁免 —— 出口在隧道里,守卫本就看不见真实目标;这类用户设逃生舱即可,失败是显式的。
+// 经代理(HTTP(S)_PROXY)时的豁免(A10):代理模式下**拨号面看到的是代理地址**(本地代理常为
+// 127.0.0.1),拿它判内网 = 把整个代理出口误伤掉。故在 Transport 外层(能同时看到逻辑目标与代理
+// 选择)做两件事:① 对**逻辑目标**跑一次守卫(字面量内网 IP / localhost 仍拒 —— 本地代理是能从
+// 本机访问内网服务的),② 给 ctx 打标,让 guardedDial 知道"这次拨的是代理",跳过拨号地址判定。
+//
+// 已知限制(登记):`http.ProxyFromEnvironment` 有**进程级一次性 env 缓存**(Go 标准库
+// `envProxyOnce`)→ 代理 env 改了要重启进程才生效(与 Go 自身行为一致)。
 package toolweb
 
 import (
@@ -16,6 +21,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -39,13 +45,50 @@ func newHTTPClient() *http.Client {
 func newFetchClient() *http.Client {
 	tr := http.DefaultTransport.(*http.Transport).Clone() // 保留代理等既有语义
 	tr.DialContext = guardedDial
-	return &http.Client{Timeout: fetchTimeout, Transport: tr}
+	return &http.Client{Timeout: fetchTimeout, Transport: &fetchTransport{base: tr}}
+}
+
+// fetchTransport 内网守卫的 Transport 外层:代理模式下改判**逻辑目标**并给 ctx 打标。
+type fetchTransport struct{ base *http.Transport }
+
+// proxyDialMark ctx 标记:本次拨的是代理(不是目标自身)。
+type proxyDialMark struct{}
+
+func (t *fetchTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if allowPrivate() || req == nil || req.URL == nil {
+		return t.base.RoundTrip(req)
+	}
+	if proxy, err := t.base.Proxy(req); err == nil && proxy != nil {
+		if err := guardLogicalHost(req.URL.Hostname()); err != nil {
+			return nil, err
+		}
+		req = req.WithContext(context.WithValue(req.Context(), proxyDialMark{}, true))
+	}
+	return t.base.RoundTrip(req)
+}
+
+// guardLogicalHost 代理模式下对**逻辑目标**的守卫:字面量内网 IP 与 localhost 仍拒;
+// 普通域名交给代理解析(本机解析结果不代表隧道出口看到的东西,DNS rebinding 判定在这里无意义)。
+func guardLogicalHost(host string) error {
+	h := strings.ToLower(strings.TrimSpace(host))
+	if h == "" {
+		return nil
+	}
+	if h == "localhost" || strings.HasSuffix(h, ".localhost") {
+		return fmt.Errorf("web_fetch: 拒绝访问本机地址 %s(防 SSRF;确需访问本地服务请设 %s=1)", host, allowPrivateEnv)
+	}
+	if ip := net.ParseIP(h); ip != nil && blockedIP(ip) {
+		return errBlocked(ip)
+	}
+	return nil
 }
 
 // guardedDial 按**实际连上的地址**判定内网:字面量 IP 在拨号前就拒,
 // 域名在连接建立后校验解析结果(DNS rebinding 无窗口)。
+// ctx 带 proxyDialMark = 本次拨的是代理地址(目标在隧道里):拨号层不做内网判定。
 func guardedDial(ctx context.Context, network, addr string) (net.Conn, error) {
-	if !allowPrivate() {
+	marked, _ := ctx.Value(proxyDialMark{}).(bool)
+	if !allowPrivate() && !marked {
 		if h, _, err := net.SplitHostPort(addr); err == nil {
 			if ip := net.ParseIP(h); ip != nil && blockedIP(ip) {
 				return nil, errBlocked(ip)
@@ -57,7 +100,7 @@ func guardedDial(ctx context.Context, network, addr string) (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	if allowPrivate() {
+	if allowPrivate() || marked {
 		return conn, nil
 	}
 	host, _, _ := net.SplitHostPort(addr)

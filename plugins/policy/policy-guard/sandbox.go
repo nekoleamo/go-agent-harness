@@ -4,6 +4,7 @@ package policyguard
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -362,39 +363,114 @@ var sniffSkipArgs = map[string]bool{
 // 数组只认**全字符串**项(含非字符串项时整条跳过,与 sdk.InferPathParams 对 array of object
 // 的处理一致:避免因“含非字符串元素”把合法调用打成失败)。
 // 读写意图取工具名动词(sdk.InferAccess),不明时按 write(更严)。
+// 值级兜底递归上限(A8,2026-09-27 审计 A1 遗留项④)。
+//
+// 为何必须有界:未声明工具的参数是**任意外形**,而判据来自被约束方(插件给的 JSON)—— 递归
+// 无界等于把裁决变成 CPU/内存放大器。超限就停,并且**只提醒一次**(slog):这不是错误,
+// 是“未裁决面”的可见化(与 A3 的“能力缺失一律明示”同口径)。
+const (
+	sniffMaxDepth = 4
+	sniffMaxKeys  = 64
+	sniffMaxItems = 64
+)
+
+var sniffLimitOnce sync.Once
+
+func sniffLimitNote(what string) {
+	sniffLimitOnce.Do(func() {
+		slog.Warn("policy-guard: 值级兜底命中结构上限,超出部分未参与路径裁决", "limit", what,
+			"hint", "插件请显式声明 PathParams(见 docs/PLUGIN_DEV.md §2.6)")
+	})
+}
+
+// sniffParam 拼一个值级兜底的路径参数(Nested 仅在确实下钻过时给出)。
+func sniffParam(keyPath []string, access sdk.PathAccess, many bool) sdk.PathParam {
+	pa := sdk.PathParam{Arg: keyPath[0], Access: access, Optional: true}
+	if len(keyPath) > 1 {
+		pa.Nested = keyPath
+		return pa // 嵌套形态由 Nested 承载取值;Many 只用于顶层数组
+	}
+	pa.Many = many
+	return pa
+}
+
+// sniffKey 去重/排序键(同一嵌套路径被多个数组元素命中时只留一条)。
+func sniffKey(p sdk.PathParam) string { return p.Arg + "|" + strings.Join(p.Nested, ".") }
+
+// sniffPathParams 值级兜底:参数值一眼是路径就按工具名的读写意图裁决(四级收敛的第④级)。
+//
+// A8 起**递归**到对象/数组内部(此前只看顶层字符串与字符串数组):嵌套参数里藏的越界路径
+// (如 `{"options":{"files":[{"path":"/etc/hosts"}]}}`)同样要拦。两条反向豁免(执行器类工具、
+// 内容/指令类参数名)在**每一层**同深生效;凭据路径例外照旧(内容名下的凭据路径仍裁)。
 func sniffPathParams(name string, m map[string]any) []sdk.PathParam {
 	if isExecutor(name) {
 		return nil // 执行器类:命令/脚本文本不是路径(absolute 形态的命令是正常写法)
 	}
 	access := sdk.InferAccess(name)
 	var out []sdk.PathParam
+	seen := map[string]bool{}
+	sniffWalk(m, nil, 1, access, &out, seen)
+	// map 遍历无序 → 定序(错误文案要可断言)
+	sort.Slice(out, func(i, j int) bool { return sniffKey(out[i]) < sniffKey(out[j]) })
+	return out
+}
+
+// sniffWalk 递归收集路径值。keyPath 用 `*` 表示“穿过一层数组”(与 sdk.InferPathParams 同约定,
+// sdk.LookupArgPath 按 `*` 展开数组):顶层数组仍是 Many,嵌套数组用 Nested+`*`。
+func sniffWalk(m map[string]any, prefix []string, depth int, access sdk.PathAccess, out *[]sdk.PathParam, seen map[string]bool) {
+	if depth > sniffMaxDepth {
+		sniffLimitNote("depth")
+		return
+	}
+	keys := 0
 	for k, v := range m {
+		if keys++; keys > sniffMaxKeys {
+			sniffLimitNote("keys")
+			return
+		}
 		skip := sniffSkipArgs[strings.ToLower(k)]
+		keyPath := append(append([]string(nil), prefix...), k)
+		add := func(p sdk.PathParam) {
+			if key := sniffKey(p); !seen[key] {
+				seen[key] = true
+				*out = append(*out, p)
+			}
+		}
 		switch t := v.(type) {
 		case string:
 			if sdk.LooksLikePathValue(t) && (!skip || sdk.LooksLikeCredentialPath(t)) {
-				out = append(out, sdk.PathParam{Arg: k, Access: access, Optional: true})
+				add(sniffParam(keyPath, access, false))
 			}
+		case map[string]any:
+			sniffWalk(t, keyPath, depth+1, access, out, seen)
 		case []any:
-			allStrings, hit := true, false
+			if len(t) > sniffMaxItems {
+				sniffLimitNote("items")
+				t = t[:sniffMaxItems]
+			}
+			// 混合数组:字符串元素按“穿过一层数组”裁决,对象元素继续下钻
+			strHit, hadObj := false, false
 			for _, item := range t {
-				s, ok := item.(string)
-				if !ok {
-					allStrings = false
-					break
-				}
-				if sdk.LooksLikePathValue(s) && (!skip || sdk.LooksLikeCredentialPath(s)) {
-					hit = true
+				switch it := item.(type) {
+				case string:
+					if sdk.LooksLikePathValue(it) && (!skip || sdk.LooksLikeCredentialPath(it)) {
+						strHit = true
+					}
+				case map[string]any:
+					hadObj = true
+					sniffWalk(it, append(keyPath, "*"), depth+1, access, out, seen)
 				}
 			}
-			if allStrings && hit {
-				out = append(out, sdk.PathParam{Arg: k, Access: access, Many: true, Optional: true})
+			if strHit {
+				// 顶层数组仍给 Many(取值形态是字符串数组);嵌套数组走 Nested+`*`
+				if len(keyPath) == 1 && !hadObj {
+					add(sniffParam(keyPath, access, true))
+				} else {
+					add(sniffParam(append(keyPath, "*"), access, false))
+				}
 			}
 		}
 	}
-	// map 遍历无序 → 定序(错误文案要可断言)
-	sort.Slice(out, func(i, j int) bool { return out[i].Arg < out[j].Arg })
-	return out
 }
 
 // pathValues 取参数值里的路径列表(字符串 / 字符串数组);类型不符显式报错。
