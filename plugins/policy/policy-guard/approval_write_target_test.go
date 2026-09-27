@@ -9,7 +9,9 @@ package policyguard
 
 import (
 	"context"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -22,16 +24,27 @@ func TestProtectedWriteTargetDerivation(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	hits := []struct{ cmd, wantLabel string }{
-		{"echo x >> /etc/hosts", "写系统目录 /etc"},                                // 枚举漏(双箭头)
-		{"echo x > /etc/hosts", "写系统目录 /etc"},                                 // 枚举原有,派生也覆盖
-		{"printf x >> ~/.zshrc", "写敏感配置 ~/.zshrc"},                            // 枚举漏(shell 配置劫持)
-		{"echo key >> ~/.ssh/authorized_keys", "写凭据路径"},                       // 枚举漏(持久化后门)
-		{"echo key >> $HOME/.ssh/authorized_keys", "写凭据路径"},                   // 枚举漏 + 变量写法(展开后判)
-		{"mv /tmp/payload /etc/y", "写系统目录 /etc"},                              // 枚举漏(覆盖系统文件)
-		{"cp /tmp/x /usr/local/bin/gah", "写系统目录 /usr"},                        // 枚举漏
-		{"install -m 755 x /Library/LaunchDaemons/x.plist", "写系统目录 /Library"}, // 枚举只认 LaunchAgents 字面
+	type hitCase struct{ cmd, wantLabel string }
+	var hits []hitCase
+	if runtime.GOOS == "windows" {
+		// 系统目录类在 Windows 上是另一批(%SystemRoot%/%ProgramFiles% 现算),且命令文本里的
+		// `C:\…` 会被 POSIX 词法扫描吃掉反斜杠(scanWord 转义分支)—— 那是**另一条**已登记缺口,
+		// 故这里跳过命令层、直接打判据(目录表与大小写折叠由 TestProtectedWriteTargetWindowsDirs 钉)。
+	} else {
+		hits = []hitCase{
+			{"echo x >> /etc/hosts", "写系统目录 /etc"},                                // 枚举漏(双箭头)
+			{"echo x > /etc/hosts", "写系统目录 /etc"},                                 // 枚举原有,派生也覆盖
+			{"mv /tmp/payload /etc/y", "写系统目录 /etc"},                              // 枚举漏(覆盖系统文件)
+			{"cp /tmp/x /usr/local/bin/gah", "写系统目录 /usr"},                        // 枚举漏
+			{"install -m 755 x /Library/LaunchDaemons/x.plist", "写系统目录 /Library"}, // 枚举只认 LaunchAgents 字面
+		}
 	}
+	// 家目录/凭据类两边都成立(不平台相关:家目录由 userHome() 给,值就是本机家目录下的路径)
+	hits = append(hits,
+		hitCase{"printf x >> ~/.zshrc", "写敏感配置 ~/.zshrc"},          // 枚举漏(shell 配置劫持)
+		hitCase{"echo key >> ~/.ssh/authorized_keys", "写凭据路径"},     // 枚举漏(持久化后门)
+		hitCase{"echo key >> $HOME/.ssh/authorized_keys", "写凭据路径"}, // 枚举漏 + 变量写法(展开后判)
+	)
 	for _, c := range hits {
 		label, hit := derivedApprovalTarget(c.cmd)
 		if !hit {
@@ -55,6 +68,60 @@ func TestProtectedWriteTargetDerivation(t *testing.T) {
 		if label, hit := derivedApprovalTarget(cmd); hit {
 			t.Fatalf("%q 不应派生审批项(避免确认框噪音),got %q", cmd, label)
 		}
+	}
+}
+
+// TestProtectedWriteTargetWindowsDirs Windows 侧受保护目录(%SystemRoot% / %ProgramFiles% /
+// %ProgramData%)与大小写折叠:POSIX 那批字面量在 Windows 上根本不存在 ⇒ 写
+// `C:\Windows\System32\drivers\etc\hosts` 既不命中枚举也无派生兜底(2026-09-27 补)。
+//
+// 必须真机跑:判据里的 filepath.IsAbs 只在 Windows 上认 `C:\…`(开关翻不动 stdlib)。
+func TestProtectedWriteTargetWindowsDirs(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("受保护目录表在非 Windows 上只有 POSIX 那批;Windows 分支只能在 Windows 上真跑")
+	}
+	withCaseFold(t, true)
+	checked := 0
+	for _, env := range []string{"SystemRoot", "ProgramFiles", "ProgramData"} {
+		dir := strings.TrimSpace(os.Getenv(env))
+		if dir == "" {
+			continue
+		}
+		for _, p := range []string{filepath.Join(dir, "sub", "x.txt"), strings.ToLower(filepath.Join(dir, "x.txt"))} {
+			label, hit := protectedWriteTarget(p)
+			if !hit || !strings.Contains(label, "写系统目录") {
+				t.Fatalf("%s 下的 %s 应派生系统目录审批项,got (%q,%v)", env, p, label, hit)
+			}
+			checked++
+		}
+	}
+	if checked == 0 {
+		t.Fatal("三个环境变量都未设:没测到任何 Windows 受保护目录")
+	}
+}
+
+// TestProtectedWriteTargetHomeCandidates 家目录取**候选并集**:MSYS 的 `~` 看 HOME,
+// os.UserHomeDir 看 %USERPROFILE% —— 两者在 Windows 上不是一个目录(HOME 甚至可为空)。
+// 过去两边各取一家 ⇒ 「$HOME 下的密钥目录」与「~/.zshrc」判出两个家,一边拦一边漏(2026-09-27)。
+func TestProtectedWriteTargetHomeCandidates(t *testing.T) {
+	withCaseFold(t, false)
+	home := t.TempDir()
+	profile := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", profile)
+
+	for _, d := range []string{home, profile} {
+		if label, hit := protectedWriteTarget(filepath.Join(d, ".zshrc")); !hit {
+			t.Fatalf("%s 下的敏感文件应命中,得 (%q,%v)", d, label, hit)
+		}
+	}
+	// HOME 缺失(Windows 上 os.UserHomeDir 未必认 HOME)不能漏:回退 %USERPROFILE%
+	t.Setenv("HOME", "")
+	if got := userHome(); got != filepath.Clean(profile) {
+		t.Fatalf("HOME 未设时首选家目录应为 USERPROFILE,得 %q", got)
+	}
+	if label, hit := protectedWriteTarget(filepath.Join(profile, ".zshrc")); !hit {
+		t.Fatalf("HOME 未设时应回退 USERPROFILE 判定,得 (%q,%v)", label, hit)
 	}
 }
 

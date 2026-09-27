@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -350,14 +351,23 @@ func TestGuardProxyAdjudicatesInnerArgs(t *testing.T) {
 
 // TestSniffPathParamsRecursion A8:值级兜底的递归形态、上限与去重(纯判据)。
 func TestSniffPathParamsRecursion(t *testing.T) {
+	// 路径值按平台取:值级兜底用 `filepath.IsAbs` 判「是不是绝对路径」,而 Windows 不认
+	// `/etc/hosts`(无盘符)⇒ 固定 POSIX 字面量在那边会全部漏判(2026-09-27 CI 实测 `[]`)。
+	// 本用例钉的是递归形状/上限,与具体路径无关,值只需是**本平台**的绝对路径。
+	abs := "/etc/hosts"
+	abs2 := "/etc/passwd"
+	if runtime.GOOS == "windows" {
+		abs = `C:\Windows\System32\drivers\etc\hosts`
+		abs2 = `C:\Windows\win.ini`
+	}
 	// 嵌套对象 + 数组下钻(路径用 `*` 表示"穿过一层数组",与 sdk.InferPathParams 同约定);
 	// 同一嵌套路径被多个数组元素命中 → 去重成一条
 	m := map[string]any{
 		"options": map[string]any{"files": []any{
-			map[string]any{"path": "/etc/hosts"},
-			map[string]any{"path": "/etc/passwd"},
+			map[string]any{"path": abs},
+			map[string]any{"path": abs2},
 		}},
-		"files": []any{"/etc/hosts", "/etc/passwd"},
+		"files": []any{abs, abs2},
 	}
 	got := sniffPathParams("mcp_x_write", m)
 	var keys []string
@@ -375,17 +385,17 @@ func TestSniffPathParamsRecursion(t *testing.T) {
 	}
 
 	// 深度边界:嵌套**第 4 层**的键仍在裁决内,第 5 层起停(上限 4 = 被遍历 map 的层号)
-	if got := sniffPathParams("mcp_x_write", map[string]any{"a": map[string]any{"b": map[string]any{"c": map[string]any{"d": "/etc/hosts"}}}}); len(got) != 1 {
+	if got := sniffPathParams("mcp_x_write", map[string]any{"a": map[string]any{"b": map[string]any{"c": map[string]any{"d": abs}}}}); len(got) != 1 {
 		t.Fatalf("第 4 层路径应在裁决内,得 %v", got)
 	}
-	if got := sniffPathParams("mcp_x_write", map[string]any{"a": map[string]any{"b": map[string]any{"c": map[string]any{"d": map[string]any{"e": "/etc/hosts"}}}}}); len(got) != 0 {
+	if got := sniffPathParams("mcp_x_write", map[string]any{"a": map[string]any{"b": map[string]any{"c": map[string]any{"d": map[string]any{"e": abs}}}}}); len(got) != 0 {
 		t.Fatalf("第 5 层路径应停在上限外,得 %v", got)
 	}
 
 	// 上限:每对象键 ≤ 64(全部键都是路径 → 恰好收集 64 条)
 	wide := map[string]any{}
 	for i := 0; i < 70; i++ {
-		wide[fmt.Sprintf("k%02d", i)] = "/etc/hosts"
+		wide[fmt.Sprintf("k%02d", i)] = abs
 	}
 	if got := sniffPathParams("mcp_x_write", wide); len(got) != sniffMaxKeys {
 		t.Fatalf("键上限应为 %d,得 %d", sniffMaxKeys, len(got))
@@ -393,14 +403,14 @@ func TestSniffPathParamsRecursion(t *testing.T) {
 	// 上限:数组项 ≤ 64(用互不相同的键名,避免去重掩盖截断)
 	big := make([]any, 0, 70)
 	for i := 0; i < 70; i++ {
-		big = append(big, map[string]any{fmt.Sprintf("p%d", i): "/etc/hosts"})
+		big = append(big, map[string]any{fmt.Sprintf("p%d", i): abs})
 	}
 	if got := sniffPathParams("mcp_x_write", map[string]any{"items": big}); len(got) != sniffMaxItems {
 		t.Fatalf("数组项上限应为 %d,得 %d", sniffMaxItems, len(got))
 	}
 
 	// 执行器类仍整体豁免(递归不能把这条推翻)
-	if got := sniffPathParams("shell", map[string]any{"a": map[string]any{"b": "/etc/hosts"}}); got != nil {
+	if got := sniffPathParams("shell", map[string]any{"a": map[string]any{"b": abs}}); got != nil {
 		t.Fatalf("执行器类应整体豁免,得 %v", got)
 	}
 }

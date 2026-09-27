@@ -37,7 +37,6 @@ package policyguard
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -374,8 +373,8 @@ func cdTargetInside(args []string, root string, cwdOK bool) bool {
 		break
 	}
 	if target == "" {
-		home, err := os.UserHomeDir()
-		if err != nil || home == "" || root == "" {
+		home := userHome()
+		if home == "" || root == "" {
 			return false
 		}
 		return pathWithin(root, home)
@@ -1117,12 +1116,14 @@ func globHead(p string) (string, bool) {
 }
 
 // expandTilde 展开 `~` 与 `~/...`;`~user` 无法可靠定位(isGlob 语义的 ok=false)。
+// 家目录走 userHome()(单一事实源):`~` 要按**用户 shell** 的口径展(MSYS 看 HOME,
+// 不是 %USERPROFILE%),否则展出来的家与拒据目录/敏感文件判定不是同一个。
 func expandTilde(p string) (string, bool) {
 	if p != "~" && !strings.HasPrefix(p, "~/") {
 		return "", false
 	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
+	home := userHome()
+	if home == "" {
 		return "", false
 	}
 	if p == "~" {

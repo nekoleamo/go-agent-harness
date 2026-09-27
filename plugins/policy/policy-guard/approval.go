@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -260,12 +261,25 @@ func matchDangerous(args string) (string, bool) {
 // `shellpaths.go` 里(与路径裁决同一份解析,不重复枚举)。两者互补:枚举给“人读得懂的罪名”,
 // 派生兜住没枚举到的写法。
 
-// protectedWriteDirs 审批层的“受保护目录”。
+// protectedWriteDirs 审批层的“受保护目录”(写它们 = 改系统;与枚举表互补,按**落点**判)。
 //
 // 刻意**不收** `/tmp`、`/var`、`/private/var`(macOS TMPDIR)、`$HOME` 下普通路径:
 // 那些是常规工作落点,收了就是每条命令都弹窗 —— 噪音会把确认框训练成“闭眼点同意”。
-var protectedWriteDirs = []string{
-	"/etc", "/usr", "/bin", "/sbin", "/boot", "/System", "/Library", "/opt", "/dev", "/root",
+//
+// Windows 侧(2026-09-27 跨平台复核补):POSIX 那批字面量在 Windows 上根本不存在 ⇒
+// 写 `C:\Windows\System32\drivers\etc\hosts` 既不命中枚举也无派生兜底。目录按环境变量现算
+// (换成 D 盘 / 非默认 Program Files 也能对上);判定用 pathWithin(卷名与段名不区分大小写)。
+func protectedWriteDirs() []string {
+	dirs := []string{"/etc", "/usr", "/bin", "/sbin", "/boot", "/System", "/Library", "/opt", "/dev", "/root"}
+	if runtime.GOOS != "windows" {
+		return dirs
+	}
+	for _, env := range []string{"SystemRoot", "ProgramFiles", "ProgramFiles(x86)", "ProgramData"} {
+		if v := strings.TrimSpace(os.Getenv(env)); v != "" {
+			dirs = append(dirs, filepath.Clean(v))
+		}
+	}
+	return dirs
 }
 
 // protectedWriteFiles 家目录下的敏感文件(相对路径):写它们 = 劫持 shell/持久化。
@@ -320,36 +334,34 @@ func protectedWriteTarget(raw string) (string, bool) {
 	if sdk.LooksLikeCredentialPath(p) {
 		return "写凭据路径 " + p, true
 	}
-	for _, d := range protectedWriteDirs {
-		if underDir(p, d) {
+	for _, d := range protectedWriteDirs() {
+		if pathWithin(d, p) {
 			return "写系统目录 " + d, true
 		}
 	}
-	if home := strings.TrimSpace(os.Getenv("HOME")); home != "" && underDir(p, filepath.Clean(home)) {
-		if rel, err := filepath.Rel(home, p); err == nil {
-			rel = filepath.ToSlash(rel)
-			for _, f := range protectedWriteFiles {
-				if rel == f {
-					return "写敏感配置 ~/" + f, true
-				}
+	// 家目录取**候选并集**(HOME/USERPROFILE/UserHomeDir):审批是拒绝面,宁多问不漏判。
+	for _, home := range userHomes() {
+		if !pathWithin(home, p) {
+			continue
+		}
+		rel, err := filepath.Rel(home, p)
+		if err != nil {
+			continue
+		}
+		rel = filepath.ToSlash(rel)
+		for _, f := range protectedWriteFiles {
+			if rel == f {
+				return "写敏感配置 ~/" + f, true
 			}
 		}
 	}
 	return "", false
 }
 
-// underDir p 是否在 dir 内(含目录自身;按路径段比,`/etc2` 不算 `/etc` 的子路径)。
-func underDir(p, dir string) bool {
-	if p == dir {
-		return true
-	}
-	return strings.HasPrefix(p, dir+string(filepath.Separator))
-}
-
 // expandHomeVars 把开头的 `$HOME`/`${HOME}`/`%USERPROFILE%` 换成真实家目录(写目标常这么写;
 // 换了才能与“绝对路径”同一条判据判定)。其余变量不动 —— 落点不可知的一律交给后面的字面量扫描。
 func expandHomeVars(s string) string {
-	home := strings.TrimSpace(os.Getenv("HOME"))
+	home := userHome()
 	if home == "" {
 		return s
 	}

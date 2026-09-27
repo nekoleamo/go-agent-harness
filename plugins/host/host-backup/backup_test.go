@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -121,8 +122,11 @@ func TestBackupExternalDest(t *testing.T) {
 	}
 	// 权限(C2,2026-09-27):归档内含 config/provider.yaml 等第三方 API key ⇒ 必须 0600
 	// (`os.Create` 会按 0644 落盘,多用户机器上同机任何用户可读走密钥)。
-	if perm := fi.Mode().Perm(); perm != 0o600 {
-		t.Fatalf("归档权限应为 0600,得 %o", perm)
+	// Windows 无 POSIX 权限位(FileMode 恒 0666)⇒ 该断言只对 POSIX 成立。
+	if runtime.GOOS != "windows" {
+		if perm := fi.Mode().Perm(); perm != 0o600 {
+			t.Fatalf("归档权限应为 0600,得 %o", perm)
+		}
 	}
 }
 
@@ -142,8 +146,10 @@ func TestBackupDefaultDirMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if perm := fi.Mode().Perm(); perm != 0o700 {
-		t.Fatalf("默认备份目录权限应为 0700,得 %o", perm)
+	if runtime.GOOS != "windows" { // Windows 无 POSIX 权限位(恒 0777),断言只在 POSIX 成立
+		if perm := fi.Mode().Perm(); perm != 0o700 {
+			t.Fatalf("默认备份目录权限应为 0700,得 %o", perm)
+		}
 	}
 }
 

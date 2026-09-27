@@ -7,6 +7,7 @@ package mcpbridge
 
 import (
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -109,7 +110,9 @@ func TestKernelSpecRWPathsFromEnv(t *testing.T) {
 	if !strings.Contains(joined, extra) {
 		t.Fatalf("GAH_EXT_RW_PATHS 应进白名单: %v", spec.RW)
 	}
-	if spec.Jail != os.Getenv("GAH_HOME")+"/jail" {
+	// 用 filepath.Join 比:数据根是 temp 目录,直接拼 "/jail" 在 Windows 上是混用分隔符
+	// (`…\003/jail` vs `…\003\jail`)⇒ 假阴(2026-09-27 CI)。
+	if want := filepath.Join(os.Getenv("GAH_HOME"), "jail"); spec.Jail != want {
 		t.Fatalf("白名单锚点应是数据根下的 jail: %s", spec.Jail)
 	}
 }

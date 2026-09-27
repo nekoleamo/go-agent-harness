@@ -112,10 +112,13 @@ func TestDefaultRWAndEnvParsing(t *testing.T) {
 		}
 	}
 
-	t.Setenv("UT_RW", "/a:: /b ")
+	// 分隔符按平台取(os.PathListSeparator:Windows 是 `;`)—— 产品侧就是用它切的,
+	// 固定写成冒号会在 Windows 上把整串当一个路径(实测 CI 假阴,2026-09-27)。
+	sep := string(os.PathListSeparator)
+	t.Setenv("UT_RW", "/a"+sep+sep+" /b ")
 	got := RWPathsFromEnv("UT_RW")
 	if len(got) != 2 || got[0] != "/a" || got[1] != "/b" {
-		t.Fatalf("冒号分隔解析(空段/空白忽略)不符:%v", got)
+		t.Fatalf("分隔解析(空段/空白忽略)不符:%v", got)
 	}
 	if RWPathsFromEnv("UT_RW_UNSET") != nil {
 		t.Fatal("未设环境变量应返回 nil")

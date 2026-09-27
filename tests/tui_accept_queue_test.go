@@ -134,30 +134,25 @@ func TestTUIAcceptQueueRecall(t *testing.T) {
 		t.Errorf("条目 7:Esc 后回吐消息未进待发队列;屏 %q", firstN(s.screen(), 400))
 	}
 	// Alt+Up 取回(kitty 变体为主,xterm 变体兜底)。
-	// 轮询窗口 6s:UI 循环在 Esc 取消后可能仍在同步收尾(命令跑在 UI 循环内),
-	// 全量套件并发负载下实测会超过 3s —— 单跑 3/3 通过、全量偶发假阴,故放宽等待而非改产品。
-	s.send("\x1b[1;3A")
-	queueGone := false
-	t0 := time.Now()
-	for i := 0; i < 24 && !queueGone; i++ {
-		time.Sleep(250 * time.Millisecond)
-		queueGone = !pendingCount.MatchString(s.screen())
-	}
-	if !queueGone {
-		s.send("\x1b\x1b[A")
-		for i := 0; i < 24 && !queueGone; i++ {
+	//
+	// 这里**不**拿状态栏计数当硬判据:Esc 取消的收尾跑在 UI 循环内,期间按键与重绘都得排队 ——
+	// 全量 -race 并发下 UI 循环实测被占住 10s+(2026-09-27 CI:计数 12s 不消失),而取回其实早已
+	// 生效(紧接着回车发出的正是取回的「插入三」)。计数只记日志:它是“UI 循环何时喘过气”的观察值。
+	// 真正的判据在下面 —— **取回的效果**:没取回则草稿为空、回车什么也发不出去。
+	for _, key := range []string{"\x1b[1;3A", "\x1b\x1b[A"} {
+		s.send(key)
+		for i := 0; i < 24; i++ { // 每个变体 6s 窗口:取回已生效但队列已空时,后发的变体是无操作
+			if !pendingCount.MatchString(s.screen()) {
+				break
+			}
 			time.Sleep(250 * time.Millisecond)
-			queueGone = !pendingCount.MatchString(s.screen())
 		}
 	}
-	t.Logf("条目 7:取回后待发计数消失=%v(耗时 %v);屏尾=%q", queueGone, time.Since(t0).Round(time.Millisecond), firstN(s.screen(), 300))
-	if !queueGone {
-		t.Errorf("条目 7:Alt+Up 未取回队列(实时状态栏仍有待发计数)")
-	}
-	// 取回的文本在输入行:直接回车应作为用户消息发出
+	t.Logf("条目 7:取回后状态栏待发计数已消=%v;屏尾=%q", !pendingCount.MatchString(s.screen()), firstN(s.screen(), 300))
+	// 取回的文本在输入行:直接回车应作为用户消息发出(这条是取回成功的判据)
 	s.send("\r")
-	if !s.waitRaw("❯ 插入三", 25*time.Second) {
-		t.Errorf("条目 7:取回后未能作为用户消息发出;尾部 %s", stripANSI(tailS(s.rawText(), 400)))
+	if !s.waitRaw("❯ 插入三", 30*time.Second) {
+		t.Errorf("条目 7:取回后未能作为用户消息发出(Alt+Up 未把待发消息放进草稿);尾部 %s", stripANSI(tailS(s.rawText(), 400)))
 	}
 }
 

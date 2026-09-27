@@ -4,6 +4,7 @@ package prefs
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -126,12 +127,16 @@ func TestAddWebAllowHost(t *testing.T) {
 		t.Fatalf("追加白名单不应丢其它字段: %+v", got)
 	}
 	// 白名单是可写面:文件权限保持 0600
-	fi, err := os.Stat(filepath.Join(home, "config", "gah-state.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if perm := fi.Mode().Perm(); perm != 0o600 {
-		t.Fatalf("权限应为 0600,得 %o", perm)
+	// (Windows 无 POSIX 权限位:FileMode 恒 0666/0777 ⇒ 该断言只在 POSIX 有意义;
+	//  那边靠 ACL,不在本用例的可判面内)
+	if runtime.GOOS != "windows" {
+		fi, err := os.Stat(filepath.Join(home, "config", "gah-state.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if perm := fi.Mode().Perm(); perm != 0o600 {
+			t.Fatalf("权限应为 0600,得 %o", perm)
+		}
 	}
 	// 无 GAH_HOME = 纯内存跳过(不 panic、不落盘)
 	t.Setenv("GAH_HOME", "")
