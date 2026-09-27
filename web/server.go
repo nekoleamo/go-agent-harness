@@ -41,9 +41,11 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"mime"
 	"net"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -1521,8 +1523,53 @@ func (s *Server) attachmentsHandler() http.Handler {
 			http.Error(w, "附件目录未配置", http.StatusServiceUnavailable)
 		})
 	}
-	return http.StripPrefix("/attachments/", http.FileServerFS(os.DirFS(s.cfg.AttachmentsDir)))
+	fs := http.StripPrefix("/attachments/", http.FileServerFS(os.DirFS(s.cfg.AttachmentsDir)))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fs.ServeHTTP(&attachGuardWriter{ResponseWriter: w, name: path.Base(strings.TrimSuffix(r.URL.Path, "/"))}, r)
+	})
 }
+
+// attachGuardWriter 附件响应的类型裁决(安全审计 C2,2026-09-27)。
+//
+// 问题:附件端点此前把上传文件**原样内联**托管 —— `x.html`(或内容嗅探为 HTML 的无扩展名文件)
+// 以 `text/html` 在同源返回,浏览器直接**执行**其中的脚本 ⇒ 存储型 XSS:脚本拿着 UI 的 cookie
+// 调 `/api/*`(读会话、注入提示词、触发工具与审批)。上传又是用户日常动作,故门槛只有"点开预览"。
+//
+// 修法复用文档侧既有判据 `isDangerousInline`(**单一事实源**,见 web/doc.go):可执行文档类型
+// 一律改 `Content-Disposition: attachment`(下载而非呈现)+ 收窄 CSP(`default-src 'none'; sandbox`,
+// 连呈现都禁脚本与跳转)。图片(不含 svg)与 PDF 保持内联 —— 前端只用 `<img src="/attachments/…">`
+// 预览,PDF 由浏览器原生查看器承载,无同源脚本面。
+//
+// 为何在 ResponseWriter 上拦截而不是看请求后缀:类型由 `http.ServeContent` **按扩展名或内容嗅探**
+// 决定(无扩展名文件会被嗅探成 text/html),只有拿到它写入的 Content-Type 才能不漏判。
+type attachGuardWriter struct {
+	http.ResponseWriter
+	name        string // 下载名(= 请求的文件名;仅用于 attachment 的 filename 参数)
+	wroteHeader bool
+}
+
+func (a *attachGuardWriter) WriteHeader(code int) {
+	if !a.wroteHeader {
+		a.wroteHeader = true
+		h := a.Header()
+		if isDangerousInline(h.Get("Content-Type")) {
+			h.Set("Content-Disposition", mime.FormatMediaType("attachment",
+				map[string]string{"filename": a.name}))
+			h.Set("Content-Security-Policy", attachDangerCSP)
+		}
+	}
+	a.ResponseWriter.WriteHeader(code)
+}
+
+func (a *attachGuardWriter) Write(b []byte) (int, error) {
+	if !a.wroteHeader {
+		a.WriteHeader(http.StatusOK)
+	}
+	return a.ResponseWriter.Write(b)
+}
+
+// attachDangerCSP 可执行文档类型的响应 CSP:什么都不许(比全局的 frame-ancestors 'none' 严得多)。
+const attachDangerCSP = "default-src 'none'; sandbox"
 
 // attachmentMimeByExt 图片扩展名 → MIME(视觉注入 data URI 用;未知回源类型)。
 var attachmentMimeByExt = map[string]string{

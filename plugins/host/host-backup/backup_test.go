@@ -115,8 +115,35 @@ func TestBackupExternalDest(t *testing.T) {
 	if out != dest {
 		t.Fatalf("外部 dest 应返回完整路径: %s", out)
 	}
-	if _, err := os.Stat(dest); err != nil {
+	fi, err := os.Stat(dest)
+	if err != nil {
 		t.Fatal(err)
+	}
+	// 权限(C2,2026-09-27):归档内含 config/provider.yaml 等第三方 API key ⇒ 必须 0600
+	// (`os.Create` 会按 0644 落盘,多用户机器上同机任何用户可读走密钥)。
+	if perm := fi.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("归档权限应为 0600,得 %o", perm)
+	}
+}
+
+// TestBackupDefaultDirMode 默认备份目录权限 0700(归档含凭据 ⇒ 目录不该 world-readable)。
+func TestBackupDefaultDirMode(t *testing.T) {
+	home := t.TempDir() // 不经 buildHome:那里预建了 0755 的 backups/(MkdirAll 不改既有目录权限)
+	t.Setenv("GAH_HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, "config"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(home, "config", "provider.yaml"), "api_key: sk-test\n")
+	b := &Backup{home: home}
+	if _, err := b.Backup(""); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(b.backupDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := fi.Mode().Perm(); perm != 0o700 {
+		t.Fatalf("默认备份目录权限应为 0700,得 %o", perm)
 	}
 }
 

@@ -441,3 +441,37 @@ func TestParallelWidthCapped(t *testing.T) {
 		}
 	}
 }
+
+// TestSpawnRunningCap(安全审计 C4,2026-09-27):后台 spawn/fork 此前无并发上限 ——
+// parallel 有 maxParallel 宽度封顶,后台路径漏了同一道闸。两条断言:达上限显式报错;
+// 腾出名额后放行(闸门不是恒拒)。
+func TestSpawnRunningCap(t *testing.T) {
+	svc := buildEnv(t)
+	f, ok := svc.(*Fanout)
+	if !ok {
+		t.Fatalf("期望 *Fanout,得 %T", svc)
+	}
+	f.mu.Lock()
+	for i := 0; i < maxRunningAgents; i++ {
+		id := fmt.Sprintf("seed%d", i)
+		f.agents[id] = &agentSession{
+			handle: sdk.AgentHandle{ID: id, State: sdk.AgentRunning},
+			cancel: func() {},
+		}
+		f.order = append(f.order, id)
+	}
+	f.mu.Unlock()
+	if _, err := svc.SpawnAgent(context.Background(), "任务"); err == nil || !strings.Contains(err.Error(), "上限") {
+		t.Fatalf("达上限应显式报错,得 err=%v", err)
+	}
+	f.mu.Lock()
+	f.agents["seed0"].handle.State = sdk.AgentDone
+	f.mu.Unlock()
+	id, err := svc.SpawnAgent(context.Background(), "任务")
+	if err != nil {
+		t.Fatalf("腾出名额后应放行,得 %v", err)
+	}
+	if id == "" {
+		t.Fatal("应返回句柄")
+	}
+}

@@ -242,3 +242,50 @@ func indexOf(s, sub string) int {
 	}
 	return -1
 }
+
+// TestWorkflowBoundedExecution(安全审计 C4,2026-09-27):脚本由模型书写,纯计算死循环
+// 必须有界 —— 此前既无步数上限也拦不住 ctx 取消(解释器只在工具调用边界看 ctx),
+// `while True: pass` 会把宿主进程挂死在 100% CPU。两条断言各钉一件事:
+// ① 步数上限让死循环有限时间内失败;② ctx 取消能打断解释器并显式说明原因。
+func TestWorkflowBoundedExecution(t *testing.T) {
+	c := buildEnv(t)
+	var tools sdk.ToolRegistry
+	if err := c.Inject("ctx.tools", &tools); err != nil {
+		t.Fatal(err)
+	}
+	// 顶层 while 被 starlark 语法拒绝(while loop not within a function),循环裹进函数即可
+	deadLoop := mustJSON(t, map[string]any{"script": "def spin():\n  x = 0\n  while True:\n    x = x + 1\nspin()"})
+
+	// ① 步数上限
+	bounded := make(chan string, 1)
+	go func() {
+		res, _ := tools.Execute(context.Background(), "workflow", deadLoop)
+		bounded <- res.Content
+	}()
+	select {
+	case content := <-bounded:
+		if !strings.Contains(content, "步数超过上限") {
+			t.Fatalf("死循环应由步数上限中止,得 %q", content)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("死循环未被步数上限打断(宿主会被挂死)")
+	}
+
+	// ② ctx 取消打断解释器(取消必须显式回因,不能静默)。用**已取消**的 ctx:运行中取消
+	// 会与步数上限抢先后(10M 步只需几十毫秒),预先取消则只有这一条路径能中止它。
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	canceled := make(chan string, 1)
+	go func() {
+		res, _ := tools.Execute(ctx, "workflow", deadLoop)
+		canceled <- res.Content
+	}()
+	select {
+	case content := <-canceled:
+		if !strings.Contains(content, "已取消") || !strings.Contains(content, "context canceled") {
+			t.Fatalf("取消应显式说明原因,得 %q", content)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("ctx 取消未能打断解释器")
+	}
+}

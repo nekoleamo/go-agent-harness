@@ -143,7 +143,7 @@ func (b *Backup) Backup(dest string) (string, error) {
 	name := "gah-backup-" + time.Now().Format("20060102-150405") + ".tar.gz"
 	out := dest
 	if out == "" {
-		if err := os.MkdirAll(b.backupDir(), 0o755); err != nil {
+		if err := os.MkdirAll(b.backupDir(), 0o700); err != nil {
 			return "", fmt.Errorf("备份目录创建失败: %w", err)
 		}
 		out = filepath.Join(b.backupDir(), name)
@@ -230,8 +230,12 @@ func home() string {
 }
 
 // writeTarGz 确定性 tar.gz 打包(归档内容按源文件 mtime/权限;gzip -n 等价:头不写时间戳)。
+// 归档权限固定 0600(安全审计 C2,2026-09-27):归档内含 $GAH_HOME 全量,其中
+// config/provider.yaml、config/search.yaml 装着第三方 API key。`os.Create` 会按 0644
+// 落盘 ⇒ 多用户机器上同机任何用户可读走密钥(sdk/env.go 的凭据隔离、config 的 0600 原子写
+// 都能被这一步绕开)。宽目录同理从 0755 收成 0700。
 func writeTarGz(out, root string, exclude map[string]bool) error {
-	f, err := os.Create(out)
+	f, err := os.OpenFile(out, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return fmt.Errorf("归档创建失败: %w", err)
 	}

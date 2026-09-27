@@ -82,6 +82,10 @@ type agentSession struct {
 // inboxCap 注入消息队列容量(运行循环每步 drain,32 已宽裕)。
 const inboxCap = 32
 
+// maxRunningAgents 同时**运行中**的后台子代理上限(已完成会话另有 keepAgents 上限;
+// 见 spawnWorker 的说明:后台路径此前无并发闸)。
+const maxRunningAgents = 16
+
 // maxSubSteps 子代理单轮最大 ReAct 迭代(防死循环)。
 const maxSubSteps = 8
 
@@ -135,6 +139,22 @@ func (f *Fanout) spawnWorker(input string, forkSeed bool, workRoot *sdk.Worktree
 		seed:   seed,
 	}
 	f.mu.Lock()
+	// 后台并发上限(安全审计 C4,2026-09-27):parallel 早有宽度封顶(maxParallel),
+	// 后台路径漏了同一道闸 —— spawn/fork 由模型(乃至工作流脚本循环)反复调用时,
+	// 每个会话都是独立 ReAct 循环(每步一次 LLM 调用),无上限即成本与宿主资源双双放大。
+	running := 0
+	for _, a := range f.agents {
+		if a.handle.State == sdk.AgentRunning {
+			running++
+		}
+	}
+	if running >= maxRunningAgents {
+		f.mu.Unlock()
+		cancel() // 尚未起 goroutine,归还上面建的 ctx
+		return sdk.AgentHandle{}, fmt.Errorf(
+			"子代理运行中会话已达上限 %d(先 agent_kill 终止或等其完成;后台无上限会放大上游配额与宿主内存)",
+			maxRunningAgents)
+	}
 	f.seq++
 	id := fmt.Sprintf("ag%d", f.seq)
 	ag.handle.ID = id

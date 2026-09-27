@@ -272,20 +272,24 @@ func spawn(command string, args []string) (*mcpClient, error) {
 // linesCap 读线程投递缓冲(取消后无人消费时读线程最多阻塞在写入上,不无限占用内存)。
 const linesCap = 256
 
-// startReader 后台逐行读 stdout:read 侧永不在持锁路径阻塞。
+// maxMCPLine 单行输出上限(安全审计 C5,2026-09-27)。外部 MCP server 的 stdout 是**不可信输入**:
+// 旧实现用 bufio.ReadBytes('\n') 逐行读 —— 没有换行符就是无限长,一个卡住(或恶意)的 server
+// 能让宿主一路分配到 OOM。同类闸在别处都有(cappedBuffer 1 MiB / web maxBody 1 MiB),此处原本缺。
+const maxMCPLine = 8 << 20
+
+// startReader 后台逐行读 stdout:read 侧永不在持锁路径阻塞;单行超上限即止并留错误(显式失败,不 OOM)。
 func (m *mcpClient) startReader() {
 	go func() {
-		for {
-			line, err := m.out.ReadBytes('\n')
-			if len(line) > 0 {
-				m.lines <- line
-			}
-			if err != nil {
-				m.readErr = err
-				close(m.lines)
-				return
-			}
+		sc := bufio.NewScanner(m.out)
+		sc.Buffer(make([]byte, 0, 64<<10), maxMCPLine)
+		for sc.Scan() {
+			// Bytes() 缓冲会被复用:必须先拷贝再投递
+			m.lines <- append([]byte(nil), sc.Bytes()...)
 		}
+		if err := sc.Err(); err != nil {
+			m.readErr = fmt.Errorf("mcp server 单行输出超上限 %d 字节: %w", maxMCPLine, err)
+		}
+		close(m.lines)
 	}()
 }
 

@@ -97,6 +97,12 @@ func (w *WorkflowTool) Execute(ctx context.Context, raw string) (any, error) {
 	return result, nil
 }
 
+// workflowMaxSteps starlark 步数上限(安全审计 C4,2026-09-27):脚本由模型书写,
+// `while True: pass` 这类**纯计算死循环**此前没有任何上限 —— 解释器只在工具调用边界看 ctx,
+// 于是循环一转,宿主进程就 100% CPU 挂死(所有会话一起卡住)。上限取 10M 步(亚秒级 CPU),
+// 正常编排(几十次工具调用 + 轻量循环)远够用;超限由解释器自己 cancel("too many steps")。
+const workflowMaxSteps = 10_000_000
+
 // run 解释执行脚本:工具以同名函数暴露,result 变量即结果。
 func (w *WorkflowTool) run(ctx context.Context, script string) (any, error) {
 	predeclared := starlark.StringDict{}
@@ -124,6 +130,22 @@ func (w *WorkflowTool) run(ctx context.Context, script string) (any, error) {
 	thread.Print = func(th *starlark.Thread, msg string) {
 		w.logger.Info("workflow print", "msg", msg)
 	}
+	thread.SetMaxExecutionSteps(workflowMaxSteps)
+	thread.OnMaxSteps = func(th *starlark.Thread) {
+		th.Cancel(fmt.Sprintf("脚本步数超过上限 %d(疑似死循环或超大循环)", workflowMaxSteps))
+	}
+	// ctx 取消 → 打断解释器:不这么做的话**纯计算循环**(while True: pass / 巨型列表构造)
+	// 永远走不到工具调用边界,ctx.Err() 检查形同不存在 —— 宿主进程被挂死在 100% CPU
+	// (整个 harness 一起没响应)。Cancel 可跨 goroutine 调用(starlark-go 有文档保证)。
+	stopWatch := make(chan struct{})
+	defer close(stopWatch)
+	go func() {
+		select {
+		case <-ctx.Done():
+			thread.Cancel("已取消: " + ctx.Err().Error())
+		case <-stopWatch:
+		}
+	}()
 
 	opts := &syntax.FileOptions{Set: true, While: true}
 	globals, err := starlark.ExecFileOptions(opts, thread, "workflow.star", script, predeclared)

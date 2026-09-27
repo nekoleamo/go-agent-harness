@@ -2,6 +2,8 @@
 package mcpbridge
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"log/slog"
 	"os/exec"
@@ -121,4 +123,39 @@ func registryToolNames(tools sdk.ToolRegistry) []string {
 		out = append(out, d.Name)
 	}
 	return out
+}
+
+// TestReaderLineCap(安全审计 C5,2026-09-27):stdout 是不可信输入,单行必须有上限 ——
+// 旧实现 bufio.ReadBytes('\n') 遇到「一直不换行」的输出会无限分配(宿主 OOM)。
+// 两条断言:① 超长单行在有限内存内中止并留显式错误;② 正常多行仍逐行投递(闸门不是恒拒)。
+func TestReaderLineCap(t *testing.T) {
+	drain := func(in []byte) (lines []string, err error) {
+		m := &mcpClient{out: bufio.NewReader(bytes.NewReader(in)), lines: make(chan []byte, linesCap)}
+		m.startReader()
+		deadline := time.After(20 * time.Second)
+		for {
+			select {
+			case l, ok := <-m.lines:
+				if !ok {
+					return lines, m.readErr
+				}
+				lines = append(lines, string(l))
+			case <-deadline:
+				t.Fatal("读线程未在限期内结束")
+			}
+		}
+	}
+
+	huge := bytes.Repeat([]byte("x"), maxMCPLine+1024)
+	if _, err := drain(huge); err == nil || !strings.Contains(err.Error(), "超上限") {
+		t.Fatalf("超长单行应显式报错,得 %v", err)
+	}
+
+	lines, err := drain([]byte("{\"id\":1}\n{\"id\":2}\n"))
+	if err != nil {
+		t.Fatalf("正常行不应报错: %v", err)
+	}
+	if len(lines) != 2 || lines[0] != `{"id":1}` || lines[1] != `{"id":2}` {
+		t.Fatalf("应逐行投递且去除换行,得 %q", lines)
+	}
 }

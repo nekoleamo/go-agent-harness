@@ -170,6 +170,11 @@ func New(sb sdk.Sandbox) *Jobs {
 func (j *Jobs) SetNotify(fn func(sdk.JobDoneEvent)) { j.notify = fn }
 
 // Submit 提交 shell 命令后台执行(读沙箱模式下拒绝)。
+//
+// 注意(安全审计 C5,2026-09-27):这里的 sh -c **不在内核沙箱包装内**(与 tool-shell 的 F1
+// 包装不同构),因此它绕过写范围裁定。当前**无生产调用方**(模型面只有 job_list/job_output/
+// job_kill;Web 只 list/get/kill;外部插件的 Submit 直接报错),不可达 ⇒ 未列为缺陷。
+// 将来若给它接线(如新增提交入口),必须同时补上 kernelsandbox.Wrap —— 否则新入口天然绕过 F1。
 func (j *Jobs) Submit(cmdline string) (string, error) {
 	if err := j.accept(); err != nil {
 		return "", err
