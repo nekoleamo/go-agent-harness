@@ -137,7 +137,7 @@ func cleanCredPath(p string) string {
 		}
 		return "" // 无家目录时无法判定 → 不误报
 	}
-	if !filepath.IsAbs(v) {
+	if !filepath.IsAbs(v) && !posixRooted(v) { // `/c/Users/…` 这类 MSYS 根相对值在 Windows 上 IsAbs=false
 		// 相对路径不在这里判:它经工具的 cwd 解析后是否落在凭据目录,值级无从得知
 		return ""
 	}

@@ -213,6 +213,28 @@ func TestLooksLikePathValue(t *testing.T) {
 	}
 }
 
+// TestPosixRooted Windows 根相对形态(`\foo`、`/etc/hosts`)在两种语义下都要判对 ——
+// 开关化是为了能在非 Windows 机器上跑(真机判据 filepath.IsAbs 翻不动,这里判的是自己的壳)。
+func TestPosixRooted(t *testing.T) {
+	old := winSemantics
+	defer func() { winSemantics = old }()
+
+	winSemantics = false // POSIX 值语义:`\foo` 是普通值(反斜杠只是字符),`/foo` 由 IsAbs 负责
+	if posixRooted(`\foo`) {
+		t.Fatal("POSIX 语义下 `\\foo` 不是根相对路径")
+	}
+	if !posixRooted("/foo") {
+		t.Fatal("`/foo` 是根相对路径")
+	}
+	winSemantics = true // Windows:`\foo` 是当前盘根下,`/foo` 是 MSYS 根相对
+	if !posixRooted(`\foo`) || !posixRooted("/foo") {
+		t.Fatal("Windows 语义下两者都是根相对路径")
+	}
+	if posixRooted("foo\\bar") {
+		t.Fatal("前缀不是根的路径不算根相对")
+	}
+}
+
 func TestDescribePathParams(t *testing.T) {
 	got := DescribePathParams([]PathParam{
 		{Arg: "path", Access: PathWrite},

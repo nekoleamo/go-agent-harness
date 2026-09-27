@@ -43,7 +43,8 @@ SKIP="${GAH_COVER_SKIP:-0}"             # 1 = 只测(不校验),用于基线测�
 #   Landlock 自举 helper 与上面的 tool-shell@linux 是**同一个盲区**(重新 exec 自身后
 #   子进程不写 cover 计数器),且 darwin 专属用例(seatbelt profile 组装)在 Linux 上不跑
 #   → 两平台不可比。下限取 50(远低于实测值),逾期若在 Linux CI 报低,按上面的
-#   模式补一行 `internal/kernelsandbox@linux <实测值>` 即可。
+#   模式补了 `internal/kernelsandbox@linux 43`(Linux CI 实测 43.4%,2026-09-27)。
+#   注意这个下限不能按 darwin 的数字(实测 95.1)要求 —— 两平台可跑到的行集不同。
 read -r -d '' MINS <<'EOF'
 core/event 90
 core/ctx 60
@@ -53,6 +54,7 @@ sdk 60
 internal/prefs 66
 internal/providerfile 72
 internal/kernelsandbox 50
+internal/kernelsandbox@linux 43
 internal/mcpconfig 80
 internal/embed 70
 internal/install 60

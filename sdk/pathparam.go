@@ -213,7 +213,7 @@ func LooksLikePathValue(s string) bool {
 	if v == "~" || strings.HasPrefix(v, "~/") || strings.HasPrefix(v, `~\`) {
 		return true
 	}
-	if filepath.IsAbs(v) { // /etc/hosts、/c/tmp(MSYS);Windows 盘符形态见 Note
+	if filepath.IsAbs(v) || posixRooted(v) { // /etc/hosts、/c/tmp(MSYS);Windows 盘符形态见 Note
 		return true
 	}
 	if strings.HasPrefix(v, "./") || strings.HasPrefix(v, `.\`) || strings.HasPrefix(v, "../") || strings.HasPrefix(v, `..\`) {
@@ -226,6 +226,21 @@ func LooksLikePathValue(s string) bool {
 		}
 	}
 	return false
+}
+
+// posixRooted 值是否以 `/`(Windows 上还包括 `\`)开头 —— 「根相对」形态,**与平台无关的判据**。
+//
+// 为什么不能只用 filepath.IsAbs:Windows 上 `filepath.IsAbs("/etc/hosts")`=false(无盘符),
+// 而 `/etc/hosts`、`/c/Users/…` 在 MSYS/Git Bash 下是**根相对**路径(Git Bash 的 `/etc` 就是它
+// 自己的安装目录)。值级判定的语义是「这个值**看起来**像不像路径」,不是「本平台能否解析」——
+// 漏判两边同时静默放行:写侧越界(`save_note{target:"/etc/hosts"}`)与读侧凭据
+// (`{blob:"/c/Users/u/.ssh/config"}`,basename 不在名单里、目录级判定又被 IsAbs 挡掉)。
+// 2026-09-27 Windows CI 实证(`TestLooksLikePathValue` / `TestLooksLikeCredentialPath` 红)。
+func posixRooted(v string) bool {
+	if strings.HasPrefix(v, "/") {
+		return true
+	}
+	return winSemantics && strings.HasPrefix(v, `\`) // Windows 根相对(`\foo` = 当前盘根下)
 }
 
 // DescribePathParams 把声明渲染成一行(注册期日志/错误文案用)。
