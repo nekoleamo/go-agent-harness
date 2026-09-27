@@ -1447,20 +1447,13 @@ func denyShellSegments(raw string) error {
 		if strings.HasPrefix(seg, "$") || strings.HasPrefix(seg, "`") {
 			continue
 		}
-		if !isFileNameShaped(seg) {
-			continue
+		// A9:不再要求“含分隔符或点”。此前 `$P/id_rsa`(变量拼出的路径)里的 `id_rsa` 段
+		// 因不含点被当裸词跳过 ⇒ 变量拼路径成了现成的绕过手段。三条判据见
+		// credentialNameMatch(含通配符前缀判定)。
+		if hit, ok := credentialNameMatch(seg); ok {
+			return fmt.Errorf("sandbox: 拒绝读取凭据类文件 %s(命中 %s)", seg, hit)
 		}
 		s := strings.ToLower(seg)
-		for _, d := range denyBase {
-			if s == d {
-				return fmt.Errorf("sandbox: 拒绝读取凭据类文件 %s", seg)
-			}
-		}
-		for _, g := range denyGlob {
-			if ok, _ := filepath.Match(g, s); ok {
-				return fmt.Errorf("sandbox: 拒绝读取凭据类文件 %s", seg)
-			}
-		}
 		switch s {
 		case ".ssh", ".gnupg", ".aws":
 			return fmt.Errorf("sandbox: 拒绝访问用户密钥目录 %s", s)

@@ -362,3 +362,70 @@ func TestValidatePathRejectsURL(t *testing.T) {
 		}
 	}
 }
+
+// TestCredentialNameGlobPrefix A9:凭据名单的**通配符字面前缀**判定(单一事实源:denyPath 与 shell 段判定共用)。
+func TestCredentialNameGlobPrefix(t *testing.T) {
+	deny := []string{"id_*", "id_rs?", "cred*", "my.key*", "*_rsa", "*.pem", "CREDENTIALS"}
+	allow := []string{"foo*", "idea*", "notes/*.md", "*", "id", "i*", "*.go"}
+	for _, n := range deny {
+		if hit, ok := credentialNameMatch(n); !ok {
+			t.Errorf("%q 应命中凭据名单", n)
+		} else {
+			t.Logf("%-12s → %s", n, hit)
+		}
+	}
+	for _, n := range allow {
+		if hit, ok := credentialNameMatch(n); ok {
+			t.Errorf("%q 不应命中凭据名单(误报):%s", n, hit)
+		}
+	}
+}
+
+// TestShellCredentialSplicedPath A9:变量/引号拼接出的凭据路径必须拦下 —— 此前段名判定要求
+// “含路径分隔符或点”,`$P/id_rsa` 里的 `id_rsa` 段因此被当裸词跳过(等价于现成的绕过手段)。
+func TestShellCredentialSplicedPath(t *testing.T) {
+	withWinSemantics(t, false)
+	p := DefaultSandbox(t.TempDir())
+	deny := []string{
+		`cat $P/id_rsa`,        // 变量拼目录 + 无扩展名段名(核心新收口)
+		`cat ${P}/credentials`, // 同样形态,名单里的另一个基准名
+		`cat $P/id_*`,          // glob 前缀命中名单项 id_rsa
+		`cat $P/cred*`,         // glob 前缀命中 credentials
+		`cat $P/my.key*`,       // 反向:前缀已带 `.key` 后缀 ⇒ 必然匹配 *.key
+		`cat "$P/.s""sh/id_rsa"`,
+	}
+	for _, cmd := range deny {
+		if err := p.CheckShellCommand(cmd); err == nil {
+			t.Errorf("%q 应被拒", cmd)
+		}
+	}
+	allow := []string{
+		`cat foo*`,
+		`cat $P/ideas*`,   // 前缀 idea 与名单项无前缀关系(误报线)
+		`cat $P/notes.md`, // 普通文件照常
+		`echo credentials`,
+		`grep -rn id_rsa .`,
+	}
+	for _, cmd := range allow {
+		if err := p.CheckShellCommand(cmd); err != nil {
+			t.Errorf("%q 不应被拒: %v", cmd, err)
+		}
+	}
+	// 登记在案的 FN(不假装修好):变量装的是**整条路径**时无法静态判定。
+	if err := p.CheckShellCommand(`F=~/.ssh/id_rsa; cat "$F"`); err == nil {
+		t.Logf("已登记 FN 仍存在:整条路径装在变量里(F=...; cat $F)")
+	}
+}
+
+// TestDenyPathGlobPrefixCoversFileTools A9 的顺带收益:同上判据也覆盖 file_* 工具(它们同走 denyPath)。
+func TestDenyPathGlobPrefixCoversFileTools(t *testing.T) {
+	withCaseFold(t, false)
+	ws := t.TempDir()
+	p := DefaultSandbox(ws)
+	if err := p.ValidateReadAt(ws, "~/id_*"); err == nil {
+		t.Fatal("file 读 `~/id_*` 应被凭据名单的前缀判定拒")
+	}
+	if err := p.ValidateReadAt(ws, "~/notes/id*"); err != nil {
+		t.Fatalf("普通 glob 不应被误拒: %v", err)
+	}
+}

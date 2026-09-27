@@ -32,19 +32,65 @@ var (
 // 四种工具都撞同一墙 —— 只报“拒绝访问”会让它以为换个入口就行。
 const denySuffix = "(凭据不进模型上下文:与沙箱档位无关,换工具重试也没用;需要改配置请让用户自己编辑)"
 
-// denyPath 密钥类路径判定(基准名 / 后缀 glob / 用户密钥目录 / $GAH_HOME/config)。
-// 与沙箱档位无关:凭据永不进入模型可见面。
-func denyPath(abs string) error {
-	base := strings.ToLower(filepath.Base(abs))
+// credentialPrefixMin 通配符字面前缀的最小长度(A9):`id_*` → `id_`(3) 才判;
+// 更短的前缀(`*`、`i*`)与名单的关系太弱,拒了就是误报。
+const credentialPrefixMin = 3
+
+// globLiteralPrefix 段内通配符之前的字面前缀:`id_*` → (`id_`,true);无通配符 → (整段,false)。
+func globLiteralPrefix(seg string) (string, bool) {
+	if i := strings.IndexAny(seg, "*?["); i >= 0 {
+		return seg[:i], true
+	}
+	return seg, false
+}
+
+// credentialNameMatch 单个 basename/路径段的凭据名单判定(单一事实源:denyPath 与 shell 段判定共用)。
+// 返回命中条目与是否命中。三条判据:
+//
+//	① 与基准名完全相等(`id_rsa`);
+//	② 后缀 glob 匹配(`*.pem`);
+//	③ **通配符字面前缀**命中名单项(A9:shell 里 `id_*` 的意图就是 `id_rsa` —— 此前这类段因
+//	   “不含分隔符与点”被当成裸词跳过 ⇒ `$P/id_*` 漏判)。
+func credentialNameMatch(name string) (string, bool) {
+	s := strings.ToLower(strings.TrimSpace(name))
+	if s == "" {
+		return "", false
+	}
 	for _, d := range denyBase {
-		if base == d {
-			return fmt.Errorf("sandbox: 拒绝访问凭据类文件 %s%s", filepath.Base(abs), denySuffix)
+		if s == d {
+			return d, true
 		}
 	}
 	for _, g := range denyGlob {
-		if ok, _ := filepath.Match(g, base); ok {
-			return fmt.Errorf("sandbox: 拒绝访问凭据类文件 %s%s", filepath.Base(abs), denySuffix)
+		if ok, _ := filepath.Match(g, s); ok {
+			return g, true
 		}
+	}
+	if pre, isGlob := globLiteralPrefix(s); isGlob && len(pre) >= credentialPrefixMin {
+		for _, d := range denyBase {
+			if strings.HasPrefix(d, pre) {
+				return pre + "* ~ " + d, true
+			}
+		}
+		for _, g := range denyGlob {
+			if strings.HasPrefix(g, pre) {
+				return pre + "* ~ " + g, true
+			}
+			// 反向:`my.key*` 的前缀已带后缀 `.key` ⇒ 该 glob 必然匹配 `*.key` 类名单项
+			if suf := strings.TrimPrefix(g, "*"); strings.HasSuffix(pre, suf) {
+				return pre + "* ~ " + g, true
+			}
+		}
+	}
+	return "", false
+}
+
+// denyPath 密钥类路径判定(基准名 / 后缀 glob / 用户密钥目录 / $GAH_HOME/config)。
+// 与沙箱档位无关:凭据永不进入模型可见面。
+func denyPath(abs string) error {
+	base := filepath.Base(abs)
+	if hit, ok := credentialNameMatch(base); ok {
+		return fmt.Errorf("sandbox: 拒绝访问凭据类文件 %s%s(命中 %s)", base, denySuffix, hit)
 	}
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		real := resolveRealPath(abs)
