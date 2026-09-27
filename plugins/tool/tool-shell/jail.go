@@ -46,7 +46,8 @@ var jailEnvs = []jailEntry{
 const jailTTL = 24 * time.Hour
 
 // jailRoot 数据根下的 jail(便携纪律:一切经 sdk.Home() 派生,禁止家目录/cwd 硬拼)。
-func jailRoot() string { return filepath.Join(sdk.Home(), "jail") }
+// 实际目录由 sdk.JailDir() 给出 —— MCP server / 外部插件的内核白名单锚点用同一个根(见 sdk/home.go)。
+func jailRoot() string { return sdk.JailDir() }
 
 // jailEnv 返回把 base 的缓存根/临时根收敛到 jail 内的环境变量副本。
 // base 里缺的键会**补上**:Go/Node/pip 在变量缺失时会回落到用户家目录,不补则 jail 形同不设。

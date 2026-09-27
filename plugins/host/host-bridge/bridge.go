@@ -82,7 +82,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	if err != nil {
 		return nil, err
 	}
-	b := &Bridge{dir: dir, tools: tools, cmds: cmds, entries: map[string]*extEntry{}, cbAddr: cbAddr, cbToken: cbToken, lg: c.Logger()}
+	b := &Bridge{dir: dir, tools: tools, cmds: cmds, hostCtx: c, entries: map[string]*extEntry{}, cbAddr: cbAddr, cbToken: cbToken, lg: c.Logger()}
 	if err := b.loadEntries(); err != nil {
 		cbClose()
 		return nil, err
@@ -126,6 +126,28 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	}, nil
 }
 
+// sandboxEnv 宿主侧**有效**沙箱档位 → 注入外部插件进程的环境。
+//
+// 为何要注入:插件进程只经回调通道与宿主通信,拿不到 ctx.sandbox 服务;而它内部起的子进程
+// (典型是 MCP server —— 第三方代码)需要知道该按什么档位施加内核沙箱。空档位/无沙箱宿主
+// → 不注入(对端按“未注入”处理,不得假定档位)。
+//
+// 现取不缓存:policy-guard 可能晚于本插件启动(装配顺序无保证),且档位运行中可变。
+func (b *Bridge) sandboxEnv() []string {
+	if b.hostCtx == nil {
+		return nil
+	}
+	var sbx sdk.Sandbox
+	if err := b.hostCtx.Inject("ctx.sandbox", &sbx); err != nil || sbx == nil {
+		return nil
+	}
+	mode := string(sbx.Mode())
+	if mode == "" {
+		return nil
+	}
+	return []string{"GAH_EXT_SANDBOX_MODE=" + mode, "GAH_EXT_SANDBOX_ROOT=" + sbx.Root()}
+}
+
 // extEntry 一个外部插件进程条目(可承载多工具 + 多命令)。
 type extEntry struct {
 	tools     map[string]*toolRPCClient
@@ -142,6 +164,7 @@ type Bridge struct {
 	dir     string
 	tools   sdk.ToolRegistry
 	cmds    sdk.CommandRegistry // M14 可选(ctx.commands;nil = 外部命令不注册)
+	hostCtx sdk.Ctx             // 宿主 Ctx(现取 ctx.sandbox 用;nil = 单测直连)
 	cbAddr  string              // 宿主回调通道地址(GAH_CB_ADDR 注入外部进程)
 	cbToken string              // M7 鉴权 token(GAH_CB_TOKEN 注入外部进程,回传校验)
 	lg      *slog.Logger        // P3 软降级日志(sdk.Ctx.Logger();nil 时兜底 slog.Default)
@@ -220,7 +243,7 @@ func (b *Bridge) loadEntries() error {
 
 // loadOne 启动外部插件进程并组装条目(定义枚举 + 协议探测)。
 func (b *Bridge) loadOne(path string) (*extEntry, error) {
-	cl, killFn, se, err := startPlugin(path, b.cbAddr, b.cbToken)
+	cl, killFn, se, err := startPlugin(path, b.cbAddr, b.cbToken, b.sandboxEnv())
 	if err != nil {
 		return nil, err
 	}
@@ -235,7 +258,7 @@ func (b *Bridge) loadOne(path string) (*extEntry, error) {
 			e.proto = 2
 			protoOK = true
 			for _, d := range multi {
-				def := sdk.ToolDefinition{Name: d.Name, Description: d.Description, InputSchema: d.InputSchema, TimeoutMs: d.TimeoutMs, PathParams: d.PathParams, ApprovalTargetParam: d.ApprovalTargetParam}
+				def := sdk.ToolDefinition{Name: d.Name, Description: d.Description, InputSchema: d.InputSchema, TimeoutMs: d.TimeoutMs, PathParams: d.PathParams, ApprovalTargetParam: d.ApprovalTargetParam, PathParamsDeclared: d.PathParamsDeclared, ProxyArgsParam: d.ProxyArgsParam}
 				e.tools[d.Name] = &toolRPCClient{br: b, path: path, name: d.Name, def: def}
 			}
 		}
@@ -555,7 +578,7 @@ func externalEnvPass() []string {
 	return out
 }
 
-func startPlugin(bin string, cbAddr, cbToken string) (*rpc.Client, func(), *pluginStderr, error) {
+func startPlugin(bin string, cbAddr, cbToken string, extraEnv []string) (*rpc.Client, func(), *pluginStderr, error) {
 	cmd := exec.Command(bin)
 	// 凭据隔离:外部插件进程不继承宿主凭据(滤除 *_API_KEY/*_TOKEN/AWS_* 等;GAH_* 宿主配置与
 	// PATH/HOME 等基础键保留),回调通道凭据 GAH_CB_* 仅注入给插件本体,由 sdk.SanitizedEnv 拦在下游。
@@ -565,6 +588,9 @@ func startPlugin(bin string, cbAddr, cbToken string) (*rpc.Client, func(), *plug
 	cmd.Env = sdk.SanitizedEnv(os.Environ())
 	cmd.Env = append(cmd.Env, "GAH_CB_ADDR="+cbAddr, "GAH_CB_TOKEN="+cbToken)
 	cmd.Env = append(cmd.Env, externalEnvPass()...)
+	// 沙箱上下文(有效档位/工作根):插件进程自己拿不到 ctx.sandbox,而它内部要起的子进程
+	// (MCP server、子命令)需要这个信息才能施加内核沙箱(见 internal/kernelsandbox)。
+	cmd.Env = append(cmd.Env, extraEnv...)
 	cmd.SysProcAttr = pluginProcAttr() // 独立进程组:退出时可连插件派生的子进程一并回收
 	// 插件子进程的 stderr 接到环形缓冲上(旧版 go-plugin 默认丢进 io.Discard,插件自己说的
 	// 原因——缺配置/端口占用/权限——全部丢失)。成功时不影响任何输出,失败时拼进错误上报。
@@ -685,6 +711,9 @@ type defDTO struct {
 	PathParams  []sdk.PathParam `json:"PathParams,omitempty"` // 路径参数能力声明(透传给宿主裁决)
 	// ApprovalTargetParam 代理工具的「真实目标参数名」(透传给宿主审批;NOND-M1-3b)。
 	ApprovalTargetParam string `json:"ApprovalTargetParam,omitempty"`
+	// 以下两项同理透传(路径裁决用,2026-09-27 审计 F2;见 sdk.ToolDefinition)。
+	PathParamsDeclared bool   `json:"PathParamsDeclared,omitempty"` // 显式声明"无路径参数":跳过推断与值级兜底
+	ProxyArgsParam     string `json:"ProxyArgsParam,omitempty"`     // 代理工具的内层参数对象字段名
 }
 
 // rpcTimeout 默认外部 RPC 调用超时(崩溃隔离:死进程快速失败而非死等)。

@@ -18,4 +18,5 @@ commands.allow = [
     "autostart_state",
     "update_state",
     "shell_log",
+    "save_export",
 ]

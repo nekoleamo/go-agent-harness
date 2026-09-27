@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -208,53 +209,80 @@ func (p *SandboxPolicy) CheckShellCommandAt(root, cmd string) error {
 
 // CheckPathArgs 宿主侧路径裁决(P0 修复):默认发行态下 file_* 工具由外部插件进程提供
 // (tool-files 未装配沙箱 → sb=nil),沙箱对其完全失效;此处按工具名+参数在 pre-execute
-// 统一裁决,与具体实现无关(外部插件零改动)。仅用内置工具名表(向后兼容入口)。
+// 统一裁决,与具体实现无关(外部插件零改动)。
+// 无工具定义(向后兼容入口)→ 内置工具名表 + 值级兜底(见 CheckToolCallAt)。
 func (p *SandboxPolicy) CheckPathArgs(name, rawArgs string) error {
-	return p.CheckToolCallAt(p.Root(), name, rawArgs, nil)
+	return p.CheckToolCallAt(p.Root(), name, rawArgs, sdk.ToolDefinition{})
 }
 
 // CheckToolCall 能力驱动裁决(params = 工具自述的路径参数声明,见 sdk.PathParam):
-// 声明非空用声明(支持自定义参数名/数组/可选参数),否则回退内置工具名表。
+// 声明非空用声明(支持自定义参数名/数组/可选参数),否则回退内置工具名表与推断/兜底。
 // 声明优先的意义:新插件工具名不受内置表覆盖(此前 save_file 之类名字下越界写不拦);
 // 而内置名仍走表兜底,插件“声明为空”也无法借此绕过已知工具的裁决。
 func (p *SandboxPolicy) CheckToolCall(name, rawArgs string, params []sdk.PathParam) error {
-	return p.CheckToolCallAt(p.Root(), name, rawArgs, params)
+	return p.CheckToolCallAt(p.Root(), name, rawArgs, sdk.ToolDefinition{PathParams: params})
 }
 
 // CheckToolCallAt 同 CheckToolCall,但以显式 root 为本次调用的写范围/相对路径基准
 // (S-P1-4 隔离运行)。root 空 = 退回自身 root。
-func (p *SandboxPolicy) CheckToolCallAt(root, name, rawArgs string, params []sdk.PathParam) error {
+//
+// 裁决依据按四级收敛(2026-09-27 安全审计 F2:此前“声明为空 + 工具名不在内置表”直接放行,
+// 第三方插件工具与 MCP 工具因此完全不受路径沙箱约束):
+//
+//	① 工具自述声明 def.PathParams(声明优先);
+//	② 内置工具名表 builtinPathParams(name);
+//	③ 按定义推断 sdk.InferPathParams(def)(schema 参数名 + 工具名动词);
+//	④ 值级兜底 sniffPathParams(参数值一眼是路径就按工具名的读写意图裁决)。
+//
+// def.PathParamsDeclared = true 时跳过 ③④(作者明确“本工具没有路径参数”)。
+func (p *SandboxPolicy) CheckToolCallAt(root, name, rawArgs string, def sdk.ToolDefinition) error {
 	if root == "" {
 		root = p.Root()
 	}
+	params := def.PathParams
 	if len(params) == 0 {
 		params = builtinPathParams(name)
 	}
 	if len(params) == 0 {
-		return nil
+		params = sdk.InferPathParams(def)
 	}
 	var m map[string]any
-	if err := json.Unmarshal([]byte(rawArgs), &m); err != nil {
-		return fmt.Errorf("sandbox: %s 参数无法解析出路径: %w", name, err)
+	sniffed := false
+	switch {
+	case len(params) > 0:
+		if err := json.Unmarshal([]byte(rawArgs), &m); err != nil {
+			return fmt.Errorf("sandbox: %s 参数无法解析出路径: %w", name, err)
+		}
+	case def.PathParamsDeclared:
+		return nil // 作者显式声明:无路径参数(③④ 均跳过)
+	default:
+		// 值级兜底:解析不出参数对象 = 没有路径面可判,不因启发式把调用打成失败
+		if json.Unmarshal([]byte(rawArgs), &m) != nil {
+			return nil
+		}
+		params = sniffPathParams(name, m)
+		if len(params) == 0 {
+			return nil // 四级全空:确实没有路径面
+		}
+		sniffed = true
 	}
 	for _, pa := range params {
-		raw, present := m[pa.Arg]
-		if !present || raw == nil {
+		paths, present, err := resolveParamPaths(name, pa, m)
+		if err != nil {
+			return err
+		}
+		if !present {
 			if pa.Optional {
 				continue
 			}
-			return fmt.Errorf("sandbox: %s 缺少 %s 参数", name, pa.Arg)
-		}
-		paths, err := pathValues(name, pa, raw)
-		if err != nil {
-			return err
+			return fmt.Errorf("sandbox: %s 缺少 %s 参数", name, paramLabel(pa))
 		}
 		for _, path := range paths {
 			if strings.TrimSpace(path) == "" {
 				if pa.Optional {
 					continue
 				}
-				return fmt.Errorf("sandbox: %s 参数 %s 为空", name, pa.Arg)
+				return fmt.Errorf("sandbox: %s 参数 %s 为空", name, paramLabel(pa))
 			}
 			if pa.Access == sdk.PathWrite {
 				err = p.ValidatePathAt(root, path)
@@ -262,11 +290,111 @@ func (p *SandboxPolicy) CheckToolCallAt(root, name, rawArgs string, params []sdk
 				err = p.ValidateReadAt(root, path)
 			}
 			if err != nil {
+				switch {
+				case len(pa.Nested) > 0:
+					// 嵌套参数:点名实际取值路径(否则作者只看到“工作区外”,不知道该改哪个字段)
+					return fmt.Errorf("sandbox: %s 参数 %s: %w", name, paramLabel(pa), err)
+				case sniffed:
+					// 兜底判定必须说清楚**为何**被拒 + 怎么解除:否则第三方插件作者只能看到一条
+					// “工作区外”消息,无从知道宿主在用启发式看着他
+					return fmt.Errorf("sandbox: 工具 %s 未声明路径参数,已按保守规则裁决参数 %q: %w"+
+						"(插件作者请显式声明 PathParams,见 docs/PLUGIN_DEV.md §2.6;确无路径参数请设 PathParamsDeclared)",
+						name, paramLabel(pa), err)
+				}
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+// resolveParamPaths 取出本次要裁决的路径值(顶层字段 / 嵌套路径两种形态)。
+//
+// 返回 present=false 表示“路径面不存在”(嵌套取不到东西、或顶层参数缺失)→ 由调用方按 Optional 处理;
+// 单条值不是字符串时**跳过**而不报错:嵌套形态下 items 可能混着非路径字段(见 InferPathParams 注释)。
+func resolveParamPaths(name string, pa sdk.PathParam, m map[string]any) ([]string, bool, error) {
+	if len(pa.Nested) > 0 {
+		vals := sdk.LookupArgPath(m, pa.Nested)
+		var out []string
+		for _, v := range vals {
+			if s, ok := v.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out, len(out) > 0, nil
+	}
+	raw, present := m[pa.Arg]
+	if !present || raw == nil {
+		return nil, false, nil
+	}
+	paths, err := pathValues(name, pa, raw)
+	return paths, true, err
+}
+
+// paramLabel 声明的可读名(嵌套形态展示实际取值路径,便于作者定位)。
+func paramLabel(pa sdk.PathParam) string {
+	if len(pa.Nested) > 0 {
+		return strings.Join(pa.Nested, ".")
+	}
+	return pa.Arg
+}
+
+// sniffSkipArgs 值级兜底**跳过**的参数名:按惯例承载“内容/指令/查询词”而非路径 ——
+// 其中的绝对路径形态不是路径用法(`web_search{query:"/etc/hosts"}` 是搜索词)。
+//
+// **但凭据面不豁免**(A2,2026-09-27):`{url:"~/.ssh/id_rsa"}` 这类值即使长在内容参数名上
+// 也照常裁决(见 sdk.LooksLikeCredentialPath)—— 搜索词是常态,拿凭据路径当内容参数的值不是。
+//
+// 代价(显式登记):把非凭据路径藏在 `input`/`query` 这类名字里的未声明工具仍会漏过 —— 但正常写法的
+// 路径参数名(“path/file/dir/…”)**已被上一级参数名推断覆盖**,而误拒一条搜索词/命令的代价
+// 更大且用户无从理解(错误文案只能告诉他“工作区外”)。
+var sniffSkipArgs = map[string]bool{
+	"command": true, "cmd": true, "script": true, "code": true, "input": true,
+	"query": true, "q": true, "url": true, "uri": true, "pattern": true, "regex": true,
+	"prompt": true, "text": true, "content": true, "body": true, "message": true,
+	"description": true, "subject": true, "objective": true, "request": true, "task": true,
+	"filter": true,
+}
+
+// sniffPathParams 值级兜底:未声明且推断不出时,扫**顶层**参数里“一眼是路径”的值。
+//
+// 只扫顶层(不递归对象) —— 递归会在 `params:{…}` 这类大 JSON 参数里误判;
+// 数组只认**全字符串**项(含非字符串项时整条跳过,与 sdk.InferPathParams 对 array of object
+// 的处理一致:避免因“含非字符串元素”把合法调用打成失败)。
+// 读写意图取工具名动词(sdk.InferAccess),不明时按 write(更严)。
+func sniffPathParams(name string, m map[string]any) []sdk.PathParam {
+	if isExecutor(name) {
+		return nil // 执行器类:命令/脚本文本不是路径(absolute 形态的命令是正常写法)
+	}
+	access := sdk.InferAccess(name)
+	var out []sdk.PathParam
+	for k, v := range m {
+		skip := sniffSkipArgs[strings.ToLower(k)]
+		switch t := v.(type) {
+		case string:
+			if sdk.LooksLikePathValue(t) && (!skip || sdk.LooksLikeCredentialPath(t)) {
+				out = append(out, sdk.PathParam{Arg: k, Access: access, Optional: true})
+			}
+		case []any:
+			allStrings, hit := true, false
+			for _, item := range t {
+				s, ok := item.(string)
+				if !ok {
+					allStrings = false
+					break
+				}
+				if sdk.LooksLikePathValue(s) && (!skip || sdk.LooksLikeCredentialPath(s)) {
+					hit = true
+				}
+			}
+			if allStrings && hit {
+				out = append(out, sdk.PathParam{Arg: k, Access: access, Many: true, Optional: true})
+			}
+		}
+	}
+	// map 遍历无序 → 定序(错误文案要可断言)
+	sort.Slice(out, func(i, j int) bool { return out[i].Arg < out[j].Arg })
+	return out
 }
 
 // pathValues 取参数值里的路径列表(字符串 / 字符串数组);类型不符显式报错。

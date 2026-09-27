@@ -294,8 +294,7 @@ func TestGuardDeclaredManyAndOptional(t *testing.T) {
 	}
 }
 
-// TestCheckToolCallUnit 裁决单元语义:声明优先、名表兜底、缺参数显式失败、
-// 未声明且不在名表的工具不受约束(诚实边界)。
+// TestCheckToolCallUnit 裁决单元语义:声明优先、名表兜底、推断接管、值级兜底、缺参数显式失败。
 func TestCheckToolCallUnit(t *testing.T) {
 	withCaseFold(t, false)
 	ws := t.TempDir()
@@ -322,9 +321,23 @@ func TestCheckToolCallUnit(t *testing.T) {
 	if err := p.CheckToolCall("save_note", `{"dst":123}`, decl); err == nil {
 		t.Fatal("路径参数类型不符应显式失败")
 	}
-	// 既无声明也不在名表:不受路径约束(需插件声明;登记为能力化边界)
-	if err := p.CheckToolCall("unknown_tool", fmt.Sprintf(`{"whatever":%q}`, outside), nil); err != nil {
-		t.Fatalf("未声明的未知工具不应被路径裁决拦截: %v", err)
+	// 既无声明也不在名表:按保守规则裁决(2026-09-27 审计 F2 前这里是 fail-open ——
+	// “未声明的未知工具不受路径裁决”曾是诚实登记的边界,MCP/第三方工具全部落在里面 ——
+	// 现在由值级兜底接管:绝对路径/~/./.. 形态按工具名读写意图裁决)
+	if err := p.CheckToolCall("unknown_tool", fmt.Sprintf(`{"whatever":%q}`, outside), nil); err == nil {
+		t.Fatal("未声明工具的越界绝对路径应被值级兜底拒")
+	}
+	// 推断得出路径参数名(schema 里的 path)+ 工具名动词 → 同样拒
+	if err := p.CheckToolCallAt(ws, "mcp_srv_read_file", fmt.Sprintf(`{"path":%q}`, outside),
+		sdk.ToolDefinition{Name: "mcp_srv_read_file", InputSchema: map[string]any{
+			"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}},
+		}}); err == nil {
+		t.Fatal("未声明但可推断(参数名 path)的越界读应被拒")
+	}
+	// 显式声明“本工具没有路径参数” → 推断与兜底都跳过(作者的解除开关)
+	if err := p.CheckToolCallAt(ws, "unknown_tool", fmt.Sprintf(`{"whatever":%q}`, outside),
+		sdk.ToolDefinition{PathParamsDeclared: true}); err != nil {
+		t.Fatalf("PathParamsDeclared 应跳过推断与兜底: %v", err)
 	}
 }
 

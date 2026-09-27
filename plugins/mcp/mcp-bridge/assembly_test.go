@@ -375,6 +375,16 @@ func TestSearchToolTolerantArgs(t *testing.T) {
 	}
 }
 
+// TestCallToolDeclaresProxyArgs mcp_call 是代理工具:宿主靠 ProxyArgsParam 把内层参数交给
+// 真实目标工具的声明/推断裁决(2026-09-27 审计 F2)。漏了这个字段 → 内层路径不经任何裁决
+// (`mcp_call{name:"mcp_srv_write_file",arguments:{path:"…"}}` 可越界)。
+func TestCallToolDeclaresProxyArgs(t *testing.T) {
+	d := newCallTool(&searchIndex{}).Definition()
+	if d.ApprovalTargetParam != "name" || d.ProxyArgsParam != "arguments" {
+		t.Fatalf("mcp_call 应声明真实工具名与内层参数对象: %+v", d)
+	}
+}
+
 // TestToolDefinitionsHaveSchema 两个代理工具的 JSON schema 必须完整(前端/模型依赖)。
 func TestToolDefinitionsHaveSchema(t *testing.T) {
 	ix := &searchIndex{}

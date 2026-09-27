@@ -38,6 +38,12 @@ SKIP="${GAH_COVER_SKIP:-0}"             # 1 = 只测(不校验),用于基线测�
 #   (seatbelt 走 argv 包装,profile 在父进程构建),故 darwin 沿用 90。
 #   若要弥合两个数字,需给测试开 GOCOVERDIR + `go tool covdata textfmt` 合并,
 #   属另一个量级的改动,暂不做(登记在此,不假装平台无关)。
+#
+#   internal/kernelsandbox 同样只登记了一个保守下限(darwin 实测 95.1):Linux 的
+#   Landlock 自举 helper 与上面的 tool-shell@linux 是**同一个盲区**(重新 exec 自身后
+#   子进程不写 cover 计数器),且 darwin 专属用例(seatbelt profile 组装)在 Linux 上不跑
+#   → 两平台不可比。下限取 50(远低于实测值),逾期若在 Linux CI 报低,按上面的
+#   模式补一行 `internal/kernelsandbox@linux <实测值>` 即可。
 read -r -d '' MINS <<'EOF'
 core/event 90
 core/ctx 60
@@ -46,6 +52,7 @@ core/config 65
 sdk 60
 internal/prefs 66
 internal/providerfile 72
+internal/kernelsandbox 50
 internal/mcpconfig 80
 internal/embed 70
 internal/install 60

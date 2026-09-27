@@ -15,23 +15,17 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
-// denyBase 密钥类文件名 deny-list(对齐 host-docview,含 gah 自身配置文件)。
-var denyBase = []string{
-	".env", ".env.local", ".env.production", ".env.development",
-	".netrc", ".npmrc", ".pgpass", ".git-credentials",
-	"credentials", "credentials.json", "credential.json",
-	"id_rsa", "id_ed25519", "id_ecdsa", "id_dsa",
-	"secring.gpg", "keychain.json",
-	"provider.yaml", "search.yaml", // gah 运行配置:含第三方 API key
-}
-
-// denyGlob 后缀类 deny-list。
-var denyGlob = []string{"*.pem", "*.key", "*.p12", "*.pfx", "*.keystore", "*.jks", "*.ppk", "*_rsa", "*_ed25519"}
-
-// denyDir 目录前缀 deny-list(相对用户的 HOME 判定).
-var denyDir = []string{".ssh", ".gnupg", ".aws", ".config/gcloud"}
+// 凭据名单本体在 sdk(单一事实源 —— tool-shell 的内核层 profile 用**同一份**,见
+// sdk/credentialpath.go);此处只做本地别名:判定顺序与错误措辞仍归本文件。
+var (
+	denyBase = sdk.CredentialBaseNames()
+	denyGlob = sdk.CredentialGlobs()
+	denyDir  = sdk.CredentialHomeDirs()
+)
 
 // denySuffix 凭据拒绝的统一尾注:说明这是**设计而非故障**,并让模型别再换工具重试。
 // 真机事故(2026-09-22):模型想改 search.yaml,被拒后连试 file_write/shell/file_read/file_write
@@ -60,7 +54,7 @@ func denyPath(abs string) error {
 			}
 		}
 	}
-	if h := sandboxGahHome(); h != "" && pathWithin(filepath.Join(h, "config"), resolveRealPath(abs)) {
+	if cfg := sdk.CredentialConfigDir(); cfg != "" && pathWithin(cfg, resolveRealPath(abs)) {
 		return fmt.Errorf("sandbox: 拒绝访问数据根配置目录 config/%s", denySuffix)
 	}
 	return nil

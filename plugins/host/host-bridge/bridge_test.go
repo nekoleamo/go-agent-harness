@@ -286,7 +286,7 @@ func TestPluginStderrSurfacesInLoadError(t *testing.T) {
 	if err := os.WriteFile(bin, []byte("#!/bin/sh\necho 'tool-mcp: 未配置任何 MCP server(设置面板「MCP」分区)' >&2\nexit 1\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	_, _, _, err := startPlugin(bin, "127.0.0.1:1", "tok")
+	_, _, _, err := startPlugin(bin, "127.0.0.1:1", "tok", nil)
 	if err == nil {
 		t.Fatal("握手前退出的插件应报错")
 	}
@@ -309,7 +309,7 @@ func TestPluginIdleMarkerIsNotAnError(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 归类:必须能被 errors.Is 认出来,且自述原因保留(供日志给出「去哪配」)
-	_, _, _, err := startPlugin(bin, "127.0.0.1:1", "tok")
+	_, _, _, err := startPlugin(bin, "127.0.0.1:1", "tok", nil)
 	if err == nil || !errors.Is(err, errPluginIdle) {
 		t.Fatalf("自述空闲应归类为 errPluginIdle,得 %v", err)
 	}
@@ -560,5 +560,45 @@ func TestExternalPluginReloadLoadsNewBinary(t *testing.T) {
 	}
 	if _, ok := tools.Get("echo"); !ok {
 		t.Fatalf("补加载后工具应可用: %v", toolNames(tools))
+	}
+}
+
+// stubSandbox 只提供档位/根(A3:host-bridge 现取这两个值注入外部插件进程)。
+type stubSandbox struct {
+	mode sdk.SandboxMode
+	root string
+}
+
+func (s *stubSandbox) Mode() sdk.SandboxMode     { return s.mode }
+func (s *stubSandbox) SetMode(m sdk.SandboxMode) { s.mode = m }
+func (s *stubSandbox) Root() string              { return s.root }
+func (s *stubSandbox) ValidatePath(string) error { return nil }
+
+// TestSandboxEnvInjection 档位随插件进程环境注入:MCP server 等子进程据此施加内核沙箱。
+// 覆盖三种退化:未装配沙箱 / 档位为空(只下传根)/ 正常。
+func TestSandboxEnvInjection(t *testing.T) {
+	dir := t.TempDir()
+	logger := slog.New(slog.DiscardHandler)
+	bus := event.New(logger)
+	c := ctx.New(logger, bus)
+	b := &Bridge{dir: dir, entries: map[string]*extEntry{}, hostCtx: c}
+
+	// ① 未装配 ctx.sandbox:不注入(对端按「未注入」处理,不得假定档位)
+	if got := b.sandboxEnv(); got != nil {
+		t.Fatalf("未装配沙箱时不应注入: %v", got)
+	}
+	// ② 挂上沙箱服务
+	sb := &stubSandbox{mode: sdk.SandboxWorkspace, root: "/ws"}
+	if err := c.Provide("ctx.sandbox", sdk.Sandbox(sb)); err != nil {
+		t.Fatal(err)
+	}
+	got := b.sandboxEnv()
+	if len(got) != 2 || got[0] != "GAH_EXT_SANDBOX_MODE=workspace-write" || got[1] != "GAH_EXT_SANDBOX_ROOT=/ws" {
+		t.Fatalf("注入内容不符: %v", got)
+	}
+	// ③ 档位清空(未选沙箱宿主):不注入 —— 只传路径基准不是沙箱上下文
+	sb.mode = ""
+	if got := b.sandboxEnv(); got != nil {
+		t.Fatalf("档位为空时不应注入: %v", got)
 	}
 }

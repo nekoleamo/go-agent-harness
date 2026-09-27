@@ -283,6 +283,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET /api/workspaces", s.handleWorkspaces)
 	mux.HandleFunc("DELETE /api/workspaces/{key}", s.handleWorkspaceDelete)
 	mux.HandleFunc("GET /api/tools", s.handleTools)
+	mux.HandleFunc("GET /api/tools/conflicts", s.handleToolConflicts)
 	mux.HandleFunc("POST /api/tools/{name}", s.handleToolCall)
 	mux.HandleFunc("GET /api/jobs", s.handleJobs)
 	mux.HandleFunc("GET /api/jobs/{id}", s.handleJobGet)
@@ -1738,6 +1739,21 @@ func (s *Server) handleTools(w http.ResponseWriter, _ *http.Request) {
 		list = []sdk.ToolDefinition{}
 	}
 	writeJSON(w, http.StatusOK, list)
+}
+
+// handleToolConflicts 注册期同名工具冲突(GET /api/tools/conflicts;B3 可见性面)。
+// 为何单独一个端点而不是塞进 /api/tools:后者是**模型可见定义**的数组,消费方多
+// (前端/外部 MCP 客户端/回调插件),改形状会连带破坏;冲突是诊断面,单独给。
+func (s *Server) handleToolConflicts(w http.ResponseWriter, _ *http.Request) {
+	out := []sdk.ToolConflict{}
+	if s.tools != nil {
+		if rep, ok := s.tools.(sdk.ToolConflictReporter); ok {
+			if got := rep.ToolConflicts(); got != nil {
+				out = got
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // handleToolCall 执行工具(POST /api/tools/{name}):body 即工具参数(JSON 原样透传)。

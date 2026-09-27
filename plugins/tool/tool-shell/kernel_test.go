@@ -193,7 +193,7 @@ func TestDarwinMissingSandboxExecFallsBack(t *testing.T) {
 	orig := sandboxExec
 	sandboxExec = filepath.Join(t.TempDir(), "no-such-sandbox-exec")
 	t.Cleanup(func() { sandboxExec = orig })
-	if got := platformWrap(sdk.SandboxWorkspace, t.TempDir()); got != nil {
+	if got := kernelWrap(sdk.SandboxHint{Mode: sdk.SandboxWorkspace, Root: t.TempDir()}, true); got != nil {
 		t.Fatalf("sandbox-exec 缺失时应不施加, got %v", got)
 	}
 }
@@ -462,5 +462,149 @@ func TestShellToolFirstCommandWritesJailOnFreshSymlinkedHome(t *testing.T) {
 	}
 	if _, err := os.Stat(outside); err == nil {
 		t.Fatal("越界写竟成功(修复放松了内核边界)")
+	}
+}
+
+// ---------- 凭据读拒绝(2026-09-27 审计:文本层判定可被解释器内动态拼路径绕过) ----------
+
+// TestCredentialReadDenyDirsSwitch 名单与开关(平台无关,任何平台都要能跑)。
+func TestCredentialReadDenyDirsSwitch(t *testing.T) {
+	kernelTestEnv(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	dirs := credentialReadDenyDirs()
+	if len(dirs) == 0 {
+		t.Fatal("默认应给出凭据读拒绝目录")
+	}
+	// $HOME 下的密钥目录 + 数据根 config 都要在(且是解析后的真实路径:seatbelt 按真实路径匹配)
+	want := append(append([]string{}, sdk.CredentialHomeDirs()...), "config")
+	for _, w := range want {
+		suffix := string(filepath.Separator) + filepath.FromSlash(w)
+		hit := false
+		for _, d := range dirs {
+			if strings.HasSuffix(d, suffix) {
+				hit = true
+				break
+			}
+		}
+		if !hit {
+			t.Fatalf("凭据读拒绝目录缺少 %q:%v", w, dirs)
+		}
+	}
+	// 显式关闭:整体不施加(退路,见 credReadKernelEnv 注释)
+	t.Setenv(credReadKernelEnv, "0")
+	if got := credentialReadDenyDirs(); got != nil {
+		t.Fatalf("%s=0 时应不施加, got %v", credReadKernelEnv, got)
+	}
+}
+
+// TestDarwinProfileDeniesCredentialReads profile 必须带上凭据读拒绝,且与协作层同一份名单。
+func TestDarwinProfileDeniesCredentialReads(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("仅 darwin 有 seatbelt profile")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	kernelTestEnv(t)
+
+	wrap := func() string {
+		pre := kernelWrap(sdk.SandboxHint{Mode: sdk.SandboxWorkspace, Root: t.TempDir()}, true)
+		if len(pre) < 3 {
+			t.Fatalf("darwin 上应给出 seatbelt 包装, got %v", pre)
+		}
+		return pre[2] // [sandbox-exec, -p, profile]
+	}
+
+	prof := wrap()
+	for _, d := range credentialReadDenyDirs() {
+		if want := `(deny file-read* (subpath "` + d + `"))`; !strings.Contains(prof, want) {
+			t.Fatalf("profile 缺少凭据读拒绝 %s:%s", want, prof)
+		}
+	}
+	// read-only 档同样带(凭据读与档位无关:任何档位都不放开)
+	pre := kernelWrap(sdk.SandboxHint{Mode: sdk.SandboxReadOnly}, true)
+	if len(pre) < 3 || !strings.Contains(pre[2], "(deny file-read*") {
+		t.Fatalf("read-only 档也应带凭据读拒绝:%v", pre)
+	}
+	// 开关关闭:规则整体消失(退路可用)
+	t.Setenv(credReadKernelEnv, "0")
+	if off := wrap(); strings.Contains(off, "deny file-read*") {
+		t.Fatalf("%s=0 时不应有凭据读拒绝:%s", credReadKernelEnv, off)
+	}
+}
+
+// TestKernelSandboxBlocksCredentialReads 真实拦截:协作层看不见的动态读必须被内核层拒。
+// 用假 HOME / 假数据根(不留真实凭据痕迹);标记内容不得出现在输出里 —— 出现即真读到了。
+func TestKernelSandboxBlocksCredentialReads(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		// Linux/Landlock 规则是 allow-list,无法表达"除凭据目录外全放行读"(见 kernel_linux.go 诚实登记)
+		t.Skip("凭据读拒绝目前只在 darwin 分支实现")
+	}
+	if !kernelSupportedHere() {
+		t.Skip("本机无内核级沙箱能力,跳过真实拦截验证")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	kernelTestEnv(t)
+
+	key := filepath.Join(home, ".ssh", "id_rsa")
+	if err := os.MkdirAll(filepath.Dir(key), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(key, []byte("SECRET-MARKER-A"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(sdk.Home(), "config", "provider.yaml")
+	if err := os.MkdirAll(filepath.Dir(cfg), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg, []byte("SECRET-MARKER-B"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plain := filepath.Join(home, "notes.txt")
+	if err := os.WriteFile(plain, []byte("PLAIN-MARKER"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ws := t.TempDir()
+	if err := os.WriteFile(filepath.Join(ws, "ws.txt"), []byte("WS-MARKER"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// 文件确实存在(故"读失败"= 被拒,不是文件不存在 —— 否则断言会被"路径写错"蒙混过关)
+	if _, err := os.Stat(key); err != nil {
+		t.Fatalf("探针凭据文件应存在: %v", err)
+	}
+
+	// ① 字面路径读:拒(与协作层同向)
+	if out, err := runWrapped(t, sdk.SandboxWorkspace, ws, "cat "+testutil.ShellPath(key)); err == nil {
+		t.Fatalf("字面路径读私钥应被拒,却成功:%s", out)
+	}
+	// ② 解释器内动态拼路径读(审计复现用例):文本层判不出,内核层必须拒
+	if _, err := exec.LookPath("python3"); err == nil {
+		dyn := `python3 -c "print(open('` + home + `/.ss'+'h/id_'+'rsa').read())"`
+		out, err := runWrapped(t, sdk.SandboxWorkspace, ws, dyn)
+		if err == nil || strings.Contains(out, "SECRET-MARKER-A") {
+			t.Fatalf("解释器内动态拼路径读私钥应被拒:err=%v out=%s", err, out)
+		}
+		dynCfg := `python3 -c "print(open('` + filepath.Dir(cfg) + `/provi'+'der.yaml').read())"`
+		out2, err2 := runWrapped(t, sdk.SandboxWorkspace, ws, dynCfg)
+		if err2 == nil || strings.Contains(out2, "SECRET-MARKER-B") {
+			t.Fatalf("动态拼路径读 provider.yaml 应被拒:err=%v out=%s", err2, out2)
+		}
+	}
+	// ③ 普通家目录文件 / 工作区文件:仍可读(不得因加读拒绝而误伤)
+	if out, err := runWrapped(t, sdk.SandboxWorkspace, ws, "cat "+testutil.ShellPath(plain)); err != nil || !strings.Contains(out, "PLAIN-MARKER") {
+		t.Fatalf("普通家目录文件应可读:err=%v out=%s", err, out)
+	}
+	if out, err := runWrapped(t, sdk.SandboxWorkspace, ws, "cat "+testutil.ShellPath(filepath.Join(ws, "ws.txt"))); err != nil || !strings.Contains(out, "WS-MARKER") {
+		t.Fatalf("工作区文件应可读:err=%v out=%s", err, out)
+	}
+	// ④ 开关关闭 = 退回文本层语义(动态拼路径读到的内容不再被内核拦 —— 退路确实可用)
+	t.Setenv(credReadKernelEnv, "0")
+	if _, err := exec.LookPath("python3"); err == nil {
+		dyn := `python3 -c "print(open('` + home + `/.ss'+'h/id_'+'rsa').read())"`
+		if out, err := runWrapped(t, sdk.SandboxWorkspace, ws, dyn); err != nil || !strings.Contains(out, "SECRET-MARKER-A") {
+			t.Fatalf("关闭内核凭据读拒绝后应能读到(退路自证):err=%v out=%s", err, out)
+		}
 	}
 }

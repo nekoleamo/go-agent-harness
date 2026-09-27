@@ -74,7 +74,7 @@ type Plugin interface {
 ### 2.6 路径参数声明(能力化沙箱,**涉及文件路径的工具必读**)
 
 宿主 `policy-guard` 在 `tools/pre-execute` 统一做路径沙箱裁决(read-only / workspace-write / full-access)。
-裁决依据 = 工具**自述**的路径参数声明;未声明时回退内置工具名表(`file_read/file_write/file_append/file_edit` 等)。
+裁决依据 = 工具**自述**的路径参数声明;未声明时依次回退:内置工具名表 → 按 `inputSchema` 参数名与工具名动词**推断** → **值级兜底**(参数值一眼是路径就按工具名的读写意图裁决);四级全空才放行(2026-09-27 审计后从 fail-open 改成这样)。
 
 ```go
 func (t *myTool) Definition() sdk.ToolDefinition {
@@ -92,8 +92,11 @@ func (t *myTool) Definition() sdk.ToolDefinition {
 ```
 
 规则:
-- **工具名不在内置表中(自定义名如 `save_note`)必须声明**,否则路径参数不受沙箱约束(未声明工具按"非路径工具"处理,不拦)。
-- 声明非空时**以声明为准**;声明为空/缺失才回退内置名表 —— 内置名工具无需改动,"声明空"也**无法**绕过已知工具的裁决。
+- **建议显式声明**(涉及文件路径的工具尤甚):未声明不再是"不受约束",而是进入推断/兜底档 —— 推断可能猜错(参数名 `file_id` 这类会命中、工具名没有读词时按写处理),猜错**宁可拒**,你只能看到一条带"未声明路径参数"的 veto。
+- 声明非空时**以声明为准**;声明为空/缺失 → 内置名表 → 推断 → 值级兜底 —— 内置名工具无须改动,"声明空"也**无法**绕过已知工具的裁决。
+- 确无路径参数的工具:设 `PathParamsDeclared: true`(显式声明位)—— 与"没写"在 JSON 里不可区分,故单列一个布尔;设了就跳过推断与兜底。
+- **代理工具**(一次调用代表对另一个工具的调用,如检索模式的 `mcp_call`)还要声明 `ProxyArgsParam`(内层参数对象字段名,如 `"arguments"`):宿主据**真实目标工具**(`ApprovalTargetParam` 指向的)的声明/推断裁决内层参数 —— 不声明则内层路径不经任何裁决。
+- **值级兜底的两条豁免**(避免把正常调用拒掉):命令/脚本执行器类工具(`shell`/`run_code`/`lisp_eval`/`bash`)不兜底 —— 命令体里出现绝对路径是正常写法,而命令面已由 shell 写目标扫描负责;内容/指令类参数名(`command`/`script`/`code`/`input`/`query`/`url`/`prompt`/`text`/`content`/`pattern`/…)跳过 —— `web_search{query:"/etc/hosts"}` 里的绝对路径形态是**搜索词**。两者都是“宁可少拦、不误拦”的一侧。
 - 参数类型不符(路径给成数字)、必填路径参数缺失 → 显式报错 veto(非静默放行)。
 - 凭据类路径(`.env`/`id_rsa`/`provider.yaml`/`~/.ssh/**` 等)任何档位、任何工具都不放行。
 - 声明只走宿主↔插件协议(桥 `defDTO`/`serve.go` 已透传),**不下发模型**(适配层只取 Name/Description/InputSchema),零 token 成本。
@@ -104,7 +107,7 @@ func (t *myTool) Definition() sdk.ToolDefinition {
 **档位联动与运行期开关(可选能力)**:审批档 `open`/`strict` 会覆盖沙箱**有效**档(`full-access`/`read-only`);共享沙箱实现若额外实现可选接口 `sdk.SandboxSync`(`SyncEnabled() bool` / `SetSyncEnabled(bool)`,与 `sdk.EffectiveSandbox` 同风格的**能力探测**模式),用户就能用 `/sandbox sync on|off`(或 Web 设置面板的「档位联动」勾选框)关掉这个覆盖 —— 关掉后 `EffectiveMode()` 等于声明档,拦截行为跟着变(item 与 UI 都只在实现该接口时才出现,未实现则显式回「不支持联动开关」,不假装成功)。用户选择经 `internal/prefs`(`$GAH_HOME/config/gah-state.json` 的 `sandbox_sync`,三态:nil=用 config 默认)持久化,并由**插件自己的 Start** 读回 —— 恢复点放在插件里而不是各端 UI 启动钩子,无人值守(定时任务/headless)才不会静默回退。
 **审批等待(2026-09-26 起默认不限时)**:smart 档需要人裁决时,`ctx.confirm` 的等待**默认没有上限** —— 只有用户应答或 ctx 取消(回合被停止/进程退出)才结束;无应答时该动作不执行,回合也不会继续往下跑(此前是硬编 2 分钟,到点按安全默认拒绝后**继续执行后续步骤**)。要恢复「无人守候也不卡住」的老行为,配 `data.confirm_timeout_sec: <秒>`。配套(web 单 profile,不经 host-confirm-fusion):`web/confirm.go` 在超时/取消时同样推 `confirmdone` 裁决帧(否则弹层残留)、新连接建立时补推未决弹层(`ConfirmService.Pending()`)、输入区在 `busy` 时提供「停止」按钮(`POST /api/control {cancel:true}`)。`sdk.UnattendedOf` 下需审批动作仍**一律直拒且绝不弹确认**,与本默认值无关。
 未覆盖(**协作层**的诚实边界):命令包装器与构建系统内部的写(`ccache`/`make`/`cmake` 自选的落点)、解释器内部写(`python3 -c "open('/x','w')"`)、`cmake --install` 不给 `--prefix` 时的默认落点、`go install` 无 `-o` 时装进 `GOPATH/bin`(`GOPATH` 刻意不重定向)、`curl -O`(按 URL 落 cwd,不越界)、变量拼出的命令文本(`CMD='rm …'; $CMD`),以及**外部进程**(MCP server 子进程、host-bridge 外部插件)的写。这些靠危险模式 + 审批档兜底。
-**内核级沙箱(第 3 组,进程树层面)** 给上述边界兜底:宿主把**有效**档位经 `sdk.SandboxHint` 下发到执行入口,`shell` 在进程树级施加平台限制 —— macOS `/usr/bin/sandbox-exec`(seatbelt profile)、Linux **Landlock**(内核 ≥5.13;因 Landlock 对进程不可撤销,经**自举 helper 重新 exec** 自身后再 `syscall.Exec` 真实命令)。语义:只约束**文件写**(读与网络不限制,与协作层范围一致);白名单 = 有效档允许的 workspace 根 + `$GAH_HOME/jail/**`(+ `/dev/null`、`/dev/tty`、pty 等必要设备节点);路径先 `filepath.EvalSymlinks` 解析(macOS `/tmp`→`/private/tmp`,不解析则白名单会静默失效);read-only 档**保留 jail 可写**(否则 `TMPDIR`/`GOCACHE` 断裂会让命令大面积失败);能力缺失(无 `sandbox-exec`、无 Landlock、Windows 等)→ **一次性 stderr 告警 + 不施加包装**(明示降级,不静默);`GAH_SHELL_KERNEL_SANDBOX=0` 可关闭。
+**内核级沙箱(第 3 组,进程树层面)** 给上述边界兜底:宿主把**有效**档位经 `sdk.SandboxHint` 下发到执行入口,`shell` 在进程树级施加平台限制 —— macOS `/usr/bin/sandbox-exec`(seatbelt profile)、Linux **Landlock**(内核 ≥5.13;因 Landlock 对进程不可撤销,经**自举 helper 重新 exec** 自身后再 `syscall.Exec` 真实命令)。语义:只约束**文件写**(读与网络不限制,与协作层范围一致;唯一例外是**凭据目录的读** —— macOS 侧与协作层同一份名单在 seatbelt 里再拒一次,`GAH_SHELL_CRED_READ_KERNEL=0` 可关,Linux 无等价能力);白名单 = 有效档允许的 workspace 根 + `$GAH_HOME/jail/**`(+ `/dev/null`、`/dev/tty`、pty 等必要设备节点);路径先 `filepath.EvalSymlinks` 解析(macOS `/tmp`→`/private/tmp`,不解析则白名单会静默失效);read-only 档**保留 jail 可写**(否则 `TMPDIR`/`GOCACHE` 断裂会让命令大面积失败);能力缺失(无 `sandbox-exec`、无 Landlock、Windows 等)→ **一次性 stderr 告警 + 不施加包装**(明示降级,不静默);`GAH_SHELL_KERNEL_SANDBOX=0` 可关闭。
 **结论**:macOS/Linux 上「表判不出的写」已被内核层兜住(最坏只是错误信息不如协作层精确),**Windows 仍是纯协作式控制**。所以**工具自己拼 shell 命令时,请把路径显式传给 `shell` 而不是塞进变量**。
 
 ### 2.7 工具执行唯一入口(安全不变式,**所有调用工具的插件必读**)
@@ -267,6 +270,12 @@ func main() {
 - 环境注入:`GAH_CB_ADDR`(宿主回调地址)+ `GAH_CB_TOKEN`(鉴权,回传校验)。
 - 可用:tools.execute/list、jobs.run/output、fanout.agent/parallel/pipeline;宿主未装配对应服务时返回显式错误(不静默)。
 
+**沙箱上下文注入(内核级写限制,2026-09-27 审计 A3)**
+- 环境注入:`GAH_EXT_SANDBOX_MODE`(宿主**有效**档位)+ `GAH_EXT_SANDBOX_ROOT`(工作区根);宿主未装配沙箱或无档位时**不注入**(插件必须按"未注入"处理,不得假定档位)。
+- 用途:插件进程拿不到 `ctx.sandbox` 服务,而它内部起的子进程需要这个信息才能施加内核沙箱 —— 典型是 MCP server(`mcp-bridge` 即经此施加 seatbelt/Landlock,见 `internal/kernelsandbox`)。
+- 纪律:宿主对**插件进程本身**目前**不施加**内核包装(两条结构性阻断见 `DESIGN.md` R10 ①),所以"自己会起子进程"的插件应主动按这两个变量处理子进程;裁决是**写**侧(读与网络不限),档位语义与 `sdk.SandboxMode` 一致。
+- 不可嵌套:被施加包装的进程会拿到 `GAH_KERNEL_SANDBOXED=1`,后代**不得**重复施加(seatbelt/Landlock 均不可嵌套,实测 `sandbox_apply: Operation not permitted`)——`internal/kernelsandbox.Wrap` 已内置该判定。
+
 **错误与退出语义(P3 软降级)**
 - 业务失败回 `reply.Error`(结构化),回传模型、不中断宿主 turn。
 - 插件加载/启动失败 = 自身被跳过(宿主 ERROR 日志,继续 boot);**exit code 不向宿主传语义**——缺配置必须在 stderr 显式说明后 `exit 1`(防静默空转,参照 extplugins/tool-mcp 的 GAH_MCP_COMMAND 模式)。
@@ -274,6 +283,7 @@ func main() {
 
 **平台与构建(P4)**
 - 插件二进制必须与宿主同平台;`scripts/gen-extplugins.sh` 按发行矩阵(darwin/linux × amd64/arm64 + windows/amd64)构建,embed 分平台打包(主包每目标只嵌本平台产物)。
+- 需要限制子进程写入的插件:用根模块的 `internal/kernelsandbox`(**仅进程内插件可用**;外部插件只 import `sdk`,故只能自己实现或按上文的沙箱上下文变量处理)。
 - 新增外部插件:加进脚本的 NAMES 列表 + catalogue 登记;构建链产物缺失时主包构建失败(防漏,勿手动删除 embed 产物目录)。
 
 **验收路径**

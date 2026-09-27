@@ -847,6 +847,92 @@ fn openWithDefaultApp(p: &std::path::Path) -> std::io::Result<()> {
         .map(|_| ())
 }
 
+// ---------- 导航护栏(B1,2026-09-27 安全审计观察项) ----------
+//
+// 为什么必须有:主窗口就绪后会 navigate 到 sidecar 页面(跨源),而 Tauri v2 的 ACL
+// `remote.urls` 只能是**静态通配**(本仓库写的是 `http://127.0.0.1:*`)—— 它表达不了
+// 「只允许我启的那一个端口」。于是壳的 webview 一旦被导航到本机**别的** 127.0.0.1 页面
+// (别人的开发服务器、别的应用的本地端口、被诱导打开的本地页),那个页面就落在 ACL 的
+// remote 范围内,能调壳的应用命令:check_update(下载并安装签名包 → 更新面即 RCE 面)、
+// save_export(把任意内容写进用户下载目录)。
+//
+// 所以真正的边界放在**导航**上(ACL 收不窄,见上):
+//   ① 壳自身资源(`tauri://localhost`、Windows 的 `http://tauri.localhost`)与 Tauri IPC 端点;
+//   ② 回环 127.0.0.1 / localhost 的**任意端口**(sidecar 端口是运行时动态要的;
+//      本机回环也是浏览器端的同一信任模型 —— 本机其他进程本来就能直连它);
+//   ③ 壳自己注入的内联页(about/data/blob);
+//   ④ 其余一律拒;其中外部 http(s) 交系统浏览器打开 —— 用户点文档里的链接仍有反应,
+//      但远程页面不会被塞进这条有命令通道的 webview。
+fn navigationAllowed(url: &tauri::Url) -> bool {
+    match url.scheme() {
+        "tauri" => true,
+        "http" | "https" => matches!(
+            url.host_str(),
+            Some("127.0.0.1") | Some("localhost") | Some("tauri.localhost") | Some("ipc.localhost")
+        ),
+        "about" | "data" | "blob" => true,
+        _ => false,
+    }
+}
+
+// navGuard 导航护栏插件。
+//
+// 为何做成插件:主窗口由 tauri.conf.json 的 `app.windows` 声明,那条路径没有 Builder 可挂
+// `on_navigation`;而**插件**的 on_navigation 会对每个 webview 的每次导航生效。
+fn navGuard() -> tauri::plugin::TauriPlugin<tauri::Wry> {
+    tauri::plugin::Builder::new("nav-guard")
+        .on_navigation(|webview, url| {
+            if navigationAllowed(url) {
+                return true;
+            }
+            if matches!(url.scheme(), "http" | "https") {
+                match openURLInBrowser(url.as_str()) {
+                    Ok(()) => shellLog(
+                        webview.app_handle(),
+                        &format!("导航被护栏拒绝,已交系统浏览器打开: {url}"),
+                    ),
+                    Err(e) => shellLog(
+                        webview.app_handle(),
+                        &format!("导航被护栏拒绝且外链打开失败: {url} ({e})"),
+                    ),
+                }
+            } else {
+                shellLog(webview.app_handle(), &format!("导航被护栏拒绝: {url}"));
+            }
+            false
+        })
+        .build()
+}
+
+// openURLInBrowser 用系统默认浏览器打开 URL。
+//
+// 为何不与 openWithDefaultApp 合并:那是给**文件路径**用的,Windows 分支走 `cmd /C start`,
+// 而 `cmd` 会二次解析 `&` 等字符 —— URL 里合法地含 `&`(查询串),这就是一条命令注入面。
+// 这里 Windows 改用 explorer(不经 cmd 解析;URL 由 url 解析器规范化,不含空白与控制字符)。
+#[cfg(target_os = "macos")]
+fn openURLInBrowser(u: &str) -> std::io::Result<()> {
+    std::process::Command::new("open")
+        .arg(u)
+        .spawn()
+        .map(|_| ())
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn openURLInBrowser(u: &str) -> std::io::Result<()> {
+    std::process::Command::new("xdg-open")
+        .arg(u)
+        .spawn()
+        .map(|_| ())
+}
+
+#[cfg(target_os = "windows")]
+fn openURLInBrowser(u: &str) -> std::io::Result<()> {
+    std::process::Command::new("explorer")
+        .arg(u)
+        .spawn()
+        .map(|_| ())
+}
+
 // httpGETAuth 带凭据的最小 GET(token 模式必须带 cookie,否则 401 → 空串)。
 fn httpGETAuth(path: &str) -> String {
     let mut s = match TcpStream::connect_timeout(&web_sockaddr(), Duration::from_millis(300)) {
@@ -1349,6 +1435,9 @@ fn resolveRuntime(app: &AppHandle) -> Runtime {
 
 fn main() {
     tauri::Builder::default()
+        // 导航护栏**要在任何页面加载前装好**(导航回调按注册时的插件集合在运行时查;
+        // 这里放在最前面是为了让「谁在守门」一眼可见)。
+        .plugin(navGuard())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(w) = app.get_webview_window("main") {
@@ -1988,5 +2077,121 @@ mod save_export_tests {
         assert_eq!(b.file_name().unwrap().to_string_lossy(), "s (1).jsonl");
         assert_eq!(c.file_name().unwrap().to_string_lossy(), "s (2).jsonl");
         assert_eq!(std::fs::read_to_string(&c).unwrap(), "3");
+    }
+}
+
+// —— 导航护栏单测(B1):白名单的“进/出”两侧都要钉 ——
+// 真机点链路的最终行为(外链弹浏览器)仍需人工确认;这里钉的是判据本身。
+#[cfg(test)]
+mod nav_guard_tests {
+    use super::*;
+
+    fn u(s: &str) -> tauri::Url {
+        s.parse().expect("测试 URL 必须可解析")
+    }
+
+    #[test]
+    fn allows_shell_and_loopback() {
+        // 壳自身资源与 IPC 端点
+        assert!(navigationAllowed(&u("tauri://localhost/index.html")));
+        assert!(navigationAllowed(&u("http://tauri.localhost/index.html")));
+        assert!(navigationAllowed(&u("http://ipc.localhost/")));
+        // sidecar 与开发服务器(回环,端口动态)
+        assert!(navigationAllowed(&u(
+            "http://127.0.0.1:2233/?shell=desktop"
+        )));
+        assert!(navigationAllowed(&u("http://127.0.0.1:54321/#token=abc")));
+        assert!(navigationAllowed(&u("http://localhost:9999/")));
+        // 壳自己注入的内联页
+        assert!(navigationAllowed(&u("about:blank")));
+        assert!(navigationAllowed(&u("data:text/html,<b>x</b>")));
+    }
+
+    #[test]
+    fn denies_everything_else() {
+        // 外链(交系统浏览器;不给 webview 加载 —— 这条路径有壳命令通道)
+        assert!(!navigationAllowed(&u("https://example.com/")));
+        assert!(!navigationAllowed(&u("http://example.com/")));
+        // 局域网/别的网卡地址:即便指向本机局域网 IP 也不算回环
+        assert!(!navigationAllowed(&u("http://192.168.1.5:2233/")));
+        assert!(!navigationAllowed(&u("http://127.0.0.1.evil.com:2233/")));
+        // 本地文件与伪协议:不给 webview 当页面用
+        assert!(!navigationAllowed(&u("file:///etc/passwd")));
+        assert!(!navigationAllowed(&u("javascript:alert(1)")));
+        assert!(!navigationAllowed(&u("ftp://127.0.0.1/x")));
+    }
+}
+
+// —— ACL 漂移护栏:命令面必须与 permissions/app-commands.toml 一致 ——
+//
+// 事发经过(2026-09-27 审计):`save_export` 加进了 generate_handler! 却漏了 ACL 列表 ——
+// 表现是「桌面端导出点了没反应」(ACL 直接拒),而源码两侧都“看起来对”。
+// 这里把两处逐字比对(TOML 用 include_str!,命令面用本文件正文),同类漏改直接红。
+#[cfg(test)]
+mod acl_tests {
+    use std::collections::BTreeSet;
+
+    /// 命令面(single source for this test;新增命令时**两处**都要动,测试会告诉你漏了哪处)。
+    const COMMANDS: &[&str] = &[
+        "check_update",
+        "shell_probe",
+        "probe_async",
+        "pick_folder_begin",
+        "pick_folder_poll",
+        "autostart_state",
+        "update_state",
+        "shell_log",
+        "save_export",
+    ];
+
+    /// 从 app-commands.toml 的 commands.allow = [...] 里抠出命令名(不引 toml 依赖:
+    /// 格式由本仓库固定,解析只需认标识符)。
+    fn acl_commands() -> BTreeSet<String> {
+        let toml = include_str!("../permissions/app-commands.toml");
+        // 取**最后一处**:注释里也提到过 commands.allow(说明文字),split_once 会先撞上它
+        let after = toml
+            .rsplit_once("commands.allow")
+            .expect("app-commands.toml 应有 commands.allow")
+            .1;
+        let block = after
+            .split_once('[')
+            .and_then(|(_, rest)| rest.split_once(']'))
+            .expect("commands.allow 应是 [..] 列表")
+            .0;
+        block
+            .split(',')
+            .map(|s| s.trim().trim_matches('"').to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    }
+
+    /// 从本文件正文的 generate_handler![...] 块里抠出命令名。
+    fn handler_commands() -> BTreeSet<String> {
+        let src = include_str!("main.rs");
+        let block = src
+            .split_once("generate_handler![")
+            .and_then(|(_, rest)| rest.split_once(']'))
+            .expect("main.rs 应有 generate_handler![...]")
+            .0;
+        block
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    }
+
+    #[test]
+    fn acl_covers_every_invokable_command() {
+        let acl = acl_commands();
+        let handler = handler_commands();
+        let want: BTreeSet<String> = COMMANDS.iter().map(|s| s.to_string()).collect();
+        assert_eq!(
+            handler, want,
+            "generate_handler! 的命令面与 ACL 测试里的 COMMANDS 不一致(改了命令面就要同步)"
+        );
+        assert_eq!(
+            acl, want,
+            "app-commands.toml 的 commands.allow 与命令面不一致 —— 漏掉的命令前端调用会被 ACL 直接拒"
+        );
     }
 }

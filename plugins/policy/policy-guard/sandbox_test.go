@@ -144,13 +144,13 @@ func TestCheckToolCallAtIsolated(t *testing.T) {
 	args := func(path string) string {
 		return `{"path":` + strconv.Quote(path) + `,"content":"x"}`
 	}
-	if err := p.CheckToolCallAt(wt, "file_write", args("a.txt"), nil); err != nil {
+	if err := p.CheckToolCallAt(wt, "file_write", args("a.txt"), sdk.ToolDefinition{}); err != nil {
 		t.Fatalf("隔离运行写 worktree 相对路径应放行,got %v", err)
 	}
-	if err := p.CheckToolCallAt(wt, "file_write", args(filepath.Join(root, "a.txt")), nil); err == nil {
+	if err := p.CheckToolCallAt(wt, "file_write", args(filepath.Join(root, "a.txt")), sdk.ToolDefinition{}); err == nil {
 		t.Fatal("隔离运行写主 workspace 应被拒")
 	}
-	if err := p.CheckToolCallAt("", "file_write", args("a.txt"), nil); err != nil {
+	if err := p.CheckToolCallAt("", "file_write", args("a.txt"), sdk.ToolDefinition{}); err != nil {
 		t.Fatalf("空工作根应退回自身 root,got %v", err)
 	}
 }

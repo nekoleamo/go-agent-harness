@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nekoleamo/go-agent-harness/internal/kernelsandbox"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -189,11 +190,69 @@ type mcpClient struct {
 	readErr error
 }
 
+// extKernelSandboxEnv MCP server 内核级沙箱的显式关闭开关("0" = 关)。
+//
+// 命名沿用 GAH_EXT_* (外部进程面):MCP server 与外部插件同属“第三方进程”这一类。
+const extKernelSandboxEnv = "GAH_EXT_KERNEL_SANDBOX"
+
+// extRWPathsEnv 额外可写路径(冒号分隔):server 需要写自己的 DB/数据目录时由用户显式点名。
+const extRWPathsEnv = "GAH_EXT_RW_PATHS"
+
+// extCredReadDenyEnv 内核层凭据**读**拒绝开关("1" = 开;默认关)。
+//
+// 为何默认关:读 ~/.aws/credentials、~/.config/gcloud 之类是 server 的正当职责,
+// 默认拒会大面积打断(与 shell 不同 —— shell 里读凭据几乎只有“被诱导”一种解释)。
+const extCredReadDenyEnv = "GAH_EXT_CRED_READ_DENY"
+
+// kernelSpec 组装 MCP server 的内核沙箱规格。
+//
+// 档位来源:宿主在启动本插件进程时注入的 GAH_EXT_SANDBOX_MODE / _ROOT
+// (插件拿不到 ctx.sandbox 服务,与 tool-shell 经 SandboxHint 取档位同一道理)。
+// 未注入 = 无沙箱宿主/旧宿主 → Mode 为空 → 不施加且不告警(不猜档位)。
+func kernelSpec() kernelsandbox.Spec {
+	spec := kernelsandbox.Spec{
+		Mode:           sdk.SandboxMode(os.Getenv("GAH_EXT_SANDBOX_MODE")),
+		Root:           os.Getenv("GAH_EXT_SANDBOX_ROOT"),
+		Jail:           sdk.JailDir(),
+		RW:             append(kernelsandbox.DefaultRWPaths(), kernelsandbox.RWPathsFromEnv(extRWPathsEnv)...),
+		Switch:         extKernelSandboxEnv,
+		Label:          "mcp-bridge(MCP server)",
+		ReadDenySwitch: extCredReadDenyEnv,
+	}
+	if os.Getenv(extCredReadDenyEnv) == "1" {
+		spec.ReadDeny = sdk.CredentialDenyDirs()
+	}
+	return spec
+}
+
+// mcpArgv 组装 MCP server 的启动 argv(含内核沙箱包装;纯函数便于断言)。
+//
+// 内核级写限制的意义:MCP server 是**第三方代码**,而协作层的路径裁决只覆盖经 mcp_* 工具传入的
+// 参数 —— server 自己选定的写落点(DB/缓存/临时文件)完全看不见。白名单依据 2026-09-27 spike
+// (真实 MCP server 只给 workspace+jail 时 npx 因写 ~/.npm 而启动失败;加上包管理器缓存与 TMPDIR
+// 后正常起、区外写仍被内核拒)。见 internal/kernelsandbox。
+//
+// 第二个返回值 = 是否真的施加了(决定要不要给子进程打 MarkerEnv)。
+func mcpArgv(command string, args []string) ([]string, bool) {
+	// Wrap 自己处理“档位未知 / 全权档 / 已在内核沙箱内(不可嵌套)/ 显式关闭”四种情况
+	pre := kernelsandbox.Wrap(kernelSpec())
+	if len(pre) == 0 {
+		return append([]string{command}, args...), false
+	}
+	return kernelsandbox.PrefixedArgv(pre, command, args...), true
+}
+
 func spawn(command string, args []string) (*mcpClient, error) {
-	cmd := exec.Command(command, args...)
+	argv, wrapped := mcpArgv(command, args)
+	cmd := exec.Command(argv[0], argv[1:]...)
 	// 凭据隔离:第三方 MCP server 不继承宿主凭据(滤除 *_API_KEY/*_TOKEN/AWS_* 等),
 	// 也不继承 GAH_CB_*(宿主回调地址/token)。需要额外 env 的 server 请经启动命令显式配置。
 	cmd.Env = sdk.SanitizedEnv(os.Environ())
+	if wrapped {
+		// 标记已在内核沙箱内:server 再起的子进程(包装脚本调子命令)不必也**不能**重复施加
+		// (seatbelt/Landlock 不可嵌套)。
+		cmd.Env = append(cmd.Env, kernelsandbox.MarkerEnv+"=1")
+	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err

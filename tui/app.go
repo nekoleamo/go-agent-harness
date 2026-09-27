@@ -824,7 +824,7 @@ func (a *App) cmdPlugins(args []string) (string, error) {
 		return "", errString("ctx.pluginManager 未装配: " + err.Error())
 	}
 	if len(args) < 1 {
-		return pluginRows(mgr, a.pluginHome()), nil
+		return pluginRows(mgr, a.pluginHome(), a.toolConflicts()), nil
 	}
 	switch args[0] {
 	case "on", "load":
@@ -861,14 +861,14 @@ func (a *App) cmdPlugins(args []string) (string, error) {
 		}
 		return "已清除持久覆盖 " + args[1] + "(恢复配置树默认,重启生效)", nil
 	case "list", "":
-		return pluginRows(mgr, a.pluginHome()), nil
+		return pluginRows(mgr, a.pluginHome(), a.toolConflicts()), nil
 	default:
 		return "", errString("/plugins list|on|off|default <id>")
 	}
 }
 
 // pluginRows 插件列表文本(含持久开关后缀)。
-func pluginRows(mgr sdk.PluginManager, home string) string {
+func pluginRows(mgr sdk.PluginManager, home string, conflicts []sdk.ToolConflict) string {
 	rows := "插件:"
 	persist := install.ReadEnablements(install.RuntimePatch(home))
 	for _, info := range mgr.List() {
@@ -882,7 +882,24 @@ func pluginRows(mgr sdk.PluginManager, home string) string {
 		}
 		rows += "\n  " + info.ID + " [" + info.Type + "] " + info.State + suffix
 	}
+	// B3(2026-09-27):同名工具被忽略时**在这里也必须看得见** —— 插件状态会显示“已启用”,
+	// 但它的工具其实没注册上(first-wins),只翻日志才知道。
+	for _, cf := range conflicts {
+		rows += "\n  ⚠ 工具重名被忽略: " + cf.Name + " (" + cf.Ignored + ")"
+	}
 	return rows
+}
+
+// toolConflicts 读注册期冲突(实现 sdk.ToolConflictReporter 的注册表才提供;不实现则无冲突可显)。
+func (a *App) toolConflicts() []sdk.ToolConflict {
+	var tools sdk.ToolRegistry
+	if err := a.c.Inject("ctx.tools", &tools); err != nil || tools == nil {
+		return nil
+	}
+	if rep, ok := tools.(sdk.ToolConflictReporter); ok {
+		return rep.ToolConflicts()
+	}
+	return nil
 }
 
 // persistPlugin 持久化插件开关:写入 patch-runtime.yaml 并让全部 profile 引用(重启生效)。

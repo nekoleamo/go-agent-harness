@@ -1017,6 +1017,57 @@ func TestToolsEndpoints(t *testing.T) {
 	}
 }
 
+// B3(2026-09-27):注册期同名工具冲突的可见性面(实现可选接口才提供;未实现 → 空数组而非 500)。
+func TestToolConflictsEndpoint(t *testing.T) {
+	s, _ := newTestServer()
+	s.tools = &stubConflictsTools{stubTools: stubTools{defs: map[string]sdk.ToolDefinition{
+		"same": {Name: "same", Description: "首个实现"},
+	}}, conflicts: []sdk.ToolConflict{{Name: "same", Ignored: "实现v2"}}}
+	hs := httptest.NewServer(s.handler())
+	defer hs.Close()
+
+	r, err := http.Get(hs.URL + "/api/tools/conflicts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Body.Close()
+	if r.StatusCode != 200 {
+		t.Fatalf("冲突端点应 200,得 %d", r.StatusCode)
+	}
+	var got []sdk.ToolConflict
+	if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Name != "same" || got[0].Ignored != "实现v2" {
+		t.Fatalf("冲突清单不符 %+v", got)
+	}
+
+	// 不实现可选接口的注册表:返回空数组(不报错,不给前端添分支)
+	s2, _ := newTestServer()
+	s2.tools = &stubTools{defs: map[string]sdk.ToolDefinition{}}
+	hs2 := httptest.NewServer(s2.handler())
+	defer hs2.Close()
+	r2, err := http.Get(hs2.URL + "/api/tools/conflicts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r2.Body.Close()
+	if r2.StatusCode != 200 {
+		t.Fatalf("无冲突能力应 200(空数组),got %d", r2.StatusCode)
+	}
+	if body := strings.TrimSpace(readAll(r2)); body != "[]" {
+		t.Fatalf("应返回空数组,got %q", body)
+	}
+}
+
+// stubConflictsTools 额外实现可选接口 sdk.ToolConflictReporter。
+type stubConflictsTools struct {
+	stubTools
+	conflicts []sdk.ToolConflict
+}
+
+func (s *stubConflictsTools) ToolConflicts() []sdk.ToolConflict { return s.conflicts }
+
 // 通用 REST 面:后台任务列表/状态/终止。
 func TestJobsEndpoints(t *testing.T) {
 	s, _ := newTestServer()

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -28,11 +29,12 @@ func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
 }
 
 type reg struct {
-	c      sdk.Ctx
-	mu     sync.RWMutex
-	order  []string
-	tools  map[string]sdk.Tool
-	logger *slog.Logger
+	c       sdk.Ctx
+	mu      sync.RWMutex
+	order   []string
+	tools   map[string]sdk.Tool
+	ignored []sdk.ToolConflict // 重名被忽略者(可见性面:B3)
+	logger  *slog.Logger
 }
 
 // Register 注册工具(返回 Disposer)。
@@ -41,12 +43,27 @@ func (r *reg) Register(t sdk.Tool) sdk.Disposer {
 		return func() {}
 	}
 	def := t.Definition()
+	// 未声明路径参数的工具:宿主裁决时会按 schema/参数值推断(见 sdk.InferPathParams 与
+	// policy-guard CheckToolCallAt)—— 从 fail-open 变成"有裁决"是行为变化,作者该知道,
+	// 故这里点名一次(不静默降级;声明 PathParams 即可覆盖推断)。
+	if len(def.PathParams) == 0 && !def.PathParamsDeclared && r.logger != nil {
+		if inferred := sdk.InferPathParams(def); len(inferred) > 0 {
+			r.logger.Info("工具未声明路径参数,宿主按推断裁决",
+				"tool", def.Name, "inferred", sdk.DescribePathParams(inferred),
+				"hint", "显式声明 PathParams 可覆盖推断(docs/PLUGIN_DEV.md §2.6);确无路径参数请设 PathParamsDeclared")
+		}
+	}
 	r.mu.Lock()
 	if _, ok := r.tools[def.Name]; ok {
+		// 重名注册非静默,且**可见**:first-wins 的语义不变(后到者不顶掉前者 ——
+		// 静默替换更难排查),但被忽略者记进 ToolConflicts(日志/`/plugins list`/API 三面可见)。
+		ignored := sdk.ToolConflict{Name: def.Name, Ignored: briefDesc(def)}
+		r.ignored = append(r.ignored, ignored)
 		r.mu.Unlock()
-		// 重名注册非静默:显式提示(替换同名工具应关闭旧工具插件后再启用新插件)
 		if r.logger != nil {
-			r.logger.Warn("tool 注册冲突已忽略", "tool", def.Name, "hint", "先关闭提供同名工具的插件,再启用新插件")
+			r.logger.Error("tool 注册冲突:同名工具已存在,本次注册被忽略",
+				"tool", def.Name, "ignored", ignored.Ignored,
+				"hint", "先关闭提供同名工具的插件,再启用新插件(启用成功≠工具可用)")
 		}
 		return func() {}
 	}
@@ -68,6 +85,28 @@ func (r *reg) Register(t sdk.Tool) sdk.Disposer {
 			}
 		})
 	}
+}
+
+// ToolConflicts 返回被忽略的同名工具注册(稳定顺序;实现 sdk.ToolConflictReporter)。
+func (r *reg) ToolConflicts() []sdk.ToolConflict {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]sdk.ToolConflict, len(r.ignored))
+	copy(out, r.ignored)
+	return out
+}
+
+// briefDesc 把定义压缩成一行描述(有界),供冲突日志/状态面定位来源插件。
+func briefDesc(def sdk.ToolDefinition) string {
+	d := strings.TrimSpace(def.Description)
+	if d == "" {
+		return "(无描述)"
+	}
+	r := []rune(d)
+	if len(r) > 80 {
+		return string(r[:80]) + "…"
+	}
+	return d
 }
 
 // List 返回模型可见的工具定义。

@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -246,4 +248,119 @@ func matchDangerous(args string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// ---------- 写目标派生(B2,2026-09-27 安全审计观察项) ----------
+//
+// 危险模式表是**枚举**正则:新增一种写法就多一个洞。实测漏网形态(均已核):
+// `echo x >> /etc/hosts`(原 `>\s*/etc/` 不匹配双箭头)、`> ~/.ssh/authorized_keys`
+// (持久化后门,原表只认字面 `LaunchAgents`)、`mv x /etc/y` / `ln -s x /etc/y`、`> ~/.zshrc`。
+//
+// 因此危险判据再加一条**派生**路:只看命令的**写目标落在哪** —— 而写目标表已在
+// `shellpaths.go` 里(与路径裁决同一份解析,不重复枚举)。两者互补:枚举给“人读得懂的罪名”,
+// 派生兜住没枚举到的写法。
+
+// protectedWriteDirs 审批层的“受保护目录”。
+//
+// 刻意**不收** `/tmp`、`/var`、`/private/var`(macOS TMPDIR)、`$HOME` 下普通路径:
+// 那些是常规工作落点,收了就是每条命令都弹窗 —— 噪音会把确认框训练成“闭眼点同意”。
+var protectedWriteDirs = []string{
+	"/etc", "/usr", "/bin", "/sbin", "/boot", "/System", "/Library", "/opt", "/dev", "/root",
+}
+
+// protectedWriteFiles 家目录下的敏感文件(相对路径):写它们 = 劫持 shell/持久化。
+var protectedWriteFiles = []string{
+	".zshrc", ".zshenv", ".zprofile", ".bashrc", ".bash_profile", ".profile", ".gitconfig",
+	".ssh/authorized_keys", ".ssh/config", ".ssh/known_hosts",
+}
+
+// derivedApprovalTarget 从命令的写目标派生审批项:命中的写目标 → (罪名, true)。
+// 不可裁决的写目标(含变量/命令替换)**不跳过**:它们在 workspace-write/read-only 下已被路径层直接拒,
+// 但 full-access 档路径检查整个短路 —— 那正是派生审批还有价值的地方(`echo x >> $HOME/.ssh/authorized_keys`)。
+// 判定仍保守:只认能展开的写法(`$HOME/…`/`~`)与字面量凭据段,其余不命中。
+func derivedApprovalTarget(cmd string) (string, bool) {
+	for _, p := range shellCmdPaths(cmd) {
+		if !p.Write {
+			continue
+		}
+		if label, hit := protectedWriteTarget(p.Path); hit {
+			return label, true
+		}
+	}
+	return "", false
+}
+
+// protectedWriteTarget 写目标是否落在受保护位置(纯词法,不做 I/O)。
+func protectedWriteTarget(raw string) (string, bool) {
+	v := expandHomeVars(strings.TrimSpace(raw))
+	if v == "" || v == "-" {
+		return "", false
+	}
+	if hasShellExpansion(v) {
+		// 目标不可知:只认字面量里出现的凭据路径(与读侧同一保守口径;不扫通配)
+		for _, seg := range strings.FieldsFunc(v, func(r rune) bool { return r == ' ' || r == '\t' }) {
+			if sdk.LooksLikeCredentialPath(seg) {
+				return "写凭据路径(变量/通配中的字面量段 " + seg + ")", true
+			}
+		}
+		return "", false
+	}
+	p := v
+	if strings.HasPrefix(p, "~") {
+		exp, ok := expandTilde(p)
+		if !ok {
+			return "", false
+		}
+		p = exp
+	}
+	if !filepath.IsAbs(p) {
+		return "", false // 相对路径落点由路径裁决管;审批层不猜(否则 workspace 内写会噪)
+	}
+	p = filepath.Clean(p)
+	if sdk.LooksLikeCredentialPath(p) {
+		return "写凭据路径 " + p, true
+	}
+	for _, d := range protectedWriteDirs {
+		if underDir(p, d) {
+			return "写系统目录 " + d, true
+		}
+	}
+	if home := strings.TrimSpace(os.Getenv("HOME")); home != "" && underDir(p, filepath.Clean(home)) {
+		if rel, err := filepath.Rel(home, p); err == nil {
+			rel = filepath.ToSlash(rel)
+			for _, f := range protectedWriteFiles {
+				if rel == f {
+					return "写敏感配置 ~/" + f, true
+				}
+			}
+		}
+	}
+	return "", false
+}
+
+// underDir p 是否在 dir 内(含目录自身;按路径段比,`/etc2` 不算 `/etc` 的子路径)。
+func underDir(p, dir string) bool {
+	if p == dir {
+		return true
+	}
+	return strings.HasPrefix(p, dir+string(filepath.Separator))
+}
+
+// expandHomeVars 把开头的 `$HOME`/`${HOME}`/`%USERPROFILE%` 换成真实家目录(写目标常这么写;
+// 换了才能与“绝对路径”同一条判据判定)。其余变量不动 —— 落点不可知的一律交给后面的字面量扫描。
+func expandHomeVars(s string) string {
+	home := strings.TrimSpace(os.Getenv("HOME"))
+	if home == "" {
+		return s
+	}
+	for _, pre := range []string{"${HOME}", "$HOME", "%USERPROFILE%"} {
+		if strings.HasPrefix(s, pre) {
+			rest := strings.TrimPrefix(strings.TrimPrefix(s, pre), string(filepath.Separator))
+			if rest == "" {
+				return filepath.Clean(home)
+			}
+			return filepath.Join(home, rest)
+		}
+	}
+	return s
 }

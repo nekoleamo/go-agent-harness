@@ -1,16 +1,25 @@
 //go:build linux && (amd64 || arm64 || loong64 || mips64 || mips64le || ppc64 || ppc64le || riscv64 || s390x || sparc64)
 
-// kernel_linux.go:Linux 内核级沙箱 = Landlock(内核 5.13+ / ABI v1)。
+// linux.go:Linux 内核沙箱 = Landlock(内核 5.13+ / ABI v1)。
 //
 // 为什么必须自举 helper:Landlock 的限制对**本进程及其所有后代**生效且**不可撤销**
-// (prctl(no_new_privs) + landlock_restrict_self 之后无法解除)。若在插件进程里直接施加,
-// 插件自己会被永久锁住 —— 之后的档位切换、full-access、甚至 jail 维护全部失效。
-// 因此把插件二进制**自己再 exec 一次**作 helper:helper 在 init()(main 之前)施加限制,
-// 再 syscall.Exec 真正的 shell —— 限制只覆盖这一次命令的进程树,随进程退出而消失。
+// (prctl(no_new_privs) + landlock_restrict_self 之后无法解除)。若在长期存活的进程里直接施加
+// (宿主 gah / 插件进程本身),它自己会被永久锁住 —— 之后的档位切换、full-access、jail 维护全失效。
+// 因此把**当前可执行文件自己再 exec 一次**作 helper:helper 在包 init()(main 之前)施加限制,
+// 再 syscall.Exec 真正的目标程序 —— 限制只覆盖这一次命令的进程树,随进程退出而消失。
+//
+// 谁做 helper:`os.Executable()` = 被包装方所在的那个二进制(宿主 gah、外部插件、或任何
+// 链接了本包的程序)。所以拦截点放在本包的 init() 而不是各调用方 —— 调用方漏调一次,
+// 包装就会退化成"带着 --gah-landlock-exec 参数去跑正常逻辑",那种故障极难定位。
 //
 // 权限模型:只 handled **写类**权利(读与网络不设限),与协作层"只管写目标"的范围对齐;
-// 白名单路径 = 数据根 jail(两档都有)+ workspace 根(仅 workspace-write)。
-package toolshell
+// 白名单 = jail + workspace 根 + RW 额外项(包管理器缓存等)。
+//
+// 已知差异(诚实登记):macOS 侧另有**凭据目录读拒绝**(Spec.ReadDeny),本分支**没有**等价能力
+// —— Landlock 规则是 additive allow-list,无法表达"除凭据目录外全放行读"
+// (handled 含 READ_FILE 就必须逐层放行,漏一层即读不了)。
+// 因此 Linux 上凭据读仍只有协作层文本判定(解释器内动态拼路径可绕过,见 A4)。
+package kernelsandbox
 
 import (
 	"fmt"
@@ -29,9 +38,9 @@ import (
 // 常量来源:内核 include/uapi/linux/landlock.h(v5.13+)。x/sys v0.45.0 只带系统调用号
 // (unix.SYS_LANDLOCK_*),不带这里的取值常量与结构体,故本地定义并写明来源。
 const (
-	// LANDLOCK_CREATE_RULESET_VERSION:landlock_create_ruleset(NULL, 0, 该值) 查询 ABI 版本。
+	// llCreateRulesetVersion:landlock_create_ruleset(NULL, 0, 该值) 查询 ABI 版本。
 	llCreateRulesetVersion = 1
-	// LANDLOCK_RULE_PATH_BENEATH:landlock_add_rule 的 rule_type。
+	// llRulePathBeneath:landlock_add_rule 的 rule_type。
 	llRulePathBeneath = 1
 
 	// handled/allowed 访问权(仅取写类):
@@ -49,11 +58,11 @@ const (
 	llAccessFSTruncate   = 1 << 14 // TRUNCATE(ABI>=3)
 )
 
-// llExecFlag 自举 helper 的 argv[1] 魔数:只有我们自己包装的命令行才会带它。
+// llExecFlag 自举 helper 的 argv[1] 魔数:只有本包包装过的命令行才会带它。
 const llExecFlag = "--gah-landlock-exec"
 
 // 需要放行的设备白名单。为什么必须有:handled 含 WRITE_FILE/TRUNCATE 后,写这些节点同样被拒 ——
-// 而 cmd 2>/dev/null 是最常见的写法,不放行会让两档下大量命令异常失败。
+// 而 `cmd 2>/dev/null` 是最常见的写法,不放行会让两档下大量命令异常失败。
 var (
 	// llDeviceDirs 目录级规则(用完整写权利集)。/dev/pts 只能整目录放行:pty slave 名
 	// (/dev/pts/N)是运行期动态分配的,无法逐项枚举;该目录内节点属当前用户,放行风险可接受。
@@ -69,21 +78,38 @@ var (
 
 var warnPartialOnce sync.Once
 
-// warnPartial 一次性告警:内核级沙箱已启用,但部分设备项未能纳入白名单(可能导致相关命令失败)。
-// 与 warnUnavailable 区分开:这里沙箱**生效了**,只是白名单不全 —— 措辞不能让人以为没开。
-func warnPartial(items []string) {
+// warnPartial 一次性告警:内核沙箱已启用,但部分白名单项未能纳入(相关命令可能失败)。
+// 与"未生效"告警分开措辞:这里沙箱**生效了**,只是白名单不全。
+func warnPartial(spec Spec, items []string) {
 	if len(items) == 0 {
 		return
 	}
 	warnPartialOnce.Do(func() {
-		fmt.Fprintf(os.Stderr, "gah tool-shell: 内核层未放行 %d 项 /dev 白名单(%s);涉及这些设备的命令(如 2>/dev/null、pty)可能失败。\n",
-			len(items), strings.Join(items, ", "))
+		fmt.Fprintf(os.Stderr, "gah %s: 内核层未放行 %d 项白名单(%s);涉及这些路径的写可能失败(用 %s 显式点名可放开)。\n",
+			spec.label(), len(items), strings.Join(items, ", "), "GAH_EXT_RW_PATHS")
 	})
 }
 
-// landlockRulesetAttr 对应 struct landlock_ruleset_attr 的 v1 形态(handled_access_fs)。
-// 该结构体是"可扩展结构"(内核 copy_min_struct_from_user,min = sizeof(u64) = 8):
-// 传 8 字节在 ABI 1..N 上都被接受,内核把其余字段清零 —— 故只传 v1 字段最稳。
+func platformSupportNote() string {
+	return "Linux 需内核 5.13+ 且启用 Landlock(ABI 探测失败即视为不可用)"
+}
+
+// ---------- 自举 helper 入口(包 init:调用方漏调也不会退化) ----------
+
+// init 自举 helper 入口。仅在 argv 带魔数时生效 —— 正常启动(宿主 gah / 插件进程)不受影响。
+// 任何失败都 os.Exit(126):绝不继续执行**未受约束**的命令(宁可失败,不静默放行)。
+func init() {
+	if len(os.Args) < 7 || os.Args[1] != llExecFlag {
+		return
+	}
+	if err := landlockSelfAndExec(os.Args[2], os.Args[3], os.Args[4], splitRWArg(os.Args[5]), os.Args[6:]); err != nil {
+		fmt.Fprintln(os.Stderr, "gah-kernelsandbox: 内核级沙箱自举失败: "+err.Error())
+	}
+	os.Exit(126) // Exec 成功则不会返回;返回即失败
+}
+
+// ---------- ABI 探测 ----------
+
 type landlockRulesetAttr struct {
 	handledAccessFs uint64
 }
@@ -95,10 +121,6 @@ type landlockPathBeneathAttr struct {
 	parentFd      int32
 }
 
-func platformSupportNote() string {
-	return "Linux 需内核 5.13+ 且启用 Landlock(ABI 探测失败即视为不可用)"
-}
-
 var (
 	llABIOnce sync.Once
 	llABI     int
@@ -106,9 +128,7 @@ var (
 
 // landlockABI 查询内核 Landlock ABI 版本(<1 = 不可用)。只探一次。
 func landlockABI() int {
-	llABIOnce.Do(func() {
-		llABI = probeLandlockABI()
-	})
+	llABIOnce.Do(func() { llABI = probeLandlockABI() })
 	return llABI
 }
 
@@ -123,36 +143,46 @@ func probeLandlockABI() int {
 	return int(r)
 }
 
-// platformWrap:探测 ABI → 以自身为 helper 重新 exec(argv = [self, 魔数, 档位, 根, 原命令…])。
-// 档位与根走 argv(不经环境变量):helper 参数显式可见、不会被用户命令的环境继承干扰。
-func platformWrap(mode sdk.SandboxMode, root string) []string {
+// platformWrap:探测 ABI → 以自身为 helper 重新 exec
+// (argv = [self, 魔数, 档位, 根, jail, RW 编码, 原命令…])。
+// 档位/根/白名单走 argv(不经环境变量):helper 参数显式可见、不会被用户命令的环境继承干扰。
+func platformWrap(spec Spec) []string {
 	if landlockABI() < 1 {
-		warnUnavailable("内核不支持 Landlock(landlock_create_ruleset 探测失败)")
+		WarnUnavailable(spec, "内核不支持 Landlock(landlock_create_ruleset 探测失败)")
 		return nil
 	}
 	self, err := os.Executable()
 	if err != nil {
-		warnUnavailable("无法定位自身可执行文件(自举 helper 需要): " + err.Error())
+		WarnUnavailable(spec, "无法定位自身可执行文件(自举 helper 需要): "+err.Error())
 		return nil
 	}
-	// jail 根在这里(父进程环境)解析并**随 argv 传给 helper**,不在 helper 内反推:
-	// helper 是重新 exec 的同一二进制,而 jailEnv 已把子进程 TMPDIR 改到 <jail>/tmp ——
-	// 若 helper 用 sdk.Home() 反推 jail(Join(Home(),"jail")),GAH_HOME 为空时 Home() 会回落到
-	// TMPDIR,得到 <jail>/tmp/jail(自指且不存在)→ landlock_add_rule ENOENT → 自举失败
-	// → 所有命令 exit 126(CI 实证:GAH_HOME 未设的直连/嵌入形态必现)。
-	return []string{self, llExecFlag, string(mode), resolvePath(root), resolvePath(jailRoot())}
+	// jail 根在调用方(父进程)解析并**随 argv 传给 helper**,不在 helper 内反推:
+	// helper 是重新 exec 的同一二进制,而环境 jail 已把子进程 TMPDIR 改到 <jail>/tmp ——
+	// 若 helper 用 sdk.Home() 反推 jail,GAH_HOME 为空时会得到 <jail>/tmp/jail(自指且不存在)
+	// → landlock_add_rule ENOENT → 自举失败 → 所有命令 exit 126(CI 实证:GAH_HOME 未设必现)。
+	return []string{
+		self, llExecFlag, string(spec.Mode),
+		ResolvePath(spec.Root), ResolvePath(spec.Jail), joinRWArg(spec.RW),
+	}
 }
 
-// init 自举 helper 入口。仅在 argv 带魔数时生效 —— 正常启动(插件进程 / 宿主 gah)不受影响。
-// 任何失败都 os.Exit(126):绝不继续执行**未受约束**的命令(宁可失败,不静默放行)。
-func init() {
-	if len(os.Args) < 6 || os.Args[1] != llExecFlag {
-		return
+// joinRWArg / splitRWArg:RW 白名单经**单个分号分隔**的 argv 槽传递(路径可含空格,故不用空格分隔;
+// 含分号的路径属病态情形,按文档登记的限制跳过)。
+func joinRWArg(paths []string) string {
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, strings.ReplaceAll(p, "\n", " "))
+		}
 	}
-	if err := landlockSelfAndExec(os.Args[2], os.Args[3], os.Args[4], os.Args[5:]); err != nil {
-		fmt.Fprintln(os.Stderr, "gah tool-shell: 内核级沙箱自举失败: "+err.Error())
+	return strings.Join(out, "\n")
+}
+
+func splitRWArg(s string) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
 	}
-	os.Exit(126) // Exec 成功则不会返回;返回即失败
+	return strings.Split(s, "\n")
 }
 
 // llAddPathRule 对路径加一条 PATH_BENEATH 规则(allowed 必须与该路径类型匹配:目录用完整集,
@@ -173,8 +203,7 @@ func llAddPathRule(rulesetFD int, path string, allowed uint64) error {
 }
 
 // landlockSelfAndExec 施加 Landlock 后 exec 目标命令(argv[0] 经 PATH 解析)。
-// jail 由调用方(父进程)经 argv 传入 —— helper 不从环境反推路径,见 platformWrap 注释。
-func landlockSelfAndExec(modeStr, root, jail string, argv []string) error {
+func landlockSelfAndExec(modeStr, root, jail string, rw []string, argv []string) error {
 	mode := sdk.SandboxMode(modeStr)
 	switch mode {
 	case sdk.SandboxReadOnly, sdk.SandboxWorkspace:
@@ -186,16 +215,17 @@ func landlockSelfAndExec(modeStr, root, jail string, argv []string) error {
 	if abi < 1 {
 		return fmt.Errorf("内核不支持 Landlock(探测返回 %d)", abi)
 	}
-
 	if strings.TrimSpace(jail) == "" {
 		return fmt.Errorf("缺少 jail 白名单根参数(自举参数被破坏)")
 	}
-	allow := []string{jail}
+
+	// 硬边界白名单:jail 两档都有;workspace 根仅 workspace 档。
+	hard := []string{jail}
 	if mode == sdk.SandboxWorkspace {
 		if strings.TrimSpace(root) == "" {
 			return fmt.Errorf("workspace 档位缺少 workspace 根")
 		}
-		allow = append(allow, root)
+		hard = append(hard, root)
 	}
 
 	handled := uint64(llAccessFSWriteFile | llAccessFSRemoveDir | llAccessFSRemoveFile |
@@ -216,23 +246,34 @@ func landlockSelfAndExec(modeStr, root, jail string, argv []string) error {
 	}
 	rulesetFD := int(fd)
 
-	// 目录规则用完整写权利集;单文件规则只能用**对文件适用**的权利:
-	// man 2 landlock_add_rule 的 ERRORS 明确 —— allowed_access 含仅适用于目录的权利
-	// (MAKE_*/REMOVE_DIR/REFER 等)而 parent_fd 指向单个文件时返回 EINVAL。
+	// 目录规则用完整写权利集;单文件规则只能用**对文件适用**的权利(见 llDeviceFiles 注释)。
 	fileRights := uint64(llAccessFSWriteFile)
 	if abi >= 3 {
 		fileRights |= llAccessFSTruncate // TRUNCATE 对文件适用(ABI>=3 才有)
 	}
 
-	// 白名单根(jail / workspace)是硬边界:加不上就整体失败(失败即 os.Exit(126)),
-	// 不许出现"白名单没加成功但命令照跑"= 静默放行。
-	for _, dir := range allow {
+	// 硬边界加不上就整体失败(os.Exit(126)):不许出现"白名单没加成功但命令照跑"= 静默放行。
+	for _, dir := range hard {
 		if err := llAddPathRule(rulesetFD, dir, handled); err != nil {
 			return fmt.Errorf("landlock_add_rule(%s) 失败: %v", dir, err)
 		}
 	}
 
 	var skipped []string
+	// RW 额外白名单(缓存/临时区):不存在的路径尝试建出来(包管理器缓存目录首次使用前不存在),
+	// 仍加不上只记入 skipped —— 不因一个缓存目录缺失就让整条命令无法执行。
+	for _, p := range rw {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if _, err := os.Stat(p); err != nil {
+			_ = os.MkdirAll(p, 0o755)
+		}
+		if err := llAddPathRule(rulesetFD, p, handled); err != nil {
+			skipped = append(skipped, fmt.Sprintf("%s(%v)", p, err))
+		}
+	}
 	// /dev/pts:pty 模式必需(slave 名动态,只能整目录放行)
 	for _, dir := range llDeviceDirs {
 		if err := llAddPathRule(rulesetFD, dir, handled); err != nil {
@@ -257,7 +298,7 @@ func landlockSelfAndExec(modeStr, root, jail string, argv []string) error {
 	for _, f := range llDeviceAliases {
 		_ = llAddPathRule(rulesetFD, f, fileRights)
 	}
-	warnPartial(skipped) // 白名单不全必须可见,但不阻断本次执行
+	warnPartial(Spec{}, skipped) // 白名单不全必须可见,但不阻断本次执行
 
 	// no_new_privs 是 restrict_self 的前置条件(同时阻止 setuid 提权逃逸)。
 	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {

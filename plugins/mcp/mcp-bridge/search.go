@@ -205,6 +205,9 @@ func (t *callTool) Definition() sdk.ToolDefinition {
 			"arguments 为该工具的入参对象(见其 inputSchema)。",
 		// 审批主体 = 被代理的真实工具名(宿主按 approval_tools 逐工具匹配;见 sdk.ToolDefinition)。
 		ApprovalTargetParam: "name",
+		// 内层参数对象字段名:宿主据**真实目标工具**的声明/推断裁决内层参数 ——
+		// 否则 `mcp_call{name:"mcp_srv_write",arguments:{path:"…"}}` 的内层路径不经任何路径裁决。
+		ProxyArgsParam: "arguments",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

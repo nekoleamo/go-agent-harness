@@ -27,13 +27,53 @@ func toolDef(c sdk.Ctx, name string) (sdk.ToolDefinition, bool) {
 	return tools.Get(name)
 }
 
-// declaredPathParams 取工具自述的路径参数声明。
-func declaredPathParams(c sdk.Ctx, name string) []sdk.PathParam {
-	def, ok := toolDef(c, name)
-	if !ok {
-		return nil
+// pathAdjudication 解出路径裁决的**对象**:非代理工具 = 自身;代理工具(声明了 ProxyArgsParam,
+// 如 search 模式 mcp_call) = 真实目标工具 + 其内层参数对象 —— 否则内层路径不经任何裁决
+// (审批维度已按真实名匹配,路径维度此前没有,属同一类间接绕过;2026-09-27 审计 F2)。
+// 返回 (裁决用工具名, 裁决用参数 JSON, 裁决用定义)。
+func pathAdjudication(c sdk.Ctx, name, args string, def sdk.ToolDefinition) (string, string, sdk.ToolDefinition) {
+	if def.ProxyArgsParam == "" {
+		return name, args, def
 	}
-	return def.PathParams
+	var outer map[string]any
+	if json.Unmarshal([]byte(args), &outer) != nil {
+		return name, args, def
+	}
+	inner := innerArgsJSON(outer[def.ProxyArgsParam])
+	if inner == "" {
+		// 没有内层参数对象:仍按代理工具自身裁决(其 name 参数值不构成路径面)
+		return name, args, def
+	}
+	target := approvalTarget(c, name, args)
+	if target == "" {
+		return name, inner, sdk.ToolDefinition{}
+	}
+	realDef, ok := toolDef(c, target)
+	if !ok {
+		// 真实定义取不到(名字错/未注册/已卸载):不猜声明,只留值级兜底(见 CheckToolCallAt);
+		// 名字仍按真实名传 —— 值级兜底的读写意图来自工具名动词
+		return target, inner, sdk.ToolDefinition{}
+	}
+	return target, inner, realDef
+}
+
+// innerArgsJSON 把代理工具的内层参数取成 JSON 对象串(*模型两种都爱用:对象或 JSON 字符串)。
+func innerArgsJSON(raw any) string {
+	switch v := raw.(type) {
+	case map[string]any:
+		if b, err := json.Marshal(v); err == nil {
+			return string(b)
+		}
+	case string:
+		var m map[string]any
+		if json.Unmarshal([]byte(v), &m) != nil {
+			return ""
+		}
+		if b, err := json.Marshal(m); err == nil {
+			return string(b)
+		}
+	}
+	return ""
 }
 
 // approvalTarget 代理工具（声明了 ApprovalTargetParam）的真实目标名：
@@ -134,7 +174,13 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		if call.Name == "shell" {
 			// 解出真实命令文本再判定:JSON 转义(`\u0072m`)与解释器删除等绕过在此收敛
 			cmd := shellCommand(call.Arguments)
-			if pattern, hit := matchDangerous(cmd); hit {
+			pattern, hit := matchDangerous(cmd)
+			if !hit {
+				// B2(2026-09-27):枚举漏网写法(`>> /etc/hosts`、`> ~/.zshrc`、`mv x /etc/y`)
+				// 由“写目标落在受保护位置”派生补充(同一份写目标解析,不重复枚举)
+				pattern, hit = derivedApprovalTarget(cmd)
+			}
+			if hit {
 				if err := ap.check(ctx, confirmOf(), pattern, cmd); err != nil {
 					return err
 				}
@@ -151,6 +197,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		// 代理工具(声明了 ApprovalTargetParam,如 search 模式的 mcp_call)按其**真实目标名**
 		// 匹配:否则按单工具名写的规则会被一个间接名整体绕过(NOND-M1-3b)。
 		target := approvalTarget(c, call.Name, call.Arguments)
+		def, _ := toolDef(c, call.Name)
 		if ap.RequiresToolApproval(call.Name) || (target != "" && ap.RequiresToolApproval(target)) {
 			subj := call.Name
 			if target != "" {
@@ -165,8 +212,10 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		}
 		// 宿主侧路径裁决(P0):默认发行态 file_* 由外部插件进程提供(sb 未注入),
 		// 仅靠工具侧沙箱会完全失效 —— 这里按工具名+参数统一裁决(插件零改动)。
-		// 若工具自述了路径参数(sdk.ToolDefinition.PathParams),以声明为准。
-		return sp.CheckToolCallAt(callRoot, call.Name, call.Arguments, declaredPathParams(c, call.Name))
+		// 依据 = 工具自述声明 → 内置名表 → 按定义推断 → 值级兜底(见 CheckToolCallAt);
+		// 代理工具按**真实目标工具**裁决其内层参数(见 pathAdjudication)。
+		pname, pargs, pdef := pathAdjudication(c, call.Name, call.Arguments, def)
+		return sp.CheckToolCallAt(callRoot, pname, pargs, pdef)
 	})
 	// 工作区切换:沙箱 root 同步(host-cwd-sessions 广播,与原 policy-sandbox 一致)
 	d2 := c.Subscribe("cwd/workspace-switched", func(ctx context.Context, ev *sdk.Event) error {
