@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -121,13 +122,33 @@ func TestInstructionFaceNotTriggeredForOrdinaryPaths(t *testing.T) {
 func TestInstructionFaceShellWriteApproval(t *testing.T) {
 	rec := &recordingConfirm{resp: false}
 	c, home := buildProbe(t, rec, "smart", "full-access")
-	cmd := fmt.Sprintf("printf x >> %s", filepath.Join(home, "roles", "finance", "AGENTS.md"))
+	// 反斜杠 + 正斜杠:Windows 的 shell 是 git-bash(MSYS),命令里的反斜杠会被 shell 自己
+	// 当转义吃掉(`C:\Users\x` 实际落到相对路径 `C:Usersx`,所以命令文本里只能用正斜杠,
+	// 见 AGENTS.md 跨平台纪律②)。扫描侧对 `C:/x` 也认绝对路径(filepath 在 Windows 接受正斜杠),
+	// 于是这条用例在两端都测的是「真的写到那个文件」。
+	target := filepath.ToSlash(filepath.Join(home, "roles", "finance", "AGENTS.md"))
+	cmd := fmt.Sprintf("printf x >> %s", target)
 	res := execTool(t, c, "shell", fmt.Sprintf(`{"command":%q}`, cmd))
 	if res.Error == "" {
 		t.Fatal("smart 档应拦下向角色文件追加内容的 shell 写")
 	}
 	if len(rec.prompts) == 0 || !strings.Contains(rec.prompts[0], "指令面") {
 		t.Fatalf("shell 写指令面应弹确认并说明罪名: %q", rec.prompts)
+	}
+
+	// 引号形态(MSYS 里表达真反斜杠路径的唯一写法):双引号内反斜杠不当转义,
+	// 扫描侧同样要认得出来 —— 否则 Windows 上「带引号就绕过指令面审批」。
+	if runtime.GOOS == "windows" {
+		rec2 := &recordingConfirm{resp: false}
+		c2, home2 := buildProbe(t, rec2, "smart", "full-access")
+		quoted := filepath.Join(home2, "roles", "finance", "AGENTS.md")
+		cmd2 := fmt.Sprintf(`printf x >> "%s"`, quoted)
+		if res := execTool(t, c2, "shell", fmt.Sprintf(`{"command":%q}`, cmd2)); res.Error == "" {
+			t.Fatal("Windows 下带引号的指令面 shell 写也应被拦下")
+		}
+		if len(rec2.prompts) == 0 || !strings.Contains(rec2.prompts[0], "指令面") {
+			t.Fatalf("带引号的 shell 写指令面应弹确认并说明罪名: %q", rec2.prompts)
+		}
 	}
 }
 
