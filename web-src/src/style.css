@@ -5,6 +5,9 @@
   color-scheme: light;
   /* 动效 token:克制动效基座(仅 transform/opacity;时长/曲线统一) */
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  /* 退场专用曲线:入场用 --ease-out(起步快、快速落位),退场套同一条会变成「前 1/5 就
+     几乎透明、剩下时间隐形拖尾」—— 看着仍是硬切。退场改 ease-in:先保持可见再加速离去。 */
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
   --dur-fast: 0.15s;
   --dur-base: 0.28s;
   --dur-slow: 0.4s;
@@ -120,6 +123,65 @@ code,
   outline: 2px solid var(--accent);
   outline-offset: 1px;
   border-radius: 4px;
+}
+
+/* 浮层显隐动效(第七十七批):全应用的浮层显隐只认这三个名字,组件侧只写
+   <Transition name="…">,不各写一套 keyframes —— 否则时长/曲线四处漂(改前:抽屉入场 0.2s
+   线性 ease、任务面板 0.28s、附加面板 0.28s,而**退场一律硬切**,关就是「啪」一下)。
+   纪律:只动 transform/opacity(不触发布局,不引回流),时长与曲线取上面的 --dur-* 与 --ease-out,
+   退场恒比入场快一档(关闭不拖沓)。
+     pane  右侧抽屉(设置 / 附加面板):遮罩淡 + 内容面横向滑入
+     pop   居中弹层(审批 / 提问):遮罩淡 + 卡片轻微落位(scale 0.97)
+     fade  通用淡入淡出(侧栏停靠区 / 任务面板) */
+.pane-enter-active,
+.pane-leave-active,
+.pop-enter-active,
+.pop-leave-active,
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity var(--dur-base) var(--ease-out);
+}
+/* 退场:更快 + ease-in(见 --ease-in 注释),两者都靠下面那条覆写 */
+.pane-leave-active,
+.pop-leave-active,
+.fade-leave-active {
+  transition: opacity var(--dur-fast) var(--ease-in);
+}
+.pane-enter-from,
+.pane-leave-to,
+.pop-enter-from,
+.pop-leave-to,
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+/* 容器只负责淡,滑/缩交给它那层“内容面”:抽屉是 .panel(设置) / .ext-panel(附加面板),
+   弹层是 .dialog —— 皆为其唯一子节点,故用 > * 选择,不在组件里再挂标记类。 */
+.pane-enter-active > * {
+  transition: transform var(--dur-base) var(--ease-out);
+}
+.pane-enter-from > * {
+  transform: translateX(28px);
+}
+.pane-leave-active > * {
+  transition: transform var(--dur-fast) var(--ease-in);
+}
+.pane-leave-to > * {
+  transform: translateX(28px);
+}
+.pop-enter-active > * {
+  transition: transform var(--dur-base) var(--ease-out), opacity var(--dur-base) var(--ease-out);
+}
+.pop-enter-from > * {
+  transform: scale(0.97);
+  opacity: 0;
+}
+.pop-leave-active > * {
+  transition: transform var(--dur-fast) var(--ease-in), opacity var(--dur-fast) var(--ease-in);
+}
+.pop-leave-to > * {
+  transform: scale(0.98);
+  opacity: 0;
 }
 
 /* 尊重系统减弱动效:全局降级(动画/过渡趋零) */

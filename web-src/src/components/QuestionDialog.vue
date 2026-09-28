@@ -49,39 +49,42 @@ function submit(): void {
 </script>
 
 <template>
-  <div v-if="request && !minimized" class="mask">
-    <div class="dialog">
-      <div class="title">需要你的选择</div>
-      <pre class="prompt">{{ request.prompt }}</pre>
-      <div v-if="request.options?.length" class="opts">
-        <label v-for="o in request.options" :key="o.value" class="opt" :class="{ on: picked.includes(o.value) }">
-          <input
-            v-if="request.multiple"
-            type="checkbox"
-            :checked="picked.includes(o.value)"
-            @change="toggle(o.value)"
-          />
-          <button v-else class="pick" type="button" @click="toggle(o.value)">{{ o.desc || o.value }}</button>
-          <span v-if="request.multiple" class="lab">{{ o.desc || o.value }}</span>
-        </label>
-      </div>
-      <input
-        v-if="request.free_text || !request.options?.length"
-        v-model="text"
-        class="inp free"
-        :placeholder="request.free_text ? '也可直接输入作答…' : '请输入你的回答…'"
-        @keydown.enter="onEnter"
-      />
-      <div class="actions">
-        <button v-if="onMinimize" class="later" data-tip="收起弹层,稍后再答(不影响继续对话)" @click="onMinimize()">
-          稍后作答
-        </button>
-        <span class="spacer" />
-        <button class="skip" @click="skip">跳过</button>
-        <button class="go" :disabled="picked.length === 0 && !text.trim()" @click="submit">提交</button>
+  <!-- 显隐走全局 pop 过渡(style.css);「稍后作答」收起时同样是淡出,不是硬切 -->
+  <Transition name="pop">
+    <div v-if="request && !minimized" class="mask">
+      <div class="dialog">
+        <div class="title">需要你的选择</div>
+        <pre class="prompt">{{ request.prompt }}</pre>
+        <div v-if="request.options?.length" class="opts">
+          <label v-for="o in request.options" :key="o.value" class="opt" :class="{ on: picked.includes(o.value) }">
+            <input
+              v-if="request.multiple"
+              type="checkbox"
+              :checked="picked.includes(o.value)"
+              @change="toggle(o.value)"
+            />
+            <button v-else class="pick" type="button" @click="toggle(o.value)">{{ o.desc || o.value }}</button>
+            <span v-if="request.multiple" class="lab">{{ o.desc || o.value }}</span>
+          </label>
+        </div>
+        <input
+          v-if="request.free_text || !request.options?.length"
+          v-model="text"
+          class="inp free"
+          :placeholder="request.free_text ? '也可直接输入作答…' : '请输入你的回答…'"
+          @keydown.enter="onEnter"
+        />
+        <div class="actions">
+          <button v-if="onMinimize" class="later" data-tip="收起弹层,稍后再答(不影响继续对话)" @click="onMinimize()">
+            稍后作答
+          </button>
+          <span class="spacer" />
+          <button class="skip" @click="skip">跳过</button>
+          <button class="go" :disabled="picked.length === 0 && !text.trim()" @click="submit">提交</button>
+        </div>
       </div>
     </div>
-  </div>
+  </Transition>
 </template>
 
 <style scoped>

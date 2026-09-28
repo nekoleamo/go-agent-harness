@@ -33,7 +33,16 @@ function sourceLabel(n: Notice): string {
 </script>
 
 <template>
-  <div v-if="state.items.length || state.overflow" class="toasts" role="status" aria-live="polite">
+  <!-- TransitionGroup 而非 v-if 包 v-for:提示卡片要能一个一个淡入淡出(含「另有多条」那两行,
+       故必须带 key),剩下的卡片靠 toast-move 滑着补位。 -->
+  <TransitionGroup
+    v-if="state.items.length || state.overflow"
+    tag="div"
+    name="toast"
+    class="toasts"
+    role="status"
+    aria-live="polite"
+  >
     <div v-for="t in state.items" :key="t.id" class="toast" :class="lvClass(t)">
       <div class="head">
         <span class="title">{{ t.title }}</span>
@@ -42,9 +51,9 @@ function sourceLabel(n: Notice): string {
       <div v-if="t.body" class="body">{{ t.body }}</div>
       <div v-if="sourceLabel(t)" class="src">{{ sourceLabel(t) }}</div>
     </div>
-    <div v-if="state.overflow" class="more">另有 {{ state.overflow }} 条提示未显示(可在日志与提示接口查)</div>
-    <div v-if="state.gap" class="more">更早的提示已过时(服务端缓冲已丢弃,回填不完整)</div>
-  </div>
+    <div v-if="state.overflow" key="overflow" class="more">另有 {{ state.overflow }} 条提示未显示(可在日志与提示接口查)</div>
+    <div v-if="state.gap" key="gap" class="more">更早的提示已过时(服务端缓冲已丢弃,回填不完整)</div>
+  </TransitionGroup>
 </template>
 
 <style scoped>
@@ -69,7 +78,24 @@ function sourceLabel(n: Notice): string {
   border-radius: var(--r-card);
   box-shadow: var(--shadow-pop);
   padding: 9px 10px 8px 11px;
-  animation: toast-in var(--dur-base) var(--ease-out);
+}
+/* 提示显隐:淡 + 轻微上浮(入场 0.28s 落位 / 退场 0.15s 快速滑走 —— 退场不能拖);
+   剩下的卡片靠 toast-move 滑动补位。退场不加 position:absolute —— 卡片脱离文档流
+   会在退场那一瞬塔陷,反而更生硬。 */
+.toast-enter-active {
+  transition: opacity var(--dur-base) var(--ease-out), transform var(--dur-base) var(--ease-out);
+}
+.toast-leave-active {
+  transition: opacity var(--dur-fast) var(--ease-in), transform var(--dur-fast) var(--ease-in);
+  pointer-events: none;
+}
+.toast-enter-from,
+.toast-leave-to {
+  opacity: 0;
+  transform: translateY(6px);
+}
+.toast-move {
+  transition: transform var(--dur-base) var(--ease-out);
 }
 /* 形状/语义一致:左侧竖条 = 级别色,info 用中性色(不把信息态伪装成强调) */
 .toast.lv-info {
@@ -132,15 +158,5 @@ function sourceLabel(n: Notice): string {
   font-size: 11px;
   color: var(--fg-faint);
   padding: 0 2px;
-}
-@keyframes toast-in {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
 }
 </style>

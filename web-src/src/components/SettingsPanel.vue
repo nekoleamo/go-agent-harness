@@ -116,9 +116,62 @@ const histN = ref(0) // 0 全部 / N 最近 / -1 禁止
 const showAdd = ref(false)
 const pf = ref({ name: '', base_url: '', api_key: '', model: '' })
 const presets = PROVIDER_PRESETS
-const provSec = ref<HTMLElement | null>(null)
-const aboutSec = ref<HTMLElement | null>(null) // 底栏版本号 → 「关于 gah」(focus='about')
-const schedSec = ref<HTMLElement | null>(null) // 看板「管理计划」→ 「计划」段(focus='schedule')
+// —— 分段导航(左栏;窄窗口退化为顶部芯片条) ——
+// 面板此前是一条长滚动列:43 个插件条目把「关于 gah / 检查更新」顶到必须长滚的位置。
+// 现在段与导航共用一份键(段上写 data-sec),跳转与高亮都从 DOM 反查 —— 少一份可能失配的映射表。
+const bodyEl = ref<HTMLElement | null>(null)
+const activeSec = ref('model')
+// navItems 导航项(顺序 = 段在 DOM 里的顺序;条件渲染的段跟着一起隐藏)
+const navItems = computed(() => {
+  const items: { key: string; label: string }[] = [
+    { key: 'model', label: '模型' },
+    { key: 'reason', label: '推理' },
+    { key: 'history', label: '会话历史' },
+    { key: 'provider', label: 'Provider' },
+    { key: 'backup', label: '数据备份' },
+  ]
+  if (schedReady.value) items.push({ key: 'schedule', label: '计划' })
+  items.push({ key: 'mcp', label: 'MCP server' }, { key: 'plugin', label: '插件' })
+  if (isDesktop) items.push({ key: 'about', label: '关于 gah' })
+  for (const s of panelSections) items.push({ key: 'ext-' + s.key, label: s.title ?? s.key })
+  return items
+})
+function secEls(): HTMLElement[] {
+  return Array.from(bodyEl.value?.querySelectorAll<HTMLElement>('section[data-sec]') ?? [])
+}
+// jumpTo 跳到某段。打开面板时的定位要即时(否则与抽屉入场动画叠在一起),用户点导航要平滑。
+function jumpTo(key: string, smooth = true): void {
+  const el = bodyEl.value?.querySelector<HTMLElement>(`section[data-sec="${key}"]`)
+  if (!el) return // 该段在当前装配下不渲染(如未装配 host-schedule):静默跳过
+  activeSec.value = key
+  el.scrollIntoView({ block: 'start', behavior: smooth ? 'smooth' : 'auto' })
+}
+// onBodyScroll 滚动时反查「当前段」= 视口顶部之上最后一段。用 rAF 合并同一帧内的多次滚动事件,
+// 每帧只读一次几何(读与写不交叉,不触发强制同步布局)。
+let navRaf = 0
+function onBodyScroll(): void {
+  if (navRaf) return
+  navRaf = requestAnimationFrame(() => {
+    navRaf = 0
+    const c = bodyEl.value
+    if (!c) return
+    const top = c.getBoundingClientRect().top
+    const secs = secEls()
+    // 已滚到底:末段顶不到容器上沿(内容不够高),但用户点它时它就是「当前段」——
+    // 不特判的话高亮会因上面的阈值判据退回倒数第二段。
+    if (c.scrollTop + c.clientHeight >= c.scrollHeight - 2) {
+      const last = secs[secs.length - 1]?.dataset.sec
+      if (last) activeSec.value = last
+      return
+    }
+    let cur = ''
+    for (const el of secs) {
+      if (el.getBoundingClientRect().top - top <= 32) cur = el.dataset.sec ?? ''
+      else break // 段按 DOM 顺序排列,首个在阈值之下即收工
+    }
+    if (cur) activeSec.value = cur
+  })
+}
 const keyInput = ref<HTMLInputElement | null>(null)
 const applied = ref<ProviderPreset | null>(null) // 最近选中的预设(用于「本地免 Key」提示)
 const lastSaved = ref('') // 刚保存的 provider(失败后「重新自检」用)
@@ -573,6 +626,20 @@ function pluginToggle(p: PluginInfo): void {
 function manageMeta(p: PluginInfo): { label: string; tip: string } {
   return MANAGE_META[p.manage] ?? { label: p.State === 'loaded' ? '已加载' : '未启用', tip: '' }
 }
+// 插件列表收纳:默认只列 5 条(≤5 条即全列 —— 折叠只在"长"的时候有意义),其余折进「展开全部」;
+// 筛选框按 ID/类型/状态过滤。这是面板里最长的一段,不收起来左栏导航也救不了滚动。
+const PLUGIN_CAP = 5
+const pluginFilter = ref('')
+const pluginExpanded = ref(false)
+const pluginHits = computed(() => {
+  const f = pluginFilter.value.trim().toLowerCase()
+  if (!f) return plugins.value
+  return plugins.value.filter((p) => `${p.ID} ${p.Type} ${p.State}`.toLowerCase().includes(f))
+})
+const pluginShown = computed(() =>
+  pluginExpanded.value || pluginHits.value.length <= PLUGIN_CAP ? pluginHits.value : pluginHits.value.slice(0, PLUGIN_CAP),
+)
+const pluginHidden = computed(() => pluginHits.value.length - pluginShown.value.length)
 
 // —— 指令热更 ——
 async function doReload(): Promise<void> {
@@ -596,6 +663,7 @@ onMounted(() => {
 })
 onUnmounted(() => {
   if (stateTimer) clearInterval(stateTimer)
+  if (navRaf) cancelAnimationFrame(navRaf)
   window.removeEventListener('keydown', onEsc, true)
 })
 // 关闭语义(Win 端反馈):**只能手动关闭** —— 遮罩点击不再关闭(误触会丢正在编辑的表单),
@@ -614,12 +682,9 @@ watch(
     void load()
     void loadSchedules()
     void loadMcp()
-    // 首启引导:直接滚到 Provider 段(面板内容比一屏长时否则看不到)
-    if (props.focus === 'provider') void nextTick(() => provSec.value?.scrollIntoView({ block: 'start' }))
-    // 底栏版本号点进来:滚到「关于 gah」(浏览器形态整段不渲染 ⇒ ref 为 null,静默跳过)
-    if (props.focus === 'about') void nextTick(() => aboutSec.value?.scrollIntoView({ block: 'start' }))
-    // 看板「管理计划」:滚到「计划」段(host-schedule 未装配 ⇒ 整段不渲染、ref 为 null,静默跳过)
-    if (props.focus === 'schedule') void nextTick(() => schedSec.value?.scrollIntoView({ block: 'start' }))
+    // 外部定位(首启引导 'provider' / 状态栏版本号 'about' / 看板「管理计划」'schedule'):
+    // 段键就是导航键(同写 data-sec),段不渲染时 jumpTo 静默跳过。
+    if (props.focus) void nextTick(() => jumpTo(props.focus as string, false))
   },
 )
 // 定时跑完一轮(schedule/run SSE 帧)→ 刷新计划状态(上次运行/下次触发已变)
@@ -658,8 +723,10 @@ watch(
 
 <template>
   <!-- 遮罩点击不关闭(只能手动关闭:✕ / Esc);见 onEsc 注释 -->
-  <div v-if="open" class="mask">
-    <aside class="panel" role="dialog" aria-label="设置">
+  <!-- 显隐走全局 pane 过渡(style.css):遮罩淡 + 抽屉横滑;关闭不再硬切 -->
+  <Transition name="pane">
+    <div v-if="open" class="mask">
+      <aside class="panel" role="dialog" aria-label="设置">
       <header class="head">
         <h2 class="title">设置</h2>
         <button class="x" data-tip="关闭设置" @click="emit('close')">✕</button>
@@ -668,9 +735,23 @@ watch(
       <div v-if="err" class="err">{{ err }}</div>
       <div v-if="info" class="info">{{ info }}</div>
 
-      <div class="body">
+      <!-- 左导航 + 右内容(窄窗口由 CSS 退化为顶部芯片条):长面板里「滚到底才能看到某段」
+           由导航一次点击替代;高亮跟着滚动走。 -->
+      <div class="cols">
+        <nav class="nav" aria-label="设置分区">
+          <button
+            v-for="s in navItems"
+            :key="s.key"
+            class="nav-it"
+            :class="{ on: activeSec === s.key }"
+            @click="jumpTo(s.key)"
+          >
+            {{ s.label }}
+          </button>
+        </nav>
+        <div ref="bodyEl" class="body" @scroll="onBodyScroll">
         <!-- 模型(输入筛选 + 匹配列表;模型多时原生 select 难找,点选即应用) -->
-        <section class="sec">
+        <section data-sec="model" class="sec">
           <h3 class="h">模型</h3>
           <div class="row">
             <span class="lab-inline">当前模型</span>
@@ -702,7 +783,7 @@ watch(
         </section>
 
         <!-- 推理 -->
-        <section class="sec">
+        <section data-sec="reason" class="sec">
           <h3 class="h">推理</h3>
           <div class="row">
             <span class="lab-inline">思考</span>
@@ -768,7 +849,7 @@ watch(
         </section>
 
         <!-- 历史与压缩 -->
-        <section class="sec">
+        <section data-sec="history" class="sec">
           <h3 class="h">会话历史</h3>
           <div class="row">
             <span class="lab-inline">历史注入</span>
@@ -786,7 +867,7 @@ watch(
         </section>
 
         <!-- Provider(W3:首启引导 + 预设 + 保存后连通性自检) -->
-        <section ref="provSec" class="sec">
+        <section data-sec="provider" class="sec">
           <h3 class="h">
             Provider
             <button class="link" data-tip="新增/编辑 LLM 端点" @click="toggleAdd">{{ showAdd ? '收起' : '＋ 新增' }}</button>
@@ -857,7 +938,7 @@ watch(
         </section>
 
         <!-- 数据备份(M18) -->
-        <section class="sec">
+        <section data-sec="backup" class="sec">
           <h3 class="h">数据备份</h3>
           <div class="row acts">
             <button class="ghost" :disabled="busy" @click="doBackupNow()">立即备份</button>
@@ -878,7 +959,7 @@ watch(
         </section>
 
         <!-- 定时计划(NOND-W4,host-schedule 未装配时整段隐藏) -->
-        <section v-if="schedReady" ref="schedSec" class="sec">
+        <section v-if="schedReady" data-sec="schedule" class="sec">
           <h3 class="h">
             计划
             <button class="link" data-tip="新增定时计划" @click="showSchedAdd = !showSchedAdd">
@@ -931,7 +1012,7 @@ watch(
         </section>
 
         <!-- MCP server 配置(NOND-M1 第 2/3 步:配置 + 状态 + 保存即重载) -->
-        <section class="sec">
+        <section data-sec="mcp" class="sec">
           <h3 class="h">
             MCP server
             <button class="link" data-tip="新增一个 MCP server" @click="mcpAdd">＋ 添加</button>
@@ -1003,8 +1084,11 @@ watch(
         </section>
 
         <!-- 插件与指令 -->
-        <section class="sec">
-          <h3 class="h">插件</h3>
+        <section data-sec="plugin" class="sec">
+          <h3 class="h">
+            插件
+            <span class="h-sub">{{ pluginShown.length }}/{{ plugins.length }}</span>
+          </h3>
           <!-- UI 插件信任模型明示(文案由后端 /api/ui-plugins 下发,单一事实源) -->
           <p v-if="uiPluginTrustNote" class="dim">UI 插件(ui-plugins):{{ uiPluginTrustNote }}</p>
           <!-- 产物完整性提示(R10 ⑤-3):sha256 覆盖范围与降级原因如实显示;值供人比对,
@@ -1015,8 +1099,11 @@ watch(
               <li v-for="d in uiPluginDigests" :key="d.id" :title="d.sha256 || '无摘要'">{{ digestLine(d) }}</li>
             </ul>
           </details>
+          <div v-if="plugins.length > PLUGIN_CAP" class="row">
+            <input v-model="pluginFilter" class="inp grow" placeholder="筛选插件 ID / 类型 / 状态" />
+          </div>
           <div class="plist">
-            <div v-for="p in plugins" :key="p.ID" class="prow">
+            <div v-for="p in pluginShown" :key="p.ID" class="prow">
               <div class="pmain">
                 <span class="pname">{{ p.ID }}</span>
                 <span class="psub">{{ p.Type }} · {{ p.State }} · {{ manageMeta(p).label }}</span>
@@ -1043,6 +1130,18 @@ watch(
               </button>
             </div>
             <p v-if="!plugins.length" class="dim">插件管理不可用</p>
+            <p v-else-if="!pluginHits.length" class="dim">没有匹配的插件</p>
+            <!-- 长列表折叠(前 5 条之外的默认不渲染);≤5 条时 pluginHidden 恒为 0,不出现按钮 -->
+            <button v-if="pluginHidden > 0" class="ghost more" @click="pluginExpanded = true">
+              展开全部(还有 {{ pluginHidden }} 个)
+            </button>
+            <button
+              v-else-if="pluginExpanded && pluginHits.length > PLUGIN_CAP"
+              class="ghost more"
+              @click="pluginExpanded = false"
+            >
+              收起
+            </button>
           </div>
           <div class="row acts">
             <button class="ghost" @click="doReload">重载指令文件</button>
@@ -1051,27 +1150,37 @@ watch(
 
         <!-- 桌面壳专属:升级入口(浏览器直连时整段隐藏)。此前升级只在托盘菜单里,
              菜单弹不出来就等于没有入口,故补到界面上。 -->
-        <section v-if="isDesktop" ref="aboutSec" class="sec">
+        <section v-if="isDesktop" data-sec="about" class="sec">
           <h3 class="h">关于 gah</h3>
           <p class="dim" data-testid="about-autostart">
             开机自启:{{ autoState === 'on' ? '已启用' : autoState === 'off' ? '未启用' : '未知' }}
           </p>
-          <div class="row acts">
-            <button class="ghost" :disabled="updBusy" @click="doCheckUpdate()">
-              {{ updBusy ? '检查中…' : '检查更新' }}
-            </button>
-          </div>
-          <p v-if="updMsg" class="dim" :class="{ ok: updOk }">{{ updMsg }}</p>
-          <p v-else class="dim">桌面版:检查 GitHub Release 上的新版本,有更新会自动下载安装并重启</p>
+          <p class="dim">升级入口固定在面板底部(不随内容滚动):点「检查更新」即查 GitHub Release 上的新版本,有更新会自动下载安装并重启。</p>
         </section>
 
         <!-- v2 扩展点:设置面板区段(插件注入,每插件一节) -->
-        <section v-for="s in panelSections" :key="s.key" class="sec">
+        <section v-for="s in panelSections" :key="s.key" :data-sec="'ext-' + s.key" class="sec">
           <component :is="s.component" />
         </section>
+        </div>
       </div>
-    </aside>
-  </div>
+
+      <!-- 固定底栏(仅桌面版):版本 + 检查更新常驻可见 —— 升级入口原本埋在面板最底,
+           而插件列表一长就得滚到底才能点到它。 -->
+      <footer v-if="isDesktop" class="foot">
+        <div class="foot-row">
+          <span class="mono ver">v{{ props.state.version || 'dev' }}</span>
+          <button class="ghost" :disabled="updBusy" @click="doCheckUpdate()">
+            {{ updBusy ? '检查中…' : '检查更新' }}
+          </button>
+        </div>
+        <p class="dim foot-msg" :class="{ ok: updOk }">
+          {{ updMsg || '检查 GitHub Release 上的新版本,有更新会自动下载安装并重启' }}
+        </p>
+      </footer>
+      </aside>
+    </div>
+  </Transition>
 </template>
 
 <style scoped>
@@ -1234,44 +1343,25 @@ textarea.inp {
   line-height: 1.5;
 }
 
+/* 显隐动效统一在 style.css 的 pane 过渡里(入场滑入 + 退场反向);此处不再写 animation,
+   否则与过渡同写 opacity/transform 会互抢(动画优先级更高 ⇒ 退场仍硬切)。 */
 .mask {
   position: fixed;
   inset: 0;
   background: var(--overlay);
   z-index: 70;
-  animation: fade 0.15s ease;
-}
-@keyframes fade {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
 }
 .panel {
   position: absolute;
   top: 0;
   right: 0;
   bottom: 0;
-  width: 360px;
-  max-width: calc(100vw - 32px);
+  width: min(640px, calc(100vw - 32px));
   background: var(--bg);
   border-left: 1px solid var(--line);
   box-shadow: var(--shadow-dialog);
   display: flex;
   flex-direction: column;
-  animation: slide 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-}
-@keyframes slide {
-  from {
-    transform: translateX(24px);
-    opacity: 0;
-  }
-  to {
-    transform: translateX(0);
-    opacity: 1;
-  }
 }
 .head {
   display: flex;
@@ -1300,8 +1390,84 @@ textarea.inp {
 }
 .body {
   flex: 1;
+  min-width: 0; /* 与左导航同排:不收缩就会被长 token 顶宽(面板里禁横向滚动条) */
   overflow-y: auto;
   padding: 6px 16px 20px;
+}
+/* 段导航:点击跳转 + 滚动高亮。面板宽时竖排左栏,窄窗口退化成顶部横向芯片条 */
+.cols {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.nav {
+  width: 148px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 8px 14px;
+  overflow-y: auto;
+  border-right: 1px solid var(--line-faint);
+}
+.nav-it {
+  text-align: left;
+  border: none;
+  background: none;
+  color: var(--fg-dim);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 6px 10px;
+  border-radius: var(--r-input);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.nav-it:hover {
+  background: var(--bg3);
+  color: var(--fg);
+}
+.nav-it.on {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 500;
+}
+@media (max-width: 719px) {
+  .cols {
+    flex-direction: column;
+  }
+  .nav {
+    width: auto;
+    flex-direction: row;
+    gap: 4px;
+    padding: 6px 8px;
+    overflow-y: hidden;
+    overflow-x: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--line-faint);
+  }
+}
+/* 固定底栏(桌面版):升级入口常驻可见,不随内容滚动 */
+.foot {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--line);
+  background: var(--bg2);
+}
+.foot-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.foot-msg {
+  margin: 0;
+}
+.foot .ver {
+  font-size: 12px;
+  color: var(--fg-faint);
 }
 .err {
   color: var(--err);
@@ -1322,9 +1488,20 @@ textarea.inp {
 .sec {
   padding: 14px 0;
   border-bottom: 1px solid var(--line-faint);
+  scroll-margin-top: 8px; /* 锚点跳转后标题不离容器上沿 */
 }
 .sec:last-child {
   border-bottom: none;
+}
+.h-sub {
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.ghost.more {
+  align-self: stretch;
+  margin-top: 2px;
 }
 .h {
   display: flex;

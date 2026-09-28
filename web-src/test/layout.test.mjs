@@ -53,7 +53,7 @@ function startStatic(root) {
 // 越界放大到 521 个元素的场景。渲染不出内容不影响判定 —— 这里断言的是外壳几何,不是业务数据。
 // 文案一律 ASCII:CI 的 ubuntu 镜像只带 fonts-noto-color-emoji(**没有 CJK 字体**),中文会渲成
 // 豆腐块 —— 字形宽度差异不是我们要测的东西,别让它污染几何断言。
-function makeStub(withProviders, longTokens = false, running = false) {
+function makeStub(withProviders, longTokens = false, running = false, manyPlugins = false) {
   return (route) => {
     const url = new URL(route.request().url())
     const p = url.pathname
@@ -94,8 +94,22 @@ function makeStub(withProviders, longTokens = false, running = false) {
       const pname = longTokens ? 'provider-name-without-any-break-0123456789abcdef' : 'layout'
       return json([{ Name: pname, BaseURL: 'http://127.0.0.1:1/v1', APIKey: 'sk-layout', Model: 'layout-guard/model', Active: true }])
     }
-    if (p === '/api/plugins' && longTokens) {
-      return json([{ ID: 'host-plugin-with-a-very-long-identifier-0123456789abcdef', Type: 'host', State: 'loaded', manage: 'external' }])
+    if (p === '/api/plugins') {
+      // manyPlugins:43 条正是真机里把「关于 gah / 检查更新」顶到面板最底的那个长度(插件段收纳的用例源)
+      if (manyPlugins) {
+        return json(
+          Array.from({ length: 43 }, (_, i) => ({
+            ID: `host-plugin-${String(i).padStart(2, '0')}`,
+            Type: 'host',
+            State: i < 3 ? 'loaded' : 'idle',
+            manage: 'web',
+          })),
+        )
+      }
+      if (longTokens) {
+        return json([{ ID: 'host-plugin-with-a-very-long-identifier-0123456789abcdef', Type: 'host', State: 'loaded', manage: 'external' }])
+      }
+      return json([])
     }
     if (p === '/api/models') return json({ providers: [] })
     if (p === '/api/mcp') {
@@ -420,17 +434,19 @@ describe('布局护栏:整页永不滚动(第五十二/五十三批)', { skip: s
             el.tagName.toLowerCase() +
             (typeof el.className === 'string' && el.className ? '.' + el.className.trim().split(/\s+/).slice(0, 2).join('.') : '')
           const off = []
-          for (const el of panel.querySelectorAll('*')) {
+          // 扫的是 .body 的后代:左导航是它的兄弟节点(在 body 左侧),拿 panel 当基准会把导航本身当成越界。
+          for (const el of body.querySelectorAll('*')) {
             const bb = el.getBoundingClientRect()
             if (bb.width === 0 && bb.height === 0) continue
             if (bb.right > br.right + 1 || bb.left < br.left - 1) off.push(nm(el))
           }
-          return { scrollW: body.scrollWidth, clientW: body.clientWidth, off: off.slice(0, 6) }
+          return { scrollW: body.scrollWidth, clientW: body.clientWidth, off: off.slice(0, 6), panelScrollW: panel.scrollWidth, panelClientW: panel.clientWidth }
         })
         assert.ok(
           m.scrollW <= m.clientW + 1,
           `设置面板被撑出横向滚动条:scrollWidth=${m.scrollW} > clientWidth=${m.clientW};越界元素=${JSON.stringify(m.off)}`,
         )
+        assert.ok(m.panelScrollW <= m.panelClientW + 1, `设置面板外壳被撑宽:${m.panelScrollW} > ${m.panelClientW}`)
       } catch (e) {
         await shoot(page, t.name)
         throw e
@@ -439,6 +455,168 @@ describe('布局护栏:整页永不滚动(第五十二/五十三批)', { skip: s
       }
     })
   }
+
+  // 设置面板的分段导航:插件列表 43 条曾把「关于 gah / 检查更新」顶到必须长滚的位置。
+  // 这条验的是导航真的能一下到达 + 高亮跟着走(修的是「要滚到底」,不是换个写法)。
+  test('设置面板:段导航点击即到达,高亮跟随滚动', async (t) => {
+    const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+    let page = null
+    try {
+      page = await open(ctx, makeStub(true, true, false, true), docks[1].dock)
+      await page.click('.gear')
+      await page.waitForSelector('[aria-label="设置"] .nav-it')
+      // 先展开到 43 条:真机里把面板拉成长滚动的就是它 —— 导航要在那种长度下仍然一跳到顶。
+      await page.click('[data-sec="plugin"] .more')
+      await page.click('.nav-it:has-text("数据备份")')
+      await page.waitForTimeout(500) // smooth 滚动落定
+      const m = await page.evaluate(() => {
+        const panel = document.querySelector('[aria-label="设置"]')
+        const body = panel.querySelector('.body')
+        const sec = body.querySelector('section[data-sec="backup"]')
+        return {
+          scrollTop: body.scrollTop,
+          delta: Math.abs(sec.getBoundingClientRect().top - body.getBoundingClientRect().top),
+          on: panel.querySelector('.nav-it.on')?.textContent?.trim() ?? '',
+        }
+      })
+      assert.ok(m.scrollTop > 0, '点「数据备份」后内容区没有滚动')
+      assert.ok(m.delta <= 40, `「数据备份」段未对齐到内容区顶部:偏差 ${m.delta}px`)
+      assert.equal(m.on, '数据备份', `高亮没落在「数据备份」上,而是「${m.on}」`)
+      // 末段(插件)在内容已被展开后仍可能顶不到上沿:高亮仍必须落在它身上(滚到底特判)
+      await page.click('.nav-it:has-text("插件")')
+      await page.waitForTimeout(500)
+      const lastOn = await page.evaluate(
+        () => document.querySelector('[aria-label="设置"] .nav-it.on')?.textContent?.trim() ?? '',
+      )
+      assert.equal(lastOn, '插件', `滚到底后高亮应留在「插件」上,实际「${lastOn}」`)
+    } catch (e) {
+      await shoot(page, t.name)
+      throw e
+    } finally {
+      await ctx.close()
+    }
+  })
+
+  // 插件段收纳:≤ 5 条全列,> 5 条只列前 5 + 「展开全部」;筛选命中少时不需要折叠。
+  test('设置面板:插件列表默认只列 5 条,展开后全列、筛选后自动收窄', async (t) => {
+    const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+    let page = null
+    try {
+      page = await open(ctx, makeStub(true, true, false, true), docks[1].dock)
+      await page.click('.gear')
+      await page.waitForSelector('[aria-label="设置"] [data-sec="plugin"] .prow')
+      const read = () =>
+        page.evaluate(() => {
+          const sec = document.querySelector('[aria-label="设置"] [data-sec="plugin"]')
+          return { rows: sec.querySelectorAll('.prow').length, more: sec.querySelector('.more')?.textContent?.trim() ?? '' }
+        })
+      const before = await read()
+      assert.equal(before.rows, 5, `默认应只列 5 条,实际 ${before.rows} 条`)
+      assert.match(before.more, /还有 38 个/, `折叠按钮文案不对:「${before.more}」`)
+
+      await page.click('[data-sec="plugin"] .more')
+      const expanded = await read()
+      assert.equal(expanded.rows, 43, `展开后应列全部 43 条,实际 ${expanded.rows} 条`)
+      assert.equal(expanded.more, '收起', `展开后的按钮应为「收起」:「${expanded.more}」`)
+
+      await page.fill('[data-sec="plugin"] input', 'host-plugin-42')
+      const filtered = await read()
+      assert.equal(filtered.rows, 1, `筛选后应只剩 1 条,实际 ${filtered.rows} 条`)
+      assert.equal(filtered.more, '', '命中 ≤ 5 条时不应再出现折叠按钮')
+    } catch (e) {
+      await shoot(page, t.name)
+      throw e
+    } finally {
+      await ctx.close()
+    }
+  })
+
+  // 浮层显隐动效(第七十七批):抽屉/停靠区不再是「啪」一下出现与消失。动效本身没法靠截图断言,
+  // 这里钉它的两个可观测不变量 —— ① 退场那一瞬过渡确实挂在元素上(时长 > 0、透明度已在变);
+  // ② 元素在退场期间仍留在 DOM(异步退场),过渡结束后必须清干净。删掉动效退回硬切,这条必红。
+  test('浮层显隐带动效:设置抽屉与侧栏停靠区都不是硬切', async (t) => {
+    // 显式声明不要 reduced-motion:宿主系统开了「减弱动效」时全局 CSS 会把时长压到 0.01ms,
+    // 那时测的就不是我们的动效而是宿主偏好了。
+    const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 }, reducedMotion: 'no-preference' })
+    let page = null
+    try {
+      page = await open(ctx, apiStub, docks[1].dock)
+      await page.click('.gear')
+      await page.waitForSelector('[aria-label="设置"]')
+
+      // 过渡类（enter/leave-active）只在过渡期间存在，故不能等它结束再看 computed style：
+      // 点完给 Vue 20ms 刷完这轮 DOM（类已挂上、但 0.15s 的过渡远未走完）再读。
+      // 容器与内容面分开读：淡出在容器（遮罩）上，位移/缩放在那层内容面（.panel）上。
+      const probe = async (clickSel, watchSel, childSel) => {
+        await page.evaluate((cs) => document.querySelector(cs)?.click(), clickSel)
+        await page.waitForTimeout(20)
+        return page.evaluate(
+          ([ws, cs]) => {
+            const read = (el) => {
+              const st = el ? getComputedStyle(el) : null
+              return {
+                present: !!el,
+                dur: st ? parseFloat(st.transitionDuration) || 0 : 0,
+                prop: st ? st.transitionProperty : '',
+                opacity: st ? parseFloat(st.opacity) : 1,
+              }
+            }
+            const el = document.querySelector(ws)
+            return { el: read(el), child: cs ? read(el?.querySelector(cs)) : null }
+          },
+          [watchSel, childSel ?? null],
+        )
+      }
+
+      // 不透明度必须真的在变(不是只挂了类):rAF 里连续采 6 帧取最小值 —— 慢机器一帧掉到
+      // 过渡结束也不怕(元素已摘 ⇒ 当作 0),快机器则能采到中间值。
+      const faded = (ws) =>
+        page.evaluate(
+          (sel) =>
+            new Promise((res) => {
+              let min = 1
+              let n = 0
+              const tick = () => {
+                const el = document.querySelector(sel)
+                min = el ? Math.min(min, parseFloat(getComputedStyle(el).opacity)) : 0
+                if (++n < 6) requestAnimationFrame(tick)
+                else res(min)
+              }
+              requestAnimationFrame(tick)
+            }),
+          ws,
+        )
+
+      const pane = await probe('[aria-label="设置"] .x', '.mask', '[aria-label="设置"]')
+      assert.ok(pane.el.present, '设置面板关掉后元素当场就没了 ⇒ 没有退场过程(硬切)')
+      assert.ok(pane.el.dur > 0, `设置遮罩退场时长为 0(硬切):prop=${pane.el.prop}`)
+      assert.match(pane.el.prop, /opacity/, `设置遮罩退场缺少淡出过渡:${pane.el.prop}`)
+      assert.ok(pane.child?.dur > 0, `设置抽屉内容面退场时长为 0(硬切):prop=${pane.child?.prop}`)
+      assert.match(pane.child?.prop ?? '', /transform/, `设置抽屉内容面退场缺少位移过渡:${pane.child?.prop}`)
+      const paneOpacity = await faded('.mask')
+      assert.ok(paneOpacity < 1, `设置遮罩退场没在动(opacity 始终为 ${paneOpacity})`)
+      await page.waitForFunction(() => !document.querySelector('.mask'), null, { timeout: 2000 })
+
+      // 侧栏停靠区（变更 / 看板 / 任务都在里面）同理；它在宽屏下是并排的 flex 兄弟，
+      // 宽度变化仍是瞬时的（拖拽调宽要手感），但内容面不该硬切。
+      const dock = await probe('[data-tip^="收起侧栏"]', '[data-ui-dock]')
+      assert.ok(dock.el.present, '停靠区收起后元素当场就没了 ⇒ 没有退场过程(硬切)')
+      assert.ok(dock.el.dur > 0, `停靠区退场时长为 0(硬切):prop=${dock.el.prop}`)
+      assert.match(dock.el.prop, /opacity/, `停靠区退场缺少淡出过渡:${dock.el.prop}`)
+      const dockOpacity = await faded('[data-ui-dock]')
+      assert.ok(dockOpacity < 1, `停靠区退场没在动(opacity 始终为 ${dockOpacity})`)
+      await page.waitForFunction(() => !document.querySelector('[data-ui-dock]'), null, { timeout: 2000 })
+      await page.waitForFunction(() => !document.querySelector('[data-ui-dock]'), null, { timeout: 2000 })
+
+      // 退场结束后外壳必须回到干净状态（动效不能把视图卡在半路）
+      assertInvariants(await measure(page))
+    } catch (e) {
+      await shoot(page, t.name)
+      throw e
+    } finally {
+      await ctx.close()
+    }
+  })
 
   // 发消息必须能看见回复:视图是全屏切换的,而 `/diff` 会把视图切到「变更」且此前没有
   // 任何逻辑切回 —— 真机反馈的「说什么都返回『本会话还没有捕获到文件改动』」就是它

@@ -120,7 +120,9 @@ function onKey(ev: KeyboardEvent): void {
   border-left: 1px solid var(--line);
   background: var(--bg2);
 }
-/* 窄屏:覆盖式抽屉(不挤压对话流;与任务面板抽屉同款视觉层级) */
+/* 窄屏:覆盖式抽屉(不挤压对话流;与任务面板抽屉同款视觉层级)。
+   显隐动效统一在 fade 过渡里(见 App.vue 的 <Transition name="fade">):容器只负责淡,
+   不再自带 dk-in —— 两套动效同写 opacity/transform 会互抢,让退场退回硬切。 */
 .dock.narrow {
   position: fixed;
   top: 33px;
@@ -128,22 +130,6 @@ function onKey(ev: KeyboardEvent): void {
   bottom: 0;
   z-index: 30;
   box-shadow: var(--shadow-dialog);
-  animation: dk-in var(--dur-base) var(--ease-out);
-}
-@keyframes dk-in {
-  from {
-    transform: translateX(20px);
-    opacity: 0;
-  }
-  to {
-    transform: translateX(0);
-    opacity: 1;
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .dock.narrow {
-    animation: none;
-  }
 }
 .dk-handle {
   position: absolute;

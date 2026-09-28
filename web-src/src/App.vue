@@ -1021,38 +1021,42 @@ onUnmounted(() => {
         </section>
       </div>
 
-      <!-- S-P2-1 侧栏停靠区(单面板):内容复用既有视图组件,不另造渲染 -->
-      <DockView
-        v-if="dock.open"
-        :panels="dockPanels"
-        :panel="dock.panel"
-        :width="dock.width"
-        :narrow="dockNarrow"
-        :body-pad="dock.panel !== 'jobs'"
-        @select="selectDockPanel"
-        @close="toggleDock"
-        @resize="onDockResize"
-        @commit="onDockCommit"
-      >
-        <ChangesView
-          v-if="dock.panel === 'changes'"
-          :model="changes"
-          :focus="chgFocus"
-          :focus-nonce="chgNonce"
-          :partial="partialWindow"
-        />
-        <BoardView
-          v-else-if="dock.panel === 'board'"
-          :cards="boardVisible"
-          :layout="board"
-          :total="BOARD_CARDS.length"
-          @move="onBoardMove"
-          @toggle="onBoardToggle"
-          @reset="onBoardReset"
-          @go="onBoardGo"
-        />
-        <JobsPanel v-else :open="true" docked @close="toggleDock" />
-      </DockView>
+      <!-- S-P2-1 侧栏停靠区(单面板):内容复用既有视图组件,不另造渲染。
+           显隐走 fade 过渡(style.css):宽屏下它是并排的 flex 兄弟,宽度变化仍是瞬时的
+           (拖拽调宽要手感,不能加宽过渡),但内容面不再硬切。 -->
+      <Transition name="fade">
+        <DockView
+          v-if="dock.open"
+          :panels="dockPanels"
+          :panel="dock.panel"
+          :width="dock.width"
+          :narrow="dockNarrow"
+          :body-pad="dock.panel !== 'jobs'"
+          @select="selectDockPanel"
+          @close="toggleDock"
+          @resize="onDockResize"
+          @commit="onDockCommit"
+        >
+          <ChangesView
+            v-if="dock.panel === 'changes'"
+            :model="changes"
+            :focus="chgFocus"
+            :focus-nonce="chgNonce"
+            :partial="partialWindow"
+          />
+          <BoardView
+            v-else-if="dock.panel === 'board'"
+            :cards="boardVisible"
+            :layout="board"
+            :total="BOARD_CARDS.length"
+            @move="onBoardMove"
+            @toggle="onBoardToggle"
+            @reset="onBoardReset"
+            @go="onBoardGo"
+          />
+          <JobsPanel v-else :open="true" docked @close="toggleDock" />
+        </DockView>
+      </Transition>
     </div>
 
     <!-- NOND-N1 提示 toast 层(宿主直挂,不经槽位覆盖) -->
@@ -1087,17 +1091,19 @@ onUnmounted(() => {
     />
 
     <!-- v2 扩展点:附加面板抽屉(插件声明 extra-panel) -->
-    <div v-if="openPanel" class="ext-mask" @click.self="openPanel = null">
-      <aside class="ext-panel">
-        <div class="ep-head">
-          <span class="ep-title">{{ openPanelTitle }}</span>
-          <span class="ep-close" data-tip="关闭" @click="openPanel = null">×</span>
-        </div>
-        <div class="ep-body">
-          <component :is="openPanelComp" @close="openPanel = null" />
-        </div>
-      </aside>
-    </div>
+    <Transition name="pane">
+      <div v-if="openPanel" class="ext-mask" @click.self="openPanel = null">
+        <aside class="ext-panel">
+          <div class="ep-head">
+            <span class="ep-title">{{ openPanelTitle }}</span>
+            <span class="ep-close" data-tip="关闭" @click="openPanel = null">×</span>
+          </div>
+          <div class="ep-body">
+            <component :is="openPanelComp" @close="openPanel = null" />
+          </div>
+        </aside>
+      </div>
+    </Transition>
 
     <!-- 上滚读历史时新消息到达 → 回底胶囊 -->
     <button v-if="showNewest" class="newest" data-tip="回到最新消息" @click="goNewest">
@@ -1230,7 +1236,8 @@ onUnmounted(() => {
   font-size: 11px;
   padding: 0 4px;
 }
-/* v2 扩展点:附加面板抽屉(固定右侧,对齐 JobsPanel 几何;taste 纪律) */
+/* v2 扩展点:附加面板抽屉(固定右侧,对齐 JobsPanel 几何;taste 纪律)
+   显隐动效跟设置抽屉同一套(pane 过渡,见 style.css)。 */
 .ext-mask {
   position: fixed;
   inset: 0;
@@ -1249,17 +1256,6 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   z-index: 30;
-  animation: ep-in 0.28s var(--ease-out);
-}
-@keyframes ep-in {
-  from {
-    transform: translateX(24px);
-    opacity: 0;
-  }
-  to {
-    transform: translateX(0);
-    opacity: 1;
-  }
 }
 .ep-head {
   display: flex;

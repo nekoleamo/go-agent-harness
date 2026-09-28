@@ -10,17 +10,20 @@ defineProps<{
 </script>
 
 <template>
-  <div v-if="request" class="mask">
-    <div class="dialog">
-      <div class="title">操作确认</div>
-      <pre class="prompt">{{ request.prompt }}</pre>
-      <div class="hint">回合会一直等你答复(不会自动超时);想中止可按输入区的「停止」</div>
-      <div class="actions">
-        <button class="deny" data-tip="拒绝该操作" @click="onAnswer(false)">拒绝</button>
-        <button class="allow" data-tip="允许该操作" @click="onAnswer(true)">允许</button>
+  <!-- 显隐走全局 pop 过渡(style.css):遮罩淡 + 卡片轻微落位;退场不再是硬切 -->
+  <Transition name="pop">
+    <div v-if="request" class="mask">
+      <div class="dialog">
+        <div class="title">操作确认</div>
+        <pre class="prompt">{{ request.prompt }}</pre>
+        <div class="hint">回合会一直等你答复(不会自动超时);想中止可按输入区的「停止」</div>
+        <div class="actions">
+          <button class="deny" data-tip="拒绝该操作" @click="onAnswer(false)">拒绝</button>
+          <button class="allow" data-tip="允许该操作" @click="onAnswer(true)">允许</button>
+        </div>
       </div>
     </div>
-  </div>
+  </Transition>
 </template>
 
 <style scoped>
