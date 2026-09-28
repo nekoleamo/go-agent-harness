@@ -340,7 +340,7 @@ func protectedWriteTarget(raw string) (string, bool) {
 		}
 	}
 	// 家目录取**候选并集**(HOME/USERPROFILE/UserHomeDir):审批是拒绝面,宁多问不漏判。
-	for _, home := range userHomes() {
+	for _, home := range sdk.UserHomes() {
 		if !pathWithin(home, p) {
 			continue
 		}
@@ -361,7 +361,7 @@ func protectedWriteTarget(raw string) (string, bool) {
 // expandHomeVars 把开头的 `$HOME`/`${HOME}`/`%USERPROFILE%` 换成真实家目录(写目标常这么写;
 // 换了才能与“绝对路径”同一条判据判定)。其余变量不动 —— 落点不可知的一律交给后面的字面量扫描。
 func expandHomeVars(s string) string {
-	home := userHome()
+	home := sdk.UserHome()
 	if home == "" {
 		return s
 	}

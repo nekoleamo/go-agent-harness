@@ -196,15 +196,23 @@ fn httpProbe(path: &str, timeout: Duration) -> bool {
 // 数据目录后再运行,让既有的「二进制同级 gah-data/」规则自己得出应用目录之外的落点 ——
 // 数据根解析链一个字没改,但升级不再替换数据、卸装不再删数据(见 stage.rs)。
 
+// user_home 用户主目录(HOME → USERPROFILE),取不到返回 None。
+//
+// 单一实现(2026-09-27 第二轮审计):此前壳里两处各写一遍、顺序**还相反** —— backupRoot 以 HOME
+// 优先、defaultWorkspace 以 USERPROFILE 优先。两者都设且不同(Git Bash 拉起的场景)时,同一个进程会把
+// 一个目录当备份落点、另一个当默认工作区。统一为 HOME 优先,与 Go 侧 sdk.UserHome() 同口径(MSYS 的 `~` 就是 HOME)。
+fn user_home() -> Option<std::path::PathBuf> {
+    std::env::var("HOME")
+        .ok()
+        .filter(|h| !h.is_empty())
+        .or_else(|| std::env::var("USERPROFILE").ok().filter(|h| !h.is_empty()))
+        .map(std::path::PathBuf::from)
+}
+
 // backupRoot 升级前备份的落地处:用户主目录下 —— 必须在应用目录之外(升级整包替换应用目录)。
 fn backupRoot() -> Option<std::path::PathBuf> {
-    let home = std::env::var("HOME")
-        .ok()
-        .or_else(|| std::env::var("USERPROFILE").ok())?;
-    if home.is_empty() {
-        return None;
-    }
-    Some(std::path::PathBuf::from(home).join("gah-upgrade-backup"))
+    let home = user_home()?;
+    Some(home.join("gah-upgrade-backup"))
 }
 
 // backupBeforeUpgrade 升级前把数据根复制到用户主目录(时间戳子目录),返回落地路径。
@@ -1012,11 +1020,7 @@ fn defaultWorkspace() -> Option<PathBuf> {
             return Some(cwd);
         }
     }
-    let home = std::env::var("USERPROFILE")
-        .ok()
-        .or_else(|| std::env::var("HOME").ok())
-        .map(PathBuf::from)?;
-    home.is_dir().then_some(home)
+    user_home().filter(|h| h.is_dir())
 }
 
 // shellLogPath 壳侧诊断日志的落点(<用户数据目录>/gah-shell.log)。

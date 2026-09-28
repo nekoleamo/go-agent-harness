@@ -193,7 +193,10 @@ func ResolvePath(p string) string {
 // 需要它们的 server 由用户经 RW 显式点名(RWPathsFromEnv),默认不放开。
 func DefaultRWPaths() []string {
 	var out []string
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
+	// 家目录走 sdk.UserHomes()(**并集**):允许面与拒绝面同理,不能只认一家 —— Windows 上 MSYS 的
+	// `~/.npm` 与原生 `%USERPROFILE%\.npm` 可能是两个目录,只白名单一个,另一个照样 EPERM
+	// (2026-09-27 第二轮审计:F-A 同源的空档,只是方向相反)。
+	for _, home := range sdk.UserHomes() {
 		out = append(out,
 			filepath.Join(home, ".npm"),
 			filepath.Join(home, ".bun"),

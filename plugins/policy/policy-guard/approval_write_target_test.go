@@ -39,7 +39,7 @@ func TestProtectedWriteTargetDerivation(t *testing.T) {
 			{"install -m 755 x /Library/LaunchDaemons/x.plist", "写系统目录 /Library"}, // 枚举只认 LaunchAgents 字面
 		}
 	}
-	// 家目录/凭据类两边都成立(不平台相关:家目录由 userHome() 给,值就是本机家目录下的路径)
+	// 家目录/凭据类两边都成立(不平台相关:家目录由 sdk.UserHome() 给,值就是本机家目录下的路径)
 	hits = append(hits,
 		hitCase{"printf x >> ~/.zshrc", "写敏感配置 ~/.zshrc"},          // 枚举漏(shell 配置劫持)
 		hitCase{"echo key >> ~/.ssh/authorized_keys", "写凭据路径"},     // 枚举漏(持久化后门)
@@ -117,7 +117,7 @@ func TestProtectedWriteTargetHomeCandidates(t *testing.T) {
 	}
 	// HOME 缺失(Windows 上 os.UserHomeDir 未必认 HOME)不能漏:回退 %USERPROFILE%
 	t.Setenv("HOME", "")
-	if got := userHome(); got != filepath.Clean(profile) {
+	if got := sdk.UserHome(); got != filepath.Clean(profile) {
 		t.Fatalf("HOME 未设时首选家目录应为 USERPROFILE,得 %q", got)
 	}
 	if label, hit := protectedWriteTarget(filepath.Join(profile, ".zshrc")); !hit {

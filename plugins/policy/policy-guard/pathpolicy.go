@@ -85,44 +85,11 @@ func credentialNameMatch(name string) (string, bool) {
 	return "", false
 }
 
-// userHomes 用户家目录候选(HOME → USERPROFILE → os.UserHomeDir),归一去重、按优先级返回。
-//
-// 单一事实源(2026-09-27 跨平台复核):此前本包三处各取一家 —— approval.go 读 `$HOME`,
-// pathpolicy/shellpaths 读 `os.UserHomeDir()`。两者在 Windows 上不是一个东西
-// (os.UserHomeDir 看 %USERPROFILE%,不认 HOME;MSYS 的 `~` 看 HOME),于是同一台机器上
-// “$HOME 下的密钥目录”与“`~/.zshrc`”判出两个家 ⇒ 一边拦一边漏。
+// 家目录候选与首选家目录:单一事实源已上提到 sdk(2026-09-27 第二轮)。
+// 本包三处(approval/pathpolicy/shellpaths)与内核层(tool-shell 的 profile)、
+// sdk.CredentialDenyDirs 必须看到同一份候选集,否则“审批层拦、内核层放”的空档会重新长回来。
 //
 // 取并集用于**拒绝**(宁多拦不漏);取首个用于**展开**(与用户 shell 的 `~` 同源)。
-func userHomes() []string {
-	var out []string
-	seen := map[string]bool{}
-	add := func(h string) {
-		h = strings.TrimSpace(h)
-		if h == "" {
-			return
-		}
-		h = filepath.Clean(h)
-		if seen[h] {
-			return
-		}
-		seen[h] = true
-		out = append(out, h)
-	}
-	add(os.Getenv("HOME"))
-	add(os.Getenv("USERPROFILE"))
-	if h, err := os.UserHomeDir(); err == nil {
-		add(h)
-	}
-	return out
-}
-
-// userHome 首选家目录(展开 `~`/`$HOME` 用);无任何候选时返回空串。
-func userHome() string {
-	if hs := userHomes(); len(hs) > 0 {
-		return hs[0]
-	}
-	return ""
-}
 
 // denyPath 密钥类路径判定(基准名 / 后缀 glob / 用户密钥目录 / $GAH_HOME/config)。
 // 与沙箱档位无关:凭据永不进入模型可见面。
@@ -132,7 +99,7 @@ func denyPath(abs string) error {
 		return fmt.Errorf("sandbox: 拒绝访问凭据类文件 %s%s(命中 %s)", base, denySuffix, hit)
 	}
 	real := resolveRealPath(abs)
-	for _, home := range userHomes() {
+	for _, home := range sdk.UserHomes() {
 		for _, d := range denyDir {
 			if pathWithin(filepath.Join(home, d), real) {
 				return fmt.Errorf("sandbox: 拒绝访问用户密钥目录 %s%s", d, denySuffix)

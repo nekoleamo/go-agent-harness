@@ -429,3 +429,31 @@ func TestDenyPathGlobPrefixCoversFileTools(t *testing.T) {
 		t.Fatalf("普通 glob 不应被误拒: %v", err)
 	}
 }
+
+// TestDenyPathHomeCandidateUnion 家目录候选并集(2026-09-27 第二轮审计 F-A 的第二半)。
+//
+// 审批层(denyPath)与内核层(sdk.CredentialDenyDirs)必须吃同一份候选集:只认一家时,
+// Windows 桌面壳启动的 gah.exe(无 HOME)会让审批层也看不到 USERPROFILE 下的密钥目录,
+// 于是「内核层拦不拦」与「审批层给不给可读理由」两处一起失守。
+func TestDenyPathHomeCandidateUnion(t *testing.T) {
+	withCaseFold(t, false)
+	a := filepath.Join(t.TempDir(), "home-a")
+	b := filepath.Join(t.TempDir(), "home-b")
+	t.Setenv("HOME", a)
+	t.Setenv("USERPROFILE", b)
+	t.Setenv("GAH_HOME", "")
+
+	for _, p := range []string{
+		filepath.Join(a, ".ssh", "config"),
+		filepath.Join(b, ".ssh", "config"),
+		filepath.Join(b, ".aws", "credentials"),
+	} {
+		if err := denyPath(p); err == nil {
+			t.Fatalf("denyPath(%q) 应拒(家目录候选并集)", p)
+		}
+	}
+	// 并集不等于放行一切:两个家目录之外的普通文件照样放
+	if err := denyPath(filepath.Join(t.TempDir(), "notes.md")); err != nil {
+		t.Fatalf("家目录之外的普通文件不该被拒: %v", err)
+	}
+}

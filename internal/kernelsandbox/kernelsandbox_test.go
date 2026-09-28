@@ -165,3 +165,32 @@ func TestEnsureJailDirCreatesAnchor(t *testing.T) {
 		t.Fatalf("重复调用不应改变结果: %s", again)
 	}
 }
+
+// TestDefaultRWPathsHomeUnion 允许面也要覆盖每个家目录候选(F-B,与 F-A 同源、方向相反)。
+//
+// 只认一家时,Windows 上 MSYS 的 `~/.npm` 与原生 `%USERPROFILE%\.npm` 只会白名单其中一个,
+// 另一个照样 EPERM —— 与 2026-09-27 spike 里 npx 起不来是同一类失败。
+func TestDefaultRWPathsHomeUnion(t *testing.T) {
+	a := filepath.Join(t.TempDir(), "home-a")
+	b := filepath.Join(t.TempDir(), "home-b")
+	t.Setenv("HOME", a)
+	t.Setenv("USERPROFILE", b)
+
+	got := DefaultRWPaths()
+	for _, want := range []string{
+		filepath.Join(a, ".npm"), filepath.Join(b, ".npm"),
+		filepath.Join(a, ".bun"), filepath.Join(b, ".bun"),
+		filepath.Join(a, "go", "pkg", "mod"), filepath.Join(b, "go", "pkg", "mod"),
+	} {
+		found := false
+		for _, g := range got {
+			if g == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("默认 RW 白名单缺 %s:%v", want, got)
+		}
+	}
+}

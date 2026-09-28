@@ -28,7 +28,7 @@ func NewResolver(sb sdk.Sandbox, gahHome string) *Resolver {
 	if gahHome != "" {
 		r.extra = append(r.extra, filepath.Join(gahHome, "attachments"))
 	}
-	r.homeDir, _ = os.UserHomeDir()
+	r.homeDir = sdk.UserHome() // 家目录候选并集里的首选(与 shell 的 `~` 同源,见 sdk.UserHomes)
 	if sb != nil && sb.Root() != "" {
 		r.workRoot = sb.Root()
 	} else if cwd, err := os.Getwd(); err == nil {

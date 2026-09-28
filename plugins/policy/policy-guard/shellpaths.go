@@ -40,6 +40,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
 // shellWinSemantics 命令文本按 Windows/MSYS 语义解释。变量而非常量:单测需在非 Windows
@@ -373,7 +375,7 @@ func cdTargetInside(args []string, root string, cwdOK bool) bool {
 		break
 	}
 	if target == "" {
-		home := userHome()
+		home := sdk.UserHome()
 		if home == "" || root == "" {
 			return false
 		}
@@ -1116,13 +1118,13 @@ func globHead(p string) (string, bool) {
 }
 
 // expandTilde 展开 `~` 与 `~/...`;`~user` 无法可靠定位(isGlob 语义的 ok=false)。
-// 家目录走 userHome()(单一事实源):`~` 要按**用户 shell** 的口径展(MSYS 看 HOME,
+// 家目录走 sdk.UserHome()(单一事实源):`~` 要按**用户 shell** 的口径展(MSYS 看 HOME,
 // 不是 %USERPROFILE%),否则展出来的家与拒据目录/敏感文件判定不是同一个。
 func expandTilde(p string) (string, bool) {
 	if p != "~" && !strings.HasPrefix(p, "~/") {
 		return "", false
 	}
-	home := userHome()
+	home := sdk.UserHome()
 	if home == "" {
 		return "", false
 	}

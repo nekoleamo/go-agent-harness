@@ -250,3 +250,43 @@ func TestWithinPrefix(t *testing.T) {
 		t.Fatal("自身应判为在内")
 	}
 }
+
+// TestResolveTildeUsesFirstHomeCandidate `~` 展开走单一事实源 sdk.UserHome()(家目录候选的**首选** = HOME)。
+//
+// 为何是首选而非并集:展开面必须与**用户 shell** 的 `~` 同源(MSYS 看 HOME),而并集只用于拒绝面
+// (见 sdk.UserHomes 的注释)。这里用「只在第二候选里放文件」证明没有偷偷用并集 —— 那会让
+// 同一个 `~/x` 在两台家目录都命中时给出“碰巧打得开”的假象。
+func TestResolveTildeUsesFirstHomeCandidate(t *testing.T) {
+	base := t.TempDir()
+	first := filepath.Join(base, "home-a")
+	second := filepath.Join(base, "home-b")
+	for _, d := range []string{first, second} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(first, "note.md"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(second, "only-b.md"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", first)
+	t.Setenv("USERPROFILE", second)
+
+	r := NewResolver(nil, filepath.Join(base, "gah-data"))
+	got, err := r.Resolve("~/note.md", false) // 只放在 first 里:打得开就证明 ~ 展到了首选候选
+	if err != nil {
+		t.Fatalf("`~/note.md` 应能解析(证明 ~ 展到了 HOME): %v", err)
+	}
+	want, err := filepath.EvalSymlinks(filepath.Join(first, "note.md")) // Resolve 返回 realpath(macOS /var → /private/var)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Clean(got) != filepath.Clean(want) {
+		t.Fatalf("~ 未按首选家目录展开: got=%s want=%s", got, want)
+	}
+	if _, err := r.Resolve("~/only-b.md", false); err == nil {
+		t.Fatal("~ 不应把第二候选取来兜底(展开面取首个,不是并集)")
+	}
+}
