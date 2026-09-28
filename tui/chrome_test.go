@@ -98,6 +98,43 @@ func TestStatusLineFields(t *testing.T) {
 	}
 }
 
+// TestStatusLineQuestionsSegment 待答提问段(S-P0-2)的**确定性**判据。
+//
+// 为什么单测落在这里:pty 验收(tests/tui_accept_ask_test.go)读的是**屏幕格子**,
+// 而这条段落的长度会随可达状态变化(1 条时无数字、2 条起带数字),窄 pty 折行 + 差分重绘
+// 会把 `待答 2` 拆到两行/两处(2026-09-28 CI 实测:格子里只剩 `❓ 待答(Esc 退出作答)` 与
+// 隔行的 `2(Esc 退出作答)`,字面断言在负载下假阴)——“计数怎么拼”在进程内可确定性判定,
+// pty 侧只留行为链(两问都要能作答、且答完栈清空)。
+func TestStatusLineQuestionsSegment(t *testing.T) {
+	strip := func(s *State) string { return stripColor(renderStatusLine(s, 200)) }
+
+	// 无待答 → 整段不出现(不是显示 0)
+	if out := strip(&State{}); strings.Contains(out, "待答") {
+		t.Fatalf("无待答时不应出现该段: %q", out)
+	}
+	// 1 条 → `❓ 待答` 且**不带数字**(与 2 条区分开)
+	one := strip(&State{Questions: []PendingQ{{ID: "q1"}}})
+	if !strings.Contains(one, "❓ 待答") {
+		t.Fatalf("1 条待答应显示段: %q", one)
+	}
+	if strings.Contains(one, "待答 1") {
+		t.Fatalf("1 条时按设计不显示数字: %q", one)
+	}
+	// 2 条 → 带数字(pty 验收原本断言的就是这一形态)
+	two := strip(&State{Questions: []PendingQ{{ID: "q1"}, {ID: "q2"}}})
+	if !strings.Contains(two, "❓ 待答 2") {
+		t.Fatalf("2 条待答应显示 `待答 2`: %q", two)
+	}
+	// 作答中 → 后缀换成 Esc 退出
+	if out := strip(&State{Questions: []PendingQ{{ID: "q1"}, {ID: "q2"}}, Answering: true}); !strings.Contains(out, "待答 2(Esc 退出作答)") {
+		t.Fatalf("作答中应提示 Esc 退出: %q", out)
+	}
+	// 删到 1 条 → 数字同步消失(栈出栈后就地重绘)
+	if out := strip(&State{Questions: []PendingQ{{ID: "q1"}}, Answering: true}); strings.Contains(out, "待答 1") || !strings.Contains(out, "待答(Esc 退出作答)") {
+		t.Fatalf("出栈回 1 条应去掉数字: %q", out)
+	}
+}
+
 // TestMetricLine F15.1:模型/思维/上下文独立指标行(固定于输入区上方,不随输入移动)。
 func TestMetricLine(t *testing.T) {
 	// 模型 + 来源 + 上下文使用率(分子 = 最近一次请求的 prompt)

@@ -34,15 +34,21 @@ func TestTUIAcceptTwoQuestionsStack(t *testing.T) {
 		t.Fatal("首帧未就绪")
 	}
 	s.send("两个问题\r")
-	// 状态栏这类"当前态"读**屏幕**(差分重绘下 raw 里 `待答 2` 会被提问块插写拆断:
-	// 只见 `待答(` + `2(Esc 退出作答)`,实测约半数假阴);「出现过」类才用 raw。
-	if !s.waitScreen("待答 2", 45*time.Second) {
-		t.Fatalf("条目 16:状态栏未出现「待答 2」(两问未共存);屏=%q", stripANSI(s.screen()))
-	}
+	// 两问共存的判据**不看状态栏计数**:该段长度随可达状态变化(1 条无数字、2 条起带数字),
+	// 窄 pty 折行 + 差分重绘会把 `待答 2` 拆到两处 —— 2026-09-28 CI 实测(v0.1.8 后一次纯文档
+	// 提交的 `test` job 就红在这里)格子里面只剩 `❓ 待答(Esc 退出作答)` 与隔行的 `2(Esc 退出作答)`,
+	// 字面断言与 raw 都会假阴,等 45s 也等不到。计数的**拼法**由 `tui.TestStatusLineQuestionsSegment`
+	// 在进程内确定性覆盖;这里只留行为链:两问都进会话流 → 两次 /answer 后回合收尾 →
+	// 无参 /answer 报“没有待答提问”(若栈丢了第一问,它的作答永远不会回来,回合收不了尾)。
 	for _, q := range []string{"聚合第一问", "聚合第二问"} {
-		if !s.waitRaw(q, 10*time.Second) {
-			t.Errorf("条目 16:提问 %q 未进入会话流", q)
+		if !s.waitRaw(q, 45*time.Second) {
+			t.Fatalf("条目 16:提问 %q 未进入会话流", q)
 		}
+	}
+	if line := s.statusLineWith("待答"); line != "" {
+		t.Logf("诊断:状态栏待答段读作 %q(不作断言)", stripANSI(line))
+	} else {
+		t.Logf("诊断:待答段未在屏幕格子里成形(折行/差分重绘,不作断言)")
 	}
 
 	// 逐问作答(栈序:栈首 = 最早到达)。两问都答完 → 回合收尾,证明第一问作答后第二问被接上。
