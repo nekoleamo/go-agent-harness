@@ -553,6 +553,21 @@ func (h *Host) cmdReload(_ []string) (string, error) {
 	if err := rl.ReloadInstructions(); err != nil {
 		return "", errString("/reload 失败(旧值保留): " + err.Error())
 	}
+	// 角色定义连带重读(可选):启用了角色插件时,手改 roles/<id>/AGENTS.md 也要生效 ——
+	// 否则用户会遇到“改了文件但下一轮没变”的静默失信(D5)。
+	rolesReloaded := false
+	var rs sdk.RoleService
+	if err := h.c.Inject("ctx.roles", &rs); err == nil {
+		if rr, ok := rs.(sdk.ReloadableRoles); ok {
+			if err := rr.ReloadRoles(); err != nil {
+				return "", errString("/reload 失败(角色重读出错,指令已重载): " + err.Error())
+			}
+			rolesReloaded = true
+		}
+	}
+	if rolesReloaded {
+		return "已热重载指令文件(全局/项目层级/附加)与角色定义(身份句/工作规则/技能挂载;下次回合的 system prompt 生效)", nil
+	}
 	return "已热重载指令文件(全局/项目层级/附加;下次回合的 system prompt 生效)", nil
 }
 

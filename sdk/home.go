@@ -26,6 +26,14 @@ func Home() string {
 // 共用一根的理由:临时区是“可盘点、可整体清理”的东西,分成多个根只会让清理与白名单各自漂移。
 func JailDir() string { return filepath.Join(Home(), "jail") }
 
+// RolesDir 数据根下的角色根($GAH_HOME/roles)。
+//
+// 为什么放在 sdk 而不是 internal/roles:布局知识有两个消费方 —— 角色存储(internal/roles,
+// 实现 CRUD)与技能扫描(host-skills,要把 roles/<id>/skills/ 纳入扫描并标出归属角色)。
+// 各写一份 filepath.Join(Home(), "roles") 迟早漂移(一个改了另一个不知),所以锚点放在
+// 双方都允许依赖的 sdk 里 —— 与 JailDir 同一约定。
+func RolesDir() string { return filepath.Join(Home(), "roles") }
+
 // UserHomes 用户家目录**候选**(HOME → USERPROFILE → os.UserHomeDir),归一去重、按优先级返回。
 //
 // 为什么要候选而不是一家(2026-09-27 跨平台复核,第二轮):同一个进程里能读到的家目录在 Windows 上

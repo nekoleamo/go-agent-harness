@@ -28,6 +28,10 @@ type Prefs struct {
 	// WebAllowHosts web_fetch 的 TOFU 域名白名单(A7 出口审批):用户批准过的**精确 host**,
 	// 小写。与 GAH_WEB_ALLOW_HOSTS(静态名单,不落盘)互补:静态名单用于无人值守事前放行。
 	WebAllowHosts []string `json:"web_allow_hosts,omitempty"`
+	// Role 当前角色 ID(空 = 未启用角色,即基线行为;角色定义见 internal/roles)。
+	// 为什么放偏好而不是另开文件:切换要**立即**对下一次组装生效,而它本来就是一个
+	// 跨端共享的小状态(TUI/Web 读写同一份),与 thinking/sandbox 同类。
+	Role string `json:"role,omitempty"`
 }
 
 // Path 偏好文件路径(GAH_HOME 未设 = 空,表示跳过持久化——测试/无 home 场景纯内存)。
@@ -169,6 +173,9 @@ func SetApproval(v string) { Update(func(p *Prefs) { p.Approval = v }) }
 
 // SetSandboxSync 档位联动开关(/sandbox sync on|off 与 Web 设置面板同一偏好)。
 func SetSandboxSync(v bool) { Update(func(p *Prefs) { p.SandboxSync = &v }) }
+
+// SetRole 当前角色 ID(空 = 停用角色;internal/roles 与 host-roles 共用)。
+func SetRole(v string) { Update(func(p *Prefs) { p.Role = v }) }
 
 // SetStatusline 状态栏项集合与顺序(nil/空 = 回基线默认)。
 func SetStatusline(items []string) {

@@ -25,7 +25,8 @@ plugins/
 | host | host-cwd-sessions | 项目级会话隔离 + 多会话切换(ctx.cwdSessions) | ctx.sessions |
 | host | host-session-summary | 会话概述(F 组 F3):ctx.sessionSummary——LLM 生成「标题+一句话+主题词」,落 meta.json 缓存;回合后自动生成(默认开) + 全局单飞 + 每会话节流 | ctx.cwdSessions(;ctx.llm 可选) |
 | host | host-usage-stats | 会话 token 统计 + 模型窗口解析(ctx.usageStats) | — |
-| host | host-skills | 技能机制(SKILL.md 扫描) | ctx.tools/ctx.systemPrompt |
+| host | host-skills | 技能机制(SKILL.md 扫描;提供 ctx.skills 索引/过滤/重扫) | ctx.tools/ctx.systemPrompt |
+| host | host-roles | 角色(人设+工作规则+技能挂载):$GAH_HOME/roles/<id>/,身份槽片段 + /role 命令 + 只读 list_roles/read_role;驱动 ctx.skills 可见性过滤 | ctx.tools/ctx.systemPrompt/ctx.skills(;ctx.commands/ctx.notices 可选) |
 | host | host-jobs | 后台任务(ctx.jobs) | ctx.tools |
 | host | host-schedule | 定时任务(NOND-W4):ctx.schedule——5 字段 cron 计划(分 时 日 月 周),到点经既有回合入口(agentLoop→tools,仍受审批/沙箱裁决)跑一轮;计划落 $GAH_HOME/schedules/*.yaml;无人值守运行 = 无确认通道 → 需审批的动作一律拒绝 | ctx.agentLoop/ctx.commands(;ctx.turnControl 可选) |
 | host | host-fanout | 子代理编排(ctx.fanout) | ctx.llm/ctx.tools/ctx.systemPrompt |

@@ -105,6 +105,10 @@ func main() {
 	if _, err := embed.EnsurePlugins(home); err != nil {
 		logger.Warn("boot: 释放外部插件失败(跳过,可后续 gah -install)", "err", err)
 	}
+	// 预置角色首启释放(home/roles/<id>/,角色目录已存在 = 整体跳过:保护用户编辑)
+	if _, err := embed.EnsureRoles(home); err != nil {
+		logger.Warn("boot: 释放预置角色失败(跳过,不影响启动)", "err", err)
+	}
 	// 插件安装/卸载/清单(M6.6):seed 释放后可写登记 patch 与 profile 引用
 	if *installFlag != "" {
 		res, err := install.Install(*installFlag, home)

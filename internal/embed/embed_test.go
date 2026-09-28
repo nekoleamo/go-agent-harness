@@ -3,11 +3,15 @@ package embed
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/nekoleamo/go-agent-harness/internal/testutil"
 )
@@ -270,5 +274,109 @@ func TestEnsureSeedWritesOnce(t *testing.T) {
 	raw, _ := os.ReadFile(p)
 	if string(raw) != "custom" {
 		t.Fatal("用户编辑的配置不应被 seed 覆盖")
+	}
+}
+
+// TestSeedRolesRelease 预置角色:首启释放、二次 no-op、用户改过的不被覆盖、坏文件守卫。
+func TestSeedRolesRelease(t *testing.T) {
+	home := t.TempDir()
+	written, err := EnsureRoles(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 至少覆盖方案承诺的五个预置角色
+	for _, id := range []string{"assistant", "finance", "novelist", "coding-master", "news-writer"} {
+		dir := filepath.Join(home, "roles", id)
+		if _, err := os.Stat(filepath.Join(dir, "role.yaml")); err != nil {
+			t.Fatalf("预置角色 %s 未释放: %v", id, err)
+		}
+		if _, err := os.Stat(filepath.Join(dir, ".seed-version")); err != nil {
+			t.Fatalf("预置角色 %s 缺 .seed-version 标记: %v", id, err)
+		}
+	}
+	if len(written) == 0 {
+		t.Fatal("应释放角色目录")
+	}
+	// 二次调用:目录已存在 → 整体跳过
+	written2, err := EnsureRoles(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(written2) != 0 {
+		t.Fatalf("二次释放应 no-op, got %v", written2)
+	}
+	// 用户改过的角色:不得被覆盖/补齐
+	p := filepath.Join(home, "roles", "finance", "AGENTS.md")
+	if err := os.WriteFile(p, []byte("我的自定义规则"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := EnsureRoles(home); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(p)
+	if string(raw) != "我的自定义规则" {
+		t.Fatal("用户编辑的角色文件被 seed 覆盖")
+	}
+	// 新增预置角色(缺失即释放):删掉一个目录后重放 → 只有它回来
+	if err := os.RemoveAll(filepath.Join(home, "roles", "novelist")); err != nil {
+		t.Fatal(err)
+	}
+	again, err := EnsureRoles(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again) != 1 || filepath.Base(again[0]) != "novelist" {
+		t.Fatalf("缺失的角色应单独释放: %v", again)
+	}
+}
+
+// roleIDRe 角色 ID 口径(与 internal/roles.ValidateID 同源;此处本地复刻以免测试引入依赖)。
+var roleIDRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
+
+// TestSeedRolesParse 预置角色文件必须可解析(role.yaml 结构 + 非空身份句)。
+// 它是 seed 的一部分 —— 写错了会让每个新装用户开局就有一个坏角色。
+func TestSeedRolesParse(t *testing.T) {
+	entries, err := fs.ReadDir(Seed, "seed/roles")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := 0
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		seen++
+		id := e.Name()
+		if !roleIDRe.MatchString(id) {
+			t.Errorf("角色目录名 %q 不符合 ID 口径", id)
+		}
+		raw, err := Seed.ReadFile("seed/roles/" + id + "/role.yaml")
+		if err != nil {
+			t.Fatalf("%s 缺 role.yaml: %v", id, err)
+		}
+		var spec struct {
+			Name     string `yaml:"name"`
+			Identity string `yaml:"identity"`
+		}
+		if err := yaml.Unmarshal(raw, &spec); err != nil {
+			t.Fatalf("%s role.yaml 解析失败: %v", id, err)
+		}
+		if strings.TrimSpace(spec.Name) == "" || strings.TrimSpace(spec.Identity) == "" {
+			t.Errorf("%s 的 name/identity 不能为空", id)
+		}
+		agents, err := Seed.ReadFile("seed/roles/" + id + "/AGENTS.md")
+		if err != nil {
+			t.Fatalf("%s 缺 AGENTS.md: %v", id, err)
+		}
+		if len(agents) > 32*1024 {
+			t.Errorf("%s AGENTS.md 超 32KiB", id)
+		}
+		// 正文里不应出现 emoji(Web/TUI 观感纪律)
+		if strings.ContainsFunc(string(agents), func(r rune) bool { return r > 0x1F000 }) {
+			t.Errorf("%s AGENTS.md 含 emoji", id)
+		}
+	}
+	if seen < 5 {
+		t.Fatalf("预置角色应不少于 5 个, got %d", seen)
 	}
 }

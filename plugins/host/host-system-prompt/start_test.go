@@ -296,6 +296,8 @@ func TestAssemblePromptIndependentOfToolSchemaSize(t *testing.T) {
 }
 
 // TestAssembleNilHistoryAndEmptySection 片段内容为空/历史为 nil 时不产生空块与多余消息。
+// 空片段整块跳过(含标题):留一个只有标题的“空段:\n”对模型毫无信息,而角色片段的
+// “无当前角色”正是这种空值 —— 判据从“保住标题”改为“不产出空块”。
 func TestAssembleNilHistoryAndEmptySection(t *testing.T) {
 	s := &Service{}
 	s.AddSection(sdk.SystemPromptSection{Name: "空段", Content: func() string { return "   " }})
@@ -303,8 +305,8 @@ func TestAssembleNilHistoryAndEmptySection(t *testing.T) {
 	if len(msgs) != 1 {
 		t.Fatalf("无历史时应只有 system: %+v", msgs)
 	}
-	if !strings.Contains(msgs[0].Content, "空段:\n") {
-		t.Fatalf("片段标题应保留(内容裁空):\n%s", msgs[0].Content)
+	if strings.Contains(msgs[0].Content, "空段") {
+		t.Fatalf("空片段不应产出块(含标题):\n%s", msgs[0].Content)
 	}
 	if strings.Contains(msgs[0].Content, "项目指令(AGENTS.md") {
 		t.Fatalf("空 projectInstr 不应注入块:\n%s", msgs[0].Content)

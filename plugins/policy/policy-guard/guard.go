@@ -220,7 +220,13 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		// 依据 = 工具自述声明 → 内置名表 → 按定义推断 → 值级兜底(见 CheckToolCallAt);
 		// 代理工具按**真实目标工具**裁决其内层参数(见 pathAdjudication)。
 		pname, pargs, pdef := pathAdjudication(c, call.Name, call.Arguments, def)
-		return sp.CheckToolCallAt(callRoot, pname, pargs, pdef)
+		if err := sp.CheckToolCallAt(callRoot, pname, pargs, pdef); err != nil {
+			return err
+		}
+		// 指令面写审批(S1/S2):角色/技能/全局 AGENTS.md 是“模型接下来要遵守的规则”,
+		// 被不可信内容改写就是持久提权。位置在路径裁决**之后**:先保证档位允许写,
+		// 再按审批档问“要不要人拍板”(open 放行 / smart 确认 / strict 拒结)。
+		return checkInstructionFaceWrite(ctx, ap, confirmOf(), pname, pargs, pdef)
 	})
 	// 工作区切换:沙箱 root 同步(host-cwd-sessions 广播,与原 policy-sandbox 一致)
 	d2 := c.Subscribe("cwd/workspace-switched", func(ctx context.Context, ev *sdk.Event) error {

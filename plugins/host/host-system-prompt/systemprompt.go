@@ -43,7 +43,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 			}
 		}
 	}
-	s := &Service{cfg: cfg}
+	s := &Service{cfg: cfg, ctx: c}
 	s.loadLocked() // 启动读取(含多级上下文 P4-5)
 	if err := c.Provide("ctx.systemPrompt", s); err != nil {
 		return nil, err
@@ -162,6 +162,37 @@ type Service struct {
 	projectInstr  string // 单级回退(测试构造/旧路径);多级经 projectLevels
 	projectLevels []projectLevel
 	extraInstr    []string
+
+	// ctx 只用于**可选**角色策略查找(见 rolesPolicy);为 nil 时行为与无角色完全一致。
+	ctx sdk.Ctx
+	// polMu/pol/polDone:角色策略的懒查缓存(装配顺序不保证 host-roles 先于本插件;
+	// 查到了就缓存,查不到就下次组装再试——单次成本 = 一次 map 查找)。
+	polMu   sync.Mutex
+	pol     sdk.RolesPolicy
+	polDone bool
+}
+
+// rolesPolicy 取 ctx.roles 的 RolesPolicy 可选能力(未装配角色插件/未实现 = nil)。
+// 用它只回答一个问题:当前角色是否要求不注入全局指令。**不**引入对角色的硬依赖 ——
+// 单独装配 host-system-prompt(含全部单测)时返回 nil,组装结果与今天逐字节相同。
+func (s *Service) rolesPolicy() sdk.RolesPolicy {
+	s.polMu.Lock()
+	defer s.polMu.Unlock()
+	if s.polDone {
+		return s.pol
+	}
+	if s.ctx == nil {
+		return nil
+	}
+	var rs sdk.RoleService
+	if err := s.ctx.Inject("ctx.roles", &rs); err != nil {
+		return nil // 尚未装配:不标 done,后续组装重试
+	}
+	if p, ok := rs.(sdk.RolesPolicy); ok {
+		s.pol = p
+	}
+	s.polDone = true
+	return s.pol
 }
 
 // AddSection 注册系统提示片段。
@@ -184,14 +215,28 @@ func (s *Service) AddSection(sec sdk.SystemPromptSection) sdk.Disposer {
 	}
 }
 
-// Assemble 组装消息:引导 → 全局指令 → 项目指令 → 附加 → 片段 → 工具名清单。
+// Assemble 组装消息:引导 → 身份槽片段(角色) → 全局指令 → 项目指令 → 附加 → 默认槽片段 → 工具名清单。
 // tools 只用于生成名称清单;完整定义由调用方经 LLMRequest.Tools 结构化下发(见包注释)。
 func (s *Service) Assemble(history []sdk.LLMMessage, tools []sdk.ToolDefinition) []sdk.LLMMessage {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var sb strings.Builder
 	sb.WriteString(guidanceText)
-	s.writeInstrBlock(&sb, s.globalInstr, "\n\n全局指令(AGENTS.md,用户级):\n")
+	// 身份槽:紧接固定引导、在指令层之前 —— 角色回答“你是谁”。
+	// 顺序含义:指令层在**后**,所以用户/项目指令仍能盖过角色设定(近者覆盖远者);
+	// 而固定引导里的安全规则在**前**且不被任何槽位替换 —— 角色抹不掉它。
+	for _, sec := range s.sections {
+		if sec.Slot == sdk.SlotIdentity {
+			s.writeSection(&sb, sec)
+		}
+	}
+	excludeGlobal := false
+	if p := s.rolesPolicy(); p != nil {
+		excludeGlobal = !p.InheritGlobalInstructions()
+	}
+	if !excludeGlobal {
+		s.writeInstrBlock(&sb, s.globalInstr, "\n\n全局指令(AGENTS.md,用户级):\n")
+	}
 	if len(s.projectLevels) > 0 {
 		// 多级(P4-5):根 → cwd 逐级注入,近者放后覆盖远者;每级标明来源目录
 		sb.WriteString("\n\n项目指令(AGENTS.md 层级,从根目录到当前目录,近者覆盖远者):\n")
@@ -205,10 +250,9 @@ func (s *Service) Assemble(history []sdk.LLMMessage, tools []sdk.ToolDefinition)
 		s.writeInstrBlock(&sb, e, fmt.Sprintf("\n\n附加指令 %d:\n", i+1))
 	}
 	for _, sec := range s.sections {
-		sb.WriteString("\n\n")
-		sb.WriteString(sec.Name)
-		sb.WriteString(":\n")
-		sb.WriteString(sec.Content())
+		if sec.Slot == sdk.SlotDefault {
+			s.writeSection(&sb, sec)
+		}
 	}
 	if len(tools) > 0 {
 		// 仅名称,不带 description/schema(结构化下发已含全文;防双重计费,见包注释)。
@@ -222,6 +266,18 @@ func (s *Service) Assemble(history []sdk.LLMMessage, tools []sdk.ToolDefinition)
 	}
 	system := sdk.LLMMessage{Role: sdk.RoleSystem, Content: sb.String()}
 	return append([]sdk.LLMMessage{system}, history...)
+}
+
+// writeSection 渲染一个注册片段(空正文不产出空块;与 Breakdown 的跳过口径一致)。
+func (s *Service) writeSection(sb *strings.Builder, sec sdk.SystemPromptSection) {
+	content := sec.Content()
+	if strings.TrimSpace(content) == "" {
+		return
+	}
+	sb.WriteString("\n\n")
+	sb.WriteString(sec.Name)
+	sb.WriteString(":\n")
+	sb.WriteString(content)
 }
 
 // guidanceText 固定引导段(身份 + 规则)。抽为常量使 Assemble 与 Breakdown 共用同一份
@@ -246,7 +302,21 @@ func (s *Service) Breakdown(tools []sdk.ToolDefinition) []sdk.PromptPart {
 		return sdk.PromptPart{Label: label, Chars: utf8.RuneCountInString(text), Bytes: len(text)}
 	}
 	parts := []sdk.PromptPart{part("固定引导(身份+规则)", guidanceText)}
-	if strings.TrimSpace(s.globalInstr) != "" {
+	for _, sec := range s.sections {
+		if sec.Slot != sdk.SlotIdentity {
+			continue
+		}
+		content := sec.Content()
+		if strings.TrimSpace(content) == "" {
+			continue
+		}
+		parts = append(parts, part("身份槽 "+sec.Name, sec.Name+":\n"+content))
+	}
+	excludeGlobal := false
+	if p := s.rolesPolicy(); p != nil {
+		excludeGlobal = !p.InheritGlobalInstructions()
+	}
+	if !excludeGlobal && strings.TrimSpace(s.globalInstr) != "" {
 		parts = append(parts, part("全局指令(用户级 AGENTS.md)", s.globalInstr))
 	}
 	if len(s.projectLevels) > 0 {
@@ -266,6 +336,9 @@ func (s *Service) Breakdown(tools []sdk.ToolDefinition) []sdk.PromptPart {
 		parts = append(parts, part(fmt.Sprintf("附加指令 %d", i+1), e))
 	}
 	for _, sec := range s.sections {
+		if sec.Slot != sdk.SlotDefault {
+			continue
+		}
 		content := sec.Content()
 		if strings.TrimSpace(content) == "" {
 			continue

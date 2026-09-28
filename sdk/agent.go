@@ -17,10 +17,24 @@ type AttachmentInput interface {
 	RunWithAttachments(ctx context.Context, input string, atts []Attachment) error
 }
 
+// SectionSlot 系统提示片段的位置槽(决定片段在组装里的渲染位置)。
+// 零值 = SlotDefault,即既有行为(向后兼容:老代码不写 Slot 照样编译且位置不变)。
+type SectionSlot int
+
+const (
+	// SlotDefault 默认槽:排在「指令层」之后(项目/附加指令 → 各片段 → 工具名清单)。
+	SlotDefault SectionSlot = iota
+	// SlotIdentity 身份槽:排在固定引导之后、指令层之前 —— 回答「你是谁」。
+	// 用途:角色(persona/role)替换身份句;安全规则仍在固定引导里,**身份槽抹不掉它**。
+	SlotIdentity
+)
+
 // SystemPrompt 片段:命名 + 内容提供器(内容可引用 ctx 动态组装)。
+// Content 在**每次组装**时求值 —— 动态状态(如当前角色)因此无需重建服务即生效。
 type SystemPromptSection struct {
 	Name    string
 	Content func() string
+	Slot    SectionSlot // 位置槽(零值 = SlotDefault)
 }
 
 // SystemPromptService 服务(ctx.systemPrompt):片段注册 + 组装模型可见消息。

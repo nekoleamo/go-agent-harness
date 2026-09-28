@@ -289,7 +289,7 @@ func TestPluginUnloadMatrix(t *testing.T) {
 	// 1) 被依赖者:卸载必须被依赖保护拒绝,提示含依赖者与可操作路径
 	// (依赖保护只作用被依赖者;无依赖者的宿主服务可卸,卸后注入引用仍可用)
 	// F 组 D/F 线新增依赖者:host-session-summary → ctx.cwdSessions;tool-doc → ctx.doc/ctx.tools
-	for _, id := range []string{"host-tools", "host-llm", "host-session-log", "host-system-prompt", "host-cwd-sessions"} {
+	for _, id := range []string{"host-tools", "host-llm", "host-session-log", "host-system-prompt", "host-cwd-sessions", "host-skills"} {
 		err := mgr.Unload(id)
 		if err == nil {
 			t.Fatalf("%s 应被依赖保护拒绝卸载", id)
@@ -304,7 +304,7 @@ func TestPluginUnloadMatrix(t *testing.T) {
 	// M6.8:host-bridge 依赖 host-jobs/host-fanout → 卸载需自内向外(先卸 bridge 再卸其依赖者)
 	// 依赖序:先卸依赖者(host-session-summary 依赖 cwdSessions;tool-doc 依赖 host-docview;
 	// NOND-W4 后 host-schedule 依赖 host-agent-loop → 必须先于 agent-loop 卸)
-	leaves := []string{"policy-guard", "tool-shell", "host-skills", "mcp-bridge", "host-schedule", "host-agent-loop",
+	leaves := []string{"policy-guard", "tool-shell", "host-roles", "host-skills", "mcp-bridge", "host-schedule", "host-agent-loop",
 		"host-plugin-manager", "host-session-summary", "host-cwd-sessions", "tool-doc", "host-docview",
 		"token-compress", "host-bridge", "host-jobs", "host-fanout"}
 	for _, id := range leaves {

@@ -331,6 +331,9 @@ func protectedWriteTarget(raw string) (string, bool) {
 		return "", false // 相对路径落点由路径裁决管;审批层不猜(否则 workspace 内写会噪)
 	}
 	p = filepath.Clean(p)
+	if label, hit := instructionFaceWriteLabel(p); hit {
+		return label, true
+	}
 	if sdk.LooksLikeCredentialPath(p) {
 		return "写凭据路径 " + p, true
 	}
@@ -356,6 +359,79 @@ func protectedWriteTarget(raw string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// instructionFaceWriteLabel 指令面/角色面的写目标判定(返回罪名与是否命中)。
+//
+// 为何单列一类:这些文件不是普通数据 —— 它们**逐字进系统提示**($GAH_HOME/AGENTS.md 全局指令、
+// roles/<id>/AGENTS.md 角色工作规则)或成为模型可读指令(roles/<id>/SKILL.md、skills/**/SKILL.md)。
+// 换言之,写它们等于改“模型接下来要遵守的规则”:不可信内容(网页/搜索结果/文件)若能落地到这里,
+// 就从“一次注入”升级为**持久提权**。凭据面(禁读禁写)之外单独把这一面纳入审批。
+//
+// 保留面与凭据面的差异:这里**不是**硬拒 —— 确实有正当用途(用户要求“把这个技能存下来”),
+// 所以走审批档语义(open 放行 / smart 确认 / strict 拒结)。
+func instructionFaceWriteLabel(abs string) (string, bool) {
+	home := sandboxGahHome()
+	if home == "" {
+		return "", false
+	}
+	clean := filepath.Clean(abs)
+	if filepath.Dir(clean) == filepath.Clean(home) && filepath.Base(clean) == "AGENTS.md" {
+		return "写全局指令 $GAH_HOME/AGENTS.md(逐字进系统提示)", true
+	}
+	for _, sub := range []string{"roles", "skills"} {
+		if pathWithin(filepath.Join(home, sub), clean) {
+			return "写 $GAH_HOME/" + sub + "/ 下的指令面文件(角色/技能定义会影响模型行为)", true
+		}
+	}
+	return "", false
+}
+
+// checkInstructionFaceWrite 工具调用写“指令面”时的审批(角色/技能/全局 AGENTS.md)。
+// 参数解出口径与沙箱裁决**完全一致**(声明 → 内置名表 → 推断 → 值级兜底),
+// 否则会出现“沙箱看得出是写、审批看不见”的空档。只审写意图(PathWrite);读不拦。
+func checkInstructionFaceWrite(ctx context.Context, ap *ApprovalPolicy, confirm sdk.ConfirmService, name, rawArgs string, def sdk.ToolDefinition) error {
+	for _, p := range instructionFaceWriteTargets(name, rawArgs, def) {
+		label, hit := instructionFaceWriteLabel(p)
+		if !hit {
+			continue
+		}
+		return ap.decide(ctx, confirm, fmt.Sprintf("写入指令面 [%s] ← 工具 %s 目标 %s", label, name, p))
+	}
+	return nil
+}
+
+// instructionFaceWriteTargets 取出本次调用中意图为**写**的路径值(口径同 CheckToolCallAt)。
+func instructionFaceWriteTargets(name, rawArgs string, def sdk.ToolDefinition) []string {
+	params := def.PathParams
+	if len(params) == 0 {
+		params = builtinPathParams(name)
+	}
+	if len(params) == 0 {
+		params = sdk.InferPathParams(def)
+	}
+	var m map[string]any
+	if json.Unmarshal([]byte(rawArgs), &m) != nil {
+		return nil // 参数不是对象:没有可裁定的路径面
+	}
+	if len(params) == 0 {
+		if def.PathParamsDeclared {
+			return nil
+		}
+		params = sniffPathParams(name, m)
+	}
+	var out []string
+	for _, pa := range params {
+		if pa.Access != sdk.PathWrite {
+			continue
+		}
+		paths, present, err := resolveParamPaths(name, pa, m)
+		if err != nil || !present {
+			continue
+		}
+		out = append(out, paths...)
+	}
+	return out
 }
 
 // expandHomeVars 把开头的 `$HOME`/`${HOME}`/`%USERPROFILE%` 换成真实家目录(写目标常这么写;
