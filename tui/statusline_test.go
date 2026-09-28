@@ -174,3 +174,99 @@ func TestStatuslineCommandRegistered(t *testing.T) {
 		}
 	}
 }
+
+// —— 角色状态栏段(第七十九批复查补)——
+// 角色是「环境事实」,与沙箱/审批同级:切完必须回读实际值,不能只在启动那一刻读一次。
+
+// fakeRoleSvc 最小 sdk.RoleService 替身(只实现状态栏用得到的两个方法)。
+type fakeRoleSvc struct {
+	current string
+	names   map[string]string
+}
+
+func (f *fakeRoleSvc) List() []sdk.RoleSpec {
+	out := make([]sdk.RoleSpec, 0, len(f.names))
+	for id, n := range f.names {
+		out = append(out, sdk.RoleSpec{ID: id, Name: n})
+	}
+	return out
+}
+
+func (f *fakeRoleSvc) Get(id string) (sdk.RoleSpec, bool) {
+	n, ok := f.names[id]
+	if !ok {
+		return sdk.RoleSpec{}, false
+	}
+	return sdk.RoleSpec{ID: id, Name: n}, true
+}
+func (f *fakeRoleSvc) Current() string     { return f.current }
+func (f *fakeRoleSvc) Use(id string) error { f.current = id; return nil }
+func (f *fakeRoleSvc) Create(sdk.RoleSpec, string) (sdk.RoleSpec, error) {
+	return sdk.RoleSpec{}, nil
+}
+func (f *fakeRoleSvc) Update(id string, spec sdk.RoleSpec) (sdk.RoleSpec, error) { return spec, nil }
+func (f *fakeRoleSvc) Rename(string, string, string) (sdk.RoleSpec, error) {
+	return sdk.RoleSpec{}, nil
+}
+func (f *fakeRoleSvc) Delete(string) error            { return nil }
+func (f *fakeRoleSvc) SetAgents(string, string) error { return nil }
+func (f *fakeRoleSvc) MaxAgentsBytes() int            { return 32768 }
+func (f *fakeRoleSvc) Reload() error                  { return nil }
+
+// TestStatuslineRoleItem 有角色才渲染(空值不留占位);超长名截断。
+func TestStatuslineRoleItem(t *testing.T) {
+	if got := statuslineItem(&State{}, "role"); got != "" {
+		t.Fatalf("无角色该项应为空串(基线输出不得多一个占位): %q", got)
+	}
+	s := &State{Role: "财务(finance)"}
+	if got := stripColor(statuslineItem(s, "role")); got != "角色: 财务(finance)" {
+		t.Fatalf("角色段文案不对: %q", got)
+	}
+	// 无角色时整条状态栏与旧基线一致(只有 role 不进输出)
+	out := stripColor(renderStatusLine(&State{Workspace: "proj", Statusline: []string{"role", "workspace"}}, 0))
+	if out != " 工作区: proj" && !strings.HasPrefix(strings.TrimSpace(out), "工作区: proj") {
+		t.Fatalf("role 为空时不应产生分隔符: %q", out)
+	}
+	// 长名截断(角色名是用户自定长度,tui 不能让它撑爆一行)
+	long := &State{Role: strings.Repeat("N", 80)}
+	if n := len([]rune(stripColor(statuslineItem(long, "role")))); n > 48 {
+		t.Fatalf("角色段未截断: %d 列", n)
+	}
+}
+
+// TestRoleDisplayFollowsSwitch 切换后刷新:启动读一次 + 每条命令后回读。
+func TestRoleDisplayFollowsSwitch(t *testing.T) {
+	rs := &fakeRoleSvc{current: "finance", names: map[string]string{"finance": "财务", "writer": "撰稿人"}}
+	regs := newMemRegistry()
+	if _, err := regs.Register(sdk.CommandSpec{Name: "role", Desc: "x", Run: func(_ []string) (string, error) {
+		return "", rs.Use("writer")
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	a := NewApp(&stubCtx{svc: map[string]any{"ctx.roles": rs, "ctx.commands": regs}}, stubLoop{}, stubLLM{}, "tui")
+	if got := a.model.state.Role; got != "财务(finance)" {
+		t.Fatalf("启动应显示当前角色: %q", got)
+	}
+	if err := a.command("/role use writer"); err != nil {
+		t.Fatal(err)
+	}
+	if got := a.model.state.Role; got != "撰稿人(writer)" {
+		t.Fatalf("切换后状态栏应回读新角色: %q", got)
+	}
+	// 停用 → 段清空
+	rs.current = ""
+	a.refreshRoleDisplay()
+	if a.model.state.Role != "" {
+		t.Fatalf("停用角色后该段应清空: %q", a.model.state.Role)
+	}
+}
+
+// TestRoleDisplayDanglingRoleShowsID 角色定义读不到(被外部删掉)仍要说出"是谁":
+// 静默隐藏会让用户以为角色还在生效。
+func TestRoleDisplayDanglingRoleShowsID(t *testing.T) {
+	rs := &fakeRoleSvc{current: "ghost", names: map[string]string{}}
+	a := NewApp(&stubCtx{svc: map[string]any{"ctx.roles": rs}}, stubLoop{}, stubLLM{}, "tui")
+	if got := a.model.state.Role; got != "ghost" {
+		t.Fatalf("定义缺失时应回退显示 id(不能装作没角色): %q", got)
+	}
+}

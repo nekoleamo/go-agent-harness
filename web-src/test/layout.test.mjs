@@ -105,11 +105,14 @@ function makeStub(withProviders, longTokens = false, running = false, manyPlugin
       if (p.endsWith('/use')) return json({ ok: true, current: p.split('/')[3] })
       if (p.endsWith('/rename')) return json({ id: 'renamed' })
       if (route.request().method() === 'PATCH') {
+        // 回包故意夹一个「库里已经没有的技能名」(技能被删/改名后的残留):面板必须把它
+        // 显示成「已失效挂载」并能单独移除 —— 否则它既看不见也取消不掉。
+        const b = JSON.parse(route.request().postData() || '{}')
         return json({
           id: 'finance',
           name: 'Finance',
           skills_set: true,
-          skills: ['skill-alpha', 'skill-with-a-very-long-name-0123456789abcdef'],
+          skills: [...(b.skills ?? []), 'stale-skill-removed-0123456789abcdef'],
           agents_bytes: 21,
         })
       }
@@ -665,6 +668,21 @@ describe('布局护栏:整页永不滚动(第五十二/五十三批)', { skip: s
       assert.equal(pbody.skills_set, true, `挂载应带 skills_set=true:${patch.body}`)
       assert.ok(pbody.skills.includes('skill-alpha'), `挂载应带上被勾的技能:${patch.body}`)
 
+      // 失效挂载(库中已不存在的技能名)必须可见、可单独移除:后端对存量悬空名放行,
+      // 所以「移除」是一次正常的 PATCH,摘掉那一个名字、其余挂载不动。
+      await page.waitForSelector('[data-sec="role"] .m-item:has-text("stale-skill-removed-0123456789abcdef")')
+      await page.click(
+        '[data-sec="role"] .m-item:has-text("stale-skill-removed-0123456789abcdef") button:has-text("移除")',
+      )
+      await page.waitForTimeout(200)
+      const patches = stub.seen.filter((r) => r.method === 'PATCH' && r.path === '/api/roles/finance')
+      const last = JSON.parse(patches[patches.length - 1].body)
+      assert.ok(
+        !last.skills.includes('stale-skill-removed-0123456789abcdef'),
+        `移除未提交:${JSON.stringify(last)}`,
+      )
+      assert.ok(last.skills.includes('skill-alpha'), `移除不应动其它挂载:${JSON.stringify(last)}`)
+
       // 删除 = 有副作用 → 必须二次确认;取消后不得发请求
       const before = stub.seen.filter((r) => r.method === 'DELETE').length
       await page.click('[data-sec="role"] .prow:has-text("Assistant") button:has-text("删除")')
@@ -724,6 +742,9 @@ describe('布局护栏:整页永不滚动(第五十二/五十三批)', { skip: s
         await page.waitForSelector('[data-sec="role"] .prow')
         await page.click('[data-sec="role"] .prow:has-text("Finance-Analyst") button:has-text("编辑")')
         await page.waitForSelector('[data-sec="role"] textarea')
+        // 勾一项 → 切「替换」并把「失效挂载」长 token 一起带出来(那是面板里最长的用户输入)
+        await page.click('[data-sec="role"] .m-list .m-item input[type=checkbox]')
+        await page.waitForSelector('[data-sec="role"] .m-item:has-text("stale-skill-removed")')
         await page.waitForTimeout(200)
         const m = await page.evaluate(() => {
           const panel = document.querySelector('[aria-label="设置"]')

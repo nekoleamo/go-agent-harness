@@ -484,3 +484,53 @@ func TestStaleMountDoesNotBlockUpdate(t *testing.T) {
 		t.Fatalf("新增不存在的技能应显式失败: %v", err)
 	}
 }
+
+// TestDanglingActiveRoleIsExplicit 当前角色被外部删掉(目录不见了)时不得静默回落基线:
+// 偏好保留原 id、身份槽显式说明「本轮按基线运行」,技能可见集合 = 基线共享池。
+func TestDanglingActiveRoleIsExplicit(t *testing.T) {
+	h := newHarness(t, false)
+	writeSkillDoc(t, filepath.Join(h.home, "skills"), "shared-a", "共享技能")
+	if err := h.svc.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.svc.Create(sdk.RoleSpec{ID: "gone", Name: "会消失", Identity: "你是测试角色"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.svc.Use("gone"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(h.systemText(), "你是测试角色") {
+		t.Fatalf("切换后身份槽应生效")
+	}
+
+	// 绕过服务直接删目录(等价于用户手删 roles/gone/ 或回滚角色文件),再刷新
+	if err := os.RemoveAll(filepath.Join(h.home, "roles", "gone")); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.svc.Reload(); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := h.svc.Current(); got != "gone" {
+		t.Fatalf("不得静默改动用户偏好(Current 应仍是 gone): %q", got)
+	}
+	block := h.svc.BlockText()
+	if !strings.Contains(block, "gone") || !strings.Contains(block, "找不到") || !strings.Contains(block, "基线") {
+		t.Fatalf("身份槽应显式说明角色已失效并按基线运行: %q", block)
+	}
+	if !strings.Contains(h.systemText(), "找不到") {
+		t.Fatalf("悬空当前角色必须体现在系统提示里(不静默降级)")
+	}
+	// 悬空 = 基线:共享技能仍可见,不掉能力
+	eff := h.svc.effectiveSkills("gone")
+	if len(eff) != 1 || eff[0] != "shared-a" {
+		t.Fatalf("悬空角色应回落到基线共享池: %v", eff)
+	}
+	// 重新选一个存在角色即恢复正常身份槽
+	if err := h.svc.Use(""); err != nil {
+		t.Fatal(err)
+	}
+	if h.svc.BlockText() != "" {
+		t.Fatalf("停用角色后身份槽应为空: %q", h.svc.BlockText())
+	}
+}

@@ -485,6 +485,21 @@ function useReplacePool(): void {
 function toggleInherit(on: boolean): void {
   void saveRoleDef({ skills_inherit: on })
 }
+// staleMounts 挂载清单里**库里已经不存在**的技能名(技能被删/改名后残留)。
+// 为什么要单列出来:下面的勾选列表只按「库里的技能」渲染,这些名字没有对应行 ⇒
+// 既看不见也取消不掉(勾选提交时会带着它们一起回去),只能靠切「默认池」绕。
+const staleMounts = computed(() => {
+  const d = roleDetail.value
+  if (!d || !d.skills_set) return []
+  const known = new Set(roleLib.value.map((s) => s.name))
+  return (d.skills ?? []).filter((n) => !known.has(n))
+})
+// removeStaleMount 把失效挂载从清单里清掉(后端只对**新增**未知名严格,存量悬空名放行)。
+function removeStaleMount(name: string): void {
+  const rest = (roleDetail.value?.skills ?? []).filter((n) => n !== name)
+  void saveRoleDef({ skills_set: true, skills: rest })
+}
+
 // skillsByRole 库技能按归属分组展示(共享库在前,各自角色私有在后)
 const skillsByRole = computed(() => {
   const groups = new Map<string, SkillInfo[]>()
@@ -1288,6 +1303,13 @@ watch(
                 </div>
               </template>
               <p v-if="!roleLib.length" class="dim">技能库为空：可在下方新建，或把技能放到 skills/&lt;名&gt;/SKILL.md。</p>
+            </div>
+            <div v-if="staleMounts.length" class="m-list">
+              <p class="dim">已失效挂载（技能已不存在）：保存其它改动不受影响，建议清掉。</p>
+              <div v-for="n in staleMounts" :key="'stale-' + n" class="m-item">
+                <span class="m-lab">{{ n }}</span>
+                <button class="ghost danger-text" data-tip="从挂载清单里移除这个名字" @click="removeStaleMount(n)">移除</button>
+              </div>
             </div>
 
             <!-- 技能原文编辑（覆盖写） -->

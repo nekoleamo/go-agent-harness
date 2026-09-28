@@ -72,6 +72,10 @@ func NewApp(c sdk.Ctx, loop sdk.AgentLoop, llm sdk.LLMService, profile string, p
 	if err := c.Inject("ctx.sandbox", &sb); err == nil && sb != nil {
 		state.Sandbox = sandboxDisplay(sb)
 	}
+	var rs sdk.RoleService
+	if err := c.Inject("ctx.roles", &rs); err == nil && rs != nil {
+		state.Role = roleDisplay(rs) // 角色是"环境事实",启动就在状态栏说清现在是谁
+	}
 	m := &Model{state: state}
 	a := &App{model: m, c: c, loop: loop, llm: llm, confirmCh: make(chan bool, 1)}
 	// M13 主题启动加载链:data.palette(装配层样板)→ theme.yaml(用户全局覆盖)→ 默认表。
@@ -592,6 +596,9 @@ func (a *App) command(raw string) error {
 	if err != nil {
 		return err
 	}
+	// 插件命令可能改了环境事实(/role use|none|rename|rm、/reload):状态栏段回读实际值,
+	// 否则切换完状态栏还写着旧角色(与 /sandbox 在同一条纪律上)。
+	a.refreshRoleDisplay()
 	if out != "" {
 		a.model.state.Lines = append(a.model.state.Lines, Line{Kind: "meta", Text: out})
 	}
@@ -690,6 +697,36 @@ func (a *App) sandboxOrNil() sdk.Sandbox {
 		return nil
 	}
 	return sb
+}
+
+// roleOrNil 宽松取角色服务(未装配返回 nil:状态栏角色段可降级,不影响其它段)。
+func (a *App) roleOrNil() sdk.RoleService {
+	var rs sdk.RoleService
+	if err := a.c.Inject("ctx.roles", &rs); err != nil {
+		return nil
+	}
+	return rs
+}
+
+// refreshRoleDisplay 刷新状态栏角色段(切换/改标识/删除角色后调用)。
+// 每次现取而非缓存服务:ctx.roles 由 host-roles 提供,与 ui 插件无拓扑顺序约束。
+func (a *App) refreshRoleDisplay() {
+	if rs := a.roleOrNil(); rs != nil {
+		a.model.state.Role = roleDisplay(rs)
+	}
+}
+
+// roleDisplay 状态栏角色段文本「名(id)」。显示名取不到就退回 id(角色定义坏/已被删,
+// 此时 Current 仍会返回非空值 —— 显式说出它是谁,别让状态栏装作没这回事)。
+func roleDisplay(rs sdk.RoleService) string {
+	id := rs.Current()
+	if id == "" {
+		return ""
+	}
+	if spec, ok := rs.Get(id); ok && spec.Name != "" {
+		return spec.Name + "(" + id + ")"
+	}
+	return id
 }
 
 // approvalMode 当前审批档(未装配返回空串;仅用于回显来源标注)。

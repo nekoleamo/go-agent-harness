@@ -59,6 +59,7 @@ type State struct {
 	selectAll      bool
 	Sandbox        string         // 沙箱档位显示(read-only|workspace-write|full-access)
 	Approval       string         // 审批档位显示(open|smart|strict)
+	Role           string         // 当前角色显示「名(id)」(空 = 未启用角色/未装配 ctx.roles)
 	PendingConfirm string         // 非空 = 有待确认的危险操作(确认弹层)
 	Questions      []PendingQ     // S-P0-2 待答提问栈(到达顺序,栈首=当前作答对象;空=无待答)
 	Answering      bool           // 输入框处于作答态(Enter=作答;Esc 退出作答态,提问仍在栈内)

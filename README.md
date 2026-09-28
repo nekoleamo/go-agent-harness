@@ -50,7 +50,7 @@ Go 实现的编程代理 Agent Harness:以**单静态二进制**交付全部能�
 | **外部插件桥** | host-bridge:独立进程插件(go-plugin),崩溃隔离(外部进程被杀宿主存活);宿主回调通道(GAH_CB_ADDR)供外部进程请求 tools/jobs/fanout 服务;工具类 100% 外部化(extplugins/) |
 | **插件安装** | `gah -install <repo>[@version]`(外部/桥插件)与 `-install-ui <repo|目录>`(UI 槽位插件)一条命令装完即启用 |
 | **指令文件与技能** | 全局/项目 AGENTS.md 自动注入(近者覆盖;`/reload` 热更);SKILL.md 技能扫描 + 模型按需加载(`list_skills`/`read_skill`);仓库自注册 `gah-plugin-dev` 技能 |
-| **角色切换** | `$GAH_HOME/roles/<id>/`(人设 + 工作规则 AGENTS.md + 私有技能),身份槽注入在固定引导之后、指令层之前(冲突时用户/项目优先);技能按角色挂载过滤(未挂载的读不到也列不出),`/role` 或**设置面板「角色」段**切换**即生效、不换会话**;5 个预置角色(通用助理/财务/小说家/编程大师/新闻撰稿人);角色/工作规则/技能挂载/技能库(含角色私有技能)都可在面板里增删改,状态栏显示当前角色;模型只有只读 `list_roles`/`read_role`(人格不可被模型自改),且写 `roles/**`、`skills/**`、全局 AGENTS.md 走审批面 |
+| **角色切换** | `$GAH_HOME/roles/<id>/`(人设 + 工作规则 AGENTS.md + 私有技能),身份槽注入在固定引导之后、指令层之前(冲突时用户/项目优先);技能按角色挂载过滤(未挂载的读不到也列不出),`/role` 或**设置面板「角色」段**切换**即生效、不换会话**;5 个预置角色(通用助理/财务/小说家/编程大师/新闻撰稿人);角色/工作规则/技能挂载/技能库(含角色私有技能)都可在面板里增删改,TUI 状态栏与 Web 底栏都显示当前角色;模型只有只读 `list_roles`/`read_role`(人格不可被模型自改),且写 `roles/**`、`skills/**`、全局 AGENTS.md 走审批面 |
 | **主题外部化** | `$GAH_HOME/config/themes/*.yaml` + `/theme` 运行期切换,零重编译换肤 |
 | **整体备份/恢复** | `/backup` 一键打包 GAH_HOME(config 含密钥/plugins/sessions/env.sh/偏好)→ 确定性 tar.gz;`list|restore`,恢复前自动先备份当前态 |
 | **配置自愈** | 启动失败自动回滚最近正常备份重试一次,坏配置不卡死 |
@@ -246,7 +246,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `/tree` | 会话分支树(会话全貌 + 可 fork 的提问点) |
 | `/name <显示名>` | 给当前会话加显示名(`-` 清除;状态栏/切换列表名优先) |
 | `/widgets on\|off` | 输入区上方 widget 区开关(宿主注册的动态信息行) |
-| `/statusline [项...]\|reset` | 状态栏项集合与顺序(TUI):无参=查看当前与可用项(`state/queue/questions/dock/notice/last/workspace/sandbox/approval/session`);给项即按序渲染(回合态项之间 `·`、其余 `|`),`reset` 恢复 F15.3 基线;偏好持久化(`gah-state.json`)重启生效 |
+| `/statusline [项...]\|reset` | 状态栏项集合与顺序(TUI):无参=查看当前与可用项(`state/queue/questions/dock/notice/last/workspace/sandbox/approval/role/session`);给项即按序渲染(回合态项之间 `·`、其余 `|`),`reset` 恢复 F15.3 基线;偏好持久化(`gah-state.json`)重启生效 |
 | `/traj` | 轨迹/可观测视图(TUI):以文本浮层呈现同一份会话事件账本的**回合 → 步 → 工具**投影(概览:回合数/总时长/累计 token 与缓存占比;逐回合倒序:时长与结束原因、步数与工具数、失败/未回填计数、token、模型名;工具行:状态/耗时/出参体积/错误原文/参数摘要)。只呈现过程与成本,不铺出参与正文;**时长只取事件时间戳,进行中的回合/步/工具一律显「进行中」**(概览改显「计算中」),不拿本地时钟补齐;浮层复用文本 pager(滚动/横移/搜索/`q` 关闭),Web 侧对应轨迹视图按钮 |
 | `/notice` | 查看最近的提示(TUI,NOND-N1):以浮层列出进程内提示缓冲(最新在前:级别/时刻/来源 + 标题 + 正文),并显示缓冲 gap 与去重计数;未装配提示通道时显式报错 |
 | `/notify [test\|auto\|osc\|bell\|off]` | 系统级通知开关与自测(TUI,NOND-N2):无参=回显**当前会怎么发**(落点与原因)与用法;`test` 发一条测试通知;`auto` 按终端能力探测(kitty OSC 99 / WezTerm·VTE OSC 777 / iTerm2 等 OSC 9 / 响铃 / 未附着终端则只留状态栏)、`osc` 强制转义、`bell` 只响铃、`off` 关闭(零输出);`GAH_TUI_NOTIFY` 是持久开关(未设或写错值回落 `auto`)。**只有 `warn`/`error` 会打扰人**,`info` 只更新状态栏 |
@@ -440,6 +440,7 @@ export GAH_MCP_COMMANDS="deja=/opt/homebrew/bin/deja\ncodegraph=codegraph serve 
 
 - **指令**:全局 `$GAH_HOME/AGENTS.md` + 项目 `AGENTS.md`(近者覆盖远者;`AGENTS.override.md` 同级替换)——自动注入 system prompt,`/reload` 热更。
 - **技能**:项目 `.gah/skills/` + 全局 `$GAH_HOME/skills/` + 当前角色的 `roles/<id>/skills/`,SKILL.md 扫描(按角色挂载过滤);模型经 `list_skills`/`read_skill` 按需加载。
+- **「所有角色都生效」的全局层(现状即已具备)**:没有单独的「默认角色」实体,全局性由两层承担 —— **全局指令** `$GAH_HOME/AGENTS.md`(无角色、或角色未声明 `exclude_global` 时注入)与**共享技能库** `$GAH_HOME/skills/`(= 默认池:角色未写 `skills` 键即全部可见,写了 `skills` 则被替换、`skills_inherit: true` 再并回)。角色要「用不到某些全局内容」是**主动 opt-out**(`exclude_global` / `skills` 替换),不是默认排除。
 - **角色**:`$GAH_HOME/roles/<id>/` = `role.yaml`(名称/身份句/`exclude_global`/技能挂载)+ `AGENTS.md`(工作规则,上限 32 KiB 超限截断并标注)+ `skills/`(私有技能)。Web 设置面板「角色」段同样支持新建/改名/删除(进 `roles/.trash/`,当前角色拒绝删除)、编辑工作规则(带字节计数)、勾选技能挂载、新建与编辑技能(共享库或角色私有,删除进技能库 `.trash/`)。预置 5 个可直接 `/role use`;技能未写 `skills` 键 = 默认池,写了 = 替换,`skills_inherit: true` = 替换后再并默认池;角色私有技能只增不减、对其它角色不可见(同名时私有压过共享库)。
 - **主题**:`$GAH_HOME/config/themes/*.yaml`(`/theme` 切换,零重编译;仓库自带 gruvbox-dark 样板)。
 

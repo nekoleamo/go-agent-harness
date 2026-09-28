@@ -114,7 +114,16 @@ func (s *Service) Refresh() []roles.Problem {
 	s.specs = specs
 	s.active = s.store.Active()
 	s.problems = probs
+	active := s.active
+	_, activeOK := specs[active]
 	s.mu.Unlock()
+	// 当前角色在磁盘上没了(外部删了目录、回滚了角色文件):不静默回落基线 ——
+	// 记一条警告日志,身份槽里显式说明(见 BlockText),状态栏/面板继续显示这个 id。
+	// 不改偏好:偏好是用户的状态,静默替他清掉下次他自己都查不出为什么角色没了。
+	if active != "" && !activeOK {
+		s.log().Warn("当前角色不存在:已按基线运行(未改动偏好)", "role", active,
+			"hint", "用 /role list 查看现有角色,或 /role use <id> 重新选择")
+	}
 	// 第二遍才算 EffectiveSkills:visibleFor 要读 s.specs(判"这个技能归不归我"),
 	// 在**旧**表上算会把刚改名/刚新建的角色自己的私有技能判成不可见(si.Role 已随
 	// 目录改名,旧表里没有新 id)。代价是多一次加锁 —— Refresh 不在热路径上。
@@ -355,8 +364,15 @@ func (s *Service) BlockText() string {
 	active := s.active
 	spec, ok := s.specs[active]
 	s.mu.RUnlock()
-	if !ok || active == "" {
+	if active == "" {
 		return ""
+	}
+	if !ok {
+		// 悬空当前角色(定义没了):显式说明已回落基线,别让模型/用户以为人设还在生效
+		// (与「缺失依赖显式失败,不静默降级」同一条纪律)。
+		return "当前角色:" + active + "\n" +
+			"(找不到这个角色的定义:本轮按基线运行 —— 只有全局与项目指令;" +
+			"请用 /role list 查看现有角色,或用 /role use <id> 重新选择)"
 	}
 	var sb strings.Builder
 	sb.WriteString("当前角色:")

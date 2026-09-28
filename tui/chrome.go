@@ -176,10 +176,10 @@ var statuslineCluster = map[string]bool{
 // defaultStatusline 基线默认项顺序(F15.3;不配置时逐字符等价旧输出)。
 // NOND-N1:notice 置首 —— 提示是「需要人回来」的信号,无提示时该项渲染空串,
 // 输出与旧基线逐字符一致。
-var defaultStatusline = []string{"notice", "state", "queue", "questions", "dock", "last", "workspace", "sandbox", "approval", "session"}
+var defaultStatusline = []string{"notice", "state", "queue", "questions", "dock", "last", "workspace", "sandbox", "approval", "role", "session"}
 
 // statuslineTokens 全部合法项(顺序无关;/statusline 错误提示与校验用)。
-var statuslineTokens = []string{"notice", "state", "queue", "questions", "dock", "last", "workspace", "sandbox", "approval", "session"}
+var statuslineTokens = []string{"notice", "state", "queue", "questions", "dock", "last", "workspace", "sandbox", "approval", "role", "session"}
 
 // statuslineTokenDesc 项说明(/statusline 无参与错误提示用)。
 var statuslineTokenDesc = map[string]string{
@@ -192,6 +192,7 @@ var statuslineTokenDesc = map[string]string{
 	"workspace": "工作区",
 	"sandbox":   "沙箱档位",
 	"approval":  "审批档位",
+	"role":      "当前角色(空 = 未启用;切换 /role use <id>)",
 	"session":   "会话名",
 }
 
@@ -266,6 +267,11 @@ func statuslineItem(s *State, token string) string {
 	case "approval":
 		if s.Approval != "" {
 			return styleStatus.Render("审批: " + approvalLabel(s.Approval))
+		}
+	case "role":
+		// 条件项:无角色(基线)时渲染空串 —— 与旧基线逐字符等价,不占位。
+		if s.Role != "" {
+			return styleStatus.Render("角色: " + truncWidthRunes(s.Role, 32))
 		}
 	case "session":
 		if s.Session != "" {
