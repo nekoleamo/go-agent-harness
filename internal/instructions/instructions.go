@@ -27,6 +27,10 @@ const (
 	MaxBytes = 32 * 1024
 )
 
+// ErrTooLarge 正文超上限(哨兵:调用方按它区分"用户要改小"与"盘写不进去" ——
+// 前者是 400,后者是 500,报错的状态码本身就在告诉面板"该提醒用户改内容"还是"该查环境")。
+var ErrTooLarge = errors.New("全局指令超上限")
+
 // Path 全局指令文件绝对路径($GAH_HOME/AGENTS.md;空数据根 → TempDir 兜底,由 sdk.Home 决定)。
 func Path() string { return filepath.Join(sdk.Home(), FileName) }
 
@@ -54,7 +58,7 @@ func Read() (string, bool, error) {
 // 本轮系统提示还是旧的 —— 那正是"保存了但不生效"的悬案。
 func Write(text string) error {
 	if len(text) > MaxBytes {
-		return fmt.Errorf("全局指令超上限:%d 字节 > %d 字节(会逐字进系统提示,请精简)", len(text), MaxBytes)
+		return fmt.Errorf("%w:%d 字节 > %d 字节(会逐字进系统提示,请精简)", ErrTooLarge, len(text), MaxBytes)
 	}
 	path := Path()
 	dir := filepath.Dir(path)

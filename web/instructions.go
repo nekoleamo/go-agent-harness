@@ -62,7 +62,13 @@ func (s *Server) handleInstructionsSave(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if err := instructions.Write(body.Text); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		// 超限 = 内容问题(400,面板会就地显示"请精简");写盘失败 = 环境问题(500,别让
+		// 用户以为是自己内容不对)。
+		code := http.StatusInternalServerError
+		if errors.Is(err, instructions.ErrTooLarge) {
+			code = http.StatusBadRequest
+		}
+		http.Error(w, err.Error(), code)
 		return
 	}
 	out := map[string]any{"ok": true, "bytes": len(body.Text), "applied": false}

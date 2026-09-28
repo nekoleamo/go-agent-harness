@@ -159,6 +159,35 @@ func TestInstructionsSaveRejectsOverMax(t *testing.T) {
 	}
 }
 
+// TestInstructionsReadErrorIs500 读不了(路径被目录占用)必须 500 且说明原因:
+// 不能把"读不出来"回成空正文 —— 那看起来就像"指令被清空了"。
+func TestInstructionsReadErrorIs500(t *testing.T) {
+	s, home := rolesServer(t, false)
+	if err := os.Mkdir(filepath.Join(home, instructions.FileName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	code, body := do(t, s, http.MethodGet, "/api/instructions", "")
+	if code != http.StatusInternalServerError || !strings.Contains(body, "全局指令读取失败") {
+		t.Fatalf("读失败应 500 且带语义: %d %s", code, body)
+	}
+}
+
+// TestInstructionsWriteEnvErrorIs500 盘写不进去(数据根被文件占住)是环境问题 → 500,
+// 不是 400 —— 400 会把这句错误变成"你的内容有问题"的暗示。
+func TestInstructionsWriteEnvErrorIs500(t *testing.T) {
+	base := t.TempDir()
+	notADir := filepath.Join(base, "notadir")
+	if err := os.WriteFile(notADir, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GAH_HOME", filepath.Join(notADir, "home"))
+	s, _ := newTestServer()
+	code, body := do(t, s, http.MethodPut, "/api/instructions", `{"text":"x"}`)
+	if code != http.StatusInternalServerError || !strings.Contains(body, "数据根不可写") {
+		t.Fatalf("环境失败应 500 且指出数据根: %d %s", code, body)
+	}
+}
+
 // TestInstructionsBadBody 坏请求体:400(不 panic、不写盘)。
 func TestInstructionsBadBody(t *testing.T) {
 	s, home := rolesServer(t, false)

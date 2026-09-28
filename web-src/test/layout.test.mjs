@@ -53,7 +53,7 @@ function startStatic(root) {
 // 越界放大到 521 个元素的场景。渲染不出内容不影响判定 —— 这里断言的是外壳几何,不是业务数据。
 // 文案一律 ASCII:CI 的 ubuntu 镜像只带 fonts-noto-color-emoji(**没有 CJK 字体**),中文会渲成
 // 豆腐块 —— 字形宽度差异不是我们要测的东西,别让它污染几何断言。
-function makeStub(withProviders, longTokens = false, running = false, manyPlugins = false, withRoles = false) {
+function makeStub(withProviders, longTokens = false, running = false, manyPlugins = false, withRoles = false, currentRole = 'finance') {
   // seen:记录写类请求(方法/路径/体),供角色面板用例断言「面板真的提交了」而不是只改了本地状态。
   const seen = []
   const handler = (route) => {
@@ -76,7 +76,8 @@ function makeStub(withProviders, longTokens = false, running = false, manyPlugin
       // 角色名/技能名故意用无空格长 token:那正是「面板多出一条横向滚动条」的触发器。
       if (route.request().method() === 'POST') return json({ id: 'new-role' })
       return json({
-        current: 'finance',
+        // currentRole 可注入:面板「默认(基线)」合成行与"当前角色悬空"提示都靠它构造(第八十一批 形态 B)。
+        current: currentRole,
         max_agents_bytes: 32768,
         roles: [
           {
@@ -131,6 +132,10 @@ function makeStub(withProviders, longTokens = false, running = false, manyPlugin
     if (p === '/api/instructions') {
       if (route.request().method() === 'PUT') {
         const b = JSON.parse(route.request().postData() || '{}')
+        // NO-RELOAD 标记 = 服务端"写盘成功但重载失败":面板必须如实说"未生效",不许报成功。
+        if ((b.text ?? '').includes('NO-RELOAD')) {
+          return json({ ok: true, bytes: (b.text ?? '').length, applied: false, warning: 'ctx.systemPrompt 未装配(缺 host-system-prompt 插件)' })
+        }
         return json({ ok: true, bytes: (b.text ?? '').length, applied: true })
       }
       // 正文用无空格长 ASCII token:全局指令是自由文本,与角色名/技能名同类 ——
@@ -638,9 +643,13 @@ describe('布局护栏:整页永不滚动(第五十二/五十三批)', { skip: s
       const rows = await page.evaluate(() =>
         Array.from(document.querySelectorAll('[data-sec="role"] .prow')).map((r) => r.textContent ?? ''),
       )
-      assert.equal(rows.length, 2, `角色行数不对:${rows.length}`)
-      assert.ok(rows[0].includes('当前'), '当前角色未标注「当前」')
-      assert.ok(rows[1].includes('切换'), '非当前角色应有「切换」按钮')
+      // 行数 = 真实角色 2 条 + 顶部合成的「默认（基线）」1 条(形态 B:不落盘,纯展示层)
+      assert.equal(rows.length, 3, `角色行数不对:${rows.length}`)
+      assert.ok(rows[0].includes('默认（基线）'), `顶部应是合成的基线行:${rows[0]}`)
+      assert.ok(!rows[0].includes('当前'), '当前是 finance,基线行不该标「当前」')
+      assert.ok(rows[0].includes('切换'), '基线不是当前态时应能一键切回')
+      assert.ok(rows[1].includes('当前'), '当前角色未标注「当前」')
+      assert.ok(rows[2].includes('切换'), '非当前角色应有「切换」按钮')
       // 段导航能到达(与其它段同一套 key→DOM 机制)
       await page.click('.nav-it:has-text("角色")')
       await page.waitForTimeout(400)
@@ -741,6 +750,9 @@ describe('布局护栏:整页永不滚动(第五十二/五十三批)', { skip: s
       assert.ok(val.includes('GLOBAL-INSTRUCTIONS-'), `未回填全局指令原文:${val.slice(0, 40)}`)
       // 改一段再保存:先弹确认;取消 → 不得发 PUT
       await page.fill('[data-sec="instr"] textarea', 'GLOBAL-EDIT-1\n')
+      // 计数必须跟着草稿走(14 字节):它同时是"保存前拦超限"的依据
+      const cnt = await page.textContent('[data-sec="instr"]')
+      assert.ok(cnt?.includes('当前 14 字节'), `字节计数未跟随草稿:${cnt?.slice(0, 160)}`)
       await page.click('[data-sec="instr"] button:has-text("保存全局指令")')
       await page.waitForSelector('[aria-label="操作确认"]')
       await page.click('[aria-label="操作确认"] button:has-text("取消")')
@@ -758,6 +770,114 @@ describe('布局护栏:整页永不滚动(第五十二/五十三批)', { skip: s
       const put = stub.seen.find((r) => r.method === 'PUT' && r.path === '/api/instructions')
       assert.ok(put, `保存未提交:${JSON.stringify(stub.seen)}`)
       assert.equal(JSON.parse(put.body).text, 'GLOBAL-EDIT-1\n', `PUT 体不对:${put.body}`)
+    } catch (e) {
+      await shoot(page, t.name)
+      throw e
+    } finally {
+      await ctx.close()
+    }
+  })
+
+  // "写了但没生效"不许谎报成功(第八十一批):文件确实落盘了,但跑在进程里的提示还是旧的 ——
+  // 这两种状态在界面上必须长得不一样(绿色成功文案 vs 黄框警示),否则用户以为改完就生效了。
+  test('设置面板:全局指令重载失败时给出警示而不是成功回执', async (t) => {
+    const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+    let page = null
+    try {
+      page = await open(ctx, makeStub(true, true, false, false, true), docks[0].dock)
+      await page.click('.gear')
+      await page.waitForSelector('[data-sec="instr"]')
+      await page.click('[data-sec="instr"] button:has-text("编辑")')
+      await page.waitForSelector('[data-sec="instr"] textarea')
+      await page.fill('[data-sec="instr"] textarea', 'NO-RELOAD')
+      await page.click('[data-sec="instr"] button:has-text("保存全局指令")')
+      await page.waitForSelector('[aria-label="操作确认"]')
+      await page.click('[aria-label="操作确认"] button:has-text("确认")')
+      await page.waitForSelector('[data-sec="instr"] .swarn')
+      const warn = await page.textContent('[data-sec="instr"] .swarn')
+      assert.ok(warn?.includes('未生效'), `警示文案应说清状态:${warn}`)
+      assert.ok(warn?.includes('ctx.systemPrompt 未装配'), `警示应带上服务端原因:${warn}`)
+      const sec = await page.textContent('[data-sec="instr"]')
+      assert.ok(!sec?.includes('已保存并生效'), `重载失败时不得出现成功回执:${sec?.slice(0, 160)}`)
+    } catch (e) {
+      await shoot(page, t.name)
+      throw e
+    } finally {
+      await ctx.close()
+    }
+  })
+
+  // 形态 B(第八十一批):基线态在列表里**有名字**且能一键切回 —— 此前"不启用角色"在面板里
+  // 是无形的(只有当前有角色时才出现的「停用当前角色」按钮),用户看不出基线意味着什么。
+  test('设置面板:默认（基线）行可一键切回,且不下发角色删除/编辑', async (t) => {
+    const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+    let page = null
+    try {
+      const stub = makeStub(true, true, false, false, true)
+      page = await open(ctx, stub, docks[1].dock)
+      await page.click('.gear')
+      await page.waitForSelector('[data-sec="role"] .prow')
+      // 点基线行的「切换」→ POST /api/roles/-/use(id 空),且请求体里不带 id(服务端认 "-" 占位符)
+      await page.click('[data-sec="role"] .prow:has-text("默认（基线）") button:has-text("切换")')
+      await page.waitForTimeout(250)
+      const use = stub.seen.find((r) => r.method === 'POST' && r.path.endsWith('/use'))
+      assert.ok(use, `基线切换未提交:${JSON.stringify(stub.seen)}`)
+      assert.equal(use.path, '/api/roles/-/use', `基线切换的路径不对:${use.path}`)
+      // 基线行只该有「切换」:它是合成行,没有定义可改、没有东西可删
+      const acts = await page.evaluate(() =>
+        Array.from(document.querySelectorAll('[data-sec="role"] .prow')).find((r) => r.textContent?.includes('默认（基线）'))?.querySelector('.sacts')?.textContent?.trim() ?? '',
+      )
+      assert.equal(acts, '切换', `基线行按钮不对:${acts}`)
+    } catch (e) {
+      await shoot(page, t.name)
+      throw e
+    } finally {
+      await ctx.close()
+    }
+  })
+
+  // 基线态(current = ""):基线行自己标「当前」且不再给自己「切换」按钮
+  test('设置面板:基线态下「默认（基线）」标当前且无切换按钮', async (t) => {
+    const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+    let page = null
+    try {
+      page = await open(ctx, makeStub(true, true, false, false, true, ''), docks[1].dock)
+      await page.click('.gear')
+      await page.waitForSelector('[data-sec="role"] .prow')
+      const rows = await page.evaluate(() =>
+        Array.from(document.querySelectorAll('[data-sec="role"] .prow')).map((r) => r.textContent ?? ''),
+      )
+      assert.ok(rows[0].includes('当前'), `基线态下基线行应标「当前」:${rows[0]}`)
+      assert.ok(!rows[0].includes('切换'), `基线已是当前态,不该再给切换按钮:${rows[0]}`)
+      assert.ok(
+        rows.slice(1).every((r) => r.includes('切换')),
+        `基线态下所有真实角色都应可切换:${JSON.stringify(rows.slice(1))}`,
+      )
+    } catch (e) {
+      await shoot(page, t.name)
+      throw e
+    } finally {
+      await ctx.close()
+    }
+  })
+
+  // 悬空当前角色(偏好指向的角色目录被外部删了):面板不静默改偏好,但必须给说法与一键修复落点
+  test('设置面板:当前角色悬空时给出说明与切回基线入口', async (t) => {
+    const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+    let page = null
+    try {
+      page = await open(ctx, makeStub(true, true, false, false, true, 'ghost-role-deleted-outside'), docks[1].dock)
+      await page.click('.gear')
+      await page.waitForSelector('[data-sec="role"] .prow')
+      const txt = await page.textContent('[data-sec="role"]')
+      assert.ok(txt?.includes('已经不存在了'), `悬空态应有说明:${txt?.slice(0, 120)}`)
+      assert.ok(txt?.includes('ghost-role-deleted-outside'), '说明里应点名具体角色 id')
+      assert.ok(txt?.includes('本轮按基线运行'), '应说明当前实际运行形态')
+      const rows = await page.evaluate(() =>
+        Array.from(document.querySelectorAll('[data-sec="role"] .prow')).map((r) => r.textContent ?? ''),
+      )
+      assert.ok(rows[0].includes('切换'), '悬空态下基线行必须能一键切回')
+      assert.ok(!rows.some((r) => r.includes('当前')), `悬空态下不该有任何行标「当前」:${JSON.stringify(rows)}`)
     } catch (e) {
       await shoot(page, t.name)
       throw e

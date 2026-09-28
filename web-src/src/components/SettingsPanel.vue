@@ -4,6 +4,7 @@
 // 破坏性动作(删 provider、卸载插件、压缩)经全局确认条(askConfirm)。
 import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { api } from '../api'
+import { byteLength } from '../bytes'
 import { autostartState, checkUpdate, isDesktop, updateState, type UpdateSnapshot } from '../desktop'
 import { currentModelValue, modelOptionValue, withCurrentModel } from '../modelsel'
 import { settingSections } from '../registry'
@@ -304,7 +305,8 @@ const instrDraft = ref('')
 const instrEdit = ref(false)
 const instrErr = ref('')
 const instrMsg = ref('')
-const instrBytes = computed(() => instrDraft.value.length)
+const instrWarn = ref('') // 文件写了但本轮提示没跟着变(重载失败):成功样式会谎报"已生效'
+const instrBytes = computed(() => byteLength(instrDraft.value))
 
 // loadInstructions 拉全局指令(读失败 → 整段隐藏,不摆空壳;不覆盖正在编辑的草稿)
 async function loadInstructions(): Promise<void> {
@@ -329,16 +331,24 @@ async function loadInstructions(): Promise<void> {
 // 服务端回 warning = 文件写了但重载没成(本轮提示仍是旧内容),照实说,不谎报"已生效"。
 function saveInstructions(): void {
   const text = instrDraft.value
-  if (text.length > instrMax.value) {
-    instrErr.value = `全局指令超上限:${text.length} > ${instrMax.value} 字节(会逐字进系统提示,请精简)`
+  if (byteLength(text) > instrMax.value) {
+    instrErr.value = `全局指令超上限:${byteLength(text)} > ${instrMax.value} 字节(会逐字进系统提示,请精简)`
     return
   }
   guard('保存全局指令?(写入 ' + instrPath.value + ',对所有角色生效)', false, () => {
     instrErr.value = ''
+    instrMsg.value = ''
+    instrWarn.value = ''
     void (async () => {
       try {
         const r = await api.instructionsSave(text)
-        instrMsg.value = r.warning ? '文件已写入,但未生效:' + r.warning : '全局指令已保存并生效'
+        if (r.warning) {
+          instrMsg.value = ''
+          instrWarn.value = '文件已写入,但未生效:' + r.warning + '(面板显示的是磁盘上的内容)'
+        } else {
+          instrWarn.value = ''
+          instrMsg.value = '全局指令已保存并生效'
+        }
         instrEdit.value = false
         await loadInstructions()
       } catch (e) {
@@ -392,6 +402,20 @@ function roleIsCurrent(r: RoleSpec): boolean {
   return roleCurrent.value === r.id
 }
 
+// roleBaseline 当前处于"基线态"(没有启用任何角色)= 列表顶部那条合成行是否标「当前」。
+// 为什么在列表里给它一个位置:基线不是"什么都没配",而是**确定的运行形态**(全局指令 +
+// 项目规则 + 默认技能池),它此前在面板里没有名字 —— 用户看不出"不启用角色"到底意味着什么,
+// 也找不到一键切回去的落点(只有底部一个「停用当前角色」,而且只在有角色时才出现)。
+// 它**只在展示层合成**:磁盘上没有任何对应实体(不落 role.yaml、不进 /api/roles 的 Roles),
+// 切换就是 POST /use 空 id(服务端认 "-" 占位符 → 清偏好)。
+const roleBaseline = computed(() => roleCurrent.value === '')
+
+// roleDangling 偏好里的当前角色在列表里找不到(角色目录被外部删了 —— Store.Delete 拒绝删当前角色,
+// 所以只可能是外部删文件)。这里**不静默改偏好**(偏好是用户状态,替他清掉下次他自己都查不出角色
+// 为什么没了),只把事实说清楚 + 给出合成行的「切换」作为一键修复落点;运行侧由 host-roles 的
+// BlockText 明示"本轮按基线运行"。
+const roleDangling = computed(() => !!roleCurrent.value && !roles.value.some((r) => r.id === roleCurrent.value))
+
 // selectRole 展开某角色的编辑区(列表不带正文,展开时才拉详情)/ 再点一次收起
 async function selectRole(r: RoleSpec): Promise<void> {
   if (selRole.value === r.id) {
@@ -433,8 +457,8 @@ function saveAgents(): void {
   const id = selRole.value
   const text = agentsDraft.value
   if (!id) return
-  if (text.length > roleMax.value) {
-    roleErr.value = `工作规则超上限:${text.length} > ${roleMax.value} 字节(会逐字进系统提示,请精简)`
+  if (byteLength(text) > roleMax.value) {
+    roleErr.value = `工作规则超上限:${byteLength(text)} > ${roleMax.value} 字节(会逐字进系统提示,请精简)`
     return
   }
   guard('保存「' + id + '」的工作规则?(写入 roles/' + id + '/AGENTS.md,下一轮系统提示生效)', false, async () => {
@@ -1216,6 +1240,7 @@ watch(
             全局 <span class="mono">AGENTS.md</span>（<span class="mono">{{ instrPath }}</span>）对<strong>所有</strong>角色生效：没有角色时注入，有角色时也注入（除非该角色声明了「不注入全局 AGENTS.md」）。
           </p>
           <div v-if="instrErr" class="serr">{{ instrErr }}</div>
+          <div v-if="instrWarn" class="swarn">{{ instrWarn }}</div>
           <p v-if="instrMsg" class="dim ok">{{ instrMsg }}</p>
           <p class="dim">
             {{ instrExists ? '当前 ' + instrBytes + ' 字节' : '还没有这份文件（保存即创建）' }}／上限 {{ instrMax }} 字节
@@ -1241,7 +1266,7 @@ watch(
             </button>
           </h3>
           <p class="dim">
-            角色 = 人设（身份句）+ 工作规则（AGENTS.md）+ 技能挂载。切换后<strong>下一轮</strong>生效，不换会话（回合历史与工作区都不动，与切换工作区不同）。
+            角色 = 人设（身份句）+ 工作规则（AGENTS.md）+ 技能挂载。切换后<strong>下一轮</strong>生效，不换会话（回合历史与工作区都不动，与切换工作区不同）。列表顶部「默认（基线）」= 不启用任何角色：全局指令 + 项目规则 + 默认技能池。
           </p>
           <div v-if="roleErr" class="serr">{{ roleErr }}</div>
           <p v-if="roleMsg" class="dim ok">{{ roleMsg }}</p>
@@ -1276,7 +1301,26 @@ watch(
             </div>
           </div>
 
+          <p v-if="roleDangling" class="dim">
+            偏好里的当前角色 <span class="mono">{{ roleCurrent }}</span> 已经不存在了（角色目录被外部删除），本轮按基线运行（只有全局与项目指令）；点下面「默认（基线）」的「切换」即可切回来。
+          </p>
+
           <div class="plist">
+            <!-- 合成行(不落盘):不启用角色也是一种确定的形态,给它一个名字与一键切回的落点 -->
+            <div class="prow scrow" :class="{ off: !roleBaseline }">
+              <div class="pmain">
+                <span class="sname">
+                  默认（基线）
+                  <span class="sstate mono">none</span>
+                  <span v-if="roleBaseline" class="sstate ss-ok">当前</span>
+                </span>
+                <span class="psub">不注入角色设定：全局指令 + 项目规则</span>
+                <span class="psub">技能：默认池（全部共享技能）</span>
+              </div>
+              <div class="sacts">
+                <button v-if="!roleBaseline" class="ghost" data-tip="下一轮生效，不换会话" @click="useRole('')">切换</button>
+              </div>
+            </div>
             <div v-for="r in roles" :key="r.id" class="prow scrow" :class="{ off: !roleIsCurrent(r) }">
               <div class="pmain">
                 <span class="sname">
@@ -1342,8 +1386,8 @@ watch(
 
             <label class="fld">
               <span class="fld-lab">
-                工作规则（AGENTS.md）{{ agentsDraft.length }} / {{ roleMax }} 字节
-                <span v-if="agentsDraft.length > roleMax" class="err-text">超出上限</span>
+                工作规则（AGENTS.md）{{ byteLength(agentsDraft) }} / {{ roleMax }} 字节
+                <span v-if="byteLength(agentsDraft) > roleMax" class="err-text">超出上限</span>
               </span>
               <textarea v-model="agentsDraft" class="inp mono" rows="8" placeholder="写这个角色的做事规程（逐字进系统提示，越短越省）"></textarea>
             </label>
@@ -1878,6 +1922,17 @@ watch(
   accent-color: var(--accent);
 }
 /* —— 定时计划(NOND-W4) —— */
+/* 警示(不是错误):文件已经写成功了,只是本轮提示还没跟上 —— 用红框会把"已保存"说成"失败"。 */
+.swarn {
+  color: var(--tool-strong);
+  background: var(--tool-soft);
+  border: 1px solid var(--tool-line);
+  border-radius: 6px;
+  font-size: 12px;
+  padding: 6px 8px;
+  margin-bottom: 8px;
+  word-break: break-word;
+}
 .serr {
   color: var(--err);
   background: var(--err-soft);
