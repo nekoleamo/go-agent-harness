@@ -1,5 +1,5 @@
 // REST 客户端(上行)+ 工具函数。核心交互纯 REST,不绕模板渲染。
-import type { AttachmentView, CommandOptionsResp, CommandView, DocTree, DocView, Job, McpView, ModelsAllResp, NoticePage, PluginInfo, ProviderInfo, RoleSpec, RolesView, Schedule, SessionEventsPage, SessionInfo, StateView, WorkspaceInfo } from './types'
+import type { AttachmentView, CommandOptionsResp, CommandView, DocTree, DocView, InstructionsView, Job, McpView, ModelsAllResp, NoticePage, PluginInfo, ProviderInfo, RoleSpec, RolesView, Schedule, SessionEventsPage, SessionInfo, StateView, WorkspaceInfo } from './types'
 
 const BASE = ''
 const json = {
@@ -172,6 +172,14 @@ export const api = {
   // —— 角色(第七十九批 1b;未装配 ctx.roles → 503,面板据此隐藏「角色」段) ——
   roles(): Promise<RolesView> {
     return req('/api/roles')
+  },
+  // instructions 全局指令读($GAH_HOME/AGENTS.md;缺文件 = 空 + exists:false,不是错误)
+  instructions(): Promise<InstructionsView> {
+    return req('/api/instructions')
+  },
+  // instructionsSave 覆盖写全局指令(PUT 后服务端会触发指令重载;warning 非空 = 文件已写但没生效)
+  instructionsSave(text: string): Promise<{ ok: true; bytes: number; applied: boolean; warning?: string }> {
+    return req('/api/instructions', { method: 'PUT', headers: json, body: JSON.stringify({ text }) })
   },
   // roleGet 详情(含 AGENTS.md 正文;列表接口不带正文,避免面板轮询拖大响应)
   roleGet(id: string): Promise<RoleSpec> {

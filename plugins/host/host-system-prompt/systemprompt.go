@@ -14,6 +14,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
+	"github.com/nekoleamo/go-agent-harness/internal/instructions"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -119,7 +120,8 @@ type instrCfg struct {
 func defaultInstrCfg() instrCfg { return instrCfg{global: true, project: true} }
 
 // globalInstructionsPath $GAH_HOME/AGENTS.md(空仅嵌入/单测 → TempDir,~/.gah 兜底已弃用)。
-func globalInstructionsPath() string { return filepath.Join(sdk.Home(), "AGENTS.md") }
+// 路径派生单点下沉 internal/instructions:面板写的就是这一份文件,两边各拼一次会漂移。
+func globalInstructionsPath() string { return instructions.Path() }
 
 // projectLevel 一个层级目录的指令来源(近者覆盖远者;override 同级替换)。
 type projectLevel struct {

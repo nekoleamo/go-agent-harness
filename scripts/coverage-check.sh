@@ -54,6 +54,7 @@ sdk 60
 internal/prefs 66
 internal/roles 74
 internal/skills 75
+internal/instructions 76
 internal/providerfile 72
 internal/kernelsandbox 50
 internal/kernelsandbox@linux 43

@@ -127,6 +127,7 @@ const navItems = computed(() => {
     { key: 'model', label: '模型' },
     { key: 'reason', label: '推理' },
   ]
+  if (instrReady.value) items.push({ key: 'instr', label: '指令' })
   if (roleReady.value) items.push({ key: 'role', label: '角色' })
   items.push(
     { key: 'history', label: '会话历史' },
@@ -288,6 +289,63 @@ async function applyCtl(body: { thinking?: string; sandbox?: string; approval?: 
   } catch (e) {
     err.value = (e as Error).message
   }
+}
+
+// —— 全局指令(第八十一批 · 形态 A) ——
+// $GAH_HOME/AGENTS.md 是"对所有角色生效"的基线层(角色未声明 exclude_global 时都注入),
+// 此前只能在文件系统上手改 —— 面板有角色级规则编辑器,却没有这一份全局的。
+// 纯文件读写,与 ctx.roles 是否装配无关(未装配角色服务时这一段照样能用)。
+const instrReady = ref(false)
+const instrPath = ref('')
+const instrMax = ref(32768)
+const instrExists = ref(false)
+const instrOver = ref(false) // 文件本身超限(手改的大文件):能看能改,但保存会被拒
+const instrDraft = ref('')
+const instrEdit = ref(false)
+const instrErr = ref('')
+const instrMsg = ref('')
+const instrBytes = computed(() => instrDraft.value.length)
+
+// loadInstructions 拉全局指令(读失败 → 整段隐藏,不摆空壳;不覆盖正在编辑的草稿)
+async function loadInstructions(): Promise<void> {
+  try {
+    const v = await api.instructions()
+    if (!v || typeof v.text !== 'string') {
+      instrReady.value = false
+      return
+    }
+    instrReady.value = true
+    instrPath.value = v.path
+    instrMax.value = v.max_bytes || 32768
+    instrExists.value = !!v.exists
+    instrOver.value = !!v.over
+    if (!instrEdit.value) instrDraft.value = v.text
+  } catch {
+    instrReady.value = false
+  }
+}
+
+// saveInstructions 保存全局指令:逐字进系统提示且影响所有角色 → 二次确认 + 上限前置校验。
+// 服务端回 warning = 文件写了但重载没成(本轮提示仍是旧内容),照实说,不谎报"已生效"。
+function saveInstructions(): void {
+  const text = instrDraft.value
+  if (text.length > instrMax.value) {
+    instrErr.value = `全局指令超上限:${text.length} > ${instrMax.value} 字节(会逐字进系统提示,请精简)`
+    return
+  }
+  guard('保存全局指令?(写入 ' + instrPath.value + ',对所有角色生效)', false, () => {
+    instrErr.value = ''
+    void (async () => {
+      try {
+        const r = await api.instructionsSave(text)
+        instrMsg.value = r.warning ? '文件已写入,但未生效:' + r.warning : '全局指令已保存并生效'
+        instrEdit.value = false
+        await loadInstructions()
+      } catch (e) {
+        instrErr.value = (e as Error).message
+      }
+    })()
+  })
 }
 
 // —— 角色(第七十九批 1b) ——
@@ -951,6 +1009,7 @@ function showInfo(s: string): void {
 onMounted(() => {
   void load()
   void loadMcp()
+  void loadInstructions()
   void loadRoles()
   window.addEventListener('keydown', onEsc, true)
 })
@@ -1145,6 +1204,35 @@ watch(
         <!-- 历史与压缩 -->
         <!-- 角色(第七十九批 1b):人设 + 工作规则(AGENTS.md)+ 技能挂载。
              未装配 ctx.roles 的环境整段不渲染(roleReady=false),导航项也一并隐藏。 -->
+        <!-- 全局指令(第八十一批):角色之外的基线层 —— 对所有角色生效,除非角色声明 exclude_global -->
+        <section v-if="instrReady" data-sec="instr" class="sec">
+          <h3 class="h">
+            指令
+            <button class="link" data-tip="编辑全局 AGENTS.md" @click="instrEdit = !instrEdit">
+              {{ instrEdit ? '收起' : '编辑' }}
+            </button>
+          </h3>
+          <p class="dim">
+            全局 <span class="mono">AGENTS.md</span>（<span class="mono">{{ instrPath }}</span>）对<strong>所有</strong>角色生效：没有角色时注入，有角色时也注入（除非该角色声明了「不注入全局 AGENTS.md」）。
+          </p>
+          <div v-if="instrErr" class="serr">{{ instrErr }}</div>
+          <p v-if="instrMsg" class="dim ok">{{ instrMsg }}</p>
+          <p class="dim">
+            {{ instrExists ? '当前 ' + instrBytes + ' 字节' : '还没有这份文件（保存即创建）' }}／上限 {{ instrMax }} 字节
+            <span v-if="instrOver">· 现有文件已超上限，保存会被拒</span>
+          </p>
+          <div v-if="instrEdit" class="add-form">
+            <label class="fld">
+              <span class="fld-lab">全局指令（原文，保存即覆盖）</span>
+              <textarea v-model="instrDraft" class="inp mono" rows="12"></textarea>
+            </label>
+            <div class="form-acts">
+              <button class="ghost solid" :disabled="busy" @click="saveInstructions">保存全局指令</button>
+              <button class="ghost" @click="instrEdit = false">取消</button>
+            </div>
+          </div>
+        </section>
+
         <section v-if="roleReady" data-sec="role" class="sec">
           <h3 class="h">
             角色

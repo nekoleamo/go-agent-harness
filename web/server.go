@@ -20,7 +20,9 @@
 //	GET/POST /api/providers … 多 provider;POST /api/reload 指令热更
 //	GET/POST /api/roles + GET/PATCH/DELETE /api/roles/{id} + PUT /api/roles/{id}/agents +
 //	POST /api/roles/{id}/rename|use 角色面板(第七十九批;未装配 ctx.roles → 503,面板整段隐藏);
-//	POST /api/skills + GET/DELETE /api/skills/{name}?role= 技能库(共享库 / 角色私有)
+//	POST /api/skills + GET/DELETE /api/skills/{name}?role= 技能库(共享库 / 角色私有);
+//	GET/PUT /api/instructions 全局指令 $GAH_HOME/AGENTS.md(第八十一批;PUT 后连带
+//	ReloadInstructions,重载失败 → 200 + warning)
 //	POST /api/shutdown 优雅停机(触发宿主 system/shutdown → DisposeAll;桌面壳/跨平台统一通道)
 //	POST /api/attachments 附件上传(multipart "file";流式/大小 20MB/类型白名单;落盘
 //	$GAH_HOME/attachments/<时间戳>/;GET /attachments/{...} 静态预览(同受鉴权门保护))
@@ -337,6 +339,8 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("PUT /api/roles/{id}/agents", s.handleRoleAgents)
 	mux.HandleFunc("POST /api/roles/{id}/rename", s.handleRoleRename)
 	mux.HandleFunc("POST /api/roles/{id}/use", s.handleRoleUse)
+	mux.HandleFunc("GET /api/instructions", s.handleInstructions)
+	mux.HandleFunc("PUT /api/instructions", s.handleInstructionsSave)
 	mux.HandleFunc("POST /api/skills", s.handleSkills)
 	mux.HandleFunc("GET /api/skills/{name}", s.handleSkillOne)
 	mux.HandleFunc("DELETE /api/skills/{name}", s.handleSkillOne)

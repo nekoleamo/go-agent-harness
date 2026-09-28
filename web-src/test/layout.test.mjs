@@ -128,6 +128,22 @@ function makeStub(withProviders, longTokens = false, running = false, manyPlugin
         agents_bytes: 96,
       })
     }
+    if (p === '/api/instructions') {
+      if (route.request().method() === 'PUT') {
+        const b = JSON.parse(route.request().postData() || '{}')
+        return json({ ok: true, bytes: (b.text ?? '').length, applied: true })
+      }
+      // 正文用无空格长 ASCII token:全局指令是自由文本,与角色名/技能名同类 ——
+      // 面板的横向滚动条高危位置。
+      return json({
+        path: '/tmp/gah-home/AGENTS.md',
+        text: 'GLOBAL-INSTRUCTIONS-' + 'x'.repeat(120) + '\nsecond line\n',
+        bytes: 141,
+        exists: true,
+        max_bytes: 32768,
+        over: false,
+      })
+    }
     if (p === '/api/skills') return json({ name: 'new-skill', path: '/tmp/skills/new-skill/SKILL.md' })
     if (p.startsWith('/api/skills/')) return json({ name: 'skill-alpha', content: '---\nname: skill-alpha\n---\nbody', path: '/tmp/skills/skill-alpha/SKILL.md' })
     if (p === '/api/state') {
@@ -706,6 +722,50 @@ describe('布局护栏:整页永不滚动(第五十二/五十三批)', { skip: s
     }
   })
 
+  // 全局指令(第八十一批):与角色段正交的一段 —— 它对**所有角色**生效(角色未声明
+  // exclude_global 时)。保存是覆盖写 + 二次确认;取消后不得发 PUT。
+  test('设置面板:全局指令可编辑、保存走二次确认、取消不发 PUT', async (t) => {
+    const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+    let page = null
+    try {
+      const stub = makeStub(true, true, false, false, true)
+      page = await open(ctx, stub, docks[0].dock)
+      await page.click('.gear')
+      await page.waitForSelector('[data-sec="instr"]')
+      // 导航项与段同键出现,且正文是拉回来的原文(不是本地写死的默认值)
+      const nav = await page.evaluate(() => Array.from(document.querySelectorAll('.nav-it')).map((b) => b.textContent?.trim() ?? ''))
+      assert.ok(nav.includes('指令'), `导航应有「指令」:${JSON.stringify(nav)}`)
+      await page.click('[data-sec="instr"] button:has-text("编辑")')
+      await page.waitForSelector('[data-sec="instr"] textarea')
+      const val = await page.inputValue('[data-sec="instr"] textarea')
+      assert.ok(val.includes('GLOBAL-INSTRUCTIONS-'), `未回填全局指令原文:${val.slice(0, 40)}`)
+      // 改一段再保存:先弹确认;取消 → 不得发 PUT
+      await page.fill('[data-sec="instr"] textarea', 'GLOBAL-EDIT-1\n')
+      await page.click('[data-sec="instr"] button:has-text("保存全局指令")')
+      await page.waitForSelector('[aria-label="操作确认"]')
+      await page.click('[aria-label="操作确认"] button:has-text("取消")')
+      await page.waitForTimeout(150)
+      assert.equal(
+        stub.seen.filter((r) => r.method === 'PUT' && r.path === '/api/instructions').length,
+        0,
+        `取消确认后仍发出了 PUT:${JSON.stringify(stub.seen)}`,
+      )
+      // 确认 → PUT 体里是新文本
+      await page.click('[data-sec="instr"] button:has-text("保存全局指令")')
+      await page.waitForSelector('[aria-label="操作确认"]')
+      await page.click('[aria-label="操作确认"] button:has-text("确认")')
+      await page.waitForTimeout(200)
+      const put = stub.seen.find((r) => r.method === 'PUT' && r.path === '/api/instructions')
+      assert.ok(put, `保存未提交:${JSON.stringify(stub.seen)}`)
+      assert.equal(JSON.parse(put.body).text, 'GLOBAL-EDIT-1\n', `PUT 体不对:${put.body}`)
+    } catch (e) {
+      await shoot(page, t.name)
+      throw e
+    } finally {
+      await ctx.close()
+    }
+  })
+
   // 未装配 ctx.roles(真实后端 503)时整段隐藏:导航项与 section 都不出现,
   // 而不是渲染一个点不动的空壳(旧后端/裁剪装配下都会走到这条)。
   test('设置面板:未装配角色服务时「角色」段整段不出现', async (t) => {
@@ -732,6 +792,43 @@ describe('布局护栏:整页永不滚动(第五十二/五十三批)', { skip: s
   // 展开的角色编辑区里全是「用户输入的长 token」(角色名/技能名/技能描述)—— 面板横向滚动条的
   // 高危位置(与长路径/长命令同类)。窄窗口下再验一遍。
   for (const vp of [{ w: 1200, h: 800 }, { w: 820, h: 560 }]) {
+    test(`${vp.w}x${vp.h} 指令段展开编辑后仍不出横向滚动条`, async (t) => {
+      const ctx = await browser.newContext({ viewport: { width: vp.w, height: vp.h } })
+      let page = null
+      try {
+        page = await open(ctx, makeStub(true, true, false, false, true), docks[0].dock)
+        await page.click('.gear')
+        await page.waitForSelector('[data-sec="instr"]')
+        await page.click('[data-sec="instr"] button:has-text("编辑")')
+        await page.waitForSelector('[data-sec="instr"] textarea')
+        await page.waitForTimeout(200)
+        const m = await page.evaluate(() => {
+          const panel = document.querySelector('[aria-label="设置"]')
+          const body = panel.querySelector('.body')
+          const br = body.getBoundingClientRect()
+          const nm = (el) =>
+            el.tagName.toLowerCase() +
+            (typeof el.className === 'string' && el.className ? '.' + el.className.trim().split(/\s+/).slice(0, 2).join('.') : '')
+          const off = []
+          for (const el of body.querySelectorAll('[data-sec="instr"] *')) {
+            const bb = el.getBoundingClientRect()
+            if (bb.width === 0 && bb.height === 0) continue
+            if (bb.right > br.right + 1 || bb.left < br.left - 1) off.push(nm(el))
+          }
+          return { scrollW: body.scrollWidth, clientW: body.clientWidth, off: off.slice(0, 6) }
+        })
+        assert.ok(
+          m.scrollW <= m.clientW + 1,
+          `指令段展开了横向滚动条:scrollWidth=${m.scrollW} > clientWidth=${m.clientW};越界元素=${JSON.stringify(m.off)}`,
+        )
+      } catch (e) {
+        await shoot(page, t.name)
+        throw e
+      } finally {
+        await ctx.close()
+      }
+    })
+
     test(`${vp.w}x${vp.h} 角色段展开后仍不出横向滚动条`, async (t) => {
       const ctx = await browser.newContext({ viewport: { width: vp.w, height: vp.h } })
       let page = null

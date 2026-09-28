@@ -444,6 +444,16 @@ export interface SkillInfo {
   triggers?: string[]
   role?: string // 归属角色(空 = 共享技能库)
 }
+// InstructionsView 全局指令($GAH_HOME/AGENTS.md)只读视图(第八十一批)。
+// over = 手改超限的文件:能读能看,但面板保存会被拒(不静默截断用户的话)。
+export interface InstructionsView {
+  path: string
+  text: string
+  bytes: number
+  exists: boolean
+  max_bytes: number
+  over: boolean
+}
 export interface RolesView {
   current: string
   max_agents_bytes: number
