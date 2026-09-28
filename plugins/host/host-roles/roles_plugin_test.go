@@ -387,3 +387,100 @@ func TestBlockTextTruncation(t *testing.T) {
 		t.Fatalf("角色块超上限: %d 字节", cut)
 	}
 }
+
+// —— 角色目录变化后的技能索引一致性(第七十九批复查补)——
+// 三处都是"角色目录动了、索引没跟上/校验过严"造成的:私有技能是随角色目录走的。
+
+// TestRenameKeepsOwnSkillsVisible 改标识后,角色自己的私有技能不能失效。
+// (Rename 会连 skills/ 一起改名,索引里那些技能的归属还停在旧 id → visibleFor 判不可见)
+func TestRenameKeepsOwnSkillsVisible(t *testing.T) {
+	h := newHarness(t, false)
+	if _, err := h.svc.Create(sdk.RoleSpec{ID: "aa", Name: "AA"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	writeSkillDoc(t, filepath.Join(h.home, "roles", "aa", "skills"), "own-a", "私有A")
+	if err := h.svc.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if sp, _ := h.svc.Get("aa"); len(sp.OwnSkills) != 1 {
+		t.Fatalf("改名前的私有技能应被发现: %+v", sp.OwnSkills)
+	}
+	if _, err := h.svc.Rename("aa", "bb", "BB"); err != nil {
+		t.Fatal(err)
+	}
+	sp, ok := h.svc.Get("bb")
+	if !ok {
+		t.Fatal("改名后角色应存在")
+	}
+	if len(sp.OwnSkills) != 1 || len(sp.EffectiveSkills) != 1 {
+		t.Fatalf("改名后私有技能应对自己可见: own=%v effective=%v", sp.OwnSkills, sp.EffectiveSkills)
+	}
+}
+
+// TestDeleteDropsOwnSkillsFromIndex 删除角色后,它的私有技能不能再算「已加载」。
+// (整个角色目录进 .trash,索引不重扫就还留着 —— 面板会列出一条属于已删角色的技能)
+func TestDeleteDropsOwnSkillsFromIndex(t *testing.T) {
+	h := newHarness(t, false)
+	if _, err := h.svc.Create(sdk.RoleSpec{ID: "cc", Name: "CC"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	writeSkillDoc(t, filepath.Join(h.home, "roles", "cc", "skills"), "own-c", "私有C")
+	if err := h.svc.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.svc.Delete("cc"); err != nil {
+		t.Fatal(err)
+	}
+	for _, si := range h.svc.Skills() {
+		if si.Name == "own-c" {
+			t.Fatalf("已删角色的私有技能仍在索引里: %+v", si)
+		}
+	}
+	if got := h.svc.Skills(); len(got) != 0 { // 本用例只建了这一个技能
+		t.Fatalf("索引应已清空: %+v", got)
+	}
+}
+
+// TestStaleMountDoesNotBlockUpdate 挂载的技能被删后,该角色仍能保存(否则面板全量 400),
+// 但**新增**一个不存在的技能仍必须显式失败。
+func TestStaleMountDoesNotBlockUpdate(t *testing.T) {
+	h := newHarness(t, false)
+	writeSkillDoc(t, filepath.Join(h.home, "skills"), "gone", "将被删")
+	if err := h.svc.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.svc.Create(sdk.RoleSpec{
+		ID: "aa", Name: "AA", Skills: []string{"gone"}, SkillsSet: true,
+	}, ""); err != nil {
+		t.Fatal(err)
+	}
+	// 删技能(等价于面板 DELETE /api/skills + Rescan)→ 挂载变悬空
+	if err := os.RemoveAll(filepath.Join(h.home, "skills", "gone")); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.svc.Reload(); err != nil {
+		t.Fatal(err)
+	}
+
+	spec, _ := h.svc.Get("aa")
+	spec.Name = "改名"
+	updated, err := h.svc.Update("aa", spec)
+	if err != nil {
+		t.Fatalf("悬空挂载不应阻塞保存: %v", err)
+	}
+	if updated.Name != "改名" {
+		t.Fatalf("保存应生效: %+v", updated)
+	}
+	// 取消那条悬空挂载 = 自助修复路径,必须走得通
+	spec, _ = h.svc.Get("aa")
+	spec.Skills = nil
+	if _, err := h.svc.Update("aa", spec); err != nil {
+		t.Fatalf("应能清掉悬空挂载: %v", err)
+	}
+	// 反过来:新增未知名仍严格失败(严进宽出)
+	spec, _ = h.svc.Get("aa")
+	spec.SkillsSet, spec.Skills = true, []string{"nope"}
+	if _, err := h.svc.Update("aa", spec); err == nil || !strings.Contains(err.Error(), "技能不存在") {
+		t.Fatalf("新增不存在的技能应显式失败: %v", err)
+	}
+}

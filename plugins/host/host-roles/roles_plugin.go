@@ -108,13 +108,27 @@ func (s *Service) Refresh() []roles.Problem {
 		if err != nil {
 			continue // 坏文件已进 probs
 		}
-		spec.EffectiveSkills = s.effectiveSkills(spec.ID)
 		specs[spec.ID] = spec
 	}
 	s.mu.Lock()
 	s.specs = specs
 	s.active = s.store.Active()
 	s.problems = probs
+	s.mu.Unlock()
+	// 第二遍才算 EffectiveSkills:visibleFor 要读 s.specs(判"这个技能归不归我"),
+	// 在**旧**表上算会把刚改名/刚新建的角色自己的私有技能判成不可见(si.Role 已随
+	// 目录改名,旧表里没有新 id)。代价是多一次加锁 —— Refresh 不在热路径上。
+	eff := make(map[string][]string, len(specs))
+	for id := range specs {
+		eff[id] = s.effectiveSkills(id)
+	}
+	s.mu.Lock()
+	for id, names := range eff {
+		if sp, ok := s.specs[id]; ok {
+			sp.EffectiveSkills = names
+			s.specs[id] = sp
+		}
+	}
 	s.mu.Unlock()
 	return probs
 }
@@ -227,7 +241,7 @@ func (s *Service) Create(spec sdk.RoleSpec, agents string) (sdk.RoleSpec, error)
 	if err := s.skills.Rescan(); err != nil {
 		s.log().Warn("技能重扫失败", "err", err)
 	}
-	if err := s.validateSkills(spec); err != nil {
+	if err := s.validateSkills(nil, spec); err != nil { // 新建:全部按新增严格校验
 		return sdk.RoleSpec{}, err
 	}
 	if err := s.store.Create(spec, agents); err != nil {
@@ -239,7 +253,8 @@ func (s *Service) Create(spec sdk.RoleSpec, agents string) (sdk.RoleSpec, error)
 
 // Update 更新角色定义(ID 不可改;技能清单/身份句/显示名都可改)。
 func (s *Service) Update(id string, spec sdk.RoleSpec) (sdk.RoleSpec, error) {
-	if _, ok := s.Get(id); !ok {
+	prev, ok := s.Get(id) // 改动前的定义:挂载校验要拿它区分「新增」与「存量悬空」
+	if !ok {
 		return sdk.RoleSpec{}, fmt.Errorf("角色不存在:%s", id)
 	}
 	spec.ID = id
@@ -247,7 +262,7 @@ func (s *Service) Update(id string, spec sdk.RoleSpec) (sdk.RoleSpec, error) {
 	if err := s.skills.Rescan(); err != nil {
 		s.log().Warn("技能重扫失败", "err", err)
 	}
-	if err := s.validateSkills(spec); err != nil {
+	if err := s.validateSkills(&prev, spec); err != nil {
 		return sdk.RoleSpec{}, err
 	}
 	if err := s.store.Save(spec); err != nil {
@@ -271,19 +286,33 @@ func (s *Service) SetAgents(id, text string) error {
 }
 
 // Rename 改 ID / 显示名。
+//
+// 必须**重扫技能索引**:角色私有技能目录随角色目录一起改名(roles/<旧>/skills →
+// roles/<新>/skills),而索引里那些技能的归属(roleOf 取路径段)还停在旧 id ⇒
+// 重命名后该角色**自己的**私有技能会对它自己不可见(visibleFor: si.Role != roleID),
+// 直到下一次重扫才恢复 —— 实测踩到。
 func (s *Service) Rename(id, newID, newName string) (sdk.RoleSpec, error) {
 	spec, err := s.store.Rename(id, newID, newName)
 	if err != nil {
 		return sdk.RoleSpec{}, err
+	}
+	if err := s.skills.Rescan(); err != nil {
+		s.log().Warn("技能重扫失败", "err", err)
 	}
 	s.Refresh()
 	return s.mustGet(spec.ID)
 }
 
 // Delete 删除角色(移入回收站;当前角色拒绝)。
+//
+// 同样要重扫:整个角色目录(含 skills/)移进 .trash,索引若不重扫,那些技能会一直
+// 算「已加载」—— 面板技能库继续列出一条属于已删角色的技能,甚至能按旧 id 写回去。
 func (s *Service) Delete(id string) error {
 	if err := s.store.Delete(id); err != nil {
 		return err
+	}
+	if err := s.skills.Rescan(); err != nil {
+		s.log().Warn("技能重扫失败", "err", err)
 	}
 	s.Refresh()
 	return nil
@@ -407,8 +436,12 @@ func (s *Service) effectiveSkills(roleID string) []string {
 // Skills 全部已加载技能索引(面板勾选用;含归属角色)。
 func (s *Service) Skills() []sdk.SkillInfo { return s.skills.List() }
 
-// validateSkills 挂载清单里的技能名必须存在于技能库(或为角色私有技能),否则显式失败。
-func (s *Service) validateSkills(spec sdk.RoleSpec) error {
+// validateSkills 校验挂载清单:**本次新增**的技能名必须存在于技能库(或为角色私有技能),
+// 否则显式失败。existing = 改动前的定义(nil = 新建,全部按新增严格校验);
+// **改动前就有的悬空名放行** —— 技能被删/改名后那条挂载就成了库里的未知名,若一律拒,
+// 这个角色的任何一次保存(改显示名、改人设、甚至把那条挂载取消掉)都会 400
+// 「技能不存在」,面板从此编辑不了它(实测踩到)。严进宽出:新增严格,存量允许清理。
+func (s *Service) validateSkills(existing *sdk.RoleSpec, spec sdk.RoleSpec) error {
 	if !spec.SkillsSet || len(spec.Skills) == 0 {
 		return nil
 	}
@@ -418,8 +451,14 @@ func (s *Service) validateSkills(spec sdk.RoleSpec) error {
 			known[si.Name] = true
 		}
 	}
+	stale := map[string]bool{}
+	if existing != nil {
+		for _, n := range existing.Skills {
+			stale[n] = true
+		}
+	}
 	for _, n := range spec.Skills {
-		if !known[n] {
+		if !known[n] && !stale[n] {
 			return fmt.Errorf("技能不存在:%s(SkillsInherit/挂载只能引用已加载的技能)", n)
 		}
 	}
