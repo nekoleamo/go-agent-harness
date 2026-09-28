@@ -2,6 +2,7 @@
 package hostskills
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -155,7 +156,7 @@ func TestListSkillsToolHonorsFilter(t *testing.T) {
 		t.Fatal(err)
 	}
 	reg.SetFilter(func(si sdk.SkillInfo) bool { return si.Name == "skill-a" })
-	out, err := (&listSkills{reg: reg}).Execute(nil, "{}") //nolint:staticcheck // ctx 未用
+	out, err := (&listSkills{reg: reg}).Execute(context.Background(), "{}") // 工具不用 ctx 也不能传 nil(staticcheck SA1012)
 	if err != nil {
 		t.Fatal(err)
 	}
