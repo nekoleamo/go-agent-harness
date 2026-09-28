@@ -48,6 +48,11 @@ func (s *Scanner) Scan(dirs ...string) ([]Skill, error) {
 			if err != nil {
 				return nil // 目录不存在/无权限:跳过
 			}
+			// 点开头的目录一律不进:技能回收站(.trash:删除的技能移到这里,留着可恢复)、
+			// .git、编辑器临时目录 —— 否则“删掉的技能还在索引里”。根目录本身除外。
+			if d.IsDir() && path != dir && strings.HasPrefix(d.Name(), ".") {
+				return filepath.SkipDir
+			}
 			if d.IsDir() || d.Name() != "SKILL.md" {
 				return nil
 			}

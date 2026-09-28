@@ -219,8 +219,8 @@ func ownSkills(dir string) []string {
 	}
 	var out []string
 	for _, e := range entries {
-		if !e.IsDir() {
-			continue
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			continue // 回收站(.trash)等点开头目录不算技能
 		}
 		if _, err := os.Stat(filepath.Join(dir, SkillsDirName, e.Name(), "SKILL.md")); err != nil {
 			continue

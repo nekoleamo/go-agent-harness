@@ -18,6 +18,9 @@
 //	GET/POST /api/mcp MCP server 配置(NOND-M1 第 3 步:列表+状态 / 保存(=写 mcp.yaml)+重启插件重载)
 //	GET /api/plugins … 插件清单/加载/卸载;GET /api/models 聚合模型列表
 //	GET/POST /api/providers … 多 provider;POST /api/reload 指令热更
+//	GET/POST /api/roles + GET/PATCH/DELETE /api/roles/{id} + PUT /api/roles/{id}/agents +
+//	POST /api/roles/{id}/rename|use 角色面板(第七十九批;未装配 ctx.roles → 503,面板整段隐藏);
+//	POST /api/skills + GET/DELETE /api/skills/{name}?role= 技能库(共享库 / 角色私有)
 //	POST /api/shutdown 优雅停机(触发宿主 system/shutdown → DisposeAll;桌面壳/跨平台统一通道)
 //	POST /api/attachments 附件上传(multipart "file";流式/大小 20MB/类型白名单;落盘
 //	$GAH_HOME/attachments/<时间戳>/;GET /attachments/{...} 静态预览(同受鉴权门保护))
@@ -95,27 +98,30 @@ type Server struct {
 	question *QuestionService
 	log      *slog.Logger
 
-	loop     sdk.AgentLoop
-	sessions sdk.SessionLog
-	llm      sdk.LLMService
-	sb       sdk.Sandbox
-	ap       sdk.ApprovalService       // 可选(审批档位 M17:未装配时 state 省略/control 400)
-	bk       sdk.BackupService         // 可选(整体备份 M18:未装配时 /api/backup 503)
-	us       sdk.UsageStatsService     // 可选
-	cs       sdk.CwdSessions           // 可选
-	ss       sdk.SessionSummaryService // 可选(F3 会话概述;未装配则 summary 端点 503)
-	cmds     sdk.CommandRegistry       // 可选(未装配 = / 命令不可用)
-	tools    sdk.ToolRegistry          // 可选(工具清单/调用/todo 面板)
-	jobs     sdk.JobService            // 可选(后台任务)
-	sched    sdk.ScheduleService       // 可选(定时计划 NOND-W4;未装配 → /api/schedules 503)
-	notices  sdk.NoticeService         // 可选(提示通道 NOND-N1;未装配 → /api/notices 503)
-	extp     sdk.ExternalPlugins       // 可选(外部插件控制面 NOND-M1;未装配 = 保存 MCP 配置后需重启)
-	pm       sdk.PluginManager         // 可选(插件启停)
-	sp       sdk.SystemPromptService   // 可选(/reload 指令热更)
-	tc       sdk.TurnControl           // 可选(回合取消 /api/control cancel;未装配 = 503)
-	doc      sdk.DocService            // 可选(文档预览 D1:未装配 → /api/doc/* 503;懒解析见 docSvc)
-	ctx      sdk.Ctx                   // 宿主上下文(懒解析可选服务,避免装配顺序依赖)
-	docMu    sync.Mutex                // doc 懒解析互斥(并发首请求防数据竞争)
+	loop       sdk.AgentLoop
+	sessions   sdk.SessionLog
+	llm        sdk.LLMService
+	sb         sdk.Sandbox
+	ap         sdk.ApprovalService       // 可选(审批档位 M17:未装配时 state 省略/control 400)
+	bk         sdk.BackupService         // 可选(整体备份 M18:未装配时 /api/backup 503)
+	us         sdk.UsageStatsService     // 可选
+	cs         sdk.CwdSessions           // 可选
+	ss         sdk.SessionSummaryService // 可选(F3 会话概述;未装配则 summary 端点 503)
+	cmds       sdk.CommandRegistry       // 可选(未装配 = / 命令不可用)
+	tools      sdk.ToolRegistry          // 可选(工具清单/调用/todo 面板)
+	jobs       sdk.JobService            // 可选(后台任务)
+	sched      sdk.ScheduleService       // 可选(定时计划 NOND-W4;未装配 → /api/schedules 503)
+	notices    sdk.NoticeService         // 可选(提示通道 NOND-N1;未装配 → /api/notices 503)
+	extp       sdk.ExternalPlugins       // 可选(外部插件控制面 NOND-M1;未装配 = 保存 MCP 配置后需重启)
+	pm         sdk.PluginManager         // 可选(插件启停)
+	sp         sdk.SystemPromptService   // 可选(/reload 指令热更)
+	tc         sdk.TurnControl           // 可选(回合取消 /api/control cancel;未装配 = 503)
+	doc        sdk.DocService            // 可选(文档预览 D1:未装配 → /api/doc/* 503;懒解析见 docSvc)
+	roles      sdk.RoleService           // 可选(角色面板 1b:未装配 → /api/roles 503;懒解析见 roleSvc)
+	roleSkills sdk.SkillsService         // 可选(技能库/新建技能;懒解析同上)
+	ctx        sdk.Ctx                   // 宿主上下文(懒解析可选服务,避免装配顺序依赖)
+	docMu      sync.Mutex                // doc 懒解析互斥(并发首请求防数据竞争)
+	roleMu     sync.Mutex                // 角色/技能懒解析互斥(同上)
 
 	running     atomic.Bool
 	lifeMu      sync.Mutex // 守护 ln/http/closed:Listen/Start(插件)与 Shutdown(卸载)可并发
@@ -172,6 +178,10 @@ func (s *Server) Inject(c sdk.Ctx) error {
 	// ctx.doc 采用**懒解析**(见 docSvc):ui-web-app 与 host-docview 无拓扑依赖,
 	// 启动顺序不定 —— 启动期一次性 Inject 会恒为 nil(policy-guard ctx.confirm 同款时序坑)。
 	_ = c.Inject("ctx.doc", &s.doc)
+	// 角色/技能同款懒解析(见 roles.go 的 roleService):这里先试一次,host-roles/host-skills
+	// 已在位时省掉首个请求的探测;不在位(未启用/后启用)就留空,由懒解析在首次请求时补上。
+	_ = c.Inject("ctx.roles", &s.roles)
+	_ = c.Inject("ctx.skills", &s.roleSkills)
 	// running 状态:随 agent/status 事件驱动(回合开始 running,结束 idle)
 	unsub := c.Subscribe(sdk.EventAgentStatus, func(_ context.Context, ev *sdk.Event) error {
 		s.running.Store(ev.Payload == "running")
@@ -318,6 +328,18 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET /api/todo", s.handleTodo)
 	mux.HandleFunc("GET /api/backup", s.handleBackup)
 	mux.HandleFunc("POST /api/backup", s.handleBackup)
+	// 角色面板(第七十九批 1b):未装配 ctx.roles → 503(前端隐藏「角色」段)
+	mux.HandleFunc("GET /api/roles", s.handleRoles)
+	mux.HandleFunc("POST /api/roles", s.handleRoles)
+	mux.HandleFunc("GET /api/roles/{id}", s.handleRoleOne)
+	mux.HandleFunc("PATCH /api/roles/{id}", s.handleRoleOne)
+	mux.HandleFunc("DELETE /api/roles/{id}", s.handleRoleOne)
+	mux.HandleFunc("PUT /api/roles/{id}/agents", s.handleRoleAgents)
+	mux.HandleFunc("POST /api/roles/{id}/rename", s.handleRoleRename)
+	mux.HandleFunc("POST /api/roles/{id}/use", s.handleRoleUse)
+	mux.HandleFunc("POST /api/skills", s.handleSkills)
+	mux.HandleFunc("GET /api/skills/{name}", s.handleSkillOne)
+	mux.HandleFunc("DELETE /api/skills/{name}", s.handleSkillOne)
 	// 文档预览(D1):无条件注册,服务缺失时 503(前端据 503 隐藏入口)
 	mux.HandleFunc("GET /api/doc/preview", s.handleDocPreview)
 	mux.HandleFunc("GET /api/doc/raw", s.handleDocRaw)
@@ -691,12 +713,15 @@ type StateView struct {
 	// DataRoot/DataRootWritable:A-5#125 数据根可写性 —— 只读时前端出**页内提示条**
 	// (此前只有启动期 WARN/ERROR 日志,浏览器/壳里的用户看不到)。
 	// GAH_HOME 未注入(嵌入/单测)时两者都省略,不谎报可写。
-	DataRoot         string         `json:"data_root,omitempty"`
-	DataRootWritable *bool          `json:"data_root_writable,omitempty"`
-	Stats            sdk.UsageStats `json:"stats"`
-	Session          *SessionV      `json:"session,omitempty"`
-	Running          bool           `json:"running"`
-	Version          string         `json:"version"`
+	DataRoot         string `json:"data_root,omitempty"`
+	DataRootWritable *bool  `json:"data_root_writable,omitempty"`
+	// Role/RoleName:当前角色(第七十九批;未装配 ctx.roles 时省略 → 状态栏不显示徒标)
+	Role     string         `json:"role,omitempty"`
+	RoleName string         `json:"role_name,omitempty"`
+	Stats    sdk.UsageStats `json:"stats"`
+	Session  *SessionV      `json:"session,omitempty"`
+	Running  bool           `json:"running"`
+	Version  string         `json:"version"`
 }
 
 // SessionV 会话视图(host-cwd-sessions 未装配时省略)。
@@ -746,6 +771,16 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.cs != nil {
 		v.Session = &SessionV{ID: s.cs.CurrentSession(), Name: s.cs.SessionName(), Path: s.cs.Path(), Key: s.cs.Current()}
+	}
+	// 当前角色(可选能力):状态栏徒标只读展示;未装配/未启用 → 字段省略
+	if rs := s.roleService(); rs != nil {
+		if id := rs.Current(); id != "" {
+			v.Role = id
+			v.RoleName = id
+			if spec, ok := rs.Get(id); ok && spec.Name != "" {
+				v.RoleName = spec.Name
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, v)
 }

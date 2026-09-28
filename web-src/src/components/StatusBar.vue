@@ -49,6 +49,15 @@ const sandboxLabel = computed(() => {
 
 // 会话标识只在**未命名**时显示(命名会话侧栏有高亮、输入框也有「会话」按钮,底栏再显一次纯重复,
 // 且长会话名会把底栏一行挤变形);它唯一的真实价值是"这条消息进的是哪条"。
+// roleLabel 当前角色徽标(第七十九批):角色会改系统提示与技能可见集合,是"环境事实",
+// 属于本栏该放的东西。未启用角色时不占位(不显示"无角色")。
+const roleLabel = computed(() => {
+  const id = props.state.role
+  if (!id) return ''
+  const name = props.state.role_name
+  return name && name !== id ? `${name}(${id})` : id
+})
+
 const anonSession = computed(() => {
   const s = props.state.session
   if (!s || s.name) return ''
@@ -63,6 +72,15 @@ const anonSession = computed(() => {
       {{ state.running ? '运行中' : '就绪' }}
     </span>
     <span class="it faint">沙箱 {{ sandboxLabel }}</span>
+    <!-- 角色名是本栏唯一「用户自定长度」的字段:截断显示,全文在 tooltip 里 ——
+         不截断时长名字会把文字挤成多行(底栏从 22px 涨到 58px,真实测得)并把右侧挤出去。 -->
+    <span
+      v-if="roleLabel"
+      class="it faint role"
+      :data-tip="'当前角色:' + roleLabel + '(下一轮生效;可在设置面板切换)'"
+    >
+      角色 {{ roleLabel }}
+    </span>
     <span v-if="anonSession" class="it faint">未命名会话{{ anonSession }}</span>
     <span class="spacer" />
     <span class="conn" :class="props.conn">
@@ -82,6 +100,16 @@ const anonSession = computed(() => {
   align-items: center;
   gap: 12px;
   min-height: 22px;
+  /* 底栏是**单行**事实栏:窄窗口下该被截断的是角色名(能吃省略号),不是把
+     「沙箱/连接/用量」折成两行 —— 折行会让底栏从 22px 涨到 38/58px(实测 700/640px)。 */
+  white-space: nowrap;
+  /* min-width:0:底栏是状态栏槽位的 flex 项,默认的 min-width:auto(= 内容宽)会让它
+     拒绝收缩,于是窄窗口下把右侧按钮顶出屏幕。允许收缩后,亏空由 .role 的省略号吸收。 */
+  min-width: 0;
+}
+.bar > * {
+  /* 固定文案不参与挤压(挤压份额全部留给 .role;见下方 .role 的 flex-shrink:1) */
+  flex-shrink: 0;
 }
 .run {
   display: inline-flex;
@@ -116,6 +144,22 @@ const anonSession = computed(() => {
 .it.faint {
   color: var(--fg-faint);
   font-size: 12px;
+}
+.role {
+  /* inline-block + 上限宽度才能出省略号(inline 元素的 overflow 不生效) */
+  display: inline-block;
+  /* flex-basis 显式给 20ch:不给的话 flex 基准取"未截断的整串名字"(实测 484px),
+     它会吃掉全部压缩份额并触顶在 max-width,剩下的亏空转嫁给别的项(它们只能折行)。 */
+  flex-basis: 20ch;
+  max-width: 20ch;
+  /* 空间不够时由徽标先让,一直可以让到 0:可省略号的内容是唯一值得牺牲的,
+     连接状态/上下文用量/版本号(以及右侧按钮)都比"角色名显示全"更不可牺牲。 */
+  min-width: 0;
+  flex-shrink: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
 }
 .ctx {
   color: var(--fg-dim);

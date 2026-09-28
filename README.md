@@ -50,7 +50,7 @@ Go 实现的编程代理 Agent Harness:以**单静态二进制**交付全部能�
 | **外部插件桥** | host-bridge:独立进程插件(go-plugin),崩溃隔离(外部进程被杀宿主存活);宿主回调通道(GAH_CB_ADDR)供外部进程请求 tools/jobs/fanout 服务;工具类 100% 外部化(extplugins/) |
 | **插件安装** | `gah -install <repo>[@version]`(外部/桥插件)与 `-install-ui <repo|目录>`(UI 槽位插件)一条命令装完即启用 |
 | **指令文件与技能** | 全局/项目 AGENTS.md 自动注入(近者覆盖;`/reload` 热更);SKILL.md 技能扫描 + 模型按需加载(`list_skills`/`read_skill`);仓库自注册 `gah-plugin-dev` 技能 |
-| **角色切换** | `$GAH_HOME/roles/<id>/`(人设 + 工作规则 AGENTS.md + 私有技能),身份槽注入在固定引导之后、指令层之前(冲突时用户/项目优先);技能按角色挂载过滤(未挂载的读不到也列不出),`/role` 切换**即生效、不换会话**;5 个预置角色(通用助理/财务/小说家/编程大师/新闻撰稿人);模型只有只读 `list_roles`/`read_role`(人格不可被模型自改),且写 `roles/**`、`skills/**`、全局 AGENTS.md 走审批面 |
+| **角色切换** | `$GAH_HOME/roles/<id>/`(人设 + 工作规则 AGENTS.md + 私有技能),身份槽注入在固定引导之后、指令层之前(冲突时用户/项目优先);技能按角色挂载过滤(未挂载的读不到也列不出),`/role` 或**设置面板「角色」段**切换**即生效、不换会话**;5 个预置角色(通用助理/财务/小说家/编程大师/新闻撰稿人);角色/工作规则/技能挂载/技能库(含角色私有技能)都可在面板里增删改,状态栏显示当前角色;模型只有只读 `list_roles`/`read_role`(人格不可被模型自改),且写 `roles/**`、`skills/**`、全局 AGENTS.md 走审批面 |
 | **主题外部化** | `$GAH_HOME/config/themes/*.yaml` + `/theme` 运行期切换,零重编译换肤 |
 | **整体备份/恢复** | `/backup` 一键打包 GAH_HOME(config 含密钥/plugins/sessions/env.sh/偏好)→ 确定性 tar.gz;`list|restore`,恢复前自动先备份当前态 |
 | **配置自愈** | 启动失败自动回滚最近正常备份重试一次,坏配置不卡死 |
@@ -440,7 +440,7 @@ export GAH_MCP_COMMANDS="deja=/opt/homebrew/bin/deja\ncodegraph=codegraph serve 
 
 - **指令**:全局 `$GAH_HOME/AGENTS.md` + 项目 `AGENTS.md`(近者覆盖远者;`AGENTS.override.md` 同级替换)——自动注入 system prompt,`/reload` 热更。
 - **技能**:项目 `.gah/skills/` + 全局 `$GAH_HOME/skills/` + 当前角色的 `roles/<id>/skills/`,SKILL.md 扫描(按角色挂载过滤);模型经 `list_skills`/`read_skill` 按需加载。
-- **角色**:`$GAH_HOME/roles/<id>/` = `role.yaml`(名称/身份句/`exclude_global`/技能挂载)+ `AGENTS.md`(工作规则,上限 32 KiB 超限截断并标注)+ `skills/`(私有技能)。预置 5 个可直接 `/role use`;技能未写 `skills` 键 = 默认池,写了 = 替换,`skills_inherit: true` = 替换后再并默认池;角色私有技能只增不减、对其它角色不可见(同名时私有压过共享库)。
+- **角色**:`$GAH_HOME/roles/<id>/` = `role.yaml`(名称/身份句/`exclude_global`/技能挂载)+ `AGENTS.md`(工作规则,上限 32 KiB 超限截断并标注)+ `skills/`(私有技能)。Web 设置面板「角色」段同样支持新建/改名/删除(进 `roles/.trash/`,当前角色拒绝删除)、编辑工作规则(带字节计数)、勾选技能挂载、新建与编辑技能(共享库或角色私有,删除进技能库 `.trash/`)。预置 5 个可直接 `/role use`;技能未写 `skills` 键 = 默认池,写了 = 替换,`skills_inherit: true` = 替换后再并默认池;角色私有技能只增不减、对其它角色不可见(同名时私有压过共享库)。
 - **主题**:`$GAH_HOME/config/themes/*.yaml`(`/theme` 切换,零重编译;仓库自带 gruvbox-dark 样板)。
 
 ## 八、插件开发

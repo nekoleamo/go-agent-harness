@@ -53,12 +53,80 @@ function startStatic(root) {
 // 越界放大到 521 个元素的场景。渲染不出内容不影响判定 —— 这里断言的是外壳几何,不是业务数据。
 // 文案一律 ASCII:CI 的 ubuntu 镜像只带 fonts-noto-color-emoji(**没有 CJK 字体**),中文会渲成
 // 豆腐块 —— 字形宽度差异不是我们要测的东西,别让它污染几何断言。
-function makeStub(withProviders, longTokens = false, running = false, manyPlugins = false) {
-  return (route) => {
+function makeStub(withProviders, longTokens = false, running = false, manyPlugins = false, withRoles = false) {
+  // seen:记录写类请求(方法/路径/体),供角色面板用例断言「面板真的提交了」而不是只改了本地状态。
+  const seen = []
+  const handler = (route) => {
     const url = new URL(route.request().url())
     const p = url.pathname
     const json = (v, status = 200) =>
       route.fulfill({ status, contentType: 'application/json; charset=utf-8', body: JSON.stringify(v) })
+    if (route.request().method() !== 'GET') {
+      let body = ''
+      try {
+        body = route.request().postData() ?? ''
+      } catch {
+        body = ''
+      }
+      seen.push({ method: route.request().method(), path: p, body })
+    }
+    if (p === '/api/roles') {
+      // 未装配 ctx.roles 的环境:真实后端回 503 文本 → 面板应整段隐藏(导航项也不出现)。
+      if (!withRoles) return route.fulfill({ status: 503, contentType: 'text/plain; charset=utf-8', body: 'role service unavailable' })
+      // 角色名/技能名故意用无空格长 token:那正是「面板多出一条横向滚动条」的触发器。
+      if (route.request().method() === 'POST') return json({ id: 'new-role' })
+      return json({
+        current: 'finance',
+        max_agents_bytes: 32768,
+        roles: [
+          {
+            id: 'finance',
+            name: 'Finance-Analyst-With-A-Very-Long-Display-Name-0123456789abcdef',
+            description: 'Bookkeeping and reporting with a deliberately long ASCII description to stress panel wrapping',
+            identity: 'You are a senior finance analyst.',
+            exclude_global: true,
+            skills_set: false,
+            skills: [],
+            agents_bytes: 21,
+            seed: true,
+          },
+          { id: 'assistant', name: 'Assistant', description: '', identity: '', skills_set: true, skills: ['skill-alpha'], agents_bytes: 0 },
+        ],
+        library: [
+          { name: 'skill-alpha', description: 'Alpha skill description with a long ASCII tail 0123456789abcdef' },
+          { name: 'skill-with-a-very-long-name-0123456789abcdef', description: 'Another skill' },
+          { name: 'private-beta', description: 'Private skill of finance', role: 'finance' },
+        ],
+      })
+    }
+    if (p.startsWith('/api/roles/') && p.endsWith('/agents')) return json({ ok: true, bytes: 21 })
+    if (p.startsWith('/api/roles/')) {
+      if (route.request().method() === 'DELETE') return route.fulfill({ status: 200, body: '' })
+      if (p.endsWith('/use')) return json({ ok: true, current: p.split('/')[3] })
+      if (p.endsWith('/rename')) return json({ id: 'renamed' })
+      if (route.request().method() === 'PATCH') {
+        return json({
+          id: 'finance',
+          name: 'Finance',
+          skills_set: true,
+          skills: ['skill-alpha', 'skill-with-a-very-long-name-0123456789abcdef'],
+          agents_bytes: 21,
+        })
+      }
+      return json({
+        id: 'finance',
+        name: 'Finance',
+        identity: 'You are a senior finance analyst.',
+        description: 'Bookkeeping',
+        exclude_global: true,
+        skills_set: false,
+        skills: [],
+        agents: 'Always reconcile before reporting.\n'.repeat(3),
+        agents_bytes: 96,
+      })
+    }
+    if (p === '/api/skills') return json({ name: 'new-skill', path: '/tmp/skills/new-skill/SKILL.md' })
+    if (p.startsWith('/api/skills/')) return json({ name: 'skill-alpha', content: '---\nname: skill-alpha\n---\nbody', path: '/tmp/skills/skill-alpha/SKILL.md' })
     if (p === '/api/state') {
       return json({
         model: 'layout-guard/model',
@@ -67,6 +135,8 @@ function makeStub(withProviders, longTokens = false, running = false, manyPlugin
         // stats 内层字段不带 json tag(直接用 sdk.UsageStats 字段名)——必须 PascalCase,
         // 写成 snake_case 前端读不到(上下文会显示 '–',桩就与真实契约不一致了)。
         stats: { PromptTokens: 1200, CompletionTokens: 300, CachedTokens: 0, Requests: 3, LastPromptTokens: 1200, Window: 200000 },
+        // 角色徽标(第七十九批):状态栏多一个 "角色 <名>" 项 —— 长角色名不得把底栏挤变形。
+        ...(withRoles ? { role: 'finance', role_name: 'Finance-Analyst-With-A-Very-Long-Display-Name-0123456789abcdef' } : {}),
         running,
         version: 'layout-guard',
       })
@@ -152,6 +222,8 @@ function makeStub(withProviders, longTokens = false, running = false, manyPlugin
     if (p === '/api/doc/tree') return json({ entries: [] })
     return json([])
   }
+  handler.seen = seen
+  return handler
 }
 const apiStub = makeStub(true)
 
@@ -534,6 +606,187 @@ describe('布局护栏:整页永不滚动(第五十二/五十三批)', { skip: s
   // 浮层显隐动效(第七十七批):抽屉/停靠区不再是「啪」一下出现与消失。动效本身没法靠截图断言,
   // 这里钉它的两个可观测不变量 —— ① 退场那一瞬过渡确实挂在元素上(时长 > 0、透明度已在变);
   // ② 元素在退场期间仍留在 DOM(异步退场),过渡结束后必须清干净。删掉动效退回硬切,这条必红。
+  // 角色面板(第七十九批 1b):装配态可展开编辑、挂载技能即时提交、删除走全局二次确认。
+  // 这里钉的是**面板真的提交了** —— 只改本地状态的假保存(刷新即回)正是这类面板最容易犯的错。
+  test('设置面板:角色段可展开编辑、挂载即提交、删除进二次确认', async (t) => {
+    const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+    let page = null
+    try {
+      const stub = makeStub(true, true, false, false, true)
+      page = await open(ctx, stub, docks[1].dock)
+      await page.click('.gear')
+      await page.waitForSelector('[data-sec="role"] .prow')
+      const rows = await page.evaluate(() =>
+        Array.from(document.querySelectorAll('[data-sec="role"] .prow')).map((r) => r.textContent ?? ''),
+      )
+      assert.equal(rows.length, 2, `角色行数不对:${rows.length}`)
+      assert.ok(rows[0].includes('当前'), '当前角色未标注「当前」')
+      assert.ok(rows[1].includes('切换'), '非当前角色应有「切换」按钮')
+      // 段导航能到达(与其它段同一套 key→DOM 机制)
+      await page.click('.nav-it:has-text("角色")')
+      await page.waitForTimeout(400)
+      const nav = await page.evaluate(() => {
+        const panel = document.querySelector('[aria-label="设置"]')
+        const body = panel.querySelector('.body')
+        const sec = body.querySelector('section[data-sec="role"]')
+        return {
+          on: panel.querySelector('.nav-it.on')?.textContent?.trim() ?? '',
+          delta: Math.abs(sec.getBoundingClientRect().top - body.getBoundingClientRect().top),
+        }
+      })
+      assert.equal(nav.on, '角色', `高亮没落在「角色」上,而是「${nav.on}」`)
+      assert.ok(nav.delta <= 40, `「角色」段未对齐到内容区顶部:偏差 ${nav.delta}px`)
+
+      // 切换另一个角色 → POST /use
+      await page.click('[data-sec="role"] .prow:has-text("Assistant") button:has-text("切换")')
+      await page.waitForTimeout(200)
+      assert.ok(
+        stub.seen.some((r) => r.method === 'POST' && r.path === '/api/roles/assistant/use'),
+        `切换未提交到后端:${JSON.stringify(stub.seen)}`,
+      )
+
+      // 展开编辑:拉详情(正文只在展开时拉)+ 字节计数器按上限显示
+      await page.click('[data-sec="role"] .prow:has-text("Finance-Analyst") button:has-text("编辑")')
+      await page.waitForSelector('[data-sec="role"] textarea')
+      const detail = await page.evaluate(() => {
+        const sec = document.querySelector('[data-sec="role"]')
+        const l = Array.from(sec.querySelectorAll('.fld-lab')).find((x) => (x.textContent ?? '').includes('/ 32768'))
+        return { lab: l?.textContent?.trim() ?? '', ta: sec.querySelector('textarea')?.value?.length ?? 0 }
+      })
+      assert.match(detail.lab, /\/ 32768/, `工作规则未显示字节上限:「${detail.lab}」`)
+      assert.ok(detail.ta > 0, '展开后未回填 AGENTS.md 正文')
+
+      // 默认池 → 勾一个技能 = 切「替换」并把 skills 一起提交(只改本地会刷新即回)
+      await page.click('[data-sec="role"] .m-list .m-item input[type=checkbox]')
+      await page.waitForTimeout(200)
+      const patch = stub.seen.find((r) => r.method === 'PATCH' && r.path === '/api/roles/finance')
+      assert.ok(patch, `挂载未提交 PATCH:${JSON.stringify(stub.seen)}`)
+      const pbody = JSON.parse(patch.body)
+      assert.equal(pbody.skills_set, true, `挂载应带 skills_set=true:${patch.body}`)
+      assert.ok(pbody.skills.includes('skill-alpha'), `挂载应带上被勾的技能:${patch.body}`)
+
+      // 删除 = 有副作用 → 必须二次确认;取消后不得发请求
+      const before = stub.seen.filter((r) => r.method === 'DELETE').length
+      await page.click('[data-sec="role"] .prow:has-text("Assistant") button:has-text("删除")')
+      await page.waitForSelector('[aria-label="操作确认"]')
+      await page.click('[aria-label="操作确认"] button:has-text("取消")')
+      await page.waitForTimeout(150)
+      assert.equal(stub.seen.filter((r) => r.method === 'DELETE').length, before, '取消确认后仍发出了 DELETE')
+      await page.click('[data-sec="role"] .prow:has-text("Assistant") button:has-text("删除")')
+      await page.waitForSelector('[aria-label="操作确认"]')
+      await page.click('[aria-label="操作确认"] button:has-text("确认")')
+      await page.waitForTimeout(200)
+      assert.ok(
+        stub.seen.some((r) => r.method === 'DELETE' && r.path === '/api/roles/assistant'),
+        `确认后未删除:${JSON.stringify(stub.seen)}`,
+      )
+    } catch (e) {
+      await shoot(page, t.name)
+      throw e
+    } finally {
+      await ctx.close()
+    }
+  })
+
+  // 未装配 ctx.roles(真实后端 503)时整段隐藏:导航项与 section 都不出现,
+  // 而不是渲染一个点不动的空壳(旧后端/裁剪装配下都会走到这条)。
+  test('设置面板:未装配角色服务时「角色」段整段不出现', async (t) => {
+    const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+    let page = null
+    try {
+      page = await open(ctx, makeStub(true), docks[1].dock)
+      await page.click('.gear')
+      await page.waitForSelector('[aria-label="设置"] .nav-it')
+      const m = await page.evaluate(() => ({
+        nav: Array.from(document.querySelectorAll('[aria-label="设置"] .nav-it')).map((b) => b.textContent?.trim() ?? ''),
+        sec: !!document.querySelector('[data-sec="role"]'),
+      }))
+      assert.ok(!m.sec, '503 时不应渲染角色段')
+      assert.ok(!m.nav.includes('角色'), `503 时导航不应有「角色」:${JSON.stringify(m.nav)}`)
+    } catch (e) {
+      await shoot(page, t.name)
+      throw e
+    } finally {
+      await ctx.close()
+    }
+  })
+
+  // 展开的角色编辑区里全是「用户输入的长 token」(角色名/技能名/技能描述)—— 面板横向滚动条的
+  // 高危位置(与长路径/长命令同类)。窄窗口下再验一遍。
+  for (const vp of [{ w: 1200, h: 800 }, { w: 820, h: 560 }]) {
+    test(`${vp.w}x${vp.h} 角色段展开后仍不出横向滚动条`, async (t) => {
+      const ctx = await browser.newContext({ viewport: { width: vp.w, height: vp.h } })
+      let page = null
+      try {
+        // 停靠收起:窄窗口下打开停靠抽屉会盖住底栏右侧的设置按钮(与本用例无关的干扰)
+        page = await open(ctx, makeStub(true, true, false, false, true), docks[0].dock)
+        await page.click('.gear')
+        await page.waitForSelector('[data-sec="role"] .prow')
+        await page.click('[data-sec="role"] .prow:has-text("Finance-Analyst") button:has-text("编辑")')
+        await page.waitForSelector('[data-sec="role"] textarea')
+        await page.waitForTimeout(200)
+        const m = await page.evaluate(() => {
+          const panel = document.querySelector('[aria-label="设置"]')
+          const body = panel.querySelector('.body')
+          const br = body.getBoundingClientRect()
+          const nm = (el) =>
+            el.tagName.toLowerCase() +
+            (typeof el.className === 'string' && el.className ? '.' + el.className.trim().split(/\s+/).slice(0, 2).join('.') : '')
+          const off = []
+          for (const el of body.querySelectorAll('[data-sec="role"] *')) {
+            const bb = el.getBoundingClientRect()
+            if (bb.width === 0 && bb.height === 0) continue
+            if (bb.right > br.right + 1 || bb.left < br.left - 1) off.push(nm(el))
+          }
+          return { scrollW: body.scrollWidth, clientW: body.clientWidth, off: off.slice(0, 6) }
+        })
+        assert.ok(
+          m.scrollW <= m.clientW + 1,
+          `角色段展开了横向滚动条:scrollWidth=${m.scrollW} > clientWidth=${m.clientW};越界元素=${JSON.stringify(m.off)}`,
+        )
+      } catch (e) {
+        await shoot(page, t.name)
+        throw e
+      } finally {
+        await ctx.close()
+      }
+    })
+  }
+
+  // 状态栏角色徽标(第七十九批):角色名是底栏唯一「用户自定长度」的字段 ——
+  // 长名字必须截断(实测未截断时文字折成多行,底栏 22px → 58px,并把右侧按钮挤出去)。
+  for (const vp of [{ w: 1200, h: 800 }, { w: 820, h: 560 }, { w: 700, h: 460 }]) {
+    test(`${vp.w}x${vp.h} 状态栏角色徽标截断显示且不破坏整页不变量`, async (t) => {
+      const ctx = await browser.newContext({ viewport: { width: vp.w, height: vp.h } })
+      let page = null
+      try {
+        page = await open(ctx, makeStub(true, true, false, false, true), docks[0].dock)
+        const b = await page.evaluate(() => {
+          const bar = document.querySelector('.statusbar-slot .bar')
+          const badge = bar?.querySelector('.role')
+          return {
+            has: !!badge,
+            // 单行:未截断的溢出文字会把 .bar 撑高(min-height 22px)
+            h: bar ? Math.round(bar.getBoundingClientRect().height) : 0,
+            barOver: bar ? bar.scrollWidth - bar.clientWidth : 0,
+            // 长名字被省略:元素内文本比可见宽度长 ⇒ 出了省略号(而不是溢出到栏外)
+            badgeOver: badge ? badge.scrollWidth - badge.clientWidth : 0,
+          }
+        })
+        assert.ok(b.has, '状态栏未显示当前角色徽标')
+        assert.ok(b.h <= 26, `底栏被角色名撑成多行:高度 ${b.h}px(应 ≤ 26)`)
+        assert.ok(b.barOver <= 1, `底栏内容溢出 ${b.barOver}px(角色名未截断)`)
+        assert.ok(b.badgeOver > 0, '超长角色名未被截断(应出现省略号)')
+        assertInvariants(await measure(page))
+      } catch (e) {
+        await shoot(page, t.name)
+        throw e
+      } finally {
+        await ctx.close()
+      }
+    })
+  }
+
   test('浮层显隐带动效:设置抽屉与侧栏停靠区都不是硬切', async (t) => {
     // 显式声明不要 reduced-motion:宿主系统开了「减弱动效」时全局 CSS 会把时长压到 0.01ms,
     // 那时测的就不是我们的动效而是宿主偏好了。

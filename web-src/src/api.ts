@@ -1,5 +1,5 @@
 // REST 客户端(上行)+ 工具函数。核心交互纯 REST,不绕模板渲染。
-import type { AttachmentView, CommandOptionsResp, CommandView, DocTree, DocView, Job, McpView, ModelsAllResp, NoticePage, PluginInfo, ProviderInfo, Schedule, SessionEventsPage, SessionInfo, StateView, WorkspaceInfo } from './types'
+import type { AttachmentView, CommandOptionsResp, CommandView, DocTree, DocView, Job, McpView, ModelsAllResp, NoticePage, PluginInfo, ProviderInfo, RoleSpec, RolesView, Schedule, SessionEventsPage, SessionInfo, StateView, WorkspaceInfo } from './types'
 
 const BASE = ''
 const json = {
@@ -168,6 +168,44 @@ export const api = {
   },
   reload(): Promise<void> {
     return req('/api/reload', { method: 'POST', headers: json, body: '{}' })
+  },
+  // —— 角色(第七十九批 1b;未装配 ctx.roles → 503,面板据此隐藏「角色」段) ——
+  roles(): Promise<RolesView> {
+    return req('/api/roles')
+  },
+  // roleGet 详情(含 AGENTS.md 正文;列表接口不带正文,避免面板轮询拖大响应)
+  roleGet(id: string): Promise<RoleSpec> {
+    return req('/api/roles/' + encodeURIComponent(id))
+  },
+  roleCreate(p: { id: string; name?: string; description?: string; identity?: string; exclude_global?: boolean }): Promise<RoleSpec> {
+    return req('/api/roles', { method: 'POST', headers: json, body: JSON.stringify(p) })
+  },
+  // roleUpdate 部分更新(只改传了的字段;未传 = 保持现值)
+  roleUpdate(id: string, p: Partial<{ name: string; description: string; identity: string; exclude_global: boolean; skills_set: boolean; skills: string[]; skills_inherit: boolean }>): Promise<RoleSpec> {
+    return req('/api/roles/' + encodeURIComponent(id), { method: 'PATCH', headers: json, body: JSON.stringify(p) })
+  },
+  roleSetAgents(id: string, agents: string): Promise<{ ok: true; bytes: number }> {
+    return req('/api/roles/' + encodeURIComponent(id) + '/agents', { method: 'PUT', headers: json, body: JSON.stringify({ agents }) })
+  },
+  roleRename(id: string, p: { id?: string; name?: string }): Promise<RoleSpec> {
+    return req('/api/roles/' + encodeURIComponent(id) + '/rename', { method: 'POST', headers: json, body: JSON.stringify(p) })
+  },
+  // roleUse 切换(id 空 = 停用回基线角色);下一回合生效,**不换会话**
+  roleUse(id: string): Promise<{ ok: true; current: string }> {
+    return req('/api/roles/' + encodeURIComponent(id || '-') + '/use', { method: 'POST', headers: json, body: '{}' })
+  },
+  roleDelete(id: string): Promise<void> {
+    return req('/api/roles/' + encodeURIComponent(id), { method: 'DELETE' })
+  },
+  // 技能:role 空 = 共享库;传 content(原文)走原样写入,否则由服务端按表单拼 frontmatter
+  skillCreate(p: { role?: string; name: string; description?: string; triggers?: string[]; body?: string; content?: string; overwrite?: boolean }): Promise<{ name: string; path: string; warning?: string }> {
+    return req('/api/skills', { method: 'POST', headers: json, body: JSON.stringify(p) })
+  },
+  skillGet(name: string, role = ''): Promise<{ name: string; content: string; path: string }> {
+    return req('/api/skills/' + encodeURIComponent(name) + (role ? '?role=' + encodeURIComponent(role) : ''))
+  },
+  skillDelete(name: string, role = ''): Promise<void> {
+    return req('/api/skills/' + encodeURIComponent(name) + (role ? '?role=' + encodeURIComponent(role) : ''), { method: 'DELETE' })
   },
   // —— 文档预览(D1;/api/doc/*;未装配 503,前端据首次探测隐藏入口) ——
   docPreview(path: string, opts?: { page?: number; sheet?: number; max?: number }): Promise<DocView> {

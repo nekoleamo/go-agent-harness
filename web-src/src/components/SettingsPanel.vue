@@ -27,7 +27,7 @@ import {
   viewNotices,
   type McpDraft,
 } from '../mcp'
-import type { AskConfirm, McpServer, McpView, PluginInfo, ProviderInfo, ProviderModelGroup, Schedule, StateView } from '../types'
+import type { AskConfirm, McpServer, McpView, PluginInfo, ProviderInfo, ProviderModelGroup, RoleSpec, Schedule, SkillInfo, StateView } from '../types'
 
 const props = defineProps<{
   open: boolean
@@ -126,10 +126,13 @@ const navItems = computed(() => {
   const items: { key: string; label: string }[] = [
     { key: 'model', label: '模型' },
     { key: 'reason', label: '推理' },
+  ]
+  if (roleReady.value) items.push({ key: 'role', label: '角色' })
+  items.push(
     { key: 'history', label: '会话历史' },
     { key: 'provider', label: 'Provider' },
     { key: 'backup', label: '数据备份' },
-  ]
+  )
   if (schedReady.value) items.push({ key: 'schedule', label: '计划' })
   items.push({ key: 'mcp', label: 'MCP server' }, { key: 'plugin', label: '插件' })
   if (isDesktop) items.push({ key: 'about', label: '关于 gah' })
@@ -200,6 +203,7 @@ async function load(): Promise<void> {
     // 模型聚合/插件/provider 任一失败降级:非核心(如未装配 MultiProviderService → 501)
     const [m, pl, pr] = await Promise.allSettled([api.models(), api.plugins(), api.providers()])
     await loadBackups() // M18 备份列表(未装配降级静默)
+    await loadRoles() // 角色段(未装配 ctx.roles → roleReady=false,整段隐藏)
     if (m.status === 'fulfilled') models.value = m.value.providers ?? []
     if (pl.status === 'fulfilled') plugins.value = pl.value ?? []
     if (pr.status === 'fulfilled') providers.value = pr.value ?? []
@@ -284,6 +288,279 @@ async function applyCtl(body: { thinking?: string; sandbox?: string; approval?: 
   } catch (e) {
     err.value = (e as Error).message
   }
+}
+
+// —— 角色(第七十九批 1b) ——
+// 角色 = 人设(身份句)+ 工作规则(AGENTS.md)+ 技能挂载;后端未装配 ctx.roles 时整段隐藏。
+const roles = ref<RoleSpec[]>([])
+const roleLib = ref<SkillInfo[]>([])
+const roleCurrent = ref('')
+const roleMax = ref(32768)
+const roleProblems = ref<{ id: string; error: string }[]>([])
+const roleReady = ref(false) // 首次 /api/roles 拿到对象 = 该环境支持角色(503/形状不对 → 不渲染空壳)
+const roleErr = ref('')
+const roleMsg = ref('')
+const selRole = ref('') // 展开编辑的角色 id
+const roleDetail = ref<RoleSpec | null>(null)
+const agentsDraft = ref('')
+const roleIDDraft = ref('')
+const showRoleNew = ref(false)
+const rf = ref({ id: '', name: '', identity: '', description: '', exclude_global: false })
+const skNew = ref({ name: '', description: '', triggers: '', body: '', role: '' })
+const showSkillNew = ref(false)
+const skErr = ref('')
+const skEdit = ref<{ name: string; role: string; content: string } | null>(null)
+
+// loadRoles 拉角色列表 + 技能库(503 = 未装配 → 整段隐藏;其余错误照常提示)。
+async function loadRoles(): Promise<void> {
+  try {
+    const v = await api.roles()
+    if (!v || !Array.isArray(v.roles)) {
+      roleReady.value = false // 形状不对(旧后端/未装配):不渲染
+      return
+    }
+    roleReady.value = true
+    roles.value = v.roles
+    roleLib.value = v.library ?? []
+    roleCurrent.value = v.current ?? ''
+    roleMax.value = v.max_agents_bytes || 32768
+    roleProblems.value = v.problems ?? []
+  } catch {
+    roleReady.value = false // 503/网络错:静默隐藏(不把「这个环境没角色功能」当故障报)
+  }
+}
+// roleIsCurrent 当前角色高亮(切换是改状态但可一键切回,故不进确认弹层)
+function roleIsCurrent(r: RoleSpec): boolean {
+  return roleCurrent.value === r.id
+}
+
+// selectRole 展开某角色的编辑区(列表不带正文,展开时才拉详情)/ 再点一次收起
+async function selectRole(r: RoleSpec): Promise<void> {
+  if (selRole.value === r.id) {
+    selRole.value = ''
+    roleDetail.value = null
+    return
+  }
+  roleErr.value = ''
+  roleMsg.value = ''
+  try {
+    const d = await api.roleGet(r.id)
+    roleDetail.value = d
+    agentsDraft.value = d.agents ?? ''
+    roleIDDraft.value = d.id
+    skEdit.value = null
+    selRole.value = r.id
+  } catch (e) {
+    roleErr.value = (e as Error).message
+  }
+}
+
+// saveRoleDef 提交角色定义的部分更新(只传改动的字段;更新后同步列表与详情)
+async function saveRoleDef(patch: Parameters<typeof api.roleUpdate>[1]): Promise<void> {
+  const id = selRole.value
+  if (!id) return
+  roleErr.value = ''
+  try {
+    const d = await api.roleUpdate(id, patch)
+    roleDetail.value = { ...(roleDetail.value as RoleSpec), ...d, agents: agentsDraft.value }
+    await loadRoles()
+    roleMsg.value = '已保存'
+  } catch (e) {
+    roleErr.value = (e as Error).message
+  }
+}
+
+// saveAgents 保存工作规则(会逐字进系统提示 → 二次确认 + 上限提示)
+function saveAgents(): void {
+  const id = selRole.value
+  const text = agentsDraft.value
+  if (!id) return
+  if (text.length > roleMax.value) {
+    roleErr.value = `工作规则超上限:${text.length} > ${roleMax.value} 字节(会逐字进系统提示,请精简)`
+    return
+  }
+  guard('保存「' + id + '」的工作规则?(写入 roles/' + id + '/AGENTS.md,下一轮系统提示生效)', false, async () => {
+    roleErr.value = ''
+    try {
+      await api.roleSetAgents(id, text)
+      roleMsg.value = '工作规则已保存'
+      await loadRoles()
+    } catch (e) {
+      roleErr.value = (e as Error).message
+    }
+  })
+}
+
+// useRole 切换(空 id = 停用回基线)。不换会话 —— 回合历史与工作区都不动。
+function useRole(id: string): void {
+  roleErr.value = ''
+  void (async () => {
+    try {
+      await api.roleUse(id)
+      roleCurrent.value = id
+      roleMsg.value = id ? '已切换到「' + id + '」(下一轮生效,未改会话历史)' : '已停用角色(回到基线)'
+      emit('changed') // App 重新拉 /api/state → 状态栏徽标同步
+      await loadRoles()
+    } catch (e) {
+      roleErr.value = (e as Error).message
+    }
+  })()
+}
+
+// createRole 新建(可重复:ID 重复由后端显式报错)
+function createRole(): void {
+  roleErr.value = ''
+  void (async () => {
+    try {
+      await api.roleCreate({ ...rf.value })
+      roleMsg.value = '已新建角色「' + rf.value.id + '」(已给一份可改的规则模板)'
+      const id = rf.value.id
+      showRoleNew.value = false
+      rf.value = { id: '', name: '', identity: '', description: '', exclude_global: false }
+      await loadRoles()
+      if (id) await selectRole({ id } as RoleSpec)
+    } catch (e) {
+      roleErr.value = (e as Error).message
+    }
+  })()
+}
+
+// renameRole 改 ID(目录改名;当前角色会跟随)
+function renameRole(): void {
+  const id = selRole.value
+  const next = roleIDDraft.value.trim()
+  if (!id || next === id) return
+  guard('把角色 ' + id + ' 的标识改为 ' + next + '?(目录会改名,当前角色设置跟随)', false, async () => {
+    roleErr.value = ''
+    try {
+      const d = await api.roleRename(id, { id: next })
+      selRole.value = d.id
+      roleMsg.value = '已改标识:' + d.id
+      await loadRoles()
+      await selectRole(d)
+    } catch (e) {
+      roleErr.value = (e as Error).message
+    }
+  })
+}
+
+// deleteRole 删除(移入回收站;当前角色后端会拒)
+function deleteRole(r: RoleSpec): void {
+  guard('删除角色「' + r.name + '」?(移入 roles/.trash/,可恢复)', true, async () => {
+    roleErr.value = ''
+    try {
+      await api.roleDelete(r.id)
+      if (selRole.value === r.id) {
+        selRole.value = ''
+        roleDetail.value = null
+      }
+      roleMsg.value = '已删除「' + r.id + '」(在 roles/.trash/)'
+      await loadRoles()
+    } catch (e) {
+      roleErr.value = (e as Error).message
+    }
+  })
+}
+
+// —— 技能挂载 ——
+// 勾选即提交(可一键改回,不进确认弹层);「默认池 / 替换」是模式选择,同样即时。
+function mounted(r: RoleSpec | null, name: string): boolean {
+  return !!r?.skills?.includes(name)
+}
+async function toggleMount(name: string, on: boolean): Promise<void> {
+  const d = roleDetail.value
+  if (!d) return
+  const next = new Set(d.skills ?? [])
+  if (on) next.add(name)
+  else next.delete(name)
+  await saveRoleDef({ skills_set: true, skills: Array.from(next).sort() })
+  roleMsg.value = '挂载已更新(下一轮生效)'
+}
+function useDefaultPool(): void {
+  void saveRoleDef({ skills_set: false })
+}
+function useReplacePool(): void {
+  void saveRoleDef({ skills_set: true, skills: roleDetail.value?.skills ?? [] })
+}
+function toggleInherit(on: boolean): void {
+  void saveRoleDef({ skills_inherit: on })
+}
+// skillsByRole 库技能按归属分组展示(共享库在前,各自角色私有在后)
+const skillsByRole = computed(() => {
+  const groups = new Map<string, SkillInfo[]>()
+  for (const s of roleLib.value) {
+    const k = s.role ?? ''
+    if (!groups.has(k)) groups.set(k, [])
+    groups.get(k)!.push(s)
+  }
+  return Array.from(groups.entries()).sort((a, b) => (a[0] === '' ? -1 : b[0] === '' ? 1 : a[0].localeCompare(b[0])))
+})
+function groupLabel(role: string): string {
+  return role ? `角色私有 · ${role}` : '共享技能库'
+}
+// createSkill 新建技能(默认落共享库;展开角色详情时可勾选存为角色私有)
+function createSkill(): void {
+  skErr.value = ''
+  const t = skNew.value.triggers
+    .split(/[,，\n]/)
+    .map((x) => x.trim())
+    .filter(Boolean)
+  void (async () => {
+    try {
+      const r = await api.skillCreate({
+        role: skNew.value.role,
+        name: skNew.value.name.trim(),
+        description: skNew.value.description,
+        triggers: t,
+        body: skNew.value.body,
+        overwrite: false,
+      })
+      roleMsg.value = r.warning ? r.warning : '技能已创建:' + r.name
+      showSkillNew.value = false
+      skNew.value = { name: '', description: '', triggers: '', body: '', role: '' }
+      await loadRoles()
+      if (roleDetail.value) await selectRole({ id: roleDetail.value.id } as RoleSpec)
+    } catch (e) {
+      skErr.value = (e as Error).message
+    }
+  })()
+}
+// openSkill 读技能原文(编辑)
+async function openSkill(name: string, role: string): Promise<void> {
+  skErr.value = ''
+  try {
+    const r = await api.skillGet(name, role)
+    skEdit.value = { name, role, content: r.content }
+  } catch (e) {
+    skErr.value = (e as Error).message
+  }
+}
+function saveSkill(): void {
+  const e = skEdit.value
+  if (!e) return
+  guard('覆盖写入技能 ' + e.name + ' 的 SKILL.md?', false, async () => {
+    skErr.value = ''
+    try {
+      await api.skillCreate({ role: e.role, name: e.name, content: e.content, overwrite: true })
+      roleMsg.value = '技能已保存:' + e.name
+      skEdit.value = null
+      await loadRoles()
+    } catch (err) {
+      skErr.value = (err as Error).message
+    }
+  })
+}
+function deleteSkill(name: string, role: string): void {
+  guard('删除技能 ' + name + '?(移入技能库 .trash/,可恢复)', true, async () => {
+    skErr.value = ''
+    try {
+      await api.skillDelete(name, role)
+      roleMsg.value = '技能已删除:' + name
+      await loadRoles()
+    } catch (e) {
+      skErr.value = (e as Error).message
+    }
+  })
 }
 
 // —— 数据备份(M18) ——
@@ -659,6 +936,7 @@ function showInfo(s: string): void {
 onMounted(() => {
   void load()
   void loadMcp()
+  void loadRoles()
   window.addEventListener('keydown', onEsc, true)
 })
 onUnmounted(() => {
@@ -682,6 +960,7 @@ watch(
     void load()
     void loadSchedules()
     void loadMcp()
+    void loadRoles()
     // 外部定位(首启引导 'provider' / 状态栏版本号 'about' / 看板「管理计划」'schedule'):
     // 段键就是导航键(同写 data-sec),段不渲染时 jumpTo 静默跳过。
     if (props.focus) void nextTick(() => jumpTo(props.focus as string, false))
@@ -849,6 +1128,220 @@ watch(
         </section>
 
         <!-- 历史与压缩 -->
+        <!-- 角色(第七十九批 1b):人设 + 工作规则(AGENTS.md)+ 技能挂载。
+             未装配 ctx.roles 的环境整段不渲染(roleReady=false),导航项也一并隐藏。 -->
+        <section v-if="roleReady" data-sec="role" class="sec">
+          <h3 class="h">
+            角色
+            <button class="link" data-tip="新建一个角色" @click="showRoleNew = !showRoleNew">
+              {{ showRoleNew ? '收起' : '＋ 新建' }}
+            </button>
+          </h3>
+          <p class="dim">
+            角色 = 人设（身份句）+ 工作规则（AGENTS.md）+ 技能挂载。切换后<strong>下一轮</strong>生效，不换会话（回合历史与工作区都不动，与切换工作区不同）。
+          </p>
+          <div v-if="roleErr" class="serr">{{ roleErr }}</div>
+          <p v-if="roleMsg" class="dim ok">{{ roleMsg }}</p>
+          <p v-if="roleProblems.length" class="dim">
+            部分角色文件读不了（已跳过）：{{ roleProblems.map((p) => p.id).join('、') }}
+          </p>
+
+          <div v-if="showRoleNew" class="add-form">
+            <label class="fld">
+              <span class="fld-lab">标识（小写字母/数字/连字符）</span>
+              <input v-model="rf.id" class="inp mono" placeholder="finance" />
+            </label>
+            <label class="fld">
+              <span class="fld-lab">显示名（留空取标识）</span>
+              <input v-model="rf.name" class="inp" placeholder="财务分析" />
+            </label>
+            <label class="fld">
+              <span class="fld-lab">一句话定位（可选）</span>
+              <input v-model="rf.description" class="inp" placeholder="记账与报表分析" />
+            </label>
+            <label class="fld">
+              <span class="fld-lab">人设（身份句，一句话即可）</span>
+              <input v-model="rf.identity" class="inp" placeholder="你是资深财务分析师，先对齐口径再给数。" />
+            </label>
+            <label class="chk">
+              <input v-model="rf.exclude_global" type="checkbox" />
+              <span>不注入全局 AGENTS.md（非开发角色建议勾上）</span>
+            </label>
+            <p class="dim">新建后会同时生成一份可改的 AGENTS.md 模板（空文件不会进系统提示）。</p>
+            <div class="form-acts">
+              <button class="ghost solid" :disabled="busy || !rf.id" @click="createRole">创建角色</button>
+            </div>
+          </div>
+
+          <div class="plist">
+            <div v-for="r in roles" :key="r.id" class="prow scrow" :class="{ off: !roleIsCurrent(r) }">
+              <div class="pmain">
+                <span class="sname">
+                  {{ r.name || r.id }}
+                  <span class="sstate mono">{{ r.id }}</span>
+                  <span v-if="roleIsCurrent(r)" class="sstate ss-ok">当前</span>
+                  <span v-if="r.seed" class="sstate">预置</span>
+                </span>
+                <span v-if="r.description" class="psub">{{ r.description }}</span>
+                <span class="psub">
+                  技能：{{ r.skills_set ? (r.skills?.length ? r.skills.join('、') : '未挂载') : '默认池（全部库技能）' }}
+                  <span v-if="r.skills_inherit">+ 默认池</span>
+                </span>
+                <span v-if="r.exclude_global" class="psub">不注入全局 AGENTS.md</span>
+              </div>
+              <div class="sacts">
+                <button v-if="!roleIsCurrent(r)" class="ghost" data-tip="下一轮生效，不换会话" @click="useRole(r.id)">切换</button>
+                <button class="ghost" @click="selectRole(r)">{{ selRole === r.id ? '收起' : '编辑' }}</button>
+                <button class="ghost danger-text" data-tip="删除角色（需确认，移入回收站）" @click="deleteRole(r)">删除</button>
+              </div>
+            </div>
+            <p v-if="!roles.length" class="dim">
+              还没有角色：点上方「＋ 新建」建一个；首次启动会释放 5 个预置角色（助理 / 财务 / 小说家 / 编程大师 / 新闻撰稿人）。
+            </p>
+          </div>
+
+          <p v-if="roleCurrent" class="row acts">
+            <button class="ghost" data-tip="回到基线（不注入任何角色设定）" @click="useRole('')">停用当前角色</button>
+          </p>
+
+          <!-- 详情编辑（列表不带正文，展开时才拉） -->
+          <div v-if="roleDetail" class="role-detail">
+            <h3 class="h">编辑：{{ roleDetail.name || roleDetail.id }}</h3>
+            <div class="row">
+              <span class="lab-inline">显示名</span>
+              <input class="inp grow" :value="roleDetail.name" @change="(e) => (roleDetail!.name = (e.target as HTMLInputElement).value)" />
+            </div>
+            <div class="row">
+              <span class="lab-inline">一句话定位</span>
+              <input class="inp grow" :value="roleDetail.description" @change="(e) => (roleDetail!.description = (e.target as HTMLInputElement).value)" />
+            </div>
+            <div class="row">
+              <span class="lab-inline">人设</span>
+              <input class="inp grow" :value="roleDetail.identity" @change="(e) => (roleDetail!.identity = (e.target as HTMLInputElement).value)" />
+            </div>
+            <label class="chk">
+              <input
+                type="checkbox"
+                :checked="!!roleDetail.exclude_global"
+                @change="saveRoleDef({ exclude_global: ($event.target as HTMLInputElement).checked })"
+              />
+              <span>不注入全局 AGENTS.md</span>
+            </label>
+            <div class="row acts">
+              <button
+                class="ghost solid"
+                :disabled="busy"
+                @click="saveRoleDef({ name: roleDetail!.name, description: roleDetail!.description, identity: roleDetail!.identity })"
+              >
+                保存定义
+              </button>
+            </div>
+
+            <label class="fld">
+              <span class="fld-lab">
+                工作规则（AGENTS.md）{{ agentsDraft.length }} / {{ roleMax }} 字节
+                <span v-if="agentsDraft.length > roleMax" class="err-text">超出上限</span>
+              </span>
+              <textarea v-model="agentsDraft" class="inp mono" rows="8" placeholder="写这个角色的做事规程（逐字进系统提示，越短越省）"></textarea>
+            </label>
+            <div class="form-acts">
+              <button class="ghost solid" :disabled="busy || !selRole" @click="saveAgents">保存工作规则</button>
+            </div>
+
+            <div class="row">
+              <span class="lab-inline">改标识</span>
+              <input v-model="roleIDDraft" class="inp mono grow" />
+              <button class="ghost" :disabled="roleIDDraft.trim() === roleDetail.id || !roleIDDraft.trim()" @click="renameRole">改标识</button>
+            </div>
+            <p class="dim">改标识 = 角色目录改名（当前角色会跟着改）。</p>
+
+            <!-- 技能挂载 -->
+            <h3 class="h">技能挂载</h3>
+            <div class="row">
+              <span class="lab-inline">挂载方式</span>
+              <div class="seg">
+                <button class="seg-it" :class="{ on: !roleDetail.skills_set }" data-tip="不写 skills 键 = 用默认池（全部库技能）" @click="useDefaultPool">默认池</button>
+                <button class="seg-it" :class="{ on: roleDetail.skills_set }" data-tip="写了 skills 键 = 只挂勾选的" @click="useReplacePool">替换</button>
+              </div>
+            </div>
+            <label class="chk">
+              <input type="checkbox" :checked="!!roleDetail.skills_inherit" @change="toggleInherit(($event.target as HTMLInputElement).checked)" />
+              <span>再并入默认池（替换之外额外挂上全部库技能）</span>
+            </label>
+            <p class="dim">角色私有技能（roles/&lt;id&gt;/skills/）只增不减；同名技能按目录顺序首个生效，重名会在日志里告警。</p>
+            <div v-if="!roleDetail.skills_set" class="dim">当前为默认池，勾选任一项即切到「替换」。</div>
+            <div class="m-list">
+              <template v-for="[g, list] in skillsByRole" :key="g">
+                <p class="dim">{{ groupLabel(g) }}</p>
+                <div v-for="s in list" :key="(s.role || '') + '/' + s.name" class="m-item">
+                  <label class="chk grow">
+                    <input
+                      type="checkbox"
+                      :checked="mounted(roleDetail, s.name)"
+                      @change="toggleMount(s.name, ($event.target as HTMLInputElement).checked)"
+                    />
+                    <span class="m-lab">{{ s.name }}</span>
+                  </label>
+                  <span v-if="s.description" class="dim grow">{{ s.description }}</span>
+                  <button class="ghost" data-tip="看/改 SKILL.md 原文" @click="openSkill(s.name, s.role || '')">原文</button>
+                  <button class="ghost danger-text" data-tip="删除技能（需确认）" @click="deleteSkill(s.name, s.role || '')">删除</button>
+                </div>
+              </template>
+              <p v-if="!roleLib.length" class="dim">技能库为空：可在下方新建，或把技能放到 skills/&lt;名&gt;/SKILL.md。</p>
+            </div>
+
+            <!-- 技能原文编辑（覆盖写） -->
+            <div v-if="skEdit" class="add-form">
+              <label class="fld">
+                <span class="fld-lab">编辑 {{ skEdit.name }} 的 SKILL.md（原文，保存即覆盖）</span>
+                <textarea v-model="skEdit.content" class="inp mono" rows="10"></textarea>
+              </label>
+              <div class="form-acts">
+                <button class="ghost solid" :disabled="busy" @click="saveSkill">保存技能</button>
+                <button class="ghost" @click="skEdit = null">取消</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 新建技能（共享库 / 角色私有） -->
+          <h3 class="h">
+            技能库
+            <button class="link" data-tip="新建一个技能" @click="showSkillNew = !showSkillNew">
+              {{ showSkillNew ? '收起' : '＋ 新建技能' }}
+            </button>
+          </h3>
+          <div v-if="skErr" class="serr">{{ skErr }}</div>
+          <div v-if="showSkillNew" class="add-form">
+            <label class="fld">
+              <span class="fld-lab">名称（小写字母/数字/._-）</span>
+              <input v-model="skNew.name" class="inp mono" placeholder="weekly-report" />
+            </label>
+            <label class="fld">
+              <span class="fld-lab">什么时候用（触发词，逗号分隔）</span>
+              <input v-model="skNew.triggers" class="inp" placeholder="写周报, 汇总进度" />
+            </label>
+            <label class="fld">
+              <span class="fld-lab">做什么（一句话）</span>
+              <input v-model="skNew.description" class="inp" placeholder="按项目汇总本周进展与风险" />
+            </label>
+            <label class="fld">
+              <span class="fld-lab">正文（步骤）</span>
+              <textarea v-model="skNew.body" class="inp" rows="4" placeholder="1. 读本周提交…"></textarea>
+            </label>
+            <label class="fld">
+              <span class="fld-lab">放哪里</span>
+              <select v-model="skNew.role" class="sel">
+                <option value="">共享技能库（所有角色可见）</option>
+                <option v-for="r in roles" :key="r.id" :value="r.id">角色私有 · {{ r.name || r.id }}</option>
+              </select>
+            </label>
+            <div class="form-acts">
+              <button class="ghost solid" :disabled="busy || !skNew.name" @click="createSkill">创建技能</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- 会话历史 -->
         <section data-sec="history" class="sec">
           <h3 class="h">会话历史</h3>
           <div class="row">

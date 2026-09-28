@@ -172,6 +172,9 @@ export interface StateView {
   data_root_writable?: boolean
   stats: UsageStats
   session?: SessionView
+  // 当前角色(第七十九批;未装配 ctx.roles / 未启用角色时省略 → 不显示徽标)
+  role?: string
+  role_name?: string
   running: boolean
   version: string
 }
@@ -415,4 +418,36 @@ export interface McpView {
   reload_err?: string
   notes?: string[]
   search_total?: number
+}
+
+// —— 角色(第七十九批 1b;sdk.RoleSpec 原样 + 派生字段) ——
+export interface RoleSpec {
+  id: string
+  name: string
+  description?: string
+  identity?: string
+  // exclude_global:true = 不注入全局 AGENTS.md(非开发角色不想背满屏编码规范)
+  exclude_global?: boolean
+  // 技能挂载:skills_set 区分"没写这个键"(= 默认池全给)与"写了 []"(= 一个都不挂)
+  skills?: string[]
+  skills_set: boolean
+  skills_inherit?: boolean
+  agents?: string
+  agents_bytes: number
+  own_skills?: string[] // 角色私有技能(roles/<id>/skills/,只增不减)
+  effective_skills?: string[] // 切换后实际可见(服务端派生,只读展示)
+  seed?: boolean // 来自预置 seed(同样可改可删)
+}
+export interface SkillInfo {
+  name: string
+  description?: string
+  triggers?: string[]
+  role?: string // 归属角色(空 = 共享技能库)
+}
+export interface RolesView {
+  current: string
+  max_agents_bytes: number
+  roles: RoleSpec[]
+  library?: SkillInfo[]
+  problems?: { id: string; error: string }[]
 }
