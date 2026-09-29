@@ -53,12 +53,24 @@ function startStatic(root) {
 // 越界放大到 521 个元素的场景。渲染不出内容不影响判定 —— 这里断言的是外壳几何,不是业务数据。
 // 文案一律 ASCII:CI 的 ubuntu 镜像只带 fonts-noto-color-emoji(**没有 CJK 字体**),中文会渲成
 // 豆腐块 —— 字形宽度差异不是我们要测的东西,别让它污染几何断言。
-function makeStub(withProviders, longTokens = false, running = false, manyPlugins = false, withRoles = false, currentRole = 'finance') {
+function makeStub(
+  withProviders,
+  longTokens = false,
+  running = false,
+  manyPlugins = false,
+  withRoles = false,
+  currentRole = 'finance',
+  patchDelayMs = 0,
+) {
   // seen:记录写类请求(方法/路径/体),供角色面板用例断言「面板真的提交了」而不是只改了本地状态。
   const seen = []
-  const handler = (route) => {
+  const handler = async (route) => {
     const url = new URL(route.request().url())
     const p = url.pathname
+    // patchDelayMs:角色定义的 PATCH 拖一拍 —— 用来观测「在途禁用/串行提交」(默认 0,不影响其它用例)。
+    if (patchDelayMs && route.request().method() === 'PATCH') {
+      await new Promise((r) => setTimeout(r, patchDelayMs))
+    }
     const json = (v, status = 200) =>
       route.fulfill({ status, contentType: 'application/json; charset=utf-8', body: JSON.stringify(v) })
     if (route.request().method() !== 'GET') {
@@ -1103,6 +1115,153 @@ describe('布局护栏:整页永不滚动(第五十二/五十三批)', { skip: s
     }
   })
 
+  // 第八十九批三条(都是「静默失信」):① 改名不是换角色 —— 旧实现接一句 selectRole(d)
+  // 会撞「同 id = 收起」分支把编辑区收掉,再展开时服务端版本盖掉草稿;② 确认文案只列真会被
+  // 丢弃的项(全局指令不在「换目标」路径上);③ 同一个技能再点一次「原文」= 重读磁盘,
+  // 有草稿时必须先问(旧实现用 `!same` 把这一次跳过了)。
+  test('设置面板:改名不动草稿、确认文案不虚报、重复点「原文」要问', async (t) => {
+    const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+    let page = null
+    try {
+      const stub = makeStub(true, true, false, false, true)
+      page = await open(ctx, stub, docks[1].dock)
+      await page.click('.gear')
+      await page.waitForSelector('[data-sec="role"] .prow')
+      const agents = '[data-sec="role"] label.fld:has-text("工作规则") textarea'
+      await page.click('[data-sec="role"] .prow:has-text("Finance-Analyst") button:has-text("编辑")')
+      await page.waitForSelector(agents)
+      await page.fill(agents, 'DRAFT-SURVIVES-RENAME\n')
+      // 顺手给全局指令也留一份草稿:它**不会**被「换角色/改名」丢掉,故不该出现在确认文案里
+      await page.click('.nav-it:has-text("指令")')
+      await page.click('[data-sec="instr"] button:has-text("编辑")')
+      await page.fill('[data-sec="instr"] textarea', 'INSTR-DRAFT\n')
+
+      // 切到另一个角色:确认文案只该点名角色工作规则(技能无草稿),不许提全局指令
+      await page.click('.nav-it:has-text("角色")')
+      await page.click('[data-sec="role"] .prow:has-text("Assistant") button:has-text("编辑")')
+      await page.waitForSelector('[aria-label="操作确认"]')
+      const ask = (await page.textContent('[aria-label="操作确认"]')) ?? ''
+      assert.ok(ask.includes('工作规则'), `确认文案应点名会丢的角色草稿:${ask}`)
+      assert.ok(!ask.includes('全局指令'), `确认文案虚报了不会被丢的全局指令草稿:${ask}`)
+      await page.click('[aria-label="操作确认"] button:has-text("取消")')
+      await page.waitForTimeout(150)
+
+      // 改名:编辑区不许收起、草稿不许被服务端版本盖掉
+      await page.fill('[data-sec="role"] .row:has-text("改标识") input', 'finance-renamed')
+      await page.click('[data-sec="role"] button:has-text("改标识")')
+      await page.waitForSelector('[aria-label="操作确认"]')
+      await page.click('[aria-label="操作确认"] button:has-text("确认")')
+      await page.waitForTimeout(300)
+      assert.equal(await page.inputValue(agents), 'DRAFT-SURVIVES-RENAME\n', '改名把工作规则草稿冲掉了')
+      assert.ok(
+        ((await page.textContent('[data-sec="role"]')) ?? '').includes('未保存'),
+        '改名后不再标「未保存」= 草稿已经不在了',
+      )
+      // 新 id 已生效(改标识按钮回到禁用态:输入框与当前 id 一致)
+      assert.ok(await page.isDisabled('[data-sec="role"] button:has-text("改标识")'), '改标识未生效或输入框未跟上新 id')
+
+      // 同一个技能再点一次「原文」:重读磁盘会盖草稿 → 必须先问;取消后草稿原封不动
+      const skTa = '[data-sec="role"] .add-form:has-text("SKILL.md") textarea'
+      await page.click('[data-sec="role"] .m-item:has-text("skill-alpha") button:has-text("原文")')
+      await page.waitForSelector(skTa)
+      await page.fill(skTa, 'SKILL-DRAFT\n')
+      await page.click('[data-sec="role"] .m-item:has-text("skill-alpha") button:has-text("原文")')
+      await page.waitForSelector('[aria-label="操作确认"]')
+      const ask2 = (await page.textContent('[aria-label="操作确认"]')) ?? ''
+      assert.ok(ask2.includes('SKILL.md'), `重复点「原文」的确认文案应点名技能草稿:${ask2}`)
+      await page.click('[aria-label="操作确认"] button:has-text("取消")')
+      await page.waitForTimeout(150)
+      assert.equal(await page.inputValue(skTa), 'SKILL-DRAFT\n', '取消后技能草稿丢了')
+    } catch (e) {
+      await shoot(page, t.name)
+      throw e
+    } finally {
+      await ctx.close()
+    }
+  })
+
+  // 第八十九批:MCP server 配置也是「改了就长期生效」的东西,而每次打开面板都会 loadMcp()
+  // 重拉磁盘那一份 —— 不拦就是静默丢草稿(与三处文本框同口径)。
+  test('设置面板:MCP 草稿不被重拉覆盖(打开面板先问一声)', async (t) => {
+    const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+    let page = null
+    try {
+      const stub = makeStub(true, true, false, false, false)
+      page = await open(ctx, stub, docks[1].dock)
+      await page.click('.gear')
+      await page.click('.nav-it:has-text("MCP server")')
+      const cmd = '[data-sec="mcp"] label.fld:has-text("启动命令") input'
+      await page.waitForSelector(cmd)
+      await page.fill(cmd, 'npx -y somewhere-else --flag=1')
+      assert.ok(((await page.textContent('[data-sec="mcp"]')) ?? '').includes('未保存'), 'MCP 草稿没标「未保存」')
+      // 关面板再打开:onMounted/watch 都会 loadMcp() → 会话里那份不能就这么没了
+      await page.keyboard.press('Escape')
+      await page.waitForTimeout(100)
+      await page.click('.gear')
+      await page.waitForSelector('[aria-label="操作确认"]')
+      const ask = (await page.textContent('[aria-label="操作确认"]')) ?? ''
+      assert.ok(ask.includes('MCP server 配置'), `确认文案应点名 MCP 草稿:${ask}`)
+      await page.click('[aria-label="操作确认"] button:has-text("取消")')
+      await page.waitForTimeout(150)
+      await page.click('.nav-it:has-text("MCP server")')
+      assert.equal(await page.inputValue(cmd), 'npx -y somewhere-else --flag=1', '取消后 MCP 草稿丢了')
+    } catch (e) {
+      await shoot(page, t.name)
+      throw e
+    } finally {
+      await ctx.close()
+    }
+  })
+
+  // 第八十九批:技能挂载是「整份替换」(skills_set + skills)的即时提交 —— 各发各的会让后一个
+  // 请求带着旧清单覆盖前一个(勾两个只生效一个),且请求在途时控件看不出已经点过。
+  test('设置面板:挂载即时提交串行且在途禁用(连点两次不丢改动)', async (t) => {
+    const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+    let page = null
+    try {
+      const stub = makeStub(true, true, false, false, true, 'finance', 250)
+      page = await open(ctx, stub, docks[1].dock)
+      await page.click('.gear')
+      await page.waitForSelector('[data-sec="role"] .prow')
+      // 用 assistant:它是「替换」态(skills_set=true,已挂 skill-alpha),勾选框的勾/去勾
+      // 才真的是加/减(默认池态下所有勾都是"显示为已勾",点一下反而是去掉)。
+      await page.click('[data-sec="role"] .prow:has-text("Assistant") button:has-text("编辑")')
+      await page.waitForSelector('[data-sec="role"] .m-item')
+      const box = (n) => `[data-sec="role"] .m-item:has-text("${n}") input[type=checkbox]`
+      const patches = () => stub.seen.filter((r) => r.method === 'PATCH' && r.path === '/api/roles/assistant').map((r) => JSON.parse(r.body || '{}'))
+      const last = () => patches()[patches().length - 1]
+
+      // ① 在途禁用:点一下之后另一处挂载控件立刻不可点,且显示「提交中」
+      await page.click(box('skill-with-a-very-long-name'))
+      await page.waitForTimeout(60)
+      assert.ok(await page.isDisabled(box('private-beta')), '提交在途时其它挂载控件应禁用')
+      assert.ok(await page.isVisible('[data-testid="role-saving"]'), '在途时应有「提交中」回执')
+      await page.waitForTimeout(400)
+      assert.ok(!(await page.isVisible('[data-testid="role-saving"]')), '请求结束后不应还挂着「提交中」')
+
+      // ② 同一 tick 连点两下(真人手速上限;此时 :disabled 还没落到 DOM 上):两次改动都要在。
+      //    两次都是"去掉"(两个名字当前都是已挂):期望最终清单两都不剩 —— 旧实现第二次带着
+      //    点击时的旧清单发,会把前一次去掉的那个名字又挂回来。
+      await page.evaluate(() => {
+        const pick = (n) =>
+          Array.from(document.querySelectorAll('[data-sec="role"] .m-item')).find((m) => m.textContent.includes(n))
+        pick('skill-alpha').querySelector('input[type=checkbox]').click()
+        pick('skill-with-a-very-long-name').querySelector('input[type=checkbox]').click()
+      })
+      await page.waitForTimeout(600)
+      const got = last().skills ?? []
+      assert.ok(
+        !got.includes('skill-alpha') && !got.includes('skill-with-a-very-long-name'),
+        `连点两次丢了改动(后者带着旧清单覆盖):${JSON.stringify(got)}`,
+      )
+    } catch (e) {
+      await shoot(page, t.name)
+      throw e
+    } finally {
+      await ctx.close()
+    }
+  })
+
   // 同样的丢失路径:技能正文(换另一个技能)与全局指令(收起编辑区)。指令侧的处理不同 ——
   // 收起**不清草稿**,清掉它的出口只有「保存」与显式「放弃修改」(不留静默丢失路径)。
   test('设置面板:技能草稿换目标要问、指令草稿收起不丢且可显式放弃', async (t) => {
@@ -1582,6 +1741,47 @@ describe('布局护栏:整页永不滚动(第五十二/五十三批)', { skip: s
         await ctx.close()
       }
     })
+  }
+})
+
+// 导航平滑滚动期间的**高亮归属**(第七十七批后修正):点「插件」时高亮不许中途跑到途经段上
+// —— 滚动反查逐帧跑,不锁的话动画一路上会把途经段点亮,动画被拖慢/中断时(CI 的 macOS runner)
+// 停下来高亮就停在错的段上(实测断言拿到「指令」而目标是「角色」)。
+// 做法:掐掉真实平滑动画 + 手动摆位置,让这条不依赖机器速度 —— 旧实现下第 2 个断言必红。
+test('设置面板:导航跳转途中高亮不落到途经段', { skip: skip && skipWhy }, async (t) => {
+  const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+  let page = null
+  try {
+    page = await open(ctx, makeStub(true, true, false, false, true), docks[1].dock)
+    await page.click('.gear')
+    await page.waitForSelector('.nav-it')
+    const at = () =>
+      page.evaluate(() => {
+        const p = document.querySelector('[aria-label="设置"]')
+        return p.querySelector('.nav-it.on')?.textContent?.trim() ?? ''
+      })
+    assert.equal(await at(), '模型', '打开面板应停在首段')
+    await page.evaluate(() => {
+      Element.prototype.scrollIntoView = () => {} // 不要真实动画(否则本用例变成计时竞速)
+      const panel = document.querySelector('[aria-label="设置"]')
+      const btn = Array.from(panel.querySelectorAll('.nav-it')).find((b) => b.textContent?.trim() === '插件')
+      btn.click()
+      // 模拟「平滑滚动途中」:容器现在停在 role 段上并抛一次 scroll(选中间段,避开“滚到底=末段”特判)
+      const body = panel.querySelector('.body')
+      const mid = body.querySelector('section[data-sec="role"]')
+      body.scrollTop += mid.getBoundingClientRect().top - body.getBoundingClientRect().top
+      body.dispatchEvent(new Event('scroll'))
+    })
+    await page.waitForTimeout(80) // 等 rAF 里的反查跑完
+    assert.equal(await at(), '插件', `跳转途中高亮跑到了「${await at()}」(应锁在目标段)`)
+    // 锁不是永久的:兜底 700ms 到期后交还反查,高亮跟随真实滚动位置(否则用户手滚后高亮会撒谎)
+    await page.waitForTimeout(800)
+    assert.equal(await at(), '角色', '兜底到期后高亮应跟随真实滚动位置')
+  } catch (e) {
+    await shoot(page, t.name)
+    throw e
+  } finally {
+    await ctx.close()
   }
 })
 

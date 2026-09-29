@@ -145,11 +145,37 @@ function secEls(): HTMLElement[] {
   return Array.from(bodyEl.value?.querySelectorAll<HTMLElement>('section[data-sec]') ?? [])
 }
 // jumpTo 跳到某段。打开面板时的定位要即时(否则与抽屉入场动画叠在一起),用户点导航要平滑。
+//
+// navTarget = 平滑滚动进行中的目标段:期间**只**高亮它。不锁的话滚动反查会把高亮中途
+// 改到途经的段上(点「角色」会先亮一下「指令」),动画被拖慢/中断时停下来高亮还停在错的段
+// —— CI 上实测踩到(macOS runner 400ms 内没滚完,断言拿到「指令」)。
+let navTarget = ''
+let navSettle = 0
+function unlockNav(): void {
+  navTarget = ''
+  if (navSettle) {
+    clearTimeout(navSettle)
+    navSettle = 0
+  }
+}
 function jumpTo(key: string, smooth = true): void {
   const el = bodyEl.value?.querySelector<HTMLElement>(`section[data-sec="${key}"]`)
   if (!el) return // 该段在当前装配下不渲染(如未装配 host-schedule):静默跳过
   activeSec.value = key
-  el.scrollIntoView({ block: 'start', behavior: smooth ? 'smooth' : 'auto' })
+  if (!smooth) {
+    unlockNav()
+    el.scrollIntoView({ block: 'start', behavior: 'auto' })
+    return
+  }
+  navTarget = key
+  if (navSettle) clearTimeout(navSettle)
+  // 兜底:目标段始终到不了容器上沿(内容不够高的末段)或滚动事件不来时,700ms 后交还反查 ——
+  // 交还时补跑一次反查,否则锁在错的位置(高亮停在目标段、视图却在别处)。
+  navSettle = window.setTimeout(() => {
+    unlockNav()
+    onBodyScroll()
+  }, 700)
+  el.scrollIntoView({ block: 'start', behavior: 'smooth' })
 }
 // onBodyScroll 滚动时反查「当前段」= 视口顶部之上最后一段。用 rAF 合并同一帧内的多次滚动事件,
 // 每帧只读一次几何(读与写不交叉,不触发强制同步布局)。
@@ -162,6 +188,15 @@ function onBodyScroll(): void {
     if (!c) return
     const top = c.getBoundingClientRect().top
     const secs = secEls()
+    if (navTarget) {
+      // 平滑滚动进行中:高亮只认目标段(途经段不算);到位(±2px)即解锁,交还下面的反查。
+      const t = secs.find((el) => el.dataset.sec === navTarget)
+      if (t && Math.abs(t.getBoundingClientRect().top - top) > 2) {
+        activeSec.value = navTarget
+        return
+      }
+      unlockNav()
+    }
     // 已滚到底:末段顶不到容器上沿(内容不够高),但用户点它时它就是「当前段」——
     // 不特判的话高亮会因上面的阈值判据退回倒数第二段。
     if (c.scrollTop + c.clientHeight >= c.scrollHeight - 2) {
@@ -226,22 +261,27 @@ function guard(title: string, danger: boolean, run: () => void): void {
 }
 
 // —— 草稿保护 ——
-// 面板里的三处文本框都是「写进磁盘就长期生效」的东西(角色工作规则 / 技能 SKILL.md /
-// 全局指令),而**切换目标**(换角色、换技能、收起编辑区)会重新拉服务端内容覆盖草稿 ——
-// 用户的修改就这么没了,连一声响都没有。所以:① 每处都记一份「服务端上一版」用于算
-// 脏;② 脏的时候切换目标前问一声;③ 面板里常驻「未保存」标记(知道自己脏,才有得选)。
+// 面板里的四处可编辑内容都是「写进磁盘就长期生效」的东西(角色工作规则 / 技能 SKILL.md /
+// 全局指令 / MCP server 配置),而**切换目标**(换角色、换技能、重拉配置)会重新拉服务端
+// 内容覆盖草稿 —— 用户的修改就这么没了,连一声响都没有。所以:① 每处都记一份「服务端上一版」
+// 用于算脏;② 脏的时候切换目标前问一声;③ 面板里常驻「未保存」标记(知道自己脏,才有得选)。
 // 反面:给一切都加确认弹层 = 噪音。所以只拦**真会丢内容**的入口,关面板/切分区不拦
 // (组件实例常驻、草稿留在内存里,关掉再打开还在)。
-const dirtyDrafts = computed<string[]>(() => {
+type DraftKind = 'role' | 'skill' | 'mcp'
+// draftLabels 未保存草稿的标签 —— **只列这次真会被丢弃的**:
+//   role = 角色工作规则(切角色/换技能要重拉详情)、skill = 技能 SKILL.md、mcp = MCP server 配置。
+//   全局指令**不在此列**:没有任何一条「换目标」路径会丢它(只由它自己的保存/放弃清掉),
+//   列上去等于说「继续将丢弃全局指令」而实际不会 —— 白吓一跳,还让人以为已经放弃了。
+function draftLabels(kinds: DraftKind[]): string[] {
   const out: string[] = []
-  if (agentsDirty.value) out.push('角色「' + selRole.value + '」的工作规则')
-  if (skDirty.value) out.push('技能「' + (skEdit.value?.name ?? '') + '」的 SKILL.md')
-  if (instrDirty.value) out.push('全局指令')
+  if (kinds.includes('role') && agentsDirty.value) out.push('角色「' + selRole.value + '」的工作规则')
+  if (kinds.includes('skill') && skDirty.value) out.push('技能「' + (skEdit.value?.name ?? '') + '」的 SKILL.md')
+  if (kinds.includes('mcp') && mcpDirty.value) out.push('MCP server 配置')
   return out
-})
+}
 // withDrafts 有未保存草稿时先确认(丢弃是用户的决定,不是面板替他做的)。
-function withDrafts(run: () => void): void {
-  const d = dirtyDrafts.value
+function withDrafts(run: () => void, kinds: DraftKind[] = ['role', 'skill']): void {
+  const d = draftLabels(kinds)
   if (!d.length) {
     run()
     return
@@ -486,9 +526,12 @@ const roleDangling = computed(() => !!roleCurrent.value && !roles.value.some((r)
 // selectRole 展开某角色的编辑区(列表不带正文,展开时才拉详情)/ 再点一次收起。
 // confirmed=true 表示"草稿丢弃已经过用户确认"(防止重入时再问一遍)。
 async function selectRole(r: RoleSpec, confirmed = false): Promise<void> {
-  if (!confirmed && (agentsDirty.value || skDirty.value)) {
-    withDrafts(() => void selectRole(r, true))
-    return
+  if (!confirmed) {
+    const d = draftLabels(['role', 'skill'])
+    if (d.length) {
+      withDrafts(() => void selectRole(r, true), ['role', 'skill'])
+      return
+    }
   }
   if (selRole.value === r.id) {
     selRole.value = ''
@@ -519,19 +562,46 @@ function discardAgents(): void {
   })
 }
 
-// saveRoleDef 提交角色定义的部分更新(只传改动的字段;更新后同步列表与详情)
-async function saveRoleDef(patch: Parameters<typeof api.roleUpdate>[1]): Promise<void> {
+// —— 角色定义的**即时提交**(挂载勾选/并入/排除/模型/思考档:点一下发一次) ——
+// 串行化 + 在途禁用。为何不能各发各的:挂载清单是**整份替换**(skills_set + skills),
+// 连点两次会让后一个请求带着旧清单覆盖前一个(服务端的原子写只保证“单次写不丢”,救不了
+// 客户端基于旧状态构造的补丁)—— 表现为“勾了两个技能只生效一个”。所以补丁改成**入队时现算**
+// (builder,排队期间前面几次的写已经回填到 roleDetail),并按提交顺序逐个发;
+// 在途期间相关控件 :disabled(点了不生效也要看得出来)。
+const roleSaving = ref(false)
+let rolePatchQueue: Promise<void> = Promise.resolve()
+let roleSavingN = 0
+type RolePatch = Parameters<typeof api.roleUpdate>[1]
+function queueRolePatch(build: () => RolePatch): Promise<void> {
   const id = selRole.value
-  if (!id) return
-  roleErr.value = ''
-  try {
-    const d = await api.roleUpdate(id, patch)
-    roleDetail.value = { ...(roleDetail.value as RoleSpec), ...d, agents: agentsDraft.value }
-    await loadRoles()
-    roleMsg.value = '已保存'
-  } catch (e) {
-    roleErr.value = (e as Error).message
+  if (!id) return Promise.resolve()
+  roleSavingN++
+  roleSaving.value = true
+  const step = async (): Promise<void> => {
+    // finally 必须盖住 build() 与「补丁为空」两条早退路径:计数不配对会让 roleSaving
+    // 永远为真,整片控件从此点不动。
+    try {
+      const patch = build() // 到执行时才读当前状态
+      if (!patch || Object.keys(patch).length === 0) return
+      const d = await api.roleUpdate(id, patch)
+      roleDetail.value = { ...(roleDetail.value as RoleSpec), ...d, agents: agentsDraft.value }
+      await loadRoles()
+      roleMsg.value = '已保存'
+    } catch (e) {
+      roleErr.value = (e as Error).message
+    } finally {
+      roleSavingN--
+      roleSaving.value = roleSavingN > 0
+    }
   }
+  rolePatchQueue = rolePatchQueue.then(step, step)
+  return rolePatchQueue
+}
+// saveRoleDef 提交角色定义的部分更新(只传改动的字段;更新后同步列表与详情)。
+// 接受对象或 builder:依赖当前状态的字段(挂载清单)必须传 builder —— 否则排队期间算出的
+// 旧快照会把前一次提交盖回去。
+function saveRoleDef(patch: RolePatch | (() => RolePatch)): Promise<void> {
+  return queueRolePatch(typeof patch === 'function' ? patch : () => patch)
 }
 
 // saveAgents 保存工作规则(会逐字进系统提示 → 二次确认 + 上限提示)
@@ -599,10 +669,13 @@ function renameRole(): void {
     roleErr.value = ''
     try {
       const d = await api.roleRename(id, { id: next })
-      selRole.value = d.id
       roleMsg.value = '已改标识:' + d.id
+      // 改名不是换角色:工作规则草稿必须留在手里 —— 旧实现接着 selectRole(d) 会撞
+      // 「同 id = 收起」分支把编辑区收掉,再展开时又用服务端版本盖掉草稿。
+      selRole.value = d.id
+      if (roleDetail.value) roleDetail.value = { ...roleDetail.value, id: d.id }
+      roleIDDraft.value = d.id
       await loadRoles()
-      await selectRole(d, true) // 改名不是换角色:草稿留着(confirmed = 不再问丢弃)
     } catch (e) {
       roleErr.value = (e as Error).message
     }
@@ -634,22 +707,23 @@ function mounted(r: RoleSpec | null, name: string): boolean {
   return !!r?.skills?.includes(name)
 }
 async function toggleMount(name: string, on: boolean): Promise<void> {
-  const d = roleDetail.value
-  if (!d) return
-  const next = new Set(d.skills ?? [])
-  if (on) next.add(name)
-  else next.delete(name)
-  await saveRoleDef({ skills_set: true, skills: Array.from(next).sort() })
+  if (!roleDetail.value) return
+  await saveRoleDef(() => {
+    const next = new Set(roleDetail.value?.skills ?? [])
+    if (on) next.add(name)
+    else next.delete(name)
+    return { skills_set: true, skills: Array.from(next).sort() }
+  })
   roleMsg.value = '挂载已更新(下一轮生效)'
 }
 function useDefaultPool(): void {
-  void saveRoleDef({ skills_set: false })
+  void saveRoleDef(() => ({ skills_set: false }))
 }
 function useReplacePool(): void {
-  void saveRoleDef({ skills_set: true, skills: roleDetail.value?.skills ?? [] })
+  void saveRoleDef(() => ({ skills_set: true, skills: roleDetail.value?.skills ?? [] }))
 }
 function toggleInherit(on: boolean): void {
-  void saveRoleDef({ skills_inherit: on })
+  void saveRoleDef(() => ({ skills_inherit: on }))
 }
 // staleMounts 挂载清单里**库里已经不存在**的技能名(技能被删/改名后残留)。
 // 为什么要单列出来:下面的勾选列表只按「库里的技能」渲染,这些名字没有对应行 ⇒
@@ -662,8 +736,10 @@ const staleMounts = computed(() => {
 })
 // removeStaleMount 把失效挂载从清单里清掉(后端只对**新增**未知名严格,存量悬空名放行)。
 function removeStaleMount(name: string): void {
-  const rest = (roleDetail.value?.skills ?? []).filter((n) => n !== name)
-  void saveRoleDef({ skills_set: true, skills: rest })
+  void saveRoleDef(() => ({
+    skills_set: true,
+    skills: (roleDetail.value?.skills ?? []).filter((n) => n !== name),
+  }))
 }
 
 // skillsByRole 库技能按归属分组展示(共享库在前,各自角色私有在后)
@@ -707,10 +783,11 @@ function createSkill(): void {
   })()
 }
 // openSkill 读技能原文(编辑)。confirmed=true 表示草稿丢弃已经过用户确认。
+// 注意闸门**不分“是不是同一个技能”**:同一个技能再点一次「原文」= 重读磁盘,
+// 照样会把手里没保存的正文盖掉(旧实现用一个 `same` 条件把这一次跳过了)。
 async function openSkill(name: string, role: string, confirmed = false): Promise<void> {
-  const same = !!skEdit.value && skEdit.value.name === name && skEdit.value.role === role
-  if (!confirmed && !same && skDirty.value) {
-    withDrafts(() => void openSkill(name, role, true))
+  if (!confirmed && skDirty.value) {
+    withDrafts(() => void openSkill(name, role, true), ['skill'])
     return
   }
   skErr.value = ''
@@ -762,7 +839,7 @@ function deleteSkill(name: string, role: string): void {
 // openMove 打开改名/移动表单(默认填现值);正文有未保存草稿时先问一声(与其他编辑入口同口径)。
 function openMove(name: string, role: string, confirmed = false): void {
   if (!confirmed && skDirty.value) {
-    withDrafts(() => openMove(name, role, true))
+    withDrafts(() => openMove(name, role, true), ['skill'])
     return
   }
   skErr.value = ''
@@ -1103,7 +1180,9 @@ function deleteSchedule(s: Schedule): void {
 // 编辑态与磁盘态分离:改动全部落在本地草稿上,点「保存并重载」才写 mcp.yaml 并重启插件。
 const mcpView = ref<McpView | null>(null)
 const mcpDrafts = ref<McpDraft[]>([])
-const mcpBase = ref('') // 磁盘当前内容指纹(脏检测基准;保存成功后刷新)
+// 磁盘当前内容指纹(脏检测基准;保存成功后刷新)。初值必须是「空清单」的指纹 ——
+// 用 '' 会和 draftKey([]) 的 '[]' 不等,首帧即脏(打开面板先弹一次丢弃确认,按钮也提前亮)。
+const mcpBase = ref(draftKey([]))
 const mcpErr = ref('')
 const mcpMsg = ref('')
 const mcpDirty = computed(() => draftKey(mcpDrafts.value) !== mcpBase.value)
@@ -1111,7 +1190,13 @@ const mcpDirty = computed(() => draftKey(mcpDrafts.value) !== mcpBase.value)
 const mcpEnvRows = computed<McpServer[]>(() => (mcpView.value?.servers ?? []).filter((s) => !canEdit(s)))
 const mcpNotices = computed<string[]>(() => (mcpView.value ? viewNotices(mcpView.value) : []))
 
-async function loadMcp(): Promise<void> {
+// loadMcp 拉 MCP 配置。`force=true` 才允许覆盖手里没保存的草稿(保存成功后/显式放弃后) ——
+// 否则打开面板/切回来时会静默丢掉未保存的编辑(与另外三处文本框同口径)。
+async function loadMcp(force = false): Promise<void> {
+  if (!force && mcpDirty.value) {
+    withDrafts(() => void loadMcp(true), ['mcp'])
+    return
+  }
   try {
     const v = await api.mcp()
     mcpView.value = v
@@ -1121,6 +1206,10 @@ async function loadMcp(): Promise<void> {
   } catch (e) {
     mcpErr.value = (e as Error).message
   }
+}
+// discardMcp 显式放弃 MCP 草稿(回到磁盘那一份)。主动放弃也要问一声 —— 与另外两处一致。
+function discardMcp(): void {
+  guard('放弃尚未保存的 MCP server 配置修改?(回到磁盘上的那一份)', true, () => void loadMcp(true))
 }
 function mcpAdd(): void {
   mcpDrafts.value.push({ name: '', command: '', enabled: true, mode: MCP_MODE_DIRECT })
@@ -1479,6 +1568,7 @@ watch(
           </p>
           <div v-if="roleErr" class="serr">{{ roleErr }}</div>
           <p v-if="roleMsg" class="dim ok">{{ roleMsg }}</p>
+          <p v-if="roleSaving" class="dim" data-testid="role-saving">提交中…</p>
           <p v-if="roleProblems.length" class="dim">
             部分角色文件读不了（已跳过）：{{ roleProblems.map((p) => p.id).join('、') }}
           </p>
@@ -1659,12 +1749,12 @@ watch(
             <div class="row">
               <span class="lab-inline">挂载方式</span>
               <div class="seg">
-                <button class="seg-it" :class="{ on: !roleDetail.skills_set }" data-tip="不写 skills 键 = 用默认池（全部库技能）" @click="useDefaultPool">默认池</button>
-                <button class="seg-it" :class="{ on: roleDetail.skills_set }" data-tip="写了 skills 键 = 只挂勾选的" @click="useReplacePool">替换</button>
+                <button class="seg-it" :class="{ on: !roleDetail.skills_set }" :disabled="roleSaving" data-tip="不写 skills 键 = 用默认池（全部库技能）" @click="useDefaultPool">默认池</button>
+                <button class="seg-it" :class="{ on: roleDetail.skills_set }" :disabled="roleSaving" data-tip="写了 skills 键 = 只挂勾选的" @click="useReplacePool">替换</button>
               </div>
             </div>
             <label class="chk">
-              <input type="checkbox" :checked="!!roleDetail.skills_inherit" @change="toggleInherit(($event.target as HTMLInputElement).checked)" />
+              <input type="checkbox" :checked="!!roleDetail.skills_inherit" :disabled="roleSaving" @change="toggleInherit(($event.target as HTMLInputElement).checked)" />
               <span>再并入默认池（替换之外额外挂上全部库技能）</span>
             </label>
             <p class="dim">角色私有技能（roles/&lt;id&gt;/skills/）只增不减；同名技能按目录顺序首个生效，重名会在日志里告警。</p>
@@ -1677,6 +1767,7 @@ watch(
                     <input
                       type="checkbox"
                       :checked="mounted(roleDetail, s.name)"
+                      :disabled="roleSaving"
                       @change="toggleMount(s.name, ($event.target as HTMLInputElement).checked)"
                     />
                     <span class="m-lab">{{ s.name }}</span>
@@ -1695,7 +1786,7 @@ watch(
               <p class="dim">已失效挂载（技能已不存在）：保存其它改动不受影响，建议清掉。</p>
               <div v-for="n in staleMounts" :key="'stale-' + n" class="m-item">
                 <span class="m-lab">{{ n }}</span>
-                <button class="ghost danger-text" data-tip="从挂载清单里移除这个名字" @click="removeStaleMount(n)">移除</button>
+                <button class="ghost danger-text" :disabled="roleSaving" data-tip="从挂载清单里移除这个名字" @click="removeStaleMount(n)">移除</button>
               </div>
             </div>
 
@@ -1982,6 +2073,7 @@ watch(
           <h3 class="h">
             MCP server
             <button class="link" data-tip="新增一个 MCP server" @click="mcpAdd">＋ 添加</button>
+            <span v-if="mcpDirty" class="dirty">未保存</span>
           </h3>
           <p class="dim">
             MCP 让模型用上外部工具(记忆、代码图谱、数据库等)。每行一条启动命令,与你终端里输入的一致。
@@ -2041,7 +2133,7 @@ watch(
 
           <div class="row acts">
             <button class="ghost solid" :disabled="busy || !mcpDirty" @click="saveMcp">保存并重载</button>
-            <button class="ghost" :disabled="busy || !mcpDirty" @click="loadMcp">放弃修改</button>
+            <button class="ghost" :disabled="busy || !mcpDirty" @click="discardMcp">放弃修改</button>
           </div>
           <p v-if="mcpView" class="dim">
             配置文件:{{ mcpView.path }}
