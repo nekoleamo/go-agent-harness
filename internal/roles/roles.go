@@ -125,6 +125,9 @@ type roleFile struct {
 	// 少一个字段就手写在 role.yaml 里的键就会被下一欢保存/改名/移动**静默抹掉**。
 	Model    string `yaml:"model,omitempty"`
 	Thinking string `yaml:"thinking,omitempty"`
+	// ToolsExclude 排除的工具名(第九十一批;空 = 不排除任何工具)。
+	// 与 Model/Thinking 同款:无 Set 标记(空清单与未写这个键行为一致)。
+	ToolsExclude []string `yaml:"tools_exclude,omitempty"`
 }
 
 // List 全部角色(按显示名排序)。**不读 AGENTS.md 正文**(只给字节数 + 私有技能名) ——
@@ -255,6 +258,13 @@ func (s Store) get(id string, withBody bool) (sdk.RoleSpec, error) {
 		return sdk.RoleSpec{}, fmt.Errorf("角色 %s 的 %s: %w", id, FileName, err)
 	}
 	spec.Thinking = th
+	// 工具排除清单:形状校验(空项/空白/过长/重复)—— 坏值显式失败进 Broken(),
+	// 不静默丢弃(默默删一条 = 给出与实际不符的角色定义)。
+	ex, err := sdk.NormalizeToolNames(f.ToolsExclude)
+	if err != nil {
+		return sdk.RoleSpec{}, fmt.Errorf("角色 %s 的 %s: %w", id, FileName, err)
+	}
+	spec.ToolsExclude = ex
 	if f.Skills != nil {
 		spec.Skills = append([]string(nil), (*f.Skills)...)
 		spec.SkillsSet = true
@@ -304,14 +314,18 @@ func (s Store) Save(spec sdk.RoleSpec) error {
 	if err := ValidateID(spec.ID); err != nil {
 		return err
 	}
-	// 落盘前同样校验思考档:写进去一个 Get 读不回来的值,等于当场造一个坏角色。
+	// 落盘前同样校验思考档与工具排除清单:写进去一个 Get 读不回来的值,等于当场造一个坏角色。
 	th, err := sdk.NormalizeThinking(spec.Thinking)
+	if err != nil {
+		return err
+	}
+	ex, err := sdk.NormalizeToolNames(spec.ToolsExclude)
 	if err != nil {
 		return err
 	}
 	f := roleFile{Name: spec.Name, Description: spec.Description, Identity: spec.Identity,
 		ExcludeGlobal: spec.ExcludeGlobal, SkillsInherit: spec.SkillsInherit,
-		Model: strings.TrimSpace(spec.Model), Thinking: th}
+		Model: strings.TrimSpace(spec.Model), Thinking: th, ToolsExclude: ex}
 	if spec.SkillsSet {
 		list := spec.Skills
 		if list == nil {

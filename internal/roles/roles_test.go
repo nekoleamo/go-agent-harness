@@ -645,3 +645,78 @@ func TestMountUsers(t *testing.T) {
 		t.Fatalf("没人挂载时应为空: %v", got)
 	}
 }
+
+// TestToolsExcludeRoundTrip 工具排除清单的落盘往返 + 坏值拒绝(第九十一批)。
+//
+// 为何必须钉住"Save 不抹掉手写键":Save 是**用 spec 重建一份 roleFile 全量覆盖写** ——
+// roleFile 少一个字段,手写在 role.yaml 里的那个键就会被下一次保存/改名/移动静默抹掉
+// (第八十六批 model/thinking 踩过同一个坑)。
+func TestToolsExcludeRoundTrip(t *testing.T) {
+	setup(t)
+	s := Store{}
+	if err := s.Create(sdk.RoleSpec{ID: "a", ToolsExclude: []string{"shell", "file_write"}}, ""); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Get("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.ToolsExclude) != 2 || got.ToolsExclude[0] != "shell" || got.ToolsExclude[1] != "file_write" {
+		t.Fatalf("排除清单未往返: %#v", got.ToolsExclude)
+	}
+	// 只改显示名再保存:排除清单必须还在(全量覆盖写的经典坑)
+	got.Name = "改了显示名"
+	if err := s.Save(got); err != nil {
+		t.Fatal(err)
+	}
+	again, _ := s.Get("a")
+	if len(again.ToolsExclude) != 2 {
+		t.Fatalf("改显示名后排除清单丢失: %#v", again.ToolsExclude)
+	}
+	// 未写这个键 → 落盘不出现该键(与"显式空"同义,故无 Set 标记)
+	if err := s.Create(sdk.RoleSpec{ID: "b"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(Dir("b"), FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "tools_exclude") {
+		t.Errorf("未声明排除清单却落了键: %s", raw)
+	}
+	// 空清单 → 也不落键(读回来是 nil,判据 ToolVisible 全放行)
+	if err := s.Create(sdk.RoleSpec{ID: "c", ToolsExclude: []string{}}, ""); err != nil {
+		t.Fatal(err)
+	}
+	rawC, _ := os.ReadFile(filepath.Join(Dir("c"), FileName))
+	if strings.Contains(string(rawC), "tools_exclude") {
+		t.Errorf("空排除清单不该落键: %s", rawC)
+	}
+	// 坏值:Save 显式拒绝(写进去一个 Get 读不回来的值 = 当场造坏角色)
+	if err := s.Save(sdk.RoleSpec{ID: "d", ToolsExclude: []string{"a b"}}); err == nil {
+		t.Error("Save 带空白工具名应当报错")
+	}
+}
+
+// TestToolsExcludeBadValueVisible 手写坏值 → 该角色进 Broken()(可见,不静默消失)。
+func TestToolsExcludeBadValueVisible(t *testing.T) {
+	setup(t)
+	s := Store{}
+	if err := s.Create(sdk.RoleSpec{ID: "a"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(Dir("a"), FileName)
+	if err := os.WriteFile(path, []byte("name: a\ntools_exclude:\n  - \"a b\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Get("a"); err == nil {
+		t.Fatal("坏工具名应当让 Get 失败")
+	}
+	probs := s.Broken()
+	if len(probs) != 1 || probs[0].ID != "a" {
+		t.Fatalf("坏角色未出现在 Broken(): %#v", probs)
+	}
+	if !strings.Contains(probs[0].Err, "工具名") {
+		t.Errorf("Broken 原因没说清是工具名问题: %s", probs[0].Err)
+	}
+}

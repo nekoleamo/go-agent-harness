@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/nekoleamo/go-agent-harness/internal/mcpconfig"
+	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
 // mcpPluginName 承接 MCP server 配置的外部插件名(目录名;见 host-bridge Reload)。
@@ -157,11 +158,18 @@ func (s *Server) mcpView() (map[string]any, error) {
 }
 
 // registeredToolNames 当前注册的工具名(未装配 ctx.tools = 空)。
+// 这里是**注册状态面**(MCP 面板报告"装了哪些工具"),不是"模型看得见什么":
+// 角色排除清单不该让一条已安装的工具从安装列表里消失(第九十一批) —— 故优先
+// sdk.ToolCatalogue.ListAll();未实现该能力的旧宿主回落 List()(过滤后的可见面,
+// 此时面板会把被角色排除的工具当成未安装,属已知局限但不静默)。
 func (s *Server) registeredToolNames() []string {
 	if s.tools == nil {
 		return nil
 	}
 	defs := s.tools.List()
+	if tc, ok := s.tools.(sdk.ToolCatalogue); ok {
+		defs = tc.ListAll()
+	}
 	out := make([]string, 0, len(defs))
 	for _, d := range defs {
 		out = append(out, d.Name)

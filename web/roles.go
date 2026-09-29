@@ -145,6 +145,9 @@ func (s *Server) handleRoleOne(w http.ResponseWriter, r *http.Request) {
 			// Model/Thinking 角色携带的模型与思考档(第八十六批);传空串 = 清掉(跟随会话)
 			Model    *string `json:"model"`
 			Thinking *string `json:"thinking"`
+			// ToolsExclude 排除的工具名(第九十一批);传数组 = 整份替换(不用 Set 标记:
+			// 空清单与不写这个键同义 —— 都不排除)。形状校验在 sdk.NormalizeToolNames。
+			ToolsExclude *[]string `json:"tools_exclude"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, "坏请求体", http.StatusBadRequest)
@@ -187,6 +190,15 @@ func (s *Server) handleRoleOne(w http.ResponseWriter, r *http.Request) {
 					return fmt.Errorf("思考档需为 off|low|medium|high(或空 = 跟随会话)")
 				}
 				cur.Thinking = t
+			}
+			if body.ToolsExclude != nil {
+				// 坏名(空项/空白/过长)**显式报错**:不静默丢掉用户写的条目(与
+				// NormalizeThinking 同款纪律,也与 internal/roles 的落盘校验同源)。
+				ex, err := sdk.NormalizeToolNames(*body.ToolsExclude)
+				if err != nil {
+					return err
+				}
+				cur.ToolsExclude = ex
 			}
 			return nil
 		}
@@ -311,7 +323,9 @@ func (s *Server) createRole(w http.ResponseWriter, r *http.Request, svc sdk.Role
 		SkillsInherit bool     `json:"skills_inherit"`
 		Model         string   `json:"model"`
 		Thinking      string   `json:"thinking"`
-		Agents        string   `json:"agents"`
+		// ToolsExclude 新建时即可带排除清单(第九十一批;与 PATCH 同一套形状校验)。
+		ToolsExclude []string `json:"tools_exclude"`
+		Agents       string   `json:"agents"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "坏请求体", http.StatusBadRequest)
@@ -325,11 +339,17 @@ func (s *Server) createRole(w http.ResponseWriter, r *http.Request, svc sdk.Role
 		http.Error(w, "思考档需为 off|low|medium|high(或空 = 跟随会话)", http.StatusBadRequest)
 		return
 	}
+	ex, err := sdk.NormalizeToolNames(body.ToolsExclude)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	spec := sdk.RoleSpec{
 		ID: body.ID, Name: body.Name, Description: body.Description, Identity: body.Identity,
 		ExcludeGlobal: body.ExcludeGlobal, Skills: body.Skills, SkillsSet: body.SkillsSet,
 		SkillsInherit: body.SkillsInherit,
 		Model:         strings.TrimSpace(body.Model), Thinking: strings.ToLower(strings.TrimSpace(body.Thinking)),
+		ToolsExclude: ex,
 	}
 	created, err := svc.Create(spec, body.Agents)
 	if err != nil {

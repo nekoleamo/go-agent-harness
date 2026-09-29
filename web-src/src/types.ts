@@ -441,11 +441,19 @@ export interface RoleSpec {
   // 角色携带的模型/思考档(第八十六批;空 = 跟随会话)。生效值见 StateView.model_from。
   model?: string
   thinking?: string
+  // tools_exclude 角色**排除**的工具名(第九十一批;空/未写 = 不排除任何工具)。
+  // 方向与 skills 相反:工具默认全给,这里是减项 —— 新装插件对老角色依然可见。
+  tools_exclude?: string[]
   agents?: string
   agents_bytes: number
   own_skills?: string[] // 角色私有技能(roles/<id>/skills/,只增不减)
   effective_skills?: string[] // 切换后实际可见(服务端派生,只读展示)
   seed?: boolean // 来自预置 seed(同样可改可删)
+}
+// ToolDef 工具定义(POST/GET /api/tools 的子集:面板只展示名字与一句话描述)。
+export interface ToolDef {
+  name: string
+  description?: string
 }
 export interface SkillInfo {
   name: string

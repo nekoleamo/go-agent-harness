@@ -4,7 +4,10 @@
 // (见 sdk/role.go 注释)。它们错了不会报错,只会让人看到与实际不符的界面。
 package sdk
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestEffectiveModel(t *testing.T) {
 	cases := []struct {
@@ -53,5 +56,62 @@ func TestEffectiveThinking(t *testing.T) {
 					c.sessionThinking, c.role, level, src, c.wantLevel, c.wantSrc)
 			}
 		})
+	}
+}
+
+// TestToolVisible 角色工具可见性的唯一判据(运行期过滤与展示端共用)。
+func TestToolVisible(t *testing.T) {
+	cases := []struct {
+		name string
+		role *RoleSpec
+		tool string
+		want bool
+	}{
+		{"无角色(基线)→ 全放行", nil, "shell", true},
+		{"未声明排除清单 → 全放行", &RoleSpec{}, "shell", true},
+		{"在排除清单里 → 不可见", &RoleSpec{ToolsExclude: []string{"shell"}}, "shell", false},
+		{"不在排除清单里 → 可见", &RoleSpec{ToolsExclude: []string{"shell"}}, "file_read", true},
+		{"空串排除清单(长度为 0)→ 全放行", &RoleSpec{ToolsExclude: []string{}}, "shell", true},
+		{"名字区分大小写(不做模糊匹配)", &RoleSpec{ToolsExclude: []string{"shell"}}, "Shell", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := ToolVisible(c.role, c.tool); got != c.want {
+				t.Fatalf("ToolVisible(%+v, %q) = %v,期望 %v", c.role, c.tool, got, c.want)
+			}
+		})
+	}
+}
+
+// TestNormalizeToolNames 形状校验:坏值显式失败(不静默丢弃),重复去重保序。
+func TestNormalizeToolNames(t *testing.T) {
+	got, err := NormalizeToolNames([]string{" shell ", "file_read", "shell", "mcp_deja_search"})
+	if err != nil {
+		t.Fatalf("NormalizeToolNames 正常输入报错: %v", err)
+	}
+	want := []string{"shell", "file_read", "mcp_deja_search"}
+	if len(got) != len(want) {
+		t.Fatalf("NormalizeToolNames = %v,期望 %v(去空白 + 去重保序)", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("NormalizeToolNames = %v,期望 %v", got, want)
+		}
+	}
+	if empty, err := NormalizeToolNames(nil); err != nil || empty != nil {
+		t.Fatalf("NormalizeToolNames(nil) = (%v, %v),期望 (nil, nil)", empty, err)
+	}
+	bad := [][]string{
+		{""},
+		{"   "},
+		{"a b"},
+		{"a\tb"},
+		{"a\nb"},
+		{strings.Repeat("x", MaxToolNameLen+1)},
+	}
+	for _, in := range bad {
+		if _, err := NormalizeToolNames(in); err == nil {
+			t.Errorf("NormalizeToolNames(%q) = nil,期望报错(坏值不能静默)", in)
+		}
 	}
 }

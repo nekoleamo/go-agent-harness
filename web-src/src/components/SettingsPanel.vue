@@ -28,7 +28,7 @@ import {
   viewNotices,
   type McpDraft,
 } from '../mcp'
-import type { AskConfirm, McpServer, McpView, PluginInfo, ProviderInfo, ProviderModelGroup, RoleSpec, Schedule, SkillInfo, StateView, TrashRoleEntry, TrashSkillEntry } from '../types'
+import type { AskConfirm, McpServer, McpView, PluginInfo, ProviderInfo, ProviderModelGroup, RoleSpec, Schedule, SkillInfo, StateView, ToolDef, TrashRoleEntry, TrashSkillEntry } from '../types'
 
 const props = defineProps<{
   open: boolean
@@ -734,6 +734,73 @@ const staleMounts = computed(() => {
   const known = new Set(roleLib.value.map((s) => s.name))
   return (d.skills ?? []).filter((n) => !known.has(n))
 })
+
+// —— 工具排除(第九十一批) ——
+// 与技能挂载**方向相反**:技能是"默认池/替换/再并入"的挂载清单,工具是**排除清单**
+// (默认全给,勾上 = 排除)。为何不做成白名单:工具面随插件装卸频繁变化,白名单会让
+// 新装的插件对老角色**静默不可见**("这个角色莫名少了个工具",用户归因不了)。
+const toolsOpen = ref(false)
+const toolAll = ref<ToolDef[]>([])
+const toolsErr = ref('')
+const toolQuery = ref('')
+const toolsLoaded = ref(false)
+// loadTools 拉**全量**工具清单(管理面:被角色排除的也得列得出来,否则分不清
+// "被角色排除"与"没装这个插件")。展开时才拉,不进每次轮询。
+async function loadTools(): Promise<void> {
+  toolsErr.value = ''
+  try {
+    const list = await api.tools(true)
+    toolAll.value = Array.isArray(list) ? list : []
+    toolsLoaded.value = true
+  } catch (e) {
+    toolsErr.value = (e as Error).message
+  }
+}
+function toggleTools(): void {
+  toolsOpen.value = !toolsOpen.value
+  if (toolsOpen.value && !toolsLoaded.value) void loadTools()
+}
+// toolExcluded 当前角色的排除清单里有没有它(展示与提交同一判据:后端用 sdk.ToolVisible)。
+function toolExcluded(name: string): boolean {
+  return !!roleDetail.value?.tools_exclude?.includes(name)
+}
+// toolShown 搜索过滤(工具可能上百条;长清单会把面板撑得很长)。
+const toolShown = computed(() => {
+  const q = toolQuery.value.trim().toLowerCase()
+  if (!q) return toolAll.value
+  return toolAll.value.filter((t) => t.name.toLowerCase().includes(q) || (t.description ?? '').toLowerCase().includes(q))
+})
+// excludedCount 已排除项数(含悬空名 —— 它们同样在 role.yaml 里占着一行)。
+const excludedCount = computed(() => roleDetail.value?.tools_exclude?.length ?? 0)
+// staleTools 排除清单里**当前不存在**的工具名(插件卸了/名字改了)。悬空名不报错
+// (后端只校验形状,存量悬空名放行),但必须看得见、清得掉 —— 否则用户只能手改 role.yaml。
+const staleTools = computed(() => {
+  const d = roleDetail.value
+  if (!d || !toolsOpen.value || !toolsLoaded.value) return []
+  const known = new Set(toolAll.value.map((t) => t.name))
+  return (d.tools_exclude ?? []).filter((n) => !known.has(n))
+})
+// toggleTool 勾选即提交(on=true = **排除**它);builder 形式 —— 排队的多个勾选按提交序
+// 逐个基于最新状态重算(整份替换的字段不能用旧快照)。
+async function toggleTool(name: string, on: boolean): Promise<void> {
+  if (!roleDetail.value) return
+  await saveRoleDef(() => {
+    const next = new Set(roleDetail.value?.tools_exclude ?? [])
+    if (on) next.add(name)
+    else next.delete(name)
+    return { tools_exclude: Array.from(next).sort() }
+  })
+  roleMsg.value = '工具可见性已更新(下一轮生效)'
+}
+// restoreAllTools 一键全部恢复(清空排除清单)。
+function restoreAllTools(): void {
+  void saveRoleDef(() => ({ tools_exclude: [] }))
+}
+function removeStaleTool(name: string): void {
+  void saveRoleDef(() => ({
+    tools_exclude: (roleDetail.value?.tools_exclude ?? []).filter((n) => n !== name),
+  }))
+}
 // removeStaleMount 把失效挂载从清单里清掉(后端只对**新增**未知名严格,存量悬空名放行)。
 function removeStaleMount(name: string): void {
   void saveRoleDef(() => ({
@@ -1787,6 +1854,51 @@ watch(
               <div v-for="n in staleMounts" :key="'stale-' + n" class="m-item">
                 <span class="m-lab">{{ n }}</span>
                 <button class="ghost danger-text" :disabled="roleSaving" data-tip="从挂载清单里移除这个名字" @click="removeStaleMount(n)">移除</button>
+              </div>
+            </div>
+
+            <!-- 工具排除(第九十一批):默认全给,勾上 = 不给(模型看不见也调不动) -->
+            <h3 class="h">
+              工具
+              <button class="link" data-tip="默认全部工具可用;勾上即排除" @click="toggleTools">
+                {{ toolsOpen ? '收起' : '配置' }}
+              </button>
+            </h3>
+            <p class="dim">
+              默认该角色可用全部工具。勾掉即排除：模型看不见也调不动(凭记忆调用会被显式拒绝)。
+              <span v-if="excludedCount">已排除 {{ excludedCount }} 项。</span>
+              <button v-if="excludedCount" class="ghost" :disabled="roleSaving" data-tip="清空排除清单，恢复全部工具" @click="restoreAllTools">全部恢复</button>
+            </p>
+            <div v-if="toolsOpen">
+              <div v-if="toolsErr" class="serr">{{ toolsErr }}</div>
+              <label class="fld">
+                <span class="fld-lab">筛选（名字/描述）</span>
+                <input v-model="toolQuery" class="inp" placeholder="shell / file / mcp_" />
+              </label>
+              <p v-if="toolsLoaded && !toolAll.length" class="dim">没有已注册的工具。</p>
+              <div v-if="toolShown.length" class="m-list">
+                <div v-for="t in toolShown" :key="'tool-' + t.name" class="m-item">
+                  <label class="chk grow">
+                    <input
+                      type="checkbox"
+                      :checked="toolExcluded(t.name)"
+                      :disabled="roleSaving"
+                      @change="toggleTool(t.name, ($event.target as HTMLInputElement).checked)"
+                    />
+                    <span class="m-lab mono">{{ t.name }}</span>
+                  </label>
+                  <span v-if="t.description" class="dim grow">{{ t.description }}</span>
+                  <span v-if="toolExcluded(t.name)" class="dirty">已排除</span>
+                </div>
+              </div>
+              <p v-else-if="toolsLoaded" class="dim">没有匹配的工具。</p>
+              <div v-if="staleTools.length" class="m-list">
+                <p class="dim">已排除但当前不存在（插件卸载/改名后残留）：不报错，建议清掉。</p>
+                <div v-for="n in staleTools" :key="'stale-tool-' + n" class="m-item">
+                  <span class="m-lab mono">{{ n }}</span>
+                  <span class="dim grow">该工具当前不存在</span>
+                  <button class="ghost danger-text" :disabled="roleSaving" data-tip="从排除清单里移除这个名字" @click="removeStaleTool(n)">清除</button>
+                </div>
               </div>
             </div>
 

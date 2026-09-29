@@ -50,9 +50,9 @@ core/event 90
 core/ctx 60
 core/plugin 65
 core/config 65
-sdk 60
+sdk 84
 internal/prefs 66
-internal/roles 83
+internal/roles 85
 internal/skills 77
 internal/searchfile 66
 internal/instructions 76
@@ -67,7 +67,7 @@ internal/sessionhtml 92
 cmd/gah 50
 plugins/catalogue 70
 plugins/ui/ui-web-app 70
-web 76
+web 79
 tui 74
 plugins/policy/policy-guard 89
 plugins/host/host-agent-loop 72
@@ -88,9 +88,9 @@ plugins/host/host-plugin-manager 76
 plugins/host/host-session-log 76
 plugins/host/host-session-summary 74
 plugins/host/host-skills 85
-plugins/host/host-roles 77
+plugins/host/host-roles 78
 plugins/host/host-system-prompt 88
-plugins/host/host-tools 88
+plugins/host/host-tools 91
 plugins/host/host-worktrees 74
 plugins/host/host-usage-stats 60
 plugins/host/token-compress 84

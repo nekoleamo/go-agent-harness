@@ -682,3 +682,179 @@ func TestPatchRoleSerializesConcurrentUpdates(t *testing.T) {
 }
 
 var errNope = errors.New("校验失败(测试)")
+
+// toolNames 当前模型可见的工具名集合。
+func (h *harness) toolNames() map[string]bool {
+	out := map[string]bool{}
+	for _, d := range h.tools.List() {
+		out[d.Name] = true
+	}
+	return out
+}
+
+// TestRoleSwitchesToolVisibility 角色排除清单 → 工具面立即变化(第九十一批)。
+//
+// 为何与技能挂载同一套写法:"切换即生效"不能靠重装插件 —— 判定函数每次现算读当前角色;
+// 缓存会让"改完角色没生效"变成偶发 bug(第八十七批 P1-3 的教训)。
+func TestRoleSwitchesToolVisibility(t *testing.T) {
+	h := newHarness(t, false)
+	if _, err := h.svc.Create(sdk.RoleSpec{
+		ID: "finance", Name: "财务", ExcludeGlobal: true,
+		ToolsExclude: []string{"read_skill"},
+	}, ""); err != nil {
+		t.Fatal(err)
+	}
+	// 基线:全量工具(含 read_skill)
+	if !h.toolNames()["read_skill"] || !h.toolNames()["list_roles"] {
+		t.Fatalf("基线应看到全部工具: %v", h.toolNames())
+	}
+	// 切到财务:排除清单生效,且**无需重装插件**
+	if err := h.svc.Use("finance"); err != nil {
+		t.Fatal(err)
+	}
+	got := h.toolNames()
+	if got["read_skill"] {
+		t.Fatalf("被排除的工具不该在模型可见表里: %v", got)
+	}
+	if !got["list_roles"] {
+		t.Fatalf("未排除的工具应保留: %v", got)
+	}
+	// 凭记忆调用:显式拒绝(不是"不存在" —— 后者会让人去查插件安装)
+	res, _ := h.tools.Execute(context.Background(), "read_skill", `{"name":"x"}`)
+	if !strings.Contains(res.Error, "排除") || strings.Contains(res.Error, "不存在") {
+		t.Fatalf("被排除的工具应给未授权文案: %q", res.Error)
+	}
+	// 停用 → 立即回全量
+	if err := h.svc.Use(""); err != nil {
+		t.Fatal(err)
+	}
+	if !h.toolNames()["read_skill"] {
+		t.Fatalf("停用后应恢复全部工具: %v", h.toolNames())
+	}
+	// 改角色的排除清单(走 Update)→ 下一轮判定即变(不缓存)
+	spec, ok := h.svc.Get("finance")
+	if !ok {
+		t.Fatal("角色不见了")
+	}
+	spec.ToolsExclude = []string{"list_roles"}
+	if _, err := h.svc.Update("finance", spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.svc.Use("finance"); err != nil {
+		t.Fatal(err)
+	}
+	if h.toolNames()["list_roles"] || !h.toolNames()["read_skill"] {
+		t.Fatalf("改完排除清单应立即生效: %v", h.toolNames())
+	}
+}
+
+// TestToolFilterRemovedOnUnload 卸载 host-roles(执行 Disposer)→ 工具面回全量,
+// 不残留过滤(注册即副作用、卸载即撤销)。
+func TestToolFilterRemovedOnUnload(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GAH_HOME", home)
+	logger := slog.New(slog.DiscardHandler)
+	c := ctx.New(logger, event.New(logger))
+	for _, p := range []sdk.Plugin{&hosttools.Plugin{}, &hostsystemprompt.Plugin{}, &hostskills.Plugin{}} {
+		if _, err := p.Start(c, &sdk.Manifest{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stop, err := (&Plugin{}).Start(c, &sdk.Manifest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var svc *Service
+	if err := c.Inject("ctx.roles", &svc); err != nil {
+		t.Fatal(err)
+	}
+	var tools sdk.ToolRegistry
+	if err := c.Inject("ctx.tools", &tools); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Create(sdk.RoleSpec{ID: "r1", ToolsExclude: []string{"read_skill"}}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Use("r1"); err != nil {
+		t.Fatal(err)
+	}
+	visible := func() bool {
+		for _, d := range tools.List() {
+			if d.Name == "read_skill" {
+				return true
+			}
+		}
+		return false
+	}
+	if visible() {
+		t.Fatal("角色生效时 read_skill 应不可见")
+	}
+	stop()
+	if !visible() {
+		t.Fatal("卸载 host-roles 后工具面应回全量(不残留过滤)")
+	}
+}
+
+// noCatalogueRegistry 未实现 sdk.ToolCatalogue 的注册表替身(旧宿主/测试桩)。
+type noCatalogueRegistry struct{ sdk.ToolRegistry }
+
+// TestToolFilterOptionalCapability 注册表未实现 ToolCatalogue ⇒ host-roles 不报错、不 panic
+// (能力不存在 ≠ 静默降级:工具过滤这一层就没有)。
+func TestToolFilterOptionalCapability(t *testing.T) {
+	logger := slog.New(slog.DiscardHandler)
+	c := ctx.New(logger, event.New(logger))
+	t.Setenv("GAH_HOME", t.TempDir())
+	inner := &memRegistry{}
+	if err := c.Provide("ctx.tools", noCatalogueRegistry{ToolRegistry: inner}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&hostsystemprompt.Plugin{}).Start(c, &sdk.Manifest{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&hostskills.Plugin{}).Start(c, &sdk.Manifest{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&Plugin{}).Start(c, &sdk.Manifest{}); err != nil {
+		t.Fatalf("未实现 ToolCatalogue 的注册表不该让 host-roles 启动失败: %v", err)
+	}
+}
+
+// memRegistry 极简 ToolRegistry 替身。
+type memRegistry struct {
+	mu    sync.Mutex
+	tools map[string]sdk.Tool
+	order []string
+}
+
+func (m *memRegistry) Register(t sdk.Tool) sdk.Disposer {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.tools == nil {
+		m.tools = map[string]sdk.Tool{}
+	}
+	n := t.Definition().Name
+	m.tools[n] = t
+	m.order = append(m.order, n)
+	return func() {}
+}
+func (m *memRegistry) List() []sdk.ToolDefinition {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []sdk.ToolDefinition
+	for _, n := range m.order {
+		out = append(out, m.tools[n].Definition())
+	}
+	return out
+}
+func (m *memRegistry) Get(name string) (sdk.ToolDefinition, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tools[name]
+	if !ok {
+		return sdk.ToolDefinition{}, false
+	}
+	return t.Definition(), true
+}
+func (m *memRegistry) Execute(context.Context, string, string) (*sdk.ToolResult, error) {
+	return &sdk.ToolResult{Content: "{}"}, nil
+}

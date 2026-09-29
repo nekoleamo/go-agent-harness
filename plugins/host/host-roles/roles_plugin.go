@@ -67,13 +67,20 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	})
 	// 技能可见性:切换角色只改判定函数,不重扫磁盘。
 	d4 := skills.SetFilter(svc.skillVisible)
+	// 工具可见性:角色排除清单决定模型能用哪些工具(第九十一批)。
+	// **可选能力**:注册表未实现 sdk.ToolCatalogue(测试替身/极简宿主)就跳过 ——
+	// 这是"能力不存在",不是静默降级(与 ctx.commands/ctx.notices 同款)。
+	d4b := sdk.Disposer(func() {})
+	if tc, ok := tools.(sdk.ToolCatalogue); ok {
+		d4b = tc.SetFilter(svc.toolVisible)
+	}
 	// 角色携带模型/思考档:订阅"模型请求即将发出"(第八十六批)。
 	// 为什么不自己改 host-llm 的会话模型:`SetModel` 改的是**全局且持久化**的会话模型,
 	// 切角色就会污染它、切回来还得还原,而且显示层会当成"当前模型"报出去(假事实)。
 	// 本订阅只改**本回合请求**里的字段,磁盘与会话状态一律不动。
 	d5 := c.Subscribe(sdk.EventLLMPreRequest, svc.onLLMPreRequest)
 
-	disposers := []sdk.Disposer{d1, d2, d3, d4, d5}
+	disposers := []sdk.Disposer{d1, d2, d3, d4, d4b, d5}
 	// /role 命令(可选:未装配 ctx.commands 时跳过 —— 与 host-internal-commands 同款)。
 	var cmds sdk.CommandRegistry
 	if err := c.Inject("ctx.commands", &cmds); err == nil && cmds != nil {
@@ -505,6 +512,31 @@ func (s *Service) effectiveSkills(roleID string) []string {
 
 // Skills 全部已加载技能索引(面板勾选用;含归属角色)。
 func (s *Service) Skills() []sdk.SkillInfo { return s.skills.List() }
+
+// —— 工具可见性(第九十一批) ——
+
+// toolVisible 过滤判定(装配给 ctx.tools;每次求值实时读当前角色,故切换即生效)。
+// 与 skillVisible 同款:**不缓存、不重扫** —— 缓存会把"改完角色没生效"变成偶发 bug。
+func (s *Service) toolVisible(def sdk.ToolDefinition) bool {
+	return s.toolVisibleFor(s.Current(), def.Name)
+}
+
+// toolVisibleFor roleID 视角下工具 name 是否可见/可调:
+//   - 无角色 = 基线:全部工具(角色是"视角",不是"默认闸门");
+//   - 角色存在:排除清单里没有它(唯一判据 sdk.ToolVisible,运行期与展示端共用);
+//   - 角色取不到(刚被删/未刷到):按基线放行 —— 不把"文件坏了"变现成"工具全没了"。
+func (s *Service) toolVisibleFor(roleID, name string) bool {
+	if roleID == "" {
+		return true
+	}
+	s.mu.RLock()
+	spec, ok := s.specs[roleID]
+	s.mu.RUnlock()
+	if !ok {
+		return true
+	}
+	return sdk.ToolVisible(&spec, name)
+}
 
 // validateSkills 校验挂载清单:**本次新增**的技能名必须存在于技能库(或为角色私有技能),
 // 否则显式失败。existing = 改动前的定义(nil = 新建,全部按新增严格校验);

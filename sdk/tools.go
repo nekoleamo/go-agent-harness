@@ -90,6 +90,29 @@ type ToolConflictReporter interface {
 	ToolConflicts() []ToolConflict
 }
 
+// ToolCatalogue 可选能力:角色工具集过滤(host-tools 实现,第九十一批)。
+//
+// 为何不扩 ToolRegistry 接口:与 ToolConflictReporter 同款 —— 只让 host-tools **自愿**实现,
+// 测试替身/极简宿主不受影响(未实现 = 不做工具过滤,即今天行为;不是静默降级)。
+//
+// 与技能可见性(host-skills 的 SetFilter)**分工明确**:技能是“有没有这份知识”,
+// 工具是“能不能动手” —— 同一个角色表达两件事,分别落在两个 Registry 上。
+// 过滤必须同时作用于 List 与 Execute:只过 List 会让模型凭记忆调用绕过
+// (工具名在历史上下文里出现过)。
+//
+// 豁免:Get **不**过过滤 —— 它是裁决面(policy-guard 靠它取真实目标工具定义做
+// 路径/审批裁决)与插件自查面,过滤它会让被排除的工具连裁决都拿不到定义。
+// 管理面需“注册了什么”而非“模型看得见什么”时用 ListAll。
+//
+// 单一判据:判定函数用 sdk.ToolVisible(role, name),运行期与展示端共用。
+// 未装配 ctx.tools 的宿主:host-roles 侧跳过(显式不报错)。
+type ToolCatalogue interface {
+	// SetFilter 安装可见性判定函数(nil = 不过滤,恢复全量);返回 Disposer 幂等撤销。
+	SetFilter(visible func(ToolDefinition) bool) Disposer
+	// ListAll 全部已注册工具(不过滤);未注册工具时返回空切片。
+	ListAll() []ToolDefinition
+}
+
 // ToolRegistry 服务(ctx.tools):注册/列举/带流水线执行。
 type ToolRegistry interface {
 	// Register 注册工具,返回 Disposer。

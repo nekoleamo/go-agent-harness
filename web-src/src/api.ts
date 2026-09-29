@@ -1,5 +1,5 @@
 // REST 客户端(上行)+ 工具函数。核心交互纯 REST,不绕模板渲染。
-import type { AttachmentView, CommandOptionsResp, CommandView, DocTree, DocView, InstructionsView, Job, McpView, ModelsAllResp, NoticePage, PluginInfo, ProviderInfo, RoleSpec, RolesView, Schedule, SessionEventsPage, SessionInfo, StateView, TrashView, WorkspaceInfo } from './types'
+import type { AttachmentView, CommandOptionsResp, CommandView, DocTree, DocView, InstructionsView, Job, McpView, ModelsAllResp, NoticePage, PluginInfo, ProviderInfo, RoleSpec, RolesView, Schedule, SessionEventsPage, SessionInfo, StateView, ToolDef, TrashView, WorkspaceInfo } from './types'
 
 const BASE = ''
 const json = {
@@ -181,6 +181,11 @@ export const api = {
   instructionsSave(text: string): Promise<{ ok: true; bytes: number; applied: boolean; warning?: string }> {
     return req('/api/instructions', { method: 'PUT', headers: json, body: JSON.stringify({ text }) })
   },
+  // tools 工具清单(GET /api/tools);all=true = **全量**(管理面:被角色排除的也要列出来,
+  // 否则面板分不清"被排除"与"没装这个插件");默认 = 模型可见(已过滤)。
+  tools(all = false): Promise<ToolDef[]> {
+    return req('/api/tools' + (all ? '?all=1' : ''))
+  },
   // roleGet 详情(含 AGENTS.md 正文;列表接口不带正文,避免面板轮询拖大响应)
   roleGet(id: string): Promise<RoleSpec> {
     return req('/api/roles/' + encodeURIComponent(id))
@@ -189,7 +194,7 @@ export const api = {
     return req('/api/roles', { method: 'POST', headers: json, body: JSON.stringify(p) })
   },
   // roleUpdate 部分更新(只改传了的字段;未传 = 保持现值;model/thinking 传空串 = 清掉)
-  roleUpdate(id: string, p: Partial<{ name: string; description: string; identity: string; exclude_global: boolean; skills_set: boolean; skills: string[]; skills_inherit: boolean; model: string; thinking: string }>): Promise<RoleSpec> {
+  roleUpdate(id: string, p: Partial<{ name: string; description: string; identity: string; exclude_global: boolean; skills_set: boolean; skills: string[]; skills_inherit: boolean; model: string; thinking: string; tools_exclude: string[] }>): Promise<RoleSpec> {
     return req('/api/roles/' + encodeURIComponent(id), { method: 'PATCH', headers: json, body: JSON.stringify(p) })
   },
   roleSetAgents(id: string, agents: string): Promise<{ ok: true; bytes: number }> {

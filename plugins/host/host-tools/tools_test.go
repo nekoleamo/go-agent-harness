@@ -148,3 +148,126 @@ func TestDuplicateNameIgnored(t *testing.T) {
 		t.Fatalf("冲突应 ERROR 级点名被忽略者: %s", log)
 	}
 }
+
+// namedTool 具名工具替身(可见性过滤用例要多个不同名字)。
+type namedTool struct{ name string }
+
+func (n *namedTool) Definition() sdk.ToolDefinition {
+	return sdk.ToolDefinition{Name: n.name, Description: "工具 " + n.name, InputSchema: map[string]any{"type": "object"}}
+}
+func (n *namedTool) Execute(context.Context, string) (any, error) {
+	return map[string]any{"ran": n.name}, nil
+}
+
+// TestToolCatalogueFilter 角色工具集过滤:List 过滤 / ListAll 全量 / Get 豁免 /
+// Execute 显式拒绝(与"不存在"区分)/ Disposer 幂等撤销。
+func TestToolCatalogueFilter(t *testing.T) {
+	c := newCtx(t)
+	if _, err := (&Plugin{}).Start(c, &sdk.Manifest{}); err != nil {
+		t.Fatal(err)
+	}
+	var reg sdk.ToolRegistry
+	if err := c.Inject("ctx.tools", &reg); err != nil {
+		t.Fatal(err)
+	}
+	reg.Register(&namedTool{name: "shell"})
+	reg.Register(&namedTool{name: "file_read"})
+	tc, ok := reg.(sdk.ToolCatalogue)
+	if !ok {
+		t.Fatal("host-tools 应实现 sdk.ToolCatalogue")
+	}
+
+	// 未装 filter:全量可见,ListAll 同
+	if len(reg.List()) != 2 || len(tc.ListAll()) != 2 {
+		t.Fatalf("未过滤应为 2 个,got List=%d ListAll=%d", len(reg.List()), len(tc.ListAll()))
+	}
+
+	disp := tc.SetFilter(func(d sdk.ToolDefinition) bool { return d.Name != "shell" })
+	if got := reg.List(); len(got) != 1 || got[0].Name != "file_read" {
+		t.Fatalf("过滤后 List = %+v,期望只剩 file_read", got)
+	}
+	if n := len(tc.ListAll()); n != 2 {
+		t.Fatalf("ListAll 不该被过滤,got %d", n)
+	}
+	// Get 是裁决面/自查面:**刻意不应用 filter**(policy-guard 要拿真实目标定义做路径裁决)
+	if _, ok := reg.Get("shell"); !ok {
+		t.Error("Get 不应受可见性过滤影响")
+	}
+	// Execute 拒绝:文案必须与"不存在"区分开(否则用户会去查插件安装)
+	res, err := reg.Execute(context.Background(), "shell", "{}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Error, "排除") || strings.Contains(res.Error, "不存在") {
+		t.Errorf("被排除的工具应给「已排除」文案,got %q", res.Error)
+	}
+	if res, _ := reg.Execute(context.Background(), "file_read", "{}"); res.Error != "" {
+		t.Errorf("可见工具应可执行,got error %q", res.Error)
+	}
+	// 不存在的工具仍走"不存在"文案(两条路径不能混)
+	if res, _ := reg.Execute(context.Background(), "nope", "{}"); !strings.Contains(res.Error, "不存在") {
+		t.Errorf("未知工具应报「不存在」,got %q", res.Error)
+	}
+
+	disp()
+	if n := len(reg.List()); n != 2 {
+		t.Fatalf("撤销 filter 后应恢复全量,got %d", n)
+	}
+	disp() // 幂等:重复撤销不炸
+	if res, _ := reg.Execute(context.Background(), "shell", "{}"); res.Error != "" {
+		t.Fatalf("撤销后 shell 应可执行,got %q", res.Error)
+	}
+
+	// nil = 恢复全量(契约的一部分)
+	d2 := tc.SetFilter(func(sdk.ToolDefinition) bool { return false })
+	if len(reg.List()) != 0 {
+		t.Fatal("拒绝所有工具的 filter 应让 List 为空")
+	}
+	tc.SetFilter(nil)
+	if len(reg.List()) != 2 {
+		t.Fatal("SetFilter(nil) 应恢复全量")
+	}
+	d2() // 后装的已被 nil 覆盖:旧 disposer 不该把 nil 抹成"某一个 filter"
+	if len(reg.List()) != 2 {
+		t.Fatal("已被覆盖的旧 disposer 不得改变现状")
+	}
+}
+
+// TestExcludedToolSkipsPreExecute 被排除的工具**不进审批/沙箱裁决**:
+// 否则会弹一次毫无意义的确认框(用户点了"允许"也执行不了)。
+func TestExcludedToolSkipsPreExecute(t *testing.T) {
+	c := newCtx(t)
+	if _, err := (&Plugin{}).Start(c, &sdk.Manifest{}); err != nil {
+		t.Fatal(err)
+	}
+	var reg sdk.ToolRegistry
+	if err := c.Inject("ctx.tools", &reg); err != nil {
+		t.Fatal(err)
+	}
+	var seen int
+	c.Subscribe("tools/pre-execute", func(context.Context, *sdk.Event) error {
+		seen++
+		return nil
+	})
+	reg.Register(&namedTool{name: "shell"})
+	reg.(sdk.ToolCatalogue).SetFilter(func(d sdk.ToolDefinition) bool { return d.Name != "shell" })
+	if _, err := reg.Execute(context.Background(), "shell", "{}"); err != nil {
+		t.Fatal(err)
+	}
+	if seen != 0 {
+		t.Fatalf("被排除的工具不应进入 pre-execute 裁决,got %d 次", seen)
+	}
+	if _, err := reg.Execute(context.Background(), "missing", "{}"); err != nil {
+		t.Fatal(err)
+	}
+	if seen != 0 {
+		t.Fatalf("未知工具同样不该进裁决,got %d 次", seen)
+	}
+	reg.Register(&namedTool{name: "file_read"})
+	if _, err := reg.Execute(context.Background(), "file_read", "{}"); err != nil {
+		t.Fatal(err)
+	}
+	if seen != 1 {
+		t.Fatalf("可见工具应进裁决一次,got %d", seen)
+	}
+}

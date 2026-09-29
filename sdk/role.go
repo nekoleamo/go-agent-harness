@@ -6,6 +6,11 @@
 // 依赖方向是「角色知道技能」,不是反的。
 package sdk
 
+import (
+	"fmt"
+	"strings"
+)
+
 // RoleSpec 一个角色的定义(role.yaml 的可序列化视图 + 派生字段)。
 type RoleSpec struct {
 	ID          string `json:"id"`                    // 目录名(唯一,受校验:[a-z0-9][a-z0-9-]{0,31})
@@ -30,6 +35,13 @@ type RoleSpec struct {
 	// 而**不**进系统提示 —— 模型不需要知道自己在哪个模型上跑。
 	Model    string `json:"model,omitempty"`
 	Thinking string `json:"thinking,omitempty"`
+	// ToolsExclude 角色**排除**的工具名(第九十一批)。
+	// 为什么是排除清单而不是白名单(与 Skills 的"挂载清单"方向相反):工具面随插件装卸
+	// **频繁变化** —— 白名单会让新装的插件对老角色静默不可见,用户看到的是"这个角色莫名
+	// 少了个工具",归因困难;排除清单的缺省(不写这个键)永远是"全部工具",能力面只增不减。
+	// 与 model/thinking 同款:**不需要 Set 标记** —— 空清单与不写这个键行为一致(都不排除)。
+	// 名字不存在不报错(工具可能被卸载):悬空名由 UI 标注,后端只校验名字的**形状**。
+	ToolsExclude []string `json:"tools_exclude,omitempty"`
 	// AGENTS 角色工作规则正文(roles/<id>/AGENTS.md);AGENTSBytes 为其字节数(上限校验/展示用)。
 	AGENTS      string `json:"agents,omitempty"`
 	AGENTSBytes int    `json:"agents_bytes"`
@@ -54,6 +66,54 @@ const (
 	SourceRole    = "role"
 	SourceSession = "session"
 )
+
+// ToolVisible 判定一个工具名在当前角色下是否**可见/可调**(单一判据:运行期过滤与
+// 三端展示共用 —— 各写一份判定就必然漂成"界面说能用、实际被拒")。
+// role 为 nil(基线/未启用角色)或未声明排除清单 ⇒ 一律放行。
+func ToolVisible(role *RoleSpec, name string) bool {
+	if role == nil || len(role.ToolsExclude) == 0 {
+		return true
+	}
+	for _, n := range role.ToolsExclude {
+		if n == name {
+			return false
+		}
+	}
+	return true
+}
+
+// NormalizeToolNames 规范化并校验一组工具名的形状(去空白、去重保序)。
+// 与 NormalizeThinking 同款纪律:坏值**显式失败**,不静默丢弃 —— 悄悄删掉用户写的
+// 条目等于给出一个与实际不符的角色定义。
+// 只校验形状(**不查存在性**):internal/roles 不依赖 ctx.tools(分层纪律),
+// 而且插件装卸是常态,悬空名不该让整个角色变成坏角色。
+func NormalizeToolNames(names []string) ([]string, error) {
+	if len(names) == 0 {
+		return nil, nil
+	}
+	out := make([]string, 0, len(names))
+	seen := make(map[string]bool, len(names))
+	for _, raw := range names {
+		n := strings.TrimSpace(raw)
+		switch {
+		case n == "":
+			return nil, fmt.Errorf("工具名不能为空(排除清单里第 %d 项)", len(out)+1)
+		case len(n) > MaxToolNameLen:
+			return nil, fmt.Errorf("工具名过长(≤ %d 字符):%q", MaxToolNameLen, n)
+		case strings.ContainsFunc(n, func(r rune) bool { return r <= ' ' || r == 0x7f }):
+			return nil, fmt.Errorf("工具名不能含空白/控制字符:%q", n)
+		}
+		if seen[n] {
+			continue
+		}
+		seen[n] = true
+		out = append(out, n)
+	}
+	return out, nil
+}
+
+// MaxToolNameLen 工具名长度上限(形状校验用;现有工具名最长约 30 字符,留足余量)。
+const MaxToolNameLen = 64
 
 // EffectiveModel 派生"本回合实际使用的模型"及其来源。
 // 语义:角色声明了 model(且角色存在)→ 用它;否则用会话模型。

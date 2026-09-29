@@ -56,6 +56,8 @@ type Plugin interface {
 | `ctx.commands` | host-commands | 斜杠命令注册表:Register/List/Get;TUI 提示/分发/help 动态来自本表 |
 | `ctx.turnControl` | host-agent-loop | 回合控制:取消(Esc / `/api/control` 共用入口)+ **转向**。转向走**可选能力接口** `sdk.TurnSteerer`(`Steer(text) bool`):实现了才能注入,未实现则调用方回落「排队待发」—— 与 `SandboxSync` / `MultiProviderService` 同一种能力探测模式,插件不应 import 提供方 |
 
+**工具可见性(可选能力,第九十一批)**:`ctx.tools` 的提供方(host-tools)额外实现 `sdk.ToolCatalogue` —— `SetFilter(visible func(sdk.ToolDefinition) bool) sdk.Disposer` + `ListAll() []sdk.ToolDefinition`。`host-roles` 在 Start 里按**当前角色**的排除清单装判定函数(每次求值现算 ⇒ 切角色即生效),卸载时经 Disposer 撤销(不留残留过滤)。契约要点:① `List()` = **模型可见**表(已过滤),`ListAll()` = **注册状态**面(给安装列表/管理面板用 —— "注册了什么"与"模型看得见什么"是两件事);② `Execute()` 也必须过滤(**只过 `List` 会让人凭历史上下文再叫一次就绕过**),拒绝文案要与"工具不存在"区分;③ `Get()` **不过滤** —— 它是裁决面(policy-guard 取真实目标工具定义做路径/审批裁决)与插件自查面;④ 未实现该接口的注册表(测试替身/极简宿主)⇒ 调用方跳过,这是"能力不存在",不是静默降级。判定用 `sdk.ToolVisible(role, name)`(运行期与展示端共用同一判据,别各写一份)。
+
 **给插件加斜杠命令**(如 host-jobs 注册 `/jobs`):Start 内**可选注入** `_ = c.Inject("ctx.commands", &cmds)`(未装配=无 TUI 场景,跳过不报错——与沙箱可选注入同模式),随后 `cmds.Register(CommandSpec{Name, Usage, Desc, Run})`;Run 返回**输出文本 + error**(输出由 TUI 显示为 meta 行);返回 Disposer 随插件卸载撤销命令;**同名冲突被拒绝**(先到先得,非静默)。插件命令自动进入 `/` 选项列表与 `/help`。
 
 **交互式选择器**(可选增强):`Args []sdk.ArgLevel` 声明参数级联——每级要么是**枚举级**(`Options`,可动态求值:任务/插件列表,`picked` 为前几级已选值,选完进下一级),要么是**自由级**(`FreeArgs` 参数名列表,选择器断点回输入框、提示继续输入,如 `/model` 需模型名、`/provider set` 需 baseUrl/apiKey);两级皆空 = 该路径无参数,直接执行(`/help`、`/provider show`)。示例见 host-jobs 的 `/jobs`(一级 list/output/kill,二级动态任务 ID)。TUI 中:输入 `/` 自动激活列表,↑/↓ 移动、Enter 确定、Esc 退出选择。 |

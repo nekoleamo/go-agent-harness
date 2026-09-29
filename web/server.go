@@ -1840,12 +1840,19 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 // —— 通用能力 REST 面(为前端增删改铺路;可选服务缺失显式 503/501) ——
 
 // handleTools 工具清单(GET /api/tools):模型可见定义(name/desc/schema)。
-func (s *Server) handleTools(w http.ResponseWriter, _ *http.Request) {
+// `?all=1` = **管理面**(设置面板的角色工具勾选):返回全部已注册工具 —— 被角色排除的
+// 工具必须还列得出来,否则面板分不清“被角色排除”与“没装这个插件”(第九十一批)。
+func (s *Server) handleTools(w http.ResponseWriter, r *http.Request) {
 	if s.tools == nil {
 		writeJSON(w, http.StatusOK, []sdk.ToolDefinition{})
 		return
 	}
 	list := s.tools.List()
+	if r.URL.Query().Get("all") != "" {
+		if tc, ok := s.tools.(sdk.ToolCatalogue); ok {
+			list = tc.ListAll()
+		}
+	}
 	if list == nil {
 		list = []sdk.ToolDefinition{}
 	}

@@ -35,7 +35,14 @@ type reg struct {
 	tools   map[string]sdk.Tool
 	ignored []sdk.ToolConflict // 重名被忽略者(可见性面:B3)
 	logger  *slog.Logger
+	// filter 可见性判定(nil = 不过滤;实现 sdk.ToolCatalogue,第九十一批)。
+	// 由 host-roles 按“当前角色排除清单”安装;每次 List/Execute 现算 ⇒ 切角色即生效。
+	// 用指针包装是为了让 Disposer 能识别“当前装的还是不是自己那一个”(函数值不可比)。
+	filter *toolFilter
 }
+
+// toolFilter 可见性判定函数的包装体(只为取得可比较的身份)。
+type toolFilter struct{ visible func(sdk.ToolDefinition) bool }
 
 // Register 注册工具(返回 Disposer)。
 func (r *reg) Register(t sdk.Tool) sdk.Disposer {
@@ -109,8 +116,51 @@ func briefDesc(def sdk.ToolDefinition) string {
 	return d
 }
 
-// List 返回模型可见的工具定义。
+// SetFilter 安装可见性判定函数(nil = 恢复全量);返回 Disposer 幂等撤销(实现 sdk.ToolCatalogue)。
+// 为什么记当前**有一个** filter 而不是叠一叠:过滤语义是“当前角色决定什么可见” ——
+// 多源叠加会让“卸载 host-roles 后过滤还在”这种残留成为可能(注册即副作用/卸载即撤销)。
+func (r *reg) SetFilter(visible func(sdk.ToolDefinition) bool) sdk.Disposer {
+	if visible == nil {
+		r.mu.Lock()
+		r.filter = nil
+		r.mu.Unlock()
+		return func() {}
+	}
+	f := &toolFilter{visible: visible}
+	r.mu.Lock()
+	r.filter = f
+	r.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			r.mu.Lock()
+			// 仅当当前 filter 还是自己装的那个才清(后装的 filter 不该被先装的 disposer 抹掉)
+			if r.filter == f {
+				r.filter = nil
+			}
+			r.mu.Unlock()
+		})
+	}
+}
+
+// List 返回模型可见的工具定义(已应用可见性过滤)。
 func (r *reg) List() []sdk.ToolDefinition {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]sdk.ToolDefinition, 0, len(r.order))
+	for _, n := range r.order {
+		def := r.tools[n].Definition()
+		if r.filter != nil && !r.filter.visible(def) {
+			continue
+		}
+		out = append(out, def)
+	}
+	return out
+}
+
+// ListAll 全部已注册工具(不过滤):管理面(注册状态/安装列表)用 ——
+// “注册了什么”与“模型看得见什么”是两件事。
+func (r *reg) ListAll() []sdk.ToolDefinition {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	out := make([]sdk.ToolDefinition, 0, len(r.order))
@@ -121,6 +171,8 @@ func (r *reg) List() []sdk.ToolDefinition {
 }
 
 // Get 取回单个工具定义。
+// **刻意不应用 filter**:本方法是裁决面(policy-guard 拿真实目标工具定义做路径/审批裁决)
+// 与插件自查面 —— 过滤它会让被排除的工具连裁决都拿不到定义(见 sdk.ToolCatalogue 注释)。
 func (r *reg) Get(name string) (sdk.ToolDefinition, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -135,9 +187,22 @@ func (r *reg) Get(name string) (sdk.ToolDefinition, bool) {
 func (r *reg) Execute(ctx context.Context, name, args string) (*sdk.ToolResult, error) {
 	r.mu.RLock()
 	t, ok := r.tools[name]
+	filter := r.filter
 	r.mu.RUnlock()
 	if !ok {
 		res := &sdk.ToolResult{Error: fmt.Sprintf("工具 %q 不存在 (对应插件可能已卸载/未启用;可经 /plugins list 排查)", name), Content: "{}"}
+		r.broadcastResult(ctx, name, res)
+		return res, nil
+	}
+	// 可见性过滤:只过 List 不够 —— 模型会把历史上下文里出现过的工具名再叫一次。
+	// 文案必须与“不存在”**区分开**(否则用户会把“角色没授权”当成插件坏了去查安装),
+	// 并且**在 tools/pre-execute 之前**拒:被排除的工具不应进入审批/沙箱裁决
+	// (否则会弹一次毫无意义的确认框)。
+	if filter != nil && !filter.visible(t.Definition()) {
+		res := &sdk.ToolResult{
+			Error:   fmt.Sprintf("工具 %q 已被当前角色排除(未授权):可在「设置 → 角色 → 工具」里恢复,或切换到其它角色", name),
+			Content: "{}",
+		}
 		r.broadcastResult(ctx, name, res)
 		return res, nil
 	}

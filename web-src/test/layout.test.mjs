@@ -64,6 +64,9 @@ function makeStub(
 ) {
   // seen:记录写类请求(方法/路径/体),供角色面板用例断言「面板真的提交了」而不是只改了本地状态。
   const seen = []
+  // toolQueries:GET /api/tools 的查询串(第九十一批 —— 面板必须读 ?all=1 全量清单;
+  // seen 只记写类请求,读类的口径单记一处)。
+  const toolQueries = []
   const handler = async (route) => {
     const url = new URL(route.request().url())
     const p = url.pathname
@@ -116,6 +119,18 @@ function makeStub(
         ],
       })
     }
+    if (p === '/api/tools') {
+      // 工具清单(第九十一批):面板的工具勾选读 ?all=1 = **全量**(管理面)——
+      // 被角色排除的工具也必须列得出来,否则面板分不清"被排除"与"没装插件"。
+      // 故意**不含** ghost-tool(模拟插件卸载后的悬空名):面板要把它显示成「该工具当前不存在」。
+      toolQueries.push(url.search)
+      return json([
+        { name: 'shell', description: 'Run a shell command' },
+        { name: 'read_skill', description: 'Read a skill by name' },
+        { name: 'list_roles', description: 'List roles' },
+        { name: 'tool-with-a-very-long-name-0123456789abcdef', description: 'Long name stress' },
+      ])
+    }
     if (p.startsWith('/api/roles/') && p.endsWith('/agents')) return json({ ok: true, bytes: 21 })
     if (p.startsWith('/api/roles/')) {
       if (route.request().method() === 'DELETE') return route.fulfill({ status: 200, body: '' })
@@ -130,6 +145,9 @@ function makeStub(
           name: 'Finance',
           skills_set: true,
           skills: [...(b.skills ?? []), 'stale-skill-removed-0123456789abcdef'],
+          // 真实后端回的是整份更新后的 spec:带上了 tools_exclude 才不至于让面板把刚提交的
+          // 排除清单从本地状态里"回滚"掉(第九十一批)。
+          ...(b.tools_exclude ? { tools_exclude: b.tools_exclude } : {}),
           agents_bytes: 21,
         })
       }
@@ -142,6 +160,8 @@ function makeStub(
           description: '',
           skills_set: true,
           skills: ['skill-alpha'],
+          // 工具排除清单(第九十一批):一个真实工具 + 一个**当前不存在**的名字(悬空名)。
+          tools_exclude: ['read_skill', 'ghost-tool'],
           agents: 'ASSISTANT-RULES\n',
           agents_bytes: 17,
         })
@@ -315,6 +335,7 @@ function makeStub(
     return json([])
   }
   handler.seen = seen
+  handler.toolQueries = toolQueries
   return handler
 }
 const apiStub = makeStub(true)
@@ -1254,6 +1275,67 @@ describe('布局护栏:整页永不滚动(第五十二/五十三批)', { skip: s
         !got.includes('skill-alpha') && !got.includes('skill-with-a-very-long-name'),
         `连点两次丢了改动(后者带着旧清单覆盖):${JSON.stringify(got)}`,
       )
+    } catch (e) {
+      await shoot(page, t.name)
+      throw e
+    } finally {
+      await ctx.close()
+    }
+  })
+
+  // 第九十一批:角色工具集 —— 默认全给、勾上即排除(整份替换)。
+  // 面板必须能分清三种状态:能用 / 被本角色排除 / 名字当前不存在(插件卸载后悬空)。
+  test('设置面板:角色工具排除(整份替换、悬空名可清、读全量清单)', async (t) => {
+    const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+    let page = null
+    try {
+      const stub = makeStub(true, false, false, false, true, 'finance', 250)
+      page = await open(ctx, stub, docks[1].dock)
+      await page.click('.gear')
+      await page.waitForSelector('[data-sec="role"] .prow')
+      await page.click('[data-sec="role"] .prow:has-text("Assistant") button:has-text("编辑")')
+      await page.waitForSelector('[data-sec="role"] textarea')
+      // 折叠时不拉工具清单(不拖大每次轮询的响应)
+      assert.equal(stub.toolQueries.length, 0, '工具清单不该在未展开时就拉')
+      await page.click('[data-sec="role"] h3:has-text("工具") button.link')
+      await page.waitForSelector('[data-sec="role"] .m-item:has-text("shell") input[type=checkbox]')
+      // 管理面口径:必须带 ?all=1(全量)—— 被排除的工具也要列出来
+      assert.equal(stub.toolQueries.length, 1, `展开应只拉一次工具清单:${JSON.stringify(stub.toolQueries)}`)
+      assert.ok(stub.toolQueries[0].includes('all=1'), `工具清单应读全量(?all=1):${stub.toolQueries[0]}`)
+
+      const sec = () => page.textContent('[data-sec="role"]')
+      assert.ok(((await sec()) ?? '').includes('已排除 2 项'), '应显示已排除项数')
+      const box = (n) => `[data-sec="role"] .m-item:has-text("${n}") input[type=checkbox]`
+      assert.ok(await page.isChecked(box('read_skill')), '已被排除的工具应显示为勾选')
+      assert.ok(!(await page.isChecked(box('shell'))), '未被排除的工具不该是勾选态')
+      // 悬空名(排除清单里有、工具清单里没有)必须可见且能单独清掉 —— 否则只能手改 role.yaml
+      const staleRow = '[data-sec="role"] .m-item:has-text("ghost-tool")'
+      await page.waitForSelector(staleRow)
+      assert.ok(((await page.textContent(staleRow)) ?? '').includes('该工具当前不存在'), '悬空名应标出「当前不存在」')
+      await page.click(`${staleRow} button:has-text("清除")`)
+      await page.waitForTimeout(400)
+      const patches = () => stub.seen.filter((r) => r.method === 'PATCH' && r.path === '/api/roles/assistant').map((r) => JSON.parse(r.body || '{}'))
+      assert.deepEqual(patches().at(-1).tools_exclude, ['read_skill'], `清除悬空名应整份替换:${JSON.stringify(patches().at(-1))}`)
+      await page.waitForSelector('[data-sec="role"] .m-item:has-text("shell") input[type=checkbox]')
+
+      // 同一 tick 连点两下(此时 :disabled 还没落到 DOM 上):两次改动都要在。
+      // 一个"恢复"(read_skill 去掉)+ 一个"排除"(shell 加上)—— 后一次若带着点击时的旧清单发,
+      // 就会把刚恢复的 read_skill 又排除回去(整份替换字段的经典丢改动)。
+      await page.evaluate(() => {
+        const pick = (n) =>
+          Array.from(document.querySelectorAll('[data-sec="role"] .m-item')).find((m) => m.textContent.includes(n))
+        const a = pick('read_skill').querySelector('input[type=checkbox]')
+        a.checked = false
+        a.dispatchEvent(new Event('change', { bubbles: true }))
+        const b = pick('shell').querySelector('input[type=checkbox]')
+        b.checked = true
+        b.dispatchEvent(new Event('change', { bubbles: true }))
+      })
+      await page.waitForTimeout(800)
+      const got = patches().at(-1).tools_exclude ?? []
+      assert.ok(got.includes('shell'), `后一次提交丢了新勾的排除项:${JSON.stringify(got)}`)
+      assert.ok(!got.includes('read_skill'), `后一次提交带着旧清单把刚恢复的工具又排除了:${JSON.stringify(got)}`)
+      assert.equal(patches().length, 3, `应一共三次 PATCH(清除悬空名 + 两次勾选):${JSON.stringify(patches())}`)
     } catch (e) {
       await shoot(page, t.name)
       throw e

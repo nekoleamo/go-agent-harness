@@ -41,6 +41,12 @@ func rolesServer(t *testing.T, withChain bool) (*Server, string) {
 		}
 	}
 	s.ctx = c
+	// 工具注册表也挂到 Server(生产走 Server.Inject 同一条链):/api/tools 与
+	// 角色工具排除的可见性断言都要它(第九十一批)。
+	var tl sdk.ToolRegistry
+	if err := c.Inject("ctx.tools", &tl); err == nil {
+		s.tools = tl
+	}
 	return s, home
 }
 
@@ -307,5 +313,67 @@ func TestSkillsEndpoints(t *testing.T) {
 	}
 	if !strings.Contains(body, `"name":"tax"`) || !strings.Contains(body, `"role":"finance"`) {
 		t.Fatalf("库列表应含角色私有技能并标归属: %s", body)
+	}
+}
+
+// TestRoleToolsExcludeEndpoints 角色工具排除清单的面板端点(第九十一批):
+// PATCH 落盘 + 详情回显 + 坏形状 400 + **模型可见面确实变了**(过滤不是只写在 role.yaml 里)。
+func TestRoleToolsExcludeEndpoints(t *testing.T) {
+	s, home := rolesServer(t, true)
+	if code, body := do(t, s, http.MethodPost, "/api/roles", `{"id":"finance","name":"财务"}`); code != 200 {
+		t.Fatalf("建角色失败: %d %s", code, body)
+	}
+	// 坏形状(空项/空白)→ 400(不静默丢弃用户写的条目)
+	if code, _ := do(t, s, http.MethodPatch, "/api/roles/finance", `{"tools_exclude":[""]}`); code != 400 {
+		t.Fatalf("空工具名应 400,got %d", code)
+	}
+	if code, _ := do(t, s, http.MethodPatch, "/api/roles/finance", `{"tools_exclude":["a b"]}`); code != 400 {
+		t.Fatalf("含空白工具名应 400,got %d", code)
+	}
+	// 正常:落盘 + 回显
+	code, body := do(t, s, http.MethodPatch, "/api/roles/finance", `{"tools_exclude":["read_skill"," list_roles "]}`)
+	if code != 200 || !strings.Contains(body, `"tools_exclude":["read_skill","list_roles"]`) {
+		t.Fatalf("PATCH tools_exclude 失败: %d %s", code, body)
+	}
+	raw, err := os.ReadFile(filepath.Join(home, "roles", "finance", "role.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "tools_exclude") || !strings.Contains(string(raw), "- read_skill") {
+		t.Fatalf("排除清单未落盘:\n%s", raw)
+	}
+	// 详情回显(面板据此渲染"已排除 N 项")
+	if code, body := do(t, s, http.MethodGet, "/api/roles/finance", ""); code != 200 || !strings.Contains(body, `"tools_exclude":["read_skill","list_roles"]`) {
+		t.Fatalf("详情未回显排除清单: %d %s", code, body)
+	}
+	// 角色生效后**模型可见面**确实少了(端到端:面板改的东西真的作用于工具表)
+	if code, _ := do(t, s, http.MethodPost, "/api/roles/finance/use", "{}"); code != 200 {
+		t.Fatalf("切换失败: %d", code)
+	}
+	code, body = do(t, s, http.MethodGet, "/api/tools", "")
+	if code != 200 {
+		t.Fatalf("GET /api/tools = %d %s", code, body)
+	}
+	if strings.Contains(body, `"read_skill"`) {
+		t.Fatalf("被排除的工具不该出现在(模型可见的)/api/tools 里: %s", body)
+	}
+	if !strings.Contains(body, `"list_roles"`) && !strings.Contains(body, `"read_role"`) {
+		t.Logf("提示:本次装配未注册角色只读工具,跳过可见性断言:%s", body)
+	}
+	// 管理面(?all=1)必须**仍列出**被排除的工具 —— 否则面板分不清"被角色排除"与"没装插件"
+	code, body = do(t, s, http.MethodGet, "/api/tools?all=1", "")
+	if code != 200 {
+		t.Fatalf("GET /api/tools?all=1 = %d %s", code, body)
+	}
+	if !strings.Contains(body, `"read_skill"`) {
+		t.Fatalf("管理面应看到全部已注册工具: %s", body)
+	}
+	// 清空(面板「全部恢复」)
+	code, body = do(t, s, http.MethodPatch, "/api/roles/finance", `{"tools_exclude":[]}`)
+	if code != 200 || strings.Contains(body, `"tools_exclude":["`) {
+		t.Fatalf("清空排除清单失败: %d %s", code, body)
+	}
+	if code, body := do(t, s, http.MethodGet, "/api/tools", ""); code != 200 || !strings.Contains(body, `"read_skill"`) {
+		t.Fatalf("清空后工具应回来: %d %s", code, body)
 	}
 }
