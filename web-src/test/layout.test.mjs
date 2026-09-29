@@ -431,6 +431,21 @@ after(async () => {
 })
 
 // shoot 失败取证:把该用例当帧截图落盘(仅在 GAH_LAYOUT_ARTIFACTS 指定时;CI 传 runner.temp)。
+// settle:轮询到条件成立为止(上限 timeoutMs),替代写死的 waitForTimeout。
+// 起因(第九十一批 CI 修正):「段落导航对齐」用例在 macos runner 上以 delta 74.25px 失败 ——
+// 平滑滚动在负载高的 runner 上 400ms 内没滚完,而断言本身(段顶对齐内容区顶)是对的。
+// 纪律:布局用例不得依赖机器速度 —— 断言"最终状态",别断言"某个时刻的状态"。
+async function settle(page, fn, { timeoutMs = 3000, stepMs = 50 } = {}) {
+  const deadline = Date.now() + timeoutMs
+  let last
+  for (;;) {
+    last = await page.evaluate(fn)
+    if (last?.ok) return last
+    if (Date.now() > deadline) return last
+    await page.waitForTimeout(stepMs)
+  }
+}
+
 async function shoot(page, name) {
   if (!ARTIFACTS || !page) return
   try {
@@ -653,26 +668,26 @@ describe('布局护栏:整页永不滚动(第五十二/五十三批)', { skip: s
       // 先展开到 43 条:真机里把面板拉成长滚动的就是它 —— 导航要在那种长度下仍然一跳到顶。
       await page.click('[data-sec="plugin"] .more')
       await page.click('.nav-it:has-text("数据备份")')
-      await page.waitForTimeout(500) // smooth 滚动落定
-      const m = await page.evaluate(() => {
+      // 轮询到"滚完且对齐"为止(写死 sleep 会在负载高的 runner 上假红,见 settle 注释)
+      const m = await settle(page, () => {
         const panel = document.querySelector('[aria-label="设置"]')
         const body = panel.querySelector('.body')
         const sec = body.querySelector('section[data-sec="backup"]')
-        return {
-          scrollTop: body.scrollTop,
-          delta: Math.abs(sec.getBoundingClientRect().top - body.getBoundingClientRect().top),
-          on: panel.querySelector('.nav-it.on')?.textContent?.trim() ?? '',
-        }
+        const on = panel.querySelector('.nav-it.on')?.textContent?.trim() ?? ''
+        const delta = Math.abs(sec.getBoundingClientRect().top - body.getBoundingClientRect().top)
+        return { ok: on === '数据备份' && delta <= 40, scrollTop: body.scrollTop, delta, on }
       })
       assert.ok(m.scrollTop > 0, '点「数据备份」后内容区没有滚动')
       assert.ok(m.delta <= 40, `「数据备份」段未对齐到内容区顶部:偏差 ${m.delta}px`)
       assert.equal(m.on, '数据备份', `高亮没落在「数据备份」上,而是「${m.on}」`)
       // 末段(插件)在内容已被展开后仍可能顶不到上沿:高亮仍必须落在它身上(滚到底特判)
       await page.click('.nav-it:has-text("插件")')
-      await page.waitForTimeout(500)
-      const lastOn = await page.evaluate(
-        () => document.querySelector('[aria-label="设置"] .nav-it.on')?.textContent?.trim() ?? '',
-      )
+      const lastOn = (
+        await settle(page, () => {
+          const on = document.querySelector('[aria-label="设置"] .nav-it.on')?.textContent?.trim() ?? ''
+          return { ok: on === '插件', on }
+        })
+      ).on
       assert.equal(lastOn, '插件', `滚到底后高亮应留在「插件」上,实际「${lastOn}」`)
     } catch (e) {
       await shoot(page, t.name)
@@ -741,15 +756,14 @@ describe('布局护栏:整页永不滚动(第五十二/五十三批)', { skip: s
       assert.ok(rows[2].includes('切换'), '非当前角色应有「切换」按钮')
       // 段导航能到达(与其它段同一套 key→DOM 机制)
       await page.click('.nav-it:has-text("角色")')
-      await page.waitForTimeout(400)
-      const nav = await page.evaluate(() => {
+      // 平滑滚动需要时间(机器快慢不可控)⇒ 轮询到"已对齐"为止;超时后照样拿最终值去断言
+      const nav = await settle(page, () => {
         const panel = document.querySelector('[aria-label="设置"]')
         const body = panel.querySelector('.body')
         const sec = body.querySelector('section[data-sec="role"]')
-        return {
-          on: panel.querySelector('.nav-it.on')?.textContent?.trim() ?? '',
-          delta: Math.abs(sec.getBoundingClientRect().top - body.getBoundingClientRect().top),
-        }
+        const on = panel.querySelector('.nav-it.on')?.textContent?.trim() ?? ''
+        const delta = Math.abs(sec.getBoundingClientRect().top - body.getBoundingClientRect().top)
+        return { ok: on === '角色' && delta <= 40, on, delta }
       })
       assert.equal(nav.on, '角色', `高亮没落在「角色」上,而是「${nav.on}」`)
       assert.ok(nav.delta <= 40, `「角色」段未对齐到内容区顶部:偏差 ${nav.delta}px`)
