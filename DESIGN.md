@@ -1000,6 +1000,8 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 
 **护栏**：`gofmt`/`go vet`/`staticcheck` 双模块干净（含 `sdk` 独立 module）；全库 `go test ./... -race -count=1` 全绿（80 包）+ sdk 模块 ok；`scripts/coverage-check.sh` **COVERAGE_OK**（棘轮新增 `internal/searchfile 66`，`plugins/tool/tool-web` 76→85，总 80.2%）；`gen-extplugins.sh` 复跑无 diff。
 
+**推送后 CI 修正（2026-09-29，本批两个提交首次上 CI，`test-windows` 抓到 2 条；两条都是本地 macOS 绿、Windows 红的老类问题）**：① `internal/searchfile` 的 `TestSaveLoadRoundTrip` 断言文件权限 `0600` —— Windows 走 ACL、`0600` 不产生私密语义（Go 写出的仍是 `0666`），改用仓库既有闸门 `testutil.PosixPerm()`（与 `internal/providerfile` 同口径，见 AGENTS.md 跨平台纪律③）；② `host-bridge` 的 `TestConfigEnvFromCaps/配置文件读不了` 用 `Path()[:strings.LastIndex(Path(), "/")]` 取目录 —— Windows 分隔符是 `\`，`LastIndex` 返 -1 ⇒ `slice bounds out of range` **直接 panic 挂掉整个包**，改 `filepath.Dir`。纪律强化：**新写的测试里「权限断言」一律包 `testutil.PosixPerm()`、「取目录」一律 `filepath.Dir`（或 `filepath.ToSlash` 后再切），本地绿不代表 Windows 绿** —— 这两类是本仓 CI 上最重复的假红来源。
+
 ### 第八十四批 · 技能改名/跨库移动 + 角色切换落会话账本（R-3）（2026-09-28）
 
 > 起因:第八十三批交付后,《角色切换与技能编排》方案里还剩两项登记未做 —— ① 技能**改名 / 共享库↔角色私有移动**:面板只能新建/改原文/删,名字或归属写错就只能删了重建,而重建会丢掉旧名字上的挂载;② **R-3「中途换角色导致会话语义混杂」只落了 notice**:提示一闪而过,会话记录里查不到,重看会话时无从判断某段话是哪个角色写的。本批两项一起收。

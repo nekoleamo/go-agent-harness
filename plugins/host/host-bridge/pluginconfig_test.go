@@ -9,7 +9,7 @@ package hostbridge
 import (
 	"log/slog"
 	"os"
-	"strings"
+	"path/filepath"
 	"testing"
 
 	"github.com/nekoleamo/go-agent-harness/internal/searchfile"
@@ -95,7 +95,8 @@ func TestConfigEnvFromCaps(t *testing.T) {
 
 	t.Run("配置文件读不了:跳过注入且不致命", func(t *testing.T) {
 		t.Setenv("GAH_HOME", t.TempDir())
-		if err := os.MkdirAll(searchfile.Path()[:strings.LastIndex(searchfile.Path(), "/")], 0o755); err != nil {
+		// 目录用 filepath.Dir(不能按 "/" 切路径 —— Windows 上分隔符是 `\\`,切出 -1 直接 panic)。
+		if err := os.MkdirAll(filepath.Dir(searchfile.Path()), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.WriteFile(searchfile.Path(), []byte("api_key: [坏\n"), 0o600); err != nil {

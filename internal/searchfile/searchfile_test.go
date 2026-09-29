@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/nekoleamo/go-agent-harness/internal/testutil"
 )
 
 // setupHome 把数据根指到临时目录(Path() 经 sdk.Home() 派生)。
@@ -30,12 +32,16 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 	// 文件权限 0600(内含第三方 key;备份/dir 权限面见 C2-b 同一纪律)。
-	fi, err := os.Stat(Path())
-	if err != nil {
-		t.Fatalf("Stat: %v", err)
-	}
-	if perm := fi.Mode().Perm(); perm != 0o600 {
-		t.Fatalf("文件权限 = %o,期望 600", perm)
+	// Windows 走 ACL,`0600` 不产生私密语义(Go 写出的仍是 0666)—— 与 AGENTS.md 跨平台纪律③ 同类,
+	// 故用 testutil.PosixPerm() 闸住(与 internal/providerfile 同口径)。
+	if testutil.PosixPerm() {
+		fi, err := os.Stat(Path())
+		if err != nil {
+			t.Fatalf("Stat: %v", err)
+		}
+		if perm := fi.Mode().Perm(); perm != 0o600 {
+			t.Fatalf("文件权限 = %o,期望 600", perm)
+		}
 	}
 	raw, err := os.ReadFile(Path())
 	if err != nil {
