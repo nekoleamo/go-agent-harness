@@ -98,6 +98,8 @@ func TestValidDataWrites(t *testing.T) {
 		" todos ",               // 合法(去空白)
 		"",                      // 空项:静默跳过
 		"config",                // 保留集:凭据
+		"Config",                // 保留集:大小写折叠(macOS/Windows 默认卷上就是同一个目录)
+		"PLUGINS",               // 保留集:同上
 		"plugins",               // 保留集:插件产物
 		"ui-plugins",            // 保留集:前端插件
 		"../etc",                // 越界

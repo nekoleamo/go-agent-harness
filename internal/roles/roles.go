@@ -127,7 +127,7 @@ type roleFile struct {
 	Thinking string `yaml:"thinking,omitempty"`
 }
 
-// List 全部角色(按显示名排序)。**不读 AGENTS.md 正文**(只给字节数 + 私有技能名)——
+// List 全部角色(按显示名排序)。**不读 AGENTS.md 正文**(只给字节数 + 私有技能名) ——
 // 列表可能被 Web 轮询,逐个读正文是纯浪费;编辑时才走 Get。
 func (s Store) List() []sdk.RoleSpec {
 	entries, err := os.ReadDir(Path())
@@ -139,11 +139,10 @@ func (s Store) List() []sdk.RoleSpec {
 		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue // 回收站/隐藏目录不算角色
 		}
-		spec, err := s.Get(e.Name())
+		spec, err := s.get(e.Name(), false)
 		if err != nil {
 			continue // 坏角色由 Broken() 单独可见
 		}
-		spec.AGENTS = "" // 列表不带正文
 		out = append(out, spec)
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -152,6 +151,30 @@ func (s Store) List() []sdk.RoleSpec {
 		}
 		return out[i].ID < out[j].ID
 	})
+	return out
+}
+
+// MountUsers 挂载了 name 这个技能名的角色 ID(排序)。用途:技能被移进某个角色的私有库时,
+// 提醒“这些角色挂着的同名技能已经看不见了”(挂载按名字存,纯移动不会留下失效挂载,
+// 但**可见性**随库变 —— 不说一声就是静默失信)。
+func (s Store) MountUsers(name string) []string {
+	var out []string
+	for _, id := range s.IDs() {
+		spec, err := s.Get(id)
+		if err != nil {
+			continue // 坏角色不参与(它本来就没在跑)
+		}
+		if !spec.SkillsSet {
+			continue // 未写 skills 键 = 默认池:整个共享库都可见,私有技能本来就不在其中
+		}
+		for _, m := range spec.Skills {
+			if m == name {
+				out = append(out, id)
+				break
+			}
+		}
+	}
+	sort.Strings(out)
 	return out
 }
 
@@ -192,7 +215,11 @@ func (s Store) Broken() []Problem {
 }
 
 // Get 读单个角色(含 AGENTS.md 正文与私有技能名);不存在/坏文件返回错误。
-func (s Store) Get(id string) (sdk.RoleSpec, error) {
+func (s Store) Get(id string) (sdk.RoleSpec, error) { return s.get(id, true) }
+
+// get 读角色定义;withBody=false 时**不读 AGENTS.md 正文**(只 Stat 出字节数)——
+// 列表/面板列表只要元信息,读全文既浪费又会让“不读正文”的注释成为谎话。
+func (s Store) get(id string, withBody bool) (sdk.RoleSpec, error) {
 	if err := ValidateID(id); err != nil {
 		return sdk.RoleSpec{}, err
 	}
@@ -232,12 +259,16 @@ func (s Store) Get(id string) (sdk.RoleSpec, error) {
 		spec.Skills = append([]string(nil), (*f.Skills)...)
 		spec.SkillsSet = true
 	}
-	if b, err := os.ReadFile(filepath.Join(dir, AgentsName)); err == nil {
-		spec.AGENTS = string(b)
-	} else if !os.IsNotExist(err) {
-		return sdk.RoleSpec{}, fmt.Errorf("角色 %s 的 %s 读取失败: %w", id, AgentsName, err)
+	if withBody {
+		if b, err := os.ReadFile(filepath.Join(dir, AgentsName)); err == nil {
+			spec.AGENTS = string(b)
+		} else if !os.IsNotExist(err) {
+			return sdk.RoleSpec{}, fmt.Errorf("角色 %s 的 %s 读取失败: %w", id, AgentsName, err)
+		}
+		spec.AGENTSBytes = len(spec.AGENTS)
+	} else if fi, err := os.Stat(filepath.Join(dir, AgentsName)); err == nil {
+		spec.AGENTSBytes = int(fi.Size())
 	}
-	spec.AGENTSBytes = len(spec.AGENTS)
 	spec.OwnSkills = ownSkills(dir)
 	if _, err := os.Stat(filepath.Join(dir, SeedVersionName)); err == nil {
 		spec.Seed = true

@@ -104,20 +104,27 @@ type Service struct {
 	sess     sdk.SessionLog          // 可选(ctx.sessions 未装配 = nil)
 	llm      sdk.LLMService          // 可选(ctx.llm 未装配 = nil;仅用于"这个模型名能不能接")
 
+	// writeMu **串行化所有定义写入**(Create/Update/PatchRole/SetAgents/Rename/Delete 与
+	// Use 的偏好写入)。为何单独一把而不并进 mu:这些方法内部要调 Refresh/Get(取 mu),
+	// 并进去就是重入死锁;而它们真正需要的是"同一时刻只有一个写事务"。
+	// 锁阶固定 "writeMu → mu",不存在反向路径。
+	writeMu sync.Mutex
+
 	// warnedModels 已告警过的「角色|模型」组合(不可用告警只报一次,不刷屏)。
 	warnedModels map[string]bool
 }
 
 // Refresh 重读角色定义与当前角色(磁盘为准);返回坏文件清单(不阻塞装配)。
-// 逐个 Get 而不是直接用 List 的结果:List 有意**不带 AGENTS.md 正文**(列表接口别读全文),
-// 而身份槽的每一轮组装都要正文 —— 缓存里就得是真身(角色几十个、每个 ≤ 32KiB,可接受)。
+// **一遍扫完**:Broken() 与 Get 都读全文,而这里是角色状态的唯一刷新点(切角色/每次
+// CRUD/面板轮询都跑),分两遍读等于把每个角色正文读三遍(旧实现实测如此)。
 func (s *Service) Refresh() []roles.Problem {
-	probs := s.store.Broken()
+	var probs []roles.Problem
 	specs := map[string]sdk.RoleSpec{}
-	for _, brief := range s.store.List() {
-		spec, err := s.store.Get(brief.ID)
+	for _, id := range s.store.IDs() {
+		spec, err := s.store.Get(id)
 		if err != nil {
-			continue // 坏文件已进 probs
+			probs = append(probs, roles.Problem{ID: id, Err: err.Error()})
+			continue
 		}
 		specs[spec.ID] = spec
 	}
@@ -205,6 +212,8 @@ func (s *Service) Current() string {
 //
 // **不换会话**:历史与工作区都不动,只有下一轮的系统提示与技能可见集合变化。
 func (s *Service) Use(id string) error {
+	s.writeMu.Lock() // 与定义写入串行:切换时的校验/回读不能被并发 PATCH 穿过
+	defer s.writeMu.Unlock()
 	// "none"/"off" 是历史停用别名,但只在**没有同名角色**时生效:
 	// 用户真建了名为 none/off 的角色,面板/API 传这个 ID 过来必须切过去 —— 无条件改写
 	// 会把“切换到 none”变成静默停用(面板契约的停用占位符另有 "-")。
@@ -257,6 +266,8 @@ func (s *Service) Use(id string) error {
 
 // Create 新建角色(缺省给一份可改写的规则模板)。
 func (s *Service) Create(spec sdk.RoleSpec, agents string) (sdk.RoleSpec, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	if spec.Name == "" {
 		spec.Name = spec.ID
 	}
@@ -279,11 +290,31 @@ func (s *Service) Create(spec sdk.RoleSpec, agents string) (sdk.RoleSpec, error)
 
 // Update 更新角色定义(ID 不可改;技能清单/身份句/显示名都可改)。
 func (s *Service) Update(id string, spec sdk.RoleSpec) (sdk.RoleSpec, error) {
+	return s.PatchRole(id, func(cur *sdk.RoleSpec) error { *cur = spec; return nil })
+}
+
+// PatchRole 在**串行化窗口内**做「读-改-写」(sdk.RoleMutator;面板的部分更新走这条路)。
+//
+// 为何必须原子:旧的 Get→改→Update 是读**缓存快照**再整份 Save —— 两个请求重叠时后者
+// 拿着旧快照盖掉前者的改动,两次都回 200(用户看到「已保存」但一半改动没了)。
+// mutate 返回 error ⇒ 本次不写盘。
+func (s *Service) PatchRole(id string, mutate func(*sdk.RoleSpec) error) (sdk.RoleSpec, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	prev, ok := s.Get(id) // 改动前的定义:挂载校验要拿它区分「新增」与「存量悬空」
 	if !ok {
 		return sdk.RoleSpec{}, fmt.Errorf("角色不存在:%s", id)
 	}
+	spec := prev
+	if mutate != nil {
+		if err := mutate(&spec); err != nil {
+			return sdk.RoleSpec{}, err
+		}
+	}
 	spec.ID = id
+	// 派生字段不是 role.yaml 的一部分(写回去只会污染定义)
+	spec.OwnSkills, spec.EffectiveSkills, spec.Seed, spec.AGENTSBytes = nil, nil, false, 0
+	spec.AGENTS = ""
 	// 技能名必须存在:显式失败而非静默丢掉一个挂载(静默会让用户以为已生效)。
 	if err := s.skills.Rescan(); err != nil {
 		s.log().Warn("技能重扫失败", "err", err)
@@ -301,6 +332,8 @@ func (s *Service) Update(id string, spec sdk.RoleSpec) (sdk.RoleSpec, error) {
 
 // SetAgents 写角色 AGENTS.md。
 func (s *Service) SetAgents(id, text string) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	if _, ok := s.Get(id); !ok {
 		return fmt.Errorf("角色不存在:%s", id)
 	}
@@ -318,6 +351,8 @@ func (s *Service) SetAgents(id, text string) error {
 // 重命名后该角色**自己的**私有技能会对它自己不可见(visibleFor: si.Role != roleID),
 // 直到下一次重扫才恢复 —— 实测踩到。
 func (s *Service) Rename(id, newID, newName string) (sdk.RoleSpec, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	spec, err := s.store.Rename(id, newID, newName)
 	if err != nil {
 		return sdk.RoleSpec{}, err
@@ -334,6 +369,8 @@ func (s *Service) Rename(id, newID, newName string) (sdk.RoleSpec, error) {
 // 同样要重扫:整个角色目录(含 skills/)移进 .trash,索引若不重扫,那些技能会一直
 // 算「已加载」—— 面板技能库继续列出一条属于已删角色的技能,甚至能按旧 id 写回去。
 func (s *Service) Delete(id string) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	if err := s.store.Delete(id); err != nil {
 		return err
 	}

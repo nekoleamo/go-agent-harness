@@ -104,6 +104,16 @@ type RoleService interface {
 	MaxAgentsBytes() int
 }
 
+// RoleMutator 可选扩展:在**串行化窗口内**做「读-改-写」(面板的部分更新必须原子)。
+//
+// 为何是可选窄接口:消费方(web)拿到的是 `ctx.roles`,而实现者可能有多个(内置 host-roles
+// 与单测桩)。不实现时调用方回落 Get+Update —— 那是个**非原子读改写**(两个 PATCH 重叠时
+// 后者用旧快照盖掉前者的改动,两次都 200),窗口 = 服务端写盘耗时,窄但非零。
+// mutate 返回 error = 本次不写盘(调用方据此回 400,不会留下半成品)。
+type RoleMutator interface {
+	PatchRole(id string, mutate func(*RoleSpec) error) (RoleSpec, error)
+}
+
 // RolesPolicy 可选扩展:角色对「指令层」的影响(ctx.roles 实现者按需实现)。
 // 独立的窄接口而非塞进 RoleService:消费方(host-system-prompt)只需要这一个问题的答案,
 // 不该为了它把整个角色服务绑成硬依赖(缺角色插件时行为必须与今天完全一致)。

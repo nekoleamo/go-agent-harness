@@ -52,7 +52,7 @@ core/plugin 65
 core/config 65
 sdk 60
 internal/prefs 66
-internal/roles 80
+internal/roles 83
 internal/skills 77
 internal/searchfile 66
 internal/instructions 76
@@ -87,8 +87,8 @@ plugins/host/host-llm 68
 plugins/host/host-plugin-manager 76
 plugins/host/host-session-log 76
 plugins/host/host-session-summary 74
-plugins/host/host-skills 76
-plugins/host/host-roles 74
+plugins/host/host-skills 85
+plugins/host/host-roles 77
 plugins/host/host-system-prompt 88
 plugins/host/host-tools 88
 plugins/host/host-worktrees 74

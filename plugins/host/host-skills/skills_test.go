@@ -2,6 +2,7 @@
 package hostskills
 
 import (
+	"bytes"
 	"context"
 	"log/slog"
 	"os"
@@ -130,5 +131,50 @@ func TestRoleOfDirectChildSkillFile(t *testing.T) {
 		if got := roleOf(tc.path); got != tc.want {
 			t.Errorf("roleOf(%s) = %q, want %q", tc.path, got, tc.want)
 		}
+	}
+}
+
+// TestRescanPicksUpProjectSkillsAfterChdir 项目技能目录必须**每次扫描现算**:
+// /workspace 会 os.Chdir,构造期快照会让 <新 cwd>/.gah/skills 永远进不来(既不在索引也读不到)。
+func TestRescanPicksUpProjectSkillsAfterChdir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GAH_HOME", home)
+	reg := newRegistry(nil, nil, nil)
+	if err := reg.Rescan(); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(reg.List()); n != 0 {
+		t.Fatalf("空环境不该有技能: %d", n)
+	}
+	proj := t.TempDir()
+	t.Chdir(proj)
+	writeSKILLMD(t, filepath.Join(proj, ".gah", "skills"), "proj-skill", "项目技能")
+	if err := reg.Rescan(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reg.IndexText(), "proj-skill") {
+		t.Fatalf("切目录后项目技能未进索引:\n%s", reg.IndexText())
+	}
+}
+
+// TestRescanWarnsDuplicates 重名告警不能只在 Start 报一次:写技能/切角色这些热路径都会重扫,
+// 那里静默就等于用户看不到「技能没生效」(first-wins 去重本身不变)。
+func TestRescanWarnsDuplicates(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GAH_HOME", home)
+	var buf bytes.Buffer
+	reg := newRegistry(slog.New(slog.NewTextHandler(&buf, nil)), nil, nil)
+	writeSKILLMD(t, filepath.Join(home, "skills"), "dup-skill", "全局")
+	proj := t.TempDir()
+	t.Chdir(proj)
+	writeSKILLMD(t, filepath.Join(proj, ".gah", "skills"), "dup-skill", "项目同名")
+	if err := reg.Rescan(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "重名") {
+		t.Fatalf("重扫遇重名应告警:\n%s", buf.String())
+	}
+	if n := len(reg.List()); n != 1 {
+		t.Fatalf("重名应 first-wins 去重: %d", n)
 	}
 }

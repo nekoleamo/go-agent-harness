@@ -76,7 +76,7 @@ func TestRegistryFilterRescanAndIndex(t *testing.T) {
 	writeSKILLMD(t, global, "skill-a", "技能A")
 	writeSKILLMD(t, global, "skill-b", "技能B")
 
-	reg := newRegistry([]string{global}, nil)
+	reg := newRegistry(nil, nil, nil)
 	if err := reg.Rescan(); err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func TestRegistryRescanPicksNewRoleDirs(t *testing.T) {
 	t.Setenv("GAH_HOME", home)
 	global := filepath.Join(home, "skills")
 	writeSKILLMD(t, global, "skill-a", "技能A")
-	reg := newRegistry([]string{global}, nil)
+	reg := newRegistry(nil, nil, nil)
 	if err := reg.Rescan(); err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +151,7 @@ func TestListSkillsToolHonorsFilter(t *testing.T) {
 	global := filepath.Join(home, "skills")
 	writeSKILLMD(t, global, "skill-a", "技能A")
 	writeSKILLMD(t, global, "skill-b", "技能B")
-	reg := newRegistry([]string{global}, nil)
+	reg := newRegistry(nil, nil, nil)
 	if err := reg.Rescan(); err != nil {
 		t.Fatal(err)
 	}

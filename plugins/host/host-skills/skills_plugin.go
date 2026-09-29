@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -30,25 +31,26 @@ func (p *Plugin) Name() string { return "host-skills" }
 // Start 扫描技能目录并注册工具与提示索引。
 // data.dirs: 附加技能目录(绝对路径列表)。
 func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
-	dirs := defaultSkillDirs()
+	// data.dirs: 附加技能目录(绝对路径列表);全局/项目目录由 scanDirs 每次现算。
+	var extra []string
 	if m != nil && m.Data != nil {
 		if xs, ok := m.Data["dirs"].([]any); ok {
 			for _, x := range xs {
 				if s, ok := x.(string); ok {
-					dirs = append(dirs, s)
+					extra = append(extra, s)
 				}
 			}
 		}
 	}
 	sc := &Scanner{}
-	skills, err := sc.Scan(append(roleSkillDirs(), dirs...)...)
+	skills, err := sc.Scan(scanDirs(extra)...)
 	if err != nil {
 		return nil, err
 	}
 	for _, d := range sc.Duplicates() {
 		c.Logger().Warn("技能重名,已忽略后到者", "detail", d)
 	}
-	reg := newRegistry(dirs, skills)
+	reg := newRegistry(c.Logger(), extra, skills)
 
 	var tools sdk.ToolRegistry
 	if err := c.Inject("ctx.tools", &tools); err != nil {
@@ -70,14 +72,31 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	return func() { d1(); d2(); d3() }, nil
 }
 
-// defaultSkillDirs 静态技能目录(顺序即优先级):全局 $GAH_HOME/skills → 项目 <cwd>/.gah/skills。
-// 角色私有目录是动态的(角色可随时新建/删除),由 roleSkillDirs() 在每次扫描时现算。
+// defaultSkillDirs 标准技能目录(顺序即优先级):全局 $GAH_HOME/skills → 项目 <cwd>/.gah/skills。
+// 在**每次扫描前**调(不是构造期快照):项目目录挂在 cwd 下,而 /workspace 会 os.Chdir ——
+// 快照会让切目录后 <新 cwd>/.gah/skills 既不在索引也读不到(与项目 AGENTS.md 每轮现算同口径)。
+// 角色私有目录是动态的(角色可随时新建/删除),同样由 roleSkillDirs() 每次现算。
 func defaultSkillDirs() []string {
 	dirs := []string{filepath.Join(sdk.Home(), "skills")} // GAH_HOME 恒设(空仅嵌入/单测 → TempDir)
 	if wd, err := os.Getwd(); err == nil {
 		dirs = append(dirs, filepath.Join(wd, ".gah", "skills"))
 	}
 	return dirs
+}
+
+// scanDirs 每次扫描现算的目录集(顺序即优先级):角色私有 → 全局 → 项目 → data.dirs 扩展。
+// 去重:同一目录在表里出现两次会让扫描器把同一批技能读两遍、重名告警刷屏。
+func scanDirs(extra []string) []string {
+	seen := make(map[string]bool, len(extra)+2)
+	var out []string
+	for _, d := range append(append(roleSkillDirs(), defaultSkillDirs()...), extra...) {
+		if d == "" || seen[d] {
+			continue
+		}
+		seen[d] = true
+		out = append(out, d)
+	}
+	return out
 }
 
 // roleSkillDirs 角色私有技能目录($GAH_HOME/roles/<id>/skills),排序保证扫描稳定。
@@ -99,13 +118,14 @@ func roleSkillDirs() []string {
 type Registry struct {
 	mu     sync.RWMutex
 	skills []Skill
-	dirs   []string                 // 静态目录集(启动时确定;重扫前再拼上角色私有目录)
+	extra  []string // data.dirs 扩展目录(构造期定;全局/项目/角色私有目录每次扫描现算)
+	lg     *slog.Logger
 	filter func(sdk.SkillInfo) bool // nil = 全部可见(无角色基线)
 }
 
-// newRegistry 构造技能表(dirs = 静态目录集;角色私有目录每次扫描现算)。
-func newRegistry(dirs []string, skills []Skill) *Registry {
-	return &Registry{dirs: append([]string(nil), dirs...), skills: skills}
+// newRegistry 构造技能表(extra = data.dirs 扩展目录;lg 可为 nil —— 单测不关心告警)。
+func newRegistry(lg *slog.Logger, extra []string, skills []Skill) *Registry {
+	return &Registry{extra: append([]string(nil), extra...), lg: lg, skills: skills}
 }
 
 func (r *Registry) all() []Skill {
@@ -171,16 +191,24 @@ func (r *Registry) SetFilter(f func(sdk.SkillInfo) bool) sdk.Disposer {
 	}
 }
 
-// Rescan 重扫技能目录(新建角色/角色私有技能/新增 SKILL.md 后调用;sdk.SkillsService)。
-// 重名警告只在 Start 打(此处无 logger);重扫后重名仍按 first-wins 去重。
+// Rescan 重扫技能目录(新建角色/角色私有技能/新增 SKILL.md/切工作区后调用;sdk.SkillsService)。
+// 目录集每次现算(切工作区后 <新 cwd>/.gah/skills 才能进来);重名 first-wins 但**不静默**:
+// 每次重扫都逐条 Warn(此前只在 Start 报一次,写技能/切角色这些热路径上的重名就静默了)。
+// 已知语义(登记在 DESIGN):去重是**全局按名字**的 —— 角色私有技能会压掉库里的同名技能,
+// 包括其它角色显式挂载的那个名字(它们既列不出也读不到),所以私有技能名应视为全局唯一。
 func (r *Registry) Rescan() error {
 	r.mu.RLock()
-	dirs := append([]string(nil), r.dirs...)
+	extra := append([]string(nil), r.extra...)
 	r.mu.RUnlock()
 	sc := &Scanner{}
-	skills, err := sc.Scan(append(roleSkillDirs(), dirs...)...)
+	skills, err := sc.Scan(scanDirs(extra)...)
 	if err != nil {
 		return err
+	}
+	if r.lg != nil {
+		for _, d := range sc.Duplicates() {
+			r.lg.Warn("技能重名,已忽略后到者", "detail", d)
+		}
 	}
 	r.mu.Lock()
 	r.skills = skills

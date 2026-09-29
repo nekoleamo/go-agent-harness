@@ -150,52 +150,69 @@ func (s *Server) handleRoleOne(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "坏请求体", http.StatusBadRequest)
 			return
 		}
-		cur, found := svc.Get(id)
-		if !found {
+		// 部分更新:只改传了的字段(未传 = 保持现值,避免面板半张表单把其它字段清空)。
+		// 整段包成一个 mutate 交给 Update/PatchRole:原子读-改-写是**后端**的责任
+		// (前端只是发起方,PATCH 也可能来自脚本/多个面板标签)。
+		apply := func(cur *sdk.RoleSpec) error {
+			if body.Name != nil {
+				cur.Name = *body.Name
+			}
+			if body.Description != nil {
+				cur.Description = *body.Description
+			}
+			if body.Identity != nil {
+				cur.Identity = *body.Identity
+			}
+			if body.ExcludeGlobal != nil {
+				cur.ExcludeGlobal = *body.ExcludeGlobal
+			}
+			if body.SkillsInherit != nil {
+				cur.SkillsInherit = *body.SkillsInherit
+			}
+			if body.SkillsSet != nil {
+				cur.SkillsSet = *body.SkillsSet
+			}
+			if body.Skills != nil {
+				cur.Skills = append([]string(nil), (*body.Skills)...)
+				cur.SkillsSet = true
+			}
+			if body.Model != nil {
+				cur.Model = strings.TrimSpace(*body.Model)
+			}
+			if body.Thinking != nil {
+				// 档位名严格校验(非法值只会在每回合静默归 Off —— 不如建/改时就报错);
+				// 空串 = 清掉(跟随会话),不是"非法档"。
+				t := strings.ToLower(strings.TrimSpace(*body.Thinking))
+				if t != "" && sdk.ParseThinking(t).String() != t {
+					return fmt.Errorf("思考档需为 off|low|medium|high(或空 = 跟随会话)")
+				}
+				cur.Thinking = t
+			}
+			return nil
+		}
+		if _, found := svc.Get(id); !found {
 			http.Error(w, "角色不存在: "+id, http.StatusNotFound)
 			return
 		}
-		// 部分更新:只改传了的字段(未传 = 保持现值,避免面板半张表单把其它字段清空)
-		if body.Name != nil {
-			cur.Name = *body.Name
-		}
-		if body.Description != nil {
-			cur.Description = *body.Description
-		}
-		if body.Identity != nil {
-			cur.Identity = *body.Identity
-		}
-		if body.ExcludeGlobal != nil {
-			cur.ExcludeGlobal = *body.ExcludeGlobal
-		}
-		if body.SkillsInherit != nil {
-			cur.SkillsInherit = *body.SkillsInherit
-		}
-		if body.SkillsSet != nil {
-			cur.SkillsSet = *body.SkillsSet
-		}
-		if body.Skills != nil {
-			cur.Skills = append([]string(nil), (*body.Skills)...)
-			cur.SkillsSet = true
-		}
-		if body.Model != nil {
-			cur.Model = strings.TrimSpace(*body.Model)
-		}
-		if body.Thinking != nil {
-			// 档位名严格校验(非法值只会在每回合静默归 Off —— 不如建/改时就报错);
-			// 空串 = 清掉(跟随会话),不是"非法档"。
-			t := strings.ToLower(strings.TrimSpace(*body.Thinking))
-			if t != "" && sdk.ParseThinking(t).String() != t {
-				http.Error(w, "思考档需为 off|low|medium|high(或空 = 跟随会话)", http.StatusBadRequest)
+		var updated sdk.RoleSpec
+		var err error
+		if mu, ok := svc.(sdk.RoleMutator); ok {
+			updated, err = mu.PatchRole(id, apply) // 串行化窗口内读-改-写(并发 PATCH 不再丢改动)
+		} else {
+			// 未实现可选能力(单测桩/极简宿主):回落非原子路径 —— 先取、再改、再整份写。
+			cur, _ := svc.Get(id)
+			if e := apply(&cur); e != nil {
+				http.Error(w, e.Error(), http.StatusBadRequest)
 				return
 			}
-			cur.Thinking = t
+			updated, err = svc.Update(id, cur)
 		}
-		// 清掉派生字段:它们不是 role.yaml 的一部分(写回会污染定义)
-		cur.OwnSkills, cur.EffectiveSkills, cur.Seed, cur.AGENTSBytes = nil, nil, false, 0
-		cur.AGENTS = ""
-		updated, err := svc.Update(id, cur)
 		if err != nil {
+			// 区分「角色没了」(404)与「字段非法」(400):PatchRole 内部才看得到竞态后的真相
+			if _, found := svc.Get(id); !found {
+				http.Error(w, "角色不存在: "+id, http.StatusNotFound)
+				return
+			}
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -429,7 +446,7 @@ func (s *Server) handleSkillRelocate(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := map[string]any{"ok": true, "name": got, "role": body.ToRole, "from_name": name, "from_role": fromRole}
 	var warns []string
-	if got != name { // 只有改名才需追着改引用;纯移动按名字挂载依然成立
+	if got != name { // 改名要追着改引用:挂载是按**名字**存的,不改就留下一条失效挂载
 		touched, err := roles.Store{}.RewriteMount(name, got)
 		if err != nil {
 			warns = append(warns, "技能已改名,但角色挂载改写失败(可能有角色残留失效挂载):"+err.Error())
@@ -437,6 +454,21 @@ func (s *Server) handleSkillRelocate(w http.ResponseWriter, r *http.Request) {
 		if len(touched) > 0 {
 			resp["mounts_updated"] = touched
 		}
+	}
+	// 纯移动(名字不变)不改引用 —— 挂载点没变;但**可见性随库变**:移进角色私有库后,
+	// 共享库默认池不再包含它,显式挂载它的其它角色也看不见了。不说一声就是静默失信。
+	if body.ToRole != "" {
+		var others []string
+		for _, u := range (roles.Store{}).MountUsers(got) {
+			if u != body.ToRole {
+				others = append(others, u)
+			}
+		}
+		note := "技能已移入角色 " + body.ToRole + " 的私有库:它不再属于共享库默认池"
+		if len(others) > 0 {
+			note += ",以下角色显式挂载的同名技能已不可见: " + strings.Join(others, ", ")
+		}
+		warns = append(warns, note)
 	}
 	if warn := s.reloadRoleSkillCaches(); warn != "" {
 		warns = append(warns, "技能已归位,但"+warn)

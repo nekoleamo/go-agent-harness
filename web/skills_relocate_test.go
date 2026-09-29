@@ -82,9 +82,19 @@ func TestSkillRelocateEndpoint(t *testing.T) {
 	}
 
 	// ② 只换库(名字不变):共享库 → 角色私有;挂载按名字存,不需要改写
+	//    但**可见性随库变** —— 另一个显式挂载它的角色要被告知(不说就是静默失信)
+	if code, body := do(t, s, http.MethodPost, "/api/roles", `{"id":"ops","name":"运维"}`); code != 200 {
+		t.Fatalf("建角色 ops 失败: %d %s", code, body)
+	}
+	if code, body := do(t, s, http.MethodPatch, "/api/roles/ops", `{"skills_set":true,"skills":["weekly-report"]}`); code != 200 {
+		t.Fatalf("ops 挂载失败: %d %s", code, body)
+	}
 	r = relocate(t, s, "/api/skills/weekly-report/relocate", `{"to_role":"finance"}`)
 	if r.Name != "weekly-report" || r.Role != "finance" || len(r.MountsUpdated) != 0 {
 		t.Fatalf("换库响应不符: %+v", r)
+	}
+	if !strings.Contains(r.Warning, "私有库") || !strings.Contains(r.Warning, "ops") {
+		t.Errorf("移入角色私有库应提示默认池与受影响的其它角色,得到 %q", r.Warning)
 	}
 	if _, err := os.Stat(filepath.Join(home, "roles", "finance", "skills", "weekly-report", "SKILL.md")); err != nil {
 		t.Errorf("技能未落到角色私有库: %v", err)
@@ -93,16 +103,28 @@ func TestSkillRelocateEndpoint(t *testing.T) {
 		t.Error("共享库副本应已搬走")
 	}
 
-	// ③ 改名 + 换库一起(搬回共享库):挂载再次被同步
+	// ③ 改名 + 换库一起(搬回共享库):**所有**挂载该名字的角色都被同步(finance + ops)
 	r = relocate(t, s, "/api/skills/weekly-report/relocate?role=finance", `{"to_name":"report","to_role":""}`)
-	if r.Name != "report" || r.FromName != "weekly-report" || len(r.MountsUpdated) != 1 {
+	if r.Name != "report" || r.FromName != "weekly-report" || len(r.MountsUpdated) != 2 {
 		t.Fatalf("改名+换库响应不符: %+v", r)
+	}
+	for _, id := range []string{"finance", "ops"} {
+		b, err := os.ReadFile(filepath.Join(home, "roles", id, "role.yaml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(b), "report") || strings.Contains(string(b), "weekly-report") {
+			t.Errorf("%s 的挂载未改名:\n%s", id, b)
+		}
 	}
 	if _, err := os.Stat(filepath.Join(home, "skills", "report", "SKILL.md")); err != nil {
 		t.Errorf("技能未搬回共享库: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(home, "roles", "finance", "skills", "weekly-report")); !os.IsNotExist(err) {
 		t.Error("角色私有库副本应已搬走")
+	}
+	if strings.Contains(r.Warning, "私有库") {
+		t.Errorf("搬回共享库不该报“私有库”提示: %q", r.Warning)
 	}
 
 	// ④ 拒绝路径:无变化 / 目标同名已存在 / 源不存在 / 非法角色 id

@@ -165,7 +165,12 @@ func (l Library) Relocate(name string, dst Library, newName string) (string, err
 	}
 	if content != nil {
 		if err := writeFileAtomic(filepath.Join(target, FileName), content, 0o644); err != nil {
-			_ = os.Rename(target, src) // 回滚:目录名与 frontmatter 名必须一致
+			// 回滚命不命要如实报:目录名与 frontmatter 名必须一致,回滚失败时两半对不上
+			// (目录名已是新名、frontmatter 还是旧名),再写「已回滚」就是骗人。
+			if rbErr := os.Rename(target, src); rbErr != nil {
+				return "", fmt.Errorf("技能改名失败,且回滚也失败:目录停在 %s 而 frontmatter 仍是旧名 %q(需手改目录名或 frontmatter);改名错误: %v;回滚错误: %w",
+					target, name, err, rbErr)
+			}
 			return "", fmt.Errorf("技能改名失败(已回滚): %w", err)
 		}
 	}

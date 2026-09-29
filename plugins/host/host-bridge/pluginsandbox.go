@@ -63,6 +63,21 @@ const (
 // 插件可给自己提权或让别的插件被替换(持久化),把 A3 的目的反过来用。
 var dataRootReserved = map[string]bool{"config": true, "plugins": true, "ui-plugins": true}
 
+// reservedDataRootName 保留目录名判定:**大小写折叠**比较。
+//
+// 为何不直接用 map 精确查:默认卷在 macOS/Windows 上大小写**不敏感**,声明 "Config" 与保留的
+// "config" 是同一个目录 —— 精确匹配等于给了一条绕过路(拿到凭据目录写权)。Linux 上会连带
+// 拒掉真叫 Config 的独立目录;拿这个名字当插件数据目录属异常,宁可显式报错。
+// 本仓其它保留判定同口径(如 policy-guard 的路径级大小写折叠)。
+func reservedDataRootName(name string) bool {
+	for k := range dataRootReserved {
+		if strings.EqualFold(k, name) {
+			return true
+		}
+	}
+	return false
+}
+
 // probeCapabilities 探测插件自报能力(见 CapsFlag)。第二个返回值 = 探测成功。
 // 探测失败一律归一为"未声明"(零值):旧插件、非 ServeTools 插件、卡死插件都走这条路,
 // 宿主据此按**普通插件**处理(包装),这是安全侧默认。
@@ -107,7 +122,7 @@ func (b *Bridge) validDataWrites(path string, decl []string) []string {
 		case filepath.IsAbs(d), strings.ContainsAny(d, `/\`), d == ".", d == "..":
 			b.logErr("host-bridge: 插件自报数据目录必须是数据根下的直接子目录名,已忽略", "path", path, "dir", raw)
 			continue
-		case dataRootReserved[d]:
+		case reservedDataRootName(d):
 			b.logErr("host-bridge: 插件自报数据目录落在保留集(凭据/插件产物),已忽略", "path", path, "dir", d)
 			continue
 		}

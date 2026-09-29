@@ -4,11 +4,14 @@ package hostroles
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/nekoleamo/go-agent-harness/core/ctx"
 	"github.com/nekoleamo/go-agent-harness/core/event"
@@ -629,3 +632,53 @@ func TestUseNoneAliasPrefersRealRole(t *testing.T) {
 		t.Fatalf("Use(\"\") 应回基线,得到 current=%q err=%v", h.svc.Current(), err)
 	}
 }
+
+// TestPatchRoleSerializesConcurrentUpdates 并发「读-改-写」不得丢改动。
+// 旧实现是「读缓存快照 → 整份 Save」:两个面板控件同时提交时,后者用旧快照盖掉前者,
+// 两次都回 200 —— 用户看到两条「已保存」但只生效一条。mutate 里 sleep 把窗口放大。
+func TestPatchRoleSerializesConcurrentUpdates(t *testing.T) {
+	h := newHarness(t, false)
+	shared := filepath.Join(h.home, "skills")
+	var want []string
+	for _, n := range []string{"s1", "s2", "s3", "s4", "s5", "s6"} {
+		writeSkillDoc(t, shared, n, "技能"+n)
+		want = append(want, n)
+	}
+	if _, err := h.svc.Create(sdk.RoleSpec{ID: "finance", Name: "财务", SkillsSet: true}, ""); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	for _, n := range want {
+		wg.Add(1)
+		go func(name string) {
+			defer wg.Done()
+			_, err := h.svc.PatchRole("finance", func(cur *sdk.RoleSpec) error {
+				cur.SkillsSet = true
+				cur.Skills = append(append([]string(nil), cur.Skills...), name)
+				time.Sleep(5 * time.Millisecond) // 放大竞态窗口(旧实现下必丢改动)
+				return nil
+			})
+			if err != nil {
+				t.Errorf("PatchRole(%s): %v", name, err)
+			}
+		}(n)
+	}
+	wg.Wait()
+	got, ok := h.svc.Get("finance")
+	if !ok {
+		t.Fatal("finance 不见了")
+	}
+	if len(got.Skills) != len(want) {
+		t.Fatalf("并发挂载丢了改动:得到 %v(%d 项),want %d 项", got.Skills, len(got.Skills), len(want))
+	}
+	// mutate 返回 error = 一个字节都不写
+	if _, err := h.svc.PatchRole("finance", func(*sdk.RoleSpec) error { return errNope }); err == nil {
+		t.Fatal("mutate 报错应原样上冒")
+	}
+	after, _ := h.svc.Get("finance")
+	if len(after.Skills) != len(want) {
+		t.Fatalf("被拒的 PatchRole 改动了定义: %v", after.Skills)
+	}
+}
+
+var errNope = errors.New("校验失败(测试)")

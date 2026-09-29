@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nekoleamo/go-agent-harness/internal/testutil"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -585,5 +586,62 @@ func TestRewriteMount(t *testing.T) {
 		if touched, err := s.RewriteMount(tc[0], tc[1]); err != nil || len(touched) != 0 {
 			t.Errorf("RewriteMount(%q,%q) 应为空操作: %v %v", tc[0], tc[1], touched, err)
 		}
+	}
+}
+
+// TestListDoesNotReadAgentsBody List 承诺「不读 AGENTS.md 正文」:正文读不了也不该
+// 让角色从列表里消失(旧实现走 Get,正文一读不到整条就被跳过),并且字节数改用 Stat 给。
+func TestListDoesNotReadAgentsBody(t *testing.T) {
+	if !testutil.PosixPerm() {
+		t.Skip("只读文件只有 POSIX 权限模型能构造(Windows 走 ACL)")
+	}
+	setup(t)
+	s := Store{}
+	if err := s.Create(sdk.RoleSpec{ID: "finance", Name: "财务"}, "规则正文"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(AgentsPath("finance"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(AgentsPath("finance"), 0o644) })
+
+	list := s.List()
+	if len(list) != 1 || list[0].ID != "finance" {
+		t.Fatalf("List 应仍列出该角色: %+v", list)
+	}
+	if list[0].AGENTS != "" {
+		t.Fatalf("List 不应带正文(注释承诺): %q", list[0].AGENTS)
+	}
+	if list[0].AGENTSBytes == 0 {
+		t.Error("List 仍应给出 AGENTS.md 字节数(Stat 而非读正文)")
+	}
+	if _, err := s.Get("finance"); err == nil {
+		t.Error("Get 要正文:读不到必须显式失败(不静默当空规则)")
+	}
+}
+
+// TestMountUsers 挂载使用者查询:显式挂载(写了 skills 键)的角色才算;默认池角色不算。
+func TestMountUsers(t *testing.T) {
+	setup(t)
+	s := Store{}
+	if err := s.Create(sdk.RoleSpec{ID: "pool", Name: "池"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Create(sdk.RoleSpec{ID: "finance", Name: "财务",
+		SkillsSet: true, Skills: []string{"report", "tax"}}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Create(sdk.RoleSpec{ID: "ops", Name: "运维", SkillsSet: true, Skills: []string{"report"}}, ""); err != nil {
+		t.Fatal(err)
+	}
+	got := s.MountUsers("report")
+	if strings.Join(got, ",") != "finance,ops" {
+		t.Fatalf("挂载使用者不符: %v", got)
+	}
+	if got := s.MountUsers("tax"); strings.Join(got, ",") != "finance" {
+		t.Fatalf("tax 使用者不符: %v", got)
+	}
+	if got := s.MountUsers("nobody"); len(got) != 0 {
+		t.Fatalf("没人挂载时应为空: %v", got)
 	}
 }

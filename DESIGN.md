@@ -6,6 +6,7 @@
 **2026-09-28 第八十四批(《角色切换与技能编排》剩余两项)**:1 技能**改名 / 共享库↔角色私有移动** -- `internal/skills.Relocate`(目录名即身份,frontmatter 的 `name` 同步改、目标同名拒绝、失败回滚)+ `internal/roles.RewriteMount`(挂载按名字存,改名后把所有角色 `role.yaml` 的引用一起改)+ `POST /api/skills/{name}/relocate`(一条端点表达改名/换库/两件一起)+ 面板技能行「改名/移动」小表单;2 **R-3 会话记角色经历** -- 新增 `sdk.EventRoleSwitch`(载荷带切换当时的显示名快照)由 `host-roles.Use` 切换成功后落账,`/recap` 出「角色经历」行(切换次数 / 经历几个角色 / 序列)，Web 会话流把切换点渲染成 meta 行；见 §14.1 第八十四批。**2026-09-29 第八十五批（联网搜索配置通道修复）**：R10⑤ 推荐的那条「改用 `$GAH_HOME/config/search.yaml`」在 **macOS 默认档下已经读不到**（A6 给外部插件进程套内核沙箱 + `tool-basic` 自报 `CredentialReadDeny` ⇒ `$GAH_HOME/config` 进内核读拒名单，而默认发行态的 `web_search` 恰好跑在该进程里），失败形态是“每次搜索都报 config 错误”而非降级；本批落 **宿主代读 + 按声明注入进程 env** 通道（新 `internal/searchfile` 单一事实源 + `host-bridge` 的 `Capabilities.ConfigEnv` 白名单校验 + `tool-basic` 声明），并顺手把配置文件通道从“只有 env”扩到 `provider`/`endpoint`（自建兼容端点**无 key 亦可**）；见 §14.1 第八十五批。
 **2026-09-29 第八十六批（角色携带 model/thinking）**：阶段 2 第一项落地 —— `role.yaml` 的 model/thinking 从“规划中的死键”变成**真生效**（此前手写在文件里会被下一次保存静默抹掉）：`LLMRequest` 增 `ThinkingSet`（让角色能显式声明 `off`）、新扩展点 `sdk.EventLLMPreRequest` 发在 **`host-llm.Service.Complete` 单点**（唯一必经点 ⇒ agent-loop/子代理/概述三处调用方零改动，且会话未配模型时角色模型也能直接跑）、`host-roles` 订阅后**只填空 + 不可用告警一次**（绝不 veto）、TUI/Web/命令提示**三处显式回显生效值与来源**（判据 = sdk 两个纯函数，避免“显示会话值、实际用角色值”）；策略取 **P1 每回合自动覆盖**（取代 D4 的“切换时询问”），**并行子代理自动继承角色模型**已显式登记 + 专项测试钉住；见 §14.1 第八十六批。
 **2026-09-29 第八十七批（v0.2.0 发版后代码审查修复）**：对 `v0.2.0`(c326f07)→HEAD 做一次全量复查（三片只读评审：数据层 `internal/*` / Web 后端+面板 / 插件层），报 **3 P1 + 13 P2 + 7 P3** 无 P0；本批修全部 3 个 P1（① 回收站轮转按**名字典序**淘汰 —— 时间戳是后缀，20 条 `z*` 之后再删一条 `aaa*` 会被轮转**当场删掉刚删的那条**，改为按尾部时间戳排序；② 指令面审批的 shell 路径展开缺 `$GAH_HOME` 变量形态 —— full-access 下路径层短路，只剩这一道，字面路径拦得住而 `echo x >> "$GAH_HOME/AGENTS.md"` 拦不住；③ `host-system-prompt` 把角色策略指针**永久缓存**，`/plugins off\|on host-roles` 后 `exclude_global` 决定冻结到重启，改为每次现查）+ 6 项小口径 P2（思考档归一/校验、私有根 `SKILL.md` 归属、frontmatter 只认同缩进的顶层 `name`、`quoteYAML` 反斜杠、三处原子写补 `Sync`、停用别名 `none`/`off` 只在无同名角色时生效、面板私有技能的角色存在性校验）；报告逐条带 file:line 与建议，剩余项（PATCH 竞态/前端草稿/7 条 P3）已登记待另批，见 §14.1 第八十七批与 `~/Documents/Plan/gah-v0.2.0-代码审查报告.md`。
+**2026-09-29 第八十八批（审查遗留・后端小口径 + 写入原子化）**：把第八十七批登记的四条后端遗留关掉 —— ① PATCH 角色定义从「读缓存快照→整份写」改为 `sdk.RoleMutator` + `host-roles.writeMu` 内的**原子读-改-写**（并发提交不再丢改动、mutate 报错零写盘）；② 项目技能目录 `<cwd>/.gah/skills` 从构造期快照改为**每次扫描现算**（`/workspace` 切目录后立刻可见，与项目 AGENTS.md 同口径）；③ `Rescan` 每次报重名（写技能/切角色这些热路径不再静默）并把「全局按名字 first-wins」契约写清；④ `Store.List` 真的不读 AGENTS.md 正文（`Get` 拆 `get(id, withBody)`）+ `Refresh` 重写成单遍。顺带三处诚实化：Relocate 回滚文案按成败分支（回滚失败不再谎称“已回滚”）、纯移动改库回**可见性警告**（`internal/roles.MountUsers`）、保留数据根名大小写折叠（macOS/Windows 上 `Config` 逃不掉保留检查，见 §14.1 第八十八批；前端草稿与即时提交串行化留第八十九批）。
 
 ## 0. 项目目的
 
@@ -960,6 +961,26 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 
 **测试**:`web/roles_test.go` 新增 3 项(装配**真实** host-roles/host-skills 走懒解析路径:`/api/roles` 未装配 503 且 state 不带 role、角色全流程 CRUD + 部分更新语义 + 当前角色改名跟随 + 删当前角色被拒 + `.trash` 回收站、技能库共享/私有/覆盖/上限/路径穿越/回收站后不再被索引);`web` 包 `go test` **127 通过**;前端 `npm test` 168 通过、`vue-tsc` 0 错、`test:layout` **39 通过 / 0 失败**(1 skip = 无浏览器时的跳过说明用例);全库 `go test ./... -race` 63 包全绿 + sdk 模块绿;`scripts/coverage-check.sh` **COVERAGE_OK**(`web` 79.1% ≥ 棘轮 68;新增 `internal/skills 75` 棘轮,实测 80.2%;总覆盖 80.1%)。
 
+### 第八十八批 · 审查遗留（后端）——写入原子化 + 目录现算 + 诚实提示（2026-09-29）
+
+> 承接第八十七批“登记为已知边界”里的**后端部分**（前端草稿与即时提交串行化留第八十九批）。本批只关一条主线：**静默失信** —— 并发写丢改动、切工作区后技能看不见、重名/移动的后果不吭声、回滚失败谎称已回滚。P1 三条与本批无冲突（已在第八十七批修完）。
+
+| # | 项 | 做法 |
+|---|---|---|
+| 1 | **P2-④：角色定义写入原子化**（`sdk` + host-roles + web） | PATCH 此前是 `Get`（缓存快照）→ 改字段 → `Update`（整份 Save）：两个请求重叠时后者拿**旧快照**盖掉前者、**两次都回 200**（用户看到两条“已保存”只生效一条）。新增可选窄接口 `sdk.RoleMutator{PatchRole(id, mutate)}`：`host-roles.Service` 实现它，在新增 `writeMu` 内完成「取当前定义 → mutate → 重扫技能 → 挂载校验 → Save → Refresh」；`mutate` 返错则**一个字节都不写**。`Update` 退化为 `PatchRole` 的整份替换包装；`Create`/`SetAgents`/`Rename`/`Delete`/`Use` 同锁串行（锁阶固定 `writeMu → mu`，定义写入与偏好写入互不阻塞；`Refresh`/`Rescan` 不持锁）。Web PATCH 有 `RoleMutator` 就走原子路径，没有（单测桩/极简宿主）回落旧路径 —— 能力**可选**，不做原子保证时不是静默降级，而是接口未实现 |
+| 2 | **P2-⑦：项目技能目录每次现算**（host-skills） | `defaultSkillDirs()`（`$GAH_HOME/skills` → `<cwd>/.gah/skills`）在**构造期快照**，而 `/workspace` 走 `os.Chdir` ⇒ 切目录后 `<新 cwd>/.gah/skills` 的 SKILL.md **既不在索引也读不到**（与项目 `AGENTS.md` 每轮现算的口径不一致）。改为 `scanDirs(extra)` 每次扫描现算（角色私有 → 全局 → 项目 → `data.dirs` 扩展，顺带去重 —— 同一目录写两遍会让扫描器把同一批技能读两遍、重名告警刷屏），`Registry` 只留 `data.dirs` 扩展。与角色私有目录走同一条“现算”链（`/reload` → `Rescan` 即生效），不再需要重启 |
+| 3 | **P2-⑧：`Rescan` 报重名 + 去重契约写清** | 重名告警此前只在 `Start` 打一次，而**写技能/切角色/切工作区都会重扫** —— 那些热路径上的重名是静默的（表现为“我加的技能没生效”）。`Registry` 存 logger，`Rescan` 每次逐条 `Warn(Duplicates())`；first-wins 去重本身不变，契约写进注释与 README：去重是**全局按名字**的，角色私有技能会压掉库里的同名技能（**包括其它角色显式挂载的那个名字** —— 它们既列不出也读不到）⇒ 私有技能名应视为全局唯一 |
+| 4 | **P2-⑨ + P3：纯移动不改引用，但后果要说**（web + internal/roles） | `handleSkillRelocate` 里“只有改名才需追着改引用”的注释与行为不对（纯移动确实不改引用 —— 挂载按名字存），改注释；并加**可见性警告**：移进角色私有库时回 `warning`（“不再属于共享库默认池” + `MountUsers` 列出显式挂载它的其它角色），搬回共享库不报。`internal/roles` 新增 `MountUsers(name)`（跳坏角色与未写 `skills` 键的默认池角色） |
+| 5 | **P2-⑬：`Store.List` 不再读正文** | 注释承诺“不读 AGENTS.md 正文”而实现走 `Get`，而 `Refresh` 对每个角色 `Broken()`+`List()`+`Get` 各一遍 ⇒ 一次刷新每角色读 **3 遍**正文（`Get` 还拿它当“坏角色”的判据）。`Get` 拆成 `Get = get(id, true)` + `get(id, false)`，`List` 走后者（`AGENTSBytes` 用 `os.Stat` 取）；`Refresh` 同时重写成**单遍** `IDs()` 循环（坏文件照旧进 `problems`）。副作用：正文读不了的角色现在能出现在列表里（这正是想要的 —— 面板里看得到才能修） |
+| 6 | **P3：Relocate 回滚文案诚实化**（internal/skills） | 原实现无论回滚成败都说“已回滚”，而回滚 rename 自身也可能失败。改为分支：回滚成功才说“已回滚”，失败则报“改名失败且回滚也失败：目录停在 X、frontmatter 仍是旧名” |
+| 7 | **P3：保留数据根名大小写折叠**（host-bridge） | `dataRootReserved` 是**大小写敏感** map，而 macOS/Windows 默认卷不区分大小写 ⇒ 声明数据目录 `Config` 与保留的 `config` 是**同一个目录**，等于绕过“保留目录不给外插件写权”（`config/` 放的是 provider 凭据）。新增 `reservedDataRootName`（`strings.EqualFold`）统一判定；代价是 Linux 上真叫 `Config` 的独立目录也会被拒 —— 拿这个名字当插件数据目录属异常，宁可显式报错 |
+
+**本批明确不做（仍登记）**：Windows 设备名（`nul`/`con`/`aux`）仍未进 `ValidateID`/`ValidateName`（`MkdirAll` 会显式报错，非静默；且各平台错误形态不一，需要真机验证再动）；前端草稿四项与 6 处即时提交控件的串行化/在途禁用留第八十九批（需重建 `web/dist` 并跑 `vue-tsc`/`npm test`/`test:layout`）。
+
+**测试**（每项都有，且 P1/P2 关键项做过**反向验证**：先临时还原旧行为确认新用例必红）：host-roles +1（`TestPatchRoleSerializesConcurrentUpdates`：6 个 goroutine 经 `PatchRole` 挂载 6 个技能、mutate 内 `Sleep(5ms)` 放大竞态窗口 —— 拆锁后实测只活下 1 项；另带“mutate 报错零写盘”断言）；web 扩 1（`TestSkillRelocateEndpoint` 新增 ops 角色：移入私有库必须回“私有库/ops”警告、搬回共享库不得报，且改名时**两个**挂载者都被改写）；host-skills +2（`TestRescanPicksUpProjectSkillsAfterChdir`：`t.Chdir` 后新项目的技能要进索引，改回构造期快照即红；`TestRescanWarnsDuplicates`：重扫遇重名要落日志且仍 first-wins 去重）；`internal/roles` +2（`TestListDoesNotReadAgentsBody`：POSIX 闸住、正文 chmod 000 后 List 仍列出且字节数不为 0、`Get` 必失败；`TestMountUsers`）。
+
+**门禁**：`gofmt`（tracked）/`go vet`/`staticcheck`（两 module，2026.2.1）全清；`go test ./... -race -count=1` **2083 通过 / 80 包 / 0 FAIL**；`scripts/coverage-check.sh` **COVERAGE_OK**（总 80.3%；棘轮随本批补测上调：`internal/roles 80→83`、`host-roles 74→77`、`host-skills 76→85` —— 只上调、不降门）。
+
 ### 第八十七批 · v0.2.0 发版后代码审查修复（3 P1 + 一批小口径 P2，2026-09-29）
 
 > 起因：`v0.2.0`(c326f07) → HEAD 全量复查（三片只读评审：数据层 `internal/*`、Web 后端+面板、插件层），逐条走 `git log -S` 归因到批号，报 **3 P1 + 13 P2 + 7 P3/备注**。本批修 3 个 P1 + 6 项“小口径”P2（改动小、语义清楚、有明确正确解）；剩下的 PATCH 竞态与前端草稿/轮转交互等涉及取舍，另批处理。完整报告（每条带 file:line + 复现路径 + 建议）见 `~/Documents/Plan/gah-v0.2.0-代码审查报告.md`。
@@ -979,7 +1000,7 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 
 **口径变更（要记）**：① 回收站轮转从此真的是“保留**最近** 20 份”（此前名义如此、实际按名字）；② `role.yaml` 的 `thinking:` 认大小写/空白差异，但**不再容忍错值**（错值 = 坏角色，而不是静默 off）；③ 面板只给真实存在的角色建私有技能；④ 指令面审批的 shell 路径展开补上 `$GAH_HOME` 变量形态（字面路径与变量形态口径一致）。
 
-**登记为已知边界（不是漏做，待另批）**：① PATCH 角色定义是非原子读改写（窗口 ≈ 服务端写盘时长）+ 面板 6 处即时提交控件未串行化/未禁用；② 前端草稿三项（改名后 `selectRole(d, true)` 撞同角色折叠分支覆盖草稿、连点「原文」绕过草稿闸、确认文案把「全局指令」列进可丢清单）；③ `Rescan` 不读 `Scanner.Duplicates()`（重名只在启动时告警一次）与跨角色同名去重副作用；④ 纯移动 `Relocate` 不重写其它角色的挂载（注释与行为不符）；⑤ `Store.List` 注释说“不读 AGENTS.md”实际走 `Get`（刷新一次读 3 遍）；⑥ `dataRootReserved` 是**大小写敏感** map（macOS 默认卷上 `Config` 与 `config` 是同一目录）—— 评审标“不确定”，未动；⑦ `ValidateID`/`ValidateName` 不拦 Windows 设备名（`nul`/`con`，MkdirAll 会显式报错，非静默）。
+**登记为已知边界（不是漏做，待另批）**：① PATCH 角色定义是非原子读改写（窗口 ≈ 服务端写盘时长）+ 面板 6 处即时提交控件未串行化/未禁用；② 前端草稿三项（改名后 `selectRole(d, true)` 撞同角色折叠分支覆盖草稿、连点「原文」绕过草稿闸、确认文案把「全局指令」列进可丢清单）；③ `Rescan` 不读 `Scanner.Duplicates()`（重名只在启动时告警一次）与跨角色同名去重副作用；④ 纯移动 `Relocate` 不重写其它角色的挂载（注释与行为不符）；⑤ `Store.List` 注释说“不读 AGENTS.md”实际走 `Get`（刷新一次读 3 遍）；⑥ `dataRootReserved` 是**大小写敏感** map（macOS 默认卷上 `Config` 与 `config` 是同一目录）—— 评审标“不确定”，未动；⑦ `ValidateID`/`ValidateName` 不拦 Windows 设备名（`nul`/`con`，MkdirAll 会显式报错，非静默）。**（后续：①③④⑤⑥ 已于第八十八批关闭，见下一节；② 与 ① 的前端部分留第八十九批；⑦ 仍登记）**
 
 **测试**：`internal/roles`/`internal/skills` 各 +2（`TestTrashPruneKeepsNewest` 用“20 条同名前缀 + 再删一条字典序最小的”构造旧实现必失的场景、`TestTrashListNewestFirst`）与 +1/+2（`TestRoleThinkingNormalizedAndValidated`、`TestFrontmatterNestedKeysUntouched`、`TestQuoteYAMLEscapesBackslash`）；policy-guard +1（`TestInstructionFaceShellGahHomeVar`：未引/双引/`${}` 三形态 + strict 拒；**反向验证**过：修前四形态全部绕过）；host-system-prompt +1（`TestRolesPolicyNotCachedAcrossUnload`：卸载后查不到、重装后立刻查到）；host-skills +1（`TestRoleOfDirectChildSkillFile`）；host-roles +1（`TestUseNoneAliasPrefersRealRole`）；web +1 项断言（未知角色私有技能 400 且不落目录）；`internal/instructions` +2（只读数据根 → `CreateTemp` 失败显式报错，POSIX 闸住；目标是目录 → rename 失败且不残留临时文件）。
 
@@ -1077,7 +1098,7 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 
 **护栏**:`vue-tsc` 0 错 + `npm test` **172** 通过 + `test:layout` **48 通过 / 0 失败**(1 skip);后端未动,但仍跑全量:`gofmt`/`go vet`/`staticcheck` 双模块干净、`go test ./... -race -count=1` **65 包 ok / 0 FAIL** + sdk 模块 ok、`scripts/coverage-check.sh` **COVERAGE_OK**(总 80.1%)。
 
-**仍未做（承接第八十一批收口的清单；回收站恢复入口已于第八十三批交付，技能重命名/移动与 R-3 会话角色经历已于第八十四批交付，「角色携带 model/thinking」已于第八十六批交付；v0.2.0 后代码审查（第八十七批）已修 3 个 P1 + 6 项小口径 P2，报出的 PATCH 竞态/前端草稿三项与 7 条 P3 已登记待另批，见上一节）**：阶段 2 六项剩五项（工具集/插件集 preset、子代理继承角色身份/技能、角色级审批/沙箱档、导出/导入、会话级 overlay）仍为登记不承诺。**第八十六批的已登记边界**（不是遗漏）：并行子代理**自动继承**角色模型/思考档（专项测试钉住；**用户 2026-09-29 确认保留**）、角色不能选 provider/凭据、无自动降级链、汇总请求不受角色影响（请求级模型非空即让位）。下一批备选见 `~/Documents/Plan/gah-角色携带模型-需求分析.md` §11（P3 策略开关 `role_model: ask|auto|off` / payload 加 `Origin` / 角色级工具集与审批档 preset）。
+**仍未做（承接第八十一批收口的清单；回收站恢复入口已于第八十三批交付，技能重命名/移动与 R-3 会话角色经历已于第八十四批交付，「角色携带 model/thinking」已于第八十六批交付；v0.2.0 后代码审查（第八十七批）已修 3 个 P1 + 6 项小口径 P2；报告里的**后端**遗留（PATCH 竞态/技能目录快照/重名静默/List 读正文/回滚文案/保留名大小写）已于第八十八批修完，**前端**草稿与 6 处即时提交串行化留第八十九批，见上两节）**：阶段 2 六项剩五项（工具集/插件集 preset、子代理继承角色身份/技能、角色级审批/沙箱档、导出/导入、会话级 overlay）仍为登记不承诺。**第八十六批的已登记边界**（不是遗漏）：并行子代理**自动继承**角色模型/思考档（专项测试钉住；**用户 2026-09-29 确认保留**）、角色不能选 provider/凭据、无自动降级链、汇总请求不受角色影响（请求级模型非空即让位）。下一批备选见 `~/Documents/Plan/gah-角色携带模型-需求分析.md` §11（P3 策略开关 `role_model: ask|auto|off` / payload 加 `Origin` / 角色级工具集与审批档 preset）。
 
 ### 第八十一批 · 全局指令编辑入口(形态 A,2026-09-28)
 
