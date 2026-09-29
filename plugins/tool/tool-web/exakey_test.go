@@ -121,3 +121,61 @@ func TestExaKeyBadYAMLSearchFails(t *testing.T) {
 		t.Fatal("Search 应显式失败")
 	}
 }
+
+// TestEndpointAndProviderFromEnv 第八十五批:端点/provider 也有 env 通道
+// (宿主按 Capabilities.ConfigEnv 注入;默认形态下插件进程读不到配置文件)。
+func TestEndpointAndProviderFromEnv(t *testing.T) {
+	t.Setenv("GAH_HOME", t.TempDir()) // 无文件
+	t.Setenv("GAH_SEARCH_ENDPOINT", "http://127.0.0.1:8787")
+	t.Setenv("GAH_SEARCH_PROVIDER", "exa")
+	if got := resolveFileEndpoint(); got != "http://127.0.0.1:8787" {
+		t.Fatalf("端点应取 env: %q", got)
+	}
+	if got := resolveFileProvider(); got != "exa" {
+		t.Fatalf("provider 应取 env: %q", got)
+	}
+	p := NewExaProvider(nil)
+	if p.endpoint != "http://127.0.0.1:8787" || p.err != nil {
+		t.Fatalf("provider 端点应来自 env:endpoint=%q err=%v", p.endpoint, p.err)
+	}
+	if p.apiKey != "" {
+		t.Fatalf("未配 key 应为空(无鉴权头): %q", p.apiKey)
+	}
+}
+
+// TestEnvKeyToleratesDeniedFile env 命中时"配置文件读不到"不致命
+// (macOS 默认沙箱档下插件读 config/ 会被内核拒;宿主已按声明把值注入 env)。
+func TestEnvKeyToleratesDeniedFile(t *testing.T) {
+	writeSearchConfig(t, "api_key: [坏\n") // 模拟读得到的坏文件:同一条错误路径
+	t.Setenv("EXA_API_KEY", "env-key")
+	p := NewExaProvider(nil)
+	if p.err != nil {
+		t.Fatalf("env 命中时不应记录配置错误: %v", p.err)
+	}
+	if p.apiKey != "env-key" {
+		t.Fatalf("key 应取 env: %q", p.apiKey)
+	}
+}
+
+// TestNewSearchToolFromEnv 外部插件构造入口:缺省 exa;未知名不拖垮同进程其它工具。
+func TestNewSearchToolFromEnv(t *testing.T) {
+	t.Run("缺省 exa", func(t *testing.T) {
+		t.Setenv("GAH_HOME", t.TempDir())
+		if got := NewSearchToolFromEnv(nil).Definition().Name; got != "web_search" {
+			t.Fatalf("工具名应为 web_search: %q", got)
+		}
+	})
+	t.Run("未知名 provider 调用即显式报错", func(t *testing.T) {
+		t.Setenv("GAH_HOME", t.TempDir())
+		t.Setenv("GAH_SEARCH_PROVIDER", "not-a-provider")
+		tool := NewSearchToolFromEnv(nil)
+		out, err := tool.Execute(context.TODO(), `{"query":"x"}`)
+		if err != nil {
+			t.Fatalf("Execute 不应返回 err(错误走结果字段): %v", err)
+		}
+		m, ok := out.(map[string]any)
+		if !ok || !strings.Contains(m["error"].(string), "未知搜索 provider") {
+			t.Fatalf("应显式报未知名 provider,got %#v", out)
+		}
+	})
+}

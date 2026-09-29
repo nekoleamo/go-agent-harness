@@ -82,6 +82,15 @@ type Capabilities struct {
 	// DataWrites 需要直接写的数据根**直接子目录名**(如 `memory`/`todos`;相对 sdk.Home())。
 	// 只允许直接子目录名且不得落在保留集(config/plugins/ui-plugins),否则宿主丢弃该项。
 	DataWrites []string `json:"data_writes,omitempty"`
+	// ConfigEnv 声明本插件需要宿主**代读并注入**的配置项 env 键(第八十五批)。
+	//
+	// 为何需要(不是多一个旋钮,是补一条死链):声明了 CredentialReadDeny 的插件进程被内核读拒
+	// 挡在 $GAH_HOME/config 之外(见 sdk.CredentialDenyDirs),而搜索配置(search.yaml)本来就是
+	// 归**插件自己**用的配置 —— 于是“写进配置文件”通道在 macOS 默认档下对插件失效
+	// (默认形态下 web_search 跑在本插件进程里)。进程 env 是同时满足“插件拿得到”与
+	// “模型经 shell 拿不到”(shell 子进程 env 经 sdk.SanitizedEnv 滤除 *_API_KEY)的唯一通道。
+	// 键名必须在宿主白名单内(见 internal/searchfile.KnownEnvKeys);未知名逐项丢弃并记 ERROR。
+	ConfigEnv []string `json:"config_env,omitempty"`
 }
 
 // newToolServer 构造协议服务端(单一构造点:running 表必须在这里初始化,

@@ -26,6 +26,7 @@ import (
 	"time"
 
 	coreplugin "github.com/nekoleamo/go-agent-harness/core/plugin"
+	"github.com/nekoleamo/go-agent-harness/internal/searchfile"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -264,7 +265,7 @@ func (b *Bridge) loadOne(path string) (*extEntry, error) {
 		b.logInfo("host-bridge: 外部插件已施加内核沙箱", "path", path, "mode", sbDesc(wrapMode),
 			"cred_read_deny", (capsKnown && caps.CredentialReadDeny) || os.Getenv(pluginCredReadDenyEnv) == "1")
 	}
-	cl, killFn, se, err := startPlugin(argv, b.cbAddr, b.cbToken, append(b.sandboxEnv(), extraEnv...))
+	cl, killFn, se, err := startPlugin(argv, b.cbAddr, b.cbToken, append(b.sandboxEnv(), extraEnv...), b.configEnvFromCaps(caps, capsKnown))
 	if err != nil {
 		return nil, err
 	}
@@ -584,6 +585,61 @@ func (b *Bridge) respawn(path string) {
 
 // startPlugin 启动外部插件进程,返回 rpc client 与 kill 函数(崩溃隔离:死进程快速失败)。
 // 回调通道:宿主地址经 GAH_CB_ADDR 环境变量注入(外部进程 Dial 后请求宿主服务)。
+// configEnvFromCaps 按插件自报的 ConfigEnv 声明生成要追加给子进程的"键=值"项。
+//
+// 值来源 = 宿主**代读**的搜索配置(宿主进程不在内核沙箱里,读得到;插件进程在 macOS 默认档
+// 下读不到,见 internal/searchfile 与 sdk/credentialpath.go)。
+//
+// 校验纪律对齐 validDataWrites:声明来自**被约束方**,只认白名单键(searchfile.KnownEnvKeys),
+// 未知名/超量逐项丢弃并记 ERROR(不整体拒绝加载:插件其余功能仍可用)。
+// 优先级:宿主 env 里经 GAH_EXT_ENV_PASS 点名且**有值**的键不注入(显式点名优先于按文件注入,
+// 与 tool-web 自身的 env > 文件 口径一致);点名了但值为空 / 未点名 → 用文件值。
+func (b *Bridge) configEnvFromCaps(caps Capabilities, capsKnown bool) []string {
+	if !capsKnown || len(caps.ConfigEnv) == 0 {
+		return nil
+	}
+	allowed := map[string]bool{}
+	for _, k := range searchfile.KnownEnvKeys() {
+		allowed[k] = true
+	}
+	// 显式点名的键 → 其值(空值视为"没给",让文件值顶上)。
+	passed := map[string]string{}
+	for _, kv := range externalEnvPass() {
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			passed[k] = v
+		}
+	}
+	const maxItems = 16
+	var out []string
+	cfg, err := searchfile.Load()
+	if err != nil {
+		// 读不到/坏文件:不注入即可(插件仍可自读文件或另给 env),但要让用户看得见。
+		b.logErr("host-bridge: 读取搜索配置失败,跳过配置注入", "path", searchfile.Path(), "err", err)
+		return nil
+	}
+	values := searchfile.EnvValues(cfg)
+	for i, rawKey := range caps.ConfigEnv {
+		if i >= maxItems {
+			b.logErr("host-bridge: 插件自报配置项过多,超出部分已忽略", "max", maxItems)
+			break
+		}
+		key := strings.TrimSpace(rawKey)
+		switch {
+		case key == "":
+			continue // 空项静默跳过(不制造噪音)
+		case !allowed[key]:
+			b.logErr("host-bridge: 插件自报的配置项不在白名单,已忽略", "key", rawKey, "allowed", searchfile.KnownEnvKeys())
+			continue
+		case passed[key] != "":
+			continue // 宿主 env 显式点名且有值:不覆盖
+		}
+		if v := values[key]; v != "" {
+			out = append(out, key+"="+v)
+		}
+	}
+	return out
+}
+
 // externalEnvPass 显式放行的宿主 env 键(GAH_EXT_ENV_PASS,逗号分隔;键名大小写敏感,
 // 与 os.LookupEnv 语义一致,写错大小写即静默不放行):
 // 凭据默认不下传外部插件;个别外部插件确需某凭据时(如 EXA_API_KEY 经 env 而非配置文件),
@@ -606,7 +662,7 @@ func externalEnvPass() []string {
 	return out
 }
 
-func startPlugin(argv []string, cbAddr, cbToken string, extraEnv []string) (*rpc.Client, func(), *pluginStderr, error) {
+func startPlugin(argv []string, cbAddr, cbToken string, extraEnv, configEnv []string) (*rpc.Client, func(), *pluginStderr, error) {
 	// argv[0] = 插件本体(可能已被内核沙箱包装器包着,见 pluginsandbox.go)。
 	bin := argv[0]
 	cmd := exec.Command(bin, argv[1:]...)
@@ -618,6 +674,9 @@ func startPlugin(argv []string, cbAddr, cbToken string, extraEnv []string) (*rpc
 	cmd.Env = sdk.SanitizedEnv(os.Environ())
 	cmd.Env = append(cmd.Env, "GAH_CB_ADDR="+cbAddr, "GAH_CB_TOKEN="+cbToken)
 	cmd.Env = append(cmd.Env, externalEnvPass()...)
+	// 配置注入(第八十五批):按插件自报的 ConfigEnv 从宿主配置文件代读的值(不经宿主源 env,
+	// 所以不受上一条凭据过滤影响)。优先级在 configEnvFromCaps 里定死:显式点名且有值 > 文件。
+	cmd.Env = append(cmd.Env, configEnv...)
 	// 沙箱上下文(有效档位/工作根):插件进程自己拿不到 ctx.sandbox,而它内部要起的子进程
 	// (MCP server、子命令)需要这个信息才能施加内核沙箱(见 internal/kernelsandbox)。
 	cmd.Env = append(cmd.Env, extraEnv...)

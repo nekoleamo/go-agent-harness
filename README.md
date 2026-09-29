@@ -43,7 +43,7 @@ Go 实现的编程代理 Agent Harness:以**单静态二进制**交付全部能�
 | **提示通道** | host-notices(`ctx.notices`,NOND-N1):插件/宿主向**人**发提示(作业终态/计划失败或跳过/回合出错),**不进会话记录、不计 token**;进程内环形缓冲(200)+ `id` 增量回填(`GET /api/notices?since=` / SSE `notice` 帧),Web 右下 toast、TUI 状态栏项与 `/notice`;同 `Key` 60s 去重防刷屏;系统级通知已交付(NOND-N2):TUI 按终端能力逐级降级发 OSC 99/777/9 或响铃(`GAH_TUI_NOTIFY=auto\|osc\|bell\|off`,`/notify test` 自测,写 `/dev/tty`),桌面壳改为**单条 2s 轮询消费提示流**(`warn`/`error` → 桌面通知),不再按场景各写一个轮询器;**macOS 上未签名/未公证的构建系统不呈现横幅**(系统收下不弹,属预期非缺陷:壳额外用 Dock 弹跳兜底,并在壳日志如实记录投递结果);应用内提示通道与状态栏不受影响 |
 | **子代理 fanout** | `agent/parallel/pipeline` 独立上下文 ReAct 扇出并行聚合;`send_message`/`fork` 注入与会话派生 |
 | **starlark workflow** | 模型写受限 starlark 脚本组合多步工具调用(天然沙箱/无标准库),`background` 异步 |
-| **联网搜索** | web_search(默认 Exa,`EXA_API_KEY`;`data.provider` 可换)与 web_fetch 协作,错误结构化归一 |
+| **联网搜索** | web_search(默认 Exa;key 与端点可经 env 或 `$GAH_HOME/config/search.yaml`,端点可指向**自建 Exa 兼容服务**、无 key 亦可用)与 web_fetch 协作,错误结构化归一 |
 | **MCP 双向** | client 桥(接外部 server,工具 `mcp_<server>_<name>`)与 server 端(对外暴露本仓全部工具,可被 Claude Desktop 等拉起) |
 | **MCP 按需检索** | 每个 MCP server 可选 `mode`: `direct`(默认,工具全量进上下文)/ `search`(工具**不进每轮上下文**,只暴露 `mcp_search` 查清单 + `mcp_call` 按名调用);配置落 `$GAH_HOME/config/mcp.yaml`(设置面板「MCP server」段可视化增删改,**保存即写盘并热重载**,无需重启),env 照旧生效(文件优先) |
 | **ACP agent 端** | `gah acp`:以 **ACP v1**(Agent Client Protocol,Linux Foundation)被编辑器(Zed / Neovim 等)当一等 agent 拉起 —— 会话、流式回复、工具进度、审批弹层全走 ACP,数据与 TUI/Web **同源**(同一会话账本、同一沙箱/审批裁决,不是另一套运行时);编辑器的权限按钮只映射 `allow_once`/`reject_once`(不给 always:一次点击不该永久放宽危险操作),交互式提问与图片输入暂不支持(显式报错,去 TUI/Web 作答) |
@@ -264,7 +264,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 |---|---|
 | `shell` | 执行 shell 命令(沙箱/审批策略拦截;写目标经路径裁决:workspace-write 下越界写被拒、只读档拒绝一切写;`data.pty` 可驱动交互式进程;凭据 env 滤除;**环境 jail**:`TMPDIR`/`XDG_CACHE_HOME`/`GOCACHE`/`GOMODCACHE`/`npm_config_cache`/`PIP_CACHE_DIR` 恒重定向到 `$GAH_HOME/jail/**`,`HOME`/`GOPATH` 等不动,`GAH_SHELL_JAIL=0` 可关;**内核级沙箱**(第 3 组):宿主把**有效**档位下发到执行入口,`shell` 在**进程树**层面限制文件写(读侧另拒凭据目录,见 `GAH_SHELL_CRED_READ_KERNEL`)—— macOS `/usr/bin/sandbox-exec`(seatbelt)、Linux **Landlock**(内核 ≥5.13,自举 helper 重新 exec 后施加);白名单 = 有效档允许的 workspace 根 + `$GAH_HOME/jail/**` + 必要设备节点(路径先解析软链),read-only 档仍保留 jail 可写;无能力平台(Windows 等)→ 一次性 stderr 告警 + 不施加包装,`GAH_SHELL_KERNEL_SANDBOX=0` 可关;**POSIX shell 解析**(`sdk/shellpath.go`):`GAH_SHELL_PATH` > Windows 上的 Git for Windows 常见安装位/PATH → `sh`,后台任务同源,缺失时显式报错不静默降级;Windows 下关闭 MSYS 参数路径转换(`MSYS_NO_PATHCONV`),防裁决路径与实际落点脱节) |
 | `file_read` / `file_write` / `file_append` / `file_edit` | 文件读写/追加/精确编辑(经沙箱路径校验) |
-| `web_fetch` / `web_search` | 抓取 URL 正文 / 联网搜索(默认 Exa,`EXA_API_KEY`;`data.provider` 可换;401/429/5xx 结构化错误) |
+| `web_fetch` / `web_search` | 抓取 URL 正文 / 联网搜索(默认 Exa;key/端点经 env(`EXA_API_KEY`/`GAH_SEARCH_PROVIDER`/`GAH_SEARCH_ENDPOINT`)或 `$GAH_HOME/config/search.yaml`,**env 优先**;端点可指向自建兼容服务;401/429/5xx 结构化错误) |
 | `workflow` / `workflow_collect` | 受限 starlark 脚本组合多步工具调用(天然沙箱);`background` 异步 + 收集 |
 | `job_list` / `job_output` / `job_kill` | 后台任务查询/取输出/终止(与 `/jobs` 同源) |
 | `memory` | 跨会话记忆(remember/list/recall/forget;`$GAH_HOME/memory/<project>.jsonl`,人工可编辑) |
@@ -368,7 +368,7 @@ patch-*.yaml            # 按 id 替换/插入/启停条目(随时插拔)
 | `GAH_SHELL_KERNEL_SANDBOX` | `0` = 关闭 shell 的**内核级沙箱**(默认开启:macOS `sandbox-exec` seatbelt / Linux Landlock 在进程树层面限制文件写;写之外另拒**凭据目录的读**(macOS,见 `GAH_SHELL_CRED_READ_KERNEL`),其余读与网络不限;能力缺失平台会自动告警并降级为纯协作式控制) |
 | `GAH_SHELL_CRED_READ_KERNEL` | `0` = 关闭**内核层凭据读拒绝**(默认开启:macOS 把 `~/.ssh`/`~/.gnupg`/`~/.aws`/`~/.config/gcloud`/`$GAH_HOME/config` 写进 seatbelt profile 拒**读**)。为何需要:协作层的凭据判定只看得见命令文本里的**字面**路径,`python3 -c "open('~/.ss'+'h/id_'+'rsa')"` 这类动态构造完全绕过它(2026-09-27 审计实测),而读侧此前没有内核层兜底(写侧由 `deny file-write*` 覆盖);关掉即退回纯文本层判定。代价:直读 keyfile 的 `ssh`/`git push`、`aws`/`gcloud` CLI 会被拒(用 agent/keychain 时不受影响)。**Linux 分支无此能力**:Landlock 规则是 allow-list,无法表达"除凭据目录外全放行读" |
 | `GAH_SHELL_JAIL` | `0` = 关闭 shell 执行的**环境 jail**(默认开启:把 `TMPDIR`/`XDG_CACHE_HOME`/`GOCACHE`/`GOMODCACHE`/`npm_config_cache`/`PIP_CACHE_DIR` 重定向到 `$GAH_HOME/jail/**`,让构建缓存与临时文件不再散落用户家目录;`HOME`/`GOPATH`/`CARGO_HOME`/`XDG_CONFIG_HOME` 刻意保留以照常读 git/ssh 配置) |
-| `GAH_EXT_ENV_PASS` | 显式放行给外部进程插件的环境变量(逗号分隔):外部插件默认**不继承宿主凭据**(`*_API_KEY`/`*_TOKEN`/`AWS_*`/`GAH_CB_*` 等已滤除),确需凭据的插件在此点名(如 `EXA_API_KEY`);或改用配置文件(推荐 `$GAH_HOME/config/search.yaml`) |
+| `GAH_EXT_ENV_PASS` | 显式放行给外部进程插件的环境变量(逗号分隔):外部插件默认**不继承宿主凭据**(`*_API_KEY`/`*_TOKEN`/`AWS_*`/`GAH_CB_*` 等已滤除),确需凭据的插件在此点名(如 `EXA_API_KEY`);或写进 `$GAH_HOME/config/search.yaml` —— 宿主按插件声明**代读并注入进程 env**(第八十五批;插件进程被内核读拒挡在 `config/` 外),点名且有值优先于文件值 |
 | `GAH_EXT_KERNEL_SANDBOX` | `0` = 关闭**MCP server 的内核级沙箱**(默认开启:MCP server 是第三方代码,只经工具参数的无路径裁决对它毫无约束——它自己选定的 DB/缓存/临时文件落点完全看不见;故起进程时按同一套 seatbelt/Landlock 包装限制文件写,白名单 = 有效档允许的 workspace 根 + `$GAH_HOME/jail/**` + 包管理器缓存与系统临时目录) |
 | `GAH_EXT_RW_PATHS` | 追加给 MCP server 的**可写路径**(冒号分隔):server 需要写自己的数据目录(如 `~/Library/Application Support/<app>`)时在此点名;默认白名单只含缓存与临时区,不猜应用数据目录 |
 | `GAH_EXT_CRED_READ_DENY` | `1` = 开启**MCP server 的内核层凭据读拒绝**(默认**关**:读凭据目录是 server 的正当职责,默认拒会大面积打断;只拒目录不拒文件,同 `GAH_SHELL_CRED_READ_KERNEL`,仅 macOS 有等价能力) |
@@ -377,7 +377,8 @@ patch-*.yaml            # 按 id 替换/插入/启停条目(随时插拔)
 | `GAH_EXT_PLUGIN_CRED_READ_DENY` | `1` = 开启**外部插件进程的内核层凭据读拒绝**(默认**关**,同 MCP server 那一条的理由;仅 macOS 有等价能力) |
 | `GAH_MCP_SERVE` / `GAH_PLUGIN` / `GAH_VERSION` | 外部进程工具入口参数(serve/加载插件/版本通告;由 host-bridge 拉起时注入) |
 | `DEEPSEEK_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | LLM 密钥(可按 provider 前缀路由;或经 `/provider` 写入 provider.yaml) |
-| `EXA_API_KEY` | web_search 联网搜索密钥(默认提供商;也可 `data.provider` 换其它) |
+| `EXA_API_KEY` | web_search 联网搜索密钥(默认提供商 Exa;env > `$GAH_HOME/config/search.yaml` 的 `api_key`;自建兼容端点可留空) |
+| `GAH_SEARCH_PROVIDER` / `GAH_SEARCH_ENDPOINT` | web_search 的提供商名与端点(端点可指向**自建 Exa 兼容服务**,此时无需 key —— key 为空不发 `Authorization`);env > 配置文件。注:外部插件进程读不到 `config/`(内核凭据读拒),配置文件由宿主代读注入,故**改文件后需重载 `tool-basic` 插件**(或重启)才生效 |
 | `GAH_WEB_APPROVE` | `web_fetch` 的**出口审批档位**:`off`(不管)/ `new-host`(默认:每个新域名首次访问弹一次确认,批准后加入白名单)/ `query`(每次访问都确认,不落白名单)。动因:`web_fetch` 默认不在 `approval_tools` 里,「把数据塞进 URL query 外发」此前没有审批出口 |
 | `GAH_WEB_ALLOW_HOSTS` | `web_fetch` 的**静态域名白名单**(逗号分隔的精确 host;`*.suffix.com` 匹配其子域):无人值守/无确认通道场景的事前放行手段(批准过的域名另记在 `$GAH_HOME/config/gah-state.json` 的 `web_allow_hosts`) |
 | `GAH_WEB_ALLOW_PRIVATE` | `1` = 放行 `web_fetch` 抓**内网/环回/链路本地**地址(默认**拒**:抓取的 URL 来自模型,防它被诱导去读本机未鉴权服务与云元数据端点 `169.254.169.254`;本地开发服务或**经本地 HTTP 代理**上网时需要打开——后者守卫看到的拨号目标是代理地址,不豁免) |

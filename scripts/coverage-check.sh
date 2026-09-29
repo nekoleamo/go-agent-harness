@@ -54,6 +54,7 @@ sdk 60
 internal/prefs 66
 internal/roles 76
 internal/skills 77
+internal/searchfile 66
 internal/instructions 76
 internal/providerfile 72
 internal/kernelsandbox 50
@@ -110,7 +111,7 @@ plugins/tool/tool-session-search 88
 plugins/tool/tool-shell@linux 58
 plugins/tool/tool-subagent 56
 plugins/tool/tool-todo 75
-plugins/tool/tool-web 76
+plugins/tool/tool-web 85
 plugins/tool/tool-workflow 72
 EOF
 

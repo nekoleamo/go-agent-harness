@@ -14,6 +14,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/nekoleamo/go-agent-harness/internal/searchfile"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -45,8 +46,35 @@ var searchProviders = map[string]func(client *http.Client) SearchProvider{
 	"exa": func(client *http.Client) SearchProvider { return NewExaProvider(client) },
 }
 
+// NewSearchToolFromEnv **外部插件**用的构造入口(第八十五批):provider 名取生效配置
+// (env GAH_SEARCH_PROVIDER > 配置文件 provider,缺省 exa;宿主按 Capabilities.ConfigEnv 注入),
+// 未知名/配置坏时**不拖垮同进程的其它工具** —— tool-basic 还挂着 shell/文件/记忆/todo,
+// 一个拼写错误不该让它们全不可用,故返回一个“调用即显式报错”的搜索工具(错误在用的时候可见)。
+// 进程内装配仍走 Plugin.Start 的严格口径(未知 provider = 装配期显式失败),两者只差失败时机。
+func NewSearchToolFromEnv(client *http.Client) sdk.Tool {
+	name := resolveFileProvider()
+	if name == "" {
+		name = "exa"
+	}
+	factory, ok := searchProviders[name]
+	if !ok {
+		return NewSearchTool(&errProvider{err: fmt.Errorf("未知搜索 provider %q(可选: exa)", name)})
+	}
+	return NewSearchTool(factory(client))
+}
+
+// errProvider 只报错的 provider(配置级失败时占位)。
+type errProvider struct{ err error }
+
+func (p *errProvider) Search(context.Context, string, int) ([]SearchResult, error) {
+	return nil, &SearchError{Kind: "config", Msg: p.err.Error()}
+}
+
 // exaProvider 默认 provider:直连 Exa Search API(Authorization: Bearer <key>)。
-// 凭据通道:host-bridge 起外部工具进程全量透传 os.Environ,shell 才白名单化,故 key 在进程可读、模型不可见。
+// 凭据通道:key 只经 env 或 $GAH_HOME/config/search.yaml 到达本进程 —— 外部插件由宿主按
+// Capabilities.ConfigEnv 声明从配置文件读值注入 env(默认形态下插件进程读不到 config/,见
+// internal/searchfile 与 sdk/credentialpath.go);shell 子进程 env 也经 sdk.SanitizedEnv 滤除
+// *_API_KEY,模型拿不到。
 type exaProvider struct {
 	client   *http.Client
 	endpoint string // 可注入(测试/自建端点/search.yaml 兜底)
@@ -54,8 +82,9 @@ type exaProvider struct {
 	err      error // 配置解析错误(坏 search.yaml):Search 时显式失败
 }
 
-// NewExaProvider 构造 Exa provider。key 解析链:env EXA_API_KEY > search.yaml > 空;
-// endpoint:search.yaml 兜底(官方端点缺省)。endpoint/apiKey 同包可注入(测试)。
+// NewExaProvider 构造 Exa provider。key/endpoint 解析链见 internal/searchfile.Resolve:
+// env(EXA_API_KEY / GAH_SEARCH_ENDPOINT)> $GAH_HOME/config/search.yaml。
+// endpoint/apiKey 同包可注入(测试)。
 func NewExaProvider(client *http.Client) *exaProvider {
 	if client == nil {
 		client = newHTTPClient()
@@ -110,7 +139,7 @@ func (p *exaProvider) Search(ctx context.Context, query string, n int) ([]Search
 	// 错误归一:401/429/5xx 给结构化文案,可重试语义对齐 llm 适配器
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized:
-		return nil, &SearchError{Kind: "auth", Msg: "搜索服务未授权(EXA_API_KEY 无效或缺失),请检查环境变量 EXA_API_KEY"}
+		return nil, &SearchError{Kind: "auth", Msg: "搜索服务未授权(搜索 key 无效或缺失),请检查 $GAH_HOME/config/search.yaml 的 api_key 或环境变量 " + searchfile.EnvAPIKey}
 	case resp.StatusCode == http.StatusTooManyRequests:
 		return nil, &SearchError{Kind: "rate", Msg: "搜索服务限流(429),请稍后重试"}
 	case resp.StatusCode >= 500:

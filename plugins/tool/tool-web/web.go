@@ -34,7 +34,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	d1 := tools.Register(&WebTool{client: newFetchClient()}) // 守卫只在 fetch 侧(见 httpclient.go)
 	name, _ := m.Data["provider"].(string)
 	if name == "" {
-		name = resolveFileProvider() // search.yaml 兜底(不依赖 bundle data)
+		name = resolveFileProvider() // 生效配置兜底(env GAH_SEARCH_PROVIDER > 搜索配置文件)
 	}
 	if name == "" {
 		name = "exa" // 最终缺省

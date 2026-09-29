@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/nekoleamo/go-agent-harness/internal/searchfile"
 	bridge "github.com/nekoleamo/go-agent-harness/plugins/host/host-bridge"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-files"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-memory"
@@ -40,10 +41,12 @@ func main() {
 		tools[name] = t
 	}
 	tools["web_fetch"] = toolweb.NewTool()
-	tools["web_search"] = toolweb.NewSearchTool(toolweb.NewExaProvider(nil)) // M6.14:默认 exa,EXA_API_KEY
-	tools["memory"] = toolmemory.NewTool()                                   // M10:跨会话操作记忆
-	tools["todo"] = tooltodo.NewTool()                                       // M8:任务清单(4 状态机/blockedBy)
-	tools["session_search"] = toolsessionsearch.NewTool()                    // S-P2-5:跨会话检索(只读)
+	// M6.14/第八十五批:provider 取生效配置(env GAH_SEARCH_PROVIDER > 搜索配置文件,缺省 exa);
+	// 未知名不拖垮本插件(shell/文件/记忆/todo 在同进程)。
+	tools["web_search"] = toolweb.NewSearchToolFromEnv(nil)
+	tools["memory"] = toolmemory.NewTool()                // M10:跨会话操作记忆
+	tools["todo"] = tooltodo.NewTool()                    // M8:任务清单(4 状态机/blockedBy)
+	tools["session_search"] = toolsessionsearch.NewTool() // S-P2-5:跨会话检索(只读)
 	// 能力自报(2026-09-27 审计 A3/A6):本插件是 **shell 提供者**。
 	// 宿主会整体包装本进程(in-process 直写因此进内核层);本插件内部的 shell/pty 再施加时由
 	// MarkerEnv 自动跳过(不可嵌套由标记解决,不再需要宿主豁免) —— 见 internal/kernelsandbox。
@@ -51,8 +54,14 @@ func main() {
 	// (默认关的 GAH_EXT_PLUGIN_CRED_READ_DENY 不管默认档)。
 	// DataWrites 是数据根写声明:本插件进程内直写 $GAH_HOME/{memory,todos}
 	// (file 工具另走协作层路径裁决)。
+	// ConfigEnv(第八十五批):本插件带 web_search,它的 provider/key/endpoint 存在
+	// $GAH_HOME/config/search.yaml 里 —— 而上面那条 CredentialReadDeny 使**本进程读不到**
+	// config/(内核凭据读拒),于是宿主按本声明代读文件并注入进程 env(进程 env 是模型经
+	// shell 拿不到的唯一通道:sdk.SanitizedEnv 会滤掉 *_API_KEY)。
+	tools["web_search"] = toolweb.NewSearchToolFromEnv(nil)
 	bridge.ServeToolsWith(tools, bridge.Capabilities{
 		CredentialReadDeny: true,
 		DataWrites:         []string{"memory", "todos"},
+		ConfigEnv:          []string{searchfile.EnvAPIKey, searchfile.EnvProvider, searchfile.EnvEndpoint},
 	})
 }

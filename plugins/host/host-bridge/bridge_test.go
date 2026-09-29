@@ -286,7 +286,7 @@ func TestPluginStderrSurfacesInLoadError(t *testing.T) {
 	if err := os.WriteFile(bin, []byte("#!/bin/sh\necho 'tool-mcp: 未配置任何 MCP server(设置面板「MCP」分区)' >&2\nexit 1\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	_, _, _, err := startPlugin([]string{bin}, "127.0.0.1:1", "tok", nil)
+	_, _, _, err := startPlugin([]string{bin}, "127.0.0.1:1", "tok", nil, nil)
 	if err == nil {
 		t.Fatal("握手前退出的插件应报错")
 	}
@@ -309,7 +309,7 @@ func TestPluginIdleMarkerIsNotAnError(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 归类:必须能被 errors.Is 认出来,且自述原因保留(供日志给出「去哪配」)
-	_, _, _, err := startPlugin([]string{bin}, "127.0.0.1:1", "tok", nil)
+	_, _, _, err := startPlugin([]string{bin}, "127.0.0.1:1", "tok", nil, nil)
 	if err == nil || !errors.Is(err, errPluginIdle) {
 		t.Fatalf("自述空闲应归类为 errPluginIdle,得 %v", err)
 	}
