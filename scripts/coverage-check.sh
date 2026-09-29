@@ -50,7 +50,7 @@ core/event 90
 core/ctx 60
 core/plugin 65
 core/config 65
-sdk 84
+sdk 85
 internal/prefs 66
 internal/roles 85
 internal/skills 77
@@ -69,7 +69,7 @@ plugins/catalogue 70
 plugins/ui/ui-web-app 70
 web 79
 tui 74
-plugins/policy/policy-guard 89
+plugins/policy/policy-guard 91
 plugins/host/host-agent-loop 72
 plugins/host/host-bridge 86
 plugins/host/host-backup 80

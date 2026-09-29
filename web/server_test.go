@@ -526,6 +526,81 @@ type stubSBSame struct{ stubSB }
 
 func (s *stubSBSame) EffectiveMode() sdk.SandboxMode { return s.mode }
 
+// stubSBRole 角色收紧后的沙箱替身:有效档比声明档**更严**,且自报来源 = role。
+type stubSBRole struct{ stubSB }
+
+func (s *stubSBRole) EffectiveMode() sdk.SandboxMode { return sdk.SandboxReadOnly }
+func (s *stubSBRole) EffectiveFrom() string          { return sdk.TierSourceRole }
+
+// stubAP 审批替身(第九十二批:state 要报声明档 + 角色收紧后的有效档与来源)。
+type stubAP struct {
+	mode sdk.ApprovalMode
+	eff  sdk.ApprovalMode // 空 = 与声明档一致
+	from string
+}
+
+func (s *stubAP) Mode() sdk.ApprovalMode     { return s.mode }
+func (s *stubAP) SetMode(m sdk.ApprovalMode) { s.mode = m }
+func (s *stubAP) EffectiveMode() sdk.ApprovalMode {
+	if s.eff == "" {
+		return s.mode
+	}
+	return s.eff
+}
+func (s *stubAP) EffectiveFrom() string { return s.from }
+
+// TestStateTierSource 第九十二批:有效档偏离声明档时,后端必须一并说清**来源**。
+// 只报 sandbox_effective 会让前端把角色收紧显示成"随审批联动" —— 假归因,而这两件事
+// 对用户意味着完全不同的处置(换个角色 vs 改审批档)。审批档同理(此前只有声明档)。
+func TestStateTierSource(t *testing.T) {
+	stateRaw := func(t *testing.T, s *Server) map[string]any {
+		t.Helper()
+		hs := httptest.NewServer(s.handler())
+		defer hs.Close()
+		resp, err := http.Get(hs.URL + "/api/state")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var raw map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+
+	// 角色收紧沙箱:报有效档 + 来源 role
+	s, _ := newTestServer()
+	s.sb = &stubSBRole{stubSB{mode: sdk.SandboxWorkspace}}
+	raw := stateRaw(t, s)
+	if raw["sandbox"] != "workspace-write" || raw["sandbox_effective"] != "read-only" || raw["sandbox_from"] != "role" {
+		t.Fatalf("角色收紧的沙箱字段不符: %v", raw)
+	}
+	// 无偏离时不报来源字段(不给客户端制造"有偏离"的假象)
+	s.sb = &stubSBSame{stubSB{mode: sdk.SandboxWorkspace}}
+	if raw = stateRaw(t, s); raw["sandbox_from"] != nil {
+		t.Fatalf("无偏离时不该下发 sandbox_from: %v", raw)
+	}
+
+	// 审批:角色收紧 → 有效档 + 来源 role;声明档保持原值(面板要能对照)
+	s.ap = &stubAP{mode: sdk.ApprovalSmart, eff: sdk.ApprovalStrict, from: sdk.TierSourceRole}
+	raw = stateRaw(t, s)
+	if raw["approval"] != "smart" || raw["approval_effective"] != "strict" || raw["approval_from"] != "role" {
+		t.Fatalf("角色收紧的审批字段不符: %v", raw)
+	}
+	// 未实现 sdk.EffectiveApproval 的旧实现:只报声明档,不编造有效档
+	s.ap = &stubAPRaw{mode: sdk.ApprovalSmart}
+	if raw = stateRaw(t, s); raw["approval"] != "smart" || raw["approval_effective"] != nil || raw["approval_from"] != nil {
+		t.Fatalf("旧审批实现不该下发有效档字段: %v", raw)
+	}
+}
+
+// stubAPRaw 只实现 sdk.ApprovalService(无角色收紧能力)的旧实现形态。
+type stubAPRaw struct{ mode sdk.ApprovalMode }
+
+func (s *stubAPRaw) Mode() sdk.ApprovalMode     { return s.mode }
+func (s *stubAPRaw) SetMode(m sdk.ApprovalMode) { s.mode = m }
+
 // /api/ui-plugins 每项必须带信任模型明示:UI 插件与宿主同源同权限(安装即完全信任)。
 func TestUIPluginsTrustModel(t *testing.T) {
 	s, _ := newTestServer()

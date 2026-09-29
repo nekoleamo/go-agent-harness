@@ -41,3 +41,12 @@ type ApprovalService interface {
 	Mode() ApprovalMode
 	SetMode(m ApprovalMode)
 }
+
+// EffectiveApproval 可选能力:返回**角色收紧后**的有效审批档(对称于 sdk.EffectiveSandbox)。
+//
+// Mode() 仍是"声明档"(展示与偏好持久化的原义),但真正的裁决行为取本接口的值 ——
+// 只读 Mode() 会把"角色收了紧"显示成没收紧,而实际危险命令已经被直接拒了。
+// 未实现 = 无角色收紧概念(测试替身/极简宿主),调用方回落 Mode()。
+type EffectiveApproval interface {
+	EffectiveMode() ApprovalMode
+}

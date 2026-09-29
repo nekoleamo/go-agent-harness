@@ -148,6 +148,11 @@ func (s *Server) handleRoleOne(w http.ResponseWriter, r *http.Request) {
 			// ToolsExclude 排除的工具名(第九十一批);传数组 = 整份替换(不用 Set 标记:
 			// 空清单与不写这个键同义 —— 都不排除)。形状校验在 sdk.NormalizeToolNames。
 			ToolsExclude *[]string `json:"tools_exclude"`
+			// Approval/Sandbox 角色**收紧**档(第九十二批);传空串 = 清掉(跟随全局)。
+			// 值域只有"比缺省更严"的那几个(见 sdk.NormalizeRoleApproval)——
+			// 传 open/full-access 会被拒并回 400:那是**放宽**,角色无权声明。
+			Approval *string `json:"approval"`
+			Sandbox  *string `json:"sandbox"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, "坏请求体", http.StatusBadRequest)
@@ -199,6 +204,22 @@ func (s *Server) handleRoleOne(w http.ResponseWriter, r *http.Request) {
 					return err
 				}
 				cur.ToolsExclude = ex
+			}
+			if body.Approval != nil {
+				// 非法值或"试图放宽"(open)都在这里被拒 —— 静默降级成"未声明"是安全问题,
+				// 静默降级成"最严"会让人以为角色坏了,两条都不做(见 sdk.NormalizeRoleApproval)。
+				v, err := sdk.NormalizeRoleApproval(*body.Approval)
+				if err != nil {
+					return err
+				}
+				cur.Approval = v
+			}
+			if body.Sandbox != nil {
+				v, err := sdk.NormalizeRoleSandbox(*body.Sandbox)
+				if err != nil {
+					return err
+				}
+				cur.Sandbox = v
 			}
 			return nil
 		}
@@ -325,7 +346,10 @@ func (s *Server) createRole(w http.ResponseWriter, r *http.Request, svc sdk.Role
 		Thinking      string   `json:"thinking"`
 		// ToolsExclude 新建时即可带排除清单(第九十一批;与 PATCH 同一套形状校验)。
 		ToolsExclude []string `json:"tools_exclude"`
-		Agents       string   `json:"agents"`
+		// Approval/Sandbox 角色收紧档(第九十二批;同上,非法值/"试图放宽"当场拒)。
+		Approval string `json:"approval"`
+		Sandbox  string `json:"sandbox"`
+		Agents   string `json:"agents"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "坏请求体", http.StatusBadRequest)
@@ -344,12 +368,22 @@ func (s *Server) createRole(w http.ResponseWriter, r *http.Request, svc sdk.Role
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	rap, err := sdk.NormalizeRoleApproval(body.Approval)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	rsb, err := sdk.NormalizeRoleSandbox(body.Sandbox)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	spec := sdk.RoleSpec{
 		ID: body.ID, Name: body.Name, Description: body.Description, Identity: body.Identity,
 		ExcludeGlobal: body.ExcludeGlobal, Skills: body.Skills, SkillsSet: body.SkillsSet,
 		SkillsInherit: body.SkillsInherit,
 		Model:         strings.TrimSpace(body.Model), Thinking: strings.ToLower(strings.TrimSpace(body.Thinking)),
-		ToolsExclude: ex,
+		ToolsExclude: ex, Approval: rap, Sandbox: rsb,
 	}
 	created, err := svc.Create(spec, body.Agents)
 	if err != nil {

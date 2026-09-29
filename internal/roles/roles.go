@@ -128,6 +128,10 @@ type roleFile struct {
 	// ToolsExclude 排除的工具名(第九十一批;空 = 不排除任何工具)。
 	// 与 Model/Thinking 同款:无 Set 标记(空清单与未写这个键行为一致)。
 	ToolsExclude []string `yaml:"tools_exclude,omitempty"`
+	// Approval / Sandbox 角色收紧档(第九十二批;空 = 跟随全局)。
+	// 同样必须与 sdk.RoleSpec 同步(Save 是全量覆盖写,少一个字段就会被下一次保存抹掉)。
+	Approval string `yaml:"approval,omitempty"`
+	Sandbox  string `yaml:"sandbox,omitempty"`
 }
 
 // List 全部角色(按显示名排序)。**不读 AGENTS.md 正文**(只给字节数 + 私有技能名) ——
@@ -265,6 +269,17 @@ func (s Store) get(id string, withBody bool) (sdk.RoleSpec, error) {
 		return sdk.RoleSpec{}, fmt.Errorf("角色 %s 的 %s: %w", id, FileName, err)
 	}
 	spec.ToolsExclude = ex
+	// 角色收紧档:非法值(含"试图放宽"的 open/full-access)与思考档同款 —— **显式失败**
+	// 进 Broken(),不静默当成"未声明"(那是安全方向上的静默降级)。
+	ap, err := sdk.NormalizeRoleApproval(f.Approval)
+	if err != nil {
+		return sdk.RoleSpec{}, fmt.Errorf("角色 %s 的 %s: %w", id, FileName, err)
+	}
+	sb, err := sdk.NormalizeRoleSandbox(f.Sandbox)
+	if err != nil {
+		return sdk.RoleSpec{}, fmt.Errorf("角色 %s 的 %s: %w", id, FileName, err)
+	}
+	spec.Approval, spec.Sandbox = ap, sb
 	if f.Skills != nil {
 		spec.Skills = append([]string(nil), (*f.Skills)...)
 		spec.SkillsSet = true
@@ -323,9 +338,20 @@ func (s Store) Save(spec sdk.RoleSpec) error {
 	if err != nil {
 		return err
 	}
+	// 收紧档落盘前同样校验:写进去一个 Get 读不回来的值,等于当场造一个坏角色。
+	// 「试图放宽」(open/full-access)在这里被拒 —— 角色无权放宽全局档(见 sdk.RoleSpec.Approval)。
+	ap, err := sdk.NormalizeRoleApproval(spec.Approval)
+	if err != nil {
+		return err
+	}
+	sb, err := sdk.NormalizeRoleSandbox(spec.Sandbox)
+	if err != nil {
+		return err
+	}
 	f := roleFile{Name: spec.Name, Description: spec.Description, Identity: spec.Identity,
 		ExcludeGlobal: spec.ExcludeGlobal, SkillsInherit: spec.SkillsInherit,
-		Model: strings.TrimSpace(spec.Model), Thinking: th, ToolsExclude: ex}
+		Model: strings.TrimSpace(spec.Model), Thinking: th, ToolsExclude: ex,
+		Approval: ap, Sandbox: sb}
 	if spec.SkillsSet {
 		list := spec.Skills
 		if list == nil {

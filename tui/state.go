@@ -63,26 +63,30 @@ type State struct {
 
 	// selectAll 全选输入态(Ctrl+A):下一次 Backspace/Delete = 清空,插入 = 替换;
 	// 其它导航/编辑动作自动复位。实现"选中一次性删除/全选替换"(TUI 无渲染选区)。
-	selectAll      bool
-	Sandbox        string         // 沙箱档位显示(read-only|workspace-write|full-access)
-	Approval       string         // 审批档位显示(open|smart|strict)
-	Role           string         // 当前角色显示「名(id)」(空 = 未启用角色/未装配 ctx.roles)
-	PendingConfirm string         // 非空 = 有待确认的危险操作(确认弹层)
-	Questions      []PendingQ     // S-P0-2 待答提问栈(到达顺序,栈首=当前作答对象;空=无待答)
-	Answering      bool           // 输入框处于作答态(Enter=作答;Esc 退出作答态,提问仍在栈内)
-	Suggestions    []string       // 输入 / 前缀时的命令提示(注册表过滤结果,渲染于输入行下方)
-	Pick           *Pick          // 非空 = 交互式选择器激活(↑/↓ 移动,Enter 应用)
-	PickDismissed  bool           // Esc/断点后抑制自动激活,直至输入变化
-	Mention        *Mention       // 非空 = @ 文件引用补全激活(↑/↓ 移动,Tab/Enter 应用;见 mention.go)
-	Doc            *DocPager      // 非空 = 文档预览 pager 浮层激活(全屏模态;见 docview.go)
-	Free           *freeStep      // 多值自由参数逐步向导(/provider set 等;断点建立,submit 前步进)。nil = 未启用
-	QuitArmed      bool           // 双按退出武装中:第一次 Ctrl+C(输入为空)后待第二次确认(输入行提示)
-	SpinnerIdx     int            // 思考动画帧索引(回合运行中 tick 推进)
-	Workspace      string         // 当前工作区显示(启动时 cwd 目录名)
-	Thinking       string         // 思考等级显示(off 空;Tab/Shift+Tab 切换)
-	Session        string         // 当前会话标签(显示名优先,无名称回退 id;空 = 未命名主会话;状态栏)
-	Stats          sdk.UsageStats // 会话 token 统计(回合结束刷新;状态栏显示使用率/缓存命中率)
-	Dock           DockInfo       // S-P0-3 后台坞:后台任务/子代理计数与最新一条(状态栏折叠行;详见 dock.go)
+	selectAll    bool
+	Sandbox      string // 沙箱档位显示(read-only|workspace-write|full-access)
+	Approval     string // 审批档位显示(open|smart|strict)
+	ApprovalEff  string // 角色收紧后的**有效**审批档(空 = 与声明档一致)
+	ApprovalFrom string // 有效档偏离来源(role|approval;空 = 无偏离)
+	// ApprovalFromRole 这一行是"角色声明了档位"带出来的(角色不再声明时收回该段)。
+	ApprovalFromRole bool
+	Role             string         // 当前角色显示「名(id)」(空 = 未启用角色/未装配 ctx.roles)
+	PendingConfirm   string         // 非空 = 有待确认的危险操作(确认弹层)
+	Questions        []PendingQ     // S-P0-2 待答提问栈(到达顺序,栈首=当前作答对象;空=无待答)
+	Answering        bool           // 输入框处于作答态(Enter=作答;Esc 退出作答态,提问仍在栈内)
+	Suggestions      []string       // 输入 / 前缀时的命令提示(注册表过滤结果,渲染于输入行下方)
+	Pick             *Pick          // 非空 = 交互式选择器激活(↑/↓ 移动,Enter 应用)
+	PickDismissed    bool           // Esc/断点后抑制自动激活,直至输入变化
+	Mention          *Mention       // 非空 = @ 文件引用补全激活(↑/↓ 移动,Tab/Enter 应用;见 mention.go)
+	Doc              *DocPager      // 非空 = 文档预览 pager 浮层激活(全屏模态;见 docview.go)
+	Free             *freeStep      // 多值自由参数逐步向导(/provider set 等;断点建立,submit 前步进)。nil = 未启用
+	QuitArmed        bool           // 双按退出武装中:第一次 Ctrl+C(输入为空)后待第二次确认(输入行提示)
+	SpinnerIdx       int            // 思考动画帧索引(回合运行中 tick 推进)
+	Workspace        string         // 当前工作区显示(启动时 cwd 目录名)
+	Thinking         string         // 思考等级显示(off 空;Tab/Shift+Tab 切换)
+	Session          string         // 当前会话标签(显示名优先,无名称回退 id;空 = 未命名主会话;状态栏)
+	Stats            sdk.UsageStats // 会话 token 统计(回合结束刷新;状态栏显示使用率/缓存命中率)
+	Dock             DockInfo       // S-P0-3 后台坞:后台任务/子代理计数与最新一条(状态栏折叠行;详见 dock.go)
 
 	// S-P0-3 坞展开态(F6):DockOpen 面板开;DockRows/DockSel 当前列表与选区(面板同帧渲);
 	// DockArm 停止武装(第一次 x 提示、第二次 x/Enter 真发 kill;任意其它键解除)。

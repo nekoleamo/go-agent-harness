@@ -158,6 +158,14 @@ func renderHintLines(_ *State, hintItems []string, hintRows int) []string {
 }
 
 // approvalLabel 审批档位中文标签(M17 三档,对齐 Web 设置面板;未知值回退智能档)。
+// tierSourceLabel 有效档偏离声明档的来源标签(策略器自报;未知来源按联动口径)。
+func tierSourceLabel(from string) string {
+	if from == sdk.TierSourceRole {
+		return "角色收紧"
+	}
+	return "审批联动"
+}
+
 func approvalLabel(mode string) string {
 	switch mode {
 	case "open":
@@ -275,7 +283,12 @@ func statuslineItem(s *State, token string) string {
 		return styleStatus.Render("沙箱: " + orDefault(s.Sandbox, string(sdk.SandboxWorkspace)))
 	case "approval":
 		if s.Approval != "" {
-			return styleStatus.Render("审批: " + approvalLabel(s.Approval))
+			txt := "审批: " + approvalLabel(s.Approval)
+			// 有效档 != 声明档(目前只有角色收紧一种):把"实际按哪档裁决"一并说清
+			if s.ApprovalEff != "" && s.ApprovalEff != s.Approval {
+				txt += "→" + approvalLabel(s.ApprovalEff) + "(" + tierSourceLabel(s.ApprovalFrom) + ")"
+			}
+			return styleStatus.Render(txt)
 		}
 	case "role":
 		// 条件项:无角色(基线)时渲染空串 —— 与旧基线逐字符等价,不占位。

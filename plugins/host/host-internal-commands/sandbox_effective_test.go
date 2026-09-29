@@ -269,3 +269,63 @@ func TestApprovalStatusSmartWithoutEffectiveCapability(t *testing.T) {
 		t.Fatalf("smart 档应只回档位: %q", out)
 	}
 }
+
+// roleStubSandbox 角色收紧后的沙箱桩:声明档 workspace-write,有效档 read-only,来源 role。
+// 与 derivedStubSandbox(联动口径)成对:两条偏离通道的文案必须分得开。
+type roleStubSandbox struct {
+	stubSandbox
+	sync bool
+}
+
+func (s *roleStubSandbox) EffectiveMode() sdk.SandboxMode { return sdk.SandboxReadOnly }
+func (s *roleStubSandbox) EffectiveFrom() string          { return sdk.TierSourceRole }
+
+// 联动开关(实现 sdk.SandboxSync):关掉联动也要能看出角色收紧还在(不然回显会说"档位独立生效")
+func (s *roleStubSandbox) SyncEnabled() bool      { return s.sync }
+func (s *roleStubSandbox) SetSyncEnabled(on bool) { s.sync = on }
+
+// roleStubApproval 角色收紧后的审批桩:声明 smart,有效 strict,来源 role。
+type roleStubApproval struct{ stubApproval }
+
+func (s *roleStubApproval) EffectiveMode() sdk.ApprovalMode { return sdk.ApprovalStrict }
+func (s *roleStubApproval) EffectiveFrom() string           { return sdk.TierSourceRole }
+
+// TestStatusTextsRoleTightened 角色收紧(第九十二批):四类回显都必须说"角色收紧",
+// 不能沿用"联动覆盖生效" —— 那是假归因(用户该去换角色,而不是去改审批档)。
+func TestStatusTextsRoleTightened(t *testing.T) {
+	c, _ := buildEnv(t)
+	t.Setenv("GAH_HOME", t.TempDir())
+	if err := c.Provide("ctx.sandbox", &roleStubSandbox{stubSandbox: stubSandbox{mode: sdk.SandboxWorkspace}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Provide("ctx.approval", &roleStubApproval{stubApproval{mode: sdk.ApprovalSmart}}); err != nil {
+		t.Fatal(err)
+	}
+	cmds := startCmds(t, c)
+	// /sandbox 无参:声明档 + 有效档 + 角色收紧来源
+	if out, err := run(t, cmds, "sandbox"); err != nil || !strings.Contains(out, "沙箱: workspace-write;有效: read-only(角色收紧)") {
+		t.Fatalf("角色收紧的沙箱回显: %q %v", out, err)
+	}
+	// /sandbox <档>:切了也不生效,提示语必须改成角色口径(否则用户以为自己点错了)
+	if out, err := run(t, cmds, "sandbox", "full"); err != nil || !strings.Contains(out, "注意:角色收紧生效,当前有效档 read-only,该设置暂不生效") {
+		t.Fatalf("角色收紧下的切档提示: %q %v", out, err)
+	}
+	// /approval 无参:声明档 + 有效档(角色收紧时行为取有效档 —— 危险命令已被直接拒)
+	if out, err := run(t, cmds, "approval"); err != nil || !strings.Contains(out, "审批: smart;有效: strict(角色收紧)") {
+		t.Fatalf("角色收紧的审批回显: %q %v", out, err)
+	}
+	// /sandbox sync off 后角色收紧仍在:不能因为关掉联动就说"档位独立生效"
+	if out, err := run(t, cmds, "sandbox", "sync", "off"); err != nil || !strings.Contains(out, "当前有效档 read-only(角色收紧)") {
+		t.Fatalf("关联动后的角色收紧回显: %q %v", out, err)
+	}
+	if out, err := run(t, cmds, "sandbox", "sync", "on"); err != nil || !strings.Contains(out, "当前有效档 read-only(角色收紧)") {
+		t.Fatalf("开联动后的角色收紧回显: %q %v", out, err)
+	}
+	// 无偏离/旧实现:一个字都不多(第九十二批之前的口径)
+	if eff, from := approvalDeviation(&stubApproval{mode: sdk.ApprovalSmart}); eff != "" || from != "" {
+		t.Fatalf("无偏离时 approvalDeviation 应回空: (%q, %q)", eff, from)
+	}
+	if out := approvalStatusText(nil, nil); out != "审批: " {
+		t.Fatalf("审批服务缺失时只回档位: %q", out)
+	}
+}

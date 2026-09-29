@@ -42,6 +42,16 @@ type RoleSpec struct {
 	// 与 model/thinking 同款:**不需要 Set 标记** —— 空清单与不写这个键行为一致(都不排除)。
 	// 名字不存在不报错(工具可能被卸载):悬空名由 UI 标注,后端只校验名字的**形状**。
 	ToolsExclude []string `json:"tools_exclude,omitempty"`
+	// Approval / Sandbox 角色**收紧**档(第九十二批;空 = 随全局)。
+	//
+	// 安全口径(不可动摇):生效档 = 更严(全局声明档 → 审批档联动 → 角色收紧),
+	// 角色档是**下限**,任何路径都不得让它比全局更松 —— 所以角色可写的值只有
+	// 比缺省更严的那些(见 NormalizeRoleApproval/NormalizeRoleSandbox)。
+	// 方向为什么是"只能收紧":放宽 = 提权面(切个角色就把 open + full-access 打开),
+	// 那必须配显式开关 + 二次确认 + 审批面登记,不在本批范围。
+	// 与 Model/Thinking 同款:不需要 Set 标记(空 = 跟随全局,没有"显式空"语义)。
+	Approval string `json:"approval,omitempty"`
+	Sandbox  string `json:"sandbox,omitempty"`
 	// AGENTS 角色工作规则正文(roles/<id>/AGENTS.md);AGENTSBytes 为其字节数(上限校验/展示用)。
 	AGENTS      string `json:"agents,omitempty"`
 	AGENTSBytes int    `json:"agents_bytes"`
@@ -133,6 +143,119 @@ func EffectiveThinking(sessionThinking string, role *RoleSpec) (level ThinkingLe
 		return ParseThinking(role.Thinking), SourceRole
 	}
 	return ParseThinking(sessionThinking), SourceSession
+}
+
+// —— 角色档收紧(第九十二批):运行期裁决与三端展示**共用的唯一判据** ——
+//
+// 为什么也要收在一处:合成链有三段(全局声明档 → 审批档联动 → 角色收紧),而消费者有
+// 四类(沙箱策略器/审批策略器/TUI 状态栏/命令回执)。各写一份就必然漂成
+// "界面说 read-only、实际 full-access" —— 那正是安全面最不该出现的错。
+
+// 档位偏离来源(策略器实现 EffectiveSource 时报告:有效档为何不等于声明档)。
+const (
+	// TierSourceApproval 审批档联动所致(open → 沙箱 full-access;strict → read-only)。
+	TierSourceApproval = "approval"
+	// TierSourceRole 当前角色收紧所致。
+	TierSourceRole = "role"
+)
+
+// EffectiveSource 可选能力:报告"有效档为何不等于声明档"(沙箱与审批策略器都实现)。
+//
+// 为什么需要它:三端展示要么写死"联动所致的偏差"(角色收紧时就成了假话),
+// 要么各自重算一遍合成链(必然漂)。问策略器本身,它与实际拦截行为同源。
+// 未实现该接口 = 没有"偏离"概念(旧实现/测试替身),展示端按无偏离处理。
+type EffectiveSource interface {
+	// EffectiveFrom 返回偏离来源;"" = 有效档 == 声明档(展示端显示"有效一致")。
+	EffectiveFrom() string
+}
+
+// approvalRank / sandboxRank 松紧序,**统一成"越大越严"**:合成取更严者。
+// 方向坑:审批档的自然序恰好与松紧一致(open<smart<strict),沙箱档**相反**
+// (read-only 最严、full-access 最松)—— 直接拿自然序比较会把角色档当成"更严"
+// 而实际放宽全局(单测已钉住:全局 read-only + 角色 workspace-write 必须仍是 read-only)。
+var approvalRank = map[string]int{string(ApprovalOpen): 0, string(ApprovalSmart): 1, string(ApprovalStrict): 2}
+var sandboxRank = map[string]int{string(SandboxReadOnly): 2, string(SandboxWorkspace): 1, string(SandboxFullAccess): 0}
+
+// NormalizeRoleApproval 归一角色声明的审批档(空 = 不收紧)。
+// 只接受 smart / strict:open 是**放宽**,角色无权声明(见 RoleSpec.Approval 的说明)。
+// 与 NormalizeThinking 同款纪律:非法值显式报错 —— 静默当成"未声明"是安全问题,
+// 静默当成"最严"会让人以为角色坏了(两条都被 D13 排除)。
+func NormalizeRoleApproval(v string) (string, error) {
+	t := strings.ToLower(strings.TrimSpace(v))
+	if t == "" {
+		return "", nil
+	}
+	if _, ok := approvalRank[t]; !ok {
+		return "", fmt.Errorf("审批档 %q 不合法(角色可选 smart|strict,或留空 = 跟随全局)", v)
+	}
+	if t == string(ApprovalOpen) {
+		return "", fmt.Errorf("角色不能声明审批档 open:角色只能收紧,不能放宽(可选 smart|strict,或留空 = 跟随全局)")
+	}
+	return t, nil
+}
+
+// NormalizeRoleSandbox 归一角色声明的沙箱档(空 = 不收紧)。
+// 只接受 read-only / workspace-write:full-access 是**放宽**,角色无权声明。
+func NormalizeRoleSandbox(v string) (string, error) {
+	t := strings.ToLower(strings.TrimSpace(v))
+	if t == "" {
+		return "", nil
+	}
+	if _, ok := sandboxRank[t]; !ok {
+		return "", fmt.Errorf("沙箱档 %q 不合法(角色可选 read-only|workspace-write,或留空 = 跟随全局)", v)
+	}
+	if t == string(SandboxFullAccess) {
+		return "", fmt.Errorf("角色不能声明沙箱档 full-access:角色只能收紧,不能放宽(可选 read-only|workspace-write,或留空 = 跟随全局)")
+	}
+	return t, nil
+}
+
+// TightenApproval 合成生效审批档:角色只能更严,绝不更松。
+// global 为**联动后**的当前档(顺序错了会破防:全局 open + sync 联动把沙箱放成
+// full-access,若角色收紧算在联动之前,角色的 read-only 会被联动覆盖掉)。
+// 返回 byRole = 这次差异确实由角色造成(展示端据此标"角色收紧"而不是"联动")。
+func TightenApproval(role, global string) (mode string, byRole bool) {
+	if role == "" {
+		return global, false
+	}
+	r, ok := approvalRank[role]
+	if !ok {
+		// 到不了这里:角色定义在校验期就会把非法档判成坏角色(不进运行期)。
+		// 若真有非校验路径塞进来(单测桩/程序化构造),**故障闭合**:当成最严,而不是
+		// 当成"未声明"静默放行(用户的意图是收紧)。
+		return string(ApprovalStrict), true
+	}
+	g, ok := approvalRank[global]
+	if !ok {
+		// 当前档不可知(空/非法):当成最松 —— 让角色声明的收紧**生效**才是故障闭合方向;
+		// 当成最严会把"用户明确要求收紧"静默丢掉(与上一段同一个判断,只是对象不同)。
+		g = 0
+	}
+	if r > g {
+		return role, true
+	}
+	return global, false
+}
+
+// TightenSandbox 合成生效沙箱档(语义同 TightenApproval)。
+func TightenSandbox(role, global string) (mode string, byRole bool) {
+	if role == "" {
+		return global, false
+	}
+	r, ok := sandboxRank[role]
+	if !ok {
+		return string(SandboxReadOnly), true // 故障闭合(同 TightenApproval)
+	}
+	g, ok := sandboxRank[global]
+	if !ok {
+		// 当前档不可知(空/非法):当成最松 —— 让角色声明的收紧生效才是故障闭合方向
+		// (与 TightenApproval 同款判断)。
+		g = 0
+	}
+	if r > g {
+		return role, true
+	}
+	return global, false
 }
 
 // RoleService 服务(ctx.roles):角色定义、当前角色与切换(host-roles 提供)。

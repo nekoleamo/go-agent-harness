@@ -720,3 +720,82 @@ func TestToolsExcludeBadValueVisible(t *testing.T) {
 		t.Errorf("Broken 原因没说清是工具名问题: %s", probs[0].Err)
 	}
 }
+
+// TestTierRoundTrip 第九十二批:角色收紧档走完 Create → 落盘 → Get 全程不失真。
+// 重点在 display-name-save 那条(与第八十六批 model 同款坑):面板改个显示名就整份回写,
+// 落盘结构体若漏了这两个键,收紧档会被**静默清掉** —— 那是安全问题,不是显示问题。
+func TestTierRoundTrip(t *testing.T) {
+	setup(t)
+	s := Store{}
+	if err := s.Create(sdk.RoleSpec{ID: "audit", Approval: "strict", Sandbox: "read-only"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(Dir("audit"), FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"approval: strict", "sandbox: read-only"} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("role.yaml 里没落盘 %q:\n%s", want, raw)
+		}
+	}
+	got, err := s.Get("audit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Approval != "strict" || got.Sandbox != "read-only" {
+		t.Fatalf("Get 回的收紧档 = (%q, %q),期望 (strict, read-only)", got.Approval, got.Sandbox)
+	}
+	// 只改显示名再写回:收紧档必须原样还在
+	got.Name = "审计"
+	if err := s.Save(got); err != nil {
+		t.Fatal(err)
+	}
+	again, err := s.Get("audit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Approval != "strict" || again.Sandbox != "read-only" {
+		t.Fatalf("改显示名后收紧档被抹掉了: (%q, %q)", again.Approval, again.Sandbox)
+	}
+}
+
+// TestTierBadValueBroken 坏值 = 坏角色(显式失败进 Broken,不静默当"未声明")。
+// "未声明"是安全方向上的静默降级:角色写着 read-only 却按全局 full-access 跑。
+func TestTierBadValueBroken(t *testing.T) {
+	setup(t)
+	s := Store{}
+	for _, tc := range []struct{ id, body, wantSub string }{
+		{"r1", "approval: open\n", "收紧"},
+		{"r2", "sandbox: full-access\n", "收紧"},
+		{"r3", "approval: extreme\n", "审批档"},
+	} {
+		if err := s.Create(sdk.RoleSpec{ID: tc.id, Name: tc.id}, ""); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(Dir(tc.id), FileName), []byte("name: "+tc.id+"\n"+tc.body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Get(tc.id); err == nil {
+			t.Fatalf("%s:坏档位应当让 Get 失败", tc.id)
+		}
+	}
+	probs := s.Broken()
+	if len(probs) != 3 {
+		t.Fatalf("坏角色未全部出现在 Broken(): %#v", probs)
+	}
+	for _, p := range probs {
+		if !strings.Contains(p.Err, "收紧") && !strings.Contains(p.Err, "审批档") {
+			t.Errorf("Broken 原因没说清是档位问题: %s", p.Err)
+		}
+	}
+	// Save 也要挡(写进一个 Get 读不回来的值 = 当场造坏角色)
+	if err := s.Create(sdk.RoleSpec{ID: "r4"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	spec, _ := s.Get("r4")
+	spec.Sandbox = "full-access"
+	if err := s.Save(spec); err == nil {
+		t.Fatal("Save 应拒绝 full-access(角色只能收紧)")
+	}
+}

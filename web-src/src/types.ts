@@ -170,9 +170,16 @@ export interface StateView {
   // 展示"实际生效档"用 sandbox_effective ?? sandbox(旧后端无此字段时语义不变)
   sandbox_effective?: string
   sandbox_derived?: boolean
+  // sandbox_from 偏离**来源**(role|approval,第九十二批):角色收紧与审批联动走同一条
+  // "有效档 != 声明档"通道,但处置完全不同(换角色 vs 改审批档)—— 由后端下发,不靠猜。
+  sandbox_from?: string
   // 审批档→沙箱有效档 的联动开关(R10 ②-2;后端未实现 sdk.SandboxSync 时省略 = 不显示该项)
   sandbox_sync?: boolean
   approval?: string
+  // approval_effective/approval_from 角色**收紧后**的有效审批档与来源(第九十二批):
+  // 只报声明档会把"危险命令已被直接拒"显示成"会弹确认框"。
+  approval_effective?: string
+  approval_from?: string
   // A-5#125 数据根可写性(后端 GAH_HOME 未注入时省略):false → 页面出只读提示条
   data_root?: string
   data_root_writable?: boolean
@@ -441,6 +448,10 @@ export interface RoleSpec {
   // 角色携带的模型/思考档(第八十六批;空 = 跟随会话)。生效值见 StateView.model_from。
   model?: string
   thinking?: string
+  // approval/sandbox 角色**收紧**档(第九十二批;空 = 跟随全局)。值域只有更严的那几个:
+  // 审批 smart|strict、沙箱 read-only|workspace-write —— open/full-access 属放宽,后端 400。
+  approval?: string
+  sandbox?: string
   // tools_exclude 角色**排除**的工具名(第九十一批;空/未写 = 不排除任何工具)。
   // 方向与 skills 相反:工具默认全给,这里是减项 —— 新装插件对老角色依然可见。
   tools_exclude?: string[]

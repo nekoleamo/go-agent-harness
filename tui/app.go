@@ -79,6 +79,15 @@ func NewApp(c sdk.Ctx, loop sdk.AgentLoop, llm sdk.LLMService, profile string, p
 	if err := c.Inject("ctx.sandbox", &sb); err == nil && sb != nil {
 		state.Sandbox = sandboxDisplay(sb)
 	}
+	// 审批段:角色声明了收紧档就必须在状态栏说清(否则危险命令已被直接拒、界面一字不提)。
+	// 未声明时维持原行为(该段只在用户显式设过档位时出现,不给默认状态栏加噪音)。
+	if role != nil && role.Approval != "" {
+		var ap sdk.ApprovalService
+		if err := c.Inject("ctx.approval", &ap); err == nil && ap != nil {
+			state.Approval, state.ApprovalFromRole = string(ap.Mode()), true
+			state.ApprovalEff, state.ApprovalFrom = approvalDeviation(ap)
+		}
+	}
 	m := &Model{state: state}
 	a := &App{model: m, c: c, loop: loop, llm: llm, confirmCh: make(chan bool, 1)}
 	// M13 主题启动加载链:data.palette(装配层样板)→ theme.yaml(用户全局覆盖)→ 默认表。
@@ -602,6 +611,8 @@ func (a *App) command(raw string) error {
 	// 插件命令可能改了环境事实(/role use|none|rename|rm、/reload):状态栏段回读实际值,
 	// 否则切换完状态栏还写着旧角色(与 /sandbox 在同一条纪律上)。
 	a.refreshRoleDisplay()
+	a.refreshApprovalDisplay() // 角色切换/改定义会改有效审批档:状态栏必须回读
+	a.refreshSandboxDisplay()  // 同上(角色收紧与联动共同决定有效沙箱档)
 	if out != "" {
 		a.model.state.Lines = append(a.model.state.Lines, Line{Kind: "meta", Text: out})
 	}
@@ -614,7 +625,7 @@ func (a *App) cmdApproval(args []string) (string, error) {
 		return "", errString("ctx.approval 未装配: " + err.Error())
 	}
 	if len(args) < 1 {
-		return approvalStatusText(ap.Mode(), a.sandboxOrNil()), nil
+		return approvalStatusText(ap, a.sandboxOrNil()), nil
 	}
 	var mode sdk.ApprovalMode
 	switch args[0] {
@@ -628,10 +639,10 @@ func (a *App) cmdApproval(args []string) (string, error) {
 		return "", errString("/approval open|smart|strict")
 	}
 	ap.SetMode(mode)
-	a.model.state.Approval = string(mode)
-	a.refreshSandboxDisplay() // 审批档是沙箱有效档的权威来源:改档必须同步状态栏
+	a.refreshApprovalDisplay() // 审批段回读(声明档 + 角色收紧后的有效档)
+	a.refreshSandboxDisplay()  // 审批档是沙箱有效档的权威来源:改档必须同步状态栏
 	prefs.SetApproval(string(mode))
-	return approvalStatusText(mode, a.sandboxOrNil()), nil
+	return approvalStatusText(ap, a.sandboxOrNil()), nil
 }
 
 func (a *App) cmdSandbox(args []string) (string, error) {
@@ -745,11 +756,40 @@ func (a *App) approvalMode() sdk.ApprovalMode {
 	return ap.Mode()
 }
 
-// refreshSandboxDisplay 刷新状态栏沙箱段(档位联动后有效档会变)。
+// refreshSandboxDisplay 刷新状态栏沙箱段(档位联动/角色收紧后有效档会变)。
 func (a *App) refreshSandboxDisplay() {
 	if sb := a.sandboxOrNil(); sb != nil {
 		a.model.state.Sandbox = sandboxDisplay(sb)
 	}
+}
+
+// refreshApprovalDisplay 刷新状态栏审批段(声明档 + 角色收紧后的有效档)。
+//
+// 这一段"只在有内容时显示"(chrome.go 的条件项,与角色段同款):默认状态栏不为它加噪音。
+// 但**角色声明了收紧档就必须显示** —— 此时危险命令已经被直接拒,状态栏一字不提就是骗人。
+// 因此用一个来源标记记住"这一行是角色带出来的":角色不再声明时收回,基线显示与从前一致。
+func (a *App) refreshApprovalDisplay() {
+	if a.c == nil {
+		return
+	}
+	var ap sdk.ApprovalService
+	if err := a.c.Inject("ctx.approval", &ap); err != nil || ap == nil {
+		return
+	}
+	st := a.model.state
+	role := a.currentRoleSpec()
+	fromRole := role != nil && role.Approval != ""
+	switch {
+	case fromRole:
+		st.Approval, st.ApprovalFromRole = string(ap.Mode()), true
+	case st.ApprovalFromRole:
+		st.Approval, st.ApprovalEff, st.ApprovalFrom, st.ApprovalFromRole = "", "", "", false
+		return
+	case st.Approval == "":
+		return // 用户没设过、角色也没声明:该段保持不显示
+	}
+	st.Approval = string(ap.Mode())
+	st.ApprovalEff, st.ApprovalFrom = approvalDeviation(ap)
 }
 
 // sandboxDisplay 状态栏沙箱段:声明档;被联动覆盖时附有效档与来源标注。
@@ -765,7 +805,41 @@ func sandboxDisplay(sb sdk.Sandbox) string {
 	if eff == declared {
 		return declared
 	}
+	// 偏离来源问策略器本身(第九十二批):写死"审批联动"在角色收紧时是假话,
+	// 而自己重算一遍合成链必然与裁决行为漂开。
+	if tierDeviationSource(sb) == sdk.TierSourceRole {
+		return declared + "→" + eff + "(角色收紧)"
+	}
 	return declared + "→" + eff + "(审批联动)"
+}
+
+// tierDeviationSource 有效档偏离声明档的来源(策略器实现 sdk.EffectiveSource 时自报;
+// 未实现 = 旧实现/测试替身,返回空串 → 展示按"联动"口径,与第九十二批之前逐字一致)。
+func tierDeviationSource(sb sdk.Sandbox) string {
+	if s, ok := sb.(sdk.EffectiveSource); ok {
+		return s.EffectiveFrom()
+	}
+	return ""
+}
+
+// approvalDeviation 有效审批档相对声明档的偏离(eff, from);无偏离/无该能力 = ("", "")。
+func approvalDeviation(ap sdk.ApprovalService) (string, string) {
+	if ap == nil {
+		return "", ""
+	}
+	ea, ok := ap.(sdk.EffectiveApproval)
+	if !ok {
+		return "", ""
+	}
+	eff := string(ea.EffectiveMode())
+	if eff == string(ap.Mode()) {
+		return "", ""
+	}
+	from := ""
+	if s, ok := ap.(sdk.EffectiveSource); ok {
+		from = s.EffectiveFrom()
+	}
+	return eff, from
 }
 
 // sandboxSyncLevel /sandbox 二级参数(sync → on|off;其它子命令无二级,选完即执行)。
@@ -784,10 +858,21 @@ func sandboxSyncText(sb sdk.Sandbox, approval sdk.ApprovalMode) string {
 		return "沙箱联动: 该沙箱不支持联动开关(仅声明档)"
 	}
 	if !sc.SyncEnabled() {
-		return "沙箱联动: off;沙箱档位独立生效,不被审批档覆盖(当前有效档 " + string(sb.Mode()) + ")"
+		// 关掉联动 ≠ 档位就是声明档:角色收紧仍在作用(第九十二批)
+		eff, note := string(sb.Mode()), ""
+		if es, ok := sb.(sdk.EffectiveSandbox); ok {
+			eff = string(es.EffectiveMode())
+		}
+		if tierDeviationSource(sb) == sdk.TierSourceRole {
+			note = "(角色收紧)"
+		}
+		return "沙箱联动: off;沙箱档位独立生效,不被审批档覆盖(当前有效档 " + eff + note + ")"
 	}
 	if es, ok := sb.(sdk.EffectiveSandbox); ok {
 		if eff := string(es.EffectiveMode()); eff != string(sb.Mode()) {
+			if tierDeviationSource(sb) == sdk.TierSourceRole {
+				return "沙箱联动: on;当前有效档 " + eff + "(角色收紧)"
+			}
 			return "沙箱联动: on;当前有效档 " + eff + "(" + approvalSource(approval) + ")"
 		}
 	}
@@ -797,10 +882,20 @@ func sandboxSyncText(sb sdk.Sandbox, approval sdk.ApprovalMode) string {
 // sandboxSyncSetText 联动开关切换回显(切完立刻报当前有效档:生效与否一眼可见)。
 func sandboxSyncSetText(sb sdk.Sandbox, on bool, approval sdk.ApprovalMode) string {
 	if !on {
-		return "沙箱联动 -> off;沙箱档位独立生效(当前有效档 " + string(sb.Mode()) + ")"
+		eff, note := string(sb.Mode()), ""
+		if es, ok := sb.(sdk.EffectiveSandbox); ok {
+			eff = string(es.EffectiveMode())
+		}
+		if tierDeviationSource(sb) == sdk.TierSourceRole {
+			note = "(角色收紧)"
+		}
+		return "沙箱联动 -> off;沙箱档位独立生效(当前有效档 " + eff + note + ")"
 	}
 	if es, ok := sb.(sdk.EffectiveSandbox); ok {
 		if eff := string(es.EffectiveMode()); eff != string(sb.Mode()) {
+			if tierDeviationSource(sb) == sdk.TierSourceRole {
+				return "沙箱联动 -> on;当前有效档 " + eff + "(角色收紧)"
+			}
 			return "沙箱联动 -> on;当前有效档 " + eff + "(" + approvalSource(approval) + ")"
 		}
 	}
@@ -818,6 +913,9 @@ func sandboxStatusText(sb sdk.Sandbox, approval sdk.ApprovalMode) string {
 	if eff == declared {
 		return "沙箱: " + declared + "(有效一致)"
 	}
+	if tierDeviationSource(sb) == sdk.TierSourceRole {
+		return "沙箱: " + declared + ";有效: " + eff + "(角色收紧)"
+	}
 	return "沙箱: " + declared + ";有效: " + eff + "(联动来源 " + approvalSource(approval) + ")"
 }
 
@@ -832,6 +930,9 @@ func sandboxSetText(sb sdk.Sandbox, approval sdk.ApprovalMode) string {
 	if eff == declared {
 		return "沙箱 -> " + declared
 	}
+	if tierDeviationSource(sb) == sdk.TierSourceRole {
+		return "沙箱 -> " + declared + ";注意:角色收紧生效,当前有效档 " + eff + ",该设置暂不生效"
+	}
 	return "沙箱 -> " + declared + ";注意:联动覆盖生效,当前有效档 " + eff + "(" + approvalSource(approval) + "),该设置暂不生效"
 }
 
@@ -844,9 +945,18 @@ func approvalSource(approval sdk.ApprovalMode) string {
 	return "approval=" + string(approval)
 }
 
-// approvalStatusText 审批档回显:档位 + 它对沙箱有效档的影响。
-func approvalStatusText(mode sdk.ApprovalMode, sb sdk.Sandbox) string {
+// approvalStatusText 审批档回显:档位 + 角色收紧后的**有效**档 + 它对沙箱有效档的影响。
+// 收服务而不是收档位(第九十二批):角色收紧时行为取有效档,只报声明档等于把"已被直接拒"
+// 说成"会弹确认框"。
+func approvalStatusText(ap sdk.ApprovalService, sb sdk.Sandbox) string {
+	mode := sdk.ApprovalMode("")
+	if ap != nil {
+		mode = ap.Mode()
+	}
 	txt := "审批: " + string(mode)
+	if eff, _ := approvalDeviation(ap); eff != "" {
+		txt += ";有效: " + eff + "(角色收紧)"
+	}
 	if sb == nil {
 		return txt
 	}

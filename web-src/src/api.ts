@@ -194,7 +194,7 @@ export const api = {
     return req('/api/roles', { method: 'POST', headers: json, body: JSON.stringify(p) })
   },
   // roleUpdate 部分更新(只改传了的字段;未传 = 保持现值;model/thinking 传空串 = 清掉)
-  roleUpdate(id: string, p: Partial<{ name: string; description: string; identity: string; exclude_global: boolean; skills_set: boolean; skills: string[]; skills_inherit: boolean; model: string; thinking: string; tools_exclude: string[] }>): Promise<RoleSpec> {
+  roleUpdate(id: string, p: Partial<{ name: string; description: string; identity: string; exclude_global: boolean; skills_set: boolean; skills: string[]; skills_inherit: boolean; model: string; thinking: string; tools_exclude: string[]; approval: string; sandbox: string }>): Promise<RoleSpec> {
     return req('/api/roles/' + encodeURIComponent(id), { method: 'PATCH', headers: json, body: JSON.stringify(p) })
   },
   roleSetAgents(id: string, agents: string): Promise<{ ok: true; bytes: number }> {

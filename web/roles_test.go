@@ -377,3 +377,57 @@ func TestRoleToolsExcludeEndpoints(t *testing.T) {
 		t.Fatalf("清空后工具应回来: %d %s", code, body)
 	}
 }
+
+// TestRoleTierEndpoints 角色收紧档的 Web 面(第九十二批):
+// 「试图放宽」= 400(不是静默忽略、不是静默存成最严);合法值落盘 + 回显;
+// 新建即可带(与 PATCH 同一套校验)。
+func TestRoleTierEndpoints(t *testing.T) {
+	s, home := rolesServer(t, true)
+	if code, body := do(t, s, http.MethodPost, "/api/roles", `{"id":"audit","name":"审计"}`); code != 200 {
+		t.Fatalf("建角色失败: %d %s", code, body)
+	}
+	// 放宽(open / full-access)一律 400:角色无权放宽全局档
+	for _, body := range []string{`{"approval":"open"}`, `{"sandbox":"full-access"}`} {
+		code, resp := do(t, s, http.MethodPatch, "/api/roles/audit", body)
+		if code != 400 {
+			t.Fatalf("放宽档应 400,body=%s got %d %s", body, code, resp)
+		}
+		if !strings.Contains(resp, "收紧") {
+			t.Errorf("400 的正文要说清\"只能收紧\": %s", resp)
+		}
+	}
+	// 非法值同样 400(不静默当"未声明")
+	for _, body := range []string{`{"approval":"extreme"}`, `{"sandbox":"ro"}`} {
+		if code, _ := do(t, s, http.MethodPatch, "/api/roles/audit", body); code != 400 {
+			t.Fatalf("非法档应 400,body=%s got %d", body, code)
+		}
+	}
+	// 合法收紧:落盘 + 回显(带空白也归一)
+	code, resp := do(t, s, http.MethodPatch, "/api/roles/audit", `{"approval":" STRICT ","sandbox":"read-only"}`)
+	if code != 200 || !strings.Contains(resp, `"approval":"strict"`) || !strings.Contains(resp, `"sandbox":"read-only"`) {
+		t.Fatalf("PATCH 收紧档失败: %d %s", code, resp)
+	}
+	raw, err := os.ReadFile(filepath.Join(home, "roles", "audit", "role.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "approval: strict") || !strings.Contains(string(raw), "sandbox: read-only") {
+		t.Fatalf("收紧档未落盘:\n%s", raw)
+	}
+	if code, body := do(t, s, http.MethodGet, "/api/roles/audit", ""); code != 200 || !strings.Contains(body, `"approval":"strict"`) {
+		t.Fatalf("详情未回显收紧档: %d %s", code, body)
+	}
+	// 清掉 = 跟随全局(空串合法)
+	code, resp = do(t, s, http.MethodPatch, "/api/roles/audit", `{"approval":"","sandbox":""}`)
+	if code != 200 || strings.Contains(resp, `"approval":"`) || strings.Contains(resp, `"sandbox":"`) {
+		t.Fatalf("清空收紧档失败: %d %s", code, resp)
+	}
+	// 新建时即可带(同一套校验;非法值当场拒)
+	if code, _ := do(t, s, http.MethodPost, "/api/roles", `{"id":"bad","approval":"open"}`); code != 400 {
+		t.Fatalf("新建带放宽档应 400,got %d", code)
+	}
+	code, resp = do(t, s, http.MethodPost, "/api/roles", `{"id":"guard","approval":"strict","sandbox":"read-only"}`)
+	if code != 200 || !strings.Contains(resp, `"approval":"strict"`) {
+		t.Fatalf("新建带收紧档失败: %d %s", code, resp)
+	}
+}

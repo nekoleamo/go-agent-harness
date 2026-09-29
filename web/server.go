@@ -724,11 +724,19 @@ type StateView struct {
 	// policy-guard 在 sync=true 时按审批档覆盖(open → full-access;strict → read-only),
 	// 前端只看 sandbox 会与实际拦截行为不一致。
 	SandboxEffective string `json:"sandbox_effective,omitempty"`
-	SandboxDerived   bool   `json:"sandbox_derived,omitempty"` // 有效档由审批档联动覆盖而来
+	SandboxDerived   bool   `json:"sandbox_derived,omitempty"` // 有效档 != 声明档(= 存在偏离)
+	// SandboxFrom 偏离**来源**(role|approval;第九十二批):只有"审批联动"一种来源时前端
+	// 可以猜,但角色收紧也走同一条偏离通道 —— 猜错就是把"角色收紧"显示成"随审批联动",
+	// 而这两件事对用户意味着完全不同的处置(换角色 vs 改审批档)。
+	SandboxFrom string `json:"sandbox_from,omitempty"`
 	// SandboxSync 审批档→沙箱有效档 的联动开关(R10 ②-2;仅沙箱实现 sdk.SandboxSync 时出现)。
 	// 与 SandboxDerived 是两件事:sync=false 时"有效档 == 声明档"不再等于"没有联动概念"。
 	SandboxSync *bool  `json:"sandbox_sync,omitempty"`
-	Approval    string `json:"approval,omitempty"` // M17:审批档位(open|smart|strict;未装配省略)
+	Approval    string `json:"approval,omitempty"` // M17:审批档位(open|smart|strict;未装配省略;**声明档**)
+	// ApprovalEffective/ApprovalFrom 角色收紧后的**有效**审批档与偏离来源(第九十二批)。
+	// 与沙箱同款:只报声明档会把"危险命令已被直接拒"显示成"会弹确认框"。
+	ApprovalEffective string `json:"approval_effective,omitempty"`
+	ApprovalFrom      string `json:"approval_from,omitempty"`
 	// DataRoot/DataRootWritable:A-5#125 数据根可写性 —— 只读时前端出**页内提示条**
 	// (此前只有启动期 WARN/ERROR 日志,浏览器/壳里的用户看不到)。
 	// GAH_HOME 未注入(嵌入/单测)时两者都省略,不谎报可写。
@@ -796,6 +804,19 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	if es, ok := s.sb.(sdk.EffectiveSandbox); ok {
 		if eff := string(es.EffectiveMode()); eff != declared {
 			v.SandboxEffective, v.SandboxDerived = eff, true
+			if src, ok := s.sb.(sdk.EffectiveSource); ok {
+				v.SandboxFrom = src.EffectiveFrom()
+			}
+		}
+	}
+	// 审批档:角色可收紧(第九十二批)。有效档取实现自报值,不按角色声明猜 ——
+	// 猜出来的值与真正裁决的档位一旦漂开,界面就成了假事实。
+	if ea, ok := s.ap.(sdk.EffectiveApproval); ok {
+		if eff := string(ea.EffectiveMode()); eff != approval {
+			v.ApprovalEffective = eff
+			if src, ok := s.ap.(sdk.EffectiveSource); ok {
+				v.ApprovalFrom = src.EffectiveFrom()
+			}
 		}
 	}
 	if s.us != nil {

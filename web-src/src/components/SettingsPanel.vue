@@ -233,6 +233,18 @@ const AP = [
   { v: 'smart', label: '智能' },
   { v: 'strict', label: '严格' },
 ] as const
+const SB_ZH: Record<string, string> = { 'read-only': '只读', 'workspace-write': '工作区', 'full-access': '完全' }
+const AP_ZH: Record<string, string> = { open: '开放', smart: '智能', strict: '严格' }
+// 角色可声明的收紧档(第九十二批):只列**比缺省更严**的那几个。
+// 不摆 open/full-access:那是放宽,后端直接 400 —— 界面摆一个点了必失败的按钮就是骗人。
+const ROLE_AP = [
+  { v: 'smart', label: '智能（危险命令逐条确认）' },
+  { v: 'strict', label: '严格（危险命令直接拒）' },
+] as const
+const ROLE_SB = [
+  { v: 'read-only', label: '只读（只能读，不能改）' },
+  { v: 'workspace-write', label: '工作区可写' },
+] as const
 
 async function load(): Promise<void> {
   err.value = ''
@@ -597,6 +609,28 @@ function queueRolePatch(build: () => RolePatch): Promise<void> {
   rolePatchQueue = rolePatchQueue.then(step, step)
   return rolePatchQueue
 }
+// —— 角色权限收紧(第九十二批) ——
+// 角色只能把审批/沙箱**往里收**:实际档 = 全局档与角色档里更严的那个(后端合成,
+// 前端不自己算 —— 算出来跟真正裁决的档位漂开就是假事实)。这里只做三件事:
+// ① 下拉值域只给"更严"的档;② 把"当前实际生效"回显出来;③ 说清停用角色后回到全局档。
+const roleTierNote = computed(() => {
+  const st = props.state
+  const parts: string[] = []
+  if (st.approval_from === 'role' && st.approval_effective) {
+    parts.push(`审批 全局${AP_ZH[st.approval ?? ''] ?? st.approval} → 实际${AP_ZH[st.approval_effective] ?? st.approval_effective}`)
+  }
+  if (st.sandbox_from === 'role' && st.sandbox_effective) {
+    parts.push(`沙箱 全局${SB_ZH[st.sandbox] ?? st.sandbox} → 实际${SB_ZH[st.sandbox_effective] ?? st.sandbox_effective}`)
+  }
+  return parts.join(';')
+})
+// tierBrief 角色列表行里的收紧摘要(只列声明了什么,有效档由上面的 roleTierNote 负责)。
+function tierBrief(r: RoleSpec): string {
+  const a = r.approval ? '审批' + (AP_ZH[r.approval] ?? r.approval) : ''
+  const b = r.sandbox ? '沙箱' + (SB_ZH[r.sandbox] ?? r.sandbox) : ''
+  return a + (a && b ? ' · ' : '') + b || '跟随全局'
+}
+
 // saveRoleDef 提交角色定义的部分更新(只传改动的字段;更新后同步列表与详情)。
 // 接受对象或 builder:依赖当前状态的字段(挂载清单)必须传 builder —— 否则排队期间算出的
 // 旧快照会把前一次提交盖回去。
@@ -1555,6 +1589,10 @@ watch(
               </button>
             </div>
           </div>
+          <p v-if="props.state.sandbox_from === 'role'" class="dim" data-testid="sandbox-role-note">
+            当前角色把沙箱收紧为「{{ SB_ZH[props.state.sandbox_effective ?? ''] ?? props.state.sandbox_effective }}」：写入被拦在这里，
+            上面选的是全局档（停用角色后生效）。
+          </p>
           <div class="row">
             <span class="lab-inline">审批</span>
             <div class="seg">
@@ -1570,6 +1608,11 @@ watch(
               </button>
             </div>
           </div>
+          <!-- 上面选的是**全局档**;角色收紧时实际按更严的那个裁决(第九十二批)。
+               不说清就会变成"点了严格却不生效"的静默矛盾。 -->
+          <p v-if="props.state.approval_from === 'role'" class="dim" data-testid="approval-role-note">
+            当前角色把审批收紧为「{{ AP_ZH[props.state.approval_effective ?? ''] ?? props.state.approval_effective }}」：实际按它裁决（上面选的是全局档，停用角色后生效）。
+          </p>
           <!-- 联动开关(R10 ②-2):默认开启时审批档会覆盖沙箱档(开放 → 完全访问、
                严格 → 只读),于是"改了沙箱档却不生效";关掉后沙箱档独立生效。
                后端不支持时该字段缺失 → 整行不显示(不摆一个点了没反应的开关)。 -->
@@ -1704,6 +1747,7 @@ watch(
                 <span v-if="r.model || r.thinking" class="psub">
                   模型：{{ r.model || '跟随会话' }} · 思考：{{ r.thinking ? THINK_LABEL[r.thinking] || r.thinking : '跟随会话' }}
                 </span>
+                <span v-if="r.approval || r.sandbox" class="psub">收紧：{{ tierBrief(r) }}</span>
               </div>
               <div class="sacts">
                 <button v-if="!roleIsCurrent(r)" class="ghost" data-tip="下一轮生效，不换会话" @click="useRole(r.id)">切换</button>
@@ -1780,6 +1824,39 @@ watch(
             <p class="dim">
               模型/思考档按角色生效：每回合的请求都按这里填的值走（会话档被它覆盖，停用角色后恢复）。
               模型名没有任何 provider 能接时本轮会退回会话模型并提示（不会硬失败）。
+            </p>
+
+            <!-- 权限档(第九十二批):角色只能收紧,不能放宽 —— 值域由 SDK 定死,
+                 后端对 open/full-access 直接拒(400),故这里只列更严的档。 -->
+            <h3 class="h">权限档（只能收紧）</h3>
+            <div class="row">
+              <span class="lab-inline">审批</span>
+              <select
+                class="sel grow"
+                :value="roleDetail.approval || ''"
+                :disabled="roleSaving"
+                @change="saveRoleDef({ approval: ($event.target as HTMLSelectElement).value })"
+              >
+                <option value="">跟随全局</option>
+                <option v-for="a in ROLE_AP" :key="'ra-' + a.v" :value="a.v">{{ a.label }}</option>
+              </select>
+            </div>
+            <div class="row">
+              <span class="lab-inline">沙箱</span>
+              <select
+                class="sel grow"
+                :value="roleDetail.sandbox || ''"
+                :disabled="roleSaving"
+                @change="saveRoleDef({ sandbox: ($event.target as HTMLSelectElement).value })"
+              >
+                <option value="">跟随全局</option>
+                <option v-for="s in ROLE_SB" :key="'rs-' + s.v" :value="s.v">{{ s.label }}</option>
+              </select>
+            </div>
+            <p v-if="roleTierNote" class="dim" data-testid="role-tier-note">当前实际生效：{{ roleTierNote }}（角色收紧中）</p>
+            <p class="dim">
+              实际档位取「全局档」与「角色档」里更严的那个；停用角色后回到全局档。
+              审批收紧到「严格」时不弹确认框，危险命令直接拒——子代理与定时任务同样按它跑。
             </p>
             <div class="row acts">
               <button

@@ -61,6 +61,7 @@ function makeStub(
   withRoles = false,
   currentRole = 'finance',
   patchDelayMs = 0,
+  tierRole = false,
 ) {
   // seen:记录写类请求(方法/路径/体),供角色面板用例断言「面板真的提交了」而不是只改了本地状态。
   const seen = []
@@ -107,6 +108,9 @@ function makeStub(
             // 模型名故意长(27 字符无空格 token):它正是“面板被撑出横向滚动条”的触发器。
             model: 'claude-sonnet-4-5-20250929',
             thinking: 'high',
+            // 角色收紧档(第九十二批):列表行要回显"这个角色收紧了什么"
+            approval: 'strict',
+            sandbox: 'read-only',
             agents_bytes: 21,
             seed: true,
           },
@@ -148,6 +152,8 @@ function makeStub(
           // 真实后端回的是整份更新后的 spec:带上了 tools_exclude 才不至于让面板把刚提交的
           // 排除清单从本地状态里"回滚"掉(第九十一批)。
           ...(b.tools_exclude ? { tools_exclude: b.tools_exclude } : {}),
+          ...(b.approval !== undefined ? { approval: b.approval } : {}),
+          ...(b.sandbox !== undefined ? { sandbox: b.sandbox } : {}),
           agents_bytes: 21,
         })
       }
@@ -162,6 +168,9 @@ function makeStub(
           skills: ['skill-alpha'],
           // 工具排除清单(第九十一批):一个真实工具 + 一个**当前不存在**的名字(悬空名)。
           tools_exclude: ['read_skill', 'ghost-tool'],
+          // 角色收紧档(第九十二批):详情回显 + 下拉初始选中值
+          approval: 'strict',
+          sandbox: 'read-only',
           agents: 'ASSISTANT-RULES\n',
           agents_bytes: 17,
         })
@@ -247,6 +256,10 @@ function makeStub(
               thinking: 'high',
               thinking_from: 'role',
               thinking_session: 'off',
+              // 角色收紧后的**有效**档与来源(第九十二批):面板据此说"实际按哪档裁决"。
+              // 只在 tierRole 用例下发 —— 底栏沙箱标签会因此多一段"(角色收紧)",
+              // 默认下发会平白改动其它用例的渲染文案。
+              ...(tierRole ? { approval: 'smart', approval_effective: 'strict', approval_from: 'role', sandbox: 'workspace-write', sandbox_effective: 'read-only', sandbox_from: 'role' } : {}),
             }
           : {}),
         running,
@@ -1350,6 +1363,59 @@ describe('布局护栏:整页永不滚动(第五十二/五十三批)', { skip: s
       assert.ok(got.includes('shell'), `后一次提交丢了新勾的排除项:${JSON.stringify(got)}`)
       assert.ok(!got.includes('read_skill'), `后一次提交带着旧清单把刚恢复的工具又排除了:${JSON.stringify(got)}`)
       assert.equal(patches().length, 3, `应一共三次 PATCH(清除悬空名 + 两次勾选):${JSON.stringify(patches())}`)
+    } catch (e) {
+      await shoot(page, t.name)
+      throw e
+    } finally {
+      await ctx.close()
+    }
+  })
+
+  // 角色权限收紧(第九十二批):角色只能往里收 —— 下拉只给"更严"的档(open/full-access
+  // 是放宽,后端直接 400,界面不摆点了必失败的选项),提交走部分更新,且全局沙箱/审批区
+  // 必须点明"上面选的是全局档、实际按角色收紧的档裁决"(否则就是"点了严格却不生效")。
+  test('设置面板:角色权限只收紧(值域 / 部分更新 / 有效档回显)', async (t) => {
+    const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+    let page = null
+    try {
+      const stub = makeStub(true, false, false, false, true, 'finance', 0, true)
+      page = await open(ctx, stub, docks[1].dock)
+      await page.click('.gear')
+      await page.waitForSelector('[data-sec="role"] .prow')
+      // 列表行:这个角色收紧了什么(声明值,不是有效值)
+      const finRow = await page.textContent('[data-sec="role"] .prow:has-text("Finance-Analyst")')
+      assert.ok(finRow?.includes('收紧：审批严格 · 沙箱只读'), `角色行应回显收紧摘要:${finRow}`)
+      // 全局区(沙箱/审批):角色收紧中必须说清"实际按哪档裁决"
+      const reason = (await page.textContent('[data-sec="reason"]')) ?? ''
+      assert.ok(reason.includes('当前角色把审批收紧为「严格」'), `全局审批区应说明角色收紧:${reason.slice(0, 200)}`)
+      assert.ok(reason.includes('当前角色把沙箱收紧为「只读」'), `全局沙箱区应说明角色收紧:${reason.slice(0, 200)}`)
+
+      await page.click('[data-sec="role"] .prow:has-text("Assistant") button:has-text("编辑")')
+      await page.waitForSelector('[data-sec="role"] select')
+      const sel = (lab) => `[data-sec="role"] .row:has-text("${lab}") select`
+      assert.equal(await page.inputValue(sel('审批')), 'strict', '角色声明的审批档应回显在下拉里')
+      assert.equal(await page.inputValue(sel('沙箱')), 'read-only', '角色声明的沙箱档应回显在下拉里')
+      // 值域:只有"跟随全局 + 更严的档";open / full-access 是放宽,后端会 400 ⇒ 不出现
+      const apOpts = await page.$$eval(`${sel('审批')} option`, (os) => os.map((o) => o.value))
+      const sbOpts = await page.$$eval(`${sel('沙箱')} option`, (os) => os.map((o) => o.value))
+      assert.deepEqual(apOpts, ['', 'smart', 'strict'], `审批下拉值域不对:${JSON.stringify(apOpts)}`)
+      assert.deepEqual(sbOpts, ['', 'read-only', 'workspace-write'], `沙箱下拉值域不对:${JSON.stringify(sbOpts)}`)
+      // 生效档回显:后端给的**实际**档与来源(前端不自己合成)
+      const note = (await page.textContent('[data-testid="role-tier-note"]')) ?? ''
+      assert.ok(note.includes('审批 全局智能 → 实际严格'), `生效档回显缺审批:${note}`)
+      assert.ok(note.includes('沙箱 全局工作区 → 实际只读'), `生效档回显缺沙箱:${note}`)
+
+      // 改沙箱档 → 一次 PATCH,且**只带这一个字段**(部分更新不能顺手把别的字段写回去)
+      await page.selectOption(sel('沙箱'), 'workspace-write')
+      await page.waitForTimeout(300)
+      const patches = stub.seen
+        .filter((r) => r.method === 'PATCH' && r.path === '/api/roles/assistant')
+        .map((r) => JSON.parse(r.body || '{}'))
+      assert.equal(patches.length, 1, `应只提交一次:${JSON.stringify(patches)}`)
+      assert.deepEqual(patches[0], { sandbox: 'workspace-write' }, `部分更新体不对:${JSON.stringify(patches[0])}`)
+      // 回包被回填(真后端回整份 spec):下拉不回弹
+      assert.equal(await page.inputValue(sel('沙箱')), 'workspace-write', '提交后下拉回弹成旧值')
+      assertInvariants(await measure(page))
     } catch (e) {
       await shoot(page, t.name)
       throw e

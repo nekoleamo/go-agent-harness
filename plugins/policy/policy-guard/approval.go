@@ -68,6 +68,8 @@ type ApprovalPolicy struct {
 	// confirmTimeout 等待用户答复的上限(0 = 不限,见 confirmTimeoutDefault)。
 	// 不可变集:Start 时从 data.confirm_timeout_sec 定下。
 	confirmTimeout time.Duration
+	// role 当前角色的收紧档读数(guard 注入;空 = 不收紧;每次裁决现算,不缓存)。
+	role roleTiers
 }
 
 func (p *ApprovalPolicy) Mode() sdk.ApprovalMode {
@@ -80,6 +82,43 @@ func (p *ApprovalPolicy) SetMode(m sdk.ApprovalMode) {
 	p.mu.Lock()
 	p.mode = m
 	p.mu.Unlock()
+}
+
+// EffectiveMode 角色收紧后的**有效**审批档(实现 sdk.EffectiveApproval)。
+// Mode() 仍是声明档(展示与偏好持久化的原义),但裁决行为取本值 —— 角色声明 strict 时
+// 危险命令应当直接拒,而不是按全局 smart 弹一次确认框。
+func (p *ApprovalPolicy) EffectiveMode() sdk.ApprovalMode {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.effectiveMode()
+}
+
+// effectiveMode 合成生效档(调用方须持锁):声明档 → 角色收紧(只更严)。
+func (p *ApprovalPolicy) effectiveMode() sdk.ApprovalMode {
+	m := string(p.mode)
+	if p.role != nil {
+		if ra, _ := p.role(); ra != "" {
+			out, _ := sdk.TightenApproval(ra, m)
+			return sdk.ApprovalMode(out)
+		}
+	}
+	return p.mode
+}
+
+// EffectiveFrom 有效档 != 声明档的来源(实现 sdk.EffectiveSource):目前只有角色收紧一种
+// (审批不受沙箱联动影响 —— 联动方向是"审批 → 沙箱",不是反过来)。
+func (p *ApprovalPolicy) EffectiveFrom() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.role == nil {
+		return ""
+	}
+	if ra, _ := p.role(); ra != "" {
+		if _, byRole := sdk.TightenApproval(ra, string(p.mode)); byRole {
+			return sdk.TierSourceRole
+		}
+	}
+	return ""
 }
 
 // check 按档处理命中危险操作:open 放行 / smart 弹确认(无通道拒绝) / strict 直接拒绝。
@@ -154,7 +193,8 @@ func (p *ApprovalPolicy) decide(ctx context.Context, confirm sdk.ConfirmService,
 	if sdk.UnattendedOf(ctx) {
 		return fmt.Errorf("approval: 无人值守运行拒绝需审批的%s(定时任务没有确认通道;需人工确认的动作请手动执行)", label)
 	}
-	switch p.Mode() {
+	// 取**有效**档(角色可收紧):角色声明 strict 时危险命令直接拒,不再弹确认框。
+	switch p.EffectiveMode() {
 	case sdk.ApprovalOpen:
 		return nil // 开放档:直接放行
 	case sdk.ApprovalStrict:

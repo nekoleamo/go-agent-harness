@@ -49,7 +49,7 @@ type Plugin interface {
 | `ctx.tools` | host-tools | 工具注册 + 执行流水线(pre/execute/post/result) |
 | `ctx.systemPrompt` | host-system-prompt | 提示词片段 + schema 组装 |
 | `ctx.agentLoop` | host-agent-loop | 默认 ReAct 循环(可替换) |
-| `ctx.sandbox` | policy-sandbox | 三档沙箱(ro/ws/full) |
+| `ctx.sandbox` | policy-guard | 三档沙箱(ro/ws/full);**实际生效档**会再被 sync 联动与当前角色收紧 (`sdk.EffectiveSandbox`) |
 | `ctx.pluginManager` | host-plugin-manager | 运行期插拔(Load/Unload) |
 | `ctx.confirm` | ui-tui-app | 危险操作 y/n 确认(无实现 = 安全拒绝)
 | `ctx.notices` | host-notices | 提示通道(见 §2.9):发布/回填用户提示,不进会话记录 |
@@ -57,6 +57,8 @@ type Plugin interface {
 | `ctx.turnControl` | host-agent-loop | 回合控制:取消(Esc / `/api/control` 共用入口)+ **转向**。转向走**可选能力接口** `sdk.TurnSteerer`(`Steer(text) bool`):实现了才能注入,未实现则调用方回落「排队待发」—— 与 `SandboxSync` / `MultiProviderService` 同一种能力探测模式,插件不应 import 提供方 |
 
 **工具可见性(可选能力,第九十一批)**:`ctx.tools` 的提供方(host-tools)额外实现 `sdk.ToolCatalogue` —— `SetFilter(visible func(sdk.ToolDefinition) bool) sdk.Disposer` + `ListAll() []sdk.ToolDefinition`。`host-roles` 在 Start 里按**当前角色**的排除清单装判定函数(每次求值现算 ⇒ 切角色即生效),卸载时经 Disposer 撤销(不留残留过滤)。契约要点:① `List()` = **模型可见**表(已过滤),`ListAll()` = **注册状态**面(给安装列表/管理面板用 —— "注册了什么"与"模型看得见什么"是两件事);② `Execute()` 也必须过滤(**只过 `List` 会让人凭历史上下文再叫一次就绕过**),拒绝文案要与"工具不存在"区分;③ `Get()` **不过滤** —— 它是裁决面(policy-guard 取真实目标工具定义做路径/审批裁决)与插件自查面;④ 未实现该接口的注册表(测试替身/极简宿主)⇒ 调用方跳过,这是"能力不存在",不是静默降级。判定用 `sdk.ToolVisible(role, name)`(运行期与展示端共用同一判据,别各写一份)。
+
+**角色级权限收紧(可选能力,第九十二批)**:`ctx.approval` / `ctx.sandbox` 的提供方额外实现 `sdk.EffectiveApproval`(`EffectiveMode() sdk.ApprovalMode`)与既有的 `sdk.EffectiveSandbox`,并可实现窄接口 `sdk.EffectiveSource{EffectiveFrom() string}`(值 `sdk.TierSourceRole` / `sdk.TierSourceApproval`)。契约要点:① `Mode()` = **声明档**(用户设的那个),`EffectiveMode()` = **实际生效档** = 「声明档 → 审批↔沙箱 sync 联动 → 当前角色收紧」里**更严**的那个 —— 判据用 sdk 纯函数 `TightenApproval`/`TightenSandbox`,**别自己写比较**:沙箱档的松紧序与自然序**相反**(read-only 最严、full-access 最松),写反就是静默放宽权限;② 角色档**只能收紧**(`sdk.NormalizeRoleApproval`/`NormalizeRoleSandbox` 拒绝 `open`/`full-access`),所以合成只需"取更严",任何路径都不得让结果比角色声明的更松;③ **每次现算,不许缓存**:`c.Inject("ctx.roles", &rs)` → `rs.Current()` → `rs.Get(id)`,并且审批与沙箱必须用**同一个闭包**(否则会出现"审批按角色拒了、沙箱按全局放行"的裂缝)—— 缓存会重犯第八十七批 P1-3(`/plugins off|on host-roles` 后策略冻结到重启);④ 裁决要用有效档:角色收紧到 `strict` 时**直接拒绝、不弹确认框**(无人值守下确认框无人应答),路径裁决同样走 `effectiveMode()`;⑤ 展示端(TUI 状态栏 / `/approval` `/sandbox` 回显 / Web `/api/state`)读 `EffectiveMode()` + `EffectiveFrom()` 判断**来源**,**不要自己重算合成链**(必然与实际拦截行为漂),也不要写死成"联动所致"(角色收紧时那是假归因);⑥ 未实现这些可选接口的替身(旧实现/单测桩)⇒ 调用方按"无偏离"处理,文案与接口出现前**逐字一致**。
 
 **给插件加斜杠命令**(如 host-jobs 注册 `/jobs`):Start 内**可选注入** `_ = c.Inject("ctx.commands", &cmds)`(未装配=无 TUI 场景,跳过不报错——与沙箱可选注入同模式),随后 `cmds.Register(CommandSpec{Name, Usage, Desc, Run})`;Run 返回**输出文本 + error**(输出由 TUI 显示为 meta 行);返回 Disposer 随插件卸载撤销命令;**同名冲突被拒绝**(先到先得,非静默)。插件命令自动进入 `/` 选项列表与 `/help`。
 

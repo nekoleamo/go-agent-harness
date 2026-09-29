@@ -12,6 +12,8 @@
 
 **2026-09-29 第九十一批（角色工具集 preset）**：阶段 2 第二项落地 —— 角色从此能**收敛工具面**（"这个角色不该看见/调用某些工具"）。`role.yaml` 增 `tools_exclude`（**排除清单**，方向与技能挂载相反：默认全给、列出即不给 —— 白名单会让新装插件的工具对老角色**静默不可见**），过滤缝只有一个：`host-tools` 的 `List()`（模型可见表）与 `Execute()`（**凭记忆调用**也要拒，且文案与"不存在"区分开）—— 一处覆盖五个消费面（主循环工具表 / 子代理 / 工作流 / 外部插件回调 / 对外 MCP server）；`Get()` **刻意不过滤**（它是裁决面：policy-guard 靠它取真实目标工具定义做路径/审批裁决）。管理面新 `sdk.ToolCatalogue.ListAll()`（"注册了什么"≠"模型看得见什么"）供 `/api/tools?all=1` 与 MCP 状态面用；角色判定 `sdk.ToolVisible` 是运行期与面板共用的**唯一判据**（面板「工具」小节约选即整份替换、在途禁用、悬空名可见可清）。见 §14.1 第九十一批。
 
+**2026-09-29 第九十二批（角色级审批/沙箱档 · 只能收紧）**：阶段 2 第三项落地 —— 角色从此能**把权限往里收**（"这个角色不该能跑 shell / 不该写工作区外的文件"），价值在于**无人值守**：定时任务与子代理按同一角色档裁决，不需要人守着点确认。方向是**单向**的（审批 `smart|strict`、沙箱 `read-only|workspace-write`；`open`/`full-access` 属**放宽**，一律拒绝 —— 放宽是提权面，得配显式开关 + 二次确认，不在本批）。合成顺序固定 **声明档 → sync 联动 → 角色收紧**（角色档是下限，任何路径都不得让它比全局更松）；`policy-guard` 的两个策略器共用**同一个现算闭包**（`c.Inject("ctx.roles")` + `Current()` + `Get()`，**不缓存** —— 缓存会重犯第八十七批 P1-3：`/plugins off|on host-roles` 后策略冻结到重启）；偏离来源由策略器自报（新窄接口 `sdk.EffectiveSource`），三端展示说"角色收紧"而不是写死"审批联动"。见 §14.1 第九十二批。
+
 ## 0. 项目目的
 
 **排除 dsh 因 Node.js 带来的依赖:以单一静态二进制交付全部 harness 能力,仅通过二进制部署即可启动,不依赖其余环境。**
@@ -965,6 +967,31 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 
 **测试**:`web/roles_test.go` 新增 3 项(装配**真实** host-roles/host-skills 走懒解析路径:`/api/roles` 未装配 503 且 state 不带 role、角色全流程 CRUD + 部分更新语义 + 当前角色改名跟随 + 删当前角色被拒 + `.trash` 回收站、技能库共享/私有/覆盖/上限/路径穿越/回收站后不再被索引);`web` 包 `go test` **127 通过**;前端 `npm test` 168 通过、`vue-tsc` 0 错、`test:layout` **39 通过 / 0 失败**(1 skip = 无浏览器时的跳过说明用例);全库 `go test ./... -race` 63 包全绿 + sdk 模块绿;`scripts/coverage-check.sh` **COVERAGE_OK**(`web` 79.1% ≥ 棘轮 68;新增 `internal/skills 75` 棘轮,实测 80.2%;总覆盖 80.1%)。
 
+### 第九十二批 · 角色级审批/沙箱档（只能收紧）（2026-09-29）
+
+> 起因:《角色切换与技能编排》阶段 2 的第三项,价值集中在**无人值守**场景 —— 定时任务与子代理跑起来时没有人点确认框,一个"可以做任何事"的角色等于没有边界。方向定为**只能收紧**:角色是"这个角色不该做什么"的表达,放宽全局档属提权面(得配显式开关 + 二次确认),不在本批。
+
+| 项 | 做法 | 为什么这么做 |
+|---|---|---|
+| `role.yaml` 新键 | `approval`(smart\|strict)、`sandbox`(read-only\|workspace-write);**空/未写 = 跟随全局**(与 model/thinking 同款,不需要 `Set` 标记) | 缺省"跟随全局"让老角色零行为变化;写进去的档是**下限**,不会因为角色切换而放松 |
+| 值域与方向 | `sdk.NormalizeRoleApproval` / `NormalizeRoleSandbox`:空白归一、非法值显式报错、`open`/`full-access` **专门报"角色只能收紧"**(不是笼统"不合法") | 静默当成"未声明"是安全方向的降级(角色写着 read-only 却按 full-access 跑);静默当成"最严"会让人以为角色坏了 —— 两条都被排除(与 `NormalizeThinking` 同款纪律)。报错文案要能让用户知道"这不是打错字,是方向不允许" |
+| 合成顺序 | `声明档 → sync 联动 → 角色收紧`(`link.go`:`effectiveMode() = tightenRole(linkedMode())`) | 顺序不可换:全局 `open` + `sync=true` 会把沙箱放大到 `full-access`,若角色收紧算在联动**之前**,角色的 read-only 会被这次联动覆盖掉 —— 角色档必须能压住联动 |
+| 松紧序 | `sdk.approvalRank` / `sandboxRank` 统一成**越大越严** | 方向坑:审批档自然序恰好与松紧一致(open<smart<strict),沙箱档**相反**(read-only 最严、full-access 最松)。直接拿自然序比较会把角色档当成"更严"而实际**放宽全局**(单测已钉住:全局 read-only + 角色 workspace-write ⇒ 必须仍是 read-only) |
+| 读数 | `guard.go:readRoleTiers` 每次裁决现算:`c.Inject("ctx.roles")` → `Current()` → `Get()`(host-roles 内存 map,无盘 I/O);approval 与 sandbox **共用同一个闭包** | ① 二者必须同源,否则会出现"审批按角色拒了、沙箱却按全局放行"的裂缝;② 现算而不是缓存:`/plugins off\|on host-roles`、切角色、改角色定义都**下一毫秒**生效 —— 第八十七批 P1-3 正是"永久缓存策略指针"被修的;③ 锁序安全:host-roles 侧从不反向获取沙箱锁 ⇒ 无环 |
+| 裁决落点 | `ApprovalPolicy.decide` 改判 `EffectiveMode()`(strict ⇒ **直接拒**,不弹确认框);`SandboxPolicy.ValidatePath/CheckTool` 走 `effectiveMode()` | 行为必须与展示同源:角色声明 strict 时"按全局 smart 弹一次确认"等于没有收紧(无人值守下确认框无人应答) |
+| 来源自报 | 新窄接口 `sdk.EffectiveSource{EffectiveFrom() string}`(值 `role`/`approval`);`sdk.EffectiveApproval`(与既有 `sdk.EffectiveSandbox` 对称) | 三端展示要么写死"联动所致的偏差"(角色收紧时成了假话),要么各自重算合成链(必然漂)。问策略器本身,它与实际拦截行为同源;未实现该接口 = 没有"偏离"概念(旧实现/测试替身),展示端按无偏离处理 |
+| 展示面(三端) | TUI 状态栏审批段(角色带出来的档位必须显示:「审批: 智能→严格(角色收紧)」)+ `/approval`、`/sandbox` 回显(声明档 → 有效档 + 来源)+ Web `/api/state` 新增 `approval_effective`/`approval_from`/`sandbox_from` | 只报声明档会把"危险命令已被直接拒"显示成"会弹确认框";`sandbox_derived` 只有布尔值也分不出"联动"与"角色收紧"—— 而这两件事的处置完全不同(改审批档 vs 换角色) |
+| 面板 | 角色段新增「权限档(只能收紧)」两行 `<select>`(值域**只给**「跟随全局 + 更严的档」,不摆点了必 400 的选项)+ 「当前实际生效:审批 全局智能 → 实际严格;沙箱 全局工作区 → 实际只读」回显;沙箱/审批段加"当前角色收紧为 X"说明 | 上面选的是**全局档**,收紧时它不生效 —— 不说清就是"点了严格却不生效"的静默矛盾;生效值取后端下发(前端不自己合成) |
+| Web 契约 | PATCH/POST `/api/roles*` 接受 `approval`/`sandbox`,非法值或"试图放宽"回 **400**;创建时同一套校验 | 与第八十六批 model/thinking 同一条纪律:坏值当场拒,不写进 role.yaml 造坏角色(落盘前 `internal/roles.Save` 同样校验) |
+
+**范围与边界(诚实登记)**:角色**只能收紧**,放宽(open/full-access)不做;**不做**角色级 provider/凭据选择(凭据面与角色无关);**不做**"角色档低于全局档时报警"(合成取更严者即可,声明不生效不是错误);`/approval`、`/sandbox` 在角色收紧下**不是错误**(照旧改全局档,只是如实说明当前被角色压住,与 `/model`、`/thinking` 同款)。**无人值守自动继承**:`host-schedule`/`host-jobs` 走同一个 `ctx.approval`/`ctx.sandbox`,不需要额外接线(它们的审批本就按"无人值守一律拒"处理,角色收紧只是再压一层)。
+
+**测试**:`sdk` 表驱动(两个归一函数的正常/空白/非法/放宽拒绝 + 两个合成的 7 例含"全局更严时角色档不生效"与"当前档不可知 ⇒ 故障闭合");`internal/roles` 往返(含"改显示名不许抹掉收紧档"—— `Save` 全量覆盖写的经典坑)+ 坏值进 `Broken()` + `Save` 拒放宽;`policy-guard` 四例(角色 read-only 压过 open+sync / 角色不得放宽全局 / strict 直接拒不弹确认(计数确认服务为证) / 未装配 ctx.roles 行为零变化);`web`(PATCH/POST 放宽与非法值 400、合法值落盘回显、可清空、`/api/state` 的 `approval_effective`/`approval_from`/`sandbox_from` 与"旧实现不下发"两态);`tui` 三例(状态栏沙箱/审批段文案 + 无来源能力的旧实现逐字回旧文案);`host-internal-commands` 四类回显 + 关联动后仍报角色收紧;`tests/role_tier_e2e_test.go`(真实 policy-guard + host-roles + tool-shell:基线放行 → 角色 read-only 被沙箱层拦 → 改定义后 strict 被审批层拦且**一次确认都不弹** → 停用角色两层回退,命令回显同步);前端布局用例(列表行收紧摘要、全局区角色收紧说明、下拉值域与回显、**只提交改动字段**的部分更新)。
+
+**反向验证(7 项,全部 compilable)**:① 沙箱松紧序写回自然序 ⇒ sdk 表驱动 4 例 + `TestRoleCannotRelaxSandbox` 红;② 角色读数改成 Start 时缓存一次 ⇒ 单元与 e2e 双层红(复现第八十七批 P1-3 的病);③ 审批合成忽略角色 ⇒ 单元 + e2e 红;④ Web PATCH 不校验收紧档 ⇒ `TestRoleTierEndpoints` 红(open 能存下来 = 静默放宽);⑤ `/api/state` 不报偏离来源 ⇒ `TestStateTierSource` 红;⑥ 面板提交整份 spec 而非改动字段 ⇒ 布局用例的部分更新断言红;⑦ 展示层写死"联动"(不读 `EffectiveSource`)⇒ e2e 回显断言与 TUI 用例红。
+
+**护栏**:`gofmt`(tracked)/`go vet`/`staticcheck`(双 module)/`go test ./... -race -count=1` 全绿;`scripts/coverage-check.sh` **COVERAGE_OK**(总 80.4%;棘轮 `sdk 84→85`、`policy-guard 89→91`,其余不动);`vue-tsc` 0 错;`npm test` 173 通过;`npm run test:layout` 58 用例 / 57 通过 / 0 失败 / 1 skip;`web/dist` 重建。
+
 ### 第九十一批 · 角色工具集 preset（2026-09-29）
 
 > 起因:《角色切换与技能编排》阶段 2 的第二项。此前角色能决定"你是谁"(身份槽)、"读哪些技能"(挂载清单)、"用哪个模型"(model/thinking),但**决定不了"能动哪些工具"** —— 一个财务角色照样看得见 `shell`、`file_write`,模型也会把"能用的工具"当成"该用的工具"。本批把工具面纳入角色边界,并把**排除清单**作为产品语言(与技能的"挂载清单"方向相反)。
@@ -1158,7 +1185,7 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 
 **护栏**:`vue-tsc` 0 错 + `npm test` **172** 通过 + `test:layout` **48 通过 / 0 失败**(1 skip);后端未动,但仍跑全量:`gofmt`/`go vet`/`staticcheck` 双模块干净、`go test ./... -race -count=1` **65 包 ok / 0 FAIL** + sdk 模块 ok、`scripts/coverage-check.sh` **COVERAGE_OK**(总 80.1%)。
 
-**仍未做（承接第八十一批收口的清单；回收站恢复入口已于第八十三批交付，技能重命名/移动与 R-3 会话角色经历已于第八十四批交付，「角色携带 model/thinking」已于第八十六批交付；v0.2.0 后代码审查（第八十七批）已修 3 个 P1 + 6 项小口径 P2；报告里的**后端**遗留（PATCH 竞态/技能目录快照/重名静默/List 读正文/回滚文案/保留名大小写）已于第八十八批修完，**前端**草稿与 6 处即时提交串行化已于第八十九批关闭，见 §14.1 第八十九批）；**「子代理继承角色身份/技能」经第九十批实测**属**登记错误** —— 它本来就成立（身份走 `sp.Assemble`、技能走会话级可见性过滤），已钉住并关闭，见 §14.1 第九十批；**工具集 preset 的工具面部分已于第九十一批交付** —— `role.yaml.tools_exclude` + `host-tools` 的 `List`/`Execute` 过滤（子代理/工作流/外部回调/MCP server 五个消费面同口径），见 §14.1 第九十一批）**：阶段 2 六项**剩三项**（**插件集** preset、角色级审批/沙箱档、导出/导入、会话级 overlay 中的三项——插件集与角色档合一的方案见 `~/Documents/Plan/gah-角色能力边界-方案.md`）仍为登记不承诺；方案里明确的**不做项**：角色级启停插件（会动用户的界面面与依赖图）、白名单式工具集（新插件静默不可见）、MCP server 粒度快捷方式。**第八十六批的已登记边界**（不是遗漏）：并行子代理**自动继承**角色模型/思考档（专项测试钉住；**用户 2026-09-29 确认保留**）、角色不能选 provider/凭据、无自动降级链、汇总请求不受角色影响（请求级模型非空即让位）。下一批备选见 `~/Documents/Plan/gah-角色携带模型-需求分析.md` §11（P3 策略开关 `role_model: ask|auto|off` / payload 加 `Origin` / 角色级工具集与审批档 preset）。
+**仍未做（承接第八十一批收口的清单；回收站恢复入口已于第八十三批交付，技能重命名/移动与 R-3 会话角色经历已于第八十四批交付，「角色携带 model/thinking」已于第八十六批交付；v0.2.0 后代码审查（第八十七批）已修 3 个 P1 + 6 项小口径 P2；报告里的**后端**遗留（PATCH 竞态/技能目录快照/重名静默/List 读正文/回滚文案/保留名大小写）已于第八十八批修完，**前端**草稿与 6 处即时提交串行化已于第八十九批关闭，见 §14.1 第八十九批）；**「子代理继承角色身份/技能」经第九十批实测**属**登记错误** —— 它本来就成立（身份走 `sp.Assemble`、技能走会话级可见性过滤），已钉住并关闭，见 §14.1 第九十批；**工具集 preset 的工具面部分已于第九十一批交付** —— `role.yaml.tools_exclude` + `host-tools` 的 `List`/`Execute` 过滤（子代理/工作流/外部回调/MCP server 五个消费面同口径），见 §14.1 第九十一批）；**角色级审批/沙箱档（只能收紧）已于第九十二批交付** —— `role.yaml.approval`/`sandbox` + `policy-guard` 合成链（声明档 → sync 联动 → 角色收紧,现算不缓存）+ 三端展示来源,见 §14.1 第九十二批）**：阶段 2 六项**剩两项半**（**插件集** preset（角色级启停插件）、导出/导入、会话级 overlay——插件集与角色档合一的方案见 `~/Documents/Plan/gah-角色能力边界-方案.md`,其中"角色级审批/沙箱档"这一半已交付）仍为登记不承诺；方案里明确的**不做项**：角色级启停插件（会动用户的界面面与依赖图）、白名单式工具集（新插件静默不可见）、MCP server 粒度快捷方式、**角色放宽全局权限档**（第九十二批：放宽是提权面，须配显式开关与二次确认；角色一律只能收紧）。**第八十六批的已登记边界**（不是遗漏）：并行子代理**自动继承**角色模型/思考档（专项测试钉住；**用户 2026-09-29 确认保留**）、角色不能选 provider/凭据、无自动降级链、汇总请求不受角色影响（请求级模型非空即让位）。下一批备选见 `~/Documents/Plan/gah-角色携带模型-需求分析.md` §11（P3 策略开关 `role_model: ask|auto|off` / payload 加 `Origin` / 角色级工具集与审批档 preset）。
 
 ### 第八十一批 · 全局指令编辑入口(形态 A,2026-09-28)
 

@@ -23,7 +23,16 @@ type SandboxPolicy struct {
 	root     string
 	sync     bool                    // 档位联动开关(data.sync)
 	approval func() sdk.ApprovalMode // 联动读数(guard 注入;不 import 审批支路,保解耦)
+	// role 当前角色的收紧档读数(guard 注入;空字符串 = 不收紧)。
+	// **每次裁决现算**(guard 里的闭包现注 ctx.roles + 现取当前角色):缓存会让
+	// "/plugins off|on host-roles 后策略冻结到重启"(第八十七批 P1-3 正是这个病)。
+	role roleTiers
 }
+
+// roleTiers 读当前角色的收紧档(approval, sandbox;"" = 不收紧)。
+// 由 guard 注入,sandbox.go 与 approval.go 共用同一条读数(两个策略器必须同源,
+// 否则会出现"审批按角色拒了、沙箱却按全局放行"的裂缝)。
+type roleTiers func() (approval, sandbox string)
 
 func (p *SandboxPolicy) Mode() sdk.SandboxMode {
 	p.mu.RLock()
@@ -69,11 +78,31 @@ func (p *SandboxPolicy) SetSyncEnabled(on bool) {
 
 // effectiveMode 由 link.go 定义(调用方须持读锁)。
 
-// EffectiveMode 档位联动后的有效档(实现 sdk.EffectiveSandbox;工具侧与状态展示对齐用)。
+// EffectiveMode 档位联动 + 角色收紧后的有效档(实现 sdk.EffectiveSandbox;工具侧与状态展示对齐用)。
 func (p *SandboxPolicy) EffectiveMode() sdk.SandboxMode {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.effectiveMode()
+}
+
+// EffectiveFrom 有效档 != 声明档的**来源**(实现 sdk.EffectiveSource):
+// 角色收紧 / 审批联动 / ""(一致)。三端展示据此说实话 —— 写死"联动所致"在角色收紧时是假话。
+func (p *SandboxPolicy) EffectiveFrom() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	declared := p.mode
+	linked := p.linkedMode() // 联动后、角色收紧前
+	if p.role != nil {
+		if _, rs := p.role(); rs != "" {
+			if _, byRole := sdk.TightenSandbox(rs, string(linked)); byRole {
+				return sdk.TierSourceRole
+			}
+		}
+	}
+	if linked != declared {
+		return sdk.TierSourceApproval
+	}
+	return ""
 }
 
 // ValidatePath 写路径校验(read-only 拒绝一切;workspace-write 限制在 root 内,防 ../ 与 symlink 穿越;凭据类一律拒)。

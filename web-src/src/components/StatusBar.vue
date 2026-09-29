@@ -43,6 +43,9 @@ const sandboxLabel = computed(() => {
   const eff = props.state.sandbox_effective || props.state.sandbox
   const base = SANDBOX_ZH[eff] ?? '工作区'
   if (!props.state.sandbox_derived || !props.state.sandbox_effective) return base
+  // 偏离来源由后端下发(第九十二批):角色收紧时写"随审批联动"是假归因,
+  // 而这两件事对用户意味着完全不同的处置(换个角色 vs 改审批档)。
+  if (props.state.sandbox_from === 'role') return `${base}(角色收紧)`
   const src = APPROVAL_ZH[props.state.approval ?? '']
   return src ? `${base}(随审批${src})` : `${base}(随审批联动)`
 })

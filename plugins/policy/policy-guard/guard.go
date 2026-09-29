@@ -76,6 +76,30 @@ func innerArgsJSON(raw any) string {
 	return ""
 }
 
+// readRoleTiers 读当前角色的收紧档(第九十二批)。**每次裁决现算**:
+//   - ctx.roles 现注(host-roles 与本插件无拓扑顺序约束,Start 一次性注入会恒 nil);
+//   - 当前角色现取(切角色/改角色定义**下一毫秒**就生效,不需要重装插件;
+//     缓存会重犯第八十七批 P1-3 的错:`/plugins off|on host-roles` 后策略冻结到重启)。
+//
+// 只有"这个角色确实声明了 X,而 X 尚未生效"才闭嘴需要一个前提:角色读不出来(坏角色)
+// 就返回空 —— 坏角色由 host-roles 启动警告 + 面板/list_roles 的 unreadable 列表可见,
+// 不是静默消失;而"按一个读不出来的角色去猜档位"更糟(猜错方向无上限)。
+func readRoleTiers(c sdk.Ctx) (approval, sandbox string) {
+	var rs sdk.RoleService
+	if err := c.Inject("ctx.roles", &rs); err != nil || rs == nil {
+		return "", ""
+	}
+	id := rs.Current()
+	if id == "" {
+		return "", "" // 基线(未启用角色):不收紧
+	}
+	spec, ok := rs.Get(id)
+	if !ok {
+		return "", ""
+	}
+	return spec.Approval, spec.Sandbox
+}
+
 // approvalTarget 代理工具（声明了 ApprovalTargetParam）的真实目标名：
 // 如 MCP 检索模式的 `mcp_call{name:"mcp_srv_read"}` → 返回被代理的真实工具名。
 // 未声明/取不到 → 空串（视为无代理层，直接按工具自身名匹配）。
@@ -107,6 +131,10 @@ func (p *Plugin) Name() string { return "policy-guard" }
 //	                显式选择过时,以 prefs 里的用户选择为准(R10 ②-2:配置是默认、用户选择是覆盖)。
 //	approval_tools: 需逐次审批的工具名列表(默认空;E-A 工具级审批。远程/破坏性副作用工具
 //	                如远程发送/部署类副作用工具应入此表;支持列表或逗号/空白分隔字符串)
+//
+// 除上述配置外,本插件还接受**角色收紧**输入(第九十二批):当前角色的 role.yaml 若声明了
+// approval/sandbox,有效档取两者中更严的一个(合成顺序:声明档 → sync 联动 → 角色收紧)。
+// 角色**只能收紧**(open 与 full-access 在角色侧被拒),所以任何角色都不可能放宽全局档。
 func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	approvalMode, sandboxMode, sync := sdk.ApprovalSmart, sdk.SandboxWorkspace, true
 	var approvalTools map[string]bool
@@ -140,8 +168,10 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	var confirm sdk.ConfirmService
 	_ = c.Inject("ctx.confirm", &confirm) // 未装配:smart 档按无通道安全拒绝
 
-	ap := &ApprovalPolicy{mode: approvalMode, tools: approvalTools, confirmTimeout: confirmTimeout}
-	sp := &SandboxPolicy{root: workspaceRoot(), mode: sandboxMode, sync: sync, approval: ap.Mode}
+	// 角色收紧读数(两个策略器共用同一个闭包 ⇒ 审批与沙箱永远同一口径)。
+	rt := func() (string, string) { return readRoleTiers(c) }
+	ap := &ApprovalPolicy{mode: approvalMode, tools: approvalTools, confirmTimeout: confirmTimeout, role: rt}
+	sp := &SandboxPolicy{root: workspaceRoot(), mode: sandboxMode, sync: sync, approval: ap.Mode, role: rt}
 	if err := c.Provide("ctx.approval", ap); err != nil {
 		return nil, err
 	}

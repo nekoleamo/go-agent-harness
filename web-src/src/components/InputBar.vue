@@ -255,6 +255,7 @@ const sandboxTip = computed(() => {
   const eff = props.state?.sandbox_effective
   if (!props.state?.sandbox_derived || !eff) return cur + ')'
   const label = SANDBOX_LABEL[eff] ?? eff
+  if (props.state?.sandbox_from === 'role') return cur + ';实际 ' + label + ',角色收紧)'
   return cur + ';实际 ' + label + ',随审批联动)'
 })
 
