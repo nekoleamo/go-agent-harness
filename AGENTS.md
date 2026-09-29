@@ -9,7 +9,7 @@
 - 交付形态:单一静态二进制(`CGO_ENABLED=0`),运行时依赖 = 0(见 DESIGN.md §7)。
 
 ## 红线
-- **插件只 import sdk/**,不 import core/、tui/ 或其它插件包(防 import 环;依赖经 Ctx 注入,宿主内部服务经 `system.registry`/`system.catalogue` 注入)。
+- **插件只 import sdk/**,不 import core/、tui/ 或其它插件包(防 import 环;依赖经 Ctx 注入,宿主内部服务经 `system.registry`/`system.catalogue` 注入)。**两处已认可的例外**:① 宿主**内置**插件(`plugins/` 下)可经 `internal/*` 取宿主内部实现(先例 `host-internal-commands`→`internal/prefs`、`host-system-prompt`→`internal/instructions`);② 插件单测要搭真实 ctx/bus,import `core/ctx`、`core/event` 属正常(仅限 `_test.go`)。树外/外部插件仍只有 `sdk/`。已知遗留:`host-bridge` 生产代码 import `core/plugin`(取文件监听 `NewWatcher`),属待还的债。
 - **注册即副作用,卸载即撤销**:任何 Provide/Subscribe/工具注册必须随 Disposer 撤销,disposers 幂等。
 - **插拔安全**:运行期卸载不得破坏依赖者(`BlockedByLoaded` 拒绝被依赖插件的卸载);工具同名注册非静默(记警告)。
 - **插件声明单一事实源是 `plugins/catalogue`**(provides/requires/bundle 归属);新增插件必须登记,装配层按配置树 enabled 启停。

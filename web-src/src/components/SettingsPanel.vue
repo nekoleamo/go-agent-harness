@@ -225,6 +225,30 @@ function guard(title: string, danger: boolean, run: () => void): void {
   ask({ title, danger, run })
 }
 
+// —— 草稿保护 ——
+// 面板里的三处文本框都是「写进磁盘就长期生效」的东西(角色工作规则 / 技能 SKILL.md /
+// 全局指令),而**切换目标**(换角色、换技能、收起编辑区)会重新拉服务端内容覆盖草稿 ——
+// 用户的修改就这么没了,连一声响都没有。所以:① 每处都记一份「服务端上一版」用于算
+// 脏;② 脏的时候切换目标前问一声;③ 面板里常驻「未保存」标记(知道自己脏,才有得选)。
+// 反面:给一切都加确认弹层 = 噪音。所以只拦**真会丢内容**的入口,关面板/切分区不拦
+// (组件实例常驻、草稿留在内存里,关掉再打开还在)。
+const dirtyDrafts = computed<string[]>(() => {
+  const out: string[] = []
+  if (agentsDirty.value) out.push('角色「' + selRole.value + '」的工作规则')
+  if (skDirty.value) out.push('技能「' + (skEdit.value?.name ?? '') + '」的 SKILL.md')
+  if (instrDirty.value) out.push('全局指令')
+  return out
+})
+// withDrafts 有未保存草稿时先确认(丢弃是用户的决定,不是面板替他做的)。
+function withDrafts(run: () => void): void {
+  const d = dirtyDrafts.value
+  if (!d.length) {
+    run()
+    return
+  }
+  guard('有未保存的修改:' + d.join('、') + '。继续将丢弃这些修改?', true, run)
+}
+
 // —— 模型/思考/沙箱 ——
 const modelOptions = ref<{ label: string; value: string }[]>([])
 function buildModelOptions(): void {
@@ -302,11 +326,24 @@ const instrMax = ref(32768)
 const instrExists = ref(false)
 const instrOver = ref(false) // 文件本身超限(手改的大文件):能看能改,但保存会被拒
 const instrDraft = ref('')
+const instrSaved = ref('') // 服务端上一版正文(草稿与它比才有"改没改过")
 const instrEdit = ref(false)
 const instrErr = ref('')
 const instrMsg = ref('')
 const instrWarn = ref('') // 文件写了但本轮提示没跟着变(重载失败):成功样式会谎报"已生效'
 const instrBytes = computed(() => byteLength(instrDraft.value))
+// instrDirty 有未保存改动。**收起编辑区不清草稿**(留在内存里,再展开还在) —— 清掉草稿的
+// 出口只有两个:「保存」与显式「放弃修改」,不留静默丢失路径。
+const instrDirty = computed(() => instrDraft.value !== instrSaved.value)
+
+// discardInstr 显式放弃草稿(回到磁盘上的内容;编辑区**留着** —— 用户可能想从磁盘版本接着改)。
+function discardInstr(): void {
+  guard('放弃尚未保存的全局指令修改?', true, () => {
+    instrErr.value = ''
+    instrDraft.value = instrSaved.value
+    void loadInstructions()
+  })
+}
 
 // loadInstructions 拉全局指令(读失败 → 整段隐藏,不摆空壳;不覆盖正在编辑的草稿)
 async function loadInstructions(): Promise<void> {
@@ -321,7 +358,10 @@ async function loadInstructions(): Promise<void> {
     instrMax.value = v.max_bytes || 32768
     instrExists.value = !!v.exists
     instrOver.value = !!v.over
-    if (!instrEdit.value) instrDraft.value = v.text
+    // 先按**上一版**基准算脏(顺序要紧:先写 instrSaved 会把"初始空草稿"自己算成脏,于是永远不回填)
+    const dirty = instrDirty.value
+    instrSaved.value = v.text
+    if (!dirty) instrDraft.value = v.text
   } catch {
     instrReady.value = false
   }
@@ -371,6 +411,7 @@ const roleMsg = ref('')
 const selRole = ref('') // 展开编辑的角色 id
 const roleDetail = ref<RoleSpec | null>(null)
 const agentsDraft = ref('')
+const agentsSaved = ref('') // 服务端上一版工作规则
 const roleIDDraft = ref('')
 const showRoleNew = ref(false)
 const rf = ref({ id: '', name: '', identity: '', description: '', exclude_global: false })
@@ -378,6 +419,10 @@ const skNew = ref({ name: '', description: '', triggers: '', body: '', role: '' 
 const showSkillNew = ref(false)
 const skErr = ref('')
 const skEdit = ref<{ name: string; role: string; content: string } | null>(null)
+const skSaved = ref('') // 服务端上一版技能正文
+// agentsDirty / skDirty 未保存改动(凡切目标前都要问一声:刚写的东西不能静默丢)
+const agentsDirty = computed(() => !!selRole.value && agentsDraft.value !== agentsSaved.value)
+const skDirty = computed(() => !!skEdit.value && (skEdit.value?.content ?? '') !== skSaved.value)
 
 // loadRoles 拉角色列表 + 技能库(503 = 未装配 → 整段隐藏;其余错误照常提示)。
 async function loadRoles(): Promise<void> {
@@ -416,8 +461,13 @@ const roleBaseline = computed(() => roleCurrent.value === '')
 // BlockText 明示"本轮按基线运行"。
 const roleDangling = computed(() => !!roleCurrent.value && !roles.value.some((r) => r.id === roleCurrent.value))
 
-// selectRole 展开某角色的编辑区(列表不带正文,展开时才拉详情)/ 再点一次收起
-async function selectRole(r: RoleSpec): Promise<void> {
+// selectRole 展开某角色的编辑区(列表不带正文,展开时才拉详情)/ 再点一次收起。
+// confirmed=true 表示"草稿丢弃已经过用户确认"(防止重入时再问一遍)。
+async function selectRole(r: RoleSpec, confirmed = false): Promise<void> {
+  if (!confirmed && (agentsDirty.value || skDirty.value)) {
+    withDrafts(() => void selectRole(r, true))
+    return
+  }
   if (selRole.value === r.id) {
     selRole.value = ''
     roleDetail.value = null
@@ -429,12 +479,22 @@ async function selectRole(r: RoleSpec): Promise<void> {
     const d = await api.roleGet(r.id)
     roleDetail.value = d
     agentsDraft.value = d.agents ?? ''
+    agentsSaved.value = d.agents ?? ''
     roleIDDraft.value = d.id
     skEdit.value = null
+    skSaved.value = ''
     selRole.value = r.id
   } catch (e) {
     roleErr.value = (e as Error).message
   }
+}
+
+// discardAgents 显式放弃工作规则草稿(回到服务端已保存的那一版)。
+function discardAgents(): void {
+  guard('放弃尚未保存的工作规则修改?', true, () => {
+    agentsDraft.value = agentsSaved.value
+    roleErr.value = ''
+  })
 }
 
 // saveRoleDef 提交角色定义的部分更新(只传改动的字段;更新后同步列表与详情)
@@ -465,6 +525,7 @@ function saveAgents(): void {
     roleErr.value = ''
     try {
       await api.roleSetAgents(id, text)
+      agentsSaved.value = text
       roleMsg.value = '工作规则已保存'
       await loadRoles()
     } catch (e) {
@@ -519,7 +580,7 @@ function renameRole(): void {
       selRole.value = d.id
       roleMsg.value = '已改标识:' + d.id
       await loadRoles()
-      await selectRole(d)
+      await selectRole(d, true) // 改名不是换角色:草稿留着(confirmed = 不再问丢弃)
     } catch (e) {
       roleErr.value = (e as Error).message
     }
@@ -622,15 +683,28 @@ function createSkill(): void {
     }
   })()
 }
-// openSkill 读技能原文(编辑)
-async function openSkill(name: string, role: string): Promise<void> {
+// openSkill 读技能原文(编辑)。confirmed=true 表示草稿丢弃已经过用户确认。
+async function openSkill(name: string, role: string, confirmed = false): Promise<void> {
+  const same = !!skEdit.value && skEdit.value.name === name && skEdit.value.role === role
+  if (!confirmed && !same && skDirty.value) {
+    withDrafts(() => void openSkill(name, role, true))
+    return
+  }
   skErr.value = ''
   try {
     const r = await api.skillGet(name, role)
     skEdit.value = { name, role, content: r.content }
+    skSaved.value = r.content
   } catch (e) {
     skErr.value = (e as Error).message
   }
+}
+// discardSkill 显式放弃技能正文草稿。
+function discardSkill(): void {
+  guard('放弃尚未保存的技能修改?', true, () => {
+    if (skEdit.value) skEdit.value = { ...skEdit.value, content: skSaved.value }
+    skErr.value = ''
+  })
 }
 function saveSkill(): void {
   const e = skEdit.value
@@ -640,6 +714,7 @@ function saveSkill(): void {
     try {
       await api.skillCreate({ role: e.role, name: e.name, content: e.content, overwrite: true })
       roleMsg.value = '技能已保存:' + e.name
+      skSaved.value = e.content
       skEdit.value = null
       await loadRoles()
     } catch (err) {
@@ -1232,6 +1307,7 @@ watch(
         <section v-if="instrReady" data-sec="instr" class="sec">
           <h3 class="h">
             指令
+            <span v-if="instrDirty" class="dirty">未保存</span>
             <button class="link" data-tip="编辑全局 AGENTS.md" @click="instrEdit = !instrEdit">
               {{ instrEdit ? '收起' : '编辑' }}
             </button>
@@ -1253,7 +1329,8 @@ watch(
             </label>
             <div class="form-acts">
               <button class="ghost solid" :disabled="busy" @click="saveInstructions">保存全局指令</button>
-              <button class="ghost" @click="instrEdit = false">取消</button>
+              <button v-if="instrDirty" class="ghost danger-text" @click="discardInstr">放弃修改</button>
+              <button class="ghost" @click="instrEdit = false">收起</button>
             </div>
           </div>
         </section>
@@ -1387,12 +1464,14 @@ watch(
             <label class="fld">
               <span class="fld-lab">
                 工作规则（AGENTS.md）{{ byteLength(agentsDraft) }} / {{ roleMax }} 字节
+                <span v-if="agentsDirty" class="dirty">未保存</span>
                 <span v-if="byteLength(agentsDraft) > roleMax" class="err-text">超出上限</span>
               </span>
               <textarea v-model="agentsDraft" class="inp mono" rows="8" placeholder="写这个角色的做事规程（逐字进系统提示，越短越省）"></textarea>
             </label>
             <div class="form-acts">
               <button class="ghost solid" :disabled="busy || !selRole" @click="saveAgents">保存工作规则</button>
+              <button v-if="agentsDirty" class="ghost danger-text" @click="discardAgents">放弃修改</button>
             </div>
 
             <div class="row">
@@ -1447,12 +1526,16 @@ watch(
             <!-- 技能原文编辑（覆盖写） -->
             <div v-if="skEdit" class="add-form">
               <label class="fld">
-                <span class="fld-lab">编辑 {{ skEdit.name }} 的 SKILL.md（原文，保存即覆盖）</span>
+                <span class="fld-lab">
+                  编辑 {{ skEdit.name }} 的 SKILL.md（原文，保存即覆盖）
+                  <span v-if="skDirty" class="dirty">未保存</span>
+                </span>
                 <textarea v-model="skEdit.content" class="inp mono" rows="10"></textarea>
               </label>
               <div class="form-acts">
                 <button class="ghost solid" :disabled="busy" @click="saveSkill">保存技能</button>
-                <button class="ghost" @click="skEdit = null">取消</button>
+                <button v-if="skDirty" class="ghost danger-text" @click="discardSkill">放弃修改</button>
+                <button class="ghost" @click="skEdit = null">收起</button>
               </div>
             </div>
           </div>
@@ -1932,6 +2015,18 @@ watch(
   padding: 6px 8px;
   margin-bottom: 8px;
   word-break: break-word;
+}
+/* 未保存草稿标记(amber 语义色 = 不是错,但需要你处理;与 .swarn 同色系) */
+.dirty {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--tool-line);
+  background: var(--tool-soft);
+  color: var(--tool-strong);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0;
 }
 .serr {
   color: var(--err);

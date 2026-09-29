@@ -117,6 +117,19 @@ function makeStub(withProviders, longTokens = false, running = false, manyPlugin
           agents_bytes: 21,
         })
       }
+      // 详情按**请求的 id** 回(两个角色正文不同):草稿保护的用例要靠正文区分"切过去没有"。
+      if (p.split('/')[3] === 'assistant') {
+        return json({
+          id: 'assistant',
+          name: 'Assistant',
+          identity: '',
+          description: '',
+          skills_set: true,
+          skills: ['skill-alpha'],
+          agents: 'ASSISTANT-RULES\n',
+          agents_bytes: 17,
+        })
+      }
       return json({
         id: 'finance',
         name: 'Finance',
@@ -799,6 +812,117 @@ describe('布局护栏:整页永不滚动(第五十二/五十三批)', { skip: s
       assert.ok(warn?.includes('ctx.systemPrompt 未装配'), `警示应带上服务端原因:${warn}`)
       const sec = await page.textContent('[data-sec="instr"]')
       assert.ok(!sec?.includes('已保存并生效'), `重载失败时不得出现成功回执:${sec?.slice(0, 160)}`)
+    } catch (e) {
+      await shoot(page, t.name)
+      throw e
+    } finally {
+      await ctx.close()
+    }
+  })
+
+  // 草稿保护(第八十二批):角色工作规则是「写进磁盘就长期生效」的东西,而**切换目标**
+  // (换角色/收起编辑区)会重新拉服务端正文覆盖草稿 —— 用户的修改不能就这么没了。
+  // 这里钉三件事:脏了有「未保存」标记、切目标前问一声、取消后草稿原封不动。
+  test('设置面板:未保存的工作规则不静默丢(切角色先问、取消保留草稿)', async (t) => {
+    const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+    let page = null
+    try {
+      const stub = makeStub(true, true, false, false, true)
+      page = await open(ctx, stub, docks[1].dock)
+      await page.click('.gear')
+      await page.waitForSelector('[data-sec="role"] .prow')
+      await page.click('[data-sec="role"] .prow:has-text("Finance-Analyst") button:has-text("编辑")')
+      await page.waitForSelector('[data-sec="role"] label.fld:has-text("工作规则") textarea')
+      await page.fill('[data-sec="role"] label.fld:has-text("工作规则") textarea', 'DRAFT-KEEP-ME\n')
+      const sec = await page.textContent('[data-sec="role"]')
+      assert.ok(sec?.includes('未保存'), `草稿动了却没标「未保存」:${sec?.slice(0, 200)}`)
+
+      // 切到另一个角色:必须先问一声(取消 → 既没切走、草稿也在)
+      await page.click('[data-sec="role"] .prow:has-text("Assistant") button:has-text("编辑")')
+      await page.waitForSelector('[aria-label="操作确认"]')
+      const ask = (await page.textContent('[aria-label="操作确认"]')) ?? ''
+      assert.ok(ask.includes('未保存'), `确认文案应点名未保存的草稿:${ask}`)
+      await page.click('[aria-label="操作确认"] button:has-text("取消")')
+      await page.waitForTimeout(150)
+      assert.equal(
+        await page.inputValue('[data-sec="role"] label.fld:has-text("工作规则") textarea'),
+        'DRAFT-KEEP-ME\n',
+        '取消后草稿丢了',
+      )
+
+      // 确认才切过去;而且只是换目标,不得顺手发出任何写请求
+      const writes = stub.seen.length
+      await page.click('[data-sec="role"] .prow:has-text("Assistant") button:has-text("编辑")')
+      await page.waitForSelector('[aria-label="操作确认"]')
+      await page.click('[aria-label="操作确认"] button:has-text("确认")')
+      await page.waitForTimeout(250)
+      const val = await page.inputValue('[data-sec="role"] label.fld:has-text("工作规则") textarea')
+      assert.ok(val.includes('ASSISTANT-RULES'), `未换到目标角色的正文:${val}`)
+      assert.equal(stub.seen.length, writes, `切目标不该发写请求:${JSON.stringify(stub.seen.slice(writes))}`)
+    } catch (e) {
+      await shoot(page, t.name)
+      throw e
+    } finally {
+      await ctx.close()
+    }
+  })
+
+  // 同样的丢失路径:技能正文(换另一个技能)与全局指令(收起编辑区)。指令侧的处理不同 ——
+  // 收起**不清草稿**,清掉它的出口只有「保存」与显式「放弃修改」(不留静默丢失路径)。
+  test('设置面板:技能草稿换目标要问、指令草稿收起不丢且可显式放弃', async (t) => {
+    const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+    let page = null
+    try {
+      const stub = makeStub(true, true, false, false, true)
+      page = await open(ctx, stub, docks[1].dock)
+      await page.click('.gear')
+      await page.waitForSelector('[data-sec="role"] .prow')
+      await page.click('[data-sec="role"] .prow:has-text("Finance-Analyst") button:has-text("编辑")')
+      await page.waitForSelector('[data-sec="role"] .m-item')
+
+      // 技能原文:改了再看另一个技能 → 先问;取消 → 草稿还在
+      const skTa = '[data-sec="role"] .add-form:has-text("SKILL.md") textarea'
+      await page.click('[data-sec="role"] .m-item:has-text("skill-alpha") button:has-text("原文")')
+      await page.waitForSelector(skTa)
+      await page.fill(skTa, 'SKILL-DRAFT\n')
+      assert.ok(
+        ((await page.textContent('[data-sec="role"] .add-form')) ?? '').includes('未保存'),
+        '技能草稿没标「未保存」',
+      )
+      await page.click('[data-sec="role"] .m-item:has-text("skill-with-a-very-long-name") button:has-text("原文")')
+      await page.waitForSelector('[aria-label="操作确认"]')
+      const ask = (await page.textContent('[aria-label="操作确认"]')) ?? ''
+      assert.ok(ask.includes('SKILL.md'), `技能草稿的确认文案应点名：${ask}`)
+      await page.click('[aria-label="操作确认"] button:has-text("取消")')
+      await page.waitForTimeout(150)
+      assert.equal(await page.inputValue(skTa), 'SKILL-DRAFT\n', '取消后技能草稿丢了')
+
+      // 全局指令:收起再展开,草稿必须还在(旧实现是收起→回填服务端内容=静默丢)
+      await page.click('[data-sec="instr"] button:has-text("编辑")')
+      await page.fill('[data-sec="instr"] textarea', 'INSTR-DRAFT\n')
+      assert.ok(
+        ((await page.textContent('[data-sec="instr"] h3')) ?? '').includes('未保存'),
+        '指令草稿没标「未保存」',
+      )
+      await page.click('[data-sec="instr"] button:has-text("收起")')
+      await page.waitForTimeout(200)
+      await page.click('[data-sec="instr"] button:has-text("编辑")')
+      assert.equal(
+        await page.inputValue('[data-sec="instr"] textarea'),
+        'INSTR-DRAFT\n',
+        '收起编辑区把全局指令草稿弄丢了',
+      )
+      // 放弃修改 = 唯一主动清草稿的出口(需确认)→ 回到磁盘上的那一版
+      await page.click('[data-sec="instr"] button:has-text("放弃修改")')
+      await page.waitForSelector('[aria-label="操作确认"]')
+      await page.click('[aria-label="操作确认"] button:has-text("确认")')
+      await page.waitForTimeout(250)
+      const back = await page.inputValue('[data-sec="instr"] textarea')
+      assert.ok(back.includes('GLOBAL-INSTRUCTIONS-'), `放弃修改未回到磁盘版本:${back.slice(0, 40)}`)
+      assert.ok(
+        !((await page.textContent('[data-sec="instr"] h3')) ?? '').includes('未保存'),
+        '放弃修改后仍标着「未保存」',
+      )
     } catch (e) {
       await shoot(page, t.name)
       throw e
