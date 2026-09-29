@@ -228,6 +228,7 @@ func roleShowText(svc *Service, id string) string {
 }
 
 // roleUseText 切换回执(讲清"立即生效的是什么、不变的是什么")。
+// "none"/"off" 的停用别名交给 Service.Use 统一处理(只在没有同名角色时生效)。
 func roleUseText(svc *Service, id string) (string, error) {
 	if id == "" {
 		if svc.Current() == "" {

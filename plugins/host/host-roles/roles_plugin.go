@@ -205,8 +205,13 @@ func (s *Service) Current() string {
 //
 // **不换会话**:历史与工作区都不动,只有下一轮的系统提示与技能可见集合变化。
 func (s *Service) Use(id string) error {
+	// "none"/"off" 是历史停用别名,但只在**没有同名角色**时生效:
+	// 用户真建了名为 none/off 的角色,面板/API 传这个 ID 过来必须切过去 —— 无条件改写
+	// 会把“切换到 none”变成静默停用(面板契约的停用占位符另有 "-")。
 	if id == "none" || id == "off" {
-		id = ""
+		if _, ok := s.Get(id); !ok {
+			id = ""
+		}
 	}
 	if id != "" {
 		if _, ok := s.Get(id); !ok {

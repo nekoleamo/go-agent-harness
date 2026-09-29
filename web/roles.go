@@ -8,6 +8,7 @@ package web
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -331,6 +332,12 @@ func skillsLib(role string) (skills.Library, error) {
 	}
 	if err := roles.ValidateID(role); err != nil {
 		return skills.Library{}, err
+	}
+	// 角色必须真实存在:否则写技能会凭空造出 roles/<id>/skills/(缺 role.yaml 的“坏角色”),
+	// 之后该 ID 既无法新建角色(Exist 为真),又会在面板里报“角色文件读不了”。
+	store := roles.Store{}
+	if !store.Exist(role) {
+		return skills.Library{}, fmt.Errorf("角色不存在:%s", role)
 	}
 	return skills.ForRole(role), nil
 }

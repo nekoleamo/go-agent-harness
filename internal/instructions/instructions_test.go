@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/nekoleamo/go-agent-harness/internal/roles"
+	"github.com/nekoleamo/go-agent-harness/internal/testutil"
 )
 
 // TestPathUnderHome 路径必须落在数据根(便携纪律:一切自身运行数据经 GAH_HOME 派生)。
@@ -187,5 +188,46 @@ func TestWriteMkdirFailure(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "数据根不可写") {
 		t.Fatalf("错误应指出数据根: %v", err)
+	}
+}
+
+// TestWriteCreateTempFailureIsExplicit 数据根不可写时,写盘必须显式失败(而不是静默丢指令)。
+// 走的是 writeFileAtomic 的 CreateTemp 失败分支 —— 只读目录只有 POSIX 权限模型能构造
+// (Windows 走 ACL,chmod 不产生只读语义),故用 testutil.PosixPerm() 闸住。
+func TestWriteCreateTempFailureIsExplicit(t *testing.T) {
+	if !testutil.PosixPerm() {
+		t.Skip("只读目录只有 POSIX 权限模型能构造(Windows 走 ACL)")
+	}
+	home := t.TempDir()
+	t.Setenv("GAH_HOME", home)
+	if err := os.Chmod(home, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(home, 0o755) }) // 否则 t.TempDir 清理会失败
+	if err := Write("内容"); err == nil {
+		t.Fatal("数据根不可写时应显式失败")
+	}
+}
+
+// TestWriteRenameFailureIsExplicit 目标路径被占成目录(手放/搬迁残留)时,原子写必须
+// 显式失败、且不留下临时文件 —— 顺带钉住 writeFileAtomic 的 rename 失败分支
+// (只 rename 不落盘的另一半是 Sync,那条分支无法在测试里构造失败)。
+func TestWriteRenameFailureIsExplicit(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GAH_HOME", home)
+	if err := os.MkdirAll(Path(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := Write("新内容"); err == nil {
+		t.Fatal("目标是目录时应显式失败")
+	}
+	ents, err := os.ReadDir(filepath.Dir(Path()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range ents {
+		if strings.HasPrefix(e.Name(), ".gah-instructions-") {
+			t.Fatalf("失败后残留临时文件: %s", e.Name())
+		}
 	}
 }

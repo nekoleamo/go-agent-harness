@@ -216,12 +216,18 @@ func (s Store) Get(id string) (sdk.RoleSpec, error) {
 		Identity:      f.Identity,
 		ExcludeGlobal: f.ExcludeGlobal,
 		SkillsInherit: f.SkillsInherit,
-		Model:         f.Model,
-		Thinking:      f.Thinking,
+		Model:         strings.TrimSpace(f.Model),
 	}
 	if spec.Name == "" {
 		spec.Name = id
 	}
+	// 思考档名规范化 + 校验:手写文件里的非法值必须**显式失败**(进 Broken()),
+	// 不能静默当 off(见 sdk.NormalizeThinking)。
+	th, err := sdk.NormalizeThinking(f.Thinking)
+	if err != nil {
+		return sdk.RoleSpec{}, fmt.Errorf("角色 %s 的 %s: %w", id, FileName, err)
+	}
+	spec.Thinking = th
 	if f.Skills != nil {
 		spec.Skills = append([]string(nil), (*f.Skills)...)
 		spec.SkillsSet = true
@@ -267,9 +273,14 @@ func (s Store) Save(spec sdk.RoleSpec) error {
 	if err := ValidateID(spec.ID); err != nil {
 		return err
 	}
+	// 落盘前同样校验思考档:写进去一个 Get 读不回来的值,等于当场造一个坏角色。
+	th, err := sdk.NormalizeThinking(spec.Thinking)
+	if err != nil {
+		return err
+	}
 	f := roleFile{Name: spec.Name, Description: spec.Description, Identity: spec.Identity,
 		ExcludeGlobal: spec.ExcludeGlobal, SkillsInherit: spec.SkillsInherit,
-		Model: spec.Model, Thinking: spec.Thinking}
+		Model: strings.TrimSpace(spec.Model), Thinking: th}
 	if spec.SkillsSet {
 		list := spec.Skills
 		if list == nil {
@@ -464,17 +475,37 @@ func (s Store) TrashList() []TrashEntry {
 	if err != nil {
 		return nil
 	}
-	out := make([]TrashEntry, 0, len(entries))
+	names := make([]string, 0, len(entries))
 	for _, e := range entries {
-		if !e.IsDir() {
-			continue
+		if e.IsDir() {
+			names = append(names, e.Name())
 		}
-		id, ts, _ := splitTrashName(e.Name())
-		out = append(out, TrashEntry{Name: e.Name(), ID: id, DeletedAt: ts})
 	}
-	// 目录名以固定格式时间戳结尾,字典序倒序 = 删除时间倒序。
-	sort.Slice(out, func(i, j int) bool { return out[i].Name > out[j].Name })
+	sortTrashNewestFirst(names)
+	out := make([]TrashEntry, 0, len(names))
+	for _, n := range names {
+		id, ts, _ := splitTrashName(n)
+		out = append(out, TrashEntry{Name: n, ID: id, DeletedAt: ts})
+	}
 	return out
+}
+
+// sortTrashNewestFirst 回收站条目按**删除时间**倒序(最新在前)。
+// 为什么不用目录名字典序:时间戳在名字**尾部**,字典序的第一主键是 id —— 那会把
+// 「刚删的那一份」当成最旧的淘汰掉(名字最小的先出局),用户正要恢复的东西被静默销毁。
+// 认不出时间戳的坏名排最后(优先淘汰);同刻/同为坏名时按名字倒序,保证顺序确定。
+func sortTrashNewestFirst(names []string) {
+	sort.Slice(names, func(i, j int) bool {
+		_, ti, oki := splitTrashName(names[i])
+		_, tj, okj := splitTrashName(names[j])
+		if oki != okj {
+			return oki
+		}
+		if ti != tj {
+			return ti > tj // 固定宽度格式 → 字典序即时间序
+		}
+		return names[i] > names[j]
+	})
 }
 
 // Restore 把回收站里的角色恢复回 roles/<id>/;返回恢复后的角色 ID。
@@ -504,7 +535,7 @@ func (s Store) Restore(trashName string) (string, error) {
 	return id, nil
 }
 
-// pruneTrash 只保留最近 maxTrashKeep 份(目录名带时间戳,倒序淘汰)。
+// pruneTrash 只保留最近 maxTrashKeep 份(按删除时间倒序淘汰;见 sortTrashNewestFirst)。
 func pruneTrash() {
 	entries, err := os.ReadDir(TrashDir())
 	if err != nil {
@@ -519,7 +550,7 @@ func pruneTrash() {
 	if len(names) <= maxTrashKeep {
 		return
 	}
-	sort.Sort(sort.Reverse(sort.StringSlice(names)))
+	sortTrashNewestFirst(names)
 	for _, n := range names[maxTrashKeep:] {
 		_ = os.RemoveAll(filepath.Join(TrashDir(), n))
 	}
@@ -558,6 +589,13 @@ func writeFileAtomic(path string, raw []byte, perm os.FileMode) error {
 		return err
 	}
 	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return err
+	}
+	// Sync 再 rename:只 rename 不落盘的话,掉电后可能“文件在、内容空”
+	// (ext4 等延迟分配的常见表现——rename 已生效而数据还在页缓存)。口径同 prefs/searchfile。
+	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
 		cleanup()
 		return err

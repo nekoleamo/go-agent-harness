@@ -260,7 +260,10 @@ func TestSkillsEndpoints(t *testing.T) {
 	if code != 200 || !strings.Contains(body, "新正文") {
 		t.Fatalf("读原文 = %d %s", code, body)
 	}
-	// 角色私有技能:落角色目录,不进共享库
+	// 角色私有技能:落角色目录,不进共享库(角色必须先存在 —— 否则会凭空造出“坏角色”目录)
+	if code, body := do(t, s, http.MethodPost, "/api/roles", `{"id":"finance"}`); code != 200 {
+		t.Fatalf("建角色 = %d %s", code, body)
+	}
 	code, body = do(t, s, http.MethodPost, "/api/skills",
 		`{"role":"finance","name":"tax","description":"税务","body":"口径"}`)
 	if code != 200 {
@@ -268,6 +271,13 @@ func TestSkillsEndpoints(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(home, "roles", "finance", "skills", "tax", "SKILL.md")); err != nil {
 		t.Fatalf("角色私有技能未落角色目录: %v", err)
+	}
+	// 不存在的角色 → 显式拒(否则会凭空造出缺 role.yaml 的“坏角色”目录,该 ID 之后无法新建角色)
+	if code, _ := do(t, s, http.MethodPost, "/api/skills", `{"role":"ghost","name":"x","body":"b"}`); code != 400 {
+		t.Fatalf("未知角色的私有技能应 400,got %d", code)
+	}
+	if _, err := os.Stat(filepath.Join(home, "roles", "ghost")); err == nil {
+		t.Fatal("不应为未知角色造出目录")
 	}
 	// 非法名/非法角色 ID 拒绝
 	if code, _ := do(t, s, http.MethodPost, "/api/skills", `{"name":"../escape"}`); code != 400 {

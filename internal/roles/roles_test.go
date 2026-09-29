@@ -1,6 +1,7 @@
 package roles
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -267,6 +268,63 @@ func TestTrashPrune(t *testing.T) {
 	ents, _ := os.ReadDir(TrashDir())
 	if len(ents) != maxTrashKeep {
 		t.Errorf("回收站保留 %d 份, want %d", len(ents), maxTrashKeep)
+	}
+}
+
+// TestTrashPruneKeepsNewest 淘汰必须按**删除时间**:按目录名字典序会把「刚删的那一份」
+// 当成最旧的删掉(时间戳在名字尾部,字典序第一主键是 id)→ 用户正要恢复的东西被静默销毁。
+func TestTrashPruneKeepsNewest(t *testing.T) {
+	setup(t)
+	if err := os.MkdirAll(TrashDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldest := ""
+	for i := 1; i <= maxTrashKeep; i++ {
+		name := fmt.Sprintf("zebra-20260101-%06d", i)
+		if err := os.MkdirAll(filepath.Join(TrashDir(), name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if oldest == "" {
+			oldest = name
+		}
+	}
+	fresh := "aaa-20260202-120000" // 刚删的那一份:名字最小、时间最新
+	if err := os.MkdirAll(filepath.Join(TrashDir(), fresh), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pruneTrash()
+	if _, err := os.Stat(filepath.Join(TrashDir(), fresh)); err != nil {
+		t.Fatalf("刚删的那一份被淘汰了(淘汰顺序不是删除时间): %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(TrashDir(), oldest)); err == nil {
+		t.Fatalf("最旧的一份应被淘汰: %s", oldest)
+	}
+	ents, _ := os.ReadDir(TrashDir())
+	if len(ents) != maxTrashKeep {
+		t.Errorf("回收站保留 %d 份, want %d", len(ents), maxTrashKeep)
+	}
+}
+
+// TestTrashListNewestFirst 面板顺序按删除时间倒序(不是按 id 分组),认不出时间戳的坏名排最后。
+func TestTrashListNewestFirst(t *testing.T) {
+	setup(t)
+	if err := os.MkdirAll(TrashDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{"zebra-20260101-000001", "handmade", "aaa-20260202-120000"} {
+		if err := os.MkdirAll(filepath.Join(TrashDir(), n), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := []string{"aaa-20260202-120000", "zebra-20260101-000001", "handmade"}
+	got := Store{}.TrashList()
+	if len(got) != len(want) {
+		t.Fatalf("条目数 = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i].Name != want[i] {
+			t.Errorf("第 %d 条 = %s, want %s", i, got[i].Name, want[i])
+		}
 	}
 }
 

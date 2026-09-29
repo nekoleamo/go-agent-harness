@@ -111,3 +111,24 @@ func TestSkillToolsAndPromptIndex(t *testing.T) {
 		t.Fatalf("prompt 应含技能索引与读取指令: %.400s", msgs[0].Content)
 	}
 }
+
+// TestRoleOfDirectChildSkillFile SKILL.md 直接放在角色私有技能根(手写/搬运)时,
+// 同样是该角色的私有技能;判成共享会让它泄给基线与所有角色。
+func TestRoleOfDirectChildSkillFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GAH_HOME", home)
+	cases := []struct {
+		path string
+		want string
+	}{
+		{filepath.Join(home, "roles", "finance", "skills", "tax", "SKILL.md"), "finance"}, // 正常布局
+		{filepath.Join(home, "roles", "finance", "skills", "SKILL.md"), "finance"},        // 手写/搬运
+		{filepath.Join(home, "skills", "tax", "SKILL.md"), ""},                            // 共享库
+		{filepath.Join(home, "roles", "finance", "AGENTS.md"), ""},                        // 角色规则不是技能
+	}
+	for _, tc := range cases {
+		if got := roleOf(tc.path); got != tc.want {
+			t.Errorf("roleOf(%s) = %q, want %q", tc.path, got, tc.want)
+		}
+	}
+}

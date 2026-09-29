@@ -168,34 +168,29 @@ type Service struct {
 
 	// ctx 只用于**可选**角色策略查找(见 rolesPolicy);为 nil 时行为与无角色完全一致。
 	ctx sdk.Ctx
-	// polMu/pol/polDone:角色策略的懒查缓存(装配顺序不保证 host-roles 先于本插件;
-	// 查到了就缓存,查不到就下次组装再试——单次成本 = 一次 map 查找)。
-	polMu   sync.Mutex
-	pol     sdk.RolesPolicy
-	polDone bool
 }
 
 // rolesPolicy 取 ctx.roles 的 RolesPolicy 可选能力(未装配角色插件/未实现 = nil)。
 // 用它只回答一个问题:当前角色是否要求不注入全局指令。**不**引入对角色的硬依赖 ——
 // 单独装配 host-system-prompt(含全部单测)时返回 nil,组装结果与今天逐字节相同。
+//
+// 为何**不**缓存查到的指针:host-roles 可被用户卸载/重载(`/plugins off|on host-roles`),
+// 卸载后旧实例不再 Refresh(它内部角色态是内存快照)却仍然可注入 —— 缓存住这个指针
+// 就把“当前角色要不要注入全局指令”冻结在卸载那一刻,两种方向都是错的(该注入的不注入 /
+// 不该注入的照旧注入),且只能重启进程恢复。每次现 Inject 的成本 = 一次 map 查找。
 func (s *Service) rolesPolicy() sdk.RolesPolicy {
-	s.polMu.Lock()
-	defer s.polMu.Unlock()
-	if s.polDone {
-		return s.pol
-	}
 	if s.ctx == nil {
 		return nil
 	}
 	var rs sdk.RoleService
 	if err := s.ctx.Inject("ctx.roles", &rs); err != nil {
-		return nil // 尚未装配:不标 done,后续组装重试
+		return nil // 尚未装配/已卸载:本轮按无角色处理,下次组装重试
 	}
-	if p, ok := rs.(sdk.RolesPolicy); ok {
-		s.pol = p
+	p, ok := rs.(sdk.RolesPolicy)
+	if !ok {
+		return nil
 	}
-	s.polDone = true
-	return s.pol
+	return p
 }
 
 // AddSection 注册系统提示片段。

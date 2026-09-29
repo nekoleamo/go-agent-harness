@@ -86,7 +86,10 @@ func roleOf(path string) string {
 		return ""
 	}
 	parts := strings.Split(rel, string(filepath.Separator))
-	if len(parts) >= 4 && parts[1] == "skills" {
+	// ≥3 段即可:roles/<id>/skills/<名>/SKILL.md 是正常布局,但 SKILL.md 直接放在
+	// roles/<id>/skills/ 下(手写/搬运)也是这个角色的私有技能 —— 用 >=4 会把它
+	// 判成共享技能,私有面就泄到基线与其它角色了。
+	if len(parts) >= 3 && parts[1] == "skills" {
 		return parts[0]
 	}
 	return ""

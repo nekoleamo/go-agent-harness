@@ -186,7 +186,12 @@ func renameFrontmatterName(content, newName string) string {
 	lines := strings.Split(rest[:end], "\n")
 	changed := false
 	for i, line := range lines {
-		if _, ok := strings.CutPrefix(strings.TrimSpace(line), "name:"); ok {
+		// 只看**零缩进**行:嵌套键(如 metadata 下的 name)被 TrimSpace 后也会以 "name:" 开头,
+		// 误改会把嵌套键提升到顶层(重复顶层键 → 扫描侧整段 meta 解析失败、静默丢)。
+		if line != strings.TrimLeft(line, " \t") {
+			continue
+		}
+		if _, ok := strings.CutPrefix(line, "name:"); ok {
 			lines[i] = "name: " + newName
 			changed = true
 		}
@@ -245,17 +250,37 @@ func (l Library) TrashList() []TrashEntry {
 	if err != nil {
 		return nil
 	}
-	out := make([]TrashEntry, 0, len(entries))
+	names := make([]string, 0, len(entries))
 	for _, e := range entries {
-		if !e.IsDir() {
-			continue
+		if e.IsDir() {
+			names = append(names, e.Name())
 		}
-		skill, ts, _ := splitTrashName(e.Name())
-		out = append(out, TrashEntry{Name: e.Name(), Skill: skill, DeletedAt: ts})
 	}
-	// 目录名以固定格式时间戳结尾,字典序倒序 = 删除时间倒序。
-	sort.Slice(out, func(i, j int) bool { return out[i].Name > out[j].Name })
+	sortTrashNewestFirst(names)
+	out := make([]TrashEntry, 0, len(names))
+	for _, n := range names {
+		skill, ts, _ := splitTrashName(n)
+		out = append(out, TrashEntry{Name: n, Skill: skill, DeletedAt: ts})
+	}
 	return out
+}
+
+// sortTrashNewestFirst 回收站条目按**删除时间**倒序(最新在前)。
+// 为什么不用目录名字典序:时间戳在名字**尾部**,字典序的第一主键是技能名 —— 那会把
+// 「刚删的那一份」当成最旧的淘汰掉(名字最小的先出局),用户正要恢复的东西被静默销毁。
+// 认不出时间戳的坏名排最后(优先淘汰);同刻/同为坏名时按名字倒序,保证顺序确定。
+func sortTrashNewestFirst(names []string) {
+	sort.Slice(names, func(i, j int) bool {
+		_, ti, oki := splitTrashName(names[i])
+		_, tj, okj := splitTrashName(names[j])
+		if oki != okj {
+			return oki
+		}
+		if ti != tj {
+			return ti > tj // 固定宽度格式 → 字典序即时间序
+		}
+		return names[i] > names[j]
+	})
 }
 
 // Restore 把回收站里的技能恢复回本库;返回恢复后的技能名。
@@ -285,7 +310,7 @@ func (l Library) Restore(trashName string) (string, error) {
 	return name, nil
 }
 
-// pruneTrash 只保留最近 maxTrashKeep 份(目录名带时间戳,倒序淘汰)。
+// pruneTrash 只保留最近 maxTrashKeep 份(按删除时间倒序淘汰;见 sortTrashNewestFirst)。
 func pruneTrash(trash string) {
 	entries, err := os.ReadDir(trash)
 	if err != nil {
@@ -300,7 +325,7 @@ func pruneTrash(trash string) {
 	if len(names) <= maxTrashKeep {
 		return
 	}
-	sort.Sort(sort.Reverse(sort.StringSlice(names)))
+	sortTrashNewestFirst(names)
 	for _, n := range names[maxTrashKeep:] {
 		_ = os.RemoveAll(filepath.Join(trash, n))
 	}
@@ -335,6 +360,9 @@ func quoteYAML(s string) string {
 	if !strings.ContainsAny(s, `:#"'{}[]&*!|>%@`+"`") && s == strings.TrimSpace(s) {
 		return s
 	}
+	// 先转义反斜杠再转义引号(YAML 双引号标量里 `\` 是转义引导符):
+	// 否则 Windows 路径/C:\temp 这类值要么生成非法 YAML(`\l` 未知转义),要么被静默改写(`\t` 变 TAB)。
+	s = strings.ReplaceAll(s, `\`, `\\`)
 	return `"` + strings.ReplaceAll(s, `"`, `\"`) + `"`
 }
 
@@ -349,7 +377,11 @@ func ParseName(content string) string {
 		return ""
 	}
 	for _, line := range strings.Split(rest[:end], "\n") {
-		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "name:"); ok {
+		// 零缩进才算顶层键(嵌套的 name: 不是本技能的 name)
+		if line != strings.TrimLeft(line, " \t") {
+			continue
+		}
+		if v, ok := strings.CutPrefix(line, "name:"); ok {
 			return strings.Trim(strings.TrimSpace(v), `"'`)
 		}
 	}
@@ -372,6 +404,12 @@ func writeFileAtomic(path string, raw []byte, perm os.FileMode) error {
 		return err
 	}
 	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return err
+	}
+	// Sync 再 rename:只 rename 不落盘的话,掉电后可能“文件在、内容空”。口径同 prefs/searchfile。
+	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
 		cleanup()
 		return err

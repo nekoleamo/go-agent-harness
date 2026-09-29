@@ -107,6 +107,12 @@ func writeFileAtomic(path string, raw []byte, perm os.FileMode) error {
 		cleanup()
 		return err
 	}
+	// Sync 再 rename:只 rename 不落盘的话,掉电后可能“文件在、内容空”。口径同 prefs/searchfile。
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return err
+	}
 	if err := tmp.Close(); err != nil {
 		cleanup()
 		return err

@@ -9,6 +9,50 @@ import (
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
+// TestRoleThinkingNormalizedAndValidated 手写 role.yaml 的思考档:大小写/空白差异规范化,
+// 真正非法的值显式失败 —— ParseThinking 对认不出的值一律返回 Off,
+// 静默按 off 跑(还带“角色强制 off”语义)是错的。
+func TestRoleThinkingNormalizedAndValidated(t *testing.T) {
+	setup(t)
+	s := Store{}
+	if err := s.Create(sdk.RoleSpec{ID: "loose", Name: "松散", Thinking: " High "}, ""); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Get("loose")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Thinking != "high" {
+		t.Fatalf("思考档应被规范化成 high,得到 %q", got.Thinking)
+	}
+
+	// 手写非法值(绕过 Save 的校验):Get 必须显式失败,并让 Broken() 看得到
+	dir := Dir("hand")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, FileName), []byte("name: 手写\nthinking: hight\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Get("hand"); err == nil {
+		t.Fatal("非法思考档应让 Get 显式失败(否则会静默按 off 跑)")
+	}
+	found := false
+	for _, pb := range s.Broken() {
+		if pb.ID == "hand" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("非法思考档的角色应出现在 Broken()")
+	}
+
+	// Save 也不接受非法值(否则会当场写下一个 Get 读不回来的文件)
+	if err := s.Create(sdk.RoleSpec{ID: "bad", Name: "坏", Thinking: "hight"}, ""); err == nil {
+		t.Fatal("非法思考档 Save 应显式失败")
+	}
+}
+
 // TestRoleModelRoundTrip 角色携带 model/thinking 的读写往返,外加一条**回归护栏**。
 //
 // 为什么非钉不可:Save 是「用 spec 重建一份 roleFile **全量覆盖写**」,所以 roleFile 少一个字段

@@ -608,3 +608,24 @@ func TestUseRecordsRoleSwitchEvent(t *testing.T) {
 		t.Errorf("未装配 ctx.sessions 时应照常切换: %v", err)
 	}
 }
+
+// TestUseNoneAliasPrefersRealRole "none"/"off" 是停用别名,但只在**没有同名角色**时生效:
+// 否则用户在面板点「切换」到一个真叫 none 的角色,会被静默停用(展示成"已停用"却不报错)。
+func TestUseNoneAliasPrefersRealRole(t *testing.T) {
+	h := newHarness(t, false)
+	if err := h.svc.Use("none"); err != nil || h.svc.Current() != "" {
+		t.Fatalf("无同名角色时 none 应停用,得到 current=%q err=%v", h.svc.Current(), err)
+	}
+	if _, err := h.svc.Create(sdk.RoleSpec{ID: "none", Name: "无名"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.svc.Use("none"); err != nil {
+		t.Fatalf("有同名角色时应真的切过去: %v", err)
+	}
+	if h.svc.Current() != "none" {
+		t.Fatalf("Current = %q, want none", h.svc.Current())
+	}
+	if err := h.svc.Use(""); err != nil || h.svc.Current() != "" {
+		t.Fatalf("Use(\"\") 应回基线,得到 current=%q err=%v", h.svc.Current(), err)
+	}
+}

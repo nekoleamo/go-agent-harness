@@ -115,6 +115,22 @@ func ParseThinking(s string) ThinkingLevel {
 	}
 }
 
+// NormalizeThinking 规范化并校验思考档名(小写 + 去首尾空白;空串 = 未声明,合法)。
+//
+// 为何需要它:ParseThinking 对认不出的值一律静默返回 Off —— 手写的 role.yaml 里
+// `thinking: High` / 带空白 / 拼错的值会被当成 off,还带“角色强制 off”语义。
+// 规范化后合法档位写法(大小写/空白差异)照常通过,真正非法的值显式失败。
+func NormalizeThinking(s string) (string, error) {
+	t := strings.ToLower(strings.TrimSpace(s))
+	if t == "" {
+		return "", nil
+	}
+	if ParseThinking(t).String() != t {
+		return "", fmt.Errorf("思考档 %q 不合法(可用 off|low|medium|high,或留空 = 跟随会话)", s)
+	}
+	return t, nil
+}
+
 // String 等级展示名。
 func (t ThinkingLevel) String() string {
 	return t.Names()[int(t)%len(t.Names())]

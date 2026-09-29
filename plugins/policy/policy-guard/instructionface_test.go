@@ -152,6 +152,35 @@ func TestInstructionFaceShellWriteApproval(t *testing.T) {
 	}
 }
 
+// TestInstructionFaceShellGahHomeVar 变量形态的指令面写目标也要被审批拦住。
+// 背景:full-access 档路径层整个短路,审批层是唯一一道闸;若只认字面绝对路径,
+// `echo … >> "$GAH_HOME/AGENTS.md"` 就既不被拒也不弹确认(而字面量形态会)。
+// smart 档用「用户拒绝」探针:被拦下 = 命中审批面。
+func TestInstructionFaceShellGahHomeVar(t *testing.T) {
+	for _, cmd := range []string{
+		`printf x >> $GAH_HOME/AGENTS.md`,
+		`printf x >> "$GAH_HOME/AGENTS.md"`,
+		`printf x >> ${GAH_HOME}/roles/finance/AGENTS.md`,
+		`printf x > "${GAH_HOME}/skills/s/SKILL.md"`,
+	} {
+		rec := &recordingConfirm{resp: false}
+		c, _ := buildProbe(t, rec, "smart", "full-access")
+		res := execTool(t, c, "shell", fmt.Sprintf(`{"command":%q}`, cmd))
+		if res.Error == "" {
+			t.Errorf("变量形态的指令面写应被审批拦住: %s", cmd)
+			continue
+		}
+		if len(rec.prompts) != 1 || !(strings.Contains(rec.prompts[0], "指令面") || strings.Contains(rec.prompts[0], "全局指令")) {
+			t.Errorf("应弹确认并说明罪名(%s): %q", cmd, rec.prompts)
+		}
+	}
+	// strict 档:变量形态同样直接拒(full-access 下路径层不兜底)
+	c, _ := buildProbe(t, &recordingConfirm{resp: true}, "strict", "full-access")
+	if res := execTool(t, c, "shell", fmt.Sprintf(`{"command":%q}`, `printf x >> "$GAH_HOME/AGENTS.md"`)); res.Error == "" {
+		t.Error("strict 档下变量形态写全局指令应被拒")
+	}
+}
+
 func TestInstructionFaceLabelUnit(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("GAH_HOME", home)

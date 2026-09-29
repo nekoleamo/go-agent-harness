@@ -2,6 +2,7 @@
 package skills
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -121,6 +122,61 @@ func TestRemoveMovesToTrashAndPrunes(t *testing.T) {
 	}
 	if len(entries) != maxTrashKeep {
 		t.Fatalf("回收站应裁到 %d 份,实际 %d", maxTrashKeep, len(entries))
+	}
+}
+
+// TestTrashPruneKeepsNewest 淘汰必须按**删除时间**:按目录名字典序会把「刚删的那一份」
+// 当成最旧的删掉(时间戳在名字尾部,字典序第一主键是技能名)。
+func TestTrashPruneKeepsNewest(t *testing.T) {
+	lib := setup(t)
+	trash := filepath.Join(lib.Root, TrashName)
+	if err := os.MkdirAll(trash, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldest := ""
+	for i := 1; i <= maxTrashKeep; i++ {
+		name := fmt.Sprintf("zebra-20260101-%06d", i)
+		if err := os.MkdirAll(filepath.Join(trash, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if oldest == "" {
+			oldest = name
+		}
+	}
+	fresh := "aaa-20260202-120000" // 刚删的那一份:名字最小、时间最新
+	if err := os.MkdirAll(filepath.Join(trash, fresh), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pruneTrash(trash)
+	if _, err := os.Stat(filepath.Join(trash, fresh)); err != nil {
+		t.Fatalf("刚删的那一份被淘汰了(淘汰顺序不是删除时间): %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(trash, oldest)); err == nil {
+		t.Fatalf("最旧的一份应被淘汰: %s", oldest)
+	}
+}
+
+// TestTrashListNewestFirst 列表按删除时间倒序(不是按技能名分组),坏名排最后。
+func TestTrashListNewestFirst(t *testing.T) {
+	lib := setup(t)
+	trash := filepath.Join(lib.Root, TrashName)
+	if err := os.MkdirAll(trash, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{"zebra-20260101-000001", "handmade", "aaa-20260202-120000"} {
+		if err := os.MkdirAll(filepath.Join(trash, n), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := []string{"aaa-20260202-120000", "zebra-20260101-000001", "handmade"}
+	got := lib.TrashList()
+	if len(got) != len(want) {
+		t.Fatalf("条目数 = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i].Name != want[i] {
+			t.Errorf("第 %d 条 = %s, want %s", i, got[i].Name, want[i])
+		}
 	}
 }
 
@@ -332,5 +388,37 @@ func TestRelocate(t *testing.T) {
 	}
 	if raw, _ := shared.Read("noname2"); !strings.Contains(raw, "description: d") || strings.Contains(raw, "name:") {
 		t.Errorf("无 name 键时不应造键: %q", raw)
+	}
+}
+
+// TestFrontmatterNestedKeysUntouched 嵌套键(如 metadata 下的 name)不是顶层 name:
+// 用 TrimSpace 匹配会连它一起改写 → 出现两个顶层 name → 扫描侧整段 meta 解析失败
+// (description/trigger 静默丢失,索引里看不出异常)。
+func TestFrontmatterNestedKeysUntouched(t *testing.T) {
+	content := "---\nname: review\nmetadata:\n  name: 内部名\ndescription: d\n---\n正文"
+	if got := ParseName(content); got != "review" {
+		t.Fatalf("ParseName 应取顶层 name,得到 %q", got)
+	}
+	got := renameFrontmatterName(content, "code-review")
+	if n := strings.Count(got, "\nname: "); n != 1 {
+		t.Fatalf("应只改顶层 name(实际改了 %d 行):\n%s", n, got)
+	}
+	if !strings.Contains(got, "\n  name: 内部名") {
+		t.Fatalf("嵌套键应原样保留:\n%s", got)
+	}
+	if !strings.Contains(got, "description: d") || !strings.HasPrefix(got, "---\nname: code-review\n") {
+		t.Fatalf("其它键/正文前缀应原样保留:\n%s", got)
+	}
+}
+
+// TestQuoteYAMLEscapesBackslash 双引号分支必须先转义反斜杠:YAML 双引号标量里 `\` 是
+// 转义引导符,否则 Windows 路径要么生成非法 YAML(`\l` 未知转义),要么被静默改写(`\t` 变 TAB)。
+func TestQuoteYAMLEscapesBackslash(t *testing.T) {
+	if got, want := quoteYAML(`C:\temp\reports`), `"C:\\temp\\reports"`; got != want {
+		t.Fatalf("quoteYAML = %s, want %s", got, want)
+	}
+	// 不含特殊字符的值保持裸写(不引入多余引号)
+	if got := quoteYAML("普通描述"); got != "普通描述" {
+		t.Fatalf("裸写值不该加引号: %s", got)
 	}
 }

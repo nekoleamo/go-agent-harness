@@ -434,21 +434,30 @@ func instructionFaceWriteTargets(name, rawArgs string, def sdk.ToolDefinition) [
 	return out
 }
 
-// expandHomeVars 把开头的 `$HOME`/`${HOME}`/`%USERPROFILE%` 换成真实家目录(写目标常这么写;
-// 换了才能与“绝对路径”同一条判据判定)。其余变量不动 —— 落点不可知的一律交给后面的字面量扫描。
+// expandHomeVars 把开头的 `$HOME`/`${HOME}`/`%USERPROFILE%`/`$GAH_HOME`/`${GAH_HOME}` 换成真实路径
+// (写目标常这么写;换了才能与“绝对路径”同一条判据判定)。其余变量不动 —— 落点不可知的一律交给后面的字面量扫描。
+//
+// 为何必须含 GAH_HOME:指令面(AGENTS.md / roles / skills)就在数据根下,而
+// workspace-write 档的路径层对“含变量的写目标”一律直接拒 —— 照理只剩审批层兜底;
+// 但 full-access 档路径层整个短路,此时**审批层是唯一一道闸**。少展开这一个变量,
+// `echo … >> "$GAH_HOME/AGENTS.md"` 就既不被拒也不弹确认(smart 档字面量会弹、变量形态不会),
+// 指令面审批形同虚设。
 func expandHomeVars(s string) string {
-	home := sdk.UserHome()
-	if home == "" {
-		return s
-	}
-	for _, pre := range []string{"${HOME}", "$HOME", "%USERPROFILE%"} {
-		if strings.HasPrefix(s, pre) {
-			rest := strings.TrimPrefix(strings.TrimPrefix(s, pre), string(filepath.Separator))
-			if rest == "" {
-				return filepath.Clean(home)
-			}
-			return filepath.Join(home, rest)
+	for _, c := range []struct{ pre, dir string }{
+		{"${GAH_HOME}", sandboxGahHome()},
+		{"$GAH_HOME", sandboxGahHome()},
+		{"${HOME}", sdk.UserHome()},
+		{"$HOME", sdk.UserHome()},
+		{"%USERPROFILE%", sdk.UserHome()},
+	} {
+		if c.dir == "" || !strings.HasPrefix(s, c.pre) {
+			continue
 		}
+		rest := strings.TrimPrefix(strings.TrimPrefix(s, c.pre), string(filepath.Separator))
+		if rest == "" {
+			return filepath.Clean(c.dir)
+		}
+		return filepath.Join(c.dir, rest)
 	}
 	return s
 }
