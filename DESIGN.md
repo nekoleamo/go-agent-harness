@@ -12,7 +12,7 @@
 
 **2026-09-29 第九十一批（角色工具集 preset）**：阶段 2 第二项落地 —— 角色从此能**收敛工具面**（"这个角色不该看见/调用某些工具"）。`role.yaml` 增 `tools_exclude`（**排除清单**，方向与技能挂载相反：默认全给、列出即不给 —— 白名单会让新装插件的工具对老角色**静默不可见**），过滤缝只有一个：`host-tools` 的 `List()`（模型可见表）与 `Execute()`（**凭记忆调用**也要拒，且文案与"不存在"区分开）—— 一处覆盖五个消费面（主循环工具表 / 子代理 / 工作流 / 外部插件回调 / 对外 MCP server）；`Get()` **刻意不过滤**（它是裁决面：policy-guard 靠它取真实目标工具定义做路径/审批裁决）。管理面新 `sdk.ToolCatalogue.ListAll()`（"注册了什么"≠"模型看得见什么"）供 `/api/tools?all=1` 与 MCP 状态面用；角色判定 `sdk.ToolVisible` 是运行期与面板共用的**唯一判据**（面板「工具」小节约选即整份替换、在途禁用、悬空名可见可清）。见 §14.1 第九十一批。
 
-**2026-09-29 第九十二批（角色级审批/沙箱档 · 只能收紧）**：阶段 2 第三项落地 —— 角色从此能**把权限往里收**（"这个角色不该能跑 shell / 不该写工作区外的文件"），价值在于**无人值守**：定时任务与子代理按同一角色档裁决，不需要人守着点确认。方向是**单向**的（审批 `smart|strict`、沙箱 `read-only|workspace-write`；`open`/`full-access` 属**放宽**，一律拒绝 —— 放宽是提权面，得配显式开关 + 二次确认，不在本批）。合成顺序固定 **声明档 → sync 联动 → 角色收紧**（角色档是下限，任何路径都不得让它比全局更松）；`policy-guard` 的两个策略器共用**同一个现算闭包**（`c.Inject("ctx.roles")` + `Current()` + `Get()`，**不缓存** —— 缓存会重犯第八十七批 P1-3：`/plugins off|on host-roles` 后策略冻结到重启）；偏离来源由策略器自报（新窄接口 `sdk.EffectiveSource`），三端展示说"角色收紧"而不是写死"审批联动"。见 §14.1 第九十二批。
+**2026-09-29 第九十二批（角色级审批/沙箱档 · 只能收紧;CI run `36591570757` 五 job 全绿）**：阶段 2 第三项落地 —— 角色从此能**把权限往里收**（"这个角色不该能跑 shell / 不该写工作区外的文件"），价值在于**无人值守**：定时任务与子代理按同一角色档裁决，不需要人守着点确认。方向是**单向**的（审批 `smart|strict`、沙箱 `read-only|workspace-write`；`open`/`full-access` 属**放宽**，一律拒绝 —— 放宽是提权面，得配显式开关 + 二次确认，不在本批）。合成顺序固定 **声明档 → sync 联动 → 角色收紧**（角色档是下限，任何路径都不得让它比全局更松）；`policy-guard` 的两个策略器共用**同一个现算闭包**（`c.Inject("ctx.roles")` + `Current()` + `Get()`，**不缓存** —— 缓存会重犯第八十七批 P1-3：`/plugins off|on host-roles` 后策略冻结到重启）；偏离来源由策略器自报（新窄接口 `sdk.EffectiveSource`），三端展示说"角色收紧"而不是写死"审批联动"。见 §14.1 第九十二批。
 
 ## 0. 项目目的
 
@@ -990,7 +990,7 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 
 **反向验证(7 项,全部 compilable)**:① 沙箱松紧序写回自然序 ⇒ sdk 表驱动 4 例 + `TestRoleCannotRelaxSandbox` 红;② 角色读数改成 Start 时缓存一次 ⇒ 单元与 e2e 双层红(复现第八十七批 P1-3 的病);③ 审批合成忽略角色 ⇒ 单元 + e2e 红;④ Web PATCH 不校验收紧档 ⇒ `TestRoleTierEndpoints` 红(open 能存下来 = 静默放宽);⑤ `/api/state` 不报偏离来源 ⇒ `TestStateTierSource` 红;⑥ 面板提交整份 spec 而非改动字段 ⇒ 布局用例的部分更新断言红;⑦ 展示层写死"联动"(不读 `EffectiveSource`)⇒ e2e 回显断言与 TUI 用例红。
 
-**护栏**:`gofmt`(tracked)/`go vet`/`staticcheck`(双 module)/`go test ./... -race -count=1` 全绿;`scripts/coverage-check.sh` **COVERAGE_OK**(总 80.4%;棘轮 `sdk 84→85`、`policy-guard 89→91`,其余不动);`vue-tsc` 0 错;`npm test` 173 通过;`npm run test:layout` 58 用例 / 57 通过 / 0 失败 / 1 skip;`web/dist` 重建。
+**护栏**:`gofmt`(tracked)/`go vet`/`staticcheck`(双 module)/`go test ./... -race -count=1` 全绿;`scripts/coverage-check.sh` **COVERAGE_OK**(总 80.4%;棘轮 `sdk 84→85`、`policy-guard 89→91`,其余不动);`vue-tsc` 0 错;`npm test` 173 通过;`npm run test:layout` 58 用例 / 57 通过 / 0 失败 / 1 skip;`web/dist` 重建。推送后 CI run `36591570757` **五 job 全绿**(含 `test-windows`/`test-macos`)。
 
 ### 第九十一批 · 角色工具集 preset（2026-09-29）
 
