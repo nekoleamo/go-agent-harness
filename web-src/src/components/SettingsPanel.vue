@@ -28,7 +28,7 @@ import {
   viewNotices,
   type McpDraft,
 } from '../mcp'
-import type { AskConfirm, McpServer, McpView, PluginInfo, ProviderInfo, ProviderModelGroup, RoleSpec, Schedule, SkillInfo, StateView } from '../types'
+import type { AskConfirm, McpServer, McpView, PluginInfo, ProviderInfo, ProviderModelGroup, RoleSpec, Schedule, SkillInfo, StateView, TrashRoleEntry, TrashSkillEntry } from '../types'
 
 const props = defineProps<{
   open: boolean
@@ -420,9 +420,28 @@ const showSkillNew = ref(false)
 const skErr = ref('')
 const skEdit = ref<{ name: string; role: string; content: string } | null>(null)
 const skSaved = ref('') // 服务端上一版技能正文
+// 改名/移动(第八十四批):技能身份 = 目录名 + 归属库。一次表单两件都能改
+// (只改名/只换库/两件一起),提交走一条 relocate 端点。
+const skMove = ref<{ name: string; role: string; toName: string; toRole: string } | null>(null)
 // agentsDirty / skDirty 未保存改动(凡切目标前都要问一声:刚写的东西不能静默丢)
 const agentsDirty = computed(() => !!selRole.value && agentsDraft.value !== agentsSaved.value)
 const skDirty = computed(() => !!skEdit.value && (skEdit.value?.content ?? '') !== skSaved.value)
+// skMoveDirty 改名/移动表单是否真有变化(无变化则提交禁用:后端也会拒)
+const skMoveDirty = computed(() => {
+  const m = skMove.value
+  if (!m) return false
+  return m.toName.trim() !== m.name || m.toRole !== m.role
+})
+
+// —— 回收站(第八十三批) ——
+// 删除角色/技能都是"移进 .trash"(可恢复),但之前面板里没有列表也没恢复动作 ——
+// 文案写着"可恢复"却无入口。这里补上:展开时才拉,不在每次轮询里拖大响应。
+const trashOpen = ref(false)
+const trashReady = ref(false) // 首次拉成功(形状对)→ 才渲染区块
+const trashRoles = ref<TrashRoleEntry[]>([])
+const trashSkills = ref<TrashSkillEntry[]>([])
+const trashErr = ref('')
+const trashCount = computed(() => trashRoles.value.length + trashSkills.value.length)
 
 // loadRoles 拉角色列表 + 技能库(503 = 未装配 → 整段隐藏;其余错误照常提示)。
 async function loadRoles(): Promise<void> {
@@ -589,7 +608,7 @@ function renameRole(): void {
 
 // deleteRole 删除(移入回收站;当前角色后端会拒)
 function deleteRole(r: RoleSpec): void {
-  guard('删除角色「' + r.name + '」?(移入 roles/.trash/,可恢复)', true, async () => {
+  guard('删除角色「' + r.name + '」?(移入 roles/.trash/,可在下方回收站恢复)', true, async () => {
     roleErr.value = ''
     try {
       await api.roleDelete(r.id)
@@ -597,8 +616,9 @@ function deleteRole(r: RoleSpec): void {
         selRole.value = ''
         roleDetail.value = null
       }
-      roleMsg.value = '已删除「' + r.id + '」(在 roles/.trash/)'
+      roleMsg.value = '已删除「' + r.id + '」(在回收站里,可恢复)'
       await loadRoles()
+      if (trashOpen.value) await loadTrash()
     } catch (e) {
       roleErr.value = (e as Error).message
     }
@@ -723,14 +743,111 @@ function saveSkill(): void {
   })
 }
 function deleteSkill(name: string, role: string): void {
-  guard('删除技能 ' + name + '?(移入技能库 .trash/,可恢复)', true, async () => {
+  guard('删除技能 ' + name + '?(移入技能库 .trash/,可在下方回收站恢复)', true, async () => {
     skErr.value = ''
     try {
       await api.skillDelete(name, role)
-      roleMsg.value = '技能已删除:' + name
+      roleMsg.value = '技能已删除:' + name + '(可在回收站恢复)'
       await loadRoles()
+      if (trashOpen.value) await loadTrash()
     } catch (e) {
       skErr.value = (e as Error).message
+    }
+  })
+}
+
+// openMove 打开改名/移动表单(默认填现值);正文有未保存草稿时先问一声(与其他编辑入口同口径)。
+function openMove(name: string, role: string, confirmed = false): void {
+  if (!confirmed && skDirty.value) {
+    withDrafts(() => openMove(name, role, true))
+    return
+  }
+  skErr.value = ''
+  skMove.value = { name, role, toName: name, toRole: role }
+}
+
+// refreshRoleDetail 重拉当前展开角色的详情。改技能名/库会连带改角色挂载清单,
+// 不重拉就会让面板拿着旧清单,把已经被同步过的挂载误列成「已失效挂载」。
+async function refreshRoleDetail(): Promise<void> {
+  if (!selRole.value) return
+  try {
+    roleDetail.value = await api.roleGet(selRole.value)
+  } catch {
+    // 详情拉不到不影响已提交成功的改动
+  }
+}
+
+// submitMove 提交改名/移动。为什么二次确认:目录名即身份 —— 改名会同步改掉每个挂载它的
+// 角色(面板没有一键回退),且目标同名会被后端拒绝(不覆盖现役技能)。
+function submitMove(): void {
+  const m = skMove.value
+  if (!m || !skMoveDirty.value) return
+  const to = m.toName.trim()
+  const fromLib = m.role ? `角色私有 · ${m.role}` : '共享技能库'
+  const toLib = m.toRole ? `角色私有 · ${m.toRole}` : '共享技能库'
+  const what = to !== m.name ? `改名为「${to}」` : '保留原名'
+  guard(`把 ${m.name}(${fromLib})${what}并移到「${toLib}」?改名会同步改掉挂载它的角色引用;目标同名会被拒。`, false, async () => {
+    skErr.value = ''
+    try {
+      const r = await api.skillRelocate(m.name, { role: m.role, to_name: to, to_role: m.toRole })
+      const n = (r.mounts_updated ?? []).length
+      roleMsg.value =
+        (r.warning ? r.warning + ' · ' : '') +
+        `技能已归位:${m.name} → ${r.role ? '角色私有 · ' + r.role + ' / ' : '共享库 / '}${r.name}` +
+        (n ? `(已同步 ${n} 个角色的挂载)` : '')
+      if (skEdit.value && skEdit.value.name === m.name && skEdit.value.role === m.role) {
+        skEdit.value = null // 正在编辑的对象被挪走了:收起旧草稿(内容已随目录一起搬走)
+        skSaved.value = ''
+      }
+      skMove.value = null
+      await loadRoles()
+      await refreshRoleDetail()
+      if (trashOpen.value) await loadTrash()
+    } catch (e) {
+      skErr.value = (e as Error).message
+    }
+  })
+}
+
+// toggleTrash 展开/收起回收站(展开时才拉)。
+async function toggleTrash(): Promise<void> {
+  trashOpen.value = !trashOpen.value
+  if (trashOpen.value) await loadTrash()
+}
+
+async function loadTrash(): Promise<void> {
+  trashErr.value = ''
+  try {
+    const v = await api.trash()
+    trashReady.value = true
+    trashRoles.value = v.roles ?? []
+    trashSkills.value = v.skills ?? []
+  } catch (e) {
+    trashReady.value = false // 拉不到就整块不渲染(不摆空壳)
+    trashErr.value = (e as Error).message
+  }
+}
+
+// fmtTrashTime 回收站目录名尾部的时间戳(20260928-153005)→ 2026-09-28 15:30。
+// 认不出(手工放进来的目录)就原样回空串。
+function fmtTrashTime(s: string): string {
+  const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})/.exec(s || '')
+  return m ? `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}` : ''
+}
+
+// restoreTrash 恢复一条回收站记录。name 是**回收站目录名**(不是原 ID/技能名)。
+// 同名已存在时后端显式拒绝(不覆盖现役角色/技能)—— 弹层里先说明这一点。
+function restoreTrash(kind: 'role' | 'skill', e: { name: string; id?: string; skill?: string; role?: string }): void {
+  const label = kind === 'role' ? e.id || e.name : e.skill || e.name
+  guard('恢复「' + label + '」?(从回收站移回原位;已存在同名项时会被拒)', false, async () => {
+    trashErr.value = ''
+    try {
+      const r = await api.trashRestore({ kind, name: e.name, role: e.role })
+      roleMsg.value = r.warning ? r.warning : '已恢复:' + label
+      await loadTrash()
+      await loadRoles()
+    } catch (err) {
+      trashErr.value = (err as Error).message
     }
   })
 }
@@ -1510,6 +1627,9 @@ watch(
                   </label>
                   <span v-if="s.description" class="dim grow">{{ s.description }}</span>
                   <button class="ghost" data-tip="看/改 SKILL.md 原文" @click="openSkill(s.name, s.role || '')">原文</button>
+                  <button class="ghost" data-tip="改目录名 / 换归属库（会同步改角色挂载；目标同名会被拒）" @click="openMove(s.name, s.role || '')">
+                    改名/移动
+                  </button>
                   <button class="ghost danger-text" data-tip="删除技能（需确认）" @click="deleteSkill(s.name, s.role || '')">删除</button>
                 </div>
               </template>
@@ -1520,6 +1640,31 @@ watch(
               <div v-for="n in staleMounts" :key="'stale-' + n" class="m-item">
                 <span class="m-lab">{{ n }}</span>
                 <button class="ghost danger-text" data-tip="从挂载清单里移除这个名字" @click="removeStaleMount(n)">移除</button>
+              </div>
+            </div>
+
+            <!-- 技能改名/跨库移动(第八十四批)：目录名即身份，frontmatter 的 name 由服务端同步改 -->
+            <div v-if="skMove" class="add-form">
+              <label class="fld">
+                <span class="fld-lab">
+                  改名 / 移动:{{ skMove.name }}
+                  <span class="dim">(目录名即身份,会同步改挂载它的角色)</span>
+                </span>
+              </label>
+              <label class="fld">
+                <span class="fld-lab">新名称（小写字母/数字/._-）</span>
+                <input v-model="skMove.toName" class="inp mono" :placeholder="skMove.name" />
+              </label>
+              <label class="fld">
+                <span class="fld-lab">移到哪个库</span>
+                <select v-model="skMove.toRole" class="sel">
+                  <option value="">共享技能库（所有角色可见）</option>
+                  <option v-for="r in roles" :key="'mv-' + r.id" :value="r.id">角色私有 · {{ r.name || r.id }}</option>
+                </select>
+              </label>
+              <div class="form-acts">
+                <button class="ghost solid" :disabled="busy || !skMoveDirty" @click="submitMove">确认改名/移动</button>
+                <button class="ghost" @click="skMove = null">取消</button>
               </div>
             </div>
 
@@ -1575,6 +1720,41 @@ watch(
             <div class="form-acts">
               <button class="ghost solid" :disabled="busy || !skNew.name" @click="createSkill">创建技能</button>
             </div>
+          </div>
+
+          <!-- 回收站(第八十三批):删除的角色/技能都能从这里恢复 -->
+          <h3 class="h">
+            回收站
+            <button class="link" data-tip="删除的角色与技能(移入 .trash,可恢复)" @click="toggleTrash">
+              {{ trashOpen ? '收起' : '查看' }}
+            </button>
+          </h3>
+          <p v-if="!trashOpen" class="dim">删除的角色与技能不会真删:移入 <span class="mono">.trash/</span>(各自保留最近 20 份),在这里可以恢复。</p>
+          <div v-if="trashOpen">
+            <div v-if="trashErr" class="serr">{{ trashErr }}</div>
+            <template v-if="trashReady">
+              <p v-if="!trashCount" class="dim">回收站是空的。</p>
+              <template v-else>
+                <div v-if="trashRoles.length" class="m-list">
+                  <p class="dim">角色</p>
+                  <div v-for="t in trashRoles" :key="'tr-' + t.name" class="m-item">
+                    <span class="m-lab">{{ t.id || t.name }}</span>
+                    <span v-if="!t.id" class="dim grow">目录名不合约定,无法还原</span>
+                    <span v-else-if="t.deleted_at" class="dim grow">删除于 {{ fmtTrashTime(t.deleted_at) }}</span>
+                    <button v-if="t.id" class="ghost" data-tip="移回 roles/&lt;id&gt;/(同名已存在会被拒)" @click="restoreTrash('role', t)">恢复</button>
+                  </div>
+                </div>
+                <div v-if="trashSkills.length" class="m-list">
+                  <p class="dim">技能</p>
+                  <div v-for="t in trashSkills" :key="'ts-' + t.role + '/' + t.name" class="m-item">
+                    <span class="m-lab">{{ t.skill || t.name }}</span>
+                    <span class="dim grow">{{ t.role ? '角色私有 · ' + t.role : '共享技能库' }}<template v-if="t.deleted_at"> · 删除于 {{ fmtTrashTime(t.deleted_at) }}</template></span>
+                    <span v-if="!t.skill" class="dim">目录名不合约定,无法还原</span>
+                    <button v-else class="ghost" data-tip="移回原技能库(同名已存在会被拒)" @click="restoreTrash('skill', t)">恢复</button>
+                  </div>
+                </div>
+              </template>
+            </template>
           </div>
         </section>
 

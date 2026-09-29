@@ -1,5 +1,5 @@
 // REST 客户端(上行)+ 工具函数。核心交互纯 REST,不绕模板渲染。
-import type { AttachmentView, CommandOptionsResp, CommandView, DocTree, DocView, InstructionsView, Job, McpView, ModelsAllResp, NoticePage, PluginInfo, ProviderInfo, RoleSpec, RolesView, Schedule, SessionEventsPage, SessionInfo, StateView, WorkspaceInfo } from './types'
+import type { AttachmentView, CommandOptionsResp, CommandView, DocTree, DocView, InstructionsView, Job, McpView, ModelsAllResp, NoticePage, PluginInfo, ProviderInfo, RoleSpec, RolesView, Schedule, SessionEventsPage, SessionInfo, StateView, TrashView, WorkspaceInfo } from './types'
 
 const BASE = ''
 const json = {
@@ -214,6 +214,27 @@ export const api = {
   },
   skillDelete(name: string, role = ''): Promise<void> {
     return req('/api/skills/' + encodeURIComponent(name) + (role ? '?role=' + encodeURIComponent(role) : ''), { method: 'DELETE' })
+  },
+  // skillRelocate 技能改名 / 跨库移动(第八十四批):to_name 空 = 只换库,to_role 空 = 只改名。
+  // 后端改了目录名后会**同步改所有挂载它的角色**(返回 mounts_updated),所以这动作不可从面板一键回退。
+  skillRelocate(
+    name: string,
+    p: { role?: string; to_name?: string; to_role?: string },
+  ): Promise<{ ok: true; name: string; role: string; from_name: string; from_role: string; mounts_updated?: string[]; warning?: string }> {
+    const q = p.role ? '?role=' + encodeURIComponent(p.role) : ''
+    return req('/api/skills/' + encodeURIComponent(name) + '/relocate' + q, {
+      method: 'POST',
+      headers: json,
+      body: JSON.stringify({ to_name: p.to_name ?? '', to_role: p.to_role ?? '' }),
+    })
+  },
+  // 回收站(第八十三批):删除的角色/技能移进 .trash 后可在这里列出并恢复
+  trash(): Promise<TrashView> {
+    return req('/api/trash')
+  },
+  // trashRestore:name 是**回收站目录名**(<名>-<时间戳>),不是原 ID/技能名
+  trashRestore(p: { kind: 'role' | 'skill'; name: string; role?: string }): Promise<{ ok: true; warning?: string; id?: string; name?: string }> {
+    return req('/api/trash/restore', { method: 'POST', headers: json, body: JSON.stringify(p) })
   },
   // —— 文档预览(D1;/api/doc/*;未装配 503,前端据首次探测隐藏入口) ——
   docPreview(path: string, opts?: { page?: number; sheet?: number; max?: number }): Promise<DocView> {

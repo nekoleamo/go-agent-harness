@@ -21,6 +21,7 @@ func TestNormalizePayloadByKind(t *testing.T) {
 		{sdk.EventToolCall, sdk.ToolCallEvent{}},
 		{sdk.EventToolResult, sdk.ToolResultEvent{}},
 		{sdk.EventFileChange, sdk.FileChangeEvent{}},
+		{sdk.EventRoleSwitch, sdk.RoleSwitchEvent{}},
 	}
 	for _, c := range cases {
 		ev := sdk.SessionEvent{Kind: c.kind, Payload: map[string]any{}}

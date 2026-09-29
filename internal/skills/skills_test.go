@@ -160,3 +160,177 @@ func TestContentQuotesTrickyValues(t *testing.T) {
 		t.Fatalf("触发词同样应加引号:\n%s", c)
 	}
 }
+
+// TestTrashListAndRestore 回收站列表与恢复(第八十三批:删除曾"可恢复"但没入口)。
+func TestTrashListAndRestore(t *testing.T) {
+	lib := setup(t)
+	// 技能名本身可含连字符 —— 解析只能按**固定长度的尾部时间戳**切,不能按"最后一个连字符"。
+	if err := lib.Write("a-b-c", Content("a-b-c", "", nil, "body-a"), false); err != nil {
+		t.Fatal(err)
+	}
+	if err := lib.Write("gone", Content("gone", "d", nil, "body-gone"), false); err != nil {
+		t.Fatal(err)
+	}
+	if err := lib.Remove("gone"); err != nil {
+		t.Fatal(err)
+	}
+	if err := lib.Remove("a-b-c"); err != nil {
+		t.Fatal(err)
+	}
+
+	list := lib.TrashList()
+	if len(list) != 2 {
+		t.Fatalf("TrashList = %+v", list)
+	}
+	bySkill := map[string]TrashEntry{}
+	for _, e := range list {
+		bySkill[e.Skill] = e
+	}
+	if _, ok := bySkill["a-b-c"]; !ok {
+		t.Errorf("含连字符的技能名解析失败: %+v", list)
+	}
+	if e, ok := bySkill["gone"]; !ok || e.DeletedAt == "" {
+		t.Errorf("技能名/时间戳解析失败: %+v", list)
+	}
+	// 最近的在前(目录名字典序倒序 = 时间戳倒序)
+	if list[0].Name < list[1].Name {
+		t.Errorf("应最近在前: %+v", list)
+	}
+
+	// 坏输入:空名 / 原名 / 路径 / 不含时间戳 / 不存在
+	for _, name := range []string{"", "gone", "a/b", "..", "ghost-20260101-000000"} {
+		if _, err := lib.Restore(name); err == nil {
+			t.Errorf("Restore(%q) 应被拒", name)
+		}
+	}
+	// 同名已存在 → 拒绝(不静默覆盖现役技能)
+	if err := lib.Write("gone", Content("gone", "", nil, "new"), false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lib.Restore(bySkill["gone"].Name); err == nil {
+		t.Error("同名已存在时应拒绝恢复")
+	}
+	// 腾开位置后恢复:正文回来
+	if err := os.RemoveAll(filepath.Join(lib.Root, "gone")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := lib.Restore(bySkill["gone"].Name)
+	if err != nil || got != "gone" {
+		t.Fatalf("Restore = %q, %v", got, err)
+	}
+	if raw, err := lib.Read("gone"); err != nil || !strings.Contains(raw, "body-gone") {
+		t.Errorf("恢复后正文不符: %q %v", raw, err)
+	}
+
+	// 手工放进来的目录:照实列出但 Skill 为空,恢复被拒(不猜)。
+	if err := os.MkdirAll(filepath.Join(lib.Root, TrashName, "handmade"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lib.Restore("handmade"); err == nil {
+		t.Error("不含时间戳的目录应拒绝恢复")
+	}
+	found := false
+	for _, e := range lib.TrashList() {
+		if e.Name == "handmade" && e.Skill == "" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("坏名条目应列出且 Skill 为空: %+v", lib.TrashList())
+	}
+}
+
+// TestRelocate 技能改名 / 跨库移动(第八十四批):目录名即身份,frontmatter 的 name 必须一起改。
+func TestRelocate(t *testing.T) {
+	t.Setenv("GAH_HOME", t.TempDir())
+	shared := Shared()
+	role := ForRole("finance")
+	if err := shared.Write("review", Content("review", "代码审查", []string{"CR"}, "# 步骤"), false); err != nil {
+		t.Fatal(err)
+	}
+
+	// ① 只换库(名字不变):正文一字不动(frontmatter 无需改写)
+	if got, err := shared.Relocate("review", role, ""); err != nil || got != "review" {
+		t.Fatalf("换库 = %q, %v", got, err)
+	}
+	if shared.Exists("review") || !role.Exists("review") {
+		t.Fatal("技能目录应已搬进角色私有库")
+	}
+	if raw, err := role.Read("review"); err != nil || !strings.Contains(raw, "name: review") || !strings.Contains(raw, "# 步骤") {
+		t.Fatalf("换库后正文不符: %q %v", raw, err)
+	}
+
+	// ② 只改名(同库):目录名与 frontmatter name 一起改,其它键/正文不动
+	if got, err := role.Relocate("review", role, "code-review"); err != nil || got != "code-review" {
+		t.Fatalf("改名 = %q, %v", got, err)
+	}
+	if role.Exists("review") || !role.Exists("code-review") {
+		t.Fatal("目录名未改")
+	}
+	raw, _ := role.Read("code-review")
+	if !strings.Contains(raw, "name: code-review") || strings.Contains(raw, "name: review\n") {
+		t.Errorf("frontmatter name 未同步: %q", raw)
+	}
+	if !strings.Contains(raw, "代码审查") || !strings.Contains(raw, "# 步骤") {
+		t.Errorf("正文/其它键被改坏: %q", raw)
+	}
+	if err := ValidateName("code-review"); err != nil {
+		t.Fatal(err)
+	}
+
+	// ③ 改名 + 换库一起(搬回共享库);Write 的不变量(署名 == 目录名)必须仍成立
+	if got, err := role.Relocate("code-review", shared, "review2"); err != nil || got != "review2" {
+		t.Fatalf("改名+换库 = %q, %v", got, err)
+	}
+	if !shared.Exists("review2") || role.Exists("code-review") {
+		t.Fatal("改名+换库后位置不对")
+	}
+	if raw, _ := shared.Read("review2"); ParseName(raw) != "review2" {
+		t.Errorf("归位后 frontmatter name 与目录名不一致: %q", raw)
+	}
+
+	// ④ 目标同名已存在 → 显式拒绝(不覆盖),两边都不动
+	for _, n := range []string{"dup", "keep"} {
+		if err := shared.Write(n, Content(n, "", nil, "b-"+n), false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := shared.Relocate("keep", shared, "dup"); err == nil || !strings.Contains(err.Error(), "同名") {
+		t.Fatalf("目标同名应被拒: %v", err)
+	}
+	if !shared.Exists("keep") || !shared.Exists("dup") {
+		t.Error("被拒时不应动任何一边")
+	}
+
+	// ⑤ 无变化 / 不存在 / 非法名字 → 显式失败,且旧技能留在原地
+	for _, tc := range []struct{ from, to string }{
+		{"review2", "review2"}, {"ghost", ""}, {"bad/name", ""}, {"review2", "Bad Name"},
+	} {
+		if _, err := shared.Relocate(tc.from, shared, tc.to); err == nil {
+			t.Errorf("Relocate(%q→%q) 应被拒", tc.from, tc.to)
+		}
+	}
+	if !shared.Exists("review2") {
+		t.Error("被拒后旧技能应仍在")
+	}
+
+	// ⑥ 无 frontmatter / 无 name 键:改名不硬造键(扫描侧会回退目录名)
+	if err := shared.Write("plain", "just body\n", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := shared.Relocate("plain", shared, "plain2"); err != nil {
+		t.Fatal(err)
+	}
+	if raw, _ := shared.Read("plain2"); raw != "just body\n" {
+		t.Errorf("无 frontmatter 的正文被改: %q", raw)
+	}
+	if err := shared.Write("noname", "---\ndescription: d\n---\nbody\n", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := shared.Relocate("noname", shared, "noname2"); err != nil {
+		t.Fatal(err)
+	}
+	if raw, _ := shared.Read("noname2"); !strings.Contains(raw, "description: d") || strings.Contains(raw, "name:") {
+		t.Errorf("无 name 键时不应造键: %q", raw)
+	}
+}

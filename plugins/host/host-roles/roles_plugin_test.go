@@ -35,6 +35,7 @@ func writeSkillDoc(t *testing.T, dir, name, desc string) {
 // harness 装配一套真实插件组合,返回角色服务与各服务句柄。
 type harness struct {
 	home  string
+	c     sdk.Ctx
 	svc   *Service
 	tools sdk.ToolRegistry
 	sp    sdk.SystemPromptService
@@ -61,7 +62,7 @@ func newHarness(t *testing.T, withCommands bool) *harness {
 	if _, err := (&Plugin{}).Start(c, &sdk.Manifest{}); err != nil {
 		t.Fatalf("host-roles Start: %v", err)
 	}
-	h := &harness{home: home}
+	h := &harness{home: home, c: c}
 	if err := c.Inject("ctx.roles", &h.svc); err != nil {
 		t.Fatal(err)
 	}
@@ -532,5 +533,78 @@ func TestDanglingActiveRoleIsExplicit(t *testing.T) {
 	}
 	if h.svc.BlockText() != "" {
 		t.Fatalf("停用角色后身份槽应为空: %q", h.svc.BlockText())
+	}
+}
+
+// switchLog 只实现 Append/Replay 的会话账本桩(内嵌 nil 接口:未覆盖的方法一旦被调用即 panic,
+// 保证本用例只依赖"切换记了一条事件"这一条路径)。
+type switchLog struct {
+	sdk.SessionLog
+	evs []sdk.SessionEvent
+}
+
+func (l *switchLog) Append(ev sdk.SessionEvent) error { l.evs = append(l.evs, ev); return nil }
+func (l *switchLog) Replay() []sdk.SessionEvent       { return l.evs }
+
+// TestUseRecordsRoleSwitchEvent R-3:切角色**不换会话**,但系统提示被整段换掉 ——
+// 会话记录里必须留下"换过谁"的痕迹,否则重看会话/`/recap` 无从判断某段话属于哪个人格。
+func TestUseRecordsRoleSwitchEvent(t *testing.T) {
+	h := newHarness(t, false)
+	lg := &switchLog{}
+	if err := h.c.Provide("ctx.sessions", sdk.SessionLog(lg)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.svc.Create(sdk.RoleSpec{ID: "finance", Name: "财务"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.svc.Use("finance"); err != nil {
+		t.Fatal(err)
+	}
+	if len(lg.evs) != 1 {
+		t.Fatalf("切换后应记 1 条事件: %+v", lg.evs)
+	}
+	if ev := lg.evs[0]; ev.Kind != sdk.EventRoleSwitch {
+		t.Fatalf("事件类型 = %s, want %s", ev.Kind, sdk.EventRoleSwitch)
+	}
+	p, ok := lg.evs[0].Payload.(sdk.RoleSwitchEvent)
+	if !ok {
+		t.Fatalf("载荷类型 = %T", lg.evs[0].Payload)
+	}
+	if p.ID != "finance" || p.Name != "财务" || p.Prev != "" {
+		t.Errorf("载荷不符: %+v", p)
+	}
+
+	// 幂等切换(同角色)不动状态也不重复记事件
+	if err := h.svc.Use("finance"); err != nil {
+		t.Fatal(err)
+	}
+	if len(lg.evs) != 1 {
+		t.Errorf("同角色重复切换不该再记事件: %+v", lg.evs)
+	}
+	// 停用回基线:ID 空,prev 记下从哪来
+	if err := h.svc.Use(""); err != nil {
+		t.Fatal(err)
+	}
+	if len(lg.evs) != 2 {
+		t.Fatalf("回基线应记第 2 条: %+v", lg.evs)
+	}
+	if p := lg.evs[1].Payload.(sdk.RoleSwitchEvent); p.ID != "" || p.Prev != "finance" {
+		t.Errorf("回基线载荷不符: %+v", p)
+	}
+	// 失败的切换不落事件(没发生的事不进账本)
+	if err := h.svc.Use("ghost"); err == nil {
+		t.Fatal("切到不存在的角色应报错")
+	}
+	if len(lg.evs) != 2 {
+		t.Errorf("失败的切换不该落事件: %+v", lg.evs)
+	}
+
+	// 未装配账本的极简 profile:切换本身照常成功(记账是可通道,不是前置条件)
+	h2 := newHarness(t, false)
+	if _, err := h2.svc.Create(sdk.RoleSpec{ID: "novelist", Name: "小说家"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := h2.svc.Use("novelist"); err != nil {
+		t.Errorf("未装配 ctx.sessions 时应照常切换: %v", err)
 	}
 }

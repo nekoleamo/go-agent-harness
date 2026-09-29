@@ -20,7 +20,9 @@
 //	GET/POST /api/providers … 多 provider;POST /api/reload 指令热更
 //	GET/POST /api/roles + GET/PATCH/DELETE /api/roles/{id} + PUT /api/roles/{id}/agents +
 //	POST /api/roles/{id}/rename|use 角色面板(第七十九批;未装配 ctx.roles → 503,面板整段隐藏);
-//	POST /api/skills + GET/DELETE /api/skills/{name}?role= 技能库(共享库 / 角色私有);
+//	POST /api/skills + GET/DELETE /api/skills/{name}?role= + POST /api/skills/{name}/relocate 技能库
+//	(共享库 / 角色私有;relocate = 改名/跨库移动,第八十四批);
+//	GET /api/trash + POST /api/trash/restore 回收站(第八十三批;删除的角色/技能可恢复);
 //	GET/PUT /api/instructions 全局指令 $GAH_HOME/AGENTS.md(第八十一批;PUT 后连带
 //	ReloadInstructions,重载失败 → 200 + warning)
 //	POST /api/shutdown 优雅停机(触发宿主 system/shutdown → DisposeAll;桌面壳/跨平台统一通道)
@@ -344,6 +346,11 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST /api/skills", s.handleSkills)
 	mux.HandleFunc("GET /api/skills/{name}", s.handleSkillOne)
 	mux.HandleFunc("DELETE /api/skills/{name}", s.handleSkillOne)
+	// 技能改名/跨库移动(第八十四批;单段通配路由不吃多段路径,与上面两条无冲突)
+	mux.HandleFunc("POST /api/skills/{name}/relocate", s.handleSkillRelocate)
+	// 回收站(第八十三批):独立前缀,避免与 /api/roles/{id}、/api/skills/{name} 互吃
+	mux.HandleFunc("GET /api/trash", s.handleTrash)
+	mux.HandleFunc("POST /api/trash/restore", s.handleTrashRestore)
 	// 文档预览(D1):无条件注册,服务缺失时 503(前端据 503 隐藏入口)
 	mux.HandleFunc("GET /api/doc/preview", s.handleDocPreview)
 	mux.HandleFunc("GET /api/doc/raw", s.handleDocRaw)

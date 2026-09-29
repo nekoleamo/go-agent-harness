@@ -363,6 +363,60 @@ func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "name": body.Name, "path": lib.Path(body.Name)})
 }
 
+// handleSkillRelocate POST /api/skills/{name}/relocate?role=<源库> {to_name, to_role}
+// —— 技能改名 / 跨库移动(共享库 ↔ 角色私有;一次可两件都做,to_name 空 = 不改名)。
+// 为什么不复用 POST /api/skills(覆盖写):这里改的是**身份**(目录名/归属)而不是正文,
+// 而且必须顺带把引用它的角色挂载清单一起改 —— 覆盖写做不到这件事:
+// 挂载是按**名字**存的,只改目录名会让每个挂载它的角色悄悹多出一条"已失效挂载"(技能从该角色消失)。
+func (s *Server) handleSkillRelocate(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.skillsSvc(w); !ok {
+		return
+	}
+	name := r.PathValue("name")
+	fromRole := r.URL.Query().Get("role")
+	var body struct {
+		ToName string `json:"to_name"`
+		ToRole string `json:"to_role"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "坏请求体", http.StatusBadRequest)
+		return
+	}
+	src, err := skillsLib(fromRole)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	dst, err := skillsLib(body.ToRole)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	got, err := src.Relocate(name, dst, strings.TrimSpace(body.ToName))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	resp := map[string]any{"ok": true, "name": got, "role": body.ToRole, "from_name": name, "from_role": fromRole}
+	var warns []string
+	if got != name { // 只有改名才需追着改引用;纯移动按名字挂载依然成立
+		touched, err := roles.Store{}.RewriteMount(name, got)
+		if err != nil {
+			warns = append(warns, "技能已改名,但角色挂载改写失败(可能有角色残留失效挂载):"+err.Error())
+		}
+		if len(touched) > 0 {
+			resp["mounts_updated"] = touched
+		}
+	}
+	if warn := s.reloadRoleSkillCaches(); warn != "" {
+		warns = append(warns, "技能已归位,但"+warn)
+	}
+	if len(warns) > 0 {
+		resp["warning"] = strings.Join(warns, "; ")
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 // handleSkillOne GET /api/skills/{name}?role= (原文,供编辑)/ DELETE(移入回收站)。
 func (s *Server) handleSkillOne(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.skillsSvc(w); !ok {

@@ -352,3 +352,59 @@ func TestRecapArgsFiles(t *testing.T) {
 		}
 	}
 }
+
+// TestCmdRecapRoleHistory R-3:切角色不换会话,同一份历史会混进多个人格的产出 ——
+// recap 必须把"本会话经历过哪几个角色"摊出来(否则重看会话无从判断某段话是谁写的)。
+func TestCmdRecapRoleHistory(t *testing.T) {
+	c, cmds := buildEnv(t)
+	sl := newStubLog()
+	sl.events = append(sessionEvents(),
+		sdk.SessionEvent{Kind: sdk.EventRoleSwitch, Payload: sdk.RoleSwitchEvent{ID: "finance", Name: "财务"}},
+		// 相邻重复(切出去又切回来):不该在序列里刷屏
+		sdk.SessionEvent{Kind: sdk.EventRoleSwitch, Payload: sdk.RoleSwitchEvent{Prev: "finance", ID: "finance", Name: "财务"}},
+		sdk.SessionEvent{Kind: sdk.EventRoleSwitch, Payload: sdk.RoleSwitchEvent{Prev: "finance", ID: "novelist", Name: "小说家"}},
+		sdk.SessionEvent{Kind: sdk.EventRoleSwitch, Payload: sdk.RoleSwitchEvent{Prev: "novelist", ID: ""}},
+		// 显示名缺失(旧事件/角色已删):退回 ID,不猜名字
+		sdk.SessionEvent{Kind: sdk.EventRoleSwitch, Payload: sdk.RoleSwitchEvent{ID: "legacy"}},
+	)
+	if err := c.Provide("ctx.sessions", sdk.SessionLog(sl)); err != nil {
+		t.Fatal(err)
+	}
+	startCmds(t, c)
+	out, err := run(t, cmds, "recap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "角色经历: 切换 5 次 / 经历 3 个角色 · 财务 → 小说家 → 默认(基线) → legacy"
+	if !strings.Contains(out, want) {
+		t.Errorf("缺少角色经历行 %q:\n%s", want, out)
+	}
+	// 基线不是角色,不计入"经历 N 个角色"(但要在序列里出现)
+	if strings.Contains(out, "经历 4 个角色") {
+		t.Errorf("基线被误计为角色:\n%s", out)
+	}
+}
+
+// TestCmdRecapRoleOnlySession:只切过角色、还没说话时不能报"会话为空" —— 角色切换本身就是
+// 会话事实(而且这正是用户最想确认"我现在是谁"的时刻)。
+func TestCmdRecapRoleOnlySession(t *testing.T) {
+	c, cmds := buildEnv(t)
+	sl := newStubLog()
+	sl.events = []sdk.SessionEvent{
+		{Kind: sdk.EventRoleSwitch, Payload: sdk.RoleSwitchEvent{ID: "finance", Name: "财务"}},
+	}
+	if err := c.Provide("ctx.sessions", sdk.SessionLog(sl)); err != nil {
+		t.Fatal(err)
+	}
+	startCmds(t, c)
+	out, err := run(t, cmds, "recap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "当前会话为空") {
+		t.Errorf("有角色切换时不该报会话为空:\n%s", out)
+	}
+	if !strings.Contains(out, "经历 1 个角色") {
+		t.Errorf("应给出角色经历:\n%s", out)
+	}
+}

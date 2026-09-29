@@ -49,6 +49,11 @@ const (
 	// 载荷 DiffOpenEvent:Path 空 = 只请求打开审查视图(清单);Path 非空 = 定位到该文件。
 	// TUI 订阅后弹 pager 浮层,Web 订阅后切到变更视图 —— 命令不解锁任何能力,只表达意图。
 	EventDiffOpen = "diff/open"
+	// EventRoleSwitch 角色切换事实(R-3):载荷 RoleSwitchEvent。
+	// 为什么落账本:切换角色**不换会话**(回合历史与工作区都不动),但系统提示被整段换掉 ——
+	// 同一份历史里会共存多个人格的产出。自由切换是需求(不阻止),但会话记录里要有痕,
+	// 否则重看会话/`/recap` 时看不出「这段话是哪个人格写的」。
+	EventRoleSwitch = "role/switch"
 )
 
 // FileChangeEvent 一次文件改动事实(EventFileChange 载荷)。
@@ -69,6 +74,15 @@ type FileChangeEvent struct {
 	Diff      string `json:"diff,omitempty"`
 	Truncated bool   `json:"truncated,omitempty"` // Diff 超预算已截断
 	Coarse    bool   `json:"coarse,omitempty"`    // 差异段过大 → 整段替换(未逐行对齐)
+}
+
+// RoleSwitchEvent 一次角色切换事实(EventRoleSwitch 载荷),只记「切成了谁」。
+// ID 空 = 回到基线(停用所有角色);Name 是**切换当时**的显示名快照 —— 角色可能随后被改名/
+// 删除,展示端不该反查磁盘补名(那会显示成与切换当时不符的名字)。
+type RoleSwitchEvent struct {
+	ID   string `json:"id,omitempty"`   // 切换后的角色 ID(空 = 基线)
+	Name string `json:"name,omitempty"` // 切换后的显示名(快照)
+	Prev string `json:"prev,omitempty"` // 切换前的角色 ID(空 = 之前是基线)
 }
 
 // DiffOpenEvent 变更审查意图载荷(EventDiffOpen)。

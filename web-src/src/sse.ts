@@ -155,6 +155,18 @@ export function consume(m: StreamModel, ev: SessionEvent): void {
       m.msgs.push({ kind: 'meta', text: `(滚动摘要) ${txt.slice(0, 120)}…`, seq: ev.Seq, ts: ev.TS })
       break
     }
+    case 'role/switch': {
+      // 切角色不换会话(R-3):同一份流里会共存多个人格的产出 —— 在流里显式标出切换点,
+      // 否则重看会话时根本看不出某段话属于哪个人格。Name 是切换当时的快照(角色可能已被改名/删)。
+      const r = p as { ID?: string; Name?: string }
+      m.msgs.push({
+        kind: 'meta',
+        text: r.ID ? `⌘ 角色切换：${r.Name || r.ID}` : '⌘ 角色切换：默认（基线）',
+        seq: ev.Seq,
+        ts: ev.TS,
+      })
+      break
+    }
     case 'turn/end': {
       const why = typeof p === 'string' ? p : 'done'
       if (why === 'cancelled') {

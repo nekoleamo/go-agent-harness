@@ -34,6 +34,9 @@ const (
 	MaxBytes = 64 * 1024
 	// maxTrashKeep 回收站保留份数(超出按名字倒序淘汰)。
 	maxTrashKeep = 20
+	// trashTimeLayout 回收站条目名尾部的时间戳口径(<名>-<YYYYMMDD-HHMMSS>)。
+	// 单一事实源:Remove 落名、TrashList/Restore 还原都读它。
+	trashTimeLayout = "20060102-150405"
 )
 
 // nameRe 技能名口径:小写字母/数字/点/下划线/连字符,首位字母数字,总长 ≤ 64。
@@ -116,6 +119,84 @@ func (l Library) Read(name string) (string, error) {
 	return string(raw), nil
 }
 
+// Relocate 改名 / 跨库移动(可一次两件都做);返回新技能名。
+// dst 是目标库(Shared() 或 ForRole(id)),newName 空 = 沿用原名。
+// 三件事必须一起做对:
+//   - 目录名即身份:移动 = 在目标库下换成目标目录名;
+//   - frontmatter 里的 name 必须跟着改 —— 扫描侧以 frontmatter 名为准,不改就会出现
+//     “目录叫 x、清单里叫 y”两个名字(Write 的同一条不变量);
+//   - 目标同名已存在 → 显式拒绝(不覆盖)。
+//
+// 顺序:先挪目录再改 frontmatter;改失败把目录挪回去(不留半截改名)。
+func (l Library) Relocate(name string, dst Library, newName string) (string, error) {
+	if err := ValidateName(name); err != nil {
+		return "", err
+	}
+	if newName == "" {
+		newName = name
+	}
+	if err := ValidateName(newName); err != nil {
+		return "", err
+	}
+	if !l.Exists(name) {
+		return "", fmt.Errorf("技能不存在:%s", name)
+	}
+	if dst.Root == l.Root && newName == name {
+		return "", errors.New("名称与所在库都没有变")
+	}
+	if dst.Exists(newName) {
+		return "", fmt.Errorf("目标库已有同名技能:%s", newName)
+	}
+	src := filepath.Join(l.Root, name)
+	target := filepath.Join(dst.Root, newName)
+	var content []byte
+	if newName != name { // 只改名才需要改 frontmatter;纯移动正文一字不动
+		raw, err := l.Read(name)
+		if err != nil {
+			return "", err
+		}
+		content = []byte(renameFrontmatterName(raw, newName))
+	}
+	if err := os.MkdirAll(dst.Root, 0o755); err != nil {
+		return "", fmt.Errorf("目标库创建失败 %s: %w", dst.Root, err)
+	}
+	if err := os.Rename(src, target); err != nil {
+		return "", fmt.Errorf("技能移动失败: %w", err)
+	}
+	if content != nil {
+		if err := writeFileAtomic(filepath.Join(target, FileName), content, 0o644); err != nil {
+			_ = os.Rename(target, src) // 回滚:目录名与 frontmatter 名必须一致
+			return "", fmt.Errorf("技能改名失败(已回滚): %w", err)
+		}
+	}
+	return newName, nil
+}
+
+// renameFrontmatterName 改写 frontmatter 里的 name 行;没有 frontmatter / 没有 name 键时
+// 原样返回(扫描侧会回退目录名,不必凭空造一个键)。
+func renameFrontmatterName(content, newName string) string {
+	if !strings.HasPrefix(content, "---") {
+		return content
+	}
+	rest := content[3:]
+	end := strings.Index(rest, "\n---")
+	if end < 0 {
+		return content
+	}
+	lines := strings.Split(rest[:end], "\n")
+	changed := false
+	for i, line := range lines {
+		if _, ok := strings.CutPrefix(strings.TrimSpace(line), "name:"); ok {
+			lines[i] = "name: " + newName
+			changed = true
+		}
+	}
+	if !changed {
+		return content
+	}
+	return "---" + strings.Join(lines, "\n") + rest[end:]
+}
+
 // Remove 删除技能:整目录移入 <root>/.trash/<名>-<时间戳>(可恢复),不做物理删除。
 func (l Library) Remove(name string) error {
 	if err := ValidateName(name); err != nil {
@@ -128,12 +209,80 @@ func (l Library) Remove(name string) error {
 	if err := os.MkdirAll(trash, 0o755); err != nil {
 		return fmt.Errorf("回收站创建失败: %w", err)
 	}
-	dst := filepath.Join(trash, fmt.Sprintf("%s-%s", name, time.Now().Format("20060102-150405")))
+	dst := filepath.Join(trash, name+"-"+time.Now().Format(trashTimeLayout))
 	if err := os.Rename(filepath.Join(l.Root, name), dst); err != nil {
 		return fmt.Errorf("技能移入回收站失败: %w", err)
 	}
 	pruneTrash(trash)
 	return nil
+}
+
+// TrashEntry 回收站里的一份技能(目录名 = <名>-<时间戳>)。
+// Skill 为空 = 目录名不合约定(手工放进来的),面板照实列出但恢复会被拒。
+type TrashEntry struct {
+	Name      string `json:"name"`       // 回收站目录名(恢复时用它定位)
+	Skill     string `json:"skill"`      // 原技能名("" = 认不出)
+	DeletedAt string `json:"deleted_at"` // 删除时间(格式 20060102-150405)
+}
+
+// splitTrashName 从回收站条目名还原原技能名与删除时间戳(不合约定 → ok=false)。
+// 技能名本身可含连字符,所以按**固定长度的尾部时间戳**切,不按"最后一个连字符"。
+func splitTrashName(name string) (skill, ts string, ok bool) {
+	cut := len(name) - len(trashTimeLayout) - 1
+	if cut <= 0 || name[cut] != '-' {
+		return "", "", false
+	}
+	skill, ts = name[:cut], name[cut+1:]
+	if _, err := time.Parse(trashTimeLayout, ts); err != nil {
+		return "", "", false
+	}
+	return skill, ts, true
+}
+
+// TrashList 本库回收站条目(最近的在前)。坏名也列出(不替用户隐藏磁盘上的东西)。
+func (l Library) TrashList() []TrashEntry {
+	entries, err := os.ReadDir(filepath.Join(l.Root, TrashName))
+	if err != nil {
+		return nil
+	}
+	out := make([]TrashEntry, 0, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		skill, ts, _ := splitTrashName(e.Name())
+		out = append(out, TrashEntry{Name: e.Name(), Skill: skill, DeletedAt: ts})
+	}
+	// 目录名以固定格式时间戳结尾,字典序倒序 = 删除时间倒序。
+	sort.Slice(out, func(i, j int) bool { return out[i].Name > out[j].Name })
+	return out
+}
+
+// Restore 把回收站里的技能恢复回本库;返回恢复后的技能名。
+// 同名技能已存在 → 显式拒绝(不静默覆盖现役技能);条目名不含时间戳 → 拒绝(手放的目录不猜)。
+func (l Library) Restore(trashName string) (string, error) {
+	if trashName == "" || strings.ContainsAny(trashName, `/\`) || trashName != filepath.Base(trashName) || trashName == "." || trashName == ".." {
+		return "", fmt.Errorf("非法回收站条目名:%q", trashName)
+	}
+	name, _, ok := splitTrashName(trashName)
+	if !ok {
+		return "", fmt.Errorf("回收站条目名不含 <名>-<时间戳>,无法还原:%s", trashName)
+	}
+	if err := ValidateName(name); err != nil {
+		return "", err
+	}
+	src := filepath.Join(l.Root, TrashName, trashName)
+	fi, err := os.Stat(src)
+	if err != nil || !fi.IsDir() {
+		return "", fmt.Errorf("回收站条目不存在:%s", trashName)
+	}
+	if l.Exists(name) {
+		return "", fmt.Errorf("技能 %s 已存在:先改名或删除现有技能,再恢复回收站里那一份", name)
+	}
+	if err := os.Rename(src, filepath.Join(l.Root, name)); err != nil {
+		return "", fmt.Errorf("技能恢复失败: %w", err)
+	}
+	return name, nil
 }
 
 // pruneTrash 只保留最近 maxTrashKeep 份(目录名带时间戳,倒序淘汰)。

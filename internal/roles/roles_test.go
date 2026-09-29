@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
@@ -391,5 +392,140 @@ func TestNoHomeNoWrite(t *testing.T) {
 	t.Setenv("GAH_HOME", "")
 	if !strings.HasPrefix(Path(), os.TempDir()) {
 		t.Errorf("无 GAH_HOME 时 Path() = %q,应回落 TempDir", Path())
+	}
+}
+
+// TestTrashListAndRestore 回收站列表与恢复(第八十三批:删除曾"可恢复"但没入口)。
+func TestTrashListAndRestore(t *testing.T) {
+	setup(t)
+	s := Store{}
+	if err := s.Create(sdk.RoleSpec{ID: "drop", Name: "Drop"}, "正文"); err != nil {
+		t.Fatal(err)
+	}
+	// 角色私有技能应随角色目录一起进出回收站(目录名按固定长度尾部时间戳切,
+	// 技能名/角色 ID 本身含连字符也不能被切错)。
+	if err := os.MkdirAll(filepath.Join(SkillsPath("drop"), "tax"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Delete("drop"); err != nil {
+		t.Fatal(err)
+	}
+
+	list := s.TrashList()
+	if len(list) != 1 {
+		t.Fatalf("TrashList = %+v", list)
+	}
+	e := list[0]
+	if e.ID != "drop" || !strings.HasPrefix(e.Name, "drop-") {
+		t.Errorf("条目解析不符: %+v", e)
+	}
+	if _, err := time.Parse(trashTimeLayout, e.DeletedAt); err != nil {
+		t.Errorf("DeletedAt 不是有效时间戳: %q", e.DeletedAt)
+	}
+	if ids := s.IDs(); len(ids) != 0 {
+		t.Errorf("删完后不该还有角色目录: %v", ids)
+	}
+
+	// 坏输入:空名 / 路径穿越 / 不含时间戳 / 不存在 / 带路径分隔符
+	for _, name := range []string{"", "../drop", "drop", "notatimestamp", "ghost-20260101-000000", "drop-20260101-000000/x"} {
+		if _, err := s.Restore(name); err == nil {
+			t.Errorf("Restore(%q) 应被拒", name)
+		}
+	}
+	// 目标 ID 已存在 → 拒绝(不覆盖现役角色)
+	if err := s.Create(sdk.RoleSpec{ID: "drop", Name: "新 Drop"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Restore(e.Name); err == nil {
+		t.Error("目标 ID 已存在时应拒绝")
+	}
+	// 腾开位置后恢复:定义与私有技能都在
+	if err := os.RemoveAll(Dir("drop")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Restore(e.Name)
+	if err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if got != "drop" || !s.Exist("drop") {
+		t.Errorf("恢复结果: %q exist=%v", got, s.Exist("drop"))
+	}
+	spec, err := s.Get("drop")
+	if err != nil || spec.Name != "Drop" || !strings.Contains(spec.AGENTS, "正文") {
+		t.Errorf("恢复后内容不符: %+v %v", spec, err)
+	}
+	if _, err := os.Stat(filepath.Join(SkillsPath("drop"), "tax")); err != nil {
+		t.Errorf("恢复后私有技能目录应回来: %v", err)
+	}
+	if len(s.TrashList()) != 0 {
+		t.Errorf("恢复后回收站应空: %+v", s.TrashList())
+	}
+
+	// 手工放进来的目录:照实列出但 ID 为空(面板据此不给"恢复"按钮),恢复被拒。
+	if err := os.MkdirAll(filepath.Join(TrashDir(), "handmade"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bad := s.TrashList()
+	if len(bad) != 1 || bad[0].Name != "handmade" || bad[0].ID != "" {
+		t.Errorf("坏名条目应列出且 ID 为空: %+v", bad)
+	}
+}
+
+// TestRewriteMount 技能改名后把角色的挂载清单引用一起改(第八十四批)。
+// 挂载按**名字**存:只改技能目录名不改这里,角色就会悄悄多出一条「已失效挂载」。
+func TestRewriteMount(t *testing.T) {
+	setup(t)
+	s := Store{}
+	if err := s.Create(sdk.RoleSpec{ID: "finance", Name: "财务", SkillsSet: true, Skills: []string{"review", "report"}}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Create(sdk.RoleSpec{ID: "novelist", Name: "小说家", SkillsSet: true, Skills: []string{"report"}}, ""); err != nil {
+		t.Fatal(err)
+	}
+	// 默认池角色(不写 skills 键):改名不该动它,也不该给它补出 skills 键
+	if err := s.Create(sdk.RoleSpec{ID: "plain", Name: "默认池"}, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	touched, err := s.RewriteMount("report", "weekly-report")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(touched) != 2 || touched[0] != "finance" || touched[1] != "novelist" {
+		t.Errorf("被改动的角色 = %v, want [finance novelist]", touched)
+	}
+	fin, err := s.Get("finance")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(fin.Skills, ",") != "review,weekly-report" {
+		t.Errorf("finance 挂载 = %v", fin.Skills)
+	}
+	if fin.Name != "财务" || fin.Identity != "" {
+		t.Errorf("只该改挂载,其它字段被动过: %+v", fin)
+	}
+	nov, _ := s.Get("novelist")
+	if strings.Join(nov.Skills, ",") != "weekly-report" {
+		t.Errorf("novelist 挂载 = %v", nov.Skills)
+	}
+	// 默认池角色:文件里不应出现 skills 键
+	raw, err := os.ReadFile(filepath.Join(Dir("plain"), FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "skills") {
+		t.Errorf("默认池角色不该被写入 skills 键: %s", raw)
+	}
+
+	// 没有角色挂这个名字 → 空结果,不算错
+	touched, err = s.RewriteMount("ghost", "ghost2")
+	if err != nil || len(touched) != 0 {
+		t.Errorf("无引用时应返回空: %v %v", touched, err)
+	}
+	// old == new / 空值 → 空操作
+	for _, tc := range [][2]string{{"a", "a"}, {"", "b"}, {"a", ""}} {
+		if touched, err := s.RewriteMount(tc[0], tc[1]); err != nil || len(touched) != 0 {
+			t.Errorf("RewriteMount(%q,%q) 应为空操作: %v %v", tc[0], tc[1], touched, err)
+		}
 	}
 }

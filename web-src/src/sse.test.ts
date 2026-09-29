@@ -100,6 +100,17 @@ test('滚动摘要与取消回合 → meta 行', () => {
   assert.equal(m.msgs.length, before)
 })
 
+// 角色切换(R-3):事件要变成流里的一条 meta 行(否则"这段话是谁写的"在 UI 上看不出来);
+// 名称用事件里的快照(角色可能随后被改名/删,不能反查)。
+test('role/switch → meta 行(含回基线)', () => {
+  const m = newModel()
+  consume(m, ev('role/switch', { ID: 'finance', Name: '财务' }, 1))
+  assert.equal(m.msgs.at(-1)?.kind, 'meta')
+  assert.match(m.msgs.at(-1)?.text ?? '', /角色切换.*财务/)
+  consume(m, ev('role/switch', {}, 2))
+  assert.match(m.msgs.at(-1)?.text ?? '', /默认（基线）/, 'ID 空 = 回基线,要说清楚')
+})
+
 test('isUsage 只认 session/usage', () => {
   assert.equal(isUsage(ev('session/usage', {})), true)
   assert.equal(isUsage(ev('assistant/chunk', {})), false)

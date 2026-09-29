@@ -27,6 +27,30 @@ var recapFileKeys = map[string]bool{
 	"target": true, "source": true, "dest": true, "to": true, "from": true,
 }
 
+// recapRoleLine 角色经历一行(R-3):"角色经历: 切换 3 次 / 经历 2 个角色 · A → B → 默认(基线)"。
+// 去重只去**连续重复**(切换序列的相邻同角色不刷屏);计数只算非基线角色 ——
+// 基线不是角色,但它确实是经历的一段,故留在序列里显式写出来。
+func recapRoleLine(seq []sdk.RoleSwitchEvent) string {
+	labels := make([]string, 0, len(seq))
+	distinct := map[string]bool{}
+	for _, ev := range seq {
+		if ev.ID != "" {
+			distinct[ev.ID] = true
+		}
+		label := ev.Name
+		if ev.ID == "" {
+			label = "默认(基线)"
+		} else if label == "" {
+			label = ev.ID // 显示名未记下(旧事件):退回 ID,不猜
+		}
+		if n := len(labels); n > 0 && labels[n-1] == label {
+			continue
+		}
+		labels = append(labels, label)
+	}
+	return fmt.Sprintf("角色经历: 切换 %d 次 / 经历 %d 个角色 · %s", len(seq), len(distinct), strings.Join(labels, " → "))
+}
+
 // truncateRunes 按 rune 截断并加省略号(不切坏多字节字符)。
 func truncateRunes(s string, limit int) string {
 	s = strings.TrimSpace(strings.ReplaceAll(s, "\n", " "))
@@ -98,6 +122,7 @@ func (h *Host) cmdRecap(_ []string) (string, error) {
 		toolFails           = map[string]int{}
 		fileTools           = map[string]map[string]bool{}
 		callNames           = map[string]string{} // callID → tool name(结果计数用)
+		roleSeq             []sdk.RoleSwitchEvent // 角色切换序列(R-3;按事发顺序)
 	)
 	for i := range evs {
 		ev := &evs[i]
@@ -142,10 +167,12 @@ func (h *Host) cmdRecap(_ []string) (string, error) {
 			if p.Model != "" {
 				model = p.Model
 			}
+		case sdk.RoleSwitchEvent:
+			roleSeq = append(roleSeq, p)
 		}
 	}
 
-	if userTurns == 0 && asstMsgs == 0 {
+	if userTurns == 0 && asstMsgs == 0 && len(roleSeq) == 0 {
 		return "会话速览(本地统计,未调用模型)\n当前会话为空(无用户消息);对话后再试。", nil
 	}
 
@@ -168,6 +195,11 @@ func (h *Host) cmdRecap(_ []string) (string, error) {
 		userTurns, asstMsgs, totalCalls, totalFails)
 	if !firstTS.IsZero() && lastTS.After(firstTS) {
 		fmt.Fprintf(&sb, "跨度: %s(首末事件)\n", humanDur(lastTS.Sub(firstTS)))
+	}
+	// 角色经历(R-3):切角色不换会话,同一份历史会混进多个人格的产出 —— 这里把它们摊开,
+	// 让人看出"本会话经历过哪几个角色",否则重看会话时无从判断某段话是谁写的。
+	if len(roleSeq) > 0 {
+		sb.WriteString(recapRoleLine(roleSeq) + "\n")
 	}
 
 	if totalCalls > 0 {

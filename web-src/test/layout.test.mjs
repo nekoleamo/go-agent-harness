@@ -68,7 +68,7 @@ function makeStub(withProviders, longTokens = false, running = false, manyPlugin
       } catch {
         body = ''
       }
-      seen.push({ method: route.request().method(), path: p, body })
+      seen.push({ method: route.request().method(), path: p, query: url.search, body })
     }
     if (p === '/api/roles') {
       // 未装配 ctx.roles 的环境:真实后端回 503 文本 → 面板应整段隐藏(导航项也不出现)。
@@ -163,7 +163,33 @@ function makeStub(withProviders, longTokens = false, running = false, manyPlugin
       })
     }
     if (p === '/api/skills') return json({ name: 'new-skill', path: '/tmp/skills/new-skill/SKILL.md' })
+    // 技能改名/跨库移动(第八十四批):POST /api/skills/{name}/relocate。
+    // 必须放在通用 /api/skills/ 兕底之前(那个会先把多段路径吃掉)。
+    if (p.endsWith('/relocate')) {
+      const q = new URLSearchParams(p.split('?')[1] || '')
+      const b = JSON.parse(route.request().postData() || '{}')
+      return json({
+        ok: true,
+        name: b.to_name || 'skill-alpha',
+        role: b.to_role || '',
+        from_name: p.split('/')[3],
+        from_role: q.get('role') || '',
+        // 故意带一条被同步的角色挂载:面板必须把这个副作用说出来(不能假装只是改了名字)
+        mounts_updated: ['assistant'],
+      })
+    }
     if (p.startsWith('/api/skills/')) return json({ name: 'skill-alpha', content: '---\nname: skill-alpha\n---\nbody', path: '/tmp/skills/skill-alpha/SKILL.md' })
+    // 回收站(第八十三批):删除的角色/技能都移进 .trash,这里列出并可恢复。
+    if (p === '/api/trash') {
+      return json({
+        roles: [{ name: 'oldrole-20260928-153005', id: 'oldrole', deleted_at: '20260928-153005' }],
+        skills: [
+          { name: 'shared-gone-20260928-153010', skill: 'shared-gone', role: '', deleted_at: '20260928-153010' },
+          { name: 'private-gone-20260928-153015', skill: 'private-gone', role: 'finance', deleted_at: '20260928-153015' },
+        ],
+      })
+    }
+    if (p === '/api/trash/restore') return json({ ok: true })
     if (p === '/api/state') {
       return json({
         model: 'layout-guard/model',
@@ -736,6 +762,145 @@ describe('布局护栏:整页永不滚动(第五十二/五十三批)', { skip: s
         stub.seen.some((r) => r.method === 'DELETE' && r.path === '/api/roles/assistant'),
         `确认后未删除:${JSON.stringify(stub.seen)}`,
       )
+    } catch (e) {
+      await shoot(page, t.name)
+      throw e
+    } finally {
+      await ctx.close()
+    }
+  })
+
+  // 回收站(第八十三批):删除的角色/技能移进 .trash 后**有入口恢复** —— 此前面板文案写着
+  // "可恢复"却没有列表也没有动作。这里钉:展开才拉 /api/trash、两组条目都渲染、恢复走
+  // 二次确认且取消不发请求、确认后 POST 用**回收站目录名**(不是原 ID/技能名)定位。
+  test('设置面板:回收站列出已删角色/技能并可按目录名恢复', async (t) => {
+    const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+    let page = null
+    try {
+      const stub = makeStub(true, true, false, false, true)
+      page = await open(ctx, stub, docks[1].dock)
+      await page.click('.gear')
+      await page.waitForSelector('[data-sec="role"]')
+      // 收起态不发请求(展开才拉,不在每次轮询里拖大响应)
+      assert.equal(await page.$('[data-sec="role"] .m-item:has-text("oldrole")'), null, '未展开时不该有回收站条目')
+      await page.click('[data-sec="role"] h3:has-text("回收站") button:has-text("查看")')
+      await page.waitForSelector('[data-sec="role"] .m-item:has-text("oldrole")')
+      const texts = await page.evaluate(() =>
+        Array.from(document.querySelectorAll('[data-sec="role"] .m-item')).map((x) => x.textContent ?? ''),
+      )
+      assert.ok(
+        texts.some((x) => x.includes('oldrole') && x.includes('2026-09-28 15:30')),
+        `角色条目应显示名字与删除时间:${JSON.stringify(texts)}`,
+      )
+      assert.ok(
+        texts.some((x) => x.includes('shared-gone') && x.includes('共享技能库')),
+        `共享库技能条目应标注归属:${JSON.stringify(texts)}`,
+      )
+      assert.ok(
+        texts.some((x) => x.includes('private-gone') && x.includes('角色私有 · finance')),
+        `角色私有技能条目应标注归属:${JSON.stringify(texts)}`,
+      )
+
+      // 恢复 = 有副作用 → 二次确认;取消后不得发请求
+      const before = stub.seen.filter((r) => r.path === '/api/trash/restore').length
+      await page.click('[data-sec="role"] .m-item:has-text("oldrole") button:has-text("恢复")')
+      await page.waitForSelector('[aria-label="操作确认"]')
+      await page.click('[aria-label="操作确认"] button:has-text("取消")')
+      await page.waitForTimeout(150)
+      assert.equal(stub.seen.filter((r) => r.path === '/api/trash/restore').length, before, '取消确认后仍发了恢复请求')
+
+      await page.click('[data-sec="role"] .m-item:has-text("oldrole") button:has-text("恢复")')
+      await page.waitForSelector('[aria-label="操作确认"]')
+      await page.click('[aria-label="操作确认"] button:has-text("确认")')
+      await page.waitForTimeout(200)
+      const post = stub.seen.find((r) => r.method === 'POST' && r.path === '/api/trash/restore')
+      assert.ok(post, `恢复未提交:${JSON.stringify(stub.seen)}`)
+      const rb = JSON.parse(post.body)
+      assert.equal(rb.kind, 'role')
+      assert.equal(rb.name, 'oldrole-20260928-153005', `恢复要按回收站目录名定位:${post.body}`)
+
+      // 恢复技能:共享库不带 role,角色私有带 role
+      await page.click('[data-sec="role"] .m-item:has-text("private-gone") button:has-text("恢复")')
+      await page.waitForSelector('[aria-label="操作确认"]')
+      await page.click('[aria-label="操作确认"] button:has-text("确认")')
+      await page.waitForTimeout(200)
+      const posts = stub.seen.filter((r) => r.method === 'POST' && r.path === '/api/trash/restore')
+      const sb = JSON.parse(posts[posts.length - 1].body)
+      assert.equal(sb.kind, 'skill')
+      assert.equal(sb.role, 'finance')
+      assert.equal(sb.name, 'private-gone-20260928-153015')
+    } catch (e) {
+      await shoot(page, t.name)
+      throw e
+    } finally {
+      await ctx.close()
+    }
+  })
+
+  // 技能改名 / 跨库移动(第八十四批):技能身份 = 目录名 + 归属库。面板要能一次把两件改完,
+  // 且必须把"会同步改掉挂载它的角色"这个副作用说出来 —— 挂载是按名字存的,改名会连带改引用。
+  test('设置面板:技能可改名/换库,走二次确认且回显挂载同步', async (t) => {
+    const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+    let page = null
+    try {
+      const stub = makeStub(true, true, false, false, true)
+      page = await open(ctx, stub, docks[1].dock)
+      await page.click('.gear')
+      await page.waitForSelector('[data-sec="role"]')
+      const form = '[data-sec="role"] .add-form:has-text("改名 / 移动")'
+      const row = '[data-sec="role"] .m-item:has-text("skill-alpha")'
+      assert.equal(await page.$(form), null, '未点按钮时不该有改名/移动表单')
+      // 技能列表在"展开某个角色"的详情里(与挂载勾选同一段),先展开 finance
+      await page.click('[data-sec="role"] .prow:has-text("Bookkeeping") button:has-text("编辑")')
+      await page.waitForSelector(`${row} button:has-text("改名/移动")`)
+
+      await page.click(`${row} button:has-text("改名/移动")`)
+      await page.waitForSelector(form)
+      // 默认填现值:名字与所属库都不变 = 没有变化 → 提交禁用(后端也会拒"无变化")
+      assert.ok(await page.isDisabled(`${form} button:has-text("确认改名/移动")`), '未填变化时提交应禁用')
+      assert.equal(await page.inputValue(`${form} input.inp`), 'skill-alpha', '新名称应预填现值')
+
+      // 改名 = 有副作用 → 二次确认;取消后不得发请求
+      await page.fill(`${form} input.inp`, 'skill-renamed')
+      assert.ok(!(await page.isDisabled(`${form} button:has-text("确认改名/移动")`)), '填了变化后提交应可用')
+      const before = stub.seen.filter((r) => r.path.endsWith('/relocate')).length
+      await page.click(`${form} button:has-text("确认改名/移动")`)
+      await page.waitForSelector('[aria-label="操作确认"]')
+      await page.click('[aria-label="操作确认"] button:has-text("取消")')
+      await page.waitForTimeout(150)
+      assert.equal(stub.seen.filter((r) => r.path.endsWith('/relocate')).length, before, '取消确认后仍发了 relocate 请求')
+
+      await page.click(`${form} button:has-text("确认改名/移动")`)
+      await page.waitForSelector('[aria-label="操作确认"]')
+      await page.click('[aria-label="操作确认"] button:has-text("确认")')
+      await page.waitForTimeout(200)
+      const post = stub.seen.find((r) => r.method === 'POST' && r.path.endsWith('/relocate'))
+      assert.ok(post, `改名未提交:${JSON.stringify(stub.seen)}`)
+      // 共享库技能:路径不带 role 查询参数,to_name 是新名字
+      assert.equal(post.path, '/api/skills/skill-alpha/relocate', `源库应写在路径上:${post.path}`)
+      const pb = JSON.parse(post.body)
+      assert.equal(pb.to_name, 'skill-renamed')
+      assert.equal(pb.to_role, '')
+      // 副作用必须说出来(否则用户不知道角色挂载被动过)
+      await page.waitForSelector('[data-sec="role"] p.ok:has-text("已同步 1 个角色的挂载")')
+      const msg = await page.textContent('[data-sec="role"] p.ok')
+      assert.ok(String(msg || '').includes('skill-alpha'), `应回显改名前后名字:${msg}`)
+
+      // 角色私有技能:源库写在查询参数上,换到共享库 = to_role 空
+      await page.click('[data-sec="role"] .m-item:has-text("private-beta") button:has-text("改名/移动")')
+      await page.waitForSelector(form)
+      await page.selectOption(`${form} select.sel`, '')
+      await page.click(`${form} button:has-text("确认改名/移动")`)
+      await page.waitForSelector('[aria-label="操作确认"]')
+      await page.click('[aria-label="操作确认"] button:has-text("确认")')
+      await page.waitForTimeout(200)
+      const posts = stub.seen.filter((r) => r.method === 'POST' && r.path.endsWith('/relocate'))
+      const last = posts[posts.length - 1]
+      assert.equal(last.path, '/api/skills/private-beta/relocate', `源库应写在路径旁的查询参数上:${last.path}`)
+      assert.equal(last.query, '?role=finance', `角色私有技能的源库应带 role:${last.query}`)
+      const lb = JSON.parse(last.body)
+      assert.equal(lb.to_role, '', '应搬到共享库')
+      assert.equal(lb.to_name, 'private-beta', '不改名时 to_name 仍是原名(后端按此判"只换库")')
     } catch (e) {
       await shoot(page, t.name)
       throw e

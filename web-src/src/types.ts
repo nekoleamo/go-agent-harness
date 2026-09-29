@@ -461,3 +461,20 @@ export interface RolesView {
   library?: SkillInfo[]
   problems?: { id: string; error: string }[]
 }
+// TrashEntry 回收站里的一份角色/技能(第八十三批)。name = 回收站目录名(<名>-<时间戳>),
+// 恢复时按它定位;id/skill 为空 = 目录名不合约定(面板照实显示但恢复会被拒)。
+export interface TrashRoleEntry {
+  name: string
+  id: string
+  deleted_at: string
+}
+export interface TrashSkillEntry {
+  name: string
+  skill: string
+  role: string // 空 = 共享技能库
+  deleted_at: string
+}
+export interface TrashView {
+  roles: TrashRoleEntry[]
+  skills: TrashSkillEntry[]
+}

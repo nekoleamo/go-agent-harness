@@ -53,6 +53,13 @@ func NormalizePayload(ev *sdk.SessionEvent) any {
 		if err := json.Unmarshal(raw, &v); err == nil {
 			return v
 		}
+	case sdk.EventRoleSwitch:
+		// 角色切换事实(R-3):/recap 统计角色经历靠它 —— 不还原就只能在**重启后**
+		// 看到 map(内存会话里是原类型,重启重放后不是),同一个命令两条口径。
+		var v sdk.RoleSwitchEvent
+		if err := json.Unmarshal(raw, &v); err == nil {
+			return v
+		}
 	case sdk.EventFileChange:
 		// S-P1-1:改动审计带 patch 文本(可能数十 KB),落盘再回放必须还原为具体类型,
 		// 否则 /diff 读回的是 map → 打不开

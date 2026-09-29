@@ -45,6 +45,9 @@ const (
 	MaxAgentsBytes = 32 * 1024
 	// maxTrashKeep .trash 保留的最近份数(超出按目录名倒序淘汰)。
 	maxTrashKeep = 20
+	// trashTimeLayout 回收站条目名尾部的时间戳口径(<id>-<YYYYMMDD-HHMMSS>)。
+	// 单一事实源:Delete 落名、TrashList/Restore 还原都读它,免得一边改了一边解析不出来。
+	trashTimeLayout = "20060102-150405"
 	// defaultOwnSkillMax 角色私有技能个数上限(防"整库复制进角色"的误用)。
 	defaultOwnSkillMax = 200
 )
@@ -144,6 +147,24 @@ func (s Store) List() []sdk.RoleSpec {
 		}
 		return out[i].ID < out[j].ID
 	})
+	return out
+}
+
+// IDs 全部角色目录名(不含 .trash/隐藏目录;不判断 role.yaml 是否可读 —— 坏角色也算)。
+// 用途:回收站面板要把每个角色的私有技能 .trash 一并列出,坏角色的目录也不该漏。
+func (s Store) IDs() []string {
+	entries, err := os.ReadDir(Path())
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		out = append(out, e.Name())
+	}
+	sort.Strings(out)
 	return out
 }
 
@@ -338,6 +359,48 @@ func (s Store) Rename(id, newID, newName string) (sdk.RoleSpec, error) {
 	return s.Get(spec.ID)
 }
 
+// RewriteMount 把所有角色 role.yaml 挂载清单里的 old 改成 new(技能改名后引用不断);
+// 返回被改动的角色 ID。为什么必须做:挂载是**按名字**的 —— 光改技能目录名会让每个挂载它的
+// 角色悄悹多出一条“已失效挂载”(技能从该角色消失)。坏角色文件跳过(不因它中断全局改写)。
+// 直接操作 roleFile 而非 RoleSpec→Save:不把 Get 的缺省显示名(= id)写成显式 name 键。
+func (s Store) RewriteMount(old, new string) ([]string, error) {
+	if old == "" || new == "" || old == new {
+		return nil, nil
+	}
+	var touched []string
+	for _, id := range s.IDs() {
+		path := filepath.Join(Dir(id), FileName)
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			continue // 坏角色:跳过(它本来就读不出来)
+		}
+		var f roleFile
+		if err := yaml.Unmarshal(raw, &f); err != nil || f.Skills == nil {
+			continue // 未写 skills 键 = 默认池,改名对它无影响
+		}
+		list, changed := *f.Skills, false
+		for i, n := range list {
+			if n == old {
+				list[i] = new
+				changed = true
+			}
+		}
+		if !changed {
+			continue
+		}
+		f.Skills = &list
+		out, err := yaml.Marshal(f)
+		if err != nil {
+			return touched, fmt.Errorf("角色 %s 序列化失败: %w", id, err)
+		}
+		if err := writeFileAtomic(path, out, 0o644); err != nil {
+			return touched, fmt.Errorf("角色 %s 挂载改写失败: %w", id, err)
+		}
+		touched = append(touched, id)
+	}
+	return touched, nil
+}
+
 // Delete 删除角色:移入 .trash(可恢复),不做物理删除。
 // 当前角色拒绝删除(否则"当前角色"悬空,下一轮提示里会静默少一层指令)。
 func (s Store) Delete(id string) error {
@@ -353,12 +416,84 @@ func (s Store) Delete(id string) error {
 	if err := os.MkdirAll(TrashDir(), 0o755); err != nil {
 		return fmt.Errorf("回收站创建失败: %w", err)
 	}
-	dst := filepath.Join(TrashDir(), fmt.Sprintf("%s-%s", id, time.Now().Format("20060102-150405")))
+	dst := filepath.Join(TrashDir(), trashEntryName(id))
 	if err := os.Rename(Dir(id), dst); err != nil {
 		return fmt.Errorf("角色移入回收站失败: %w", err)
 	}
 	pruneTrash()
 	return nil
+}
+
+// TrashEntry 回收站里的一份角色(目录名 = <id>-<时间戳>)。
+// ID/DeletedAt 为空 = 目录名不合约定(手工放进来的),面板照实列出但恢复会被拒。
+// 为什么带 ID 而不是只给目录名:面板要显示"这是哪个角色",且恢复目标就是这个 ID。
+type TrashEntry struct {
+	Name      string `json:"name"`       // 回收站目录名(恢复时用它定位)
+	ID        string `json:"id"`         // 原角色 ID("" = 认不出)
+	DeletedAt string `json:"deleted_at"` // 删除时间(目录名尾部时间戳,格式 20060102-150405)
+}
+
+// trashEntryName 回收站目录名(<id>-<时间戳>);Delete 与测试共用一处命名。
+func trashEntryName(id string) string { return id + "-" + time.Now().Format(trashTimeLayout) }
+
+// splitTrashName 从回收站条目名还原原 ID 与删除时间戳(不合约定 → ok=false)。
+// 技能名/角色 ID 本身可以含连字符,所以只能按**固定长度的尾部时间戳**切,不能按"最后一个连字符"。
+func splitTrashName(name string) (id, ts string, ok bool) {
+	cut := len(name) - len(trashTimeLayout) - 1
+	if cut <= 0 || name[cut] != '-' {
+		return "", "", false
+	}
+	id, ts = name[:cut], name[cut+1:]
+	if _, err := time.Parse(trashTimeLayout, ts); err != nil {
+		return "", "", false
+	}
+	return id, ts, true
+}
+
+// TrashList 回收站条目(最近的在前)。不做清洗:坏名也列出来(否则用户看不见自己手放的目录)。
+func (s Store) TrashList() []TrashEntry {
+	entries, err := os.ReadDir(TrashDir())
+	if err != nil {
+		return nil
+	}
+	out := make([]TrashEntry, 0, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		id, ts, _ := splitTrashName(e.Name())
+		out = append(out, TrashEntry{Name: e.Name(), ID: id, DeletedAt: ts})
+	}
+	// 目录名以固定格式时间戳结尾,字典序倒序 = 删除时间倒序。
+	sort.Slice(out, func(i, j int) bool { return out[i].Name > out[j].Name })
+	return out
+}
+
+// Restore 把回收站里的角色恢复回 roles/<id>/;返回恢复后的角色 ID。
+// 目标 ID 已存在 → 显式拒绝(不覆盖现役角色);条目名不含时间戳 → 拒绝(手放的目录不猜)。
+func (s Store) Restore(trashName string) (string, error) {
+	if trashName == "" || strings.ContainsAny(trashName, `/\`) || trashName != filepath.Base(trashName) || trashName == "." || trashName == ".." {
+		return "", fmt.Errorf("非法回收站条目名:%q", trashName)
+	}
+	id, _, ok := splitTrashName(trashName)
+	if !ok {
+		return "", fmt.Errorf("回收站条目名不含 <id>-<时间戳>,无法还原:%s", trashName)
+	}
+	if err := ValidateID(id); err != nil {
+		return "", err
+	}
+	src := filepath.Join(TrashDir(), trashName)
+	fi, err := os.Stat(src)
+	if err != nil || !fi.IsDir() {
+		return "", fmt.Errorf("回收站条目不存在:%s", trashName)
+	}
+	if s.Exist(id) {
+		return "", fmt.Errorf("角色 %s 已存在:先改名或删除现有角色,再恢复回收站里那一份", id)
+	}
+	if err := os.Rename(src, Dir(id)); err != nil {
+		return "", fmt.Errorf("角色恢复失败: %w", err)
+	}
+	return id, nil
 }
 
 // pruneTrash 只保留最近 maxTrashKeep 份(目录名带时间戳,倒序淘汰)。

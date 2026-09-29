@@ -95,6 +95,7 @@ type Service struct {
 	specs    map[string]sdk.RoleSpec // 全量角色缓存(Refresh 刷新)
 	problems []roles.Problem         // 上次刷新遇到坏文件(可见性)
 	notices  sdk.NoticeService       // 可选(ctx.notices 未装配 = nil)
+	sess     sdk.SessionLog          // 可选(ctx.sessions 未装配 = nil)
 }
 
 // Refresh 重读角色定义与当前角色(磁盘为准);返回坏文件清单(不阻塞装配)。
@@ -235,6 +236,7 @@ func (s *Service) Use(id string) error {
 	// 迁移期刷新缓存里的 EffectiveSkills(重扫后技能集合可能变了)。
 	s.Refresh()
 	s.notifySwitch(id)
+	s.recordSwitch(prev, id)
 	return nil
 }
 
@@ -491,6 +493,34 @@ func (s *Service) mustGet(id string) (sdk.RoleSpec, error) {
 }
 
 func (s *Service) log() *slog.Logger { return s.c.Logger() }
+
+// recordSwitch 把切换落进会话账本(R-3)。切角色不换会话,但系统提示整段换掉 ——
+// 同一份历史会共存多个人格的产出;不落账就只能事后在日志里猜「这段话是谁写的」。
+// 与 notifySwitch 同一纪律:通道未装配/写失败只告警,**不影响切换本身**(磁盘偏好已落)。
+func (s *Service) recordSwitch(prev, id string) {
+	s.mu.RLock()
+	lg := s.sess
+	s.mu.RUnlock()
+	if lg == nil {
+		var dep sdk.SessionLog
+		if err := s.c.Inject("ctx.sessions", &dep); err != nil || dep == nil {
+			return // 极简 profile / 未装配账本:没有会话可记
+		}
+		lg = dep
+		s.mu.Lock()
+		s.sess = dep
+		s.mu.Unlock()
+	}
+	ev := sdk.RoleSwitchEvent{ID: id, Prev: prev}
+	if id != "" {
+		if spec, ok := s.Get(id); ok {
+			ev.Name = spec.Name
+		}
+	}
+	if err := lg.Append(sdk.SessionEvent{Kind: sdk.EventRoleSwitch, Payload: ev}); err != nil {
+		s.log().Warn("role/switch 事件记录失败(切换已生效)", "role", id, "err", err)
+	}
+}
 
 // notifySwitch 切换后发一条用户提示(可选通道):
 // 讲清两件事 —— 提示缓存失效(首轮变慢)、会话不换(与 /workspace 的差异)。
