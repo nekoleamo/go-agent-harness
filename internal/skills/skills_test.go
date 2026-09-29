@@ -231,6 +231,9 @@ func TestTrashListAndRestore(t *testing.T) {
 	if err := lib.Remove("gone"); err != nil {
 		t.Fatal(err)
 	}
+	// 让两次删除的毫秒时间戳**必然不同**:否则同一毫秒内删除会走"名字倒序决胜",
+	// 断言就变成了在赌调度(CI Windows 上正是这么红的)。
+	time.Sleep(20 * time.Millisecond)
 	if err := lib.Remove("a-b-c"); err != nil {
 		t.Fatal(err)
 	}
@@ -249,9 +252,13 @@ func TestTrashListAndRestore(t *testing.T) {
 	if e, ok := bySkill["gone"]; !ok || e.DeletedAt == "" {
 		t.Errorf("技能名/时间戳解析失败: %+v", list)
 	}
-	// 最近的在前(目录名字典序倒序 = 时间戳倒序)
-	if list[0].Name < list[1].Name {
-		t.Errorf("应最近在前: %+v", list)
+	// 最近的在前:判据是**删除时间戳**,不是目录名字典序 —— 名字的第一主键是技能名
+	// ("gone" > "a-b-c"),拿字典序当代理会在「后删的那条名字更小」时假红。
+	if list[0].Skill != "a-b-c" || !strings.HasPrefix(list[0].Name, "a-b-c-") {
+		t.Errorf("后删的那条应排第一: %+v", list)
+	}
+	if list[0].DeletedAt <= list[1].DeletedAt {
+		t.Errorf("删除时间应严格倒序(已隔 20ms): %+v", list)
 	}
 
 	// 坏输入:空名 / 原名 / 路径 / 不含时间戳 / 不存在
