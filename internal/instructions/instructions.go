@@ -22,8 +22,9 @@ const (
 	// FileName 全局指令文件名(数据根下)。
 	FileName = "AGENTS.md"
 	// MaxBytes 全局指令的字节上限(与 roles.MaxAgentsBytes 同值:两份指令都逐字进
-	// 系统提示,上限不一致会让"这里能存那里不能"变成悬案)。写入超限显式失败,
-	// 不静默截断 —— 截断一份指令文件等于悄悄改用户的话。
+	// 系统提示,上限不一致会让"这里能存那里不能"变成悬案)。写入超限显式失败(不静默
+	// 截断 —— 悄悄改用户的话不行);注入侧超限则截断但**带标注**(Injected),
+	// 两条路都不让用户"不知道发生了什么"。
 	MaxBytes = 32 * 1024
 )
 
@@ -33,12 +34,6 @@ var ErrTooLarge = errors.New("全局指令超上限")
 
 // Path 全局指令文件绝对路径($GAH_HOME/AGENTS.md;空数据根 → TempDir 兜底,由 sdk.Home 决定)。
 func Path() string { return filepath.Join(sdk.Home(), FileName) }
-
-// Exists 文件是否存在。
-func Exists() bool {
-	_, err := os.Stat(Path())
-	return err == nil
-}
 
 // Read 读全文(文件不存在 → ("", false, nil):"没有全局指令"是合法状态,不是错误)。
 func Read() (string, bool, error) {
@@ -71,8 +66,13 @@ func Write(text string) error {
 	return nil
 }
 
-// Shrink 按上限截断(注入侧用;返回是否发生截断)。
-func Shrink(text string) (string, bool) {
+// Injected 注入用的全局指令正文:超上限按 UTF-8 边界截断并**显式标注**(返回是否截断)。
+//
+// 与角色 AGENTS.md 同口径(roles.Shrink + "已截断"标注):两份指令都逐字进系统提示、
+// 共用同一个上限,不该一个截一个不截。手改出的超大文件也不静默丢内容 —— 截断标记随
+// 正文进系统提示与 /context 分解,模型与用户都看得见(读盘原文件仍原样可读,面板按
+// Over 提示"已超上限,保存会被拒")。
+func Injected(text string) (string, bool) {
 	if len(text) <= MaxBytes {
 		return text, false
 	}
@@ -81,7 +81,7 @@ func Shrink(text string) (string, bool) {
 	for cut > 0 && !utf8Start(text[cut]) {
 		cut--
 	}
-	return text[:cut], true
+	return text[:cut] + "\n(全局指令超过 " + fmt.Sprint(MaxBytes) + " 字节上限,已截断)", true
 }
 
 // utf8Start 该字节是否为 UTF-8 起始字节(续字节形如 10xxxxxx)。

@@ -1244,7 +1244,7 @@ watch(
           <p v-if="instrMsg" class="dim ok">{{ instrMsg }}</p>
           <p class="dim">
             {{ instrExists ? '当前 ' + instrBytes + ' 字节' : '还没有这份文件（保存即创建）' }}／上限 {{ instrMax }} 字节
-            <span v-if="instrOver">· 现有文件已超上限，保存会被拒</span>
+            <span v-if="instrOver">· 现有文件已超上限，保存会被拒；注入时按上限截断并标注「已截断」</span>
           </p>
           <div v-if="instrEdit" class="add-form">
             <label class="fld">

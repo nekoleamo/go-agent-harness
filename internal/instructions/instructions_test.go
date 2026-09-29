@@ -1,10 +1,12 @@
 package instructions
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/nekoleamo/go-agent-harness/internal/roles"
 )
@@ -18,6 +20,13 @@ func TestPathUnderHome(t *testing.T) {
 	}
 }
 
+// existsOnDisk 文件是否在盘上(仅测试用:生产侧不需要这个入口 —— Read 已回 exists bool,
+// 面板也按 Read 的返回值渲染;少一个导出函数就少一处漂移面)。
+func existsOnDisk() bool {
+	_, err := os.Stat(Path())
+	return err == nil
+}
+
 // TestReadMissingIsNotError "没有全局指令"是合法状态:不报错、不算存在。
 func TestReadMissingIsNotError(t *testing.T) {
 	t.Setenv("GAH_HOME", t.TempDir())
@@ -25,7 +34,7 @@ func TestReadMissingIsNotError(t *testing.T) {
 	if err != nil || ok || text != "" {
 		t.Fatalf("缺文件应回空且无错: %q %v %v", text, ok, err)
 	}
-	if Exists() {
+	if existsOnDisk() {
 		t.Fatal("缺文件时 Exists 应为 false")
 	}
 }
@@ -42,7 +51,7 @@ func TestWriteReadRoundTrip(t *testing.T) {
 	if err != nil || !ok || text != body {
 		t.Fatalf("读回不一致: %q %v %v", text, ok, err)
 	}
-	if !Exists() {
+	if !existsOnDisk() {
 		t.Fatal("写入后 Exists 应为 true")
 	}
 	// 覆盖写(旧内容不残留)
@@ -73,7 +82,7 @@ func TestWriteRejectsOverMax(t *testing.T) {
 	} else if !strings.Contains(err.Error(), "超上限") {
 		t.Fatalf("错误信息应说明超上限: %v", err)
 	}
-	if Exists() {
+	if existsOnDisk() {
 		t.Fatal("超限失败不应落盘")
 	}
 	// 边界:正好等于上限可以通过
@@ -82,23 +91,30 @@ func TestWriteRejectsOverMax(t *testing.T) {
 	}
 }
 
-// TestShrinkUTF8Boundary 截断不切半截字符;未超限原样返回。
-func TestShrinkUTF8Boundary(t *testing.T) {
+// TestInjectedTruncatesUTF8 注入侧超限截断不切半截字符 + 带显式标注;未超限原样返回。
+func TestInjectedTruncatesUTF8(t *testing.T) {
 	small := "短"
-	if got, cut := Shrink(small); got != small || cut {
+	if got, cut := Injected(small); got != small || cut {
 		t.Fatalf("未超限不该改: %q %v", got, cut)
+	}
+	// 边界值:恰好等于上限 → 不截断(与 Write 放行边界一致)
+	if got, cut := Injected(strings.Repeat("a", MaxBytes)); cut || len(got) != MaxBytes {
+		t.Fatalf("边界值不该截断: len=%d cut=%v", len(got), cut)
 	}
 	// 构造:前缀填满到 MaxBytes-1,再放一个 3 字节汉字 → 必须退到字符边界
 	body := strings.Repeat("a", MaxBytes-1) + "汉"
-	got, cut := Shrink(body)
+	got, cut := Injected(body)
 	if !cut {
 		t.Fatal("超限应报告截断")
 	}
-	if len(got) > MaxBytes {
-		t.Fatalf("截断后仍超限: %d", len(got))
+	if !strings.HasSuffix(got, "\n(全局指令超过 "+fmt.Sprint(MaxBytes)+" 字节上限,已截断)") {
+		t.Fatalf("截断必须带标注(否则用户不知道指令被截了): %q", got[len(got)-20:])
 	}
-	if !strings.HasSuffix(got, "a") {
-		t.Fatalf("截断应退到字符边界(不能留半截汉字): %q", got[len(got)-3:])
+	if !strings.HasSuffix(strings.TrimSuffix(got, "\n(全局指令超过 "+fmt.Sprint(MaxBytes)+" 字节上限,已截断)"), "a") {
+		t.Fatalf("截断应退到字符边界(不能留半截汉字): %q", got[len(got)-30:])
+	}
+	if !utf8.ValidString(got) {
+		t.Fatalf("截断后必须仍是合法 UTF-8: %q", got)
 	}
 }
 

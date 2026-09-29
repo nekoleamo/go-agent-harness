@@ -15,6 +15,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/nekoleamo/go-agent-harness/internal/instructions"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -366,5 +367,73 @@ func TestReloadRebuildsExtraInstructions(t *testing.T) {
 	}
 	if len(s.extraInstr) != 2 {
 		t.Fatalf("文件回来后 reload 应重新纳入: %+v", s.extraInstr)
+	}
+}
+
+// noteTruncated 截断标注文案(与 internal/instructions.Injected 同口径)。
+func noteTruncated() string {
+	return "\n(全局指令超过 " + fmt.Sprint(instructions.MaxBytes) + " 字节上限,已截断)"
+}
+
+// TestGlobalInstructionsTruncatedOnInject 手改出的超大全局 AGENTS.md:注入侧按上限
+// 截断 + 显式标注(与角色 AGENTS.md 同口径;读盘原文件不动);Breakdown 与注入**同源**
+// (报截断后的字节数 —— /context 说的是“占了多少上下文”,不是“盘上文件多大”)。
+func TestGlobalInstructionsTruncatedOnInject(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GAH_HOME", home)
+	t.Chdir(t.TempDir())
+	head := "全局首标记-HEAD\n"
+	tail := "尾巴标记-TAIL"
+	body := head + strings.Repeat("x", instructions.MaxBytes) + tail
+	if err := os.WriteFile(filepath.Join(home, "AGENTS.md"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	svc, _ := startPrompt(t, nil)
+	sys := svc.Assemble(nil, nil)[0].Content
+	if !strings.Contains(sys, "全局首标记-HEAD") {
+		t.Fatalf("超限也不该整个丢掉(保前缀):\n%s", sys)
+	}
+	if strings.Contains(sys, tail) {
+		t.Fatalf("超限尾部不应进提示:\n%s", sys[len(sys)-80:])
+	}
+	if !strings.Contains(sys, "字节上限,已截断") {
+		t.Fatalf("截断必须带标注(不静默):\n%s", sys[len(sys)-80:])
+	}
+
+	ins, ok := svc.(sdk.SystemPromptInspector)
+	if !ok {
+		t.Fatal("host-system-prompt 应实现 SystemPromptInspector")
+	}
+	parts := ins.Breakdown(nil)
+	var part *sdk.PromptPart
+	for i := range parts {
+		if parts[i].Label == "全局指令(用户级 AGENTS.md)" {
+			p := parts[i]
+			part = &p
+		}
+	}
+	if part == nil {
+		t.Fatal("Breakdown 应含全局指令分项")
+	}
+	want := instructions.MaxBytes + len(noteTruncated())
+	if part.Bytes != want {
+		t.Fatalf("Breakdown 应与注入同源(报截断后 %d 字节,而非盘上 %d): got %d", want, len(body), part.Bytes)
+	}
+
+	// reload 路径同口径:文件换成小内容后应恢复原样注入(旧截断值不残留)。
+	if err := os.WriteFile(filepath.Join(home, "AGENTS.md"), []byte("小内容-OK"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rs, ok := svc.(sdk.ReloadableInstructions)
+	if !ok {
+		t.Fatal("host-system-prompt 应实现 ReloadableInstructions")
+	}
+	if err := rs.ReloadInstructions(); err != nil {
+		t.Fatalf("reload 应成功: %v", err)
+	}
+	sys = svc.Assemble(nil, nil)[0].Content
+	if !strings.Contains(sys, "小内容-OK") || strings.Contains(sys, "已截断") {
+		t.Fatalf("reload 后应按新内容原样注入:\n%s", sys[len(sys)-80:])
 	}
 }

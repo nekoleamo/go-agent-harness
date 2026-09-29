@@ -194,7 +194,7 @@ func TestInstructionsBadBody(t *testing.T) {
 	if code, _ := do(t, s, http.MethodPut, "/api/instructions", `{`); code != http.StatusBadRequest {
 		t.Fatalf("坏请求体应 400,got %d", code)
 	}
-	if instructions.Exists() {
+	if _, err := os.Stat(filepath.Join(home, instructions.FileName)); !os.IsNotExist(err) {
 		t.Fatalf("坏请求体不该写盘: %s", home)
 	}
 }

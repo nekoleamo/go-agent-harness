@@ -56,7 +56,8 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 func (s *Service) loadLocked() {
 	if s.cfg.global {
 		if raw, err := os.ReadFile(globalInstructionsPath()); err == nil {
-			s.globalInstr = string(raw)
+			// 超上限截断 + 标注(与角色 AGENTS.md 同口径;读盘原文件不动)
+			s.globalInstr, _ = instructions.Injected(string(raw))
 		}
 	}
 	if s.cfg.project {
@@ -85,7 +86,7 @@ func (s *Service) ReloadInstructions() error {
 			return fmt.Errorf("重载全局指令失败(旧值保留): %w", err)
 		}
 		if err == nil {
-			gi = string(raw)
+			gi, _ = instructions.Injected(string(raw))
 		} else {
 			gi = ""
 		}
