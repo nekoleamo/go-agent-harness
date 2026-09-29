@@ -17,13 +17,22 @@ func renderInputRight(s *State) string {
 	var parts []string
 	if s.Model != "" {
 		m := s.Model
-		if s.ModelSrc != "" {
+		switch {
+		case s.ModelFrom == sdk.SourceRole:
+			m += "(角色)" // 角色指定:不拼 provider 域名(该域名只属于会话通用适配器)
+		case s.ModelSrc != "":
 			m += "(" + s.ModelSrc + ")"
 		}
 		parts = append(parts, "模型: "+m)
 	}
-	if s.Thinking != "" && s.Thinking != "off" {
-		parts = append(parts, "思维: "+s.Thinking)
+	// off 本来隐身(会话档里 off 是默认值,天天占位没信息量);
+	// 但**角色强制 off** 是“它真的生效了”的唯一证据,得显出来。
+	if s.Thinking != "" && (s.Thinking != "off" || s.ThinkingFrom == sdk.SourceRole) {
+		t := s.Thinking
+		if s.ThinkingFrom == sdk.SourceRole {
+			t += "(角色)"
+		}
+		parts = append(parts, "思维: "+t)
 	}
 	stats := "上下文 -"
 	if s.Stats.Requests > 0 {

@@ -63,18 +63,21 @@ type App struct {
 func NewApp(c sdk.Ctx, loop sdk.AgentLoop, llm sdk.LLMService, profile string, palette ...map[string]string) *App {
 	// 启动即从服务拉取实际生效配置(模型/沙箱/思考等级),状态栏不显示"未设置"等假默认;
 	// 装配顺序保证适配器已 SetModel(host-llm → 适配器先于 ui 启动)。
-	state := &State{Profile: profile, Workspace: workspaceName(),
-		Model:    llm.Model(),
-		Thinking: llm.Thinking().String(),
+	state := &State{Profile: profile, Workspace: workspaceName()}
+	// 角色先取(生效值派生要它):模型/思考档都得经 Effective* 合成,
+	// 否则启动那一刻就在骗人(角色声明了模型,输入行却写着会话模型)。
+	var rs sdk.RoleService
+	if err := c.Inject("ctx.roles", &rs); err == nil && rs != nil {
+		state.Role = roleDisplay(rs) // 角色是"环境事实",启动就在状态栏说清现在是谁
 	}
+	role := roleSpecOf(rs)
+	state.Model, state.ModelFrom = sdk.EffectiveModel(llm.Model(), role)
+	tlvl, tfrom := sdk.EffectiveThinking(llm.Thinking().String(), role)
+	state.Thinking, state.ThinkingFrom = tlvl.String(), tfrom
 	// 沙箱档位从服务读实际值(而非展示层写死 workspace-write);联动覆盖时标注有效档
 	var sb sdk.Sandbox
 	if err := c.Inject("ctx.sandbox", &sb); err == nil && sb != nil {
 		state.Sandbox = sandboxDisplay(sb)
-	}
-	var rs sdk.RoleService
-	if err := c.Inject("ctx.roles", &rs); err == nil && rs != nil {
-		state.Role = roleDisplay(rs) // 角色是"环境事实",启动就在状态栏说清现在是谁
 	}
 	m := &Model{state: state}
 	a := &App{model: m, c: c, loop: loop, llm: llm, confirmCh: make(chan bool, 1)}
@@ -551,7 +554,7 @@ func (a *App) submit(input string) {
 func (a *App) cycleThinking(dir int) {
 	next := nextThinking(a.llm.Thinking(), dir)
 	a.llm.SetThinking(next)
-	a.model.state.Thinking = next.String()
+	a.syncDisplay() // 经角色合成后显示:角色声明了思考档时这里必须回显"角色覆盖"
 }
 
 // nextThinking 思考等级循环(纯函数):dir=1 前进(off→low→medium→high),-1 后退。
@@ -700,7 +703,11 @@ func (a *App) sandboxOrNil() sdk.Sandbox {
 }
 
 // roleOrNil 宽松取角色服务(未装配返回 nil:状态栏角色段可降级,不影响其它段)。
+// c 为空也返回 nil 而非 panic:大量 TUI 单测直接拼 &App{llm: …},没有宿主 ctx。
 func (a *App) roleOrNil() sdk.RoleService {
+	if a.c == nil {
+		return nil
+	}
 	var rs sdk.RoleService
 	if err := a.c.Inject("ctx.roles", &rs); err != nil {
 		return nil
@@ -1729,7 +1736,7 @@ func (a *App) applyPrefs() {
 	if p.Thinking != "" {
 		if lvl := sdk.ParseThinking(p.Thinking); lvl.String() == p.Thinking {
 			a.llm.SetThinking(lvl)
-			a.model.state.Thinking = lvl.String()
+			a.syncDisplay()
 		}
 	}
 	if p.Sandbox != "" {
@@ -1939,7 +1946,10 @@ func (a *App) cmdThinking(args []string) (string, error) {
 		return "", errString("/thinking off|low|medium|high")
 	}
 	a.llm.SetThinking(sdk.ParseThinking(args[0]))
-	a.model.state.Thinking = args[0]
+	a.syncDisplay() // 角色声明了思考档时会把会话值盖回去:显示必须说清当前到底用哪个
+	if role := a.currentRoleSpec(); role != nil && role.Thinking != "" {
+		return "会话思考档 -> " + args[0] + "(当前角色已声明 " + sdk.ParseThinking(role.Thinking).String() + ",实际按角色跑;改角色定义或 /role use 停用)", nil
+	}
 	return "思考等级 -> " + args[0], nil
 }
 
@@ -2241,15 +2251,43 @@ func (a *App) modelOptions([]string) []sdk.Option {
 	return opts
 }
 
-// syncDisplay 状态栏模型与来源随 provider/模型配置刷新(启动、/model、provider set/unset/clear)。
-// 模型 id = 适配器实际生效值;来源 = 当前 provider 域名短名(未配置则空,不显示)。
+// syncDisplay 状态栏模型与来源、思考档随 provider/模型/角色配置刷新(启动、/model、
+// provider set/unset/clear、Tab 切思考档、角色切换)。
+// 模型 id = **生效值**(会话值经角色声明合成后);来源 = 当前 provider 域名短名
+// (未配置则空,不显示);思考档同理。派生判据统一走 sdk.EffectiveModel/EffectiveThinking
+// —— 与 host-roles 真正注入请求时用的那份判定同源(两处不一致就会"显示与实际不符")。
 func (a *App) syncDisplay() {
-	a.model.state.Model = a.llm.Model()
+	role := a.currentRoleSpec()
+	model, from := sdk.EffectiveModel(a.llm.Model(), role)
 	src := ""
 	if base, _, ok := a.llm.ProviderInfo(); ok {
 		src = providerShortFromURL(base)
 	}
+	thinking, tfrom := sdk.EffectiveThinking(a.llm.Thinking().String(), role)
+	a.model.state.Model = model
 	a.model.state.ModelSrc = src
+	a.model.state.ModelFrom = from
+	a.model.state.Thinking = thinking.String()
+	a.model.state.ThinkingFrom = tfrom
+}
+
+// currentRoleSpec 当前角色定义(nil = 未启用/未装配/定义不可读)。
+func (a *App) currentRoleSpec() *sdk.RoleSpec { return roleSpecOf(a.roleOrNil()) }
+
+// roleSpecOf 从角色服务取当前角色定义(纯函数,展示层共用;
+// 角色定义不可读时返回 nil = 按基线显示与运行,与 host-roles 行为一致)。
+func roleSpecOf(rs sdk.RoleService) *sdk.RoleSpec {
+	if rs == nil {
+		return nil
+	}
+	id := rs.Current()
+	if id == "" {
+		return nil
+	}
+	if spec, ok := rs.Get(id); ok {
+		return &spec
+	}
+	return nil
 }
 
 // providerShort 当前 provider 域名短名(api.siliconflow.cn → siliconflow;模型来源备注)。

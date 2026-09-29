@@ -120,6 +120,11 @@ type roleFile struct {
 	ExcludeGlobal bool      `yaml:"exclude_global,omitempty"`
 	Skills        *[]string `yaml:"skills,omitempty"`
 	SkillsInherit bool      `yaml:"skills_inherit,omitempty"`
+	// Model / Thinking 角色携带的模型与思考档(第八十六批;空 = 跟随会话)。
+	// 必须与 sdk.RoleSpec 同步:Save 是"用 spec 重建一份 roleFile 全量覆盖写",
+	// 少一个字段就手写在 role.yaml 里的键就会被下一欢保存/改名/移动**静默抹掉**。
+	Model    string `yaml:"model,omitempty"`
+	Thinking string `yaml:"thinking,omitempty"`
 }
 
 // List 全部角色(按显示名排序)。**不读 AGENTS.md 正文**(只给字节数 + 私有技能名)——
@@ -211,6 +216,8 @@ func (s Store) Get(id string) (sdk.RoleSpec, error) {
 		Identity:      f.Identity,
 		ExcludeGlobal: f.ExcludeGlobal,
 		SkillsInherit: f.SkillsInherit,
+		Model:         f.Model,
+		Thinking:      f.Thinking,
 	}
 	if spec.Name == "" {
 		spec.Name = id
@@ -261,7 +268,8 @@ func (s Store) Save(spec sdk.RoleSpec) error {
 		return err
 	}
 	f := roleFile{Name: spec.Name, Description: spec.Description, Identity: spec.Identity,
-		ExcludeGlobal: spec.ExcludeGlobal, SkillsInherit: spec.SkillsInherit}
+		ExcludeGlobal: spec.ExcludeGlobal, SkillsInherit: spec.SkillsInherit,
+		Model: spec.Model, Thinking: spec.Thinking}
 	if spec.SkillsSet {
 		list := spec.Skills
 		if list == nil {

@@ -88,6 +88,10 @@ function makeStub(withProviders, longTokens = false, running = false, manyPlugin
             exclude_global: true,
             skills_set: false,
             skills: [],
+            // 角色携带模型/思考档(第八十六批):行内回显 + 详情编辑区都读这两个字段。
+            // 模型名故意长(27 字符无空格 token):它正是“面板被撑出横向滚动条”的触发器。
+            model: 'claude-sonnet-4-5-20250929',
+            thinking: 'high',
             agents_bytes: 21,
             seed: true,
           },
@@ -199,7 +203,20 @@ function makeStub(withProviders, longTokens = false, running = false, manyPlugin
         // 写成 snake_case 前端读不到(上下文会显示 '–',桩就与真实契约不一致了)。
         stats: { PromptTokens: 1200, CompletionTokens: 300, CachedTokens: 0, Requests: 3, LastPromptTokens: 1200, Window: 200000 },
         // 角色徽标(第七十九批):状态栏多一个 "角色 <名>" 项 —— 长角色名不得把底栏挤变形。
-        ...(withRoles ? { role: 'finance', role_name: 'Finance-Analyst-With-A-Very-Long-Display-Name-0123456789abcdef' } : {}),
+        // 生效值来源(第八十六批):withRoles → finance 已声明模型/思考档,
+        // 于是 model/thinking 应是**角色值**(与真实后端同一判据:生效值 + 会话原值都给)。
+        ...(withRoles
+          ? {
+              role: 'finance',
+              role_name: 'Finance-Analyst-With-A-Very-Long-Display-Name-0123456789abcdef',
+              model: 'claude-sonnet-4-5-20250929',
+              model_from: 'role',
+              model_session: 'layout-guard/model',
+              thinking: 'high',
+              thinking_from: 'role',
+              thinking_session: 'off',
+            }
+          : {}),
         running,
         version: 'layout-guard',
       })
@@ -762,6 +779,60 @@ describe('布局护栏:整页永不滚动(第五十二/五十三批)', { skip: s
         stub.seen.some((r) => r.method === 'DELETE' && r.path === '/api/roles/assistant'),
         `确认后未删除:${JSON.stringify(stub.seen)}`,
       )
+    } catch (e) {
+      await shoot(page, t.name)
+      throw e
+    } finally {
+      await ctx.close()
+    }
+  })
+
+  // 角色携带模型/思考档(第八十六批):面板要如实区分“生效值”与“会话档”——
+  // 角色声明了就标「角色指定」并在设置区说清“这里切换要停用角色后才生效”(静默失效比不做更糟)。
+  test('设置面板:角色指定模型/思考档时回显生效值并标出来源', async (t) => {
+    const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+    let page = null
+    try {
+      const stub = makeStub(true, true, false, false, true)
+      page = await open(ctx, stub, docks[1].dock)
+      await page.click('.gear')
+      await page.waitForSelector('[data-sec="role"] .prow')
+      await page.waitForTimeout(200)
+
+      // 行内回显(不必展开就能看出这个角色自己带模型)
+      const rows = await page.evaluate(() =>
+        Array.from(document.querySelectorAll('[data-sec="role"] .prow')).map((r) => r.textContent ?? ''),
+      )
+      const financeRow = rows.find((r) => r.includes('Finance-Analyst')) ?? ''
+      assert.ok(financeRow.includes('claude-sonnet-4-5-20250929'), `角色行未回显模型:${financeRow}`)
+      assert.ok(financeRow.includes('思考'), `角色行未回显思考档:${financeRow}`)
+
+      // 「当前生效」行:值 = 角色模型,且带「角色指定」标 + 会话档说明
+      const cur = await page.evaluate(() => document.querySelector('[data-testid="cur-model"]')?.textContent ?? '')
+      assert.ok(cur.includes('claude-sonnet-4-5-20250929'), `当前生效未显示角色模型:${cur}`)
+      assert.ok(cur.includes('角色指定'), `未标出模型来源是角色:${cur}`)
+      assert.ok(cur.includes('layout-guard/model'), `未说清被覆盖的会话档:${cur}`)
+
+      // 模型区与推理区都必须有“覆盖”告知(用户点了没反应才是真问题)
+      assert.ok(await page.isVisible('[data-testid="model-role-note"]'), '模型区缺少角色覆盖说明')
+      const note = await page.textContent('[data-testid="thinking-role-note"]')
+      assert.ok(note && note.includes('高'), `思考覆盖提示未说明实际生效档:${note}`)
+
+      // 展开编辑:思考档可选「跟随会话」,点了就清空(PATCH thinking:'')
+      await page.click('[data-sec="role"] .prow:has-text("Finance-Analyst") button:has-text("编辑")')
+      await page.waitForSelector('[data-sec="role"] textarea')
+      await page.click('[data-sec="role"] .role-detail .seg-it:has-text("跟随会话")')
+      await page.waitForTimeout(200)
+      const patches = stub.seen.filter((r) => r.method === 'PATCH' && r.path === '/api/roles/finance')
+      assert.ok(patches.length > 0, `未提交角色定义 PATCH:${JSON.stringify(stub.seen)}`)
+      assert.equal(JSON.parse(patches[patches.length - 1].body).thinking, '', `未清掉角色思考档:${patches[patches.length - 1].body}`)
+
+      // 新增的回显行不得把面板撑出横向滚动条(长模型名是无空格 token)
+      const m = await page.evaluate(() => {
+        const body = document.querySelector('[aria-label="设置"] .body')
+        return { scrollW: body.scrollWidth, clientW: body.clientWidth }
+      })
+      assert.ok(m.scrollW <= m.clientW + 1, `新回显行撑出横向滚动条:${m.scrollW} > ${m.clientW}`)
     } catch (e) {
       await shoot(page, t.name)
       throw e

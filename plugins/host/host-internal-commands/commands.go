@@ -87,6 +87,11 @@ func (h *Host) specs() []sdk.CommandSpec {
 			if err := providerfile.UpdateModel(model); err != nil {
 				return "已切换模型 " + model + ",但持久化同步失败: " + err.Error(), nil
 			}
+			// 当前角色声明了模型 → 本条设置**这一会话**不会生效(每回合请求都被角色盖回)。
+			// 不报错(会话档仍是合法状态,停用角色后就生效),但必须说清 —— 否则就是个静默失效。
+			if rm := h.roleModel(); rm != "" {
+				return "会话模型 -> " + model + "(当前角色已声明 " + rm + ",实际按角色跑;停用角色后本设置生效)", nil
+			}
 			return "", nil
 		}},
 		{Name: "provider", Usage: "/provider show|add|use|set|unset|remove|clear", Desc: "配置 LLM 提供商(多 provider 并存/show|add|use|set|unset|remove|clear)", Run: h.cmdProvider,
@@ -210,7 +215,41 @@ func (h *Host) cmdThinking(args []string) (string, error) {
 	}
 	llm.SetThinking(sdk.ParseThinking(args[0]))
 	prefs.SetThinking(args[0]) // 偏好持久化(退出即记,与 Web 共享)
+	if rt := h.roleThinking(); rt != "" {
+		return "会话思考档 -> " + args[0] + "(当前角色已声明 " + rt + ",实际按角色跑;停用角色后本设置生效)", nil
+	}
 	return "思考等级 -> " + args[0], nil
+}
+
+// roleModel / roleThinking 当前角色声明的模型、思考档(未装配 ctx.roles / 未启用角色 / 未声明 → 空串)。
+// 为何要在命令里回显:角色的声明每回合都会覆盖会话值,不说明的话命令看起来“执行成功了但没生效”。
+func (h *Host) roleModel() string {
+	spec, ok := h.currentRole()
+	if !ok {
+		return ""
+	}
+	return spec.Model
+}
+
+func (h *Host) roleThinking() string {
+	spec, ok := h.currentRole()
+	if !ok || spec.Thinking == "" {
+		return ""
+	}
+	return sdk.ParseThinking(spec.Thinking).String()
+}
+
+// currentRole 当前角色定义(可选依赖:未装配 ctx.roles → ok=false,命令行为与本功能上线前一致)。
+func (h *Host) currentRole() (sdk.RoleSpec, bool) {
+	var rs sdk.RoleService
+	if err := h.c.Inject("ctx.roles", &rs); err != nil || rs == nil {
+		return sdk.RoleSpec{}, false
+	}
+	id := rs.Current()
+	if id == "" {
+		return sdk.RoleSpec{}, false
+	}
+	return rs.Get(id)
 }
 
 func (h *Host) cmdApproval(args []string) (string, error) {

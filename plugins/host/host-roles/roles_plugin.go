@@ -15,6 +15,7 @@
 package hostroles
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -66,8 +67,13 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	})
 	// 技能可见性:切换角色只改判定函数,不重扫磁盘。
 	d4 := skills.SetFilter(svc.skillVisible)
+	// 角色携带模型/思考档:订阅"模型请求即将发出"(第八十六批)。
+	// 为什么不自己改 host-llm 的会话模型:`SetModel` 改的是**全局且持久化**的会话模型,
+	// 切角色就会污染它、切回来还得还原,而且显示层会当成"当前模型"报出去(假事实)。
+	// 本订阅只改**本回合请求**里的字段,磁盘与会话状态一律不动。
+	d5 := c.Subscribe(sdk.EventLLMPreRequest, svc.onLLMPreRequest)
 
-	disposers := []sdk.Disposer{d1, d2, d3, d4}
+	disposers := []sdk.Disposer{d1, d2, d3, d4, d5}
 	// /role 命令(可选:未装配 ctx.commands 时跳过 —— 与 host-internal-commands 同款)。
 	var cmds sdk.CommandRegistry
 	if err := c.Inject("ctx.commands", &cmds); err == nil && cmds != nil {
@@ -96,6 +102,10 @@ type Service struct {
 	problems []roles.Problem         // 上次刷新遇到坏文件(可见性)
 	notices  sdk.NoticeService       // 可选(ctx.notices 未装配 = nil)
 	sess     sdk.SessionLog          // 可选(ctx.sessions 未装配 = nil)
+	llm      sdk.LLMService          // 可选(ctx.llm 未装配 = nil;仅用于"这个模型名能不能接")
+
+	// warnedModels 已告警过的「角色|模型」组合(不可用告警只报一次,不刷屏)。
+	warnedModels map[string]bool
 }
 
 // Refresh 重读角色定义与当前角色(磁盘为准);返回坏文件清单(不阻塞装配)。
@@ -523,26 +533,21 @@ func (s *Service) recordSwitch(prev, id string) {
 }
 
 // notifySwitch 切换后发一条用户提示(可选通道):
-// 讲清两件事 —— 提示缓存失效(首轮变慢)、会话不换(与 /workspace 的差异)。
+// 讲清三件事 —— 提示缓存失效(首轮变慢)、会话不换(与 /workspace 的差异)、
+// 本角色声明的模型/思考档(若有:用户必须看得见"接下来用哪个模型跑",不能只靠状态栏)。
 func (s *Service) notifySwitch(id string) {
-	s.mu.RLock()
-	nt := s.notices
-	s.mu.RUnlock()
+	nt := s.noticeSvc()
 	if nt == nil {
-		var dep sdk.NoticeService
-		if err := s.c.Inject("ctx.notices", &dep); err != nil {
-			return
-		}
-		nt = dep
-		s.mu.Lock()
-		s.notices = dep
-		s.mu.Unlock()
+		return
 	}
 	title, body := "已停用角色(回到基线)", "系统提示与技能索引已重建(下一轮生效);会话与历史不变。Prompt 缓存失效,首轮可能变慢。"
 	if id != "" {
 		name := id
 		if spec, ok := s.Get(id); ok {
 			name = spec.Name
+			if extra := modelSwitchNote(spec); extra != "" {
+				body += extra
+			}
 		}
 		title = "已切换到角色:" + name
 	}
@@ -550,6 +555,129 @@ func (s *Service) notifySwitch(id string) {
 		Level: sdk.NoticeInfo, Source: "host-roles", Key: "role-switch",
 		Title: title, Body: body,
 	})
+}
+
+// modelSwitchNote 切换提示里的模型/思考档说明(未声明 = 空串,不占提示字符)。
+func modelSwitchNote(spec sdk.RoleSpec) string {
+	var parts []string
+	if spec.Model != "" {
+		parts = append(parts, "模型 "+spec.Model)
+	}
+	if spec.Thinking != "" {
+		parts = append(parts, "思考档 "+strings.ToLower(spec.Thinking))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " 本角色自带" + strings.Join(parts, "、") + "(会话档被它覆盖;用 /role 改角色定义)。"
+}
+
+// noticeSvc 乱解析 ctx.notices(可选通道;未装配返回 nil)。
+func (s *Service) noticeSvc() sdk.NoticeService {
+	s.mu.RLock()
+	nt := s.notices
+	s.mu.RUnlock()
+	if nt != nil {
+		return nt
+	}
+	var dep sdk.NoticeService
+	if err := s.c.Inject("ctx.notices", &dep); err != nil || dep == nil {
+		return nil
+	}
+	s.mu.Lock()
+	s.notices = dep
+	s.mu.Unlock()
+	return dep
+}
+
+// onLLMPreRequest 把当前角色声明的模型/思考档填进**本次请求**(llm/pre-request 监听器)。
+//
+// 三条纪律(它是热路径上的监听器,错一步就是每轮都错):
+//   - 不打网络/不读盘:角色取自内存缓存;可用性判定用 ctx.llm 的本地目录(发不出网络请求);
+//   - 只"填空"不掠夺:req.Model 已被别人显式指定就让位;req.ThinkingSet 已置真就不碰;
+//   - 永不返回 error:返回 error = 阻断本回合(waterfall veto),模型名拼错不该让会话直接停摆 ——
+//     不可用就告警 + 沿用会话模型继续跑(不静默降级,但也不硬失败)。
+func (s *Service) onLLMPreRequest(_ context.Context, ev *sdk.Event) error {
+	req, ok := ev.Payload.(*sdk.LLMRequest)
+	if !ok || req == nil {
+		return nil
+	}
+	spec, ok := s.activeSpec()
+	if !ok || (spec.Model == "" && spec.Thinking == "") {
+		return nil // 基线/未声明:与本功能上线前完全一致
+	}
+	if spec.Model != "" && req.Model == "" {
+		if s.modelUsable(spec.Model) {
+			req.Model = spec.Model
+		} else {
+			s.warnModelUnusable(spec)
+		}
+	}
+	if spec.Thinking != "" && !req.ThinkingSet {
+		req.Thinking = sdk.ParseThinking(spec.Thinking)
+		req.ThinkingSet = true // 显式:含 off —— 否则会被会话档回填(这正是本批新增该字段的原因)
+	}
+	return nil
+}
+
+// activeSpec 当前角色的定义(未启用/不可读 → ok=false)。
+func (s *Service) activeSpec() (sdk.RoleSpec, bool) {
+	s.mu.RLock()
+	id := s.active
+	spec, ok := s.specs[id]
+	s.mu.RUnlock()
+	return spec, ok && id != ""
+}
+
+// modelUsable 角色声明的模型名有没有适配器能接。
+// 数据源是 ctx.llm 的**本地**目录(sdk.ModelCatalog;实现方按已注册适配器声明的前缀判定,
+// 不发网络请求)。拿不到该能力(未装配 / 假实现)时一律放行 —— 宁可由供应商报真错,
+// 也不做"我以为不可用"的误拦。
+func (s *Service) modelUsable(model string) bool {
+	s.mu.RLock()
+	llm := s.llm
+	s.mu.RUnlock()
+	if llm == nil {
+		var dep sdk.LLMService
+		if err := s.c.Inject("ctx.llm", &dep); err != nil || dep == nil {
+			return true
+		}
+		llm = dep
+		s.mu.Lock()
+		s.llm = dep
+		s.mu.Unlock()
+	}
+	cat, ok := llm.(sdk.ModelCatalog)
+	if !ok {
+		return true
+	}
+	return cat.KnownModel(model)
+}
+
+// warnModelUnusable 不可用告警:同一「角色|模型」只报一次(热路径上不能每轮刷屏),
+// 但**必须**报 —— 否则用户看到的是"用法变了但没变"(静默降级是另一种错误)。
+func (s *Service) warnModelUnusable(spec sdk.RoleSpec) {
+	key := spec.ID + "|" + spec.Model
+	s.mu.Lock()
+	if s.warnedModels[key] {
+		s.mu.Unlock()
+		return
+	}
+	if s.warnedModels == nil {
+		s.warnedModels = map[string]bool{}
+	}
+	s.warnedModels[key] = true
+	s.mu.Unlock()
+
+	s.log().Warn("角色声明的模型没有适配器可接:本轮沿用会话模型",
+		"role", spec.ID, "role_model", spec.Model)
+	if nt := s.noticeSvc(); nt != nil {
+		nt.Publish(sdk.Notice{
+			Level: sdk.NoticeWarn, Source: "host-roles", Key: "role-model-unusable",
+			Title: "角色「" + spec.Name + "」的模型不可用",
+			Body:  "未找到能处理 " + spec.Model + " 的 provider,本回合回退到会话模型 (改角色定义中 provider 模型).",
+		})
+	}
 }
 
 // AgentsTemplate 新建角色时的 AGENTS.md 初始内容(可执行动作,不写空话)。

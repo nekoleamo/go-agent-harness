@@ -55,11 +55,12 @@ var _ sdk.ToolRegistry = (*fanoutRecordingTools)(nil)
 
 // recordingLLM 首个请求回一次工具调用,后续请求回终结文本;记录每次请求的消息与工具定义。
 type recordingLLM struct {
-	mu    sync.Mutex
-	reqs  []sdk.LLMRequest
-	tool  string
-	args  string
-	final string
+	mu     sync.Mutex
+	reqs   []sdk.LLMRequest
+	models []string // 每次请求实际发出的模型名(第八十六批:验子代理是否继承角色模型)
+	tool   string
+	args   string
+	final  string
 }
 
 func (a *recordingLLM) Name() string { return "recording" }
@@ -67,6 +68,7 @@ func (a *recordingLLM) Name() string { return "recording" }
 func (a *recordingLLM) Complete(ctx context.Context, req *sdk.LLMRequest, onChunk func(sdk.LLMStreamEvent) error) (*sdk.LLMResponse, error) {
 	a.mu.Lock()
 	a.reqs = append(a.reqs, sdk.LLMRequest{Messages: append([]sdk.LLMMessage(nil), req.Messages...), Tools: req.Tools})
+	a.models = append(a.models, req.Model)
 	n := len(a.reqs)
 	a.mu.Unlock()
 	if err := ctx.Err(); err != nil {
@@ -123,6 +125,13 @@ func (p *capturingPrompt) lastTools() []sdk.ToolDefinition {
 // buildContractEnv 装配 host-llm + 记录型适配器 + 捕获型 system-prompt + 本插件(替换真实 registry)。
 func buildContractEnv(t *testing.T, reg *fanoutRecordingTools, ad *recordingLLM) (sdk.FanoutService, *capturingPrompt) {
 	t.Helper()
+	svc, sp, _ := buildContractEnvCtx(t, reg, ad)
+	return svc, sp
+}
+
+// buildContractEnvCtx 同上,额外返回宿主 ctx(要订阅扩展点/注入服务时用)。
+func buildContractEnvCtx(t *testing.T, reg *fanoutRecordingTools, ad *recordingLLM) (sdk.FanoutService, *capturingPrompt, sdk.Ctx) {
+	t.Helper()
 	logger := slog.New(slog.DiscardHandler)
 	c := ctx.New(logger, event.New(logger))
 	var llm sdk.LLMService
@@ -151,7 +160,7 @@ func buildContractEnv(t *testing.T, reg *fanoutRecordingTools, ad *recordingLLM)
 	if err := c.Inject("ctx.fanout", &svc); err != nil {
 		t.Fatal(err)
 	}
-	return svc, sp
+	return svc, sp, c
 }
 
 // TestSubAgentToolsGoThroughInjectedRegistry 子代理工具调用经注入 registry(参数原样),

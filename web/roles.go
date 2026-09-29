@@ -141,6 +141,9 @@ func (s *Server) handleRoleOne(w http.ResponseWriter, r *http.Request) {
 			SkillsSet     *bool     `json:"skills_set"`
 			Skills        *[]string `json:"skills"`
 			SkillsInherit *bool     `json:"skills_inherit"`
+			// Model/Thinking 角色携带的模型与思考档(第八十六批);传空串 = 清掉(跟随会话)
+			Model    *string `json:"model"`
+			Thinking *string `json:"thinking"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, "坏请求体", http.StatusBadRequest)
@@ -173,6 +176,19 @@ func (s *Server) handleRoleOne(w http.ResponseWriter, r *http.Request) {
 		if body.Skills != nil {
 			cur.Skills = append([]string(nil), (*body.Skills)...)
 			cur.SkillsSet = true
+		}
+		if body.Model != nil {
+			cur.Model = strings.TrimSpace(*body.Model)
+		}
+		if body.Thinking != nil {
+			// 档位名严格校验(非法值只会在每回合静默归 Off —— 不如建/改时就报错);
+			// 空串 = 清掉(跟随会话),不是"非法档"。
+			t := strings.ToLower(strings.TrimSpace(*body.Thinking))
+			if t != "" && sdk.ParseThinking(t).String() != t {
+				http.Error(w, "思考档需为 off|low|medium|high(或空 = 跟随会话)", http.StatusBadRequest)
+				return
+			}
+			cur.Thinking = t
 		}
 		// 清掉派生字段:它们不是 role.yaml 的一部分(写回会污染定义)
 		cur.OwnSkills, cur.EffectiveSkills, cur.Seed, cur.AGENTSBytes = nil, nil, false, 0
@@ -275,6 +291,8 @@ func (s *Server) createRole(w http.ResponseWriter, r *http.Request, svc sdk.Role
 		Skills        []string `json:"skills"`
 		SkillsSet     bool     `json:"skills_set"`
 		SkillsInherit bool     `json:"skills_inherit"`
+		Model         string   `json:"model"`
+		Thinking      string   `json:"thinking"`
 		Agents        string   `json:"agents"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -285,10 +303,15 @@ func (s *Server) createRole(w http.ResponseWriter, r *http.Request, svc sdk.Role
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if t := strings.ToLower(strings.TrimSpace(body.Thinking)); t != "" && sdk.ParseThinking(t).String() != t {
+		http.Error(w, "思考档需为 off|low|medium|high(或空 = 跟随会话)", http.StatusBadRequest)
+		return
+	}
 	spec := sdk.RoleSpec{
 		ID: body.ID, Name: body.Name, Description: body.Description, Identity: body.Identity,
 		ExcludeGlobal: body.ExcludeGlobal, Skills: body.Skills, SkillsSet: body.SkillsSet,
 		SkillsInherit: body.SkillsInherit,
+		Model:         strings.TrimSpace(body.Model), Thinking: strings.ToLower(strings.TrimSpace(body.Thinking)),
 	}
 	created, err := svc.Create(spec, body.Agents)
 	if err != nil {

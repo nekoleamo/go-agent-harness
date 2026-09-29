@@ -274,8 +274,11 @@ const filteredModels = computed(() => {
 // 就是个空筛选框,用户会读成「已选了模型但当前模型没显示」,故把当前值显式摆出来。
 const curModelLabel = computed(() => {
   const hit = modelOptions.value.find((o) => o.value === modelVal.value)
-  if (hit) return hit.label
   const m = (props.state.model ?? '').trim()
+  // 角色指定模型时只报模型名:provider 前缀是**会话通用适配器**的域短名,
+  // 角色模型可能走另一个前缀路由(claude-* 等),拼上去就是编(与 TUI 同一条纪律)。
+  if (props.state.model_from === 'role') return m || hit?.value || ''
+  if (hit) return hit.label
   if (!m) return ''
   const p = activeProvider()
   return p?.Name ? p.Name + ' · ' + m : m
@@ -1334,7 +1337,16 @@ watch(
           </div>
           <!-- 当前生效单独一行:上面那个输入框是筛选框,用户会把它当成「当前模型」的显示位,
                真机上因此得出「已选了模型但当前模型显示为空」的结论。 -->
-          <p class="dim" data-testid="cur-model">当前生效:{{ curModelLabel || '(未设置)' }}</p>
+          <p class="dim" data-testid="cur-model">
+            当前生效:{{ curModelLabel || '(未设置)' }}
+            <span v-if="props.state.model_from === 'role'" class="sstate ss-ok">角色指定</span>
+            <span v-if="props.state.model_from === 'role' && props.state.model_session" class="dim">
+              （会话档 {{ props.state.model_session }} 被角色覆盖，停用角色后生效）
+            </span>
+          </p>
+          <p v-if="props.state.model_from === 'role'" class="dim" data-testid="model-role-note">
+            当前角色已指定模型：这里切换只改会话档，实际仍按角色跑。
+          </p>
           <div class="m-list">
             <div
               v-for="o in filteredModels"
@@ -1361,7 +1373,7 @@ watch(
                 v-for="t in THINK"
                 :key="t"
                 class="seg-it"
-                :class="{ on: props.state.thinking === t }"
+                :class="{ on: (props.state.thinking_session ?? props.state.thinking) === t }"
                 :data-tip="'思考 ' + THINK_LABEL[t]"
                 @click="applyCtl({ thinking: t })"
               >
@@ -1369,6 +1381,9 @@ watch(
               </button>
             </div>
           </div>
+          <p v-if="props.state.thinking_from === 'role'" class="dim" data-testid="thinking-role-note">
+            当前角色的思考档覆盖了会话设置：实际按「{{ THINK_LABEL[props.state.thinking] || props.state.thinking }}」跑（上面选的是会话档，停用角色后生效）。
+          </p>
           <div class="row">
             <span class="lab-inline">沙箱</span>
             <div class="seg">
@@ -1529,6 +1544,9 @@ watch(
                   <span v-if="r.skills_inherit">+ 默认池</span>
                 </span>
                 <span v-if="r.exclude_global" class="psub">不注入全局 AGENTS.md</span>
+                <span v-if="r.model || r.thinking" class="psub">
+                  模型：{{ r.model || '跟随会话' }} · 思考：{{ r.thinking ? THINK_LABEL[r.thinking] || r.thinking : '跟随会话' }}
+                </span>
               </div>
               <div class="sacts">
                 <button v-if="!roleIsCurrent(r)" class="ghost" data-tip="下一轮生效，不换会话" @click="useRole(r.id)">切换</button>
@@ -1568,6 +1586,44 @@ watch(
               />
               <span>不注入全局 AGENTS.md</span>
             </label>
+            <!-- 角色携带模型/思考档(第八十六批):留空 = 跟随会话。
+                 这两个输入框不是"建议值"而是真生效的值(每回合注入请求),故文案要写清。 -->
+            <div class="row">
+              <span class="lab-inline">模型</span>
+              <input
+                class="inp grow mono"
+                :value="roleDetail.model || ''"
+                placeholder="留空 = 跟随会话模型"
+                @change="saveRoleDef({ model: ($event.target as HTMLInputElement).value })"
+              />
+            </div>
+            <div class="row">
+              <span class="lab-inline">思考</span>
+              <div class="seg">
+                <button
+                  class="seg-it"
+                  :class="{ on: !roleDetail.thinking }"
+                  data-tip="跟随会话思考档"
+                  @click="saveRoleDef({ thinking: '' })"
+                >
+                  跟随会话
+                </button>
+                <button
+                  v-for="t in THINK"
+                  :key="t"
+                  class="seg-it"
+                  :class="{ on: roleDetail.thinking === t }"
+                  :data-tip="'角色固定为 ' + THINK_LABEL[t]"
+                  @click="saveRoleDef({ thinking: t })"
+                >
+                  {{ THINK_LABEL[t] }}
+                </button>
+              </div>
+            </div>
+            <p class="dim">
+              模型/思考档按角色生效：每回合的请求都按这里填的值走（会话档被它覆盖，停用角色后恢复）。
+              模型名没有任何 provider 能接时本轮会退回会话模型并提示（不会硬失败）。
+            </p>
             <div class="row acts">
               <button
                 class="ghost solid"

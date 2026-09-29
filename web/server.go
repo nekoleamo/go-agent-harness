@@ -709,9 +709,17 @@ func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
 
 // StateView /api/state 快照(前端状态栏/首帧渲染)。
 type StateView struct {
-	Model    string `json:"model"`
-	Thinking string `json:"thinking"`
-	Sandbox  string `json:"sandbox"`
+	Model    string `json:"model"`    // **生效值**(角色声明优先;与真正发出去的请求同源)
+	Thinking string `json:"thinking"` // 同上
+	// ModelFrom/ThinkingFrom 生效值来源(role|session):前端据此标“角色指定”。
+	// 为何不是布尔:后续还可能有别的来源层(会话级 overlay 在未实施清单里)。
+	ModelFrom    string `json:"model_from,omitempty"`
+	ThinkingFrom string `json:"thinking_from,omitempty"`
+	// ModelSession/ThinkingSession 会话档原值:设置面板要能显示“会话档 X(被角色 Y 覆盖)”,
+	// 否则用户改完会话值看不到任何变化,也不知道为什么。
+	ModelSession    string `json:"model_session,omitempty"`
+	ThinkingSession string `json:"thinking_session,omitempty"`
+	Sandbox         string `json:"sandbox"`
 	// SandboxEffective 档位联动后的**有效**档(仅当与声明档不同时出现):
 	// policy-guard 在 sync=true 时按审批档覆盖(open → full-access;strict → read-only),
 	// 前端只看 sandbox 会与实际拦截行为不一致。
@@ -749,14 +757,27 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	if lvl < 0 || lvl >= len(names) {
 		lvl = 0
 	}
+	// 角色先取:模型/思考档的**生效值**要经 sdk.Effective* 合成(与 host-roles 注入请求时同一判据);
+	// 会话原值一并传出,面板才能说清“会话档被角色覆盖”。
+	var roleSpec *sdk.RoleSpec
+	if rs := s.roleService(); rs != nil {
+		if id := rs.Current(); id != "" {
+			if spec, ok := rs.Get(id); ok {
+				roleSpec = &spec
+			}
+		}
+	}
+	sessionModel, sessionThinking := s.llm.Model(), names[lvl]
+	effModel, modelFrom := sdk.EffectiveModel(sessionModel, roleSpec)
+	effThinking, thinkingFrom := sdk.EffectiveThinking(sessionThinking, roleSpec)
 	approval := ""
 	if s.ap != nil {
 		approval = string(s.ap.Mode())
 	}
 	declared := string(s.sb.Mode())
 	v := StateView{
-		Model:    s.llm.Model(),
-		Thinking: names[lvl],
+		Model: effModel, ModelFrom: modelFrom, ModelSession: sessionModel,
+		Thinking: effThinking.String(), ThinkingFrom: thinkingFrom, ThinkingSession: sessionThinking,
 		Sandbox:  declared,
 		Approval: approval,
 		Running:  s.running.Load(),
@@ -784,13 +805,10 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		v.Session = &SessionV{ID: s.cs.CurrentSession(), Name: s.cs.SessionName(), Path: s.cs.Path(), Key: s.cs.Current()}
 	}
 	// 当前角色(可选能力):状态栏徒标只读展示;未装配/未启用 → 字段省略
-	if rs := s.roleService(); rs != nil {
-		if id := rs.Current(); id != "" {
-			v.Role = id
-			v.RoleName = id
-			if spec, ok := rs.Get(id); ok && spec.Name != "" {
-				v.RoleName = spec.Name
-			}
+	if roleSpec != nil {
+		v.Role, v.RoleName = roleSpec.ID, roleSpec.ID
+		if roleSpec.Name != "" {
+			v.RoleName = roleSpec.Name
 		}
 	}
 	writeJSON(w, http.StatusOK, v)

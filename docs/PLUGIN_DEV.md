@@ -63,9 +63,25 @@ type Plugin interface {
 
 ### 2.4 事件命名与语义
 
-- 名称点分:`agent/pre-step`、`tools/pre-execute`、`session/event`(会话事件广播)。
+- 名称点分:`agent/pre-step`、`tools/pre-execute`、`llm/pre-request`、`session/event`(会话事件广播)。
 - 扩展点优先 **Waterfall**(返回 error = veto/拦截)。
 - 持久事实用 `ctx.sessions.Append`(可回放);实时通知用 `Emit`。
+
+**`llm/pre-request`(sdk.EventLLMPreRequest,waterfall)**:宿主 `host-llm` 在**每次模型请求的公共必经点**(`Service.Complete` 开头)发出,载荷 `*sdk.LLMRequest` —— 监听器**就地改写**即可生效(改 `Model`/`Thinking`/`Messages`/任何请求字段均在适配器调用之前);返回 error = **veto**,整个请求不发出。
+
+```go
+c.Subscribe("llm/pre-request", func(e *sdk.Event) error {
+    req := e.Payload.(*sdk.LLMRequest) // 就是宿主接下来要发的那一个指针,就地改写
+    return nil
+})
+```
+
+与 `tools/pre-execute` 的差别与纪律:
+- 它是**热路径**(每回合、每次重试之外的每个逻辑请求一次;`retry` 直调适配器,不重复发)且**无人交互** —— 只该做“填空/标注”这类确定性动作。 **长时间阻塞、网络调用、抛错都要慎用**:抛错会直接掐掉本回合(可用但要想清楚)。
+- 事件在**取 `Service` 内部锁之前**发出 ⇒ 监听器可安全读宿主状态(如 `ctx.roles`);但不要在监听器里回头调 `ctx.llm.Complete`(会递归发事件)。
+- **发生在模型解析之前**:若会话未配模型、而监听器填了一个,请求照样能跑(这是“角色携带模型”依赖的性质)。
+- 现有订阅者:`host-roles`(角色声明的 model/thinking 在此注入,只填空不掠夺,且**永不返回 error**)。
+- 想按要求来源区分路径(如只主回合生效)**本批没有 Origin 包装** —— 载荷就是裸 `*sdk.LLMRequest`;需要时先加字段再订阅,不要靠调用方自己约定。
 
 ### 2.5 结构化错误契约
 

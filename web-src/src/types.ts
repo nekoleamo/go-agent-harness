@@ -157,8 +157,14 @@ export interface SessionView {
   key: string
 }
 export interface StateView {
+  // model/thinking 是**生效值**(角色声明优先):与真正发出去的请求同源,
+  // 不是会话档原值(那两个是 model_session/thinking_session)
   model: string
   thinking: string
+  model_from?: string // role|session(旧后端省略 = 无角色概念,按 session 处理)
+  thinking_from?: string
+  model_session?: string
+  thinking_session?: string
   sandbox: string
   // 档位联动(approval 为权威档时覆盖沙箱):仅当有效档 != 声明档时后端下发;
   // 展示"实际生效档"用 sandbox_effective ?? sandbox(旧后端无此字段时语义不变)
@@ -432,6 +438,9 @@ export interface RoleSpec {
   skills?: string[]
   skills_set: boolean
   skills_inherit?: boolean
+  // 角色携带的模型/思考档(第八十六批;空 = 跟随会话)。生效值见 StateView.model_from。
+  model?: string
+  thinking?: string
   agents?: string
   agents_bytes: number
   own_skills?: string[] // 角色私有技能(roles/<id>/skills/,只增不减)

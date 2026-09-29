@@ -56,6 +56,22 @@ type LLMMessage struct {
 	ToolCallID  string // RoleTool 时关联的工具调用 id
 }
 
+// EventLLMPreRequest 模型请求发出**之前**的 waterfall 扩展点(载荷 *LLMRequest)。
+//
+// 为什么需要它:`LLMRequest` 早就有 `Model`(请求级覆盖)与 `Thinking` 字段,但**没人填** ——
+// 于是"按角色换模型/换思考档"这类"随场景改本回合请求"的需求无处安放。本事件是**唯一必经点**
+// (`host-llm.Service.Complete` 开头,主回合/并行子代理/概述/未来调用方都走它)。
+//
+// 语义(waterfall):监听器可**原地改写** `*LLMRequest`(典型:当前角色声明了模型则填入);
+// 返回 error = 阻断本次请求(错误上冒成调用方可见的失败)。两条纪律:
+//   - 监听器必须**幂等**且只做"填空"类改写 —— 溢出兜底重试会重新走一遍请求(emit 在 Complete 内,
+//     每个逻辑请求只 emit 一次;重试不重复 emit)。
+//   - 监听器**不得**回调 `ctx.llm.Complete`(emit 发生在 LLM 服务发请求的路径上,回调即自锁)。
+//
+// 为何是常量而非字面量:发出方(host-llm)与订阅方(如 host-roles)分属不同插件,
+// 两边各写一份字面量时打错一个字符就静默失效(参 EventUsageWindow 的同类先例)。
+const EventLLMPreRequest = "llm/pre-request"
+
 // LLMRequest 一次模型请求。Tools 为模型可见的工具 schema 列表。
 type LLMRequest struct {
 	Model       string
@@ -64,6 +80,11 @@ type LLMRequest struct {
 	MaxTokens   *int
 	Temperature *float64
 	Thinking    ThinkingLevel // 思考等级(默认 Off=不发送;host-llm 注入会话级)
+	// ThinkingSet 置真 = 调用方**显式指定**了思考档(含显式 Off):host-llm 不再用会话档覆盖。
+	// 为何需要单独的布尔:`ThinkingOff` 既是零值又是合法档位 —— 只看 `Thinking == Off` 无法区分
+	// "没设置"与"就是要关思考",于是"角色强制 off 压过会话 high"这类需求表达不出来。
+	// 零值 false 与今天行为完全一致(既有调用方全不设 Thinking)。
+	ThinkingSet bool
 }
 
 // ThinkingLevel 思考等级(推理预算)。Off=关闭(默认,不发送推理字段——对不支持端点安全);
@@ -175,6 +196,16 @@ type LLMAdapter interface {
 // 无命中 → 首个注册适配器(默认回退)。
 type ModelRouter interface {
 	Models() []string
+}
+
+// ModelCatalog 可选接口(ctx.llm 实现者按需实现):**本地**回答「这个模型名有没有适配器能接」。
+//
+// 为何单独一个窄接口而不塞进 LLMService:消费方(host-roles 在"按角色换模型"前做一次可用性校验)
+// 只需要这一个问题的答案,且假实现(单测里的假 LLM)不该为此扩接口。
+// 与 ModelRouter 的分工:ModelRouter 是**适配器**声明自己能接什么,Catalog 是**服务**汇总后的判定。
+// 实现纪律:必须纯本地(不得打端点 /models)、不得因未知而失败(判不了就返回 true)。
+type ModelCatalog interface {
+	KnownModel(model string) bool
 }
 
 // ModelInfo 一个可选模型(经 ListModels 从端点 /models 拉取)。

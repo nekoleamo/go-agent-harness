@@ -21,7 +21,7 @@ func (p *Plugin) Name() string { return "host-llm" }
 
 // Start 注册 ctx.llm 服务。
 func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
-	s := &Service{adapters: make(map[string]sdk.LLMAdapter)}
+	s := &Service{adapters: make(map[string]sdk.LLMAdapter), c: c}
 	if err := c.Provide("ctx.llm", s); err != nil {
 		return nil, err
 	}
@@ -30,6 +30,13 @@ func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
 
 // Service 实现 sdk.LLMService。
 type Service struct {
+	// c 宿主 ctx:只为发 `llm/pre-request` 扩展点事件(第八十六批)。为何存这里而不是让调用方发:
+	// 本服务的 Complete 是**所有模型请求的唯一必经点**(主回合 agent-loop、并行子代理 host-fanout、
+	// 汇总 host-session-summary,以后的调用方同样走它) —— 把事件发在这里,一次就覆盖全部,
+	// 且各调用方零改动。代价:本服务从"纯注册表"变成"也发事件",故注释写明。
+	// 单测里可能为 nil(大量既有单测直接构造 &Service{}),故使用处必须 nil 守卫。
+	c sdk.Ctx
+
 	mu       sync.RWMutex
 	adapters map[string]sdk.LLMAdapter
 	order    []string // 注册顺序(首个为默认候选)
@@ -97,8 +104,46 @@ func (s *Service) completeAdapter(model string) (sdk.LLMAdapter, error) {
 	return s.adapters[s.order[0]], nil
 }
 
+// KnownModel 本地判定「这个模型名有适配器能接」(sdk.ModelCatalog;不发任何网络请求)。
+// 判据与 completeAdapter 的路由一致:任一适配器声明的前缀命中即 true。
+// 两个"判不了就放行"的分支① 存在**未声明模型前缀的通用适配器**(它接受任意模型名);
+// ② 一个适配器都没注册时不报 false(该情况由 Complete 的"还没有配置模型"负责。
+func (s *Service) KnownModel(model string) bool {
+	if model == "" {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	generic := false
+	for _, a := range s.adapters {
+		r, ok := a.(sdk.ModelRouter)
+		if !ok {
+			generic = true
+			continue
+		}
+		for _, m := range r.Models() {
+			if model == m || strings.HasPrefix(model, m+"-") {
+				return true
+			}
+		}
+	}
+	return generic
+}
+
 // Complete 以默认适配器发起请求;对可重试错误实施指数退避重试(§11 矩阵:网络断流/5xx 可重试,4xx 不可重试)。
 func (s *Service) Complete(ctx context.Context, req *sdk.LLMRequest, onChunk func(ev sdk.LLMStreamEvent) error) (*sdk.LLMResponse, error) {
+	// llm/pre-request:模型请求发出前的 waterfall 扩展点(第八十六批)。
+	// 监听器可原地改写 *req(典型:当前角色声明的模型/思考档);返回 error = 阻断本次请求。
+	// 三条要点:
+	//   - 必须在取 s.mu **之前**发 —— 监听器会去读角色状态(另一把锁),没理由交叉持锁;
+	//   - 在"模型解析"之前发 ⇒ 监听器给的模型即便会话未配模型也能跑(不再依赖会话先配好);
+	//   - 只在这里发:retry() 直调适配器,所以一个逻辑请求只 emit 一次(监听器仍需幂等,
+	//     因为溢出兜底重试会重新进入 Complete —— 那是另一次请求,理应重新经过本扩展点)。
+	if s.c != nil {
+		if _, err := s.c.Emit(ctx, sdk.EventLLMPreRequest, req, sdk.Waterfall); err != nil {
+			return nil, err
+		}
+	}
 	model := req.Model
 	if model == "" {
 		s.mu.RLock()
@@ -108,8 +153,9 @@ func (s *Service) Complete(ctx context.Context, req *sdk.LLMRequest, onChunk fun
 	if model == "" {
 		return nil, fmt.Errorf("llm: 还没有配置模型:先用 /provider 或 Web 的「设置 → Provider」配置一个端点与 API Key")
 	}
-	// 思考等级注入:请求未显式设置时用会话级(Tab 切换的等级;agent-loop 无需感知)
-	if req.Thinking == sdk.ThinkingOff {
+	// 思考等级注入:调用方**未显式设置**时用会话级(Tab 切换的等级;agent-loop 无需感知)。
+	// ThinkingSet 区分"没设置"与"显式 off"—— 否则角色声明的 off 会被当成未设置而被会话档回填。
+	if req.Thinking == sdk.ThinkingOff && !req.ThinkingSet {
 		s.mu.RLock()
 		req.Thinking = s.thinking
 		s.mu.RUnlock()

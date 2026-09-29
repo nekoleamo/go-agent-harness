@@ -25,11 +25,18 @@ type State struct {
 	Running  bool
 	Model    string // 当前模型 id(状态栏;空 = 未设置)
 	ModelSrc string // 模型来源缩写(当前 provider 域名,如 siliconflow;空 = 未配置/不显示)
-	Profile  string
-	Error    string
-	Input    string
-	Cursor   int
-	LastTool string
+	// ModelFrom / ThinkingFrom 生效值来源(sdk.SourceRole/sdk.SourceSession):
+	// 角色声明了 → 实际跑的就是角色那个值,输入行右侧必须如实标“角色”
+	// (只显示会话值 = 假事实;派生判据与运行期注入同一处,见 sdk.EffectiveModel)。
+	// 角色指定时不再拼 provider 域名:那个域名是**会话通用适配器**的,
+	// 角色模型完全可能走另一个前缀路由,拼上去就是编。
+	ModelFrom    string
+	ThinkingFrom string
+	Profile      string
+	Error        string
+	Input        string
+	Cursor       int
+	LastTool     string
 
 	// Queue 消息队列(P4-1):无法即时注入的普通消息按序暂存,当前回合成功结束后自动
 	// 逐条发送(每次一条,保证会话串行);回合取消/失败不自动续发,队列保留供

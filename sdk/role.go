@@ -24,6 +24,12 @@ type RoleSpec struct {
 	Skills        []string `json:"skills,omitempty"`
 	SkillsSet     bool     `json:"skills_set"`
 	SkillsInherit bool     `json:"skills_inherit,omitempty"`
+	// Model / Thinking 角色携带的模型与思考档(空 = 跟随会话)。
+	// 与 skills 不同,**不需要 Set 标记**:空串就是"跟随会话",没有"显式空"这种独立语义。
+	// 真正生效的判据在 SDK 纯函数 EffectiveModel/EffectiveThinking(运行期注入与三端展示同一处),
+	// 而**不**进系统提示 —— 模型不需要知道自己在哪个模型上跑。
+	Model    string `json:"model,omitempty"`
+	Thinking string `json:"thinking,omitempty"`
 	// AGENTS 角色工作规则正文(roles/<id>/AGENTS.md);AGENTSBytes 为其字节数(上限校验/展示用)。
 	AGENTS      string `json:"agents,omitempty"`
 	AGENTSBytes int    `json:"agents_bytes"`
@@ -33,6 +39,40 @@ type RoleSpec struct {
 	EffectiveSkills []string `json:"effective_skills,omitempty"`
 	// Seed 该角色是否来自预置 seed(仅展示:预置同样可改可删)。
 	Seed bool `json:"seed,omitempty"`
+}
+
+// —— 生效值派生(运行期注入与三端展示的**单一判据**) ——
+//
+// 为什么必须收在一处:同一件事有三个消费者 —— `host-roles` 往请求里填值(真正生效的),
+// TUI 输入行右侧、Web `/api/state`+设置面板(展示给人看的)。各写一份判定就必然漂:
+// 典型病征是"显示跟随会话、实际用角色模型",而且是那种没人报的错。
+// 本函数无副作用、不读盘、不依赖服务(纯函数才能被三处共用)。
+
+// 生效值来源(展示端据此标注"角色指定";模型与思考档共用同一对)。
+const (
+	// SourceRole 值来自当前角色的声明;SourceSession 值来自会话档(角色未声明)。
+	SourceRole    = "role"
+	SourceSession = "session"
+)
+
+// EffectiveModel 派生"本回合实际使用的模型"及其来源。
+// 语义:角色声明了 model(且角色存在)→ 用它;否则用会话模型。
+func EffectiveModel(sessionModel string, role *RoleSpec) (model, src string) {
+	if role != nil && role.Model != "" {
+		return role.Model, SourceRole
+	}
+	return sessionModel, SourceSession
+}
+
+// EffectiveThinking 派生"本回合实际使用的思考档"及其来源。
+// sessionThinking 为会话档名(如 `high`);返回的 level 为 0(Off) 时 src 仍如实标注来源。
+// 注意与运行期的差别:真正注入时角色声明的档还要置 `LLMRequest.ThinkingSet`(让显式 `off` 能压过会话档),
+// 那是**注入侧的事**(见 host-llm/host-roles);本函数只回答"最终是什么、来自哪"。
+func EffectiveThinking(sessionThinking string, role *RoleSpec) (level ThinkingLevel, src string) {
+	if role != nil && role.Thinking != "" {
+		return ParseThinking(role.Thinking), SourceRole
+	}
+	return ParseThinking(sessionThinking), SourceSession
 }
 
 // RoleService 服务(ctx.roles):角色定义、当前角色与切换(host-roles 提供)。
