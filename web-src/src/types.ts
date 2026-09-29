@@ -506,3 +506,14 @@ export interface TrashView {
   roles: TrashRoleEntry[]
   skills: TrashSkillEntry[]
 }
+// RolePackResult 导入角色包的回执(第九十三批)。replaced=true 时 backup_name 是那份被覆盖的旧角色
+// 在 roles/.trash/ 里的条目名(可恢复);manifest 是包里的清单(原本的 ID/显示名/导出时间)。
+export interface RolePackResult {
+  id: string
+  name?: string
+  agents_bytes: number
+  skills: string[]
+  replaced: boolean
+  backup_name?: string
+  manifest: { format: string; version: number; id: string; name?: string; exported_at: string; gah_version?: string }
+}

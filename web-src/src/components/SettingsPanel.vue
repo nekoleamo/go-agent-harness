@@ -3,9 +3,9 @@
 // 分组:模型/推理(thinking·sandbox)/历史与压缩/Provider/插件与指令。
 // 破坏性动作(删 provider、卸载插件、压缩)经全局确认条(askConfirm)。
 import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { api } from '../api'
+import { api, rolePackDownloadUrl, rolePackName } from '../api'
 import { byteLength } from '../bytes'
-import { autostartState, checkUpdate, isDesktop, updateState, type UpdateSnapshot } from '../desktop'
+import { autostartState, checkUpdate, isDesktop, pickDirectory, updateState, type UpdateSnapshot } from '../desktop'
 import { currentModelValue, modelOptionValue, withCurrentModel } from '../modelsel'
 import { settingSections } from '../registry'
 import { uiPluginDigests, uiPluginTrustNote } from '../plugins'
@@ -28,7 +28,7 @@ import {
   viewNotices,
   type McpDraft,
 } from '../mcp'
-import type { AskConfirm, McpServer, McpView, PluginInfo, ProviderInfo, ProviderModelGroup, RoleSpec, Schedule, SkillInfo, StateView, ToolDef, TrashRoleEntry, TrashSkillEntry } from '../types'
+import type { AskConfirm, McpServer, McpView, PluginInfo, ProviderInfo, ProviderModelGroup, RolePackResult, RoleSpec, Schedule, SkillInfo, StateView, ToolDef, TrashRoleEntry, TrashSkillEntry } from '../types'
 
 const props = defineProps<{
   open: boolean
@@ -733,6 +733,120 @@ function deleteRole(r: RoleSpec): void {
       roleErr.value = (e as Error).message
     }
   })
+}
+
+// —— 角色包(第九十三批):导出/导入 ——
+// 导出:浏览器直接下载;桌面壳**没有下载通道**(Tauri 未注册 wry 的 on_download ⇒ `<a download>`
+// 点了什么都不会发生,见 Sidebar.vue 同款说明),改由服务端写文件 —— 先用原生选择器挑目录,
+// 再跑 /role export(与 TUI 同一个实现,界面只负责给路径)。
+const packAs = ref('') // 「导入为」目标 ID(留空 = 用包里的原始标识)
+const packBusy = ref(false)
+const showPackImport = ref(false)
+
+function exportRole(r: RoleSpec): void {
+  roleErr.value = ''
+  roleMsg.value = ''
+  if (!isDesktop) {
+    const a = document.createElement('a')
+    a.href = rolePackDownloadUrl(r.id)
+    a.download = rolePackName(r.id)
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    roleMsg.value = '已开始下载 ' + rolePackName(r.id) + '(文件里含定义 + 工作规则 + 私有技能)'
+    return
+  }
+  void (async () => {
+    const dir = await pickDirectory('选择角色包保存目录')
+    if (!dir) {
+      roleMsg.value = '已取消导出'
+      return
+    }
+    packBusy.value = true
+    try {
+      const path = dir.replace(/[\\/]+$/, '') + '/' + rolePackName(r.id)
+      const res = await api.commandRun('role', ['export', r.id, path])
+      if (res.error) roleErr.value = res.error
+      else roleMsg.value = res.output || '已导出到 ' + path
+    } catch (e) {
+      roleErr.value = (e as Error).message
+    } finally {
+      packBusy.value = false
+    }
+  })()
+}
+
+// afterPack 导入成功后的统一收尾:说清落在哪、带了什么、旧份去哪了,再刷新列表。
+async function afterPack(res: RolePackResult): Promise<void> {
+  const bits = ['已导入角色「' + (res.name || res.id) + '」(' + res.id + ')']
+  if (res.manifest?.id && res.manifest.id !== res.id) bits.push('包里原本是 ' + res.manifest.id)
+  bits.push('技能 ' + (res.skills?.length ? res.skills.join('、') : '无'))
+  if (res.replaced) bits.push('旧的那份已移入回收站(' + (res.backup_name || '') + '),可恢复')
+  roleMsg.value = bits.join(' · ')
+  packAs.value = ''
+  showPackImport.value = false
+  await loadRoles()
+  if (trashOpen.value) await loadTrash()
+}
+
+// importRolePack 导入。默认**不覆盖**:后端对同名目标显式 400,这里问过用户(并说明旧份进回收站)
+// 才带 overwrite 重试 —— 覆盖是有副作用的动作,不能悄悄做。
+async function importRolePack(file: File): Promise<void> {
+  roleErr.value = ''
+  roleMsg.value = ''
+  const as = packAs.value.trim()
+  packBusy.value = true
+  let askWho = ''
+  try {
+    if (!(await tryImport(file, as, false))) askWho = roleErr.value
+  } catch (e) {
+    askWho = (e as Error).message
+    roleErr.value = ''
+  } finally {
+    packBusy.value = false
+  }
+  if (!askWho) return
+  // 只对"同名已存在"问一次;别的错误(frontmatter 不一致/包坏了)直接摆出来,不该被覆盖确认掩住
+  if (!askWho.includes('已存在')) {
+    roleErr.value = askWho
+    return
+  }
+  const m = /角色 ([^ ]+) 已存在/.exec(askWho)
+  guard(
+    (m ? '导入会覆盖已存在的角色「' + m[1] + '」？' : '导入会覆盖已存在的同名角色？') +
+      '(旧的那份移入 roles/.trash/，可在下方回收站恢复。不想覆盖就改用「导入为」换一个标识)',
+    true,
+    () => {
+      packBusy.value = true
+      void (async () => {
+        try {
+          await tryImport(file, as, true)
+        } finally {
+          packBusy.value = false
+        }
+      })()
+    },
+  )
+}
+
+// tryImport 单次导入尝试:成功 → 收尾并返回 true;失败 → 把错误文案落到 roleErr 后返回 false
+// (roleErr 就是给调用方看的"为什么没成",不再另设一个变量传话)。
+async function tryImport(file: File, as: string, overwrite: boolean): Promise<boolean> {
+  try {
+    const res = await api.rolePackImport(file, { ...(as ? { as } : {}), overwrite })
+    await afterPack(res)
+    return true
+  } catch (e) {
+    roleErr.value = (e as Error).message
+    return false
+  }
+}
+
+function onPackPick(ev: Event): void {
+  const el = ev.target as HTMLInputElement
+  const f = el.files?.[0]
+  el.value = '' // 清掉便于同一个文件再选一次
+  if (f) void importRolePack(f)
 }
 
 // —— 技能挂载 ——
@@ -1669,6 +1783,9 @@ watch(
         <section v-if="roleReady" data-sec="role" class="sec">
           <h3 class="h">
             角色
+            <button class="link" data-tip="导入角色包(单文件 zip,别人分享给你的)" @click="showPackImport = !showPackImport">
+              {{ showPackImport ? '收起' : '⤒ 导入' }}
+            </button>
             <button class="link" data-tip="新建一个角色" @click="showRoleNew = !showRoleNew">
               {{ showRoleNew ? '收起' : '＋ 新建' }}
             </button>
@@ -1682,6 +1799,32 @@ watch(
           <p v-if="roleProblems.length" class="dim">
             部分角色文件读不了（已跳过）：{{ roleProblems.map((p) => p.id).join('、') }}
           </p>
+
+          <!-- 导入角色包:一个 zip 里装着定义 + 工作规则 + 私有技能(第九十三批)。
+               「导入为」留空 = 用包里的标识;同名时后端会拒,再问一次是否覆盖(旧份进回收站)。 -->
+          <div v-if="showPackImport" class="add-form">
+            <label class="fld">
+              <span class="fld-lab">角色包文件(.zip)</span>
+              <input
+                class="inp"
+                type="file"
+                accept=".zip,application/zip"
+                :disabled="packBusy"
+                data-testid="pack-file"
+                @change="onPackPick"
+              />
+            </label>
+            <label class="fld">
+              <span class="fld-lab">导入为（可选：留空 = 用包里的标识）</span>
+              <input v-model="packAs" class="inp mono" placeholder="finance-copy" :disabled="packBusy" />
+            </label>
+            <p class="dim">
+              包里是别人导出的角色（人设 + 工作规则 + 私有技能）；导入<strong>不会</strong>动你现有角色，
+              同名时默认拒绝，确认后才覆盖（旧份进回收站可恢复）。
+              想并存一份就填「导入为」换一个标识。
+            </p>
+            <p v-if="packBusy" class="dim" data-testid="pack-busy">导入中…</p>
+          </div>
 
           <div v-if="showRoleNew" class="add-form">
             <label class="fld">
@@ -1752,6 +1895,14 @@ watch(
               <div class="sacts">
                 <button v-if="!roleIsCurrent(r)" class="ghost" data-tip="下一轮生效，不换会话" @click="useRole(r.id)">切换</button>
                 <button class="ghost" @click="selectRole(r)">{{ selRole === r.id ? '收起' : '编辑' }}</button>
+                <button
+                  class="ghost"
+                  :disabled="packBusy"
+                  data-tip="导成单个 zip（定义 + 工作规则 + 私有技能），可分享给别的 gah"
+                  @click="exportRole(r)"
+                >
+                  导出
+                </button>
                 <button class="ghost danger-text" data-tip="删除角色（需确认，移入回收站）" @click="deleteRole(r)">删除</button>
               </div>
             </div>

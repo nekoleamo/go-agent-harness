@@ -53,6 +53,7 @@ core/config 65
 sdk 85
 internal/prefs 66
 internal/roles 85
+internal/rolepack 85
 internal/skills 77
 internal/searchfile 66
 internal/instructions 76

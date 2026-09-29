@@ -12,6 +12,7 @@ package skills
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -34,9 +35,13 @@ const (
 	MaxBytes = 64 * 1024
 	// maxTrashKeep 回收站保留份数(超出按名字倒序淘汰)。
 	maxTrashKeep = 20
-	// trashTimeLayout 回收站条目名尾部的时间戳口径(<名>-<YYYYMMDD-HHMMSS>)。
+	// trashTimeLayout 回收站条目名尾部的时间戳口径(<名>-<YYYYMMDD-HHMMSS.毫秒>)。
 	// 单一事实源:Remove 落名、TrashList/Restore 还原都读它。
-	trashTimeLayout = "20060102-150405"
+	// 为什么到毫秒:条目名是"同一秒内删两次"的唯一区分手段 —— 面板里删掉技能又马上新建同名技能
+	// (或脚本连续删同一个)会撞名,rename 报 "file exists"(用户看不懂且当下做不下去)。
+	trashTimeLayout = "20060102-150405.000"
+	// trashTimeLayoutLegacy 早期版本(秒精度)的条目名,仍要能解析/恢复 —— 老用户目录里就有这些。
+	trashTimeLayoutLegacy = "20060102-150405"
 )
 
 // nameRe 技能名口径:小写字母/数字/点/下划线/连字符,首位字母数字,总长 ≤ 64。
@@ -219,8 +224,11 @@ func (l Library) Remove(name string) error {
 	if err := os.MkdirAll(trash, 0o755); err != nil {
 		return fmt.Errorf("回收站创建失败: %w", err)
 	}
-	dst := filepath.Join(trash, name+"-"+time.Now().Format(trashTimeLayout))
-	if err := os.Rename(filepath.Join(l.Root, name), dst); err != nil {
+	entry, err := freeTrashName(trash, name, time.Now())
+	if err != nil {
+		return err
+	}
+	if err := os.Rename(filepath.Join(l.Root, name), filepath.Join(trash, entry)); err != nil {
 		return fmt.Errorf("技能移入回收站失败: %w", err)
 	}
 	pruneTrash(trash)
@@ -238,15 +246,30 @@ type TrashEntry struct {
 // splitTrashName 从回收站条目名还原原技能名与删除时间戳(不合约定 → ok=false)。
 // 技能名本身可含连字符,所以按**固定长度的尾部时间戳**切,不按"最后一个连字符"。
 func splitTrashName(name string) (skill, ts string, ok bool) {
-	cut := len(name) - len(trashTimeLayout) - 1
-	if cut <= 0 || name[cut] != '-' {
-		return "", "", false
+	for _, layout := range []string{trashTimeLayout, trashTimeLayoutLegacy} {
+		cut := len(name) - len(layout) - 1
+		if cut <= 0 || name[cut] != '-' {
+			continue
+		}
+		if _, err := time.Parse(layout, name[cut+1:]); err != nil {
+			continue
+		}
+		return name[:cut], name[cut+1:], true
 	}
-	skill, ts = name[:cut], name[cut+1:]
-	if _, err := time.Parse(trashTimeLayout, ts); err != nil {
-		return "", "", false
+	return "", "", false
+}
+
+// freeTrashName 取一个**未被占用**的回收站条目名(now 只为了可测:同一时刻再取一次必须拿到另一个名字)。
+// 撞名(同一毫秒内连删两次)就把时间戳往后推 1 毫秒重试;试满 1 秒仍撞 ⇒ 如实报错,
+// 绝不退化成"覆盖同名的那个条目"(那是拿旧份换新份,回收站就不再是备份了)。
+func freeTrashName(dir, name string, now time.Time) (string, error) {
+	for i := 0; i < 1000; i++ {
+		entry := name + "-" + now.Add(time.Duration(i)*time.Millisecond).Format(trashTimeLayout)
+		if _, err := os.Lstat(filepath.Join(dir, entry)); errors.Is(err, fs.ErrNotExist) {
+			return entry, nil
+		}
 	}
-	return skill, ts, true
+	return "", fmt.Errorf("回收站里 %s 的条目过多(同一秒内反复删除):请稍后再试", name)
 }
 
 // TrashList 本库回收站条目(最近的在前)。坏名也列出(不替用户隐藏磁盘上的东西)。

@@ -799,3 +799,147 @@ func TestTierBadValueBroken(t *testing.T) {
 		t.Fatal("Save 应拒绝 full-access(角色只能收紧)")
 	}
 }
+
+// TestFreeTrashName 同一时刻取两次必须拿到两个不同的名字。
+// 为什么要有这条:`/role rm x` 之后立刻 force 覆盖导入(或脚本连续删同一个角色)会在同一秒内
+// 落两个条目 —— 早期实现直接撞名,rename 报 "file exists",用户当下做不下去。
+func TestFreeTrashName(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
+	first, err := freeTrashName(dir, "finance", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, first), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	second, err := freeTrashName(dir, "finance", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatalf("同一时刻两次取名撞了:%s", first)
+	}
+	// 两个名字都要能被解析回同一个 ID(不然恢复时认不出是谁)
+	for _, name := range []string{first, second} {
+		if id, _, ok := splitTrashName(name); !ok || id != "finance" {
+			t.Fatalf("条目名解析失败:%s → %s %v", name, id, ok)
+		}
+	}
+	if _, err := freeTrashName(dir, "finance", now.Add(-time.Second)); err != nil {
+		t.Fatalf("挪到别的秒应立刻可用: %v", err)
+	}
+}
+
+// TestTrashLegacyName 早期版本(秒精度)的回收站条目名仍要能识别与恢复。
+// 为什么:第九十三批把条目名精度提到毫秒(修"同一秒内连删两次撞名"),老用户目录里
+// 已经躺着秒精度的旧条目 —— 解析不认就等于把他们删除的角色/技能悄悄弄丢。
+func TestTrashLegacyName(t *testing.T) {
+	t.Setenv("GAH_HOME", t.TempDir())
+	s := Store{}
+	legacy := "legacy-role-" + time.Now().Format(trashTimeLayoutLegacy)
+	if err := os.MkdirAll(filepath.Join(TrashDir(), legacy), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(TrashDir(), legacy, FileName), []byte("name: 旧角色\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, it := range s.TrashList() {
+		if it.Name == legacy {
+			found = it.ID == "legacy-role" && it.DeletedAt != ""
+		}
+	}
+	if !found {
+		t.Fatalf("秒精度旧条目应能解析:%+v", s.TrashList())
+	}
+	if _, err := s.Restore(legacy); err != nil {
+		t.Fatalf("旧条目应能恢复: %v", err)
+	}
+	if _, err := s.Get("legacy-role"); err != nil {
+		t.Fatalf("恢复后角色应存在: %v", err)
+	}
+	// 恢复出来的角色再删一次:这次落的是新精度条目名,同样能解析
+	if err := s.Delete("legacy-role"); err != nil {
+		t.Fatal(err)
+	}
+	list := s.TrashList()
+	if len(list) != 1 || list[0].ID != "legacy-role" {
+		t.Fatalf("新条目名解析不符:%+v", list)
+	}
+	if _, err := time.Parse(trashTimeLayout, list[0].DeletedAt); err != nil {
+		t.Errorf("新条目时间戳格式不符: %q", list[0].DeletedAt)
+	}
+}
+
+// TestParseDefinitionStrictKeys 严格模式(导入角色包用)必须拒未知键、并放过全部已知键。
+// 为什么要严格模式:包可能来自更新的 gah —— 静默忽略不认识的键,用户拿到的是"少了一半设定"
+// 的角色且毫无提示(第九十三批)。
+func TestParseDefinitionStrictKeys(t *testing.T) {
+	t.Setenv("GAH_HOME", t.TempDir())
+	// 全部已知键写满:严格模式必须放过(白名单来自 roleFile 的 tag 全集,加字段不会漏)
+	full := "name: 满载\n" +
+		"description: 一句话\n" +
+		"identity: 你是满载\n" +
+		"exclude_global: true\n" +
+		"skills:\n  - a\n" +
+		"skills_inherit: true\n" +
+		"model: m\n" +
+		"thinking: low\n" +
+		"tools_exclude:\n  - shell\n" +
+		"approval: strict\n" +
+		"sandbox: read-only\n"
+	spec, err := ParseDefinition("full", []byte(full), true)
+	if err != nil {
+		t.Fatalf("全部已知键应放过: %v", err)
+	}
+	if spec.Name != "满载" || spec.Approval != "strict" || spec.Sandbox != "read-only" ||
+		spec.Model != "m" || len(spec.ToolsExclude) != 1 || !spec.ExcludeGlobal {
+		t.Fatalf("严格模式解析结果不符:%+v", spec)
+	}
+	// 未知键:拒绝,且文案要说清"不是静默丢掉"
+	_, err = ParseDefinition("full", []byte("name: x\nplugin_set:\n  - a\n"), true)
+	if err == nil || !strings.Contains(err.Error(), "不认识的键") ||
+		!strings.Contains(err.Error(), "plugin_set") {
+		t.Fatalf("未知键应被拒并指出键名: %v", err)
+	}
+	// 宽松模式(get 用的历史行为)仍不因未知键失败 —— 老版本忽略它,今天也不该突然读不出来
+	if _, err := ParseDefinition("full", []byte("name: x\nplugin_set:\n  - a\n"), false); err != nil {
+		t.Fatalf("宽松模式不该因未知键失败: %v", err)
+	}
+	// 坏 YAML / 非法 ID:两种模式都要报错(严格模式先撞 YAML,宽松模式撞第二次解析)
+	for _, strict := range []bool{true, false} {
+		if _, err := ParseDefinition("full", []byte("name: [unclosed\n"), strict); err == nil ||
+			!strings.Contains(err.Error(), "解析失败") {
+			t.Fatalf("坏 YAML(strict=%v)应报解析失败: %v", strict, err)
+		}
+	}
+	if _, err := ParseDefinition("Bad ID", []byte("name: x\n"), true); err == nil {
+		t.Fatal("非法 ID 应被拒")
+	}
+}
+
+// TestSplitTrashName 条目名解析的边界(毫秒精度 + 秒精度兼容)。
+func TestSplitTrashName(t *testing.T) {
+	cases := []struct {
+		name  string
+		id    string
+		ts    string
+		valid bool
+	}{
+		{"finance-20260929-120000.123", "finance", "20260929-120000.123", true},
+		{"finance-20260929-120000", "finance", "20260929-120000", true}, // 旧精度
+		{"tax-report-20260929-120000.001", "tax-report", "20260929-120000.001", true},
+		{"finance-20260929-120000.12", "", "", false},  // 毫秒位数不对
+		{"finance", "", "", false},                     // 没有时间戳
+		{"finance-20260929", "", "", false},            // 时间戳不完整
+		{"-20260929-120000.123", "", "", false},        // 没有 id
+		{"finance-20261329-120000.123", "", "", false}, // 月份越界
+	}
+	for _, tc := range cases {
+		id, ts, ok := splitTrashName(tc.name)
+		if ok != tc.valid || id != tc.id || ts != tc.ts {
+			t.Errorf("splitTrashName(%q) = (%q,%q,%v),期望 (%q,%q,%v)", tc.name, id, ts, ok, tc.id, tc.ts, tc.valid)
+		}
+	}
+}

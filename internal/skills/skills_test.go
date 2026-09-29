@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func setup(t *testing.T) Library {
@@ -420,5 +421,56 @@ func TestQuoteYAMLEscapesBackslash(t *testing.T) {
 	// 不含特殊字符的值保持裸写(不引入多余引号)
 	if got := quoteYAML("普通描述"); got != "普通描述" {
 		t.Fatalf("裸写值不该加引号: %s", got)
+	}
+}
+
+// TestTrashLegacyNameSkill 秒精度的旧条目名仍要能识别/恢复(第九十三批把条目名提到毫秒)。
+func TestTrashLegacyNameSkill(t *testing.T) {
+	root := t.TempDir()
+	lib := Library{Root: root}
+	legacy := "legacy-skill-" + time.Now().Format(trashTimeLayoutLegacy)
+	if err := os.MkdirAll(filepath.Join(root, TrashName, legacy), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, TrashName, legacy, FileName), []byte("---\nname: legacy-skill\n---\n正文"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, it := range lib.TrashList() {
+		if it.Name == legacy {
+			found = it.Skill == "legacy-skill" && it.DeletedAt != ""
+		}
+	}
+	if !found {
+		t.Fatalf("秒精度旧条目应能解析:%+v", lib.TrashList())
+	}
+	if _, err := lib.Restore(legacy); err != nil {
+		t.Fatalf("旧条目应能恢复: %v", err)
+	}
+	if body, err := lib.Read("legacy-skill"); err != nil || !strings.Contains(body, "正文") {
+		t.Fatalf("恢复后技能应可读:%q %v", body, err)
+	}
+}
+
+// TestFreeTrashNameSkill 同一时刻取两次必须拿到两个不同的名字(技能版:删了又立刻建同名技能)。
+func TestFreeTrashNameSkill(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
+	first, err := freeTrashName(dir, "review", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, first), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	second, err := freeTrashName(dir, "review", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatalf("同一时刻两次取名撞了:%s", first)
+	}
+	if skill, _, ok := splitTrashName(second); !ok || skill != "review" {
+		t.Fatalf("条目名解析失败:%s → %s %v", second, skill, ok)
 	}
 }

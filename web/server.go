@@ -23,6 +23,8 @@
 //	POST /api/skills + GET/DELETE /api/skills/{name}?role= + POST /api/skills/{name}/relocate 技能库
 //	(共享库 / 角色私有;relocate = 改名/跨库移动,第八十四批);
 //	GET /api/trash + POST /api/trash/restore 回收站(第八十三批;删除的角色/技能可恢复);
+//	GET /api/rolepack/{id} 下载角色包(zip) + POST /api/rolepack?as=&overwrite=1 导入角色包
+//	(multipart "file";第九十三批;独立前缀 —— 角色 id 可以是 export/import,挂 /api/roles 下会被通配吃);
 //	GET/PUT /api/instructions 全局指令 $GAH_HOME/AGENTS.md(第八十一批;PUT 后连带
 //	ReloadInstructions,重载失败 → 200 + warning)
 //	POST /api/shutdown 优雅停机(触发宿主 system/shutdown → DisposeAll;桌面壳/跨平台统一通道)
@@ -351,6 +353,9 @@ func (s *Server) handler() http.Handler {
 	// 回收站(第八十三批):独立前缀,避免与 /api/roles/{id}、/api/skills/{name} 互吃
 	mux.HandleFunc("GET /api/trash", s.handleTrash)
 	mux.HandleFunc("POST /api/trash/restore", s.handleTrashRestore)
+	// 角色包(第九十三批):独立前缀(理由见 web/rolepack.go 顶部)
+	mux.HandleFunc("GET /api/rolepack/{id}", s.handleRolePackGet)
+	mux.HandleFunc("POST /api/rolepack", s.handleRolePackPost)
 	// 文档预览(D1):无条件注册,服务缺失时 503(前端据 503 隐藏入口)
 	mux.HandleFunc("GET /api/doc/preview", s.handleDocPreview)
 	mux.HandleFunc("GET /api/doc/raw", s.handleDocRaw)

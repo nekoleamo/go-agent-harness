@@ -68,6 +68,8 @@ function makeStub(
   // toolQueries:GET /api/tools 的查询串(第九十一批 —— 面板必须读 ?all=1 全量清单;
   // seen 只记写类请求,读类的口径单记一处)。
   const toolQueries = []
+  // packPosts:角色包导入的每次尝试(第九十三批 —— 要证"先不带 overwrite,确认后才带")。
+  const packPosts = []
   const handler = async (route) => {
     const url = new URL(route.request().url())
     const p = url.pathname
@@ -344,11 +346,29 @@ function makeStub(
       // 运行中的提交回 accepted=steer(宿主把消息注入当前回合);否则 turn(开新回合)。
       return json({ ok: true, accepted: running ? 'steer' : 'turn' })
     }
+    // 角色包(第九十三批):导出 = 下载(zip 字节),导入 = multipart。
+    // 导入**第一次一律回"已存在"** —— 面板必须先问用户再带 overwrite 重试(不静默覆盖)。
+    if (p === '/api/rolepack') {
+      packPosts.push({ as: url.searchParams.get('as'), overwrite: url.searchParams.get('overwrite') })
+      if (url.searchParams.get('overwrite') !== '1') {
+        return route.fulfill({ status: 400, contentType: 'text/plain; charset=utf-8', body: '角色 finance 已存在:要覆盖请加 force' })
+      }
+      return json({
+        ok: true,
+        result: { id: url.searchParams.get('as') || 'finance', name: 'Finance', agents_bytes: 21, skills: ['tax'], replaced: true, backup_name: 'finance-20260929-000000' },
+      })
+    }
+    if (p.startsWith('/api/rolepack/')) {
+      return route.fulfill({ status: 200, contentType: 'application/zip', body: 'PK\x03\x04stub' })
+    }
+    // 桌面壳导出:面板挑完目录后跑 /role export(服务端写文件)
+    if (p === '/api/commands/role') return json({ output: '已导出角色 Finance(finance)→ /tmp/gah-role-finance.zip' })
     if (p === '/api/doc/tree') return json({ entries: [] })
     return json([])
   }
   handler.seen = seen
   handler.toolQueries = toolQueries
+  handler.packPosts = packPosts
   return handler
 }
 const apiStub = makeStub(true)
@@ -1415,6 +1435,56 @@ describe('布局护栏:整页永不滚动(第五十二/五十三批)', { skip: s
       assert.deepEqual(patches[0], { sandbox: 'workspace-write' }, `部分更新体不对:${JSON.stringify(patches[0])}`)
       // 回包被回填(真后端回整份 spec):下拉不回弹
       assert.equal(await page.inputValue(sel('沙箱')), 'workspace-write', '提交后下拉回弹成旧值')
+      assertInvariants(await measure(page))
+    } catch (e) {
+      await shoot(page, t.name)
+      throw e
+    } finally {
+      await ctx.close()
+    }
+  })
+
+  // 角色包导出/导入(第九十三批):导出走按钮(浏览器下载 / 桌面壳交服务端写文件),
+  // 导入走 multipart 上传,且**同名覆盖必须先问**——默认那次不带 overwrite。
+  test('设置面板:角色包导出与导入(下载 / multipart / 覆盖先问)', async (t) => {
+    const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 }, acceptDownloads: true })
+    let page = null
+    try {
+      const stub = makeStub(true, false, false, false, true, 'finance')
+      page = await open(ctx, stub, docks[1].dock)
+      await page.click('.gear')
+      await page.waitForSelector('[data-sec="role"] .prow')
+
+      // 导出:点「导出」= 触发一次下载,建议文件名与后端 Content-Disposition 同口径
+      const [dl] = await Promise.all([
+        page.waitForEvent('download'),
+        page.click('[data-sec="role"] .prow:has-text("Finance-Analyst") button:has-text("导出")'),
+      ])
+      assert.equal(dl.suggestedFilename(), 'gah-role-finance.zip', `下载文件名不对:${dl.suggestedFilename()}`)
+      const msg1 = (await page.textContent('[data-sec="role"]')) ?? ''
+      assert.ok(msg1.includes('已开始下载 gah-role-finance.zip'), `导出后应有回执:${msg1.slice(0, 200)}`)
+
+      // 导入:选文件 → 首次提交**不带** overwrite → 后端拒 → 面板弹确认(说明旧份进回收站)
+      await page.click('[data-sec="role"] h3 button:has-text("导入")')
+      await page.setInputFiles('[data-testid="pack-file"]', {
+        name: 'gah-role-finance.zip',
+        mimeType: 'application/zip',
+        buffer: Buffer.from('PK\x03\x04stub'),
+      })
+      await page.waitForSelector('.dialog .btn.ok')
+      const dlg = (await page.textContent('.dialog .t')) ?? ''
+      assert.ok(dlg.includes('覆盖已存在的角色「finance」'), `确认文案要说清覆盖谁:${dlg}`)
+      assert.ok(dlg.includes('回收站'), `确认文案要说清旧份去哪:${dlg}`)
+      assert.deepEqual(stub.packPosts, [{ as: null, overwrite: null }], `首次提交不该带 overwrite:${JSON.stringify(stub.packPosts)}`)
+
+      // 确认 → 带 overwrite=1 重试 → 回执说清旧份进回收站
+      await page.click('.dialog .btn.ok')
+      await page.waitForTimeout(300)
+      assert.equal(stub.packPosts.length, 2, `确认后应再提交一次:${JSON.stringify(stub.packPosts)}`)
+      assert.equal(stub.packPosts[1].overwrite, '1', `确认后必须带 overwrite:${JSON.stringify(stub.packPosts[1])}`)
+      const msg2 = (await page.textContent('[data-sec="role"]')) ?? ''
+      assert.ok(msg2.includes('已导入角色'), `导入后应有回执:${msg2.slice(0, 200)}`)
+      assert.ok(msg2.includes('回收站'), `回执要说清旧份进回收站:${msg2.slice(0, 200)}`)
       assertInvariants(await measure(page))
     } catch (e) {
       await shoot(page, t.name)

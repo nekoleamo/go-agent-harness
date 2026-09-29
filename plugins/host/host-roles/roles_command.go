@@ -3,8 +3,11 @@ package hostroles
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
+	"github.com/nekoleamo/go-agent-harness/internal/rolepack"
 	"github.com/nekoleamo/go-agent-harness/internal/roles"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
@@ -14,8 +17,8 @@ import (
 func newRoleCommand(svc *Service) sdk.CommandSpec {
 	return sdk.CommandSpec{
 		Name:  "role",
-		Usage: "/role list|show|use|none|new|rename|rm [id]",
-		Desc:  "角色(人设+规则+技能挂载):切换/查看/新建/删除",
+		Usage: "/role list|show|use|none|new|rename|rm|export|import [id|路径]",
+		Desc:  "角色(人设+规则+技能挂载):切换/查看/新建/删除/导出/导入",
 		Args: []sdk.ArgLevel{
 			{Options: func([]string) []sdk.Option {
 				return []sdk.Option{
@@ -26,6 +29,8 @@ func newRoleCommand(svc *Service) sdk.CommandSpec {
 					{Value: "new", Desc: "新建角色(自动生成 AGENTS.md 模板)"},
 					{Value: "rename", Desc: "改 ID / 显示名"},
 					{Value: "rm", Desc: "删除角色(移入 roles/.trash/,可恢复)"},
+					{Value: "export", Desc: "导出角色包(单文件 zip,可分享给别的 gah)"},
+					{Value: "import", Desc: "导入角色包(同名目标默认拒绝,加 force 覆盖)"},
 				}
 			}},
 			{Options: func(picked []string) []sdk.Option {
@@ -33,7 +38,7 @@ func newRoleCommand(svc *Service) sdk.CommandSpec {
 					return nil
 				}
 				switch picked[1] {
-				case "show", "use", "rm":
+				case "show", "use", "rm", "export":
 					return roleOptions(svc)
 				}
 				return nil
@@ -46,6 +51,10 @@ func newRoleCommand(svc *Service) sdk.CommandSpec {
 					return []string{"角色 ID(小写字母/数字/连字符)", "显示名?"}
 				case "rename":
 					return []string{"当前 ID", "新 ID(不变则填原 ID)", "新显示名?"}
+				case "export":
+					return []string{"导出路径?(可空:落在工作区 gah-role-<id>.zip)"}
+				case "import":
+					return []string{"角色包路径(.zip)", "as <新 ID> ?(并存用)", "force ?(覆盖同名角色)"}
 				}
 				return nil
 			}},
@@ -92,6 +101,13 @@ func newRoleCommand(svc *Service) sdk.CommandSpec {
 					return "", err
 				}
 				return fmt.Sprintf("已更新角色:%s(%s)", spec.Name, spec.ID), nil
+			case "export":
+				return roleExportText(svc, argAt(args, 1), argAt(args, 2))
+			case "import":
+				if argAt(args, 1) == "" {
+					return "", fmt.Errorf("/role import <角色包路径> [as <新 ID>] [force]")
+				}
+				return roleImportText(svc, args[1:])
 			case "rm", "delete":
 				if argAt(args, 1) == "" {
 					return "", fmt.Errorf("/role rm <id>(删除即移入 roles/.trash/,可用 ls 恢复)")
@@ -114,6 +130,109 @@ func argAt(args []string, n int) string {
 		return args[n]
 	}
 	return ""
+}
+
+// roleExportText 导出角色为单文件包(/role export <id> [路径])。
+// 覆盖规则:目标已存在且**本身就是一个角色包**才允许覆盖(那是"重新导一次"),
+// 否则拒绝 —— 用户给的路径上可能躺着一个正经文件,导出不该悄悄把它换成 zip。
+func roleExportText(svc *Service, id, path string) (string, error) {
+	if id == "" {
+		return "", fmt.Errorf("/role export <id> [路径](可用 /role list 查看)")
+	}
+	if _, ok := svc.Get(id); !ok {
+		return "", fmt.Errorf("角色不存在:%s", id)
+	}
+	pack, err := rolepack.Export(id)
+	if err != nil {
+		return "", err
+	}
+	if path == "" {
+		path = rolepack.FileName(id)
+	}
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
+	if old, err := os.ReadFile(path); err == nil {
+		man, ierr := rolepack.Inspect(old)
+		if ierr != nil {
+			return "", fmt.Errorf("目标已存在且不是角色包,拒绝覆盖:%s(换个路径)", path)
+		}
+		return writeExport(path, pack, id, "已覆盖同名角色包(它原本是 "+man.ID+")")
+	}
+	return writeExport(path, pack, id, "")
+}
+
+// writeExport 落盘 + 回执(讲清"里面装了什么、下次怎么用")。
+func writeExport(path string, pack []byte, id, note string) (string, error) {
+	if err := os.WriteFile(path, pack, 0o644); err != nil {
+		return "", fmt.Errorf("角色包写入失败: %w", err)
+	}
+	spec, _ := roles.Store{}.Get(id)
+	var sb strings.Builder
+	if note != "" {
+		sb.WriteString(note + "\n")
+	}
+	sb.WriteString(fmt.Sprintf("已导出角色 %s(%s)→ %s(%d 字节)\n", spec.Name, id, path, len(pack)))
+	sb.WriteString(fmt.Sprintf("包含:角色定义 + 工作规则(%d 字节) + %d 个私有技能(%s)\n",
+		spec.AGENTSBytes, len(spec.OwnSkills), strings.Join(topN(spec.OwnSkills, 8), ", ")))
+	sb.WriteString("别的 gah 上用「/role import " + path + "」或在设置面板「角色」段导入即可(同名角色默认拒绝,加 force 覆盖)。")
+	return sb.String(), nil
+}
+
+// roleImportText 导入角色包(/role import <路径> [as <新 ID>] [force])。
+// 语法用关键字而不是位置:force 与 as 都可能单独出现(位置式会逼用户填占位符)。
+func roleImportText(svc *Service, args []string) (string, error) {
+	path := args[0]
+	var as string
+	force := false
+	for i := 1; i < len(args); i++ {
+		switch args[i] {
+		case "as":
+			as = argAt(args, i+1)
+			i++
+			if as == "" {
+				return "", fmt.Errorf("as 后面要跟目标 ID")
+			}
+		case "force", "-f":
+			force = true
+		default:
+			return "", fmt.Errorf("不认识的参数 %q(可用:as <新 ID>、force)", args[i])
+		}
+	}
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("角色包读取失败 %s: %w", path, err)
+	}
+	res, err := rolepack.Import(data, rolepack.ImportOptions{As: as, Overwrite: force})
+	if err != nil {
+		return "", err
+	}
+	prev := svc.Current()
+	if err := svc.Reload(); err != nil {
+		// 文件已落盘但索引没刷新:如实说(与 Web 侧同名警告一致),不回滚 —— 角色本身是好的
+		return "", fmt.Errorf("角色包已导入(%s),但角色索引重载失败: %w(可 /reload 或重启)", res.ID, err)
+	}
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("已导入角色 %s(%s)", res.Name, res.ID))
+	if res.Manifest.ID != res.ID {
+		sb.WriteString(fmt.Sprintf("—— 包里原本是 %s,按你的要求导入为 %s", res.Manifest.ID, res.ID))
+	}
+	sb.WriteString("\n")
+	sb.WriteString(fmt.Sprintf("包含:工作规则 %d 字节 + %d 个私有技能(%s)\n",
+		res.AgentsLen, len(res.Skills), strings.Join(topN(res.Skills, 8), ", ")))
+	if res.Replaced {
+		sb.WriteString(fmt.Sprintf("覆盖了同名角色:旧的那份已移入回收站(%s/%s),需要时可恢复。\n",
+			roles.TrashDir(), res.BackupName))
+	}
+	if prev != "" && prev != res.ID {
+		sb.WriteString("当前角色未变(仍是 " + prev + ");需要切到新角色请 /role use " + res.ID + "。")
+	} else if prev == "" {
+		sb.WriteString("需要启用它请 /role use " + res.ID + "。")
+	}
+	return strings.TrimSuffix(sb.String(), "\n"), nil
 }
 
 // roleOptions 现有角色枚举(选择器用)。

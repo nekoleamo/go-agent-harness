@@ -18,8 +18,10 @@ package roles
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -45,9 +47,13 @@ const (
 	MaxAgentsBytes = 32 * 1024
 	// maxTrashKeep .trash 保留的最近份数(超出按目录名倒序淘汰)。
 	maxTrashKeep = 20
-	// trashTimeLayout 回收站条目名尾部的时间戳口径(<id>-<YYYYMMDD-HHMMSS>)。
+	// trashTimeLayout 回收站条目名尾部的时间戳口径(<id>-<YYYYMMDD-HHMMSS.毫秒>)。
 	// 单一事实源:Delete 落名、TrashList/Restore 还原都读它,免得一边改了一边解析不出来。
-	trashTimeLayout = "20060102-150405"
+	// 为什么到毫秒:条目名是"同一秒内删两次"的唯一区分手段 —— `/role rm x` 之后立刻
+	// `force` 覆盖导入(或脚本连续删同一个角色)会撞名,rename 报 "file exists"(用户看不懂且当下做不下去)。
+	trashTimeLayout = "20060102-150405.000"
+	// trashTimeLayoutLegacy 早期版本(秒精度)的条目名,仍要能解析/恢复 —— 老用户目录里就有这些。
+	trashTimeLayoutLegacy = "20060102-150405"
 	// defaultOwnSkillMax 角色私有技能个数上限(防"整库复制进角色"的误用)。
 	defaultOwnSkillMax = 200
 )
@@ -239,6 +245,52 @@ func (s Store) get(id string, withBody bool) (sdk.RoleSpec, error) {
 	if err != nil {
 		return sdk.RoleSpec{}, fmt.Errorf("角色 %s 缺 %s: %w", id, FileName, err)
 	}
+	spec, err := ParseDefinition(id, raw, false)
+	if err != nil {
+		return sdk.RoleSpec{}, err
+	}
+	if withBody {
+		if b, err := os.ReadFile(filepath.Join(dir, AgentsName)); err == nil {
+			spec.AGENTS = string(b)
+		} else if !os.IsNotExist(err) {
+			return sdk.RoleSpec{}, fmt.Errorf("角色 %s 的 %s 读取失败: %w", id, AgentsName, err)
+		}
+		spec.AGENTSBytes = len(spec.AGENTS)
+	} else if fi, err := os.Stat(filepath.Join(dir, AgentsName)); err == nil {
+		spec.AGENTSBytes = int(fi.Size())
+	}
+	spec.OwnSkills = ownSkills(dir)
+	if _, err := os.Stat(filepath.Join(dir, SeedVersionName)); err == nil {
+		spec.Seed = true
+	}
+	return spec, nil
+}
+
+// ParseDefinition 解析并校验 role.yaml 的原始字节 → RoleSpec(不含 AGENTS 正文/私有技能/预置标记 ——
+// 那些是目录里的其它文件,由 get 补齐)。id 只用于校验与缺省显示名,不落进 role.yaml。
+//
+// 谁能用:本包的 get()(strictKeys=false,与历史行为一致:手写文件里的多余键照旧忽略)与
+// 角色包导入(internal/rolepack,strictKeys=true)。
+//
+// strictKeys 为什么必要:角色包**可能来自更新的 gah** —— 不认识的顶层键若被静默丢弃,
+// 导入后角色会悄悄少掉一个字段(比如 tools_exclude/approval),而用户以为自己拿到了
+// 分享方那份完整角色。宁可在导入时显式拒绝(报出是哪个键),也不做这种静默降级。
+func ParseDefinition(id string, raw []byte, strictKeys bool) (sdk.RoleSpec, error) {
+	if err := ValidateID(id); err != nil {
+		return sdk.RoleSpec{}, err
+	}
+	if strictKeys {
+		var top map[string]any
+		if err := yaml.Unmarshal(raw, &top); err != nil {
+			return sdk.RoleSpec{}, fmt.Errorf("角色 %s 的 %s 解析失败: %w", id, FileName, err)
+		}
+		known := definitionKeys()
+		for k := range top {
+			if !known[k] {
+				return sdk.RoleSpec{}, fmt.Errorf("角色 %s 的 %s 含本版本不认识的键 %q(角色包可能来自更新的 gah;已拒绝导入而不是静默丢掉该字段)", id, FileName, k)
+			}
+		}
+	}
 	var f roleFile
 	if err := yaml.Unmarshal(raw, &f); err != nil {
 		return sdk.RoleSpec{}, fmt.Errorf("角色 %s 的 %s 解析失败: %w", id, FileName, err)
@@ -284,21 +336,21 @@ func (s Store) get(id string, withBody bool) (sdk.RoleSpec, error) {
 		spec.Skills = append([]string(nil), (*f.Skills)...)
 		spec.SkillsSet = true
 	}
-	if withBody {
-		if b, err := os.ReadFile(filepath.Join(dir, AgentsName)); err == nil {
-			spec.AGENTS = string(b)
-		} else if !os.IsNotExist(err) {
-			return sdk.RoleSpec{}, fmt.Errorf("角色 %s 的 %s 读取失败: %w", id, AgentsName, err)
-		}
-		spec.AGENTSBytes = len(spec.AGENTS)
-	} else if fi, err := os.Stat(filepath.Join(dir, AgentsName)); err == nil {
-		spec.AGENTSBytes = int(fi.Size())
-	}
-	spec.OwnSkills = ownSkills(dir)
-	if _, err := os.Stat(filepath.Join(dir, SeedVersionName)); err == nil {
-		spec.Seed = true
-	}
 	return spec, nil
+}
+
+// definitionKeys role.yaml 允许的顶层键(= roleFile 的 yaml tag 全集,反射取,不手抄一份)。
+// 手抄一份的下场是可预期的:加字段时忘了同步,导入一条合法角色包会被拒。
+func definitionKeys() map[string]bool {
+	t := reflect.TypeOf(roleFile{})
+	out := make(map[string]bool, t.NumField())
+	for i := 0; i < t.NumField(); i++ {
+		tag := strings.Split(t.Field(i).Tag.Get("yaml"), ",")[0]
+		if tag != "" && tag != "-" {
+			out[tag] = true
+		}
+	}
+	return out
 }
 
 // ownSkills 角色私有技能名 = roles/<id>/skills/<名>/SKILL.md 的目录名(排序去重)。
@@ -492,26 +544,38 @@ func (s Store) RewriteMount(old, new string) ([]string, error) {
 }
 
 // Delete 删除角色:移入 .trash(可恢复),不做物理删除。
-// 当前角色拒绝删除(否则"当前角色"悬空,下一轮提示里会静默少一层指令)。
 func (s Store) Delete(id string) error {
+	_, err := s.MoveToTrash(id)
+	return err
+}
+
+// MoveToTrash 把角色目录整份移入回收站,返回条目名(可用 Restore 原样搬回)。
+//
+// 与 Delete 同一条路径(Delete 只是不要条目名):角色包导入要**覆盖**一个已有角色时,
+// 先把旧份搬进回收站再落新份 —— 覆盖因此可逆;失败回滚也靠这个条目名把旧份搬回来。
+// 当前角色拒绝(否则"当前角色"悬空,下一轮提示会静默少一层指令)。
+func (s Store) MoveToTrash(id string) (string, error) {
 	if err := ValidateID(id); err != nil {
-		return err
+		return "", err
 	}
 	if !s.Exist(id) {
-		return fmt.Errorf("角色不存在:%s", id)
+		return "", fmt.Errorf("角色不存在:%s", id)
 	}
 	if cur := s.Active(); cur == id {
-		return fmt.Errorf("角色 %s 正在使用中:先切换到其它角色(或 /role none)再删除", id)
+		return "", fmt.Errorf("角色 %s 正在使用中:先切换到其它角色(或 /role none)再覆盖/删除", id)
 	}
 	if err := os.MkdirAll(TrashDir(), 0o755); err != nil {
-		return fmt.Errorf("回收站创建失败: %w", err)
+		return "", fmt.Errorf("回收站创建失败: %w", err)
 	}
-	dst := filepath.Join(TrashDir(), trashEntryName(id))
-	if err := os.Rename(Dir(id), dst); err != nil {
-		return fmt.Errorf("角色移入回收站失败: %w", err)
+	name, err := freeTrashName(TrashDir(), id, time.Now())
+	if err != nil {
+		return "", err
+	}
+	if err := os.Rename(Dir(id), filepath.Join(TrashDir(), name)); err != nil {
+		return "", fmt.Errorf("角色移入回收站失败: %w", err)
 	}
 	pruneTrash()
-	return nil
+	return name, nil
 }
 
 // TrashEntry 回收站里的一份角色(目录名 = <id>-<时间戳>)。
@@ -523,21 +587,33 @@ type TrashEntry struct {
 	DeletedAt string `json:"deleted_at"` // 删除时间(目录名尾部时间戳,格式 20060102-150405)
 }
 
-// trashEntryName 回收站目录名(<id>-<时间戳>);Delete 与测试共用一处命名。
-func trashEntryName(id string) string { return id + "-" + time.Now().Format(trashTimeLayout) }
+// freeTrashName 取一个**未被占用**的回收站条目名(now 只为了可测:同一时刻再取一次必须拿到另一个名字)。
+// 撞名(同一毫秒内连删两次)就把时间戳往后推 1 毫秒重试;试满 1 秒仍撞 ⇒ 如实报错,
+// 绝不退化成"覆盖同名的那个条目"(那是拿旧份换新份,回收站就不再是备份了)。
+func freeTrashName(dir, id string, now time.Time) (string, error) {
+	for i := 0; i < 1000; i++ {
+		name := id + "-" + now.Add(time.Duration(i)*time.Millisecond).Format(trashTimeLayout)
+		if _, err := os.Lstat(filepath.Join(dir, name)); errors.Is(err, fs.ErrNotExist) {
+			return name, nil
+		}
+	}
+	return "", fmt.Errorf("回收站里 %s 的条目过多(同一秒内反复删除):请稍后再试", id)
+}
 
 // splitTrashName 从回收站条目名还原原 ID 与删除时间戳(不合约定 → ok=false)。
 // 技能名/角色 ID 本身可以含连字符,所以只能按**固定长度的尾部时间戳**切,不能按"最后一个连字符"。
 func splitTrashName(name string) (id, ts string, ok bool) {
-	cut := len(name) - len(trashTimeLayout) - 1
-	if cut <= 0 || name[cut] != '-' {
-		return "", "", false
+	for _, layout := range []string{trashTimeLayout, trashTimeLayoutLegacy} {
+		cut := len(name) - len(layout) - 1
+		if cut <= 0 || name[cut] != '-' {
+			continue
+		}
+		if _, err := time.Parse(layout, name[cut+1:]); err != nil {
+			continue
+		}
+		return name[:cut], name[cut+1:], true
 	}
-	id, ts = name[:cut], name[cut+1:]
-	if _, err := time.Parse(trashTimeLayout, ts); err != nil {
-		return "", "", false
-	}
-	return id, ts, true
+	return "", "", false
 }
 
 // TrashList 回收站条目(最近的在前)。不做清洗:坏名也列出来(否则用户看不见自己手放的目录)。

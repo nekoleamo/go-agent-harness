@@ -1,5 +1,5 @@
 // REST 客户端(上行)+ 工具函数。核心交互纯 REST,不绕模板渲染。
-import type { AttachmentView, CommandOptionsResp, CommandView, DocTree, DocView, InstructionsView, Job, McpView, ModelsAllResp, NoticePage, PluginInfo, ProviderInfo, RoleSpec, RolesView, Schedule, SessionEventsPage, SessionInfo, StateView, ToolDef, TrashView, WorkspaceInfo } from './types'
+import type { AttachmentView, CommandOptionsResp, CommandView, DocTree, DocView, InstructionsView, Job, McpView, ModelsAllResp, NoticePage, PluginInfo, ProviderInfo, RolePackResult, RoleSpec, RolesView, Schedule, SessionEventsPage, SessionInfo, StateView, ToolDef, TrashView, WorkspaceInfo } from './types'
 
 const BASE = ''
 const json = {
@@ -210,6 +210,28 @@ export const api = {
   roleDelete(id: string): Promise<void> {
     return req('/api/roles/' + encodeURIComponent(id), { method: 'DELETE' })
   },
+  // —— 角色包(第九十三批):单文件导出/导入 ——
+  // rolePackImport 上传角色包(multipart "file")。overwrite 缺省时同名目标后端**显式拒绝**(400),
+  // 由调用方问过用户后再带 overwrite=1 重试;as 空 = 用包里的原始 ID。
+  async rolePackImport(file: File, p: { as?: string; overwrite?: boolean } = {}): Promise<RolePackResult> {
+    const fd = new FormData()
+    fd.append('file', file, file.name)
+    const q = new URLSearchParams()
+    if (p.as) q.set('as', p.as)
+    if (p.overwrite) q.set('overwrite', '1')
+    const qs = q.toString()
+    return req('/api/rolepack' + (qs ? '?' + qs : ''), { method: 'POST', body: fd })
+  },
+  // commandRun 直接跑一个斜杠命令(POST /api/commands/{name} {args})。
+  // 桌面壳专用:WebView 没有下载通道(`<a download>` 点了什么都不会发生),
+  // 导出改由服务端写文件 —— 与 TUI 的 /role export 是同一实现,界面只负责挑目录。
+  commandRun(name: string, args: string[]): Promise<{ output?: string; error?: string }> {
+    return req('/api/commands/' + encodeURIComponent(name), {
+      method: 'POST',
+      headers: json,
+      body: JSON.stringify({ args }),
+    })
+  },
   // 技能:role 空 = 共享库;传 content(原文)走原样写入,否则由服务端按表单拼 frontmatter
   skillCreate(p: { role?: string; name: string; description?: string; triggers?: string[]; body?: string; content?: string; overwrite?: boolean }): Promise<{ name: string; path: string; warning?: string }> {
     return req('/api/skills', { method: 'POST', headers: json, body: JSON.stringify(p) })
@@ -307,6 +329,16 @@ export interface McpSaveServer {
 export function summarize(text: string, max = 600): string {
   if (text.length <= max) return text
   return text.slice(0, max) + '\n…'
+}
+
+// rolePackDownloadUrl 角色包下载地址(浏览器 <a download> 直接吃;桌面壳走 commandRun)。
+export function rolePackDownloadUrl(id: string): string {
+  return '/api/rolepack/' + encodeURIComponent(id)
+}
+
+// rolePackName 角色包建议文件名(与后端 Content-Disposition / 命令默认名同口径)。
+export function rolePackName(id: string): string {
+  return 'gah-role-' + id + '.zip'
 }
 
 // sessionExportUrl 会话导出地址(浏览器下载 href)。format 缺省 jsonl(后端缺省同此)。
