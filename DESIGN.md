@@ -998,6 +998,8 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 
 **③ #86 复核**：macOS 桌面壳系统横幅不弹 —— **维持「预期不呈现」**（选 A 档，不追）。根因锁定为 **ad-hoc 签名**（macOS 收下通知但不呈现），与 B-1 Gatekeeper 同源、同为 2026-09-22「不做公证」拍板的后果；壳侧已交付三通道兜底（窗口内注入卡片 / Dock 弹跳 / `gah-shell.log` 留痕，另直调 `notify-rust` 取代 `tauri-plugin-notification` 的「写死 Granted + 丢弃错误」）。可选解 B（`osascript` 兜底：能弹但归属显示 Script Editor）/ C（免费自签：能否呈现属未验证假设，证书 7 天且 CI 用不了）/ D（付费 + 公证，已否决）均不采纳 —— 横幅是最低优先的提醒通道。
 
+**CI**：run `36689815486` 五 job 全绿（test 15m12s / test-windows 8m45s / test-macos 12m1s / desktop-shell 2m45s / desktop-shell-macos 45s）—— 本批无产品代码改动（脚本 + 文档），CI 只作护栏。
+
 ### 第九十七批 · 真 exec 契约跨平台化（host-docview 假 soffice）（2026-09-30）
 
 **背景**：未实施清单那条「Windows 上真 exec 契约无等价覆盖」—— `TestConverterRealExecPATHShim` 用 `#!/bin/sh` 脚本当假 `soffice`，Windows 只能 skip（`LookPath` 按 PATHEXT 只认 `.exe/.com/.bat/.cmd`；换 cmd 版就得重写一套参数解析与日志格式，断言失去同构意义）。2026-09-19 的 CI run 里它在 Windows 上是**真红**的（那时还没有 skip）。
