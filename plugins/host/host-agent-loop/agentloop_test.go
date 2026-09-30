@@ -166,7 +166,7 @@ func TestTurnControlCancel(t *testing.T) {
 	if tci.Running() {
 		t.Fatal("初始应无运行回合")
 	}
-	loop := &Loop{c: e.c, sessions: e.sessions, tools: e.tools, llm: &blockLLM{}, sp: e.sp, tc: tci.(*control)}
+	loop := &Loop{c: e.c, sessions: e.sessions, tools: e.tools, locks: newKeyedMutex(), llm: &blockLLM{}, sp: e.sp, tc: tci.(*control)}
 	done := make(chan error, 1)
 	go func() { done <- loop.Run(context.Background(), "任务") }()
 	time.Sleep(80 * time.Millisecond) // 等待进入 Complete 阻塞点
@@ -403,7 +403,7 @@ func TestTurnLLMError(t *testing.T) {
 	e := buildEnv(t, `[
 		{"text":"完成","finish":"stop"}
 	]`)
-	bad := &Loop{c: e.c, sessions: e.sessions, tools: e.tools, llm: &errLLM{}, sp: e.sp}
+	bad := &Loop{c: e.c, sessions: e.sessions, tools: e.tools, locks: newKeyedMutex(), llm: &errLLM{}, sp: e.sp}
 	if err := bad.Run(context.Background(), "任务"); err == nil {
 		t.Fatal("LLM 错误应使回合失败")
 	}
@@ -869,7 +869,7 @@ func TestTurnOverflowCompactsAndRetries(t *testing.T) {
 	e.log.RegisterCompressor(1_000_000, comp) // 预算给足:确保不是自动路径折的,而是溢出兜底折的
 	llm := &overflowLLM{}
 	notices := &recNotices{}
-	loop := &Loop{c: e.c, sessions: e.sessions, tools: e.tools, llm: llm, sp: e.sp, notices: notices}
+	loop := &Loop{c: e.c, sessions: e.sessions, tools: e.tools, locks: newKeyedMutex(), llm: llm, sp: e.sp, notices: notices}
 	if err := loop.Run(context.Background(), "第二轮问题"); err != nil {
 		t.Fatalf("压缩后应能完成: %v", err)
 	}
@@ -915,7 +915,7 @@ func TestTurnOverflowRetriesAtMostOnce(t *testing.T) {
 	e := buildEnv(t, `[{"text":"unused"}]`)
 	e.log.RegisterCompressor(1_000_000, &foldAllCompressor{})
 	llm := &overflowLLM{always: true}
-	loop := &Loop{c: e.c, sessions: e.sessions, tools: e.tools, llm: llm, sp: e.sp}
+	loop := &Loop{c: e.c, sessions: e.sessions, tools: e.tools, locks: newKeyedMutex(), llm: llm, sp: e.sp}
 	err := loop.Run(context.Background(), "问题")
 	if err == nil {
 		t.Fatal("端点持续超窗应显式失败")
@@ -935,7 +935,7 @@ func TestTurnOverflowRetriesAtMostOnce(t *testing.T) {
 func TestTurnOverflowWithoutCompactor(t *testing.T) {
 	e := buildEnv(t, `[{"text":"unused"}]`)
 	llm := &overflowLLM{}
-	loop := &Loop{c: e.c, sessions: e.sessions, tools: e.tools, llm: llm, sp: e.sp}
+	loop := &Loop{c: e.c, sessions: e.sessions, tools: e.tools, locks: newKeyedMutex(), llm: llm, sp: e.sp}
 	err := loop.Run(context.Background(), "问题")
 	if err == nil {
 		t.Fatal("应失败")
@@ -954,7 +954,7 @@ func TestTurnPlainErrorDoesNotCompress(t *testing.T) {
 	e := buildEnv(t, `[{"text":"unused"}]`)
 	comp := &foldAllCompressor{}
 	e.log.RegisterCompressor(1_000_000, comp)
-	loop := &Loop{c: e.c, sessions: e.sessions, tools: e.tools, llm: &errLLM{}, sp: e.sp}
+	loop := &Loop{c: e.c, sessions: e.sessions, tools: e.tools, locks: newKeyedMutex(), llm: &errLLM{}, sp: e.sp}
 	err := loop.Run(context.Background(), "问题")
 	if err == nil || !strings.Contains(err.Error(), "llm 流中断") {
 		t.Fatalf("应原样失败: %v", err)

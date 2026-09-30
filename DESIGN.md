@@ -28,6 +28,8 @@
 
 **2026-09-30 第一百批（桌面壳多会话窗口）**：把第九十九批的 `?session=` 从「URL 能带」推到「托盘一键开窗」—— 托盘新增「新会话窗口…」:壳经 `POST /api/sessions {action:spawn}` 要一个**独立**会话(不切换当前那一个),用 `WebviewWindowBuilder` 开一个 label 为 `gah-session-<id>` 的窗口并导航到 `?shell=desktop&session=<id>`;读侧(首屏历史/事件流/state)按会话全通,**写入仍需该版本支持向指定会话提交**(否则后端 409,如实报错)。三处关键手艺:**① capability 的 `windows` 必须加 `gah-session-*` 通配** —— 漏了它新窗口**完全没有权限**(连 `core:default` 都没有),症状是新窗口里前端 invoke 全废而源码两侧看起来都对,已加单测钉住;**② 导航护栏无需重挂** —— `navGuard` 是插件级 `on_navigation`,对每个 webview 的每次导航都生效(主窗口没挂只是因为它走 `tauri.conf.json` 的 `app.windows` 声明、那条路径没有 Builder),此点**订正**了方案文档里的猜测;**③ 拿不到会话 id 就不开窗**,并给原生对话框反馈(开一个指向空 id 的窗口只会让人对空白界面猜原因)。壳内首次有了 POST(`buildPostRequest`/`httpPOSTAuth`,与既有 `httpGETAuth` 同款的裸 TCP);窗口数上限 8(每个窗口 = 一个 webview + 一条 SSE + 一份会话日志实例)。
 
+**2026-09-30 第一百零一批（实例内多会话并行回合 · 写侧解锁）**：让 `host-agent-loop` 真正实现 `sdk.SessionRunner` —— 多窗口从「各看各的」变成「**各跑各的**」。① **单写者不变量从实例级降到会话级**:`runMu` 一把全局锁换成 `keyedMutex`(按会话一把,**同一会话内仍严格串行**,不同会话各有自己的 Log 因而可并行);`sess sdk.SessionLog` 一路显式下传(`appendEvents`/`step`/`injectSteers`/`compressOnOverflow`),不再靠 `Loop` 上的字段(那在并行下是共享的)。② **`control` 记会话归属**:`registerSession` 带 sid,新增 `CancelSession`(只停目标会话)与 `RunningSessions`(诊断/多窗口展示);`Cancel()` 仍是「停全部」(TUI 语义不变)。③ **web 写侧解锁**:回合占用闸从一把全局 `running` 改成**每会话一张**(`runningFor`,此前 B 窗口在跑会把 A 窗口的提交也顶成 409);`/api/input` 按会话路由到 `RunInSession`;`/api/control {cancel, session}` 支持按会话取消;`/api/state` 报真 per-session `running` + 新增 `running_sessions`。④ **归一化键**(`sessionKey`/`resolveKey`):空与「当前打开的会话」必须落到同一把锁、同一份日志,否则会出现两个 Log 写同一文件。⑤ **逮到一处既有 race**:`control.register` 原先在 `Unlock()` **之后** `return c.seq`(又读一次共享字段)—— 串行时看不出,多会话并行立刻被 `-race` 逮到,已改为锁内取快照;这类「串行掩盖的并发缺陷」正是并行化的额外收益。⑥ **双反向验证**(项目惯例):把 keyed 锁退化成全局单锁 ⇒ 真并行测试转红(峰值并发只有 1);退化成完全不串行 ⇒ 同会话串行测试转红(`turn/start` 嵌套交错)—— 两次都精确命中,证明测试真的在验这件事。
+
 ## 0. 项目目的
 
 **排除 dsh 因 Node.js 带来的依赖:以单一静态二进制交付全部 harness 能力,仅通过二进制部署即可启动,不依赖其余环境。**
@@ -980,6 +982,66 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 **推送后 CI 两轮修正(两条都要记)**:① `plugins/host/host-skills/roles_filter_test.go` 的工具单测给 `list_skills.Execute` 传了 `nil` context —— 本地 `go vet`/单测全不报,**CI 的 staticcheck(版本固定 2026.2.1)报 SA1012**,且原先写的 `//nolint:staticcheck` 对它**惰性**(它只认 golangci-lint)。纪律升级:**推前跑同版本 staticcheck**(`staticcheck ./...` + `cd sdk && staticcheck ./...`),别只跑 vet —— 这是本仓 CI 与本地唯一一处"命令不同"的盲区。② 指令面 shell 用例把 `filepath.Join` 拼出的 Windows 反斜杠路径直接写进命令文本,而 Windows 的 shell 是 git-bash(MSYS):命令里的反斜杠会被 shell 自己当转义吃掉(`>> C:\Users\x` 实际落到相对名 `C:Usersx`),扫描侧按 POSIX 语义也就认不出这是绝对路径 ⇒ 用例在 Windows 上**根本没测到那个文件**(见 AGENTS.md 跨平台纪律②)。改用 `filepath.ToSlash`(两端都是"真写那个文件"的形态),另加 Windows 专有的**双引号形态**断言(MSYS 里表达真反斜杠路径的唯一写法,防"带引号就绕过指令面审批")。修正后 CI run **36420256132 五个 job 全绿**(test / test-macos / test-windows / desktop-shell / desktop-shell-macos)。
 
 **测试**:`web/roles_test.go` 新增 3 项(装配**真实** host-roles/host-skills 走懒解析路径:`/api/roles` 未装配 503 且 state 不带 role、角色全流程 CRUD + 部分更新语义 + 当前角色改名跟随 + 删当前角色被拒 + `.trash` 回收站、技能库共享/私有/覆盖/上限/路径穿越/回收站后不再被索引);`web` 包 `go test` **127 通过**;前端 `npm test` 168 通过、`vue-tsc` 0 错、`test:layout` **39 通过 / 0 失败**(1 skip = 无浏览器时的跳过说明用例);全库 `go test ./... -race` 63 包全绿 + sdk 模块绿;`scripts/coverage-check.sh` **COVERAGE_OK**(`web` 79.1% ≥ 棘轮 68;新增 `internal/skills 75` 棘轮,实测 80.2%;总覆盖 80.1%)。
+
+### 第一百零一批 · 实例内多会话并行回合（2026-09-30）
+
+> 承接第一百批:多窗口已经能各看各的会话(读侧),但往非当前会话提交仍被 409 拒收。
+> 本批让 `host-agent-loop` 实现 `sdk.SessionRunner`,写侧随之解锁。
+
+**① 内核:单写者不变量从实例级降到会话级**
+
+| 改动 | 说明 |
+|---|---|
+| `keyedMutex` | 按会话一把锁(零值可用);**同一会话内仍严格串行** —— 单写者的原意是「一个 Log 的单写者」,不是「整个进程一个回合」。两个互不相干的会话各有自己的 Log,可以并行 |
+| `run(ctx, sid, …)` | `Run`/`RunWithAttachments` = `sid=""`;`RunInSession` = 指定会话。开头 `acquire` 拿**这一回合专属**的日志,回合结束归还 |
+| `sess sdk.SessionLog` 显式下传 | `appendEvents`/`step`/`injectSteers`/`compressOnOverflow` 都收它 —— 不能靠 `Loop` 字段(并行下那是共享的) |
+| `resolveKey` | 归一化:空 与「当前打开的会话」⇒ 同一把锁、同一份日志(否则两个 Log 写同一文件) |
+| `acquire` | `sid` 空 ⇒ 主单例;否则经 `ctx.sessionDir` 取独立实例。**目录未装配 / 取日志失败 ⇒ 显式报错**,绝不静默回落成"写进主会话" |
+
+**② control 记会话归属**
+
+`registerSession(fn, turn, session)` + `owner` 表;新增 `CancelSession(session) bool`(只停目标会话)
+与 `RunningSessions() []string`(空串 = 主会话)。`Cancel()` 语义不变 = 停全部(TUI 在单会话里用它)。
+
+**③ web 写侧解锁**
+
+| 位置 | 改法 |
+|---|---|
+| 回合占用闸 | `running atomic.Bool`(一把全局)⇒ `runningFor(key) *atomic.Bool`(每会话一张,懒建)。此前 B 窗口在跑会把 A 窗口的提交顶成 409 —— 明明两边都空 |
+| `/api/input` | 按 `sessionKey` CAS;命中非当前会话 ⇒ `RunInSession` |
+| per-session + 附件 | **显式报错**而非把附件丢掉跑一个"看不见图"的回合(`RunInSession` 无附件变体) |
+| `/api/control` | `{cancel, session}`:带 session ⇒ `CancelSession`;不带 ⇒ `Cancel()`(全部) |
+| `/api/state` | `running` 改为真 per-session;新增 `running_sessions`(多窗口显示「别的也在跑」) |
+
+**④ 逮到一处既有 race(并行化的额外收益)**
+
+`control.register` 原本是 `c.mu.Unlock(); return c.seq` —— **解锁后又读一次共享字段**。
+串行时完全看不出来,两个会话同时注册回合时 `-race` 立刻报(本批 `-race` 首次跑到这条路径)。
+已改为锁内取 `tok` 快照再返回。这类缺陷只有"让并发真的发生"才会显形,值得单独记一笔:
+**串行时代的绿灯不等于没有并发缺陷**。
+
+**⑤ 测试与门禁**
+
+- `host-agent-loop` 新增 7 条行为测试(钉不变量,不凑覆盖率):
+  ① **真并行证据** —— 两个会话的回合**同时**处在 `Complete` 里(`countingLLM` 数峰值并发 ≥2)
+  + 都在 `RunningSessions`;② 两会话历史**互不串**(各自的 user/assistant 配对、主会话零污染)
+  ③ **同会话仍串行** —— 回合边界严格交替 + user/assistant 严格交替
+  ④ 取消按会话(取消未运行的会话返回 false);⑤ 无目录 ⇒ 显式报错且不写主会话;
+  ⑥ 取日志失败 ⇒ 报错且不写主会话;⑦ `RunningSessions` 列出在跑的会话。
+- **双反向验证**:keyed 锁 ⇒ 全局单锁,真并行测试转红(`峰值并发 1`);keyed 锁 ⇒ 完全不串行,
+  同会话串行测试转红(`turn/start` 嵌套)。两次都精确命中,证明测试真在验这件事
+  ——第一次只写"不交错"时反向验证**没转红**(串行也满足不交错),据此补了并发观测才算数。
+- 门禁:`gofmt`/`go vet`/`staticcheck` 干净;核心包 `-race` **66 包 0 FAIL**(agent-loop 另跑 `-count=3`);
+  e2e `tests` 绿(340s);`COVERAGE_OK`(总 80.9%,棘轮按实测上调 `host-agent-loop` 72→90.7);
+  `vue-tsc` 0 error;`npm test` 186。
+
+**⑥ 本批未做(诚实登记)**
+
+- **未做前端并行视图**(侧栏并行标记 / "另有 N 个在跑" / 逐会话 `/stop` 按钮)= 方案 N+5,
+  后端字段(`running`/`running_sessions`/按会话取消)已就位,前端还没读它们。
+- **未做每会话不同模型/思考档/审批档**:那些仍是**服务级**状态(方案 §R1,需另立项)。
+- **未做真机验证**:两个窗口各跑各的回合,需要 macOS/Windows 机器。
+- 并行会话共享 `llm`/`tools`/`policy-guard` 服务实例(它们已声明并发安全;`policy-guard` 现查不缓存)。
 
 ### 第一百批 · 桌面壳多会话窗口（2026-09-30）
 

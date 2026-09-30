@@ -58,7 +58,7 @@ Go 实现的编程代理 Agent Harness:以**单静态二进制**交付全部能�
 | **Web 附件+多模态** | 传图/文件入输入框或**拖到窗口任意位置**(按钮 + 拖放 + 粘贴),芯片预览/删除;图片经 openai/anthropic 适配器结构化注入(模型看图),文本附件路径引用;落盘 `$GAH_HOME/attachments/` |
 | **文档预览** | 一个块模型 + 四端同源渲染(markdown/文本/代码/CSV/notebook + PDF 页事实):Web 预览工作台(文件树/PDF 原生查看器/HTML 源码视图+沙箱)、TUI `/preview` pager(滚动/搜索/横移)、`gah doc` CLI、会话流 markdown 渲染;路径经沙箱+逃逸校验+密钥 deny-list,零 v-html;旧二进制 Office(`.doc/.xls/.ppt`)走**可选**外部转换(`data.external_converters` / `gah doc --convert`,需本机 LibreOffice,缺省关,未装时显式提示不静默) |
 | **优雅停机** | `POST /api/shutdown` → DisposeAll 全回收(Windows 无 SIGTERM 的统一停机通道;桌面壳/运维复用) |
-| **桌面壳(P1)** | `desktop/` Tauri v2 壳:sidecar gah + 窗口直连本地服务;托盘(关于/检查更新/开机自启/**新会话窗口**)/ 通知 / 单实例 / 系统文件夹选择器(与设置面板状态同源:面板开着时托盘操作 1.5 秒内同步);**多会话窗口**(托盘「新会话窗口…」开一个绑定独立会话的窗口,`?session=<id>` 让每个窗口各看各的会话,读侧全通、写入需该版本支持向指定会话提交);**诊断**:壳日志 `<用户数据目录>/gah-shell.log` 同时收录壳侧事件、sidecar stderr(滤掉 go-plugin 的 `[DEBUG]`)、sidecar 文本 stdout、页面侧错误(前端经 `shell_log` 上报)、**启动自检的通道矩阵**(同步/异步/选择器/自启四条通道各探一次)与**任何线程的 panic**(`panic @ 文件:行`);**零成本发行**(updater ed25519 自持签名 + CI 矩阵 + 无签名首次启动指引);**侧栏会话导出走壳命令落盘**(HTML/jsonl 写入下载目录,网页自动打开,侧栏回执路径) |
+| **桌面壳(P1)** | `desktop/` Tauri v2 壳:sidecar gah + 窗口直连本地服务;托盘(关于/检查更新/开机自启/**新会话窗口**)/ 通知 / 单实例 / 系统文件夹选择器(与设置面板状态同源:面板开着时托盘操作 1.5 秒内同步);**多会话窗口与并行回合**(托盘「新会话窗口…」开一个绑定独立会话的窗口,`?session=<id>` 让每个窗口各看各的会话;多个会话的回合**可同时跑**(同会话内仍严格串行,保证会话日志单写者);向指定会话提交经 `/api/input {session}`;取消可按会话 `/api/control {cancel, session}`);**诊断**:壳日志 `<用户数据目录>/gah-shell.log` 同时收录壳侧事件、sidecar stderr(滤掉 go-plugin 的 `[DEBUG]`)、sidecar 文本 stdout、页面侧错误(前端经 `shell_log` 上报)、**启动自检的通道矩阵**(同步/异步/选择器/自启四条通道各探一次)与**任何线程的 panic**(`panic @ 文件:行`);**零成本发行**(updater ed25519 自持签名 + CI 矩阵 + 无签名首次启动指引);**侧栏会话导出走壳命令落盘**(HTML/jsonl 写入下载目录,网页自动打开,侧栏回执路径) |
 
 ## 三、快速开始
 

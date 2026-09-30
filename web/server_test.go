@@ -656,7 +656,7 @@ func TestInputConflict409(t *testing.T) {
 	s, _ := newTestServer()
 	hs := httptest.NewServer(s.handler())
 	defer hs.Close()
-	s.running.Store(true)
+	s.runningFor("").Store(true)
 
 	resp, err := http.Post(hs.URL+"/api/input", "application/json", strings.NewReader(`{"content":"hi"}`))
 	if err != nil {
@@ -676,7 +676,7 @@ func TestInputSteerWhileRunning(t *testing.T) {
 	s.tc = tc
 	hs := httptest.NewServer(s.handler())
 	defer hs.Close()
-	s.running.Store(true)
+	s.runningFor("").Store(true)
 
 	resp, err := http.Post(hs.URL+"/api/input", "application/json", strings.NewReader(`{"content":"别查了,改 B 方案"}`))
 	if err != nil {
@@ -725,7 +725,7 @@ func TestInputSteerRefusesAttachments(t *testing.T) {
 		t.Fatalf("上传响应异常: %+v", up)
 	}
 
-	s.running.Store(true)
+	s.runningFor("").Store(true)
 	in, _ := json.Marshal(map[string]any{"content": "看下这张图", "attachments": []string{up.Attachments[0].URL}})
 	resp, err = http.Post(hs.URL+"/api/input", "application/json", strings.NewReader(string(in)))
 	if err != nil {
@@ -746,7 +746,7 @@ func TestInputSteerUnavailableFallsBackTo409(t *testing.T) {
 	s.tc = &stubTurnControl{cancelled: make(chan struct{}, 1)}
 	hs := httptest.NewServer(s.handler())
 	defer hs.Close()
-	s.running.Store(true)
+	s.runningFor("").Store(true)
 
 	resp, err := http.Post(hs.URL+"/api/input", "application/json", strings.NewReader(`{"content":"hi"}`))
 	if err != nil {
@@ -765,7 +765,7 @@ func TestInputSteerNotUsedForCommands(t *testing.T) {
 	s.tc = tc
 	hs := httptest.NewServer(s.handler())
 	defer hs.Close()
-	s.running.Store(true)
+	s.runningFor("").Store(true)
 
 	resp, err := http.Post(hs.URL+"/api/input", "application/json", strings.NewReader(`{"content":"/help"}`))
 	if err != nil {

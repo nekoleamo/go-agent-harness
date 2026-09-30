@@ -93,6 +93,10 @@ type Log struct {
 	emergencyTrim int
 }
 
+// NewMemLog 建一个**纯内存**会话日志(不落盘;Flush 为 no-op)。
+// 给测试与嵌入场景:注册表里的实例都按路径建,只有明确不落盘时才用这个。
+func NewMemLog() *Log { return newLog("") }
+
 func newLog(dir string) *Log {
 	return &Log{path: dir, compressedUntil: -1, pairedProjectChars: -1}
 }

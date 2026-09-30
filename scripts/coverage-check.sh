@@ -75,7 +75,7 @@ plugins/ui/ui-web-app 70
 web 80
 tui 74
 plugins/policy/policy-guard 91
-plugins/host/host-agent-loop 72
+plugins/host/host-agent-loop 90.7
 plugins/host/host-bridge 86
 plugins/host/host-backup 80
 plugins/host/host-commands 76

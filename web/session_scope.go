@@ -11,7 +11,9 @@ package web
 
 import (
 	"net/http"
+	"sort"
 	"strings"
+	"sync/atomic"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
@@ -33,24 +35,66 @@ func (sc sessionScope) Release() {
 	}
 }
 
+// sessionKey 会话 id 的**归一化**键:空 / 等于当前打开的会话 ⇒ 空串(= 主会话)。
+//
+// 三处必须用同一个键,否则会出现「两个回合写同一个文件」(主单例 + 注册表实例):
+// 读侧 scopeOf、回合占用 runningFor、agent-loop 的串行锁与取消归属。
+func (s *Server) sessionKey(id string) string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ""
+	}
+	if s.cs != nil && id == s.cs.CurrentSession() {
+		return ""
+	}
+	return id
+}
+
+// runningFor 该会话的回合占用标志(懒建)。
+//
+// 为什么从一把全局闸改成**每会话一把**:多会话并行后,两个会话各跑各的回合是正常的;
+// 用一把全局闸会让「B 窗口在跑」把「A 窗口提交」也顶成 409(明明两边都空)。
+// 键用 sessionKey 归一化,与 agent-loop 的串行锁同一把语义。
+func (s *Server) runningFor(key string) *atomic.Bool {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	b, ok := s.runBySession[key]
+	if !ok {
+		b = &atomic.Bool{}
+		s.runBySession[key] = b
+	}
+	return b
+}
+
+// runningSessionsOf 当前有回合在跑的会话键(排序;诊断与 UI 用)。
+func (s *Server) runningSessionsOf() []string {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	out := make([]string, 0, len(s.runBySession))
+	for k, b := range s.runBySession {
+		if b.Load() {
+			out = append(out, k)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // scopeOf 解析会话 id 并取对应日志(读侧用)。
 // 缺省 / 等于当前打开的会话 → 主单例(零行为变化)。
 func (s *Server) scopeOf(id string) (sessionScope, error) {
-	id = strings.TrimSpace(id)
-	if id == "" {
+	key := s.sessionKey(id)
+	if key == "" {
 		return sessionScope{Log: s.sessions}, nil
-	}
-	if s.cs != nil && id == s.cs.CurrentSession() {
-		return sessionScope{ID: id, Log: s.sessions}, nil
 	}
 	if s.sdir == nil {
 		return sessionScope{}, errSessionScopedUnsupported
 	}
-	lg, err := s.sdir.Acquire(id)
+	lg, err := s.sdir.Acquire(key)
 	if err != nil {
 		return sessionScope{}, err
 	}
-	return sessionScope{ID: id, Log: lg, release: func() { s.sdir.Release(id) }}, nil
+	return sessionScope{ID: key, Log: lg, release: func() { s.sdir.Release(key) }}, nil
 }
 
 // sessionScopedError 会话作用域相关的显式失败文案。
@@ -64,11 +108,7 @@ var errSessionScopedUnsupported = sessionScopedError(
 // guardWrite 写侧闸门:非当前会话一律 409 并说明原因(不静默写错会话)。
 // 返回 true = 允许继续。
 func (s *Server) guardWrite(w http.ResponseWriter, id string) bool {
-	id = strings.TrimSpace(id)
-	if id == "" {
-		return true
-	}
-	if s.cs != nil && id == s.cs.CurrentSession() {
+	if s.sessionKey(id) == "" {
 		return true
 	}
 	// 放行的唯一条件:agent-loop 已声明支持按会话执行(方案 B-1 的能力接口)。

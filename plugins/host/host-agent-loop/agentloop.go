@@ -50,7 +50,15 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	// 溢出兜底压缩会改写模型看到的输入,属于“用户看不见的输入改写”,至少要在状态栏/toast 露面。
 	var notices sdk.NoticeService
 	_ = c.Inject("ctx.notices", &notices)
-	loop := &Loop{c: c, sessions: sessions, tools: tools, llm: llm, sp: sp, notices: notices, tc: newTurnControl(), maxSteps: maxStepsFromManifest(m)}
+	loop := &Loop{c: c, sessions: sessions, tools: tools, llm: llm, sp: sp, notices: notices, tc: newTurnControl(), maxSteps: maxStepsFromManifest(m), locks: newKeyedMutex()}
+	// 多会话并行(实现 sdk.SessionRunner):会话目录按 id 给**独立**日志实例。
+	// 两个可选服务都缺时只支持主会话 —— RunInSession 显式报错,不静默串行顶替。
+	var sdir sdk.SessionDir
+	_ = c.Inject("ctx.sessionDir", &sdir)
+	loop.sdir = sdir
+	var cs sdk.CwdSessions
+	_ = c.Inject("ctx.cwdSessions", &cs)
+	loop.cs = cs
 	if err := c.Provide("ctx.agentLoop", loop); err != nil {
 		return nil, err
 	}
@@ -70,27 +78,76 @@ type control struct {
 	seq     uint64
 	cancels map[uint64]context.CancelFunc
 	turns   map[uint64]*turn // 与 cancels 同键(tok):Steer 定向用
+	// owner tok → 归一化会话 id(空 = 主会话):CancelSession 只打中目标会话的回合。
+	owner map[uint64]string
 }
 
 func newTurnControl() *control {
-	return &control{cancels: map[uint64]context.CancelFunc{}, turns: map[uint64]*turn{}}
+	return &control{
+		cancels: map[uint64]context.CancelFunc{},
+		turns:   map[uint64]*turn{},
+		owner:   map[uint64]string{},
+	}
 }
 
 // register 注册一个回合(取消函数 + 回合状态),返回注销 token。
 func (c *control) register(fn context.CancelFunc, t *turn) uint64 {
+	return c.registerSession(fn, t, "")
+}
+
+// registerSession 同 register,但带上会话归属(按会话取消/列举的根据)。
+//
+// tok 取**锁内快照**再返回:此前是 `Unlock()` 之后 `return c.seq` —— 串行时看不出问题,
+// 多会话并行(两个回合同时注册)时就是真 data race(`-race` 直接逮到)。
+func (c *control) registerSession(fn context.CancelFunc, t *turn, session string) uint64 {
 	c.mu.Lock()
 	c.seq++
-	c.cancels[c.seq] = fn
-	c.turns[c.seq] = t
+	tok := c.seq
+	c.cancels[tok] = fn
+	c.turns[tok] = t
+	c.owner[tok] = session
 	c.mu.Unlock()
-	return c.seq
+	return tok
 }
 
 func (c *control) unregister(tok uint64) {
 	c.mu.Lock()
 	delete(c.cancels, tok)
 	delete(c.turns, tok)
+	delete(c.owner, tok)
 	c.mu.Unlock()
+}
+
+// CancelSession 取消该会话正在跑的回合(归一化后比较;空 = 主会话),返回是否命中。
+func (c *control) CancelSession(session string) bool {
+	c.mu.Lock()
+	fns := make([]context.CancelFunc, 0, 1)
+	for tok, fn := range c.cancels {
+		if c.owner[tok] == session {
+			fns = append(fns, fn)
+		}
+	}
+	c.mu.Unlock()
+	for _, fn := range fns {
+		fn()
+	}
+	return len(fns) > 0
+}
+
+// runningSessions 当前有回合在跑的会话 id(每个只列一次;含主会话空串)。
+func (c *control) runningSessions() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	seen := map[string]bool{}
+	out := make([]string, 0, len(c.cancels))
+	for tok := range c.cancels {
+		s := c.owner[tok]
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // Steer 实现 sdk.TurnSteerer:把 text 投给最近注册的运行中回合,返回是否投出。
@@ -138,6 +195,35 @@ func (c *control) Cancel() {
 	}
 }
 
+// keyedMutex 按会话 id 一把锁的串行化器。
+//
+// 为什么从一把全局锁改成按会话(第一百零一批):`sessions` 的追加与 DeriveMessages 是
+// **单写者**模型 —— 但单写者说的是「**一个** Log 的单写者」,不是「整个进程只能跑一个回合」。
+// 逐会话实例化(经 ctx.sessionDir)之后,每个会话有自己的 Log,因此互不相干的两个会话
+// 可以各跑各的回合 —— 而**同一会话内仍严格串行**(键为空 = 主会话)。
+type keyedMutex struct {
+	mu    sync.Mutex
+	locks map[string]*sync.Mutex
+}
+
+func newKeyedMutex() *keyedMutex { return &keyedMutex{locks: map[string]*sync.Mutex{}} }
+
+// Lock 取该会话的锁并加锁(同一 key 复用同一把)。**零值可用**(map 惰性建)。
+func (k *keyedMutex) Lock(key string) func() {
+	k.mu.Lock()
+	if k.locks == nil {
+		k.locks = map[string]*sync.Mutex{}
+	}
+	m, ok := k.locks[key]
+	if !ok {
+		m = &sync.Mutex{}
+		k.locks[key] = m
+	}
+	k.mu.Unlock()
+	m.Lock()
+	return m.Unlock
+}
+
 // Loop 实现 sdk.AgentLoop。
 type Loop struct {
 	c        sdk.Ctx
@@ -149,9 +235,14 @@ type Loop struct {
 	tc       *control          // ctx.turnControl 实现(回合取消注册表)
 	maxSteps int               // 单轮最大步数(<=0 = 不限;见 maxStepsDefault)
 
-	// runMu 回合串行化:sessions 追加与 DeriveMessages 是单写者模型,
-	// 并发 Run(多路输入同时提交)会让回合互相交错、工具结果错位 → 显式串行不静默交错。
-	runMu sync.Mutex
+	// locks 回合串行化:**按会话**一把锁(空键 = 主会话 = 原全局串行语义)。
+	// 同一会话内两个回合交错会让工具结果错位,所以每个会话仍严格串行;
+	// 不同会话各有自己的 Log,互不干涉,可以并行。
+	locks *keyedMutex
+	// sdir 会话目录(可选;缺 = 只支持主会话)。cs 当前打开的会话(用于把「当前会话」
+	// 这个 UI 概念与 id 对齐,好让 sid="" 与 sid=当前 走同一条路径)。
+	sdir sdk.SessionDir
+	cs   sdk.CwdSessions
 }
 
 // turn 单回合状态(每回合独立对象;修复:此前挂在 Loop 上被并发回合互相踩)。
@@ -196,10 +287,11 @@ func (t *turn) hasSteers() bool {
 }
 
 // appendEvents 记录会话事件并返回首个错误。
+// sess 显式下传:回合知道自己属于哪个会话,不能靠 Loop 上的字段(那在并行下是共享的)。
 // 记录失败必须显式失败(此前全部忽略返回值 → 日志满/写盘失败时静默丢历史而模型仍继续)。
-func (l *Loop) appendEvents(evs ...sdk.SessionEvent) error {
+func (l *Loop) appendEvents(sess sdk.SessionLog, evs ...sdk.SessionEvent) error {
 	for _, ev := range evs {
-		if err := l.sessions.Append(ev); err != nil {
+		if err := sess.Append(ev); err != nil {
 			return err
 		}
 	}
@@ -210,10 +302,10 @@ func (l *Loop) appendEvents(evs ...sdk.SessionEvent) error {
 // 导出/轨迹视图的分隔与用户实际发送一致,不合并成一段文本)。
 // 必须在 assemble 之前调用:assemble 经 DeriveMessages 读日志,只推内存队列模型看不到
 // (不变量:模型可见即已记录)。
-func (l *Loop) injectSteers(t *turn) error {
+func (l *Loop) injectSteers(sess sdk.SessionLog, t *turn) error {
 	msgs := t.takeSteers()
 	for _, m := range msgs {
-		if err := l.appendEvents(sdk.SessionEvent{Kind: sdk.EventUserMessage,
+		if err := l.appendEvents(sess, sdk.SessionEvent{Kind: sdk.EventUserMessage,
 			Payload: sdk.UserMessage{Content: m}}); err != nil {
 			return fmt.Errorf("session log: %w", err)
 		}
@@ -240,9 +332,27 @@ func (l *Loop) Run(ctx context.Context, input string) error {
 
 // RunWithAttachments 处理一次用户输入(附件一期:图片随消息视觉注入,文件路径引用)。
 func (l *Loop) RunWithAttachments(ctx context.Context, input string, atts []sdk.Attachment) error {
-	// 回合串行化(见 runMu 注释)
-	l.runMu.Lock()
-	defer l.runMu.Unlock()
+	return l.run(ctx, "", input, atts)
+}
+
+// RunInSession 实现 sdk.SessionRunner:在指定会话执行一轮(sid 空 = 当前主会话)。
+func (l *Loop) RunInSession(ctx context.Context, sid, input string) error {
+	return l.run(ctx, sid, input, nil)
+}
+
+// run 回合主体:先解析会话拿到**这一回合专属**的日志,再取该会话的串行锁,
+// 之后 sess 一路下传(追加事件 / step / 压缩都只在它上面写)。
+func (l *Loop) run(ctx context.Context, sid, input string, atts []sdk.Attachment) error {
+	sess, release, err := l.acquire(sid)
+	if err != nil {
+		return err
+	}
+	defer release()
+	// 回合串行化(按会话;同会话交错会让工具结果错位,不静默交错)。
+	// 键取归一化后的 sid(空 = 主会话),与注册给 turnControl 的键保持一致。
+	lockKey := l.resolveKey(sid)
+	unlock := l.locks.Lock(lockKey)
+	defer unlock()
 
 	// 回合级可取消 ctx:派生 child 并注册到 ctx.turnControl(TUI Esc/Web 取消经
 	// Cancel() 取消同一回合);父 ctx 取消沿链生效;回合结束(任意返回路径)注销并释放。
@@ -253,14 +363,14 @@ func (l *Loop) RunWithAttachments(ctx context.Context, input string, atts []sdk.
 	defer l.emitDroppedSteers(t)
 	var tok uint64
 	if l.tc != nil { // 直接构造的 Loop(旧测试/无 turnControl 场景)跳过注册
-		tok = l.tc.register(runCancel, t)
+		tok = l.tc.registerSession(runCancel, t, lockKey)
 		defer l.tc.unregister(tok)
 	}
 
 	l.c.Emit(runCtx, "agent/status", "running", sdk.Emit)
 	// turn/start:回合起点标记(与 turn/end 配对;此前只声明未发出,S-P0-1 轨迹视图需要
 	// 权威回合边界)。nil 载荷不参与 DeriveMessages 投影,旧会话缺该帧也能正常工作。
-	if err := l.appendEvents(
+	if err := l.appendEvents(sess,
 		sdk.SessionEvent{Kind: sdk.EventTurnStart},
 		sdk.SessionEvent{Kind: sdk.EventUserMessage, Payload: sdk.UserMessage{Content: input, Attachments: atts}},
 	); err != nil {
@@ -268,9 +378,9 @@ func (l *Loop) RunWithAttachments(ctx context.Context, input string, atts []sdk.
 		return fmt.Errorf("session log: %w", err)
 	}
 	for step := 0; l.maxSteps <= 0 || step < l.maxSteps; step++ {
-		if err := l.step(runCtx, t); err != nil {
+		if err := l.step(runCtx, t, sess); err != nil {
 			if errors.Is(err, context.Canceled) {
-				_ = l.appendEvents(sdk.SessionEvent{Kind: sdk.EventTurnEnd, Payload: "cancelled"})
+				_ = l.appendEvents(sess, sdk.SessionEvent{Kind: sdk.EventTurnEnd, Payload: "cancelled"})
 			} else {
 				l.c.Emit(runCtx, "agent/error", err, sdk.Emit)
 			}
@@ -285,12 +395,12 @@ func (l *Loop) RunWithAttachments(ctx context.Context, input string, atts []sdk.
 		// 步数耗尽(仅在配了 data.max_steps > 0 时可达):此前静默记为 "done" 并返回 nil ——
 		// 模型/用户都看不出"未收敛"。现显式失败,但事实不再被掩盖。
 		err := fmt.Errorf("agent: 达到最大步数 %d 仍未完成(可能工具循环或模型未收敛;data.max_steps 放宽或设 0 取消上限)", l.maxSteps)
-		_ = l.appendEvents(sdk.SessionEvent{Kind: sdk.EventTurnEnd, Payload: "max_steps"})
+		_ = l.appendEvents(sess, sdk.SessionEvent{Kind: sdk.EventTurnEnd, Payload: "max_steps"})
 		l.c.Emit(context.Background(), "agent/error", err, sdk.Emit)
 		l.c.Emit(context.Background(), "agent/status", "idle", sdk.Emit)
 		return err
 	}
-	if err := l.appendEvents(sdk.SessionEvent{Kind: sdk.EventTurnEnd, Payload: "done"}); err != nil {
+	if err := l.appendEvents(sess, sdk.SessionEvent{Kind: sdk.EventTurnEnd, Payload: "done"}); err != nil {
 		l.c.Emit(context.Background(), "agent/status", "idle", sdk.Emit)
 		return fmt.Errorf("session log: %w", err)
 	}
@@ -299,14 +409,14 @@ func (l *Loop) RunWithAttachments(ctx context.Context, input string, atts []sdk.
 }
 
 // step 执行一轮 ReAct 迭代(单次模型请求 + 其工具调用)。
-func (l *Loop) step(ctx context.Context, t *turn) error {
+func (l *Loop) step(ctx context.Context, t *turn, sess sdk.SessionLog) error {
 	t.finished = false
 	// 回合已被取消:不再开新步骤(否则会消费掉待注入的插话,并写一个没有 step/end 的
 	// step/start)。待注入消息留给 emitDroppedSteers 交回发起端。
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := l.appendEvents(sdk.SessionEvent{Kind: sdk.EventStepStart}); err != nil {
+	if err := l.appendEvents(sess, sdk.SessionEvent{Kind: sdk.EventStepStart}); err != nil {
 		return fmt.Errorf("session log: %w", err)
 	}
 
@@ -317,7 +427,7 @@ func (l *Loop) step(ctx context.Context, t *turn) error {
 
 	// 转向注入:上一步的工具结果已落账,下一次模型请求组装之前把用户中途插进来的
 	// 消息补成 EventUserMessage(见 injectSteers;必须在 assemble 之前)。
-	if err := l.injectSteers(t); err != nil {
+	if err := l.injectSteers(sess, t); err != nil {
 		return err
 	}
 
@@ -348,7 +458,7 @@ func (l *Loop) step(ctx context.Context, t *turn) error {
 		// 思维增量也必须落流(仅正文落流会让推理模型的 thinking 增量整段丢失 →
 		// TUI 思维块 / 导出 HTML 思考块 / ACP thinking 永远为空,只剩键位可验)。
 		if ev.Delta != "" || ev.Thinking != "" {
-			if err := l.appendEvents(sdk.SessionEvent{Kind: sdk.EventAssistantChunk, Payload: ev}); err != nil {
+			if err := l.appendEvents(sess, sdk.SessionEvent{Kind: sdk.EventAssistantChunk, Payload: ev}); err != nil {
 				return fmt.Errorf("session log: %w", err)
 			}
 		}
@@ -373,7 +483,7 @@ func (l *Loop) step(ctx context.Context, t *turn) error {
 	overflowHint := ""
 	if err != nil && !t.overflowRetried && sdk.IsContextOverflowError(err) {
 		t.overflowRetried = true // 无论折叠成败,同一回合不再试第二次(防重试环/重复计费)
-		if folded, ferr := l.compressOnOverflow(); ferr == nil {
+		if folded, ferr := l.compressOnOverflow(sess); ferr == nil {
 			content.Reset() // 失败尝试已落流的部分增量不得混进重试结果
 			calls = nil
 			final = sdk.LLMResponse{}
@@ -410,7 +520,7 @@ func (l *Loop) step(ctx context.Context, t *turn) error {
 	}
 
 	// 持久记录 assistant/message(模型可见即已记录)
-	if err := l.appendEvents(sdk.SessionEvent{Kind: sdk.EventAssistantMessage,
+	if err := l.appendEvents(sess, sdk.SessionEvent{Kind: sdk.EventAssistantMessage,
 		Payload: sdk.AssistantMessage{Content: final.Message.Content, ToolCalls: final.Message.ToolCalls}}); err != nil {
 		return fmt.Errorf("session log: %w", err)
 	}
@@ -418,7 +528,7 @@ func (l *Loop) step(ctx context.Context, t *turn) error {
 	// 记录本轮 token 消耗(session/usage;host-usage-stats 订阅累计;无 usage 数据不记)。
 	// 携带请求模型名(host-llm 已在 req.Model 填当前模型,统计按模型解析上下文窗口)。
 	if final.Usage.PromptTokens > 0 || final.Usage.CompletionTokens > 0 {
-		if err := l.appendEvents(sdk.SessionEvent{Kind: sdk.EventUsage,
+		if err := l.appendEvents(sess, sdk.SessionEvent{Kind: sdk.EventUsage,
 			Payload: sdk.UsageEvent{Model: req.Model, Usage: final.Usage}}); err != nil {
 			return fmt.Errorf("session log: %w", err)
 		}
@@ -429,20 +539,20 @@ func (l *Loop) step(ctx context.Context, t *turn) error {
 		if !t.reminded && containsFakeToolCall(final.Message.Content) {
 			t.reminded = true
 			t.reminder = fakeToolCallReminder()
-			if err := l.appendEvents(sdk.SessionEvent{Kind: sdk.EventStepEnd}); err != nil {
+			if err := l.appendEvents(sess, sdk.SessionEvent{Kind: sdk.EventStepEnd}); err != nil {
 				return fmt.Errorf("session log: %w", err)
 			}
 			return nil // 不结束:下一轮带提醒重新请求
 		}
 		// 用户在本回合中插了话(尚未注入)→ 不收尾:下一 step 开头注入后继续本回合。
 		if t.hasSteers() {
-			if err := l.appendEvents(sdk.SessionEvent{Kind: sdk.EventStepEnd}); err != nil {
+			if err := l.appendEvents(sess, sdk.SessionEvent{Kind: sdk.EventStepEnd}); err != nil {
 				return fmt.Errorf("session log: %w", err)
 			}
 			return nil // 不结束:下一轮带转向消息继续
 		}
 		t.finished = true
-		if err := l.appendEvents(sdk.SessionEvent{Kind: sdk.EventStepEnd}); err != nil {
+		if err := l.appendEvents(sess, sdk.SessionEvent{Kind: sdk.EventStepEnd}); err != nil {
 			return fmt.Errorf("session log: %w", err)
 		}
 		return nil
@@ -454,7 +564,7 @@ func (l *Loop) step(ctx context.Context, t *turn) error {
 	// 问题栈/「待答 N」无法成立)。事件落序固定为调用序(先全部 tool/call,再按序 tool/result),
 	// 会话日志重放语义与串行时完全一致;单调用仍走原同步路径,行为零变化。
 	for _, call := range calls {
-		if err := l.appendEvents(sdk.SessionEvent{Kind: sdk.EventToolCall,
+		if err := l.appendEvents(sess, sdk.SessionEvent{Kind: sdk.EventToolCall,
 			Payload: sdk.ToolCallEvent(call)}); err != nil {
 			return fmt.Errorf("session log: %w", err)
 		}
@@ -496,12 +606,12 @@ func (l *Loop) step(ctx context.Context, t *turn) error {
 		if outcomes[i].content == "" && outcomes[i].errText == "" {
 			continue // 与串行路径一致:结果为 nil 且无错时不落事件
 		}
-		if aerr := l.appendEvents(sdk.SessionEvent{Kind: sdk.EventToolResult,
+		if aerr := l.appendEvents(sess, sdk.SessionEvent{Kind: sdk.EventToolResult,
 			Payload: sdk.ToolResultEvent{CallID: call.ID, Name: call.Name, Content: outcomes[i].content, Error: outcomes[i].errText}}); aerr != nil {
 			return fmt.Errorf("session log: %w", aerr)
 		}
 	}
-	if err := l.appendEvents(sdk.SessionEvent{Kind: sdk.EventStepEnd}); err != nil {
+	if err := l.appendEvents(sess, sdk.SessionEvent{Kind: sdk.EventStepEnd}); err != nil {
 		return fmt.Errorf("session log: %w", err)
 	}
 	return nil
@@ -540,8 +650,8 @@ func fakeToolCallReminder() string {
 // compressOnOverflow 走 sdk.OverflowCompactor(host-session-log 实现):强制压缩一次。
 // 未实现(旧装配/纯内存日志)⇒ 如实返回错误,让调用方把原因写进失败文案 ——
 // 不能静默假装压过(那会让用户以为“已经帮我压了”而实际什么都没做)。
-func (l *Loop) compressOnOverflow() (int, error) {
-	oc, ok := l.sessions.(sdk.OverflowCompactor)
+func (l *Loop) compressOnOverflow(sess sdk.SessionLog) (int, error) {
+	oc, ok := sess.(sdk.OverflowCompactor)
 	if !ok {
 		return 0, errors.New("会话日志未提供溢出压缩能力")
 	}
@@ -587,3 +697,52 @@ func maxStepsFromManifest(m *sdk.Manifest) int {
 	}
 	return maxStepsDefault
 }
+
+// —— 多会话并行(实现 sdk.SessionRunner)——
+//
+// resolveKey 把「当前打开的会话」归一成空键:主会话与「显式传入当前会话 id」必须落到
+// 同一把锁、同一份日志,否则会出现「两个回合写同一个文件」(注册表实例 + 单例)。
+func (l *Loop) resolveKey(sid string) string {
+	sid = strings.TrimSpace(sid)
+	if sid == "" || (l.cs != nil && sid == l.cs.CurrentSession()) {
+		return ""
+	}
+	return sid
+}
+
+// acquire 取该会话的日志与归还函数。
+//   - sid 空 / 归一后为空 ⇒ 主单例(ctx.sessions),不归还。
+//   - 其余 ⇒ 经 ctx.sessionDir 取独立实例(同 id 复用同一实例),回合结束归还。
+//   - 拿不到目录(sdir 未装配)或会话不存在 ⇒ 显式报错,不静默回落成"写进主会话"。
+func (l *Loop) acquire(sid string) (sdk.SessionLog, func(), error) {
+	key := l.resolveKey(sid)
+	if key == "" {
+		return l.sessions, func() {}, nil
+	}
+	if l.sdir == nil {
+		return nil, nil, fmt.Errorf("agent: 会话目录未装配(缺 ctx.sessionDir),无法在会话 %s 上执行回合", key)
+	}
+	lg, err := l.sdir.Acquire(key)
+	if err != nil {
+		return nil, nil, fmt.Errorf("agent: 取会话 %s 的日志失败: %w", key, err)
+	}
+	return lg, func() { l.sdir.Release(key) }, nil
+}
+
+// CancelSession 实现 sdk.SessionRunner:只取消该会话的回合(其他会话不受影响)。
+func (l *Loop) CancelSession(sid string) bool {
+	if l.tc == nil {
+		return false
+	}
+	return l.tc.CancelSession(l.resolveKey(sid))
+}
+
+// RunningSessions 实现 sdk.SessionRunner:正在跑的会话 id(空串 = 主会话)。
+func (l *Loop) RunningSessions() []string {
+	if l.tc == nil {
+		return nil
+	}
+	return l.tc.runningSessions()
+}
+
+var _ sdk.SessionRunner = (*Loop)(nil)

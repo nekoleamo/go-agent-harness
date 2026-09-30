@@ -130,12 +130,14 @@ type Server struct {
 	docMu      sync.Mutex                // doc 懒解析互斥(并发首请求防数据竞争)
 	roleMu     sync.Mutex                // 角色/技能懒解析互斥(同上)
 
-	running     atomic.Bool
-	lifeMu      sync.Mutex // 守护 ln/http/closed:Listen/Start(插件)与 Shutdown(卸载)可并发
-	ln          net.Listener
-	http        *http.Server
-	closed      bool         // 已 Shutdown:Start 若尚未发布 http 则放弃监听(不留孤儿)
-	unsubStatus sdk.Disposer // agent/status 订阅撤销(驱动 running 复位)
+	running      atomic.Bool             // 主会话(键空)占用;其余在 runBySession
+	runMu        sync.Mutex              // 守护 runBySession
+	runBySession map[string]*atomic.Bool // 会话键 → 回合占用(懒建)
+	lifeMu       sync.Mutex              // 守护 ln/http/closed:Listen/Start(插件)与 Shutdown(卸载)可并发
+	ln           net.Listener
+	http         *http.Server
+	closed       bool         // 已 Shutdown:Start 若尚未发布 http 则放弃监听(不留孤儿)
+	unsubStatus  sdk.Disposer // agent/status 订阅撤销(驱动 running 复位)
 
 	// OnReady 监听成功回调(参数=访问 URL;监听失败不触发,插件层据此自动打开浏览器)。
 	OnReady func(url string)
@@ -147,7 +149,7 @@ type Server struct {
 
 // New 构造服务;依赖经插件装配层注入(Required 之外的可选注入失败即忽略)。
 func New(cfg Config, hub *EventHub, confirm *ConfirmService, log *slog.Logger) *Server {
-	return &Server{cfg: cfg, hub: hub, confirm: confirm, question: NewQuestionService(hub), log: log}
+	return &Server{cfg: cfg, hub: hub, confirm: confirm, question: NewQuestionService(hub), log: log, runBySession: map[string]*atomic.Bool{}}
 }
 
 // Question Web 提问服务(P3;ui-web-app 用它注册渠道呈现者或 Provide ctx.question)。
@@ -190,7 +192,9 @@ func (s *Server) Inject(c sdk.Ctx) error {
 	// 已在位时省掉首个请求的探测;不在位(未启用/后启用)就留空,由懒解析在首次请求时补上。
 	_ = c.Inject("ctx.roles", &s.roles)
 	_ = c.Inject("ctx.skills", &s.roleSkills)
-	// running 状态:随 agent/status 事件驱动(回合开始 running,结束 idle)
+	// running 状态:随 agent/status 事件驱动(回合开始 running,结束 idle)。
+	// 多会话并行后事件不再归属某个窗口,所以**只用来驱动主会话**那把闸;
+	// 各会话的占用由 handleInput 的 CAS 直接置位/复位(权威),不靠事件反推。
 	unsub := c.Subscribe(sdk.EventAgentStatus, func(_ context.Context, ev *sdk.Event) error {
 		s.running.Store(ev.Payload == "running")
 		return nil
@@ -600,6 +604,8 @@ func (s *Server) handleInput(w http.ResponseWriter, r *http.Request) {
 	if !s.guardWrite(w, req.Session) {
 		return
 	}
+	// 会话键(空 = 主会话);回合占用、串行落账、取消都按它分桶。
+	skey := s.sessionKey(req.Session)
 	// 附件校验与解析(必须落在附件根内且为已存在文件;防注入任意路径)
 	resolved := make([]string, 0, len(req.Attachments))
 	for _, a := range req.Attachments {
@@ -616,7 +622,7 @@ func (s *Server) handleInput(w http.ResponseWriter, r *http.Request) {
 	// **带附件也不走转向**:转向通道只带文本(见 host-agent-loop 的 Steer),放进去等于
 	// 把附件静默丢掉 —— 宁可 409 让用户等回合结束,也不假装收下了。
 	// 权威占用在下方 CAS。
-	if s.running.Load() {
+	if s.runningFor(skey).Load() {
 		if !strings.HasPrefix(content, "/") && len(resolved) == 0 && s.steer(content) {
 			writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "accepted": "steer"})
 			return
@@ -644,7 +650,8 @@ func (s *Server) handleInput(w http.ResponseWriter, r *http.Request) {
 	}
 	// CAS 原子占用:Load+Store 分离时并发双击可同时通过快速检查,跑出两个回合
 	// (两个 goroutine 共享同一 Loop 的回合状态)。
-	if !s.running.CompareAndSwap(false, true) {
+	busy := s.runningFor(skey)
+	if !busy.CompareAndSwap(false, true) {
 		// 竞态:另一请求刚起回合 → 同样按转向处理(不静默丢用户输入);
 		// 带附件同样不走转向(理由见上面的闸门)。
 		if len(resolved) == 0 && s.steer(content) {
@@ -655,12 +662,30 @@ func (s *Server) handleInput(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	go func() {
-		defer s.running.Store(false)
+		defer busy.Store(false)
+		if skey == "" {
+			s.running.Store(true) // 主会话:agent/status 订阅者也据此复位
+			defer s.running.Store(false)
+		}
 		var err error
-		if l, ok := s.loop.(sdk.AttachmentInput); ok && len(atts) > 0 {
-			err = l.RunWithAttachments(context.Background(), content, atts)
-		} else {
-			err = s.loop.Run(context.Background(), content)
+		switch {
+		case skey != "" && len(atts) > 0:
+			// per-session + 附件:RunInSession 没有附件变体(附件要拼进会话历史)。
+			// 显式报错而不是把附件丢掉跑一个"看不见图"的回合。
+			err = fmt.Errorf("向指定会话提交暂不支持附件(会话 %s):请去掉附件,或切到当前会话再发", skey)
+		case skey != "":
+			sr, ok := s.loop.(sdk.SessionRunner)
+			if !ok {
+				err = fmt.Errorf("该构建不支持向指定会话提交(缺 SessionRunner)")
+			} else {
+				err = sr.RunInSession(context.Background(), skey, content)
+			}
+		default:
+			if l, ok := s.loop.(sdk.AttachmentInput); ok && len(atts) > 0 {
+				err = l.RunWithAttachments(context.Background(), content, atts)
+			} else {
+				err = s.loop.Run(context.Background(), content)
+			}
 		}
 		if err != nil {
 			s.hub.Push(Frame{Type: FrameError, Payload: err.Error()})
@@ -779,9 +804,10 @@ type StateView struct {
 	RoleName string         `json:"role_name,omitempty"`
 	Stats    sdk.UsageStats `json:"stats"`
 	Session  *SessionV      `json:"session,omitempty"`
-	// Running 该作用域会话是否正在跑回合。非主会话在多会话并行回合落地(B-1)前
-	// 恒为 false —— 宁可显示「没在跑」,不谎报(谎报会让用户以为提交被接住了)。
+	// Running 该作用域会话是否正在跑回合(每会话一张闸;多会话并行后可同时为真)。
 	Running bool `json:"running"`
+	// RunningSessions 当前有回合在跑的会话键(空串 = 主会话;多窗口用它显示「别的也在跑」)。
+	RunningSessions []string `json:"running_sessions,omitempty"`
 	// SessionID 本次快照对应的会话 id(缺省查询 = 当前主会话)。
 	SessionID string `json:"session_id,omitempty"`
 	// ActiveSessions 其它窗口正在占用的会话 id(多窗口场景可见;未装配目录时省略)。
@@ -821,21 +847,19 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		approval = string(s.ap.Mode())
 	}
 	declared := string(s.sb.Mode())
-	// Running:只有当前主会话可能真的在跑(agent-loop 单例);其它会话在并行回合
-	// 落地前恒 false(见 StateView.Running)。
+	// Running:每个会话各自一张闸(多会话并行后不再是全局单值)。
 	scopeQ := strings.TrimSpace(r.URL.Query().Get("session"))
-	scopeIsMain := scopeQ == ""
-	if !scopeIsMain && s.cs != nil && scopeQ == s.cs.CurrentSession() {
-		scopeIsMain = true
-	}
 	v := StateView{
 		Model: effModel, ModelFrom: modelFrom, ModelSession: sessionModel,
 		Thinking: effThinking.String(), ThinkingFrom: thinkingFrom, ThinkingSession: sessionThinking,
 		Sandbox:   declared,
 		Approval:  approval,
-		Running:   s.running.Load() && scopeIsMain,
+		Running:   s.runningFor(s.sessionKey(scopeQ)).Load(),
 		SessionID: scopeQ,
 		Version:   os.Getenv("GAH_VERSION"),
+	}
+	if rs := s.runningSessionsOf(); len(rs) > 0 {
+		v.RunningSessions = rs
 	}
 	if s.sdir != nil {
 		if act := s.sdir.Active(); len(act) > 0 {
@@ -1140,7 +1164,8 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 		// SandboxSync 联动开关(指针:区分"没给"与"显式 false")—— R10 ②-2。
 		SandboxSync *bool  `json:"sandbox_sync"`
 		Workspace   string `json:"workspace"`
-		Cancel      bool   `json:"cancel"` // 取消运行中回合(经 ctx.turnControl;未装配 503)
+		Cancel      bool   `json:"cancel"`            // 取消运行中回合(经 ctx.turnControl;未装配 503)
+		Session     string `json:"session,omitempty"` // 取消作用域:非空 = 只停该会话(需 SessionRunner)
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "坏请求体", http.StatusBadRequest)
@@ -1149,6 +1174,17 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 	if req.Cancel {
 		if s.tc == nil {
 			http.Error(w, "回合控制未装配(ctx.turnControl)", http.StatusServiceUnavailable)
+			return
+		}
+		// 带 session = 只停那个会话的回合(多窗口各自停自己的);不带 = 停全部(TUI 语义)。
+		if key := s.sessionKey(req.Session); key != "" {
+			sr, ok := s.loop.(sdk.SessionRunner)
+			if !ok {
+				http.Error(w, "该构建不支持按会话取消(缺 SessionRunner)", http.StatusNotImplemented)
+				return
+			}
+			sr.CancelSession(key)
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 			return
 		}
 		s.tc.Cancel()

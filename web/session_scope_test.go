@@ -163,7 +163,7 @@ func TestStateRunningScopedAndActive(t *testing.T) {
 	d := newFakeDir(main, "cur-1")
 	d.byID["other-9"] = &memLog{}
 	s.sdir = d
-	s.running.Store(true)
+	s.runningFor("").Store(true)
 
 	rec := httptest.NewRecorder()
 	s.handleState(rec, httptest.NewRequest(http.MethodGet, "/api/state?session=other-9", nil))
