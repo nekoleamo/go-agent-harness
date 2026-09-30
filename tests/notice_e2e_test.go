@@ -163,7 +163,11 @@ func TestNoticeEndToEndPublishFrameAndBackfill(t *testing.T) {
 	hs := httptest.NewServer(srv.Handler())
 	defer hs.Close()
 
-	evResp, err := http.Get(hs.URL + "/api/events")
+	// SSE 是**长连接**:客户端必须自带 Timeout,否则无帧时 Body.Read 永久阻塞
+	// (bufio.Scanner.Scan 的 deadline 检查在阻塞返回后才轮到,调用点传的
+	//  “等 N 秒” 是假的)—— CI 的 Windows job 上曾因此挂到 go test 的 10 分钟总超时。
+	cl := &http.Client{Timeout: 60 * time.Second}
+	evResp, err := cl.Get(hs.URL + "/api/events")
 	if err != nil {
 		t.Fatal(err)
 	}

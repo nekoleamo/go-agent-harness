@@ -99,7 +99,10 @@ func TestWebEndToEndTurn(t *testing.T) {
 	}
 
 	// 2. 先建 SSE 连接(订阅先于回合提交,对齐真实前端时序;避免依赖历史重放窗口)
-	evResp, err := http.Get(hs.URL + "/api/events")
+	//    SSE 是长连接:客户端必须自带 Timeout(无帧时 Body.Read 会永久阻塞,
+	//  调用点传的“等 N 秒”对 Scanner 不生效)—— 见 notice_e2e_test.go 同处注释。
+	cl := &http.Client{Timeout: 60 * time.Second}
+	evResp, err := cl.Get(hs.URL + "/api/events")
 	if err != nil {
 		t.Fatal(err)
 	}

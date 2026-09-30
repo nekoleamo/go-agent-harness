@@ -40,9 +40,9 @@ func (r *recCtx) seen() []string {
 func TestSessionEventNamePerStream(t *testing.T) {
 	rc := &recCtx{}
 	r := NewLogs(rc)
+	dir := t.TempDir()
 	// 句柄关净:Windows 上未关的 *os.File 会让 TempDir 清理失败(RemoveAll 报「被另一进程占用」)。
 	t.Cleanup(r.CloseAll)
-	dir := t.TempDir()
 	la, err := r.Acquire(filepath.Join(dir, "a.jsonl"), "20260930-1")
 	if err != nil {
 		t.Fatal(err)
@@ -65,9 +65,9 @@ func TestSessionEventNamePerStream(t *testing.T) {
 
 func TestLogsAcquireSamePathReusesInstance(t *testing.T) {
 	r := NewLogs(nopCtx{})
+	dir := t.TempDir()
 	// 句柄关净:Windows 上未关的 *os.File 会让 TempDir 清理失败(RemoveAll 报「被另一进程占用」)。
 	t.Cleanup(r.CloseAll)
-	dir := t.TempDir()
 	p := filepath.Join(dir, "s.jsonl")
 	a, err := r.Acquire(p, "s1")
 	if err != nil {
@@ -98,9 +98,9 @@ func TestLogsAcquireSamePathReusesInstance(t *testing.T) {
 
 func TestLogsInstancesAreIndependent(t *testing.T) {
 	r := NewLogs(nopCtx{})
+	dir := t.TempDir()
 	// 句柄关净:Windows 上未关的 *os.File 会让 TempDir 清理失败(RemoveAll 报「被另一进程占用」)。
 	t.Cleanup(r.CloseAll)
-	dir := t.TempDir()
 	pa := filepath.Join(dir, "a.jsonl")
 	pb := filepath.Join(dir, "b.jsonl")
 	la, _ := r.Acquire(pa, "a1")
@@ -129,9 +129,9 @@ func TestLogsInstancesAreIndependent(t *testing.T) {
 
 func TestLogsAcquireLoadsExistingHistory(t *testing.T) {
 	r := NewLogs(nopCtx{})
+	dir := t.TempDir()
 	// 句柄关净:Windows 上未关的 *os.File 会让 TempDir 清理失败(RemoveAll 报「被另一进程占用」)。
 	t.Cleanup(r.CloseAll)
-	dir := t.TempDir()
 	p := filepath.Join(dir, "h.jsonl")
 	// 先写一条,再 Acquire —— 应读到历史(不是空会话)。
 	if err := os.WriteFile(p, []byte(`{"kind":"user/message","seq":7,"ts":"2026-09-30T10:00:00Z","payload":{"text":"旧"}}`+"\n"), 0o600); err != nil {
@@ -165,10 +165,11 @@ func TestLogsAcquireEmptyPathErrors(t *testing.T) {
 }
 
 func TestLogsConcurrentAcquireSamePath(t *testing.T) {
-	r := NewLogs(nopCtx{})
-	// 句柄关净:Windows 上未关的 *os.File 会让 TempDir 清理失败(RemoveAll 报「被另一进程占用」)。
-	t.Cleanup(r.CloseAll)
 	p := filepath.Join(t.TempDir(), "c.jsonl")
+	r := NewLogs(nopCtx{})
+	// 句柄关净,且必须**在** t.TempDir() 之后注册:t.Cleanup 是 LIFO,后注册者先跑 ——
+	// 反过来会先 RemoveAll 再关句柄,Windows 上直接报「文件被另一进程占用」。
+	t.Cleanup(r.CloseAll)
 	var wg sync.WaitGroup
 	got := make([]sdk.SessionLog, 8)
 	for i := range got {
