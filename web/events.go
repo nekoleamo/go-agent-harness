@@ -90,15 +90,31 @@ type Frame struct {
 	TS      int64  `json:"ts,omitempty"`     // 会话事件时间戳(unix ms;非会话帧可省略)
 	Payload any    `json:"payload"`          // 事件载荷
 	Replay  bool   `json:"replay,omitempty"` // true = 历史重放帧(连接建立/断线续传)
+	// Session 会话 id(仅会话帧;空 = 当前主会话)。多窗口/多会话订阅时用它做**投递过滤**:
+	// 每条连接只收自己那个会话的会话帧,而**非会话帧**(status/error/notice/plan/diff/doc)
+	// 仍一律广播 —— 那些是实例级信号(整个进程都该知道)。
+	Session string `json:"session,omitempty"`
 }
 
 // EventHub 订阅宿主事件并转换为 SSE 帧;支持按会话 Seq 断线续传。
 // 只读历史经 sdk.SessionLog.Replay()(全量事件,坏行容忍由宿主保证)。
 type EventHub struct {
 	mu      sync.Mutex
-	subs    []chan Frame // 活跃 SSE 流(广播;慢消费者由 server 层 per-stream goroutine 隔离)
+	subs    []subscriber // 活跃 SSE 流(广播;慢消费者由 server 层 per-stream goroutine 隔离)
 	lastSeq uint64       // 最近会话 Seq(Replay 上限/快照起点)
 	subsD   []sdk.Disposer
+	// 主会话 id 的现取值:主单例的帧要打上它,否则「窗口绑定当前会话」与
+	// 「未带 session 的旧连接」会互相看不到对方的帧。切换会话时随之变化。
+	mainID func() string
+	// ctx/sessionsD:非主会话的按需订阅(某个窗口第一次订这个会话时建,最后一条连接断开时撤)。
+	ctx       sdk.Ctx
+	sessionsD map[string]sdk.Disposer
+}
+
+// subscriber 一条 SSE 连接:ch 是帧通道,want 是它要收的会话 id(空 = 主会话/全量)。
+type subscriber struct {
+	ch   chan Frame
+	want string
 }
 
 // NewHub 构造事件通道(惰性:Subscribe 时才订阅宿主事件)。
@@ -118,7 +134,7 @@ func (h *EventHub) Subscribe(c sdk.Ctx, sessions sdk.SessionLog) (disposer sdk.D
 		if !ok {
 			return nil
 		}
-		h.push(se)
+		h.push(h.mainSessionID(), se)
 		return nil
 	})
 	add(sdk.EventDocOpen, func(_ context.Context, ev *sdk.Event) error {
@@ -204,6 +220,7 @@ func (h *EventHub) Subscribe(c sdk.Ctx, sessions sdk.SessionLog) (disposer sdk.D
 	})
 	h.mu.Lock()
 	h.subsD = ds
+	h.ctx = c
 	h.mu.Unlock()
 	return func() {
 		h.mu.Lock()
@@ -215,58 +232,74 @@ func (h *EventHub) Subscribe(c sdk.Ctx, sessions sdk.SessionLog) (disposer sdk.D
 	}, nil
 }
 
-// push 会话事件 → 帧并广播(维持 lastSeq)。
-func (h *EventHub) push(se *sdk.SessionEvent) {
+// mainSessionID 当前主会话 id(未绑定 = 返回空,行为与改造前一致)。
+func (h *EventHub) mainSessionID() string {
+	if h.mainID == nil {
+		return ""
+	}
+	return h.mainID()
+}
+
+// push 会话事件 → 帧并广播(维持 lastSeq)。session 为该事件的会话 id(空 = 主会话)。
+func (h *EventHub) push(session string, se *sdk.SessionEvent) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if se.Seq > h.lastSeq {
 		h.lastSeq = se.Seq
 	}
-	f := Frame{ID: se.Seq, Type: FrameSession, TS: se.TS.UnixMilli(), Payload: se}
+	f := Frame{ID: se.Seq, Type: FrameSession, TS: se.TS.UnixMilli(), Payload: se, Session: session}
 	h.broadcast(f)
 }
 
-// broadcast 向全部活跃流投递帧(非阻塞;调用方持 h.mu)。
+// broadcast 向活跃流投递帧(非阻塞;调用方持 h.mu)。
 // 会话帧丢弃不能静默:游标 replay 只在连接重建时发生,而"只是慢"的连接不会断——
 // 被丢的帧会永久缺失(前端消息与后端会话日志漂移,直到手动切会话)。故丢会话帧即
 // 摘除并关闭该流(在锁内摘,不会再有人写),读侧见通道关闭 → 断开 → 客户端按
 // after 游标重连重放补齐。非会话帧(status 等)丢弃无害:下一帧即最新。
+//
+// 会话帧还多一道**投递过滤**:want 为空(主/未指定)或等于帧的会话 ⇒ 收。
 func (h *EventHub) broadcast(f Frame) {
 	if f.Type != FrameSession {
-		for _, ch := range h.subs {
+		for _, sb := range h.subs {
 			select {
-			case ch <- f:
+			case sb.ch <- f:
 			default:
 			}
 		}
 		return
 	}
 	keep := h.subs[:0]
-	for _, ch := range h.subs {
+	for _, sb := range h.subs {
+		if sb.want != "" && sb.want != f.Session {
+			keep = append(keep, sb) // 不是这个会话的:不投也不摘除
+			continue
+		}
 		select {
-		case ch <- f:
-			keep = append(keep, ch)
+		case sb.ch <- f:
+			keep = append(keep, sb)
 		default:
-			close(ch) // 摘除:读侧收到关闭 → 断流重连重放
+			close(sb.ch) // 摘除:读侧收到关闭 → 断流重连重放
 		}
 	}
 	for i := len(keep); i < len(h.subs); i++ {
-		h.subs[i] = nil // 释放引用,防订阅者泄漏
+		h.subs[i] = subscriber{} // 释放引用,防订阅者泄漏
 	}
 	h.subs = keep
 }
 
-// Stream 返回一个只接收新帧的流(调用方负责 Unsubscribe)。
-func (h *EventHub) Stream() (<-chan Frame, func()) {
+// Stream 返回一个只接收新帧的流(调用方负责 Unsubscribe)。want 为该连接要的会话 id
+// (空 = 主会话/全量会话流,与改造前行为一致)。
+func (h *EventHub) Stream(want string) (<-chan Frame, func()) {
 	ch := make(chan Frame, 256)
 	h.mu.Lock()
-	h.subs = append(h.subs, ch)
+	sb := subscriber{ch: ch, want: want}
+	h.subs = append(h.subs, sb)
 	h.mu.Unlock()
 	return ch, func() {
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		for i, c := range h.subs {
-			if c == ch {
+			if c.ch == ch {
 				// 已因丢帧被摘除时不会命中(语义等价:流已关闭)
 				h.subs = append(h.subs[:i], h.subs[i+1:]...)
 				break
@@ -280,6 +313,58 @@ func (h *EventHub) LastSeq() uint64 {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.lastSeq
+}
+
+// BindMain 绑定「当前主会话是谁」的取法(通常传 CwdSessions.CurrentSession)。
+// 主单例的帧会被打上这个 id,于是「窗口绑定当前会话」与「未带 session 的连接」
+// 看到的是同一批帧。fn 为 nil 时全部按「空 = 主会话」处理(行为与改造前一致)。
+func (h *EventHub) BindMain(fn func() string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.mainID = fn
+}
+
+// EnsureSession 为非主会话建立事件订阅(幂等)。必须在该会话的 SSE 连接建立前调。
+// 为什么按需:主单例的事件名是 session/event,而其它会话走 session/event/<id>,
+// 不建就收不到。没 ctx(单测直接构造 hub)时静默跳过 —— 测试里不走真实事件总线。
+func (h *EventHub) EnsureSession(id string) {
+	if id == "" {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.ctx == nil {
+		return
+	}
+	if _, ok := h.sessionsD[id]; ok {
+		return
+	}
+	if h.sessionsD == nil {
+		h.sessionsD = make(map[string]sdk.Disposer)
+	}
+	sid := id
+	h.sessionsD[id] = h.ctx.Subscribe(sdk.SessionEventName(id), func(_ context.Context, ev *sdk.Event) error {
+		se, ok := ev.Payload.(*sdk.SessionEvent)
+		if !ok {
+			return nil
+		}
+		h.push(sid, se)
+		return nil
+	})
+}
+
+// UnbindSession 撤销某会话的事件订阅(该会话最后一条连接断开时调)。
+func (h *EventHub) UnbindSession(id string) {
+	if id == "" {
+		return
+	}
+	h.mu.Lock()
+	d, ok := h.sessionsD[id]
+	delete(h.sessionsD, id)
+	h.mu.Unlock()
+	if ok {
+		d()
+	}
 }
 
 // ReplayAfter 取会话全量事件中 seq 严格大于 after 的帧(**断线续传差集**;

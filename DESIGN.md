@@ -23,6 +23,9 @@
 
 **2026-09-30 第九十八批（Windows 真机清单脚本化 + 阶段 2 剩余三项收口）**：两件收尾 —— ① 真机验收从「48 项手敲清单」变成**可重放脚本**：新增 `scripts/win-real-check.ps1`（自动段 16 个强判据项 Id + 标 `weak` 的经模型观测项 + 由它渲染的 38 条人工段模板；判不了的项**记 SKIP 写原因**，不假 PASS；不读不打印凭据），产物 `evidence.md` / `manual-checklist.md` / `raw/`，卸载相位 `-Phase post-uninstall` 判定「卸载不删数据」（96/100/A18）；② 阶段 2「剩一项半」**收口**：六项四项已交付、三项经复核判「不做 + 理由」（插件集 preset：运行期启停动界面面与依赖图，真要做是配置层 preset；会话级 overlay：卡在**服务端没有「当前会话」单一事实源** —— `RoleService.Current()` 无参、`CwdSessions.Current()` 是 cwd 派生的项目 key，要 per-session 须贯通四处消费面 ⇒ 成本 L，半吊子档按第八十七批教训不做，附触发条件；角色级记忆：会话内经历 R-3 已交付）—— 逐项分析见 `~/Documents/Plan/gah-阶段2剩余项-建议方案.md`。另：#86（macOS 系统横幅不弹）**复核维持「预期不呈现」**（A 档不追）—— ad-hoc 签名所致，与 B-1 同源；窗口内卡片 / Dock 弹跳 / 壳日志三通道在。
 
+**2026-09-30 第九十九批（会话 ID 请求级化 · 多开会话的地基）**：为《多开会话实施方案》A/B/D 的第一块地基 —— 会话 id 从「UI 私有的隐含状态」变成**请求的显式参数**。① **内核**:`sdk` 新增 `SessionLogs`(按落盘路径取/建**独立**日志实例,同路径复用+引用计数,归零落盘移表)与 `SessionDir`(按会话 id 取;`id` 空或恰为当前打开的会话 ⇒ 直接给 `ctx.sessions` 单例,**向后兼容的关键**)与 `SessionRunner`(per-session 回合能力接口,本批只定义不实现);`host-session-log` 提供注册表(`ctx.sessionLogs`),`host-cwd-sessions` 提供 `ctx.sessionDir`;`Log` 增会话 id,广播走 `sdk.SessionEventName(id)`(`session/event/<id>`,**不改公共载荷类型**,既有订阅方零改动)。② **一条硬规则**:同一会话文件不能有两个 Log 实例 —— 切向**正被其它视图持有**的会话显式拒绝(`Open` 闸门),而不是切过去让两份日志交错写。③ **web 读侧全开**:`?session=` 进 `/api/session/events`、`/api/state`(新增 `session_id` 与 `active_sessions`)、`/api/events`+`/ws`(SSE/WS 按会话过滤,**非会话帧仍全量广播**),`spawn` action 新建独立会话且不切当前。④ **web 写侧显式拒收**:向非当前会话提交输入/命令/审批在 agent-loop 会话化之前一律 **409 + 说明原因**(否则内容会静默写进另一个会话 = 数据错位);放行条件 = loop 声明了 `SessionRunner`。⑤ **前端**:`?session=` 启动即绑定(`session-scope.ts` + `api.bindSession`/`setTransportSession`;那两个文件被 Node 测试以 `.ts` 直载而浏览器侧类型检查禁止 `.ts` 后缀 ⇒ 只能零运行时相对 import,由 `main.ts` 同时注入两边)。方案与后续批次见 `~/Documents/Plan/gah-多开会话实施方案-A-B-D.md`。
+
+
 ## 0. 项目目的
 
 **排除 dsh 因 Node.js 带来的依赖:以单一静态二进制交付全部 harness 能力,仅通过二进制部署即可启动,不依赖其余环境。**
@@ -975,6 +978,62 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 **推送后 CI 两轮修正(两条都要记)**:① `plugins/host/host-skills/roles_filter_test.go` 的工具单测给 `list_skills.Execute` 传了 `nil` context —— 本地 `go vet`/单测全不报,**CI 的 staticcheck(版本固定 2026.2.1)报 SA1012**,且原先写的 `//nolint:staticcheck` 对它**惰性**(它只认 golangci-lint)。纪律升级:**推前跑同版本 staticcheck**(`staticcheck ./...` + `cd sdk && staticcheck ./...`),别只跑 vet —— 这是本仓 CI 与本地唯一一处"命令不同"的盲区。② 指令面 shell 用例把 `filepath.Join` 拼出的 Windows 反斜杠路径直接写进命令文本,而 Windows 的 shell 是 git-bash(MSYS):命令里的反斜杠会被 shell 自己当转义吃掉(`>> C:\Users\x` 实际落到相对名 `C:Usersx`),扫描侧按 POSIX 语义也就认不出这是绝对路径 ⇒ 用例在 Windows 上**根本没测到那个文件**(见 AGENTS.md 跨平台纪律②)。改用 `filepath.ToSlash`(两端都是"真写那个文件"的形态),另加 Windows 专有的**双引号形态**断言(MSYS 里表达真反斜杠路径的唯一写法,防"带引号就绕过指令面审批")。修正后 CI run **36420256132 五个 job 全绿**(test / test-macos / test-windows / desktop-shell / desktop-shell-macos)。
 
 **测试**:`web/roles_test.go` 新增 3 项(装配**真实** host-roles/host-skills 走懒解析路径:`/api/roles` 未装配 503 且 state 不带 role、角色全流程 CRUD + 部分更新语义 + 当前角色改名跟随 + 删当前角色被拒 + `.trash` 回收站、技能库共享/私有/覆盖/上限/路径穿越/回收站后不再被索引);`web` 包 `go test` **127 通过**;前端 `npm test` 168 通过、`vue-tsc` 0 错、`test:layout` **39 通过 / 0 失败**(1 skip = 无浏览器时的跳过说明用例);全库 `go test ./... -race` 63 包全绿 + sdk 模块绿;`scripts/coverage-check.sh` **COVERAGE_OK**(`web` 79.1% ≥ 棘轮 68;新增 `internal/skills 75` 棘轮,实测 80.2%;总覆盖 80.1%)。
+
+### 第九十九批 · 会话 ID 请求级化（多开会话地基）（2026-09-30）
+
+> 起因:《多开会话实施方案》(A 多实例 / B 实例内并行 / D 多窗口)三项全做,而它们共同的
+> 地基是「会话 id 请求级化」—— 服务端此前**没有**「当前会话」的事实源之外的第二入口。
+> 本批只做地基 + 读侧;写侧的并行回合在下一批(N+3)才开,本批对写侧**显式拒收**。
+
+**① 内核(sdk + 两个 host 插件)**
+
+| 新增 | 位置 | 语义 |
+|---|---|---|
+| `sdk.SessionLogs` | `sdk/session.go` | 按**落盘路径**取/建**独立**会话日志实例(各自事件序列/seq/压缩水位/文件句柄);同路径复用同一实例(引用计数),`Release` 归零即落盘移表;`Acquire` 失败**不入表**(不留半成品) |
+| `sdk.SessionDir` | `sdk/session.go` | 按**会话 id** 取日志。**`id` 空或恰为当前打开的会话 ⇒ 直接返回 `ctx.sessions` 单例**(不计数、不新建)—— 这是未带 id 的调用方**行为逐字不变**的原因 |
+| `sdk.SessionRunner` | `sdk/agent.go` | per-session 回合能力接口(`RunInSession` / `CancelSession` / `RunningSessions`);本批**只定义不实现**,web 写侧闸门以它为放行条件 |
+| `sdk.SessionEventName(id)` | `sdk/session.go` | 事件名单一事实源:`id` 空 ⇒ `session/event`(既有订阅方零改动);非空 ⇒ `session/event/<id>` |
+| `host-session-log` 注册表 | `plugins/host/host-session-log/logs.go` | 实现 `ctx.sessionLogs`;`Log` 增会话 id,广播按会话分流 |
+| `host-cwd-sessions` 目录层 | `plugins/host/host-cwd-sessions/sessiondir.go` | 实现 `ctx.sessionDir`;id 校验(防路径穿越)与文件名解析仍在这里(唯一事实源,不复制到别处);`Spawn()` = 建独立会话且**不切换当前** |
+
+**为何用事件名而不是给载荷打标**:`sdk.SessionEvent` 是全仓公共载荷类型(轨迹/导出/遥测/ACP 都在消费),包一层带 id 的载荷要逐个改消费方;而一个 SSE 连接只订阅一个会话 ⇒ 帧里的 `seq` 仍是单值,`Last-Event-ID` 语义不变。多会话**合并**订阅是后面的能力,届时才需要复合 id。
+
+**② 硬规则:同一会话文件不能有两个 Log 实例**
+
+主单例与注册表实例若指向同一文件,两个 `Append` 会交错写、投影会互相污染(与 `runMu` 当初「单写者」的理由同级)。因此:`Acquire` 命中当前会话 ⇒ 给单例;`Open`/`New` 切向**正被注册表持有**的会话 ⇒ **显式拒绝**并提示「该会话正在被其他视图使用,请先关闭那个视图」。
+
+**③ web 读侧全开(可按会话读)**
+
+| 端点 | 改法 |
+|---|---|
+| `GET /api/session/events` | `?session=` ⇒ 读**那个会话自己的**日志 |
+| `GET /api/events`、`/api/events/ws` | `?session=` ⇒ 只收该会话的会话帧(帧带 `session`);**非会话帧**(status/notice/plan/diff/doc)仍**全量广播**(那些是实例级信号);重放与基线也走该会话的日志 |
+| `GET /api/state` | `?session=` ⇒ 回显 `session_id`、列出 `active_sessions`;非主会话 `running` **恒 false**(并行回合未落地,宁可显示「没在跑」也不谎报) |
+| `POST /api/sessions {action:"spawn"}` | 新建独立会话且**不切换当前**(`New()` 会切走,不适合多窗口);id 生成器抽成 `newSessionID` 与 `New()` 共用 |
+
+**④ web 写侧:显式拒收(不静默写错会话)**
+
+`POST /api/input`、`POST /api/commands/{name}`、`POST /api/confirm` 的 body 增 `session`;`guardWrite` 在「非当前会话且 loop 未声明 `SessionRunner`」时一律 **409 + 说明原因**。理由:agent-loop 仍把事件写进 `ctx.sessions`(当前会话),此时放行等于把内容写进**另一个**会话 —— 那是最严重的一类静默失信。放行条件即 `SessionRunner`,下一批(N+3)接上。
+
+**⑤ 前端**
+
+- `web-src/src/session-scope.ts`:从 URL `?session=` 读绑定;`api.bindSession` / `setTransportSession` 两个注入点。
+- **一处必须解释的取巧**:`api.ts` 与 `transport.ts` 都被 Node 内置测试以 `./x.ts` **直载**(那要求 import 带 `.ts`),而浏览器侧类型检查禁止应用代码写 `.ts` 后缀(`tsconfig` 的 `allowImportingTsExtensions: false`)—— 两者只能取交集,故这两个文件**零运行时相对 import**,各自持一份绑定,由 `main.ts` 同时注入(漏调一个就是半绑定,故紧邻注释写明)。
+- `api.state/sessionEvents/input/confirm/commandRun` 带上会话;新增 `api.sessionSpawn()`。
+
+**⑥ 测试与门禁**
+
+- `host-session-log`:同路径复用、引用计数、实例互相独立、并发 `Acquire` 同实例、`Acquire` 恢复历史后 seq 接续、空路径显式报错、**每个会话一个事件名**。
+- `host-cwd-sessions`:id 空/当前 ⇒ 单例且不走注册表;其它会话 ⇒ 独立实例 + 记账;非法 id(路径穿越)报错;`Open` 冲突闸门(释放后可切)。
+- `web`:读侧按会话、**跨会话提交 409**、跨会话审批 409、`state` 的 per-session running 与 `active_sessions`、`spawn` 不切当前、未装配目录 ⇒ 501、**hub 按会话投递过滤**(每边 1 会话帧 + 1 非会话帧;未绑定连接仍收主会话帧)。
+- 门禁:`gofmt`/`go vet`(根 + `sdk`)/核心包 `-race`/e2e `tests` 全绿、`COVERAGE_OK`(棘轮按实测上调:`sdk` 85→85.6、`web` 79→80、`host-cwd-sessions` 76→86.8)、`vue-tsc` 0 error、`npm test` 186、`test:layout` 59 绿 / 1 skip。
+
+**⑦ 本批未做(诚实登记)**
+
+- **写侧并行**未开:向非当前会话提交恒 409,直到 N+3 让 `host-agent-loop` 实现 `SessionRunner`。
+- **每会话不同模型/思考档/审批档**未做:那些是**服务级**状态(`handleState` 直接读 `s.llm`/`s.ap`/`s.sb`),本批明确登记为 R1,需另立项。
+- **壳多窗口**(N+2)、**实例内并行回合**(N+3–N+5)、**多实例多开**(N+6)均未做;`Spawn` 已就位但当前**没有调用方**(壳开窗才会用),前端 `api.sessionSpawn()` 同样待 N+2 接线。
+- 未做多窗口真机验证(需壳改动 + Windows/macOS 真机)。
 
 ### 第九十八批 · Windows 真机清单脚本化 + 阶段 2 剩余三项收口（2026-09-30）
 

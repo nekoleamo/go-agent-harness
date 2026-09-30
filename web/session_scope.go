@@ -1,0 +1,79 @@
+// web · 会话作用域(把 ?session=/body.session 落到具体日志与写侧闸门上)。
+//
+// 为什么读侧与写侧待遇不同(重要,别当成不一致):
+//   - **读侧**(首屏历史、事件流、state)现在就能按会话走:每个会话一份独立日志,
+//     互不干扰,所以多窗口可以各自看一个会话。
+//   - **写侧**(提交输入、命令、确认)仍绑在 agent-loop 单例上 —— 它把事件写进
+//     ctx.sessions(当前打开的会话)。在多会话并行回合落地(方案 B-1)之前,
+//     若允许「向非当前会话提交」,内容会静默写进**另一个**会话 = 数据错位。
+//     故此处在闸门上显式拒绝并说明原因,而不是假装成功。
+package web
+
+import (
+	"net/http"
+	"strings"
+
+	"github.com/nekoleamo/go-agent-harness/sdk"
+)
+
+// sessionScope 一次请求的会话作用域:ID 为空 = 当前主会话(Log 即 ctx.sessions 单例)。
+type sessionScope struct {
+	ID  string
+	Log sdk.SessionLog
+	// release 归还可能持有的独立实例(主会话为 nil = 无需归还)。
+	release func()
+}
+
+// Release 归还(幂等;主会话 no-op)。
+func (sc sessionScope) Release() {
+	if sc.release != nil {
+		sc.release()
+		sc.release = nil
+	}
+}
+
+// scopeOf 解析会话 id 并取对应日志(读侧用)。
+// 缺省 / 等于当前打开的会话 → 主单例(零行为变化)。
+func (s *Server) scopeOf(id string) (sessionScope, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return sessionScope{Log: s.sessions}, nil
+	}
+	if s.cs != nil && id == s.cs.CurrentSession() {
+		return sessionScope{ID: id, Log: s.sessions}, nil
+	}
+	if s.sdir == nil {
+		return sessionScope{}, errSessionScopedUnsupported
+	}
+	lg, err := s.sdir.Acquire(id)
+	if err != nil {
+		return sessionScope{}, err
+	}
+	return sessionScope{ID: id, Log: lg, release: func() { s.sdir.Release(id) }}, nil
+}
+
+// sessionScopedError 会话作用域相关的显式失败文案。
+type sessionScopedError string
+
+func (e sessionScopedError) Error() string { return string(e) }
+
+var errSessionScopedUnsupported = sessionScopedError(
+	"当前构建未装配会话目录(缺 ctx.sessionDir),只能操作当前会话")
+
+// guardWrite 写侧闸门:非当前会话一律 409 并说明原因(不静默写错会话)。
+// 返回 true = 允许继续。
+func (s *Server) guardWrite(w http.ResponseWriter, id string) bool {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return true
+	}
+	if s.cs != nil && id == s.cs.CurrentSession() {
+		return true
+	}
+	// 放行的唯一条件:agent-loop 已声明支持按会话执行(方案 B-1 的能力接口)。
+	if _, ok := s.loop.(sdk.SessionRunner); ok {
+		return true
+	}
+	http.Error(w, "当前版本尚未支持向指定会话提交(多会话并行回合未落地);请先 /session 切换到该会话再提交", http.StatusConflict)
+	return false
+}

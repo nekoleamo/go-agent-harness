@@ -10,7 +10,7 @@ import (
 func TestConfirmAnswerFlow(t *testing.T) {
 	hub := NewHub()
 	svc := NewConfirm(hub)
-	ch, release := hub.Stream()
+	ch, release := hub.Stream("")
 	defer release()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -51,7 +51,7 @@ func TestConfirmAnswerFlow(t *testing.T) {
 func TestConfirmCancelRejects(t *testing.T) {
 	hub := NewHub()
 	svc := NewConfirm(hub)
-	ch, release := hub.Stream()
+	ch, release := hub.Stream("")
 	defer release()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
@@ -104,7 +104,7 @@ func TestPendingConfirmReplayedOnConnect(t *testing.T) {
 
 	frames := make(chan Frame, 8)
 	stop := make(chan struct{})
-	go s.consumeStream(0, func(f Frame) error { frames <- f; return nil }, stop)
+	go s.consumeStream(0, func(f Frame) error { frames <- f; return nil }, stop, "")
 	defer close(stop)
 
 	saw := false
@@ -140,7 +140,7 @@ func TestPendingConfirmReplayedOnConnect(t *testing.T) {
 func TestConfirmDeny(t *testing.T) {
 	hub := NewHub()
 	svc := NewConfirm(hub)
-	ch, release := hub.Stream()
+	ch, release := hub.Stream("")
 	defer release()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

@@ -86,7 +86,7 @@ func TestHubBroadcastAndSeq(t *testing.T) {
 	}
 	defer unsub()
 
-	ch, release := hub.Stream()
+	ch, release := hub.Stream("")
 	defer release()
 	// 宿主总线广播会话事件(生产路径:sessionlog Append 后发 session/event)
 	ctx.fire(sdk.EventSession, &sdk.SessionEvent{Kind: sdk.EventUserMessage, Seq: 1, Payload: &sdk.UserMessage{Content: "hi"}})
@@ -151,7 +151,7 @@ func TestInteractionResolvedFrames(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer dis()
-	ch, release := hub.Stream()
+	ch, release := hub.Stream("")
 	defer release()
 
 	c.fire(sdk.EventQuestionResolved, &sdk.QuestionEvent{
@@ -198,7 +198,7 @@ func TestInteractionResolvedFrames(t *testing.T) {
 // 让读侧断开连接、客户端按 after 游标重连重放——静默丢弃会让前端永久少消息。
 func TestSlowConsumerSessionDropClosesStream(t *testing.T) {
 	h := NewHub()
-	ch, release := h.Stream()
+	ch, release := h.Stream("")
 	defer release()
 	n := 0
 	for i := 0; i < 300; i++ {
@@ -233,7 +233,7 @@ func TestHubScheduleFrame(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer unsub()
-	ch, release := hub.Stream()
+	ch, release := hub.Stream("")
 	defer release()
 
 	ev := sdk.ScheduleRunEvent{ID: "sched-1", State: sdk.ScheduleRunFailed, Error: "模型调用失败"}
@@ -265,7 +265,7 @@ func TestErrorFramePayloadIsReadable(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer unsub()
-	ch, release := hub.Stream()
+	ch, release := hub.Stream("")
 	defer release()
 
 	ctx.fire(sdk.EventAgentError, errors.New("dial tcp 127.0.0.1:9: connect: connection refused"))
@@ -291,5 +291,61 @@ func TestErrorFramePayloadIsReadable(t *testing.T) {
 	}
 	if got := errorTextOf(nil); got != "" {
 		t.Fatalf("nil 载荷应为空串: %q", got)
+	}
+}
+
+// TestHubFiltersSessionFramesPerConnection 多窗口正确性:会话帧只投给订阅它的连接,
+// 非会话帧(status/notice 等实例级信号)两边都收。
+func TestHubFiltersSessionFramesPerConnection(t *testing.T) {
+	h := NewHub()
+	h.BindMain(func() string { return "cur-1" })
+	chMain, relMain := h.Stream("cur-1")
+	chOther, relOther := h.Stream("other-9")
+	defer relMain()
+	defer relOther()
+
+	h.push("cur-1", &sdk.SessionEvent{Seq: 1, Kind: sdk.EventUserMessage})
+	h.push("other-9", &sdk.SessionEvent{Seq: 1, Kind: sdk.EventTurnEnd})
+	h.Push(Frame{Type: FrameStatus, Payload: "busy"})
+
+	drain := func(ch <-chan Frame) []Frame {
+		var out []Frame
+		for {
+			select {
+			case f := <-ch:
+				out = append(out, f)
+			default:
+				return out
+			}
+		}
+	}
+	main := drain(chMain)
+	other := drain(chOther)
+	if len(main) != 2 || len(other) != 2 {
+		t.Fatalf("每边应是 1 会话帧 + 1 非会话帧,got main=%d other=%d", len(main), len(other))
+	}
+	if main[0].Session != "cur-1" || other[0].Session != "other-9" {
+		t.Fatalf("会话帧应带各自会话:main=%q other=%q", main[0].Session, other[0].Session)
+	}
+	if main[1].Type != FrameStatus || other[1].Type != FrameStatus {
+		t.Fatal("非会话帧应两边都收到")
+	}
+}
+
+// TestHubUnboundConnectionGetsMainFrames 未带 session 的旧客户端连接(want 空)
+// 仍能收到主会话帧(向后兼容:改造前只有这一种连接)。
+func TestHubUnboundConnectionGetsMainFrames(t *testing.T) {
+	h := NewHub()
+	h.BindMain(func() string { return "cur-1" })
+	ch, rel := h.Stream("")
+	defer rel()
+	h.push("cur-1", &sdk.SessionEvent{Seq: 1})
+	select {
+	case f := <-ch:
+		if f.Type != FrameSession {
+			t.Fatalf("应收到主会话帧,got %s", f.Type)
+		}
+	default:
+		t.Fatal("未绑定连接应收主会话帧")
 	}
 }

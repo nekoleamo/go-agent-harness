@@ -18,7 +18,7 @@ func TestDiffOpenBroadcastsFrame(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer dis()
-	ch, release := hub.Stream()
+	ch, release := hub.Stream("")
 	defer release()
 
 	// 清单意图(无 Path/Diff)

@@ -428,7 +428,7 @@ func TestDocOpenBroadcastsFrame(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer dis()
-	ch, release := hub.Stream()
+	ch, release := hub.Stream("")
 	defer release()
 
 	c.fire(sdk.EventDocOpen, sdk.DocOpenEvent{Path: "docs/a.md", Page: 2})

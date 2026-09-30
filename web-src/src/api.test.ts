@@ -182,3 +182,42 @@ test('req:成功码却不是 JSON 时说清形状(而不是 Unexpected token)', 
     restore()
   }
 })
+
+// 会话作用域(多窗口):绑定后所有作用域请求都带 session=;未绑定时 query 为空。
+// 这是「每个窗口看各自会话」的前端半边:api.ts 与 transport.ts 各自持有绑定
+// (那两条路都被 Node 测试以 .ts 直载,不能互相 import),由 main.ts 同时注入。
+test('api:bindSession 之后读侧请求带 session', async () => {
+  api.bindSession('20260930-101010')
+  const calls: string[] = []
+  const orig = globalThis.fetch
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    calls.push(String(input))
+    return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } })
+  }) as typeof fetch
+  try {
+    await api.state()
+    await api.sessionEvents(0, 50)
+    assert.ok(calls[0].includes('session=20260930-101010'), 'state 应带 session: ' + calls[0])
+    assert.ok(calls[1].includes('session=20260930-101010'), 'sessionEvents 应带 session: ' + calls[1])
+    assert.ok(calls[1].includes('before=0') && calls[1].includes('limit=50'), '分页参数不得丢: ' + calls[1])
+  } finally {
+    globalThis.fetch = orig
+    api.bindSession('')
+  }
+})
+
+test('api:未绑定时 query 为空(旧客户端行为不变)', async () => {
+  api.bindSession('')
+  const calls: string[] = []
+  const orig = globalThis.fetch
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    calls.push(String(input))
+    return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } })
+  }) as typeof fetch
+  try {
+    await api.state()
+    assert.equal(calls[0], '/api/state')
+  } finally {
+    globalThis.fetch = orig
+  }
+})

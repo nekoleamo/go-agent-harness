@@ -824,7 +824,7 @@ func TestCommandDispatch(t *testing.T) {
 		t.Fatalf("未知命令应 400,得 %d", resp.StatusCode)
 	}
 	// 已知命令 → 200 且回命令帧
-	ch, release := s.hub.Stream()
+	ch, release := s.hub.Stream("")
 	defer release()
 	resp, err = http.Post(hs.URL+"/api/input", "application/json", strings.NewReader(`{"content":"/echo 你好"}`))
 	if err != nil {
@@ -2267,7 +2267,7 @@ func TestQuestionEndpoint(t *testing.T) {
 		t.Fatalf("缺 id 应 400,得 %d", resp2.StatusCode)
 	}
 	// 已登记提问 → 作答回填(先订阅再推送,对齐真实时序)
-	stream, release := s.hub.Stream()
+	stream, release := s.hub.Stream("")
 	defer release()
 	ch, cancel, err := s.Question().PresentQuestion(context.Background(), sdk.Question{
 		Prompt: "选环境", Options: []sdk.QuestionOption{{Value: "dev"}, {Value: "prod"}},

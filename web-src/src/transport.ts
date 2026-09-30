@@ -3,6 +3,27 @@
 // (两条路都显式带 ?after=;SSE 另接受浏览器自动重连时自带的 Last-Event-ID)。
 import type { Frame } from './types'
 
+// 本窗口绑定的会话(空 = 当前主会话)。与 api.ts 同样**零运行时相对 import**:
+// 本文件被 Node 内置测试以「./transport.ts」直载,而浏览器侧类型检查禁止应用代码写
+// .ts 后缀。入口 = setTransportSession(id),由 main.ts 与 api.bindSession 一起调。
+let boundSessionId = ''
+
+// setTransportSession 绑定本窗口的会话 id(事件流与重放游标都按它分桶)。
+export function setTransportSession(id: string): void {
+  boundSessionId = id || ''
+}
+
+// sessionQS 会话作用域的 query 串(含前导 ?)。
+function sessionQS(extra?: Record<string, string | number | undefined>): string {
+  const q = new URLSearchParams()
+  if (boundSessionId) q.set('session', boundSessionId)
+  for (const [k, val] of Object.entries(extra || {})) {
+    if (val !== undefined && val !== '') q.set(k, String(val))
+  }
+  const s = q.toString()
+  return s ? '?' + s : ''
+}
+
 export type TransportListener = (f: Frame) => void
 
 // 续传游标:最近一个会话帧 id(sessionStorage;页面刷新/切会话时 App 会清掉 → 回到首连语义)。
@@ -88,7 +109,8 @@ class WsTransport implements Transport {
   private connect(): void {
     // after 游标:最近一个会话帧 id(断线重连差集续传)
     const after = afterCursor()
-    const url = `/api/events/ws${after > 0 ? '?after=' + after : ''}`
+    // sessionQS 同时带上本窗口绑定的会话(多窗口各看各的);after 游标是**该会话**的 seq。
+    const url = '/api/events/ws' + sessionQS({ after: after > 0 ? after : undefined })
     const sock = new WebSocket(url)
     this.sock = sock
     sock.onopen = () => {
@@ -212,7 +234,7 @@ class EsTransport implements Transport {
     // S-P1-2:显式带上 after 游标 —— 自己重建的 EventSource 不会带 Last-Event-ID,
     // 不带游标就会被服务端当成「全新连接」重放尾部窗口 → 已有消息被重复追加。
     const after = afterCursor()
-    const es = new EventSource('/api/events' + (after > 0 ? '?after=' + after : ''))
+    const es = new EventSource('/api/events' + sessionQS({ after: after > 0 ? after : undefined }))
     this.es = es
     es.onopen = () => {
       if (this.closed || es !== this.es) return

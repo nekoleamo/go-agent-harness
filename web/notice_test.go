@@ -49,7 +49,7 @@ func TestHubNoticeFrame(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer unsub()
-	ch, release := hub.Stream()
+	ch, release := hub.Stream("")
 	defer release()
 
 	ts := time.Date(2026, 9, 18, 10, 30, 0, 0, time.UTC)

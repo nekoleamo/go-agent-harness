@@ -12,7 +12,7 @@ import (
 func TestQuestionAnswerFlow(t *testing.T) {
 	hub := NewHub()
 	svc := NewQuestionService(hub)
-	ch, release := hub.Stream()
+	ch, release := hub.Stream("")
 	defer release()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

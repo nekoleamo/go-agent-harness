@@ -6,10 +6,26 @@ import (
 	"time"
 )
 
+// SessionEventName 会话事件的订阅名(单一事实源):id 空 = 当前主会话(沿用 EventSession,
+// 既有订阅方无需改动);id 非空 = 「session/event/<id>」。
+//
+// 为何用**事件名**而不是给载荷打标:SessionEvent 是全仓公共载荷类型(轨迹/导出/遥测/
+// ACP 都在消费),包一层带 id 的载荷会逐个改消费方。而事件总线本来就按名路由,
+// 且一个 SSE 连接只订阅一个会话 ⇒ 帧里的 seq 仍单值,Last-Event-ID 语义不变。
+// 多会话**合并**订阅(同一连接看多个会话)是后续能力,届时才需要复合 id。
+func SessionEventName(id string) string {
+	if id == "" {
+		return EventSession
+	}
+	return EventSessionPrefix + id
+}
+
 // 持久会话事件 Kind(对齐 dsh 轮次流程的事件域)。
 const (
 	// EventSession 广播:每次会话事件 Append 后发出(UI/遥测实时订阅;对齐 dsh session/event)。
-	EventSession          = "session/event"
+	EventSession = "session/event"
+	// EventSessionPrefix 非主会话的事件名前缀(见 SessionEventName)。
+	EventSessionPrefix    = "session/event/"
 	EventTurnStart        = "turn/start"
 	EventTurnEnd          = "turn/end"
 	EventStepStart        = "step/start"
@@ -177,6 +193,43 @@ type SessionLog interface {
 	// RegisterCompressor 注册滚动摘要压缩器与其字符预算(M6.5 拆分后由 token-compress 注入)。
 	// budget <= 0 关闭压缩;压缩器在投影超预算时被调用(详见 SessionCompressor)。
 	RegisterCompressor(budget int, c SessionCompressor)
+}
+
+// SessionLogs 服务(ctx.sessionLogs,host-session-log 提供):按**落盘路径**取/建
+// **互不相干的会话日志实例**(每会话一个 Log),供“多会话并行”使用。
+//
+// 为何需要第二个来源:ctx.sessions 是**单例**,SetPath/Load 是「切换」语义 ——
+// 两个会话同时跑回合时它们会争同一份内存事件与文件句柄(追加与投影互相交错)。
+// 这里给每个路径一份独立 Log(各自的事件序列、seq、压缩水位、文件句柄),
+// 同一路径重复 Acquire 复用同一实例(引用计数),Release 归零即 Flush+Close 移出表。
+type SessionLogs interface {
+	// Acquire 取(必要时建)该路径的会话日志实例并 +1 引用;文件不存在 = 空会话。
+	// id 是会话标识(广播事件名用,见 SessionEventName)——由调用方(cwd-sessions)给,
+	// 不做「从文件名反推」:项目 key 本身含 '-',反推不可靠。
+	// 返回 error 时**不入表**(权限/IO 失败等),调用方必须显式失败,不得回落成空会话。
+	Acquire(path, id string) (SessionLog, error)
+	// Release 归还一次引用;归零时落盘并从表里移除(空闲会话不留内存副本)。
+	// 未持有的路径 = no-op(幂等)。
+	Release(path string)
+	// Active 当前持有实例的路径(排序;诊断与多窗口展示用)。
+	Active() []string
+}
+
+// SessionDir 服务(ctx.sessionDir,host-cwd-sessions 提供):按**会话 id** 取会话日志。
+// 为什么要这层:会话 id → 落盘文件名的映射(以及 id 的合法性校验、防路径穿越)是
+// host-cwd-sessions 的唯一事实源,不该被别的插件复制一份。
+type SessionDir interface {
+	// Acquire 取该 id 的会话日志。**id 空 = 当前主会话**,直接返回 ctx.sessions 单例
+	// (不计数、不新建)—— 这是向后兼容的关键:未带 id 的请求行为逐字不变。
+	// id 非空时按 <key>-<id>.jsonl 取/建独立实例(同一 id 复用同一实例)。
+	Acquire(id string) (SessionLog, error)
+	// Release 归还(仅对 id 非空且曾 Acquire 的会话生效;其余 no-op)。
+	Release(id string)
+	// Active 当前被占用的**非当前**会话 id(排序;诊断与展示用)。
+	Active() []string
+	// Spawn 新建一个**独立**会话(落一个空会话文件)且**不动当前会话**,返回新 id。
+	// 给「多窗口各开各的」用 —— CwdSessions.New 会把当前会话切走,不适合。
+	Spawn() (string, error)
 }
 
 // SessionCompressor 滚动摘要引擎(M6.5 拆出 token-compress;仅消费 SessionEvent,零内部状态)。

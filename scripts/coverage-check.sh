@@ -54,7 +54,7 @@ core/event 90
 core/ctx 60
 core/plugin 65
 core/config 65
-sdk 85
+sdk 85.6
 internal/prefs 82
 internal/roles 85
 internal/rolepack 85
@@ -72,7 +72,7 @@ internal/sessionhtml 92
 cmd/gah 56
 plugins/catalogue 70
 plugins/ui/ui-web-app 70
-web 79
+web 80
 tui 74
 plugins/policy/policy-guard 91
 plugins/host/host-agent-loop 72
@@ -80,7 +80,7 @@ plugins/host/host-bridge 86
 plugins/host/host-backup 80
 plugins/host/host-commands 76
 plugins/host/host-confirm-fusion 76
-plugins/host/host-cwd-sessions 76
+plugins/host/host-cwd-sessions 86.8
 plugins/host/host-docview 72
 plugins/host/host-docview/pdfium 20
 plugins/host/host-fanout 80

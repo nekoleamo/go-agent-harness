@@ -1,9 +1,31 @@
 // REST 客户端(上行)+ 工具函数。核心交互纯 REST,不绕模板渲染。
 import type { AttachmentView, CommandOptionsResp, CommandView, DocTree, DocView, InstructionsView, Job, McpView, ModelsAllResp, NoticePage, PluginInfo, ProviderInfo, RolePackResult, RoleSpec, RolesView, Schedule, SessionEventsPage, SessionInfo, StateView, ToolDef, TrashView, WorkspaceInfo } from './types'
 
+// 本窗口绑定的会话(多窗口/多会话作用域)。为何是本文件自己持有而不是 import 一个
+// session 模块:本文件被 Node 内置测试以「./api.ts」直接加载(那条路要求 import 带 .ts),
+// 而浏览器侧类型检查禁止应用代码写 .ts 后缀 —— 两者只能取交集 = 这里**零运行时相对 import**。
+// 绑定入口是 api.bindSession(id),由 main.ts 在启动时从 URL ?session= 注入。
+let boundSessionId = ''
+
+// sessionQS 会话作用域的 query 串(含前导 ?;未绑定为空串,便于直接拼 URL)。
+function sessionQS(extra?: Record<string, string | number | undefined>): string {
+  const q = new URLSearchParams()
+  if (boundSessionId) q.set('session', boundSessionId)
+  for (const [k, val] of Object.entries(extra || {})) {
+    if (val !== undefined && val !== '') q.set(k, String(val))
+  }
+  const s = q.toString()
+  return s ? '?' + s : ''
+}
+
 const BASE = ''
 const json = {
   'Content-Type': 'application/json',
+}
+
+// bindSession 绑定本窗口的会话 id(空 = 当前主会话)。main.ts 启动时从 URL 调一次。
+function bindSession(id: string): void {
+  boundSessionId = id || ''
 }
 
 // errText 把失败响应体读成人话:后端两种契约并存 —— JSON {error}(新写入口,如 /api/models 的 501)
@@ -46,12 +68,14 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  // bindSession 绑定本窗口会话(多窗口各看各的);空 = 当前主会话。启动时由 main.ts 调一次。
+  bindSession,
   state(): Promise<StateView> {
-    return req('/api/state')
+    return req('/api/state' + sessionQS())
   },
   // S-P1-2 会话事件分页:上滚加载更早历史(before = 已加载的最老事件 Seq;0 = 尾部窗口)
   sessionEvents(before: number, limit: number): Promise<SessionEventsPage> {
-    return req(`/api/session/events?before=${before}&limit=${limit}`)
+    return req('/api/session/events' + sessionQS({ before, limit }))
   },
   commands(): Promise<CommandView[]> {
     return req('/api/commands')
@@ -94,7 +118,7 @@ export const api = {
     return req('/api/input', {
       method: 'POST',
       headers: json,
-      body: JSON.stringify({ content, attachments: attachments ?? [] }),
+      body: JSON.stringify({ content, attachments: attachments ?? [], session: boundSessionId }),
     })
   },
   // 附件上传(multipart;返回落盘视图;后端大小/类型/数量白名单)。
@@ -138,7 +162,7 @@ export const api = {
     return req('/api/backup', { method: 'POST', headers: json, body: JSON.stringify({ action: 'restore', name }) })
   },
   confirm(id: string, ok: boolean): Promise<void> {
-    return req('/api/confirm', { method: 'POST', headers: json, body: JSON.stringify({ id, ok }) })
+    return req('/api/confirm', { method: 'POST', headers: json, body: JSON.stringify({ id, ok, session: boundSessionId }) })
   },
   // 结构化提问作答(P3;values=选项值,text=自由文本,二者可并存)
   questionAnswer(id: string, values: string[], text: string): Promise<void> {
@@ -253,8 +277,13 @@ export const api = {
     return req('/api/commands/' + encodeURIComponent(name), {
       method: 'POST',
       headers: json,
-      body: JSON.stringify({ args }),
+      body: JSON.stringify({ args, session: boundSessionId }),
     })
+  },
+  // 新建**独立**会话且不动当前会话(多窗口用:POST action=spawn)。
+  // 与 sessionNew() 的区别 = 后者会把当前会话切走(本窗口历史当场换掉)。
+  sessionSpawn(): Promise<{ id: string }> {
+    return req('/api/sessions', { method: 'POST', headers: json, body: JSON.stringify({ action: 'spawn' }) })
   },
   // 技能:role 空 = 共享库;传 content(原文)走原样写入,否则由服务端按表单拼 frontmatter
   skillCreate(p: { role?: string; name: string; description?: string; triggers?: string[]; body?: string; content?: string; overwrite?: boolean }): Promise<{ name: string; path: string; warning?: string }> {

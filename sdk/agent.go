@@ -81,3 +81,21 @@ type TurnSteerer interface {
 	// err 非空 = 已受理但未能投递/落账,调用方按「一条不丢」处理(回落排队)。
 	Steer(text string) (bool, error)
 }
+
+// SessionRunner 可选扩展:AgentLoop 支持**按会话**执行回合(实例内多会话并行)。
+//
+// 背景:默认实现把 ctx.sessions(单例)当当前会话写,SetPath/Load 是「切换」语义 ——
+// 两个会话并发跑回合会争同一份内存事件与同一个文件句柄(追加与投影互相交错)。
+// 逐会话实例化(经 ctx.sessionDir 取日志)之后,不同会话的回合才能真正并行;
+// **同一会话内仍然串行**(单写者不变量不变)。
+//
+// 未实现时:调用方必须回落旧行为(主回路合串行 + 409 拒收),不静默「看起来并行」。
+// 能力探测用类型断言;web 侧写侧闸门也看这个接口决定能否放行(见 web/session_scope.go)。
+type SessionRunner interface {
+	// RunInSession 在指定会话执行一轮(sessionID 空 = 当前主会话,与 Run 等价)。
+	RunInSession(ctx context.Context, sessionID, input string) error
+	// CancelSession 取消该会话正在跑的回合;返回是否命中(无在跑回合 = false)。
+	CancelSession(sessionID string) bool
+	// RunningSessions 当前有回合在跑的会话 id(空串 = 主会话);诊断与多窗口展示用。
+	RunningSessions() []string
+}

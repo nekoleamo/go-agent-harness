@@ -112,6 +112,7 @@ type Server struct {
 	bk         sdk.BackupService         // 可选(整体备份 M18:未装配时 /api/backup 503)
 	us         sdk.UsageStatsService     // 可选
 	cs         sdk.CwdSessions           // 可选
+	sdir       sdk.SessionDir            // 可选(按会话 id 取日志;未装配 = 只支持主会话)
 	ss         sdk.SessionSummaryService // 可选(F3 会话概述;未装配则 summary 端点 503)
 	cmds       sdk.CommandRegistry       // 可选(未装配 = / 命令不可用)
 	tools      sdk.ToolRegistry          // 可选(工具清单/调用/todo 面板)
@@ -170,6 +171,7 @@ func (s *Server) Inject(c sdk.Ctx) error {
 	_ = c.Inject("ctx.backup", &s.bk)   // 可选:未装配则 /api/backup 503
 	_ = c.Inject("ctx.usageStats", &s.us)
 	_ = c.Inject("ctx.cwdSessions", &s.cs)
+	_ = c.Inject("ctx.sessionDir", &s.sdir)   // 可选:未装配则 ?session= 非主会话 → 501/503(显式)
 	_ = c.Inject("ctx.sessionSummary", &s.ss) // 可选:未装配则 /api/sessions/summary 503
 	_ = c.Inject("ctx.commands", &s.cmds)
 	_ = c.Inject("ctx.tools", &s.tools)
@@ -422,8 +424,20 @@ func (s *Server) afterOf(r *http.Request) uint64 {
 //   - after > 0(断线续传):回放差集。这是真有缺口的场景,必须补齐不能截断。
 //
 // seen 游标去重保证「重放期间已入实时流的帧」不双发。
-func (s *Server) consumeStream(after uint64, sink func(Frame) error, stop <-chan struct{}) {
-	ch, unsub := s.hub.Stream()
+// consumeStream 消费事件流。sid 非空时只收该会话的会话帧(非会话帧仍全量),
+// 且重放读的是**那个会话自己的**日志(否则历史与实时流会来自两个会话)。
+func (s *Server) consumeStream(after uint64, sink func(Frame) error, stop <-chan struct{}, sid string) {
+	sc, err := s.scopeOf(sid)
+	if err != nil {
+		// 拿不到该会话的日志:宁可立刻断流(前端按 after 重连),不接一条混着主会话的流。
+		return
+	}
+	defer sc.Release()
+	if sc.ID != "" {
+		s.hub.EnsureSession(sc.ID)
+		defer s.hub.UnbindSession(sc.ID)
+	}
+	ch, unsub := s.hub.Stream(sc.ID)
 	defer unsub()
 	seen := after // 已消费会话游标(会话帧按 Seq 全局递增;非会话帧 ID=0 不参与去重)
 	// 未决审批弹层补推(只推给本连接):confirm 帧是实时广播、不落账本,而审批现在默认
@@ -438,13 +452,13 @@ func (s *Server) consumeStream(after uint64, sink func(Frame) error, stop <-chan
 	}
 	var replay []Frame
 	if after == 0 {
-		frames, base := s.hub.ReplayTail(s.sessions)
+		frames, base := s.hub.ReplayTail(sc.Log)
 		if err := sink(Frame{Type: FrameBaseline, Payload: base}); err != nil {
 			return
 		}
 		replay = frames
 	} else {
-		replay = s.hub.ReplayAfter(s.sessions, after)
+		replay = s.hub.ReplayAfter(sc.Log, after)
 	}
 	for _, f := range replay {
 		if f.ID > 0 && f.ID <= seen {
@@ -515,7 +529,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		fl.Flush()
 		return nil
 	}
-	s.consumeStream(s.afterOf(r), sse, r.Context().Done())
+	s.consumeStream(s.afterOf(r), sse, r.Context().Done(), r.URL.Query().Get("session"))
 }
 
 // handleEventsWS WebSocket 通道(/api/events/ws):同 payload 不同载体。
@@ -555,13 +569,16 @@ func (s *Server) handleEventsWS(w http.ResponseWriter, r *http.Request) {
 	}()
 	// hijack 后 r.Context() 已取消(服务端接管连接):停止信号由读泵提供,
 	// 推送写失败同样驱动 consumeStream 退出。
-	s.consumeStream(s.afterOf(r), wsc, stop)
+	s.consumeStream(s.afterOf(r), wsc, stop, r.URL.Query().Get("session"))
 }
 
 // —— REST ——
 
 type inputReq struct {
 	Content string `json:"content"`
+	// Session 目标会话 id(缺省 = 当前主会话)。非当前会话需 agent-loop 支持
+	// sdk.SessionRunner(方案 B-1),否则 409 —— 不静默写进当前会话(见 web/session_scope.go)。
+	Session string `json:"session,omitempty"`
 	// Attachments 附件标识(两种写法均接受):
 	//   ① `/attachments/<rel>`(`/api/attachments` 返回的 url,前端默认用这个);
 	//   ② 附件目录内的绝对路径(该接口返回的 path,供旧客户端/脚本兼容)。
@@ -577,6 +594,10 @@ func (s *Server) handleInput(w http.ResponseWriter, r *http.Request) {
 	content := strings.TrimSpace(req.Content)
 	if content == "" {
 		http.Error(w, "空输入", http.StatusBadRequest)
+		return
+	}
+	// 写侧闸门:向非当前会话提交需要 per-session 回合能力(未落地则显式拒收)。
+	if !s.guardWrite(w, req.Session) {
 		return
 	}
 	// 附件校验与解析(必须落在附件根内且为已存在文件;防注入任意路径)
@@ -700,12 +721,18 @@ func (s *Server) runCommand(content string, w http.ResponseWriter) {
 type confirmReq struct {
 	ID string `json:"id"`
 	OK bool   `json:"ok"`
+	// Session 作答所属会话 id。非当前会话的待答项在并行回合落地前不存在,
+	// 带上错的 id 会被闸门拒收(而不是让一个窗口替另一个窗口应答)。
+	Session string `json:"session,omitempty"`
 }
 
 func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
 	var req confirmReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "坏请求体", http.StatusBadRequest)
+		return
+	}
+	if !s.guardWrite(w, req.Session) {
 		return
 	}
 	s.confirm.Answer(req.ID, req.OK)
@@ -752,8 +779,14 @@ type StateView struct {
 	RoleName string         `json:"role_name,omitempty"`
 	Stats    sdk.UsageStats `json:"stats"`
 	Session  *SessionV      `json:"session,omitempty"`
-	Running  bool           `json:"running"`
-	Version  string         `json:"version"`
+	// Running 该作用域会话是否正在跑回合。非主会话在多会话并行回合落地(B-1)前
+	// 恒为 false —— 宁可显示「没在跑」,不谎报(谎报会让用户以为提交被接住了)。
+	Running bool `json:"running"`
+	// SessionID 本次快照对应的会话 id(缺省查询 = 当前主会话)。
+	SessionID string `json:"session_id,omitempty"`
+	// ActiveSessions 其它窗口正在占用的会话 id(多窗口场景可见;未装配目录时省略)。
+	ActiveSessions []string `json:"active_sessions,omitempty"`
+	Version        string   `json:"version"`
 }
 
 // SessionV 会话视图(host-cwd-sessions 未装配时省略)。
@@ -788,13 +821,26 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		approval = string(s.ap.Mode())
 	}
 	declared := string(s.sb.Mode())
+	// Running:只有当前主会话可能真的在跑(agent-loop 单例);其它会话在并行回合
+	// 落地前恒 false(见 StateView.Running)。
+	scopeQ := strings.TrimSpace(r.URL.Query().Get("session"))
+	scopeIsMain := scopeQ == ""
+	if !scopeIsMain && s.cs != nil && scopeQ == s.cs.CurrentSession() {
+		scopeIsMain = true
+	}
 	v := StateView{
 		Model: effModel, ModelFrom: modelFrom, ModelSession: sessionModel,
 		Thinking: effThinking.String(), ThinkingFrom: thinkingFrom, ThinkingSession: sessionThinking,
-		Sandbox:  declared,
-		Approval: approval,
-		Running:  s.running.Load(),
-		Version:  os.Getenv("GAH_VERSION"),
+		Sandbox:   declared,
+		Approval:  approval,
+		Running:   s.running.Load() && scopeIsMain,
+		SessionID: scopeQ,
+		Version:   os.Getenv("GAH_VERSION"),
+	}
+	if s.sdir != nil {
+		if act := s.sdir.Active(); len(act) > 0 {
+			v.ActiveSessions = act
+		}
 	}
 	// A-5#125 数据根可写性:每次请求现探(用户改完权限**无需重启**就能看到提示条消失)。
 	if root := dataRootPath(); root != "" {
@@ -843,7 +889,14 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 // handleSessionEvents 会话事件分页(GET /api/session/events?before=<seq>&limit=<n>)。
 // 上滚加载更早历史的唯一入口:before 缺省/0 = 尾部窗口(与首连基线同口径),limit 可调小不可调大。
 // 事件带完整载荷(前端用 consume 重建消息),与 SSE 实时帧同源 —— 两条路同一份账本事实。
+// handleSessionEvents 首屏/上滚历史分页(?session= 指定会话;缺省 = 当前主会话)。
 func (s *Server) handleSessionEvents(w http.ResponseWriter, r *http.Request) {
+	sc, err := s.scopeOf(r.URL.Query().Get("session"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotImplemented)
+		return
+	}
+	defer sc.Release()
 	before, _ := strconv.ParseUint(r.URL.Query().Get("before"), 10, 64)
 	limit := 0
 	if q := r.URL.Query().Get("limit"); q != "" {
@@ -857,7 +910,7 @@ func (s *Server) handleSessionEvents(w http.ResponseWriter, r *http.Request) {
 	if limit > SessionPageLimitMax {
 		limit = SessionPageLimitMax
 	}
-	writeJSON(w, http.StatusOK, pageOf(s.sessions.Replay(), before, limit))
+	writeJSON(w, http.StatusOK, pageOf(sc.Log.Replay(), before, limit))
 }
 
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
@@ -875,7 +928,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, list)
 	case http.MethodPost:
 		var req struct {
-			Action string `json:"action"` // switch | new | fork | clone | pin | unpin | delete
+			Action string `json:"action"` // switch | new | spawn | fork | clone | pin | unpin | delete
 			ID     string `json:"id"`     // switch/pin/unpin 目标(空 = 主会话)
 			Seq    uint64 `json:"seq"`    // fork 分支点(会话事件 seq)
 		}
@@ -903,6 +956,19 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 				s.us.Reset()
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id, "session": s.currentSessionV()})
+		case "spawn":
+			// 多窗口用:建一个**独立**会话且**不切换当前**。
+			// 不能用 new:它会把当前会话切走(本窗口的历史与输入框当场换掉)。
+			if s.sdir == nil {
+				http.Error(w, "会话目录未装配(缺 ctx.sessionDir)", http.StatusNotImplemented)
+				return
+			}
+			id, err := s.sdir.Spawn()
+			if err != nil {
+				http.Error(w, "新建失败: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id})
 		case "pin", "unpin":
 			// F 组 F2:置顶/取消置顶(不新增端点,沿用 action 分派;上限 8 显式报错)
 			if err := s.cs.SetPinned(req.ID, req.Action == "pin"); err != nil {
@@ -2129,9 +2195,15 @@ func (s *Server) handleCommandRun(w http.ResponseWriter, r *http.Request) {
 	}
 	var req struct {
 		Args []string `json:"args"`
+		// Session 目标会话 id:命令(如 /compact、/export)在哪个会话上执行。
+		// 非当前会话需 per-session 回合能力,否则 409(见 web/session_scope.go)。
+		Session string `json:"session,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "坏请求体", http.StatusBadRequest)
+		return
+	}
+	if !s.guardWrite(w, req.Session) {
 		return
 	}
 	out, err := spec.Run(req.Args)

@@ -302,12 +302,12 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | 方法 路径 | 说明 |
 |---|---|
 | `POST /api/auth` | 引导通道:`{"token":"…"}`(或 `Authorization: Bearer`)换 `gah_token` cookie(POST-only,错误 token 401);唯一豁免鉴权门的路径,仍受 Host 白名单 + 同源校验 |
-| `GET /api/state` | 状态快照(model/thinking/sandbox/sandbox_effective/sandbox_sync/approval/stats/session/running/version;**model_from/thinking_from 与 model_session/thinking_session** = 生效值与来源(role\|session)以及被覆盖的会话档) |
-| `POST /api/input` | 提交回合;`/` 前缀走命令;回合运行中普通消息**注入当前回合**(转向,响应带 `accepted:"steer"`);**带附件的提交回落 409**(转向通道只带文本,不静默丢附件);无法注入时(未装配转向能力)与命令路径仍 409 |
-| `POST /api/confirm` | 审批应答 `{id, ok}` |
-| `GET /api/events` + `GET /api/events/ws` | 事件流(SSE 断线重放 / WS;首连发 `baseline` 基线 + 尾部窗口,续传按 `after` 补差集) |
-| `GET /api/session/events` | 会话事件分页(`?before=<seq>&limit=<n>`):长会话上滚加载更早历史,窗口回合对齐、返回 `has_more` |
-| `GET /api/sessions`、`POST /api/sessions` | 会话列表 / `{action: switch\|new\|fork\|clone\|delete}` |
+| `GET /api/state` | 状态快照(model/thinking/sandbox/sandbox_effective/sandbox_sync/approval/stats/session/running/version;**model_from/thinking_from 与 model_session/thinking_session** = 生效值与来源(role\|session)以及被覆盖的会话档)。**`?session=<id>`** 查指定会话:回显 `session_id`、列出 `active_sessions`(其它窗口正占用的会话);非主会话的 `running` 恒 false(并行回合未落地,不谎报) |
+| `POST /api/input` | 提交回合;body 可带 `session`;`/` 前缀走命令;回合运行中普通消息**注入当前回合**(转向,响应带 `accepted:"steer"`);**带附件的提交回落 409**(转向通道只带文本,不静默丢附件);无法注入时(未装配转向能力)与命令路径仍 409。**向非当前会话提交恒 409**(多会话并行回合未落地,内容会写进当前会话 ⇒ 显式拒收而非静默写错) |
+| `POST /api/confirm` | 审批应答 `{id, ok, session?}`;`session` 与当前会话不符 ⇒ 409(防一个窗口替另一个应答) |
+| `GET /api/events` + `GET /api/events/ws` | 事件流(SSE 断线重放 / WS;首连发 `baseline` 基线 + 尾部窗口,续传按 `after` 补差集)。**`?session=<id>`** 只收该会话的会话帧(帧带 `session` 字段),**非会话帧**(status/notice/plan/diff)仍全量广播 |
+| `GET /api/session/events` | 会话事件分页(`?before=<seq>&limit=<n>&session=<id>`):长会话上滚加载更早历史,窗口回合对齐、返回 `has_more`;`session` 读的是**那个会话自己的**日志 |
+| `GET /api/sessions`、`POST /api/sessions` | 会话列表 / `{action: switch\|new\|spawn\|fork\|clone\|delete}`;**`spawn`** = 新建独立会话且**不切换当前**(多窗口用) |
 | `POST /api/sessions/rename`、`GET /api/sessions/{id}/export` | 会话改名 / 导出会话(`?format=html` = 自包含网页,缺省 jsonl;无 id 路径 = 主会话) |
 | `GET /api/workspaces`、`DELETE /api/workspaces/{key}` | 工作区历史 / 删除记录(不动文件夹) |
 | `GET /api/commands`、`POST /api/commands/{name}` | 命令注册表 / 直接执行 `{args}` |

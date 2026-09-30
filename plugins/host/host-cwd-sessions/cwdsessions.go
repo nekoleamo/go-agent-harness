@@ -32,8 +32,12 @@ func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
 	if err := c.Inject("ctx.sessions", &sessions); err != nil {
 		return nil, err
 	}
+	// 实例注册表(host-session-log 提供):可选注入 —— 缺失时非主会话 Acquire 显式失败。
+	var logs sdk.SessionLogs
+	_ = c.Inject("ctx.sessionLogs", &logs)
 	key := ProjectKeyFromCwd()
-	svc := &Service{key: key, sessions: sessions}
+	svc := &Service{key: key, sessions: sessions, logs: logs}
+	svc.dir = &sessionDir{svc: svc, logs: logs}
 	// 工作区切换事件广播(广播模式,监听器错误仅记日志不中断切换)
 	svc.emitWS = func(dir string) {
 		_, _ = c.Emit(context.Background(), "cwd/workspace-switched", dir, sdk.Emit)
@@ -49,6 +53,10 @@ func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
 		return nil, err
 	}
 	if err := c.Provide("ctx.cwdSessions", svc); err != nil {
+		return nil, err
+	}
+	// 按会话 id 取日志的能力(多会话并行/多窗口绑定会话的入口;见 sessiondir.go)。
+	if err := c.Provide("ctx.sessionDir", sdk.SessionDir(svc.dir)); err != nil {
 		return nil, err
 	}
 	return func() {}, nil
@@ -98,6 +106,11 @@ type Service struct {
 	wsMu     sync.Mutex     // workspaces 记录文件写锁
 	nmMu     sync.Mutex     // 会话显示名(names.json)读写锁
 	ftMu     sync.Mutex     // 分支树衍生记录(fork-tree.json)读写锁
+	// logs 多会话并行的实例注册表(ctx.sessionLogs,host-session-log 提供);
+	// 未装配时只支持主会话(Acquire 对非空 id 显式报错,不回落成静默单例)。
+	logs sdk.SessionLogs
+	// dir 会话目录适配层(见 sessiondir.go);Start 建好后回填,供 Open 的冲突闸门查询。
+	dir *sessionDir
 	// emitWS 工作区切换事件广播(可选,nil = 不广播;Plugin.Start 绑定 c.Emit)。
 	// 宿主订阅方:host-bridge(重启外部工具进程使其继承新 cwd)、
 	// policy-guard(沙箱 root 同步)——工具真正在新目录执行。
@@ -211,6 +224,11 @@ func (s *Service) Open(id string) error {
 		// 防穿越:filepath.Join 会 Clean 掉 ".." 段,未过滤的 id 可让会话落到数据根之外
 		return fmt.Errorf("cwdsessions: 非法会话 id")
 	}
+	// 冲突闸门:该会话已被注册表持有(=另一个视图/窗口正在用独立实例写这个文件)时
+	// 显式拒绝 —— 两个 Log 写同一文件会交错,不能静默切过去。
+	if id != "" && s.dir != nil && s.dir.heldRefs(id) > 0 {
+		return fmt.Errorf("cwdsessions: 会话 %s 正在被其他视图使用,请先关闭那个视图", id)
+	}
 	path := SessionPath(SessionsRoot(), s.Current(), id)
 	if s.sessions != nil {
 		if err := s.sessions.Load(path); err != nil {
@@ -229,19 +247,29 @@ func (s *Service) Open(id string) error {
 
 // New 新建会话:生成唯一 id(时间戳;同分钟冲突追加序号)并 Open,返回新会话 id。
 func (s *Service) New() (string, error) {
+	id, err := newSessionID(s.Current())
+	if err != nil {
+		return "", err
+	}
+	if err := s.Open(id); err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+// newSessionID 生成当前项目下未被占用的会话 id(时间戳;同分钟冲突追加序号)。
+// New(切换)与 SessionDir.Spawn(不切换)共用 —— 两处各写一份必然会漂。
+func newSessionID(key string) (string, error) {
 	base := time.Now().Format("20060102-150405")
 	id := base
 	for n := 2; ; n++ {
-		if !fileExists(SessionPath(SessionsRoot(), s.Current(), id)) {
+		if !fileExists(SessionPath(SessionsRoot(), key, id)) {
 			break
 		}
 		id = fmt.Sprintf("%s-%d", base, n)
 		if n > 10000 {
 			return "", fmt.Errorf("cwdsessions: 无法生成唯一会话 id(%s)", base)
 		}
-	}
-	if err := s.Open(id); err != nil {
-		return "", err
 	}
 	return id, nil
 }

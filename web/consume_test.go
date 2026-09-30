@@ -66,7 +66,7 @@ func TestConsumeStreamGapNoLossNoDup(t *testing.T) {
 	var got []Frame
 	sink := func(f Frame) error { mu.Lock(); got = append(got, f); mu.Unlock(); return nil }
 	done := make(chan struct{})
-	go func() { defer close(done); s.consumeStream(0, sink, stop) }()
+	go func() { defer close(done); s.consumeStream(0, sink, stop, "") }()
 
 	<-log.replayC // 订阅已建立、重放被阻塞 = 窗口内
 	// 窗口内广播新会话帧:先落盘(Append)再广播(push,真实语义)→ 重放集与实时流均含 seq3

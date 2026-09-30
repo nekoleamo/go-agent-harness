@@ -41,6 +41,11 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	if err := c.Provide("ctx.sessions", lg); err != nil {
 		return nil, err
 	}
+	// 多会话并行的实例注册表(同一 ctx:新实例要靠它广播自己的会话事件)。
+	// 独立于 ctx.sessions 单例 —— 单例的 SetPath/Load 是「切换」语义,不能并发用。
+	if err := c.Provide("ctx.sessionLogs", NewLogs(c)); err != nil {
+		return nil, err
+	}
 	// 窗口快照:压缩阈值按窗口比例派生(host-usage-stats 每轮 usage 后广播)。
 	// 启动期拿不到那个服务(bundle 里本插件排在它前面,Provide/Inject 无晚绑定),运行期拿值就够。
 	dw := c.Subscribe(sdk.EventUsageWindow, func(_ context.Context, ev *sdk.Event) error {
@@ -60,11 +65,14 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 // 投影超预算时回调压缩器折叠最旧块为 session/summary 摘要事件,
 // 原始事件保留(留盘完整),投影见“累计摘要 + 最近块”。
 type Log struct {
-	mu               sync.Mutex
-	events           []sdk.SessionEvent
-	seq              atomic.Uint64
-	file             *os.File
-	path             string
+	mu     sync.Mutex
+	events []sdk.SessionEvent
+	seq    atomic.Uint64
+	file   *os.File
+	path   string
+	// id 会话标识(空 = 当前主会话):广播事件名用(sdk.SessionEventName),
+	// 使「每个会话一个事件流」对订阅方可见。主会话单例为空,事件名仍是 session/event。
+	id               string
 	ctx              sdk.Ctx
 	historyLimit     int // -1 禁止 / 0 全部 / N>0 最近 N 条
 	budget           int // 投影字符预算(0 = 关闭压缩;由 token-compress 注册时设置)
@@ -201,7 +209,7 @@ func (l *Log) Append(ev sdk.SessionEvent) error {
 	if err == nil && l.ctx != nil {
 		// 广播回填后的事件(与落盘同源):web/events.go 依赖载荷自带 Seq/TS 支撑
 		// Last-Event-ID 断线续传与前端时间戳;此前广播未回填的副本 → 帧 id/TS 恒为 0。
-		l.ctx.Emit(context.Background(), sdk.EventSession, &stamped, sdk.Emit)
+		l.ctx.Emit(context.Background(), sdk.SessionEventName(l.id), &stamped, sdk.Emit)
 	}
 	return err
 }
