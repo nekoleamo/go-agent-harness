@@ -96,7 +96,7 @@ Go 实现的编程代理 Agent Harness:以**单静态二进制**交付全部能�
 > `/backup <应用目录之外的路径>` 与 `/backup restore <名字>`。
 > 命令行版:数据与 `gah` 同目录,升级只替换单文件,`gah-data/` 原地保留。
 >
-> **国内网络升级(GitHub 直连不稳时)**:升级只依赖两样东西——`latest.json` 与安装包,两者都能用「GitHub 加速代理前缀」就地换源:把原链接拼在代理前缀之后即可,例如 `https://gh-proxy.com/https://github.com/nekoleamo/go-agent-harness/releases/download/v0.2.0/gah_0.2.0_aarch64.dmg`(Windows 换成 `gah_0.2.0_x64-setup.exe`;CLI 归档同理)。**桌面端自动升级换源**:发布侧一条命令即可把 `latest.json` 里的下载 URL 整体前置代理前缀——`bash scripts/publish-desktop.sh rewrite-url https://gh-proxy.com/`(还原:`… rewrite-url none`),或在 GitHub Actions 里跑 `release-desktop` 的 `workflow_dispatch { tag, mirror_base }`,**不需重发版本、对已装版本立即生效**。**换源不降低安全性**:updater 的 ed25519 签名只对**文件内容**验签、URL 不参与 ⇒ 代理/镜像换包会被签名直接拒掉(脚本内含「签名逐平台未被改动」自检,不过即回滚)。公共代理是公益服务、可用性不保证:失效时换一个前缀或跑 `none` 还原直链;而自控镜像**已就绪** —— Gitee Release 附件随各版本同步上传(见下段自动选源),不再单靠公共代理。
+> **国内网络升级(GitHub 直连不稳时)**:升级只依赖两样东西——`latest.json` 与安装包,两者都能用「GitHub 加速代理前缀」就地换源:把原链接拼在代理前缀之后即可,例如 `https://gh-proxy.com/https://github.com/nekoleamo/go-agent-harness/releases/download/v0.3.0/gah_0.3.0_aarch64.dmg`(Windows 换成 `gah_0.3.0_x64-setup.exe`;CLI 归档同理)。**桌面端自动升级换源**:发布侧一条命令即可把 `latest.json` 里的下载 URL 整体前置代理前缀——`bash scripts/publish-desktop.sh rewrite-url https://gh-proxy.com/`(还原:`… rewrite-url none`),或在 GitHub Actions 里跑 `release-desktop` 的 `workflow_dispatch { tag, mirror_base }`,**不需重发版本、对已装版本立即生效**。**换源不降低安全性**:updater 的 ed25519 签名只对**文件内容**验签、URL 不参与 ⇒ 代理/镜像换包会被签名直接拒掉(脚本内含「签名逐平台未被改动」自检,不过即回滚)。公共代理是公益服务、可用性不保证:失效时换一个前缀或跑 `none` 还原直链;而自控镜像**已就绪** —— Gitee Release 附件随各版本同步上传(见下段自动选源),不再单靠公共代理。
 >
 > **升级源自动切换(0.1.6 起)**:桌面端检查更新时同时拿着两个源 —— Gitee 镜像(国内直连)与
 > GitHub Release(全球可达),默认 Gitee 优先,取不到表就自动落到另一个;**某个源「表能取到但包下不下来」
