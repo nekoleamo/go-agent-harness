@@ -988,6 +988,8 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 - 纪律：不读不打印 provider 凭据（只看文件是否存在）；弱判据不足定论**记 SKIP 并写明原因**；有 FAIL 退出码 1。产物：`evidence.md` + `manual-checklist.md` + `raw/`。
 - 边界（诚实登记）：脚本本地只在 macOS 做了**静态检查**（UTF-8 BOM —— PS 5.1 读无 BOM 的 UTF-8 会把中文判据文案解析成乱码、LF 行尾、括号 249/249·38/38·103/103、无未闭合字符串），**未在 Windows 上实跑**（用户 2026-09-30：真机后续再实测）。清单文档同步加 §12（执行方式与分工口径：强判据 / weak / 人工三段）。
 
+- 顺带**回填两条悬空登记**(2026-09-30 复核):「布局护栏在 CI 首次实跑」在本文件未实施表与 `docs/VERIFY.md` 里仍写 ⏳,而该步在 `test` / `test-macos` 两 job 上**早已实跑且绿**(最近 run `36691461746` 两 job 该步 = success,`GAH_LAYOUT_REQUIRE=1`)—— 原登记「需 ubuntu runner + CJK 字体场景」的条件已满足,两处一并改标 ✅。
+
 **② 阶段 2 剩余三项收口**（`~/Documents/Plan/gah-阶段2剩余项-建议方案.md`）：
 
 | 剩余项 | 结论 | 理由 |
@@ -1846,7 +1848,7 @@ pdfium.wasm，CI 不保证有）；`cmd/gah` 的 `c.Provide` 失败（新 ctx �
 |---|---|
 | 模型报超窗时的**压缩重试**(溢出兜底) | ✅ **已交付**(2026-09-22 第五十六批):端点报上下文超窗 ⇒ `sdk.IsContextOverflowError` 判定 → `host-session-log.CompressForOverflow()` 强制折叠(目标 = 阈值一半,长单轮挂应急截断)→ `host-agent-loop` 重新组装请求**重试同一回合,硬上限 1 次**;仍失败则文案如实说明已试过什么并给 `/compact`、换大窗口两条出路。判定/压缩/回路三层单测 + 全库 `-race` 绿;方案与风险对照见 `/Users/nekoleamo/Documents/Plan/gah-上下文占用对照-pi.md` |
 | macOS 系统通知的**呈现** | ❌ **明确不做**(2026-09-22 用户拍板:本项目不做 dmg 公证,见第五十六批):macOS 只给签名/公证过的 app 呈现横幅,ad-hoc 构建**系统收下不弹** —— 这是**预期行为**,不再列为待修缺陷。代码侧已做到「投递 + 可观测 + Dock 弹跳兜底」,应用内仍有提示通道;若将来购证书签名公证,横幅自动回来、代码无需再改 |
-| 布局护栏在 **CI 首次实跑** | ⏳ 非人工、待 CI 环境(2026-09-22 第五十五批登记):本机没有 ubuntu runner(也没有 CJK 字体场景),护栏的 Linux 沙箱兜底与两个 job 的实跑只能由 CI 证实;判据 = `test` / `test-macos` 的「布局回归护栏」步绿;红则看该步上传的 artifact(`layout-artifacts-*`,失败用例截图)+ 报错点名的元素几何 |
+| 布局护栏在 **CI 首次实跑** | ✅ **已交付**(2026-09-30 第九十八批复核回填):该步在 `test` / `test-macos` 两个 job 上**已实跑且绿**(env `GAH_LAYOUT_REQUIRE=1`;最近一次 run `36691461746` 两 job 的「布局回归护栏」步 = success) —— 原文登记「本机没有 ubuntu runner(也没有 CJK 字体场景),只能由 CI 证实」的条件已满足;失败时看该步上传的 artifact(`layout-artifacts-*`,失败用例截图)+ 报错点名的元素几何 |
 | Windows 真机复核 | ⏳ 需 Win 机器:**27 条 + A 表 18 行**(2026-09-22 起有独立清单)`/Users/nekoleamo/Documents/Plan/gah-Windows真机测试清单.md`(按「必须先跑 / 无 Git 与装 Git 两份环境 / 通知与沙箱 / 便携与升级卸载」分组,每条给判据与取证位置);逐条权威定义仍在 `docs/VERIFY.md` §B,R15–R22 四轮已闭环项写在同文件「Windows 桌面壳真机复验记录」 |
 | Linux 真机(Landlock / 无内核沙箱告警) | ⏸ **暂缓**(2026-09-22 用户拍板):C 段 120/121 保留在册,不在本轮与近期真机计划内;本机可覆盖的分支(未启用告警、`GAH_SHELL_KERNEL_SANDBOX=0` 静默)已有自动证据 |
 | LibreOffice 转换链真机验证 | ❌ **放弃验证**(2026-09-22 用户拍板:不装 ≈700MB LibreOffice),**代码零改动、能力保留** —— `data.external_converters` / `--convert` 是可选且缺省关的增强(未装时显式报「未检测到 soffice/libreoffice」+ 退出码 3,离线桩单测已覆盖);删代码只会把 `.doc/.xls/.ppt` 从「装了就能用」退化成「永远不能用」 |
