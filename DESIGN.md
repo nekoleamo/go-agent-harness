@@ -1035,6 +1035,17 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 - **壳多窗口**(N+2)、**实例内并行回合**(N+3–N+5)、**多实例多开**(N+6)均未做;`Spawn` 已就位但当前**没有调用方**(壳开窗才会用),前端 `api.sessionSpawn()` 同样待 N+2 接线。
 - 未做多窗口真机验证(需壳改动 + Windows/macOS 真机)。
 
+**⑧ CI(诚实记录三连红 → 收口)**
+
+| run | 现象 | 根因与处置 |
+|---|---|---|
+| `36719151174` | test / test-macos / test-windows 红(desktop 两 job 绿) | 注册表实例的 `*os.File` 没关:POSIX 下 unlink 不在乎(macOS 全绿),Windows 下 `t.TempDir()` 清理被拒。处置:新增 `Logs.CloseAll()` 并挂进插件 Disposer(注册即副作用、卸载即撤销),测试侧 `t.Cleanup` 兜底 |
+| `36720437825` | 同三 job 红 | `sessionScope.Release` 在**值接收者**上置 nil ⇒ staticcheck **SA4005**。本地 `go vet` 不查 SA 系列且当时没跑 staticcheck —— 已把 staticcheck 列为本地提交前门禁(与 go vet 并列) |
+| `36721616633` | 仅 test-windows 红(600s 总超时卡在 `TestNoticeEndToEndPublishFrameAndBackfill`) | 两处:**t.Cleanup 注册顺序反了**(LIFO:CloseAll 注册在 `t.TempDir()` 之前 ⇒ 先 RemoveAll 再关句柄,上一次的修复实际没生效);**e2e 的 SSE 长连接没有客户端超时**,调用点传的「等 N 秒」对 `bufio.Scanner` 是假的(`Scan` 阻塞返回后才轮到 deadline 检查)⇒ 无帧时挂到 10 分钟总超时,并连带拖死等它的并行用例。处置:调整注册顺序 + 给 notice/web 两个 e2e 的 SSE 连接加 `http.Client{Timeout: 60s}` |
+| **`36725007030`** | **五 job 全绿** | test 16m11s / **test-windows 7m15s** / test-macos 11m54s / desktop-shell 3m17s / desktop-shell-macos 40s |
+
+三连红的共同教训:**「本地全绿」不等于跨平台成立**。第一、二两条只有 CI 能看见(Windows 句柄语义、staticcheck SA 系列),第三条是既有测试的**假超时**被新代码放大 —— 修复时顺手把它变成真超时,比调大 CI 超时值正确。
+
 ### 第九十八批 · Windows 真机清单脚本化 + 阶段 2 剩余三项收口（2026-09-30）
 
 > 起因：Windows 真机验收的 48 项清单一直只能人肉照着跑；而阶段 2「剩一项半」挂在未实施清单里多轮，**没人写清它为什么难**。本批把前者变成可重放脚本，把后者写成有理由、有触发条件的收口结论。
