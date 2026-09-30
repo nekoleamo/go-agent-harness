@@ -24,11 +24,12 @@ type sessionScope struct {
 	release func()
 }
 
-// Release 归还(幂等;主会话 no-op)。
+// Release 归还。幂等由**服务端**保证:SessionDir.Release 本身幂等
+// (未持有 = no-op),所以这里不能把 release 置 nil —— sessionScope 是值传递,
+// 置 nil 只是改副本(staticcheck SA4005 会报「无效赋值」),并不能防重复调用。
 func (sc sessionScope) Release() {
 	if sc.release != nil {
 		sc.release()
-		sc.release = nil
 	}
 }
 
