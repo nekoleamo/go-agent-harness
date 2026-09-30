@@ -43,7 +43,8 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	}
 	// 多会话并行的实例注册表(同一 ctx:新实例要靠它广播自己的会话事件)。
 	// 独立于 ctx.sessions 单例 —— 单例的 SetPath/Load 是「切换」语义,不能并发用。
-	if err := c.Provide("ctx.sessionLogs", NewLogs(c)); err != nil {
+	logsReg := NewLogs(c)
+	if err := c.Provide("ctx.sessionLogs", logsReg); err != nil {
 		return nil, err
 	}
 	// 窗口快照:压缩阈值按窗口比例派生(host-usage-stats 每轮 usage 后广播)。
@@ -56,7 +57,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		}
 		return nil
 	})
-	return func() { dw(); lg.Close() }, nil
+	return func() { dw(); lg.Close(); logsReg.CloseAll() }, nil
 }
 
 // Log 是会话日志实现。事件并发追加,jsonl 落盘(按项目 key 一个文件)。

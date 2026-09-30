@@ -77,6 +77,22 @@ func (r *Logs) Release(path string) {
 	e.log.Close()
 }
 
+// CloseAll 落盘并关闭注册表里的**所有**实例(插件卸载时调)。
+// 必需而非可选:空闲实例的 *os.File 句柄不关,在 Windows 上会让临时目录清理失败
+// (RemoveAll 报「文件被另一进程占用」),在 POSIX 上只是句柄泄漏到进程结束。
+func (r *Logs) CloseAll() {
+	r.mu.Lock()
+	entries := make([]*Log, 0, len(r.byPath))
+	for p, e := range r.byPath {
+		entries = append(entries, e.log)
+		delete(r.byPath, p)
+	}
+	r.mu.Unlock()
+	for _, lg := range entries {
+		lg.Close()
+	}
+}
+
 // Active 当前持有实例的路径(排序)。
 func (r *Logs) Active() []string {
 	r.mu.Lock()

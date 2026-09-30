@@ -40,6 +40,8 @@ func (r *recCtx) seen() []string {
 func TestSessionEventNamePerStream(t *testing.T) {
 	rc := &recCtx{}
 	r := NewLogs(rc)
+	// 句柄关净:Windows 上未关的 *os.File 会让 TempDir 清理失败(RemoveAll 报「被另一进程占用」)。
+	t.Cleanup(r.CloseAll)
 	dir := t.TempDir()
 	la, err := r.Acquire(filepath.Join(dir, "a.jsonl"), "20260930-1")
 	if err != nil {
@@ -63,6 +65,8 @@ func TestSessionEventNamePerStream(t *testing.T) {
 
 func TestLogsAcquireSamePathReusesInstance(t *testing.T) {
 	r := NewLogs(nopCtx{})
+	// 句柄关净:Windows 上未关的 *os.File 会让 TempDir 清理失败(RemoveAll 报「被另一进程占用」)。
+	t.Cleanup(r.CloseAll)
 	dir := t.TempDir()
 	p := filepath.Join(dir, "s.jsonl")
 	a, err := r.Acquire(p, "s1")
@@ -94,6 +98,8 @@ func TestLogsAcquireSamePathReusesInstance(t *testing.T) {
 
 func TestLogsInstancesAreIndependent(t *testing.T) {
 	r := NewLogs(nopCtx{})
+	// 句柄关净:Windows 上未关的 *os.File 会让 TempDir 清理失败(RemoveAll 报「被另一进程占用」)。
+	t.Cleanup(r.CloseAll)
 	dir := t.TempDir()
 	pa := filepath.Join(dir, "a.jsonl")
 	pb := filepath.Join(dir, "b.jsonl")
@@ -123,6 +129,8 @@ func TestLogsInstancesAreIndependent(t *testing.T) {
 
 func TestLogsAcquireLoadsExistingHistory(t *testing.T) {
 	r := NewLogs(nopCtx{})
+	// 句柄关净:Windows 上未关的 *os.File 会让 TempDir 清理失败(RemoveAll 报「被另一进程占用」)。
+	t.Cleanup(r.CloseAll)
 	dir := t.TempDir()
 	p := filepath.Join(dir, "h.jsonl")
 	// 先写一条,再 Acquire —— 应读到历史(不是空会话)。
@@ -149,6 +157,8 @@ func TestLogsAcquireLoadsExistingHistory(t *testing.T) {
 
 func TestLogsAcquireEmptyPathErrors(t *testing.T) {
 	r := NewLogs(nopCtx{})
+	// 句柄关净:Windows 上未关的 *os.File 会让 TempDir 清理失败(RemoveAll 报「被另一进程占用」)。
+	t.Cleanup(r.CloseAll)
 	if _, err := r.Acquire("", "x"); err == nil {
 		t.Fatal("空路径应显式报错(不静默回落)")
 	}
@@ -156,6 +166,8 @@ func TestLogsAcquireEmptyPathErrors(t *testing.T) {
 
 func TestLogsConcurrentAcquireSamePath(t *testing.T) {
 	r := NewLogs(nopCtx{})
+	// 句柄关净:Windows 上未关的 *os.File 会让 TempDir 清理失败(RemoveAll 报「被另一进程占用」)。
+	t.Cleanup(r.CloseAll)
 	p := filepath.Join(t.TempDir(), "c.jsonl")
 	var wg sync.WaitGroup
 	got := make([]sdk.SessionLog, 8)
