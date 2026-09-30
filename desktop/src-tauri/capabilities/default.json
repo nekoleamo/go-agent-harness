@@ -1,8 +1,9 @@
 {
   "identifier": "default",
-  "description": "gah 桌面壳的最小权限面:主窗口 + sidecar 页面(127.0.0.1 任意端口)只能调应用自有命令。",
+  "description": "gah 桌面壳的最小权限面:主窗口 + sidecar 页面(127.0.0.1 任意端口)只能调应用自有命令。gah-session-* 是「新会话窗口」的标签前缀(多会话并行,第九十九批起)—— 漏了它那些窗口会**完全没有权限**(连 core:default 都没有),表现为新窗口里前端 invoke 全废。",
   "windows": [
-    "main"
+    "main",
+    "gah-session-*"
   ],
   "remote": {
     "urls": [

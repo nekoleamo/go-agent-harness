@@ -26,6 +26,8 @@
 **2026-09-30 第九十九批（会话 ID 请求级化 · 多开会话的地基）**：为《多开会话实施方案》A/B/D 的第一块地基 —— 会话 id 从「UI 私有的隐含状态」变成**请求的显式参数**。① **内核**:`sdk` 新增 `SessionLogs`(按落盘路径取/建**独立**日志实例,同路径复用+引用计数,归零落盘移表)与 `SessionDir`(按会话 id 取;`id` 空或恰为当前打开的会话 ⇒ 直接给 `ctx.sessions` 单例,**向后兼容的关键**)与 `SessionRunner`(per-session 回合能力接口,本批只定义不实现);`host-session-log` 提供注册表(`ctx.sessionLogs`),`host-cwd-sessions` 提供 `ctx.sessionDir`;`Log` 增会话 id,广播走 `sdk.SessionEventName(id)`(`session/event/<id>`,**不改公共载荷类型**,既有订阅方零改动)。② **一条硬规则**:同一会话文件不能有两个 Log 实例 —— 切向**正被其它视图持有**的会话显式拒绝(`Open` 闸门),而不是切过去让两份日志交错写。③ **web 读侧全开**:`?session=` 进 `/api/session/events`、`/api/state`(新增 `session_id` 与 `active_sessions`)、`/api/events`+`/ws`(SSE/WS 按会话过滤,**非会话帧仍全量广播**),`spawn` action 新建独立会话且不切当前。④ **web 写侧显式拒收**:向非当前会话提交输入/命令/审批在 agent-loop 会话化之前一律 **409 + 说明原因**(否则内容会静默写进另一个会话 = 数据错位);放行条件 = loop 声明了 `SessionRunner`。⑤ **前端**:`?session=` 启动即绑定(`session-scope.ts` + `api.bindSession`/`setTransportSession`;那两个文件被 Node 测试以 `.ts` 直载而浏览器侧类型检查禁止 `.ts` 后缀 ⇒ 只能零运行时相对 import,由 `main.ts` 同时注入两边)。方案与后续批次见 `~/Documents/Plan/gah-多开会话实施方案-A-B-D.md`。
 
 
+**2026-09-30 第一百批（桌面壳多会话窗口）**：把第九十九批的 `?session=` 从「URL 能带」推到「托盘一键开窗」—— 托盘新增「新会话窗口…」:壳经 `POST /api/sessions {action:spawn}` 要一个**独立**会话(不切换当前那一个),用 `WebviewWindowBuilder` 开一个 label 为 `gah-session-<id>` 的窗口并导航到 `?shell=desktop&session=<id>`;读侧(首屏历史/事件流/state)按会话全通,**写入仍需该版本支持向指定会话提交**(否则后端 409,如实报错)。三处关键手艺:**① capability 的 `windows` 必须加 `gah-session-*` 通配** —— 漏了它新窗口**完全没有权限**(连 `core:default` 都没有),症状是新窗口里前端 invoke 全废而源码两侧看起来都对,已加单测钉住;**② 导航护栏无需重挂** —— `navGuard` 是插件级 `on_navigation`,对每个 webview 的每次导航都生效(主窗口没挂只是因为它走 `tauri.conf.json` 的 `app.windows` 声明、那条路径没有 Builder),此点**订正**了方案文档里的猜测;**③ 拿不到会话 id 就不开窗**,并给原生对话框反馈(开一个指向空 id 的窗口只会让人对空白界面猜原因)。壳内首次有了 POST(`buildPostRequest`/`httpPOSTAuth`,与既有 `httpGETAuth` 同款的裸 TCP);窗口数上限 8(每个窗口 = 一个 webview + 一条 SSE + 一份会话日志实例)。
+
 ## 0. 项目目的
 
 **排除 dsh 因 Node.js 带来的依赖:以单一静态二进制交付全部 harness 能力,仅通过二进制部署即可启动,不依赖其余环境。**
@@ -978,6 +980,55 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 **推送后 CI 两轮修正(两条都要记)**:① `plugins/host/host-skills/roles_filter_test.go` 的工具单测给 `list_skills.Execute` 传了 `nil` context —— 本地 `go vet`/单测全不报,**CI 的 staticcheck(版本固定 2026.2.1)报 SA1012**,且原先写的 `//nolint:staticcheck` 对它**惰性**(它只认 golangci-lint)。纪律升级:**推前跑同版本 staticcheck**(`staticcheck ./...` + `cd sdk && staticcheck ./...`),别只跑 vet —— 这是本仓 CI 与本地唯一一处"命令不同"的盲区。② 指令面 shell 用例把 `filepath.Join` 拼出的 Windows 反斜杠路径直接写进命令文本,而 Windows 的 shell 是 git-bash(MSYS):命令里的反斜杠会被 shell 自己当转义吃掉(`>> C:\Users\x` 实际落到相对名 `C:Usersx`),扫描侧按 POSIX 语义也就认不出这是绝对路径 ⇒ 用例在 Windows 上**根本没测到那个文件**(见 AGENTS.md 跨平台纪律②)。改用 `filepath.ToSlash`(两端都是"真写那个文件"的形态),另加 Windows 专有的**双引号形态**断言(MSYS 里表达真反斜杠路径的唯一写法,防"带引号就绕过指令面审批")。修正后 CI run **36420256132 五个 job 全绿**(test / test-macos / test-windows / desktop-shell / desktop-shell-macos)。
 
 **测试**:`web/roles_test.go` 新增 3 项(装配**真实** host-roles/host-skills 走懒解析路径:`/api/roles` 未装配 503 且 state 不带 role、角色全流程 CRUD + 部分更新语义 + 当前角色改名跟随 + 删当前角色被拒 + `.trash` 回收站、技能库共享/私有/覆盖/上限/路径穿越/回收站后不再被索引);`web` 包 `go test` **127 通过**;前端 `npm test` 168 通过、`vue-tsc` 0 错、`test:layout` **39 通过 / 0 失败**(1 skip = 无浏览器时的跳过说明用例);全库 `go test ./... -race` 63 包全绿 + sdk 模块绿;`scripts/coverage-check.sh` **COVERAGE_OK**(`web` 79.1% ≥ 棘轮 68;新增 `internal/skills 75` 棘轮,实测 80.2%;总覆盖 80.1%)。
+
+### 第一百批 · 桌面壳多会话窗口（2026-09-30）
+
+> 起因:《多开会话实施方案》D-2。第九十九批把 `?session=` 做成了请求级参数,但用户还缺一个
+> 入口 —— 「多开」得是点一下就有新窗口,而不是自己拼 URL。
+
+**壳侧改动**(`desktop/src-tauri/src/main.rs`)
+
+| 改动 | 说明 |
+|---|---|
+| `buildPostRequest` / `httpPOSTAuth` | 壳内首次有了 POST(裸 TCP,与既有 `httpGETAuth` 同款:带 cookie、读超时 1.5s、失败返空串)。`Content-Length` 按**字节**算(中文 body 下按 rune 会短少) |
+| `spawnSession` | `POST /api/sessions {"action":"spawn"}` → 解析新 id;空串 = 失败 |
+| `session_window_label` / `session_window_url` | label = `gah-session-<id>`(稳定可预测,关窗反查与 capability 通配都靠它);URL = `?shell=desktop&session=<id>`(+ token 模式的 fragment) |
+| `open_session_window` | 三段式:拿 id → 查上限(8) → `WebviewWindowBuilder` 建窗。**拿不到 id 就不开窗**,给原生对话框(不依赖系统通知授权) |
+| 托盘项「新会话窗口…」 | 排在「显示窗口」之后(高频窗口操作) |
+| `capabilities/default.json` | `windows` 加 `gah-session-*` 通配(见下) |
+
+**三处必须写下来的关键点**
+
+1. **capability 的 `windows` 是硬门槛**:Tauri v2 的权限按窗口标签匹配,不在列表里的窗口
+   **完全没有权限**(连 `core:default` 都没有)—— 表现是新窗口里前端 `invoke` 全废、
+   界面看着"加载了但什么都不动",而源码两侧(capability / Builder)都"看起来对"。
+   已加单测 `capability_covers_session_window_labels` 直接读 `default.json` 钉住。
+2. **导航护栏不用为动态窗口重挂**:`navGuard` 是**插件级** `on_navigation`,对每个 webview
+   的每次导航都生效;主窗口之所以没挂,是因为它由 `tauri.conf.json` 的 `app.windows` 声明、
+   那条路径没有 Builder。**此点订正了方案文档《多开会话实施方案》D-2 里的猜测**
+   (当时写的是"必须用 Builder 显式挂 navGuard",实际不需要)。
+3. **写侧仍是 409**:新窗口能读自己会话的全部历史与事件流,但向它提交输入要等下一批
+   (`host-agent-loop` 实现 `SessionRunner`)。后端已按 D-1 的闸门如实回 409 并说明原因,
+   壳不做任何"假装成功"的处理。
+
+**验证**
+
+- Rust:`cargo fmt --check` 干净,`cargo test --offline` **43 passed**(新增 6 条:POST 请求
+  形状/字节长度/cookie、label 稳定性、URL 形状、capability 通配、窗口上限)。
+- Go 侧本批未改产品代码;真链路用起真实 web 实例端到端验过:`spawn` 返回新 id
+  (`20260930-230925`)、**当前会话未被切换**(仍是 `…-230923`)、按新会话读历史 **200**、
+  向新会话提交 **409**、会话文件已落盘。
+- `desktop/src-tauri/gen/schemas/capabilities.json`(Tauri 自动生成)随 default.json 同步。
+
+**本批未做(诚实登记)**
+
+- 未做多窗口**真机**验证(开窗、拖动、关窗、并发两个窗口各跑各的):需 macOS/Windows
+  机器,归入 Windows 真机清单与本地人工项。
+- 窗口未做"独立工作区":所有窗口共用 sidecar 的当前工作区(per-session cwd 是另一个特性,
+  会牵动全部工具裁决,见方案 §R1 同款取舍)。
+- 窗口关闭时**不**主动 `Release` 会话引用:靠前端 SSE 断开触发后端的 `scopeOf` 归还 ——
+  若窗口被强杀,引用由注册表在下次 `Release` 时归零(不会泄漏,但那一刻之前那个会话的
+  `Open` 会被闸门拒,提示"正在被其他视图使用")。
 
 ### 第九十九批 · 会话 ID 请求级化（多开会话地基）（2026-09-30）
 

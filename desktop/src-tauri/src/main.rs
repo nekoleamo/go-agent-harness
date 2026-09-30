@@ -50,6 +50,10 @@ const GAH_ADDR: &str = "127.0.0.1:2233";
 // 桌面壳标记:web UI 依 `?shell=desktop` 走桌面壳布局(浏览器端不受影响)。
 const GAH_SHELL_PATH: &str = "/?shell=desktop";
 
+// 会话窗口数量上限:每个窗口 = 一个 webview + 一条 SSE 连接 + 一份会话日志实例。
+// 不设限的话「连点托盘」就能把本机资源吃满,而症状(界面变卡)与原因隔着好几层。
+const MAX_SESSION_WINDOWS: usize = 8;
+
 // WEB_ADDR 本次运行的 Web 地址,setup 早期写入一次(此后只读,故用 OnceLock)。
 static WEB_ADDR: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
@@ -148,6 +152,124 @@ fn cookie_header() -> String {
         String::new()
     } else {
         format!("Cookie: gah_token={t}\r\n")
+    }
+}
+
+// buildPostRequest 拼裸 TCP 的 POST 请求(纯函数,便于单测)。
+// 与 buildGetRequest(内联在 httpGETAuth 里)同款;拆出来是因为「新会话窗口」需要
+// POST /api/sessions {action:spawn} 拿一个独立会话 id,而壳里原先只有 GET。
+fn buildPostRequest(path: &str, body: &str, cookie: &str) -> String {
+    format!(
+        "POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{cookie}Connection: close\r\n\r\n{body}",
+        body.len()
+    )
+}
+
+// httpPOSTAuth 带凭据的最小 POST(读回响应体)。连通失败/超时 → 空串(调用方显式判空,
+// 绝不把空串当成成功)。
+fn httpPOSTAuth(path: &str, body: &str) -> String {
+    let mut s = match TcpStream::connect_timeout(&web_sockaddr(), Duration::from_millis(300)) {
+        Ok(s) => s,
+        Err(_) => return String::new(),
+    };
+    let _ = s.set_read_timeout(Some(Duration::from_millis(1500)));
+    if s.write_all(buildPostRequest(path, body, &cookie_header()).as_bytes())
+        .is_err()
+    {
+        return String::new();
+    }
+    let mut all = Vec::new();
+    let mut buf = [0u8; 1024];
+    loop {
+        match s.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => all.extend_from_slice(&buf[..n]),
+        }
+    }
+    let text = String::from_utf8_lossy(&all).to_string();
+    match text.find("\r\n\r\n") {
+        Some(i) => text[i + 4..].to_string(),
+        None => String::new(),
+    }
+}
+
+// spawnSession 向 sidecar 要一个**独立**会话(不切换当前那一个),返回新 id。
+// 空串 = 失败(调用方必须显式失败并给用户可见反馈,不能开一个指向空 id 的窗口)。
+fn spawnSession() -> String {
+    let resp = httpPOSTAuth("/api/sessions", "{\"action\":\"spawn\"}");
+    serde_json::from_str::<serde_json::Value>(&resp)
+        .ok()
+        .and_then(|v| v.get("id").and_then(|i| i.as_str()).map(|s| s.to_string()))
+        .unwrap_or_default()
+}
+
+// session_window_label 会话窗口的 label(纯函数):稳定可预测,便于关窗时反查。
+fn session_window_label(session_id: &str) -> String {
+    format!("gah-session-{session_id}")
+}
+
+// session_window_url 会话窗口要 navigate 的地址(纯函数)。
+// 形状 = 主窗口地址 + &session=<id>:前端启动时读 ?session= 绑定本窗口的会话(多窗口
+// 各看各的)。token 模式的凭据仍在 fragment(不发往服务端),由引导页换 cookie。
+fn session_window_url(session_id: &str) -> String {
+    let mut base = format!("{}{}&session={}", web_url(), GAH_SHELL_PATH, session_id);
+    let t = web_token();
+    if !t.is_empty() {
+        base.push('#');
+        base.push_str(&t);
+    }
+    base
+}
+
+// open_session_window 开一个绑定到新会话的窗口(托盘「新会话窗口」)。
+//
+// 三处必要的手艺:
+//   ① label 前缀固定为 gah-session- —— capability 的 windows 通配靠它;
+//   ② 不碰 main 窗口:关掉会话窗口只是关它自己,主窗口与 sidecar 照旧;
+//   ③ 导航护栏无需在这里重挂 —— navGuard 是**插件级** on_navigation,对每个 webview
+//      的每次导航都生效(主窗口之所以没挂,是因为它走 tauri.conf.json 的 app.windows
+//      声明、那条路径没有 Builder;插件路径才是全局的)。
+fn open_session_window(app: &AppHandle) {
+    let id = spawnSession();
+    if id.is_empty() {
+        // 拿不到会话 id 就**不开窗**:开一个 ?session= 的空窗口只会让人对着空白
+        // 界面猜发生了什么。给原生对话框(不依赖系统通知授权,见 notifyUpdate 的教训)。
+        shellLog(app, "新会话窗口: 向 sidecar 要会话失败(sidecar 未就绪?)");
+        app.dialog()
+            .message("没能新建会话(服务可能尚未就绪)。请稍后再试。")
+            .title("gah 新会话窗口")
+            .show(|_| {});
+        return;
+    }
+    {
+        let label = session_window_label(&id);
+        let url = session_window_url(&id);
+        // 上限:防止「点开一堆窗口」把本机 webview 吃满(每个窗口一个 SSE 连接 +
+        // 一份会话日志)。超限时明确拒绝并记日志,不做静默丢弃。
+        let open = app.webview_windows().len();
+        if open >= MAX_SESSION_WINDOWS {
+            let msg = format!("新会话窗口: 已达上限 {MAX_SESSION_WINDOWS} 个窗口");
+            shellLog(app, &msg);
+            app.dialog()
+                .message(format!(
+                    "已经开了 {MAX_SESSION_WINDOWS} 个会话窗口(上限)。先关掉一个再开。"
+                ))
+                .title("gah 新会话窗口")
+                .show(|_| {});
+            return;
+        }
+        match tauri::WebviewWindowBuilder::new(
+            app,
+            &label,
+            tauri::WebviewUrl::External(url.parse().expect("会话窗口地址必须可解析")),
+        )
+        .title("gah 会话")
+        .inner_size(1200.0, 800.0)
+        .build()
+        {
+            Ok(_) => shellLog(app, &format!("新会话窗口: 已开 {label} → {url}")),
+            Err(e) => shellLog(app, &format!("新会话窗口: 建窗失败 {label}({e})")),
+        }
     }
 }
 
@@ -1522,9 +1644,15 @@ fn main() {
             let quit_item = MenuItemBuilder::with_id("quit", "退出 gah")
                 .build(app)
                 .unwrap();
+            // 「新会话窗口」:多会话并行(第九十九批起 ?session= 是请求级参数)。
+            // 放在「显示窗口」旁边而不是设置里 —— 它是个高频的窗口操作。
+            let new_window_item = MenuItemBuilder::with_id("new_window", "新会话窗口…")
+                .build(app)
+                .unwrap();
             let menu = MenuBuilder::new(app)
                 .items(&[
                     &show_item,
+                    &new_window_item,
                     &autostart_item,
                     &check_item,
                     &notify_item,
@@ -1557,6 +1685,7 @@ fn main() {
                             let _ = w.set_focus();
                         }
                     }
+                    "new_window" => open_session_window(app),
                     "test_notify" => {
                         shellLog(app, "托盘: 测试系统通知");
                         notifyNative(app, "gah", "测试通知:看到这条说明系统通知通了。");
@@ -2196,6 +2325,81 @@ mod acl_tests {
         assert_eq!(
             acl, want,
             "app-commands.toml 的 commands.allow 与命令面不一致 —— 漏掉的命令前端调用会被 ACL 直接拒"
+        );
+    }
+}
+
+// —— 多会话窗口(第九十九/一百批):请求构造与 capability 覆盖面 ——
+//
+// 这些是纯函数与配置断言:真机行为(开窗、导航、SSE 按会话)由 CI 的 desktop-shell
+// 编译 + 端到端覆盖,这里只钉住「拼错就静默失效」的那几处 —— 尤其 capability 的
+// windows 列表:漏了 gah-session-* ⇒ 新窗口完全没有权限(前端 invoke 全废),
+// 而症状与原因隔着好几层,不钉住必然复发。
+#[cfg(test)]
+mod session_window_tests {
+    use super::*;
+
+    #[test]
+    fn post_request_carries_method_length_and_body() {
+        let req = buildPostRequest("/api/sessions", "{\"action\":\"spawn\"}", "");
+        assert!(req.starts_with("POST /api/sessions HTTP/1.1\r\n"), "{req}");
+        assert!(req.contains("Content-Type: application/json\r\n"), "{req}");
+        // Content-Length 必须按**字节**算:中文 body 下按 rune 算会短少,服务端读不全。
+        let body = "{\"name\":\"会话\"}";
+        let want_len = body.len();
+        let req2 = buildPostRequest("/x", body, "");
+        assert!(
+            req2.contains(&format!("Content-Length: {want_len}\r\n")),
+            "Content-Length 应为字节数({want_len}): {req2}"
+        );
+        assert!(req2.ends_with(body), "body 必须原样收尾: {req2}");
+    }
+
+    #[test]
+    fn post_request_includes_cookie_when_given() {
+        let req = buildPostRequest("/api/sessions", "{}", "Cookie: gah_token=t123\r\n");
+        assert!(req.contains("Cookie: gah_token=t123\r\n"), "{req}");
+    }
+
+    #[test]
+    fn session_window_label_is_prefixed_and_stable() {
+        assert_eq!(
+            session_window_label("20260930-101010"),
+            "gah-session-20260930-101010"
+        );
+        // 同一 id 必须给出同一 label(capability 通配与关窗反查都靠这个稳定性)。
+        assert_eq!(
+            session_window_label("abc"),
+            session_window_label("abc"),
+            "label 必须可预测"
+        );
+    }
+
+    #[test]
+    fn session_window_url_carries_shell_flag_and_session() {
+        let u = session_window_url("20260930-101010");
+        // 无 token 模式(本测试进程未设 GAH_WEB_TOKEN):应带 ?shell=desktop 与 &session=
+        assert!(u.contains("?shell=desktop"), "缺 shell 标记: {u}");
+        assert!(u.contains("&session=20260930-101010"), "缺 session: {u}");
+    }
+
+    /// capability 必须覆盖会话窗口标签 —— 漏了就是「新窗口里 invoke 全废」,
+    /// 而错误只出现在真机上(源码两侧都看起来对)。
+    #[test]
+    fn capability_covers_session_window_labels() {
+        let cap = include_str!("../capabilities/default.json");
+        assert!(
+            cap.contains("gah-session-*"),
+            "capabilities/default.json 的 windows 必须含 gah-session-* 通配,否则会话窗口没有权限: {cap}"
+        );
+    }
+
+    #[test]
+    fn session_window_limit_is_bounded() {
+        // 上限存在的意义就是「有界」:每个窗口 = 一个 webview + 一条 SSE + 一份日志实例。
+        assert!(
+            (1..=16).contains(&MAX_SESSION_WINDOWS),
+            "上限应合理: {MAX_SESSION_WINDOWS}"
         );
     }
 }
