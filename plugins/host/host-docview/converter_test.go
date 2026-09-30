@@ -444,29 +444,11 @@ func TestServiceRasterCachePath(t *testing.T) {
 
 // 条目 77:真 exec 路径(PATH 探测 → 真进程 → argv → 退出码 → 产物发现/缓存落位)。
 // 用 PATH 前置**假 soffice** 覆盖,不装 ≈700MB 的 LibreOffice:契约(参数/命名/退出语义)照查。
+// 假 soffice = 本测试二进制的复制品(见 converter_shim_test.go)—— 跨平台同一份实现,Windows 不再 skip。
 func TestConverterRealExecPATHShim(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		// 两个不可移的直接原因:① 无扩展名 shim 不会被 Hit —— Windows 的 LookPath 按 PATHEXT
-		// 解析,只认 .exe/.com/.bat/.cmd;② 本用例覆盖的是 sh 脚本契约(argv 日志格式、退出码、
-		// 产物命名),换成 cmd 版就得再写一套参数解析与日志格式 ⇒ 断言失去同构意义。
-		// 探测段本身走 exec.LookPath(标准库,跨平台语义一致),已由本包其它用例覆盖。
-		t.Skip("真 exec 契约用 sh shim 覆盖;Windows 需 cmd 版 shim(已登记待办)")
-	}
 	shimDir, logFile := t.TempDir(), filepath.Join(t.TempDir(), "argv.log")
-	script := "#!/bin/sh\n" +
-		"printf '%s\\n' \"$*\" >> '" + logFile + "'\n" +
-		"out=''; in=''\n" +
-		"while [ $# -gt 0 ]; do if [ \"$1\" = '--outdir' ]; then out=\"$2\"; fi; in=\"$1\"; shift; done\n" +
-		"base=$(basename \"$in\"); base=${base%.*}\n" +
-		"printf '%%PDF-1.4\\n' > \"$out/$base.pdf\"\n" +
-		"exit 0\n"
-	writeShim := func(body string) {
-		t.Helper()
-		if err := os.WriteFile(filepath.Join(shimDir, "soffice"), []byte(body), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	writeShim(script)
+	installSofficeShim(t, shimDir)
+	writeShimSpec(t, shimDir, shimSpec{Log: logFile})
 	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	conv := newConverter(true, t.TempDir())
@@ -519,19 +501,19 @@ func TestConverterRealExecPATHShim(t *testing.T) {
 		t.Error("源文件 mtime 变化后缓存键应变化")
 	}
 	// ④ 退出码非 0 → 显式错误(不静默降级)
-	writeShim("#!/bin/sh\nexit 3\n")
+	writeShimSpec(t, shimDir, shimSpec{Log: logFile, Exit: 3})
 	if _, err := conv.convertToPDF(context.Background(), src, fi); err == nil ||
 		!strings.Contains(err.Error(), "soffice 转换失败") {
 		t.Errorf("非 0 退出应显式报错,得 %v", err)
 	}
 	// ⑤ 失败原因要透出(stderr 尾部进错误文本,否则用户只看到"转换失败"没法排查)
-	writeShim("#!/bin/sh\necho 'Error: source file could not be loaded' >&2\nexit 1\n")
+	writeShimSpec(t, shimDir, shimSpec{Log: logFile, Exit: 1, Stderr: "Error: source file could not be loaded"})
 	if _, err := conv.convertToPDF(context.Background(), src, fi); err == nil ||
 		!strings.Contains(err.Error(), "could not be loaded") {
 		t.Errorf("转换器 stderr 应透出到错误文本,得 %v", err)
 	}
 	// ⑥ 退出码 0 但没产出 → 显式错误(不当作成功)
-	writeShim("#!/bin/sh\nexit 0\n")
+	writeShimSpec(t, shimDir, shimSpec{Log: logFile, SkipProduce: true})
 	if _, err := conv.convertToPDF(context.Background(), src, fi); err == nil ||
 		!strings.Contains(err.Error(), "未产出 PDF") {
 		t.Errorf("无产物应显式报错,得 %v", err)

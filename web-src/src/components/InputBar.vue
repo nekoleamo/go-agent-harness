@@ -99,6 +99,41 @@ function onDragOver(e: DragEvent): void {
   dragging.value = true
   e.dataTransfer!.dropEffect = 'copy'
 }
+
+// —— 全窗拖放落点 ——
+// 此前只有落在输入外壳上才收附件;拖到窗口别处(会话流/侧栏/停靠区)时交给浏览器默认动作
+// —— 它直接把该文件**导航打开**,当前会话界面被顶掉,用户得退回来。现在任意落点都收。
+const winDrag = ref(false)
+
+// dataTransfer.types 是拖拽期唯一可用的清单(files 列表要到 drop 才填);
+// 只有含 'Files' 才算文件拖拽 —— 拖选中文本进来不该弹附件提示。
+function dragHasFiles(e: DragEvent): boolean {
+  const t = e.dataTransfer?.types
+  return !!t && Array.from(t).includes('Files')
+}
+function onWinDragOver(e: DragEvent): void {
+  if (!dragHasFiles(e)) return
+  // defaultPrevented = 输入外壳已经处理过(它有自己的一圈高亮),不叠全窗提示
+  if (e.defaultPrevented) {
+    winDrag.value = false
+    return
+  }
+  e.preventDefault() // 缺它浏览器会在 drop 时执行默认动作(打开文件)
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
+  winDrag.value = true
+}
+function onWinDragLeave(e: DragEvent): void {
+  // relatedTarget 为 null / 已不在文档内 = 指针真离开了窗口(窗口内元素间移动时不为 null)
+  const to = e.relatedTarget as Node | null
+  if (!to || !document.contains(to)) winDrag.value = false
+}
+function onWinDrop(e: DragEvent): void {
+  winDrag.value = false
+  if (e.defaultPrevented) return // 输入外壳已收(它的 drop 处理器阻止了冒泡到这里的重复收集)
+  if (!dragHasFiles(e)) return
+  e.preventDefault()
+  if (e.dataTransfer?.files) collectFiles(Array.from(e.dataTransfer.files))
+}
 function onPaste(e: ClipboardEvent): void {
   const items = e.clipboardData?.items ?? []
   const imgs: File[] = []
@@ -415,8 +450,17 @@ onMounted(() => {
   api.commands().then((c) => (cmds.value = c)).catch(() => undefined)
   // 会话列表在别处变更(侧栏删除等)时关闭抽屉,避免陈旧缓存(下次打开重拉)
   window.addEventListener('gah:sessions-changed', onSessionsChanged)
+  // 全窗拖放落点(输入区常驻,故监听挂在它身上即可)
+  window.addEventListener('dragover', onWinDragOver)
+  window.addEventListener('dragleave', onWinDragLeave)
+  window.addEventListener('drop', onWinDrop)
 })
 onUnmounted(() => window.removeEventListener('gah:sessions-changed', onSessionsChanged))
+onUnmounted(() => {
+  window.removeEventListener('dragover', onWinDragOver)
+  window.removeEventListener('dragleave', onWinDragLeave)
+  window.removeEventListener('drop', onWinDrop)
+})
 onUnmounted(() => {
   if (attErrTimer) clearTimeout(attErrTimer)
 })
@@ -429,6 +473,15 @@ defineExpose({ cycleThinking, cycleSandbox })
 
 <template>
   <div class="shell" :class="{ centered, dragging }" @dragover.prevent="onDragOver" @dragleave="dragging = false" @drop.prevent="onDrop">
+    <!-- 全窗拖放提示(Teleport 到 body:面板的 overflow/transform 包含块裁不掉它;拖动中才挂载) -->
+    <Teleport to="body">
+      <div v-if="winDrag" class="windrop" aria-hidden="true">
+        <div class="wd-card">
+          <div class="wd-title">松开即添加为附件</div>
+          <div class="wd-hint">图片或文件 · 最多 {{ MAX_ATT }} 个 · 单个不超过 {{ fmtSize(MAX_ATT_BYTES) }}</div>
+        </div>
+      </div>
+    </Teleport>
     <!-- / 命令提示(浮于外壳上方) -->
     <div v-if="hints.length || levelFree" class="float">
       <div
@@ -682,6 +735,37 @@ defineExpose({ cycleThinking, cycleSandbox })
 .shell.dragging {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
+}
+/* 全窗拖放提示(z-index 75:压住普通面板 70,让位于审批条 80 / 弹层 90;
+   pointer-events:none 保证 drop 的落点判定不受它干扰;不给它加入场动效 ——
+   拖动中要的是即时反馈,过渡会让「松手前看得见」变成看运气) */
+.windrop {
+  position: fixed;
+  inset: 0;
+  z-index: 75;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--overlay);
+  pointer-events: none;
+}
+.wd-card {
+  padding: 16px 26px;
+  border: 1px dashed var(--accent);
+  border-radius: var(--r-card);
+  background: var(--surface);
+  box-shadow: var(--shadow-pop);
+  text-align: center;
+}
+.wd-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.wd-hint {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--fg-dim);
 }
 .hidden-file {
   display: none;

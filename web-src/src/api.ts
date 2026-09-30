@@ -6,19 +6,43 @@ const json = {
   'Content-Type': 'application/json',
 }
 
+// errText 把失败响应体读成人话:后端两种契约并存 —— JSON {error}(新写入口,如 /api/models 的 501)
+// 与纯文本(http.Error 的存量)。直接透传 JSON 原文会把 {"error":"…"} 这种开发者形状甩给用户。
+function errText(body: string): string {
+  const s = body.trim()
+  if (!s) return ''
+  if (s.startsWith('{')) {
+    try {
+      const v = JSON.parse(s) as { error?: unknown }
+      if (typeof v.error === 'string' && v.error) return v.error
+    } catch {
+      /* 不是合法 JSON:按纯文本处理 */
+    }
+  }
+  return s
+}
+
+// snippet 压成单行短片段(成功码却不是 JSON 时,得说清"拿到的到底是什么")
+function snippet(s: string, max = 120): string {
+  const one = s.replace(/\s+/g, ' ').trim()
+  return one.length <= max ? one : one.slice(0, max) + '…'
+}
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(BASE + path, init)
+  const body = await resp.text()
   if (!resp.ok) {
-    let msg = resp.statusText
-    try {
-      const body = await resp.text()
-      if (body) msg = body
-    } catch {
-      /* ignore */
-    }
-    throw new Error(`HTTP ${resp.status}: ${msg}`)
+    throw new Error(`HTTP ${resp.status}: ${errText(body) || resp.statusText || '请求失败'}`)
   }
-  return (await resp.json()) as T
+  // 204 / 空体:契约上就是"无返回"(调用方按 void 用)
+  if (!body) return undefined as T
+  try {
+    return JSON.parse(body) as T
+  } catch {
+    // 成功码却不是 JSON(代理/中间层的错误页、静态兜底返回 HTML):说清是什么形状
+    // —— 别抛 "Unexpected token '<'…",那句对用户与排查都没有信息量。
+    throw new Error(`HTTP ${resp.status}: 响应不是 JSON(${snippet(body) || '空体'})`)
+  }
 }
 
 export const api = {

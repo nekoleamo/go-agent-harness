@@ -2017,6 +2017,73 @@ test('设置面板:导航跳转途中高亮不落到途经段', { skip: skip && 
   }
 })
 
+// 拖放落点:此前只有落在输入外壳上才收附件 —— 拖到窗口别处(会话流/侧栏/停靠区)时交给浏览器
+// 默认动作,它直接把该文件**导航打开**,当前会话界面被顶掉。这条用真浏览器 + 合成 DataTransfer
+// 钉住三件事:① 落到非输入区 → 出现全窗提示、松手后附件进清单、window 层 drop 被 preventDefault;
+// ② 落到输入外壳 → 只收一次(输入区自己的 drop 处理与全窗落点不得各收一遍);
+// ③ 拖选中文本(非文件)→ 不弹提示也不收。
+test('拖放:窗口任意位置都是附件落点(不再被浏览器导航打开)', { skip: skip && skipWhy }, async (t) => {
+  const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+  let page = null
+  const names = () => page.$$eval('.att-name', (els) => els.map((e) => e.textContent))
+  const fileDT = (name) =>
+    page.evaluateHandle((n) => {
+      const d = new DataTransfer()
+      d.items.add(new File(['hello'], n, { type: 'text/plain' }))
+      return d
+    }, name)
+  try {
+    page = await open(ctx, apiStub, docks[1].dock)
+    // 记录 window 层 drop 的 defaultPrevented —— 「不再导航打开」在合成事件下的可观测代理
+    await page.evaluate(() => {
+      window.__drops = []
+      window.addEventListener('drop', (e) =>
+        window.__drops.push({ prevented: e.defaultPrevented, files: e.dataTransfer?.files?.length ?? 0 }),
+      )
+    })
+
+    // ① 落到会话流(非输入区)
+    const dt1 = await fileDT('note.txt')
+    await page.dispatchEvent('.stream-slot', 'dragover', { dataTransfer: dt1 })
+    await page.waitForSelector('.windrop')
+    assert.deepEqual(await names(), [], '拖动中不该提前收附件')
+    await page.dispatchEvent('.stream-slot', 'drop', { dataTransfer: dt1 })
+    await page.waitForFunction(() => !document.querySelector('.windrop'))
+    assert.deepEqual(await names(), ['note.txt'], '拖到非输入区也要收到附件')
+    assert.deepEqual(
+      await page.evaluate(() => window.__drops),
+      [{ prevented: true, files: 1 }],
+      'window 层 drop 必须 preventDefault(否则浏览器会导航打开该文件)',
+    )
+
+    // ② 落到输入外壳:输入区自己的 drop 已处理 ⇒ 全窗监听不得再收一遍
+    const dt2 = await fileDT('second.txt')
+    await page.dispatchEvent('.shell', 'dragover', { dataTransfer: dt2 })
+    await page.waitForTimeout(80)
+    assert.equal(await page.$('.windrop'), null, '落在输入外壳内不该再叠全窗提示(它有自己的一圈高亮)')
+    await page.dispatchEvent('.shell', 'drop', { dataTransfer: dt2 })
+    await page.waitForTimeout(80)
+    assert.deepEqual(await names(), ['note.txt', 'second.txt'], '输入外壳落点只应收集一次')
+
+    // ③ 拖选中文本(非文件)
+    const textDT = await page.evaluateHandle(() => {
+      const d = new DataTransfer()
+      d.setData('text/plain', 'just text')
+      return d
+    })
+    await page.dispatchEvent('.stream-slot', 'dragover', { dataTransfer: textDT })
+    await page.dispatchEvent('.stream-slot', 'drop', { dataTransfer: textDT })
+    await page.waitForTimeout(80)
+    assert.equal(await page.$('.windrop'), null, '非文件拖拽不该弹附件提示')
+    assert.deepEqual(await names(), ['note.txt', 'second.txt'], '非文件拖拽不该收附件')
+  } catch (e) {
+    await shoot(page, t.name)
+    throw e
+  } finally {
+    await ctx.close()
+  }
+})
+
 // 仪器自检:护栏本身失效是最危险的失败模式(全绿但什么都没测)。这里注入一个与 2026-09-22 事故
 // 同形的越界元素(侧栏末尾 height:100% —— `.sidebar`/`.app` 无 overflow,故必须被检测到),
 // 断言不变量**必须开火**;删掉后必须恢复干净。

@@ -135,3 +135,50 @@ test('sessionExportName:与后端 Content-Disposition 同名', () => {
   assert.equal(sessionExportName('s1', 'html'), 'session-s1.html')
   assert.equal(sessionExportName('', 'jsonl'), 'session-main.jsonl')
 })
+
+// —— 错误体契约(第九十六批):后端两种形状并存,前端必须都读成人话 ——
+// 背景:/api/models 这类未实现端点的 501 从前是纯文本,前端只能把原文当消息;
+// 后端改成 JSON {error} 后,若前端不认识该形状,就会把 {"error":"…"} 原样甩给用户。
+test('req:非 2xx 的 JSON {error} 读成人话,不透出 JSON 原文', async () => {
+  const restore = stubFetch(
+    () => new Response(JSON.stringify({ error: '当前适配器不支持列举模型(可手动设置): 列举接口未实现' }), { status: 501 }),
+  )
+  try {
+    await assert.rejects(
+      () => api.models(),
+      (e: Error) => {
+        assert.match(e.message, /^HTTP 501: 当前适配器不支持列举模型/)
+        assert.ok(!e.message.includes('{'), `不该把 JSON 原文透出: ${e.message}`)
+        return true
+      },
+    )
+  } finally {
+    restore()
+  }
+})
+
+test('req:纯文本错误体仍原样透出(存量 http.Error 端点)', async () => {
+  const restore = stubFetch(() => new Response('文档预览未装配(缺 ctx.doc / host-docview)', { status: 503 }))
+  try {
+    await assert.rejects(() => api.models(), /HTTP 503: 文档预览未装配/)
+  } finally {
+    restore()
+  }
+})
+
+test('req:成功码却不是 JSON 时说清形状(而不是 Unexpected token)', async () => {
+  const restore = stubFetch(() => new Response('<!DOCTYPE html><html><body>proxy error</body></html>', { status: 200 }))
+  try {
+    await assert.rejects(
+      () => api.models(),
+      (e: Error) => {
+        assert.match(e.message, /HTTP 200: 响应不是 JSON/)
+        assert.ok(/proxy error/.test(e.message), `应带原文片段便于排查: ${e.message}`)
+        assert.ok(!/Unexpected token/.test(e.message))
+        return true
+      },
+    )
+  } finally {
+    restore()
+  }
+})

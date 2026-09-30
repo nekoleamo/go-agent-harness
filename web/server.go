@@ -1863,6 +1863,14 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// writeErr 写 JSON 错误体(第九十六批):前端 req() 优先解析 {error} —— 用 http.Error 的纯文本
+// 它只能把整段原文当消息,而 JSON 体又会被原样甩出来({"error":"…"} 是开发者形状)。
+// 本批只收敛「模型列举 / 多 provider 能力未实现」这族**用户会看到**的 501;其余 http.Error
+// 逐点收敛是另一笔账(前端已能回退纯文本,不会报 JSON 解析错)。
+func writeErr(w http.ResponseWriter, code int, msg string) {
+	writeJSON(w, code, map[string]any{"error": msg})
+}
+
 // —— 通用能力 REST 面(为前端增删改铺路;可选服务缺失显式 503/501) ——
 
 // handleTools 工具清单(GET /api/tools):模型可见定义(name/desc/schema)。
@@ -2231,7 +2239,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	}
 	models, err := s.llm.ListModels()
 	if err != nil {
-		http.Error(w, "当前适配器不支持列举模型(可手动设置): "+err.Error(), http.StatusNotImplemented)
+		writeErr(w, http.StatusNotImplemented, "当前适配器不支持列举模型(可手动设置): "+err.Error())
 		return
 	}
 	if models == nil {
@@ -2244,7 +2252,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleProviders(w http.ResponseWriter, _ *http.Request) {
 	mp, ok := s.llm.(sdk.MultiProviderService)
 	if !ok {
-		http.Error(w, "多 provider 能力未实现(MultiProviderService)", http.StatusNotImplemented)
+		writeErr(w, http.StatusNotImplemented, "多 provider 能力未实现(MultiProviderService)")
 		return
 	}
 	// 不回传明文密钥(设置面板只需 name/base_url/model/active;编辑时手填新 key)。
@@ -2274,7 +2282,7 @@ func maskKey(k string) string {
 func (s *Server) handleProviderAdd(w http.ResponseWriter, r *http.Request) {
 	mp, ok := s.llm.(sdk.MultiProviderService)
 	if !ok {
-		http.Error(w, "多 provider 能力未实现(MultiProviderService)", http.StatusNotImplemented)
+		writeErr(w, http.StatusNotImplemented, "多 provider 能力未实现(MultiProviderService)")
 		return
 	}
 	var req struct {
@@ -2302,7 +2310,7 @@ func (s *Server) handleProviderAdd(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleProviderUse(w http.ResponseWriter, r *http.Request) {
 	mp, ok := s.llm.(sdk.MultiProviderService)
 	if !ok {
-		http.Error(w, "多 provider 能力未实现(MultiProviderService)", http.StatusNotImplemented)
+		writeErr(w, http.StatusNotImplemented, "多 provider 能力未实现(MultiProviderService)")
 		return
 	}
 	if err := mp.SetActiveProvider(r.PathValue("name")); err != nil {
@@ -2318,7 +2326,7 @@ func (s *Server) handleProviderUse(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleProviderDelete(w http.ResponseWriter, r *http.Request) {
 	mp, ok := s.llm.(sdk.MultiProviderService)
 	if !ok {
-		http.Error(w, "多 provider 能力未实现(MultiProviderService)", http.StatusNotImplemented)
+		writeErr(w, http.StatusNotImplemented, "多 provider 能力未实现(MultiProviderService)")
 		return
 	}
 	if err := mp.RemoveProvider(r.PathValue("name")); err != nil {

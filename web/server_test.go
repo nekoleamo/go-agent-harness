@@ -1327,6 +1327,44 @@ func (e *errListingLLM) ListAllModels() []sdk.ProviderModelList {
 	}
 }
 
+// modelsErrLLM 单适配器 ListModels 报错(测 /api/models 的 501 响应形状)。
+type modelsErrLLM struct{ stubLLM }
+
+func (*modelsErrLLM) ListModels() ([]sdk.ModelInfo, error) {
+	return nil, errors.New("列举接口未实现")
+}
+
+// TestModelsUnsupportedErrShape /api/models 在适配器不支持列举时回 501 + **JSON {error}**
+// (第九十六批):前端 req() 优先解析该形状 —— 纯文本时代它只能把整段原文当消息。
+// 这条同时钉住「别退回去用 http.Error」:退回去 ⇒ Content-Type 变 text/plain、body 不再是 JSON。
+func TestModelsUnsupportedErrShape(t *testing.T) {
+	s, _ := newTestServer()
+	s.llm = &modelsErrLLM{}
+	hs := httptest.NewServer(s.handler())
+	defer hs.Close()
+
+	r, err := http.Get(hs.URL + "/api/models")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Body.Close()
+	if r.StatusCode != http.StatusNotImplemented {
+		t.Fatalf("不支持列举应 501,得 %d", r.StatusCode)
+	}
+	if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Fatalf("错误体应为 JSON(前端 req() 按该契约解析),得 Content-Type %q", ct)
+	}
+	var v struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&v); err != nil {
+		t.Fatalf("错误体不是合法 JSON: %v", err)
+	}
+	if !strings.Contains(v.Error, "当前适配器不支持列举模型") || !strings.Contains(v.Error, "列举接口未实现") {
+		t.Fatalf("错误文案应含能力缺失与原因: %q", v.Error)
+	}
+}
+
 // TestModelsAllErrString /api/models?all=1 回传可读的失败原因(而非 `{}`)、Models 归一为空数组、
 // 错误文案按 rune 截断(W3 首启自检靠它给 401/404/DNS 人话提示)。
 func TestModelsAllErrString(t *testing.T) {

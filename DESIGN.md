@@ -17,6 +17,10 @@
 **2026-09-30 第九十四批（覆盖率补强 · 只补测不降门）**：把第八十八批盘点里的 A 类剩余项「覆盖率余量包」按纪律补完（**不降门、只补测**，补的是**行为契约**而不是凑数字）：`plugins/host/host-roles` 命令面 69.9%→95%+（包 79.8→**90.4**）、`internal/prefs` 71.6→**86.4**、`cmd/gah` 55.7→**57.9**（`main()` 只能由子进程跑到，子进程不写 cover 计数器 ⇒ 天花板在此，与 `tool-shell@linux`/`kernelsandbox@linux` 同一盲区）；棘轮按实测上调（prefs 66→82 / host-roles 78→87 / cmd-gah 50→56），总覆盖率 80.6% → **80.9%**；顺带修一个真 papercut —— `gah -version` 原本排在 TTY 护栏之后，`gah -version | cat`（stdin 非 TTY）会报「TUI 需要交互式终端」，已挪到护栏之前（反向验证 RV13）。见 §14.1 第九十四批。
 **2026-09-29 第九十三批（角色导出/导入 · 单文件角色包;CI run `36607426580` 五 job 全绿）**：阶段 2 第四项落地 —— 角色从此能**打包分享**（一个 zip 装下定义 + 工作规则 + 私有技能，在别的 gah 上导入即复现）。新包 `internal/rolepack`（导出/导入/清单/`Inspect`，同时依赖 `internal/roles` 与 `internal/skills` —— 放这两个包里都会成环）；包格式 `gah-role.json`（format/version/原始 ID/导出时间）+ `role.yaml`（**原样搬运**，不重排不丢注释）+ `AGENTS.md` + `skills/<名>/SKILL.md`，写入顺序固定 ⇒ 确定性字节；解包**白名单式**（只认这四种条目名，磁盘路径由解析出的名字重新拼 ⇒ 穿越在构造上不可能，段级再禁 `.`/`..`/空段/反斜杠；三层上限：包 8 MiB / 解包 32 MiB / 512 条目，单项沿用本地写盘上限）；导入默认**同名拒绝**（`force` 才覆盖且旧份先整份进 `roles/.trash` 可恢复，**当前角色一律拒覆盖**，写入中途失败整体回滚并如实报回滚结果）；未知定义键**拒绝而不静默丢字段**（`roles.ParseDefinition(id, raw, strictKeys)`，白名单 = `roleFile` 的 yaml tag 全集反射取）；两条入口一份实现：`/role export|import` 与 `GET/POST /api/rolepack`（**独立前缀** —— 角色 id 的合法值含 `export`/`import`，挂 `/api/roles/{id}` 下会被通配吃，第八十三批同一课），面板角色段加「导出」（浏览器下载 / 桌面壳用原生目录选择器后交服务端写文件，因 WebView 无下载通道）与「⤒ 导入」（文件上传 + 「导入为」+ 覆盖先问）；顺带修一个真 bug：回收站条目名精度从秒提到**毫秒**（`/role rm x` 后立刻 `force` 覆盖会在同一秒落两条同名条目 ⇒ `rename` 报 `file exists`，删除在"马上重来"时直接失败），解析兼容旧的秒精度条目名（不弄丢老用户的回收站）。见 §14.1 第九十三批。
 
+**2026-09-30 第九十五批（全窗拖放落点 · web）**：把未实施表里的「拖放非附件文件到窗口的其它落点」关掉 —— 此前附件落点只有输入外壳，拖到会话流/侧栏/停靠区时浏览器默认动作**直接把文件导航打开**（当前会话界面被顶掉）；现在 window 级落点接管（`dragover`/`drop` 双 `preventDefault` 拦默认动作，输入外壳落点靠 `defaultPrevented` 早退不重复收集），并给全窗遮罩提示（Teleport + `pointer-events:none`，拖动中即时出现、无动效）；真浏览器用例（合成 DataTransfer：任意落点收附件 / 输入区只收一次 / 非文件不弹提示）；边界与测试见 §14.1 第九十五批。
+**2026-09-30 第九十六批（错误体契约收敛 · models/providers 501 → JSON `{error}`）**：把未实施表那条关掉 —— 复查发现「前端报 JSON 解析错」已被 `req()` 的原文回退盖住，但契约仍散：同族错误有的纯文本有的 JSON、前端会把 `{"error":"…"}` 原样甩给用户、**成功码 + 非 JSON**（代理错误页 / 静态兜底 HTML）仍抛 `Unexpected token '<'`；本批新增后端 `writeErr`（`/api/models` 501 + 4 处「多 provider 能力未实现」走它），前端 `req()` 改为先 `text()` 再解析（JSON `error` → 纯文本 → `statusText`；2xx 空体 → `undefined`；2xx 非 JSON → 「响应不是 JSON(片段)」）；**只收敛这族用户可见 501**，其余 `http.Error` 逐点收敛是另一笔账（前端已有回退，不假装已全 JSON 化）。见 §14.1 第九十六批。
+**2026-09-30 第九十七批（真 exec 契约跨平台化 · host-docview 假 soffice）**：把未实施清单那条关掉 —— 假 `soffice` 从 `#!/bin/sh` 脚本改成「**本测试二进制的复制品**」：`TestMain` 按二进制基名认领 shim 身份（扮转换器后直接 `os.Exit`，绝不落回 `m.Run()` 以免递归跑整包），行为由**二进制同目录的 `shim.json`** 控制（不走 env —— `runExternal` 用 `SanitizedChildEnv()` 清洗子进程环境）；测试侧复制自身为 `soffice`/`soffice.exe` ⇒ **Windows 不再 skip**，argv 形状 / 产物命名 / 退出语义三断言与 darwin、linux 同构。本地反向验证（把 spec 落点改名 ⇒ `exit status 9`，证明 shim 真被 exec 且 spec 是唯一行为输入）+ `GOOS=windows` 交叉编译通过；**Windows 运行时语义仍待 CI `test-windows` 确认**（诚实登记）。见 §14.1 第九十七批。
+
 ## 0. 项目目的
 
 **排除 dsh 因 Node.js 带来的依赖:以单一静态二进制交付全部 harness 能力,仅通过二进制部署即可启动,不依赖其余环境。**
@@ -970,6 +974,56 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 
 **测试**:`web/roles_test.go` 新增 3 项(装配**真实** host-roles/host-skills 走懒解析路径:`/api/roles` 未装配 503 且 state 不带 role、角色全流程 CRUD + 部分更新语义 + 当前角色改名跟随 + 删当前角色被拒 + `.trash` 回收站、技能库共享/私有/覆盖/上限/路径穿越/回收站后不再被索引);`web` 包 `go test` **127 通过**;前端 `npm test` 168 通过、`vue-tsc` 0 错、`test:layout` **39 通过 / 0 失败**(1 skip = 无浏览器时的跳过说明用例);全库 `go test ./... -race` 63 包全绿 + sdk 模块绿;`scripts/coverage-check.sh` **COVERAGE_OK**(`web` 79.1% ≥ 棘轮 68;新增 `internal/skills 75` 棘轮,实测 80.2%;总覆盖 80.1%)。
 
+### 第九十七批 · 真 exec 契约跨平台化（host-docview 假 soffice）（2026-09-30）
+
+**背景**：未实施清单那条「Windows 上真 exec 契约无等价覆盖」—— `TestConverterRealExecPATHShim` 用 `#!/bin/sh` 脚本当假 `soffice`，Windows 只能 skip（`LookPath` 按 PATHEXT 只认 `.exe/.com/.bat/.cmd`；换 cmd 版就得重写一套参数解析与日志格式，断言失去同构意义）。2026-09-19 的 CI run 里它在 Windows 上是**真红**的（那时还没有 skip）。
+
+**做法**：假 `soffice` 从「脚本」换成「**本测试二进制的复制品**」（新增 `plugins/host/host-docview/converter_shim_test.go`）：
+
+- `TestMain` 双身份：二进制基名（去掉 `.exe`）是 `soffice` ⇒ 扮转换器并 `os.Exit`，**绝不落回 `m.Run()`**（否则复制品会把整个包再跑一遍 = 递归）；
+- 行为（argv 日志落点 / 退出码 / stderr / 是否产出）写在**二进制同目录的 `shim.json`** —— 不走环境变量，因为 `runExternal` 用 `sdk.SanitizedChildEnv()` 清洗子进程环境，env 传不进被 exec 的 shim；
+- 测试侧 `installSofficeShim` 复制自身并命名 `soffice`（Windows 加 `.exe`），`writeShimSpec` 换行为：只改数据、不改二进制；
+- **跨平台同一份实现**：没有新增 `.bat`，`argv` 参数形状 / 产物命名 / 退出语义三条断言与 darwin、linux 完全同构。
+
+**验证**（本地为 darwin）：
+
+- 全包 `go test ./plugins/host/host-docview/` 绿；
+- **反向验证**（临时把 `writeShimSpec` 的落点改成另一个文件名跑一次，跑完恢复）：报 `真 exec 转换应成功: soffice 转换失败: exit status 9` —— 证明 ① shim 二进制**真被 exec**（不是被短路）② 身份判定生效（返回 9 而非递归跑测试）③ `shim.json` 是唯一行为输入 ④ 退出码契约真的从子进程传回；
+- `GOOS=windows go test -c ./plugins/host/host-docview/` 交叉编译测试二进制通过（18.4 MB）；
+- Windows 的**运行时**语义（`LookPath` 按 PATHEXT 命中 `soffice.exe`、复制正在运行的 exe、绝对路径 `CreateProcess`）仍需 CI `test-windows` 确认 —— 本地无法验证，诚实登记（推送后盯该 job）。
+
+### 第九十六批 · 错误体契约收敛（models / providers 的 501 → JSON `{error}`）（2026-09-30）
+
+**背景**：未实施表里那条「`/api/models` 不支持列举时返 501 + 纯文本」——它登记时的症状是「前端报 JSON 解析错误而非服务端人话」。复查发现 `req()` 后来已补上「失败时读原文当消息」，所以人话能显示，但**契约仍是散的**：同一族错误有的走 `http.Error` 纯文本、有的走 `writeJSON`；前端把 JSON 体当纯文本读时会把 `{"error":"…"}` 这种开发者形状原样甩给用户；而**成功码 + 非 JSON**（代理错误页 / 静态兜底返回 HTML）仍会抛 `Unexpected token '<'` —— 那句对用户与排查都没有信息量。
+
+| 项 | 做法 |
+|---|---|
+| 后端写入口 | 新增 `writeErr(w, code, msg)`（`writeJSON` 上的一层薄封装，body = `{"error": msg}`）；`/api/models` 的 501 与 4 处「多 provider 能力未实现」的 501 改走它 |
+| 前端读入口 | `req()` 改为「先 `text()` 再解析」：非 2xx → 优先取 JSON 的 `error` 字段，回退纯文本，再回退 `statusText`；2xx 空体 → `undefined`（契约上的无返回）；2xx 非 JSON → 抛「响应不是 JSON(片段)」而不是 JSON 解析器的原话 |
+| 范围 | **只收敛这族「用户会看到的」 501** —— web 包里还有大量 `http.Error`（doc / guard / mcp / rolepack…），逐点收敛是另一笔账；前端回退纯文本已在，不会因此报解析错（诚实登记，不假装「错误已全 JSON 化」） |
+
+**测试**：`web/server_test.go` 新增 `TestModelsUnsupportedErrShape`（501 + `Content-Type` 是 JSON + body 解出 `error` 且含能力缺失与原因 —— 退回 `http.Error` 即红）；`web-src/src/api.test.ts` 新增 3 条（JSON `{error}` 读成人话且不透出 JSON 原文 / 纯文本错误体仍原样透出 / 2xx 非 JSON 说清形状且不带 `Unexpected token`）。读数：`go vet ./web/` 干净、核心包 `go test -race` **39.4s 全绿**、`vue-tsc --noEmit` 0 错、`npm test` **180 通过**（原 177）、`npm run test:layout` **60 用例 / 59 通过 / 0 失败 / 1 skip**。
+
+### 第九十五批 · 全窗拖放落点（web）（2026-09-30）
+
+**背景**：未实施表里的「拖放非附件文件到窗口的其它落点」——Web 附件入口只有一个落点（`InputBar` 的 `.shell` 外壳），拖到会话流 / 侧栏 / 停靠区时没人接管，交给浏览器默认动作：它**直接导航打开该文件**，当前会话界面被顶掉。所以这不是「少一个便利入口」，是「一次误拖丢当前界面」。
+
+| 项 | 做法 | 为什么 |
+|---|---|---|
+| 落点 | `InputBar` 挂 window 级 `dragover` / `dragleave` / `drop`（输入区常驻，无需跨组件通信或槽位契约改动） | 附件收集只有一份（`collectFiles`：上限 8 个 / 单文件 20MB / `noAttach` 闸门 / 瞬时错误提示），从哪个落点进来都必须走它 |
+| 文件判定 | `dataTransfer.types` 含 `Files` 才算文件拖拽 | drop 之前 `dataTransfer.files` 是空的 —— `types` 是拖拽期唯一可用的信息；拖选中文本进来不该弹附件提示 |
+| 不重复收集 | 输入外壳的 `@drop.prevent` 先把 `defaultPrevented` 置真，window 处理据此早退 | 两条路径各收一遍 = 同一文件出现两个 chip（反向验证：去掉早退 ⇒ 布局用例变红） |
+| 默认动作 | window 的 `dragover` 与 `drop` 各自 `preventDefault()` | 缺任意一个，浏览器都会在松手时导航打开文件 |
+| 提示 | 全窗遮罩（`Teleport to="body"` + `position:fixed`）：「松开即添加为附件」+ 上限文案 | ① Teleport 是因为祖先的 `overflow` / 动效 `transform` 会成为包含块，就地 `fixed` 会被裁；② 不给它加入场动效 —— 拖动中要即时反馈；③ `pointer-events:none`，不让它改变 drop 的落点判定 |
+| 层叠 | `z-index:75` | 压住普通面板（70），让位于审批条（80）/ 弹层（90） |
+| 输入区边界 | 拖到输入外壳内仍只有输入区自己那圈 accent 高亮（window 侧见 `defaultPrevented` 即隐藏遮罩） | 同一次拖拽不叠两层「这里能放下」的信号 |
+
+**边界（诚实登记）**：只收 `dataTransfer.files`，拖动网页内元素 / 选中文本的行为不变；桌面壳走同一 HTML5 路径（前提是 `tauri.conf.json` 的 `dragDropEnabled:false` —— 它也让 Windows 上 WebView 拿得到 HTML5 拖放），**未做真机复验**（本机无 GUI 场景）；不扩「拖入整个目录递归收集」（浏览器只给空 `type` 的 File 条目，要不要递归是一个新接口，不在本批）。
+
+**测试**：`web-src/test/layout.test.mjs` 新增 1 条真浏览器用例（合成 `DataTransfer`）：拖到 `.stream-slot` → 出现遮罩、松手后 chip 进清单、window 层 drop 的 `defaultPrevented === true`（「不再导航打开」在合成事件下的可观测代理）；拖到 `.shell` → 只收一次（`['note.txt','second.txt']`，重复收集会多出一条）；拖 `text/plain` → 不弹提示也不收。`vue-tsc --noEmit` 0 错、`npm test` **177 通过**、`npm run test:layout` **60 用例 / 59 通过 / 0 失败 / 1 skip**（原 59/58/1）。
+
+**文档**：README 双语功能表同步（拖放落点 = 窗口任意位置）；`docs/TODO_OVERVIEW.md` 与 DESIGN 未实施表对应行结清。
+
 ### 第九十四批 · 覆盖率补强（prefs / 角色命令面 / CLI）（2026-09-30）
 
 **背景**：第八十八批的「未完成项盘点」把「覆盖率余量包」挂在 A 类（现在就能做、无外部依赖）。本批按
@@ -1395,7 +1449,7 @@ pdfium.wasm，CI 不保证有）；`cmd/gah` 的 `c.Provide` 失败（新 ctx �
 | 6 | `tests` `TestSandboxSyncE2ECommandRoundTrip` | 探针用 `/tmp/...`,Windows 上属 MSYS 根相对 ⇒ 裁决层判「无法裁决」(消息不含「被拒」)。**第一轮只改了一半**(改成 Go 绝对路径 `C:\...`)⇒ 仍红:**git-bash 把 `\` 当转义吃掉** ⇒ 实际变成相对路径、放行本身是正确行为 | 探针在 Windows 上用 MSYS 形态 `/c/...` 表达工作区外绝对位置,JSON 走 `json.Marshal` 转义(路径含反斜杠,手拼是非法 JSON);断言放宽为「被拒 或 无法裁决」 |
 | 7 | `tests` `TestTUIAcceptContextAgentsHierarchy` | `os.MkdirTemp("/tmp", …)` 硬编码:Windows 无 `/tmp` | 平台化(Windows 退系统 temp)+ Windows 跳过 ② 的屏幕路径比对(临时目录路径超 TUI 行宽会被截断;① 已覆盖层级逻辑) |
 | 8 | `web` `TestProbeWritableReadOnly` | `chmod 0555` 在 Windows 不产生只读语义(走 ACL),构造不出只读目录 | Windows 上 skip(与 root 场景同样处理) |
-| 9 | `host-docview` `TestConverterRealExecPATHShim` | shim 写成无扩展名的 shell 脚本,而 Windows 的 `LookPath` 按 PATHEXT 只认 `.exe/.com/.bat/.cmd` ⇒ 探测命中不上 | Windows 上 skip + 登记待办(换 cmd 版 shim 就得重写一套参数解析与日志格式,断言失去同构意义;探测段本身走标准库 `LookPath`,跨平台语义一致) |
+| 9 | `host-docview` `TestConverterRealExecPATHShim` | shim 写成无扩展名的 shell 脚本,而 Windows 的 `LookPath` 按 PATHEXT 只认 `.exe/.com/.bat/.cmd` ⇒ 探测命中不上 | Windows 上 skip + 登记待办(换 cmd 版 shim 就得重写一套参数解析与日志格式,断言失去同构意义;探测段本身走标准库 `LookPath`,跨平台语义一致)。**第九十七批已消除**:假 soffice 改为「测试二进制复制品 + 同目录 `shim.json`」,跨平台同一份实现,不再 skip |
 
 教训写在这里比写在注释里更耐久 —— 上表第 5 条是典型:**两侧内容逐字一样却比较失败,唯一差异是 `\r`**(Windows 检出转 CRLF)。先去查不可见字符,别怀疑 JSON 形状。
 
@@ -1772,13 +1826,13 @@ pdfium.wasm，CI 不保证有）；`cmd/gah` 的 `c.Provide` 失败（新 ctx �
 | LibreOffice 转换链真机验证 | ❌ **放弃验证**(2026-09-22 用户拍板:不装 ≈700MB LibreOffice),**代码零改动、能力保留** —— `data.external_converters` / `--convert` 是可选且缺省关的增强(未装时显式报「未检测到 soffice/libreoffice」+ 退出码 3,离线桩单测已覆盖);删代码只会把 `.doc/.xls/.ppt` 从「装了就能用」退化成「永远不能用」 |
 | dmg 公证 / Apple 代码签名 | ❌ **明确不做**(2026-09-22 用户拍板):发行继续走 `docs/RELEASE.md` 的零成本口径(ed25519 自持更新签名 + 无签名首次启动指引:右键打开 / 「已损坏」时 `xattr -dr com.apple.quarantine`);连带 A-3 横幅与 B-1「首放行后不再弹层」两条从「待外部条件」降为**不做**(见本表上方两行) |
 | 原生文件夹选择器(桌面端) | ⏳ 需网络加 `tauri-plugin-dialog`(现已用路径输入覆盖同一能力) |
-| 拖放非附件文件(图片直贴等)到窗口的其它落点 | ⏳ 本轮只放开 WebView 拖放,业务落点仍仅输入区 |
+| 拖放非附件文件(图片直贴等)到窗口的其它落点 | ✅ **已交付**(2026-09-30 第九十五批):`InputBar` 挂 window 级 `dragover`/`drop` 落点 + 全窗遮罩提示;拖到会话流/侧栏/停靠区不再被浏览器导航打开,输入外壳落点不重复收集;真浏览器用例钉住三件事(见 §14.1 第九十五批) |
 | Web 设置面板「删除 provider」是死按钮 | ✅ **已交付**(2026-09-19 第二十一批):分析与拍板取**方案 B(真删除)**,非「删掉按钮」——`providerfile.Remove` 与单测 `TestSetActiveNotFoundAndRemove` 早已存在(仅被 `Unset` 删空路径触达),缺的只是**运行时一层 + REST/命令面**;选 B 的理由:Web 端只有 add/upsert/use,删按钮等于让 Web-only 用户永远无法移除误配端点(TUI 的 unset 删空语义在 Web 不可达 = 另一种能力静默缺失)。落点:`sdk.MultiProviderService += RemoveProvider` → `host-llm` 删除/活跃顺延/删空回退/聚合缓存失效 → Web `DELETE` 真删除(不存在 400 显式)→ TUI(宿主命令 `/provider remove` + 判重跳过的 TUI 副本同步)→ 面板文案产品化 + 成功后 `emit('changed')`。真机 `prov.mjs` **8/8**,兼作 M12「/provider 单条删除记 TODO」的结清凭据 |
 | 本机验收余项(TUI 42 / Web 9 / 文档 11 / 壳 8 / 其它 16) | ✅ **2026-09-22 收口订正**:A 本机 109 条已跑 **102** / 剩 **4 条纯人工**(#39 导出 HTML 观感 · #42 TUI P5 视觉 · #88 通知矩阵人眼段 · #86 壳端到端横幅)+ 本表下方「待人工验」各条(B 组 4 项卡外部条件,权威清单见 `docs/VERIFY.md` §剩余任务快照);其中 A-1a / A-1b / A-2 / A-5 已由用户实测通过(2026-09-22) |
-| `/api/models` 不支持列举时返 **501 + 纯文本** | ⏳ 前端 `req()` 对非 JSON 响应 → 报 JSON 解析错误而非服务端人话。影响仅错误文案(能力缺失本身已显式);改法:错误一律走 JSON `{error}` 或前端按 content-type 兜底。登记自第二十二批验收副产品 |
+| `/api/models` 不支持列举时的错误体 | ✅ **已交付**(2026-09-30 第九十六批):501 改 **JSON `{error}`**(新增 `writeErr`,同族 4 处「多 provider 能力未实现」一并收敛),前端 `req()` 优先解析 `error` 字段、回退纯文本;2xx 空体回 `undefined`、2xx 非 JSON 抛「响应不是 JSON(片段)」而非 `Unexpected token`。**范围**:只收敛这族用户可见 501,其余 `http.Error` 逐点收敛是另一笔账(前端已有回退)。见 §14.1 第九十六批 |
 | Web 侧 `#65 概述节流/截断`、`#66 跨渠道提问提示` | ⏳ 不可从外部观测/属 TUI 能力(理由见 §14.1 第二十二批口径订正 2、3):#65 以 `host-session-summary` 单测为准;#66 归 A-1 TUI 批 |
 | Windows CI(`test-windows`)**9 处平台适配失败** | ✅ **已交付并 CI 复核通过**(2026-09-25 第六十二批):失败数 9 → 2 → **0**,run `36170038615` 五个 job **全绿**。逐条根因与修法见该批表格 —— 1 处是**产品缺陷**(host-worktrees 同一 worktree 两种路径写法),1 处是**测试用错 shell 语义**(git-bash 反斜杠转义),其余为平台适配(`/tmp` 硬编码、CRLF 检出、MSYS 路径形态、`chmod` 语义、PATHEXT) |
-| Windows 上**真 exec 契约**无等价覆盖 | ⏳ 待办(2026-09-25 第六十二批):`TestConverterRealExecPATHShim` 用 **sh 脚本**当假 `soffice` 覆盖「PATH 探测 → 真进程 → argv → 退出码 → 产物发现」,**Windows 上如实 skip** —— ① 无扩展名 shim 不会被 `LookPath` 命中(按 PATHEXT 只认 `.exe/.com/.bat/.cmd`);② 换 cmd 版 shim 要再写一套参数解析与日志格式,断言失去同构意义。影响:Windows 上「探测到 soffice ⇒ 真调用其契约」无误覆盖(探测段本身走 `exec.LookPath`,跨平台语义一致且已被包内其它用例覆盖)|
+| Windows 上**真 exec 契约**无等价覆盖 | ✅ **已交付**(2026-09-30 第九十七批):假 `soffice` 从 sh 脚本改为**测试二进制复制品**(`TestMain` 双身份 + 同目录 `shim.json` 控行为;不走 env,因 `runExternal` 走 `SanitizedChildEnv()` 清洗),`installSofficeShim` 复制自身为 `soffice`/`soffice.exe` ⇒ **Windows 不再 skip**,argv 形状/产物命名/退出语义三断言与 darwin、linux 同构。本地反向验证(改 spec 名 ⇒ `exit status 9`)+ `GOOS=windows` 交叉编译通过;**Windows 运行时语义由 CI `test-windows` 确认**。见 §14.1 第九十七批 |
 | `tests` 包 `-race` 单跑 **347s**(本地)/277s(CI) | ⏸ **本批评估后不做**(2026-09-25 第六十二批):大头是 pty 端到端用例的固定 sleep;加 `t.Parallel()` 会在共享 runner 上放大时序 flaky(pty 探针对 CPU 负载敏感),CI 按文件拆 job 也只是把 6 分钟摊成两个 job(总成本不降、多付一份 setup)。护栏已按口径拆开(不再拿它当回归信号),记录在案 |
 | Rust 侧 **rustfmt 门禁** | ✅ **已交付**(2026-09-25 第六十二批):一次性 `cargo fmt` + CI 加 `cargo fmt --check`(`cargo fmt --check` 现已干净、`cargo test --offline` 34 passed) |
 | 0.1.6 桌面端**选源真机验证** | ⏳ 需已装 0.1.6 的机器点一次「检查更新」:壳日志 `~/Library/Application Support/dev.gah.desktop/gah-shell.log` 应出现「检查更新:端点顺序 [gitee…, github…](首选源 \"gitee\")」;判据与三种场景(正常 / Gitee 不可达 / 表可取但包不可达)已写进 `docs/VERIFY.md` |
