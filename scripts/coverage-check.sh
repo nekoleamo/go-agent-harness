@@ -28,6 +28,10 @@ SKIP="${GAH_COVER_SKIP:-0}"             # 1 = 只测(不校验),用于基线测�
 
 # —— 棘轮表:关键包逐包下限(实测值 - 5~8pp)。提升覆盖后请把数字上调。——
 # 更新规则:新增关键包 → 补一行;包改名/拆分 → 同步本表(未登记的棘轮包会被报缺失)。
+# 第九十四批(2026-09-30)按实测上调三行(补测:命令补全/显示分支、偏好落盘失败路径、
+# CLI 进程级行为):internal/prefs 66→82(实测 86.4)、plugins/host/host-roles 78→87(实测 90.4)、
+# cmd/gah 50→56(实测 57.9;main() 只能由**子进程**跑到,子进程不写 cover 计数器 ⇒ 上限在此)。
+# 方向只允许往上:降门必须换成补测(见 AGENTS.md「覆盖率门」)。
 #
 # 平台覆盖:<包>@<GOOS> 行 = 该平台专用下限(覆盖同包的基础行)。仅当某个包的覆盖率
 # **因平台语义而不可比**时才用,且必须写清原因 —— 目前只有一处:
@@ -51,7 +55,7 @@ core/ctx 60
 core/plugin 65
 core/config 65
 sdk 85
-internal/prefs 66
+internal/prefs 82
 internal/roles 85
 internal/rolepack 85
 internal/skills 77
@@ -65,7 +69,7 @@ internal/embed 70
 internal/install 60
 internal/sessionevents 92
 internal/sessionhtml 92
-cmd/gah 50
+cmd/gah 56
 plugins/catalogue 70
 plugins/ui/ui-web-app 70
 web 79
@@ -89,7 +93,7 @@ plugins/host/host-plugin-manager 76
 plugins/host/host-session-log 76
 plugins/host/host-session-summary 74
 plugins/host/host-skills 85
-plugins/host/host-roles 78
+plugins/host/host-roles 87
 plugins/host/host-system-prompt 88
 plugins/host/host-tools 91
 plugins/host/host-worktrees 74

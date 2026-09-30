@@ -145,7 +145,7 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 ### 三种运行形态
 
 ```bash
-./gah                                          # TUI(默认 tui profile;非 TTY 自动降级文本)
+./gah                                          # TUI(默认 tui profile;stdin 非 TTY 时**显式拒绝**并提示走 headless —— 不静默降级)
 ./gah web                                      # Web UI(≡ --profile web),http://127.0.0.1:2233,自动开浏览器
 ./gah acp                                      # ACP agent 形态(被编辑器如 Zed 经 stdio 拉起,≡ --profile acp)
 ./gah --profile headless --input "帮我执行 echo hi"   # headless 一轮(CI/脚本/dev 用 mock 模型免 key)
@@ -194,7 +194,7 @@ export DEEPSEEK_API_KEY=sk-...            # 或 OPENAI_API_KEY / ANTHROPIC_API_K
 | `-input <文本>` | headless 一次输入,跑一轮输出回复并退出 |
 | `-dump-config` | 输出合并后的配置树并退出 |
 | `-ephemeral` | 临时数据根,退出即焚 |
-| `-version` | 输出版本信息 |
+| `-version` | 输出版本信息(纯查询:管道/CI 里没 TTY 也能打,先于 TUI 护栏) |
 | `-install <repo>[@version]` | 安装线上/桥插件(`mcp:<id>:<command>` 登记 MCP 插件) |
 | `-uninstall <id>` / `-list-plugins` | 卸载 / 列出外部插件 |
 | `-install-ui <repo\|本地目录>` / `-uninstall-ui <id>` / `-list-ui-plugins` | UI 插件安装 / 卸载 / 列出 |

@@ -155,7 +155,7 @@ The data root is `gah-data/` next to the real binary (created on first run; a sy
 ### Three run forms
 
 ```bash
-./gah                                        # TUI (default tui profile; auto-falls back to text when non-TTY)
+./gah                                        # TUI (default tui profile; **refuses explicitly** when stdin is not a TTY and points to headless — no silent fallback)
 ./gah web                                    # Web UI (≡ --profile web), http://127.0.0.1:2233, opens browser
 ./gah acp                                    # ACP agent form (launched over stdio by an editor such as Zed; ≡ --profile acp)
 ./gah --profile headless --input "run echo hi"        # one headless turn (CI/scripts; mock model needs no key)
@@ -204,7 +204,7 @@ Then chat normally; use `/provider clear` to return to env-var config.
 | `-input <text>` | headless single input: run one turn, print the reply, exit |
 | `-dump-config` | print the merged config tree and exit |
 | `-ephemeral` | throwaway data root |
-| `-version` | print version |
+| `-version` | print version (pure query: works with no TTY in a pipe/CI, before the TUI guard) |
 | `-install <repo>[@version]` | install online/bridge plugins (`mcp:<id>:<command>` registers MCP plugins) |
 | `-uninstall <id>` / `-list-plugins` | uninstall / list external plugins |
 | `-install-ui <repo\|local dir>` / `-uninstall-ui <id>` / `-list-ui-plugins` | UI-plugin install / uninstall / list |

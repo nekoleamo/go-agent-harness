@@ -59,14 +59,16 @@ func main() {
 		os.Exit(runDocCmd(os.Args[2:]))
 	}
 	flag.Parse()
-	if !isStdinTTY() && *inputFlag == "" && *profileFlag == "tui" {
-		fmt.Fprintln(os.Stderr, "gah: TUI 需要交互式终端(stdin 非 TTY)。管道/后台场景请用: -profile headless -input <文本>")
-		os.Exit(1)
-	}
-
+	// -version 在任何 stdin 环境下都要能打出来(CI/脚本里 stdin 常常不是 TTY):
+	// 它既是**纯查询**又常在管道里用,先于 TUI 护栏判定,免得 `gah -version | cat` 报
+	// "TUI 需要交互式终端" 这种驴唇不对马嘴的错。
 	if *showVersion {
 		fmt.Printf("gah %s (github.com/nekoleamo/go-agent-harness)\n", version)
 		return
+	}
+	if !isStdinTTY() && *inputFlag == "" && *profileFlag == "tui" {
+		fmt.Fprintln(os.Stderr, "gah: TUI 需要交互式终端(stdin 非 TTY)。管道/后台场景请用: -profile headless -input <文本>")
+		os.Exit(1)
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
