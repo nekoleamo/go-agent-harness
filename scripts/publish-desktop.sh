@@ -232,6 +232,79 @@ done
 if [ "$need_copy" = 1 ]; then cp "$upd_file" "$OUT/$platform/"; fi
 ls -la "$OUT/$platform"
 
+# 3b. Windows 便携包(一个 zip 解压即用;不进 latest.json —— updater 只认安装包)
+#
+# 为什么是 zip 而不是「真单文件 exe」:壳与 sidecar 天然是两个 exe。真单文件要么自解压
+# (多一层、启动变慢、杀软更敏感),要么把 sidecar 塞进壳内资源每次落盘(= 现有外置复制),
+# 两者都不比 zip 干净。**zip 就是这个需求的真正形态**。
+#
+# 包内四个条目(判定 = 同目录有 portable.marker,壳侧 stage.rs::is_portable):
+#   gah/                     顶层目录(避免解压时把一堆文件倒进当前目录)
+#   gah/gah-desktop.exe      壳(主程序;名字来自 Cargo 包名 gah-desktop)
+#   gah/gah.exe              sidecar(壳按固定名找它,改了就起不来)
+#   gah/portable.marker      便携标记(空文件)
+#   gah/README-portable.txt  三行说明:数据在哪 / 怎么升级 / 为什么没有自动更新
+# ⚠ 便携包**不进 updater 端点**:Windows 不允许覆盖正在运行的 exe,让 updater 去装
+#   NSIS 包只会半途失败(壳里已在 checkForUpdatesInner 拦掉并说明原因)。
+if [ "$platform" = "windows-x86_64" ]; then
+  SHELL_EXE="desktop/src-tauri/target/$triple/$PROFILE_DIR/gah-desktop.exe"
+  [ -f "$SHELL_EXE" ] || { echo "缺壳产物:$SHELL_EXE" >&2; exit 1; }
+  [ -f "$SIDECAR" ] || { echo "缺 sidecar 产物:$SIDECAR" >&2; exit 1; }
+  PSTAGE="$OUT/$platform/portable"
+  rm -rf "$PSTAGE"
+  mkdir -p "$PSTAGE/gah"
+  cp "$SHELL_EXE" "$PSTAGE/gah/gah-desktop.exe"
+  cp "$SIDECAR" "$PSTAGE/gah/gah.exe"
+  : > "$PSTAGE/gah/portable.marker"   # 空文件即标记
+  cat > "$PSTAGE/gah/README-portable.txt" <<TXT
+gah 便携版 $VERSION(Windows x64)
+================================
+
+怎么用:解压整个 gah 目录到任意可写位置(推荐 D 盘或移动硬盘的专用目录),双击 gah-desktop.exe。
+        不用安装,没有开始菜单项,卸载 = 删掉这个目录。
+
+数据在哪:本目录的 gah-data/ 子目录(配置、会话、记忆、凭据都在里面)。
+        换机器请把**整个目录**一起拷过去;只拷 gah-desktop.exe 和 gah.exe 是空的。
+        重要数据建议定期用对话里的 /backup 导出一份到目录之外。
+
+怎么升级:到发布页下载新的便携包,解压后用新文件覆盖本目录里的同名文件。
+        **不要删 gah-data/**(数据在里面),也不要删 portable.marker(删了就变回安装版行为)。
+
+为什么没有自动更新:Windows 不允许覆盖正在运行的程序文件。便携版的升级动作就是
+        「下载新包覆盖本目录」,托盘里的「检查更新」因此是置灰的。
+        安装版(NSIS)仍然有自动更新,两条路互不影响。
+
+注意:未签名分发,首启可能弹 SmartScreen —— 点「更多信息」→「仍要运行」即可。
+      数据目录请放在有写权限的位置(桌面/程序目录等受保护位置会写不进去)。
+TXT
+  PORTABLE_ZIP="$OUT/gah_${VERSION}_x64-portable.zip"
+  rm -f "$PORTABLE_ZIP"
+  # zip 目录内不放平台元数据(时间戳全固定 ⇒ 同样输入打出同样字节,重跑无 diff)
+  if command -v zip >/dev/null 2>&1; then
+    (cd "$PSTAGE" && find gah -exec touch -t 200001010000 {} + && TZ=UTC zip -X -q -9 -r "$OLDPWD/$PORTABLE_ZIP" gah)
+  else
+    python3 - "$PSTAGE" "$OLDPWD/$PORTABLE_ZIP" <<'PY'
+# 无 zip 命令时(最小 Windows runner 镜像)的等价实现:同样固定时间戳,同样顶层 gah/
+import os, sys, zipfile
+stage, out = sys.argv[1], sys.argv[2]
+with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as z:
+    for root, _dirs, files in os.walk(os.path.join(stage, 'gah')):
+        for f in sorted(files):
+            p = os.path.join(root, f)
+            arc = os.path.relpath(p, stage).replace(os.sep, '/')
+            zi = zipfile.ZipInfo(arc, date_time=(2000, 1, 1, 0, 0, 0))
+            zi.compress_type = zipfile.ZIP_DEFLATED
+            zi.external_attr = 0o755 << 16 if f.endswith('.exe') else 0o644 << 16
+            with open(p, 'rb') as fh:
+                z.writestr(zi, fh.read())
+PY
+  fi
+  rm -rf "$PSTAGE"
+  [ -f "$PORTABLE_ZIP" ] || { echo "便携包未生成:$PORTABLE_ZIP" >&2; exit 1; }
+  echo "便携包 → $PORTABLE_ZIP($(du -h "$PORTABLE_ZIP" | cut -f1))"
+  echo "  条目:$(unzip -Z1 "$PORTABLE_ZIP" 2>/dev/null | tr '\n' ' ' || python3 -c "import zipfile,sys;print(' '.join(zipfile.ZipFile(sys.argv[1]).namelist()))" "$PORTABLE_ZIP")"
+fi
+
 # 4. latest.<平台>.json(签名优先取 tauri-bundler 自己产出的 .sig;缺失时回退 tauri signer)
 echo "[4/4] updater 签名"
 if [ -f "$upd_file.sig" ] && [ -s "$upd_file.sig" ]; then

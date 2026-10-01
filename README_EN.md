@@ -69,6 +69,7 @@ Grab the right file from [Releases](https://github.com/nekoleamo/go-agent-harnes
 |---|---|---|
 | macOS (Apple silicon) | `gah_<version>_aarch64.dmg` | open, then drag gah into /Applications |
 | Windows (64-bit) | `gah_<version>_x64-setup.exe` | double-click to install (current user, no admin) |
+| Windows portable | `gah_<version>_x64-portable.zip` | **no install**: unzip anywhere writable, run `gah-desktop.exe` (see below) |
 | CLI (any platform) | `go-agent-harness_<version>_<os>_<arch>.tar.gz` | single binary, unzip and run (also `.zip` + `checksums.txt`) |
 
 > **The first launch is blocked once by the OS** (the app ships without an Apple Developer
@@ -98,6 +99,13 @@ provider (DeepSeek / Kimi / Zhipu / Qwen / Ollama presets; paste an API key).
 > upgrade** if that backup fails. For manual backups use `/backup <path outside the app dir>` and
 > `/backup restore <name>`. The CLI build is unaffected: upgrading replaces the single `gah` file and keeps
 > `gah-data/` in place.
+>
+> **Portable build (Windows) is the exception**: when a `portable.marker` file sits next to the executable, the
+> shell runs **in place** and copies nothing out, so the data lives in that directory's own `gah-data/` (copy
+> the whole directory to move machines). Its tray "Check for updates" item is **disabled** — Windows will not
+> let a running program overwrite itself, so upgrading means "download the new package and overwrite this
+> directory". **Do not delete `gah-data/`** (that is your data) **nor `portable.marker`** (without it the build
+> behaves like the installed one). Installed and portable builds do not affect each other.
 >
 > **Upgrading from mainland China (when GitHub is flaky)**: an upgrade needs only two things — `latest.json` and the installer — and both can be re-sourced through a GitHub acceleration prefix: just concatenate the original link after the prefix, e.g. `https://gh-proxy.com/https://github.com/nekoleamo/go-agent-harness/releases/download/v0.3.0/gah_0.3.0_aarch64.dmg` (Windows: `gah_0.3.0_x64-setup.exe`; same idea for the CLI archive). **Auto-update re-sourcing**: one release-side command prefixes every download URL in `latest.json` — `bash scripts/publish-desktop.sh rewrite-url https://gh-proxy.com/` (revert with `… rewrite-url none`) — or run the `release-desktop` workflow via `workflow_dispatch { tag, mirror_base }`. **No re-release needed, and it applies to already-installed builds.** **Re-sourcing does not weaken security**: the updater's ed25519 signature covers the **file contents**, not the URL, so a mirror swapping the payload is rejected outright (the script self-checks that every platform's `signature` is untouched, and rolls back otherwise). Public proxies are community services with no availability guarantee — if one dies, try another prefix or `none` to restore the direct link; and the **self-hosted mirror is live**: Gitee Release assets ship with every release (see the automatic source switching below), so you no longer depend on community proxies.
 >

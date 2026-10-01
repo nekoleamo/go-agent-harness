@@ -100,6 +100,8 @@ struct TrayCheck(Mutex<Option<MenuItem<tauri::Wry>>>);
 // 检查更新项的两种文字(集中一处,免得改文案漏掉一边)
 const CHECK_IDLE_TEXT: &str = "检查更新…";
 const CHECK_BUSY_TEXT: &str = "检查更新中…";
+// 便携模式下的同一项:置灰 + 把替代动作说清(便携版靠手动换包升级)。
+const PORTABLE_CHECK_TEXT: &str = "便携版:请下载新包覆盖本目录";
 // PickSlot 文件夹选择器的一次运行状态(begin 置位,poll 取结果并复位)。
 //
 // 为什么不直接用 async 命令 await blocking_pick_folder(2026-09-17 真机):那台机器上
@@ -396,6 +398,18 @@ async fn checkForUpdates(app: &tauri::AppHandle) -> UpdateOutcome {
 }
 
 async fn checkForUpdatesInner(app: &tauri::AppHandle) -> UpdateOutcome {
+    // 便携模式:**不做自更新**。Windows 不允许覆盖正在运行的 exe(替换报 os error 5),
+    // 而便携版的升级方式就是「下载新包覆盖本目录」—— 让 updater 去装 NSIS 包只会
+    // 半途失败(而且会把安装器塞进便携目录,形态反而乱了)。这一处是**所有出口的
+    // 共同入口**(托盘菜单 / 界面 invoke / 启动看门狗都走 checkForUpdates),
+    // 所以置灰托盘项之外不必在每个出口各写一遍。
+    if stage::is_portable() {
+        return UpdateOutcome::new(
+            "portable",
+            None,
+            "便携版不自动更新:请到发布页下载新的便携包,解压后覆盖本目录(数据在本目录 gah-data/,不会被覆盖)".into(),
+        );
+    }
     // 升级源自动切换:两个端点按「Gitee 优先、上次失败的源垫底」交给 updater,
     // 它内部会按序回退(`for url in &self.endpoints`),端点不可达就自动换下一个源。
     let (endpoints, primary) = update_source::select();
@@ -1505,6 +1519,29 @@ fn resolveRuntime(app: &AppHandle) -> Runtime {
             }
         }
     };
+    // 便携模式(Windows zip 解压即用):**就地跑**。
+    // 为什么跳过外置复制:外置是为**安装版**做的(NSIS 删安装目录会连带删数据);
+    // 便携用户的直觉恰恰是「删目录即删数据」,复制反而把数据搬到
+    // %LOCALAPPDATA% 之外、让「数据在哪」这件事变得不可预期。
+    // 数据根仍是「二进制同级 gah-data/」—— 便携纪律一个字没改。
+    if stage::is_portable() {
+        // 就地跑 ⇒ 没有 fs::copy 那一环,「来自网络」标记得自己清(否则 sidecar
+        // 带着 Zone.Identifier 启动会静默失败)。两个都清,失败不报说辞、只记一条告警。
+        let mut notices = vec![
+            "便携模式:数据在本目录的 gah-data/(换机器请整个目录一起拷)".to_string(),
+            "便携版不自动更新(Windows 不允许覆盖正在运行的程序):请下载新包覆盖本目录".to_string(),
+        ];
+        stage::strip_mark_of_transfer(&src);
+        if let Ok(exe) = std::env::current_exe() {
+            stage::strip_mark_of_transfer(&exe);
+        }
+        return Runtime {
+            data_root: siblingDataRoot(&src),
+            bin: src,
+            external: false,
+            notices,
+        };
+    }
     let home = match app.path().app_local_data_dir() {
         Ok(p) => p,
         Err(e) => {
@@ -1644,9 +1681,17 @@ fn main() {
                 .checked(app.autolaunch().is_enabled().unwrap_or(false))
                 .build(app)
                 .unwrap();
-            let check_item = MenuItemBuilder::with_id("check_update", CHECK_IDLE_TEXT)
-                .build(app)
-                .unwrap();
+            // 「检查更新…」:便携模式下**置灰并改文案** —— 理由写进菜单项本身
+            // (置灰而不给理由,用户只会以为菜单坏了)。真正的拦截在
+            // checkForUpdatesInner(所有出口共用),这里只负责让入口一眼可读。
+            let portable = stage::is_portable();
+            let check_item = MenuItemBuilder::with_id(
+                "check_update",
+                if portable { PORTABLE_CHECK_TEXT } else { CHECK_IDLE_TEXT },
+            )
+            .enabled(!portable)
+            .build(app)
+            .unwrap();
             // 「测试系统通知」:真机排查「通知不弹」的定性入口。
             // 点一下就能分清是「壳没发」(日志无行)、「系统抑制」(日志有跳过行)
             // 还是「系统收了但没弹」(日志有已发行 → 查系统设置/专注模式)。

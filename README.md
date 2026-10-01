@@ -70,6 +70,7 @@ Go 实现的编程代理 Agent Harness:以**单静态二进制**交付全部能�
 |---|---|---|
 | macOS(Apple 芯片) | `gah_<版本>_aarch64.dmg` | 打开后把 gah 拖进「应用程序」 |
 | Windows(64 位) | `gah_<版本>_x64-setup.exe` | 双击安装(仅当前用户,不要求管理员) |
+| Windows 便携版 | `gah_<版本>_x64-portable.zip` | **不安装**:解压到任意可写目录,双击 `gah-desktop.exe`(见下) |
 | 命令行版(任意平台) | `go-agent-harness_<版本>_<系统>_<架构>.tar.gz` | 解压即用的单文件二进制(另附 `.zip` 与 `checksums.txt`) |
 
 > **首次打开会被系统拦一下**(本应用未购买 Apple 开发者证书 / 微软代码签名证书 —— 程序本身完好,
@@ -94,6 +95,11 @@ Go 实现的编程代理 Agent Harness:以**单静态二进制**交付全部能�
 > **升级(整包替换应用)不会动数据,卸载也不会删数据**。升级前桌面壳仍会额外备份一份到
 > `~/gah-upgrade-backup/`(备份失败会取消升级,不拿数据冒险);想手动备份/恢复就用
 > `/backup <应用目录之外的路径>` 与 `/backup restore <名字>`。
+>
+> **便携版(Windows)例外**:便携包里同目录有 `portable.marker`,壳就**就地运行**、不外置,
+> 数据在本目录的 `gah-data/`(换机器请整个目录一起拷)。托盘里的「检查更新」因此是**置灰**的
+> —— Windows 不允许覆盖正在运行的程序,便携版的升级动作是「下载新包覆盖本目录」,
+> **别删 `gah-data/`,也别删 `portable.marker`**(删了就退回安装版行为)。安装版与便携版互不影响。
 > 命令行版:数据与 `gah` 同目录,升级只替换单文件,`gah-data/` 原地保留。
 >
 > **国内网络升级(GitHub 直连不稳时)**:升级只依赖两样东西——`latest.json` 与安装包,两者都能用「GitHub 加速代理前缀」就地换源:把原链接拼在代理前缀之后即可,例如 `https://gh-proxy.com/https://github.com/nekoleamo/go-agent-harness/releases/download/v0.3.0/gah_0.3.0_aarch64.dmg`(Windows 换成 `gah_0.3.0_x64-setup.exe`;CLI 归档同理)。**桌面端自动升级换源**:发布侧一条命令即可把 `latest.json` 里的下载 URL 整体前置代理前缀——`bash scripts/publish-desktop.sh rewrite-url https://gh-proxy.com/`(还原:`… rewrite-url none`),或在 GitHub Actions 里跑 `release-desktop` 的 `workflow_dispatch { tag, mirror_base }`,**不需重发版本、对已装版本立即生效**。**换源不降低安全性**:updater 的 ed25519 签名只对**文件内容**验签、URL 不参与 ⇒ 代理/镜像换包会被签名直接拒掉(脚本内含「签名逐平台未被改动」自检,不过即回滚)。公共代理是公益服务、可用性不保证:失效时换一个前缀或跑 `none` 还原直链;而自控镜像**已就绪** —— Gitee Release 附件随各版本同步上传(见下段自动选源),不再单靠公共代理。

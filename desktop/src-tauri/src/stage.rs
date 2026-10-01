@@ -75,6 +75,32 @@ pub fn data_root(home: &Path) -> PathBuf {
     home.join("bin").join("gah-data")
 }
 
+// —— 便携模式(Windows zip 解压即用;mac/Linux 不做,见 DESIGN 第一百一十一批) ——
+//
+// 判定只看**同目录的 portable.marker 空文件**:
+//   不用「目录是否可写」这类启发式 —— U 盘、只读域、企业策略都会让它误判;
+//   不用命令行参数 —— 参数会丢(快捷方式、文件关联、任务栏固定都传不了)。
+// 存在的形式是「一个 zip 解压即用」而不是「真单文件 exe」:壳与 sidecar 天然是
+// 两个 exe,真单文件要么自解压(启动变慢、杀软更敏感),要么每次运行把 sidecar
+// 落盘(= 现有的外置复制),两者都不比 zip 干净。
+pub const PORTABLE_MARKER: &str = "portable.marker";
+
+/// is_portable_at 指定目录里是否有便携标记。
+pub fn is_portable_at(dir: &Path) -> bool {
+    dir.join(PORTABLE_MARKER).is_file()
+}
+
+/// is_portable 便携模式判定(主程序同目录)。
+pub fn is_portable() -> bool {
+    match std::env::current_exe() {
+        Ok(exe) => match exe.parent() {
+            Some(d) => is_portable_at(d),
+            None => false,
+        },
+        Err(_) => false,
+    }
+}
+
 /// legacy_data_root 旧位置(= 应用目录内)的数据根,用于一次性迁移。
 pub fn legacy_data_root() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
@@ -228,7 +254,12 @@ fn make_executable(_p: &Path) -> Result<(), String> {
 /// - mac:`fs::copy` 走 copyfile(COPYFILE_ALL),会把 `com.apple.quarantine` 一起带过来 →
 ///   用系统 `xattr -d` 清掉(失败只忽略:GUI 还会再问一次,不影响正确性)。
 /// - win:`fs::copy` 会复制备用数据流(Zone.Identifier) → 删掉该流(失败忽略)。
-fn strip_mark_of_transfer(p: &Path) {
+///
+/// 便携模式是**就地跑**,没有 fs::copy 那一环,所以由壳在启动时自己清:从网上下载的
+/// zip 解压出来的 exe 带 Zone.Identifier,用户已经对主程序点过「仍要运行」,但 sidecar
+/// 是**另一个文件** —— 它身上的标记会让 spawn 静默失败(没有界面可提示,表现为
+/// “窗口开了但没有反应”)。清不掉就如实告警,不假装清掉了。
+pub fn strip_mark_of_transfer(p: &Path) {
     #[cfg(target_os = "macos")]
     {
         let _ = std::process::Command::new("/usr/bin/xattr")
@@ -453,5 +484,39 @@ mod tests {
         copy_tree(&src, &dst).unwrap();
         assert_eq!(std::fs::read(dst.join("a/b/c.txt")).unwrap(), b"deep");
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // 便携判定:只看**同目录的 portable.marker**。两条边界一起钉:
+    // ① 目录存在但标记是**目录**而不是文件 ⇒ 不算便携(否则用户手滑建了个同名
+    //    空目录就被切进便携分支,而便携分支不外置 ⇒ 数据会落回应用目录内);
+    // ② 有标记才认,没有标记绝不自作主张进便携(安装版必须继续外置)。
+    #[test]
+    fn portable_marker_decides() {
+        let base = tmp_dir("portable");
+        assert!(
+            !is_portable_at(&base),
+            "无标记时不得判成便携(安装版要继续外置)"
+        );
+
+        // 同名**目录**不算(必须是文件)
+        std::fs::create_dir_all(base.join(PORTABLE_MARKER)).unwrap();
+        assert!(!is_portable_at(&base), "同名目录不得被判成便携标记");
+        std::fs::remove_dir_all(base.join(PORTABLE_MARKER)).unwrap();
+
+        std::fs::write(base.join(PORTABLE_MARKER), b"").unwrap();
+        assert!(is_portable_at(&base), "同目录的标记文件应判成便携");
+
+        // 标记必须在**主程序同级**:旁边的目录有标记不算
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // 便携包内的文件名**不在 Rust 侧再声明一份**:唯一生产者是打包脚本
+    // (scripts/publish-desktop.sh),唯一执法者是发布校验门(verify-release.mjs 解包
+    // 核对四个条目)。两侧常量都写不出「脚本改了名而壳不知道」这种不一致 ——
+    // 真出现不一致时,校验门会当场红。
+    #[test]
+    fn portable_sidecar_keeps_one_exe_name() {
+        // 便携包里的 sidecar 与安装版用**同一个** 文件名(壳的 bundled_sidecar 就找它)
+        assert_eq!(exe_name(), if cfg!(windows) { "gah.exe" } else { "gah" });
     }
 }

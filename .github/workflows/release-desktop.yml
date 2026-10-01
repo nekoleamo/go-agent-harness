@@ -166,6 +166,8 @@ jobs:
             dist-desktop/**/*.dmg
             dist-desktop/**/*-setup.exe
             dist-desktop/**/*-setup.exe.zip
+            # 便携包(Windows 解压即用;不进 latest.json —— updater 只认安装包)
+            dist-desktop/**/*-portable.zip
           draft: false
           prerelease: false
           # 正文来自 tag 注解(人工写的发行说明);不用 GitHub 自动 notes —— 两个 workflow 并发时

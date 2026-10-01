@@ -357,6 +357,13 @@ try {
   // 4) 已装版本不回退(仅线上 latest 有意义)
   checkInstalledVersion(manifest, !opts.local && !opts.tag)
 
+  // 4b) 便携包布局(Windows 解压即用):**不进 latest.json**(updater 只认安装包),
+  // 所以它没有签名可验 —— 能验的只有「壳能不能找到它要的文件」。
+  // 这一步的实际价值:包结构错了(少 marker / sidecar 改名 / 顶层目录不对)时,
+  // 用户解压后双击就是「窗口没反应」,而那条路径**只有真机能发现**。
+  // CI 平台 job 与本地 --local 都会跑;线上清单模式(没本地目录)只能提示。
+  checkPortableBundle(opts)
+
   // 5) checksums.txt 覆盖面(桌面产物是否登记;缺 = 上传方与哈希清单各自为政)
   if (!opts.skipArtifacts && !opts.local) {
     try {
@@ -378,6 +385,93 @@ try {
 }
 
 // findLocal 在本地发布目录里按文件名找产物(publish-desktop 按平台分目录)。
+function checkPortableBundle(opts) {
+  // 便携包必须且只能有这几个条目(顶层单一目录 gah/):
+  //   gah-desktop.exe      壳(Cargo 包名 gah-desktop;改了这里也要改 publish-desktop.sh)
+  //   gah.exe              sidecar(壳按**固定名**找它;改了就起不来)
+  //   portable.marker      便携标记(空文件)—— 删了它就退回安装版行为(要外置数据)
+  //   README-portable.txt  人看的三行说明(数据在哪 / 怎么升级 / 为什么没有自动更新)
+  // 判定:四个都在 + 顶层只有一个目录 + 没有绝对路径/上跳条目(解压到哪都能用)。
+  const WANT = ['gah/gah-desktop.exe', 'gah/gah.exe', 'gah/portable.marker', 'gah/README-portable.txt']
+  if (opts.skipArtifacts) {
+    info('便携包', '--skip-artifacts:未检查')
+    return
+  }
+  if (!opts.local) {
+    info('便携包', '便携包不进 latest.json(由发布上传),此处只查本地构建产物;CI 平台 job 会逐包核对')
+    return
+  }
+  const dir = resolve(opts.local)
+  const zips = readdirSyncSafe(dir).filter((f) => f.endsWith('-portable.zip'))
+  const nested = readdirSyncSafe(dir).flatMap((f) => {
+    const p = join(dir, f)
+    try {
+      return statSync(p).isDirectory() ? readdirSyncSafe(p).filter((x) => x.endsWith('-portable.zip')).map((x) => join(f, x)) : []
+    } catch {
+      return []
+    }
+  })
+  const found = [...zips.map((f) => join(dir, f)), ...nested.map((f) => join(dir, f))]
+  if (found.length === 0) {
+    fail('便携包', `${dir} 下没有 *-portable.zip(windows-x86_64 构建应产出便携包)`)
+    return
+  }
+  for (const zp of found) {
+    const name = basename(zp)
+    const names = readZipNames(zp)
+    if (names.err) {
+      fail(`便携包 ${name}`, `读不了 zip:${names.err}`)
+      continue
+    }
+    const missing = WANT.filter((e) => !names.list.includes(e))
+    if (missing.length > 0) {
+      fail(`便携包 ${name}`, `缺条目:${missing.join(', ')}(壳会找不到它们;实际条目:${names.list.join(', ')})`)
+      continue
+    }
+    const tops = new Set(names.list.filter((n) => !n.endsWith('/')).map((n) => n.split('/')[0]))
+    if (tops.size !== 1 || !tops.has('gah')) {
+      fail(`便携包 ${name}`, `顶层应只有 gah/ 一个目录,实际:${[...tops].join(', ')}(否则解压会散落一地)`)
+      continue
+    }
+    const abs = names.list.filter((n) => n.startsWith('/') || n.includes(':') || n.includes('..'))
+    if (abs.length > 0) {
+      fail(`便携包 ${name}`, `含绝对路径/上跳条目:${abs.join(', ')}`)
+      continue
+    }
+    ok(`便携包 ${name}`, `4 个条目齐备 · 顶层 gah/ · ${(statSync(zp).size / 1048576).toFixed(1)} MiB(未签名,人工分发)`)
+  }
+}
+
+// readZipNames 只读 zip 的 central directory 拿条目名(不引第三方库)。
+function readZipNames(path) {
+  try {
+    const buf = readFileSync(path)
+    // EOCD:从尾部回扫 0x06054b50(注释最长 64 KiB)
+    let eocd = -1
+    for (let i = buf.length - 22; i >= 0 && i > buf.length - 66000; i--) {
+      if (buf.readUInt32LE(i) === 0x06054b50) {
+        eocd = i
+        break
+      }
+    }
+    if (eocd < 0) return { err: '找不到 EOCD(不是 zip 或被截断)' }
+    const count = buf.readUInt16LE(eocd + 10)
+    let off = buf.readUInt32LE(eocd + 16)
+    const list = []
+    for (let i = 0; i < count; i++) {
+      if (buf.readUInt32LE(off) !== 0x02014b50) return { err: `第 ${i} 个 central directory 条目头异常` }
+      const nameLen = buf.readUInt16LE(off + 28)
+      const extraLen = buf.readUInt16LE(off + 30)
+      const commentLen = buf.readUInt16LE(off + 32)
+      list.push(buf.subarray(off + 46, off + 46 + nameLen).toString('utf8'))
+      off += 46 + nameLen + extraLen + commentLen
+    }
+    return { list }
+  } catch (e) {
+    return { err: e.message }
+  }
+}
+
 function findLocal(dir, name) {
   const root = resolve(dir)
   const stack = [root]
