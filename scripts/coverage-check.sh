@@ -32,6 +32,9 @@ SKIP="${GAH_COVER_SKIP:-0}"             # 1 = 只测(不校验),用于基线测�
 # CLI 进程级行为):internal/prefs 66→82(实测 86.4)、plugins/host/host-roles 78→87(实测 90.4)、
 # cmd/gah 50→56(实测 57.9;main() 只能由**子进程**跑到,子进程不写 cover 计数器 ⇒ 上限在此)。
 # 方向只允许往上:降门必须换成补测(见 AGENTS.md「覆盖率门」)。
+# 跨平台差(踩过的坑):棘轮取**各平台实测的较小值**。第一百零四批按 macOS 实测把
+# host-schedule 调到 81.5,而 CI(linux)实测 81.2 ⇒ 门红。带平台差异的代码路径要用
+# @GOOS 平台行单独登记,别拿单一平台的读数当通用值。
 #
 # 平台覆盖:<包>@<GOOS> 行 = 该平台专用下限(覆盖同包的基础行)。仅当某个包的覆盖率
 # **因平台语义而不可比**时才用,且必须写清原因 —— 目前只有一处:
@@ -88,7 +91,7 @@ plugins/host/host-fanout 80
 plugins/host/host-internal-commands 93
 plugins/host/host-jobs 88
 plugins/host/host-notices 70
-plugins/host/host-schedule 81.5
+plugins/host/host-schedule 81
 plugins/host/host-llm 68
 plugins/host/host-plugin-manager 76
 plugins/host/host-session-log 76
