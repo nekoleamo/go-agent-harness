@@ -158,6 +158,17 @@ func (h *Host) specs() []sdk.CommandSpec {
 		{Name: "export", Usage: "/export [path]", Desc: "导出会话(.html 结尾→自包含网页;否则 jsonl)", Run: h.cmdExport,
 			// 自由级断点:回车直接执行(默认路径 jsonl);输入路径回车则导出到该路径
 			Args: []sdk.ArgLevel{{FreeArgs: func([]string) []string { return []string{"路径?"} }}}},
+		// 技能包(第一百零七批):与 Web 的 /api/skillpack 同一实现(校验/格式/回滚都在
+		// internal/skillpack),这里只做参数解析与落盘 —— 角色私有技能随角色包走,不在此列。
+		{Name: "skill-export", Usage: "/skill-export <技能名> [路径]", Desc: "导出共享技能为技能包(.zip,含 SKILL.md)",
+			Run: h.cmdSkillExport,
+			Args: []sdk.ArgLevel{
+				{FreeArgs: func([]string) []string { return []string{"技能名"} }},
+				{FreeArgs: func([]string) []string { return []string{"路径?(默认工作区)"} }},
+			}},
+		{Name: "skill-import", Usage: "/skill-import <包路径> [--as 名] [--overwrite]", Desc: "导入技能包(同名默认拒;--overwrite 才覆盖,旧份进回收站)",
+			Run:  h.cmdSkillImport,
+			Args: []sdk.ArgLevel{{FreeArgs: func([]string) []string { return []string{"包路径(.zip)"} }}}},
 		{Name: "compact", Usage: "/compact [指示词]", Desc: "手动滚动摘要压缩(立即折叠旧历史;指示词仅作记录)", Run: h.cmdCompact,
 			Args: []sdk.ArgLevel{{FreeArgs: func([]string) []string { return []string{"指示词?"} }}}},
 		{Name: "workspace", Usage: "/workspace [目录]", Desc: "切换工作区(项目):最近使用列表选择或输入新目录,切换即开新会话",
