@@ -460,6 +460,8 @@ export interface RoleSpec {
   own_skills?: string[] // 角色私有技能(roles/<id>/skills/,只增不减)
   effective_skills?: string[] // 切换后实际可见(服务端派生,只读展示)
   seed?: boolean // 来自预置 seed(同样可改可删)
+  // group 场景分组(纯展示;空 = 不分组,面板收在「其它」一节)
+  group?: string
 }
 // ToolDef 工具定义(POST/GET /api/tools 的子集:面板只展示名字与一句话描述)。
 export interface ToolDef {

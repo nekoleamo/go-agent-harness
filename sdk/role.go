@@ -16,6 +16,10 @@ type RoleSpec struct {
 	ID          string `json:"id"`                    // 目录名(唯一,受校验:[a-z0-9][a-z0-9-]{0,31})
 	Name        string `json:"name"`                  // 显示名(空 = 用 ID)
 	Description string `json:"description,omitempty"` // 一句话定位(列表展示)
+	// Group 场景分组(如「工程」「写作」):纯**展示**用的归类,不进系统提示 ——
+	// 12 个预置角色之后,平铺列表已经认不出"该挑哪个",分组是发现成本最低的一刀。
+	// 空 = 不分组(用户自建角色不必填);面板按它分节,顺序按分组首次出现。
+	Group string `json:"group,omitempty"`
 	// Identity 身份句:进「身份槽」(固定引导之后、指令层之前),回答"你是谁"。
 	Identity string `json:"identity,omitempty"`
 	// ExcludeGlobal 置真 = **不注入**全局指令($GAH_HOME/AGENTS.md)。

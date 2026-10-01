@@ -120,8 +120,11 @@ type Store struct{}
 
 // roleFile role.yaml 的落盘结构(字段名与文档一致;指针字段区分"未写"与"写了零值")。
 type roleFile struct {
-	Name          string    `yaml:"name,omitempty"`
-	Description   string    `yaml:"description,omitempty"`
+	Name        string `yaml:"name,omitempty"`
+	Description string `yaml:"description,omitempty"`
+	// Group 展示分组(与 sdk.RoleSpec 同步;Save 是全量覆盖写,少这个字段
+	// 就会在用户下一次保存/改名/移动时**静默抹掉**手写的 group)。
+	Group         string    `yaml:"group,omitempty"`
 	Identity      string    `yaml:"identity,omitempty"`
 	ExcludeGlobal bool      `yaml:"exclude_global,omitempty"`
 	Skills        *[]string `yaml:"skills,omitempty"`
@@ -299,6 +302,7 @@ func ParseDefinition(id string, raw []byte, strictKeys bool) (sdk.RoleSpec, erro
 		ID:            id,
 		Name:          f.Name,
 		Description:   f.Description,
+		Group:         strings.TrimSpace(f.Group),
 		Identity:      f.Identity,
 		ExcludeGlobal: f.ExcludeGlobal,
 		SkillsInherit: f.SkillsInherit,
@@ -400,7 +404,7 @@ func (s Store) Save(spec sdk.RoleSpec) error {
 	if err != nil {
 		return err
 	}
-	f := roleFile{Name: spec.Name, Description: spec.Description, Identity: spec.Identity,
+	f := roleFile{Name: spec.Name, Description: spec.Description, Group: strings.TrimSpace(spec.Group), Identity: spec.Identity,
 		ExcludeGlobal: spec.ExcludeGlobal, SkillsInherit: spec.SkillsInherit,
 		Model: strings.TrimSpace(spec.Model), Thinking: th, ToolsExclude: ex,
 		Approval: ap, Sandbox: sb}

@@ -516,10 +516,35 @@ async function loadRoles(): Promise<void> {
     roleReady.value = false // 503/网络错:静默隐藏(不把「这个环境没角色功能」当故障报)
   }
 }
+// roleGroups 角色按 group 分节(12 个预置角色之后,平铺列表已经认不出"该挑哪个")。
+// 顺序:分组按其角色在列表里的**首次出现**排序(不给分组表设死顺序 —— 新增预置角色
+// 落在哪个组就出现在那个组,不用改前端)。无 group 的角色收在「其它」一节。
+const roleGroups = computed(() => {
+  const order: string[] = []
+  const by = new Map<string, RoleSpec[]>()
+  for (const r of roles.value) {
+    const g = (r.group || '').trim() || '其它'
+    if (!by.has(g)) {
+      by.set(g, [])
+      order.push(g)
+    }
+    by.get(g)!.push(r)
+  }
+  return order.map((g) => ({ group: g, items: by.get(g)! }))
+})
+
 // roleIsCurrent 当前角色高亮(切换是改状态但可一键切回,故不进确认弹层)
 function roleIsCurrent(r: RoleSpec): boolean {
   return roleCurrent.value === r.id
 }
+
+// roleHint 未选过角色时的引导条(第一百零二批)。
+//
+// 判据只用**已有状态**:当前角色为空 = 从没挑过角色。选中之后这条自然永久消失,
+// 因此不需要额外的「不再提示」偏好字段 —— 省一个持久化状态,也就省一个将来要迁移的东西。
+// 刻意做成面板里的一行提示而不是启动浮层:浮层会打断第一次对话,而角色这件事
+// **不挑也能用**(走基线:全局指令 + 全部技能),不该挡路。
+const roleHint = computed(() => roleBaseline.value && roles.value.length > 1)
 
 // roleBaseline 当前处于"基线态"(没有启用任何角色)= 列表顶部那条合成行是否标「当前」。
 // 为什么在列表里给它一个位置:基线不是"什么都没配",而是**确定的运行形态**(全局指令 +
@@ -1873,7 +1898,16 @@ watch(
                 <button v-if="!roleBaseline" class="ghost" data-tip="下一轮生效，不换会话" @click="useRole('')">切换</button>
               </div>
             </div>
-            <div v-for="r in roles" :key="r.id" class="prow scrow" :class="{ off: !roleIsCurrent(r) }">
+            <p v-if="roleHint" class="dim" data-testid="role-hint">
+              还没挑过角色。下面 {{ roles.length }} 个预置角色按场景分组，<strong>挑一个</strong>就能换身份、工作规则与技能面；
+              不挑也能用（走默认：全局指令 + 全部技能）。选中后本提示不再出现。
+            </p>
+            <template v-for="sec in roleGroups" :key="sec.group">
+              <div v-if="sec.items.length > 1 || sec.group !== '其它'" class="srow-label">
+                {{ sec.group }}
+                <span class="dim">{{ sec.items.length }}</span>
+              </div>
+              <div v-for="r in sec.items" :key="r.id" class="prow scrow" :class="{ off: !roleIsCurrent(r) }">
               <div class="pmain">
                 <span class="sname">
                   {{ r.name || r.id }}
@@ -1906,8 +1940,9 @@ watch(
                 <button class="ghost danger-text" data-tip="删除角色（需确认，移入回收站）" @click="deleteRole(r)">删除</button>
               </div>
             </div>
+            </template>
             <p v-if="!roles.length" class="dim">
-              还没有角色：点上方「＋ 新建」建一个；首次启动会释放 5 个预置角色（助理 / 财务 / 小说家 / 编程大师 / 新闻撰稿人）。
+              还没有角色：点上方「＋ 新建」建一个；首次启动会释放 12 个预置角色（通用 / 工程 / 数据 / 写作 / 学习五组）。
             </p>
           </div>
 

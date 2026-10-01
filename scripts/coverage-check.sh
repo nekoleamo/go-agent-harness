@@ -56,7 +56,7 @@ core/plugin 65
 core/config 65
 sdk 85.6
 internal/prefs 82
-internal/roles 85
+internal/roles 86.4
 internal/rolepack 85
 internal/skills 77
 internal/searchfile 66
@@ -65,7 +65,7 @@ internal/providerfile 72
 internal/kernelsandbox 50
 internal/kernelsandbox@linux 43
 internal/mcpconfig 80
-internal/embed 70
+internal/embed 75.2
 internal/install 60
 internal/sessionevents 92
 internal/sessionhtml 92

@@ -943,3 +943,48 @@ func TestSplitTrashName(t *testing.T) {
 		}
 	}
 }
+
+// TestGroupRoundTrip 分组往返(第一百零二批):group 是纯展示字段,但 Save 是**全量覆盖写** ——
+// 少一个字段映射就会在用户下一次保存/改名/移动时把它**静默抹掉**(和 tools_exclude 同款坑)。
+func TestGroupRoundTrip(t *testing.T) {
+	setup(t)
+	s := Store{}
+	if err := s.Create(sdk.RoleSpec{ID: "g", Group: "工程", Name: "某角色"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Get("g")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Group != "工程" {
+		t.Fatalf("分组未往返: %q", got.Group)
+	}
+	// 只改显示名再保存:分组必须还在
+	got.Name = "改名了"
+	if err := s.Save(got); err != nil {
+		t.Fatal(err)
+	}
+	again, _ := s.Get("g")
+	if again.Group != "工程" {
+		t.Fatalf("改显示名后分组丢失: %q", again.Group)
+	}
+	// 未声明分组 → 落盘不出现该键(面板据此收在「其它」一节)
+	if err := s.Create(sdk.RoleSpec{ID: "nogroup"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(Dir("nogroup"), FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "group:") {
+		t.Errorf("未声明分组却落了键: %s", raw)
+	}
+	// 分组两侧空白应被规范化(用户手写 " 工程 " 不该在面板上多出两个空格)
+	if err := s.Create(sdk.RoleSpec{ID: "ws", Group: "  数据  "}, ""); err != nil {
+		t.Fatal(err)
+	}
+	ws, _ := s.Get("ws")
+	if ws.Group != "数据" {
+		t.Fatalf("分组两侧空白应被裁掉: %q", ws.Group)
+	}
+}

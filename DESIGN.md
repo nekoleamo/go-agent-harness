@@ -30,6 +30,8 @@
 
 **2026-09-30 第一百零一批（实例内多会话并行回合 · 写侧解锁）**：让 `host-agent-loop` 真正实现 `sdk.SessionRunner` —— 多窗口从「各看各的」变成「**各跑各的**」。① **单写者不变量从实例级降到会话级**:`runMu` 一把全局锁换成 `keyedMutex`(按会话一把,**同一会话内仍严格串行**,不同会话各有自己的 Log 因而可并行);`sess sdk.SessionLog` 一路显式下传(`appendEvents`/`step`/`injectSteers`/`compressOnOverflow`),不再靠 `Loop` 上的字段(那在并行下是共享的)。② **`control` 记会话归属**:`registerSession` 带 sid,新增 `CancelSession`(只停目标会话)与 `RunningSessions`(诊断/多窗口展示);`Cancel()` 仍是「停全部」(TUI 语义不变)。③ **web 写侧解锁**:回合占用闸从一把全局 `running` 改成**每会话一张**(`runningFor`,此前 B 窗口在跑会把 A 窗口的提交也顶成 409);`/api/input` 按会话路由到 `RunInSession`;`/api/control {cancel, session}` 支持按会话取消;`/api/state` 报真 per-session `running` + 新增 `running_sessions`。④ **归一化键**(`sessionKey`/`resolveKey`):空与「当前打开的会话」必须落到同一把锁、同一份日志,否则会出现两个 Log 写同一文件。⑤ **逮到一处既有 race**:`control.register` 原先在 `Unlock()` **之后** `return c.seq`(又读一次共享字段)—— 串行时看不出,多会话并行立刻被 `-race` 逮到,已改为锁内取快照;这类「串行掩盖的并发缺陷」正是并行化的额外收益。⑥ **双反向验证**(项目惯例):把 keyed 锁退化成全局单锁 ⇒ 真并行测试转红(峰值并发只有 1);退化成完全不串行 ⇒ 同会话串行测试转红(`turn/start` 嵌套交错)—— 两次都精确命中,证明测试真的在验这件事。
 
+**2026-09-30 第一百零二批（预置角色广度 + 发现引导）**：把《WorkBuddy 借鉴吸收方案》借鉴 1 落地 —— 预置角色 **5 → 12**,并让它们**可被发现**。① **12 个预置角色,按场景分五组**:通用(通用助理)/ 工程(编程大师、**技术负责人、代码评审、运维值守**)/ 数据(数据分析、财务)/ 写作(小说家、新闻撰稿人、**技术文档、翻译**)/ 学习(**技术导师**);`seed-version` 1→2(仍是「缺失才释放」,不覆盖用户改过的)。② **新增 `group` 展示字段**(`sdk.RoleSpec` + `role.yaml` 的 `group`):纯展示归类,**不进系统提示**;面板按分组分节,顺序按分组首次出现(不给分组表设死顺序 —— 新增预置角色落在哪组就出现在哪组,不用改前端)。③ **引导只用已有状态**:面板提示条判据 = `current == ''`(从没挑过角色),选中后**自然永久消失**,因此**不新增「不再提示」偏好字段**(省一个持久化状态与将来的迁移);刻意做成一行提示而不是启动浮层 —— 角色**不挑也能用**(基线 = 全局指令 + 全部技能),不该挡第一次对话。④ **内容质量有测试兜底**(宁少勿滥的机制化):预置内容若缺 description/group/identity、AGENTS.md 小节不足 2 段或过短、或预置了 `skills` 键(会静默缩小用户可见技能),**直接红**;12 个都要能被真实解析器接受(不进 `Broken()`)。⑤ 顺带记一处**方案订正**:`FirstRunGuide` / `/api/guides` / `prefs.DismissedGuides` 已随 IM 线整体删除(2026-09-12),**没有现成引导链路可复用** —— 所以首启引导做成面板内提示而非重建向导。
+
 ## 0. 项目目的
 
 **排除 dsh 因 Node.js 带来的依赖:以单一静态二进制交付全部 harness 能力,仅通过二进制部署即可启动,不依赖其余环境。**
@@ -982,6 +984,66 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 **推送后 CI 两轮修正(两条都要记)**:① `plugins/host/host-skills/roles_filter_test.go` 的工具单测给 `list_skills.Execute` 传了 `nil` context —— 本地 `go vet`/单测全不报,**CI 的 staticcheck(版本固定 2026.2.1)报 SA1012**,且原先写的 `//nolint:staticcheck` 对它**惰性**(它只认 golangci-lint)。纪律升级:**推前跑同版本 staticcheck**(`staticcheck ./...` + `cd sdk && staticcheck ./...`),别只跑 vet —— 这是本仓 CI 与本地唯一一处"命令不同"的盲区。② 指令面 shell 用例把 `filepath.Join` 拼出的 Windows 反斜杠路径直接写进命令文本,而 Windows 的 shell 是 git-bash(MSYS):命令里的反斜杠会被 shell 自己当转义吃掉(`>> C:\Users\x` 实际落到相对名 `C:Usersx`),扫描侧按 POSIX 语义也就认不出这是绝对路径 ⇒ 用例在 Windows 上**根本没测到那个文件**(见 AGENTS.md 跨平台纪律②)。改用 `filepath.ToSlash`(两端都是"真写那个文件"的形态),另加 Windows 专有的**双引号形态**断言(MSYS 里表达真反斜杠路径的唯一写法,防"带引号就绕过指令面审批")。修正后 CI run **36420256132 五个 job 全绿**(test / test-macos / test-windows / desktop-shell / desktop-shell-macos)。
 
 **测试**:`web/roles_test.go` 新增 3 项(装配**真实** host-roles/host-skills 走懒解析路径:`/api/roles` 未装配 503 且 state 不带 role、角色全流程 CRUD + 部分更新语义 + 当前角色改名跟随 + 删当前角色被拒 + `.trash` 回收站、技能库共享/私有/覆盖/上限/路径穿越/回收站后不再被索引);`web` 包 `go test` **127 通过**;前端 `npm test` 168 通过、`vue-tsc` 0 错、`test:layout` **39 通过 / 0 失败**(1 skip = 无浏览器时的跳过说明用例);全库 `go test ./... -race` 63 包全绿 + sdk 模块绿;`scripts/coverage-check.sh` **COVERAGE_OK**(`web` 79.1% ≥ 棘轮 68;新增 `internal/skills 75` 棘轮,实测 80.2%;总覆盖 80.1%)。
+
+### 第一百零二批 · 预置角色广度 + 发现引导（2026-09-30）
+
+> 起因:《WorkBuddy 借鉴吸收方案》借鉴 1 —— 对比里 gah 与对手差距最大、性价比最高的一处是
+> 「预置资产薄 + 找不到」:5 个预置角色、无预置技能、无发现入口。
+
+**① 12 个预置角色(5 → 12,五组)**
+
+| 组 | 角色 | 新增 |
+|---|---|---|
+| 通用 | 通用助理 | — |
+| 工程 | 编程大师 · **技术负责人** · **代码评审** · **运维值守** | 3 个 |
+| 数据 | 财务 · **数据分析** | 1 个 |
+| 写作 | 小说家 · 新闻撰稿人 · **技术文档** · **翻译** | 2 个 |
+| 学习 | **技术导师** | 1 个 |
+
+每个角色都有 `description`(用途)+`group`(分组)+`identity`(身份句)+`AGENTS.md`(工作规则,
+含"边界"一节:不替用户做不可逆决定、相关≠因果、不在生产试操作等)。`SeedRolesVersion` 1→2;
+升级策略不变(「缺失才释放」,已存在整体跳过)—— 新增预置会落到老用户机器,预置内容修订不会。
+
+**② `group` 展示字段**
+
+`sdk.RoleSpec.Group` + `role.yaml` 的 `group` 键,贯穿 `ParseDefinition` 与 `Save`(后者是
+**全量覆盖写**,少映射一个字段就会在下一次保存/改名/移动时静默抹掉 —— 与 `tools_exclude` 同款坑,
+已用 `TestGroupRoundTrip` 钉住)。面板按组分节,顺序按**首次出现**(不设死分组表:新增预置落哪组
+就出现在哪组,不用改前端);无 group 的用户自建角色收在「其它」一节。
+
+**③ 发现引导:只用已有状态**
+
+提示条判据 = `Prefs.Role` 为空(从没挑过角色)。**选中后自然永久消失** ⇒ 不需要新增
+「不再提示」偏好字段(省一个持久化状态 + 将来的迁移面)。刻意做成**面板内一行提示**而不是启动浮层:
+角色不挑也能用(基线 = 全局指令 + 全部技能),不该打断第一次对话;真要更强引导时再加。
+
+**④ 内容质量契约(宁少勿滥,机制化)**
+
+`internal/embed/preset_roles_test.go` 对 12 个预置角色逐个断言:有 description / group(与表一致)/
+identity;**没有 `skills` 键**(预置会静默缩小用户可见技能);AGENTS.md 至少 2 个小节且 ≥200 字;
+且能被真实解析器以 `strictKeys=true` 接受(不进 `Broken()`)。写不出实质规则的角色**加不进来**。
+
+**⑤ 方案订正(诚实记录)**
+
+《WorkBuddy 借鉴吸收方案》里写的「复用现有 `NOND-W3` 首启引导链路」**不成立** ——
+`FirstRunGuide` / `/api/guides` / `prefs.DismissedGuides` 已随 IM 线于 2026-09-12 整体删除。
+故引导改为面板内提示条,未重建向导(那是另一个量级的 UI 工程)。
+
+**⑥ 测试与门禁**
+
+- `internal/embed`:12 角色内容契约 + 解析洁净;`internal/roles`:`group` 往返 + 空白裁剪。
+- 门禁:`gofmt`/`go vet`/`staticcheck` 干净;核心包 `-race` **66 包 0 FAIL**;e2e `tests` 绿(341s);
+  `COVERAGE_OK`(棘轮按实测上调 `internal/embed` 70→75.2、`internal/roles` 85→86.4);
+  `vue-tsc` 0 error;`npm test` 186;`test:layout` 全绿(1 skip)。
+
+**⑦ 本批未做(诚实登记)**
+
+- **未做真正的首启向导**(多步浮层 + provider 就绪后自动弹出):那要重建已删除的引导面,成本 M;
+  本批的提示条覆盖"知道有角色这回事"这一段,不够再加。
+- **未做角色市场的导入/分享**:角色包导出/导入(第九十三批)已能覆盖团队内分享;
+  社区市场涉及不可信内容与版本治理,不在本批。
+- **未给 12 个角色逐个跑真实验收任务**:本批的机制化门槛是「内容契约」(结构完整、规则有实质),
+  真正的"每个角色跑一轮真实任务并留判据"是**人工验收**,已列入本批 §待办与人工验证项。
 
 ### 第一百零一批 · 实例内多会话并行回合（2026-09-30）
 
