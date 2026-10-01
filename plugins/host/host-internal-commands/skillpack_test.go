@@ -11,6 +11,10 @@ import (
 	"strings"
 	"testing"
 
+	"log/slog"
+
+	"github.com/nekoleamo/go-agent-harness/core/ctx"
+	"github.com/nekoleamo/go-agent-harness/core/event"
 	"github.com/nekoleamo/go-agent-harness/internal/skillpack"
 	"github.com/nekoleamo/go-agent-harness/internal/skills"
 	"github.com/nekoleamo/go-agent-harness/sdk"
@@ -245,5 +249,20 @@ func TestSkillPackCommandsRegistered(t *testing.T) {
 		if _, ok := cmds.Get(name); !ok {
 			t.Fatalf("命令未注册: /%s", name)
 		}
+	}
+}
+
+// TestCmdSkillExportWithoutWorkspace 同理:拿不到工作区时要显式路径,不静默落盘。
+func TestCmdSkillExportWithoutWorkspace(t *testing.T) {
+	t.Setenv("GAH_HOME", t.TempDir())
+	logger := slog.New(slog.DiscardHandler)
+	h := &Host{c: ctx.New(logger, event.New(logger))}
+	seedSharedSkill(t, "nw")
+	if _, err := h.cmdSkillExport([]string{"nw"}); err == nil {
+		t.Fatal("拿不到工作区时应要求显式路径")
+	}
+	p := filepath.Join(t.TempDir(), "s.zip")
+	if _, err := h.cmdSkillExport([]string{"nw", p}); err != nil {
+		t.Fatalf("给了显式路径应成功: %v", err)
 	}
 }

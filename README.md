@@ -224,6 +224,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `/settings history N\|off\|unlimited` | 会话历史注入条数(`off` 禁止 / `unlimited` 全部 / N 最近 N 条;全局偏好跨会话) |
 | `/compact [指示词]` | 手动滚动摘要压缩(立即折叠旧历史;自动超预算压缩不变;指示词仅记录);端点报上下文超窗时会**自动**压缩后重试本回合(溢出兜底,只重试一次),无需手动 |
 | `/export [path]` | 导出当前会话事件序列(`.html` 结尾 = 自包含 HTML 渲染,否则 jsonl;**导出成功后默认自动用系统默认程序打开**,`GAH_EXPORT_OPEN=0` 关闭);Web/桌面端等价入口 = 侧栏会话行 `⤓` 菜单(桌面端落盘到下载目录) |
+| `/role-pack export <标识> [路径]` · `/role-pack import <包路径> [--as 名] [--overwrite]` | 角色包(定义 + 工作规则 + 私有技能,单个 zip):TUI/headless 侧的分享入口(与 Web 的 `/api/rolepack` 同一实现;同名默认拒,`--overwrite` 才覆盖且旧份进回收站) |
 | `/skill-export <技能名> [路径]` · `/skill-import <包路径> [--as 名] [--overwrite]` | 技能包(借鉴 5):`/skill-export` 把**共享技能**导成 `.zip`(只有它的 `SKILL.md`,缺省落当前工作区,给目录则拼 `gah-skill-<名>.zip`);`/skill-import` 导入(`--as` 改名会同步改写正文 frontmatter,**同名缺省拒**,`--overwrite` 才覆盖且旧份进回收站)。角色私有技能随**角色包**走 |
 | `/workspace [目录]` | 切换工作区(项目):最近列表选择或输新目录;切换即开新会话、工具进程 cwd 真实切换、沙箱 root 同步 |
 | `/session list\|switch\|new\|current` | 会话管理:列出(★ = 置顶,带概述)/ 切换(二级选择器带内容预览与时间)/ 新建(空历史)/ 查看当前 |

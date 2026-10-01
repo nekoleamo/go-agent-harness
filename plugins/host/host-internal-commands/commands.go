@@ -169,6 +169,22 @@ func (h *Host) specs() []sdk.CommandSpec {
 		{Name: "skill-import", Usage: "/skill-import <包路径> [--as 名] [--overwrite]", Desc: "导入技能包(同名默认拒;--overwrite 才覆盖,旧份进回收站)",
 			Run:  h.cmdSkillImport,
 			Args: []sdk.ArgLevel{{FreeArgs: func([]string) []string { return []string{"包路径(.zip)"} }}}},
+		// 角色包命令面(第一百零八批):与 Web 的 /api/rolepack 同一实现。TUI/headless 此前
+		// 只能回设置面板才能分享角色 —— 这是补上的那条路。
+		{Name: "role-pack", Usage: "/role-pack export <标识> [路径] | import <包路径> [--as 名] [--overwrite]",
+			Desc: "角色包(定义 + 工作规则 + 私有技能,单个 zip):导出 / 导入(同名默认拒,--overwrite 才覆盖,旧份进回收站)",
+			Run:  h.cmdRolePack,
+			Args: []sdk.ArgLevel{
+				{Options: func([]string) []sdk.Option {
+					return []sdk.Option{{Value: "export", Desc: "导出角色为 .zip"}, {Value: "import", Desc: "导入角色包"}}
+				}},
+				{FreeArgs: func(picked []string) []string {
+					if len(picked) > 0 && picked[0] == "export" {
+						return []string{"角色标识", "路径?"}
+					}
+					return []string{"包路径(.zip)"}
+				}},
+			}},
 		{Name: "compact", Usage: "/compact [指示词]", Desc: "手动滚动摘要压缩(立即折叠旧历史;指示词仅作记录)", Run: h.cmdCompact,
 			Args: []sdk.ArgLevel{{FreeArgs: func([]string) []string { return []string{"指示词?"} }}}},
 		{Name: "workspace", Usage: "/workspace [目录]", Desc: "切换工作区(项目):最近使用列表选择或输入新目录,切换即开新会话",

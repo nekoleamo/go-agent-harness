@@ -107,19 +107,13 @@ func (h *Host) cmdSkillImport(args []string) (string, error) {
 	if res.Replaced {
 		msg += ";覆盖了同名旧技能(旧份在回收站可恢复)"
 	}
-	if svc, ok := h.svc(); ok {
-		if err := svc.Rescan(); err != nil {
+	var skSvc sdk.SkillsService
+	if err := h.c.Inject("ctx.skills", &skSvc); err == nil {
+		if err := skSvc.Rescan(); err != nil {
 			msg += ";注意:技能索引重扫失败(" + err.Error() + "),可 /reload 或重启 gah"
 		}
+	} else {
+		msg += ";注意:当前构建未装配技能服务,新技能要重启 gah 后可见"
 	}
 	return msg, nil
-}
-
-// svc 取技能服务(未装配 → nil,导入仍落盘,只是索引不刷新)。
-func (h *Host) svc() (sdk.SkillsService, bool) {
-	var s sdk.SkillsService
-	if err := h.c.Inject("ctx.skills", &s); err != nil {
-		return nil, false
-	}
-	return s, s != nil
 }
