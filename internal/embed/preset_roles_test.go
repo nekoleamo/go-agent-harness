@@ -145,8 +145,8 @@ func TestPresetRolesParseClean(t *testing.T) {
 // 为什么单独钉:skills 键写错一个名字,切到这个角色就会看到一条"失效挂载"
 // (面板上挂着、模型却读不到)—— 而预置内容出错对所有用户生效,不是个别情况。
 func TestPresetRoleSkillsResolve(t *testing.T) {
-	if SeedRolesVersion < 3 {
-		t.Fatalf("预置技能从 SeedRolesVersion 3 起,got %d", SeedRolesVersion)
+	if SeedRolesVersion < 4 {
+		t.Fatalf("预置技能从 SeedRolesVersion 3 起(第三批 24 条),got %d", SeedRolesVersion)
 	}
 	home := t.TempDir()
 	if _, err := EnsureRoles(home); err != nil {

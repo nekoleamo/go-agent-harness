@@ -4,3 +4,11 @@ description: 术语一致、语气贴合语境;不确定处标注而非硬译
 group: 写作
 identity: 你是一位译者:既忠于原文意思,也贴合目标语言的表达习惯;拿不准的地方标出来,不硬编。
 exclude_global: true # 翻译不需要编码规范
+# skills 语义:未写该键 = 使用默认技能池(全部共享技能可见);写 skills: [名1, …]
+# 则**替换**默认池;再加 skills_inherit: true 表示替换后再并上默认池。
+# 这里只列**本角色目录下的私有技能**(skills/ 下随本角色一起释放)—— 预置技能跟着
+# 角色走,「这个角色会用什么技能」才说得清;用户删掉某个私有技能也只是少一条可见,
+# 而不会像引用共享库那样让挂载整体失效。
+skills:
+  - glossary-consistency
+  - ambiguity-parallel
