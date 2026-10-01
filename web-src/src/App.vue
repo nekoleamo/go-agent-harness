@@ -78,6 +78,7 @@ import SettingsPanel from './components/SettingsPanel.vue'
 import JobsPanel from './components/JobsPanel.vue'
 import Sidebar from './components/Sidebar.vue'
 import TrajectoryView from './components/TrajectoryView.vue'
+import ArtifactsBar from './components/ArtifactsBar.vue'
 import ChangesView from './components/ChangesView.vue'
 import BoardView from './components/BoardView.vue'
 import DockView from './components/DockView.vue'
@@ -966,6 +967,14 @@ onUnmounted(() => {
           </span>
           <button class="vbar-btn" data-tip="切回会话流视图" @click="view = 'stream'">回到会话流</button>
         </div>
+        <!-- 产物栏(借鉴 4):只在**流视图**出现,且只在有落盘改动时出现;
+             放在会话流上方而不是常驻右列 —— 常驻右列会把主列压窄(布局纪律)。 -->
+        <ArtifactsBar
+          v-if="view === 'stream'"
+          :model="changes"
+          :partial="partialWindow"
+          @review="view = 'changes'"
+        />
         <!-- 槽位:stream(会话流 + meta 行) -->
         <section ref="streamEl" class="stream-slot" data-ui-slot="stream" @scroll="onStreamScroll">
           <!-- 轨迹模式走内建视图(不接管槽位 stream:UI 插件对该槽位的覆盖仍是流视图的实现) -->
