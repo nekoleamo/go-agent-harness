@@ -65,7 +65,21 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	if err := c.Provide("ctx.schedule", s); err != nil {
 		return nil, err
 	}
+	// 多实例租约(第一百零四批):同一个数据根被两个实例共用时,调度循环只能有一个在跑 ——
+	// 否则同一个 cron 计划会被触发两遍(跑两次 = 两次模型开销 + 两次副作用)。
+	// 拿不到租约**不报错**:服务照常可列/可增删计划(用户换个窗口照样管计划),
+	// 只是这个实例不负责触发,并在启动日志里如实说明。
+	lease, busy, err := acquireLease()
+	if err != nil {
+		return nil, fmt.Errorf("host-schedule: 取调度租约失败: %w", err)
+	}
+	if busy {
+		s.log.Warn("host-schedule: 另一个 gah 实例已在执行定时计划,本实例只管理不触发",
+			"lease", leasePath())
+		return func() {}, nil
+	}
 	if err := s.launch(); err != nil {
+		lease.Release()
 		return nil, err
 	}
 	var disposers []sdk.Disposer
@@ -79,6 +93,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	}
 	return func() {
 		s.Stop() // 先停循环并取消在跑回合(卸载即撤销),再注销命令
+		lease.Release()
 		for _, d := range disposers {
 			d()
 		}

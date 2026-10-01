@@ -55,7 +55,8 @@ core/ctx 60
 core/plugin 65
 core/config 65
 sdk 85.6
-internal/prefs 82
+internal/prefs 82.1
+internal/xlock 70
 internal/roles 86.4
 internal/rolepack 85
 internal/skills 77
@@ -87,7 +88,7 @@ plugins/host/host-fanout 80
 plugins/host/host-internal-commands 93
 plugins/host/host-jobs 88
 plugins/host/host-notices 70
-plugins/host/host-schedule 76
+plugins/host/host-schedule 81.5
 plugins/host/host-llm 68
 plugins/host/host-plugin-manager 76
 plugins/host/host-session-log 76
@@ -96,7 +97,7 @@ plugins/host/host-skills 85
 plugins/host/host-roles 87
 plugins/host/host-system-prompt 88
 plugins/host/host-tools 91
-plugins/host/host-worktrees 74
+plugins/host/host-worktrees 81
 plugins/host/host-usage-stats 60
 plugins/host/token-compress 84
 plugins/mcp/mcp-bridge 72

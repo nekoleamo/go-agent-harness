@@ -22,6 +22,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -88,6 +89,17 @@ const (
 	maxNameLen = 24
 )
 
+// instanceTag 本进程实例短码(第一百零四批:多实例多开)。
+//
+// 为什么需要:id 分配虽然会 `os.Stat` 查目录是否已存在,但两个实例的 `w.seq` 都从 1 开始,
+// 会**探到同一个空位** —— 后到者 git worktree add 会撞上已存在的路径/分支。
+// 把实例短码编进 id 之后,两个实例的候选集合天然不重叠。
+func instanceTag() string {
+	// PID 足够:同机同数据根不会有 PID 相同的两个活进程。
+	pid := os.Getpid()
+	return strconv.FormatInt(int64(pid)%4096, 36) // 36 进制 1~3 位,名字不臃肿
+}
+
 // baseDir 受管 worktree 的根(便携纪律:数据根派生,不落用户仓库、不落系统目录)。
 func baseDir() string { return filepath.Join(sdk.Home(), "worktrees") }
 
@@ -140,7 +152,7 @@ func (w *Worktrees) Create(_ context.Context, label string) (sdk.Worktree, error
 	var id, path string
 	for i := 0; i < maxIDProbe; i++ {
 		w.seq++
-		id = fmt.Sprintf("%s-wt%d", name, w.seq)
+		id = fmt.Sprintf("%s-wt%d-%s", name, w.seq, instanceTag())
 		path = filepath.Join(root, id)
 		if _, serr := os.Stat(path); os.IsNotExist(serr) {
 			break

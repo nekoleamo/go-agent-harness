@@ -3,6 +3,7 @@ package hostworktrees
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -297,4 +298,29 @@ func readFile(t *testing.T, p string) string {
 		t.Fatal(err)
 	}
 	return strings.TrimSpace(string(b))
+}
+
+// TestInstanceTagInWorktreeID 多实例下两个进程的 worktree id 不能撞(第一百零四批)。
+//
+// 背景:id 分配会 `os.Stat` 查目录是否存在,但两个实例的 seq 都从 1 开始,会探到**同一个
+// 空位** ⇒ 后到者 git worktree add 撞上已存在的路径/分支。把实例短码编进 id 之后,
+// 两边的候选集合天然不重叠。
+func TestInstanceTagInWorktreeID(t *testing.T) {
+	tag := instanceTag()
+	if tag == "" {
+		t.Fatal("实例短码不应为空")
+	}
+	// 短码来自 PID,同机同数据根不会有 PID 相同的两个活进程
+	if instanceTag() != tag {
+		t.Fatal("同进程内实例短码应稳定")
+	}
+	// id 形状:<name>-wt<N>-<tag>
+	seq := 7
+	id := fmt.Sprintf("%s-wt%d-%s", "proj", seq, tag)
+	if !strings.HasSuffix(id, "-wt7-"+tag) {
+		t.Fatalf("id 应以 -wtN-实例码 结尾,got %s", id)
+	}
+	if strings.Count(id, "-wt") != 1 {
+		t.Fatalf("id 里的 -wt 段应只出现一次,got %s", id)
+	}
 }

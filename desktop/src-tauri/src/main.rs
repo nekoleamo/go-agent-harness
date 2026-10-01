@@ -1559,18 +1559,33 @@ fn resolveRuntime(app: &AppHandle) -> Runtime {
     }
 }
 
+/// 启动参数是否要求「另起一个实例」(第一百零四批:多实例多开)。
+///
+/// 形态刻意是**参数/托盘显式开启**,而不是默认多开:默认多开会让「手滑双击图标」
+/// 变成两个 sidecar 抢同一个数据根(虽然已加租约与锁,但用户看到的是两个窗口,
+/// 以为是 bug)。默认仍聚焦已有窗口,与今天的行为逐字一致。
+fn wants_new_instance() -> bool {
+    std::env::args().any(|a| a == "--new-instance")
+}
+
 fn main() {
-    tauri::Builder::default()
-        // 导航护栏**要在任何页面加载前装好**(导航回调按注册时的插件集合在运行时查;
-        // 这里放在最前面是为了让「谁在守门」一眼可见)。
-        .plugin(navGuard())
-        .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+    let new_instance = wants_new_instance();
+    let mut b = tauri::Builder::default();
+    // 导航护栏**要在任何页面加载前装好**(导航回调按注册时的插件集合在运行时查;
+    // 这里放在最前面是为了让「谁在守门」一眼可见)。
+    b = b.plugin(navGuard()).plugin(tauri_plugin_shell::init());
+    if !new_instance {
+        // 单实例插件**只在默认模式下注册**:注册它就等于宣告「本进程是该单例的持锁者」,
+        // 于是第二次启动会走进回调(聚焦已有窗口)。--new-instance 不注册它,
+        // 两个实例才能并存(端口已随机、数据根已加租约与锁)。
+        b = b.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.show();
                 let _ = w.set_focus();
             }
-        }))
+        }));
+    }
+    b
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             None,
@@ -1649,10 +1664,17 @@ fn main() {
             let new_window_item = MenuItemBuilder::with_id("new_window", "新会话窗口…")
                 .build(app)
                 .unwrap();
+            // 「新实例」:多开一个**进程**(与「新会话窗口」的同实例多窗口是两件事 —
+            // 前者各有独立的 sidecar 与端口,后者共用一个)。共享数据根,所以配了
+            // 调度租约与偏好跨进程锁(见 host-schedule/lease.go 与 internal/prefs)。
+            let new_instance_item = MenuItemBuilder::with_id("new_instance", "新实例…")
+                .build(app)
+                .unwrap();
             let menu = MenuBuilder::new(app)
                 .items(&[
                     &show_item,
                     &new_window_item,
+                    &new_instance_item,
                     &autostart_item,
                     &check_item,
                     &notify_item,
@@ -1686,6 +1708,7 @@ fn main() {
                         }
                     }
                     "new_window" => open_session_window(app),
+                    "new_instance" => spawn_new_instance(app),
                     "test_notify" => {
                         shellLog(app, "托盘: 测试系统通知");
                         notifyNative(app, "gah", "测试通知:看到这条说明系统通知通了。");
@@ -2401,5 +2424,39 @@ mod session_window_tests {
             (1..=16).contains(&MAX_SESSION_WINDOWS),
             "上限应合理: {MAX_SESSION_WINDOWS}"
         );
+    }
+}
+
+// spawn_new_instance 再起一个 gah 壳进程(带 --new-instance ⇒ 不注册单实例插件)。
+//
+// 为什么直接 spawn 而不是"再开一个窗口":新窗口共用同一个 sidecar(同一端口、
+// 同一份偏好),而这个入口的语义是**另一个进程** —— 各自独立的 sidecar、独立的端口、
+// 各自的调度租约竞争。两种需求在托盘里分列两个项,免得用户按直觉点错。
+//
+// 失败(路径不对/权限)时给原生对话框:静默失败会让人以为菜单坏了。
+fn spawn_new_instance(app: &AppHandle) {
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            shellLog(app, &format!("新实例: 取当前可执行路径失败 {e}"));
+            app.dialog()
+                .message(format!("无法确定程序路径:{e}"))
+                .title("gah 新实例")
+                .show(|_| {});
+            return;
+        }
+    };
+    match std::process::Command::new(&exe)
+        .arg("--new-instance")
+        .spawn()
+    {
+        Ok(_) => shellLog(app, &format!("新实例: 已启动 {}", exe.display())),
+        Err(e) => {
+            shellLog(app, &format!("新实例: 启动失败 {e}"));
+            app.dialog()
+                .message(format!("没能启动新实例:{e}"))
+                .title("gah 新实例")
+                .show(|_| {});
+        }
     }
 }

@@ -7,7 +7,11 @@
 package prefs
 
 import (
+	"log"
+	"time"
+
 	"encoding/json"
+	"github.com/nekoleamo/go-agent-harness/internal/xlock"
 	"os"
 	"path/filepath"
 	"strings"
@@ -95,22 +99,84 @@ var mu sync.Mutex
 
 // Save 覆写偏好(GAH_HOME 未设 = 跳过;目录自动创建;失败静默——非关键路径)。
 func Save(p Prefs) {
+	path := Path()
+	if path == "" {
+		mu.Lock()
+		defer mu.Unlock()
+		saveLocked(p)
+		return
+	}
+	// 跨进程:整对象覆写同样要串行,否则一个实例的整份快照会盖掉另一个实例刚写的字段。
 	mu.Lock()
 	defer mu.Unlock()
-	saveLocked(p)
+	ran, err := xlock.TryRun(lockPath(path), func() error { saveTo(path, p); return nil })
+	if err != nil {
+		logPrefs("Save 失败", "err", err)
+		return
+	}
+	if !ran {
+		logPrefs("Save 放弃:另一个实例正占用偏好锁(本次未落盘)", "path", path)
+	}
 }
 
 // Update 读-改-写偏好:进程内互斥 + 落盘前重读文件,只改回调涉及的字段,
 // 避免并发写者用共享快照整体覆写抹掉对方刚写入的偏好。
+//
+// **跨进程**:进程内的 mu 挡不住"桌面壳起了两个实例各改各的"。因此这里在读-改-写
+// 全程持一把**文件锁**;拿不到锁(另一个实例正在写)时按"稍后重试"处理 ——
+// 锁的持有时间只有一次读+一次写,重试几乎必然成功;连续两次失败就**放弃本次修改**
+// 并记日志(绝不静默成功:调用方会以为偏好已改,重启后又不是那一套)。
 func Update(fn func(*Prefs)) {
 	if fn == nil {
 		return
 	}
+	path := Path()
+	if path == "" {
+		// 无数据根(纯内存/嵌入场景):退回进程内互斥的老口径。
+		mu.Lock()
+		defer mu.Unlock()
+		p := Load()
+		fn(&p)
+		saveLocked(p)
+		return
+	}
+	// 进程内也要串行:文件锁在同进程的不同 fd 之间**同样**互斥,若不在进程内先排队,
+	// 同一进程里的几十个 goroutine(=web 每请求一个)会自己抢自己,重试再多次也会丢操作。
 	mu.Lock()
 	defer mu.Unlock()
-	p := Load()
-	fn(&p)
-	saveLocked(p)
+	// 跨进程:带退避地重试。锁的持有时间只有「一次读 + 一次写」,正常竞争都是毫秒级;
+	// 上限 1.5s 是为了覆盖"另一个实例正在做一次慢写"的情况。
+	delay := 5 * time.Millisecond
+	deadline := time.Now().Add(1500 * time.Millisecond)
+	for {
+		ran, err := xlock.TryRun(lockPath(path), func() error {
+			p := loadFrom(path) // 锁内重读:拿到的必是另一个写者刚落盘的状态
+			fn(&p)
+			saveTo(path, p)
+			return nil
+		})
+		if err != nil {
+			logPrefs("偏好更新失败", "err", err)
+			return
+		}
+		if ran {
+			return
+		}
+		// busy:有别的进程(或另一把锁的持有者)正在写。等它一下再试。
+		if time.Now().After(deadline) {
+			logPrefs("偏好更新放弃:偏好锁持续被占用(本次修改未落盘)", "path", path)
+			return
+		}
+		time.Sleep(delay)
+		if delay < 100*time.Millisecond {
+			delay *= 2
+		}
+	}
+}
+
+// lockPath 偏好文件的锁路径(与状态文件同目录,便于整目录一起迁移)。
+func lockPath(statePath string) string {
+	return statePath + ".lock"
 }
 
 // saveLocked Save 的实现体(调用方持有 mu;不做加锁)。
@@ -119,6 +185,21 @@ func saveLocked(p Prefs) {
 	if path == "" {
 		return
 	}
+	saveTo(path, p)
+}
+
+// loadFrom 读指定状态文件(不回落到 legacy:调用方明确知道要读哪个文件)。
+// 读不出来/坏 JSON = 空偏好(与 Load 同口径:坏文件不阻断启动)。
+func loadFrom(path string) Prefs {
+	p := Prefs{}
+	if b, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(b, &p)
+	}
+	return p
+}
+
+// saveTo 写指定状态文件(原子替换;失败静默 —— 偏好是非关键路径)。
+func saveTo(path string, p Prefs) {
 	b, err := json.Marshal(p)
 	if err != nil {
 		return
@@ -127,6 +208,16 @@ func saveLocked(p Prefs) {
 		return
 	}
 	_ = writeFileAtomic(path, b, 0o600)
+}
+
+// logPrefs 偏好层的失败留痕。用标准 log 而非 slog:internal/prefs 是不依赖 ctx 的
+// 底层包,而「两个实例抢锁」这类问题恰恰是**用户报不出 stack、只有日志能查**的那类。
+func logPrefs(msg string, kv ...any) {
+	if len(kv) == 0 {
+		log.Printf("prefs: %s", msg)
+		return
+	}
+	log.Printf("prefs: "+msg, kv...)
 }
 
 // writeFileAtomic 同目录临时文件写入 + rename 原子替换(失败清理临时文件)。
