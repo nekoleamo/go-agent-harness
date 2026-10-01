@@ -12,6 +12,7 @@ import (
 
 	"github.com/nekoleamo/go-agent-harness/core/ctx"
 	"github.com/nekoleamo/go-agent-harness/core/event"
+	"github.com/nekoleamo/go-agent-harness/internal/embed"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-system-prompt"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-tools"
 	"github.com/nekoleamo/go-agent-harness/sdk"
@@ -176,5 +177,42 @@ func TestRescanWarnsDuplicates(t *testing.T) {
 	}
 	if n := len(reg.List()); n != 1 {
 		t.Fatalf("重名应 first-wins 去重: %d", n)
+	}
+}
+
+// TestPresetRolePrivateSkillsScanned 预置角色的私有技能必须被扫描器看到。
+//
+// 为什么单独钉:文件"释放出来了"与"扫得到"是两件事 —— 扫描器的目录集是每次现算的
+// scanDirs(角色私有 → 全局 → 项目 → 扩展),一旦将来某处改动漏了角色私有目录,
+// 症状是「面板上该角色挂了 2 个技能,切过去却一条都看不见」,而文件明明在磁盘上。
+func TestPresetRolePrivateSkillsScanned(t *testing.T) {
+	t.Setenv("GAH_HOME", t.TempDir())
+	if _, err := embed.EnsureRoles(t.TempDir()); err != nil {
+		// 这条只验扫描面;释放由 internal/embed 的契约测试负责,这里用真实装配。
+		t.Logf("预置释放失败(本用例只关心扫描): %v", err)
+	}
+	home := os.Getenv("GAH_HOME")
+	if _, err := embed.EnsureRoles(home); err != nil {
+		t.Fatal(err)
+	}
+	// 造一个带私有技能的角色(用真实预置目录,保证与 seed 一致)
+	dirs := scanDirs(nil)
+	found := false
+	for _, d := range dirs {
+		if filepath.Base(d) != "skills" {
+			continue
+		}
+		entries, err := os.ReadDir(d)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if e.IsDir() && e.Name() == "clarify-requirement" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("预置角色的私有技能没出现在扫描目录集里;scanDirs=%v", dirs)
 	}
 }

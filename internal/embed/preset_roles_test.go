@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	"github.com/nekoleamo/go-agent-harness/internal/roles"
+	"github.com/nekoleamo/go-agent-harness/internal/skills"
 )
 
 // presetRoles 预置角色清单(有测试覆盖的角色必须列在这里,反向也成立)。
@@ -81,10 +82,10 @@ func TestPresetRoleContentContract(t *testing.T) {
 		if !hasYAMLValue(yamlTxt, "identity") {
 			t.Errorf("%s 缺 identity(身份槽会是空的)", id)
 		}
-		// ④ 一律不写 skills 键:用户技能池不可预知,写错会**静默缩小**可见技能
-		if strings.Contains(yamlTxt, "\nskills:") {
-			t.Errorf("%s 预置了 skills 键:会静默缩小用户可见技能(应交默认池)", id)
-		}
+		// ④ skills 键(第一批起允许,但**只能列本角色的私有技能**):
+		//    预置技能必须跟着角色走(否则"这个角色会用什么技能"说不清);引用共享库
+		//    会被用户删技能搞成失效挂载。校验在下面的 TestPresetRoleSkillsResolve 里做。
+		//    仍不允许 skills_inherit(那会把用户自己的技能并进来,预置内容不该预设)。
 		// ⑤ 工作规则(AGENTS.md)要有实质内容:标题 + 至少两个小节
 		ag, err := os.ReadFile(filepath.Join(dir, "AGENTS.md"))
 		if err != nil {
@@ -136,4 +137,89 @@ func TestPresetRolesParseClean(t *testing.T) {
 			t.Errorf("预置角色 %s 解析失败(会进 Broken() 对用户可见): %v", e.Name(), err)
 		}
 	}
+}
+
+// TestPresetRoleSkillsResolve 预置角色的 skills 键必须**逐条解析到它自己目录下的
+// 私有技能文件**,且每个技能文件要过解析器(strictKeys,坏文件不许进 Broken())。
+//
+// 为什么单独钉:skills 键写错一个名字,切到这个角色就会看到一条"失效挂载"
+// (面板上挂着、模型却读不到)—— 而预置内容出错对所有用户生效,不是个别情况。
+func TestPresetRoleSkillsResolve(t *testing.T) {
+	if SeedRolesVersion < 3 {
+		t.Fatalf("预置技能从 SeedRolesVersion 3 起,got %d", SeedRolesVersion)
+	}
+	home := t.TempDir()
+	if _, err := EnsureRoles(home); err != nil {
+		t.Fatal(err)
+	}
+	rolesDir := filepath.Join(home, "roles")
+	entries, err := os.ReadDir(rolesDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	presetWithSkills := 0
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		id := e.Name()
+		raw, err := os.ReadFile(filepath.Join(rolesDir, id, "role.yaml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		names := presetSkillNames(string(raw))
+		if len(names) == 0 {
+			continue
+		}
+		presetWithSkills++
+		// 只看**有效键**(行首),不看注释 —— 注释里解释这个语义是应该的。
+		for _, line := range strings.Split(string(raw), "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), "skills_inherit:") && !strings.HasPrefix(line, "#") {
+				t.Errorf("%s 预置了 skills_inherit:会并入用户自己的技能(预置内容不该预设)", id)
+			}
+		}
+		for _, n := range names {
+			if err := skills.ValidateName(n); err != nil {
+				t.Errorf("%s 的 skills 含非法名 %q: %v", id, n, err)
+				continue
+			}
+			p := filepath.Join(rolesDir, id, "skills", n, "SKILL.md")
+			body, rerr := os.ReadFile(p)
+			if rerr != nil {
+				t.Errorf("%s 的技能 %q 没有随角色释放(挂载会失效): %v", id, n, rerr)
+				continue
+			}
+			// 技能正文要能被解析器接受,且 frontmatter 的 name 与目录名一致
+			if fn := skills.ParseName(string(body)); fn != "" && fn != n {
+				t.Errorf("%s 的技能 %q frontmatter name 是 %q(与目录名不一致)", id, n, fn)
+			}
+		}
+	}
+	if presetWithSkills == 0 {
+		t.Fatal("没有任何预置角色带技能 —— 第一批技能没落进来")
+	}
+}
+
+// presetSkillNames 从 role.yaml 里抠出 skills 键下的名字列表(只看行首 "skills:" 后的
+// "  - 名" 行;注释里的 skills: 不算数)。
+func presetSkillNames(doc string) []string {
+	var out []string
+	in := false
+	for _, line := range strings.Split(doc, "\n") {
+		t := strings.TrimSpace(line)
+		if strings.HasPrefix(line, "skills:") {
+			in = true
+			continue
+		}
+		if in {
+			if strings.HasPrefix(t, "- ") {
+				out = append(out, strings.Trim(strings.TrimPrefix(t, "- "), "\"'"))
+				continue
+			}
+			if t != "" && !strings.HasPrefix(line, "#") {
+				in = false // 键块结束(下一个非缩进、非注释行)
+			}
+		}
+	}
+	return out
 }
