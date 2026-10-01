@@ -479,6 +479,59 @@ function memSource(line: string): string {
 function memContent(line: string): string {
   return line.replace(/\(来源:\s*会话\s+\S+?\s*\)\s*$/, '').replace(/^\d+\.\s*/, '')
 }
+// memHasCandidates 该构建是否提供候选能力(字段组缺席 = 老版本;不渲染空壳)
+const memHasCandidates = computed(() => Array.isArray(memCand.value))
+const memCand = ref<string[]>([])
+
+// memoryRun 之后要把候选组也同步过来(它与记忆列表在同一个响应里)
+function memSync(v: { candidates?: string[]; candidate_used?: number; candidate_limit?: number; candidate_today?: number; candidate_today_max?: number }): void {
+  if (Array.isArray(v.candidates)) {
+    memCand.value = v.candidates
+    memUsed.value = v.candidate_used ?? v.candidates.length
+    memLimit.value = v.candidate_limit ?? 0
+    memToday.value = v.candidate_today ?? 0
+    memTodayMax.value = v.candidate_today_max ?? 0
+  }
+}
+const memUsed = ref(0)
+const memLimit = ref(0)
+const memToday = ref(0)
+const memTodayMax = ref(0)
+
+// memoryPropose 提一条候选。候选**不进上下文**,要确认(accept)之后才生效 ——
+// 界面上把这句话放在按钮旁边,不然用户会以为「提了就已经记住了」。
+function memoryPropose(): void {
+  const content = memDraft.value.trim()
+  if (!content) {
+    memErr.value = '候选内容为空'
+    return
+  }
+  void memoryRun({ action: 'propose', content }, () => {
+    memDraft.value = ''
+    return '已放进候选池(**还没进上下文**):确认之后才生效'
+  })
+}
+
+function memoryAccept(index: number): void {
+  void memoryRun({ action: 'accept', index }, () => '已转正为记忆(之后每轮带进上下文)')
+}
+
+function memoryReject(index: number): void {
+  void memoryRun({ action: 'reject', index }, () => '已丢弃候选(没有进记忆)')
+}
+
+function memoryAcceptAll(): void {
+  guard('把候选池里**全部**候选转正为记忆?(之后每轮都会带进上下文)', true, () => {
+    void memoryRun({ action: 'accept_all' }, (n) => (n ? `已转正 ${n} 条为记忆` : '候选池是空的,没东西可转正'))
+  })
+}
+
+function memoryRejectAll(): void {
+  guard('丢弃候选池里**全部**候选?(不进记忆)', true, () => {
+    void memoryRun({ action: 'reject_all' }, (n) => `已丢弃 ${n} 条候选`)
+  })
+}
+
 const memSources = computed(() => {
   const seen = new Set<string>()
   for (const l of memUser.value) {
@@ -502,6 +555,7 @@ async function loadMemory(): Promise<void> {
     memUser.value = v.user
     memProject.value = Array.isArray(v.project) ? v.project : []
     memPath.value = v.user_path
+    memSync(v)
   } catch {
     memReady.value = false
   }
@@ -517,6 +571,7 @@ async function memoryRun(body: Parameters<typeof api.memoryAct>[0], ok: (deleted
     memEnabled.value = !!v.enabled
     memUser.value = Array.isArray(v.user) ? v.user : []
     memProject.value = Array.isArray(v.project) ? v.project : []
+    memSync(v)
     memMsg.value = ok(v.deleted)
   } catch (e) {
     memErr.value = (e as Error).message
@@ -1984,6 +2039,25 @@ watch(
             用户级 {{ memUser.length }} 条／本项目 {{ memProject.length }} 条／注入预算 {{ memBudget }}
             字节（超预算时按时间倒序丢最旧）
           </p>
+          <template v-if="memHasCandidates">
+            <p class="dim" data-testid="mem-cand-head">
+              候选池 {{ memUsed }}/{{ memLimit }} 条（今日已提 {{ memToday }}/{{ memTodayMax }}）——
+              <strong>候选不进上下文</strong>，只有「转正」之后才生效。文件
+              <span class="mono">{{ memPath.replace(/user\.md$/, 'candidates.md') }}</span> 同样可以直接改。
+            </p>
+            <div v-if="memCand.length" class="mem-list">
+              <div v-for="(l, i) in memCand" :key="'c' + i" class="mem-item">
+                <span class="mem-txt" :data-tip="memContent(l)">{{ memContent(l) }}</span>
+                <button class="ghost solid" :disabled="memBusy" data-tip="转正为记忆(之后每轮带进上下文)" @click="memoryAccept(i + 1)">转正</button>
+                <button class="ghost danger-text" :disabled="memBusy" data-tip="丢弃(不进记忆)" @click="memoryReject(i + 1)">丢弃</button>
+              </div>
+            </div>
+            <div v-if="memCand.length" class="form-acts">
+              <button class="ghost solid" :disabled="memBusy" data-testid="mem-accept-all" @click="memoryAcceptAll">全部转正</button>
+              <button class="ghost danger-text" :disabled="memBusy" @click="memoryRejectAll">全部丢弃</button>
+            </div>
+            <p v-else class="dim">候选池是空的。</p>
+          </template>
           <div class="add-form">
             <label class="fld">
               <span class="fld-lab">记一条（写清“是什么、为什么”）</span>
@@ -1998,6 +2072,16 @@ watch(
             </label>
             <div class="form-acts">
               <button class="ghost solid" :disabled="memBusy || !memDraft.trim()" data-testid="mem-add" @click="memoryAdd">记住</button>
+              <button
+                v-if="memHasCandidates"
+                class="ghost"
+                :disabled="memBusy || !memDraft.trim()"
+                data-testid="mem-propose"
+                data-tip="先进候选池,确认之后才进上下文"
+                @click="memoryPropose"
+              >
+                提候选
+              </button>
               <button v-if="memEnabled" class="ghost danger-text" data-tip="只关注入，记忆文件保留" @click="memoryToggle(false)">关掉注入</button>
               <button v-else class="ghost" data-tip="重新把记忆注入系统提示" @click="memoryToggle(true)">开启注入</button>
             </div>

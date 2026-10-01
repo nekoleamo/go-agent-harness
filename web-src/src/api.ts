@@ -238,7 +238,19 @@ export const api = {
   },
   // memoryAct 四个动作:add / remove(按展示序号) / remove_source(按来源会话整段删) / toggle。
   // 响应就是刷新后的视图(+ deleted),面板不必再拉一次。
-  memoryAct(body: { action: 'add'; content: string } | { action: 'remove'; index: number } | { action: 'remove_source'; source: string } | { action: 'toggle'; enabled: boolean }): Promise<MemoryView> {
+  memoryAct(
+    body:
+      | { action: 'add'; content: string }
+      | { action: 'remove'; index: number }
+      | { action: 'remove_source'; source: string }
+      | { action: 'toggle'; enabled: boolean }
+      // 候选池(M2 前置件):propose 提候选(不进上下文),accept/reject 转正或丢弃。
+      | { action: 'propose'; content: string }
+      | { action: 'accept'; index: number }
+      | { action: 'reject'; index: number }
+      | { action: 'accept_all' }
+      | { action: 'reject_all' },
+  ): Promise<MemoryView> {
     return req('/api/memory', { method: 'POST', headers: json, body: JSON.stringify(body) })
   },
   // tools 工具清单(GET /api/tools);all=true = **全量**(管理面:被角色排除的也要列出来,

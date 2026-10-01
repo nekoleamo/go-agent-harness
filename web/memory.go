@@ -14,6 +14,7 @@ package web
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -60,6 +61,13 @@ func (s *Server) memorySvc(w http.ResponseWriter) (sdk.MemoryService, bool) {
 // 而不是显示一个空的「项目记忆」骗人)。
 type projectMemory interface{ ListProject() []string }
 
+// memoryCandidateSvc 取候选能力(未实现 ⇒ nil,**不报错**):候选是可选能力,
+// 老构建没有它时面板只是少一块,不该整段 503。
+func memoryCandidateSvc(ms sdk.MemoryService) sdk.MemoryCandidates {
+	cs, _ := ms.(sdk.MemoryCandidates)
+	return cs
+}
+
 // memoryView GET /api/memory 的响应体。
 type memoryView struct {
 	Enabled bool     `json:"enabled"`
@@ -70,6 +78,14 @@ type memoryView struct {
 	UserPath    string `json:"user_path"`
 	ProjectPath string `json:"project_path,omitempty"`
 	ProjectKey  string `json:"project_key,omitempty"`
+	// 候选池(M2 前置件):**候选永不进上下文**,只有 accept 之后才进。
+	// 该能力未实现(旧构建)时整组省略,前端不渲染候选区。
+	Candidates        []string `json:"candidates,omitempty"`
+	CandidatePath     string   `json:"candidate_path,omitempty"`
+	CandidateUsed     int      `json:"candidate_used"`
+	CandidateLimit    int      `json:"candidate_limit"`
+	CandidateToday    int      `json:"candidate_today"`
+	CandidateTodayMax int      `json:"candidate_today_max"`
 }
 
 // handleMemory GET /api/memory(只读视图)/ POST /api/memory(四个动作)。
@@ -131,6 +147,58 @@ func (s *Server) handleMemory(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		ms.SetEnabled(*body.Enabled)
+	case "propose":
+		// 候选池是**可选能力**:没装配就 501(如实说"这一版没有候选功能"),
+		// 绝不能退化成"直接写进记忆"—— 那会让面板比命令多一块能力,而用户以为走的是候选。
+		cs := memoryCandidateSvc(ms)
+		if cs == nil {
+			http.Error(w, "该构建不支持候选池(缺 host-memory 的候选能力)", http.StatusNotImplemented)
+			return
+		}
+		if strings.TrimSpace(body.Content) == "" {
+			http.Error(w, "候选内容为空", http.StatusBadRequest)
+			return
+		}
+		// 限流在这里显式报错(4xx:「你今天提太多」是内容问题,不是环境坏了)
+		if err := cs.Propose(body.Content, ""); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	case "accept", "reject", "accept_all", "reject_all":
+		cs := memoryCandidateSvc(ms)
+		if cs == nil {
+			http.Error(w, "该构建不支持候选池(缺 host-memory 的候选能力)", http.StatusNotImplemented)
+			return
+		}
+		switch body.Action {
+		case "accept":
+			if _, err := cs.AcceptCandidate(body.Index); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			deleted = 0
+		case "reject":
+			if _, err := cs.RejectCandidate(body.Index); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			deleted = 0
+		case "accept_all":
+			n, err := cs.AcceptAllCandidates()
+			if err != nil {
+				// 半截状态必须说清楚:已转正几条 + 错在哪(不能报「都好了」)
+				http.Error(w, fmt.Sprintf("已转正 %d 条后出错(不是全成):%s", n, err), http.StatusInternalServerError)
+				return
+			}
+			deleted = n
+		case "reject_all":
+			n, err := cs.RejectAllCandidates()
+			if err != nil {
+				http.Error(w, "驳回失败:"+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			deleted = n
+		}
 	default:
 		http.Error(w, "未知 action:"+body.Action, http.StatusBadRequest)
 		return
@@ -158,6 +226,14 @@ func (s *Server) memoryView(w http.ResponseWriter, ms sdk.MemoryService, extra m
 	}
 	if v.ProjectKey != "" {
 		v.ProjectPath = memory.ProjectPath(v.ProjectKey)
+	}
+	if cs := memoryCandidateSvc(ms); cs != nil {
+		v.Candidates = cs.ListCandidates()
+		if v.Candidates == nil {
+			v.Candidates = []string{}
+		}
+		v.CandidatePath = memory.CandidatesPath()
+		v.CandidateUsed, v.CandidateLimit, v.CandidateToday, v.CandidateTodayMax = cs.CandidateQuota()
 	}
 	if len(extra) == 0 {
 		writeJSON(w, http.StatusOK, v)

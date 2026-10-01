@@ -75,6 +75,15 @@ function makeStub(
   // 记忆是用户自己写的整句话,是面板横向滚动的高危位置(与技能/角色名同类)。
   const memState = {
     enabled: true,
+    // 候选池(记忆层 M2 前置件)。**候选不进上下文** —— 桩里也分开放,免得用例看不出来。
+    candidates: [
+      '1. [2026-10-02] CAND-ONE-' + 'z'.repeat(120) + ' (来源: 会话 sess-abc123)',
+      '2. [2026-10-01] 候选二(无来源)',
+    ],
+    candidateUsed: 2,
+    candidateLimit: 12,
+    candidateToday: 2,
+    candidateTodayMax: 5,
     user: [
       '1. [2026-10-02] ' + 'MEM-LONG-' + 'y'.repeat(140) + ' (来源: 会话 sess-abc123)',
       '2. [2026-10-01] 第二条记忆(来源: 会话 sess-abc123)',
@@ -92,6 +101,12 @@ function makeStub(
     user_path: '/tmp/gah-home/memory/user.md',
     project_path: '/tmp/gah-home/memory/projects/proj-1.md',
     project_key: 'proj-1',
+    candidates: st.candidates,
+    candidate_path: '/tmp/gah-home/memory/candidates.md',
+    candidate_used: st.candidateUsed,
+    candidate_limit: st.candidateLimit,
+    candidate_today: st.candidateToday,
+    candidate_today_max: st.candidateTodayMax,
   })
   const handler = async (route) => {
     const url = new URL(route.request().url())
@@ -247,6 +262,27 @@ function makeStub(
           memState.lastDeleted = before - memState.user.length
         }
         if (b.action === 'toggle') memState.enabled = !!b.enabled
+        // 候选动作:propose 进候选池;accept 转正进 user;reject 只丢候选
+        if (b.action === 'propose') {
+          memState.candidates = [`1. [2026-10-02] ${b.content}`, ...memState.candidates]
+          memState.candidateUsed = memState.candidates.length
+          memState.candidateToday += 1
+        }
+        if (b.action === 'accept') {
+          memState.candidates.splice((b.index ?? 1) - 1, 1)
+          memState.user = [`1. [2026-10-02] ACCEPTED-ENTRY`, ...memState.user]
+          memState.candidateUsed = memState.candidates.length
+        }
+        if (b.action === 'reject') memState.candidates.splice((b.index ?? 1) - 1, 1)
+        if (b.action === 'accept_all') {
+          memState.candidateUsed = 0
+          memState.candidates = []
+          memState.user = [...memState.user, '1. [2026-10-02] BULK-ACCEPTED']
+        }
+        if (b.action === 'reject_all') {
+          memState.candidateUsed = 0
+          memState.candidates = []
+        }
         return json({ ...memView(memState), deleted: b.action === 'remove' ? 1 : memState.lastDeleted ?? 0 })
       }
       return json(memView(memState))
@@ -1235,6 +1271,51 @@ describe('布局护栏:整页永不滚动(第五十二/五十三批)', { skip: s
       await page.waitForSelector('[data-sec="memory"] [data-testid="mem-off"]')
       assert.equal(stub.memState.enabled, false, '关掉注入应提交 toggle:false')
       assert.ok((await page.textContent('[data-sec="memory"] .mem-list')) !== null, '关注入是关注入,不该把记忆清空')
+      assertInvariants(await measure(page))
+    } catch (e) {
+      await shoot(page, t.name)
+      throw e
+    } finally {
+      await ctx.close()
+    }
+  })
+
+  // 候选池(记忆层 M2 前置件):候选**不进上下文**,只有转正才生效 —— 界面上必须把这
+  // 句话说在按钮旁边(否则用户会以为「提了就已经记住了」),且两个动作真提交后端。
+  test('设置面板:候选池的提/转正/丢弃与二次确认', async (t) => {
+    const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+    let page = null
+    try {
+      const stub = makeStub(true, true, false, false, true)
+      page = await open(ctx, stub, docks[1].dock)
+      await page.click('.gear')
+      await page.waitForSelector('[data-sec="memory"] [data-testid="mem-cand-head"]')
+      const head = await page.textContent('[data-testid="mem-cand-head"]')
+      assert.ok(head?.includes('候选不进上下文'), `必须说清候选不进上下文:${head}`)
+      assert.ok(head?.includes('2/12'), `应回显池子用量:${head}`)
+      const sec = await page.textContent('[data-sec="memory"]')
+      assert.ok(sec?.includes('CAND-ONE-'), `未回填候选内容:${sec?.slice(0, 200)}`)
+
+      // 提一条 → 真发 propose
+      await page.fill('[data-sec="memory"] [data-testid="mem-input"]', 'NEW-CANDIDATE')
+      await page.click('[data-sec="memory"] [data-testid="mem-propose"]')
+      await page.waitForTimeout(200)
+      const props = stub.memState.writes.filter((w) => w.action === 'propose')
+      assert.equal(props.length, 1, `提候选应提交一次:${JSON.stringify(stub.memState.writes)}`)
+      assert.equal(props[0].content, 'NEW-CANDIDATE')
+      assert.ok((await page.textContent('[data-sec="memory"]'))?.includes('NEW-CANDIDATE'), '新候选应出现在候选区')
+
+      // 转正第一条 → 真发 accept
+      await page.click('[data-sec="memory"] .mem-item button:has-text("转正")')
+      await page.waitForTimeout(200)
+      assert.equal(stub.memState.writes.filter((w) => w.action === 'accept').length, 1, '转正应提交 accept')
+
+      // 全部转正 → 二次确认,取消不发请求
+      await page.click('[data-sec="memory"] [data-testid="mem-accept-all"]')
+      await page.waitForSelector('[aria-label="操作确认"]')
+      await page.click('[aria-label="操作确认"] button:has-text("取消")')
+      await page.waitForTimeout(150)
+      assert.equal(stub.memState.writes.filter((w) => w.action === 'accept_all').length, 0, '取消确认后仍发了全部转正')
       assertInvariants(await measure(page))
     } catch (e) {
       await shoot(page, t.name)

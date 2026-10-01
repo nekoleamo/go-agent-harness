@@ -313,6 +313,31 @@ type MemoryService interface {
 	RemoveBySource(source string) (int, error)
 }
 
+// MemoryCandidates 可选扩展(由 host-memory 实现):候选池 —— 记忆层 M2 的**前置件**。
+//
+// 为什么是候选而不是直接写记忆:自动写记忆 = **静默提权**(它长期影响后续每次对话)。
+// M2(自动提取)开工前必须先有「候选 + 批量确认 + 限流」三件事,本接口就是它们的落点。
+// 纪律:**候选永不进上下文**(物理上不在记忆文件里),没有任何自动产出候选的路径 ——
+// 自动提取是 M2 本体,须等观察到「记忆确实有用」之后再开。
+// 不并进 MemoryService 是为了不破坏既有实现(接口加方法 = 破坏性变更)。
+type MemoryCandidates interface {
+	// ListCandidates 候选展示行(新的在前,与 List 同一种行格式)。
+	ListCandidates() []string
+	// Propose 提一条候选(**不进上下文**);source 空 = 手工提,无来源可追溯。
+	// 限流(池子总量 + 当日条数)在此显式报错,不是静默丢弃。
+	Propose(content, source string) error
+	// AcceptCandidate 把第 index 条转正为记忆(展示序号,新的在前),返回被转正的内容。
+	AcceptCandidate(index int) (string, error)
+	// RejectCandidate 驳回第 index 条(丢弃,不进记忆),返回被丢的内容。
+	RejectCandidate(index int) (string, error)
+	// AcceptAllCandidates 一次性转正全部候选,返回转正了几条(任一条失败即停并如实报已转正数)。
+	AcceptAllCandidates() (int, error)
+	// RejectAllCandidates 清空候选池,返回丢了几条。
+	RejectAllCandidates() (int, error)
+	// CandidateQuota 候选池用量:已用、总量上限、今日已提、今日上限。
+	CandidateQuota() (used, limit, today, todayLimit int)
+}
+
 // ForkableSessions 会话树/分支(P4-10;可选实现——host-cwd-sessions)。类型断言发现,
 // ctx.cwdSessions 接口不变。分支 = 复制继承历史到点的独立会话文件,继续演进互不影响。
 type ForkableSessions interface {

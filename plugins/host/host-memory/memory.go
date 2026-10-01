@@ -175,3 +175,33 @@ func countLines(text string) int {
 }
 
 var _ sdk.MemoryService = (*Service)(nil)
+
+// —— 候选池(M2 前置件;实现 sdk.MemoryCandidates) ——
+// 单独一组方法而不是并进 MemoryService:那会**追坏现有实现**(接口加方法 = 破坏性变更),
+// 而窄可选接口正是本项目的惯用做法(见 ForkableSessions / ReloadableInstructions)。
+// 候选存储在 memory/candidates.md(与记忆同行格式 ⇒ 人可直接改),**永不进上下文**。
+
+// ListCandidates 候选展示行(新的在前)。
+func (s *Service) ListCandidates() []string { return memory.ListCandidates() }
+
+// Propose 提一条候选(不进上下文;限流在 memory.Propose 里显式报错)。
+func (s *Service) Propose(content, source string) error {
+	return memory.Propose(content, source)
+}
+
+// AcceptCandidate 第 index 条转正为记忆(展示序号,新的在前)。
+func (s *Service) AcceptCandidate(index int) (string, error) { return memory.Accept(index) }
+
+// RejectCandidate 驳回第 index 条(丢弃,不进记忆)。
+func (s *Service) RejectCandidate(index int) (string, error) { return memory.Reject(index) }
+
+// AcceptAllCandidates 一次性转正全部候选。
+func (s *Service) AcceptAllCandidates() (int, error) { return memory.AcceptAll() }
+
+// RejectAllCandidates 清空候选池。
+func (s *Service) RejectAllCandidates() (int, error) { return memory.RejectAll() }
+
+// CandidateQuota 候选池用量(已用/总量上限/今日已提/今日上限)。
+func (s *Service) CandidateQuota() (int, int, int, int) { return memory.CandidateQuota() }
+
+var _ sdk.MemoryCandidates = (*Service)(nil)

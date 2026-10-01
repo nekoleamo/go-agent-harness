@@ -504,6 +504,16 @@ export interface MemoryView {
   project_key?: string
   /** 写动作回执:删了几条(remove 恒为 1;remove_source 可能是 0 = 没有来自该会话的记忆) */
   deleted?: number
+  /**
+   * 候选池(记忆层 M2 前置件)。**候选永不进上下文**,只有 accept 之后才进。
+   * 整个字段组缺席 = 该构建没有候选能力(老版本),前端不渲染这一块。
+   */
+  candidates?: string[]
+  candidate_path?: string
+  candidate_used?: number
+  candidate_limit?: number
+  candidate_today?: number
+  candidate_today_max?: number
 }
 export interface RolesView {
   current: string

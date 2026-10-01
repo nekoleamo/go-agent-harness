@@ -9,8 +9,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/nekoleamo/go-agent-harness/internal/memory"
 
 	"github.com/nekoleamo/go-agent-harness/core/ctx"
 	"github.com/nekoleamo/go-agent-harness/core/event"
@@ -198,3 +201,119 @@ func jsonStr(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
 }
+
+// 候选池端点(记忆层 M2 前置件)。判据与上面同款:面板的操作**真落到了候选文件/记忆文件**。
+func TestMemoryCandidateEndpoints(t *testing.T) {
+	s, home := memoryServer(t, true)
+
+	// 初始为空
+	_, body := do(t, s, "GET", "/api/memory", "")
+	m := decodeMemory(t, body)
+	if cs, _ := m["candidates"].([]any); len(cs) != 0 {
+		t.Fatalf("初始候选应为空,got %#v", m["candidates"])
+	}
+	if m["candidate_limit"] != float64(memory.MaxCandidates) {
+		t.Fatalf("应回候选池上限,got %#v", m["candidate_limit"])
+	}
+
+	// propose → 进候选文件,**不进记忆文件**
+	if code, _ := do(t, s, "POST", "/api/memory", `{"action":"propose","content":"候选A"}`); code != http.StatusOK {
+		t.Fatal("propose 应 200")
+	}
+	raw, _ := os.ReadFile(filepath.Join(home, "memory", "candidates.md"))
+	if !strings.Contains(string(raw), "候选A") {
+		t.Fatalf("候选没落盘:\n%s", raw)
+	}
+	if _, err := os.Stat(filepath.Join(home, "memory", "user.md")); !os.IsNotExist(err) {
+		t.Fatal("提候选不该写记忆文件(候选永不进上下文)")
+	}
+
+	// 限流:当日 5 条 ⇒ 第 6 条 400 且**不落盘**
+	for i := 2; i <= memory.MaxCandidatesPerDay; i++ {
+		if code, _ := do(t, s, "POST", "/api/memory", `{"action":"propose","content":`+jsonStr("候选"+strconv.Itoa(i))+`}`); code != http.StatusOK {
+			t.Fatalf("第 %d 条应成功", i)
+		}
+	}
+	code, _ := do(t, s, "POST", "/api/memory", `{"action":"propose","content":"超限的一条"}`)
+	if code != http.StatusBadRequest {
+		t.Fatalf("超当日额度应 400,got %d", code)
+	}
+	raw, _ = os.ReadFile(filepath.Join(home, "memory", "candidates.md"))
+	if strings.Contains(string(raw), "超限的一条") {
+		t.Fatal("被限流拒的候选不该落盘")
+	}
+
+	// accept 1 ⇒ 进记忆,候选少一条
+	if code, _ := do(t, s, "POST", "/api/memory", `{"action":"accept","index":1}`); code != http.StatusOK {
+		t.Fatal("accept 应 200")
+	}
+	raw, _ = os.ReadFile(filepath.Join(home, "memory", "user.md"))
+	if !strings.Contains(string(raw), "候选") {
+		t.Fatalf("accept 后记忆文件应有内容:\n%s", raw)
+	}
+	_, body = do(t, s, "GET", "/api/memory", "")
+	if cs, _ := decodeMemory(t, body)["candidates"].([]any); len(cs) != memory.MaxCandidatesPerDay-1 {
+		t.Fatalf("候选应剩 %d 条,got %d", memory.MaxCandidatesPerDay-1, len(cs))
+	}
+
+	// reject 1 ⇒ 丢弃,不进记忆
+	before, _ := os.ReadFile(filepath.Join(home, "memory", "user.md"))
+	if code, _ := do(t, s, "POST", "/api/memory", `{"action":"reject","index":1}`); code != http.StatusOK {
+		t.Fatal("reject 应 200")
+	}
+	after, _ := os.ReadFile(filepath.Join(home, "memory", "user.md"))
+	if string(before) != string(after) {
+		t.Fatal("reject 不该动记忆文件")
+	}
+
+	// accept_all ⇒ 全进;半截状态由后端负责如实报
+	_, body = do(t, s, "POST", "/api/memory", `{"action":"accept_all"}`)
+	if n := decodeMemory(t, body)["deleted"]; n == float64(0) {
+		t.Fatalf("accept_all 应回转正条数,got %#v", n)
+	}
+	_, body = do(t, s, "GET", "/api/memory", "")
+	m = decodeMemory(t, body)
+	if cs, _ := m["candidates"].([]any); len(cs) != 0 {
+		t.Fatalf("accept_all 后候选应清空,got %d", len(cs))
+	}
+	// 5 条候选里:1 条 accept、1 条 reject(丢弃)、其余 accept_all ⇒ 记忆里 4 条
+	if want := memory.MaxCandidatesPerDay - 1; func() int { us, _ := m["user"].([]any); return len(us) }() != want {
+		t.Fatalf("记忆里应有 %d 条(5 提 - 1 驳回),got %#v", want, m["user"])
+	}
+
+	// reject_all 在空池上 ⇒ 0 条,不报错
+	if code, _ := do(t, s, "POST", "/api/memory", `{"action":"reject_all"}`); code != http.StatusOK {
+		t.Fatal("空池 reject_all 应 200")
+	}
+}
+
+// 未实现候选能力的老构建:候选动作 501(不是 400 也不是**偷偷写进记忆**)。
+func TestMemoryCandidatesUnsupported(t *testing.T) {
+	s, _ := memoryServer(t, true)
+	// 拿一个只实现 MemoryService 的替身(不实现候选接口)覆盖缓存
+	var only sdk.MemoryService = &plainMemory{}
+	s.roleMu.Lock()
+	s.memory = only
+	s.roleMu.Unlock()
+	for _, act := range []string{`{"action":"propose","content":"x"}`, `{"action":"accept","index":1}`, `{"action":"accept_all"}`} {
+		if code, _ := do(t, s, "POST", "/api/memory", act); code != http.StatusNotImplemented {
+			t.Fatalf("%s 应 501,got %d", act, code)
+		}
+	}
+	// 读视图里候选组应缺席(前端据此不渲染),而不是给一个空的
+	_, body := do(t, s, "GET", "/api/memory", "")
+	if strings.Contains(body, "candidates") {
+		t.Fatalf("未实现候选能力时不该返回 candidates 字段:%s", body)
+	}
+}
+
+// plainMemory 只实现 sdk.MemoryService(模拟老构建的 ctx.memory)。
+type plainMemory struct{}
+
+func (plainMemory) Enabled() bool                      { return true }
+func (plainMemory) SetEnabled(bool) bool               { return true }
+func (plainMemory) Budget() int                        { return 2048 }
+func (plainMemory) Add(string, string) error           { return nil }
+func (plainMemory) List() []string                     { return []string{} }
+func (plainMemory) Remove(int) (string, error)         { return "", nil }
+func (plainMemory) RemoveBySource(string) (int, error) { return 0, nil }
