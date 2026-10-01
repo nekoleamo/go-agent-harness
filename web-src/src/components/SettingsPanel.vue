@@ -3,7 +3,7 @@
 // 分组:模型/推理(thinking·sandbox)/历史与压缩/Provider/插件与指令。
 // 破坏性动作(删 provider、卸载插件、压缩)经全局确认条(askConfirm)。
 import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { api, rolePackDownloadUrl, rolePackName } from '../api'
+import { api, rolePackDownloadUrl, rolePackName, skillPackDownloadUrl, skillPackName  } from '../api'
 import { byteLength } from '../bytes'
 import { autostartState, checkUpdate, isDesktop, pickDirectory, updateState, type UpdateSnapshot } from '../desktop'
 import { currentModelValue, modelOptionValue, withCurrentModel } from '../modelsel'
@@ -764,6 +764,60 @@ function deleteRole(r: RoleSpec): void {
 // 导出:浏览器直接下载;桌面壳**没有下载通道**(Tauri 未注册 wry 的 on_download ⇒ `<a download>`
 // 点了什么都不会发生,见 Sidebar.vue 同款说明),改由服务端写文件 —— 先用原生选择器挑目录,
 // 再跑 /role export(与 TUI 同一个实现,界面只负责给路径)。
+// —— 技能包(第一百零六批):共享技能的导出/导入。角色私有技能随**角色包**走(那边已带),
+// 所以这里只管共享库那一份 —— 两条路合起来分享没有缺口。
+const skPackAs = ref('') // 「导入为」目标技能名(留空 = 用包里的原名)
+const skPackBusy = ref(false)
+const showSkPackImport = ref(false)
+
+// exportSkillPack 导出共享技能(浏览器直吃 /api/skillpack/<名>,含 Content-Disposition)。
+// 导出的包**只有那个技能的 SKILL.md**;角色私有技能不在其中(用角色包导)。
+function exportSkillPack(name: string): void {
+  skErr.value = ''
+  const a = document.createElement('a')
+  a.href = skillPackDownloadUrl(name)
+  a.download = skillPackName(name)
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  roleMsg.value = '已开始下载 ' + skillPackName(name) + '(包内只有该技能的 SKILL.md;导入端不执行任何脚本)'
+}
+
+// onSkPackPick 导入技能包。同名已存在时后端**显式拒绝**(400),再问一次是否覆盖 ——
+// 不静默覆盖别人的技能(与本地写入、角色包同款口径)。
+async function onSkPackPick(e: Event): Promise<void> {
+  const input = e.target as HTMLInputElement
+  const file = input.files && input.files[0]
+  if (!file) return
+  skPackBusy.value = true
+  skErr.value = ''
+  roleMsg.value = ''
+  const opts = skPackAs.value ? { as: skPackAs.value } : {}
+  try {
+    const res = await api.skillPackImport(file, opts)
+    await loadRoles()
+    roleMsg.value =
+      '已导入技能 ' + res.name + '(' + res.bytes + ' 字节)' + (res.replaced ? '(覆盖了同名旧技能)' : '') +
+      (res.warning ? '；注意:' + res.warning : '')
+  } catch (err) {
+    const msg = (err as Error).message
+    if (/已存在/.test(msg) && confirm('同名技能已存在。要覆盖它吗?(旧份进回收站,可恢复)')) {
+      try {
+        const res2 = await api.skillPackImport(file, { ...opts, overwrite: true })
+        await loadRoles()
+        roleMsg.value = '已覆盖导入技能 ' + res2.name + '(旧份在回收站可恢复)'
+      } catch (e2) {
+        skErr.value = '覆盖导入失败:' + (e2 as Error).message
+      }
+    } else {
+      skErr.value = '导入失败:' + msg
+    }
+  } finally {
+    skPackBusy.value = false
+    input.value = ''
+  }
+}
+
 const packAs = ref('') // 「导入为」目标 ID(留空 = 用包里的原始标识)
 const packBusy = ref(false)
 const showPackImport = ref(false)
@@ -2104,6 +2158,14 @@ watch(
                   </label>
                   <span v-if="s.description" class="dim grow">{{ s.description }}</span>
                   <button class="ghost" data-tip="看/改 SKILL.md 原文" @click="openSkill(s.name, s.role || '')">原文</button>
+                  <button
+                    v-if="!s.role"
+                    class="ghost"
+                    data-tip="导出为技能包(.zip,含 SKILL.md,可分享)"
+                    @click="exportSkillPack(s.name)"
+                  >
+                    导出包
+                  </button>
                   <button class="ghost" data-tip="改目录名 / 换归属库（会同步改角色挂载；目标同名会被拒）" @click="openMove(s.name, s.role || '')">
                     改名/移动
                   </button>
@@ -2213,7 +2275,37 @@ watch(
             <button class="link" data-tip="新建一个技能" @click="showSkillNew = !showSkillNew">
               {{ showSkillNew ? '收起' : '＋ 新建技能' }}
             </button>
+            <!-- 技能包(第一百零六批):只管**共享库**;角色私有技能随角色包导出 -->
+            <button
+              class="link"
+              data-tip="导入一个 gah 技能包(.zip,内含单个 SKILL.md)"
+              @click="showSkPackImport = !showSkPackImport"
+            >
+              {{ showSkPackImport ? '收起' : '＋ 导入技能包' }}
+            </button>
           </h3>
+          <div v-if="showSkPackImport" class="add-form">
+            <p class="dim">
+              包里只有那个技能的 <code>SKILL.md</code>(frontmatter + 正文)—— 导入端
+              <strong>不执行任何脚本</strong>。同名已存在时后端会先拒，再问你要不要覆盖(旧份进回收站)。
+            </p>
+            <label class="fld">
+              <span class="fld-lab">技能包文件(.zip)</span>
+              <input
+                class="inp"
+                type="file"
+                accept=".zip,application/zip"
+                :disabled="skPackBusy"
+                data-testid="skpack-file"
+                @change="onSkPackPick"
+              />
+            </label>
+            <label class="fld">
+              <span class="fld-lab">导入为（可选：留空 = 用包里的名称）</span>
+              <input v-model="skPackAs" class="inp mono" placeholder="weekly-report-copy" :disabled="skPackBusy" />
+            </label>
+            <p v-if="skPackBusy" class="dim">导入中…</p>
+          </div>
           <div v-if="skErr" class="serr">{{ skErr }}</div>
           <div v-if="showSkillNew" class="add-form">
             <label class="fld">

@@ -1,5 +1,5 @@
 // REST 客户端(上行)+ 工具函数。核心交互纯 REST,不绕模板渲染。
-import type { AttachmentView, CommandOptionsResp, CommandView, DocTree, DocView, InstructionsView, Job, McpView, ModelsAllResp, NoticePage, PluginInfo, ProviderInfo, RolePackResult, RoleSpec, RolesView, Schedule, SessionEventsPage, SessionInfo, StateView, ToolDef, TrashView, WorkspaceInfo } from './types'
+import type { AttachmentView, CommandOptionsResp, CommandView, DocTree, DocView, InstructionsView, Job, McpView, ModelsAllResp, NoticePage, PluginInfo, ProviderInfo, RolePackResult, RoleSpec, RolesView, SkillPackResult, Schedule, SessionEventsPage, SessionInfo, StateView, ToolDef, TrashView, WorkspaceInfo } from './types'
 
 // 本窗口绑定的会话(多窗口/多会话作用域)。为何是本文件自己持有而不是 import 一个
 // session 模块:本文件被 Node 内置测试以「./api.ts」直接加载(那条路要求 import 带 .ts),
@@ -264,6 +264,18 @@ export const api = {
   // —— 角色包(第九十三批):单文件导出/导入 ——
   // rolePackImport 上传角色包(multipart "file")。overwrite 缺省时同名目标后端**显式拒绝**(400),
   // 由调用方问过用户后再带 overwrite=1 重试;as 空 = 用包里的原始 ID。
+  // skillPackImport 上传技能包(multipart "file")。overwrite 缺省时同名目标后端**显式拒绝**(400),
+  // 导入为(As)会同步改写正文 frontmatter 的 name —— skills.Write 显式校验两者一致。
+  async skillPackImport(file: File, p: { as?: string; overwrite?: boolean } = {}): Promise<SkillPackResult> {
+    const fd = new FormData()
+    fd.append('file', file, file.name)
+    const q = new URLSearchParams()
+    if (p.as) q.set('as', p.as)
+    if (p.overwrite) q.set('overwrite', '1')
+    const qs = q.toString()
+    return req('/api/skillpack' + (qs ? '?' + qs : ''), { method: 'POST', body: fd })
+  },
+
   async rolePackImport(file: File, p: { as?: string; overwrite?: boolean } = {}): Promise<RolePackResult> {
     const fd = new FormData()
     fd.append('file', file, file.name)
@@ -385,6 +397,17 @@ export interface McpSaveServer {
 export function summarize(text: string, max = 600): string {
   if (text.length <= max) return text
   return text.slice(0, max) + '\n…'
+}
+
+// skillPackDownloadUrl 技能包下载地址(浏览器 <a download> 直接吃;桌面壳走 commandRun)。
+// 独立前缀 /api/skillpack —— 不挂在 /api/skills/{name} 下(技能名里就有 import/export)。
+export function skillPackDownloadUrl(name: string): string {
+  return '/api/skillpack/' + encodeURIComponent(name)
+}
+
+// skillPackName 建议文件名(与后端 skillpack.FileName 同款:gah-skill-<名>.zip)。
+export function skillPackName(name: string): string {
+  return 'gah-skill-' + name + '.zip'
 }
 
 // rolePackDownloadUrl 角色包下载地址(浏览器 <a download> 直接吃;桌面壳走 commandRun)。

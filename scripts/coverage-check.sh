@@ -62,7 +62,7 @@ internal/prefs 82.1
 internal/xlock 70
 internal/roles 86.4
 internal/rolepack 85
-internal/skills 77
+internal/skills 81.7
 internal/searchfile 66
 internal/instructions 76
 internal/providerfile 72
@@ -76,7 +76,7 @@ internal/sessionhtml 92
 cmd/gah 56
 plugins/catalogue 70
 plugins/ui/ui-web-app 70
-web 80
+web 80.6
 tui 74
 plugins/policy/policy-guard 91
 plugins/host/host-agent-loop 90.7

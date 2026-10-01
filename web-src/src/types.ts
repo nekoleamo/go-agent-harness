@@ -514,6 +514,17 @@ export interface TrashView {
   roles: TrashRoleEntry[]
   skills: TrashSkillEntry[]
 }
+// SkillPackResult 导入技能包的回执(第一百零六批)。replaced=true 时覆盖了同名旧技能;
+// from 是包里的原名(用「导入为」改名时与 name 不同)。
+export interface SkillPackResult {
+  name: string
+  path: string
+  bytes: number
+  replaced: boolean
+  from: string
+  warning?: string
+}
+
 // RolePackResult 导入角色包的回执(第九十三批)。replaced=true 时 backup_name 是那份被覆盖的旧角色
 // 在 roles/.trash/ 里的条目名(可恢复);manifest 是包里的清单(原本的 ID/显示名/导出时间)。
 export interface RolePackResult {

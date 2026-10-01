@@ -212,6 +212,15 @@ func renameFrontmatterName(content, newName string) string {
 	return "---" + strings.Join(lines, "\n") + rest[end:]
 }
 
+// RenameFrontmatter 改写正文 frontmatter 里的 name(重命名落盘共用)。
+//
+// 为什么导出它:技能包「导入为另一个名字」时,正文里的 name 必须与目标目录名一致
+// (Write 会显式校验这一点,不一致直接拒)。重写一份解析逻辑必然与这里漂移,
+// 所以复用同一实现。
+func RenameFrontmatter(content, newName string) string {
+	return renameFrontmatterName(content, newName)
+}
+
 // Remove 删除技能:整目录移入 <root>/.trash/<名>-<时间戳>(可恢复),不做物理删除。
 func (l Library) Remove(name string) error {
 	if err := ValidateName(name); err != nil {
