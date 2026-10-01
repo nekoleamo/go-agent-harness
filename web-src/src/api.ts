@@ -145,6 +145,9 @@ export const api = {
     sandbox_sync?: boolean
     workspace?: string
     cancel?: boolean
+    // session 取消作用域:非空 = 只停该会话的回合(需后端支持 SessionRunner);
+    // 空 = 停全部(TUI 语义)。
+    session?: string
   }): Promise<void> {
     return req('/api/control', { method: 'POST', headers: json, body: JSON.stringify(body) })
   },

@@ -6,12 +6,20 @@
 import { computed } from 'vue'
 import { connLabel } from '../conn'
 import type { StateView } from '../types'
+import { othersRunning } from '../session-parallel'
 
-const props = defineProps<{ state: StateView; conn?: 'open' | 'reconnecting' | 'offline' }>()
+const props = defineProps<{
+  state: StateView
+  conn?: 'open' | 'reconnecting' | 'offline'
+  // curSteps 本窗口会话的当前步数(只对本窗口可见;别的会话只能知道"在跑")
+  curSteps?: number
+}>()
 // 版本号点击 → 「关于 gah」。用插槽替换底栏的一方不发这个事件也不影响(监听是可选的)。
 const emit = defineEmits<{ (e: 'open-about'): void }>()
 // connText 连接状态短标签:口径来自 conn.ts(宿主与插件覆盖槽位共用同一定义)
 const connText = computed(() => connLabel(props.conn ?? 'open'))
+// othersRunning 别的会话正在跑的数量(不含本会话 —— 本会话在跑时上面已显示)。
+const othersN = computed(() => othersRunning(props.state.running_sessions, props.state.running))
 
 function k(n: number): string {
   if (n < 1024) return String(n)
@@ -73,6 +81,12 @@ const anonSession = computed(() => {
     <span class="run" :class="{ busy: state.running }">
       <span v-if="state.running" class="dot" />
       {{ state.running ? '运行中' : '就绪' }}
+      <template v-if="state.running && (curSteps || 0) > 0">· 第 {{ curSteps }} 步</template>
+    </span>
+    <!-- 别的窗口/别的会话在跑:只在**本会话没在跑**时提示。本会话在跑时不必说
+         「还有 N 个」——底栏已经很挤,且那件事在侧栏有逐会话标记。 -->
+    <span v-if="othersN > 0" class="it faint" data-testid="others-running">
+      另有 {{ othersN }} 个会话在跑
     </span>
     <span class="it faint">沙箱 {{ sandboxLabel }}</span>
     <!-- 角色名是本栏唯一「用户自定长度」的字段:截断显示,全文在 tooltip 里 ——

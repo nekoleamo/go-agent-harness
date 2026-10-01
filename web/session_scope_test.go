@@ -224,3 +224,43 @@ func TestSpawnWithoutSessionDir501(t *testing.T) {
 		t.Fatalf("应 501,got %d: %s", rec.Code, rec.Body.String())
 	}
 }
+
+// TestRunningSessionsExposeIDs running_sessions 必须给**会话 id**:闸门内部用归一键
+// (空 = 主会话),但对外要回答「哪个会话在跑」——空串对应不到会话列表里的任何一行。
+func TestRunningSessionsExposeIDs(t *testing.T) {
+	s, main := newTestServer()
+	s.cs = &fakeCS{cur: "cur-1"}
+	d := newFakeDir(main, "cur-1")
+	s.sdir = d
+	s.runningFor("").Store(true) // 主会话在跑
+	s.runningFor("sB").Store(true)
+	s.runningFor("sC").Store(true) // 已停(应为 false)
+	s.runningFor("sC").Store(false)
+
+	rec := httptest.NewRecorder()
+	s.handleState(rec, httptest.NewRequest(http.MethodGet, "/api/state", nil))
+	var v StateView
+	if err := json.Unmarshal(rec.Body.Bytes(), &v); err != nil {
+		t.Fatalf("解码: %v", err)
+	}
+	if len(v.RunningSessions) != 2 {
+		t.Fatalf("应只报两个在跑的,got %v", v.RunningSessions)
+	}
+	got := map[string]bool{}
+	for _, id := range v.RunningSessions {
+		got[id] = true
+	}
+	if !got["cur-1"] {
+		t.Fatalf("主会话应以自己的 id 出现(空键要映射),got %v", v.RunningSessions)
+	}
+	if !got["sB"] {
+		t.Fatalf("sB 应在列表里,got %v", v.RunningSessions)
+	}
+	if got["sC"] {
+		t.Fatalf("已停的会话不该出现,got %v", v.RunningSessions)
+	}
+	// 主会话的 running 仍由本会话闸门决定(不带 session 查询 = 主会话)。
+	if !v.Running {
+		t.Fatal("不带 session 查询时 running 应反映主会话")
+	}
+}

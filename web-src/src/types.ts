@@ -24,6 +24,9 @@ export interface Frame {
   id: number
   type: FrameType
   ts?: number
+  // session 会话帧的会话 id(空 = 主会话;非会话帧无此字段)。
+  // 多窗口/多会话并行后,前端据此把事件归到正确的会话(每条连接只收自己会话的帧)。
+  session?: string
   payload: unknown
   replay?: boolean
 }
@@ -189,6 +192,9 @@ export interface StateView {
   role?: string
   role_name?: string
   running: boolean
+  // running_sessions 当前有回合在跑的**会话 id** 列表(第一百零二批;多窗口并行时用)。
+  // 本窗口的会话可能不在其中(别的窗口在跑)—— 主会话也在列表里(有自己的 id)。
+  running_sessions?: string[]
   version: string
 }
 

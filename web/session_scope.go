@@ -66,15 +66,29 @@ func (s *Server) runningFor(key string) *atomic.Bool {
 	return b
 }
 
-// runningSessionsOf 当前有回合在跑的会话键(排序;诊断与 UI 用)。
+// runningSessionsOf 当前有回合在跑的**会话 id**(排序;诊断与多窗口 UI 用)。
+//
+// 为何把归一键换回 id:闸门内部用归一键(空 = 主会话),但对外必须说清「**哪个**会话」。
+// 主会话本身也有 id(CwdSessions.CurrentSession()),空键就映射成它 —— 否则前端拿到的
+// "" 无法对应到会话列表里的任何一行,「哪个会话在跑」就成了答不出来的问题。
+// 拿不到会话服务(cs 未装配)时才保留空串,那时也没有会话列表可对应。
 func (s *Server) runningSessionsOf() []string {
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
+	cur := ""
+	if s.cs != nil {
+		cur = s.cs.CurrentSession()
+	}
 	out := make([]string, 0, len(s.runBySession))
 	for k, b := range s.runBySession {
-		if b.Load() {
-			out = append(out, k)
+		if !b.Load() {
+			continue
 		}
+		if k == "" {
+			out = append(out, cur)
+			continue
+		}
+		out = append(out, k)
 	}
 	sort.Strings(out)
 	return out

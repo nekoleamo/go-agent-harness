@@ -2,7 +2,8 @@
 // 左侧抽屉:工作区固定展示(顶部独立区,不归类到历史)+ 会话历史(内容省略版预览)。
 // 全部增删改操作(切换会话/工作区、新建、改名、删除)经全局确认条二次确认(inject askConfirm)。
 // 切换/删除/改名后 emit session-changed(宿主重建 SSE 重放);列表经 refreshKey 或手动刷新重拉。
-import { inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { runLabel } from '../session-parallel'
 import { api, sessionExportName, sessionExportUrl } from '../api'
 import { isDesktop, pickDirectory, saveExport, shellLog } from '../desktop'
 import { sameDir } from '../wsdir'
@@ -14,11 +15,30 @@ const props = defineProps<{
   refreshKey: number
   curSession?: string
   curKey?: string
+  // runningSessions 正在跑回合的会话 id(后端 running_sessions;主会话也用自己的 id)
+  runningSessions?: string[]
+  // curSteps 本窗口会话的当前步数(只对本窗口可见 —— 别的会话收不到帧,见 App.vue 注释)
+  curSteps?: number
 }>()
 
 const emit = defineEmits<{ (e: 'session-changed'): void; (e: 'open-panel', key: string): void }>()
 
+// stopSession 停某个会话正在跑的回合(多会话并行后,「停」得说清停哪个)。
+// 走 /api/control {cancel, session};后端在缺 SessionRunner 时会 501,如实显示不假装停了。
+async function stopSession(id: string): Promise<void> {
+  try {
+    await api.control({ cancel: true, session: id })
+  } catch (e) {
+    err.value = '停止失败:' + (e as Error).message
+  }
+}
+
 const open = ref(true)
+// runningSet 运行中的会话 id 集合(侧栏打「运行中」标记用)。
+// 用 id 而不是索引:会话列表会随新建/删除变,按索引会错位到别的会话上。
+const runningSet = computed(() => new Set(props.runningSessions || []))
+// runTag 该会话的运行标签(空串 = 不在跑);步数只对本窗口会话给(见 session-parallel.ts)
+const runTag = (id: string): string => runLabel(props.runningSessions, id, props.curSession || '', props.curSteps || 0)
 const sessions = ref<SessionInfo[]>([])
 const workspaces = ref<WorkspaceInfo[]>([])
 const err = ref('')
@@ -460,6 +480,14 @@ defineExpose({ refresh })
                 <span v-if="s.Pinned" class="pin-mark" data-tip="已置顶">★</span>{{ label(s) }}
               </span>
               <span class="ops">
+                <span v-if="runningSet.has(s.ID || '')" class="op run-mark" data-tip="该会话正在跑回合" @click.stop>●</span>
+                <span
+                  v-if="runningSet.has(s.ID || '')"
+                  class="op"
+                  data-tip="停止该会话的回合(需确认)"
+                  @click.stop="stopSession(s.ID || '')"
+                  >■</span
+                >
                 <span v-if="editing && editing.id === s.ID" class="op" data-tip="保存改名(需确认)" @click.stop="saveName(s)">✓</span>
                 <template v-else>
                   <span class="op" :data-tip="s.Pinned ? '取消置顶' : '置顶会话'" @click.stop="togglePin(s)">{{ s.Pinned ? '☆' : '★' }}</span>
@@ -472,6 +500,7 @@ defineExpose({ refresh })
             </div>
             <div class="preview" :class="{ empty: !detailOf(s) }">{{ detailOf(s) }}</div>
             <div class="sub mono">
+              <span v-if="runTag(s.ID || '')" class="run-tag">{{ runTag(s.ID || '') }}</span>
               {{ fmtTime(s.MTime) }}<template v-if="s.Frames >= 0"> · {{ s.Frames }} 条</template>
               <span v-if="s.SummaryState === 'stale'" class="stale"> · 待更新</span>
               <span v-else-if="s.SummaryState === 'unavailable'" class="stale"> · 概述不可用</span>
@@ -827,6 +856,30 @@ defineExpose({ refresh })
 .op.del:hover {
   color: var(--err);
   background: var(--err-soft);
+}
+/* 运行中标记:用**单强调色** + 轻微脉冲,不引第二种语义色(它不是"错误/警告",
+  只是"这个会话在跑")。prefers-reduced-motion 下停掉动画(taste 纪律)。 */
+.run-mark {
+  color: var(--accent);
+  animation: run-pulse 1.4s ease-in-out infinite;
+}
+@keyframes run-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .run-mark {
+    animation: none;
+  }
+}
+.run-tag {
+  color: var(--accent);
+  font-weight: 600;
 }
 .empty {
   color: var(--fg-faint);

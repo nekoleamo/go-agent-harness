@@ -89,9 +89,16 @@ const state = ref<StateView>({
   sandbox: '',
   stats: { PromptTokens: 0, CompletionTokens: 0, CachedTokens: 0, Requests: 0, LastPromptTokens: 0, Window: 0 },
   running: false,
+  running_sessions: [],
   version: '',
 })
 const model = ref<StreamModel>(newModel())
+// 本窗口会话的当前步数(第一百零三批)。
+//
+// 诚实的边界:**只有本连接订阅的那个会话**能数到步 —— 事件连接按会话过滤
+// (`?session=`),别的窗口在跑到第几步我们收不到帧。能拿到的只有 `running_sessions`
+// (谁在跑)。所以侧栏对别的会话只显示「运行中」,不编造步数。
+const steps = ref(0)
 // S-P0-1 轨迹视图:与流视图并列的模式(同一事件账本、并行投影;不替代槽位 stream 的插件覆盖)
 const traj = ref<TrajModel>(newTraj())
 // S-P1-1 变更审查视图:同一账本的第三种投影(只呈现文件改动与逐行 diff)
@@ -546,6 +553,9 @@ function rebuild(keepCursor: boolean): void {
   }))
   transport.on('session', gate((f) => {
     const se = f.payload as SessionEvent
+    // 步数(仅本窗口会话):step/start 累加,turn/end 归零;用 kind 判定,不看 payload。
+    if (se.Kind === 'step/start') steps.value++
+    else if (se.Kind === 'turn/end') steps.value = 0
     consume(model.value, se)
     trajPush(traj.value, se)
     changesPush(changes.value, se)
@@ -893,7 +903,13 @@ onUnmounted(() => {
     <!-- 槽位:statusbar(含连接状态与设置入口)。覆盖走 slotComponent:
          此前写死 <StatusBar> 使 M7.2 的 statusbar 插件覆盖永不生效(2026-09-19 本机验收遯到) -->
     <section class="statusbar-slot" data-ui-slot="statusbar">
-      <component :is="slotComponent('statusbar') || StatusBar" :state="state" :conn="conn.state" @open-about="openAboutSettings" />
+      <component
+        :is="slotComponent('statusbar') || StatusBar"
+        :state="state"
+        :conn="conn.state"
+        :cur-steps="steps"
+        @open-about="openAboutSettings"
+      />
       <button class="gear" data-tip="设置(模型/Provider/插件/历史)" :aria-expanded="settingsOpen" @click="settingsOpen = !settingsOpen">设置</button>
       <button
         class="gear"
@@ -932,6 +948,8 @@ onUnmounted(() => {
         :refresh-key="refreshKey"
         :cur-session="state.session?.id"
         :cur-key="state.session?.key"
+        :running-sessions="state.running_sessions || []"
+        :cur-steps="steps"
         @session-changed="sessionChanged"
         @open-panel="openPanel = $event"
       />
