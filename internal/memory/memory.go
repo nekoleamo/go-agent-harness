@@ -157,6 +157,14 @@ func Append(path, content, source string) error {
 
 // Remove 按序号删一条(序号 = 用户在 `/memory list` 里看到的编号,1 起)。
 // 返回被删的内容(用于回执)。
+// Remove 删掉**展示序**里的第 index 条(1 起,与 SortedForDisplay 一致;新的在前)。
+// 返回被删的条目。
+//
+// 为什么按展示序而不是文件序:调用方(/memory rm N 与记忆面板)拿到的序号来自展示行,
+// 用户看着第 N 行说「删这个」。早期实现假定「展示序 = 文件序完全倒置」,于是把展示
+// 序号换算成 `len-i+1` —— 那条假定在**同一天的多条记忆**上不成立(展示序里同日的
+// 是一条稳定排序,不是倒置),会让「删第 1 行」删掉另一条。现在直接经展示序求位置,
+// 换算与展示走**同一个函数** ⇒ 不会分叉。
 func Remove(path string, index int) (Entry, error) {
 	cur, err := Read(path)
 	if err != nil {
@@ -165,11 +173,24 @@ func Remove(path string, index int) (Entry, error) {
 	if index < 1 || index > len(cur) {
 		return Entry{}, fmt.Errorf("memory: 序号 %d 越界(共 %d 条)", index, len(cur))
 	}
-	victim := cur[index-1]
+	disp := SortedForDisplay(cur)
+	victim := disp[index-1]
+	fileIdx := entryIndex(cur, victim)
 	kept := make([]Entry, 0, len(cur)-1)
-	kept = append(kept, cur[:index-1]...)
-	kept = append(kept, cur[index:]...)
+	kept = append(kept, cur[:fileIdx]...)
+	kept = append(kept, cur[fileIdx+1:]...)
 	return victim, rewrite(path, kept)
+}
+
+// entryIndex 在文件序里找到那条记忆的位置(按 Raw 逐行比,不去重 —— 同一条内容被
+// 记两次时,删的仍是展示序指到的**那一次**)。
+func entryIndex(entries []Entry, victim Entry) int {
+	for i, e := range entries {
+		if e.Raw == victim.Raw {
+			return i
+		}
+	}
+	return len(entries) - 1 // 理论上到不了(展示序是同一批条目排出来的);兜底不 panic
 }
 
 // RemoveBySource 删掉某个来源会话写入的全部记忆(治理的关键动作:"那条让我删文件的
@@ -278,9 +299,24 @@ func sectionLines(lines []string, split int) string {
 }
 
 // SortedForDisplay 给界面/命令用的展示顺序:新的在上(倒序)。
+//
+// 同一天内的多条也要真的「新的在前」:日期只到天,单靠日期排序会让当天的条目保持
+// **写入顺序**(最旧的在前)—— 于是「新的在前」这句话当天内是假的,并且会让预算裁剪
+// (Inject 按这个顺序保留)先丢刚记的那条。所以日期相同的整段再反转一次:
+// 文件靠后 = 写得更晚 = 更新。
 func SortedForDisplay(entries []Entry) []Entry {
 	out := append([]Entry(nil), entries...)
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Date > out[j].Date })
+	for i := 0; i < len(out); {
+		j := i + 1
+		for j < len(out) && out[j].Date == out[i].Date {
+			j++
+		}
+		for a, b := i, j-1; a < b; a, b = a+1, b-1 {
+			out[a], out[b] = out[b], out[a]
+		}
+		i = j
+	}
 	return out
 }
 

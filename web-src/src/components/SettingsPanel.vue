@@ -129,6 +129,7 @@ const navItems = computed(() => {
     { key: 'reason', label: '推理' },
   ]
   if (instrReady.value) items.push({ key: 'instr', label: '指令' })
+  if (memReady.value) items.push({ key: 'memory', label: '记忆' })
   if (roleReady.value) items.push({ key: 'role', label: '角色' })
   items.push(
     { key: 'history', label: '会话历史' },
@@ -252,6 +253,7 @@ async function load(): Promise<void> {
     // 模型聚合/插件/provider 任一失败降级:非核心(如未装配 MultiProviderService → 501)
     const [m, pl, pr] = await Promise.allSettled([api.models(), api.plugins(), api.providers()])
     await loadBackups() // M18 备份列表(未装配降级静默)
+    await loadMemory() // 记忆段(未装配 ctx.memory → memReady=false,整段隐藏)
     await loadRoles() // 角色段(未装配 ctx.roles → roleReady=false,整段隐藏)
     if (m.status === 'fulfilled') models.value = m.value.providers ?? []
     if (pl.status === 'fulfilled') plugins.value = pl.value ?? []
@@ -451,6 +453,109 @@ function saveInstructions(): void {
       }
     })()
   })
+}
+
+// —— 跨会话记忆(记忆治理面板) ——
+// 与 `/memory` 命令**同一份实现**(两边都只调 ctx.memory):此前只能在命令里管,
+// 面板没有对应段落 —— 于是“治理”这个动作对只在 Web 端的人根本不存在。
+// 未装配 ctx.memory(host-memory 未启用)→ 503 → 整段隐藏(不摆空壳)。
+const memReady = ref(false)
+const memEnabled = ref(true)
+const memBudget = ref(2048)
+const memUser = ref<string[]>([])
+const memProject = ref<string[]>([])
+const memPath = ref('')
+const memErr = ref('')
+const memMsg = ref('')
+const memDraft = ref('')
+const memBusy = ref(false)
+
+// memSource 拆出行尾的「(来源: 会话 x)」—— 治理的关键动作是“按来源整段删”,
+// 面板得能一键删掉“某个会话写进来的全部记忆”,而不只是逐条删。
+function memSource(line: string): string {
+  const m = /\(来源:\s*会话\s+(\S+?)\s*\)\s*$/.exec(line)
+  return m ? m[1] : ''
+}
+function memContent(line: string): string {
+  return line.replace(/\(来源:\s*会话\s+\S+?\s*\)\s*$/, '').replace(/^\d+\.\s*/, '')
+}
+const memSources = computed(() => {
+  const seen = new Set<string>()
+  for (const l of memUser.value) {
+    const s = memSource(l)
+    if (s) seen.add(s)
+  }
+  return Array.from(seen)
+})
+
+// loadMemory 拉记忆视图(读失败 → 整段隐藏)。**不覆盖正在输入的草稿**。
+async function loadMemory(): Promise<void> {
+  try {
+    const v = await api.memory()
+    if (!v || !Array.isArray(v.user)) {
+      memReady.value = false
+      return
+    }
+    memReady.value = true
+    memEnabled.value = !!v.enabled
+    memBudget.value = v.budget || 2048
+    memUser.value = v.user
+    memProject.value = Array.isArray(v.project) ? v.project : []
+    memPath.value = v.user_path
+  } catch {
+    memReady.value = false
+  }
+}
+
+// memoryRun 发一个动作并把回执(刷新后的视图)并进状态;写动作统一走这里。
+async function memoryRun(body: Parameters<typeof api.memoryAct>[0], ok: (deleted?: number) => string): Promise<void> {
+  memBusy.value = true
+  memErr.value = ''
+  memMsg.value = ''
+  try {
+    const v = await api.memoryAct(body)
+    memEnabled.value = !!v.enabled
+    memUser.value = Array.isArray(v.user) ? v.user : []
+    memProject.value = Array.isArray(v.project) ? v.project : []
+    memMsg.value = ok(v.deleted)
+  } catch (e) {
+    memErr.value = (e as Error).message
+  } finally {
+    memBusy.value = false
+  }
+}
+
+function memoryAdd(): void {
+  const content = memDraft.value.trim()
+  if (!content) {
+    memErr.value = '记忆内容为空(写一句“是什么、为什么”即可)'
+    return
+  }
+  void memoryRun({ action: 'add', content }, () => {
+    memDraft.value = ''
+    return '已记住'
+  })
+}
+
+function memoryRemove(index: number, line: string): void {
+  guard('删除这条记忆?' + memContent(line) + '(删了就没了,不留回收站)', true, () => {
+    void memoryRun({ action: 'remove', index }, () => '已删除')
+  })
+}
+
+function memoryRemoveSource(src: string): void {
+  guard('删掉会话 ' + src + ' 写进来的**全部**记忆?', true, () => {
+    void memoryRun({ action: 'remove_source', source: src }, (n) =>
+      n ? '已删掉 ' + n + ' 条来自该会话的记忆' : '没有来自该会话的记忆',
+    )
+  })
+}
+
+// memoryToggle 一键关掉注入:关的是“注入”,不是“数据”(文件仍在,可随时再开)。
+function memoryToggle(on: boolean): void {
+  void memoryRun({ action: 'toggle', enabled: on }, () =>
+    on ? '已开启注入(每轮按预算注入记忆)' : '已关闭注入(记忆文件保留,不再进系统提示)',
+  )
 }
 
 // —— 角色(第七十九批 1b) ——
@@ -1859,6 +1964,76 @@ watch(
           </div>
         </section>
 
+        <section v-if="memReady" data-sec="memory" class="sec">
+          <h3 class="h">
+            记忆
+            <span v-if="!memEnabled" class="dim" data-testid="mem-off">注入已关</span>
+          </h3>
+          <p class="dim">
+            跨会话记忆是<strong>事实性记录</strong>：每轮按预算注入系统提示，排在角色指令之后 —— 记忆
+            <strong>不能覆盖</strong>指令与工作规则，冲突时以指令为准。记忆不会自动提取（要记住什么，由你
+            或 <span class="mono">/memory add</span> 明确写下来）。
+          </p>
+          <p class="dim">
+            存在纯 markdown 文件 <span class="mono">{{ memPath }}</span
+            >，写错了可以直接改这个文件（记忆层最大的风险是写错，给人一个文本文件比给一套管理工具更有用）。
+          </p>
+          <div v-if="memErr" class="serr">{{ memErr }}</div>
+          <p v-if="memMsg" class="dim ok">{{ memMsg }}</p>
+          <p class="dim">
+            用户级 {{ memUser.length }} 条／本项目 {{ memProject.length }} 条／注入预算 {{ memBudget }}
+            字节（超预算时按时间倒序丢最旧）
+          </p>
+          <div class="add-form">
+            <label class="fld">
+              <span class="fld-lab">记一条（写清“是什么、为什么”）</span>
+              <input
+                v-model="memDraft"
+                class="inp"
+                :disabled="memBusy"
+                placeholder="比如：报告里的图表用蓝灰配色，不要渐变"
+                data-testid="mem-input"
+                @keyup.enter="memoryAdd"
+              />
+            </label>
+            <div class="form-acts">
+              <button class="ghost solid" :disabled="memBusy || !memDraft.trim()" data-testid="mem-add" @click="memoryAdd">记住</button>
+              <button v-if="memEnabled" class="ghost danger-text" data-tip="只关注入，记忆文件保留" @click="memoryToggle(false)">关掉注入</button>
+              <button v-else class="ghost" data-tip="重新把记忆注入系统提示" @click="memoryToggle(true)">开启注入</button>
+            </div>
+          </div>
+          <template v-if="memUser.length">
+            <div class="mem-list">
+              <div v-for="(l, i) in memUser" :key="i" class="mem-item">
+                <span class="mem-txt" :data-tip="memContent(l)">{{ memContent(l) }}</span>
+                <span v-if="memSource(l)" class="dim mono">{{ memSource(l) }}</span>
+                <button class="ghost danger-text" :disabled="memBusy" data-tip="删除这条记忆" @click="memoryRemove(i + 1, l)">删除</button>
+              </div>
+            </div>
+            <div v-if="memSources.length" class="mem-src">
+              <p class="dim">按来源整段删（某个会话写进来的记忆一次性清干净）</p>
+              <div class="form-acts">
+                <button
+                  v-for="s in memSources"
+                  :key="s"
+                  class="ghost danger-text"
+                  :disabled="memBusy"
+                  data-tip="删掉该来源的全部记忆"
+                  @click="memoryRemoveSource(s)"
+                >
+                  会话 {{ s }}
+                </button>
+              </div>
+            </div>
+          </template>
+          <p v-else class="dim">还没有记忆。记一条试试，比如“部署前先跑一次 /verify”。</p>
+          <div v-if="memProject.length" class="mem-list">
+            <div v-for="(l, i) in memProject" :key="'p' + i" class="mem-item">
+              <span class="mem-txt dim" :data-tip="memContent(l)">{{ memContent(l) }}</span>
+            </div>
+          </div>
+        </section>
+
         <section v-if="roleReady" data-sec="role" class="sec">
           <h3 class="h">
             角色
@@ -2832,6 +3007,46 @@ watch(
   padding: 6px 8px;
   margin-bottom: 8px;
   word-break: break-word;
+}
+/* —— 跨会话记忆段(第一百一十批)——
+   记忆正文是**用户自己写的整句话**,长度不可控(既有技能行会碰到的长文本撑出横向滚动,
+   见第七十九批的实测)。所以不用 .m-lab 的单行省略(删之前看不清自己删的是什么),
+   改成最多两行 + 全文进 data-tip,并显式 overflow-wrap:anywhere(长 URL/路径不撑破)。 */
+.mem-list {
+  max-height: 220px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border: 1px solid var(--line-faint);
+  border-radius: var(--r-input);
+  background: var(--bg);
+  padding: 4px;
+  margin-bottom: 8px;
+}
+.mem-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+.mem-item:hover {
+  background: var(--bg3);
+}
+.mem-txt {
+  flex: 1;
+  min-width: 0;
+  color: var(--fg);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.mem-src {
+  margin-bottom: 8px;
 }
 /* .prow.scrow 提高特异性:.prow 的 align-items:center 在样式表里更靠后,会盖掉这里的 stretch ——
    而 scrow 的堆叠布局全靠 stretch(cross 轴不被 stretch 时,flex item 宽 = 内容 min-content,

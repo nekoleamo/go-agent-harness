@@ -1,5 +1,5 @@
 // REST 客户端(上行)+ 工具函数。核心交互纯 REST,不绕模板渲染。
-import type { AttachmentView, CommandOptionsResp, CommandView, DocTree, DocView, InstructionsView, Job, McpView, ModelsAllResp, NoticePage, PluginInfo, ProviderInfo, RolePackResult, RoleSpec, RolesView, SkillPackResult, Schedule, SessionEventsPage, SessionInfo, StateView, ToolDef, TrashView, WorkspaceInfo } from './types'
+import type { AttachmentView, CommandOptionsResp, CommandView, DocTree, DocView, InstructionsView, Job, McpView, MemoryView, ModelsAllResp, NoticePage, PluginInfo, ProviderInfo, RolePackResult, RoleSpec, RolesView, SkillPackResult, Schedule, SessionEventsPage, SessionInfo, StateView, ToolDef, TrashView, WorkspaceInfo } from './types'
 
 // 本窗口绑定的会话(多窗口/多会话作用域)。为何是本文件自己持有而不是 import 一个
 // session 模块:本文件被 Node 内置测试以「./api.ts」直接加载(那条路要求 import 带 .ts),
@@ -231,6 +231,15 @@ export const api = {
   // instructionsSave 覆盖写全局指令(PUT 后服务端会触发指令重载;warning 非空 = 文件已写但没生效)
   instructionsSave(text: string): Promise<{ ok: true; bytes: number; applied: boolean; warning?: string }> {
     return req('/api/instructions', { method: 'PUT', headers: json, body: JSON.stringify({ text }) })
+  },
+  // memory 跨会话记忆读(治理面板;未装配 host-memory → 503,面板整段隐藏)
+  memory(): Promise<MemoryView> {
+    return req('/api/memory')
+  },
+  // memoryAct 四个动作:add / remove(按展示序号) / remove_source(按来源会话整段删) / toggle。
+  // 响应就是刷新后的视图(+ deleted),面板不必再拉一次。
+  memoryAct(body: { action: 'add'; content: string } | { action: 'remove'; index: number } | { action: 'remove_source'; source: string } | { action: 'toggle'; enabled: boolean }): Promise<MemoryView> {
+    return req('/api/memory', { method: 'POST', headers: json, body: JSON.stringify(body) })
   },
   // tools 工具清单(GET /api/tools);all=true = **全量**(管理面:被角色排除的也要列出来,
   // 否则面板分不清"被排除"与"没装这个插件");默认 = 模型可见(已过滤)。

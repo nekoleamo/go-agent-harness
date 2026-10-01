@@ -62,14 +62,37 @@ function makeStub(
   currentRole = 'finance',
   patchDelayMs = 0,
   tierRole = false,
+  withMemory = true,
 ) {
   // seen:记录写类请求(方法/路径/体),供角色面板用例断言「面板真的提交了」而不是只改了本地状态。
   const seen = []
   // toolQueries:GET /api/tools 的查询串(第九十一批 —— 面板必须读 ?all=1 全量清单;
   // seen 只记写类请求,读类的口径单记一处)。
   const toolQueries = []
-  // packPosts:角色包导入的每次尝试(第九十三批 —— 要证"先不带 overwrite,确认后才带")。
+  // packPosts:角色包导入的每次尝试(第九十三批 —— 要证“先不带 overwrite,确认后才带”)。
   const packPosts = []
+  // memState:记忆治理面板的桩状态(第一百一十批)。内容**故意用无空格长 token** ——
+  // 记忆是用户自己写的整句话,是面板横向滚动的高危位置(与技能/角色名同类)。
+  const memState = {
+    enabled: true,
+    user: [
+      '1. [2026-10-02] ' + 'MEM-LONG-' + 'y'.repeat(140) + ' (来源: 会话 sess-abc123)',
+      '2. [2026-10-01] 第二条记忆(来源: 会话 sess-abc123)',
+      '3. [2026-09-30] 手工记的一条(无来源)',
+    ],
+    project: ['1. [2026-10-02] 本项目的口径约定'],
+    lastDeleted: 0,
+    writes: [],
+  }
+  const memView = (st) => ({
+    enabled: st.enabled,
+    budget: 2048,
+    user: st.user,
+    project: st.project,
+    user_path: '/tmp/gah-home/memory/user.md',
+    project_path: '/tmp/gah-home/memory/projects/proj-1.md',
+    project_key: 'proj-1',
+  })
   const handler = async (route) => {
     const url = new URL(route.request().url())
     const p = url.pathname
@@ -210,6 +233,24 @@ function makeStub(
       })
     }
     if (p === '/api/skills') return json({ name: 'new-skill', path: '/tmp/skills/new-skill/SKILL.md' })
+    // 记忆治理面板(第一百一十批):读 + 四个写动作。回执里带 deleted(面板要显示“删了几条”)。
+    if (p === '/api/memory') {
+      if (!withMemory) return json({ error: '记忆服务未装配(缺 ctx.memory / host-memory 插件)' }, 503)
+      if (route.request().method() === 'POST') {
+        const b = JSON.parse(route.request().postData() || '{}')
+        memState.writes.push(b)
+        if (b.action === 'add') memState.user.unshift(`1. [2026-10-02] ${b.content}`)
+        if (b.action === 'remove') memState.user.splice((b.index ?? 1) - 1, 1)
+        if (b.action === 'remove_source') {
+          const before = memState.user.length
+          memState.user = memState.user.filter((l) => !l.includes(`会话 ${b.source}`))
+          memState.lastDeleted = before - memState.user.length
+        }
+        if (b.action === 'toggle') memState.enabled = !!b.enabled
+        return json({ ...memView(memState), deleted: b.action === 'remove' ? 1 : memState.lastDeleted ?? 0 })
+      }
+      return json(memView(memState))
+    }
     // 技能改名/跨库移动(第八十四批):POST /api/skills/{name}/relocate。
     // 必须放在通用 /api/skills/ 兕底之前(那个会先把多段路径吃掉)。
     if (p.endsWith('/relocate')) {
@@ -369,6 +410,7 @@ function makeStub(
   handler.seen = seen
   handler.toolQueries = toolQueries
   handler.packPosts = packPosts
+  handler.memState = memState
   return handler
 }
 const apiStub = makeStub(true)
@@ -1128,6 +1170,91 @@ describe('布局护栏:整页永不滚动(第五十二/五十三批)', { skip: s
       assert.ok(warn?.includes('ctx.systemPrompt 未装配'), `警示应带上服务端原因:${warn}`)
       const sec = await page.textContent('[data-sec="instr"]')
       assert.ok(!sec?.includes('已保存并生效'), `重载失败时不得出现成功回执:${sec?.slice(0, 160)}`)
+    } catch (e) {
+      await shoot(page, t.name)
+      throw e
+    } finally {
+      await ctx.close()
+    }
+  })
+
+  // 记忆治理面板(第一百一十批):与 /memory 命令同一份实现,此前只能在命令里管。
+  // 钉四件事:① 段与导航同键出现、内容是拉回来的真实数据;② 写动作真的提交后端
+  // (不是只改本地状态);③ 删除走二次确认;④ 未装配(503)时整段隐藏不摆空壳。
+  // 记忆正文故意是无空格长 token —— 与技能名/角色名同属横向滚动高危位置。
+  test('设置面板:记忆段的读写与治理动作', async (t) => {
+    const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+    let page = null
+    try {
+      const stub = makeStub(true, true, false, false, true)
+      page = await open(ctx, stub, docks[1].dock)
+      await page.click('.gear')
+      await page.waitForSelector('[data-sec="memory"]')
+      const nav = await page.evaluate(() => Array.from(document.querySelectorAll('.nav-it')).map((b) => b.textContent?.trim() ?? ''))
+      assert.ok(nav.includes('记忆'), `导航应有「记忆」:${JSON.stringify(nav)}`)
+      const sec = await page.textContent('[data-sec="memory"]')
+      assert.ok(sec?.includes('MEM-LONG-'), `未回填真实记忆内容:${sec?.slice(0, 120)}`)
+      assert.ok(sec?.includes('以指令为准'), `应说清记忆与指令的优先级:${sec?.slice(0, 200)}`)
+      assert.ok(sec?.includes('user.md'), `应给出记忆文件路径(设计上允许人手改):${sec?.slice(0, 200)}`)
+
+      // 记一条 → 真发 POST,列表随后多一条
+      await page.fill('[data-sec="memory"] [data-testid="mem-input"]', 'NEW-MEM-ENTRY')
+      await page.click('[data-sec="memory"] [data-testid="mem-add"]')
+      await page.waitForTimeout(200)
+      const adds = stub.memState.writes.filter((w) => w.action === 'add')
+      assert.equal(adds.length, 1, `记一条应提交一次:${JSON.stringify(stub.memState.writes)}`)
+      assert.equal(adds[0].content, 'NEW-MEM-ENTRY')
+      assert.ok((await page.textContent('[data-sec="memory"]'))?.includes('NEW-MEM-ENTRY'), '新记忆应出现在列表里')
+
+      // 逐条删 → 二次确认,取消不发请求
+      await page.click('[data-sec="memory"] .mem-item button:has-text("删除")')
+      await page.waitForSelector('[aria-label="操作确认"]')
+      await page.click('[aria-label="操作确认"] button:has-text("取消")')
+      await page.waitForTimeout(150)
+      assert.equal(stub.memState.writes.filter((w) => w.action === 'remove').length, 0, '取消确认后仍发了删除')
+      // 确认 → 真删
+      await page.click('[data-sec="memory"] .mem-item button:has-text("删除")')
+      await page.waitForSelector('[aria-label="操作确认"]')
+      await page.click('[aria-label="操作确认"] button:has-text("确认")')
+      await page.waitForTimeout(200)
+      assert.equal(stub.memState.writes.filter((w) => w.action === 'remove').length, 1, '确认后应发出删除')
+
+      // 按来源整段删:治理的关键动作(某个会话写进来的记忆一次性清干净)
+      const srcBtn = '[data-sec="memory"] .mem-src button'
+      await page.waitForSelector(srcBtn)
+      assert.ok((await page.textContent(srcBtn))?.includes('sess-abc123'), '来源按钮应标出来源会话')
+      await page.click(srcBtn)
+      await page.waitForSelector('[aria-label="操作确认"]')
+      await page.click('[aria-label="操作确认"] button:has-text("确认")')
+      await page.waitForTimeout(200)
+      const bySrc = stub.memState.writes.find((w) => w.action === 'remove_source')
+      assert.equal(bySrc?.source, 'sess-abc123', `按来源删的参数不对:${JSON.stringify(bySrc)}`)
+
+      // 关掉注入 → 标记出现,数据仍在
+      await page.click('[data-sec="memory"] button:has-text("关掉注入")')
+      await page.waitForSelector('[data-sec="memory"] [data-testid="mem-off"]')
+      assert.equal(stub.memState.enabled, false, '关掉注入应提交 toggle:false')
+      assert.ok((await page.textContent('[data-sec="memory"] .mem-list')) !== null, '关注入是关注入,不该把记忆清空')
+      assertInvariants(await measure(page))
+    } catch (e) {
+      await shoot(page, t.name)
+      throw e
+    } finally {
+      await ctx.close()
+    }
+  })
+
+  test('设置面板:未装配记忆服务时整段隐藏(不摆空壳)', async (t) => {
+    const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+    let page = null
+    try {
+      page = await open(ctx, makeStub(true, true, false, false, true, 'finance', 0, false, false), docks[1].dock)
+      await page.click('.gear')
+      await page.waitForSelector('[data-sec="instr"]')
+      await page.waitForTimeout(300)
+      assert.equal(await page.locator('[data-sec="memory"]').count(), 0, '未装配 ctx.memory 时不该出现记忆段')
+      const nav = await page.evaluate(() => Array.from(document.querySelectorAll('.nav-it')).map((b) => b.textContent?.trim() ?? ''))
+      assert.ok(!nav.includes('记忆'), `导航也不该有「记忆」:${JSON.stringify(nav)}`)
     } catch (e) {
       await shoot(page, t.name)
       throw e

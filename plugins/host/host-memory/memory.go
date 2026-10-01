@@ -123,17 +123,12 @@ func displayLines(es []memory.Entry) []string {
 	return out
 }
 
-// Remove 按 List 的序号删一条(序号是"新的在前",内部换成文件序索引)。
+// Remove 按 List 的序号删一条(序号与展示行一致 = 新的在前)。
 func (s *Service) Remove(index int) (string, error) {
-	path := memory.UserPath()
-	es, err := memory.Read(path)
-	if err != nil {
-		return "", err
-	}
-	if index < 1 || index > len(es) {
-		return "", fmt.Errorf("序号 %d 越界(共 %d 条;用 /memory list 看编号)", index, len(es))
-	}
-	e, err := memory.Remove(path, len(es)-index+1)
+	// internal/memory.Remove 接的就是**展示序**序号(两边共用同一个排序函数);
+	// 这里不要再做「展示序 → 文件序」的换算 —— 那个换算曾假定展示序是文件序的
+	// 完全倒置,在同日多条上不成立,会让「删第 1 行」删掉另一条。
+	e, err := memory.Remove(memory.UserPath(), index)
 	if err != nil {
 		return "", err
 	}

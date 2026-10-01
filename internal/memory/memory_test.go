@@ -86,13 +86,20 @@ func TestRemoveAndRemoveBySource(t *testing.T) {
 			t.Fatal("s1 的记忆没删掉")
 		}
 	}
-	// 按序号删(文件序)
+	// 按展示序号删。三条同日 ⇒ 展示序 = 写入序倒置 [C, B, A],删 1 = 删 C。
+	disp := SortedForDisplay(es)
+	if disp[0].Content != "C" {
+		t.Fatalf("同日三条的展示序应是新的在前(C 最后写),got %q 在前", disp[0].Content)
+	}
 	if _, err := Remove(path, 1); err != nil {
 		t.Fatal(err)
 	}
 	es2, _ := Read(path)
 	if len(es2) != 1 {
-		t.Fatalf("应剩 1 条,got %d", len(es2))
+		t.Fatalf("删展示序第 1 条(C)后应剩 1 条(B),got %d", len(es2))
+	}
+	if !strings.HasPrefix(es2[0].Content, "B") {
+		t.Fatalf("删展示序第 1 条(C)后剩的应是 B,got %q", es2[0].Content)
 	}
 	// 越界
 	if _, err := Remove(path, 99); err == nil {
@@ -109,7 +116,22 @@ func TestRemoveBySourceUnknownIsNoop(t *testing.T) {
 	}
 }
 
-// TestInjectBudgetKeepsNewestFirst 预算内**新的优先**(旧的更可能已过时)。
+// TestSortedForDisplaySameDayNewestFirst 同一天内的多条:新的必须在前(日期只到天,
+// 只按日期排会让当天保持写入顺序 = 最旧在前;连带后果是预算裁剪先丢刚记的那条)。
+func TestSortedForDisplaySameDayNewestFirst(t *testing.T) {
+	es := []Entry{
+		{Date: "2026-10-02", Content: "最先写的", Raw: "1"},
+		{Date: "2026-10-02", Content: "后写的", Raw: "2"},
+		{Date: "2026-10-01", Content: "昨天的", Raw: "3"},
+	}
+	got := SortedForDisplay(es)
+	want := []string{"后写的", "最先写的", "昨天的"}
+	for i, w := range want {
+		if got[i].Content != w {
+			t.Fatalf("展示序第 %d 条应是 %q,got %q(完整:%v)", i+1, w, got[i].Content, got)
+		}
+	}
+}
 func TestInjectBudgetKeepsNewestFirst(t *testing.T) {
 	old := Entry{Date: "2026-01-01", Content: "很旧的口径"}
 	recent := Entry{Date: "2026-10-01", Content: "最新口径"}

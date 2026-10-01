@@ -490,6 +490,21 @@ export interface InstructionsView {
   max_bytes: number
   over: boolean
 }
+
+// MemoryView 跨会话记忆(记忆治理面板;与 `/memory` 命令同一份实现)。
+// user/project = 展示行(新的在前,每行带序号与来源标注)。
+// project 缺省 = 该实现不提供项目级只读列表(前端不渲染那一组,而不是显示空的骗人)。
+export interface MemoryView {
+  enabled: boolean
+  budget: number
+  user: string[]
+  project?: string[]
+  user_path: string
+  project_path?: string
+  project_key?: string
+  /** 写动作回执:删了几条(remove 恒为 1;remove_source 可能是 0 = 没有来自该会话的记忆) */
+  deleted?: number
+}
 export interface RolesView {
   current: string
   max_agents_bytes: number
