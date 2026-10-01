@@ -35,3 +35,11 @@
 # 内部设计/推进文档不入库(对外仅保留插件开发规范 PLUGIN_DEV.md;其余随本地开发,不随仓库分发)
 /docs/*
 !/docs/PLUGIN_DEV.md
+
+# 设计登记册 DESIGN.md(2026-10-01 起):**本地文档,不入库**。
+# 它是本项目最大的单文件(数千行)且只对本地开发有意义;对外分发只需要 README、
+# docs/PLUGIN_DEV.md 与提交历史。
+# 注意:.goreleaser.yaml 的 archives.files 已同步移除它(留在那里会让发版找不到文件而失败),
+# README 双语里指向它的超链接也已改成纯文字说明。
+# 想恢复跟踪:git add -f DESIGN.md(并删掉本节)
+/DESIGN.md

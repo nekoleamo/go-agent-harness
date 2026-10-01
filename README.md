@@ -5,7 +5,7 @@
 Go 实现的编程代理 Agent Harness:以**单静态二进制**交付全部能力,零运行时依赖。对齐 DeepSeek Harness 与 Cordis 的「一切皆插件」设计哲学——微内核仅负责插件的加载/卸载/依赖管理(零 Agent 能力、零 UI),全部能力以插件形式经配置层(profile→bundle→patch)随时插拔开关。
 
 > 设计参考:DeepSeek Harness(TS/Cordis)、[naamfung/dsc](https://github.com/naamfung/dsc)(Go/go-plugin/gRPC)、[pi coding agent](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)(TS 终端 harness)。
-> - 完整设计:[DESIGN.md](./DESIGN.md)(§14.1 交付表/未实施清单)
+> - 完整设计:设计登记册(`DESIGN.md`)是**本地文档,不随仓库分发**;对外的交付总览见本文与提交历史
 > - 插件开发:[docs/PLUGIN_DEV.md](./docs/PLUGIN_DEV.md);插件总览:[plugins/README.md](./plugins/README.md)
 
 ---
@@ -110,7 +110,7 @@ Go 实现的编程代理 Agent Harness:以**单静态二进制**交付全部能�
 > **两点例外(唯一会丢配置的情况)**:① Windows 卸载页有个「Delete app data」勾选框,勾了会连
 > `%LOCALAPPDATA%\dev.gah.desktop`(数据根所在)一起删 —— 默认**不勾**,想留着就别勾;
 > ② Linux 只有命令行包(解压即用),数据在 `gah` 同目录 —— **把新版本解压覆盖到同一目录**就保留,
-> 整个目录换掉就丢了。详细矩阵见 `DESIGN.md` R25。
+> 整个目录换掉就丢了。详细矩阵见本地设计登记册(`DESIGN.md`)R25。
 
 ### 构建(发布形态)
 

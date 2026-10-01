@@ -4,7 +4,7 @@ A programming-agent harness implemented in Go, shipping **all capabilities as a 
 
 > English edition of [README.md](./README.md). Keep both in sync when updating. 中文版见 [README.md](./README.md)。
 > Design references: [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness) (TS/Cordis), [naamfung/dsc](https://github.com/naamfung/dsc) (Go/go-plugin/gRPC), [pi coding agent](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) (TS terminal harness).
-> - Full design: [DESIGN.md](./DESIGN.md) (§14.1 delivery table / backlog)
+> - Full design: the design register (`DESIGN.md`) is a **local document and is not distributed with the repository**; see this README and the commit history for the delivery overview
 > - Plugin development: [docs/PLUGIN_DEV.md](./docs/PLUGIN_DEV.md); plugin overview: [plugins/README.md](./plugins/README.md)
 
 ---
@@ -119,7 +119,7 @@ provider (DeepSeek / Kimi / Zhipu / Qwen / Ollama presets; paste an API key).
 > \"Delete app data\" checkbox — ticking it also removes `%LOCALAPPDATA%\dev.gah.desktop` (where the data root
 > lives). It is **unchecked by default**; leave it unchecked to keep your data. ② Linux ships as a CLI
 > tarball only: the data sits next to `gah`, so **extracting the new version over the same directory** keeps
-> it, while replacing the whole directory loses it. Full matrix: `DESIGN.md` R25.
+> it, while replacing the whole directory loses it. Full matrix: local design register (`DESIGN.md`) R25.
 
 ### Build (release form)
 

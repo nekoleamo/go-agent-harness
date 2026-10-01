@@ -23,7 +23,8 @@ archives:
   - id: gah-archive
     formats: [tar.gz, zip]
     files:
-      - DESIGN.md
+      # 2026-10-01:DESIGN.md 已改为**本地文档不入库**(.gitignore)—— 留着这一行会让
+      # 发版时找不到文件而直接失败。它只是随包附带的说明文档,不入包不影响任何功能。
       - README.md
       - LICENSE
 checksum:
@@ -36,6 +37,7 @@ release:
   mode: keep-existing
 # 正文归属:由 release-desktop 的 merge job 用 GitHub 自动 notes 生成(两个 workflow 并发,
 # 若 goreleaser 也写正文,谁后跑谁覆盖 → 结果不确定)。此处关掉自带 changelog,使最终正文
-# 恒为 GitHub notes(本仓提交历史与 DESIGN.md §14.1 已是完整变更记录)。
+# 恒为 GitHub notes(本仓提交历史与**本地**设计登记册 DESIGN.md §14.1 已是完整变更记录;
+# DESIGN.md 自 2026-10-01 起不入库,故不随发行包分发)。
 changelog:
   disable: true
