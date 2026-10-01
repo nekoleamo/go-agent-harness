@@ -291,6 +291,28 @@ type ForkNode struct {
 	ParentSeq uint64 // 父会话分支点 seq(0 = 克隆全量)
 }
 
+// MemoryService 服务(ctx.memory,host-memory 提供):跨会话记忆的读改(M1 手动)。
+//
+// 为什么用 `[]string` 而不是结构体:记忆条目是 internal/memory 的类型,sdk 不该依赖
+// internal —— 展示行由实现侧拼好(带序号与来源标注),调用方只负责显示。
+// 语义边界:写入**必须经用户显式发起**(自动写入记忆 = 静默提权,见 host-memory 注释)。
+type MemoryService interface {
+	// Enabled 注入是否开启(一键关闭后不再进系统提示)。
+	Enabled() bool
+	// SetEnabled 设置开关,返回新状态。
+	SetEnabled(on bool) bool
+	// Budget 注入预算(字节;超出按时间倒序丢最旧)。
+	Budget() int
+	// Add 手工加一条到用户级记忆(source 空 = 手工写,无来源可追溯)。
+	Add(content, source string) error
+	// List 用户级记忆的展示行(**新的在前**),每行带序号与来源标注。
+	List() []string
+	// Remove 按 List 的序号删一条(1 起),返回被删的展示行。
+	Remove(index int) (string, error)
+	// RemoveBySource 按来源会话删全部,返回删了几条(0 = 没有来自该来源的记忆)。
+	RemoveBySource(source string) (int, error)
+}
+
 // ForkableSessions 会话树/分支(P4-10;可选实现——host-cwd-sessions)。类型断言发现,
 // ctx.cwdSessions 接口不变。分支 = 复制继承历史到点的独立会话文件,继续演进互不影响。
 type ForkableSessions interface {

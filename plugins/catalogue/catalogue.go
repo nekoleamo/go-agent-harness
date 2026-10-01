@@ -17,6 +17,7 @@ import (
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-internal-commands"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-jobs"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-llm"
+	"github.com/nekoleamo/go-agent-harness/plugins/host/host-memory"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-notices"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-plugin-manager"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-roles"
@@ -82,6 +83,12 @@ var All = map[string]Def{
 		ID: "host-roles", Type: "host", APIVersion: ">=1.0,<2.0",
 		Provides: []string{"ctx.roles"},
 		Requires: []string{"ctx.tools", "ctx.systemPrompt", "ctx.skills"}}, Bundle: "base"},
+	"host-memory": {Factory: func() sdk.Plugin { return &hostmemory.Plugin{} }, Manifest: &sdk.Manifest{
+		ID: "host-memory", Type: "host", APIVersion: ">=1.0,<2.0",
+		Provides: []string{"ctx.memory"},
+		// ctx.cwdSessions 是**可选**依赖(拿不到就只注入用户级记忆):若声明成必需,
+		// host-cwd-sessions 就再也不能在运行期卸载(e2e 卸载矩阵直接抓到)。
+		Requires: []string{"ctx.systemPrompt"}}, Bundle: "base"},
 	"policy-guard": {Factory: func() sdk.Plugin { return &policyguard.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "policy-guard", Type: "policy", APIVersion: ">=1.0,<2.0",
 		Provides: []string{"ctx.sandbox", "ctx.approval"}}, Bundle: "base"},

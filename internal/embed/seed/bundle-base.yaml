@@ -1,4 +1,4 @@
-# seed-version: 28 # 样板版本:新增 base 能力条目(host-* 等)时 +1(28:新增 host-roles 角色切换/技能挂载;27:host-agent-loop 增 data.max_steps(缺省 0 = 不限,此前硬编码 10);26:token-compress 阈值改按窗口比例(trigger_ratio/max_tokens/chars_per_token);25:host-internal-commands 增 export_open_browser;24:新增 tool-schedule 定时计划工具),老用户自动升级(备份后覆盖)
+# seed-version: 29 # 样板版本:新增 base 能力条目(host-* 等)时 +1(29:新增 host-memory 跨会话记忆;28:新增 host-roles 角色切换/技能挂载;27:host-agent-loop 增 data.max_steps(缺省 0 = 不限,此前硬编码 10);26:token-compress 阈值改按窗口比例(trigger_ratio/max_tokens/chars_per_token);25:host-internal-commands 增 export_open_browser;24:新增 tool-schedule 定时计划工具),老用户自动升级(备份后覆盖)
 # base bundle:对齐 dsh-base,一切功能皆插件的共享第一层。
 # M1 阶段条目仅记录意图;对应插件工厂在 M2 base bundle 落地。
 name: base
@@ -43,6 +43,7 @@ entries:
       # 例如联网抓取、向外部系统写入。支持列表或逗号/空白分隔字符串。
       approval_tools: []
   - id: host-skills
+  - id: host-memory # 跨会话记忆(M1 手动):$GAH_HOME/memory/{user.md, projects/<key>.md};注入排在指令层之后;记忆按数据处理;关闭位在偏好 memory_off
   - id: host-roles # 角色(人设+工作规则+技能挂载):$GAH_HOME/roles/<id>/;/role 命令切换;模型只能只读 list_roles/read_role
   - id: host-plugin-manager
   - id: host-cwd-sessions

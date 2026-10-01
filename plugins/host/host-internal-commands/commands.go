@@ -185,6 +185,28 @@ func (h *Host) specs() []sdk.CommandSpec {
 					return []string{"包路径(.zip)"}
 				}},
 			}},
+		// 跨会话记忆(第一百零九批):子命令 + 自由文本(记忆正文是自然语言)。
+		{Name: "memory", Usage: "/memory list|add <内容>|rm <序号>|rm --from <会话>|on|off|project",
+			Desc: "跨会话记忆:记住跨对话要长期遵守的事(偏好、约定、口径);每轮带进上下文,按预算截断",
+			Run:  h.cmdMemory,
+			Args: []sdk.ArgLevel{
+				{Options: func([]string) []sdk.Option {
+					return []sdk.Option{
+						{Value: "list", Desc: "看全部记忆(新的在前)"},
+						{Value: "add", Desc: "记住一条(后面跟内容)"},
+						{Value: "rm", Desc: "删一条(按序号)或按来源整段删"},
+						{Value: "on", Desc: "开启注入"},
+						{Value: "off", Desc: "关闭注入(记忆仍留着)"},
+						{Value: "project", Desc: "看本项目记忆"},
+					}
+				}},
+				{FreeArgs: func(picked []string) []string {
+					if len(picked) > 0 && picked[0] == "add" {
+						return []string{"要记住的内容"}
+					}
+					return []string{"子命令后的内容(可选)"}
+				}},
+			}},
 		{Name: "compact", Usage: "/compact [指示词]", Desc: "手动滚动摘要压缩(立即折叠旧历史;指示词仅作记录)", Run: h.cmdCompact,
 			Args: []sdk.ArgLevel{{FreeArgs: func([]string) []string { return []string{"指示词?"} }}}},
 		{Name: "workspace", Usage: "/workspace [目录]", Desc: "切换工作区(项目):最近使用列表选择或输入新目录,切换即开新会话",

@@ -36,6 +36,10 @@ type Prefs struct {
 	// 为什么放偏好而不是另开文件:切换要**立即**对下一次组装生效,而它本来就是一个
 	// 跨端共享的小状态(TUI/Web 读写同一份),与 thinking/sandbox 同类。
 	Role string `json:"role,omitempty"`
+	// MemoryOff 跨会话记忆**关闭**标记(默认开;置真 = 不再注入系统提示)。
+	// 为什么是「关闭」而不是「开启」:记忆默认开启是有用默认,而"记住什么"由用户显式添加,
+	// 记���0 条时片段自然不渲染 ⇒ 不需要"开"这个状态。
+	MemoryOff bool `json:"memory_off,omitempty"`
 }
 
 // Path 偏好文件路径(GAH_HOME 未设 = 空,表示跳过持久化——测试/无 home 场景纯内存)。
