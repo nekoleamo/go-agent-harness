@@ -987,6 +987,9 @@ bar 吸附跳转/拖动位移/非 bar 不触发 | 方向键编辑;滚动条点�
 
 **测试**:`web/roles_test.go` 新增 3 项(装配**真实** host-roles/host-skills 走懒解析路径:`/api/roles` 未装配 503 且 state 不带 role、角色全流程 CRUD + 部分更新语义 + 当前角色改名跟随 + 删当前角色被拒 + `.trash` 回收站、技能库共享/私有/覆盖/上限/路径穿越/回收站后不再被索引);`web` 包 `go test` **127 通过**;前端 `npm test` 168 通过、`vue-tsc` 0 错、`test:layout` **39 通过 / 0 失败**(1 skip = 无浏览器时的跳过说明用例);全库 `go test ./... -race` 63 包全绿 + sdk 模块绿;`scripts/coverage-check.sh` **COVERAGE_OK**(`web` 79.1% ≥ 棘轮 68;新增 `internal/skills 75` 棘轮,实测 80.2%;总覆盖 80.1%)。
 
+**CI**:run `36812106039` 五 job 全绿(test 17m4s / test-windows 9m11s / test-macos 11m8s /
+desktop-shell 3m39s / desktop-shell-macos 33s)。
+
 ### 第一百零三批 · 前端并行视图（N+5）（2026-09-30）
 
 > 承接第一百零一批:后端已能并行跑多个会话,`/api/state` 也报了 `running_sessions`,
