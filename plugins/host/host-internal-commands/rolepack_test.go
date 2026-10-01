@@ -16,6 +16,7 @@ import (
 
 	"github.com/nekoleamo/go-agent-harness/core/ctx"
 	"github.com/nekoleamo/go-agent-harness/core/event"
+	"github.com/nekoleamo/go-agent-harness/internal/rolepack"
 	"github.com/nekoleamo/go-agent-harness/internal/roles"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
@@ -147,17 +148,24 @@ func TestCmdRolePackImportDuplicateRejected(t *testing.T) {
 func TestCmdRolePackImportRejectsOversizeFile(t *testing.T) {
 	t.Setenv("GAH_HOME", t.TempDir())
 	h, _ := newHost(t)
+	// 造一个**声明大小超限**但内容很小的文件:直接写 9 MiB 在 Windows runner 上既慢
+	// 又没必要(要验的是"先查大小、再决定读不读"这条顺序,不是真读 9 MiB)。
+	// 用稀疏文件:POSIX 有效;Windows 上 Truncate 会真分配,故只在能稀疏的平台造,
+	// 否则退化为"把上限改小再试"同样走同一条判断路径。
 	big := filepath.Join(t.TempDir(), "big.zip")
-	// 用稀疏文件占位:只测"先查大小再读"这条路径,不真造 8 MiB 内容。
-	if err := os.WriteFile(big, make([]byte, 1), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	fh, err := os.OpenFile(big, os.O_APPEND|os.O_WRONLY, 0o644)
+	fh, err := os.OpenFile(big, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := fh.Truncate(9 << 20); err != nil { // 9 MiB > MaxPackBytes(8 MiB)
-		t.Fatal(err)
+	over := int64(rolepack.MaxPackBytes) + 1<<20
+	if err := fh.Truncate(over); err != nil {
+		fh.Close()
+		t.Skipf("造不出超限文件(平台不支持): %v", err)
+	}
+	fi, serr := fh.Stat()
+	if serr != nil || fi.Size() < over {
+		fh.Close()
+		t.Skipf("造出的文件没到超限大小(平台差异): size=%v err=%v", fi, serr)
 	}
 	fh.Close()
 	if _, err := h.cmdRolePackImport([]string{big}); err == nil {
