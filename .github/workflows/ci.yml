@@ -41,15 +41,11 @@ jobs:
           name: layout-artifacts-${{ runner.os }}
           path: ${{ runner.temp }}/gah-layout
           if-no-files-found: ignore
-      - name: go vet(sdk 为独立 module,go.work 下根目录 ./... 不含它,须单独跑)
-        run: |
-          go vet ./...
-          (cd sdk && go vet ./...)
-      - name: staticcheck(静态分析;版本固定保证本地/CI 一致)
+      - name: 本地门禁同源(gofmt + go vet + staticcheck,双模块;scripts/gate.sh 是单一事实源)
+        # go vet 也在 scripts/gate.sh 里跑(单一步骤,避免两份命令各自漂移)
         run: |
           go install honnef.co/go/tools/cmd/staticcheck@2026.2.1
-          "$(go env GOPATH)/bin/staticcheck" ./...
-          (cd sdk && "$(go env GOPATH)/bin/staticcheck" ./...)
+          bash scripts/gate.sh
       - name: go test -race(含覆盖率 profile,供下一步复用;sdk module 单独跑)
         run: |
           go test -race -coverprofile=coverage.out -covermode=atomic ./...

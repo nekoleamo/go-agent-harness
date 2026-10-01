@@ -18,6 +18,33 @@
 #   bash scripts/coverage-check.sh                 # 自行跑两模块覆盖率(本地,较慢)
 #   bash scripts/coverage-check.sh a.out b.out     # 复用已有 profile(CI 用)
 #   GAH_COVER_FLOOR_MIN=60 GAH_COVER_SKIP=1 bash scripts/coverage-check.sh
+#
+# —— 结构性稀释口径(2026-10-02 补齐,原先只有「不降门」三个字)——
+#   背景:棘轮是**逐包绝对百分比**,而一批新功能往往给某个包一次加几百行新代码
+#   (例:第一百零九批给 host-internal-commands 加约 700 行命令面)。此时该包的
+#   百分比会因**分母变大**而下滑 —— 与「旧代码的测试被删/被改坏」是两回事,
+#   但棘轮看数字 indistinguishable,于是只剩两个坏选择:要么降门(纪律不允许),
+#   要么在别处凑测试(第九十四/一百零九批实际做的:补既有低覆盖路径)。
+#   两种做法都会掩盖真问题:凑出来的测试与新代码无关;「稀释不算回退」若只写
+#   在心里,则等于门禁可以随时被解释掉。所以口径**写成可判定规则**:
+#
+#   规则(三条,顺序即处置顺序):
+#     1. 棘轮数值**只许上调**。包覆盖率下滑一律先当回退处理(现行行为不变)。
+#     2. 本批给某包新增了**超过 200 行语句**(用两份 profile 的语句数差算),
+#        且下滑 ≥ GAH_DILUTION_PP(默认 3.0)pp ⇒ 判为「结构性稀释」,此时该包
+#        **必须补测本批新增的那部分**,补测后覆盖率应回到棘轮之上;
+#        若补不满,唯一合法出口是把它写进下面的 DILUTION 表并写明理由 ——
+#        理由必须指向**为什么本批新增的行现在还测不到**(需子进程/需真机/需注入
+#        失败分支),不接受「时间不够」「下批补」。
+#     3. 判定入口 = `bash scripts/coverage-check.sh --dilution <基线> <当前>`,
+#        它只对**棘轮包**报 Δ 并在越线时红;不改动普通模式的任何行为。
+#   基线 profile 从哪来:开工那批之前跑一次普通模式,把两份 profile 存到别处
+#   (`go test ./... -coverprofile=/tmp/base.out` + `cd sdk && … -coverprofile=…`)。
+#
+#   已知的一次真实触发:第一百零九批(约 700 行命令面)→ 补 13 条既有低覆盖路径,
+#   包回到棘轮之上,本表留空(有据可查的处置不需要豁免条目)。
+DILUTION_MAX_NEW_STMT="${GAH_DILUTION_MAX_STMT:-200}"   # 认定为「大批量新增」的语句数门
+DILUTION_PP="${GAH_DILUTION_PP:-3.0}"                   # 稀释判定的下滑幅度门(pp)
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -124,6 +151,12 @@ plugins/tool/tool-web 85
 plugins/tool/tool-workflow 72
 EOF
 
+# —— 稀释豁免表:仅「结构性稀释且本批补不满」时用(包名|理由)。前缀不匹配,精确包名。——
+# 理由必须指向**为什么本批新增的行现在还测不到**(需子进程 / 需真机 / 需注入失败
+# 分支),不接受「时间不够」「下批补」。留空是正常状态 —— 有据可查的处置请直接补测。
+read -r -d '' DILUTION <<'EOF'
+EOF
+
 # —— 豁免表:无「语句覆盖」意义的包(必须写理由)。前缀匹配。——
 read -r -d '' EXEMPT <<'EOF'
 bundles|bundle 装配声明层(仅注册表,catalogue 为单一事实源)
@@ -137,6 +170,83 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 printf '%s\n' "$MINS" >"$TMP/mins.txt"
 printf '%s\n' "$EXEMPT" >"$TMP/exempt.txt"
+printf '%s\n' "$DILUTION" >"$TMP/dilution.txt"
+
+# —— 模式二:结构性稀释判定(只报棘轮包的 Δ;不跑测试,吃外部 profile)——
+# 用法:bash scripts/coverage-check.sh --dilution <基线根> <基线sdk> <当前根> <当前sdk>
+# 四个 profile 按固定顺序传入(awk 靠 FNR==1 切阶段,避免依赖 gawk 的 ARGIND ——
+# macOS 自带的是 mawk)。
+if [ "${1:-}" = "--dilution" ]; then
+  shift
+  if [ "$#" -ne 4 ]; then
+    echo "用法:bash scripts/coverage-check.sh --dilution <基线根.out> <基线sdk.out> <当前根.out> <当前sdk.out>"
+    exit 2
+  fi
+  for p in "$@"; do
+    [ -s "$p" ] || { echo "FAIL 覆盖率 profile 缺失或为空:$p"; exit 1; }
+  done
+  awk -v maxnew="$DILUTION_MAX_NEW_STMT" -v maxpp="$DILUTION_PP" '
+    FILENAME == ARGV[1] {
+      if (NF >= 2 && index($1, "@") == 0) min[$1] = $2 + 0
+      next
+    }
+    FILENAME == ARGV[2] {
+      n = split($0, f, "|"); if (n >= 2 && f[1] != "") why[f[1]] = f[2]
+      next
+    }
+    FNR == 1 { phase++ }
+    !/^mode:/ {
+      split($1, a, ":"); path = a[1]
+      sub(/\/[^\/]*$/, "", path)
+      sub(/^github\.com\/nekoleamo\/go-agent-harness\/?/, "", path)
+      if (path == "") path = "."
+      k = (phase <= 2) ? "b" : "c"
+      if (phase == 2 || phase == 4) k = k "s"        # sdk module 单独计一份
+      stmts[k SUBSEP path] += $2
+      if ($3+0 > 0) cov[k SUBSEP path] += $2
+    }
+    # 基线/当前各自优先用本 module 的 profile,取不到才回退到另一个(不跨 module 混算)
+    function pick(p) {
+      if (stmts["b" SUBSEP p] + 0 > 0) return pct("b", p)
+      if (stmts["bs" SUBSEP p] + 0 > 0) return pct("bs", p)
+      return -1
+    }
+    function pickc(p) {
+      if (stmts["c" SUBSEP p] + 0 > 0) return pct("c", p)
+      if (stmts["cs" SUBSEP p] + 0 > 0) return pct("cs", p)
+      return -1
+    }
+    function pct(k, p) { return 100 * cov[k SUBSEP p] / stmts[k SUBSEP p] }
+    function stmtsOf(p) { return stmts["c" SUBSEP p] + stmts["cs" SUBSEP p] }
+    function stmtsB(p) { return stmts["b" SUBSEP p] + stmts["bs" SUBSEP p] }
+    END {
+      printf "%-46s %8s %8s %8s %9s  %s\n", "包", "基线", "当前", "Δpp", "新增语句", "判定"
+      bad = 0
+      for (p in min) {
+        b = pick(p); c = pickc(p)
+        if (b < 0) continue
+        if (c < 0) { printf "%-46s %7.1f%% %7s %8s %9s  %s\n", p, b, "-", "-", "-", "✗ 当前 profile 缺该包(改名/移除请同步棘轮表,否则等于把测试删了而不报错)"; bad = 1; continue }
+        d = c - b
+        new = stmtsOf(p) - stmtsB(p)
+        if (d > -0.05) { continue }                    # 只报下滑的包(持平/上升不列)
+        verdict = "—"
+        if (d <= -maxpp && new > maxnew) {
+          if (p in why) { verdict = "稀释·已登记豁免" }
+          else { verdict = "✗ 结构性稀释未处置"; bad = 1 }
+        } else if (d <= -maxpp) {
+          if (p in min && c + 0.05 < min[p]) { verdict = "✗ 跌破棘轮(按回退处理)"; bad = 1 }
+          else verdict = "小幅下滑(仍在棘轮上)"
+        } else if (c + 0.05 < min[p]) {
+          verdict = "✗ 跌破棘轮"; bad = 1
+        } else verdict = "小幅下滑(仍在棘轮上)"
+        printf "%-46s %7.1f%% %7.1f%% %+7.1f %9d  %s\n", p, b, c, d, new, verdict
+      }
+      if (bad) { print "\nDILUTION_FAIL(处置见脚本头「结构性稀释口径」三条规则)"; exit 1 }
+      print "\nDILUTION_OK"
+    }
+  ' "$TMP/mins.txt" "$TMP/dilution.txt" "$1" "$2" "$3" "$4"
+  exit $?
+fi
 
 if [ "$#" -gt 0 ]; then
   PROFILES=("$@")

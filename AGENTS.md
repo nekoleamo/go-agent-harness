@@ -27,6 +27,7 @@
 
 ## 语言与工具
 - Go 1.27+;golangci-lint;testify 可选,多数用例标准库断言即可。
+- **提交前门禁**:`bash scripts/gate.sh`(gofmt + go vet + staticcheck,**双 module**;`--fast` 跳过 staticcheck)。它是 gofmt/vet/staticcheck 的**单一事实源**,CI 的「本地门禁同源」步骤直接调它 —— 2026-10-02 之前这三步只活在习惯里(连 gofmt 在 CI 都没有),代价是 SA4005 只在 CI 被逮到。
 - 发布编译:`CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$(git describe --tags)"`。
 - 桌面壳(`desktop/src-tauri/`):改后必跑 `cargo fmt` 与 `cargo test --offline`(CI 的 `desktop-shell` job = `cargo fmt --check` + `cargo test --locked`;`--offline` 是因为 crates.io 偶发拉取超时)。
 - CI:go vet + go test ./... -race;全库测试必须保持 -race 全绿。
@@ -47,7 +48,8 @@
 - 端到端:tests/ 包直接装配 base bundle + 注入 `system.*` 服务,验 round 流程与"模型可见即已记录"不变量。
 - 外部进程插件(host-bridge/mcp-bridge):测试内 `go build` 产物到临时目录再加载。
 - tests 卸载矩阵:关闭 llm-anthropic-compat(防打真实 API),按依赖序卸载(先 host-bridge 再 host-jobs/host-fanout)。
-- **覆盖率门**:`bash scripts/coverage-check.sh`(CI 同源;逐包棘轮 + 全局下限 + 零覆盖包禁止 + 豁免需理由,阈值只在脚本内)。回退即 CI 红;新增关键包请同步棘轮表(未能登记的棘轮包会被报"未出现在 profile")。
+- **覆盖率门**:`bash scripts/coverage-check.sh`(CI 同源;逐包棘轮 + 全局下限 + 零覆盖包禁止 + 豁免需理由,阈值只在脚本内)。回退即 CI 红;新增关键包请同步棘轮表(未能登记的棘轮包会被报“未出现在 profile”)。
+- **结构性稀释口径(2026-10-02 定,别只靠自觉)**:棘轮是**逐包绝对百分比**,一批给某包加几百行新代码会让它因**分母变大**而下滑 —— 与“旧测试被改坏”不可区分,只剩“降门(不允许)”与“在别处凑测试(掩盖真问题)”两个坏选择。规则三条(详见 `scripts/coverage-check.sh` 头注):① 棘轮只许上调;② 本批给某包**新增语句 > 200** 且下滑 ≥ 3pp ⇒ 判为结构性稀释,**必须补测本批新增部分**,补不满才允许写进脚本里的 `DILUTION` 表并写明“为什么这些行现在测不到”(不接受“下批补”);③ 判定入口 `bash scripts/coverage-check.sh --dilution <基线根> <基线sdk> <当前根> <当前sdk>`(开工那批前先存一份基线 profile)。
 - **sdk 是独立 module**(`sdk/go.mod` + `go.work`):`go vet/staticcheck/test ./...` 从根目录跑**不含它**,新增/改动 sdk 时必须 `cd sdk && …`(CI 三步已同步补齐)。
 - **跨平台(Windows)**:CI 有 `test-windows` job,macOS 本地跑绿**不代表**它绿。四个反复踩到的坑:① 不硬编码 `/tmp`(用 `t.TempDir()`);② Windows 的 shell 是 git-bash(MSYS):`C:\...` 里的反斜杠会被 shell 当转义吃掉(命令实际落到相对位置),要用 `/c/...` 表达绝对路径;③ `chmod 0555` 在 Windows 不产生只读语义(走 ACL),构造不出只读目录;④ `exec.LookPath` 按 PATHEXT 解析,无扩展名脚本不是可执行文件。**逐字节比较失败时先怀疑行尾**(CRLF 检出)。
 - **CI 计时门口径**:`全库 -race 计时回归护栏` 只覆盖**核心包**(`go list ./... | grep -v '/tests$'`),阈值 150s(本地基线 ~40s);`tests/` 包单独一步、**不设时长门** —— 它的耗时是 pty 交互 sleep 之和(随用例数线性增长),拿墙钟做回归判据会必然假红。
@@ -55,6 +57,7 @@
 ## 变更纪律
 - **行尾钉死**:凡参与逐字节比较的仓库内文本 fixture(如 `desktop/src-tauri/fixtures/*`)必须写进 `.gitattributes`(`text eol=lf`)—— 否则 Windows 检出成 CRLF,该测试会在 `test-windows` 上假红(内容打印完全一致却比较失败)。
 - **新增插件必须**:登记 `plugins/catalogue` + 落位 `plugins/<类别>/`(host/adapter/policy/tool/mcp/ui,总览 plugins/README.md)+ 同步 config 与 internal/embed/seed 两份 bundle 样板。
+- **预置角色/技能**:形态(三道闸、配方表、契约、bump `SeedRolesVersion` 的流程)见 docs/PRESET_SKILLS.md;机器判定在 `internal/embed/preset_skills_contract_test.go`(宁少勿滥的机制化,与预置角色内容契约同一条纪律)。
 - **样板版本化**:config/bundle-*.yaml 头部 `# seed-version: N`(seed 与 repo 两份同步,guard 测试强制);**新增 base 能力条目必须 bump 版本号**(EnsureSeed 对低版本落盘自动备份后覆盖,否则老用户不升级)。仅 bundle 系列参与;profile/patch 不覆盖。
 - **外部化二进制**:extplugins/ 独立二进制经 `scripts/gen-extplugins.sh` 按发行矩阵生成(内含架构断言,生成后立即校验);改 embed 布局后必须重跑(embed 缺失主包构建失败);产物 `gzip -9 -n`(确定性,重跑无 diff);tests 经 embed.OpenExtPlugin 读本平台产物。
 - **README 双语同步**:README.md(中文)与 README_EN.md(英文)互链同步维护——改动其中任一的功能描述/命令表/状态/目录/链接时,必须同步另一份(用户工作流,2026-09-16 起);新增面向用户的文档如涉及对外可见描述,一并考虑双语。
