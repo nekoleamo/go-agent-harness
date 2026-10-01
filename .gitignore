@@ -43,3 +43,21 @@
 # README 双语里指向它的超链接也已改成纯文字说明。
 # 想恢复跟踪:git add -f DESIGN.md(并删掉本节)
 /DESIGN.md
+
+# —— 构建产物:不入库(2026-10-01)——
+#
+# ① 外部插件各平台产物 internal/embed/extplugins/(约 60M,占原仓库 87%)
+#    它是 `scripts/gen-extplugins.sh` 的产物(外部插件独立二进制 + gzip -9 -n),
+#    而 CI 的三个 job 都会**先重建**再构建(ci.yml),发版 before hooks 同样重建
+#    (docs/RELEASE.md「真发行要求干净工作树」一节)—— 入库它只会让每次 diff
+#    都拖着几十兆二进制。
+#    代价(**必须知道**):`//go:embed extplugins/<平台>` 要求目录存在,全新 clone
+#    后第一次编译前要跑 `bash scripts/gen-extplugins.sh`,否则 go build 直接报
+#    "pattern ...: no matching files found"。这与既有的 gen-web.sh 约定一致。
+# ② Tauri 编译期生成的 schema(desktop/src-tauri/gen/,约 300K)
+#    由 build.rs 里的 `tauri_build::build()` 每次 cargo 编译时重新生成
+#    (capability / ACL schema 都是它的产物),入库只会与插件版本打架。
+#
+# 恢复跟踪:git add -f internal/embed/extplugins desktop/src-tauri/gen
+/internal/embed/extplugins/
+/desktop/src-tauri/gen/
