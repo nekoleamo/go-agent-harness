@@ -55,7 +55,7 @@ function parseArgs(argv) {
 
 // 平台矩阵:publish-desktop.sh 的发行矩阵(darwin aarch64 + windows x64)。
 // 加新平台时改这里(或用 GAH_RELEASE_PLATFORMS 覆盖,便于先跑后登记)。
-const DEFAULT_PLATFORMS = ['darwin-aarch64', 'windows-x86_64']
+const DEFAULT_PLATFORMS = ['darwin-aarch64', 'windows-x86_64', 'windows-arm64']
 
 // 本机平台 → tauri updater 平台键(默认只验本机,避免每次发版下载全平台)。
 function hostPlatform() {

@@ -32,9 +32,10 @@ case "$platform" in
   darwin-aarch64)  triple=aarch64-apple-darwin;   updkey=darwin-aarch64;  bdir=macos ;;
   darwin-x86_64)   triple=x86_64-apple-darwin;    updkey=darwin-x86_64;   bdir=macos ;;
   windows-x86_64)  triple=x86_64-pc-windows-msvc; updkey=windows-x86_64;  bdir=nsis ;;
+  windows-arm64)   triple=aarch64-pc-windows-msvc; updkey=windows-arm64;  bdir=nsis ;;
   merge) merge=1 ;;
   rewrite-url) rewrite=1 ;;
-  *) echo "用法: $0 {darwin-aarch64|darwin-x86_64|windows-x86_64|merge|rewrite-url}"; exit 1 ;;
+  *) echo "用法: $0 {darwin-aarch64|darwin-x86_64|windows-x86_64|windows-arm64|merge|rewrite-url}"; exit 1 ;;
 esac
 
 if [ "${merge:-0}" = 1 ]; then
@@ -206,7 +207,7 @@ case "$platform" in
       case "$(basename "$f")" in rw.*) ;; *) dist_glob+=("$f") ;; esac
     done
     ;;
-  windows-x86_64)
+  windows-x86_64 | windows-arm64)
     dist_glob=("$BUNDLE/nsis"/*-setup.exe)
     upd_candidates=("$BUNDLE/nsis"/*.zip "${dist_glob[@]}")
     ;;
@@ -246,7 +247,7 @@ ls -la "$OUT/$platform"
 #   gah/README-portable.txt  三行说明:数据在哪 / 怎么升级 / 为什么没有自动更新
 # ⚠ 便携包**不进 updater 端点**:Windows 不允许覆盖正在运行的 exe,让 updater 去装
 #   NSIS 包只会半途失败(壳里已在 checkForUpdatesInner 拦掉并说明原因)。
-if [ "$platform" = "windows-x86_64" ]; then
+if [ "$platform" = "windows-x86_64" ] || [ "$platform" = "windows-arm64" ]; then
   SHELL_EXE="desktop/src-tauri/target/$triple/$PROFILE_DIR/gah-desktop.exe"
   [ -f "$SHELL_EXE" ] || { echo "缺壳产物:$SHELL_EXE" >&2; exit 1; }
   [ -f "$SIDECAR" ] || { echo "缺 sidecar 产物:$SIDECAR" >&2; exit 1; }

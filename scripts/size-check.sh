@@ -60,7 +60,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 TARGETS="$(go env GOOS)/$(go env GOARCH)"
-[ "$ALL" -eq 1 ] && TARGETS="darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64"
+[ "$ALL" -eq 1 ] && TARGETS="darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64 windows/arm64"
 
 MINOR="$(git describe --tags 2>/dev/null || echo dev)"
 TMP="$(mktemp -d)"

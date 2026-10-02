@@ -1,7 +1,7 @@
 #!/bin/bash
 # 生成随包分发的外部工具插件二进制(M6.9 工具类全外部化):tool-basic(三件套)、
 # tool-workflow(starlark 引擎,经宿主回调通道)、tool-mcp(MCP client 桥)。
-# P4 平台匹配:按发行矩阵(darwin/linux × amd64/arm64 + windows/amd64,与
+# P4 平台匹配:按发行矩阵(darwin/linux/windows × amd64/arm64,与
 # .goreleaser.yaml 对齐)每目标构建一份,落 internal/embed/extplugins/<os>-<arch>/;
 # 主包交叉编译时经 build-tag 只嵌本平台产物(体积门不变);
 # 产物缺失时主包构建失败(goreleaser before hook 调用,防漏)。
@@ -18,7 +18,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 EMBED_DIR=internal/embed/extplugins
-TARGETS="darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64"
+TARGETS="darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64 windows/arm64"
 NAMES="tool-basic tool-workflow tool-mcp tool-subagent"
 
 # assert_arch <bin> <expect-os> <expect-arch>:build 后(压缩前)校验产物头部魔数
@@ -55,7 +55,15 @@ assert_arch() {
       sighex=$(dd if="$bin" bs=1 skip="$lf" count=4 2>/dev/null | od -An -tx1 | tr -d ' \n')
       if [ "$sighex" = 50450000 ]; then
         mhex=$(dd if="$bin" bs=1 skip=$((lf + 4)) count=2 2>/dev/null | od -An -tx1 | tr -d ' \n')
-        [ "$mhex" = 6486 ] && actual="windows/amd64" || actual="windows/?"
+        # PE machine 字段是**小端字节序**的十六进制文本:0x8664 → "6486"、0xAA64 → "64aa"。
+        # 写十进制会永远匹配不上(初版就这么错了,表现为 assert_arch 报 windows/?
+        # 而产物其实是对的 —— 平台护栏自己抓的)。
+        case "$mhex" in
+          6486)  actual="windows/amd64" ;;
+          64aa)  actual="windows/arm64" ;;
+          c401)  actual="windows/arm" ;;   # 0x01C4 = arm32,不在矩阵内(报出来,不混过去)
+          *)     actual="windows/?" ;;
+        esac
       else
         actual="windows/?"
       fi

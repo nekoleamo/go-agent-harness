@@ -20,9 +20,14 @@ func binArch(raw []byte) (osName, arch string) {
 		if len(raw) >= 4+64+4+2 {
 			peOff := binary.LittleEndian.Uint32(raw[0x3C:0x40])
 			if peOff+24 <= uint32(len(raw)) && string(raw[peOff:peOff+4]) == "PE\x00\x00" {
+				// machine:0x8664=amd64、**0xAA64=arm64**(2026-10-02 起进矩阵;
+				// 不认它的话 arm64 产物会被报成 windows/?,而真正的问题要到目标机上暴露)。
 				mach := binary.LittleEndian.Uint16(raw[peOff+4 : peOff+6])
-				if mach == 0x8664 {
+				switch mach {
+				case 0x8664:
 					return "windows", "amd64"
+				case 0xAA64:
+					return "windows", "arm64"
 				}
 			}
 		}
@@ -106,6 +111,43 @@ func TestExtPluginsMatchPlatform(t *testing.T) {
 		if osName != runtime.GOOS || arch != runtime.GOARCH {
 			t.Fatalf("%s 产物架构 %s/%s != 构建平台 %s/%s(发行产物将不可执行)",
 				e.Name(), osName, arch, runtime.GOOS, runtime.GOARCH)
+		}
+	}
+}
+
+// TestBinArchPEArchitectures PE machine 字段的判定(**合成头,不依赖本机平台**)。
+//
+// 为什么单列:TestExtPluginsMatchPlatform 是**按宿主平台**检查的(本机只查 darwin 那份
+// embed),所以「PE arm64 认不认得出来」这条判定在 mac 上根本走不到 —— 而它恰恰是
+// windows/arm64 进矩阵后最容易漏的一处(漏了的表现是:arm64 产物被报成 windows/?,
+// 而真正的问题要到目标机上才暴露)。
+func TestBinArchPEArchitectures(t *testing.T) {
+	mkPE := func(machine uint16) []byte {
+		// 布局必须**精确**:MZ 头 0x80 字节、e_lfanew=0x80、PE 头紧随其后 ——
+		// 填充长度差一点就读不到 "PE\x00\x00"(合成头初版就栽在这里,三个用例全报 ?/?)。
+		const peOff = 0x80
+		raw := make([]byte, peOff)
+		raw[0], raw[1] = 'M', 'Z'
+		binary.LittleEndian.PutUint32(raw[0x3C:0x40], peOff)
+		hdr := make([]byte, 0x18)
+		hdr[0], hdr[1], hdr[2], hdr[3] = 'P', 'E', 0, 0
+		binary.LittleEndian.PutUint16(hdr[4:6], machine)
+		return append(raw, hdr...)
+	}
+	cases := []struct {
+		machine  uint16
+		wantOS   string
+		wantArch string
+		note     string
+	}{
+		{0x8664, "windows", "amd64", "x64"},
+		{0xAA64, "windows", "arm64", "AArch64(2026-10-02 进矩阵)"},
+		{0x01C4, "windows", "?", "arm32 不在矩阵内 ⇒ 报出来而不是猜"},
+	}
+	for _, c := range cases {
+		os1, arch := binArch(mkPE(c.machine))
+		if os1 != c.wantOS || arch != c.wantArch {
+			t.Errorf("machine 0x%04X(%s):got %s/%s,want %s/%s", c.machine, c.note, os1, arch, c.wantOS, c.wantArch)
 		}
 	}
 }
