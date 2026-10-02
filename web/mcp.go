@@ -28,6 +28,42 @@ type mcpServerView struct {
 	Tools  int  `json:"tools"`
 }
 
+// MarshalJSON 显式序列化(内联 server 字段 + 运行期状态)。
+//
+// **为什么必须显式写**:Go 会把**内嵌类型的方法提升**到外层类型 —— mcpconfig.Server
+// 为了保证凭据永不出门而实现了 MarshalJSON(headers 打码),于是 mcpServerView 也
+// 「继承」了它,序列化结果里**只剩 server 字段,loaded/tools 整个消失**。
+// 症状很隐蔽:面板的 MCP 段会永远显示「0 个工具 / 未加载」,而插件其实连得好好的
+// (2026-10-02 加传输面时踩到,由 web 的 TestMCPSaveAndReload 当场逮住)。
+type serverViewJSON struct {
+	Loaded bool `json:"loaded"`
+	Tools  int  `json:"tools"`
+}
+
+func (v mcpServerView) MarshalJSON() ([]byte, error) {
+	// 顺序:先让 Server 自己序列化(它会打码 headers),再把外层字段并进去。
+	raw, err := json.Marshal(v.Server)
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, err
+	}
+	extra, err := json.Marshal(serverViewJSON{Loaded: v.Loaded, Tools: v.Tools})
+	if err != nil {
+		return nil, err
+	}
+	var em map[string]any
+	if err := json.Unmarshal(extra, &em); err != nil {
+		return nil, err
+	}
+	for k, val := range em {
+		m[k] = val
+	}
+	return json.Marshal(m)
+}
+
 // handleMCPList MCP 配置视图(GET /api/mcp)。
 func (s *Server) handleMCPList(w http.ResponseWriter, _ *http.Request) {
 	view, err := s.mcpView()

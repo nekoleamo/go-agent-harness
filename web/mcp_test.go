@@ -310,3 +310,44 @@ func TestMCPListBrokenConfig(t *testing.T) {
 		t.Fatalf("坏配置应 500,得 %d", resp.StatusCode)
 	}
 }
+
+// TestMCPViewKeepsRuntimeFieldsAndMasksHeaders 两个承重断言,都在**序列化后的 JSON** 上:
+//
+//	① loaded/tools 必须在(内嵌 Server 的 MarshalJSON 会「提升」到外层结构把它们吞掉 ——
+//	   症状是面板永远显示「0 个工具/未加载」,而插件其实连得好好的);
+//	② headers 的值必须不在 JSON 里(凭据),但键名与「配了几个」要在。
+func TestMCPViewKeepsRuntimeFieldsAndMasksHeaders(t *testing.T) {
+	v := mcpServerView{
+		Server: mcpconfig.Server{
+			Name: "remote", Transport: mcpconfig.TransportHTTP,
+			URL:     "https://x.example/mcp",
+			Headers: map[string]string{"Authorization": "Bearer super-secret-1234"},
+		},
+		Loaded: true,
+		Tools:  3,
+	}
+	raw, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["loaded"] != true {
+		t.Errorf("loaded 丢了(内嵌类型的 MarshalJSON 被提升,吞掉了外层字段):%s", raw)
+	}
+	if got["tools"] != float64(3) {
+		t.Errorf("tools 丢了:%s", raw)
+	}
+	if got["url"] != "https://x.example/mcp" || got["transport"] != mcpconfig.TransportHTTP {
+		t.Errorf("http 传输的字段没出来:%s", raw)
+	}
+	if strings.Contains(string(raw), "super-secret-1234") {
+		t.Fatalf("凭据泄露:%s", raw)
+	}
+	// 键名**按用户写的原样**保留(打码只换值):面板要让人认得出自己配了哪个头。
+	if _, ok := got["headers"].(map[string]any)["Authorization"]; !ok {
+		t.Errorf("键名应原样保留(面板要显示配了哪些头):%s", raw)
+	}
+}

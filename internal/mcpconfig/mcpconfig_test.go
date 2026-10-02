@@ -317,3 +317,80 @@ servers:
 		t.Fatalf("显式 args 优先: %+v", got)
 	}
 }
+
+// http 传输的配置面(2026-10-02):字段规范化 + 端点合规 + **凭据永不出现在 JSON 里**。
+func TestServerHTTPTransportConfig(t *testing.T) {
+	// 缺省 transport = stdio(老配置零改动)
+	s, err := Normalize(Server{Name: "a", Command: "npx -y srv"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.TransportOrDefault() != TransportStdio || s.IsHTTP() {
+		t.Fatalf("缺省应是 stdio,got %+v", s)
+	}
+	// http:url 必填
+	if _, err := Normalize(Server{Name: "b", Transport: "http"}); err == nil {
+		t.Error("http 缺 url 应报错")
+	}
+	// http:远端必须 https
+	if _, err := Normalize(Server{Name: "b", Transport: "http", URL: "http://example.com/mcp"}); err == nil {
+		t.Error("远端明文 http 应拒绝")
+	}
+	// http:回环允许明文(本机 server 是常态)
+	if _, err := Normalize(Server{Name: "b", Transport: "http", URL: "http://127.0.0.1:3000/mcp"}); err != nil {
+		t.Errorf("回环明文应放行:%v", err)
+	}
+	// header 键统一小写、值 trim
+	s2, err := Normalize(Server{Name: "c", Transport: "http", URL: "https://x.example/mcp",
+		Headers: map[string]string{" Authorization ": " Bearer t "}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s2.Headers["authorization"] != "Bearer t" {
+		t.Fatalf("header 规范化不对:%+v", s2.Headers)
+	}
+}
+
+// TestServerMarshalJSONMasksHeaders **凭据不得出现在任何序列化出口**。
+//
+// 这条是承重的:Server 被 web/mcp.go 直接序列化进 /api/mcp(面板要显示 server 列表)。
+// 只要有一处忘了脱敏,用户的 API Key 就出现在 HTTP 响应里 —— 所以脱敏做在**类型**上。
+func TestServerMarshalJSONMasksHeaders(t *testing.T) {
+	s := Server{Name: "n", Transport: "http", URL: "https://x.example/mcp",
+		Headers: map[string]string{"Authorization": "Bearer super-secret-1234"}}
+	raw, err := s.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "super-secret-1234") {
+		t.Fatalf("序列化泄露了 header 值:%s", raw)
+	}
+	if !strings.Contains(string(raw), "Authorization") {
+		t.Fatalf("键名应保留(面板要显示「配了几个头」):%s", raw)
+	}
+	// 无 header 时不凭空多出 masks 字段
+	raw2, _ := Server{Name: "n", Command: "x"}.MarshalJSON()
+	if strings.Contains(string(raw2), maskedValue) {
+		t.Fatalf("没有 header 时不该出现占位:%s", raw2)
+	}
+}
+
+// TestValidateEndpoint 端点合规的边界(回环 / 协议 / 主机缺失)。
+func TestValidateEndpoint(t *testing.T) {
+	ok := []string{"https://a.example/mcp", "http://127.0.0.1:1/mcp", "http://localhost:2/mcp", "http://[::1]:3/mcp"}
+	for _, u := range ok {
+		if err := ValidateEndpoint(u, true); err != nil {
+			t.Errorf("%s 应放行:%v", u, err)
+		}
+	}
+	bad := []string{"http://example.com/mcp", "ws://a/mcp", "file:///tmp/x", "not-a-url", "https://"}
+	for _, u := range bad {
+		if err := ValidateEndpoint(u, true); err == nil {
+			t.Errorf("%s 应拒绝", u)
+		}
+	}
+	// 无凭据时远端 http 仍拒(传输加密不是凭据专属问题)
+	if err := ValidateEndpoint("http://example.com/mcp", false); err == nil {
+		t.Error("远端明文即使无凭据也应拒绝")
+	}
+}

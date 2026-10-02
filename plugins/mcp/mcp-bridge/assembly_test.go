@@ -37,11 +37,17 @@ func (f *fakeConn) Close() { f.closed = true }
 func withDial(t *testing.T, m map[string]*fakeConn) func() {
 	t.Helper()
 	old := dialConn
-	dialConn = func(command string, _ []string) (Conn, error) {
-		if c, ok := m[command]; ok {
+	// 按 spec 的 **目标**(stdio=command;http=url)路由 —— 与生产侧同一口径,
+	// 用「command 字段」路由会在加入 http 后悄悄给远程 server 路由到错误替身。
+	dialConn = func(spec serverSpec) (Conn, error) {
+		key := spec.command
+		if spec.kind == "http" {
+			key = spec.url
+		}
+		if c, ok := m[key]; ok {
 			return c, nil
 		}
-		return nil, errors.New("no such server: " + command)
+		return nil, errors.New("no such server: " + key)
 	}
 	return func() { dialConn = old }
 }
@@ -175,7 +181,7 @@ func TestAssembleMixedModesAndSkips(t *testing.T) {
 		t.Fatalf("停用/失败都应有提示: %v", notes)
 	}
 	// 停用的 server 不得被连接(未 dial)
-	if offConn, ok := dialConn("/bin/off", nil); ok == nil {
+	if offConn, ok := dialConn(serverSpec{kind: "stdio", command: "/bin/off"}); ok == nil {
 		_ = offConn
 		t.Fatal("停用的 server 不应被连接")
 	}

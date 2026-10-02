@@ -61,6 +61,9 @@ SKIP="${GAH_COVER_SKIP:-0}"             # 1 = 只测(不校验),用于基线测�
 #   → 2026-10-02 子进程覆盖接通后重测:darwin/arm64 **75.0**(含 main()),棘轮 56 → **68**。
 #   取 68 而非 75:棘轮取**各平台实测的较小值**,本地只有 darwin 一档,linux/windows 由 CI 首跑实测;
 #   CI 实测若低于 68,按跨平台差处理(平台专用 @GOOS 行),不要直接把这里往上抬。
+#   2026-10-02(MCP 传输面:http 传输 + 凭据打码)后再上调:plugins/mcp/mcp-bridge 72 → **75**
+#   (实测 75.7)、internal/mcpconfig 80 → **88**(实测 88.8;新增的 ValidateEndpoint 与
+#   headers 规范化/打码都有用例)。
 #   2026-10-02(子进程覆盖接通 + zstd 换代)后再上调:internal/embed 75.2 → **78**
 #   (实测 78.4;该包换 zstd 后新增了 SHA256SUMS 解析与流式落盘,补了坏清单/写失败两条用例)。
 # 方向只允许往上:降门必须换成补测(见 AGENTS.md「覆盖率门」)。
@@ -108,7 +111,7 @@ internal/instructions 76
 internal/providerfile 72
 internal/kernelsandbox 50
 internal/kernelsandbox@linux 43
-internal/mcpconfig 80
+internal/mcpconfig 88
 internal/embed 78
 internal/install 60
 internal/sessionevents 92
@@ -143,7 +146,7 @@ plugins/host/host-tools 91
 plugins/host/host-worktrees 81
 plugins/host/host-usage-stats 60
 plugins/host/token-compress 84
-plugins/mcp/mcp-bridge 72
+plugins/mcp/mcp-bridge 75
 plugins/mcp/mcp-server 85
 plugins/mcp/acp-server 86
 plugins/adapter/llm-anthropic-compat 58

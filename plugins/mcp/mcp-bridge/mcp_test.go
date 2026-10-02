@@ -33,7 +33,7 @@ func buildMiniServer(t *testing.T, dir string) string {
 
 func TestHolderRespawnOnCrash(t *testing.T) {
 	bin := buildMiniServer(t, t.TempDir())
-	cli, err := spawn(bin, nil)
+	cli, err := newStdioClient(bin, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,11 +41,11 @@ func TestHolderRespawnOnCrash(t *testing.T) {
 	if err := cli.initialize(rctx); err != nil {
 		t.Fatal(err)
 	}
-	h := &holder{cli: cli, command: bin, throttle: 150 * time.Millisecond, lg: slog.New(slog.DiscardHandler)}
+	h := &holder{cli: cli, spec: serverSpec{kind: "stdio", command: bin}, throttle: 150 * time.Millisecond, lg: slog.New(slog.DiscardHandler)}
 	go h.supervise()
 
 	// 杀进程模拟崩溃
-	old := cli.cmd.Process
+	old := cli.tr.(*stdioTransport).cmd.Process
 	_ = old.Kill()
 	// 等重启(轮询 current 换新连接;超时防护)
 	deadline := time.Now().Add(5 * time.Second)
@@ -130,14 +130,16 @@ func registryToolNames(tools sdk.ToolRegistry) []string {
 // 两条断言:① 超长单行在有限内存内中止并留显式错误;② 正常多行仍逐行投递(闸门不是恒拒)。
 func TestReaderLineCap(t *testing.T) {
 	drain := func(in []byte) (lines []string, err error) {
-		m := &mcpClient{out: bufio.NewReader(bytes.NewReader(in)), lines: make(chan []byte, linesCap)}
-		m.startReader()
+		// 读线程现在挂在传输上(mcpClient 不再自己持管道)—— 直接造一个 stdio 传输,
+		// 用 bytes.Reader 当 stdout 管道(不经过子进程:这测的是**行闸**不是 spawn)。
+		s := &stdioTransport{out: bufio.NewReader(bytes.NewReader(in)), lines: make(chan []byte, linesCap)}
+		s.startReader()
 		deadline := time.After(20 * time.Second)
 		for {
 			select {
-			case l, ok := <-m.lines:
+			case l, ok := <-s.lines:
 				if !ok {
-					return lines, m.readErr
+					return lines, s.readErr
 				}
 				lines = append(lines, string(l))
 			case <-deadline:

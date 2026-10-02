@@ -22,7 +22,43 @@ type Conn interface {
 }
 
 // dialConn 连接工厂(单测替换点;同 kernel.go 的 sandboxExec 先例)。
-var dialConn = func(command string, args []string) (Conn, error) { return NewClient(command, args) }
+// 签名按 **serverSpec** 而不是 (command, args):http 传输没有 command/args,
+// 硬塞进两个字符串只会逼调用方造占位命令 —— 那是「两套实现」的开始。
+var dialConn = func(spec serverSpec) (Conn, error) { return newClientSpec(spec) }
+
+// specOf 从配置项解析连接参数(装配层与插件层共用同一条解析口径)。
+func specOf(sp mcpconfig.Server) (serverSpec, error) {
+	if sp.IsHTTP() {
+		return parseServerSpec(map[string]any{
+			"transport": "http",
+			"url":       sp.URL,
+			"headers":   toAnyMap(sp.Headers),
+		})
+	}
+	return parseServerSpec(map[string]any{"command": sp.Command, "args": toAnySlice(sp.Args)})
+}
+
+func toAnyMap(m map[string]string) map[string]any {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+func toAnySlice(ss []string) []any {
+	if len(ss) == 0 {
+		return nil
+	}
+	out := make([]any, len(ss))
+	for i, s := range ss {
+		out[i] = s
+	}
+	return out
+}
 
 // Assemble 按配置装配工具集:
 //   - enabled=false → 跳过(不连进程),记一行 note;
@@ -58,7 +94,12 @@ func Assemble(specs []mcpconfig.Server) (map[string]sdk.Tool, []string, error) {
 			notes = append(notes, fmt.Sprintf("server %s 已停用(跳过)", serverLabel(sp)))
 			continue
 		}
-		cn, err := dialConn(sp.Command, sp.Args)
+		spec, err := specOf(sp)
+		if err != nil {
+			notes = append(notes, fmt.Sprintf("server %s 配置无效(跳过): %v", serverLabel(sp), err))
+			continue
+		}
+		cn, err := dialConn(spec)
 		if err != nil {
 			notes = append(notes, fmt.Sprintf("server %s 连接失败(跳过): %v", serverLabel(sp), err))
 			continue

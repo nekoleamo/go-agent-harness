@@ -11,7 +11,10 @@
 package mcpconfig
 
 import (
+	"encoding/json"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,6 +30,17 @@ const (
 	ModeSearch = "search"
 )
 
+// 传输方式(2026-10-02 新增,补「MCP 传输面」的零依赖那半):
+//
+//	stdio —— 现状:本地起一个进程,逐行 JSON-RPC(NOND-M1 起的唯一形态)。
+//	http  —— Streamable HTTP(2025-03-26):POST 到一个 URL,响应可能是
+//	         application/json(单条)或 text/event-stream(消息流)。
+//	         **凭据放 headers**(Authorization 等),只从本文件读,永不经 env。
+const (
+	TransportStdio = "stdio"
+	TransportHTTP  = "http"
+)
+
 // 条目来源(装配视图用,不落盘):file = mcp.yaml 可经 GUI 改;env = 启动环境变量只读。
 const (
 	SourceFile = "file"
@@ -37,13 +51,42 @@ const (
 // Enabled 用指针:缺省(nil)= 启用 —— 手写配置时不必写 enabled: true。
 type Server struct {
 	Name    string   `yaml:"name" json:"name"`
-	Command string   `yaml:"command" json:"command"`
+	Command string   `yaml:"command,omitempty" json:"command,omitempty"`
 	Args    []string `yaml:"args,omitempty" json:"args,omitempty"`
 	Enabled *bool    `yaml:"enabled,omitempty" json:"enabled,omitempty"`
 	Mode    string   `yaml:"mode,omitempty" json:"mode,omitempty"`
+	// Transport 缺省 stdio(不写即现状,老配置零改动)。
+	Transport string `yaml:"transport,omitempty" json:"transport,omitempty"`
+	// URL 仅 transport=http 需要(https 优先;http 明文会被拒绝,见 Normalize)。
+	URL string `yaml:"url,omitempty" json:"url,omitempty"`
+	// Headers 仅 transport=http 使用,键值成对。**值是凭据** ⇒ 序列化一律打码
+	// (见 MarshalJSON),只在本文件里落盘(0600),不经 env、不进日志。
+	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
 	// Source 装配视图来源(file|env);yaml:"-" 保证永不写回文件。
 	Source string `yaml:"-" json:"source,omitempty"`
 }
+
+// MarshalJSON 回给 Web/日志的形状:**headers 的值一律打码**。
+//
+// 为什么不靠调用方记得脱敏:这个类型被 `web/mcp.go` 直接序列化进 `/api/mcp`
+// (面板要显示 server 列表),将来还会被别的出口用到 —— 只要有一处忘了脱敏,
+// 用户的 API Key 就出现在 HTTP 响应里。**在类型上做掉**才是唯一可靠的位置。
+// 面板因此只能看到「有几个头」,看不到值(值要改请编辑 $GAH_HOME/config/mcp.yaml)。
+func (s Server) MarshalJSON() ([]byte, error) {
+	type alias Server // 避免递归
+	a := alias(s)
+	if len(s.Headers) > 0 {
+		masked := make(map[string]string, len(s.Headers))
+		for k := range s.Headers {
+			masked[k] = maskedValue
+		}
+		a.Headers = masked
+	}
+	return json.Marshal(a)
+}
+
+// maskedValue headers 值的占位(固定文案,长度也不泄露原值长度)。
+const maskedValue = "(已配置,值不回显)"
 
 // IsEnabled 是否启用(缺省启用)。
 func (s Server) IsEnabled() bool { return s.Enabled == nil || *s.Enabled }
@@ -55,6 +98,17 @@ func (s Server) ModeOrDefault() string {
 	}
 	return s.Mode
 }
+
+// TransportOrDefault 生效传输(缺省 stdio = 现状)。
+func (s Server) TransportOrDefault() string {
+	if strings.TrimSpace(s.Transport) == "" {
+		return TransportStdio
+	}
+	return strings.ToLower(strings.TrimSpace(s.Transport))
+}
+
+// IsHTTP 是否 HTTP 传输(远程 server;没有本地进程 ⇒ 不受内核沙箱约束,见 mcp-bridge)。
+func (s Server) IsHTTP() bool { return s.TransportOrDefault() == TransportHTTP }
 
 // File 配置文件内容。
 type File struct {
@@ -188,10 +242,65 @@ func Normalize(s Server) (Server, error) {
 	if s.Mode != "" && s.Mode != ModeDirect && s.Mode != ModeSearch {
 		return Server{}, fmt.Errorf("mcp: server %q 的 mode %q 非法(可选 %s|%s)", s.Name, s.Mode, ModeDirect, ModeSearch)
 	}
+	if s.Transport != "" && s.Transport != TransportStdio && s.Transport != TransportHTTP {
+		return Server{}, fmt.Errorf("mcp: server %q 的 transport %q 非法(可选 %s|%s)",
+			s.Name, s.Transport, TransportStdio, TransportHTTP)
+	}
+	if s.IsHTTP() {
+		// http 侧只要 url;缺 url 是配置错(否则会回落成 stdio 去起一个空命令 ⇒ 症状会很怪)。
+		if s.URL == "" {
+			return Server{}, fmt.Errorf("mcp: server %q 是 %s 传输但没有 url", s.Name, TransportHTTP)
+		}
+		if err := ValidateEndpoint(s.URL, len(s.Headers) > 0); err != nil {
+			return Server{}, fmt.Errorf("mcp: server %q: %w", s.Name, err)
+		}
+		return s, nil
+	}
 	if s.Command == "" {
 		return Server{}, fmt.Errorf("mcp: server %q 缺少 command(启动命令)", s.Name)
 	}
 	return s, nil
+}
+
+// ValidateEndpoint 远程端点合规性(https 或回环)。
+//
+// 为什么回环放行:**本机**的 server(测试夹具、用户自己起的 localhost MCP)用明文是常态,
+// 一刀切 https 会让它们连不上;而回环流量**不出网卡**,凭据不会裸奔在网络上。
+// 判定放在这里(配置层)是刻意的:mcp-bridge 与 Normalize 两处都要用同一条规则,
+// 写在一边、另一边各写一份,迟早漂(典型漂法:配置层放行、运行时又拒,症状是
+// 「面板保存成功、装配失败」)。
+func ValidateEndpoint(raw string, hasHeaders bool) error {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return fmt.Errorf("url 不合法: %w", err)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("url 缺少主机部分: %q", raw)
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https":
+		return nil
+	case "http":
+		if IsLoopbackHost(u.Hostname()) {
+			return nil
+		}
+		if hasHeaders {
+			return fmt.Errorf("url 必须是 https(明文 http 会让请求头里的凭据裸奔在网络上): %q", raw)
+		}
+		return fmt.Errorf("url 必须是 https(远程 server 一律加密传输): %q", raw)
+	default:
+		return fmt.Errorf("url 协议 %q 不支持(只接受 https,或本机回环的 http)", u.Scheme)
+	}
+}
+
+// IsLoopbackHost 主机是否回环(127.0.0.0/8、::1、localhost)。
+func IsLoopbackHost(host string) bool {
+	h := strings.ToLower(strings.TrimSpace(host))
+	if h == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
 }
 
 // splitCommand 按空白拆分命令行,双/单引号内的空白保留(路径含空格请写
@@ -242,7 +351,26 @@ func splitCommand(s string) []string {
 func normalizeLenient(s Server) Server {
 	s.Name = CleanName(s.Name)
 	s.Mode = strings.ToLower(strings.TrimSpace(s.Mode))
+	s.Transport = s.TransportOrDefault()
 	s.Command = strings.TrimSpace(s.Command)
+	s.URL = strings.TrimSpace(s.URL)
+	if s.IsHTTP() {
+		// http 侧:command/args 无意义(没有本地进程),留着只会让人以为「它也起个进程」。
+		// **不清空** —— 清空会让人后来改回 stdio 时丢掉命令;但**不参与装配**。
+		// header 键统一小写(大小写不敏感,避免 Authorization / authorization 两种写法都留着)。
+		if len(s.Headers) > 0 {
+			lowered := make(map[string]string, len(s.Headers))
+			for k, v := range s.Headers {
+				k = strings.ToLower(strings.TrimSpace(k))
+				if k == "" {
+					continue
+				}
+				lowered[k] = strings.TrimSpace(v)
+			}
+			s.Headers = lowered
+		}
+		return s
+	}
 	if len(s.Args) == 0 && strings.ContainsAny(s.Command, " \t") {
 		if parts := splitCommand(s.Command); len(parts) > 0 {
 			s.Command, s.Args = parts[0], parts[1:]

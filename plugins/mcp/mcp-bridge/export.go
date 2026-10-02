@@ -16,9 +16,15 @@ type Client struct {
 	names map[string]string
 }
 
-// NewClient spawn MCP server 并完成 initialize/tools/list 握手。
+// NewClient spawn MCP server(stdio)并完成 initialize/tools/list 握手。
+// 远程 server 走 NewClientHTTP(装配层用 dialConn 统一按 spec 分派)。
 func NewClient(command string, args []string) (*Client, error) {
-	cli, err := spawn(command, args)
+	return newClientSpec(serverSpec{kind: "stdio", command: command, args: args})
+}
+
+// newClientSpec 按 spec 建连并握手(两种传输**同一段**握手逻辑)。
+func newClientSpec(spec serverSpec) (*Client, error) {
+	cli, err := newClient(spec)
 	if err != nil {
 		return nil, err
 	}

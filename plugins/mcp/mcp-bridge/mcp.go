@@ -7,14 +7,11 @@
 package mcpbridge
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
-	"os/exec"
 	"sync"
 	"time"
 
@@ -22,7 +19,15 @@ import (
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
-// Plugin 实现 mcp-bridge。requires ctx.tools;data: {command, args[]}。
+// Plugin 实现 mcp-bridge。requires ctx.tools。
+//
+// data 两种形态(2026-10-02 起):
+//
+//	stdio(缺省):{command, args[]}              —— 现状,本地起进程
+//	http       :{transport:"http", url, headers} —— Streamable HTTP(远程 server)
+//
+// 凭据只在 headers 里,且来自 $GAH_HOME/config/mcp.yaml(0600);不经 env、不进日志
+// (见 mcpconfig.Server.MarshalJSON 的打码与 transport 的 Redacted)。
 type Plugin struct{}
 
 func (p *Plugin) Name() string { return "mcp-bridge" }
@@ -32,23 +37,15 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	if m == nil || m.Data == nil {
 		return nil, fmt.Errorf("mcp-bridge: 需要 data.command 配置")
 	}
-	command, _ := m.Data["command"].(string)
-	if command == "" {
-		return nil, fmt.Errorf("mcp-bridge: 需要 data.command")
-	}
-	var args []string
-	if a, ok := m.Data["args"].([]any); ok {
-		for _, x := range a {
-			if s, ok := x.(string); ok {
-				args = append(args, s)
-			}
-		}
+	spec, err := parseServerSpec(m.Data)
+	if err != nil {
+		return nil, err
 	}
 	var tools sdk.ToolRegistry
 	if err := c.Inject("ctx.tools", &tools); err != nil {
 		return nil, err
 	}
-	cli, err := spawn(command, args)
+	cli, err := newClient(spec)
 	if err != nil {
 		return nil, err
 	}
@@ -62,8 +59,9 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		cli.close()
 		return nil, fmt.Errorf("mcp-bridge: tools/list: %w", err)
 	}
-	// holder 生命周期看护:进程崩溃自动重启(60s 节流),工具读取始终持当前连接
-	h := &holder{cli: cli, command: command, args: args, throttle: 60 * time.Second, lg: c.Logger()}
+	// holder 生命周期看护(**只对 stdio**):进程崩溃自动重启(60s 节流),工具读取始终持当前连接。
+	// http 传输没有本地进程 ⇒ supervise 直接返回(远端掉线由下一次调用如实报错)。
+	h := &holder{cli: cli, spec: spec, throttle: 60 * time.Second, lg: c.Logger()}
 	disposers := []sdk.Disposer{}
 	for _, def := range defs {
 		sdkDef := sdk.ToolDefinition{Name: "mcp_" + def.Name, Description: def.Description, InputSchema: def.InputSchema}
@@ -83,8 +81,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 type holder struct {
 	mu       sync.RWMutex
 	cli      *mcpClient
-	command  string
-	args     []string
+	spec     serverSpec // 重建用的连接参数(凭据**不**进日志:spec.Redacted 负责)
 	closed   bool
 	respawn  time.Time
 	throttle time.Duration
@@ -100,8 +97,13 @@ func (h *holder) current() *mcpClient {
 // supervise 阻塞等进程退出;崩溃则按节流重建(spawn+initialize+toolsList)。
 // 进程被 disposer 杀掉时 closed=true → 直接退出,不再重启。
 func (h *holder) supervise() {
+	// http 传输**没有本地进程**:崩溃看护(等 cmd.Wait)对它没有意义,退出即可。
+	// 远程 server 掉线由「下一次工具调用报错」如实暴露(不静默重试、不假装它还在)。
+	if h.cli.tr.Kind() != "stdio" {
+		return
+	}
 	for {
-		_ = h.cli.cmd.Wait() // 进程退出(崩溃/被杀/正常退出)
+		waitTransportProcess(h.cli.tr) // 进程退出(崩溃/被杀/正常退出)
 		h.mu.Lock()
 		if h.closed {
 			h.mu.Unlock()
@@ -116,7 +118,7 @@ func (h *holder) supervise() {
 		h.respawn = time.Now().Add(h.throttle)
 		h.mu.Unlock()
 
-		nc, err := spawn(h.command, h.args)
+		nc, err := newClient(h.spec)
 		if err != nil {
 			h.lg.Warn("mcp-bridge: 重启进程失败", "err", err)
 			time.Sleep(h.throttle)
@@ -141,17 +143,39 @@ func (h *holder) supervise() {
 		}
 		h.cli = nc
 		h.mu.Unlock()
-		h.lg.Info("mcp-bridge: 崩溃自动恢复", "command", h.command)
+		h.lg.Info("mcp-bridge: 崩溃自动恢复", "target", h.spec.Redacted())
 	}
 }
 
-// close 停看护并杀当前进程(不 Wait:Wait 由 supervise 独占回收)。
+// close 断开当前传输(http = 关空闲连接;stdio = 杀进程并 Wait)。
+func (m *mcpClient) close() {
+	if m.tr == nil {
+		return
+	}
+	_ = m.tr.Close()
+}
+
+// closeKill 只杀进程不 Wait(holder 的 supervise 独占回收);http 传输直接 Close。
+func (m *mcpClient) closeKill() {
+	if m.tr == nil {
+		return
+	}
+	if s, ok := m.tr.(*stdioTransport); ok {
+		s.closeKill()
+		return
+	}
+	_ = m.tr.Close()
+}
+
+// close 停看护并断开当前传输。
 func (h *holder) close() {
 	h.mu.Lock()
 	h.closed = true
 	cur := h.cli
 	h.mu.Unlock()
 	if cur != nil {
+		// 「怎么关」由 mcpClient 按传输类型分派 —— 「什么时候关」才归 holder。
+		// 两处各写一遍分派,将来加第三种传输就会漏一处。
 		cur.closeKill()
 	}
 }
@@ -160,14 +184,15 @@ func (h *holder) close() {
 
 type rpcReq struct {
 	JSONRPC string `json:"jsonrpc"`
-	ID      int    `json:"id"`
-	Method  string `json:"method"`
-	Params  any    `json:"params,omitempty"`
+	// ID 用 int64:两个传输的 id 生成与匹配都走它(通知不带 id ⇒ 序列化时省略,见 ID 指针语义)。
+	ID     int64  `json:"id,omitempty"`
+	Method string `json:"method"`
+	Params any    `json:"params,omitempty"`
 }
 
 type rpcResp struct {
 	JSONRPC string          `json:"jsonrpc"`
-	ID      int             `json:"id"`
+	ID      int64           `json:"id"`
 	Result  json.RawMessage `json:"result,omitempty"`
 	Error   *struct {
 		Code    int    `json:"code"`
@@ -175,19 +200,12 @@ type rpcResp struct {
 	} `json:"error,omitempty"`
 }
 
-// mcpClient 一个 stdio MCP server 连接(顺序请求-响应)。
+// mcpClient 一个 MCP server 连接(顺序请求-响应;传输可替换,见 transport.go)。
 type mcpClient struct {
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	out    *bufio.Reader
-	nextID int
-	mu     sync.Mutex
-
-	// lines 后台读线程投递的 stdout 行(关闭 = 读结束,readErr 记原因);
-	// 阻塞读放在独立 goroutine,调用侧才能 select ctx.Done 真正中断
-	// (此前在持 m.mu 的情况下阻塞 ReadBytes:server 卡住即挂死整个回合且取消无效)。
-	lines   chan []byte
-	readErr error
+	tr     transport
+	nextID int64
+	// mu 保护 nextID 与「同一 id 只发一次」;各传输内部另有自己的串行保证。
+	mu sync.Mutex
 }
 
 // extKernelSandboxEnv MCP server 内核级沙箱的显式关闭开关("0" = 关)。
@@ -242,132 +260,42 @@ func mcpArgv(command string, args []string) ([]string, bool) {
 	return kernelsandbox.PrefixedArgv(pre, command, args...), true
 }
 
-func spawn(command string, args []string) (*mcpClient, error) {
-	argv, wrapped := mcpArgv(command, args)
-	cmd := exec.Command(argv[0], argv[1:]...)
-	// 凭据隔离:第三方 MCP server 不继承宿主凭据(滤除 *_API_KEY/*_TOKEN/AWS_* 等),
-	// 也不继承 GAH_CB_*(宿主回调地址/token)。需要额外 env 的 server 请经启动命令显式配置。
-	cmd.Env = sdk.SanitizedEnv(os.Environ())
-	if wrapped {
-		// 标记已在内核沙箱内:server 再起的子进程(包装脚本调子命令)不必也**不能**重复施加
-		// (seatbelt/Landlock 不可嵌套)。
-		cmd.Env = append(cmd.Env, kernelsandbox.MarkerEnv+"=1")
-	}
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, err
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, err
-	}
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-	m := &mcpClient{cmd: cmd, stdin: stdin, out: bufio.NewReader(stdout), lines: make(chan []byte, linesCap)}
-	m.startReader()
-	return m, nil
-}
-
-// linesCap 读线程投递缓冲(取消后无人消费时读线程最多阻塞在写入上,不无限占用内存)。
-const linesCap = 256
-
-// maxMCPLine 单行输出上限(安全审计 C5,2026-09-27)。外部 MCP server 的 stdout 是**不可信输入**:
-// 旧实现用 bufio.ReadBytes('\n') 逐行读 —— 没有换行符就是无限长,一个卡住(或恶意)的 server
-// 能让宿主一路分配到 OOM。同类闸在别处都有(cappedBuffer 1 MiB / web maxBody 1 MiB),此处原本缺。
-const maxMCPLine = 8 << 20
-
-// startReader 后台逐行读 stdout:read 侧永不在持锁路径阻塞;单行超上限即止并留错误(显式失败,不 OOM)。
-func (m *mcpClient) startReader() {
-	go func() {
-		sc := bufio.NewScanner(m.out)
-		sc.Buffer(make([]byte, 0, 64<<10), maxMCPLine)
-		for sc.Scan() {
-			// Bytes() 缓冲会被复用:必须先拷贝再投递
-			m.lines <- append([]byte(nil), sc.Bytes()...)
-		}
-		if err := sc.Err(); err != nil {
-			m.readErr = fmt.Errorf("mcp server 单行输出超上限 %d 字节: %w", maxMCPLine, err)
-		}
-		close(m.lines)
-	}()
-}
-
-func (m *mcpClient) close() {
-	m.stdin.Close()
-	m.cmd.Process.Kill()
-	m.cmd.Wait()
-}
-
-// closeKill 只杀进程不 Wait(Wait 由 holder.supervise 独占回收;无看护路径用 close)。
-func (m *mcpClient) closeKill() {
-	m.stdin.Close()
-	if m.cmd.Process != nil {
-		_ = m.cmd.Process.Kill()
-	}
-}
-
-// call 发请求并等对应 id 的响应(stdout 逐行;id 不匹配跳过)。
-func (m *mcpClient) call(ctx context.Context, method string, params any, result any) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.nextID++
-	req := rpcReq{JSONRPC: "2.0", ID: m.nextID, Method: method, Params: params}
-	b, err := json.Marshal(req)
-	if err != nil {
-		return err
-	}
-	if _, err := m.stdin.Write(append(b, '\n')); err != nil {
-		return err
-	}
-	for {
-		var line []byte
-		select {
-		case <-ctx.Done():
-			// 中途取消:未读响应由后续调用按 id 跳过(JSON-RPC 有 id,不会错配)。
-			return ctx.Err()
-		case l, ok := <-m.lines:
-			if !ok {
-				if m.readErr != nil {
-					return m.readErr
-				}
-				return io.EOF
-			}
-			line = l
-		}
-		var resp rpcResp
-		if err := json.Unmarshal(line, &resp); err != nil {
-			continue
-		}
-		if resp.ID != req.ID {
-			continue
-		}
-		if resp.Error != nil {
-			return fmt.Errorf("mcp-rpc error %d: %s", resp.Error.Code, resp.Error.Message)
-		}
-		if result != nil && len(resp.Result) > 0 {
-			return json.Unmarshal(resp.Result, result)
-		}
-		return nil
-	}
-}
-
 // initialize 握手 + initialized 通知。
+// initialize 握手 + initialized 通知(两个传输**同一段** —— 协议面不该因传输而分叉)。
 func (m *mcpClient) initialize(ctx context.Context) error {
 	var r struct {
 		ProtocolVersion string `json:"protocolVersion"`
 	}
-	if err := m.call(ctx, "initialize", map[string]any{
-		"protocolVersion": "2024-11-05",
-		"capabilities":    map[string]any{},
-		"clientInfo":      map[string]string{"name": "gah", "version": "dev"},
+	if err := m.call(ctx, "initialize", initializeParams{
+		ProtocolVersion: "2024-11-05",
+		Capabilities:    map[string]any{},
+		ClientInfo:      map[string]string{"name": "gah", "version": "dev"},
 	}, &r); err != nil {
 		return err
 	}
-	// notifications/initialized(无响应)
-	b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"})
-	_, err := m.stdin.Write(append(b, '\n'))
-	return err
+	// notifications/initialized(无响应,两种传输都允许 202/无 body)
+	return m.tr.Notify(ctx, "notifications/initialized", nil)
+}
+
+// initializeParams initialize 的参数(单独一个类型:http 传输重握手时要用同一份形状,
+// 两处各写一遍字面量早晚会漂)。
+type initializeParams struct {
+	ProtocolVersion string            `json:"protocolVersion"`
+	Capabilities    map[string]any    `json:"capabilities"`
+	ClientInfo      map[string]string `json:"clientInfo"`
+}
+
+// call 发请求并解出 result(协议错误的报错口径由 transport 统一给出)。
+func (m *mcpClient) call(ctx context.Context, method string, params any, result any) error {
+	m.mu.Lock()
+	m.nextID++
+	id := m.nextID
+	m.mu.Unlock()
+	resp, err := m.tr.RoundTrip(ctx, rpcReq{JSONRPC: "2.0", ID: id, Method: method, Params: params})
+	if err != nil {
+		return err
+	}
+	return decodeResult(resp, result)
 }
 
 // toolDef MCP 工具清单条目。
