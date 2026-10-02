@@ -62,4 +62,5 @@
 - **样板版本化**:config/bundle-*.yaml 头部 `# seed-version: N`(seed 与 repo 两份同步,guard 测试强制);**新增 base 能力条目必须 bump 版本号**(EnsureSeed 对低版本落盘自动备份后覆盖,否则老用户不升级)。仅 bundle 系列参与;profile/patch 不覆盖。
 - **外部化二进制**:extplugins/ 独立二进制经 `scripts/gen-extplugins.sh` 按发行矩阵生成(内含架构断言,生成后立即校验);改 embed 布局后必须重跑(embed 缺失主包构建失败);产物 `gzip -9 -n`(确定性,重跑无 diff);tests 经 embed.OpenExtPlugin 读本平台产物。
 - **README 双语同步**:README.md(中文)与 README_EN.md(英文)互链同步维护——改动其中任一的功能描述/命令表/状态/目录/链接时,必须同步另一份(用户工作流,2026-09-16 起);新增面向用户的文档如涉及对外可见描述,一并考虑双语。
+- **验收结论的权威只有一处**：`docs/VERIFY.md §剩余任务快照`（逐条验收状态）。`docs/TODO_OVERVIEW.md` 只做**索引与未完成项汇总**，**不得单独维护验收结论** —— 2026-10-02 发现两处口径打架：TODO_OVERVIEW 的 `G-X2` 行（写于 09-21）仍写「剩 4 条纯人工」，而 VERIFY 的 09-22 快照已是「剩 **0** 条纯人工」（用户实测通过 3 条 + 4 项裁决各关 1 条）。**改验收状态只改 VERIFY，随后同步 TODO_OVERVIEW 的那一行**；两份不一致时以 VERIFY 为准。
 - **不入库的决策资料要定期导出**:DESIGN.md 与 `docs/*`(除 PLUGIN_DEV.md)按 2026-10-01 决定不入库(太大/只对本地开发有意义)⇒ 决策历史只存在于本机。**清盘、换机、删目录前先跑 `bash scripts/records-export.sh`**(导出到 `~/Documents/gah-records/<时间戳>/` + 生成 INDEX.md 索引,--verify 可只跑自检)。异地备份由用户决定(脚本不读凭据、不往远端传)。
