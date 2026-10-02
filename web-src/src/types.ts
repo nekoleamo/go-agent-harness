@@ -116,6 +116,11 @@ export interface AssistantMessage {
 }
 export interface LLMStreamDelta {
   Delta?: string
+  // Thinking 思维增量(reasoning_content/thinking,与 Delta 互斥)。
+  // 服务端一直有这个字段,Web 侧此前**整个丢弃** —— 于是推理模型的思考过程
+  // 一条都不显示,用户看到的是一段没有铺垫的结论(2026-10-03 用户反馈:
+  // 「思考过程和最终输出结果展示区分度不够」)。
+  Thinking?: string
   ToolCallID?: string
   ToolCallName?: string
   ToolCallArgs?: string

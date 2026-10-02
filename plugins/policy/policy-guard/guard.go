@@ -172,6 +172,16 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	rt := func() (string, string) { return readRoleTiers(c) }
 	ap := &ApprovalPolicy{mode: approvalMode, tools: approvalTools, confirmTimeout: confirmTimeout, role: rt}
 	sp := &SandboxPolicy{root: workspaceRoot(), mode: sandboxMode, sync: sync, approval: ap.Mode, role: rt}
+	// 内核层写入面读数:协作层按它裁决区外落点(见 SandboxPolicy.kernelWritablePaths)。
+	// **现算、且内核层不在场时返回 nil** —— 那时协作层保持窄口径。
+	// **两个执行面各拿各的**:shell 面(TMPDIR 已重定向进 jail,spec.RW 为空)与
+	// 工具面/外部插件(额外放行包缓存与系统临时区)的内核 spec 本来就不同 ——
+	// 用一份清单覆盖两者会让 `shell "echo x > /tmp/log"` 从「路径层干净地拒」
+	// 退化成「内核 EPERM 报错」。
+	sp.SetKernelScopes(
+		func() []string { return kernelWriteScope(sp, surfaceTool) },
+		func() []string { return kernelWriteScope(sp, surfaceShell) },
+	)
 	if err := c.Provide("ctx.approval", ap); err != nil {
 		return nil, err
 	}
@@ -244,7 +254,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		}
 		// A7(2026-09-27 安全审计):网页抓取的**出口审批**(域名级 TOFU)。位置在工具级审批之后、
 		// 路径裁决之前 —— 它决定的是"访问哪个域名",与文件路径无关;非抓取工具直接放行。
-		if err := checkWebToolFetch(ctx, confirmOf(), call.Name, call.Arguments); err != nil {
+		if err := checkWebToolFetch(ctx, confirmOf(), call.Name, call.Arguments, ap.EffectiveMode()); err != nil {
 			return err
 		}
 		// 宿主侧路径裁决(P0):默认发行态 file_* 由外部插件进程提供(sb 未注入),

@@ -11,6 +11,7 @@ identifier = "allow-app-commands"
 description = "允许前端(gah 壳内的 sidecar 页面)调用壳的应用自有命令。"
 commands.allow = [
     "check_update",
+    "install_update",
     "shell_probe",
     "probe_async",
     "pick_folder_begin",

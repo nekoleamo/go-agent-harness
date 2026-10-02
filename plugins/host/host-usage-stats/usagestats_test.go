@@ -98,8 +98,9 @@ func TestWindowForModel(t *testing.T) {
 		{"", 0},                          // 空 → 兜底
 		// 大小写不敏感:同一端点会写 deepseek-ai/DeepSeek-V4-Flash 或 DeepSeek-V4-Flash-0731,
 		// 大小写敏感会让后者漏进内置表(窗口未知 ⇒ 压缩阈值退化为绝对上限、展示层不显示占用比)。
-		{"DeepSeek-V4-Flash-0731", 128 * 1024},
-		{"deepseek-ai/DeepSeek-V4-Flash", 128 * 1024},
+		// V4 系列是 1M(2026-09 官方发布),不再是早期表里的 128K。
+		{"DeepSeek-V4-Flash-0731", 1024 * 1024},
+		{"deepseek-ai/DeepSeek-V4-Flash", 1024 * 1024},
 		{"GLM-5.3", 1024 * 1024},
 		{"Claude-Sonnet-5", 1024 * 1024},
 	}

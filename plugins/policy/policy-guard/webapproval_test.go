@@ -74,13 +74,49 @@ func TestWebURLHost(t *testing.T) {
 	}
 }
 
-// TestWebApproveModeOf 档位解析:空/非法值都必须落到默认 new-host(不是 off —— 失败方向要安全)。
+// TestWebApproveModeOf 档位解析:空/非法值都落到 auto(auto 才是缺省口径;非法值不得被
+// 当成 off —— 拼错一个词就静默放开所有出口,方向必须安全)。
 func TestWebApproveModeOf(t *testing.T) {
-	for raw, want := range map[string]string{"": "new-host", "OFF": "off", "query": "query", "bogus": "new-host"} {
+	for raw, want := range map[string]string{"": "auto", "OFF": "off", "query": "query", "new-host": "new-host", "bogus": "auto"} {
 		t.Setenv(webApproveEnv, raw)
 		if got := webApproveModeOf(); got != want {
 			t.Errorf("mode(%q) = %q, want %q", raw, got, want)
 		}
+	}
+}
+
+// TestResolveWebApproveModeAuto auto 跟随审批档:open/smart 直放行,strict 才逐域名确认。
+// 显式设过 env 的档位不受审批档影响(env 优先,与沙箱/审批的联动口径一致)。
+func TestResolveWebApproveModeAuto(t *testing.T) {
+	t.Setenv(webApproveEnv, "")
+	for mode, want := range map[sdk.ApprovalMode]string{
+		sdk.ApprovalOpen:   "off",
+		sdk.ApprovalSmart:  "off",
+		sdk.ApprovalStrict: "new-host",
+	} {
+		if got := resolveWebApproveMode(mode); got != want {
+			t.Errorf("resolveWebApproveMode(%s) = %q, want %q", mode, got, want)
+		}
+	}
+	t.Setenv(webApproveEnv, "query")
+	if got := resolveWebApproveMode(sdk.ApprovalOpen); got != "query" {
+		t.Errorf("显式 env 优先于审批档, got %q", got)
+	}
+}
+
+// TestSmartApprovalWebFetchNoPrompt smart 档下 web_fetch 不再弹确认(2026-10-03 用户要求:
+// 「不需要每次请求都先确定再加入白名单」)。反提示注入与内网拦截不依赖这道门(见
+// webapproval.go 文件头),故直放行不放宽那两条硬边界。
+func TestSmartApprovalWebFetchNoPrompt(t *testing.T) {
+	t.Setenv(webApproveEnv, "")
+	t.Setenv(webAllowEnv, "")
+	cf := &countingConfirm{resp: true}
+	if err := checkWebToolFetch(context.Background(), cf, "web_fetch",
+		`{"url":"https://never-approved.example/a"}`, sdk.ApprovalSmart); err != nil {
+		t.Fatalf("smart 档应直接放行: %v", err)
+	}
+	if cf.count() != 0 {
+		t.Fatalf("smart 档不应弹确认,got %d 次", cf.count())
 	}
 }
 
@@ -92,26 +128,26 @@ func TestCheckWebToolFetchPure(t *testing.T) {
 	// off:不问也不拒
 	t.Setenv(webApproveEnv, "off")
 	t.Setenv(webAllowEnv, "")
-	if err := checkWebToolFetch(ctxb, nil, "web_fetch", args); err != nil {
+	if err := checkWebToolFetch(ctxb, nil, "web_fetch", args, sdk.ApprovalStrict); err != nil {
 		t.Fatalf("off 档应放行: %v", err)
 	}
 	// 非抓取工具:完全不参与(即使 mode 是 query、无确认通道)
 	t.Setenv(webApproveEnv, "query")
-	if err := checkWebToolFetch(ctxb, nil, "deploy_tool", args); err != nil {
+	if err := checkWebToolFetch(ctxb, nil, "deploy_tool", args, sdk.ApprovalStrict); err != nil {
 		t.Fatalf("非抓取工具不应被拦: %v", err)
 	}
 	// 静态白名单命中(含通配)
 	t.Setenv(webAllowEnv, "a.com, *.example.com")
-	if err := checkWebToolFetch(ctxb, nil, "web_fetch", args); err != nil {
+	if err := checkWebToolFetch(ctxb, nil, "web_fetch", args, sdk.ApprovalStrict); err != nil {
 		t.Fatalf("静态白名单命中应放行: %v", err)
 	}
 	// 白名单未命中的 host 本身(example.com ≠ *.example.com)
-	if err := checkWebToolFetch(ctxb, nil, "web_fetch", `{"url":"https://example.com/"}`); err == nil {
+	if err := checkWebToolFetch(ctxb, nil, "web_fetch", `{"url":"https://example.com/"}`, sdk.ApprovalStrict); err == nil {
 		t.Fatal("*.example.com 不应放行 example.com 本身")
 	}
 	// 无确认通道 → 拒绝,且文案给出加白名单的办法
 	t.Setenv(webAllowEnv, "")
-	err := checkWebToolFetch(ctxb, nil, "web_fetch", args)
+	err := checkWebToolFetch(ctxb, nil, "web_fetch", args, sdk.ApprovalStrict)
 	if err == nil {
 		t.Fatal("无确认通道应拒绝")
 	}
@@ -122,18 +158,18 @@ func TestCheckWebToolFetchPure(t *testing.T) {
 	}
 	// 无人值守:即使有确认通道也拒绝,且**不弹窗**(没人在场)
 	cf := &countingConfirm{resp: true}
-	if err := checkWebToolFetch(sdk.WithUnattended(ctxb), cf, "web_fetch", args); err == nil {
+	if err := checkWebToolFetch(sdk.WithUnattended(ctxb), cf, "web_fetch", args, sdk.ApprovalStrict); err == nil {
 		t.Fatal("无人值守应拒绝")
 	}
 	if cf.count() != 0 {
 		t.Fatalf("无人值守不应弹确认,实际弹了 %d 次", cf.count())
 	}
 	// URL 解析不出主机 → 安全默认拒
-	if err := checkWebToolFetch(ctxb, cf, "web_fetch", `{"url":"///"}`); err == nil {
+	if err := checkWebToolFetch(ctxb, cf, "web_fetch", `{"url":"///"}`, sdk.ApprovalStrict); err == nil {
 		t.Fatal("URL 解析不出主机应拒绝")
 	}
 	// 缺 url 字段 → 不由本层抢答(交给工具自身报错)
-	if err := checkWebToolFetch(ctxb, nil, "web_fetch", `{}`); err != nil {
+	if err := checkWebToolFetch(ctxb, nil, "web_fetch", `{}`, sdk.ApprovalStrict); err != nil {
 		t.Fatalf("缺 url 时本层不应报错: %v", err)
 	}
 }
@@ -193,3 +229,55 @@ func TestWebApprovalGateDenyAndQuery(t *testing.T) {
 		t.Fatalf("off 档应放行: %+v", res)
 	}
 }
+
+// TestWebApprovalCanceledIsAborted 用户按停止导致确认取消 → 错误链带 sdk.ErrAborted,
+// 且文案不再说「确认失败」(2026-10-03 实机反馈:停止后弹红色 blocked)。
+func TestWebApprovalCanceledIsAborted(t *testing.T) {
+	t.Setenv(webApproveEnv, "new-host")
+	t.Setenv(webAllowEnv, "")
+	ctx, cancel := context.WithCancel(context.Background())
+	confirm := &signalConfirm{called: make(chan struct{})}
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- checkWebToolFetch(ctx, confirm, "web_fetch", `{"url":"https://not-allowed.example/a"}`, sdk.ApprovalStrict)
+	}()
+	<-confirm.called // 弹层已呈现 = 用户此刻按停止
+	cancel()
+	err := <-errCh
+	if err == nil {
+		t.Fatal("取消应返回错误")
+	}
+	if !sdk.IsAborted(err) {
+		t.Fatalf("应是中止而非策略拒绝: %v", err)
+	}
+	if strings.Contains(err.Error(), "网页抓取确认失败") {
+		t.Fatalf("中止不该说成确认失败: %v", err)
+	}
+}
+
+// TestWebApprovalDeniedStillNotAborted 用户真拒绝(非取消)仍是策略拒绝,文案不变。
+func TestWebApprovalDeniedStillNotAborted(t *testing.T) {
+	t.Setenv(webApproveEnv, "new-host")
+	err := checkWebToolFetch(context.Background(), &staticConfirm{ok: false},
+		"web_fetch", `{"url":"https://not-allowed.example/a"}`, sdk.ApprovalStrict)
+	if err == nil || sdk.IsAborted(err) {
+		t.Fatalf("拒绝应是策略拒绝: %v", err)
+	}
+	if !strings.Contains(err.Error(), "用户拒绝") {
+		t.Fatalf("文案不符: %v", err)
+	}
+}
+
+// signalConfirm 先点亮 called 再阻塞到 ctx 结束(= 弹层已呈现、用户还没答)。
+type signalConfirm struct{ called chan struct{} }
+
+func (s *signalConfirm) Confirm(ctx context.Context, _ string) (bool, error) {
+	close(s.called)
+	<-ctx.Done()
+	return false, ctx.Err()
+}
+
+// staticConfirm 固定应答的确认桩。
+type staticConfirm struct{ ok bool }
+
+func (s *staticConfirm) Confirm(context.Context, string) (bool, error) { return s.ok, nil }

@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"sort"
 	"sync"
 )
@@ -63,12 +64,14 @@ func (s *ConfirmService) Confirm(ctx context.Context, prompt string) (bool, erro
 	case ok := <-ch:
 		return ok, nil
 	case <-ctx.Done():
-		// 超时/取消(回合被停止、进程退出):安全默认拒绝,且**必须通知前端关掉弹层**。
-		// 为何要自己推:单 profile 是 web 自己 Provide ctx.confirm,不经 host-confirm-fusion,
-		// 没有 confirm/resolved 事件可订阅 —— 不推这一帧,弹层就永远挂在界面上(真机反馈:
-		// 「超时系统默认失败,继续进行,但弹窗仍在界面上」)。融合路径不会走到这里
-		// (由 Fusion 统一广播 resolved)。
-		s.hub.Push(Frame{Type: FrameConfirmDone, Payload: &ConfirmDone{Prompt: prompt, Err: ctx.Err().Error()}})
+		// 两种结束必须分开说(2026-10-03 实机反馈:「停止后报错审批未等到应答(context canceled)」):
+		//   - ctx 被取消 = 用户自己按了停止 → Canceled,前端**静默**关弹层;
+		//   - 超时 = 等太久没人答 → Err,前端给一句「未等到应答」+ 错误行。
+		// 不区分就把用户的主动动作说成故障,也会让人以为审批弹窗真的存在过。
+		canceled := errors.Is(ctx.Err(), context.Canceled)
+		s.hub.Push(Frame{Type: FrameConfirmDone, Payload: &ConfirmDone{
+			Prompt: prompt, Err: ctx.Err().Error(), Canceled: canceled,
+		}})
 		return false, ctx.Err()
 	}
 }

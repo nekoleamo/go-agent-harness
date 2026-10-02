@@ -697,7 +697,10 @@ func (s *Server) handleInput(w http.ResponseWriter, r *http.Request) {
 				err = s.loop.Run(context.Background(), content)
 			}
 		}
-		if err != nil {
+		if err != nil && !errors.Is(err, context.Canceled) {
+			// 用户按了停止(err = context.Canceled)不是错误:回合流里已经有
+			// 「回合已取消」这一行,再推一条红字只会让“自己停的”看着像“崩了”
+			// (2026-10-03 实机反馈)。
 			s.hub.Push(Frame{Type: FrameError, Payload: err.Error()})
 		}
 	}()

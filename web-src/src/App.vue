@@ -46,6 +46,7 @@ import {
 } from './dock'
 import { connReduce, newConn, offlineHint, submitAllowed, type ConnEv, type ConnModel } from './conn'
 import { createTransport, type Transport } from './transport'
+import { isUserCanceled } from './turns'
 import { extraPanel, slotComponent, type MetaLine } from './registry'
 import { OPEN_DOC_EVENT, docRequest } from './docstore'
 import type {
@@ -144,6 +145,15 @@ function nextView(): ViewName {
 const VIEW_LABEL: Record<ViewName, string> = { stream: '会话流', traj: '轨迹', changes: '变更', board: '看板' }
 const viewTargetLabel = computed(() => VIEW_LABEL[nextView()])
 const metas = ref<MetaLine[]>([])
+// pushMeta 追一行前端侧产生的 meta(命令回显/回合错误/审批未应答)。
+// after 记「此刻会话流已落定的最后一条消息 seq」—— StreamView 据此把它织回
+// 正确的位置,而不是统统堆在所有消息之后(见 registry.ts 的 MetaLine.after)。
+// turnCanceled:本回合是用户自己按停止结束的,这类行不产生(见 turns.ts)。
+function pushMeta(kind: MetaLine['kind'], text: string): void {
+  if (isUserCanceled(text)) return // 用户自己的停止不是错误(2026-10-03)
+  const msgs = model.value.msgs
+  metas.value.push({ kind, text, after: msgs.length ? msgs[msgs.length - 1].seq : 0 })
+}
 // NOND-N1 提示 toast(状态机在 notices.ts):实时 `notice` 帧 + 连接后 /api/notices 回填,
 // 两路按 id 去重。提示不进会话流 —— 它是「需要人回来」的信号,不是对话内容。
 const toasts = ref<ToastState>(newToasts())
@@ -475,7 +485,7 @@ async function loadEarlier(): Promise<void> {
     stick = false // 刚补过历史:用户此刻在看旧内容,不自动跟底
   } catch (e) {
     if (gen !== connGen) return
-    metas.value.push({ kind: 'error', text: '加载更早消息失败: ' + (e as Error).message + '。上滚可重试。' })
+    pushMeta('error', '加载更早消息失败: ' + (e as Error).message + '。上滚可重试。')
   } finally {
     loadingEarlier.value = false
   }
@@ -575,15 +585,15 @@ function rebuild(keepCursor: boolean): void {
   transport.on('command', gate((f) => {
     const r = f.payload as CommandResult
     if (r.error) {
-      metas.value.push({ kind: 'error', text: r.raw + ': ' + r.error })
+      pushMeta('error', r.raw + ': ' + r.error)
     } else if (r.output) {
-      metas.value.push({ kind: 'command', text: r.output })
+      pushMeta('command', r.output)
     }
   }))
   transport.on('error', gate((f) => {
     // 后端已把 agent/error 载荷归一为文本;这里再兜一层:对象载荷不再渲染成 "[object Object]"
     const p = f.payload as unknown
-    metas.value.push({ kind: 'error', text: typeof p === 'string' ? p : JSON.stringify(p) })
+    pushMeta('error', typeof p === 'string' ? p : JSON.stringify(p))
   }))
   transport.on('confirm', gate((f) => {
     const req = f.payload as ConfirmRequest
@@ -606,14 +616,16 @@ function rebuild(keepCursor: boolean): void {
       questionMin.value = false
     }
   }))
-  // G-E5-4:审批已裁决(confirm/resolved;Confirm 无端侧 id → 按 prompt 关联)
-  // err 非空 = 未等到应答(回合被停止/取消,或配了 confirm_timeout_sec 后到期):
-  // 弹层由服务端主动关掉,这里同步说明一声 —— 否则用户以为界面吞了他的决定。
+  // G-E5-4:审批已裁决(confirm/resolved;Confirm 无端侧 id → 按 prompt 关联)。
+  // err 非空 = 未等到应答。三种结局要分开说(2026-10-03 实机反馈):
+  //   - canceled:用户自己按了停止 → **静默**关弹层,不推错误行(他没做错什么);
+  //   - err:配了 confirm_timeout_sec 且真的到期 → 说一声,否则用户以为界面吞了他的决定;
+  //   - 都空:正常裁决(本端弹层是残留的,关掉即可)。
   transport.on('confirmdone', gate((f) => {
-    const p = f.payload as { prompt?: string; err?: string }
+    const p = f.payload as { prompt?: string; err?: string; canceled?: boolean }
     if (p?.prompt && confirm.value && confirm.value.prompt === p.prompt) confirm.value = null
-    if (p?.err) {
-      metas.value.push({ kind: 'status', text: '审批未等到应答(' + p.err + '),该动作未执行' })
+    if (p?.err && !p.canceled) {
+      pushMeta('status', '审批未等到应答(' + p.err + '),该动作未执行')
     }
   }))
   // 文档预览意图(D5:模型 doc_open / `/preview` 命令)→ 打开文档面板并定位文件
@@ -770,7 +782,7 @@ async function stopTurn(): Promise<void> {
   try {
     await api.control({ cancel: true })
   } catch (e) {
-    metas.value.push({ kind: 'error', text: '停止失败:' + (e as Error).message })
+    pushMeta('error', '停止失败:' + (e as Error).message)
   }
 }
 
@@ -780,7 +792,7 @@ async function onSubmit(text: string, attachments?: string[]): Promise<boolean> 
   const t = text.trim()
   if (!t) return true
   if (!submitAllowed(conn.value)) {
-    metas.value.push({ kind: 'error', text: '未发送:连接不可用。草稿与附件已保留,恢复后请重新发送。' })
+    pushMeta('error', '未发送:连接不可用。草稿与附件已保留,恢复后请重新发送。')
     return false
   }
   try {
@@ -788,7 +800,7 @@ async function onSubmit(text: string, attachments?: string[]): Promise<boolean> 
     // 回合进行中的追加消息:宿主把它**注入当前回合**(转向),模型下一次请求即可见,
     // 不是新回合。回执里说清楚,否则用户以为输入掉进了黑洞(真机反馈)。
     if (r?.accepted === 'steer') {
-      metas.value.push({ kind: 'status', text: '已注入当前回合(模型下一次请求即可见)' })
+      pushMeta('status', '已注入当前回合(模型下一次请求即可见)')
     }
     // 提交成功即把主视图切回会话流。为何:视图是全屏切换的,而 `/diff` 会把视图永久切到
     // 「变更」且此后没有任何逻辑切回 —— 用户接着发消息,回复全进了看不见的「会话流」,
@@ -797,7 +809,7 @@ async function onSubmit(text: string, attachments?: string[]): Promise<boolean> 
     if (view.value !== 'stream') view.value = 'stream'
     return true
   } catch (e) {
-    metas.value.push({ kind: 'error', text: '未发送:' + (e as Error).message + '。草稿已保留。' })
+    pushMeta('error', '未发送:' + (e as Error).message + '。草稿已保留。')
     // 提交失败往往就是链路已断:探一次并据实降级(不靠猜测)
     void probeConn()
     return false
@@ -817,14 +829,14 @@ async function onQuestionAnswer(values: string[], text: string): Promise<void> {
   if (!req) return
   // S-P1-3:断开时不掷掉作答 —— 弹层/角标保留(作答只回填提问通道,丢失即只能等超时)
   if (!submitAllowed(conn.value)) {
-    metas.value.push({ kind: 'error', text: '作答未提交:连接已断开。弹层已保留,恢复后可重试。' })
+    pushMeta('error', '作答未提交:连接已断开。弹层已保留,恢复后可重试。')
     return
   }
   try {
     await api.questionAnswer(req.id, values, text)
     question.value = null
   } catch (e) {
-    metas.value.push({ kind: 'error', text: '作答提交失败: ' + (e as Error).message + '。弹层已保留。' })
+    pushMeta('error', '作答提交失败: ' + (e as Error).message + '。弹层已保留。')
     void probeConn()
   }
 }
@@ -834,7 +846,7 @@ async function onAnswer(ok: boolean): Promise<void> {
   if (!req) return
   // S-P1-3:断开时不掷掉审批决定 —— 弹层保留,恢复后可重答(服务端侧超时仍按安全默认拒绝)
   if (!submitAllowed(conn.value)) {
-    metas.value.push({ kind: 'error', text: '审批未提交:连接已断开。弹层已保留,恢复后可重试。' })
+    pushMeta('error', '审批未提交:连接已断开。弹层已保留,恢复后可重试。')
     return
   }
   try {
@@ -842,7 +854,7 @@ async function onAnswer(ok: boolean): Promise<void> {
     confirm.value = null
   } catch (e) {
     // 未送达就不关弹层:关掉等于丢掉用户的决定(回合会一直阻塞到超时)
-    metas.value.push({ kind: 'error', text: '审批应答未送达:' + (e as Error).message + '。弹层已保留。' })
+    pushMeta('error', '审批应答未送达:' + (e as Error).message + '。弹层已保留。')
     void probeConn()
   }
 }

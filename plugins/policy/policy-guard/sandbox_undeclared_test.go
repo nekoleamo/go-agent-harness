@@ -312,7 +312,7 @@ func TestGuardProxyAdjudicatesInnerArgs(t *testing.T) {
 	tools.Register(target)
 	tools.Register(proxy)
 
-	outside := filepath.Join(t.TempDir(), "a.txt")
+	outside := filepath.Join(outsideProbe(), "a.txt")
 	// 内层越界写 → 按真实目标工具的推断裁决并 veto(代理工具自身不得执行)
 	if res := execTool(t, c, "mcp_call", fmt.Sprintf(`{"name":"mcp_srv_write_file","arguments":{"path":%q}}`, outside)); res.Error == "" {
 		t.Fatal("代理调用内层越界写应被 veto")

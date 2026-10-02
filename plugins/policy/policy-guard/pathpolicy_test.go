@@ -251,7 +251,9 @@ func TestGuardVetoesDeclaredPathOfCustomTool(t *testing.T) {
 	tool := &stubPathTool{name: "save_note", params: []sdk.PathParam{{Arg: "target", Access: sdk.PathWrite}}}
 	tools.Register(tool)
 
-	abs := filepath.Join(t.TempDir(), "note.md")
+	// 探针必须是**真正越界**的:t.TempDir() 在 macOS 上落在内核可写面(/var/folders/**)内,
+	// 用它当「越界」根本触发不了路径层拒绝(见 shellguard_test.go 文件头)。
+	abs := filepath.Join(outsideProbe(), "note.md")
 	if res := execTool(t, c, "save_note", fmt.Sprintf(`{"target":%q}`, abs)); res.Error == "" {
 		t.Fatal("自定义工具声明的写路径越界应被 veto")
 	}

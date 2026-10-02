@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -41,26 +42,40 @@ type SearchError struct {
 
 func (e *SearchError) Error() string { return e.Msg }
 
-// searchProviders 注册表:data.provider 选默认,缺省 exa;启动读,consumer 零感知。
+// searchProviders 注册表:data.provider 选默认,缺省 searchfile.DefaultProvider;
+// 启动读,consumer 零感知。新增 provider = 在此登记一行(键须与 searchfile 的 provider 常量一致)。
 var searchProviders = map[string]func(client *http.Client) SearchProvider{
-	"exa": func(client *http.Client) SearchProvider { return NewExaProvider(client) },
+	searchfile.ProviderAnysearch: func(client *http.Client) SearchProvider { return NewAnysearchProvider(client) },
+	searchfile.ProviderExa:       func(client *http.Client) SearchProvider { return NewExaProvider(client) },
 }
 
 // NewSearchToolFromEnv **外部插件**用的构造入口(第八十五批):provider 名取生效配置
-// (env GAH_SEARCH_PROVIDER > 配置文件 provider,缺省 exa;宿主按 Capabilities.ConfigEnv 注入),
+// (env GAH_SEARCH_PROVIDER > 配置文件 provider,缺省 searchfile.DefaultProvider;
+// 宿主按 Capabilities.ConfigEnv 注入),
 // 未知名/配置坏时**不拖垮同进程的其它工具** —— tool-basic 还挂着 shell/文件/记忆/todo,
 // 一个拼写错误不该让它们全不可用,故返回一个“调用即显式报错”的搜索工具(错误在用的时候可见)。
 // 进程内装配仍走 Plugin.Start 的严格口径(未知 provider = 装配期显式失败),两者只差失败时机。
 func NewSearchToolFromEnv(client *http.Client) sdk.Tool {
 	name := resolveFileProvider()
 	if name == "" {
-		name = "exa"
+		name = searchfile.DefaultProvider
 	}
 	factory, ok := searchProviders[name]
 	if !ok {
-		return NewSearchTool(&errProvider{err: fmt.Errorf("未知搜索 provider %q(可选: exa)", name)})
+		return NewSearchTool(&errProvider{err: fmt.Errorf("未知搜索 provider %q(可选: %s)",
+			name, strings.Join(providerNames(), "/"))})
 	}
 	return NewSearchTool(factory(client))
+}
+
+// providerNames 注册表里的 provider 名(排序;错误文案用,避免文案与注册表漂移)。
+func providerNames() []string {
+	names := make([]string, 0, len(searchProviders))
+	for n := range searchProviders {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // errProvider 只报错的 provider(配置级失败时占位)。
@@ -139,9 +154,15 @@ func (p *exaProvider) Search(ctx context.Context, query string, n int) ([]Search
 	// 错误归一:401/429/5xx 给结构化文案,可重试语义对齐 llm 适配器
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized:
-		return nil, &SearchError{Kind: "auth", Msg: "搜索服务未授权(搜索 key 无效或缺失),请检查 $GAH_HOME/config/search.yaml 的 api_key 或环境变量 " + searchfile.EnvAPIKey}
+		return nil, &SearchError{Kind: "auth", Msg: "搜索服务未授权(搜索 key 无效或缺失),请检查 $GAH_HOME/config/search.yaml 的 api_key/exa_api_key 或环境变量 " + searchfile.EnvExaAPIKey}
 	case resp.StatusCode == http.StatusTooManyRequests:
 		return nil, &SearchError{Kind: "rate", Msg: "搜索服务限流(429),请稍后重试"}
+	case resp.StatusCode == http.StatusPaymentRequired:
+		// exa 是按量付费的:额度耗尽就是 402,用户侧看着像「一搜索就坏」。
+		// 文案必须给出可执行的下一步(换 provider),否则无从自愈。
+		return nil, &SearchError{Kind: "quota", Msg: fmt.Sprintf(
+			"搜索服务额度已用尽(402)。换 provider:%s 写 %s(匿名可用、国内直连)后重载插件",
+			searchfile.EnvProvider, searchfile.ProviderAnysearch)}
 	case resp.StatusCode >= 500:
 		return nil, &SearchError{Kind: "server", Msg: fmt.Sprintf("搜索服务暂时不可用(%d),可稍后重试", resp.StatusCode)}
 	case resp.StatusCode != http.StatusOK:
@@ -239,9 +260,19 @@ func (t *SearchTool) Execute(ctx context.Context, raw string) (any, error) {
 		}
 		return map[string]any{"error": "web_search: " + err.Error()}, nil
 	}
-	out := map[string]any{"query": query, "results": results}
+	// 剔除搜索引擎结果页(见 search_filter.go):这些 URL 在境内基本不可达,
+	// 留着只会让模型去 fetch 一个必然失败的地址,还白烧一次域名审批。
+	kept, dropped := dropSearchEngineResults(results)
+	out := map[string]any{"query": query, "results": kept}
 	if truncated {
 		out["truncated"] = true
+	}
+	if dropped > 0 {
+		out["dropped_search_engine_results"] = dropped
+	}
+	if len(kept) == 0 && dropped > 0 {
+		out["error"] = "web_search: 全部结果都指向无法访问的搜索引擎结果页,已全部剔除;" +
+			"请换一个更具体的关键词,或改用 web_fetch 直接访问已知站点"
 	}
 	return out, nil
 }

@@ -36,6 +36,8 @@
   --hover-bg: #f1f3f5;
   --accent-hover: #5590f0;
   --accent-soft: #eaf0fd;
+  /* 强调色系边框 token(胶囊/强调条用;与 --sel-border 同色阶,不另起色相) */
+  --accent-line: #cfdcfa;
   /* 语义色 */
   --ok: #1a9e5c;
   --err: #e5484d;

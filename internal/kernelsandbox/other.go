@@ -17,6 +17,9 @@ func platformSupportNote() string {
 	return "当前平台/架构无等价的文件写限制能力(内核级沙箱仅支持 macOS seatbelt 与 Linux Landlock)"
 }
 
+// platformAvailableReason 本平台无等价原语 ⇒ 一律不可施加(见文件头)。
+func platformAvailableReason(Spec) string { return platformSupportNote() }
+
 func platformWrap(spec Spec) []string {
 	WarnUnavailable(spec, "平台能力缺口(无 seatbelt/Landlock 等价机制)")
 	return nil

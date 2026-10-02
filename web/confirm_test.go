@@ -164,3 +164,60 @@ func TestConfirmDeny(t *testing.T) {
 		t.Fatal("应答未回传")
 	}
 }
+
+// TestConfirmCanceledFlag 用户按「停止」(ctx 被取消)与「等超时」必须能被前端区分:
+// 前者要静默关弹层,后者要说明未等到应答(2026-10-03 实机反馈:停止后弹红色错误)。
+func TestConfirmCanceledFlag(t *testing.T) {
+	hub := NewHub()
+	svc := NewConfirm(hub)
+	ch, release := hub.Stream("")
+	defer release()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := svc.Confirm(ctx, "web_fetch 要访问新域名?")
+		errCh <- err
+	}()
+	<-ch     // 弹层已推
+	cancel() // 用户按停止
+	if err := <-errCh; err == nil {
+		t.Fatal("取消应返回错误(安全默认拒绝)")
+	}
+
+	f := <-ch
+	if f.Type != FrameConfirmDone {
+		t.Fatalf("应推 confirmdone 帧,得 %+v", f)
+	}
+	done, ok := f.Payload.(*ConfirmDone)
+	if !ok {
+		t.Fatalf("载荷类型不符: %T", f.Payload)
+	}
+	if !done.Canceled {
+		t.Fatalf("用户停止应标记 canceled,得 %+v", done)
+	}
+	if done.Err == "" {
+		t.Fatal("Err 仍应保留原始原因(诊断用),只是前端不再据此报错")
+	}
+}
+
+// TestConfirmTimeoutNotCanceled 超时不是「用户按了停止」:Canceled 必须为 false。
+func TestConfirmTimeoutNotCanceled(t *testing.T) {
+	hub := NewHub()
+	svc := NewConfirm(hub)
+	ch, release := hub.Stream("")
+	defer release()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	go func() { _, _ = svc.Confirm(ctx, "危险操作?") }()
+	<-ch
+	f := <-ch
+	done, ok := f.Payload.(*ConfirmDone)
+	if !ok || f.Type != FrameConfirmDone {
+		t.Fatalf("应推 confirmdone:%+v", f)
+	}
+	if done.Canceled {
+		t.Fatalf("超时不等于用户停止:Canceled 应为 false,得 %+v", done)
+	}
+}

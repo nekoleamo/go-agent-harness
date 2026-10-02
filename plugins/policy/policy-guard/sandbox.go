@@ -27,6 +27,57 @@ type SandboxPolicy struct {
 	// **每次裁决现算**(guard 里的闭包现注 ctx.roles + 现取当前角色):缓存会让
 	// "/plugins off|on host-roles 后策略冻结到重启"(第八十七批 P1-3 正是这个病)。
 	role roleTiers
+	// kernelScopeTool / kernelScopeShell 内核层当前**真正会施加**的写入面
+	// (guard 注入;nil = 内核层不在场)。两者**必须分开**,因为两个执行面的内核 spec
+	// 本来就不同 —— shell 侧把 TMPDIR 重定向进 jail(spec.RW 为空),外部插件侧才额外
+	// 放行包管理器缓存与系统临时区。用一份清单覆盖两者,会让 `shell "echo x > /tmp/log"`
+	// 从「路径层干净地拒」退化成「内核 EPERM 报错」—— 拒是拒了,但话说不清了。
+	kernelScopeTool  func() []string
+	kernelScopeShell func() []string
+}
+
+// kernelSurface 协作层面对的两条执行面。
+type kernelSurface int
+
+const (
+	// surfaceTool 文件/工具类调用(默认形态下跑在**外部插件进程**里,spec.RW = 缓存+临时区)。
+	surfaceTool kernelSurface = iota
+	// surfaceShell shell/pty 命令(跑在 tool-shell 里,TMPDIR 已重定向进 jail,spec.RW 为空)。
+	surfaceShell
+)
+
+// String 面名(日志/测试断言用)。
+func (s kernelSurface) String() string {
+	if s == surfaceShell {
+		return "shell"
+	}
+	return "tool"
+}
+
+// SetKernelScopes 注入两个执行面的内核写入面读数(guard 在装配时给;测试可直接给)。
+// 传 nil 的那一面视为「内核层不在场」,协作层对它保持窄口径。
+func (p *SandboxPolicy) SetKernelScopes(tool, shell func() []string) {
+	p.mu.Lock()
+	p.kernelScopeTool, p.kernelScopeShell = tool, shell
+	p.mu.Unlock()
+}
+
+// SetKernelScope 两个执行面都用同一份写入面(测试与「只有一个面」的简化场景)。
+func (p *SandboxPolicy) SetKernelScope(fn func() []string) { p.SetKernelScopes(fn, fn) }
+
+// kernelWritablePaths 当前可写的额外目录(内核层在场时 = 它那份清单,否则空)。
+// 每次现算(档位/根/开关运行期可变):缓存会让「切了档没生效」,与第八十七批同款教训。
+func (p *SandboxPolicy) kernelWritablePaths(s kernelSurface) []string {
+	p.mu.RLock()
+	fn := p.kernelScopeTool
+	if s == surfaceShell {
+		fn = p.kernelScopeShell
+	}
+	p.mu.RUnlock()
+	if fn == nil {
+		return nil
+	}
+	return fn()
 }
 
 // roleTiers 读当前角色的收紧档(approval, sandbox;"" = 不收紧)。
@@ -105,7 +156,9 @@ func (p *SandboxPolicy) EffectiveFrom() string {
 	return ""
 }
 
-// ValidatePath 写路径校验(read-only 拒绝一切;workspace-write 限制在 root 内,防 ../ 与 symlink 穿越;凭据类一律拒)。
+// ValidatePath 写路径校验(read-only 拒绝一切;workspace-write 限制在 root 内
+// **加上内核层放行的落点**(jail/临时区/包缓存,见 kernelWritablePaths),防 ../ 与
+// symlink 穿越;凭据类一律拒)。
 // 与工具侧重复实现不同,此处是**唯一**裁决点(工具插件与宿主 pre-execute 均调它)。
 func (p *SandboxPolicy) ValidatePath(path string) error {
 	return p.ValidatePathAt(p.Root(), path)
@@ -114,6 +167,12 @@ func (p *SandboxPolicy) ValidatePath(path string) error {
 // ValidatePathAt 以显式 root 为写范围校验(S-P1-4 隔离运行:root = 本次调用工作根/受管 worktree)。
 // root 空 → 退回自身 root(未隔离调用行为不变)。
 func (p *SandboxPolicy) ValidatePathAt(root, path string) error {
+	return p.validatePathAt(root, path, surfaceTool)
+}
+
+// validatePathAtAt 同一判定,显式指定执行面(shell 命令走 surfaceShell —— 它的内核 spec 与
+// 工具面不同,见 kernelScopeTool 注释)。
+func (p *SandboxPolicy) validatePathAt(root, path string, surface kernelSurface) error {
 	// URL 当路径:模型会把网页地址交给写工具(含 shell 重定向),于是在 cwd 下长出
 	// `https:/host/docs/…` 空目录树(2026-09-22 真机)。
 	// **必须在拼 root 之前判原始入参** —— 相对形态经 filepath.Join 后 URL 前缀就没了(只剩 <root>/https:/…)。
@@ -141,14 +200,22 @@ func (p *SandboxPolicy) ValidatePathAt(root, path string) error {
 	case sdk.SandboxFullAccess:
 		return nil
 	default: // workspace-write(realpath 归一后限本次调用工作根内)
-		if !pathWithin(root, abs) {
-			if root != own {
-				// 隔离运行:明确说“本次工作根”而非“workspace”—— 否则子代理看到的消息会误导它去改主工作区
-				return fmt.Errorf("sandbox: 隔离运行拒绝写本次工作根之外: %s(本次工作根 %s)", path, root)
-			}
-			return fmt.Errorf("sandbox: workspace-write 拒绝写 workspace 之外: %s", path)
+		if pathWithin(root, abs) {
+			return nil
 		}
-		return nil
+		// 工作区根之外,先看**内核层放不放行**(jail/临时区/包缓存/插件自报数据目录)。
+		// 内核层在场就以它为准 —— 边界由内核定义,协作层与之对齐(而不是比它更严地
+		// 拒掉同一批落点,让模型在同一堵墙上反复换路径重试)。
+		for _, w := range p.kernelWritablePaths(surface) {
+			if pathWithin(w, abs) {
+				return nil
+			}
+		}
+		if root != own {
+			// 隔离运行:明确说“本次工作根”而非“workspace”—— 否则子代理看到的消息会误导它去改主工作区
+			return fmt.Errorf("sandbox: 隔离运行拒绝写本次工作根之外: %s(本次工作根 %s)", path, root)
+		}
+		return fmt.Errorf("sandbox: workspace-write 拒绝写 workspace 之外: %s", path)
 	}
 }
 
@@ -230,7 +297,7 @@ func (p *SandboxPolicy) CheckShellCommandAt(root, cmd string) error {
 		if pth.Unresolvable {
 			return fmt.Errorf("sandbox: shell 命令含无法裁决的写目标 %q(含变量/命令替换、切换出工作区后的相对路径,或 Windows/MSYS 根相对路径如 /c/…、/tmp/…);请改写为确定路径或切 /sandbox full", pth.Path)
 		}
-		if err := p.ValidatePathAt(root, pth.Path); err != nil {
+		if err := p.validatePathAt(root, pth.Path, surfaceShell); err != nil {
 			return fmt.Errorf("sandbox: shell 命令写目标被拒(%s): %w", pth.Path, err)
 		}
 	}
@@ -614,7 +681,7 @@ func (p *SandboxPolicy) CheckExecutorCommandAt(root, name, cmd string) error {
 			return fmt.Errorf("sandbox: powershell 命令含无法裁决的写目标 %q(含 $ 变量/子表达式/通配/调用表达式);"+
 				"请改写为确定路径,或切 /sandbox full 后自行确认", pth.Path)
 		}
-		if err := p.ValidatePathAt(root, pth.Path); err != nil {
+		if err := p.validatePathAt(root, pth.Path, surfaceShell); err != nil {
 			return fmt.Errorf("sandbox: powershell 命令写目标被拒(%s): %w", pth.Path, err)
 		}
 	}

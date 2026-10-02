@@ -35,7 +35,7 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WindowEvent};
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_autostart::ManagerExt;
-use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_shell::process::CommandChild;
 use tauri_plugin_shell::ShellExt;
@@ -384,17 +384,107 @@ impl UpdateOutcome {
 // 有更新 → 备份数据 + 下载安装,随后延时重启;无更新/失败 → 返回结果交给调用方呈现。
 // 这里不发通知:托盘与界面两个入口的呈现方式不同。
 async fn checkForUpdates(app: &tauri::AppHandle) -> UpdateOutcome {
-    let outcome = checkForUpdatesInner(app).await;
-    // 安装完必须重启才生效。延时一小会儿:界面内入口(前端 invoke)才有机会先把
-    // 「已安装」这个结果拿到并渲染出来,否则窗口会在响应返回前就被干掉。
-    if outcome.status == "installed" {
-        let h = app.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(1500));
-            h.restart();
-        });
+    checkForUpdatesInner(app).await
+}
+
+/// 待装的更新(check 阶段存下,install 阶段消费)。
+///
+/// 为何存全局而不是把 Update 句柄在调用链里传:tauri command 是 async 的,
+/// 中间隔着「用户点确认」这道人为停顿 —— 句柄活不过一次往返。存的是句柄本身,
+/// 不是 URL:updater 的签名/校验都在 Update 里,重解析会绕过它。
+static PENDING_UPDATE: Mutex<Option<tauri_plugin_updater::Update>> = Mutex::new(None);
+
+/// installPendingUpdate 下载并安装待装更新(check 已确认 available 时才走到这里)。
+///
+/// 返回 installed 时由调用方负责延时重启(安装完必须重启才生效);这里不做,
+/// 因为「检查」与「安装」是两个独立命令,重启跟安装走更贴。
+async fn installPendingUpdate(app: &tauri::AppHandle) -> UpdateOutcome {
+    let pending = PENDING_UPDATE.lock().unwrap().take();
+    let Some(update) = pending else {
+        return UpdateOutcome::new(
+            "noUpdate",
+            None,
+            "没有待安装的更新:请先「检查更新」,确认后再升级".into(),
+        );
+    };
+    let version = update.version.clone();
+    // 升级整包替换应用目录:数据已外置到用户数据目录(见 stage.rs),正常不会再被替换;
+    // 这里仍先备份一次(额外保险,覆盖壳回退到应用目录内运行的极端情况)。
+    let data = match app.state::<DataRoot>().0.lock().unwrap().clone() {
+        Some(d) => d,
+        None => {
+            return UpdateOutcome::new("failed", Some(version), "数据根未初始化,已取消升级".into())
+        }
+    };
+    let backup_note = match backupBeforeUpgrade(&data) {
+        Ok(p) if p.as_os_str().is_empty() => String::new(),
+        Ok(p) => format!("(升级前数据已备份到 {})", p.display()),
+        Err(e) => {
+            return UpdateOutcome::new(
+                "failed",
+                Some(version),
+                format!(
+                    "升级前备份数据失败,为免丢失数据已取消升级:{e}\n请先在对话里执行 /backup(存到应用目录之外的路径),再重试升级。"
+                ),
+            );
+        }
+    };
+    if let Err(e) = update.download_and_install(|_, _| {}, || {}).await {
+        // 表取到了但包下不下来:通常是这一跳被拦(国内直连 GitHub 资产的典型症状)。
+        // 源记忆由 check 阶段记过一次(表能取到说明那个源是通的);这里只在装失败时
+        // 把失败反馈到 UI,不猜下一个源(下次 check 会重新 select)。
+        return UpdateOutcome::new("failed", Some(version), format!("下载安装未完成:{e}"));
     }
-    outcome
+    update_source::note_success();
+    UpdateOutcome::new(
+        "installed",
+        Some(version.clone()),
+        format!("更新 {version} 已安装,即将重启生效{backup_note}"),
+    )
+}
+
+/// restartAfterInstall 安装完成后延时重启。
+/// 为什么要延时:界面内入口(前端 invoke)才有机会先把「已安装」这个结果拿到并渲染出来,
+/// 否则窗口会在响应返回前就被干掉。
+fn restartAfterInstall(app: &tauri::AppHandle) {
+    let h = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(1500));
+        h.restart();
+    });
+}
+
+/// promptAndInstall 有更新时先问用户再装(托盘出口用;界面出口由前端确认后调 install_update)。
+///
+/// 两个选项:立即升级 / 稍后。**「检查」与「安装」必须分开**(2026-10-03 用户要求) ——
+/// 升级会换掉整个应用,必须是用户明确的动作,不能由一次「检查更新」顺手带过去。
+fn promptAndInstall(app: &tauri::AppHandle, version: &str) {
+    let h = app.clone();
+    let v = version.to_string();
+    app.dialog()
+        .message(format!(
+            "发现新版本 {version}。\n\n现在升级?升级会下载并替换应用本体,完成后自动重启;你的数据(gah-data/)不受影响。"
+        ))
+        .title("gah 检查更新")
+        // OkCancel:默认焦点在「Cancel(稍后)」—— 升级会换掉整个应用,
+        // 不能被一次回车顺手带过去。
+        .buttons(MessageDialogButtons::OkCancel)
+        .show(move |ok| {
+            if !ok {
+                shellLog(&h, &format!("检查更新: 用户选择稍后升级({v})"));
+                return;
+            }
+            let h2 = h.clone();
+            tauri::async_runtime::spawn(async move {
+                let o = installPendingUpdate(&h2).await;
+                shellLog(&h2, &format!("安装(用户已确认)status={}", o.status));
+                recordUpdate(0, &o);
+                notifyUpdate(&h2, &o);
+                if o.status == "installed" {
+                    restartAfterInstall(&h2);
+                }
+            });
+        });
 }
 
 async fn checkForUpdatesInner(app: &tauri::AppHandle) -> UpdateOutcome {
@@ -439,39 +529,14 @@ async fn checkForUpdatesInner(app: &tauri::AppHandle) -> UpdateOutcome {
             return UpdateOutcome::new("failed", None, explainUpdateError(&e.to_string()));
         }
     };
+    // 有更新:**到此为止**,不下载不安装 —— 先让用户决定(2026-10-03)。
+    // 把 Update 句柄存下来供 install_update / 托盘对话框消费,并把版本号报给 UI。
     let version = update.version.clone();
-    // 升级整包替换应用目录:数据已外置到用户数据目录(见 stage.rs),正常不会再被替换;
-    // 这里仍先备份一次(额外保险,覆盖壳回退到应用目录内运行的极端情况)。
-    let data = match app.state::<DataRoot>().0.lock().unwrap().clone() {
-        Some(d) => d,
-        None => {
-            return UpdateOutcome::new("failed", Some(version), "数据根未初始化,已取消升级".into())
-        }
-    };
-    let backup_note = match backupBeforeUpgrade(&data) {
-        Ok(p) if p.as_os_str().is_empty() => String::new(),
-        Ok(p) => format!("(升级前数据已备份到 {})", p.display()),
-        Err(e) => {
-            return UpdateOutcome::new(
-                "failed",
-                Some(version),
-                format!(
-                    "升级前备份数据失败,为免丢失数据已取消升级:{e}\n请先在对话里执行 /backup(存到应用目录之外的路径),再重试检查更新。"
-                ),
-            );
-        }
-    };
-    if let Err(e) = update.download_and_install(|_, _| {}, || {}).await {
-        // 表取到了但包下不下来:通常是这一跳被拦(国内直连 GitHub 资产的典型症状)。
-        // 记下来,下次检查时把该源排到最后,换另一个源试。
-        update_source::note_failure(primary);
-        return UpdateOutcome::new("failed", Some(version), format!("下载安装未完成:{e}"));
-    }
-    update_source::note_success();
+    *PENDING_UPDATE.lock().unwrap() = Some(update);
     UpdateOutcome::new(
-        "installed",
+        "available",
         Some(version.clone()),
-        format!("更新 {version} 已安装,即将重启生效{backup_note}"),
+        format!("发现新版本 {version},确认后可升级"),
     )
 }
 
@@ -689,6 +754,24 @@ async fn check_update(app: AppHandle) -> UpdateOutcome {
     o
 }
 
+/// install_update 界面内「确认升级」入口:下载并安装**上一次 check_update 找到的**更新。
+///
+/// 为何是独立命令而不是 check_update 的参数:升级要人点头(2026-10-03 用户要求
+/// 「先提示是否需要更新,确认升级后再下载安装」),而 check 与 install 之间隔着一次
+/// 人为停顿 —— 期间进程可能已经被别的 check 覆盖,所以 install 只认「最近一次
+/// check 存下的那一个」,不重新解析版本。
+#[tauri::command]
+async fn install_update(app: AppHandle) -> UpdateOutcome {
+    shellLog(&app, "web: 确认升级,开始下载安装");
+    let o = installPendingUpdate(&app).await;
+    shellLog(&app, &format!("web: 安装返回 status={}", o.status));
+    recordUpdate(0, &o);
+    if o.status == "installed" {
+        restartAfterInstall(&app);
+    }
+    o
+}
+
 // spawnAutoCheck 升级冒烟缝:GAH_SHELL_UPDATE_AUTOCHECK=<秒> 时,启动后自动跑一次「检查更新」,
 // 走与托盘菜单/界面按钮**完全同一条**代码路径(checkForUpdates → 备份 → download_and_install →
 // 延时重启),因此能把「发出去的包到底能不能升级」从「只能靠人点托盘」变成一条可脚本化的命令。
@@ -771,7 +854,25 @@ fn spawnAutoCheck(app: AppHandle) {
             CHECK_DONE.fetch_max(seq, Ordering::SeqCst);
             setCheckBusy(&h, false);
             recordUpdate(seq, &outcome);
-            // 装完的延时重启由 checkForUpdates 自己发起(与托盘/界面路径一致),这里不再插手。
+            // 冒烟缝是**显式声明「无人值守也要装」**的逃生门(GAH_SHELL_UPDATE_AUTOCHECK):
+            // 普通用户路径一律走 promptAndInstall 先问一句。这里直接装,否则冒烟就测不到
+            // 「发出去的包到底能不能装上」——那正是这条缝存在的唯一理由。
+            if outcome.status == "available" {
+                let o = installPendingUpdate(&h).await;
+                shellLog(
+                    &h,
+                    &format!(
+                        "升级冒烟: 用户已确认(环境变量授权),安装 status={}",
+                        o.status
+                    ),
+                );
+                recordUpdate(seq, &o);
+                if o.status == "installed" {
+                    restartAfterInstall(&h);
+                }
+            }
+            // 装完的延时重启由 installPendingUpdate 的调用方发起(与托盘/界面路径一致),
+            // 这里不再插手。
         });
     });
 }
@@ -1642,6 +1743,7 @@ fn main() {
         // 菜单弹不出来就等于完全没有升级入口(Windows 真机反馈)。
         .invoke_handler(tauri::generate_handler![
             check_update,
+            install_update,
             shell_probe,
             probe_async,
             pick_folder_begin,
@@ -1807,7 +1909,18 @@ fn main() {
                             CHECK_DONE.fetch_max(seq, Ordering::SeqCst);
                             setCheckBusy(&h, false);
                             recordUpdate(seq, &outcome);
-                            notifyUpdate(&h, &outcome);
+                            // 有更新 → 先问用户再装(2026-10-03):点一次「检查更新」
+                            // 不该顺带把整个应用换掉。其余结局照旧用通知+对话框呈现。
+                            if outcome.status == "available" {
+                                let ver = outcome
+                                    .version
+                                    .clone()
+                                    .unwrap_or_else(|| "新版本".into());
+                                notifyNative(&h, "gah", &outcome.message);
+                                promptAndInstall(&h, &ver);
+                            } else {
+                                notifyUpdate(&h, &outcome);
+                            }
                         });
                     }
                     "about" => {
@@ -2334,6 +2447,7 @@ mod acl_tests {
 
     /// 命令面(single source for this test;新增命令时**两处**都要动,测试会告诉你漏了哪处)。
     const COMMANDS: &[&str] = &[
+        "install_update",
         "check_update",
         "shell_probe",
         "probe_async",

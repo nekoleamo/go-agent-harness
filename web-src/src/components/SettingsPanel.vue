@@ -5,7 +5,7 @@
 import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { api, rolePackDownloadUrl, rolePackName, skillPackDownloadUrl, skillPackName  } from '../api'
 import { byteLength } from '../bytes'
-import { autostartState, checkUpdate, isDesktop, pickDirectory, updateState, type UpdateSnapshot } from '../desktop'
+import { autostartState, checkUpdate, installUpdate, isDesktop, pickDirectory, updateState, type UpdateSnapshot } from '../desktop'
 import { currentModelValue, modelOptionValue, withCurrentModel } from '../modelsel'
 import { settingSections } from '../registry'
 import { uiPluginDigests, uiPluginTrustNote } from '../plugins'
@@ -45,9 +45,12 @@ const ask = inject<(a: AskConfirm) => void>('askConfirm')
 const updBusy = ref(false)
 const updMsg = ref('')
 const updOk = ref(false)
+// updAvailable 有更新待确认:此时底栏多一个「立即升级」按钮,且**必须**先经过二次确认。
+// 2026-10-03 用户要求:「检查更新后,应先提示是否需要更新,确认升级后,再下载安装」。
+const updAvailable = ref('')
 
-// doCheckUpdate 桌面版检查更新:壳侧走同一条 checkForUpdates(与托盘菜单同一实现,
-// 结果回传到这里展示)。有更新时壳会自动下载安装并重启。
+// doCheckUpdate 桌面版检查更新:壳侧走同一条 checkForUpdates(与托盘菜单同一实现)。
+// **只查不装**:有更新时壳返回 available,由用户点「立即升级」并确认后才下载安装。
 async function doCheckUpdate() {
   if (!isDesktop) {
     updOk.value = false
@@ -57,13 +60,44 @@ async function doCheckUpdate() {
   updBusy.value = true
   updMsg.value = '正在检查…'
   updOk.value = false
+  updAvailable.value = ''
   try {
     const r = await checkUpdate()
+    updAvailable.value = r?.status === 'available' ? String(r?.version ?? '新版本') : ''
     updOk.value = r?.status === 'upToDate' || r?.status === 'installed'
     updMsg.value = String(r?.message ?? '检查完成')
   } catch (e) {
     updOk.value = false
+    updAvailable.value = ''
     updMsg.value = '检查更新失败:' + (e instanceof Error ? e.message : String(e))
+  } finally {
+    updBusy.value = false
+  }
+}
+
+// doInstallUpdate 确认升级:二次确认(有副作用的操作必须问)→ 下载安装 → 壳自动重启。
+// 二次确认走既有的全局确认条 guard(与增删改前置同一处):升级会换掉整个应用本体,
+// 属于必须由人点头的动作。取消只是不 run —— updAvailable 保留,按钮还在,可随时再升。
+function doInstallUpdate(): void {
+  const ver = updAvailable.value
+  if (!ver) return
+  guard(`升级到 ${ver}(会替换应用本体并重启)`, false, () => {
+    void doInstallNow()
+  })
+}
+
+// doInstallNow 确认之后真正下载安装的那一段(与确认弹层解耦)。
+async function doInstallNow(): Promise<void> {
+  updBusy.value = true
+  updMsg.value = '正在下载安装…'
+  try {
+    const r = await installUpdate()
+    updOk.value = r?.status === 'installed'
+    updAvailable.value = r?.status === 'installed' ? '' : updAvailable.value
+    updMsg.value = String(r?.message ?? '安装完成')
+  } catch (e) {
+    updOk.value = false
+    updMsg.value = '安装失败:' + (e instanceof Error ? e.message : String(e))
   } finally {
     updBusy.value = false
   }
@@ -87,6 +121,7 @@ function applyUpdateSnapshot(u: UpdateSnapshot): void {
   if (u.seq <= lastUpdSeq.value) return
   lastUpdSeq.value = u.seq
   updBusy.value = false
+  updAvailable.value = u.status === 'available' ? String(u.version ?? '新版本') : ''
   updOk.value = u.status === 'upToDate' || u.status === 'installed'
   updMsg.value = u.message || '检查完成'
 }
@@ -1879,9 +1914,12 @@ watch(
             />
           </div>
           <!-- 当前生效单独一行:上面那个输入框是筛选框,用户会把它当成「当前模型」的显示位,
-               真机上因此得出「已选了模型但当前模型显示为空」的结论。 -->
-          <p class="dim" data-testid="cur-model">
-            当前生效:{{ curModelLabel || '(未设置)' }}
+               真机上因此得出「已选了模型但当前模型显示为空」的结论。
+               这一行是「当前状态」不是说明文字 → 用强调色 + 加重,别与灰色提示同级
+               (2026-10-03 用户反馈:这一行应为强调色,更显眼)。 -->
+          <p class="cur-line" data-testid="cur-model">
+            <span class="cur-key">当前生效</span>
+            <span class="cur-val">{{ curModelLabel || '(未设置)' }}</span>
             <span v-if="props.state.model_from === 'role'" class="sstate ss-ok">角色指定</span>
             <span v-if="props.state.model_from === 'role' && props.state.model_session" class="dim">
               （会话档 {{ props.state.model_session }} 被角色覆盖，停用角色后生效）
@@ -2957,9 +2995,13 @@ watch(
           <button class="ghost" :disabled="updBusy" @click="doCheckUpdate()">
             {{ updBusy ? '检查中…' : '检查更新' }}
           </button>
+          <!-- 有更新才出现:检查只查不装,升级必须由用户点这一下并再确认一次 -->
+          <button v-if="updAvailable" class="ghost solid" :disabled="updBusy" @click="doInstallUpdate()">
+            升级到 {{ updAvailable }}
+          </button>
         </div>
         <p class="dim foot-msg" :class="{ ok: updOk }">
-          {{ updMsg || '检查 GitHub Release 上的新版本,有更新会自动下载安装并重启' }}
+          {{ updMsg || '检查新版本;发现更新后由你确认再下载安装' }}
         </p>
       </footer>
       </aside>
@@ -3554,6 +3596,30 @@ textarea.inp {
   /* 这句里的路径/URL/命令常是一整段无空格文本(如 mcp 配置文件路径):不断行就溢出面板,
      而 .body 的 overflow-y:auto 会把 overflow-x 也算成 auto ⇒ 设置页多出一条横向滚动条。 */
   overflow-wrap: anywhere;
+}
+/* 「当前生效」行:当前**状态**而不是说明文字 ⇒ 强调色 + 加重 + 左侧强调条。
+   此前它与一排 .dim 提示同级(灰小字),用户完全扫不到
+   (2026-10-03:「这一行颜色应为强调色,更显眼」)。 */
+.cur-line {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 6px 0 10px;
+  padding: 6px 10px;
+  border-left: 3px solid var(--accent);
+  border-radius: var(--r-input);
+  background: var(--accent-soft);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.cur-key {
+  color: var(--fg-dim);
+  font-weight: 600;
+}
+.cur-val {
+  color: var(--accent);
+  font-weight: 600;
 }
 /* 产物校验值列表(R10 ⑤-3):等宽字体便于逐字符比对;折行不裁剪(哈希截断会误导) */
 .digests {

@@ -11,8 +11,6 @@ import (
 	"os"
 	"strings"
 	"sync"
-
-	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
 // sandboxExecDefault seatbelt 前端默认路径。
@@ -35,6 +33,18 @@ func noteReadDeny(spec Spec, dirs []string) {
 
 func platformSupportNote() string { return "macOS 需 " + sandboxExecDefault + " 可用" }
 
+// platformAvailableReason 前端(sandbox-exec)缺失时不可施加(与 Spec.SandboxExec 一致)。
+func platformAvailableReason(spec Spec) string {
+	exe := spec.SandboxExec
+	if strings.TrimSpace(exe) == "" {
+		exe = sandboxExecDefault
+	}
+	if _, err := os.Stat(exe); err != nil {
+		return "找不到 seatbelt 前端 " + exe
+	}
+	return ""
+}
+
 // platformWrap 生成 seatbelt 包装 argv(空 = 不施加)。
 // profile 语义:默认全放行(读 + 网络),只 deny 文件写,再按档位放行白名单
 // —— 与协作层"只管写目标"的范围一致。读只多拒 ReadDeny 里的目录(shell 专用)。
@@ -54,21 +64,13 @@ func platformWrap(spec Spec) []string {
 func darwinProfile(spec Spec) string {
 	var b strings.Builder
 	b.WriteString("(version 1)(allow default)(deny file-write*)(allow file-write*")
-	// 白名单路径必须**按解析后的真实路径**给出(见 ResolvePath 注释)。顺序无关,
-	// workspace 在前便于阅读。
-	if spec.Mode == sdk.SandboxWorkspace && strings.TrimSpace(spec.Root) != "" {
-		b.WriteString(" (subpath \"" + sandboxQuote(ResolvePath(spec.Root)) + "\")")
+	// 白名单来自**共享写入面**(WritablePaths):内核规则与协作层裁决共用同一份推导,
+	// 两层不再各写一套而互相打架(见 kernelsandbox.go 里「写入面」的说明)。
+	// 路径已按真实路径解析(见 ResolvePath);非存在路径无害(seatbelt 不报错)。
+	for _, p := range WritablePaths(spec) {
+		b.WriteString(" (subpath \"" + sandboxQuote(p) + "\")")
 	}
-	// jail(临时/缓存锚点):两档都放行,否则 TMPDIR/GOCACHE 写不通,命令会大面积失败。
-	b.WriteString(" (subpath \"" + sandboxQuote(ResolvePath(spec.Jail)) + "\")")
-	// 额外白名单(包管理器缓存等):非存在路径也无害(seatbelt 对不存在的 subpath 不报错)。
-	for _, p := range spec.RW {
-		if strings.TrimSpace(p) == "" {
-			continue
-		}
-		b.WriteString(" (subpath \"" + sandboxQuote(ResolvePath(p)) + "\")")
-	}
-	for _, lit := range []string{"/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty", "/dev/ptmx"} {
+	for _, lit := range DeviceLiterals() {
 		b.WriteString(" (literal \"" + lit + "\")")
 	}
 	b.WriteString(" (subpath \"/dev/fd\")")

@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -553,8 +554,11 @@ func TestExternalPathCapabilityDeclared(t *testing.T) {
 	if got := def.PathParams[0]; got.Arg != "path" || got.Access != sdk.PathWrite {
 		t.Fatalf("声明内容不符: %+v", got)
 	}
-	// ② 越界写按声明被宿主 pre-execute veto(工具未真正执行)
-	outside := filepath.Join(t.TempDir(), "leak.txt")
+	// ② 越界写按声明被宿主 pre-execute veto(工具未真正执行)。
+	// 探针必须是**真越界**的:不能用 t.TempDir() —— macOS 上它落在 /var/folders/**,
+	// 而那正是内核沙箱刻意放行的临时区(协作层已按同一份清单对齐,见 kernelscope.go),
+	// 用它当「越界」根本触发不了 veto。
+	outside := filepath.Join(outsideProbePath(), "leak.txt")
 	res, err := tools.Execute(context.Background(), "file_write",
 		mustJSON2(t, map[string]any{"path": outside, "content": "x"}))
 	if err != nil {
@@ -566,6 +570,15 @@ func TestExternalPathCapabilityDeclared(t *testing.T) {
 	if _, statErr := os.Stat(outside); statErr == nil {
 		t.Fatal("被 veto 的写不应落盘")
 	}
+}
+
+// outsideProbePath 一个**确定越界**的落点:既不在工作区,也不在内核可写面内。
+// 为什么不能用 t.TempDir():macOS 上它位于 /var/folders/**,正是内核刻意放行的临时区。
+func outsideProbePath() string {
+	if runtime.GOOS == "windows" {
+		return `C:/gah-e2e-outside-probe`
+	}
+	return "/gah-e2e-outside-probe"
 }
 
 // TestExternalFileChangeLandsInLedger 变更审查面的**发行态**全链路回归(S-P1-1 缺口):

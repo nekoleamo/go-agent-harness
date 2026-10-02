@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
+	"github.com/nekoleamo/go-agent-harness/internal/searchfile"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -24,7 +26,7 @@ type Plugin struct{}
 func (p *Plugin) Name() string { return "tool-web" }
 
 // Start 注册 web_fetch + web_search 两个工具。
-// web_search provider 经 data.provider 选择(注册表,缺省 exa;未知名显式失败)。
+// web_search provider 经 data.provider 选择(注册表,缺省 searchfile.DefaultProvider;未知名显式失败)。
 func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	var tools sdk.ToolRegistry
 	if err := c.Inject("ctx.tools", &tools); err != nil {
@@ -37,12 +39,13 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		name = resolveFileProvider() // 生效配置兜底(env GAH_SEARCH_PROVIDER > 搜索配置文件)
 	}
 	if name == "" {
-		name = "exa" // 最终缺省
+		name = searchfile.DefaultProvider // 最终缺省
 	}
 	factory, ok := searchProviders[name]
 	if !ok {
 		d1() // 未知名 provider 显式失败,不静默降级(先撤销已注册部分)
-		return nil, fmt.Errorf("tool-web: 未知搜索 provider %q(可选: exa)", name)
+		return nil, fmt.Errorf("tool-web: 未知搜索 provider %q(可选: %s)",
+			name, strings.Join(providerNames(), "/"))
 	}
 	d2 := tools.Register(NewSearchTool(factory(client)))
 	return func() { d1(); d2() }, nil

@@ -211,6 +211,11 @@ func (p *ApprovalPolicy) decide(ctx context.Context, confirm sdk.ConfirmService,
 		}
 		ok, err := confirm.Confirm(cl, fmt.Sprintf("确认执行%s? y/n", label))
 		if err != nil {
+			// 用户按了停止 → 这是**中止**不是拒绝:挂哨兵让上层改用中性文案
+			// (否则每按一次停止就弹一条红色 blocked,见 sdk/aborted.go)。
+			if ctx.Err() != nil {
+				return sdk.AbortedError("approval: %s 未执行(等待确认时被停止)", label)
+			}
 			return fmt.Errorf("approval: 确认失败(%s): %v", label, err)
 		}
 		if !ok {

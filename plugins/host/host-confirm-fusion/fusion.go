@@ -219,6 +219,8 @@ func (f *Fusion) Confirm(ctx context.Context, prompt string) (bool, error) {
 	ok, channel, err := f.confirmInner(ctx, prompt)
 	f.emit(sdk.EventConfirmResolved, &sdk.ConfirmEvent{
 		Prompt: prompt, OK: ok, Resolved: true, Channel: channel, Err: errStr(err),
+		// 用户按停止与“等超时”对前端是两件事(见 sdk/interaction.go 的 Canceled)。
+		Canceled: ctx.Err() != nil,
 	})
 	return ok, err
 }

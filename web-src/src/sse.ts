@@ -17,6 +17,7 @@ export interface Msg {
   full?: string // tool:全文;assistant:无
   tools?: ToolRow[] // assistant 携带的工具调用(落定时的快照)
   atts?: AttachmentInfo[] // user:附件(图片预览/文件引用)
+  think?: string // assistant:本轮的思维/推理过程(与最终答复分开渲染)
   seq: number // 会话事件 Seq(重放/渲染定位)
   ts: string
   err?: boolean
@@ -29,6 +30,7 @@ export interface Msg {
 export interface StreamModel {
   msgs: Msg[]
   pending: string // 进行中 assistant 文本(chunk 增量)
+  pendingThink: string // 进行中 assistant 思维增量(与 pending 分开,渲染上也要分开)
   pendingTool?: ToolRow // 进行中工具(等待 result)
   step: number
   from: number
@@ -37,7 +39,7 @@ export interface StreamModel {
 }
 
 export function newModel(): StreamModel {
-  return { msgs: [], pending: '', step: 0, from: 0, hasMore: false, trimmed: 0 }
+  return { msgs: [], pending: '', pendingThink: '', step: 0, from: 0, hasMore: false, trimmed: 0 }
 }
 
 // 一批事件 → 消息(一次性、独立模型)。用于 S-P1-2 上滚分页:必须整页喂进 consume,
@@ -87,6 +89,8 @@ export function consume(m: StreamModel, ev: SessionEvent): void {
     case 'assistant/chunk': {
       const d = p as LLMStreamDelta
       if (d.Delta) m.pending += d.Delta
+      // 思维增量单独累积:与正文混在一起就看不出哪段是「想」哪段是「答」。
+      if (d.Thinking) m.pendingThink += d.Thinking
       if (d.ToolCallID) {
         // 工具调用增量归并(流式参数;实时下常与 message 落定重叠,保守归并即可)
         if (!m.pendingTool || m.pendingTool.id !== d.ToolCallID) {
@@ -101,11 +105,13 @@ export function consume(m: StreamModel, ev: SessionEvent): void {
     case 'assistant/message': {
       const am = p as { Content: string; ToolCalls: ToolCall[] }
       const text = am.Content || m.pending
+      const think = m.pendingThink
       const tools: ToolRow[] = (am.ToolCalls ?? []).map((c) => m.pendingTool && m.pendingTool.id === c.ID ? m.pendingTool : ({ id: c.ID, name: c.Name, args: argsSummary(c.Arguments), status: 'called', result: '', full: '' }))
       // 已落定的叫工具行保持结果;新条目挂到 assistant 消息
       m.pending = ''
+      m.pendingThink = ''
       m.pendingTool = undefined
-      m.msgs.push({ kind: 'assistant', text, tools, seq: ev.Seq, ts: ev.TS })
+      m.msgs.push({ kind: 'assistant', text, think: think || undefined, tools, seq: ev.Seq, ts: ev.TS })
       break
     }
     case 'tool/call': {

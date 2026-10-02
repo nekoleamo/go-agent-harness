@@ -18,6 +18,13 @@ import type { Msg } from './sse'
 export interface MetaLine {
   kind: 'command' | 'error' | 'summary' | 'status'
   text: string
+  // after 该行产生时**会话流已落定的最后一条消息的 seq**(0 = 还没有任何消息)。
+  // 为什么要有:meta 是前端侧产生的(命令回显/回合错误/审批未应答),不进会话账本,
+  // 原先它们被单独渲染在**所有消息之后**(StreamView 末尾一个循环)——
+  // 于是回合被停止时的报错会永远钉在最底下,后续回答只能显示在它上面
+  // (2026-10-03 实机反馈)。用 seq 定位插入点即可按发生顺序交织,
+  // 且比时间戳可靠:不依赖前后端时钟是否同源。
+  after: number
 }
 export interface StreamProps {
   frames: Msg[]

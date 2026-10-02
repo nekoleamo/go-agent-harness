@@ -93,10 +93,10 @@ const anonSession = computed(() => {
          不截断时长名字会把文字挤成多行(底栏从 22px 涨到 58px,真实测得)并把右侧挤出去。 -->
     <span
       v-if="roleLabel"
-      class="it faint role"
+      class="it role"
       :data-tip="'当前角色:' + roleLabel + '(下一轮生效;可在设置面板切换)'"
     >
-      角色 {{ roleLabel }}
+      <span class="role-key">角色</span>{{ roleLabel }}
     </span>
     <span v-if="anonSession" class="it faint">未命名会话{{ anonSession }}</span>
     <span class="spacer" />
@@ -163,8 +163,20 @@ const anonSession = computed(() => {
   font-size: 12px;
 }
 .role {
-  /* inline-block + 上限宽度才能出省略号(inline 元素的 overflow 不生效) */
+  /* 角色会改系统提示与技能可见集合 —— 是“当前人格”这个环境事实,不是一条状态说明。
+     2026-10-03 用户反馈「主界面当前角色很难注意到」:此前是 .faint 灰小字,与沙箱/会话
+     等提示同级。改为单强调色 + 胶囊底 + 边框(不引第二色相:单强调色纪律)。
+     display 必须留在 inline-block:flex 容器里 text-overflow:ellipsis **不生效**(溢出文本
+     只被裁掉、不出省略号),长角色名会把底栏撑高 —— 布局护栏 test:layout 会红。
+     同理不能用 gap(那是 flex/grid 属性),间距走 .role-key 的 margin。 */
   display: inline-block;
+  padding: 0 8px;
+  border: 1px solid var(--accent-line);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
   /* flex-basis 显式给 20ch:不给的话 flex 基准取"未截断的整串名字"(实测 484px),
      它会吃掉全部压缩份额并触顶在 max-width,剩下的亏空转嫁给别的项(它们只能折行)。 */
   flex-basis: 20ch;
@@ -178,6 +190,32 @@ const anonSession = computed(() => {
   white-space: nowrap;
   vertical-align: bottom;
 }
+.role-key {
+  color: var(--fg-dim);
+  font-weight: 500;
+  margin-right: 5px;
+}
+/* 窄窗(底栏已被挤满时):胶囊的 padding+border 是**不可压缩的固定开销**(flex-shrink 只压内容,
+   压不掉内边距),而本栏里角色徽标正是「唯一允许先让位」的那一项 —— 不让位的结果是
+   700px 视口下整条底栏溢出 16px(布局护栏 test:layout 实测红)。
+   故窄窗退成**无胶囊的强调色粗体**:显眼度的大头(强调色 + 加重)全保留,只丢掉装饰,
+   零布局开销。判断线取 760px:低于它底栏本就没有余量。 */
+@media (max-width: 760px) {
+  .role {
+    padding: 0;
+    border: 0;
+    background: none;
+    border-radius: 0;
+  }
+  .role-key {
+    display: none;
+  }
+}
+/* 窄窗(底栏已被挤满时):胶囊的 padding+border 是**不可压缩的固定开销**(flex-shrink 只压
+   内容,压不掉内边距),而本栏里角色徽标正是「唯一允许先让位」的那一项 —— 不让位的结果是
+   700px 视口下整条底栏溢出 16px(布局护栏会红)。
+   故窄窗退成**无胶囊的强调色粗体**:显眼度的大头(强调色 + 加重)全保留,只丢掉装饰,
+   零布局开销。判断线取 760px:低于它底栏本就没有余量。 */
 .ctx {
   color: var(--fg-dim);
   font-size: 12px;

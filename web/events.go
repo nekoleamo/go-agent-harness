@@ -71,6 +71,10 @@ type ConfirmDone struct {
 	Prompt string `json:"prompt"`
 	OK     bool   `json:"ok,omitempty"`
 	Err    string `json:"err,omitempty"`
+	// Canceled 未应答的原因是**用户按了停止**(不是超时)。前端据此静默关弹层,
+	// 不弹错误行 —— 用户自己点的停止,回一句红字「审批未等到应答」是纯噪音
+	// (2026-10-03 实机反馈)。
+	Canceled bool `json:"canceled,omitempty"`
 }
 
 // Baseline 首帧基线载荷(S-P1-2:长会话的首帧窗口描述)。
@@ -197,7 +201,7 @@ func (h *EventHub) Subscribe(c sdk.Ctx, sessions sdk.SessionLog) (disposer sdk.D
 			return nil
 		}
 		h.Push(Frame{Type: FrameConfirmDone, Payload: &ConfirmDone{
-			Prompt: ce.Prompt, OK: ce.OK, Err: ce.Err,
+			Prompt: ce.Prompt, OK: ce.OK, Err: ce.Err, Canceled: ce.Canceled,
 		}})
 		return nil
 	})

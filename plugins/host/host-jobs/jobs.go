@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nekoleamo/go-agent-harness/internal/kernelsandbox"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -171,10 +172,13 @@ func (j *Jobs) SetNotify(fn func(sdk.JobDoneEvent)) { j.notify = fn }
 
 // Submit 提交 shell 命令后台执行(读沙箱模式下拒绝)。
 //
-// 注意(安全审计 C5,2026-09-27):这里的 sh -c **不在内核沙箱包装内**(与 tool-shell 的 F1
-// 包装不同构),因此它绕过写范围裁定。当前**无生产调用方**(模型面只有 job_list/job_output/
-// job_kill;Web 只 list/get/kill;外部插件的 Submit 直接报错),不可达 ⇒ 未列为缺陷。
-// 将来若给它接线(如新增提交入口),必须同时补上 kernelsandbox.Wrap —— 否则新入口天然绕过 F1。
+// **围栏(2026-10-03 补)**:这里的 `sh -c` 此前是全库最后一条**裸 exec** —— 既不在内核
+// 沙箱包装内,也不经 tools/pre-execute 的路径裁决,等于绕过整条写范围边界。
+// 现按与 tool-shell 同一份 spec 施加 kernelsandbox.Wrap:工作区根 + jail + 包缓存/临时区。
+//
+// 为何现在就补(而不是继续记着「将来接线时再说」):这条边界与「现在有没有调用方」无关 ——
+// 一旦有任何新入口接上它,缺围栏就是天然绕过,而且**看不出来**(命令正常跑、正常返回)。
+// 补上的成本是一次 Wrap 调用,收益是这条路径从「不可知」变成「与其它命令同一套档位」。
 func (j *Jobs) Submit(cmdline string) (string, error) {
 	if err := j.accept(); err != nil {
 		return "", err
@@ -196,6 +200,11 @@ func (j *Jobs) Submit(cmdline string) (string, error) {
 	j.add(e)
 	go func() {
 		cmd := exec.Command(sh, "-c", cmdline)
+		// 内核围栏:与 tool-shell 同一份 spec(档位取沙箱有效档,根取沙箱根;
+		// 没装配 ctx.sandbox 时档位为空 ⇒ Wrap 不施加,与「无沙箱宿主」语义一致)。
+		if pre := kernelsandbox.Wrap(j.kernelSpec()); len(pre) > 0 {
+			cmd = exec.Command(pre[0], append(append([]string{}, pre[1:]...), sh, "-c", cmdline)...)
+		}
 		setupCmdGroup(cmd) // 独立进程组(组杀可连带 sh -c 子进程,防孤儿)
 		// WaitDelay:命令进程退出后若它派生的子进程还开着 stdout/stderr 管道
 		// (典型 sh -c "sleep 30" —— sh 被杀而 sleep 还活着),cmd.Wait 会阻塞在 I/O
@@ -306,6 +315,30 @@ func (j *Jobs) Kill(id string) error {
 		return fmt.Errorf("host-jobs: 任务 %s 终止超时", id)
 	}
 	return nil
+}
+
+// kernelSpec 后台命令的内核沙箱规格(与 tool-shell 同款:档位 + 根 + jail + 工具链缓存/临时区)。
+// 开关名用 GAH_SHELL_KERNEL_SANDBOX / GAH_SHELL_JAIL(shell 那一套):这是**同一种执行面**
+// (用户 shell 命令),复用同一组开关才谈得上一致;另起名字会得到两个半开半关的档位。
+func (j *Jobs) kernelSpec() kernelsandbox.Spec {
+	mode := ""
+	root := ""
+	if j.sb != nil {
+		mode = string(j.sb.Mode())
+		if es, ok := j.sb.(sdk.EffectiveSandbox); ok {
+			mode = string(es.EffectiveMode()) // 审批联动后的有效档(与 host-tools 一致)
+		}
+		root = j.sb.Root()
+	}
+	return kernelsandbox.Spec{
+		Mode:              sdk.SandboxMode(mode),
+		Root:              root,
+		Jail:              kernelsandbox.EnsureJailDir(),
+		RW:                kernelsandbox.DefaultRWPaths(),
+		Switch:            "GAH_SHELL_KERNEL_SANDBOX",
+		RequireJailSwitch: "GAH_SHELL_JAIL",
+		Label:             "后台任务",
+	}
 }
 
 // checkExec read-only 沙箱下拒绝提交(执行器类约束,对齐 policy-guard)。

@@ -7,8 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
 // 注意:Wrap 在"已标记"或"开关关"时返回 nil;所有用例都要显式清掉 MarkerEnv,
@@ -191,6 +194,88 @@ func TestDefaultRWPathsHomeUnion(t *testing.T) {
 		}
 		if !found {
 			t.Fatalf("默认 RW 白名单缺 %s:%v", want, got)
+		}
+	}
+}
+
+// TestWritablePathsIsSingleSource 写入面清单 = workspace 根(仅 workspace 档)+ jail + RW,
+// 且按真实路径解析、按首次出现保序去重。协作层(policy-guard)与平台 profile 共用它,
+// 两层因此不会各写一套而互相打架(见 kernelsandbox.go「写入面」注释)。
+func TestWritablePathsIsSingleSource(t *testing.T) {
+	jail := t.TempDir()
+	spec := Spec{
+		Mode: sdk.SandboxWorkspace,
+		Root: t.TempDir(),
+		Jail: jail,
+		RW:   []string{"/gah-rw-1", "", "/gah-rw-1", filepath.Join(jail, "dup")},
+	}
+	got := WritablePaths(spec)
+	if len(got) != 4 {
+		t.Fatalf("期望 4 条(去重后:根/jail/rw1/jail 的子路径),got %d: %v", len(got), got)
+	}
+	if !strings.HasSuffix(got[0], filepath.Base(spec.Root)) {
+		t.Fatalf("第 1 条应是 workspace 根: %v", got[0])
+	}
+	if ResolvePath(jail) != got[1] {
+		t.Fatalf("第 2 条应是解析后的 jail: %q vs %q", got[1], ResolvePath(jail))
+	}
+	for _, p := range got {
+		if strings.TrimSpace(p) == "" {
+			t.Fatal("清单里不该有空串")
+		}
+	}
+	// read-only 档:不放行 workspace 根(它此刻是读边界,不是写边界)。
+	ro := spec
+	ro.Mode = sdk.SandboxReadOnly
+	if roPaths := WritablePaths(ro); len(roPaths) != len(got)-1 {
+		t.Fatalf("read-only 档不应含 workspace 根: %v", roPaths)
+	}
+}
+
+// TestWouldApplyReasons 每条不施加的分支都要给出**可断言的原因**,而不是静默。
+// 协作层靠它判断"内核层在场吗",静默会让它误以为对齐了。
+func TestWouldApplyReasons(t *testing.T) {
+	good := Spec{Mode: sdk.SandboxWorkspace, Root: t.TempDir(), Jail: t.TempDir()}
+	if ok, why := WouldApply(good); !ok && why != "" && !strings.Contains(why, "平台") && !strings.Contains(why, "seatbelt") && !strings.Contains(why, "Landlock") {
+		t.Fatalf("本机应能施加,却给出意外原因: %s", why)
+	}
+	cases := []struct {
+		name string
+		spec Spec
+		want string
+		t    func(t *testing.T)
+	}{
+		{"显式关闭", Spec{Mode: sdk.SandboxWorkspace, Root: "/r", Jail: "/j", Switch: "GAH_X"},
+			"显式关闭", func(t *testing.T) { t.Setenv("GAH_X", "0") }},
+		{"档位未知", Spec{Jail: "/j"}, "档位未知", nil},
+		{"全权档", Spec{Mode: sdk.SandboxFullAccess, Jail: "/j"}, "全权档", nil},
+		{"缺 jail", Spec{Mode: sdk.SandboxWorkspace, Root: "/r"}, "jail", nil},
+		{"workspace 缺根", Spec{Mode: sdk.SandboxWorkspace, Jail: "/j"}, "根路径", nil},
+		{"档位非法", Spec{Mode: sdk.SandboxMode("weird"), Jail: "/j"}, "无法识别", nil},
+	}
+	for _, c := range cases {
+		if c.t != nil {
+			c.t(t)
+		}
+		ok, why := WouldApply(c.spec)
+		if ok {
+			t.Fatalf("%s: 不该施加", c.name)
+		}
+		if !strings.Contains(why, c.want) {
+			t.Fatalf("%s: 原因 %q 未含 %q", c.name, why, c.want)
+		}
+	}
+}
+
+// TestDeviceLiteralsSeparate 设备字面量与目录清单分开(匹配语义不同:literal 不展开子路径)。
+func TestDeviceLiteralsSeparate(t *testing.T) {
+	lits := DeviceLiterals()
+	if len(lits) == 0 || !slices.Contains(lits, "/dev/null") {
+		t.Fatalf("设备字面量缺 /dev/null: %v", lits)
+	}
+	for _, p := range WritablePaths(Spec{Mode: sdk.SandboxWorkspace, Root: "/r", Jail: "/j"}) {
+		if slices.Contains(lits, p) {
+			t.Fatalf("%s 不该同时出现在目录清单里", p)
 		}
 	}
 }

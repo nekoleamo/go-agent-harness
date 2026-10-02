@@ -47,7 +47,7 @@ func runBasic() {
 		tools[name] = t
 	}
 	tools["web_fetch"] = toolweb.NewTool()
-	// M6.14/第八十五批:provider 取生效配置(env GAH_SEARCH_PROVIDER > 搜索配置文件,缺省 exa);
+	// M6.14/第八十五批:provider 取生效配置(env GAH_SEARCH_PROVIDER > 搜索配置文件,缺省 anysearch);
 	// 未知名不拖垮本插件(shell/文件/记忆/todo 在同进程)。
 	tools["web_search"] = toolweb.NewSearchToolFromEnv(nil)
 	tools["memory"] = toolmemory.NewTool()                // M10:跨会话操作记忆
@@ -68,6 +68,6 @@ func runBasic() {
 	bridge.ServeToolsWith(tools, bridge.Capabilities{
 		CredentialReadDeny: true,
 		DataWrites:         []string{"memory", "todos"},
-		ConfigEnv:          []string{searchfile.EnvAPIKey, searchfile.EnvProvider, searchfile.EnvEndpoint},
+		ConfigEnv:          searchfile.KnownEnvKeys(),
 	})
 }

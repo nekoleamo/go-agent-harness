@@ -29,6 +29,9 @@ const PICK_POLL_MS = 300
 const PICK_TIMEOUT_MS = 300_000
 // 检查更新的前端兜底:壳侧另有 75 秒看门狗,这里保证界面一定能拿到结果。
 const CHECK_TIMEOUT_MS = 75_000
+// INSTALL_TIMEOUT_MS 下载安装的前端兜底:远宽于检查(包 30+ MB,慢网要几分钟),
+// 拿检查的 75 秒套上去会把正常下载判成超时。
+const INSTALL_TIMEOUT_MS = 30 * 60_000
 
 // parsePick 解析 pick_folder_poll 的返回(JSON 文本)。
 // 做成纯函数 + 单测:形状判错在页面上只表现为「点了没反应」,自证成本极高。
@@ -158,23 +161,49 @@ export async function saveExport(name: string, text: string, open: boolean): Pro
   }
 }
 
-// checkUpdate 壳侧检查更新(与托盘菜单同一实现);有更新时壳自己下载安装并重启。
+/** 壳侧升级结果。status:available=有更新待确认 / installed=已装待重启 / upToDate / failed / portable。 */
+export interface UpdateResult {
+  status?: string
+  message?: string
+  version?: string | null
+}
+
+// checkUpdate 壳侧检查更新(与托盘菜单同一实现)。
+//
+// **只查不装**(2026-10-03):有更新时返回 available,由用户确认后走 installUpdate ——
+// 一次「检查更新」不该顺手把整个应用换掉。
 // 前端也加超时:真机上出现过壳侧异步任务不返回、界面永远停在「检查中…」——
 // 宁可给出「没有结果」的结论,也不让用户空等。
-export async function checkUpdate(timeoutMs = CHECK_TIMEOUT_MS): Promise<{ status?: string; message?: string }> {
+export async function checkUpdate(timeoutMs = CHECK_TIMEOUT_MS): Promise<UpdateResult> {
   if (!tauriInvoke) throw new Error('当前环境不支持检查更新(需桌面版)')
+  return raceUpdate('check_update', timeoutMs, '检查更新 75 秒没有响应:壳的异步任务没有返回。请把壳日志发给开发者。')
+}
+
+// installUpdate 确认升级:下载并安装上一次 checkUpdate 找到的更新,完成后壳自动重启。
+// 超时给得比检查宽得多:下载 30+ MB 在慢网络下要几分钟,拿检查的 75 秒套上去会假红。
+export async function installUpdate(timeoutMs = INSTALL_TIMEOUT_MS): Promise<UpdateResult> {
+  if (!tauriInvoke) throw new Error('当前环境不支持升级(需桌面版)')
+  return raceUpdate(
+    'install_update',
+    timeoutMs,
+    '下载安装 30 分钟没有响应:壳的异步任务没有返回。请把壳日志发给开发者。',
+  )
+}
+
+// raceUpdate 两条升级命令共用的超时包装(纯函数式抽出,免得两处各写一份计时器)。
+async function raceUpdate(cmd: string, timeoutMs: number, timeoutMsg: string): Promise<UpdateResult> {
+  // 两条调用方都先判过 isDesktop;这里再取一次是为了让 TS 收窄(tauriInvoke 是可选值)。
+  const invoke = tauriInvoke
+  if (!invoke) throw new Error('当前环境不支持升级(需桌面版)')
   let timer: ReturnType<typeof setTimeout> | undefined
   const timeout = new Promise<never>((_, rej) => {
-    timer = setTimeout(
-      () => rej(new Error('检查更新 75 秒没有响应:壳的异步任务没有返回。请把壳日志发给开发者。')),
-      timeoutMs,
-    )
+    timer = setTimeout(() => rej(new Error(timeoutMsg)), timeoutMs)
   })
   try {
     return (await Promise.race([
-      tauriInvoke('check_update') as Promise<{ status?: string; message?: string }>,
+      invoke(cmd) as Promise<UpdateResult>,
       timeout,
-    ])) as { status?: string; message?: string }
+    ])) as UpdateResult
   } finally {
     if (timer) clearTimeout(timer)
   }

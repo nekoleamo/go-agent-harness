@@ -156,7 +156,9 @@ func buildToolsWithShell(t *testing.T, confirm sdk.ConfirmService, data map[stri
 // TestDerivedApprovalEndToEnd 端到端:smart 档下漏网写法确实走审批,且拒绝即 veto(工具未执行)。
 func TestDerivedApprovalEndToEnd(t *testing.T) {
 	withCaseFold(t, false)
-	home := t.TempDir()
+	// 假 HOME 必须落在**真正越界**处:t.TempDir() 在 macOS 上位于内核可写面内,
+	// 那样"家目录在工作区外"的前提不成立(见 shellguard_test.go 文件头)。
+	home := outsideProbe()
 	t.Setenv("HOME", home)
 	const cmd = `{"command":"echo x >> ~/.zshrc"}`
 

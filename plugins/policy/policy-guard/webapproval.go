@@ -5,9 +5,24 @@
 // **只有 URL**,所以决策对象就是"访问哪个域名"。
 //
 // 档位(GAH_WEB_APPROVE):
+//   - auto      **缺省**:跟随全局审批档(open/smart → 直接放行;strict → new-host)。
 //   - off       完全不管(与 F3 修复前一致;自有 HTTP 代理 / 内网服务场景)
-//   - new-host  默认:每个新域名第一次访问弹一次确认,批准后记入白名单(以后不再问)
+//   - new-host  每个新域名第一次访问弹一次确认,批准后记入白名单(以后不再问)
 //   - query     每次都弹确认(不落白名单),适合高敏感场景
+//
+// 为何缺省改成 auto(2026-10-03 用户要求「智能模式不需要每次先确定再加入白名单」):
+// 原来的 new-host 缺省意味着**每接触一个新域名就弹一次**,一次真实任务会碎成十几次
+// 审批 —— 久而久之就变成无脑点「允许」,白名单反而越长越假。而 web_fetch 真正的风险
+// 不在「去哪个域名」,而在「拿回来的内容能不能反过来支配模型」与「能不能摸到内网」,
+// 这两件事已经有**不依赖审批**的硬拦:
+//   - 反提示注入(F4):系统提示固定声明网页/文件/搜索结果属不可信数据;
+//   - 内网与重绑定(F3):guardedDial 拒字面 IP、私网地址与 DNS 重绑定;
+//   - 读凭据:凭据目录的读被内核沙箱与 ReadValidator 挡住;
+//   - 响应体上限:maxBody 封顶。
+//
+// 剩余的真风险(去访问哪个**公网**站点)是用户自己能看见的 URL,逐域名确认的收益
+// 远小于打断成本。故 open/smart 档直接放行;要拿回逐域名确认请显式 strict 或
+// GAH_WEB_APPROVE=new-host。
 //
 // 白名单(两级,精确 host 匹配 —— 不做公后缀推断,推错的代价是放开一个不该放的域):
 //   - 静态:`GAH_WEB_ALLOW_HOSTS="a.com,b.com,*.suffix.com"`(`*.suffix.com` 匹配其子域)
@@ -35,10 +50,12 @@ import (
 )
 
 const (
-	// webApproveEnv 出口审批档位(off / new-host / query;空或非法值 = new-host)。
+	// webApproveEnv 出口审批档位(off / new-host / query / auto;空或非法值 = auto)。
 	webApproveEnv = "GAH_WEB_APPROVE"
 	// webAllowEnv 静态白名单(逗号分隔的精确 host;`*.suffix` 前缀通配)。
 	webAllowEnv = "GAH_WEB_ALLOW_HOSTS"
+	// webApproveAuto 跟随全局审批档(auto = 缺省口径,见文件头)。
+	webApproveAuto = "auto"
 )
 
 // webApprovalTools 需要域名审批的工具 → 其 URL 参数名。
@@ -46,16 +63,31 @@ const (
 // 不是路径裁决;工具自述里没有 URL 参数位,故用宿主侧名单)。
 var webApprovalTools = map[string]string{"web_fetch": "url"}
 
-// webApproveModeOf 当前档位(空/非法 = new-host 默认)。
+// webApproveModeOf 当前档位(空/非法 = auto 缺省)。
 func webApproveModeOf() string {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(webApproveEnv))) {
 	case "off":
 		return "off"
 	case "query":
 		return "query"
+	case "new-host":
+		return "new-host"
 	default:
+		return webApproveAuto
+	}
+}
+
+// resolveWebApproveMode 把 auto 解析成具体档:审批 open/smart → 直接放行,strict → new-host。
+// 显式设过 GAH_WEB_APPROVE 的档位原样返回(env 优先于审批档)。
+func resolveWebApproveMode(approval sdk.ApprovalMode) string {
+	mode := webApproveModeOf()
+	if mode != webApproveAuto {
+		return mode
+	}
+	if approval == sdk.ApprovalStrict {
 		return "new-host"
 	}
+	return "off"
 }
 
 // webAllowEntries 静态名单 + TOFU 白名单(顺序无关)。
@@ -131,8 +163,9 @@ func webDeniedErr(tool, host, why string) error {
 
 // checkWebToolFetch 单次工具调用的出口裁决(非抓取工具 = 直接放行)。
 //
-// 顺序:档位 off → 白名单命中 → 无人值守 → 确认通道 → 弹确认(批准后按档记白名单)。
-func checkWebToolFetch(ctx context.Context, confirm sdk.ConfirmService, tool, args string) error {
+// 顺序:解析后的档位 off → 白名单命中 → 无人值守 → 确认通道 → 弹确认(批准后按档记白名单)。
+// approval = 本次生效的审批档(auto 档据此决定要不要问,见 resolveWebApproveMode)。
+func checkWebToolFetch(ctx context.Context, confirm sdk.ConfirmService, tool, args string, approval sdk.ApprovalMode) error {
 	argName, ok := webApprovalTools[tool]
 	if !ok {
 		return nil
@@ -146,7 +179,7 @@ func checkWebToolFetch(ctx context.Context, confirm sdk.ConfirmService, tool, ar
 		return fmt.Errorf("策略 guard: %s 的 URL 解析不出主机名(%q),已按安全默认拒绝;"+
 			"请给出完整 http(s) URL。", tool, raw)
 	}
-	mode := webApproveModeOf()
+	mode := resolveWebApproveMode(approval)
 	if mode == "off" || webHostAllowed(host) {
 		return nil
 	}
@@ -158,6 +191,11 @@ func checkWebToolFetch(ctx context.Context, confirm sdk.ConfirmService, tool, ar
 	}
 	yes, err := confirm.Confirm(ctx, webPrompt(tool, host, mode))
 	if err != nil {
+		// 用户按了停止 → 中止而非拒绝(文案区别见 sdk/aborted.go):不挂错就只会得到
+		// 一条红色的「blocked: 策略 guard: 网页抓取确认失败: context canceled」。
+		if ctx.Err() != nil {
+			return sdk.AbortedError("策略 guard: %s 未执行(等待域名确认时被停止)", tool)
+		}
 		return fmt.Errorf("策略 guard: 网页抓取确认失败: %w", err)
 	}
 	if !yes {

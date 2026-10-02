@@ -122,3 +122,28 @@ test('未知帧与空载荷不崩(前向兼容)', () => {
   consume(m, ev('assistant/chunk', {}))
   assert.equal(m.msgs.length, 0)
 })
+
+// 思维增量必须单独落位(此前整个丢弃,「思考过程与最终输出结果」看不出区别
+// —— 2026-10-03 用户反馈)。
+test('thinking 增量与正文分开落位,不混进最终答复', () => {
+  const m = newModel()
+  consume(m, ev('assistant/chunk', { Thinking: '先推理甲。' }))
+  consume(m, ev('assistant/chunk', { Thinking: '再推理乙。' }))
+  consume(m, ev('assistant/chunk', { Delta: '结论丙。' }))
+  consume(m, ev('assistant/message', { Content: '结论丙。', ToolCalls: [] }))
+  assert.equal(m.msgs.length, 1)
+  const msg = m.msgs[0]
+  assert.equal(msg.think, '先推理甲。再推理乙。')
+  assert.equal(msg.text, '结论丙。')
+  assert.ok(!msg.text.includes('推理'), '思维内容不得混进正文')
+  // 下一轮不串味
+  assert.equal(m.pendingThink, '')
+})
+
+test('只有思维、没有正文的轮次也保留思考内容', () => {
+  const m = newModel()
+  consume(m, ev('assistant/chunk', { Thinking: '在想。' }))
+  consume(m, ev('assistant/message', { Content: '', ToolCalls: [] }))
+  assert.equal(m.msgs[0].think, '在想。')
+  assert.equal(m.msgs[0].text, '')
+})

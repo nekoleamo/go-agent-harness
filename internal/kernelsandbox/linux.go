@@ -143,6 +143,15 @@ func probeLandlockABI() int {
 	return int(r)
 }
 
+// platformAvailableReason 本平台能否施加(空串 = 能):Landlock ABI 探测。
+// 与 platformWrap 的第一道门是同一次探测,故两处结论必然一致。
+func platformAvailableReason(Spec) string {
+	if landlockABI() < 1 {
+		return "内核不支持 Landlock(landlock_create_ruleset 探测失败)"
+	}
+	return ""
+}
+
 // platformWrap:探测 ABI → 以自身为 helper 重新 exec
 // (argv = [self, 魔数, 档位, 根, jail, RW 编码, 原命令…])。
 // 档位/根/白名单走 argv(不经环境变量):helper 参数显式可见、不会被用户命令的环境继承干扰。
@@ -220,6 +229,10 @@ func landlockSelfAndExec(modeStr, root, jail string, rw []string, argv []string)
 	}
 
 	// 硬边界白名单:jail 两档都有;workspace 根仅 workspace 档。
+	// 这份清单与 WritablePaths(Spec{Root,Jail,RW})**同一集合**;这里仍走 argv 且分
+	// hard/rw 两组,是因为两者失败语义不同(hard 加不上 → exit 126,不许静默放行;
+	// rw 加不上 → 只记 skipped,不能为一个还没建的缓存目录废掉整条命令)。
+	// 集合一致性由 TestWritablePathsMatchesLandlockScope 钉住。
 	hard := []string{jail}
 	if mode == sdk.SandboxWorkspace {
 		if strings.TrimSpace(root) == "" {

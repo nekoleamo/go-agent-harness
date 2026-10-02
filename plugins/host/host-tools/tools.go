@@ -210,7 +210,13 @@ func (r *reg) Execute(ctx context.Context, name, args string) (*sdk.ToolResult, 
 	// 1. tools/pre-execute:waterfall veto 拦截
 	call := &sdk.ToolCallEvent{ID: newCallID(), Name: name, Arguments: args}
 	if _, err := r.c.Emit(ctx, "tools/pre-execute", call, sdk.Waterfall); err != nil {
-		res := &sdk.ToolResult{Error: "blocked: " + err.Error(), Content: "{}"}
+		// 「用户按了停止」不是策略拒绝:blocked 的潜台词是「换个写法重试」,
+		// 而中止的潜台词是「这轮结束了」—— 混用会让每次停止都跳一条红色错误(见 sdk/aborted.go)。
+		text := "blocked: " + err.Error()
+		if sdk.IsAborted(err) {
+			text = err.Error()
+		}
+		res := &sdk.ToolResult{Error: text, Content: "{}"}
 		r.broadcastResult(ctx, name, res)
 		return res, nil
 	}

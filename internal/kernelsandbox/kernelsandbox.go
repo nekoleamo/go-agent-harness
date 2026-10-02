@@ -233,3 +233,97 @@ func RWPathsFromEnv(name string) []string {
 	}
 	return out
 }
+
+// ---- 写入面:内核层与协作层的**单一事实源**(2026-10-03) ----
+//
+// 为何要有:此前「哪里能写」被推导了**两遍**,且两遍不等价 ——
+//   - 内核层(darwinProfile / landlock 规则):工作区根(仅 workspace 档)+ jail + RW(包缓存/临时区);
+//   - 协作层(policy-guard 的 ValidatePathAt,workspace 档):**只有工作区根**。
+//
+// 于是 `file_write $TMPDIR/x`、`~/.cache/y` 这类落点**内核放行、协作拒绝**。表现就是
+// 用户看到的「做出操作后再判断、被回绝后再重新操作」:模型反复换路径重试,而两次裁决
+// 说的根本不是同一件事。
+//
+// 收敛口径(不是放宽安全边界):
+//   - 安全边界**仍然只由内核层守**(profile 不变,一处代码都没多放行);
+//   - 协作层改为**按同一份清单**裁决,不再比内核更严地拒掉内核明确放行的落点;
+//   - **内核层没在位时**(平台不支持 / 开关关 / jail 缺失 / 档位空)协作层保持原口径
+//     (只在工作区根内)——那时它就是唯一的边界,放宽它等于 Windows 上直接失守。
+//
+// 这也是「把边界前置到内核层」的落法:先由内核定义边界,协作层与之对齐,而不是两层各写一套。
+const (
+	// writeScopeDeviceLiterals 设备节点字面量:内核 profile 需要,但**不属于目录白名单**
+	// (协作层的路径判定按目录做,塞进清单只会得到一堆永不匹配的前缀)。
+	writeScopeDeviceLiterals = "/dev/null,/dev/stdout,/dev/stderr,/dev/tty,/dev/ptmx"
+)
+
+// WritablePaths 该 spec 下的**写落点目录清单**(已按真实路径解析、去重、保序)。
+//
+// 供平台 profile 组装与协作层裁决共用(见文件上方说明)。不含设备字面量。
+func WritablePaths(spec Spec) []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(p string) {
+		if p = strings.TrimSpace(p); p == "" {
+			return
+		}
+		r := ResolvePath(p)
+		if seen[r] {
+			return
+		}
+		seen[r] = true
+		out = append(out, r)
+	}
+	if spec.Mode == sdk.SandboxWorkspace {
+		add(spec.Root)
+	}
+	// jail 两档都放行:否则 TMPDIR/GOCACHE 写不通,命令会大面积失败。
+	add(spec.Jail)
+	for _, p := range spec.RW {
+		add(p)
+	}
+	return out
+}
+
+// DeviceLiterals 写放行的设备节点字面量(平台 profile 用;与 WritablePaths 分开是因为
+// 它们的匹配语义不同:literal 不做子路径展开)。
+func DeviceLiterals() []string {
+	return strings.Split(writeScopeDeviceLiterals, ",")
+}
+
+// WouldApply 这份 spec 是否真的会施加内核约束,以及不施加的原因(**返回 true 时原因为空**)。
+//
+// 为何导出:协作层需要知道「内核层在场吗」—— 在场才敢按共享写入面裁决(见 WritablePaths
+// 的口径),不在场就必须自己守住窄口径。同时它让「为什么没生效」从「静默」变成可断言的
+// 事实(Wrap 的四类静默分支里,只有「档位未知/全权」是设计预期,其余都该被看见)。
+func WouldApply(spec Spec) (bool, string) {
+	if spec.Switch != "" && os.Getenv(spec.Switch) == "0" {
+		return false, "已显式关闭(" + spec.Switch + "=0)"
+	}
+	if Marked() {
+		// 祖先已施加:覆盖后代,重复施加会直接失败(不可嵌套)。这是设计预期,不算降级。
+		return false, "已在祖先的内核沙箱内(覆盖后代)"
+	}
+	if spec.RequireJailSwitch != "" && os.Getenv(spec.RequireJailSwitch) == "0" {
+		return false, "已关闭临时区(" + spec.RequireJailSwitch + "=0),白名单锚点失效"
+	}
+	switch spec.Mode {
+	case "":
+		return false, "档位未知(不猜)"
+	case sdk.SandboxFullAccess:
+		return false, "全权档(定义就是无边界)"
+	case sdk.SandboxReadOnly, sdk.SandboxWorkspace:
+	default:
+		return false, "档位无法识别: " + string(spec.Mode)
+	}
+	if strings.TrimSpace(spec.Jail) == "" {
+		return false, "缺少临时区锚点(jail 路径为空)"
+	}
+	if spec.Mode == sdk.SandboxWorkspace && strings.TrimSpace(spec.Root) == "" {
+		return false, "workspace 档缺少根路径(降级为只读)"
+	}
+	if why := platformAvailableReason(spec); why != "" {
+		return false, why
+	}
+	return true, ""
+}

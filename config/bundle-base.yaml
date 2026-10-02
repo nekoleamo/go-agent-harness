@@ -82,8 +82,9 @@ entries:
   - id: host-usage-stats
     # 会话 token 统计(ctx.usageStats):状态栏显示上下文使用率/缓存命中率。
     # 上下文窗口解析链:data.context_window(统一覆盖)> data.model_windows(按模型名前缀覆盖,
-    # 新模型/文档更新无需改代码)> 内置窗口表(claude 1M/200K、deepseek 128K、gemini 1M 等,
-    # 发行版本基线);未知/空模型窗口=0,状态栏只显示使用量(不显示总量/百分比)。
+    # 新模型/文档更新无需改代码)> 内置窗口表(claude 1M/200K、deepseek V4 1M / V3 128K、
+    # gemini 1M 等,发行版本基线);模型名带厂商前缀(deepseek-ai/…)时按斜杠后的段匹配;
+    # 未知/空模型窗口=0,状态栏只显示使用量(不显示总量/百分比)。
   - id: host-jobs
   - id: host-schedule
     # NOND-W4 定时任务(ctx.schedule):5 字段 cron 计划,到点经既有回合入口(agentLoop→tools)
@@ -122,7 +123,7 @@ entries:
     enabled: false # P1 外部化同上
   - id: tool-web
     enabled: false # P1 外部化同上
-    # M6.14:包内含 web_fetch/web_search;web_search provider 经 data.provider 选(缺省 exa = 直连 Exa API,EXA_API_KEY;未知名显式失败)
+    # M6.14:包内含 web_fetch/web_search;web_search provider 经 data.provider 选(缺省 anysearch = 匿名可用、国内直连;exa 备选;未知名显式失败)
   - id: tool-memory
     enabled: false # M10 外部化:memory(remember/list/recall/forget)由 host-bridge 加载 extplugins/tool-basic;内嵌双轨同 tool-files
   - id: tool-ask

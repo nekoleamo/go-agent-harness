@@ -33,6 +33,10 @@ type ConfirmEvent struct {
 	OK       bool   `json:"ok,omitempty"`
 	Resolved bool   `json:"resolved,omitempty"`
 	Err      string `json:"err,omitempty"`
+	// Canceled 本次未应答是因为**用户按了停止**(而非要等到超时)。
+	// 必须与 Err 分开:两者在前端都是「弹层被服务端关掉」,但前者是用户自己的动作,
+	// 弹一条红字错误纯属噪音(2026-10-03 实机反馈)。
+	Canceled bool `json:"canceled,omitempty"`
 }
 
 // QuestionEvent 提问事件载荷(requested 时 Answer/Resolved 无意义)。

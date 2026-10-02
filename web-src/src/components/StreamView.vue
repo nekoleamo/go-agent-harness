@@ -2,19 +2,25 @@
 // 会话流渲染(槽位 stream):消息/工具行(折叠展开)/meta 行。
 // 渲染层禁止 v-html(文本一律插值转义);代码块内等宽字体展示。
 // 视觉:用户气泡轻盈化(浅蓝底 + 主色文字),工具调用为弱化胶囊,meta/pending 极淡。
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import type { Msg, ToolRow } from '../sse'
 import type { MetaLine } from '../registry'
+import { rowsOf, type Row } from '../streamrows'
 import DocText from './doc/DocText.vue'
 import { previewablePathOf, requestDoc } from '../docstore'
 
-defineProps<{
+const props = defineProps<{
   frames: Msg[]
   metas: MetaLine[]
   running: boolean
 }>()
 
 const expanded = ref<Record<number, boolean>>({})
+
+// 行序模型:把 meta 行按 MetaLine.after(产生时的最后一条消息 seq)织回消息流。
+// 为何必须织(2026-10-03):meta 原来统一渲染在**所有消息之后**,回合被停止的报错
+// 就永远钉在最底下,后续回答全显示在它上方。交织逻辑在 streamrows.ts(纯函数、带单测)。
+const rows = computed<Row[]>(() => rowsOf(props.frames, props.metas ?? []))
 
 function toggle(seq: number): void {
   expanded.value = { ...expanded.value, [seq]: !expanded.value[seq] }
@@ -48,52 +54,69 @@ function attUrl(rel: string): string {
 
 <template>
   <div class="stream">
-    <div v-for="m in frames" :key="m.seq" class="msg" :class="m.kind">
-      <span class="ts mono">{{ fmtTs(m.ts) }}</span>
-      <div v-if="m.kind === 'user'" class="user mono">
-        {{ m.text }}
-        <div v-if="m.atts && m.atts.some(a => a.Kind === 'image')" class="atts">
-          <img
-            v-for="(a, i) in m.atts.filter(x => x.Kind === 'image')"
-            :key="i"
-            class="att-img"
-            :src="attUrl(a.Rel)"
-            :alt="a.Name"
-          />
+    <template v-for="(r, ri) in rows" :key="r.t === 'msg' ? 'm' + r.m.seq : 'x' + ri">
+      <div v-if="r.t === 'msg'" class="msg" :class="r.m.kind">
+        <span class="ts mono">{{ fmtTs(r.m.ts) }}</span>
+        <div v-if="r.m.kind === 'user'" class="user mono">
+          {{ r.m.text }}
+          <div v-if="r.m.atts && r.m.atts.some(a => a.Kind === 'image')" class="atts">
+            <img
+              v-for="(a, i) in r.m.atts.filter(x => x.Kind === 'image')"
+              :key="i"
+              class="att-img"
+              :src="attUrl(a.Rel)"
+              :alt="a.Name"
+            />
+          </div>
         </div>
-      </div>
-      <div v-else-if="m.kind === 'assistant'" class="assistant">
-        <div class="text" :class="{ 'pending': m.text === '' }">
-          <DocText v-if="m.text" :text="m.text" />
+        <div v-else-if="r.m.kind === 'assistant'" class="assistant">
+          <!-- 思维过程与最终答复**分区块**渲染(2026-10-03 用户反馈:区分度不够):
+               左侧竖线 + 淡底 + 弱色斜体 = 「过程」;正文保持正常前景色 = 「结论」。
+               默认折叠:思维往往很长,展开与否由用户决定。 -->
+          <details v-if="r.m.think" class="think">
+            <summary>
+              <span class="think-tag">思考过程</span>
+              <span class="think-nums">{{ r.m.think.length }} 字</span>
+            </summary>
+            <div class="think-body">{{ r.m.think }}</div>
+          </details>
+          <div class="text" :class="{ 'pending': r.m.text === '' }">
+            <DocText v-if="r.m.text" :text="r.m.text" />
+          </div>
+          <div v-for="t in toolCallsOf(r.m)" :key="t.id" class="tool-inline mono">
+            <span class="tl">{{ t.name }}</span>
+            <span class="toolargs">{{ t.args }}</span>
+            <button
+              v-if="previewablePathOf(t.args)"
+              class="t-prev"
+              data-tip="在文档预览工作台打开"
+              @click="requestDoc(previewablePathOf(t.args))"
+            >
+              预览
+            </button>
+          </div>
         </div>
-        <div v-for="t in toolCallsOf(m)" :key="t.id" class="tool-inline mono">
-          <span class="tl">{{ t.name }}</span>
-          <span class="toolargs">{{ t.args }}</span>
+        <div v-else-if="r.m.kind === 'tool'" class="tool mono">
+          <span class="tl">{{ r.m.text }}</span>
+          <div class="result" :class="{ err: r.m.err }">
+            <pre>{{ expanded[r.m.seq] ? r.m.full : r.m.full?.slice(0, 400) }}</pre>
+          </div>
           <button
-            v-if="previewablePathOf(t.args)"
-            class="t-prev"
-            data-tip="在文档预览工作台打开"
-            @click="requestDoc(previewablePathOf(t.args))"
+            v-if="r.m.full && r.m.full.length > 400"
+            class="fold"
+            data-tip="展开/收起工具结果"
+            @click="toggle(r.m.seq)"
           >
-            预览
+            {{ expanded[r.m.seq] ? '收起 ▲' : '展开 ▼' }}
           </button>
         </div>
+        <div v-else-if="r.m.kind === 'meta'" class="meta mono">{{ r.m.text }}</div>
       </div>
-      <div v-else-if="m.kind === 'tool'" class="tool mono">
-        <span class="tl">{{ m.text }}</span>
-        <div class="result" :class="{ err: m.err }">
-          <pre>{{ expanded[m.seq] ? m.full : m.full?.slice(0, 400) }}</pre>
-        </div>
-        <button v-if="m.full && m.full.length > 400" class="fold" data-tip="展开/收起工具结果" @click="toggle(m.seq)">
-          {{ expanded[m.seq] ? '收起 ▲' : '展开 ▼' }}
-        </button>
+      <div v-else class="meta mono" :class="r.mm.kind">
+        <span v-if="metaTag(r.mm.kind)" class="m-tag" :class="r.mm.kind">{{ metaTag(r.mm.kind) }}</span>
+        <span class="m-text">{{ r.mm.text }}</span>
       </div>
-      <div v-else-if="m.kind === 'meta'" class="meta mono">{{ m.text }}</div>
-    </div>
-    <div v-for="(mm, mi) in metas" :key="'m' + mi" class="meta mono" :class="mm.kind">
-      <span v-if="metaTag(mm.kind)" class="m-tag" :class="mm.kind">{{ metaTag(mm.kind) }}</span>
-      <span class="m-text">{{ mm.text }}</span>
-    </div>
+    </template>
     <div v-if="running" class="pending-indicator">
       <span class="dot" /> 正在运行…
     </div>
@@ -163,6 +186,43 @@ function attUrl(rel: string): string {
   white-space: pre-wrap;
   color: var(--fg);
   line-height: 1.75;
+}
+/* 思考过程:左侧竖线 + 淡底,与正文在**形状**上就分开(taste 纪律:形状一致性
+   用同一套圆角/边框 token,不用散写裸色)。 */
+.think {
+  margin: 0 0 10px;
+  border-left: 2px solid var(--line);
+  border-radius: var(--r-input);
+  background: var(--bg2);
+  padding: 4px 0 4px 10px;
+}
+.thick summary {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--fg-faint);
+  font-size: 12px;
+  list-style: none;
+}
+.think summary::-webkit-details-marker {
+  display: none;
+}
+.thick-tag {
+  font-weight: 600;
+  color: var(--fg-dim);
+}
+.think-nums {
+  color: var(--fg-faint);
+}
+.think-body {
+  margin-top: 6px;
+  white-space: pre-wrap;
+  color: var(--fg-dim);
+  font-size: 13px;
+  font-style: italic;
+  line-height: 1.7;
+  word-break: break-word;
 }
 .assistant .text.pending {
   color: var(--fg-faint);

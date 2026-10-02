@@ -36,7 +36,17 @@ var modelWindows = []modelEntry{
 	{"claude-opus-5", 1024 * 1024},
 	{"claude-sonnet-5", 1024 * 1024},
 	{"claude-", 200 * 1024}, // 4.x 及其他 200K
-	// DeepSeek:deepseek-chat / deepseek-reasoner / v4 系列 128K
+	// DeepSeek:deepseek-chat / deepseek-reasoner(V3.x)128K;
+	// **V4 系列 1M**(2026-09 官方发布,稀疏注意力 KV 压缩;V4.1 Flash 原名 deepseek-flash)
+	// —— 实测 2026-10-03:未单列时 `DeepSeek-V4.1-Flash` 会落进下面的 128K 兜底,
+	// 状态栏把 1M 的模型显示成 128K,压缩阈值也跟着算错。
+	{"deepseek-v4.1", 1024 * 1024},
+	{"deepseek-v4-flash", 1024 * 1024},
+	{"deepseek-v4-pro", 1024 * 1024},
+	{"deepseek-v4", 1024 * 1024},
+	{"deepseek-flash", 1024 * 1024},
+	{"deepseek-reasoner", 128 * 1024},
+	{"deepseek-chat", 128 * 1024},
 	{"deepseek-", 128 * 1024},
 	// Gemini 1M(2.0/2.5 pro/flash)
 	{"gemini-", 1024 * 1024},
@@ -67,15 +77,39 @@ var modelWindows = []modelEntry{
 }
 
 // matchWindow 前缀匹配取最长命中(辅助;空模型名/未命中 → 0;大小写不敏感,见 windowForModel)。
+//
+// 兼容**厂商前缀形态**(`deepseek-ai/DeepSeek-V4-Flash`、`openai/gpt-4o`):这类名字以
+// 厂商段开头,不剥掉就永远匹配不到真正的模型前缀,只能掉进最短的兜底条目 —— 表现为
+// 「1M 的模型被当成 128K」。故对 `厂商/模型` 形态额外用斜杠后的段参与一次匹配,
+// 两边都命中时取**更长**的前缀;同长则原串优先(避免语义被改写)。
 func matchWindow(model string, tbl []modelEntry) int {
 	best, bestLen := 0, 0
-	m := strings.ToLower(model)
-	for _, e := range tbl {
-		if strings.HasPrefix(m, strings.ToLower(e.prefix)) && len(e.prefix) > bestLen {
-			bestLen, best = len(e.prefix), e.window
+	for _, cand := range matchCandidates(model) {
+		w, wl := matchOne(cand, tbl)
+		if wl > bestLen {
+			bestLen, best = wl, w
 		}
 	}
 	return best
+}
+
+// matchCandidates 参与匹配的候选串:原串 + 斜杠后的最后一段(无斜杠时只有原串)。
+func matchCandidates(model string) []string {
+	m := strings.ToLower(strings.TrimSpace(model))
+	if i := strings.LastIndex(m, "/"); i >= 0 && i+1 < len(m) {
+		return []string{m, m[i+1:]}
+	}
+	return []string{m}
+}
+
+// matchOne 单个候选串的最长前缀命中(辅助,纯逻辑)。
+func matchOne(m string, tbl []modelEntry) (window, prefixLen int) {
+	for _, e := range tbl {
+		if strings.HasPrefix(m, strings.ToLower(e.prefix)) && len(e.prefix) > prefixLen {
+			prefixLen, window = len(e.prefix), e.window
+		}
+	}
+	return window, prefixLen
 }
 
 // windowForModel 按模型名解析窗口:配置层覆盖(data.model_windows)> 错误驱动学习(learned)> 内置表 > 0(未知)。
@@ -84,11 +118,13 @@ func matchWindow(model string, tbl []modelEntry) int {
 // DeepSeek-V4-Flash-0731;大小写敏感会让后者漏进内置表 = 窗口未知)。
 func (s *Service) windowForModel(model string) int {
 	m := strings.ToLower(model)
-	// 配置层覆盖(最优先)
+	// 配置层覆盖(最优先);与内置表同口径参与匹配(含厂商前缀形态 `厂商/模型`)。
 	best, bestLen := 0, 0
-	for p, w := range s.extraWindows {
-		if strings.HasPrefix(m, strings.ToLower(p)) && len(p) > bestLen {
-			bestLen, best = len(p), w
+	for _, cand := range matchCandidates(m) {
+		for p, w := range s.extraWindows {
+			if strings.HasPrefix(cand, strings.ToLower(p)) && len(p) > bestLen {
+				bestLen, best = len(p), w
+			}
 		}
 	}
 	if best > 0 {
