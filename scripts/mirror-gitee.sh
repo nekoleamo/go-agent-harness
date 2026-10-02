@@ -51,8 +51,71 @@ need_token() {
 # 便携包为什么也要镜像:它**不进 latest.json**(updater 只认安装包),分发全靠人工拿链接;
 # 而 GitHub 在国内往往拉不动 ⇒ 不镜像等于国内用户没有便携包可用 —— 而便携包恰恰是
 # 「不想安装、解压即用」那批人的唯一入口(v0.4.0 起才有)。对 updater 无影响:它不读这两件。
+# 产物文件名必须**属于本 tag** 才允许进这个 Release。
+#
+# 为何要有这道闸(2026-10-03 实测):产物目录是**复用**的(dist-desktop/up),上一次发版
+# 的包还躺在里面。上一轮跑 v0.4.1 时,目录里残留的 gah_0.1.7_*.dmg / _x64-setup.exe
+# 被原样传进了 **v0.4.1** 的 Gitee Release —— 页面上出现「0.4.1 的 release 里挂着
+# 0.1.7 的安装包」,用户点下去装的是三个月前的版本。旧脚本只做「同名先删后传」,
+# 对**不同名**的脏文件一无所知。
+#
+# 形状:gah_<版本>_<平台>.<ext> / gah.app.tar.gz(无版本号,永远放行)。
+# 判据取「文件名里含 _<版本>_ 」而不是逐个平台写死 —— 与 --prepare 那侧从 Release
+# 资产清单派生名字的做法同源。
+belongs_to_tag() {
+  local name="$1" ver
+  case "$name" in
+    gah.app.tar.gz) return 0 ;;                       # 名字里不带版本,属所有 tag
+    *.dmg|*setup.exe|*portable.zip) ;;
+    *) return 1 ;;                                    # 不认识的形态:不放行(宁可漏传)
+  esac
+  ver="${tag#v}"
+  case "$name" in
+    *_"$ver"_*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 collect() {
   find "$dir" -type f \( -name '*.dmg' -o -name '*-setup.exe' -o -name '*.app.tar.gz' -o -name '*-portable.zip' \) 2>/dev/null | sort
+}
+
+# collect_checked = collect + 版本闸:不属于本 tag 的**显式报错退出**,不静默跳过。
+#
+# 为何是 exit 而不是跳过:目录被复用是常态,而「漏传一件便携包」与「多传一件旧版安装包」
+# 在发布这一步都同样静默 —— 前者让国内用户拿不到包,后者让他们装到旧版本。宁可停下来。
+collect_checked() {
+  local f name bad=0
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    name="$(basename "$f")"
+    if belongs_to_tag "$name"; then
+      echo "$f"
+    else
+      echo "  拒绝(不属于 $tag):$name  ← $f" >&2
+      bad=1
+    fi
+  done <<< "$(collect)"
+  [ "$bad" = 0 ] || { echo "产物目录里有其它版本的残留包 —— 清掉再跑(它们会被传进本 tag 的 Release)" >&2; exit 1; }
+}
+
+# prune_foreign 删掉该 Release 上**已存在但不属于本 tag**的附件。
+#
+# 自愈用:上一轮如果已经传脏(见 belongs_to_tag 的注释),光加闸不够 —— 脏文件已经在
+# 线上了,得由这里清掉。判据同上;gah.app.tar.gz 保留。
+prune_foreign() {
+  local rid="$1" name
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    belongs_to_tag "$name" && continue
+    local aid
+    aid="$(api_json "$API/releases/$rid/attach_files?access_token=$TOKEN" \
+      | jq -r --arg n "$name" '.[] | select(.name == $n) | .id' | head -1)"
+    if [ -n "$aid" ]; then
+      api_json -X DELETE "$API/releases/$rid/attach_files/$aid?access_token=$TOKEN" >/dev/null
+      echo "  已清理不属于本 tag 的旧附件:$name"
+    fi
+  done < <(api_json "$API/releases/$rid/attach_files?access_token=$TOKEN" | jq -r '.[].name')
 }
 
 # 找 Release id(tag 不存在则创建)
@@ -98,6 +161,9 @@ case "$cmd" in
     need_token
     [ -n "$dir" ] && [ -d "$dir" ] || usage
     id="$(release_id)"
+    # 先自愈线上的脏附件,再校验本地产物 —— 顺序反过来的话,脏文件会留在线上没人管。
+    prune_foreign "$id"
+    files="$(collect_checked)"
     while IFS= read -r f; do
       [ -n "$f" ] || continue
       name="$(basename "$f")"
@@ -120,7 +186,7 @@ case "$cmd" in
         sleep 5
       done
       [ "$ok" = 1 ] || { echo "上传失败:$name(三次都未成功)" >&2; exit 1; }
-    done <<< "$(collect)"
+    done <<< "$files"
     echo "上传完成,回查匿名直链:"
     verify || exit 1
     # 生成 Gitee 版 latest.json:把每个平台的下载地址换到 Gitee 直链(取原 URL 最后两段
