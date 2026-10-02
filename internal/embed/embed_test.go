@@ -519,13 +519,17 @@ func TestWriteHashedMatchesContent(t *testing.T) {
 	if sum != sha256.Sum256(payload) {
 		t.Fatalf("哈希与内容不一致:%x vs %x", sum, sha256.Sum256(payload))
 	}
-	// 权限:可执行位(解出来的插件必须能被 exec)
-	fi, err := os.Stat(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fi.Mode().Perm()&0o100 == 0 {
-		t.Errorf("应带执行位,got %v", fi.Mode().Perm())
+	// 权限:可执行位(解出来的插件必须能被 exec)。
+	// **只在 unix 上断言**:Windows 没有执行位语义,Mode().Perm() 的高位在那里不是
+	// 「可执行」(AGENTS「跨平台」那节的已知差异),断言它会挂到 test-windows 上。
+	if runtime.GOOS != "windows" {
+		fi, err := os.Stat(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fi.Mode().Perm()&0o100 == 0 {
+			t.Errorf("应带执行位,got %v", fi.Mode().Perm())
+		}
 	}
 	// 覆盖写:第二次写更短的内容,文件被截断而不是残留旧尾巴
 	if _, err := writeHashed(p, bytes.NewReader([]byte("ab"))); err != nil {

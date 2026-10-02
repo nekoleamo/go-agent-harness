@@ -5,8 +5,9 @@ package policyguard
 // 为什么需要一份**独立**的扫描器而不是复用 `shellCmdPaths`:POSIX 那一套认的是
 // `>` / `cp` / `mv` / `tee` / `sed -i` 这些词法;PowerShell 的写动作长成
 // `Set-Content C:\x\y` / `Remove-Item` / `New-Item`,再叠一层 `-Path`/`-LiteralPath`
-// 参数与 cmdlet 名不区分大小写。拿 POSIX 扫描器去扫 PowerShell,结果是**一个字都认不出**
-// —— 而那恰恰是最危险的一种失败(看起来在管,实际没管)。
+// 参数与 cmdlet 名不区分大小写。拿 POSIX 扫描器去扫 PowerShell,结果是**把裸词认成路径、
+// 却判不出它是写**(读侧照样会裁凭据)—— 而那恰恰是最危险的一种失败:看起来在管写,
+// 实际写一个都没拦住。
 //
 // 口径与 POSIX 那一支保持一致(这是刻意的,见下):
 //   - **写动词取第一个非旗标参数**(PowerShell 的位置约定);`-Path`/`-LiteralPath`/

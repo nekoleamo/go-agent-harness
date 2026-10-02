@@ -150,12 +150,14 @@ func TestPowerShellAndShellUseSeparateTables(t *testing.T) {
 
 // 派生审批:PowerShell 的写目标落在受保护位置时也要能派生出来。
 func TestDerivedApprovalTargetPowerShell(t *testing.T) {
-	// 注意用**跨平台都能判**的凭据路径:Windows 的 `C:\…` 在 macOS 上不是绝对路径,
-	// 派生逻辑会走相对分支而判不出受保护位置 —— 那是平台语义,不是这条逻辑的问题。
-	if _, hit := derivedApprovalTarget("powershell", `Set-Content /home/me/.ssh/authorized_keys -Value x`); !hit {
+	// 用与既有 POSIX 用例**同一形态**的路径(`~` 展开):`~` 在三个平台上都能展开,
+	// 而 `/home/...` 只在 Linux/macOS 上是绝对路径 —— 写死平台路径的用例会挂到
+	// 另一个平台的 CI 上(本次就挂了一次),而这条断言要证明的是「PowerShell 的写目标
+	// 也会走派生审批」,不是路径本身在哪个平台上成立。
+	if _, hit := derivedApprovalTarget("powershell", `Set-Content ~/.ssh/authorized_keys -Value x`); !hit {
 		t.Error("写凭据路径应派生出审批项")
 	}
-	if _, hit := derivedApprovalTarget("powershell", `Get-Content /home/me/.ssh/id_rsa`); hit {
+	if _, hit := derivedApprovalTarget("powershell", `Get-Content ~/.ssh/id_rsa`); hit {
 		t.Error("纯读不该派生写审批项")
 	}
 }
@@ -192,15 +194,21 @@ func TestPowerShellIsExecutorTool(t *testing.T) {
 // 这条断言钉的是「新增执行器时,策略层按名字分派」这件事本身 ——
 // 两边共用一张扫描器(初版的隐患)会让 PowerShell 的写目标整个漏掉。
 func TestExecutorCommandRoutingByToolName(t *testing.T) {
-	root := t.TempDir()
-	p := &SandboxPolicy{root: root, mode: sdk.SandboxWorkspace}
-	// 同一个命令文本:对 shell 是「未知命令」(不产写目标),对 powershell 是写目标
-	const cmd = `Set-Content ` + "/outside/authorized_keys" + ` -Value x`
-	if err := p.CheckExecutorCommandAt(root, "shell", cmd); err != nil {
-		t.Errorf("shell 走 POSIX 扫描器,不该把 PowerShell 写法认成写目标却报错了:%v", err)
+	// 断言放在**纯扫描器**上,而不是经沙箱裁决:沙箱那一层要判断路径是否越界,
+	// 而越界与否依赖具体路径在当前平台怎么解析(`/outside/x` 在 Windows 上是
+	// 当前盘根下的路径、在 unix 上是绝对路径)—— 那会让这条断言按平台分裂。
+	// 这里要证明的是更根本的一件事:**同一个命令文本,两套语法给出的写判定不同**。
+	// 注意精确口径:POSIX 扫描器**认得**这个 token(裸词在它眼里是个路径),但判成**读** ——
+	// 真正缺的是「这是写」。所以断言的是 Write 标志,不是「一个路径都没认出来」。
+	const cmd = `Set-Content C:/data/secret.txt -Value x`
+	for _, p := range shellCmdPaths(cmd) {
+		if p.Write {
+			t.Errorf("POSIX 扫描器不该把 PowerShell 的 Set-Content 判成写,got %+v", p)
+		}
 	}
-	if err := p.CheckExecutorCommandAt(root, "powershell", cmd); err == nil {
-		t.Error("powershell 走自己的扫描器,应识别出越界写目标并拒绝")
+	got := powershellCmdPaths(cmd)
+	if len(got) != 1 || !got[0].Write || got[0].Path != "C:/data/secret.txt" {
+		t.Fatalf("PowerShell 扫描器应认出该写目标,got %+v", got)
 	}
 }
 
