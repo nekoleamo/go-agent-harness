@@ -413,7 +413,13 @@ function checkPortableBundle(opts) {
   })
   const found = [...zips.map((f) => join(dir, f)), ...nested.map((f) => join(dir, f))]
   if (found.length === 0) {
-    fail('便携包', `${dir} 下没有 *-portable.zip(windows-x86_64 构建应产出便携包)`)
+    // 便携包**只在 Windows 构建产出**;mac/linux 的 job 跑到这里时没有它是正常的。
+    // 之前这里无条件 fail ⇒ run 37000288306 的 mac job 因为「没有便携包」红了。
+    if (hostPlatform().startsWith('windows')) {
+      fail('便携包', `${dir} 下没有 *-portable.zip(Windows 构建应产出便携包)`)
+    } else {
+      info('便携包', '本平台不产便携包(仅 Windows 构建产出),跳过')
+    }
     return
   }
   for (const zp of found) {

@@ -278,7 +278,14 @@ gah 便携版 $VERSION(Windows x64)
 注意:未签名分发,首启可能弹 SmartScreen —— 点「更多信息」→「仍要运行」即可。
       数据目录请放在有写权限的位置(桌面/程序目录等受保护位置会写不进去)。
 TXT
-  PORTABLE_ZIP="$OUT/gah_${VERSION}_x64-portable.zip"
+  # 包名里的架构要跟平台走(写死 x64 会让 arm64 构建产出一个自称 x64 的包 ——
+  # run 37000288306 就是这么红的:产物叫 gah_0.4.0_x64-portable.zip,而校验按架构找它,
+  # 结果 FileNotFoundError,arm64 首跑因此挂了)。
+  case "$platform" in
+    windows-arm64) parch=arm64 ;;
+    *)            parch=x64 ;;
+  esac
+  PORTABLE_ZIP="$OUT/gah_${VERSION}_${parch}-portable.zip"
   rm -f "$PORTABLE_ZIP"
   # zip 目录内不放平台元数据(时间戳全固定 ⇒ 同样输入打出同样字节,重跑无 diff)
   if command -v zip >/dev/null 2>&1; then
