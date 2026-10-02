@@ -141,13 +141,26 @@ func TestScheduleTriggerRunsRoundAndRecords(t *testing.T) {
 	if !strings.Contains(asstMsg, "对账完成") {
 		t.Fatalf("定时回合的模型产出应落会话记录,得 %q", asstMsg)
 	}
-	// 运行记录落盘(重启后可见)
-	raw, err := os.ReadFile(filepath.Join(home, "schedules", p.ID+".yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(raw), "last_status: ok") {
-		t.Fatalf("运行记录应落盘: %s", raw)
+	// 运行记录落盘(重启后可见)。
+	//
+	// **必须轮询,不能读一次**:宿主的 execute() 是「先在内存里发布 LastStatus/running=false,
+	// 再 savePlan 落盘」—— 也就是说内存终态**早于**文件落盘。runPlanNow 等的是内存终态,
+	// 所以此处单次读文件是在跟一个子毫秒级窗口赛跑:macOS 上基本赢得过,Windows runner
+	// 上稳定输(run 36984612939 test-windows 就是这么红的,内容里只有 plan 头没有 last_status)。
+	// 「运行记录应落盘」断言的是**最终一致**(设计如此:文件写不跨锁),轮询才是它的正确形状。
+	// 顺带把那个窗口写下来:进程若在这 ~1ms 内被杀,最后一次运行记录会丢(重启后看不到);
+	// 修它要动 execute 的发布顺序(跨文件写),属发布前不该塞进来的改动。
+	recFile := filepath.Join(home, "schedules", p.ID+".yaml")
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		raw, rerr := os.ReadFile(recFile)
+		if rerr == nil && strings.Contains(string(raw), "last_status: ok") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("运行记录应落盘(last_status: ok):%v\n%s", rerr, raw)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
