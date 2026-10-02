@@ -23,7 +23,10 @@ VERSION="${VERSION#v}"   # 允许带 v 前缀(RELEASE_VERSION=v0.1.3)
 [ -z "$VERSION" ] && VERSION="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' desktop/src-tauri/tauri.conf.json | head -1)"
 PROFILE_DIR=release
 [ "${GAH_DESKTOP_DEBUG:-0}" = "1" ] && PROFILE_DIR=debug
-OUT="dist-desktop"
+# 输出目录**用绝对路径**:脚本中途会 cd 进 desktop/src-tauri 再 cd 回来,而便携包那段还用了
+# $OLDPWD(那是**调用者**的旧目录,不是脚本 CWD)⇒ run 37002443809 的两个 Windows job 把
+# 便携包写到了仓库外,紧接着自检读 $OUT/... 就 FileNotFoundError。绝对路径一次消掉这整类坑。
+OUT="$PWD/dist-desktop"
 mkdir -p "$OUT"
 
 # 平台 → Rust triple / updater 键 / bundle 子目录
@@ -289,9 +292,9 @@ TXT
   rm -f "$PORTABLE_ZIP"
   # zip 目录内不放平台元数据(时间戳全固定 ⇒ 同样输入打出同样字节,重跑无 diff)
   if command -v zip >/dev/null 2>&1; then
-    (cd "$PSTAGE" && find gah -exec touch -t 200001010000 {} + && TZ=UTC zip -X -q -9 -r "$OLDPWD/$PORTABLE_ZIP" gah)
+    (cd "$PSTAGE" && find gah -exec touch -t 200001010000 {} + && TZ=UTC zip -X -q -9 -r "$PORTABLE_ZIP" gah)
   else
-    python3 - "$PSTAGE" "$OLDPWD/$PORTABLE_ZIP" <<'PY'
+    python3 - "$PSTAGE" "$PORTABLE_ZIP" <<'PY'
 # 无 zip 命令时(最小 Windows runner 镜像)的等价实现:同样固定时间戳,同样顶层 gah/
 import os, sys, zipfile
 stage, out = sys.argv[1], sys.argv[2]
