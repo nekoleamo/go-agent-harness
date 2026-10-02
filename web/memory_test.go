@@ -71,9 +71,14 @@ func TestMemoryEndpointCRUD(t *testing.T) {
 	if m["enabled"] != true {
 		t.Fatalf("记忆默认应开启(口径建议 P2),got %#v", m["enabled"])
 	}
-	// 路径要给出来:记忆文件设计上就允许人手改
-	if p, _ := m["user_path"].(string); !strings.HasPrefix(p, home) || !strings.HasSuffix(p, "memory/user.md") {
-		t.Fatalf("user_path 应指向数据根下的 memory/user.md,got %q", p)
+	// 路径要给出来:记忆文件设计上就允许人手改。
+	// 判据 = **与服务端同一条解析链**(`sdk.Home()` + memory.UserPath()),而不是
+	// 「前缀是 t.TempDir()」—— Windows 上 TempDir 有时给短名(RUNNER~1)、有时给长名,
+	// 前缀比较会假红(run 36960818167 test-windows 就是这么红的)。
+	// 比前缀也证明不了「写在数据根内」这条纪律,而比解析链能。
+	want := filepath.ToSlash(memory.UserPath())
+	if p, _ := m["user_path"].(string); filepath.ToSlash(p) != want {
+		t.Fatalf("user_path 应由数据根派生(%s),got %q", want, p)
 	}
 
 	// add:两条

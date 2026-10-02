@@ -20,6 +20,7 @@ package embed
 
 import (
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -53,12 +54,17 @@ func presetSkillNamesAll(t *testing.T) map[string][]string {
 }
 
 // presetSkillDoc 读一个预置技能的 SKILL.md。
+//
+// ⚠ 这里必须用 **path.Join**(斜杠)而不是 filepath.Join:`embed.FS` 的路径**永远是
+// 斜杠分隔**的,与运行平台无关(AGENTS「跨平台」那节的坑 ②)。用 filepath.Join 在
+// Windows 上会拼出反斜杠,于是 `ReadFile` 报「file does not exist」—— 而同一段代码在
+// macOS/Linux 上永远是绿的。run 36960818167 就是这么红的(test-windows)。
 func presetSkillDoc(t *testing.T, role, skill string) string {
 	t.Helper()
-	p := filepath.Join("seed", "roles", role, "skills", skill, "SKILL.md")
+	p := path.Join("seed", "roles", role, "skills", skill, "SKILL.md")
 	raw, err := Seed.ReadFile(p)
 	if err != nil {
-		t.Fatalf("预置技能 %s/%s 读不到: %v", role, skill, err)
+		t.Fatalf("预置技能 %s/%s 读不到(%s): %v", role, skill, p, err)
 	}
 	return string(raw)
 }
