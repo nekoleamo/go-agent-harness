@@ -95,15 +95,6 @@ func waitUnlocked(t *testing.T, path string) {
 	}
 }
 
-func toolsOf(t *testing.T, c sdk.Ctx) sdk.ToolRegistry {
-	t.Helper()
-	var reg sdk.ToolRegistry
-	if err := c.Inject("ctx.tools", &reg); err != nil {
-		t.Fatal(err)
-	}
-	return reg
-}
-
 func toolNames(tools sdk.ToolRegistry) []string {
 	defs := tools.List()
 	out := make([]string, 0, len(defs))
