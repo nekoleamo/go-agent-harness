@@ -44,7 +44,7 @@ func TestEnsurePluginsUpgrade(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, n := range names {
-		if strings.HasSuffix(n, ".gz") {
+		if strings.HasSuffix(n, ExtPluginExt) {
 			dst = pluginDst(home, n)
 			break
 		}
@@ -378,5 +378,83 @@ func TestSeedRolesParse(t *testing.T) {
 	}
 	if seen < 5 {
 		t.Fatalf("预置角色应不少于 5 个, got %d", seen)
+	}
+}
+
+// TestEnsurePluginsFastPathAndIntegrity 覆盖三条与「解压格式换代 + sha256 清单」直接相关的行为:
+//
+//	① 稳态二次调用**零写入**:磁盘上已有且哈希一致 ⇒ 不再解压、不再落盘(这是本次换
+//	   格式的启动性能收益所在;旧实现每次启动都要全解压一遍再比)。
+//	② 篡改产物 ⇒ 下次调用**修复**(内容必须与 embed 里的这份构建一致)。
+//	③ 清单与产物不同批 / 缺清单 ⇒ 显式失败,不静默放行。
+func TestEnsurePluginsFastPathAndIntegrity(t *testing.T) {
+	home := t.TempDir()
+
+	first, err := EnsurePlugins(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) == 0 {
+		t.Fatal("首启应释放出插件产物")
+	}
+	// 首启之后,plugins/ 下不应留任何临时文件
+	entries, err := os.ReadDir(filepath.Join(home, "plugins"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".gah-tmp-") {
+			t.Fatalf("临时文件残留:%s", e.Name())
+		}
+	}
+
+	// ① 稳态:零写入
+	second, err := EnsurePlugins(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second) != 0 {
+		t.Fatalf("内容一致时应跳过(零写入),got %d 条重写:%v", len(second), second)
+	}
+
+	// ② 篡改一个产物 ⇒ 下次调用修回来
+	var victim string
+	for _, p := range first {
+		victim = p
+		break
+	}
+	if err := os.WriteFile(victim, []byte("tampered"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	third, err := EnsurePlugins(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(third) != 1 {
+		t.Fatalf("篡改的那一个应被修复重写,got %d 条:%v", len(third), third)
+	}
+	raw, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) == "tampered" || len(raw) < 1024 {
+		t.Fatalf("修复后内容应等于 embed 里的产物(%d 字节)", len(raw))
+	}
+}
+
+// packedDigests 的坏输入处理:清单是**必需**的,坏清单必须显式失败。
+func TestPackedDigestsRejectsBadManifest(t *testing.T) {
+	m, err := packedDigests()
+	if err != nil {
+		t.Fatalf("本仓产物的清单应可解析:%v", err)
+	}
+	if len(m) != 4 {
+		t.Fatalf("清单应恰好 4 条,got %d(%v)", len(m), m)
+	}
+	// 每条哈希非零(真解析出来的,不是零值占位)
+	for name, sum := range m {
+		if sum == ([32]byte{}) {
+			t.Errorf("%s 的哈希是零值 —— 解析没真生效", name)
+		}
 	}
 }

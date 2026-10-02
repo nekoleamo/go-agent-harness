@@ -3,13 +3,14 @@
 package embed
 
 import (
-	"compress/gzip"
 	"encoding/binary"
 	"io"
 	"io/fs"
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/klauspost/compress/zstd"
 )
 
 // binArch 读取可执行文件头部,识别平台与架构(ELF/Mach-O/PE 魔数)。
@@ -72,31 +73,31 @@ func TestExtPluginsMatchPlatform(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var gz []fs.DirEntry
+	var packed []fs.DirEntry
 	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".gz") {
-			gz = append(gz, e)
+		if strings.HasSuffix(e.Name(), ExtPluginExt) {
+			packed = append(packed, e)
 		}
 	}
 	// 期望集 = gen-extplugins.sh NAMES(darwin/linux/windows 各 4 个产物)。
-	if len(gz) != 4 {
-		t.Fatalf("本平台应恰好 4 个插件产物,got %d(%v)", len(gz), gz)
+	if len(packed) != 4 {
+		t.Fatalf("本平台应恰好 4 个插件产物,got %d(%v)", len(packed), packed)
 	}
 	if platformDirName() != runtime.GOOS+"-"+runtime.GOARCH {
 		t.Fatalf("embed 目录 %s 与构建平台 %s/%s 不符(build-tag 漂移)", platformDirName(), runtime.GOOS, runtime.GOARCH)
 	}
-	for _, e := range gz {
+	for _, e := range packed {
 		f, err := extPlugins.Open(extPluginDir + "/" + e.Name())
 		if err != nil {
 			t.Fatal(err)
 		}
-		gzr, err := gzip.NewReader(f)
+		dec, err := zstd.NewReader(f)
 		if err != nil {
 			f.Close()
 			t.Fatal(err)
 		}
-		raw, err := io.ReadAll(gzr)
-		gzr.Close()
+		raw, err := io.ReadAll(dec.IOReadCloser())
+		dec.Close()
 		f.Close()
 		if err != nil {
 			t.Fatal(err)

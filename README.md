@@ -14,7 +14,7 @@ Go 实现的编程代理 Agent Harness:以**单静态二进制**交付全部能�
 
 **排除 dsh 因 Node.js 带来的依赖**:
 
-- 单一静态二进制(`CGO_ENABLED=0`,五目标实测 **41–46 MiB**,压缩下载产物 ≈27–31 MiB;外部插件经 gzip 内嵌,体积门见 `scripts/size-check.sh`),无 node 运行时、无 node_modules 分发链、无版本管理器;
+- 单一静态二进制(`CGO_ENABLED=0`,五目标实测 **41–46 MiB**,压缩下载产物 ≈27–31 MiB;外部插件经 zstd 压缩内嵌,体积门见 `scripts/size-check.sh`),无 node 运行时、无 node_modules 分发链、无版本管理器;
 - `scp` 一个文件到目标机即开箱可用,运行时依赖 = 0(裸环境 `env -i` 可直接启动);
 - 六目标交叉编译(darwin/linux/windows × amd64/arm64);
 - 便携数据根:`gah-data/` 随二进制同级自动创建,部署目录内 gah+gah-data 即完整,升级只替换单文件。
@@ -497,7 +497,7 @@ export GAH_MCP_COMMANDS="deja=/opt/homebrew/bin/deja\ncodegraph=codegraph serve 
 
 三端同一 gah 二进制:Web 前端内嵌,TUI/Web/headless 是同一进程的三个 profile;桌面壳复用同一 sidecar 产物。发行矩阵配套:
 
-- `scripts/gen-extplugins.sh` 按发行矩阵(darwin/linux × amd64/arm64 + windows/amd64)构建外部插件产物,`gzip -9 -n` 确定性压缩,embed 按平台拆包(每目标只嵌本平台产物)。
+- `scripts/gen-extplugins.sh` 按发行矩阵(darwin/linux × amd64/arm64 + windows/amd64)构建外部插件产物,仓内 `scripts/zstdpack` 确定性压缩(纯 Go,五平台 CI 不依赖系统 zstd),embed 按平台拆包(每目标只嵌本平台产物)。
 - `goreleaser release --snapshot` 可直接出六目标包;`.goreleaser.yaml` 已配置 before hooks。
 
 - **门禁(CI 与本地同源)**:`go vet` + 全库 `go test -race` + `bash scripts/coverage-check.sh`(逐包棘轮 + 全局下限,豁免需理由)+ `scripts/size-check.sh`(体积门 ≤36 MiB / gz ≤23 MiB)+ 前端 `npm test`(逻辑单测)+ **`npm run test:layout`**(真浏览器布局回归:5 视口 × 4 停靠态,断言整页不滚 / 无越界元素 / 骨架在场,并含**检测器自检**;CI 上带 `GAH_LAYOUT_REQUIRE=1`,环境不满足即红灯而不是静默跳过)。`sdk/` 是独立 module(`go.work`),三步需单独跑。

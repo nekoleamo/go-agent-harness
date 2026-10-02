@@ -5,11 +5,9 @@
 package tests
 
 import (
-	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -35,21 +33,11 @@ import (
 func releaseExt(t *testing.T, dir string, names ...string) {
 	t.Helper()
 	for _, n := range names {
-		// M7 体积门:embed 存 gzip,named name.gz;释放时解压
-		fgz, err := embed.OpenExtPlugin(n)
+		// 体积门:embed 里存的是压缩产物(zstd,2026-10-02 起;此前是 gzip);
+		// ReadExtPlugin 返回**解压后**的字节,压缩格式是它的实现细节,这里不感知。
+		raw, err := embed.ReadExtPlugin(n)
 		if err != nil {
-			t.Fatalf("embed 读取 %s.gz: %v", n, err)
-		}
-		gzr, gerr := gzip.NewReader(fgz)
-		if gerr != nil {
-			fgz.Close()
-			t.Fatal(gerr)
-		}
-		raw, err := io.ReadAll(gzr)
-		gzr.Close()
-		fgz.Close()
-		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("embed 读取 %s: %v", n, err)
 		}
 		// 写盘名带平台扩展名(os/exec 在 Windows 上按 PATHEXT 解析,见 embed.ExtPluginBinary)
 		dst := filepath.Join(dir, embed.ExtPluginBinary(n))

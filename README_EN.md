@@ -13,7 +13,7 @@ A programming-agent harness implemented in Go, shipping **all capabilities as a 
 
 **Removes the Node.js dependency that dsh carries**:
 
-- Single static binary (`CGO_ENABLED=0`, **41–46 MiB** across five targets; compressed download ≈27–31 MiB; external plugins are embedded gzip, gate in `scripts/size-check.sh`): no node runtime, no node_modules distribution chain, no version manager;
+- Single static binary (`CGO_ENABLED=0`, **41–46 MiB** across five targets; compressed download ≈27–31 MiB; external plugins are embedded zstd-compressed, gate in `scripts/size-check.sh`): no node runtime, no node_modules distribution chain, no version manager;
 - `scp` one file to any machine and it works; runtime dependencies = 0 (boots fine under `env -i`);
 - Six-target cross-compilation (darwin/linux/windows × amd64/arm64);
 - Portable data root: `gah-data/` is auto-created next to the binary; the deployment directory (gah + gah-data) is self-contained; upgrades replace the single binary only.

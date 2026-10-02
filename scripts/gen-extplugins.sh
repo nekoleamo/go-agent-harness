@@ -5,8 +5,13 @@
 # .goreleaser.yaml 对齐)每目标构建一份,落 internal/embed/extplugins/<os>-<arch>/;
 # 主包交叉编译时经 build-tag 只嵌本平台产物(体积门不变);
 # 产物缺失时主包构建失败(goreleaser before hook 调用,防漏)。
-# P0 体积门回归(M7):strip(-s -w)+ gzip(Go 二进制压缩率 ~50%);embed 存 .gz,
-# 宿主首启 EnsurePlugins 解压落盘。
+# P0 体积门回归(M7):strip(-s -w)+ 压缩;embed 存压缩产物,宿主首启 EnsurePlugins 解压落盘。
+# 压缩格式 2026-10-02 由 gzip -9 换 **zstd -19**(体积债路径 ③,size-check.sh 头注登记):
+# 实测同一批产物 28.67 MiB 原始 → gzip -9 11.53 / zstd -19 9.75 / xz -9 8.60 MiB。
+# 选 zstd 不选 xz 的理由不是压缩率,是**解码成本落在每次启动上**:xz 还能再省 ~1.15 MiB,
+# 但 28 MiB 的单线程 xz 解码约 0.5–1s,而 zstd 约 0.05s —— 启动时间比 1 MiB 体积更值钱。
+# 编码侧同样不引外部工具:`scripts/zstdpack`(仓内几十行的 Go 程序,纯 Go 编码器)——
+# 五个平台的 CI runner 里 macOS/Windows 镜像都不保证装了 `zstd` 命令。
 # Windows 产物带 .exe(os/exec 在 Windows 上按 PATHEXT 补扩展名,无扩展名的 PE 无法
 # exec;见 internal/embed/embed.go ExtPluginBinary 注释)。
 set -euo pipefail
@@ -64,12 +69,13 @@ assert_arch() {
   echo "assert_arch OK: $bin = $actual"
 }
 
-# 清旧产物(平铺 *.gz 与旧平台目录),防跨平台残留
+# 清旧产物(平铺 *.gz/*.zst 与旧平台目录),防跨平台残留与格式换代残留
 rm -rf "$EMBED_DIR"/*
 for t in $TARGETS; do
   os="${t%/*}"; arch="${t#*/}"
   dir="$EMBED_DIR/$os-$arch"
   mkdir -p "$dir"
+  built=()
   for name in $NAMES; do
     bin="$name"
     if [ "$os" = windows ]; then bin="$name.exe"; fi
@@ -79,8 +85,13 @@ for t in $TARGETS; do
     # 与提交版字节不同但大小相同,只是这几个字段)。剥掉 VCS 戳后产物只由源码决定。
     GOOS=$os GOARCH=$arch CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags "-s -w" -o "$dir/$bin" "./extplugins/$name"
     assert_arch "$dir/$bin" "$os" "$arch"
-    gzip -9 -n -f "$dir/$bin" # -n:不存 mtime/文件名,产物幂等(重跑无 diff)
+    built+=("$dir/$bin")
   done
+  # 用仓内的 Go 打包器而不是系统 zstd:五个平台的 CI runner 里 macOS/Windows
+  # 镜像都不保证有 zstd(为一个压缩动作引入外部工具依赖不值)。
+  # zstd 帧**不存 mtime/文件名**,同一份二进制 ⇒ 同一份压缩产物(重跑无 diff)。
+  # 一次调用传全部四件:打包器据此写出**完整**的 SHA256SUMS(逐件调用会互相覆盖)。
+  go run ./scripts/zstdpack "${built[@]}"
 done
 echo "--- 产物清单 ---"
 ls -la "$EMBED_DIR"/*/

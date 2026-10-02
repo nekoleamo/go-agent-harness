@@ -3,9 +3,9 @@
 package embed
 
 import (
-	"compress/gzip"
 	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"io/fs"
@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/klauspost/compress/zstd"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
@@ -119,20 +121,38 @@ func diskVersion(path string) int {
 }
 
 // EnsurePlugins 释放随包外部插件二进制到 home/plugins/<name>/<name[.exe]>(方案 B 首启释放)。
-// P0 体积门(M7):embed 存 gzip(.gz,压缩率约 50%),释放时解压落盘;
+// P0 体积门(M7):embed 存**压缩产物**(2026-10-02 起为 zstd,.zst),释放时解压落盘;
 // 自动升级:内容(sha256)与 embed 一致 → 跳过(幂等,同版/用户自装产物保留);
 // 内容不同 → 覆盖(插件产物必须与主程序版本匹配,旧版能力缺失有害,如缺 web_search)。
 // 不保留备份:plugins 扫描会加载任何 tool-* 前缀文件(host-bridge),同目录备份会被误加载;
 // 二进制随包可再生,无保留价值。
-// OpenExtPlugin 打开本平台外部插件 gzip 产物(只读;调用方负责 Close)。
+// ReadExtPlugin 读本平台某个外部插件的**解压后**二进制。
 // name 为插件基名(tool-basic),平台扩展名由本函数补:调用方不必关心平台差异。
 // P4 平台匹配:build-tag 保证只取当前构建平台的产物(黑盒测试/工具链读取用)。
-func OpenExtPlugin(name string) (io.ReadCloser, error) {
+//
+// 2026-10-02:由 `OpenExtPlugin(io.ReadCloser)` 改名并改成返回字节。旧形态返回的是
+// **压缩流**,名字却像「打开二进制」,于是每个调用方都得自己再解一层 —— 这正是
+// tests/ 里那段多余 gzip.NewReader 的来历。压缩格式换代(gzip→zstd)时,那一层在
+// 调用方还得跟着改一次;改成「读出解压后的字节」之后,格式是实现细节,调用方不再感知。
+func ReadExtPlugin(name string) ([]byte, error) {
 	if err := checkPlatformEmbedded(); err != nil {
 		return nil, err
 	}
-	return extPlugins.Open(extPluginDir + "/" + ExtPluginBinary(name) + ".gz")
+	f, err := extPlugins.Open(extPluginDir + "/" + ExtPluginBinary(name) + ExtPluginExt)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	dec, err := zstd.NewReader(f)
+	if err != nil {
+		return nil, fmt.Errorf("internal/embed: %s 解码器初始化失败:%w", name, err)
+	}
+	defer dec.Close()
+	return io.ReadAll(dec.IOReadCloser())
 }
+
+// ExtPluginExt 随包外部插件产物的压缩扩展名(单一事实源:生成侧 scripts/gen-extplugins.sh)。
+const ExtPluginExt = ".zst"
 
 // checkPlatformEmbedded 平台内置产物可用性(发行矩阵外 → 显式错误,不静默返回空/不存在)。
 func checkPlatformEmbedded() error {
@@ -143,7 +163,7 @@ func checkPlatformEmbedded() error {
 	return nil
 }
 
-// ExtPluginBinary 外部插件在**当前平台**的产物文件名(gzip 之前)。
+// ExtPluginBinary 外部插件在**当前平台**的产物文件名(压缩之前)。
 //
 // Windows 必须带 .exe:宿主用 exec.Command(绝对路径) 启动外部插件,而 os/exec 在 Windows
 // 上走 PATHEXT 补全,findExecutable 对**无扩展名**的文件不会 stat 字面路径
@@ -160,9 +180,14 @@ func ExtPluginBinary(name string) string {
 // pluginDst 产物在数据根中的落点:plugins/<目录名>/<文件名>。
 // 目录名去平台扩展名(plugins/tool-basic/tool-basic.exe):目录口径跨平台统一,
 // 文件名保留 .exe 以适配 Windows 的 PATHEXT 解析(见 ExtPluginBinary)。
-func pluginDst(home, gzName string) string {
-	bin := strings.TrimSuffix(gzName, ".gz")
+func pluginDst(home, packedName string) string {
+	bin := pluginBaseName(packedName)
 	return filepath.Join(home, "plugins", strings.TrimSuffix(bin, ".exe"), bin)
+}
+
+// pluginBaseName 压缩产物名 → 插件基名(`tool-basic.exe.zst` → `tool-basic.exe`)。
+func pluginBaseName(packedName string) string {
+	return strings.TrimSuffix(packedName, ExtPluginExt)
 }
 
 // readFileBytes 读文件内容(不存在/读失败 ok=false,与幂等跳过区分)。
@@ -181,36 +206,44 @@ func EnsurePlugins(home string) ([]string, error) {
 	if err := checkPlatformEmbedded(); err != nil {
 		return nil, err
 	}
+	want, err := packedDigests()
+	if err != nil {
+		return nil, err
+	}
 	names, err := listNames(extPlugins, extPluginDir)
 	if err != nil {
 		return nil, err
 	}
 	var written []string
 	for _, n := range names {
-		if !strings.HasSuffix(n, ".gz") {
-			continue // 只处理 gzip 打包的外部插件
+		if !strings.HasSuffix(n, ExtPluginExt) {
+			continue // 只处理本仓生成的压缩产物(格式换代后旧 .gz 残留会被忽略,不会被当插件加载)
 		}
+		bin := pluginBaseName(n)
 		dst := pluginDst(home, n)
-		fgz, err := extPlugins.Open(extPluginDir + "/" + n)
-		if err != nil {
-			return nil, err
+		// 稳态快路径:清单里有这个产物、磁盘上也有,且内容哈希一致 ⇒ **不解压**(旧实现
+		// 每次启动都要把 4 件共 ~28 MiB 全解压一遍再比,实测 ~150ms;这一跳省掉)。
+		wantSum, ok := want[bin]
+		if !ok {
+			return nil, fmt.Errorf("internal/embed: %s 不在 SHA256SUMS 里(产物与清单不同批;重跑 scripts/gen-extplugins.sh)", bin)
 		}
-		gzr, err := gzip.NewReader(fgz)
-		if err != nil {
-			fgz.Close()
-			return nil, err
-		}
-		raw, err := io.ReadAll(gzr)
-		gzr.Close()
-		fgz.Close()
-		if err != nil {
-			return nil, err
-		}
-		// 自动升级:内容一致 → 跳过(幂等);内容不同 → 覆盖(必须与主程序匹配)。
-		if cur, ok := readFileBytes(dst); ok && sha256.Sum256(cur) == sha256.Sum256(raw) {
+		if cur, ok := readFileBytes(dst); ok && sha256.Sum256(cur) == wantSum {
 			continue
 		}
+		f, err := extPlugins.Open(extPluginDir + "/" + n)
+		if err != nil {
+			return nil, err
+		}
+		dec, derr := zstd.NewReader(f)
+		if derr != nil {
+			f.Close()
+			return nil, fmt.Errorf("internal/embed: %s 解码器初始化失败:%w", n, derr)
+		}
+		// 流式解码 + 一边写一边哈希:旧实现是 io.ReadAll 整份读进内存(4 件合计
+		// ~28 MiB 解压后峰值内存),临时文件也只在这条「需要写」的路径上出现。
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			dec.Close()
+			f.Close()
 			return nil, err
 		}
 		// 写临时文件再 rename 覆盖,而不是直接 WriteFile 截断重写:
@@ -220,8 +253,17 @@ func EnsurePlugins(home string) ([]string, error) {
 		//      而 rename 出来的新 inode 同一份字节就能跑。详见 DESIGN R23。
 		//   临时名以点开头且不带 tool- 前缀,即使残留也不会被插件扫描误当产物加载。
 		tmp := filepath.Join(filepath.Dir(dst), ".gah-tmp-"+filepath.Base(dst))
-		if err := os.WriteFile(tmp, raw, 0o755); err != nil {
+		sum, err := writeHashed(tmp, dec.IOReadCloser())
+		dec.Close()
+		f.Close()
+		if err != nil {
+			os.Remove(tmp)
 			return nil, err
+		}
+		// 解出来的东西必须与清单一致 —— 清单错 = 装上去的插件不是这份构建的产物。
+		if sum != wantSum {
+			os.Remove(tmp)
+			return nil, fmt.Errorf("internal/embed: %s 解出内容与 SHA256SUMS 不一致(嵌入产物与清单不同批)", bin)
 		}
 		if err := os.Rename(tmp, dst); err != nil {
 			os.Remove(tmp)
@@ -230,6 +272,61 @@ func EnsurePlugins(home string) ([]string, error) {
 		written = append(written, dst)
 	}
 	return written, nil
+}
+
+// packedDigests 读 embed 内的 SHA256SUMS(未压缩内容的哈希表:插件基名 → sha256)。
+//
+// 为什么清单是**必需的**而不是可选的:它同时是稳态快路径的判据、产物与构建绑定的
+// 校验、以及发行校验门核对「装到磁盘上的那份是不是这份构建的」的依据。缺了它 ⇒
+// 显式失败,而不是悄悄退回「每次启动全解压再比」的第二条路(两条路漂移起来没人发现)。
+func packedDigests() (map[string][32]byte, error) {
+	raw, err := extPlugins.ReadFile(extPluginDir + "/SHA256SUMS")
+	if err != nil {
+		return nil, fmt.Errorf("internal/embed: 缺 %s/SHA256SUMS(请跑 bash scripts/gen-extplugins.sh 重建产物):%w", extPluginDir, err)
+	}
+	out := map[string][32]byte{}
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) != 2 || len(fields[0]) != 64 {
+			return nil, fmt.Errorf("internal/embed: SHA256SUMS 有坏行:%q", line)
+		}
+		// 用 hex.Decode 而非 fmt.Sscanf("%64x"):Sscanf 对定长十六进制的宽度语义
+		// 并不保证「正好 32 字节」(实测直接报错),别在格式化上绕。
+		raw, err := hex.DecodeString(fields[0])
+		if err != nil || len(raw) != sha256.Size {
+			return nil, fmt.Errorf("internal/embed: SHA256SUMS 哈希非法(%q)", fields[0])
+		}
+		var sum [32]byte
+		copy(sum[:], raw)
+		out[fields[1]] = sum
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("internal/embed: SHA256SUMS 是空的(产物与清单不同批)")
+	}
+	return out, nil
+}
+
+// writeHashed 把 r 写到 path(0755),同时返回内容的 sha256(一边写一边算,不二次读盘)。
+func writeHashed(path string, r io.Reader) ([32]byte, error) {
+	out, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	if err != nil {
+		return [32]byte{}, err
+	}
+	h := sha256.New()
+	if _, err := io.Copy(io.MultiWriter(out, h), r); err != nil {
+		out.Close()
+		return [32]byte{}, err
+	}
+	if err := out.Close(); err != nil {
+		return [32]byte{}, err
+	}
+	var sum [32]byte
+	copy(sum[:], h.Sum(nil))
+	return sum, nil
 }
 
 var _ = sdk.SDKVersion // 保持 sdk 感知(seed 与 SDK 同版本发布语义)
