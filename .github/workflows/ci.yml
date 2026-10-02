@@ -47,10 +47,18 @@ jobs:
           go install honnef.co/go/tools/cmd/staticcheck@2026.2.1
           bash scripts/gate.sh
       - name: go test -race(含覆盖率 profile,供下一步复用;sdk module 单独跑)
+        env:
+          # 子进程覆盖:cmd/gah 的 main() 只能在**子进程**里跑到,测试用 `go build -cover`
+          # 插桩 + GOCOVERDIR 让它自己落盘,覆盖率门再把这份并进主 profile
+          # (实现与边界见 internal/testutil/coverchild.go 与 coverage-check.sh 头注)。
+          GAH_COVER_MERGE_DIR: ${{ runner.temp }}/gah-cover-merge
         run: |
+          mkdir -p "$GAH_COVER_MERGE_DIR"
           go test -race -coverprofile=coverage.out -covermode=atomic ./...
           (cd sdk && go test -race -coverprofile=../sdk-coverage.out -covermode=atomic ./...)
       - name: 覆盖率门(逐包棘轮 + 全局下限;阈值只在 scripts/coverage-check.sh)
+        env:
+          GAH_COVER_MERGE_DIR: ${{ runner.temp }}/gah-cover-merge
         run: bash scripts/coverage-check.sh coverage.out sdk-coverage.out
       - name: 交叉编译矩阵(五目标+体积门+平台匹配)
         run: |

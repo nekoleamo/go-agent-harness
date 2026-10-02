@@ -14,6 +14,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/nekoleamo/go-agent-harness/internal/testutil"
 )
 
 var (
@@ -23,6 +25,11 @@ var (
 
 func TestMain(m *testing.M) {
 	code := m.Run()
+	// 子进程覆盖数据交给覆盖率门(必须在 os.Exit 之前 flush:covdata 目录里的数据
+	// 由子进程退出时写入,转换要在用例跑完之后做)。
+	if testutil.RunDir(nil) != "" {
+		testutil.Flush(nil, "github.com/nekoleamo/go-agent-harness/cmd/gah")
+	}
 	if cliDir != "" {
 		_ = os.RemoveAll(cliDir)
 	}
@@ -45,10 +52,12 @@ func cliBinary(t *testing.T) string {
 		name += ".exe"
 	}
 	cliBin = filepath.Join(dir, name)
-	out, err := exec.Command("go", "build", "-o", cliBin, ".").CombinedOutput()
-	if err != nil {
-		t.Fatalf("go build gah: %v\n%s", err, out)
-	}
+	// **带覆盖插桩**构建:不带 -cover 的产物根本不写 GOCOVERDIR(main() 的那些分支
+	// 永远进不了覆盖率账 —— 这就是这个包长期停在 56% 的成因,见
+	// scripts/coverage-check.sh 头注「子进程盲区」与 internal/testutil/coverchild.go)。
+	// 未设合并目录时 BuildCovered 照常工作,只是没人来合并那份数据(门会把子进程那份
+	// 算作「无数据」而不是「0 覆盖」)。
+	testutil.BuildCovered(t, cliBin, ".")
 	return cliBin
 }
 
@@ -62,6 +71,10 @@ type cliResult struct {
 func runCLI(t *testing.T, stdinMode string, args ...string) cliResult {
 	t.Helper()
 	cmd := exec.Command(cliBinary(t), args...)
+	// 子进程覆盖:设了合并目录才有这一步(没设时 envFromChild 返回 nil)。
+	if env := testutil.ChildEnv(t); env != nil {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	switch stdinMode {

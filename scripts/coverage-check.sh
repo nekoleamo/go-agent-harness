@@ -57,21 +57,32 @@ SKIP="${GAH_COVER_SKIP:-0}"             # 1 = 只测(不校验),用于基线测�
 # 更新规则:新增关键包 → 补一行;包改名/拆分 → 同步本表(未登记的棘轮包会被报缺失)。
 # 第九十四批(2026-09-30)按实测上调三行(补测:命令补全/显示分支、偏好落盘失败路径、
 # CLI 进程级行为):internal/prefs 66→82(实测 86.4)、plugins/host/host-roles 78→87(实测 90.4)、
-# cmd/gah 50→56(实测 57.9;main() 只能由**子进程**跑到,子进程不写 cover 计数器 ⇒ 上限在此)。
+# cmd/gah 50→56(实测 57.9;当时 main() 只能由**子进程**跑到,子进程不写 cover 计数器 ⇒ 上限在此)
+#   → 2026-10-02 子进程覆盖接通后重测:darwin/arm64 **75.0**(含 main()),棘轮 56 → **68**。
+#   取 68 而非 75:棘轮取**各平台实测的较小值**,本地只有 darwin 一档,linux/windows 由 CI 首跑实测;
+#   CI 实测若低于 68,按跨平台差处理(平台专用 @GOOS 行),不要直接把这里往上抬。
 # 方向只允许往上:降门必须换成补测(见 AGENTS.md「覆盖率门」)。
 # 跨平台差(踩过的坑):棘轮取**各平台实测的较小值**。第一百零四批按 macOS 实测把
 # host-schedule 调到 81.5,而 CI(linux)实测 81.2 ⇒ 门红。带平台差异的代码路径要用
 # @GOOS 平台行单独登记,别拿单一平台的读数当通用值。
 #
 # 平台覆盖:<包>@<GOOS> 行 = 该平台专用下限(覆盖同包的基础行)。仅当某个包的覆盖率
-# **因平台语义而不可比**时才用,且必须写清原因 —— 目前只有一处:
-#   plugins/tool/tool-shell@linux:Landlock 自举 helper(kernel_linux.go 的
-#   landlockSelfAndExec/llAddPathRule)是**重新 exec 自身**后在子进程里跑完的,
-#   子进程不写 cover 计数器 → Linux 上这部分永远显示 0.0%(代码其实被真跑到了,
-#   Linux CI 的端到端与 tool-shell 用例都验证了「越界写被拦」)。darwin 无此问题
-#   (seatbelt 走 argv 包装,profile 在父进程构建),故 darwin 沿用 90。
-#   若要弥合两个数字,需给测试开 GOCOVERDIR + `go tool covdata textfmt` 合并,
-#   属另一个量级的改动,暂不做(登记在此,不假装平台无关)。
+# **因平台语义而不可比**时才用,且必须写清原因 —— 目前两处,都是同一条:
+#   plugins/tool/tool-shell@linux 与 internal/kernelsandbox@linux:Landlock 自举 helper
+#   (linux.go 的 landlockSelfAndExec/llAddPathRule)是**重新 exec 自身**去跑目标命令的。
+#   被 exec 替换掉的进程**永远不会写出覆盖计数器**(Go 运行时在正常退出时写盘,而 exec
+#   替换了进程镜像 ⇒ 退出处理根本不执行)。已用最小实验验证:插桩程序 exec 掉自己后,
+#   那段代码在 profile 里计数恒为 0,而父进程写出的文件里**只有父进程那段**。
+#   ⇒ 这一类**不是「测试没跑到」,也修不了**:GOCOVERDIR / covdata 合并对它无效(2026-10-02
+#   实测确认),要真弥合得让 helper 不 exec 自己(改成 fork 出子进程、由父进程等待),
+#   那是动**内核沙箱的施加路径**、只能在 Linux 上验 —— 已登记待议,不假装已解决。
+#   darwin 无此问题(seatbelt 走 argv 包装,profile 在父进程构建)。
+#
+# cmd/gah 曾是第三处同类盲区(main() 只能由**子进程**跑到),2026-10-02 **已弥合**:
+# 测试用 `go build -cover` 插桩 + `GOCOVERDIR` 让子进程自己落盘,再经 `scripts/covermerge`
+# 按区块计数相加并进主 profile(实现与边界见 internal/testutil/coverchild.go)。
+#   驱动方式:设 `GAH_COVER_MERGE_DIR=<目录>` 后跑测试,覆盖率门会自动并入该目录下的
+#   `*.child.out`;不设 = 不启用(拿不到子进程那份 ≠ 那部分覆盖率为 0,两件事必须能分开)。
 #
 #   internal/kernelsandbox 同样只登记了一个保守下限(darwin 实测 95.1):Linux 的
 #   Landlock 自举 helper 与上面的 tool-shell@linux 是**同一个盲区**(重新 exec 自身后
@@ -100,7 +111,7 @@ internal/embed 75.2
 internal/install 60
 internal/sessionevents 92
 internal/sessionhtml 92
-cmd/gah 56
+cmd/gah 68
 plugins/catalogue 70
 plugins/ui/ui-web-app 70
 web 80.6
@@ -269,6 +280,53 @@ fi
 for p in "${PROFILES[@]}"; do
   [ -s "$p" ] || { echo "FAIL 覆盖率 profile 缺失或为空:$p"; exit 1; }
 done
+
+# 子进程覆盖合并(2026-10-02):测试侧按 GAH_COVER_MERGE_DIR 落 *.child.out
+# (见 internal/testutil/coverchild.go —— 子进程必须带 -cover 插桩才会写 GOCOVERDIR,
+#  文件已按包筛过,不把别的包的测量混进来)。这里做「按区块计数相加」的并入:
+# 没设该变量 = 不启用,普通模式与 --dilution 的行为与从前**逐字相同**。
+CHILD_DIR="${GAH_COVER_MERGE_DIR:-}"
+if [ -n "$CHILD_DIR" ] && [ -d "$CHILD_DIR" ]; then
+  shopt -s nullglob
+  child_files=("$CHILD_DIR"/*.child.out)
+  shopt -u nullglob
+  if [ "${#child_files[@]}" -gt 0 ]; then
+    echo "== 合并子进程覆盖:${#child_files[@]} 份 =="
+    for f in "${child_files[@]}"; do echo "   $(basename "$f")"; done
+    # 逐份并入**拥有该包的那个 profile**(root 或 sdk)。两份都并会把同一个包计两次 ——
+    # 分母翻倍、覆盖率被拉回中间值(实测 75.0% 被算成 59.0%)。
+    # 归属判据用「该子进程 profile 里的文件是否已出现在某个 profile 中」,不引入模块路径知识。
+    for f in "${child_files[@]}"; do
+      # 取第一行数据块的文件部分(纯 bash 切:profile 行首字段就是 "文件:起.止",
+      # 去掉最后一个冒号之后的内容即文件路径)。不用 sed/awk 的正则 —— BSD sed 与
+      # awk 字面量里的 `/` 转义各有一版怪癖,为这一行不值得踩两种坑。
+      line="$(grep -m1 -v '^mode:' "$f" || true)"
+      tok="${line%% *}"
+      pkg="${tok%:*}"
+      [ -n "$pkg" ] && [ "$pkg" != "$tok" ] || { echo "FAIL 子进程 profile 形状不对:$f" >&2; exit 1; }
+      target=""
+      for p in "${PROFILES[@]}"; do
+        if grep -q "^${pkg}:" "$p" 2>/dev/null; then target="$p"; break; fi
+      done
+      if [ -z "$target" ]; then
+        # 既不在 root 也不在 sdk ⇒ 要么这个包的测试压根没跑(该 profile 里没有它),
+        # 要么子进程插桩的是别的 module。显式报错,不静默丢数据。
+        echo "FAIL 子进程覆盖 $f 的包(文件前缀 $pkg)不属于任何已有 profile —— 并进去会重复计数" >&2
+        exit 1
+      fi
+      m="$TMP/merged-$(basename "$target")"
+      if go run ./scripts/covermerge "$target" "$f" > "$m"; then
+        cp "$m" "$target"
+        echo "   $(basename "$f") → $(basename "$target")"
+      else
+        echo "FAIL 子进程覆盖合并失败(不静默跳过:那会让盲区重新变成假的 0%)"
+        exit 1
+      fi
+    done
+  else
+    echo "== 子进程覆盖:无数据(测试未启用插桩,或本平台无子进程路径) =="
+  fi
+fi
 
 GOOS_NOW="$(go env GOOS 2>/dev/null || uname -s | tr '[:upper:]' '[:lower:]')"
 echo "== 逐包覆盖率(棘轮;平台 $GOOS_NOW) =="
