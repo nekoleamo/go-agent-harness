@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"time"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
@@ -35,6 +36,13 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		}
 	}
 	d := tools.Register(&ShellTool{timeout: 60 * time.Second, pty: ptyEnabled})
+	// PowerShell 工具(NOND-W1b):**只在 Windows 注册**。
+	// 不注册而不是注册了再说「本机不支持」,是因为模型会为不存在的工具浪费轮次去试;
+	// 而 Windows 上它确实存在 —— 这不是静默降级,是那个平台上真的有这个东西。
+	if runtime.GOOS == "windows" {
+		dps := tools.Register(NewPowerShellTool())
+		return func() { dps(); d() }, nil
+	}
 	return d, nil
 }
 

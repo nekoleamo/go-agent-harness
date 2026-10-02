@@ -61,6 +61,8 @@ SKIP="${GAH_COVER_SKIP:-0}"             # 1 = 只测(不校验),用于基线测�
 #   → 2026-10-02 子进程覆盖接通后重测:darwin/arm64 **75.0**(含 main()),棘轮 56 → **68**。
 #   取 68 而非 75:棘轮取**各平台实测的较小值**,本地只有 darwin 一档,linux/windows 由 CI 首跑实测;
 #   CI 实测若低于 68,按跨平台差处理(平台专用 @GOOS 行),不要直接把这里往上抬。
+#   2026-10-02(子进程覆盖接通 + zstd 换代)后再上调:internal/embed 75.2 → **78**
+#   (实测 78.4;该包换 zstd 后新增了 SHA256SUMS 解析与流式落盘,补了坏清单/写失败两条用例)。
 # 方向只允许往上:降门必须换成补测(见 AGENTS.md「覆盖率门」)。
 # 跨平台差(踩过的坑):棘轮取**各平台实测的较小值**。第一百零四批按 macOS 实测把
 # host-schedule 调到 81.5,而 CI(linux)实测 81.2 ⇒ 门红。带平台差异的代码路径要用
@@ -107,7 +109,7 @@ internal/providerfile 72
 internal/kernelsandbox 50
 internal/kernelsandbox@linux 43
 internal/mcpconfig 80
-internal/embed 75.2
+internal/embed 78
 internal/install 60
 internal/sessionevents 92
 internal/sessionhtml 92

@@ -570,12 +570,55 @@ func (p *SandboxPolicy) CheckTool(name string) error {
 }
 
 // isExecutor 判定命令/执行器类工具。
+//
+// `powershell`(NOND-W1b,Windows 侧执行器)与 shell 同类,同样**不在这里**按路径参数
+// 解析命令文本 —— 它走 `powershellCmdPaths` 那一支(见 CheckExecutorCommandAt),
+// 否则值级兜底会把命令里的绝对路径当普通参数路径裁掉(read-only 档会误拒,
+// 而更大的问题是**写**目标走不到 PowerShell 专用的扫描器)。
 func isExecutor(name string) bool {
 	switch name {
-	case "shell", "run_code", "lisp_eval", "bash":
+	case "shell", "powershell", "run_code", "lisp_eval", "bash":
 		return true
 	}
 	return false
+}
+
+// CheckExecutorCommandAt 按工具名选对应的写目标扫描器裁决一次命令。
+//
+// 为什么在这里分派而不是让调用方各自判断:「哪个工具用哪套语法」是**策略层**的知识
+// (漏一处 = 一个执行器没有写裁决),集中在一行 switch 里最容易在新增执行器时被看见。
+func (p *SandboxPolicy) CheckExecutorCommandAt(root, name, cmd string) error {
+	if strings.TrimSpace(cmd) == "" {
+		return nil
+	}
+	if name != "powershell" {
+		return p.CheckShellCommandAt(root, cmd)
+	}
+	p.mu.RLock()
+	mode := p.effectiveMode()
+	p.mu.RUnlock()
+	if mode == sdk.SandboxFullAccess {
+		return nil
+	}
+	if root == "" {
+		root = p.Root()
+	}
+	for _, pth := range powershellCmdPaths(cmd) {
+		if !pth.Write {
+			if err := checkShellReadToken(root, pth.Path); err != nil {
+				return err
+			}
+			continue
+		}
+		if pth.Unresolvable {
+			return fmt.Errorf("sandbox: powershell 命令含无法裁决的写目标 %q(含 $ 变量/子表达式/通配/调用表达式);"+
+				"请改写为确定路径,或切 /sandbox full 后自行确认", pth.Path)
+		}
+		if err := p.ValidatePathAt(root, pth.Path); err != nil {
+			return fmt.Errorf("sandbox: powershell 命令写目标被拒(%s): %w", pth.Path, err)
+		}
+	}
+	return nil
 }
 
 // workspaceRoot 工作区根:启动 cwd(后续支持 workspace_root 配置覆盖)。

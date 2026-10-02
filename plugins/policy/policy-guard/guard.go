@@ -201,14 +201,16 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		if dir, ok := sdk.WorkRootOf(ctx); ok {
 			callRoot = dir
 		}
-		if call.Name == "shell" {
-			// 解出真实命令文本再判定:JSON 转义(`\u0072m`)与解释器删除等绕过在此收敛
+		if isExecutor(call.Name) {
+			// 解出真实命令文本再判定:JSON 转义(`\u0072m`)与解释器删除等绕过在此收敛。
+			// powershell 与 shell 同为执行器,但**危险词表与写目标解析各走各的语法**
+			// (POSIX 词法扫 PowerShell 一个字都认不出 —— 那是最危险的「看起来在管」)。
 			cmd := shellCommand(call.Arguments)
-			pattern, hit := matchDangerous(cmd)
+			pattern, hit := matchDangerousCmd(call.Name, cmd)
 			if !hit {
 				// B2(2026-09-27):枚举漏网写法(`>> /etc/hosts`、`> ~/.zshrc`、`mv x /etc/y`)
 				// 由“写目标落在受保护位置”派生补充(同一份写目标解析,不重复枚举)
-				pattern, hit = derivedApprovalTarget(cmd)
+				pattern, hit = derivedApprovalTarget(call.Name, cmd)
 			}
 			if hit {
 				if err := ap.check(ctx, confirmOf(), pattern, cmd); err != nil {
@@ -218,7 +220,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 			// 路径裁决(R10 ①,顺序在审批之后、与 file_* 一致):显式写目标必须落在档位允许范围
 			// 内。审批通过不代表放开档位(workspace-write 下 `rm -rf /tmp/x` 即便人工同意仍被拒),
 			// 需要放开请显式切 /sandbox full。
-			if err := sp.CheckShellCommandAt(callRoot, cmd); err != nil {
+			if err := sp.CheckExecutorCommandAt(callRoot, call.Name, cmd); err != nil {
 				return err
 			}
 		}

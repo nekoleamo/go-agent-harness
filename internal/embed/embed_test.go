@@ -2,6 +2,7 @@
 package embed
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -13,6 +14,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"bytes"
+	"crypto/sha256"
 	"github.com/nekoleamo/go-agent-harness/internal/testutil"
 )
 
@@ -458,3 +461,107 @@ func TestPackedDigestsRejectsBadManifest(t *testing.T) {
 		}
 	}
 }
+
+// parseDigests 的坏输入路径:清单是**必需**的,坏清单必须显式失败而不是退回
+// 「每次启动全解压」的第二条路 —— 两条路并存就会漂,而且没人发现漂了。
+func TestParseDigestsRejectsBadManifests(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{"坏行", "broken-line\n", "坏行"},
+		{"字段数不对", "onlyonefield\n", "坏行"},
+		{"哈希长度不对", "abcd  a\n", "坏行"},
+		{"哈希非十六进制", strings.Repeat("z", 64) + "  a\n", "哈希非法"},
+		{"空清单", "\n# 只有注释\n", "是空的"},
+	}
+	for _, c := range cases {
+		_, err := parseDigests([]byte(c.content))
+		if err == nil {
+			t.Errorf("%s:应报错", c.name)
+			continue
+		}
+		if !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s:错误应含 %q,got %q", c.name, c.want, err.Error())
+		}
+	}
+}
+
+// 正常清单的读法:空行与 # 注释跳过。
+func TestParseDigestsSkipsBlanksAndComments(t *testing.T) {
+	sum := strings.Repeat("ab", 32)
+	m, err := parseDigests([]byte("# 注释\n\n" + sum + "  tool-x\n" + sum + "  tool-y\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m) != 2 || m["tool-x"] == ([32]byte{}) {
+		t.Fatalf("应解析出 2 条且哈希非零,got %v", m)
+	}
+}
+
+// writeHashed:写文件 + 返回内容哈希(两件事必须一致 —— 宿主靠这个哈希判「要不要重写」)。
+func TestWriteHashedMatchesContent(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "x.bin")
+	payload := []byte("hello embedded plugin")
+	sum, err := writeHashed(p, bytes.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("写出的内容不对:%q", got)
+	}
+	if sum != sha256.Sum256(payload) {
+		t.Fatalf("哈希与内容不一致:%x vs %x", sum, sha256.Sum256(payload))
+	}
+	// 权限:可执行位(解出来的插件必须能被 exec)
+	fi, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm()&0o100 == 0 {
+		t.Errorf("应带执行位,got %v", fi.Mode().Perm())
+	}
+	// 覆盖写:第二次写更短的内容,文件被截断而不是残留旧尾巴
+	if _, err := writeHashed(p, bytes.NewReader([]byte("ab"))); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(p); string(b) != "ab" {
+		t.Fatalf("覆盖写应截断,got %q", b)
+	}
+}
+
+// ReadExtPlugin 的失败路径:不存在的插件名 ⇒ 显式错误(而不是返回一个空流,
+// 让调用方拿到 0 字节还以为「插件是空的」)。
+func TestReadExtPluginUnknownName(t *testing.T) {
+	if _, err := ReadExtPlugin("no-such-plugin-xyz"); err == nil {
+		t.Fatal("不存在的插件名应报错")
+	}
+}
+
+// writeHashed 的两条失败路径:目录不存在(建不出文件)与读取中途出错。
+func TestWriteHashedErrors(t *testing.T) {
+	// 目录不存在
+	if _, err := writeHashed(filepath.Join(t.TempDir(), "nope", "x.bin"), bytes.NewReader([]byte("x"))); err == nil {
+		t.Error("目录不存在时应报错")
+	}
+	// 读取中途出错:写到一半失败,不能留下一个「看起来完整」的文件
+	dir := t.TempDir()
+	p := filepath.Join(dir, "y.bin")
+	if _, err := writeHashed(p, &errReader{}); err == nil {
+		t.Error("读取出错时应报错")
+	}
+	if fi, err := os.Stat(p); err == nil && fi.Size() > 0 {
+		t.Error("失败后不该留下非空的半截文件")
+	}
+}
+
+// errReader 一个总是失败的 reader。
+type errReader struct{}
+
+func (errReader) Read([]byte) (int, error) { return 0, errors.New("boom") }

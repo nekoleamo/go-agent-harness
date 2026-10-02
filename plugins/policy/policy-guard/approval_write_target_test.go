@@ -46,7 +46,7 @@ func TestProtectedWriteTargetDerivation(t *testing.T) {
 		hitCase{"echo key >> $HOME/.ssh/authorized_keys", "写凭据路径"}, // 枚举漏 + 变量写法(展开后判)
 	)
 	for _, c := range hits {
-		label, hit := derivedApprovalTarget(c.cmd)
+		label, hit := derivedApprovalTarget("shell", c.cmd)
 		if !hit {
 			t.Fatalf("%q 应派生出审批项(枚举表的漏网写法)", c.cmd)
 		}
@@ -65,7 +65,7 @@ func TestProtectedWriteTargetDerivation(t *testing.T) {
 		"grep -r credentials .",                               // 裸词不是路径
 	}
 	for _, cmd := range misses {
-		if label, hit := derivedApprovalTarget(cmd); hit {
+		if label, hit := derivedApprovalTarget("shell", cmd); hit {
 			t.Fatalf("%q 不应派生审批项(避免确认框噪音),got %q", cmd, label)
 		}
 	}

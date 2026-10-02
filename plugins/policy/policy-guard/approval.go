@@ -281,7 +281,7 @@ func parseApprovalTools(v any) map[string]bool {
 	return out
 }
 
-// matchDangerous 返回命中的危险模式名。
+// matchDangerous 返回命中的危险模式名(POSIX shell 词表)。
 func matchDangerous(args string) (string, bool) {
 	for _, d := range dangerousPatterns {
 		if d.re.MatchString(args) {
@@ -289,6 +289,51 @@ func matchDangerous(args string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// matchDangerousCmd 按工具名选词表:PowerShell 有**自己**的一套(NOND-W1b)。
+//
+// 为什么不能共用一张表:POSIX 那张认的是 `rm -rf /`、`chmod 777`、`dd if=` 这些词法,
+// 而 Windows 上真正会执行的是 `Remove-Item ... -Recurse -Force`、`Format-Volume`、
+// `Set-MpPreference -DisableRealtimeMonitoring` —— 共用一张表的后果是**PowerShell 的
+// 危险命令一条都不命中**(看起来在审批,实际全放行)。
+func matchDangerousCmd(tool, cmd string) (string, bool) {
+	if tool == "powershell" {
+		for _, d := range dangerousPowerShellPatterns {
+			if d.re.MatchString(cmd) {
+				return d.name, true
+			}
+		}
+		return "", false
+	}
+	return matchDangerous(cmd)
+}
+
+// dangerousPowerShellPatterns PowerShell 侧的危险模式(NOND-W1b)。
+//
+// 取舍:**宁少勿滥** —— 只收「不可逆 / 系统级 / 关防护」三类,每条都写清为什么。
+// 不收的典型:普通 `Get-*`/`Select-*`(读)、`Move-Item` 改工作区内文件(路径层已管),
+// 因为把它们推去确认只会让用户对审批框脱敏。
+var dangerousPowerShellPatterns = []struct {
+	name string
+	re   *regexp.Regexp
+}{
+	// —— 不可逆 / 破坏面 ——
+	{"递归强删(Remove-Item -Recurse -Force)", regexp.MustCompile(`(?i)\bremove-item\b[^\n]*-recurse\b[^\n]*-force\b|\brm\s+[^\n]*-[a-z]*r[a-z]*f\b`)},
+	{"磁盘/卷级擦除(Format-Volume / Clear-Disk)", regexp.MustCompile(`(?i)\b(format-volume|clear-disk|initialize-disk|diskpart)\b`)},
+	{"清空卷影副本(vssadmin delete shadows)", regexp.MustCompile(`(?i)\bvssadmin\b[^\n]*\bdelete\b[^\n]*\bshadows\b`)},
+	{"CIPHER 重写空闲空间(不可恢复)", regexp.MustCompile(`(?i)^\s*cipher\b[^\n]*\s/w\b`)},
+	// —— 系统级注册表/服务/计划任务 ——
+	{"注册表删除(HKLM 侧)", regexp.MustCompile(`(?i)\breg(\s+delete|\s+remove)\b[^\n]*hklm|\bremove-item\b[^\n]*hklm:\\`)},
+	{"删系统服务 / 改启动项", regexp.MustCompile(`(?i)\b(sc(\.exe)?\s+delete|remove-item\b[^\n]*\\services\\|set-service\b[^\n]*-starttype\s+disabled)`)},
+	{"新建/改计划任务或启动项", regexp.MustCompile(`(?i)\b(new-scheduledtaskaction|register-scheduledtask|new-item\b[^\n]*\\startup\\|set-itemproperty\b[^\n]*\\run\b)`)},
+	// —— 关防护 / 提权 ——
+	{"关闭 Defender 实时监控", regexp.MustCompile(`(?i)\bset-mppreference\b[^\n]*-disablerealtimemonitoring\b`)},
+	{"添加 Defender 排除项", regexp.MustCompile(`(?i)\badd-mppreference\b[^\n]*-exclusionpath\b`)},
+	{"关闭 UAC(ChangeUserAccount / EnableLUA)", regexp.MustCompile(`(?i)\b(set-itemproperty\b[^\n]*enablelua|reg\s+add\b[^\n]*enable\s+lua\s+/d\s+0)`)},
+	{"改执行策略为不受限", regexp.MustCompile(`(?i)\bset-executionpolicy\b[^\n]*\b(bypass|unrestricted)\b`)},
+	// —— 动态求值(命令注入面) ——
+	{"动态执行(IEX / 脚本块求值 / FromBase64String)", regexp.MustCompile(`(?i)\b(iex|invoke-expression)\b|\bfrombase64string\b|\.invoke\(.*\bexpression\b|\$\(`)},
 }
 
 // ---------- 写目标派生(B2,2026-09-27 安全审计观察项) ----------
@@ -332,8 +377,14 @@ var protectedWriteFiles = []string{
 // 不可裁决的写目标(含变量/命令替换)**不跳过**:它们在 workspace-write/read-only 下已被路径层直接拒,
 // 但 full-access 档路径检查整个短路 —— 那正是派生审批还有价值的地方(`echo x >> $HOME/.ssh/authorized_keys`)。
 // 判定仍保守:只认能展开的写法(`$HOME/…`/`~`)与字面量凭据段,其余不命中。
-func derivedApprovalTarget(cmd string) (string, bool) {
-	for _, p := range shellCmdPaths(cmd) {
+// name 是工具名(powershell 走自己的扫描器);保持单参调用点的旧写法不成立 ——
+// 宁可改全部调用点,也不要留一个「默认当 shell」的隐式约定。
+func derivedApprovalTarget(name, cmd string) (string, bool) {
+	paths := shellCmdPaths(cmd)
+	if name == "powershell" {
+		paths = powershellCmdPaths(cmd)
+	}
+	for _, p := range paths {
 		if !p.Write {
 			continue
 		}

@@ -284,6 +284,15 @@ func packedDigests() (map[string][32]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("internal/embed: 缺 %s/SHA256SUMS(请跑 bash scripts/gen-extplugins.sh 重建产物):%w", extPluginDir, err)
 	}
+	return parseDigests(raw)
+}
+
+// parseDigests 解析清单正文(**纯函数**:embed.FS 里的内容不可替换,坏输入只能靠它测)。
+//
+// 清单是**必需**的而不是可选的:它同时是稳态快路径的判据、产物与构建绑定的校验、
+// 以及发行校验门核对「装到磁盘上的那份是不是这份构建的」的依据。缺了它 ⇒ 显式失败,
+// 而不是悄悄退回「每次启动全解压再比」的第二条路(两条路漂移起来没人发现)。
+func parseDigests(raw []byte) (map[string][32]byte, error) {
 	out := map[string][32]byte{}
 	for _, line := range strings.Split(string(raw), "\n") {
 		line = strings.TrimSpace(line)
@@ -296,12 +305,12 @@ func packedDigests() (map[string][32]byte, error) {
 		}
 		// 用 hex.Decode 而非 fmt.Sscanf("%64x"):Sscanf 对定长十六进制的宽度语义
 		// 并不保证「正好 32 字节」(实测直接报错),别在格式化上绕。
-		raw, err := hex.DecodeString(fields[0])
-		if err != nil || len(raw) != sha256.Size {
+		h, err := hex.DecodeString(fields[0])
+		if err != nil || len(h) != sha256.Size {
 			return nil, fmt.Errorf("internal/embed: SHA256SUMS 哈希非法(%q)", fields[0])
 		}
 		var sum [32]byte
-		copy(sum[:], raw)
+		copy(sum[:], h)
 		out[fields[1]] = sum
 	}
 	if len(out) == 0 {
