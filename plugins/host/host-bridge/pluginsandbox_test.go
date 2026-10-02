@@ -61,7 +61,7 @@ func TestProbeCapabilities(t *testing.T) {
 	// ① 自报 shell 语义 + 数据目录
 	t.Setenv("FIXTURE_CRED_READ_DENY", "1")
 	t.Setenv("FIXTURE_DATA_WRITES", "memory,todos")
-	caps, ok := probeCapabilities(bin)
+	caps, ok := probeCapabilities(bin, "")
 	if !ok {
 		t.Fatal("自报能力的插件应探测成功")
 	}
@@ -75,14 +75,14 @@ func TestProbeCapabilities(t *testing.T) {
 	// ② 零声明(探测成功但什么都没声明)= 「普通插件」:宿主仍按包装处理
 	t.Setenv("FIXTURE_CRED_READ_DENY", "0")
 	t.Setenv("FIXTURE_DATA_WRITES", "")
-	if caps, ok := probeCapabilities(bin); !ok || caps.CredentialReadDeny || len(caps.DataWrites) != 0 {
+	if caps, ok := probeCapabilities(bin, ""); !ok || caps.CredentialReadDeny || len(caps.DataWrites) != 0 {
 		t.Fatalf("零声明应探测成功且为空: ok=%v caps=%+v", ok, caps)
 	}
 
 	// ③ 旧插件(tool-echo 用裸 ServeRPC,不认 --gah-caps):探测失败 = 未声明
 	buildExternalPlugin(t, dir)
 	echo := filepath.Join(dir, testutil.ExeName("tool-echo"))
-	if caps, ok := probeCapabilities(echo); ok {
+	if caps, ok := probeCapabilities(echo, ""); ok {
 		t.Fatalf("不认 --gah-caps 的旧插件必须归为未声明: %+v", caps)
 	}
 }
@@ -130,7 +130,7 @@ func TestWrapPluginArgvDecision(t *testing.T) {
 	bin := "/tmp/tool-x"
 
 	// ① 未声明(旧插件/普通插件)→ 包装(安全侧默认)。平台不支持时 Skip 并说清。
-	argv, env, wrapped := b.wrapPluginArgv(bin, Capabilities{}, false, nil)
+	argv, env, wrapped := b.wrapPluginArgv(bin, "", Capabilities{}, false, nil)
 	if !wrapped {
 		if argv[0] != bin || len(env) != 0 {
 			t.Fatalf("未包装时 argv/env 不应被改动: %v %v", argv, env)
@@ -146,20 +146,20 @@ func TestWrapPluginArgvDecision(t *testing.T) {
 
 	// ② 自报「进程内会跑 shell 命令」→ **仍包装**(嵌套由 MarkerEnv 承担,2026-09-27 审计 A6),
 	//    只是多带凭据读拒绝(读拒绝本身在 TestPluginSandboxSpecReadDeny 单独钉)。
-	if argv, env, wrapped := b.wrapPluginArgv(bin, Capabilities{CredentialReadDeny: true}, true, nil); !wrapped || argv[0] == bin || len(env) != 1 {
+	if argv, env, wrapped := b.wrapPluginArgv(bin, "", Capabilities{CredentialReadDeny: true}, true, nil); !wrapped || argv[0] == bin || len(env) != 1 {
 		t.Fatalf("自报 shell 语义的插件不得被免除包装: argv=%v env=%v wrapped=%v", argv, env, wrapped)
 	}
 
 	// ③ 全权档 → 不包装(协作层也不拦,内核层无需施加)
 	sb.mode = sdk.SandboxFullAccess
-	if _, _, wrapped := b.wrapPluginArgv(bin, Capabilities{}, true, nil); wrapped {
+	if _, _, wrapped := b.wrapPluginArgv(bin, "", Capabilities{}, true, nil); wrapped {
 		t.Fatal("全权档不得包装")
 	}
 
 	// ④ 显式关闭 → 不包装
 	sb.mode = sdk.SandboxWorkspace
 	t.Setenv(pluginKernelSandboxEnv, "0")
-	if _, _, wrapped := b.wrapPluginArgv(bin, Capabilities{}, true, nil); wrapped {
+	if _, _, wrapped := b.wrapPluginArgv(bin, "", Capabilities{}, true, nil); wrapped {
 		t.Fatal("GAH_EXT_PLUGIN_SANDBOX=0 时不得包装")
 	}
 }
@@ -226,7 +226,7 @@ func TestSandboxStaleRebuildsBeforeCall(t *testing.T) {
 	b := capsTestBridge(t, root, sb, logger)
 	bin := buildCapsFixture(t, root)
 
-	e, err := b.loadOne(bin)
+	e, err := b.loadOne(bin, "")
 	if err != nil {
 		t.Fatalf("加载夹具失败: %v", err)
 	}
@@ -301,7 +301,7 @@ func TestWrappedPluginProcessIsKernelConstrained(t *testing.T) {
 	t.Setenv("FIXTURE_WRITE_PATH", target)
 
 	call := func(requireWrapped bool) string {
-		e, lerr := b.loadOne(bin)
+		e, lerr := b.loadOne(bin, "")
 		if lerr != nil {
 			t.Fatalf("加载夹具失败: %v", lerr)
 		}

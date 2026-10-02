@@ -1,6 +1,7 @@
 #!/bin/bash
-# 生成随包分发的外部工具插件二进制(M6.9 工具类全外部化):tool-basic(三件套)、
-# tool-workflow(starlark 引擎,经宿主回调通道)、tool-mcp(MCP client 桥)。
+# 生成随包分发的外部工具插件二进制(M6.9 工具类全外部化):**一个** tool-kit 二进制,
+# 按角色分派 tool-basic(三件套)/ tool-workflow(starlark)/ tool-mcp(MCP client)/
+# tool-subagent —— 2026-10-02 由四个独立二进制合并而来(原始 30.8 MiB → 9.6 MiB)。
 # P4 平台匹配:按发行矩阵(darwin/linux/windows × amd64/arm64,与
 # .goreleaser.yaml 对齐)每目标构建一份,落 internal/embed/extplugins/<os>-<arch>/;
 # 主包交叉编译时经 build-tag 只嵌本平台产物(体积门不变);
@@ -19,7 +20,9 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 EMBED_DIR=internal/embed/extplugins
 TARGETS="darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64 windows/arm64"
-NAMES="tool-basic tool-workflow tool-mcp tool-subagent"
+# 2026-10-02 瘦身:四个独立二进制合成一个 tool-kit(按角色分派,见 extplugins/toolkit)。
+# 合成的是二进制不是进程 —— 宿主仍逐角色起进程,配置文件里的插件 id 一个都没变。
+NAMES="tool-kit"
 
 # assert_arch <bin> <expect-os> <expect-arch>:build 后(压缩前)校验产物头部魔数
 # 与架构字段 == 目标平台(P4 漂移护栏:脚本/工具链改动漏平台立即失败)。

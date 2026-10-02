@@ -231,7 +231,7 @@ func newFakeBridgeEnv(t *testing.T, cl *rpc.Client, name string, def sdk.ToolDef
 	b := &Bridge{dir: t.TempDir(), tools: reg, lg: slog.New(slog.DiscardHandler), entries: map[string]*extEntry{}}
 	path := filepath.Join(b.dir, "tool-fake")
 	e := &extEntry{client: cl, kill: func() {}, unreg: func() {}, tools: map[string]*toolRPCClient{}}
-	e.tools[name] = &toolRPCClient{br: b, path: path, name: name, def: def}
+	e.tools[name] = &toolRPCClient{br: b, path: path, key: path, name: name, def: def}
 	e.unreg = b.registerAll(e)
 	b.mu.Lock()
 	b.entries[path] = e
@@ -575,12 +575,12 @@ func TestBridgeReloadAddsAndIgnoresPaths(t *testing.T) {
 
 	buildExternalPlugin(t, dir) // 运行期新落地的 tool-echo
 	path := filepath.Join(dir, testutil.ExeName("tool-echo"))
-	b.reload(path)
+	b.reload(path, "")
 	if b.entries[path] == nil {
 		t.Fatal("reload 应加载新出现的插件二进制")
 	}
 	first := b.entries[path]
-	b.reload(path) // 已存在 → 替换实例
+	b.reload(path, "") // 已存在 → 替换实例
 	if b.entries[path] == nil || b.entries[path] == first {
 		t.Fatal("reload 已加载插件应替换实例")
 	}
@@ -590,7 +590,7 @@ func TestBridgeReloadAddsAndIgnoresPaths(t *testing.T) {
 	if err := os.WriteFile(other, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	b.reload(other)
+	b.reload(other, "")
 	if _, ok := b.entries[other]; ok {
 		t.Fatal("非 tool-*/cmd-* 文件不应被当作插件加载")
 	}

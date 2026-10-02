@@ -107,7 +107,10 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 			// 热更新仅对已存在目录有意义(防止默认开 watch 后空目录拖垮 boot)
 			if _, serr := os.Stat(dir); serr == nil {
 				_, closeFn, werr := coreplugin.NewWatcher(dir, 300*time.Millisecond, func(path string) {
-					b.reload(path)
+					// 一个二进制可能是多角色(瘦身):逐角色重载,只重载**当时已加载**的那些
+					for _, role := range b.loadedRolesOf(path) {
+						_ = b.reload(path, role)
+					}
 				})
 				if werr != nil {
 					b.closeAll()
@@ -157,6 +160,11 @@ func (b *Bridge) sandboxModeRoot() (mode, root string) {
 
 // extEntry 一个外部插件进程条目(可承载多工具 + 多命令)。
 type extEntry struct {
+	// role 本进程承担的角色(= 配置文件里的插件 id,如 "tool-basic")。
+	// 2026-10-02 瘦身:一个二进制可提供多个角色(见 rolesOf/--roles),条目按
+	// 「路径 + 角色」寻址,否则四个角色共用一个文件时无法分别开关/重载。
+	role      string
+	path      string
 	tools     map[string]*toolRPCClient
 	commands  map[string]*commandRPCClient // M14 外部命令(可空)
 	unreg     sdk.Disposer                 // 聚合注销(全部工具+命令)
@@ -181,7 +189,8 @@ type Bridge struct {
 	cbToken string              // M7 鉴权 token(GAH_CB_TOKEN 注入外部进程,回传校验)
 	lg      *slog.Logger        // P3 软降级日志(sdk.Ctx.Logger();nil 时兜底 slog.Default)
 	mu      sync.RWMutex
-	entries map[string]*extEntry // bin 绝对路径 → 条目
+	// 键 = entryKey(路径 + 角色):一个二进制提供多角色时,每角色一个条目(可分别开关/重载)。
+	entries map[string]*extEntry
 	// reloadMu 串行化 reload(文件监听 / 工作区切换 / ctx.extplugins.Reload 三处入口并发时,
 	// 同一路径不得双载:否则先载的实例被后载覆盖且永不回收 = 进程泄漏 + 工具双注册残留)。
 	reloadMu sync.Mutex
@@ -233,33 +242,46 @@ func (b *Bridge) loadEntries() error {
 		if !isExternalPluginBin(d.Name()) {
 			return nil
 		}
-		e, lerr := b.loadOne(path)
-		if lerr != nil {
-			if errors.Is(lerr, errPluginIdle) {
-				// 插件自述空闲(如 tool-mcp 未配置任何 server):记 INFO 跳过。
-				// 「没用到某功能」不是故障,启动日志不该为它报 ERROR。
-				b.logInfo("host-bridge: 外部插件未参与(自述空闲)", "path", path, "reason", lerr)
-				return nil
+		// 一个二进制可能提供**多个角色**(tool-kit:tool-basic/tool-mcp/…)。
+		// 问一次 rolesOf,拿到几个起几个 —— 合成的是二进制,进程仍各自独立(崩溃隔离不丢)。
+		roles := rolesOf(path)
+		for _, role := range roles {
+			e, lerr := b.loadOne(path, role)
+			if lerr != nil {
+				if errors.Is(lerr, errPluginIdle) {
+					// 插件自述空闲(如 tool-mcp 未配置任何 server):记 INFO 并**继续下一个角色**。
+					//
+					// 「继续」而不是「返回」:合并成一个二进制之前,每个角色是各自的文件,
+					// 空闲只影响自己那份;合成之后一个文件里有四个角色,这里若 return,
+					// **排在后面没参与的角色会被前一个角色的空闲顺带掐掉**(实测:tool-mcp
+					// 没配 server ⇒ tool-subagent/tool-workflow 的工具整组消失,而日志
+					// 只有一行 INFO,看着像「本来就没装」)。合成二进制必须自己守住这条边界。
+					b.logInfo("host-bridge: 外部插件角色未参与(自述空闲)", "path", path, "role", role, "reason", lerr)
+					continue
+				}
+				b.logErr("host-bridge: 跳过加载失败的外部插件角色", "path", path, "role", role, "err", lerr)
+				continue
 			}
-			b.logErr("host-bridge: 跳过加载失败的外部插件", "path", path, "err", lerr)
-			return nil
+			unreg := b.registerAll(e)
+			b.mu.Lock()
+			e.unreg = unreg
+			e.path = path
+			b.entries[entryKey(path, role)] = e
+			b.mu.Unlock()
 		}
-		unreg := b.registerAll(e)
-		b.mu.Lock()
-		e.unreg = unreg
-		b.entries[path] = e
-		b.mu.Unlock()
 		return nil
 	})
 }
 
 // loadOne 启动外部插件进程并组装条目(定义枚举 + 协议探测)。
-func (b *Bridge) loadOne(path string) (*extEntry, error) {
+//
+// role 非空 = 该二进制提供多个角色,按 `bin <role>` 起(瘦身);为空 = 老行为(无参起)。
+func (b *Bridge) loadOne(path, role string) (*extEntry, error) {
 	// 能力自报探测必须在 exec **之前**(包装 argv 只能那时定)。探测失败 = 未声明 = 按普通
 	// 插件包装(安全侧默认)。自报项只影响**策略面**(数据根白名单/凭据读拒),不再影响包不包。
-	caps, capsKnown := probeCapabilities(path)
+	caps, capsKnown := probeCapabilities(path, role)
 	dataWrites := b.validDataWrites(path, caps.DataWrites)
-	argv, extraEnv, wrapped := b.wrapPluginArgv(path, caps, capsKnown, dataWrites)
+	argv, extraEnv, wrapped := b.wrapPluginArgv(path, role, caps, capsKnown, dataWrites)
 	wrapMode, wrapRoot := b.sandboxModeRoot()
 	if wrapped {
 		b.logInfo("host-bridge: 外部插件已施加内核沙箱", "path", path, "mode", sbDesc(wrapMode),
@@ -270,7 +292,7 @@ func (b *Bridge) loadOne(path string) (*extEntry, error) {
 		return nil, err
 	}
 	e := &extEntry{client: cl, kill: killFn, unreg: func() {}, tools: map[string]*toolRPCClient{},
-		wrapped: wrapped, wrapMode: wrapMode, wrapRoot: wrapRoot}
+		role: role, path: path, wrapped: wrapped, wrapMode: wrapMode, wrapRoot: wrapRoot}
 	// 协议探测:新协议(Definitions)优先,旧单工具协议回退;
 	// 纯命令插件(cmd-*,无工具)可经 Commands 单独满足加载条件
 	raw := ""
@@ -282,7 +304,7 @@ func (b *Bridge) loadOne(path string) (*extEntry, error) {
 			protoOK = true
 			for _, d := range multi {
 				def := sdk.ToolDefinition{Name: d.Name, Description: d.Description, InputSchema: d.InputSchema, TimeoutMs: d.TimeoutMs, PathParams: d.PathParams, ApprovalTargetParam: d.ApprovalTargetParam, PathParamsDeclared: d.PathParamsDeclared, ProxyArgsParam: d.ProxyArgsParam}
-				e.tools[d.Name] = &toolRPCClient{br: b, path: path, name: d.Name, def: def}
+				e.tools[d.Name] = &toolRPCClient{br: b, path: path, role: role, key: entryKey(path, role), name: d.Name, def: def}
 			}
 		}
 	}
@@ -294,7 +316,7 @@ func (b *Bridge) loadOne(path string) (*extEntry, error) {
 			if json.Unmarshal([]byte(defJSON), &def) == nil && def.Name != "" {
 				e.proto = 1
 				protoOK = true
-				e.tools[def.Name] = &toolRPCClient{br: b, path: path, name: def.Name, def: def}
+				e.tools[def.Name] = &toolRPCClient{br: b, path: path, role: role, key: entryKey(path, role), name: def.Name, def: def}
 			}
 		}
 	}
@@ -308,7 +330,7 @@ func (b *Bridge) loadOne(path string) (*extEntry, error) {
 			e.commands = make(map[string]*commandRPCClient, len(cmds))
 			for _, cd := range cmds {
 				name := cd.Name
-				e.commands[name] = &commandRPCClient{br: b, path: path, name: name, def: cd, timeoutMs: cd.TimeoutMs}
+				e.commands[name] = &commandRPCClient{br: b, path: path, role: role, key: entryKey(path, role), name: name, def: cd, timeoutMs: cd.TimeoutMs}
 			}
 		}
 	}
@@ -359,7 +381,7 @@ func (b *Bridge) Reload(name string) error {
 		return err
 	}
 	b.mu.RLock()
-	_, loaded := b.entries[path]
+	_, loaded := b.entries[entryKey(path, roleOf(name, path))]
 	b.mu.RUnlock()
 	if !loaded {
 		// 未加载:目录里没有(pluginPath 已报错)或上次加载失败/自述空闲;
@@ -367,13 +389,13 @@ func (b *Bridge) Reload(name string) error {
 		// 记 INFO 而非 ERROR:用户刚加第一个 MCP server 走的就是这条路,不是故障。
 		b.logInfo("host-bridge: 外部插件尚未加载,按补加载处理", "name", name, "path", path)
 	}
-	rerr := b.reload(path)
+	rerr := b.reload(path, roleOf(name, path))
 	if errors.Is(rerr, errPluginIdle) {
 		// 自述空闲(未配置任何 server)不是重启失败:配置已保存,只是没有要加载的东西。
 		return nil
 	}
 	b.mu.RLock()
-	_, ok := b.entries[path]
+	_, ok := b.entries[entryKey(path, roleOf(name, path))]
 	b.mu.RUnlock()
 	if !ok {
 		return fmt.Errorf("host-bridge: 重启 %s 失败(详见日志;多为进程启动失败或握手拒绝)", name)
@@ -390,10 +412,13 @@ func (b *Bridge) Reload(name string) error {
 func (b *Bridge) pluginPath(name string) (string, error) {
 	// 1) 已加载条目优先(任意目录布局都能命中;不必猜落点)
 	b.mu.RLock()
-	for path := range b.entries {
-		if externalPluginName(path) == name {
+	for key, e := range b.entries {
+		p := keyPathOf(key, e)
+		if externalPluginName(p) == name || (e != nil && e.role == name) {
+			// 多角色二进制:名字命中的是**角色**(tool-kit 提供 tool-basic 时,
+			// 插件名是 tool-basic 而文件名是 tool-kit)。
 			b.mu.RUnlock()
-			return path, nil
+			return p, nil
 		}
 	}
 	b.mu.RUnlock()
@@ -427,6 +452,57 @@ func (b *Bridge) pluginPath(name string) (string, error) {
 	}
 }
 
+// entryKey 条目键 = 路径 + 角色。
+//
+// 为什么不能只用路径:tool-kit 一个文件提供四个角色,四个条目若共用一个键,后一个会覆盖
+// 前一个(工具双注册 / 前一个进程永不回收)。键里带角色后,四个角色可**分别**开关、重载、
+// 崩溃拉起 —— 而配置文件里的插件 id 一个都没变。
+func entryKey(path, role string) string {
+	if role == "" {
+		return path
+	}
+	return path + "#" + role
+}
+
+// rolesOf 问一个外部二进制它提供哪些角色(2026-10-02 瘦身)。
+//
+// 协议:运行 `bin --roles`,成功则 stdout 是一个 JSON 字符串数组。
+//
+// **向后兼容的关键**:命令失败 / 输出不是 JSON / 数组为空 / 列表里有空项 ⇒
+// 返回 `[""]`,意思是「按**合并前**的老方式起一个无参进程」。第三方自己放进
+// plugins/ 的外部插件(或任何不认识 --roles 的二进制)完全不受影响。
+// 兜底刻意用**空角色**而不是文件基名:空角色让条目键保持等于路径,于是所有按路径
+// 寻址的老代码(测试替身、clientFor、文件监听)一行都不用改;用文件基名当角色会把
+// 键变成 `路径#名字`,老代码全部失配(第一版就这么栽的,表现为「条目缺失」)。
+// 探测与能力自报(CapsFlag)一样有超时与凭据隔离,不给 GAH_CB_*/GAH_PLUGIN。
+func rolesOf(bin string) []string {
+	ctx, cancel := context.WithTimeout(context.Background(), capsProbeTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, RolesFlag)
+	cmd.Env = sdk.SanitizedEnv(os.Environ())
+	out, err := cmd.Output()
+	if err != nil {
+		return legacyRole()
+	}
+	var roles []string
+	if json.Unmarshal(bytes.TrimSpace(out), &roles) != nil || len(roles) == 0 {
+		return legacyRole()
+	}
+	for _, r := range roles {
+		if strings.TrimSpace(r) == "" {
+			return legacyRole() // 有空项 = 清单不可信,退回老行为
+		}
+	}
+	return roles
+}
+
+// legacyRole 「合并前」的单角色标记(空字符串 = 无子命令)。
+func legacyRole() []string { return []string{""} }
+
+// RolesFlag 角色自描述标志(与 extplugins/toolkit 的常量同值;
+// 这里显式写一份:宿主不该为了一个协议常量去 import 外部工具二进制所在的包)。
+const RolesFlag = "--roles"
+
 // externalPluginName 由二进制路径推外部插件名(文件基名去 .exe)。
 func externalPluginName(path string) string {
 	return strings.TrimSuffix(filepath.Base(path), ".exe")
@@ -437,37 +513,83 @@ func externalPluginName(path string) string {
 // 逐个 reload(先注销+kill 再 loadOne+注册);失败条目记日志跳过(软降级,同热更新)。
 func (b *Bridge) reloadAll() {
 	b.mu.RLock()
-	paths := make([]string, 0, len(b.entries))
-	for p := range b.entries {
-		paths = append(paths, p)
+	pairs := make([][2]string, 0, len(b.entries))
+	for key, e := range b.entries {
+		p := key
+		if e != nil && e.path != "" {
+			p = e.path
+		}
+		pairs = append(pairs, [2]string{p, e.role})
 	}
 	b.mu.RUnlock()
-	for _, p := range paths {
-		b.reload(p)
+	for _, pr := range pairs {
+		_ = b.reload(pr[0], pr[1])
 	}
 }
 
-func (b *Bridge) reload(path string) error {
+// keyPathOf 取条目键里的路径部分(`路径#角色` → `路径`)。
+//
+// 为什么需要:条目键现在是「路径+角色」(瘦身),而**按插件名找文件**仍须按文件匹配
+// (名字是角色,文件是 tool-kit)。手工构造的条目(单测替身)可能不填 e.path ⇒ 兜底从键里切。
+func keyPathOf(key string, e *extEntry) string {
+	if e != nil && e.path != "" {
+		return e.path
+	}
+	if i := strings.IndexByte(key, '#'); i > 0 {
+		return key[:i]
+	}
+	return key
+}
+
+// roleOf 一个「插件名」对应的角色:多角色二进制里名字就是角色;老式单角色二进制
+// 名字 = 文件基名(角色为空 ⇒ 无参起,合并前行为)。
+func roleOf(name, path string) string {
+	if externalPluginName(path) == name {
+		return "" // 文件名就是插件名 ⇒ 老式单角色
+	}
+	return name
+}
+
+// loadedRolesOf 某个二进制**当前已加载**的角色(文件监听按它逐个重载)。
+func (b *Bridge) loadedRolesOf(path string) []string {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	var out []string
+	for _, e := range b.entries {
+		if e != nil && e.path == path {
+			out = append(out, e.role)
+		}
+	}
+	if len(out) == 0 {
+		// 没加载过(刚放进来的文件):按 rolesOf 问一次
+		return rolesOf(path)
+	}
+	return out
+}
+
+func (b *Bridge) reload(path, role string) error {
 	b.reloadMu.Lock()
 	defer b.reloadMu.Unlock()
-	return b.reloadLocked(path)
+	return b.reloadLocked(path, role)
 }
 
 // reloadLocked 同 reload,但要求调用方**已持** reloadMu。
 // 拆出来是因为档位变更路径要“持锁重检后再决定要不要重建”(见 pluginsandbox.go 的 sandboxStale)。
-func (b *Bridge) reloadLocked(path string) error {
+func (b *Bridge) reloadLocked(path, role string) error {
+	key := entryKey(path, role)
 	b.mu.Lock()
-	entry, ok := b.entries[path]
+	entry, ok := b.entries[key]
 	b.mu.Unlock()
 	if !ok {
 		if isExternalPluginBin(filepath.Base(path)) {
-			e, err := b.loadOne(path)
+			e, err := b.loadOne(path, role)
 			switch {
 			case err == nil:
 				unreg := b.registerAll(e)
 				b.mu.Lock()
 				e.unreg = unreg
-				b.entries[path] = e
+				e.path = path
+				b.entries[key] = e
 				b.mu.Unlock()
 			case errors.Is(err, errPluginIdle):
 				// 自述空闲(如 tool-mcp 未配置 server):没用到这个功能,不是故障。
@@ -484,10 +606,10 @@ func (b *Bridge) reloadLocked(path string) error {
 	entry.unreg()
 	entry.kill()
 	b.mu.Unlock()
-	e, err := b.loadOne(path)
+	e, err := b.loadOne(path, role)
 	if err != nil {
 		b.mu.Lock()
-		delete(b.entries, path)
+		delete(b.entries, key)
 		b.mu.Unlock()
 		if errors.Is(err, errPluginIdle) {
 			// 配置被清空等 ⇒ 插件自述空闲:旧条目已正常撤销,只是不再参与(不是失败)。
@@ -500,7 +622,8 @@ func (b *Bridge) reloadLocked(path string) error {
 	unreg := b.registerAll(e)
 	b.mu.Lock()
 	e.unreg = unreg
-	b.entries[path] = e
+	e.path = path
+	b.entries[key] = e
 	b.mu.Unlock()
 	return nil
 }
@@ -523,35 +646,41 @@ func (b *Bridge) closeAll() {
 }
 
 // clientFor 取当前活动 client(未加载/重建中返回 nil)。
-func (b *Bridge) clientFor(path string) *rpc.Client {
+// clientFor 按**条目键**(路径#角色)取进程连接。
+//
+// 为什么必须按键而不按路径:多角色二进制(瘦身)下一个文件对应多个进程,按路径寻址
+// 会拿到**别的角色**的连接 —— 实测症状是「外部插件无此工具 subagent」:subagent 的
+// 调用被送进了 tool-basic 的进程,而那次调用看起来像是「插件里没这个工具」。
+// 单角色二进制(第三方插件、tool-echo)的角色为空 ⇒ 键 == 路径,行为与从前一致。
+func (b *Bridge) clientFor(key string) *rpc.Client {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	if e, ok := b.entries[path]; ok {
+	if e, ok := b.entries[key]; ok && e != nil {
 		return e.client
 	}
 	return nil
 }
 
 // onDead 连接错误 → 标记并异步重建进程(60s 节流,防崩溃循环)。
-func (b *Bridge) onDead(path string) {
+func (b *Bridge) onDead(path, role string) {
 	b.mu.Lock()
 	if b.closed {
 		b.mu.Unlock()
 		return
 	}
-	e, ok := b.entries[path]
+	e, ok := b.entries[entryKey(path, role)]
 	if !ok || !time.Now().After(e.respawnAt) {
 		b.mu.Unlock()
 		return
 	}
 	e.respawnAt = time.Now().Add(60 * time.Second)
 	b.mu.Unlock()
-	go b.respawn(path)
+	go b.respawn(path, role)
 }
 
 // respawn 重建进程并替换条目(先注销旧工具腾名,再注册新工具,最后替换 map)。
-func (b *Bridge) respawn(path string) {
-	e, err := b.loadOne(path)
+func (b *Bridge) respawn(path, role string) {
+	e, err := b.loadOne(path, role)
 	if err != nil {
 		b.logErr("host-bridge: 崩溃自动拉起失败(60s 节流内不再尝试)", "path", path, "err", err)
 		return
@@ -562,7 +691,7 @@ func (b *Bridge) respawn(path string) {
 		e.kill()
 		return
 	}
-	old := b.entries[path]
+	old := b.entries[entryKey(path, role)]
 	b.mu.Unlock()
 	if old != nil {
 		old.unreg()
@@ -909,6 +1038,8 @@ func rpcCallCtx(ctx context.Context, cl *rpc.Client, method string, args, reply 
 type toolRPCClient struct {
 	br   *Bridge
 	path string
+	role string // 多角色二进制里的角色(= 插件 id);空 = 单角色(老行为)
+	key  string // 条目键(路径#角色):寻址用,别按 path(见 clientFor 注释)
 	name string
 	def  sdk.ToolDefinition
 }
@@ -921,10 +1052,10 @@ func (t *toolRPCClient) Execute(ctx context.Context, args string) (any, error) {
 	// 档位/根陈旧:插件进程的 profile 是启动时静态串 ⇒ **先同步重建**再执行(见
 	// pluginsandbox.go);重建不了才 fail-closed 拒绝本次。放在最前:拿不拿得到 client
 	// 都要先把"旧档不跑"说清楚。
-	if msg, stale := t.br.sandboxStale(t.path); stale {
+	if msg, stale := t.br.sandboxStale(t.path, t.role); stale {
 		return map[string]any{"error": msg}, nil
 	}
-	cl := t.br.clientFor(t.path)
+	cl := t.br.clientFor(t.key)
 	if cl == nil {
 		return map[string]any{"error": "外部插件重建中(崩溃自动拉起)"}, nil
 	}
@@ -966,7 +1097,7 @@ func (t *toolRPCClient) Execute(ctx context.Context, args string) (any, error) {
 				"外部插件调用超时(>%s;长耗时工具应声明 timeout_ms): %s", timeout, t.name)}, nil
 		}
 		if isConnErr(err) {
-			t.br.onDead(t.path)
+			t.br.onDead(t.path, t.role)
 			return map[string]any{"error": "外部插件不可达(进程崩溃,自动重建中): " + err.Error()}, nil
 		}
 		return map[string]any{"error": "外部插件不可达: " + err.Error()}, nil
@@ -1016,6 +1147,8 @@ func isTimeoutErr(err error) bool {
 type commandRPCClient struct {
 	br        *Bridge
 	path      string
+	role      string // 同 toolRPCClient.role
+	key       string // 同 toolRPCClient.key
 	name      string
 	def       CommandDTO
 	timeoutMs int64
@@ -1038,10 +1171,10 @@ func (c *commandRPCClient) spec() sdk.CommandSpec {
 func (c *commandRPCClient) run(args []string) (string, error) {
 	// 与工具调用同一口径:被包装的插件档位/根变了就先同步重建,重建不了才拒绝本次
 	// (见 pluginsandbox.go)。
-	if msg, stale := c.br.sandboxStale(c.path); stale {
+	if msg, stale := c.br.sandboxStale(c.path, c.role); stale {
 		return "", errors.New(msg)
 	}
-	cl := c.br.clientFor(c.path)
+	cl := c.br.clientFor(c.key)
 	if cl == nil {
 		return "", errors.New("外部命令插件重建中(崩溃自动拉起)")
 	}
@@ -1049,7 +1182,7 @@ func (c *commandRPCClient) run(args []string) (string, error) {
 	var reply ExecReply
 	err := rpcCall(cl, "Plugin.RunCommand", &RunCommandArgs{Name: c.name, Args: args}, &reply, timeout)
 	if isConnErr(err) {
-		c.br.onDead(c.path)
+		c.br.onDead(c.path, c.role)
 		return "", errors.New("外部命令插件不可达(进程崩溃,自动重建中): " + err.Error())
 	}
 	if err != nil {
@@ -1092,7 +1225,7 @@ func (c *commandRPCClient) enumOptions(level int, picked []string) []sdk.Option 
 	var raw string
 	err := rpcCall(cl, "Plugin.CommandOptions", &CmdOptionsArgs{Name: c.name, Level: level, Picked: picked}, &raw, rpcTimeoutOf(c.timeoutMs))
 	if isConnErr(err) {
-		c.br.onDead(c.path)
+		c.br.onDead(c.path, c.role)
 		return nil
 	}
 	if err != nil || raw == "" {

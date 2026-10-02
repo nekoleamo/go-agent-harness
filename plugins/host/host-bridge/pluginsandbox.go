@@ -81,10 +81,12 @@ func reservedDataRootName(name string) bool {
 // probeCapabilities 探测插件自报能力(见 CapsFlag)。第二个返回值 = 探测成功。
 // 探测失败一律归一为"未声明"(零值):旧插件、非 ServeTools 插件、卡死插件都走这条路,
 // 宿主据此按**普通插件**处理(包装),这是安全侧默认。
-func probeCapabilities(bin string) (Capabilities, bool) {
+// role 非空 = 该二进制提供多角色,探测要走 `bin <role> <CapsFlag>`。
+func probeCapabilities(bin, role string) (Capabilities, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), capsProbeTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, bin, CapsFlag)
+	argv := append([]string{bin}, roleArgs(role)...)
+	cmd := exec.CommandContext(ctx, argv[0], append(argv[1:], CapsFlag)...)
 	// 探测进程不继承宿主凭据(与真正启动同一纪律),也不给 GAH_CB_*/GAH_PLUGIN:
 	// 插件若不认该参数会走进正常握手流程并因缺 GAH_PLUGIN 立刻退出(不会误报能力)。
 	cmd.Env = sdk.SanitizedEnv(os.Environ())
@@ -172,13 +174,22 @@ func (b *Bridge) pluginSandboxSpec(dataWrites []string, credReadDeny bool) kerne
 // `sandbox_apply: Operation not permitted`。于是 shell 提供者(tool-basic)也能被外层
 // 包装,它的 in-process 直写(memory/todos/file 工具)一并进内核层。
 // 自报的读拒绝经 Caps 传入(caps 零值 = 探测失败/未声明 ⇒ 默认关)。
-func (b *Bridge) wrapPluginArgv(bin string, caps Capabilities, capsKnown bool, dataWrites []string) ([]string, []string, bool) {
+func (b *Bridge) wrapPluginArgv(bin, role string, caps Capabilities, capsKnown bool, dataWrites []string) ([]string, []string, bool) {
 	pre := kernelsandbox.Wrap(b.pluginSandboxSpec(dataWrites, capsKnown && caps.CredentialReadDeny))
+	full := append([]string{bin}, roleArgs(role)...)
 	if len(pre) == 0 {
-		return []string{bin}, nil, false
+		return full, nil, false
 	}
 	// 标记已在内核沙箱内:插件再起的子进程(它内部的 MCP server、子命令)不得也不能重复施加。
-	return kernelsandbox.PrefixedArgv(pre, bin), []string{kernelsandbox.MarkerEnv + "=1"}, true
+	return kernelsandbox.PrefixedArgv(pre, full[0], full[1:]...), []string{kernelsandbox.MarkerEnv + "=1"}, true
+}
+
+// roleArgs 角色 → argv 片段(空角色 = 无参,合并前的行为)。
+func roleArgs(role string) []string {
+	if role == "" {
+		return nil
+	}
+	return []string{role}
 }
 
 // sandboxStale 判定被包装插件的**启动档位/根**是否已过期(阻断 ②)。
@@ -193,19 +204,19 @@ func (b *Bridge) wrapPluginArgv(bin string, caps Capabilities, capsKnown bool, d
 // 现在改为：档位/根变了 ⇒ **同步重建**(持 reloadMu 重建,并发的另一路会串行等完)、
 // 就绪后本次调用照常执行。等不到(重建失败/条目被撤)才拒绝 —— 安全性不降(执行的
 // 始终是新 profile)。
-func (b *Bridge) sandboxStale(path string) (string, bool) {
+func (b *Bridge) sandboxStale(path, role string) (string, bool) {
 	mode, root := b.sandboxModeRoot()
 	if !b.wrappedStale(path, mode, root) {
 		return "", false
 	}
-	if err := b.reloadForSandbox(path, mode, root); err != nil && !errors.Is(err, errPluginIdle) {
+	if err := b.reloadForSandbox(path, role, mode, root); err != nil && !errors.Is(err, errPluginIdle) {
 		b.logErr("host-bridge: 档位/根变更后的重载失败(条目已撤销,下次加载重试)", "path", path, "err", err)
 	}
 	if !b.wrappedStale(path, mode, root) {
 		return "", false // 已按新档位重建:本次调用照常执行
 	}
 	b.mu.RLock()
-	e := b.entries[path]
+	e := b.entries[entryKey(path, role)]
 	b.mu.RUnlock()
 	if e == nil {
 		return "外部插件重建中或已撤销:请重新调用", true
@@ -223,13 +234,14 @@ func (b *Bridge) wrappedStale(path, mode, root string) bool {
 }
 
 // reloadForSandbox 为档位/根变更做一次重建(持 reloadMu,重检后决定,避免并发调用各自重启一遍)。
-func (b *Bridge) reloadForSandbox(path, mode, root string) error {
+// role:多角色二进制里重建要指明角色(一个文件四个角色,重建错角色 = 工具集体失踪)。
+func (b *Bridge) reloadForSandbox(path, role, mode, root string) error {
 	b.reloadMu.Lock()
 	defer b.reloadMu.Unlock()
 	if !b.wrappedStale(path, mode, root) {
 		return nil // 别的调用已经重建好了
 	}
-	return b.reloadLocked(path)
+	return b.reloadLocked(path, role)
 }
 
 // sbDesc 档位/根的日志展示(空 = 未注入,别打印成空串让人误以为"没有档位")。

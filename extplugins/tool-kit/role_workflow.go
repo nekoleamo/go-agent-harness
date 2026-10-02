@@ -1,8 +1,11 @@
-// Command tool-workflow 外部化 workflow 进程(M6.8):starlark 执行引擎移出宿主,
-// 经宿主回调通道(GAH_CB_ADDR)驱动工具/后台任务/子代理编排。
-// 脚本内工具调用 → 回调宿主 ctx.tools.Execute(全流水线);agent/parallel/pipeline
-// → 回调宿主 ctx.fanout;background → 回调宿主 jobs.run(宿主起任务,任务体=调用本工具
-// 非 background 模式,即宿主经桥协议再调回本进程执行脚本)。
+// 本文件:toolkit 二进制里的 tool-workflow 角色。
+//
+// 2026-10-02 瘦身:原来 tool-basic / tool-workflow / tool-mcp / tool-subagent 是**四个**
+// 独立二进制,各自静态链一遍运行时 + host-bridge + sdk —— 实测四份合计 30.8 MiB,
+// 而合成一个只要 9.6 MiB(省 69%)。合成的是**二进制**,不是**进程**:宿主仍按角色逐个
+// 起进程(崩溃隔离不丢),配置文件里的插件 id 一个都没变。
+//
+// 自合并以来本文件内容**逐字未改**,只把 main() 改成由 toolkit 分派调用。
 package main
 
 import (
@@ -18,7 +21,8 @@ import (
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
-func main() {
+// 由 tool-kit 的分派调用(见 main.go)。
+func runWorkflow() {
 	if v, ok := os.LookupEnv("GAH_PLUGIN"); !ok || v != "gah-external-tool" {
 		fmt.Fprintln(os.Stderr, "外部插件缺少握手标识 GAH_PLUGIN")
 		os.Exit(1)

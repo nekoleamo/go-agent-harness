@@ -30,6 +30,10 @@ import (
 )
 
 // releaseExt 把 embed 中的外部插件二进制释放到临时目录(可执行)。
+//
+// 2026-10-02 瘦身:embed 里只有**一个** tool-kit(四个角色在同一二进制里,
+// 宿主按角色逐个起进程)。所以这里统一释放 tool-kit;**哪些角色参与**由
+// 宿主扫到文件后的角色分派 + 配置条目决定,不再由「放了哪个文件」决定。
 func releaseExt(t *testing.T, dir string, names ...string) {
 	t.Helper()
 	for _, n := range names {
@@ -51,7 +55,7 @@ func releaseExt(t *testing.T, dir string, names ...string) {
 // dir 为外部插件目录;enabled 指定要启用的插件集合(默认上述集合)。
 func buildExternalEnv(t *testing.T, dir string, extra ...config.Entry) (*ctx.Ctx, *plugin.Registry) {
 	t.Helper()
-	logger := slog.New(slog.DiscardHandler)
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	bus := event.New(logger)
 	c := ctx.New(logger, bus)
 	reg := plugin.New()
@@ -90,7 +94,7 @@ func buildExternalEnv(t *testing.T, dir string, extra ...config.Entry) (*ctx.Ctx
 func TestExternalWebFetchPrivateGuard(t *testing.T) {
 	t.Parallel()
 	extDir := t.TempDir()
-	releaseExt(t, extDir, "tool-basic")
+	releaseExt(t, extDir, "tool-kit")
 	c, _ := buildExternalEnv(t, extDir)
 
 	var tools sdk.ToolRegistry
@@ -122,7 +126,7 @@ func TestExternalWebFetchPrivateGuard(t *testing.T) {
 func TestExternalWorkflow(t *testing.T) {
 	t.Parallel() // M16 T1:独立 e2e(各自 TempDir)并行化
 	extDir := t.TempDir()
-	releaseExt(t, extDir, "tool-basic", "tool-workflow")
+	releaseExt(t, extDir, "tool-kit")
 	c, _ := buildExternalEnv(t, extDir)
 
 	var tools sdk.ToolRegistry
@@ -155,7 +159,7 @@ result = {"out": r}`
 func TestExternalWorkflowBackground(t *testing.T) {
 	t.Parallel() // M16 T1:独立 e2e(各自 TempDir)并行化
 	extDir := t.TempDir()
-	releaseExt(t, extDir, "tool-basic", "tool-workflow")
+	releaseExt(t, extDir, "tool-kit")
 	c, _ := buildExternalEnv(t, extDir)
 
 	var tools sdk.ToolRegistry
@@ -195,7 +199,7 @@ func TestExternalWorkflowBackground(t *testing.T) {
 // 工具 mcp_greet 经桥协议注册到宿主并可调用。
 func TestExternalMCPBridge(t *testing.T) {
 	extDir := t.TempDir()
-	releaseExt(t, extDir, "tool-basic", "tool-mcp")
+	releaseExt(t, extDir, "tool-kit")
 	// 编译迷你 MCP server(tests/mcpserver)
 	bin := filepath.Join(extDir, testutil.ExeName("mcpserver"))
 	if err := runGoBuild(t, bin, "./mcpserver"); err != nil {
@@ -233,7 +237,7 @@ func TestExternalMCPBridge(t *testing.T) {
 // MCP server,工具按 mcp_<server>_<name> 注册且路由到各自 server 实例。-race 全绿。
 func TestExternalMCPBridgeMulti(t *testing.T) {
 	extDir := t.TempDir()
-	releaseExt(t, extDir, "tool-basic", "tool-mcp")
+	releaseExt(t, extDir, "tool-kit")
 	bin := filepath.Join(extDir, testutil.ExeName("mcpserver"))
 	if err := runGoBuild(t, bin, "./mcpserver"); err != nil {
 		t.Fatalf("编译 mcpserver: %v", err)
@@ -277,7 +281,7 @@ func TestExternalMCPConfigFile(t *testing.T) {
 	t.Setenv("GAH_HOME", home)
 	t.Setenv("GAH_MCP_COMMANDS", "")
 	extDir := t.TempDir()
-	releaseExt(t, extDir, "tool-basic", "tool-mcp")
+	releaseExt(t, extDir, "tool-kit")
 	bin := filepath.Join(extDir, testutil.ExeName("mcpserver"))
 	if err := runGoBuild(t, bin, "./mcpserver"); err != nil {
 		t.Fatalf("编译 mcpserver: %v", err)
@@ -360,7 +364,7 @@ func registryNamesForTest(tools sdk.ToolRegistry) []string {
 func TestExternalSubagent(t *testing.T) {
 	t.Parallel() // M16 T1:独立 e2e(各自 TempDir)并行化
 	extDir := t.TempDir()
-	releaseExt(t, extDir, "tool-subagent")
+	releaseExt(t, extDir, "tool-kit")
 	c, _ := buildExternalEnv(t, extDir)
 
 	var tools sdk.ToolRegistry
@@ -398,7 +402,7 @@ func TestExternalSubagent(t *testing.T) {
 func TestExternalSubagentBackground(t *testing.T) {
 	t.Parallel() // M16 T1:独立 e2e(各自 TempDir)并行化
 	extDir := t.TempDir()
-	releaseExt(t, extDir, "tool-subagent")
+	releaseExt(t, extDir, "tool-kit")
 	c, _ := buildExternalEnv(t, extDir)
 
 	var tools sdk.ToolRegistry
@@ -451,7 +455,7 @@ func TestExternalSubagentBackground(t *testing.T) {
 func TestExternalSubagentFork(t *testing.T) {
 	t.Parallel() // M16 T1:独立 e2e(各自 TempDir)并行化
 	extDir := t.TempDir()
-	releaseExt(t, extDir, "tool-subagent")
+	releaseExt(t, extDir, "tool-kit")
 	c, _ := buildExternalEnv(t, extDir)
 
 	var sessions sdk.SessionLog
@@ -531,7 +535,7 @@ func mustJSON2(t *testing.T, v any) string {
 func TestExternalPathCapabilityDeclared(t *testing.T) {
 	t.Parallel()
 	extDir := t.TempDir()
-	releaseExt(t, extDir, "tool-basic")
+	releaseExt(t, extDir, "tool-kit")
 	c, _ := buildExternalEnv(t, extDir, config.Entry{ID: "policy-guard"})
 
 	var tools sdk.ToolRegistry
@@ -572,7 +576,7 @@ func TestExternalPathCapabilityDeclared(t *testing.T) {
 func TestExternalFileChangeLandsInLedger(t *testing.T) {
 	t.Parallel()
 	extDir := t.TempDir()
-	releaseExt(t, extDir, "tool-basic")
+	releaseExt(t, extDir, "tool-kit")
 	// policy-guard 提供 ctx.sandbox(工作区根);host-session-log 已在 buildExternalEnv 装好
 	c, _ := buildExternalEnv(t, extDir, config.Entry{ID: "policy-guard"})
 

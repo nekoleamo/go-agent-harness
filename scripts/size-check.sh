@@ -42,6 +42,14 @@
 #   门 36/23 不变而余量从 0.78 升到 1.12 MiB(gz 余量 1.61 → 2.18)。
 #   顺带把**稳态启动**从「每次全解压再比」改成「按 SHA256SUMS 比磁盘哈希,稳态零解压」
 #   (实测 144 ms → 14 ms/op)。
+#   2026-10-02 **再瘦身(外部插件合成一个二进制)**:tool-basic / tool-workflow / tool-mcp /
+#   tool-subagent 原是**四个**独立二进制,各自静态链一遍运行时 + host-bridge + sdk ——
+#   实测四份合计 30.77 MiB,而合成一个 tool-kit 只要 **9.62 MiB**(省 69%;合成的是二进制
+#   不是进程,宿主仍按角色逐个起进程,配置文件里的插件 id 一个都没变)。
+#   embed 因此 12.2→4.0 MiB,五目标二进制 **35.76 → 26.82 MiB**(gz 21.66 → 12.79)。
+#   门随之下调:**30 MiB / gz 15 MiB**(此前 36/23)。理由不是"数字好看了":余量 9 MiB 的门
+#   等于**抓不住下一次膨胀**(有人把插件拆回四个二进制,门会一路绿到 36)。
+#   新的余量 ~3 MiB,与此前同档(36 时留 2.2~5.8 MiB)。
 #   路径 ②(附包化)自此**永久排除**:它打破「单一静态二进制」这个对外承诺,不是省几 MiB 的事。
 #   **纪律不变:门只许往下调,不许往上抬。**
 #
@@ -51,8 +59,8 @@
 #   GAH_SIZE_MAX_BIN_MIB=36 GAH_SIZE_MAX_GZ_MIB=23 bash scripts/size-check.sh --all
 set -euo pipefail
 
-MAX_BIN_MIB="${GAH_SIZE_MAX_BIN_MIB:-36}"
-MAX_GZ_MIB="${GAH_SIZE_MAX_GZ_MIB:-23}"
+MAX_BIN_MIB="${GAH_SIZE_MAX_BIN_MIB:-30}"
+MAX_GZ_MIB="${GAH_SIZE_MAX_GZ_MIB:-15}"
 ALL=0
 [ "${1:-}" = "--all" ] && ALL=1
 

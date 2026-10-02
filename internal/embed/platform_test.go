@@ -84,9 +84,10 @@ func TestExtPluginsMatchPlatform(t *testing.T) {
 			packed = append(packed, e)
 		}
 	}
-	// 期望集 = gen-extplugins.sh NAMES(darwin/linux/windows 各 4 个产物)。
-	if len(packed) != 4 {
-		t.Fatalf("本平台应恰好 4 个插件产物,got %d(%v)", len(packed), packed)
+	// 期望集 = gen-extplugins.sh NAMES。2026-10-02 瘦身后是**一个** tool-kit
+	// (四个角色在同一二进制里,见 extplugins/toolkit/main.go 的 --roles)。
+	if len(packed) != 1 {
+		t.Fatalf("本平台应恰好 1 个插件产物(tool-kit),got %d(%v)", len(packed), packed)
 	}
 	if platformDirName() != runtime.GOOS+"-"+runtime.GOARCH {
 		t.Fatalf("embed 目录 %s 与构建平台 %s/%s 不符(build-tag 漂移)", platformDirName(), runtime.GOOS, runtime.GOARCH)

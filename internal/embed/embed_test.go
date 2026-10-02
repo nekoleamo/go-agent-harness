@@ -451,8 +451,8 @@ func TestPackedDigestsRejectsBadManifest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("本仓产物的清单应可解析:%v", err)
 	}
-	if len(m) != 4 {
-		t.Fatalf("清单应恰好 4 条,got %d(%v)", len(m), m)
+	if len(m) != 1 {
+		t.Fatalf("清单应恰好 1 条(2026-10-02 瘦身后只剩 tool-kit),got %d(%v)", len(m), m)
 	}
 	// 每条哈希非零(真解析出来的,不是零值占位)
 	for name, sum := range m {

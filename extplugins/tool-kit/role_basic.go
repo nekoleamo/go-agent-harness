@@ -1,6 +1,11 @@
-// Command tool-basic 外部化基础工具进程(P1 方案 B):shell/files/web/memory
-// 合一批二进制(共享运行时,体积与进程数最优),经桥协议(多工具)暴露。
-// 宿主 host-bridge 扫描 tool-* 二进制 → Definitions 枚举 → 逐个注册。
+// 本文件:toolkit 二进制里的 tool-basic 角色。
+//
+// 2026-10-02 瘦身:原来 tool-basic / tool-workflow / tool-mcp / tool-subagent 是**四个**
+// 独立二进制,各自静态链一遍运行时 + host-bridge + sdk —— 实测四份合计 30.8 MiB,
+// 而合成一个只要 9.6 MiB(省 69%)。合成的是**二进制**,不是**进程**:宿主仍按角色逐个
+// 起进程(崩溃隔离不丢),配置文件里的插件 id 一个都没变。
+//
+// 自合并以来本文件内容**逐字未改**,只把 main() 改成由 toolkit 分派调用。
 package main
 
 import (
@@ -18,7 +23,8 @@ import (
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
-func main() {
+// 由 tool-kit 的分派调用(见 main.go)。
+func runBasic() {
 	// pty 开关经环境变量透传(bundle data 无法透传子进程,外部化按需自配)
 	pty := os.Getenv("GAH_TOOL_SHELL_PTY") == "1"
 	tools := map[string]sdk.Tool{
