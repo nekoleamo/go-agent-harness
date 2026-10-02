@@ -8,7 +8,7 @@
 #
 # 做什么(upload):
 #   1. 创建(或复用)Gitee 上同名 tag 的 Release;
-#   2. 上传桌面产物(dmg / *-setup.exe / *.app.tar.gz);同名附件**先删后传**,所以可重复跑;
+#   2. 上传桌面产物(dmg / *-setup.exe / *.app.tar.gz / 便携包 *-portable.zip);同名附件**先删后传**,所以可重复跑;
 #   3. 回查匿名直链(HEAD 跟随重定向后 200)并打印 —— 这是「镜像真的能下」的唯一自动出口。
 #
 # 之后由调用方决定是否把 latest.json 的下载地址换成 Gitee(GitHub 与 Gitee 的直链同形:
@@ -46,9 +46,13 @@ need_token() {
   [ -n "$TOKEN" ] || { echo "缺 GITEE_TOKEN(Gitee → 设置 → 私人令牌,勾选 projects)" >&2; exit 1; }
 }
 
-# 产物清单:只镜像「给人装的包」与「updater 要的包」三类
+# 产物清单:镜像「给人装的包」与「updater 要的包」——
+# dmg / *-setup.exe / *.app.tar.gz **外加便携包**。
+# 便携包为什么也要镜像:它**不进 latest.json**(updater 只认安装包),分发全靠人工拿链接;
+# 而 GitHub 在国内往往拉不动 ⇒ 不镜像等于国内用户没有便携包可用 —— 而便携包恰恰是
+# 「不想安装、解压即用」那批人的唯一入口(v0.4.0 起才有)。对 updater 无影响:它不读这两件。
 collect() {
-  find "$dir" -type f \( -name '*.dmg' -o -name '*-setup.exe' -o -name '*.app.tar.gz' \) 2>/dev/null | sort
+  find "$dir" -type f \( -name '*.dmg' -o -name '*-setup.exe' -o -name '*.app.tar.gz' -o -name '*-portable.zip' \) 2>/dev/null | sort
 }
 
 # 找 Release id(tag 不存在则创建)
