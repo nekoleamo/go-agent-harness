@@ -38,10 +38,16 @@ jobs:
           cache: npm
           cache-dependency-path: web-src/package-lock.json
       - name: 预生成前端产物(web/dist 未入库,主包 go:embed 需要它)
-        # 注意:这一步**不**重生成 extplugins embed —— 那 20 件产物已入库,而跨工具链重建的
-        # gzip 字节必然有微小差异(build id),会让 goreleaser 以「git is in a dirty state」拒绝发行。
-        # 入库产物与源码是否一致由 ci.yml 每次 push 校验(gen-extplugins + 平台断言 + 体积门 + 测试)。
         run: bash scripts/gen-web.sh
+      - name: 预生成外部插件产物(extplugins 未入库,主包 go:embed 需要它)
+        # 2026-10-01 起外部插件产物**已不入库**(extplugins 约 60 MiB,见 .gitignore);
+        # 而本工作流用 `--skip=before`(跳过 goreleaser 的 before 钩子)⇒ 这一步是**唯一**
+        # 生成它们的地方,漏了就直接 `pattern extplugins/…: no matching files found` 编译失败
+        # (run 37000288314 就是这么红的:注释里还写着「那 20 件产物已入库」,已经不成立了)。
+        # 「重建会让树变脏、goreleaser 拒绝发行」那个顾虑只对**已入库**的产物成立 ——
+        # 它们现在本来就是生成物,脏树是必然且无害的(goreleaser 不因脏树拒绝发行)。
+        # 产物与源码是否一致由 ci.yml 每次 push 校验(同样跑 gen-extplugins + 平台断言 + 体积门 + 测试)。
+        run: bash scripts/gen-extplugins.sh
       - name: 校验发行配置(配置漂移即红,别等 tag 才发现)
         # 必须走 action(它负责安装 CLI);裸 `run: goreleaser check` 在 runner 上是 command not found
         uses: goreleaser/goreleaser-action@v6
