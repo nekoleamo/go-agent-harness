@@ -111,6 +111,14 @@ func TestWebEndToEndTurn(t *testing.T) {
 		t.Fatalf("SSE Content-Type 不符: %q", evResp.Header.Get("Content-Type"))
 	}
 
+	sc := bufio.NewScanner(evResp.Body)
+	sc.Buffer(make([]byte, 4096), 1<<20)
+	// 2.5 等 baseline 帧 —— 上面那句「订阅先于回合提交」在这一步之前**并不成立**:
+	// `handleEvents` 会先 flush 前导 `retry:` 让客户端尽快认为已连接,之后才注册 hub 订阅
+	// (详见 notice_e2e_test.go::waitStreamReady 注释)。本用例的帧在账本里,重放尾部窗口
+	// 能自愈,所以此前一直是「靠重放侥幸通过」;等 baseline 才是真正的先订阅后提交。
+	waitStreamReady(t, sc, 10*time.Second)
+
 	// 3. 回合提交(mock LLM 一步:调 shell 工具 + 收尾回复)
 	resp, err = http.Post(hs.URL+"/api/input", "application/json",
 		strings.NewReader(`{"content":"请运行 echo 集成测试"}`))
@@ -123,8 +131,6 @@ func TestWebEndToEndTurn(t *testing.T) {
 	}
 
 	// 4. 读取事件流,断言帧序列(实时路径覆盖:tool/call 等全部经已建立连接到达)
-	sc := bufio.NewScanner(evResp.Body)
-	sc.Buffer(make([]byte, 4096), 1<<20)
 	kinds := map[string]bool{}
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) && (!kinds["user/message"] || !kinds["tool/call"] || !kinds["turn/end"]) {

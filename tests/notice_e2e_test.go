@@ -120,6 +120,32 @@ func itoa(u uint64) string {
 	return string(b[i:])
 }
 
+// waitStreamReady 等到本连接的 **baseline 帧**。
+//
+// 为什么必须等它:SSE 的长连接语义里,「客户端收到响应」**不等于**「服务端已注册订阅」——
+// `handleEvents` 先写并 flush 前导 `retry: 3000`(让客户端尽快认为已连接,这是刻意的:
+// 不等第一帧,否则首次连接要挂到有帧为止),**之后**才进 `consumeStream` 注册 hub 订阅。
+// 而提示**不进会话记录**(刻意:提示不该被塞进对话上下文),所以重放尾部窗口补不到它 ⇒
+// 在「拿到响应」与「订阅已注册」之间发布的提示会真的丢,只能靠 REST 回填兜(REST 路径
+// 由用例后半段单独断言)。
+//
+// baseline 帧恰恰是**订阅注册之后**的第一个输出,等它到达即证明订阅已就绪 —— 这把
+// 「用例与调度器赛跑」变成确定性等待。Windows runner 上原本稳定输掉这场赛跑:
+// 表现是 60s 后客户端超时杀连接、\`Scan()\` 返回 false(「SSE 流结束,未见 notice 帧」)。
+func waitStreamReady(t *testing.T, r *bufio.Scanner, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if !r.Scan() {
+			t.Fatal("SSE 流在读到达 baseline 前结束(订阅未就绪或 scope 取不到)")
+		}
+		if strings.TrimSpace(r.Text()) == "event: "+web.FrameBaseline {
+			return
+		}
+	}
+	t.Fatalf("超时(%s)未收到 baseline 帧", timeout)
+}
+
 // readNoticeFrame 从 SSE 流里等一条 notice 帧(载荷解码为 sdk.Notice);超时即失败。
 func readNoticeFrame(t *testing.T, r *bufio.Scanner, timeout time.Duration) sdk.Notice {
 	t.Helper()
@@ -174,6 +200,9 @@ func TestNoticeEndToEndPublishFrameAndBackfill(t *testing.T) {
 	defer evResp.Body.Close()
 	sc := bufio.NewScanner(evResp.Body)
 	sc.Buffer(make([]byte, 4096), 1<<20)
+
+	// 先等订阅就绪(见 waitStreamReady 注释),再发布 —— 否则是在与调度器赛跑。
+	waitStreamReady(t, sc, 10*time.Second)
 
 	ns := noticeSvcOf(t, c)
 	id := ns.Publish(sdk.Notice{Level: sdk.NoticeError, Title: "计划「对账」执行失败",
