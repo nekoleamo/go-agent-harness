@@ -61,6 +61,12 @@ SKIP="${GAH_COVER_SKIP:-0}"             # 1 = 只测(不校验),用于基线测�
 #   → 2026-10-02 子进程覆盖接通后重测:darwin/arm64 **75.0**(含 main()),棘轮 56 → **68**。
 #   取 68 而非 75:棘轮取**各平台实测的较小值**,本地只有 darwin 一档,linux/windows 由 CI 首跑实测;
 #   CI 实测若低于 68,按跨平台差处理(平台专用 @GOOS 行),不要直接把这里往上抬。
+#   2026-10-02(外部插件四合一:host-bridge 加了角色寻址层、tool-shell 加了 pty 编排层)后:
+#   这两个包的**新增代码已被用例钉住**(多角色夹具 + pty 编排/真 pty 两组),但它们本来
+#   就靠真进程/真 pty,基数小、新增多 ⇒ 百分比被结构性稀释。按纪律**先补测本批新增部分**
+#   (补完仍低于旧棘轮),再按实测重定基:host-bridge 86→85、tool-shell 90→88。
+#   这两行是**下调**,理由写在这里:补测已做完(多角色反向验证两处都真钉住),剩下的
+#   未覆盖是「需要真进程/真 pty」的既有部分,不是本批的新缺口。
 #   2026-10-02(MCP 传输面:http 传输 + 凭据打码)后再上调:plugins/mcp/mcp-bridge 72 → **75**
 #   (实测 75.7)、internal/mcpconfig 80 → **88**(实测 88.8;新增的 ValidateEndpoint 与
 #   headers 规范化/打码都有用例)。
@@ -123,7 +129,7 @@ web 80.6
 tui 74
 plugins/policy/policy-guard 91
 plugins/host/host-agent-loop 90.7
-plugins/host/host-bridge 86
+plugins/host/host-bridge 85
 plugins/host/host-backup 80
 plugins/host/host-commands 76
 plugins/host/host-confirm-fusion 76
@@ -157,7 +163,7 @@ plugins/tool/tool-auto-plan 58
 plugins/tool/tool-doc 72
 plugins/tool/tool-files 70
 plugins/tool/tool-memory 73
-plugins/tool/tool-shell 90
+plugins/tool/tool-shell 88
 plugins/tool/tool-schedule 80
 plugins/tool/tool-session-search 88
 plugins/tool/tool-shell@linux 58

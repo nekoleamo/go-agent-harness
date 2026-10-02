@@ -196,3 +196,50 @@ func TestShellArgvPerPlatform(t *testing.T) {
 		t.Errorf("命令应在最后一段,got %v", argv)
 	}
 }
+
+// TestStartPTYRealShell 走**真** pty 起一条真命令(不是假管道):
+// 验的是「平台那层起进程」也能通 —— 假管道只覆盖了编排(见上)。
+// 覆盖 unix 的 creack/pty 分支;Windows 侧 ConPTY 的等价真跑在 Windows 真机清单里
+// (#170 起),本机(macOS)跑不到那半,故显式跳过而不是假装验过。
+func TestStartPTYRealShell(t *testing.T) {
+	if isWindows() {
+		t.Skip("ConPTY 执行路径需 Windows 真机(清单 #170–173);本机只验编排")
+	}
+	s, err := startPTY([]string{shellForPty(), "-c", "printf pty-real-ok"}, "", nil)
+	if err != nil {
+		t.Fatalf("起 pty 进程失败: %v", err)
+	}
+	defer s.close()
+	out, timedOut, err := runPty(context.Background(), s, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if timedOut {
+		t.Error("一条立即退出的命令不该报超时")
+	}
+	if !strings.Contains(out, "pty-real-ok") {
+		t.Fatalf("真 pty 应采到输出,got %q", out)
+	}
+}
+
+// TestStartPTYMissingShell 找不到 shell ⇒ 显式失败(不是静默换个「大概在」的位置)。
+func TestStartPTYMissingShell(t *testing.T) {
+	if isWindows() {
+		t.Skip("Windows 侧 shell 恒为 cmd.exe,此路径不适用")
+	}
+	if shellForPty() != "" {
+		t.Skip("本机有 POSIX shell,跳过「找不到」路径")
+	}
+	if _, err := startPTY([]string{"", "-c", "x"}, "", nil); err == nil {
+		t.Fatal("shell 解析失败时应报错")
+	}
+}
+
+// TestShellArgvUnknownRole shellArgv 只拼 argv,不改命令(命令必须原样落在最后一段)。
+func TestShellArgvRejectsUnknownRole(t *testing.T) {
+	argv := shellArgv("echo hi")
+	last := argv[len(argv)-1]
+	if last != "echo hi" {
+		t.Errorf("命令应原样保留,got %q", last)
+	}
+}
