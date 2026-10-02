@@ -47,7 +47,10 @@ func (h *Host) cmdMemory(args []string) (string, error) {
 		if err := cs.Propose(rest, ""); err != nil {
 			return "", errString(err.Error())
 		}
-		return h.memoryCandidates(ms)
+		// 回执先说清「还没生效」再列候选:用户刚提一条时最想知道的是这条**进没进上下文**,
+		// 而不是一屏编号(只列编号的话,提完与没提看起来一样)。
+		return "已放进候选池(**还没进上下文**;确认之后才生效)。\n" +
+			mustMemoryCandidates(h, cs), nil
 	case "accept", "reject":
 		return h.memoryAcceptReject(ms, sub, args[1:], rest)
 	case "accept-all":
@@ -123,6 +126,29 @@ func (h *Host) memoryStatus(ms sdk.MemoryService) (string, error) {
 		onoff(ms.Enabled()), len(ms.List()), len(h.memoryProjectLines(ms)), cand, ms.Budget()), nil
 }
 
+// mustMemoryCandidates 列候选(出错时回一句说明,不吞错误 —— 命令回执是唯一反馈面)。
+func mustMemoryCandidates(h *Host, cs sdk.MemoryCandidates) string {
+	out, err := h.memoryCandidatesVia(cs)
+	if err != nil {
+		return "(候选列表读取失败:" + err.Error() + ")"
+	}
+	return out
+}
+
+// memoryCandidatesVia 列出候选(已取到能力后的实现)。
+func (h *Host) memoryCandidatesVia(cs sdk.MemoryCandidates) (string, error) {
+	used, limit, today, todayLimit := cs.CandidateQuota()
+	lines := cs.ListCandidates()
+	if used == 0 {
+		return fmt.Sprintf("候选池是空的。用 /memory propose <内容> 提一条 —— 候选**不进上下文**,"+
+			"确认(accept)之后才生效。\n额度:今日 %d/%d,池子 %d/%d", today, todayLimit, used, limit), nil
+	}
+	return fmt.Sprintf("待确认候选 %d 条(新的在前;**都不进上下文**):\n  %s\n"+
+		"  /memory accept <序号>   转正为记忆\n  /memory accept-all      全部转正\n"+
+		"  /memory reject <序号>   丢弃\n额度:今日 %d/%d,池子 %d/%d",
+		used, strings.Join(lines, "\n  "), today, todayLimit, used, limit), nil
+}
+
 // memoryCandidates2 取候选能力(未实现 ⇒ 显式错误,不假装"没有候选")。
 func (h *Host) memoryCandidates2(ms sdk.MemoryService) (sdk.MemoryCandidates, error) {
 	cs, ok := ms.(sdk.MemoryCandidates)
@@ -138,16 +164,7 @@ func (h *Host) memoryCandidates(ms sdk.MemoryService) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	used, limit, today, todayLimit := cs.CandidateQuota()
-	lines := cs.ListCandidates()
-	if used == 0 {
-		return fmt.Sprintf("候选池是空的。用 /memory propose <内容> 提一条 —— 候选**不进上下文**,"+
-			"确认(accept)之后才生效。\n额度:今日 %d/%d,池子 %d/%d", today, todayLimit, used, limit), nil
-	}
-	return fmt.Sprintf("待确认候选 %d 条(新的在前;**都不进上下文**):\n  %s\n"+
-		"  /memory accept <序号>   转正为记忆\n  /memory accept-all      全部转正\n"+
-		"  /memory reject <序号>   丢弃\n额度:今日 %d/%d,池子 %d/%d",
-		used, strings.Join(lines, "\n  "), today, todayLimit, used, limit), nil
+	return h.memoryCandidatesVia(cs)
 }
 
 // memoryAcceptReject /memory accept <序号>|reject <序号>|accept-all|reject-all
@@ -187,12 +204,18 @@ func (h *Host) memoryAcceptReject(ms sdk.MemoryService, sub string, args []strin
 
 func (h *Host) memoryList(ms sdk.MemoryService) (string, error) {
 	lines := ms.List()
+	proj := h.memoryProjectLines(ms)
+	// 「还没有记忆」只在**两级都空**时才能说:只有项目级记忆时说这句,用户会以为
+	// `/memory project` 里看到的那条不存在(它确实存在,只是用户级为空)。
 	if len(lines) == 0 {
-		return "还没有记忆。用 /memory add <内容> 记一条(比如「报告里的图表用蓝灰配色,不要渐变」)。", nil
+		if len(proj) == 0 {
+			return "还没有记忆。用 /memory add <内容> 记一条(比如「报告里的图表用蓝灰配色,不要渐变」)。", nil
+		}
+		return "用户级还没有记忆;本项目有:\n  " + strings.Join(proj, "\n  "), nil
 	}
 	out := "记忆(新的在前,共 " + itoa(len(lines)) + " 条):\n  " + strings.Join(lines, "\n  ")
-	if p := h.memoryProjectLines(ms); len(p) > 0 {
-		out += "\n本项目:\n  " + strings.Join(p, "\n  ")
+	if len(proj) > 0 {
+		out += "\n本项目:\n  " + strings.Join(proj, "\n  ")
 	}
 	return out, nil
 }
