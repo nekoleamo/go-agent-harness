@@ -11,7 +11,9 @@
 package policyguard
 
 import (
+	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -19,7 +21,7 @@ import (
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
-// needKernel 跳过「本机内核层不在场」的用例(Windows / 无 /usr/bin/sandbox-exec)。
+// needKernel 跳过「本机内核层不在场」的用例(Windows / 无 /usr/bin/sandbox-exec),返回 jail。
 func needKernel(t *testing.T) string {
 	t.Helper()
 	t.Setenv(kernelShellJailEnv, "")
@@ -36,6 +38,23 @@ func needKernel(t *testing.T) string {
 	return jail
 }
 
+// sysTemp 系统临时区里的一条**绝对路径**,落在工作区之外。
+//
+// 为什么不能直接写 "/tmp":① macOS 上 /tmp 是软链,内核按真实路径匹配,得用 ResolvePath;
+// ② Windows 上 "/tmp/x" 不是绝对路径(没有盘符),filepath.Join 会把它拼到工作区**底下**,
+// 于是「越界探针」反而变成区内路径 —— CI test-windows 就这样红过(AGENTS.md 跨平台纪律②)。
+// os.TempDir() 在三个平台上都给出正确形态的绝对路径,且不在 t.TempDir() 里。
+func sysTempProbe(t *testing.T) string {
+	t.Helper()
+	return filepath.Join(os.TempDir(), "gah-scope-probe")
+}
+
+// resolvedSysTemp 系统临时区在**内核白名单里的那一份**(ResolvePath 后)。
+func resolvedSysTemp(t *testing.T) string {
+	t.Helper()
+	return kernelsandbox.ResolvePath(os.TempDir())
+}
+
 // TestSharedScopeAllowsKernelWritable ①:内核放行的落点,协作层不再多此一举地拒。
 func TestSharedScopeAllowsKernelWritable(t *testing.T) {
 	jail := needKernel(t)
@@ -48,8 +67,8 @@ func TestSharedScopeAllowsKernelWritable(t *testing.T) {
 	if err := sp.ValidatePath(filepath.Join(jail, "gah-scope-probe")); err != nil {
 		t.Fatalf("jail 是内核放行的落点,不该被协作层再拒一次: %v", err)
 	}
-	if err := sp.ValidatePath("/tmp/gah-scope-probe"); err != nil {
-		t.Fatalf("/tmp 在外部插件面的内核白名单内: %v", err)
+	if err := sp.ValidatePath(sysTempProbe(t)); err != nil {
+		t.Fatalf("系统临时区在外部插件面的内核白名单内: %v", err)
 	}
 	if err := sp.ValidatePath(filepath.Join(outsideProbe(), "x")); err == nil {
 		t.Fatal("真正越界的落点仍应拒绝")
@@ -63,27 +82,29 @@ func TestSharedScopeAllowsKernelWritable(t *testing.T) {
 func TestSurfacesGetOwnScope(t *testing.T) {
 	needKernel(t)
 	sp := &SandboxPolicy{root: t.TempDir(), mode: sdk.SandboxWorkspace}
-	tool := strings.Join(kernelWriteScope(sp, surfaceTool), "\n")
-	shell := strings.Join(kernelWriteScope(sp, surfaceShell), "\n")
-	if !strings.Contains(tool, "/tmp") {
-		t.Fatalf("工具面(外部插件)应含系统临时区: %v", tool)
+	toolScope := kernelWriteScope(sp, surfaceTool)
+	shellScope := kernelWriteScope(sp, surfaceShell)
+	sysTmp := resolvedSysTemp(t)
+	if !slices.Contains(toolScope, sysTmp) {
+		t.Fatalf("工具面(外部插件)应放行系统临时区 %q: %v", sysTmp, toolScope)
 	}
-	if strings.Contains(shell, "/tmp") {
-		t.Fatalf("shell 面不应放系统临时区(TMPDIR 已重定向进 jail): %v", shell)
+	if slices.Contains(shellScope, sysTmp) {
+		t.Fatalf("shell 面不应放系统临时区(TMPDIR 已重定向进 jail): %v", shellScope)
 	}
-	if !strings.Contains(shell, "jail") {
-		t.Fatalf("shell 面应含 jail: %v", shell)
+	// jail 两面都在(判据要精确到条目,不能只搜子串:测试自己的 TempDir 里也可能带 "jail" 字样)
+	if !slices.ContainsFunc(shellScope, func(p string) bool { return strings.HasSuffix(p, "jail") }) {
+		t.Fatalf("shell 面应含 jail: %v", shellScope)
 	}
 }
 
 // TestNoKernelScopeKeepsNarrow ②:内核层不在场(未注入)→ 退回「只在工作区根内」。
 func TestNoKernelScopeKeepsNarrow(t *testing.T) {
 	p := &SandboxPolicy{root: t.TempDir(), mode: sdk.SandboxWorkspace}
-	for _, target := range []string{"/tmp", kernelsandbox.EnsureJailDir()} {
+	for _, target := range []string{sysTempProbe(t), filepath.Join(kernelsandbox.EnsureJailDir(), "gah-scope-probe")} {
 		if target == "" {
 			continue
 		}
-		if err := p.ValidatePath(filepath.Join(target, "gah-scope-probe")); err == nil {
+		if err := p.ValidatePath(target); err == nil {
 			t.Fatalf("内核层不在场时,协作层必须自己守住窄口径(%s 被放行了)", target)
 		}
 	}

@@ -72,6 +72,10 @@ func kernelWriteScope(sp *SandboxPolicy, surface kernelSurface) []string {
 		spec.RW = append(spec.RW, kernelsandbox.RWPathsFromEnv(kernelToolRWPaths)...)
 		spec.Switch, spec.RequireJailSwitch = kernelToolSwitch, kernelShellJailEnv
 	}
+	// 与 Wrap/WouldApply 走**同一份**修正(spec.Normalized):workspace 根缺失时内核按只读
+	// 生效,协作层也必须按只读那份清单对齐 —— 否则会出现「内核按只读拒、协作层按工作区放」
+	// 的错位,比不同源更难查。
+	spec, _ = kernelsandbox.Normalized(spec)
 	if ok, _ := kernelsandbox.WouldApply(spec); !ok {
 		return nil
 	}

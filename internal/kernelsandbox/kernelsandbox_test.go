@@ -250,7 +250,8 @@ func TestWouldApplyReasons(t *testing.T) {
 		{"档位未知", Spec{Jail: "/j"}, "档位未知", nil},
 		{"全权档", Spec{Mode: sdk.SandboxFullAccess, Jail: "/j"}, "全权档", nil},
 		{"缺 jail", Spec{Mode: sdk.SandboxWorkspace, Root: "/r"}, "jail", nil},
-		{"workspace 缺根", Spec{Mode: sdk.SandboxWorkspace, Jail: "/j"}, "根路径", nil},
+		// workspace 缺根/根不存在**不是**「不施加」:内核层降级成只读档仍然生效,
+		// 协作层据此继续认为「内核在场」(见 Normalized)。故不出现在这张表里。
 		{"档位非法", Spec{Mode: sdk.SandboxMode("weird"), Jail: "/j"}, "无法识别", nil},
 	}
 	for _, c := range cases {
@@ -277,5 +278,50 @@ func TestDeviceLiteralsSeparate(t *testing.T) {
 		if slices.Contains(lits, p) {
 			t.Fatalf("%s 不该同时出现在目录清单里", p)
 		}
+	}
+}
+
+// TestNormalizedDowngradesMissingRoot workspace 根不可用时降级成**只读**而不是「不施加」。
+//
+// 这条是 Linux 专属坑的修复钉子:Landlock 加规则要求路径存在(unix.Open(O_PATH) 对缺失
+// 路径 ENOENT,加不上就整体 exit 126),而 macOS seatbelt 容忍不存在的 subpath ——
+// 于是「根不存在」在 Linux 上表现为命令直接跑不起来(2026-10-03 host-jobs 围栏补上后
+// CI 实测:一个 root 指向不存在目录的用例任务 failed)。
+// 降级方向必须**收紧**(只读仍拒区外写),不能是放开。
+func TestNormalizedDowngradesMissingRoot(t *testing.T) {
+	clearMarker(t)
+	jail := t.TempDir()
+
+	// 根不存在 → 降级
+	got, why := Normalized(Spec{Mode: sdk.SandboxWorkspace, Root: filepath.Join(jail, "nope"), Jail: jail})
+	if got.Mode != sdk.SandboxReadOnly {
+		t.Fatalf("根不存在应降级只读,got %q", got.Mode)
+	}
+	if !strings.Contains(why, "不存在") {
+		t.Fatalf("降级原因应说明根不存在: %q", why)
+	}
+	// 降级后写入面不含那个根(否则协作层会按工作区放行,内核却按只读拒 ⇒ 错位)
+	if ws := WritablePaths(Spec{Mode: got.Mode, Root: got.Root, Jail: jail}); len(ws) != 1 || ws[0] != ResolvePath(jail) {
+		t.Fatalf("降级后写入面应只剩 jail: %v", ws)
+	}
+
+	// 根为空 → 降级(既有语义)
+	got2, why2 := Normalized(Spec{Mode: sdk.SandboxWorkspace, Jail: jail})
+	if got2.Mode != sdk.SandboxReadOnly || !strings.Contains(why2, "未知") {
+		t.Fatalf("空根应降级只读: %q / %q", got2.Mode, why2)
+	}
+
+	// 根存在 → 不降级,且 WouldApply 仍为真(内核在场)
+	root := t.TempDir()
+	got3, why3 := Normalized(Spec{Mode: sdk.SandboxWorkspace, Root: root, Jail: jail})
+	if got3.Mode != sdk.SandboxWorkspace || why3 != "" {
+		t.Fatalf("根存在不该降级: %q / %q", got3.Mode, why3)
+	}
+	if ok, _ := WouldApply(Spec{Mode: sdk.SandboxWorkspace, Root: root, Jail: jail}); !ok {
+		t.Skip("本机内核层不在场(非 seatbelt/Landlock),不适用")
+	}
+	// 根缺失时 WouldApply 仍为真:内核按只读生效,协作层要据此继续对齐
+	if ok, why := WouldApply(Spec{Mode: sdk.SandboxWorkspace, Root: filepath.Join(jail, "nope"), Jail: jail}); !ok {
+		t.Fatalf("根缺失时内核仍以只读档生效,不该判成不在场: %s", why)
 	}
 }

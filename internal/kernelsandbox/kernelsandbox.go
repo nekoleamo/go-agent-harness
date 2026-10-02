@@ -68,6 +68,8 @@ type Spec struct {
 
 var warnOnce sync.Once
 
+var downgradeOnce sync.Once
+
 // WarnUnavailable 一次性告警:内核沙箱本该生效却无法生效(安全边界降级必须可见)。
 // 导出给调用方用自己的措辞说明"为什么这次不施加"(如 shell 的 jail 被关)。
 func WarnUnavailable(spec Spec, why string) {
@@ -123,8 +125,12 @@ func Wrap(spec Spec) []string {
 		WarnUnavailable(spec, "缺少临时区锚点(jail 路径为空)")
 		return nil
 	}
-	if spec.Mode == sdk.SandboxWorkspace && strings.TrimSpace(spec.Root) == "" {
-		spec.Mode = sdk.SandboxReadOnly // 根未知 → 判不定的写更危险
+	// workspace 根不可用 → 降级 read-only(**而不是不施加**):见 Normalized 的说明。
+	spec, why := Normalized(spec)
+	if why != "" {
+		downgradeOnce.Do(func() {
+			fmt.Fprintf(os.Stderr, "gah %s: %s;本次按只读档施加内核约束(区外写仍被拒)\n", spec.label(), why)
+		})
 	}
 	return platformWrap(spec)
 }
@@ -319,11 +325,47 @@ func WouldApply(spec Spec) (bool, string) {
 	if strings.TrimSpace(spec.Jail) == "" {
 		return false, "缺少临时区锚点(jail 路径为空)"
 	}
-	if spec.Mode == sdk.SandboxWorkspace && strings.TrimSpace(spec.Root) == "" {
-		return false, "workspace 档缺少根路径(降级为只读)"
-	}
+	// workspace 根不可用**不**判成「不施加」:内核层仍会以只读档生效(见 Normalized),
+	// 协作层据此继续认为「内核在场」。这里只跑平台能力判定。
 	if why := platformAvailableReason(spec); why != "" {
 		return false, why
 	}
 	return true, ""
+}
+
+// Normalized 按内核能力把 spec 修正成「内核层真能施加的那一份」,并给出降级原因(空 = 未降级)。
+//
+// 降级只有一条:workspace 根**缺失或不存在** → 降为 read-only。
+//
+//   - 根为空:判不定的写更危险(既有语义)。
+//   - 根不存在:**Landlock 要求规则路径存在**(`unix.Open(O_PATH)` 对缺失路径 ENOENT,
+//     加不上规则就整体失败 → exit 126);macOS seatbelt 容忍不存在的 subpath,所以这是
+//     **只有 Linux 会踩**的差异。2026-10-03 实测:host-jobs 的围栏补上后,Linux CI 上
+//     一个 root 指向不存在目录的用例直接 126(命令跑不起来,任务 failed)。
+//     降级成 read-only 仍然是**有围栏**(区外写一律被内核拒),只是不再放行工作区 ——
+//     方向是收紧,不是放开。
+//
+// 为何要单列成函数:Wrap(施加)、WouldApply(协作层问「内核在场吗」)、以及协作层取共享
+// 写入面这三处必须看到**同一份**修正后的 spec,否则会出现「内核按只读、协作层按工作区」
+// 的错位 —— 比不同源更难查。
+func Normalized(spec Spec) (Spec, string) {
+	if spec.Mode != sdk.SandboxWorkspace {
+		return spec, ""
+	}
+	root := strings.TrimSpace(spec.Root)
+	switch {
+	case root == "":
+		spec.Mode = sdk.SandboxReadOnly
+		return spec, "workspace 根未知"
+	case !dirExists(root):
+		spec.Mode = sdk.SandboxReadOnly
+		return spec, "workspace 根不存在(" + root + ");内核规则要求该路径存在(Landlock 遇缺失路径会整体拒绝加规则)"
+	}
+	return spec, ""
+}
+
+// dirExists 目录是否存在(不可访问也算「不可用」——加不上规则就是加不上)。
+func dirExists(dir string) bool {
+	fi, err := os.Stat(dir)
+	return err == nil && fi.IsDir()
 }
