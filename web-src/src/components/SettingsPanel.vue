@@ -57,6 +57,8 @@ const installBusy = ref(false)
 const installRows = ref<InstallView[]>([])
 const installErr = ref('')
 const installOk = ref('')
+// installWarn 独立于 installOk:成功回执会被下一条操作冲掉,这类长期影响必须占一行不混进去。
+const installWarn = ref('')
 
 async function refreshInstallList(): Promise<void> {
   try {
@@ -71,6 +73,7 @@ async function doInstall(): Promise<void> {
   if (!spec || installBusy.value) return
   installErr.value = ''
   installOk.value = ''
+  installWarn.value = ''
   installBusy.value = true
   try {
     const pv = await api.pluginInstallPreview(spec)
@@ -93,6 +96,10 @@ async function doPluginInstallNow(spec: string): Promise<void> {
   try {
     const r = await api.pluginInstall(spec)
     installOk.value = `已安装 ${r.id} → ${r.dir}` + (r.hint ? '(' + r.hint + ')' : '')
+    // 补依赖是**供应链面被扩宽**的事实,不能混在一句成功回执里(用户扫一眼就过)。
+    installWarn.value = r.tidied
+      ? '注意:仓库的 go.mod 不完整,构建前补跑过 go mod tidy —— 这个插件引入了仓库原本没声明的模块依赖。'
+      : 
     installSpec.value = ''
     await refreshInstallList()
   } catch (e) {
@@ -3049,6 +3056,7 @@ watch(
             </button>
           </div>
           <p v-if="installOk" class="dim">{{ installOk }}</p>
+          <p v-if="installWarn" class="warn-line">{{ installWarn }}</p>
           <p v-if="installErr" class="err-line">{{ installErr }}</p>
           <details v-if="installRows.length" class="dim">
             <summary>已装外部插件({{ installRows.length }};白名单{{ installRows[0]?.enforced ? '强制' : '未启用' }})</summary>
@@ -3807,6 +3815,12 @@ textarea.inp {
   font-weight: 600;
 }
 /* 产物校验值列表(R10 ⑤-3):等宽字体便于逐字符比对;折行不裁剪(哈希截断会误导) */
+/* 安装期的长期影响提示(补依赖):警告色而非错误色 —— 装**成功了**,但供应链面变了。 */
+.warn-line {
+  color: var(--tool);
+  font-size: 12px;
+  margin: 4px 0;
+}
 /* 插件安装行与已装列表。
    **刻意不复用 .plist**:那个类被布局护栏的「插件列表默认只列 5 条」用例按选择器数行,
    两张表共用一个类会让护栏数到错的行数(实测 43 ≠ 1)。选择器与语义都要各自成立。 */

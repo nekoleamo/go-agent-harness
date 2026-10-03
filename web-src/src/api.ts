@@ -220,7 +220,7 @@ export const api = {
   pluginInstallPreview(spec: string): Promise<{ prompt: string }> {
     return req('/api/plugins/install', { method: 'POST', headers: json, body: JSON.stringify({ spec, preview: true }) })
   },
-  pluginInstall(spec: string): Promise<{ ok: boolean; id: string; dir: string; audit: AuditEntry; hint: string }> {
+  pluginInstall(spec: string): Promise<{ ok: boolean; id: string; dir: string; audit: AuditEntry; tidied: boolean; hint: string }> {
     return req('/api/plugins/install', { method: 'POST', headers: json, body: JSON.stringify({ spec, confirmed: true }) })
   },
   pluginUninstall(id: string): Promise<{ ok: boolean }> {

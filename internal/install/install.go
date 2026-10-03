@@ -70,6 +70,8 @@ type Result struct {
 	BuildCmd string
 	// Local 是不是从本地目录装的(本地目录的 id 默认是路径,展示上要说清来源)。
 	Local bool
+	// Tidied 构建前是否补跑过 go mod tidy(⇒ 插件引入了仓库原本没声明的模块依赖)。
+	Tidied bool
 	// Audit 这次登记进白名单的审计行(时间/来源/哈希);装完回显给用户看。
 	Audit plugintrust.AuditEntry
 }
@@ -128,7 +130,9 @@ func installBridge(spec, home string) (*Result, error) {
 			args = append(args, "--branch", version)
 		}
 		args = append(args, repo, clone)
-		if out, err := run("", "git", args...); err != nil {
+		// 环境同样清洗:git 也可能在 remote helper / credential helper 里读到宿主凭据。
+		// HOME 与 SSH_AUTH_SOCK 由 SanitizedEnv 保留 ⇒ SSH 私库照常可用。
+		if out, err := runEnv("", buildEnv(), "git", args...); err != nil {
 			return nil, fmt.Errorf("install: 拉取 %s: %w(%s)", repo, err, out)
 		}
 	}
@@ -150,13 +154,18 @@ func installBridge(spec, home string) (*Result, error) {
 	if !strings.HasPrefix(binary, "tool-") {
 		return nil, fmt.Errorf("install: 二进制名须 tool- 前缀(host-bridge 扫描约定): %s", binary)
 	}
-	buildCmd := man.Build
+	buildCmd := strings.TrimSpace(man.Build)
 	if buildCmd == "" {
-		// 先 tidy 补齐依赖(第三方 repo 的 go.mod 常不完整),再构建
-		buildCmd = "go mod tidy && go build -o " + binary + " ."
+		buildCmd = defaultBuildCmd(binary) // -mod=readonly;tidy 只在需要时补跑(见 build.go)
 	}
-	if out, err := run(clone, "sh", "-c", buildCmd); err != nil {
-		return nil, fmt.Errorf("install: 构建失败: %w(%s)", err, out)
+	built2, err := buildPlugin(clone, buildCmd, binary)
+	if err != nil {
+		return nil, err
+	}
+	// 补过依赖这件事**必须回显**:它意味着这个插件往 go.mod 里新增了仓库原本没声明的
+	// 模块 —— 供应链面被装插件这件事扩宽了,用户有权知道(见 build.go 的 ①)。
+	if built2.Tidied {
+		fmt.Fprintf(os.Stderr, "gah: 安装 %s:仓库的 go.mod 不完整,已补跑 go mod tidy(引入了仓库未声明的模块依赖)\n", man.ID)
 	}
 	built := filepath.Join(clone, binary)
 	if _, err := os.Stat(built); err != nil {
@@ -202,7 +211,7 @@ func installBridge(spec, home string) (*Result, error) {
 	audit, _ := list.LastAuditOf(binary)
 	return &Result{
 		ID: man.ID, Protocol: "bridge", Binary: binary, Dir: dir, Patch: patch,
-		Source: source, BuildCmd: buildCmd, Local: local, Audit: audit,
+		Source: source, BuildCmd: built2.Cmd, Local: local, Tidied: built2.Tidied, Audit: audit,
 	}, nil
 }
 
@@ -349,9 +358,18 @@ func readManifest(dir string) Manifest {
 
 // run 执行命令并回传输出。
 func run(dir, name string, args ...string) (string, error) {
+	return runEnv(dir, nil, name, args...)
+}
+
+// runEnv 同 run,但可指定子进程环境(env = nil 时继承宿主环境)。
+// 拆分只为让「清洗后的环境」有唯一入口,免得各处各写一遍 exec.Command。
+func runEnv(dir string, env []string, name string, args ...string) (string, error) {
 	cmd := exec.Command(name, args...)
 	if dir != "" {
 		cmd.Dir = dir
+	}
+	if env != nil {
+		cmd.Env = env
 	}
 	out, err := cmd.CombinedOutput()
 	return strings.TrimSpace(string(out)), err

@@ -94,6 +94,11 @@ func (h *Host) cmdInstall(args []string) (string, error) {
 		if res.BuildCmd != "" {
 			out += "\n构建命令:" + res.BuildCmd
 		}
+		if res.Tidied {
+			// 补依赖意味着「装这个插件往供应链面里加了仓库没声明的模块」—— 必须说,
+			// 而不是只在 stderr 留一行(用户不看 stderr,而这个词的后果是长期的)。
+			out += "\n注意:仓库的 go.mod 不完整,构建前补跑过 go mod tidy,这个插件引入了仓库原本没声明的模块依赖。"
+		}
 		if res.Audit.Time != "" {
 			out += "\n白名单登记:" + res.Audit.Time + " " + res.Audit.Source
 		}

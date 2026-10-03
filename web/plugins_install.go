@@ -140,12 +140,19 @@ func (s *Server) handlePluginInstall(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "安装失败:"+err.Error(), http.StatusBadRequest)
 		return
 	}
+	// Tidied 回显给面板:补依赖意味着这个插件引入了仓库原本没声明的模块 ——
+	// 供应链面被「装插件」这件事扩宽了,用户有权知道(见 internal/install/build.go ①)。
+	hint := "已装上;若工具没出现,等热重载或重启 gah(宿主侧 watch 只在插件目录变动时触发)"
+	if res.Tidied {
+		hint += "。注意:仓库的 go.mod 不完整,构建前补跑过 go mod tidy —— 这个插件引入了仓库原本没声明的模块依赖"
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":    true,
-		"id":    res.ID,
-		"dir":   res.Dir,
-		"audit": res.Audit,
-		"hint":  "已装上;若工具没出现,等热重载或重启 gah(宿主侧 watch 只在插件目录变动时触发)",
+		"ok":     true,
+		"id":     res.ID,
+		"dir":    res.Dir,
+		"audit":  res.Audit,
+		"tidied": res.Tidied,
+		"hint":   hint,
 	})
 }
 

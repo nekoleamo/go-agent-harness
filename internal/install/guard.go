@@ -49,9 +49,12 @@ func ConfirmPrompt(f ConfirmFacts) string {
 	}
 	build := f.BuildCmd
 	if build == "" {
-		build = "go mod tidy && go build -o <binary> .(默认)"
+		build = "GOFLAGS=-mod=readonly go build -o <binary> .(默认)"
 	}
 	return fmt.Sprintf("安装插件 %s?\n来源:%s\n落位:%s\n将执行的构建命令:%s\n"+
+		"构建进程拿不到你环境里的 API key/令牌(已清洗);但它仍能读到磁盘上的文件。\n"+
+		"若仓库的 go.mod 不完整,构建前会自动补跑一次 go mod tidy —— 那会让这个插件引入"+
+		"仓库原本没声明的模块依赖,面板会标出来。\n"+
 		"装完它会在本机常驻一个进程,并拿到与 gah 同级的沙箱围栏。只装你信任的插件。",
 		f.ID, f.Source, f.Dir, build)
 }
@@ -88,7 +91,7 @@ func Preview(spec, home string) ConfirmFacts {
 	f.Dir = filepath.Join(home, "plugins", man.ID)
 	f.BuildCmd = man.Build
 	if f.BuildCmd == "" {
-		f.BuildCmd = "go mod tidy && go build -o " + binary + " .(默认)"
+		f.BuildCmd = defaultBuildCmd(binary) + "(默认;不改 go.mod/go.sum)"
 	}
 	return f
 }
