@@ -371,7 +371,9 @@ func TestInstallFromLocalDir(t *testing.T) {
 	if res.ID != "demo" || res.Binary != "tool-demo" {
 		t.Fatalf("结果不符: %+v", res)
 	}
-	if res.Source == "" || !strings.HasPrefix(res.Source, "/") {
+	// 判据用 filepath.IsAbs 而不是 HasPrefix("/"):Windows 的绝对路径带盘符
+	// (`C:\Users\...`),按 "/" 断言会在 Windows CI 上稳定红。
+	if res.Source == "" || !filepath.IsAbs(res.Source) {
 		t.Fatalf("本地来源应回显绝对路径: %q", res.Source)
 	}
 	if !fileExists(filepath.Join(res.Dir, res.Binary)) {

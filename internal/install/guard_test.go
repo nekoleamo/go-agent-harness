@@ -65,7 +65,9 @@ func TestPreviewLocalDirReadsManifest(t *testing.T) {
 	if f.ID != "demo" || f.BuildCmd != "go build -o tool-demo ." {
 		t.Fatalf("本地目录应读出完整事实: %+v", f)
 	}
-	if !strings.HasSuffix(f.Dir, "/plugins/demo") {
+	// 判据用 filepath.Base 而不是字符串后缀:Windows 上 Join 出来是反斜杠
+	// (`\data\plugins\demo`),按 "/plugins/demo" 断言会在 Windows CI 上稳定红。
+	if filepath.Base(f.Dir) != "demo" || filepath.Base(filepath.Dir(f.Dir)) != "plugins" {
 		t.Fatalf("落位目录推导不对: %+v", f)
 	}
 }
