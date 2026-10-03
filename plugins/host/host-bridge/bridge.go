@@ -26,6 +26,7 @@ import (
 	"time"
 
 	coreplugin "github.com/nekoleamo/go-agent-harness/core/plugin"
+	"github.com/nekoleamo/go-agent-harness/internal/plugintrust"
 	"github.com/nekoleamo/go-agent-harness/internal/searchfile"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
@@ -181,6 +182,8 @@ type extEntry struct {
 
 // Bridge 外部插件目录管理(扫描/重载/关闭/崩溃拉起)。
 type Bridge struct {
+	// rejects 被拒绝加载的插件(白名单/探测);供 API 暴露,免得表现成「插件不见了」。
+	rejects []sdk.RejectedPlugin
 	dir     string
 	tools   sdk.ToolRegistry
 	cmds    sdk.CommandRegistry // M14 可选(ctx.commands;nil = 外部命令不注册)
@@ -273,10 +276,78 @@ func (b *Bridge) loadEntries() error {
 	})
 }
 
+// verifyTrust 白名单校验(见 internal/plugintrust)。返回错误 = 拒绝加载。
+//
+// 为什么每次现读而不是启动时读一次:登记动作(`gah -install-plugin` / `-trust-plugin`)
+// 之后用户期望「下次调用就生效」,而外部插件的加载本来就是 per-call 可重入的(loadOne)。
+// 清单很小,读它比维护一个可能过期的缓存便宜得多 —— 而缓存过期会变成「我明明登记过了」。
+func (b *Bridge) verifyTrust(path string) error {
+	list, err := plugintrust.Load(b.dir)
+	if err != nil {
+		// 清单本身坏了(有坏行 / 是空的):**整体不放行**并显式报错。
+		// 这比「退回不校验」安全 —— 后者会把一份坏清单变成无声的全面放行。
+		return err
+	}
+	if !list.Enforced() {
+		trustWarnOnce.Do(func() {
+			b.logInfo("host-bridge: 外部插件未做哈希校验(" + plugintrust.FileName +
+				" 不存在)。装第三方插件前先登记:gah -install-plugin <repo|目录>")
+		})
+		return nil
+	}
+	name := filepath.Base(path)
+	sum, err := plugintrust.HashFile(path)
+	if err != nil {
+		b.reject(path, err)
+		return err
+	}
+	if err := list.Verify(name, sum); err != nil {
+		b.reject(path, err)
+		return err
+	}
+	return nil
+}
+
+// reject 记一条被拒(同一条插件只留最新原因;list 规模是插件数,不会涨)。
+func (b *Bridge) reject(path string, err error) {
+	name := filepath.Base(path)
+	reason := err.Error()
+	b.logErr("host-bridge: 外部插件被拒绝加载", "path", path, "reason", reason)
+	b.mu.Lock()
+	for i := range b.rejects {
+		if b.rejects[i].Name == name {
+			b.rejects[i].Reason = reason
+			b.mu.Unlock()
+			return
+		}
+	}
+	b.rejects = append(b.rejects, sdk.RejectedPlugin{Name: name, Reason: reason})
+	b.mu.Unlock()
+}
+
+// Rejected sdk.RejectedPlugins 实现:被拒绝加载的插件清单(稳定排序)。
+func (b *Bridge) Rejected() []sdk.RejectedPlugin {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	out := make([]sdk.RejectedPlugin, len(b.rejects))
+	copy(out, b.rejects)
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// trustWarnOnce 「未启用白名单」的一次性提示(别每次加载都刷一行)。
+var trustWarnOnce sync.Once
+
 // loadOne 启动外部插件进程并组装条目(定义枚举 + 协议探测)。
 //
 // role 非空 = 该二进制提供多个角色,按 `bin <role>` 起(瘦身);为空 = 老行为(无参起)。
 func (b *Bridge) loadOne(path, role string) (*extEntry, error) {
+	// 白名单校验(2026-10-03):放在**探测之前** —— 探测会 exec 那个文件,而白名单的
+	// 全部意义就是「未经你确认的东西不许被执行」。清单不存在 ⇒ 不启用(照旧加载)。
+	// 每次 loadOne 现读:用户装完/登记完不必重启,热重载路径也跟着同一口径。
+	if err := b.verifyTrust(path); err != nil {
+		return nil, err // 记录在 verifyTrust 内(被拒清单与原因同处一处)
+	}
 	// 能力自报探测必须在 exec **之前**(包装 argv 只能那时定)。探测失败 = 未声明 = 按普通
 	// 插件包装(安全侧默认)。自报项只影响**策略面**(数据根白名单/凭据读拒),不再影响包不包。
 	caps, capsKnown := probeCapabilities(path, role)
@@ -548,6 +619,43 @@ func roleOf(name, path string) string {
 		return "" // 文件名就是插件名 ⇒ 老式单角色
 	}
 	return name
+}
+
+// onWatchEvent 监听事件回调:按「是文件还是目录」分流。
+//
+// 为何要分流(2026-10-03):事件给的是**变化的那个路径**。
+//   - 已加载的插件二进制被重编译 → 逐角色重载(旧语义);
+//   - **运行中新增**的插件 → reloadLocked 的「未加载分支」会把它装载进来;
+//   - **新增目录**(发布布局的 `plugins/<名>/` 整个落盘、`cp -r`、解压包)→
+//     目录本身不是插件二进制,拿它去 `rolesOf` 只会探测失败返回空,于是这一整支被静默
+//     丢弃,症状是「放了插件但没生效」,日志只有一行探测失败。监听改成递归后事件能收到了,
+//     但这一步不补上等于白补。
+func (b *Bridge) onWatchEvent(path string) {
+	if strings.TrimSpace(path) == "" {
+		return // 监听错误上报(watcher 侧已记日志),此处不做事
+	}
+	if fi, err := os.Stat(path); err == nil && fi.IsDir() {
+		b.loadUnder(path)
+		return
+	}
+	// 一个二进制可能是多角色(瘦身):逐角色重载,只重载**当时已加载**的那些
+	// (未加载的新文件走 loadedRolesOf 的 rolesOf 兜底 → 由 reloadLocked 装载)。
+	for _, role := range b.loadedRolesOf(path) {
+		_ = b.reload(path, role)
+	}
+}
+
+// loadUnder 装载某个目录下的全部外部插件(新增目录布局用;已加载的会被 reload)。
+func (b *Bridge) loadUnder(dir string) {
+	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !isExternalPluginBin(d.Name()) {
+			return nil // 读不到这一项就跳过,不影响其余
+		}
+		for _, role := range b.loadedRolesOf(path) {
+			_ = b.reload(path, role)
+		}
+		return nil
+	})
 }
 
 // loadedRolesOf 某个二进制**当前已加载**的角色(文件监听按它逐个重载)。

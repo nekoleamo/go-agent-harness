@@ -2266,6 +2266,10 @@ func (s *Server) handleCommandRun(w http.ResponseWriter, r *http.Request) {
 type pluginView struct {
 	sdk.PluginInfo
 	Manage string `json:"manage"`
+	// Rejected 非空 = 这条是**被拒绝加载**的外部插件(白名单不符等),不是「已装载」。
+	// 为何要单列:被拒的表现是「工具整组消失」,而原因若只在日志里,界面就无从区分
+	// 「没装」与「被拦」—— 面板据此显示原因与补救办法。
+	Rejected string `json:"rejected,omitempty"`
 }
 
 func (s *Server) handlePlugins(w http.ResponseWriter, _ *http.Request) {
@@ -2287,6 +2291,19 @@ func (s *Server) handlePlugins(w http.ResponseWriter, _ *http.Request) {
 		}
 		out = append(out, pluginView{PluginInfo: p, Manage: m})
 	}
+	// 被拒的外部插件:实现 sdk.RejectedPlugins 的宿主才报(否则本宿主没这个面)。
+	// 为何要单列:被拒的表现是「工具整组消失」,而原因若只在日志里,界面就无从区分
+	// 「没装」与「被拦」—— 面板据此显示原因与补救办法。
+	if rp, ok := s.extp.(sdk.RejectedPlugins); ok {
+		for _, r := range rp.Rejected() {
+			out = append(out, pluginView{
+				PluginInfo: sdk.PluginInfo{ID: r.Name, State: "rejected"},
+				Manage:     "external",
+				Rejected:   r.Reason,
+			})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	writeJSON(w, http.StatusOK, out)
 }
 

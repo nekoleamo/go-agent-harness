@@ -93,3 +93,34 @@ export function trustNoteOf(list: UIPluginDigest[]): string {
 export function digestRows(list: UIPluginDigest[]): UIPluginDigest[] {
   return list.filter((p) => !!p && typeof p.id === 'string' && p.id.trim() !== '')
 }
+
+/** UIPluginFailure 一个槽位加载失败的展示行。 */
+export interface UIPluginFailure {
+  id: string
+  slot: string
+  reason: string
+}
+
+/**
+ * failureRow 把一次槽位加载失败整成一行可展示的记录。
+ *
+ * 为什么要它而不是在 plugins.ts 里就地拼字符串(2026-10-03):失败此前只 `console.warn`
+ * —— 界面上「我装了插件但没生效」与「它根本没被扫到」长得一模一样,用户无从判断该
+ * 重扫还是该重装。把「失败 ⇒ 一行带插件名/槽位/原因」的映射做成纯函数放这里,
+ * 是为了能被 node --test 直跑(plugins.ts 依赖 vue 运行时,node 跑不了)。
+ *
+ * 原因为空时给一个兜底文案:空白的错误行在界面上等于没有这一行。
+ */
+export function failureRow(id: string, slot: string, e: unknown): UIPluginFailure {
+  let reason = ''
+  if (e instanceof Error) reason = e.message
+  else if (typeof e === 'string') reason = e
+  else if (e !== null && e !== undefined) {
+    try {
+      reason = JSON.stringify(e)
+    } catch {
+      reason = String(e)
+    }
+  }
+  return { id, slot, reason: reason || '未知错误' }
+}

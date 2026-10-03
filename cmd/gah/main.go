@@ -20,6 +20,7 @@ import (
 	"github.com/nekoleamo/go-agent-harness/core/plugin"
 	"github.com/nekoleamo/go-agent-harness/internal/embed"
 	"github.com/nekoleamo/go-agent-harness/internal/install"
+	"github.com/nekoleamo/go-agent-harness/internal/plugintrust"
 	"github.com/nekoleamo/go-agent-harness/plugins/catalogue"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
@@ -39,6 +40,9 @@ var (
 	installUIFl  = flag.String("install-ui", "", "安装 UI 插件(M7.2):<repo>[@version] 或本地目录;v-html 扫描拒装")
 	uninstallUIF = flag.String("uninstall-ui", "", "卸载 UI 插件:<id>(删 home/ui-plugins/<id>,重载页面即回默认)")
 	listUIPlugs  = flag.Bool("list-ui-plugins", false, "列出已安装的 UI 插件")
+	trustPlugin  = flag.String("trust-plugin", "", "把已放在 plugins/ 的二进制登记进哈希白名单:<名>(如 tool-basic);确认来源可信后再执行")
+	untrustPl    = flag.String("untrust-plugin", "", "从哈希白名单移除:<名>")
+	listTrust    = flag.Bool("list-trusted-plugins", false, "列出插件哈希白名单")
 )
 
 // 非 TTY 检测(TUI profile):stdin 为 pipe/重定向时 bubbletea 会直读 stdin 卡死挂起;
@@ -153,6 +157,37 @@ func main() {
 		fmt.Printf("已安装 UI 插件 %s v%s(覆盖 %d 槽位)\n", res.ID, res.Version, res.Slots)
 		fmt.Printf("  落位: %s\n", res.Dir)
 		fmt.Printf("  生效: 重载 web 页面即换(ui-web-app 聚合自动发现)\n")
+		return
+	}
+	if *trustPlugin != "" {
+		if err := install.Trust(*trustPlugin, home); err != nil {
+			logger.Error("trust-plugin: 失败", "err", err)
+			os.Exit(1)
+		}
+		fmt.Printf("已登记 %s 到 plugins/%s(下次调用即生效,热重载路径同样校验)\n", *trustPlugin, plugintrust.FileName)
+		return
+	}
+	if *untrustPl != "" {
+		if err := install.Untrust(*untrustPl, home); err != nil {
+			logger.Error("untrust-plugin: 失败", "err", err)
+			os.Exit(1)
+		}
+		fmt.Printf("已从 plugins/%s 移除 %s\n", plugintrust.FileName, *untrustPl)
+		return
+	}
+	if *listTrust {
+		list, err := install.TrustedList(home)
+		if err != nil {
+			logger.Error("list-trusted-plugins: 失败", "err", err)
+			os.Exit(1)
+		}
+		if len(list) == 0 {
+			fmt.Println("(白名单为空或未启用)")
+			return
+		}
+		for _, n := range list {
+			fmt.Println(n)
+		}
 		return
 	}
 	if *uninstallUIF != "" {

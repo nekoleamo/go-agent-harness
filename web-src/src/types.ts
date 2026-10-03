@@ -293,6 +293,10 @@ export interface PluginInfo {
   // 管理域(web 设置面板):host=宿主运行可卸载 | external=已外部化勿启停 | scenario=场景专用勿启 | web=常规可启用
   // 单一事实源=Go 侧 catalogue 声明(PluginInfo.Manage),server 透传;新增外部化/场景插件仅需在 catalogue 声明
   manage: string
+  // rejected 非空 = 这条是**被拒绝加载**的外部插件(哈希白名单不符/清单坏了等),
+  // State 会是 "rejected"。带原因是为了让「没装」与「被拦」在界面上可区分 ——
+  // 被拦的表现是工具整组消失,没有原因就只剩一个查不到出处的空缺。
+  rejected?: string
 }
 
 // 命令结果帧

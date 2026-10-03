@@ -8,14 +8,22 @@ import (
 	"testing"
 
 	"github.com/nekoleamo/go-agent-harness/internal/embed"
+	"github.com/nekoleamo/go-agent-harness/internal/plugintrust"
 )
 
 // makeFixture 构造本地 git 插件仓库(桥协议 demo 插件);返回仓库路径。
-func makeFixture(t *testing.T) string {
+func makeFixture(t *testing.T) string { return makeFixtureVer(t, "") }
+
+// makeFixtureVer 同 makeFixture,额外往 plugin.yaml 写 api_version(空 = 不写该键)。
+func makeFixtureVer(t *testing.T, apiVersion string) string {
 	t.Helper()
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, "go.mod"), "module demo-tool\n\ngo 1.27\n\nrequire github.com/nekoleamo/go-agent-harness v0.0.0\n\nrequire github.com/nekoleamo/go-agent-harness/sdk v0.0.0\n\nreplace github.com/nekoleamo/go-agent-harness => "+repoRoot(t)+"\n\nreplace github.com/nekoleamo/go-agent-harness/sdk => "+filepath.Join(repoRoot(t), "sdk"))
-	writeFile(t, filepath.Join(repo, "plugin.yaml"), "id: demo\nprotocol: bridge\nbinary: tool-demo\n")
+	manifest := "id: demo\nprotocol: bridge\nbinary: tool-demo\n"
+	if apiVersion != "" {
+		manifest += "api_version: " + apiVersion + "\n"
+	}
+	writeFile(t, filepath.Join(repo, "plugin.yaml"), manifest)
 	// 桥协议实现:直接复用仓库示例插件源码(握手 + echo 工具)
 	example, err := os.ReadFile(filepath.Join(repoRoot(t), "extplugins", "tool-echo", "main.go"))
 	if err != nil {
@@ -267,5 +275,79 @@ func TestRuntimePatchPersist(t *testing.T) {
 	}
 	if err := RemoveEntry(filepath.Join(t.TempDir(), "x.yaml"), "id"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// —— 插件协议兼容闸 + 白名单登记(2026-10-03)——
+
+// TestCheckAPIVersion 缺省放行(兼容既有插件);认识则放行;不认识 ⇒ 显式拒绝。
+func TestCheckAPIVersion(t *testing.T) {
+	if err := checkAPIVersion(Manifest{}); err != nil {
+		t.Fatalf("缺省(=v1)应放行,不能因为加了一个字段就让已发布插件全被拒: %v", err)
+	}
+	if err := checkAPIVersion(Manifest{APIVersion: "v1"}); err != nil {
+		t.Fatalf("v1 应放行: %v", err)
+	}
+	err := checkAPIVersion(Manifest{APIVersion: "v99"})
+	if err == nil {
+		t.Fatal("不认识的版本必须显式拒绝")
+	}
+	if !strings.Contains(err.Error(), PluginAPIVersion) {
+		t.Fatalf("错误文案应说清本版支持什么: %v", err)
+	}
+}
+
+// TestInstallRecordsWhitelist 装完必须登记白名单。
+//
+// 为何这条重要:白名单一存在即强制,而清单默认不存在(opt-in)。用户装了第一个插件之后
+// 清单就出现了 —— 里面若没有刚装的这件,下次启动它会被**自己**拒掉,症状是「装完能用,
+// 重启就没了」。
+func TestInstallRecordsWhitelist(t *testing.T) {
+	home := t.TempDir()
+	res, err := Install(makeFixture(t), home)
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	names, err := TrustedList(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, n := range names {
+		if n == res.Binary {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("装完应登记 %s,白名单=%v", res.Binary, names)
+	}
+	// 登记的哈希必须与盘上那份一致(否则第一次加载就会被自己拒)
+	sum, err := plugintrust.HashFile(filepath.Join(res.Dir, res.Binary))
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := plugintrust.Load(filepath.Join(home, "plugins"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := list.Sum(res.Binary)
+	if !ok || got != sum {
+		t.Fatal("登记的哈希与盘上产物不一致")
+	}
+}
+
+// TestInstallRejectsIncompatibleAPIVersion 兼容闸在**构建之前**生效。
+func TestInstallRejectsIncompatibleAPIVersion(t *testing.T) {
+	home := t.TempDir()
+	_, err := Install(makeFixtureVer(t, "v99"), home)
+	if err == nil {
+		t.Fatal("不兼容的 api_version 应被拒")
+	}
+	if !strings.Contains(err.Error(), "api_version") {
+		t.Fatalf("错误应点名 api_version: %v", err)
+	}
+	// 闸在构建前 ⇒ 不该留下任何产物
+	if entries, _ := os.ReadDir(filepath.Join(home, "plugins")); len(entries) != 0 {
+		t.Fatalf("被拒的安装不该留下产物: %v", entries)
 	}
 }

@@ -18,7 +18,9 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 
+	"github.com/nekoleamo/go-agent-harness/internal/plugintrust"
 	"github.com/nekoleamo/go-agent-harness/sdk"
+	"sort"
 )
 
 //go:embed seed
@@ -271,7 +273,38 @@ func EnsurePlugins(home string) ([]string, error) {
 		}
 		written = append(written, dst)
 	}
+	// 把自己登记进**用户侧**插件白名单(2026-10-03)。
+	//
+	// 为什么必须有这一步:白名单(`plugins/SHA256SUMS`)一存在即强制,而它默认
+	// **不存在**(opt-in)。若不主动登记,用户装完官方插件、第一次跑起 `gah -install-plugin`
+	// 或 `-trust-plugin` 之后,清单就出现了 —— 里面却没有官方四件 ⇒ 下次启动它们全被拒。
+	// 官方产物是**本仓自签**的(嵌入的 SHA256SUMS 已在上面逐件核对过),登记它不降低边界:
+	// 它防的是「盘上那份被换掉」,而盘上那份每次启动都要与嵌入清单比对一次。
+	if err := recordSelf(home, want); err != nil {
+		// 登记失败**不阻断启动**:插件此刻已经落盘且内容与嵌入清单一致,
+		// 真正的风险(有人改了盘上文件)在每次启动的嵌入比对里已经被挡住。
+		// 硬失败只会让一个「想加个白名单」的用户装不上官方插件。
+		return written, fmt.Errorf("internal/embed: 登记官方插件到 plugins/%s 失败(插件已释放,可稍后执行 gah -trust-plugin <名>):%w", plugintrust.FileName, err)
+	}
 	return written, nil
+}
+
+// recordSelf 把官方产物登记进用户侧插件白名单(upsert,已存在的条目原样保留)。
+func recordSelf(home string, want map[string][32]byte) error {
+	dir := filepath.Join(home, "plugins")
+	list, err := plugintrust.Load(dir)
+	if err != nil {
+		return err
+	}
+	names := make([]string, 0, len(want))
+	for n := range want {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return list.Set(names, func(n string) ([32]byte, bool) {
+		s, ok := want[n]
+		return s, ok
+	})
 }
 
 // packedDigests 读 embed 内的 SHA256SUMS(未压缩内容的哈希表:插件基名 → sha256)。

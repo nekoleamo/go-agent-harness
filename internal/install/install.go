@@ -14,6 +14,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/nekoleamo/go-agent-harness/internal/plugintrust"
 )
 
 // PatchFile 安装登记的 patch 文件名(profile 引用)。
@@ -25,6 +27,32 @@ type Manifest struct {
 	Protocol string `yaml:"protocol"` // bridge | mcp(仓库侧一般 bridge)
 	Binary   string `yaml:"binary"`   // 桥插件产物文件名(须 tool- 前缀)
 	Build    string `yaml:"build"`    // 构建命令(默认 go build -o <binary> .)
+	// APIVersion 插件协议版本(2026-10-03 加)。**缺省 = 视为 v1**(兼容既有插件,
+	// 不能因为加了一个字段就让已发布的插件全被拒);写了但认不出来 ⇒ 显式拒绝。
+	//
+	// 为什么需要它:插件是**常驻进程**,宿主升级后协议可能变(工具定义字段、回调通道、
+	// 沙箱握手)。没有版本闸的表现是「装得上、起得来、跑到一半静默不对」——
+	// 比装不上更难查。版本号让不兼容在安装那一刻就说清。
+	APIVersion string `yaml:"api_version,omitempty"`
+}
+
+// PluginAPIVersion 当前宿主支持的插件协议版本(安装兼容闸的权威)。
+const PluginAPIVersion = "v1"
+
+// supportedAPIVersions 认识的版本 → 判否接受。
+var supportedAPIVersions = map[string]bool{PluginAPIVersion: true, "1": true}
+
+// checkAPIVersion 兼容闸:缺省放行(v1);认识则放行;不认识 → 显式报错并说清宿主支持什么。
+func checkAPIVersion(man Manifest) error {
+	v := strings.TrimSpace(man.APIVersion)
+	if v == "" {
+		return nil
+	}
+	if supportedAPIVersions[v] {
+		return nil
+	}
+	return fmt.Errorf("install: plugin.yaml 声明 api_version=%s,本版 gah 只支持 %s"+
+		"(插件协议变了:请用与本版 gah 匹配的插件版本,或升级 gah)", v, PluginAPIVersion)
 }
 
 // Result 安装结果摘要。
@@ -68,6 +96,10 @@ func installBridge(spec, home string) (*Result, error) {
 	if man.ID == "" {
 		return nil, fmt.Errorf("install: 仓库缺少 plugin.yaml(id 必填)")
 	}
+	// 兼容闸在**拉取之后、构建之前**:不该为一个注定装不上的版本烧一次 go build。
+	if err := checkAPIVersion(man); err != nil {
+		return nil, err
+	}
 	if man.Protocol != "" && man.Protocol != "bridge" {
 		return nil, fmt.Errorf("install: 仓库声明 protocol=%s,仅支持 bridge", man.Protocol)
 	}
@@ -100,6 +132,20 @@ func installBridge(spec, home string) (*Result, error) {
 	}
 	if mf := filepath.Join(clone, "plugin.yaml"); fileExists(mf) {
 		_ = copyFile(mf, filepath.Join(dir, "plugin.yaml"))
+	}
+	// 登记白名单(2026-10-03):白名单一存在即强制,装完不登记 ⇒ 下次启动被自己拒掉。
+	// 登记的是**刚构建出来的这份**的哈希,不是发布方声明的值 —— 我们只能担保自己
+	// 装进去的这份,担保不了「作者那一份本来就好」。
+	sum, err := plugintrust.HashFile(filepath.Join(dir, binary))
+	if err != nil {
+		return nil, fmt.Errorf("install: 算产物哈希失败: %w", err)
+	}
+	list, err := plugintrust.Load(filepath.Join(home, "plugins"))
+	if err != nil {
+		return nil, err
+	}
+	if err := list.Record(binary, sum); err != nil {
+		return nil, fmt.Errorf("install: 登记 plugins/%s 失败: %w", plugintrust.FileName, err)
 	}
 	// 登记:host-bridge 指向 home/plugins
 	patch := filepath.Join(home, "config", PatchFile)

@@ -143,3 +143,30 @@ func TestEffectiveScopeContainsJail(t *testing.T) {
 		t.Fatalf("共享写入面应含 jail 锚点: %v", scope)
 	}
 }
+
+// TestNoKernelSupportImpliesNoSharedScope 平台**没有内核原语**时,共享写入面必须为 nil。
+//
+// 为何要这条:共享写入面存在的全部理由是「以内核放行面为准」;内核不在场时它必须是 nil,
+// 协作层才退回「只在工作区根内」的窄口径 —— 那时它是唯一的边界(Windows 就是这一侧)。
+// 这条断言在 CI 的 test-windows job 上**真的会跑**(那台机器没有 seatbelt/Landlock),
+// 在 macOS/Linux 上跳过。所以它不是纸面结论,而是「Windows 上的收紧方向」被钉住的证据。
+func TestNoKernelSupportImpliesNoSharedScope(t *testing.T) {
+	t.Setenv(kernelShellJailEnv, "")
+	sp := &SandboxPolicy{root: t.TempDir(), mode: sdk.SandboxWorkspace}
+	// 拿一份「平台确实不支持」的探针:直接问 kernelsandbox 的平台判定。
+	probe := kernelsandbox.Spec{Mode: sdk.SandboxWorkspace, Root: t.TempDir(), Jail: kernelsandbox.EnsureJailDir()}
+	if ok, _ := kernelsandbox.WouldApply(probe); ok {
+		t.Skip("本机有内核原语(非 Windows/无 seatbelt 平台),本用例只针对「平台不支持」那一侧")
+	}
+	for _, surface := range []kernelSurface{surfaceTool, surfaceShell} {
+		if got := kernelWriteScope(sp, surface); got != nil {
+			t.Fatalf("%s: 平台无内核原语时不得有共享写入面(会放宽协作层),got %v", surface, got)
+		}
+	}
+	// 连带:窄口径真的生效 —— 区外与临时区都仍被拒。
+	for _, target := range []string{sysTempProbe(t), filepath.Join(outsideProbe(), "x")} {
+		if err := sp.ValidatePath(target); err == nil {
+			t.Fatalf("平台无内核原语时协作层必须守住窄口径,%s 被放行了", target)
+		}
+	}
+}

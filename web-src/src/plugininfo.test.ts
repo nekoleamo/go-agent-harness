@@ -1,7 +1,16 @@
 // UI 插件完整性展示逻辑单测(node --test 直跑,自包含无运行时依赖)。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { SHORT_HASH_LEN, digestLine, digestRows, scopeLabel, shortHash, toDigest, trustNoteOf } from './plugininfo.ts'
+import {
+  SHORT_HASH_LEN,
+  digestLine,
+  digestRows,
+  failureRow,
+  scopeLabel,
+  shortHash,
+  toDigest,
+  trustNoteOf,
+} from './plugininfo.ts'
 
 test('shortHash 截断前缀,空值原样返回空', () => {
   const full = 'a'.repeat(64)
@@ -86,4 +95,23 @@ test('toDigest 边界映射:snake_case API 字段必须翻成展示字段(否则
 test('toDigest 空值:无 id → 被 digestRows 过滤;无哈希 → 如实说无法校验', () => {
   assert.deepEqual(digestRows([toDigest({}), toDigest({ id: 'a' })]).map((r) => r.id), ['a'])
   assert.equal(digestLine(toDigest({ id: 'b', hash_scope: 'none', hash_note: '产物目录无文件' })), 'b · 无法校验:产物目录无文件')
+})
+
+// failureRow:失败必须变成**看得见的一行**(插件 + 槽位 + 原因)。
+//
+// 这条钉的是 2026-10-03 的真问题:失败此前只 console.warn,界面上「装了没生效」与
+// 「根本没扫到」分不出来,用户无从判断该重扫还是该重装。
+test('failureRow 三种错误形态都产出带原因的一行', () => {
+  assert.deepEqual(failureRow('demo', 'extra-panel', new Error('boom')), {
+    id: 'demo',
+    slot: 'extra-panel',
+    reason: 'boom',
+  })
+  assert.equal(failureRow('demo', 'stream', '字符串原因').reason, '字符串原因')
+  assert.equal(failureRow('demo', 'stream', { code: 1 }).reason, '{"code":1}')
+})
+
+test('failureRow 空原因给兜底文案(空行在界面上等于没有)', () => {
+  assert.equal(failureRow('demo', 'stream', undefined).reason, '未知错误')
+  assert.equal(failureRow('demo', 'stream', new Error('')).reason, '未知错误')
 })

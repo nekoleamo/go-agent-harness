@@ -48,7 +48,7 @@ Go 实现的编程代理 Agent Harness:以**单静态二进制**交付全部能�
 | **MCP 按需检索** | 每个 MCP server 可选 `mode`: `direct`(默认,工具全量进上下文)/ `search`(工具**不进每轮上下文**,只暴露 `mcp_search` 查清单 + `mcp_call` 按名调用);配置落 `$GAH_HOME/config/mcp.yaml`(设置面板「MCP server」段可视化增删改,**保存即写盘并热重载**,无需重启),env 照旧生效(文件优先) |
 | **ACP agent 端** | `gah acp`:以 **ACP v1**(Agent Client Protocol,Linux Foundation)被编辑器(Zed / Neovim 等)当一等 agent 拉起 —— 会话、流式回复、工具进度、审批弹层全走 ACP,数据与 TUI/Web **同源**(同一会话账本、同一沙箱/审批裁决,不是另一套运行时);编辑器的权限按钮只映射 `allow_once`/`reject_once`(不给 always:一次点击不该永久放宽危险操作),交互式提问与图片输入暂不支持(显式报错,去 TUI/Web 作答) |
 | **外部插件桥** | host-bridge:独立进程插件(go-plugin),崩溃隔离(外部进程被杀宿主存活);宿主回调通道(GAH_CB_ADDR)供外部进程请求 tools/jobs/fanout 服务;工具类 100% 外部化(extplugins/) |
-| **插件安装** | `gah -install <repo>[@version]`(外部/桥插件)与 `-install-ui <repo|目录>`(UI 槽位插件)一条命令装完即启用 |
+| **插件安装** | `gah -install <repo>[@version]`(外部/桥插件)与 `-install-ui <repo|目录>`(UI 槽位插件)一条命令装完即启用。**哈希白名单**(2026-10-03):`plugins/SHA256SUMS` 一存在即强制 —— 未列入或哈希不符的插件**拒绝加载**(官方四件由 embed 每次启动自登记,`gah -install` 装完自动登记);手工放进来的二进制用 `gah -trust-plugin <名>` 补登记,`-list-trusted-plugins` 查看、`-untrust-plugin <名>` 撤销。被拒的插件在设置面板插件段**显示原因与补救命令**(不是默默消失);插件协议版本由 `plugin.yaml` 的 `api_version` 声明(缺省 = v1),不兼容在安装那一刻就拒 |
 | **指令文件与技能** | 全局/项目 AGENTS.md 自动注入(近者覆盖;`/reload` 热更);SKILL.md 技能扫描 + 模型按需加载(`list_skills`/`read_skill`);仓库自注册 `gah-plugin-dev` 技能 |
 | **角色切换** | `$GAH_HOME/roles/<id>/`(人设 + 工作规则 AGENTS.md + 私有技能 + **可选模型/思考档** + **可排除的工具清单** + **只能收紧的权限档 `approval`/`sandbox`**),身份槽注入在固定引导之后、指令层之前(冲突时用户/项目优先);技能按角色挂载过滤(未挂载的读不到也列不出)、**工具按角色排除清单过滤(被排除的看不见也调不动,子代理与工作流同口径)**、**权限档只能收紧(`role.yaml` 的 `approval`/`sandbox`,声明后实际生效取「声明档 → 审批联动 → 角色档」中更严者,三端回显标注「角色收紧」)**,`/role` 或**设置面板「角色」段**切换**即生效、不换会话**;**角色声明的模型/思考档每回合自动覆盖会话档**(三处回显来源,不静默改会话偏好;模型不可用时回退会话模型并告警一次,子代理同样继承角色的身份槽/技能与工具可见性/权限收紧档);**12 个预置角色,按场景分五组**(通用:通用助理;工程:编程大师/技术负责人/代码评审/运维值守;数据:财务/数据分析;写作:小说家/新闻撰稿人/技术文档/翻译;学习:技术导师)—— 面板按组分节显示,**从没挑过角色时会有一行提示**(选中后不再出现;不挑也能用,走基线:全局指令 + 全部技能);角色/工作规则/技能挂载/技能库(含角色私有技能)都可在面板里增删改(列表顶部有**合成的「默认（基线）」行**= 不启用任何角色,一键切回),TUI 状态栏与 Web 底栏都显示当前角色;模型只有只读 `list_roles`/`read_role`(人格不可被模型自改),且写 `roles/**`、`skills/**`、全局 AGENTS.md 走审批面;技能可**改名或改归属库**(共享库 ↔ 角色私有),改名会同步改掉每个挂载它的角色引用(不会留下已失效挂载);技能可**导出/导入为技能包**(`gah-skill-<名>.zip`,只含该技能的 `SKILL.md`;导入端**不执行任何脚本** —— gah 的技能本就是提示词文件,没有可执行载荷;角色私有技能随角色包走);角色可**导出/导入为单文件角色包**(`.zip`:定义 + 工作规则 + 私有技能,可分享与复现) |
 | **主题外部化** | `$GAH_HOME/config/themes/*.yaml` + `/theme` 运行期切换,零重编译换肤 |
@@ -203,6 +203,7 @@ export DEEPSEEK_API_KEY=sk-...            # 或 OPENAI_API_KEY / ANTHROPIC_API_K
 | `-version` | 输出版本信息(纯查询:管道/CI 里没 TTY 也能打,先于 TUI 护栏) |
 | `-install <repo>[@version]` | 安装线上/桥插件(`mcp:<id>:<command>` 登记 MCP 插件) |
 | `-uninstall <id>` / `-list-plugins` | 卸载 / 列出外部插件 |
+| `-trust-plugin <名>` / `-untrust-plugin <名>` / `-list-trusted-plugins` | 把已放在 `plugins/` 的二进制**登记进哈希白名单** / 撤销 / 列出。用于「插件被拒了但你确认来源可信」——它只登记你手上**当前这一份**的哈希;若清单里已有不同哈希会显式拒绝,不会自动洗白 |
 | `-install-ui <repo\|本地目录>` / `-uninstall-ui <id>` / `-list-ui-plugins` | UI 插件安装 / 卸载 / 列出 |
 
 文档阅读子命令(web/im 同级入口,零装配纯读):

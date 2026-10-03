@@ -8,7 +8,7 @@ import { byteLength } from '../bytes'
 import { autostartState, checkUpdate, installUpdate, isDesktop, pickDirectory, updateState, type UpdateSnapshot } from '../desktop'
 import { currentModelValue, modelOptionValue, withCurrentModel } from '../modelsel'
 import { settingSections } from '../registry'
-import { uiPluginDigests, uiPluginTrustNote } from '../plugins'
+import { loadUIPlugins, uiPluginDigests, uiPluginErrors, uiPluginTrustNote } from '../plugins'
 import { digestLine } from '../plugininfo'
 import { PROVIDER_PRESETS, explainProbeError, type ProviderPreset } from '../providers'
 import { cronShapeError, fmtAbs, fmtNextRun, statusLabel } from '../schedule'
@@ -48,6 +48,26 @@ const updOk = ref(false)
 // updAvailable 有更新待确认:此时底栏多一个「立即升级」按钮,且**必须**先经过二次确认。
 // 2026-10-03 用户要求:「检查更新后,应先提示是否需要更新,确认升级后,再下载安装」。
 const updAvailable = ref('')
+
+// uiScanBusy UI 插件重扫进行中(按钮置灰;防连点)。
+const uiScanBusy = ref(false)
+
+// rescanUIPlugins 重扫 UI 插件并重装槽位。
+//
+// 为什么必须有它:插件清单是**页面启动时扫一次**的(`main.ts` 的 loadUIPlugins),
+// 装完新插件只能靠刷新页面;而用户在设置面板里刚装完、看着「没变化」,
+// 会以为装失败了 —— 实际只是没重扫。补这个入口把「刷新页面」变成一个按钮。
+// 注意:重扫**只重装槽位覆盖**,不清空已注册的默认实现(registry 的 registerSlot
+// 自带优先级比较,同优先级后注册者胜 ⇒ 重扫是幂等叠加,不是"再装一遍同样的东西")。
+async function rescanUIPlugins(): Promise<void> {
+  if (uiScanBusy.value) return
+  uiScanBusy.value = true
+  try {
+    await loadUIPlugins()
+  } finally {
+    uiScanBusy.value = false
+  }
+}
 
 // doCheckUpdate 桌面版检查更新:壳侧走同一条 checkForUpdates(与托盘菜单同一实现)。
 // **只查不装**:有更新时壳返回 available,由用户点「立即升级」并确认后才下载安装。
@@ -2911,8 +2931,26 @@ watch(
             插件
             <span class="h-sub">{{ pluginShown.length }}/{{ plugins.length }}</span>
           </h3>
-          <!-- UI 插件信任模型明示(文案由后端 /api/ui-plugins 下发,单一事实源) -->
+          <!-- UI 插件(2026-10-03):信任模型 + 摘要 + **重扫入口** + 失败原因。
+               重扫解决的是「装了插件但没生效、只能靠刷新页面」;失败清单解决的是
+               「没生效」与「没被扫到」在界面上分不出来 —— 这两者的处置完全不同。 -->
+          <div class="row ui-plugin-row">
+            <span class="lab-inline">UI 插件</span>
+            <button class="ghost" :disabled="uiScanBusy" @click="rescanUIPlugins()">
+              {{ uiScanBusy ? '扫描中…' : '重新扫描' }}
+            </button>
+            <span class="dim">
+              装好后点这里重扫(不必刷新页面);命令行等价物是
+              <code>gah -install-ui &lt;repo|目录&gt;</code>
+            </span>
+          </div>
           <p v-if="uiPluginTrustNote" class="dim">UI 插件(ui-plugins):{{ uiPluginTrustNote }}</p>
+          <p v-if="uiPluginErrors.length" class="err-line">
+            {{ uiPluginErrors.length }} 个槽位加载失败:
+            <template v-for="(e, i) in uiPluginErrors" :key="e.id + e.slot">
+              {{ i ? ';' : '' }}{{ e.id }}·{{ e.slot }} — {{ e.reason }}
+            </template>
+          </p>
           <!-- 产物完整性提示(R10 ⑤-3):sha256 覆盖范围与降级原因如实显示;值供人比对,
                本面板不做"通过/不通过"判断(同源页面自证不构成安全边界) -->
           <details v-if="uiPluginDigests.length" class="dim">
@@ -2929,6 +2967,9 @@ watch(
               <div class="pmain">
                 <span class="pname">{{ p.ID }}</span>
                 <span class="psub">{{ p.Type }} · {{ p.State }} · {{ manageMeta(p).label }}</span>
+                <!-- 被拒(白名单不符等):必须显示原因与补救办法 ——
+                     否则表现只是「插件不见了」,用户无从判断是没装还是被拦。 -->
+                <span v-if="p.rejected" class="pwhy" :title="p.rejected">被拒绝:{{ p.rejected }}</span>
               </div>
               <!-- 外部化/场景专用:只读标记,web 侧禁用启停 -->
               <button
@@ -3622,6 +3663,26 @@ textarea.inp {
   font-weight: 600;
 }
 /* 产物校验值列表(R10 ⑤-3):等宽字体便于逐字符比对;折行不裁剪(哈希截断会误导) */
+/* 被拒插件的原因行:错误语义色,但只到"说明"的分量(不抢主体) */
+.pwhy {
+  display: block;
+  color: var(--err);
+  font-size: 11px;
+  margin-top: 2px;
+  word-break: break-word;
+}
+/* UI 插件段的失败清单:与工具结果里的错误块同一套语义色(不用第二个色相) */
+.err-line {
+  color: var(--err);
+  font-size: 12px;
+  margin: 4px 0;
+  word-break: break-word;
+}
+.ui-plugin-row code {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--fg-dim);
+}
 .digests {
   margin: 4px 0 0;
   padding-left: 18px;

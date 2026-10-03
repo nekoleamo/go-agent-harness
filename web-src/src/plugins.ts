@@ -6,8 +6,8 @@ import { ref } from 'vue'
 import { registerSlot, registerSettingSection, registerSidebarAction, registerExtraPanel } from './registry'
 import type { SlotName } from './registry'
 import type { Component } from 'vue'
-import { trustNoteOf, digestRows, toDigest } from './plugininfo'
-import type { UIPluginDigest } from './plugininfo'
+import { failureRow, trustNoteOf, digestRows, toDigest } from './plugininfo'
+import type { UIPluginDigest, UIPluginFailure } from './plugininfo'
 
 interface SlotDef {
   name: string // v1 四槽位 或 v2 扩展点(settings-section/sidebar-action/extra-panel)
@@ -33,6 +33,13 @@ interface UIPlugin {
 // uiPluginTrustNote 后端下发的 UI 插件信任模型文案(设置面板照显;空 = 未取到/无插件)。
 export const uiPluginTrustNote = ref('')
 
+// uiPluginErrors 本轮扫描里**加载失败**的槽位(插件 id + 槽位 + 原因)。
+//
+// 为何要把它暴露出来(2026-10-03):此前失败只 `console.warn` —— 界面上看不出「我装的
+// 插件没生效」和「它根本没被扫到」的区别,而这两者的处置完全不同(重扫 vs 重新安装)。
+// 面板的「UI 插件」小节照显这份清单。
+export const uiPluginErrors = ref<UIPluginFailure[]>([])
+
 // uiPluginDigests 已安装 UI 插件的产物摘要行(设置面板显示;空 = 无插件/未取到)。
 // 只放展示所需字段:面板不做任何"校验通过/不通过"的判断 —— 值由人拿去与发布方比对。
 export const uiPluginDigests = ref<UIPluginDigest[]>([])
@@ -41,10 +48,14 @@ export const uiPluginDigests = ref<UIPluginDigest[]>([])
 export async function loadUIPlugins(): Promise<number> {
   let list: UIPlugin[]
   try {
-    const resp = await fetch('/api/ui-plugins')
-    if (!resp.ok) return 0
+    const resp = await fetch('/api/ui-plugins', { cache: 'no-store' })
+    if (!resp.ok) {
+      uiPluginErrors.value = [failureRow('(清单)', '-', `/api/ui-plugins 返回 ${resp.status}`)]
+      return 0
+    }
     list = (await resp.json()) as UIPlugin[]
-  } catch {
+  } catch (e) {
+    uiPluginErrors.value = [failureRow('(清单)', '-', e)]
     return 0
   }
   const V1 = ['stream', 'input', 'statusbar', 'confirm'] as const
@@ -55,6 +66,7 @@ export async function loadUIPlugins(): Promise<number> {
   if (note) uiPluginTrustNote.value = note
   uiPluginDigests.value = digests
   let loaded = 0
+  const errors: UIPluginFailure[] = []
   for (const p of list) {
     for (const slot of p.slots) {
       if (!slot.module) continue
@@ -80,10 +92,12 @@ export async function loadUIPlugins(): Promise<number> {
         }
         loaded++
       } catch (e) {
+        errors.push(failureRow(p.id, name, e))
         // eslint-disable-next-line no-console
-        console.warn(`ui-plugin ${p.id}: 加载槽位 ${slot.name} 失败`, e)
+        console.warn(`ui-plugin ${p.id}: 加载槽位 ${name} 失败`, e)
       }
     }
   }
+  uiPluginErrors.value = errors
   return loaded
 }

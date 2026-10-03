@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/nekoleamo/go-agent-harness/internal/install"
+	"github.com/nekoleamo/go-agent-harness/internal/plugintrust"
 	"github.com/nekoleamo/go-agent-harness/internal/searchfile"
 )
 
@@ -106,4 +108,76 @@ func TestConfigEnvFromCaps(t *testing.T) {
 			t.Fatalf("坏配置应跳过注入,got %v", got)
 		}
 	})
+}
+
+// —— 哈希白名单(2026-10-03)——
+
+// TestVerifyTrustAbsentWhitelistNotEnforced 清单不存在 ⇒ 放行(与从前行为一致)。
+func TestVerifyTrustAbsentWhitelistNotEnforced(t *testing.T) {
+	b := newCfgTestBridge()
+	b.dir = t.TempDir()
+	bin := filepath.Join(b.dir, "tool-demo")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.verifyTrust(bin); err != nil {
+		t.Fatalf("清单不存在时应放行: %v", err)
+	}
+	if len(b.Rejected()) != 0 {
+		t.Fatal("放行时不该进被拒清单")
+	}
+}
+
+// TestVerifyTrustEnforced 清单存在 ⇒ 未列入/不符都拒,且进被拒清单(供 /api/plugins 显示)。
+func TestVerifyTrustEnforced(t *testing.T) {
+	// install.Trust 收的是 **home**(内部自己拼 plugins/),故这里按 home 布局造目录。
+	dir := filepath.Join(t.TempDir(), "plugins")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(dir, "tool-demo")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nv1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// 先登记正确的哈希
+	if err := install.Trust("tool-demo", filepath.Dir(dir)); err != nil {
+		t.Fatal(err)
+	}
+	b := newCfgTestBridge()
+	b.dir = dir
+	if err := b.verifyTrust(bin); err != nil {
+		t.Fatalf("登记一致时应放行: %v", err)
+	}
+	// 改内容 ⇒ 哈希不符 ⇒ 拒
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nv2\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	err := b.verifyTrust(bin)
+	if err == nil {
+		t.Fatal("哈希不符必须被拒")
+	}
+	rej := b.Rejected()
+	if len(rej) != 1 || rej[0].Name != "tool-demo" {
+		t.Fatalf("被拒清单应含该插件(否则界面上表现成「插件不见了」): %+v", rej)
+	}
+	if rej[0].Reason == "" {
+		t.Fatal("被拒原因不能为空")
+	}
+}
+
+// TestVerifyTrustBrokenManifestFailsClosed 清单坏了 ⇒ 拒(不退化成不校验)。
+func TestVerifyTrustBrokenManifestFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "tool-demo")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, plugintrust.FileName), []byte("坏行\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	b := newCfgTestBridge()
+	b.dir = dir
+	if err := b.verifyTrust(bin); err == nil {
+		t.Fatal("清单坏掉时应 fail-closed(不是退回不校验)")
+	}
 }
