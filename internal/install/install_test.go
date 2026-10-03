@@ -351,3 +351,81 @@ func TestInstallRejectsIncompatibleAPIVersion(t *testing.T) {
 		t.Fatalf("被拒的安装不该留下产物: %v", entries)
 	}
 }
+
+// TestInstallFromLocalDir 本地目录安装(2026-10-03)。
+//
+// 为什么这条路径必须独立于 git:自己写的插件**不该被迫先 git init + push** ——
+// 那是纯仪式,而且会把源码推到某个远端去。
+func TestInstallFromLocalDir(t *testing.T) {
+	repo := makeFixture(t)         // 本地 git 仓库(造料用;安装本身不走 git)
+	home := t.TempDir()            // 不带 seed:install 只需要 home/plugins
+	dir := strings.TrimSpace(repo) // 直接把本地目录当来源
+
+	res, err := Install(dir, home)
+	if err != nil {
+		t.Fatalf("从本地目录安装失败: %v", err)
+	}
+	if !res.Local {
+		t.Fatal("Local 标志应为 true(面板与 /install 回显要用)")
+	}
+	if res.ID != "demo" || res.Binary != "tool-demo" {
+		t.Fatalf("结果不符: %+v", res)
+	}
+	if res.Source == "" || !strings.HasPrefix(res.Source, "/") {
+		t.Fatalf("本地来源应回显绝对路径: %q", res.Source)
+	}
+	if !fileExists(filepath.Join(res.Dir, res.Binary)) {
+		t.Fatal("产物未落位")
+	}
+	// 白名单登记 + 审计来源标成 install:<本地路径>
+	names, err := TrustedList(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, n := range names {
+		if n == res.Binary {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("装完应登记白名单:%v", names)
+	}
+	list, err := plugintrust.Load(filepath.Join(home, "plugins"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, ok := list.LastAuditOf(res.Binary)
+	if !ok || !strings.HasPrefix(a.Source, "install:") {
+		t.Fatalf("审计来源应标出 install:<spec>,got %+v", a)
+	}
+}
+
+// TestUninstallRemovesWhitelistEntry 卸载必须撤白名单条目。
+//
+// 留着幽灵条目的后果很具体:同名再装、构建产物哈希与上次不同时,会被**自己的旧条目**拒掉,
+// 而错误文案说的是「文件可能已被改动」—— 与真实原因毫无关系。
+func TestUninstallRemovesWhitelistEntry(t *testing.T) {
+	home := t.TempDir()
+	res, err := Install(makeFixture(t), home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := plugintrust.Load(filepath.Join(home, "plugins"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := list.Sum(res.Binary); !ok {
+		t.Fatal("装完应在白名单里")
+	}
+	if err := Uninstall(res.ID, home); err != nil {
+		t.Fatalf("卸载失败: %v", err)
+	}
+	list2, err := plugintrust.Load(filepath.Join(home, "plugins"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := list2.Sum(res.Binary); ok {
+		t.Fatal("卸载后白名单条目应一并撤销(否则同名再装会被自己的旧条目拒掉)")
+	}
+}

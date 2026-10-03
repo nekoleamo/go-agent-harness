@@ -141,6 +141,19 @@ func (h *Host) specs() []sdk.CommandSpec {
 					return opts
 				}},
 			}},
+		{Name: "install", Usage: "/install list|<仓库|目录>[@版本]|uninstall <id>|trust <名>|untrust <名>",
+			Desc: "插件安装与信任(外部进程插件;启停走 /plugins)", Run: h.cmdInstall,
+			Args: []sdk.ArgLevel{
+				{Options: func([]string) []sdk.Option {
+					return []sdk.Option{
+						{Value: "list", Desc: "列出已装插件与白名单状态"},
+						{Value: "uninstall", Desc: "卸载(白名单条目一并撤销)"},
+						{Value: "trust", Desc: "把已放置的二进制登记进哈希白名单"},
+						{Value: "untrust", Desc: "从哈希白名单移除"},
+					}
+				}},
+				{FreeArgs: func([]string) []string { return []string{"仓库地址或本地目录"} }},
+			}},
 		{Name: "settings", Usage: "/settings history N|off|unlimited", Desc: "历史注入", Run: h.cmdSettings,
 			Args: []sdk.ArgLevel{
 				{Options: func([]string) []sdk.Option { return []sdk.Option{{Value: "history", Desc: "历史条数"}} }},

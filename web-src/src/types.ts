@@ -299,6 +299,28 @@ export interface PluginInfo {
   rejected?: string
 }
 
+// 一次白名单登记的审计行(非安全边界:能改插件目录的人也能改它,见 internal/plugintrust)。
+export interface AuditEntry {
+  Time: string
+  Source: string
+  Name: string
+  Hash: string
+}
+
+// 已安装插件 + 信任状态 + 最近登记来源(GET /api/plugins/install)。
+export interface InstallView {
+  id: string
+  protocol: string
+  binary: string
+  dir: string
+  trusted: boolean // 白名单里有它、且哈希与盘上那份一致
+  enforced: boolean // 白名单是否存在(= 是否强制)
+  hash?: string
+  audit_time?: string // RFC3339
+  audit_source?: string // embed | install:<spec> | trust:manual
+  loadable: boolean // 二进制在不在(不在 = 装了但没构建成功)
+}
+
 // 命令结果帧
 export interface CommandResult {
   raw: string

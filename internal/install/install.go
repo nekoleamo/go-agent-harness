@@ -62,6 +62,21 @@ type Result struct {
 	Binary   string
 	Dir      string
 	Patch    string
+	// Source 实际来源(repo spec 或本地绝对路径),原样回显给用户核对。
+	Source string
+	// BuildCmd 实际执行的构建命令(plugin.yaml 的 build,空 = 用默认)。
+	// 为什么要往外送:确认文案必须含**命令原文**(它可以是任意 shell 命令)——
+	// 由内核算好给入口,三个入口就不会拼出三种不一样的说法。
+	BuildCmd string
+	// Local 是不是从本地目录装的(本地目录的 id 默认是路径,展示上要说清来源)。
+	Local bool
+	// Audit 这次登记进白名单的审计行(时间/来源/哈希);装完回显给用户看。
+	Audit plugintrust.AuditEntry
+}
+
+// Facts 把结果整成确认文案所需的事实(入口在**执行前**用 SpecFacts)。
+func (r *Result) Facts() ConfirmFacts {
+	return ConfirmFacts{Source: r.Source, ID: r.ID, Dir: r.Dir, BuildCmd: r.BuildCmd}
 }
 
 // Install 安装插件:spec 形如 <repo>[@<version>](桥)或 mcp:<id>:<command>(MCP)。
@@ -72,25 +87,50 @@ func Install(spec, home string) (*Result, error) {
 	return installBridge(spec, home)
 }
 
-// installBridge git 拉取 + 构建 + 落目录 + 登记。
+// installBridge 拉取或就地读取 + 构建 + 落目录 + 登记。
+//
+// 来源两类(判据 isLocalDir,与 install-ui 同款 —— 同一个词在一个项目里必须是同一个意思):
+//   - **本地目录**:`/abs/path`、`./rel`、`../rel`、或任何已存在的路径。**自己写的插件
+//     不该被迫先 git init + push** —— 那是纯仪式,而且会把源码推到某个远端。
+//   - git repo:`<repo>[@<version>]`(http(s)/git@/.git 一律按 repo 处理)。
+//
+// 本地目录**复制到临时区再构建**:构建产物必须落在我们自己管理的目录里
+// (`go build` 会在源目录留 cache/临时文件,而用户的源码目录不该被构建过程弄脏)。
 func installBridge(spec, home string) (*Result, error) {
-	repo, version := spec, ""
-	if i := strings.LastIndex(spec, "@"); i > 0 {
-		repo, version = spec[:i], spec[i+1:]
-	}
 	tmp, err := os.MkdirTemp("", "gah-install-")
 	if err != nil {
 		return nil, err
 	}
 	defer os.RemoveAll(tmp)
 	clone := filepath.Join(tmp, "repo")
-	args := []string{"clone", "--depth", "1"}
-	if version != "" {
-		args = append(args, "--branch", version)
-	}
-	args = append(args, repo, clone)
-	if out, err := run("", "git", args...); err != nil {
-		return nil, fmt.Errorf("install: 拉取 %s: %w(%s)", repo, err, out)
+
+	local := isLocalDir(spec)
+	source := spec // 回显用:本地目录先按用户给的原样,末尾再换成绝对路径
+	if local {
+		src, err := filepath.Abs(spec)
+		if err != nil {
+			return nil, fmt.Errorf("install: 解析本地路径 %s: %w", spec, err)
+		}
+		if !fileExists(src) {
+			return nil, fmt.Errorf("install: 本地路径不存在: %s", src)
+		}
+		if err := copyDir(src, clone); err != nil {
+			return nil, fmt.Errorf("install: 复制本地目录: %w", err)
+		}
+		source = src // 绝对路径比用户手打的相对路径更可核对
+	} else {
+		repo, version := spec, ""
+		if i := strings.LastIndex(spec, "@"); i > 0 {
+			repo, version = spec[:i], spec[i+1:]
+		}
+		args := []string{"clone", "--depth", "1"}
+		if version != "" {
+			args = append(args, "--branch", version)
+		}
+		args = append(args, repo, clone)
+		if out, err := run("", "git", args...); err != nil {
+			return nil, fmt.Errorf("install: 拉取 %s: %w(%s)", repo, err, out)
+		}
 	}
 	man := readManifest(clone)
 	if man.ID == "" {
@@ -118,8 +158,8 @@ func installBridge(spec, home string) (*Result, error) {
 	if out, err := run(clone, "sh", "-c", buildCmd); err != nil {
 		return nil, fmt.Errorf("install: 构建失败: %w(%s)", err, out)
 	}
-	src := filepath.Join(clone, binary)
-	if _, err := os.Stat(src); err != nil {
+	built := filepath.Join(clone, binary)
+	if _, err := os.Stat(built); err != nil {
 		return nil, fmt.Errorf("install: 构建产物缺失 %s: %v", binary, err)
 	}
 	// 落 ~/.gah/plugins/<id>/
@@ -127,7 +167,7 @@ func installBridge(spec, home string) (*Result, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
-	if err := copyFile(src, filepath.Join(dir, binary)); err != nil {
+	if err := copyFile(built, filepath.Join(dir, binary)); err != nil {
 		return nil, fmt.Errorf("install: 复制产物: %w", err)
 	}
 	if mf := filepath.Join(clone, "plugin.yaml"); fileExists(mf) {
@@ -144,7 +184,7 @@ func installBridge(spec, home string) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := list.Record(binary, sum); err != nil {
+	if err := list.RecordWithAudit(binary, sum, "install:"+spec); err != nil {
 		return nil, fmt.Errorf("install: 登记 plugins/%s 失败: %w", plugintrust.FileName, err)
 	}
 	// 登记:host-bridge 指向 home/plugins
@@ -159,7 +199,11 @@ func installBridge(spec, home string) (*Result, error) {
 	if err := EnsureProfilePicks(home); err != nil {
 		return nil, err
 	}
-	return &Result{ID: man.ID, Protocol: "bridge", Binary: binary, Dir: dir, Patch: patch}, nil
+	audit, _ := list.LastAuditOf(binary)
+	return &Result{
+		ID: man.ID, Protocol: "bridge", Binary: binary, Dir: dir, Patch: patch,
+		Source: source, BuildCmd: buildCmd, Local: local, Audit: audit,
+	}, nil
 }
 
 // installMCP 直接生成 mcp-bridge 配置条目(无需拉取)。
@@ -188,11 +232,68 @@ func installMCP(spec, home string) (*Result, error) {
 
 // Uninstall 卸载:删除插件目录(host-bridge watch 自动撤销工具;patch 为共享条目保留)。
 func Uninstall(id, home string) error {
-	dir := filepath.Join(home, "plugins", id)
+	plugins := filepath.Join(home, "plugins")
+	dir := filepath.Join(plugins, id)
 	if !fileExists(dir) {
 		return fmt.Errorf("uninstall: 插件 %s 未安装(%s)", id, dir)
 	}
-	return os.RemoveAll(dir)
+	// 白名单的键是**二进制文件名**(tool-demo / tool-kit.exe),不是插件 id(demo) ——
+	// 必须在删目录**之前**把它读出来:删完就无从得知该撤哪一条了。
+	// 撤不掉的后果很具体:同名再装、构建产物哈希与上次不同时,会被**自己的旧条目**拒掉,
+	// 而错误文案说的是「文件可能已被改动」,与真实原因毫无关系。
+	bins := pluginBinNames(dir)
+	if err := os.RemoveAll(dir); err != nil {
+		return err
+	}
+	list, err := plugintrust.Load(plugins)
+	if err != nil {
+		return err // 清单坏了要报出来,不能悄悄留着幽灵条目
+	}
+	for _, b := range bins {
+		if err := list.Remove(b); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// BinaryName 插件目录里**实际会加载的那个二进制**的文件名。
+//
+// 为什么需要它:`Item.Binary` 只来自 plugin.yaml,而**手工放置**的插件(没写 manifest)
+// 那一栏是空的 —— 面板与 /install 清单若直接显示空值,用户看到的是"这个插件没有二进制",
+// 与"我没 manifest"完全两回事。故回落到扫目录(与 host-bridge 的 isExternalPluginBin
+// 同一口径:`tool-` / `cmd-` 前缀),找不到返回 ""。
+func BinaryName(dir string) string {
+	names := pluginBinNames(dir)
+	if len(names) == 0 {
+		return ""
+	}
+	if m := readManifest(dir); m.Binary != "" && fileExists(filepath.Join(dir, m.Binary)) {
+		return m.Binary
+	}
+	return names[0]
+}
+
+// pluginBinNames 目录里会被 host-bridge 当成插件的二进制名(manifest 声明优先,
+// 否则扫 tool-*/cmd-*;删目录前调用)。
+func pluginBinNames(dir string) []string {
+	var out []string
+	if m := readManifest(dir); m.Binary != "" {
+		out = append(out, m.Binary)
+	}
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return out
+	}
+	for _, e := range ents {
+		if e.IsDir() {
+			continue
+		}
+		if strings.HasPrefix(e.Name(), "tool-") || strings.HasPrefix(e.Name(), "cmd-") {
+			out = append(out, e.Name())
+		}
+	}
+	return out
 }
 
 // Item 已安装插件条目。

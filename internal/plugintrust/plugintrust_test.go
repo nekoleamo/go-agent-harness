@@ -172,3 +172,95 @@ func contains(s, sub string) bool {
 	}
 	return false
 }
+
+// TestRecordWithAudit 登记要带审计行(时间/来源),且**数据行格式一字不变**。
+//
+// 为何重要:审计要解决「事后说不清是谁/什么时候/从哪放进来的」,但它是**注释行** ——
+// 数据行格式一变,已落盘的清单与发行侧那份就解析不了。
+func TestRecordWithAudit(t *testing.T) {
+	dir := t.TempDir()
+	l := &List{dir: dir, sums: map[string][32]byte{}}
+	sum := [32]byte{0x5a}
+	if err := l.RecordWithAudit("tool-x", sum, "install:github.com/foo/bar@v1"); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(Path(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(raw)
+	// 数据行仍然是最朴素的两字段形态(兼容发行侧那份)
+	if !contains(body, "  tool-x\n") {
+		t.Fatalf("数据行形态变了:\n%s", body)
+	}
+	l2, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 审计能读回来
+	es := l2.Audit()
+	if len(es) != 1 || es[0].Name != "tool-x" || es[0].Source != "install:github.com/foo/bar@v1" {
+		t.Fatalf("审计行不符: %+v", es)
+	}
+	last, ok := l2.LastAuditOf("tool-x")
+	if !ok || last.Hash != hexOf(sum) {
+		t.Fatalf("LastAuditOf 不符: %+v ok=%v", last, ok)
+	}
+	if _, ok := l2.LastAuditOf("tool-none"); ok {
+		t.Fatal("未登记的插件不该有审计")
+	}
+}
+
+// TestBadAuditLineDoesNotBreakList 坏审计行只是注释:跳过,不能让整份清单失效。
+//
+// 反过来做会让「一条手改坏的注释」变成「所有插件都加载不了」—— 那是把注释当数据行的错。
+func TestBadAuditLineDoesNotBreakList(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, FileName, "1111111111111111111111111111111111111111111111111111111111111111  tool-a\n"+
+		"# audit: 这行是坏的\n"+
+		"# audit: 2026-10-03T00:00:00Z trust:manual tool-a 2222\n")
+	l, err := Load(dir)
+	if err != nil {
+		t.Fatalf("坏注释行不应让 Load 失败: %v", err)
+	}
+	if len(l.Audit()) != 0 {
+		t.Fatalf("两行坏审计都该被跳过: %+v", l.Audit())
+	}
+	if _, ok := l.Sum("tool-a"); !ok {
+		t.Fatal("数据行仍应生效")
+	}
+}
+
+// TestRemoveLastEntryDeletesFile 撤掉最后一个条目 ⇒ 删文件而不是留一个空清单。
+//
+// 为什么不写空文件:Load 对「文件存在但一条没有」是 fail-closed(那几乎必然是文件被写坏),
+// 而「卸载了最后一个插件」也会落到同一个状态 —— 两者没法靠内容区分。把区分放在写入侧:
+// 空 = 未启用(与升级前一致),坏文件 = 报错。
+func TestRemoveLastEntryDeletesFile(t *testing.T) {
+	dir := t.TempDir()
+	l := &List{dir: dir, sums: map[string][32]byte{}}
+	if err := l.Record("tool-x", [32]byte{1}); err != nil {
+		t.Fatal(err)
+	}
+	if !fileExistsAt(Path(dir)) {
+		t.Fatal("登记后应有清单")
+	}
+	if err := l.Remove("tool-x"); err != nil {
+		t.Fatal(err)
+	}
+	if fileExistsAt(Path(dir)) {
+		t.Fatal("撤掉最后一条后应删文件(而不是留一个空的 fail-closed 清单)")
+	}
+	l2, err := Load(dir)
+	if err != nil {
+		t.Fatalf("回到未启用态不该报错: %v", err)
+	}
+	if l2.Enforced() {
+		t.Fatal("文件已删 ⇒ 未启用")
+	}
+}
+
+func fileExistsAt(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
+}

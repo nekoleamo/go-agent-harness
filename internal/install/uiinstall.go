@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/nekoleamo/go-agent-harness/internal/plugintrust"
 )
 
 // UIManifest UI 插件声明(仓库根 manifest.json)。
@@ -40,6 +42,8 @@ type UIResult struct {
 	Version string
 	Dir     string
 	Slots   int
+	// Audit 本次登记进 UI 白名单的审计行(时间/来源/哈希);装完回显给用户看。
+	Audit plugintrust.AuditEntry
 }
 
 // InstallUI 安装 UI 插件:spec = <repo>[@<version>] 或本地目录路径。
@@ -143,11 +147,20 @@ func InstallUI(spec, home string) (*UIResult, error) {
 	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), raw, 0o644); err != nil {
 		return nil, err
 	}
-	return &UIResult{ID: man.ID, Version: man.Version, Dir: dir, Slots: len(man.Slots)}, nil
+	// 登记 UI 白名单(2026-10-03):ui-plugins/SHA256SUMS 一存在即强制,而本函数是
+	// 「第一次创建它」的入口 —— 不登记的话,下一个 UI 插件装完就被上一轮的清单拒掉。
+	if err := UITrust(filepath.Dir(dir), man.ID, man.Slots); err != nil {
+		return nil, err
+	}
+	audit, _ := plugintrust.Open(filepath.Dir(dir)).LastAuditOf(man.ID)
+	return &UIResult{ID: man.ID, Version: man.Version, Dir: dir, Slots: len(man.Slots), Audit: audit}, nil
 }
 
-// UninstallUI 卸载:删目录(装配即时失效;前端重载回默认实现)。
+// UninstallUI 卸载:删目录 + 撤白名单条目(装配即时失效;前端重载回默认实现)。
 func UninstallUI(id, home string) error {
+	// 白名单条目必须一起撤:留着幽灵条目 ⇒ 同名再装、产物哈希与上次不同时,会被**自己的
+	// 旧条目**拒掉,而错误文案说的是"文件被改动",与真实原因无关。
+	_ = UIUntrust(filepath.Join(home, "ui-plugins"), id)
 	dir := filepath.Join(home, "ui-plugins", id)
 	if !fileExists(dir) {
 		return fmt.Errorf("uninstall-ui: 插件 %s 未安装(%s)", id, dir)

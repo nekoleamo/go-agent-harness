@@ -8,6 +8,7 @@ package install
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -18,6 +19,10 @@ import (
 func pluginsDir(home string) string { return filepath.Join(home, "plugins") }
 
 // findPluginBin 在两种布局里定位二进制:扁平 plugins/<名>[.exe]、发布布局 plugins/<名>/<名>[.exe]。
+//
+// 判据是**普通文件**,不是"路径存在":扁平布局里 `plugins/tool-demo` 可能是**同名目录**
+// (发布布局),只判存在会挑中目录,于是后面算哈希报 "is a directory" ——
+// 那条报错与真实原因毫无关系(实测踩到)。
 func findPluginBin(dir, name string) (string, bool) {
 	for _, cand := range []string{
 		filepath.Join(dir, name),
@@ -25,7 +30,7 @@ func findPluginBin(dir, name string) (string, bool) {
 		filepath.Join(dir, name, name),
 		filepath.Join(dir, name, name+".exe"),
 	} {
-		if fileExists(cand) {
+		if fi, err := os.Stat(cand); err == nil && fi.Mode().IsRegular() {
 			return cand, true
 		}
 	}
@@ -59,7 +64,9 @@ func Trust(name, home string) error {
 		return fmt.Errorf("trust-plugin: %s 在白名单里已有**不同**的哈希(文件可能已被改动)。"+
 			"确认这就是你要的版本后,先 gah -untrust-plugin %s 再执行本命令", name, name)
 	}
-	return list.Record(name, sum)
+	// 审计来源标 trust:manual:事后能区分「装的时候登记的」与「后来手工补的」——
+	// 这两者的信任语义不同(后者是你看着一份现成的二进制点的头)。
+	return list.RecordWithAudit(name, sum, "trust:manual")
 }
 
 // Untrust 从白名单移除一个条目(不删二进制)。

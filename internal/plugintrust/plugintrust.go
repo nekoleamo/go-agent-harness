@@ -31,16 +31,33 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // FileName 白名单文件名(与发行侧 internal/embed 的清单同名同格式)。
 const FileName = "SHA256SUMS"
+
+// AuditEntry 一次登记的审计行(时间 / 来源 / 插件 / 哈希)。
+//
+// 它**不是安全边界**:能改 plugins/ 的人也能改这份注释(与 SHA256SUMS 本身同性质)。
+// 它解决的是「事后说不清是谁、什么时候、从哪放进来的」—— 事故复盘与追责要用,
+// 拦不住任何人。同理,注释里的时间/来源可被编辑,不得用于任何判定。
+type AuditEntry struct {
+	Time   string // RFC3339
+	Source string // embed | install:<spec> | trust:manual | ui-install:<spec>
+	Name   string
+	Hash   string // 64 位小写 hex
+}
+
+// auditPrefix 审计注释行的字段前缀(与数据行区分:数据行以 64 位 hex 开头)。
+const auditPrefix = "# audit:"
 
 // List 白名单(键 = 插件二进制基名,含平台扩展名;如 tool-basic / tool-kit.exe)。
 type List struct {
 	dir      string
 	enforced bool
 	sums     map[string][sha256.Size]byte
+	audits   []AuditEntry // 解析自 `# audit:` 注释行(时间/来源;非边界,见类型注释)
 }
 
 // Path 白名单绝对路径。
@@ -58,6 +75,12 @@ func Load(dir string) (*List, error) {
 	l := &List{dir: dir, enforced: true, sums: map[string][sha256.Size]byte{}}
 	for _, line := range strings.Split(string(raw), "\n") {
 		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, auditPrefix) {
+			if e, ok := parseAudit(strings.TrimSpace(strings.TrimPrefix(line, auditPrefix))); ok {
+				l.audits = append(l.audits, e)
+			}
+			continue
+		}
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
@@ -80,6 +103,10 @@ func Load(dir string) (*List, error) {
 	}
 	return l, nil
 }
+
+// Open 打开(或新建)某个目录下的白名单,用于**另一处**要复用同一套语义的场景
+// (如 ui-plugins/ 与 plugins/ 各有一份清单)。字段不导出,故必须走本构造。
+func Open(dir string) *List { return &List{dir: dir, sums: map[string][sha256.Size]byte{}} }
 
 // Enforced 白名单是否在强制。false = 文件不存在,宿主照旧加载全部(并如实告知一次)。
 func (l *List) Enforced() bool { return l != nil && l.enforced }
@@ -185,6 +212,18 @@ func (l *List) write() error {
 	if err := os.MkdirAll(l.dir, 0o755); err != nil {
 		return err
 	}
+	// 清单空了 ⇒ **删文件**,不写空文件。
+	//
+	// 为何:Load 对「文件存在但一条没有」是 fail-closed(报错),因为那份状态几乎必然是
+	// 文件被清空/写坏 —— 但「卸载了最后一个插件」也会落到同一个状态。两者没法靠内容区分,
+	// 所以**不写空文件**:空 = 未启用(与升级前一致),坏文件 = 报错。区分放在写入侧。
+	if len(l.sums) == 0 {
+		if err := os.Remove(Path(l.dir)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		l.enforced = false
+		return nil
+	}
 	names := make([]string, 0, len(l.sums))
 	for n := range l.sums {
 		names = append(names, n)
@@ -197,6 +236,14 @@ func (l *List) write() error {
 	for _, n := range names {
 		sum := l.sums[n]
 		fmt.Fprintf(&b, "%s  %s\n", hex.EncodeToString(sum[:]), n)
+	}
+	// 审计行在数据行之后(数据行在前 = 人与解析器先看到「装了什么」)。
+	// source 可能含空格(repo spec 带分支名),故按固定次序解析:时间、来源(末两段固定)、
+	// 名、哈希 —— 写成 `<时间> <source> <名> <哈希>` 且 source 内部空格会被 Fields 拆开,
+	// 故这里把 source 里的空白替换掉(审计不需要精确到带空格的 URL)。
+	for _, a := range l.audits {
+		fmt.Fprintf(&b, "%s %s %s %s %s\n", auditPrefix, a.Time,
+			strings.ReplaceAll(a.Source, " ", "_"), a.Name, a.Hash)
 	}
 	path := Path(l.dir)
 	tmp, err := os.CreateTemp(l.dir, ".SHA256SUMS-*.tmp")
@@ -225,6 +272,62 @@ func (l *List) write() error {
 	}
 	l.enforced = true
 	return nil
+}
+
+// parseAudit 解析 `# audit: <RFC3339> <source> <name> <hash>`。
+// 任一字段不合规 → ok=false(**跳过而不报错**):审计行是注释,坏注释不该让整份清单失效
+// (那会把「一条手改坏的注释」变成「所有插件都加载不了」)。
+func parseAudit(body string) (AuditEntry, bool) {
+	f := strings.Fields(body)
+	if len(f) != 4 || len(f[3]) != 2*sha256.Size {
+		return AuditEntry{}, false
+	}
+	if _, err := time.Parse(time.RFC3339, f[0]); err != nil {
+		return AuditEntry{}, false
+	}
+	return AuditEntry{Time: f[0], Source: f[1], Name: f[2], Hash: f[3]}, true
+}
+
+// Audit 已登记的审计行(按写入顺序)。
+func (l *List) Audit() []AuditEntry {
+	if l == nil {
+		return nil
+	}
+	out := make([]AuditEntry, len(l.audits))
+	copy(out, l.audits)
+	return out
+}
+
+// LastAuditOf 某个插件最近一次登记的审计行(找不到 → ok=false)。
+func (l *List) LastAuditOf(name string) (AuditEntry, bool) {
+	if l == nil {
+		return AuditEntry{}, false
+	}
+	for i := len(l.audits) - 1; i >= 0; i-- {
+		if l.audits[i].Name == name {
+			return l.audits[i], true
+		}
+	}
+	return AuditEntry{}, false
+}
+
+// RecordWithAudit 登记 + 追加一条审计行(时间 = 现在;source 由调用方给,如
+// `install:github.com/foo/bar@v1` / `trust:manual` / `embed`)。
+//
+// 为什么 Record 与审计一起做:分开就会出现「登记了但没审计」的状态,而那份清单正是
+// 事后唯一能说清来源的东西。
+func (l *List) RecordWithAudit(name string, sum [sha256.Size]byte, source string) error {
+	if err := l.loadIfNeeded(); err != nil {
+		return err
+	}
+	l.sums[name] = sum
+	l.audits = append(l.audits, AuditEntry{
+		Time:   time.Now().UTC().Format(time.RFC3339),
+		Source: source,
+		Name:   name,
+		Hash:   hex.EncodeToString(sum[:]),
+	})
+	return l.write()
 }
 
 // HashFile 读文件并算 sha256(登记用;流式,不把整个二进制读进内存)。

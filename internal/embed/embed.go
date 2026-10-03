@@ -301,10 +301,20 @@ func recordSelf(home string, want map[string][32]byte) error {
 		names = append(names, n)
 	}
 	sort.Strings(names)
-	return list.Set(names, func(n string) ([32]byte, bool) {
-		s, ok := want[n]
-		return s, ok
-	})
+	// 逐条登记(而非 Set 一次写完):Set 不写审计行,而这份清单是事后唯一能说清
+	// 「这份官方二进制是什么时候、由谁登记」的依据。已登记过的条目仍会**每次刷新**
+	// 审计时间 —— 这是有意的:官方产物每次启动都要与嵌入清单比对,盘上那份被换掉时
+	// 清单会跟着记下新哈希,那条记录就是线索。
+	for _, n := range names {
+		sum, ok := want[n]
+		if !ok {
+			continue
+		}
+		if err := list.RecordWithAudit(n, sum, "embed"); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // packedDigests 读 embed 内的 SHA256SUMS(未压缩内容的哈希表:插件基名 → sha256)。

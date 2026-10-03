@@ -1,5 +1,5 @@
 // REST 客户端(上行)+ 工具函数。核心交互纯 REST,不绕模板渲染。
-import type { AttachmentView, CommandOptionsResp, CommandView, DocTree, DocView, InstructionsView, Job, McpView, MemoryView, ModelsAllResp, NoticePage, PluginInfo, ProviderInfo, RolePackResult, RoleSpec, RolesView, SkillPackResult, Schedule, SessionEventsPage, SessionInfo, StateView, ToolDef, TrashView, WorkspaceInfo } from './types'
+import type { AttachmentView, AuditEntry, CommandOptionsResp, InstallView, CommandView, DocTree, DocView, InstructionsView, Job, McpView, MemoryView, ModelsAllResp, NoticePage, PluginInfo, ProviderInfo, RolePackResult, RoleSpec, RolesView, SkillPackResult, Schedule, SessionEventsPage, SessionInfo, StateView, ToolDef, TrashView, WorkspaceInfo } from './types'
 
 // 本窗口绑定的会话(多窗口/多会话作用域)。为何是本文件自己持有而不是 import 一个
 // session 模块:本文件被 Node 内置测试以「./api.ts」直接加载(那条路要求 import 带 .ts),
@@ -210,6 +210,27 @@ export const api = {
   },
   pluginToggle(id: string, on: boolean): Promise<void> {
     return req('/api/plugins/' + encodeURIComponent(id) + (on ? '/load' : '/unload'), { method: 'POST', headers: json, body: '{}' })
+  },
+  // —— 插件安装 / 卸载 / 信任(2026-10-03)——
+  // 安装走两段:preview 先取确认文案所需事实(与服务端 ConfirmPrompt 同一份),
+  // confirmed=true 才真装 —— 服务端没有确认服务,不能替用户点确认。
+  pluginInstallList(): Promise<InstallView[]> {
+    return req('/api/plugins/install')
+  },
+  pluginInstallPreview(spec: string): Promise<{ prompt: string }> {
+    return req('/api/plugins/install', { method: 'POST', headers: json, body: JSON.stringify({ spec, preview: true }) })
+  },
+  pluginInstall(spec: string): Promise<{ ok: boolean; id: string; dir: string; audit: AuditEntry; hint: string }> {
+    return req('/api/plugins/install', { method: 'POST', headers: json, body: JSON.stringify({ spec, confirmed: true }) })
+  },
+  pluginUninstall(id: string): Promise<{ ok: boolean }> {
+    return req('/api/plugins/uninstall', { method: 'POST', headers: json, body: JSON.stringify({ id, confirmed: true }) })
+  },
+  pluginTrust(id: string): Promise<{ ok: boolean }> {
+    return req('/api/plugins/trust', { method: 'POST', headers: json, body: JSON.stringify({ id, confirmed: true }) })
+  },
+  pluginUntrust(id: string): Promise<{ ok: boolean }> {
+    return req('/api/plugins/untrust', { method: 'POST', headers: json, body: JSON.stringify({ id, confirmed: true }) })
   },
   compact(prompt?: string): Promise<{ summary: string; folded: number }> {
     return req('/api/compact', { method: 'POST', headers: json, body: JSON.stringify({ prompt: prompt ?? '' }) })

@@ -66,6 +66,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/nekoleamo/go-agent-harness/internal/install"
+	"github.com/nekoleamo/go-agent-harness/internal/plugintrust"
 	"github.com/nekoleamo/go-agent-harness/internal/providerfile"
 
 	"github.com/nekoleamo/go-agent-harness/internal/prefs"
@@ -106,32 +108,37 @@ type Server struct {
 	question *QuestionService
 	log      *slog.Logger
 
-	loop       sdk.AgentLoop
-	sessions   sdk.SessionLog
-	llm        sdk.LLMService
-	sb         sdk.Sandbox
-	ap         sdk.ApprovalService       // 可选(审批档位 M17:未装配时 state 省略/control 400)
-	bk         sdk.BackupService         // 可选(整体备份 M18:未装配时 /api/backup 503)
-	us         sdk.UsageStatsService     // 可选
-	cs         sdk.CwdSessions           // 可选
-	sdir       sdk.SessionDir            // 可选(按会话 id 取日志;未装配 = 只支持主会话)
-	ss         sdk.SessionSummaryService // 可选(F3 会话概述;未装配则 summary 端点 503)
-	cmds       sdk.CommandRegistry       // 可选(未装配 = / 命令不可用)
-	tools      sdk.ToolRegistry          // 可选(工具清单/调用/todo 面板)
-	jobs       sdk.JobService            // 可选(后台任务)
-	sched      sdk.ScheduleService       // 可选(定时计划 NOND-W4;未装配 → /api/schedules 503)
-	notices    sdk.NoticeService         // 可选(提示通道 NOND-N1;未装配 → /api/notices 503)
-	extp       sdk.ExternalPlugins       // 可选(外部插件控制面 NOND-M1;未装配 = 保存 MCP 配置后需重启)
-	pm         sdk.PluginManager         // 可选(插件启停)
-	sp         sdk.SystemPromptService   // 可选(/reload 指令热更)
-	tc         sdk.TurnControl           // 可选(回合取消 /api/control cancel;未装配 = 503)
-	doc        sdk.DocService            // 可选(文档预览 D1:未装配 → /api/doc/* 503;懒解析见 docSvc)
-	roles      sdk.RoleService           // 可选(角色面板 1b:未装配 → /api/roles 503;懒解析见 roleSvc)
-	roleSkills sdk.SkillsService         // 可选(技能库/新建技能;懒解析同上)
-	memory     sdk.MemoryService         // 可选(记忆治理面板:未装配 → /api/memory 503;懒解析见 memorySvc;与角色服务共用 roleMu)
-	ctx        sdk.Ctx                   // 宿主上下文(懒解析可选服务,避免装配顺序依赖)
-	docMu      sync.Mutex                // doc 懒解析互斥(并发首请求防数据竞争)
-	roleMu     sync.Mutex                // 角色/技能懒解析互斥(同上)
+	loop     sdk.AgentLoop
+	sessions sdk.SessionLog
+	llm      sdk.LLMService
+	sb       sdk.Sandbox
+	ap       sdk.ApprovalService       // 可选(审批档位 M17:未装配时 state 省略/control 400)
+	bk       sdk.BackupService         // 可选(整体备份 M18:未装配时 /api/backup 503)
+	us       sdk.UsageStatsService     // 可选
+	cs       sdk.CwdSessions           // 可选
+	sdir     sdk.SessionDir            // 可选(按会话 id 取日志;未装配 = 只支持主会话)
+	ss       sdk.SessionSummaryService // 可选(F3 会话概述;未装配则 summary 端点 503)
+	cmds     sdk.CommandRegistry       // 可选(未装配 = / 命令不可用)
+	tools    sdk.ToolRegistry          // 可选(工具清单/调用/todo 面板)
+	jobs     sdk.JobService            // 可选(后台任务)
+	sched    sdk.ScheduleService       // 可选(定时计划 NOND-W4;未装配 → /api/schedules 503)
+	notices  sdk.NoticeService         // 可选(提示通道 NOND-N1;未装配 → /api/notices 503)
+	extp     sdk.ExternalPlugins       // 可选(外部插件控制面 NOND-M1;未装配 = 保存 MCP 配置后需重启)
+	pm       sdk.PluginManager         // 可选(插件启停)
+	// rejectedUI 被完整性闸拦下的 UI 插件(id → 原因);供 /api/ui-plugins 一并下发,
+	// 让界面能区分「没装这个插件」与「装了但被完整性闸拦下」。写路径是 HTTP handler,
+	// 故用 mutex 而非裸 map。
+	rejMu      sync.Mutex
+	rejectedUI map[string]string
+	sp         sdk.SystemPromptService // 可选(/reload 指令热更)
+	tc         sdk.TurnControl         // 可选(回合取消 /api/control cancel;未装配 = 503)
+	doc        sdk.DocService          // 可选(文档预览 D1:未装配 → /api/doc/* 503;懒解析见 docSvc)
+	roles      sdk.RoleService         // 可选(角色面板 1b:未装配 → /api/roles 503;懒解析见 roleSvc)
+	roleSkills sdk.SkillsService       // 可选(技能库/新建技能;懒解析同上)
+	memory     sdk.MemoryService       // 可选(记忆治理面板:未装配 → /api/memory 503;懒解析见 memorySvc;与角色服务共用 roleMu)
+	ctx        sdk.Ctx                 // 宿主上下文(懒解析可选服务,避免装配顺序依赖)
+	docMu      sync.Mutex              // doc 懒解析互斥(并发首请求防数据竞争)
+	roleMu     sync.Mutex              // 角色/技能懒解析互斥(同上)
 
 	running      atomic.Bool             // 主会话(键空)占用;其余在 runBySession
 	runMu        sync.Mutex              // 守护 runBySession
@@ -328,6 +335,13 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET /api/plugins", s.handlePlugins)
 	mux.HandleFunc("POST /api/plugins/{id}/load", s.handlePluginAction)
 	mux.HandleFunc("POST /api/plugins/{id}/unload", s.handlePluginAction)
+	// 插件安装/卸载/信任(2026-10-03):把 CLI 的安装内核接到面板上。
+	// 路由不冲突:既有的是 3 段(/api/plugins/{id}/load),新增是 2 段字面量。
+	mux.HandleFunc("GET /api/plugins/install", s.handlePluginInstallList)
+	mux.HandleFunc("POST /api/plugins/install", s.handlePluginInstall)
+	mux.HandleFunc("POST /api/plugins/uninstall", s.handlePluginUninstall)
+	mux.HandleFunc("POST /api/plugins/trust", s.handlePluginTrust)
+	mux.HandleFunc("POST /api/plugins/untrust", s.handlePluginUntrust)
 	mux.HandleFunc("GET /api/models", s.handleModels)
 	mux.HandleFunc("GET /api/providers", s.handleProviders)
 	mux.HandleFunc("POST /api/providers", s.handleProviderAdd)
@@ -1438,10 +1452,94 @@ func (s *Server) scanUIPlugins() []UIPlugin {
 		if m.Slots == nil {
 			m.Slots = []SlotDef{}
 		}
+		// 完整性闸(2026-10-03):ui-plugins/SHA256SUMS 存在即强制。UI 插件是**与宿主同源
+		// 同权限**的面(产物经动态 import() 进主页面,能调全部 API),此前只有一个
+		// 「展示用」的摘要 —— 加载与否与它无关。拒绝的动作是**不下发**:前端因此完全
+		// 看不到它,而不是「看到了但摘要不符」让人自己去比。
+		if why := uiTrustCheck(dir, e.Name(), m); why != "" {
+			s.log.Warn("ui-plugin: 完整性未通过,不下发", "id", m.ID, "reason", why)
+			s.noteRejectedUI(m.ID, why)
+			continue
+		}
 		h := digestPluginDir(filepath.Join(dir, e.Name()), m.Slots)
 		out = append(out, UIPlugin{ID: m.ID, Version: m.Version, Slots: m.Slots, Trusted: true, TrustNote: uiPluginTrustNote,
 			SHA256: h.Sum, HashScope: h.Scope, HashNote: h.Note})
 	}
+	return out
+}
+
+// clearRejectedUI 清空被拦记录(scan 开始时调:清单可能已被修复)。
+func (s *Server) clearRejectedUI() {
+	s.rejMu.Lock()
+	s.rejectedUI = map[string]string{}
+	s.rejMu.Unlock()
+}
+
+// noteRejectedUI 记一条被拦的 UI 插件(同一 id 覆盖最新原因)。
+func (s *Server) noteRejectedUI(id, why string) {
+	s.rejMu.Lock()
+	defer s.rejMu.Unlock()
+	if s.rejectedUI == nil {
+		s.rejectedUI = map[string]string{}
+	}
+	s.rejectedUI[id] = why
+}
+
+// rejectedUIList 被拦的 UI 插件(排序;先清空再逐条重填 —— scan 是权威)。
+func (s *Server) rejectedUIList() []pluginView {
+	s.rejMu.Lock()
+	ids := make([]string, 0, len(s.rejectedUI))
+	for id := range s.rejectedUI {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	out := make([]pluginView, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, pluginView{
+			PluginInfo: sdk.PluginInfo{ID: id, State: "rejected"},
+			Manage:     "external",
+			Rejected:   s.rejectedUI[id],
+		})
+	}
+	s.rejMu.Unlock()
+	return out
+}
+
+// uiTrustCheck UI 插件完整性校验(清单不存在 = 未启用 = 放行)。
+//
+// 摘要口径用 **entry scope**(manifest + 槽位声明会被 import 的模块),不是整目录 ——
+// 见 internal/install/uitrust.go 的口径说明(全量既费预算又与「实际执行的代码」不精确对应)。
+func uiTrustCheck(root, dirName string, m struct {
+	ID      string    `json:"id"`
+	Version string    `json:"version"`
+	Slots   []SlotDef `json:"slots"`
+}) string {
+	list, err := plugintrust.Load(root)
+	if err != nil {
+		return err.Error()
+	}
+	if !list.Enforced() {
+		return ""
+	}
+	slots := make([]install.UISlot, 0, len(m.Slots))
+	for _, sl := range m.Slots {
+		slots = append(slots, install.UISlot{Module: sl.Module})
+	}
+	d, derr := install.UIDigestEntry(filepath.Join(root, dirName), slots)
+	if derr != nil {
+		return derr.Error()
+	}
+	if err := list.Verify(m.ID, mustHexSum(d.Sum)); err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
+// mustHexSum 64 位 hex → [32]byte(清单比对用)。
+func mustHexSum(s string) [32]byte {
+	var out [32]byte
+	b, _ := hex.DecodeString(s)
+	copy(out[:], b)
 	return out
 }
 
@@ -2303,6 +2401,10 @@ func (s *Server) handlePlugins(w http.ResponseWriter, _ *http.Request) {
 			})
 		}
 	}
+	// 被完整性闸拦下的 UI 插件也列出来(否则它只是「不见了」):scan 是权威,每次现清现填。
+	s.clearRejectedUI()
+	_ = s.scanUIPlugins()
+	out = append(out, s.rejectedUIList()...)
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	writeJSON(w, http.StatusOK, out)
 }

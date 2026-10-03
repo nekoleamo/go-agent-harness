@@ -830,7 +830,8 @@ describe('布局护栏:整页永不滚动(第五十二/五十三批)', { skip: s
       assert.equal(expanded.rows, 43, `展开后应列全部 43 条,实际 ${expanded.rows} 条`)
       assert.equal(expanded.more, '收起', `展开后的按钮应为「收起」:「${expanded.more}」`)
 
-      await page.fill('[data-sec="plugin"] input', 'host-plugin-42')
+      // 选择器收紧到筛选框本身(该段新增了「安装插件」的输入框,`input` 已不唯一)。
+      await page.fill('[data-sec="plugin"] [data-testid="plugin-filter"]', 'host-plugin-42')
       const filtered = await read()
       assert.equal(filtered.rows, 1, `筛选后应只剩 1 条,实际 ${filtered.rows} 条`)
       assert.equal(filtered.more, '', '命中 ≤ 5 条时不应再出现折叠按钮')

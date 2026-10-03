@@ -28,7 +28,7 @@ import {
   viewNotices,
   type McpDraft,
 } from '../mcp'
-import type { AskConfirm, McpServer, McpView, PluginInfo, ProviderInfo, ProviderModelGroup, RolePackResult, RoleSpec, Schedule, SkillInfo, StateView, ToolDef, TrashRoleEntry, TrashSkillEntry } from '../types'
+import type { AskConfirm, InstallView, McpServer, McpView, PluginInfo, ProviderInfo, ProviderModelGroup, RolePackResult, RoleSpec, Schedule, SkillInfo, StateView, ToolDef, TrashRoleEntry, TrashSkillEntry } from '../types'
 
 const props = defineProps<{
   open: boolean
@@ -48,6 +48,103 @@ const updOk = ref(false)
 // updAvailable 有更新待确认:此时底栏多一个「立即升级」按钮,且**必须**先经过二次确认。
 // 2026-10-03 用户要求:「检查更新后,应先提示是否需要更新,确认升级后,再下载安装」。
 const updAvailable = ref('')
+
+// —— 插件安装(2026-10-03)——
+// 两段式安装:先 preview 取确认文案(与服务端 ConfirmPrompt 同一份),用户点头后才真装。
+// 服务端**没有**确认服务,故必须由前端带 confirmed:true;忘了弹确认 ⇒ 400,而不会静默安装。
+const installSpec = ref('')
+const installBusy = ref(false)
+const installRows = ref<InstallView[]>([])
+const installErr = ref('')
+const installOk = ref('')
+
+async function refreshInstallList(): Promise<void> {
+  try {
+    installRows.value = await api.pluginInstallList()
+  } catch (e) {
+    installErr.value = '读取已装插件失败:' + (e as Error).message
+  }
+}
+
+async function doInstall(): Promise<void> {
+  const spec = installSpec.value.trim()
+  if (!spec || installBusy.value) return
+  installErr.value = ''
+  installOk.value = ''
+  installBusy.value = true
+  try {
+    const pv = await api.pluginInstallPreview(spec)
+    // 二次确认(与删 provider / 卸载角色同一处确认条):文案由服务端生成,
+    // 三个入口(CLI / TUI / 面板)看到的是同一句话。
+    await new Promise<void>((done) => {
+      guard(pv.prompt, true, () => {
+        done()
+        void doPluginInstallNow(spec)
+      })
+    })
+  } catch (e) {
+    installErr.value = '安装失败:' + (e as Error).message
+  } finally {
+    installBusy.value = false
+  }
+}
+
+async function doPluginInstallNow(spec: string): Promise<void> {
+  try {
+    const r = await api.pluginInstall(spec)
+    installOk.value = `已安装 ${r.id} → ${r.dir}` + (r.hint ? '(' + r.hint + ')' : '')
+    installSpec.value = ''
+    await refreshInstallList()
+  } catch (e) {
+    installErr.value = '安装失败:' + (e as Error).message
+  }
+}
+
+// doUninstallPlugin 卸载(含白名单条目撤销),二次确认。
+function doUninstallPlugin(id: string): void {
+  guard(`卸载插件 ${id}?会删掉它的目录与白名单条目(不影响已有会话与配置)`, true, async () => {
+    try {
+      await api.pluginUninstall(id)
+      installOk.value = '已卸载 ' + id
+      await refreshInstallList()
+    } catch (e) {
+      installErr.value = '卸载失败:' + (e as Error).message
+    }
+  })
+}
+
+// doTrustPlugin 登记进哈希白名单(被完整性闸拒了、但你确认来源可信时用)。
+function doTrustPlugin(name: string): void {
+  guard(`把 ${name} 登记进哈希白名单?登记的是**当前盘上那一份**的 sha256`, true, async () => {
+    try {
+      await api.pluginTrust(name)
+      installOk.value = '已登记 ' + name
+      await refreshInstallList()
+    } catch (e) {
+      installErr.value = '登记失败:' + (e as Error).message
+    }
+  })
+}
+
+// doUntrustPlugin 撤销登记(之后该插件会被拒绝加载)。
+function doUntrustPlugin(name: string): void {
+  guard(`从白名单移除 ${name}?移除后它会被拒绝加载`, true, async () => {
+    try {
+      await api.pluginUntrust(name)
+      installOk.value = '已移除 ' + name
+      await refreshInstallList()
+    } catch (e) {
+      installErr.value = '撤销失败:' + (e as Error).message
+    }
+  })
+}
+
+// pickInstallDir 桌面端用原生选择器挑本地插件源码目录;浏览器形态返回空(手打路径)。
+async function pickInstallDir(): Promise<void> {
+  if (!isDesktop) return
+  const dir = await pickDirectory('选择本地插件源码目录(含 plugin.yaml)')
+  if (dir) installSpec.value = dir
+}
 
 // uiScanBusy UI 插件重扫进行中(按钮置灰;防连点)。
 const uiScanBusy = ref(false)
@@ -1828,6 +1925,7 @@ onMounted(() => {
   void loadMcp()
   void loadInstructions()
   void loadRoles()
+  void refreshInstallList()
   window.addEventListener('keydown', onEsc, true)
 })
 onUnmounted(() => {
@@ -2931,6 +3029,44 @@ watch(
             插件
             <span class="h-sub">{{ pluginShown.length }}/{{ plugins.length }}</span>
           </h3>
+          <!-- 插件安装(2026-10-03):CLI 的安装内核接进面板。两条来源都支持 ——
+               第三方仓库与**本地自己写的目录**(不需要先 git init + push)。
+               每次安装/卸载/登记都走二次确认;审批档为「严格」时服务端直接拒。 -->
+          <div class="row install-row">
+            <span class="lab-inline">安装插件</span>
+            <input
+              v-model="installSpec"
+              class="inp grow"
+              placeholder="仓库地址(git@…/@版本)或本地目录绝对路径"
+              :disabled="installBusy"
+              @keyup.enter="doInstall()"
+            />
+            <button v-if="isDesktop" class="ghost" :disabled="installBusy" data-tip="选择本地插件源码目录" @click="pickInstallDir()">
+              浏览…
+            </button>
+            <button class="ghost solid" :disabled="installBusy || !installSpec.trim()" @click="doInstall()">
+              {{ installBusy ? '处理中…' : '安装' }}
+            </button>
+          </div>
+          <p v-if="installOk" class="dim">{{ installOk }}</p>
+          <p v-if="installErr" class="err-line">{{ installErr }}</p>
+          <details v-if="installRows.length" class="dim">
+            <summary>已装外部插件({{ installRows.length }};白名单{{ installRows[0]?.enforced ? '强制' : '未启用' }})</summary>
+            <ul class="install-list">
+              <li v-for="r in installRows" :key="r.id" class="irow">
+                <span class="pname">{{ r.id }}</span>
+                <span class="psub">{{ r.protocol || 'bridge' }} · {{ r.binary }} ·
+                  {{ r.trusted ? '白名单已登记' : (r.loadable ? '未登记(会被拒)' : '二进制缺失') }}
+                  <template v-if="r.audit_source"> · {{ r.audit_source }} @ {{ (r.audit_time || '').slice(0, 16) }}</template>
+                </span>
+                <span class="iact">
+                  <button v-if="!r.trusted && r.loadable" class="ghost" @click="doTrustPlugin(r.binary)">登记</button>
+                  <button v-if="r.trusted" class="ghost" @click="doUntrustPlugin(r.binary)">撤销登记</button>
+                  <button class="ghost ro" @click="doUninstallPlugin(r.id)">卸载</button>
+                </span>
+              </li>
+            </ul>
+          </details>
           <!-- UI 插件(2026-10-03):信任模型 + 摘要 + **重扫入口** + 失败原因。
                重扫解决的是「装了插件但没生效、只能靠刷新页面」;失败清单解决的是
                「没生效」与「没被扫到」在界面上分不出来 —— 这两者的处置完全不同。 -->
@@ -2959,8 +3095,16 @@ watch(
               <li v-for="d in uiPluginDigests" :key="d.id" :title="d.sha256 || '无摘要'">{{ digestLine(d) }}</li>
             </ul>
           </details>
+          <!-- data-testid:本段新增了「安装插件」的输入框,`[data-sec="plugin"] input`
+               已经**不唯一**(布局护栏按它 fill,装到安装框上,筛选就失效)。给筛选框一个
+               稳定锚点,别让"谁排在前面"决定语义。 -->
           <div v-if="plugins.length > PLUGIN_CAP" class="row">
-            <input v-model="pluginFilter" class="inp grow" placeholder="筛选插件 ID / 类型 / 状态" />
+            <input
+              v-model="pluginFilter"
+              class="inp grow"
+              data-testid="plugin-filter"
+              placeholder="筛选插件 ID / 类型 / 状态"
+            />
           </div>
           <div class="plist">
             <div v-for="p in pluginShown" :key="p.ID" class="prow">
@@ -3663,6 +3807,26 @@ textarea.inp {
   font-weight: 600;
 }
 /* 产物校验值列表(R10 ⑤-3):等宽字体便于逐字符比对;折行不裁剪(哈希截断会误导) */
+/* 插件安装行与已装列表。
+   **刻意不复用 .plist**:那个类被布局护栏的「插件列表默认只列 5 条」用例按选择器数行,
+   两张表共用一个类会让护栏数到错的行数(实测 43 ≠ 1)。选择器与语义都要各自成立。 */
+.install-list {
+  list-style: none;
+  margin: 4px 0 8px;
+  padding: 0;
+}
+.irow {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 2px 0;
+}
+.iact {
+  display: inline-flex;
+  gap: 6px;
+  margin-left: auto;
+}
 /* 被拒插件的原因行:错误语义色,但只到"说明"的分量(不抢主体) */
 .pwhy {
   display: block;
