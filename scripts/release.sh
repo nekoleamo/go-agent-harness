@@ -22,7 +22,7 @@
 #   bash scripts/release.sh wait               # 等 master 的 CI 五 job 全绿
 #   bash scripts/release.sh tag v0.6.0 --yes    # 打 tag 并推(默认只打印将执行的命令)
 #   bash scripts/release.sh watch v0.6.0       # 盯 release-cli + release-desktop 到终态
-#   bash scripts/release.sh verify v0.6.0      # 产物校验门(逐平台验签)
+#   bash scripts/release.sh verify v0.6.0 --all  # 产物校验门(逐平台下载验签;发版建议加)
 #   bash scripts/release.sh mirror v0.6.0 --mirror      # Gitee 镜像(需 env 的 GITEE_TOKEN)
 #   bash scripts/release.sh endpoint v0.6.0    # 回查壳的第一顺位端点
 #   bash scripts/release.sh all v0.6.0 --yes --mirror
@@ -56,20 +56,35 @@ sub="${1:-}"
 if [ -z "$sub" ]; then grep '^#' "$0" | tail -n +2 | sed 's/^# \{0,1\}//'; exit 0; fi
 shift || true
 
-FAST=0; YES=0; MIRROR=0; SKIP_VERIFY=0
+FAST=0; YES=0; MIRROR=0; SKIP_VERIFY=0; VERIFY_ALL=0
+VERIFY_FLAGS=() # 转发给 verify-release.mjs 的未知旗标(见下面 --*) 分支)
 TAG=""; ARGS=()
-for a in "$@"; do
-  case "$a" in
-    --fast) FAST=1 ;;
-    --yes) YES=1 ;;
-    --mirror) MIRROR=1 ;;
-    --skip-artifacts) SKIP_VERIFY=1 ;;
-    -h|--help) grep '^#' "$0" | tail -n +2 | sed 's/^# \{0,1\}//'; exit 0 ;;
-    -*) echo "未知旗标:$a(--help 看用法)" >&2; exit 2 ;;
-    *) ARGS+=("$a") ;;
-  esac
-done
-[ "${#ARGS[@]}" -le 1 ] || { echo "多余的位置参数:${ARGS[*]:1}" >&2; exit 2; }
+# verify 阶段**完全不分类**:位置参数是 tag,其余一律原样转发给 verify-release.mjs。
+#
+# 为什么:编排层冻结叶子脚本的命令面是**第二份 CLI 契约** —— 叶子加一个选项就得改这里,
+# 漏改的后果是「明明支持却报未知旗标」。第一版就因此连栽两次(--all、--platform)。
+# 而 verify-release 用的是 `argv[++i]` 式解析(旗标带值),任何「猜哪些旗标带值」的转发都会错
+# (第二版就把 `--platform darwin-aarch64` 的**值**当成了位置参数)。
+if [ "$sub" = verify ]; then
+  ARGS=("$@")
+else
+  for a in "$@"; do
+    case "$a" in
+      --fast) FAST=1 ;;
+      --yes) YES=1 ;;
+      --mirror) MIRROR=1 ;;
+      --skip-artifacts) SKIP_VERIFY=1 ;;
+      --all) VERIFY_ALL=1 ;; # verify-release 的逐平台全量验签(慢,但发版该跑)
+      -h|--help) grep '^#' "$0" | tail -n +2 | sed 's/^# \{0,1\}//'; exit 0 ;;
+      --*) echo "未知旗标:$a(--help 看用法)" >&2; exit 2 ;;
+      *) ARGS+=("$a") ;;
+    esac
+  done
+fi
+# 位置参数个数检查**跳过 verify**:它的整行参数都是原样转发的(旗标带值,不做分类)。
+if [ "$sub" != verify ]; then
+  [ "${#ARGS[@]}" -le 1 ] || { echo "多余的位置参数:${ARGS[*]:1}" >&2; exit 2; }
+fi
 if [ "${#ARGS[@]}" -ge 1 ]; then TAG="${ARGS[0]}"; fi
 
 # —— 输出小工具(不用颜色:日志会被 CI 抓走,转义序列只会更难读)——
@@ -277,9 +292,16 @@ do_verify() {
   need_cmd node
   [ -n "$TAG" ] || die "用法:release.sh verify <vX.Y.Z>"
   step "verify · 产物校验门(verify-release.mjs --all)"
-  local args=(--tag "$TAG")
-  [ "$SKIP_VERIFY" = 1 ] && args+=(--skip-artifacts)
-  node scripts/verify-release.mjs "${args[@]}" || die "产物校验不过(逐平台验签 / updater 端点一致性)"
+  # 参数解析阶段把整个 verify 参数行**原样**收进了 ARGS:第一个是 tag,其余转发。
+  local tag="${ARGS[0]:-$TAG}"
+  local rest=("${ARGS[@]:1}")
+  [ -n "$tag" ] || die "用法:release.sh verify <vX.Y.Z> [--all|--platform <键>|--local <目录>|--skip-artifacts]"
+  [ "$SKIP_VERIFY" = 1 ] && rest+=(--skip-artifacts)
+  # --all:逐平台下载产物验签(每平台 20~40 MiB,慢)。发版**建议加** ——
+  # 只验本机平台时,「另一个平台的包压根没下下来过」这件事没有任何人会发现。
+  [ "$VERIFY_ALL" = 1 ] && rest+=(--all)
+  node scripts/verify-release.mjs --tag "$tag" ${rest[@]+"${rest[@]}"} \
+    || die "产物校验不过(逐平台验签 / updater 端点一致性)"
 }
 
 # ───────────────────────────── mirror ─────────────────────────────
