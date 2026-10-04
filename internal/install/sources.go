@@ -242,6 +242,14 @@ func NormalizeRepo(spec string) string {
 	if i := strings.Index(s, "@"); i > 0 && i < len(s)-1 && !strings.Contains(s[:i], "/") {
 		s = s[i+1:]
 	}
+	// 本地文件系统路径**原样返回**:下面那句 `.git` 剥离是「**网络仓库标识**」的规范化
+	// (`gitee.com/a/b.git` 与 `gitee.com/a/b` 是同一个仓库),而对**本地路径**它是**破坏性的**
+	// —— `/srv/git/remote.git` 会被变成 `/srv/git/remote`,那个目录不存在。
+	// 而 `-install <本地路径>@ref` 是**支持的入口**(本地裸仓库/自建镜像),
+	// 那样记下来的账会让「检查更新」永远报 unreachable(2026-10-04 CI 在 Linux 上抓到)。
+	if isFilesystemPath(s) {
+		return filepath.Clean(s)
+	}
 	s = strings.TrimSuffix(s, "/")
 	s = strings.TrimSuffix(s, ".git")
 	// host 小写(路径部分**不动**:仓库路径大小写敏感,小写化会指向不存在的仓库)
@@ -249,6 +257,16 @@ func NormalizeRepo(spec string) string {
 		return strings.ToLower(s[:i]) + s[i:]
 	}
 	return strings.ToLower(s)
+}
+
+// isFilesystemPath 这个 spec 看着像本地文件系统路径(而非网络仓库标识)。
+//
+// 判据只认**绝对/相对路径前缀与盘符**,不认「长得像路径」——后者会把
+// `github.com/a/b` 这种含斜杠的 host/path 形式误判成本地路径。
+func isFilesystemPath(s string) bool {
+	return strings.HasPrefix(s, "/") || strings.HasPrefix(s, "./") ||
+		strings.HasPrefix(s, "../") || filepath.IsAbs(s) ||
+		(len(s) > 2 && s[1] == ':' && (s[2] == '\\' || s[2] == '/')) // C:\… / C:/…
 }
 
 // SplitSpec 拆 `<repo>[@<ref>]`(ref 空 = 未指定 = 默认分支)。

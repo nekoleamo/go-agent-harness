@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -180,6 +181,16 @@ func TestDisableDuringToolCall(t *testing.T) {
 // 而外部插件这条路没有 plugin-manager 介入 ⇒ 用户 rm 掉文件,进程继续跑到 gah 重启。
 // 「我删了它」给的是虚假的安全感。
 func TestRemovedFileUnloadsRunningPlugin(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// **Windows 上这个场景构造不出来**:运行中的 exe 被内核锁住,`os.Remove` 直接
+		// 失败(ACCESS_DENIED)—— 用户想「删文件让插件消失」在 Windows 上根本做不到。
+		//
+		// 这不是「换个平台就测不了」的遗憾,而是一条**平台事实**:批二修的那个洞
+		// (删文件后进程继续跑到 gah 重启 = 虚假的安全感)在 Windows 上**本来就不存在**,
+		// 因为 OS 不让你删。想在 Windows 上验等价语义,该走的是「停用」那条路
+		// (TestDisableRemovesProcessAndTools 已覆盖)。
+		t.Skip("Windows 不允许删除运行中的 exe,该场景不可构造(OS 层面挡住了)")
+	}
 	homeFor(t)
 	dir := t.TempDir()
 	buildExternalPlugin(t, dir)

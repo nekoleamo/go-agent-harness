@@ -3,6 +3,7 @@ package install
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -30,6 +31,13 @@ func TestNormalizeRepo(t *testing.T) {
 		// 带 @ 的仓库路径不能被当成 user@host。
 		{"github.com/a/b@v1.2.0", "github.com/a/b@v1.2.0"},
 		{"  https://github.com/a/b  ", "github.com/a/b"},
+		// 本地路径**原样**:`.git` 剥离对网络标识是规范化,对本地路径是破坏性的
+		// (`/srv/remote.git` → `/srv/remote`,那目录不存在)。`-install <本地路径>@ref`
+		// 是支持的入口,那样记账会让「检查更新」永远 unreachable(CI 在 Linux 上抓到的)。
+		{"/srv/git/remote.git", "/srv/git/remote.git"},
+		{"./local/remote.git", "local/remote.git"},
+		{"../up/remote.git", "../up/remote.git"},
+		{"/srv/git/remote/", "/srv/git/remote"},
 		{"https://gitee.com/nekoleamo/go-agent-harness.git", "gitee.com/nekoleamo/go-agent-harness"},
 	}
 	for _, c := range cases {
@@ -163,7 +171,10 @@ func TestSourcesRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm() != 0o600 {
+	// 0600 只在 POSIX 形态上可判:Windows 的权限位由 ACL 管,os.Chmod(0o600) 在那里
+	// 不产生该权限位(AGENTS.md 跨平台坑 ③)。写死这条就是让 test-windows 稳定红
+	// —— v0.5.1 的 CI 红里就有这一条。
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 		t.Errorf("来源账应 0600, got %v", fi.Mode().Perm())
 	}
 	back, err := LoadSources(home)
