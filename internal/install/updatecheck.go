@@ -19,6 +19,7 @@ package install
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -154,7 +155,10 @@ func RemoteSHAOf(e SourceEntry) (string, error) {
 // 绝对路径(本地仓库)原样返回:那是 kind=local 之外的一种情况(测试与自建仓库都可能是它),
 // 而 `strings.Cut("/a/b", "/")` 的 host 是空串,不加这个分支就会拼出 `:a/b` 这种废地址。
 func gitRemoteFor(norm string) string {
-	if strings.HasPrefix(norm, "/") || strings.HasPrefix(norm, ".") {
+	// 本地文件系统路径原样返回。判据用 `filepath.IsAbs` 而不是「以 / 开头」——
+	// 后者在 Windows 上对 `D:\srv\remote` 为假(它以盘符开头),而这里错了的后果是
+	// 拿一个本地路径去拼 `host:path`,得到一个谁也访问不到的地址。
+	if strings.HasPrefix(norm, ".") || filepath.IsAbs(norm) {
 		return norm
 	}
 	host, path, ok := strings.Cut(norm, "/")

@@ -34,10 +34,13 @@ func TestNormalizeRepo(t *testing.T) {
 		// 本地路径**原样**:`.git` 剥离对网络标识是规范化,对本地路径是破坏性的
 		// (`/srv/remote.git` → `/srv/remote`,那目录不存在)。`-install <本地路径>@ref`
 		// 是支持的入口,那样记账会让「检查更新」永远 unreachable(CI 在 Linux 上抓到的)。
-		{"/srv/git/remote.git", "/srv/git/remote.git"},
-		{"./local/remote.git", "local/remote.git"},
-		{"../up/remote.git", "../up/remote.git"},
-		{"/srv/git/remote/", "/srv/git/remote"},
+		// 注:本地路径经 `filepath.Clean` 规范化,那在 Windows 上会把 `/` 转成 `\`
+		// —— **那正是 Windows 的原生路径形态**,git 接受它。所以期望值要过一遍
+		// `filepath.FromSlash`,不能写死 POSIX 字面量。
+		{"/srv/git/remote.git", filepath.FromSlash("/srv/git/remote.git")},
+		{"./local/remote.git", filepath.FromSlash("local/remote.git")},
+		{"../up/remote.git", filepath.FromSlash("../up/remote.git")},
+		{"/srv/git/remote/", filepath.FromSlash("/srv/git/remote")},
 		{"https://gitee.com/nekoleamo/go-agent-harness.git", "gitee.com/nekoleamo/go-agent-harness"},
 	}
 	for _, c := range cases {
