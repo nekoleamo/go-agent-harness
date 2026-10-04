@@ -289,6 +289,24 @@ func EnsurePlugins(home string) ([]string, error) {
 	return written, nil
 }
 
+// OfficialPluginNames 随包官方外部插件的全部基名(排序)。
+//
+// 为什么需要它(而不是用 EnsurePlugins 的返回值):那个返回值是**本次新写入**的那些,
+// 第二次启动时它为空 —— 用它去标注来源,官方插件就永远标不上「official」。
+// 而分类展示(批四 P3)需要的是**全部**官方插件,与本次是否重写了它们无关。
+func OfficialPluginNames() ([]string, error) {
+	want, err := packedDigests()
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(want))
+	for n := range want {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
 // recordSelf 把官方产物登记进用户侧插件白名单(upsert,已存在的条目原样保留)。
 func recordSelf(home string, want map[string][32]byte) error {
 	dir := filepath.Join(home, "plugins")

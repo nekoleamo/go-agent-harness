@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/nekoleamo/go-agent-harness/internal/install"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 	"github.com/nekoleamo/go-agent-harness/web"
 )
@@ -50,6 +51,19 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	}
 	// UI 插件目录(M7.2):默认 $GAH_HOME/ui-plugins(与主配置同 home,数据单根)
 	cfg.UIPluginsDir = filepath.Join(uiPluginsHome(), "ui-plugins")
+	// 无条件建 UI 侧的完整性闸(批四 §A.2):UI 插件是**与宿主同源同权限**的最宽面
+	// (产物经动态 import() 进主页面,能调全部 API 含工具执行),而这侧**没有官方插件**
+	// 可供 embed 自登记 ⇒ 清单原先只有 InstallUI 会创建 ⇒ 从没装过 UI 插件的用户
+	// 手工拷一个目录进来就能用。那是本项目最宽的一个零校验口。
+	//
+	// 放在 Start 而不是请求路径里:写文件不能挂在「打开设置面板」这种读操作上。
+	// 失败**只记 WARN 不阻断启动** —— 闸建不起来不该让 gah 起不来(与 embed.recordSelf
+	// 同款失败软处理),但必须留痕,否则就是一次静默的口子。
+	if created, err := install.EnsureUIList(cfg.UIPluginsDir); err != nil {
+		c.Logger().Warn("ui-web-app: 建 UI 插件完整性闸失败(此后手工放进 ui-plugins/ 的插件仍会被加载)", "dir", cfg.UIPluginsDir, "err", err)
+	} else if created {
+		c.Logger().Info("ui-web-app: 已建 UI 插件完整性闸(空清单即强制:手工放置的插件需 gah -trust-ui-plugin <id> 放行)", "dir", cfg.UIPluginsDir)
+	}
 	// 附件目录(附件一期):$GAH_HOME/attachments(数据单根,随目录迁移)
 	cfg.AttachmentsDir = filepath.Join(uiPluginsHome(), "attachments")
 	var sessions sdk.SessionLog

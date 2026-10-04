@@ -127,13 +127,13 @@ func TestInstallBridge(t *testing.T) {
 		t.Fatalf("List 不符: %+v", items)
 	}
 	// 卸载:目录删除
-	if err := Uninstall("demo", home); err != nil {
+	if err := Uninstall("demo", home, nil); err != nil {
 		t.Fatal(err)
 	}
 	if fileExists(filepath.Join(home, "plugins", "demo")) {
 		t.Fatal("卸载后目录应删除")
 	}
-	if err := Uninstall("demo", home); err == nil {
+	if err := Uninstall("demo", home, nil); err == nil {
 		t.Fatal("重复卸载应报错")
 	}
 }
@@ -280,20 +280,52 @@ func TestRuntimePatchPersist(t *testing.T) {
 
 // —— 插件协议兼容闸 + 白名单登记(2026-10-03)——
 
-// TestCheckAPIVersion 缺省放行(兼容既有插件);认识则放行;不认识 ⇒ 显式拒绝。
+// TestCheckAPIVersion 缺省放行(兼容既有插件);声明与宿主范围有交集则放行;没交集 ⇒ 显式拒绝。
 func TestCheckAPIVersion(t *testing.T) {
 	if err := checkAPIVersion(Manifest{}); err != nil {
 		t.Fatalf("缺省(=v1)应放行,不能因为加了一个字段就让已发布插件全被拒: %v", err)
 	}
-	if err := checkAPIVersion(Manifest{APIVersion: "v1"}); err != nil {
+	if err := checkAPIVersion(Manifest{APIVersion: StringList{"v1"}}); err != nil {
 		t.Fatalf("v1 应放行: %v", err)
 	}
-	err := checkAPIVersion(Manifest{APIVersion: "v99"})
+	// 裸数字与 v 形式等价(旧写法兼容)。
+	if err := checkAPIVersion(Manifest{APIVersion: StringList{"1"}}); err != nil {
+		t.Fatalf("裸数字 1 应放行: %v", err)
+	}
+	// 兼容范围:声明 [v1,v2] 与宿主 {v1} 有交集 ⇒ 放行。
+	if err := checkAPIVersion(Manifest{APIVersion: StringList{"v1", "v2"}}); err != nil {
+		t.Fatalf("声明含 v1 应放行: %v", err)
+	}
+	err := checkAPIVersion(Manifest{APIVersion: StringList{"v99"}})
 	if err == nil {
 		t.Fatal("不认识的版本必须显式拒绝")
 	}
-	if !strings.Contains(err.Error(), PluginAPIVersion) {
+	if !strings.Contains(err.Error(), strings.Join(PluginAPIVersionSupported, ", ")) {
 		t.Fatalf("错误文案应说清本版支持什么: %v", err)
+	}
+	// 只声明未来版本 ⇒ 拒绝(不能因为"将来会支持"就放行)。
+	if err := checkAPIVersion(Manifest{APIVersion: StringList{"v2"}}); err == nil {
+		t.Fatal("只声明宿主不认识的版本必须拒绝")
+	}
+}
+
+// TestManifestAPIVersionShapes `api_version: v1` 与 `api_version: [v1,v2]` 两种写法等价。
+//
+// 不做这件事的后果:作者写列表而宿主只认单值时,yaml.v3 会把整条声明**静默忽略** ——
+// 那等于「作者声明了版本,宿主当没看见」,正是这个字段存在的目的的反面。
+func TestManifestAPIVersionShapes(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "plugin.yaml"), "id: x\napi_version: v1\n")
+	if got := readManifest(dir).APIVersion.Strings(); len(got) != 1 || got[0] != "v1" {
+		t.Errorf("单值写法应得 [v1],得 %v", got)
+	}
+	writeFile(t, filepath.Join(dir, "plugin.yaml"), "id: x\napi_version: [v1, v2]\n")
+	if got := readManifest(dir).APIVersion.Strings(); len(got) != 2 {
+		t.Errorf("列表写法应得 2 项,得 %v", got)
+	}
+	writeFile(t, filepath.Join(dir, "plugin.yaml"), "id: x\napi_version: []\n")
+	if readManifest(dir).APIVersion.Any() {
+		t.Errorf("空列表 = 未声明")
 	}
 }
 
@@ -420,7 +452,7 @@ func TestUninstallRemovesWhitelistEntry(t *testing.T) {
 	if _, ok := list.Sum(res.Binary); !ok {
 		t.Fatal("装完应在白名单里")
 	}
-	if err := Uninstall(res.ID, home); err != nil {
+	if err := Uninstall(res.ID, home, nil); err != nil {
 		t.Fatalf("卸载失败: %v", err)
 	}
 	list2, err := plugintrust.Load(filepath.Join(home, "plugins"))

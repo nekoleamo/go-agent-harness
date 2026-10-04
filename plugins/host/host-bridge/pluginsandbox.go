@@ -43,8 +43,15 @@ import (
 // 真身按探测结果一次性带包装启动 —— 避免"先无沙箱跑一遍再杀掉重来"的空窗。
 const CapsFlag = "--gah-caps"
 
-// capsProbeTimeout 探测超时:插件若不认这个参数而进入正常握手流程,会因缺 GAH_PLUGIN 而退出;
-// 万一它卡住也不能拖住加载(超时 = 视为未声明 = 按普通插件包装,安全侧默认)。
+// capsProbeTimeout 能力探测超时:插件若不认这个参数而进入正常握手流程,会因缺 GAH_PLUGIN
+// 而**快速退出**;万一它卡住也不能拖住加载(超时 = 视为未声明 = 按普通插件包装,安全侧默认)。
+//
+// 为什么**不像** rolesProbeTimeout 那样提到 10s(2026-10-03):本探测在 **loadOne 内逐角色**执行
+// (`caps, capsKnown := probeCapabilities(path, role)`),而 tool-kit 一个二进制提供四个角色
+// ⇒ 最坏 4 次。把单次提到 10s 就是最坏 40s 启动 —— 那才是真的回归。
+// 两者的降级方向也不同(见 rolesProbeTimeout 的注释),共用一个常量本来就不该。
+//
+// 这里**保持 3s**,并靠 probeCapabilities 的「超时要说清丢了什么」来补偿(见该函数)。
 const capsProbeTimeout = 3 * time.Second
 
 // 插件进程内核沙箱的三个开关(命名对齐既有 GAH_EXT_* 一族;MCP server 用无 _PLUGIN_ 的那组区分)。
@@ -78,11 +85,11 @@ func reservedDataRootName(name string) bool {
 	return false
 }
 
-// probeCapabilities 探测插件自报能力(见 CapsFlag)。第二个返回值 = 探测成功。
+// probeCapabilities 探测插件自报能力(见 CapsFlag)。第二/三个返回值 = 探测成功 / 是否**超时**。
 // 探测失败一律归一为"未声明"(零值):旧插件、非 ServeTools 插件、卡死插件都走这条路,
 // 宿主据此按**普通插件**处理(包装),这是安全侧默认。
 // role 非空 = 该二进制提供多角色,探测要走 `bin <role> <CapsFlag>`。
-func probeCapabilities(bin, role string) (Capabilities, bool) {
+func probeCapabilities(bin, role string) (Capabilities, bool, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), capsProbeTimeout)
 	defer cancel()
 	argv := append([]string{bin}, roleArgs(role)...)
@@ -92,13 +99,19 @@ func probeCapabilities(bin, role string) (Capabilities, bool) {
 	cmd.Env = sdk.SanitizedEnv(os.Environ())
 	out, err := cmd.Output() // stderr 直接丢弃:探测失败的原因不影响结论
 	if err != nil {
-		return Capabilities{}, false
+		// 第三个返回值 = **超时**(与「不认这个参数」严格区分)。
+		//
+		// 为什么必须区分:两种情形的**损失不同**。不认参数 ⇒ 插件压根没有这套声明,
+		// 没有东西可丢;超时 ⇒ 插件**有**声明而我们**没测出来**,声明被静默丢弃 ——
+		// 其中 `CredentialReadDeny: true` 关系到凭据目录读拒(tool-basic 正是靠它
+		// 在被内核包装后仍然开读拒),丢它等于**安全声明无声消失**。
+		return Capabilities{}, false, errors.Is(ctx.Err(), context.DeadlineExceeded)
 	}
 	var c Capabilities
 	if json.Unmarshal(bytes.TrimSpace(out), &c) != nil {
-		return Capabilities{}, false
+		return Capabilities{}, false, false
 	}
-	return c, true
+	return c, true, false
 }
 
 // validDataWrites 校验插件自报的数据根可写子目录,返回绝对路径白名单。

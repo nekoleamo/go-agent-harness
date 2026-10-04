@@ -107,12 +107,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 			// 目录不存在 = 空插件集(loadEntries 已降级):不监听、不报错——
 			// 热更新仅对已存在目录有意义(防止默认开 watch 后空目录拖垮 boot)
 			if _, serr := os.Stat(dir); serr == nil {
-				_, closeFn, werr := coreplugin.NewWatcher(dir, 300*time.Millisecond, func(path string) {
-					// 一个二进制可能是多角色(瘦身):逐角色重载,只重载**当时已加载**的那些
-					for _, role := range b.loadedRolesOf(path) {
-						_ = b.reload(path, role)
-					}
-				})
+				_, closeFn, werr := coreplugin.NewWatcher(dir, 300*time.Millisecond, b.onWatchEvent)
 				if werr != nil {
 					b.closeAll()
 					return nil, fmt.Errorf("host-bridge: 监听 %s: %w", dir, werr)
@@ -234,20 +229,9 @@ func (b *Bridge) loadEntries() error {
 		b.logErr("host-bridge: 外部插件目录不存在(空插件集),跳过扫描", "dir", b.dir)
 		return nil
 	}
-	return filepath.WalkDir(b.dir, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			b.logErr("host-bridge: 扫描路径失败,跳过", "path", path, "err", err)
-			return nil
-		}
-		if d.IsDir() {
-			return nil
-		}
-		if !isExternalPluginBin(d.Name()) {
-			return nil
-		}
-		// 一个二进制可能提供**多个角色**(tool-kit:tool-basic/tool-mcp/…)。
-		// 问一次 rolesOf,拿到几个起几个 —— 合成的是二进制,进程仍各自独立(崩溃隔离不丢)。
-		roles := rolesOf(path)
+	// 候选收集与角色探测**分开**:探测要并行且有总预算(批五 P5),所以「有哪些候选」
+	// 必须先于「它们提供什么角色」确定。
+	for path, roles := range b.probeRoles(b.candidatesForProbe()) {
 		for _, role := range roles {
 			e, lerr := b.loadOne(path, role)
 			if lerr != nil {
@@ -263,6 +247,7 @@ func (b *Bridge) loadEntries() error {
 					continue
 				}
 				b.logErr("host-bridge: 跳过加载失败的外部插件角色", "path", path, "role", role, "err", lerr)
+				b.rejectLoad(path, role, lerr)
 				continue
 			}
 			unreg := b.registerAll(e)
@@ -272,8 +257,167 @@ func (b *Bridge) loadEntries() error {
 			b.entries[entryKey(path, role)] = e
 			b.mu.Unlock()
 		}
+	}
+	return nil
+}
+
+// 探测预算(批五 P5)。三项各自有上限,任何一项都不会让启动无界等待。
+const (
+	// rolesProbeConcurrency 并行探测的并发上限。
+	//
+	// 不是越高越好:每个探测是一次 exec,几百个并发会先把 CPU 与 fd 吃光,
+	// 那与“启动很慢”是同一种故障,只是换了个形态。
+	rolesProbeConcurrency = 8
+)
+
+// rolesProbeTimeout 单个二进制的**角色探测**超时(2026-10-03 从 capsProbeTimeout 拆出)。
+//
+// 为什么必须与 caps 探测**分开**:两者的超时后果方向相反 —— 角色探测超时 ⇒ 多角色二进制
+// 整个失效(功能降级);能力探测超时 ⇒ 丢掉作者的能力声明(安全/性能降级)。共用一个常量
+// 意味着「为了修一个而调大另一个」,而那个另一个**恰恰不该被调大**(见 capsProbeTimeout)。
+//
+// 为什么是 10s:它只为「打印一行 JSON」而跑,代价**只付在「这个二进制确实慢」的情况**,
+// 而那种情况现在付的代价是「插件不加载」—— 用启动时间换功能可用,划算。
+// 对照:启动整个插件并枚举全部定义的手持 30s(handshakeTimeout),比例不再是 1:10。
+//
+// 声明成 var 而不是 const:**超时分支是本批最难测的一条**(要真的让探测跑不完),
+// 而「造一个睡 11 秒的桩」会让单测变成 11 秒起步 —— CI 上那是不可接受的。
+// 可调的超时是这里唯一诚实的测试缝(与 rolesProbeBudget 同款理由)。
+var rolesProbeTimeout = 10 * time.Second
+
+// rolesProbeBudget 全部探测的**总**时限。
+//
+// 为什么要有总预算而不只是并发:并发的总耗时 ≈ 串行/并发,候选一多照样涨。
+// 总预算是唯一能把“启动耗时”与“候选数”解耦的东西。
+//
+// 声明成 var 而不是 const:超预算那条路径是**最难测的**(要真的在 goroutine 还在跑的
+// 时候就去遍历返回值),靠「造足够多的慢候选」去撞那个窗口不可靠 —— 实测第一版
+// 撞不出来,于是一个真 bug 躲过了整轮门禁。可调的预算是这里唯一诚实的测试缝。
+//
+// **必须 > rolesProbeTimeout**,否则 `time.After(rolesProbeBudget)` 会早于**任何**一次探测
+// 完成就返回 ⇒ 预算机制事实上失效(每次都「只探测了少数几个」)。这条不变量由
+// TestProbeBudgetExceedsSingleTimeout 钉住。
+var rolesProbeBudget = 20 * time.Second
+
+// probeRoles 并行问每个候选提供哪些角色;总预算用尽时**如实上报**被舍掉的那些。
+//
+// 为什么不能静默截断(批五 P5 的核心):一个用户装了 50 个真插件,只有前 8 个被探测,
+// 后面 42 个静默不加载 —— 症状是「我明明装了,它就是没出现」,而日志一行都没有。
+// 截断必须**明说**,让用户能自己决定是清目录还是调预算。
+func (b *Bridge) probeRoles(cands []string) map[string][]string {
+	out := make(map[string][]string, len(cands))
+	if len(cands) == 0 {
+		return out
+	}
+	sem := make(chan struct{}, rolesProbeConcurrency)
+	// uncertainPaths 探测超时(=「没测出来」)的候选:降级照旧,但必须**留痕**。
+	var uncertainPaths []string
+	var wg sync.WaitGroup
+	// out 被并发写 ⇒ 必须有锁。多 goroutine 写 map 会直接 crash(不是「偶尔错」),
+	// 而这条路径只在**启动时**跑一次,崩了就是「gah 起不来」,没有第二次机会。
+	var mu sync.Mutex
+	for _, c := range cands {
+		wg.Add(1)
+		go func(path string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			roles, uncertain := rolesOf(path)
+			mu.Lock()
+			out[path] = roles
+			if uncertain {
+				uncertainPaths = append(uncertainPaths, path)
+			}
+			mu.Unlock()
+		}(c)
+	}
+	waited := make(chan struct{})
+	go func() { wg.Wait(); close(waited) }()
+	select {
+	case <-waited:
+	case <-time.After(rolesProbeBudget):
+		// 到点:已完成的照常用,剩下的**如实上报**。
+		mu.Lock()
+		done := len(out)
+		mu.Unlock()
+		if skipped := len(cands) - done; skipped > 0 {
+			b.logErr("host-bridge: 外部插件角色探测超出总预算,只探测了部分候选",
+				"dir", b.dir, "total", len(cands), "probed", done, "skipped", skipped,
+				"budget", rolesProbeBudget.String(),
+				"hint", "目录里可能有名字像插件的构建产物;清理后重试,或把它们挪出 "+b.dir)
+		}
+	}
+	snap := snapshotRoles(out, &mu)
+	// 探测超时(**没测出来**)必须留痕 —— 降级本身是兼容的,但「这台机器上有个二进制
+	// 我们没测准」这件事原本是**完全无声**的:多角色插件会以缺角色参数的方式失败,
+	// 而日志里只有插件自己打的用法提示,与真实原因毫无关系。
+	//
+	// 报 WARN 而不是 ERROR:插件**仍然加载了**(单角色情形),这不是故障;
+	// 但多角色情形会加载失败,那时的 ERROR 由 loadOne 那条给出。
+	if len(uncertainPaths) > 0 {
+		sort.Strings(uncertainPaths)
+		b.logInfo("host-bridge: 部分外部插件的角色探测超时,已按单角色启动(不确定是不是多角色插件)",
+			"dir", b.dir, "timeout", rolesProbeTimeout.String(), "uncertain", uncertainPaths)
+	}
+	return snap
+}
+
+// snapshotRoles 在锁内复制一份返回(**不是**直接返回内部 map)。
+//
+// 超预算时那些 goroutine **仍在跑**:直接返回 out 之后,调用方
+// `for path, roles := range probeRoles(...)` 会与它们并发写同一张 map ⇒
+// Go 的 `concurrent map iteration and map write` **fatal**(不可 recover)。
+//
+// 而这条路径**只在超预算时触发** —— 也就是「目录里堆了一堆假 tool-*」那一种,
+// 恰好是本功能要处理的情形。
+//
+// 为什么单独抽成函数:这个崩溃**没法做成确定性用例** —— 它要求「写」恰好落在「遍历」
+// 期间,而单次 range 只要微秒级;实测把消费窗口人为拉长到数秒,在这台机器上仍然
+// 撞不出来(单次 exec 的开销在 200~600ms 之间浮动,时序不可控)。于是与其留一条
+// 「看着覆盖了、实则对着有 bug 的实现也照样绿」的 placebo 用例,不如把**机制**抽出来
+// 直接钉住:快照必须是**另一张表**(见 snapshotRoles 的单测)。
+func snapshotRoles(out map[string][]string, mu *sync.Mutex) map[string][]string {
+	mu.Lock()
+	defer mu.Unlock()
+	snap := make(map[string][]string, len(out))
+	for k, v := range out {
+		snap[k] = v
+	}
+	return snap
+}
+
+// candidatesForProbe 收集要加载的外部插件二进制(已停用的滤掉,顺序稳定)。
+//
+// 为什么单独一个函数(批五 P5):探测要**并行且有总预算**,所以「有哪些候选」必须先于
+// 「它们提供什么角色」确定。合成一个函数就没法在测试里直接验证「停用的项不进候选」——
+// 而那正是顺带修好的一件事:原顺序下一个已停用的插件也要先花 3s 探测才被跳过,
+// 而"停用"的意义正是让它别给启动添麻烦。
+//
+// 原来的形状是「边走边串行探测」:每个候选跑一次 3s 超时的 rolesOf。100 个假 `tool-*`
+// ⇒ 最坏 ~300s 启动,表现为「gah 卡在启动」。这不是理论值:文件名带 tool- 前缀的构建产物
+// 并不罕见(把别的项目的 out/ 拷进来)。
+func (b *Bridge) candidatesForProbe() []string {
+	var cands []string
+	_ = filepath.WalkDir(b.dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			b.logErr("host-bridge: 扫描路径失败,跳过", "path", path, "err", err)
+			return nil
+		}
+		if d.IsDir() || !isExternalPluginBin(d.Name()) {
+			return nil
+		}
+		// 停用(批二):用户主动关掉的一个二进制,**不启动**。
+		// 判据是二进制基名(不是角色名):一个 tool-kit 提供四个角色,用户的心智单位是「一件」。
+		// 现读而不缓存:停用可能来自面板或另一个 gah 实例,缓存过期会变成
+		// 「我明明点了停用,插件还在」—— 而那正是止损手段最不能失效的时刻。
+		if b.disabledNow(externalPluginName(path)) {
+			return nil
+		}
+		cands = append(cands, path)
 		return nil
 	})
+	sort.Strings(cands) // 顺序稳定 ⇒ 预算截断时「被舍掉的是哪些」可复现
+	return cands
 }
 
 // verifyTrust 白名单校验(见 internal/plugintrust)。返回错误 = 拒绝加载。
@@ -308,21 +452,44 @@ func (b *Bridge) verifyTrust(path string) error {
 	return nil
 }
 
-// reject 记一条被拒(同一条插件只留最新原因;list 规模是插件数,不会涨)。
+// reject 记一条被完整性闸拒绝的插件。
+//
+// 日志与 rejected 面**同源写入**(noteReject 不打日志,避免与调用方的日志重复):
+// 这条是 ERROR,因为用户此刻**能做什么**(登记/撤登记),不写就会变成「插件莫名消失」。
 func (b *Bridge) reject(path string, err error) {
+	b.logErr("host-bridge: 外部插件被完整性闸拒绝加载", "path", path, "reason", err.Error())
+	b.noteReject(path, err, sdk.RejectedKindTrust)
+}
+
+// rejectLoad 记一条「**加载失败**」—— 与白名单无关,信任它也没用。
+//
+// 为什么要进这个面(2026-10-03):此前加载失败**只写日志**,于是「我装的插件不见了」
+// 在面板上是**无解释**的 —— 面板只能显示被完整性闸拦下的那些。用户看到工具整组消失,
+// 唯一线索在日志里。这与批四 UI 侧那条「不能静默拒绝」是同一条纪律。
+func (b *Bridge) rejectLoad(path, role string, err error) {
+	// 带上角色:多角色二进制一个角色加载成功、另一个失败时,只报「tool-kit 加载失败」
+	// 会让人以为整个工具都没了,而实际只缺一部分。
+	reason := err.Error()
+	if role != "" {
+		reason = "角色 " + role + " 加载失败:" + reason
+	}
+	b.noteReject(path, errors.New(reason), sdk.RejectedKindLoad)
+}
+
+// noteReject 记一条被拒/加载失败(共用的去重写入)。
+func (b *Bridge) noteReject(path string, err error, kind string) {
 	name := filepath.Base(path)
 	reason := err.Error()
-	b.logErr("host-bridge: 外部插件被拒绝加载", "path", path, "reason", reason)
 	b.mu.Lock()
+	defer b.mu.Unlock()
 	for i := range b.rejects {
 		if b.rejects[i].Name == name {
 			b.rejects[i].Reason = reason
-			b.mu.Unlock()
+			b.rejects[i].Kind = kind
 			return
 		}
 	}
-	b.rejects = append(b.rejects, sdk.RejectedPlugin{Name: name, Reason: reason})
-	b.mu.Unlock()
+	b.rejects = append(b.rejects, sdk.RejectedPlugin{Name: name, Reason: reason, Kind: kind})
 }
 
 // Rejected sdk.RejectedPlugins 实现:被拒绝加载的插件清单(稳定排序)。
@@ -350,7 +517,14 @@ func (b *Bridge) loadOne(path, role string) (*extEntry, error) {
 	}
 	// 能力自报探测必须在 exec **之前**(包装 argv 只能那时定)。探测失败 = 未声明 = 按普通
 	// 插件包装(安全侧默认)。自报项只影响**策略面**(数据根白名单/凭据读拒),不再影响包不包。
-	caps, capsKnown := probeCapabilities(path, role)
+	caps, capsKnown, capsTimedOut := probeCapabilities(path, role)
+	// 超时(而非「插件没有这套声明」)⇒ **必须留痕**:声明被静默丢弃时,
+	// `CredentialReadDeny` 关系到凭据目录读拒,丢了它等于安全声明无声消失。
+	// 降级方向不动(仍是「按普通插件包装」= 安全侧),要改的是把「丢了什么」说出来。
+	if capsTimedOut {
+		b.logInfo("host-bridge: 外部插件能力探测超时,按「未声明」处理(若该插件声明过凭据读拒或数据目录,那两项目前不生效)",
+			"path", path, "role", role, "timeout", capsProbeTimeout.String())
+	}
 	dataWrites := b.validDataWrites(path, caps.DataWrites)
 	argv, extraEnv, wrapped := b.wrapPluginArgv(path, role, caps, capsKnown, dataWrites)
 	wrapMode, wrapRoot := b.sandboxModeRoot()
@@ -546,25 +720,38 @@ func entryKey(path, role string) string {
 // 寻址的老代码(测试替身、clientFor、文件监听)一行都不用改;用文件基名当角色会把
 // 键变成 `路径#名字`,老代码全部失配(第一版就这么栽的,表现为「条目缺失」)。
 // 探测与能力自报(CapsFlag)一样有超时与凭据隔离,不给 GAH_CB_*/GAH_PLUGIN。
-func rolesOf(bin string) []string {
-	ctx, cancel := context.WithTimeout(context.Background(), capsProbeTimeout)
+func rolesOf(bin string) ([]string, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), rolesProbeTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, RolesFlag)
 	cmd.Env = sdk.SanitizedEnv(os.Environ())
 	out, err := cmd.Output()
 	if err != nil {
-		return legacyRole()
+		// 「非零退出」与「超时」是**两件事**,原来都归一到 legacyRole:
+		//
+		//	非零退出 = 这个二进制**不支持** --roles(第三方单角色插件的正常情形)—— 结论可靠;
+		//	超时     = 我们**没测出来**(机器忙 / 冷页缓存 / shell wrapper 启动慢)—— 结论不可靠。
+		//
+		// 两者语义相反却被同一个出口归一,后果是:高负载机器上多角色二进制被当成
+		// 「单角色」启动 ⇒ 缺角色参数 ⇒ 握手失败 ⇒ **工具整组消失**,而日志里只有
+		// 「用法:tool-kit <角色>...」,与真实原因毫无关系。
+		//
+		// ⚠️ 超时**仍然**降级成 legacyRole(不改这个方向):第三方单角色插件在超时下
+		// 恰好会得到**正确**结果(它本来就是无参插件)。若改成「超时就跳过」,那才是
+		// 回归 —— 完全正常的第三方插件会在慢机器上集体消失。
+		// 要改的是**留痕**(第二个返回值),不是降级方向。
+		return legacyRole(), errors.Is(ctx.Err(), context.DeadlineExceeded)
 	}
 	var roles []string
 	if json.Unmarshal(bytes.TrimSpace(out), &roles) != nil || len(roles) == 0 {
-		return legacyRole()
+		return legacyRole(), false
 	}
 	for _, r := range roles {
 		if strings.TrimSpace(r) == "" {
-			return legacyRole() // 有空项 = 清单不可信,退回老行为
+			return legacyRole(), false // 有空项 = 清单不可信,退回老行为
 		}
 	}
-	return roles
+	return roles, false
 }
 
 // legacyRole 「合并前」的单角色标记(空字符串 = 无子命令)。
@@ -621,7 +808,7 @@ func roleOf(name, path string) string {
 	return name
 }
 
-// onWatchEvent 监听事件回调:按「是文件还是目录」分流。
+// onWatchEvent 监听事件回调:按「文件还在吗」与「是文件还是目录」分流。
 //
 // 为何要分流(2026-10-03):事件给的是**变化的那个路径**。
 //   - 已加载的插件二进制被重编译 → 逐角色重载(旧语义);
@@ -630,9 +817,20 @@ func roleOf(name, path string) string {
 //     目录本身不是插件二进制,拿它去 `rolesOf` 只会探测失败返回空,于是这一整支被静默
 //     丢弃,症状是「放了插件但没生效」,日志只有一行探测失败。监听改成递归后事件能收到了,
 //     但这一步不补上等于白补。
+//   - **文件没了**(删掉二进制 / 删掉整个插件目录)→ **卸载**,不是重载。
+//     这一支原先根本不存在:watcher 只报 Write|Create|Rename,Remove 被显式排除
+//     (注释说"删除由 plugin-manager 决定"),而外部插件这条路**没有 plugin-manager 介入**
+//     ⇒ 用户 `rm` 掉文件,进程继续跑(持工具注册 + 回调 token)直到 gah 重启,
+//     「我删了它」给的是**虚假的安全感**。见 core/plugin/watch.go 的去抖与存在性判定。
 func (b *Bridge) onWatchEvent(path string) {
 	if strings.TrimSpace(path) == "" {
 		return // 监听错误上报(watcher 侧已记日志),此处不做事
+	}
+	// 先判存在性:watcher 侧已经去抖 + 判过,这里再判一次是为了覆盖「同一次落盘里
+	// 先 Create 后 Remove」的顺序(文件已不存在 ⇒ 就是一次删除)。
+	if _, err := os.Lstat(path); err != nil {
+		b.onPathRemoved(path)
+		return
 	}
 	if fi, err := os.Stat(path); err == nil && fi.IsDir() {
 		b.loadUnder(path)
@@ -643,6 +841,50 @@ func (b *Bridge) onWatchEvent(path string) {
 	for _, role := range b.loadedRolesOf(path) {
 		_ = b.reload(path, role)
 	}
+}
+
+// onPathRemoved 某个路径没了 ⇒ 卸载它下面**已加载**的条目(停进程 + 撤工具注册)。
+//
+// 为什么只按「已加载的」:路径没了之后没有任何办法知道它提供过哪些角色,而逐角色
+// 询问一个不存在的二进制只会拿到失败。那些没加载的条目本来就不占资源,不需要处理。
+func (b *Bridge) onPathRemoved(path string) {
+	// 目录被删:里面的二进制路径也一并算没了(watcher 会逐个报文件事件,这里先兜底)。
+	for _, e := range b.entriesAtOrUnder(path) {
+		if n := b.unloadPath(e); n > 0 {
+			b.logInfo("host-bridge: 外部插件二进制已删除,已停掉其进程并撤销工具注册",
+				"path", e, "entries", n)
+		}
+	}
+}
+
+// entriesAtOrUnder 找出「路径 == p」或「路径在 p 之下」的已加载条目路径。
+func (b *Bridge) entriesAtOrUnder(p string) []string {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		abs = filepath.Clean(p)
+	}
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	var out []string
+	seen := map[string]bool{}
+	for _, e := range b.entries {
+		if e == nil || e.path == "" {
+			continue
+		}
+		ep, err := filepath.Abs(e.path)
+		if err != nil {
+			ep = filepath.Clean(e.path)
+		}
+		if ep != abs && !strings.HasPrefix(ep, abs+string(filepath.Separator)) {
+			continue
+		}
+		if !seen[ep] {
+			seen[ep] = true
+			out = append(out, ep)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // loadUnder 装载某个目录下的全部外部插件(新增目录布局用;已加载的会被 reload)。
@@ -669,8 +911,13 @@ func (b *Bridge) loadedRolesOf(path string) []string {
 		}
 	}
 	if len(out) == 0 {
-		// 没加载过(刚放进来的文件):按 rolesOf 问一次
-		return rolesOf(path)
+		// 没加载过(刚放进来的文件):按 rolesOf 问一次。
+		//
+		// 这里**丢掉 uncertain**:热重载路径只取角色列表去重载,而重载走的是
+		// reloadLocked → loadOne,那里另有一次 caps 探测与真实的握手超时(30s)。
+		// 留痕由 loadEntries 那条路径负责(只有它在 boot 时批量决定"装不装")。
+		roles, _ := rolesOf(path)
+		return roles
 	}
 	return out
 }

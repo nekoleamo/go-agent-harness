@@ -259,12 +259,17 @@ func scanBareProcessEnv(dir string) (string, bool) {
 
 // isLocalDir spec 是否为本地路径(相对/绝对的已存在路径;仓库 URL 以 .git 或协议前缀)。
 func isLocalDir(spec string) bool {
-	if strings.HasPrefix(spec, "http://") || strings.HasPrefix(spec, "https://") ||
-		strings.HasPrefix(spec, "git@") || strings.HasSuffix(spec, ".git") {
+	// 先拆掉 `@<ref>` 再判:**带 ref 的一定不是本地目录**(本地目录没有 ref 这个概念)。
+	// 不拆的话,`/srv/git/remote.git@v1.0.0` 会先命中「以 / 开头」被判成本地目录,
+	// 然后报一条与真实原因毫无关系的「本地路径不存在」(2026-10-03 实测)。
+	repo, _ := SplitSpec(spec)
+	if strings.HasPrefix(repo, "http://") || strings.HasPrefix(repo, "https://") ||
+		strings.HasPrefix(repo, "file://") || strings.HasPrefix(repo, "git@") ||
+		strings.HasPrefix(repo, "ssh://") || strings.HasSuffix(repo, ".git") {
 		return false
 	}
-	return strings.HasPrefix(spec, "/") || strings.HasPrefix(spec, "./") || strings.HasPrefix(spec, "../") ||
-		fileExists(spec)
+	return strings.HasPrefix(repo, "/") || strings.HasPrefix(repo, "./") ||
+		strings.HasPrefix(repo, "../") || fileExists(repo)
 }
 
 // readUIManifest 读仓库根 manifest.json(缺省返回空结构)。
@@ -298,10 +303,46 @@ func copyDir(src, dst string) error {
 			return os.MkdirAll(filepath.Join(dst, strings.TrimPrefix(p, abs)), 0o755)
 		}
 		rel := strings.TrimPrefix(p, abs)
+		// ① **拒绝符号链接**(2026-10-03 批六,修一个真实的信息泄漏)。
+		//
+		// 原来用 filepath.Walk(基于 Lstat,不跟随)却用 os.ReadFile(**跟随**):
+		// 一个指向 `~/.ssh/id_rsa` 的软链会被**读出来写进临时克隆**,而那份克隆随后
+		// 就成了插件仓库 —— 构建脚本完全可见、构建产物里也可能带出去。
+		//
+		// 不做「只记录链接目标」:那仍把链接暴露给构建脚本,还要额外定义"摘要算不算
+		// 链接本身"的判定,复杂度换不来任何安全性。直接拒绝并说清原因。
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("插件目录里含符号链接,拒绝复制:%s(→ %s)—— "+
+				"跟随它会把链接指向的文件(可能是 ~/.ssh/id_rsa 之类)复制进构建区,"+
+				"对构建脚本完全可见。请把它换成真实文件,或用 git 管理该目录", rel, safeLinkTarget(p))
+		}
 		b, err := os.ReadFile(p)
 		if err != nil {
 			return err
 		}
-		return os.WriteFile(filepath.Join(dst, rel), b, 0o644)
+		// ② **保留可执行位**。原来一律 0o644 ⇒ 本地插件用 `./build.sh` 构建会报
+		// `Permission denied` —— 而真实原因(执行位被复制过程吃掉了)与那个报错毫无关系,
+		// 排查成本极高。至少保留 mode&0o111;其余按源模式给。
+		mode := info.Mode().Perm()
+		if mode == 0 {
+			mode = 0o644
+		}
+		return os.WriteFile(filepath.Join(dst, rel), b, mode)
 	})
+}
+
+// safeLinkTarget 读链接目标,**只用于报错文案**(不读目标内容)。
+//
+// 为什么要克制:它出现在错误消息里,可能随日志落到别处。只回 basename 与「疑似指向家目录」
+// 这类**不泄露内容**的事实;解析不出就直接说解析不出,不猜。
+func safeLinkTarget(p string) string {
+	tgt, err := os.Readlink(p)
+	if err != nil {
+		return "(读不出链接目标)"
+	}
+	base := filepath.Base(tgt)
+	if home, herr := os.UserHomeDir(); herr == nil && strings.HasPrefix(tgt, home) {
+		return base + "(在你的家目录内)"
+	}
+	return base
 }

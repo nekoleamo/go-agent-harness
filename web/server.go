@@ -338,7 +338,10 @@ func (s *Server) handler() http.Handler {
 	// 插件安装/卸载/信任(2026-10-03):把 CLI 的安装内核接到面板上。
 	// 路由不冲突:既有的是 3 段(/api/plugins/{id}/load),新增是 2 段字面量。
 	mux.HandleFunc("GET /api/plugins/install", s.handlePluginInstallList)
+	mux.HandleFunc("GET /api/plugins/update-check", s.handlePluginUpdateCheck)
 	mux.HandleFunc("POST /api/plugins/install", s.handlePluginInstall)
+	mux.HandleFunc("POST /api/plugins/install/enable", s.handlePluginEnable)
+	mux.HandleFunc("POST /api/plugins/install/disable", s.handlePluginDisable)
 	mux.HandleFunc("POST /api/plugins/uninstall", s.handlePluginUninstall)
 	mux.HandleFunc("POST /api/plugins/trust", s.handlePluginTrust)
 	mux.HandleFunc("POST /api/plugins/untrust", s.handlePluginUntrust)
@@ -354,6 +357,9 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST /api/settings/history", s.handleSettingsHistory)
 	mux.HandleFunc("GET /api/commands", s.handleCommands)
 	mux.HandleFunc("GET /api/ui-plugins", s.handleUIPlugins)
+	mux.HandleFunc("GET /api/ui-plugins/state", s.handleUIPluginState)
+	mux.HandleFunc("POST /api/ui-plugins/disable", s.handleUIDisable)
+	mux.HandleFunc("POST /api/ui-plugins/enable", s.handleUIEnable)
 	mux.HandleFunc("GET /api/todo", s.handleTodo)
 	mux.HandleFunc("GET /api/backup", s.handleBackup)
 	mux.HandleFunc("POST /api/backup", s.handleBackup)
@@ -1456,6 +1462,15 @@ func (s *Server) scanUIPlugins() []UIPlugin {
 		// 同权限**的面(产物经动态 import() 进主页面,能调全部 API),此前只有一个
 		// 「展示用」的摘要 —— 加载与否与它无关。拒绝的动作是**不下发**:前端因此完全
 		// 看不到它,而不是「看到了但摘要不符」让人自己去比。
+		// 停用(批四 §A.4):被用户停用的 UI 插件**不下发** ⇒ 前端根本不加载它。
+		//
+		// 为什么 UI 侧也需要「停用」这个中间态:批四给 UI 侧建了**默认闸**,被闸挡住之后
+		// 如果只剩「删目录」这一条路,用户想「先关掉、回头再放行」就必须付出删除的代价。
+		// 进程型侧在批二已经有这条中间态,两侧对齐。
+		if prefs.IsUIDisabled(m.ID) {
+			s.log.Info("ui-plugin: 已被用户停用,不下发", "id", m.ID)
+			continue
+		}
 		if why := uiTrustCheck(dir, e.Name(), m); why != "" {
 			s.log.Warn("ui-plugin: 完整性未通过,不下发", "id", m.ID, "reason", why)
 			s.noteRejectedUI(m.ID, why)

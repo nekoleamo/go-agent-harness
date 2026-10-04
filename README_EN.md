@@ -47,7 +47,7 @@ One source, three surfaces: the same gah binary hosts **TUI / Web / headless**; 
 | **MCP on-demand search** | per-server `mode`: `direct` (default, full tool set in context) or `search` (tools stay **out of the per-turn context**; only `mcp_search` to look them up and `mcp_call` to invoke). Config lives in `$GAH_HOME/config/mcp.yaml` (add/edit/remove in the settings panel's "MCP server" section; **saving writes the file and hot-reloads the plugin**, no restart). Env vars still work (file wins) |
 | **ACP agent side** | `gah acp`: run as a first-class agent over **ACP v1** (Agent Client Protocol, Linux Foundation) inside editors (Zed, Neovim, ...). Sessions, streaming replies, tool progress and approval prompts all travel over ACP, on the **same data** as TUI/Web (same session ledger, same sandbox/approval decisions; not a second runtime). Editor permission buttons only map to `allow_once`/`reject_once` (never always: one click should not permanently relax dangerous operations); interactive questions and image input are not supported (explicit errors, answer in TUI/Web) |
 | **External plugin bridge** | out-of-process plugins (go-plugin); crash isolation (host survives a killed child); callback channel (GAH_CB_ADDR) so external processes can request tools/jobs/fanout; tools are 100% external (extplugins/) |
-| **Plugin install** | One kernel, three entries: the CLI `gah -install <repo\|local dir>[@version]`, the TUI slash command `/install` (divided from `/plugins`: the former installs and trusts, the latter toggles), and the Web/desktop settings panel's install row (with a native "Browse…" picker on desktop). **A plugin you wrote locally does not have to be `git init` + `push` first** — hand it a directory. All three entries render the confirmation text from one shared generator, and an approval tier of "strict" refuses everywhere (installing a plugin means introducing code that keeps running). **The build step itself is fenced too**: the default build is `GOFLAGS=-mod=readonly go build` (it never rewrites go.mod/go.sum), and `go mod tidy` runs **only when the build genuinely cannot succeed without it** — flagged in the panel and in the receipt, because it means the plugin pulls module dependencies the repository never declared. The build subprocess gets a credential-scrubbed environment (no `*_API_KEY`/tokens), and host switches that would change build semantics (`GOFLAGS`/`GO111MODULE`/…) are stripped **Hash allowlist**: `plugins/SHA256SUMS` is enforced as soon as it exists — a plugin that is unlisted or whose hash differs is **refused** (the official ones self-register on every boot; `gah -install` registers what it just built; a binary you placed yourself needs `gah -trust-plugin <name>`). Registry lines carry `# audit:` comments (time/source: `embed` / `install:<spec>` / `trust:manual`) — **not a security boundary** (anyone who can edit the plugin directory can edit it too); it answers "who put this here, when, and from where" after the fact. **UI plugins get a gate too** (`ui-plugins/SHA256SUMS`, qualified at manifest + the modules the slots actually `import()` — not the whole directory, so a sourcemap change must not get you rejected): as soon as it exists it is enforced, and an unlisted or mismatched plugin is **not served at all**. A refused plugin shows its reason and the remedy **in the settings panel's plugin section**. Protocol compatibility is declared via `api_version` in `plugin.yaml` (absent = v1); an incompatible version is refused at install time |
+| **Plugin install** | One kernel, three entries: the CLI `gah -install <repo\|local dir>[@version]`, the TUI slash command `/install` (divided from `/plugins`: the former installs and trusts, the latter toggles), and the Web/desktop settings panel's install row (with a native "Browse…" picker on desktop). **A plugin you wrote locally does not have to be `git init` + `push` first** — hand it a directory. All three entries render the confirmation text from one shared generator, and an approval tier of "strict" refuses everywhere (installing a plugin means introducing code that keeps running). **The build step itself is fenced too**: the default build is `GOFLAGS=-mod=readonly go build` (it never rewrites go.mod/go.sum), and `go mod tidy` runs **only when the build genuinely cannot succeed without it** — flagged in the panel and in the receipt, because it means the plugin pulls module dependencies the repository never declared. The build subprocess gets a credential-scrubbed environment (no `*_API_KEY`/tokens), and host switches that would change build semantics (`GOFLAGS`/`GO111MODULE`/…) are stripped **Hash allowlist**: `plugins/SHA256SUMS` is enforced as soon as it exists — a plugin that is unlisted or whose hash differs is **refused** (the official ones self-register on every boot; `gah -install` registers what it just built; a binary you placed yourself needs `gah -trust-plugin <name>`). Registry lines carry `# audit:` comments (time/source: `embed` / `install:<spec>` / `trust:manual`) — **not a security boundary** (anyone who can edit the plugin directory can edit it too); it answers "who put this here, when, and from where" after the fact. **UI plugins get a gate too** (`ui-plugins/SHA256SUMS`, qualified at manifest + the modules the slots actually `import()` — not the whole directory, so a sourcemap change must not get you rejected): as soon as it exists it is enforced, and an unlisted or mismatched plugin is **not served at all**. A refused plugin shows its reason and the remedy **in the settings panel's plugin section**. **Load failures** (start failure / refused handshake / incompatible protocol) go into the same list, tagged `kind: load` to distinguish them from the integrity gate's `kind: trust` — the remedies differ completely: trusting the plugin does not help in the first case, you need the reason in stderr or a reinstall. Previously a load failure was **log-only**, so on the panel the plugin simply *was not there* with no explanation. Protocol compatibility is declared via `api_version` in `plugin.yaml` (absent = v1); an incompatible version is refused at install time |
 | **Instruction files & skills** | Global/project AGENTS.md auto-injected (closer overrides; `/reload` hot reload); SKILL.md scanning with on-demand loading (`list_skills`/`read_skill`); ships the `gah-plugin-dev` skill |
 | **Roles** | `$GAH_HOME/roles/<id>/` (persona + working rules AGENTS.md + private skills + **optional model / thinking level** + **tighten-only permission tiers `approval`/`sandbox`** + an **excluded tool list**); the identity slot is injected after the fixed preamble and before the instruction layers (on conflict the user/project rules win); skills are filtered by the role's mounts (unmounted ones can neither be read nor listed), `/role` or the **settings panel's "Roles" section** switches **live, without a new session**; **a role's declared model/thinking level overrides the session setting on every turn** (all three surfaces label the source instead of silently changing session preferences; an unusable model falls back to the session model with a one-time warning, and parallel subagents inherit the role's model, thinking level, identity slot and skill visibility (same persona, same visible skill set, and the same **tool table** — the role's `tools_exclude` list filters both)); **tool set by role**: `tools_exclude` in `role.yaml` means listed = denied (default is everything, so tools of a newly installed plugin stay visible to existing roles) — an excluded tool can be neither seen nor called, and the same predicate covers subagents, workflows, external-plugin callbacks and the MCP server; **permission tiers can only be tightened** (`approval`/`sandbox` in `role.yaml`; the effective tier is the strictest of declared → linkage → role, and all three surfaces label it "role-tightened"); **12 seeded roles in five scenario groups** (general: assistant; engineering: coding-master / tech-lead / reviewer / ops-sre; data: finance / data-analyst; writing: novelist / news-writer / tech-writer / translator; learning: teacher) — the panel lists them grouped by scenario, and shows a one-line hint while no role has ever been picked (it disappears once you pick one; picking is optional — the baseline is the global instructions plus every skill); roles, working rules, skill mounts and the skill library (including role-private skills) can all be created/edited/deleted in the panel (the list opens with a **synthesised "Default (baseline)" row** = no role active, one click to switch back), and both the TUI status bar and the Web bottom bar show the current role; the model only gets read-only `list_roles`/`read_role` (a model cannot rewrite its own persona), and writes to `roles/**`, `skills/**` or the global AGENTS.md go through the approval gate; skills can be **renamed or moved between the shared library and a role's private library**, and a rename rewrites the mount list of every role that mounted it (no stale mounts left behind); skills can be **exported/imported as a skill pack** (`gah-skill-<name>.zip`, holding just that skill's `SKILL.md`; the import side **executes nothing** — a gah skill is a prompt file with no executable payload, while role-private skills travel with their role pack); roles can be **exported/imported as a single-file role pack** (`.zip`: definition + working rules + private skills, shareable and reproducible) |
 | **Externalized themes** | `$GAH_HOME/config/themes/*.yaml` + `/theme` runtime switching — reskin without recompiling |
@@ -213,11 +213,16 @@ Then chat normally; use `/provider clear` to return to env-var config.
 | `-dump-config` | print the merged config tree and exit |
 | `-ephemeral` | throwaway data root |
 | `-version` | print version (pure query: works with no TTY in a pipe/CI, before the TUI guard) |
-| `-install <repo>[@version]` | install online/bridge plugins (`mcp:<id>:<command>` registers MCP plugins) |
-| `-uninstall <id>` / `-list-plugins` | uninstall / list external plugins |
+| `-install <repo>[@version]` | install online/bridge plugins (`mcp:<id>:<command>` registers MCP plugins). `version` may be a tag/branch name **or a 40-hex commit sha** (`@<sha>` pins one exact commit) |
+| `-accept-drift` | With `-install`: accept a **same-named tag now pointing at a different commit** (default is to **refuse**, see "Pinned sources & drift guard") |
+| `-prebuilt` | With `-install`: download the author's **prebuilt artifact** and **execute none of the repository's build commands** (see "Prebuilt artifacts: `--prebuilt`") |
+| `-install-artifact <url>` + `-id <id>` + `-name <tool-xxx>` | Install a plugin binary **somebody else already built**, from a URL. **This machine needs no Go / node / any toolchain**, and no build command runs at all. `-id` / `-name` both end up in the install path, so they are validated with a whitelist (see "Installing a binary somebody else built") |
+| `-check-plugin-updates` | Check whether the sources of installed plugins moved on. **Only `git ls-remote` — no clone, no install** |
+| `-uninstall <id>` / `-list-plugins` | uninstall / list external plugins (`-list-plugins` appends the source triple: repo · ref · commit) |
 | `-install-ui <repo\|local dir>` / `-uninstall-ui <id>` / `-list-ui-plugins` | UI-plugin install / uninstall / list |
+| `-trust-ui-plugin <id>` / `-untrust-ui-plugin <id>` | Register a UI plugin **already placed** under `ui-plugins/` into the integrity gate / revoke. The UI-side gate is **enforced by default** (created unconditionally at boot), so a hand-placed plugin does not load until you say so — this is that exit |
 | `-trust-plugin <name>` / `-untrust-plugin <name>` / `-list-trusted-plugins` | Register a binary you already placed under `plugins/` into the **hash allowlist** / revoke / list. For "the plugin was refused but I trust its source" — it records the hash of the copy **you have right now**; if the list already holds a different hash it refuses explicitly rather than laundering a mismatch |
-| `/install` | TUI slash command: `list` / `<repo\|dir>` / `uninstall <id>` / `trust <name>` / `untrust <name>`. The split against `/plugins` is stated in both commands' descriptions |
+| `/install` | TUI slash command: `list` / `check` / `enable <name>` / `disable <name>` / `prebuilt <repo>` / `<repo\|dir>[@version or commit]` / `uninstall <id>` / `trust <name>` / `untrust <name>`. The split against `/plugins` is stated in both commands' descriptions |
 
 Document reading subcommand (same level as `web`/`im`; zero assembly, read-only):
 
@@ -407,6 +412,8 @@ The data root is **the `gah-data/` sibling of the gah binary (the only one; auto
 | `GAH_WEB_APPROVE` | Outbound approval tier for `web_fetch`: `auto` (**default** — follows the approval tier: open/smart pass straight through, strict behaves like `new-host`) / `off` (no gate) / `new-host` (one prompt the first time each new host is visited, then remembered) / `query` (prompt every time, nothing remembered). Prompt-injection hardening, private-address / DNS-rebinding blocking and credential-read denial do **not** depend on this gate, so the smart/open tiers no longer interrupt once per host |
 | `GAH_WEB_ALLOW_HOSTS` | Static host allow-list for `web_fetch` (comma-separated exact hosts; `*.suffix.com` matches subdomains): the pre-approval path for unattended runs and no-confirm-channel setups (hosts you approved interactively are stored in `web_allow_hosts` inside `$GAH_HOME/config/gah-state.json`) |
 | `GAH_WEB_ALLOW_PRIVATE` | `1` allows `web_fetch` to reach **private/loopback/link-local** addresses (denied by default: the URL comes from the model, so this blocks model-induced reads of unauthenticated local services and the cloud metadata endpoint `169.254.169.254`; turn it on for local dev servers or when your egress **is a local HTTP proxy** — the guard then sees the proxy address and does not exempt it) |
+| `GAH_ALLOW_PLUGIN_GOENV` | `1` = keep the host's `GOPRIVATE`/`GONOSUMDB`/`GOSUMDB` in the plugin build subprocess (stripped by default — see "Build-environment isolation and its escape hatch"). Affects only go's module resolution and verification; no credentials involved |
+| `GAH_ALLOW_IMPLICIT_PLUGIN_BUILD` | `1` = allow the default build command for a `plugin.yaml` with no `build:` key. **Currently inert** (the A behaviour is "install as usual, plus label that the command was chosen by gah"); the constant and the judgement point are already in place, so tightening it to "refuse" is a one-function change |
 | `GAH_DOC_CONVERTER_SANDBOX` | `0` disables the **kernel sandbox around the document-converter subprocess** (LibreOffice/`pdftoppm`; on by default because it consumes untrusted documents — downloads and attachments; allow-list = the conversion cache + `$GAH_HOME/jail/**` + system temp, tier fixed at read-only. External converters themselves are off by default: see `data.external_converters`) |
 
 ### MCP (bridge client / serve form)
@@ -456,11 +463,188 @@ If `ctx.confirmFusion` is missing (profile without the confirm-fusion bundle) th
 
 ```bash
 ./gah -install <repo>[@version]     # external plugin (go-plugin bridge): git clone → build → $GAH_HOME/plugins/<id>/ → idempotent register; enabled right away
+./gah -install <repo>@<40-hex sha>   # pin one exact commit (for when a tag was moved and you want to stay on the old one)
 ./gah -install mcp:<id>:<command>   # MCP plugin registered through the same entry
 ./gah -install-ui <repo|local dir>  # UI plugin (manifest.json slot overrides; two reject guards: v-html directive scan + build output containing an unreplaced bare process.env)
 ./gah -list-plugins / -uninstall <id>
 ./gah -list-ui-plugins / -uninstall-ui <id>
 ```
+
+#### Pinned sources & drift guard
+
+A **third-party plugin** is one someone uploaded to their own repository (or any public repository). gah
+**does not verify signatures — you bear the consequences**, but it does turn "which piece of code did
+I actually install" into a fact that is **recorded, displayed, and can refuse drift**.
+
+**Why**: `git clone --depth 1 --branch <ref>` pinned **nothing** — a same-named **tag can be force-pushed**,
+and GitHub / Gitee **usernames can be released and re-registered** (author abandons the plugin → the account
+is reclaimed → someone new registers the same name and pushes a "v1.2.0"). Re-running the *exact same command*
+then installs someone else's code, with no trace. `SHA256SUMS` cannot stop that: it only answers "was this
+copy swapped after installing", not "was it the same copy in the first place".
+
+- **Source ledger** `$GAH_HOME/plugins/sources.yaml` (0600), keyed by **repository**: the normalized repo name, the ref, the **40-hex sha it actually resolved to**, the plugin id, the protocol version declared at install time, origin, install time. Deliberately **not merged** into `SHA256SUMS`: that one is keyed by **binary** and changes as plugins come and go; this one is keyed by **repository** and is only written at install time — different lifecycles, different key spaces. Repository URLs are normalized (`https://github.com/a/b`, `git@github.com:a/b.git`, `github.com/a/b` and the trailing-slash form are one repository) — without that the guard would be theater. **A corrupt ledger errors out explicitly** rather than being treated as empty: silently treating it as empty means the next install overwrites it wholesale, and that file is the only thing that can answer "which one was that, last week".
+- **Drift verdict**: same ref resolving to the **same** sha ⇒ idempotent reinstall. A different sha ⇒
+  - **tag** ⇒ **refused**, with two ways out: `--accept-drift` (take the author's current one) / `@<old sha>` (stay put);
+  - **branch / default branch** ⇒ allowed, but **flagged prominently and recorded as `drifted`**.
+  **Tags are refused, branches are not**: a tag is the author's promise that "this version is this version", and re-pushing it breaks that promise; refusing branches would force everyone to tag releases, and long-tail authors rarely do.
+- **`@<commit sha>` only became possible with this change**: `git clone --branch` does not accept a bare sha, so before it, the "stay on the old version" half of the refusal message above **could not be carried out at all**. It now uses `git fetch --depth 1 <sha>` + `checkout FETCH_HEAD`, and falls back to a full clone when the host disallows shallow fetch of an arbitrary historical commit.
+- The panel and the listing show the triple honestly: `github.com/a/b @v1.2.0 (tag · 9f2c1ab3e5f7)`, with moving refs marked as such.
+
+**Check for updates (check-then-ask), not automatic updates**: `gah -check-plugin-updates` / `/install check` / the panel's "check for updates" button ask the remote once via `git ls-remote` (**no clone**) and return one of three states: up to date / the branch moved on / **a same-named tag was changed** (which the guard will refuse; the message gives both ways out). Installation happens only after you confirm.
+
+**Why no automatic updates**: (1) with **no signatures**, an auto-update channel is an unauthenticated, permanent remote-code-execution channel — installing by hand is something "you read and decided on", auto-update turns it into something that keeps happening in the background where **you cannot answer which author the package came from** (when an author's account is compromised, the manual model only exposes whoever re-runs the command, while the automatic model exposes **every user at once**); (2) it would destroy the reassuring property that "gah never auto-updates plugins"; (3) it would be inconsistent with gah itself — the desktop shell was just changed from "download and install as soon as one is found" to "ask first", and the host only dares to ask because *it* is signed. Even with signatures, auto-update stays dangerous: **"update to the newest version" is not "the newest version you trust"** — the tag is itself the author's mechanism for expressing "this version".
+
+#### Prebuilt artifacts: `--prebuilt` gets the foreign build script off your machine
+
+Installing a plugin otherwise means running the author's **arbitrary shell command** on **your** machine. The
+earlier build hardening (`-mod=readonly`, no proactive `tidy`, credential scrubbing) constrains it, but it is
+still arbitrary shell — the build script can still read files on your disk. `--prebuilt` removes that cell
+entirely: it only downloads the author's published artifact, so **this machine needs no go / node / make**.
+
+Publishers declare it in `plugin.yaml` (a Release is where an author puts artifacts; no separate index service
+— that would mean trusting yet another party):
+
+```yaml
+prebuilt:
+  darwin/arm64: https://github.com/a/b/releases/download/v1.2.0/tool-demo-darwin-arm64
+  linux/amd64:  https://…
+```
+
+- **Without that section, or without the current platform ⇒ an explicit error**, and it **never silently falls back to building from source** — you reached for this switch precisely to avoid running its scripts, so falling back would turn it into a lie. The error lists which platforms the author did declare and tells you that dropping the switch builds from source.
+- Three checks before installing: non-empty / size cap (512 MiB) / **architecture magic** (mirroring the release script's `assert_arch` in `gen-extplugins.sh`: ELF / Mach-O LE64 / PE). An architecture mismatch is the easiest mistake to make and the hardest to diagnose — uncaught, the symptom is "it installed, and every call dies with exec format error", which reads like the plugin is broken.
+- URLs must be `http/https`: `file:///etc/shadow` would turn "download an artifact" into "read an arbitrary file on this machine and install it as an executable plugin".
+- **It hooks into the drift guard**: the `prebuilt:` section is part of the manifest, and the manifest arrives via clone ⇒ **the tag-drift guard is already in effect before the download happens**. A hijacked tag's prebuilt URL is caught the same way.
+- The artifact's hash still goes into the allowlist and the ledger still records repo/ref/commit; additionally the **artifact URL** is recorded and the audit source is marked `install-prebuilt:<url>`, so afterwards you can tell at a glance that this binary was **downloaded, not built here**.
+
+> ⚠️ **The honest cost**: the download URL is **declared by the author itself**, and gah **does not verify
+> signatures** ⇒ **there is no independent verification at the moment of installation**. That is a direct
+> consequence of choosing no signatures, not an implementation gap that can be worked around. The only
+> mitigation: the installed hash goes into the allowlist, so **swapping it afterwards is blocked at the next
+> load**. This paragraph is also in the install confirmation text, not only here in the docs.
+
+#### Build-environment isolation and its escape hatch
+
+The build subprocess gets none of your `*_API_KEY`/tokens (`sdk.SanitizedEnv`), and the host's
+`GOFLAGS`/`GO111MODULE`/`GOWORK` are stripped — they **change build semantics**, and semantics should be decided
+by this install, not by whatever environment variable happens to be set on your machine.
+
+`GOPRIVATE`/`GONOSUMDB`/`GOSUMDB` are stripped too by default: stripping `GOPRIVATE` makes go treat
+**private module paths as public** and query sumdb for them, which means **leaking internal module names to
+public lookups** — the right direction. But a corporate plugin that depends on private modules then fails to
+build, and "it won't build" is a dead end for the user ⇒ an explicit escape hatch: `GAH_ALLOW_PLUGIN_GOENV=1`.
+
+> `GAH_ALLOW_IMPLICIT_PLUGIN_BUILD` is a different thing (implicit builds when `build:` is undeclared), and it
+> is **currently inert**: the A behaviour is "install as usual, plus label in three places that this command was
+> chosen by gah rather than written by the author". Tightening it to C (refuse) has its **judgement point** already
+> in the code (`implicitBuildAllowed`) — changing one function is all it takes.
+
+`copyDir` (local-directory install) had two defects fixed: (1) **symbolic links are refused** — the old code
+walked with Lstat (does not follow) but read with `os.ReadFile` (**follows**), so a symlink pointing at
+`~/.ssh/id_rsa` was **read and copied into the temporary clone**, and that clone then *is* the plugin repository:
+build scripts can see it in full; (2) **the executable bit is preserved** — it used to write `0o644` for
+everything, so a local plugin building via `./build.sh` failed with `Permission denied`, a message bearing no
+relation to the actual cause.
+
+#### Installing a binary somebody else built (`-install-artifact`): long-tail plugins without Go too
+
+`--prebuilt` removes the toolchain requirement **when the author cooperates** (a `prebuilt:` section in the
+manifest plus that flag). But long-tail third-party plugins mostly will not write one - it asks the author to
+publish seven artifacts and maintain a table. For those, the only Go-free path today is three manual steps:
+download by hand, drop it into `plugins/`, then `gah -trust-plugin`.
+
+`-install-artifact <url> -id <id> -name <tool-xxx>` collapses those three steps into one command:
+
+```bash
+./gah -install-artifact https://.../tool-demo-darwin-arm64 -id demo -name tool-demo
+```
+
+- **No Go / node / make, and no build command runs at all** - it verifies the architecture magic and places the binary.
+- Checks: `http/https` only / size cap / **architecture magic** (mirroring the release script's `assert_arch`). An architecture mismatch is the easiest mistake to make and the hardest to diagnose; uncaught, the symptom is "it installed, and every call dies with exec format error".
+- **`-id` / `-name` go straight into the install path**, so they are validated with a **whitelist** (`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`, no `..`, the name must start with `tool-` / `cmd-`). A whitelist beats a blacklist because a blacklist always misses one. It reuses the **loader's own** prefix predicate rather than a second set of rules - if the two drift you get "passed at install time, silently skipped at load time".
+- **Nothing is guessed**: both `-id` and `-name` must be given explicitly. The "infer the id/platform from the filename" shape is not accepted (its failure mode is "it installed, and the tool is not the one you wanted").
+- On success it registers the hash allowlist, the source ledger (`kind: artifact`) and an audit line (`artifact-install:<url>`) exactly as the other two install paths do. Artifact entries are **excluded from update checks** - they have no repository at all, and running `ls-remote` against a URL would only produce an error that means nothing to the user.
+- TUI equivalent: `/install artifact <url> <id> <name>`.
+
+> The **same honest cost as `--prebuilt`**: whoever supplies the URL decides where the bytes come from,
+> and gah **does not verify signatures** => **there is no independent verification at the moment of installation**.
+> The only mitigation: the installed hash goes into the allowlist, so **swapping it afterwards is blocked at
+> the next load**. This is also in the install confirmation text.
+
+**Zero-network local compatibility notice**: the protocol version declared at install time is stored in the ledger (the plugin's `Capabilities` is deliberately **not** given a new field — that is burden on plugin authors). `api_version` is a **compatibility range** (`api_version: v1` or `api_version: [v1, v2]`; the scalar and list spellings are equivalent), and plugins this gah does not recognize produce **one summary line** in the panel (not one pop-up each), with no network involved.
+
+#### Plugin probing: a timeout is no longer disguised as "it has none" (2026-10-03)
+
+Before starting, an external plugin is asked two short-lived questions (`bin --roles` for roles,
+`bin <role> --gah-caps` for capability declarations). Both probes used to share one 3s timeout, and their
+**degradation directions are opposite**: a roles-probe timeout makes a multi-role binary get started as
+single-role, so it fails the handshake without its role argument and its **whole toolset disappears** — with
+only the plugin's own usage text in the log; a capabilities-probe timeout silently **drops the author's
+declarations** (`CredentialReadDeny` among them).
+
+Both conflate "**we did not find out**" with "**we found out: it has none**". On a loaded machine (observed
+while running the full test suite and six-target cross-compiles at once) this made the bundled `tool-kit`
+fail to load entirely.
+
+Now:
+
+- The two probes get **their own** timeouts. Roles 3s → **10s** (a four-role kit is probed once, because it
+  is probed per *binary*, not per role); capabilities **stays at 3s** — it runs **once per role** inside
+  `loadOne`, so raising it to 10s means 40s of startup in the worst case. Sharing one constant was a hazard
+  in itself: tuning one silently retuned the other.
+- A timeout **still** degrades to "start it as single-role", and that direction is **deliberately unchanged**:
+  a third-party single-role plugin happens to get the right answer under a timeout. Making it "skip on
+  timeout" would be the regression — entirely healthy plugins would vanish en masse on slow machines. What
+  needed fixing was **leaving a trace**, not the degradation direction.
+- Timeouts now **say so**: the log and the rejected list both point out that this binary was not probed
+  accurately, and the capabilities one additionally names **which declarations were lost**.
+- The total budget (20s) must exceed the single-probe timeout — otherwise the budget returns before any probe
+  can finish and the mechanism is effectively dead. A unit test pins that invariant.
+
+#### Lifecycle: third-party process plugins can be enabled/disabled at any time (disable ≠ uninstall)
+
+`sdk.ExternalPlugins` previously had **only `Reload`** ⇒ there was **no runtime means at all** to switch off a
+misbehaving plugin. Under a "no signatures, you bear the consequences" model that is not a nice-to-have: **it is
+the user's stop-loss mechanism**.
+
+| | `disable` | `uninstall` |
+|---|---|---|
+| Process / tools | killed, registrations withdrawn | killed, registrations withdrawn |
+| Plugin files | **kept** | deleted |
+| Allowlist / source-ledger entry | **kept** (re-opening needs **no** re-`trust`) | revoked |
+
+The panel buttons, the TUI `/install enable|disable` and `POST /api/plugins/install/{disable,enable}` all go
+through one kernel. Disabling is **per binary, not per role** — a `tool-kit` provides four roles, but the unit a
+user thinks in is the single `tool-kit`.
+
+Four behaviours this changed:
+
+- **The order is load-bearing**: uninstall must "stop the process, *then* delete the file". The other way round means "the user deletes the file while the process keeps holding tool registrations and a callback token until gah restarts" — a **false sense of safety**. If the process cannot be stopped, the uninstall **aborts with an error** and the file is left in place, so there is something to retry.
+- **Deleting the binary really does unload it**, no restart needed. The watcher previously reported only write/create/rename — **deletion was explicitly excluded** (comment: "deletion is decided by plugin-manager") — and the external-plugin path has **no plugin-manager in it**, so `rm` left the process running until a restart.
+- **The disabled state takes effect at boot**. That is how a stop-loss gets used in a real incident (shut down → disable → start again); if it only applied while running, one restart would bring the plugin back on its own.
+- **Re-enabling re-checks drift**: come back after six months and the author may have moved the tag. Without the re-check, "disable" would be a back door around the drift guard. A moved tag ⇒ refused with the two ways out (reinstall / stay on the old one); **remote unreachable (offline) ⇒ allowed**, because "cannot tell" is not "has drifted" — otherwise an offline user could never re-enable anything.
+- Disabling mid-turn ⇒ the in-flight tool call gets a **readable error** and can be retried, and **the host does not crash** (the RPC disconnect takes the existing soft-degradation path).
+
+#### The UI plugin integrity gate is enforced by default (batch 4 — one old path **cut off**)
+
+A UI plugin is the **widest surface in this project, with the same origin and the same permissions as the host**:
+its artifact is pulled into the main page via dynamic `import()`, and it can call every API including tool
+execution. Its `ui-plugins/SHA256SUMS` used to be created **only by `-install-ui`** ⇒ **anyone who had never
+installed a UI plugin could copy a directory into `ui-plugins/` and just use it** — the widest zero-validation
+opening in the project.
+
+Now `ui-web-app` creates the gate **unconditionally** at Start (failure only logs a WARN, never blocks boot).
+Consequently:
+
+- **A hand-placed UI plugin does not load by default.** The exit: `gah -trust-ui-plugin <id>`, which records the entry-scope digest of **the copy you have right now** (manifest + the modules the slots declare); if the list already holds a **different** digest it refuses explicitly rather than laundering the mismatch. `-install-ui` goes through the same registration, no extra step.
+- At the moment that old path is cut, **the panel and the log each leave one line of explanation** — silent refusal is the worst option, because the user just sees "the plugin I placed is gone" and concludes the product is broken.
+- **UI plugins get enable/disable too** (disabled = not served; the files and the gate entry stay, so re-enabling needs no re-registration). `POST /api/ui-plugins/{enable,disable}`. The state lives in `prefs.ui_disabled`, **as a field separate from `external_disabled`** — the key spaces differ (one is a binary basename, the other a manifest id), and merging them into one list will eventually break.
+- "Two kinds of empty" are now separated inside `plugintrust` (**and both sides use the same rule**): **0 bytes** = corrupted ⇒ error (fail-closed unchanged); **comments only** = legal ⇒ enforced, with nothing trusted yet. That distinction is what lets "unconditionally create the gate" coexist with "fail closed" — the UI side has **no official plugin** for embed to self-register, so "register the official four at boot like the process side does" simply does not exist there.
+- The panel's plugin section is **split by origin**: "plugins bundled with gah" (compared against the embedded manifest on every boot) and "plugins you installed" (three states: enabled / disabled / binary missing). The two sets are handled completely differently; in one table the user has to read a column every time to work out which buttons are even meaningful.
+
+> Division of labour between `/plugins` and `/install` (stated in both commands' descriptions): `/plugins`
+> governs **in-process** plugins (config tree + `patch-runtime.yaml`); enable/disable for external process plugins
+> goes through `/install` or the panel's plugin section. Reaching for `/plugins off` and finding it does nothing
+> to a third-party plugin is the most common misuse of this split.
 
 ### Instruction files & skills
 

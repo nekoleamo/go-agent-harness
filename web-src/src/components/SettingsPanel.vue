@@ -28,7 +28,7 @@ import {
   viewNotices,
   type McpDraft,
 } from '../mcp'
-import type { AskConfirm, InstallView, McpServer, McpView, PluginInfo, ProviderInfo, ProviderModelGroup, RolePackResult, RoleSpec, Schedule, SkillInfo, StateView, ToolDef, TrashRoleEntry, TrashSkillEntry } from '../types'
+import type { AskConfirm, InstallView, McpServer, McpView, PluginInfo, ProviderInfo, ProviderModelGroup, RolePackResult, RoleSpec, Schedule, SkillInfo, StateView, ToolDef, TrashRoleEntry, TrashSkillEntry, UpdateCheck } from '../types'
 
 const props = defineProps<{
   open: boolean
@@ -53,6 +53,10 @@ const updAvailable = ref('')
 // 两段式安装:先 preview 取确认文案(与服务端 ConfirmPrompt 同一份),用户点头后才真装。
 // 服务端**没有**确认服务,故必须由前端带 confirmed:true;忘了弹确认 ⇒ 400,而不会静默安装。
 const installSpec = ref('')
+// installPrebuilt 走作者发布的预编译产物(批三):不执行仓库里的构建脚本。
+// 默认**关**:它要求 plugin.yaml 声明了当前平台的产物,而多数插件没有;而且产物是
+// **下载来的**(作者声明来源 + 不验签名),这是一次真实的取舍,不该替用户默认。
+const installPrebuilt = ref(false)
 const installBusy = ref(false)
 const installRows = ref<InstallView[]>([])
 const installErr = ref('')
@@ -63,6 +67,9 @@ const installWarn = ref('')
 async function refreshInstallList(): Promise<void> {
   try {
     installRows.value = await api.pluginInstallList()
+    const st = await api.uiPluginState()
+    uiPluginDisabled.value = st.disabled
+    uiPluginTrustEnforced.value = st.enforced
   } catch (e) {
     installErr.value = '读取已装插件失败:' + (e as Error).message
   }
@@ -76,7 +83,7 @@ async function doInstall(): Promise<void> {
   installWarn.value = ''
   installBusy.value = true
   try {
-    const pv = await api.pluginInstallPreview(spec)
+    const pv = await api.pluginInstallPreview(spec, installPrebuilt.value)
     // 二次确认(与删 provider / 卸载角色同一处确认条):文案由服务端生成,
     // 三个入口(CLI / TUI / 面板)看到的是同一句话。
     await new Promise<void>((done) => {
@@ -87,19 +94,34 @@ async function doInstall(): Promise<void> {
     })
   } catch (e) {
     installErr.value = '安装失败:' + (e as Error).message
+    // 漂移拒绝要给一条**可点的出路**:再输一遍同样的命令只会再被拒一次。
+    // 判据取服务端文案里的标记词而不是猜错误类型(错误类型已在内核里定型,
+    // 前端再判一次就会与内核漂)。
+    const msg = (e as Error).message || ''
+    if (msg.includes('--accept-drift')) {
+      guard('这个 tag 现在指向了不同的 commit(见上面那条错)。确认要换成作者现在这一版吗?' +
+        '\n\n' + msg, true, () => {
+        void doPluginInstallNow(spec, true)
+      })
+    }
   } finally {
     installBusy.value = false
   }
 }
 
-async function doPluginInstallNow(spec: string): Promise<void> {
+async function doPluginInstallNow(spec: string, acceptDrift?: boolean): Promise<void> {
   try {
-    const r = await api.pluginInstall(spec)
+    const r = await api.pluginInstall(spec, acceptDrift, installPrebuilt.value)
     installOk.value = `已安装 ${r.id} → ${r.dir}` + (r.hint ? '(' + r.hint + ')' : '')
     // 补依赖是**供应链面被扩宽**的事实,不能混在一句成功回执里(用户扫一眼就过)。
     installWarn.value = r.tidied
       ? '注意:仓库的 go.mod 不完整,构建前补跑过 go mod tidy —— 这个插件引入了仓库原本没声明的模块依赖。'
-      : 
+      : ''
+    // 预编译装的产物是**下载来的**,作者声明来源 + 不验签名 —— 装完再换会被下一次
+    // 加载挡住,但那是唯一的缓解,必须说出来。
+    if (r.prebuilt) installWarn.value = '产物来自作者发布的预编译产物(' + r.prebuilt + '):未执行任何构建命令,但**装的那一刻没有独立校验**(下载源由作者声明,gah 不验签名)。' + installWarn.value
+    // 原先这里的 else 分支写成了 `installSpec.value = ''`,于是**只有补过依赖时**才清输入框
+    // —— 正常路径(没 tidy)装完输入框还留着,看着像没装成。
     installSpec.value = ''
     await refreshInstallList()
   } catch (e) {
@@ -107,15 +129,121 @@ async function doPluginInstallNow(spec: string): Promise<void> {
   }
 }
 
-// doUninstallPlugin 卸载(含白名单条目撤销),二次确认。
+// —— 检查更新(批一 §1.5:check-then-ask,**不是自动更新**)——
+// 网络只在点这个按钮时发生一次(服务端只发 git ls-remote,不 clone)。
+// 结果里 `tag_changed` 必须显眼:它对应「同名 tag 指向了别的代码」。
+const updChecking = ref(false)
+const updChecks = ref<UpdateCheck[]>([])
+const updErr = ref('')
+
+async function doCheckPluginUpdates(): Promise<void> {
+  if (updChecking.value) return
+  updChecking.value = true
+  updErr.value = ''
+  try {
+    const r = await api.pluginUpdateCheck()
+    updChecks.value = r.checks
+    if (r.notice) installWarn.value = r.notice
+  } catch (e) {
+    updErr.value = '检查失败:' + (e as Error).message
+  } finally {
+    updChecking.value = false
+  }
+}
+
+// 官方件与「你安装的」分组(批四 P3)。
+//
+// 为什么分组而不是一个混合列表加一列「来源」:这两个集合的**处置完全不同** ——
+// 官方件由 embed 每次启动比对嵌入清单,用户碰它没有意义;而「你安装的」才需要
+// 启停、信任、卸载。混在一张表里,用户每次都要先读一列才知道哪些按钮对自己有意义。
+const bundledPlugins = computed(() => installRows.value.filter((r) => r.origin === 'official'))
+const userPlugins = computed(() => installRows.value.filter((r) => r.origin !== 'official'))
+
+// 停用的 UI 插件必须仍然看得见(它在 /api/ui-plugins 里已被过滤掉了)。
+// 「我停用的那个」从清单里消失,等于用户以为自己停错了。
+const uiPluginDisabled = ref<string[]>([])
+// uiPluginTrustEnforced:完整性闸是否强制。老路「手工拷一个 UI 插件目录进
+// ui-plugins/ 就能用」在批四被断掉 —— 面板必须**主动说明**怎么放行,
+// 否则用户只看到「我放的插件不见了」,以为产品坏了(静默拒绝是最坏的处置)。
+const uiPluginTrustEnforced = ref(false)
+
+async function doUIToggle(id: string, enable: boolean): Promise<void> {
+  const verb = enable ? '启用' : '停用'
+  guard(enable
+    ? `启用 UI 插件 ${id}?它会经动态 import() 进入主页面 —— 与宿主同源同权限,能调全部 API`
+    : `停用 UI 插件 ${id}?\n\n· 不再下发(主页面不再加载它)\n· **文件与完整性闸条目都留着**\n\n重新启用不需要重新登记。`, true, async () => {
+    try {
+      await api.uiPluginToggle(id, enable)
+      installOk.value = `已${verb} UI 插件 ${id}`
+      await refreshInstallList()
+    } catch (e) {
+      installErr.value = `${verb}失败:` + (e as Error).message
+    }
+  })
+}
+
+// pluginStateLabel 三态标签(批二)。
+//
+// 「工具不出现」这一个症状对应三种情况,而它们的处置完全不同:
+// 被完整性闸拒 ⇒ 要登记;被停用 ⇒ 要启用;二进制没了 ⇒ 要重装。合成一句「没加载」
+// 会让用户在三者之间猜。**停用排在最前**:那是他自己刚刚做的动作,最容易被忘。
+function pluginStateLabel(r: InstallView): string {
+  if (r.disabled) return '已停用(文件在,没跑)'
+  if (!r.loadable) return '二进制缺失'
+  return r.trusted ? '已启用 · 白名单已登记' : '未登记(会被完整性闸拒)'
+}
+
+// sourceLine 一个已装插件的来源三件(仓库 · ref · commit 短显示)。
+function sourceLine(r: InstallView): string {
+  if (!r.source_repo) return '(无来源记录:手工放置或早期安装)'
+  const ref = r.source_ref ? '@' + r.source_ref : ''
+  const sha = r.source_commit ? ' · ' + r.source_commit : ''
+  const moved = r.drifted ? ' · 会移动' : ''
+  const pre = r.prebuilt ? ' · 下载的预编译产物' : ''
+  return r.source_repo + ref + '(' + (r.source_kind || '') + sha + moved + pre + ')'
+}
+
+// doUninstallPlugin 卸载(含白名单与来源账条目撤销),二次确认。
+//
+// 文案必须与「停用」**明确区分**:停用留文件,卸载删文件。用户以为点的是后者而实际
+// 是前者,重启后插件又回来了 —— 或者反过来,以为还能停用结果被删了。
 function doUninstallPlugin(id: string): void {
-  guard(`卸载插件 ${id}?会删掉它的目录与白名单条目(不影响已有会话与配置)`, true, async () => {
+  guard(`卸载并删除插件 ${id}?\n\n· 删掉它的目录文件\n· 撤销哈希白名单与来源账条目\n· 已经跑的进程会被先停掉\n\n` +
+    '只想临时关掉它(文件留着、以后不用重新登记),用「停用」而不是「卸载」。', true, async () => {
     try {
       await api.pluginUninstall(id)
-      installOk.value = '已卸载 ' + id
+      installOk.value = '已卸载 ' + id + '(进程已停,白名单与来源账条目一并撤销)'
       await refreshInstallList()
     } catch (e) {
       installErr.value = '卸载失败:' + (e as Error).message
+    }
+  })
+}
+
+// doDisablePlugin 停用(文件留着,只是不跑)。二次确认。
+function doDisablePlugin(name: string): void {
+  guard(`停用插件 ${name}?\n\n· 停掉它的进程并撤销它的工具\n· **文件、白名单条目、来源账条目都留着**\n\n` +
+    '重新启用时不需要重新登记哈希。彻底删掉用「卸载并删除」。', true, async () => {
+    try {
+      await api.pluginDisable(name)
+      installOk.value = '已停用 ' + name + '(文件与登记都留着,重新启用不需要重新登记)'
+      await refreshInstallList()
+    } catch (e) {
+      installErr.value = '停用失败:' + (e as Error).message
+    }
+  })
+}
+
+// doEnablePlugin 启用。启用前会**重验漂移**(tag 被改过 ⇒ 服务端会拒绝并给出路)。
+function doEnablePlugin(name: string): void {
+  guard(`启用插件 ${name}?启用前会检查它当初记录的 tag 是否还指向同一个 commit(被改过会拒绝)`, true, async () => {
+    try {
+      await api.pluginEnable(name)
+      installOk.value = '已启用 ' + name
+      await refreshInstallList()
+    } catch (e) {
+      // 漂移拒绝要原样透出:那里面有一条用户可执行的路子(重新安装),吞掉就等于没给。
+      installErr.value = '启用失败:' + (e as Error).message
     }
   })
 }
@@ -3044,13 +3172,17 @@ watch(
             <input
               v-model="installSpec"
               class="inp grow"
-              placeholder="仓库地址(git@…/@版本)或本地目录绝对路径"
+              placeholder="仓库地址(git@…/@版本或 40 位 commit sha)或本地目录绝对路径"
               :disabled="installBusy"
               @keyup.enter="doInstall()"
             />
             <button v-if="isDesktop" class="ghost" :disabled="installBusy" data-tip="选择本地插件源码目录" @click="pickInstallDir()">
               浏览…
             </button>
+            <label class="chk" data-tip="只下载作者发布的预编译产物,不执行仓库里的构建脚本(本机可以没有 go/node/make)。要求 plugin.yaml 声明了当前平台;下载源由作者声明,gah 不验签名 —— 装的那一刻没有独立校验。">
+              <input type="checkbox" v-model="installPrebuilt" :disabled="installBusy" data-testid="install-prebuilt" />
+              <span>只装预编译产物(不跑它的构建脚本)</span>
+            </label>
             <button class="ghost solid" :disabled="installBusy || !installSpec.trim()" @click="doInstall()">
               {{ installBusy ? '处理中…' : '安装' }}
             </button>
@@ -3058,19 +3190,60 @@ watch(
           <p v-if="installOk" class="dim">{{ installOk }}</p>
           <p v-if="installWarn" class="warn-line">{{ installWarn }}</p>
           <p v-if="installErr" class="err-line">{{ installErr }}</p>
+          <!-- 检查更新(批一 §1.5):**只问不装**。没有自动更新通道 —— 在不签名的前提下,
+               那是一条无认证的、持续性的远程代码执行通道(理由见 internal/install/updatecheck.go)。
+               网络只在这个按钮被点时发生一次。 -->
+          <div v-if="installRows.length" class="row install-row">
+            <button class="ghost" :disabled="updChecking" @click="doCheckPluginUpdates()">
+              {{ updChecking ? '检查中…' : '检查更新' }}
+            </button>
+            <span class="dim">
+              gah 不自动更新插件:这里只查远端当前指向,装新版要你自己重跑安装命令
+            </span>
+          </div>
+          <p v-if="updErr" class="err-line">{{ updErr }}</p>
+          <ul v-if="updChecks.length" class="install-list">
+            <li v-for="c in updChecks" :key="c.plugin_id" class="irow">
+              <span class="pname">{{ c.plugin_id }}</span>
+              <span class="psub" :class="{ 'warn-line': c.status === 'tag_changed' }">
+                {{ c.repo }}{{ c.ref ? '@' + c.ref : '' }} —— {{ c.message }}
+              </span>
+            </li>
+          </ul>
           <details v-if="installRows.length" class="dim">
             <summary>已装外部插件({{ installRows.length }};白名单{{ installRows[0]?.enforced ? '强制' : '未启用' }})</summary>
-            <ul class="install-list">
-              <li v-for="r in installRows" :key="r.id" class="irow">
+            <!-- 分组(批四 P3):两个集合的**处置完全不同** ——
+                 「随 gah 附带」由 embed 每次启动与嵌入清单比对,用户碰它没有意义;
+                 「你安装的」才需要登记 / 启停 / 卸载。混在一张表里,用户每次都要
+                 先读一列才知道哪些按钮对自己有意义。 -->
+            <p v-if="bundledPlugins.length" class="dim">随 gah 附带的插件({{ bundledPlugins.length }})</p>
+            <ul v-if="bundledPlugins.length" class="install-list">
+              <li v-for="r in bundledPlugins" :key="'b-' + r.id" class="irow">
+                <span class="pname">{{ r.id }}</span>
+                <span class="psub">{{ r.protocol || 'bridge' }} · {{ r.binary }} · 随 gah 附带(由 embed 每次启动校验,不必手动登记)</span>
+              </li>
+            </ul>
+            <p v-if="userPlugins.length" class="dim">你安装的插件({{ userPlugins.length }})</p>
+            <ul v-if="userPlugins.length" class="install-list">
+              <li v-for="r in userPlugins" :key="r.id" class="irow">
                 <span class="pname">{{ r.id }}</span>
                 <span class="psub">{{ r.protocol || 'bridge' }} · {{ r.binary }} ·
-                  {{ r.trusted ? '白名单已登记' : (r.loadable ? '未登记(会被拒)' : '二进制缺失') }}
+                  <!-- 三态(启用 / 已停用 / 二进制缺失):三种情况**处置完全不同**,
+                       而「工具不出现」这一个症状对应它们 —— 不分开呈现,用户只能猜。 -->
+                  {{ pluginStateLabel(r) }}
                   <template v-if="r.audit_source"> · {{ r.audit_source }} @ {{ (r.audit_time || '').slice(0, 16) }}</template>
+                  <!-- 装机来源(批一):「它当初是从哪一份代码装的」—— 与上面的白名单状态
+                       答的不是同一个问题,故另起一行而不是挤在同一行里。 -->
+                  <template v-if="r.source_repo"> · 来源 {{ sourceLine(r) }}</template>
+                  <template v-if="!r.compat_ok"> · <span class="warn-line">协议版本 {{ r.api_version }} 不在本版 gah 的支持范围内</span></template>
                 </span>
                 <span class="iact">
                   <button v-if="!r.trusted && r.loadable" class="ghost" @click="doTrustPlugin(r.binary)">登记</button>
                   <button v-if="r.trusted" class="ghost" @click="doUntrustPlugin(r.binary)">撤销登记</button>
-                  <button class="ghost ro" @click="doUninstallPlugin(r.id)">卸载</button>
+                  <!-- 停用与卸载**文案不同**(批二):停用留文件与登记,卸载删全部。 -->
+                  <button v-if="!r.disabled && r.loadable" class="ghost" @click="doDisablePlugin(r.binary)">停用</button>
+                  <button v-if="r.disabled" class="ghost" @click="doEnablePlugin(r.binary)">启用</button>
+                  <button class="ghost ro" @click="doUninstallPlugin(r.id)">卸载并删除</button>
                 </span>
               </li>
             </ul>
@@ -3089,6 +3262,23 @@ watch(
             </span>
           </div>
           <p v-if="uiPluginTrustNote" class="dim">UI 插件(ui-plugins):{{ uiPluginTrustNote }}</p>
+          <!-- 批四:UI 侧闸改为**默认强制**(boot 无条件创建)。老路「手工拷一个 UI 插件
+               目录进 ui-plugins/ 就能用」被断掉了 —— 必须在面板留一行说明,
+               否则用户只会看到"我放的插件不见了",以为产品坏了。放行命令写在这里。 -->
+          <p v-if="uiPluginTrustEnforced" class="warn-line">
+            UI 插件完整性闸已启用:手工放进 <code>ui-plugins/</code> 的插件默认**不加载**。
+            确认某个可信之后放行:<code>gah -trust-ui-plugin &lt;id&gt;</code>
+            (或用 <code>-install-ui</code> 安装,它会自动登记)。
+          </p>
+          <ul v-if="uiPluginDisabled.length" class="install-list">
+            <li v-for="id in uiPluginDisabled" :key="'d-' + id" class="irow">
+              <span class="pname">{{ id }}</span>
+              <span class="psub">已停用(不再下发;文件与完整性闸条目都留着,重新启用不需要重新登记)</span>
+              <span class="iact">
+                <button class="ghost" @click="doUIToggle(id, true)">启用</button>
+              </span>
+            </li>
+          </ul>
           <p v-if="uiPluginErrors.length" class="err-line">
             {{ uiPluginErrors.length }} 个槽位加载失败:
             <template v-for="(e, i) in uiPluginErrors" :key="e.id + e.slot">

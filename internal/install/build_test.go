@@ -189,3 +189,61 @@ func (g *goStub) called(sub string) bool {
 	}
 	return false
 }
+
+// TestBuildEnvGoEnvEscapeHatch 默认剥掉 GOPRIVATE/GOSUMDB;GAH_ALLOW_PLUGIN_GOENV=1 时保留。
+//
+// 为什么需要这个口(批五 P4):剥掉 GOPRIVATE 会让 go 把**私有模块路径当公开模块**去查 sumdb
+// —— 那等于把内部模块名泄漏到公网查询里,方向是对的。但依赖私有模块的企业内部插件会构建失败,
+// 而"构建不出来"对用户是死路 ⇒ 给一条显式放行口。
+func TestBuildEnvGoEnvEscapeHatch(t *testing.T) {
+	t.Setenv("PATH", "/usr/bin")
+	t.Setenv("GOPRIVATE", "corp.example.com/*")
+	t.Setenv("GOSUMDB", "sum.golang.org")
+	has := func(env []string, k string) bool {
+		for _, kv := range env {
+			if key, _, _ := strings.Cut(kv, "="); strings.EqualFold(key, k) {
+				return true
+			}
+		}
+		return false
+	}
+	// 默认:剥掉
+	env := buildEnv()
+	for _, k := range []string{"GOPRIVATE", "GOSUMDB", "GONOSUMDB"} {
+		if has(env, k) {
+			t.Errorf("默认不应下发 %s(剥掉它才不泄漏私有模块路径)", k)
+		}
+	}
+	// 显式放行:保留这两个
+	t.Setenv(AllowPluginGoEnvEnv, "1")
+	env = buildEnv()
+	if !has(env, "GOPRIVATE") || !has(env, "GOSUMDB") {
+		t.Errorf("%s=1 时应保留 GOPRIVATE/GOSUMDB: %v", AllowPluginGoEnvEnv, env)
+	}
+	// 但**改变构建语义**的那三个仍然无条件剥掉:它们该由这次安装决定,不该由宿主的意外设置决定
+	for _, k := range []string{"GOFLAGS", "GO111MODULE", "GOWORK"} {
+		t.Setenv(k, "x-"+k)
+	}
+	t.Setenv(AllowPluginGoEnvEnv, "1")
+	env = buildEnv()
+	for _, k := range []string{"GOFLAGS", "GO111MODULE", "GOWORK"} {
+		if has(env, k) {
+			t.Errorf("%s 属于改变构建语义的开关,不该因放行口而保留", k)
+		}
+	}
+}
+
+// TestBuildEnvGoEnvNoteNoteIsNotEmpty 文案必须说清方向与代价(它进确认框)。
+func TestBuildEnvGoEnvNoteNoteIsNotEmpty(t *testing.T) {
+	t.Setenv(AllowPluginGoEnvEnv, "")
+	note := BuildEnvGoEnvNote()
+	for _, want := range []string{AllowPluginGoEnvEnv, "私有模块"} {
+		if !strings.Contains(note, want) {
+			t.Errorf("放行口文案缺 %q: %s", want, note)
+		}
+	}
+	t.Setenv(AllowPluginGoEnvEnv, "1")
+	if BuildEnvGoEnvNote() != "" {
+		t.Error("放行口已打开时不该再提醒")
+	}
+}

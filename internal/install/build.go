@@ -43,13 +43,32 @@ var buildEnvOverride = []string{
 	"GOFLAGS", "GO111MODULE", "GOWORK", "GOPRIVATE", "GONOSUMDB", "GONOSUMCHECK", "GOSUMDB",
 }
 
+// buildEnvOverrideAlways 无论如何都剥掉的那些(与显式放行口无关)。
+//
+// 为什么它们没有放行口:它们**改变构建语义**,而语义该由**这次安装**决定,不该由宿主的
+// 意外设置决定。用户机器上恰好有 `GOFLAGS=-mod=vendor` 时,一次"只读构建"的结果会完全不同,
+// 而他完全不知情;`GO111MODULE=off` 会让构建根本不走模块。这类不是凭据,但同样属于
+// 「宿主的意外设置决定了这次安装的产物」。
+var buildEnvOverrideAlways = []string{"GOFLAGS", "GO111MODULE", "GOWORK"}
+
+// AllowPluginGoEnvEnv 放行口:把 `GOPRIVATE`/`GONOSUMDB`/`GOSUMDB` 也**不下发**给构建子进程
+// (默认剥掉)。设为 `1` 时保留它们。
+const AllowPluginGoEnvEnv = "GAH_ALLOW_PLUGIN_GOENV"
+
+// buildEnvGoEnvAllowed 显式放行口是否打开(GAH_ALLOW_PLUGIN_GOENV=1)。
+func buildEnvGoEnvAllowed() bool { return os.Getenv(AllowPluginGoEnvEnv) == "1" }
+
 // buildEnv 构造构建子进程环境:清洗凭据 + 去掉上表里的宿主开关,再叠加我们自己的设定。
 func buildEnv(extra ...string) []string {
+	override := buildEnvOverrideAlways
+	if !buildEnvGoEnvAllowed() {
+		override = buildEnvOverride
+	}
 	base := sdk.SanitizedEnv(os.Environ())
 	out := make([]string, 0, len(base)+len(extra))
 	for _, kv := range base {
 		k, _, _ := strings.Cut(kv, "=")
-		if containsFold(buildEnvOverride, k) {
+		if containsFold(override, k) {
 			continue
 		}
 		out = append(out, kv)
@@ -123,3 +142,39 @@ func buildPlugin(dir, buildCmd, binary string) (buildResult, error) {
 func cmdSource(dir string) string {
 	return strings.TrimSpace(readManifest(dir).Build)
 }
+
+// BuildEnvGoEnvNote 放行口的文案(进确认与文档)。
+//
+// 为什么需要这个口(批五 P4):默认剥掉 `GOPRIVATE`/`GONOSUMDB`/`GOSUMDB` 是对的 ——
+// 剥掉 `GOPRIVATE` 会让 go 把**私有模块路径当公开模块**去查 sumdb,等于**泄漏模块路径**
+// (企业内网的模块名/内部域名会出现在公网查询里)。但依赖私有模块的企业内部插件会构建失败,
+// 而"构建不出来"对用户是死路。
+//
+// 显式开关的代价要说清:打开后 `GOSUMDB`/`GOPRIVATE` 会**原样进到作者的构建脚本**里 ——
+// 不是凭据(那两个键里没有 token),但会改变 go 的模块解析与校验行为。
+func BuildEnvGoEnvNote() string {
+	if buildEnvGoEnvAllowed() {
+		return "" // 已经打开,没什么要提醒的
+	}
+	return "构建子进程的 go 网络设置已被隔离(不下发 GOPRIVATE/GONOSUMDB/GOSUMDB)。" +
+		"这能避免 go 把私有模块路径当公开模块去查 sumdb(那等于泄漏内部模块名)," +
+		"但依赖私有模块的企业内部插件会构建失败 —— 那时用 " + AllowPluginGoEnvEnv + "=1 重跑。"
+}
+
+// AllowImplicitPluginBuildEnv 隐式构建的放行口(批六 §6.1 的 C 留口)。
+//
+// 现在恒为空实现(`implicitBuildAllowed()` 永远 false ⇒ C 永不触发,A 口径生效),
+// 但**判定点与常量都在**:某天要改成「未声明 `build:` 一律拒绝」,只改这一个函数。
+//
+// 为什么留口而不直接删:A 口径要求三处标注「这条命令是默认的,不是你仓库里写的」——
+// 而真要收紧时,那个收紧必须能对**长尾插件**说清为什么(它们绝大多数不写 `build:`)。
+// 留一个显式开关比没有强:出问题时用户至少有一条可执行的路。
+const AllowImplicitPluginBuildEnv = "GAH_ALLOW_IMPLICIT_PLUGIN_BUILD"
+
+// implicitBuildAllowed C 口径是否已启用(= **拒绝**未声明 `build:` 的插件)。
+//
+// 返回 false ⇒ A 口径:照常装并标注。这是**当前**的默认,也是**唯一**在跑的形态。
+// 语义方向别搞反:它是「要不要收紧」,不是「要不要放行」——
+// 第一版写成 `!implicitBuildAllowed() && !AllowImplicitBuild` 导致默认反而拒绝,
+// 全部既有安装用例当场变红。
+func implicitBuildAllowed() bool { return false }

@@ -61,7 +61,7 @@ func TestProbeCapabilities(t *testing.T) {
 	// ① 自报 shell 语义 + 数据目录
 	t.Setenv("FIXTURE_CRED_READ_DENY", "1")
 	t.Setenv("FIXTURE_DATA_WRITES", "memory,todos")
-	caps, ok := probeCapabilities(bin, "")
+	caps, ok, _ := probeCapabilities(bin, "")
 	if !ok {
 		t.Fatal("自报能力的插件应探测成功")
 	}
@@ -75,14 +75,14 @@ func TestProbeCapabilities(t *testing.T) {
 	// ② 零声明(探测成功但什么都没声明)= 「普通插件」:宿主仍按包装处理
 	t.Setenv("FIXTURE_CRED_READ_DENY", "0")
 	t.Setenv("FIXTURE_DATA_WRITES", "")
-	if caps, ok := probeCapabilities(bin, ""); !ok || caps.CredentialReadDeny || len(caps.DataWrites) != 0 {
+	if caps, ok, _ := probeCapabilities(bin, ""); !ok || caps.CredentialReadDeny || len(caps.DataWrites) != 0 {
 		t.Fatalf("零声明应探测成功且为空: ok=%v caps=%+v", ok, caps)
 	}
 
 	// ③ 旧插件(tool-echo 用裸 ServeRPC,不认 --gah-caps):探测失败 = 未声明
 	buildExternalPlugin(t, dir)
 	echo := filepath.Join(dir, testutil.ExeName("tool-echo"))
-	if caps, ok := probeCapabilities(echo, ""); ok {
+	if caps, ok, _ := probeCapabilities(echo, ""); ok {
 		t.Fatalf("不认 --gah-caps 的旧插件必须归为未声明: %+v", caps)
 	}
 }

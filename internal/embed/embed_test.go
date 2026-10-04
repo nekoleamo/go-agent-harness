@@ -569,3 +569,44 @@ func TestWriteHashedErrors(t *testing.T) {
 type errReader struct{}
 
 func (errReader) Read([]byte) (int, error) { return 0, errors.New("boom") }
+
+// TestOfficialPluginNames 随包官方件的**全部**名字(不是本次新释放的那些)。
+//
+// 为什么单独要这个函数:EnsurePlugins 的返回值是**本次新写入**的那些,第二次启动时它为空
+// —— 用它去标注来源,官方插件就永远标不上「official」(批四 P3 的分类展示)。
+func TestOfficialPluginNames(t *testing.T) {
+	names, err := OfficialPluginNames()
+	if err != nil {
+		t.Fatalf("读官方清单失败: %v", err)
+	}
+	if len(names) == 0 {
+		t.Fatal("官方件清单不应为空")
+	}
+	seen := map[string]bool{}
+	for _, n := range names {
+		if n == "" {
+			t.Errorf("名字不该为空: %v", names)
+		}
+		if seen[n] {
+			t.Errorf("重复的名字: %s", n)
+		}
+		seen[n] = true
+		if !strings.HasPrefix(n, "tool-") && !strings.HasPrefix(n, "cmd-") {
+			t.Errorf("官方件名应带 tool-/cmd- 前缀(host-bridge 扫描约定): %s", n)
+		}
+	}
+	// 排序稳定(调用方靠它把结果写进账,顺序变了会产生无谓 diff)
+	for i := 1; i < len(names); i++ {
+		if names[i-1] > names[i] {
+			t.Fatalf("应排序: %v", names)
+		}
+	}
+	// 与 EnsurePlugins 释放到盘上的集合一致(同一个来源 packedDigests)
+	want, err := packedDigests()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(want) != len(names) {
+		t.Errorf("应与嵌入清单同集合: got %d, want %d", len(names), len(want))
+	}
+}

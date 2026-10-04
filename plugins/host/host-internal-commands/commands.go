@@ -121,7 +121,7 @@ func (h *Host) specs() []sdk.CommandSpec {
 			Args: []sdk.ArgLevel{{Options: func([]string) []sdk.Option {
 				return []sdk.Option{{Value: "open", Desc: "开放:危险操作直接放行"}, {Value: "smart", Desc: "智能:命中危险模式弹确认"}, {Value: "strict", Desc: "严格:危险操作直接拒绝"}}
 			}}}},
-		{Name: "plugins", Usage: "/plugins list|on|off|default <id>", Desc: "插件插拔/持久开关", Run: h.cmdPlugins,
+		{Name: "plugins", Usage: "/plugins list|on|off|default <id>", Desc: "进程内插件的插拔/持久开关(**第三方外部进程的插件走 /install 的启停**,这里对它无效)", Run: h.cmdPlugins,
 			Args: []sdk.ArgLevel{
 				{Options: func([]string) []sdk.Option {
 					return []sdk.Option{{Value: "list", Desc: "列出插件"}, {Value: "on", Desc: "加载并持久启用"}, {Value: "off", Desc: "卸载并持久关闭"}, {Value: "default", Desc: "恢复配置默认"}}
@@ -141,8 +141,9 @@ func (h *Host) specs() []sdk.CommandSpec {
 					return opts
 				}},
 			}},
-		{Name: "install", Usage: "/install list|<仓库|目录>[@版本]|uninstall <id>|trust <名>|untrust <名>",
-			Desc: "插件安装与信任(外部进程插件;启停走 /plugins)", Run: h.cmdInstall,
+		{Name: "install", Usage: "/install list|check|enable <名>|disable <名>|prebuilt <仓库>|<仓库|目录>[@版本或commit]|uninstall <id>|trust <名>|untrust <名>",
+			Desc: "外部进程插件的安装/信任/启停(**进程内插件的启停走 /plugins**,这里对它无效)。" +
+				"disable 是停用(文件与登记留着),uninstall 是卸载并删除;check 只检查不装;prebuilt 装作者发布的预编译产物(不跑构建);版本可写 40 位 commit sha 以装回指定那一版", Run: h.cmdInstall,
 			Args: []sdk.ArgLevel{
 				{Options: func([]string) []sdk.Option {
 					return []sdk.Option{

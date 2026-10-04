@@ -38,8 +38,26 @@ type Prefs struct {
 	Role string `json:"role,omitempty"`
 	// MemoryOff 跨会话记忆**关闭**标记(默认开;置真 = 不再注入系统提示)。
 	// 为什么是「关闭」而不是「开启」:记忆默认开启是有用默认,而"记住什么"由用户显式添加,
-	// 记���0 条时片段自然不渲染 ⇒ 不需要"开"这个状态。
+	// 记为 0 条时片段自然不渲染 ⇒ 不需要"开"这个状态。
 	MemoryOff bool `json:"memory_off,omitempty"`
+	// ExternalDisabled 已被用户**停用**的外部插件二进制名(去平台扩展名,如 tool-kit)。
+	//
+	// 为什么用 internal/prefs 而不是 patch-runtime.yaml:后者是**配置树**的补丁,
+	// 作用于「插件是否参与装配」;而外部插件是 host-bridge **扫盘加载**的,不在配置树里,
+	// 那条路对它无效。
+	//
+	// 为什么键是**二进制基名**而不是角色名:一个 tool-kit 提供四个角色,用户的心智单位
+	// 是「tool-kit」这一件;停用它 = 该二进制的所有角色都不加载。
+	//
+	// 为什么与未来的 ui_disabled **分开两个字段**:键空间不同(一个是二进制基名,
+	// 一个是 manifest id),面板分组也不同。混在一个列表里迟早在某次改动里出错。
+	ExternalDisabled []string `json:"external_disabled,omitempty"`
+	// UIDisabled 被用户**停用**的 UI 插件 id(manifest.json 的 id)。
+	//
+	// **为什么与 external_disabled 分开两个字段**:键空间不同(一个是二进制基名,
+	// 一个是 manifest id),面板分组也不同。混在一个列表里,迟早在某次改动里出错
+	// —— 而出错的形态是「停用了 A 却把 B 也关掉」,用户完全看不出来。
+	UIDisabled []string `json:"ui_disabled,omitempty"`
 }
 
 // Path 偏好文件路径(GAH_HOME 未设 = 空,表示跳过持久化——测试/无 home 场景纯内存)。
@@ -280,5 +298,88 @@ func SetStatusline(items []string) {
 			return
 		}
 		p.Statusline = append([]string(nil), items...)
+	})
+}
+
+// IsExternalDisabled 某个外部插件二进制当前是否被停用。
+//
+// 大小写不敏感:Windows 上文件名与体积无关但用户手打的大小写随意,而这里是**拒绝加载**
+// 的判定 —— 因大小写不同而加载/不加载是纯粹的意外。
+func IsExternalDisabled(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		return false
+	}
+	p := Load()
+	for _, n := range p.ExternalDisabled {
+		if strings.EqualFold(strings.TrimSpace(n), name) {
+			return true
+		}
+	}
+	return false
+}
+
+// SetExternalDisabled 停用/启用一个外部插件二进制(幂等)。
+//
+// 幂等是硬要求:停用可能来自「用户 rm 掉文件后自动记账」与「用户点按钮」两条路径,
+// 同一次意图落两次不该报错。
+func SetExternalDisabled(name string, disabled bool) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return
+	}
+	Update(func(p *Prefs) {
+		// 去重后再按需追加(而不是「找到了就不写」):后者在第二次停用时会把条目**抹掉** ——
+		// 停用是幂等的,连续点两次(或 CLI 与面板各点一次)之后它会自己解开,
+		// 而用户看到的是「我停用了它,重启后又回来了」。
+		kept := make([]string, 0, len(p.ExternalDisabled)+1)
+		for _, n := range p.ExternalDisabled {
+			if n = strings.TrimSpace(n); n == "" || strings.EqualFold(n, name) {
+				continue
+			}
+			kept = append(kept, n)
+		}
+		if disabled {
+			kept = append(kept, name)
+		}
+		p.ExternalDisabled = kept
+	})
+}
+
+// IsUIDisabled 某个 UI 插件 id 当前是否被停用(大小写不敏感:拒绝下发是判定,不该因手打大小写而变)。
+func IsUIDisabled(id string) bool {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false
+	}
+	for _, n := range Load().UIDisabled {
+		if strings.EqualFold(strings.TrimSpace(n), id) {
+			return true
+		}
+	}
+	return false
+}
+
+// SetUIDisabled 停用/启用一个 UI 插件(幂等)。
+//
+// 与 SetExternalDisabled 同一个坑:幂等必须写成「去重后按需追加」。
+// 「已存在就不写」那种写法会在第二次停用时把条目**抹掉** —— 用户连点两次,它自己解开了。
+func SetUIDisabled(id string, disabled bool) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return
+	}
+	Update(func(p *Prefs) {
+		kept := make([]string, 0, len(p.UIDisabled)+1)
+		for _, n := range p.UIDisabled {
+			if n = strings.TrimSpace(n); n == "" || strings.EqualFold(n, id) {
+				continue
+			}
+			kept = append(kept, n)
+		}
+		if disabled {
+			kept = append(kept, id)
+		}
+		p.UIDisabled = kept
 	})
 }

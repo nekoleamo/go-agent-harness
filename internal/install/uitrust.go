@@ -117,3 +117,90 @@ func mustHex(s string) [32]byte {
 	copy(out[:], b)
 	return out
 }
+
+// EnsureUIList **无条件**建 UI 侧的完整性闸(批四 §A.2)。幂等;已存在则什么都不做。
+//
+// 为什么 UI 侧必须这样,而进程型侧不需要:进程型有 embed 每次启动登记的**官方四件**,
+// 所以 `plugins/SHA256SUMS` 必然存在 ⇒ 手工放进去的进程型插件必被白名单拒。
+// 而 **UI 侧根本没有官方插件**,「像进程型那样每次 boot 登记官方件」这条路不存在;
+// 原先那份清单**只有 InstallUI 会创建** ⇒ 从没装过 UI 插件的用户手工拷一个目录进去,
+// 清单不存在 ⇒ `Load` 返回 Enforced=false ⇒ **放行**。
+//
+// 而 UI 插件是**与宿主同源同权限**的最宽面(产物经动态 import() 进主页面,能调全部 API
+// 含工具执行)。"本项目最宽的面上一道默认闸"这件事,只能靠无条件建闸来实现。
+func EnsureUIList(uiRoot string) (created bool, err error) {
+	return plugintrust.EnsureEmpty(uiRoot)
+}
+
+// TrustUI 给**已经放在 ui-plugins/ 里**的插件补登记(放行出口,批四 §A.3)。
+//
+// 与 `-trust-plugin` 同款形状,一条都不能少:
+//   - **显式执行**,绝不自动;
+//   - 只登记**当前那一份**的 entry-scope 摘要(用 UIDigestEntry,与验签口径同源 ——
+//     「同一句话、同一口径」是作用域口径原则的第一次真实应用);
+//   - 清单里已有**不同**摘要 ⇒ 显式拒绝,不自动洗白(文件可能已被改动)。
+//
+// 「登记成功」即等价于「你看过这一份」—— 除此以外不做任何推断(没装过这个 id 就登记 id,
+// 不问它从哪来、是谁写的)。
+func TrustUI(uiRoot, id string, slots []UISlot) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return fmt.Errorf("trust-ui-plugin: 缺少 UI 插件 id")
+	}
+	dir := filepath.Join(uiRoot, id)
+	man, err := readUIManifest(dir)
+	if err != nil {
+		return fmt.Errorf("trust-ui-plugin: %s 下没有可读的 manifest.json(%s)", uiRoot, id)
+	}
+	if man.ID != "" && man.ID != id {
+		return fmt.Errorf("trust-ui-plugin: 目录名是 %s,但 manifest 里的 id 是 %s。"+
+			"两边不一致时登记哪一个都会让事后说不清是哪一个 —— 先把目录名改成 manifest 的 id", id, man.ID)
+	}
+	slots = mergeDeclaredSlots(man, slots)
+	d, err := UIDigestEntry(dir, slots)
+	if err != nil {
+		return err
+	}
+	list, err := plugintrust.Load(uiRoot)
+	if err != nil {
+		return err
+	}
+	if cur, ok := list.Sum(id); ok && cur != mustHex(d.Sum) {
+		return fmt.Errorf("trust-ui-plugin: %s 在白名单里已有**不同**的摘要(文件可能已被改动)。"+
+			"确认这就是你要的版本后,先 gah -untrust-ui-plugin %s 再执行本命令", id, id)
+	}
+	// 审计来源标 trust-ui:manual:与「装的时候登记的」分开 —— 两者信任语义不同
+	// (后者是你看着一份现成的前端代码点的头)。
+	return list.RecordWithAudit(id, mustHex(d.Sum), "trust-ui:manual")
+}
+
+// mergeDeclaredSlots 用 manifest 自己声明的槽位补全(显式传入的优先)。
+//
+// 为什么要补:trust 的合格线是「manifest + 槽位声明的模块」。若调用方没读 manifest
+// 就来登记,只能登记 manifest 一个文件 —— 那等于**给一个改槽位指向就能绕过校验的插件放行**。
+// 与 uidigest 把 manifest.json 算进去是同一个道理(它定义槽位指向)。
+func mergeDeclaredSlots(man UIManifest, slots []UISlot) []UISlot {
+	seen := map[string]bool{}
+	for _, s := range slots {
+		seen[s.Module] = true
+	}
+	out := append([]UISlot(nil), slots...)
+	for _, sl := range man.Slots {
+		if !seen[sl.Module] {
+			out = append(out, sl)
+		}
+	}
+	return out
+}
+
+// UIPluginSlots 读一个已放置的 UI 插件的槽位声明(供 trust 命令用)。
+//
+// 为什么要显式读:合格线是「manifest + 槽位声明的模块」。少读槽位 = 给一个
+// 「改 manifest 的槽位指向就能绕过校验」的插件放行 —— 那等于把闸做成形同虚设。
+func UIPluginSlots(uiRoot, id string) ([]UISlot, error) {
+	man, err := readUIManifest(filepath.Join(uiRoot, strings.TrimSpace(id)))
+	if err != nil {
+		return nil, fmt.Errorf("trust-ui-plugin: %s 下没有可读的 manifest.json: %w", id, err)
+	}
+	return man.Slots, nil
+}

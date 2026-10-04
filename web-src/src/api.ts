@@ -1,5 +1,5 @@
 // REST 客户端(上行)+ 工具函数。核心交互纯 REST,不绕模板渲染。
-import type { AttachmentView, AuditEntry, CommandOptionsResp, InstallView, CommandView, DocTree, DocView, InstructionsView, Job, McpView, MemoryView, ModelsAllResp, NoticePage, PluginInfo, ProviderInfo, RolePackResult, RoleSpec, RolesView, SkillPackResult, Schedule, SessionEventsPage, SessionInfo, StateView, ToolDef, TrashView, WorkspaceInfo } from './types'
+import type { AttachmentView, AuditEntry, CommandOptionsResp, InstallView, CommandView, DocTree, DocView, InstructionsView, Job, McpView, MemoryView, ModelsAllResp, NoticePage, PluginInfo, ProviderInfo, RolePackResult, RoleSpec, RolesView, SkillPackResult, Schedule, SessionEventsPage, SessionInfo, StateView, ToolDef, TrashView, UpdateCheckResp, WorkspaceInfo } from './types'
 
 // 本窗口绑定的会话(多窗口/多会话作用域)。为何是本文件自己持有而不是 import 一个
 // session 模块:本文件被 Node 内置测试以「./api.ts」直接加载(那条路要求 import 带 .ts),
@@ -217,14 +217,37 @@ export const api = {
   pluginInstallList(): Promise<InstallView[]> {
     return req('/api/plugins/install')
   },
-  pluginInstallPreview(spec: string): Promise<{ prompt: string }> {
-    return req('/api/plugins/install', { method: 'POST', headers: json, body: JSON.stringify({ spec, preview: true }) })
+  pluginInstallPreview(spec: string, prebuilt?: boolean): Promise<{ prompt: string }> {
+    return req('/api/plugins/install', { method: 'POST', headers: json, body: JSON.stringify({ spec, preview: true, prebuilt: !!prebuilt }) })
   },
-  pluginInstall(spec: string): Promise<{ ok: boolean; id: string; dir: string; audit: AuditEntry; tidied: boolean; hint: string }> {
-    return req('/api/plugins/install', { method: 'POST', headers: json, body: JSON.stringify({ spec, confirmed: true }) })
+  // acceptDrift:接受同名 tag 指向了新 commit(批一 §1.3)。只在用户**先看到漂移**
+  // 之后才带 true —— 它必须是一个用户点过的开关,不是默认值。
+  pluginInstall(spec: string, acceptDrift?: boolean, prebuilt?: boolean): Promise<{ ok: boolean; id: string; dir: string; audit: AuditEntry; tidied: boolean; drifted?: boolean; prebuilt?: string; hint: string }> {
+    return req('/api/plugins/install', { method: 'POST', headers: json, body: JSON.stringify({ spec, confirmed: true, accept_drift: !!acceptDrift, prebuilt: !!prebuilt }) })
+  },
+  // 检查更新:**只问不装**(网络只在这里发生一次,只发 git ls-remote)。
+  pluginUpdateCheck(): Promise<UpdateCheckResp> {
+    return req('/api/plugins/update-check')
   },
   pluginUninstall(id: string): Promise<{ ok: boolean }> {
     return req('/api/plugins/uninstall', { method: 'POST', headers: json, body: JSON.stringify({ id, confirmed: true }) })
+  },
+  // UI 插件的状态事实:被停用的 id(它们不在 /api/ui-plugins 里,但面板要看得见)
+  // + 完整性闸是否强制(闸挡住时 /api/ui-plugins 返回空数组,拿不到这个信号)。
+  uiPluginState(): Promise<{ disabled: string[]; enforced: boolean; note: string }> {
+    return req('/api/ui-plugins/state')
+  },
+  // UI 插件的停用 / 启用(批四)。停用的效果是**不下发** ⇒ 前端根本不加载。
+  uiPluginToggle(id: string, enable: boolean): Promise<{ ok: boolean; enabled: boolean }> {
+    return req('/api/ui-plugins/' + (enable ? 'enable' : 'disable'), { method: 'POST', headers: json, body: JSON.stringify({ id, confirmed: true }) })
+  },
+  // 停用 / 启用外部插件(批二)。**停用 ≠ 卸载**:停用只停进程与工具,
+  // 文件与白名单/来源账条目都留着 ⇒ 重新启用不需要重新登记。
+  pluginDisable(id: string): Promise<{ ok: boolean }> {
+    return req('/api/plugins/install/disable', { method: 'POST', headers: json, body: JSON.stringify({ id, confirmed: true }) })
+  },
+  pluginEnable(id: string): Promise<{ ok: boolean }> {
+    return req('/api/plugins/install/enable', { method: 'POST', headers: json, body: JSON.stringify({ id, confirmed: true }) })
   },
   pluginTrust(id: string): Promise<{ ok: boolean }> {
     return req('/api/plugins/trust', { method: 'POST', headers: json, body: JSON.stringify({ id, confirmed: true }) })

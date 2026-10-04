@@ -142,3 +142,71 @@ func TestAddWebAllowHost(t *testing.T) {
 	t.Setenv("GAH_HOME", "")
 	AddWebAllowHost("nowhere.test")
 }
+
+// TestSetExternalDisabledIdempotent 停用/启用必须幂等。
+//
+// 这条不是「顺手补的」:第一版把「已存在就不写」写成了幂等,于是**第二次**停用反而把
+// 条目抹掉 —— 停用是止损手段,用户连点两次之后它自己解开、重启又回来了。
+func TestSetExternalDisabledIdempotent(t *testing.T) {
+	t.Setenv("GAH_HOME", t.TempDir())
+	SetExternalDisabled("tool-echo", true)
+	SetExternalDisabled("tool-echo", true) // 再点一次
+	if !IsExternalDisabled("tool-echo") {
+		t.Fatal("重复停用应仍处于停用态")
+	}
+	if n := len(Load().ExternalDisabled); n != 1 {
+		t.Fatalf("重复停用不应产生重复条目,得 %d: %v", n, Load().ExternalDisabled)
+	}
+	// 不影响别的条目
+	SetExternalDisabled("tool-mcp", true)
+	SetExternalDisabled("tool-echo", true)
+	if len(Load().ExternalDisabled) != 2 {
+		t.Fatalf("不应误伤别的条目: %v", Load().ExternalDisabled)
+	}
+	SetExternalDisabled("tool-echo", false)
+	if IsExternalDisabled("tool-echo") || !IsExternalDisabled("tool-mcp") {
+		t.Errorf("只应解开指定那一个: %v", Load().ExternalDisabled)
+	}
+	// 大小写不敏感(Windows 上文件路径与手打大小写无关,这里是拒绝加载的判定)
+	SetExternalDisabled("Tool-Echo", true)
+	if !IsExternalDisabled("tool-echo") {
+		t.Errorf("大小写应不敏感: %v", Load().ExternalDisabled)
+	}
+	// 空名不写(此刻已有 tool-mcp 与 Tool-Echo 两条)
+	SetExternalDisabled("  ", true)
+	if got := Load().ExternalDisabled; len(got) != 2 {
+		t.Errorf("空名不应入列: %v", got)
+	}
+}
+
+// TestSetUIDisabledIdempotent UI 插件启停必须幂等(与 SetExternalDisabled 同一个坑)。
+func TestSetUIDisabledIdempotent(t *testing.T) {
+	t.Setenv("GAH_HOME", t.TempDir())
+	SetUIDisabled("demo-ui", true)
+	SetUIDisabled("demo-ui", true)
+	if !IsUIDisabled("demo-ui") {
+		t.Fatal("重复停用应仍处于停用态")
+	}
+	if n := len(Load().UIDisabled); n != 1 {
+		t.Fatalf("重复停用不应产生重复条目: %v", Load().UIDisabled)
+	}
+	// 大小写不敏感:拒绝下发是判定,不该因手打大小写而变
+	if !IsUIDisabled("DEMO-UI") {
+		t.Error("大小写应不敏感")
+	}
+	SetUIDisabled("demo-ui", false)
+	if IsUIDisabled("demo-ui") {
+		t.Error("启用后应解开")
+	}
+	// 与 external_disabled 是**两个列表**:键空间不同,混在一起迟早出错
+	SetUIDisabled("a", true)
+	SetExternalDisabled("a", true)
+	SetUIDisabled("a", false)
+	if IsUIDisabled("a") || !IsExternalDisabled("a") {
+		t.Errorf("两个列表不该互相影响: ui=%v ext=%v", Load().UIDisabled, Load().ExternalDisabled)
+	}
+	SetUIDisabled("  ", true)
+	if len(Load().UIDisabled) != 0 {
+		t.Errorf("空名不应入列: %v", Load().UIDisabled)
+	}
+}

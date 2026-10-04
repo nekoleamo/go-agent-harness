@@ -10,14 +10,20 @@ package hostintcmd
 
 import (
 	"context"
+	"encoding/binary"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/nekoleamo/go-agent-harness/core/ctx"
 	"github.com/nekoleamo/go-agent-harness/core/event"
+	"github.com/nekoleamo/go-agent-harness/internal/install"
 	"github.com/nekoleamo/go-agent-harness/internal/plugintrust"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
@@ -52,6 +58,12 @@ func (a *installApproval) EffectiveFrom() string           { return "" }
 
 func newInstallHost(t *testing.T, ap sdk.ApprovalService, cf sdk.ConfirmService) *Host {
 	t.Helper()
+	return newInstallHostWithExtp(t, ap, cf, nil)
+}
+
+// newInstallHostWithExtp 同上,额外 Provide 一个外部插件控制面(批二启停用)。
+func newInstallHostWithExtp(t *testing.T, ap sdk.ApprovalService, cf sdk.ConfirmService, extp sdk.ExternalPlugins) *Host {
+	t.Helper()
 	logger := slog.New(slog.DiscardHandler)
 	c := ctx.New(logger, event.New(logger))
 	if ap != nil {
@@ -61,6 +73,11 @@ func newInstallHost(t *testing.T, ap sdk.ApprovalService, cf sdk.ConfirmService)
 	}
 	if cf != nil {
 		if err := c.Provide("ctx.confirm", cf); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if extp != nil {
+		if err := c.Provide("ctx.extplugins", extp); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -457,4 +474,324 @@ func TestCmdInstallUninstallMissing(t *testing.T) {
 	if _, err := h.cmdInstall([]string{"uninstall", "nope"}); err == nil {
 		t.Fatal("卸载不存在的插件应显式报错")
 	}
+}
+
+// TestCmdInstallSourceCellAndCheck 批一:清单要显示来源三件,`/install check` 要只问不装。
+//
+// 覆盖的正是新加的两块:sourceCell(无记录/有记录两条分支)与 installCheck(有可查/无可查)。
+func TestCmdInstallSourceCellAndCheck(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GAH_HOME", home)
+	h := newInstallHost(t, &installApproval{mode: sdk.ApprovalSmart}, &installConfirm{ok: true})
+
+	// ① 账上什么都没有时:清单要有行,且来源格明说「无来源记录」而不是空白。
+	if err := os.MkdirAll(filepath.Join(home, "plugins", "hand"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "plugins", "hand", "tool-hand"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, err := h.cmdInstall([]string{"list"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "无来源记录") {
+		t.Errorf("手工放置的插件应明说无来源记录(空白会让用户以为是表格坏了):\n%s", out)
+	}
+	// ② `/install check`:无可查来源 ⇒ 说清为什么没得查,不是干打一行空。
+	out, err = h.cmdInstall([]string{"check"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "没有可检查的来源") {
+		t.Errorf("/install check 空结果文案不对: %s", out)
+	}
+
+	// ③ 账上有一条本地来源:清单显示它;check 仍跳过它(本地目录没有「更新」)。
+	var ledger install.SourceLedger
+	ledger.Record(install.SourceEntry{PluginID: "hand", Kind: install.KindLocal,
+		Repo: "/src/hand", Commit: "9f2c1ab3e5f7aa11bb22cc33dd44ee55ff6607", Drifted: true})
+	if err := install.WriteSources(home, &ledger); err != nil {
+		t.Fatal(err)
+	}
+	out, err = h.cmdInstall([]string{"list"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"/src/hand", "9f2c1ab3e5f7", "会移动"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("清单缺 %q:\n%s", want, out)
+		}
+	}
+	// ④ 账坏了 ⇒ 明确报错(不当空账:那会让用户以为这些插件「来源不明」而不是「账坏了」)。
+	if err := os.WriteFile(install.SourcesPath(home), []byte("sources: [oops\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := h.cmdInstall([]string{"list"}); err == nil {
+		t.Errorf("账坏了应报错,得到:\n%s", out)
+	} else if !strings.Contains(err.Error(), "sources.yaml") {
+		t.Errorf("报错应指明是来源账: %s", err.Error())
+	}
+}
+
+// TestCmdInstallCheckRows `/install check` 的有结果分支(用本地裸仓库当远端,零网络)。
+//
+// 要点:① 每条检查都要打出来;② 结尾必须**明说不会自动装** —— 这个出口最容易被后来人
+// 改成「顺便就装了」,而那正是本批定下「不做自动更新」的地方。
+func TestCmdInstallCheckRows(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GAH_HOME", home)
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	runGitCmd(t, filepath.Dir(remote), "init", "-q", "--bare", remote)
+	// 往裸仓库塞一个 main 分支(内容不重要,ls-remote 只看 refs)
+	work := t.TempDir()
+	runGitCmd(t, work, "init", "-q")
+	if err := os.WriteFile(filepath.Join(work, "x"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitCmd(t, work, "config", "user.email", "t@t")
+	runGitCmd(t, work, "config", "user.name", "t")
+	runGitCmd(t, work, "add", ".")
+	runGitCmd(t, work, "commit", "-qm", "init")
+	runGitCmd(t, work, "push", "-q", remote, "HEAD:refs/heads/main")
+
+	var ledger install.SourceLedger
+	ledger.Record(install.SourceEntry{PluginID: "demo", Kind: install.KindTag, Ref: "v1.0.0",
+		Repo: remote, Commit: "9f2c1ab3e5f7aa11bb22cc33dd44ee55ff6607"})
+	if err := install.WriteSources(home, &ledger); err != nil {
+		t.Fatal(err)
+	}
+	h := newInstallHost(t, &installApproval{mode: sdk.ApprovalSmart}, &installConfirm{ok: true})
+	out, err := h.cmdInstall([]string{"check"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"demo", "remote.git", "v1.0.0", "不会自动装"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("检查结果缺 %q:\n%s", want, out)
+		}
+	}
+}
+
+// runGitCmd 跑一条 git(失败即 t.Fatal —— 测试里 git 失败一定是夹具坏了)。
+func runGitCmd(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v(%s)", args, err, out)
+	}
+}
+
+// fakeExtPlugins 控制面替身(批二)。
+type fakeExtPlugins struct {
+	disabled map[string]bool
+	calls    []string
+}
+
+func (f *fakeExtPlugins) Reload(n string) error { f.calls = append(f.calls, "reload:"+n); return nil }
+func (f *fakeExtPlugins) List() []sdk.ExternalPluginInfo {
+	var out []sdk.ExternalPluginInfo
+	for n, d := range f.disabled {
+		out = append(out, sdk.ExternalPluginInfo{Name: n, Path: "/x/" + n, Loaded: !d, Disabled: d})
+	}
+	return out
+}
+func (f *fakeExtPlugins) Enable(n string) error {
+	f.calls = append(f.calls, "enable:"+n)
+	delete(f.disabled, n)
+	return nil
+}
+func (f *fakeExtPlugins) Disable(n string) error {
+	f.calls = append(f.calls, "disable:"+n)
+	f.disabled[n] = true
+	return nil
+}
+
+// TestCmdInstallLifecycle `/install disable|enable`:二次确认 + 回执要说清「停用 ≠ 卸载」。
+//
+// 回执那句是硬要求:用户以为插件被删掉、重启后它又出现,是停用最常见的误解。
+func TestCmdInstallLifecycle(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GAH_HOME", home)
+	extp := &fakeExtPlugins{disabled: map[string]bool{}}
+	h := newInstallHostWithExtp(t, &installApproval{mode: sdk.ApprovalSmart}, &installConfirm{ok: true}, extp)
+
+	out, err := h.cmdInstall([]string{"disable", "tool-demo"})
+	if err != nil {
+		t.Fatalf("停用应成功: %v", err)
+	}
+	if !extp.disabled["tool-demo"] {
+		t.Error("停用应落到控制面")
+	}
+	for _, want := range []string{"已停用", "文件与白名单条目留着", "uninstall"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("回执缺 %q:\n%s", want, out)
+		}
+	}
+	out, err = h.cmdInstall([]string{"enable", "tool-demo"})
+	if err != nil {
+		t.Fatalf("启用应成功: %v", err)
+	}
+	if extp.disabled["tool-demo"] {
+		t.Error("启用应解开停用")
+	}
+	if !strings.Contains(out, "不需要重新登记") {
+		t.Errorf("启用回执要说明不用重新登记:\n%s", out)
+	}
+}
+
+// TestCmdInstallLifecycleCancel 用户拒绝 ⇒ 什么都不发生,且不报错。
+func TestCmdInstallLifecycleCancel(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GAH_HOME", home)
+	extp := &fakeExtPlugins{disabled: map[string]bool{}}
+	h := newInstallHostWithExtp(t, &installApproval{mode: sdk.ApprovalSmart}, &installConfirm{ok: false}, extp)
+	out, err := h.cmdInstall([]string{"disable", "tool-demo"})
+	if err != nil {
+		t.Fatalf("取消不应报错: %v", err)
+	}
+	if !strings.Contains(out, "已取消") {
+		t.Errorf("回执应说明已取消:\n%s", out)
+	}
+	if len(extp.calls) != 0 {
+		t.Errorf("取消时不应调控制面: %v", extp.calls)
+	}
+}
+
+// TestCmdInstallLifecycleNoExtp profile 未装 host-bridge ⇒ 明确报错(不是假装成功)。
+func TestCmdInstallLifecycleNoExtp(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GAH_HOME", home)
+	h := newInstallHost(t, &installApproval{mode: sdk.ApprovalSmart}, &installConfirm{ok: true})
+	if _, err := h.cmdInstall([]string{"disable", "tool-demo"}); err == nil {
+		t.Error("未装配控制面应报错")
+	} else if !strings.Contains(err.Error(), "host-bridge") {
+		t.Errorf("文案应指明是 host-bridge: %s", err.Error())
+	}
+	// 参数缺失也要给出用法
+	if _, err := h.cmdInstall([]string{"disable"}); err == nil {
+		t.Error("缺参数应报错")
+	}
+}
+
+// TestCmdInstallPrebuiltSubcommand `/install prebuilt <目录>`:走预编译产物路。
+//
+// 断两件事:① 子命令确实进了预编译路(URL 不可达 ⇒ 报错指向那个 URL,而**不是**源码构建错误);
+// ② 缺参数给用法。
+func TestCmdInstallPrebuiltSubcommand(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GAH_HOME", home)
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "plugin.yaml"),
+		[]byte("id: demo\nprotocol: bridge\nbinary: tool-demo\nprebuilt:\n  "+
+			runtime.GOOS+"/"+runtime.GOARCH+": https://example.invalid/tool-demo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := newInstallHost(t, &installApproval{mode: sdk.ApprovalSmart}, &installConfirm{ok: true})
+	_, err := h.cmdInstall([]string{"prebuilt", src})
+	if err == nil {
+		t.Fatal("URL 不可达时应报错")
+	}
+	if !strings.Contains(err.Error(), "example.invalid") {
+		t.Errorf("错误应指向预编译产物 URL(证明走的是下载路而非构建路): %s", err.Error())
+	}
+	if _, err := h.cmdInstall([]string{"prebuilt"}); err == nil {
+		t.Error("缺参数应给出用法")
+	} else if !strings.Contains(err.Error(), "/install prebuilt") {
+		t.Errorf("缺参数要给出用法: %s", err.Error())
+	}
+}
+
+// TestCmdInstallArtifact `/install artifact <url> <id> <name>`:装下载来的产物。
+//
+// 与 CLI 同一条内核,这里要额外钉的是 TUI 侧的**二次确认**与回执:
+// 产物是下载来的、没有独立校验这件事,必须出现在用户点确认之前和回执里。
+func TestCmdInstallArtifact(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GAH_HOME", home)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(fakeArchPayload(runtime.GOOS, runtime.GOARCH))
+	}))
+	defer srv.Close()
+	cf := &installConfirm{ok: true}
+	h := newInstallHost(t, &installApproval{mode: sdk.ApprovalSmart}, cf)
+
+	// ① 参数不合法 ⇒ 显式报错,且**不**弹确认(先拒后问)
+	for _, args := range [][]string{
+		{"artifact"}, {"artifact", srv.URL + "/t", "../evil", "tool-x"},
+		{"artifact", srv.URL + "/t", "demo", "echo"},
+	} {
+		if _, err := h.cmdInstall(args); err == nil {
+			t.Errorf("%v 应报错", args)
+		}
+	}
+	if cf.n != 0 {
+		t.Errorf("参数不合法时不该弹确认,实际 %d 次", cf.n)
+	}
+	// ② 正常路径:确认一次 + 回执说清代价
+	out, err := h.cmdInstall([]string{"artifact", srv.URL + "/tool-demo", "demo", "tool-demo"})
+	if err != nil {
+		t.Fatalf("产物安装应成功: %v", err)
+	}
+	if cf.n != 1 {
+		t.Fatalf("应恰好弹一次确认,实际 %d", cf.n)
+	}
+	for _, want := range []string{"未执行任何构建命令", "不验签名", "装完再换"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("回执缺 %q:\n%s", want, out)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(home, "plugins", "demo", "tool-demo")); err != nil {
+		t.Errorf("产物未落位: %v", err)
+	}
+}
+
+// TestCmdInstallArtifactCancel 用户拒绝 ⇒ 什么都不发生。
+func TestCmdInstallArtifactCancel(t *testing.T) {
+	t.Setenv("GAH_HOME", t.TempDir())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(fakeArchPayload(runtime.GOOS, runtime.GOARCH))
+	}))
+	defer srv.Close()
+	h := newInstallHost(t, &installApproval{mode: sdk.ApprovalSmart}, &installConfirm{ok: false})
+	out, err := h.cmdInstall([]string{"artifact", srv.URL + "/tool-demo", "demo", "tool-demo"})
+	if err != nil {
+		t.Fatalf("取消不应报错: %v", err)
+	}
+	if !strings.Contains(out, "已取消") {
+		t.Errorf("回执应说明已取消: %s", out)
+	}
+}
+
+// fakeArchPayload 只含正确魔数的头(与 internal/install 的 archOf 同源)。
+func fakeArchPayload(goos, goarch string) []byte {
+	buf := make([]byte, 0x200)
+	switch goos {
+	case "linux":
+		copy(buf, []byte{0x7f, 'E', 'L', 'F'})
+		m := uint16(0x3e)
+		if goarch == "arm64" {
+			m = 0xb7
+		}
+		binary.LittleEndian.PutUint16(buf[18:20], m)
+	case "darwin":
+		buf[0], buf[1], buf[2], buf[3] = 0xcf, 0xfa, 0xed, 0xfe
+		c := uint32(0x01000007)
+		if goarch == "arm64" {
+			c = 0x0100000c
+		}
+		binary.LittleEndian.PutUint32(buf[4:8], c)
+	default:
+		buf[0], buf[1] = 'M', 'Z'
+		off := uint32(0x40)
+		binary.LittleEndian.PutUint32(buf[0x3c:0x40], off)
+		buf[off], buf[off+1], buf[off+2], buf[off+3] = 'P', 'E', 0, 0
+		m := uint16(0x8664)
+		if goarch == "arm64" {
+			m = 0xaa64
+		}
+		binary.LittleEndian.PutUint16(buf[off+4:off+6], m)
+	}
+	return buf
 }

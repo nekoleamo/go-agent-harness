@@ -51,7 +51,7 @@ func TestRolesOfFallback(t *testing.T) {
 	if err := os.WriteFile(notExec, []byte("not an executable"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := rolesOf(notExec); len(got) != 1 || got[0] != "" {
+	if got, _ := rolesOf(notExec); len(got) != 1 || got[0] != "" {
 		t.Errorf("不可执行时应退回单角色(空),got %#v", got)
 	}
 	// ② echo 认识 --roles 但输出不是 JSON
@@ -59,7 +59,7 @@ func TestRolesOfFallback(t *testing.T) {
 	if err := os.WriteFile(echoBin, []byte("#!/bin/sh\necho --roles\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if got := rolesOf(echoBin); len(got) != 1 || got[0] != "" {
+	if got, _ := rolesOf(echoBin); len(got) != 1 || got[0] != "" {
 		t.Errorf("输出非 JSON 时应退回单角色(空),got %#v", got)
 	}
 }

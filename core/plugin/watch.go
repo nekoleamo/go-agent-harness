@@ -16,6 +16,7 @@ package plugin
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -140,8 +141,14 @@ func (wt *Watcher) loop(debounce time.Duration, onChange func(string)) {
 			if !ok {
 				return
 			}
-			// 只关心写/创建/重命名(删除由 plugin-manager 决定)
-			if ev.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename) == 0 {
+			// 关心写/创建/重命名/**删除**。
+			//
+			// 删除这一支原先被显式排除(注释“删除由 plugin-manager 决定”)—— 而**外部插件这条路
+			// 没有 plugin-manager 介入**:它由 host-bridge 扫盘加载。于是用户 `rm` 掉插件文件,
+			// 运行中的进程继续跑(持工具注册 + 回调 token)直到 gah 重启,「我删了它」给人一个
+			// **虚假的安全感**。外部插件删除的处置主体就是扫描方(host-bridge),它在这里把事件
+			// 收下就能立刻卸。
+			if ev.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename|fsnotify.Remove) == 0 {
 				continue
 			}
 			// 新建目录:先补监听,**再**上报 —— 否则「整个目录连同里面的文件一起
@@ -164,6 +171,13 @@ func (wt *Watcher) loop(debounce time.Duration, onChange func(string)) {
 }
 
 // schedule 每路径去抖:debounce 窗口内的连续事件合并为一次回调。
+//
+// 去抖对**删除**尤其重要:原子替换(写 .tmp 再 rename)、`cp`、安装过程都会在一瞬间
+// 产生「Create + Write + Rename + Remove」的序列。若不去抖,一个中间态就会被上报成
+// 「插件没了」→ 调用方刚卸完,真身才落盘 —— 用户看到工具凭空消失又回不来。
+//
+// 因此回调**在去抖之后才判存在性**:路径还在 ⇒ 变化(重载);真不在了 ⇒ 删除(卸载)。
+// 判据放在最后而不是逐事件判,是因为中间态的文件系统状态在那时才稳定。
 func (wt *Watcher) schedule(name string, debounce time.Duration, onChange func(string)) {
 	wt.mu.Lock()
 	defer wt.mu.Unlock()
@@ -175,6 +189,25 @@ func (wt *Watcher) schedule(name string, debounce time.Duration, onChange func(s
 		wt.mu.Lock()
 		delete(wt.timers, name)
 		wt.mu.Unlock()
+		// 目录删除后递归监听就断了:把该目录从监听表里摘掉,避免无限增长。
+		// 不摘也无害(条目数上限 watchMaxDirs 堆着),但它会让「同一路径重建」时
+		// addDir 因“已登记”而不再真正 add —— 那才是真会出事的地方。
+		if _, err := os.Lstat(name); err != nil {
+			wt.forgetDir(name)
+		}
 		onChange(name)
 	})
+}
+
+// forgetDir 摘掉一个已消失的目录及其子目录(仅从登记表里摘，不断 fsnotify;
+// watcher 已随目录删除自动失效)。
+func (wt *Watcher) forgetDir(dir string) {
+	wt.mu.Lock()
+	defer wt.mu.Unlock()
+	for d := range wt.dirs {
+		if d == dir || strings.HasPrefix(d, dir+string(filepath.Separator)) {
+			delete(wt.dirs, d)
+			wt.nDirs--
+		}
+	}
 }

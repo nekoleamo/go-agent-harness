@@ -64,6 +64,19 @@ type List struct {
 func Path(dir string) string { return filepath.Join(dir, FileName) }
 
 // Load 读白名单。**文件不存在 ⇒ 未启用**(不是错误)。
+//
+// **两种「空」必须分开**(批四 §A.1,2026-10-03):
+//
+//	0 字节     ⇒ 坏文件 ⇒ **报错**。几乎必然是被写坏/截断;fail-closed 不变。
+//	只有注释行 ⇒ **合法**:启用(Enforced=true),但当前**没有任何被信任插件**。
+//
+// 为什么必须分:本项目要有「UI 侧无条件建闸」的能力(boot 每次创建一个空清单),
+// 而 UI 侧**根本没有官方插件** ——「像进程型那样每次 boot 登记官方件」这条路不存在。
+// 要让闸必然存在就只能无条件建一个空文件,而旧口径把「空」与「坏」混为一谈,
+// 于是「建闸」与「fail-closed」直接冲突。
+//
+// 两者**可靠可区分**(0 字节 vs 有内容),不需要猜。口径**两侧统一**
+// (进程型也适用 —— 它的清单正常情况下有官方四件,但**规则一致**比**规则各自合理**更重要)。
 func Load(dir string) (*List, error) {
 	raw, err := os.ReadFile(Path(dir))
 	if err != nil {
@@ -97,11 +110,40 @@ func Load(dir string) (*List, error) {
 		l.sums[fields[1]] = sum
 	}
 	if len(l.sums) == 0 {
-		// 存在但为空 = 「什么都不许装」,这几乎一定是误操作(文件被清空/写坏)。
-		// 按 fail-closed 处理并**显式报错** —— 静默成「未启用」等于把机制架空。
-		return nil, fmt.Errorf("plugintrust: %s 是空的(什么都不许装)。删掉该文件即可回到「不校验」,或用 gah -install-plugin / gah -trust-plugin 登记", Path(dir))
+		// 一条数据行都没有 ⇒ 判成「坏文件」还是「合法的空清单」?
+		// 判据是**内容**:0 字节是被写坏/截断(fail-closed);有内容(哪怕只是注释)=
+		// 「我们建了闸、闸后面暂时没人」(合法且**启用**)。见函数注释。
+		if len(strings.TrimSpace(string(raw))) == 0 {
+			return nil, fmt.Errorf("plugintrust: %s 是空的(什么都不许装)。删掉该文件即可回到「不校验」,或用 gah -install-plugin / gah -trust-plugin 登记", Path(dir))
+		}
 	}
 	return l, nil
+}
+
+// EnsureEmpty 建一个**空的但已启用**的清单(内容 = 文件头注释;幂等)。
+//
+// 用途:UI 侧要在 boot 时**无条件建闸**(该侧没有官方插件可自登记,所以「像进程型那样
+// 每次启动登记官方件」这条路不存在)。建出来的东西必须是「合法空」而不是「0 字节坏文件」——
+// 两者可靠可区分(见 Load),不需要额外标记。
+//
+// 幂等:已存在就**什么都不做**(不覆写别人的内容)。返回 created 表示是不是这次新建的。
+func EnsureEmpty(dir string) (created bool, err error) {
+	path := Path(dir)
+	if _, err := os.Stat(path); err == nil {
+		return false, nil // 已有 ⇒ 不动
+	} else if !os.IsNotExist(err) {
+		return false, err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return false, err
+	}
+	body := listHeader +
+		"# 这个清单是**空的**:闸已经建起来,当前没有任何被信任的插件。\n" +
+		"# 确认某个插件可信后执行 gah -trust-plugin <名>(UI 侧:gah -trust-ui-plugin <id>)。\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // Open 打开(或新建)某个目录下的白名单,用于**另一处**要复用同一套语义的场景
@@ -204,6 +246,14 @@ func (l *List) loadIfNeeded() error {
 	return nil
 }
 
+// listHeader 清单的文件头(写出侧的唯一文案源;EnsureEmpty 与 write 共用)。
+//
+// 为什么抽出来:两处写出的注释必须**逐字一致** —— EnsureEmpty 建的是「合法空」,
+// write 在条目清空时也写「合法空」,两处文案不同会让用户以为是两种文件。
+const listHeader = "# gah 外部插件白名单(每行:内容 sha256 + 插件二进制基名)\n" +
+	"# 由 internal/embed(官方插件)、gah -install-plugin、gah -trust-plugin 写入。\n" +
+	"# 本文件存在即强制:未列入或哈希不符的插件会被拒绝加载。\n"
+
 // write 原子写(同目录临时文件 + rename),权限 0644。
 //
 // 为何不是 0600:这份清单不是凭据,而且它要被用户读、被别的进程核对;
@@ -217,22 +267,30 @@ func (l *List) write() error {
 	// 为何:Load 对「文件存在但一条没有」是 fail-closed(报错),因为那份状态几乎必然是
 	// 文件被清空/写坏 —— 但「卸载了最后一个插件」也会落到同一个状态。两者没法靠内容区分,
 	// 所以**不写空文件**:空 = 未启用(与升级前一致),坏文件 = 报错。区分放在写入侧。
-	if len(l.sums) == 0 {
-		if err := os.Remove(Path(l.dir)); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-		l.enforced = false
-		return nil
-	}
 	names := make([]string, 0, len(l.sums))
 	for n := range l.sums {
 		names = append(names, n)
 	}
 	sort.Strings(names)
 	var b strings.Builder
-	b.WriteString("# gah 外部插件白名单(每行:内容 sha256 + 插件二进制基名)\n")
-	b.WriteString("# 由 internal/embed(官方插件)、gah -install-plugin、gah -trust-plugin 写入。\n")
-	b.WriteString("# 本文件存在即强制:未列入或哈希不符的插件会被拒绝加载。\n")
+	b.WriteString(listHeader)
+	if len(l.sums) == 0 {
+		// **写注释,不是删文件**(2026-10-03 批四改;这是一个真漏洞的修复)。
+		//
+		// 旧口径在条目清空时**删掉文件**,因为当时的 Load 把「文件存在但一条没有」
+		// 判为「坏文件 ⇒ 报错」—— 写出一个空文件会变成「gah 起不来」。
+		// 于是「删文件」成了唯一不产生坏文件的选择。
+		//
+		// 后果(批四引入「合法空」语义后才暴露出来):**撤销最后一条登记 = 把闸关掉**。
+		// `Load` 对不存在的文件返回 `Enforced()==false` ⇒ 手工放置的 UI 插件立刻又能加载,
+		// 直到下一次 boot 由 EnsureUIList 重建闸为止 —— 一个**静默的、只在你撤销时
+		// 发生**的口子,而且窗口长度取决于你什么时候重启。
+		//
+		// 现在 Load 已能区分「0 字节(坏)」与「只有注释(合法且启用)」,所以这里直接
+		// 写注释:文件仍在 ⇒ Enforced 仍为 true ⇒ 闸一直关着,直到有人真的登记了什么。
+		b.WriteString("# 这个清单是**空的**:闸已建起,当前没有任何被信任的插件。\n")
+		b.WriteString("# 确认某个插件可信后执行 gah -trust-plugin <名>(UI 侧:gah -trust-ui-plugin <id>)。\n")
+	}
 	for _, n := range names {
 		sum := l.sums[n]
 		fmt.Fprintf(&b, "%s  %s\n", hex.EncodeToString(sum[:]), n)

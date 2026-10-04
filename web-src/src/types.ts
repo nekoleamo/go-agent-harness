@@ -319,6 +319,39 @@ export interface InstallView {
   audit_time?: string // RFC3339
   audit_source?: string // embed | install:<spec> | trust:manual
   loadable: boolean // 二进制在不在(不在 = 装了但没构建成功)
+  // —— 批一:装机来源(仓库/ref/commit) ——
+  // 与 audit_source 分开:审计行答「谁把它登记进白名单」,来源账答「它当初是从哪份代码装的」。
+  source_repo?: string // 归一化后的 host/path
+  source_ref?: string // tag/branch 名;默认分支为空
+  source_kind?: string // tag | branch | default | commit | local
+  source_commit?: string // 短显示(12 位)
+  drifted?: boolean // 移动引用换过 sha(不是风险,但你应该知道)
+  origin?: string // user | official
+  prebuilt?: string // 产物是下载来的(URL);非空 = 没在本机构建
+  api_version?: string // 装机时记下的协议版本
+  compat_ok: boolean // 声明版本是否在本版 gah 支持范围内
+  // —— 批二:生命周期三态 ——
+  disabled?: boolean // 被用户停用(文件还在,只是不加载)
+  loaded?: boolean // 当前是否有进程在跑
+}
+
+// 检查更新(GET /api/plugins/update-check;批一 §1.5)。
+export interface UpdateCheck {
+  plugin_id: string
+  repo: string
+  ref?: string
+  kind?: string
+  current?: string
+  remote?: string
+  // no_update | moved | tag_changed | unreachable
+  status: string
+  message: string
+}
+
+export interface UpdateCheckResp {
+  checks: UpdateCheck[]
+  notice?: string // 本地兼容性提示汇总(空 = 无)
+  hint: string
 }
 
 // 命令结果帧

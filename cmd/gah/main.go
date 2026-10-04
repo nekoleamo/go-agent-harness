@@ -29,12 +29,13 @@ import (
 var version = "dev"
 
 var (
-	profileFlag  = flag.String("profile", "tui", "profile 名(tui | headless | dev)")
-	inputFlag    = flag.String("input", "", "headless:一次输入,跑一轮后输出模型回复并退出")
-	dumpConfig   = flag.Bool("dump-config", false, "输出合并后的配置树并退出")
-	ephemeral    = flag.Bool("ephemeral", false, "一次性模式:配置落 temp,退出即焚")
-	showVersion  = flag.Bool("version", false, "输出版本信息并退出")
-	installFlag  = flag.String("install", "", "安装线上插件(M6.6):<repo>[@version] 或 mcp:<id>:<command>,装完即启用")
+	profileFlag = flag.String("profile", "tui", "profile 名(tui | headless | dev)")
+	inputFlag   = flag.String("input", "", "headless:一次输入,跑一轮后输出模型回复并退出")
+	dumpConfig  = flag.Bool("dump-config", false, "输出合并后的配置树并退出")
+	ephemeral   = flag.Bool("ephemeral", false, "一次性模式:配置落 temp,退出即焚")
+	showVersion = flag.Bool("version", false, "输出版本信息并退出")
+	installFlag = flag.String("install", "", "安装线上插件(M6.6):<repo>[@version] 或 mcp:<id>:<command>,装完即启用;"+
+		"version 可为 tag/branch/40 位 commit sha(装回指定的那一版)")
 	uninstallFl  = flag.String("uninstall", "", "卸载插件:<id>(删 home/plugins/<id>,桥 watch 自动撤销)")
 	listPlugins  = flag.Bool("list-plugins", false, "列出已安装的外部插件")
 	installUIFl  = flag.String("install-ui", "", "安装 UI 插件(M7.2):<repo>[@version] 或本地目录;v-html 扫描拒装")
@@ -42,7 +43,17 @@ var (
 	listUIPlugs  = flag.Bool("list-ui-plugins", false, "列出已安装的 UI 插件")
 	trustPlugin  = flag.String("trust-plugin", "", "把已放在 plugins/ 的二进制登记进哈希白名单:<名>(如 tool-basic);确认来源可信后再执行")
 	untrustPl    = flag.String("untrust-plugin", "", "从哈希白名单移除:<名>")
+	trustUIFl    = flag.String("trust-ui-plugin", "", "把已放在 ui-plugins/ 的 UI 插件登记进完整性闸:<id>(批四:UI 侧闸默认强制,手工放置的插件需在此放行)")
+	untrustUIFl  = flag.String("untrust-ui-plugin", "", "从 UI 插件完整性闸移除:<id>")
 	listTrust    = flag.Bool("list-trusted-plugins", false, "列出插件哈希白名单")
+	acceptDrift  = flag.Bool("accept-drift", false, "配合 -install:接受同名 tag 指向了新 commit(默认拒绝)")
+	artifactFl   = flag.String("install-artifact", "", "装一个**别人已经构建好**的插件产物(URL):"+
+		"本机不需要 Go/node/任何工具链,也不执行任何构建命令。必须配 -id <插件id> -name <tool-xxx>")
+	artifactID   = flag.String("id", "", "配合 -install-artifact:插件 id(= 落位目录名)")
+	artifactName = flag.String("name", "", "配合 -install-artifact:产物文件名(须 tool- / cmd- 开头)")
+	prebuiltFl   = flag.Bool("prebuilt", false, "配合 -install:下载作者发布的预编译产物,**不执行仓库里的构建脚本**"+
+		"(必须有 plugin.yaml 的 prebuilt 段且含当前平台;找不到就报错,不回退源码构建)")
+	checkUpdates = flag.Bool("check-plugin-updates", false, "检查已装插件的来源是否有更新(只发 git ls-remote,不安装)")
 )
 
 // 非 TTY 检测(TUI profile):stdin 为 pipe/重定向时 bubbletea 会直读 stdin 卡死挂起;
@@ -111,13 +122,43 @@ func main() {
 	if _, err := embed.EnsurePlugins(home); err != nil {
 		logger.Warn("boot: 释放外部插件失败(跳过,可后续 gah -install)", "err", err)
 	}
+	// 标出「随 gah 附带的官方件」(批四 P3 的分类展示)。
+	// 取**全部**官方插件名而不是本次释放的:第二次启动时释放列表是空的,用后者会永远标不上。
+	if official, err := embed.OfficialPluginNames(); err == nil {
+		if err := install.MarkOfficial(home, official); err != nil {
+			// 标不出来只影响面板的分组展示,不影响加载 —— 记 WARN 不阻断启动。
+			logger.Warn("boot: 标注官方插件来源失败(面板里它们会与「你安装的」混在一组)", "err", err)
+		}
+	}
 	// 预置角色首启释放(home/roles/<id>/,角色目录已存在 = 整体跳过:保护用户编辑)
 	if _, err := embed.EnsureRoles(home); err != nil {
 		logger.Warn("boot: 释放预置角色失败(跳过,不影响启动)", "err", err)
 	}
 	// 插件安装/卸载/清单(M6.6):seed 释放后可写登记 patch 与 profile 引用
+	if *artifactFl != "" {
+		// 产物安装:不构建 ⇒ 本机可以完全没有 Go / node / make。
+		// 两个路径参数先校验(确认文案要用安全的事实,而不是未验证过的拼接结果)。
+		if err := install.ValidateArtifactArgs(*artifactID, *artifactName); err != nil {
+			logger.Error("install-artifact: 失败", "err", err)
+			os.Exit(1)
+		}
+		dir := filepath.Join(home, "plugins", *artifactID)
+		fmt.Println(install.ConfirmPromptArtifact(install.ArtifactFacts{
+			URL: *artifactFl, ID: *artifactID, Name: *artifactName, Dir: dir,
+		}))
+		res, err := install.InstallArtifact(*artifactFl, *artifactID, *artifactName, home)
+		if err != nil {
+			logger.Error("install-artifact: 失败", "err", err)
+			os.Exit(1)
+		}
+		fmt.Printf("\n已安装 %s → %s\n", res.ID, res.Dir)
+		fmt.Printf("  产物: %s(下载所得,**未执行任何构建命令**;本机不需要 Go)\n", res.Source)
+		fmt.Printf("  登记: %s(profile 已自动引用)\n", res.Patch)
+		return
+	}
 	if *installFlag != "" {
-		res, err := install.Install(*installFlag, home)
+		res, err := install.InstallWithOpts(*installFlag, home,
+			install.InstallOpts{AcceptDrift: *acceptDrift, Prebuilt: *prebuiltFl})
 		if err != nil {
 			logger.Error("install: 失败", "err", err)
 			os.Exit(1)
@@ -126,24 +167,84 @@ func main() {
 		if res.Binary != "" {
 			fmt.Printf("  产物: %s%s\n", res.Binary, "(host-bridge watch 自动生效)")
 		}
+		// 来源三件(仓库/ref/commit)必须回显:「我装的是哪一份代码」要当场看得见,
+		// 而不是只能事后去翻 plugins/sources.yaml。
+		if res.Record.Repo != "" {
+			fmt.Printf("  来源: %s", res.Record.Repo)
+			if res.Record.Ref != "" {
+				fmt.Printf(" @%s", res.Record.Ref)
+			}
+			fmt.Printf("(%s", res.Record.Kind)
+			if res.Record.Commit != "" {
+				fmt.Printf(" · %s", install.ShortSHA(res.Record.Commit))
+			}
+			fmt.Printf(")\n")
+		}
+		if res.Prebuilt != "" {
+			fmt.Printf("  产物: %s(作者发布的预编译产物,**未执行任何构建命令**)\n", res.Prebuilt)
+		}
+		if res.BuildImplicit {
+			fmt.Printf("  注意:该仓库的 plugin.yaml **没有声明 build:** —— %s\n"+
+				"        是 gah 替你选的默认命令,不是作者写的(装之前值得确认这个仓库确实是 Go 项目)\n", res.BuildCmd)
+		}
+		if w := res.DriftWarning(); w != "" {
+			fmt.Println("  " + w)
+		}
 		fmt.Printf("  登记: %s(profile 已自动引用,下一轮启动即启用)\n", res.Patch)
 		return
 	}
 	if *uninstallFl != "" {
-		if err := install.Uninstall(*uninstallFl, home); err != nil {
+		// ctl 传 nil:CLI 场景下 gah 进程本身没在跑(插件装了但服务没起),**没有活进程可停** ——
+		// 而「停不掉就不删」那条规则正是为有活进程的场景写的,这里天然无事可做。
+		if err := install.Uninstall(*uninstallFl, home, nil); err != nil {
 			logger.Error("uninstall: 失败", "err", err)
 			os.Exit(1)
 		}
-		fmt.Printf("已卸载 %s(工具经 host-bridge watch 自动撤销)\n", *uninstallFl)
+		fmt.Printf("已卸载 %s(白名单与来源账条目一并撤销;若另有一个 gah 服务正在跑,那侧的插件进程需自行停)\n", *uninstallFl)
 		return
 	}
 	if *listPlugins {
+		ledger, _ := install.LoadSources(home)
 		for _, it := range install.List(home) {
 			protocol := it.Protocol
 			if protocol == "" {
 				protocol = "bridge"
 			}
-			fmt.Printf("%s\t%s	%s\n", it.ID, protocol, it.Binary)
+			line := it.ID + "\t" + protocol + "\t" + install.ListBinaryName(it)
+			if e, ok := ledger.Find(it.ID); ok {
+				line += "\t" + e.Repo
+				if e.Ref != "" {
+					line += "@" + e.Ref
+				}
+				line += "(" + e.Kind
+				if e.Commit != "" {
+					line += " · " + install.ShortSHA(e.Commit)
+				}
+				if e.Drifted {
+					line += " · 会移动"
+				}
+				line += ")"
+			}
+			fmt.Println(line)
+		}
+		if notice := install.CompatibilityNoticeText(home); notice != "" {
+			fmt.Println("\n注意:" + notice)
+		}
+		return
+	}
+	// 检查更新(批一 §1.5):**只问不装**。网络只在这里发生一次(git ls-remote,不 clone)。
+	if *checkUpdates {
+		checks, err := install.CheckForUpdates(home)
+		if err != nil {
+			logger.Error("check-plugin-updates: 失败", "err", err)
+			os.Exit(1)
+		}
+		if len(checks) == 0 {
+			fmt.Println("(没有可检查的来源:本地目录、按 commit 固定的插件、以及下载来的产物都没有「更新」这回事)")
+			return
+		}
+		for _, c := range checks {
+			fmt.Printf("%s\t%s\t%s\t%s\n", c.PluginID, c.Repo, c.Status, c.Message)
 		}
 		return
 	}
@@ -165,6 +266,30 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Printf("已登记 %s 到 plugins/%s(下次调用即生效,热重载路径同样校验)\n", *trustPlugin, plugintrust.FileName)
+		return
+	}
+	// UI 插件放行口(批四):UI 侧无官方插件 ⇒ 闸由 boot 无条件创建 ⇒ 手工放进
+	// ui-plugins/ 的插件默认被拒。这是本项目最宽的面上一道**默认**闸 + 一条明确出路。
+	if *trustUIFl != "" {
+		uiRoot := filepath.Join(home, "ui-plugins")
+		slots, err := install.UIPluginSlots(uiRoot, *trustUIFl)
+		if err != nil {
+			logger.Error("trust-ui-plugin: 失败", "err", err)
+			os.Exit(1)
+		}
+		if err := install.TrustUI(uiRoot, *trustUIFl, slots); err != nil {
+			logger.Error("trust-ui-plugin: 失败", "err", err)
+			os.Exit(1)
+		}
+		fmt.Printf("已登记 UI 插件 %s 到 ui-plugins/%s(下次打开设置面板即生效;只登记你看过的那一份)\n", *trustUIFl, plugintrust.FileName)
+		return
+	}
+	if *untrustUIFl != "" {
+		if err := install.UIUntrust(filepath.Join(home, "ui-plugins"), *untrustUIFl); err != nil {
+			logger.Error("untrust-ui-plugin: 失败", "err", err)
+			os.Exit(1)
+		}
+		fmt.Printf("已从 ui-plugins/%s 移除 %s\n", plugintrust.FileName, *untrustUIFl)
 		return
 	}
 	if *untrustPl != "" {
