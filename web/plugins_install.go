@@ -431,27 +431,171 @@ func (s *Server) uiToggleState(w http.ResponseWriter, r *http.Request, enable bo
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "enabled": enable})
 }
 
+// uiPluginView 一个已安装 UI 插件在面板上的视图事实。
+type uiPluginView struct {
+	ID      string `json:"id"`
+	Version string `json:"version,omitempty"`
+	Dir     string `json:"dir,omitempty"`
+	// Slots 覆盖的槽位数(面板只显示个数;逐槽在 /api/ui-plugins)。
+	Slots int `json:"slots"`
+	// Trusted 是否已登记进完整性闸(批四起**默认强制**:没登记的不会被加载)。
+	Trusted bool `json:"trusted"`
+	// Disabled 是否被用户停用。
+	Disabled bool `json:"disabled"`
+	// Reject 被完整性闸拦下的原因(空 = 没被拦)。
+	Reject string `json:"reject,omitempty"`
+}
+
 // handleUIPluginState UI 插件的**状态事实**(GET /api/ui-plugins/state)。
 //
-// 两个字段回答两件面板必须知道的事:
-//   - disabled:被停用的 id。停用项**不在** /api/ui-plugins 里(那是"下发什么"),
-//     而「我停用的那个」必须仍然看得见 —— 它从清单里消失,等于用户以为自己停错了;
-//   - enforced:完整性闸是否强制。批四起 UI 侧**默认强制**(boot 无条件创建),
-//     所以面板要能无条件告诉用户「手工放置的不会被加载,放行命令是 X」。
+// 三个字段回答面板必须知道的三件事:
+//   - installed:盘上装了哪些、各自**登不登记**。
+//     为什么必须有它:`/api/ui-plugins` 只返回**会被下发**的那些(闸挡住的不在其中),
+//     所以「我装了但没登记因而加载不了」这件事**在任何现有接口里都看不见** ——
+//     而那正是批四之后最常见的一种状态。
+//   - disabled:被停用的 id。停用项不在 /api/ui-plugins 里,而「我停用的那个」必须可见。
+//   - enforced:完整性闸是否强制(批四起**默认强制**,boot 无条件创建)。
 //     它从 /api/ui-plugins 的返回里拿不到:闸挡住时那个数组是**空的**。
 func (s *Server) handleUIPluginState(w http.ResponseWriter, _ *http.Request) {
 	root := s.cfg.UIPluginsDir
 	enforced := false
+	trustedSet := map[string]bool{}
 	if root != "" {
 		if list, err := plugintrust.Load(root); err == nil {
 			enforced = list.Enforced()
+			for _, n := range list.Names() {
+				trustedSet[n] = true
+			}
 		}
 	}
+	rejects := map[string]string{}
+	for _, r := range s.rejectedUIList() {
+		rejects[r.ID] = r.Rejected
+	}
+	disabledSet := map[string]bool{}
+	for _, id := range s.uiDisabledIDs() {
+		disabledSet[id] = true
+	}
+	installed := []uiPluginView{}
+	for _, it := range install.ListUI(pluginHomeOf(root)) {
+		installed = append(installed, uiPluginView{
+			ID: it.ID, Version: it.Version, Dir: it.Dir, Slots: len(it.Slots),
+			Trusted: trustedSet[it.ID], Disabled: disabledSet[it.ID], Reject: rejects[it.ID],
+		})
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"disabled": s.uiDisabledIDs(),
-		"enforced": enforced,
-		"note":     "UI 插件与宿主同源同权限(能调全部 API,含工具执行)。手工放进 ui-plugins/ 的默认不加载;放行: gah -trust-ui-plugin <id>",
+		"installed": installed,
+		"disabled":  s.uiDisabledIDs(),
+		"enforced":  enforced,
+		"note":      "UI 插件与宿主同源同权限(能调全部 API,含工具执行)。手工放进 ui-plugins/ 的默认不加载;放行: gah -trust-ui-plugin <id>",
 	})
+}
+
+// pluginHomeOf 从 ui-plugins 目录反推 home(状态端点只有目录,没有 home)。
+//
+// 为什么反推而不是另存一份:`install.ListUI` 的入参就是 home,而 ui-plugins 永远是
+// `$GAH_HOME/ui-plugins`,所以它的父目录就是 home。**只有一个真源**,不必维护映射。
+func pluginHomeOf(uiRoot string) string {
+	if uiRoot == "" {
+		return ""
+	}
+	return filepath.Dir(uiRoot)
+}
+
+// uiPluginReq UI 插件的安装/卸载/登记请求。
+type uiPluginReq struct {
+	Spec      string `json:"spec"`      // install 用
+	ID        string `json:"id"`        // uninstall / trust 用
+	Confirmed bool   `json:"confirmed"` // 二次确认;缺它一律拒
+}
+
+// handleUIPluginInstall UI 插件安装(POST /api/ui-plugins/install)。
+//
+// 与进程型插件**同一套纪律**:审批档 strict 拒、二次确认必需、成功后回显实际落位与登记信息。
+func (s *Server) handleUIPluginInstall(w http.ResponseWriter, r *http.Request) {
+	var req uiPluginReq
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	spec := strings.TrimSpace(req.Spec)
+	if spec == "" {
+		http.Error(w, "缺少 spec(仓库地址或本地目录)", http.StatusBadRequest)
+		return
+	}
+	if !s.approvalAllowsInstall(w) {
+		return
+	}
+	if !req.Confirmed {
+		http.Error(w, "未经确认:UI 插件与主页面同源同权限(能调全部 API,含工具执行),装它就是让它的代码进你的页面", http.StatusBadRequest)
+		return
+	}
+	res, err := install.InstallUI(spec, s.pluginHome())
+	if err != nil {
+		http.Error(w, "UI 插件安装失败:"+err.Error(), http.StatusBadRequest)
+		return
+	}
+	_ = s.scanUIPlugins() // 让本次装上的立刻出现在下发列表里
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "id": res.ID, "dir": res.Dir, "slots": res.Slots, "audit": res.Audit,
+		"hint": "已装上并登记进完整性闸。UI 插件在**重载页面**后生效(不必重启 gah)。",
+	})
+}
+
+// handleUIPluginUninstall UI 插件卸载(POST /api/ui-plugins/uninstall):删目录 + 撤登记。
+func (s *Server) handleUIPluginUninstall(w http.ResponseWriter, r *http.Request) {
+	var req uiPluginReq
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	id := strings.TrimSpace(req.ID)
+	if id == "" {
+		http.Error(w, "缺少 id", http.StatusBadRequest)
+		return
+	}
+	if !s.approvalAllowsInstall(w) {
+		return
+	}
+	if !req.Confirmed {
+		http.Error(w, "未经确认(卸载会删掉插件目录与它的完整性闸条目)", http.StatusBadRequest)
+		return
+	}
+	if err := install.UninstallUI(id, s.pluginHome()); err != nil {
+		http.Error(w, "卸载失败:"+err.Error(), http.StatusBadRequest)
+		return
+	}
+	_ = s.scanUIPlugins()
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleUIPluginTrust 手工放置的 UI 插件放行(POST /api/ui-plugins/trust)。
+//
+// 语义与 `gah -trust-ui-plugin` **同款**:只登记**当前那一份**的 entry-scope 摘要,
+// 已有不同摘要 ⇒ 显式拒绝,不自动洗白。
+func (s *Server) handleUIPluginTrust(w http.ResponseWriter, r *http.Request) {
+	var req uiPluginReq
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	id := strings.TrimSpace(req.ID)
+	if id == "" {
+		http.Error(w, "缺少 id", http.StatusBadRequest)
+		return
+	}
+	if !req.Confirmed {
+		http.Error(w, "未经确认:放行等于让它的代码进你的页面", http.StatusBadRequest)
+		return
+	}
+	slots, err := install.UIPluginSlots(filepath.Join(s.pluginHome(), "ui-plugins"), id)
+	if err != nil {
+		http.Error(w, "登记失败:"+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := install.TrustUI(filepath.Join(s.pluginHome(), "ui-plugins"), id, slots); err != nil {
+		http.Error(w, "登记失败:"+err.Error(), http.StatusBadRequest)
+		return
+	}
+	_ = s.scanUIPlugins()
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (s *Server) uiDisabledIDs() []string {

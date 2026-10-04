@@ -336,6 +336,28 @@ export interface InstallView {
 }
 
 // 检查更新(GET /api/plugins/update-check;批一 §1.5)。
+// 一个已安装的 UI 插件在设置面板上的视图事实(GET /api/ui-plugins/state)。
+export interface UIPluginView {
+  id: string
+  version?: string
+  dir?: string
+  slots: number
+  /** 是否已登记进完整性闸。批四起**默认强制**:没登记的不会被加载。 */
+  trusted: boolean
+  disabled: boolean
+  /** 被闸拦下的原因(空 = 没被拦)。 */
+  reject?: string
+}
+
+export interface UIPluginState {
+  /** 盘上装了哪些(不论是否登记/是否停用)。 */
+  installed: UIPluginView[]
+  disabled: string[]
+  /** 完整性闸是否强制。 */
+  enforced: boolean
+  note: string
+}
+
 export interface UpdateCheck {
   plugin_id: string
   repo: string

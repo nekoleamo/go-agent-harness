@@ -664,3 +664,110 @@ func TestUIPluginStateEndpoint(t *testing.T) {
 		t.Errorf("停用项要能被面板看见: %v", get()["disabled"])
 	}
 }
+
+// TestUIPluginInstallRequiresConfirmed UI 插件安装也要二次确认。
+//
+// 它比进程型插件更需要:UI 插件经**动态 import()** 进主页面,与宿主同源同权限。
+func TestUIPluginInstallRequiresConfirmed(t *testing.T) {
+	s := newPluginServer(t, "")
+	s.cfg.UIPluginsDir = filepath.Join(t.TempDir(), "ui-plugins")
+	rec := postJSON(t, s, "/api/ui-plugins/install", uiPluginReq{Spec: "/tmp/nope"})
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "未经确认") {
+		t.Fatalf("未经确认应 400,实际 %d(%s)", rec.Code, rec.Body.String())
+	}
+	rec = postJSON(t, s, "/api/ui-plugins/install", uiPluginReq{})
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "缺少 spec") {
+		t.Fatalf("缺 spec 应 400,实际 %d(%s)", rec.Code, rec.Body.String())
+	}
+}
+
+// TestUIPluginUninstallTrustRequireConfirmed 卸载与登记同样要确认(都是破坏性/安全面变更)。
+func TestUIPluginUninstallTrustRequireConfirmed(t *testing.T) {
+	s := newPluginServer(t, "")
+	for _, p := range []string{"/api/ui-plugins/uninstall", "/api/ui-plugins/trust"} {
+		rec := postJSON(t, s, p, uiPluginReq{ID: "demo"})
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "未经确认") {
+			t.Errorf("%s 未经确认应 400,实际 %d(%s)", p, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+// TestUIPluginStateListsInstalled 状态端点必须列出**盘上装了哪些**。
+//
+// 为什么这条是本批的核心:`/api/ui-plugins` 只返回**会被下发**的那些(闸挡住的不在其中),
+// 所以「我装了但没登记因而加载不了」这件事在任何既有接口里都**看不见** —— 而那正是
+// 批四之后最常见的一种状态。
+func TestUIPluginStateListsInstalled(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GAH_HOME", home)
+	uiRoot := filepath.Join(home, "ui-plugins")
+	dir := filepath.Join(uiRoot, "demo")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "manifest.json"),
+		[]byte(`{"id":"demo","version":"1.0.0","slots":[{"name":"v1:extra-panel","priority":1,"module":"./p.js"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := plugintrust.EnsureEmpty(uiRoot); err != nil {
+		t.Fatal(err)
+	}
+	s := newPluginServer(t, "")
+	s.cfg.UIPluginsDir = uiRoot
+	req := httptest.NewRequest(http.MethodGet, "/api/ui-plugins/state", nil)
+	rec := httptest.NewRecorder()
+	s.handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("应 200,实际 %d(%s)", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Installed []uiPluginView `json:"installed"`
+		Enforced  bool           `json:"enforced"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Installed) != 1 {
+		t.Fatalf("已装的插件应列出(否则用户看不到自己装了什么): %s", rec.Body.String())
+	}
+	got := out.Installed[0]
+	if got.ID != "demo" || got.Slots != 1 || got.Trusted {
+		t.Errorf("视图字段不对: %+v", got)
+	}
+	if !out.Enforced {
+		t.Error("闸状态应下发(面板要能无条件告诉用户「手工放置的不会被加载」)")
+	}
+}
+
+// TestUIPluginTrustThenStateShowsTrusted 登记后状态端点应报 trusted —— 前端据此换按钮。
+func TestUIPluginTrustThenStateShowsTrusted(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GAH_HOME", home)
+	uiRoot := filepath.Join(home, "ui-plugins")
+	dir := filepath.Join(uiRoot, "demo")
+	if err := os.MkdirAll(filepath.Join(dir, "dist"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "manifest.json"),
+		[]byte(`{"id":"demo","version":"1.0.0","slots":[{"name":"v1:extra-panel","priority":1,"module":"./dist/p.js"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "dist", "p.js"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := plugintrust.EnsureEmpty(uiRoot); err != nil {
+		t.Fatal(err)
+	}
+	s := newPluginServer(t, "")
+	s.cfg.UIPluginsDir = uiRoot
+	rec := postJSON(t, s, "/api/ui-plugins/trust", uiPluginReq{ID: "demo", Confirmed: true})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("登记应 200,实际 %d(%s)", rec.Code, rec.Body.String())
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/ui-plugins/state", nil)
+	rec2 := httptest.NewRecorder()
+	s.handler().ServeHTTP(rec2, req)
+	if !strings.Contains(rec2.Body.String(), `"trusted":true`) {
+		t.Errorf("登记后应报 trusted(前端据此把「登记」换成别的动作): %s", rec2.Body.String())
+	}
+}

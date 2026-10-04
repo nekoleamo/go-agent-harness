@@ -28,7 +28,7 @@ import {
   viewNotices,
   type McpDraft,
 } from '../mcp'
-import type { AskConfirm, InstallView, McpServer, McpView, PluginInfo, ProviderInfo, ProviderModelGroup, RolePackResult, RoleSpec, Schedule, SkillInfo, StateView, ToolDef, TrashRoleEntry, TrashSkillEntry, UpdateCheck } from '../types'
+import type { AskConfirm, InstallView, McpServer, McpView, PluginInfo, ProviderInfo, ProviderModelGroup, RolePackResult, RoleSpec, Schedule, SkillInfo, StateView, ToolDef, TrashRoleEntry, TrashSkillEntry, UIPluginView, UpdateCheck } from '../types'
 
 const props = defineProps<{
   open: boolean
@@ -77,9 +77,7 @@ async function refreshInstallList(): Promise<void> {
     // 所以凡是进模板的数组,一律在**边界**上收敛成数组,不给 undefined 留路。
     const rows = await api.pluginInstallList()
     installRows.value = Array.isArray(rows) ? rows : []
-    const st = await api.uiPluginState()
-    uiPluginDisabled.value = Array.isArray(st?.disabled) ? st.disabled : []
-    uiPluginTrustEnforced.value = st?.enforced === true
+    await refreshUIState()
   } catch (e) {
     installErr.value = '读取已装插件失败:' + (e as Error).message
   }
@@ -173,10 +171,87 @@ const userPlugins = computed(() => installRows.value.filter((r) => r.origin !== 
 // 停用的 UI 插件必须仍然看得见(它在 /api/ui-plugins 里已被过滤掉了)。
 // 「我停用的那个」从清单里消失,等于用户以为自己停错了。
 const uiPluginDisabled = ref<string[]>([])
+const uiOk = ref('')
+const uiErr = ref('')
 // uiPluginTrustEnforced:完整性闸是否强制。老路「手工拷一个 UI 插件目录进
 // ui-plugins/ 就能用」在批四被断掉 —— 面板必须**主动说明**怎么放行,
 // 否则用户只看到「我放的插件不见了」,以为产品坏了(静默拒绝是最坏的处置)。
 const uiPluginTrustEnforced = ref(false)
+
+// —— UI 插件:安装 / 卸载 / 登记 / 启停(批九补齐 GUI 入口)——
+//
+// 为什么之前面板上只有「重新扫描」:UI 插件的安装与放行只在命令行有,而「重新扫描」
+// 对一个**从没装过**的用户毫无用处(扫一个空目录)。入口缺失不是功能缺失,更糟:
+// 用户看到「UI 插件」这一段却找不到任何能开始的动作。
+const uiSpec = ref('')
+const uiBusy = ref(false)
+const uiPluginList = ref<UIPluginView[]>([])
+
+async function doUIInstall(): Promise<void> {
+  const spec = uiSpec.value.trim()
+  if (!spec || uiBusy.value) return
+  guard(UIInstallConfirmText(spec), true, async () => {
+    uiBusy.value = true
+    uiErr.value = ''
+    try {
+      const r = await api.uiPluginInstall(spec)
+      uiOk.value = `已安装 UI 插件 ${r.id}(覆盖 ${r.slots} 个槽位)` + (r.hint ? ' · ' + r.hint : '')
+      uiSpec.value = ''
+      await refreshUIState()
+    } catch (e) {
+      uiErr.value = 'UI 插件安装失败:' + (e as Error).message
+    } finally {
+      uiBusy.value = false
+    }
+  })
+}
+
+function doUIUninstall(id: string): void {
+  guard(`卸载 UI 插件 ${id}?\n\n· 删掉它的目录\n· 撤销完整性闸里的登记\n\n随时可重装。`, true, async () => {
+    try {
+      await api.uiPluginUninstall(id)
+      uiOk.value = '已卸载 ' + id
+      await refreshUIState()
+    } catch (e) {
+      uiErr.value = '卸载失败:' + (e as Error).message
+    }
+  })
+}
+
+// doUITrust 放行一个手工放置的 UI 插件(只登记**当前那一份**的摘要)。
+function doUITrust(id: string): void {
+  guard(`把 UI 插件 ${id} 登记进完整性闸?\n\n它会经动态 import() 进入主页面 —— 与宿主同源同权限,` +
+    `能读页面全部会话内容、可用 cookie 调全部 API。只登记你**看过**的这一份。`, true, async () => {
+    try {
+      await api.uiPluginTrust(id)
+      uiOk.value = '已登记 ' + id + '(重载页面后生效)'
+      await refreshUIState()
+    } catch (e) {
+      uiErr.value = '登记失败:' + (e as Error).message
+    }
+  })
+}
+
+// UIInstallConfirmText UI 插件安装的确认文案(自己生成:服务端的 Prompt 形状是进程型插件的,
+// 文案里提到「构建命令」与「白名单二进制」,对 UI 插件是错的)。
+function UIInstallConfirmText(spec: string): string {
+  return `安装 UI 插件?\n来源:${spec}\n` +
+    `它会经**动态 import()** 进入主页面 —— 与宿主**同源同权限**:` +
+    `可读取页面上的全部会话内容,可用 cookie 调全部 API(含 /api/input,` +
+    `即向模型投喂 prompt ⇒ 经工具执行等同本地代码执行)。\n` +
+    `构建脚本会在本机跑 npm;装完的产物哈希会进完整性闸,装完再换会被下一次加载挡住。`
+}
+
+async function refreshUIState(): Promise<void> {
+  try {
+    const st = await api.uiPluginState()
+    uiPluginList.value = Array.isArray(st.installed) ? st.installed : []
+    uiPluginDisabled.value = Array.isArray(st.disabled) ? st.disabled : []
+    uiPluginTrustEnforced.value = st.enforced === true
+  } catch {
+    // 状态读不出来时**不**把已装清单清空:那会让「我装了 5 个」在一闪之间变成「一个都没有」。
+  }
+}
 
 async function doUIToggle(id: string, enable: boolean): Promise<void> {
   const verb = enable ? '启用' : '停用'
@@ -290,6 +365,14 @@ async function pickInstallDir(): Promise<void> {
   if (!isDesktop) return
   const dir = await pickDirectory('选择本地插件源码目录(含 plugin.yaml)')
   if (dir) installSpec.value = dir
+}
+
+// pickUIDir 桌面端选本地 UI 插件源码目录(与外部插件那条同款,但**各自一个状态变量** ——
+// 共用一个会让「选了 A 的目录,装 B 的插件」这种错配发生而不报错)。
+async function pickUIDir(): Promise<void> {
+  if (!isDesktop) return
+  const dir = await pickDirectory('选择本地 UI 插件源码目录(含 manifest.json)')
+  if (dir) uiSpec.value = dir
 }
 
 // uiScanBusy UI 插件重扫进行中(按钮置灰;防连点)。
@@ -3178,50 +3261,59 @@ watch(
           <!-- 插件安装(2026-10-03):CLI 的安装内核接进面板。两条来源都支持 ——
                第三方仓库与**本地自己写的目录**(不需要先 git init + push)。
                每次安装/卸载/登记都走二次确认;审批档为「严格」时服务端直接拒。 -->
-          <div class="row install-row">
-            <span class="lab-inline">安装插件</span>
-            <input
-              v-model="installSpec"
-              class="inp grow"
-              placeholder="仓库地址(git@…/@版本或 40 位 commit sha)或本地目录绝对路径"
-              :disabled="installBusy"
-              @keyup.enter="doInstall()"
-            />
-            <button v-if="isDesktop" class="ghost" :disabled="installBusy" data-tip="选择本地插件源码目录" @click="pickInstallDir()">
-              浏览…
-            </button>
-            <label class="chk" data-tip="只下载作者发布的预编译产物,不执行仓库里的构建脚本(本机可以没有 go/node/make)。要求 plugin.yaml 声明了当前平台;下载源由作者声明,gah 不验签名 —— 装的那一刻没有独立校验。">
+          <!-- 批九重排:三个子块各带标题与边框,控件行只留控件。
+               原先标签 / 输入框 / 按钮 / 一句很长的 checkbox 全挤在**一个 flex 行**里,
+               窗口一窄按钮就被压到折行(实测「检查更新」断成「检查更 / 新」),
+               整段读起来是一堵墙。现在长文案一律下沉到控件行**下面**独占一行。 -->
+          <div class="plg-block">
+            <div class="plg-block-t">安装外部插件</div>
+            <div class="plg-row">
+              <input
+                v-model="installSpec"
+                class="inp grow"
+                placeholder="仓库地址(git@…/@版本或 40 位 commit sha)或本地目录绝对路径"
+                :disabled="installBusy"
+                @keyup.enter="doInstall()"
+              />
+              <button v-if="isDesktop" class="ghost" :disabled="installBusy" data-tip="选择本地插件源码目录" @click="pickInstallDir()">
+                浏览…
+              </button>
+              <button class="ghost solid" :disabled="installBusy || !installSpec.trim()" @click="doInstall()">
+                {{ installBusy ? '处理中…' : '安装' }}
+              </button>
+            </div>
+            <label class="chk plg-hint" data-tip="只下载作者发布的预编译产物,不执行仓库里的构建脚本(本机可以没有 go/node/make)。要求 plugin.yaml 声明了当前平台;下载源由作者声明,gah 不验签名 —— 装的那一刻没有独立校验。">
               <input type="checkbox" v-model="installPrebuilt" :disabled="installBusy" data-testid="install-prebuilt" />
               <span>只装预编译产物(不跑它的构建脚本)</span>
             </label>
-            <button class="ghost solid" :disabled="installBusy || !installSpec.trim()" @click="doInstall()">
-              {{ installBusy ? '处理中…' : '安装' }}
-            </button>
+            <p v-if="installOk" class="dim">{{ installOk }}</p>
+            <p v-if="installWarn" class="warn-line">{{ installWarn }}</p>
+            <p v-if="installErr" class="err-line">{{ installErr }}</p>
           </div>
-          <p v-if="installOk" class="dim">{{ installOk }}</p>
-          <p v-if="installWarn" class="warn-line">{{ installWarn }}</p>
-          <p v-if="installErr" class="err-line">{{ installErr }}</p>
           <!-- 检查更新(批一 §1.5):**只问不装**。没有自动更新通道 —— 在不签名的前提下,
                那是一条无认证的、持续性的远程代码执行通道(理由见 internal/install/updatecheck.go)。
                网络只在这个按钮被点时发生一次。 -->
-          <div v-if="installRows.length" class="row install-row">
-            <button class="ghost" :disabled="updChecking" @click="doCheckPluginUpdates()">
-              {{ updChecking ? '检查中…' : '检查更新' }}
-            </button>
-            <span class="dim">
+          <div v-if="installRows.length" class="plg-block">
+            <div class="plg-block-t">检查更新</div>
+            <div class="plg-row">
+              <button class="ghost" :disabled="updChecking" @click="doCheckPluginUpdates()">
+                {{ updChecking ? '检查中…' : '检查更新' }}
+              </button>
+            </div>
+            <p class="dim plg-hint">
               gah 不自动更新插件:这里只查远端当前指向,装新版要你自己重跑安装命令
-            </span>
+            </p>
+            <p v-if="updErr" class="err-line">{{ updErr }}</p>
+            <ul v-if="updChecks.length" class="install-list">
+              <li v-for="c in updChecks" :key="c.plugin_id" class="irow">
+                <span class="pname">{{ c.plugin_id }}</span>
+                <span class="psub" :class="{ 'warn-line': c.status === 'tag_changed' }">
+                  {{ c.repo }}{{ c.ref ? '@' + c.ref : '' }} —— {{ c.message }}
+                </span>
+              </li>
+            </ul>
           </div>
-          <p v-if="updErr" class="err-line">{{ updErr }}</p>
-          <ul v-if="updChecks.length" class="install-list">
-            <li v-for="c in updChecks" :key="c.plugin_id" class="irow">
-              <span class="pname">{{ c.plugin_id }}</span>
-              <span class="psub" :class="{ 'warn-line': c.status === 'tag_changed' }">
-                {{ c.repo }}{{ c.ref ? '@' + c.ref : '' }} —— {{ c.message }}
-              </span>
-            </li>
-          </ul>
-          <details v-if="installRows.length" class="dim">
+          <details v-if="installRows.length" class="plg-block dim">
             <summary>已装外部插件({{ installRows.length }};白名单{{ installRows[0]?.enforced ? '强制' : '未启用' }})</summary>
             <!-- 分组(批四 P3):两个集合的**处置完全不同** ——
                  「随 gah 附带」由 embed 每次启动与嵌入清单比对,用户碰它没有意义;
@@ -3253,8 +3345,22 @@ watch(
                   <button v-if="r.trusted" class="ghost" @click="doUntrustPlugin(r.binary)">撤销登记</button>
                   <!-- 停用与卸载**文案不同**(批二):停用留文件与登记,卸载删全部。 -->
                   <button v-if="!r.disabled && r.loadable" class="ghost" @click="doDisablePlugin(r.binary)">停用</button>
-                  <button v-if="r.disabled" class="ghost" @click="doEnablePlugin(r.binary)">启用</button>
-                  <button class="ghost ro" @click="doUninstallPlugin(r.id)">卸载并删除</button>
+                  <!-- 「启用」在**未登记**时必然失败:Enable → reload → loadOne → verifyTrust 被完整性闸拒。
+                       实测(2026-10-04 用户报):停用 + 撤销登记后点启用,报的是登记错误而不是启用错误,
+                       而按钮看上去完全可点。所以这里**禁用并说明原因**,而不是让人点一次换一条看不懂的报错。 -->
+                  <button
+                    v-if="r.disabled"
+                    class="ghost"
+                    :disabled="!r.trusted"
+                    :data-tip="r.trusted ? '加载这个插件' : '需先登记:未登记的插件过不了完整性闸,启用必然失败'"
+                    @click="doEnablePlugin(r.binary)"
+                  >
+                    启用
+                  </button>
+                  <!-- 破坏性动作用**语义色**,不用灰:灰色读起来就是「禁用」。
+                       刻意**不在已登记/已启用时禁用它** —— 那恰恰是最需要它的时刻
+                       (一个行为不良的插件正是要靠卸载来止损),禁掉它等于把止损手段藏起来。 -->
+                  <button class="ghost danger" @click="doUninstallPlugin(r.id)">卸载并删除</button>
                 </span>
               </li>
             </ul>
@@ -3262,34 +3368,66 @@ watch(
           <!-- UI 插件(2026-10-03):信任模型 + 摘要 + **重扫入口** + 失败原因。
                重扫解决的是「装了插件但没生效、只能靠刷新页面」;失败清单解决的是
                「没生效」与「没被扫到」在界面上分不出来 —— 这两者的处置完全不同。 -->
-          <div class="row ui-plugin-row">
-            <span class="lab-inline">UI 插件</span>
-            <button class="ghost" :disabled="uiScanBusy" @click="rescanUIPlugins()">
-              {{ uiScanBusy ? '扫描中…' : '重新扫描' }}
-            </button>
-            <span class="dim">
-              装好后点这里重扫(不必刷新页面);命令行等价物是
-              <code>gah -install-ui &lt;repo|目录&gt;</code>
-            </span>
+          <!-- UI 插件(批九):**补上安装入口**。此前这一段只有「重新扫描」,
+               而它对**从没装过**的用户毫无用处(扫一个空目录),安装与放行都只在命令行有
+               —— 用户看到「UI 插件」却找不到任何能开始的动作。
+               UI 插件经动态 import() 进主页面,与宿主**同源同权限**,所以确认文案要自己讲清。 -->
+          <div class="plg-block">
+            <div class="plg-block-t">UI 插件</div>
+            <div class="plg-row">
+              <input
+                v-model="uiSpec"
+                class="inp grow"
+                placeholder="仓库地址或本地目录绝对路径"
+                :disabled="uiBusy"
+                @keyup.enter="doUIInstall()"
+              />
+              <button v-if="isDesktop" class="ghost" :disabled="uiBusy" data-tip="选择本地 UI 插件源码目录" @click="pickUIDir()">
+                浏览…
+              </button>
+              <button class="ghost solid" :disabled="uiBusy || !uiSpec.trim()" @click="doUIInstall()">
+                {{ uiBusy ? '处理中…' : '安装' }}
+              </button>
+              <button class="ghost" :disabled="uiScanBusy" @click="rescanUIPlugins()">
+                {{ uiScanBusy ? '扫描中…' : '重新扫描' }}
+              </button>
+            </div>
+            <p class="dim plg-hint">
+              UI 插件经<strong>动态 import()</strong> 进入主页面 —— 与宿主<strong>同源同权限</strong>,
+              可读全部会话内容、可用 cookie 调全部 API。装完重载页面即生效,不必重启 gah。
+            </p>
+            <p v-if="uiOk" class="dim">{{ uiOk }}</p>
+            <p v-if="uiErr" class="err-line">{{ uiErr }}</p>
+
+            <ul v-if="uiPluginList.length" class="install-list">
+              <li v-for="p in uiPluginList" :key="p.id" class="irow">
+                <span class="pname">{{ p.id }}</span>
+                <span class="psub">
+                  v{{ p.version || '?' }} · {{ p.slots }} 槽位 ·
+                  <template v-if="p.disabled">已停用</template>
+                  <template v-else-if="p.trusted">已登记</template>
+                  <template v-else>未登记(完整性闸拦下,不加载)</template>
+                  <template v-if="p.reject"> —— {{ p.reject }}</template>
+                </span>
+                <span class="iact">
+                  <button v-if="!p.trusted && !p.disabled" class="ghost" @click="doUITrust(p.id)">登记</button>
+                  <button v-if="p.disabled" class="ghost" @click="doUIToggle(p.id, true)">启用</button>
+                  <button v-if="!p.disabled" class="ghost" @click="doUIToggle(p.id, false)">停用</button>
+                  <button class="ghost danger" @click="doUIUninstall(p.id)">卸载并删除</button>
+                </span>
+              </li>
+            </ul>
+            <p v-else-if="uiScanBusy || !uiBusy" class="dim plg-hint">还没装 UI 插件。</p>
+            <p v-if="uiPluginTrustEnforced" class="warn-line plg-hint">
+              完整性闸已启用:手工放进 <code>ui-plugins/</code> 的插件默认**不加载**。
+              确认某个可信之后,在上面点「登记」放行(命令行等价物 <code>gah -trust-ui-plugin &lt;id&gt;</code>)。
+            </p>
           </div>
+          <!-- 批四的闸说明已移进上面的 UI 子块内(原先它在块外,与「重新扫描」那段
+               隔着一整个已装列表,读起来像另一件事)。 -->
+          <!-- 原先这里还有一条「已停用的 UI 插件」独立列表。批九**删掉**:installed 列表
+               每行已带 disabled 状态与启停按钮,两条列表会把同一个插件显示两遍。 -->
           <p v-if="uiPluginTrustNote" class="dim">UI 插件(ui-plugins):{{ uiPluginTrustNote }}</p>
-          <!-- 批四:UI 侧闸改为**默认强制**(boot 无条件创建)。老路「手工拷一个 UI 插件
-               目录进 ui-plugins/ 就能用」被断掉了 —— 必须在面板留一行说明,
-               否则用户只会看到"我放的插件不见了",以为产品坏了。放行命令写在这里。 -->
-          <p v-if="uiPluginTrustEnforced" class="warn-line">
-            UI 插件完整性闸已启用:手工放进 <code>ui-plugins/</code> 的插件默认**不加载**。
-            确认某个可信之后放行:<code>gah -trust-ui-plugin &lt;id&gt;</code>
-            (或用 <code>-install-ui</code> 安装,它会自动登记)。
-          </p>
-          <ul v-if="uiPluginDisabled.length" class="install-list">
-            <li v-for="id in uiPluginDisabled" :key="'d-' + id" class="irow">
-              <span class="pname">{{ id }}</span>
-              <span class="psub">已停用(不再下发;文件与完整性闸条目都留着,重新启用不需要重新登记)</span>
-              <span class="iact">
-                <button class="ghost" @click="doUIToggle(id, true)">启用</button>
-              </span>
-            </li>
-          </ul>
           <p v-if="uiPluginErrors.length" class="err-line">
             {{ uiPluginErrors.length }} 个槽位加载失败:
             <template v-for="(e, i) in uiPluginErrors" :key="e.id + e.slot">
@@ -3814,6 +3952,48 @@ textarea.inp {
   gap: 10px;
   margin-bottom: 10px;
 }
+
+/* —— 插件段的分区节奏(批九)——
+   原先「安装 / 检查更新 / 已装清单 / UI 插件」是四组同级的 .row 直接堆叠,
+   彼此之间只有 10px,读起来是一堵墙。现在每组是一个带标题与边框的**子块**,
+   块内控件行只留控件,长说明文字下沉独占一行。
+   控件行允许换行:窄窗时按钮整块下移,而不是被压窄折字。 */
+.plg-block {
+  border: 1px solid var(--line-faint);
+  border-radius: var(--r-input);
+  padding: 12px 14px;
+  margin-bottom: 14px;
+}
+.plg-block > summary {
+  cursor: pointer;
+  font-size: 12px;
+}
+.plg-block-t {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-dim);
+  letter-spacing: 0.04em;
+  margin-bottom: 10px;
+}
+.plg-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap; /* 窄窗时整块下移,不压窄 */
+  margin-bottom: 8px;
+}
+.plg-row > .inp {
+  min-width: 220px;
+}
+.plg-hint {
+  margin: 6px 0 0;
+  line-height: 1.7;
+}
+/* 行内说明文字与正文同字体(比例),只有真正的命令/路径才用 <code>。
+   整段等宽会让中文小字号变成一堵方块墙 —— 这是「阅读困难」的另一半成因。 */
+.plg-hint code {
+  font-size: 11px;
+}
 .row:last-child {
   margin-bottom: 0;
 }
@@ -3868,21 +4048,43 @@ textarea.inp {
   cursor: pointer;
   font-size: 12px;
   padding: 5px 12px;
+  /* 按钮标签**永不折行**(批九)。这一行是 2026-10-04 用户报的「排版太过紧凑」的直接成因之一:
+     窗口一窄,flex 行里的按钮被压窄,「检查更新」断成「检查更 / 新」、「重新扫描」断成
+     「重新 / 扫描」—— 一个按钮被拆成两行,读起来像两个控件。
+     宁可按钮自己撑宽(行可换行),也不让标签被拆开。 */
+  white-space: nowrap;
+  flex: none;
   transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+.ghost:disabled {
+  cursor: not-allowed;
+  color: var(--fg-faint);
+  border-style: dashed;
+  opacity: 0.75;
 }
 .ghost:hover {
   border-color: var(--accent);
   color: var(--accent);
   background: var(--accent-soft);
 }
-.ghost.ro {
-  color: var(--fg-faint);
-  cursor: default;
+/* 破坏性动作(卸载并删除):用**语义色**,不用灰(批九)。
+   原先这里是 `.ro`(--fg-faint + cursor:default)—— 那个样子读起来就是「禁用」,
+   而它恰恰是唯一**必须一直可用**的动作:一个行为不良的插件正是要靠卸载来止损,
+   把止损手段做成「看起来是灰的」等于在用户最需要它的时刻把它藏起来。
+   「已登记 / 已启用时禁用它」这个方案**不采纳**:那正好禁掉了最该用的时刻。 */
+.ghost.danger {
+  color: var(--err);
+  border-color: var(--err-line);
 }
-.ghost.ro:hover {
-  border-color: var(--line);
+.ghost.danger:hover {
+  border-color: var(--err);
+  color: var(--err);
+  background: var(--err-soft);
+}
+.ghost.danger:disabled {
   color: var(--fg-faint);
-  background: none;
+  border-color: var(--line);
+  border-style: dashed;
 }
 .ghost.solid {
   background: var(--accent);

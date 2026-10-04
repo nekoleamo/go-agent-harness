@@ -1,5 +1,5 @@
 // REST 客户端(上行)+ 工具函数。核心交互纯 REST,不绕模板渲染。
-import type { AttachmentView, AuditEntry, CommandOptionsResp, InstallView, CommandView, DocTree, DocView, InstructionsView, Job, McpView, MemoryView, ModelsAllResp, NoticePage, PluginInfo, ProviderInfo, RolePackResult, RoleSpec, RolesView, SkillPackResult, Schedule, SessionEventsPage, SessionInfo, StateView, ToolDef, TrashView, UpdateCheckResp, WorkspaceInfo } from './types'
+import type { AttachmentView, AuditEntry, CommandOptionsResp, InstallView, UIPluginState, CommandView, DocTree, DocView, InstructionsView, Job, McpView, MemoryView, ModelsAllResp, NoticePage, PluginInfo, ProviderInfo, RolePackResult, RoleSpec, RolesView, SkillPackResult, Schedule, SessionEventsPage, SessionInfo, StateView, ToolDef, TrashView, UpdateCheckResp, WorkspaceInfo } from './types'
 
 // 本窗口绑定的会话(多窗口/多会话作用域)。为何是本文件自己持有而不是 import 一个
 // session 模块:本文件被 Node 内置测试以「./api.ts」直接加载(那条路要求 import 带 .ts),
@@ -234,8 +234,22 @@ export const api = {
   },
   // UI 插件的状态事实:被停用的 id(它们不在 /api/ui-plugins 里,但面板要看得见)
   // + 完整性闸是否强制(闸挡住时 /api/ui-plugins 返回空数组,拿不到这个信号)。
-  uiPluginState(): Promise<{ disabled: string[]; enforced: boolean; note: string }> {
+  uiPluginState(): Promise<UIPluginState> {
     return req('/api/ui-plugins/state')
+  },
+  // UI 插件的安装 / 卸载 / 登记(批九:补 GUI 入口 —— 此前面板只有「重新扫描」,
+//  安装与放行都只在命令行有,用户找不到入口)。
+  //
+  // 为什么不复用进程型插件那套 installNameReq:UI 插件的 spec 在 install 时是 `spec`,
+  // 在 uninstall/trust 时是 `id` —— 一个结构体两处语义不同的字段会让人填错还不报错。
+  uiPluginInstall(spec: string): Promise<{ ok: boolean; id: string; dir: string; slots: number; hint: string }> {
+    return req('/api/ui-plugins/install', { method: 'POST', headers: json, body: JSON.stringify({ spec, confirmed: true }) })
+  },
+  uiPluginUninstall(id: string): Promise<{ ok: boolean }> {
+    return req('/api/ui-plugins/uninstall', { method: 'POST', headers: json, body: JSON.stringify({ id, confirmed: true }) })
+  },
+  uiPluginTrust(id: string): Promise<{ ok: boolean }> {
+    return req('/api/ui-plugins/trust', { method: 'POST', headers: json, body: JSON.stringify({ id, confirmed: true }) })
   },
   // UI 插件的停用 / 启用(批四)。停用的效果是**不下发** ⇒ 前端根本不加载。
   uiPluginToggle(id: string, enable: boolean): Promise<{ ok: boolean; enabled: boolean }> {
