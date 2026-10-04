@@ -66,10 +66,20 @@ const installWarn = ref('')
 
 async function refreshInstallList(): Promise<void> {
   try {
-    installRows.value = await api.pluginInstallList()
+    // ⚠️ **形状必须在这里归一**,不能把响应字段直接塞进 ref(2026-10-04 v0.5.0 事故)。
+    //
+    // 事由:`uiPluginDisabled` 直接接 `st.disabled`。只要响应不是预期形状(桩返回 `{}`、
+    // 旧版服务端、代理层兜底),它就是 `undefined` ⇒ 模板里的 `uiPluginDisabled.length`
+    // 在**渲染期**抛 TypeError ⇒ Vue 的更新中断 ⇒ **整个设置面板不出现** ——
+    // 而用户看到的只是「点设置没反应」,面板里一条错误都没有。
+    //
+    // 判据:渲染期任何一处异常都会让**整块 UI 消失**,而不只是那一个控件坏掉。
+    // 所以凡是进模板的数组,一律在**边界**上收敛成数组,不给 undefined 留路。
+    const rows = await api.pluginInstallList()
+    installRows.value = Array.isArray(rows) ? rows : []
     const st = await api.uiPluginState()
-    uiPluginDisabled.value = st.disabled
-    uiPluginTrustEnforced.value = st.enforced
+    uiPluginDisabled.value = Array.isArray(st?.disabled) ? st.disabled : []
+    uiPluginTrustEnforced.value = st?.enforced === true
   } catch (e) {
     installErr.value = '读取已装插件失败:' + (e as Error).message
   }
@@ -142,8 +152,9 @@ async function doCheckPluginUpdates(): Promise<void> {
   updErr.value = ''
   try {
     const r = await api.pluginUpdateCheck()
-    updChecks.value = r.checks
-    if (r.notice) installWarn.value = r.notice
+    // 同上:进模板的数组在边界收敛(checks 非数组会让 `updChecks.length` 在渲染期抛错)。
+    updChecks.value = Array.isArray(r?.checks) ? r.checks : []
+    if (r?.notice) installWarn.value = r.notice
   } catch (e) {
     updErr.value = '检查失败:' + (e as Error).message
   } finally {

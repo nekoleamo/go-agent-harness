@@ -370,7 +370,10 @@ func TestCLIInstallArtifact(t *testing.T) {
 	if err != nil || fi.Size() == 0 {
 		t.Fatalf("产物未落位: %v", err)
 	}
-	if fi.Mode().Perm()&0o111 == 0 {
+	// 执行位只在 POSIX 形态上有意义:Windows 的权限位由 ACL 管,Go 的 os.Chmod(0o755)
+	// 在那里**不产生** POSIX 执行位(AGENTS.md 跨平台坑 ③)。写死这条断言就是让 test-windows
+	// 稳定红 —— v0.5.0 的 CI 红里就有这一条(2026-10-04)。
+	if runtime.GOOS != "windows" && fi.Mode().Perm()&0o111 == 0 {
 		t.Errorf("落位产物应可执行: %v", fi.Mode().Perm())
 	}
 	// ③ 来源账里是 artifact,且不进更新检查
