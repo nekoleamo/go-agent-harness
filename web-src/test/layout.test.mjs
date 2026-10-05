@@ -2113,6 +2113,46 @@ describe('布局护栏:整页永不滚动(第五十二/五十三批)', { skip: s
   // 发消息必须能看见回复:视图是全屏切换的,而 `/diff` 会把视图切到「变更」且此前没有
   // 任何逻辑切回 —— 真机反馈的「说什么都返回『本会话还没有捕获到文件改动』」就是它
   // (那是变更视图的空态,回复全进了看不见的会话流)。
+  // 删**非当前**历史会话,不该动当前会话(2026-10-04 用户实测)。
+  //
+  // 判据用 sessionStorage 的 `gah.lastSeq`:App.rebuild(false)(session-changed 的处理函数)
+  // 第一件事就是 `sessionStorage.removeItem('gah.lastSeq')` —— 它是「整条会话流被重建过」
+  // 留下的**可观测痕迹**,且不依赖任何 DOM 细节。
+  test('删非当前历史会话不刷新当前会话(删当前会话仍要刷新)', async (t) => {
+    const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+    let page = null
+    try {
+      const stub = makeStub(true, false)
+      page = await open(ctx, stub, docks[0].dock)
+      await page.waitForSelector('.sidebar .items', { timeout: 10000 })
+      const mark = async (v) => page.evaluate((x) => sessionStorage.setItem('gah.lastSeq', x), v)
+      const readMark = () => page.evaluate(() => sessionStorage.getItem('gah.lastSeq'))
+      const delRow = async (name) => {
+        await page.click(`.sidebar .session-item:has-text("${name}") .op.del`)
+        await page.waitForSelector('[aria-label="操作确认"]')
+        await page.click('[aria-label="操作确认"] .btn.ok')
+        await page.waitForTimeout(300)
+      }
+
+      // ① 删一个**非当前**的历史会话(桩里当前会话名是 main,历史是 session N)
+      await mark('777')
+      await delRow('session 7')
+      assert.equal(await readMark(), '777', '删非当前会话不该重建当前会话的流(上一次会话才被清过)')
+
+      // ② 删**当前**会话:后端会新建空会话承接,前端必须重新对齐 ⇒ 流要被重建
+      await mark('777')
+      await delRow('main')
+      assert.equal(await readMark(), null, '删当前会话后端已新建空会话承接,前端必须重建会话流')
+
+      assertInvariants(await measure(page))
+    } catch (e) {
+      await shoot(page, t.name)
+      throw e
+    } finally {
+      await ctx.close()
+    }
+  })
+
   test('发消息自动切回会话流(变更视图不吞掉回复)', async (t) => {
     const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
     let page = null

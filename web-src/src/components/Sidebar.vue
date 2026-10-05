@@ -169,11 +169,31 @@ function saveName(s: SessionInfo): void {
   guard('重命名会话「' + cur + '」为「' + v + '」？', false, () => void doSaveName(s))
 }
 
-// —— 删除(仅删记录,不删文件夹;删除类标红)—
+// —— 删除(仅删记录,不删文件夹;删除类标红)——
+//
+// **只在删的是「当前」会话时才 emit session-changed**(2026-10-04 用户实测修复)。
+//
+// 依据在后端,不在前端猜:host-cwd-sessions 的 Delete 末尾是
+//
+//	if s.CurrentSession() == id { _, err := s.New(); return err }
+//
+// 即**只有删掉当前打开的会话**才新建空会话承接。删别的会话时,当前会话的
+// jsonl、显示名与指针**一个字都没变**。
+//
+// 而此前这里无条件 emit ⇒ App.sessionChanged() 会
+// `streamSessionId = ''` + `rebuild(false)`(整条会话流重建)+ `refreshKey++`,
+// 表现为「删一条历史记录,当前会话立刻被刷新」—— 白白打断当前对话的滚动位置与
+// 已渲染内容,回合正在跑时还会闪一下。
+//
+// 顺带说明为什么 `gah:sessions-changed` 那条**照旧无条件发**:它的唯一监听方是
+// InputBar 的 `onSessionsChanged`,只做「关掉会话选择器」。会话列表变了就该通知,
+// 与当前会话是否切换无关。
 async function doDeleteSession(s: SessionInfo): Promise<void> {
+  const wasCurrent = (s.ID || '') === (props.curSession || '')
   try {
     await api.sessionDelete(s.ID)
-    emit('session-changed') // 删除当前会话后端已新建空会话承接
+    // 删当前会话 → 后端已新建空会话承接,前端必须重新对齐(id 已变)。
+    if (wasCurrent) emit('session-changed')
     window.dispatchEvent(new Event('gah:sessions-changed'))
     void refresh()
   } catch (e) {
