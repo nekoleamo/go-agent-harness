@@ -223,6 +223,11 @@ function makeStub(
         exclude_global: true,
         skills_set: false,
         skills: [],
+        // 详情必须回**整份 spec**(真实后端 roleGet 就是这样):思考/模型/收紧档都在里面。
+        // 此前这里漏了它们,于是详情表单里 thinking 是空的 —— 点「跟随会话」等于没点,
+        // 而旧的「点一下就 PATCH」实现照样发请求,把这个桩保真度的缺口**藏住了**。
+        thinking: 'high',
+        model: 'claude-sonnet-4-5-20250929',
         agents: 'Always reconcile before reporting.\n'.repeat(3),
         agents_bytes: 96,
       })
@@ -977,13 +982,19 @@ describe('布局护栏:整页永不滚动(第五十二/五十三批)', { skip: s
       const note = await page.textContent('[data-testid="thinking-role-note"]')
       assert.ok(note && note.includes('高'), `思考覆盖提示未说明实际生效档:${note}`)
 
-      // 展开编辑:思考档可选「跟随会话」,点了就清空(PATCH thinking:'')
+      // 展开编辑:思考档可选「跟随会话」。
+      // 2026-10-04 起**只改本地草稿**,点「保存定义」才写盘(与同区文本框一致;
+      // 此前点一下就 PATCH,两套语义并排)。故这里要多点一次保存。
       await page.click('[data-sec="role"] .prow:has-text("Finance-Analyst") button:has-text("编辑")')
       await page.waitForSelector('[data-sec="role"] textarea')
+      const finPatches = () => stub.seen.filter((r) => r.method === 'PATCH' && r.path === '/api/roles/finance')
       await page.click('[data-sec="role"] .role-detail .seg-it:has-text("跟随会话")')
       await page.waitForTimeout(200)
-      const patches = stub.seen.filter((r) => r.method === 'PATCH' && r.path === '/api/roles/finance')
-      assert.ok(patches.length > 0, `未提交角色定义 PATCH:${JSON.stringify(stub.seen)}`)
+      assert.equal(finPatches().length, 0, `选中不该写盘,却有:${JSON.stringify(finPatches())}`)
+      await page.click('[data-sec="role"] .acts button:has-text("保存定义")')
+      await page.waitForTimeout(300)
+      const patches = finPatches()
+      assert.ok(patches.length > 0, `点保存定义后应提交:${JSON.stringify(stub.seen)}`)
       assert.equal(JSON.parse(patches[patches.length - 1].body).thinking, '', `未清掉角色思考档:${patches[patches.length - 1].body}`)
 
       // 新增的回显行不得把面板撑出横向滚动条(长模型名是无空格 token)
@@ -1634,16 +1645,46 @@ describe('布局护栏:整页永不滚动(第五十二/五十三批)', { skip: s
       assert.ok(note.includes('审批 全局智能 → 实际严格'), `生效档回显缺审批:${note}`)
       assert.ok(note.includes('沙箱 全局工作区 → 实际只读'), `生效档回显缺沙箱:${note}`)
 
-      // 改沙箱档 → 一次 PATCH,且**只带这一个字段**(部分更新不能顺手把别的字段写回去)
+      // 改沙箱档 → **只改本地草稿,一个 PATCH 都不发**(2026-10-04 用户实测反馈)。
+      // 此前是 @change="saveRoleDef(...)" = 选中即写盘,而同一区的文本框却要点「保存定义」——
+      // 两套语义并排,用户无法形成稳定预期;而这个选项恰好是**权限档**。
       await page.selectOption(sel('沙箱'), 'workspace-write')
       await page.waitForTimeout(300)
-      const patches = stub.seen
-        .filter((r) => r.method === 'PATCH' && r.path === '/api/roles/assistant')
-        .map((r) => JSON.parse(r.body || '{}'))
+      const patchesOf = () =>
+        stub.seen
+          .filter((r) => r.method === 'PATCH' && r.path === '/api/roles/assistant')
+          .map((r) => JSON.parse(r.body || '{}'))
+      assert.equal(patchesOf().length, 0, `选中不该写盘,却有:${JSON.stringify(patchesOf())}`)
+      assert.equal(await page.inputValue(sel('沙箱')), 'workspace-write', '草稿应即时反映在下拉上')
+      assert.ok(
+        await page.locator('[data-sec="role"] .acts .dirty').isVisible(),
+        '未保存要有常驻标记(否则用户不知道刚才那一下没生效)',
+      )
+
+      // 「放弃改动」→ 回到已保存的值,且**不发请求**(不丢数据也不写盘的退出口)
+      await page.click('[data-sec="role"] .acts button:has-text("放弃改动")')
+      await page.waitForTimeout(300)
+      assert.equal(patchesOf().length, 0, `放弃不该写盘:${JSON.stringify(patchesOf())}`)
+      assert.equal(await page.inputValue(sel('沙箱')), 'read-only', '放弃后应回到已保存的档位')
+
+      // 点「保存定义」→ **一次** PATCH,且带上整份定义(不再是一个字段一个请求)
+      await page.selectOption(sel('沙箱'), 'workspace-write')
+      await page.waitForTimeout(200)
+      await page.click('[data-sec="role"] .acts button:has-text("保存定义")')
+      await page.waitForTimeout(400)
+      const patches = patchesOf()
       assert.equal(patches.length, 1, `应只提交一次:${JSON.stringify(patches)}`)
-      assert.deepEqual(patches[0], { sandbox: 'workspace-write' }, `部分更新体不对:${JSON.stringify(patches[0])}`)
-      // 回包被回填(真后端回整份 spec):下拉不回弹
+      for (const k of ['sandbox', 'approval', 'model', 'thinking', 'exclude_global', 'name', 'description', 'identity']) {
+        assert.ok(k in patches[0], `保存定义应带上 ${k}(缺它 = 这个控件的改动会丢):${JSON.stringify(patches[0])}`)
+      }
+      assert.equal(patches[0].sandbox, 'workspace-write', `保存体不对:${JSON.stringify(patches[0])}`)
+      // 回包被回填(真后端回整份 spec):下拉不回弹,且「未保存」标记消失
       assert.equal(await page.inputValue(sel('沙箱')), 'workspace-write', '提交后下拉回弹成旧值')
+      assert.equal(
+        await page.locator('[data-sec="role"] .acts .dirty').count(),
+        0,
+        '保存成功后未保存标记应消失(否则看着像存了又没存)',
+      )
       assertInvariants(await measure(page))
     } catch (e) {
       await shoot(page, t.name)

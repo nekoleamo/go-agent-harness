@@ -669,6 +669,7 @@ type DraftKind = 'role' | 'skill' | 'mcp'
 //   列上去等于说「继续将丢弃全局指令」而实际不会 —— 白吓一跳,还让人以为已经放弃了。
 function draftLabels(kinds: DraftKind[]): string[] {
   const out: string[] = []
+  if (kinds.includes('role') && roleDefDirty.value) out.push('角色「' + selRole.value + '」的定义(名称/权限档/模型等)')
   if (kinds.includes('role') && agentsDirty.value) out.push('角色「' + selRole.value + '」的工作规则')
   if (kinds.includes('skill') && skDirty.value) out.push('技能「' + (skEdit.value?.name ?? '') + '」的 SKILL.md')
   if (kinds.includes('mcp') && mcpDirty.value) out.push('MCP server 配置')
@@ -1019,6 +1020,33 @@ const skSaved = ref('') // 服务端上一版技能正文
 // 改名/移动(第八十四批):技能身份 = 目录名 + 归属库。一次表单两件都能改
 // (只改名/只换库/两件一起),提交走一条 relocate 端点。
 const skMove = ref<{ name: string; role: string; toName: string; toRole: string } | null>(null)
+// roleDefSaved 角色**定义**的已保存基线(不含 AGENTS.md,那是 agentsSaved 管的)。
+//
+// 为什么要有它(2026-10-04 用户实测):这一区的控件此前是**两套语义**——
+// 显示名/定位/人设三个文本框只改本地草稿(要点「保存定义」),而审批档、沙箱档、思考档、
+// 模型、exclude_global 这些**选项型控件却是选中即写盘**。用户看到的正是「文本框要点确定、
+// 选项一点就生效」的自相矛盾,而且选项里恰好是**权限档**(选「严格」= 危险命令直接拒)。
+//
+// 统一成草稿式:所有控件只改本地,「保存定义」一次性写盘。未保存有常驻标记,
+// 切角色/换技能前会问一声(进 draftLabels)。
+// 基线存**值快照**而不是只存一个 key:「放弃改动」要把值拨回去,只存 key 拨不回去
+// (第一版就是个空操作 —— 从当前值构造 back 再盖回去,等于什么都没做)。
+const roleDefSaved = ref<Partial<RoleSpec>>({})
+function roleDefSnapshot(d: RoleSpec | null): Partial<RoleSpec> {
+  const out: Record<string, unknown> = {}
+  for (const k of ROLE_DEF_FIELDS) out[k] = d ? (d[k] ?? '') : ''
+  return out as Partial<RoleSpec>
+}
+// 参与基线的字段:少写一个就会出现「改了它却算不出未保存」。
+const ROLE_DEF_FIELDS: (keyof RoleSpec)[] = [
+  'name', 'description', 'identity', 'exclude_global', 'model', 'thinking', 'approval', 'sandbox',
+]
+function roleDefKey(d: RoleSpec | null): string {
+  if (!d) return ''
+  return ROLE_DEF_FIELDS.map((k) => String(d[k] ?? '')).join('\u0001')
+}
+const roleDefDirty = computed(() => !!roleDetail.value && roleDefKey(roleDetail.value) !== roleDefKey(roleDefSaved.value as RoleSpec))
+
 // agentsDirty / skDirty 未保存改动(凡切目标前都要问一声:刚写的东西不能静默丢)
 const agentsDirty = computed(() => !!selRole.value && agentsDraft.value !== agentsSaved.value)
 const skDirty = computed(() => !!skEdit.value && (skEdit.value?.content ?? '') !== skSaved.value)
@@ -1121,6 +1149,7 @@ async function selectRole(r: RoleSpec, confirmed = false): Promise<void> {
   try {
     const d = await api.roleGet(r.id)
     roleDetail.value = d
+    roleDefSaved.value = roleDefSnapshot(d)
     agentsDraft.value = d.agents ?? ''
     agentsSaved.value = d.agents ?? ''
     roleIDDraft.value = d.id
@@ -1163,6 +1192,9 @@ function queueRolePatch(build: () => RolePatch): Promise<void> {
       if (!patch || Object.keys(patch).length === 0) return
       const d = await api.roleUpdate(id, patch)
       roleDetail.value = { ...(roleDetail.value as RoleSpec), ...d, agents: agentsDraft.value }
+      // 基线跟着服务端回包走:不刷新的话「未保存」标记在保存成功之后仍然亮着,
+      // 而「保存定义」按钮又因为 !roleDefDirty 变灰 —— 看上去像存了又没存。
+      roleDefSaved.value = roleDefSnapshot(roleDetail.value)
       await loadRoles()
       roleMsg.value = '已保存'
     } catch (e) {
@@ -1175,6 +1207,36 @@ function queueRolePatch(build: () => RolePatch): Promise<void> {
   rolePatchQueue = rolePatchQueue.then(step, step)
   return rolePatchQueue
 }
+// saveRoleDefNow 把角色**定义**的整份草稿一次性写盘。
+//
+// 为什么不是「每个控件各自保存」:同一区里两种语义并排(文本框要点保存、选项一点就生效)
+// 会让人无法形成稳定预期 —— 2026-10-04 用户实测报的就是这个。而选项里恰好是**权限档**
+// (选「严格」= 危险命令直接拒、子代理与定时任务同样按它跑),最不该误触即生效。
+async function saveRoleDefNow(): Promise<void> {
+  const d = roleDetail.value
+  if (!d) return
+  await saveRoleDef({
+    name: d.name ?? '',
+    description: d.description ?? '',
+    identity: d.identity ?? '',
+    exclude_global: !!d.exclude_global,
+    model: d.model ?? '',
+    thinking: d.thinking ?? '',
+    approval: d.approval ?? '',
+    sandbox: d.sandbox ?? '',
+  })
+}
+
+// revertRoleDef 放弃定义区的未保存改动(把本地值拨回已保存基线)。
+//
+// 为什么要有它:草稿式的代价是「改了没保存就走了」的风险,所以需要一个**不丢数据也不写盘**
+// 的退出口 —— 只切角色会问「要不要丢」,但用户多数时候只是想撤销刚才那一下。
+function revertRoleDef(): void {
+  const d = roleDetail.value
+  if (!d) return
+  roleDetail.value = { ...d, ...roleDefSnapshot(roleDefSaved.value as RoleSpec) } as RoleSpec
+}
+
 // —— 角色权限收紧(第九十二批) ——
 // 角色只能把审批/沙箱**往里收**:实际档 = 全局档与角色档里更严的那个(后端合成,
 // 前端不自己算 —— 算出来跟真正裁决的档位漂开就是假事实)。这里只做三件事:
@@ -2664,10 +2726,14 @@ watch(
               <input class="inp grow" :value="roleDetail.identity" @change="(e) => (roleDetail!.identity = (e.target as HTMLInputElement).value)" />
             </div>
             <label class="chk">
+              <!-- 选项型控件一律**只改本地草稿**,由下面的「保存定义」一次性写盘(2026-10-04 用户实测)。
+                   此前这里是 @change="saveRoleDef(...)" = 选中即写盘,而同一区的文本框却要点保存 ——
+                   两套语义并排,用户无法形成稳定预期;且选项里恰好是**权限档**。 -->
               <input
                 type="checkbox"
                 :checked="!!roleDetail.exclude_global"
-                @change="saveRoleDef({ exclude_global: ($event.target as HTMLInputElement).checked })"
+                :disabled="roleSaving"
+                @change="roleDetail!.exclude_global = ($event.target as HTMLInputElement).checked"
               />
               <span>不注入全局 AGENTS.md</span>
             </label>
@@ -2678,8 +2744,9 @@ watch(
               <input
                 class="inp grow mono"
                 :value="roleDetail.model || ''"
+                :disabled="roleSaving"
                 placeholder="留空 = 跟随会话模型"
-                @change="saveRoleDef({ model: ($event.target as HTMLInputElement).value })"
+                @change="roleDetail!.model = ($event.target as HTMLInputElement).value"
               />
             </div>
             <div class="row">
@@ -2689,7 +2756,8 @@ watch(
                   class="seg-it"
                   :class="{ on: !roleDetail.thinking }"
                   data-tip="跟随会话思考档"
-                  @click="saveRoleDef({ thinking: '' })"
+                  :disabled="roleSaving"
+                  @click="roleDetail!.thinking = ''"
                 >
                   跟随会话
                 </button>
@@ -2699,7 +2767,8 @@ watch(
                   class="seg-it"
                   :class="{ on: roleDetail.thinking === t }"
                   :data-tip="'角色固定为 ' + THINK_LABEL[t]"
-                  @click="saveRoleDef({ thinking: t })"
+                  :disabled="roleSaving"
+                  @click="roleDetail!.thinking = t"
                 >
                   {{ THINK_LABEL[t] }}
                 </button>
@@ -2719,7 +2788,7 @@ watch(
                 class="sel grow"
                 :value="roleDetail.approval || ''"
                 :disabled="roleSaving"
-                @change="saveRoleDef({ approval: ($event.target as HTMLSelectElement).value })"
+                @change="roleDetail!.approval = ($event.target as HTMLSelectElement).value"
               >
                 <option value="">跟随全局</option>
                 <option v-for="a in ROLE_AP" :key="'ra-' + a.v" :value="a.v">{{ a.label }}</option>
@@ -2731,7 +2800,7 @@ watch(
                 class="sel grow"
                 :value="roleDetail.sandbox || ''"
                 :disabled="roleSaving"
-                @change="saveRoleDef({ sandbox: ($event.target as HTMLSelectElement).value })"
+                @change="roleDetail!.sandbox = ($event.target as HTMLSelectElement).value"
               >
                 <option value="">跟随全局</option>
                 <option v-for="s in ROLE_SB" :key="'rs-' + s.v" :value="s.v">{{ s.label }}</option>
@@ -2745,11 +2814,14 @@ watch(
             <div class="row acts">
               <button
                 class="ghost solid"
-                :disabled="busy"
-                @click="saveRoleDef({ name: roleDetail!.name, description: roleDetail!.description, identity: roleDetail!.identity })"
+                :disabled="busy || roleSaving || !roleDefDirty"
+                :data-tip="roleDefDirty ? '把上面这些改动写进角色定义' : '没有未保存的改动'"
+                @click="saveRoleDefNow()"
               >
                 保存定义
               </button>
+              <button v-if="roleDefDirty" class="ghost" :disabled="roleSaving" @click="revertRoleDef()">放弃改动</button>
+              <span v-if="roleDefDirty" class="dirty">未保存</span>
             </div>
 
             <label class="fld">
