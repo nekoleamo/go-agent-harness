@@ -102,16 +102,16 @@ func TestMergeFieldsHeaders(t *testing.T) {
 func TestExpandHeaders(t *testing.T) {
 	in := map[string]string{
 		"x-session": "sess-${session}",
-		"ua":         "gah/${version}",
-		"cwd":        "${cwd}/x",
-		"mixed":      "${session}-${version}-${cwd}",
+		"ua":        "gah/${version}",
+		"cwd":       "${cwd}/x",
+		"mixed":     "${session}-${version}-${cwd}",
 	}
 	got := ExpandHeaders(in, HeaderVars{Session: "abc", Version: "0.5.5", CWD: "/tmp/p"})
 	want := map[string]string{
 		"x-session": "sess-abc",
-		"ua":         "gah/0.5.5",
-		"cwd":        "/tmp/p/x",
-		"mixed":      "abc-0.5.5-/tmp/p",
+		"ua":        "gah/0.5.5",
+		"cwd":       "/tmp/p/x",
+		"mixed":     "abc-0.5.5-/tmp/p",
 	}
 	for k, v := range want {
 		if got[k] != v {
