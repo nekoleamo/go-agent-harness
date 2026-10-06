@@ -71,3 +71,19 @@ test('预设默认不写死模型名,唯一例外是 openrouter/free', () => {
   const withModel = PROVIDER_PRESETS.filter((p) => p.default_model)
   assert.equal(withModel.length, 1)
 })
+
+// —— OpenCode Go 预设 ——
+// 它与 OpenRouter 的差别是**订阅制**且**按请求头接入**(官方要求自定义 UA + 每会话
+// 稳定 session id),所以预设必须自带 default_headers,且这些头要能被用户看到并改。
+test('OpenCode Go 预置了会话头(网关按头识别,不能藏成隐式行为)', () => {
+  const go = presetByName('opencode-go')
+  assert.ok(go, '应有 opencode-go 预设')
+  assert.equal(go.base_url, 'https://opencode.ai/zen/go/v1')
+  assert.ok(go.default_headers, '应预置自定义头')
+  assert.match(go.default_headers, /x-opencode-session:\s*\$\{session\}/)
+  // 订阅制 ⇒ 不能标成"本地免 Key"
+  assert.ok(!go.key_optional, '需要订阅取 key,不该标免 Key')
+  // 端点必须是 https
+  assert.match(go.base_url, /^https:\/\//)
+})
+

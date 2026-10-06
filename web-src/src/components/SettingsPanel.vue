@@ -34,6 +34,7 @@ import {
   withCurrentModel,
 } from "../modelsel";
 import type { ModelOption } from "../modelsel";
+import { parseHeaderLines } from "../providerheaders";
 import { settingSections } from "../registry";
 import {
   loadUIPlugins,
@@ -637,8 +638,20 @@ const providerNames = computed(() => new Set(providers.value.map((p) => p.Name))
 const pfConflicts = computed(
   () => providers.value.find((p) => p.Name === pf.value.name.trim())?.Name ?? "",
 );
-const pf = ref({ name: "", base_url: "", api_key: "", model: "" });
+const pf = ref({
+  name: "",
+  base_url: "",
+  api_key: "",
+  model: "",
+  /**
+   * 自定义请求头,**一行一个** `键: 值`(textarea 形态,因为它天生是多行且用户量少)。
+   * 选这个形态而不是两个输入框:头值里常带冒号/等号/占位符,单行输入框容易看不出问题在哪;
+   * 而解析失败时能指着行号说「第 2 行格式不对」。
+   */
+  headers: "",
+});
 const presets = PROVIDER_PRESETS;
+
 // —— 分段导航(左栏;窄窗口退化为顶部芯片条) ——
 // 面板此前是一条长滚动列:43 个插件条目把「关于 gah / 检查更新」顶到必须长滚的位置。
 // 现在段与导航共用一份键(段上写 data-sec),跳转与高亮都从 DOM 反查 —— 少一份可能失配的映射表。
@@ -2352,6 +2365,9 @@ function applyPreset(p: ProviderPreset): void {
     base_url: p.base_url,
     api_key: "",
     model: p.default_model ?? "",
+    // 预设自带的头直接**填进表单**(可见可改),而不是悄悄在下发时补上:
+    // 隐式行为出问题时用户无从查,而这两行字就是排查的起点。
+    headers: p.default_headers ?? "",
   };
   showAdd.value = true;
   err.value = "";
@@ -2434,14 +2450,17 @@ async function addProvider(): Promise<void> {
   const name = pf.value.name;
   busy.value = true;
   try {
+    // 解析放在 await 之前:格式错就该当场报,不该先发一个「保存成功」再告诉用户头没生效
+    const headers = parseHeaderLines(pf.value.headers);
     await api.providerAdd({
       name: pf.value.name,
       base_url: pf.value.base_url,
       api_key: pf.value.api_key,
       model: pf.value.model || undefined,
+      headers: Object.keys(headers).length ? headers : undefined,
     });
     showAdd.value = false;
-    pf.value = { name: "", base_url: "", api_key: "", model: "" };
+    pf.value = { name: "", base_url: "", api_key: "", model: "", headers: "" };
     applied.value = null;
     probe.value = null;
     lastSaved.value = name;
@@ -4673,6 +4692,22 @@ watch(
                     class="inp mono"
                     placeholder="留空则在保存后从模型下拉里选"
                   />
+                </label>
+                <label class="fld">
+                  <span class="fld-lab">自定义请求头(可选,一行一个「键: 值」)</span>
+                  <textarea
+                    v-model="pf.headers"
+                    class="inp mono"
+                    rows="2"
+                    placeholder="x-opencode-session: ${session}"
+                  ></textarea>
+                  <span class="dim"
+                    >网关按请求头路由或限流时才需要。支持
+                    <code>${session}</code> / <code>${version}</code> /
+                    <code>${cwd}</code> 三个占位符(保存时由服务端展开);值留空表示删掉
+                    这个键。注意:头值会**明文**存在 provider.yaml 里,长期凭据请放
+                    api_key。</span
+                  >
                 </label>
                 <div class="form-acts">
                   <button

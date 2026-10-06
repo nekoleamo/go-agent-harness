@@ -214,10 +214,42 @@ type ModelRouter interface {
 }
 
 // ModelCatalog 可选接口(ctx.llm 实现者按需实现):**本地**回答「这个模型名有没有适配器能接」。
-//
 // 为何单独一个窄接口而不塞进 LLMService:消费方(host-roles 在"按角色换模型"前做一次可用性校验)
 // 只需要这一个问题的答案,且假实现(单测里的假 LLM)不该为此扩接口。
 // 与 ModelRouter 的分工:ModelRouter 是**适配器**声明自己能接什么,Catalog 是**服务**汇总后的判定。
+// 实现纪律:必须纯本地(不得打端点 /models)、不得因未知而失败(判不了就返回 true)。
+// ProviderHeaders provider 级自定义请求头(键值均为字符串)。
+//
+// 为什么需要它:有些网关**按请求头**路由或限流,光有 base_url + key 接入不了。已知的真实
+// 例子:OpenCode Go(第三方 coding agent 可用,但要求①用**自己的** user agent 标识自己、
+// ②每个会话发一个**稳定**的 session ID 到 `x-opencode-session`,否则会被限速/拒绝)。
+//
+// 因此这一层刻意做成**通用 header 而不是某家厂商的特例**:头怎么解释由 provider 配置声明,
+// 适配器只负责原样带上,不硬编码任何一家的语义。
+//
+// 值支持占位符(在宿主侧、发给适配器之前展开;见 providerfile.ExpandHeaders):
+//
+//	${session} 当前会话 id(主会话时为空 ⇒ 回落项目 key)
+//	${version} gah 版本号
+//	${cwd}     当前工作目录
+//
+// 未知占位符**原样保留**(宁可让网关看到一个它不认识的字面量,也不要静默变成空串 ——
+// 后者会悄悄改变请求语义)。
+type ProviderHeaders map[string]string
+
+// HeaderConfigurable 可选接口:适配器支持 provider 级自定义请求头。
+//
+// 为什么不做进 LLMAdapter 接口:它只有一处消费(host-llm 切 provider 时下发),
+// 而多数适配器不需要它 —— 塞进核心接口会让所有适配器为不需要的能力写空实现。
+// 宿主按「实现了就下发」处理,没实现的适配器**静默忽略**并在日志留一行说明。
+type HeaderConfigurable interface {
+	ConfigureHeaders(h ProviderHeaders)
+}
+
+// ModelCatalog 可选接口(ctx.llm 实现者按需实现):**本地**回答「这个模型名有没有适配器能接」。
+//
+// 为何单独一个窄接口而不塞进 LLMService:消费方(host-roles 在"按角色换模型"前做一次可用性校验)
+// 只需要这一个问题的答案,且假实现(单测里的假 LLM)不该为此扩接口。
 // 实现纪律:必须纯本地(不得打端点 /models)、不得因未知而失败(判不了就返回 true)。
 type ModelCatalog interface {
 	KnownModel(model string) bool
@@ -346,12 +378,30 @@ type ProviderAdapter interface {
 }
 
 // ProviderProfile 一个 provider 的运行时视图(展示/切换用;host-llm 提供)。
+// ProviderProfile 一个 provider 的可序列化视图(GET /api/providers / POST 同形)。
 type ProviderProfile struct {
 	Name    string // 标识/切换名(域短名,持久化 provider.yaml 的 name)
 	BaseURL string
 	APIKey  string
 	Model   string
 	Active  bool // 当前活跃(adapter 端点与模型均指向它)
+	// Headers provider 级自定义请求头(见 ProviderHeaders)。
+	//
+	// **原样回显,不打码**:设置面板本来就要回显用户自己填的配置(与 base_url 同级)。
+	// 但要说清它的落盘形态 —— 与 api_key 一样**明文**存在 provider.yaml(该文件 0600),
+	// 所以别把长期凭据塞进 header 值里(那种场景应该用 api_key 字段)。
+	Headers ProviderHeaders
+}
+
+// ProviderHeadersMutable 可选接口(多 provider 实现者按需实现):**单独**设置某 provider 的
+// 自定义请求头。
+//
+// 为什么不把它并进 AddProvider 的参数:AddProvider 已有四个参数且被多处实现与桩件使用
+// (tests 里的 stubMultiProvider 等),加第五个参数会把所有实现与测试一起改。而「先加 provider、
+// 再设头」本来就是自然的两步,拆开反而少一处耦合。宿主侧:实现了就调,没实现就明确报,
+// **不静默丢弃**(头配了却没生效 = 用户以为限速规则已改,实际没改)。
+type ProviderHeadersMutable interface {
+	SetProviderHeaders(name string, h map[string]string) error
 }
 
 // ProviderModelList 一个 provider 端点的模型列表(/model 聚合各 provider 的结果)。

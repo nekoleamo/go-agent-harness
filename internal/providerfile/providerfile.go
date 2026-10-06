@@ -17,13 +17,17 @@ import (
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
-// Provider 一个提供商(base_url/api_key/model 三项;omitempty:逐项删除后不写出空字段)。
+// Provider 一个提供商(base_url/api_key/model 三项 + 可选自定义请求头)。
 // Name 为标识/切换名(域短名;旧格式迁移时生成)。
+//
+// Headers 是 2026-10-06 新增的第四项:有些网关按请求头路由/限流,光有端点与 key 接入不了
+// (真实例子见 sdk.ProviderHeaders)。值里的 ${session}/${version}/${cwd} 在下发适配器前展开。
 type Provider struct {
-	Name    string `yaml:"name,omitempty"`
-	BaseURL string `yaml:"base_url,omitempty"`
-	APIKey  string `yaml:"api_key,omitempty"`
-	Model   string `yaml:"model,omitempty"`
+	Name    string            `yaml:"name,omitempty"`
+	BaseURL string            `yaml:"base_url,omitempty"`
+	APIKey  string            `yaml:"api_key,omitempty"`
+	Model   string            `yaml:"model,omitempty"`
+	Headers map[string]string `yaml:"headers,omitempty"`
 }
 
 // File 配置文件内容(v2):active = 启动默认活跃 provider 名;空 = 无/首个自动。
@@ -213,6 +217,9 @@ func SetFields(name, baseURL, apiKey, model string) error {
 }
 
 // mergeFields partial 合并:src 非空字段覆盖 dst,空字段保留 dst。
+//
+// Headers 的合并语义与前三项**故意不同**:逐键合并而不是整体替换。理由:头是一组独立
+// 的开关,整体替换会让「只改 UA 却把会话头弄丢了」;而值显式置空字符串仍表示删这一个键。
 func mergeFields(src, dst Provider) Provider {
 	if src.BaseURL != "" {
 		dst.BaseURL = src.BaseURL
@@ -226,7 +233,48 @@ func mergeFields(src, dst Provider) Provider {
 	if src.Name != "" {
 		dst.Name = src.Name
 	}
+	if src.Headers != nil {
+		if dst.Headers == nil {
+			dst.Headers = map[string]string{}
+		}
+		for k, v := range src.Headers {
+			if v == "" {
+				delete(dst.Headers, k) // 显式置空 = 删这一个键
+				continue
+			}
+			dst.Headers[k] = v
+		}
+		if len(dst.Headers) == 0 {
+			dst.Headers = nil // 别在盘上留一个空 map(它与“没有”应当读起来一样)
+		}
+	}
 	return dst
+}
+
+// HeaderVars 头里占位符的取值(由宿主从真实运行态取,不在本层猜)。
+type HeaderVars struct {
+	Session string // 当前会话 id(主会话为空 ⇒ 宿主回落项目 key)
+	Version string // gah 版本号
+	CWD     string // 当前工作目录
+}
+
+// ExpandHeaders 展开头值里的 ${session} / ${version} / ${cwd}。
+//
+// 为什么**未知占位符原样保留**:静默换成空串会悄悄改变请求语义(网关看到空会话 id 与看到
+// 字面量 "${seesion}" 是两回事,后者至少会报错而不是被当成合法值)。空值输入是合法的
+// (主会话/未设版本),那时占位符就替换成空串。
+func ExpandHeaders(h map[string]string, vars HeaderVars) map[string]string {
+	if h == nil {
+		return nil
+	}
+	out := make(map[string]string, len(h))
+	for k, v := range h {
+		v = strings.ReplaceAll(v, "${session}", vars.Session)
+		v = strings.ReplaceAll(v, "${version}", vars.Version)
+		v = strings.ReplaceAll(v, "${cwd}", vars.CWD)
+		out[k] = v
+	}
+	return out
 }
 
 // SetActive 切换活跃(校验存在;空名 = 清除活跃)。持久化 active。
@@ -369,4 +417,30 @@ func ShortNameOf(baseURL string) string {
 		return "default"
 	}
 	return h
+}
+
+// UpdateHeaders 覆盖式设置某 provider 的自定义头(nil/空 = 清空该 provider 的全部头)。
+//
+// 刻意是**覆盖**而不是逐键合并:界面上「改自定义头」的语义是「这就是我要的那一组」,
+// 逐键合并会让「删掉一个键」这个动作根本表达不出来(前端删了一行,保存后它还在)。
+func UpdateHeaders(name string, h map[string]string) error {
+	f, err := LoadFile()
+	if err != nil {
+		return err
+	}
+	for i := range f.Providers {
+		if f.Providers[i].Name == name {
+			if len(h) == 0 {
+				f.Providers[i].Headers = nil
+			} else {
+				cp := make(map[string]string, len(h))
+				for k, v := range h {
+					cp[k] = v
+				}
+				f.Providers[i].Headers = cp
+			}
+			return SaveFile(f)
+		}
+	}
+	return fmt.Errorf("provider: %s 不存在", name)
 }

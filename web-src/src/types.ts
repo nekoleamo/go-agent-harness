@@ -312,6 +312,8 @@ export interface ProviderInfo {
   APIKey: string
   Model: string
   Active: boolean
+  /** provider 级自定义请求头(网关按头路由/限流时才需要;值里的 ${session} 等占位符未展开) */
+  Headers?: Record<string, string>
 }
 export interface PluginInfo {
   ID: string

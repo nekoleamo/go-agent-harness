@@ -117,8 +117,9 @@ type Adapter struct {
 	apiKey  string
 	// 启动默认快照(Unset/Reset 恢复用;env/样板/provider.yaml 顺序的生效值)
 	defaultBaseURL, defaultAPIKey, defaultModel string
-	modelsCache                                 []sdk.ModelInfo // ListModels TTL 缓存
-	modelsCachedAt                              time.Time       // 缓存写入时间
+	headers                                     sdk.ProviderHeaders // provider 级自定义请求头(见 ConfigureHeaders)
+	modelsCache                                 []sdk.ModelInfo     // ListModels TTL 缓存
+	modelsCachedAt                              time.Time           // 缓存写入时间
 }
 
 func (a *Adapter) Name() string { return "llm-openai-compat" }
@@ -131,9 +132,50 @@ func (a *Adapter) Configure(baseURL, apiKey string) error {
 	a.mu.Lock()
 	a.baseURL = strings.TrimSuffix(baseURL, "/")
 	a.apiKey = apiKey
+	a.headers = nil     // 端点已变:旧的自定义头属于上一个端点,留着会把它发去不相干的网关
 	a.modelsCache = nil // 端点已变:缓存失效
 	a.mu.Unlock()
 	return nil
+}
+
+// ConfigureHeaders 下发 provider 级自定义请求头(sdk.HeaderConfigurable)。
+//
+// 头在**每一跳**都发(模型枚举 + 对话),不是只发对话 —— 网关常按头做路由与限流,
+// 只发一半会出现「能列模型但发不出去」这种难查的不一致。
+func (a *Adapter) ConfigureHeaders(h sdk.ProviderHeaders) {
+	a.mu.Lock()
+	if len(h) == 0 {
+		a.headers = nil
+	} else {
+		a.headers = h
+	}
+	a.mu.Unlock()
+}
+
+// applyHeaders 把自定义头 + 标识自己的 UA 打到请求上。
+//
+// **UA 一律带**:OpenCode Go 这类网关明确要求客户端「用自己的 UA 标识自己」
+// (文档原话:不要用通用 SDK / HTTP 库的名字),而对别家网关这也是好事(不少按 UA 路由或限流)。
+// 放在这里而不是让每个 provider 各自声明 —— UA 是**客户端身份**,不是某个网关的特例。
+func (a *Adapter) applyHeaders(req *http.Request) {
+	a.mu.RLock()
+	hs := a.headers
+	a.mu.RUnlock()
+	for k, v := range hs {
+		req.Header.Set(k, v)
+	}
+	if req.Header.Get("User-Agent") == "" {
+		req.Header.Set("User-Agent", gahUserAgent())
+	}
+}
+
+// gahUserAgent 本客户端的 UA(版本来自 GAH_VERSION;boot 时由 cmd/gah 注入)。
+func gahUserAgent() string {
+	v := strings.TrimSpace(os.Getenv("GAH_VERSION"))
+	if v == "" {
+		return "gah" // 未注入(单测/嵌入):仍然自报家门,不伪装成 curl 之类
+	}
+	return "gah/" + strings.TrimPrefix(v, "v")
 }
 
 // ProviderInfo 当前端点与凭据(展示用)。
@@ -195,6 +237,7 @@ func (a *Adapter) ListModels() ([]sdk.ModelInfo, error) {
 	if key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
+	a.applyHeaders(req)
 	resp, err := a.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("llm-openai: models 列表请求失败: %w", err)
@@ -350,6 +393,7 @@ func (a *Adapter) Complete(ctx context.Context, req *sdk.LLMRequest, onChunk fun
 	if key := a.credentials(); key != "" {
 		hreq.Header.Set("Authorization", "Bearer "+key)
 	}
+	a.applyHeaders(hreq)
 
 	resp, err := a.client.Do(hreq)
 	if err != nil {
@@ -523,3 +567,5 @@ func wireContent(msg sdk.LLMMessage) any {
 	}
 	return parts
 }
+
+var _ sdk.HeaderConfigurable = (*Adapter)(nil)

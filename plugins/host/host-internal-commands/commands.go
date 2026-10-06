@@ -1054,8 +1054,14 @@ func (h *Host) providerShow() (string, error) {
 		if p.Active {
 			mark = "★"
 		}
-		fmt.Fprintf(&b, "  %s %s | %s | 模型: %s | Key: %s\n",
+		line := fmt.Sprintf("  %s %s | %s | 模型: %s | Key: %s",
 			mark, p.Name, orDefault(p.BaseURL, "未配置端点"), orDefault(p.Model, "未设置"), maskKey(p.APIKey))
+		// 自定义头**只报数量不报值**:头里可能混着凭据,打进会话记录(会进上下文、可能落盘)
+		// 是不必要的暴露面;而只报数量已经足够回答「我配的头到底还在不在」。
+		if n := len(p.Headers); n > 0 {
+			line += fmt.Sprintf(" | 自定义头 %d 个", n)
+		}
+		b.WriteString(line + "\n")
 	}
 	b.WriteString("  (切换: /provider use <name>;新增: /provider add <baseUrl> <apiKey> [model];编辑活跃: /provider set)")
 	return "提供商: \n" + b.String(), nil

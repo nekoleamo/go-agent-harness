@@ -24,6 +24,14 @@ export interface ProviderPreset {
    * 模型里先挑一个才开始用。
    */
   default_model?: string
+  /**
+   * 预设自带的自定义请求头(一行一个「键: 值」,写进表单让用户看得见、可改)。
+   *
+   * 存在的理由:OpenCode Go 这类网关**按请求头**做识别与限流(官方要求用自己的 UA、
+   * 每个会话带一个稳定 session id),而这些头属于「怎么接」而不是「用哪个模型」——
+   * 藏进代码里就成了用户看不见的隐式行为,出问题时无从排查。所以摆在表单里。
+   */
+  default_headers?: string
 }
 
 export const PROVIDER_PRESETS: ProviderPreset[] = [
@@ -56,6 +64,13 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     label: '硅基流动',
     base_url: 'https://api.siliconflow.cn/v1',
     note: '聚合多家开源模型',
+  },
+  {
+    name: 'opencode-go',
+    label: 'OpenCode Go',
+    base_url: 'https://opencode.ai/zen/go/v1',
+    note: 'OpenCode 官方的订阅网关($10/月,另有 $40/月档),OpenAI 兼容,可直接用。官方要求客户端用自己的 UA 并按会话带一个稳定 session id(下面已预置);需要先在 opencode.ai 订阅并取 API Key',
+    default_headers: 'x-opencode-session: ${session}',
   },
   {
     name: 'openrouter',

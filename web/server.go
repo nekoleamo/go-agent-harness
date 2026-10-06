@@ -2646,10 +2646,11 @@ func (s *Server) handleProviderAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Name    string `json:"name"`
-		BaseURL string `json:"base_url"`
-		APIKey  string `json:"api_key"`
-		Model   string `json:"model"`
+		Name    string            `json:"name"`
+		BaseURL string            `json:"base_url"`
+		APIKey  string            `json:"api_key"`
+		Model   string            `json:"model"`
+		Headers map[string]string `json:"headers"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "坏请求体", http.StatusBadRequest)
@@ -2662,6 +2663,19 @@ func (s *Server) handleProviderAdd(w http.ResponseWriter, r *http.Request) {
 	if err := mp.AddProvider(req.Name, req.BaseURL, req.APIKey, req.Model); err != nil {
 		http.Error(w, "新增失败: "+err.Error(), http.StatusBadRequest)
 		return
+	}
+	// 自定义头单独一步(见 sdk.ProviderHeadersMutable 的理由)。头配了却没生效是最坏的结局 ——
+	// 用户以为限速规则已改,实际没改,所以这里**显式报**,不静默丢弃。
+	if len(req.Headers) > 0 {
+		hm, ok := s.llm.(sdk.ProviderHeadersMutable)
+		if !ok {
+			http.Error(w, "当前实现不支持 provider 自定义请求头(已保存其余字段)", http.StatusNotImplemented)
+			return
+		}
+		if err := hm.SetProviderHeaders(req.Name, req.Headers); err != nil {
+			http.Error(w, "自定义请求头未生效: "+err.Error(), http.StatusBadRequest)
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }

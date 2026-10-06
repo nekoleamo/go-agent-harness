@@ -70,8 +70,11 @@ func TestAddSaveLoadAndPerm(t *testing.T) {
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatal("Clear 后文件应删除")
 	}
-	if p, err := Load(); err != nil || p != (Provider{}) {
-		t.Fatalf("缺文件应空: %+v %v", p, err)
+	// 结构体现在含 map(Headers),不能用 != 比较 —— 逐字段比。
+	// 刻意不引 testify/reflect.DeepEqual:这个文件里所有断言都是手写的,风格一致优先。
+	if p, err := Load(); err != nil || p.Name != "" || p.BaseURL != "" || p.APIKey != "" ||
+		p.Model != "" || len(p.Headers) != 0 {
+		t.Fatalf("缺文件应为空: %+v %v", p, err)
 	}
 	if err := Clear(); err != nil {
 		t.Fatal("重复 Clear 应幂等")

@@ -196,7 +196,17 @@ export const api = {
   providers(): Promise<ProviderInfo[]> {
     return req('/api/providers')
   },
-  providerAdd(p: { name: string; base_url: string; api_key: string; model?: string }): Promise<void> {
+  providerAdd(p: {
+    name: string;
+    base_url: string;
+    api_key: string;
+    model?: string;
+    /**
+     * 自定义请求头(网关按头路由/限流时才需要)。
+     * 值支持 ${session} / ${version} / ${cwd} 占位符 —— 服务端展开,这里原样传。
+     */
+    headers?: Record<string, string>;
+  }): Promise<void> {
     return req('/api/providers', { method: 'POST', headers: json, body: JSON.stringify(p) })
   },
   providerUse(name: string): Promise<void> {

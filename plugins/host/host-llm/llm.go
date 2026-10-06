@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +23,12 @@ func (p *Plugin) Name() string { return "host-llm" }
 // Start 注册 ctx.llm 服务。
 func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
 	s := &Service{adapters: make(map[string]sdk.LLMAdapter), c: c}
+	// 会话服务(可选):只用于给 provider 自定义头里的 ${session} 取一个**稳定**的会话 id
+	// (OpenCode Go 这类网关按会话优化路由与缓存,官方要求每会话一个稳定值)。
+	// 缺它不影响别的功能 —— 拿不到时 ${session} 展开成空串(见 headerVars)。
+	var cs sdk.CwdSessions
+	_ = c.Inject("ctx.cwdSessions", &cs)
+	s.cs = cs
 	if err := c.Provide("ctx.llm", s); err != nil {
 		return nil, err
 	}
@@ -43,6 +50,8 @@ type Service struct {
 	model    string
 	thinking sdk.ThinkingLevel // 会话级思考等级(Tab 循环;默认 Off)
 
+	// cs 会话服务(可选,nil 兼容单测的裸 &Service{}):只喂 provider 自定义头的 ${session}。
+	cs              sdk.CwdSessions
 	provModelsCache []sdk.ProviderModelList // ListAllModels TTL 缓存
 	provModelsAt    time.Time               // 缓存写入时刻
 }
@@ -217,7 +226,8 @@ func (s *Service) Providers() []sdk.ProviderProfile {
 	out := make([]sdk.ProviderProfile, 0, len(f.Providers))
 	for _, p := range f.Providers {
 		out = append(out, sdk.ProviderProfile{Name: p.Name, BaseURL: p.BaseURL,
-			APIKey: p.APIKey, Model: p.Model, Active: p.Name == f.Active})
+			APIKey: p.APIKey, Model: p.Model, Active: p.Name == f.Active,
+			Headers: providerfile.ExpandHeaders(p.Headers, s.headerVars())})
 	}
 	return out
 }
@@ -362,6 +372,12 @@ func (s *Service) switchActive(p providerfile.Provider) error {
 	}
 	if err := pa.Configure(p.BaseURL, p.APIKey); err != nil {
 		return err
+	}
+	// 自定义头在 Configure **之后**下发:Configure 会清掉上一端点的头(端点变了,
+	// 旧头的语义未必还成立)。适配器没实现 HeaderConfigurable 时静默忽略 —— 那是可选能力
+	// (多数适配器不需要自定义头),不该让一个 provider 的配置把启动搞挂。
+	if hc, ok := pa.(sdk.HeaderConfigurable); ok {
+		hc.ConfigureHeaders(s.headersFor(p))
 	}
 	if p.Model != "" {
 		s.SetModel(p.Model)
@@ -531,3 +547,69 @@ func (s *Service) List() []string {
 	defer s.mu.RUnlock()
 	return append([]string(nil), s.order...)
 }
+
+// headersFor 展开某 provider 的自定义头(占位符在本层替换,适配器只收最终值)。
+//
+// 为什么占位符在这层而不在适配器:适配器不知道「当前会话」是什么,那是宿主的概念
+// (会话由 host-cwd-sessions 管);让适配器自己猜就会各猜各的。
+func (s *Service) headersFor(p providerfile.Provider) sdk.ProviderHeaders {
+	if len(p.Headers) == 0 {
+		return nil
+	}
+	return providerfile.ExpandHeaders(p.Headers, s.headerVars())
+}
+
+// headerVars 占位符取值。会话 id 的口径:有当前会话就用它,主会话(空)回落项目 key ——
+// 官方要的语义是「同一段对话稳定、不同对话不同」,项目 key 恰好满足后半句。
+func (s *Service) headerVars() providerfile.HeaderVars {
+	v := providerfile.HeaderVars{Version: strings.TrimSpace(os.Getenv("GAH_VERSION"))}
+	if s.cs != nil {
+		v.Session = s.cs.CurrentSession()
+		if v.Session == "" {
+			v.Session = s.cs.Current()
+		}
+	}
+	if wd, err := os.Getwd(); err == nil {
+		v.CWD = wd
+	}
+	return v
+}
+
+// SetProviderHeaders 单独设置某 provider 的自定义请求头(sdk.ProviderHeadersMutable)。
+//
+// 为什么要独立于 AddProvider:见接口注释。行为上刻意做到「写盘 + 若是活跃则立即下发」,
+// 不拆成两步 —— 否则用户改完头要切走再切回来才生效,那是个很容易被当成 bug 的中间态。
+func (s *Service) SetProviderHeaders(name string, h map[string]string) error {
+	f, err := providerfile.LoadFile()
+	if err != nil {
+		return err
+	}
+	if _, ok := findProvider(f, name); !ok {
+		return fmt.Errorf("provider: %s 不存在", name)
+	}
+	if err := providerfile.UpdateHeaders(name, h); err != nil {
+		return err
+	}
+	if f.Active != name {
+		return nil // 非活跃:只落盘(列表里改一个 provider 不应该顺手改当前在用的那个)
+	}
+	// **重新加载**:上面那份 f 是写入**前**的快照,里面的 p.Headers 还是旧的 ——
+	// 用它下发会把「刚设的头」当成「没有头」(第一次实现就踩了这个,被测试当场逮住)。
+	f2, err := providerfile.LoadFile()
+	if err != nil {
+		return err
+	}
+	p, ok := findProvider(f2, name)
+	if !ok {
+		return nil
+	}
+	if pa, err := s.providerAdapterFor(p.Model); err == nil {
+		if hc, ok := pa.(sdk.HeaderConfigurable); ok {
+			hc.ConfigureHeaders(s.headersFor(p))
+		}
+	}
+	s.invalidateModelsCache()
+	return nil
+}
+
+var _ sdk.ProviderHeadersMutable = (*Service)(nil)
