@@ -52,25 +52,28 @@ func findByID(t *testing.T, s *Scheduler, id string) sdk.Schedule {
 	return sdk.Schedule{}
 }
 
-// waitIdle 等一次触发的**收尾**(execute 回写状态 + 落盘)完成。
-// waitCall 只保证 loop.Run 已被调用,那之后还有状态回写 —— 不等就会读到旧快照,
+// waitIdle 等一次触发的**收尾**(已触发 + 不再跑 + 状态已落盘)。
+// waitCall 只保证 loop.Run 已被调用,那之后还有状态回写与落盘 —— 不等就会读到旧快照,
 // 症状是「明明该自动停用了却还是启用」这类假失败。
+//
+// 预算说明:这条要连等四步(触发 → 执行 → 回写内存 → 落盘)。原先写死 3s,本地 0.3s 就过,
+// 但 test-windows 带 -race 且几十个包并行时不够 —— run 37442904845 就是在这里红的
+// (同一份代码在 v0.5.4 的 Windows job 是绿的,本地连跑 6 次也全绿 ⇒ 负载型 flake,不是逻辑问题)。
+// 用同文件已有的 waitFor(测试里唯一允许的等待入口)而不是再开一个裸轮询循环。
 func waitIdle(t *testing.T, s *Scheduler, id string) sdk.Schedule {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
+	const budget = 15 * time.Second
+	waitFor(t, budget, func() bool {
 		p := findByID(t, s, id)
-		if !p.LastRunAt.IsZero() && !runningLocked(s, id) {
-			// 还要等落盘:execute 是「先回写内存、runting=false,再落盘」,
-			// 只看内存会读到还没写下去的状态。
-			if disk := loadOneQuiet(id); disk != nil && disk.Enabled == p.Enabled {
-				return p
-			}
+		if p.LastRunAt.IsZero() || runningLocked(s, id) {
+			return false
 		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatal("等待触发收尾超时")
-	return sdk.Schedule{}
+		// 还要等落盘:execute 是「先回写内存、runting=false,再落盘」,
+		// 只看内存会读到还没写下去的状态。
+		disk := loadOneQuiet(id)
+		return disk != nil && disk.Enabled == p.Enabled
+	})
+	return findByID(t, s, id)
 }
 
 // runningLocked 该计划此刻是否仍在跑(读运行态,不用重新 List 一遍)。

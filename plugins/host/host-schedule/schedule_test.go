@@ -471,10 +471,9 @@ func TestStopReleasesEverything(t *testing.T) {
 		t.Fatalf("卸载后不得再触发起任务,得 %d 次", n)
 	}
 	// goroutine 不增长(循环已退出 + 无残留定时器)
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && runtime.NumGoroutine() > before+2 {
-		time.Sleep(20 * time.Millisecond)
-	}
+	// 预算与 once_test.waitIdle 同理:负载下 2s 可能不够(run 37442904845 里同包的
+	// once 用例就是 3s 预算在 Windows CI 上红的)。这里不设下限,只等它落回阈值内。
+	waitFor(t, 15*time.Second, func() bool { return runtime.NumGoroutine() <= before+2 })
 	if after := runtime.NumGoroutine(); after > before+2 {
 		t.Fatalf("疑似 goroutine 泄漏:before=%d after=%d", before, after)
 	}
