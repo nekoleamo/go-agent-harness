@@ -221,3 +221,53 @@ test('api:未绑定时 query 为空(旧客户端行为不变)', async () => {
     globalThis.fetch = orig
   }
 })
+
+// scheduleResolve 的契约:路径/方法/请求体 + **ok:false 不抛异常**。
+// 这条是承重的:「没看懂」必须以数据形式回到界面(好提示怎么改),不是 reject —
+// reject 会被上层当故障显示成红字,而不会 cron 的用户看到红字就走了。
+test('scheduleResolve:POST /api/schedules/resolve,ok:false 正常返回', async () => {
+  let seen = ''
+  let body = ''
+  const restore = stubFetch((url, init) => {
+    seen = url
+    assert.equal(init?.method, 'POST')
+    body = String(init?.body)
+    return new Response(JSON.stringify({ ok: true, cron: '0 8 * * *', repeat: 'daily', label: '每天 08:00', next_runs: [] }), {
+      status: 200,
+    })
+  })
+  try {
+    const v = await api.scheduleResolve({ text: '每天早上8点' })
+    assert.equal(seen, '/api/schedules/resolve')
+    assert.ok(body.includes('每天早上8点'))
+    assert.equal(v.ok, true)
+    assert.equal(v.repeat, 'daily')
+  } finally {
+    restore()
+  }
+
+  const restore2 = stubFetch(() => new Response(JSON.stringify({ ok: false, reason: '没看懂「月底前」' }), { status: 200 }))
+  try {
+    const v2 = await api.scheduleResolve({ text: '月底前' })
+    assert.equal(v2.ok, false)
+    assert.ok(v2.reason && v2.reason.includes('没看懂'))
+  } finally {
+    restore2()
+  }
+})
+
+test('scheduleAdd/scheduleUpdate 透传 once / once_date', async () => {
+  const bodies: string[] = []
+  const restore = stubFetch((_url, init) => {
+    bodies.push(String(init?.body))
+    return new Response(JSON.stringify({ id: 'sched-1', cron: '0 9 20 11 *' }), { status: 200 })
+  })
+  try {
+    await api.scheduleAdd({ name: '提醒', cron: '0 9 20 11 *', prompt: '跑', once: true, once_date: '2026-11-20' })
+    await api.scheduleUpdate('sched-1', { once: false })
+    assert.ok(bodies[0].includes('"once":true') && bodies[0].includes('2026-11-20'))
+    assert.ok(bodies[1].includes('"once":false'))
+  } finally {
+    restore()
+  }
+})

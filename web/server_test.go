@@ -23,6 +23,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nekoleamo/go-agent-harness/plugins/host/host-schedule"
+
 	"github.com/nekoleamo/go-agent-harness/internal/testutil"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
@@ -2659,5 +2661,249 @@ func TestScheduleEndpoints(t *testing.T) {
 		if resp.StatusCode != http.StatusServiceUnavailable {
 			t.Fatalf("%s %s 未装配应 503,得 %d", c.method, c.path, resp.StatusCode)
 		}
+	}
+}
+
+// resolve 端点(排期解释):契约 + 十档 + 中文解析 + 失败语义。
+//
+// 这里刻意用**真实** hostschedule.Scheduler(而非 stub):resolve 的价值全在
+// 「控件档位 ↔ 中文 ↔ 预览时刻」三者一致,拿 stub 测只能证明 JSON 能往返,
+// 证明不了「列表显示的和实际会触发的是同一件事」。
+func TestScheduleResolve(t *testing.T) {
+	s, _ := newTestServer()
+	s.sched = hostschedule.New(nil, slog.New(slog.DiscardHandler))
+	hs := httptest.NewServer(s.handler())
+	defer hs.Close()
+
+	post := func(body string) (int, resolveResp) {
+		t.Helper()
+		r, err := http.Post(hs.URL+"/api/schedules/resolve", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Body.Close()
+		var out resolveResp
+		// 4xx 的响应体是纯文本错误(http.Error),不是 JSON —— 解不出不算失败,
+		// 状态码才是这里要断言的东西。
+		_ = json.NewDecoder(r.Body).Decode(&out)
+		return r.StatusCode, out
+	}
+
+	// 十档:每档都能反解回同一个 repeat(控件档位是 UI 的唯一依据)
+	cases := []struct{ cron, repeat string }{
+		{"0 8 * * *", "daily"},
+		{"30 6 * * 1", "weekly"},
+		{"0 9 * * 1-5", "weekdays"},
+		{"0 0 5 * *", "monthly_day"},
+		{"0 9 8-14 * 2", "monthly_nth"},
+		{"0 9 L * *", "monthly_last"},
+		{"30 * * * *", "hourly"},
+		{"*/15 * * * *", "every_n_min"},
+		{"0 */6 * * *", "every_n_hour"},
+	}
+	for _, tc := range cases {
+		code, out := post(`{"cron":"` + tc.cron + `"}`)
+		if code != 200 || !out.OK {
+			t.Fatalf("%s:期望 200/ok,得 %d/ok=%v reason=%s", tc.cron, code, out.OK, out.Reason)
+		}
+		if out.Repeat != tc.repeat {
+			t.Fatalf("%s:repeat 应为 %s,得 %s", tc.cron, tc.repeat, out.Repeat)
+		}
+		if out.Cron == "" || out.Label == "" {
+			t.Fatalf("%s:应同时给出表达式与中文描述,得 cron=%q label=%q", tc.cron, out.Cron, out.Label)
+		}
+		if len(out.NextRuns) == 0 {
+			t.Fatalf("%s:应给出预览时刻(用户唯一的验收手段)", tc.cron)
+		}
+	}
+	// 控件表达不了的表达式:仍是 200,repeat=custom,label 空(前端按只读展示)
+	code, out := post(`{"cron":"5,35 8-10 * * 1,3"}`)
+	if code != 200 || !out.OK || out.Repeat != "custom" || out.Label != "" {
+		t.Fatalf("复杂表达式应 ok+custom+空 label,得 %d ok=%v repeat=%s label=%q", code, out.OK, out.Repeat, out.Label)
+	}
+
+	// 中文解析
+	code, out = post(`{"text":"每周一三五 早上八点半"}`)
+	if code != 200 || !out.OK || out.Repeat != "weekly" || out.Hour != 8 || out.Minute != 30 {
+		t.Fatalf("中文解析不符: %d ok=%v repeat=%s %02d:%02d", code, out.OK, out.Repeat, out.Hour, out.Minute)
+	}
+	if len(out.Dows) != 3 {
+		t.Fatalf("应解析出 3 个周几,得 %v", out.Dows)
+	}
+
+	// 解析不出:**200 + ok=false + 中文原因**(不是 4xx —— 红字会把人堵死)
+	code, out = post(`{"text":"月底前有空的时候"}`)
+	if code != 200 || out.OK {
+		t.Fatalf("解析不出应为 200/ok=false,得 %d/ok=%v", code, out.OK)
+	}
+	if out.Reason == "" {
+		t.Fatal("解析不出必须给出中文原因,好让界面提示怎么改")
+	}
+
+	// 两个都不给 → 400(真的没输入才用错误码)
+	if code, _ = post(`{}`); code != http.StatusBadRequest {
+		t.Fatalf("空请求应 400,得 %d", code)
+	}
+
+	// 未装配 → 503
+	s2, _ := newTestServer()
+	hs2 := httptest.NewServer(s2.handler())
+	defer hs2.Close()
+	r, err := http.Post(hs2.URL+"/api/schedules/resolve", "application/json", strings.NewReader(`{"cron":"0 8 * * *"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Body.Close()
+	if r.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("未装配应 503,得 %d", r.StatusCode)
+	}
+}
+
+// 一次性字段要能通过 REST 增改;且改回循环时 once_date 被清掉。
+func TestScheduleOnceOverREST(t *testing.T) {
+	s, _ := newTestServer()
+	sched := &stubSched{plans: []sdk.Schedule{{ID: "sched-test0001", Name: "对账", Cron: "0 8 * * *", Prompt: "跑", Enabled: true}}}
+	s.sched = sched
+	hs := httptest.NewServer(s.handler())
+	defer hs.Close()
+
+	r, err := http.Post(hs.URL+"/api/schedules", "application/json",
+		strings.NewReader(`{"name":"只跑一次","cron":"0 9 20 11 *","prompt":"跑","once":true,"once_date":"2099-11-20"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var added sdk.Schedule
+	if err := json.NewDecoder(r.Body).Decode(&added); err != nil {
+		t.Fatal(err)
+	}
+	r.Body.Close()
+	if !added.Once || added.OnceDate != "2099-11-20" {
+		t.Fatalf("once/once_date 未透传: %+v", added)
+	}
+
+	// PATCH 改回循环 → once=false 且 once_date 清空
+	req, err := http.NewRequest(http.MethodPatch, hs.URL+"/api/schedules/sched-test0001",
+		strings.NewReader(`{"once":false}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	r, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var upd sdk.Schedule
+	if err := json.NewDecoder(r.Body).Decode(&upd); err != nil {
+		t.Fatal(err)
+	}
+	r.Body.Close()
+	if upd.Once || upd.OnceDate != "" {
+		t.Fatalf("改回循环应清掉 once/once_date,得 %+v", upd)
+	}
+}
+
+// 农历年度排期经 resolve 的契约:档位、月日、节日名、农历键与预览都要对。
+func TestScheduleResolveLunarAndAnnual(t *testing.T) {
+	s, _ := newTestServer()
+	s.sched = hostschedule.New(nil, slog.New(slog.DiscardHandler))
+	hs := httptest.NewServer(s.handler())
+	defer hs.Close()
+
+	post := func(body string) resolveResp {
+		t.Helper()
+		r, err := http.Post(hs.URL+"/api/schedules/resolve", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Body.Close()
+		var out resolveResp
+		_ = json.NewDecoder(r.Body).Decode(&out)
+		return out
+	}
+
+	// 农历节日:cron 只承载时分(日/月/周必须是 `*`),日期在 lunar_date 上
+	mid := post(`{"text":"中秋节 20:00"}`)
+	if !mid.OK || mid.Repeat != "lunar_annual" || mid.Month != 8 || mid.Day != 15 {
+		t.Fatalf("中秋节解析不符: ok=%v repeat=%s %d-%d", mid.OK, mid.Repeat, mid.Month, mid.Day)
+	}
+	if mid.LunarDate != "08-15" {
+		t.Fatalf("应给出农历键 08-15,得 %q", mid.LunarDate)
+	}
+	if mid.Festival != "中秋节" || !strings.Contains(mid.Label, "中秋") {
+		t.Fatalf("应带节日名与文案,得 festival=%q label=%q", mid.Festival, mid.Label)
+	}
+	if fields := strings.Fields(mid.Cron); len(fields) != 5 || fields[2] != "*" || fields[3] != "*" || fields[4] != "*" {
+		t.Fatalf("农历计划的 cron 只能是时分(日/月/周为 *),得 %q", mid.Cron)
+	}
+	if len(mid.NextRuns) != 3 {
+		t.Fatalf("农历年度应给三次预览(确认明年也对),得 %d 次", len(mid.NextRuns))
+	}
+	years := map[int]bool{}
+	for _, r := range mid.NextRuns {
+		if years[r.Year()] {
+			t.Fatalf("预览出现重复年份: %v", mid.NextRuns)
+		}
+		years[r.Year()] = true
+	}
+	// 除夕 = 腊月最后一天,用 MM-00 表示
+	eve := post(`{"text":"除夕 18点"}`)
+	if !eve.OK || eve.Repeat != "lunar_annual" || eve.Day != 0 || eve.LunarDate != "12-00" {
+		t.Fatalf("除夕解析不符: %+v", eve)
+	}
+
+	// 公历年度:每年某天,用 cron 表达
+	gq := post(`{"cron":"0 9 1 10 *"}`)
+	if !gq.OK || gq.Repeat != "annual_date" || gq.Month != 10 || gq.Day != 1 {
+		t.Fatalf("每年 10 月 1 日应判 annual_date,得 ok=%v repeat=%s %d-%d", gq.OK, gq.Repeat, gq.Month, gq.Day)
+	}
+	if gq.Label != "每年 10 月 1 日 09:00" {
+		t.Fatalf("年度文案不符: %q", gq.Label)
+	}
+	// 永不存在的日期不能给自信的年度文案(2 月 30 日)
+	if bad := post(`{"cron":"0 9 30 2 *"}`); bad.OK && bad.Repeat == "annual_date" {
+		t.Fatalf("2 月 30 日不该判成年度排期: %+v", bad)
+	}
+}
+
+// 农历计划经 REST 增改:LunarDate 要透传;改成普通排期时清掉它。
+func TestScheduleLunarOverREST(t *testing.T) {
+	s, _ := newTestServer()
+	sched := &stubSched{plans: []sdk.Schedule{{ID: "sched-test0001", Name: "中秋", Cron: "0 20 * * *", Prompt: "跑", Enabled: true}}}
+	s.sched = sched
+	hs := httptest.NewServer(s.handler())
+	defer hs.Close()
+
+	r, err := http.Post(hs.URL+"/api/schedules", "application/json",
+		strings.NewReader(`{"name":"中秋提醒","cron":"0 20 * * *","prompt":"打电话","lunar_date":"08-15"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var added sdk.Schedule
+	if err := json.NewDecoder(r.Body).Decode(&added); err != nil {
+		t.Fatal(err)
+	}
+	r.Body.Close()
+	if added.LunarDate != "08-15" {
+		t.Fatalf("lunar_date 未透传: %+v", added)
+	}
+
+	// 改成普通每天排期 → 农历字段被清掉(否则重启后界面说的与实际不符)
+	req, err := http.NewRequest(http.MethodPatch, hs.URL+"/api/schedules/sched-test0001",
+		strings.NewReader(`{"cron":"0 8 * * *","lunar_date":""}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	r, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var upd sdk.Schedule
+	if err := json.NewDecoder(r.Body).Decode(&upd); err != nil {
+		t.Fatal(err)
+	}
+	r.Body.Close()
+	if upd.LunarDate != "" {
+		t.Fatalf("改回普通排期应清掉 lunar_date,得 %q", upd.LunarDate)
 	}
 }

@@ -1,5 +1,5 @@
 // REST 客户端(上行)+ 工具函数。核心交互纯 REST,不绕模板渲染。
-import type { AttachmentView, AuditEntry, CommandOptionsResp, InstallView, UIPluginState, CommandView, DocTree, DocView, InstructionsView, Job, McpView, MemoryView, ModelsAllResp, NoticePage, PluginInfo, ProviderInfo, RolePackResult, RoleSpec, RolesView, SkillPackResult, Schedule, SessionEventsPage, SessionInfo, StateView, ToolDef, TrashView, UpdateCheckResp, WorkspaceInfo } from './types'
+import type { AttachmentView, AuditEntry, CommandOptionsResp, InstallView, UIPluginState, CommandView, DocTree, DocView, InstructionsView, Job, McpView, MemoryView, ModelsAllResp, NoticePage, PluginInfo, ProviderInfo, RolePackResult, RoleSpec, RolesView, ScheduleResolve, SkillPackResult, Schedule, SessionEventsPage, SessionInfo, StateView, ToolDef, TrashView, UpdateCheckResp, WorkspaceInfo } from './types'
 
 // 本窗口绑定的会话(多窗口/多会话作用域)。为何是本文件自己持有而不是 import 一个
 // session 模块:本文件被 Node 内置测试以「./api.ts」直接加载(那条路要求 import 带 .ts),
@@ -441,12 +441,37 @@ export const api = {
   schedules(): Promise<Schedule[]> {
     return req('/api/schedules')
   },
-  scheduleAdd(p: { name: string; cron: string; prompt: string; enabled?: boolean }): Promise<Schedule> {
+  scheduleAdd(p: {
+    name: string
+    cron: string
+    prompt: string
+    enabled?: boolean
+    once?: boolean
+    once_date?: string
+    lunar_date?: string
+  }): Promise<Schedule> {
     return req('/api/schedules', { method: 'POST', headers: json, body: JSON.stringify(p) })
   },
-  // 仅覆盖传入字段(未传 = 不改;enabled 走 undefined 区分 false)
-  scheduleUpdate(id: string, p: { name?: string; cron?: string; prompt?: string; enabled?: boolean }): Promise<Schedule> {
+  // 仅覆盖传入字段(未传 = 不改;enabled / once 走 undefined 区分 false)
+  scheduleUpdate(
+    id: string,
+    p: {
+      name?: string
+      cron?: string
+      prompt?: string
+      enabled?: boolean
+      once?: boolean
+      once_date?: string
+      lunar_date?: string
+    },
+  ): Promise<Schedule> {
     return req('/api/schedules/' + encodeURIComponent(id), { method: 'PATCH', headers: json, body: JSON.stringify(p) })
+  },
+  // 排期解释(text = 一句中文,cron = 已有表达式;二选一)。
+  // **解析失败也返回 200 + ok:false**:用户输入的是人话,回退到界面选择器即可,
+  // 不是故障 —— 所以调用方别把 reason 当错误抛。
+  scheduleResolve(p: { text?: string; cron?: string }): Promise<ScheduleResolve> {
+    return req('/api/schedules/resolve', { method: 'POST', headers: json, body: JSON.stringify(p) })
   },
   scheduleDelete(id: string): Promise<void> {
     return req('/api/schedules/' + encodeURIComponent(id), { method: 'DELETE', headers: json, body: '{}' })

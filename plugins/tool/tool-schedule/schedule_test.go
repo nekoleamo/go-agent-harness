@@ -1,6 +1,7 @@
 package toolschedule
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -38,6 +39,7 @@ func (f *fakeSvc) Update(p sdk.Schedule) (sdk.Schedule, error) {
 		if cur.ID == p.ID {
 			// 与 host-schedule 一致:Name/Cron/Prompt/Enabled 整组覆盖(所以调用方必须先读回)
 			cur.Name, cur.Cron, cur.Prompt, cur.Enabled = p.Name, p.Cron, p.Prompt, p.Enabled
+			cur.Once, cur.OnceDate = p.Once, p.OnceDate
 			f.plans[i] = cur
 			return cur, nil
 		}
@@ -254,5 +256,93 @@ func TestDefinition(t *testing.T) {
 	}
 	if strings.Contains(d.Description, "**") {
 		t.Fatal("模型可见文案不用 markdown 加粗")
+	}
+}
+
+// 一次性:模型必须同时给 once 与 once_date —— cron 没有年字段,只写 cron 会变成
+// 「每年那一天」,那是静默的语义漂移(比报错糟得多)。
+func TestToolOnce(t *testing.T) {
+	svc := &fakeSvc{}
+	tool := &Tool{svc: svc}
+	ctx := context.Background()
+
+	got, err := tool.Execute(ctx, `{"action":"add","name":"提醒","cron":"0 9 20 11 *","prompt":"跑","once":true}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasErr(got, "once_date") {
+		t.Fatalf("once=true 缺 once_date 应报错(否则会被排成每年),得 %v", got)
+	}
+	got, err = tool.Execute(ctx, `{"action":"add","name":"提醒","cron":"0 9 20 11 *","prompt":"跑","once":true,"once_date":"2026-11-20"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasErr(got, "") {
+		t.Fatalf("给全 once/once_date 应成功,得 %v", got)
+	}
+	added := svc.plans[len(svc.plans)-1]
+	if !added.Once || added.OnceDate != "2026-11-20" {
+		t.Fatalf("once/once_date 未落到计划: %+v", added)
+	}
+
+	// update 改回循环:once 归零且 once_date 清空(否则重启后语义反了)
+	got, err = tool.Execute(ctx, `{"action":"update","id":"`+added.ID+`","once":false}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasErr(got, "") {
+		t.Fatalf("update 应成功,得 %v", got)
+	}
+	after := svc.plans[len(svc.plans)-1]
+	if after.Once || after.OnceDate != "" {
+		t.Fatalf("改回循环应清空 once/once_date,得 %+v", after)
+	}
+}
+
+// hasErr 结果 map 里是否带 error;sub 非空时还要求包含它。
+func hasErr(got any, sub string) bool {
+	m, ok := got.(map[string]any)
+	if !ok {
+		return false
+	}
+	e, _ := m["error"].(string)
+	if e == "" {
+		return false
+	}
+	return sub == "" || strings.Contains(e, sub)
+}
+
+// 农历年度:模型必须把日期放在 lunar_date 上,cron 只能写时分 ——
+// 写错了在线一定会被拒,不如在这里就拒并说清原因。
+func TestToolLunar(t *testing.T) {
+	svc := &fakeSvc{}
+	tool := &Tool{svc: svc}
+	ctx := context.Background()
+
+	got, err := tool.Execute(ctx, `{"action":"add","name":"中秋","cron":"0 20 15 8 *","prompt":"打电话","lunar_date":"08-15"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasErr(got, "只写时分") {
+		t.Fatalf("cron 限定了日/月时应拒,得 %v", got)
+	}
+	got, err = tool.Execute(ctx, `{"action":"add","name":"中秋","cron":"0 20 * * *","prompt":"打电话","lunar_date":"08-15"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasErr(got, "") {
+		t.Fatalf("合法农历计划应成功,得 %v", got)
+	}
+	added := svc.plans[len(svc.plans)-1]
+	if added.LunarDate != "08-15" {
+		t.Fatalf("lunar_date 未落到计划: %+v", added)
+	}
+	// 一次性与农历互斥
+	got, err = tool.Execute(ctx, `{"action":"add","name":"x","cron":"0 20 * * *","prompt":"跑","once":true,"once_date":"2026-09-25","lunar_date":"08-15"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasErr(got, "不能同时") {
+		t.Fatalf("once 与 lunar_date 并用应拒,得 %v", got)
 	}
 }

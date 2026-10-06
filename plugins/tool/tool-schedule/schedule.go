@@ -57,11 +57,13 @@ func (t *Tool) Definition() sdk.ToolDefinition {
 			"type":     "object",
 			"required": []any{"action"},
 			"properties": map[string]any{
-				"action": map[string]any{"type": "string", "enum": []string{"list", "add", "update", "remove", "run"}},
-				"id":     map[string]any{"type": "string", "description": "update/remove/run 的目标计划 id"},
-				"name":   map[string]any{"type": "string", "description": "add 必填(短名);update 可改"},
-				"cron":   map[string]any{"type": "string", "description": "5 字段 cron:分 时 日 月 周(如 '0 9 * * 1' = 每周一 9:00;add 必填)"},
-				"prompt": map[string]any{"type": "string", "description": "到点提交给模型的输入(add 必填);写自包含的一句话,别依赖当前会话上下文"},
+				"action":    map[string]any{"type": "string", "enum": []string{"list", "add", "update", "remove", "run"}},
+				"id":        map[string]any{"type": "string", "description": "update/remove/run 的目标计划 id"},
+				"name":      map[string]any{"type": "string", "description": "add 必填(短名);update 可改"},
+				"cron":      map[string]any{"type": "string", "description": "5 字段 cron:分 时 日 月 周(如 '0 9 * * 1' = 每周一 9:00;add 必填)"},
+				"once":      map[string]any{"type": "boolean", "description": "add/update 可改;true = 只跑一次(触发后自动停用)。注意 5 字段 cron 没有年字段,一次性必须同时给 once_date"},
+				"once_date": map[string]any{"type": "string", "description": "一次性计划的目标日期 YYYY-MM-DD(once=true 时必填;时刻仍走 cron 的时分,如 '0 9 20 11 *' + once_date=2026-11-20)"},
+				"prompt":    map[string]any{"type": "string", "description": "到点提交给模型的输入(add 必填);写自包含的一句话,别依赖当前会话上下文"},
 				"enabled": map[string]any{
 					"type": "boolean", "description": "update 可改(停用 = 保留配置但不触发);add 默认启用"},
 			},
@@ -71,12 +73,15 @@ func (t *Tool) Definition() sdk.ToolDefinition {
 
 // args 统一入参(enabled 用指针:区分「没给」与「显式 false」)。
 type args struct {
-	Action  string `json:"action"`
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	Cron    string `json:"cron"`
-	Prompt  string `json:"prompt"`
-	Enabled *bool  `json:"enabled"`
+	Action    string `json:"action"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Cron      string `json:"cron"`
+	Prompt    string `json:"prompt"`
+	Enabled   *bool  `json:"enabled"`
+	Once      *bool  `json:"once"`
+	OnceDate  string `json:"once_date"`
+	LunarDate string `json:"lunar_date"`
 }
 
 // Execute 执行一个 action;业务失败以 map{"error":...} 回传模型(不中断 turn)。
@@ -111,7 +116,21 @@ func (t *Tool) add(a args) (any, error) {
 	if a.Enabled != nil {
 		enabled = *a.Enabled
 	}
-	p, err := t.svc.Add(sdk.Schedule{Name: a.Name, Cron: a.Cron, Prompt: a.Prompt, Enabled: enabled})
+	once := a.Once != nil && *a.Once
+	if once && strings.TrimSpace(a.OnceDate) == "" {
+		return map[string]any{"error": "once=true 时必须给 once_date(YYYY-MM-DD):cron 没有年字段,只写 cron 会变成「每年那一天」"}, nil
+	}
+	if lunar := strings.TrimSpace(a.LunarDate); lunar != "" {
+		if once {
+			return map[string]any{"error": "once 与 lunar_date 不能同时给(一次性 vs 每年农历日期,挑一个)"}, nil
+		}
+		// 农历计划的 cron 只写时分;在这里先说清,免得被宿主拒了才发现
+		if f := strings.Fields(a.Cron); len(f) == 5 && (f[2] != "*" || f[3] != "*" || f[4] != "*") {
+			return map[string]any{"error": "lunar_date 与限定了日/月/周的 cron 不能并用:cron 只写时分(如 '0 20 * * *'),日期由农历决定"}, nil
+		}
+	}
+	p, err := t.svc.Add(sdk.Schedule{Name: a.Name, Cron: a.Cron, Prompt: a.Prompt, Enabled: enabled,
+		Once: once, OnceDate: strings.TrimSpace(a.OnceDate), LunarDate: strings.TrimSpace(a.LunarDate)})
 	if err != nil {
 		return map[string]any{"error": err.Error()}, nil
 	}
@@ -129,7 +148,8 @@ func (t *Tool) update(a args) (any, error) {
 	if !ok {
 		return map[string]any{"error": "计划不存在: " + id}, nil
 	}
-	merged := sdk.Schedule{ID: cur.ID, Name: cur.Name, Cron: cur.Cron, Prompt: cur.Prompt, Enabled: cur.Enabled}
+	merged := sdk.Schedule{ID: cur.ID, Name: cur.Name, Cron: cur.Cron, Prompt: cur.Prompt, Enabled: cur.Enabled,
+		Once: cur.Once, OnceDate: cur.OnceDate, LunarDate: cur.LunarDate}
 	if strings.TrimSpace(a.Name) != "" {
 		merged.Name = a.Name
 	}
@@ -141,6 +161,19 @@ func (t *Tool) update(a args) (any, error) {
 	}
 	if a.Enabled != nil {
 		merged.Enabled = *a.Enabled
+	}
+	if a.Once != nil {
+		merged.Once = *a.Once
+		if !merged.Once {
+			merged.OnceDate = "" // 改回循环得清掉日期,否则重启后语义又反了
+		}
+	}
+	if d := strings.TrimSpace(a.OnceDate); d != "" {
+		merged.OnceDate = d
+	}
+	if a.LunarDate != "" {
+		merged.LunarDate = strings.TrimSpace(a.LunarDate)
+		merged.Once, merged.OnceDate = false, "" // 农历年度与一次性互斥
 	}
 	p, err := t.svc.Update(merged)
 	if err != nil {
@@ -187,6 +220,9 @@ type view struct {
 	ID         string `json:"id"`
 	Name       string `json:"name"`
 	Cron       string `json:"cron"`
+	Once       bool   `json:"once,omitempty"`
+	OnceDate   string `json:"once_date,omitempty"`
+	LunarDate  string `json:"lunar_date,omitempty"`
 	Prompt     string `json:"prompt"`
 	Enabled    bool   `json:"enabled"`
 	NextRun    string `json:"next_run,omitempty"`
@@ -197,6 +233,7 @@ type view struct {
 
 func viewOf(p sdk.Schedule) view {
 	v := view{ID: p.ID, Name: p.Name, Cron: p.Cron, Prompt: p.Prompt, Enabled: p.Enabled,
+		Once: p.Once, OnceDate: p.OnceDate, LunarDate: p.LunarDate,
 		LastStatus: string(p.LastStatus), LastError: p.LastError}
 	if !p.NextRun.IsZero() {
 		v.NextRun = p.NextRun.Format("2006-01-02 15:04")

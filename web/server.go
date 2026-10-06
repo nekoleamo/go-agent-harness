@@ -327,6 +327,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET /api/schedules", s.handleSchedules)
 	mux.HandleFunc("GET /api/notices", s.handleNotices)
 	mux.HandleFunc("POST /api/schedules", s.handleScheduleAdd)
+	mux.HandleFunc("POST /api/schedules/resolve", s.handleScheduleResolve)
 	mux.HandleFunc("PATCH /api/schedules/{id}", s.handleScheduleUpdate)
 	mux.HandleFunc("DELETE /api/schedules/{id}", s.handleScheduleDelete)
 	mux.HandleFunc("POST /api/schedules/{id}/run", s.handleScheduleRun)
@@ -2247,6 +2248,65 @@ type scheduleReq struct {
 	Cron    string `json:"cron"`
 	Prompt  string `json:"prompt"`
 	Enabled *bool  `json:"enabled"`
+	// Once/OnceDate 一次性(只跑一次)。Once 用指针:PATCH 未传 = 不改;
+	// 显式 false = 改回循环(此时一并清空 OnceDate,否则重启后会又变回一次性)。
+	Once     *bool  `json:"once"`
+	OnceDate string `json:"once_date"`
+	// LunarDate 农历年度(如 "08-15";"12-00" = 腊月最后一天即除夕)。与 once 互斥。
+	LunarDate string `json:"lunar_date"`
+}
+
+// resolveReq 排期解释请求(二选一:text = 一句中文,cron = 已有表达式)。
+type resolveReq struct {
+	Text string `json:"text"`
+	Cron string `json:"cron"`
+}
+
+// resolveResp 排期解释响应。OK=false 时 Reason 是给用户看的中文原因(不是堆栈)。
+type resolveResp struct {
+	sdk.ScheduleView
+	OK     bool   `json:"ok"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// handleScheduleResolve 排期解释(POST /api/schedules/resolve)。
+//
+// 为什么解析失败也返回 200:用户输入的是人话(“月底前”“有空的时候”这类我们**刻意不支持**),
+// 回 4xx 会让只会照着界面点的人在红色报错前卡死。ok=false + reason 让界面能说
+// “没看懂,可以直接用下面的选择器”——解析失败是日常,不是故障。
+func (s *Server) handleScheduleResolve(w http.ResponseWriter, r *http.Request) {
+	if s.sched == nil {
+		http.Error(w, "定时计划服务未装配(ctx.schedule)", http.StatusServiceUnavailable)
+		return
+	}
+	resolver, ok := s.sched.(sdk.ScheduleResolver)
+	if !ok {
+		http.Error(w, "当前装配未提供排期解析能力", http.StatusNotImplemented)
+		return
+	}
+	var req resolveReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "坏请求体", http.StatusBadRequest)
+		return
+	}
+	var (
+		view sdk.ScheduleView
+		err  error
+	)
+	switch {
+	case strings.TrimSpace(req.Text) != "":
+		view, err = resolver.ResolveText(req.Text)
+	case strings.TrimSpace(req.Cron) != "":
+		view, err = resolver.ResolveCron(req.Cron)
+	default:
+		http.Error(w, "需要 text(一句中文)或 cron(表达式)", http.StatusBadRequest)
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusOK, resolveResp{OK: false, Reason: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resolveResp{ScheduleView: view, OK: true})
 }
 
 // handleScheduleAdd 新增计划(POST /api/schedules)。
@@ -2264,7 +2324,9 @@ func (s *Server) handleScheduleAdd(w http.ResponseWriter, r *http.Request) {
 	if req.Enabled != nil {
 		enabled = *req.Enabled
 	}
-	p, err := s.sched.Add(sdk.Schedule{Name: req.Name, Cron: req.Cron, Prompt: req.Prompt, Enabled: enabled})
+	p, err := s.sched.Add(sdk.Schedule{Name: req.Name, Cron: req.Cron, Prompt: req.Prompt, Enabled: enabled,
+		Once: req.Once != nil && *req.Once, OnceDate: strings.TrimSpace(req.OnceDate),
+		LunarDate: strings.TrimSpace(req.LunarDate)})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -2300,6 +2362,20 @@ func (s *Server) handleScheduleUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Enabled != nil {
 		cur.Enabled = *req.Enabled
+	}
+	if req.Once != nil {
+		cur.Once = *req.Once
+		if !cur.Once {
+			cur.OnceDate = "" // 改回循环就得清掉日期,否则重启后语义又反了
+		}
+	}
+	if req.OnceDate != "" {
+		cur.OnceDate = strings.TrimSpace(req.OnceDate)
+	}
+	// lunar_date 用"传了就覆盖(空串 = 清掉)"的语义:改回普通排期时前端会显式传空串,
+	// 否则重启后旧农历字段还在,界面说的与实际排的又不一样了。
+	if req.LunarDate != cur.LunarDate && (req.LunarDate != "" || req.Cron != "") {
+		cur.LunarDate = strings.TrimSpace(req.LunarDate)
 	}
 	upd, err := s.sched.Update(cur)
 	if err != nil {

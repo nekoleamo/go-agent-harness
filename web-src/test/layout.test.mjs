@@ -418,6 +418,10 @@ function makeStub(
           prompt: 'x',
           enabled: true,
           next_run: 1_900_000_000,
+          next_runs: [1_900_000_000, 1_900_086_400, 1_900_172_800],
+          // 中文排期描述(界面显示的是它,不再显示裸 cron):刻意给长文本 ——
+          // 它取代了原本那条 mono 表达式,布局护栏必须跟着盯它。
+          cron_label: '每个工作日 08:00(以及非常长的中文补充说明用来撑宽度检测)',
           last_run_at: 1_900_000_000,
           last_status: 'failed',
           last_error: 'connect ECONNREFUSED 127.0.0.1:11434',

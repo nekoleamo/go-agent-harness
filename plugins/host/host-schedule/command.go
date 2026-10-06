@@ -17,14 +17,14 @@ import (
 func scheduleCommand(s *Scheduler) sdk.CommandSpec {
 	return sdk.CommandSpec{
 		Name:  "schedule",
-		Usage: "/schedule list|add <cron> <任务描述>|rm|on|off|run <id>",
+		Usage: "/schedule list|add <cron> <任务描述>|add once <YYYY-MM-DD> <HH:MM> <任务描述>|rm|on|off|run <id>",
 		Desc:  "定时任务(到点自动跑一轮;无人值守,危险动作一律拒绝)",
 		Run:   func(args []string) (string, error) { return scheduleCmd(s, args) },
 		Args: []sdk.ArgLevel{
 			{Options: func([]string) []sdk.Option {
 				return []sdk.Option{
 					{Value: "list", Desc: "列出全部计划"},
-					{Value: "add", Desc: "新增计划(cron 5 字段 + 任务描述)"},
+					{Value: "add", Desc: "新增计划(cron 5 字段 + 任务描述);add once <日期> <HH:MM> <描述> = 只跑一次"},
 					{Value: "rm", Desc: "删除计划"},
 					{Value: "on", Desc: "启用计划"},
 					{Value: "off", Desc: "停用计划"},
@@ -67,6 +67,10 @@ func scheduleCmd(s *Scheduler, args []string) (string, error) {
 	case "list":
 		return scheduleList(s), nil
 	case "add":
+		// once 形态:/schedule add once 2026-11-20 09:00 描述
+		if len(args) >= 2 && args[1] == "once" {
+			return scheduleAddOnce(s, args[2:])
+		}
 		cron, prompt, err := parseAddArgs(args[1:])
 		if err != nil {
 			return "", err
@@ -117,6 +121,39 @@ func scheduleCmd(s *Scheduler, args []string) (string, error) {
 	default:
 		return "", fmt.Errorf("未知子命令 %q;用法:/schedule list|add|rm|on|off|run", args[0])
 	}
+}
+
+// scheduleAddOnce 新增一次性计划:/schedule add once <YYYY-MM-DD> <HH:MM> <任务描述>。
+//
+// 为什么单独一个形态:5 字段 cron 表达不了年(`0 9 20 11 *` 是「每年 11/20」),
+// 一次性必须显式给日期 —— 与界面上「只跑一次」档位说的是同一件事。
+func scheduleAddOnce(s *Scheduler, args []string) (string, error) {
+	const usage = "用法:/schedule add once <YYYY-MM-DD> <HH:MM> <任务描述>,如 /schedule add once 2026-11-20 09:00 生成昨日对账"
+	if len(args) < 3 {
+		return "", fmt.Errorf("%s(缺少日期、时刻与任务描述)", usage)
+	}
+	date := strings.TrimSpace(args[0])
+	if _, err := time.Parse("2006-01-02", date); err != nil {
+		return "", fmt.Errorf("%s(日期须为 YYYY-MM-DD)", usage)
+	}
+	tm := strings.TrimSpace(args[1])
+	at, err := time.Parse("2006-01-02 15:04", date+" "+tm)
+	if err != nil {
+		return "", fmt.Errorf("%s(时刻须为 HH:MM,24 小时制)", usage)
+	}
+	prompt := strings.TrimSpace(strings.Join(args[2:], " "))
+	if prompt == "" {
+		return "", fmt.Errorf("%s(缺少任务描述)", usage)
+	}
+	p, err := s.Add(sdk.Schedule{
+		Name: autoName(prompt), Cron: fmt.Sprintf("%d %d %d %d *", at.Minute(), at.Hour(), at.Day(), int(at.Month())),
+		Prompt: prompt, Enabled: true, Once: true, OnceDate: date,
+	})
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("已创建一次性计划 %s(仅 %s 执行一次)\n触发时刻:%s\n到点自动运行;无人值守:需审批的危险动作一律拒绝。",
+		p.ID, date, formatTime(p.NextRun)), nil
 }
 
 // parseAddArgs 还原 add 的 cron 与任务描述(兼容「cron 一个参数」与「被空格拆散」两种形态)。
@@ -176,8 +213,13 @@ func scheduleList(s *Scheduler) string {
 		if !p.Enabled {
 			state = "停用"
 		}
-		fmt.Fprintf(&b, "\n  [%s] %s  · %s\n    cron %s(%s)  下次 %s",
-			p.ID, p.Name, state, p.Cron, cronLabel(p.Cron), formatTime(p.NextRun))
+		if p.Once {
+			fmt.Fprintf(&b, "\n  [%s] %s  · %s\n    仅执行一次:%s  下次 %s",
+				p.ID, p.Name, state, p.OnceDate, formatTime(p.NextRun))
+		} else {
+			fmt.Fprintf(&b, "\n  [%s] %s  · %s\n    cron %s(%s)  下次 %s",
+				p.ID, p.Name, state, p.Cron, cronLabel(p.Cron), formatTime(p.NextRun))
+		}
 		if !p.LastRunAt.IsZero() {
 			fmt.Fprintf(&b, "  上次 %s", formatTime(p.LastRunAt))
 			if p.LastStatus != "" {

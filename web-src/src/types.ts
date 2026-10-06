@@ -399,14 +399,66 @@ export interface Job {
 export interface Schedule {
   id: string
   name: string
-  cron: string // 5 字段:分 时 日 月 周
+  cron: string // 5 字段:分 时 日 月 周(日字段可含 L = 当月最后一天)
   prompt: string
   enabled: boolean
   created_at: string
+  once?: boolean // 只跑一次(触发后自动停用)
+  once_date?: string // 一次性目标日期 YYYY-MM-DD(once 时的权威,cron 表达不了年)
+  // 农历年度排期(如 "08-15";"12-00" = 腊月最后一天即除夕)。
+  // 设了它时 cron 只承载时分 —— 农历日期在公历上每年都在变,cron 表达不了。
+  lunar_date?: string
   last_run_at?: string
   last_status?: string // ok | failed | skipped
   last_error?: string
   next_run?: string // 宿主机算;零值(未启用/无匹配时刻)序列化为零时刻字符串
+  // 中文排期描述与预览时刻:不会 cron 的用户没有别的验收手段 ——
+  // 界面显示的是这两个,不是 cron。
+  cron_label?: string // 空串 = 控件表达不了(repeat=custom),界面按只读展示
+  next_runs?: string[] // 接下来 1-3 次(once 只 1 次)
+}
+
+// 排期档位(与后端 hostschedule.RepeatKind 同名同值;custom = 控件表达不了)。
+export type RepeatKind =
+  | 'daily'
+  | 'weekly'
+  | 'weekdays'
+  | 'monthly_day'
+  | 'monthly_nth'
+  | 'monthly_last'
+  | 'monthly_last_workday'
+  | 'hourly'
+  | 'every_n_min'
+  | 'every_n_hour'
+  | 'annual_date' // 每年某个公历日期(cron 可表达)
+  | 'lunar_annual' // 每年某个农历日期(中秋/春节;cron 表达不了,靠 lunar_date)
+  | 'once'
+  | 'custom'
+
+// ScheduleView 排期解释结果(sdk.ScheduleView 原样):控件回填 + 人话描述 + 预览。
+export interface ScheduleView {
+  cron: string
+  label: string // 中文排期描述(custom 时为空串)
+  next_runs: string[] // 接下来 1-3 次触发时刻
+  repeat: RepeatKind
+  minute?: number // 时刻(分)
+  hour?: number // 时刻(时)
+  dows?: number[] // weekly 选中的周几(0=周日)
+  month?: number // annual_date / lunar_annual 的月
+  day?: number // monthly_day 几号;annual/lunar 的日(0 = 该月最后一天)
+  festival?: string // 节日名(中秋/春节…),仅用于文案
+  nth?: number // monthly_nth 第几个(1-5)
+  every?: number // every_n_min/every_n_hour 的间隔数
+  once?: boolean
+  once_date?: string
+  assumed_time?: boolean // 时刻是补的默认值(用户没说)→ 界面必须回显告知
+}
+
+// ScheduleResolve resolve 响应。ok=false **不是**故障:那是「这句话没看懂」,
+// 界面要说的是「没看懂,可以直接用下面的选择器」,不是红字报错。
+export interface ScheduleResolve extends Partial<ScheduleView> {
+  ok: boolean
+  reason?: string
 }
 
 // —— 文档预览(D1;/api/doc/* 契约,sdk.DocView 原样) ——

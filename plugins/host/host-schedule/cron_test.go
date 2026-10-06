@@ -41,8 +41,8 @@ func TestParseCronInvalid(t *testing.T) {
 		"5-1 * * * *":    "倒序",
 		"1,,2 * * * *":   "逗号",
 		"? * * * *":      "扩展语法",
-		"0 0 L * *":      "取值非法",
-		"0 0 15W * *":    "取值非法",
+		"0 0 15W * *":    "取值非法", // W 仍未支持(「最近的工作日」)
+		"0 0 L-31 * *":   "偏移非法",
 		"abc * * * *":    "取值非法",
 		"0 0 * FOO *":    "取值非法",
 		"0 0 * * MONDAY": "取值非法",
@@ -204,24 +204,145 @@ func TestCronNextLocalTZ(t *testing.T) {
 
 func TestCronHuman(t *testing.T) {
 	cases := map[string]string{
-		"0 8 * * *":    "每天 08:00",
-		"30 6 * * 1":   "每周一 06:30",
-		"0 0 5 * *":    "每月 5 号 00:00",
-		"* * * * *":    "每分钟",
-		"0 * * * *":    "每小时整点",
-		"*/15 * * * *": "每 15 分钟",
-		"0 */6 * * *":  "每 6 小时的第 0 分",
-		"0 0 * * 0":    "每周日 00:00",
+		"0 8 * * *":     "每天 08:00",
+		"30 6 * * 1":    "每周一 06:30",
+		"0 0 5 * *":     "每月 5 号 00:00",
+		"* * * * *":     "每分钟",
+		"0 * * * *":     "每小时整点",
+		"*/15 * * * *":  "每 15 分钟",
+		"0 */6 * * *":   "每 6 小时", // 分是 0 时不提「第 0 分」(这串直接给人看)
+		"30 */6 * * *":  "每 6 小时的第 30 分",
+		"0 0 * * 0":     "每周日 00:00",
+		"0 9 * * 1-5":   "每个工作日 09:00",
+		"0 9 * * 1,3,5": "每周一、三、五 09:00",
+		"0 9 8-14 * 2":  "每月第二个周二 09:00",
+		"0 9 15-21 * 3": "每月第三个周三 09:00",
+		"0 9 29-31 * 3": "每月第五个周三 09:00", // 第 5 个窗口被钳到 29-31
+		"0 9 L * *":     "每月最后一天 09:00",
+		"30 * * * *":    "每小时第 30 分",
 	}
 	for expr, want := range cases {
 		if got := cronHuman(expr); got != want {
 			t.Fatalf("%q:期望 %q,得 %q", expr, want, got)
 		}
 	}
-	// 无法简写的形态返回空串(调用方回显表达式本身)
-	for _, expr := range []string{"5,35 8-10 * * 1,3", "0 0 1 1 *"} {
-		if got := cronHuman(expr); got != "" && strings.Contains(got, "每月 1 号 00:00") {
-			t.Fatalf("%q 的简写不该命中(rules 只覆盖 日+周 皆限定的形态)", expr)
+	// 每年某天能被 cron 表达,所以现在有文案(此前一律返回空串:看得见却改不了)。
+	if got, want := cronHuman("0 9 1 10 *"), "每年 10 月 1 日 09:00"; got != want {
+		t.Fatalf("限定月份的年度排期应有文案:期望 %q,得 %q", want, got)
+	}
+
+	// 无法简写的形态返回空串(调用方回显表达式本身)。
+	// 红线:`0 8 1 * 1` = 「每月 1 号**或**每周一」(日与周**同时受限**),简写成任何一种都在说谎。
+	// 注意别把 `0 0 1 1 *` 也归进来 —— 它是「1 月 1 日」(周字段为 `*`),不是 OR 陷阱。
+	for _, expr := range []string{
+		"5,35 8-10 * * 1,3", "0 8 1 * 1", "0 9 1-15 * *", "0 9 L * 1", "0 8-18 * * *",
+	} {
+		if got := cronHuman(expr); got != "" {
+			t.Fatalf("%q 应无法简写(得 %q),实得 %q", expr, "空串", got)
 		}
+	}
+}
+
+// —— 月末扩展语法 `L` / `L-n` ——
+
+func TestParseCronLastValid(t *testing.T) {
+	for _, expr := range []string{"0 9 L * *", "30 6 l * *", "0 9 L-3 * *", "0 0 L * 1"} {
+		if _, err := parseCron(expr); err != nil {
+			t.Fatalf("应可解析 %q: %v", expr, err)
+		}
+	}
+}
+
+func TestParseCronLastInvalid(t *testing.T) {
+	cases := map[string]string{
+		"0 9 L,15 * *": "不能与其他取值并存", // 混用会让 vals 整段失效
+		"0 9 L * * ,":  "5 字段",
+		"0 9 L/2 * *":  "不支持步长",
+		"0 9 L,L * *":  "重复出现 L",
+		"0 9 L-x * *":  "偏移非法",
+		"0 9 L-99 * *": "偏移非法",
+		"0 L * * *":    "只有「日」字段支持 L", // 小时字段不支持
+		"0 9 * L *":    "只有「日」字段支持 L", // 月份字段不支持
+		"0 9 * * L":    "只有「日」字段支持 L", // 周字段不支持
+	}
+	for expr, want := range cases {
+		_, err := parseCron(expr)
+		if err == nil {
+			t.Fatalf("%q 应被拒", expr)
+		}
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("%q 报错应含 %q,得 %q", expr, want, err.Error())
+		}
+	}
+}
+
+func TestCronLastMatchesMonthEnd(t *testing.T) {
+	spec, err := parseCron("0 9 L * *")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		at      time.Time
+		matches bool
+	}{
+		{at(2026, 1, 31, 9, 0), true},  // 31 天月
+		{at(2026, 1, 30, 9, 0), false}, // 前一天不算
+		{at(2026, 2, 28, 9, 0), true},  // 平年 2 月
+		{at(2026, 4, 30, 9, 0), true},  // 30 天月
+		{at(2028, 2, 29, 9, 0), true},  // 闰年 2 月
+		{at(2028, 2, 28, 9, 0), false}, // 闰年 2 月不是 28 号
+	} {
+		if got := spec.match(tc.at); got != tc.matches {
+			t.Fatalf("%s 命中=%v,期望 %v", tc.at, got, tc.matches)
+		}
+	}
+}
+
+func TestCronLastNextAcrossMonths(t *testing.T) {
+	spec, err := parseCron("0 9 L * *")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 下次触发恒为「当月最后一天 09:00」,跨月/跨闰年都要准。
+	for _, tc := range []struct{ from, want time.Time }{
+		{at(2026, 1, 15, 0, 0), at(2026, 1, 31, 9, 0)},
+		{at(2026, 2, 28, 9, 0), at(2026, 3, 31, 9, 0)}, // 当天 9:00 已过 → 下个月末
+		{at(2028, 2, 29, 10, 0), at(2028, 3, 31, 9, 0)},
+	} {
+		got, ok := spec.next(tc.from)
+		if !ok || !got.Equal(tc.want) {
+			t.Fatalf("next(%s)=%v(%v),期望 %v", tc.from, got, ok, tc.want)
+		}
+	}
+}
+
+func TestCronLastOffset(t *testing.T) {
+	spec, err := parseCron("0 9 L-2 * *")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 2 月平年 28 天:最后一天往前 2 天 = 26 号。
+	if !spec.match(at(2026, 2, 26, 9, 0)) {
+		t.Fatal("L-2 应命中 2 月 26 号")
+	}
+	if spec.match(at(2026, 2, 27, 9, 0)) {
+		t.Fatal("L-2 不该命中 27 号")
+	}
+}
+
+// L 是受限字段(非裸 *):与受限周几并存时走日-周 OR,与 Vixie 语义一致。
+func TestCronLastWithDayOfWeekOr(t *testing.T) {
+	spec, err := parseCron("0 9 L * 1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !spec.match(at(2026, 1, 31, 9, 0)) { // 1/31 = 月末
+		t.Fatal("月末应命中")
+	}
+	if !spec.match(at(2026, 1, 26, 9, 0)) { // 1/26 = 周一
+		t.Fatal("每周一应命中")
+	}
+	if spec.match(at(2026, 1, 28, 9, 0)) { // 既非月末也非周一
+		t.Fatal("1/28 不该命中")
 	}
 }
