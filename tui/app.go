@@ -2342,23 +2342,23 @@ func (a *App) modelOptions([]string) []sdk.Option {
 			return nil
 		}
 		src := a.providerShort()
-		opts := make([]sdk.Option, 0, len(infos))
+		entries := make([]sdk.ModelSelectEntry, 0, len(infos))
 		for _, m := range infos {
-			opts = append(opts, sdk.Option{Value: m.ID, Desc: modelDesc(m.ID, m.OwnedBy, src)})
+			entries = append(entries, sdk.NewModelSelectEntry(m.ID, m, src))
 		}
-		return opts
+		return modelEntriesToOptions(entries)
 	}
 	all := ms.ListAllModels()
-	opts := make([]sdk.Option, 0, 16)
+	entries := make([]sdk.ModelSelectEntry, 0, 64)
 	for _, pl := range all {
 		if pl.Err != nil || len(pl.Models) == 0 {
 			continue // 不可达/无模型:仅 show 可见,不提供无效选项
 		}
 		for _, m := range pl.Models {
-			opts = append(opts, sdk.Option{Value: pl.Name + "|" + m.ID, Desc: modelDesc(m.ID, m.OwnedBy, pl.Name)})
+			entries = append(entries, sdk.NewModelSelectEntry(pl.Name+"|"+m.ID, m, pl.Name))
 		}
 	}
-	return opts
+	return modelEntriesToOptions(entries)
 }
 
 // syncDisplay 状态栏模型与来源、思考档随 provider/模型/角色配置刷新(启动、/model、
@@ -2721,4 +2721,14 @@ func (a *App) levels(name string) []sdk.ArgLevel {
 		return nil
 	}
 	return spec.Args
+}
+
+// modelEntriesToOptions 排序并转成 TUI 选择器要的 []sdk.Option。
+func modelEntriesToOptions(entries []sdk.ModelSelectEntry) []sdk.Option {
+	sorted := sdk.SortModelSelectEntries(entries)
+	opts := make([]sdk.Option, 0, len(sorted))
+	for _, e := range sorted {
+		opts = append(opts, sdk.Option{Value: e.Value, Desc: e.Desc})
+	}
+	return opts
 }

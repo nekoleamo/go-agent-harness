@@ -57,3 +57,17 @@ test('explainProbeError 空值/未知错误回落到通用提示', () => {
   assert.ok(explainProbeError('   ').includes('没有返回模型列表'))
   assert.ok(explainProbeError('something completely different 500').includes('不可达'))
 })
+
+// —— default_model(2026-10-06)——
+// 原则:预设默认**不写死模型名**(模型名几个月一变,写死必然过期);唯一的例外是
+// openrouter/free —— 官方维护的自动路由 id,不随免费清单变动而失效。
+test('预设默认不写死模型名,唯一例外是 openrouter/free', () => {
+  for (const p of PROVIDER_PRESETS) {
+    if (p.default_model === undefined) continue
+    assert.equal(p.name, 'openrouter', `只有 OpenRouter 允许预填模型:${p.name}`)
+    assert.equal(p.default_model, 'openrouter/free')
+  }
+  // openrouter 之外不得有 default_model(否则这条原则就名存实亡)
+  const withModel = PROVIDER_PRESETS.filter((p) => p.default_model)
+  assert.equal(withModel.length, 1)
+})

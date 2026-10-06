@@ -12,6 +12,18 @@ export interface ProviderPreset {
   base_url: string // OpenAI 兼容端点(不带尾斜杠)
   note: string // 一句说明(来源/是否本地)
   key_optional?: boolean // 本地端点(Ollama)不需要 Key
+  /**
+   * 保存时预填的模型名。
+   *
+   * **默认不给**:模型名几个月一变(改名/下线/预览版到期),硬编码在预设里必然过期,
+   * 用户照着预设保存反而得到「模型不存在」—— 这是本表头注释那条原则。
+   *
+   * 唯一的例外是 OpenRouter 的 `openrouter/free`:它不是某个模型,而是**官方维护的
+   * 自动路由 id**(“每次请求挑一个当前可用的免费模型”)。免费清单实测一天内就换了一半 ——
+   * 写死其中任何一个都会过期,而这个 id 不会失效;它还有个实际好处:用户不必在几百个
+   * 模型里先挑一个才开始用。
+   */
+  default_model?: string
 }
 
 export const PROVIDER_PRESETS: ProviderPreset[] = [
@@ -49,7 +61,8 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     name: 'openrouter',
     label: 'OpenRouter',
     base_url: 'https://openrouter.ai/api/v1',
-    note: '一个 Key 用多家模型',
+    note: '一个 Key 用多家模型。默认模型给「自动路由」:由 OpenRouter 每次挑一个当前可用的免费模型(官方维护的 id,不会失效);想要指定就把模型改成名字后带 :free 的那个',
+    default_model: 'openrouter/free',
   },
   {
     name: 'openai',

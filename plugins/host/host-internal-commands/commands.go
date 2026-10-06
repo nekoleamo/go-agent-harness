@@ -1231,6 +1231,10 @@ func (h *Host) providerFree2(picked []string) []string {
 
 // modelOptions 动态模型枚举:聚合所有 provider 端点模型,选项携带来源
 // (Value=provider|model;选中后 /model Run 解析并自动切所属 provider)。
+//
+// 排序与描述**全部委托 sdk**(ModelSelectEntry / ModelOptionDesc):TUI 自己那份枚举
+// (tui/app.go)走的是同一套,两端不可能漂移。不可用的条目**不藏**(藏了用户会以为不存在),
+// 排到最后并把原因写进描述。
 func (h *Host) modelOptions([]string) []sdk.Option {
 	ms, err := h.multiSvc()
 	if err != nil {
@@ -1243,21 +1247,31 @@ func (h *Host) modelOptions([]string) []sdk.Option {
 			return nil
 		}
 		src := h.providerShort()
-		opts := make([]sdk.Option, 0, len(infos))
+		entries := make([]sdk.ModelSelectEntry, 0, len(infos))
 		for _, m := range infos {
-			opts = append(opts, sdk.Option{Value: m.ID, Desc: modelDesc(m.ID, m.OwnedBy, src)})
+			entries = append(entries, sdk.NewModelSelectEntry(m.ID, m, src))
 		}
-		return opts
+		return modelEntriesToOptions(entries)
 	}
 	all := ms.ListAllModels()
-	opts := make([]sdk.Option, 0, 16)
+	entries := make([]sdk.ModelSelectEntry, 0, 64)
 	for _, pl := range all {
 		if pl.Err != nil || len(pl.Models) == 0 {
 			continue
 		}
 		for _, m := range pl.Models {
-			opts = append(opts, sdk.Option{Value: pl.Name + "|" + m.ID, Desc: modelDesc(m.ID, m.OwnedBy, pl.Name)})
+			entries = append(entries, sdk.NewModelSelectEntry(pl.Name+"|"+m.ID, m, pl.Name))
 		}
+	}
+	return modelEntriesToOptions(entries)
+}
+
+// modelEntriesToOptions 排序并转成选择器要的 []sdk.Option。
+func modelEntriesToOptions(entries []sdk.ModelSelectEntry) []sdk.Option {
+	sorted := sdk.SortModelSelectEntries(entries)
+	opts := make([]sdk.Option, 0, len(sorted))
+	for _, e := range sorted {
+		opts = append(opts, sdk.Option{Value: e.Value, Desc: e.Desc})
 	}
 	return opts
 }

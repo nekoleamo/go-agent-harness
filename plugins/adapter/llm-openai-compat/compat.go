@@ -211,29 +211,17 @@ func (a *Adapter) ListModels() ([]sdk.ModelInfo, error) {
 	if len(raw) > modelsMaxBody {
 		return nil, fmt.Errorf("llm-openai: models 响应超过 %d MiB 上限", modelsMaxBody>>20)
 	}
-	var mr modelsResp
-	if err := json.Unmarshal(raw, &mr); err != nil {
+	// 解析交给单一事实源(sdk.ParseModelsPayload):host-llm 聚合非活跃端点时走同一条路,
+	// 两边解出的元信息(上下文/工具调用/价格)必须一致 —— 徽标是「能不能当 agent 用」的依据。
+	infos, err := sdk.ParseModelsPayload(raw)
+	if err != nil {
 		return nil, fmt.Errorf("llm-openai: models 解析失败: %w", err)
-	}
-	infos := make([]sdk.ModelInfo, 0, len(mr.Data))
-	for _, d := range mr.Data {
-		if d.ID != "" {
-			infos = append(infos, sdk.ModelInfo{ID: d.ID, OwnedBy: d.OwnedBy})
-		}
 	}
 	a.mu.Lock()
 	a.modelsCache = infos
 	a.modelsCachedAt = time.Now()
 	a.mu.Unlock()
 	return infos, nil
-}
-
-type modelsResp struct {
-	Object string `json:"object"`
-	Data   []struct {
-		ID      string `json:"id"`
-		OwnedBy string `json:"owned_by"`
-	} `json:"data"`
 }
 
 // endpoint 当前聊天端点(锁保护读取)。

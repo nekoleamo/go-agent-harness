@@ -599,14 +599,26 @@ func TestModelSelectorOptions(t *testing.T) {
 	if len(opts) != 2 {
 		t.Fatalf("应只列成功且有模型的端点: %+v", opts)
 	}
-	if opts[0].Value != "siliconflow|deepseek-ai/DeepSeek-V3" {
-		t.Fatalf("选项值应带来源前缀: %+v", opts[0])
+	// 顺序自 2026-10-06 起按「可用性 > 免费 > 上下文大」排;同权重时按 Value 字典序
+	// **稳定**排列(跳端点合并时需要确定性 tie-break)。因此这里不锁下标,按 Value 找条目。
+	find := func(id string) sdk.Option {
+		for _, o := range opts {
+			if strings.HasSuffix(o.Value, "|"+id) || o.Value == id {
+				return o
+			}
+		}
+		return sdk.Option{}
 	}
-	if !strings.Contains(opts[0].Desc, "(来源 siliconflow)") {
-		t.Fatalf("归属与来源一致时不重复标注: %+v", opts[0])
+	ds := find("deepseek-ai/DeepSeek-V3")
+	if ds.Value != "siliconflow|deepseek-ai/DeepSeek-V3" {
+		t.Fatalf("选项值应带来源前缀: %+v", ds)
 	}
-	if !strings.Contains(opts[1].Desc, "归属 other") {
-		t.Fatalf("归属与来源不一致应标注两者: %+v", opts[1])
+	if !strings.Contains(ds.Desc, "(来源 siliconflow)") {
+		t.Fatalf("归属与来源一致时不重复标注: %+v", ds)
+	}
+	qw := find("Qwen/Qwen2.5-72B")
+	if !strings.Contains(qw.Desc, "归属 other") {
+		t.Fatalf("归属与来源不一致应标注两者: %+v", qw)
 	}
 
 	// 单 provider 回退:llm 仅实现 ListModels + ProviderInfo(未实现 MultiProviderService)

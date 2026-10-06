@@ -262,9 +262,37 @@ export interface AskConfirm {
 }
 
 // —— 设置面板数据(契约 /api/models /api/providers /api/plugins) ——
+// ModelVerdict 由**后端算好下发**(Go 侧 sdk.AssessModel 是单一事实源)。
+//
+// 为什么前端不自己判「这个模型能不能当 agent 用」:那是一条会让用户按它选错模型的结论
+// (没有工具调用能力的模型当不了 agent 的脑子)。前端算一份就会与 TUI 选择器的结论漂移,
+// 而两端都在同一个界面体系里 —— 用户从 Web 选、在 TUI 里看到另一套说法,没法排查。
+export interface ModelVerdict {
+  Free: boolean
+  /** id = openrouter/free(官方自动路由到某个免费模型;不会随免费清单变动而失效) */
+  AutoRouter?: boolean
+  ToolsKnown: boolean
+  Tools: boolean
+  Vision: boolean
+  ContextWindow: number
+  Usable: boolean
+  Tags: string[]
+  Warn: string
+}
 export interface ModelInfo {
   ID: string
   OwnedBy?: string
+  // 端点自述的可选元信息(不在就别显示;字段多时纯属向后兼容的补充)
+  ContextWindow?: number
+  SupportsTools?: boolean | null
+  InputModalities?: string[]
+  MaxOutputTokens?: number
+  /** 端点给的输入价(单位=每 token 美元;见 Go 侧 ModelInfo.PromptPrice 的注释) */
+  PromptPrice?: number
+  PriceKnown?: boolean
+  // 后端算好的判定 + 厂商提示(端点不返回 owned_by 时由 id 前缀补)
+  Verdict?: ModelVerdict
+  Vendor?: string
 }
 export interface ProviderModelGroup {
   Name: string

@@ -12,6 +12,16 @@ export interface ModelOption {
   label: string
   /** "Provider|模型ID"(面板列表的既有约定) */
   value: string
+  // —— 以下为 2026-10-06 新增:能不能当 agent 用的判定**由后端算好**(Go 侧 sdk.AssessModel
+  // 是单一事实源),前端只渲染与排序。下面几个一律**可选**:枚举失败/旧后端时缺它们,
+  // 此时不得当成「不可用」,否则会把用户的模型列表清空。
+  usable?: boolean
+  free?: boolean
+  /** 官方自动路由模型(后端 verdict.AutoRouter;置顶理由见后端注释) */
+  autoRouter?: boolean
+  contextWindow?: number
+  tags?: string[]
+  warn?: string
 }
 
 export function modelOptionValue(providerName: string, modelID: string): string {
@@ -38,7 +48,17 @@ export function withCurrentModel(options: ModelOption[], stateModel: string, act
   if (!cur) return options
   const name = activeProviderName.trim()
   const value = modelOptionValue(name, cur)
-  return [{ label: (name ? name + ' · ' : '') + cur + '(当前)', value }, ...options]
+  // 补的这一条必须 **usable: true**:它就是此刻正在用的模型,凭什么被「只看能当 agent 用的」
+  // 过滤藏起来?而它没经过 verdict 判定(端点枚举里根本没有它),所以显式标为可用。
+  return [
+    {
+      label: (name ? name + ' · ' : '') + cur + '(当前)',
+      value,
+      usable: true,
+      tags: ['当前生效'],
+    },
+    ...options,
+  ]
 }
 
 // currentModelValue 当前模型在选项里的 value;返回空串表示「不高亮任何一项」。

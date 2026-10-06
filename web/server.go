@@ -2523,15 +2523,41 @@ func (s *Server) handlePluginAction(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+// modelView 模型 + **后端算好的可用性判定**。
+//
+// 为什么判定在 Go 侧而不在前端:sdk.AssessModel 是单一事实源(sdk/modelverdict.go),
+// TUI 选择器已经用它。Web 端若再写一份 TS 版,同一个模型在两端会得到不同结论 ——
+// 而「能不能当 agent 用」是会让用户按它选错模型的结论,不是可以各说各的样式。
+// 前端只渲染 verdict.tags / verdict.warn / verdict.usable,不做任何能力判断。
+type modelView struct {
+	sdk.ModelInfo
+	Verdict sdk.ModelVerdict `json:"verdict"`
+	// Vendor 厂商(端点不返回 owned_by 时由 id 前缀补;OpenRouter 这类端点就是)。
+	Vendor string `json:"Vendor,omitempty"`
+}
+
+// modelViews 把模型列表转成视图(判定在此发生,前端零判断)。
+func modelViews(list []sdk.ModelInfo) []modelView {
+	out := make([]modelView, 0, len(list))
+	for _, m := range list {
+		out = append(out, modelView{
+			ModelInfo: m,
+			Verdict:   sdk.AssessModel(m),
+			Vendor:    m.VendorHint(),
+		})
+	}
+	return out
+}
+
 // providerModelsView 聚合模型列表的可序列化视图。
 // 为何不直接输出 sdk.ProviderModelList:`Err` 是 `error` 接口,JSON 只能序列化成 `{}` 或
 // 内嵌字段(前端永远拿不到失败原因),首启引导的「连通性自检」就无从给 401/404/DNS 人话提示。
 // 转字符串同时给长度上限(端点返回 HTML 错误页时不把整页塞进响应体)。
 type providerModelsView struct {
-	Name    string          `json:"Name"`
-	BaseURL string          `json:"BaseURL"`
-	Models  []sdk.ModelInfo `json:"Models"`
-	Err     string          `json:"Err,omitempty"`
+	Name    string      `json:"Name"`
+	BaseURL string      `json:"BaseURL"`
+	Models  []modelView `json:"Models"`
+	Err     string      `json:"Err,omitempty"`
 }
 
 // probeErrMaxRunes 单条探测错误的最大长度(超出截断并加省略号)。
@@ -2550,9 +2576,9 @@ func truncateRunes(s string, max int) string {
 func providerModelsViews(list []sdk.ProviderModelList) []providerModelsView {
 	out := make([]providerModelsView, 0, len(list))
 	for _, p := range list {
-		v := providerModelsView{Name: p.Name, BaseURL: p.BaseURL, Models: p.Models}
+		v := providerModelsView{Name: p.Name, BaseURL: p.BaseURL, Models: modelViews(p.Models)}
 		if v.Models == nil {
-			v.Models = []sdk.ModelInfo{} // 前端 length/遍历安全(与 /api/models 单端点分支口径一致)
+			v.Models = []modelView{} // 前端 length/遍历安全(与 /api/models 单端点分支口径一致)
 		}
 		if p.Err != nil {
 			v.Err = truncateRunes(p.Err.Error(), probeErrMaxRunes)
@@ -2579,7 +2605,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	if models == nil {
 		models = []sdk.ModelInfo{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"models": models})
+	writeJSON(w, http.StatusOK, map[string]any{"models": modelViews(models)})
 }
 
 // handleProviders provider 视图(GET /api/providers)。

@@ -4,7 +4,6 @@ package sdk
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -225,9 +224,60 @@ type ModelCatalog interface {
 }
 
 // ModelInfo 一个可选模型(经 ListModels 从端点 /models 拉取)。
+//
+// 后四个字段是**可选元信息**:端点给才有值,不给就留空 —— 它们全部是判定「这个模型能不能
+// 当 agent 用」的依据(见 ModelVerdict),而不是展示用的装饰。
+//   - 为什么不是「统一按模型名猜」:模型名几个月一变(实测 OpenRouter 一天内 :free 清单就换了
+//     一半),名字猜不出能力,端点的自述才作数。
+//   - 为什么 SupportsTools 是三态(*bool):nil = 端点没说。**「没说」不等于「不支持」**,
+//     把它当成 false 会把大量正常模型误判成不能用(绝大多数 provider 的 /models 不返回这个字段)。
 type ModelInfo struct {
 	ID      string // 模型名(如 deepseek-ai/DeepSeek-V3)
 	OwnedBy string // 模型归属(如 deepseek-ai;可空)
+
+	// ContextWindow 上下文窗口(端点自报;0 = 未知)。
+	ContextWindow int
+	// SupportsTools 端点是否声明支持结构化工具调用;nil = 未声明(见类型注释的三态理由)。
+	SupportsTools *bool
+	// InputModalities 输入模态(text/image/audio/video…;部分端点(如 OpenRouter)声明)。
+	InputModalities []string
+	// MaxOutputTokens 单次输出上限(端点自报;0 = 未知)。太小会让长任务在输出中途被截断。
+	MaxOutputTokens int
+	// PromptPrice 输入价(**每 token**,美元/单 token;0 = 免费)。
+	//
+	// 单位为什么写死成"每 token"而不是"每百万 token":这就是端点给的值(实测 OpenRouter 的
+	// pricing.prompt = 0.00000015 对应 gpt-4o-mini,即 $0.15/M)。刻意不换算成每百万 ——
+	// 换算等于把端点的口径偷偷改掉,而各家口径未必一致(有的按字符、有的按 token 打包)。
+	// 命名曾经写成 PromptPricePerMillion(注释也说每百万),与实际单位不符,已改 —— 名字骗人比
+	// 字段缺失更贵,因为它会让读代码的人以为拿到的数可以直接乘百万。
+	//
+	// 为什么要价格而不要「:free 后缀」启发:后缀只是 OpenRouter 的约定,价格才是事实
+	// (实测该站 16 个 :free 模型 pricing 真为 0,但反过来不成立 —— 有 id 不带后缀的模型也可能免费)。
+	PromptPrice float64
+	// PriceKnown 端点是否给了价格字段(区分「0 = 免费」与「没说 = 未知」)。
+	PriceKnown bool
+}
+
+// vendorHint 厂商猜测:OpenRouter 之类不返回 owned_by,只能用 id 的 `/` 前缀。
+func (m ModelInfo) vendorHint() string {
+	if m.OwnedBy != "" {
+		return m.OwnedBy
+	}
+	if i := strings.IndexByte(m.ID, '/'); i > 0 {
+		return m.ID[:i]
+	}
+	return ""
+}
+
+// SupportsVision 是否声明支持图片输入。
+func (m ModelInfo) SupportsVision() bool {
+	for _, mod := range m.InputModalities {
+		switch strings.ToLower(strings.TrimSpace(mod)) {
+		case "image", "image+text", "text+image":
+			return true
+		}
+	}
+	return false
 }
 
 // ModelLister 可选接口:适配器支持列举端点可用模型(TUI /model 动态枚举;失败回退手动)。
@@ -354,20 +404,21 @@ func OpenAIFetchModels(baseURL, apiKey string) ([]ModelInfo, error) {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("openai-models: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
-	var mr struct {
-		Data []struct {
-			ID      string `json:"id"`
-			OwnedBy string `json:"owned_by"`
-		} `json:"data"`
+	// 读整体再交给单一解析源(sdk.ParseModelsPayload):适配器自身的 ListModels 走同一条路,
+	// 两边解出的元信息必须逐字一致,否则「列表里有徽标、聚合列表里没有」。
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, modelsListMaxBody+1))
+	if err != nil {
+		return nil, fmt.Errorf("openai-models: 读取失败: %w", err)
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&mr); err != nil {
-		return nil, fmt.Errorf("openai-models: 解析失败: %w", err)
+	if len(raw) > modelsListMaxBody {
+		return nil, fmt.Errorf("openai-models: 模型列表响应超过 %d MiB 上限", modelsListMaxBody>>20)
 	}
-	out := make([]ModelInfo, 0, len(mr.Data))
-	for _, d := range mr.Data {
-		if d.ID != "" {
-			out = append(out, ModelInfo{ID: d.ID, OwnedBy: d.OwnedBy})
-		}
+	infos, err := ParseModelsPayload(raw)
+	if err != nil {
+		return nil, fmt.Errorf("openai-models: %w", err)
 	}
-	return out, nil
+	return infos, nil
 }
+
+// modelsListMaxBody /models 响应上限(实测 OpenRouter 全量 400+ 模型约 1 MiB;留足余量)。
+const modelsListMaxBody = 16 << 20

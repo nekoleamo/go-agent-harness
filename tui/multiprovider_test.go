@@ -77,13 +77,15 @@ func TestModelOptionsAggregate(t *testing.T) {
 	if len(opts) != 3 {
 		t.Fatalf("应聚合 3 个可用模型(失败 provider 跳过): %+v", opts)
 	}
-	if opts[0].Value != "siliconflow|deepseek-ai/DeepSeek-V3" {
-		t.Fatalf("Value 应携带来源: %q", opts[0].Value)
-	}
+	// 顺序自 2026-10-06 起按 sdk.ModelSelectRank 排(能用当 agent 用 > 免费 > 上下文大),
+	// 同权重按 Value 字典序稳定排列 —— 所以不锁下标,按 Value 找条目。
 	got := false
 	for _, o := range opts {
 		if o.Value == "deepseek|deepseek-chat" {
 			got = true
+		}
+		if o.Value == "siliconflow|deepseek-ai/DeepSeek-V3" && !strings.HasPrefix(o.Desc, "deepseek-ai/DeepSeek-V3 (来源 siliconflow") {
+			t.Fatalf("Value 应携带来源且描述带来源: %+v", o)
 		}
 	}
 	if !got {

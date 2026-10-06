@@ -33,6 +33,7 @@ import {
   modelOptionValue,
   withCurrentModel,
 } from "../modelsel";
+import type { ModelOption } from "../modelsel";
 import { settingSections } from "../registry";
 import {
   loadUIPlugins,
@@ -849,16 +850,36 @@ function withDrafts(
 }
 
 // —— 模型/思考/沙箱 ——
-const modelOptions = ref<{ label: string; value: string }[]>([]);
+// modelOption 的形状在 modelsel.ts(ModelOption):tags/warn/usable 全部来自**后端算好的**
+// verdict(Go 侧 sdk.AssessModel 是单一事实源);前端只渲染与排序,不自己判「能不能当 agent 用」。
+const modelOptions = ref<ModelOption[]>([]);
 function buildModelOptions(): void {
-  const opts: { label: string; value: string }[] = [];
+  const opts: ModelOption[] = [];
   for (const g of models.value) {
-    for (const md of g.Models)
+    for (const md of g.Models) {
+      const v = md.Verdict;
+      const tags = v?.Tags ?? [];
       opts.push({
-        label: g.Name + " · " + md.ID,
+        label:
+          g.Name +
+          " · " +
+          md.ID +
+          (tags.length ? " · " + tags.join(" · ") : ""),
         value: modelOptionValue(g.Name, md.ID),
+        // 没有 verdict(旧后端/枚举失败)时不当成不可用 —— 那会把列表清空
+        usable: v ? v.Usable : true,
+        free: v ? v.Free : false,
+        autoRouter: v?.AutoRouter ?? false,
+        contextWindow: v?.ContextWindow ?? 0,
+        tags,
+        warn: v?.Warn ?? "",
       });
+    }
   }
+  // 排序:能用当 agent 用 > 免费 > 上下文大。权重口径与 TUI 选择器一致
+  // (host-internal-commands 的 modelRankOf);顺序只影响观感,不影响正确性 ——
+  // 真正的过滤条件用的是后端给的 usable,不在前端重算。
+  opts.sort((a, b) => modelRank(a) - modelRank(b));
   // 当前模型可能不在枚举里(手填/provider 未列全):补一条「(当前)」,保证高亮总有落点。
   // 真源只有一个 —— state.model(运行时真正在用的),不是 provider 配置里的 Model 默认值:
   // 旧实现两者混用,不一致时高亮永远匹配不上(见 modelsel.ts 顶部注释)。
@@ -868,17 +889,36 @@ function buildModelOptions(): void {
     activeProvider()?.Name ?? "",
   );
 }
+function modelRank(o: ModelOption): number {
+  let rank = 0;
+  if (o.usable === false) rank += 1000;
+  if (o.autoRouter) rank -= 50; // 官方自动路由:不会因某个免费模型下线而失效,置顶
+  if (o.free) rank -= 10;
+  rank -= Math.floor((o.contextWindow ?? 0) / 1_000_000);
+  return rank;
+}
 const modelVal = ref("");
 // 模型选择:输入筛选(modelFilter 实时过滤选项,provider·模型名均可匹配;命中即点选)
 const modelFilter = ref("");
+// 「只看能当 agent 用的」**默认开**(2026-10-06)。开着的理由:OpenRouter 这类聚合端点
+// 一次给 400+ 个模型,其中不少既没工具调用能力、上下文也偏小,平铺出来等于没法选。
+// 不藏被过滤掉的那部分 —— 开关旁边写明还剩多少条,关掉就能看到全部(并在标签上标明原因)。
+const onlyUsableModels = ref(true);
 const filteredModels = computed(() => {
   const f = modelFilter.value.trim().toLowerCase();
-  if (!f) return modelOptions.value;
-  return modelOptions.value.filter(
+  let list = modelOptions.value;
+  if (onlyUsableModels.value) list = list.filter((o) => o.usable !== false);
+  if (!f) return list;
+  return list.filter(
     (o) =>
-      o.label.toLowerCase().includes(f) || o.value.toLowerCase().includes(f),
+      o.label.toLowerCase().includes(f) ||
+      o.value.toLowerCase().includes(f) ||
+      (o.tags ?? []).join(" ").toLowerCase().includes(f),
   );
 });
+const hiddenModelCount = computed(
+  () => modelOptions.value.length - filteredModels.value.length,
+);
 // curModelLabel 当前生效模型的可读标签(输入框占位 + 「当前生效」行)。
 // 真源是 state.model(运行时真正在用的),不是筛选框内容 —— 真机上「当前模型」标签后面
 // 就是个空筛选框,用户会读成「已选了模型但当前模型没显示」,故把当前值显式摆出来。
@@ -2294,7 +2334,14 @@ function toggleAdd(): void {
 // applyPreset 一键填入预设(只给 name/base_url:模型名会过期,保存后从实时列表里选)
 function applyPreset(p: ProviderPreset): void {
   applied.value = p;
-  pf.value = { name: p.name, base_url: p.base_url, api_key: "", model: "" };
+  // default_model 只有 OpenRouter 预设带(见 providers.ts 的理由);其余预设留空 ——
+  // 模型名会过期,硬编码在预设里必然让用户撞上「模型不存在」。
+  pf.value = {
+    name: p.name,
+    base_url: p.base_url,
+    api_key: "",
+    model: p.default_model ?? "",
+  };
   showAdd.value = true;
   err.value = "";
   probe.value = null;
@@ -3148,6 +3195,14 @@ watch(
                 当前角色已指定模型：这里切换只改会话档，实际仍按角色跑。
               </p>
               <div class="m-list">
+                <label class="m-filter dim">
+                  <input type="checkbox" v-model="onlyUsableModels" />
+                  只看能当 agent 用的
+                  <span v-if="hiddenModelCount > 0" class="dim">
+                    （已隐去 {{ hiddenModelCount }} 条：端点声明不支持工具调用，或上下文
+                    太小；关掉开关就能看到，它们会在标签后标出原因）
+                  </span>
+                </label>
                 <div
                   v-for="o in filteredModels"
                   :key="o.value"
@@ -3157,9 +3212,14 @@ watch(
                   @click="pickModel(o)"
                 >
                   <span class="m-lab">{{ o.label }}</span>
+                  <span v-if="o.warn" class="m-warn" :data-tip="o.warn">⚠</span>
                 </div>
                 <p v-if="!filteredModels.length" class="dim">
-                  无匹配模型(清空筛选或经 /model 手动设置)
+                  {{
+                    onlyUsableModels
+                      ? "没有能当 agent 用的模型(可关掉上方开关查看全部,或换一个 Provider)"
+                      : "无匹配模型(清空筛选或经 /model 手动设置)"
+                  }}
                 </p>
               </div>
               <p v-if="!models.length && !modelOptions.length" class="dim">
@@ -6595,5 +6655,25 @@ textarea.inp {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* 「只看能当 agent 用的」开关行:与筛选框同区但更轻(它改的是**可见范围**不是查询词) */
+.m-filter {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  padding: 4px 8px 6px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.m-filter input {
+  margin: 0;
+  vertical-align: baseline;
+}
+/* 不可用/有警告条目的行内标记。刻意用语义色的「注意」档而不是错误色:
+   这类条目仍可选(比如你只想拿它聊天),不该看起来像出错。 */
+.m-warn {
+  margin-left: 6px;
+  color: var(--tool);
+  cursor: help;
 }
 </style>
