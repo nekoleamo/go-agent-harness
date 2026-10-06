@@ -35,8 +35,13 @@ func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
 	// 实例注册表(host-session-log 提供):可选注入 —— 缺失时非主会话 Acquire 显式失败。
 	var logs sdk.SessionLogs
 	_ = c.Inject("ctx.sessionLogs", &logs)
-	key := ProjectKeyFromCwd()
-	svc := &Service{key: key, sessions: sessions, logs: logs}
+	// 启动落点:无意义 cwd(双击图标 / 开机自启 → 用户 home 或数据根)下回到**上次打开的
+	// 工作区**;从项目目录里手工拉起则原样保留(那才是意图)。详见 restore.go。
+	//
+	// 位置很关键:必须在 key 计算与 recordProject **之前**,否则无意义 cwd 会被写进
+	// 最近使用列表,下一次恢复又会被这条脏记录带偏。svc 先建空壳(key 稍后由落点决定),
+	// 因为恢复动作本身要调 svc.SwitchDir。
+	svc := &Service{sessions: sessions, logs: logs}
 	svc.dir = &sessionDir{svc: svc, logs: logs}
 	// 工作区切换事件广播(广播模式,监听器错误仅记日志不中断切换)
 	svc.emitWS = func(dir string) {
@@ -46,11 +51,21 @@ func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
 	svc.emitSession = func(id string) {
 		_, _ = c.Emit(context.Background(), "cwd/session-switched", id, sdk.Emit)
 	}
+	restoredDir, restored := restoreLastWorkspace(svc, currentDir())
+	if restored {
+		// 说一句:落点与「按图标前所在的目录」直觉不同(重开 ≠ 从 home 重新开始),不吭声会像 bug。
+		fmt.Fprintf(os.Stderr, "gah: 启动工作区沿用上次打开的目录:%s\n", restoredDir)
+	}
+	key := ProjectKeyFromCwd()
+	svc.key = key
 	svc.recordProject(key, currentDir()) // 启动即记录当前项目(最近使用列表)
 	// 每次启动 = 新会话(空历史):不再自动恢复主会话——过往对话保留在
 	// <key>.jsonl(主会话)/历史切换会话文件,经 /session switch 回溯。
-	if _, err := svc.New(); err != nil {
-		return nil, err
+	// 恢复落点时 SwitchDir 已经开过会话,这里不能再开一次(否则同一项目凭空多一个空会话)。
+	if !restored {
+		if _, err := svc.New(); err != nil {
+			return nil, err
+		}
 	}
 	if err := c.Provide("ctx.cwdSessions", svc); err != nil {
 		return nil, err

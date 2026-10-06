@@ -19,6 +19,12 @@
 #   bash scripts/coverage-check.sh a.out b.out     # 复用已有 profile(CI 用)
 #   GAH_COVER_FLOOR_MIN=60 GAH_COVER_SKIP=1 bash scripts/coverage-check.sh
 #
+#   本地跑请按 CI 同源口径带上子进程覆盖变量(否则 cmd/gah 会假红,45.9% vs 棘轮 69):
+#     mkdir -p /tmp/gah-cover-merge
+#     GAH_COVER_MERGE_DIR=/tmp/gah-cover-merge bash scripts/coverage-check.sh
+#   2026-10-05:未设该变量且 cmd/gah 跌破棘轮时,脚本会**在红字里明示这一点**
+#   (此前只印覆盖率数字,很容易被当成代码退化去追 —— 实测 45.9% → 加变量即 70.7)。
+#
 # —— 结构性稀释口径(2026-10-02 补齐,原先只有「不降门」三个字)——
 #   背景:棘轮是**逐包绝对百分比**,而一批新功能往往给某个包一次加几百行新代码
 #   (例:第一百零九批给 host-internal-commands 加约 700 行命令面)。此时该包的
@@ -73,6 +79,12 @@ SKIP="${GAH_COVER_SKIP:-0}"             # 1 = 只测(不校验),用于基线测�
 #   2026-10-02(子进程覆盖接通 + zstd 换代)后再上调:internal/embed 75.2 → **78**
 #   (实测 78.4;该包换 zstd 后新增了 SHA256SUMS 解析与流式落盘,补了坏清单/写失败两条用例)。
 # 方向只允许往上:降门必须换成补测(见 AGENTS.md「覆盖率门」)。
+#   2026-10-02(计划计划段 UI 可用化:解析层 cronexpr/crontxt/resolver + 一次性触发链路)后上调:
+#   plugins/host/host-schedule 81 → **82**(实测 83.7;新增 L 字段月末语义、十档控件态映射、
+#   中文排期解析、once 触发链路四组用例)、plugins/tool/tool-schedule 80 → **82**(实测 83.1;
+#   补 once/once_date 的参数校验与改回循环的清理用例)、web 80.6 → **81**(实测 81.6;
+#   补 resolve 端点的十档/中文/失败语义与一次性 REST 用例)。跨平台留约 1pp 余量给 linux CI。
+
 # 跨平台差(踩过的坑):棘轮取**各平台实测的较小值**。第一百零四批按 macOS 实测把
 # host-schedule 调到 81.5,而 CI(linux)实测 81.2 ⇒ 门红。带平台差异的代码路径要用
 # @GOOS 平台行单独登记,别拿单一平台的读数当通用值。
@@ -125,7 +137,7 @@ internal/sessionhtml 92
 cmd/gah 69
 plugins/catalogue 70
 plugins/ui/ui-web-app 70
-web 80.6
+web 81
 tui 74
 plugins/policy/policy-guard 91
 plugins/host/host-agent-loop 90.7
@@ -140,7 +152,7 @@ plugins/host/host-fanout 80
 plugins/host/host-internal-commands 93
 plugins/host/host-jobs 88
 plugins/host/host-notices 70
-plugins/host/host-schedule 81
+plugins/host/host-schedule 82
 plugins/host/host-llm 68
 plugins/host/host-plugin-manager 76
 plugins/host/host-session-log 76
@@ -164,7 +176,7 @@ plugins/tool/tool-doc 72
 plugins/tool/tool-files 70
 plugins/tool/tool-memory 73
 plugins/tool/tool-shell 88
-plugins/tool/tool-schedule 80
+plugins/tool/tool-schedule 82
 plugins/tool/tool-session-search 88
 plugins/tool/tool-shell@linux 58
 plugins/tool/tool-subagent 56
@@ -340,8 +352,10 @@ if [ -n "$CHILD_DIR" ] && [ -d "$CHILD_DIR" ]; then
 fi
 
 GOOS_NOW="$(go env GOOS 2>/dev/null || uname -s | tr '[:upper:]' '[:lower:]')"
-echo "== 逐包覆盖率(棘轮;平台 $GOOS_NOW) =="
-awk -v mins="$TMP/mins.txt" -v exempt="$TMP/exempt.txt" -v floor_min="$FLOOR_MIN" -v skip="$SKIP" -v goos="$GOOS_NOW" '
+# 子进程覆盖是否启用(未启用 ⇒ cmd/gah 的 main() 那段永远写不到计数器,必假红)
+CHILD_ON=0; [ -n "${GAH_COVER_MERGE_DIR:-}" ] && CHILD_ON=1
+echo "== 逐包覆盖率(棘轮;平台 $GOOS_NOW;子进程覆盖 $([ "$CHILD_ON" = 1 ] && echo 已启用 || echo 未启用)) =="
+awk -v mins="$TMP/mins.txt" -v exempt="$TMP/exempt.txt" -v floor_min="$FLOOR_MIN" -v skip="$SKIP" -v goos="$GOOS_NOW" -v child="$CHILD_ON" '
   FILENAME==mins   {
     if (NF>=2) {
       k=$1; v=$2+0
@@ -383,6 +397,13 @@ awk -v mins="$TMP/mins.txt" -v exempt="$TMP/exempt.txt" -v floor_min="$FLOOR_MIN
       else if (isExempt(p)) tag = "豁免"
       ord[++n] = pct "\t" tag "\t" p
       if (m != "" && pct + 0.05 < m) { bads[++nb] = "  ✗ " p " 覆盖率 " int(pct*10)/10 "% < 下限 " m "%(" goos ")"; bad = 1 }
+      # cmd/gah 的 main() 只能由子进程跑到,子进程不写 cover 计数器 ⇒ 未启用插桩时
+      # 它必然远低于棘轮。那是**测量缺失**,不是回退,但只印数字会被当成代码退化
+      # 去追(实测裸跑 45.9% / 棘轮 69,加 GAH_COVER_MERGE_DIR 后 70.7)。
+      # 这里只作**明示**:不跳过判定、不降门 —— 静默跳过正是本门要消灭的东西。
+      if (p == "cmd/gah" && m != "" && pct + 0.05 < m && child == "0") {
+        bads[++nb] = "      ↳ 本次未启用子进程覆盖(未设 GAH_COVER_MERGE_DIR),该数字必偏低、不是回退;按脚本头部用法带上该变量重跑才是真结论"
+      }
       if (!(p in min) && !isExempt(p) && pct <= 0.0) { bads[++nb] = "  ✗ " p " 覆盖率为 0(非豁免包必须带测试)"; bad = 1 }
     }
     for (i = 2; i <= n; i++) { key = ord[i]; j = i - 1

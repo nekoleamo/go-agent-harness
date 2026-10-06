@@ -29,6 +29,15 @@ PROFILE_DIR=release
 OUT="$PWD/dist-desktop"
 mkdir -p "$OUT"
 
+# 便携版的 bundle identifier(与安装版 dev.gah.desktop **必须不同**)。
+#
+# 为什么:桌面壳注册了 tauri-plugin-single-instance,单实例锁按 bundle identifier 走。
+# 两形态共用一个 identifier 时,安装版与便携版会被当成同一个产品 —— 后开的那个只做
+# 「show + set_focus」已有窗口,真机表现是「打开便携版却看到安装版的界面」,且与谁先开无关。
+# 两形态数据根本来就不同(安装版在应用数据目录,便携版在用户解压目录),本就不该互顶。
+# 详见 3b 步骤的注释。
+PORTABLE_IDENTIFIER="dev.gah.desktop.portable"
+
 # 平台 → Rust triple / updater 键 / bundle 子目录
 platform="$1"
 case "$platform" in
@@ -55,7 +64,11 @@ if [ "${merge:-0}" = 1 ]; then
   jq -s '{
     version: .[0].version,
     pub_date: (map(.pub_date) | max),
-    platforms: (reduce .[].platforms as $p ({}; . + $p))
+    platforms: (reduce .[].platforms as $p ({}; . + $p)),
+    # 逐平台合并便携资产。**必须给 // {} 兵底**:只有 Windows 平台产便携包,macOS 那份
+    # 没有这个键 ⇒ `.[].portable` 对它求值为 null,而 `{} + null` 直接报错 —— 没有兵底时
+    # merge 必崩(不是“少一项”,是整个发版停在这里)。已用混合输入实测过。
+    portable: (reduce (.[].portable // {}) as $p ({}; . + $p))
   }' "${files[@]}" > "$OUT/latest.json"
   echo "merged → $OUT/latest.json"
   jq . "$OUT/latest.json"
@@ -236,11 +249,23 @@ done
 if [ "$need_copy" = 1 ]; then cp "$upd_file" "$OUT/$platform/"; fi
 ls -la "$OUT/$platform"
 
-# 3b. Windows 便携包(一个 zip 解压即用;不进 latest.json —— updater 只认安装包)
+# 3b. Windows 便携包(一个 zip 解压即用;不进 updater 端点 —— updater 只认安装包)
 #
 # 为什么是 zip 而不是「真单文件 exe」:壳与 sidecar 天然是两个 exe。真单文件要么自解压
 # (多一层、启动变慢、杀软更敏感),要么把 sidecar 塞进壳内资源每次落盘(= 现有外置复制),
 # 两者都不比 zip 干净。**zip 就是这个需求的真正形态**。
+#
+# ⚠ 便携版必须**单独构建一次**(identifier 覆盖),不能直接拿主构建的 exe:
+#   桌面壳注册了 tauri-plugin-single-instance,而单实例锁是按 **bundle identifier** 走的
+#   (壳侧 main.rs 的 plugin 注册处)。两种形态共用 dev.gah.desktop 时,安装版与便携版
+#   会被当成同一个产品 —— 先开的那个把窗口留住,后开的只做「show + set_focus」,
+#   真机表现就是「打开便携版却看到安装版的界面」,而且与谁先打开无关(双向都错)。
+#   两形态的**数据根本就不同**(安装版 %LOCALAPPDATA%\dev.gah.desktop\bin\、
+#   便携版用户解压目录),锁不该互顶。分 identifier 之后:
+#     同一形态双击 → 照旧聚焦已有窗口(手滑双击不会开出两个实例);
+#     不同形态     → 各自独立跑,各挑各的空闲端口。
+#   代价:多跑一次 tauri build(只发生在 Windows;macOS 不发便携包)。
+#   updater artifacts 关掉:便携版不做自动更新(见下),不产 updater 产物也不用签名。
 #
 # 包内四个条目(判定 = 同目录有 portable.marker,壳侧 stage.rs::is_portable):
 #   gah/                     顶层目录(避免解压时把一堆文件倒进当前目录)
@@ -251,6 +276,15 @@ ls -la "$OUT/$platform"
 # ⚠ 便携包**不进 updater 端点**:Windows 不允许覆盖正在运行的 exe,让 updater 去装
 #   NSIS 包只会半途失败(壳里已在 checkForUpdatesInner 拦掉并说明原因)。
 if [ "$platform" = "windows-x86_64" ] || [ "$platform" = "windows-arm64" ]; then
+  # 便携构建会重建 bundle/ 目录(主构建的 .sig 可能随之消失)⇒ 先把签名备份到输出目录,
+  # 第 4 步优先读它,省掉一次重新签名(npx 拉 tauri signer)。
+  [ -f "$upd_file.sig" ] && cp "$upd_file.sig" "$OUT/$platform/"
+  echo "[3b] 便携版单独构建(identifier=$PORTABLE_IDENTIFIER)"
+  (cd desktop/src-tauri && \
+   # shellcheck disable=SC2086
+   $TAURI_BUILD build --target "$triple" \
+     --config "{\"version\":\"$VERSION\",\"identifier\":\"$PORTABLE_IDENTIFIER\",\"bundle\":{\"createUpdaterArtifacts\":false}}" \
+     $DEBUG_FLAG)
   SHELL_EXE="desktop/src-tauri/target/$triple/$PROFILE_DIR/gah-desktop.exe"
   [ -f "$SHELL_EXE" ] || { echo "缺壳产物:$SHELL_EXE" >&2; exit 1; }
   [ -f "$SIDECAR" ] || { echo "缺 sidecar 产物:$SIDECAR" >&2; exit 1; }
@@ -275,8 +309,10 @@ gah 便携版 $VERSION(Windows x64)
         **不要删 gah-data/**(数据在里面),也不要删 portable.marker(删了就变回安装版行为)。
 
 为什么没有自动更新:Windows 不允许覆盖正在运行的程序文件。便携版的升级动作就是
-        「下载新包覆盖本目录」,托盘里的「检查更新」因此是置灰的。
-        安装版(NSIS)仍然有自动更新,两条路互不影响。
+        「下载新包覆盖本目录」。不过托盘里的「检查更新…」**仍可点**:它会查一次版本,
+        有新版就直接为你打开便携包的下载页(国内走 Gitee 镜像,取不到时回落 GitHub),
+        下载后你自己解压覆盖即可。
+        安装版(NSIS)才有真正的自动更新(它能替换自己);两条路互不影响。
 
 注意:未签名分发,首启可能弹 SmartScreen —— 点「更多信息」→「仍要运行」即可。
       数据目录请放在有写权限的位置(桌面/程序目录等受保护位置会写不进去)。
@@ -318,21 +354,46 @@ fi
 
 # 4. latest.<平台>.json(签名优先取 tauri-bundler 自己产出的 .sig;缺失时回退 tauri signer)
 echo "[4/4] updater 签名"
-if [ -f "$upd_file.sig" ] && [ -s "$upd_file.sig" ]; then
-  sig="$(tr -d '\n' < "$upd_file.sig")"
-  echo "签名来源:$upd_file.sig"
+name="$(basename "$upd_file")"
+# 签名来源优先级:输出目录里的备份(便携构建前拷的,最可靠)→ 主构建 bundle 里的 .sig →
+# 现场签一次。便携包那次 tauri build 会重建 bundle/,所以第二档可能已经没了。
+sig_src=""
+[ -f "$OUT/$platform/$name.sig" ] && sig_src="$OUT/$platform/$name.sig"
+[ -z "$sig_src" ] && [ -f "$upd_file.sig" ] && sig_src="$upd_file.sig"
+if [ -n "$sig_src" ] && [ -s "$sig_src" ]; then
+  sig="$(tr -d '\n' < "$sig_src")"
+  echo "签名来源:$sig_src"
 else
-  sig="$(npx -y -p @tauri-apps/cli@2 tauri signer sign -k "$KEY" "$OUT/$platform/$(basename "$upd_file")" 2>/dev/null | tail -1)"
+  sig="$(npx -y -p @tauri-apps/cli@2 tauri signer sign -k "$KEY" "$OUT/$platform/$name" 2>/dev/null | tail -1)"
   echo "签名来源:tauri signer sign(回退)"
 fi
 [ "$KEY_TMP" = 1 ] && rm -f "$KEY"
 if [ -z "$sig" ]; then echo "updater 签名失败(无 .sig 且 tauri signer 失败)"; exit 1; fi
 
-name="$(basename "$upd_file")"
 url="https://github.com/$REPO/releases/download/v$VERSION/$name"
+# 便携资产(**不进 platforms**):updater 只会把它当安装包下载,而便携包不能被 updater 装
+# (Windows 不允许覆盖正在运行的 exe)。放顶层 portable 键 = 版本清单里能看到便携包在哪,
+# 而 platforms 的结构与 updater 契约**一字不动**(tauri-plugin-updater 2.11 的 manifest
+# 解析没有 deny_unknown_fields,且 Static 形状靠 platforms 字段识别,顶层多一个键无害)。
+# 壳侧当前**不读**这个键(没有 HTTPS 客户端依赖,不为一次检查更新加依赖):它按
+# 「{站点}/releases/download/v{版本}/gah_{版本}_{架构}-portable.zip」这个形态开下载页 ——
+# 形态依据见 scripts/mirror-gitee.sh 的 link_of(两站同形,已逐条验证)。登记的价值是
+# 「可盘点 + 可被发布校验断言」,而不是给壳省一步。
+portable_json=""
+case "$platform" in
+  windows-arm64) pkey=windows-arm64; parch=arm64 ;;
+  windows-x86_64) pkey=windows-x86_64; parch=x64 ;;
+  *) pkey="" ; parch="" ;;
+esac
+if [ -n "$pkey" ] && [ -f "$OUT/gah_${VERSION}_${parch}-portable.zip" ]; then
+  portable_json="$(jq -n --arg v "$VERSION" --arg p "$pkey" --arg u "https://github.com/$REPO/releases/download/v$VERSION/gah_${VERSION}_${parch}-portable.zip" \
+    '{($p): {url: $u, note: "便携包:解压后覆盖本目录,不要删 gah-data/"}}')"
+else
+  portable_json='{}'
+fi
 jq -n --arg v "$VERSION" --arg d "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-      --arg u "$url" --arg s "$sig" --arg k "$updkey" \
-      '{version: $v, pub_date: $d, platforms: {($k): {url: $u, signature: $s}}}' \
+      --arg u "$url" --arg s "$sig" --arg k "$updkey" --argjson portable "$portable_json" \
+      '{version: $v, pub_date: $d, platforms: {($k): {url: $u, signature: $s}}, portable: $portable}' \
   > "$OUT/latest.$platform.json"
 cat "$OUT/latest.$platform.json"
 echo "完成。多平台发布:各平台跑本脚本后执行 bash scripts/publish-desktop.sh merge,上传 dist-desktop/latest.json 与安装包到 GitHub Release(v$VERSION)"

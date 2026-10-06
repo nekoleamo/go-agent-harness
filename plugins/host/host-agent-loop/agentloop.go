@@ -50,7 +50,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	// 溢出兜底压缩会改写模型看到的输入,属于“用户看不见的输入改写”,至少要在状态栏/toast 露面。
 	var notices sdk.NoticeService
 	_ = c.Inject("ctx.notices", &notices)
-	loop := &Loop{c: c, sessions: sessions, tools: tools, llm: llm, sp: sp, notices: notices, tc: newTurnControl(), maxSteps: maxStepsFromManifest(m), locks: newKeyedMutex()}
+	loop := &Loop{c: c, sessions: sessions, tools: tools, llm: llm, sp: sp, notices: notices, tc: newTurnControl(), maxSteps: maxStepsFromManifest(m), locks: newKeyedMutex(), probe: &prefixProbe{}}
 	// 多会话并行(实现 sdk.SessionRunner):会话目录按 id 给**独立**日志实例。
 	// 两个可选服务都缺时只支持主会话 —— RunInSession 显式报错,不静默串行顶替。
 	var sdir sdk.SessionDir
@@ -64,6 +64,10 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	}
 	// ctx.turnControl 回合控制(TUI Esc / Web /api/control 共用取消入口)。
 	if err := c.Provide("ctx.turnControl", loop.tc); err != nil {
+		return nil, err
+	}
+	// ctx.prefixProbe 前缀稳定性探针(只读诊断;查缓存命中率为什么低,见 prefixprobe.go)。
+	if err := c.Provide("ctx.prefixProbe", sdk.PrefixProbe(loop.probe)); err != nil {
 		return nil, err
 	}
 	return func() {}, nil
@@ -243,6 +247,9 @@ type Loop struct {
 	// 这个 UI 概念与 id 对齐,好让 sid="" 与 sid=当前 走同一条路径)。
 	sdir sdk.SessionDir
 	cs   sdk.CwdSessions
+	// probe 前缀指纹探针(只读诊断;查缓存命中率为什么低)。零值可用(record 判 nil,
+	// 接口方法判 nil),所以单元测试里不装配也能跑。
+	probe *prefixProbe
 }
 
 // turn 单回合状态(每回合独立对象;修复:此前挂在 Loop 上被并发回合互相踩)。
@@ -443,6 +450,8 @@ func (l *Loop) step(ctx context.Context, t *turn, sess sdk.SessionLog) error {
 			messages = append(messages, sdk.LLMMessage{Role: sdk.RoleUser, Content: t.reminder})
 			t.reminder = ""
 		}
+		// 前缀指纹取样(只读诊断;开销见 prefixprobe.go 头注)
+		l.probe.record(messages, tools)
 		return &sdk.LLMRequest{Messages: messages, Tools: tools}
 	}
 

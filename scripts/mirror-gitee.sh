@@ -194,7 +194,8 @@ case "$cmd" in
     if [ -f "$dir/latest.json" ]; then
       mkdir -p "$OUT_DIR/gitee"
       jq --arg g "https://gitee.com/$REPO/releases/download/" \
-        '.platforms |= with_entries(.value |= (.url = ($g + (.url | split("/") | .[-2:] | join("/")))))' \
+        '(.platforms |= with_entries(.value |= (.url = ($g + (.url | split("/") | .[-2:] | join("/"))))))
+         | (if .portable then (.portable |= with_entries(.value |= (.url = ($g + (.url | split("/") | .[-2:] | join("/")))))) else . end)' \
         "$dir/latest.json" > "$OUT_DIR/gitee/latest.json"
       # 自检:平台集合与签名必须与原表逐平台一致(换源可以,改签名不行)
       diff <(jq -S '.platforms | map_values(.signature)' "$dir/latest.json") \
@@ -203,6 +204,15 @@ case "$cmd" in
       jq -e --arg b "https://gitee.com/$REPO/releases/download/" \
         '[.platforms[].url | startswith($b)] | all' "$OUT_DIR/gitee/latest.json" >/dev/null \
         || { echo "自检失败:仍有下载地址未指向 Gitee" >&2; rm -rf "$OUT_DIR/gitee"; exit 1; }
+      # 便携资产同样要换源(它在顶层 portable 键下,不参与 updater,但下载页要指着 Gitee)
+      if jq -e 'has("portable") and (.portable | length > 0)' "$dir/latest.json" >/dev/null; then
+        jq -e --arg b "https://gitee.com/$REPO/releases/download/" \
+          '[.portable[].url | startswith($b)] | all' "$OUT_DIR/gitee/latest.json" >/dev/null \
+          || { echo "自检失败:便携包地址未指向 Gitee" >&2; rm -rf "$OUT_DIR/gitee"; exit 1; }
+        diff <(jq -S '.portable | map_values(.note)' "$dir/latest.json") \
+             <(jq -S '.portable | map_values(.note)' "$OUT_DIR/gitee/latest.json") >/dev/null \
+          || { echo "自检失败:便携包的 note 被改写了" >&2; rm -rf "$OUT_DIR/gitee"; exit 1; }
+      fi
       echo "已生成 Gitee 版表:$OUT_DIR/gitee/latest.json"
       echo "→ 随代码快照提交:GAH_EXTRA_FILES=$OUT_DIR/gitee/latest.json:latest.json bash scripts/sync-gitee.sh"
     else

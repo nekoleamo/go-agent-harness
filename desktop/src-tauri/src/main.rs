@@ -100,8 +100,12 @@ struct TrayCheck(Mutex<Option<MenuItem<tauri::Wry>>>);
 // 检查更新项的两种文字(集中一处,免得改文案漏掉一边)
 const CHECK_IDLE_TEXT: &str = "检查更新…";
 const CHECK_BUSY_TEXT: &str = "检查更新中…";
-// 便携模式下的同一项:置灰 + 把替代动作说清(便携版靠手动换包升级)。
-const PORTABLE_CHECK_TEXT: &str = "便携版:请下载新包覆盖本目录";
+// 便携模式下检查更新的菜单项文案(集中一处,免得改文案漏掉一边)。
+//
+// 为什么**不再置灰**(2026-10-05 改):便携版确实不能自动安装(Windows 不允许覆盖正在运行
+// 的 exe),但「查一查有没有新版 + 打开下载页」是能做的,而且置灰而不给理由会让人以为菜单坏了。
+// 点击路径在 checkForUpdatesInner 统一分流。
+const PORTABLE_CHECK_TEXT: &str = "检查更新…(便携版:打开下载页)";
 // PickSlot 文件夹选择器的一次运行状态(begin 置位,poll 取结果并复位)。
 //
 // 为什么不直接用 async 命令 await blocking_pick_folder(2026-09-17 真机):那台机器上
@@ -454,7 +458,100 @@ fn restartAfterInstall(app: &tauri::AppHandle) {
     });
 }
 
-/// promptAndInstall 有更新时先问用户再装(托盘出口用;界面出口由前端确认后调 install_update)。
+/// checkPortableUpdate 便携版的「检查更新」:只取版本表、只开下载页,**不下载不安装**。
+//
+// 为什么能复用 updater 取表:tauri-plugin-updater 的 check() 只做「GET 表 → 比版本」,
+// 签名校验发生在安装阶段。端点回退(Gitee 优先 / 上次失败的源垫底)也由它内部完成,
+// 所以不必为便携版另写一套 HTTPS 客户端 —— 桌面壳没有通用 HTTP 依赖,加一个只为
+// 一次版本查询不值得(体积门余量不多,且客户端越少越好)。
+//
+// 为什么不开 updater 的安装包直链:那会把 NSIS 安装包塞给便携用户,装完机器上多一个安装版。
+// 便携包直链按「{站点}/releases/download/v{版本}/gah_{版本}_{架构}-portable.zip」拼 ——
+// 两站同形(依据:scripts/mirror-gitee.sh 的 link_of,发布流程逐条验证过匿名直链),
+// 与 scripts/publish-desktop.sh 生成便携包时的命名一致。
+async fn checkPortableUpdate(app: &tauri::AppHandle) -> UpdateOutcome {
+    let (endpoints, primary) = update_source::select();
+    let updater = match app.updater_builder().endpoints(endpoints) {
+        Ok(b) => match b.build() {
+            Ok(u) => u,
+            Err(e) => return UpdateOutcome::new("failed", None, format!("检查更新未完成:{e}")),
+        },
+        Err(e) => return UpdateOutcome::new("failed", None, format!("检查更新未完成:{e}")),
+    };
+    match updater.check().await {
+        Ok(None) => {
+            update_source::note_success();
+            UpdateOutcome::new("upToDate", None, "已是最新版本(便携版)".into())
+        }
+        Ok(Some(u)) => {
+            update_source::note_success();
+            let v = u.version.to_string();
+            let url = portableAssetURL(&v, primary);
+            let alt = releasePageURL(&v, primary);
+            let opened = openURLInBrowser(&url).is_ok();
+            let mut msg = format!("发现新版本 {v}(便携版不会自动更新)。");
+            if opened {
+                msg.push_str(&format!("已为你打开便携包下载页:{url}"));
+            } else {
+                msg.push_str(&format!("请手动打开下载页:{url}"));
+            }
+            msg.push_str("\n下载后解压,用新文件**覆盖本目录**的同名文件(别删本目录的 gah-data/,数据在里面)。");
+            msg.push_str(&format!("备用地址(若上面打不开):{alt}"));
+            shellLog(app, &format!("便携版检查更新:新版本 {v},下载页 {url}"));
+            UpdateOutcome::new("availablePortable", Some(v), msg)
+        }
+        Err(e) => {
+            update_source::note_failure(primary);
+            let hint = match primary {
+                Some("gitee") => "Gitee 表取不到,下次会先试 GitHub",
+                Some("github") => "GitHub 表取不到,下次会先试 Gitee",
+                _ => "",
+            };
+            UpdateOutcome::new(
+                "failed",
+                None,
+                format!(
+                    "检查更新失败:{}。{}\n你可以手动打开发布页挑选便携包。",
+                    explainUpdateError(&e.to_string()),
+                    hint
+                ),
+            )
+        }
+    }
+}
+
+/// 本便携包的架构后缀(与发布脚本的 parch 取值一致:x64 / arm64)。
+fn portableArch() -> &'static str {
+    if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else {
+        "x64"
+    }
+}
+
+/// 便携包直链。primary 为 None(取表源无法判定)时回落 GitHub —— 与 update_source 的
+/// 「Gitee 优先」相反是刻意的:判不出源就选全球可达的那个,宁可慢一点也要能下。
+fn portableAssetURL(version: &str, primary: Option<&'static str>) -> String {
+    let v = version.trim_start_matches('v');
+    let base = match primary {
+        Some("gitee") => "https://gitee.com/null_593_5354/go-agent-harness/releases/download",
+        _ => "https://github.com/nekoleamo/go-agent-harness/releases/download",
+    };
+    format!("{base}/v{v}/gah_{v}_{}-portable.zip", portableArch())
+}
+
+/// 发布页(直链打不开时的兜底;用户能在页面上看到全部资产,包括便携包)。
+fn releasePageURL(version: &str, primary: Option<&'static str>) -> String {
+    let v = version.trim_start_matches('v');
+    match primary {
+        Some("gitee") => {
+            format!("https://gitee.com/null_593_5354/go-agent-harness/releases/tag/v{v}")
+        }
+        _ => format!("https://github.com/nekoleamo/go-agent-harness/releases/tag/v{v}"),
+    }
+}
+
+// promptAndInstall 有更新时先问用户再装(托盘出口用;界面出口由前端确认后调 install_update)。
 ///
 /// 两个选项:立即升级 / 稍后。**「检查」与「安装」必须分开**(2026-10-03 用户要求) ——
 /// 升级会换掉整个应用,必须是用户明确的动作,不能由一次「检查更新」顺手带过去。
@@ -488,17 +585,14 @@ fn promptAndInstall(app: &tauri::AppHandle, version: &str) {
 }
 
 async fn checkForUpdatesInner(app: &tauri::AppHandle) -> UpdateOutcome {
-    // 便携模式:**不做自更新**。Windows 不允许覆盖正在运行的 exe(替换报 os error 5),
-    // 而便携版的升级方式就是「下载新包覆盖本目录」—— 让 updater 去装 NSIS 包只会
-    // 半途失败(而且会把安装器塞进便携目录,形态反而乱了)。这一处是**所有出口的
-    // 共同入口**(托盘菜单 / 界面 invoke / 启动看门狗都走 checkForUpdates),
-    // 所以置灰托盘项之外不必在每个出口各写一遍。
+    // 便携模式:**不自动更新,但可以查**。Windows 不允许覆盖正在运行的 exe(替换报
+    // os error 5),便携版的升级方式就是「下载新包覆盖本目录」—— 让 updater 去装 NSIS 包只会
+    // 半途失败(而且会把安装器塞进便携目录,形态反而乱了)。
+    // 2026-10-05 起这里不再直接返回一句「不支持」:照常取一次版本表,真有新版本就**打开便携包
+    // 的下载页**。置灰托盘项之外不必在每个出口各写一遍 —— 托盘 / 界面 invoke / 启动看门狗
+    // 都走这一个入口。
     if stage::is_portable() {
-        return UpdateOutcome::new(
-            "portable",
-            None,
-            "便携版不自动更新:请到发布页下载新的便携包,解压后覆盖本目录(数据在本目录 gah-data/,不会被覆盖)".into(),
-        );
+        return checkPortableUpdate(app).await;
     }
     // 升级源自动切换:两个端点按「Gitee 优先、上次失败的源垫底」交给 updater,
     // 它内部会按序回退(`for url in &self.endpoints`),端点不可达就自动换下一个源。
@@ -1217,10 +1311,16 @@ fn stateRunning() -> bool {
 // noticesScript 生成"壳侧提示"注入脚本(纯函数,便于单测)。
 //
 // 为什么必须注入 DOM:壳侧 emit 的 Tauri 事件只到得了壳自己的 webview 页面,而就绪后窗口
-// navigate 到 sidecar 的 http://127.0.0.1:2233(跨源)——事件到不了那边,`runtime-notice`
-// 也就成了没有听众的死信号。系统通知(notification().show())在 macOS/Windows 上可能被用户
-// 拒绝授权,于是"外置失败/迁移"这类**数据安全相关**的提示会彻底消失。
-// 这里用与失败页相同的 w.eval 通道把提示贴进页面(幂等:重复调用只更新同一个节点)。
+// navigate 到 sidecar 的 http://127.0.0.1:<本次挑的空闲端口>(跨源)——事件到不了那边,
+// `runtime-notice` 也就成了没有听众的死信号。系统通知(notification().show())在
+// macOS/Windows 上可能被用户拒绝授权,于是"外置失败/迁移"这类**数据安全相关**的提示会
+// 彻底消失。这里用与失败页相同的 w.eval 通道把提示贴进页面。
+//
+// **必须幂等**(注入走的是「导航后重试 6 次」那条路,见 setup 里的注入循环):
+//   早先的写法每被调用一次就 insertBefore 一段新文本,而调用方是
+//   `for _ in 0..6 { sleep 500ms; eval(script) }` —— 于是两条便携提示在真机上交替
+//   **叠了 6 遍**(2026-10-05 用户截图),注释当时写的是"重复调用只更新同一个节点",
+//   代码做的却是追加。现在固定为「取(必要时建)容器 → 整体替换文本」,重试多少次结果都一样。
 fn noticesScript(notices: &[String]) -> Option<String> {
     if notices.is_empty() {
         return None;
@@ -1228,11 +1328,15 @@ fn noticesScript(notices: &[String]) -> Option<String> {
     let text = serde_json::to_string(&notices.join("\n")).ok()?;
     Some(format!(
         r#"(function(){{var t={text};var id='gah-shell-notice';var el=document.getElementById(id);
-if(!el||!document.body){{if(!document.body)return;el=document.createElement('div');el.id=id;
+if(!document.body)return;
+if(!el){{el=document.createElement('div');el.id=id;
 el.style.cssText='position:fixed;left:12px;right:12px;bottom:12px;z-index:99999;background:#fff8e6;border:1px solid #e0b34d;border-radius:8px;padding:10px 12px;font:13px/1.5 -apple-system,sans-serif;color:#3a2c05;white-space:pre-wrap;box-shadow:0 4px 14px rgba(0,0,0,.12)';
 var b=document.createElement('span');b.textContent='×';b.style.cssText='float:right;cursor:pointer;padding:0 4px;font-weight:600';
-b.onclick=function(){{el.remove()}};el.appendChild(b);document.body.appendChild(el);}}
-el.insertBefore(document.createTextNode(t+'\n'),el.firstChild);}})();"#
+b.onclick=function(){{el.remove()}};
+var s=document.createElement('span');s.className='gah-shell-notice-body';
+el.appendChild(b);el.appendChild(s);document.body.appendChild(el);}}
+var sp=el.querySelector('.gah-shell-notice-body');
+if(sp)sp.textContent=t;}})();"#
     ))
 }
 
@@ -1605,6 +1709,21 @@ fn siblingDataRoot(bin: &std::path::Path) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("gah-data"))
 }
 
+/// 便携形态说明的「已提示」标记文件名(空文件)。
+///
+/// 位置：**数据根内**(便携纪律 —— gah 自身产生的数据一律在数据根单根下)。所以标记跟着
+/// 目录一起迁移:换机器后仍认为“讲过了”,不会在别人的新机器上突然又弹一遍。
+const PORTABLE_NOTICE_MARKER: &str = ".portable-notice-shown";
+
+fn portable_notice_shown(root: &std::path::Path) -> bool {
+    root.join(PORTABLE_NOTICE_MARKER).exists()
+}
+
+fn mark_portable_notice_shown(root: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(root)?;
+    std::fs::write(root.join(PORTABLE_NOTICE_MARKER), "")
+}
+
 // resolveRuntime 决定从哪里跑 sidecar(NOND-W2b-α):
 //  ① 正常:复制到 `<用户数据目录>/bin/gah` 再运行 → 「二进制同级 gah-data/」自然落在应用目录外;
 //  ② 任一步失败:回退到随包 sidecar(数据仍在应用目录内)并给**显式**告警,绝不静默降级。
@@ -1626,18 +1745,32 @@ fn resolveRuntime(app: &AppHandle) -> Runtime {
     // %LOCALAPPDATA% 之外、让「数据在哪」这件事变得不可预期。
     // 数据根仍是「二进制同级 gah-data/」—— 便携纪律一个字没改。
     if stage::is_portable() {
+        let root = siblingDataRoot(&src);
+        // 便携形态说明**仅首次提示**:它是「一次讲清就够」的事实(数据在哪 / 怎么升级),
+        // 每次启动再刷一遍是噪音(2026-10-05 用户实测:每次打开都弹)。
+        // 标记落在数据根里(便携纪律:gah 自身产生的数据一律在数据根单根下);
+        // 删掉它就会再提示一次 —— 这是有意的出口(给同事看、或换机器时想再看一遍)。
+        let notices = if portable_notice_shown(&root) {
+            Vec::new()
+        } else {
+            if let Err(e) = mark_portable_notice_shown(&root) {
+                // 标记写不下去(目录只读等)只是退回「每次都提示」,不该拦住启动。
+                shellLog(app, &format!("便携提示标记写入失败(将每次启动都提示):{e}"));
+            }
+            vec![
+                "便携模式:数据在本目录的 gah-data/(换机器请整个目录一起拷)".to_string(),
+                "便携版不自动更新(Windows 不允许覆盖正在运行的程序):请下载新包覆盖本目录"
+                    .to_string(),
+            ]
+        };
         // 就地跑 ⇒ 没有 fs::copy 那一环,「来自网络」标记得自己清(否则 sidecar
         // 带着 Zone.Identifier 启动会静默失败)。两个都清,失败不报说辞、只记一条告警。
-        let mut notices = vec![
-            "便携模式:数据在本目录的 gah-data/(换机器请整个目录一起拷)".to_string(),
-            "便携版不自动更新(Windows 不允许覆盖正在运行的程序):请下载新包覆盖本目录".to_string(),
-        ];
         stage::strip_mark_of_transfer(&src);
         if let Ok(exe) = std::env::current_exe() {
             stage::strip_mark_of_transfer(&exe);
         }
         return Runtime {
-            data_root: siblingDataRoot(&src),
+            data_root: root,
             bin: src,
             external: false,
             notices,
@@ -1716,6 +1849,15 @@ fn main() {
         // 单实例插件**只在默认模式下注册**:注册它就等于宣告「本进程是该单例的持锁者」,
         // 于是第二次启动会走进回调(聚焦已有窗口)。--new-instance 不注册它,
         // 两个实例才能并存(端口已随机、数据根已加租约与锁)。
+        //
+        // **锁的粒度是 bundle identifier,不是数据根** —— 所以安装版与便携版必须用不同
+        // identifier(`dev.gah.desktop` / `dev.gah.desktop.portable`,后者由
+        // scripts/publish-desktop.sh 的便携构建用 --config 覆盖注入)。共用一个的话,
+        // 后启动的那个只会 show+set_focus 已有窗口:真机表现是「打开便携版却看到安装版的
+        // 界面」,而且与谁先打开无关(两个方向都错)。两形态的数据根本来就不同
+        // (安装版在应用数据目录、便携版在用户解压目录),本就不该互顶。
+        // ⚠ 改 identifier 前先想清楚:它是**已装机的产品身份**(Windows 卸载注册、
+        //   macOS bundle id、updater 归属),不是随便的构建参数。
         b = b.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.show();
@@ -1783,15 +1925,14 @@ fn main() {
                 .checked(app.autolaunch().is_enabled().unwrap_or(false))
                 .build(app)
                 .unwrap();
-            // 「检查更新…」:便携模式下**置灰并改文案** —— 理由写进菜单项本身
-            // (置灰而不给理由,用户只会以为菜单坏了)。真正的拦截在
-            // checkForUpdatesInner(所有出口共用),这里只负责让入口一眼可读。
+            // 「检查更新…」:便携模式下**换文案但不置灰** —— 理由写进菜单项本身;
+            // 真正的分流在 checkForUpdatesInner(所有出口共用)。
             let portable = stage::is_portable();
             let check_item = MenuItemBuilder::with_id(
                 "check_update",
                 if portable { PORTABLE_CHECK_TEXT } else { CHECK_IDLE_TEXT },
             )
-            .enabled(!portable)
+            .enabled(true)
             .build(app)
             .unwrap();
             // 「测试系统通知」:真机排查「通知不弹」的定性入口。
@@ -2292,6 +2433,77 @@ mod main_tests {
         assert!(!s2.contains(r#"路径 "C:"#), "不得裸插引号: {s2}");
         let s3 = noticesScript(&["a".into(), "b".into()]).unwrap();
         assert!(s3.contains("a\\nb"), "多条应换行拼接: {s3}");
+    }
+
+    /// 注入脚本必须**幂等**。
+    ///
+    /// 钉的是真机现象(2026-10-05 用户截图):两条便携提示交替叠了 6 遍。原因是调用方
+    /// `for _ in 0..6 { sleep 500ms; eval(script) }`,而脚本当时每调一次就往容器里
+    /// `insertBefore` 一段新文本。改回追加写法就会当场复发。
+    #[test]
+    fn notices_script_replaces_instead_of_appending() {
+        let s = noticesScript(&["第一遍".into()]).unwrap();
+        assert!(!s.contains("insertBefore"), "不得往容器里追加文本: {s}");
+        assert!(s.contains("textContent=t"), "应整体替换文本节点: {s}");
+        // 文本容器要独立于关闭按钮(否则整体替换会把 × 按钮一起抹掉)
+        assert!(
+            s.contains("gah-shell-notice-body"),
+            "文本应落在自己的节点里: {s}"
+        );
+        assert!(s.contains("el.remove()"), "关闭按钮行为要保留: {s}");
+    }
+
+    /// 便携形态说明仅首次提示(标记落在数据根内,跟着目录迁移)。
+    #[test]
+    fn portable_notice_marker_gates_the_notice() {
+        let root = std::env::temp_dir().join(format!("gah-portable-notice-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(!portable_notice_shown(&root), "首次应提示");
+        mark_portable_notice_shown(&root).expect("写标记");
+        assert!(portable_notice_shown(&root), "标记后不再提示");
+        // 数据根自建:标记不能要求数据根事先存在
+        assert!(root.join(PORTABLE_NOTICE_MARKER).exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 便携包直链的形态必须与发布脚本产出的**文件名逐字一致**。
+    ///
+    /// 钉的是「改名即红」:发布脚本(generatePortableZip 那段)拼出
+    /// `gah_{version}_{arch}-portable.zip`,而这里在客户端拼同一条 URL ——
+    /// 两边任一边改了命名,便携用户的「点检查更新」就会落到 404。
+    #[test]
+    fn portable_asset_url_follows_release_naming() {
+        let arch = portableArch();
+        assert!(
+            arch == "x64" || arch == "arm64",
+            "架构后缀必须与发布脚本的取值一致: {arch}"
+        );
+        for (src, host) in [
+            (
+                Some("gitee"),
+                "https://gitee.com/null_593_5354/go-agent-harness",
+            ),
+            (
+                Some("github"),
+                "https://github.com/nekoleamo/go-agent-harness",
+            ),
+            // 判不出源时回落全球可达的那个(宁可慢也要能下)
+            (None, "https://github.com/nekoleamo/go-agent-harness"),
+        ] {
+            let got = portableAssetURL("0.5.2", src);
+            assert_eq!(
+                got,
+                format!("{host}/releases/download/v0.5.2/gah_0.5.2_{arch}-portable.zip"),
+                "源 {src:?} 的直链不对"
+            );
+            assert_eq!(
+                releasePageURL("0.5.2", src),
+                format!("{host}/releases/tag/v0.5.2"),
+                "源 {src:?} 的发布页不对"
+            );
+        }
+        // 版本号带 v 前缀也不能把 tag 拼成 v v0.5.2
+        assert!(portableAssetURL("v0.5.2", Some("github")).contains("/download/v0.5.2/"));
     }
 
     #[test]

@@ -248,6 +248,8 @@ func (h *Host) specs() []sdk.CommandSpec {
 				return []sdk.Option{{Value: "all", Desc: "展开逐工具 schema 成本"}}
 			}}}},
 		{Name: "recap", Usage: "/recap", Desc: "本地会话速览(轮数/工具/文件/最近问答;纯本地不调模型)", Run: h.cmdRecap},
+		{Name: "cache", Usage: "/cache [n]", Desc: "缓存命中率诊断(前缀指纹序列;定位命中率为什么低;只读)", Run: h.cmdCache,
+			Args: []sdk.ArgLevel{{FreeArgs: func([]string) []string { return []string{"显示条数?"} }}}},
 		// S-P1-1 变更审查面:数据来自捕获的写操作(tool-files 落 file/change),不依赖 git。
 		// 自由参数级断点:回车直接看清单;输入路径回车看该文件逐行 diff。
 		{Name: "diff", Usage: "/diff [路径]", Desc: "本会话文件改动清单与逐行 diff(来自捕获的写操作,不依赖 git)", Run: h.cmdDiff,
