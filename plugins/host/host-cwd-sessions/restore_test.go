@@ -3,6 +3,7 @@ package hostcwdsessions
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -107,19 +108,27 @@ func TestStartDirIsMeaninglessSystemDirs(t *testing.T) {
 		t.Fatal("Windows 的 %SystemRoot% 应判为无意义")
 	}
 	// SystemRoot 只在 Windows 才有;非 Windows 上置了也不该改变别的判定
-	if !startDirIsMeaningless("/System/Library/Extensions") {
-		t.Fatal("macOS 的 /System/** 应判为无意义")
+	if !startDirIsMeaningless(os.Getenv("SystemRoot")) {
+		t.Fatal("Windows 的 %SystemRoot% 应判为无意义")
 	}
-	if !startDirIsMeaningless("/usr") {
-		t.Fatal("/usr 本身应判为无意义")
-	}
-	// **反向钉**: /usr 下的项目目录(容器与 CI 里很常见:/usr/src/app、/usr/local/src/x)
-	// 是真实工作目录,通配拦截会把用户的项目从启动落点上劫持走。
-	if startDirIsMeaningless("/usr/src/app") {
-		t.Fatal("/usr 下的项目目录是明确意图,不该判为无意义")
-	}
-	if startDirIsMeaningless("/usr/local/share/gah-proj") {
-		t.Fatal("/usr/local 下的项目目录不该判为无意义")
+	// 以下三条是 **macOS 专属路径**,在 Windows 上 `filepath.Clean("/System")` 会变成
+	// `\System`(分隔符不同)⇒ 判定当然不匹配 —— 那是对的:这些路径在 Windows 上不存在,
+	// 不该被判成「系统目录」。所以整块按平台守卫,而不是把它们写成跨平台断言。
+	if runtime.GOOS != "windows" {
+		if !startDirIsMeaningless("/System/Library/Extensions") {
+			t.Fatal("macOS 的 /System/** 应判为无意义")
+		}
+		if !startDirIsMeaningless("/usr") {
+			t.Fatal("/usr 本身应判为无意义")
+		}
+		// **反向钉**: /usr 下的项目目录(容器与 CI 里很常见:/usr/src/app、/usr/local/src/x)
+		// 是真实工作目录,通配拦截会把用户的项目从启动落点上劫持走。
+		if startDirIsMeaningless("/usr/src/app") {
+			t.Fatal("/usr 下的项目目录是明确意图,不该判为无意义")
+		}
+		if startDirIsMeaningless("/usr/local/share/gah-proj") {
+			t.Fatal("/usr/local 下的项目目录不该判为无意义")
+		}
 	}
 }
 
