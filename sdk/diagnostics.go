@@ -24,8 +24,17 @@ type PrefixSample struct {
 	At string
 	// Hash 前缀指纹(system + 工具名 + 历史)的前 8 位十六进制。
 	Hash string
-	// SysChars 系统提示的字符数。
+	// SysChars 系统提示的字符数(所有 system 消息之和:滚动摘要触发时不止一条)。
 	SysChars int
+	// SysCount 本次请求里的 system 消息条数(正常为 1;>1 说明历史被摘要系统消息顶过)。
+	SysCount int
+	// ToolCount 工具数量。
+	ToolCount int
+	// SysHash / ToolsHash / HistHash 三段指纹(system / 工具定义 / 历史)。
+	// 分段的用处:「变了」这个结论本身不可行动,而「哪一段变了」直接对应一处代码。
+	SysHash   string
+	ToolsHash string
+	HistHash  string
 	// MsgCount 组装后的消息条数(含 system)。
 	MsgCount int
 	// DiffToPrev 与上一条样本的关系:"same" = 指纹一致 | "changed" = 变了 |

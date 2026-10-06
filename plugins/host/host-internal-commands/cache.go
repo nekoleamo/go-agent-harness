@@ -69,18 +69,31 @@ func (h *Host) cmdCache(args []string) (string, error) {
 		switch s.DiffToPrev {
 		case "changed":
 			mark = "✗"
+		case "appended":
+			mark = "+" // **正常**:尾部追加、前缀未变 ⇒ 缓存本该命中,不是故障
 		case "same":
 			mark = "="
 		case "first":
 			mark = "※"
 		}
-		fmt.Fprintf(&sb, " %s #%-3d %s  %s  system %s  消息 %d 条\n",
-			mark, s.Seq, s.At, s.Hash, fmtK(s.SysChars), s.MsgCount)
+		fmt.Fprintf(&sb, " %s #%-3d %s  %s  消息 %d 条(system %d 条/%d字符 · 工具 %d 个)\n",
+			mark, s.Seq, s.At, s.Hash, s.MsgCount, s.SysCount, s.SysChars, s.ToolCount)
 		if s.DiffWhere != "" {
-			fmt.Fprintf(&sb, "        ↳ 前缀变化:%s\n", s.DiffWhere)
+			fmt.Fprintf(&sb, "        ↳ %s\n", s.DiffWhere)
 		}
 	}
-	sb.WriteString("\n判读:✗ 越多说明前缀每轮都在变 ⇒ 缓存无法复用(按上面指出的那条去修);\n")
-	sb.WriteString("      全是 = 而命中率仍低 ⇒ 前缀太短或厂商侧缓存过期,改代码无效,只能减体积。\n")
+	// 三段指纹并排:连续几行里哪一段的哈希在跳,一眼能看出来(定位「哪一段在变」靠它)。
+	var last sdk.PrefixSample
+	for _, s := range samples {
+		if last.Hash == "" || s.Hash != last.Hash {
+			fmt.Fprintf(&sb, "        分段 %s  sys %s · tools %s · hist %s\n",
+				s.At, s.SysHash, s.ToolsHash, s.HistHash)
+		}
+		last = s
+	}
+	sb.WriteString("\n判读:+ 只是尾部追加(正常,前缀没动);✗ 才是真的失配(看它说的哪一段变了)。\n")
+	sb.WriteString("     三段指纹逐行对比:哪一段在跳,就去查那一段的生成逻辑(system 里若有每轮重算的\n")
+	sb.WriteString("     片段、或消息位置被摘要/裁剪重排,都会让前缀失配);全都不跳而命中率仍低,\n")
+	sb.WriteString("     那就是前缀太短(达不到厂商最小缓存块)或厂商侧过期,改代码没用,只能减体积。\n")
 	return sb.String(), nil
 }

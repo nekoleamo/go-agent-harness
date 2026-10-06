@@ -46,13 +46,90 @@ func TestPrefixProbeDetectsChangedMessage(t *testing.T) {
 		t.Fatalf("变化点应指名第 2 条 user,现为 %q", last.DiffWhere)
 	}
 
-	// 追加一条 → 指纹变,变化点是「多出 N 条」
-	grown := append(append([]sdk.LLMMessage(nil), changed...),
-		sdk.LLMMessage{Role: sdk.RoleAssistant, Content: "回答"})
-	p.record(grown, tools)
-	s = p.PrefixSamples(0)
-	if last = s[len(s)-1]; last.DiffToPrev != "changed" || !strings.Contains(last.DiffWhere, "多出") {
-		t.Fatalf("追加消息应报「多出」,现为 %+v / %q", last.DiffToPrev, last.DiffWhere)
+}
+
+// TestPrefixProbeAppendedIsNotAProblem 尾部追加**不是**故障,必须与改写分开报。
+//
+// 钉它的理由来自真机踩坑(2026-10-06 第一次 /cache 输出):第一版把每轮的正常追加
+// 报成「✗ 前缀变化:多出 2 条消息」,看着像前缀每轮都在破坏,把人引到错的方向
+// (实际那正是缓存该命中的情况)。三种结论必须分清:appended / changed / same。
+func TestPrefixProbeAppendedIsNotAProblem(t *testing.T) {
+	p := &prefixProbe{}
+	base := []sdk.LLMMessage{
+		{Role: sdk.RoleSystem, Content: "你是 gah"},
+		{Role: sdk.RoleUser, Content: "第一条"},
+	}
+	p.record(base, nil)
+	p.record(base, nil)
+	p.record(append(append([]sdk.LLMMessage(nil), base...),
+		sdk.LLMMessage{Role: sdk.RoleAssistant, Content: "回答"},
+		sdk.LLMMessage{Role: sdk.RoleUser, Content: "追问"}), nil)
+
+	last := p.PrefixSamples(0)
+	s := last[len(last)-1]
+	if s.DiffToPrev != "appended" {
+		t.Fatalf("尾部追加应标 appended 而非 changed: %+v", s)
+	}
+	if s.MsgCount != 4 || s.SysCount != 1 {
+		t.Fatalf("条数统计不对: %+v", s)
+	}
+	// sys 段没变 ⇒ 它的指纹必须保持不变(变了就说明有 bug)
+	if p.lastSysHash != s.SysHash {
+		t.Fatalf("尾部追加不应动到 sys 指纹")
+	}
+}
+
+// TestPrefixProbeSegmentsPointAtCulprit 三段指纹要能指向「哪一段在变」。
+//
+// 真实场景:滚动摘要触发时会在第 2 位插一条 system,若只报「第 2 条变了」,人很可能去查
+// 历史/用户消息;分段之后直接看到「system 变了」,对应的是摘要系统消息这件事本身。
+func TestPrefixProbeSegmentsPointAtCulprit(t *testing.T) {
+	p := &prefixProbe{}
+	base := []sdk.LLMMessage{
+		{Role: sdk.RoleSystem, Content: "你是 gah"},
+		{Role: sdk.RoleUser, Content: "第一条"},
+	}
+	p.record(base, []sdk.ToolDefinition{{Name: "a", Description: "甲"}})
+	// 摘要插入:多一条 system,且原历史仍在
+	withSummary := []sdk.LLMMessage{
+		{Role: sdk.RoleSystem, Content: "你是 gah"},
+		{Role: sdk.RoleSystem, Content: "对先前对话的滚动摘要:…"},
+		{Role: sdk.RoleUser, Content: "第一条"},
+	}
+	p.record(withSummary, []sdk.ToolDefinition{{Name: "a", Description: "甲"}})
+	s := p.PrefixSamples(0)
+	last := s[len(s)-1]
+	if last.DiffToPrev != "changed" {
+		t.Fatalf("插入 system 应算改写: %+v", last)
+	}
+	if !strings.Contains(last.DiffWhere, "system 变了") {
+		t.Fatalf("应点名 system 段: %q", last.DiffWhere)
+	}
+	if last.SysCount != 2 {
+		t.Fatalf("system 条数应为 2: %+v", last)
+	}
+
+	// 工具变 ⇒ 只报 tools,别把锅甩给消息
+	p2 := &prefixProbe{}
+	p2.record(base, []sdk.ToolDefinition{{Name: "a", Description: "甲"}})
+	p2.record(base, []sdk.ToolDefinition{{Name: "a", Description: "甲"}, {Name: "b", Description: "乙"}})
+	s2 := p2.PrefixSamples(0)
+	if l := s2[len(s2)-1]; !strings.Contains(l.DiffWhere, "工具定义变了") {
+		t.Fatalf("应点名工具段: %q", l.DiffWhere)
+	}
+}
+
+// TestPrefixProbeSeesSystemBodyChange system 段用**全文**入指纹:长度相近、中间被改写
+// 这种最常见的失配不能漏(第一版只取长度+头 48 字节,这类改动完全看不见)。
+func TestPrefixProbeSeesSystemBodyChange(t *testing.T) {
+	p := &prefixProbe{}
+	a := sdk.LLMMessage{Role: sdk.RoleSystem, Content: "你是 gah。规则一:…要求 A。" + strings.Repeat("x", 40)}
+	b := sdk.LLMMessage{Role: sdk.RoleSystem, Content: "你是 gah。规则一:…要求 B。" + strings.Repeat("x", 40)}
+	p.record([]sdk.LLMMessage{a}, nil)
+	p.record([]sdk.LLMMessage{b}, nil)
+	s := p.PrefixSamples(0)
+	if l := s[len(s)-1]; l.DiffToPrev != "changed" {
+		t.Fatalf("同长度不同内容必须被发现: %+v", l)
 	}
 }
 
