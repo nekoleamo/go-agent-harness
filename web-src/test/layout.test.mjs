@@ -2311,6 +2311,62 @@ test('设置面板:导航跳转途中高亮不落到途经段', { skip: skip && 
   }
 })
 
+// provider 预设的可见性(2026-10-06 用户反馈:「已添加一个 provider 之后,就没法再用预设添加」)。
+//
+// 真 bug 的形状:预设 chips 整块包在 `!providers.length` 里 ⇒ 配好第一个之后预设全部消失,
+// 而「＋ 新增」打开的表单只能手打 base_url。这条钉住「**有 provider 之后预设依然可点**」,
+// 并顺手钉住同名预设的诚实提示(同名保存是更新,不是新增 —— 后端 providerfile.Add 走 mergeFields)。
+test('设置面板:已有 provider 后,预设仍能新增(且同名会说明是更新)', { skip: skip && skipWhy }, async (t) => {
+  const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+  let page = null
+  try {
+    // makeStub(withProviders=true, longTokens=false) ⇒ /api/providers 返回 1 个名为 'layout' 的 provider。
+    // longTokens 必须为 false:它会把 provider 名换成无空格长 token,那样下面「同名冲突」就构造不出来。
+    page = await open(ctx, makeStub(true, false, false, false, true), docks[1].dock)
+    await page.click('.gear')
+    await page.waitForSelector('.nav-it')
+    await page.evaluate(() => {
+      const panel = document.querySelector('[aria-label="设置"]')
+      const btn = Array.from(panel.querySelectorAll('.nav-it')).find((b) => b.textContent?.trim() === 'Provider')
+      btn.click()
+    })
+    await page.waitForSelector('section[data-sec="provider"]')
+    // 点「＋ 新增」
+    await page.click('section[data-sec="provider"] .h button.link')
+    await page.waitForSelector('section[data-sec="provider"] .add-form .chip')
+    const chips = await page.$$eval('section[data-sec="provider"] .add-form .chip', (ns) =>
+      ns.map((n) => n.textContent.trim()),
+    )
+    assert.ok(chips.length >= 5, `表单里应有 provider 预设 chips,实得 ${chips.length}`)
+    // 点 OpenRouter 预设 → name/base_url 被填好(默认模型带上 openrouter/free)
+    await page.click('section[data-sec="provider"] .add-form .chip:has-text("OpenRouter")')
+    const vals = await page.evaluate(() => {
+      const f = document.querySelector('section[data-sec="provider"] .add-form')
+      const ins = f.querySelectorAll('input.inp')
+      return { name: ins[0]?.value, url: ins[1]?.value, model: ins[3]?.value }
+    })
+    assert.equal(vals.name, 'openrouter')
+    assert.equal(vals.url, 'https://openrouter.ai/api/v1')
+    assert.equal(vals.model, 'openrouter/free')
+    // 同名冲突提示:把名称改成已存在的那个(layout),应出现「更新」字样的说明
+    await page.evaluate(() => {
+      const f = document.querySelector('section[data-sec="provider"] .add-form')
+      const inp = f.querySelectorAll('input.inp')[0]
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+      setter.call(inp, 'layout')
+      inp.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await page.waitForSelector('section[data-sec="provider"] .add-form p.dim')
+    const hint = await page.$eval('section[data-sec="provider"] .add-form p.dim', (n) => n.textContent)
+    assert.match(hint, /更新/, `同名保存应说明是更新而不是新增,实得:${hint}`)
+  } catch (e) {
+    await shoot(page, t.name)
+    throw e
+  } finally {
+    await ctx.close()
+  }
+})
+
 // 拖放落点:此前只有落在输入外壳上才收附件 —— 拖到窗口别处(会话流/侧栏/停靠区)时交给浏览器
 // 默认动作,它直接把该文件**导航打开**,当前会话界面被顶掉。这条用真浏览器 + 合成 DataTransfer
 // 钉住三件事:① 落到非输入区 → 出现全窗提示、松手后附件进清单、window 层 drop 被 preventDefault;

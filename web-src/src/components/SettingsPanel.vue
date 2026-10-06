@@ -626,6 +626,17 @@ const histN = ref(0); // 0 全部 / N 最近 / -1 禁止
 
 // —— 操作表单(Provider 新增)与 W3 首启引导 ——
 const showAdd = ref(false);
+
+// providerNames 已配置的 provider 名集合(判断某个预设是不是「已添加」)。
+//
+// 为什么需要它:**同名保存不是新增而是更新**(后端 providerfile.Add 对同名走 mergeFields
+// 并激活)—— 用户在已有 DeepSeek 的情况再点一次 DeepSeek 预设,表单会静默把旧记录的
+// api_key 换掉。不说清就会以为「多了���个」,而实际是「少了原来那个配置」。
+const providerNames = computed(() => new Set(providers.value.map((p) => p.Name)));
+// pfConflicts 表单里当前名称命中已存在的 provider ⇒ 保存是更新它(显示为空即新增)。
+const pfConflicts = computed(
+  () => providers.value.find((p) => p.Name === pf.value.name.trim())?.Name ?? "",
+);
 const pf = ref({ name: "", base_url: "", api_key: "", model: "" });
 const presets = PROVIDER_PRESETS;
 // —— 分段导航(左栏;窄窗口退化为顶部芯片条) ——
@@ -4580,8 +4591,9 @@ watch(
                 </button>
               </h3>
 
-              <!-- 一个 Key 就能开始:没有 provider 时空状态本身就是入口 -->
-              <div v-if="!providers.length" class="onboard">
+              <!-- 一个 Key 就能开始:没有 provider 时空状态本身就是入口。
+                   点完预设会自动展开下方表单(加 !showAdd 是为了不出现两排一模一样的 chip)。 -->
+              <div v-if="!providers.length && !showAdd" class="onboard">
                 <p class="ob-lead">
                   粘贴一个 API Key 就能开始,base_url 由预设填好。
                 </p>
@@ -4600,6 +4612,31 @@ watch(
               </div>
 
               <div v-if="showAdd" class="add-form">
+                <!-- 预设入口:**不能只存在于空状态**。
+                     原实现里预设 chips 整块包在 `!providers.length` 里 ⇒ 配好第一个之后
+                     预设全部消失,而「＋ 新增」打开的表单只能手打 base_url ——
+                     「已添加一个 provider 之后就无法再通过预设添加」就是这么来的
+                     (2026-10-06 用户反馈)。现在无论有没有 provider，点「＋ 新增」都能从预设起步。 -->
+                <div class="chip-row">
+                  <button
+                    v-for="p in presets"
+                    :key="p.name"
+                    class="chip"
+                    :class="{ added: providerNames.has(p.name) }"
+                    :data-tip="
+                      providerNames.has(p.name)
+                        ? p.note + '(已添加:保存会更新它)'
+                        : p.note
+                    "
+                    @click="applyPreset(p)"
+                  >
+                    {{ p.label }}
+                  </button>
+                </div>
+                <p v-if="pfConflicts" class="dim">
+                  「{{ pfConflicts }}」已存在：保存会**更新**它（换成这次的 api_key），不是新增一条；
+                  想多接一家请选别的预设，或自己改个名称。
+                </p>
                 <label class="fld">
                   <span class="fld-lab">名称</span>
                   <input
@@ -5945,6 +5982,13 @@ watch(
   border-color: var(--accent);
   background: var(--accent-soft);
   color: var(--accent);
+}
+/* 已添加过的 provider 预设:弱化处理(不是禁用 —— 点它仍可用,只是提醒你保存会更新那个)。
+   刻意不用 .chip.on(那是「当前选中」的口径),也不用纯 dim(降对比度到像不可点)。 */
+.chip.added {
+  border-color: var(--line-strong);
+  background: var(--bg2);
+  color: var(--fg-faint);
 }
 /* 预览:中文排期 + 接下来几次 —— 不会 cron 的用户靠它验收。
    竖排而非 flex-wrap 横排:横排时「每天 08:00」与第一次触发会挤在同一行、
