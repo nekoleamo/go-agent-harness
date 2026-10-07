@@ -112,16 +112,22 @@ func (f *FilesTool) resolve(ctx context.Context, path string, write bool) (strin
 		if sc, ok := f.sb.(sdk.RootScoped); ok {
 			return abs, sc.ValidatePathAt(base, abs)
 		}
+		if vf, ok := f.sb.(sdk.PathValidatorFor); ok {
+			return abs, vf.ValidatePathFor(ctx, abs)
+		}
 		return abs, f.sb.ValidatePath(abs)
 	}
 	if rv, ok := f.sb.(sdk.ReadValidator); ok {
 		if sc, ok2 := f.sb.(sdk.RootScoped); ok2 {
 			return abs, sc.ValidateReadAt(base, abs)
 		}
+		if rf, ok := f.sb.(sdk.ReadValidatorFor); ok {
+			return abs, rf.ValidateReadFor(ctx, abs)
+		}
 		return abs, rv.ValidateRead(abs)
 	}
 	// 兜底:沙箱未实现读校验能力 → 按**有效档位**判定(联动开启时 Mode() 不代表拦截行为)
-	switch effectiveSandboxMode(f.sb) {
+	switch effectiveSandboxMode(ctx, f.sb) {
 	case sdk.SandboxFullAccess, sdk.SandboxReadOnly:
 		return abs, nil // 读放行
 	default: // workspace-write:读限 workspace 内(防 ../ 穿越与读外泄)
@@ -139,7 +145,13 @@ func (f *FilesTool) resolve(ctx context.Context, path string, write bool) (strin
 // effectiveSandboxMode 优先取联动后的有效档(沙箱实现 sdk.EffectiveSandbox 时)。
 // 否则 policy-guard 的档位联动(sync)会被工具侧忽略:approval=strict 显示只读、
 // 工具仍按 workspace-write 放行。
-func effectiveSandboxMode(sb sdk.Sandbox) sdk.SandboxMode {
+//
+// 带 ctx(第一百一十六批):沙箱若实现了 sdk.EffectiveSandboxFor,就按**这次调用所属会话**
+// 取档 —— 多页签各设各的沙箱档时,无参版会拿"全局当前"档去裁另一个会话的回合。
+func effectiveSandboxMode(ctx context.Context, sb sdk.Sandbox) sdk.SandboxMode {
+	if es, ok := sb.(sdk.EffectiveSandboxFor); ok {
+		return es.EffectiveModeFor(ctx)
+	}
 	if es, ok := sb.(sdk.EffectiveSandbox); ok {
 		return es.EffectiveMode()
 	}

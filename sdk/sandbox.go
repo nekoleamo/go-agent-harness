@@ -34,6 +34,21 @@ type ReadValidator interface {
 	ValidateRead(p string) error
 }
 
+// PathValidatorFor 可选扩展(ctx.sandbox 实现者):按**这次调用所属会话**校验写路径。
+//
+// 为什么需要(第一百一十六批):ValidatePath 是无参的,而它才是**真正拦写**的那一步 ——
+// 只让"有效档位"变成按会话,不等于拦截按会话。多页签各设各的沙箱档时,A 页签的
+// read-only 必须真的挡住 A 的写,而 B 页签的 full-access 不受影响。
+type PathValidatorFor interface {
+	// ValidatePathFor 按该次调用所属会话的生效档位校验写路径(root 取实现自身 Root)。
+	ValidatePathFor(ctx context.Context, path string) error
+}
+
+// ReadValidatorFor 可选扩展:同上,按会话校验读路径。
+type ReadValidatorFor interface {
+	ValidateReadFor(ctx context.Context, path string) error
+}
+
 // RootScoped 可选能力:按**显式调用根**校验路径(而非沙箱自身 Root)。
 //
 // 为什么需要:子代理可在受管 git worktree 内隔离运行(S-P1-4),此时"本次调用的工作根"
@@ -68,6 +83,17 @@ type SandboxSync interface {
 // 若只读 Mode() 会与实际拦截行为不一致;实现此接口即可对齐。
 type EffectiveSandbox interface {
 	EffectiveMode() SandboxMode
+}
+
+// EffectiveSandboxFor 可选扩展(ctx.sandbox 实现者):按**这次调用所属会话**取有效沙箱档。
+//
+// 为什么需要(第一百一十六批):EffectiveMode() 是无参的,而安全判定发生在**工具执行时**
+// —— 那时 ctx 里带着会话 id。多会话(页签)并行时,无参版会拿"全局当前"档去裁另一个会话的
+// 回合(A 页签设了 read-only,B 页签设了 full-access 就会互相串)。
+//
+// 消费方(tool-files 等)优先用它,没有就回落 EffectiveMode(单会话/旧实现逐字不变)。
+type EffectiveSandboxFor interface {
+	EffectiveModeFor(ctx context.Context) SandboxMode
 }
 
 // SandboxHint 宿主在调用工具前注入的**有效沙箱上下文**(经 ctx 传递,不改 sdk.Tool 签名)。

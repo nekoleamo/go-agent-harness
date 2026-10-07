@@ -165,3 +165,53 @@ func TestListSkillsToolHonorsFilter(t *testing.T) {
 		t.Fatalf("list_skills 应只回可见技能: %+v", out)
 	}
 }
+
+// 按会话的技能可见性(第一百一十六批):list_skills / read_skill 的过滤函数拿 ctx 取会话,
+// 于是两个页签的角色各自只看到自己的技能。
+func TestContextFilterVisibility(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GAH_HOME", home)
+	shared := filepath.Join(home, "skills")
+	writeSKILLMD(t, shared, "s-a", "技能A")
+	writeSKILLMD(t, shared, "s-b", "技能B")
+
+	r := newRegistry(nil, nil, nil)
+	if err := r.Rescan(); err != nil {
+		t.Fatal(err)
+	}
+	ctxA := sdk.WithSessionContext(context.Background(), "A")
+	ctxB := sdk.WithSessionContext(context.Background(), "B")
+
+	d := r.SetContextFilter(func(ctx context.Context, si sdk.SkillInfo) bool {
+		return sdk.SessionFromContext(ctx) != "A" || si.Name != "s-b"
+	})
+	namesA := map[string]bool{}
+	for _, s := range r.visibleFor(ctxA) {
+		namesA[s.Name] = true
+	}
+	if namesA["s-b"] {
+		t.Fatalf("会话 A 的过滤应排除 s-b,得 %v", namesA)
+	}
+	if !namesA["s-a"] {
+		t.Fatalf("会话 A 不该被误伤:%v", namesA)
+	}
+	namesB := map[string]bool{}
+	for _, s := range r.visibleFor(ctxB) {
+		namesB[s.Name] = true
+	}
+	if !namesB["s-b"] || !namesB["s-a"] {
+		t.Fatalf("会话 B 没设限制,应看到全部:%v", namesB)
+	}
+	// read_skill 的路径同样按会话
+	if _, ok := r.findVisibleFor(ctxA, "s-b"); ok {
+		t.Fatal("会话 A 不该能读到被排除的技能")
+	}
+	if _, ok := r.findVisibleFor(ctxA, "s-a"); !ok {
+		t.Fatal("会话 A 应能读到自己的技能")
+	}
+	d()
+	// 撤销后回落无参过滤(= 全部可见)
+	if len(r.visibleFor(ctxA)) != 2 {
+		t.Fatalf("撤销按会话过滤后应回到全部可见,得 %d", len(r.visibleFor(ctxA)))
+	}
+}

@@ -84,12 +84,19 @@ func innerArgsJSON(raw any) string {
 // 只有"这个角色确实声明了 X,而 X 尚未生效"才闭嘴需要一个前提:角色读不出来(坏角色)
 // 就返回空 —— 坏角色由 host-roles 启动警告 + 面板/list_roles 的 unreadable 列表可见,
 // 不是静默消失;而"按一个读不出来的角色去猜档位"更糟(猜错方向无上限)。
-func readRoleTiers(c sdk.Ctx) (approval, sandbox string) {
+func readRoleTiers(c sdk.Ctx, ctx context.Context) (approval, sandbox string) {
 	var rs sdk.RoleService
 	if err := c.Inject("ctx.roles", &rs); err != nil || rs == nil {
 		return "", ""
 	}
+	// 角色取"这个会话用的那个"(第一百一十六批):ctx 带会话 id 时按会话解析,
+	// 没带(展示路径 / 未装配)才回落全局当前角色 —— 单会话下两者相同。
 	id := rs.Current()
+	if sr, ok := rs.(sdk.SessionRoles); ok && ctx != nil {
+		if sid := sdk.SessionFromContext(ctx); sr.RoleForSession(sid) != "" {
+			id = sr.RoleForSession(sid)
+		}
+	}
 	if id == "" {
 		return "", "" // 基线(未启用角色):不收紧
 	}
@@ -168,8 +175,14 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	var confirm sdk.ConfirmService
 	_ = c.Inject("ctx.confirm", &confirm) // 未装配:smart 档按无通道安全拒绝
 
+	// 会话级偏好(沙箱/审批档):可选,未装配 ⇒ 全部跟随全局(与从前逐字一致)。
+	var cs sdk.CwdSessions
+	_ = c.Inject("ctx.cwdSessions", &cs)
+	if src, ok := cs.(sdk.SessionPrefsSource); ok {
+		currentSessionPrefsSrc = src
+	}
 	// 角色收紧读数(两个策略器共用同一个闭包 ⇒ 审批与沙箱永远同一口径)。
-	rt := func() (string, string) { return readRoleTiers(c) }
+	rt := func(ctx context.Context) (string, string) { return readRoleTiers(c, ctx) }
 	ap := &ApprovalPolicy{mode: approvalMode, tools: approvalTools, confirmTimeout: confirmTimeout, role: rt}
 	sp := &SandboxPolicy{root: workspaceRoot(), mode: sandboxMode, sync: sync, approval: ap.Mode, role: rt}
 	// 内核层写入面读数:协作层按它裁决区外落点(见 SandboxPolicy.kernelWritablePaths)。

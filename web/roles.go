@@ -314,6 +314,11 @@ func (s *Server) handleRoleUse(w http.ResponseWriter, r *http.Request) {
 	}
 	var body struct {
 		ID string `json:"id"`
+		// Session 目标会话 id(第一百一十六批):带它 = **给这个会话**选角色(页签各用各的);
+		// 不带 = 设全局当前角色(与从前一致:单会话、命令行都是它)。
+		Session string `json:"session,omitempty"`
+		// AlsoGlobal 同时把全局当前角色也设成它("这个会话 + 以后新建的会话都用这个")。
+		AlsoGlobal bool `json:"also_global,omitempty"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body) // 空 body 合法(用路径里的 id)
 	id := body.ID
@@ -322,6 +327,29 @@ func (s *Server) handleRoleUse(w http.ResponseWriter, r *http.Request) {
 	}
 	if id == "-" { // 前端「停用」用一个不可能撞上真实 ID 的占位符
 		id = ""
+	}
+	if body.Session != "" || body.AlsoGlobal {
+		// 会话级:写该会话的偏好;"同时设全局"再走一遍全局路径,失败则回滚会话那一步
+		// (两个动作是一次意图,不能只落一半 —— 那会让用户以为"全局也改了")。
+		if body.Session != "" {
+			role := id
+			prev := s.sessionPrefsOf(body.Session).Role // 记住原值:全局失败要回滚,不留半完成状态
+			if err := s.setSessionPref(body.Session, func(p *sdk.SessionPrefs) { p.Role = role }); err != nil {
+				http.Error(w, "会话级设置失败: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			if body.AlsoGlobal {
+				if err := svc.Use(id); err != nil {
+					// 回滚会话设置:两个动作是一次意图,失败不能只落一半
+					_ = s.setSessionPref(body.Session, func(p *sdk.SessionPrefs) { p.Role = prev })
+					http.Error(w, "设置失败: "+err.Error(), http.StatusBadRequest)
+					return
+				}
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session": body.Session, "global": body.AlsoGlobal})
+			return
+		}
+		// 只给 also_global(没带 session):落到下面的全局路径即可。
 	}
 	if err := svc.Use(id); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)

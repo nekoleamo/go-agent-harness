@@ -29,10 +29,85 @@ func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
 	var cs sdk.CwdSessions
 	_ = c.Inject("ctx.cwdSessions", &cs)
 	s.cs = cs
+	// 提示通道(可选):会话级模型不可用时如实告警一次(未装配 = 静默回落到全局模型)。
+	var notices sdk.NoticeService
+	_ = c.Inject("ctx.notices", &notices)
+	s.notices = notices
 	if err := c.Provide("ctx.llm", s); err != nil {
 		return nil, err
 	}
-	return func() {}, nil
+	// 会话级模型/思考(第一百一十六批):在请求发出前按**该会话**显式设置过的那份填进去。
+	//
+	// 为什么挂在这里而不是让 agent-loop 填:模型选择归 LLM 服务管(它才知道这个 provider
+	// 有哪些模型、不可用时怎么回落),agent-loop 不该知道模型可用性。
+	//
+	// 为什么与角色的覆盖**顺序无关**:两边都是"空才填"(req.Model == "" / !req.ThinkingSet),
+	// 而扩展点的契约明确要求监听器"只做填空类改写" ⇒ 谁先谁后都不会互相盖掉,
+	// 会话级永远赢(它先填,角色发现非空就跳过)。
+	dPre := c.Subscribe(sdk.EventLLMPreRequest, s.onPreRequest)
+	return func() { dPre() }, nil
+}
+
+// onPreRequest 会话级模型/思考档注入。
+func (s *Service) onPreRequest(ctx context.Context, ev *sdk.Event) error {
+	req, ok := ev.Payload.(*sdk.LLMRequest)
+	if !ok || req == nil {
+		return nil
+	}
+	prefs := s.sessionPrefs(ctx)
+	if prefs.Model != "" && req.Model == "" {
+		if s.ModelUsable(prefs.Model) {
+			req.Model = prefs.Model
+		} else {
+			// 不可用:如实告警一次并回落全局 —— 让整轮请求因为一个拼错的名字失败更糟。
+			s.warnModelUnusable(prefs.Model)
+		}
+	}
+	if prefs.Thinking != "" && !req.ThinkingSet {
+		req.Thinking = sdk.ParseThinking(prefs.Thinking)
+		req.ThinkingSet = true // 显式:含 off,否则会被会话级 thinking 回填(同角色那条的教训)
+	}
+	return nil
+}
+
+// sessionPrefs 该次请求所属会话的偏好(拿不到会话服务/会话没设 = 零值 ⇒ 交给全局兜底)。
+func (s *Service) sessionPrefs(ctx context.Context) sdk.SessionPrefs {
+	src, ok := s.cs.(sdk.SessionPrefsSource)
+	if !ok || src == nil {
+		return sdk.SessionPrefs{}
+	}
+	return src.SessionPrefsOf(sdk.SessionFromContext(ctx))
+}
+
+// ModelUsable 实现 sdk.ModelAvailability:本地判断模型名是否可用(不发请求)。
+//
+// 与 host-roles 里那份私有判定同源(都走 sdk.ModelCatalog);抽成接口是因为
+// 两处都要问 —— 角色声明的模型与会话级模型。判不了(未实现 ModelCatalog)一律当可用。
+func (s *Service) ModelUsable(model string) bool {
+	if model == "" {
+		return true
+	}
+	cat := s.catalog
+	if cat == nil {
+		cat, _ = s.c.(sdk.ModelCatalog)
+	}
+	if cat == nil {
+		return true // 本地判不了:不当成不可用(否则会把能跑的模型也拒了)
+	}
+	return cat.KnownModel(model)
+}
+
+// warnModelUnusable 会话级模型不可用时告警一次(不阻断:回落到全局模型继续跑)。
+func (s *Service) warnModelUnusable(model string) {
+	if s.notices == nil {
+		return
+	}
+	s.notices.Publish(sdk.Notice{
+		Level:  "warn",
+		Title:  "本会话的模型不可用",
+		Body:   "已改用当前模型继续:" + model,
+		Source: "host-llm",
+	})
 }
 
 // Service 实现 sdk.LLMService。
@@ -52,6 +127,8 @@ type Service struct {
 
 	// cs 会话服务(可选,nil 兼容单测的裸 &Service{}):只喂 provider 自定义头的 ${session}。
 	cs              sdk.CwdSessions
+	notices         sdk.NoticeService       // 可选(ctx.notices 未装配 = nil;会话级模型不可用时告警)
+	catalog         sdk.ModelCatalog        // 可选(模型可用性判定;缺 = 一律当可用)。字段仅为可测
 	provModelsCache []sdk.ProviderModelList // ListAllModels TTL 缓存
 	provModelsAt    time.Time               // 缓存写入时刻
 }

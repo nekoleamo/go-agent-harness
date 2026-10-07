@@ -132,3 +132,40 @@ func (s *Server) guardWrite(w http.ResponseWriter, id string) bool {
 	http.Error(w, "当前版本尚未支持向指定会话提交(多会话并行回合未落地);请先 /session 切换到该会话再提交", http.StatusConflict)
 	return false
 }
+
+// sessionPrefsSvc 会话偏好读数(可选窄接口);未装配 ⇒ 所有会话都跟随全局。
+func (s *Server) sessionPrefsSvc() sdk.SessionPrefsSource {
+	if s.cs == nil {
+		return nil
+	}
+	src, _ := s.cs.(sdk.SessionPrefsSource)
+	return src
+}
+
+// sessionPrefsOf 读会话显式设置过的偏好(原始值;空 = 没设 = 跟随全局)。
+func (s *Server) sessionPrefsOf(sessionID string) sdk.SessionPrefs {
+	if src := s.sessionPrefsSvc(); src != nil {
+		return src.SessionPrefsOf(sessionID)
+	}
+	return sdk.SessionPrefs{}
+}
+
+// setSessionPref 读-改-写会话级偏好(mutate 决定改哪些项)。
+//
+// 为什么是 mutate 而不是"传一份要写的值":单项 setter 在两个页面同时改不同项时会丢更新;
+// 而且"清除某项"(置空 = 跟随全局)必须能被表达 —— 传值式接口里"空串"和"没传"分不清。
+func (s *Server) setSessionPref(sessionID string, mutate func(*sdk.SessionPrefs)) error {
+	if s.cs == nil {
+		return errSessionScopedUnsupported
+	}
+	type prefsSetter interface {
+		SetSessionPrefs(id string, p sdk.SessionPrefs) error
+	}
+	st, ok := s.cs.(prefsSetter)
+	if !ok {
+		return errSessionScopedUnsupported
+	}
+	p := s.sessionPrefsOf(sessionID)
+	mutate(&p)
+	return st.SetSessionPrefs(sessionID, p)
+}

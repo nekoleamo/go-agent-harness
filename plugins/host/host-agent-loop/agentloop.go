@@ -455,8 +455,16 @@ func (l *Loop) step(ctx context.Context, t *turn, sess sdk.SessionLog) error {
 		// 单会话下看不出来(那时 sess 就是主单例),多会话并行(页签)下一轮就露馅:
 		// 各会话的请求内容会一模一样(实测 4 个会话的模型请求全部拿到同一个任务文本)。
 		history := sess.DeriveMessages()
+		// 工具列表按**本回合所属会话**过滤(角色收窄的工具不该出现在别的页签里);
+		// 拿不到按会话的实现时回落无参 List(单会话/外部实现,行为逐字不变)。
 		tools := l.tools.List()
+		if cc, ok := l.tools.(sdk.ContextualToolCatalogue); ok {
+			tools = cc.ListFor(ctx)
+		}
 		messages := l.sp.Assemble(history, tools)
+		if cp, ok := l.sp.(sdk.ContextualSystemPrompt); ok {
+			messages = cp.AssembleFor(ctx, history, tools)
+		}
 		// 伪调用提醒注入(上步检测到文本伪造工具调用;作为追加输入给模型修正机会)
 		if t.reminder != "" {
 			messages = append(messages, sdk.LLMMessage{Role: sdk.RoleUser, Content: t.reminder})
@@ -565,12 +573,20 @@ func (l *Loop) step(ctx context.Context, t *turn, sess sdk.SessionLog) error {
 		return fmt.Errorf("session log: %w", err)
 	}
 
-	// 记录本轮 token 消耗(session/usage;host-usage-stats 订阅累计;无 usage 数据不记)。
-	// 携带请求模型名(host-llm 已在 req.Model 填当前模型,统计按模型解析上下文窗口)。
+	// 记录本轮 token 消耗(session/usage;无 usage 数据不记)。
+	// 携带请求模型名(host-llm 已在 req.Model 填当前模型,统计按模型解析上下文窗口)
+	// 与**会话归属**(Session:多会话并行时统计要按会话分桶 —— 原先是一个全局累加器,
+	// 页签之间会互相清零)。
 	if final.Usage.PromptTokens > 0 || final.Usage.CompletionTokens > 0 {
-		if err := l.appendEvents(sess, sdk.SessionEvent{Kind: sdk.EventUsage,
-			Payload: sdk.UsageEvent{Model: req.Model, Usage: final.Usage}}); err != nil {
+		ue := sdk.UsageEvent{Model: req.Model, Usage: final.Usage, Session: sdk.SessionFromContext(ctx)}
+		if err := l.appendEvents(sess, sdk.SessionEvent{Kind: sdk.EventUsage, Payload: ue}); err != nil {
 			return fmt.Errorf("session log: %w", err)
+		}
+		// 额外发一条**实例级**事件:统计服务只订阅主会话的事件名,而会话事件名是 per-session
+		// 命名空间(session/event/<id>),它没法"订阅全部会话" —— 非主会话的用量压根收不到。
+		// 这条只是通知通道(账本仍以会话日志为准),与 EventUsageWindow 同款。
+		if l.c != nil {
+			_, _ = l.c.Emit(context.Background(), sdk.EventUsageRecorded, ue, sdk.Emit)
 		}
 	}
 

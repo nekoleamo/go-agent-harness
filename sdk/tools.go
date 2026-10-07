@@ -113,6 +113,18 @@ type ToolCatalogue interface {
 	ListAll() []ToolDefinition
 }
 
+// ContextualToolCatalogue 可选扩展(ctx.tools 实现者):按**调用所属会话**过滤可见工具。
+//
+// 为什么需要(第一百一十六批):SetFilter 的判定是无参的,而 List() 在组装请求时调用 ——
+// 那时 ctx 里带着会话 id。多页签各用各的角色时,角色 A 排除的工具不该在页签 B 的
+// 工具列表里(那等于让 A 的收窄失去意义)。
+type ContextualToolCatalogue interface {
+	// SetContextFilter 安装按会话的可见性判定(nil = 回落 SetFilter 的判定)。
+	SetContextFilter(visible func(ctx context.Context, def ToolDefinition) bool) Disposer
+	// ListFor 该会话下模型可见的工具定义。
+	ListFor(ctx context.Context) []ToolDefinition
+}
+
 // ToolRegistry 服务(ctx.tools):注册/列举/带流水线执行。
 type ToolRegistry interface {
 	// Register 注册工具,返回 Disposer。

@@ -59,3 +59,13 @@ test('页签标题:人写的名优先,id 样的名退成短形', () => {
   assert.equal(tabTitle('', 'main'), '主会话')
   assert.equal(tabTitle('主会话', 'main'), '主会话')
 })
+
+// 会话级设置的来源标注:前端据此显示"本页签独立"还是"跟随全局"。
+// 混起来说"这个值生效了"是不够的 —— 用户改了全局却发现某个页签没跟着变,会以为界面坏了。
+import { prefSourceLabel } from './frame-routing.ts'
+test('偏好来源标注', () => {
+  assert.equal(prefSourceLabel('session'), '本会话')
+  assert.equal(prefSourceLabel('role'), '角色')
+  assert.equal(prefSourceLabel(''), '跟随全局')
+  assert.equal(prefSourceLabel('approval'), '审批联动')
+})

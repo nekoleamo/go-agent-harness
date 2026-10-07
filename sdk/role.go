@@ -6,6 +6,8 @@
 // 依赖方向是「角色知道技能」,不是反的。
 package sdk
 
+import "context"
+
 import (
 	"fmt"
 	"strings"
@@ -322,6 +324,15 @@ type SkillInfo struct {
 	Triggers    []string `json:"triggers,omitempty"`
 	// Role 归属角色 ID(空 = 共享技能库)。角色私有技能只能被其归属角色看到。
 	Role string `json:"role,omitempty"`
+}
+
+// ContextualSkillsService 可选扩展(ctx.skills 实现者):按**调用所属会话**过滤技能。
+//
+// 与 ContextualToolCatalogue 同因:list_skills / read_skill 发生在工具执行时,
+// 那时 ctx 带着会话 id;无参判定在多页签下会让"角色 A 的私有技能"泄漏到页签 B。
+type ContextualSkillsService interface {
+	// SetContextFilter 安装按会话的可见性判定(nil = 回落无参判定);返回 Disposer 幂等撤销。
+	SetContextFilter(visible func(ctx context.Context, si SkillInfo) bool) Disposer
 }
 
 // SkillsService 服务(ctx.skills):技能索引与**可见性过滤**(host-skills 提供)。

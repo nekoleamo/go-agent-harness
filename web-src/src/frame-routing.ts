@@ -73,3 +73,21 @@ export function foreignTodoText(kind: 'confirm' | 'question' | 'command', ownerI
   const body = (prompt || '').trim().slice(0, 80)
   return body ? `${who}${what}:${body}` : `${who}${what}`
 }
+/**
+ * 偏好生效来源的人话标注(state 的 *_from 字段)。
+ *
+ * 为什么界面必须说清来源:多会话之后"生效值"可能是本页签自己设的、角色声明的、
+ * 或者只是跟随全局。用户改完全局发现某个页签没变,没有标注就只会以为界面在骗人。
+ */
+export function prefSourceLabel(from: string): string {
+  switch (from) {
+    case 'session':
+      return '本会话'
+    case 'role':
+      return '角色'
+    case 'approval':
+      return '审批联动'
+    default:
+      return '跟随全局'
+  }
+}

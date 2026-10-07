@@ -277,6 +277,76 @@ func SessionFromContext(ctx context.Context) string {
 
 type sessionCtxKey struct{}
 
+// SessionPrefs 一个会话的偏好(角色/模型/思考/沙箱/审批)。
+//
+// 语义:**空串 = 该会话没单独设 = 跟随全局当前值**(不是"空值/关")。这个约定让老会话零迁移,
+// 也让"全局改一次,所有没单独设过的会话跟着变"成为默认行为。
+// 存放在会话元数据里(host-cwd-sessions),所以切回历史会话、刷新、重开进程都还在。
+type SessionPrefs struct {
+	Role     string `json:"role,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Thinking string `json:"thinking,omitempty"`
+	Sandbox  string `json:"sandbox,omitempty"`
+	Approval string `json:"approval,omitempty"`
+}
+
+// ResolvedPrefs 会话偏好的**生效值** + 每项的来源(供 UI 标注"跟随全局"还是"本页签独立")。
+type ResolvedPrefs struct {
+	Role     string
+	Model    string
+	Thinking string
+	Sandbox  string
+	Approval string
+	// FromSession 哪些项是这个会话自己设的(其余为跟随全局)。
+	FromSession map[string]bool
+}
+
+// Session 视为"该会话显式设置"的键名集合。
+func (p ResolvedPrefs) FromSessionOf(key string) bool { return p.FromSession[key] }
+
+// ResolveSessionPrefs 会话级偏好的**统一回落**:会话没设的项用全局当前值。
+//
+// 为什么放 sdk 纯函数而不是各处各判:模型/思考、沙箱/审批、角色三处消费点都要回落,
+// 各写一份必然漂(而且漂了很难发现:表现是"某个页签的模型莫名变了")。
+// 全局值由调用方填(它们的来源各自不同:prefs / provider.yaml / roles 偏好)。
+func ResolveSessionPrefs(session, global SessionPrefs) ResolvedPrefs {
+	pick := func(key, s, g string) (string, bool) {
+		if s != "" {
+			return s, true
+		}
+		return g, false
+	}
+	out := ResolvedPrefs{FromSession: map[string]bool{}}
+	out.Role, out.FromSession["role"] = pick("role", session.Role, global.Role)
+	out.Model, out.FromSession["model"] = pick("model", session.Model, global.Model)
+	out.Thinking, out.FromSession["thinking"] = pick("thinking", session.Thinking, global.Thinking)
+	out.Sandbox, out.FromSession["sandbox"] = pick("sandbox", session.Sandbox, global.Sandbox)
+	out.Approval, out.FromSession["approval"] = pick("approval", session.Approval, global.Approval)
+	return out
+}
+
+// SessionRoles 可选扩展(ctx.roles 实现者):该会话用的角色(空 = 跟随全局当前角色)。
+//
+// 为什么需要:多会话(页签)并行时,一个进程只有一个"当前角色",于是所有会话会被同一个人格
+// 接管 —— 页签 A 选"代码评审"、B 选"数据分析"时,B 也会被代码评审的语气与工具清单支配。
+// 存储在会话元数据里,所以恢复对话(切回历史会话)拿到的就是当时的角色。
+type SessionRoles interface {
+	// RoleForSession 会话 id(空 = 主会话)显式设置的角色;空串 = 该会话跟随全局当前角色。
+	RoleForSession(sessionID string) string
+	// Get 角色定义(宿主复用 ctx.roles 的同一份,不重复解析)。
+	// 消费方(如系统提示判断"是否注入全局指令")不该为此再拿整个 RoleService。
+	Get(id string) (RoleSpec, bool)
+}
+
+// SessionPrefsSource 可选扩展(ctx.cwdSessions 实现者):读某个会话显式设置过的偏好。
+//
+// 为什么是窄接口而不是加进 CwdSessions 主接口:主接口是宿主↔宿主服务的契约,
+// 加方法会破坏所有实现(包括外部实现);而"读会话偏好"只有少数消费方需要。
+// 返回**原始值**(某项空 = 该会话没设 = 跟随全局),回落统一走 ResolveSessionPrefs。
+type SessionPrefsSource interface {
+	SessionPrefsOf(sessionID string) SessionPrefs
+}
+
 // SessionCompressor 滚动摘要引擎(M6.5 拆出 token-compress;仅消费 SessionEvent,零内部状态)。
 // host-session-log 在投影超预算时回调 Fold;引擎折叠事件流最旧块为累计摘要,
 // 每折一块调用 summary 回调持久化 session/summary 事件;host 据此推进水位(投影跳过已压缩块)。
@@ -435,6 +505,15 @@ type OverflowCompactor interface {
 type UsageEvent struct {
 	Model string
 	Usage Usage
+	// Session 本次消耗归属的会话 id(空 = 主会话/未标注)。
+	//
+	// 为什么加这个字段:用量统计原先是**一个全局累加器**,而多会话并行下"这条消耗属于哪个
+	// 会话"根本无从判断 —— 统计服务只订阅主会话的事件名(非主会话的用量压根收不到),
+	// 切会话还会 Reset 把别的会话的数清零。带上归属后,统计才能按会话分桶
+	// (多页签各看各的用量)。
+	//
+	// 兼容:旧日志没有这个字段 = 空 = 归到主会话/全局桶,不报错、不迁移。
+	Session string `json:",omitempty"`
 }
 
 // SessionInfo 一个会话的元信息(host-cwd-sessions 列表/切换用)。
@@ -446,6 +525,11 @@ type SessionInfo struct {
 	Preview string // 会话内容省略版(首条用户消息截断;空 = 无内容)
 	MTime   int64  // 最后修改时间(unix 秒;0 = 未知/未落盘)
 	Frames  int    // 事件条数(-1 = 未统计)
+
+	// 会话级偏好(第一百一十六批):该会话显式设置过的项,空 = 跟随全局。
+	// 页签徽标/会话列表据此显示"这个会话有自己的角色/模型",而不必逐个点开。
+	SessionRole  string `json:"session_role,omitempty"`
+	SessionModel string `json:"session_model,omitempty"`
 
 	// F 组会话体验(DESIGN §14.1 F0/F2/F3):置顶与概述(omitempty 向后兼容)。
 	Pinned        bool     `json:",omitempty"` // 是否置顶

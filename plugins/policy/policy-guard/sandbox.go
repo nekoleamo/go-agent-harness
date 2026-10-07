@@ -2,6 +2,7 @@
 package policyguard
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -83,7 +84,10 @@ func (p *SandboxPolicy) kernelWritablePaths(s kernelSurface) []string {
 // roleTiers 读当前角色的收紧档(approval, sandbox;"" = 不收紧)。
 // 由 guard 注入,sandbox.go 与 approval.go 共用同一条读数(两个策略器必须同源,
 // 否则会出现"审批按角色拒了、沙箱却按全局放行"的裂缝)。
-type roleTiers func() (approval, sandbox string)
+// roleTiers 取"这个会话上"的角色收紧档。**ctx 永不为 nil**:"无会话上下文"用
+// context.Background() 表示(它的 session id 为空 ⇒ 解析成全局当前角色),
+// 而不是传 nil —— 传 nil 会让静态检查判 SA1012,也让"这个参数能不能是 nil"变成隐含约定。
+type roleTiers func(ctx context.Context) (approval, sandbox string)
 
 func (p *SandboxPolicy) Mode() sdk.SandboxMode {
 	p.mu.RLock()
@@ -129,6 +133,20 @@ func (p *SandboxPolicy) SetSyncEnabled(on bool) {
 
 // effectiveMode 由 link.go 定义(调用方须持读锁)。
 
+// EffectiveModeFor 实现 sdk.EffectiveSandboxFor:按这次调用所属会话取有效沙箱档。
+//
+// 与 EffectiveMode() 的差别只有"档位来源":从"全局当前"换成"该会话显式设置过的,
+// 没设置才回落全局"。判定链(声明 → 会话 → 联动 → 角色收紧)共用,不多一份逻辑。
+// ctx 为 nil 时等价于无参版(展示路径)。
+func (p *SandboxPolicy) EffectiveModeFor(ctx context.Context) sdk.SandboxMode {
+	if ctx == nil {
+		return p.EffectiveMode()
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.effectiveModeWith(ctx)
+}
+
 // EffectiveMode 档位联动 + 角色收紧后的有效档(实现 sdk.EffectiveSandbox;工具侧与状态展示对齐用)。
 func (p *SandboxPolicy) EffectiveMode() sdk.SandboxMode {
 	p.mu.RLock()
@@ -144,7 +162,7 @@ func (p *SandboxPolicy) EffectiveFrom() string {
 	declared := p.mode
 	linked := p.linkedMode() // 联动后、角色收紧前
 	if p.role != nil {
-		if _, rs := p.role(); rs != "" {
+		if _, rs := p.role(context.Background()); rs != "" {
 			if _, byRole := sdk.TightenSandbox(rs, string(linked)); byRole {
 				return sdk.TierSourceRole
 			}
@@ -164,6 +182,30 @@ func (p *SandboxPolicy) ValidatePath(path string) error {
 	return p.ValidatePathAt(p.Root(), path)
 }
 
+// ValidatePathFor 实现 sdk.PathValidatorFor:按该次调用所属会话的生效档位校验写路径。
+//
+// 为什么必须有它:ValidatePath 是无参的,而它才是**真正拦写**的那一步 —— 只让"有效档位"
+// 变成按会话,不等于拦截按会话(那会得到"显示只读、实际照写"这种最坏的假象)。
+func (p *SandboxPolicy) ValidatePathFor(ctx context.Context, path string) error {
+	p.mu.RLock()
+	mode, own := p.effectiveModeWith(ctx), p.root
+	p.mu.RUnlock()
+	return p.validateWriteAt(own, path, mode, surfaceTool)
+}
+
+// ValidateReadFor 实现 sdk.ReadValidatorFor:同上,按会话校验读路径。
+func (p *SandboxPolicy) ValidateReadFor(ctx context.Context, path string) error {
+	p.mu.RLock()
+	mode := p.effectiveModeWith(ctx)
+	p.mu.RUnlock()
+	switch mode {
+	case sdk.SandboxFullAccess, sdk.SandboxReadOnly:
+		return nil // 这两档读不设 workspace 限制(与 ValidateRead 同语义)
+	default:
+		return p.ValidateRead(path)
+	}
+}
+
 // ValidatePathAt 以显式 root 为写范围校验(S-P1-4 隔离运行:root = 本次调用工作根/受管 worktree)。
 // root 空 → 退回自身 root(未隔离调用行为不变)。
 func (p *SandboxPolicy) ValidatePathAt(root, path string) error {
@@ -173,6 +215,14 @@ func (p *SandboxPolicy) ValidatePathAt(root, path string) error {
 // validatePathAtAt 同一判定,显式指定执行面(shell 命令走 surfaceShell —— 它的内核 spec 与
 // 工具面不同,见 kernelScopeTool 注释)。
 func (p *SandboxPolicy) validatePathAt(root, path string, surface kernelSurface) error {
+	p.mu.RLock()
+	mode := p.effectiveMode()
+	p.mu.RUnlock()
+	return p.validateWriteAt(root, path, mode, surface)
+}
+
+// validateWriteAt 写校验主体(档位由调用方给 —— 无参路径取全局,按会话路径取该会话)。
+func (p *SandboxPolicy) validateWriteAt(root, path string, mode sdk.SandboxMode, surface kernelSurface) error {
 	// URL 当路径:模型会把网页地址交给写工具(含 shell 重定向),于是在 cwd 下长出
 	// `https:/host/docs/…` 空目录树(2026-09-22 真机)。
 	// **必须在拼 root 之前判原始入参** —— 相对形态经 filepath.Join 后 URL 前缀就没了(只剩 <root>/https:/…)。
@@ -181,7 +231,7 @@ func (p *SandboxPolicy) validatePathAt(root, path string, surface kernelSurface)
 		return fmt.Errorf("sandbox: 拒绝把 URL 当成文件路径: %s(抓网页请用 web 工具)", path)
 	}
 	p.mu.RLock()
-	mode, own := p.effectiveMode(), p.root
+	own := p.root
 	p.mu.RUnlock()
 	if root == "" {
 		root = own

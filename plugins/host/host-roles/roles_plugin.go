@@ -47,6 +47,11 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	}
 
 	svc := &Service{c: c, skills: skills}
+	// 会话偏好(可选):ctx.cwdSessions 实现了 sdk.SessionPrefsSource 时,角色可按会话解析。
+	// 与本插件无拓扑顺序约束(都在 base bundle),所以用懒解析而非 Start 时一次性注入。
+	if err := c.Inject("ctx.cwdSessions", &svc.cs); err != nil {
+		svc.cs = nil // 缺会话服务:角色按全局当前值走(行为与从前一致)
+	}
 	if err := c.Provide("ctx.roles", svc); err != nil {
 		return nil, err
 	}
@@ -81,6 +86,29 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	d5 := c.Subscribe(sdk.EventLLMPreRequest, svc.onLLMPreRequest)
 
 	disposers := []sdk.Disposer{d1, d2, d3, d4, d4b, d5}
+
+	// 按**会话**过滤技能/工具(第一百一十六批):判定函数拿 ctx 取该会话的角色,
+	// 而不是读全局当前角色 —— 页签 A 排除的工具不该出现在页签 B 的工具列表里
+	// (那等于让角色的收窄静默失效)。ctx 里没有会话 id(Background)时按全局角色,
+	// 单会话场景与从前逐字一致。
+	if tc, ok := tools.(sdk.ContextualToolCatalogue); ok {
+		disposers = append(disposers, tc.SetContextFilter(func(ctx context.Context, def sdk.ToolDefinition) bool {
+			spec, found := svc.specForSession(ctx)
+			if !found {
+				return true // 基线角色不排除任何工具
+			}
+			return sdk.ToolVisible(&spec, def.Name)
+		}))
+	}
+	if sk, ok := skills.(sdk.ContextualSkillsService); ok {
+		disposers = append(disposers, sk.SetContextFilter(func(ctx context.Context, si sdk.SkillInfo) bool {
+			spec, found := svc.specForSession(ctx)
+			if !found {
+				return true
+			}
+			return svc.visibleFor(spec.ID, si)
+		}))
+	}
 	// /role 命令(可选:未装配 ctx.commands 时跳过 —— 与 host-internal-commands 同款)。
 	var cmds sdk.CommandRegistry
 	if err := c.Inject("ctx.commands", &cmds); err == nil && cmds != nil {
@@ -102,6 +130,12 @@ type Service struct {
 	c      sdk.Ctx
 	store  roles.Store
 	skills sdk.SkillsService
+
+	// cs 会话服务(可选;用于按会话解析角色)
+	cs      sdk.CwdSessions
+	prefsMu sync.Mutex
+	// prefsSrc 会话偏好读数(懒解析:host-roles 与 host-cwd-sessions 无拓扑顺序约束)
+	prefsSrc sdk.SessionPrefsSource
 
 	mu       sync.RWMutex
 	active   string                  // 当前角色缓存(事实源仍是 prefs;Refresh 同步)
@@ -671,12 +705,12 @@ func (s *Service) noticeSvc() sdk.NoticeService {
 //   - 只"填空"不掠夺:req.Model 已被别人显式指定就让位;req.ThinkingSet 已置真就不碰;
 //   - 永不返回 error:返回 error = 阻断本回合(waterfall veto),模型名拼错不该让会话直接停摆 ——
 //     不可用就告警 + 沿用会话模型继续跑(不静默降级,但也不硬失败)。
-func (s *Service) onLLMPreRequest(_ context.Context, ev *sdk.Event) error {
+func (s *Service) onLLMPreRequest(ctx context.Context, ev *sdk.Event) error {
 	req, ok := ev.Payload.(*sdk.LLMRequest)
 	if !ok || req == nil {
 		return nil
 	}
-	spec, ok := s.activeSpec()
+	spec, ok := s.specForSession(ctx)
 	if !ok || (spec.Model == "" && spec.Thinking == "") {
 		return nil // 基线/未声明:与本功能上线前完全一致
 	}
@@ -695,6 +729,50 @@ func (s *Service) onLLMPreRequest(_ context.Context, ev *sdk.Event) error {
 }
 
 // activeSpec 当前角色的定义(未启用/不可读 → ok=false)。
+// RoleForSession 实现 sdk.SessionRoles:该会话显式设置的角色(空 = 跟随全局当前角色)。
+//
+// 多会话(页签)并行时"当前角色"是进程单值 —— 一个窗口里 A 页签选代码评审、B 页签选数据分析时,
+// 两个会话会被同一个人格接管(语气、技能、工具清单全是同一个)。角色存在会话元数据里,
+// 所以切回历史会话拿到的就是当时的角色(用户明确要求的行为)。
+func (s *Service) RoleForSession(sessionID string) string {
+	src := s.sessionPrefs()
+	if src == nil {
+		return ""
+	}
+	return src.SessionPrefsOf(sessionID).Role
+}
+
+// specForSession 该次调用所属会话生效的角色(会话显式设置 > 全局当前;读不出 → ok=false)。
+func (s *Service) specForSession(ctx context.Context) (sdk.RoleSpec, bool) {
+	if ctx != nil {
+		if id := s.RoleForSession(sdk.SessionFromContext(ctx)); id != "" {
+			s.mu.RLock()
+			spec, ok := s.specs[id]
+			s.mu.RUnlock()
+			return spec, ok
+		}
+	}
+	return s.activeSpec()
+}
+
+// sessionPrefs 懒解析会话偏好服务(一次 Inject,无盘 I/O)。
+// 为什么不缓存判断结果:host-roles 与 host-cwd-sessions 之间无拓扑顺序约束,
+// Start 时一次性注入会恒 nil —— 与本插件"每次现取当前角色"的纪律同源。
+func (s *Service) sessionPrefs() sdk.SessionPrefsSource {
+	s.prefsMu.Lock()
+	defer s.prefsMu.Unlock()
+	if s.prefsSrc != nil {
+		return s.prefsSrc
+	}
+	var cs sdk.CwdSessions
+	if err := s.c.Inject("ctx.cwdSessions", &cs); err != nil || cs == nil {
+		return nil
+	}
+	src, _ := cs.(sdk.SessionPrefsSource)
+	s.prefsSrc = src
+	return src
+}
+
 func (s *Service) activeSpec() (sdk.RoleSpec, bool) {
 	s.mu.RLock()
 	id := s.active

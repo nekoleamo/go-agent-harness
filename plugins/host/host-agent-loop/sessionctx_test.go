@@ -128,3 +128,77 @@ func TestOtherSessionRequestUsesItsOwnHistory(t *testing.T) {
 		t.Fatalf("B 的请求混进了别的会话历史(跨会话串上下文):%v", text)
 	}
 }
+
+// TestAssembleUsesSessionScopedExtensions 组装请求时优先用**按会话**的可选扩展:
+// 工具清单(ListFor)与系统提示(AssembleFor)都要按那次调用所属会话解析 —— 否则角色
+// 在别的页签排除的工具/技能/指令,在本页签仍然可见(角色的收窄静默失效)。
+func TestAssembleUsesSessionScopedExtensions(t *testing.T) {
+	e, llm := buildEnvScripted(t, []string{"ok"})
+	// 假扩展:把"本会话 id"塞进工具名与系统提示,便于断言确实走了它们
+	tools := &ctxTools{inner: e.tools}
+	sp := &ctxSP{inner: e.sp}
+	e.loop.tools = tools
+	e.loop.sp = sp
+	dir := newMemDir("cur-1")
+	e.loop.sdir = dir
+	e.loop.cs = &stubCS{cur: "cur-1"}
+
+	if err := e.loop.RunInSession(context.Background(), "sA", "任务"); err != nil {
+		t.Fatal(err)
+	}
+	if len(llm.requests) != 1 {
+		t.Fatalf("一次请求,实得 %d", len(llm.requests))
+	}
+	// scriptedLLM 分别记录每趟请求的消息与工具清单
+	if len(llm.toolSets) != 1 || len(llm.toolSets[0]) == 0 || llm.toolSets[0][0].Name != "tools@sA" {
+		t.Fatalf("工具清单应来自 ListFor(本会话 sA),得 %+v", llm.toolSets)
+	}
+	msgs := llm.requests[0]
+	found := false
+	for _, m := range msgs {
+		if m.Role == sdk.RoleSystem && strings.Contains(m.Content, "assemble@sA") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("系统提示应来自 AssembleFor(本会话 sA)")
+	}
+}
+
+// ctxTools 实现 sdk.ContextualToolCatalogue(工具名后缀带会话 id)。
+type ctxTools struct {
+	sdk.ToolRegistry
+	inner sdk.ToolRegistry
+}
+
+// 其余方法转发到 inner(内嵌接口是 nil,直接调会 panic —— 替身必须显式转发)。
+func (c *ctxTools) List() []sdk.ToolDefinition { return c.inner.List() }
+
+func (c *ctxTools) SetContextFilter(func(context.Context, sdk.ToolDefinition) bool) sdk.Disposer {
+	return func() {}
+}
+func (c *ctxTools) ListFor(ctx context.Context) []sdk.ToolDefinition {
+	defs := c.inner.List()
+	out := make([]sdk.ToolDefinition, 0, len(defs))
+	for _, d := range defs {
+		d.Name = "tools@" + sdk.SessionFromContext(ctx)
+		out = append(out, d)
+	}
+	return out
+}
+
+// ctxSP 实现 sdk.ContextualSystemPrompt(系统提示里塞入会话 id)。
+type ctxSP struct {
+	sdk.SystemPromptService
+	inner sdk.SystemPromptService
+}
+
+// Assemble 转发(inner 是真实实现)。
+func (c *ctxSP) Assemble(h []sdk.LLMMessage, tools []sdk.ToolDefinition) []sdk.LLMMessage {
+	return c.inner.Assemble(h, tools)
+}
+
+func (c *ctxSP) AssembleFor(ctx context.Context, h []sdk.LLMMessage, tools []sdk.ToolDefinition) []sdk.LLMMessage {
+	out := c.inner.Assemble(h, tools)
+	return append([]sdk.LLMMessage{{Role: sdk.RoleSystem, Content: "assemble@" + sdk.SessionFromContext(ctx)}}, out...)
+}

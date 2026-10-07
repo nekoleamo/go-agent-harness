@@ -145,11 +145,16 @@ export const api = {
     sandbox_sync?: boolean
     workspace?: string
     cancel?: boolean
-    // session 取消作用域:非空 = 只停该会话的回合(需后端支持 SessionRunner);
-    // 空 = 停全部(TUI 语义)。
+    // session 作用域:非空 = 只作用于此会话(取消=停该会话回合;模型/思考/沙箱/审批=
+    // 写**该会话**的偏好,不动全局);空 = 全局(停全部 / 改全局当前值,TUI 语义)。
     session?: string
+    // alsoGlobal 连模型/思考/沙箱/审批一起写成全局默认(前端"同时设为全局"入口)。
+    also_global?: boolean
   }): Promise<void> {
-    return req('/api/control', { method: 'POST', headers: json, body: JSON.stringify(body) })
+    // 未显式给 session 时默认绑当前页签 —— 这是页签的默认语义(改设置只影响这个页签);
+    // 要改全局必须显式传空串。
+    const body2 = body.session === undefined ? { ...body, session: boundSessionId } : body
+    return req('/api/control', { method: 'POST', headers: json, body: JSON.stringify(body2) })
   },
 
   // —— 整体备份(M18) ——
@@ -345,9 +350,15 @@ export const api = {
   roleRename(id: string, p: { id?: string; name?: string }): Promise<RoleSpec> {
     return req('/api/roles/' + encodeURIComponent(id) + '/rename', { method: 'POST', headers: json, body: JSON.stringify(p) })
   },
-  // roleUse 切换(id 空 = 停用回基线角色);下一回合生效,**不换会话**
-  roleUse(id: string): Promise<{ ok: true; current: string }> {
-    return req('/api/roles/' + encodeURIComponent(id || '-') + '/use', { method: 'POST', headers: json, body: '{}' })
+  // roleUse 切换角色(id 空 = 停用回基线);下一回合生效,**不换会话**。
+  //
+  // 会话级(第一百一十六批):带 `session` 时只给**当前页签的会话**设角色(页签各用各的);
+  // `alsoGlobal` 同时把全局当前角色也设成它("这个会话 + 以后新建的会话都用这个")。
+  // 都不带 = 原语义:改全局当前角色(单会话窗口与命令行都是它)。
+  roleUse(id: string, opts: { session?: string; alsoGlobal?: boolean } = {}): Promise<{ ok: true; current: string }> {
+    const session = opts.session ?? boundSessionId
+    const body = JSON.stringify({ session, also_global: !!opts.alsoGlobal })
+    return req('/api/roles/' + encodeURIComponent(id || '-') + '/use', { method: 'POST', headers: json, body })
   },
   roleDelete(id: string): Promise<void> {
     return req('/api/roles/' + encodeURIComponent(id), { method: 'DELETE' })

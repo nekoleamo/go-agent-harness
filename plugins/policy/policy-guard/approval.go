@@ -93,11 +93,33 @@ func (p *ApprovalPolicy) EffectiveMode() sdk.ApprovalMode {
 	return p.effectiveMode()
 }
 
+// EffectiveModeFor 实现 sdk.EffectiveApprovalFor:按这次调用所属会话取有效审批档。
+//
+// 与无参版的差别只有"会话档"这一层(角色收紧逻辑共用);ctx 为 nil 时等价于无参版。
+func (p *ApprovalPolicy) EffectiveModeFor(ctx context.Context) sdk.ApprovalMode {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	m := string(p.mode)
+	if ctx != nil {
+		if v := sessionPref(ctx, func(x sdk.SessionPrefs) string { return x.Approval }); v != "" {
+			// 会话级**替换**声明档(同沙箱:显式设置优先;角色仍只更严)。
+			m = v
+		}
+	}
+	if p.role != nil {
+		if ra, _ := p.role(ctx); ra != "" {
+			out, _ := sdk.TightenApproval(ra, m)
+			return sdk.ApprovalMode(out)
+		}
+	}
+	return sdk.ApprovalMode(m)
+}
+
 // effectiveMode 合成生效档(调用方须持锁):声明档 → 角色收紧(只更严)。
 func (p *ApprovalPolicy) effectiveMode() sdk.ApprovalMode {
 	m := string(p.mode)
 	if p.role != nil {
-		if ra, _ := p.role(); ra != "" {
+		if ra, _ := p.role(context.Background()); ra != "" {
 			out, _ := sdk.TightenApproval(ra, m)
 			return sdk.ApprovalMode(out)
 		}
@@ -113,7 +135,7 @@ func (p *ApprovalPolicy) EffectiveFrom() string {
 	if p.role == nil {
 		return ""
 	}
-	if ra, _ := p.role(); ra != "" {
+	if ra, _ := p.role(context.Background()); ra != "" {
 		if _, byRole := sdk.TightenApproval(ra, string(p.mode)); byRole {
 			return sdk.TierSourceRole
 		}

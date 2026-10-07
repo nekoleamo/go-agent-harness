@@ -140,7 +140,7 @@ plugins/ui/ui-web-app 70
 web 81
 tui 74
 plugins/policy/policy-guard 91
-plugins/host/host-agent-loop 92
+plugins/host/host-agent-loop 91.5
 plugins/host/host-bridge 85
 plugins/host/host-backup 80
 plugins/host/host-commands 76

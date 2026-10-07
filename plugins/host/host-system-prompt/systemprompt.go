@@ -7,6 +7,7 @@
 package hostsystemprompt
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -178,6 +179,26 @@ type Service struct {
 // 卸载后旧实例不再 Refresh(它内部角色态是内存快照)却仍然可注入 —— 缓存住这个指针
 // 就把“当前角色要不要注入全局指令”冻结在卸载那一刻,两种方向都是错的(该注入的不注入 /
 // 不该注入的照旧注入),且只能重启进程恢复。每次现 Inject 的成本 = 一次 map 查找。
+// inheritGlobalFor 该次组装是否允许注入全局指令(ctx 为 nil ⇒ 全局当前角色)。
+func (s *Service) inheritGlobalFor(ctx context.Context) bool {
+	p := s.rolesPolicy()
+	if p == nil {
+		return true
+	}
+	if ctx != nil {
+		if sr, ok := p.(sdk.SessionRoles); ok {
+			if id := sr.RoleForSession(sdk.SessionFromContext(ctx)); id != "" {
+				if spec, ok := sr.Get(id); ok {
+					// 读不出定义时按"不排除"处理 —— 坏角色由启动警告与面板可见,
+					// 不能因为一次读取失败就把用户的全局指令悄悄掐掉。
+					return !spec.ExcludeGlobal
+				}
+			}
+		}
+	}
+	return p.InheritGlobalInstructions()
+}
+
 func (s *Service) rolesPolicy() sdk.RolesPolicy {
 	if s.ctx == nil {
 		return nil
@@ -215,7 +236,19 @@ func (s *Service) AddSection(sec sdk.SystemPromptSection) sdk.Disposer {
 
 // Assemble 组装消息:引导 → 身份槽片段(角色) → 全局指令 → 项目指令 → 附加 → 默认槽片段 → 工具名清单。
 // tools 只用于生成名称清单;完整定义由调用方经 LLMRequest.Tools 结构化下发(见包注释)。
+// AssembleFor 实现 sdk.ContextualSystemPrompt:按调用所属会话组装(第一百一十六批)。
+//
+// 与 Assemble 的差别只有"角色相关的判定按哪个会话解析"(当前是是否注入全局指令);
+// 身份槽、项目/用户指令、顺序与安全规则完全共用 —— 不多写一份组装逻辑。
+func (s *Service) AssembleFor(ctx context.Context, history []sdk.LLMMessage, tools []sdk.ToolDefinition) []sdk.LLMMessage {
+	return s.assemble(history, tools, ctx)
+}
+
 func (s *Service) Assemble(history []sdk.LLMMessage, tools []sdk.ToolDefinition) []sdk.LLMMessage {
+	return s.assemble(history, tools, nil)
+}
+
+func (s *Service) assemble(history []sdk.LLMMessage, tools []sdk.ToolDefinition, ctx context.Context) []sdk.LLMMessage {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var sb strings.Builder
@@ -230,7 +263,7 @@ func (s *Service) Assemble(history []sdk.LLMMessage, tools []sdk.ToolDefinition)
 	}
 	excludeGlobal := false
 	if p := s.rolesPolicy(); p != nil {
-		excludeGlobal = !p.InheritGlobalInstructions()
+		excludeGlobal = !s.inheritGlobalFor(ctx)
 	}
 	if !excludeGlobal {
 		s.writeInstrBlock(&sb, s.globalInstr, "\n\n全局指令(AGENTS.md,用户级):\n")

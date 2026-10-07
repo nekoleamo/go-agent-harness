@@ -867,26 +867,47 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	if lvl < 0 || lvl >= len(names) {
 		lvl = 0
 	}
+	scopeQ := strings.TrimSpace(r.URL.Query().Get("session"))
+	// 会话级偏好覆盖(第一百一十六批):本页签显式设过的项优先,没设的跟随全局。
+	globalApproval := ""
+	if s.ap != nil {
+		globalApproval = string(s.ap.Mode())
+	}
+	if globalApproval == "" {
+		if pl := prefs.Load(); pl.Approval != "" {
+			globalApproval = pl.Approval
+		}
+	}
+	sessPrefs := s.sessionPrefsOf(s.usageSessionKey(scopeQ))
+	// 全局侧四项都要给(否则"没设过的项"会解析成空值 —— 那正是本页签**没设**时的回落来源)。
+	globalPrefs := sdk.SessionPrefs{
+		Model: s.llm.Model(), Thinking: names[lvl],
+		Sandbox: string(s.sb.Mode()), Approval: globalApproval,
+	}
+	resolved := sdk.ResolveSessionPrefs(sessPrefs, globalPrefs)
 	// 角色先取:模型/思考档的**生效值**要经 sdk.Effective* 合成(与 host-roles 注入请求时同一判据);
 	// 会话原值一并传出,面板才能说清“会话档被角色覆盖”。
 	var roleSpec *sdk.RoleSpec
 	if rs := s.roleService(); rs != nil {
-		if id := rs.Current(); id != "" {
-			if spec, ok := rs.Get(id); ok {
+		roleID := ""
+		if sr, ok := rs.(sdk.SessionRoles); ok && scopeQ != "" {
+			roleID = sr.RoleForSession(scopeQ)
+		}
+		if roleID == "" {
+			roleID = rs.Current()
+		}
+		if roleID != "" {
+			if spec, ok := rs.Get(roleID); ok {
 				roleSpec = &spec
 			}
 		}
 	}
-	sessionModel, sessionThinking := s.llm.Model(), names[lvl]
+	sessionModel, sessionThinking := resolved.Model, resolved.Thinking
 	effModel, modelFrom := sdk.EffectiveModel(sessionModel, roleSpec)
 	effThinking, thinkingFrom := sdk.EffectiveThinking(sessionThinking, roleSpec)
-	approval := ""
-	if s.ap != nil {
-		approval = string(s.ap.Mode())
-	}
-	declared := string(s.sb.Mode())
+	approval := resolved.Approval
+	declared := resolved.Sandbox
 	// Running:每个会话各自一张闸(多会话并行后不再是全局单值)。
-	scopeQ := strings.TrimSpace(r.URL.Query().Get("session"))
 	v := StateView{
 		Model: effModel, ModelFrom: modelFrom, ModelSession: sessionModel,
 		Thinking: effThinking.String(), ThinkingFrom: thinkingFrom, ThinkingSession: sessionThinking,
@@ -933,10 +954,31 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if s.us != nil {
+		// 用量按**本请求作用域的会话**取(多页签各看各的);服务只实现了可选扩展时
+		// 回落无参 Stats()(单会话场景与从前逐字一致)。
 		v.Stats = s.us.Stats()
+		if ss, ok := s.us.(sdk.SessionUsageStats); ok {
+			v.Stats = ss.StatsFor(s.usageSessionKey(scopeQ))
+		}
 	}
 	if s.cs != nil {
 		v.Session = &SessionV{ID: s.cs.CurrentSession(), Name: s.cs.SessionName(), Path: s.cs.Path(), Key: s.cs.Current()}
+	}
+	// 会话级偏好的来源标记(前端据此标"本页签独立 / 跟随全局";空 = 跟随全局)。
+	//
+	// 模型/思考**不在这里标**:它们的来源由 sdk.EffectiveModel/EffectiveThinking 判定
+	// (角色声明优先、否则算会话档),sessionModel 传进去的已经是本页签的生效值。
+	// 早先在这里再覆盖一次会把"角色声明的模型"误标成"本会话"—— 界面说假话比不说更糟。
+	if resolved.FromSessionOf("role") && roleSpec != nil {
+		v.Role = resolved.Role
+		v.RoleName = roleSpec.Name
+	}
+	// 沙箱/审批:只在没有更"硬"的来源时标会话(角色收紧、审批联动都比会话优先)。
+	if v.SandboxFrom == "" && resolved.FromSessionOf("sandbox") {
+		v.SandboxFrom = "session"
+	}
+	if v.ApprovalFrom == "" && resolved.FromSessionOf("approval") {
+		v.ApprovalFrom = "session"
 	}
 	// 当前角色(可选能力):状态栏徒标只读展示;未装配/未启用 → 字段省略
 	if roleSpec != nil {
@@ -1075,6 +1117,18 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// usageSessionKey 用量分桶的会话键(统计服务按**对外**会话 id 分桶)。
+//
+// 为什么不能直接传 sessionKey(id):内部归一键里主会话是空串,而桶的键是主会话的真实 id
+// (usage 事件带的是对外 id)—— 与 running_sessions 当初踩的是同一个坑。
+func (s *Server) usageSessionKey(scopeID string) string {
+	key := s.sessionKey(scopeID)
+	if key == "" && s.cs != nil {
+		return s.cs.CurrentSession()
+	}
+	return key
 }
 
 func (s *Server) currentSessionV() *SessionV {
@@ -1229,10 +1283,23 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return
 	}
+	// 会话作用域(第一百一十六批):带 session 时,这四项写**该会话**的偏好,不动全局;
+	// 不带 = 原来的全局语义(单会话、命令行都是它)。校验顺序逐字保留,只是"写到哪"变了。
+	sessionScoped := req.Session != ""
 	if req.Model != "" {
-		s.llm.SetModel(req.Model)
-		// 持久化:模型随 providerfile 落盘(重启经 providerfile 链恢复;失败不阻断即时生效)
-		_ = providerfile.UpdateModel(req.Model)
+		if sessionScoped {
+			m := req.Model
+			if err := s.setSessionPref(req.Session, func(p *sdk.SessionPrefs) { p.Model = m }); err != nil {
+				http.Error(w, "会话级模型设置失败: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+		} else {
+			s.llm.SetModel(req.Model)
+			// 持久化:模型随 providerfile 落盘(重启经 providerfile 链恢复;失败不阻断即时生效)。
+			// 会话级模型**不写 provider.yaml** —— 那是"该 provider 的默认模型",
+			// 被一个页签的选择顺手改掉就是全局污染(前端提供单独的"设为默认"入口)。
+			_ = providerfile.UpdateModel(req.Model)
+		}
 	}
 	if req.Thinking != "" {
 		lvl := sdk.ParseThinking(req.Thinking)
@@ -1240,9 +1307,17 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "未知思考等级 off|low|medium|high", http.StatusBadRequest)
 			return
 		}
-		s.llm.SetThinking(lvl)
-		// 持久化偏好(重启恢复)
-		updatePrefs(func(p *prefs.Prefs) { p.Thinking = lvl.String() })
+		if sessionScoped {
+			t := lvl.String()
+			if err := s.setSessionPref(req.Session, func(p *sdk.SessionPrefs) { p.Thinking = t }); err != nil {
+				http.Error(w, "会话级思考档设置失败: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+		} else {
+			s.llm.SetThinking(lvl)
+			// 持久化偏好(重启恢复)
+			updatePrefs(func(p *prefs.Prefs) { p.Thinking = lvl.String() })
+		}
 	}
 	if req.Sandbox != "" {
 		switch sdk.SandboxMode(req.Sandbox) {
@@ -1251,9 +1326,17 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "未知沙箱档位(只读 read-only|工作区 workspace-write|全权 full-access)", http.StatusBadRequest)
 			return
 		}
-		s.sb.SetMode(sdk.SandboxMode(req.Sandbox))
-		// 持久化偏好(重启恢复)
-		updatePrefs(func(p *prefs.Prefs) { p.Sandbox = req.Sandbox })
+		if sessionScoped {
+			sb := req.Sandbox
+			if err := s.setSessionPref(req.Session, func(p *sdk.SessionPrefs) { p.Sandbox = sb }); err != nil {
+				http.Error(w, "会话级沙箱档设置失败: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+		} else {
+			s.sb.SetMode(sdk.SandboxMode(req.Sandbox))
+			// 持久化偏好(重启恢复)
+			updatePrefs(func(p *prefs.Prefs) { p.Sandbox = req.Sandbox })
+		}
 	}
 	if req.SandboxSync != nil {
 		sc, ok := s.sb.(sdk.SandboxSync)
@@ -1275,9 +1358,17 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "审批服务未装配(ctx.approval)", http.StatusBadRequest)
 			return
 		}
-		s.ap.SetMode(sdk.ApprovalMode(req.Approval))
-		// 持久化偏好(重启恢复)
-		updatePrefs(func(p *prefs.Prefs) { p.Approval = req.Approval })
+		if sessionScoped {
+			ap := req.Approval
+			if err := s.setSessionPref(req.Session, func(p *sdk.SessionPrefs) { p.Approval = ap }); err != nil {
+				http.Error(w, "会话级审批档设置失败: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+		} else {
+			s.ap.SetMode(sdk.ApprovalMode(req.Approval))
+			// 持久化偏好(重启恢复)
+			updatePrefs(func(p *prefs.Prefs) { p.Approval = req.Approval })
+		}
 	}
 	if req.Workspace != "" {
 		if s.cs == nil {

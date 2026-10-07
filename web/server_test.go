@@ -77,6 +77,7 @@ type stubLLM struct {
 var errStubMissingProvider = errors.New("provider: 不存在 (\"/provider show\" 查看)")
 
 func (s *stubLLM) Model() string               { return "deepseek-chat" }
+func (s *stubLLM) SetModel(m string)           {} // 会话级偏好批:控制端点的全局分支会调它
 func (s *stubLLM) Thinking() sdk.ThinkingLevel { return sdk.ThinkingMedium }
 func (s *stubLLM) ListModels() ([]sdk.ModelInfo, error) {
 	return []sdk.ModelInfo{{ID: "deepseek-chat"}}, nil
@@ -113,6 +114,8 @@ func (s *stubStats) Reset()                { s.v = sdk.UsageStats{} }
 
 type stubCS struct {
 	sdk.CwdSessions
+	// prefs 会话级偏好(第一百一十六批):本测试替身按会话 id 存一份,便于断言端点写到了哪。
+	prefs     *prefsStub
 	mu        sync.Mutex
 	infos     []sdk.SessionInfo
 	curID     string
@@ -132,6 +135,32 @@ type stubCS struct {
 }
 
 func (s *stubCS) Sessions() []sdk.SessionInfo { return s.infos }
+
+// prefsStub 会话偏好替身(实现 sdk.SessionPrefsSource 与写侧窄接口)。
+type prefsStub struct {
+	byID map[string]sdk.SessionPrefs
+}
+
+func (p *prefsStub) SessionPrefsOf(id string) sdk.SessionPrefs { return p.byID[id] }
+func (p *prefsStub) SetSessionPrefs(id string, v sdk.SessionPrefs) error {
+	if p.byID == nil {
+		p.byID = map[string]sdk.SessionPrefs{}
+	}
+	p.byID[id] = v
+	return nil
+}
+func (s *stubCS) SessionPrefsOf(id string) sdk.SessionPrefs {
+	if s.prefs == nil {
+		return sdk.SessionPrefs{}
+	}
+	return s.prefs.SessionPrefsOf(id)
+}
+func (s *stubCS) SetSessionPrefs(id string, v sdk.SessionPrefs) error {
+	if s.prefs == nil {
+		s.prefs = &prefsStub{byID: map[string]sdk.SessionPrefs{}}
+	}
+	return s.prefs.SetSessionPrefs(id, v)
+}
 func (s *stubCS) SetPinned(id string, pinned bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

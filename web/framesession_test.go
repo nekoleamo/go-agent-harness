@@ -12,6 +12,9 @@ package web
 
 import (
 	"context"
+	"encoding/json"
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -117,5 +120,83 @@ func TestCommandFrameCarriesSession(t *testing.T) {
 	f := waitFrame(t, frames, FrameCommand)
 	if f.Session != "sC" {
 		t.Fatalf("命令帧应带归属会话 sC,得 %q", f.Session)
+	}
+}
+
+// TestControlAndRoleUseAreSessionScoped 会话级偏好经端点落地:带 session 写会话,
+// 不带写全局(与从前一致);模型**不**写 provider.yaml(那是 provider 的默认模型)。
+func TestControlAndRoleUseAreSessionScoped(t *testing.T) {
+	s, _ := newTestServer()
+	cs := &stubCS{infos: []sdk.SessionInfo{{ID: "A"}, {ID: "B"}, {ID: ""}}}
+	cs.prefs = &prefsStub{byID: map[string]sdk.SessionPrefs{}}
+	s.cs = cs
+	// 审批/沙箱服务:测试 Server 没装配,给最小替身(control 端点要它们才能通过校验)
+	s.llm = &stubLLM{}
+	s.ap = &stubAPRaw{mode: sdk.ApprovalSmart}
+	s.sb = &stubSB{mode: sdk.SandboxWorkspace}
+	hs := httptest.NewServer(s.handler())
+	defer hs.Close()
+
+	post := func(path, body string) string {
+		t.Helper()
+		resp, err := http.Post(hs.URL+path, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("POST %s: %d %s", path, resp.StatusCode, string(b))
+		}
+		return string(b)
+	}
+
+	// 角色:写会话 A(端点链路需要真角色服务;这里直接打存储面 —— 端点本身在 host-roles 侧验)
+	if err := s.setSessionPref("A", func(p *sdk.SessionPrefs) { p.Role = "finance" }); err != nil {
+		t.Fatal(err)
+	}
+	if got := cs.prefs.byID["A"].Role; got != "finance" {
+		t.Fatalf("角色应写进会话 A,得 %q", got)
+	}
+	// 模型/思考/沙箱/审批:写会话 A
+	post("/api/control", `{"session":"A","model":"m-A","thinking":"high","sandbox":"read-only","approval":"strict"}`)
+	got := cs.prefs.byID["A"]
+	if got.Model != "m-A" || got.Thinking != "high" || got.Sandbox != "read-only" || got.Approval != "strict" {
+		t.Fatalf("会话 A 的四项偏好应落库,得 %+v", got)
+	}
+	// 不带 session ⇒ 不碰会话偏好(全局路径)
+	post("/api/control", `{"model":"m-global"}`)
+	if len(cs.prefs.byID) != 1 {
+		t.Fatalf("不带 session 不该写会话偏好,得 %+v", cs.prefs.byID)
+	}
+
+	// state 按会话给生效值 + 来源
+	resp, err := http.Get(hs.URL + "/api/state?session=A")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var v StateView
+	if err := json.NewDecoder(resp.Body).Decode(&v); err != nil {
+		t.Fatal(err)
+	}
+	if v.Model != "m-A" || v.ModelFrom != "session" {
+		t.Fatalf("会话 A 的生效模型应是 m-A(session 来源),得 model=%q from=%q", v.Model, v.ModelFrom)
+	}
+	if v.Sandbox != "read-only" || v.Approval != "strict" {
+		t.Fatalf("会话 A 的沙箱/审批应取会话值,得 %q/%q", v.Sandbox, v.Approval)
+	}
+	// 另一个会话(B,没设)⇒ 跟随全局
+	resp2, err := http.Get(hs.URL + "/api/state?session=B")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	var v2 StateView
+	if err := json.NewDecoder(resp2.Body).Decode(&v2); err != nil {
+		t.Fatal(err)
+	}
+	if v2.Model == "m-A" || v2.Sandbox == "read-only" || v2.Role == "finance" {
+		t.Fatalf("没设过的会话应跟随全局(不该看到 A 的值):model=%q sandbox=%q role=%q", v2.Model, v2.Sandbox, v2.Role)
 	}
 }

@@ -71,6 +71,14 @@ type LLMMessage struct {
 // 两边各写一份字面量时打错一个字符就静默失效(参 EventUsageWindow 的同类先例)。
 const EventLLMPreRequest = "llm/pre-request"
 
+// EventUsageRecorded 一次模型请求的用量已记录(**实例级**;载荷 sdk.UsageEvent,自带 Session 归属)。
+//
+// 为什么用量要走实例级事件,而不是让统计服务去订阅会话事件:会话事件名是 per-session 命名空间
+// (`session/event/<id>`),服务没法“订阅全部会话”,而用量是**实例级事实**、只是需要按会话分桶。
+// 落盘事实仍然是会话日志里的 `session/usage` 事件(那条不动),这条只是通知通道 ——
+// 与 EventUsageWindow 同款先例(统计类信号走实例级,账本留在会话里)。
+const EventUsageRecorded = "usage/recorded"
+
 // LLMRequest 一次模型请求。Tools 为模型可见的工具 schema 列表。
 type LLMRequest struct {
 	Model       string
@@ -317,7 +325,30 @@ type ModelLister interface {
 	ListModels() ([]ModelInfo, error)
 }
 
-// UsageStatsService 服务(ctx.usageStats):会话级 token 消耗统计(host-usage-stats 提供)。
+// ModelAvailability 可选扩展(ctx.llm 实现者提供):本地判断模型名是否可用(**不发请求**)。
+//
+// 谁需要:两处都要在"把模型名填进请求之前"先问一句 —— 角色的 model 字段,
+// 以及会话级模型偏好。填一个不存在的模型名会让整轮请求直接失败,
+// 而"回落到会话模型 + 告警一次"才是可接受的降级。
+type ModelAvailability interface {
+	// ModelUsable 模型名本地可��(有适配器且 model 在本地目录里;判不了的一律当可用)。
+	ModelUsable(model string) bool
+}
+
+// SessionUsageStats 可选扩展(ctx.usageStats 实现者按需实现):按会话取统计快照。
+//
+// 为什么不给 Stats() 加会话参数:那是公共接口,加参数会破坏所有实现与调用方(6 处)。
+// 单会话场景继续用 Stats(),语义与从前逐字一致;多会话(页签)才需要 StatsFor。
+type SessionUsageStats interface {
+	// StatsFor 该会话的累计统计(会话不存在/没花过 = 零值)。
+	// 会话 id 为空 = 主会话 —— 与 sessionKey 的归一口径一致。
+	StatsFor(sessionID string) UsageStats
+}
+
+// UsageStatsService 服务(ctx.usageStats):token 消耗统计(host-usage-stats 提供)。
+//
+// 注意:它历史上是**一个全局累加器**(注释曾写"会话级"),而多会话并行下会互相清零 ——
+// 已改为按会话分桶,单会话用 Stats()、多会话用 StatsFor。
 // TUI 状态栏显示上下文使用率/缓存命中率;切换会话时经 Reset 归零。
 type UsageStatsService interface {
 	// Stats 当前会话累计统计快照。

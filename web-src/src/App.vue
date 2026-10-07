@@ -157,7 +157,7 @@ function syncTabs(): void {
   tabList.value = tabs.ids().map((id) => {
     const t = tabs.get(id)!
     return {
-      id: t.id, title: t.title, running: t.running, unread: t.unread,
+      id: t.id, title: t.title, running: t.running, unread: t.unread, role: t.role,
       draft: t.draft, scrollTop: t.scrollTop, atBottom: t.atBottom,
     }
   })
@@ -821,6 +821,11 @@ async function refreshStats(): Promise<void> {
     }
     lastRunning = running.slice()
     tabs.markRunning(running, mainId)
+    // 当前页签的角色徽标(后端按会话给的生效值;跟随全局时为空 = 不显示徽标)
+    if (tabId.value) {
+      const t = tabs.get(tabId.value)
+      if (t) t.role = state.value.role || ''
+    }
     syncTabs()
   } catch (e) {
     // S-P1-3:网络层失败(非 HTTP 状态错误)= 链路事实 → 据实降级,不等用户发现。

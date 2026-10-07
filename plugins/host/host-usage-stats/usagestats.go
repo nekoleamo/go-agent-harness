@@ -58,6 +58,16 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		}
 		return nil
 	})
+	// 实例级用量事件:按会话分桶记账(账本仍在会话日志里,这条只是通知通道)。
+	d3 := c.Subscribe(sdk.EventUsageRecorded, func(_ context.Context, ev *sdk.Event) error {
+		ue, ok := ev.Payload.(sdk.UsageEvent)
+		if !ok {
+			return nil
+		}
+		svc.add(ue.Session, ue.Model, ue.Usage)
+		_, _ = c.Emit(context.Background(), sdk.EventUsageWindow, svc.currentWindow(), sdk.Emit)
+		return nil
+	})
 	// 错误驱动学习:LLM 请求超窗口失败时,错误文本携带该模型窗口数字,
 	// 解析后记忆(新模型无需改表/配置即自动获取窗口,见 modelwindows.go)。
 	d2 := c.Subscribe(sdk.EventAgentError, func(ctx context.Context, ev *sdk.Event) error {
@@ -69,20 +79,33 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		}
 		return nil
 	})
-	return func() { d(); d2() }, nil
+	return func() { d(); d2(); d3() }, nil
 }
 
-// Service 实现 sdk.UsageStatsService:会话级累计统计。
-type Service struct {
-	mu                 sync.Mutex
-	windowOverride     int            // data.context_window 显式覆盖(0 = 未配置,按模型解析)
-	extraWindows       map[string]int // data.model_windows 配置层覆盖(前缀→窗口)
-	learned            map[string]int // 错误驱动学习缓存(模型精确名 → 实测窗口)
+// counter 一个会话的累计值(按会话分桶,见 Service.buckets)。
+type counter struct {
 	model              string
 	prompt, completion int
 	lastPrompt         int // 最近一次请求的实测输入 token(上下文占用口径,不是累计)
 	cached             int
 	requests           int
+}
+
+// Service 实现 sdk.UsageStatsService:按会话分桶的累计统计。
+//
+// **为什么分桶**(第一百一十六批):原先是一个全局累加器 + 切会话 Reset。多会话并行下这是错的 ——
+// 页签 A 在跑、页签 B 切一下,A 的 token 数当场归零;而且非主会话的 usage 事件走
+// `session/event/<id>`,本服务只订阅主会话事件名,压根收不到。
+//
+// 桶的键 = 会话 id(空 = 主会话,与 sessionKey 同口径)。桶只增不减(会话删了桶还在):
+// 内存占用是每桶几十字节、生命周期等于进程,不值得为它引入清理路径。
+type Service struct {
+	mu             sync.Mutex
+	windowOverride int            // data.context_window 显式覆盖(0 = 未配置,按模型解析)
+	extraWindows   map[string]int // data.model_windows 配置层覆盖(前缀→窗口)
+	learned        map[string]int // 错误驱动学习缓存(模型精确名 → 实测窗口;按模型,不分会话)
+	buckets        map[string]*counter
+	cur            string // 最近一次累加的会话 id(供无参 Stats() 回落;单会话下即主会话)
 }
 
 // HandleSessionEvent 事件过滤:仅 session/usage 载荷累计(订阅回调调用;纯逻辑可测)。
@@ -95,11 +118,15 @@ func (s *Service) HandleSessionEvent(sev *sdk.SessionEvent) {
 	if !ok {
 		// 兼容旧日志:载荷为裸 sdk.Usage(无模型名)时按现状累计,窗口不刷新
 		if u, ok2 := sev.Payload.(sdk.Usage); ok2 {
-			s.add("", u)
+			s.add("", "", u)
 		}
 		return
 	}
-	s.add(ue.Model, ue.Usage)
+	if ue.Session != "" {
+		return // 带会话归属的由 usage/recorded 记账(agent-loop 同时发两条,这里跳过防重复计数)
+	}
+	// 无 Session 字段 = 老日志/主单例通道 ⇒ 归主会话桶(空键)。
+	s.add("", ue.Model, ue.Usage)
 }
 
 // LearnWindowFromError 错误驱动学习:从 LLM 超限错误文本解析窗口数字并记忆
@@ -121,48 +148,102 @@ func (s *Service) LearnWindowFromError(model, msg string) {
 	s.learned[strings.ToLower(model)] = w
 }
 
-// add 累计一笔 usage 并刷新模型。
-func (s *Service) add(model string, u sdk.Usage) {
+// add 累计一笔 usage 到该会话的桶(sid 空 = 主会话)。
+func (s *Service) add(sid, model string, u sdk.Usage) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if model != "" {
-		s.model = model
+	if s.buckets == nil {
+		s.buckets = make(map[string]*counter)
 	}
-	s.prompt += u.PromptTokens
-	s.completion += u.CompletionTokens
-	s.lastPrompt = u.PromptTokens // 上下文占用 = 最近一次发出去的 prompt,与累计量无关
-	s.cached += u.CachedTokens
-	s.requests++
+	c := s.buckets[sid]
+	if c == nil {
+		c = &counter{}
+		s.buckets[sid] = c
+	}
+	if model != "" {
+		c.model = model
+	}
+	c.prompt += u.PromptTokens
+	c.completion += u.CompletionTokens
+	c.lastPrompt = u.PromptTokens // 上下文占用 = 最近一次发出去的 prompt,与累计量无关
+	c.cached += u.CachedTokens
+	c.requests++
+	s.cur = sid
 }
 
-// currentWindow 当前窗口:显式覆盖(context_window)> 按模型解析(见 modelwindows.go)> 0(未知)。
-// 0 = 窗口未知:展示层只显示使用量。
+// currentWindow 当前窗口(无参 = 最近累加的那个会话的模型)。
 func (s *Service) currentWindow() int {
+	s.mu.Lock()
+	cur := s.cur
+	s.mu.Unlock()
+	return s.currentWindowFor(cur)
+}
+
+// currentWindowLocked 调用方已持锁的版本(StatsFor 里用)。
+func (s *Service) currentWindowLocked() int { return s.currentWindowFor(s.cur) }
+
+// currentWindowFor 指定会话的窗口:显式覆盖(context_window)> 按模型解析(见 modelwindows.go)> 0(未知)。
+// 0 = 窗口未知:展示层只显示使用量。
+//
+// 注意:窗口是**按模型**解析的,不分会话 —— 同一个模型在哪用都是那个窗口;
+// 会话没花过钱时用全局 cur 的模型兜底(展示上宁可给个大致值,也不要空白让人以为没窗口)。
+func (s *Service) currentWindowFor(sessionID string) int {
 	if s.windowOverride > 0 {
 		return s.windowOverride
 	}
-	return s.windowForModel(s.model)
+	if c := s.buckets[sessionID]; c != nil && c.model != "" {
+		return s.windowForModel(c.model)
+	}
+	if c := s.buckets[s.cur]; c != nil && c.model != "" {
+		return s.windowForModel(c.model)
+	}
+	return 0
 }
 
-// Stats 当前会话累计统计快照。
+// Stats 累计统计快照(**最近累加的那个会话**)。
+//
+// 单会话时它就是"当前会话",与从前逐字一致;TUI 走这条(单会话)。
+// 多会话(页签)请用 StatsFor —— 否则显示的会是"最后一次有消耗的那个会话"的数字。
 func (s *Service) Stats() sdk.UsageStats {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return sdk.UsageStats{
-		PromptTokens:     s.prompt,
-		CompletionTokens: s.completion,
-		CachedTokens:     s.cached,
-		Requests:         s.requests,
-		LastPromptTokens: s.lastPrompt,
-		Window:           s.currentWindow(),
-	}
+	cur := s.cur
+	s.mu.Unlock()
+	return s.StatsFor(cur)
 }
 
-// Reset 归零统计(切换会话时调用;新会话从零累计,模型/窗口保留)。
-func (s *Service) Reset() {
+// StatsFor 指定会话的累计统计(会话不存在/没花过 = 零值 + 全局窗口)。
+func (s *Service) StatsFor(sessionID string) sdk.UsageStats {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.prompt, s.completion, s.cached, s.requests = 0, 0, 0, 0
-	s.lastPrompt = 0
-	s.model = ""
+	var c *counter
+	if s.buckets != nil {
+		c = s.buckets[sessionID]
+	}
+	st := sdk.UsageStats{Window: s.currentWindowLocked()}
+	if c != nil {
+		st.PromptTokens = c.prompt
+		st.CompletionTokens = c.completion
+		st.CachedTokens = c.cached
+		st.Requests = c.requests
+		st.LastPromptTokens = c.lastPrompt
+	}
+	return st
+}
+
+// Reset 归零**主会话**的累计(切会话时调用;窗口学习保留)。
+//
+// 为什么是主会话而不是"当前":页签模式下不再有全局的"当前会话",而 TUI 单会话切走时
+// 期望新会话从零累计 —— 语义上对应主会话桶。要清别的会话请用 ResetFor。
+func (s *Service) Reset() { s.ResetFor("") }
+
+// ResetFor 归零指定会话的累计(窗口学习保留)。
+func (s *Service) ResetFor(sessionID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.buckets != nil {
+		delete(s.buckets, sessionID)
+		if s.cur == sessionID {
+			s.cur = ""
+		}
+	}
 }

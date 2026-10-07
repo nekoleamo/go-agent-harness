@@ -44,6 +44,8 @@ function closeLabel(t: TabMeta): string {
     >
       <!-- 运行中脉冲点:一眼看出哪个会话在跑(底栏只说本会话,这里说全部) -->
       <span v-if="t.running" class="dot" aria-hidden="true" />
+      <!-- 会话角色徽标(该会话自己设了角色才显示;跟随全局的不显示 —— 那是基线) -->
+      <span v-if="t.role" class="role" :data-tip="'角色:' + t.role">@</span>
       <span class="t-title">{{ t.title }}</span>
       <span v-if="t.unread" class="badge" aria-label="有未读">·</span>
       <!-- 关闭是真 button(不塞在 button 里嵌套交互元素):嵌套会被浏览器重组,
@@ -113,6 +115,11 @@ function closeLabel(t: TabMeta): string {
 }
 @media (prefers-reduced-motion: reduce) {
   .dot { animation: none; }
+}
+.role {
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 12px;
 }
 .t-title {
   overflow: hidden;

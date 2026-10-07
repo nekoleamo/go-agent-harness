@@ -50,3 +50,10 @@ type ApprovalService interface {
 type EffectiveApproval interface {
 	EffectiveMode() ApprovalMode
 }
+
+// EffectiveApprovalFor 可选扩展(ctx.approval 实现者):按**这次调用所属会话**取有效审批档。
+//
+// 与 EffectiveSandboxFor 同因(见 sdk/sandbox.go):无参版在多会话并行下会串档。
+type EffectiveApprovalFor interface {
+	EffectiveModeFor(ctx context.Context) ApprovalMode
+}

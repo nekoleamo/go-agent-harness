@@ -116,11 +116,12 @@ func roleSkillDirs() []string {
 // 为什么过滤器而不是重扫:角色切换是高频交互,重扫要碰磁盘且会丢掉解析结果;
 // 而“哪些技能对当前角色可见”本来就是一个纯函数(角色定义 + 技能归属)。
 type Registry struct {
-	mu     sync.RWMutex
-	skills []Skill
-	extra  []string // data.dirs 扩展目录(构造期定;全局/项目/角色私有目录每次扫描现算)
-	lg     *slog.Logger
-	filter func(sdk.SkillInfo) bool // nil = 全部可见(无角色基线)
+	mu        sync.RWMutex
+	skills    []Skill
+	extra     []string // data.dirs 扩展目录(构造期定;全局/项目/角色私有目录每次扫描现算)
+	lg        *slog.Logger
+	filter    func(sdk.SkillInfo) bool
+	ctxFilter func(context.Context, sdk.SkillInfo) bool // nil = 全部可见(无角色基线)
 }
 
 // newRegistry 构造技能表(extra = data.dirs 扩展目录;lg 可为 nil —— 单测不关心告警)。
@@ -177,6 +178,52 @@ func (r *Registry) List() []sdk.SkillInfo {
 		out = append(out, s.Info())
 	}
 	return out
+}
+
+// SetContextFilter 设置**按会话**的可见性判定(可选;nil = 回落 SetFilter 的判定)。
+//
+// 为什么需要(第一百一十六批):SetFilter 的判定无参,而 list_skills / read_skill 是在
+// 工具执行时跑的 —— 那时 ctx 里带着会话 id。多页签各用各的角色时,角色 A 的私有技能
+// 不该在页签 B 的技能列表里(否则 A 的收窄等于没做)。
+func (r *Registry) SetContextFilter(f func(context.Context, sdk.SkillInfo) bool) sdk.Disposer {
+	r.mu.Lock()
+	r.ctxFilter = f
+	r.mu.Unlock()
+	return func() {
+		r.mu.Lock()
+		r.ctxFilter = nil
+		r.mu.Unlock()
+	}
+}
+
+// visibleFor 当前调用可见的技能(优先按会话判定)。
+func (r *Registry) visibleFor(ctx context.Context) []Skill {
+	if ctx != nil {
+		r.mu.RLock()
+		f := r.ctxFilter
+		r.mu.RUnlock()
+		if f != nil {
+			all := r.all()
+			out := make([]Skill, 0, len(all))
+			for _, s := range all {
+				if f(ctx, s.Info()) {
+					out = append(out, s)
+				}
+			}
+			return out
+		}
+	}
+	return r.visible()
+}
+
+// findVisibleFor 按会话找技能(工具执行时用)。
+func (r *Registry) findVisibleFor(ctx context.Context, name string) (Skill, bool) {
+	for _, s := range r.visibleFor(ctx) {
+		if s.Name == name {
+			return s, true
+		}
+	}
+	return Skill{}, false
 }
 
 // SetFilter 设置可见性判定(sdk.SkillsService;返回撤销函数,幂等)。
@@ -252,7 +299,7 @@ func (t *listSkills) Definition() sdk.ToolDefinition {
 }
 
 func (t *listSkills) Execute(ctx context.Context, args string) (any, error) {
-	return t.reg.visible(), nil
+	return t.reg.visibleFor(ctx), nil
 }
 
 // readSkill 工具:按名读技能全文。
@@ -279,7 +326,7 @@ func (t *readSkill) Execute(ctx context.Context, args string) (any, error) {
 	if err := json.Unmarshal([]byte(args), &a); err != nil {
 		return nil, fmt.Errorf("read_skill: args: %w", err)
 	}
-	s, ok := t.reg.findVisible(a.Name)
+	s, ok := t.reg.findVisibleFor(ctx, a.Name)
 	if !ok {
 		if _, exists := t.reg.find(a.Name); exists {
 			return map[string]any{"error": "技能未挂载到当前角色: " + a.Name + "(可用 list_skills 查看当前可见技能)"}, nil

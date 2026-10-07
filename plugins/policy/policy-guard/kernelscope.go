@@ -52,7 +52,7 @@ func kernelWriteScope(sp *SandboxPolicy, surface kernelSurface) []string {
 	mode := ""
 	root := ""
 	if sp != nil {
-		mode = string(sp.EffectiveMode())
+		mode = string(sp.EffectiveMode()) // 无会话上下文(内核写入面是全局的) —— 见下方注释
 		root = sp.Root()
 	}
 	spec := kernelsandbox.Spec{

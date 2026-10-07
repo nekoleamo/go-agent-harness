@@ -82,6 +82,17 @@ type TurnSteerer interface {
 	Steer(text string) (bool, error)
 }
 
+// ContextualSystemPrompt 可选扩展(宿主默认实现支持;外部实现可不给)。
+//
+// 为什么不给 Assemble 直接加 ctx 参数:那是公共签名,加参数会破坏所有实现与外部插件;
+// 而"这次组装属于哪个会话"是**按需才有**的上下文(无会话 = 旧行为)。
+// 消费方(agent-loop)优先用它,拿不到就回落无参 Assemble —— 行为逐字不变。
+type ContextualSystemPrompt interface {
+	// AssembleFor 与 Assemble 同义,但能按调用所属会话解析角色相关的注入
+	// (身份槽之外的:是否注入全局指令、可用技能片段)。
+	AssembleFor(ctx context.Context, history []LLMMessage, tools []ToolDefinition) []LLMMessage
+}
+
 // SessionRunner 可选扩展:AgentLoop 支持**按会话**执行回合(实例内多会话并行)。
 //
 // 背景:默认实现把 ctx.sessions(单例)当当前会话写,SetPath/Load 是「切换」语义 ——

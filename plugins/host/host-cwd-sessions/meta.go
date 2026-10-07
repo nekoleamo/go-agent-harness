@@ -40,6 +40,49 @@ type sessionMeta struct {
 	Pinned   bool          `json:"pinned,omitempty"`
 	PinnedAt int64         `json:"pinned_at,omitempty"`
 	Summary  *summaryEntry `json:"summary,omitempty"`
+	// 会话级偏好(第一百一十六批):每个会话各用各的角色/模型/思考档/沙箱档/审批档。
+	//
+	// 为什么空 = "跟随全局":老会话零迁移(没有这些字段 = 跟随全局当前值 = 与从前逐字一致),
+	// 用户改全局仍能一次改全部;页签上用徽标区分"跟随全局"与"本页签独立"。
+	// 为什么不另开一个 prefs 文件:它与会话一一对应,而 meta.json 已经是"按会话的元数据"这一张表。
+	Prefs *sdk.SessionPrefs `json:"prefs,omitempty"`
+}
+
+// SetSessionPrefs 写会话级偏好(id 空 = 主会话)。
+//
+// 只写"非空项"之外的整份快照:调用方拿到的是**合并后的完整值**(先读现状 → 改若干项 → 写回),
+// 所以这里不提供单项 setter —— 单项 setter 会在两个页面同时改不同项时丢更新。
+// 整份写回用 nmMu + 原子写,多页签并发改**不同会话**也被串行化(同一张 meta.json)。
+func (s *Service) SetSessionPrefs(id string, p sdk.SessionPrefs) error {
+	file := filepath.Base(SessionPath(SessionsRoot(), s.Current(), id))
+	// 存在性检查**放行当前打开的会话**:空会话从未写过内容时文件还不存在(首次写入才建),
+	// 而"新建会话后立刻选个角色"是正常操作 —— 按文件判存在会把这条路径堵死。
+	// 其它 id 仍要求文件真的存在,避免给永远不会出现的 id 造元数据。
+	if id != s.CurrentSession() && !fileExists(filepath.Join(SessionsRoot(), file)) {
+		return fmt.Errorf("cwdsessions: 会话不存在: %s", file)
+	}
+	s.nmMu.Lock()
+	defer s.nmMu.Unlock()
+	m := loadMeta(metaPath())
+	e := m[file]
+	e.Prefs = &p
+	m[file] = e
+	return saveMeta(metaPath(), m)
+}
+
+// SessionPrefsOf 读会话级偏好(id 空 = 主会话)。
+//
+// 返回的是**原始值**:某项为空 = 该会话没单独设 = 跟随全局(回落由消费方用
+// sdk.ResolveSessionPrefs 统一做,别在各处各写一份 —— 那必然漂)。
+func (s *Service) SessionPrefsOf(id string) sdk.SessionPrefs {
+	file := filepath.Base(SessionPath(SessionsRoot(), s.Current(), id))
+	s.nmMu.Lock()
+	defer s.nmMu.Unlock()
+	m := loadMeta(metaPath())
+	if e := m[file]; e.Prefs != nil {
+		return *e.Prefs
+	}
+	return sdk.SessionPrefs{}
 }
 
 // metaPath 会话元数据索引($GAH_HOME/sessions/meta.json;与 names.json 同目录)。

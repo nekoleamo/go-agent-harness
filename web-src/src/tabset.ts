@@ -14,6 +14,8 @@ export interface TabMeta {
   id: string
   /** 页签标题(会话名/短 id;由调用方算,这里只存)。 */
   title: string
+  /** 该会话显式设置的角色 id(空 = 跟随全局;页签徽标据此显示,只显示"自己设过的")。 */
+  role?: string
   /** 该会话此刻有回合在跑(后端 running_sessions / 自己的 status 帧)。 */
   running: boolean
   /** 有新活动而用户没在看(切回来时清)—— 隐藏页签完成时靠它提示。 */

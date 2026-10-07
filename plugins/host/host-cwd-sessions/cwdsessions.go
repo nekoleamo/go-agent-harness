@@ -224,7 +224,12 @@ func (s *Service) Sessions() []sdk.SessionInfo {
 			}
 			info.SummaryState = summaryStateOf(me.Summary, info.Frames)
 		} else {
-			info.SummaryState = "missing"
+			info.SummaryState = "missing" // 列表请求绝不生成概述,没缓存就是没有
+		}
+		// 会话级偏好(第一百一十六批):**复用上面已加载的 meta**,不逐会话读盘
+		// (列表请求在会话多时会被放大成 N 次文件读 —— 这类"顺手加的字段"最容易被漏成性能坑)。
+		if e, ok := meta[name]; ok && e.Prefs != nil {
+			info.SessionRole, info.SessionModel = e.Prefs.Role, e.Prefs.Model
 		}
 		out = append(out, info)
 	}

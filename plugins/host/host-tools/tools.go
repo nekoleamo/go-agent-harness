@@ -35,6 +35,8 @@ type reg struct {
 	tools   map[string]sdk.Tool
 	ignored []sdk.ToolConflict // 重名被忽略者(可见性面:B3)
 	logger  *slog.Logger
+	// ctxFilter 按会话的可见性判定(可选;ctx.tools 实现 sdk.ContextualToolCatalogue)。
+	ctxFilter func(context.Context, sdk.ToolDefinition) bool
 	// filter 可见性判定(nil = 不过滤;实现 sdk.ToolCatalogue,第九十一批)。
 	// 由 host-roles 按“当前角色排除清单”安装;每次 List/Execute 现算 ⇒ 切角色即生效。
 	// 用指针包装是为了让 Disposer 能识别“当前装的还是不是自己那一个”(函数值不可比)。
@@ -143,6 +145,49 @@ func (r *reg) SetFilter(visible func(sdk.ToolDefinition) bool) sdk.Disposer {
 	}
 }
 
+// SetContextFilter 实现 sdk.ContextualToolCatalogue:安装按会话的可见性判定。
+func (r *reg) SetContextFilter(visible func(context.Context, sdk.ToolDefinition) bool) sdk.Disposer {
+	r.mu.Lock()
+	r.ctxFilter = visible
+	r.mu.Unlock()
+	return func() {
+		r.mu.Lock()
+		// 仅当当前还是自己装的那个才清(后装的 filter 不该被先装的 disposer 抹掉)
+		if r.ctxFilter == nil {
+			r.mu.Unlock()
+			return
+		}
+		r.ctxFilter = nil
+		r.mu.Unlock()
+	}
+}
+
+// ListFor 实现 sdk.ContextualToolCatalogue:该会话下模型可见的工具。
+//
+// 没装按会话判定时与 List() 逐字一致(单会话路径零变化)。
+func (r *reg) ListFor(ctx context.Context) []sdk.ToolDefinition {
+	r.mu.RLock()
+	f := r.ctxFilter
+	r.mu.RUnlock()
+	if f == nil {
+		return r.List()
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]sdk.ToolDefinition, 0, len(r.order))
+	for _, n := range r.order {
+		def := r.tools[n].Definition()
+		if r.filter != nil && !r.filter.visible(def) {
+			continue
+		}
+		if !f(ctx, def) {
+			continue
+		}
+		out = append(out, def)
+	}
+	return out
+}
+
 // List 返回模型可见的工具定义(已应用可见性过滤)。
 func (r *reg) List() []sdk.ToolDefinition {
 	r.mu.RLock()
@@ -188,7 +233,16 @@ func (r *reg) Execute(ctx context.Context, name, args string) (*sdk.ToolResult, 
 	r.mu.RLock()
 	t, ok := r.tools[name]
 	filter := r.filter
+	ctxFilter := r.ctxFilter
 	r.mu.RUnlock()
+	if ok && ctxFilter != nil && !ctxFilter(ctx, t.Definition()) {
+		res := &sdk.ToolResult{
+			Error:   fmt.Sprintf("工具 %q 在**本会话**的角色下未被授权:该会话用的角色把它排除了(可在「设置 → 角色 → 工具」里恢复,或给这个会话换一个角色)", name),
+			Content: "{}",
+		}
+		r.broadcastResult(ctx, name, res)
+		return res, nil
+	}
 	if !ok {
 		res := &sdk.ToolResult{Error: fmt.Sprintf("工具 %q 不存在 (对应插件可能已卸载/未启用;可经 /plugins list 排查)", name), Content: "{}"}
 		r.broadcastResult(ctx, name, res)
@@ -209,16 +263,19 @@ func (r *reg) Execute(ctx context.Context, name, args string) (*sdk.ToolResult, 
 
 	// 1. tools/pre-execute:waterfall veto 拦截
 	call := &sdk.ToolCallEvent{ID: newCallID(), Name: name, Arguments: args}
-	if _, err := r.c.Emit(ctx, "tools/pre-execute", call, sdk.Waterfall); err != nil {
-		// 「用户按了停止」不是策略拒绝:blocked 的潜台词是「换个写法重试」,
-		// 而中止的潜台词是「这轮结束了」—— 混用会让每次停止都跳一条红色错误(见 sdk/aborted.go)。
-		text := "blocked: " + err.Error()
-		if sdk.IsAborted(err) {
-			text = err.Error()
+	if r.c != nil {
+		// 同样 nil 守卫:裸注册表(单测/嵌入)没有总线,不该在 pre-execute 上崩。
+		if _, err := r.c.Emit(ctx, "tools/pre-execute", call, sdk.Waterfall); err != nil {
+			// 「用户按了停止」不是策略拒绝:blocked 的潜台词是「换个写法重试」,
+			// 而中止的潜台词是「这轮结束了」—— 混用会让每次停止都跳一条红色错误(见 sdk/aborted.go)。
+			text := "blocked: " + err.Error()
+			if sdk.IsAborted(err) {
+				text = err.Error()
+			}
+			res := &sdk.ToolResult{Error: text, Content: "{}"}
+			r.broadcastResult(ctx, name, res)
+			return res, nil
 		}
-		res := &sdk.ToolResult{Error: text, Content: "{}"}
-		r.broadcastResult(ctx, name, res)
-		return res, nil
 	}
 
 	// 2. 执行(包裹/超时策略在 M4 tools/execute 瀑布引入)
@@ -246,9 +303,11 @@ func (r *reg) Execute(ctx context.Context, name, args string) (*sdk.ToolResult, 
 	}
 	res := &sdk.ToolResult{Content: content, Error: merr}
 
-	// 3. tools/post-execute:waterfall(可改写结果)
-	if _, err := r.c.Emit(ctx, "tools/post-execute", res, sdk.Waterfall); err != nil {
-		res = &sdk.ToolResult{Error: "post-execute blocked: " + err.Error(), Content: "{}"}
+	// 3. tools/post-execute:waterfall(可改写结果);裸注册表无总线 ⇒ 跳过(同上)
+	if r.c != nil {
+		if _, err := r.c.Emit(ctx, "tools/post-execute", res, sdk.Waterfall); err != nil {
+			res = &sdk.ToolResult{Error: "post-execute blocked: " + err.Error(), Content: "{}"}
+		}
 	}
 
 	// 4. tool/result:emit 广播结果
@@ -269,6 +328,11 @@ func (r *reg) withSandboxHint(ctx context.Context) context.Context {
 		root = dir
 	}
 	var sb sdk.Sandbox
+	// nil 守卫:裸注册表(单测/嵌入)没有 ctx,拿不到沙箱 —— 走到"无沙箱"分支即可,
+	// 不该 panic(拒绝路径已经 return,只有真正放行的工具才会到这里)。
+	if r.c == nil {
+		return sdk.WithSandboxHint(ctx, sdk.SandboxHint{Root: root})
+	}
 	if err := r.c.Inject("ctx.sandbox", &sb); err != nil || sb == nil {
 		if root == "" {
 			return ctx
@@ -294,7 +358,12 @@ func (r *reg) withSandboxHint(ctx context.Context) context.Context {
 
 // broadcastResult 广播工具结果(供 UI/日志/策略监听)。
 func (r *reg) broadcastResult(ctx context.Context, name string, res *sdk.ToolResult) {
-	r.c.Emit(ctx, "tool/result", &sdk.ToolResultEvent{Name: name, Content: res.Content, Error: res.Error}, sdk.Emit)
+	// ctx 为 nil 时不广播:裸构造的注册表(单测/嵌入)没有总线,不能因此 panic
+	// —— 被排除的工具/不存在的工具都要走这里(拒绝路径同样该让前端看到)。
+	if r.c == nil {
+		return
+	}
+	_, _ = r.c.Emit(ctx, "tool/result", &sdk.ToolResultEvent{Name: name, Content: res.Content, Error: res.Error}, sdk.Emit)
 }
 
 var callSeq uint64
