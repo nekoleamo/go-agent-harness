@@ -363,7 +363,12 @@ func (l *Loop) run(ctx context.Context, sid, input string, atts []sdk.Attachment
 
 	// 回合级可取消 ctx:派生 child 并注册到 ctx.turnControl(TUI Esc/Web 取消经
 	// Cancel() 取消同一回合);父 ctx 取消沿链生效;回合结束(任意返回路径)注销并释放。
+	//
+	// 同时注入**会话归属**(sdk.WithSessionContext):下游的审批/提问弹层据此知道
+	// 「这个待办属于哪个会话」—— 多会话并行时,前端才不会把 A 会话的审批弹到 B 会话上
+	// (甚至让用户在 B 上误按、替 A 做决定)。
 	runCtx, runCancel := context.WithCancel(ctx)
+	runCtx = sdk.WithSessionContext(runCtx, l.sessionIDOf(sid))
 	defer runCancel()
 	t := &turn{} // 回合级状态(伪调用提醒每回合至多一次;转向注入见 turn.steers)
 	// 回吐:取消/失败时仍未注入的转向消息不得静默丢(见 emitDroppedSteers)
@@ -442,7 +447,14 @@ func (l *Loop) step(ctx context.Context, t *turn, sess sdk.SessionLog) error {
 	// 抽成函数供溢出兜底路径重新组装:强制压缩会改写投影,重试必须用压缩后的历史;
 	// 提醒只注入一次(首次组装已消费 t.reminder),重试不得重复追加。
 	assemble := func() *sdk.LLMRequest {
-		history := l.sessions.DeriveMessages()
+		// 必须用**本回合的日志**(sess),不是 l.sessions(主单例)。
+		//
+		// 这一行原先写的是 l.sessions.DeriveMessages() —— 第一百零一批把 sess 一路下传,
+		// 唯独漏了这里。后果不是"少一段历史",而是**跨会话串上下文**:非当前会话跑回合时,
+		// 模型看到的是**主会话**的对话,而它自己这轮的输入/工具结果全都不在上下文里。
+		// 单会话下看不出来(那时 sess 就是主单例),多会话并行(页签)下一轮就露馅:
+		// 各会话的请求内容会一模一样(实测 4 个会话的模型请求全部拿到同一个任务文本)。
+		history := sess.DeriveMessages()
 		tools := l.tools.List()
 		messages := l.sp.Assemble(history, tools)
 		// 伪调用提醒注入(上步检测到文本伪造工具调用;作为追加输入给模型修正机会)
@@ -738,23 +750,54 @@ func (l *Loop) resolveKey(sid string) string {
 	return sid
 }
 
+// sessionIDOf 该回合的**对外**会话 id(空 sid 或归一到当前会话 ⇒ 当前打开的会话 id)。
+//
+// 为什么与 resolveKey 分开:锁与日志按归一键(空 = 主会话)已经够了;而弹层归属、页签角标、
+// 前端路由这些要拿**会话列表里的 id** 才对得上 —— 直接吐归一键 "" 的话前端无处可对应
+// (与 running_sessions 已踩过的坑同源)。
+func (l *Loop) sessionIDOf(sid string) string {
+	if k := l.resolveKey(sid); k != "" {
+		return k
+	}
+	if l.cs != nil {
+		return l.cs.CurrentSession()
+	}
+	return ""
+}
+
 // acquire 取该会话的日志与归还函数。
 //   - sid 空 / 归一后为空 ⇒ 主单例(ctx.sessions),不归还。
 //   - 其余 ⇒ 经 ctx.sessionDir 取独立实例(同 id 复用同一实例),回合结束归还。
 //   - 拿不到目录(sdir 未装配)或会话不存在 ⇒ 显式报错,不静默回落成"写进主会话"。
 func (l *Loop) acquire(sid string) (sdk.SessionLog, func(), error) {
 	key := l.resolveKey(sid)
+	var lg sdk.SessionLog
+	var release func()
 	if key == "" {
-		return l.sessions, func() {}, nil
+		lg, release = l.sessions, func() {}
+	} else {
+		if l.sdir == nil {
+			return nil, nil, fmt.Errorf("agent: 会话目录未装配(缺 ctx.sessionDir),无法在会话 %s 上执行回合", key)
+		}
+		v, err := l.sdir.Acquire(key)
+		if err != nil {
+			return nil, nil, fmt.Errorf("agent: 取会话 %s 的日志失败: %w", key, err)
+		}
+		lg, release = v, func() { l.sdir.Release(key) }
 	}
-	if l.sdir == nil {
-		return nil, nil, fmt.Errorf("agent: 会话目录未装配(缺 ctx.sessionDir),无法在会话 %s 上执行回合", key)
+	// 标记「有回合在写这份日志」:host-cwd-sessions 切换/删除当前会话前据此拒绝
+	// (当前会话 = ctx.sessions 单例,切走时会对同一对象 Load 新路径 ⇒ 在跑的回合
+	// 会把后半截写进新会话的文件)。置位/清零与 acquire/release 严格成对。
+	bm, markable := lg.(sdk.BusyMarker)
+	if markable {
+		bm.MarkBusy()
 	}
-	lg, err := l.sdir.Acquire(key)
-	if err != nil {
-		return nil, nil, fmt.Errorf("agent: 取会话 %s 的日志失败: %w", key, err)
-	}
-	return lg, func() { l.sdir.Release(key) }, nil
+	return lg, func() {
+		if markable {
+			bm.MarkIdle()
+		}
+		release()
+	}, nil
 }
 
 // CancelSession 实现 sdk.SessionRunner:只取消该会话的回合(其他会话不受影响)。

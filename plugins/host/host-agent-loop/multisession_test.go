@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -355,4 +356,42 @@ func waitRunning(t *testing.T, l *Loop, want string) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("会话 %s 迟迟未进入运行态:%v", want, l.RunningSessions())
+}
+
+// TestSecondRoundSeesFirstRoundHistory 同会话跑第二轮时,模型必须能看到第一轮的全部消息。
+//
+// 为什么单独钉:并发压测(见 tests/multisession_parallel_e2e_test.go)里第二轮的模型请求
+// 看到的是**第一轮的用户消息** —— 也就是"新输入没进投影"。那会让模型以为这轮没新东西,
+// 直接收尾,用户表现为"第二轮说了话,模型当没听见"。这里用白盒把每次请求的完整消息抓出来断言。
+func TestSecondRoundSeesFirstRoundHistory(t *testing.T) {
+	e, llm := buildEnvScripted(t, []string{"第一轮答复", "第二轮答复"})
+	if err := e.loop.Run(context.Background(), "第一轮的问题"); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.loop.Run(context.Background(), "第二轮的问题"); err != nil {
+		t.Fatal(err)
+	}
+	if len(llm.requests) != 2 {
+		t.Fatalf("每轮一次请求,应共 2 次,实得 %d", len(llm.requests))
+	}
+	second := llm.requests[1]
+	var users []string
+	for _, m := range second {
+		if m.Role == sdk.RoleUser {
+			users = append(users, m.Content)
+		}
+	}
+	found := false
+	for _, u := range users {
+		if strings.Contains(u, "第二轮的问题") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("第二次请求的投影里必须有第二轮的用户输入,实得用户消息 %v", users)
+	}
+	// 第一轮的内容也要在(否则是"只带最新一句",历史断了)
+	if len(users) < 2 || !strings.Contains(users[0], "第一轮的问题") {
+		t.Fatalf("第二次请求应同时带第一轮与第二轮的用户消息,实得 %v", users)
+	}
 }
