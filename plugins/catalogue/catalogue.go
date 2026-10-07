@@ -178,7 +178,10 @@ var All = map[string]Def{
 		Requires: []string{"ctx.cwdSessions"}}, Bundle: "base"},
 	"host-cwd-sessions": {Factory: func() sdk.Plugin { return &hostcwdsessions.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "host-cwd-sessions", Type: "host", APIVersion: ">=1.0,<2.0",
-		Provides: []string{"ctx.cwdSessions"},
+		// ctx.sessionDir 是真在 Provide 的(按会话 id 取日志);漏报会让拓扑排序看不到
+		// 这条边 —— 声明必须与实现同源(plugins/catalogue 是单一事实源)。
+		// 消费方(host-agent-loop)仍按**可选**注入拿它:没有会话目录的组合照样能跑主会话。
+		Provides: []string{"ctx.cwdSessions", "ctx.sessionDir"},
 		Requires: []string{"ctx.sessions"}}, Bundle: "base"},
 	"host-fanout": {Factory: func() sdk.Plugin { return &hostfanout.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "host-fanout", Type: "host", APIVersion: ">=1.0,<2.0",

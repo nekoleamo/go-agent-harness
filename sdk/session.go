@@ -232,6 +232,51 @@ type SessionDir interface {
 	Spawn() (string, error)
 }
 
+// BusyMarker 会话日志的「此刻有回合在写我」标记(**可选**实现;host-session-log 的 Log 提供)。
+//
+// 为什么需要:当前打开的会话用的是 **ctx.sessions 单例**,而切换会话是对**同一个对象**
+// 调 Load(路径/内存事件/seq 一起换)。若此时有回合正在往这个单例上追加,而切换照做,
+// 回合的后半截就会写进**新会话的文件** —— 跨会话串写(多窗口已能触发:一个窗口在会话 X
+// 跑回合,另一个窗口 /session switch)。
+//
+// 为什么挂在 Log 对象自己身上(而不是让会话服务去问 agent-loop):
+//   - 判定与事实**同源** —— 标记的置位/清理由真正写它的回合做(acquire/release 成对),
+//     跨插件再复制一份状态就多一处会漂移的镜像;
+//   - 不依赖插件注入顺序(两个插件互不依赖,谁先 Start 不定,晚到的服务无法回填已注入的变量)。
+//
+// 消费者:host-cwd-sessions 的 Open/Delete/Switch* —— 有回合在写当前会话时**显式拒绝**
+// 切走,并说明原因(不静默改、不半途切换)。
+type BusyMarker interface {
+	// MarkBusy 标记有回合在写(计数式:同会话并发持锁由 keyedMutex 保证不会发生,
+	// 这里仍用计数而非布尔,免得将来有重叠持有时提前解除)。
+	MarkBusy()
+	// MarkIdle 撤销一次 MarkBusy。
+	MarkIdle()
+	// IsBusy 当前是否有回合在写。
+	IsBusy() bool
+}
+
+// 会话上下文:把「这次调用属于哪个会话」沿调用链传下去。
+//
+// 为什么走 context 而不是给每个接口加参数:确认/提问的呈现入口
+// (sdk.ConfirmPresenter.Present / sdk.QuestionPresenter.PresentQuestion)是三端融合的
+// **公共签名**,加参数会破坏所有实现与外部插件;而"这次调用属于哪个会话"本来就是沿
+// 调用链流动的环境信息 —— 与 ctx 取消、deadline 同类。
+//
+// 谁写:host-agent-loop 在回合入口给 runCtx 注入(归一后取**对外**会话 id,前端要与
+// 会话列表对得上);谁读:web 的审批/提问服务给推送帧填 Session,前端据此决定弹层归哪个会话。
+func WithSessionContext(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, sessionCtxKey{}, id)
+}
+
+// SessionFromContext 取当前调用所属会话 id(未注入 = 空 = 主会话)。
+func SessionFromContext(ctx context.Context) string {
+	v, _ := ctx.Value(sessionCtxKey{}).(string)
+	return v
+}
+
+type sessionCtxKey struct{}
+
 // SessionCompressor 滚动摘要引擎(M6.5 拆出 token-compress;仅消费 SessionEvent,零内部状态)。
 // host-session-log 在投影超预算时回调 Fold;引擎折叠事件流最旧块为累计摘要,
 // 每折一块调用 summary 回调持久化 session/summary 事件;host 据此推进水位(投影跳过已压缩块)。

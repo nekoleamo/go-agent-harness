@@ -35,7 +35,7 @@ func NewQuestionService(hub *EventHub) *QuestionService {
 // PresentQuestion 推送提问弹层并返回作答通道;cancel 幂等清理本次 pending。
 // G-E5-4:id 优先用调用方给定的 q.ID(与 question/requested↔resolved 事件同 id,
 // 以便其它渠道作答时前端能按 id 关闭遗留弹层),未给才生成。
-func (s *QuestionService) PresentQuestion(_ context.Context, q sdk.Question) (<-chan sdk.QuestionAnswer, func(), error) {
+func (s *QuestionService) PresentQuestion(ctx context.Context, q sdk.Question) (<-chan sdk.QuestionAnswer, func(), error) {
 	id := q.ID
 	if id == "" {
 		id = randID()
@@ -44,7 +44,9 @@ func (s *QuestionService) PresentQuestion(_ context.Context, q sdk.Question) (<-
 	s.mu.Lock()
 	s.pending[id] = ch
 	s.mu.Unlock()
-	s.hub.Push(Frame{Type: FrameQuestion, Payload: &QuestionRequest{
+	// 帧带归属会话(回合入口注入):多会话并行时,弹层必须落在**提出问题的那一个**会话,
+	// 否则会在别的会话视图里弹出来,用户答的等于替别人答。
+	s.hub.Push(Frame{Type: FrameQuestion, Session: sdk.SessionFromContext(ctx), Payload: &QuestionRequest{
 		ID: id, Prompt: q.Prompt, Options: q.Options, Multiple: q.Multiple, FreeText: q.FreeText,
 	}})
 	cancel := func() {

@@ -113,6 +113,7 @@ type stubCS struct {
 	renamed   []string
 	forks     []uint64
 	clones    int
+	openErr   error // Open 失败(切走闸门等)——验证端点把原因原样带给用户
 }
 
 func (s *stubCS) Sessions() []sdk.SessionInfo { return s.infos }
@@ -136,9 +137,12 @@ func (s *stubCS) Current() string        { return s.curKey }
 func (s *stubCS) Path() string           { return s.curPath }
 func (s *stubCS) Open(id string) error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.openErr != nil {
+		return s.openErr
+	}
 	s.opened = append(s.opened, id)
 	s.curID = id
-	s.mu.Unlock()
 	return nil
 }
 func (s *stubCS) New() (string, error) {
@@ -914,6 +918,59 @@ func TestSessionsEndpoints(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("未知 action 应 400,得 %d", resp.StatusCode)
+	}
+}
+
+// TestSessionsSwitchReportsGuardReason 切走被闸门拒绝(当前会话正在跑回合)时,
+// 端点必须把**原因原样**带回(400):用户要能知道“先去停止回合”,而不是一句“切换失败”。
+func TestSessionsSwitchReportsGuardReason(t *testing.T) {
+	s, _ := newTestServer()
+	cs := &stubCS{infos: []sdk.SessionInfo{{ID: "", Name: "主"}}, curKey: "demo",
+		openErr: errors.New("cwdsessions: 当前会话正在运行回合,请先停止(取消)该回合再切换/新建/删除会话")}
+	s.cs = cs
+	hs := httptest.NewServer(s.handler())
+	defer hs.Close()
+
+	resp, err := http.Post(hs.URL+"/api/sessions", "application/json", strings.NewReader(`{"action":"switch","id":"s1"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("被闸门拒绝应为 400,得 %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "请先停止") {
+		t.Fatalf("响应体应含可执行的原因,got %q", string(body))
+	}
+	if len(cs.opened) != 0 {
+		t.Fatalf("失败时不应记录为已切换:%+v", cs.opened)
+	}
+}
+
+// TestSessionRenameTargetsGivenSession 改名必须按 id 定位,不能靠"先切过去再改名":
+// 页签模式下当前打开的会话未必是用户要改名的那个,切过去会误改别人,还会撞切走闸门。
+func TestSessionRenameTargetsGivenSession(t *testing.T) {
+	s, _ := newTestServer()
+	cs := &stubCS{curKey: "demo"}
+	s.cs = cs
+	hs := httptest.NewServer(s.handler())
+	defer hs.Close()
+
+	resp, err := http.Post(hs.URL+"/api/sessions/rename", "application/json", strings.NewReader(`{"name":"新名字","id":"sB"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("改名应 200,得 %d %s", resp.StatusCode, string(body))
+	}
+	if len(cs.renamed) != 1 || cs.renamed[0] != "sB=新名字" {
+		t.Fatalf("应按 id 改名,实得 %+v", cs.renamed)
+	}
+	if len(cs.opened) != 0 {
+		t.Fatalf("改名不该切换会话(那会误改当前会话),opened=%+v", cs.opened)
 	}
 }
 

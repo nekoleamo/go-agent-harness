@@ -119,7 +119,7 @@ afterEach(() => {
 })
 
 test('WS 握手成功 → open;带 after 游标(断线续传基准)', async () => {
-  store['gah.lastSeq'] = '42'
+  store['gah.lastSeq.main'] = '42'
   await newTransport()
   FakeWS.last().fireOpen()
   assert.deepEqual(states, ['open'])
@@ -162,9 +162,9 @@ test('SSE 路径也记 after 游标,主动重建时带上(不带会被当成全�
   const es0 = FakeES.last()
   assert.equal(es0.url, '/api/events') // 首连无游标 = 尾部窗口 + baseline
   es0.fireFrame('session', { id: 42, type: 'session', payload: {} })
-  assert.equal(store['gah.lastSeq'], '42')
+  assert.equal(store['gah.lastSeq.main'], '42')
   es0.fireFrame('baseline', { id: 0, type: 'baseline', payload: {} })
-  assert.equal(store['gah.lastSeq'], '42', '非会话帧(id=0)不动游标')
+  assert.equal(store['gah.lastSeq.main'], '42', '非会话帧(id=0)不动游标')
   t.reconnect()
   assert.equal(FakeES.last().url, '/api/events?after=42')
 })
@@ -233,4 +233,39 @@ test('坏帧不影响链路状态(解析失败静默忽略)', async () => {
   ws.onmessage?.({ data: '{"id":7,"type":"session","payload":{}}' })
   assert.equal(got.length, 1)
   assert.deepEqual(states, ['open'])
+})
+
+// P0-3:续传游标按会话分桶。多页签共用一个键时,A 会话的 seq 会被 B 会话拿去当
+// after 要差集 —— 重连结果不可预期(要么漏要么重)。这里用两个会话各写一次来钉。
+test('游标按会话分桶(不同会话互不覆盖)', async () => {
+  const mod = await import('./transport.ts')
+  // 1) 会话 A:写游标 42
+  mod.setTransportSession('sA')
+  const tA = mod.createTransport()
+  tA.onstate = () => {}
+  const wsA = FakeWS.last()
+  wsA.fireOpen()
+  wsA.onmessage?.({ data: '{"id":42,"type":"session","payload":{}}' })
+  assert.equal(store['gah.lastSeq.sA'], '42')
+
+  // 2) 切到会话 B:读不到 A 的游标(首连语义 = 尾部窗口 + baseline),写自己的 7
+  mod.setTransportSession('sB')
+  const tB = mod.createTransport()
+  tB.onstate = () => {}
+  const wsB = FakeWS.last()
+  wsB.fireOpen()
+  assert.match(wsB.url, /session=sB/) // 且确实带了 session 参数
+  assert.doesNotMatch(wsB.url, /after=/) // 不能拿 A 的 42 当 B 的 after
+  wsB.onmessage?.({ data: '{"id":7,"type":"session","payload":{}}' })
+  assert.equal(store['gah.lastSeq.sB'], '7')
+  assert.equal(store['gah.lastSeq.sA'], '42', 'B 的写入不得动 A 的桶')
+
+  // 3) 回到 A:游标还在(断线重连能续上)
+  mod.setTransportSession('sA')
+  const tA2 = mod.createTransport()
+  tA2.onstate = () => {}
+  assert.match(FakeWS.last().url, /after=42/)
+  tA.close()
+  tB.close()
+  tA2.close()
 })

@@ -91,11 +91,36 @@ type Log struct {
 	// (长单轮)时,截断最旧工具结果是唯一能立刻降占用的手段。粘到下一次实测 usage 为止 ——
 	// 那时估算有了新基线,常规口径自动接管。
 	emergencyTrim int
+	// busy 有多少个回合正在往本实例上写(acquire/release 成对置位/清零)。
+	// 消费者是 host-cwd-sessions 的「切走闸门」:当前会话的单例被 Load 换掉时,
+	// 在跑的回合会继续往新会话文件里写(跨会话串写)。挂在 Log 上 = 判定与事实同源。
+	busy atomic.Int32
 }
 
 // NewMemLog 建一个**纯内存**会话日志(不落盘;Flush 为 no-op)。
 // 给测试与嵌入场景:注册表里的实例都按路径建,只有明确不落盘时才用这个。
 func NewMemLog() *Log { return newLog("") }
+
+// MarkBusy 实现 sdk.BusyMarker:标记有回合在写本实例。
+func (l *Log) MarkBusy() { l.busy.Add(1) }
+
+// MarkIdle 实现 sdk.BusyMarker:撤销一次 MarkBusy(计数不低于 0)。
+func (l *Log) MarkIdle() {
+	for {
+		n := l.busy.Load()
+		if n <= 0 {
+			return // 已清零:再减会变负(标记重复清除不该把计数拉成负数)
+		}
+		if l.busy.CompareAndSwap(n, n-1) {
+			return
+		}
+	}
+}
+
+// IsBusy 实现 sdk.BusyMarker:是否有回合正在写本实例。
+func (l *Log) IsBusy() bool { return l.busy.Load() > 0 }
+
+var _ sdk.BusyMarker = (*Log)(nil)
 
 func newLog(dir string) *Log {
 	return &Log{path: dir, compressedUntil: -1, pairedProjectChars: -1}

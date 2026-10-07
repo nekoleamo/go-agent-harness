@@ -9,6 +9,8 @@ import (
 	"errors"
 	"sort"
 	"sync"
+
+	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
 // ConfirmRequest 审批弹层载荷(SSE 帧 payload;前端据此渲染弹层)。
@@ -26,9 +28,12 @@ type ConfirmService struct {
 }
 
 // pendingConfirm 未决确认(prompt 留着是为了重连重放:连接断开时推出去的弹层会丢)。
+// session 记**归属会话**(来自回合注入的 sdk.SessionFromContext):补推时前端据此
+// 知道这个弹层该去哪个会话开 —— 不记的话刷新后补推的弹层会被当前会话认领。
 type pendingConfirm struct {
-	prompt string
-	ch     chan bool
+	prompt  string
+	session string
+	ch      chan bool
 }
 
 // NewConfirm 构造 Web 确认服务(prompt 经 hub 广播为 FrameConfirm 帧)。
@@ -41,10 +46,11 @@ func NewConfirm(hub *EventHub) *ConfirmService {
 func (s *ConfirmService) Present(ctx context.Context, prompt string) (<-chan bool, func(), error) {
 	id := randID()
 	ch := make(chan bool, 1)
+	sid := sdk.SessionFromContext(ctx)
 	s.mu.Lock()
-	s.pending[id] = pendingConfirm{prompt: prompt, ch: ch}
+	s.pending[id] = pendingConfirm{prompt: prompt, session: sid, ch: ch}
 	s.mu.Unlock()
-	s.hub.Push(Frame{Type: FrameConfirm, Payload: &ConfirmRequest{ID: id, Prompt: prompt}})
+	s.hub.Push(Frame{Type: FrameConfirm, Session: sid, Payload: &ConfirmRequest{ID: id, Prompt: prompt}})
 	cancel := func() {
 		s.mu.Lock()
 		delete(s.pending, id)
@@ -80,13 +86,36 @@ func (s *ConfirmService) Confirm(ctx context.Context, prompt string) (bool, erro
 // 为何需要:confirm 帧是实时广播、不落会话账本,而审批现在默认**不限时地等** ——
 // 用户刷新/重开页面期间弹层就丢了,不补推他就会永远等下去(回合一直挂)。
 func (s *ConfirmService) Pending() []*ConfirmRequest {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([]*ConfirmRequest, 0, len(s.pending))
-	for id, p := range s.pending {
-		out = append(out, &ConfirmRequest{ID: id, Prompt: p.prompt})
+	out := make([]*ConfirmRequest, 0)
+	for _, f := range s.PendingFrames() {
+		out = append(out, f.Payload.(*ConfirmRequest))
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+// PendingFrames 未决审批的补推帧(含**归属会话** Session),按弹层 id 升序。
+// 归属从哪来:回合入口注入的 sdk.SessionFromContext(见 pendingConfirm.session)。
+//
+// 为何是「帧」而不是给 Pending 返回值加字段:ConfirmRequest 是**前端载荷**,
+// 会话归属是**投递元信息**(帧的 Session),两者职责不同 —— 不让载荷背它;
+// 而排序只在这里有一份(Pending 由它派生),不会两处漂移。
+func (s *ConfirmService) PendingFrames() []Frame {
+	s.mu.Lock()
+	type item struct {
+		id, session string
+		p           pendingConfirm
+	}
+	items := make([]item, 0, len(s.pending))
+	for id, p := range s.pending {
+		items = append(items, item{id: id, session: p.session, p: p})
+	}
+	s.mu.Unlock()
+	sort.Slice(items, func(i, j int) bool { return items[i].id < items[j].id })
+	out := make([]Frame, 0, len(items))
+	for _, it := range items {
+		out = append(out, Frame{Type: FrameConfirm, Session: it.session,
+			Payload: &ConfirmRequest{ID: it.id, Prompt: it.p.prompt}})
+	}
 	return out
 }
 

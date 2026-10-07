@@ -482,8 +482,8 @@ func (s *Server) consumeStream(after uint64, sink func(Frame) error, stop <-chan
 	// **不限时地等** —— 用户刷新/重开页面期间推出去的弹层就丢了,不补推他会永远等下去。
 	// 其它已连着的前端早就收到过同一帧,所以只推本连接,不用广播。
 	if s.confirm != nil {
-		for _, p := range s.confirm.Pending() {
-			if err := sink(Frame{Type: FrameConfirm, Payload: p}); err != nil {
+		for _, f := range s.confirm.PendingFrames() {
+			if err := sink(f); err != nil {
 				return
 			}
 		}
@@ -679,7 +679,7 @@ func (s *Server) handleInput(w http.ResponseWriter, r *http.Request) {
 		content = b.String()
 	}
 	if strings.HasPrefix(content, "/") {
-		s.runCommand(content, w)
+		s.runCommand(content, req.Session, w)
 		return
 	}
 	// CAS 原子占用:Load+Store 分离时并发双击可同时通过快速检查,跑出两个回合
@@ -751,7 +751,7 @@ func (s *Server) steer(content string) bool {
 }
 
 // runCommand 斜杠命令经 ctx.commands 同步执行(输出回 SSE 帧)。
-func (s *Server) runCommand(content string, w http.ResponseWriter) {
+func (s *Server) runCommand(content, session string, w http.ResponseWriter) {
 	if s.cmds == nil {
 		http.Error(w, "命令不可用: ctx.commands 未装配", http.StatusServiceUnavailable)
 		return
@@ -772,7 +772,8 @@ func (s *Server) runCommand(content string, w http.ResponseWriter) {
 	if err != nil {
 		res.Error = err.Error()
 	}
-	s.hub.Push(Frame{Type: FrameCommand, Payload: res})
+	// 帧带会话归属:命令输出要落在**执行它的那个会话**视图里(与输入同规则)。
+	s.hub.Push(Frame{Type: FrameCommand, Session: session, Payload: res})
 	code := http.StatusOK
 	if res.Error != "" {
 		code = http.StatusOK // 命令业务失败:结果回前端展示,不按 4xx(与 TUI meta 行语义一致)
@@ -2718,6 +2719,10 @@ func (s *Server) handleSessionRename(w http.ResponseWriter, r *http.Request) {
 	}
 	var req struct {
 		Name string `json:"name"`
+		// ID 目标会话 id(空 = 主会话)。**必须按 id 定位**,不能沿用 Rename:
+		// 页签模式下当前打开的会话 ≠ 用户要改名的那个,靠切换来定位会误改
+		// (还会撞上切走闸门)。id 缺省时才回落 Rename(旧调用方/TUI 同语义)。
+		ID string `json:"id,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "坏请求体", http.StatusBadRequest)
@@ -2725,6 +2730,14 @@ func (s *Server) handleSessionRename(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Name == "-" {
 		req.Name = "" // 清除名(对齐 TUI /name -)
+	}
+	if req.ID != "" {
+		if err := s.cs.SetName(req.ID, req.Name); err != nil {
+			http.Error(w, "改名失败: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": req.ID})
+		return
 	}
 	if err := s.cs.Rename(req.Name); err != nil {
 		http.Error(w, "改名失败: "+err.Error(), http.StatusBadRequest)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
@@ -60,7 +61,23 @@ var errInject = injectErr{}
 type memLog struct {
 	path string
 	evs  []sdk.SessionEvent
+	// busy 模拟 sdk.BusyMarker(切走闸门要读它):测试替身实现全套,才验得到真判定路径。
+	busy atomic.Int32
 }
+
+func (m *memLog) MarkBusy() { m.busy.Add(1) }
+func (m *memLog) MarkIdle() {
+	for {
+		n := m.busy.Load()
+		if n <= 0 {
+			return
+		}
+		if m.busy.CompareAndSwap(n, n-1) {
+			return
+		}
+	}
+}
+func (m *memLog) IsBusy() bool { return m.busy.Load() > 0 }
 
 func (m *memLog) Append(ev sdk.SessionEvent) error              { m.evs = append(m.evs, ev); return nil }
 func (m *memLog) DeriveMessages() []sdk.LLMMessage              { return nil }
@@ -70,6 +87,8 @@ func (m *memLog) SetPath(p string)                              { m.path = p }
 func (m *memLog) Load(p string) error                           { m.path = p; return nil }
 func (m *memLog) SetHistory(int)                                {}
 func (m *memLog) RegisterCompressor(int, sdk.SessionCompressor) {}
+
+var _ sdk.BusyMarker = (*memLog)(nil)
 
 // recLogs 记录 Acquire/Release 的注册表(断言 id 与 path 配对)。
 type recLogs struct {

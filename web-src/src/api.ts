@@ -182,8 +182,10 @@ export const api = {
     return req('/api/sessions', { method: 'POST', headers: json, body: JSON.stringify({ action: 'delete', id }) })
   },
   // 会话改名(仅作用于当前会话;改名即切换目标会话)
-  sessionRename(name: string): Promise<void> {
-    return req('/api/sessions/rename', { method: 'POST', headers: json, body: JSON.stringify({ name }) })
+  // sessionRename 改会话名。id 传目标会话(空 = 主会话)—— 按 id 定位,
+  // 不靠「先切过去」:页签模式下当前会话未必是用户要改名的那个。
+  sessionRename(name: string, id: string = ''): Promise<void> {
+    return req('/api/sessions/rename', { method: 'POST', headers: json, body: JSON.stringify({ name, id }) })
   },
   // 删除工作区记录(仅移除记录,不删除对应文件夹)
   workspaceForget(key: string): Promise<void> {

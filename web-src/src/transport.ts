@@ -27,9 +27,18 @@ function sessionQS(extra?: Record<string, string | number | undefined>): string 
 export type TransportListener = (f: Frame) => void
 
 // 续传游标:最近一个会话帧 id(sessionStorage;页面刷新/切会话时 App 会清掉 → 回到首连语义)。
+//
+// **按会话分桶**(P0-3):以前只有一个键 'gah.lastSeq',多页签共用一条连接时它就是
+// 「谁最后收到帧就写谁」—— A 会话的 seq 会被 B 会话拿去当 after 要差集,重连结果不可预期。
+// 现在键是 'gah.lastSeq.<会话 id>',主会话用 'main'(不与任何真实 id 撞)。
+// 不迁旧键:旧值只可能来自单会话时代(主会话),留在那儿无害,别为省一个键引入误读。
+function cursorKey(): string {
+  return 'gah.lastSeq.' + (boundSessionId || 'main')
+}
+
 function afterCursor(): number {
   try {
-    const v = Number(sessionStorage.getItem('gah.lastSeq'))
+    const v = Number(sessionStorage.getItem(cursorKey()))
     return Number.isFinite(v) && v > 0 ? v : 0
   } catch {
     return 0 // 无痕模式/无 sessionStorage
@@ -39,7 +48,18 @@ function afterCursor(): number {
 function markCursor(id: number): void {
   if (id <= 0) return
   try {
-    sessionStorage.setItem('gah.lastSeq', String(id))
+    sessionStorage.setItem(cursorKey(), String(id))
+  } catch {
+    /* 无痕模式忽略 */
+  }
+}
+
+// clearSessionCursor 清掉某会话的续传游标(切会话/重放时调)。
+// 键规则在这里唯一实现(之前 App.vue 自己 removeItem('gah.lastSeq'),与本文件
+// 的分桶键不同步就等于清不到 —— 游标残留会让重连拿旧 after 静默少拉一段)。
+export function clearSessionCursor(id: string): void {
+  try {
+    sessionStorage.removeItem('gah.lastSeq.' + (id || 'main'))
   } catch {
     /* 无痕模式忽略 */
   }

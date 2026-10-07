@@ -468,7 +468,13 @@ function onSessionsChanged(): void {
   if (showPicker.value) showPicker.value = false
 }
 
-defineExpose({ cycleThinking, cycleSandbox })
+// getText/setText:会话页签用来**命令式**存取草稿(切页签时保存旧页签、载入新页签)。
+//
+// 为何用命令式而不是 v-model 双向:输入框内容要存在一个**普通 JS 对象**里(TabSet),
+// 那个对象不是响应式的 —— 靠父组件重渲染把草稿"推"下来,在真机上不成立
+// (切页签后输入框不会跟着换)。命令式读写没有这个依赖,行为也可预期。
+// 外部 UI 插件覆盖 input 槽位时可能没有这两个方法,宿主调用前会判空。
+defineExpose({ cycleThinking, cycleSandbox, getText: () => text.value, setText: (v: string) => { text.value = v } })
 </script>
 
 <template>

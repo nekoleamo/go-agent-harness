@@ -239,6 +239,12 @@ func (s *Service) Open(id string) error {
 		// 防穿越:filepath.Join 会 Clean 掉 ".." 段,未过滤的 id 可让会话落到数据根之外
 		return fmt.Errorf("cwdsessions: 非法会话 id")
 	}
+	// 切走闸门(**在 Load 之前**):当前会话是 ctx.sessions 单例,切换会对同一个对象
+	// Load 新路径 —— 若此刻有回合正在往它身上追加,回合的后半截就写进了新会话的文件
+	// (跨会话串写,且不可事后分辨)。显式拒绝并说明怎么办,而不是让它静默错位。
+	if err := s.guardLeaveBusy(); err != nil {
+		return err
+	}
 	// 冲突闸门:该会话已被注册表持有(=另一个视图/窗口正在用独立实例写这个文件)时
 	// 显式拒绝 —— 两个 Log 写同一文件会交错,不能静默切过去。
 	if id != "" && s.dir != nil && s.dir.heldRefs(id) > 0 {
@@ -305,6 +311,20 @@ func (s *Service) Delete(id string) error {
 	if !fileExists(path) {
 		return fmt.Errorf("cwdsessions: 会话不存在: %s", file)
 	}
+	// 删当前会话前先过闸门(在 os.Remove **之前**):删除末尾会自动新建空会话承接,
+	// 若此刻有回合正在写这个会话,轻则 New 被闸门拒绝、文件却已删(回合继续往已被 unlink
+	// 的文件句柄里写 = 数据进黑洞),重则删掉别人的在跑会话。
+	if id == s.CurrentSession() {
+		if err := s.guardLeaveBusy(); err != nil {
+			return err
+		}
+	}
+	// 删**非当前**会话:同样不能删正被别的视图(多页签/多窗口)持有的那个 —— 那个视图
+	// 手上的回合还在往这个文件里写,删了它等于把别人的进行中会话扔进黑洞。
+	// 与 Open 的 heldRefs 闸门同一形状、同一理由。
+	if id != "" && s.dir != nil && s.dir.heldRefs(id) > 0 {
+		return fmt.Errorf("cwdsessions: 会话 %s 正在被其他视图使用,请先关闭那个视图", id)
+	}
 	if err := os.Remove(path); err != nil {
 		return err
 	}
@@ -328,6 +348,19 @@ func (s *Service) Delete(id string) error {
 		return err
 	}
 	return nil
+}
+
+// guardLeaveBusy 切走/删除当前会话前的闸门:当前会话正被回合写着就拒绝。
+//
+// 事实来源是日志对象自己的 sdk.BusyMarker(由 agent-loop 回合 acquire/release 成对置位),
+// 不是"问一圈谁在跑":那会多一份会漂移的镜像状态,还依赖插件注入顺序。日志实现不带
+// BusyMarker 时(= 不是 host-session-log 的 Log)判为无人在写,不阻断。
+func (s *Service) guardLeaveBusy() error {
+	m, ok := s.sessions.(sdk.BusyMarker)
+	if !ok || !m.IsBusy() {
+		return nil
+	}
+	return fmt.Errorf("cwdsessions: 当前会话正在运行回合,请先停止(取消)该回合再切换/新建/删除会话")
 }
 
 // UnrecordProject 删除工作区使用记录:仅从 workspaces 记录移除该 key,
@@ -382,12 +415,18 @@ func (s *Service) SwitchProject(key string) (string, error) {
 	if key == "" {
 		key = "default"
 	}
+	// 先过切走闸门,再改 key:换项目末尾会 New() 打开新会话,那时才发现当前会话在跑
+	// 就已经改了 key —— 半切换状态比直接拒绝难收拾。
 	s.recordProject(key, currentDir())
 	s.mu.Lock()
 	if key == s.key {
 		cur := s.current
 		s.mu.Unlock()
 		return cur, nil // 同项目:仅刷新最近使用时间
+	}
+	if err := s.guardLeaveBusy(); err != nil {
+		s.mu.Unlock()
+		return "", err
 	}
 	s.key = key
 	s.mu.Unlock()
@@ -404,6 +443,16 @@ func (s *Service) SwitchProject(key string) (string, error) {
 func (s *Service) SwitchDir(dir string) (string, error) {
 	if dir == "" {
 		return "", fmt.Errorf("cwdsessions: 缺工作区目录")
+	}
+	// 切走闸门:仅当确实要换项目时才问 —— 同项目只是刷新最近使用时间,不该被拦。
+	// 位置在 Chdir 之前:末尾的 New() 若才拒绝,cwd 已经改了,是个半切换状态。
+	s.mu.RLock()
+	keyChanged := sdk.ProjectKey(dir) != s.key
+	s.mu.RUnlock()
+	if keyChanged {
+		if err := s.guardLeaveBusy(); err != nil {
+			return "", err
+		}
 	}
 	// 归一化符号链接与 Windows 8.3 短名(同 tui /workspace):下方 key 由本路径派生,
 	// 不归一化会让同一目录在不同形态下产生两个 key(工作区历史重复)。

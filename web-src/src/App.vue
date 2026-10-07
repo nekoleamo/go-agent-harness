@@ -45,8 +45,13 @@ import {
   type DockState,
 } from './dock'
 import { connReduce, newConn, offlineHint, submitAllowed, type ConnEv, type ConnModel } from './conn'
-import { createTransport, type Transport } from './transport'
+import { clearSessionCursor, createTransport, setTransportSession, type Transport } from './transport'
 import { isUserCanceled } from './turns'
+import { DEFAULT_TAB_LIMIT, decodeTabs, encodeTabs, TabSet } from './tabset'
+import type { TabMeta } from './tabset'
+import { shortSessionId, tabTitle } from './frame-routing'
+import { boundSession } from './session-scope'
+import { foreignOwner, foreignTodoText } from './frame-routing'
 import { extraPanel, slotComponent, type MetaLine } from './registry'
 import { OPEN_DOC_EVENT, docRequest } from './docstore'
 import type {
@@ -84,6 +89,7 @@ import ChangesView from './components/ChangesView.vue'
 import BoardView from './components/BoardView.vue'
 import DockView from './components/DockView.vue'
 import ToastStack from './components/ToastStack.vue'
+import TabBar from './components/TabBar.vue'
 
 const state = ref<StateView>({
   model: '',
@@ -94,6 +100,68 @@ const state = ref<StateView>({
   running_sessions: [],
   version: '',
 })
+// 页签状态容器(骨架批):**每会话一份**会话流状态。
+// 本批只开一个页签(= 当前会话),UI 与切换交互留给下一批;但"按会话隔离"这件事
+// 从现在就成立,后面加页签条只是把同一份状态画出来。
+const tabs = new TabSet<StreamModel>()
+// TABS_KEY 页签集合的持久化位置(sessionStorage)。为什么存 sessionStorage 而不是
+// 后端:这是**本窗口的视图状态**(用户在这个窗口开了哪几个页签),不是会话数据;
+// 落盘到 $GAH_HOME 会变成跨设备的共享状态 —— 那不是这个功能要的。
+// 只存 id 与激活项,**不存流内容**(流由各页签重连后按游标补齐)。
+const TABS_KEY = 'gah.tabs'
+function persistTabs(): void {
+  try {
+    sessionStorage.setItem(TABS_KEY, encodeTabs(tabs.ids(), tabs.activeId()))
+  } catch {
+    /* 无痕模式:不持久化,刷新后回到单页签(不算故障) */
+  }
+}
+
+/** 刷新后恢复页签集合。返回激活页签 id(空 = 没有可恢复的,走单页签默认)。 */
+function restoreTabs(): string {
+  let raw: string | null = null
+  try {
+    raw = sessionStorage.getItem(TABS_KEY)
+  } catch {
+    return '' // 无痕模式读不到:按单页签默认走
+  }
+  const { ids, active } = decodeTabs(raw, DEFAULT_TAB_LIMIT)
+  for (const id of ids) tabs.ensure(id, newModel)
+  return active
+}
+
+// 首屏页签:URL ?session= 优先(桌面壳多窗口既有语义),否则先落在"主会话"占位。
+// 为什么不等第一次 state 快照:那之前页签条会是空的(用户看不到自己在哪个会话里);
+// 快照到了再用 TabSet.rekey 把占位页改绑到真实 id(而不是新建第二个页签)。
+const restoredActive = restoreTabs()
+const bootTab = boundSession() || restoredActive || 'main'
+tabs.ensure(bootTab, newModel, boundSession() ? '' : bootTab === 'main' ? '主会话' : '')
+// tabId 当前页签的会话 id。
+//
+// **页签与「服务端当前会话」是两个东西**:页签是"我现在在看哪个会话",
+// 后者的切换是全局操作(TUI /session、命令 /session switch)且会受切走闸门约束。
+// 所以这里一律用 tabId,不拿 state.session.id 当页签键。
+// tabId 必须**是 ref**:它是模板依赖(输入框草稿、页签高亮)的唯一数据源。
+// 用普通 let 时 Vue 追踪不到变化 —— 真机手测据此发现"切页签后草稿/输入框都不更新"。
+const tabId = ref(bootTab)
+// calibrated 首屏占位页是否已完成改绑(见 refreshStats 的首次校准)。
+let calibrated = bootTab !== 'main' // URL 已带 ?session= 时不需要校准
+function curTabId(): string {
+  return tabId.value || state.value.session?.id || 'main'
+}
+// tabList 是给模板的**副本**(TabSet 是普通对象,Vue 感知不到它的内部变化;
+// 每次变更后 syncTabs() 重建一次 —— 比把容器做成 reactive 更省心,也不会误触发深层代理)。
+const tabList = ref<TabMeta[]>([])
+function syncTabs(): void {
+  persistTabs()
+  tabList.value = tabs.ids().map((id) => {
+    const t = tabs.get(id)!
+    return {
+      id: t.id, title: t.title, running: t.running, unread: t.unread,
+      draft: t.draft, scrollTop: t.scrollTop, atBottom: t.atBottom,
+    }
+  })
+}
 const model = ref<StreamModel>(newModel())
 // 本窗口会话的当前步数(第一百零三批)。
 //
@@ -438,7 +506,14 @@ const showNewest = ref(false) // 上滚读历史时新内容到达 → 浮现回
 function onStreamScroll(): void {
   const el = streamEl.value
   if (!el) return
+  if (restoring) return // 程序性滚动(恢复位置):不当作"用户滚了"
   stick = el.scrollHeight - el.scrollTop - el.clientHeight < 140
+  // 记进当前页签:切回来应回到原处(而不是跳到最新 —— 读历史时被拽走是真打断)
+  const t = tabs.get(curTabId())
+  if (t) {
+    t.scrollTop = el.scrollTop
+    t.atBottom = stick
+  }
   if (stick) showNewest.value = false
   // S-P1-2:接近顶部就拉更早一页(留一屏余量,避免贴边反复触发)
   if (shouldLoadEarlier(el, model.value.hasMore, loadingEarlier.value)) void loadEarlier()
@@ -524,16 +599,13 @@ let streamSessionId = ''
 function rebuild(keepCursor: boolean): void {
   // 会话切换/全新连接:清流重放全量(通道按 after 游标差集重放)
   if (!keepCursor) {
-    model.value = newModel()
+    // 换状态本体重放;页签的草稿/滚动不动(重放的是流,不是这个页签的使用痕迹)。
+    model.value = tabs.replaceState(curTabId(), newModel()).state
     traj.value = newTraj()
     changes.value = newChanges()
     loadingEarlier.value = false
     baseSeen.value = false
-    try {
-      sessionStorage.removeItem('gah.lastSeq')
-    } catch {
-      /* 无痕模式忽略 */
-    }
+    clearSessionCursor(curTabId())
   }
   metas.value = []
   // S-P1-3:代际号 —— 旧连接(已 close 的 WS/降级的 SSE)的迟到帧与状态回调一律丢弃,
@@ -584,6 +656,12 @@ function rebuild(keepCursor: boolean): void {
   }))
   transport.on('command', gate((f) => {
     const r = f.payload as CommandResult
+    // 别的会话执行的命令:输出不能抹在本会话的流里(会对不上账)。
+    const fo = foreignOwner(f, state.value.session?.id ?? '')
+    if (fo) {
+      pushMeta('command', foreignTodoText('command', fo, r.output || r.raw))
+      return
+    }
     if (r.error) {
       pushMeta('error', r.raw + ': ' + r.error)
     } else if (r.output) {
@@ -597,12 +675,29 @@ function rebuild(keepCursor: boolean): void {
   }))
   transport.on('confirm', gate((f) => {
     const req = f.payload as ConfirmRequest
+    // **别的会话的审批不在这里弹**:那一步的决定会作用在那个会话上,
+    // 在本会话弹出来等于骗用户替他点头(多窗口/页签并行时真实会发生)。
+    // 也不能静默丢 —— 审批默认不限时地等,没人知道就一直挂着。⇒ 记一行 + 系统通知。
+    const fo = foreignOwner(f, state.value.session?.id ?? '')
+    if (fo) {
+      const txt = foreignTodoText('confirm', fo, req?.prompt || '')
+      pushMeta('status', txt + '(请到该会话处理)')
+      notifier.fireEvent('gah 需要你确认', txt.slice(0, 120))
+      return
+    }
     confirm.value = req
     // 审批在后台弹出来 = 回合一直阻塞到超时:这是真正“需要人回来”的时刻。
     if (hidden()) notifier.fireEvent('gah 需要你确认', (req?.prompt || '').slice(0, 120))
   }))
   transport.on('question', gate((f) => {
     const req = f.payload as QuestionRequest
+    const fo = foreignOwner(f, state.value.session?.id ?? '')
+    if (fo) {
+      const txt = foreignTodoText('question', fo, req?.prompt || '')
+      pushMeta('status', txt + '(请到该会话处理)')
+      notifier.fireEvent('gah 需要你作答', txt.slice(0, 120))
+      return
+    }
     question.value = req
     questionMin.value = false
     if (hidden()) notifier.fireEvent('gah 需要你作答', (req?.prompt || '').slice(0, 120))
@@ -686,6 +781,9 @@ async function backfillNotices(gen: number): Promise<void> {
   }
 }
 
+// lastRunning 上一轮快照里在跑的会话(用于「从跑变不跑 ⇒ 标未读」)。
+let lastRunning: string[] = []
+
 async function refreshStats(): Promise<void> {
   try {
     state.value = await api.state()
@@ -703,6 +801,27 @@ async function refreshStats(): Promise<void> {
         refreshKey.value++
       }
     }
+    // 页签运行标记 + 未读:后台页签没有事件连接(每页签一条),只能靠这份快照 ——
+    // 「从跑变不跑」且不是当前页签 ⇒ 标未读(切回去就知道有结果了)。
+    const running = state.value.running_sessions || []
+    const mainId = state.value.session?.id ?? ''
+    // 首次校准**只做一次**(占位页 → 服务端当前会话):改绑而不是新建 ——
+    // 新建会让用户一进来就看到两个页签(一个还是没用的占位)。
+    // 必须只做一次:页签打开的可能是**非当前**会话,若每轮都校准,每轮都会把页签
+    // 键强行改回全局当前会话 —— 真机手测据此逮到"两个页签标题一样、关闭失效"。
+    if (!calibrated && mainId && mainId !== tabId.value) {
+      tabs.rekey(tabId.value || 'main', mainId)
+      tabId.value = mainId
+      calibrated = true
+      void syncTitles()
+    }
+    for (const id of lastRunning) {
+      if (running.includes(id) || id === curTabId()) continue
+      tabs.markUnread(id)
+    }
+    lastRunning = running.slice()
+    tabs.markRunning(running, mainId)
+    syncTabs()
   } catch (e) {
     // S-P1-3:网络层失败(非 HTTP 状态错误)= 链路事实 → 据实降级,不等用户发现。
     // HTTP 4xx/5xx 说明服务可达(请求本身被拒),不当作断连。
@@ -824,6 +943,195 @@ function sessionChanged(): void {
   refreshKey.value++
 }
 
+// —— 会话页签 ——
+//
+// 为什么侧栏点会话 = 在本页签打开,而不是全局切换:页签模式下"当前会话"必须稳定
+// (它一被换掉,正在跑的回合就面临切走闸门,且其它页签的绑定全部漂移)。
+// 侧栏那个「切换」按钮的直觉(换一个看)由页签满足;要真全局切换仍是 TUI/命令 `/session switch`。
+
+/** 切换到某个页签(已打开则恢复它自己的流,首次打开则拉历史)。 */
+function switchTab(id: string): void {
+  const key = id || 'main'
+  if (key === tabId.value) return
+  const existed = tabs.has(key)
+  // 切走前:把当前会话的流存回它的页签(否则切回来就空了)。
+  // 只在**它还开着**时存:关页签后再走这条路会用 ensure 把刚关掉的页签重新建出来
+  // (真机手测逮到:关掉一个页签后它又回来了 —— 计数一直是 2)。
+  if (tabId.value && tabs.has(tabId.value)) {
+    tabs.get(tabId.value)!.state = model.value
+    saveDraftToTab(tabId.value)
+  }
+  tabs.activate(key)
+  tabId.value = key
+  // 已打开的页签:用它自己的流(并按**该会话**的游标续接);新页签:空流 + 尾窗回放
+  model.value = existed ? tabs.get(key)!.state : tabs.replaceState(key, newModel()).state
+  metas.value = []
+  // 请求层与事件层一起切(甲方案:每页签一条连接 ⇒ 换绑即重连)
+  api.bindSession(key === 'main' ? '' : key)
+  setTransportSession(key === 'main' ? '' : key)
+  streamSessionId = ''
+  rebuild(!existed)
+  void refreshStats()
+  syncTabs()
+  beginScrollRestore(key)
+  // 草稿要等 DOM 更新完再装(此时组件已是当前页签的那个)
+  void nextTick(() => loadDraftFromTab(key))
+}
+
+/** 在本页签打开某个会话(侧栏点会话)。已开着就直接切过去。 */
+function openTabIn(rawId: string, title?: string): void {
+  const id = rawId || 'main'
+  tabs.ensure(id, newModel, title || (id === 'main' ? '主会话' : shortSessionId(id) || id))
+  switchTab(id)
+}
+
+/** 新建一个页签(spawn:建独立会话且**不动**当前会话)。 */
+async function newTab(): Promise<void> {
+  if (tabs.atLimit()) {
+    pushMeta('error', '页签已达上限(' + tabs.room() + ' 个可开):先关掉一个再新建。')
+    return
+  }
+  try {
+    const r = await api.sessionSpawn()
+    tabs.ensure(r.id, newModel, shortSessionId(r.id) || r.id)
+    switchTab(r.id)
+    void syncTitles()
+  } catch (e) {
+    pushMeta('error', '新建页签失败:' + (e as Error).message)
+  }
+}
+
+/** 关页签。回合属于后端会话不属于窗口 —— 关掉在跑的那个会在后台继续跑。 */
+function closeTab(id: string): void {
+  const out = tabs.close(id)
+  if (!out.closed) return
+  if (out.wasRunning) {
+    notifier.fireEvent('gah 页签已关闭', '「' + out.closed.title + '」在后台继续运行')
+  }
+  if (out.nextActive) {
+    tabId.value = '' // 强制走完整切换流程(不再回存已关闭页签的状态)
+    switchTab(out.nextActive)
+  } else {
+    // 不允许"零页签":回主会话页签(主会话永远存在)
+    tabs.ensure('main', newModel, '主会话')
+    tabId.value = ''
+    switchTab('main')
+  }
+  syncTabs()
+}
+
+// inputRef 当前输入框组件实例(外部 UI 插件覆盖 input 槽位时可能没有 getText/setText,
+// 所以下面每处调用都判空回落 —— 不假设槽位实现是谁)。
+const inputRef = ref<{ getText?: () => string; setText?: (v: string) => void } | null>(null)
+
+/** 切走前把输入框里的字存回当前页签(草稿跟着页签走,切回来还在)。 */
+function saveDraftToTab(id: string): void {
+  const t = tabs.get(id)
+  const v = inputRef.value?.getText?.()
+  if (t && typeof v === 'string') t.draft = v
+}
+
+/** 切走后把目标页签的草稿装进输入框(没有草稿就清空,别把上一个会话的字带过去)。 */
+function loadDraftFromTab(id: string): void {
+  inputRef.value?.setText?.(tabs.get(id)?.draft ?? '')
+}
+
+
+// —— 切页签后恢复滚动位置 ——
+//
+// 关键:**必须等内容稳定**。切换页签后事件连接才刚重连、历史还在回放,此刻 scrollHeight
+// 远小于最终值 —— 这时设 scrollTop 会被后续渲染一路顶走(真机实测:目标 1200,
+// 切回来落在 14364 = 贴底)。所以每帧往目标值上拉,直到 scrollHeight 连续 3 帧不变
+// 或达到帧数上限(约 2s)。
+//
+// 中途用户自己滚了就停手:不跟人抢滚动条。
+let scrollTimer = 0
+// restoring 恢复进行中:期间**不采信**滚动事件。
+// 为什么不能用"设完 scrollTop 后 60ms 内忽略"那种时间窗 —— 事件是异步派发的,
+// 时间窗一过就漏进来,把 atBottom 改回 true,恢复循环随即"以为用户自己滚了"而让位
+// (真机实测:目标 1200,切回来落在 0)。标志位覆盖整段恢复期,没有竞态窗口。
+let restoring = false
+function cancelScrollRestore(): void {
+  restoring = false
+  if (scrollTimer) {
+    clearTimeout(scrollTimer)
+    scrollTimer = 0
+  }
+}
+function beginScrollRestore(id: string): void {
+  cancelScrollRestore()
+  const t = tabs.get(id)
+  if (!t) return
+  // 必须等 DOM 更新完再开始:此刻 streamEl 还指着**旧会话的那个 section**(切页签会
+  // 重建它),对 detached 元素设 scrollTop 无效且 scrollHeight 恒为 0 ——
+  // 真机实测正因此恢复落空(目标 1200,回来是 0)。
+  void nextTick(() => startScrollRestore(t))
+  stick = t.atBottom
+  // 原本就贴底的页签:回到贴底(交给既有的 pinBottom 语义,不必逐帧拉)
+  if (t.atBottom || !t.scrollTop) {
+    void nextTick(() => pinBottom())
+    return
+  }
+}
+
+function startScrollRestore(t: { scrollTop: number; atBottom: boolean }): void {
+  restoring = true
+  const target = t.scrollTop
+  let tries = 0
+  // 只做一件事:把滚动位置拉到目标,拉到就收工。
+  // 早先那版还判断「scrollHeight 是否稳定」「用户是否中途滚走」,结果把自己掐死 ——
+  // 真机实测目标 1200、切回来落在 0;而同样"延时一下再设"的探针一次就成。
+  // 现在:恢复期不采信滚动事件(restoring),拉到目标即结束;之后用户滚动立刻照常生效。
+  const step = (): void => {
+    const el = streamEl.value
+    if (el) el.scrollTop = target
+    tries++
+    const reached = !!el && Math.abs(el.scrollTop - target) < 2
+    if ((reached && tries > 2) || tries > 40) {
+      scrollTimer = 0
+      restoring = false
+      return
+    }
+    scrollTimer = window.setTimeout(step, 50)
+  }
+  scrollTimer = window.setTimeout(step, 50)
+}
+
+/** 会话被删(侧栏):若有开着页签,那一页已经不存在 → 关掉它。 */
+function onSessionDeleted(id: string): void {
+  const key = id || 'main'
+  if (!tabs.has(key)) return
+  if (key === curTabId()) {
+    // 当前页签被删:后端已新建空会话承接 → 直接去那个新的
+    const cur = state.value.session?.id ?? ''
+    if (cur && cur !== key) {
+      openTabIn(cur)
+      return
+    }
+  }
+  closeTab(key)
+}
+
+/** 页签标题拿真实会话名(侧栏拉过一次列表,这里只做一次性对齐;无名则用短 id)。 */
+async function syncTitles(): Promise<void> {
+  try {
+    const list = await api.sessions()
+    for (const s of list) {
+      const key = s.ID || 'main'
+      const t = tabs.get(key)
+      if (!t) continue
+      const label = tabTitle(s.Name, key)
+      if (t.title !== label) {
+        t.title = label
+        tabs.ensure(key, () => t.state, label)
+      }
+    }
+    syncTabs()
+  } catch {
+    /* 拿不到名字就用短 id(页签仍可用),不报错打断 */
+  }
+}
+
 async function onQuestionAnswer(values: string[], text: string): Promise<void> {
   const req = question.value
   if (!req) return
@@ -899,6 +1207,7 @@ onMounted(async () => {
   statsTimer = setInterval(() => void refreshStats(), 3000)
 })
 onUnmounted(() => {
+  cancelScrollRestore()
   window.removeEventListener('pointerdown', onFirstGesture, { capture: true })
   window.removeEventListener(OPEN_DOC_EVENT, onOpenDoc)
   window.removeEventListener(OPEN_PANEL_EVENT, onOpenPanel)
@@ -955,15 +1264,27 @@ onUnmounted(() => {
       </button>
     </section>
 
+    <TabBar
+      :tabs="tabList"
+      :active="tabId || 'main'"
+      :limit-reached="tabs.atLimit()"
+      @select="switchTab"
+      @close="closeTab"
+      @new="newTab"
+    />
+
     <div class="main">
       <!-- 左侧历史抽屉(可收起):会话 + 工作区 -->
       <Sidebar
         :refresh-key="refreshKey"
-        :cur-session="state.session?.id"
+        :cur-session="tabId"
         :cur-key="state.session?.key"
         :running-sessions="state.running_sessions || []"
         :cur-steps="steps"
         @session-changed="sessionChanged"
+        @open-tab="openTabIn"
+        @new-tab="newTab"
+        @session-deleted="onSessionDeleted"
         @open-panel="openPanel = $event"
       />
 
@@ -1048,6 +1369,7 @@ onUnmounted(() => {
           <component
             :is="slotComponent('input') || 'div'"
             :disabled="offline"
+            ref="inputRef"
             :busy="state.running"
             :on-cancel="stopTurn"
             :disabled-hint="offline ? '连接已断开:草稿与附件已保留,恢复后请重新发送' : ''"

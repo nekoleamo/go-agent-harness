@@ -21,7 +21,13 @@ const props = defineProps<{
   curSteps?: number
 }>()
 
-const emit = defineEmits<{ (e: 'session-changed'): void; (e: 'open-panel', key: string): void }>()
+const emit = defineEmits<{
+  (e: 'session-changed'): void
+  (e: 'open-tab', id: string): void
+  (e: 'new-tab'): void
+  (e: 'session-deleted', id: string): void
+  (e: 'open-panel', key: string): void
+}>()
 
 // stopSession 停某个会话正在跑的回合(多会话并行后,「停」得说清停哪个)。
 // 走 /api/control {cancel, session};后端在缺 SessionRunner 时会 501,如实显示不假装停了。
@@ -112,27 +118,24 @@ function guard(title: string, danger: boolean, run: () => void): void {
   ask({ title, danger, run })
 }
 
-async function doSwitchSession(id: string): Promise<void> {
-  try {
-    await api.sessionSwitch(id)
-    emit('session-changed')
-  } catch (e) {
-    err.value = (e as Error).message
-  }
+// 「打开会话」= 在本页签打开它(页签模式),**不做全局切换**。
+// 为何不调 api.sessionSwitch:全局切换会换掉「当前打开的会话」,而页签模式下其它页签
+// 绑定的正是各自会话(当前会话一被换,正在跑的回合就撞上切走闸门,且绑定关系全漂)。
+// 全局切换仍由 TUI / 命令 `/session switch` 承担。
+function doSwitchSession(id: string): void {
+  emit('open-tab', id)
 }
 function switchSession(s: SessionInfo): void {
-  guard('切换到会话「' + label(s) + '」？', false, () => void doSwitchSession(s.ID))
+  // 不做二次确认:页签模式下"打开会话"只是换一个视图,**没有任何后端副作用**
+  // (不改当前会话、不动文件)。原先那个确认是因为它会全局切换 —— 那个语义已经没了。
+  // 真机手测:每次开页签都要多点一次确认,摩擦与风险完全不成比例。
+  doSwitchSession(s.ID)
 }
-async function doNewSession(): Promise<void> {
-  try {
-    await api.sessionNew()
-    emit('session-changed')
-  } catch (e) {
-    err.value = (e as Error).message
-  }
+function doNewSession(): void {
+  emit('new-tab')
 }
 function newSession(): void {
-  guard('新建会话？', false, () => void doNewSession())
+  guard('新建会话页签？(会新建一个空会话)', false, () => doNewSession())
 }
 
 // —— 会话改名(内联编辑,保存时二次确认;后端 rename 仅作用当前会话 → 先切目标会话再改名)—
@@ -144,8 +147,9 @@ async function doSaveName(s: SessionInfo): Promise<void> {
   editing.value = null
   if (!v) return
   try {
-    await api.sessionSwitch(s.ID) // 同名/当前会话幂等
-    await api.sessionRename(v)
+    // 不再 `await api.sessionSwitch(s.ID)` —— 页签模式下改名不该切走当前会话
+    // (切走会撞切走闸门);改名按 id 定位(主会话 id 传空)。
+    await api.sessionRename(v, s.ID || '')
     emit('session-changed')
     void refresh()
   } catch (e) {
@@ -194,6 +198,8 @@ async function doDeleteSession(s: SessionInfo): Promise<void> {
     await api.sessionDelete(s.ID)
     // 删当前会话 → 后端已新建空会话承接,前端必须重新对齐(id 已变)。
     if (wasCurrent) emit('session-changed')
+    // 页签侧:被删会话若有开着页签,那一页已经不存在了 → 通知宿主关掉。
+    emit('session-deleted', s.ID || '')
     window.dispatchEvent(new Event('gah:sessions-changed'))
     void refresh()
   } catch (e) {

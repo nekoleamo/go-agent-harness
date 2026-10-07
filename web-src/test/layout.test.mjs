@@ -679,6 +679,7 @@ async function measure(page) {
       hasSettings: !!document.querySelector('[aria-label="设置"]'),
       composer: box('.input-slot'),
       statusbar: box('.statusbar-slot'),
+      tabbar: box('.tabbar'),
     }
   })
 }
@@ -2119,9 +2120,10 @@ describe('布局护栏:整页永不滚动(第五十二/五十三批)', { skip: s
   // (那是变更视图的空态,回复全进了看不见的会话流)。
   // 删**非当前**历史会话,不该动当前会话(2026-10-04 用户实测)。
   //
-  // 判据用 sessionStorage 的 `gah.lastSeq`:App.rebuild(false)(session-changed 的处理函数)
-  // 第一件事就是 `sessionStorage.removeItem('gah.lastSeq')` —— 它是「整条会话流被重建过」
+  // 判据用 sessionStorage 的续传游标键:App.rebuild(false)(session-changed 的处理函数)
+  // 第一件事就是清它(transport.clearSessionCursor)—— 它是「整条会话流被重建过」
   // 留下的**可观测痕迹**,且不依赖任何 DOM 细节。
+  // 键是**按会话分桶**的(多页签各一个,主会话 `gah.lastSeq.main`),所以先找出当前在用的那个桶。
   test('删非当前历史会话不刷新当前会话(删当前会话仍要刷新)', async (t) => {
     const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
     let page = null
@@ -2129,8 +2131,13 @@ describe('布局护栏:整页永不滚动(第五十二/五十三批)', { skip: s
       const stub = makeStub(true, false)
       page = await open(ctx, stub, docks[0].dock)
       await page.waitForSelector('.sidebar .items', { timeout: 10000 })
-      const mark = async (v) => page.evaluate((x) => sessionStorage.setItem('gah.lastSeq', x), v)
-      const readMark = () => page.evaluate(() => sessionStorage.getItem('gah.lastSeq'))
+      const mark = async (v) =>
+        page.evaluate((x) => {
+          const k = Object.keys(sessionStorage).find((n) => n.startsWith('gah.lastSeq.')) || 'gah.lastSeq.main'
+          sessionStorage.setItem(k, x)
+          return k
+        }, v)
+      const readMark = (k) => page.evaluate((key) => sessionStorage.getItem(key), k)
       const delRow = async (name) => {
         await page.click(`.sidebar .session-item:has-text("${name}") .op.del`)
         await page.waitForSelector('[aria-label="操作确认"]')
@@ -2139,16 +2146,85 @@ describe('布局护栏:整页永不滚动(第五十二/五十三批)', { skip: s
       }
 
       // ① 删一个**非当前**的历史会话(桩里当前会话名是 main,历史是 session N)
-      await mark('777')
+      const k1 = await mark('777')
       await delRow('session 7')
-      assert.equal(await readMark(), '777', '删非当前会话不该重建当前会话的流(上一次会话才被清过)')
+      assert.equal(await readMark(k1), '777', '删非当前会话不该重建当前会话的流(上一次会话才被清过)')
 
       // ② 删**当前**会话:后端会新建空会话承接,前端必须重新对齐 ⇒ 流要被重建
-      await mark('777')
+      const k2 = await mark('777')
       await delRow('main')
-      assert.equal(await readMark(), null, '删当前会话后端已新建空会话承接,前端必须重建会话流')
+      assert.equal(await readMark(k2), null, '删当前会话后端已新建空会话承接,前端必须重建会话流')
 
       assertInvariants(await measure(page))
+    } catch (e) {
+      await shoot(page, t.name)
+      throw e
+    } finally {
+      await ctx.close()
+    }
+  })
+
+  // 会话页签(第一百一十三批):页签条是**新增的横向通栏**,最容易破坏"整页不滚"与
+  // "主列不被挤"两条纪律;顺带钉住「点侧栏 = 在本页签打开」与「关到最后一个回落」。
+  test('会话页签条:多页签仍整页不滚、关掉最后一个回主会话', async (t) => {
+    const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+    let page = null
+    try {
+      const stub = makeStub(true, false)
+      page = await open(ctx, stub, docks[0].dock)
+      await page.waitForSelector('.tabbar', { timeout: 10000 })
+      const tabs = () => page.$$eval('.tabbar .tab', (ns) => ns.length)
+
+      assert.equal(await tabs(), 1, '首屏只有当前会话一个页签')
+      const before = await measure(page)
+
+      // 点侧栏里的历史会话 = 在本页签打开它(不做全局切换)
+      await page.click('.sidebar .session-item:has-text("session 1")')
+      await page.waitForFunction(() => document.querySelectorAll('.tabbar .tab').length === 2, null, { timeout: 8000 })
+      assert.equal(await tabs(), 2, '点侧栏应开出第二个页签')
+
+      // 页签条不得挤压主列(输入框列宽不变)、整页不滚
+      const after = await measure(page)
+      assert.equal(after.scrollHeight <= after.clientHeight + 1, true, '加页签后整页不得出现纵向滚动')
+      assert.equal(after.scrollWidth <= after.clientWidth + 1, true, '加页签后整页不得出现横向滚动')
+      assert.equal(after.composer.width, before.composer.width, '页签条是通栏,不许挤压主列宽度')
+      assert.ok(after.tabbar && after.tabbar.bottom > after.tabbar.top, '页签条应可见且有高度')
+
+      // 关掉刚开的那一个 → 回到 1 个
+      await page.$$eval('.tabbar .tab .x', (els) => els[els.length - 1].click()) // 关最后一个页签(.add 不是 .tab,别用 :last-child)
+      await page.waitForFunction(() => document.querySelectorAll('.tabbar .tab').length === 1, null, { timeout: 8000 })
+      assertInvariants(await measure(page))
+    } catch (e) {
+      await shoot(page, t.name)
+      throw e
+    } finally {
+      await ctx.close()
+    }
+  })
+
+  // 草稿必须**跟着页签走**(用户在同一窗口开多个会话,最怕的是切个页签就把没发出去的字弄丢,
+  // 或反过来把上一个会话的字发到另一个会话去)。
+  test('会话页签:草稿跟着页签走,切过去不串台', async (t) => {
+    const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+    let page = null
+    try {
+      const stub = makeStub(true, false)
+      page = await open(ctx, stub, docks[0].dock)
+      await page.waitForSelector('.tabbar', { timeout: 10000 })
+      await page.click('.sidebar .session-item:has-text("session 1")')
+      await page.waitForFunction(() => document.querySelectorAll('.tabbar .tab').length === 2, null, { timeout: 8000 })
+
+      const ta = '.input-slot textarea'
+      await page.fill(ta, 'draft-for-tab-2')
+      // 切到第一个页签:那个页签没有草稿 ⇒ 输入框应为空(不能带过去的字)
+      await page.$$eval('.tabbar .tab', (ns) => ns[0].click())
+      await page.waitForTimeout(600)
+      assert.equal(await page.$eval(ta, (el) => el.value), '', '切到没草稿的页签,输入框不该带上一页的字')
+
+      // 切回来:草稿还在
+      await page.$$eval('.tabbar .tab', (ns) => ns[ns.length - 1].click())
+      await page.waitForTimeout(600)
+      assert.equal(await page.$eval(ta, (el) => el.value), 'draft-for-tab-2', '切回来草稿应还在')
     } catch (e) {
       await shoot(page, t.name)
       throw e
