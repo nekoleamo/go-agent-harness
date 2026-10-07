@@ -65,6 +65,10 @@ var searchProviders = map[string]func(client *http.Client) SearchProvider{
 	searchfile.ProviderExa:       func(client *http.Client) SearchProvider { return NewExaProvider(client) },
 }
 
+// exaDefaultEndpoint exa 官方端点(配置里没写 endpoint 时用这个 —— 与 NewExaProvider
+// 内部的口径必须一致,否则「配置里看到的」与「实际发到的」会分叉)。
+const exaDefaultEndpoint = "https://api.exa.ai/search"
+
 // NewSearchToolFromEnv **外部插件**用的构造入口(第八十五批):provider 名取生效配置
 // (env GAH_SEARCH_PROVIDER > 配置文件 provider,缺省 searchfile.DefaultProvider;
 // 宿主按 Capabilities.ConfigEnv 注入),
@@ -122,11 +126,11 @@ func NewExaProvider(client *http.Client) *exaProvider {
 	}
 	key, err := resolveExaKey()
 	if err != nil {
-		return &exaProvider{client: client, endpoint: "https://api.exa.ai/search", err: err}
+		return &exaProvider{client: client, endpoint: exaDefaultEndpoint, err: err}
 	}
 	endpoint := resolveFileEndpoint()
 	if endpoint == "" {
-		endpoint = "https://api.exa.ai/search"
+		endpoint = exaDefaultEndpoint
 	}
 	return &exaProvider{
 		client:   client,

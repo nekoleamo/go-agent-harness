@@ -37,10 +37,22 @@ func NewSearchService() sdk.SearchService {
 	if name == "" {
 		name = searchfile.DefaultProvider
 	}
-	endpoint := resolveFileEndpoint()
-	key := ""
+	// 端点与 key 都按**当前 provider**取,不能用 resolveFileEndpoint —— 那个函数是
+	// exa 专用的(内部硬编码 ProviderExa),拿它给 anysearch 会返回空或别人的端点。
+	var endpoint, key string
 	if cfg, err := loadSearchConfig(); err == nil {
+		endpoint = cfg.EndpointFor(name)
 		key = cfg.KeyFor(name)
+	}
+	// 配置里没写 endpoint 时补上官方默认 —— 诊断命令要回答的是「请求实际打到哪」,
+	// 留空会让用户以为「没配端点所以不知道发到哪」,而真实目标一直是确定的。
+	if endpoint == "" {
+		switch name {
+		case searchfile.ProviderExa:
+			endpoint = exaDefaultEndpoint
+		case searchfile.ProviderAnysearch:
+			endpoint = anysearchDefaultEndpoint
+		}
 	}
 	s := &searchService{
 		provider: name,

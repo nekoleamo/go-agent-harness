@@ -64,6 +64,11 @@ func SearchEndpointHost(endpoint string) string {
 	if i := strings.IndexAny(e, "/?#"); i >= 0 {
 		e = e[:i]
 	}
+	// 去掉端口:「是哪一家」这个问题 host 就够回答,端口是本地自建端点才有的细节,
+	// 留在输出里只会让人以为那是线上服务的一部分。
+	if i := strings.LastIndex(e, ":"); i >= 0 && !strings.Contains(e[i:], "]") {
+		e = e[:i]
+	}
 	if i := strings.Index(e, "@"); i >= 0 { // user:pass@host 形态也只留 host
 		e = e[i+1:]
 	}
