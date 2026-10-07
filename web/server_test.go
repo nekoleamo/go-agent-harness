@@ -44,6 +44,21 @@ func (l *stubLoop) Run(_ context.Context, input string) error {
 	return l.failErr
 }
 
+// waitLastInput 等 stubLoop 收到第一条输入(最多 2s)。
+// 为什么需要:handleInput 先回 202 再起 goroutine 跑回合,"已受理"不等于"已经跑到"。
+func waitLastInput(l *stubLoop) string {
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if v := l.last(); v != "" {
+			return v
+		}
+		if time.Now().After(deadline) {
+			return ""
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func (l *stubLoop) last() string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -1921,7 +1936,10 @@ func TestAttachmentsEndpoint(t *testing.T) {
 	if resp.StatusCode != 202 {
 		t.Fatalf("input 应 202,得 %d", resp.StatusCode)
 	}
-	got := s.loop.(*stubLoop).last()
+	// 202 只表示"已受理":handleInput 是**先应答再起 goroutine 跑回合**,所以断言那一刻
+	// stubLoop 未必已经被调用过(慢 CI 上就是偶发红,本地 80 次都复现不了)。
+	// 这里等它落账,而不是加 sleep 赌时序。
+	got := waitLastInput(s.loop.(*stubLoop))
 	if !strings.Contains(got, "[附件]") || !strings.Contains(got, "photo.png") {
 		t.Fatalf("附件引用未注入: %q", got)
 	}
