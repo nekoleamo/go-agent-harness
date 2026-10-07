@@ -943,6 +943,17 @@ const filteredModels = computed(() => {
 const hiddenModelCount = computed(
   () => modelOptions.value.length - filteredModels.value.length,
 );
+// noPriceInfoProviders 哪些端点的模型列表**完全不带价格信息**。
+//
+// 为什么要有这一行:免费徽标是靠端点 /models 返回的 pricing 算出来的(没有硬编码任何
+// 「某家免费」—— 那些政策会过期,百炼的额度有效期就已经从 365 天改成 90 天)。代价是:
+// 端点不给价格时,面板上就不会出现「免费」徽标,而**用户无从区分**「这些真不免费」与
+// 「这个网关没告诉我们价格」。直说比让用户怀疑徽标坏了强。
+const noPriceInfoProviders = computed(() =>
+  models.value
+    .filter((g) => (g.Models ?? []).length > 0 && !g.Models.some((m) => m.PriceKnown))
+    .map((g) => g.Name),
+);
 // curModelLabel 当前生效模型的可读标签(输入框占位 + 「当前生效」行)。
 // 真源是 state.model(运行时真正在用的),不是筛选框内容 —— 真机上「当前模型」标签后面
 // 就是个空筛选框,用户会读成「已选了模型但当前模型没显示」,故把当前值显式摆出来。
@@ -3223,6 +3234,11 @@ watch(
                 data-testid="model-role-note"
               >
                 当前角色已指定模型：这里切换只改会话档，实际仍按角色跑。
+              </p>
+              <p v-if="noPriceInfoProviders.length" class="dim">
+                {{ noPriceInfoProviders.join("、") }}
+                未提供价格信息，判不出哪些模型免费（免费标记只依据端点自述的价格，
+                gah 不内置任何"某家免费"的说法——那些政策变得比软件快）。
               </p>
               <div class="m-list">
                 <label class="m-filter dim">

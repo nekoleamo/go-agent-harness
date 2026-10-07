@@ -182,3 +182,30 @@ func TestPromptPriceIsPerToken(t *testing.T) {
 		t.Fatal("价格为 0 应判为免费")
 	}
 }
+
+// TestNoPriceInfoIsSafeNotMisleading 端点**不**给价格信息时的三条边界。
+//
+// 这组断言是「零硬编码免费政策」这条决定的代价与护栏(2026-10-06 决定 A 方案):
+// 免费徽标只依据端点 /models 自述的 pricing,不内置任何「某家免费」的说法 ——
+// 那些政策变得比软件快(通义百炼的免费额度有效期就已经从 365 天改成 90 天)。
+// 于是必须保证「端点没说」不会被误读成任何事实:
+//
+//	① 不标免费(否则会把付费模型标成免费);
+//	② 不给任何标签(标签会暗示我们知道了什么);
+//	③ 仍判可用(否则「只看能当 agent 用的」过滤会把这类端点的模型**全部清空**)。
+func TestNoPriceInfoIsSafeNotMisleading(t *testing.T) {
+	v := AssessModel(ModelInfo{ID: "qwen-plus", OwnedBy: "qwen"})
+	if v.Free {
+		t.Fatal("端点没说价格时不能标免费")
+	}
+	if len(v.Tags) != 0 {
+		t.Fatalf("没有价格/能力信息时不该给标签: %v", v.Tags)
+	}
+	if !v.Usable {
+		t.Fatal("未声明能力的模型仍应判可用(否则过滤会清空这类端点)")
+	}
+	// 主路径:端点给了 pricing=0 ⇒ 自动标免费,零维护
+	if !AssessModel(ModelInfo{ID: "free-x", PriceKnown: true}).Free {
+		t.Fatal("pricing=0 应自动标免费")
+	}
+}
