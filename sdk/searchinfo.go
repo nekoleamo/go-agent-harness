@@ -64,13 +64,15 @@ func SearchEndpointHost(endpoint string) string {
 	if i := strings.IndexAny(e, "/?#"); i >= 0 {
 		e = e[:i]
 	}
-	// 去掉端口:「是哪一家」这个问题 host 就够回答,端口是本地自建端点才有的细节,
+	// **先**剥 userinfo,再剥端口:`user:pass@host` 里也含冒号,反序会把 `user` 当成 host
+	// (IPv6 字面量 [::1]:8080 同理,所以端口那一段要跳过含 ] 的)。
+	if i := strings.Index(e, "@"); i >= 0 {
+		e = e[i+1:]
+	}
+	// 端口:「是哪一家」这个问题 host 就够回答,端口是本地自建端点才有的细节,
 	// 留在输出里只会让人以为那是线上服务的一部分。
 	if i := strings.LastIndex(e, ":"); i >= 0 && !strings.Contains(e[i:], "]") {
 		e = e[:i]
-	}
-	if i := strings.Index(e, "@"); i >= 0 { // user:pass@host 形态也只留 host
-		e = e[i+1:]
 	}
 	if e == "" {
 		return "(端点无法解析)"
