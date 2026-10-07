@@ -16,11 +16,15 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/nekoleamo/go-agent-harness/internal/searchfile"
 )
 
 // anysearchDefaultEndpoint 官方端点(api.anysearch.com;文档站为 SPA,端点形状取自实测)。
+// providerLabelAnysearch 本文件这条路径的服务名(兜底报错要指名是谁在报错)。
+const providerLabelAnysearch = "anysearch"
+
 const anysearchDefaultEndpoint = "https://api.anysearch.com/v1/search"
 
 // anysearchProvider 直连 AnySearch Search API。
@@ -29,6 +33,12 @@ type anysearchProvider struct {
 	endpoint string
 	apiKey   string
 	err      error // 配置解析错误(坏 search.yaml):Search 时显式失败
+	// keyRejected 记「这次运行的 key 被服务端拒了」—— 拒一次之后就一直匿名。
+	//
+	// 为什么要有记忆而不是每次都重试:401 往返一次不多,但每次搜索都多一次失败请求,
+	// 在批量搜索里会明显变慢。key 是**配置**,它不会自己在运行中变好,拒了就该当作没配。
+	keyRejected bool
+	mu          sync.Mutex
 }
 
 // NewAnysearchProvider 构造 anysearch provider。key 为空 = 匿名调用(合法)。
@@ -67,9 +77,18 @@ func (p *anysearchProvider) Search(ctx context.Context, query string, n int) ([]
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", userAgent)
-	// 匿名调用不带 Authorization;带错 key 会 401/403 且**不会**回落匿名,所以宁可不带。
-	if p.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	// 带 key(提额用);**被拒过一次之后一律不带** —— 见 keyRejected 的注释。
+	//
+	// 为什么不是「宁可不带」(原注释那么写、代码却反着做):匿名才是这条路的前提,
+	// 带 key 只是加分项。加分项把主功能打挂是本末倒置(2026-10-06 实测:一个失效 key 就 401)。
+	p.mu.Lock()
+	key := ""
+	if !p.keyRejected {
+		key = p.apiKey
+	}
+	p.mu.Unlock()
+	if key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
 	}
 	resp, err := p.client.Do(req)
 	if err != nil {
@@ -82,6 +101,12 @@ func (p *anysearchProvider) Search(ctx context.Context, query string, n int) ([]
 	}
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized, resp.StatusCode == http.StatusForbidden:
+		// key 被拒 → **退回匿名重试一次**。匿名是这条路能工作的前提(key 只是提额),
+		// 让一个加分项把主功能打挂是本末倒置 —— 这正是 2026-10-06 用户遇到的:
+		// 搜不动,报错还只有一句「搜索服务返回 402」,看不出是没配 key 还是 key 坏了。
+		if p.rememberKeyRejected() {
+			return p.Search(ctx, query, n) // 已记住「key 无效」,这次不带 key
+		}
 		return nil, &SearchError{Kind: "auth", Msg: fmt.Sprintf(
 			"搜索服务拒绝鉴权(%d)。anysearch 匿名即可用,可把 %s 的配置清空;exa 需检查 $GAH_HOME/config/search.yaml 的 key",
 			resp.StatusCode, searchfile.EnvAnysearchAPIKey)}
@@ -94,7 +119,14 @@ func (p *anysearchProvider) Search(ctx context.Context, query string, n int) ([]
 	case resp.StatusCode >= 500:
 		return nil, &SearchError{Kind: "server", Msg: fmt.Sprintf("搜索服务暂时不可用(%d),可稍后重试", resp.StatusCode)}
 	case resp.StatusCode != http.StatusOK:
-		return nil, &SearchError{Kind: "http", Msg: fmt.Sprintf("搜索服务返回 %d", resp.StatusCode)}
+		// 兜底也**必须说清是谁在报错**:「搜索服务返回 402」这种句子对用户零信息量 ——
+		// 他既不知道是哪一家,也不知道下一步做什么(2026-10-06 实测:用户拿这句话来问,
+		// 而真正的信息在它前面那个分支里,压根没被打印出来)。
+		return nil, &SearchError{Kind: "http", Msg: fmt.Sprintf(
+			"搜索服务(%s)返回 %d。排查:%s=%s 是当前 provider;anysearch 匿名可用(配了 key 也可能因失效而 402/401,会自动退回匿名);exa 是按量付费,402 即额度用尽,换 %s=%s 后 /reload",
+			providerLabelAnysearch, resp.StatusCode,
+			searchfile.EnvProvider, currentProviderName(),
+			searchfile.EnvProvider, searchfile.ProviderAnysearch)}
 	}
 	var out struct {
 		Code    int    `json:"code"`
@@ -130,4 +162,18 @@ func (p *anysearchProvider) Search(ctx context.Context, query string, n int) ([]
 		})
 	}
 	return results, nil
+}
+
+// rememberKeyRejected 记下「key 被拒」并回报是否**本次**才发生(第一次才重试)。
+func (p *anysearchProvider) rememberKeyRejected() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.apiKey == "" {
+		return false // 已经是匿名在跑了,再退一次没有意义
+	}
+	if p.keyRejected {
+		return false // 已经退过,别把每次搜索都变成两次请求
+	}
+	p.keyRejected = true
+	return true
 }

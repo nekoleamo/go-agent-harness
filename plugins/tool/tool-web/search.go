@@ -21,6 +21,22 @@ import (
 
 const maxResults = 10 // num_results 上限
 
+// providerLabel 本文件这条路径的服务名(兜底报错要指名是谁在报错 —— 「搜索服务返回 402」
+// 这种句子对用户零信息量:既不知道是哪一家,也不知道下一步做什么)。
+const providerLabel = "exa"
+
+// currentProviderName 当前生效的 provider 名(读配置;读不到用缺省,缺省也读不到就说未知)。
+func currentProviderName() string {
+	name := ""
+	if cfg, err := loadSearchConfig(); err == nil {
+		name = strings.TrimSpace(cfg.Provider)
+	}
+	if name == "" {
+		return searchfile.DefaultProvider
+	}
+	return name
+}
+
 // SearchResult 归一化搜索结果(与 provider 解耦的公共结构)。
 type SearchResult struct {
 	Title         string `json:"title"`
@@ -166,7 +182,14 @@ func (p *exaProvider) Search(ctx context.Context, query string, n int) ([]Search
 	case resp.StatusCode >= 500:
 		return nil, &SearchError{Kind: "server", Msg: fmt.Sprintf("搜索服务暂时不可用(%d),可稍后重试", resp.StatusCode)}
 	case resp.StatusCode != http.StatusOK:
-		return nil, &SearchError{Kind: "http", Msg: fmt.Sprintf("搜索服务返回 %d", resp.StatusCode)}
+		// 兜底也**必须说清是谁在报错**:「搜索服务返回 402」这种句子对用户零信息量 ——
+		// 他既不知道是哪一家,也不知道下一步做什么(2026-10-06 实测:用户拿这句话来问,
+		// 而真正的信息在它前面那个分支里,压根没被打印出来)。
+		return nil, &SearchError{Kind: "http", Msg: fmt.Sprintf(
+			"搜索服务(%s)返回 %d。排查:%s=%s 是当前 provider;anysearch 匿名可用(配了 key 也可能因失效而 402/401,会自动退回匿名);exa 是按量付费,402 即额度用尽,换 %s=%s 后 /reload",
+			providerLabel, resp.StatusCode,
+			searchfile.EnvProvider, currentProviderName(),
+			searchfile.EnvProvider, searchfile.ProviderAnysearch)}
 	}
 	type exaResult struct {
 		Title         string `json:"title"`

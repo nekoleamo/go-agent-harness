@@ -103,12 +103,28 @@ func (h *Host) cmdContext(args []string) (string, error) {
 		}
 		fmt.Fprintf(&sb, "上下文窗口: %d token(%s)\n", window, src)
 		if st.Requests > 0 {
-			used := st.PromptTokens
+			// 「占用」必须是**当前上下文的大小**,而不是累计输入。
+			//
+			// 原来直接拿 st.PromptTokens(会话**累计**输入)除窗口,于是 20 次请求累积到
+			// 263k 时报「占用 51%」—— 而真实上下文只有 ~19k(3.7%)。这个数字摆在状态栏
+			// 旁边会被当成「快满了」,进而让用户不敢继续对话、去手动 /compact,或者
+			// 干脆换大窗口模型(2026-10-07 用户排查时先撞上的是这个误解)。
+			//
+			// 口径:最近一次请求的实测输入(LastPromptTokens)最接近「下一轮会有多大」;
+			// 它拿不到(尚无请求)才退回累计值,并**显式标注**那份是累计口径,不冒充。
+			used, usedIsEstimate := st.LastPromptTokens, false
+			if used <= 0 {
+				used, usedIsEstimate = st.PromptTokens, true
+			}
 			cache := 0
 			if st.PromptTokens > 0 {
 				cache = st.CachedTokens * 100 / st.PromptTokens
 			}
-			fmt.Fprintf(&sb, "占用: %s/%s(%d%%)  %s\n", fmtK(used), fmtK(window), used*100/window, contextBar(used, window))
+			label := "占用"
+			if usedIsEstimate {
+				label = "占用(无实测请求,按累计输入估)"
+			}
+			fmt.Fprintf(&sb, "%s: %s/%s(%d%%)  %s\n", label, fmtK(used), fmtK(window), used*100/window, contextBar(used, window))
 			fmt.Fprintf(&sb, "累计: 输入 %d · 输出 %d · 缓存命中 %d(%d%%) · 请求 %d\n",
 				st.PromptTokens, st.CompletionTokens, st.CachedTokens, cache, st.Requests)
 		} else {

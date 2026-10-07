@@ -791,15 +791,18 @@ func TestTurnMaxStepsConfigured(t *testing.T) {
 // 供断言"重试发出去的是压缩后的历史"。嵌入 errLLM 复用其余接口方法。
 type overflowLLM struct {
 	errLLM
-	calls  int
+	calls int
+	// always:每次都报超窗
 	always bool
-	reqs   [][]sdk.LLMMessage
+	// failUntilCall:前 N 次调用报超窗(第 1 次也算);用来测"第二轮才过"
+	failUntilCall int
+	reqs          [][]sdk.LLMMessage
 }
 
 func (o *overflowLLM) Complete(_ context.Context, req *sdk.LLMRequest, _ func(sdk.LLMStreamEvent) error) (*sdk.LLMResponse, error) {
 	o.calls++
 	o.reqs = append(o.reqs, req.Messages)
-	if o.always || o.calls == 1 {
+	if o.always || (o.failUntilCall > 0 && o.calls <= o.failUntilCall) || o.calls == 1 {
 		return nil, errors.New(`llm-openai: HTTP 400: {"error":{"code":"context_length_exceeded","message":"This model's maximum context length is 8192 tokens. However, your messages resulted in 9000 tokens."}}`)
 	}
 	return &sdk.LLMResponse{
@@ -909,9 +912,13 @@ func projCharsAll(msgs []sdk.LLMMessage) string {
 	return b.String()
 }
 
-// TestTurnOverflowRetriesAtMostOnce 端点持续报超窗:只重试一次,失败文案如实说明"已试过自动压缩"
-// 并给出人话出路 —— 不静默把原始报错丢给用户,也不形成重试环/重复计费。
-func TestTurnOverflowRetriesAtMostOnce(t *testing.T) {
+// TestTurnOverflowRetriesBounded 端点持续报超窗:压缩后**重试若干轮但有硬上限**,失败文案
+// 如实说明「已自动压缩 N 次仍超窗」并给出人话出路 —— 不静默丢原始报错,也不形成重试环。
+//
+// 上限从 1 提到 maxOverflowAttempts 的原因(2026-10-07 用户真机):折叠受「水位不得越过
+// 最后一个用户轮」约束,单轮压不下来时差额往往再折一轮就够;实测 512K 窗口请求 697K 时
+// 单轮之后仍超,直接把用户挡在门外,把本该自动做的一步推给了 /compact。
+func TestTurnOverflowRetriesBounded(t *testing.T) {
 	e := buildEnv(t, `[{"text":"unused"}]`)
 	e.log.RegisterCompressor(1_000_000, &foldAllCompressor{})
 	llm := &overflowLLM{always: true}
@@ -920,13 +927,28 @@ func TestTurnOverflowRetriesAtMostOnce(t *testing.T) {
 	if err == nil {
 		t.Fatal("端点持续超窗应显式失败")
 	}
-	if llm.calls != 2 {
-		t.Fatalf("只应重试一次(硬上限): %d", llm.calls)
+	if want := maxOverflowAttempts + 1; llm.calls != want {
+		t.Fatalf("请求次数应是 1 + 最多 %d 轮重试 = %d,实得 %d", maxOverflowAttempts, want, llm.calls)
 	}
-	for _, want := range []string{"已自动压缩上下文后重试仍超窗", "/compact"} {
+	for _, want := range []string{"已自动压缩", "/compact"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("失败文案应含 %q,得: %v", want, err)
 		}
+	}
+}
+
+// TestTurnOverflowSucceedsAfterSeveralRounds 第二轮才过:必须真的按新投影重发,
+// 不能因为第一次还超就直接放弃(那正是这个改动要修的行为)。
+func TestTurnOverflowSucceedsAfterSeveralRounds(t *testing.T) {
+	e := buildEnv(t, `[{"text":"好了"}]`)
+	e.log.RegisterCompressor(1_000_000, &foldAllCompressor{})
+	llm := &overflowLLM{failUntilCall: 2} // 第 1、2 次超窗,第 3 次才过
+	loop := &Loop{c: e.c, sessions: e.sessions, tools: e.tools, locks: newKeyedMutex(), llm: llm, sp: e.sp}
+	if err := loop.Run(context.Background(), "问题"); err != nil {
+		t.Fatalf("第二/三轮压缩后应成功: %v", err)
+	}
+	if llm.calls != 3 {
+		t.Fatalf("应在第 3 次请求成功,实得 %d 次", llm.calls)
 	}
 }
 

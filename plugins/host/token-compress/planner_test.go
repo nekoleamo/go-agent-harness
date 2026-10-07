@@ -155,3 +155,51 @@ func TestPlannerOverflowSubmit(t *testing.T) {
 		t.Fatalf("应落到预算下限 %d: %+v", minBudgetChars, d)
 	}
 }
+
+// TestOverflowTargetUsesRealWindow 溢出兜底的目标必须按**实际窗口**算,不被
+// data.max_tokens(默认 200K)压住。
+//
+// 背景(2026-10-07 用户真机):512K 窗口、请求 697K。max_tokens 这个上限在**常规**路径
+// 是对的(窗口巨大时防历史无限膨胀),但已经超窗时它会让兜底折到一个比窗口小得多的目标,
+// 白扔可用空间。而端点窗口越大,这个浪费越明显。
+//
+// 输入刻意取「轻度超窗」:超窗量大于阈值的一半时,新旧两种公式都会算出负数并落到
+// minBudgetChars 下限 —— 那时两者输出相同,测不出差别(我第一版用例就栽在这里)。
+func TestOverflowTargetUsesRealWindow(t *testing.T) {
+	p := newPlanner(nil, 0)
+	p.maxTokens = 200_000
+	p.triggerRatio = 0.8
+	p.cpt = 2 // 显式写出来:下面的反推依赖它
+
+	const window = 512_000
+	const lastPrompt = 520_000          // 刚超出窗口一点(轻度超窗)
+	const projectChars = lastPrompt * 2 // cpt=2
+
+	got := p.Plan(sdk.CompressInput{
+		LastPromptTokens: lastPrompt, LastProjectChars: projectChars,
+		Window: window, ProjectChars: projectChars, Overflow: true,
+	})
+	if got.BudgetChars <= 0 {
+		t.Fatalf("溢出目标应为正,得 %d", got.BudgetChars)
+	}
+	// 阈值 = 窗口 × 0.8 = 409,600;折到它的一半 = 204,800 token。
+	gotTokens := int(float64(got.BudgetChars) / p.cpt)
+	wantTokens := int(float64(window) * p.triggerRatio / 2)
+	if gotTokens < wantTokens/2 || gotTokens > wantTokens*2 {
+		t.Fatalf("溢出目标应按窗口的 80%% 折的一半(≈%d token),反推得 %d", wantTokens, gotTokens)
+	}
+	// 被 max_tokens(200K → half=100K)压住的话,目标会小一个量级 —— 这正是要修的
+	if gotTokens < int(float64(p.maxTokens/2)/p.cpt) {
+		t.Fatalf("目标不该被 max_tokens 上限压住(得 %d token,门槛 %d)",
+			gotTokens, int(float64(p.maxTokens/2)/p.cpt))
+	}
+
+	// 窗口未知时回落到 max_tokens(不能凭空猜)
+	got2 := p.Plan(sdk.CompressInput{
+		LastPromptTokens: lastPrompt, LastProjectChars: projectChars,
+		Window: 0, ProjectChars: projectChars, Overflow: true,
+	})
+	if got2.BudgetChars <= 0 {
+		t.Fatalf("窗口未知也应给出正目标,得 %d", got2.BudgetChars)
+	}
+}

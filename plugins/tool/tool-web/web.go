@@ -48,6 +48,10 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 			name, strings.Join(providerNames(), "/"))
 	}
 	d2 := tools.Register(NewSearchTool(factory(client)))
+	// 搜索能力的只读自证入口(/search 命令用):回答「我现在在用哪家、端点哪个、key 有没有」。
+	// 注册不了只是少一个诊断入口 —— 不撤销已注册的工具,也不让插件起不来(诊断入口不该
+	// 反过来成为启动条件)。
+	_ = c.Provide("ctx.search", NewSearchService())
 	return func() { d1(); d2() }, nil
 }
 

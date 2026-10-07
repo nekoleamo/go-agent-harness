@@ -59,7 +59,8 @@ func EnsureSeed(home string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	var written []string
+	written := []string{}
+
 	for _, n := range names {
 		dst := filepath.Join(cfgDir, n)
 		raw, err := Seed.ReadFile("seed/" + n)
@@ -212,11 +213,14 @@ func EnsurePlugins(home string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 先清理「曾经随包、但当前版本不再随包」的旧插件(见 pruneObsolete 的注释)。
+	// 必须在拿到 want 之后、释放新产物之前:否则先装新的、再移旧的,中间存在
+	// 同名两份的时刻虽短,但没必要制造它。
+	written := pruneObsolete(home, want)
 	names, err := listNames(extPlugins, extPluginDir)
 	if err != nil {
-		return nil, err
+		return written, err
 	}
-	var written []string
 	for _, n := range names {
 		if !strings.HasSuffix(n, ExtPluginExt) {
 			continue // 只处理本仓生成的压缩产物(格式换代后旧 .gz 残留会被忽略,不会被当插件加载)
@@ -400,3 +404,56 @@ func writeHashed(path string, r io.Reader) ([32]byte, error) {
 }
 
 var _ = sdk.SDKVersion // 保持 sdk 感知(seed 与 SDK 同版本发布语义)
+
+// pruneObsolete 把「**曾经**由随包官方发布、但当前版本不再随包」的插件移出插件目录。
+//
+// 为什么必须有这一步(2026-10-07 用户真机):升级只加不减时,旧版本插件会**永远留在**
+// 数据根里,并与新版重复提供同名工具 —— 而先注册的旧插件先上场。用户的真实症状:
+// v0.5.6 已支持 anysearch 搜索 provider,面板里却一直报「未知搜索 provider "anysearch"
+// (可选: exa)」—— 提供 web_search 的是升级前留下的旧插件,它只认 exa。
+// 用户看到的是「新功能没出现」,而系统自检(版本、哈希)全绿:没有任何一处能自证这件事。
+//
+// 三条边界:
+//   - **只动 audit 标记为 `embed` 的**(随包官方发布)。用户自己装的(`install:` /
+//     `trust:manual`)永远不动 —— 升级不该把用户装的东西悄悄处理掉;
+//   - **移走而不是删除**:落到 `<name>.obsolete-<hash8>`,用户能自己看、能放回去;
+//     删掉之后就只剩"插件不见了",而没人能判断它是不是本来就不该在;
+//   - 任何一步失败只记一笔、绝不阻断启动:清理是卫生工作,不是启动条件。
+//
+// 返回被移走的插件 id(调用方可打日志/进 notice)。
+func pruneObsolete(home string, want map[string][32]byte) []string {
+	dir := filepath.Join(home, "plugins")
+	list, err := plugintrust.Load(dir)
+	if err != nil || list == nil {
+		return nil // 清单读不出来 ⇒ 什么都不做(绝不凭猜测删插件)
+	}
+	var pruned []string
+	for _, e := range list.Audit() {
+		if e.Source != "embed" {
+			continue // 用户装的:不碰
+		}
+		if _, still := want[e.Name]; still {
+			continue // 当前版本仍随包:上面那条哈希路会更新它
+		}
+		src := filepath.Join(dir, e.Name)
+		if _, err := os.Stat(src); err != nil {
+			continue // 目录已不在(可能已被用户手动处理)
+		}
+		dst := fmt.Sprintf("%s.obsolete-%s", src, shortHash(e.Hash))
+		if err := os.Rename(src, dst); err != nil {
+			continue // 删不掉/移不动:留着,下次启动再试(Windows 上插件正被运行就会这样)
+		}
+		pruned = append(pruned, e.Name+" → "+filepath.Base(dst))
+	}
+	return pruned
+}
+
+func shortHash(hex64 string) string {
+	if len(hex64) > 8 {
+		return hex64[:8]
+	}
+	if hex64 == "" {
+		return "unknown"
+	}
+	return hex64
+}

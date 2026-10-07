@@ -50,8 +50,21 @@ func (p *Planner) Plan(in sdk.CompressInput) sdk.CompressDecision {
 	// 而且折完还有固定的系统提示 + 工具 schema 开销没算进去。
 	if in.Overflow {
 		target := in.ProjectChars / 2 // 无实测用量/窗口未知:保守折一半
-		if in.LastPromptTokens > 0 && p.maxTokens > 0 {
-			if threshold := p.thresholdTokens(in.Window); threshold > 0 {
+		if in.LastPromptTokens > 0 {
+			// 溢出兜底的阈值**只按实际窗口算,不受 data.max_tokens 上限压住**。
+			//
+			// 常规路径用 min(窗口×ratio, max_tokens) 是对的(200K 的上限用来防窗口
+			// 巨大时无限膨胀历史)。但**已经超窗**就不一样了:此时再按一个比窗口小的
+			// 阈值折,是白扔可用空间 —— 用户实测 512K 窗口、请求 697K,兜底按 200K 上限
+			// 折到 ~100K,而多折两轮本来就能进窗口。窗口未知时才回落 max_tokens。
+			threshold := 0
+			if in.Window > 0 && p.triggerRatio > 0 {
+				threshold = int(float64(in.Window) * p.triggerRatio)
+			}
+			if threshold <= 0 {
+				threshold = p.maxTokens
+			}
+			if threshold > 0 {
 				half := threshold / 2
 				growth := float64(in.ProjectChars-in.LastProjectChars) / p.cpt
 				if growth < 0 {

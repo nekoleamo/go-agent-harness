@@ -485,23 +485,42 @@ func (l *Loop) step(ctx context.Context, t *turn, sess sdk.SessionLog) error {
 	// 结构化 tool_calls 依赖 tools 下发(此前只注入系统提示文本,模型无法走 API 结构化调用,只能正文伪调用 → 工具永不执行)
 	req := assemble()
 	resp, err := l.llm.Complete(ctx, req, onChunk)
-	// 溢出兜底(第五十六批):端点报超窗时**强制压缩后重试同一回合** —— 硬上限 1 次。
+	// 溢出兜底:端点报超窗时**压缩后重试同一回合**,最多 maxOverflowAttempts 轮。
+	//
 	// 为何必需:阈值再准也有估偏来源(非均匀 token 分布/CJK/图片/长单轮几十个工具结果/
-	// cpt 未收敛),一旦端点真的拒了,当前实现没有第二次机会 —— 用户只能自己 /compact 再重问。
-	// 为何必须先压缩:原样重发只会撞同一堆墙。
+	// cpt 未收敛),一旦端点真的拒了,不重试就只能让用户自己 /compact 再重问。
+	//
+	// 为何是**多轮**而不是 1 次(2026-10-07 用户真机):折叠有硬约束 —— 水位不得越过
+	// 最后一个用户轮(host-session-log)。当超窗量大于「最后一轮之前可折叠的部分」时,一轮
+	// 压不下来,而剩下的差额往往再折一轮就够了。实测卡住的那次是 512K 窗口、请求 697K
+	// (超 36%),单轮折叠后仍超,直接把用户挡在门外 —— 提示语让他自己 /compact,等于把
+	// 我们本该自动做的一步推给了用户。
+	//
+	// 为何要有上限:每轮都是一次真实请求(理论上计费),无界重试既慢又可能重复计费。
+	// 三轮是「够用且可解释」的折中;超窗请求通常不计费,但不拿这个当保证。
 	overflowHint := ""
 	if err != nil && !t.overflowRetried && sdk.IsContextOverflowError(err) {
-		t.overflowRetried = true // 无论折叠成败,同一回合不再试第二次(防重试环/重复计费)
-		if folded, ferr := l.compressOnOverflow(sess); ferr == nil {
+		t.overflowRetried = true
+		for attempt := 1; attempt <= maxOverflowAttempts; attempt++ {
 			content.Reset() // 失败尝试已落流的部分增量不得混进重试结果
 			calls = nil
 			final = sdk.LLMResponse{}
-			overflowHint = "已自动压缩上下文后重试仍超窗"
-			l.publishOverflowNotice(folded)
+			folded, ferr := l.compressOnOverflow(sess)
+			if ferr != nil {
+				overflowHint = "自动压缩不可用(" + ferr.Error() + ")"
+				break
+			}
+			if attempt == 1 {
+				l.publishOverflowNotice(folded) // 只在第一次通知:重复提示反而像故障
+			}
 			req = assemble() // 折叠立即生效:重试发出去的是压缩后的历史
 			resp, err = l.llm.Complete(ctx, req, onChunk)
-		} else {
-			overflowHint = "自动压缩不可用(" + ferr.Error() + ")"
+			if err == nil || !sdk.IsContextOverflowError(err) {
+				break // 好了,或换了个别的错(那不是压缩能解决的,原样报出去)
+			}
+			if attempt == maxOverflowAttempts {
+				overflowHint = fmt.Sprintf("已自动压缩 %d 次仍超窗", attempt)
+			}
 		}
 	}
 	if err != nil {
@@ -755,3 +774,9 @@ func (l *Loop) RunningSessions() []string {
 }
 
 var _ sdk.SessionRunner = (*Loop)(nil)
+
+// maxOverflowAttempts 溢出兜底的「压缩→重试」最多轮数。
+//
+// 取 3 的理由:折叠受「水位不得越过最后一个用户轮」约束,单轮常常不够(见调用处注释);
+// 而每轮都是一次真实请求,无界重试既慢又可能重复计费。
+const maxOverflowAttempts = 3

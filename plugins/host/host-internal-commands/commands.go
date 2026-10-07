@@ -248,6 +248,12 @@ func (h *Host) specs() []sdk.CommandSpec {
 				return []sdk.Option{{Value: "all", Desc: "展开逐工具 schema 成本"}}
 			}}}},
 		{Name: "recap", Usage: "/recap", Desc: "本地会话速览(轮数/工具/文件/最近问答;纯本地不调模型)", Run: h.cmdRecap},
+		// 刻意叫 websearch 而不是 search:/search 是 **TUI 专属**命令(UI 元素搜索),
+		// 宿主命令与 UI 命令同名会让两处帮助都变得含混(测试里有这条断言)。
+		{Name: "websearch", Usage: "/websearch [测试 <词>]", Desc: "联网搜索配置诊断(在用哪家/端点/key 有无;可实跑一次)", Run: h.cmdSearch,
+			Args: []sdk.ArgLevel{{Options: func([]string) []sdk.Option {
+				return []sdk.Option{{Value: "测试", Desc: "顺便实跑一次,看通路与耗时"}}
+			}}, {FreeArgs: func([]string) []string { return []string{"测试词?"} }}}},
 		{Name: "cache", Usage: "/cache [n]", Desc: "缓存命中率诊断(前缀指纹序列;定位命中率为什么低;只读)", Run: h.cmdCache,
 			Args: []sdk.ArgLevel{{FreeArgs: func([]string) []string { return []string{"显示条数?"} }}}},
 		// S-P1-1 变更审查面:数据来自捕获的写操作(tool-files 落 file/change),不依赖 git。
