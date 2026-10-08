@@ -1,12 +1,12 @@
 <script setup lang="ts">
-// 本会话设置面板(第一百三十四批 · 设置作用域收敛)。
+// 本会话设置面板(第一百三十四批 · 设置作用域收敛;第一百三十六批入口移到右上角状态栏)。
 //
-// 为何要有这个面板:会话级参数(模型/思考/沙箱/审批)在设置面板里也有一份,但那一栏
+// 为何要有这个面板:会话级参数(角色/模型/思考/沙箱/审批)在设置面板里也有一份,但那一栏
 // 从此只改**全局默认**;要改「这个页签用什么」必须有另一个入口 —— 作用域与对象一一对应,
 // 才不会「点了一下以为是全局、实际只动了这个页签」。
 //
-// 位置:输入框工具条上的按钮。改的就是**这个会话**的运行参数,那里本来就有思考/沙箱的
-// 循环按钮,就近原则成立(侧栏离得远,页签右键又太隐蔽)。
+// 位置:状态栏右上角「当前会话设置」(第一百三十六批从输入框工具条移来;用户反馈那儿不够明显);
+// 单独靠右、常驻强调色,本会话真压过全局时带计数徽标。
 //
 // 每项**二态**:跟随全局 / 独立。这是本面板的核心 ——
 // 「跟随」意味着不写会话档,后端合成时回落全局(前端把这种留空画成一种状态,而不是
@@ -98,7 +98,48 @@ async function pickModel(o: ModelOption): Promise<void> {
   await pick('model', mid)
 }
 
-type Field = 'model' | 'thinking' | 'sandbox' | 'approval'
+// —— 本会话角色(第一百三十八批) ——
+//
+// 用户反馈「当前会话仍然无法独立选择角色」:角色此前**只在设置面板里能选**,而那一栏按
+// 作用域纪律应当只改全局默认(与模型/思考/沙箱/审批一致);本会话要另选角色,缺的正是这里。
+//
+// 会话档存的只是**角色 id**(人设/技能/工具可见性都在角色定义里);「默认(基线)」= 不启用角色。
+type RoleItem = { id: string; name: string; group?: string }
+const roles = ref<RoleItem[]>([])
+const roleReady = ref(false)
+async function loadRoles(): Promise<void> {
+  try {
+    const v = await api.roles()
+    roles.value = (v.roles ?? []).map((r) => ({ id: r.id, name: r.name || r.id, group: r.group }))
+    roleReady.value = true
+  } catch {
+    roleReady.value = false // 未装配 ctx.roles(503):整段不渲染(不摆空壳,与设置面板同口径)
+  }
+}
+// currentRoleLabel 本会话**实际生效**的角色(后端按作用域合成:会话档优先,否则全局当前)。
+const currentRoleLabel = computed(() => {
+  const id = props.state.role
+  if (!id) return '默认(基线)'
+  const name = props.state.role_name
+  return name && name !== id ? `${name}(${id})` : id
+})
+// 角色按分组铺(与设置面板同一份 group):平铺十几个角色时认不出该挑哪个。
+const roleGroups = computed(() => {
+  const by = new Map<string, RoleItem[]>()
+  for (const r of roles.value) {
+    const g = r.group || '其它'
+    if (!by.has(g)) by.set(g, [])
+    by.get(g)!.push(r)
+  }
+  return [...by.entries()].map(([group, items]) => ({ group, items }))
+})
+// pickRole 写**本会话**的角色(id 空 = 回基线)。与设置面板的全局切换分开,各写各的。
+async function pickRole(id: string): Promise<void> {
+  await api.roleUse(id, { session: api.boundSession() })
+  emit('changed')
+}
+
+type Field = 'role' | 'model' | 'thinking' | 'sandbox' | 'approval'
 
 // indep:该项是否**独立于全局**。判据见 scope.ts —— 只看 session_prefs。
 // 第一版在这里读 `*_from === 'session'`,那是错的:model_from/thinking_from 在没有角色时
@@ -108,7 +149,7 @@ function indep(field: Field): boolean {
 }
 
 function independentCount(): number {
-  return (['model', 'thinking', 'sandbox', 'approval'] as const).filter(indep).length
+  return (['role', 'model', 'thinking', 'sandbox', 'approval'] as const).filter(indep).length
 }
 const anyIndependent = computed(() => independentCount() > 0)
 
@@ -132,6 +173,7 @@ async function resetAll(): Promise<void> {
   for (const f of ['model', 'thinking', 'sandbox', 'approval'] as const) {
     await api.control({ session: api.boundSession(), [f]: '' })
   }
+  if (roleReady.value) await api.roleUse('', { session: api.boundSession() })
   emit('changed')
 }
 
@@ -145,6 +187,7 @@ function onEsc(e: KeyboardEvent): void {
 onMounted(() => {
   window.addEventListener('keydown', onEsc, true)
   void loadModels()
+  void loadRoles()
 })
 onUnmounted(() => window.removeEventListener('keydown', onEsc, true))
 
@@ -175,6 +218,35 @@ function eff(field: 'sandbox' | 'approval', zh: Record<string, string>): string 
       <button class="scp-reset-all" @click="resetAll">全部改为跟随全局</button>
     </p>
     <p v-else class="scp-sum scp-sum-off" data-testid="scp-summary">全部跟随全局。</p>
+
+    <!-- 角色(第一百三十八批):会话级角色选择。放在最前 —— 角色一改,模型/思考档与
+         技能面都跟着变,它比其它四项更“上游”。 -->
+    <section v-if="roleReady" class="scp-sec">
+      <h4 class="scp-h">
+        角色
+        <span v-if="indep('role')" class="scp-tag">独立</span>
+        <span v-else class="scp-tag scp-tag-off">跟随全局</span>
+      </h4>
+      <p class="scp-now">本会话在用：<b>{{ currentRoleLabel }}</b></p>
+      <ul class="scp-list" data-testid="scp-roles">
+        <li>
+          <button class="scp-opt" :class="{ on: !state.role }" @click="pickRole('')">
+            <span class="scp-opt-name">默认（基线）· 不启用角色</span>
+          </button>
+        </li>
+        <template v-for="g in roleGroups" :key="g.group">
+          <li class="scp-group">{{ g.group }}</li>
+          <li v-for="r in g.items" :key="r.id">
+            <button class="scp-opt" :class="{ on: state.role === r.id }" @click="pickRole(r.id)">
+              <span class="scp-opt-name">{{ r.name }}</span>
+              <span class="scp-opt-id">{{ r.id }}</span>
+            </button>
+          </li>
+        </template>
+      </ul>
+      <p class="scp-hint">角色改人设、工作规则与技能面；下一轮生效，不换会话。</p>
+      <button v-if="indep('role')" class="scp-reset" @click="pickRole('')">改为跟随全局</button>
+    </section>
 
     <!-- 模型 -->
     <section class="scp-sec">
@@ -475,6 +547,17 @@ function eff(field: 'sandbox' | 'approval', zh: Record<string, string>): string 
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.scp-opt-id {
+  flex: none;
+  color: var(--fg-faint);
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 10px;
+}
+.scp-group {
+  padding: 4px 9px 2px;
+  color: var(--fg-faint);
+  font-size: 11px;
 }
 .scp-free {
   flex: none;

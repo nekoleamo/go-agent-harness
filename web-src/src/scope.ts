@@ -12,9 +12,9 @@
 // 通道被「偏离归因」占着(角色收紧 / 审批联动都走它),语义不干净。四项口径必须一致,
 // 所以后端单开了 `session_prefs` 这张表 —— 「这一项跟随全局吗」只有它答得准。
 
-type Field = 'model' | 'thinking' | 'sandbox' | 'approval'
+type Field = 'role' | 'model' | 'thinking' | 'sandbox' | 'approval'
 
-const SESSION_PREF_FIELDS: readonly Field[] = ['model', 'thinking', 'sandbox', 'approval']
+const SESSION_PREF_FIELDS: readonly Field[] = ['role', 'model', 'thinking', 'sandbox', 'approval']
 
 /** 最小状态形状:判据只需要 session_prefs 一处,不必依赖整个 StateView。 */
 export interface PrefScope {

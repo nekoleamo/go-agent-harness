@@ -66,6 +66,9 @@ function makeStub(
   sseTurns = 0,
   sessionOverride = false,
   withModels = false,
+  // mainSessionId 非空时 /api/state 下发 session.id —— 首帧校准与 api 侧会话绑定都靠它。
+  // 默认空:很多用例只测渲染,给一个真实 session 会把页签改绑/同步标题的路径也拖进来。
+  mainSessionId = '',
 ) {
   // seen:记录写类请求(方法/路径/体),供角色面板用例断言「面板真的提交了」而不是只改了本地状态。
   const seen = []
@@ -376,6 +379,7 @@ function makeStub(
             }
           : {}),
         running,
+        ...(mainSessionId ? { session: { id: mainSessionId, name: '主会话', path: '/tmp/' + mainSessionId + '.jsonl', key: 'k-' + mainSessionId } } : {}),
         version: 'layout-guard',
       })
     }
@@ -2829,6 +2833,131 @@ test('作用域:本会话设置面板可单独选模型(写会话档)', { skip: 
   }
 })
 
+
+// ⑥ 会话级角色：右上角面板能单独给这个页签选角色（写会话档）。
+// 这条同时钉住一个真 bug（第一百三十八批）：主会话占位 'main' 必须解析成服务端**真实会话 id**
+// —— 绑占位时请求里的 session 是空串 = 全局档，表现为「设了角色却仍跟随全局」。
+test('作用域:当前会话设置可单独选角色(写会话档,非空 session)', { skip: skip && skipWhy }, async (t) => {
+  const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+  let page = null
+  try {
+    const stub = makeStub(true, false, false, false, true, 'finance', 0, false, true, 0, false, false, 'layout-main')
+    page = await ctx.newPage()
+    await page.addInitScript(() => window.sessionStorage.setItem('gah.onboard.auto', '1'))
+    await page.route('**/api/**', stub)
+    await page.goto(baseURL(), { waitUntil: 'load' })
+    await waitSkeleton(page)
+    await page.click('.statusbar-slot .gear.ses')
+    await page.waitForSelector('[data-testid="scp-roles"]')
+    const secs = await page.$$eval('.scp .scp-sec', (els) => els.length)
+    assert.equal(secs, 5, `本会话面板应有五段(角色/模型/思考/沙箱/审批),实际 ${secs}`)
+    await page.click('[data-testid="scp-roles"] .scp-opt:has-text("Assistant")')
+    const hit = stub.seen.find((r) => r.method === 'POST' && r.path === '/api/roles/assistant/use')
+    assert.ok(hit, `选角色应提交 /api/roles/assistant/use:${JSON.stringify(stub.seen)}`)
+    assert.equal(JSON.parse(hit.body || '{}').session, 'layout-main', `必须写当前会话档(真实 id),实际 ${hit.body}`)
+  } catch (e) {
+    await shoot(page, t.name)
+    throw e
+  } finally {
+    await ctx.close()
+  }
+})
+
+// ⑦ 设置面板的角色切换是**全局默认**（与模型/思考/沙箱/审批同一作用域纪律）。
+// 防回归：roleUse 不给 session 时默认绑当前页签，设置面板会变成“第二个会话级入口”。
+test('作用域:设置面板切换角色写全局(session 为空)', { skip: skip && skipWhy }, async (t) => {
+  const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+  let page = null
+  try {
+    const stub = makeStub(true, false, false, false, true, 'finance', 0, false, true, 0, false, false, 'layout-main')
+    page = await ctx.newPage()
+    await page.addInitScript(() => window.sessionStorage.setItem('gah.onboard.auto', '1'))
+    await page.route('**/api/**', stub)
+    await page.goto(baseURL(), { waitUntil: 'load' })
+    await waitSkeleton(page)
+    await page.click('.gear')
+    await page.waitForSelector('[data-sec="role"]')
+    const note = await page.textContent('[data-sec="role"] .scope-note')
+    assert.ok(note && note.includes('全局默认'), `角色段应声明改的是全局默认:${note}`)
+    await page.click('[data-sec="role"] .prow:has-text("Assistant") button:has-text("切换")')
+    const hit = stub.seen.find((r) => r.method === 'POST' && r.path === '/api/roles/assistant/use')
+    assert.ok(hit, `设置面板切换角色应提交:${JSON.stringify(stub.seen)}`)
+    assert.equal(JSON.parse(hit.body || '{}').session, '', `设置面板应写全局(session 为空),实际 ${hit.body}`)
+  } catch (e) {
+    await shoot(page, t.name)
+    throw e
+  } finally {
+    await ctx.close()
+  }
+})
+
+// ⑧ 关闭再打开设置面板：滚回**上次停留的段**（不仅是高亮留着）。
+// 用户报的「内容回滚到最上面、选项还选中着之前的」：正文 DOM 随 v-if 销毁重建、scrollTop 归零，
+// 而 activeSec 仍停在旧段。
+test('设置面板:关开后滚回上次停留的段', { skip: skip && skipWhy }, async (t) => {
+  const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+  let page = null
+  try {
+    page = await ctx.newPage()
+    await page.addInitScript(() => window.sessionStorage.setItem('gah.onboard.auto', '1'))
+    await page.route('**/api/**', makeStub(true, true))
+    await page.goto(baseURL(), { waitUntil: 'load' })
+    await waitSkeleton(page)
+    const gap = () =>
+      page.evaluate(() => {
+        const body = document.querySelector('.panel .body')
+        const sec = body?.querySelector('section[data-sec="schedule"]')
+        if (!body || !sec) return null
+        return Math.round(sec.getBoundingClientRect().top - body.getBoundingClientRect().top)
+      })
+    await page.click('.gear')
+    await page.waitForSelector('[data-sec="schedule"]')
+    await page.click('.nav button:has-text("计划")')
+    await page.waitForTimeout(900) // 平滑滚动落定
+    const before = await gap()
+    assert.ok(before !== null && Math.abs(before) <= 40, `跳转后「计划」段未对齐顶部:${before}`)
+    await page.click('.panel .head .x')
+    await page.waitForTimeout(200)
+    await page.click('.gear')
+    await page.waitForSelector('[data-sec="schedule"]')
+    await page.waitForTimeout(300)
+    const after = await gap()
+    assert.ok(after !== null && Math.abs(after) <= 40, `关开后面板没滚回「计划」段(内容在顶部、高亮却停着):${after}`)
+  } catch (e) {
+    await shoot(page, t.name)
+    throw e
+  } finally {
+    await ctx.close()
+  }
+})
+
+// ⑨ 「改用选择器」必须真的回到选择器：早先只清空输入框、粘贴区还开着，空输入框下看不出变化 = 无反应。
+test('设置面板:计划「改用选择器」关闭自定义表达式区', { skip: skip && skipWhy }, async (t) => {
+  const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+  let page = null
+  try {
+    page = await ctx.newPage()
+    await page.addInitScript(() => window.sessionStorage.setItem('gah.onboard.auto', '1'))
+    await page.route('**/api/**', makeStub(true, true))
+    await page.goto(baseURL(), { waitUntil: 'load' })
+    await waitSkeleton(page)
+    await page.click('.gear')
+    await page.waitForSelector('[data-sec="schedule"]')
+    // 自定义表达式区在「新增计划」表单里 —— 先展开表单
+    await page.click('[data-sec="schedule"] button:has-text("新增")')
+    await page.click('[data-sec="schedule"] button:has-text("从别处粘贴排期表达式")')
+    await page.waitForSelector('[data-sec="schedule"] input[placeholder="0 9 * * 1-5"]')
+    await page.click('[data-sec="schedule"] button:has-text("改用选择器")')
+    await page.waitForTimeout(200)
+    const stillOpen = await page.$('[data-sec="schedule"] input[placeholder="0 9 * * 1-5"]')
+    assert.equal(stillOpen, null, '点了「改用选择器」后自定义表达式输入框应消失(回到选择器)')
+  } catch (e) {
+    await shoot(page, t.name)
+    throw e
+  } finally {
+    await ctx.close()
+  }
+})
 
 test('布局护栏:跳过原因(仅在没有浏览器/产物时输出)', { skip: !skip }, () => {
   console.log(`  跳过:${skipWhy}`)

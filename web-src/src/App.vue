@@ -147,8 +147,19 @@ tabs.ensure(bootTab, newModel, boundSession() ? '' : bootTab === 'main' ? '主�
 // tabId 必须**是 ref**:它是模板依赖(输入框草稿、页签高亮)的唯一数据源。
 // 用普通 let 时 Vue 追踪不到变化 —— 真机手测据此发现"切页签后草稿/输入框都不更新"。
 const tabId = ref(bootTab)
-// calibrated 首屏占位页是否已完成改绑(见 refreshStats 的首次校准)。
+// calibration 首屏占位页是否已完成改绑(见 refreshStats 的首次校准)。
 let calibrated = bootTab !== 'main' // URL 已带 ?session= 时不需要校准
+// sessionIdFor 把页签键解析成**服务端真实会话 id**(占位 'main' → 当前会话 id)。
+//
+// 为何必须解析(第一百三十八批真 bug):后端以「session 参数非空」判会话档、空串判全局档
+// (web/server.go handleControl 的 sessionScoped),而页签首帧前只知道占位 'main'。
+// 绑占位会在**主会话**上把「当前会话设置」写成全局默认 —— 症状:设了模型/角色后页签仍标
+// 「跟随全局」,而且切到别的页签也跟着变(README 说的“各用各的”根本没发生)。
+// 首帧后 state.session.id 就是真实 id(后端 handleState 下发),拿它绑定即对。
+function sessionIdFor(key: string): string {
+  if (key && key !== 'main') return key
+  return state.value.session?.id ?? ''
+}
 function curTabId(): string {
   return tabId.value || state.value.session?.id || 'main'
 }
@@ -906,6 +917,9 @@ async function refreshStats(): Promise<void> {
       tabs.rekey(tabId.value || 'main', mainId)
       tabId.value = mainId
       calibrated = true
+      // 改绑后 api 侧必须跟进:否则 boundSession 仍是首帧的 ''(主会话),此后会话档写入
+      // 全落成全局 —— 这正是「主会话无法单独设置模型/角色」的根(第一百三十八批)。
+      api.bindSession(mainId)
       void syncTitles()
     }
     for (const id of lastRunning) {
@@ -1074,7 +1088,10 @@ function switchTab(id: string): void {
   model.value = existed ? tabs.get(key)!.state : tabs.replaceState(key, newModel()).state
   metas.value = []
   // 请求层与事件层一起切(甲方案:每页签一条连接 ⇒ 换绑即重连)
-  api.bindSession(key === 'main' ? '' : key)
+  // api 侧绑**真实 id**:主会话占位 'main' 解析成当前会话 id,否则会话档写入会落成全局
+  // (见 sessionIdFor 注释)。事件层仍用 '' 代主会话:它的 scopeOf 归一化、且游标分桶键
+  // (gah.lastSeq.main)换了会让老用户的续传游标失配一次。
+  api.bindSession(sessionIdFor(key))
   setTransportSession(key === 'main' ? '' : key)
   streamSessionId = ''
   rebuild(!existed)

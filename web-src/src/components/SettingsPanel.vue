@@ -1001,7 +1001,7 @@ async function applyModel(): Promise<void> {
     // 只说「已更新」不说更新成了什么 —— 独立会话的用户在界面上**看不到**全局新值
     // (本会话仍在用自己的),不给新值就成了「不知道改到哪去了」。
     info.value = wasIndependent
-      ? `全局默认已改为「${modelLabelOf(mid)}」。本会话有独立设置,仍在用「${wasUsing}」—— 想去掉这层覆盖,点输入框旁的「本会话」。`
+      ? `全局默认已改为「${modelLabelOf(mid)}」。本会话有独立设置,仍在用「${wasUsing}」—— 想去掉这层覆盖,点右上角的「当前会话设置」。`
       : "";
   } catch (e) {
     err.value = (e as Error).message;
@@ -1032,7 +1032,7 @@ async function applyCtl(body: {
         : body.sandbox
           ? `沙箱档`
           : `审批档`
-      info.value = `全局默认的${what}已更新。本会话有独立设置,不受影响(点输入框旁的「本会话」可去掉那层覆盖)。`;
+      info.value = `全局默认的${what}已更新。本会话有独立设置,不受影响(点右上角的「当前会话设置」可去掉那层覆盖)。`;
     } else if (!globalOnly) {
       info.value = "";
     }
@@ -1663,12 +1663,16 @@ function saveAgents(): void {
   );
 }
 
-// useRole 切换(空 id = 停用回基线)。不换会话 —— 回合历史与工作区都不动。
+// useRole 切换**全局当前角色**(空 id = 停用回基线)。不换会话 —— 回合历史与工作区都不动。
+//
+// session:"" 是**必须的**(第一百三十八批):api.roleUse 不给 session 时默认绑当前页签,
+// 而本面板按作用域纪律只改全局默认(与模型/思考/沙箱/审批一致);本会话要另选角色,
+// 在右上角「当前会话设置」面板里选。
 function useRole(id: string): void {
   roleErr.value = "";
   void (async () => {
     try {
-      await api.roleUse(id);
+      await api.roleUse(id, { session: "" });
       roleCurrent.value = id;
       roleMsg.value = id
         ? "已切换到「" + id + "」(下一轮生效,未改会话历史)"
@@ -2691,6 +2695,9 @@ function useRawExpression(): void {
 function clearRawExpression(): void {
   schedRaw.value = "";
   schedRawNote.value = "";
+  // 关掉粘贴区,回到选择器 —— 早先漏了这一行:按钮只清空输入框,粘贴区还开着,
+  // 空输入框下看不出任何变化 = 用户报的「点改用选择器无反应」(第一百三十八批)。
+  schedRawOpen.value = false;
   void refreshSchedulePreview();
 }
 
@@ -3148,7 +3155,12 @@ watch(
     void loadRoles();
     // 外部定位(首启引导 'provider' / 状态栏版本号 'about' / 看板「管理计划」'schedule'):
     // 段键就是导航键(同写 data-sec),段不渲染时 jumpTo 静默跳过。
-    if (props.focus) void nextTick(() => jumpTo(props.focus as string, false));
+    //
+    // 没有外部定位时回到**上次停留的段**(第一百三十八批):正文 DOM 随 v-if 销毁重建,
+    // scrollTop 归零,而导航高亮(activeSec)仍在上一段 —— 不滚过去就是用户报的
+    // 「内容回滚到最上面、选项还选中着之前的」。activeSec 是组件级 ref,关开不丢。
+    const target = props.focus ? (props.focus as string) : activeSec.value;
+    void nextTick(() => jumpTo(target, false));
   },
 );
 // 定时跑完一轮(schedule/run SSE 帧)→ 刷新计划状态(上次运行/下次触发已变)
@@ -3681,6 +3693,10 @@ watch(
                   {{ showRoleNew ? "收起" : "＋ 新建" }}
                 </button>
               </h3>
+              <!-- 作用域声明(第一百三十八批):角色此前是本面板里**唯一**会话级的控件(其余四项在
+                   第一百三十四批已收口到全局),与其它段的说法不一致。现在对齐:这里改全局默认,
+                   本会话另选角色去右上角「当前会话设置」。 -->
+              <ScopeNote what="角色" />
               <p class="dim">
                 角色 = 人设（身份句）+ 工作规则（AGENTS.md）+
                 技能挂载。切换后<strong>下一轮</strong>生效，不换会话（回合历史与工作区都不动，与切换工作区不同）。列表顶部「默认（基线）」=

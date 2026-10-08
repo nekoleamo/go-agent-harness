@@ -39,12 +39,13 @@ test('角色给的 model_from 不算独立(它已不在判据里)', () => {
 })
 
 test('未知键不影响计数', () => {
+  // role 从第一百三十八批起**是**受管项(会话级角色),不再算未知键。
   const s = { session_prefs: { role: true, model: true, 未知键: true } }
-  assert.equal(sessionSetCount(s), 1, 'role 与未知键都不计入四项运行参数')
+  assert.equal(sessionSetCount(s), 2, 'role 与 model 计入,未知键不计入')
 })
 
-test('四个字段各设一次都能数到', () => {
-  for (const f of ['model', 'thinking', 'sandbox', 'approval'] as const) {
+test('五个字段各设一次都能数到', () => {
+  for (const f of ['role', 'model', 'thinking', 'sandbox', 'approval'] as const) {
     assert.equal(sessionSetCount({ session_prefs: { [f]: true } }), 1, f)
   }
 })
