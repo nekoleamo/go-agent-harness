@@ -28,6 +28,7 @@
 ## 语言与工具
 - Go 1.27+;golangci-lint;testify 可选,多数用例标准库断言即可。
 - **提交前门禁**:`bash scripts/gate.sh`(gofmt + go vet + staticcheck,**双 module**;`--fast` 跳过 staticcheck)。它是 gofmt/vet/staticcheck 的**单一事实源**,CI 的「本地门禁同源」步骤直接调它 —— 2026-10-02 之前这三步只活在习惯里(连 gofmt 在 CI 都没有),代价是 SA4005 只在 CI 被逮到。
+- **新增文件必须先 `git add` 再跑门禁**(2026-10-08 登记):`gate.sh` 的 gofmt 一步只检查 `git ls-files '*.go'` —— **未跟踪的文件它一个都不看**。新写的测试文件在 `git add` 之前跑门禁 ⇒ 本地 `GATE_OK` 是**假的**,CI 才红(那次红的就是两个新 `_test.go`)。凡本批有新增文件:`git add -A` → 跑门禁 → 再提交;「本地绿」这个词只有在**工作树已全部入索引**时才成立。与 v0.5.0/v0.5.1 同源的一类教训(门禁跑在错误的状态上),只是这次换成「文件还没进索引」。
 - 发布编译:`CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$(git describe --tags)"`。
 - 桌面壳(`desktop/src-tauri/`):改后必跑 `cargo fmt` 与 `cargo test --offline`(CI 的 `desktop-shell` job = `cargo fmt --check` + `cargo test --locked`;`--offline` 是因为 crates.io 偶发拉取超时)。
 - CI:go vet + go test ./... -race;全库测试必须保持 -race 全绿。
@@ -53,6 +54,7 @@
 - **结构性稀释口径(2026-10-02 定,别只靠自觉)**:棘轮是**逐包绝对百分比**,一批给某包加几百行新代码会让它因**分母变大**而下滑 —— 与“旧测试被改坏”不可区分,只剩“降门(不允许)”与“在别处凑测试(掩盖真问题)”两个坏选择。规则三条(详见 `scripts/coverage-check.sh` 头注):① 棘轮只许上调;② 本批给某包**新增语句 > 200** 且下滑 ≥ 3pp ⇒ 判为结构性稀释,**必须补测本批新增部分**,补不满才允许写进脚本里的 `DILUTION` 表并写明“为什么这些行现在测不到”(不接受“下批补”);③ 判定入口 `bash scripts/coverage-check.sh --dilution <基线根> <基线sdk> <当前根> <当前sdk>`(开工那批前先存一份基线 profile)。
 - **sdk 是独立 module**(`sdk/go.mod` + `go.work`):`go vet/staticcheck/test ./...` 从根目录跑**不含它**,新增/改动 sdk 时必须 `cd sdk && …`(CI 三步已同步补齐)。
 - **跨平台(Windows)**:CI 有 `test-windows` job,macOS 本地跑绿**不代表**它绿。四个反复踩到的坑:① 不硬编码 `/tmp`(用 `t.TempDir()`);② Windows 的 shell 是 git-bash(MSYS):`C:\...` 里的反斜杠会被 shell 当转义吃掉(命令实际落到相对位置),要用 `/c/...` 表达绝对路径;③ `chmod 0555` 在 Windows 不产生只读语义(走 ACL),构造不出只读目录;④ `exec.LookPath` 按 PATHEXT 解析,无扩展名脚本不是可执行文件。**逐字节比较失败时先怀疑行尾**(CRLF 检出)。
+  - ③ 的**具体变体**(2026-10-08 补,踩过一次):写「只读目录」类用例时,别拿 `os.Getuid() == 0` 当 Windows 的守卫 —— 它在 Windows 上返回 **-1**(非 0)⇒ 跳过不触发,断言照样跑并在 `test-windows` 红。**必须显式判 `runtime.GOOS == "windows"`**,且**拄同包已有用例的守卫**(如 `web.TestProbeWritableReadOnly`)而不是自己发明一个。本地 macOS 跑绿 + `GOOS=windows go vet` 通过 **都不算验过** —— vet 只验类型不验行为。
 - **CI 计时门口径**:`全库 -race 计时回归护栏` 只覆盖**核心包**(`go list ./... | grep -v '/tests$'`),阈值 150s(本地基线 ~40s);`tests/` 包单独一步、**不设时长门** —— 它的耗时是 pty 交互 sleep 之和(随用例数线性增长),拿墙钟做回归判据会必然假红。
 
 ## 变更纪律
