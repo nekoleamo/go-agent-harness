@@ -4,6 +4,7 @@
 // 设置面板),底栏再镜像一遍既是重复显示又把一行挤变形;命名会话也不在这里重复(看侧栏高亮),
 // 版本号改成「关于 gah」入口。对齐 TUI 状态栏语义;空值显示占位(不假精确:窗口未知仅显示量)。
 import { computed } from 'vue'
+import { hasSessionOverride } from '../scope'
 import { connLabel } from '../conn'
 import type { StateView } from '../types'
 import { othersRunning } from '../session-parallel'
@@ -40,6 +41,10 @@ const ctx = computed(() => {
 })
 
 const SANDBOX_ZH: Record<string, string> = { 'read-only': '只读', 'full-access': '完全', 'workspace-write': '工作区' }
+// sessionScoped:该会话是否**压过了全局默认**(模型/思考/沙箱/审批任一项自己设过)。
+// 判据见 scope.ts:只看 session_prefs,不读 *_from(那些字段答的是「是不是角色给的」)。
+const sessionScoped = computed(() => hasSessionOverride(props.state))
+
 // 审批档位中文名:只服务下面的 sandboxLabel(拼"随审批联动"的出处);审批档本身不在底栏显示
 // —— 它已有唯一交互位(设置面板「审批」分段按钮)。
 const APPROVAL_ZH: Record<string, string> = { open: '开放', smart: '智能', strict: '严格' }
@@ -88,6 +93,10 @@ const anonSession = computed(() => {
     <span v-if="othersN > 0" class="it faint" data-testid="others-running">
       另有 {{ othersN }} 个会话在跑
     </span>
+    <!-- 沙箱与角色都是**本会话**的(第一百三十四批)。前缀只在**该会话真的压过了全局**时出现:
+         绝大多数会话跟随全局,那时这三个字是纯噪音,还要挤底栏的宽度(700px 窗口下实测溢出
+         46px)。真独立了才值得说 —— 「信号才占位」与页签方块标记同一口径。 -->
+    <span v-if="sessionScoped" class="it faint scope-key">本会话</span>
     <span class="it faint">沙箱 {{ sandboxLabel }}</span>
     <!-- 角色名是本栏唯一「用户自定长度」的字段:截断显示,全文在 tooltip 里 ——
          不截断时长名字会把文字挤成多行(底栏从 22px 涨到 58px,真实测得)并把右侧挤出去。 -->
@@ -194,6 +203,12 @@ const anonSession = computed(() => {
   color: var(--fg-dim);
   font-weight: 500;
   margin-right: 5px;
+}
+/* 作用域前缀词(「本会话」):比值本身更弱,但比没有强 —— 它的作用是**把作用域说出口**,
+   不是抢注意力。与 .role-key 同构但更淡。 */
+.scope-key {
+  font-size: 11px;
+  opacity: 0.75;
 }
 /* 窄窗(底栏已被挤满时):胶囊的 padding+border 是**不可压缩的固定开销**(flex-shrink 只压内容,
    压不掉内边距),而本栏里角色徽标正是「唯一允许先让位」的那一项 —— 不让位的结果是

@@ -26,7 +26,9 @@ const props = defineProps<{
   onCancel?: () => void
 }>()
 // 会话切换/新建成功后通知宿主;控制(思考/沙箱)变更后通知宿主刷新 state
-const emit = defineEmits<{ (e: 'session-changed'): void; (e: 'changed'): void }>()
+// open-prefs:打开「本会话设置」面板(第一百三十四批)。放在这里而不是状态栏,是因为
+// 改的就是**这个会话**的运行参数 —— 而思考/沙箱两个循环按钮本来就在这一排,就近。
+const emit = defineEmits<{ (e: 'session-changed'): void; (e: 'changed'): void; (e: 'open-prefs'): void }>()
 
 const text = ref('')
 const cmds = ref<CommandView[]>([])
@@ -286,12 +288,21 @@ const sandboxVal = computed(() => {
 // 本按钮改的是**声明档**(点一下循环);实际生效档可能被审批档联动覆盖,
 // 故在图说里补一句,避免"设了工作区却仍可写"的静默矛盾。
 const sandboxTip = computed(() => {
-  const cur = '切换沙箱档位(当前 ' + sandboxVal.value
+  // 第一百三十四批:先说作用域再说档位。原话只讲档位与联动,**完全不提作用域** ——
+  // 于是「点一下就改了」这件事看起来像全局改动,而实际只作用于当前会话。
+  const cur = '切换本会话的沙箱档位(全局默认在「设置」里改;当前 ' + sandboxVal.value
   const eff = props.state?.sandbox_effective
   if (!props.state?.sandbox_derived || !eff) return cur + ')'
   const label = SANDBOX_LABEL[eff] ?? eff
   if (props.state?.sandbox_from === 'role') return cur + ';实际 ' + label + ',角色收紧)'
   return cur + ';实际 ' + label + ',随审批联动)'
+})
+
+// 思考档按钮的图说同上:先说「本会话」,再说当前值;被角色覆盖时补一句(那层在设置面板)。
+const thinkTip = computed(() => {
+  const cur = '切换本会话的思考等级(全局默认在「设置」里改;当前 ' + thinkVal.value
+  if (props.state?.thinking_from === 'role') return cur + ';被当前角色覆盖)'
+  return cur + ')'
 })
 
 // 多行生长(Shift+Enter 换行;裸 Enter 提交);封顶=40vh(至少 180px)防超高,
@@ -568,9 +579,16 @@ defineExpose({ cycleThinking, cycleSandbox, getText: () => text.value, setText: 
           </svg>
           <span class="ctl-n">附件</span>
         </button>
-        <button class="ctl" :data-tip="'切换思考等级(当前 ' + thinkVal + ')'" @click="cycleThinking">
+        <button class="ctl" :data-tip="thinkTip" @click="cycleThinking">
           <span class="ctl-n">思考</span>
           <span class="ctl-v">{{ thinkVal }}</span>
+        </button>
+        <button
+          class="ctl"
+          data-tip="本会话设置:模型/思考/沙箱/审批只作用于当前页签(全局默认在「设置」里改)"
+          @click="emit('open-prefs')"
+        >
+          <span class="ctl-n">本会话</span>
         </button>
         <button class="ctl" :data-tip="sandboxTip" @click="cycleSandbox">
           <span class="ctl-n">沙箱</span>

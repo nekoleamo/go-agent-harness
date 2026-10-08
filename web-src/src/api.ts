@@ -28,6 +28,14 @@ function bindSession(id: string): void {
   boundSessionId = id || ''
 }
 
+// boundSession 读出本窗口绑定的会话 id。
+// 为何要暴露(第一百三十四批):「本会话设置」面板要**显式**点名会话写档,
+// 而 api.control 的默认行为就是「不传 session 就绑当前页签」—— 依赖那个默认值意味着
+// 「这里写的到底是哪个会话」要从别处推。显式读一次,比隐式继承更不容易错。
+function boundSession(): string {
+  return boundSessionId
+}
+
 // errText 把失败响应体读成人话:后端两种契约并存 —— JSON {error}(新写入口,如 /api/models 的 501)
 // 与纯文本(http.Error 的存量)。直接透传 JSON 原文会把 {"error":"…"} 这种开发者形状甩给用户。
 function errText(body: string): string {
@@ -70,8 +78,18 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   // bindSession 绑定本窗口会话(多窗口各看各的);空 = 当前主会话。启动时由 main.ts 调一次。
   bindSession,
+  // boundSession 读出当前绑定(「本会话设置」面板显式点名会话写档时用,见上方注释)。
+  boundSession,
   state(): Promise<StateView> {
     return req('/api/state' + sessionQS())
+  },
+  // stateFor 取**指定会话**的状态快照(后端 handleState 认 ?session=)。
+  // 为何需要:页签条要标出「哪个页签有独立于全局的设置」,而每个页签的来源标记
+  // (model_from / sandbox_from / …)只随那**一个**会话的 state 一起下发 ——
+  // 当前页签靠 state() 拿,别的页签只能显式点名问后端。
+  // 不走 sessionQS:那个函数读的是「本窗口绑定会话」,查别的会话时它是错的。
+  stateFor(session: string): Promise<StateView> {
+    return req('/api/state?session=' + encodeURIComponent(session))
   },
   // S-P1-2 会话事件分页:上滚加载更早历史(before = 已加载的最老事件 Seq;0 = 尾部窗口)
   sessionEvents(before: number, limit: number): Promise<SessionEventsPage> {

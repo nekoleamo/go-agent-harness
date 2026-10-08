@@ -46,6 +46,15 @@ function closeLabel(t: TabMeta): string {
       <span v-if="t.running" class="dot" aria-hidden="true" />
       <!-- 会话角色徽标(该会话自己设了角色才显示;跟随全局的不显示 —— 那是基线) -->
       <span v-if="t.role" class="role" :data-tip="'角色:' + t.role">@</span>
+      <!-- 会话级覆盖标记(第一百三十四批):该页签的模型/思考/沙箱/审批至少一项没跟随全局。
+           形状选**方块**而不是圆点:条上已有两个圆点(运行脉冲 / 未读),换颜色在单强调色
+           纪律下分不开,换形状才能一眼分清三件事。 -->
+      <span
+        v-if="t.custom"
+        class="custom"
+        aria-label="本会话有独立于全局的设置"
+        data-tip="本会话有独立于全局的设置(模型/思考/沙箱/审批),在输入框旁的「本会话设置」里改"
+      />
       <span class="t-title">{{ t.title }}</span>
       <span v-if="t.unread" class="badge" aria-label="有未读">·</span>
       <!-- 关闭是真 button(不塞在 button 里嵌套交互元素):嵌套会被浏览器重组,
@@ -134,6 +143,14 @@ function closeLabel(t: TabMeta): string {
   color: var(--accent);
   font-weight: 600;
   font-size: 12px;
+}
+/* 会话级覆盖标记:实心小方块。尺寸略小于运行点(6px),不抢它的注意力。 */
+.custom {
+  width: 4px;
+  height: 4px;
+  flex-shrink: 0;
+  border-radius: 1px;
+  background: var(--accent);
 }
 .t-title {
   overflow: hidden;

@@ -171,6 +171,15 @@ export interface StateView {
   thinking: string
   model_from?: string // role|session(旧后端省略 = 无角色概念,按 session 处理)
   thinking_from?: string
+  /**
+   * 本会话**自己显式设过**的项(键:model/thinking/sandbox/approval/role;只带 true 的键;
+   * 全跟随时整个字段省略)。
+   *
+   * **别用 *_from 判「这一项跟随全局吗」**(第一百三十四批):model_from/thinking_from
+   * 只要没有角色声明就恒为 'session' —— 它们答的是「生效值是不是角色给的」。
+   * 「跟随 vs 独立」只认这个字段;判据见 scope.ts。
+   */
+  session_prefs?: Record<string, boolean>
   model_session?: string
   thinking_session?: string
   sandbox: string

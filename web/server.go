@@ -810,6 +810,18 @@ type StateView struct {
 	// 为何不是布尔:后续还可能有别的来源层(会话级 overlay 在未实施清单里)。
 	ModelFrom    string `json:"model_from,omitempty"`
 	ThinkingFrom string `json:"thinking_from,omitempty"`
+	// SessionPrefs 本会话**自己显式设过**的项(键:model/thinking/sandbox/approval/role;
+	// 只带 true 的键)。这是「这一项跟随全局吗」的唯一权威口径。
+	//
+	// 为何要单开一个字段而不复用 *_from(第一百三十四批实测踩出来的):
+	// model_from/thinking_from 走的是 sdk.EffectiveModel/EffectiveThinking,那两个函数
+	// **只要没有角色声明就返回 "session"** —— 它答的是「生效值是不是角色给的」,
+	// 不是「这个会话有没有自己压过全局」。于是前端拿 model_from === 'session'
+	// 当「独立」判据时,**每个会话都会被判成独立**(跟随全局的也算)。
+	// sandbox_from/approval_from 才是真信号(它们由 resolved.FromSessionOf 填),但语义
+	// 又被「偏离归因」占着(角色收紧/审批联动走同一条通道)。四项口径必须一致,
+	// 所以单开这张表 —— 前端不必再猜哪个 from 字段可信。
+	SessionPrefs map[string]bool `json:"session_prefs,omitempty"`
 	// ModelSession/ThinkingSession 会话档原值:设置面板要能显示“会话档 X(被角色 Y 覆盖)”,
 	// 否则用户改完会话值看不到任何变化,也不知道为什么。
 	ModelSession    string `json:"model_session,omitempty"`
@@ -979,6 +991,17 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	}
 	if v.ApprovalFrom == "" && resolved.FromSessionOf("approval") {
 		v.ApprovalFrom = "session"
+	}
+	// 「本会话自己设过哪些项」:只带 true 的键(空的 map 会被 omitempty 整块省略,
+	// 于是「全部跟随全局」在响应里就是没有 session_prefs —— 前端零特判)。
+	set := map[string]bool{}
+	for _, k := range []string{"model", "thinking", "sandbox", "approval", "role"} {
+		if resolved.FromSessionOf(k) {
+			set[k] = true
+		}
+	}
+	if len(set) > 0 {
+		v.SessionPrefs = set
 	}
 	// 当前角色(可选能力):状态栏徒标只读展示;未装配/未启用 → 字段省略
 	if roleSpec != nil {

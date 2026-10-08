@@ -36,6 +36,8 @@ import {
 import type { ModelOption } from "../modelsel";
 import { parseHeaderLines } from "../providerheaders";
 import { settingSections } from "../registry";
+import ScopeNote from "./ScopeNote.vue";
+import { hasSessionOverride } from "../scope";
 import {
   loadUIPlugins,
   uiPluginDigests,
@@ -974,11 +976,18 @@ function pickModel(o: { label: string; value: string }): void {
   modelFilter.value = "";
   void applyModel();
 }
+// 下面两个写盘函数共用一条纪律:改全局默认**之前**先记下本会话是否独立。
+// 本会话有独立设置时,改全局不会改变它 —— 不据实说明就是「点了没生效」的静默矛盾
+// (与第九十二批角色收紧那条同一种毛病:说法与实际生效的档位对不上)。
+
 async function applyModel(): Promise<void> {
   const v = modelVal.value;
   if (!v) return;
   const [pname, mid] = v.split("|");
   busy.value = true;
+  // 改之前快照:本会话是否独立、它当时在用什么(改完之后这些都不会因全局变化而变)
+  const wasIndependent = hasSessionOverride(props.state);
+  const wasUsing = props.state.model;
   try {
     if (
       pname &&
@@ -987,8 +996,11 @@ async function applyModel(): Promise<void> {
     ) {
       await api.providerUse(pname); // 先切所属 provider(活跃态与端点)
     }
-    await api.control({ model: mid });
+    await api.control({ model: mid, session: "" }); // session:"" = 写全局默认
     emit("changed");
+    info.value = wasIndependent
+      ? `全局默认已更新。本会话有独立设置,仍在用「${wasUsing}」—— 想去掉这层覆盖,点输入框旁的「本会话」。`
+      : "";
   } catch (e) {
     err.value = (e as Error).message;
   } finally {
@@ -1005,9 +1017,18 @@ async function applyCtl(body: {
   approval?: string;
   sandbox_sync?: boolean;
 }): Promise<void> {
+  // 联动开关是**全局的**(它决定全局默认怎么派生),不带 session;档位三类带 session:""
+  // 表示写全局默认(第一百三十四批)。改之前先记下本会话是否独立,改完据实提示。
+  const globalOnly = Object.keys(body).length === 1 && "sandbox_sync" in body;
+  const wasIndependent = hasSessionOverride(props.state);
   try {
-    await api.control(body);
+    await api.control(globalOnly ? body : { ...body, session: "" });
     emit("changed");
+    if (!globalOnly && wasIndependent) {
+      info.value = "全局默认已更新。本会话有独立设置,不受影响(点输入框旁的「本会话」可去掉那层覆盖)。";
+    } else if (!globalOnly) {
+      info.value = "";
+    }
   } catch (e) {
     err.value = (e as Error).message;
   }
@@ -3195,6 +3216,10 @@ watch(
             <!-- 模型(输入筛选 + 匹配列表;模型多时原生 select 难找,点选即应用) -->
             <section data-sec="model" class="sec">
               <h3 class="h">模型</h3>
+              <!-- 作用域声明(第一百三十四批):本段的控件改的是**全局默认**,
+                   下方那一行显示的是**本会话当前在用**的值。两者不是一回事,
+                   原来只有一个没标作用域的「当前生效」⇒ 用户以为改的是全局、实际只改了当前页签。 -->
+              <ScopeNote what="模型" />
               <div class="row">
                 <span class="lab-inline">当前模型</span>
                 <input
@@ -3210,7 +3235,7 @@ watch(
                这一行是「当前状态」不是说明文字 → 用强调色 + 加重,别与灰色提示同级
                (2026-10-03 用户反馈:这一行应为强调色,更显眼)。 -->
               <p class="cur-line" data-testid="cur-model">
-                <span class="cur-key">当前生效</span>
+                <span class="cur-key">本会话在用</span>
                 <span class="cur-val">{{ curModelLabel || "(未设置)" }}</span>
                 <span
                   v-if="props.state.model_from === 'role'"
@@ -3276,6 +3301,8 @@ watch(
             <!-- 推理 -->
             <section data-sec="reason" class="sec">
               <h3 class="h">推理</h3>
+              <!-- 同上:这一段的思考/沙箱/审批三个控件改的都是**全局默认**。 -->
+              <ScopeNote what="思考 / 沙箱 / 审批" />
               <div class="row">
                 <span class="lab-inline">思考</span>
                 <div class="seg">
@@ -3327,7 +3354,7 @@ watch(
                 当前角色把沙箱收紧为「{{
                   SB_ZH[props.state.sandbox_effective ?? ""] ??
                   props.state.sandbox_effective
-                }}」：写入被拦在这里， 上面选的是全局档（停用角色后生效）。
+                }}」：写入被拦在这里，上面选的是**本会话**档（停用角色后生效）。
               </p>
               <div class="row">
                 <span class="lab-inline">审批</span>
@@ -3344,7 +3371,8 @@ watch(
                   </button>
                 </div>
               </div>
-              <!-- 上面选的是**全局档**;角色收紧时实际按更严的那个裁决(第九十二批)。
+              <!-- 上面选的是**本会话档**(这一段三个控件都经 api.control 默认带 session,第一百三十四批核实);
+               角色收紧时实际按更严的那个裁决(第九十二批)。
                不说清就会变成"点了严格却不生效"的静默矛盾。 -->
               <p
                 v-if="props.state.approval_from === 'role'"
@@ -3354,7 +3382,7 @@ watch(
                 当前角色把审批收紧为「{{
                   AP_ZH[props.state.approval_effective ?? ""] ??
                   props.state.approval_effective
-                }}」：实际按它裁决（上面选的是全局档，停用角色后生效）。
+                }}」：实际按它裁决（上面选的是**本会话**档，停用角色后生效）。
               </p>
               <!-- 联动开关(R10 ②-2):默认开启时审批档会覆盖沙箱档(开放 → 完全访问、
                严格 → 只读),于是"改了沙箱档却不生效";关掉后沙箱档独立生效。

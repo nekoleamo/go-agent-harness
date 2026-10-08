@@ -54,6 +54,8 @@ import { shortSessionId, tabTitle } from './frame-routing'
 import { boundSession } from './session-scope'
 import { foreignOwner, foreignTodoText } from './frame-routing'
 import { extraPanel, slotComponent, type MetaLine, type PendingView } from './registry'
+import SessionPrefsPanel from './components/SessionPrefsPanel.vue'
+import { hasSessionOverride } from './scope'
 import { OPEN_DOC_EVENT, docRequest } from './docstore'
 import type {
   SessionEvent,
@@ -159,9 +161,56 @@ function syncTabs(): void {
     const t = tabs.get(id)!
     return {
       id: t.id, title: t.title, running: t.running, unread: t.unread, role: t.role,
+      custom: t.custom,
       draft: t.draft, scrollTop: t.scrollTop, atBottom: t.atBottom,
     }
   })
+  // 标记要给**别的**页签也探一次(当前页签的来源由 state 直接可知,见 watchStateCustom)。
+  for (const id of tabs.ids()) probeTabCustom(id)
+}
+
+// hasSessionOverride 从共享判据取(见 scope.ts):只看 state.session_prefs。
+// 曾经在这里用 *_from === 'session' 判过 —— 那是错的,后端那个值在没有角色时恒为 'session'
+// ⇒ 跟随全局的会话也会被判成独立。判据已收口到 scope.ts 一处,这里不再自己拼。
+
+// currentCustom / probed:页签标记的取数。
+// 当前页签不用发请求(state() 已经拿到了,watchStateCustom 顺手记下);
+// 别的页签按需各问后端一次(/api/state?session=),**每个会话只问一次**——
+// 页签上限 8,反复问会把 3s 一次的 statsTimer 变成 N 倍请求。
+const currentCustom = ref(false)
+const probed = new Set<string>()
+function markProbed(id: string): void {
+  probed.add(id)
+}
+function probeTabCustom(id: string): void {
+  if (id === curTabId() || probed.has(id)) return
+  probed.add(id)
+  void api
+    .stateFor(id)
+    .then((s) => {
+      const t = tabs.get(id)
+      if (!t) return // 已关掉
+      if (t.custom !== hasSessionOverride(s)) {
+        t.custom = hasSessionOverride(s)
+        syncTabs()
+      }
+    })
+    .catch(() => {
+      probed.delete(id) // 失败下轮再试,不把错误答案定死
+    })
+}
+// watchStateCustom:state 每次刷新都把**当前页签**的来源落到模型上,顺带刷新标记。
+function watchStateCustom(s: StateView): void {
+  const id = curTabId()
+  markProbed(id)
+  const v = hasSessionOverride(s)
+  if (currentCustom.value === v) return
+  currentCustom.value = v
+  const t = tabs.get(id)
+  if (t && t.custom !== v) {
+    t.custom = v
+    syncTabs()
+  }
 }
 const model = ref<StreamModel>(newModel())
 // 本窗口会话的当前步数(第一百零三批)。
@@ -261,6 +310,13 @@ const refreshKey = ref(0)
 // 全局二次确认(增删改前置):Sidebar/InputBar 经 inject('askConfirm') 触发
 const settingsOpen = ref(false)
 const openPanel = ref<string | null>(null)
+// prefsOpen:本会话设置面板的开关(第一百三十四批)。与 openPanel 分开是两个状态变量,
+// 共用一个抽屉壳 —— 两者语义不同(一个是「插件的附加面板」,一个是内置的本会话设置),
+// 混成一个会让插件一注册就把内置入口顶掉。
+const prefsOpen = ref(false)
+function openSessionPrefs(): void {
+  prefsOpen.value = true
+}
 // S-P2-1 轻量版:侧栏停靠区(单面板)。布局落 localStorage['gah.dock'](纯呈现偏好,
 // 与 gah.view/gah.board 同机制);宽度可拖拽,窄屏退化为覆盖式抽屉。
 const dock = ref<DockState>(readDock())
@@ -818,7 +874,8 @@ let lastRunning: string[] = []
 async function refreshStats(): Promise<void> {
   try {
     state.value = await api.state()
-    lastTick = Date.now() // 活跃心跳(睡眠检测基准)
+    lastTick = Date.now() // 活跃心跳（睡眠检测基准）
+    watchStateCustom(state.value)
     // 会话被**命令**切走(如 `/session new`、`/session switch`)时前端收不到任何信号:
     // SSE 订阅还挂在旧会话上 → 用户后续输入的消息服务端已记录,界面上却一个帧都不来(静默丢显示)。
     // 故以服务端快照为事实:监到当前会话 id 与流所绑定的不一致 → 重放全量(与侧栏切换同一条路径)。
@@ -1429,6 +1486,7 @@ onUnmounted(() => {
             :centered="empty"
             @session-changed="sessionChanged"
             @changed="refreshStats"
+            @open-prefs="openSessionPrefs"
           />
         </section>
       </div>
@@ -1501,6 +1559,18 @@ onUnmounted(() => {
       @close="closeSettings"
       @changed="onSettingsChanged"
     />
+
+    <!-- 本会话设置(第一百三十四批):会话级参数的编辑入口,与设置面板(全局)物理分开。
+         复用 extra-panel 抽屉的壳与动效 —— 不为它再造一层浮层。 -->
+    <Transition name="pane">
+      <div v-if="prefsOpen" class="ext-mask" @click.self="prefsOpen = false">
+        <aside class="ext-panel">
+          <div class="ep-body">
+            <SessionPrefsPanel :state="state" @close="prefsOpen = false" @changed="refreshStats" />
+          </div>
+        </aside>
+      </div>
+    </Transition>
 
     <!-- v2 扩展点:附加面板抽屉(插件声明 extra-panel) -->
     <Transition name="pane">

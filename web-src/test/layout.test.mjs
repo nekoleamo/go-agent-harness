@@ -64,6 +64,7 @@ function makeStub(
   tierRole = false,
   withMemory = true,
   sseTurns = 0,
+  sessionOverride = false,
 ) {
   // seen:记录写类请求(方法/路径/体),供角色面板用例断言「面板真的提交了」而不是只改了本地状态。
   const seen = []
@@ -345,6 +346,15 @@ function makeStub(
         // stats 内层字段不带 json tag(直接用 sdk.UsageStats 字段名)——必须 PascalCase,
         // 写成 snake_case 前端读不到(上下文会显示 '–',桩就与真实契约不一致了)。
         stats: { PromptTokens: 1200, CompletionTokens: 300, CachedTokens: 0, Requests: 3, LastPromptTokens: 1200, Window: 200000 },
+        // 会话级覆盖(第一百三十四批)。
+        //
+        // 桩必须**同时**给两样才对得上真实后端,只给一样正是上一版把 bug 藏住的原因:
+        //   session_prefs = 「这一项跟随全局吗」的唯一权威口径(前端只认它);
+        //   model_from     = 「生效值是不是角色给的」,没有角色时**恒为 'session'**,
+        //                    与「会话有没有压过全局」毫无关系 —— 早期判据读它 ⇒ 全误判。
+        // 真实后端这两者是独立的(见 sdk.EffectiveModel 与 web/server.go 的 SessionPrefs)。
+        model_from: 'session',
+        ...(sessionOverride ? { session_prefs: { model: true, sandbox: true } } : {}),
         // 角色徽标(第七十九批):状态栏多一个 "角色 <名>" 项 —— 长角色名不得把底栏挤变形。
         // 生效值来源(第八十六批):withRoles → finance 已声明模型/思考档,
         // 于是 model/thinking 应是**角色值**(与真实后端同一判据:生效值 + 会话原值都给)。
@@ -2604,6 +2614,113 @@ test(`批零合帧护栏:${PERF_TURNS * 2} 条消息首屏无 >${PERF_LONG_TASK_
         `若合帧(前端 framequeue.ts)被去掉,这里会退化到秒级 —— 那是本护栏要抓的回归。`,
     )
     console.log(`  批零合帧护栏:${PERF_TURNS * 2} 条消息首屏 ${elapsed}ms,最长长任务 ${worst}ms`)
+  } catch (e) {
+    await shoot(page, t.name)
+    throw e
+  } finally {
+    await ctx.close()
+  }
+})
+
+// 第一百三十四批 · 设置作用域收敛 —— 三条护栏,各钉一件「作用域没说清就会误解」的事。
+//
+// 为何要护栏:这一批改动全是**文案与徽标**,没有一条逻辑断言能覆盖它;而它坏了不会崩,
+// 只会让用户重新产生「我改的到底是全局还是这个页签」那个疑问 —— 正是它要消灭的东西。
+// 动效能截图断言,作用域不能,只能钉可观测的不变量(标记出现/不出现、文案在不在)。
+
+// ① 页签方块:会话有独立设置时出现,跟随全局时不出现。
+test('作用域:会话级覆盖时页签出方块标记,跟随全局时不出现', { skip: skip && skipWhy }, async (t) => {
+  for (const override of [false, true]) {
+    const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+    let page = null
+    try {
+      const stub = makeStub(true, false, false, false, false, 'finance', 0, false, true, 0, override)
+      page = await ctx.newPage()
+      await page.addInitScript(
+        ([k, v]) => {
+          window.localStorage.setItem(k, v)
+          window.sessionStorage.setItem('gah.onboard.auto', '1')
+        },
+        ['gah.dock', JSON.stringify(docks[1].dock)],
+      )
+      await page.route('**/api/**', stub)
+      await page.goto(baseURL(), { waitUntil: 'load' })
+      await waitSkeleton(page)
+      await page.waitForTimeout(400)
+      const has = await page.evaluate(() => !!document.querySelector('.tabbar .tab .custom'))
+      assert.equal(
+        has,
+        override,
+        `sessionOverride=${override} 时页签方块应 ${override ? '出现' : '不出现'};` +
+          `形状选方块正是为了与运行脉冲点/未读点(两个圆点)区分开。`,
+      )
+    } catch (e) {
+      await shoot(page, t.name)
+      throw e
+    } finally {
+      await ctx.close()
+    }
+  }
+})
+
+// ② 本会话设置面板:二态表达必须跟着来源走 —— 跟随时不摆复位按钮(没得复位就别给按钮)。
+test('作用域:本会话设置面板按来源显示跟随/独立与复位入口', { skip: skip && skipWhy }, async (t) => {
+  for (const override of [false, true]) {
+    const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+    let page = null
+    try {
+      const stub = makeStub(true, false, false, false, false, 'finance', 0, false, true, 0, override)
+      page = await ctx.newPage()
+      await page.addInitScript(() => window.sessionStorage.setItem('gah.onboard.auto', '1'))
+      await page.route('**/api/**', stub)
+      await page.goto(baseURL(), { waitUntil: 'load' })
+      await waitSkeleton(page)
+      await page.click('.ctl:has-text("本会话")')
+      await page.waitForSelector('.scp')
+      const d = await page.evaluate(() => ({
+        summary: document.querySelector('[data-testid="scp-summary"]')?.textContent?.trim() ?? '',
+        indep: document.querySelectorAll('.scp-tag:not(.scp-tag-off)').length,
+        reset: document.querySelectorAll('.scp-reset').length,
+        secs: document.querySelectorAll('.scp-sec').length,
+      }))
+      assert.equal(d.secs, 4, `本会话设置应有四段(模型/思考/沙箱/审批),实际 ${d.secs}`)
+      assert.equal(d.indep, override ? 2 : 0, `sessionOverride=${override} 时独立标记数应为 ${override ? 2 : 0},实际 ${d.indep}`)
+      assert.equal(d.reset, override ? 2 : 0, `复位入口只在该项独立时出现,实际 ${d.reset}`)
+      if (override) assert.ok(d.summary.includes('独立'), `独立时摘要要说清:${d.summary}`)
+      else assert.ok(d.summary.includes('跟随'), `跟随时摘要要说清:${d.summary}`)
+    } catch (e) {
+      await shoot(page, t.name)
+      throw e
+    } finally {
+      await ctx.close()
+    }
+  }
+})
+
+// ③ 设置面板的模型段必须写明作用域:控件改的是全局默认。
+// 这条防的是最贵的那种回归 —— 面板改回会话档而界面照旧说「全局默认」,用户就会
+// 「改了全局却只有这个页签变了」,比改前更糟。
+test('作用域:设置面板模型段写明「改的是全局默认」', { skip: skip && skipWhy }, async (t) => {
+  const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+  let page = null
+  try {
+    page = await ctx.newPage()
+    await page.addInitScript(() => window.sessionStorage.setItem('gah.onboard.auto', '1'))
+    await page.route('**/api/**', makeStub(true))
+    await page.goto(baseURL(), { waitUntil: 'load' })
+    await waitSkeleton(page)
+    await page.click('.gear')
+    await page.waitForSelector('[data-sec="model"]')
+    const notes = await page.$$eval('[data-sec="model"] .scope-note, [data-sec="reason"] .scope-note', (ns) =>
+      ns.map((n) => n.textContent?.replace(/\s+/g, ' ').trim() ?? ''),
+    )
+    assert.equal(notes.length, 2, `模型段与推理段都该有作用域声明,实际 ${notes.length} 处`)
+    for (const n of notes) {
+      assert.ok(n.includes('全局默认'), `作用域声明须点明「全局默认」:${n}`)
+    }
+    // 「本会话在用」那行也要在 —— 只说改哪里、不说当前是什么,仍然答不上「那我用的啥」
+    const cur = await page.textContent('[data-testid="cur-model"]')
+    assert.ok(cur && cur.includes('本会话在用'), `模型段应显示本会话实际在用的值:${cur}`)
   } catch (e) {
     await shoot(page, t.name)
     throw e
