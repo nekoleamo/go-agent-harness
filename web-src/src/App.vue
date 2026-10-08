@@ -1372,18 +1372,23 @@ onUnmounted(() => {
       >
         {{ viewTargetLabel }}
       </button>
+      <!-- 当前会话设置(第一百三十六批移来、第一百三十七批独立):从其它 gear 按钮里**单独分出**一身
+            —— 它改的是「这个页签用什么」,与右侧的全局设置/任务/侧栏/视图不是一类东西。分隔线 + 常驻强调色
+            + 右对齐,解决用户反馈的「配色不够突出、难以识别」。 -->
+      <span class="gear-sep" aria-hidden="true" />
       <button
         class="gear ses"
         :class="{ on: prefsOpen, scoped: prefsCount > 0 }"
         :aria-expanded="prefsOpen"
         :data-tip="
           prefsCount > 0
-            ? '本会话设置:' + prefsCount + ' 项独立于全局(点开可调模型/思考/沙箱/审批)'
-            : '本会话设置:模型/思考/沙箱/审批只作用于当前页签(全局默认在「设置」里改)'
+            ? '当前会话设置:' + prefsCount + ' 项独立于全局(点开可调模型/思考/沙箱/审批)'
+            : '当前会话设置:模型/思考/沙箱/审批只作用于当前页签(全局默认在「设置」里改)'
         "
         @click="toggleSessionPrefs()"
       >
-        本会话<span v-if="prefsCount" class="ses-badge">{{ prefsCount }}</span>
+        <span class="ses-full">当前会话设置</span><span class="ses-short">会话设置</span
+        ><span v-if="prefsCount" class="ses-badge">{{ prefsCount }}</span>
       </button>
     </section>
 
@@ -1693,14 +1698,41 @@ onUnmounted(() => {
   border-color: var(--accent);
   background: var(--accent-soft);
 }
-/* 本会话入口(第一百三十六批):从输入框工具条移到右上角独占一格。
-   跟随全局时与其它 gear 同观(低调);本会话真压过全局时用强调色 + 计数徽标点明 ——
-   「这个页签有自己的设置」是当前状态下最容易忘记、又最影响理解的一条。 */
-.gear.ses.scoped {
+/* 当前会话设置(第一百三十六批移来、第一百三十七批独立):从输入框工具条移到右上角,与其它
+   gear 按钮用分隔线隔开、靠右独占。**常驻**强调色(不是只有 scoped 才变色)—— 用户反馈
+   「配色不够突出、难以识别」:跟随全局时它和灰色 gear 长得一样,等于没入口。
+   分两档:跟随全局 = 软底 + 强调色描边/字;本会话真压过全局 = 实心强调色 + 反白计数徽标。 */
+.gear-sep {
+  flex: none;
+  width: 1px;
+  height: 16px;
+  margin: 0 2px;
+  background: var(--line-strong);
+}
+.gear.ses {
   border-color: var(--accent-line);
   background: var(--accent-soft);
   color: var(--accent);
   font-weight: 600;
+}
+.gear.ses:hover {
+  border-color: var(--accent);
+  background: var(--sel-bg);
+  color: var(--accent);
+}
+.gear.ses.scoped {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--fg-on-accent);
+}
+.gear.ses.scoped:hover {
+  border-color: var(--accent-hover);
+  background: var(--accent-hover);
+  color: var(--fg-on-accent);
+}
+/* 面板开着时给一圈软环(两档都适用):与实心/软底的颜色都拉开区分。 */
+.gear.ses.on {
+  box-shadow: 0 0 0 2px var(--accent-soft);
 }
 .ses-badge {
   margin-left: 5px;
@@ -1710,6 +1742,24 @@ onUnmounted(() => {
   color: var(--fg-on-accent);
   font-size: 10px;
   font-weight: 600;
+}
+.gear.ses.scoped .ses-badge {
+  background: var(--fg-on-accent);
+  color: var(--accent);
+}
+/* 窄窗(≤900px):右上角按钮组已经吃紧,长标题会再把底栏顶出横向溢出(角色徽标护栏实测
+   820×560 溢出 7px)。缩为「会话设置」(保留可识别的主体,去掉限定词),而不是整个隐掉 ——
+   用户反馈的正是入口不够明显。 */
+.ses-short {
+  display: none;
+}
+@media (max-width: 900px) {
+  .ses-full {
+    display: none;
+  }
+  .ses-short {
+    display: inline;
+  }
 }
 /* 窄窗(≤760px):底栏本就贴边,右上角按钮组再宽一点就会把底栏顶出横向溢出
    (布局护栏 test:layout 700×460 实测 60px)。收紧间距与内边距,而不是隐藏入口 ——
@@ -1721,6 +1771,9 @@ onUnmounted(() => {
   }
   .gear {
     padding: 1px 5px;
+  }
+  .gear-sep {
+    margin: 0 1px;
   }
 }
 .q-chip {

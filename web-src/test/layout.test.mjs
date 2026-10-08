@@ -2754,10 +2754,10 @@ test('作用域:设置面板模型段写明「改的是全局默认」', { skip:
   }
 })
 
-// ④ 本会话入口必须在**右上角**（状态栏右端），且本会话独立时用计数徽标点明。
-// 这条防两件事：入口又跑回输入框工具条（用户反馈“不够明显”的原始问题），
-// 以及“独立了但界面上看不出来”（与页签方块/状态栏前缀同一口径）。
-test('作用域:本会话入口在右上角,独立项数以徽标点明', { skip: skip && skipWhy }, async (t) => {
+// ④ 当前会话设置入口必须在**右上角**（状态栏右端、与其它 gear 用分隔线隔开），且本会话独立时
+// 用计数徽标点明。这条防三件事：入口又跑回输入框工具条（用户反馈“不够明显”的原始问题）、
+// 标题名改回短名（用户要求“当前会话设置”）、以及“独立了但界面上看不出来”（与页签方块/状态栏前缀同一口径）。
+test('作用域:当前会话设置入口单独靠右、独立项数以徽标点明', { skip: skip && skipWhy }, async (t) => {
   for (const override of [false, true]) {
     const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
     let page = null
@@ -2767,13 +2767,25 @@ test('作用域:本会话入口在右上角,独立项数以徽标点明', { skip
       await page.route('**/api/**', makeStub(true, false, false, false, false, 'finance', 0, false, true, 0, override))
       await page.goto(baseURL(), { waitUntil: 'load' })
       await waitSkeleton(page)
-      const d = await page.evaluate(() => ({
-        inTopRight: !!document.querySelector('.statusbar-slot .gear.ses'),
-        inComposer: [...document.querySelectorAll('.input-slot .ctl')].some((b) => (b.textContent || '').includes('本会话')),
-        badge: document.querySelector('.statusbar-slot .gear.ses .ses-badge')?.textContent?.trim() ?? '',
-      }))
-      assert.ok(d.inTopRight, '本会话入口应在右上角状态栏(.statusbar-slot .gear.ses)')
-      assert.ok(!d.inComposer, '本会话入口不应再出现在输入框工具条里(第一百三十六批已移走)')
+      const d = await page.evaluate(() => {
+        const slot = document.querySelector('.statusbar-slot')
+        const btn = slot?.querySelector('.gear.ses')
+        const kids = slot ? [...slot.children] : []
+        return {
+          inTopRight: !!btn,
+          inComposer: [...document.querySelectorAll('.input-slot .ctl')].some((b) => (b.textContent || '').includes('会话设置')),
+          badge: document.querySelector('.statusbar-slot .gear.ses .ses-badge')?.textContent?.trim() ?? '',
+          label: (btn?.textContent || '').replace(/\s+/g, ''),
+          // 右对齐 = 它是状态栏槽位的**最后一个**子元素;单独放置 = 前面紧着一个分隔线
+          isLast: kids.length > 0 && kids[kids.length - 1] === btn,
+          hasSep: !!btn && btn.previousElementSibling?.classList.contains('gear-sep'),
+        }
+      })
+      assert.ok(d.inTopRight, '当前会话设置入口应在右上角状态栏(.statusbar-slot .gear.ses)')
+      assert.ok(!d.inComposer, '会话设置入口不应再出现在输入框工具条里(第一百三十六批已移走)')
+      assert.ok(d.label.includes('当前会话设置'), `入口标题应为「当前会话设置」,实际 "${d.label}"`)
+      assert.ok(d.isLast, '入口应右对齐(是状态栏槽位的最后一个元素)')
+      assert.ok(d.hasSep, '入口应与其它 gear 按钮用分隔线隔开(单独放置)')
       assert.equal(d.badge, override ? '2' : '', `sessionOverride=${override} 时徽标应为 ${override ? '2' : '空'},实际 "${d.badge}"`)
     } catch (e) {
       await shoot(page, t.name)
@@ -2816,6 +2828,7 @@ test('作用域:本会话设置面板可单独选模型(写会话档)', { skip: 
     await ctx.close()
   }
 })
+
 
 test('布局护栏:跳过原因(仅在没有浏览器/产物时输出)', { skip: !skip }, () => {
   console.log(`  跳过:${skipWhy}`)

@@ -162,7 +162,7 @@ function eff(field: 'sandbox' | 'approval', zh: Record<string, string>): string 
 <template>
   <div class="scp">
     <header class="scp-head">
-      <span class="scp-title">本会话设置</span>
+      <span class="scp-title">当前会话设置</span>
       <button class="scp-x" data-tip="关闭" @click="emit('close')">×</button>
     </header>
 

@@ -96,7 +96,7 @@ const anonSession = computed(() => {
     <!-- 沙箱与角色都是**本会话**的(第一百三十四批)。前缀只在**该会话真的压过了全局**时出现:
          绝大多数会话跟随全局,那时这三个字是纯噪音,还要挤底栏的宽度(700px 窗口下实测溢出
          46px)。真独立了才值得说 —— 「信号才占位」与页签方块标记同一口径。 -->
-    <span v-if="sessionScoped" class="it faint scope-key">本会话</span>
+    <span v-if="sessionScoped" class="it faint scope-key">当前会话</span>
     <span class="it faint">沙箱 {{ sandboxLabel }}</span>
     <!-- 角色名是本栏唯一「用户自定长度」的字段:截断显示,全文在 tooltip 里 ——
          不截断时长名字会把文字挤成多行(底栏从 22px 涨到 58px,真实测得)并把右侧挤出去。 -->

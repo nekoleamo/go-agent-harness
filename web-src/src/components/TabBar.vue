@@ -53,7 +53,7 @@ function closeLabel(t: TabMeta): string {
         v-if="t.custom"
         class="custom"
         aria-label="本会话有独立于全局的设置"
-        data-tip="本会话有独立于全局的设置(模型/思考/沙箱/审批),在输入框旁的「本会话设置」里改"
+        data-tip="本会话有独立于全局的设置(模型/思考/沙箱/审批),在右上角「当前会话设置」里改"
       />
       <span class="t-title">{{ t.title }}</span>
       <span v-if="t.unread" class="badge" aria-label="有未读">·</span>
