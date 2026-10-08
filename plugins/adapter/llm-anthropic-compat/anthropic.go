@@ -363,7 +363,7 @@ func (a *Adapter) Complete(ctx context.Context, req *sdk.LLMRequest, onChunk fun
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		return nil, &sdk.RetryableError{Err: fmt.Errorf("llm-anthropic: request: %w", err)}
+		return nil, &sdk.RetryableError{Err: fmt.Errorf("llm-anthropic: request: %w%s", err, sdk.TLSVerifyHint(err))}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {

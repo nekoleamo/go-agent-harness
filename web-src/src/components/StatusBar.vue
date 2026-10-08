@@ -216,6 +216,9 @@ const anonSession = computed(() => {
    故窄窗退成**无胶囊的强调色粗体**:显眼度的大头(强调色 + 加重)全保留,只丢掉装饰,
    零布局开销。判断线取 760px:低于它底栏本就没有余量。 */
 @media (max-width: 760px) {
+  .bar {
+    gap: 8px;
+  }
   .role {
     padding: 0;
     border: 0;

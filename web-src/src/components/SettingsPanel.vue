@@ -31,6 +31,7 @@ import {
 import {
   currentModelValue,
   modelOptionValue,
+  modelRank,
   withCurrentModel,
 } from "../modelsel";
 import type { ModelOption } from "../modelsel";
@@ -914,14 +915,6 @@ function buildModelOptions(): void {
     props.state.model,
     activeProvider()?.Name ?? "",
   );
-}
-function modelRank(o: ModelOption): number {
-  let rank = 0;
-  if (o.usable === false) rank += 1000;
-  if (o.autoRouter) rank -= 50; // 官方自动路由:不会因某个免费模型下线而失效,置顶
-  if (o.free) rank -= 10;
-  rank -= Math.floor((o.contextWindow ?? 0) / 1_000_000);
-  return rank;
 }
 const modelVal = ref("");
 // 模型选择:输入筛选(modelFilter 实时过滤选项,provider·模型名均可匹配;命中即点选)

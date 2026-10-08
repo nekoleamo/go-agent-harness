@@ -21,6 +21,7 @@ import (
 	"github.com/nekoleamo/go-agent-harness/internal/embed"
 	"github.com/nekoleamo/go-agent-harness/internal/install"
 	"github.com/nekoleamo/go-agent-harness/internal/plugintrust"
+	"github.com/nekoleamo/go-agent-harness/internal/sysproxy"
 	"github.com/nekoleamo/go-agent-harness/plugins/catalogue"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
@@ -90,6 +91,12 @@ func main() {
 
 	// 版本贯通(M7):mcp-server 等插件经 GAH_VERSION 读取构建版本
 	os.Setenv("GAH_VERSION", version)
+
+	// 桌面壳由 Finder/开始菜单启动,**不继承 shell 环境**:装了本机代理(Clash/xray)的用户
+	// 双击打开桌面版时 LLM 请求会直连,被网络侧自签证书拦截(x509: "localhost" certificate
+	// is not standards compliant)。这里在没有代理 env 时补上系统代理,且必须早于任何 HTTP
+	// 客户端首次使用 —— net/http 的 env 代理是**进程级一次性缓存**,晚了就不生效。
+	sysproxy.Apply(logger.Info)
 
 	// 运行时 home 初始化:首启释放 seed 样板(home/config),ephemeral 用临时 home 退出即焚(设计 §7.3)
 	home := homeDir()

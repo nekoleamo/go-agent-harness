@@ -87,6 +87,8 @@ SKIP="${GAH_COVER_SKIP:-0}"             # 1 = 只测(不校验),用于基线测�
 #   2026-10-08(动画加强 + 性能优化)后上调:internal/prefs 83 → **84**(实测 84.3;新增的
 #   mtime 缓存带来七条护栏用例:命中/同进程写失效/跨进程写可见/文件删除/坏 JSON/按路径分桶/
 #   写路径不经缓存)、web 81 → **81.5**(实测 81.5;数据根可写性探针的 TTL 复用六条用例)。
+#   2026-10-09(第一百三十六批 · 桌面端系统代理)新增 internal/sysproxy,登记 **65**
+#   (darwin 实测 72.1;Apply 里的 scutil/平台分支不在单测里跑,余量留足)。
 
 # 跨平台差(踩过的坑):棘轮取**各平台实测的较小值**。第一百零四批按 macOS 实测把
 # host-schedule 调到 81.5,而 CI(linux)实测 81.2 ⇒ 门红。带平台差异的代码路径要用
@@ -133,6 +135,7 @@ internal/providerfile 72
 internal/kernelsandbox 50
 internal/kernelsandbox@linux 43
 internal/mcpconfig 88
+internal/sysproxy 65
 internal/embed 78
 internal/install 77
 internal/sessionevents 92

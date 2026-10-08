@@ -28,6 +28,20 @@ export function modelOptionValue(providerName: string, modelID: string): string 
   return providerName + '|' + modelID
 }
 
+// modelRank 模型排序权重:能用当 agent 用 > 免费 > 上下文大。
+//
+// 单一事实源(与 TUI 选择器的 modelRankOf 同口径):设置面板(全局默认)与「本会话设置」
+// 面板(会话档)两处都要排序,同一份清单排成两种顺序会让人以为"这里少了模型"。
+// 顺序只影响观感,不影响正确性 —— 真正的可用性判定用后端给的 usable,不在前端重算。
+export function modelRank(o: ModelOption): number {
+  let rank = 0
+  if (o.usable === false) rank += 1000
+  if (o.autoRouter) rank -= 50 // 官方自动路由:不会因某个免费模型下线而失效,置顶
+  if (o.free) rank -= 10
+  rank -= Math.floor((o.contextWindow ?? 0) / 1_000_000)
+  return rank
+}
+
 // resolveModelValue 当前模型对应的选项 value;没有合适落点时返回空串。
 // 先按「活跃 provider + 模型 ID」精确匹配,再退一步按模型 ID 唯一匹配(活跃 provider 与模型
 // 归属不一致时,精确匹配必然落空)。

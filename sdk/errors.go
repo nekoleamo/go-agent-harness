@@ -3,6 +3,8 @@
 package sdk
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"strings"
 )
@@ -139,4 +141,47 @@ func HTTPStatusHint(code int) string {
 		return "端点不支持该接口(如 /chat/completions)"
 	}
 	return ""
+}
+
+// TLSVerifyHint 证书校验失败时的可执行提示(非证书错误返回空串)。
+//
+// 为什么要这条:这类失败在**桌面端**最常见也最难自证 —— 桌面壳由 Finder/开始菜单启动,
+// 不继承 shell 里的 HTTPS_PROXY;直连后流量被网络侧(运营商/公司网关,或本机代理的 TLS
+// 拦截)插入自签证书,报错长这样:
+//
+//	x509: “localhost” certificate is not standards compliant
+//	x509: certificate signed by unknown authority
+//
+// 用户看到「证书不合格」只会以为软件坏了。提示给的是**两条能立刻做的事**,不是原因科普。
+//
+// 返回形如 "(…)" 的括号后缀,便于调用方直接 `fmt.Errorf("…: %w%s", err, sdk.TLSVerifyHint(err))`。
+func TLSVerifyHint(err error) string {
+	if err == nil {
+		return ""
+	}
+	var (
+		cve *tls.CertificateVerificationError
+		uae x509.UnknownAuthorityError
+		hn  x509.HostnameError
+		ci  x509.CertificateInvalidError
+		sre x509.SystemRootsError
+	)
+	hit := errors.As(err, &cve) || errors.As(err, &uae) || errors.As(err, &hn) ||
+		errors.As(err, &ci) || errors.As(err, &sre)
+	if !hit {
+		// 平台校验器(macOS Security.framework 等)回传的是**无类型**的字符串错误,
+		// errors.As 抓不到 —— 用明确的证书措辞兜底(措辞必须足够专指,不误伤普通网络错误)。
+		s := strings.ToLower(err.Error())
+		hit = strings.Contains(s, "x509:") ||
+			strings.Contains(s, "failed to verify certificate") ||
+			strings.Contains(s, "certificate is not standards compliant") ||
+			strings.Contains(s, "certificate signed by unknown authority")
+	}
+	if !hit {
+		return ""
+	}
+	return "(TLS 证书校验失败:多为本机代理/VPN 或公司网关拦截 HTTPS 后替换了证书。" +
+		"可把该端点加入代理白名单,或用 NO_PROXY 让它直连;" +
+		"若确需使用自签根证书,导出后用 SSL_CERT_FILE 指向它" +
+		"—— macOS 上 Go 1.27 起设置该变量会改用自带校验器,不再走系统校验)"
 }

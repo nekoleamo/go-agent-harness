@@ -85,3 +85,30 @@ func TestIsContextOverflowError(t *testing.T) {
 		t.Fatal("nil 错误不得判定为超窗")
 	}
 }
+
+// TLSVerifyHint:这条的价值在于「无类型错误」也能认出来 —— macOS 平台校验器回传的
+// “certificate is not standards compliant” 就是一个普通 errors.New 字符串,errors.As 抓不到。
+func TestTLSVerifyHint(t *testing.T) {
+	if got := TLSVerifyHint(nil); got != "" {
+		t.Fatalf("nil 不该给提示,实际 %q", got)
+	}
+	if got := TLSVerifyHint(errors.New("dial tcp: connection refused")); got != "" {
+		t.Fatalf("普通网络错误不该被当成证书问题,实际 %q", got)
+	}
+	cases := []string{
+		`Get "https://x/api": tls: failed to verify certificate: x509: “localhost” certificate is not standards compliant`,
+		"x509: certificate signed by unknown authority",
+		`tls: failed to verify certificate: x509: certificate is valid for example.com, not api.openai.com`,
+	}
+	for _, c := range cases {
+		got := TLSVerifyHint(errors.New(c))
+		if got == "" {
+			t.Fatalf("证书错误应给提示:%s", c)
+		}
+		for _, want := range []string{"NO_PROXY", "SSL_CERT_FILE"} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("提示要给可执行动作 %q,实际 %q", want, got)
+			}
+		}
+	}
+}

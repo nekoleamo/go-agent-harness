@@ -240,7 +240,7 @@ func (a *Adapter) ListModels() ([]sdk.ModelInfo, error) {
 	a.applyHeaders(req)
 	resp, err := a.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("llm-openai: models 列表请求失败: %w", err)
+		return nil, fmt.Errorf("llm-openai: models 列表请求失败: %w%s", err, sdk.TLSVerifyHint(err))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -400,7 +400,7 @@ func (a *Adapter) Complete(ctx context.Context, req *sdk.LLMRequest, onChunk fun
 		if ctx.Err() != nil {
 			return nil, ctx.Err() // 取消:不包装,不重试
 		}
-		return nil, &sdk.RetryableError{Err: fmt.Errorf("llm-openai: request: %w", err)} // 网络故障可重试
+		return nil, &sdk.RetryableError{Err: fmt.Errorf("llm-openai: request: %w%s", err, sdk.TLSVerifyHint(err))} // 网络故障可重试
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {

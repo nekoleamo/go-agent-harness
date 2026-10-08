@@ -55,7 +55,7 @@ import { boundSession } from './session-scope'
 import { foreignOwner, foreignTodoText } from './frame-routing'
 import { extraPanel, slotComponent, type MetaLine, type PendingView } from './registry'
 import SessionPrefsPanel from './components/SessionPrefsPanel.vue'
-import { hasSessionOverride } from './scope'
+import { hasSessionOverride, sessionSetCount } from './scope'
 import { OPEN_DOC_EVENT, docRequest } from './docstore'
 import type {
   SessionEvent,
@@ -313,9 +313,13 @@ const openPanel = ref<string | null>(null)
 // prefsOpen:本会话设置面板的开关(第一百三十四批)。与 openPanel 分开是两个状态变量,
 // 共用一个抽屉壳 —— 两者语义不同(一个是「插件的附加面板」,一个是内置的本会话设置),
 // 混成一个会让插件一注册就把内置入口顶掉。
+// 开关入口在**右上角**(第一百三十六批从输入框工具条移来,见模板里的 .gear.ses)。
 const prefsOpen = ref(false)
-function openSessionPrefs(): void {
-  prefsOpen.value = true
+// prefsCount 本会话独立于全局的项数(0 = 全部跟随):右上角入口的徽标与强调态据它显示。
+// 判据与页签方块、状态栏前缀同源(scope.ts 的 session_prefs)。
+const prefsCount = computed(() => sessionSetCount(state.value))
+function toggleSessionPrefs(): void {
+  prefsOpen.value = !prefsOpen.value
 }
 // S-P2-1 轻量版:侧栏停靠区(单面板)。布局落 localStorage['gah.dock'](纯呈现偏好,
 // 与 gah.view/gah.board 同机制);宽度可拖拽,窄屏退化为覆盖式抽屉。
@@ -1368,6 +1372,19 @@ onUnmounted(() => {
       >
         {{ viewTargetLabel }}
       </button>
+      <button
+        class="gear ses"
+        :class="{ on: prefsOpen, scoped: prefsCount > 0 }"
+        :aria-expanded="prefsOpen"
+        :data-tip="
+          prefsCount > 0
+            ? '本会话设置:' + prefsCount + ' 项独立于全局(点开可调模型/思考/沙箱/审批)'
+            : '本会话设置:模型/思考/沙箱/审批只作用于当前页签(全局默认在「设置」里改)'
+        "
+        @click="toggleSessionPrefs()"
+      >
+        本会话<span v-if="prefsCount" class="ses-badge">{{ prefsCount }}</span>
+      </button>
     </section>
 
     <TabBar
@@ -1490,7 +1507,6 @@ onUnmounted(() => {
             :centered="empty"
             @session-changed="sessionChanged"
             @changed="refreshStats"
-            @open-prefs="openSessionPrefs"
           />
         </section>
       </div>
@@ -1676,6 +1692,36 @@ onUnmounted(() => {
   color: var(--accent);
   border-color: var(--accent);
   background: var(--accent-soft);
+}
+/* 本会话入口(第一百三十六批):从输入框工具条移到右上角独占一格。
+   跟随全局时与其它 gear 同观(低调);本会话真压过全局时用强调色 + 计数徽标点明 ——
+   「这个页签有自己的设置」是当前状态下最容易忘记、又最影响理解的一条。 */
+.gear.ses.scoped {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+.ses-badge {
+  margin-left: 5px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--fg-on-accent);
+  font-size: 10px;
+  font-weight: 600;
+}
+/* 窄窗(≤760px):底栏本就贴边,右上角按钮组再宽一点就会把底栏顶出横向溢出
+   (布局护栏 test:layout 700×460 实测 60px)。收紧间距与内边距,而不是隐藏入口 ——
+   用户反馈的正是「入口不够明显」,窄窗下更不能把它藏掉。 */
+@media (max-width: 760px) {
+  .statusbar-slot {
+    gap: 4px;
+    padding: 4px 10px;
+  }
+  .gear {
+    padding: 1px 5px;
+  }
 }
 .q-chip {
   display: flex;

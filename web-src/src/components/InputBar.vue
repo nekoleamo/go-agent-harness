@@ -25,10 +25,9 @@ const props = defineProps<{
   // onCancel 中止运行中的回合(可选;不传则不显示「停止」按钮)
   onCancel?: () => void
 }>()
-// 会话切换/新建成功后通知宿主;控制(思考/沙箱)变更后通知宿主刷新 state
-// open-prefs:打开「本会话设置」面板(第一百三十四批)。放在这里而不是状态栏,是因为
-// 改的就是**这个会话**的运行参数 —— 而思考/沙箱两个循环按钮本来就在这一排,就近。
-const emit = defineEmits<{ (e: 'session-changed'): void; (e: 'changed'): void; (e: 'open-prefs'): void }>()
+// 会话切换/新建成功后通知宿主;控制(思考/沙箱)变更后通知宿主刷新 state。
+// 「本会话设置」入口**不在这里** —— 第一百三十六批已移到右上角状态栏(用户反馈工具条里不够明显)。
+const emit = defineEmits<{ (e: 'session-changed'): void; (e: 'changed'): void }>()
 
 const text = ref('')
 const cmds = ref<CommandView[]>([])
@@ -582,13 +581,6 @@ defineExpose({ cycleThinking, cycleSandbox, getText: () => text.value, setText: 
         <button class="ctl" :data-tip="thinkTip" @click="cycleThinking">
           <span class="ctl-n">思考</span>
           <span class="ctl-v">{{ thinkVal }}</span>
-        </button>
-        <button
-          class="ctl"
-          data-tip="本会话设置:模型/思考/沙箱/审批只作用于当前页签(全局默认在「设置」里改)"
-          @click="emit('open-prefs')"
-        >
-          <span class="ctl-n">本会话</span>
         </button>
         <button class="ctl" :data-tip="sandboxTip" @click="cycleSandbox">
           <span class="ctl-n">沙箱</span>

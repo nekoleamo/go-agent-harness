@@ -11,8 +11,10 @@
 // 每项**二态**:跟随全局 / 独立。这是本面板的核心 ——
 // 「跟随」意味着不写会话档,后端合成时回落全局(前端把这种留空画成一种状态,而不是
 // 假装自己设了全局值);「独立」才写会话档。
-import { computed, onMounted, onUnmounted } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { api } from '../api'
+import { currentModelValue, modelOptionValue, modelRank, withCurrentModel } from '../modelsel'
+import type { ModelOption } from '../modelsel'
 import { isSessionSet } from '../scope'
 import type { StateView } from '../types'
 
@@ -38,6 +40,63 @@ const APPROVAL = [
 
 const SB_ZH: Record<string, string> = { 'read-only': '只读', 'workspace-write': '工作区', 'full-access': '完全' }
 const AP_ZH: Record<string, string> = { open: '开放', smart: '智能', strict: '严格' }
+
+// —— 本会话模型选择(第一百三十六批) ——
+//
+// 为什么面板里必须有它:会话级模型此前**根本没有设置入口** —— 设置面板的模型段只写全局默认
+// (session:""),而这里只显示当前值 + 「改为跟随全局」。于是「只让这个页签用另一个模型」
+// 在界面层完全做不到(第一百三十四/五批修好了「清除覆盖」,却漏了「设置覆盖」)。
+//
+// 只列**当前 provider** 的模型:会话档存的只是模型名(与「角色只能选模型名」同一条边界),
+// 换 provider 仍是全局动作。把别的 provider 的模型也摆上 = 点了不生效的假按钮。
+const rawModels = ref<ModelOption[]>([])
+const activeProviderName = ref('')
+const modelFilter = ref('')
+const modelOptions = computed(() =>
+  withCurrentModel(rawModels.value, props.state.model, activeProviderName.value),
+)
+const filteredModels = computed(() => {
+  const f = modelFilter.value.trim().toLowerCase()
+  if (!f) return modelOptions.value
+  return modelOptions.value.filter(
+    (o) => o.label.toLowerCase().includes(f) || o.value.toLowerCase().includes(f),
+  )
+})
+const curModelValue = computed(() =>
+  currentModelValue(modelOptions.value, props.state.model, activeProviderName.value),
+)
+
+async function loadModels(): Promise<void> {
+  const [m, pr] = await Promise.allSettled([api.models(), api.providers()])
+  const groups = m.status === 'fulfilled' ? (m.value.providers ?? []) : []
+  const active =
+    pr.status === 'fulfilled' ? ((pr.value ?? []).find((p) => p.Active)?.Name ?? '') : ''
+  activeProviderName.value = active
+  const g = groups.find((x) => x.Name === active)
+  const opts: ModelOption[] = (g?.Models ?? []).map((md) => {
+    const v = md.Verdict
+    const tags = v?.Tags ?? []
+    return {
+      label: md.ID + (tags.length ? ' · ' + tags.join(' · ') : ''),
+      value: modelOptionValue(active, md.ID),
+      // 没有 verdict(旧后端/枚举失败)时不当成不可用 —— 那会把列表清空(与设置面板同一条纪律)
+      usable: v ? v.Usable : true,
+      free: v ? v.Free : false,
+      autoRouter: v?.AutoRouter ?? false,
+      contextWindow: v?.ContextWindow ?? 0,
+      tags,
+    }
+  })
+  opts.sort((a, b) => modelRank(a) - modelRank(b))
+  rawModels.value = opts
+}
+
+// pickModel 写**本会话**的模型名(显式带 session;换 provider 不做 —— 那是全局动作)。
+async function pickModel(o: ModelOption): Promise<void> {
+  const mid = o.value.split('|').slice(1).join('|')
+  if (!mid) return
+  await pick('model', mid)
+}
 
 type Field = 'model' | 'thinking' | 'sandbox' | 'approval'
 
@@ -83,7 +142,10 @@ function onEsc(e: KeyboardEvent): void {
   e.stopPropagation()
   emit('close')
 }
-onMounted(() => window.addEventListener('keydown', onEsc, true))
+onMounted(() => {
+  window.addEventListener('keydown', onEsc, true)
+  void loadModels()
+})
 onUnmounted(() => window.removeEventListener('keydown', onEsc, true))
 
 // effectiveXxx 显示**本会话实际生效**的值(已含角色收紧与审批联动的合成结果)。
@@ -123,6 +185,25 @@ function eff(field: 'sandbox' | 'approval', zh: Record<string, string>): string 
       </h4>
       <p class="scp-now">本会话在用：<b>{{ state.model }}</b></p>
       <p v-if="state.model_from === 'role'" class="scp-note">当前角色指定了模型，实际按角色那份跑。</p>
+      <template v-if="activeProviderName && modelOptions.length">
+        <input
+          v-model="modelFilter"
+          class="scp-input"
+          data-testid="scp-model-filter"
+          placeholder="筛选模型（点一下设为本会话专用）"
+        />
+        <ul class="scp-list" data-testid="scp-models">
+          <li v-for="o in filteredModels" :key="o.value">
+            <button class="scp-opt" :class="{ on: o.value === curModelValue }" @click="pickModel(o)">
+              <span class="scp-opt-name">{{ o.label }}</span>
+              <span v-if="o.free" class="scp-free">免费</span>
+            </button>
+          </li>
+          <li v-if="!filteredModels.length" class="scp-empty">没有匹配的模型</li>
+        </ul>
+        <p class="scp-hint">只列当前 provider（{{ activeProviderName }}）的模型；换 provider 是全局设置。</p>
+      </template>
+      <p v-else class="scp-note">模型列表拉不到，可到状态栏「设置」里改全局默认。</p>
       <button v-if="indep('model')" class="scp-reset" @click="reset('model')">改为跟随全局</button>
     </section>
 
@@ -337,6 +418,83 @@ function eff(field: 'sandbox' | 'approval', zh: Record<string, string>): string 
   background: var(--accent-soft);
   color: var(--fg);
   font-weight: 600;
+}
+.scp-input {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 4px 0 6px;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-input);
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 12px;
+}
+.scp-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.scp-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--r-input);
+}
+.scp-opt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  background: none;
+  border: none;
+  color: var(--fg-dim);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 5px 9px;
+  text-align: left;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.scp-opt + .scp-opt {
+  border-top: 1px solid var(--line-faint);
+}
+.scp-opt:hover {
+  background: var(--bg2);
+  color: var(--fg);
+}
+.scp-opt.on {
+  background: var(--accent-soft);
+  color: var(--fg);
+  font-weight: 600;
+}
+.scp-opt-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scp-free {
+  flex: none;
+  padding: 0 5px;
+  border: 1px solid var(--accent-line);
+  border-radius: 4px;
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 500;
+}
+.scp-empty {
+  padding: 6px 9px;
+  color: var(--fg-faint);
+  font-size: 12px;
+}
+.scp-hint {
+  margin: 6px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--fg-faint);
 }
 .scp-reset {
   display: block;

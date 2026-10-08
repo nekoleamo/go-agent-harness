@@ -65,6 +65,7 @@ function makeStub(
   withMemory = true,
   sseTurns = 0,
   sessionOverride = false,
+  withModels = false,
 ) {
   // seen:记录写类请求(方法/路径/体),供角色面板用例断言「面板真的提交了」而不是只改了本地状态。
   const seen = []
@@ -418,7 +419,29 @@ function makeStub(
       }
       return json([])
     }
-    if (p === '/api/models') return json({ providers: [] })
+    if (p === '/api/models') {
+      if (!withModels) return json({ providers: [] })
+      // 本会话模型选择器需要「当前 provider 有模型」这个真实形状:
+      // 一个普通模型 + 一个免费模型(免费徽标分支)。可用性一律由 Verdict 给(后端算好)。
+      const pname = longTokens ? 'provider-name-without-any-break-0123456789abcdef' : 'layout'
+      return json({
+        providers: [
+          {
+            Name: pname,
+            Models: [
+              {
+                ID: 'layout-guard/model',
+                Verdict: { Free: false, ToolsKnown: true, Tools: true, Vision: false, ContextWindow: 200000, Usable: true, Tags: ['工具'], Warn: '' },
+              },
+              {
+                ID: 'layout-guard/other-model',
+                Verdict: { Free: true, ToolsKnown: true, Tools: true, Vision: false, ContextWindow: 128000, Usable: true, Tags: ['免费'], Warn: '' },
+              },
+            ],
+          },
+        ],
+      })
+    }
     if (p === '/api/mcp') {
       if (!longTokens) return json({ path: '', servers: [], reload_available: false, plugin_loaded: false })
       // 长 token 场景照搬真机形状:Windows 配置路径与 MCP 启动命令都是一整段无空格文本,正是
@@ -2675,7 +2698,9 @@ test('作用域:本会话设置面板按来源显示跟随/独立与复位入口
       await page.route('**/api/**', stub)
       await page.goto(baseURL(), { waitUntil: 'load' })
       await waitSkeleton(page)
-      await page.click('.ctl:has-text("本会话")')
+      // 入口在**右上角**(第一百三十六批从输入框工具条移来):用 .gear.ses 选中,
+      // 若哪天又跑回工具条,这条会直接找不到元素。
+      await page.click('.statusbar-slot .gear.ses')
       await page.waitForSelector('.scp')
       const d = await page.evaluate(() => ({
         summary: document.querySelector('[data-testid="scp-summary"]')?.textContent?.trim() ?? '',
@@ -2729,10 +2754,72 @@ test('作用域:设置面板模型段写明「改的是全局默认」', { skip:
   }
 })
 
+// ④ 本会话入口必须在**右上角**（状态栏右端），且本会话独立时用计数徽标点明。
+// 这条防两件事：入口又跑回输入框工具条（用户反馈“不够明显”的原始问题），
+// 以及“独立了但界面上看不出来”（与页签方块/状态栏前缀同一口径）。
+test('作用域:本会话入口在右上角,独立项数以徽标点明', { skip: skip && skipWhy }, async (t) => {
+  for (const override of [false, true]) {
+    const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+    let page = null
+    try {
+      page = await ctx.newPage()
+      await page.addInitScript(() => window.sessionStorage.setItem('gah.onboard.auto', '1'))
+      await page.route('**/api/**', makeStub(true, false, false, false, false, 'finance', 0, false, true, 0, override))
+      await page.goto(baseURL(), { waitUntil: 'load' })
+      await waitSkeleton(page)
+      const d = await page.evaluate(() => ({
+        inTopRight: !!document.querySelector('.statusbar-slot .gear.ses'),
+        inComposer: [...document.querySelectorAll('.input-slot .ctl')].some((b) => (b.textContent || '').includes('本会话')),
+        badge: document.querySelector('.statusbar-slot .gear.ses .ses-badge')?.textContent?.trim() ?? '',
+      }))
+      assert.ok(d.inTopRight, '本会话入口应在右上角状态栏(.statusbar-slot .gear.ses)')
+      assert.ok(!d.inComposer, '本会话入口不应再出现在输入框工具条里(第一百三十六批已移走)')
+      assert.equal(d.badge, override ? '2' : '', `sessionOverride=${override} 时徽标应为 ${override ? '2' : '空'},实际 "${d.badge}"`)
+    } catch (e) {
+      await shoot(page, t.name)
+      throw e
+    } finally {
+      await ctx.close()
+    }
+  }
+})
+
+// ⑤ 会话级模型必须能**真正设上**(不只是能清除)。
+// 缺口原状：设置面板的模型段只写全局（session:""），本会话面板只有「改为跟随全局」——
+// “只让这个页签用另一个模型”在界面层完全做不到。这条钉住选中的是**会话档**而不是全局。
+test('作用域:本会话设置面板可单独选模型(写会话档)', { skip: skip && skipWhy }, async (t) => {
+  const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+  let page = null
+  try {
+    const stub = makeStub(true, false, false, false, false, 'finance', 0, false, true, 0, false, true)
+    page = await ctx.newPage()
+    await page.addInitScript(() => window.sessionStorage.setItem('gah.onboard.auto', '1'))
+    await page.route('**/api/**', stub)
+    await page.goto(baseURL(), { waitUntil: 'load' })
+    await waitSkeleton(page)
+    await page.click('.statusbar-slot .gear.ses')
+    await page.waitForSelector('.scp')
+    await page.waitForSelector('[data-testid="scp-models"]')
+    const n = await page.$$eval('[data-testid="scp-models"] .scp-opt', (els) => els.length)
+    assert.ok(n >= 2, `本会话模型列表应列出当前 provider 的模型,实际 ${n} 条`)
+    await page.click('[data-testid="scp-models"] .scp-opt:has-text("other-model")')
+    const hit = stub.seen.find(
+      (r) => r.path === '/api/control' && (r.body || '').includes('layout-guard/other-model'),
+    )
+    assert.ok(hit, `选模型应提交 /api/control:${JSON.stringify(stub.seen)}`)
+    assert.ok((hit.body || '').includes('"session"'), `必须是会话档(带 session)而不是全局:${hit.body}`)
+    assert.ok(!(hit.body || '').includes('"also_global"'), `会话档不该顺手改全局:${hit.body}`)
+  } catch (e) {
+    await shoot(page, t.name)
+    throw e
+  } finally {
+    await ctx.close()
+  }
+})
+
 test('布局护栏:跳过原因(仅在没有浏览器/产物时输出)', { skip: !skip }, () => {
   console.log(`  跳过:${skipWhy}`)
 })
-
 // CI 的 ubuntu-latest(24.04)那两个参数能不能救场,本地验不了;但"什么失败该重试"这个判定
 // 是纯函数,拿真实报错文案钉住 —— 既不让沙箱失败白挂,也不让装错浏览器被重试掩盖。
 test('无沙箱重试判定:只对沙箱/namespace 类失败生效(ubuntu-latest 24.04 的 AppArmor)', () => {
