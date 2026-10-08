@@ -265,6 +265,7 @@ const anonSession = computed(() => {
   color: var(--fg-faint);
   font-size: 12px;
   cursor: pointer;
+  transition: color var(--dur-fast) var(--ease-out);
 }
 .ver:hover {
   color: var(--fg-dim);

@@ -139,6 +139,7 @@ onUnmounted(() => {
   color: var(--fg-faint);
   font-size: 16px;
   padding: 2px 6px;
+  transition: color var(--dur-fast) var(--ease-out);
 }
 .jp-close:hover {
   color: var(--fg);
@@ -200,6 +201,7 @@ onUnmounted(() => {
   border: 1px solid var(--err-line);
   border-radius: 6px;
   padding: 1px 8px;
+  transition: background var(--dur-fast) var(--ease-out);
 }
 .jp-kill:hover {
   background: var(--err-soft);

@@ -93,6 +93,20 @@ function closeLabel(t: TabMeta): string {
   font-size: 13px;
   cursor: pointer;
   white-space: nowrap;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+  /* 新页签入场(批四 4b):v-for keyed ⇒ 已有页签不重播,只有新建那个淡入。
+     与消息入场同一条曲线与时长。 */
+  animation: tab-in var(--dur-base) var(--ease-out);
+}
+@keyframes tab-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 .tab:hover {
   background: var(--hover-bg);
@@ -138,6 +152,7 @@ function closeLabel(t: TabMeta): string {
   font: inherit;
   line-height: 1;
   cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
 }
 .x:hover {
   background: var(--bg3);

@@ -139,6 +139,7 @@ function onKey(ev: KeyboardEvent): void {
   width: 7px;
   cursor: col-resize;
   z-index: 2;
+  transition: background var(--dur-fast) var(--ease-out);
 }
 .dk-handle::after {
   content: '';
@@ -190,6 +191,7 @@ function onKey(ev: KeyboardEvent): void {
   font-size: 12px;
   padding: 2px 6px;
   border-radius: var(--r-input);
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
 }
 .dk-close:hover {
   background: var(--hover-bg);

@@ -342,6 +342,7 @@ const fmtSize = (n?: number): string => {
   font-size: 12px;
   padding: 5px 10px;
   cursor: pointer;
+  transition: color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
 }
 .dp-btn:hover {
   color: var(--fg);
@@ -385,6 +386,7 @@ const fmtSize = (n?: number): string => {
   border-radius: 6px;
   cursor: pointer;
   font-size: 12.5px;
+  transition: background var(--dur-fast) var(--ease-out);
 }
 .dp-item:hover {
   background: var(--bg2);
@@ -454,6 +456,7 @@ const fmtSize = (n?: number): string => {
   cursor: pointer;
   font-size: 12px;
   padding: 3px 10px;
+  transition: color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
 }
 .dp-mode:hover {
   border-color: var(--line-strong);
@@ -472,6 +475,7 @@ const fmtSize = (n?: number): string => {
   cursor: pointer;
   font-size: 12px;
   padding: 3px 10px;
+  transition: color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
 }
 .dp-sheet:hover {
   border-color: var(--line-strong);

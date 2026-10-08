@@ -607,7 +607,7 @@ defineExpose({ cycleThinking, cycleSandbox, getText: () => text.value, setText: 
   box-shadow: var(--shadow-pop);
   max-width: 900px;
   margin: 0 auto; /* 对话态:右列内底部限宽居中(≤900),窄列自适应满宽 */
-  transition: border-color var(--dur-fast) ease, box-shadow var(--dur-fast) ease;
+  transition: border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
 }
 .shell:focus-within {
   border-color: var(--accent);
@@ -703,6 +703,7 @@ defineExpose({ cycleThinking, cycleSandbox, getText: () => text.value, setText: 
   cursor: pointer;
   padding: 2px;
   flex-shrink: 0;
+  transition: color var(--dur-fast) var(--ease-out);
 }
 .att-x:hover {
   color: var(--err);
@@ -732,6 +733,7 @@ defineExpose({ cycleThinking, cycleSandbox, getText: () => text.value, setText: 
   padding: 2px 4px;
   border-radius: 4px;
   opacity: 0.7;
+  transition: background var(--dur-fast) var(--ease-out), opacity var(--dur-fast) var(--ease-out);
 }
 .att-err-x:hover {
   opacity: 1;
@@ -810,7 +812,7 @@ defineExpose({ cycleThinking, cycleSandbox, getText: () => text.value, setText: 
   cursor: pointer;
   padding: 3px 8px;
   font-size: 12px;
-  transition: border-color var(--dur-fast) ease, color var(--dur-fast) ease, background var(--dur-fast) ease, transform 0.08s ease;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
 }
 .ctl:hover {
   border-color: var(--line);
@@ -841,7 +843,7 @@ defineExpose({ cycleThinking, cycleSandbox, getText: () => text.value, setText: 
   color: var(--fg-dim);
   font-size: 13px;
   cursor: pointer;
-  transition: border-color var(--dur-fast) ease, color var(--dur-fast) ease;
+  transition: color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
 }
 .stop:hover {
   border-color: var(--err);
@@ -857,7 +859,7 @@ defineExpose({ cycleThinking, cycleSandbox, getText: () => text.value, setText: 
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  transition: background var(--dur-fast) ease, transform 0.1s ease;
+  transition: background var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
 }
 .send:hover {
   background: var(--accent-hover);
@@ -914,6 +916,7 @@ defineExpose({ cycleThinking, cycleSandbox, getText: () => text.value, setText: 
   display: flex;
   gap: 10px;
   border-radius: 6px;
+  transition: background var(--dur-fast) var(--ease-out);
 }
 .hint:hover {
   background: var(--bg3);
@@ -942,6 +945,7 @@ defineExpose({ cycleThinking, cycleSandbox, getText: () => text.value, setText: 
   display: flex;
   gap: 10px;
   border-radius: 6px;
+  transition: background var(--dur-fast) var(--ease-out);
 }
 .pitem:hover,
 .pitem.cur {
@@ -976,6 +980,7 @@ defineExpose({ cycleThinking, cycleSandbox, getText: () => text.value, setText: 
   color: var(--accent);
   font-size: 12px;
   border-radius: 6px;
+  transition: background var(--dur-fast) var(--ease-out);
 }
 .sel:hover {
   background: var(--bg3);

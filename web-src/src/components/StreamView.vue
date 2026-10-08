@@ -4,7 +4,7 @@
 // 视觉:用户气泡轻盈化(浅蓝底 + 主色文字),工具调用为弱化胶囊,meta/pending 极淡。
 import { computed, ref } from 'vue'
 import type { Msg, ToolRow } from '../sse'
-import type { MetaLine } from '../registry'
+import type { MetaLine, PendingView } from '../registry'
 import { rowsOf, type Row } from '../streamrows'
 import DocText from './doc/DocText.vue'
 import { previewablePathOf, requestDoc } from '../docstore'
@@ -13,6 +13,8 @@ const props = defineProps<{
   frames: Msg[]
   metas: MetaLine[]
   running: boolean
+  /** v1.4 可选:进行中的流式增量(批一)。不传 = 不渲染(旧插件/旧调用逐字不变)。 */
+  pending?: PendingView
 }>()
 
 const expanded = ref<Record<number, boolean>>({})
@@ -29,6 +31,13 @@ function toggle(seq: number): void {
 function toolCallsOf(m: Msg): ToolRow[] {
   return m.tools ?? []
 }
+
+// hasPending:三个字段全空的 pending 对象等同于「没有进行中内容」——
+// 宿主传 undefined 之外,落定后理论上还可能短暂持有一个空壳。
+const hasPending = computed(() => {
+  const p = props.pending
+  return !!p && (!!p.text || !!p.think || !!p.tool)
+})
 
 const META_TAG: Record<string, string> = {
   command: '命令',
@@ -117,7 +126,29 @@ function attUrl(rel: string): string {
         <span class="m-text">{{ r.mm.text }}</span>
       </div>
     </template>
-    <div v-if="running" class="pending-indicator">
+    <!-- 进行中的流式增量(批一):宿主此前从不渲染它,只显示一句「正在运行…」直到落定。
+         结构与已落定的 assistant 块同形(思维折叠 / 正文 / 工具行),只是末尾多一个光标,
+         这样「正在写的这段」与「已写好的那段」看上去是同一类东西。 -->
+    <div v-if="pending && hasPending" class="pending-live">
+      <details v-if="pending.think" class="think" open>
+        <summary>
+          <span class="think-tag">思考中</span>
+          <span class="think-nums">{{ pending.think.length }} 字</span>
+        </summary>
+        <div class="think-body">{{ pending.think }}</div>
+      </details>
+      <div v-if="pending.text" class="assistant">
+        <!-- settle=false:流式中用 700ms 防抖(见 DocText),否则每个 chunk 改一次文本
+             就发一次 /api/doc/render;落定后由已落定那块走 40ms 立即渲染 -->
+        <DocText :text="pending.text" :settle="false" />
+        <span class="caret" aria-hidden="true" />
+      </div>
+      <div v-if="pending.tool" class="tool-inline mono">
+        <span class="tl">{{ pending.tool.name || '…' }}</span>
+        <span class="toolargs">{{ pending.tool.args }}</span>
+      </div>
+    </div>
+    <div v-else-if="running" class="pending-indicator">
       <span class="dot" /> 正在运行…
     </div>
   </div>
@@ -294,6 +325,7 @@ function attUrl(rel: string): string {
   font-size: 11px;
   padding: 0 6px;
   line-height: 1.6;
+  transition: border-color var(--dur-fast) var(--ease-out);
 }
 .t-prev:hover {
   border-color: var(--accent);
@@ -366,6 +398,38 @@ function attUrl(rel: string): string {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+}
+/* 进行中的流式块:入场跟已落定消息同一条动效(淡 + 上移),不另起一套 */
+.pending-live {
+  margin: 0 0 14px;
+  animation: msg-in var(--dur-base) var(--ease-out);
+}
+/* 光标:打字机感只靠这一个元素(不引库、不动正文排版)。1.1s 呼吸。 */
+.caret {
+  display: inline-block;
+  width: 7px;
+  height: 15px;
+  margin-left: 2px;
+  vertical-align: -2px;
+  border-radius: 1px;
+  background: var(--accent);
+  animation: caret-blink 1.1s ease-in-out infinite;
+}
+@keyframes caret-blink {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+/* 尊重系统减弱动效:光标停闪但**保留可见**(减弱动效不等于内容消失)。 */
+@media (prefers-reduced-motion: reduce) {
+  .caret {
+    animation: none;
+    opacity: 1;
+  }
 }
 .dot {
   width: 7px;

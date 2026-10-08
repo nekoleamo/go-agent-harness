@@ -14,6 +14,7 @@ import {
   trimHead,
   windowPartial,
 } from './streamwin'
+import { FrameQueue, rafScheduler } from './framequeue'
 import { clip, newTraj, trajOverview, trajPush, turnStats, type TrajModel } from './traj'
 import { changesPush, changesStats, newChanges, type ChangesModel } from './changes'
 import {
@@ -52,7 +53,7 @@ import type { TabMeta } from './tabset'
 import { shortSessionId, tabTitle } from './frame-routing'
 import { boundSession } from './session-scope'
 import { foreignOwner, foreignTodoText } from './frame-routing'
-import { extraPanel, slotComponent, type MetaLine } from './registry'
+import { extraPanel, slotComponent, type MetaLine, type PendingView } from './registry'
 import { OPEN_DOC_EVENT, docRequest } from './docstore'
 import type {
   SessionEvent,
@@ -417,7 +418,9 @@ let planTimer: ReturnType<typeof setInterval> | null = null
 function syncPlanTimer(on: boolean): void {
   if (on && !planTimer) {
     void refreshPlan()
-    planTimer = setInterval(() => void refreshPlan(), 15000)
+    // 后台不轮询(批三):页面看不见时没人看这些数字,发出去只是白耗网络与服务端 IO。
+    // 回前台由 onVisibility 立即补一次(见 wakePollers)。
+    planTimer = setInterval(() => { if (!hidden()) void refreshPlan() }, 15000)
   } else if (!on && planTimer) {
     clearInterval(planTimer)
     planTimer = null
@@ -427,7 +430,7 @@ watch(view, (v) => syncPlanTimer(v === 'board'), { immediate: true })
 onMounted(() => {
   window.addEventListener('resize', onViewportResize)
   void refreshJobs()
-  jobsTimer = setInterval(() => void refreshJobs(), 5000)
+  jobsTimer = setInterval(() => { if (!hidden()) void refreshJobs() }, 5000)
   void maybeOnboard()
 })
 onUnmounted(() => {
@@ -535,6 +538,13 @@ const loadingEarlier = ref(false)
 const earlierText = computed(() => earlierHint(model.value))
 // 窗口不完整(还有更早历史/已折叠):轨迹与变更视图据此标注口径,不谎报「累计」
 const partialWindow = computed(() => windowPartial(model.value))
+// 进行中的流式内容(v1.4,批一):此前 chunk 累进模型却从不渲染,用户只看到「正在运行…」
+// 硬等到落定。三者全空时传 undefined —— 槽位插件据此知道「此刻没有进行中内容」。
+const pendingView = computed<PendingView | undefined>(() => {
+  const m = model.value
+  if (!m.pending && !m.pendingThink && !m.pendingTool) return undefined
+  return { text: m.pending, think: m.pendingThink, tool: m.pendingTool }
+})
 
 // 上滚分页:以模型最老事件 Seq 为游标拉更早一页 → 拼到头部 → **锚定滚动位置**
 // (视口里正看着的那条消息不能在拼接后跳走)。失败不静默:提示可重试。
@@ -565,18 +575,19 @@ async function loadEarlier(): Promise<void> {
     loadingEarlier.value = false
   }
 }
-// 新消息/流式文本增长/历史重放/会话切换后:若贴底则 nextTick(等 DOM 更新)后滚到底
-watch(
-  () => model.value.msgs.map((m) => m.text + (m.kind === 'user' ? 'u' : 'a')).join('|').length,
-  () => {
-    if (view.value !== 'stream') return // 轨迹模式下不动流视图滚动位置
-    const go = stick
-    void nextTick(() => {
-      if (go) pinBottom()
-      else showNewest.value = true
-    })
-  },
-)
+// 新消息/流式文本增长/历史重放/会话切换后:若贴底则 nextTick(等 DOM 更新)后滚到底。
+// 依赖式是**计数器**而非「全量文本拼接」:此前每次渲染都 map+join 整个消息数组
+// (n 条 × 每条全文 ⇒ O(n) 字符串拼接),批处理一帧几百条时是几百次 O(n) 叠加。
+// 现在由消费引擎在一批处理完时打一个 tick,依赖成本 O(1)。
+const contentTick = ref(0)
+watch(contentTick, () => {
+  if (view.value !== 'stream') return // 轨迹模式下不动流视图滚动位置
+  const go = stick
+  void nextTick(() => {
+    if (go) pinBottom()
+    else showNewest.value = true
+  })
+})
 watch(
   () => [metas.value.length, state.value.running],
   () => {
@@ -596,7 +607,34 @@ let statsTimer: ReturnType<typeof setInterval> | null = null
 // 用于发现「服务端当前会话 ≠ 界面所绑会话」(命令切会话、别的端切走)→ 重放新会话。
 let streamSessionId = ''
 
+// 会话帧合帧消费(批零):到达一帧即同步消费一次的话,每条都触发一次消息列表 patch,
+// 而 keyed diff 仍要遍历整棵列表做 key 比对 ⇒ 追加一条是 O(n)。首屏重放几百帧就是
+// 几百次 O(n) 叠加 = O(n²)(实测 800 条消息 = 单个 7.9s 主线程长任务,页面白屏到出内容)。
+// 入队 + 一个动画帧内批量消费 ⇒ 一帧只 patch 一次。调度器在页面隐藏时退 setTimeout
+// (rAF 在隐藏页不触发,否则后台标签页会一直攒帧,回前台再一次性爆出来)。
+const sessionQueue = new FrameQueue<SessionEvent>(
+  (batch) => {
+    for (const se of batch) {
+      // 步数(仅本窗口会话):step/start 累加,turn/end 归零;用 kind 判定,不看 payload。
+      if (se.Kind === 'step/start') steps.value++
+      else if (se.Kind === 'turn/end') steps.value = 0
+      consume(model.value, se)
+      trajPush(traj.value, se)
+      changesPush(changes.value, se)
+      if (isUsage(se)) refreshStats()
+    }
+    // 贴底阅读时裁头部:长会话持续输出时 DOM/内存不随会话长度增长(上滚可重新取回)。
+    // 放在批末尾而非逐帧:一批裁一次即可,逐帧裁会把 splice 成本乘上帧数。
+    if (stick && model.value.msgs.length > MAX_LIVE_MSGS) trimHead(model.value)
+    // 贴底滚动的信号(计数器,见 contentTick 注释)
+    if (batch.length > 0) contentTick.value++
+  },
+  rafScheduler(),
+)
+
 function rebuild(keepCursor: boolean): void {
+  // 会话切换/连接重建:丢弃未批处理的会话帧 —— 否则旧会话的帧会被拼进新会话的流。
+  sessionQueue.clear()
   // 会话切换/全新连接:清流重放全量(通道按 after 游标差集重放)
   if (!keepCursor) {
     // 换状态本体重放;页签的草稿/滚动不动(重放的是流,不是这个页签的使用痕迹)。
@@ -634,17 +672,10 @@ function rebuild(keepCursor: boolean): void {
     applyBaseline(model.value, f.payload as Baseline)
     baseSeen.value = true
   }))
+  // 会话帧合帧消费见 sessionQueue 定义(批零:入队 + 一个动画帧内批量消费 = O(n²) → O(n))
   transport.on('session', gate((f) => {
-    const se = f.payload as SessionEvent
-    // 步数(仅本窗口会话):step/start 累加,turn/end 归零;用 kind 判定,不看 payload。
-    if (se.Kind === 'step/start') steps.value++
-    else if (se.Kind === 'turn/end') steps.value = 0
-    consume(model.value, se)
-    trajPush(traj.value, se)
-    changesPush(changes.value, se)
-    // 贴底阅读时裁头部:长会话持续输出时 DOM/内存不随会话长度增长(上滚可重新取回)
-    if (stick && model.value.msgs.length > MAX_LIVE_MSGS) trimHead(model.value)
-    if (isUsage(se)) refreshStats()
+    // 代际检查已由 gate 在入队时完成(gen 有意义的时候);此处只管入队。
+    sessionQueue.push(f.payload as SessionEvent)
   }))
   transport.on('status', gate((f) => {
     const was = state.value.running
@@ -887,9 +918,18 @@ function onWake(): void {
   if (slept || !submitAllowed(conn.value)) retryConn()
   else void probeConn()
 }
+// wakePollers 回前台补一次轮询(批三):后台期间定时器只是**跳过**请求,回来时不会追补 ⇒
+// 必须现拉一次,否则状态栏停留在后台之前的旧值(上下文占用、运行徽标都可能已变)。
+function wakePollers(): void {
+  void refreshStats()
+  void refreshJobs()
+  if (view.value === 'board') void refreshPlan()
+}
+
 // onVisibility 回到前台(桌面壳最小化恢复)同上;后台时不动(省网络)。
 function onVisibility(): void {
   if (document.visibilityState !== 'visible') return
+  wakePollers()
   onWake()
 }
 
@@ -1209,7 +1249,7 @@ onMounted(async () => {
   await refreshStats() // 首帧就探活:服务端本就不在时立刻显离线横幅(非「安静会话」误判)
   rebuild(false)
   // 统计节流刷新(usage 事件外,兜底上下文/缓存显示)
-  statsTimer = setInterval(() => void refreshStats(), 3000)
+  statsTimer = setInterval(() => { if (!hidden()) void refreshStats() }, 3000)
 })
 onUnmounted(() => {
   cancelScrollRestore()
@@ -1341,7 +1381,13 @@ onUnmounted(() => {
                 {{ loadingEarlier ? '加载中…' : earlierText }}
               </button>
             </div>
-            <component :is="slotComponent('stream') || 'div'" :frames="model.msgs" :metas="metas" :running="state.running" />
+            <component
+              :is="slotComponent('stream') || 'div'"
+              :frames="model.msgs"
+              :metas="metas"
+              :running="state.running"
+              :pending="pendingView"
+            />
           </template>
         </section>
 
@@ -1521,6 +1567,7 @@ onUnmounted(() => {
   cursor: pointer;
   padding: 2px 4px;
   border-radius: var(--r-input);
+  transition: background var(--dur-fast) var(--ease-out);
 }
 .rb-x:hover {
   background: color-mix(in srgb, var(--tool) 18%, transparent);
@@ -1639,6 +1686,7 @@ onUnmounted(() => {
   color: var(--fg-faint);
   font-size: 16px;
   padding: 2px 6px;
+  transition: color var(--dur-fast) var(--ease-out);
 }
 .ep-close:hover {
   color: var(--fg);
@@ -1664,6 +1712,24 @@ onUnmounted(() => {
   flex: 1;
   overflow-y: auto;
   padding: 12px 36px 20px; /* 左右对称留白:消息流占满右列不贴侧栏也不缩窄居中 */
+}
+/* 视图切换入场(批四 4a):会话流 / 轨迹 / 变更 / 看板四者都是 App.vue 里的 v-if 分支
+   ⇒ 切换就是**元素重建**,给直接子元素一次性入场动画即可,不必再用 <Transition> 包一层
+   (那会给流视图多套一个 DOM 元素,而 .stream-slot 是滚动容器,多一层就多一处几何风险)。
+   曲线与时长取会话流消息入场(msg-in)同一套 token,故另起 view-in 而不散写数值。
+   注:.stream-slot > * 只命中视图根元素(消息行在 .stream 内部,不是直接子级)。 */
+.stream-slot > * {
+  animation: view-in var(--dur-base) var(--ease-out);
+}
+@keyframes view-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 /* 非会话流视图的常驻提醒条(单强调色,不抢消息流):与看板动作同色系 —— --accent 单色 */
 .vbar {
@@ -1692,7 +1758,7 @@ onUnmounted(() => {
   color: var(--accent);
   font-size: 12px;
   cursor: pointer;
-  transition: background var(--dur-fast) ease;
+  transition: background var(--dur-fast) var(--ease-out);
 }
 .vbar-btn:hover {
   background: var(--accent);
@@ -1744,6 +1810,7 @@ onUnmounted(() => {
   cursor: pointer;
   font-size: 12px;
   padding: 3px 10px;
+  transition: border-color var(--dur-fast) var(--ease-out);
 }
 .off-act:hover {
   border-color: var(--err);
@@ -1833,7 +1900,7 @@ onUnmounted(() => {
   padding: 5px 12px;
   cursor: pointer;
   animation: newest-in var(--dur-base) var(--ease-out);
-  transition: border-color var(--dur-fast) ease, background var(--dur-fast) ease;
+  transition: background var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
 }
 .newest:hover {
   border-color: var(--accent);
@@ -1854,7 +1921,7 @@ onUnmounted(() => {
   font-size: 12px;
   padding: 4px 12px;
   cursor: pointer;
-  transition: border-color var(--dur-fast) ease, color var(--dur-fast) ease;
+  transition: color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
 }
 .earlier-btn:hover:not(:disabled) {
   border-color: var(--line-strong);

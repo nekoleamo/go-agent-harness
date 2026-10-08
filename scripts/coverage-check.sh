@@ -84,6 +84,9 @@ SKIP="${GAH_COVER_SKIP:-0}"             # 1 = 只测(不校验),用于基线测�
 #   中文排期解析、once 触发链路四组用例)、plugins/tool/tool-schedule 80 → **82**(实测 83.1;
 #   补 once/once_date 的参数校验与改回循环的清理用例)、web 80.6 → **81**(实测 81.6;
 #   补 resolve 端点的十档/中文/失败语义与一次性 REST 用例)。跨平台留约 1pp 余量给 linux CI。
+#   2026-10-08(动画加强 + 性能优化)后上调:internal/prefs 83 → **84**(实测 84.3;新增的
+#   mtime 缓存带来七条护栏用例:命中/同进程写失效/跨进程写可见/文件删除/坏 JSON/按路径分桶/
+#   写路径不经缓存)、web 81 → **81.5**(实测 81.5;数据根可写性探针的 TTL 复用六条用例)。
 
 # 跨平台差(踩过的坑):棘轮取**各平台实测的较小值**。第一百零四批按 macOS 实测把
 # host-schedule 调到 81.5,而 CI(linux)实测 81.2 ⇒ 门红。带平台差异的代码路径要用
@@ -119,7 +122,7 @@ core/ctx 60
 core/plugin 72
 core/config 65
 sdk 85.6
-internal/prefs 83
+internal/prefs 84
 internal/xlock 70
 internal/roles 86.4
 internal/rolepack 85
@@ -137,7 +140,7 @@ internal/sessionhtml 92
 cmd/gah 69
 plugins/catalogue 70
 plugins/ui/ui-web-app 70
-web 81
+web 81.5
 tui 74
 plugins/policy/policy-guard 91
 plugins/host/host-agent-loop 91.5

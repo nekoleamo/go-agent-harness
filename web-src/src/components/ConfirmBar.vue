@@ -92,6 +92,7 @@ const emit = defineEmits<{ (e: 'confirm'): void; (e: 'cancel'): void }>()
   background: var(--accent);
   border-color: var(--accent);
   color: var(--fg-on-accent);
+  transition: opacity var(--dur-fast) var(--ease-out);
 }
 .ok:hover {
   background: var(--accent-hover);

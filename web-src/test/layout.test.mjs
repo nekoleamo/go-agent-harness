@@ -63,6 +63,7 @@ function makeStub(
   patchDelayMs = 0,
   tierRole = false,
   withMemory = true,
+  sseTurns = 0,
 ) {
   // seen:记录写类请求(方法/路径/体),供角色面板用例断言「面板真的提交了」而不是只改了本地状态。
   const seen = []
@@ -111,6 +112,23 @@ function makeStub(
   const handler = async (route) => {
     const url = new URL(route.request().url())
     const p = url.pathname
+    // 事件流(EventSource):返回一段 text/event-stream body。
+    // 浏览器会把 body 里的多个 event **逐个 dispatch**(每个 event 一个任务)—— 这正好
+    // 复现「几百个会话帧一次性到达」的真实形状,是批零合帧护栏能立住的前提。
+    // turns=0(默认)时不接管,走下面的 JSON 兜底(其余用例看不到会话流,行为不变)。
+    if (p === '/api/events') {
+      const turns = Number(url.searchParams.get('turns') || 0) || sseTurns
+      if (!turns) return json([])
+      const now = new Date().toISOString()
+      const frames = []
+      let seq = 1
+      for (let i = 0; i < turns; i++) {
+        frames.push(`event: session\ndata: ${JSON.stringify({ id: seq, type: 'session', ts: Date.now(), payload: { Kind: 'user/message', Payload: { Content: `u${i}` }, Seq: seq++, TS: now } })}\n\n`)
+        frames.push(`event: session\ndata: ${JSON.stringify({ id: seq, type: 'session', ts: Date.now(), payload: { Kind: 'assistant/message', Payload: { Content: `a${i} ` + 'A'.repeat(80), ToolCalls: [] }, Seq: seq++, TS: now } })}\n\n`)
+      }
+      const body = frames.join('') + `event: baseline\ndata: ${JSON.stringify({ count: seq - 1, has_more: false, window: seq - 1, from: 1, to: seq - 1 })}\n\n`
+      return route.fulfill({ status: 200, contentType: 'text/event-stream; charset=utf-8', headers: { 'Cache-Control': 'no-cache' }, body })
+    }
     // patchDelayMs:角色定义的 PATCH 拖一拍 —— 用来观测「在途禁用/串行提交」(默认 0,不影响其它用例)。
     if (patchDelayMs && route.request().method() === 'PATCH') {
       await new Promise((r) => setTimeout(r, patchDelayMs))
@@ -2530,6 +2548,62 @@ test('检测器自检:注入越界元素必须被抓到,移除后必须恢复', 
     assert.ok(fired, `检测器没开火 —— 护栏本身失效:${JSON.stringify(dirty)}`)
     await page.evaluate(() => document.querySelector('.canary-stray')?.remove())
     assertInvariants(await measure(page))
+  } catch (e) {
+    await shoot(page, t.name)
+    throw e
+  } finally {
+    await ctx.close()
+  }
+})
+
+// 批零合帧护栏:长会话首屏不得出现长任务。
+//
+// 为什么要有这条(2026-10-08 实测):会话帧原先是「到达一条即同步消费一条」,每条都触发
+// 一次消息列表的 Vue patch;keyed diff 仍要遍历整棵列表做 key 比对 ⇒ 追加一条是 O(n),
+// 首屏回放几百帧就是几百次 O(n) 叠加 = O(n²)。实测 800 条消息 = **单个 7.9s 主线程长任务**
+// (页面白屏到出内容,期间滚动/点击/动画全部停摆)。改成「入队 + 一个动画帧内批量消费」
+// 后同场景 135ms。
+//
+// 判据为什么用长任务而不是总时长:总时长会被机器快慢与桩响应速度带偏;长任务(>50ms 的
+// 不可中断区间)才是「界面冻结」的直接度量,且与帧率无关。
+//
+// 这条护栏防的是**回归**(有人把合帧去掉、或再加一条逐帧 patch 的路径),不是验收当前实现。
+const PERF_TURNS = 400 // 800 条消息,贴 MAX_LIVE_MSGS(=400 条窗口)的两倍 —— 覆盖裁剪路径
+const PERF_LONG_TASK_MS = 1000 // 单个长任务上限;实测修复后最大 65ms,留足余量又足够抓回归
+
+test(`批零合帧护栏:${PERF_TURNS * 2} 条消息首屏无 >${PERF_LONG_TASK_MS}ms 长任务`, { skip: skip && skipWhy }, async (t) => {
+  const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 }, reducedMotion: 'no-preference' })
+  let page = null
+  try {
+    const stub = makeStub(true, false, false, false, false, 'finance', 0, false, true, PERF_TURNS)
+    page = await ctx.newPage()
+    await page.addInitScript(() => {
+      // 收集主线程长任务(>50ms 的不可中断区间)。必须在文档脚本前装,否则漏掉首批。
+      window.__long = []
+      try {
+        performance.setResourceTimingBufferSize(2000)
+        new PerformanceObserver((l) => {
+          for (const e of l.getEntries()) window.__long.push(Math.round(e.duration))
+        }).observe({ entryTypes: ['longtask'] })
+      } catch {
+        /* 浏览器不支持 longtask:下面按「无长任务」判定,即该护栏退化为不拦人 */
+      }
+    })
+    await page.route('**/api/**', stub)
+    const started = Date.now()
+    await page.goto(baseURL(), { waitUntil: 'load' })
+    // 等消息全部落进 DOM(窗口上限会裁剪,故按「至少一半到位」判定,不给裁剪留歧义)
+    await page.waitForFunction((n) => document.querySelectorAll('.msg').length >= n, PERF_TURNS, { timeout: 30_000 })
+    const elapsed = Date.now() - started
+    const long = await page.evaluate(() => window.__long)
+    const worst = long.length ? Math.max(...long) : 0
+    assert.ok(
+      worst <= PERF_LONG_TASK_MS,
+      `首屏出现 ${worst}ms 的主线程长任务(上限 ${PERF_LONG_TASK_MS}ms);` +
+        `全部长任务=[${long.join(',')}];共 ${elapsed}ms。` +
+        `若合帧(前端 framequeue.ts)被去掉,这里会退化到秒级 —— 那是本护栏要抓的回归。`,
+    )
+    console.log(`  批零合帧护栏:${PERF_TURNS * 2} 条消息首屏 ${elapsed}ms,最长长任务 ${worst}ms`)
   } catch (e) {
     await shoot(page, t.name)
     throw e

@@ -74,6 +74,7 @@ function preview(path: string): void {
   align-items: baseline;
   color: var(--fg-dim);
   max-width: calc(100% - 64px);
+  transition: color var(--dur-fast) var(--ease-out);
 }
 .abar-toggle:hover {
   color: var(--fg);
@@ -130,6 +131,7 @@ function preview(path: string): void {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  transition: color var(--dur-fast) var(--ease-out);
 }
 .abar-name:hover {
   color: var(--accent);

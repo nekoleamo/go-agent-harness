@@ -87,6 +87,7 @@ button:active {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--fg-on-accent);
+  transition: background var(--dur-fast) var(--ease-out);
 }
 .allow:hover {
   background: var(--accent-hover);

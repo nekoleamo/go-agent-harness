@@ -220,6 +220,7 @@ function toolStatus(t: TrajTool): string {
   background: var(--bg2);
   color: var(--fg-dim);
   cursor: pointer;
+  transition: color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
 }
 .chip:hover {
   border-color: var(--accent);
@@ -247,6 +248,7 @@ function toolStatus(t: TrajTool): string {
   border-radius: var(--r-input);
   cursor: pointer;
   border-bottom: 1px solid var(--line-faint);
+  transition: background var(--dur-fast) var(--ease-out);
 }
 .t-head:hover {
   background: var(--hover-bg);

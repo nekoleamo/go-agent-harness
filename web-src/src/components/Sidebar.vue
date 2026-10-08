@@ -480,7 +480,7 @@ defineExpose({ refresh })
           <span>历史会话</span>
           <span class="act" data-tip="新建会话(需确认)" @click="newSession">＋ 新建</span>
         </div>
-        <div class="items">
+        <TransitionGroup tag="div" name="list" class="items">
           <div
             v-for="s in sessions"
             :key="s.ID || '(main)'"
@@ -532,8 +532,8 @@ defineExpose({ refresh })
               <span v-else-if="s.SummaryState === 'unavailable'" class="stale"> · 概述不可用</span>
             </div>
           </div>
-          <div v-if="!sessions.length" class="empty">无会话</div>
-        </div>
+        </TransitionGroup>
+        <div v-if="!sessions.length" class="empty">无会话</div>
       </div>
 
       <!-- v2 扩展点:侧栏动作(插件注入) -->
@@ -751,6 +751,31 @@ defineExpose({ refresh })
   display: flex;
   flex-direction: column;
   gap: 2px;
+  /* 列表过渡的**必需前提**:离场项用 position:absolute 脱离文档流才能让其余行 FLIP 平移,
+     而 absolute 一旦没有定位祖先就会相对 .sidebar / 更外层定位 ⇒ 离场项飞到错位置。
+     这里显式建立包含块。 */
+  position: relative;
+}
+/* 列表增删/重排的过渡(批四 4c):会话新建、删除、改名后位置变化时,新项淡入、
+   离场项淡出、其余行用 FLIP 平移让位(Vue 的 TransitionGroup 内置 move 类)。
+   离场项必须 absolute:否则它还占着位置 → 其它行先跳一下再平移,看着像两次动。 */
+.list-enter-active,
+.list-leave-active {
+  transition: opacity var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
+}
+.list-enter-from {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+.list-leave-to {
+  opacity: 0;
+}
+.list-leave-active {
+  position: absolute;
+  width: 100%;
+}
+.list-move {
+  transition: transform var(--dur-fast) var(--ease-out);
 }
 .item {
   position: relative;

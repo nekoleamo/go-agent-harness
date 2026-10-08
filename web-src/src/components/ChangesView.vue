@@ -198,6 +198,7 @@ function degrade(h: FileChange['hunks'][number]): string {
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 240px;
+  transition: color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
 }
 .chip:hover {
   border-color: var(--accent);
@@ -223,6 +224,7 @@ function degrade(h: FileChange['hunks'][number]): string {
   border-radius: var(--r-input);
   cursor: pointer;
   border-bottom: 1px solid var(--line-faint);
+  transition: background var(--dur-fast) var(--ease-out);
 }
 .f-head:hover {
   background: var(--hover-bg);

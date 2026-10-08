@@ -172,18 +172,26 @@ func (s *Service) add(sid, model string, u sdk.Usage) {
 }
 
 // currentWindow 当前窗口(无参 = 最近累加的那个会话的模型)。
+//
+// 全程持锁(2026-10-08 修):原实现先在锁内取出 cur、**解锁后**才调 currentWindowFor ——
+// 而后者要读 s.buckets、counter.model、s.learned,这些正是 add() / LearnWindowFromError
+// 在锁内写的东西。`go test -race ./tests/` 能稳定捕到(usage 事件与窗口广播并发)。
+// 展示路径每秒级调用,多一次加锁的成本可以忽略,换成读一致的事实更值。
 func (s *Service) currentWindow() int {
 	s.mu.Lock()
-	cur := s.cur
-	s.mu.Unlock()
-	return s.currentWindowFor(cur)
+	defer s.mu.Unlock()
+	return s.currentWindowLocked()
 }
 
-// currentWindowLocked 调用方已持锁的版本(StatsFor 里用)。
+// currentWindowLocked 调用方已持锁的版本(StatsFor / currentWindow 里用)。
+// currentWindowFor 只在持锁路径上可达 —— 它读的 buckets / counter.model / learned
+// 都由 add()、LearnWindowFromError 在锁内写;无锁调用就是数据竞争。
 func (s *Service) currentWindowLocked() int { return s.currentWindowFor(s.cur) }
 
 // currentWindowFor 指定会话的窗口:显式覆盖(context_window)> 按模型解析(见 modelwindows.go)> 0(未知)。
 // 0 = 窗口未知:展示层只显示使用量。
+//
+// **调用方必须已持 s.mu**(读 s.windowOverride / s.buckets / s.learned 三处共享状态)。
 //
 // 注意:窗口是**按模型**解析的,不分会话 —— 同一个模型在哪用都是那个窗口;
 // 会话没花过钱时用全局 cur 的模型兜底(展示上宁可给个大致值,也不要空白让人以为没窗口)。

@@ -5938,6 +5938,7 @@ watch(
   font-size: 12px;
   padding: 4px 8px;
   cursor: pointer;
+  transition: color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
 }
 .chip:hover {
   border-color: var(--accent);
@@ -6125,6 +6126,7 @@ watch(
   padding: 5px 8px;
   border-radius: 6px;
   font-size: 12px;
+  transition: background var(--dur-fast) var(--ease-out);
 }
 .mem-item:hover {
   background: var(--bg3);
@@ -6240,6 +6242,7 @@ textarea.inp {
   font-size: 13px;
   padding: 2px 6px;
   border-radius: 6px;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
 }
 .x:hover {
   color: var(--fg);
@@ -6279,6 +6282,7 @@ textarea.inp {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
 }
 .nav-it:hover {
   background: var(--bg3);
@@ -6735,6 +6739,7 @@ textarea.inp {
   cursor: pointer;
   font-size: 12px;
   color: var(--fg-dim);
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
 }
 .m-item:hover {
   background: var(--bg3);

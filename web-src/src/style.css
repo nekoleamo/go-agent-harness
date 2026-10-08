@@ -186,6 +186,24 @@ code,
   opacity: 0;
 }
 
+/* 折叠区展开/收起动画(批四 4b)。用 <details> 的 ::details-content 而不是 JS 测高:
+   测高需要把面板打开一次才拿得到真实高度,而折叠内容常常含代码块/图片(高度随时变)。
+   浏览器原生支持这条路径(Chrome 131+),且是**渐进增强**:不支持的浏览器读不到这段声明,
+   折叠照样能用(只是硬切) —— 绝不能为了动画把功能绑死在它上面。
+   动画只动 block-size 与 content-visibility,不触发布局 thrash 之外的任何重排开销。 */
+@supports selector(::details-content) {
+  details::details-content {
+    block-size: 0;
+    overflow: hidden;
+    transition:
+      block-size var(--dur-base) var(--ease-out),
+      content-visibility var(--dur-base) allow-discrete;
+  }
+  details[open]::details-content {
+    block-size: auto;
+  }
+}
+
 /* 尊重系统减弱动效:全局降级(动画/过渡趋零) */
 @media (prefers-reduced-motion: reduce) {
   *,

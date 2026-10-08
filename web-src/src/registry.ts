@@ -4,12 +4,13 @@
 // 契约:槽位名 kebab-case 跨档不变;渲染层禁止 v-html(Vue 模板转义天然保证)。
 import type { Component } from 'vue'
 import type { StateView, ConfirmRequest } from './types'
-import type { Msg } from './sse'
+import type { Msg, ToolRow } from './sse'
 
 // 槽位 Props(宿主注入,契约 v1;UI 插件组件必须兼容):
-// stream    → { frames: Msg[]; metas: MetaLine[]; running: boolean }
+// stream    → { frames: Msg[]; metas: MetaLine[]; running: boolean; pending?: PendingView }
 //             (frames 是宿主消费引擎产出的展示消息 Msg,非原始 SessionEvent;
 //              按 SessionEvent 实现槽位的插件会渲染空白——v1.1 已对齐)
+//             (pending = 进行中的流式增量,v1.4 新增的可选字段;不声明即不渲染)
 // input     → { disabled: boolean; onSubmit(text: string): boolean | void; disabledHint?: string }
 //             (onSubmit 返回 false = 未受理(断连/提交失败)→ 输入框保留草稿与附件;
 //              S-P1-3;旧插件不返回值仍按已受理处理)
@@ -30,6 +31,25 @@ export interface StreamProps {
   frames: Msg[]
   metas: MetaLine[]
   running: boolean
+  // v1.4 可选扩展(批一,2026-10-08):**进行中**的流式内容(正文/思维/工具调用增量)。
+  // 为何现在才有:宿主此前把 chunk 累进模型却从不把它渲染出去,插件无从展示
+  // 「模型正在写字」—— 用户只看到一句「正在运行…」硬等到落定。
+  // 缺省 = 不渲染 ⇒ 旧插件行为逐字不变(延续 v1.1–v1.3 的可选扩展先例)。
+  pending?: PendingView
+}
+
+/**
+ * 进行中的流式内容(v1.4)。三者可能同时非空:正文与思维并行时两者都在涨,
+ * 工具调用进行中时 tool 有值而正文已停。
+ * 三者全是空/无值 = 本刻没有进行中内容(宿主不会传这个对象)。
+ */
+export interface PendingView {
+  /** assistant 正文增量(未落定;落定后由 frames 里的那条接管)。 */
+  text: string
+  /** 思维/推理增量(与正文分开,渲染上也分开——混一起就看不出哪段是「想」)。 */
+  think: string
+  /** 进行中的工具调用(已发起、等 result);结果到达后由 frames 里的工具行接管。 */
+  tool?: ToolRow
 }
 export interface InputProps {
   disabled: boolean

@@ -138,6 +138,7 @@ function submit(): void {
   padding: 8px 12px;
   color: var(--fg);
   cursor: pointer;
+  transition: color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
 }
 .pick:hover {
   border-color: var(--accent);
@@ -171,6 +172,7 @@ function submit(): void {
   border-radius: var(--r-input);
   padding: 8px 16px;
   cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease-out);
 }
 .later:hover {
   border-color: var(--accent);
@@ -182,6 +184,7 @@ function submit(): void {
   border-radius: var(--r-input);
   padding: 8px 16px;
   cursor: pointer;
+  transition: color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
 }
 .skip:hover {
   color: var(--fg);

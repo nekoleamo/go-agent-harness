@@ -83,10 +83,10 @@ function sourceLabel(n: Notice): string {
    剩下的卡片靠 toast-move 滑动补位。退场不加 position:absolute —— 卡片脱离文档流
    会在退场那一瞬塔陷,反而更生硬。 */
 .toast-enter-active {
-  transition: opacity var(--dur-base) var(--ease-out), transform var(--dur-base) var(--ease-out);
+  transition: opacity var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
 }
 .toast-leave-active {
-  transition: opacity var(--dur-fast) var(--ease-in), transform var(--dur-fast) var(--ease-in);
+  transition: opacity var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
   pointer-events: none;
 }
 .toast-enter-from,
@@ -95,7 +95,7 @@ function sourceLabel(n: Notice): string {
   transform: translateY(6px);
 }
 .toast-move {
-  transition: transform var(--dur-base) var(--ease-out);
+  transition: transform var(--dur-fast) var(--ease-out);
 }
 /* 形状/语义一致:左侧竖条 = 级别色,info 用中性色(不把信息态伪装成强调) */
 .toast.lv-info {
@@ -133,6 +133,7 @@ function sourceLabel(n: Notice): string {
   padding: 0 2px;
   cursor: pointer;
   border-radius: var(--r-input);
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
 }
 .x:hover {
   color: var(--fg);

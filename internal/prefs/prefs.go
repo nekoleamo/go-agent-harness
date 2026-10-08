@@ -79,22 +79,87 @@ func legacyPath() string {
 }
 
 // Load 读偏好(缺文件/坏文件 = 零值默认,容忍;迁移期回退旧 web-state.json)。
+//
+// **mtime 缓存**(批三):`/api/state` 是高频轮询端点(Web 3s 一次 + 桌面壳 2s 一次),
+// 每次都 os.ReadFile 一遍 gah-state.json 是纯浪费的 IO。改为先 Stat 拿 (mtime,size),
+// 与缓存一致就复用;不一致才真读。
+//
+// 失效口径两条,缺一不可:
+//
+//	① **同进程写**后主动清(saveTo 末尾)—— 不依赖 mtime 的分辨率;
+//	② **跨进程写**靠 mtime/size 变化 —— 桌面壳与 CLI 各起一个实例是常态。
+//
+// 边界:若某文件系统的 mtime 精度粗到同一 tick 内两次写看不出变化,②会漏一次更新;
+// 该文件系统上本层最坏退化为「晚一个 tick 生效」,而真正的写入路径(Update)走 loadFrom
+// 直读、不经本缓存 ⇒ **写路径永远拿最新值**,缓存只服务只读展示面。
 func Load() Prefs {
 	p := Prefs{}
 	path := Path()
-	if path != "" {
-		if b, err := os.ReadFile(path); err == nil {
-			_ = json.Unmarshal(b, &p)
-			return p
-		}
+	if path == "" {
+		return p
 	}
-	if lp := legacyPath(); lp != "" {
-		if b, err := os.ReadFile(lp); err == nil {
-			_ = json.Unmarshal(b, &p)
-			return p
+	if st, err := os.Stat(path); err == nil {
+		if hit, ok := loadCache.get(path, st); ok {
+			return hit
 		}
+		p = loadFrom(path)
+		loadCache.put(path, st, p)
+		return p
+	}
+	lp := legacyPath()
+	if lp == "" {
+		return p
+	}
+	if st, err := os.Stat(lp); err == nil {
+		if hit, ok := loadCache.get(lp, st); ok {
+			return hit
+		}
+		p = loadFrom(lp)
+		loadCache.put(lp, st, p)
+		return p
 	}
 	return p
+}
+
+// loadCache 是「(路径, mtime, size) → Prefs」的一层缓存,进程内一份。
+// 键含路径:GAH_HOME 可能在测试里被改,只按 mtime 命中会串味。
+var loadCache = &prefCache{}
+
+type prefCache struct {
+	mu    sync.Mutex
+	entry map[string]prefCacheEntry
+}
+
+type prefCacheEntry struct {
+	mod  time.Time
+	size int64
+	p    Prefs
+}
+
+// get 命中判定必须在**同一把锁内**完成(两次 Stat + 一次读之间文件可能已被改)。
+func (c *prefCache) get(path string, st os.FileInfo) (Prefs, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.entry[path]
+	if !ok || !e.mod.Equal(st.ModTime()) || e.size != st.Size() {
+		return Prefs{}, false
+	}
+	return e.p, true
+}
+
+func (c *prefCache) put(path string, st os.FileInfo, p Prefs) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.entry == nil {
+		c.entry = make(map[string]prefCacheEntry)
+	}
+	c.entry[path] = prefCacheEntry{mod: st.ModTime(), size: st.Size(), p: p}
+}
+
+func (c *prefCache) invalidate(path string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.entry, path)
 }
 
 // AddWebAllowHost 把一个 host 追加进 TOFU 白名单(小写、幂等;GAH_HOME 未设 = 纯内存无效写)。
@@ -229,7 +294,12 @@ func saveTo(path string, p Prefs) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return
 	}
-	_ = writeFileAtomic(path, b, 0o600)
+	if err := writeFileAtomic(path, b, 0o600); err != nil {
+		return
+	}
+	// 写成功后清掉只读侧的缓存(同进程写):不靠 mtime 分辨率,也不怕「写成功但 Stat
+	// 拿到旧时间戳」的极端文件系统。没落盘就不清 —— 缓存里仍是盘上的真值。
+	loadCache.invalidate(path)
 }
 
 // logPrefs 偏好层的失败留痕。用标准 log 而非 slog:internal/prefs 是不依赖 ctx 的

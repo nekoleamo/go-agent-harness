@@ -159,6 +159,7 @@ function canMove(id: string, dir: -1 | 1): boolean {
   padding: 0 8px;
   border-radius: var(--r-input);
   cursor: pointer;
+  transition: color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
 }
 .ov-btn:hover {
   border-color: var(--line-strong);
@@ -177,6 +178,7 @@ function canMove(id: string, dir: -1 | 1): boolean {
   border-radius: var(--r-card);
   padding: 10px 12px 12px;
   background: var(--bg);
+  transition: opacity var(--dur-fast) var(--ease-out);
 }
 .ch {
   display: flex;
@@ -211,6 +213,7 @@ function canMove(id: string, dir: -1 | 1): boolean {
   padding: 0 4px;
   border-radius: 4px;
   cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
 }
 .ib:hover:not(:disabled) {
   color: var(--fg);
@@ -271,6 +274,7 @@ dd.off {
   font-size: 12px;
   padding: 0;
   cursor: pointer;
+  transition: color var(--dur-fast) var(--ease-out);
 }
 .act:hover {
   color: var(--accent-hover);
