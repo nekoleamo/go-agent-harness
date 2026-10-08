@@ -6,9 +6,23 @@ package web
 
 import (
 	"os"
+	"runtime"
 	"testing"
 	"time"
 )
+
+// needPermBits 只读目录能否构造出来:Windows 用 ACL 而非权限位,chmod 0o500 不产生
+// 只读语义(TempDir 仍可写)⇒ 那三个「改成只读再探」的断言在 Windows 上无对象。
+// 与既有 TestProbeWritableReadOnly 同一守卫,不新造口径。
+func needPermBits(t *testing.T) {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		t.Skip("root 无视权限位,只读断言无意义")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 用 ACL 而非权限位,chmod 不产生只读语义")
+	}
+}
 
 // newProbe 造一个独立探针(不碰包级单例,免得用例之间互相影响)。
 func newProbe(ttl time.Duration, now func() time.Time) *writableProbe {
@@ -22,9 +36,7 @@ func TestProbeWritableNilWhenNoRoot(t *testing.T) {
 }
 
 func TestProbeWritableDetectsReadOnlyDir(t *testing.T) {
-	if os.Getuid() == 0 {
-		t.Skip("root 忽略目录权限,跳过")
-	}
+	needPermBits(t)
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0o500); err != nil {
 		t.Fatalf("chmod: %v", err)
@@ -58,9 +70,7 @@ func TestProbeCacheReusesWithinTTL(t *testing.T) {
 
 // TTL 到期后必须重新探测:用户 chmod 了要能看见。
 func TestProbeCacheRefreshesAfterTTL(t *testing.T) {
-	if os.Getuid() == 0 {
-		t.Skip("root 忽略目录权限,跳过")
-	}
+	needPermBits(t)
 	dir := t.TempDir()
 	now := time.Now()
 	p := newProbe(5*time.Second, func() time.Time { return now })
@@ -80,6 +90,7 @@ func TestProbeCacheRefreshesAfterTTL(t *testing.T) {
 
 // 换了数据根必须重新探:缓存按 root 记账,不按时间。
 func TestProbeCacheKeyedByRoot(t *testing.T) {
+	needPermBits(t)
 	a, b := t.TempDir(), t.TempDir()
 	now := time.Now()
 	p := newProbe(time.Hour, func() time.Time { return now })
