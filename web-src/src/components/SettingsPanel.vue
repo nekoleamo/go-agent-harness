@@ -976,6 +976,13 @@ function pickModel(o: { label: string; value: string }): void {
   modelFilter.value = "";
   void applyModel();
 }
+// modelLabelOf:模型 id → 人读的标签(带 provider 前缀)。全局提示里要说清「改成了什么」,
+// 而 state 只回显**生效值**(独立会话看不到全局值),所以这里从选项表里查标签。
+function modelLabelOf(mid: string): string {
+  const hit = modelOptions.value.find((m) => m.value.endsWith("|" + mid) || m.value === mid)
+  return hit?.label ?? mid
+}
+
 // 下面两个写盘函数共用一条纪律:改全局默认**之前**先记下本会话是否独立。
 // 本会话有独立设置时,改全局不会改变它 —— 不据实说明就是「点了没生效」的静默矛盾
 // (与第九十二批角色收紧那条同一种毛病:说法与实际生效的档位对不上)。
@@ -998,8 +1005,10 @@ async function applyModel(): Promise<void> {
     }
     await api.control({ model: mid, session: "" }); // session:"" = 写全局默认
     emit("changed");
+    // 只说「已更新」不说更新成了什么 —— 独立会话的用户在界面上**看不到**全局新值
+    // (本会话仍在用自己的),不给新值就成了「不知道改到哪去了」。
     info.value = wasIndependent
-      ? `全局默认已更新。本会话有独立设置,仍在用「${wasUsing}」—— 想去掉这层覆盖,点输入框旁的「本会话」。`
+      ? `全局默认已改为「${modelLabelOf(mid)}」。本会话有独立设置,仍在用「${wasUsing}」—— 想去掉这层覆盖,点输入框旁的「本会话」。`
       : "";
   } catch (e) {
     err.value = (e as Error).message;
@@ -1025,7 +1034,12 @@ async function applyCtl(body: {
     await api.control(globalOnly ? body : { ...body, session: "" });
     emit("changed");
     if (!globalOnly && wasIndependent) {
-      info.value = "全局默认已更新。本会话有独立设置,不受影响(点输入框旁的「本会话」可去掉那层覆盖)。";
+      const what = body.thinking
+        ? `思考档`
+        : body.sandbox
+          ? `沙箱档`
+          : `审批档`
+      info.value = `全局默认的${what}已更新。本会话有独立设置,不受影响(点输入框旁的「本会话」可去掉那层覆盖)。`;
     } else if (!globalOnly) {
       info.value = "";
     }

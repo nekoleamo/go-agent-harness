@@ -173,15 +173,11 @@ function syncTabs(): void {
 // 曾经在这里用 *_from === 'session' 判过 —— 那是错的,后端那个值在没有角色时恒为 'session'
 // ⇒ 跟随全局的会话也会被判成独立。判据已收口到 scope.ts 一处,这里不再自己拼。
 
-// currentCustom / probed:页签标记的取数。
-// 当前页签不用发请求(state() 已经拿到了,watchStateCustom 顺手记下);
-// 别的页签按需各问后端一次(/api/state?session=),**每个会话只问一次**——
-// 页签上限 8,反复问会把 3s 一次的 statsTimer 变成 N 倍请求。
-const currentCustom = ref(false)
+// probed:已探过「是否独立」的会话。别的页签按需各问后端一次
+// (/api/state?session=),**每个会话只问一次** —— 页签上限 8,反复问会把 3s 一次的
+// statsTimer 变成 N 倍请求。页签关闭时要在 closeTab 里删掉(见那里),否则同一会话
+// 重新打开时会拿一份可能已经过期的标记。
 const probed = new Set<string>()
-function markProbed(id: string): void {
-  probed.add(id)
-}
 function probeTabCustom(id: string): void {
   if (id === curTabId() || probed.has(id)) return
   probed.add(id)
@@ -199,18 +195,22 @@ function probeTabCustom(id: string): void {
       probed.delete(id) // 失败下轮再试,不把错误答案定死
     })
 }
-// watchStateCustom:state 每次刷新都把**当前页签**的来源落到模型上,顺带刷新标记。
-function watchStateCustom(s: StateView): void {
-  const id = curTabId()
-  markProbed(id)
+// applyCustomTo:把一份 state 的「是否独立」记到**指定**页签上。
+//
+// 为何要传 id 而不是用 curTabId()(第一百三十五批 review 修的两个错):
+//   ① refreshStats 是异步的 —— 请求飞行途中切了页签,`curTabId()` 已经是**别的**页签,
+//      而这份 state 回答的是**发问时**那个页签。记到当前页签头上 = 记错对象。
+//      所以调用方在发问时就把 id 传进来,结果永远归它本来该去的地方。
+//   ② 早先还有一个跨页签共享的 `currentCustom` 缓存用来短路「值没变」——
+//      切页签时它还留着**上一页**的值,新页签若恰好同值就直接 return,
+//      新页签的标记于是永远不更新(方块不出现)。现在只跟目标页签自己的 custom 比。
+function applyCustomTo(tabIdFor: string, s: StateView): void {
+  const t = tabs.get(tabIdFor)
+  if (!t) return // 页签已关
   const v = hasSessionOverride(s)
-  if (currentCustom.value === v) return
-  currentCustom.value = v
-  const t = tabs.get(id)
-  if (t && t.custom !== v) {
-    t.custom = v
-    syncTabs()
-  }
+  if (t.custom === v) return
+  t.custom = v
+  syncTabs()
 }
 const model = ref<StreamModel>(newModel())
 // 本窗口会话的当前步数(第一百零三批)。
@@ -873,9 +873,10 @@ let lastRunning: string[] = []
 
 async function refreshStats(): Promise<void> {
   try {
+    const askedForTab = curTabId() // 飞行途中可能切页签,归属按**发问时**那个算
     state.value = await api.state()
     lastTick = Date.now() // 活跃心跳（睡眠检测基准）
-    watchStateCustom(state.value)
+    applyCustomTo(askedForTab, state.value)
     // 会话被**命令**切走(如 `/session new`、`/session switch`)时前端收不到任何信号:
     // SSE 订阅还挂在旧会话上 → 用户后续输入的消息服务端已记录,界面上却一个帧都不来(静默丢显示)。
     // 故以服务端快照为事实:监到当前会话 id 与流所绑定的不一致 → 重放全量(与侧栏切换同一条路径)。
@@ -1107,6 +1108,9 @@ async function newTab(): Promise<void> {
 function closeTab(id: string): void {
   const out = tabs.close(id)
   if (!out.closed) return
+  // 探测记录一并清掉:同一会话重新打开时要重新探一次(期间它的设置可能变过,
+  // 而 probed 是「只问一次」的缓存,留着就等于把一份旧标记永久钉住)。
+  probed.delete(id)
   if (out.wasRunning) {
     notifier.fireEvent('gah 页签已关闭', '「' + out.closed.title + '」在后台继续运行')
   }

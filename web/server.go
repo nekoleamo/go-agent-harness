@@ -1271,11 +1271,21 @@ func (s *Server) handleCommands(w http.ResponseWriter, r *http.Request) {
 // handleControl 状态栏级控制(model/thinking/sandbox 切换;对齐 TUI /model、/thinking、/sandbox)。
 // 核心交互纯 REST(槽位契约:不绕模板渲染);命令式路径仍经 ctx.commands(host 插件命令)。
 func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
+	// 四项运行参数用**指针**:nil = 客户端没给(不动),非 nil = 给了。
+	//
+	// 为何不能继续用 string + `!= ""`(第一百三十五批修):「会话级设置」面板的
+	// 「改为跟随全局」正是**写空串**表示清掉该会话的覆盖 —— 而 `req.Model != ""` 会把
+	// 空串和「没给」当成同一回事,于是那个按钮**点了完全不生效且无任何提示**
+	// (按钮在、界面像在响应,实际后端什么都没做)。
+	//
+	// 兼容性:旧客户端不传这些字段 → nil → 行为逐字不变(仍是「没给就不动」)。
+	// 全局作用域下空串仍视为不动(全局没有「清除模型」这种操作);只有**会话作用域**
+	// 才把空串当「清除该会话的覆盖」。
 	var req struct {
-		Model    string `json:"model"`
-		Thinking string `json:"thinking"`
-		Sandbox  string `json:"sandbox"`
-		Approval string `json:"approval"`
+		Model    *string `json:"model"`
+		Thinking *string `json:"thinking"`
+		Sandbox  *string `json:"sandbox"`
+		Approval *string `json:"approval"`
 		// SandboxSync 联动开关(指针:区分"没给"与"显式 false")—— R10 ②-2。
 		SandboxSync *bool  `json:"sandbox_sync"`
 		Workspace   string `json:"workspace"`
@@ -1309,56 +1319,74 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 	// 会话作用域(第一百一十六批):带 session 时,这四项写**该会话**的偏好,不动全局;
 	// 不带 = 原来的全局语义(单会话、命令行都是它)。校验顺序逐字保留,只是"写到哪"变了。
 	sessionScoped := req.Session != ""
-	if req.Model != "" {
+	if req.Model != nil {
+		m := *req.Model
 		if sessionScoped {
-			m := req.Model
+			// 空串 = 清除该会话的覆盖(回到跟随全局),这是「改为跟随全局」按钮的实际动作。
 			if err := s.setSessionPref(req.Session, func(p *sdk.SessionPrefs) { p.Model = m }); err != nil {
 				http.Error(w, "会话级模型设置失败: "+err.Error(), http.StatusBadRequest)
 				return
 			}
-		} else {
-			s.llm.SetModel(req.Model)
+		} else if m != "" {
+			s.llm.SetModel(m)
 			// 持久化:模型随 providerfile 落盘(重启经 providerfile 链恢复;失败不阻断即时生效)。
 			// 会话级模型**不写 provider.yaml** —— 那是"该 provider 的默认模型",
 			// 被一个页签的选择顺手改掉就是全局污染(前端提供单独的"设为默认"入口)。
-			_ = providerfile.UpdateModel(req.Model)
+			_ = providerfile.UpdateModel(m)
 		}
 	}
-	if req.Thinking != "" {
-		lvl := sdk.ParseThinking(req.Thinking)
-		if req.Thinking != lvl.String() {
-			http.Error(w, "未知思考等级 off|low|medium|high", http.StatusBadRequest)
-			return
-		}
-		if sessionScoped {
-			t := lvl.String()
-			if err := s.setSessionPref(req.Session, func(p *sdk.SessionPrefs) { p.Thinking = t }); err != nil {
+	if req.Thinking != nil {
+		raw := *req.Thinking
+		// 会话作用域下空串是「清除覆盖」,不能拿去做合法性校验(ParseThinking("") 会得到 Off,
+		// 而"清掉思考档"绝不能被顺手改成"把思考档设成 off")。
+		if sessionScoped && raw == "" {
+			if err := s.setSessionPref(req.Session, func(p *sdk.SessionPrefs) { p.Thinking = "" }); err != nil {
 				http.Error(w, "会话级思考档设置失败: "+err.Error(), http.StatusBadRequest)
 				return
 			}
-		} else {
-			s.llm.SetThinking(lvl)
-			// 持久化偏好(重启恢复)
-			updatePrefs(func(p *prefs.Prefs) { p.Thinking = lvl.String() })
+		} else if raw != "" {
+			lvl := sdk.ParseThinking(raw)
+			if raw != lvl.String() {
+				http.Error(w, "未知思考等级 off|low|medium|high", http.StatusBadRequest)
+				return
+			}
+			if sessionScoped {
+				t := lvl.String()
+				if err := s.setSessionPref(req.Session, func(p *sdk.SessionPrefs) { p.Thinking = t }); err != nil {
+					http.Error(w, "会话级思考档设置失败: "+err.Error(), http.StatusBadRequest)
+					return
+				}
+			} else {
+				s.llm.SetThinking(lvl)
+				// 持久化偏好(重启恢复)
+				updatePrefs(func(p *prefs.Prefs) { p.Thinking = lvl.String() })
+			}
 		}
 	}
-	if req.Sandbox != "" {
-		switch sdk.SandboxMode(req.Sandbox) {
+	if req.Sandbox != nil && sessionScoped && *req.Sandbox == "" {
+		// 空串 = 清除该会话的沙箱覆盖(先于合法性校验,否则空串会撞下面那个 switch)。
+		if err := s.setSessionPref(req.Session, func(p *sdk.SessionPrefs) { p.Sandbox = "" }); err != nil {
+			http.Error(w, "会话级沙箱档设置失败: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+	} else if req.Sandbox != nil && *req.Sandbox != "" {
+		sbv := *req.Sandbox
+		switch sdk.SandboxMode(sbv) {
 		case sdk.SandboxReadOnly, sdk.SandboxWorkspace, sdk.SandboxFullAccess:
 		default:
 			http.Error(w, "未知沙箱档位(只读 read-only|工作区 workspace-write|全权 full-access)", http.StatusBadRequest)
 			return
 		}
 		if sessionScoped {
-			sb := req.Sandbox
+			sb := sbv
 			if err := s.setSessionPref(req.Session, func(p *sdk.SessionPrefs) { p.Sandbox = sb }); err != nil {
 				http.Error(w, "会话级沙箱档设置失败: "+err.Error(), http.StatusBadRequest)
 				return
 			}
 		} else {
-			s.sb.SetMode(sdk.SandboxMode(req.Sandbox))
+			s.sb.SetMode(sdk.SandboxMode(sbv))
 			// 持久化偏好(重启恢复)
-			updatePrefs(func(p *prefs.Prefs) { p.Sandbox = req.Sandbox })
+			updatePrefs(func(p *prefs.Prefs) { p.Sandbox = sbv })
 		}
 	}
 	if req.SandboxSync != nil {
@@ -1370,8 +1398,15 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 		sc.SetSyncEnabled(*req.SandboxSync)
 		updatePrefs(func(p *prefs.Prefs) { p.SandboxSync = req.SandboxSync })
 	}
-	if req.Approval != "" {
-		switch sdk.ApprovalMode(req.Approval) {
+	if req.Approval != nil && sessionScoped && *req.Approval == "" {
+		// 空串 = 清除该会话的审批覆盖(先于合法性校验)。
+		if err := s.setSessionPref(req.Session, func(p *sdk.SessionPrefs) { p.Approval = "" }); err != nil {
+			http.Error(w, "会话级审批档设置失败: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+	} else if req.Approval != nil && *req.Approval != "" {
+		apv := *req.Approval
+		switch sdk.ApprovalMode(apv) {
 		case sdk.ApprovalOpen, sdk.ApprovalSmart, sdk.ApprovalStrict:
 		default:
 			http.Error(w, "未知审批档位(open|smart|strict)", http.StatusBadRequest)
@@ -1382,15 +1417,15 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if sessionScoped {
-			ap := req.Approval
+			ap := apv
 			if err := s.setSessionPref(req.Session, func(p *sdk.SessionPrefs) { p.Approval = ap }); err != nil {
 				http.Error(w, "会话级审批档设置失败: "+err.Error(), http.StatusBadRequest)
 				return
 			}
 		} else {
-			s.ap.SetMode(sdk.ApprovalMode(req.Approval))
+			s.ap.SetMode(sdk.ApprovalMode(apv))
 			// 持久化偏好(重启恢复)
-			updatePrefs(func(p *prefs.Prefs) { p.Approval = req.Approval })
+			updatePrefs(func(p *prefs.Prefs) { p.Approval = apv })
 		}
 	}
 	if req.Workspace != "" {

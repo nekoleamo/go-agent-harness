@@ -11,7 +11,7 @@
 // 每项**二态**:跟随全局 / 独立。这是本面板的核心 ——
 // 「跟随」意味着不写会话档,后端合成时回落全局(前端把这种留空画成一种状态,而不是
 // 假装自己设了全局值);「独立」才写会话档。
-import { computed } from 'vue'
+import { computed, onMounted, onUnmounted } from 'vue'
 import { api } from '../api'
 import { isSessionSet } from '../scope'
 import type { StateView } from '../types'
@@ -75,6 +75,16 @@ async function resetAll(): Promise<void> {
   }
   emit('changed')
 }
+
+// onEsc:Esc 关面板(与设置面板同一手势 —— 一个只能靠点遮罩关的抽屉,用户会以为坏了)。
+// capture:抢在输入框/文档面板的 Esc 之前 —— 本面板开着时它们不该先响应。
+function onEsc(e: KeyboardEvent): void {
+  if (e.key !== 'Escape') return
+  e.stopPropagation()
+  emit('close')
+}
+onMounted(() => window.addEventListener('keydown', onEsc, true))
+onUnmounted(() => window.removeEventListener('keydown', onEsc, true))
 
 // effectiveXxx 显示**本会话实际生效**的值(已含角色收紧与审批联动的合成结果)。
 function eff(field: 'sandbox' | 'approval', zh: Record<string, string>): string {
