@@ -24,6 +24,7 @@
 #   bash scripts/release.sh watch v0.6.0       # 盯 release-cli + release-desktop 到终态
 #   bash scripts/release.sh verify v0.6.0 --all  # 产物校验门(逐平台下载验签;发版建议加)
 #   bash scripts/release.sh mirror v0.6.0 --mirror      # Gitee 镜像(需 env 的 GITEE_TOKEN)
+#   bash scripts/release.sh verify-mirror v0.6.0 --dir /tmp/rel   # 只做逐字节核对(**只读**,不需 token)
 #   bash scripts/release.sh endpoint v0.6.0    # 回查壳的第一顺位端点
 #   bash scripts/release.sh all v0.6.0 --yes --mirror
 #   bash scripts/release.sh preflight --fast   # 跳过重活(交叉编译/desktop),只跑快的
@@ -52,11 +53,22 @@ RELEASE_WORKFLOWS=(release-cli release-desktop)
 
 # 先取子命令并 shift —— **再**扫旗标/位置参数。
 # (顺序反了的话子命令会被当成位置参数,报「多余的位置参数」——第一版就栽在这。)
+# usage 只打**文件开头**那段用法注释。
+# 早先是 `grep '^#' "$0"`,会把正文里所有 column-0 的注释一并倒出来 —— 包括每个阶段的
+# `# ──── xxx ────` 分节符。于是「用法」随脚本体量一起变长(加个 verify-mirror 就从 69 行
+# 涨到 97 行),而其中大半是内部施工注释,对看用法的人是噪音。
+usage() { awk 'NR>1 && /^#/ { sub(/^# ?/, ""); print; next } NR>1 { exit }' "$0"; }
+
 sub="${1:-}"
-if [ -z "$sub" ]; then grep '^#' "$0" | tail -n +2 | sed 's/^# \{0,1\}//'; exit 0; fi
+# -h/--help 要在「取子命令」之后、「无参检查」之前接住。
+# 原先只把它当旗标处理 ⇒ 作为**首个**参数时会被 sub 吃掉,落到未知子命令的死路上
+# (只有 `release.sh tag --help` 这种「后面才有 --help」的形式能用);无参数时靠空 sub 打用法。
+case "$sub" in -h|--help) usage; exit 0 ;; esac
+if [ -z "$sub" ]; then usage; exit 0; fi
 shift || true
 
 FAST=0; YES=0; MIRROR=0; SKIP_VERIFY=0; VERIFY_ALL=0
+MIRROR_DIR="" # verify-mirror 的 --dir:本地产物目录(与 GAH_MIRROR_DIR 同义,显式的优先)
 VERIFY_FLAGS=() # 转发给 verify-release.mjs 的未知旗标(见下面 --*) 分支)
 TAG=""; ARGS=()
 # verify 阶段**完全不分类**:位置参数是 tag,其余一律原样转发给 verify-release.mjs。
@@ -68,17 +80,25 @@ TAG=""; ARGS=()
 if [ "$sub" = verify ]; then
   ARGS=("$@")
 else
-  for a in "$@"; do
+  # 用 while+shift 而不是 for:--dir 要**带值**,for 里的 "$@" 无法消费下一个参数。
+  while [ $# -gt 0 ]; do
+    a="$1"
     case "$a" in
       --fast) FAST=1 ;;
       --yes) YES=1 ;;
       --mirror) MIRROR=1 ;;
       --skip-artifacts) SKIP_VERIFY=1 ;;
       --all) VERIFY_ALL=1 ;; # verify-release 的逐平台全量验签(慢,但发版该跑)
-      -h|--help) grep '^#' "$0" | tail -n +2 | sed 's/^# \{0,1\}//'; exit 0 ;;
+      --dir)
+        shift
+        [ $# -gt 0 ] || { echo "--dir 需要目录参数" >&2; exit 2; }
+        MIRROR_DIR="$1"
+        ;;
+      -h|--help) usage; exit 0 ;;
       --*) echo "未知旗标:$a(--help 看用法)" >&2; exit 2 ;;
       *) ARGS+=("$a") ;;
     esac
+    shift
   done
 fi
 # 位置参数个数检查**跳过 verify**:它的整行参数都是原样转发的(旗标带值,不做分类)。
@@ -321,55 +341,130 @@ do_mirror() {
 
   # 1) 拉齐 GitHub Release 上的桌面产物(经 gh-proxy;本机直连拉 25MB 级附件会长时间 0 字节停滞)
   step "mirror 1/4 · 按 Release 资产清单拉齐产物 → $dir"
-  local ver names f
-  ver="$(ver_of "$TAG")"
-  names="$(gh release view "$TAG" --repo "$GH_REPO" --json assets -q '.assets[].name' 2>/dev/null \
-          | grep -E '\.app\.tar\.gz$|-setup\.exe$|\.dmg$|-portable\.zip$|^latest\.json$' || true)"
-  if [ -z "$names" ]; then
-    say "    取不到资产清单(gh 缺失/未登录/无此 tag)→ 退回按平台名猜"
-    names="$(printf '%s\n' "gah_${ver}_aarch64.dmg" "gah_${ver}_x64.dmg" \
-             "gah_${ver}_x64-setup.exe" "gah_${ver}_x64-portable.zip" "gah.app.tar.gz" "latest.json")"
-  fi
-  # 目录**先清空**:它是复用的,上一次发版的包还躺在里面 —— 旧脚本会把它们一并传进本 tag
-  # (v0.4.1 首次镜像时,v0.1.7 的两个安装包就被传到了 0.4.1 页面上)。
-  find "$dir" -maxdepth 1 -type f \( -name '*.dmg' -o -name '*-setup.exe' -o -name '*.app.tar.gz' \
-       -o -name '*-portable.zip' -o -name 'latest.json' \) -delete
-  while IFS= read -r f; do
-    [ -n "$f" ] || continue
-    say "    拉取 $f …"
-    curl -fsSL --connect-timeout 20 --max-time 900 -o "$dir/$f" \
-      "${GH_PROXY:-https://gh-proxy.com/}https://github.com/${GH_REPO}/releases/download/${TAG}/${f}" \
-      || die "拉取 $f 失败"
-  done <<< "$names"
+  mirror_fetch "$dir" "$TAG"
 
   # 2) 上传 + 回查匿名直链
   step "mirror 2/4 · 上传桌面附件 + 回查匿名直链"
   bash scripts/mirror-gitee.sh upload "$TAG" "$dir" || die "上传/回查失败"
 
-  # 3) 逐字节核对。同名先删后传若中途失败/截断,updater 只会发现「下到的包签名不对」,
-  #    而人眼看到的是「附件在、URL 200」—— 这一步把它变成机器判定。
+  # 3) 逐字节核对(实现见 mirror_bytecheck:verify-mirror 子命令也走它,不留第二份)
   step "mirror 3/4 · 逐字节核对(本地 sha256 == Gitee 直链 sha256)"
-  local bad=0 url tmp a b
-  while IFS= read -r f; do
-    [ -n "$f" ] || continue
-    local name; name="$(basename "$f")"
-    url="https://gitee.com/${GITEE_REPO}/releases/download/${TAG}/${name}"
-    tmp="$(mktemp)"
-    if ! curl -fsSL --connect-timeout 20 --max-time 900 -o "$tmp" "$url"; then
-      say "    拉取失败:$name" >&2; rm -f "$tmp"; bad=1; continue
-    fi
-    a="$(sha256_of "$f")"; b="$(sha256_of "$tmp")"; rm -f "$tmp"
-    if [ "$a" = "$b" ]; then say "    OK   $name  $(printf '%s' "$a" | cut -c1-16)…"
-    else say "    不一致 $name:本地 ${a:0:16}… vs Gitee ${b:0:16}…" >&2; bad=1; fi
-  done <<< "$(attach_list "$dir")"
-  [ "$bad" = 0 ] || die "附件内容与本地副本不一致 —— 先别推更新表(否则线上指向一个换过的包)。
-  **不要盲目重跑**:重跑 = 「先删后传」,半途失败会留下缺件。先用 curl -sIL 确认现状。"
+  mirror_bytecheck "$dir" "$TAG" || die "附件内容与本地副本不一致 —— 先别推更新表(否则线上指向一个换过的包)。
+  **不要盲目重跑**:重跑 = 「先删后传」,半途失败会留下缺件。
+  只补核对那一步(不碰远端):bash scripts/release.sh verify-mirror $TAG --dir $dir"
 
   # 4) 推快照 + 注表
   local snap="$REPO_ROOT/dist-desktop/gitee/latest.json"
   [ -f "$snap" ] || die "缺 Gitee 版更新表:$snap"
   step "mirror 4/4 · 推代码快照 + 注入 latest.json"
   GAH_EXTRA_FILES="$snap:latest.json" bash scripts/sync-gitee.sh || die "推快照失败"
+}
+
+# ───────────────────────────── verify-mirror ─────────────────────────────
+# 只做 mirror 的第 3 步(逐字节核对),**不碰远端**:不建 Release、不传附件、不推快照。
+#
+# 为什么需要它(2026-10-08 发 v0.5.12 踩到):mirror 的第 3 步在**网络抖动**下会判红
+# (回查时 curl 连不上代理/直链截断),而那时 6 件附件其实已经全部传完且直链 200。
+# 脚本自己的告诫是「不要盲目重跑(重跑=先删后传,半途失败会留下缺件)」——
+# 却一直没有「只重跑第 3 步」的入口,只能手工拼 curl 逐件比对。这条子命令补的就是那个缺口。
+#
+# 也**不需要 GITEE_TOKEN**:核对读的是 Gitee 的**匿名**直链,一个字节都不写。
+do_verify_mirror() {
+  need_cmd curl
+  [ -n "$TAG" ] || die "用法:release.sh verify-mirror <vX.Y.Z> --dir <本地产物目录>
+  目录里应放着该 tag 的桌面临产物(mirror 用 GAH_MIRROR_DIR 跑过一次就会留在那里)。"
+  local dir="${MIRROR_DIR:-${GAH_MIRROR_DIR:-}}"
+  [ -n "$dir" ] || die "需 --dir <目录>(或 GAH_MIRROR_DIR)。
+  核对是「本地副本 ↔ Gitee 直链」的比对,没有本地副本无从比起 ——
+  刻意**不**用「先下再比」的方式糊过去:那样比的还是网络,不是发布结果。"
+  [ -d "$dir" ] || die "目录不存在:$dir"
+  dir="$(cd "$dir" && pwd)"
+
+  # 本地空目录时按 Release 清单拉一次(复用 mirror 的同一段实现,不另写一份)
+  if [ -z "$(attach_list "$dir")" ]; then
+    need_cmd gh
+    say "本地目录里没有桌面临产物 → 先按 Release 资产清单拉齐(走 GH_PROXY)"
+    mirror_fetch "$dir" "$TAG"
+  fi
+
+  step "verify-mirror · 逐字节核对(本地 sha256 == Gitee 直链 sha256;不写远端)"
+  mirror_bytecheck "$dir" "$TAG" || die "核对未过。
+  若失败项是「拉取失败」而附件曾传上去过,先分清是**没传上去**还是**网络抖动**:
+    curl -sIL <直链>   # 200 = 在;404 = 真缺
+  确认「只是核对那一步没跑完」时,换网络/重试本命令即可;不必重跑 mirror(那是先删后传)。"
+  say ""
+  say "核对通过:本地副本与 Gitee 直链逐字节一致。"
+  say "  注:本命令只读 —— 附件是否齐全仍需自行看一眼 Release 页(或跑 release.sh mirror)。"
+}
+
+# ─────────────────── mirror 的两个可复用步骤 ───────────────────
+# 为什么要抽出来:mirror 第 3 步(逐字节核对)在**网络抖动**下会判红,而那时附件其实
+# 已经全部传完了 —— 脚本自己的告诫是「不要盲目重跑(重跑=先删后传,半途失败会留下缺件)」,
+# 却一直没有「只重跑第 3 步」的入口,只能手工拼 curl。抽成函数后 verify-mirror 复用它,
+# 核对逻辑仍然只有一份(第二份 = 第二份事实源,本脚本头部明令禁止)。
+
+# mirror_fetch 按 Release 资产清单把桌面临产物拉到 $1(标签 $2)。
+# 目录**先清空**:它是复用的,上一次发版的包还躺在里面 —— 旧脚本会把它们一并传进本 tag
+# (v0.4.1 首次镜像时,v0.1.7 的两个安装包就被传到了 0.4.1 页面上)。
+mirror_fetch() {
+  local dir="$1" tag="$2" ver names f
+  ver="$(ver_of "$tag")"
+  names="$(gh release view "$tag" --repo "$GH_REPO" --json assets -q '.assets[].name' 2>/dev/null \
+          | grep -E '\.app\.tar\.gz$|-setup\.exe$|\.dmg$|-portable\.zip$|^latest\.json$' || true)"
+  if [ -z "$names" ]; then
+    say "    取不到资产清单(gh 缺失/未登录/无此 tag)→ 退回按平台名猜"
+    names="$(printf '%s\n' "gah_${ver}_aarch64.dmg" "gah_${ver}_x64.dmg" \
+             "gah_${ver}_x64-setup.exe" "gah_${ver}_x64-portable.zip" "gah.app.tar.gz" "latest.json")"
+  fi
+  find "$dir" -maxdepth 1 -type f \( -name '*.dmg' -o -name '*-setup.exe' -o -name '*.app.tar.gz' \
+       -o -name '*-portable.zip' -o -name 'latest.json' \) -delete
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    say "    拉取 $f …"
+    curl -fsSL --connect-timeout 20 --max-time 900 -o "$dir/$f" \
+      "${GH_PROXY:-https://gh-proxy.com/}https://github.com/${GH_REPO}/releases/download/${tag}/${f}" \
+      || die "拉取 $f 失败"
+  done <<< "$names"
+}
+
+# release_asset_names 打印该 tag 上「该镜像」的资产名(gh 不可用时打不出东西 —— 调用方要能容忍)。
+release_asset_names() {
+  gh release view "$1" --repo "$GH_REPO" --json assets -q '.assets[].name' 2>/dev/null \
+    | grep -E '\.app\.tar\.gz$|-setup\.exe$|\.dmg$|-portable\.zip$' || true
+}
+
+# mirror_bytecheck 逐字节核对:本地副本 vs Gitee 匿名直链(标签 $2)。
+# 返回 0 = 全部一致;1 = 有差异/缺失/拉不下来。
+#
+# 为何值得单独当一道门:同名**先删后传**若中途失败/截断,updater 只会发现「下到的包签名
+# 不对」,而人眼看到的是「附件在、URL 200」—— 这一步把它变成机器判定。
+#
+# 核对清单取**本地文件 ∪ Release 资产名**:只迭代本地的话,「某件压根没传上去」
+# 这种最该抓的情况反而看不见(本地有、远端没有 → 直链 404 → 会被抓到;
+# 本地没有、远端也没有 → 两边都漏,但 Release 清单里有 ⇒ 靠并集兜住)。
+mirror_bytecheck() {
+  local dir="$1" tag="$2" bad=0 f name url tmp a b
+  local names; names="$(attach_list "$dir" | while IFS= read -r x; do basename "$x"; done)"
+  names="$(printf '%s\n%s\n' "$names" "$(release_asset_names "$tag")" | sed '/^$/d' | sort -u)"
+  [ -n "$names" ] || { say "    没有可核对的产物(本地空 + 取不到 Release 清单)" >&2; return 1; }
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    f="$dir/$name"
+    if [ ! -f "$f" ]; then
+      say "    本地缺失 $name(Release 清单里有,本地副本里没有 → 没法比对)" >&2
+      bad=1; continue
+    fi
+    url="https://gitee.com/${GITEE_REPO}/releases/download/${tag}/${name}"
+    tmp="$(mktemp)"
+    if ! curl -fsSL --connect-timeout 20 --max-time 900 -o "$tmp" "$url"; then
+      say "    拉取失败:$name(直链取不到 —— 是没传上去,还是网络抖动?可用 curl -sIL "$url" 复核)" >&2
+      rm -f "$tmp"; bad=1; continue
+    fi
+    a="$(sha256_of "$f")"; b="$(sha256_of "$tmp")"; rm -f "$tmp"
+    if [ "$a" = "$b" ]; then say "    OK   $name  $(printf '%s' "$a" | cut -c1-16)…"
+    else say "    不一致 $name:本地 ${a:0:16}… vs Gitee ${b:0:16}…" >&2; bad=1; fi
+  done <<< "$names"
+  return "$bad"
 }
 
 attach_list() {
@@ -434,6 +529,7 @@ case "$sub" in
   watch)     watch_release "$@" ;;
   verify)    do_verify "$@" ;;
   mirror)    do_mirror "$@" ;;
+  verify-mirror) do_verify_mirror ;;
   endpoint)  do_endpoint "$@" ;;
   all)
     TAG="${TAG:-${1:-}}"
