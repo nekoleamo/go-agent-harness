@@ -187,16 +187,17 @@ func approvalLabel(mode string) string {
 
 // statuslineCluster 回合态集群:组内 " · "、与分区段 " | "。
 var statuslineCluster = map[string]bool{
-	"state": true, "queue": true, "questions": true, "dock": true, "last": true,
+	"state": true, "queue": true, "questions": true, "dock": true, "last": true, "tps": true,
 }
 
 // defaultStatusline 基线默认项顺序(F15.3;不配置时逐字符等价旧输出)。
 // NOND-N1:notice 置首 —— 提示是「需要人回来」的信号,无提示时该项渲染空串,
 // 输出与旧基线逐字符一致。
-var defaultStatusline = []string{"notice", "state", "queue", "questions", "dock", "last", "workspace", "sandbox", "approval", "role", "session"}
+// 第一百三十八批:tps 紧跟 last(两项同属「上一回合」的度量,拆开写才能各自 /statusline 开关)。
+var defaultStatusline = []string{"notice", "state", "queue", "questions", "dock", "last", "tps", "workspace", "sandbox", "approval", "role", "session"}
 
 // statuslineTokens 全部合法项(顺序无关;/statusline 错误提示与校验用)。
-var statuslineTokens = []string{"notice", "state", "queue", "questions", "dock", "last", "workspace", "sandbox", "approval", "role", "session"}
+var statuslineTokens = []string{"notice", "state", "queue", "questions", "dock", "last", "tps", "workspace", "sandbox", "approval", "role", "session"}
 
 // statuslineTokenDesc 项说明(/statusline 无参与错误提示用)。
 var statuslineTokenDesc = map[string]string{
@@ -206,6 +207,7 @@ var statuslineTokenDesc = map[string]string{
 	"questions": "待答提问计数(S-P0-2)",
 	"dock":      "后台任务/子代理坞(S-P0-3)",
 	"last":      "上一回合耗时",
+	"tps":       "上一回合输出速率(输出 tok/回合时长;工具与审批等待计入分母)",
 	"workspace": "工作区",
 	"sandbox":   "沙箱档位",
 	"approval":  "审批档位",
@@ -276,6 +278,14 @@ func statuslineItem(s *State, token string) string {
 	case "last":
 		if !s.Running && s.turnDur > 0 {
 			return styleStatus.Render("上一回合 " + fmtDur(s.turnDur))
+		}
+	case "tps":
+		// 第一百三十八批:只报**已结束**回合的输出速率(Tra 是当前会话的账本,天然不跨会话)。
+		// 无速率不渲染(首个回合还没跑完 / provider 不报用量 ⇒ 摆个 0 只会让人以为“不快”)。
+		if !s.Running {
+			if v, ok := s.Traj.LastTps(); ok {
+				return styleStatus.Render(tpsLabel(v))
+			}
 		}
 	case "workspace":
 		return styleStatus.Render("工作区: " + orDefault(s.Workspace, "?"))

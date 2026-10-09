@@ -3,7 +3,7 @@
 // 异常顺序(结果晚到/回合已结束)、隐式回合、概览聚合与格式化口径。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { clip, fmtBytes, fmtMs, fmtTok, newTraj, trajOverview, trajPush, turnMs, turnStats, toolMs, stepMs } from './traj.ts'
+import { clip, fmtBytes, fmtMs, fmtTok, fmtTps, lastTps, newTraj, trajOverview, trajPush, turnEndLabel, turnMs, turnSpeedLine, turnStats, turnTps, toolMs, stepMs } from './traj.ts'
 import type { TrajModel } from './traj.ts'
 import { argsSummary } from './sse.ts'
 import type { SessionEvent } from './types.ts'
@@ -166,10 +166,16 @@ test('turn/end 无载荷(undefined)记为 done', () => {
   assert.equal(m.turns[0].reason, 'done')
 })
 
-test('session/usage 出现在回合外(无 cur)时不崩且不记账', () => {
+test('session/usage:一个回合都还没有时不崩且不记账;晚于 turn/end 的归到刚结束的那回合', () => {
   const m = newTraj()
   trajPush(m, ev('session/usage', { Model: 'x', Usage: { PromptTokens: 1 } }, 1, 0))
   assert.equal(m.turns.length, 0)
+  // 无处可归的情况之外:收尾帧先到、usage 迟到时必须落到那个回合,否则统计永久缺一块
+  const m2 = newTraj()
+  trajPush(m2, ev('user/message', { Content: 'x' }, 1, 0))
+  trajPush(m2, ev('turn/end', 'done', 2, 2))
+  trajPush(m2, ev('session/usage', { Model: 'x', Usage: { PromptTokens: 10, CompletionTokens: 4 } }, 3, 3))
+  assert.equal(m2.turns[0].usage.completion, 4)
 })
 
 test('trajOverview:回合数/总时长/累计 token 与缓存;有未结束回合则总时长为 undefined', () => {
@@ -193,6 +199,11 @@ test('格式化口径:ms/tok/bytes/clip', () => {
   assert.equal(fmtMs(930), '930ms')
   assert.equal(fmtMs(4200), '4.2s')
   assert.equal(fmtMs(62000), '1m2s')
+  // 速率四舍五入到 0 不能写成「0 tok/s」(读起来像一个字都没吐),写成 <1
+  assert.equal(fmtTps(289.4), '289 tok/s')
+  assert.equal(fmtTps(0.6), '1 tok/s')
+  assert.equal(fmtTps(0.25), '<1 tok/s')
+  assert.equal(fmtTps(0), '<1 tok/s')
   assert.equal(fmtTok(120), '120')
   assert.equal(fmtTok(12500), '12.5K')
   assert.equal(fmtTok(2500000), '2.50M')
@@ -202,6 +213,54 @@ test('格式化口径:ms/tok/bytes/clip', () => {
   assert.equal(fmtBytes(3 * 1024 * 1024), '3.0MB')
   assert.equal(clip('  多行\n文本  '), '多行 文本')
   assert.equal(clip('x'.repeat(80), 10), 'xxxxxxxxxx…')
+})
+
+test('回合速度:输出 TPS = 补全 token / 回合时长,不含输入 token', () => {
+  const m = sample()
+  const t1 = m.turns[0] // 4s 回合:输入 100、输出 20 ⇒ 5 tok/s
+  assert.equal(turnTps(t1), 5)
+  // 只算输出:把输入也计进去会得到 120/4=30 tok/s,那不是“吐字速度”
+  assert.equal(turnSpeedLine(t1), '回合结束 · 4.0s · 输出 20 tok · 5 tok/s · 工具 1')
+  assert.equal(turnSpeedLine(m.turns[1]), '回合结束 · 2.0s · 输出 30 tok · 15 tok/s · 工具 1')
+  // 进行中回合没有结束 ⇒ 没有速率,也不编造
+  assert.equal(turnTps(m.cur), undefined)
+  assert.equal(turnTps(m.turns[1]), 15)
+})
+
+test('回合速度:用量未到时说“待补”而不是 0(收尾帧比 usage 早到是常态)', () => {
+  const m = newTraj()
+  trajPush(m, ev('user/message', { Content: 'hi' }, 1, 0))
+  trajPush(m, ev('turn/end', 'done', 2, 2))
+  assert.equal(turnTps(m.turns[0]), undefined)
+  assert.equal(turnSpeedLine(m.turns[0]), '回合结束 · 2.0s · 用量待补')
+  // usage 迟到:同一回合补上后,同一句话给出真实速率(前端改写的是这一行)
+  trajPush(m, ev('session/usage', { Model: 'm', Usage: { PromptTokens: 900, CompletionTokens: 100 } }, 3, 3))
+  assert.equal(turnTps(m.turns[0]), 50)
+  assert.equal(turnSpeedLine(m.turns[0]), '回合结束 · 2.0s · 输出 100 tok · 50 tok/s')
+})
+
+test('回合收尾标签按真因由说话:取消/步数上限不是“结束”', () => {
+  assert.equal(turnEndLabel('done'), '回合结束')
+  assert.equal(turnEndLabel(undefined), '回合结束')
+  assert.equal(turnEndLabel('cancelled'), '回合取消')
+  assert.equal(turnEndLabel('max_steps'), '步数上限')
+  assert.equal(turnEndLabel('weird'), '回合结束(weird)') // 未知因由原样带出,不静默吞
+  // 零时长(同秒收尾)不除零、不报 Infinity
+  const m = newTraj()
+  trajPush(m, ev('user/message', { Content: 'x' }, 1, 0))
+  trajPush(m, ev('session/usage', { Model: 'm', Usage: { CompletionTokens: 10 } }, 2, 0))
+  trajPush(m, ev('turn/end', 'done', 3, 0))
+  assert.equal(turnTps(m.turns[0]), undefined)
+})
+
+test('lastTps(状态栏):只取已结束回合,进行中/无数据不报', () => {
+  const m = sample() // 前两回合已结束(4s/2s),第三回合进行中
+  assert.equal(lastTps(m), 15) // 末个**已结束**回合 = 30 tok / 2s
+  const fresh = newTraj()
+  trajPush(fresh, ev('user/message', { Content: 'x' }, 1, 0))
+  trajPush(fresh, ev('session/usage', { Model: 'm', Usage: { CompletionTokens: 10 } }, 2, 1))
+  assert.equal(lastTps(fresh), undefined) // 进行中:不报(会被读成「现在多快」)
+  assert.equal(lastTps(newTraj()), undefined) // 什么回合都没有:不占位
 })
 
 test('args 保留原始 JSON:展示口径经 sse.argsSummary 与流视图一致', () => {

@@ -15,7 +15,8 @@ import {
   windowPartial,
 } from './streamwin'
 import { FrameQueue, rafScheduler } from './framequeue'
-import { clip, newTraj, trajOverview, trajPush, turnStats, type TrajModel } from './traj'
+import { clip, newTraj, trajOverview, trajPush, turnSpeedLine, turnStats, type TrajModel, type TrajTurn } from './traj'
+import { SessionCache, switchPlan, type SwitchPlan } from './sessioncache'
 import { changesPush, changesStats, newChanges, type ChangesModel } from './changes'
 import {
   BOARD_CARDS,
@@ -278,11 +279,67 @@ const metas = ref<MetaLine[]>([])
 // after 记「此刻会话流已落定的最后一条消息 seq」—— StreamView 据此把它织回
 // 正确的位置,而不是统统堆在所有消息之后(见 registry.ts 的 MetaLine.after)。
 // turnCanceled:本回合是用户自己按停止结束的,这类行不产生(见 turns.ts)。
-function pushMeta(kind: MetaLine['kind'], text: string): void {
-  if (isUserCanceled(text)) return // 用户自己的停止不是错误(2026-10-03)
+function pushMeta(kind: MetaLine['kind'], text: string, tps = false): MetaLine | undefined {
+  if (isUserCanceled(text)) return undefined // 用户自己的停止不是错误(2026-10-03)
   const msgs = model.value.msgs
-  metas.value.push({ kind, text, after: msgs.length ? msgs[msgs.length - 1].seq : 0 })
+  const line: MetaLine = { kind, text, after: msgs.length ? msgs[msgs.length - 1].seq : 0 }
+  if (tps) line.tps = true
+  metas.value.push(line)
+  return line // 供需要回头改写自己的行(如回合速记被迟到的 usage 补正)使用
 }
+// —— 回合结束速记(输出 TPS)——
+// 行文本盯住回合对象:收尾的 usage 帧偶发晚于 turn/end,那时先落一行「用量待补」,
+// usage 一到就把**同一行**改写(而不是再追一行),免得同一回合出现两行统计。
+const tpsTurn = ref<TrajTurn | null>(null)
+const tpsLine = ref<MetaLine | null>(null)
+function showTps(): void {
+  const turns = traj.value.turns
+  const t = turns.length ? turns[turns.length - 1] : undefined
+  if (!t || !t.endTs) return // 无结束标记(被 stop 卡在半路的脏帧):不造数字
+  tpsTurn.value = t
+  tpsLine.value = pushMeta('status', turnSpeedLine(t), true) ?? null
+}
+function refreshTps(): void {
+  if (tpsTurn.value && tpsLine.value) tpsLine.value.text = turnSpeedLine(tpsTurn.value)
+}
+// retargetTps 切会话后重新对准速记行:它指向的回合对象与行都在**被切换的那份** traj/metas 里。
+// 不重指的后果:新会话的 usage 帧会把旧会话那行改写成不相干的数字。
+function retargetTps(): void {
+  const turns = traj.value.turns
+  let last: TrajTurn | undefined
+  for (let i = turns.length - 1; i >= 0; i--) {
+    if (turns[i].endTs) {
+      last = turns[i]
+      break
+    }
+  }
+  tpsTurn.value = last ?? null
+  tpsLine.value = [...metas.value].reverse().find((m) => m.tps) ?? null
+}
+
+// viewCache 会话视图缓存(按会话 id;见 sessioncache.ts)。缓存上限 = 页签上限,淘汰时连带清
+// 该会话的续传游标 —— **缓存没了游标必须跟着没**,否则下次连上去会拿一个“指向已丢弃模型”的
+// after 要差集,服务端又不会发 baseline ⇒ 流里凭空缺一大段(第一三九批修的真缺陷)。
+const viewCache = new SessionCache()
+viewCache.setEvict((id) => clearSessionCursor(id))
+
+// saveView 把当前界面上的这份视图存进缓存(离开会话前调)。
+// 存的都是**同一份引用**(model/traj/changes/metas 全不拷贝):换回去时赋值同一份 → 身份不变、
+// 不重复包代理,而且存完之后对它的写入(比如 rebuild 里 flush 出来的那批帧)照样落在缓存上 ——
+// 拷贝就会丢掉这份更新。metas 不 slice() 的理由同此(它按会话一份,不存在两会话共享同一数组)。
+function saveView(key: string): void {
+  if (!key) return
+  const t = tabs.get(key)
+  viewCache.put(key, {
+    model: model.value,
+    traj: traj.value,
+    changes: changes.value,
+    metas: metas.value,
+    scrollTop: t?.scrollTop ?? 0,
+    atBottom: t?.atBottom ?? true,
+  })
+}
+
 // NOND-N1 提示 toast(状态机在 notices.ts):实时 `notice` 帧 + 连接后 /api/notices 回填,
 // 两路按 id 去重。提示不进会话流 —— 它是「需要人回来」的信号,不是对话内容。
 const toasts = ref<ToastState>(newToasts())
@@ -692,7 +749,12 @@ const sessionQueue = new FrameQueue<SessionEvent>(
       consume(model.value, se)
       trajPush(traj.value, se)
       changesPush(changes.value, se)
-      if (isUsage(se)) refreshStats()
+      // 回合收尾 → 追一行速记;后到的 usage 帧补正同一行(见 showTps/refreshTps)
+      if (se.Kind === 'turn/end') showTps()
+      if (isUsage(se)) {
+        refreshStats()
+        refreshTps()
+      }
     }
     // 贴底阅读时裁头部:长会话持续输出时 DOM/内存不随会话长度增长(上滚可重新取回)。
     // 放在批末尾而非逐帧:一批裁一次即可,逐帧裁会把 splice 成本乘上帧数。
@@ -703,20 +765,33 @@ const sessionQueue = new FrameQueue<SessionEvent>(
   rafScheduler(),
 )
 
-function rebuild(keepCursor: boolean): void {
-  // 会话切换/连接重建:丢弃未批处理的会话帧 —— 否则旧会话的帧会被拼进新会话的流。
+// rebuild 吃 switchPlan 的决策对象,而不是一个裸布尔 —— 裸布尔的极向被写反过一次,
+// 而且“清流/清游标/清 metas”三件事必须同进同出(第一三九批 review 逮到 metas 被无条件清,
+// 把刚由缓存装回的速记行又抹掉了)。决策只有一个来源,写不成一半。
+function rebuild(plan: SwitchPlan): void {
+  // 会话切换/连接重建:先把**积压未消费**的帧消费掉再清。为何不能直接 clear():
+  // 这些帧在 transport.onmessage 里已经 markCursor 记进续传游标了(消费是延后一帧批处理的),
+  // 清掉它们不会重来 —— 这段消息在任何地方都不再出现(永久缺失)。
+  // 为何消费进 model.value 是对的:此刻它还属于**产出这些帧的那个会话**
+  // (switchTab 已先把它存进缓存,而缓存存的是同一个对象 ⇒ 内容一并落在缓存上)。
+  sessionQueue.flush()
   sessionQueue.clear()
   // 会话切换/全新连接:清流重放全量(通道按 after 游标差集重放)
-  if (!keepCursor) {
+  if (!plan.keepStream) {
     // 换状态本体重放;页签的草稿/滚动不动(重放的是流,不是这个页签的使用痕迹)。
     model.value = tabs.replaceState(curTabId(), newModel()).state
     traj.value = newTraj()
+    // 速记行的被盯对象属旧会话;不释放的话新会话的 usage 帧会把它改写(旧回合数字变形)
+    tpsTurn.value = null
+    tpsLine.value = null
     changes.value = newChanges()
+    // metas 属**会话**、不属窗口:命中缓存的那条路由 switchTab 从缓存装回,这里清掉就等于
+    // 刚装回就抹掉(TPS 速记/命令回显/错误行全丢)。故只在「清流重放」时清(见 resetMetas)。
+    if (plan.resetMetas) metas.value = []
     loadingEarlier.value = false
     baseSeen.value = false
-    clearSessionCursor(curTabId())
+    if (plan.clearCursor) clearSessionCursor(curTabId())
   }
-  metas.value = []
   // S-P1-3:代际号 —— 旧连接(已 close 的 WS/降级的 SSE)的迟到帧与状态回调一律丢弃,
   // 防止它们把新一轮的状态(如 running/连接态)改回去。
   // 顺序要紧:先递增代际再 close 旧通道 —— 否则旧通道的 closed 回调会被当成当前事实,
@@ -901,7 +976,7 @@ async function refreshStats(): Promise<void> {
         streamSessionId = sid // 首次快照 / 本地刚切换(见 sessionChanged)→ 只校准,不重放
       } else {
         streamSessionId = sid
-        rebuild(false)
+        rebuild(switchPlan(false))
         refreshKey.value++
       }
     }
@@ -914,6 +989,7 @@ async function refreshStats(): Promise<void> {
     // 必须只做一次:页签打开的可能是**非当前**会话,若每轮都校准,每轮都会把页签
     // 键强行改回全局当前会话 —— 真机手测据此逮到"两个页签标题一样、关闭失效"。
     if (!calibrated && mainId && mainId !== tabId.value) {
+      viewCache.rename(tabId.value || 'main', mainId) // 缓存跟着改绑(否则占位名那份永远取不到)
       tabs.rekey(tabId.value || 'main', mainId)
       tabId.value = mainId
       calibrated = true
@@ -1060,7 +1136,7 @@ async function onSubmit(text: string, attachments?: string[]): Promise<boolean> 
 function sessionChanged(): void {
   streamSessionId = '' // 本地已切换:下一次 refreshStats 只校准 id,不重复重放
   void refreshStats()
-  rebuild(false)
+  rebuild(switchPlan(false))
   refreshKey.value++
 }
 
@@ -1074,19 +1150,37 @@ function sessionChanged(): void {
 function switchTab(id: string): void {
   const key = id || 'main'
   if (key === tabId.value) return
-  const existed = tabs.has(key)
-  // 切走前:把当前会话的流存回它的页签(否则切回来就空了)。
+  // 切走前:把当前会话的流存回它的页签 + 存进会话视图缓存。
   // 只在**它还开着**时存:关页签后再走这条路会用 ensure 把刚关掉的页签重新建出来
   // (真机手测逮到:关掉一个页签后它又回来了 —— 计数一直是 2)。
   if (tabId.value && tabs.has(tabId.value)) {
+    // 第一三九批后**缓存以 viewCache 为准**(跟着会话,不跟页签);这一行只是让页签自己的
+    // make 回退值不落在空模型上(重建页签时 `() => t.state` 会用到)。
     tabs.get(tabId.value)!.state = model.value
     saveDraftToTab(tabId.value)
+    saveView(tabId.value)
   }
   tabs.activate(key)
   tabId.value = key
-  // 已打开的页签:用它自己的流(并按**该会话**的游标续接);新页签:空流 + 尾窗回放
-  model.value = existed ? tabs.get(key)!.state : tabs.replaceState(key, newModel()).state
-  metas.value = []
+  const cached = viewCache.get(key)
+  const plan = switchPlan(!!cached)
+  // 命中缓存:直接接上(不空白、不整窗重放)。未命中(真没开过 / 已被 LRU 淘汰)则不装任何东西 ——
+  // 交给下面 rebuild(plan) 走「空模型 + 尾窗重放」,清流/清游标/清 metas 三件事同源。
+  // 页签自带的那份 state 不采纳:它的游标已在淘汰时一并清掉,拿旧模型配新游标、
+  // 或不配游标,都会让流里缺一段或重一段。
+  if (plan.keepStream && cached) {
+    model.value = cached.model
+    traj.value = cached.traj
+    changes.value = cached.changes
+    metas.value = cached.metas
+    // 滚动位置也跟会话走(页签关过又开时,页签上是 0/贴底,只有缓存知道它读到了哪)
+    const t = tabs.get(key)
+    if (t) {
+      t.scrollTop = cached.scrollTop
+      t.atBottom = cached.atBottom
+    }
+    retargetTps()
+  }
   // 请求层与事件层一起切(甲方案:每页签一条连接 ⇒ 换绑即重连)
   // api 侧绑**真实 id**:主会话占位 'main' 解析成当前会话 id,否则会话档写入会落成全局
   // (见 sessionIdFor 注释)。事件层仍用 '' 代主会话:它的 scopeOf 归一化、且游标分桶键
@@ -1094,7 +1188,7 @@ function switchTab(id: string): void {
   api.bindSession(sessionIdFor(key))
   setTransportSession(key === 'main' ? '' : key)
   streamSessionId = ''
-  rebuild(!existed)
+  rebuild(plan) // 命中缓存 ⇒ 保留流/游标/metas(只补差集);未命中 ⇒ 清干净重放
   void refreshStats()
   syncTabs()
   beginScrollRestore(key)
@@ -1129,8 +1223,9 @@ async function newTab(): Promise<void> {
 function closeTab(id: string): void {
   const out = tabs.close(id)
   if (!out.closed) return
-  // 探测记录一并清掉:同一会话重新打开时要重新探一次(期间它的设置可能变过,
-  // 而 probed 是「只问一次」的缓存,留着就等于把一份旧标记永久钉住)。
+  // 关页签**不丢会话视图**:缓存跟着会话走,不是跟着页签 —— 下次从侧栏点开这个会话
+  // 直接接上(第一三九批)。要存的是当前页签的这份;后台页签的在切走时已经存过了。
+  if (id === tabId.value) saveView(id)
   probed.delete(id)
   if (out.wasRunning) {
     notifier.fireEvent('gah 页签已关闭', '「' + out.closed.title + '」在后台继续运行')
@@ -1227,6 +1322,10 @@ function startScrollRestore(t: { scrollTop: number; atBottom: boolean }): void {
 /** 会话被删(侧栏):若有开着页签,那一页已经不存在 → 关掉它。 */
 function onSessionDeleted(id: string): void {
   const key = id || 'main'
+  // 会话没了,它的视图缓存也一并清(留着就是给不存在的会话占内存);顺带清续传游标,
+  // 否则同名会话(极少:id 复用)重建后会拿一个指向已丢弃模型的 after 去要差集。
+  viewCache.drop(key)
+  clearSessionCursor(key)
   if (!tabs.has(key)) return
   if (key === curTabId()) {
     // 当前页签被删:后端已新建空会话承接 → 直接去那个新的
@@ -1329,7 +1428,7 @@ onMounted(async () => {
   // 首次交互触发一次;非本机来源内部直接跳过(不弹权限条、不报错)。
   window.addEventListener('pointerdown', onFirstGesture, { once: true, capture: true })
   await refreshStats() // 首帧就探活:服务端本就不在时立刻显离线横幅(非「安静会话」误判)
-  rebuild(false)
+  rebuild(switchPlan(false))
   // 统计节流刷新(usage 事件外,兜底上下文/缓存显示)
   statsTimer = setInterval(() => { if (!hidden()) void refreshStats() }, 3000)
 })
@@ -1357,6 +1456,7 @@ onUnmounted(() => {
         :state="state"
         :conn="conn.state"
         :cur-steps="steps"
+        :traj="traj"
         @open-about="openAboutSettings"
       />
       <button class="gear" data-tip="设置(模型/Provider/插件/历史)" :aria-expanded="settingsOpen" @click="settingsOpen = !settingsOpen">设置</button>

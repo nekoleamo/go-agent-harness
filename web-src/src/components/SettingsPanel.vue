@@ -846,7 +846,8 @@ function guard(title: string, danger: boolean, run: () => void): void {
 // 内容覆盖草稿 —— 用户的修改就这么没了,连一声响都没有。所以:① 每处都记一份「服务端上一版」
 // 用于算脏;② 脏的时候切换目标前问一声;③ 面板里常驻「未保存」标记(知道自己脏,才有得选)。
 // 反面:给一切都加确认弹层 = 噪音。所以只拦**真会丢内容**的入口,关面板/切分区不拦
-// (组件实例常驻、草稿留在内存里,关掉再打开还在)。
+// (组件实例常驻、草稿留在内存里,关掉再打开还在)。真正会丢的是**页面卸载**(刷新/关标签),
+// 那条走浏览器的 beforeunload,见 onBeforeUnload。
 type DraftKind = "role" | "skill" | "mcp";
 // draftLabels 未保存草稿的标签 —— **只列这次真会被丢弃的**:
 //   role = 角色工作规则(切角色/换技能要重拉详情)、skill = 技能 SKILL.md、mcp = MCP server 配置。
@@ -3130,19 +3131,40 @@ onMounted(() => {
   void loadRoles();
   void refreshInstallList();
   window.addEventListener("keydown", onEsc, true);
+  window.addEventListener("beforeunload", onBeforeUnload);
 });
 onUnmounted(() => {
   if (stateTimer) clearInterval(stateTimer);
   if (navRaf) cancelAnimationFrame(navRaf);
   window.removeEventListener("keydown", onEsc, true);
+  window.removeEventListener("beforeunload", onBeforeUnload);
 });
-// 关闭语义(Win 端反馈):**只能手动关闭** —— 遮罩点击不再关闭(误触会丢正在编辑的表单),
-// 出口只有 ✕ 按钮与 Esc。Esc 用捕获阶段并阻止冒泡,避免同时触发输入框的「Esc 清空」(草稿丢失)。
+// 关闭语义(Win 端反馈):✕ / Esc / 点空白区域 —— 遮罩点击已按 2026-10-09 的统一交互启用
+// (早前只留手动出口,理由是误触会丢正在编辑的表单;现在与本会话设置抽屉一致)。
+// Esc 用捕获阶段并阻止冒泡,避免同时触发输入框的「Esc 清空」(草稿丢失)。
 function onEsc(e: KeyboardEvent): void {
   if (!props.open || e.key !== "Escape") return;
   e.preventDefault();
   e.stopPropagation();
   emit("close");
+}
+// 页面卸载守卫(2026-10-09):草稿只在内存里,刷新/关标签/关窗口一卸载就没了,且重开就是服务端那版
+// —— 悄无声息地丢。这里是**唯一**"关面板会丢"的路径,所以提示放这儿,不放点空白关闭上。
+// 浏览器只给原生确认框、文案不可控;干净时直接 return,不给干净页面加无谓的拦截。
+function anyDraftDirty(): boolean {
+  return (
+    instrDirty.value ||
+    roleDefDirty.value ||
+    agentsDirty.value ||
+    skDirty.value ||
+    skMoveDirty.value ||
+    mcpDirty.value
+  );
+}
+function onBeforeUnload(e: BeforeUnloadEvent): void {
+  if (!anyDraftDirty()) return;
+  e.preventDefault();
+  e.returnValue = ""; // 规范:同时置非空 returnValue(部分浏览器只认它,否则拦不住)
 }
 // 打开时同步当前值与枚举
 watch(
@@ -3202,10 +3224,11 @@ watch(
 </script>
 
 <template>
-  <!-- 遮罩点击不关闭(只能手动关闭:✕ / Esc);见 onEsc 注释 -->
+  <!-- 点空白区域关闭(与本会话设置抽屉同一交互,2026-10-09 按用户要求改;
+       早前「遮罩点击不关闭」的取舍是为防误触丢正在编辑的表单,现按统一交互反转) -->
   <!-- 显隐走全局 pane 过渡(style.css):遮罩淡 + 抽屉横滑;关闭不再硬切 -->
   <Transition name="pane">
-    <div v-if="open" class="mask">
+    <div v-if="open" class="mask" @click.self="emit('close')">
       <aside class="panel" role="dialog" aria-label="设置">
         <header class="head">
           <h2 class="title">设置</h2>

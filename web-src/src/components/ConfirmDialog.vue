@@ -12,7 +12,9 @@ defineProps<{
 <template>
   <!-- 显隐走全局 pop 过渡(style.css):遮罩淡 + 卡片轻微落位;退场不再是硬切 -->
   <Transition name="pop">
-    <div v-if="request" class="mask">
+    <!-- 点空白处 = 拒绝(与 ConfirmBar 的遮罩点击同语义):不答即拒是本弹层的安全默认,
+         遮罩点击不能变成「消失但回合仍干等」 -->
+    <div v-if="request" class="mask" @click.self="onAnswer(false)">
       <div class="dialog">
         <div class="title">操作确认</div>
         <pre class="prompt">{{ request.prompt }}</pre>

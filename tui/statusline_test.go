@@ -28,6 +28,37 @@ func TestStatuslineDefaultMatchesBaseline(t *testing.T) {
 	}
 }
 
+// TestStatuslineTpsItem 输出速率项(第一百三十八批):只报**已结束**回合的速率,运行中不报。
+func TestStatuslineTpsItem(t *testing.T) {
+	s := &State{Statusline: []string{"tps"}}
+	tr := NewTraj()
+	// 无回合:不渲染(摆个 0 只会让人以为“不快”)
+	if out := stripColor(renderStatusLine(s, 0)); strings.Contains(out, "tok/s") {
+		t.Fatalf("无回合时不应渲染速率: %q", out)
+	}
+	trajPushEv(t, tr, sdk.EventUserMessage, 1, "2026-09-18T10:00:00Z", sdk.UserMessage{Content: "q"})
+	trajPushEv(t, tr, sdk.EventUsage, 2, "2026-09-18T10:00:01Z", sdk.UsageEvent{Usage: sdk.Usage{CompletionTokens: 40}})
+	// 进行中:不报(速率一路上涨会被读成“现在多快”)
+	s.Traj = *tr
+	if out := stripColor(renderStatusLine(s, 0)); strings.Contains(out, "tok/s") {
+		t.Fatalf("回合进行中不应渲染速率: %q", out)
+	}
+	trajPushEv(t, &s.Traj, sdk.EventTurnEnd, 3, "2026-09-18T10:00:03Z", "done")
+	if out := stripColor(renderStatusLine(s, 0)); !strings.Contains(out, "13 tok/s") {
+		t.Fatalf("已结束回合应渲染速率: %q", out)
+	}
+	// 默认集合里含 tps(基线默认已含 ⇒ 用户不动 /statusline 也看得到)
+	var has bool
+	for _, tok := range defaultStatusline {
+		if tok == "tps" {
+			has = true
+		}
+	}
+	if !has {
+		t.Fatalf("默认集合应含 tps: %v", defaultStatusline)
+	}
+}
+
 // TestStatuslineCustomOrderAndSubset 自定义集合与顺序生效;段间分隔符随项归属变化。
 func TestStatuslineCustomOrderAndSubset(t *testing.T) {
 	s := &State{Workspace: "proj", Sandbox: "workspace-write", Approval: "open", Session: "s1",

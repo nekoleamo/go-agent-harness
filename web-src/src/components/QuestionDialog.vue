@@ -41,6 +41,11 @@ function onEnter(e: KeyboardEvent): void {
 function skip(): void {
   props.onAnswer([], '')
 }
+// 点空白处的收起身形:能收起就收起(题还在,可从角标回来),没有收起入口才退成跳过。
+function hide(): void {
+  if (props.onMinimize) props.onMinimize()
+  else skip()
+}
 function submit(): void {
   const values = props.request?.multiple ? picked.value : picked.value.slice(0, 1)
   if (values.length === 0 && !text.value.trim()) return // 无选择且无文本:不提交(等用户输入)
@@ -51,7 +56,8 @@ function submit(): void {
 <template>
   <!-- 显隐走全局 pop 过渡(style.css);「稍后作答」收起时同样是淡出,不是硬切 -->
   <Transition name="pop">
-    <div v-if="request && !minimized" class="mask">
+    <!-- 点空白处 = 收起(与「稍后作答」同语义,不放弃作答):角标会把弹层挂回来 -->
+    <div v-if="request && !minimized" class="mask" @click.self="hide">
       <div class="dialog">
         <div class="title">需要你的选择</div>
         <pre class="prompt">{{ request.prompt }}</pre>

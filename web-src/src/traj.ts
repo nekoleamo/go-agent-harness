@@ -202,7 +202,10 @@ export function trajPush(m: TrajModel, ev: SessionEvent): void {
     }
     case 'session/usage': {
       const ue = p as UsageEvent
-      const t = m.cur
+      // cur 为空 = 这一帧晚于 turn/end 到(收尾帧先于用量统计是真实现象)⇒ 归到**最后一个
+      // 已结束回合**。原先直接丢:结果是这个回合的 token 永久缺一块(TPS/看板累计一起少)。
+      // 一个回合都还没有 ⇒ 确实无处可归,仍不记账(见 traj.test 的同名用例)。
+      const t = m.cur ?? (m.turns.length ? m.turns[m.turns.length - 1] : undefined)
       if (!t) break
       t.usage.requests++
       t.usage.prompt += ue?.Usage?.PromptTokens ?? 0
@@ -263,6 +266,70 @@ export function turnStats(t: TrajTurn): TrajStats {
     tokens: t.usage.prompt + t.usage.completion,
     ms: turnMs(t),
   }
+}
+
+// —— 回合速度(输出 TPS)——
+//
+// 为何只算**输出** token:输入 token 是“读”(请求时一次性送进去),把它算进速率会把
+// “上下文越长越快”这种反向结论显示给用户。速率只反映模型吐字。
+// 口径必须说清:分母是**整个回合**,含工具执行与审批等待 —— 所以带工具/等确认的回合
+// TPS 明显偏低。它是“这次回答交付多快”,不是“模型纯生成多快”(后者要把工具耗时扣掉,
+// 可 traj.ts 里步/工具都有各自 TS,只是那种口径日常用不上,不摆到主界面)。
+// 无时长 / 无补全量(usage 帧还没到)⇒ undefined,由调用方决定怎么措辞(不许编个 0 出来)。
+export function turnTps(t: TrajTurn): number | undefined {
+  const ms = turnMs(t)
+  if (ms === undefined || ms <= 0) return undefined
+  if (t.usage.completion <= 0) return undefined
+  return (t.usage.completion * 1000) / ms
+}
+
+// fmtTps 速率的显示口径(两端共用一处,不为各行散写四舍五入):
+// 四舍五入到 0 就显示 `<1` —— 长回合少输出(如 20 tok / 80s = 0.25)写成 `0 tok/s`
+// 读起来是“一个字都没吐”,而它只是个小于 1 的数。
+export function fmtTps(v: number): string {
+  const r = Math.round(v)
+  return r < 1 ? '<1 tok/s' : r + ' tok/s'
+}
+
+// lastTps 本页签/本会话**上一回合**的输出速率(状态栏用)。只认已结束回合:进行中的回合
+// 速率会一路往上涨,摆在状态栏会被读成「现在多快」,而它连一半都没跑完。没有就不报(不编造)。
+export function lastTps(m: TrajModel): number | undefined {
+  for (let i = m.turns.length - 1; i >= 0; i--) {
+    const t = m.turns[i]
+    if (!t.endTs) continue
+    return turnTps(t)
+  }
+  return undefined
+}
+
+// turnSpeedLine 回合结束时的一行速记(会话流里跟回合末尾)。turnEndLabel 给“结束”配上真因由:
+// 取消/步数上限也是回合结束的一种,写成同一句话就是谎报;没见过的 reason 原样带出(不静默丢掉)。
+const REASON_ZH: Record<string, string> = {
+  done: '回合结束',
+  cancelled: '回合取消',
+  max_steps: '步数上限',
+}
+export function turnEndLabel(reason?: string): string {
+  if (!reason) return '回合结束'
+  const zh = REASON_ZH[reason]
+  return zh ?? '回合结束(' + reason + ')'
+}
+
+export function turnSpeedLine(t: TrajTurn): string {
+  const ms = turnMs(t)
+  const st = turnStats(t)
+  const parts: string[] = [turnEndLabel(t.reason)]
+  if (ms !== undefined) parts.push(fmtMs(ms))
+  // usage 未到就明说“待补”,不给一个假的 0 tok/s(它在几百毫秒后就会被改写,先说清楚更好)
+  if (t.usage.completion > 0) {
+    parts.push('输出 ' + fmtTok(t.usage.completion) + ' tok')
+    const tps = turnTps(t)
+    if (tps !== undefined) parts.push(fmtTps(tps))
+  } else {
+    parts.push('用量待补')
+  }
+  if (st.tools > 0) parts.push('工具 ' + st.tools)
+  return parts.join(' · ')
 }
 
 // —— 格式化(视图共用;数字一律走这里,不为各处散写口径) ——

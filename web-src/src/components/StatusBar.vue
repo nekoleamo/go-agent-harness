@@ -6,6 +6,8 @@
 import { computed } from 'vue'
 import { hasSessionOverride } from '../scope'
 import { connLabel } from '../conn'
+import { lastTps, fmtTps } from '../traj'
+import type { TrajModel } from '../traj'
 import type { StateView } from '../types'
 import { othersRunning } from '../session-parallel'
 
@@ -14,6 +16,9 @@ const props = defineProps<{
   conn?: 'open' | 'reconnecting' | 'offline'
   // curSteps 本窗口会话的当前步数(只对本窗口可见;别的会话只能知道"在跑")
   curSteps?: number
+  // traj 本页签会话的轨迹账本(只传本会话的 —— 页签各自一份,换会话时重建)。
+  // 状态栏的输出速率只从这里派生:状态体(stats)是累计量,算不出「上一回合多快」。
+  traj?: TrajModel
 }>()
 // 版本号点击 → 「关于 gah」。用插槽替换底栏的一方不发这个事件也不影响(监听是可选的)。
 const emit = defineEmits<{ (e: 'open-about'): void }>()
@@ -79,6 +84,14 @@ const anonSession = computed(() => {
   if (!s || s.name) return ''
   return s.id ? ' #' + s.id : ' (主)'
 })
+
+// tps 上一回合的输出速率(第一百三十八批;与 TUI 状态栏同口径)。口径写在 traj.ts:
+// 只算输出 token、分母是整个回合(含工具与审批等待)—— 它是「这次回答交付多快」,
+// 不是「模型纯生成多快」。没有可报的已结束回合就不占位。
+const tpsLabel = computed(() => {
+  const v = props.traj ? lastTps(props.traj) : undefined
+  return v === undefined ? '' : fmtTps(v)
+})
 </script>
 
 <template>
@@ -109,6 +122,7 @@ const anonSession = computed(() => {
     </span>
     <span v-if="anonSession" class="it faint">未命名会话{{ anonSession }}</span>
     <span class="spacer" />
+    <span v-if="tpsLabel" class="it faint mono" data-testid="tps">速率 {{ tpsLabel }}</span>
     <span class="conn" :class="props.conn">
       <span class="conn-dot" />
       <span class="conn-text">{{ connText }}</span>

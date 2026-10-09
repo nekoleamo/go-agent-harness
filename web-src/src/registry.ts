@@ -19,6 +19,10 @@ import type { Msg, ToolRow } from './sse'
 export interface MetaLine {
   kind: 'command' | 'error' | 'summary' | 'status'
   text: string
+  // tps=true = 回合结束速记行(第一百三十八批)。为何要标记:这行文本要随迟到的 usage 帧
+  // **就地改写**,得能把它从一堆 meta 里认出来;而 meta 不进会话账本、切页签靠
+  // sessioncache 存取 —— 认不出它就等于切一次丢一行。
+  tps?: boolean
   // after 该行产生时**会话流已落定的最后一条消息的 seq**(0 = 还没有任何消息)。
   // 为什么要有:meta 是前端侧产生的(命令回显/回合错误/审批未应答),不进会话账本,
   // 原先它们被单独渲染在**所有消息之后**(StreamView 末尾一个循环)——

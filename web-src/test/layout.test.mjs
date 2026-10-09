@@ -72,6 +72,8 @@ function makeStub(
 ) {
   // seen:记录写类请求(方法/路径/体),供角色面板用例断言「面板真的提交了」而不是只改了本地状态。
   const seen = []
+  // eventReqs 事件流连接记录(会话 + after 游标):用于断言“切回已开过的会话没有从头重放”
+  const eventReqs = []
   // toolQueries:GET /api/tools 的查询串(第九十一批 —— 面板必须读 ?all=1 全量清单;
   // seen 只记写类请求,读类的口径单记一处)。
   const toolQueries = []
@@ -125,13 +127,24 @@ function makeStub(
       const turns = Number(url.searchParams.get('turns') || 0) || sseTurns
       if (!turns) return json([])
       const now = new Date().toISOString()
+      // 遵守 ?after=(真实后端就是差集续传):桩先前无视它、每次都从头重放 ——
+      // 于是「切回已开过的会话有没有重新下载一遍」这类断言根本立不住(第一三九批)。
+      const after = Number(url.searchParams.get('after') || 0) || 0
+      eventReqs.push({ session: url.searchParams.get('session') || '', after })
       const frames = []
       let seq = 1
       for (let i = 0; i < turns; i++) {
         frames.push(`event: session\ndata: ${JSON.stringify({ id: seq, type: 'session', ts: Date.now(), payload: { Kind: 'user/message', Payload: { Content: `u${i}` }, Seq: seq++, TS: now } })}\n\n`)
         frames.push(`event: session\ndata: ${JSON.stringify({ id: seq, type: 'session', ts: Date.now(), payload: { Kind: 'assistant/message', Payload: { Content: `a${i} ` + 'A'.repeat(80), ToolCalls: [] }, Seq: seq++, TS: now } })}\n\n`)
       }
-      const body = frames.join('') + `event: baseline\ndata: ${JSON.stringify({ count: seq - 1, has_more: false, window: seq - 1, from: 1, to: seq - 1 })}\n\n`
+      // baseline 只在“全新连接”(after=0)时发,与真实后端一致(断线续传不描述窗口)
+      const tail = frames.filter((f) => {
+        const m = /"id":(\d+)/.exec(f)
+        return m ? Number(m[1]) > after : true
+      })
+      const body =
+        tail.join('') +
+        (after === 0 ? `event: baseline\ndata: ${JSON.stringify({ count: seq - 1, has_more: false, window: seq - 1, from: 1, to: seq - 1 })}\n\n` : '')
       return route.fulfill({ status: 200, contentType: 'text/event-stream; charset=utf-8', headers: { 'Cache-Control': 'no-cache' }, body })
     }
     // patchDelayMs:角色定义的 PATCH 拖一拍 —— 用来观测「在途禁用/串行提交」(默认 0,不影响其它用例)。
@@ -379,7 +392,12 @@ function makeStub(
             }
           : {}),
         running,
-        ...(mainSessionId ? { session: { id: mainSessionId, name: '主会话', path: '/tmp/' + mainSessionId + '.jsonl', key: 'k-' + mainSessionId } } : {}),
+        // session.id 必须**回显请求的 ?session=**(真实后端如此:每个页签拉的是**那个会话**的快照)。
+        // 桩先前恒返回 main ⇒ 前端每次打开非主会话页签都会判定「服务端当前会话被切走了」
+        // → rebuild(false) 清空重放(第一三九批写用例时踩到:明明有缓存,流还是空的)。
+        ...(mainSessionId
+          ? { session: { id: url.searchParams.get('session') || mainSessionId, name: '主会话', path: '/tmp/' + (url.searchParams.get('session') || mainSessionId) + '.jsonl', key: 'k-' + (url.searchParams.get('session') || mainSessionId) } }
+          : {}),
         version: 'layout-guard',
       })
     }
@@ -508,6 +526,7 @@ function makeStub(
     return json([])
   }
   handler.seen = seen
+  handler.eventReqs = eventReqs
   handler.toolQueries = toolQueries
   handler.packPosts = packPosts
   handler.memState = memState
@@ -1249,6 +1268,62 @@ describe('布局护栏:整页永不滚动(第五十二/五十三批)', { skip: s
       const put = stub.seen.find((r) => r.method === 'PUT' && r.path === '/api/instructions')
       assert.ok(put, `保存未提交:${JSON.stringify(stub.seen)}`)
       assert.equal(JSON.parse(put.body).text, 'GLOBAL-EDIT-1\n', `PUT 体不对:${put.body}`)
+    } catch (e) {
+      await shoot(page, t.name)
+      throw e
+    } finally {
+      await ctx.close()
+    }
+  })
+
+  // 草稿只在内存里:面板内关掉/再打开都不丢(组件常驻),但**页面卸载**(刷新/关标签)会丢 ——
+  // 而且悄无声息,重开就是服务端那版。所以拦截只装在 beforeunload 上,且只脏时拦;
+  // 点空白关闭面板照常关(它不丢东西,拦它只是噪音)。这三条一起钉住,免得以后只留一半。
+  test('未保存草稿:点空白关闭面板不拦也不丢,刷新/关标签才拦', async (t) => {
+    const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+    let page = null
+    try {
+      page = await open(ctx, makeStub(true, true, false, false, true), docks[0].dock)
+      await page.click('.gear')
+      await page.waitForSelector('[data-sec="instr"]')
+      // dispatchEvent 返回 false ⇔ 监听器 preventDefault 过(即浏览器会弹「确认离开」)
+      const unloadBlocked = () =>
+        page.evaluate(() => !window.dispatchEvent(new Event('beforeunload', { cancelable: true })))
+
+      assert.equal(await unloadBlocked(), false, '干净时也拦刷新 ⇒ 给正常操作加了没来由的确认框')
+      await page.click('[data-sec="instr"] button:has-text("编辑")')
+      await page.fill('[data-sec="instr"] textarea', 'DRAFT-KEEP-ME\n')
+
+      assert.equal(await unloadBlocked(), true, '有未保存草稿却不拦刷新/关标签 ⇒ 草稿被静默丢弃')
+
+      // 点空白关闭:直接关掉,不出确认层;草稿留在内存里(下面重开还能取到)
+      await page.click('.mask', { position: { x: 40, y: 400 } })
+      await page.waitForFunction(() => !document.querySelector('.mask'), null, { timeout: 2000 })
+      assert.equal(
+        await page.evaluate(() => document.querySelectorAll('[aria-label="操作确认"]').length),
+        0,
+        '点空白关闭弹了确认层:关闭面板不丢草稿,不该拦',
+      )
+
+      // 重开面板 → 草稿还在(这正是「点空白关闭可以放心关」的依据)。编辑区的展开态也是组件级
+      // ref,重开时通常已经展开;没展开才点一下「编辑」。
+      await page.click('.gear')
+      await page.waitForSelector('[data-sec="instr"]')
+      if ((await page.locator('[data-sec="instr"] textarea').count()) === 0) {
+        await page.click('[data-sec="instr"] button:has-text("编辑")')
+      }
+      const kept = await page.inputValue('[data-sec="instr"] textarea')
+      assert.equal(kept, 'DRAFT-KEEP-ME\n', `点空白关闭把草稿丢了:重开拿到 ${JSON.stringify(kept)}`)
+
+      await page.click('[data-sec="instr"] button:has-text("放弃修改")')
+      await page.waitForSelector('[aria-label="操作确认"]')
+      await page.click('[aria-label="操作确认"] button:has-text("确认")')
+      await page.waitForFunction(
+        () => !document.querySelector('[data-sec="instr"] .dirty'),
+        null,
+        { timeout: 2000 },
+      )
+      assert.equal(await unloadBlocked(), false, '放弃修改后仍拦刷新 ⇒ 拦了一个已经不存在的问题')
     } catch (e) {
       await shoot(page, t.name)
       throw e

@@ -219,15 +219,25 @@ func (t *Traj) Push(ev *sdk.SessionEvent) {
 		}
 	case sdk.EventUsage:
 		ue, ok := ev.Payload.(sdk.UsageEvent)
-		if !ok || t.cur == nil {
+		if !ok {
 			return
 		}
-		t.cur.Usage.Requests++
-		t.cur.Usage.Prompt += ue.Usage.PromptTokens
-		t.cur.Usage.Completion += ue.Usage.CompletionTokens
-		t.cur.Usage.Cached += ue.Usage.CachedTokens
+		// cur 为空 = 这一帧晚于 turn/end 到(收尾帧先于用量统计是真实现象)⇒ 归到**最后一个
+		// 已结束回合**;原先直接丢,结果是这个回合的 token 永久缺一块(TPS/累计一起少)。
+		// 一个回合都还没有 ⇒ 确实无处可归,仍不记账(与 Web 侧 traj.ts 同口径)。
+		turn := t.cur
+		if turn == nil && len(t.Turns) > 0 {
+			turn = t.Turns[len(t.Turns)-1]
+		}
+		if turn == nil {
+			return
+		}
+		turn.Usage.Requests++
+		turn.Usage.Prompt += ue.Usage.PromptTokens
+		turn.Usage.Completion += ue.Usage.CompletionTokens
+		turn.Usage.Cached += ue.Usage.CachedTokens
 		if ue.Model != "" {
-			t.cur.Usage.Model = ue.Model
+			turn.Usage.Model = ue.Model
 		}
 	default:
 		// assistant/chunk(流式增量)等:以落定事件为准,轨迹侧不累积
@@ -251,6 +261,46 @@ func (s *TrajStep) StepMS() (int64, bool) { return trajElapsed(s.TS, s.EndTS) }
 
 // ToolMS 工具耗时(调用到结果;结果未回 = false)。
 func (t *TrajTool) ToolMS() (int64, bool) { return trajElapsed(t.CallTS, t.ResultTS) }
+
+// Tps 回合输出速率(输出 token/秒)。
+//
+// 口径与 Web 侧 traj.ts 的 turnTps 同源(两边各写一份实现,但口径注释逐字对齐):
+//
+//	① 只算**输出** token —— 输入是「读」,计进速率会把「上下文越长越快」这种反向结论显示给人;
+//	② 分母是**整个回合**,含工具执行与审批等待 ⇒ 带工具的回合明显偏低。它是「这次回答交付多快」,
+//	   不是「模型纯生成多快」(后者要把工具耗时扣掉)。
+//
+// 未结束 / 无补全量 / 零时长 ⇒ (0,false):不编造数字。
+func (t *TrajTurn) Tps() (float64, bool) {
+	ms, ok := t.TurnMS()
+	if !ok || ms <= 0 || t.Usage.Completion <= 0 {
+		return 0, false
+	}
+	return float64(t.Usage.Completion) * 1000 / float64(ms), true
+}
+
+// LastTps 上一回合的输出速率(状态栏 tps 项)。只认**已结束**的回合:进行中的回合速率会一路
+// 往上涨,摆在状态栏会被读成「现在多快」,而它连一半都没跑完。
+func (t *Traj) LastTps() (float64, bool) {
+	for i := len(t.Turns) - 1; i >= 0; i-- {
+		turn := t.Turns[i]
+		if turn == nil || turn.EndTS.IsZero() {
+			continue
+		}
+		return turn.Tps()
+	}
+	return 0, false
+}
+
+// tpsLabel 速率的显示口径(Web 侧 traj.ts:fmtTps 同一口径,两端各写一份但规则需一致):
+// 四舍五入到 0 就写 `<1` —— 长回合少输出写成 `0 tok/s` 读起来是“一个字都没吐”。
+func tpsLabel(v float64) string {
+	if r := int(v + 0.5); r < 1 {
+		return "<1 tok/s"
+	} else {
+		return fmt.Sprintf("%d tok/s", r)
+	}
+}
 
 // TrajStats 单回合计数(与 Web turnStats 同字段)。
 type TrajStats struct {
@@ -401,6 +451,9 @@ func renderTrajTurn(turn *TrajTurn) []string {
 	}
 	if st.Tokens > 0 {
 		line += fmt.Sprintf(" · %s tok", fmtK(st.Tokens))
+	}
+	if v, ok := turn.Tps(); ok {
+		line += " · " + tpsLabel(v)
 	}
 	if turn.Usage.Model != "" {
 		line += " · " + turn.Usage.Model

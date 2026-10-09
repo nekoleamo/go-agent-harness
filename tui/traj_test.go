@@ -166,6 +166,71 @@ func TestTrajUsageAggregatedPerTurn(t *testing.T) {
 	}
 }
 
+// TestTrajTpsAndLateUsage 回合输出速率(只算输出 token)与两个“不编造”分支。
+// 与 Web 侧 traj.test.ts 的同名用例同源口径。
+func TestTrajTpsAndLateUsage(t *testing.T) {
+	tr := NewTraj()
+	trajPushEv(t, tr, sdk.EventUserMessage, 1, "2026-09-18T10:00:00Z", sdk.UserMessage{Content: "q"})
+	trajPushEv(t, tr, sdk.EventUsage, 2, "2026-09-18T10:00:01Z", sdk.UsageEvent{Usage: sdk.Usage{PromptTokens: 900, CompletionTokens: 100}})
+	trajPushEv(t, tr, sdk.EventTurnEnd, 3, "2026-09-18T10:00:03Z", "done")
+
+	// 只算输出:输入 900 不进分子(否则 1000/3 ≈ 333 tok/s,那不是吐字速度)
+	if v, ok := tr.Turns[0].Tps(); !ok || v < 33.3 || v > 33.4 {
+		t.Fatalf("输出速率应 ≈ 33.3 tok/s,得到 %v (%v)", v, ok)
+	}
+	if v, ok := tr.LastTps(); !ok || int(v+0.5) != 33 {
+		t.Fatalf("LastTps 应取已结束回合: %v %v", v, ok)
+	}
+	if out := strings.Join(tr.Render(), "\n"); !strings.Contains(out, "33 tok/s") {
+		t.Fatalf("/traj 回合行应带速率: %q", out)
+	}
+
+	// usage 晚于 turn/end 到:归到刚结束的回合(原先整帧丢弃 ⇒ token 永久缺一块)
+	tr2 := NewTraj()
+	trajPushEv(t, tr2, sdk.EventUserMessage, 1, "2026-09-18T10:00:00Z", sdk.UserMessage{Content: "q"})
+	trajPushEv(t, tr2, sdk.EventTurnEnd, 2, "2026-09-18T10:00:02Z", "done")
+	if _, ok := tr2.LastTps(); ok {
+		t.Fatal("无用量时不应编造速率")
+	}
+	trajPushEv(t, tr2, sdk.EventUsage, 3, "2026-09-18T10:00:03Z", sdk.UsageEvent{Usage: sdk.Usage{CompletionTokens: 50}})
+	if tr2.Turns[0].Usage.Completion != 50 {
+		t.Fatalf("迟到 usage 应落到刚结束的回合: %+v", tr2.Turns[0].Usage)
+	}
+	if v, ok := tr2.LastTps(); !ok || int(v+0.5) != 25 {
+		t.Fatalf("迟到 usage 后速率应为 25 tok/s: %v %v", v, ok)
+	}
+
+	// 进行中的回合不参与 LastTps(速率会一路上涨,会被读成“现在多快”)
+	tr3 := NewTraj()
+	trajPushEv(t, tr3, sdk.EventUserMessage, 1, "2026-09-18T10:00:00Z", sdk.UserMessage{Content: "q"})
+	trajPushEv(t, tr3, sdk.EventUsage, 2, "2026-09-18T10:00:01Z", sdk.UsageEvent{Usage: sdk.Usage{CompletionTokens: 10}})
+	if _, ok := tr3.LastTps(); ok {
+		t.Fatal("进行中的回合不该报速率")
+	}
+	// 零时长不除零
+	tr4 := NewTraj()
+	trajPushEv(t, tr4, sdk.EventUserMessage, 1, "2026-09-18T10:00:00Z", sdk.UserMessage{Content: "q"})
+	trajPushEv(t, tr4, sdk.EventUsage, 2, "2026-09-18T10:00:00Z", sdk.UsageEvent{Usage: sdk.Usage{CompletionTokens: 10}})
+	trajPushEv(t, tr4, sdk.EventTurnEnd, 3, "2026-09-18T10:00:00Z", "done")
+	if v, ok := tr4.Turns[0].Tps(); ok {
+		t.Fatalf("零时长应报无速率,得到 %v", v)
+	}
+}
+
+// TestTpsLabel 速率显示口径:四舍五入到 0 写 `<1` 而不是 `0 tok/s`
+// (长回合少输出写成 0 读起来是“一个字都没吐”)。与 Web 侧 traj.ts:fmtTps 同一规则。
+func TestTpsLabel(t *testing.T) {
+	if got := tpsLabel(289.4); got != "289 tok/s" {
+		t.Fatalf("常规速率: %q", got)
+	}
+	if got := tpsLabel(0.6); got != "1 tok/s" {
+		t.Fatalf("向上取整到 1: %q", got)
+	}
+	if got := tpsLabel(0.25); got != "<1 tok/s" {
+		t.Fatalf("小于 1 不该写成 0: %q", got)
+	}
+}
+
 // TestTrajLateToolResultCrossTurn 结果帧晚于回合结束(取消后收尾)时跨回合回溯定位,不新开回合。
 func TestTrajLateToolResultCrossTurn(t *testing.T) {
 	tr := NewTraj()
