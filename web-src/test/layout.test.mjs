@@ -2334,6 +2334,41 @@ describe('布局护栏:整页永不滚动(第五十二/五十三批)', { skip: s
     }
   })
 
+  // W1 补完(2026-10-10 收尾):主页签**跟随**服务端切走会话时必须整体改绑。
+  // 只改 streamSessionId(旧写法)会留下「显示的是新会话、api 绑定还在旧会话」—— 最要命的是
+  // api.input / api.control 都带 boundSessionId ⇒ 用户发消息与改「本会话设置」落到**上一个**会话
+  // (改了没生效;input 更是写错会话的账)。判据用可观测的写入 session 字段。
+  test('会话作用域:主页签跟随切走后,本会话设置写给新会话', { skip: skip && skipWhy }, async (t) => {
+    const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+    let page = null
+    try {
+      const stub = makeStub(true, false, false, false, false, 'finance', 0, false, true, 0, false, true, 'layout-main')
+      page = await ctx.newPage()
+      await page.addInitScript(() => window.sessionStorage.setItem('gah.onboard.auto', '1'))
+      await page.route('**/api/**', stub)
+      await page.goto(baseURL(), { waitUntil: 'load' })
+      await waitSkeleton(page)
+      await page.waitForTimeout(500) // 等首帧校准:api 绑定到 layout-main
+      stub.setServerCurrent('layout-other') // 命令/别的端切走当前会话
+      await page.waitForTimeout(3500) // 至少一轮 stats 轮询 → 主页签跟随
+      await page.click('.statusbar-slot .gear.ses')
+      await page.waitForSelector('[data-testid="scp-models"]')
+      await page.click('[data-testid="scp-models"] .scp-opt:has-text("other-model")')
+      const hit = stub.seen.find((r) => r.path === '/api/control' && (r.body || '').includes('layout-guard/other-model'))
+      assert.ok(hit, `选模型应提交 /api/control:${JSON.stringify(stub.seen)}`)
+      assert.ok(
+        (hit.body || '').includes('"session":"layout-other"'),
+        `跟随之后会话档必须写给**当前**会话 layout-other,实际 ${hit.body}`,
+      )
+      assertInvariants(await measure(page))
+    } catch (e) {
+      await shoot(page, t.name)
+      throw e
+    } finally {
+      await ctx.close()
+    }
+  })
+
   // 会话页签(第一百一十三批):页签条是**新增的横向通栏**,最容易破坏"整页不滚"与
   // "主列不被挤"两条纪律;顺带钉住「点侧栏 = 在本页签打开」与「关到最后一个回落」。
   test('会话页签条:多页签仍整页不滚、关掉最后一个回主会话', async (t) => {

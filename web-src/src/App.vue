@@ -1005,7 +1005,22 @@ async function refreshStats(): Promise<void> {
       if (streamSessionId === '') {
         streamSessionId = sid // 首次快照 / 本地刚切换(见 sessionChanged)→ 只校准,不重放
       } else {
+        // 能走到这里只可能是**主页签**(非主页签的 sid 恒等于自己的键,不会不等):
+        // 服务端当前会话被命令/别的端切走了。跟随就必须**整体改绑**,只改 streamSessionId 会留下三处不一致:
+        //   ① 页签键/标题还指向旧会话;
+        //   ② **api 绑定还是旧会话**(api.input / api.control 都带 boundSessionId)
+        //      ⇒ 用户看到新会话、发消息与「本会话设置」却落到上一个会话(改了没生效);
+        //   ③ 事件层游标桶还是旧会话(rebuild 清的桶与连接用的桶不是一个)。
+        // 与首帧校准(第一百三十八批)同一手法:改绑而不是新建,只是触发点不同。
+        const oldKey = tabId.value || 'main'
+        viewCache.rename(oldKey, sid)
+        tabs.rekey(oldKey, sid)
+        tabId.value = sid
+        if (mainTabKey !== null && mainTabKey === oldKey) mainTabKey = sid
+        api.bindSession(sid)
+        setTransportSession(sid)
         streamSessionId = sid
+        void syncTitles()
         rebuild(switchPlan(false))
         refreshKey.value++
       }
