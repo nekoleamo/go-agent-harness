@@ -208,10 +208,7 @@ func checkPlatformEmbedded() error {
 // ErrNotFound,外部插件在 Windows 上根本无法启动(而 isExternalPluginBin 只按前缀匹配,
 // 发现阶段看不出来)。生成侧对应 scripts/gen-extplugins.sh。
 func ExtPluginBinary(name string) string {
-	if runtime.GOOS == "windows" {
-		return name + ".exe"
-	}
-	return name
+	return sdk.BinaryName(name)
 }
 
 // pluginDst 产物在数据根中的落点:plugins/<目录名>/<文件名>。

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -269,6 +270,30 @@ func TestApplyNoticeReportsAcceptance(t *testing.T) {
 //	GAH_TUI_NOTIFY_SMOKE=1 script -q /tmp/tty.log go test ./tui/ -run TestNotifyRealTTY -v
 //
 // 断言的是「写到真实 pty 且不报错」;观察到弹出与否由人确认(产物 /tmp/tty.log 里有转义序列)。
+// TestNotifierCloseTerm 控制终端 fd 在 App.Close 时被释放(T1);幂等且对自定义 writer 无害。
+func TestNotifierCloseTerm(t *testing.T) {
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = pr.Close()
+	n := newNotifier(NotifyAuto, func(string) string { return "" }, pw, nil)
+	if n.closer == nil {
+		t.Fatal("*os.File 应被记为可关句柄")
+	}
+	n.closeTerm()
+	n.closeTerm() // 幂等:再调不 panic
+	if _, werr := pw.WriteString("x"); werr == nil {
+		t.Fatal("closeTerm 后写端应已关闭")
+	}
+	// 自定义 writer(bytes.Buffer / io.Discard)不可关:不报错、不退化成 panic
+	nb := newNotifier(NotifyAuto, func(string) string { return "" }, io.Discard, nil)
+	nb.closeTerm()
+	// nil 接收者安全(App 未装配 notifier 时 App.Close 会走到)
+	var nilN *notifier
+	nilN.closeTerm()
+}
+
 func TestNotifyRealTTY(t *testing.T) {
 	if os.Getenv("GAH_TUI_NOTIFY_SMOKE") == "" {
 		t.Skip("真机冒烟:需 GAH_TUI_NOTIFY_SMOKE=1(会在当前终端真发通知)")

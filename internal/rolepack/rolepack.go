@@ -295,7 +295,7 @@ func writeRole(id string, spec sdk.RoleSpec, agents []byte, ownSkills []roleSkil
 
 // rollback 半成品清掉,并把被覆盖的那份从回收站搬回原位(搬不回来就如实说 —— 不许谎称"已回滚")。
 func rollback(store roles.Store, id, backup string, cause error) error {
-	rmErr := os.RemoveAll(roles.Dir(id))
+	rmErr := sdk.RemoveTree(roles.Dir(id))
 	if backup == "" {
 		if rmErr != nil {
 			return fmt.Errorf("导入失败: %v;且清理半成品目录也失败: %w(请手工删除 %s)", cause, rmErr, roles.Dir(id))

@@ -172,28 +172,21 @@ func TestRunPtyContextCancel(t *testing.T) {
 	}
 }
 
-// TestShellArgvPerPlatform 交互命令选哪个 shell:Windows 走 cmd.exe,其它走 POSIX shell
-// (缺 Git for Windows 时返回空串 —— 由 startPTY 显式报错,不静默换个「大概在」的位置)。
-func TestShellArgvPerPlatform(t *testing.T) {
-	argv := shellArgv("echo hi")
-	if len(argv) == 0 {
-		t.Fatal("argv 为空")
+// TestShellArgvUnified 交互命令一律走 POSIX shell(与非 pty 同口径;W1/P2 决策 A)。
+// 缺 POSIX shell(Windows 未装 Git for Windows)⇒ 解析报错(由 execPty 显式上抛,不静默换 shell)。
+func TestShellArgvUnified(t *testing.T) {
+	argv, err := shellArgv("echo hi")
+	if err != nil {
+		t.Skipf("本机没有 POSIX shell(缺 Git for Windows?):%v", err)
 	}
-	if isWindows() {
-		if argv[0] != "cmd.exe" || argv[1] != "/c" {
-			t.Errorf("Windows 侧应是 cmd.exe /c,got %v", argv)
-		}
-	} else {
-		sh := shellForPty()
-		if sh == "" {
-			t.Skip("本机没有 POSIX shell(缺 Git for Windows?);Windows 侧由真机清单验")
-		}
-		if argv[0] != sh || argv[1] != "-c" {
-			t.Errorf("posix 侧应是 <shell> -c,got %v", argv)
-		}
+	if len(argv) != 3 || argv[1] != "-c" || argv[2] != "echo hi" {
+		t.Fatalf("应是 <posix-shell> -c <cmd>,got %v", argv)
 	}
-	if argv[len(argv)-1] != "echo hi" {
-		t.Errorf("命令应在最后一段,got %v", argv)
+	if argv[0] == "cmd.exe" {
+		t.Fatal("交互命令不得再走 cmd.exe(裁决是 POSIX 词法,执行必须同口径)")
+	}
+	if shellForPty() == "" {
+		t.Fatal("shellArgv 解析成功但 shellForPty 为空")
 	}
 }
 
@@ -205,7 +198,11 @@ func TestStartPTYRealShell(t *testing.T) {
 	if isWindows() {
 		t.Skip("ConPTY 执行路径需 Windows 真机(清单 #170–173);本机只验编排")
 	}
-	s, err := startPTY([]string{shellForPty(), "-c", "printf pty-real-ok"}, "", nil)
+	sh := shellForPty()
+	if sh == "" {
+		t.Skip("本机没有 POSIX shell")
+	}
+	s, err := startPTY([]string{sh, "-c", "printf pty-real-ok"}, "", nil)
 	if err != nil {
 		t.Fatalf("起 pty 进程失败: %v", err)
 	}
@@ -225,7 +222,7 @@ func TestStartPTYRealShell(t *testing.T) {
 // TestStartPTYMissingShell 找不到 shell ⇒ 显式失败(不是静默换个「大概在」的位置)。
 func TestStartPTYMissingShell(t *testing.T) {
 	if isWindows() {
-		t.Skip("Windows 侧 shell 恒为 cmd.exe,此路径不适用")
+		t.Skip("argv[0] 为空的兑底分支只在 unix 实现里;Windows 侧由真机清单验")
 	}
 	if shellForPty() != "" {
 		t.Skip("本机有 POSIX shell,跳过「找不到」路径")
@@ -235,11 +232,13 @@ func TestStartPTYMissingShell(t *testing.T) {
 	}
 }
 
-// TestShellArgvUnknownRole shellArgv 只拼 argv,不改命令(命令必须原样落在最后一段)。
-func TestShellArgvRejectsUnknownRole(t *testing.T) {
-	argv := shellArgv("echo hi")
-	last := argv[len(argv)-1]
-	if last != "echo hi" {
-		t.Errorf("命令应原样保留,got %q", last)
+// TestShellArgvKeepsCommand shellArgv 只拼 argv,不改命令(命令必须原样落在最后一段)。
+func TestShellArgvKeepsCommand(t *testing.T) {
+	argv, err := shellArgv("echo hi")
+	if err != nil {
+		t.Skipf("本机没有 POSIX shell:%v", err)
+	}
+	if argv[len(argv)-1] != "echo hi" {
+		t.Errorf("命令应原样保留,got %q", argv[len(argv)-1])
 	}
 }

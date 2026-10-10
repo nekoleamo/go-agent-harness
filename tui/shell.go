@@ -81,6 +81,10 @@ func (a *App) execShell(ctx context.Context, reg sdk.ToolRegistry, cmd string) s
 func (a *App) runShellPassthrough(ctx context.Context, cmd string) {
 	reg, err := a.shellRegistry()
 	if err != nil {
+		// 失败分支同样要摘除取消句柄:与成功分支保持同一不变量("执行结束即无句柄"),
+		// 否则之后 Esc 会对一个早已结束的命令调 cancel,且未来若有"句柄非 nil = 有回合在跑"
+		// 的判据就会误判。
+		a.cancelFn.Store(nil)
 		a.sendShellDone(shellDoneMsg{cmd: cmd, err: err})
 		return
 	}

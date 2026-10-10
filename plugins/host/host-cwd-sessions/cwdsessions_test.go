@@ -85,6 +85,24 @@ func TestSessionPath(t *testing.T) {
 	}
 }
 
+// TestCheckSessionPath 超长工作区路径必须在**写入前**给出人话错误(而不是让文件系统
+// 抛 "filename or extension is too long")。
+func TestCheckSessionPath(t *testing.T) {
+	if err := CheckSessionPath(SessionPath("/tmp", "k", "20240101-1200")); err != nil {
+		t.Fatalf("普通路径不该报错: %v", err)
+	}
+	deep := SessionPath("/tmp", strings.Repeat("verydeep-", 40), "20240101-1200")
+	err := CheckSessionPath(deep)
+	if err == nil {
+		t.Fatal("超长路径应报错")
+	}
+	for _, want := range []string{"过长", "更浅的目录", "MAX_PATH"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("错误文案应含可操作指引 %q: %v", want, err)
+		}
+	}
+}
+
 func TestSessionsListOrder(t *testing.T) {
 	tmp := t.TempDir()
 	root := filepath.Join(tmp, "sessions")

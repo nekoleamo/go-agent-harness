@@ -60,7 +60,8 @@ func ValidateName(name string) error {
 	case !nameRe.MatchString(name):
 		return fmt.Errorf("技能名只允许小写字母/数字/点/下划线/连字符(首字符须为字母或数字,长度 ≤ 64):%q", name)
 	}
-	return nil
+	// Windows 保留名/尾点:正则本身允许(如 "con"、"notes."),但落盘会在 Windows 上失败或被静默改名。
+	return roles.WindowsNameIssue(name)
 }
 
 // Dir 共享技能库根目录($GAH_HOME/skills)。
@@ -240,7 +241,9 @@ func (l Library) Remove(name string) error {
 	if err := os.Rename(filepath.Join(l.Root, name), filepath.Join(trash, entry)); err != nil {
 		return fmt.Errorf("技能移入回收站失败: %w", err)
 	}
-	pruneTrash(trash)
+	// 轮转失败不改删除结果(条目已在回收站里、可恢复):显式忽略并说明理由。
+	// 切成 RemoveTree 是为了 Windows 上只读文件不再让轮转无声失效。
+	_ = pruneTrash(trash)
 	return nil
 }
 
@@ -348,10 +351,13 @@ func (l Library) Restore(trashName string) (string, error) {
 }
 
 // pruneTrash 只保留最近 maxTrashKeep 份(按删除时间倒序淘汰;见 sortTrashNewestFirst)。
-func pruneTrash(trash string) {
+// 返回首个删除失败(删除本身已成功,轮转失败不该被当成删除失败)。
+// 用 sdk.RemoveTree:Windows 上被淘汰目录里只要有一个只读文件,os.RemoveAll 就失败
+// ⇒ 回收站无声地无界增长。
+func pruneTrash(trash string) error {
 	entries, err := os.ReadDir(trash)
 	if err != nil {
-		return
+		return err
 	}
 	names := make([]string, 0, len(entries))
 	for _, e := range entries {
@@ -360,12 +366,16 @@ func pruneTrash(trash string) {
 		}
 	}
 	if len(names) <= maxTrashKeep {
-		return
+		return nil
 	}
 	sortTrashNewestFirst(names)
+	var firstErr error
 	for _, n := range names[maxTrashKeep:] {
-		_ = os.RemoveAll(filepath.Join(trash, n))
+		if err := sdk.RemoveTree(filepath.Join(trash, n)); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
+	return firstErr
 }
 
 // Content 组装 SKILL.md(frontmatter + 正文)。与 host-skills 的解析口径一致:

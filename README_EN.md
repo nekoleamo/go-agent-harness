@@ -56,7 +56,7 @@ One source, three surfaces: the same gah binary hosts **TUI / Web / headless**; 
 | **Externalized themes** | `$GAH_HOME/config/themes/*.yaml` + `/theme` runtime switching — reskin without recompiling |
 | **Full backup/restore** | `/backup` packs GAH_HOME (config incl. keys/plugins/sessions/env.sh/prefs) into a deterministic tar.gz; `list|restore`; restore auto-backs-up the current state first |
 | **Config self-healing** | On boot failure, automatically rolls back to the last good backup and retries once; broken config does not brick startup |
-| **pty interaction** | tool-shell `data.pty` flag: drive REPLs, git editors, and other interactive processes |
+| **pty interaction** | tool-shell `data.pty` flag: drive REPLs, git editors, and other interactive processes; uses the **same POSIX shell** as the non-pty path (on Windows this needs Git for Windows, and fails explicitly without it) — adjudication and execution stay in sync, so cmd built-ins cannot bypass write-target checks |
 | **Web attachments + multimodal** | Drop images/files into the input **or anywhere in the window** (button + drag-drop + paste), chip preview/remove; images injected structurally through openai/anthropic adapters (the model sees images); text files referenced by path; stored under `$GAH_HOME/attachments/` |
 | **Document preview** | One block model rendered by four front ends (markdown/text/code/CSV/notebook + PDF page facts): Web preview workbench (file tree / native PDF viewer / HTML source view + sandbox), TUI `/preview` pager (scroll/search/horizontal), `gah doc` CLI, and markdown rendering in the web session stream; every path goes through the sandbox + escape checks + secret deny-list, zero `v-html`; legacy binary Office (`.doc/.xls/.ppt`) goes through an **optional** external converter (`data.external_converters` / `gah doc --convert`, requires a local LibreOffice, off by default, explicit message when missing) |
 | **Graceful shutdown** | `POST /api/shutdown` → DisposeAll full teardown (the cross-platform stop channel, incl. Windows without SIGTERM; reused by the desktop shell) |
@@ -198,6 +198,11 @@ The data root is `gah-data/` next to the real binary (created on first run; a sy
 > explicitly. There is **no cmd.exe/PowerShell fallback** — write-target adjudication is POSIX-lexical,
 > and swapping the shell would decouple the sandbox decision from what actually runs; when no POSIX
 > shell is found the tool fails **explicitly** (never degrades silently).
+
+> **Known boundary (Windows)**: the session file name is the workspace's absolute path flattened
+> (separators become `-`), so a very deep workspace (> ~200 characters) hits MAX_PATH (260). In that
+> case creating/opening a session fails **explicitly with actionable guidance** (move the workspace
+> shallower) instead of letting the OS throw `filename or extension is too long`.
 
 **Two modes coexist (same binary; the mode is the location)**: ① **Global/shared** — after install, run `gah` from any directory; the data root lives once under the install dir's `gah-data/`, with sessions/memory isolated per project by the cwd. ② **Portable single** — just copy/download `gah` into any directory and run it there; that directory auto-creates its own independent `gah-data/`, fully isolated from the global install. They never interfere; no switching needed.
 

@@ -516,6 +516,8 @@ func (a *App) Start() error {
 // Close 撤销订阅并退出程序。
 func (a *App) Close() {
 	a.started.Store(false)
+	// 释放控制终端 fd(notifier 自己打开的 /dev/tty / CONOUT$;详见 notifier.closeTerm)。
+	a.notifier.closeTerm()
 	for _, d := range a.subs {
 		d()
 	}

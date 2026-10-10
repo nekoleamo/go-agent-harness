@@ -364,11 +364,22 @@ func TestBarHoverAndMark(t *testing.T) {
 	if m.state.HoverBar {
 		t.Fatal("非 bar 列 motion 应清 hover")
 	}
-	// markBar 重置计时并返回 tick 命令
+	// markBar 重置计时并返回 tick 命令;已有 tick 在跑则不重复排(T3:事件风暴不堆 goroutine)
 	m.state.BarShownAt = time.Time{}
+	m.barTickArmed = false
 	cmd := m.markBar()
 	if cmd == nil || m.state.BarShownAt.IsZero() {
 		t.Fatal("markBar 应重置计时并返回 tick")
+	}
+	if again := m.markBar(); again != nil {
+		t.Fatal("已有 tick 在跑时不应重复排")
+	}
+	if m.state.BarShownAt.IsZero() {
+		t.Fatal("重复调用仍应重置显示计时")
+	}
+	m.barTickArmed = false // 模拟 barHideMsg 到点
+	if c := m.markBar(); c == nil {
+		t.Fatal("复位后应能再次起 tick")
 	}
 }
 

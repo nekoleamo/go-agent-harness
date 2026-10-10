@@ -5,6 +5,7 @@ package web
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"reflect"
 	"sync"
@@ -67,7 +68,7 @@ func TestConsumeStreamGapNoLossNoDup(t *testing.T) {
 	var got []Frame
 	sink := func(f Frame) error { mu.Lock(); got = append(got, f); mu.Unlock(); return nil }
 	done := make(chan struct{})
-	go func() { defer close(done); s.consumeStream(0, sink, stop, "") }()
+	go func() { defer close(done); s.consumeStream(0, sink, nil, stop, "") }()
 
 	<-log.replayC // 订阅已建立、重放被阻塞 = 窗口内
 	// 窗口内广播新会话帧:先落盘(Append)再广播(push,真实语义)→ 重放集与实时流均含 seq3
@@ -140,7 +141,7 @@ func TestConsumeStreamResendsPendingPopups(t *testing.T) {
 	var mu sync.Mutex
 	var got []Frame
 	sink := func(f Frame) error { mu.Lock(); got = append(got, f); mu.Unlock(); return nil }
-	go func() { s.consumeStream(0, sink, stop, "") }()
+	go func() { s.consumeStream(0, sink, nil, stop, "") }()
 	defer close(stop)
 
 	deadline := time.Now().Add(2 * time.Second)
@@ -173,5 +174,49 @@ func TestConsumeStreamResendsPendingPopups(t *testing.T) {
 	}
 	if !haveConfirm || !haveQuestion {
 		t.Fatalf("未决确认与提问都应补推(confirm=%v question=%v): %+v", haveConfirm, haveQuestion, frames)
+	}
+}
+
+// TestConsumeStreamHeartbeat 无数据帧时也要有心跳(W2):
+//   - 心跳被周期调用(否则 TCP 半开 + 久无广播的连接要滞留到下次广播才回收);
+//   - 心跳写失败 = 客户端已断 ⇒ 消费立即结束(不留 goroutine/订阅)。
+func TestConsumeStreamHeartbeat(t *testing.T) {
+	old := streamHeartbeat
+	streamHeartbeat = 20 * time.Millisecond
+	defer func() { streamHeartbeat = old }()
+
+	hub := NewHub()
+	s := New(Config{}, hub, NewConfirm(hub), slog.Default())
+	s.sessions = &memLog{}
+
+	stop := make(chan struct{})
+	defer close(stop)
+	beat := make(chan struct{}, 8)
+	go s.consumeStream(0, func(Frame) error { return nil }, func() error {
+		select {
+		case beat <- struct{}{}:
+		default:
+		}
+		return nil
+	}, stop, "")
+	select {
+	case <-beat:
+	case <-time.After(2 * time.Second):
+		t.Fatal("无数据帧时也应收到心跳")
+	}
+
+	// 心跳失败 ⇒ 结束
+	stop2 := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		s.consumeStream(0, func(Frame) error { return nil }, func() error {
+			return errors.New("broken pipe")
+		}, stop2, "")
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("心跳写失败应结束消费(及时回收连接)")
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -109,6 +110,40 @@ func SessionPath(root, key, id string) string {
 		return filepath.Join(root, key+".jsonl")
 	}
 	return filepath.Join(root, key+"-"+id+".jsonl")
+}
+
+// maxSessionNameLen 会话文件名成分的长度上限(字节)。
+//
+// 为何要有:会话文件名 = **工作区绝对路径扁平化**(分隔符换成 -)⇒ 工作区越深,这一个
+// 文件名成分就越长,最终撞上文件系统上限,底层报 "filename or extension is too long",
+// 用户看不懂也不知道怎么办。取 240(而非 255):POSIX NAME_MAX 255 留一点余量。
+const maxSessionNameLen = 240
+
+// maxSessionPathLenWindows Windows 全路径上限(MAX_PATH 260;取 240 给 \\?\ 前缀与临时名留余量)。
+// 为何单独一条:Windows 限制的是**全路径**而不是单个成分。
+const maxSessionPathLenWindows = 240
+
+// CheckSessionPath 会话落盘路径长度自检(超限返回可操作错误)。
+//
+// 在**新建/打开**会话处调用(而不是每个 SessionPath 调用点):长度只由工作区路径决定,
+// 一个入口拦住就够,且不打扰纯函数与测试夹具。
+func CheckSessionPath(path string) error {
+	base := filepath.Base(path)
+	if len(base) > maxSessionNameLen {
+		return tooLongErr(len(base), maxSessionNameLen, "会话文件名", path)
+	}
+	if runtime.GOOS == "windows" && len(path) > maxSessionPathLenWindows {
+		return tooLongErr(len(path), maxSessionPathLenWindows, "会话文件路径", path)
+	}
+	return nil
+}
+
+func tooLongErr(got, limit int, what, path string) error {
+	return fmt.Errorf(
+		"%s过长(%d 字节 > %d):%s\n"+
+			"会话文件名 = 工作区绝对路径扁平化,所以深层工作区会撞上文件系统上限"+
+			"(Windows MAX_PATH 260 / POSIX NAME_MAX 255)。请把工作区移到更浅的目录(如 C:\\work\\proj)后重试。",
+		what, got, limit, path)
 }
 
 // Service 实现 sdk.CwdSessions。
@@ -256,6 +291,9 @@ func (s *Service) Open(id string) error {
 		return fmt.Errorf("cwdsessions: 会话 %s 正在被其他视图使用,请先关闭那个视图", id)
 	}
 	path := SessionPath(SessionsRoot(), s.Current(), id)
+	if err := CheckSessionPath(path); err != nil {
+		return err
+	}
 	if s.sessions != nil {
 		if err := s.sessions.Load(path); err != nil {
 			return err

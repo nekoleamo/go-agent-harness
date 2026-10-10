@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +18,33 @@ func setup(t *testing.T) Library {
 	return Shared()
 }
 
+// TestPruneTrashErrors 轮转的错误分支如实返回(不吞):目录读不到、条目删不掉。
+func TestPruneTrashErrors(t *testing.T) {
+	if err := pruneTrash(filepath.Join(t.TempDir(), "nope")); err == nil {
+		t.Error("目录不存在应返回错误")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 上 chmod 不产生只读语义(走 ACL),构造不出「删不掉」")
+	}
+	trash := t.TempDir()
+	for i := 0; i < maxTrashKeep+2; i++ {
+		d := filepath.Join(trash, fmt.Sprintf("s-%02d-20260101-0000%02d.000", i, i))
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(d, FileName), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(d, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		defer os.Chmod(d, 0o755) // 恢复写位,否则 t.TempDir 清理失败
+	}
+	if err := pruneTrash(trash); err == nil {
+		t.Error("条目删不掉时应返回错误")
+	}
+}
+
 func TestValidateName(t *testing.T) {
 	ok := []string{"a", "code-review", "my.skill_1", "x0123456789"}
 	for _, n := range ok {
@@ -24,7 +52,8 @@ func TestValidateName(t *testing.T) {
 			t.Errorf("ValidateName(%q) = %v, want nil", n, err)
 		}
 	}
-	bad := []string{"", ".hidden", "..", "A", "a/b", `a\b`, "a b", "带中文", "a" + strings.Repeat("b", 64)}
+	bad := []string{"", ".hidden", "..", "A", "a/b", `a\b`, "a b", "带中文", "a" + strings.Repeat("b", 64),
+		"con", "aux", "nul", "prn", "com1", "lpt9", "notes.", "con.txt"}
 	for _, n := range bad {
 		if err := ValidateName(n); err == nil {
 			t.Errorf("ValidateName(%q) = nil, want error", n)

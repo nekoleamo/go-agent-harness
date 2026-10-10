@@ -47,7 +47,7 @@ function preview(path: string): void {
 
     <div v-if="open" class="abar-list" role="list">
       <p class="abar-tip">
-        只列**已落盘**的改动;被拒绝的写不会出现在这里(它没写盘),请看会话流里的工具结果。
+        只列已落盘的改动;被拒绝的写不会出现在这里(它没写盘),请看会话流里的工具结果。
       </p>
       <div v-for="it in items" :key="it.path" class="abar-item" role="listitem">
         <button class="abar-name" :title="it.path" data-tip="在文档面板里预览这个文件" @click="preview(it.path)">

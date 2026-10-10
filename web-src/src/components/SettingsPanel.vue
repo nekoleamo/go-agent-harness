@@ -587,6 +587,9 @@ const autoState = ref<"" | "on" | "off">("");
 // lastUpdSeq 面板已经展示过的检查轮次:轮询只贴更新的轮次,不把面板自己刚给出的结论冲掉。
 const lastUpdSeq = ref(0);
 let stateTimer: ReturnType<typeof setInterval> | undefined;
+// 两处短时提示的句柄:组件若被销毁(v-if 重建),已排队的清理定时器不该再去写已卸载的 ref。
+let mcpMsgTimer = 0;
+let infoTimer = 0;
 
 // applyUpdateSnapshot 把壳侧检查更新快照贴到面板上。进行中始终跟随(busy 由壳侧真源定);
 // 结束时只认比本地见过的更新的那一轮 —— 否则轮询会把面板自己刚写的错误提示覆盖回去。
@@ -3041,7 +3044,8 @@ async function saveMcp(): Promise<void> {
     mcpMsg.value = v.reload_err
       ? v.reload_err
       : "已保存并重载:模型工具表已更新";
-    setTimeout(() => (mcpMsg.value = ""), 8000);
+    clearTimeout(mcpMsgTimer);
+    mcpMsgTimer = window.setTimeout(() => (mcpMsg.value = ""), 8000);
   } catch (e) {
     mcpErr.value = (e as Error).message;
   } finally {
@@ -3121,7 +3125,8 @@ async function doReload(): Promise<void> {
 
 function showInfo(s: string): void {
   info.value = s;
-  setTimeout(() => (info.value = ""), 3000);
+  clearTimeout(infoTimer);
+  infoTimer = window.setTimeout(() => (info.value = ""), 3000);
 }
 
 onMounted(() => {
@@ -3135,6 +3140,8 @@ onMounted(() => {
 });
 onUnmounted(() => {
   if (stateTimer) clearInterval(stateTimer);
+  if (mcpMsgTimer) clearTimeout(mcpMsgTimer);
+  if (infoTimer) clearTimeout(infoTimer);
   if (navRaf) cancelAnimationFrame(navRaf);
   window.removeEventListener("keydown", onEsc, true);
   window.removeEventListener("beforeunload", onBeforeUnload);

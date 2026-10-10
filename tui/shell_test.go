@@ -143,6 +143,19 @@ func TestShellRegistryErrors(t *testing.T) {
 	}
 }
 
+// TestShellFailureClearsCancel:注册表获取失败的**同步**分支同样要摘除取消句柄。
+// 否则此后 Esc 会对一个已结束的命令调 cancel;若将来有"句柄非 nil = 回合在跑"的判据会误判。
+func TestShellFailureClearsCancel(t *testing.T) {
+	a := newTestApp(&stubCtx{svc: map[string]any{}})
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	a.cancelFn.Store(&cancel)
+	a.runShellPassthrough(context.Background(), "echo hi")
+	if a.cancelFn.Load() != nil {
+		t.Fatalf("失败分支应摘除 cancelFn")
+	}
+}
+
 // TestExecShellThroughToolRegistry:命令经 ctx.tools.Execute 走完整管线(参数透传),
 // 输出按 shell 工具结果形状解析(不伪造调用、不绕过 pre-execute)。
 func TestExecShellThroughToolRegistry(t *testing.T) {

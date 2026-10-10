@@ -104,7 +104,7 @@ func TestPendingConfirmReplayedOnConnect(t *testing.T) {
 
 	frames := make(chan Frame, 8)
 	stop := make(chan struct{})
-	go s.consumeStream(0, func(f Frame) error { frames <- f; return nil }, stop, "")
+	go s.consumeStream(0, func(f Frame) error { frames <- f; return nil }, nil, stop, "")
 	defer close(stop)
 
 	saw := false

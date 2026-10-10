@@ -368,7 +368,10 @@ fn backupRoot() -> Option<std::path::PathBuf> {
 // backupBeforeUpgrade 升级前把数据根复制到用户主目录(时间戳子目录),返回落地路径。
 // 数据根来自本次运行实际使用的位置(外置后应在应用目录外,备份属额外保险)。
 // 无数据(首次安装即升级)→ 返回空路径(无可备份);失败 → 错误(调用方中止升级)。
-fn backupBeforeUpgrade(data: &std::path::Path) -> Result<std::path::PathBuf, String> {
+fn backupBeforeUpgrade(
+    app: &tauri::AppHandle,
+    data: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
     if !data.exists() {
         return Ok(std::path::PathBuf::new());
     }
@@ -380,7 +383,40 @@ fn backupBeforeUpgrade(data: &std::path::Path) -> Result<std::path::PathBuf, Str
     let dst = root.join(format!("{ts}"));
     stage::copy_tree(data, &dst.join("gah-data"))
         .map_err(|e| format!("复制 {:?} → {:?} 失败: {e}", data, dst))?;
+    pruneUpgradeBackups(app, &root, BACKUP_KEEP);
     Ok(dst)
+}
+
+/// BACKUP_KEEP 升级前备份保留份数(超出即删更早的时间戳目录)。
+/// 备份是保险而非归档:磁盘占用随升级次数单调增长,留最近几份足够。
+const BACKUP_KEEP: usize = 3;
+
+// pruneUpgradeBackups 只保留最新 keep 份备份,删更早的。
+// 失败只记日志、不阻断升级(清理是附带好处,升级才是目的)。
+fn pruneUpgradeBackups(app: &tauri::AppHandle, root: &std::path::Path, keep: usize) {
+    for old in upgradeBackupsToRemove(root, keep) {
+        if let Err(e) = std::fs::remove_dir_all(&old) {
+            shellLog(app, &format!("升级备份清理失败(不影响升级):{:?} {e}", old));
+        }
+    }
+}
+
+// upgradeBackupsToRemove 选出该删的备份目录(纯函数,便于单测)。
+// 目录名是 unix 秒且定宽 ⇒ 名字序 = 时间序;更早的排前面,留下最后 keep 个。
+fn upgradeBackupsToRemove(root: &std::path::Path, keep: usize) -> Vec<std::path::PathBuf> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new(); // 目录不存在/不可读:没有可清理的
+    };
+    let mut dirs: Vec<std::path::PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    dirs.sort();
+    if dirs.len() <= keep {
+        return Vec::new();
+    }
+    dirs.drain(..dirs.len() - keep).collect()
 }
 
 // UpdateOutcome 检查更新的结果:托盘菜单把它转成系统通知(托盘点击后唯一的反馈
@@ -442,7 +478,7 @@ async fn installPendingUpdate(app: &tauri::AppHandle) -> UpdateOutcome {
             return UpdateOutcome::new("failed", Some(version), "数据根未初始化,已取消升级".into())
         }
     };
-    let backup_note = match backupBeforeUpgrade(&data) {
+    let backup_note = match backupBeforeUpgrade(app, &data) {
         Ok(p) if p.as_os_str().is_empty() => String::new(),
         Ok(p) => format!("(升级前数据已备份到 {})", p.display()),
         Err(e) => {
@@ -1324,12 +1360,31 @@ fn httpGETAuth(path: &str) -> String {
     }
 }
 
-// stateRunning 服务是否在运行(/api/state)。
-// 复用 httpGETAuth(原先这里有一份重复的手写 socket 代码):读不到/超时 → 空串 → false,
-// 与旧实现在「连不上就当没在跑」上语义一致。
-fn stateRunning() -> bool {
-    httpGETAuth("/api/state").contains("\"running\":true")
+// stateAlive 服务是否还在应答(/api/state):None = 连不上/超时(服务多半已退出),
+// Some(true/false) = 应答了,running 是/否。
+//
+// 为何要把「不可达」与「没在跑」分开:以前 stateRunning() 把两者都压成 false ⇒
+// 服务崩掉时壳只看到一个「回合结束」翻转,用户看到的是「输入没反应」而壳毫无提示(D1)。
+fn stateAlive() -> Option<bool> {
+    let body = httpGETAuth("/api/state");
+    if body.is_empty() {
+        return None;
+    }
+    Some(body.contains("\"running\":true"))
 }
+
+// SIDECAR_LOST_STREAK 连续多少次 /api/state 不可达才判「服务已退出」。
+// 为何不是 1:2s 一次探针,单次超时可能只是瞬时卡顿;3 次(≈6s)足以区分,又不会让人干等太久。
+const SIDECAR_LOST_STREAK: u32 = 3;
+
+// sidecarLost 纯判据:界面已就绪且服务连续不可达 ⇒ 视为已退出(便于单测)。
+fn sidecarLost(ready: bool, unreachableStreak: u32) -> bool {
+    ready && unreachableStreak >= SIDECAR_LOST_STREAK
+}
+
+// SIDECAR_LOST_NOTICE 服务失联时贴进页面的提示(与托盘菜单同一条恢复路径)。
+const SIDECAR_LOST_NOTICE: &str =
+    "后台服务已退出:界面不再接收新内容。可从托盘菜单选择「重新启动服务」恢复(进行中的回合会丢失)。";
 
 // noticesScript 生成"壳侧提示"注入脚本(纯函数,便于单测)。
 //
@@ -1410,6 +1465,7 @@ fn logLine(path: &std::path::Path, msg: &str) {
             return;
         }
     }
+    rotateIfTooBig(path);
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
@@ -1422,6 +1478,26 @@ fn logLine(path: &std::path::Path, msg: &str) {
         use std::io::Write;
         let _ = writeln!(f, "[{ts}] {msg}");
     }
+}
+
+/// SHELL_LOG_MAX 壳日志单文件上限:超过即轮转保留 1 份(`.1`)。
+/// 日志只用于现场诊断,无限追加既长期占盘,又让 UI 线程上的 shellLogTail 变慢。
+const SHELL_LOG_MAX: u64 = 4 * 1024 * 1024;
+
+// rotateIfTooBig 日志超上限时轮转一份(当前 + 上一份,共 2 份)。
+// 失败一律忽略:轮转是有界化手段,不能让它把"写日志"本身弄失败。
+fn rotateIfTooBig(path: &std::path::Path) {
+    let too_big = std::fs::metadata(path)
+        .map(|m| m.len() > SHELL_LOG_MAX)
+        .unwrap_or(false);
+    if !too_big {
+        return;
+    }
+    let mut bak = path.as_os_str().to_owned();
+    bak.push(".1");
+    let bak = std::path::PathBuf::from(bak);
+    let _ = std::fs::remove_file(&bak); // Windows 上 rename 不覆盖已存在目标
+    let _ = std::fs::rename(path, &bak);
 }
 
 // installPanicLog 装 panic 钩子:任何线程 panic 都写进壳日志,然后交回原钩子。
@@ -1469,11 +1545,48 @@ fn shellLog(app: &AppHandle, msg: &str) {
     logLine(&shellLogPath(app), msg);
 }
 
+// SHELL_LOG_TAIL_BYTES 单次最多从日志尾部读这么多字节。
+// shellLogTail 在 UI 线程上被自检/诊断面板调用,读整份会在日志变大时卡顿。
+const SHELL_LOG_TAIL_BYTES: u64 = 128 * 1024;
+
 // shellLogTail 取壳侧日志最后 n 行(诊断面板要把现场直接摆到用户眼前)。
 fn shellLogTail(app: &AppHandle, n: usize) -> String {
-    let txt = std::fs::read_to_string(shellLogPath(app)).unwrap_or_default();
+    let txt = readTail(&shellLogPath(app), SHELL_LOG_TAIL_BYTES);
     let lines: Vec<&str> = txt.lines().collect();
     lines[lines.len().saturating_sub(n)..].join("\n")
+}
+
+// readTail 读文件尾部至多 max 字节(不把整份读进内存)。
+// 触发截断时首行可能是半行,直接丢掉(面板里不该出现残句)。
+fn readTail(path: &std::path::Path, max: u64) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return String::new();
+    };
+    let size = f.metadata().map(|m| m.len()).unwrap_or(0);
+    if size == 0 {
+        return String::new();
+    }
+    let start = size.saturating_sub(max);
+    if start > 0 {
+        let _ = f.seek(SeekFrom::Start(start));
+    }
+    let mut buf = Vec::new();
+    if f.take(max.saturating_add(4096))
+        .read_to_end(&mut buf)
+        .is_err()
+    {
+        return String::new();
+    }
+    let s = String::from_utf8_lossy(&buf).into_owned();
+    if start > 0 {
+        match s.find('\n') {
+            Some(i) => s[i + 1..].to_string(), // 丢掉被截断的首行
+            None => s,
+        }
+    } else {
+        s
+    }
 }
 
 // esc 最小 HTML 转义:日志原文要摆进页面,`<`/`&` 不能被当成标签。
@@ -1894,7 +2007,7 @@ fn main() {
             }
         }));
     }
-    b
+    let app = b
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             None,
@@ -1926,8 +2039,6 @@ fn main() {
         ])
         .setup(|app| {
             let handle = app.handle().clone();
-            // 最早装 panic 钩子:此后任何线程的 panic 都会落进壳日志(桌面版没有终端)。
-            installPanicLog(shellLogPath(app.handle()));
             shellLog(
                 app.handle(),
                 &format!(
@@ -1987,6 +2098,11 @@ fn main() {
             let new_instance_item = MenuItemBuilder::with_id("new_instance", "新实例…")
                 .build(app)
                 .unwrap();
+            // 「重新启动服务」:sidecar 崩掉后的人工恢复入口(D1)。用 app.restart() 整套重启 ——
+            // 比壳内重放一套 spawn 逻辑简单得多,也不会与升级重启那条路径分叉。
+            let restart_item = MenuItemBuilder::with_id("restart_service", "重新启动服务")
+                .build(app)
+                .unwrap();
             let menu = MenuBuilder::new(app)
                 .items(&[
                     &show_item,
@@ -1996,6 +2112,7 @@ fn main() {
                     &check_item,
                     &notify_item,
                     &about_item,
+                    &restart_item,
                     &PredefinedMenuItem::separator(app).unwrap(),
                     &quit_item,
                 ])
@@ -2118,6 +2235,10 @@ fn main() {
                         app.dialog().message(txt).title("关于 gah").show(|_| {});
                     }
                     "quit" => quitApp(app),
+                    "restart_service" => {
+                        shellLog(app, "托盘: 重新启动服务");
+                        app.restart(); // 不返回:整套壳进程重启(含重新 spawn sidecar)
+                    }
                     _ => {}
                 });
                 // 不监听 on_tray_icon_event:窗口打开走菜单里的「显示窗口」项(跨平台一致)。
@@ -2360,7 +2481,9 @@ fn main() {
             let handle4 = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let mut consumer = notice::Consumer::new();
-                let mut prev = stateRunning();
+                let mut prev = stateAlive();
+                let mut unreachable = 0u32;
+                let mut lost_alerted = false;
                 loop {
                     // 同上一处：async 任务里不得用 std::thread::sleep（占死 worker）。
                     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -2374,9 +2497,36 @@ fn main() {
                             notifyNotice(&handle4, &notice::notifyTitle(&n), &notice::notifyBody(&n));
                         }
                     }
-                    // 2) 回合结束(壳侧独有信号)
-                    let cur = stateRunning();
-                    if prev && !cur {
+                    // 2) 探针:服务失联(D1)与回合结束共用同一次请求
+                    let cur = stateAlive();
+                    match cur {
+                        None => unreachable += 1,
+                        Some(_) => {
+                            unreachable = 0;
+                            lost_alerted = false;
+                        }
+                    }
+                    if !lost_alerted && sidecarLost(true, unreachable) {
+                        lost_alerted = true; // 只提醒一次,不每 2 秒刷一条
+                        shellLog(
+                            &handle4,
+                            &format!("后台服务失联:连续 {unreachable} 次 /api/state 不可达(进程可能已退出)"),
+                        );
+                        notifyNative(
+                            &handle4,
+                            "gah 服务已退出",
+                            "后台服务不再响应。可从托盘菜单「重新启动服务」恢复;进行中的回合会丢失。",
+                        );
+                        if let (Some(w), Some(script)) = (
+                            handle4.get_webview_window("main"),
+                            noticesScript(&[SIDECAR_LOST_NOTICE.to_string()]),
+                        ) {
+                            let _ = w.eval(script);
+                        }
+                    }
+                    // 3) 回合结束(壳侧独有信号):只在「应答了且从跑变不跑」时才发;
+                    //    服务不可达由上面那条失联提示负责,不谎报「回合已完成」。
+                    if prev == Some(true) && cur == Some(false) {
                         notifyNative(&handle4, "gah", "回合已完成");
                     }
                     prev = cur;
@@ -2400,17 +2550,28 @@ fn main() {
             }
         })
         .build(tauri::generate_context!())
-        .expect("tauri app build 失败")
-        .run(|app, event| {
-            if let RunEvent::Exit = event {
-                if let Some(c) = app.state::<Sidecar>().0.lock().unwrap().take() {
-                    // 无条件回收:正常退出本该由 /api/shutdown 让 sidecar 自杀,但壳崩溃或被强退
-                    // 时子进程会变孤儿 —— 真机(白屏那次)就留下了占着 2233 的旧实例,后遗症是
-                    // 「升级了但界面还是旧的」。已退出的进程再 kill 一次无害。
-                    let _ = c.kill();
-                }
-            }
+        .unwrap_or_else(|e| {
+            // 这里还没有 AppHandle,求不出权威日志路径 —— 退到临时目录记一条,总比"白闪一下就没了"强。
+            logLine(
+                &std::env::temp_dir().join("gah-shell-build-error.log"),
+                &format!("tauri app build 失败: {e}"),
+            );
+            panic!("tauri app build 失败: {e}");
         });
+    // panic 钩子尽量早装:此处是**能拿到权威日志路径(经 AppHandle)的最早点**,且必须早于
+    // run() —— setup 闭包(含窗口创建)与所有 async 任务都在 run 内执行,装在这里它们的 panic
+    // 才会落进壳日志。此前它装在 setup 闭包内,晚于 setup 里的窗口创建。
+    installPanicLog(shellLogPath(app.handle()));
+    app.run(|app, event| {
+        if let RunEvent::Exit = event {
+            if let Some(c) = app.state::<Sidecar>().0.lock().unwrap().take() {
+                // 无条件回收:正常退出本该由 /api/shutdown 让 sidecar 自杀,但壳崩溃或被强退
+                // 时子进程会变孤儿 —— 真机(白屏那次)就留下了占着 2233 的旧实例,后遗症是
+                // 「升级了但界面还是旧的」。已退出的进程再 kill 一次无害。
+                let _ = c.kill();
+            }
+        }
+    });
 }
 
 // quitApp 托盘退出:POST /api/shutdown → 等端口释放(5s) → 仍活 SIGKILL 兜底 → 壳退出。
@@ -2453,6 +2614,20 @@ fn quitApp(app: &AppHandle) {
 #[cfg(test)]
 mod main_tests {
     use super::*;
+
+    #[test]
+    fn sidecar_lost_needs_ready_and_consecutive_unreachable() {
+        assert!(
+            !sidecarLost(false, 99),
+            "未就绪不算失联(启动期由探活超时负责)"
+        );
+        assert!(!sidecarLost(true, 0), "应答正常不算");
+        assert!(!sidecarLost(true, SIDECAR_LOST_STREAK - 1), "单次抖动不算");
+        assert!(
+            sidecarLost(true, SIDECAR_LOST_STREAK),
+            "连续不可达即判已退出"
+        );
+    }
 
     #[test]
     fn notices_script_is_none_when_empty_and_escapes_text() {
@@ -2662,6 +2837,75 @@ mod save_export_tests {
         assert_eq!(b.file_name().unwrap().to_string_lossy(), "s (1).jsonl");
         assert_eq!(c.file_name().unwrap().to_string_lossy(), "s (2).jsonl");
         assert_eq!(std::fs::read_to_string(&c).unwrap(), "3");
+    }
+}
+
+// —— 壳日志有界化单测(D3):轮转 / 尾部读取 / 备份保留 ——
+#[cfg(test)]
+mod shell_log_tests {
+    use super::*;
+
+    fn tmpdir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!(
+            "gah-shell-log-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn tail_reads_only_last_lines_across_truncation() {
+        let d = tmpdir("tail");
+        let p = d.join("x.log");
+        let mut body = String::new();
+        for i in 0..5000 {
+            body.push_str(&format!("line-{i}\n"));
+        }
+        std::fs::write(&p, &body).unwrap();
+        let got = readTail(&p, 200); // 只读尾部 200 字节
+        assert_eq!(
+            got.lines().last(),
+            Some("line-4999"),
+            "应读到最新一行: {got}"
+        );
+        assert!(!got.contains("line-0"), "不应把整份读进内存");
+        // 未触发截断(小文件)→ 原样
+        let small = d.join("s.log");
+        std::fs::write(&small, "a\nb\n").unwrap();
+        assert_eq!(readTail(&small, 1024), "a\nb\n");
+    }
+
+    #[test]
+    fn rotates_when_over_limit_keeping_one_backup() {
+        let d = tmpdir("rotate");
+        let p = d.join("x.log");
+        std::fs::write(&p, vec![b'a'; (SHELL_LOG_MAX + 1) as usize]).unwrap();
+        logLine(&p, "next");
+        assert!(d.join("x.log.1").exists(), "超上限应轮转出 .1");
+        let cur = std::fs::read_to_string(&p).unwrap();
+        assert!(cur.contains("next"));
+        assert!(cur.len() < 1024, "轮转后当前文件应从小开始: {}", cur.len());
+    }
+
+    #[test]
+    fn backup_prune_keeps_newest_k() {
+        let d = tmpdir("backup");
+        for ts in ["100", "200", "300", "400", "500"] {
+            std::fs::create_dir_all(d.join(ts)).unwrap();
+        }
+        std::fs::write(d.join("readme.txt"), "x").unwrap(); // 非目录项不参与
+        let removed: Vec<String> = upgradeBackupsToRemove(&d, 3)
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(removed, vec!["100", "200"], "应删最旧两份,留 300/400/500");
+        assert!(upgradeBackupsToRemove(&d, 10).is_empty(), "未超上限不删");
     }
 }
 

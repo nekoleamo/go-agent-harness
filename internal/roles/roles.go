@@ -81,6 +81,32 @@ var idRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
 // reservedID 保留名(与回收站/内部目录冲突)。
 var reservedID = map[string]bool{TrashName: true, "roles": true}
 
+// reservedWindowsNames Windows 保留设备名(大小写不敏感;Win32 一律拒建这些名字的目录)。
+// 附带说明:在 Windows 上 "con" 与 "con.txt" 都指向设备,故判定按首个 '.' 之前的部分。
+var reservedWindowsNames = map[string]bool{
+	"CON": true, "PRN": true, "AUX": true, "NUL": true,
+	"COM1": true, "COM2": true, "COM3": true, "COM4": true, "COM5": true,
+	"COM6": true, "COM7": true, "COM8": true, "COM9": true,
+	"LPT1": true, "LPT2": true, "LPT3": true, "LPT4": true, "LPT5": true,
+	"LPT6": true, "LPT7": true, "LPT8": true, "LPT9": true,
+}
+
+// WindowsNameIssue 报告名字在 Windows 上的落盘陷阱(保留设备名 / 尾点),无问题返回 nil。
+//
+// 为什么两端用同一份口径而不是"仅 Windows 拒绝":这些名字在 Linux/macOS 上也无人使用,
+// 统一拒绝不损失什么,却让单测能**跨平台跑** —— GOOS 分支式的校验在非 Windows 上根本跑不到。
+// 为什么放在 roles:skills 已依赖 roles(DAG 单向),共用一处胜过各写一份设备名表。
+func WindowsNameIssue(name string) error {
+	head, _, _ := strings.Cut(name, ".")
+	if reservedWindowsNames[strings.ToUpper(head)] {
+		return fmt.Errorf("%q 是 Windows 保留设备名(CON/PRN/AUX/NUL/COM1-9/LPT1-9;带扩展名同样保留)", name)
+	}
+	if strings.HasSuffix(name, ".") {
+		return fmt.Errorf("%q 不能以点结尾(Windows 会静默去掉尾点,变成\"写得进、查不到\")", name)
+	}
+	return nil
+}
+
 // ValidateID 校验角色 ID(非法时返回人话原因)。
 func ValidateID(id string) error {
 	switch {
@@ -93,7 +119,7 @@ func ValidateID(id string) error {
 	case !idRe.MatchString(id):
 		return fmt.Errorf("角色 ID 只允许小写字母/数字/连字符(首字符须为字母或数字,长度 ≤ 32):%q", id)
 	}
-	return nil
+	return WindowsNameIssue(id)
 }
 
 // truncate 按字节上限截断 UTF-8 文本(截断点落在 rune 边界;返回值已截断 = true)。
@@ -455,8 +481,11 @@ func (s Store) Create(spec sdk.RoleSpec, agents string) error {
 	}
 	if agents != "" {
 		if err := s.SetAgents(spec.ID, agents); err != nil {
-			// 回滚:不留下"半截角色"(定义写了但正文超限失败)
-			_ = os.RemoveAll(Dir(spec.ID))
+			// 回滚:不留下"半截角色"(定义写了但正文超限失败)。
+			// 用 RemoveTree 而非 RemoveAll:Windows 上只读文件会让后者失败 ⇒ 回滚**无声地**没做。
+			if rmErr := sdk.RemoveTree(Dir(spec.ID)); rmErr != nil {
+				return fmt.Errorf("%w;且回滚半截角色目录失败(%v),请手工删除 %s", err, rmErr, Dir(spec.ID))
+			}
 			return err
 		}
 	}
@@ -578,7 +607,9 @@ func (s Store) MoveToTrash(id string) (string, error) {
 	if err := os.Rename(Dir(id), filepath.Join(TrashDir(), name)); err != nil {
 		return "", fmt.Errorf("角色移入回收站失败: %w", err)
 	}
-	pruneTrash()
+	// 轮转失败不改删除结果(条目已在回收站里、可恢复):显式忽略并说明理由,
+	// 不做"删除成功却报错"的误导。切成 RemoveTree 是为了 Windows 上只读文件不再让轮转无声失效。
+	_ = pruneTrash()
 	return name, nil
 }
 
@@ -687,10 +718,13 @@ func (s Store) Restore(trashName string) (string, error) {
 }
 
 // pruneTrash 只保留最近 maxTrashKeep 份(按删除时间倒序淘汰;见 sortTrashNewestFirst)。
-func pruneTrash() {
+// 返回首个删除失败,供调用方决定是否提示(删除本身已成功,轮转失败不该被当成删除失败)。
+// 用 sdk.RemoveTree 而非 os.RemoveAll:Windows 上被淘汰目录里只要有一个只读文件,
+// os.RemoveAll 就失败 ⇒ 回收站无声地无界增长。
+func pruneTrash() error {
 	entries, err := os.ReadDir(TrashDir())
 	if err != nil {
-		return
+		return err
 	}
 	names := make([]string, 0, len(entries))
 	for _, e := range entries {
@@ -699,12 +733,16 @@ func pruneTrash() {
 		}
 	}
 	if len(names) <= maxTrashKeep {
-		return
+		return nil
 	}
 	sortTrashNewestFirst(names)
+	var firstErr error
 	for _, n := range names[maxTrashKeep:] {
-		_ = os.RemoveAll(filepath.Join(TrashDir(), n))
+		if err := sdk.RemoveTree(filepath.Join(TrashDir(), n)); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
+	return firstErr
 }
 
 // Active 当前角色 ID("" = 未启用)。

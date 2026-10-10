@@ -464,7 +464,11 @@ func (s *Server) afterOf(r *http.Request) uint64 {
 // seen 游标去重保证「重放期间已入实时流的帧」不双发。
 // consumeStream 消费事件流。sid 非空时只收该会话的会话帧(非会话帧仍全量),
 // 且重放读的是**那个会话自己的**日志(否则历史与实时流会来自两个会话)。
-func (s *Server) consumeStream(after uint64, sink func(Frame) error, stop <-chan struct{}, sid string) {
+//
+// hb = 通道心跳(可选):无数据帧时周期性调一次,写失败即视为客户端已断。
+// 为何要有它(2026-10-10 W2):以前只在有帧时写 ⇒ 客户端 TCP 半开且久无广播时,
+// 该连接的 goroutine/订阅要滞留到**下次广播**才回收。SSE 传注释帧,WS 传 ping;nil = 无心跳。
+func (s *Server) consumeStream(after uint64, sink func(Frame) error, hb func() error, stop <-chan struct{}, sid string) {
 	sc, err := s.scopeOf(sid)
 	if err != nil {
 		// 拿不到该会话的日志:宁可立刻断流(前端按 after 重连),不接一条混着主会话的流。
@@ -517,6 +521,12 @@ func (s *Server) consumeStream(after uint64, sink func(Frame) error, stop <-chan
 		}
 		seen = f.ID
 	}
+	var tick <-chan time.Time
+	if hb != nil {
+		t := time.NewTicker(streamHeartbeat)
+		defer t.Stop()
+		tick = t.C
+	}
 	for {
 		select {
 		case f, ok := <-ch:
@@ -532,11 +542,20 @@ func (s *Server) consumeStream(after uint64, sink func(Frame) error, stop <-chan
 			if err := sink(f); err != nil {
 				return
 			}
+		case <-tick:
+			// 心跳写失败 = 客户端已断 ⇒ 就地回收,不等下次广播
+			if err := hb(); err != nil {
+				return
+			}
 		case <-stop:
 			return
 		}
 	}
 }
+
+// streamHeartbeat 通道心跳间隔(SSE 注释帧 / WS ping)。
+// 变量而非常量:测试把它调小以验证「无数据帧也会心跳」。
+var streamHeartbeat = 25 * time.Second
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	fl, ok := w.(http.Flusher)
@@ -577,7 +596,15 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		fl.Flush()
 		return nil
 	}
-	s.consumeStream(s.afterOf(r), sse, r.Context().Done(), r.URL.Query().Get("session"))
+	// SSE 心跳:注释帧(`: ping`)—— 无数据帧时也有一条写,写失败即可判客户端已断。
+	ping := func() error {
+		if _, err := w.Write([]byte(": ping\n\n")); err != nil {
+			return err
+		}
+		fl.Flush()
+		return nil
+	}
+	s.consumeStream(s.afterOf(r), sse, ping, r.Context().Done(), r.URL.Query().Get("session"))
 }
 
 // handleEventsWS WebSocket 通道(/api/events/ws):同 payload 不同载体。
@@ -595,29 +622,16 @@ func (s *Server) handleEventsWS(w http.ResponseWriter, r *http.Request) {
 		}
 		return conn.WriteText(raw)
 	}
-	// 读泵 + ping 保活:客户端静默消失时(即使无事件可写)也能及时回收 goroutine/fd/订阅。
+	// 读泵:客户端静默消失时能及时回收 goroutine/fd/订阅。
+	// 保活 ping 改由 consumeStream 的心跳位统一驱动(不再另起一条睡眠 goroutine)。
 	stop := make(chan struct{})
 	go func() {
 		conn.drain()
 		close(stop)
 	}()
-	go func() {
-		t := time.NewTicker(30 * time.Second)
-		defer t.Stop()
-		for {
-			select {
-			case <-t.C:
-				if err := conn.WritePing(); err != nil {
-					return
-				}
-			case <-stop:
-				return
-			}
-		}
-	}()
 	// hijack 后 r.Context() 已取消(服务端接管连接):停止信号由读泵提供,
 	// 推送写失败同样驱动 consumeStream 退出。
-	s.consumeStream(s.afterOf(r), wsc, stop, r.URL.Query().Get("session"))
+	s.consumeStream(s.afterOf(r), wsc, conn.WritePing, stop, r.URL.Query().Get("session"))
 }
 
 // —— REST ——

@@ -139,13 +139,17 @@ type notifier struct {
 	target notifyTarget
 	wrap   notifyWrap
 	out    io.Writer
-	note   string // 装配说明(/notify 回显:未附着终端/写端打开失败原因)
+	closer io.Closer // 控制终端句柄(out 可关时记下;退出时 App.Close 关一行)
+	note   string    // 装配说明(/notify 回显:未附着终端/写端打开失败原因)
 }
 
 // newNotifier 组装(探测与写端都由外部给,便于单测;目标置 nil = 未附着终端)。
 func newNotifier(mode NotifyMode, env func(string) string, out io.Writer, attachErr error) *notifier {
 	target, wrap := detectNotifyTarget(env)
 	n := &notifier{mode: mode, target: target, wrap: wrap, out: out}
+	if c, ok := out.(io.Closer); ok {
+		n.closer = c // *os.File(openNotifyTTY)/os.Stdout 都算;测试用的 bytes.Buffer 不算
+	}
 	if out == nil {
 		n.note = "未附着控制终端(stdout 被重定向或非交互运行)"
 		if attachErr != nil {
@@ -153,6 +157,16 @@ func newNotifier(mode NotifyMode, env func(string) string, out io.Writer, attach
 		}
 	}
 	return n
+}
+
+// closeTerm 释放打开的控制终端 fd(幂等:nil 接收者/已关/自定义 writer 均为 no-op)。
+func (n *notifier) closeTerm() {
+	if n == nil || n.closer == nil {
+		return
+	}
+	c := n.closer
+	n.closer = nil
+	_ = c.Close()
 }
 
 // newDefaultNotifier 默认装配:模式取 GAH_TUI_NOTIFY,输出写控制终端。

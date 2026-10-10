@@ -162,6 +162,14 @@ if (!boundSession() && bootTab !== 'main') {
 const tabId = ref(bootTab)
 // calibration 首屏占位页是否已完成改绑(见 refreshStats 的首次校准)。
 let calibrated = bootTab !== 'main' // URL 已带 ?session= 时不需要校准
+// mainTabKey 本窗口「代表服务端当前会话」的那个页签键(null = 本窗口没有这样的页签:
+// 由 ?session= 或会话恢复带着具体会话启动的多窗口/刷新,不跟随服务端当前会话)。
+//
+// 为什么要它(W1):`state.session.id` 是**全局当前会话**(后端 handleState 恒下发 CurrentSession(),
+// 与 ?session= 无关),而页签是「我在看哪个会话」。非主会话页签若拿它当自己的 id,
+// 别的端/命令一切走当前会话,它就会误判「我绑的会话被切走」→ 白重放一次(清 TPS/命令回显行)。
+// 判据必须是「只有代表当前会话的那个页签才跟随」,其余页签一律用**自己的**键。
+let mainTabKey: string | null = bootTab === 'main' ? 'main' : null
 // sessionIdFor 把页签键解析成**服务端真实会话 id**(占位 'main' → 当前会话 id)。
 //
 // 为何必须解析(第一百三十八批真 bug):后端以「session 参数非空」判会话档、空串判全局档
@@ -989,7 +997,10 @@ async function refreshStats(): Promise<void> {
     // 会话被**命令**切走(如 `/session new`、`/session switch`)时前端收不到任何信号:
     // SSE 订阅还挂在旧会话上 → 用户后续输入的消息服务端已记录,界面上却一个帧都不来(静默丢显示)。
     // 故以服务端快照为事实:监到当前会话 id 与流所绑定的不一致 → 重放全量(与侧栏切换同一条路径)。
-    const sid = state.value.session?.id ?? ''
+    // 只有主页签跟随全局当前会话;其余页签用**自己的**键(W1,见 mainTabKey 注释)。
+    const sid = mainTabKey !== null && askedForTab === mainTabKey
+      ? (state.value.session?.id ?? '')
+      : askedForTab
     if (sid && sid !== streamSessionId) {
       if (streamSessionId === '') {
         streamSessionId = sid // 首次快照 / 本地刚切换(见 sessionChanged)→ 只校准,不重放
@@ -1008,6 +1019,9 @@ async function refreshStats(): Promise<void> {
     // 必须只做一次:页签打开的可能是**非当前**会话,若每轮都校准,每轮都会把页签
     // 键强行改回全局当前会话 —— 真机手测据此逮到"两个页签标题一样、关闭失效"。
     if (!calibrated && mainId && mainId !== tabId.value) {
+      // 主页签改绑后 mainTabKey 必须跟着走:否则下一轮 askedForTab !== mainTabKey,
+      // 主页签从此不再跟随服务端当前会话(命令 /session new 切走后界面不翻)。
+      if (mainTabKey !== null && mainTabKey === (tabId.value || 'main')) mainTabKey = mainId
       viewCache.rename(tabId.value || 'main', mainId) // 缓存跟着改绑(否则占位名那份永远取不到)
       tabs.rekey(tabId.value || 'main', mainId)
       tabId.value = mainId
@@ -1242,6 +1256,8 @@ async function newTab(): Promise<void> {
 function closeTab(id: string): void {
   const out = tabs.close(id)
   if (!out.closed) return
+  // 关掉的是主页签 ⇒ 本窗口不再有「跟随服务端当前会话」的页签(其余页签都是显式会话)。
+  if (mainTabKey !== null && mainTabKey === id) mainTabKey = null
   // 关页签**不丢会话视图**:缓存跟着会话走,不是跟着页签 —— 下次从侧栏点开这个会话
   // 直接接上(第一三九批)。要存的是当前页签的这份;后台页签的在切走时已经存过了。
   if (id === tabId.value) saveView(id)

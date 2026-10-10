@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +20,53 @@ func setup(t *testing.T) string {
 	return home
 }
 
+// TestWindowsNameIssue 保留设备名与尾点都在**校验层**拒绝(而非等落盘在 Windows 上失败)。
+func TestWindowsNameIssue(t *testing.T) {
+	if err := WindowsNameIssue("finance"); err != nil {
+		t.Fatalf("普通名不该报错: %v", err)
+	}
+	for _, n := range []string{"con", "CON", "aux", "nul", "prn", "com1", "com9", "lpt1", "lpt9", "con.txt"} {
+		if err := WindowsNameIssue(n); err == nil {
+			t.Errorf("%q 应判为 Windows 保留名", n)
+		}
+	}
+	if err := WindowsNameIssue("notes."); err == nil {
+		t.Error("尾点应被拒")
+	}
+}
+
+// TestPruneTrashErrors 轮转的错误分支如实返回(不吞):目录读不到、条目删不掉。
+// 调用方按「删除已成功、轮转失败」处理(见 Delete/Remove 的调用点)。
+func TestPruneTrashErrors(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GAH_HOME", filepath.Join(home, "gah-data"))
+	if err := pruneTrash(); err == nil {
+		t.Error("回收站目录不存在应返回错误")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 上 chmod 不产生只读语义(走 ACL),构造不出「删不掉」")
+	}
+	if err := os.MkdirAll(TrashDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < maxTrashKeep+2; i++ {
+		d := filepath.Join(TrashDir(), fmt.Sprintf("r-%02d-20260101-0000%02d.000", i, i))
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(d, FileName), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(d, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		defer os.Chmod(d, 0o755) // 恢复写位,否则 t.TempDir 清理失败
+	}
+	if err := pruneTrash(); err == nil {
+		t.Error("条目删不掉时应返回错误")
+	}
+}
+
 func TestValidateID(t *testing.T) {
 	ok := []string{"a", "finance", "coding-master", "r2", strings.Repeat("a", 32)}
 	for _, id := range ok {
@@ -27,7 +75,7 @@ func TestValidateID(t *testing.T) {
 		}
 	}
 	bad := []string{"", "Finance", "-a", ".hidden", "a_b", "a.b", "a/..", "../x", ".trash", "roles",
-		strings.Repeat("a", 33), "中文"}
+		strings.Repeat("a", 33), "中文", "con", "aux", "nul", "prn", "com1", "com9", "lpt1", "lpt9"}
 	for _, id := range bad {
 		if err := ValidateID(id); err == nil {
 			t.Errorf("ValidateID(%q) = nil, want error", id)

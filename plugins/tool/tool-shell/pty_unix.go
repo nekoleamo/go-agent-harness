@@ -16,15 +16,8 @@ import (
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
-// shellForPty 交互命令用的 shell(Windows 侧走 cmd.exe,见 pty.go 的 shellArgv)。
-func shellForPty() string {
-	sh, err := sdk.ResolvePOSIXShell()
-	if err != nil {
-		// 解析失败不静默换成一个「大概在」的位置:startPTY 里再报错一次带上下文。
-		return ""
-	}
-	return sh
-}
+// shellForPty 已收口到 pty.go(两平台统一走 sdk.ResolvePOSIXShell,见那里的决策注释)。
+// startPTY 仍接受 argv[0] 为空并在这里显式报出「缺 POSIX shell」的原因(不静默换 shell)。
 
 // startPTY 起一个带 pty 的进程。
 func startPTY(argv []string, dir string, env []string) (*ptySession, error) {

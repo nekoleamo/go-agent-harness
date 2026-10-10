@@ -17,7 +17,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"runtime"
 	"sync"
 	"time"
 
@@ -62,7 +61,11 @@ func execPty(ctx context.Context, dir, command, input string) (string, bool, err
 	}
 	// 内核级沙箱(第 3 组 ①-E):与普通路径同一套包装(见 kernel.go);pty 不改变 argv 语义。
 	pre := kernelWrapCtx(ctx)
-	argv := prefixedArgv(pre, shellArgv(command)[0], shellArgv(command)[1:]...)
+	base, err := shellArgv(command)
+	if err != nil {
+		return "", false, err
+	}
+	argv := prefixedArgv(pre, base[0], base[1:]...)
 	s, err := startPTY(argv, dir, env)
 	if err != nil {
 		return "", false, err
@@ -73,16 +76,29 @@ func execPty(ctx context.Context, dir, command, input string) (string, bool, err
 	return runPty(ctx, s, input)
 }
 
-// shellArgv 交互命令的 argv(平台无关的那一半:选 shell + 传 -c)。
+// shellArgv 交互命令的 argv:与非 pty 路径**同一口径** —— 一律走 POSIX shell
+// (sdk.ResolvePOSIXShell;Windows 上即 Git for Windows 的 bash)。
 //
-// Windows 侧**不用** POSIX shell:交互场景在 Windows 上就是 cmd/PowerShell 的主场
-// (用 Git Bash 跑交互 REPL 是绕远路)。所以这半也不放在 unix 文件里 ——
-// 但「选哪个 shell」是**策略**,两处各写一遍早晚会不一致。
-func shellArgv(command string) []string {
-	if runtime.GOOS == "windows" {
-		return []string{"cmd.exe", "/c", command}
+// 为何不给 Windows 单独用 cmd.exe(2026-10-10 决策 A):裁决分发 policy-guard 只按工具名分派,
+// `copy/del/move/rd` 这些 **cmd 内建**不在 POSIX 动词表里 ⇒ 工作区外的写/删既不拦也不弹确认
+// (执行的是 A、裁决的是 B)。sdk/shellpath.go 的文件头本就写明「不提供 cmd.exe/PowerShell 回退:
+// 命令的写目标裁决按 POSIX 词法进行,换 shell 会让判定与实际执行脱节」;pty 曾是唯一的分岔点,
+// 现收口到同一口径。要跑 cmd/PowerShell 内建仍可显式写 `cmd /c …` / `powershell -Command …`。
+func shellArgv(command string) ([]string, error) {
+	sh, err := sdk.ResolvePOSIXShell()
+	if err != nil {
+		return nil, fmt.Errorf("交互式命令需要 POSIX shell(Windows 上请安装 Git for Windows):%w", err)
 	}
-	return []string{shellForPty(), "-c", command}
+	return []string{sh, "-c", command}, nil
+}
+
+// shellForPty 交互命令用的 shell 路径(解析失败返回空串;测试与 startPTY 的兜底分支用)。
+func shellForPty() string {
+	sh, err := sdk.ResolvePOSIXShell()
+	if err != nil {
+		return ""
+	}
+	return sh
 }
 
 // runPty 会话驱动:写输入 → 采集输出 → 等退出 / 超时 / 取消 → 取快照。

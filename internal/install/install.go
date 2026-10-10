@@ -378,6 +378,10 @@ func installBridge(spec, home string, opts InstallOpts) (*Result, error) {
 	if !strings.HasPrefix(binary, "tool-") {
 		return nil, fmt.Errorf("install: 二进制名须 tool- 前缀(host-bridge 扫描约定): %s", binary)
 	}
+	// Windows 汇总成 .exe:源码路的 `go build -o <名> .` 与预编译路都按这个名字落盘,
+	// 而 os/exec 对绝对路径不做 PATHEXT 补全 ⇒ 不带 .exe 就是「装上了、重启后不加载」
+	// (2026-10-10 查 Go 源码确认:`-o` 非目录时不补扩展名,两条路都得补;见 sdk.BinaryName)。
+	binary = sdk.BinaryName(binary)
 	// built2.Cmd / built2.Tidied 两条回执字段在两条路上都有意义:
 	// 源码路是「跑了哪条命令 / 补没补依赖」;预编译路是「没跑构建 / 从哪个 URL 下的」。
 	buildCmd := strings.TrimSpace(man.Build)
@@ -641,8 +645,12 @@ func BinaryName(dir string) string {
 	if len(names) == 0 {
 		return ""
 	}
-	if m := readManifest(dir); m.Binary != "" && fileExists(filepath.Join(dir, m.Binary)) {
-		return m.Binary
+	// manifest 声明的名字也要过平台扩展名归一:Windows 上盘上是 tool-x.exe,
+	// 而 plugin.yaml 里写的是 tool-x —— 直接判 fileExists 会失配,回落到扫描第一个又未必是它。
+	if m := readManifest(dir); m.Binary != "" {
+		if b := sdk.BinaryName(m.Binary); fileExists(filepath.Join(dir, b)) {
+			return b
+		}
 	}
 	return names[0]
 }
@@ -652,7 +660,7 @@ func BinaryName(dir string) string {
 func pluginBinNames(dir string) []string {
 	var out []string
 	if m := readManifest(dir); m.Binary != "" {
-		out = append(out, m.Binary)
+		out = append(out, sdk.BinaryName(m.Binary)) // 平台扩展名归一(见 BinaryName 注释)
 	}
 	ents, err := os.ReadDir(dir)
 	if err != nil {

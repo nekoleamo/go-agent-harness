@@ -96,6 +96,7 @@ type Model struct {
 	onDockSteer       func(id, msg string) error                            // 坞面板定向(注入;ctx.fanout SendMessage)
 	onSessionSwitched func()                                                // 会话/工作区已在别处切换(注入;由 UI 循环内调用,见 App.Start 的 d3/d4)
 	dockTicking       bool                                                  // 坞刷新链在跑(防重复链;Update 单 goroutine 访问)
+	barTickArmed      bool                                                  // 滚动条 auto-hide tick 已在跑(防事件风暴堆 sleep goroutine;同上)
 	spinning          bool                                                  // 思考动画链在跑(同上;空闲自停,回合开始时由 startSpin 重新起链)
 }
 
@@ -286,6 +287,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd = m.markBar() // 滚动条显示计时重置并排 auto-hide tick(渲染按时间/hover 判定隐藏)
 	case barHideMsg:
 		// 仅触发重绘:渲染按 BarShownAt/HoverBar 判定滚动条隐藏(消息本身无状态变更)
+		m.barTickArmed = false // 本拍已到:允许下一次交互重新排 tick
 	case editorDoneMsg:
 		// 外部编辑器(Ctrl+G)结束:读回结果回填输入框(tea.ExecProcess 自动临时退出
 		// alt-screen 交还终端给编辑器;恢复后收到本消息)
@@ -643,8 +645,14 @@ func (m *Model) handleMouseMotion(mo tea.Mouse) {
 }
 
 // markBar 滚动条交互计时:重置显示计时并返回 auto-hide tick 命令(渲染按时间/HoverBar 判定隐藏)。
+// 已有 tick 在跑则不重复排:bubbletea 为每个 Cmd 起一个 goroutine,而鼠标事件(触控板惯性)会
+// 连发 —— 每个事件都排一个 1.5s tea.Tick 就是 O(事件数) 个睡眠 goroutine(与坞节拍链同款防重)。
 func (m *Model) markBar() tea.Cmd {
 	m.state.BarShownAt = time.Now()
+	if m.barTickArmed {
+		return nil
+	}
+	m.barTickArmed = true
 	return tea.Tick(barHideDelay, func(time.Time) tea.Msg { return barHideMsg{} })
 }
 
@@ -998,8 +1006,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		// Ctrl+↑/Ctrl+Shift+↑:跳到最早一条用户消息(对话起点;P5 消息跳转)
 		if k.Mod&tea.ModCtrl != 0 {
 			m.jumpToFirstUser()
-			m.markBar()
-			return nil
+			return m.markBar() // 必须回传 Cmd:tick 不回传就等于没排(且会让防重标志永远挂着)
 		}
 		if p := m.state.Mention; p != nil {
 			if p.Cursor > 0 {
@@ -1019,8 +1026,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		// Ctrl+↓/Ctrl+Shift+↓:回到底部跟随最新(P5 消息跳转)
 		if k.Mod&tea.ModCtrl != 0 {
 			m.state.ScrollOffset = 0
-			m.markBar()
-			return nil
+			return m.markBar()
 		}
 		if p := m.state.Mention; p != nil {
 			if p.Cursor < len(p.Items)-1 {
@@ -1049,11 +1055,11 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	case tea.KeyPgUp:
 		// 整页翻(兼容保留;箭头逐行为主通道)
 		m.state.ScrollBy(m.h-4, m.h-4)
-		m.markBar() // 键盘翻页同样重置滚动条显示计时
+		return m.markBar() // 键盘翻页同样重置滚动条显示计时
 	case tea.KeyPgDown:
 		// 整页翻回底部
 		m.state.ScrollBy(-(m.h - 4), m.h-4)
-		m.markBar()
+		return m.markBar()
 	case tea.KeyF3:
 		// 搜索激活时:F3 跳下一命中(Shift+F3 上一处)
 		if m.state.SearchQuery != "" {

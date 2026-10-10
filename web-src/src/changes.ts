@@ -132,7 +132,7 @@ export function changesStats(m: ChangesModel): { files: number; added: number; r
 }
 
 // findChange 按用户/命令给的路径定位文件:精确 → 路径后缀 → 文件名(与 Go 侧 /diff 同一宽松度)。
-// 多个候选返回第一个命中集合中的唯一项;歧义时返回 undefined(视图只做定位,不猜)。
+// 多个候选返回第一个命中集合中的唯一项;歧义时返回首个命中(视图只做滚动定位,不替用户挑)。
 export function findChange(m: ChangesModel, path: string): FileChange | undefined {
   const arg = (path || '').replace(/\\/g, '/')
   if (!arg) return undefined

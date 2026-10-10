@@ -57,7 +57,7 @@ Go 实现的编程代理 Agent Harness:以**单静态二进制**交付全部能�
 | **主题外部化** | `$GAH_HOME/config/themes/*.yaml` + `/theme` 运行期切换,零重编译换肤 |
 | **整体备份/恢复** | `/backup` 一键打包 GAH_HOME(config 含密钥/plugins/sessions/env.sh/偏好)→ 确定性 tar.gz;`list|restore`,恢复前自动先备份当前态 |
 | **配置自愈** | 启动失败自动回滚最近正常备份重试一次,坏配置不卡死 |
-| **pty 交互** | tool-shell `data.pty` 开关:驱动 REPL / git 编辑器等交互进程 |
+| **pty 交互** | tool-shell `data.pty` 开关:驱动 REPL / git 编辑器等交互进程;与非 pty 路径**同一 POSIX shell 口径**(Windows 上需 Git for Windows,否则显式报错)—— 判定与执行同源,cmd 内建不会绕过写目标裁决 |
 | **Web 附件+多模态** | 传图/文件入输入框或**拖到窗口任意位置**(按钮 + 拖放 + 粘贴),芯片预览/删除;图片经 openai/anthropic 适配器结构化注入(模型看图),文本附件路径引用;落盘 `$GAH_HOME/attachments/` |
 | **文档预览** | 一个块模型 + 四端同源渲染(markdown/文本/代码/CSV/notebook + PDF 页事实):Web 预览工作台(文件树/PDF 原生查看器/HTML 源码视图+沙箱)、TUI `/preview` pager(滚动/搜索/横移)、`gah doc` CLI、会话流 markdown 渲染;路径经沙箱+逃逸校验+密钥 deny-list,零 v-html;旧二进制 Office(`.doc/.xls/.ppt`)走**可选**外部转换(`data.external_converters` / `gah doc --convert`,需本机 LibreOffice,缺省关,未装时显式提示不静默) |
 | **优雅停机** | `POST /api/shutdown` → DisposeAll 全回收(Windows 无 SIGTERM 的统一停机通道;桌面壳/运维复用) |
@@ -179,6 +179,10 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 > `%LOCALAPPDATA%\Programs\Git\bin\bash.exe` 与 PATH 上的 `bash.exe`),
 > 或用 `GAH_SHELL_PATH` 显式指定。**不提供 cmd.exe/PowerShell 回退** —— 命令的写目标裁决按
 > POSIX 词法进行,换 shell 会让沙箱判定与实际执行脱节;缺失时工具**显式报错**(不静默降级)。
+
+> **已知边界(Windows)**:会话文件名 = 工作区绝对路径扁平化(分隔符换 `-`)⇒ 很深的
+> 工作区(路径超过约 200 字符)会撞 MAX_PATH(260)。此时新建/打开会话会**显式报错并给出
+> 可操作指引**(把工作区移到更浅的目录),而不是让底层抛 `filename or extension is too long`。
 
 **两种模式并存(同一二进制,模式 = 位置)**:① **全局共用**——install 后任意目录敲 `gah`,数据根统一在安装目录 `gah-data/`,会话/记忆按项目 cwd 自动隔离;② **便携单飞**——直接把 `gah` 复制/下载到任意目录即用,该目录自动建独立 `gah-data/`,与全局数据完全隔离(适合临时环境/隔离试验/分发)。两者互不影响,无需切换。
 

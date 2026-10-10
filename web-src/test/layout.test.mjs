@@ -72,6 +72,9 @@ function makeStub(
 ) {
   // seen:记录写类请求(方法/路径/体),供角色面板用例断言「面板真的提交了」而不是只改了本地状态。
   const seen = []
+  // serverCurrentId 服务端**当前会话** id:非空时 /api/state 恒下发它(与 ?session= 无关)。
+  // 可变:用例可中途改它,模拟「别的端/命令切走当前会话」而不需重启页面。
+  let serverCurrentId = mainSessionId
   // eventReqs 事件流连接记录(会话 + after 游标):用于断言“切回已开过的会话没有从头重放”
   const eventReqs = []
   // toolQueries:GET /api/tools 的查询串(第九十一批 —— 面板必须读 ?all=1 全量清单;
@@ -392,11 +395,12 @@ function makeStub(
             }
           : {}),
         running,
-        // session.id 必须**回显请求的 ?session=**(真实后端如此:每个页签拉的是**那个会话**的快照)。
-        // 桩先前恒返回 main ⇒ 前端每次打开非主会话页签都会判定「服务端当前会话被切走了」
-        // → rebuild(false) 清空重放(第一三九批写用例时踩到:明明有缓存,流还是空的)。
-        ...(mainSessionId
-          ? { session: { id: url.searchParams.get('session') || mainSessionId, name: '主会话', path: '/tmp/' + (url.searchParams.get('session') || mainSessionId) + '.jsonl', key: 'k-' + (url.searchParams.get('session') || mainSessionId) } }
+        // session.id **恒为服务端当前会话**(与 ?session= 无关)—— 真实后端 handleState 如此。
+        // 别让它回显请求参数:那正是第一四〇批前端 P1(非当前会话页签的弹层永不弹)长期没被
+        // 用例拦住的根因(W3:测试桩替产品说假话)。前端要的是「本页签的会话」时用页签键
+        // (App.vue 的 mainTabKey / askedForTab),不是 state.session.id。
+        ...(serverCurrentId
+          ? { session: { id: serverCurrentId, name: '主会话', path: '/tmp/' + serverCurrentId + '.jsonl', key: 'k-' + serverCurrentId } }
           : {}),
         version: 'layout-guard',
       })
@@ -530,6 +534,10 @@ function makeStub(
   handler.toolQueries = toolQueries
   handler.packPosts = packPosts
   handler.memState = memState
+  // setServerCurrent 切走服务端当前会话(模拟别的端/命令改动;见 W1 用例)。
+  handler.setServerCurrent = (id) => {
+    serverCurrentId = id
+  }
   return handler
 }
 const apiStub = makeStub(true)
@@ -2285,6 +2293,38 @@ describe('布局护栏:整页永不滚动(第五十二/五十三批)', { skip: s
       await delRow('main')
       assert.equal(await readMark(k2), null, '删当前会话后端已新建空会话承接,前端必须重建会话流')
 
+      assertInvariants(await measure(page))
+    } catch (e) {
+      await shoot(page, t.name)
+      throw e
+    } finally {
+      await ctx.close()
+    }
+  })
+
+  // W1:非主会话页签**不跟随**服务端当前会话。
+  //
+  // 后端 /api/state 的 session.id 恒为 CurrentSession()(与 ?session= 无关),而页签是
+  // 「我在看哪个会话」。若不区分,别的端/命令一切走当前会话,这个页签就会把全局当前会话
+  // 当成自己的 id,判定「我绑的会话被切走」→ 白重放一次(判据:续传游标被清 = 流被重建过)。
+  test('会话作用域:非主会话页签不被服务端当前会话的切换带走', async (t) => {
+    const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+    let page = null
+    try {
+      const stub = makeStub(true, false, false, false, false, 'finance', 0, false, true, 0, false, false, 'layout-main')
+      page = await ctx.newPage()
+      await page.addInitScript(() => window.sessionStorage.setItem('gah.onboard.auto', '1'))
+      await page.route('**/api/**', stub)
+      await page.goto(baseURL() + '?session=hist-1', { waitUntil: 'load' })
+      await waitSkeleton(page)
+      // 桩下发的 session.id 是 layout-main,而本页签绑的是 hist-1 ⇒ 应认自己的键,不重建。
+      // 游标内袋就是 transport 的分桶键(`gah.lastSeq.<会话 id>`),当作「流被重建过」的可观测痕迹。
+      await page.evaluate(() => sessionStorage.setItem('gah.lastSeq.hist-1', '777'))
+      await page.waitForTimeout(400)
+      stub.setServerCurrent('layout-other') // 别的端/命令切走服务端当前会话
+      await page.waitForTimeout(3500) // 至少一轮 stats 轮询(3s)
+      const got = await page.evaluate(() => sessionStorage.getItem('gah.lastSeq.hist-1'))
+      assert.equal(got, '777', '非主会话页签不该因全局当前会话变化而重建会话流')
       assertInvariants(await measure(page))
     } catch (e) {
       await shoot(page, t.name)

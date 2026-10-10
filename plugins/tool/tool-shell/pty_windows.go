@@ -2,8 +2,9 @@
 
 // pty_windows.go:Windows 侧的 pty = **ConPTY**(伪控制台)。
 //
-// 为什么 Windows 不用 Git Bash 跑交互(见 pty.go 的 shellArgv):交互场景在 Windows 上
-// 就是 cmd/PowerShell 的主场,用 bash 去跑交互 REPL 是绕远路。
+// 跑在 ConPTY 里的 shell 与其它路径**同一口径**(sdk.ResolvePOSIXShell ⇒ Git for Windows 的
+// bash;见 pty.go 的 shellArgv 决策注释):裁决按 POSIX 词法进行,执行也必须用 POSIX shell,
+// 否则 `copy/del/move/rd` 等 cmd 内建会绕过写目标裁决。缺 Git for Windows 时显式报错。
 //
 // Win32 调用序列,每步都标了为什么不能省:
 //  1. `CreatePipe` 造匿名管道 —— ConPTY 要求输入输出是**可异步读的句柄**;不能用
@@ -114,6 +115,10 @@ func startPTY(argv []string, dir string, env []string) (*ptySession, error) {
 	if len(argv) == 0 {
 		return nil, fmt.Errorf("pty: argv 为空")
 	}
+	// MSYS 路径转换开关必须与**非 pty 路径同口径**(sdk/shellpath.go):Git Bash 会把看起来像
+	// unix 路径的参数自动转成 Windows 路径 ⇒ 裁决层「以为拦住了」而实际写到了别处。
+	// unix 侧在 cmd.Env 里设过;这里是手工拼环境块,得自己补上(否则换 shell 后出现新窗口)。
+	env = sdk.ShellExecEnv(env)
 	// ① 管道:子进程**读** inR、**写** outW;父进程写 inW、读 outR。
 	inR, inW, err := os.Pipe()
 	if err != nil {
@@ -292,8 +297,6 @@ func sortStrings(s []string) {
 	}
 }
 
-// shellForPty 交互命令用的 shell(Windows 侧恒为 cmd.exe,见 pty.go 的 shellArgv)。
-// 保留这个函数是为了让「选哪个 shell」这件事在两个平台文件里形状一致(pty.go 直接调它)。
-func shellForPty() string { return "cmd.exe" }
+// shellForPty 已收口到 pty.go(两平台统一走 sdk.ResolvePOSIXShell)。
 
 var _ = sdk.SandboxWorkspace // 保持 sdk 引用(环境/沙箱口径与 unix 侧同源,见 pty.go)
