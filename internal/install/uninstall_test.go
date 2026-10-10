@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nekoleamo/go-agent-harness/internal/testutil"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -52,7 +53,7 @@ func TestUninstallStopsProcessBeforeDeleting(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := filepath.Join(home, "plugins", "demo")
-	bin := filepath.Join(dir, "tool-demo")
+	bin := filepath.Join(dir, testutil.ExeName("tool-demo"))
 
 	// 在「文件还在的时候」调 Disable —— 停用必须发生在文件被删之前。
 	ctl := &fakeCtl{paths: map[string]string{"tool-demo": bin}}

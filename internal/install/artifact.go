@@ -107,6 +107,10 @@ func InstallArtifact(rawURL, id, name, home string) (*Result, error) {
 	if err := ValidateArtifactArgs(id, name); err != nil {
 		return nil, err
 	}
+	// Windows 下产物必须带 .exe(与 install.Install 同一条口径,见 sdk.BinaryName):
+	// os/exec 对绝对路径不做 PATHEXT 补全 → 不带 .exe 的 PE 一律 ErrNotFound。
+	// 白名单键 / 来源账 / Result.Binary 都用归一后的名字,与盘上文件一致。
+	name = sdk.BinaryName(name)
 	if err := checkPrebuiltURL(rawURL); err != nil {
 		return nil, fmt.Errorf("install-artifact: %w", err)
 	}

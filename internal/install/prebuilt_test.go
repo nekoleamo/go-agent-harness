@@ -17,6 +17,7 @@ import (
 	"testing"
 
 	"github.com/nekoleamo/go-agent-harness/internal/plugintrust"
+	"github.com/nekoleamo/go-agent-harness/internal/testutil"
 )
 
 // fakeBin 造一个**只有头部**的假产物(magic 指向 os/arch)。
@@ -100,7 +101,7 @@ func TestPrebuiltNeverBuilds(t *testing.T) {
 		t.Errorf("回执必须明说没跑构建: %q", res.BuildCmd)
 	}
 	// 产物落位
-	bin := filepath.Join(home, "plugins", "demo", "tool-demo")
+	bin := filepath.Join(home, "plugins", "demo", testutil.ExeName("tool-demo"))
 	if fi, err := os.Stat(bin); err != nil || fi.Size() == 0 {
 		t.Fatalf("产物未落位: %v", err)
 	}
@@ -173,7 +174,7 @@ func TestPrebuiltArchMismatch(t *testing.T) {
 	if !strings.Contains(err.Error(), "架构不符") || !strings.Contains(err.Error(), other) {
 		t.Errorf("报错要说清「需要什么/拿到什么」: %v", err)
 	}
-	if fileExists(filepath.Join(home, "plugins", "demo", "tool-demo")) {
+	if fileExists(filepath.Join(home, "plugins", "demo", testutil.ExeName("tool-demo"))) {
 		t.Error("校验没过就不该落位")
 	}
 }

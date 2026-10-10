@@ -9,6 +9,7 @@ import (
 
 	"github.com/nekoleamo/go-agent-harness/internal/embed"
 	"github.com/nekoleamo/go-agent-harness/internal/plugintrust"
+	"github.com/nekoleamo/go-agent-harness/internal/testutil"
 )
 
 // makeFixture 构造本地 git 插件仓库(桥协议 demo 插件);返回仓库路径。
@@ -85,8 +86,8 @@ func TestInstallBridge(t *testing.T) {
 	if res.ID != "demo" || res.Protocol != "bridge" {
 		t.Fatalf("结果不符: %+v", res)
 	}
-	// 产物在 home/plugins/demo/tool-demo
-	bin := filepath.Join(home, "plugins", "demo", "tool-demo")
+	// 产物在 home/plugins/demo/tool-demo[.exe](Windows 补 .exe,见 sdk.BinaryName)
+	bin := filepath.Join(home, "plugins", "demo", testutil.ExeName("tool-demo"))
 	if fi, err := os.Stat(bin); err != nil || fi.Size() == 0 {
 		t.Fatalf("产物缺失: %v %v", bin, err)
 	}
@@ -182,7 +183,7 @@ func main() {
 		t.Fatalf("id 不符: %+v", res)
 	}
 	// 桥协议枚举多工具的入口产物存在即可(注册面由 host-bridge 枚举测试覆盖)
-	bin := filepath.Join(home, "plugins", "multi", "tool-multi")
+	bin := filepath.Join(home, "plugins", "multi", testutil.ExeName("tool-multi"))
 	if fi, err := os.Stat(bin); err != nil || fi.Size() == 0 {
 		t.Fatalf("产物缺失: %v %v", bin, err)
 	}
@@ -400,7 +401,7 @@ func TestInstallFromLocalDir(t *testing.T) {
 	if !res.Local {
 		t.Fatal("Local 标志应为 true(面板与 /install 回显要用)")
 	}
-	if res.ID != "demo" || res.Binary != "tool-demo" {
+	if res.ID != "demo" || res.Binary != testutil.ExeName("tool-demo") {
 		t.Fatalf("结果不符: %+v", res)
 	}
 	// 判据用 filepath.IsAbs 而不是 HasPrefix("/"):Windows 的绝对路径带盘符

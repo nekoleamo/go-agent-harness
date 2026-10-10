@@ -365,7 +365,7 @@ func TestCLIInstallArtifact(t *testing.T) {
 	if !strings.Contains(res.stdout, "未执行任何构建命令") {
 		t.Errorf("回执要明说没跑构建: %q", res.stdout)
 	}
-	p := filepath.Join(home, "plugins", "demo", "tool-demo")
+	p := filepath.Join(home, "plugins", "demo", testutil.ExeName("tool-demo"))
 	fi, err := os.Stat(p)
 	if err != nil || fi.Size() == 0 {
 		t.Fatalf("产物未落位: %v", err)

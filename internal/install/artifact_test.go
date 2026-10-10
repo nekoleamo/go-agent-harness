@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/nekoleamo/go-agent-harness/internal/plugintrust"
+	"github.com/nekoleamo/go-agent-harness/internal/testutil"
 )
 
 func artifactServer(t *testing.T, body []byte) *httptest.Server {
@@ -97,7 +98,7 @@ func TestInstallArtifactNoBuild(t *testing.T) {
 	if !strings.Contains(res.BuildCmd, "未执行构建") {
 		t.Errorf("回执要明说没跑构建: %q", res.BuildCmd)
 	}
-	bin := filepath.Join(home, "plugins", "demo", "tool-demo")
+	bin := filepath.Join(home, "plugins", "demo", testutil.ExeName("tool-demo"))
 	fi, err := os.Stat(bin)
 	if err != nil || fi.Size() == 0 {
 		t.Fatalf("产物未落位: %v", err)
@@ -119,18 +120,18 @@ func TestInstallArtifactRecordsSameShape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sum, ok := list.Sum("tool-demo")
+	sum, ok := list.Sum(testutil.ExeName("tool-demo"))
 	if !ok {
 		t.Fatal("产物应登记进白名单")
 	}
 	// 装完再换会被挡住 —— 这是不验签名下**唯一**的缓解,必须真的生效
-	if err := list.Verify("tool-demo", sum); err != nil {
+	if err := list.Verify(testutil.ExeName("tool-demo"), sum); err != nil {
 		t.Errorf("刚装的那份应通过校验: %v", err)
 	}
-	if err := list.Verify("tool-demo", [32]byte{0xAB}); err == nil {
+	if err := list.Verify(testutil.ExeName("tool-demo"), [32]byte{0xAB}); err == nil {
 		t.Error("换成别的内容应被挡住(否则「不验签名」就连这一点缓解都没有)")
 	}
-	if a, ok := list.LastAuditOf("tool-demo"); !ok || !strings.HasPrefix(a.Source, "artifact-install:") {
+	if a, ok := list.LastAuditOf(testutil.ExeName("tool-demo")); !ok || !strings.HasPrefix(a.Source, "artifact-install:") {
 		t.Errorf("审计来源应标出产物安装: %+v", a)
 	}
 	// 来源账
@@ -171,7 +172,7 @@ func TestInstallArtifactArchMismatch(t *testing.T) {
 	if !strings.Contains(err.Error(), "架构不符") || !strings.Contains(err.Error(), other) {
 		t.Errorf("报错要说清需要什么/拿到什么: %v", err)
 	}
-	if fileExists(filepath.Join(home, "plugins", "demo", "tool-demo")) {
+	if fileExists(filepath.Join(home, "plugins", "demo", testutil.ExeName("tool-demo"))) {
 		t.Error("校验没过就不该落位")
 	}
 }

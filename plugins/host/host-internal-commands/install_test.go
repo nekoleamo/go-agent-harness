@@ -25,6 +25,7 @@ import (
 	"github.com/nekoleamo/go-agent-harness/core/event"
 	"github.com/nekoleamo/go-agent-harness/internal/install"
 	"github.com/nekoleamo/go-agent-harness/internal/plugintrust"
+	"github.com/nekoleamo/go-agent-harness/internal/testutil"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -226,7 +227,7 @@ func TestCmdInstallRealInstall(t *testing.T) {
 			t.Fatalf("回执缺 %q:\n%s", want, out)
 		}
 	}
-	bin := filepath.Join(home, "plugins", "demo", "tool-demo")
+	bin := filepath.Join(home, "plugins", "demo", testutil.ExeName("tool-demo"))
 	if _, err := os.Stat(bin); err != nil {
 		t.Fatalf("产物未落位: %v", err)
 	}
@@ -742,7 +743,7 @@ func TestCmdInstallArtifact(t *testing.T) {
 			t.Errorf("回执缺 %q:\n%s", want, out)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(home, "plugins", "demo", "tool-demo")); err != nil {
+	if _, err := os.Stat(filepath.Join(home, "plugins", "demo", testutil.ExeName("tool-demo"))); err != nil {
 		t.Errorf("产物未落位: %v", err)
 	}
 }
