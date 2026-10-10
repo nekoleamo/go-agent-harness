@@ -26,7 +26,13 @@
 #   bash scripts/release.sh mirror v0.6.0 --mirror      # Gitee 镜像(需 env 的 GITEE_TOKEN)
 #   bash scripts/release.sh verify-mirror v0.6.0 --dir /tmp/rel   # 只做逐字节核对(**只读**,不需 token)
 #   bash scripts/release.sh endpoint v0.6.0    # 回查壳的第一顺位端点
-#   bash scripts/release.sh all v0.6.0 --yes --mirror
+#   bash scripts/release.sh finish v0.6.0      # **终局闸(只读)**:产物门 + 第一顺位端点都对齐才算发完
+#   bash scripts/release.sh all v0.6.0 --yes --mirror   # **一条命令走完全部**(结尾含终局闸)
+#
+#   all 的两个必选旗标(2026-10-10 起):--mirror(国内镜像,推荐)/ --skip-mirror(明知不做才写)。
+#   此前 --mirror 可省,省了只打印一行「跳过」—— 而 Gitee 正是 updater 的**第一顺位端点**,
+#   于是「发版成功」与「国内用户能看到新版」是两件事,后者没人判。真踩过:v0.6.1 打 tag、
+#   GitHub 全绿,而 Gitee 表还停在 0.6.0,用户在应用里「检查更新」找不到新版。
 #   bash scripts/release.sh preflight --fast   # 跳过重活(交叉编译/desktop),只跑快的
 #
 # 环境:
@@ -67,7 +73,7 @@ case "$sub" in -h|--help) usage; exit 0 ;; esac
 if [ -z "$sub" ]; then usage; exit 0; fi
 shift || true
 
-FAST=0; YES=0; MIRROR=0; SKIP_VERIFY=0; VERIFY_ALL=0
+FAST=0; YES=0; MIRROR=0; SKIP_VERIFY=0; VERIFY_ALL=0; SKIP_MIRROR=0
 MIRROR_DIR="" # verify-mirror 的 --dir:本地产物目录(与 GAH_MIRROR_DIR 同义,显式的优先)
 VERIFY_FLAGS=() # 转发给 verify-release.mjs 的未知旗标(见下面 --*) 分支)
 TAG=""; ARGS=()
@@ -87,6 +93,7 @@ else
       --fast) FAST=1 ;;
       --yes) YES=1 ;;
       --mirror) MIRROR=1 ;;
+      --skip-mirror) SKIP_MIRROR=1 ;; # 明知不做 Gitee 镜像才写;终局闸会打一段后果说明
       --skip-artifacts) SKIP_VERIFY=1 ;;
       --all) VERIFY_ALL=1 ;; # verify-release 的逐平台全量验签(慢,但发版该跑)
       --dir)
@@ -305,6 +312,13 @@ watch_release() {
   printf '%s\n' "$assets" | grep -qx latest.json \
     || die "Release $TAG 没有 latest.json —— release-desktop 的 merge job 没成功。updater 端点会 404(用户端显示「暂无可用更新」)"
   say "    Release 资产 $(printf '%s\n' "$assets" | grep -c . ) 件,含 latest.json"
+  say ""
+  say "    ⚠ GitHub 侧到此为止,**这个版本还没发完**:Gitee 镜像与端点回查在后面。"
+  say "      updater 的第一顺位端点是 Gitee(raw/master/latest.json),GitHub 只是兜底;"
+  say "      它不跑到本次 tag,国内用户的「检查更新」就看不到这一版(2026-10-10 v0.6.1 真踩过)。"
+  say "      接着跑其中一条:"
+  say "        bash ~/.pi/agent/local/gitee-release.sh $TAG    # 镜像 + 逐字节核对 + 端点回查"
+  say "        bash scripts/release.sh finish $TAG            # 只判「是否已发完」(只读,不需 token)"
 }
 
 # ───────────────────────────── verify ─────────────────────────────
@@ -502,6 +516,30 @@ do_endpoint() {
     || die "端点未对齐到 $TAG(当前 $got)。**这是可接受的安全态**:升级器不会指向未核验的字节"
 }
 
+# ─────────────────────────── finish(终局闸)───────────────────────────
+# 判定「这个版本真的发完了」。只做两件**只读**的事:① GitHub 产物门 ② updater 第一顺位端点对齐。
+#
+# 为什么不把它编进 watch(2026-10-10 的取舍):watch 跑在 tag 之后、mirror 之前 ——
+# 那一刻 Gitee 表**理应**还没本次 tag(要等 ⑥),所以那里判红是假的。真踩过的坑是**结尾**没人判:
+# `all` 跑完、GitHub 全绿、Gitee 表停在旧版,于是「发版成功」而用户端找不到新版。
+# 终局闸只重用一个判定实现(do_endpoint,本就重试 5×、对不上即 die)—— 不新增第二份口径。
+do_finish() {
+  local verify_ran="${1:-0}"
+  step "finish · 终局闸(只读:这个版本真的发完了吗)"
+  [ "$verify_ran" = 1 ] || [ "$SKIP_VERIFY" = 1 ] || do_verify "$TAG"
+  if [ "$SKIP_MIRROR" = 1 ]; then
+    say ""
+    say "  !! 你显式选了 --skip-mirror:本次发版**不含 Gitee 镜像**。"
+    say "     后果不是「少个功能」:updater 第一顺位端点是 Gitee,它不跑到本次 tag,"
+    say "     国内用户的「检查更新」看不到这一版。随时可补做:"
+    say "       bash ~/.pi/agent/local/gitee-release.sh $TAG"
+    return 0
+  fi
+  do_endpoint "$TAG" || die "第一顺位端点未对齐 $TAG —— 上面就是原因"
+  say ""
+  say "  终局闸通过:GitHub 产物与第一顺位端点都对齐 $TAG —— 这一版发完了。"
+}
+
 # ───────────────────────────── all ─────────────────────────────
 closeout() {
   step "收尾 · 待同步的文档(**脚本不代劳**,见方案 §4 决策 C)"
@@ -531,12 +569,21 @@ case "$sub" in
   mirror)    do_mirror "$@" ;;
   verify-mirror) do_verify_mirror ;;
   endpoint)  do_endpoint "$@" ;;
+  finish)    do_finish 0 ;;
   all)
     TAG="${TAG:-${1:-}}"
-    [ -n "$TAG" ] || die "用法:release.sh all <vX.Y.Z> --yes --mirror"
+    [ -n "$TAG" ] || die "用法:release.sh all <vX.Y.Z> --yes --mirror(或 --skip-mirror)"
+    # 镜像必选其一:默认「不做也不问」正是 v0.6.1 那类静默缺口的来源。
+    [ "$MIRROR" = 1 ] || [ "$SKIP_MIRROR" = 1 ] \
+      || die "all 必须显式选一个:--mirror(推荐;国内镜像 + 端点回查)或 --skip-mirror(明知不做才写,终局闸会打后果说明)"
+    # 凭据**提前**判:否则要等四十分钟(等 CI + 盯两个 workflow)才在镜像那一步因缺 token 失败。
+    if [ "$MIRROR" = 1 ] && [ -z "${GITEE_TOKEN:-}" ]; then
+      die "--mirror 需要 env 里的 GITEE_TOKEN(本脚本**刻意不读** secrets 文件,引入在仓库外)。
+  用入口:bash ~/.pi/agent/local/gitee-release.sh all $TAG —— 它定点引入凭据后调本脚本;或显式改用 --skip-mirror"
+    fi
     preflight; wait_ci; do_tag "$TAG"; watch_release "$TAG"; do_verify "$TAG"
-    [ "$MIRROR" = 1 ] && { do_mirror "$TAG"; do_endpoint "$TAG"; } \
-      || say "未带 --mirror:跳过 Gitee 镜像与端点回查(那是唯一写外部平台的一步)"
+    [ "$MIRROR" = 1 ] && do_mirror "$TAG"
+    do_finish 1   # verify 刚跑过;这里只判端点并给「发完了」的结论
     closeout ;;
   *) die "未知子命令:$sub(--help 看用法)" ;;
 esac
