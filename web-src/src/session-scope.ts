@@ -38,3 +38,25 @@ export function sessionQS(extra?: Record<string, string | number | undefined>): 
   const s = q.toString()
   return s ? '?' + s : ''
 }
+
+// shouldFollowSwitch 「服务端当前会话已切到 id」的显式信号(FrameSessionSwitched)到达时,
+// 本窗口该不该跟随。
+//
+// 三条否定判据分别对应三种「不该动」:
+//   ① mainTabKey 为 null —— 本窗口没有「代表服务端当前会话」的页签(带 ?session= 启动的多窗口
+//      / 刷新恢复出的具体会话),它钉在某个会话上,不跟随;
+//   ② 当前页签不是那个主页签 —— 用户正在看别的会话,不能把**它**改绑走(主页签等切回去时再追);
+//   ③ id 为空或已等于本流绑定 —— 空 id(未装配 CwdSessions / 旧事件形态)交给快照兜底,
+//      相等则已经在看它了。
+export function shouldFollowSwitch(
+  id: string,
+  mainTabKey: string | null,
+  curTabId: string,
+  streamSessionId: string,
+): boolean {
+  if (mainTabKey === null) return false
+  if (mainTabKey !== (curTabId || 'main')) return false
+  const s = (id || '').trim()
+  if (!s) return false
+  return s !== streamSessionId
+}

@@ -19,6 +19,7 @@ export type FrameType =
   | 'baseline'
   | 'notice'
   | 'steer_dropped'
+  | 'sessionswitched'
 
 export interface Frame {
   id: number
@@ -52,6 +53,13 @@ export interface NoticePage {
   max_id: number
   gap?: boolean
   suppressed?: number
+}
+
+// 服务端当前会话已切走(FrameSessionSwitched payload;W1 根修)。
+// id 恒为**真实会话 id**(宿主已把「回主会话」解析成当前会话 id)—— 前端据此立即改绑跟随,
+// 不必等 3s 轮询从 /api/state 的 state.session.id 差值里嗅探(那是兜底)。
+export interface SessionSwitched {
+  id: string
 }
 
 // 首帧基线(FrameBaseline payload;S-P1-2 长会话):首连时服务端只回放**尾部窗口**,

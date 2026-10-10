@@ -57,6 +57,12 @@ const (
 	// 用户在本端插了话而回合却结束了(取消/失败):前端把内容还回输入框并提示,
 	// 不静默丢 —— 与 TUI 侧「转为待发」同语义。
 	FrameSteerDropped = "steer_dropped"
+	// FrameSessionSwitched 服务端**当前会话已切走**(cwd/session-switched 的 Web 桥;W1 根修)。
+	// 载荷 *SessionSwitched。为何要有它:此前 Web 端只能等 3s 轮询,从 /api/state 的
+	// state.session.id 差值里**嗅探**出「当前会话被切走了」—— 那是兜底,不是唯一判据。
+	// 有了这条显式信号,主页签可**立即**改绑跟随(多窗口/?session= 启动的窗口不跟随,前端按
+	// mainTabKey 判定)。快照差值仍保留为兜底(漏帧/重连/未来未发事件的切换路径)。
+	FrameSessionSwitched = "sessionswitched"
 )
 
 // QuestionDone 提问解决载荷(多端同步观察:按 id 关闭本端遗留弹层)。
@@ -75,6 +81,14 @@ type ConfirmDone struct {
 	// 不弹错误行 —— 用户自己点的停止,回一句红字「审批未等到应答」是纯噪音
 	// (2026-10-03 实机反馈)。
 	Canceled bool `json:"canceled,omitempty"`
+}
+
+// SessionSwitched 「服务端当前会话已切到 ID」的帧载荷(W1 根修)。
+//
+// ID 恒为**真实会话 id**(即便宿主那次切换说的是「回主会话」)—— 主机侧已把空串
+// 解析成当前会话 id:前端只有拿到真 id 才能改绑页签键与 api 绑定,空串改绑不了。
+type SessionSwitched struct {
+	ID string `json:"id"`
 }
 
 // Baseline 首帧基线载荷(S-P1-2:长会话的首帧窗口描述)。
@@ -143,6 +157,18 @@ func (h *EventHub) Subscribe(c sdk.Ctx, sessions sdk.SessionLog) (disposer sdk.D
 			return nil
 		}
 		h.push(h.mainSessionID(), se)
+		return nil
+	})
+	add("cwd/session-switched", func(_ context.Context, ev *sdk.Event) error {
+		// 服务端当前会话被 TUI/命令/别的端切走(CwdSessions.Open/New 广播)。
+		// 给 Web 一条显式信号(WebSocket/SSE 同一帧表)→ 主页签立即改绑跟随。
+		id, _ := ev.Payload.(string)
+		if id == "" {
+			// Open("") = 回主会话:载荷是空串,而前端需要**真实** id 才能改绑。
+			// 取不到(未装配 CwdSessions)就原样下发,由前端交给快照兜底 —— 不在这里编 id。
+			id = h.mainSessionID()
+		}
+		h.Push(Frame{Type: FrameSessionSwitched, Payload: &SessionSwitched{ID: id}})
 		return nil
 	})
 	add(sdk.EventDocOpen, func(_ context.Context, ev *sdk.Event) error {

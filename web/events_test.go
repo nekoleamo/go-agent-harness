@@ -110,6 +110,41 @@ func TestHubBroadcastAndSeq(t *testing.T) {
 	}
 }
 
+// TestHubBridgesSessionSwitched cwd/session-switched → 显式帧(W1 根修)。
+//
+// 两个要点:① 事件确实被桥成帧(否则前端只能继续靠快照嗅探);
+// ② 载荷为空串(Open("") = 回主会话)时必须用 BindMain 解析成**真实** id ——
+// 前端只有拿到真 id 才能改绑页签键与 api 绑定。
+func TestHubBridgesSessionSwitched(t *testing.T) {
+	ctx := newTestCtx()
+	hub := NewHub()
+	hub.BindMain(func() string { return "cur-1" })
+	unsub, err := hub.Subscribe(ctx, &memLog{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unsub()
+	ch, rel := hub.Stream("")
+	defer rel()
+
+	ctx.fire("cwd/session-switched", "s2")
+	f := <-ch
+	if f.Type != FrameSessionSwitched {
+		t.Fatalf("应收到 %q 帧,得 %q", FrameSessionSwitched, f.Type)
+	}
+	sw, ok := f.Payload.(*SessionSwitched)
+	if !ok || sw.ID != "s2" {
+		t.Fatalf("载荷应是 {id:s2},得 %#v", f.Payload)
+	}
+
+	ctx.fire("cwd/session-switched", "")
+	f2 := <-ch
+	sw2, _ := f2.Payload.(*SessionSwitched)
+	if sw2 == nil || sw2.ID != "cur-1" {
+		t.Fatalf("空载荷应解析成当前主会话 id,得 %#v", f2.Payload)
+	}
+}
+
 func TestReplayAfter(t *testing.T) {
 	ctx := newTestCtx()
 	log := &memLog{}

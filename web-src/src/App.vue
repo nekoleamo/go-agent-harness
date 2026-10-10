@@ -52,7 +52,7 @@ import { isUserCanceled } from './turns'
 import { DEFAULT_TAB_LIMIT, decodeTabs, encodeTabs, TabSet } from './tabset'
 import type { TabMeta } from './tabset'
 import { shortSessionId, tabTitle } from './frame-routing'
-import { boundSession } from './session-scope'
+import { boundSession, shouldFollowSwitch } from './session-scope'
 import { foreignOwner, foreignTodoText } from './frame-routing'
 import { extraPanel, slotComponent, type MetaLine, type PendingView } from './registry'
 import SessionPrefsPanel from './components/SessionPrefsPanel.vue'
@@ -70,6 +70,7 @@ import type {
   Notice,
   NoticePage,
   Schedule,
+  SessionSwitched,
 } from './types'
 import {
   applyPage,
@@ -843,6 +844,14 @@ function rebuild(plan: SwitchPlan): void {
     // 代际检查已由 gate 在入队时完成(gen 有意义的时候);此处只管入队。
     sessionQueue.push(f.payload as SessionEvent)
   }))
+  // 服务端当前会话被切走的**显式信号**(W1 根修):主页签立即改绑跟随,不等下一轮 3s 轮询。
+  // 快照差值仍是兜底(漏帧/重连/未发事件的切换路径),两条路走同一个 followServerSession。
+  transport.on('sessionswitched', gate((f) => {
+    const id = (f.payload as SessionSwitched | undefined)?.id ?? ''
+    if (!shouldFollowSwitch(id, mainTabKey, curTabId(), streamSessionId)) return
+    followServerSession(id)
+    void refreshStats() // 状态栏/本会话面板也要切到新会话(模型/沙箱/running 都是它的)
+  }))
   transport.on('status', gate((f) => {
     const was = state.value.running
     state.value.running = f.payload === 'running'
@@ -981,6 +990,27 @@ async function backfillNotices(gen: number): Promise<void> {
   }
 }
 
+// followServerSession 主页签跟随服务端当前会话:改绑**整条链**(页签键 + viewCache + api 绑定 +
+// 事件层游标桶 + mainTabKey)再重放。
+//
+// 为何必须整体改绑而不是只改 streamSessionId:api.input / api.control 都带 boundSessionId
+// ⇒ 只改流的话,用户看到新会话、发消息与改「本会话设置」却落到**上一个**会话;页签键不改则
+// 标题/关闭/重开语义都指向旧会话;游标桶不改则 rebuild 清的桶与连接用的桶不是一个。
+// 两条触发路径(显式帧 FrameSessionSwitched / 快照兜底)共用本函数。
+function followServerSession(sid: string): void {
+  const oldKey = tabId.value || 'main'
+  viewCache.rename(oldKey, sid)
+  tabs.rekey(oldKey, sid)
+  tabId.value = sid
+  if (mainTabKey !== null && mainTabKey === oldKey) mainTabKey = sid
+  api.bindSession(sid)
+  setTransportSession(sid)
+  streamSessionId = sid
+  void syncTitles()
+  rebuild(switchPlan(false))
+  refreshKey.value++
+}
+
 // lastRunning 上一轮快照里在跑的会话(用于「从跑变不跑 ⇒ 标未读」)。
 let lastRunning: string[] = []
 
@@ -996,33 +1026,21 @@ async function refreshStats(): Promise<void> {
     applyCustomTo(askedForTab, state.value)
     // 会话被**命令**切走(如 `/session new`、`/session switch`)时前端收不到任何信号:
     // SSE 订阅还挂在旧会话上 → 用户后续输入的消息服务端已记录,界面上却一个帧都不来(静默丢显示)。
-    // 故以服务端快照为事实:监到当前会话 id 与流所绑定的不一致 → 重放全量(与侧栏切换同一条路径)。
+    // 显式信号已由 FrameSessionSwitched 帧给出(W1 根修);这里的快照差值是**兜底**
+    // (漏帧/重连/未发事件的切换路径),两条路走同一个 followServerSession。
     // 只有主页签跟随全局当前会话;其余页签用**自己的**键(W1,见 mainTabKey 注释)。
     const sid = mainTabKey !== null && askedForTab === mainTabKey
       ? (state.value.session?.id ?? '')
       : askedForTab
     if (sid && sid !== streamSessionId) {
-      if (streamSessionId === '') {
-        streamSessionId = sid // 首次快照 / 本地刚切换(见 sessionChanged)→ 只校准,不重放
-      } else {
-        // 能走到这里只可能是**主页签**(非主页签的 sid 恒等于自己的键,不会不等):
-        // 服务端当前会话被命令/别的端切走了。跟随就必须**整体改绑**,只改 streamSessionId 会留下三处不一致:
-        //   ① 页签键/标题还指向旧会话;
-        //   ② **api 绑定还是旧会话**(api.input / api.control 都带 boundSessionId)
-        //      ⇒ 用户看到新会话、发消息与「本会话设置」却落到上一个会话(改了没生效);
-        //   ③ 事件层游标桶还是旧会话(rebuild 清的桶与连接用的桶不是一个)。
-        // 与首帧校准(第一百三十八批)同一手法:改绑而不是新建,只是触发点不同。
-        const oldKey = tabId.value || 'main'
-        viewCache.rename(oldKey, sid)
-        tabs.rekey(oldKey, sid)
-        tabId.value = sid
-        if (mainTabKey !== null && mainTabKey === oldKey) mainTabKey = sid
-        api.bindSession(sid)
-        setTransportSession(sid)
+      if (streamSessionId === '' && (!calibrated || askedForTab === sid)) {
+        // 只校准,不重放。两种情形:① 首帧占位页(!calibrated)—— 视图本就是空的,
+        // 且连接按 sessionKey("") 已指向当前会话;② 本地刚切换(sessionChanged/switchTab
+        // 已把视图换成目标会话)。判据就是「当前视图属于**这个**会话」。
         streamSessionId = sid
-        void syncTitles()
-        rebuild(switchPlan(false))
-        refreshKey.value++
+      } else {
+        // 视图属于**别的**会话:服务端当前会话被切走,或从别的页签切回主页签时才发现。
+        followServerSession(sid)
       }
     }
     // 页签运行标记 + 未读:后台页签没有事件连接(每页签一条),只能靠这份快照 ——
