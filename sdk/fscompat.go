@@ -101,15 +101,25 @@ func removeTreeWith(dir string, rm func(string) error, makeWritable func(string)
 
 // makeWritable 把整棵树的只读位清掉(目录要可进入才能删里面的文件,故目录与文件一起处理)。
 func makeWritable(dir string) error {
-	return makeWritableWith(dir, filepath.WalkDir)
+	return makeWritableWith(dir, filepath.WalkDir, os.Chmod)
 }
 
-// makeWritableWith makeWritable 的可测内核(注入遍历器)。
+// makeWritableWith makeWritable 的可测内核(注入遍历器与 chmod)。
 //
-// 为什么要拆:「非「不存在」的遍历错误必须上抛」那一支在真实文件系统上**几乎构造不出来** ——
-// 我们是树的主人,chmod 子目录永远成功,而 chmod 只需父目录写权限,于是 WalkDir 不会因权限失败。
-// 不拆开就只能留一条无用例的分支(本地绿 ≠ Windows 绿那条纪律的老问题)。
-func makeWritableWith(dir string, walk func(string, fs.WalkDirFunc) error) error {
+// 为什么要拆、为什么把 chmod 也注进去(2026-10-10 本仓自己的 Windows CI 当场教过一次):
+//
+//	① 「非「不存在」的遍历错误必须上抛」那一支在真实文件系统上几乎构造不出来 —— 我们是树的主人,
+//	   chmod 子目录永远成功(改子目录只需**父目录**的写权限),于是 WalkDir 不会因权限失败。
+//	② 想用「路径的父级是个文件」制造 chmod 失败:POSIX 给 ENOTDIR,但 **Windows 把
+//	   ERROR_PATH_NOT_FOUND 映射成「不存在」**⇒ 断言 `errors.Is(err, fs.ErrNotExist)` 在 Windows 上
+//	   成立,用例当场红(`test-windows`,2026-10-10)。
+//
+// 注入之后这些契约在**任何平台**都由用例钉住,不依赖任何「某个 errno 在某个平台上长什么样」。
+func makeWritableWith(
+	dir string,
+	walk func(string, fs.WalkDirFunc) error,
+	chmod func(string, fs.FileMode) error,
+) error {
 	return walk(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
@@ -123,7 +133,7 @@ func makeWritableWith(dir string, walk func(string, fs.WalkDirFunc) error) error
 		if d.IsDir() {
 			mode = 0o700
 		}
-		if cerr := os.Chmod(path, mode); cerr != nil && !errors.Is(cerr, fs.ErrNotExist) {
+		if cerr := chmod(path, mode); cerr != nil && !errors.Is(cerr, fs.ErrNotExist) {
 			return cerr
 		}
 		return nil

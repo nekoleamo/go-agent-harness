@@ -235,19 +235,23 @@ func TestMakeWritableMissingTreeIsNotAnError(t *testing.T) {
 	}
 }
 
-// 遍历报**非「不存在」**的错误(如无权限的目录、I/O 错)必须上抛:不能默默当成「已删干净」。
-// 「不存在」那半支(并发里已被删)反过来必须当成成功。
-func TestMakeWritableWalkErrorSemantics(t *testing.T) {
+// 遍历报**非「不存在」**的错误必须上抛;chmod 失败同理。「已不存在」那半支(并发里已被删、
+// chmod 打到已消失的条目)反过来必须当成成功。
+//
+// 全程注入,不碰真实文件系统的 errno 形状:「父级是个文件」在 POSIX 是 ENOTDIR、在 Windows 却被
+// 映射成「不存在」(2026-10-10 本仓 test-windows 当场红过一次)。
+func TestMakeWritableErrorSemantics(t *testing.T) {
 	walkErr := errors.New("permission denied")
+	noopChmod := func(string, os.FileMode) error { return nil }
 	err := makeWritableWith("root", func(_ string, fn fs.WalkDirFunc) error {
 		return fn("root/deep", nil, walkErr)
-	})
+	}, noopChmod)
 	if !errors.Is(err, walkErr) {
 		t.Fatalf("遍历错必须上抛(不得当成已处理),实际 %v", err)
 	}
 	err = makeWritableWith("root", func(_ string, fn fs.WalkDirFunc) error {
 		return fn("root/deep", nil, fs.ErrNotExist)
-	})
+	}, noopChmod)
 	if err != nil {
 		t.Fatalf("「已不存在」应视为成功(并发删除不是失败),实际 %v", err)
 	}
@@ -257,21 +261,24 @@ func TestMakeWritableWalkErrorSemantics(t *testing.T) {
 			return e
 		}
 		return fn("root/dir", fakeDirEntry{isDir: true}, nil)
-	})
+	}, noopChmod)
 	if err != nil {
 		t.Fatalf("正常条目不应报错: %v", err)
 	}
-	// chmod 失败(非「不存在」)必须上抛:路径的父级是个**文件** ⇒ ENOTDIR
-	base := t.TempDir()
-	blocker := filepath.Join(base, "file")
-	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
+	// chmod 失败(非「不存在」)必须上抛
+	chmodErr := errors.New("chmod boom")
+	err = makeWritableWith("root", func(_ string, fn fs.WalkDirFunc) error {
+		return fn("root/file", fakeDirEntry{}, nil)
+	}, func(string, os.FileMode) error { return chmodErr })
+	if !errors.Is(err, chmodErr) {
+		t.Fatalf("chmod 错必须上抛(不得当成已处理),实际 %v", err)
 	}
-	err = makeWritableWith(base, func(_ string, fn fs.WalkDirFunc) error {
-		return fn(filepath.Join(blocker, "child"), fakeDirEntry{}, nil)
-	})
-	if err == nil || errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("chmod 失败必须上抛,实际 %v", err)
+	// chmod 打到已消失的条目(ErrNotExist)→ 当成功(与遍历同一口径)
+	err = makeWritableWith("root", func(_ string, fn fs.WalkDirFunc) error {
+		return fn("root/file", fakeDirEntry{}, nil)
+	}, func(string, os.FileMode) error { return fs.ErrNotExist })
+	if err != nil {
+		t.Fatalf("chmod 打在已消失的条目上应视为成功,实际 %v", err)
 	}
 }
 
