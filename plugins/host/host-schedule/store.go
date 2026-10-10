@@ -59,7 +59,7 @@ func savePlan(p sdk.Schedule) error {
 		return fmt.Errorf("host-schedule: 写计划失败(%s): %w", tmp, err)
 	}
 	dst := filepath.Join(dir, p.ID+".yaml")
-	if err := os.Rename(tmp, dst); err != nil {
+	if err := sdk.ReplaceFile(tmp, dst); err != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("host-schedule: 替换计划文件失败(%s): %w", dst, err)
 	}

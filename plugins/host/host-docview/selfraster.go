@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-docview/pdfium"
+	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
 // selfRaster 自包含光栅后端(懒加载 wasm 与运行时)。
@@ -106,7 +107,7 @@ func (s *selfRaster) renderPDF(ctx context.Context, abs string, fileSize, modUni
 	if err := os.WriteFile(tmp, buf.Bytes(), 0o644); err != nil {
 		return "", "", fmt.Errorf("光栅产物落盘失败: %w", err)
 	}
-	if err := os.Rename(tmp, out); err != nil {
+	if err := sdk.ReplaceFile(tmp, out); err != nil {
 		_ = os.Remove(tmp)
 		return "", "", fmt.Errorf("光栅产物落盘失败: %w", err)
 	}

@@ -610,3 +610,42 @@ func TestOfficialPluginNames(t *testing.T) {
 		t.Errorf("应与嵌入清单同集合: got %d, want %d", len(names), len(want))
 	}
 }
+
+// writeSeedAtomic 的失败路径必须**清掉临时文件**:seed 样板升级失败时不能在 config/ 里
+// 积下一堆 `.seed-tmp-*`(它们会被下一次 EnsureSeed 当成用户文件看待,也污染目录)。
+//
+// 用「目标是一个目录」制造失败:文件 rename 到目录上在**任何平台**都失败 ⇒ 可在 macOS 上钉住。
+// 反向验证:把 writeSeedAtomic 里的 `defer func(){...os.Remove(tmpPath)}` 删掉,本用例必红。
+func TestWriteSeedAtomicCleansTempOnFailure(t *testing.T) {
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "bundle-base.yaml")
+	if err := os.MkdirAll(dst, 0o755); err != nil { // 目标是目录 ⇒ 落盘必然失败
+		t.Fatal(err)
+	}
+	if err := writeSeedAtomic(dst, []byte("x: 1\n")); err == nil {
+		t.Fatal("目标是目录时应报错")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".seed-tmp-") {
+			t.Fatalf("失败后不得残留临时文件: %s", e.Name())
+		}
+	}
+}
+
+// writeSeedAtomic 在**临时文件都建不出来**时(目录不存在)必须直接报错,
+// 而不是静默继续/写出半个文件。写失败路径得有一半能被钉住,否则「失败即清理」那条纪律
+// 在真机上就是空的。
+func TestWriteSeedAtomicMissingDir(t *testing.T) {
+	base := t.TempDir()
+	err := writeSeedAtomic(filepath.Join(base, "no-such-dir", "bundle.yaml"), []byte("x: 1\n"))
+	if err == nil {
+		t.Fatal("目录不存在时应报错")
+	}
+	if !os.IsNotExist(err) {
+		t.Fatalf("应把「目录不存在」原样传出(便于上层分辨原因),实际 %v", err)
+	}
+}

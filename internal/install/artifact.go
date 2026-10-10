@@ -29,6 +29,7 @@ import (
 	"strings"
 
 	"github.com/nekoleamo/go-agent-harness/internal/plugintrust"
+	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
 // KindArtifact 来源种类:产物是**下载来的**,既没有仓库也没有 ref(批七)。
@@ -130,7 +131,7 @@ func InstallArtifact(rawURL, id, name, home string) (*Result, error) {
 	if err := downloadAndVerify(rawURL, tmpPath); err != nil {
 		return nil, err
 	}
-	if err := os.Rename(tmpPath, dst); err != nil {
+	if err := sdk.ReplaceFile(tmpPath, dst); err != nil {
 		return nil, fmt.Errorf("install-artifact: 落位 %s: %w", dst, err)
 	}
 	// 登记白名单:登记的是**刚下下来的这一份**的哈希。我们只能担保自己装进去的这份,

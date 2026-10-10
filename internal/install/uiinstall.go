@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/nekoleamo/go-agent-harness/internal/plugintrust"
+	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
 // UIManifest UI 插件声明(仓库根 manifest.json)。
@@ -53,7 +54,7 @@ func InstallUI(spec, home string) (*UIResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer os.RemoveAll(tmp)
+	defer sdk.RemoveTree(tmp)
 
 	src := filepath.Join(tmp, "repo")
 	if isLocalDir(spec) {
@@ -165,7 +166,7 @@ func UninstallUI(id, home string) error {
 	if !fileExists(dir) {
 		return fmt.Errorf("uninstall-ui: 插件 %s 未安装(%s)", id, dir)
 	}
-	return os.RemoveAll(dir)
+	return sdk.RemoveTree(dir)
 }
 
 // UIItem 已安装 UI 插件条目。

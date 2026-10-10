@@ -141,7 +141,7 @@ func writeIndexAtomic(path string, raw []byte, perm os.FileMode) error {
 		cleanup()
 		return err
 	}
-	if err := os.Rename(tmpName, path); err != nil {
+	if err := sdk.ReplaceFile(tmpName, path); err != nil {
 		cleanup()
 		return err
 	}

@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"github.com/nekoleamo/go-agent-harness/sdk"
 	"io"
 	"net/http"
 	"os"
@@ -88,7 +89,7 @@ func (s Source) Ensure(ctx context.Context) ([]byte, error) {
 	if err := os.WriteFile(tmp, wasm, 0o644); err != nil {
 		return nil, fmt.Errorf("pdfium: 写缓存失败: %w", err)
 	}
-	if err := os.Rename(tmp, cache); err != nil {
+	if err := sdk.ReplaceFile(tmp, cache); err != nil {
 		_ = os.Remove(tmp)
 		return nil, fmt.Errorf("pdfium: 落缓存失败: %w", err)
 	}

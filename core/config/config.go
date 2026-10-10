@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/nekoleamo/go-agent-harness/sdk"
 	"gopkg.in/yaml.v3"
 )
 
@@ -234,7 +235,7 @@ func writeFileAtomic(path string, raw []byte, perm os.FileMode) (err error) {
 	if err = os.Chmod(name, perm); err != nil {
 		return err
 	}
-	if err = os.Rename(name, path); err != nil {
+	if err = sdk.ReplaceFile(name, path); err != nil {
 		return err
 	}
 	name = ""

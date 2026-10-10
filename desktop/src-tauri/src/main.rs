@@ -1321,6 +1321,12 @@ fn stateRunning() -> bool {
 //   `for _ in 0..6 { sleep 500ms; eval(script) }` —— 于是两条便携提示在真机上交替
 //   **叠了 6 遍**(2026-10-05 用户截图),注释当时写的是"重复调用只更新同一个节点",
 //   代码做的却是追加。现在固定为「取(必要时建)容器 → 整体替换文本」,重试多少次结果都一样。
+//
+// **容器必须不吃点击**(2026-10-10):它 `position:fixed; left/right/bottom:12px; z-index:99999`,
+// 又盖在**整个**界面之上(含右侧抽屉)。原先未设 `pointer-events` ⇒ 默认 `auto`,于是只要壳侧有提示
+// (便携首启、旧数据迁移、运行文件放置失败),窗口底部那条**全宽**横带上的点击全被它吃掉 ——
+// 表现与「点了没反应」一模一样(Windows 真机报「当前会话设置点不动」时,这条是排查项之一)。
+// 现在:容器 `pointer-events:none`(纯展示),只把关闭按钮放回去(`pointer-events:auto`)。
 fn noticesScript(notices: &[String]) -> Option<String> {
     if notices.is_empty() {
         return None;
@@ -1330,8 +1336,8 @@ fn noticesScript(notices: &[String]) -> Option<String> {
         r#"(function(){{var t={text};var id='gah-shell-notice';var el=document.getElementById(id);
 if(!document.body)return;
 if(!el){{el=document.createElement('div');el.id=id;
-el.style.cssText='position:fixed;left:12px;right:12px;bottom:12px;z-index:99999;background:#fff8e6;border:1px solid #e0b34d;border-radius:8px;padding:10px 12px;font:13px/1.5 -apple-system,sans-serif;color:#3a2c05;white-space:pre-wrap;box-shadow:0 4px 14px rgba(0,0,0,.12)';
-var b=document.createElement('span');b.textContent='×';b.style.cssText='float:right;cursor:pointer;padding:0 4px;font-weight:600';
+el.style.cssText='position:fixed;left:12px;right:12px;bottom:12px;z-index:99999;pointer-events:none;background:#fff8e6;border:1px solid #e0b34d;border-radius:8px;padding:10px 12px;font:13px/1.5 -apple-system,sans-serif;color:#3a2c05;white-space:pre-wrap;box-shadow:0 4px 14px rgba(0,0,0,.12)';
+var b=document.createElement('span');b.textContent='×';b.style.cssText='float:right;cursor:pointer;padding:0 4px;font-weight:600;pointer-events:auto';
 b.onclick=function(){{el.remove()}};
 var s=document.createElement('span');s.className='gah-shell-notice-body';
 el.appendChild(b);el.appendChild(s);document.body.appendChild(el);}}
@@ -2451,6 +2457,31 @@ mod main_tests {
             "文本应落在自己的节点里: {s}"
         );
         assert!(s.contains("el.remove()"), "关闭按钮行为要保留: {s}");
+    }
+
+    /// 提示条**不得吃点击**(容器不吃,只把关闭按钮放回去)。
+    ///
+    /// 钉的是平台差异带来的真机症状:容器 `position:fixed; left/right/bottom:12px; z-index:99999`
+    /// 盖在整个界面之上(含右侧抽屉),未设 `pointer-events` 时默认 `auto` ⇒ 只要壳侧有提示
+    /// (便携首启/迁移/放置失败),窗口底部那条全宽横带上的点击全被它吃掉,表现为「点了没反应」。
+    #[test]
+    fn notices_script_container_does_not_swallow_clicks() {
+        let s = noticesScript(&["便携模式:数据在本目录的 gah-data/".into()]).unwrap();
+        // 容器本体:不吃点击
+        assert!(
+            s.contains("z-index:99999;pointer-events:none"),
+            "提示条容器必须 pointer-events:none(否则盖住整条底部横带吃点击): {s}"
+        );
+        // 关闭按钮:仍可点(不然提示就永远关不掉)
+        assert!(
+            s.contains("pointer-events:auto"),
+            "关闭按钮必须显式 pointer-events:auto: {s}"
+        );
+        // 别把可点性放错层级:body 节点(纯文本)不该单独开可点
+        assert!(
+            !s.contains("gah-shell-notice-body';pointer-events"),
+            "文本节点不必可点: {s}"
+        );
     }
 
     /// 便携形态说明仅首次提示(标记落在数据根内,跟着目录迁移)。

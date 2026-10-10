@@ -163,7 +163,7 @@ func (c converter) rasterPDF(ctx context.Context, abs string, fileSize int64, mo
 		"-f", strconv.Itoa(page), "-l", strconv.Itoa(page), abs, tmp); err != nil {
 		return "", fmt.Errorf("pdftoppm 光栅失败: %w", err)
 	}
-	if err := os.Rename(tmp+".png", out); err != nil {
+	if err := sdk.ReplaceFile(tmp+".png", out); err != nil {
 		return "", fmt.Errorf("光栅产物落盘失败: %w", err)
 	}
 	fi, err := os.Stat(out)
@@ -261,7 +261,7 @@ func (c converter) convertToPDF(ctx context.Context, abs string, fi os.FileInfo)
 		return "", fmt.Errorf("转换产物过大(%d 字节 > %d)", pfi.Size(), int64(converterMaxOut))
 	}
 	dst := filepath.Join(c.cacheDir, converterCacheName(abs, fi))
-	if err := os.Rename(produced, dst); err != nil {
+	if err := sdk.ReplaceFile(produced, dst); err != nil {
 		return "", fmt.Errorf("落盘转换产物失败: %w", err)
 	}
 	return dst, nil

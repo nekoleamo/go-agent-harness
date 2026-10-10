@@ -304,7 +304,7 @@ func installBridge(spec, home string, opts InstallOpts) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer os.RemoveAll(tmp)
+	defer sdk.RemoveTree(tmp)
 	clone := filepath.Join(tmp, "repo")
 
 	local := isLocalDir(spec)
@@ -573,7 +573,7 @@ func Uninstall(id, home string, ctl sdk.ExternalPlugins) error {
 		}
 	}
 	bins := pluginBinNames(dir)
-	if err := os.RemoveAll(dir); err != nil {
+	if err := sdk.RemoveTree(dir); err != nil {
 		return err
 	}
 	list, err := plugintrust.Load(plugins)

@@ -89,6 +89,9 @@ SKIP="${GAH_COVER_SKIP:-0}"             # 1 = 只测(不校验),用于基线测�
 #   写路径不经缓存)、web 81 → **81.5**(实测 81.5;数据根可写性探针的 TTL 复用六条用例)。
 #   2026-10-09(第一百三十六批 · 桌面端系统代理)新增 internal/sysproxy,登记 **65**
 #   (darwin 实测 72.1;Apply 里的 scutil/平台分支不在单测里跑,余量留足)。
+#   2026-10-10(Windows 平台语义收口:新增 sdk/fscompat.go —— ReplaceFile/RemoveTree 两条补丁,
+#   三个内核函数靠注入依赖在任意平台可测)后上调:sdk 85.6 → **86.5**(darwin 实测 87.7;
+#   新文件六项全 100%。跨平台留约 1pp 余量给 linux/windows CI,取实测 - 1pp 而非直接抬到 87.7)。
 
 # 跨平台差(踩过的坑):棘轮取**各平台实测的较小值**。第一百零四批按 macOS 实测把
 # host-schedule 调到 81.5,而 CI(linux)实测 81.2 ⇒ 门红。带平台差异的代码路径要用
@@ -123,7 +126,7 @@ core/event 90
 core/ctx 60
 core/plugin 72
 core/config 65
-sdk 85.6
+sdk 86.5
 internal/prefs 84
 internal/xlock 70
 internal/roles 86.4

@@ -350,7 +350,7 @@ func writeFileAtomic(path string, raw []byte) error {
 		cleanup()
 		return err
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
+	if err := sdk.ReplaceFile(tmpPath, path); err != nil {
 		cleanup()
 		return err
 	}

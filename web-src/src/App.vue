@@ -140,6 +140,18 @@ function restoreTabs(): string {
 const restoredActive = restoreTabs()
 const bootTab = boundSession() || restoredActive || 'main'
 tabs.ensure(bootTab, newModel, boundSession() ? '' : bootTab === 'main' ? '主会话' : '')
+// 恢复出来的页签若**就是真实会话 id**(刷新页面 / 桌面壳重开:sessionStorage 里存着上一轮的
+// 会话),必须和「URL 带 ?session=」同一条语义 —— 请求层与事件层一起绑过去。
+//
+// 为何(2026-10-09 实测真 bug):api 绑定原先只在 refreshStats 的**首次校准**分支里做,
+// 而那个分支的前提是 `calibrated = bootTab !== 'main'` —— 恢复出真实 id 时它一上来就是 true,
+// 分支永不执行 ⇒ `boundSession()` 停在 main.ts 绑的 ''(= 全局档)⇒
+// 「当前会话设置」的**每一次写都静默落成全局档**(实测 POST /api/control 的 session 变成 "",
+// 页签标着某个会话、设置却写给所有人)。事件层同理:不绑就退化成服务端当前会话。
+if (!boundSession() && bootTab !== 'main') {
+  api.bindSession(bootTab)
+  setTransportSession(bootTab)
+}
 // tabId 当前页签的会话 id。
 //
 // **页签与「服务端当前会话」是两个东西**:页签是"我现在在看哪个会话",

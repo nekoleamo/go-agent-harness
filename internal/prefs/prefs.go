@@ -12,6 +12,7 @@ import (
 
 	"encoding/json"
 	"github.com/nekoleamo/go-agent-harness/internal/xlock"
+	"github.com/nekoleamo/go-agent-harness/sdk"
 	"os"
 	"path/filepath"
 	"strings"
@@ -340,7 +341,7 @@ func writeFileAtomic(path string, raw []byte, perm os.FileMode) error {
 		cleanup()
 		return err
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
+	if err := sdk.ReplaceFile(tmpPath, path); err != nil {
 		cleanup()
 		return err
 	}

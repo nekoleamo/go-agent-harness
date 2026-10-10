@@ -13,6 +13,7 @@
 // 假装自己设了全局值);「独立」才写会话档。
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { api } from '../api'
+import { shellLog } from '../desktop'
 import { currentModelValue, modelOptionValue, modelRank, withCurrentModel } from '../modelsel'
 import type { ModelOption } from '../modelsel'
 import { isSessionSet } from '../scope'
@@ -20,6 +21,9 @@ import type { StateView } from '../types'
 
 const props = defineProps<{ state: StateView }>()
 const emit = defineEmits<{ (e: 'close'): void; (e: 'changed'): void }>()
+
+// err 写档失败就跑在这里(见 write 的注释):本面板的唯一错误面。
+const err = ref('')
 
 const THINK = [
   { v: 'off', label: '关闭' },
@@ -135,8 +139,9 @@ const roleGroups = computed(() => {
 })
 // pickRole 写**本会话**的角色(id 空 = 回基线)。与设置面板的全局切换分开,各写各的。
 async function pickRole(id: string): Promise<void> {
-  await api.roleUse(id, { session: api.boundSession() })
-  emit('changed')
+  await write(`角色=${id || '默认(基线)'}`, () =>
+    api.roleUse(id, { session: api.boundSession() }),
+  )
 }
 
 type Field = 'role' | 'model' | 'thinking' | 'sandbox' | 'approval'
@@ -157,23 +162,57 @@ const anyIndependent = computed(() => independentCount() > 0)
 // 认不出来的值原样透出 —— 界面宁可难看也不能说错话。
 const thinkLabel = computed(() => THINK.find((t) => t.v === props.state.thinking)?.label ?? props.state.thinking)
 
+const FIELD_ZH: Record<Field, string> = {
+  role: '角色',
+  model: '模型',
+  thinking: '思考等级',
+  sandbox: '沙箱',
+  approval: '审批',
+}
+
+// write 是本面板**所有写档动作**的唯一出口(选角色/选模型/四个档位/两种复位)。
+//
+// 为什么必须有这个函数(2026-10-09 Windows 真机反馈「点击无法选中/修改无效」):原先三处写档
+// (control / roleUse / 复位)都是**裸 await** —— 后端 4xx 时 Promise 拒绝没人接,界面一点反馈都没有,
+// 表现正是「点了没反应」;而桌面壳没有终端,连错误文本都拿不到(壳日志里也不会有),排查只剩猜。
+// 现在:成功也记一行壳日志(便于真机判读「请求到底发出去没有」),失败就地显示 + 记日志,
+// 与 Sidebar 的目录选择器失败同一条纪律 —— **失败必须自证**。
+// refresh=false 用于「全部改为跟随全局」:逐项写完再统一刷新一次(否则 5 次写 5 次拉快照)。
+async function write(what: string, fn: () => Promise<unknown>, refresh = true): Promise<void> {
+  err.value = ''
+  try {
+    await fn()
+    shellLog(`会话设置:${what} 已提交`)
+    if (refresh) emit('changed')
+  } catch (e) {
+    const msg = (e as Error)?.message ?? String(e)
+    err.value = `${what}没生效:${msg}`
+    shellLog(`会话设置:${what} 失败: ${msg}`)
+  }
+}
+
 // pick 写**本会话**档:显式传 session,不受 api.control 的默认绑定影响。
 async function pick(field: Field, v: string): Promise<void> {
-  await api.control({ session: api.boundSession(), [field]: v })
-  emit('changed')
+  await write(`${FIELD_ZH[field]}=${v}`, () =>
+    api.control({ session: api.boundSession(), [field]: v }),
+  )
 }
 
 // reset 回到「跟随全局」:空串 = 清掉该会话的会话档,后端合成时回落到全局。
 async function reset(field: Field): Promise<void> {
-  await api.control({ session: api.boundSession(), [field]: '' })
-  emit('changed')
+  await write(`${FIELD_ZH[field]}→跟随全局`, () =>
+    api.control({ session: api.boundSession(), [field]: '' }),
+  )
 }
 
 async function resetAll(): Promise<void> {
+  // 逐项写、失败**不中断**(一项失败不该让其余四项连试都不试);刷新留到最后一次。
   for (const f of ['model', 'thinking', 'sandbox', 'approval'] as const) {
-    await api.control({ session: api.boundSession(), [f]: '' })
+    await write(`${FIELD_ZH[f]}→跟随全局`, () => api.control({ session: api.boundSession(), [f]: '' }), false)
   }
-  if (roleReady.value) await api.roleUse('', { session: api.boundSession() })
+  if (roleReady.value) {
+    await write('角色→默认', () => api.roleUse('', { session: api.boundSession() }), false)
+  }
   emit('changed')
 }
 
@@ -212,6 +251,9 @@ function eff(field: 'sandbox' | 'approval', zh: Record<string, string>): string 
     <p class="scp-lede">
       这里只改<b>当前页签</b>（随页签走，换页签就是另一套）；全局默认在状态栏「设置」里改。
     </p>
+
+    <!-- 写档失败必须看得见:否则「点了没反应」既没有原因也没有线索(见 write 的注释)。 -->
+    <p v-if="err" class="scp-err" role="alert" data-testid="scp-err">{{ err }}</p>
 
     <p v-if="anyIndependent" class="scp-sum" data-testid="scp-summary">
       <b>{{ independentCount() }}</b> 项独立于全局，其余跟随。
@@ -395,6 +437,17 @@ function eff(field: 'sandbox' | 'approval', zh: Record<string, string>): string 
 }
 .scp-lede b {
   color: var(--fg-dim);
+}
+.scp-err {
+  margin: 0 0 10px;
+  padding: 6px 10px;
+  border: 1px solid var(--err-line);
+  border-radius: var(--r-input);
+  background: var(--err-soft);
+  color: var(--err);
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-word;
 }
 .scp-sum {
   margin: 0 0 12px;

@@ -26,6 +26,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"github.com/nekoleamo/go-agent-harness/sdk"
 	"io"
 	"os"
 	"path/filepath"
@@ -324,7 +325,7 @@ func (l *List) write() error {
 		cleanup()
 		return err
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
+	if err := sdk.ReplaceFile(tmpPath, path); err != nil {
 		cleanup()
 		return err
 	}

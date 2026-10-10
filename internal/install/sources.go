@@ -28,6 +28,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nekoleamo/go-agent-harness/sdk"
 	"gopkg.in/yaml.v3"
 )
 
@@ -147,7 +148,7 @@ func WriteSources(home string, sf *SourceLedger) error {
 		cleanup()
 		return err
 	}
-	if err := os.Rename(tmpPath, SourcesPath(home)); err != nil {
+	if err := sdk.ReplaceFile(tmpPath, SourcesPath(home)); err != nil {
 		cleanup()
 		return err
 	}

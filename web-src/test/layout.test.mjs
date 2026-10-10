@@ -3034,6 +3034,78 @@ test('设置面板:计划「改用选择器」关闭自定义表达式区', { sk
   }
 })
 
+// ⑩ 本会话设置写档失败必须**说出来**(2026-10-09 Windows 真机反馈「点击无法选中」)。
+// 原先三处写档都是裸 await:后端 4xx ⇒ Promise 拒绝无人接收 ⇒ 界面零反馈,表现正是
+// 「点了没反应」;桌面壳还没有终端,连错误文本都拿不到(壳日志里也不会有)。
+// 这条钉两件事:失败可见(带后端原始文本) + 不假装成功(高亮不跟着动)。
+test('作用域:本会话设置写档失败时就地报错(不再静默)', { skip: skip && skipWhy }, async (t) => {
+  const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+  let page = null
+  try {
+    const stub = makeStub(true)
+    page = await ctx.newPage()
+    await page.addInitScript(() => window.sessionStorage.setItem('gah.onboard.auto', '1'))
+    // 路由按**后注册者优先**匹配:先挂全量桩,再用更具体的 /api/control 覆写它。
+    await page.route('**/api/**', stub)
+    await page.route('**/api/control', (r) =>
+      r.fulfill({
+        status: 400,
+        contentType: 'text/plain',
+        body: '会话级思考档设置失败: meta.json 被占用',
+      }),
+    )
+    await page.goto(baseURL(), { waitUntil: 'load' })
+    await waitSkeleton(page)
+    await page.click('.statusbar-slot .gear.ses')
+    await page.waitForSelector('.scp')
+    const onBefore = await page.$eval('.scp-seg', (el) => el.querySelector('.scp-it.on')?.textContent?.trim() ?? '')
+    await page.click('.scp-it:has-text("高")')
+    await page.waitForSelector('[data-testid="scp-err"]')
+    const txt = (await page.textContent('[data-testid="scp-err"]')) || ''
+    assert.ok(txt.includes('没生效'), `失败必须说清哪一项没生效:${txt}`)
+    assert.ok(txt.includes('meta.json 被占用'), `失败必须带上后端的原始错误文本(排查全靠它):${txt}`)
+    const onAfter = await page.$eval('.scp-seg', (el) => el.querySelector('.scp-it.on')?.textContent?.trim() ?? '')
+    assert.equal(onAfter, onBefore, `写档失败后高亮不得变化(否则等于谎报成功):${onBefore} → ${onAfter}`)
+  } catch (e) {
+    await shoot(page, t.name)
+    throw e
+  } finally {
+    await ctx.close()
+  }
+})
+
+// ⑪ 刷新/重开后恢复出来的页签若**就是真实会话 id**,请求层必须跟着绑过去(而不是停在 ''= 全局档)。
+// 这条钉一个实测真 bug(2026-10-09):api 绑定原先只在「首次校准」分支里做,而恢复出真实 id 时
+// `calibrated` 一上来就是 true ⇒ 分支永不执行 ⇒ 「本会话设置」的每次写都静默落成全局档
+// (实测 POST /api/control 的 session 变成 "")。
+test('作用域:刷新后恢复的页签仍写会话档(api 绑定不丢)', { skip: skip && skipWhy }, async (t) => {
+  const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+  let page = null
+  try {
+    // sessionStorage 里的 gah.tabs = 上一轮留下的真实会话 id(刷新的实况形状)
+    const stub = makeStub(true, false, false, false, false, 'finance', 0, false, true, 0, false, false, 'layout-main')
+    page = await ctx.newPage()
+    await page.addInitScript(() => {
+      window.sessionStorage.setItem('gah.onboard.auto', '1')
+      window.sessionStorage.setItem('gah.tabs', JSON.stringify({ ids: ['layout-restored'], active: 'layout-restored' }))
+    })
+    await page.route('**/api/**', stub)
+    await page.goto(baseURL(), { waitUntil: 'load' })
+    await waitSkeleton(page)
+    await page.click('.statusbar-slot .gear.ses')
+    await page.waitForSelector('.scp')
+    await page.click('.scp-it:has-text("高")')
+    const hit = stub.seen.find((r) => r.path === '/api/control')
+    assert.ok(hit, `本会话设置的写档应提交 /api/control:${JSON.stringify(stub.seen)}`)
+    assert.equal(JSON.parse(hit.body || '{}').session, 'layout-restored', `恢复的页签必须写自己的会话档,实际 ${hit.body}`)
+  } catch (e) {
+    await shoot(page, t.name)
+    throw e
+  } finally {
+    await ctx.close()
+  }
+})
+
 test('布局护栏:跳过原因(仅在没有浏览器/产物时输出)', { skip: !skip }, () => {
   console.log(`  跳过:${skipWhy}`)
 })

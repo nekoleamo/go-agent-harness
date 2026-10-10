@@ -19,7 +19,7 @@ package install
 
 import (
 	"fmt"
-	"os"
+	"github.com/nekoleamo/go-agent-harness/sdk"
 	"strings"
 )
 
@@ -58,7 +58,7 @@ func cloneBySHA(repo, sha, clone string) error {
 		// 不静默 —— 退回全量路径,那里会报一条能看懂的错。
 	}
 	// 退回完整 clone。
-	if err := os.RemoveAll(clone); err != nil {
+	if err := sdk.RemoveTree(clone); err != nil {
 		return err
 	}
 	if out, err := runEnv("", buildEnv(), "git", "clone", repo, clone); err != nil {

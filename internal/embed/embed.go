@@ -89,12 +89,46 @@ func EnsureSeed(home string) ([]string, error) {
 		if err := os.WriteFile(bak, old, 0o644); err != nil {
 			return nil, fmt.Errorf("seed 升级备份失败 %s: %w", dst, err)
 		}
-		if err := os.WriteFile(dst, raw, 0o644); err != nil {
+		// 覆盖走「临时文件 + 原子替换」而不是直接 WriteFile 覆写:
+		//  ① Windows:目标带**只读属性**时直接覆写被拒(ACCESS_DENIED)⇒ 老用户升级直接失败
+		//     ($GAH_HOME 整体来自只读副本 / zip 解压保留属性 / 单副本备份还原,这三者都不罕见);
+		//  ② 任何平台:写到一半崩了会留下**半截样板**,而 boot 后续读它会得到坏配置。
+		if err := writeSeedAtomic(dst, raw); err != nil {
 			return nil, err
 		}
 		written = append(written, dst)
 	}
 	return written, nil
+}
+
+// writeSeedAtomic 同目录临时文件 → sdk.ReplaceFile 落盘(见调用处的两条理由)。
+func writeSeedAtomic(dst string, raw []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(dst), ".seed-tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer func() {
+		if tmpPath != "" {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if _, err := tmp.Write(raw); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := sdk.ReplaceFile(tmpPath, dst); err != nil {
+		return err
+	}
+	tmpPath = "" // 已就位:defer 不再删(否则会把刚写好的文件删掉)
+	return nil
 }
 
 // seedVersion 解析样板首部 seed-version 注释(bundle 系列;无标记 = 0)。
@@ -271,7 +305,7 @@ func EnsurePlugins(home string) ([]string, error) {
 			os.Remove(tmp)
 			return nil, fmt.Errorf("internal/embed: %s 解出内容与 SHA256SUMS 不一致(嵌入产物与清单不同批)", bin)
 		}
-		if err := os.Rename(tmp, dst); err != nil {
+		if err := sdk.ReplaceFile(tmp, dst); err != nil {
 			os.Remove(tmp)
 			return nil, err
 		}
