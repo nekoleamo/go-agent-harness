@@ -326,6 +326,14 @@ func TestMdLinkInline(t *testing.T) {
 	if strings.Contains(out2, "131;165;152") {
 		t.Fatalf("未配对 [ 不应按链接: %q", out2)
 	}
+	// 行尾链接(](url) 后无字符):段末下标不得越界。
+	// 回归(2026-10-10):end 多算 1 字节 ⇒ text[i+1+j:end] 越界 panic,
+	// 在 View() 里触发即 bubbletea 整程序退出(模型只要输出以 ](url) 结尾的行就命中)。
+	for _, s := range []string{"[a](b)", "见 [文档](https://example.com)", "[x](y)"} {
+		if got := stripANSI(mdAnnotateRow(s, fg(TokAssistant))); got != s {
+			t.Fatalf("行尾链接应字符无损: %q → %q", s, got)
+		}
+	}
 }
 
 // TestMdQuoteRow P5:引用行 > :标记边框灰加粗,正文 quote 米白;字符无损。

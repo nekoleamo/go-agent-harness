@@ -76,31 +76,56 @@ type Model struct {
 	cacheSet       bool
 	cacheW, cacheH int
 
-	onSubmit        func(input string)                                    // 普通输入提交(注入)
-	onSteer         func(input string) bool                               // 转向注入(回合运行中;false = 回落排队)
-	onCommand       func(cmd string) error                                // 命令处理(注入)
-	onConfirm       func(ok bool)                                         // 确认答复(注入;见 app.Confirm)
-	onQuestion      func(id string, ans sdk.QuestionAnswer)               // 提问作答(注入;按 id 定向;见 app.answerQuestion)
-	onCancel        func()                                                // 取消进行中的回合(注入;Esc 触发)
-	hints           func(prefix string) []sdk.Option                      // 命令选项(注入;前缀=去掉 / 后的输入)
-	levels          func(name string) []sdk.ArgLevel                      // 命令参数级定义(注入;枚举/自由级)
-	onFiles         func() []sdk.Option                                   // @ 文件引用候选(注入;App 项目文件索引含缓存)
-	onWidgets       func() []Widget                                       // P4-12 widget 行注入(渲染帧拉取;App widgets 集合)
-	onThinkingCycle func(dir int)                                         // Tab/Shift+Tab 思考等级循环(注入:dir=1 前进,-1 后退)
-	onStats         func() sdk.UsageStats                                 // 会话 token 统计拉取(注入;回合结束刷新状态栏)
-	onNotice        func(n *sdk.Notice)                                   // NOND-N2 系统级通知落点(注入;只给新接纳的提示)
-	onOpenDoc       func(path string, page, sheet int) (*DocPager, error) // 文档预览加载(注入;ctx.doc)
-	onDock          func() DockInfo                                       // S-P0-3 后台坞拉取(注入;App 读 ctx.jobs/ctx.fanout)
-	onDockOutput    func(id string) (*DocPager, error)                    // 坞面板看输出(注入;走宿主 /jobs output)
-	onDockKill      func(id string) (string, error)                       // 坞面板停止(注入;走宿主 /jobs kill)
-	onDockSteer     func(id, msg string) error                            // 坞面板定向(注入;ctx.fanout SendMessage)
-	dockTicking     bool                                                  // 坞刷新链在跑(防重复链;Update 单 goroutine 访问)
+	onSubmit          func(input string)                                    // 普通输入提交(注入)
+	onSteer           func(input string) bool                               // 转向注入(回合运行中;false = 回落排队)
+	onCommand         func(cmd string) error                                // 命令处理(注入)
+	onConfirm         func(ok bool)                                         // 确认答复(注入;见 app.Confirm)
+	onQuestion        func(id string, ans sdk.QuestionAnswer)               // 提问作答(注入;按 id 定向;见 app.answerQuestion)
+	onCancel          func()                                                // 取消进行中的回合(注入;Esc 触发)
+	hints             func(prefix string) []sdk.Option                      // 命令选项(注入;前缀=去掉 / 后的输入)
+	levels            func(name string) []sdk.ArgLevel                      // 命令参数级定义(注入;枚举/自由级)
+	onFiles           func() []sdk.Option                                   // @ 文件引用候选(注入;App 项目文件索引含缓存)
+	onWidgets         func() []Widget                                       // P4-12 widget 行注入(渲染帧拉取;App widgets 集合)
+	onThinkingCycle   func(dir int)                                         // Tab/Shift+Tab 思考等级循环(注入:dir=1 前进,-1 后退)
+	onStats           func() sdk.UsageStats                                 // 会话 token 统计拉取(注入;回合结束刷新状态栏)
+	onNotice          func(n *sdk.Notice)                                   // NOND-N2 系统级通知落点(注入;只给新接纳的提示)
+	onOpenDoc         func(path string, page, sheet int) (*DocPager, error) // 文档预览加载(注入;ctx.doc)
+	onDock            func() DockInfo                                       // S-P0-3 后台坞拉取(注入;App 读 ctx.jobs/ctx.fanout)
+	onDockOutput      func(id string) (*DocPager, error)                    // 坞面板看输出(注入;走宿主 /jobs output)
+	onDockKill        func(id string) (string, error)                       // 坞面板停止(注入;走宿主 /jobs kill)
+	onDockSteer       func(id, msg string) error                            // 坞面板定向(注入;ctx.fanout SendMessage)
+	onSessionSwitched func()                                                // 会话/工作区已在别处切换(注入;由 UI 循环内调用,见 App.Start 的 d3/d4)
+	dockTicking       bool                                                  // 坞刷新链在跑(防重复链;Update 单 goroutine 访问)
+	spinning          bool                                                  // 思考动画链在跑(同上;空闲自停,回合开始时由 startSpin 重新起链)
 }
 
 // spinInterval 思考动画帧间隔。
 type spinnerMsg struct{}
 
+// sessionSwitchedMsg 会话/工作区已在别处被切换(宿主 cwd/session-switched 等事件)。
+// 必须走 UI 消息而不是在订阅回调里直接改 Model:同进程装配 TUI+Web 时,
+// Web 的 HTTP 协程会同步广播该事件,回调里直改 a.model.state 与 UI 协程的
+// Update/View 并发读写同一份 State/Traj(数据竞争 → 花屏/越界)。
+type sessionSwitchedMsg struct{}
+
 const spinInterval = 120 * time.Millisecond
+
+// spinTick 生成一帧思考动画节拍(自续链:仅回合运行中续发)。
+func spinTick() tea.Cmd {
+	return tea.Every(spinInterval, func(time.Time) tea.Msg { return spinnerMsg{} })
+}
+
+// startSpin 起思考动画链(幂等);nil = 链已在跑。
+//
+// 为什么需要它:spinnerMsg 只在 Running 时自续,而程序启动时必然空闲 —— 首个 tick 一到
+// 链就断了;回合开始时没有任何地方重新起链(Enter 提交路径与 agent/status 各自调本函数)。
+func (m *Model) startSpin() tea.Cmd {
+	if m.spinning {
+		return nil
+	}
+	m.spinning = true
+	return spinTick()
+}
 
 // quitConfirmWindow 双按退出确认窗口:第一次 Ctrl+C(输入为空)武装后,
 // 窗口内再按一次才彻底退出;超时未按自动解除(防误触)。
@@ -123,8 +148,10 @@ const (
 )
 
 func (m *Model) Init() tea.Cmd {
-	// 首帧即启动 tick(回合未运行时 Update 不再续发,自动停)
-	return tea.Every(spinInterval, func(time.Time) tea.Msg { return spinnerMsg{} })
+	// 首帧即启动 tick(回合未运行时 Update 不再续发,自动停);
+	// 链停后由 startSpin 在回合开始时重新起链。
+	m.spinning = true
+	return spinTick()
 }
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -161,6 +188,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.skipView = false
 	case statusMsg:
 		m.state.ApplyStatus(msg.status)
+		// 回合开始(含别的端/其它渠道在同进程里起的回合)→ 起思考动画链
+		if m.state.Running {
+			cmd = m.startSpin()
+		}
+	case sessionSwitchedMsg:
+		// 会话/工作区切换:在 UI 循环内重放刷新(订阅回调不得直改 Model,见类型注释)
+		if m.onSessionSwitched != nil {
+			m.onSessionSwitched()
+		}
+		m.skipView = false
 	case noticeMsg:
 		// 状态栏承接 + NOND-N2 系统级通知(只给新提示;warn/error 才打扰,见 onNotice)
 		if m.state.ApplyNotice(msg.n) && m.onNotice != nil {
@@ -217,16 +254,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.skipView = false
 		}
 	case spinnerMsg:
-		// 思考动画:仅回合运行中续发 tick(空闲停,不浪费重绘)
+		// 思考动画:仅回合运行中续发 tick(空闲停,不浪费重绘)。
+		// 注意:链停之后必须由 startSpin 重新起链(启动首帧必然空闲,见其注释)。
 		if m.state.Running {
 			m.state.SpinnerIdx++
 			dock := m.startDockTick() // S-P0-3:回合开始顺手起后台坞刷新链(幂等)
-			spin := tea.Every(spinInterval, func(time.Time) tea.Msg { return spinnerMsg{} })
+			spin := spinTick()
 			if dock != nil {
 				return m, tea.Batch(spin, dock)
 			}
 			return m, spin
 		}
+		m.spinning = false
 	case tea.PasteMsg:
 		// bracketed paste:整段插入(终端 Cmd+V/中键粘贴);与字符输入同语义
 		m.state.PickDismissed = false
@@ -928,6 +967,12 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			return nil
 		}
 		m.enter()
+		// 回合已开始(Running 由 onSubmit/直通同步置位)→ 补起思考动画链:
+		// 该链在空闲首帧已自停,这是回合开始唯一的起链时机。
+		if cmd := m.startSpin(); cmd != nil {
+			return cmd
+		}
+		return nil
 	case tea.KeyBackspace:
 		m.state.PickDismissed = false
 		if m.pickFilterBackspace() {

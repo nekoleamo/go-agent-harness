@@ -426,3 +426,50 @@ func hasLineKind(lines []Line, kind, sub string) bool {
 func keyMsg(code rune) tea.KeyPressMsg {
 	return tea.KeyPressMsg{Code: code}
 }
+
+// TestSpinChain 思考动画链:空闲首帧自停,回合开始(Enter 提交 / agent/status running)
+// 必须由 startSpin 重新起链。
+//
+// 回归(2026-10-10):此前 Init 起链、spinnerMsg 只在 Running 时自续,而程序启动必然空闲
+// ⇒ 链 120ms 内即死;回合开始又无处起链 ⇒ SpinnerIdx 永不前进、startDockTick 从不被调用。
+func TestSpinChain(t *testing.T) {
+	m := &Model{state: &State{}}
+	if cmd := m.Init(); cmd == nil || !m.spinning {
+		t.Fatalf("Init 应起链并置 spinning")
+	}
+	if m.startSpin() != nil {
+		t.Fatalf("链在跑时重复起链应幂等")
+	}
+	// 空闲:收到一帧即停链并解除标志
+	if _, cmd := m.Update(spinnerMsg{}); cmd != nil {
+		t.Fatalf("空闲时不应续拍")
+	}
+	if m.spinning {
+		t.Fatalf("停链后应解除 spinning")
+	}
+	// 回合开始(宿主 agent/status running)→ 重新起链
+	if _, cmd := m.Update(statusMsg{"running"}); cmd == nil || !m.spinning {
+		t.Fatalf("回合开始时 statusMsg 应重新起链")
+	}
+	// 运行中续拍 + 推进帧 + 顺手起坞链
+	if _, cmd := m.Update(spinnerMsg{}); cmd == nil {
+		t.Fatalf("运行中应续拍")
+	}
+	if m.state.SpinnerIdx == 0 {
+		t.Fatalf("运行中应推进 SpinnerIdx")
+	}
+}
+
+// TestEnterRestartsSpinChain Enter 提交路径也要起链(它不走 agent/status 事件)。
+func TestEnterRestartsSpinChain(t *testing.T) {
+	m := &Model{state: &State{}}
+	m.onSubmit = func(string) { m.state.Running = true } // 与 App.submit 同款:同步置运行态
+	m.state.Input = "你好"
+	m.state.Cursor = len([]rune("你好"))
+	if cmd := m.handleKey(tea.KeyPressMsg{Code: tea.KeyEnter}); cmd == nil {
+		t.Fatalf("Enter 提交后应起思考动画链")
+	}
+	if !m.spinning {
+		t.Fatalf("Enter 提交后应置 spinning")
+	}
+}

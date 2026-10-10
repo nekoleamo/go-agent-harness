@@ -846,7 +846,10 @@ function rebuild(plan: SwitchPlan): void {
   transport.on('command', gate((f) => {
     const r = f.payload as CommandResult
     // 别的会话执行的命令:输出不能抹在本会话的流里(会对不上账)。
-    const fo = foreignOwner(f, state.value.session?.id ?? '')
+    // curId 必须用**本页签自己的会话**(curTabId),不能用 state.session.id ——
+    // 后者是服务端「当前会话」(handleState 固定下发 CurrentSession,与 ?session= 无关),
+    // 页签绑的不是当前会话时会把**自己**的帧判成外来(命令回显被改写 + 弹层不弹)。
+    const fo = foreignOwner(f, curTabId())
     if (fo) {
       pushMeta('command', foreignTodoText('command', fo, r.output || r.raw))
       return
@@ -867,7 +870,7 @@ function rebuild(plan: SwitchPlan): void {
     // **别的会话的审批不在这里弹**:那一步的决定会作用在那个会话上,
     // 在本会话弹出来等于骗用户替他点头(多窗口/页签并行时真实会发生)。
     // 也不能静默丢 —— 审批默认不限时地等,没人知道就一直挂着。⇒ 记一行 + 系统通知。
-    const fo = foreignOwner(f, state.value.session?.id ?? '')
+    const fo = foreignOwner(f, curTabId())
     if (fo) {
       const txt = foreignTodoText('confirm', fo, req?.prompt || '')
       pushMeta('status', txt + '(请到该会话处理)')
@@ -880,7 +883,7 @@ function rebuild(plan: SwitchPlan): void {
   }))
   transport.on('question', gate((f) => {
     const req = f.payload as QuestionRequest
-    const fo = foreignOwner(f, state.value.session?.id ?? '')
+    const fo = foreignOwner(f, curTabId())
     if (fo) {
       const txt = foreignTodoText('question', fo, req?.prompt || '')
       pushMeta('status', txt + '(请到该会话处理)')
@@ -974,9 +977,13 @@ async function backfillNotices(gen: number): Promise<void> {
 let lastRunning: string[] = []
 
 async function refreshStats(): Promise<void> {
+  const askedForTab = curTabId() // 飞行途中可能切页签,归属按**发问时**那个算
+  const gen = connGen // 代际:迟到快照不得写进新一轮(可能已是另一个会话)
   try {
-    const askedForTab = curTabId() // 飞行途中可能切页签,归属按**发问时**那个算
     state.value = await api.state()
+    // 迟到快照直接丢弃:否则会用另一会话的 model/running/session_prefs 覆盖状态栏,
+    // 并把 streamSessionId 校准成旧会话 → 下一轮误判「会话被切走」而重放一次(闪一下)。
+    if (gen !== connGen || askedForTab !== curTabId()) return
     lastTick = Date.now() // 活跃心跳（睡眠检测基准）
     applyCustomTo(askedForTab, state.value)
     // 会话被**命令**切走(如 `/session new`、`/session switch`)时前端收不到任何信号:
@@ -1243,6 +1250,9 @@ function closeTab(id: string): void {
     notifier.fireEvent('gah 页签已关闭', '「' + out.closed.title + '」在后台继续运行')
   }
   if (out.nextActive) {
+    // 关后台页签时 tabId 先被清空 ⇒ switchTab 的「切走前存草稿」分支被跳过,
+    // 输入框会被目标页签的旧草稿覆盖(用户刚打的字静默丢失)。这里先补存一次。
+    if (tabId.value && tabs.has(tabId.value)) saveDraftToTab(tabId.value)
     tabId.value = '' // 强制走完整切换流程(不再回存已关闭页签的状态)
     switchTab(out.nextActive)
   } else {

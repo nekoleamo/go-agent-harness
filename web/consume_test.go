@@ -4,6 +4,7 @@
 package web
 
 import (
+	"context"
 	"log/slog"
 	"reflect"
 	"sync"
@@ -109,5 +110,68 @@ func TestConsumeStreamGapNoLossNoDup(t *testing.T) {
 	want := []uint64{1, 2, 3, 0} // 会话帧各恰一次 + 状态帧透传
 	if !reflect.DeepEqual(ids, want) {
 		t.Fatalf("基线之后的帧序应 %v(切换窗口不重不漏),得 %v", want, ids)
+	}
+}
+
+// TestConsumeStreamResendsPendingPopups 新连接(刷新页面)时补推未决审批/提问:
+//   - FrameBaseline 必须是首帧(前端与 frame_sync/consume 的契约);
+//   - 未决 confirm 与 question 都要补推(否则弹层丢失而审批/提问不限时地等 = 回合挂死)。
+//
+// 回归(2026-10-10):补推曾排在 baseline 之前(首帧变 confirm),且 question 根本没有补推。
+func TestConsumeStreamResendsPendingPopups(t *testing.T) {
+	hub := NewHub()
+	s := New(Config{}, hub, NewConfirm(hub), slog.Default())
+	s.question = NewQuestionService(hub)
+	s.sessions = &memLog{}
+
+	cctx := sdk.WithSessionContext(context.Background(), "sess-A")
+	if _, cancel, err := s.confirm.Present(cctx, "删库?"); err != nil {
+		t.Fatal(err)
+	} else {
+		defer cancel()
+	}
+	if _, qcancel, err := s.question.PresentQuestion(cctx, sdk.Question{ID: "q1", Prompt: "选哪个?"}); err != nil {
+		t.Fatal(err)
+	} else {
+		defer qcancel()
+	}
+
+	stop := make(chan struct{})
+	var mu sync.Mutex
+	var got []Frame
+	sink := func(f Frame) error { mu.Lock(); got = append(got, f); mu.Unlock(); return nil }
+	go func() { s.consumeStream(0, sink, stop, "") }()
+	defer close(stop)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		n := len(got)
+		mu.Unlock()
+		if n >= 3 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	mu.Lock()
+	frames := append([]Frame(nil), got...)
+	mu.Unlock()
+	if len(frames) == 0 || frames[0].Type != FrameBaseline {
+		t.Fatalf("首帧应为 baseline(补推不得排在它之前): %+v", frames)
+	}
+	var haveConfirm, haveQuestion bool
+	for _, f := range frames {
+		switch f.Type {
+		case FrameConfirm:
+			haveConfirm = true
+		case FrameQuestion:
+			haveQuestion = true
+			if f.Session != "sess-A" {
+				t.Fatalf("提问补推帧应带归属会话: %+v", f)
+			}
+		}
+	}
+	if !haveConfirm || !haveQuestion {
+		t.Fatalf("未决确认与提问都应补推(confirm=%v question=%v): %+v", haveConfirm, haveQuestion, frames)
 	}
 }

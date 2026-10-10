@@ -5,6 +5,7 @@ package web
 
 import (
 	"context"
+	"sort"
 	"sync"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
@@ -20,16 +21,27 @@ type QuestionRequest struct {
 }
 
 // QuestionService Web 版 sdk.QuestionPresenter 实现(经 EventHub 推送)。
+//
+// pending 同时存**待推帧的载荷**与归属会话:question 帧是实时广播、不落会话账本,
+// 而提问会一直阻塞等待作答 —— 用户刷新/重开页面后弹层就丢了,不补推他会永远等下去
+// (与 confirm 的 PendingFrames 同一件事,2026-10-10 补齐)。
 type QuestionService struct {
 	hub *EventHub
 
 	mu      sync.Mutex
-	pending map[string]chan sdk.QuestionAnswer
+	pending map[string]pendingQuestion
+}
+
+// pendingQuestion 一个未决提问:作答通道 + 补推所需的载荷与会话归属。
+type pendingQuestion struct {
+	ch   chan sdk.QuestionAnswer
+	req  *QuestionRequest
+	sess string
 }
 
 // NewQuestionService 构造 Web 提问服务(prompt 经 hub 广播为 FrameQuestion 帧)。
 func NewQuestionService(hub *EventHub) *QuestionService {
-	return &QuestionService{hub: hub, pending: make(map[string]chan sdk.QuestionAnswer)}
+	return &QuestionService{hub: hub, pending: make(map[string]pendingQuestion)}
 }
 
 // PresentQuestion 推送提问弹层并返回作答通道;cancel 幂等清理本次 pending。
@@ -41,14 +53,17 @@ func (s *QuestionService) PresentQuestion(ctx context.Context, q sdk.Question) (
 		id = randID()
 	}
 	ch := make(chan sdk.QuestionAnswer, 1)
-	s.mu.Lock()
-	s.pending[id] = ch
-	s.mu.Unlock()
 	// 帧带归属会话(回合入口注入):多会话并行时,弹层必须落在**提出问题的那一个**会话,
 	// 否则会在别的会话视图里弹出来,用户答的等于替别人答。
-	s.hub.Push(Frame{Type: FrameQuestion, Session: sdk.SessionFromContext(ctx), Payload: &QuestionRequest{
+	req := &QuestionRequest{
 		ID: id, Prompt: q.Prompt, Options: q.Options, Multiple: q.Multiple, FreeText: q.FreeText,
-	}})
+	}
+	// 归属取一次并存下:补推帧必须与实时帧同一个会话归属。
+	sess := sdk.SessionFromContext(ctx)
+	s.mu.Lock()
+	s.pending[id] = pendingQuestion{ch: ch, req: req, sess: sess}
+	s.mu.Unlock()
+	s.hub.Push(Frame{Type: FrameQuestion, Session: sess, Payload: req})
 	cancel := func() {
 		s.mu.Lock()
 		delete(s.pending, id)
@@ -60,15 +75,39 @@ func (s *QuestionService) PresentQuestion(ctx context.Context, q sdk.Question) (
 // Answer 接收前端作答(/api/question 处理器调用);未知弹层 id 忽略(已超时/重复)。
 func (s *QuestionService) Answer(id string, ans sdk.QuestionAnswer) {
 	s.mu.Lock()
-	ch, found := s.pending[id]
+	p, found := s.pending[id]
 	s.mu.Unlock()
 	if !found {
 		return
 	}
 	select {
-	case ch <- ans:
+	case p.ch <- ans:
 	default:
 	}
+}
+
+// PendingFrames 未决提问的补推帧(含**归属会话**),按弹层 id 升序。
+// 与 ConfirmService.PendingFrames 同款:新连接建立/页面刷新时补推,否则弹层丢失
+// 而提问侧一直阻塞等待(回合挂死)。
+func (s *QuestionService) PendingFrames() []Frame {
+	s.mu.Lock()
+	ids := make([]string, 0, len(s.pending))
+	for id := range s.pending {
+		ids = append(ids, id)
+	}
+	s.mu.Unlock()
+	sort.Strings(ids)
+	out := make([]Frame, 0, len(ids))
+	s.mu.Lock()
+	for _, id := range ids {
+		p, ok := s.pending[id]
+		if !ok {
+			continue
+		}
+		out = append(out, Frame{Type: FrameQuestion, Session: p.sess, Payload: p.req})
+	}
+	s.mu.Unlock()
+	return out
 }
 
 // PendingCount 当前未决提问数(融合断言/诊断)。

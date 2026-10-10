@@ -66,6 +66,18 @@ func (s *Server) runningFor(key string) *atomic.Bool {
 	return b
 }
 
+// runningOf 只读探测该会话是否在跑(不存在 = false,**不建条目**)。
+//
+// 为何需要:GET /api/state?session=<任意串> 是 CORS 简单请求(浏览器里任意页面可发),
+// 而 sessionKey 直接用查询参数当 map 键 —— 用 runningFor 判会让这张表被任意字符串无限撑大。
+// 写侧仍然用 runningFor(懒建 + CAS 是必要的)。
+func (s *Server) runningOf(key string) bool {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	b, ok := s.runBySession[key]
+	return ok && b.Load()
+}
+
 // runningSessionsOf 当前有回合在跑的**会话 id**(排序;诊断与多窗口 UI 用)。
 //
 // 为何把归一键换回 id:闸门内部用归一键(空 = 主会话),但对外必须说清「**哪个**会话」。

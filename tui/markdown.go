@@ -378,7 +378,7 @@ func mdTokens(text string, baseFg color.Color) string {
 				if e := strings.IndexByte(text[i+1+j+2:], ')'); e >= 0 {
 					inner := text[i+1 : i+1+j]
 					url := text[i+1+j+2 : i+1+j+2+e]
-					end := i + 1 + j + 2 + e + 2 // ']' 后整段 '](url)' 的下界
+					end := i + 1 + j + 2 + e + 1 // ']' 后整段 '](url)' 的下界(e 是 ')' 的相对下标,含 ')' 本身才 +1)
 					flushPlain(i)
 					segStart = i
 					b.WriteString(mdSeg(text[i:i+1], baseFg, false)) // '[' 原样

@@ -110,7 +110,14 @@ func defaultBuildCmd(binary string) string {
 // 真的需要时动 go.mod,并把"动过"这件事回报出去。
 func buildPlugin(dir, buildCmd, binary string) (buildResult, error) {
 	var res buildResult
-	out, err := runEnv(dir, buildEnv(), "sh", "-c", buildCmd)
+	// 必须用 **解析出来的** POSIX shell,不能裸 "sh":Windows 上 Git for Windows 默认只把
+	// …\Git\cmd(git.exe)加进 PATH,sh.exe 在 …\Git\bin —— 即使满足 README 的 Windows
+	// 前置条件,exec.LookPath("sh") 仍会失败(而 macOS/Linux 恒有 /bin/sh,本地永远绿)。
+	sh, serr := sdk.ResolvePOSIXShell()
+	if serr != nil {
+		return res, fmt.Errorf("install: %w", serr)
+	}
+	out, err := runEnv(dir, buildEnv(), sh, "-c", buildCmd)
 	if err == nil {
 		res.Cmd = buildCmd
 		return res, nil
@@ -123,12 +130,12 @@ func buildPlugin(dir, buildCmd, binary string) (buildResult, error) {
 	// 默认路径:可能是 go.mod/go.sum 不完整。先 tidy 一次,再重试;两次都失败时报**第二次**
 	// 的输出 —— 那是用户真正需要看的(第一次的"缺依赖"在补完之后已经没有意义了)。
 	tidyCmd := "go mod tidy"
-	if out2, terr := runEnv(dir, buildEnv(), "sh", "-c", tidyCmd); terr != nil {
+	if out2, terr := runEnv(dir, buildEnv(), sh, "-c", tidyCmd); terr != nil {
 		res.Cmd = buildCmd
 		return res, fmt.Errorf("install: 补依赖失败(tidy): %w(%s)", terr, out2)
 	}
 	retry := defaultBuildCmd(binary)
-	out3, err3 := runEnv(dir, buildEnv(), "sh", "-c", retry)
+	out3, err3 := runEnv(dir, buildEnv(), sh, "-c", retry)
 	if err3 != nil {
 		res.Cmd = retry + "(已先执行 " + tidyCmd + ")"
 		return res, fmt.Errorf("install: 构建失败(已尝试补依赖后): %w(%s)", err3, out3)

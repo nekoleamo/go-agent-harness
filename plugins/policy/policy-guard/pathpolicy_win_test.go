@@ -2,7 +2,10 @@
 // macOS/Linux 上验证;真机行为仍需 Windows 复核)。
 package policyguard
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
 
 // withCaseFold 临时切换路径大小写折叠开关(测试结束自动还原)。
 func withCaseFold(t *testing.T, on bool) {
@@ -28,5 +31,25 @@ func TestPathWithinCaseFold(t *testing.T) {
 	withCaseFold(t, false)
 	if pathWithin("/a/B", "/a/b/c") {
 		t.Fatal("大小写敏感平台保持原语义(不得放松)")
+	}
+}
+
+// TestDenyPathCaseFold 大小写不敏感平台上 `~/.SSH/notes.txt` 落在 `~/.ssh/` 里
+// (Windows 与 macOS 默认卷 APFS/HFS+ 都是同一份文件)⇒ denyPath 必须拒。
+// 只折 Windows 会让 macOS 上大小写变形的路径绕过凭据 deny(安全缺口)。
+func TestDenyPathCaseFold(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	withCaseFold(t, true)
+	if err := denyPath(filepath.Join(home, ".SSH", "notes.txt")); err == nil {
+		t.Fatal("大小写不敏感平台应拒 ~/.SSH/notes.txt(与 ~/.ssh 同一目录)")
+	}
+
+	// 大小写敏感平台(Linux):`.SSH` 是真不同的目录,不得折叠(折叠即误报)。
+	withCaseFold(t, false)
+	if err := denyPath(filepath.Join(home, ".SSH", "notes.txt")); err != nil {
+		t.Fatalf("大小写敏感平台 .SSH 不是 .ssh,不该拒: %v", err)
 	}
 }

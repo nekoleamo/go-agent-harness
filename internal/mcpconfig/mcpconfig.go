@@ -469,3 +469,60 @@ func Save(servers []Server) error {
 	}
 	return SaveFile(File{Servers: out})
 }
+
+// MergePreserve 把提交列表里**缺失的传输面/凭据**从盘上同名条目补回(纯函数,便于单测)。
+//
+// 为何需要:面板提交的是「完整列表」,但它的形状里没有 transport/url/headers
+// (web-src 的 McpSaveServer 只有 name/command/args/enabled/mode)—— 整份覆写会
+// 静默把 http server 降级成 stdio、并丢掉 headers 里的凭据(2026-10-10 review)。
+// 规则(只补不覆盖):
+//   - 提交项未声明 transport 而盘上同名项是 http → 保留盘上的 transport/url/headers;
+//   - 声明了 http 但 url 为空 → 用盘上的 url;
+//   - headers 值等于打码占位(客户端把 GET 视图原样回传)→ 换回盘上真值;
+//     headers 里提交了真值的一律以提交为准。
+//
+// 签名必须拿到**提交项**才能判断这是「清空」还是「没携带」。
+func MergePreserve(disk, submitted []Server) []Server {
+	if len(disk) == 0 {
+		return submitted
+	}
+	byName := make(map[string]Server, len(disk))
+	for _, d := range disk {
+		byName[d.Name] = d
+	}
+	out := make([]Server, 0, len(submitted))
+	for _, s := range submitted {
+		d, ok := byName[s.Name]
+		if ok && d.IsHTTP() {
+			if !s.IsHTTP() { // 未声明传输(面板形状)= 不是想改传输,原样保留
+				s.Transport, s.URL = d.Transport, d.URL
+			} else if strings.TrimSpace(s.URL) == "" {
+				s.URL = d.URL
+			}
+			s.Headers = restoreHeaders(d.Headers, s.Headers)
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// restoreHeaders 把打码占位换回盘上真值(未回传/回传真值的一律以提交为准)。
+func restoreHeaders(disk, sub map[string]string) map[string]string {
+	if len(disk) == 0 {
+		return sub
+	}
+	out := make(map[string]string, len(disk)+len(sub))
+	for k, v := range disk {
+		out[k] = v
+	}
+	for k, v := range sub {
+		if v == maskedValue {
+			if dv, ok := disk[k]; ok {
+				out[k] = dv
+				continue
+			}
+		}
+		out[k] = v
+	}
+	return out
+}

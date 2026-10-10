@@ -15,8 +15,24 @@ package sdk
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
+
+// credCaseFold 凭据路径比较是否大小写不敏感:**Windows** 与 **macOS**(默认卷 APFS/HFS+
+// 大小写不敏感:`~/.SSH/config` 与 `~/.ssh/config` 是同一份文件);Linux 默认卷区分大小写,
+// `.SSH` 是真不同的目录,折叠只会误报。
+// 与 policy-guard 的 pathCaseFold 同口径(同一份判定转的两个面)。
+// 变量而非常量:单测需在任意平台覆盖该分支。
+var credCaseFold = runtime.GOOS == "windows" || runtime.GOOS == "darwin"
+
+// foldIf 按平台折叠大小写。
+func foldIf(s string) string {
+	if credCaseFold {
+		return strings.ToLower(s)
+	}
+	return s
+}
 
 // CredentialBaseNames 密钥类文件名 deny-list(按 basename 判定)。
 func CredentialBaseNames() []string {
@@ -87,33 +103,34 @@ func LooksLikeCredentialPath(p string) bool {
 	}
 	base := filepath.Base(v)
 	for _, n := range CredentialBaseNames() {
-		if base == n {
+		if foldIf(base) == foldIf(n) {
 			return true
 		}
 	}
 	for _, g := range CredentialGlobs() {
-		if ok, _ := filepath.Match(g, base); ok {
+		if ok, _ := filepath.Match(foldIf(g), foldIf(base)); ok {
 			return true
 		}
 	}
 	for _, h := range UserHomes() {
 		home := cleanCredPath(h)
-		if home == "" || (v != home && !hasPathPrefix(v, home)) {
+		fv, fhome := foldIf(v), foldIf(home)
+		sep := string(filepath.Separator)
+		if home == "" || (fv != fhome && !strings.HasPrefix(fv, fhome+sep)) {
 			continue
 		}
-		rel, err := filepath.Rel(home, v)
-		if err != nil {
-			continue
-		}
+		// 相对前缀用**折叠后**的串裁出(避开 filepath.Rel 逐段 == 比较在大小写不同时失败)
+		rel := strings.TrimPrefix(strings.TrimPrefix(fv, fhome), sep)
 		rel = filepath.ToSlash(rel)
 		for _, d := range CredentialHomeDirs() {
-			// `.ssh` 本身或 `.ssh/**` 都算(前缀按路径段比,避免 `.sshrc` 误命中)
-			if rel == d || strings.HasPrefix(rel, d+"/") {
+			// `.ssh` 本身或 `.ssh/**` 都算(前缀按路径段比,避开 `.sshrc` 误命中)
+			fd := filepath.ToSlash(d)
+			if rel == fd || strings.HasPrefix(rel, fd+"/") {
 				return true
 			}
 		}
 	}
-	if cfg := cleanCredPath(CredentialConfigDir()); cfg != "" && (v == cfg || hasPathPrefix(v, cfg)) {
+	if cfg := cleanCredPath(CredentialConfigDir()); cfg != "" && (foldIf(v) == foldIf(cfg) || hasPathPrefix(foldIf(v), foldIf(cfg))) {
 		return true
 	}
 	return false

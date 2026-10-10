@@ -56,6 +56,12 @@ type App struct {
 
 	themeBase map[string]string // M13 启动活动覆盖链(data.palette+theme.yaml),/theme default 重置目标
 	notifier  *notifier         // NOND-N2 系统级通知落点(探测 + 逐级降级;/notify 可查/可切)
+
+	// lastAppliedSession 最后一次已应用切换的会话 id。**仅 UI 协程访问**:命令路径与
+	// 经 sendToUI 排队的事件回调都落在 UI 循环里。用途:命令(/clone、/branch、/session)
+	// 已经同步调过 afterSessionSwitch,宿主随后广播的同一次切换事件要**跳过** ——
+	// 重复刷新会把命令回显行(如「已复制当前会话…)抹掉。
+	lastAppliedSession string
 }
 
 // NewApp 构造 TUI 应用。命令注册表(ctx.commands,host-commands 提供)注入:
@@ -141,6 +147,7 @@ func NewApp(c sdk.Ctx, loop sdk.AgentLoop, llm sdk.LLMService, profile string, p
 	m.onNotice = a.systemNotify // NOND-N2 提示 → 系统级落点(终端的活,warn/error 才发)
 	m.onDockKill = a.dockKillCmd
 	m.onDockSteer = a.dockSteer
+	m.onSessionSwitched = a.onSessionSwitched
 	a.registerInternalCommands()
 	a.applyPrefs() // 恢复上次退出偏好(思考/沙箱/历史;与 Web 共享 gah-state.json)
 	// 启动即新会话(host-cwd-sessions 启动时 New):模型上下文与展示层均从空开始,
@@ -464,12 +471,15 @@ func (a *App) Start() error {
 	})
 	// 会话/工作区切换事件(B3 命令下沉):宿主命令执行切换后 UI 经此重放刷新
 	// (替代原命令内 afterSessionSwitch 直调——判重跳过后命令走宿主版本)
+	//
+	// 必须进 UI 循环再改 Model:同进程装配 TUI+Web 时该事件在 Web 的 HTTP 协程里
+	// 同步广播,回调里直改 a.model.state 就是数据竞争(见 sessionSwitchedMsg 注释)。
 	d3 := a.c.Subscribe("cwd/session-switched", func(context.Context, *sdk.Event) error {
-		a.onSessionSwitched()
+		a.sendToUI(sessionSwitchedMsg{})
 		return nil
 	})
 	d4 := a.c.Subscribe("cwd/workspace-switched", func(context.Context, *sdk.Event) error {
-		a.onSessionSwitched()
+		a.sendToUI(sessionSwitchedMsg{})
 		return nil
 	})
 	// NOND-N1 提示 → 状态栏(订阅回调可能在总线 goroutine,也可能在 UI 循环内,统一经 sendToUI 递进)
@@ -510,6 +520,11 @@ func (a *App) Close() {
 		d()
 	}
 	a.program.Quit()
+	// Wait 等 Run 真正退出(shutdown 里才恢复 raw mode/alt-screen)。
+	// SIGTERM 路径下 main 收到信号直接 return → 本函数与 Run 由同一个信号唤醒,
+	// 谁先结束由调度决定;不等就是终端留在 raw + alt-screen(正常退出路径 Run 已返回,
+	// Wait 立即返回,无副作用)。
+	a.program.Wait()
 }
 
 // steer 把回合运行中提交的输入注入当前回合(宿主 ctx.turnControl 的转向能力)。
@@ -1707,7 +1722,8 @@ func sessionDesc(si sdk.SessionInfo) string {
 // afterSessionSwitch 切换会话后的界面同步:状态栏会话标签(名优先)、重置 token 统计、
 // 清空 TUI 会话流并重放新会话历史(继续上下文可见)。
 func (a *App) afterSessionSwitch(cs sdk.CwdSessions) {
-	a.model.state.Workspace = workspaceName() // 工作区切换后 cwd 已更新,状态栏同步
+	a.lastAppliedSession = cs.CurrentSession() // 命令路径已刷过 → 随后的事件跳过(见字段注释)
+	a.model.state.Workspace = workspaceName()  // 工作区切换后 cwd 已更新,状态栏同步
 	a.model.state.Session = sessionLabel(cs)
 	var us sdk.UsageStatsService
 	if err := a.c.Inject("ctx.usageStats", &us); err == nil {
@@ -1736,6 +1752,11 @@ func (a *App) afterSessionSwitch(cs sdk.CwdSessions) {
 func (a *App) onSessionSwitched() {
 	var cs sdk.CwdSessions
 	if err := a.c.Inject("ctx.cwdSessions", &cs); err != nil {
+		return
+	}
+	// 命令路径(/clone、/branch、/session)已经同步刷过一次 → 同一会话不得再刷:
+	// 重复刷新会 Lines=nil 重放,把刚回显的命令结果行抹掉(真机感知:确认话术消失)。
+	if cs.CurrentSession() == a.lastAppliedSession {
 		return
 	}
 	a.afterSessionSwitch(cs)

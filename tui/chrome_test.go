@@ -159,6 +159,11 @@ func TestMetricLine(t *testing.T) {
 	if out := stripColor(renderMetricLine(s2)); !strings.Contains(out, "缓存 50%") {
 		t.Fatalf("应显缓存命中率: %q", out)
 	}
+	// 缓存 > 0 但累计 prompt 为 0(全命中缓存的适配器口径):不得整数除零 panic
+	s2z := &State{Stats: sdk.UsageStats{Requests: 1, PromptTokens: 0, CachedTokens: 512, LastPromptTokens: 512, Window: 4096}}
+	if out := stripColor(renderMetricLine(s2z)); strings.Contains(out, "缓存") {
+		t.Fatalf("prompt 为 0 时不应显缓存命中率: %q", out)
+	}
 	// 无请求:上下文 -
 	s3 := &State{}
 	if out := stripColor(renderMetricLine(s3)); !strings.Contains(out, "上下文 -") {

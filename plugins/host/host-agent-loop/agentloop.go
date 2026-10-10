@@ -159,6 +159,19 @@ func (c *control) runningSessions() []string {
 // host-schedule 的 waitIdle 保证不与人回合并发),取最近 = 取那个唯一回合。
 // 投递本身不阻塞(消息进回合队列),实际注入与落账发生在下一次模型请求组装之前。
 func (c *control) Steer(text string) (bool, error) {
+	return c.steerTo("", false, text)
+}
+
+// SteerSession 实现 sdk.TurnSteererSession:只投给**指定会话**的运行中回合。
+// 多会话并行时不能靠「最近注册」猜(闸门按会话判运行中,投递按全局最近,两把锁的键不同)。
+// session 为归一化会话键(空 = 主会话),与 registerSession 的 owner 同口径。
+func (c *control) SteerSession(session, text string) (bool, error) {
+	return c.steerTo(session, true, text)
+}
+
+// steerTo 转向投递内核:bySession=false 时取最近注册的回合(旧语义/单会话),
+// true 时只取 owner == session 的那一个。
+func (c *control) steerTo(session string, bySession bool, text string) (bool, error) {
 	if strings.TrimSpace(text) == "" {
 		return false, errors.New("agentloop: 转向消息为空")
 	}
@@ -169,13 +182,16 @@ func (c *control) Steer(text string) (bool, error) {
 		if tt == nil {
 			continue
 		}
+		if bySession && c.owner[tok] != session {
+			continue
+		}
 		if t == nil || tok > latest {
 			latest, t = tok, tt
 		}
 	}
 	c.mu.Unlock()
 	if t == nil {
-		return false, nil // 无运行回合:调用方回落(TUI 入队 / Web 409)
+		return false, nil // 无匹配回合:调用方回落(TUI 入队 / Web 409)
 	}
 	t.pushSteer(text)
 	return true, nil

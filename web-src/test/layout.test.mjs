@@ -2363,6 +2363,33 @@ describe('布局护栏:整页永不滚动(第五十二/五十三批)', { skip: s
     }
   })
 
+  // 关掉**后台**页签不得动当前页签输入框里刚打的字:
+  // 回归(2026-10-10):closeTab 先把 tabId 置空 ⇒ switchTab 的「切走前存草稿」分支被跳过
+  // ⇒ 输入框被目标页签的旧草稿覆盖(用户刚写的字静默丢失)。
+  test('会话页签:关后台页签不丢当前页签草稿', async (t) => {
+    const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+    let page = null
+    try {
+      page = await open(ctx, makeStub(true, false), docks[0].dock)
+      await page.waitForSelector('.tabbar', { timeout: 10000 })
+      await page.click('.sidebar .session-item:has-text("session 1")')
+      await page.waitForFunction(() => document.querySelectorAll('.tabbar .tab').length === 2, null, { timeout: 8000 })
+
+      const ta = '.input-slot textarea'
+      await page.fill(ta, 'keep-me')
+      // 关第一个(=后台)页签:当前页签不变
+      await page.$$eval('.tabbar .tab .x', (els) => els[0].click())
+      await page.waitForFunction(() => document.querySelectorAll('.tabbar .tab').length === 1, null, { timeout: 8000 })
+      await page.waitForTimeout(300)
+      assert.equal(await page.$eval(ta, (el) => el.value), 'keep-me', '关后台页签不得清掉当前页签的草稿')
+    } catch (e) {
+      await shoot(page, t.name)
+      throw e
+    } finally {
+      await ctx.close()
+    }
+  })
+
   test('发消息自动切回会话流(变更视图不吞掉回复)', async (t) => {
     const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
     let page = null

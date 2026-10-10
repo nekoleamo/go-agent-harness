@@ -478,16 +478,9 @@ func (s *Server) consumeStream(after uint64, sink func(Frame) error, stop <-chan
 	ch, unsub := s.hub.Stream(sc.ID)
 	defer unsub()
 	seen := after // 已消费会话游标(会话帧按 Seq 全局递增;非会话帧 ID=0 不参与去重)
-	// 未决审批弹层补推(只推给本连接):confirm 帧是实时广播、不落账本,而审批现在默认
-	// **不限时地等** —— 用户刷新/重开页面期间推出去的弹层就丢了,不补推他会永远等下去。
-	// 其它已连着的前端早就收到过同一帧,所以只推本连接,不用广播。
-	if s.confirm != nil {
-		for _, f := range s.confirm.PendingFrames() {
-			if err := sink(f); err != nil {
-				return
-			}
-		}
-	}
+	// 历史重放与基线先走完 —— FrameBaseline 是**首帧契约**(tests/frame_sync / consume_test
+	// 都按「首帧 = baseline」断言)。未决弹层补推放在它**之后**:刷新页面时恰好有未决
+	// 审批/提问就是补推存在的那个场景,把它排在基线前会当场破约。
 	var replay []Frame
 	if after == 0 {
 		frames, base := s.hub.ReplayTail(sc.Log)
@@ -497,6 +490,23 @@ func (s *Server) consumeStream(after uint64, sink func(Frame) error, stop <-chan
 		replay = frames
 	} else {
 		replay = s.hub.ReplayAfter(sc.Log, after)
+	}
+	// 未决审批/提问弹层补推(只推给本连接):这些帧是实时广播、不落账本,而审批与提问
+	// 都默认**不限时地等** —— 用户刷新/重开页面期间推出去的弹层就丢了,不补推他会永远等下去。
+	// 其它已连着的前端早就收到过同一帧,所以只推本连接,不用广播。
+	if s.confirm != nil {
+		for _, f := range s.confirm.PendingFrames() {
+			if err := sink(f); err != nil {
+				return
+			}
+		}
+	}
+	if s.question != nil {
+		for _, f := range s.question.PendingFrames() {
+			if err := sink(f); err != nil {
+				return
+			}
+		}
 	}
 	for _, f := range replay {
 		if f.ID > 0 && f.ID <= seen {
@@ -657,7 +667,7 @@ func (s *Server) handleInput(w http.ResponseWriter, r *http.Request) {
 	// 把附件静默丢掉 —— 宁可 409 让用户等回合结束,也不假装收下了。
 	// 权威占用在下方 CAS。
 	if s.runningFor(skey).Load() {
-		if !strings.HasPrefix(content, "/") && len(resolved) == 0 && s.steer(content) {
+		if !strings.HasPrefix(content, "/") && len(resolved) == 0 && s.steer(content, skey) {
 			writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "accepted": "steer"})
 			return
 		}
@@ -688,7 +698,7 @@ func (s *Server) handleInput(w http.ResponseWriter, r *http.Request) {
 	if !busy.CompareAndSwap(false, true) {
 		// 竞态:另一请求刚起回合 → 同样按转向处理(不静默丢用户输入);
 		// 带附件同样不走转向(理由见上面的闸门)。
-		if len(resolved) == 0 && s.steer(content) {
+		if len(resolved) == 0 && s.steer(content, skey) {
 			writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "accepted": "steer"})
 			return
 		}
@@ -734,9 +744,21 @@ func (s *Server) handleInput(w http.ResponseWriter, r *http.Request) {
 // steer 把输入注入运行中的回合(宿主 ctx.turnControl 实现 sdk.TurnSteerer)。
 // 返回 false = 未装配该能力 / 无运行回合 / 落账失败 → 调用方按旧行为回落(409),
 // 不静默把用户的输入吃掉。已注入的消息由回合落账,并经事件流回到前端渲染。
-func (s *Server) steer(content string) bool {
+//
+// sessionKey 是本请求的**归一化会话键**(空 = 主会话):闸门按它判「这个会话在跑」,
+// 投递也必须按它定向 —— 否则 A 窗口的插话会投给「最近注册的回合」(可能是 B 会话)。
+func (s *Server) steer(content, sessionKey string) bool {
 	if s.tc == nil {
 		return false
+	}
+	// 优先定向投递(多窗口并行必需);实现方未提供时回落到「最近回合」旧语义。
+	if st, ok := s.tc.(sdk.TurnSteererSession); ok {
+		injected, err := st.SteerSession(sessionKey, content)
+		if err != nil {
+			s.log.Warn("web: 转向注入失败(回落 409)", "err", err, "session", sessionKey)
+			return false
+		}
+		return injected
 	}
 	st, ok := s.tc.(sdk.TurnSteerer)
 	if !ok {
@@ -925,7 +947,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		Thinking: effThinking.String(), ThinkingFrom: thinkingFrom, ThinkingSession: sessionThinking,
 		Sandbox:   declared,
 		Approval:  approval,
-		Running:   s.runningFor(s.sessionKey(scopeQ)).Load(),
+		Running:   s.runningOf(s.sessionKey(scopeQ)),
 		SessionID: scopeQ,
 		Version:   os.Getenv("GAH_VERSION"),
 	}
@@ -1924,6 +1946,7 @@ func (s *Server) handleAttachments(w http.ResponseWriter, r *http.Request) {
 		// 原始名清洗(filepath.Base 防目录穿越)
 		name := filepath.Base(part.FileName())
 		if name == "." || name == ".." || name == "" {
+			cleanup() // 同请求里已落盘的文件不能留成孤儿(与其余失败分支同款)
 			http.Error(w, "非法文件名", http.StatusBadRequest)
 			return
 		}

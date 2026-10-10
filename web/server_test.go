@@ -436,13 +436,23 @@ func (s *stubTurnControl) Cancel() {
 // stubTurnSteerer 实现 sdk.TurnSteerer 的回合控制 stub(记录转向消息;ok=false 模拟无运行回合)。
 type stubTurnSteerer struct {
 	stubTurnControl
-	mu     sync.Mutex
-	steers []string
-	ok     bool
-	err    error
+	mu       sync.Mutex
+	steers   []string
+	sessions []string
+	ok       bool
+	err      error
 }
 
 func (s *stubTurnSteerer) Steer(text string) (bool, error) {
+	return s.record("", text)
+}
+
+// SteerSession 可选扩展(sdk.TurnSteererSession):web 侧优先走它做定向投递。
+func (s *stubTurnSteerer) SteerSession(session, text string) (bool, error) {
+	return s.record(session, text)
+}
+
+func (s *stubTurnSteerer) record(session, text string) (bool, error) {
 	if s.err != nil {
 		return false, s.err
 	}
@@ -451,6 +461,7 @@ func (s *stubTurnSteerer) Steer(text string) (bool, error) {
 	}
 	s.mu.Lock()
 	s.steers = append(s.steers, text)
+	s.sessions = append(s.sessions, session)
 	s.mu.Unlock()
 	return true, nil
 }
@@ -459,6 +470,17 @@ func (s *stubTurnSteerer) texts() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string(nil), s.steers...)
+}
+
+// pairs 返回 (session, text) 对(验定向投递)。
+func (s *stubTurnSteerer) pairs() [][2]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([][2]string, 0, len(s.steers))
+	for i := range s.steers {
+		out = append(out, [2]string{s.sessions[i], s.steers[i]})
+	}
+	return out
 }
 
 // newTestServer 组装一个可测试的 Server(直接注入字段,不经 sdk.Ctx)。
@@ -745,6 +767,48 @@ func TestInputSteerWhileRunning(t *testing.T) {
 	}
 	if got := tc.texts(); len(got) != 1 || got[0] != "别查了,改 B 方案" {
 		t.Fatalf("转向消息应交给 turnControl: %#v", got)
+	}
+}
+
+// TestInputSteerTargetsRequestedSession 多会话并行时转向必须投给**请求指定的会话**:
+// 闸门按会话判「运行中」,投递也按同一把键定向 —— 否则 A 窗口的插话会被投给
+// 「最近注册的回合」(可能是 B 会话),由 B 落账进 B 的日志(内容静默错位)。
+// 直接调 s.steer(不走 HTTP):写侧闸门对非当前会话另有 SessionRunner 前置,
+// 本用例只钉「定向投递」本身。
+func TestInputSteerTargetsRequestedSession(t *testing.T) {
+	s, _ := newTestServer()
+	tc := &stubTurnSteerer{ok: true}
+	s.tc = tc
+	if !s.steer("改 B 方案", "sess-B") {
+		t.Fatalf("定向转向应投出")
+	}
+	got := tc.pairs()
+	if len(got) != 1 || got[0][0] != "sess-B" || got[0][1] != "改 B 方案" {
+		t.Fatalf("转向应按请求会话定向投递 (session,text): %#v", got)
+	}
+}
+
+// TestSteerFallsBackWhenSessionUnsupported 实现方只有 TurnSteerer(旧实现/外部插件)
+// 时必须回落旧语义,不能因缺可选接口就静默不投。
+type steerOnly struct {
+	stubTurnControl
+	got []string
+}
+
+func (s *steerOnly) Steer(text string) (bool, error) {
+	s.got = append(s.got, text)
+	return true, nil
+}
+
+func TestSteerFallsBackWhenSessionUnsupported(t *testing.T) {
+	s, _ := newTestServer()
+	tc := &steerOnly{}
+	s.tc = tc
+	if !s.steer("hi", "sess-B") {
+		t.Fatalf("无定向接口时应回落到 TurnSteerer")
+	}
+	if len(tc.got) != 1 || tc.got[0] != "hi" {
+		t.Fatalf("回落路径应调用 Steer: %#v", tc.got)
 	}
 }
 
@@ -3009,5 +3073,73 @@ func TestScheduleLunarOverREST(t *testing.T) {
 	r.Body.Close()
 	if upd.LunarDate != "" {
 		t.Fatalf("改回普通排期应清掉 lunar_date,得 %q", upd.LunarDate)
+	}
+}
+
+// TestStateQueryDoesNotGrowRunningMap GET /api/state?session=<任意串> 是 CORS 简单请求
+// (浏览器里任意页面都能发):只读探测不得懒建 map 条目,否则这张表会被任意字符串无限撑大。
+//
+// 回归(2026-10-10):handleState 用 runningFor(懒建)导致每个不同的 session 查询都留一条。
+func TestStateQueryDoesNotGrowRunningMap(t *testing.T) {
+	s, _ := newTestServer()
+	hs := httptest.NewServer(s.handler())
+	defer hs.Close()
+	for i := 0; i < 5; i++ {
+		resp, err := http.Get(hs.URL + "/api/state?session=bogus-" + fmt.Sprint(i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+	}
+	s.runMu.Lock()
+	n := len(s.runBySession)
+	s.runMu.Unlock()
+	if n != 0 {
+		t.Fatalf("只读探测不应建运行态条目,得 %d 条", n)
+	}
+}
+
+// TestAttachmentInvalidFilenameCleansUp multipart 里出现非法文件名(如 ".")时,
+// 同请求里**已落盘**的合法文件必须被清掉(与其余失败分支同款 cleanup)。
+//
+// 回归(2026-10-10):该分支直接 400 返回,第一个文件留在 attachments 目录成孤儿。
+func TestAttachmentInvalidFilenameCleansUp(t *testing.T) {
+	s, _ := newTestServer()
+	s.cfg.AttachmentsDir = t.TempDir()
+	hs := httptest.NewServer(s.handler())
+	defer hs.Close()
+
+	var b bytes.Buffer
+	w := multipart.NewWriter(&b)
+	add := func(filename, ct, data string) {
+		h := make(textproto.MIMEHeader)
+		h.Set("Content-Disposition", `form-data; name="file"; filename="`+filename+`"`)
+		h.Set("Content-Type", ct)
+		p, err := w.CreatePart(h)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := p.Write([]byte(data)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add("ok.png", "image/png", "\x89PNG\r\n\x1a\nxx")
+	add(".", "image/png", "boom")
+	w.Close()
+
+	resp, err := http.Post(hs.URL+"/api/attachments", w.FormDataContentType(), &b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("非法文件名应 400,得 %d", resp.StatusCode)
+	}
+	entries, err := os.ReadDir(s.cfg.AttachmentsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("失败请求不得留下孤儿附件,得 %d 个条目", len(entries))
 	}
 }

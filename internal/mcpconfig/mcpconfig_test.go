@@ -3,6 +3,7 @@
 package mcpconfig
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -392,5 +393,62 @@ func TestValidateEndpoint(t *testing.T) {
 	// 无凭据时远端 http 仍拒(传输加密不是凭据专属问题)
 	if err := ValidateEndpoint("http://example.com/mcp", false); err == nil {
 		t.Error("远端明文即使无凭据也应拒绝")
+	}
+}
+
+// TestMergePreserveHTTPFields 面板提交的「完整列表」不含 transport/url/headers
+// (前端形状只有 name/command/args/enabled/mode):整份覆写会静默把 HTTP server
+// 降级成 stdio 并丢掉 headers 凭据。MergePreserve 按 name 补回提交项没携带的字段。
+//
+// 回归(2026-10-10):此前 Save 直接整份覆盖,GUI 改任意一条都会清掉其它 HTTP 条目。
+func TestMergePreserveHTTPFields(t *testing.T) {
+	disk := []Server{
+		{Name: "remote", Transport: TransportHTTP, URL: "https://api.example.com/mcp",
+			Headers: map[string]string{"Authorization": "Bearer secret"}},
+		{Name: "local", Command: "npx", Args: []string{"-y", "x"}},
+	}
+	// 面板形状:只带 name/command/args/enabled/mode —— 没有 transport/url/headers
+	submitted := []Server{
+		{Name: "remote", Command: "will-be-replaced-by-transport"},
+		{Name: "local", Command: "npx", Args: []string{"-y", "x"}},
+		{Name: "new", Command: "go", Args: []string{"run", "."}},
+	}
+	got := MergePreserve(disk, submitted)
+	byName := map[string]Server{}
+	for _, s := range got {
+		byName[s.Name] = s
+	}
+	if r := byName["remote"]; !r.IsHTTP() || r.URL != "https://api.example.com/mcp" {
+		t.Fatalf("HTTP 条目必须保留 transport/url: %+v", r)
+	}
+	if r := byName["remote"]; r.Headers["Authorization"] != "Bearer secret" {
+		t.Fatalf("headers 凭据必须保留: %+v", r.Headers)
+	}
+	if n := byName["new"]; n.IsHTTP() {
+		t.Fatalf("新条目不应凭空变成 http: %+v", n)
+	}
+	if l := byName["local"]; l.IsHTTP() {
+		t.Fatalf("stdio 条目不应被改成 http: %+v", l)
+	}
+}
+
+// TestMergePreserveMaskedHeaderRoundTrip 客户端把 GET 视图原样回传(headers 值是打码
+// 占位)时,落盘必须是真值,不能把占位串写进配置(写进去 = 凭据损坏)。
+func TestMergePreserveMaskedHeaderRoundTrip(t *testing.T) {
+	disk := []Server{{
+		Name: "remote", Transport: TransportHTTP, URL: "https://x/mcp",
+		Headers: map[string]string{"Authorization": "Bearer real"},
+	}}
+	raw, _ := json.Marshal(disk[0]) // 经 MarshalJSON 打码
+	var masked Server
+	if err := json.Unmarshal(raw, &masked); err != nil {
+		t.Fatal(err)
+	}
+	if masked.Headers["Authorization"] != maskedValue {
+		t.Fatalf("前提不成立:GET 形状应打码,得 %q", masked.Headers["Authorization"])
+	}
+	got := MergePreserve(disk, []Server{masked})
+	if got[0].Headers["Authorization"] != "Bearer real" {
+		t.Fatalf("打码占位必须换回真值: %+v", got[0].Headers)
 	}
 }

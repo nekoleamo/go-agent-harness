@@ -111,8 +111,12 @@ type EventHub struct {
 	// 「未带 session 的旧连接」会互相看不到对方的帧。切换会话时随之变化。
 	mainID func() string
 	// ctx/sessionsD:非主会话的按需订阅(某个窗口第一次订这个会话时建,最后一条连接断开时撤)。
-	ctx       sdk.Ctx
-	sessionsD map[string]sdk.Disposer
+	// sessionRefs 与 sessionsD 同键:同一会话可能有**多条**连接(SSE 自动重连与旧连接
+	// 生命期重叠、同会话开两个页签),只有引用归零才能撤订阅 —— 否则先断的那条把
+	// 订阅撤掉,剩下那条永久收不到帧(静默停更,直到手动重载)。
+	ctx         sdk.Ctx
+	sessionsD   map[string]sdk.Disposer
+	sessionRefs map[string]int
 }
 
 // subscriber 一条 SSE 连接:ch 是帧通道,want 是它要收的会话 id(空 = 主会话/全量)。
@@ -328,7 +332,7 @@ func (h *EventHub) BindMain(fn func() string) {
 	h.mainID = fn
 }
 
-// EnsureSession 为非主会话建立事件订阅(幂等)。必须在该会话的 SSE 连接建立前调。
+// EnsureSession 为非主会话建立事件订阅(幂等,带引用计数)。必须在该会话的 SSE 连接建立前调。
 // 为什么按需:主单例的事件名是 session/event,而其它会话走 session/event/<id>,
 // 不建就收不到。没 ctx(单测直接构造 hub)时静默跳过 —— 测试里不走真实事件总线。
 func (h *EventHub) EnsureSession(id string) {
@@ -340,6 +344,10 @@ func (h *EventHub) EnsureSession(id string) {
 	if h.ctx == nil {
 		return
 	}
+	if h.sessionRefs == nil {
+		h.sessionRefs = make(map[string]int)
+	}
+	h.sessionRefs[id]++ // 已订阅时只是计数 +1
 	if _, ok := h.sessionsD[id]; ok {
 		return
 	}
@@ -357,12 +365,18 @@ func (h *EventHub) EnsureSession(id string) {
 	})
 }
 
-// UnbindSession 撤销某会话的事件订阅(该会话最后一条连接断开时调)。
+// UnbindSession 释放一条该会话的连接:引用归零才真正撤销订阅(见 sessionRefs 注释)。
 func (h *EventHub) UnbindSession(id string) {
 	if id == "" {
 		return
 	}
 	h.mu.Lock()
+	if n := h.sessionRefs[id]; n > 1 {
+		h.sessionRefs[id] = n - 1
+		h.mu.Unlock()
+		return
+	}
+	delete(h.sessionRefs, id)
 	d, ok := h.sessionsD[id]
 	delete(h.sessionsD, id)
 	h.mu.Unlock()

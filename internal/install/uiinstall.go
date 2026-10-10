@@ -107,7 +107,12 @@ func InstallUI(spec, home string) (*UIResult, error) {
 	}
 
 	// 构建(vite;需 npm;产物默认 dist)
-	if out, err := run(src, "sh", "-c", "npm install --no-audit --no-fund && npm run build"); err != nil {
+	// shell 必须解析(与 buildPlugin 同一理由:Windows 裸 "sh" 不在 PATH)。
+	sh, serr := sdk.ResolvePOSIXShell()
+	if serr != nil {
+		return nil, fmt.Errorf("install-ui: %w", serr)
+	}
+	if out, err := run(src, sh, "-c", "npm install --no-audit --no-fund && npm run build"); err != nil {
 		return nil, fmt.Errorf("install-ui: 构建失败(需 node/npm): %w(%s)", err, out)
 	}
 	outDir := man.Out

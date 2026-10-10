@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
 // —— ① 默认不 tidy,失败才 tidy ——
@@ -245,5 +247,23 @@ func TestBuildEnvGoEnvNoteNoteIsNotEmpty(t *testing.T) {
 	t.Setenv(AllowPluginGoEnvEnv, "1")
 	if BuildEnvGoEnvNote() != "" {
 		t.Error("放行口已打开时不该再提醒")
+	}
+}
+
+// TestBuildPluginHonorsResolvedShell 构建必须经 sdk.ResolvePOSIXShell 解析 shell,
+// 不得裸用 "sh":Windows 上 Git for Windows 默认只把 …\Git\cmd 加进 PATH,sh.exe 在
+// …\Git\bin ⇒ 裸 LookPath("sh") 必失败,而 macOS/Linux 恒有 /bin/sh(本地永远绿)。
+//
+// 判据:GAH_SHELL_PATH 指向不存在的路径时,解析必须**显式失败** ——
+// 裸 "sh" 会忽略该变量照跑(于是这个用例会失败),正好把回归钉住。
+func TestBuildPluginHonorsResolvedShell(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("桩脚本是 sh,Windows 上不跑(与该文件其余用例同口径)")
+	}
+	dir := t.TempDir()
+	t.Setenv(sdk.ShellPathEnv, filepath.Join(dir, "no-such-shell"))
+	_, err := buildPlugin(dir, "true", "tool-demo")
+	if err == nil || !strings.Contains(err.Error(), sdk.ShellPathEnv) {
+		t.Fatalf("应因显式指定的 shell 不可用而失败(证明确实走了解析): %v", err)
 	}
 }

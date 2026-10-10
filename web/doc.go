@@ -2,7 +2,8 @@
 // 内嵌资产(白名单 MIME)、文件树、HTML 沙箱、markdown 文本渲染。
 //
 // 全部挂 authMiddleware;全部经 host-docview 的统一 resolver(沙箱 + 逃逸校验 + deny-list,
-// strict 模式:根集合 = workspace ∪ $GAH_HOME/attachments)。未装配 ctx.doc 时**不注册路由**。
+// strict 模式:根集合 = workspace ∪ $GAH_HOME/attachments)。路由**无条件注册**,
+// 未装配 ctx.doc 时各处理器返回 503(前端据 503 隐藏入口;见 server.go 路由注册段)。
 package web
 
 import (

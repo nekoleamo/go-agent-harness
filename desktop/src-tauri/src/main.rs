@@ -218,13 +218,26 @@ fn session_window_label(session_id: &str) -> String {
 // 形状 = 主窗口地址 + &session=<id>:前端启动时读 ?session= 绑定本窗口的会话(多窗口
 // 各看各的)。token 模式的凭据仍在 fragment(不发往服务端),由引导页换 cookie。
 fn session_window_url(session_id: &str) -> String {
-    let mut base = format!("{}{}&session={}", web_url(), GAH_SHELL_PATH, session_id);
-    let t = web_token();
-    if !t.is_empty() {
-        base.push('#');
-        base.push_str(&t);
+    format!(
+        "{}{}&session={}{}",
+        web_url(),
+        GAH_SHELL_PATH,
+        session_id,
+        token_fragment(&web_token())
+    )
+}
+
+// token_fragment token 模式的 URL fragment(空 token = 空串)。
+//
+// 形状**必须**是 `#token=<token>` 且转义:引导页(web/bootstrap.go)的正则是
+// `(?:^#token=|[#&]token=)([\s\S]*)$` —— 裸 `#<token>` 既不匹配 `^#token=` 也不匹配
+// `[#&]token=`,于是窗口一落到引导页只会显示「未授权」,凭据通道等于死代码。
+fn token_fragment(token: &str) -> String {
+    if token.is_empty() {
+        String::new()
+    } else {
+        format!("#token={}", escape_fragment(token))
     }
-    base
 }
 
 // open_session_window 开一个绑定到新会话的窗口(托盘「新会话窗口」)。
@@ -236,6 +249,25 @@ fn session_window_url(session_id: &str) -> String {
 //      的每次导航都生效(主窗口之所以没挂,是因为它走 tauri.conf.json 的 app.windows
 //      声明、那条路径没有 Builder;插件路径才是全局的)。
 fn open_session_window(app: &AppHandle) {
+    // 上限**先判**:spawn 在宿主侧是**真建会话**(落日志、进会话列表),超限后再拒会白留一个
+    // 没人打开的幻影会话。计数只算会话窗口(gah-session-* 前缀),不含主窗口 —— 否则
+    // 实际能开的比文案少一个。
+    let open = app
+        .webview_windows()
+        .keys()
+        .filter(|l| l.starts_with("gah-session-"))
+        .count();
+    if open >= MAX_SESSION_WINDOWS {
+        let msg = format!("新会话窗口: 已达上限 {MAX_SESSION_WINDOWS} 个窗口");
+        shellLog(app, &msg);
+        app.dialog()
+            .message(format!(
+                "已经开了 {MAX_SESSION_WINDOWS} 个会话窗口(上限)。先关掉一个再开。"
+            ))
+            .title("gah 新会话窗口")
+            .show(|_| {});
+        return;
+    }
     let id = spawnSession();
     if id.is_empty() {
         // 拿不到会话 id 就**不开窗**:开一个 ?session= 的空窗口只会让人对着空白
@@ -250,20 +282,6 @@ fn open_session_window(app: &AppHandle) {
     {
         let label = session_window_label(&id);
         let url = session_window_url(&id);
-        // 上限:防止「点开一堆窗口」把本机 webview 吃满(每个窗口一个 SSE 连接 +
-        // 一份会话日志)。超限时明确拒绝并记日志,不做静默丢弃。
-        let open = app.webview_windows().len();
-        if open >= MAX_SESSION_WINDOWS {
-            let msg = format!("新会话窗口: 已达上限 {MAX_SESSION_WINDOWS} 个窗口");
-            shellLog(app, &msg);
-            app.dialog()
-                .message(format!(
-                    "已经开了 {MAX_SESSION_WINDOWS} 个会话窗口(上限)。先关掉一个再开。"
-                ))
-                .title("gah 新会话窗口")
-                .show(|_| {});
-            return;
-        }
         match tauri::WebviewWindowBuilder::new(
             app,
             &label,
@@ -271,6 +289,11 @@ fn open_session_window(app: &AppHandle) {
         )
         .title("gah 会话")
         .inner_size(1200.0, 800.0)
+        // 必须关掉 Tauri 原生 drag-drop 处理器:该开关默认**开**,开着时 Windows 上
+        // HTML5 拖放不落到 DOM(会话窗口失去拖文件进附件入口,与主窗口行为不一致)。
+        // 主窗口在 tauri.conf.json 写的是 dragDropEnabled:false;Builder 路径无配置可依,
+        // 只能显式调。
+        .disable_drag_drop_handler()
         .build()
         {
             Ok(_) => shellLog(app, &format!("新会话窗口: 已开 {label} → {url}")),
@@ -281,13 +304,12 @@ fn open_session_window(app: &AppHandle) {
 
 // shell_url 主窗口导航地址:token 模式把凭据放 URL fragment(不发往服务端;引导页换取 cookie)。
 fn shell_url() -> String {
-    let base = format!("{}{}", web_url(), GAH_SHELL_PATH);
-    let t = web_token();
-    if t.is_empty() {
-        base
-    } else {
-        format!("{base}#token={}", escape_fragment(&t))
-    }
+    format!(
+        "{}{}{}",
+        web_url(),
+        GAH_SHELL_PATH,
+        token_fragment(&web_token())
+    )
 }
 
 // status_code 从裸 TCP 响应首行取状态码(解析失败 = 未就绪)。
@@ -1179,8 +1201,9 @@ fn openWithDefaultApp(p: &std::path::Path) -> std::io::Result<()> {
 
 #[cfg(target_os = "windows")]
 fn openWithDefaultApp(p: &std::path::Path) -> std::io::Result<()> {
-    std::process::Command::new("cmd")
-        .args(["/C", "start", ""])
+    // explorer 而非 `cmd /C start ""`:cmd 会二次解析 & % < > —— 路径含 &(如用户名里带 &)
+    // 会被截断甚至注入;explorer 把参数当单个 argv 交给系统关联程序,与 openURLInBrowser 同口径。
+    std::process::Command::new("explorer")
         .arg(p)
         .spawn()
         .map(|_| ())
@@ -1656,7 +1679,7 @@ fn spawnSelfCheck(h: AppHandle) {
         );
         let script = selfcheckScript(&diag);
         for round in 0..2 {
-            std::thread::sleep(Duration::from_secs(if round == 0 { 3 } else { 4 }));
+            tokio::time::sleep(Duration::from_secs(if round == 0 { 3 } else { 4 })).await;
             let Some(w) = h.get_webview_window("main") else {
                 shellLog(&h, "自检: 取不到 label=main 的窗口,界面无法被导航");
                 return;
@@ -1683,7 +1706,7 @@ fn spawnSelfCheck(h: AppHandle) {
                 if done.load(Ordering::SeqCst) {
                     break;
                 }
-                std::thread::sleep(Duration::from_millis(500));
+                tokio::time::sleep(Duration::from_millis(500)).await;
             }
             if !done.load(Ordering::SeqCst) {
                 shellLog(
@@ -2272,7 +2295,7 @@ fn main() {
                                             if let Some(w) = h.get_webview_window("main") {
                                                 let _ = w.eval(JS_ERRHOOK);
                                             }
-                                            std::thread::sleep(Duration::from_millis(150));
+                                            tokio::time::sleep(Duration::from_millis(150)).await;
                                         }
                                     });
                                 }
@@ -2282,7 +2305,7 @@ fn main() {
                                     let h = handle3.clone();
                                     tauri::async_runtime::spawn(async move {
                                         for _ in 0..6 {
-                                            std::thread::sleep(Duration::from_millis(500));
+                                            tokio::time::sleep(Duration::from_millis(500)).await;
                                             if let Some(w) = h.get_webview_window("main") {
                                                 let _ = w.eval(&script);
                                             }
@@ -2299,7 +2322,11 @@ fn main() {
                         }
                         return;
                     }
-                    std::thread::sleep(Duration::from_millis(200));
+                    // 必须 tokio::time::sleep（不得 std::thread::sleep）:本块跑在 tauri
+                    // async_runtime 的 tokio worker 上，std 睡会**占死一个 worker**（不返回
+                    // Pending，别的 worker 不会接管）—— 低核机器上启动期几处并联就能把
+                    // 线程池占满，连定时器都驱动不了（真机「一直停在检查更新中」同源）。
+                    tokio::time::sleep(Duration::from_millis(200)).await;
                 }
                 shellLog(&handle3, "sidecar 在 12 秒内未就绪(注入失败页)");
                 let _ = handle3.emit("sidecar-start-failed", "gah 12 秒内未就绪");
@@ -2335,7 +2362,8 @@ fn main() {
                 let mut consumer = notice::Consumer::new();
                 let mut prev = stateRunning();
                 loop {
-                    std::thread::sleep(Duration::from_secs(2));
+                    // 同上一处：async 任务里不得用 std::thread::sleep（占死 worker）。
+                    tokio::time::sleep(Duration::from_secs(2)).await;
                     if !READY.load(Ordering::SeqCst) {
                         continue;
                     }
@@ -2806,6 +2834,16 @@ mod session_window_tests {
         // 无 token 模式(本测试进程未设 GAH_WEB_TOKEN):应带 ?shell=desktop 与 &session=
         assert!(u.contains("?shell=desktop"), "缺 shell 标记: {u}");
         assert!(u.contains("&session=20260930-101010"), "缺 session: {u}");
+    }
+
+    /// token 模式的 fragment 形状必须与主窗口/引导页一致:`#token=` 前缀 + 转义。
+    /// 裸 `#<token>` 引导页解析不了(它只认 `^#token=`/`[#&]token=`),凭据通道等于死代码。
+    #[test]
+    fn token_fragment_matches_bootstrap_shape() {
+        assert_eq!(token_fragment(""), "", "空 token 不写 fragment");
+        assert_eq!(token_fragment("abc123"), "#token=abc123");
+        // 需转义的字符按 RFC3986 百分号编码
+        assert_eq!(token_fragment("a b&c"), "#token=a%20b%26c");
     }
 
     /// capability 必须覆盖会话窗口标签 —— 漏了就是「新窗口里 invoke 全废」,

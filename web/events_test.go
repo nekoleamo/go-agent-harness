@@ -47,6 +47,8 @@ func (m *memLog) RegisterCompressor(int, sdk.SessionCompressor) {}
 type testCtx struct {
 	subs map[string][]sdk.AnyListener
 	mu   sync.Mutex
+	// unsubs 被调用的撤销次数(引用计数用例:订阅只有在最后一条连接断开时才允许被撤)。
+	unsubs int
 }
 
 func newTestCtx() *testCtx                   { return &testCtx{subs: map[string][]sdk.AnyListener{}} }
@@ -65,7 +67,11 @@ func (c *testCtx) Subscribe(name string, fn sdk.AnyListener) sdk.Disposer {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.subs[name] = append(c.subs[name], fn)
-	return func() {}
+	return func() {
+		c.mu.Lock()
+		c.unsubs++
+		c.mu.Unlock()
+	}
 }
 func (c *testCtx) fire(name string, payload any) {
 	c.mu.Lock()
@@ -348,4 +354,44 @@ func TestHubUnboundConnectionGetsMainFrames(t *testing.T) {
 	default:
 		t.Fatal("未绑定连接应收主会话帧")
 	}
+}
+
+// TestEnsureSessionRefcount 同一会话的多条连接(SSE 自动重连与旧连接重叠、同会话两页签)
+// 必须引用计数:先断的那条不得撤掉宿主机订阅,否则剩下那条永久收不到帧(静默停更)。
+func TestEnsureSessionRefcount(t *testing.T) {
+	ctx := newTestCtx()
+	hub := NewHub()
+	unsub, err := hub.Subscribe(ctx, &memLog{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unsub()
+
+	ch, rel := hub.Stream("s1")
+	defer rel()
+	hub.EnsureSession("s1") // 连接 1
+	hub.EnsureSession("s1") // 连接 2(重连重叠)
+	hub.UnbindSession("s1") // 连接 1 断开:还有引用,不得撤订阅
+
+	ctx.fire(sdk.SessionEventName("s1"), &sdk.SessionEvent{Kind: sdk.EventUserMessage, Seq: 7})
+	select {
+	case f := <-ch:
+		if f.ID != 7 {
+			t.Fatalf("剩下那条连接应仍收到帧,得 %+v", f)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("先断的连接不应撤掉会话订阅(剩下那条永久收不到帧)")
+	}
+
+	hub.UnbindSession("s1") // 最后一条断开:此时才撤
+	if got := ctx.disposeCount(); got != 1 {
+		t.Fatalf("引用归零应恰好撤一次订阅,得 %d", got)
+	}
+}
+
+// disposeCount 已执行的撤销次数。
+func (c *testCtx) disposeCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.unsubs
 }

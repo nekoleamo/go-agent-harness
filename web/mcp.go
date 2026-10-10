@@ -89,6 +89,12 @@ func (s *Server) handleMCPSave(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "坏请求体", http.StatusBadRequest)
 		return
 	}
+	// 面板提交的是「完整列表」,但它的形状里没有 transport/url/headers —— 整份覆写会把
+	// HTTP server 静默降级成 stdio、并丢掉 headers 里的凭据。按 name 从盘上补回
+	// 提交项**没携带**的字段(读不到盘就当空,与改动前行为一致)。
+	if disk, derr := mcpconfig.LoadFile(); derr == nil {
+		req.Servers = mcpconfig.MergePreserve(disk.Servers, req.Servers)
+	}
 	if err := mcpconfig.Save(req.Servers); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return

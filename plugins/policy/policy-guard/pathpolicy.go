@@ -133,9 +133,13 @@ func resolveRealPath(p string) string {
 	}
 }
 
-// pathCaseFold 路径比较是否大小写不敏感(Windows 卷名/段名不区分大小写)。
+// pathCaseFold 路径比较是否大小写不敏感。Windows 卷名/段名不区分大小写;**macOS 默认卷
+// (APFS/HFS+)同样不区分** —— `~/.SSH/config` 就是 `~/.ssh/config` 同一份文件。
+// 只折 Windows 会让 macOS 上「大小写变形的凭据路径」既躲过 denyPath(安全缺口),
+// 又让区内路径被 workspace 归属误判成区外。Linux 默认卷区分大小写(`.SSH` 是真不同的
+// 目录),折了就是误报。
 // 变量而非常量:单测需在非 Windows 机器上覆盖该分支(沿用 kernel.go 的 sandboxExec 惯例)。
-var pathCaseFold = runtime.GOOS == "windows"
+var pathCaseFold = runtime.GOOS == "windows" || runtime.GOOS == "darwin"
 
 // pathWithin 整段归属校验(realpath 归一;root 与 p 均先归一,防 symlink 逃逸与 /root2 误判;
 // Windows 上大小写不敏感,否则 D:\Repo 与 d:\repo\sub 会被误判为“根之外”)。

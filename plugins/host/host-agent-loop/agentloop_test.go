@@ -985,3 +985,34 @@ func TestTurnPlainErrorDoesNotCompress(t *testing.T) {
 		t.Fatalf("普通错误不得触发压缩: %d", comp.calls)
 	}
 }
+
+// TestTurnControlSteerSession 按会话定向转向(多会话并行):
+// A 的插话只能进 A 的回合,绝不能被「最近注册」猜给 B(内容静默写进另一个会话)。
+func TestTurnControlSteerSession(t *testing.T) {
+	c := newTurnControl()
+	ca := &turn{}
+	tokA := c.registerSession(func() {}, ca, "sess-A")
+	cb := &turn{}
+	c.registerSession(func() {}, cb, "sess-B")
+
+	if ok, err := c.SteerSession("sess-A", "A 的插话"); !ok || err != nil {
+		t.Fatalf("应投给 sess-A: ok=%v err=%v", ok, err)
+	}
+	if msgs := ca.takeSteers(); len(msgs) != 1 || msgs[0] != "A 的插话" {
+		t.Fatalf("sess-A 应收到插话: %#v", msgs)
+	}
+	if msgs := cb.takeSteers(); len(msgs) != 0 {
+		t.Fatalf("sess-B 不得收到 A 的插话(定向失效): %#v", msgs)
+	}
+
+	if _, err := c.SteerSession("sess-A", "   "); err == nil {
+		t.Fatal("空消息应报错")
+	}
+	if ok, err := c.SteerSession("sess-C", "无人"); ok || err != nil {
+		t.Fatalf("该会话无回合应回落 false/无错: ok=%v err=%v", ok, err)
+	}
+	c.unregister(tokA)
+	if ok, _ := c.SteerSession("sess-A", "注销后"); ok {
+		t.Fatal("注销后应回落 false(不得投给 sess-B)")
+	}
+}

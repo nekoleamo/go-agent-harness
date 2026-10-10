@@ -44,7 +44,7 @@ func renderInputRight(s *State) string {
 		} else {
 			stats = fmt.Sprintf("上下文 %s", fmtK(used)) // 窗口未知:仅使用量(不假精确)
 		}
-		if s.Stats.CachedTokens > 0 {
+		if s.Stats.CachedTokens > 0 && s.Stats.PromptTokens > 0 {
 			stats += fmt.Sprintf(" 缓存 %d%%", s.Stats.CachedTokens*100/s.Stats.PromptTokens)
 		}
 	}

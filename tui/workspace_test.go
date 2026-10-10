@@ -16,6 +16,7 @@ type fakeCwdSessions struct {
 	switchedKey string
 	name        string
 	recent      []sdk.ProjectInfo
+	cur         string // CurrentSession 返回值(默认空;去重用例需要真实 id)
 }
 
 func (f *fakeCwdSessions) Current() string                             { return "" }
@@ -26,7 +27,7 @@ func (f *fakeCwdSessions) SetPinned(string, bool) error                { return 
 func (f *fakeCwdSessions) SetName(string, string) error                { return nil }
 func (f *fakeCwdSessions) SetSummary(string, sdk.SessionSummary) error { return nil }
 func (f *fakeCwdSessions) Open(string) error                           { return nil }
-func (f *fakeCwdSessions) CurrentSession() string                      { return "" }
+func (f *fakeCwdSessions) CurrentSession() string                      { return f.cur }
 func (f *fakeCwdSessions) New() (string, error)                        { return "n1", nil }
 func (f *fakeCwdSessions) RecentProjects() []sdk.ProjectInfo           { return f.recent }
 func (f *fakeCwdSessions) Rename(n string) error                       { f.name = n; return nil }
@@ -242,5 +243,44 @@ func TestCmdName(t *testing.T) {
 	na := NewApp(c, stubLoop{}, stubLLM{}, "tui")
 	if err := na.command("/name x"); err == nil {
 		t.Fatal("未装配 ctx.cwdSessions 应报错")
+	}
+}
+
+// TestOnSessionSwitchedDedup 命令路径(/clone、/branch、/session)已同步刷过之后,
+// 宿主广播的**同一次**切换事件必须跳过 —— 重复刷新会 Lines=nil 重放,
+// 把刚回显的命令结果行(/clone 的「已复制当前会话…」)整段抹掉。
+//
+// 回归(2026-10-10):事件回调改走 UI 队列(修数据竞争)后变成异步,晚于命令结果行,
+// 于是把确认话术擦掉了(pty 验收用例 TestTUIAcceptCommands 当场逮到)。
+func TestOnSessionSwitchedDedup(t *testing.T) {
+	fake := &fakeCwdSessions{cur: "s-1"}
+	a := workspaceApp(fake)
+
+	a.afterSessionSwitch(fake) // 命令路径:同步刷一次(清 Lines + 重放)
+	a.model.state.Lines = append(a.model.state.Lines, Line{Kind: "meta", Text: "已复制当前会话为分支 s-2"})
+
+	a.onSessionSwitched() // 同一次切换的广播事件:应跳过
+	for _, l := range a.model.state.Lines {
+		if l.Text == "已复制当前会话为分支 s-2" {
+			return
+		}
+	}
+	t.Fatalf("重复切换事件不得抹掉命令回显行: %+v", a.model.state.Lines)
+}
+
+// TestOnSessionSwitchedRefreshesOtherSession 换个会话的切换事件必须照常刷新
+// (去重只针对「已经刷过的同一个会话」,不能把别的渠道切换一并吞掉)。
+func TestOnSessionSwitchedRefreshesOtherSession(t *testing.T) {
+	fake := &fakeCwdSessions{cur: "s-1"}
+	a := workspaceApp(fake)
+	a.afterSessionSwitch(fake)
+	a.model.state.Lines = append(a.model.state.Lines, Line{Kind: "meta", Text: "旧会话回显"})
+
+	fake.cur = "s-2" // 别的渠道切到了 s-2
+	a.onSessionSwitched()
+	for _, l := range a.model.state.Lines {
+		if l.Text == "旧会话回显" {
+			t.Fatalf("换会话必须刷新(旧回显应被清掉): %+v", a.model.state.Lines)
+		}
 	}
 }

@@ -158,3 +158,33 @@ func containsStr(list []string, want string) bool {
 	}
 	return false
 }
+
+// TestLooksLikeCredentialPathCaseFold 大小写不敏感平台(Windows/macOS 默认卷)上,
+// `.SSH`/`AWS` 与 `.ssh`/`aws` 是同一份文件 ⇒ 必须按折叠判定。
+// 只折 Windows 会让 macOS 上「大小写变形的凭据路径」直接绕过值级兜底。
+func TestLooksLikeCredentialPathCaseFold(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("GAH_HOME", "")
+
+	old := credCaseFold
+	credCaseFold = true
+	t.Cleanup(func() { credCaseFold = old })
+
+	if !LooksLikeCredentialPath("~/.SSH/config") {
+		t.Fatal("大小写不敏感平台应把 ~/.SSH/config 判为凭据(.ssh 的同一份文件)")
+	}
+	if !LooksLikeCredentialPath(filepath.Join(home, ".AWS", "credentials")) {
+		t.Fatal("目录段大小写变形同样应命中")
+	}
+	if !LooksLikeCredentialPath(filepath.Join(home, ".ssh", "ID_RSA")) {
+		t.Fatal("basename 大小写变形应命中")
+	}
+
+	// 大小写敏感平台(Linux):`.SSH` 是真不同的目录 —— 折叠就是误报,保持原语义。
+	credCaseFold = false
+	if LooksLikeCredentialPath("~/.SSH/config") {
+		t.Fatal("大小写敏感平台不得折叠(.SSH 不是 .ssh)")
+	}
+}

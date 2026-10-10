@@ -82,6 +82,19 @@ type TurnSteerer interface {
 	Steer(text string) (bool, error)
 }
 
+// TurnSteererSession 可选扩展:TurnSteerer 的**按会话定向**变体。
+//
+// 为何不给 Steer 加参数:那是公共签名,加参数会破坏所有实现与外部插件;而「这次转向
+// 属于哪个会话」是按需才有的维度。消费方(web)优先用本接口,拿不到再回落 TurnSteerer。
+//
+// 为什么必须有它:多会话并行时闸门按会话判「运行中」,而按「最近注册的回合」投递 ——
+// 两把锁的键不是同一个,会话 A 的插话会被写进会话 B 的回合(由 B 落账进 B 的日志),
+// 内容静默错位。sessionID 空串 = 主会话(与 ctx.turnControl 的归一键同一语义)。
+type TurnSteererSession interface {
+	// SteerSession 把 text 注入**指定会话**运行中的回合(该会话无回合 → false,调用方回落)。
+	SteerSession(sessionID, text string) (bool, error)
+}
+
 // ContextualSystemPrompt 可选扩展(宿主默认实现支持;外部实现可不给)。
 //
 // 为什么不给 Assemble 直接加 ctx 参数:那是公共签名,加参数会破坏所有实现与外部插件;
