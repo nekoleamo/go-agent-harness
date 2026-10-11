@@ -104,16 +104,23 @@ func (t *ImageTool) Definition() sdk.ToolDefinition {
 	}
 }
 
-const imageOpsDesc = "图像处理七动作(单工具多动作):" +
+// imageOpsDesc 工具描述。**上限数字从 sdk 常量派生**(不是写死的"3000 万/8000"):
+// 常量与描述各写一份,迟早对不上 —— 而这里说错会直接导致模型按错误前提操作
+// (比如以为 4000 万像素也能处理,于是反复重试)。
+var imageOpsDesc = "图像处理七动作(单工具多动作):" +
 	"info(格式/尺寸/EXIF 概要,不解码像素) · convert(转格式) · resize(缩放) · " +
 	"crop(裁剪) · rotate(90/180/270) · compress(压到目标体积) · thumbnail(缩略图)。" +
 	"单张用 src,批量用 srcs(逐条报结果);dst 缺省写到 src 同目录。\n" +
 	"【必须知道的四条限制】\n" +
 	"1. 方向:会按 EXIF Orientation 自动摆正并烘焙,**裁剪坐标按摆正后的图算**;竖拍照片请按摆正后的尺寸给坐标。\n" +
-	"2. 上限:单张 ≤ 3000 万像素且长边 ≤ 8000px(超限会报错并让你先缩小);宽色域(Display P3)转 sRGB 会偏色,纯 Go 无 ICC 转换。\n" +
+	fmt.Sprintf("2. 上限:单张 ≤ %d 万像素且长边 ≤ %dpx(超限会报错并让你先缩小);"+
+		"宽色域(Display P3)转 sRGB 会偏色,纯 Go 无 ICC 转换。\n",
+		sdk.DefaultMaxPixels/10000, sdk.DefaultMaxDim) +
 	"3. 动画与多图:动画 GIF/APNG 只处理首帧,多页 TIFF 只处理第一页,HEIC 多图只取主图。\n" +
 	"4. 隐私:**输出默认剥离全部元数据(含 GPS 定位)**,keep_metadata 只影响信息回报、不保留 GPS。\n" +
-	"默认不覆盖:dst 已存在会报错,确实要覆盖才传 overwrite: true。"
+	"默认不覆盖:dst 已存在会报错,确实要覆盖才传 overwrite: true;" +
+	"**dst 必须与 src 不同**(原地覆盖会失去源文件,会被拒);覆盖是全有或全无(失败时原文件照旧)。" +
+	"compress 会在目标体积内取**最高可用质量**(目标只是上限,不是越小越好)。"
 
 // opsArgs 入参。
 type opsArgs struct {

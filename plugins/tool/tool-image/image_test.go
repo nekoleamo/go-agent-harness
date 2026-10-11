@@ -476,3 +476,24 @@ func TestInfoRejectsSpecialFiles(t *testing.T) {
 		t.Fatal("thumbnail 在 fifo 上阻塞了")
 	}
 }
+
+// TestDescriptionLimitsComeFromConstants 描述里的上限必须与 sdk 常量同步。
+// "文档写 3000 万、代码改成 4000 万"这类漂移不会让任何测试红,却会让模型按错误前提
+// 反复重试(它以为能处理,实际每次都超限失败)。故描述里的数字直接从常量派生,并用例钉住。
+func TestDescriptionLimitsComeFromConstants(t *testing.T) {
+	d := (&ImageTool{}).Definition()
+	wantPixels := strconv.Itoa(sdk.DefaultMaxPixels / 10000)
+	wantDim := strconv.Itoa(sdk.DefaultMaxDim)
+	if !strings.Contains(d.Description, wantPixels+" 万像素") {
+		t.Fatalf("描述应写明像素上限 %s 万(与 sdk.DefaultMaxPixels 同步):\n%s", wantPixels, d.Description)
+	}
+	if !strings.Contains(d.Description, wantDim+"px") {
+		t.Fatalf("描述应写明长边上限 %s(与 sdk.DefaultMaxDim 同步):\n%s", wantDim, d.Description)
+	}
+	// 本轮新增的三条硬规则也要在描述里(否则模型不知道会被拒)
+	for _, kw := range []string{"dst 必须与 src 不同", "最高可用质量", "全有或全无"} {
+		if !strings.Contains(d.Description, kw) {
+			t.Fatalf("描述缺 %q(行为已实现但没告诉模型):\n%s", kw, d.Description)
+		}
+	}
+}

@@ -155,7 +155,7 @@ func opsDesc(name string) string {
 		return "删除文件/目录:{paths}(字符串数组)。默认移入回收站(可用 file_trash_list 查、file_restore 恢复);" +
 			"permanent: true 才是真删,不可恢复 —— 除非用户明确要求,否则别用。"
 	case "file_trash_list":
-		return "列回收站条目:{path 可选=只列某个工作区目录的]};返回原路径/删除时间/大小。" +
+		return "列回收站条目:{path 可选=只列某个工作区目录的条目};返回原路径/删除时间/大小。" +
 			"删除文件后想找回,先看这里。"
 	case "file_restore":
 		return "从回收站恢复:{entry=条目名};默认恢复到删除时的原路径,to 可指定别处(目录需已存在)。" +
