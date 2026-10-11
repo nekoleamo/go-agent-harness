@@ -379,7 +379,13 @@ func TestOpsDefinitionsDeclarePathParams(t *testing.T) {
 // TestCopyDoesNotDestroyOnFailure 覆盖语义的关键安全属性:
 // overwrite: true 时若复制**失败**,旧目标必须原样还在 —— 一次失败的操作不该
 // 把你原本就有的文件赔进去。(上一版在 prepDst 里先删旧目标,复制再失败 → 两头都没。)
+//
+// 失败注入选**源读不了**(chmod 000),而不是"目标目录只读":后者连删除也会失败,
+// 于是"旧文件是否被赔掉"这件事根本测不到(第一版就这么写错了 —— 用例恒绿)。
 func TestCopyDoesNotDestroyOnFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod 在 Windows 不产生只读语义(走 ACL),构造不出这个失败")
+	}
 	ws := t.TempDir()
 	c := buildEnv(t, ws, sdk.SandboxFullAccess)
 	src := filepath.Join(ws, "src.txt")
@@ -390,25 +396,23 @@ func TestCopyDoesNotDestroyOnFailure(t *testing.T) {
 	if err := os.WriteFile(dst, []byte("precious"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// 让「读源」失败来模拟复制途中的失败:源存在性检查通过后消失
-	// (直接删源做不到 —— 检查与复制之间没有钩子,故用只读目标目录制造失败更可靠)
-	roDir := filepath.Join(ws, "ro")
-	if err := os.MkdirAll(roDir, 0o755); err != nil {
+	if err := os.Chmod(src, 0o000); err != nil {
 		t.Fatal(err)
 	}
-	blocked := filepath.Join(roDir, "dst.txt")
-	if err := os.WriteFile(blocked, []byte("precious"), 0o644); err != nil {
-		t.Fatal(err)
+	defer os.Chmod(src, 0o644)
+	opsFail(t, c, "file_copy", `{"from":"src.txt","to":"dst.txt","overwrite":true}`, "")
+	if b, err := os.ReadFile(dst); err != nil || string(b) != "precious" {
+		t.Fatalf("复制失败后旧目标必须原样还在: %q(%v)", b, err)
 	}
-	if runtime.GOOS != "windows" { // Windows 上 chmod 不产生只读语义(走 ACL)
-		if err := os.Chmod(roDir, 0o555); err != nil {
-			t.Fatal(err)
-		}
-		defer os.Chmod(roDir, 0o755)
-		opsFail(t, c, "file_copy", `{"from":"src.txt","to":"ro/dst.txt","overwrite":true}`, "")
-		if b, err := os.ReadFile(blocked); err != nil || string(b) != "precious" {
-			t.Fatalf("复制失败后旧目标必须原样还在: %q(%v)", b, err)
-		}
+	// 移动:同设备走 rename(只动目录项、不读内容),所以源不可读**不会**让它失败 ——
+	// 那是正常且想要的语义(原子替换)。要让"移动失败不能赔掉旧目标"这条可测,
+	// 得走**跨设备兜底复制**那条路:注入 rename 失败,复制再失败。
+	orig := renameHook
+	renameHook = func(_, _ string) error { return &fsErrLink{msg: "invalid cross-device link"} }
+	defer func() { renameHook = orig }()
+	opsFail(t, c, "file_move", `{"from":"src.txt","to":"dst.txt","overwrite":true}`, "")
+	if b, err := os.ReadFile(dst); err != nil || string(b) != "precious" {
+		t.Fatalf("跨设备移动失败后旧目标必须原样还在: %q(%v)", b, err)
 	}
 }
 
@@ -481,8 +485,12 @@ func TestCopyDirReplacesInsteadOfMerging(t *testing.T) {
 }
 
 // TestTrashListFiltersByItsOwnProject 按路径筛选回收站必须命中**那个路径自己的分区**。
-// 上一版用当前工作根的 key 去比,筛选恒为空 —— 模型会看到"回收站里什么都没有",
-// 而条目明明就在里面(这是最容易被误读成数据丢了的一类 bug)。
+// 上一版用当前工作根的 key 去比,筛选恒为空的场景极其误导 —— 模型会看到"回收站里什么都
+// 没有",而条目明明就在里面(最容易被读成"数据丢了"的一类 bug)。
+//
+// 判别力来自**两个分区的条目数不同**:从 A 的工作区去筛 B 的路径时,
+// 正确实现给 1 条、按"当前工作根"筛的旧实现给 2 条(筛错了分区)。
+// 第一版用例只筛自己的分区 —— 那时两个 key 恰好相等,改错了也测不出来。
 func TestTrashListFiltersByItsOwnProject(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("GAH_HOME", t.TempDir())
@@ -493,28 +501,34 @@ func TestTrashListFiltersByItsOwnProject(t *testing.T) {
 	}
 	a := buildEnv(t, filepath.Join(root, "proj-a"), sdk.SandboxFullAccess)
 	b := buildEnv(t, filepath.Join(root, "proj-b"), sdk.SandboxFullAccess)
-	// 各自删一个(各自工作区分区)
-	if err := os.WriteFile(filepath.Join(root, "proj-a", "a.txt"), []byte("x"), 0o644); err != nil {
+	// A 删 2 个、B 删 1 个(数量不同才有判别力)
+	for _, n := range []string{"a1.txt", "a2.txt"} {
+		if err := os.WriteFile(filepath.Join(root, "proj-a", n), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "proj-b", "b1.txt"), []byte("y"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "proj-b", "b.txt"), []byte("y"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	opsCall(t, a, "file_delete", `{"paths":["a.txt"]}`)
-	opsCall(t, b, "file_delete", `{"paths":["b.txt"]}`)
+	opsCall(t, a, "file_delete", `{"paths":["a1.txt","a2.txt"]}`)
+	opsCall(t, b, "file_delete", `{"paths":["b1.txt"]}`)
 
-	full := opsCall(t, a, "file_trash_list", `{}`)
-	if full["count"].(float64) != 2 {
-		t.Fatalf("不筛选应看到全部 2 条:%v", full)
+	if got := opsCall(t, a, "file_trash_list", `{}`)["count"].(float64); got != 3 {
+		t.Fatalf("不筛选应看到全部 3 条,得 %v", got)
 	}
-	// 按 A 的工作区路径筛 → 只应看到 A 的那条(**非空**是这条用例的重点)
-	filtered := opsCall(t, a, "file_trash_list", `{"path":"`+filepath.ToSlash(filepath.Join(root, "proj-a"))+`"}`)
-	if filtered["count"].(float64) != 1 {
-		t.Fatalf("按工作区筛选应只剩 1 条(为 0 说明用了错误的 key):%v", filtered)
+	// 筛自己的分区:2 条
+	mine := opsCall(t, a, "file_trash_list", `{"path":"`+filepath.ToSlash(filepath.Join(root, "proj-a"))+`"}`)
+	if got := mine["count"].(float64); got != 2 {
+		t.Fatalf("按 A 自己的分区筛应得 2 条,得 %v", got)
 	}
-	first := filtered["entries"].([]any)[0].(map[string]any)
-	if !strings.HasSuffix(first["original"].(string), "a.txt") {
-		t.Fatalf("筛出来的应是 A 的条目:%v", first)
+	// **判别用例**:从 A 去筛 B 的路径 → 必须给 B 的 1 条(旧实现会给 A 的 2 条)
+	other := opsCall(t, a, "file_trash_list", `{"path":"`+filepath.ToSlash(filepath.Join(root, "proj-b"))+`"}`)
+	if got := other["count"].(float64); got != 1 {
+		t.Fatalf("按 B 的分区筛应得 1 条(得 %v 说明用了当前工作根的 key,筛错了分区)", got)
+	}
+	first := other["entries"].([]any)[0].(map[string]any)
+	if !strings.HasSuffix(first["original"].(string), "b1.txt") {
+		t.Fatalf("筛出来的应是 B 的条目:%v", first)
 	}
 }
 
