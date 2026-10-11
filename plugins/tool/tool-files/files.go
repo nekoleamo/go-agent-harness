@@ -20,7 +20,7 @@ type Plugin struct{}
 
 func (p *Plugin) Name() string { return "tool-files" }
 
-// Start 注册 file_read/file_write/file_append/file_edit 工具。
+// Start 注册 file_read/file_write/file_append/file_edit 与 F1 文件操作工具(M1 十个动作)。
 func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
 	var tools sdk.ToolRegistry
 	if err := c.Inject("ctx.tools", &tools); err != nil {
@@ -32,7 +32,7 @@ func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
 	return f.register(tools), nil
 }
 
-// NewTools 外部化工厂(P1):四件套工具表(外部进程经桥协议暴露;沙箱由宿主注入,外部进程不装配)。
+// NewTools 外部化工厂(P1):四件套 + F1 文件操作工具表(外部进程经桥协议暴露;沙箱由宿主注入,外部进程不装配)。
 func NewTools() map[string]sdk.Tool { return NewToolsWith(nil) }
 
 // NewToolsWith 带改动回传出口的外部化工厂:外部进程没有宿主 Ctx,写盘后的 file/change
@@ -40,12 +40,16 @@ func NewTools() map[string]sdk.Tool { return NewToolsWith(nil) }
 // 变更视图/`/diff` 恒为空。rec 为 nil(无回调通道)时退回「无审计」但不静默(见 recordChange)。
 func NewToolsWith(rec sdk.FileChangeRecorder) map[string]sdk.Tool {
 	f := &FilesTool{sb: nil, rec: rec}
-	return map[string]sdk.Tool{
+	tools := map[string]sdk.Tool{
 		"file_read":   &fileTool{name: "file_read", f: f, schema: fileSchema("read")},
 		"file_write":  &fileTool{name: "file_write", f: f, schema: fileSchema("write")},
 		"file_append": &fileTool{name: "file_append", f: f, schema: fileSchema("write")},
 		"file_edit":   &fileTool{name: "file_edit", f: f, schema: fileSchema("edit")},
 	}
+	for _, n := range opsNames { // F1:与内嵌注册同一份定义(ops.go 的 schema/PathParams/描述)
+		tools[n] = &fileTool{name: n, f: f, schema: opsSchema(n)}
+	}
+	return tools
 }
 
 // fileSchema 工具参数 schema 模板。
@@ -160,6 +164,10 @@ func effectiveSandboxMode(ctx context.Context, sb sdk.Sandbox) sdk.SandboxMode {
 
 // exec 统一工具执行(按工具名分发)。
 func (f *FilesTool) exec(ctx context.Context, name, raw string) (any, error) {
+	// F1 文件操作走自己的分派(入参形状不同:from/to/paths/limit…),代码在 ops.go
+	if isOpsTool(name) {
+		return f.execOps(ctx, name, raw)
+	}
 	var a struct {
 		Path    string `json:"path"`
 		Content string `json:"content,omitempty"`
@@ -255,6 +263,11 @@ func (f *FilesTool) recordChange(path, op, tool, before string, existed bool, af
 		return // 内容未变(重写同名内容不必刷空事件)
 	}
 	ev := sdk.BuildFileChange(path, f.relPath(path), op, tool, !existed, before, after)
+	f.emitChange(ev, path)
+}
+
+// emitChange file/change 事件的两条出口(内嵌 Ctx / 外部进程桥)—— recordChange 与 recordRaw 共用。
+func (f *FilesTool) emitChange(ev sdk.FileChangeEvent, path string) {
 	if f.c != nil { // 内嵌:宿主 Ctx 现取账本(不依赖插件启动顺序)
 		var sess sdk.SessionLog
 		if err := f.c.Inject("ctx.sessions", &sess); err != nil || sess == nil {
@@ -289,30 +302,31 @@ func (f *FilesTool) relPath(p string) string {
 	return filepath.ToSlash(rel)
 }
 
-// register 注册四个工具(统一执行分发)。
+// register 注册工具(统一执行分发):四件套 + F1 文件操作。
 func (f *FilesTool) register(tools sdk.ToolRegistry) sdk.Disposer {
-	d1 := tools.Register(&fileTool{name: "file_read", f: f, schema: map[string]any{
+	var ds []func()
+	ds = append(ds, tools.Register(&fileTool{name: "file_read", f: f, schema: map[string]any{
 		"type":       "object",
 		"required":   []any{"path"},
 		"properties": map[string]any{"path": map[string]any{"type": "string"}},
-	}})
-	d2 := tools.Register(&fileTool{name: "file_write", f: f, schema: map[string]any{
+	}}))
+	ds = append(ds, tools.Register(&fileTool{name: "file_write", f: f, schema: map[string]any{
 		"type":     "object",
 		"required": []any{"path", "content"},
 		"properties": map[string]any{
 			"path":    map[string]any{"type": "string"},
 			"content": map[string]any{"type": "string"},
 		},
-	}})
-	d3 := tools.Register(&fileTool{name: "file_append", f: f, schema: map[string]any{
+	}}))
+	ds = append(ds, tools.Register(&fileTool{name: "file_append", f: f, schema: map[string]any{
 		"type":     "object",
 		"required": []any{"path", "content"},
 		"properties": map[string]any{
 			"path":    map[string]any{"type": "string"},
 			"content": map[string]any{"type": "string"},
 		},
-	}})
-	d4 := tools.Register(&fileTool{name: "file_edit", f: f, schema: map[string]any{
+	}}))
+	ds = append(ds, tools.Register(&fileTool{name: "file_edit", f: f, schema: map[string]any{
 		"type":     "object",
 		"required": []any{"path", "old", "new"},
 		"properties": map[string]any{
@@ -320,14 +334,22 @@ func (f *FilesTool) register(tools sdk.ToolRegistry) sdk.Disposer {
 			"old":  map[string]any{"type": "string"},
 			"new":  map[string]any{"type": "string"},
 		},
-	}})
-	return func() { d1(); d2(); d3(); d4() }
+	}}))
+	// F1 文件操作(ops.go 持有各自 schema/PathParams/描述)
+	for _, n := range opsNames {
+		ds = append(ds, tools.Register(&fileTool{name: n, f: f, schema: opsSchema(n)}))
+	}
+	return func() {
+		for _, d := range ds {
+			d()
+		}
+	}
 }
 
 // fileTool 单个具名工具(定义与执行分发)。
-// fileAccess 工具名的读写意图(file_read 读;其余改写)。
+// fileAccess 工具名的读写意图(file_read 读;F1 十个动作按 opsPathParams 声明)。
 func fileAccess(name string) sdk.PathAccess {
-	if name == "file_read" {
+	if name == "file_read" || isOpsTool(name) {
 		return sdk.PathRead
 	}
 	return sdk.PathWrite
@@ -339,16 +361,28 @@ type fileTool struct {
 	schema map[string]any
 }
 
+// fileOpDescs 四件套描述;F1 十个动作的描述在 ops.go(opsDesc)。
+var fileOpDescs = map[string]string{
+	"file_read":   "读文件内容:{path}",
+	"file_write":  "写文件(覆盖):{path, content}",
+	"file_append": "追加文件:{path, content}",
+	"file_edit":   "替换文件中的片段:{path, old, new}",
+}
+
 func (t *fileTool) Definition() sdk.ToolDefinition {
-	desc := map[string]string{
-		"file_read":   "读文件内容:{path}",
-		"file_write":  "写文件(覆盖):{path, content}",
-		"file_append": "追加文件:{path, content}",
-		"file_edit":   "替换文件中的片段:{path, old, new}"}[t.name]
+	desc := fileOpDescs[t.name]
+	if desc == "" {
+		desc = opsDesc(t.name)
+	}
+	params := opsPathParams(t.name)
+	if params == nil {
+		// 四件套只有单个 path 参数;F1 各动作的声明在 ops.go
+		params = []sdk.PathParam{{Arg: "path", Access: fileAccess(t.name)}}
+	}
 	return sdk.ToolDefinition{
 		Name: t.name, Description: desc, InputSchema: t.schema,
 		// 路径参数能力声明(宿主 pre-execute 路径沙箱据此裁决;外部插件经桥协议原样传递)
-		PathParams: []sdk.PathParam{{Arg: "path", Access: fileAccess(t.name)}},
+		PathParams: params,
 	}
 }
 

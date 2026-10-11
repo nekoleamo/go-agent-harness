@@ -26,6 +26,14 @@ func Home() string {
 // 共用一根的理由:临时区是“可盘点、可整体清理”的东西,分成多个根只会让清理与白名单各自漂移。
 func JailDir() string { return filepath.Join(Home(), "jail") }
 
+// TrashDir 数据根下的**文件回收站**根($GAH_HOME/trash)。
+//
+// 为什么需要它(roles/skills 的 .trash 是各存储自带的私有目录,模型侧文件操作没有等价物):
+// 「删除」若做成不可逆 rm,模型一次误判就永久丢用户文件;做成可恢复的移入回收站,
+// 才敢把删除能力交给模型。落点必须在数据根内(便携纪律),且**不能**经工作区沙箱裁决 ——
+// 回收站路径由工具内部派生,不是用户给的写目标。
+func TrashDir() string { return filepath.Join(Home(), "trash") }
+
 // RolesDir 数据根下的角色根($GAH_HOME/roles)。
 //
 // 为什么放在 sdk 而不是 internal/roles:布局知识有两个消费方 —— 角色存储(internal/roles,
