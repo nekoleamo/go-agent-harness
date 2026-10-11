@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -57,8 +58,67 @@ var (
 	checkUpdates = flag.Bool("check-plugin-updates", false, "检查已装插件的来源是否有更新(只发 git ls-remote,不安装)")
 )
 
-// 非 TTY 检测(TUI profile):stdin 为 pipe/重定向时 bubbletea 会直读 stdin 卡死挂起;
-// 显式拒绝并提示走 headless(或提供 -input)——不再死机。
+// options 入口选项集:run 的唯一入参(M0)。CLI 下由 cliOptions 从 flag 变量快照;
+// 嵌入形态(mobile/libgah)自行构造同一结构即可复用装配逻辑,不必伪造命令行。
+type options struct {
+	// Home 嵌入形态的数据根注入口(容器路径);空 = CLI 便携根(见 resolveHome)。
+	Home            string
+	Profile         string
+	Input           string
+	DumpConfig      bool
+	Ephemeral       bool
+	ShowVersion     bool
+	Install         string
+	Uninstall       string
+	ListPlugins     bool
+	InstallUI       string
+	UninstallUI     string
+	ListUIPlugins   bool
+	TrustPlugin     string
+	UntrustPlugin   string
+	TrustUIPlugin   string
+	UntrustUIPlugin string
+	ListTrusted     bool
+	AcceptDrift     bool
+	Artifact        string
+	ArtifactID      string
+	ArtifactName    string
+	Prebuilt        bool
+	CheckUpdates    bool
+}
+
+// cliOptions 快照全局 flag 变量为 options(settable:true 供单测注入)。
+func cliOptions() *options {
+	set := func(p *string) string {
+		if p == nil {
+			return ""
+		}
+		return *p
+	}
+	tf := func(p *bool) bool { return p != nil && *p }
+	return &options{
+		Profile: set(profileFlag), Input: set(inputFlag), DumpConfig: tf(dumpConfig),
+		Ephemeral: tf(ephemeral), ShowVersion: tf(showVersion), Install: set(installFlag),
+		Uninstall: set(uninstallFl), ListPlugins: tf(listPlugins), InstallUI: set(installUIFl),
+		UninstallUI: set(uninstallUIF), ListUIPlugins: tf(listUIPlugs), TrustPlugin: set(trustPlugin),
+		UntrustPlugin: set(untrustPl), TrustUIPlugin: set(trustUIFl), UntrustUIPlugin: set(untrustUIFl),
+		ListTrusted: tf(listTrust), AcceptDrift: tf(acceptDrift), Artifact: set(artifactFl),
+		ArtifactID: set(artifactID), ArtifactName: set(artifactName), Prebuilt: tf(prebuiltFl),
+		CheckUpdates: tf(checkUpdates),
+	}
+}
+
+// exitErr 已经把信息打印到用户可见的出口(日志/标准错误)的失败:
+// 调用方只需按 code 退出,不得重复输出(否则日志翻倍)。
+type exitErr struct{ code int }
+
+func (e *exitErr) Error() string { return fmt.Sprintf("exit %d", e.code) }
+
+// exit 构造「已自行输出」的退出错误。
+func exit(code int) error { return &exitErr{code: code} }
+
+// main 只做:入口糖 → 文档子命令路由 → flag 解析 → 按 run 返回值设退出码。
+// 业务实质全在 run(M0 拆分的唯一目的:让嵌入形态能复用同一套装配逻辑)。
 func main() {
 	// M7 入口糖:gah web ≡ gah --profile web(Web UI 形态,浏览器访问 http://127.0.0.1:2233)
 	if len(os.Args) > 1 && os.Args[1] == "web" {
@@ -75,16 +135,33 @@ func main() {
 		os.Exit(runDocCmd(os.Args[2:]))
 	}
 	flag.Parse()
+	if err := run(cliOptions()); err != nil {
+		var ee *exitErr
+		if errors.As(err, &ee) {
+			os.Exit(ee.code)
+		}
+		os.Exit(1)
+	}
+}
+
+// run 装配并跑一轮(挂载编排的全部实质;M0 行为保持重构)。
+// CLI 行为与拆分前逐字一致:成功路径返回 nil,失败路径**在此处已按原样日志输出**后
+// 返回错误,由 main 只负责按退出码退出(不重复打印)。
+// 依赖 options 而非全局 flag 变量 ⇒ 嵌入形态(mobile/libgah)可直接构造该结构调用,
+// 无需伪造命令行;数据根等仍走各自的注入点。
+func run(opts *options) error {
 	// -version 在任何 stdin 环境下都要能打出来(CI/脚本里 stdin 常常不是 TTY):
 	// 它既是**纯查询**又常在管道里用,先于 TUI 护栏判定,免得 `gah -version | cat` 报
 	// "TUI 需要交互式终端" 这种驴唇不对马嘴的错。
-	if *showVersion {
+	if opts.ShowVersion {
 		fmt.Printf("gah %s (github.com/nekoleamo/go-agent-harness)\n", version)
-		return
+		return nil
 	}
-	if !isStdinTTY() && *inputFlag == "" && *profileFlag == "tui" {
+	// 非 TTY 检测(TUI profile):stdin 为 pipe/重定向时 bubbletea 会直读 stdin 卡死挂起;
+	// 显式拒绝并提示走 headless(或提供 -input)——不再死机。
+	if !isStdinTTY() && opts.Input == "" && opts.Profile == "tui" {
 		fmt.Fprintln(os.Stderr, "gah: TUI 需要交互式终端(stdin 非 TTY)。管道/后台场景请用: -profile headless -input <文本>")
-		os.Exit(1)
+		return exit(1)
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
@@ -99,12 +176,12 @@ func main() {
 	sysproxy.Apply(logger.Info)
 
 	// 运行时 home 初始化:首启释放 seed 样板(home/config),ephemeral 用临时 home 退出即焚(设计 §7.3)
-	home := homeDir()
-	if *ephemeral {
+	home, portable := resolveHome(opts)
+	if opts.Ephemeral {
 		tmp, err := os.MkdirTemp("", "gah-ephemeral-")
 		if err != nil {
 			logger.Error("boot: 创建 ephemeral home 失败", "err", err)
-			os.Exit(1)
+			return err
 		}
 		home = tmp
 		defer os.RemoveAll(home)
@@ -112,18 +189,21 @@ func main() {
 	if home == "" {
 		// 数据根唯一 = 二进制同级 gah-data/(2026-09-16 收紧:不再接受 GAH_HOME env / ~/.gah)
 		logger.Error("boot: 无法确定运行时数据目录。请将 gah 与 gah-data/ 置于同目录(目录需可写),数据根仅支持 gah-data")
-		os.Exit(1)
+		return exit(1)
 	}
-	// 用户显式设置的 GAH_HOME env 不再作为输入源(数据根已锁定便携 gah-data):不一致时告警防误导
-	if h := os.Getenv("GAH_HOME"); h != "" && h != home {
-		logger.Warn("boot: 忽略 GAH_HOME env(数据根仅允许二进制同级 gah-data)", "GAH_HOME", h, "gah-data", home)
+	// 用户显式设置的 GAH_HOME env 不再作为输入源(数据根已锁定便携 gah-data):不一致时告警防误导。
+	// 仅 CLI(便携根)路径有意义:嵌入形态的数据根本来就是宿主注入的,不是误设的 env。
+	if portable {
+		if h := os.Getenv("GAH_HOME"); h != "" && h != home {
+			logger.Warn("boot: 忽略 GAH_HOME env(数据根仅允许二进制同级 gah-data)", "GAH_HOME", h, "gah-data", home)
+		}
 	}
 	// P3 统一 home 事实源:经 GAH_HOME 贯通插件层(host-bridge 默认扫描目录等),
 	// ephemeral 模式彻底隔离(外部插件目录一并入临时 home,退出即焚)。
 	os.Setenv("GAH_HOME", home)
 	if _, err := embed.EnsureSeed(home); err != nil {
 		logger.Error("boot: 首启释放样板失败", "err", err)
-		os.Exit(1)
+		return err
 	}
 	// P1 方案 B:随包外部插件首启释放(home/plugins/,已有跳过)
 	if _, err := embed.EnsurePlugins(home); err != nil {
@@ -142,33 +222,33 @@ func main() {
 		logger.Warn("boot: 释放预置角色失败(跳过,不影响启动)", "err", err)
 	}
 	// 插件安装/卸载/清单(M6.6):seed 释放后可写登记 patch 与 profile 引用
-	if *artifactFl != "" {
+	if opts.Artifact != "" {
 		// 产物安装:不构建 ⇒ 本机可以完全没有 Go / node / make。
 		// 两个路径参数先校验(确认文案要用安全的事实,而不是未验证过的拼接结果)。
-		if err := install.ValidateArtifactArgs(*artifactID, *artifactName); err != nil {
+		if err := install.ValidateArtifactArgs(opts.ArtifactID, opts.ArtifactName); err != nil {
 			logger.Error("install-artifact: 失败", "err", err)
-			os.Exit(1)
+			return err
 		}
-		dir := filepath.Join(home, "plugins", *artifactID)
+		dir := filepath.Join(home, "plugins", opts.ArtifactID)
 		fmt.Println(install.ConfirmPromptArtifact(install.ArtifactFacts{
-			URL: *artifactFl, ID: *artifactID, Name: *artifactName, Dir: dir,
+			URL: opts.Artifact, ID: opts.ArtifactID, Name: opts.ArtifactName, Dir: dir,
 		}))
-		res, err := install.InstallArtifact(*artifactFl, *artifactID, *artifactName, home)
+		res, err := install.InstallArtifact(opts.Artifact, opts.ArtifactID, opts.ArtifactName, home)
 		if err != nil {
 			logger.Error("install-artifact: 失败", "err", err)
-			os.Exit(1)
+			return err
 		}
 		fmt.Printf("\n已安装 %s → %s\n", res.ID, res.Dir)
 		fmt.Printf("  产物: %s(下载所得,**未执行任何构建命令**;本机不需要 Go)\n", res.Source)
 		fmt.Printf("  登记: %s(profile 已自动引用)\n", res.Patch)
-		return
+		return nil
 	}
-	if *installFlag != "" {
-		res, err := install.InstallWithOpts(*installFlag, home,
-			install.InstallOpts{AcceptDrift: *acceptDrift, Prebuilt: *prebuiltFl})
+	if opts.Install != "" {
+		res, err := install.InstallWithOpts(opts.Install, home,
+			install.InstallOpts{AcceptDrift: opts.AcceptDrift, Prebuilt: opts.Prebuilt})
 		if err != nil {
 			logger.Error("install: 失败", "err", err)
-			os.Exit(1)
+			return err
 		}
 		fmt.Printf("已安装 %s(protocol=%s)\n", res.ID, res.Protocol)
 		if res.Binary != "" {
@@ -198,19 +278,19 @@ func main() {
 			fmt.Println("  " + w)
 		}
 		fmt.Printf("  登记: %s(profile 已自动引用,下一轮启动即启用)\n", res.Patch)
-		return
+		return nil
 	}
-	if *uninstallFl != "" {
+	if opts.Uninstall != "" {
 		// ctl 传 nil:CLI 场景下 gah 进程本身没在跑(插件装了但服务没起),**没有活进程可停** ——
 		// 而「停不掉就不删」那条规则正是为有活进程的场景写的,这里天然无事可做。
-		if err := install.Uninstall(*uninstallFl, home, nil); err != nil {
+		if err := install.Uninstall(opts.Uninstall, home, nil); err != nil {
 			logger.Error("uninstall: 失败", "err", err)
-			os.Exit(1)
+			return err
 		}
-		fmt.Printf("已卸载 %s(白名单与来源账条目一并撤销;若另有一个 gah 服务正在跑,那侧的插件进程需自行停)\n", *uninstallFl)
-		return
+		fmt.Printf("已卸载 %s(白名单与来源账条目一并撤销;若另有一个 gah 服务正在跑,那侧的插件进程需自行停)\n", opts.Uninstall)
+		return nil
 	}
-	if *listPlugins {
+	if opts.ListPlugins {
 		ledger, _ := install.LoadSources(home)
 		for _, it := range install.List(home) {
 			protocol := it.Protocol
@@ -237,100 +317,100 @@ func main() {
 		if notice := install.CompatibilityNoticeText(home); notice != "" {
 			fmt.Println("\n注意:" + notice)
 		}
-		return
+		return nil
 	}
 	// 检查更新(批一 §1.5):**只问不装**。网络只在这里发生一次(git ls-remote,不 clone)。
-	if *checkUpdates {
+	if opts.CheckUpdates {
 		checks, err := install.CheckForUpdates(home)
 		if err != nil {
 			logger.Error("check-plugin-updates: 失败", "err", err)
-			os.Exit(1)
+			return err
 		}
 		if len(checks) == 0 {
 			fmt.Println("(没有可检查的来源:本地目录、按 commit 固定的插件、以及下载来的产物都没有「更新」这回事)")
-			return
+			return nil
 		}
 		for _, c := range checks {
 			fmt.Printf("%s\t%s\t%s\t%s\n", c.PluginID, c.Repo, c.Status, c.Message)
 		}
-		return
+		return nil
 	}
 	// UI 插件安装/卸载/清单(M7.2):产物落 home/ui-plugins/<id>/,装配即生效(重载页面)
-	if *installUIFl != "" {
-		res, err := install.InstallUI(*installUIFl, home)
+	if opts.InstallUI != "" {
+		res, err := install.InstallUI(opts.InstallUI, home)
 		if err != nil {
 			logger.Error("install-ui: 失败", "err", err)
-			os.Exit(1)
+			return err
 		}
 		fmt.Printf("已安装 UI 插件 %s v%s(覆盖 %d 槽位)\n", res.ID, res.Version, res.Slots)
 		fmt.Printf("  落位: %s\n", res.Dir)
 		fmt.Printf("  生效: 重载 web 页面即换(ui-web-app 聚合自动发现)\n")
-		return
+		return nil
 	}
-	if *trustPlugin != "" {
-		if err := install.Trust(*trustPlugin, home); err != nil {
+	if opts.TrustPlugin != "" {
+		if err := install.Trust(opts.TrustPlugin, home); err != nil {
 			logger.Error("trust-plugin: 失败", "err", err)
-			os.Exit(1)
+			return err
 		}
-		fmt.Printf("已登记 %s 到 plugins/%s(下次调用即生效,热重载路径同样校验)\n", *trustPlugin, plugintrust.FileName)
-		return
+		fmt.Printf("已登记 %s 到 plugins/%s(下次调用即生效,热重载路径同样校验)\n", opts.TrustPlugin, plugintrust.FileName)
+		return nil
 	}
 	// UI 插件放行口(批四):UI 侧无官方插件 ⇒ 闸由 boot 无条件创建 ⇒ 手工放进
 	// ui-plugins/ 的插件默认被拒。这是本项目最宽的面上一道**默认**闸 + 一条明确出路。
-	if *trustUIFl != "" {
+	if opts.TrustUIPlugin != "" {
 		uiRoot := filepath.Join(home, "ui-plugins")
-		slots, err := install.UIPluginSlots(uiRoot, *trustUIFl)
+		slots, err := install.UIPluginSlots(uiRoot, opts.TrustUIPlugin)
 		if err != nil {
 			logger.Error("trust-ui-plugin: 失败", "err", err)
-			os.Exit(1)
+			return err
 		}
-		if err := install.TrustUI(uiRoot, *trustUIFl, slots); err != nil {
+		if err := install.TrustUI(uiRoot, opts.TrustUIPlugin, slots); err != nil {
 			logger.Error("trust-ui-plugin: 失败", "err", err)
-			os.Exit(1)
+			return err
 		}
-		fmt.Printf("已登记 UI 插件 %s 到 ui-plugins/%s(下次打开设置面板即生效;只登记你看过的那一份)\n", *trustUIFl, plugintrust.FileName)
-		return
+		fmt.Printf("已登记 UI 插件 %s 到 ui-plugins/%s(下次打开设置面板即生效;只登记你看过的那一份)\n", opts.TrustUIPlugin, plugintrust.FileName)
+		return nil
 	}
-	if *untrustUIFl != "" {
-		if err := install.UIUntrust(filepath.Join(home, "ui-plugins"), *untrustUIFl); err != nil {
+	if opts.UntrustUIPlugin != "" {
+		if err := install.UIUntrust(filepath.Join(home, "ui-plugins"), opts.UntrustUIPlugin); err != nil {
 			logger.Error("untrust-ui-plugin: 失败", "err", err)
-			os.Exit(1)
+			return err
 		}
-		fmt.Printf("已从 ui-plugins/%s 移除 %s\n", plugintrust.FileName, *untrustUIFl)
-		return
+		fmt.Printf("已从 ui-plugins/%s 移除 %s\n", plugintrust.FileName, opts.UntrustUIPlugin)
+		return nil
 	}
-	if *untrustPl != "" {
-		if err := install.Untrust(*untrustPl, home); err != nil {
+	if opts.UntrustPlugin != "" {
+		if err := install.Untrust(opts.UntrustPlugin, home); err != nil {
 			logger.Error("untrust-plugin: 失败", "err", err)
-			os.Exit(1)
+			return err
 		}
-		fmt.Printf("已从 plugins/%s 移除 %s\n", plugintrust.FileName, *untrustPl)
-		return
+		fmt.Printf("已从 plugins/%s 移除 %s\n", plugintrust.FileName, opts.UntrustPlugin)
+		return nil
 	}
-	if *listTrust {
+	if opts.ListTrusted {
 		list, err := install.TrustedList(home)
 		if err != nil {
 			logger.Error("list-trusted-plugins: 失败", "err", err)
-			os.Exit(1)
+			return err
 		}
 		if len(list) == 0 {
 			fmt.Println("(白名单为空或未启用)")
-			return
+			return nil
 		}
 		for _, n := range list {
 			fmt.Println(n)
 		}
-		return
+		return nil
 	}
-	if *uninstallUIF != "" {
-		if err := install.UninstallUI(*uninstallUIF, home); err != nil {
+	if opts.UninstallUI != "" {
+		if err := install.UninstallUI(opts.UninstallUI, home); err != nil {
 			logger.Error("uninstall-ui: 失败", "err", err)
-			os.Exit(1)
+			return err
 		}
-		fmt.Printf("已卸载 UI 插件 %s(重载 web 页面回默认实现)\n", *uninstallUIF)
-		return
+		fmt.Printf("已卸载 UI 插件 %s(重载 web 页面回默认实现)\n", opts.UninstallUI)
+		return nil
 	}
-	if *listUIPlugs {
+	if opts.ListUIPlugins {
 		for _, it := range install.ListUI(home) {
 			slots := make([]string, 0, len(it.Slots))
 			for _, s := range it.Slots {
@@ -338,37 +418,37 @@ func main() {
 			}
 			fmt.Printf("%s\tv%s\t[%s]\t%s\n", it.ID, it.Version, strings.Join(slots, ","), it.Dir)
 		}
-		return
+		return nil
 	}
 	profilePath := filepath.Join(home, "config")
-	tree, err := loadProfileTree(profilePath, *profileFlag)
+	tree, err := loadProfileTree(profilePath, opts.Profile)
 	if err != nil {
 		logger.Error("boot: 加载 profile 失败", "err", err)
-		os.Exit(1)
+		return err
 	}
 
 	// 2. --dump-config:输出合并树即可退出(任一条目可被自己的 patch 替换)
-	if *dumpConfig {
+	if opts.DumpConfig {
 		raw, err := tree.DumpYAML()
 		if err != nil {
 			logger.Error("boot: dump-config 失败", "err", err)
-			os.Exit(1)
+			return err
 		}
 		fmt.Print(string(raw))
-		return
+		return nil
 	}
 
 	// 3. 装配并启动插件(配置自愈:坏配置导致失败时回滚最近备份重试一次,再失败才退出)
-	bundleNames, err := config.BundlesOfProfile(filepath.Join(profilePath, "profile-"+*profileFlag+".yaml"))
+	bundleNames, err := config.BundlesOfProfile(filepath.Join(profilePath, "profile-"+opts.Profile+".yaml"))
 	if err != nil {
 		logger.Error("boot: 读取 profile bundle 列表失败", "err", err)
-		os.Exit(1)
+		return err
 	}
 
 	reg, c, tree, err := bootWithRecovery(logger, tree, profilePath, bundleNames)
 	if err != nil {
 		logger.Error("boot: 启动失败(已尝试回滚):", "err", err)
-		os.Exit(1)
+		return err
 	}
 	defer reg.DisposeAll()
 	// 启动成功 → 备份**实际生效**的配置(自愈回滚后是备份树,不是启动失败的那棵;
@@ -379,18 +459,18 @@ func main() {
 	}
 
 	logger.Info("gah booted",
-		"profile", *profileFlag,
+		"profile", opts.Profile,
 		"instances", reg.Snapshot(),
 		"services", c.ListServiceKeys(),
 	)
 
 	// 4. headless 模式:跑一轮并输出模型回复;否则等待退出信号
-	if *inputFlag != "" {
-		if err := runHeadless(c, *inputFlag, logger); err != nil {
+	if opts.Input != "" {
+		if err := runHeadless(c, opts.Input, logger); err != nil {
 			logger.Error("headless: 运行失败", "err", err)
-			os.Exit(1)
+			return err
 		}
-		return
+		return nil
 	}
 
 	sig := make(chan os.Signal, 1)
@@ -409,6 +489,7 @@ func main() {
 	case <-shutdown:
 	}
 	logger.Info("gah shutting down")
+	return nil
 }
 
 // runHeadless 注入 agentLoop 跑一轮,输出最后一个 assistant 回复。
@@ -507,6 +588,21 @@ func enabledSet(tree *config.Tree) map[string]bool {
 		}
 	}
 	return set
+}
+
+// resolveHome 数据根解析(M0 为嵌入留的口子)。
+//
+//   - opts.Home 非空(**嵌入形态的唯一入口**,如 mobile/libgah 传入的容器路径):
+//     直接采用;它不受「数据根 = 二进制同级 gah-data」约束 —— .so 形态下 os.Executable
+//     返回的是宿主 app_process,便携根无从谈起(既不可写也不该写)。
+//   - 否则走 CLI 便携根(homeDir),第二返回值 true 供调用方决定是否提示忽略 env。
+//
+// 便携纪律不变:**CLI 链仍只认二进制同级 gah-data/**,opts.Home 仅供嵌入调用方显式注入。
+func resolveHome(opts *options) (string, bool) {
+	if h := strings.TrimSpace(opts.Home); h != "" {
+		return filepath.Clean(h), false
+	}
+	return homeDir(), true
 }
 
 // isStdinTTY stdin 是否交互终端(char device);pipe/重定向 → false。
