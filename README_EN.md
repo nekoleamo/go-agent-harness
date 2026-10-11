@@ -406,7 +406,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `POST /api/compact`, `POST /api/settings/history` | Manual compaction / history-injection count |
 | `GET /api/todo` | Todo panel data (pass-through of the todo tool list) |
 | `GET /api/backup`, `POST /api/backup` | Backup list / `{action: backup\|restore, dest?, name?}` |
-| `POST /api/attachments` + `GET /attachments/...` | Attachment upload (20MB / type allowlist) / static preview |
+| `POST /api/attachments` + `GET /attachments/...` | Attachment upload (20MB / type allow-list) / static preview. The allow-list is images (`image/*`), text, PDF and JSON; when the browser gives no usable Content-Type (HEIC/HEIF/AVIF have no registered MIME on Windows, and `.md`/`.log` often arrive as `application/octet-stream`) we fall back to the **file extension**, matching the front-end accept list — anything the picker lets you choose can be uploaded. HEIC/AVIF upload and preview fine, but **desktop has no decoder**: reading one says "cannot decode, convert first" explicitly (no hex-dump degradation, no silence). To actually see the pixels, convert to JPEG/PNG or use the Android shell, which has native decoding |
 | `POST /api/reload` | Instruction-file hot reload |
 | `POST /api/shutdown` | Graceful shutdown (→ system/shutdown → DisposeAll; reused by desktop/ops) |
 | `GET /api/ui-plugins` + `/ui-plugins/` | UI-plugin aggregate view / static hosting; aggregate items carry `trusted`/`trust_note` (UI plugins share the app's origin and therefore its privileges: they can call any API, including `/api/input` → tool execution; only install plugins you trust; the SPA ships a strict CSP that closes pure exfiltration) |

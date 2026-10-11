@@ -55,6 +55,10 @@ var extFormats = map[string]sdk.DocFormat{
 	"png": sdk.DocFormatImage, "jpg": sdk.DocFormatImage, "jpeg": sdk.DocFormatImage,
 	"gif": sdk.DocFormatImage, "webp": sdk.DocFormatImage, "bmp": sdk.DocFormatImage,
 	"svg": sdk.DocFormatImage, "ico": sdk.DocFormatImage, "avif": sdk.DocFormatImage,
+	// heic/heif 也是**图像**(手机照片的主流格式)。此前不在表里 ⇒ 落到 binary 分支 ⇒
+	// 模型看到的是一段十六进制 dump,而它多半会据此认为"这就是附件内容"。
+	// 本机解不解得出来是另一回事(见 extractImage 的显式警告),先得认对类别。
+	"heic": sdk.DocFormatImage, "heif": sdk.DocFormatImage,
 }
 
 // unsupportedExts 显式不支持的扩展名(明确拒绝,不回退到 binary 的模糊语义)。

@@ -77,8 +77,12 @@ const dragging = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
 
 const ATT_ACCEPT =
-  // heic/heif/avif:手机照片常是 HEIC —— 选得到才能由 image_ops / 附件链路处理;
-  // 桌面端没有原生 codec 时会显式提示需要转换,而不是静默失败(见 tool-image 的 K1–K4)。
+  // heic/heif/avif:手机照片常是 HEIC —— 选得到才能进附件链路。
+  // 两处配套(2026-10-11 补齐,口径与后端 attachExtAllow 一致):
+  //  ① 服务端按**扩展名兜底**:这些格式在 Windows 上没有注册 MIME,浏览器会送空类型,
+  //     只认 Content-Type 会把用户"选得中却传不上"的东西拒掉;
+  //  ② 读它时**显式提示**:桌面无 HEIC 解码器 ⇒ 文档预览会给出"无法解码 + 先用系统工具转码",
+  //     不会退化成十六进制 dump 或一声不吭(见 host-docview extractImage)。
   'image/*,text/*,.txt,.md,.json,.csv,.log,application/json,application/pdf,.pdf,.png,.jpg,.jpeg,.gif,.webp,.heic,.heif,.avif'
 const MAX_ATT = 8
 const MAX_ATT_BYTES = 20 << 20

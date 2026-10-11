@@ -82,3 +82,81 @@ func TestAttachmentsDangerousTypesNotInline(t *testing.T) {
 		}
 	}
 }
+
+// TestAttachTypeFallbackByExtension 浏览器给不出 Content-Type 时要按扩展名兜底。
+//
+// 这不是理论问题:.heic/.heif/.avif 在 Windows 上没有注册 MIME(Chrome 送空值),
+// .md/.log/.csv 常被送成 application/octet-stream。而前端 accept 列表里写着这些扩展名
+// —— 用户能选中、上传却被"类型不允许"拒掉,且报错里的类型是空的(「不允许: 」)。
+// 口径必须与前端一致:用户看得见"能选"的东西,上传就不能被拒。
+func TestAttachTypeFallbackByExtension(t *testing.T) {
+	cases := []struct {
+		ct       string
+		filename string
+		want     bool
+		why      string
+	}{
+		// CT 不可判 → 按扩展名
+		{"", "photo.heic", true, "heic 在 Windows 上常无 MIME"},
+		{"", "photo.HEIF", true, "大小写不敏感"},
+		{"application/octet-stream", "photo.avif", true, "octet-stream 视为不可判"},
+		{"", "notes.md", true, "md 常被送空类型"},
+		{"application/octet-stream", "app.log", true, ""},
+		{"", "photo.png", true, ""},
+		// CT 可判 → 以类型为准,不看扩展名
+		{"image/png", "weird.bin", true, "明确类型为图片就放行"},
+		{"text/plain", "x.whatever", true, ""},
+		// 真不认识:类型与扩展名都不在白名单 ⇒ 拒
+		{"", "malware.bin", false, "扩展名不在白名单"},
+		{"", "noext", false, "无扩展名"},
+		{"application/zip", "photos.heic", false, "明确给了其它类型 ⇒ 按类型拒(不兜底)"},
+		{"application/x-msdownload", "a.exe", false, ""},
+	}
+	for _, tc := range cases {
+		got := attachTypeAllowed(tc.ct, tc.filename)
+		if got != tc.want {
+			t.Errorf("attachTypeAllowed(%q,%q)=%v,want=%v %s", tc.ct, tc.filename, got, tc.want, tc.why)
+		}
+	}
+}
+
+// TestAttachmentsAcceptHeicWithoutMIME 端到端:无 Content-Type 的 .heic 能上传成功,
+// 且能经 /attachments/<rel> 取回(附件链路对手机照片可用)。
+func TestAttachmentsAcceptHeicWithoutMIME(t *testing.T) {
+	s, _ := newTestServer()
+	s.cfg.AttachmentsDir = t.TempDir()
+	hs := httptest.NewServer(s.handler())
+	defer hs.Close()
+
+	body, ctype := multipartBody(t, "", "IMG_0001.heic", "ftypheic-fake-bytes")
+	resp, err := http.Post(hs.URL+"/api/attachments", ctype, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("无 MIME 的 .heic 应能上传(扩展名兜底),得 %d", resp.StatusCode)
+	}
+	var up struct {
+		Attachments []AttachmentView `json:"attachments"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&up); err != nil {
+		t.Fatal(err)
+	}
+	if len(up.Attachments) != 1 || up.Attachments[0].Name != "IMG_0001.heic" {
+		t.Fatalf("附件视图异常: %+v", up.Attachments)
+	}
+	if code := mustGet(t, hs.URL+up.Attachments[0].URL); code != 200 {
+		t.Fatalf("取回应 200,得 %d", code)
+	}
+	// 反过来:真不认识的文件仍然拒(兜底不能变成"什么都收")
+	body2, ctype2 := multipartBody(t, "", "malware.bin", "data")
+	resp2, err := http.Post(hs.URL+"/api/attachments", ctype2, body2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode == 200 {
+		t.Fatal("不在白名单的扩展名仍应被拒")
+	}
+}

@@ -160,8 +160,29 @@ func extractImage(_ context.Context, _ *Service, abs string, fi os.FileInfo, req
 	v.Blocks = []sdk.DocBlock{blk}
 	if w > 0 {
 		v.Blocks = append(v.Blocks, sdk.DocBlock{Kind: sdk.DocBlockNote, Text: fmt.Sprintf("尺寸 %d×%d,%d 字节", w, h, fi.Size())})
+		return v, nil
+	}
+	// 尺寸探测失败 = 本机没有这种格式的解码器(stdlib 只有 png/jpeg/gif/bmp/webp/tiff;
+	// heic/heif/avif 与宽色域新格式都要宿主原生实现)。**必须显式说**:
+	// 上一版什么都不说 —— 界面拿到一个没有 Asset 的 image 块(渲染不出东西),
+	// 模型拿到一个只有文件名的块(于是它可能凭文件名编内容),这是最典型的静默降级。
+	// SVG 例外:它本来就没有 stdlib 解码器,尺寸未知是正常的(由浏览器渲染)。
+	if !isSVGPath(abs) {
+		ext := strings.ToUpper(strings.TrimPrefix(filepath.Ext(abs), "."))
+		v.Warnings = append(v.Warnings, fmt.Sprintf(
+			"本机没有 %s 的解码器:只有格式信息,没有像素内容(不是文件损坏)。"+
+				"要读它请先转码成 JPEG/PNG(macOS: sips -s format jpeg;Linux: ImageMagick/ffmpeg;"+
+				"Windows: 用「照片」另存),或改用带原生解码的宿主(Android 壳)", ext))
+		v.Blocks = append(v.Blocks, sdk.DocBlock{Kind: sdk.DocBlockNote,
+			Text: fmt.Sprintf("无法解码:本机解码面不含 %s(仅 png/jpeg/gif/bmp/webp/tiff)。"+
+				"预览与视觉分析都拿不到像素;需要先转码。", ext)})
 	}
 	return v, nil
+}
+
+// isSVGPath 是否 SVG(矢量文本格式:无 stdlib 解码器属正常,不该报"缺解码器")。
+func isSVGPath(p string) bool {
+	return strings.EqualFold(filepath.Ext(p), ".svg")
 }
 
 // imageDims 用 stdlib 解码器探测图片尺寸(SVG/未知格式返回 0,0;失败不报错)。

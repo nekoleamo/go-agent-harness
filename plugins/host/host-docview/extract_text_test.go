@@ -272,3 +272,86 @@ func TestNoExtFallsBackToText(t *testing.T) {
 	}
 	_ = os.Remove(filepath.Join(dir, "nonexistent"))
 }
+
+// TestHeicIsImageWithExplicitWarning 手机照片(HEIC/HEIF)必须被认成**图像**,
+// 且本机解不出来时要**显式说清**(而不是退化成十六进制 dump 或一句不吭)。
+//
+// 背景:前端附件 accept 列表里有 .heic/.heif/.avif(A 组改动的相邻面)。上一版
+// heic/heif 不在图像扩展名表里 ⇒ 落到 binary 分支 ⇒ 模型看到的是一段 hexdump,
+// 它多半会据此认为"这就是附件内容";avif 虽然认成图像,却在解不出像素时**零警告**
+// ⇒ 界面渲染空白、模型只有文件名(可能凭名字编内容)。两者都是静默降级。
+func TestHeicIsImageWithExplicitWarning(t *testing.T) {
+	s, dir := newSvc(t, Budget{})
+	// 造一个像 HEIC 的文件(ftyp box + 少量填充;本机必然解不出像素)
+	heic := append([]byte{0, 0, 0, 0x20}, []byte("ftypheic")...)
+	heic = append(heic, make([]byte, 64)...)
+	p := writeFile(t, dir, "IMG_0001.heic", heic)
+
+	v, err := s.Preview(context.Background(), sdk.DocRequest{Path: p})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Format != sdk.DocFormatImage {
+		t.Fatalf("HEIC 应认成图像(而不是二进制),得 %s", v.Format)
+	}
+	if len(v.Warnings) == 0 {
+		t.Fatalf("解不出像素必须显式警告(否则界面空白 + 模型只剩文件名):%+v", v)
+	}
+	warn := strings.Join(v.Warnings, "\n")
+	for _, kw := range []string{"HEIC", "转码"} {
+		if !strings.Contains(warn, kw) {
+			t.Fatalf("警告要给格式与出路(含 %q):%s", kw, warn)
+		}
+	}
+	// 不能把 hexdump 当内容:块里不该出现 code(十六进制转储)块
+	for _, b := range v.Blocks {
+		if b.Kind == sdk.DocBlockCode && strings.Contains(b.Text, "00000000") {
+			t.Fatalf("HEIC 不该退化成十六进制 dump:%q", b.Text[:min(40, len(b.Text))])
+		}
+	}
+	// 有"无法解码"的显式说明块(界面/模型都看得见)
+	found := false
+	for _, b := range v.Blocks {
+		if b.Kind == sdk.DocBlockNote && strings.Contains(b.Text, "无法解码") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("应有一块明确说明'无法解码':%+v", v.Blocks)
+	}
+
+	// AVIF 同理(它在旧实现里已是图像但零警告)
+	avif := append([]byte{0, 0, 0, 0x20}, []byte("ftypavif")...)
+	avif = append(avif, make([]byte, 64)...)
+	p2 := writeFile(t, dir, "IMG_0002.avif", avif)
+	v2, err := s.Preview(context.Background(), sdk.DocRequest{Path: p2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(v2.Warnings) == 0 {
+		t.Fatalf("AVIF 解不出像素也必须警告:%+v", v2)
+	}
+
+	// SVG 例外:没有 stdlib 解码器属正常,不该报"缺解码器"
+	svg := writeFile(t, dir, "icon.svg", []byte(`<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"/>`))
+	v3, err := s.Preview(context.Background(), sdk.DocRequest{Path: svg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(v3.Warnings) != 0 {
+		t.Fatalf("SVG 尺寸未知是正常的,不该报缺解码器:%v", v3.Warnings)
+	}
+
+	// 能解的格式不受影响(PNG 仍带 Asset 与尺寸、无警告)
+	png := writeFile(t, dir, "ok.png", pngBytes(t, 7, 5))
+	v4, err := s.Preview(context.Background(), sdk.DocRequest{Path: png})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(v4.Warnings) != 0 {
+		t.Fatalf("PNG 不该有警告:%v", v4.Warnings)
+	}
+	if a := v4.Blocks[0].Asset; a == nil || a.W != 7 || a.H != 5 {
+		t.Fatalf("PNG 尺寸/资产不该受影响:%+v", a)
+	}
+}

@@ -387,7 +387,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `GET /api/todo` | 任务面板数据(todo 工具 list 透传) |
 | `GET /api/backup`、`POST /api/backup` | 备份列表 / `{action: backup\|restore, dest?, name?}` |
 | `POST /api/sessions`(`action: pin\|unpin`)、`POST /api/sessions/summary` | 会话置顶/取消置顶 · 生成/取回概述(会调用模型;列表请求只读缓存) |
-| `POST /api/attachments` + `GET /attachments/...` | 附件上传(20MB/类型白名单)/ 静态预览 |
+| `POST /api/attachments` + `GET /attachments/...` | 附件上传(20MB/类型白名单)/ 静态预览。白名单 = 图片(`image/*`)、文本、PDF、JSON;浏览器给不出 Content-Type 时(HEIC/HEIF/AVIF 在 Windows 上没有注册 MIME,`.md/.log` 常被送成 `application/octet-stream`)**按扩展名兜底**,口径与前端 accept 列表一致 —— 用户选得中的东西就不会传不上。HEIC/AVIF 能上传、能预览,但**桌面端没有解码器**:读它时会明确说"无法解码 + 先转码"(不会退化成十六进制 dump,也不会一声不吭);要真正看图请转成 JPEG/PNG 或用 Android 壳(壳侧有原生解码) |
 | `POST /api/reload` | 指令文件热更 |
 | `POST /api/shutdown` | 优雅停机(→ system/shutdown → DisposeAll 全回收;桌面壳/运维复用) |
 | `GET /api/ui-plugins` + `/ui-plugins/` | UI 插件聚合视图 / 静态托管;聚合项带 `trusted`/`trust_note`(UI 插件与主应用**同源同权限**:可调用全部 API(含 `/api/input` → 工具执行),只安装你信任的插件;SPA 带严格 CSP 切断纯外发通道) |

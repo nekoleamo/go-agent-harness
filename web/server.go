@@ -1907,6 +1907,46 @@ func allowedAttachType(ct string) bool {
 	return false
 }
 
+// attachExtAllow 扩展名兜底白名单。
+//
+// 为什么需要它:**浏览器给不出可靠 Content-Type** 是真实现象,不是理论问题 ——
+// `.heic/.heif/.avif` 在 Windows 上没有注册 MIME,Chrome 会送**空值**;
+// `.md/.log/.csv` 也常被送成 `application/octet-stream`。而前端 accept 列表里明明
+// 写着这些扩展名(用户照着选得中),上传却在服务端被"类型不允许"拒掉 ——
+// 且报错里类型是空的(「附件类型不允许: 」),用户完全不知道该怎么办。
+//
+// 口径**刻意与前端 ATT_ACCEPT 对齐**:用户看得见"能选"的东西,上传就不能被拒。
+// 只判扩展名(不嗅探内容):这里决定的是"要不要落到附件目录",内容安全由下游
+// (沙箱/工具/下载头)负责;把内容嗅探塞进上传路径只会带来新的绕过面。
+var attachExtAllow = map[string]bool{
+	".txt": true, ".md": true, ".json": true, ".csv": true, ".log": true, ".pdf": true,
+	".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".webp": true,
+	".bmp": true, ".tif": true, ".tiff": true,
+	".heic": true, ".heif": true, ".avif": true,
+}
+
+// attachTypeAllowed 附件类型判定:Content-Type 是主判据;它**不可判**时(空 /
+// application/octet-stream)按扩展名兜底。给了其它明确类型则不兜底(仍按类型拒)。
+func attachTypeAllowed(ct, filename string) bool {
+	if allowedAttachType(ct) {
+		return true
+	}
+	base, _, _ := strings.Cut(ct, ";")
+	base = strings.ToLower(strings.TrimSpace(base))
+	if base != "" && base != "application/octet-stream" {
+		return false
+	}
+	return attachExtAllow[strings.ToLower(filepath.Ext(filename))]
+}
+
+// attachTypeLabel 报错时把"类型不可判"如实写出来(空串会让用户看到「不允许: 」)。
+func attachTypeLabel(ct string) string {
+	if strings.TrimSpace(ct) == "" {
+		return "(浏览器未给出类型)"
+	}
+	return ct
+}
+
 // handleAttachments POST /api/attachments:multipart("file" 字段,可多个)上传,
 // 落盘 $GAH_HOME/attachments/<时间戳目录>/<原始名>(重名追加数字后缀)。
 func (s *Server) handleAttachments(w http.ResponseWriter, r *http.Request) {
@@ -1965,9 +2005,9 @@ func (s *Server) handleAttachments(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		ct := part.Header.Get("Content-Type")
-		if !allowedAttachType(ct) {
+		if !attachTypeAllowed(ct, name) {
 			cleanup()
-			http.Error(w, "附件类型不允许: "+ct, http.StatusUnsupportedMediaType)
+			http.Error(w, fmt.Sprintf("附件类型不允许: %s(文件 %s);支持图片/文本/PDF/JSON", attachTypeLabel(ct), name), http.StatusUnsupportedMediaType)
 			return
 		}
 		// 重名追加数字后缀
