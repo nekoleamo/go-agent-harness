@@ -29,6 +29,12 @@
 - Go 1.27+;golangci-lint;testify 可选,多数用例标准库断言即可。
 - **提交前门禁**:`bash scripts/gate.sh`(gofmt + go vet + staticcheck,**双 module**;`--fast` 跳过 staticcheck)。它是 gofmt/vet/staticcheck 的**单一事实源**,CI 的「本地门禁同源」步骤直接调它 —— 2026-10-02 之前这三步只活在习惯里(连 gofmt 在 CI 都没有),代价是 SA4005 只在 CI 被逮到。
 - **新增文件必须先 `git add` 再跑门禁**(2026-10-08 登记):`gate.sh` 的 gofmt 一步只检查 `git ls-files '*.go'` —— **未跟踪的文件它一个都不看**。新写的测试文件在 `git add` 之前跑门禁 ⇒ 本地 `GATE_OK` 是**假的**,CI 才红(那次红的就是两个新 `_test.go`)。凡本批有新增文件:`git add -A` → 跑门禁 → 再提交;「本地绿」这个词只有在**工作树已全部入索引**时才成立。与 v0.5.0/v0.5.1 同源的一类教训(门禁跑在错误的状态上),只是这次换成「文件还没进索引」。
+- **改了 CLI 相关代码就比对一次**:`bash scripts/cli-parity.sh <ref>` —— 把任意 ref 的 `gah`
+  与当前工作树都构建出来,跑同一批命令**逐字节**比 stdout/stderr/退出码(有差异 exit 1,
+  `--report` 只报告)。它守的是"入口重构/迁移**不改变 CLI 行为**"这条承诺:2026-10-11
+  靠它揪出「纯查询/管理类 flag 在管道里被 TUI 护栏拦死」这个一直存在的缺陷 —— 那不是读
+  diff 能读出来的(比对里一个"意外的零差异"case 逼我去查,因为管道里两侧都没输出)。
+  两侧统一用假版本号 + 日志时间戳归一化,矩阵刻意离线(不含 `-install <repo>` 这类发网络的)。
 - 发布编译:`CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$(git describe --tags)"`。
 - 桌面壳(`desktop/src-tauri/`):改后必跑 `cargo fmt` 与 `cargo test --offline`(CI 的 `desktop-shell` job = `cargo fmt --check` + `cargo test --locked`;`--offline` 是因为 crates.io 偶发拉取超时)。
 - CI:go vet + go test ./... -race;全库测试必须保持 -race 全绿。
