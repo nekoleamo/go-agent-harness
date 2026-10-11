@@ -62,6 +62,28 @@ func TestRunVersionSucceedsWithoutProfile(t *testing.T) {
 	}
 }
 
+// TestManagementOnly 判据表:纯查询/管理动作(不需要终端)与需要 TUI 的动作要分得清。
+// 这条判据决定 TUI 护栏跳不跳 —— 判错的方向是"把运维命令拦死"(用户最常见的用法)。
+func TestManagementOnly(t *testing.T) {
+	mgmt := []*options{
+		{DumpConfig: true}, {ListPlugins: true}, {CheckUpdates: true}, {ListTrusted: true},
+		{ListUIPlugins: true}, {Install: "repo"}, {Artifact: "http://x"}, {Uninstall: "id"},
+		{InstallUI: "repo"}, {UninstallUI: "id"}, {TrustPlugin: "n"}, {UntrustPlugin: "n"},
+		{TrustUIPlugin: "n"}, {UntrustUIPlugin: "n"},
+	}
+	for _, o := range mgmt {
+		if !managementOnly(o) {
+			t.Fatalf("纯查询/管理动作应被判为不需终端:%+v", o)
+		}
+	}
+	// 这些仍然需要终端(要跑 UI):空 options、只有 profile/input/ephemeral
+	for _, o := range []*options{{}, {Profile: "tui"}, {Ephemeral: true}, {Input: "hi"}, {ShowVersion: true}} {
+		if managementOnly(o) {
+			t.Fatalf("这些不该被判为纯查询(会绕过 TUI 护栏):%+v", o)
+		}
+	}
+}
+
 // TestCLIOptionsSnapshotsFlags cliOptions 读全局 flag 变量;未注册的指针也要能安全取零值
 // (单测里可能直接置 nil),避免入口糖之后拿到垃圾值。
 func TestCLIOptionsSnapshotsFlags(t *testing.T) {

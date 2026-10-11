@@ -159,7 +159,12 @@ func run(opts *options) error {
 	}
 	// 非 TTY 检测(TUI profile):stdin 为 pipe/重定向时 bubbletea 会直读 stdin 卡死挂起;
 	// 显式拒绝并提示走 headless(或提供 -input)——不再死机。
-	if !isStdinTTY() && opts.Input == "" && opts.Profile == "tui" {
+	//
+	// **纯查询/管理类动作不受此限**(managementOnly):它们本来就只打印结果后退出,
+	// 而正常用法正是管道(`gah -list-plugins | grep x`、`gah -dump-config | diff -`)。
+	// 上一版会在这类调用上打一句驴唇不对马嘴的"请用 -profile headless -input"
+	// (那个 `-input` 对它们毫无意义),把"查看已装插件"这类最普通的运维动作拦死。
+	if !isStdinTTY() && opts.Input == "" && opts.Profile == "tui" && !managementOnly(opts) {
 		fmt.Fprintln(os.Stderr, "gah: TUI 需要交互式终端(stdin 非 TTY)。管道/后台场景请用: -profile headless -input <文本>")
 		return exit(1)
 	}
@@ -596,6 +601,19 @@ func enabledSet(tree *config.Tree) map[string]bool {
 		}
 	}
 	return set
+}
+
+// managementOnly 本次调用是否只做"查询/管理"这类**不需要终端**的动作:
+// dump-config、插件清单与检查更新、装/卸/信任白名单。它们只打印结果后退出(不装配 UI),
+// 被 TUI 护栏拦住既无道理、又给出误导性的补救建议。
+//
+// 与 `-version` 同一判据:纯输出型动作不该因为 stdin 不是终端而失败。
+func managementOnly(opts *options) bool {
+	return opts.DumpConfig || opts.ListPlugins || opts.CheckUpdates || opts.ListTrusted ||
+		opts.ListUIPlugins || opts.Install != "" || opts.Artifact != "" ||
+		opts.Uninstall != "" || opts.InstallUI != "" || opts.UninstallUI != "" ||
+		opts.TrustPlugin != "" || opts.UntrustPlugin != "" ||
+		opts.TrustUIPlugin != "" || opts.UntrustUIPlugin != ""
 }
 
 // resolveHome 数据根解析(M0 为嵌入留的口子)。

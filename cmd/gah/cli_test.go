@@ -129,6 +129,41 @@ func TestCLIVersionAndTTYGuard(t *testing.T) {
 	}
 }
 
+// TestCLIManagementFlagsWorkInPipe 纯查询/管理类 flag 在**管道**里必须能跑。
+//
+// 它们只打印结果后退出,正常用法就是管道(`gah -list-plugins | grep x`);被 TUI 护栏拦下
+// 既没道理、又给出误导性的补救建议("请用 -profile headless -input" —— `-input` 对它们
+// 毫无意义)。这条用例钉住"护栏只拦真正要跑 UI 的调用"。
+func TestCLIManagementFlagsWorkInPipe(t *testing.T) {
+	cases := []struct {
+		args []string
+		want string // stdout 应包含
+	}{
+		{[]string{"-ephemeral", "-dump-config"}, "entries:"},
+		{[]string{"-ephemeral", "-list-plugins"}, "tool-kit"},
+		{[]string{"-ephemeral", "-list-trusted-plugins"}, ""},
+		{[]string{"-ephemeral", "-list-ui-plugins"}, ""},
+		{[]string{"-ephemeral", "-check-plugin-updates"}, "没有可检查的来源"},
+	}
+	for _, tc := range cases {
+		res := runCLI(t, "pipe", tc.args...)
+		if res.code != 0 {
+			t.Errorf("%v 在管道里应成功退出,得 %d(stderr %q)", tc.args, res.code, res.stderr)
+		}
+		if strings.Contains(res.stderr, "TUI 需要交互式终端") {
+			t.Errorf("%v 不该被 TUI 护栏拦下(stderr %q)", tc.args, res.stderr)
+		}
+		if tc.want != "" && !strings.Contains(res.stdout, tc.want) {
+			t.Errorf("%v 的输出应含 %q,得 %q", tc.args, tc.want, res.stdout)
+		}
+	}
+	// 需要 TUI 的调用仍被拦(不能顺手把护栏拆了)
+	res := runCLI(t, "pipe")
+	if res.code != 1 || !strings.Contains(res.stderr, "TUI 需要交互式终端") {
+		t.Fatalf("裸 TUI 调用在管道里仍应被拦:%d %q", res.code, res.stderr)
+	}
+}
+
 // TestCLIDocSubcommandRouting `gah doc …` 的路由发生在标志解析与 TTY 护栏之前:
 // 管道里也能用(这是脚本场景的主力用法)。
 func TestCLIDocSubcommandRouting(t *testing.T) {
