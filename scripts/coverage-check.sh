@@ -183,6 +183,7 @@ plugins/tool/tool-ask 80
 plugins/tool/tool-auto-plan 58
 plugins/tool/tool-doc 72
 plugins/tool/tool-files 70
+plugins/tool/tool-image 60
 plugins/tool/tool-memory 73
 plugins/tool/tool-shell 88
 plugins/tool/tool-schedule 82

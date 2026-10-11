@@ -2,7 +2,12 @@
 // 模式:read-only(拒绝写/解释器)/ workspace-write(仅 workspace 根内写,默认)/ full-access(不拦截)。
 package sdk
 
-import "context"
+import (
+	"context"
+	"fmt"
+	"path/filepath"
+	"strings"
+)
 
 // SandboxMode 沙箱档位。
 type SandboxMode string
@@ -151,4 +156,82 @@ func SandboxHintOf(ctx context.Context) (SandboxHint, bool) {
 	}
 	h, ok := ctx.Value(sandboxHintKey{}).(SandboxHint)
 	return h, ok
+}
+
+// ResolveSandboxPath 解析并裁决路径(**写目标裁决的唯一实现**)。
+//
+// 为什么放在 sdk 而不是各工具各写一份:工具只要漏一次裁决就是越界写,而"读/写两套校验 +
+// 本次工作根 + 隔离子代理 worktree + 审批联动档位"这套组合逻辑本身很容易两份实现漂移。
+// tool-files / tool-image 等所有路径类工具都经它,口径只有这一处。
+//
+// 规则(与 tool-files 既有行为逐字一致):
+//   - 相对路径基准 = 本次调用工作根(hint.Root)> 沙箱 workspace 根;
+//   - 写:优先 RootScoped.ValidatePathAt(同一工作根)> PathValidatorFor > ValidatePath;
+//   - 读:优先 ReadValidator(同上三态)> 退回按**有效档位**兜底(workspace-write 限区内,
+//     防 ../ 穿越与读外泄;full/read-only 放行);
+//   - sb == nil(未装配沙箱:单测/独立部署/外部进程)⇒ 不在此处限制,放行。
+func ResolveSandboxPath(ctx context.Context, sb Sandbox, path string, write bool) (string, error) {
+	base := ""
+	if h, ok := SandboxHintOf(ctx); ok {
+		base = h.Root
+	}
+	if base == "" && sb != nil {
+		base = sb.Root()
+	}
+	abs := path
+	if !filepath.IsAbs(abs) && base != "" {
+		abs = filepath.Join(base, abs)
+	}
+	abs = filepath.Clean(abs)
+	if sb == nil {
+		return abs, nil
+	}
+	if write {
+		if sc, ok := sb.(RootScoped); ok {
+			return abs, sc.ValidatePathAt(base, abs)
+		}
+		if vf, ok := sb.(PathValidatorFor); ok {
+			return abs, vf.ValidatePathFor(ctx, abs)
+		}
+		return abs, sb.ValidatePath(abs)
+	}
+	if rv, ok := sb.(ReadValidator); ok {
+		if sc, ok2 := sb.(RootScoped); ok2 {
+			return abs, sc.ValidateReadAt(base, abs)
+		}
+		if rf, ok := sb.(ReadValidatorFor); ok {
+			return abs, rf.ValidateReadFor(ctx, abs)
+		}
+		return abs, rv.ValidateRead(abs)
+	}
+	// 兜底:沙箱未实现读校验能力 → 按**有效档位**判定(联动开启时 Mode() 不代表拦截行为)
+	switch EffectiveSandboxModeFor(ctx, sb) {
+	case SandboxFullAccess, SandboxReadOnly:
+		return abs, nil // 读放行
+	default: // workspace-write:读限 workspace 内(防 ../ 穿越与读外泄)
+		root := filepath.Clean(base)
+		if root == "" {
+			root = filepath.Clean(sb.Root())
+		}
+		if abs != root && !strings.HasPrefix(abs, root+string(filepath.Separator)) {
+			return "", fmt.Errorf("sandbox: workspace-write 拒绝访问 workspace 之外: %s", path)
+		}
+		return abs, nil
+	}
+}
+
+// EffectiveSandboxModeFor 取联动后的有效档(沙箱实现 sdk.EffectiveSandbox 时)。
+// 否则 policy-guard 的档位联动(sync)会被工具侧忽略:approval=strict 显示只读、
+// 工具仍按 workspace-write 放行。
+//
+// 带 ctx:沙箱若实现 sdk.EffectiveSandboxFor,就按**这次调用所属会话**取档 ——
+// 多页签各设各的沙箱档时,无参版会拿"全局当前"档去裁另一个会话的回合。
+func EffectiveSandboxModeFor(ctx context.Context, sb Sandbox) SandboxMode {
+	if es, ok := sb.(EffectiveSandboxFor); ok {
+		return es.EffectiveModeFor(ctx)
+	}
+	if es, ok := sb.(EffectiveSandbox); ok {
+		return es.EffectiveMode()
+	}
+	return sb.Mode()
 }

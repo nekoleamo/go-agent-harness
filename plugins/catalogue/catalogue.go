@@ -38,6 +38,7 @@ import (
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-auto-plan"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-doc"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-files"
+	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-image"
 	"github.com/nekoleamo/go-agent-harness/plugins/tool/tool-memory"
 	toolschedule "github.com/nekoleamo/go-agent-harness/plugins/tool/tool-schedule"
 	toolsessionsearch "github.com/nekoleamo/go-agent-harness/plugins/tool/tool-session-search"
@@ -117,6 +118,12 @@ var All = map[string]Def{
 	"tool-files": {Factory: func() sdk.Plugin { return &toolfiles.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "tool-files", Type: "tool", APIVersion: ">=1.0,<2.0",
 		Requires: []string{"ctx.tools"}}, Bundle: "base", Manage: "external"},
+	// F4 图像工具(M2):单工具多动作 image_ops;编解码实现可被宿主替换(sdk.ImageCodec seam,
+	// Android 壳注册原生实现即自动优先)⇒ **进程内装配**,不进 extplugins 外部化矩阵。
+	"tool-image": {Factory: func() sdk.Plugin { return &toolimage.Plugin{} }, Manifest: &sdk.Manifest{
+		ID: "tool-image", Type: "tool", APIVersion: ">=1.0,<2.0",
+		// system.imageCodec 可选:宿主(Android 壳)注册的原生编解码器;未注册 = 内置纯 Go
+		Requires: []string{"ctx.tools"}}, Bundle: "base"},
 	"tool-web": {Factory: func() sdk.Plugin { return &toolweb.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "tool-web", Type: "tool", APIVersion: ">=1.0,<2.0",
 		Requires: []string{"ctx.tools"}}, Bundle: "base", Manage: "external"},

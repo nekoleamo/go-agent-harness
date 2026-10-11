@@ -85,9 +85,8 @@ type FilesTool struct {
 // 相对路径基准优先级:本次调用工作根(宿主经 sdk.SandboxHint.Root 下传;隔离子代理 = 受管
 // worktree)> 沙箱 workspace 根。**这是隔离能生效的关键**:外部插件进程的 cwd 恒为主工作区,
 // 按进程 cwd 解析会把子代理的写落回主工作区(两子代理继续互相覆盖)。
-// 校验统一委托沙箱(唯一裁决点):写经 ValidatePath、读经 ValidateRead(可选能力);
-// 沙箱实现 RootScoped(sdk)时按**同一工作根**校验,否则退回自身 root(未隔离调用行为不变)。
-// 未实现读校验能力时退回本插件三档兜底(单测/独立部署场景)。
+// 校验委托 sdk.ResolveSandboxPath(**写目标裁决的唯一实现**,tool-image 等工具共用同一口径);
+// 未实现读校验能力时由该函数按有效档位兜底(单测/独立部署场景)。
 func (f *FilesTool) resolve(ctx context.Context, path string, write bool) (string, error) {
 	if strings.TrimSpace(path) == "" {
 		return "", fmt.Errorf("tool-files: 缺少 path 参数")
@@ -97,69 +96,7 @@ func (f *FilesTool) resolve(ctx context.Context, path string, write bool) (strin
 	if sdk.LooksLikeURLPath(path) {
 		return "", fmt.Errorf("tool-files: path 是 URL 而不是本地文件路径: %s(抓网页请用 web 工具)", path)
 	}
-	base := ""
-	if h, ok := sdk.SandboxHintOf(ctx); ok {
-		base = h.Root
-	}
-	if base == "" && f.sb != nil {
-		base = f.sb.Root()
-	}
-	abs := path
-	if !filepath.IsAbs(abs) && base != "" {
-		abs = filepath.Join(base, abs)
-	}
-	abs = filepath.Clean(abs)
-	if f.sb == nil {
-		return abs, nil // 未装配沙箱:不限制(单测/独立部署;宿主侧 pre-execute 仍会裁决)
-	}
-	if write {
-		if sc, ok := f.sb.(sdk.RootScoped); ok {
-			return abs, sc.ValidatePathAt(base, abs)
-		}
-		if vf, ok := f.sb.(sdk.PathValidatorFor); ok {
-			return abs, vf.ValidatePathFor(ctx, abs)
-		}
-		return abs, f.sb.ValidatePath(abs)
-	}
-	if rv, ok := f.sb.(sdk.ReadValidator); ok {
-		if sc, ok2 := f.sb.(sdk.RootScoped); ok2 {
-			return abs, sc.ValidateReadAt(base, abs)
-		}
-		if rf, ok := f.sb.(sdk.ReadValidatorFor); ok {
-			return abs, rf.ValidateReadFor(ctx, abs)
-		}
-		return abs, rv.ValidateRead(abs)
-	}
-	// 兜底:沙箱未实现读校验能力 → 按**有效档位**判定(联动开启时 Mode() 不代表拦截行为)
-	switch effectiveSandboxMode(ctx, f.sb) {
-	case sdk.SandboxFullAccess, sdk.SandboxReadOnly:
-		return abs, nil // 读放行
-	default: // workspace-write:读限 workspace 内(防 ../ 穿越与读外泄)
-		root := filepath.Clean(base)
-		if root == "" {
-			root = filepath.Clean(f.sb.Root())
-		}
-		if abs != root && !strings.HasPrefix(abs, root+string(filepath.Separator)) {
-			return "", fmt.Errorf("sandbox: workspace-write 拒绝访问 workspace 之外: %s", path)
-		}
-		return abs, nil
-	}
-}
-
-// effectiveSandboxMode 优先取联动后的有效档(沙箱实现 sdk.EffectiveSandbox 时)。
-// 否则 policy-guard 的档位联动(sync)会被工具侧忽略:approval=strict 显示只读、
-// 工具仍按 workspace-write 放行。
-//
-// 带 ctx(第一百一十六批):沙箱若实现了 sdk.EffectiveSandboxFor,就按**这次调用所属会话**
-// 取档 —— 多页签各设各的沙箱档时,无参版会拿"全局当前"档去裁另一个会话的回合。
-func effectiveSandboxMode(ctx context.Context, sb sdk.Sandbox) sdk.SandboxMode {
-	if es, ok := sb.(sdk.EffectiveSandboxFor); ok {
-		return es.EffectiveModeFor(ctx)
-	}
-	if es, ok := sb.(sdk.EffectiveSandbox); ok {
-		return es.EffectiveMode()
-	}
-	return sb.Mode()
+	return sdk.ResolveSandboxPath(ctx, f.sb, path, write)
 }
 
 // exec 统一工具执行(按工具名分发)。

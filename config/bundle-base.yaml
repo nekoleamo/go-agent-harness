@@ -1,4 +1,4 @@
-# seed-version: 29 # 样板版本:新增 base 能力条目(host-* 等)时 +1(29:新增 host-memory 跨会话记忆;28:新增 host-roles 角色切换/技能挂载;27:host-agent-loop 增 data.max_steps(缺省 0 = 不限,此前硬编码 10);26:token-compress 阈值改按窗口比例(trigger_ratio/max_tokens/chars_per_token);25:host-internal-commands 增 export_open_browser;24:新增 tool-schedule 定时计划工具),老用户自动升级(备份后覆盖)
+# seed-version: 30 # 样板版本:新增 base 能力条目(host-* 等)时 +1(30:新增 tool-image 图像工具(image_ops 七动作);29:新增 host-memory 跨会话记忆;28:新增 host-roles 角色切换/技能挂载;27:host-agent-loop 增 data.max_steps(缺省 0 = 不限,此前硬编码 10);26:token-compress 阈值改按窗口比例(trigger_ratio/max_tokens/chars_per_token);25:host-internal-commands 增 export_open_browser;24:新增 tool-schedule 定时计划工具),老用户自动升级(备份后覆盖)
 # base bundle:对齐 dsh-base,一切功能皆插件的共享第一层。
 # M1 阶段条目仅记录意图;对应插件工厂在 M2 base bundle 落地。
 name: base
@@ -140,6 +140,11 @@ entries:
       read_limit: 2000
       max_output_kb: 50
       pdf_max_pages: 100
+  - id: tool-image
+    # F4 图像工具(M2):image_ops 七动作(info/convert/resize/crop/rotate/compress/thumbnail)。
+    # 默认启用(新增 base 能力);编解码走 sdk.ImageCodec seam —— 未注册宿主实现时用内置纯 Go
+    # (jpeg/png/gif/bmp/tiff 互转 + webp 解码;HEIC/AVIF 与 WebP 编码需宿主原生实现)。
+    enabled: true
   - id: tool-auto-plan
     # M11:auto_plan(规划模式)与 todo 同属工具,但需进程内规则注入(ctx.systemPrompt AddSection,
     # 外部进程无法注入)→ 装配进宿主(host-skills 同款),不进 tool-basic。
