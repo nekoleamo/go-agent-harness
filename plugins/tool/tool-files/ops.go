@@ -664,6 +664,9 @@ func checkDst(to string, overwrite bool) error {
 // 只在**内容已经完整落好**(大小校验过、fsync 过)之后才走到这一步,所以"删旧"这一步
 // 失败或崩掉,最坏结果是新文件没就位、旧文件还在 —— 而不是两头都没。
 // Windows 上 rename 不能覆盖已存在的文件,故删这一步不是"可选优化"而是必需。
+//
+// **rename 失败时保留临时文件**:那说明发生了非常规状况(目录权限被改/目录被删等),
+// 此时删临时文件等于把"已经写好的新内容"也丢掉 —— 如实报出路径,让人能把它拾回来。
 func commitDst(tmp, to string) error {
 	if _, err := os.Lstat(to); err == nil {
 		if err := sdk.RemoveTree(to); err != nil {
@@ -672,7 +675,10 @@ func commitDst(tmp, to string) error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	return os.Rename(tmp, to)
+	if err := os.Rename(tmp, to); err != nil {
+		return fmt.Errorf("提交替换失败(新内容已完整写好,留在 %s): %w", tmp, err)
+	}
+	return nil
 }
 
 // renameHook = os.Rename 的注入点(单测用它模拟跨卷 EXDEV;生产恒为 os.Rename)。
@@ -1075,6 +1081,7 @@ func (f *FilesTool) trashPut(ctx context.Context, p string) (entry string, abs s
 }
 
 // writeFileAtomic 同目录临时文件 + rename(D2:写一律原子)。
+// 目标已存在时先删:Windows 上 rename 覆盖不了已存在文件(回收站元数据重写会走到这里)。
 func writeFileAtomic(path string, b []byte) error {
 	tmp := path + ".gah-tmp"
 	fh, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
@@ -1094,6 +1101,12 @@ func writeFileAtomic(path string, b []byte) error {
 	if err := fh.Close(); err != nil {
 		_ = os.Remove(tmp)
 		return err
+	}
+	if _, err := os.Lstat(path); err == nil {
+		if err := sdk.RemoveTree(path); err != nil {
+			_ = os.Remove(tmp)
+			return err
+		}
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)

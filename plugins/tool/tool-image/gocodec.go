@@ -705,6 +705,10 @@ func pickFilter(name string) xdraw.Scaler {
 }
 
 // writeAtomic 同目录临时文件 + fsync + rename(失败清理临时文件,不留半截)。
+//
+// **前置契约:调用方已保证 dst 不存在**(image_ops 侧:已存在且未 overwrite ⇒ 提前报错;
+// overwrite=true ⇒ 已把旧目标腾到 `<dst>.gah-bak-<纳秒>`)。因此这里的 rename 不需要
+// 覆盖已存在的文件 —— 那在 Windows 上会失败。
 func writeAtomic(dst string, enc func(w io.Writer) error) (err error) {
 	dir := filepath.Dir(dst)
 	tmp, err := os.CreateTemp(dir, "."+filepath.Base(dst)+".gah-tmp-*")

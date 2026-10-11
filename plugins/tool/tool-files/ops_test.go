@@ -699,3 +699,26 @@ func TestFileOntoExistingDirRejected(t *testing.T) {
 	}
 	opsCall(t, c, "file_copy", `{"from":"src2","to":"Download","overwrite":true}`)
 }
+
+// TestTrashMetaRewriteIsIdempotent 回收站元数据重写(同名条目再次落盘)在 Windows 上
+// 会撞上"rename 不能覆盖已存在文件" ⇒ writeFileAtomic 必须先腾位。这条用例在 Linux/macOS
+// 上也跑(它至少钉住"重写不会失败、内容是最新的"),真正的 Windows 行为由 CI 的 test-windows 验。
+func TestTrashMetaRewriteIsIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "meta.json")
+	if err := writeFileAtomic(p, []byte("first")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFileAtomic(p, []byte("second")); err != nil {
+		t.Fatalf("覆盖写应成功(Windows 上需先腾位): %v", err)
+	}
+	if b, err := os.ReadFile(p); err != nil || string(b) != "second" {
+		t.Fatalf("内容应为最新的一次: %q(%v)", b, err)
+	}
+	ents, _ := os.ReadDir(dir)
+	for _, e := range ents {
+		if strings.HasSuffix(e.Name(), ".gah-tmp") {
+			t.Fatalf("不该留下临时文件: %s", e.Name())
+		}
+	}
+}
