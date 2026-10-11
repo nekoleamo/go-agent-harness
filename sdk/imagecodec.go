@@ -35,12 +35,13 @@ const (
 	DefaultMaxDim    = 8000
 )
 
-// DecodeOpt 解码约束(宿主实现可据此选解码策略;纯 Go 实现超限即报错)。
-type DecodeOpt struct {
-	MaxPixels      int  // 像素上限(DefaultMaxPixels)
-	MaxDim         int  // 长边上限(DefaultMaxDim)
-	AllowDownscale bool // true = 允许实现方边解边降采样(宿主原生实现),false = 超限即报错
-}
+// 契约里**刻意没有 `DecodeOpt`**(方案 D1 草案里有这一项)。理由:接口只有
+// Info/Transform/Caps 三个方法,**没有任何一个能收解码参数** —— 一个没人能传进去的
+// 参数结构就是纯 API 负债(它会让人误以为“这里有旋钮可调”)。
+// 当前实际生效的限制入口有两处,都已存在:
+//   - `CodecCaps.MaxPixels` / `CanDownscale`:实现自述能力面(工具据此报“不支持/可降采样”);
+//   - `TransformSpec.MaxDim`:调用方要的缩放上限。
+// 将来真需要“按次解码约束”时,先给它一个**会用它**的方法,再把这个类型加回来。
 
 // ResizeSpec 缩放规格(与 TransformSpec.MaxDim 互斥)。
 type ResizeSpec struct {

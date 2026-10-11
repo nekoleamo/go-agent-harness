@@ -2,7 +2,6 @@ package sdk
 
 import (
 	"encoding/json"
-	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -109,24 +108,19 @@ func TestTransformSpecZeroValueIsNoop(t *testing.T) {
 	}
 }
 
-func TestImageCodecInterfaceSatisfiedByMinimalImpl(t *testing.T) {
-	// 契约面只有三个方法:实现方(Android 壳)照这三个就能接上
-	var _ ImageCodec = &fakeCodec{}
-	if (&fakeCodec{}).Caps().CanDownscale != true {
+// 契约面刻意不含 DecodeOpt(见 imagecodec.go 的说明):接口没有任何方法能收解码参数,
+// 加一个传不进去的结构只会让人以为"这里有旋钮可调"。这条用例钉住"契约面只有三方法"。
+func TestImageCodecContractSurface(t *testing.T) {
+	// 只有 Caps/Info/Transform 三个方法:实现方(Android 壳)照这三个就能接上,
+	// 多一个方法就多一处"壳侧忘了实现"的失败面。
+	var c ImageCodec = &fakeCodec{}
+	if c.Caps().CanDownscale != true {
 		t.Fatal("caps 失真")
 	}
-	if _, err := (&fakeCodec{}).Info("x"); err != nil {
+	if _, err := c.Info("x"); err != nil {
 		t.Fatal(err)
 	}
-	if err := (&fakeCodec{}).Transform("a", "b", TransformSpec{}); err != nil && !errors.Is(err, nil) {
+	if err := c.Transform("a", "b", TransformSpec{}); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestDecodeOptDefaults(t *testing.T) {
-	// DecodeOpt 由宿主实现按 DefaultMaxPixels/DefaultMaxDim 自行取默认
-	var d DecodeOpt
-	if d.MaxPixels != 0 || d.MaxDim != 0 || d.AllowDownscale {
-		t.Fatalf("DecodeOpt 零值应表示未指定: %+v", d)
 	}
 }

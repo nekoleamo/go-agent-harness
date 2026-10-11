@@ -1,6 +1,7 @@
 package toolfiles
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -371,4 +372,208 @@ func TestOpsDefinitionsDeclarePathParams(t *testing.T) {
 			t.Fatalf("外部化工具表缺 %s", n)
 		}
 	}
+}
+
+// ── 第二轮 review 逮到的五个真缺陷的回归用例(每条都是"改回去就红") ──────────
+
+// TestCopyDoesNotDestroyOnFailure 覆盖语义的关键安全属性:
+// overwrite: true 时若复制**失败**,旧目标必须原样还在 —— 一次失败的操作不该
+// 把你原本就有的文件赔进去。(上一版在 prepDst 里先删旧目标,复制再失败 → 两头都没。)
+func TestCopyDoesNotDestroyOnFailure(t *testing.T) {
+	ws := t.TempDir()
+	c := buildEnv(t, ws, sdk.SandboxFullAccess)
+	src := filepath.Join(ws, "src.txt")
+	dst := filepath.Join(ws, "dst.txt")
+	if err := os.WriteFile(src, []byte("new content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, []byte("precious"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// 让「读源」失败来模拟复制途中的失败:源存在性检查通过后消失
+	// (直接删源做不到 —— 检查与复制之间没有钩子,故用只读目标目录制造失败更可靠)
+	roDir := filepath.Join(ws, "ro")
+	if err := os.MkdirAll(roDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	blocked := filepath.Join(roDir, "dst.txt")
+	if err := os.WriteFile(blocked, []byte("precious"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" { // Windows 上 chmod 不产生只读语义(走 ACL)
+		if err := os.Chmod(roDir, 0o555); err != nil {
+			t.Fatal(err)
+		}
+		defer os.Chmod(roDir, 0o755)
+		opsFail(t, c, "file_copy", `{"from":"src.txt","to":"ro/dst.txt","overwrite":true}`, "")
+		if b, err := os.ReadFile(blocked); err != nil || string(b) != "precious" {
+			t.Fatalf("复制失败后旧目标必须原样还在: %q(%v)", b, err)
+		}
+	}
+}
+
+// TestCopySymlinkExplicitlyRejected 符号链接/特殊文件**显式拒**:
+// 上一版 os.Open 会跟到链接目标,把目标内容复制成普通文件,再被体积校验逮住,
+// 报一句"源 12 字节、落地 34567 字节"这种与事实无关的话(fifo 更糟:直接永久阻塞)。
+func TestCopySymlinkExplicitlyRejected(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 建符号链接需要特权,跳过")
+	}
+	ws := t.TempDir()
+	c := buildEnv(t, ws, sdk.SandboxFullAccess)
+	target := filepath.Join(ws, "target.txt")
+	if err := os.WriteFile(target, []byte("0123456789"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(ws, "link.txt")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("建符号链接失败(沙箱限制?):%v", err)
+	}
+	opsFail(t, c, "file_copy", `{"from":"link.txt","to":"copy.txt"}`, "符号链接")
+	if _, err := os.Stat(filepath.Join(ws, "copy.txt")); !os.IsNotExist(err) {
+		t.Fatal("被拒时不该产出任何文件")
+	}
+	// 目录里含符号链接同样显式拒(不能静默把链接内容拷成普通文件)
+	dir := filepath.Join(ws, "tree")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(dir, "inner-link")); err != nil {
+		t.Skip("目录内符号链接创建失败")
+	}
+	opsFail(t, c, "file_copy", `{"from":"tree","to":"tree2"}`, "符号链接")
+}
+
+// TestCopyDirReplacesInsteadOfMerging 覆盖一个已存在的目录应当是**替换**而不是合并:
+// 合并会让目标里"源没有的旧文件"原样留下,而调用方以为自己拿到的是源的一份拷贝。
+func TestCopyDirReplacesInsteadOfMerging(t *testing.T) {
+	ws := t.TempDir()
+	c := buildEnv(t, ws, sdk.SandboxFullAccess)
+	mk := func(dir string, files map[string]string) {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for n, b := range files {
+			if err := os.WriteFile(filepath.Join(dir, n), []byte(b), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	mk(filepath.Join(ws, "src"), map[string]string{"a.txt": "a", "keep.txt": "new"})
+	mk(filepath.Join(ws, "dst"), map[string]string{"old-only.txt": "stale", "keep.txt": "old"})
+	opsCall(t, c, "file_copy", `{"from":"src","to":"dst","overwrite":true}`)
+	if _, err := os.Stat(filepath.Join(ws, "dst", "old-only.txt")); !os.IsNotExist(err) {
+		t.Fatalf("覆盖目录后,源里没有的旧文件不该还在(合并语义):%v", err)
+	}
+	if b, err := os.ReadFile(filepath.Join(ws, "dst", "keep.txt")); err != nil || string(b) != "new" {
+		t.Fatalf("同名文件应被覆盖: %q(%v)", b, err)
+	}
+	if b, err := os.ReadFile(filepath.Join(ws, "dst", "a.txt")); err != nil || string(b) != "a" {
+		t.Fatalf("源里的新文件应到位: %q(%v)", b, err)
+	}
+	// 临时目录不留痕
+	ents, _ := os.ReadDir(ws)
+	for _, e := range ents {
+		if strings.Contains(e.Name(), "gah-tmp") {
+			t.Fatalf("不该留下临时目录:%s", e.Name())
+		}
+	}
+}
+
+// TestTrashListFiltersByItsOwnProject 按路径筛选回收站必须命中**那个路径自己的分区**。
+// 上一版用当前工作根的 key 去比,筛选恒为空 —— 模型会看到"回收站里什么都没有",
+// 而条目明明就在里面(这是最容易被误读成数据丢了的一类 bug)。
+func TestTrashListFiltersByItsOwnProject(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("GAH_HOME", t.TempDir())
+	for _, d := range []string{"proj-a", "proj-b"} {
+		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a := buildEnv(t, filepath.Join(root, "proj-a"), sdk.SandboxFullAccess)
+	b := buildEnv(t, filepath.Join(root, "proj-b"), sdk.SandboxFullAccess)
+	// 各自删一个(各自工作区分区)
+	if err := os.WriteFile(filepath.Join(root, "proj-a", "a.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "proj-b", "b.txt"), []byte("y"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	opsCall(t, a, "file_delete", `{"paths":["a.txt"]}`)
+	opsCall(t, b, "file_delete", `{"paths":["b.txt"]}`)
+
+	full := opsCall(t, a, "file_trash_list", `{}`)
+	if full["count"].(float64) != 2 {
+		t.Fatalf("不筛选应看到全部 2 条:%v", full)
+	}
+	// 按 A 的工作区路径筛 → 只应看到 A 的那条(**非空**是这条用例的重点)
+	filtered := opsCall(t, a, "file_trash_list", `{"path":"`+filepath.ToSlash(filepath.Join(root, "proj-a"))+`"}`)
+	if filtered["count"].(float64) != 1 {
+		t.Fatalf("按工作区筛选应只剩 1 条(为 0 说明用了错误的 key):%v", filtered)
+	}
+	first := filtered["entries"].([]any)[0].(map[string]any)
+	if !strings.HasSuffix(first["original"].(string), "a.txt") {
+		t.Fatalf("筛出来的应是 A 的条目:%v", first)
+	}
+}
+
+// TestRestoreRejectsPathsWithSeparators entry 只是条目名:带分隔符/.. 一律拒。
+// 上一版接受"回收站内的路径",等于给了模型一条"../ 拼出任意路径再被移动"的口子,
+// 而这个动作不经过沙箱裁决(回收站是工具内部区域)。
+func TestRestoreRejectsPathsWithSeparators(t *testing.T) {
+	ws := t.TempDir()
+	t.Setenv("GAH_HOME", t.TempDir())
+	c := buildEnv(t, ws, sdk.SandboxFullAccess)
+	// 用 json.Marshal 构造参数:手写 JSON 字符串在反斜杠那条上极易把"转义地狱"
+	// 写进测试本身(第一版就踩了:Go 串 → JSON 串 → 反序列化,三层转义)
+	for _, bad := range []string{"../escape", "/abs/path", "a/b", `x\y`, "..", "."} {
+		raw, err := json.Marshal(map[string]string{"entry": bad})
+		if err != nil {
+			t.Fatal(err)
+		}
+		opsFail(t, c, "file_restore", string(raw), "条目名")
+	}
+}
+
+// TestGlobPatternsMatchDocumentedForms 描述里推荐的写法必须真的能用。
+// 上一版 `**/*.go` 永远不中(path.Match 的 `*` 不跨 `/`),而描述里正写着它 ——
+// 模型照文档写、拿到空结果,只会得出"这里没有这类文件"的错误结论。
+func TestGlobPatternsMatchDocumentedForms(t *testing.T) {
+	ws := t.TempDir()
+	c := buildEnv(t, ws, sdk.SandboxFullAccess)
+	for _, rel := range []string{"one.go", "a/two.go", "a/b/three.go", "a/b/notes.md"} {
+		p := filepath.Join(ws, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("package x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		pattern string
+		want    int
+	}{
+		{"*.go", 3},         // 直觉写法:所有 .go(含子目录)
+		{"**/*.go", 3},      // 描述里推荐的写法
+		{"a/*.go", 1},       // 限定一层
+		{"a/**/*.go", 2},    // `**` = 任意深度(与 shell globstar 同义):a/two.go + a/b/three.go
+		{"a/b/*.go", 1},     // 精确一层
+		{"*.md", 1},         // 另一类扩展名
+		{"a/b/notes.md", 1}, // 精确路径
+		{"*.rs", 0},         // 真没有
+	} {
+		out := opsCall(t, c, "file_glob", `{"path":".","pattern":"`+tc.pattern+`"}`)
+		if got := out["count"].(float64); int(got) != tc.want {
+			t.Fatalf("pattern %q 应命中 %d 条,得 %v(%v)", tc.pattern, tc.want, got, out["matches"])
+		}
+	}
+	// grep 的 glob 过滤同一口径
+	out := opsCall(t, c, "file_grep", `{"path":".","pattern":"package","glob":"**/*.go"}`)
+	if got := out["count"].(float64); got != 3 {
+		t.Fatalf("grep glob=**/*.go 应命中 3 处,得 %v", got)
+	}
+	// 坏通配符仍然显式报错(展开不能把错误吞掉)
+	opsFail(t, c, "file_glob", `{"path":".","pattern":"[a-"}`, "通配符")
 }

@@ -227,6 +227,11 @@ func ResolveSandboxPath(ctx context.Context, sb Sandbox, path string, write bool
 // 带 ctx:沙箱若实现 sdk.EffectiveSandboxFor,就按**这次调用所属会话**取档 ——
 // 多页签各设各的沙箱档时,无参版会拿"全局当前"档去裁另一个会话的回合。
 func EffectiveSandboxModeFor(ctx context.Context, sb Sandbox) SandboxMode {
+	if sb == nil {
+		// 未装配沙箱(单测/独立部署/外部进程):给 read-only —— 调用方拿它做拦截判定时
+		// 宁可拒也不能放(所有真实调用路径都已在前置判定里返回,这里只是不给 nil 解引用)。
+		return SandboxReadOnly
+	}
 	if es, ok := sb.(EffectiveSandboxFor); ok {
 		return es.EffectiveModeFor(ctx)
 	}

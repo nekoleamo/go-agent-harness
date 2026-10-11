@@ -227,12 +227,20 @@ func (t *ImageTool) one(ctx context.Context, a opsArgs, srcArg string) (map[stri
 	if err != nil {
 		return map[string]any{"src": src, "error": err.Error()}, nil
 	}
-	if _, err := os.Lstat(dst); err == nil {
+	if fi, err := os.Lstat(dst); err == nil {
+		if fi.IsDir() {
+			// dst 给了个目录名(模型很容易顺手写成 `/sdcard/Pictures`):显式说清,
+			// 否则落盘阶段会报一句"rename: file exists"之类与事实无关的话。
+			return map[string]any{"src": src, "error": fmt.Sprintf(
+				"dst 是一个目录: %s(请给到具体文件名)", dst)}, nil
+		}
 		if !a.Overwrite {
 			return map[string]any{"src": src, "error": fmt.Sprintf(
 				"目标已存在: %s(确实要覆盖就传 overwrite: true,或换一个 dst)", dst)}, nil
 		}
-		// 覆盖前先清掉旧目标:Windows 上 os.Rename 不能覆盖已存在的文件。
+		// 覆盖前清掉旧目标:Windows 上 os.Rename 不能覆盖已存在的文件。
+		// (删除推迟到这里而不是更早 —— 与 tool-files 的 checkDst/commitDst 同一纪律:
+		//  失败的操作不该先毁掉用户原本就在的文件。)
 		if err := sdk.RemoveTree(dst); err != nil {
 			return map[string]any{"src": src, "error": fmt.Sprintf("overwrite: true 但删不掉旧目标 %s: %v", dst, err)}, nil
 		}
@@ -257,30 +265,32 @@ func (t *ImageTool) one(ctx context.Context, a opsArgs, srcArg string) (map[stri
 	if b := imageBounds(t, dst); b != "" {
 		res["output_size"] = b
 	}
-	if n := t.notes(src, spec); len(n) > 0 {
+	if n := t.notes(info, src, spec); len(n) > 0 {
 		res["notes"] = n
 	}
 	return res, nil
 }
 
 // notes 告知性事实(方向已烘焙 / 动画取首帧 / 宽色域偏色 / 目标体积达成)。
-// 这些是模型下一次决策需要知道的"发生了什么" —— 不告诉它,下一次就会按错误前提继续。
-func (t *ImageTool) notes(src string, spec sdk.TransformSpec) []string {
+//
+// 这些是模型下一次决策需要的"发生了什么" —— 不告诉它,下一次就会按错误前提继续。
+// 参数传的是**已经取到的概要**而不是路径:上一版每个事实各读一遍文件
+// (一次转换要开五次同一个文件),批量 20 张时是纯浪费。
+func (t *ImageTool) notes(info sdk.ImageInfo, src string, spec sdk.TransformSpec) []string {
 	var out []string
-	if info, err := t.codec.Info(src); err == nil {
-		if info.EXIF.Orientation > 1 {
-			out = append(out, fmt.Sprintf("已按 EXIF Orientation=%d 摆正并烘焙", info.EXIF.Orientation))
-		}
-		if info.Animated {
-			out = append(out, "动画/多帧:只处理首帧")
-		}
-		if info.MultiPage {
-			out = append(out, "多页 TIFF:只处理第一页")
-		}
+	if info.EXIF.Orientation > 1 {
+		out = append(out, fmt.Sprintf("已按 EXIF Orientation=%d 摆正并烘焙", info.EXIF.Orientation))
+	}
+	if info.Animated {
+		out = append(out, "动画/多帧:只处理首帧")
+	}
+	if info.MultiPage {
+		out = append(out, "多页 TIFF:只处理第一页")
 	}
 	if spec.StripAll {
 		out = append(out, "已剥离 EXIF/GPS 等元数据(输出不含定位信息)")
 	}
+	// 宽色域只在**真读得出 ICC 段**时提示(读一次 EXIF 头即可,不做像素转换)
 	if readEXIF(src).P3 {
 		out = append(out, "源带 ICC 宽色域(P3):纯 Go 无 ICC 转换,输出会偏色")
 	}
@@ -310,11 +320,22 @@ func (t *ImageTool) spec(a opsArgs, info sdk.ImageInfo) (sdk.TransformSpec, erro
 		if a.Width <= 0 && a.Height <= 0 && a.MaxDim <= 0 {
 			return spec, fmt.Errorf("resize 需要 width/height(或 max_dim 指定长边)")
 		}
-		if a.Width > 0 && a.Height > 0 {
-			spec.Resize = &sdk.ResizeSpec{W: a.Width, H: a.Height, Mode: orDefault(a.Mode, "fit"), Filter: a.Filter}
-		} else {
-			spec.MaxDim = a.MaxDim
+		mode := orDefault(a.Mode, "fit")
+		if a.Width > 0 || a.Height > 0 {
+			// **只给一边也算数**:按比例推出另一边(fit)。
+			// 上一版只接受"宽高都给",于是 `resize width=800` 这种最常见的写法会落进
+			// `else` 分支、MaxDim 为 0 ⇒ **什么都不做却报成功**(调用方拿到原尺寸还以为成了)。
+			// exact 需要两边都给(否则"强制尺寸"没有第二边可依)。
+			if mode == "exact" && (a.Width <= 0 || a.Height <= 0) {
+				return spec, fmt.Errorf("mode=exact 需要 width 与 height 都给出(单边用 fit)")
+			}
+			spec.Resize = &sdk.ResizeSpec{W: a.Width, H: a.Height, Mode: mode, Filter: a.Filter}
+			if a.MaxDim > 0 {
+				return spec, fmt.Errorf("width/height 与 max_dim 互斥:一次只给一种尺寸口径")
+			}
+			break
 		}
+		spec.MaxDim = a.MaxDim
 	case "crop":
 		if a.CW <= 0 || a.CH <= 0 {
 			return spec, fmt.Errorf("crop 需要 cw/ch(裁剪宽高),x/y 缺省为左上角(0,0)")

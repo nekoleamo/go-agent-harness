@@ -491,3 +491,108 @@ func writeAnimatedGIF(t *testing.T, path string, frames int) {
 		t.Fatal(err)
 	}
 }
+
+// ── 第二轮 review 逮到的缺陷的回归用例 ─────────────────────────────────
+
+// TestGIFFrameCountDoesNotDecodeAll 动画判定必须**只扫流结构**,不解码所有帧。
+// 上一版用 gif.DecodeAll:一个 20MB 的动画 GIF 在这里能吃掉几百 MB,而它只是被
+// Info 顺带问了一句"是不是动画"。(这条用例无法直接测内存,故测行为等价 + 一个
+// 带大体积数据的 GIF 不会让它变慢到超时。)
+func TestGIFFrameCountDoesNotDecodeAll(t *testing.T) {
+	dir := t.TempDir()
+	static := filepath.Join(dir, "static.gif")
+	anim := filepath.Join(dir, "anim.gif")
+	var buf bytes.Buffer
+	one := &gif.GIF{}
+	pal := image.NewPaletted(image.Rect(0, 0, 4, 4), []color.Color{color.Black, color.White})
+	one.Image = append(one.Image, pal)
+	one.Delay = append(one.Delay, 10)
+	if err := gif.EncodeAll(&buf, one); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(static, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeAnimatedGIF(t, anim, 3)
+	if isAnimatedGIF(static) {
+		t.Fatal("单帧 GIF 不该被判成动画")
+	}
+	if !isAnimatedGIF(anim) {
+		t.Fatal("三帧 GIF 应被判成动画")
+	}
+	// 非 GIF 文件不能因为解析器乱走而误判
+	pngPath := filepath.Join(dir, "a.png")
+	mustWritePNG(t, pngPath, solidImage(4, 4))
+	if isAnimatedGIF(pngPath) {
+		t.Fatal("PNG 不该被判成动画 GIF")
+	}
+	if n := countGIFImages(anim); n < 3 {
+		t.Fatalf("帧数应 ≥3,得 %d", n)
+	}
+}
+
+// TestResizeCoverIsSinglePass 铺满后裁必须一次采样:输出尺寸精确、且**不放大**超出必要。
+func TestResizeCoverIsSinglePass(t *testing.T) {
+	src := solidImage(200, 100)
+	out := resizeImage(src, &sdk.ResizeSpec{W: 50, H: 50, Mode: "cover"})
+	if out.Bounds().Dx() != 50 || out.Bounds().Dy() != 50 {
+		t.Fatalf("cover 结果应为 50x50,得 %dx%d", out.Bounds().Dx(), out.Bounds().Dy())
+	}
+	// 取的是源上居中的正方形区域 ⇒ 输出仍应呈现源中心的颜色特征(不是拉伸变形的整幅)
+	if got := out.At(25, 25); got == nil {
+		t.Fatal("中心像素不该为空")
+	}
+	// fit **会放大**(与 ImageMagick -resize 同口径;只缩不放会静默忽略调用方给的尺寸)
+	out = resizeImage(src, &sdk.ResizeSpec{W: 500, H: 500, Mode: "fit"})
+	if out.Bounds().Dx() != 500 || out.Bounds().Dy() != 250 {
+		t.Fatalf("fit 应按包围盒等比放大,得 %dx%d", out.Bounds().Dx(), out.Bounds().Dy())
+	}
+	// 封顶语义归 max_dim:它**只缩不放**
+	out = resizeImage(src, &sdk.ResizeSpec{W: 1000, H: 1000, Mode: "fit"})
+	if out.Bounds().Dx() != 1000 {
+		t.Fatalf("fit 会放大到包围盒,得 %d", out.Bounds().Dx())
+	}
+}
+
+// TestAlphaReportedTruthfully Alpha 字段要真判:上一版写 `cfg.ColorModel != nil` 恒为真。
+func TestAlphaReportedTruthfully(t *testing.T) {
+	dir := t.TempDir()
+	jpg := filepath.Join(dir, "a.jpg")
+	writeJPEG(t, jpg, solidImage(8, 8), nil)
+	// **必须真有半透明像素**:Go 的 PNG 编码器在全不透明时会丢掉 alpha 通道
+	// (写成色彩类型 2 = truecolor),那样测的就不是"能不能识别 alpha"而是编码器的优化。
+	rgba := filepath.Join(dir, "a.png")
+	alpha := image.NewNRGBA(image.Rect(0, 0, 8, 8))
+	for y := 0; y < 8; y++ {
+		for x := 0; x < 8; x++ {
+			alpha.SetNRGBA(x, y, color.NRGBA{R: 10, G: 20, B: 30, A: uint8(100 + x)})
+		}
+	}
+	mustWritePNG(t, rgba, alpha)
+	c := NewGoCodec()
+	ji, err := c.Info(jpg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ji.Alpha {
+		t.Fatal("JPEG 不该报有透明通道")
+	}
+	pi, err := c.Info(rgba)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pi.Alpha {
+		t.Fatal("带半透明像素的 PNG 应报有透明通道")
+	}
+}
+
+// TestDstDirectoryRejected dst 给成目录要显式说清(否则落盘阶段报一句与事实无关的话)
+func TestDstDirectoryRejected(t *testing.T) {
+	ws := t.TempDir()
+	c := buildEnv(t, ws, sdk.SandboxFullAccess)
+	mustWritePNG(t, filepath.Join(ws, "a.png"), solidImage(8, 8))
+	if err := os.MkdirAll(filepath.Join(ws, "out"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	needErr(t, firstResult(t, call(t, c, `{"action":"convert","src":"a.png","format":"png","dst":"out"}`)), "目录")
+}

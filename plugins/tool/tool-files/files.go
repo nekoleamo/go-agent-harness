@@ -308,8 +308,14 @@ var fileOpDescs = map[string]string{
 
 func (t *fileTool) Definition() sdk.ToolDefinition {
 	desc := fileOpDescs[t.name]
+	schema := t.schema
 	if desc == "" {
 		desc = opsDesc(t.name)
+		if schema == nil {
+			// 健壮性:手工构造的 F1 工具忘了带 schema 时不能给模型一个"没有参数"的空定义
+			// (那会让模型根本看不见该传什么),按名字取一份。
+			schema = opsSchema(t.name)
+		}
 	}
 	params := opsPathParams(t.name)
 	if params == nil {
@@ -317,7 +323,7 @@ func (t *fileTool) Definition() sdk.ToolDefinition {
 		params = []sdk.PathParam{{Arg: "path", Access: fileAccess(t.name)}}
 	}
 	return sdk.ToolDefinition{
-		Name: t.name, Description: desc, InputSchema: t.schema,
+		Name: t.name, Description: desc, InputSchema: schema,
 		// 路径参数能力声明(宿主 pre-execute 路径沙箱据此裁决;外部插件经桥协议原样传递)
 		PathParams: params,
 	}

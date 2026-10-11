@@ -4,6 +4,7 @@ package main
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -74,5 +75,35 @@ func TestCLIOptionsSnapshotsFlags(t *testing.T) {
 	defer func() { profileFlag = savedProfile }()
 	if got := cliOptions().Profile; got != "" {
 		t.Fatalf("nil flag 指针应取空串,得 %q", got)
+	}
+}
+
+// TestEphemeralDoesNotCreatePortableRoot -ephemeral 不该在二进制旁边留下 gah-data/。
+//
+// 这条是 review 逮到的:上一版先 `homeDir()`(它的语义就是"不存在则新建")再判 ephemeral,
+// 于是 `gah -ephemeral -dump-config` 这种纯读调用会**白建一个空数据根** ——
+// 对只读安装目录是直接失败,对可写目录是留下垃圾。
+func TestEphemeralDoesNotCreatePortableRoot(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := filepath.Join(filepath.Dir(filepath.Clean(execRealPath(exe))), "gah-data")
+	// 用例前提:测试二进制旁**当前没有** gah-data(有就是别的用例留下的,先清掉)
+	if _, err := os.Stat(expected); err == nil {
+		if err := os.RemoveAll(expected); err != nil {
+			t.Skipf("无法清理已存在的 %s(并发用例?):%v", expected, err)
+		}
+	}
+	o := cliOptions()
+	o.Ephemeral = true
+	o.DumpConfig = true
+	o.Profile = "web"
+	if err := run(o); err != nil {
+		t.Fatalf("ephemeral dump-config 应成功:%v", err)
+	}
+	if _, err := os.Stat(expected); err == nil {
+		_ = os.RemoveAll(expected)
+		t.Fatalf("ephemeral 运行不该创建便携数据根 %s", expected)
 	}
 }

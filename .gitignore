@@ -65,3 +65,15 @@
 # 恢复跟踪:git add -f internal/embed/extplugins desktop/src-tauri/gen
 /internal/embed/extplugins/
 /desktop/src-tauri/gen/
+
+# Android 侧载形态的构建产物(全部可重新生成;源码与工程文件在 feature/android-sideload)
+# 这几条与那条分支上的规则一致,放在主分支是为了**防住"切回主分支后 git add -A 顺手把
+# 100+MB 构建产物提交进来"**这一类事故(2026-10-11 实际发生过一次,已 reset)。
+/gah-android.apk
+/gah-android.apk.idsig
+mobile/android/.gradle/
+mobile/android/build/
+mobile/android/app/build/
+mobile/android/local.properties
+mobile/android/app/src/main/jniLibs/
+mobile/android/app/src/main/assets/*.wasm

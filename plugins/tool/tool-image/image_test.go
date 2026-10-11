@@ -268,3 +268,27 @@ func (s *stubCodec) Transform(src, dst string, spec sdk.TransformSpec) error {
 }
 
 var _ = context.Background
+
+// TestResizeOneSidedActuallyResizes 只给一边的 resize 必须真的缩放。
+// 上一版只认"宽高都给":`resize width=800` 落进 else 分支、MaxDim=0 ⇒ **什么都不做却报成功**,
+// 调用方拿到原尺寸还以为是缩过的(静默忽略参数比报错危险得多)。
+func TestResizeOneSidedActuallyResizes(t *testing.T) {
+	ws := t.TempDir()
+	c := buildEnv(t, ws, sdk.SandboxFullAccess)
+	mustWritePNG(t, filepath.Join(ws, "a.png"), solidImage(200, 100))
+
+	out := call(t, c, `{"action":"resize","src":"a.png","width":50,"dst":"w.png"}`)
+	if r := firstResult(t, out); r["output_size"] != "50x25" {
+		t.Fatalf("只给 width 应按比例得 50x25,得 %v", r["output_size"])
+	}
+	out = call(t, c, `{"action":"resize","src":"a.png","height":50,"dst":"h.png"}`)
+	if r := firstResult(t, out); r["output_size"] != "100x50" {
+		t.Fatalf("只给 height 应按比例得 100x50,得 %v", r["output_size"])
+	}
+	// exact 单边是明确的错(强制尺寸没有第二边可依)
+	out = call(t, c, `{"action":"resize","src":"a.png","width":50,"mode":"exact","dst":"e.png"}`)
+	needErr(t, firstResult(t, out), "exact")
+	// 两种尺寸口径同时给要明确拒(否则取哪个是暗规则)
+	out = call(t, c, `{"action":"resize","src":"a.png","width":50,"height":50,"max_dim":100,"dst":"m.png"}`)
+	needErr(t, firstResult(t, out), "互斥")
+}

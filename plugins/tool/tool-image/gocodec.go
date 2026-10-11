@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"image/color"
 	"image/draw"
 	"image/gif"
 	"image/jpeg"
@@ -62,6 +63,63 @@ func hasFormat(list []sdk.ImageFormat, f sdk.ImageFormat) bool {
 	for _, x := range list {
 		if x == f {
 			return true
+		}
+	}
+	return false
+}
+
+// hasAlpha 图像是否带透明通道。
+//
+// **不能靠 color.Model 判**:PNG 解码器给的是 `*color.modelFunc`(不可比、不可读),
+// 于是"等值比较"对最常见的输入直接失效 —— 而上一版更糟,写的是 `cfg.ColorModel != nil`,
+// **恒为真**,一个永远为真的字段等于没有字段(模型据此判断"转 png 会不会多底色"必然被误导)。
+// 所以按**容器头**的真凭据判:
+//
+//	PNG: IHDR 的色彩类型 4(灰度+α)/6(RGBA);另外 tRNS 块给 0/2/3 型也加了透明
+//	GIF: 图形控制扩展的透明色标志位
+//	其余(BMP/TIFF/JPEG/WebP):保守 false —— 它们的 alpha 要么罕见,要么要读更深的结构,
+//	     而"错报有 alpha"会让模型白转一次 png(无损失),"错报没有"最多是少一句提示
+func hasAlpha(cm color.Model, path string) bool {
+	if detectAlphaInContainer(path) {
+		return true
+	}
+	// 兜底:宿主实现/其它解码器可能给得出可比的色彩模型
+	switch cm {
+	case color.NRGBA64Model, color.AlphaModel, color.Alpha16Model:
+		return true
+	}
+	return false
+}
+
+// detectAlphaInContainer 按文件头判透明通道(读几百字节,不解码像素)。
+func detectAlphaInContainer(path string) bool {
+	fh, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer fh.Close()
+	head := make([]byte, 512)
+	n, _ := io.ReadFull(fh, head)
+	head = head[:n]
+	switch {
+	case len(head) >= 26 && bytes.HasPrefix(head, []byte("\x89PNG\r\n\x1a\n")):
+		switch head[25] { // 签名8 + 长度4 + "IHDR"4 + 宽4 + 高4 + 位深1 → 色彩类型在 25
+		case 4, 6: // 灰度+α / RGBA
+			return true
+		}
+		return bytes.Contains(head, []byte("tRNS")) // 调色板/真彩的透明色块
+	case len(head) >= 6 && (string(head[:6]) == "GIF87a" || string(head[:6]) == "GIF89a"):
+		return gifHasTransparentIndex(head)
+	}
+	return false
+}
+
+// gifHasTransparentIndex 图形控制扩展的 packed 字节 bit0 = 有透明色。
+func gifHasTransparentIndex(b []byte) bool {
+	for i := 0; i+3 < len(b); i++ {
+		// 0x21 扩展引导 + 0xF9 图形控制标签 + 块长(4)+ packed
+		if b[i] == 0x21 && b[i+1] == 0xF9 && b[i+2] == 0x04 {
+			return b[i+3]&0x01 != 0
 		}
 	}
 	return false
@@ -158,11 +216,10 @@ func (c *GoCodec) Info(path string) (sdk.ImageInfo, error) {
 		}
 		return sdk.ImageInfo{}, fmt.Errorf("读图像头失败 %s: %v", path, decErr)
 	}
-	animated := isAnimatedGIF(path)
 	return sdk.ImageInfo{
 		Path: path, Format: format, Width: cfg.Width, Height: cfg.Height, Bytes: st.Size(),
-		Animated: animated, MultiPage: format == sdk.FormatTIFF, Alpha: cfg.ColorModel != nil,
-		EXIF: exif.summary(),
+		Animated: isAnimatedGIF(path), MultiPage: format == sdk.FormatTIFF,
+		Alpha: hasAlpha(cfg.ColorModel, path), EXIF: exif.summary(),
 	}, nil
 }
 
@@ -352,35 +409,55 @@ func encodeToTarget(w io.Writer, img image.Image, format sdk.ImageFormat, spec s
 // ── 几何变换 ────────────────────────────────────────────────────
 
 // resizeImage 按 ResizeSpec 缩放。
+//
+// cover(铺满后裁)走**一次采样**:直接从源图上取居中的子矩形缩到目标尺寸。
+// 上一版是"先按较大缩放比缩到覆盖,再把整幅缩一次"—— 两次重采样等于把细节糊一遍
+// (缩放核的负空间与锐化在第二次都被放大),而两次的差别用户只会觉得"图有点糊"。
 func resizeImage(img image.Image, r *sdk.ResizeSpec) image.Image {
 	mode := r.Mode
 	if mode == "" {
 		mode = "fit"
 	}
-	scaler := pickFilter(r.Filter)
-	sw, sh := img.Bounds().Dx(), img.Bounds().Dy()
-	if sw <= 0 || sh <= 0 {
+	filter := pickFilter(r.Filter)
+	sb := img.Bounds()
+	sw, sh := sb.Dx(), sb.Dy()
+	if sw <= 0 || sh <= 0 || (r.W <= 0 && r.H <= 0) {
 		return img
 	}
-	var tw, th int
-	switch mode {
-	case "exact":
-		tw, th = max(1, r.W), max(1, r.H)
-	case "cover":
-		// 等比缩放铺满包围盒后裁掉溢出部分
+	// 单边目标(只给宽或只给高):按源比例推出另一边。fit/cover 的语义里"一边定死"
+	// 本来就是常见用法(`resize width=800`),不处理它等于静默忽略这个参数。
+	if r.W > 0 && r.H <= 0 {
+		r.H = max(1, int(float64(sh)*float64(r.W)/float64(sw)+0.5))
+	}
+	if r.H > 0 && r.W <= 0 {
+		r.W = max(1, int(float64(sw)*float64(r.H)/float64(sh)+0.5))
+	}
+	if mode == "exact" {
+		dst := image.NewRGBA(image.Rect(0, 0, r.W, r.H))
+		filter.Scale(dst, dst.Bounds(), img, sb, drawOp, nil)
+		return dst
+	}
+	if mode == "cover" {
+		// 源上居中的子矩形,宽高比与目标一致
 		scale := max(float64(r.W)/float64(sw), float64(r.H)/float64(sh))
-		tw, th = max(1, int(float64(sw)*scale+0.5)), max(1, int(float64(sh)*scale+0.5))
-	default: // fit
-		scale := min(float64(r.W)/float64(sw), float64(r.H)/float64(sh))
-		tw, th = max(1, int(float64(sw)*scale+0.5)), max(1, int(float64(sh)*scale+0.5))
+		cw := min(float64(sw), float64(r.W)/scale)
+		ch := min(float64(sh), float64(r.H)/scale)
+		sub := image.Rect(
+			sb.Min.X+(sw-int(cw))/2, sb.Min.Y+(sh-int(ch))/2,
+			sb.Min.X+(sw+int(cw))/2, sb.Min.Y+(sh+int(ch))/2,
+		)
+		dst := image.NewRGBA(image.Rect(0, 0, r.W, r.H))
+		filter.Scale(dst, dst.Bounds(), img, sub, drawOp, nil)
+		return dst
 	}
-	dst := image.NewRGBA(image.Rect(0, 0, tw, th))
-	scaler.Scale(dst, dst.Bounds(), img, img.Bounds(), drawOp, nil)
-	if mode == "cover" && (tw > r.W || th > r.H) {
-		// 铺满后裁掉溢出(cover 语义:先按较大缩放比铺满包围盒,再裁到框内)
-		dst = image.NewRGBA(image.Rect(0, 0, r.W, r.H))
-		scaler.Scale(dst, dst.Bounds(), img, img.Bounds(), drawOp, nil)
-	}
+	// fit **会放大**:目标比源大时按包围盒等比放大(与 ImageMagick -resize 同口径)。
+	// 反面选项(只缩不放)会"静默忽略调用方给的尺寸",比放大更糟 ——
+	// 需要"别放大"的语义时用 max_dim / thumbnail(它们本就按长边封顶)。
+	scale := min(float64(r.W)/float64(sw), float64(r.H)/float64(sh))
+	w := max(1, int(float64(sw)*scale+0.5))
+	h := max(1, int(float64(sh)*scale+0.5))
+	dst := image.NewRGBA(image.Rect(0, 0, w, h))
+	filter.Scale(dst, dst.Bounds(), img, sb, drawOp, nil)
 	return dst
 }
 
@@ -472,15 +549,107 @@ func applyOrientation(img image.Image, orientation int) (image.Image, int) {
 
 // ── 编码器小工具 ────────────────────────────────────────────────
 
-// isAnimatedGIF 动画 GIF 取首帧(K3);只读文件头数帧,不解码整幅。
+// isAnimatedGIF 动画 GIF 取首帧(K3)。
+//
+// **只扫流结构数帧,不解码**:上一版用 gif.DecodeAll 判"是不是动画",那会把**所有帧**解码
+// 进内存 —— 一个 20MB 的动画 GIF 在这里能吃掉几百 MB,而它只是被 Info 顺带问了一句。
+// 帧数按 GIF 流的图像描述符(0x2C)计,只读前若干字节即可(动画必然在文件头附近出现第二个)。
 func isAnimatedGIF(path string) bool {
+	return countGIFImages(path) > 1
+}
+
+// gifFrameCap 帧数计数上限。判"是不是动画"只要 >1,而"到底几帧"对使用者没有意义,
+// 故数到上限就停(仍然只扫结构,不解码任何一帧)。
+const gifFrameCap = 100
+
+// gifHeaderLen GIF 头 + 逻辑屏描述符 + **最坏情况**的全局颜色表(256 项)。
+const gifHeaderLen = 6 + 7 + 768
+
+// countGIFImages 数 GIF 里的图像描述符个数(≥2 即动画)。解析失败按 1 处理(当静态)。
+//
+// 按 GIF 流结构跳:0x2C 图像描述符(再 9 字节 + LZW 最小码长 + 数据子块)、
+// 0x21 扩展(标签 + 子块)、0x3B 结束。只读文件头之后的一段 —— 动画第二帧必然在里面,
+// 再往后就是为计数白花内存。
+func countGIFImages(path string) int {
 	fh, err := os.Open(path)
 	if err != nil {
-		return false
+		return 1
 	}
 	defer fh.Close()
-	g, err := gif.DecodeAll(bufio.NewReader(fh))
-	return err == nil && len(g.Image) > 1
+	head := make([]byte, gifHeaderLen)
+	n, err := io.ReadFull(fh, head)
+	if err != nil && n < 13 {
+		return 1
+	}
+	head = head[:n]
+	if string(head[:6]) != "GIF87a" && string(head[:6]) != "GIF89a" {
+		return 1
+	}
+	// 全局颜色表:逻辑屏描述符的 packed 位 bit7 = 有表,大小 = 3 << (N+1)
+	pos := 13
+	if head[10]&0x80 != 0 {
+		pos += 3 << ((head[10] & 0x07) + 1)
+	}
+	// 跳到第一个块(头部缓冲区可能已越过它,也可能还没到 —— 两种都要处理对)
+	if pos > n {
+		if _, err := fh.Seek(int64(pos-n), io.SeekStart); err != nil {
+			return 1
+		}
+	} else {
+		if _, err := fh.Seek(int64(pos), io.SeekStart); err != nil {
+			return 1
+		}
+	}
+	rest := make([]byte, 64<<10)
+	r, _ := fh.Read(rest)
+	rest = rest[:r]
+	count := 0 // 数图像描述符个数(不是"1 + 个数",否则单帧 GIF 会被判成动画)
+	for i := 0; i < len(rest); {
+		switch rest[i] {
+		case 0x2C: // 图像描述符
+			count++
+			if i+10 > len(rest) {
+				return count
+			}
+			// 9 字节描述符(左/上/宽/高/包字段)+ 可选的**局部颜色表** + LZW 最小码长 + 数据子块。
+			// 漏掉局部颜色表会让解析从色表中间继续 —— 那是彩色噪声,数出来的帧数是随机的
+			// (本仓的动画 GIF 正是每帧带局部色表的情况)。
+			i += 10
+			if rest[i-1]&0x80 != 0 { // packed bit7 = 有局部颜色表
+				i += 3 << ((rest[i-1] & 0x07) + 1)
+			}
+			i++ // LZW 最小码长
+			i += skipSubBlocks(rest[i:])
+		case 0x21: // 扩展:标签 + 子块
+			if i+2 > len(rest) {
+				return count
+			}
+			i += 2
+			i += skipSubBlocks(rest[i:])
+		case 0x3B: // trailer
+			return count
+		default:
+			i += skipSubBlocks(rest[i:])
+		}
+		if count >= gifFrameCap {
+			return count // 计数上限:只为了回答"是不是动画/多不多",不追求精确到帧
+		}
+	}
+	if count == 0 {
+		return 1 // 没数到描述符(截断/畸形):按静态处理,不谎报动画
+	}
+	return count
+}
+
+// skipSubBlocks 跳过一串 [长度][数据] 子块(以 0 长度块收尾);越界返回剩余长度。
+func skipSubBlocks(b []byte) int {
+	for i := 0; i < len(b); {
+		if b[i] == 0 {
+			return i + 1
+		}
+		i += int(b[i]) + 1
+	}
+	return len(b)
 }
 
 func pickFilter(name string) xdraw.Scaler {

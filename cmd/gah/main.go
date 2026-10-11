@@ -176,7 +176,14 @@ func run(opts *options) error {
 	sysproxy.Apply(logger.Info)
 
 	// 运行时 home 初始化:首启释放 seed 样板(home/config),ephemeral 用临时 home 退出即焚(设计 §7.3)
-	home, portable := resolveHome(opts)
+	//
+	// 顺序上**先判 ephemeral**:便携根解析会**新建** `gah-data/`(homeDir 的语义),
+	// 而 ephemeral 根本不会用它 —— 先解析就是白建一个目录,`gah -ephemeral -dump-config`
+	// 这类纯读调用会在二进制旁边留下一个空 gah-data(上一版如此)。
+	home, portable := "", false
+	if !opts.Ephemeral {
+		home, portable = resolveHome(opts)
+	}
 	if opts.Ephemeral {
 		tmp, err := os.MkdirTemp("", "gah-ephemeral-")
 		if err != nil {
@@ -184,6 +191,7 @@ func run(opts *options) error {
 			return err
 		}
 		home = tmp
+		portable = false // 临时根是本次运行自己的:不该提示"忽略 GAH_HOME env"
 		defer os.RemoveAll(home)
 	}
 	if home == "" {

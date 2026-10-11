@@ -29,7 +29,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
@@ -327,6 +326,46 @@ func orDot(p string) string {
 	return p
 }
 
+// expandGlob 把常见 shell 风格写法展开成 path.Match 能用的候选集。
+//
+// 为什么必须有这一步:工具描述里推荐的 `**/*.go`,在 Go 的 `path.Match` 里**永远不中**
+// (`*` 不跨 `/`,而 `**` 也不是它的特殊语法)。模型照着描述写,拿到的是空结果 ——
+// 它会由此认为"这个目录里没有这类文件",而不是"我的写法不被支持"。
+// 展开规则:原样 → 去掉 `**/` 前缀 → 把 `/**/` 换成 `/` → 去掉 `./` 前缀。
+// 效果上 `**` 一律解释成"任意深度"(与 shell 的 globstar 同义);候选集里同时留着原样写法,
+// 于是"恰好一层"的写法也不会被误伤。
+func expandGlob(pattern string) []string {
+	out := []string{pattern}
+	q := pattern
+	if strings.HasPrefix(q, "**/") {
+		q = strings.TrimPrefix(q, "**/")
+		out = append(out, q)
+	}
+	if strings.Contains(q, "/**/") {
+		out = append(out, strings.ReplaceAll(q, "/**/", "/"))
+	}
+	if strings.HasPrefix(q, "./") {
+		out = append(out, strings.TrimPrefix(q, "./"))
+	}
+	return out
+}
+
+// matchGlob 通配匹配:**相对路径**或**基名**任一命中即算命中。
+//
+// 基名这一条是为了 `*.go` 这种"我只要这类文件"的直觉写法(`a/b.go` 对 `*.go`
+// 在 path.Match 下不命中,那是 Go 的语义而不是用户的意图)。
+func matchGlob(pattern, rel, base string) bool {
+	for _, p := range expandGlob(pattern) {
+		if ok, err := path.Match(p, rel); err == nil && ok {
+			return true
+		}
+		if ok, err := path.Match(p, base); err == nil && ok {
+			return true
+		}
+	}
+	return false
+}
+
 // ── file_glob ────────────────────────────────────────────────────
 
 func (f *FilesTool) opGlob(ctx context.Context, tool string, a opsArgs) (any, error) {
@@ -359,13 +398,7 @@ func (f *FilesTool) opGlob(ctx context.Context, tool string, a opsArgs) (any, er
 			return nil
 		}
 		rel = filepath.ToSlash(rel)
-		ok, _ := path.Match(a.Pattern, rel)
-		if !ok {
-			// 相对路径不中时再看**基名**(`*.go` 在 `a/b.go` 上 path.Match 不中,那是 Go 的语义,
-			// 但用户要的显然是"所有 .go")。
-			ok, _ = path.Match(a.Pattern, d.Name())
-		}
-		if ok {
+		if matchGlob(a.Pattern, rel, d.Name()) {
 			if len(matches) >= limit {
 				truncated = true
 				return filepath.SkipAll
@@ -402,18 +435,17 @@ func isBinaryHead(b []byte) bool {
 }
 
 // clipLine 单行截断到 grepMaxLine 个字符(按 rune 切,不切碎多字节字符)。
+//
+// 用 range 的字节下标切而不是 []rune 转换:后者会把整行再复制一份 —— 一行几 MB 的
+// minified 文件只为了截到 500 字符而复制全文,不值得。
 func clipLine(s string) (string, bool) {
-	if utf8.RuneCountInString(s) <= grepMaxLine {
-		return s, false
-	}
-	i, n := 0, 0
+	n := 0
 	for j := range s {
 		if n == grepMaxLine {
 			return s[:j] + "…", true
 		}
-		i, n = j, n+1
+		n++
 	}
-	_ = i
 	return s, false
 }
 
@@ -462,7 +494,11 @@ func (f *FilesTool) opGrep(ctx context.Context, tool string, a opsArgs) (any, er
 			return filepath.SkipAll
 		}
 		if a.Glob != "" {
-			if ok, _ := path.Match(a.Glob, d.Name()); !ok {
+			rel, rerr := filepath.Rel(root, p)
+			if rerr != nil {
+				return nil
+			}
+			if !matchGlob(a.Glob, filepath.ToSlash(rel), d.Name()) {
 				return nil
 			}
 		}
@@ -566,15 +602,13 @@ func srcFor(from string) (fs.FileInfo, error) {
 	return fi, nil
 }
 
-// prepDst 目标占位处理(D2「默认不覆盖」的唯一落点):
-//   - 不存在 → 放行(随后原子落盘);
+// checkDst 目标占位检查(D2「默认不覆盖」的唯一落点):
+//   - 不存在 → 放行;
 //   - 存在且未 overwrite → 拒绝,并告诉模型怎么改;
-//   - 存在且 overwrite=true → 先删旧目标(目录场景 rename 覆盖不了非空目录),
-//     这是显式破坏性动作,只有用户/模型明确传了 overwrite 才走到。
-//
-// 注意:POSIX 上 os.Rename 覆盖同名文件不报错,所以「存在性检查」只在非 overwrite 路径上
-// 是硬保证;overwrite 路径本身已声明为破坏性,竞态窗口可接受。
-func prepDst(to string, overwrite bool) error {
+//   - 存在且 overwrite=true → 放行,但**此函数不删它**:删除推迟到落盘提交那一刻
+//     (见 copyFile/copyTree 的 commit)。提前删会让"复制失败"把旧目标也赔进去 ——
+//     一次失败的操作不该毁掉用户原本就在的文件。
+func checkDst(to string, overwrite bool) error {
 	_, err := os.Lstat(to)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -585,16 +619,29 @@ func prepDst(to string, overwrite bool) error {
 	if !overwrite {
 		return fmt.Errorf("目标已存在: %s(确认要覆盖就传 overwrite: true,或换一个目标名)", to)
 	}
-	if err := sdk.RemoveTree(to); err != nil {
-		return fmt.Errorf("overwrite: true 但删不掉旧目标 %s: %w", to, err)
-	}
 	return nil
+}
+
+// commitDst 提交替换:先删旧目标再 rename 临时产物。
+//
+// 只在**内容已经完整落好**(大小校验过、fsync 过)之后才走到这一步,所以"删旧"这一步
+// 失败或崩掉,最坏结果是新文件没就位、旧文件还在 —— 而不是两头都没。
+// Windows 上 rename 不能覆盖已存在的文件,故删这一步不是"可选优化"而是必需。
+func commitDst(tmp, to string) error {
+	if _, err := os.Lstat(to); err == nil {
+		if err := sdk.RemoveTree(to); err != nil {
+			return fmt.Errorf("提交替换失败(删不掉旧目标 %s): %w", to, err)
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return os.Rename(tmp, to)
 }
 
 // renameHook = os.Rename 的注入点(单测用它模拟跨卷 EXDEV;生产恒为 os.Rename)。
 var renameHook = os.Rename
 
-// moveAny 移动:**先试 rename(同卷最快、原子),失败则 copy+fsync+校验+删源**。
+// moveAny 移动:**先试 rename(同卷最快、原子),失败则 copy+校验+提交+删源**。
 //
 // 为什么必须兜底 copy(D3):`/sdcard` → `$GAH_HOME`、macOS 外置卷、Windows 跨盘一律 EXDEV,
 // 只 rename 的实现 100% 会在这些场景失败或丢文件。copy 失败**保留源文件**,绝不两头都没。
@@ -613,19 +660,29 @@ func moveAny(from, to string) (crossDevice bool, err error) {
 	return true, nil
 }
 
-// copyAny 复制(文件/目录)。dst 的存在性由调用方 prepDst 处理掉。
+// copyAny 复制(文件/目录)。dst 的存在性由调用方 checkDst 处理掉。
 func copyAny(from, to string) error {
 	fi, err := os.Lstat(from)
 	if err != nil {
 		return err
 	}
+	if fi.Mode().IsRegular() {
+		return copyFile(from, to, fi)
+	}
 	if fi.IsDir() {
 		return copyTree(from, to, fi)
 	}
-	return copyFile(from, to, fi)
+	// 符号链接与特殊文件(fifo/socket/设备)**不猜**。猜错的后果不对称:
+	//  · 对符号链接 os.Open 会跟到目标,把目标内容复制成普通文件(模型看到的是"复制成功了",
+	//    而链接关系已经没了)—— 更糟的是随后的体积校验必然失败,报一句与事实无关的错;
+	//  · 对 fifo,os.Open 会**永久阻塞**(没有写端),整个回合卡死。
+	// 移动这两类东西不需要复制,rename 本身就行,所以出路是明确的。
+	return fmt.Errorf("%s 不是普通文件或目录(符号链接/设备/fifo/socket);"+
+		"复制这类目标请改用 file_move(同一设备内),或先让模型说明要的是链接还是内容",
+		filepath.Base(from))
 }
 
-// copyFile 文件复制:**同目录临时文件 → fsync → 校验大小 → rename**。
+// copyFile 文件复制:**同目录临时文件 → fsync → 校验大小 → 提交替换**。
 // 中途任何失败都清掉临时文件,绝不把半截文件留在目标位置(D2「写一律原子」)。
 func copyFile(from, to string, fi fs.FileInfo) error {
 	tmp, err := os.CreateTemp(filepath.Dir(to), "."+filepath.Base(to)+".gah-tmp-*")
@@ -669,37 +726,67 @@ func copyFile(from, to string, fi fs.FileInfo) error {
 	if err := os.Chtimes(name, fi.ModTime(), fi.ModTime()); err != nil {
 		fmt.Fprintf(os.Stderr, "tool-files: 保留修改时间失败 %s: %v\n", to, err)
 	}
-	if err := os.Rename(name, to); err != nil {
+	if err := commitDst(name, to); err != nil {
 		return err
 	}
 	name = "" // 已落位:不再清理
 	return nil
 }
 
-// copyTree 目录复制(逐项 copyFile;目录权限尽力保留)。
+// copyTree 目录复制:**先落到同级临时目录,再整体换名**(与文件复制同一个提交口径)。
+//
+// 为什么不逐项写进目标目录:那会让"覆盖一个已存在的目录"变成**合并** —— 目标里源没有的
+// 旧文件会原封不动留下,而调用方(模型)以为自己拿到的是源的一份拷贝。先在临时目录里拼出
+// 完整的一棵,再一次性换名,失败/中断最多影响临时目录。
 func copyTree(from, to string, fi fs.FileInfo) error {
-	if err := os.MkdirAll(to, fi.Mode().Perm()); err != nil {
+	parent := filepath.Dir(to)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return err
 	}
+	staging, err := os.MkdirTemp(parent, "."+filepath.Base(to)+".gah-tmp-*")
+	if err != nil {
+		return fmt.Errorf("在目标目录建临时目录失败: %w", err)
+	}
+	defer func() { _ = sdk.RemoveTree(staging) }() // 换名成功后 RemoveTree 是空操作
+	if err := fillTree(from, staging); err != nil {
+		return err
+	}
+	// 目录的权限(含 setgid 之类)搬过来;失败只提示:内容已经对了。
+	if err := os.Chmod(staging, fi.Mode().Perm()); err != nil {
+		fmt.Fprintf(os.Stderr, "tool-files: 保留目录权限位失败 %s: %v\n", to, err)
+	}
+	return commitDst(staging, to)
+}
+
+// fillTree 把 from 的内容逐项填进已存在的 dst 目录(不碰 dst 自身)。
+func fillTree(from, dst string) error {
 	entries, err := os.ReadDir(from)
 	if err != nil {
 		return err
 	}
 	for _, e := range entries {
 		src := filepath.Join(from, e.Name())
-		dst := filepath.Join(to, e.Name())
+		dst := filepath.Join(dst, e.Name())
 		info, err := e.Info()
 		if err != nil {
 			return err
 		}
-		if info.IsDir() {
-			if err := copyTree(src, dst, info); err != nil {
+		switch {
+		case info.Mode().IsRegular():
+			if err := copyFile(src, dst, info); err != nil {
 				return err
 			}
-			continue
-		}
-		if err := copyFile(src, dst, info); err != nil {
-			return err
+		case info.IsDir():
+			if err := os.MkdirAll(dst, info.Mode().Perm()); err != nil {
+				return err
+			}
+			if err := fillTree(src, dst); err != nil {
+				return err
+			}
+		default:
+			// 与 copyAny 同一口径:符号链接/特殊文件不猜(见那里的理由)
+			return fmt.Errorf("%s 不是普通文件或目录(符号链接/设备/fifo/socket);"+
+				"目录复制不处理这类条目(要整体搬动请用 file_move)", src)
 		}
 	}
 	return nil
@@ -724,7 +811,7 @@ func (f *FilesTool) opMove(ctx context.Context, tool string, a opsArgs) (any, er
 	if _, err := srcFor(from); err != nil {
 		return map[string]any{"error": err.Error()}, nil
 	}
-	if err := prepDst(to, a.Overwrite); err != nil {
+	if err := checkDst(to, a.Overwrite); err != nil {
 		return map[string]any{"error": err.Error()}, nil
 	}
 	cross, err := moveAny(from, to)
@@ -759,7 +846,7 @@ func (f *FilesTool) opCopy(ctx context.Context, tool string, a opsArgs) (any, er
 	if err != nil {
 		return map[string]any{"error": err.Error()}, nil
 	}
-	if err := prepDst(to, a.Overwrite); err != nil {
+	if err := checkDst(to, a.Overwrite); err != nil {
 		return map[string]any{"error": err.Error()}, nil
 	}
 	if err := copyAny(from, to); err != nil {
@@ -804,7 +891,7 @@ func (f *FilesTool) opRename(ctx context.Context, tool string, a opsArgs) (any, 
 	if to == p {
 		return opErr("新名与原名相同: %s", a.Name), nil
 	}
-	if err := prepDst(to, a.Overwrite); err != nil {
+	if err := checkDst(to, a.Overwrite); err != nil {
 		return map[string]any{"error": err.Error()}, nil
 	}
 	if err := renameHook(p, to); err != nil {
@@ -830,8 +917,7 @@ type trashMeta struct {
 	SizeKnown bool      `json:"size_known"`
 }
 
-// trashProjectKey 回收站分区键:按工作区根(沙箱根/本次调用根)分目录,避免不同项目的删除物混在一处。
-// 名 = 净化后的基名 + 短哈希(同名不同目录不撞车;哈希取自完整路径)。
+// trashProjectKey 回收站分区键:按**本次工作根**分目录,避免不同项目的删除物混在一处。
 func (f *FilesTool) trashProjectKey(ctx context.Context) string {
 	base := ""
 	if h, ok := sdk.SandboxHintOf(ctx); ok {
@@ -847,6 +933,15 @@ func (f *FilesTool) trashProjectKey(ctx context.Context) string {
 		}
 		base = home
 	}
+	return trashKeyFor(base)
+}
+
+// trashKeyFor 给定一个根算分区键(名 = 净化后的基名 + 短哈希,哈希取自完整路径)。
+//
+// **刻意与 trashProjectKey 分开**:按路径筛选回收站时要用"那个路径自己的 key",
+// 而不是"当前工作根的 key" —— 两者混用会让筛选恒为空(模型看到"回收站里什么都没有",
+// 而条目其实就在里面)。这是上一版的真缺陷。
+func trashKeyFor(base string) string {
 	base = filepath.Clean(base)
 	sum := sha256.Sum256([]byte(base))
 	safe := sanitizeName(filepath.Base(base))
@@ -1060,18 +1155,13 @@ func (f *FilesTool) opTrashList(ctx context.Context, tool string, a opsArgs) (an
 		return opFail("读回收站", sdk.TrashDir(), err), nil
 	}
 	if strings.TrimSpace(a.Path) != "" {
-		// 指定了路径 = 只看那个工作区分区(与删除时的分区口径一致)。
+		// 指定了路径 = 只看那个目录自己的分区。key 必须**按解析后的路径**算,
+		// 不能用当前工作根的 key —— 否则筛选几乎总是空的。
 		p, err := f.resolve(ctx, a.Path, false)
 		if err != nil {
 			return map[string]any{"error": err.Error()}, nil
 		}
-		key := f.trashProjectKey(ctx)
-		if base := filepath.Base(filepath.Clean(p)); sanitizeName(base) != "" {
-			sum := sha256.Sum256([]byte(filepath.Clean(p)))
-			if want := sanitizeName(base) + "-" + hex.EncodeToString(sum[:3]); want != key {
-				dirs = filterTrashDirs(dirs, key)
-			}
-		}
+		dirs = filterTrashDirs(dirs, trashKeyFor(p))
 	}
 	entries := make([]any, 0, 16)
 	var totalBytes int64
@@ -1134,27 +1224,27 @@ func (f *FilesTool) opRestore(ctx context.Context, tool string, a opsArgs) (any,
 	if err != nil {
 		return opFail("读回收站", sdk.TrashDir(), err), nil
 	}
+	// 条目名必须是**回收站内的单个名字**:带分隔符/.. 的一律拒。
+	// 上一版接受"回收站内的路径"看着方便,实际给了模型一条"用 ../ 拼出任意路径再被移动"
+	// 的口子 —— 而这个动作根本不经过沙箱裁决(回收站是工具内部区域)。
+	name := strings.TrimSpace(a.Entry)
+	if name == "" || name == "." || name == ".." ||
+		strings.ContainsAny(name, `/\`) || strings.ContainsRune(name, 0) {
+		return opErr("file_restore: entry 只是回收站里的**条目名**(不含路径分隔符):%q;"+
+			"条目名见 file_trash_list 的 entry 字段", a.Entry), nil
+	}
 	var found []string
 	for _, dir := range dirs {
-		cand := filepath.Join(dir, filepath.Clean(a.Entry))
-		if strings.ContainsRune(a.Entry, filepath.Separator) || strings.Contains(a.Entry, "/") {
-			// 允许直接给回收站内的绝对/相对路径(条目名形态不含分隔符)
-			cand = a.Entry
-			if !filepath.IsAbs(cand) {
-				cand = filepath.Join(sdk.TrashDir(), cand)
-			}
-		}
-		if fi, err := os.Lstat(cand); err == nil {
-			_ = fi
-			found = append(found, cand)
+		if _, err := os.Lstat(filepath.Join(dir, name)); err == nil {
+			found = append(found, filepath.Join(dir, name))
 		}
 	}
 	switch len(found) {
 	case 0:
-		return opErr("回收站里没有条目 %q:用 file_trash_list 看现有条目(超龄条目按最近 %d 份轮转淘汰)", a.Entry, trashKeep), nil
+		return opErr("回收站里没有条目 %q:用 file_trash_list 看现有条目(超龄条目按最近 %d 份轮转淘汰)", name, trashKeep), nil
 	case 1:
 	default:
-		return opErr("回收站里有多个同名条目 %q,无法判断恢复哪一个:请用 file_trash_list 里的 trash_path 完整路径", a.Entry), nil
+		return opErr("回收站里有多个同名条目 %q,无法判断恢复哪一个(同名条目分属不同工作区)", name), nil
 	}
 	src := found[0]
 	dir := filepath.Dir(src)
@@ -1166,7 +1256,7 @@ func (f *FilesTool) opRestore(ctx context.Context, tool string, a opsArgs) (any,
 	if err != nil {
 		return map[string]any{"error": err.Error()}, nil
 	}
-	if err := prepDst(dst, a.Overwrite); err != nil {
+	if err := checkDst(dst, a.Overwrite); err != nil {
 		return map[string]any{"error": err.Error()}, nil
 	}
 	cross, err := moveAny(src, dst)
