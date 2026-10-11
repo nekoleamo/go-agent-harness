@@ -596,3 +596,32 @@ func TestDstDirectoryRejected(t *testing.T) {
 	}
 	needErr(t, firstResult(t, call(t, c, `{"action":"convert","src":"a.png","format":"png","dst":"out"}`)), "目录")
 }
+
+// TestReadASCIIBothStorageForms EXIF 的 ASCII 值有两种存法(内联 / 偏移),必须分开处理。
+// 上一版把内联的 4 个字节当偏移去索引:不崩,但会给模型一个瞎编的相机型号。
+func TestReadASCIIBothStorageForms(t *testing.T) {
+	// 造一个最小 TIFF:头(8)+ IFD 计数(2)+ 两条条目(Make 内联 4 字节、Model 走偏移)
+	tiff := make([]byte, 0, 64)
+	tiff = append(tiff, 'I', 'I', 42, 0, 8, 0, 0, 0) // 小端,IFD0 @8
+	tiff = append(tiff, 2, 0)                        // 条目数 = 2
+	// Make(0x010F) ASCII 长度 4:"ACME" 内联
+	tiff = append(tiff, 0x0F, 0x01, 2, 0, 4, 0, 0, 0, 'A', 'C', 'M', 'E')
+	// Model(0x0110) ASCII 长度 9:偏移指向字符串(IFD 之后)
+	strOff := 8 + 2 + 2*12 + 4 // 头+计数+条目+next IFD 偏移 = 38
+	tiff = append(tiff, 0x10, 0x01, 2, 0, 9, 0, 0, 0, byte(strOff), 0, 0, 0)
+	tiff = append(tiff, 0, 0, 0, 0)                         // next IFD = 0
+	tiff = append(tiff, []byte("X100V\x00\x00\x00\x00")...) // 偏移处的字符串
+
+	// 直接喂 TIFF 块:findTIFF 也认"文件本身就是 TIFF"这种形态(与 .tif 输入同一条路)
+	d := parseEXIF(tiff)
+	if d.Make != "ACME" {
+		t.Fatalf("内联 ASCII 应读成 ACME,得 %q", d.Make)
+	}
+	if d.Model != "X100V" {
+		t.Fatalf("偏移 ASCII 应读成 X100V,得 %q", d.Model)
+	}
+	// 偏移越界不猜(不 panic、不返回垃圾)
+	if got := readASCII([]byte{'I', 'I', 42, 0, 8, 0, 0, 0}, 8, 2, 9, 9999); got != "" {
+		t.Fatalf("越界偏移应返回空串,得 %q", got)
+	}
+}

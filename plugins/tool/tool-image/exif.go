@@ -126,15 +126,13 @@ func parseEXIF(buf []byte) exifData {
 				out.Orientation = v
 			}
 		case 0x010F: // Make(ASCII)
-			out.Make = readASCII(tiff, typ, val, u32)
+			out.Make = readASCII(tiff, ent, typ, u32(ent+4), val)
 		case 0x0110: // Model
-			out.Model = readASCII(tiff, typ, val, u32)
+			out.Model = readASCII(tiff, ent, typ, u32(ent+4), val)
 		case 0x8825: // GPS IFD 指针:只记存在性(**不跟进指针**,坐标值一律不进内存,K4)
 			if val > 0 {
 				out.HasGPS = true
 			}
-		case 0xA001: // ColorSpace(1 = sRGB);0xFFFF 未定义常被相机用于 P3/JPEG-RGB
-			_ = typ
 		}
 	}
 	// 宽色域判定:ICC profile(APP2)或 MPF(CMM)标记 → 提示会偏色(Go 无 ICC 转换)。
@@ -143,13 +141,24 @@ func parseEXIF(buf []byte) exifData {
 }
 
 // readASCII 读 ASCII 型 tag 的字符串(值内联在 4 字节里时取前若干字符)。
-func readASCII(tiff []byte, typ, val int, _ func(int) int) string {
-	if typ != 2 || val <= 0 { // ASCII 型,值偏移必须在正数
+// readASCII 读 ASCII(类型 2)tag 的字符串。
+//
+// EXIF 的 ASCII 值有两种存法,必须分开处理(第一版混在一起:把**内联的 4 个字节**
+// 当偏移去索引,读到的是别处的字节 —— 不崩,但可能给模型一个瞎编的相机型号):
+//   - **声明长度 ≤4**:值内联在条目的 value 字段里(ent+8 起 4 字节),直接读那 4 字节;
+//   - **声明长度 >4**:value 字段是**偏移**,指向 TIFF 块内的字符串。
+//
+// 判别依据是 count 字段(ent+4),**不是** value 字段的首字节:偏移的低字节通常非零,
+// 拿它当判据会把偏移形态误当内联(第一版就这么写,于是相机型号读出来是一个乱码字符)。
+func readASCII(tiff []byte, ent, typ, cnt, val int) string {
+	if typ != 2 || ent+12 > len(tiff) { // 只处理 ASCII,且条目自身要完整
 		return ""
 	}
-	if val >= len(tiff) {
-		// 4 字节内联值:打印型相机常把 make/model 前缀塞在这里
-		return trimNUL(string(tiff[min(val, len(tiff)):min(val+4, len(tiff))]))
+	if cnt > 0 && cnt <= 4 { // 内联形态
+		return trimNUL(string(tiff[ent+8 : ent+12]))
+	}
+	if val <= 0 || val >= len(tiff) { // 偏移形态:越界就不猜
+		return ""
 	}
 	end := val
 	for end < len(tiff) && tiff[end] != 0 && end-val < 64 {
