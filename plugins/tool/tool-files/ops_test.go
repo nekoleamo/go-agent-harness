@@ -3,10 +3,12 @@ package toolfiles
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
@@ -590,4 +592,110 @@ func TestGlobPatternsMatchDocumentedForms(t *testing.T) {
 	}
 	// 坏通配符仍然显式报错(展开不能把错误吞掉)
 	opsFail(t, c, "file_glob", `{"path":".","pattern":"[a-"}`, "通配符")
+}
+
+// ── 第三轮 review:特殊文件与自引用路径(同一族隐患)──────────────────────
+
+// TestDirIntoItselfRejected 目录移进/复制进它自己里面必须**先拒**。
+// 上一版会走到:rename 失败 ⇒ 兜底递归复制 ⇒ 目标目录里再套源目录、再套……直到磁盘写满。
+// 失败模式是"把盘写满",而不是一句能看懂的报错。
+func TestDirIntoItselfRejected(t *testing.T) {
+	ws := t.TempDir()
+	c := buildEnv(t, ws, sdk.SandboxFullAccess)
+	if err := os.MkdirAll(filepath.Join(ws, "tree", "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws, "tree", "sub", "f.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	opsFail(t, c, "file_move", `{"from":"tree","to":"tree/inner"}`, "无限递归")
+	opsFail(t, c, "file_copy", `{"from":"tree","to":"tree/inner"}`, "无限递归")
+	opsFail(t, c, "file_copy", `{"from":"tree","to":"tree/sub/deeper"}`, "无限递归")
+	// 自引用被拒后不该留下任何半成品目录
+	if _, err := os.Stat(filepath.Join(ws, "tree", "inner")); !os.IsNotExist(err) {
+		t.Fatalf("被拒时不该创建目标: %v", err)
+	}
+	// 平级以外的正常目标仍然可用
+	opsCall(t, c, "file_copy", `{"from":"tree","to":"tree2"}`)
+	if _, err := os.Stat(filepath.Join(ws, "tree2", "sub", "f.txt")); err != nil {
+		t.Fatalf("正常复制应成功: %v", err)
+	}
+}
+
+// TestGrepSkipsSpecialFiles file_grep 不能在 fifo/设备上阻塞。
+// ReadFile 在无写端的 fifo 上会**永久挂住**(整回合卡死),而这类文件在用户的
+// 下载目录/项目里并不罕见。符号链接按目标判定(链接到普通文件照常搜)。
+func TestGrepSkipsSpecialFiles(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 上没有 mkfifo")
+	}
+	ws := t.TempDir()
+	c := buildEnv(t, ws, sdk.SandboxFullAccess)
+	if err := os.WriteFile(filepath.Join(ws, "real.txt"), []byte("needle here\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fifo := filepath.Join(ws, "pipe")
+	if out, err := exec.Command("mkfifo", fifo).CombinedOutput(); err != nil {
+		t.Skipf("mkfifo 不可用:%v %s", err, out)
+	}
+	done := make(chan map[string]any, 1)
+	go func() {
+		out, _ := call(t, c, "file_grep", `{"path":".","pattern":"needle"}`)
+		done <- out
+	}()
+	select {
+	case out := <-done:
+		if got := out["count"].(float64); got != 1 {
+			t.Fatalf("应搜到 1 处(只搜普通文件),得 %v", got)
+		}
+		if out["skipped_non_regular"] == nil {
+			t.Fatalf("跳过的特殊文件要如实报数:%v", out)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("file_grep 在 fifo 上阻塞了")
+	}
+	// 指向普通文件的符号链接仍应被搜到
+	if err := os.Symlink(filepath.Join(ws, "real.txt"), filepath.Join(ws, "link.txt")); err == nil {
+		out := opsCall(t, c, "file_grep", `{"path":".","pattern":"needle"}`)
+		if got := out["count"].(float64); got < 1 {
+			t.Fatalf("链接到普通文件应被搜到,得 %v", got)
+		}
+	}
+}
+
+// TestFileOntoExistingDirRejected "把文件复制到某个目录下"是极常见的写法(模型常漏写文件名),
+// 而 overwrite=true 时旧行为会先删掉**整棵目录树**再放一个文件进去 —— 代价是用户的一整个目录。
+// 宁可让它多写一次路径,也不要静默删树。
+func TestFileOntoExistingDirRejected(t *testing.T) {
+	ws := t.TempDir()
+	c := buildEnv(t, ws, sdk.SandboxFullAccess)
+	if err := os.MkdirAll(filepath.Join(ws, "Download", "keep"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws, "Download", "keep", "important.txt"), []byte("别删我"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws, "a.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	opsFail(t, c, "file_copy", `{"from":"a.txt","to":"Download","overwrite":true}`, "已存在的目录")
+	opsFail(t, c, "file_move", `{"from":"a.txt","to":"Download","overwrite":true}`, "已存在的目录")
+	// 目录树必须完好
+	if b, err := os.ReadFile(filepath.Join(ws, "Download", "keep", "important.txt")); err != nil || string(b) != "别删我" {
+		t.Fatalf("被拒后目录树应完好: %q(%v)", b, err)
+	}
+	// 源文件也还在(移动被拒不该让它消失)
+	if _, err := os.Stat(filepath.Join(ws, "a.txt")); err != nil {
+		t.Fatalf("被拒后源文件应还在: %v", err)
+	}
+	// 写全路径就正常
+	opsCall(t, c, "file_copy", `{"from":"a.txt","to":"Download/a.txt"}`)
+	if _, err := os.Stat(filepath.Join(ws, "Download", "a.txt")); err != nil {
+		t.Fatalf("写全路径应成功: %v", err)
+	}
+	// 目录 → 目录(替换语义)不受影响
+	if err := os.MkdirAll(filepath.Join(ws, "src2"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	opsCall(t, c, "file_copy", `{"from":"src2","to":"Download","overwrite":true}`)
 }

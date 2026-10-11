@@ -477,7 +477,7 @@ func (f *FilesTool) opGrep(ctx context.Context, tool string, a opsArgs) (any, er
 		Text string `json:"text"`
 	}
 	hits := make([]hit, 0, 16)
-	scanned, skipLarge, skipBinary, clipped := 0, 0, 0, 0
+	scanned, skipLarge, skipBinary, clipped, skipOther := 0, 0, 0, 0, 0
 	truncated := false
 	walkErr := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -502,11 +502,14 @@ func (f *FilesTool) opGrep(ctx context.Context, tool string, a opsArgs) (any, er
 				return nil
 			}
 		}
-		info, ierr := d.Info()
-		if ierr != nil {
+		// 只处理**普通文件**:fifo/设备/socket 上的 ReadFile 同样会永久阻塞
+		// (与复制 fifo 是同一族隐患)。符号链接按目标判定 —— 链接到普通文件照常搜。
+		st, serr := os.Stat(p)
+		if serr != nil || !st.Mode().IsRegular() {
+			skipOther++
 			return nil
 		}
-		if info.Size() > grepSkipFileSize {
+		if st.Size() > grepSkipFileSize {
 			skipLarge++
 			return nil
 		}
@@ -546,6 +549,9 @@ func (f *FilesTool) opGrep(ctx context.Context, tool string, a opsArgs) (any, er
 	res := map[string]any{
 		"root": root, "pattern": a.Pattern, "count": len(out), "matches": out,
 		"files_scanned": scanned, "skipped_large": skipLarge, "skipped_binary": skipBinary,
+	}
+	if skipOther > 0 {
+		res["skipped_non_regular"] = skipOther // 特殊文件(如实报数,别让"搜过了"显得含糊)
 	}
 	if clipped > 0 {
 		res["clipped_lines"] = clipped
@@ -600,6 +606,37 @@ func srcFor(from string) (fs.FileInfo, error) {
 		return nil, err
 	}
 	return fi, nil
+}
+
+// dstIsDirForFile 目标是个已存在的目录、而源不是目录 ⇒ 显式拒并提示怎么写。
+//
+// 为什么单独拦这一种:overwrite=true 时"用文件替换目录"会先把整棵目录树删掉
+// (checkDst 放行 → commitDst 的 RemoveTree)。而"把文件复制到某个目录下"是**极常见**的
+// 写法(`to: /sdcard/Download`),模型漏写文件名就会踩到 —— 代价是用户的一整个目录。
+// 宁可让它多写一次路径,也不要静默删树。
+func dstIsDirForFile(from, to string) error {
+	fi, err := os.Lstat(from)
+	if err != nil || fi.IsDir() {
+		return nil // 源本身是目录:走"替换目录"的正常语义
+	}
+	ti, err := os.Lstat(to)
+	if err != nil || !ti.IsDir() {
+		return nil
+	}
+	return fmt.Errorf("目标是一个已存在的目录: %s(源不是目录);"+
+		"想放进去请写全路径(如 %s/%s),否则会把整个目录替换掉",
+		to, to, filepath.Base(from))
+}
+
+// pathInside 判断 child 是否位于 parent **之内**(含相等)。
+// 用于拦"目录移进/复制进它自己里面"这一类自引用:rename 会直接失败,而兜底的递归复制
+// 会一路把目录套目录复制到磁盘满(没有这一层守卫,失败模式是"把盘写满"而不是报错)。
+func pathInside(parent, child string) bool {
+	rel, err := filepath.Rel(parent, child)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
 // checkDst 目标占位检查(D2「默认不覆盖」的唯一落点):
@@ -808,7 +845,15 @@ func (f *FilesTool) opMove(ctx context.Context, tool string, a opsArgs) (any, er
 	if from == to {
 		return opErr("源与目标是同一路径,无需移动: %s", from), nil
 	}
-	if _, err := srcFor(from); err != nil {
+	fi, err := srcFor(from)
+	if err != nil {
+		return map[string]any{"error": err.Error()}, nil
+	}
+	if fi.IsDir() && pathInside(from, to) {
+		return opErr("不能把目录移进它自己里面: %s → %s"+
+			"(源目录包含目标 ⇒ 复制/移动会无限递归,直到磁盘写满)", from, to), nil
+	}
+	if err := dstIsDirForFile(from, to); err != nil {
 		return map[string]any{"error": err.Error()}, nil
 	}
 	if err := checkDst(to, a.Overwrite); err != nil {
@@ -844,6 +889,13 @@ func (f *FilesTool) opCopy(ctx context.Context, tool string, a opsArgs) (any, er
 	}
 	fi, err := srcFor(from)
 	if err != nil {
+		return map[string]any{"error": err.Error()}, nil
+	}
+	if fi.IsDir() && pathInside(from, to) {
+		return opErr("不能把目录复制进它自己里面: %s → %s"+
+			"(源目录包含目标 ⇒ 复制会无限递归,直到磁盘写满)", from, to), nil
+	}
+	if err := dstIsDirForFile(from, to); err != nil {
 		return map[string]any{"error": err.Error()}, nil
 	}
 	if err := checkDst(to, a.Overwrite); err != nil {

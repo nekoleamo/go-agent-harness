@@ -4,12 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"image"
+	"image/color"
 	"image/png"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nekoleamo/go-agent-harness/core/ctx"
 	"github.com/nekoleamo/go-agent-harness/core/event"
@@ -291,4 +296,183 @@ func TestResizeOneSidedActuallyResizes(t *testing.T) {
 	// 两种尺寸口径同时给要明确拒(否则取哪个是暗规则)
 	out = call(t, c, `{"action":"resize","src":"a.png","width":50,"height":50,"max_dim":100,"dst":"m.png"}`)
 	needErr(t, firstResult(t, out), "互斥")
+}
+
+// ── 第三轮 review:写盘安全与压缩语义 ──────────────────────────────────
+
+// TestImageOpsRejectsInPlaceOverwrite dst 与 src 是同一个文件时必须**先拒**。
+// 上一版会走到"覆盖前删旧目标",于是把源文件删掉、随后转换因"文件不存在"失败 ——
+// 用户丢图,还拿到一句指向自己的报错(src==dst 是最容易发生的写法:"原地转格式")。
+func TestImageOpsRejectsInPlaceOverwrite(t *testing.T) {
+	ws := t.TempDir()
+	c := buildEnv(t, ws, sdk.SandboxFullAccess)
+	p := filepath.Join(ws, "a.png")
+	mustWritePNG(t, p, solidImage(8, 8))
+	out := call(t, c, `{"action":"convert","src":"a.png","format":"png","dst":"a.png","overwrite":true}`)
+	needErr(t, firstResult(t, out), "同一个文件")
+	if _, err := os.Stat(p); err != nil {
+		t.Fatalf("源文件必须完好无损: %v", err)
+	}
+	// 大小写/符号链接等价形态也算同一个文件(macOS 上二者是常态)
+	if runtime.GOOS != "windows" {
+		link := filepath.Join(ws, "link.png")
+		if err := os.Symlink(p, link); err == nil {
+			out = call(t, c, `{"action":"convert","src":"a.png","format":"png","dst":"link.png","overwrite":true}`)
+			needErr(t, firstResult(t, out), "同一个文件")
+		}
+	}
+}
+
+// TestOverwriteFailureKeepsOldFile 覆盖失败必须"什么都没变":旧目标原样在,
+// 不留备份文件。上一版先删旧目标再转换 ⇒ 转换失败就赔掉了用户原本的图。
+func TestOverwriteFailureKeepsOldFile(t *testing.T) {
+	ws := t.TempDir()
+	c := buildEnv(t, ws, sdk.SandboxFullAccess)
+	mustWritePNG(t, filepath.Join(ws, "a.png"), solidImage(8, 8))
+	old := filepath.Join(ws, "out.png")
+	mustWritePNG(t, old, solidImage(4, 4))
+	before, err := os.ReadFile(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 用一个必然失败的转换:目标格式不支持编码(纯 Go 不能编 webp)
+	out := call(t, c, `{"action":"convert","src":"a.png","format":"webp","dst":"out.png","overwrite":true}`)
+	needErr(t, firstResult(t, out), "")
+	after, err := os.ReadFile(old)
+	if err != nil {
+		t.Fatalf("覆盖失败后旧目标必须还在: %v", err)
+	}
+	if string(before) != string(after) {
+		t.Fatal("覆盖失败后旧目标内容不该变")
+	}
+	// 且不留下备份/临时文件
+	ents, _ := os.ReadDir(ws)
+	for _, e := range ents {
+		if strings.Contains(e.Name(), "gah-bak") || strings.Contains(e.Name(), "gah-tmp") {
+			t.Fatalf("不该留下中间产物: %s", e.Name())
+		}
+	}
+	// 成功的覆盖则要真的换掉内容,同时不留备份
+	out = call(t, c, `{"action":"convert","src":"a.png","format":"jpeg","dst":"out.png","overwrite":true}`)
+	if _, bad := firstResult(t, out)["error"]; bad {
+		t.Fatalf("正常覆盖应成功: %v", firstResult(t, out))
+	}
+	ents, _ = os.ReadDir(ws)
+	for _, e := range ents {
+		if strings.Contains(e.Name(), "gah-bak") {
+			t.Fatalf("成功后不该留下备份: %s", e.Name())
+		}
+	}
+}
+
+// TestCompressKeepsQualityWithinBudget compress 的语义是"不超过目标且尽量清晰",
+// 不是"越小越好"。上一版搜索方向反了:实测目标 200KB 输出 41KB(占预算 20%),
+// 白丢八成画质而调用方看不出损失。这条用例钉住"贴着预算"。
+func TestCompressKeepsQualityWithinBudget(t *testing.T) {
+	ws := t.TempDir()
+	c := buildEnv(t, ws, sdk.SandboxFullAccess)
+	src := filepath.Join(ws, "noise.png")
+	img := image.NewRGBA(image.Rect(0, 0, 600, 600))
+	seed := uint32(12345)
+	for y := 0; y < 600; y++ {
+		for x := 0; x < 600; x++ {
+			seed = seed*1664525 + 1013904223 // 伪随机噪声:体积随质量平滑变化,不靠具体编解码实现
+			img.Set(x, y, color.RGBA{R: uint8(seed >> 24), G: uint8(seed >> 16), B: uint8(seed >> 8), A: 255})
+		}
+	}
+	mustWritePNG(t, src, img)
+
+	const targetKB = 200
+	out := call(t, c, `{"action":"compress","src":"noise.png","target_kb":200,"dst":"q.jpg"}`)
+	r := firstResult(t, out)
+	size, ok := r["dst_bytes"].(float64)
+	if !ok {
+		t.Fatalf("compress 应报出体积: %v", r)
+	}
+	target := float64(targetKB << 10)
+	if size > target {
+		t.Fatalf("不该超出目标体积: %.0f > %.0f", size, target)
+	}
+	// 贴着预算才算达成"压缩"的本意(实测旧实现只有 20%;取 60% 作下限,
+	// 留出不同编解码实现/平台的余量,但足以逮住"方向反了"这种量级的问题)
+	if size < target*0.6 {
+		t.Fatalf("压得远低于预算(%.0f/%.0f = %.0f%%):说明在找'最低可行质量'而不是'预算内最高质量'",
+			size, target, size*100/target)
+	}
+}
+
+// TestCompressUnreachableReportsTrueMinimum 压不到目标时,报的"最小可达"必须是**真的最小**
+// (质量下限的产物体积),不能是二分最后一次采样的值 —— 那会给出误导性的可达性判断。
+func TestCompressUnreachableReportsTrueMinimum(t *testing.T) {
+	ws := t.TempDir()
+	c := buildEnv(t, ws, sdk.SandboxFullAccess)
+	src := filepath.Join(ws, "noise.png")
+	img := image.NewRGBA(image.Rect(0, 0, 400, 400))
+	seed := uint32(7)
+	for y := 0; y < 400; y++ {
+		for x := 0; x < 400; x++ {
+			seed = seed*1103515245 + 12345
+			img.Set(x, y, color.RGBA{R: uint8(seed >> 24), G: uint8(seed >> 17), B: uint8(seed >> 9), A: 255})
+		}
+	}
+	mustWritePNG(t, src, img)
+	out := call(t, c, `{"action":"compress","src":"noise.png","target_kb":1,"dst":"tiny.jpg"}`)
+	e, _ := firstResult(t, out)["error"].(string)
+	if e == "" {
+		t.Fatalf("压不到目标应如实报错:%v", firstResult(t, out))
+	}
+	if !strings.Contains(e, "缩尺寸") {
+		t.Fatalf("报错要给可行动的出路(先用 resize/thumbnail):%s", e)
+	}
+	// "最小可达"这个数字要真:与质量下限(10)的产物体积**逐字节相等**
+	minProd, err := encodeAt(img, sdk.FormatJPEG, sdk.TransformSpec{Format: sdk.FormatJPEG}, minEncodeQuality)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(e, strconv.Itoa(len(minProd))) {
+		t.Fatalf("报错里的最小可达体积应是质量下限的产物体积 %d,得:%s", len(minProd), e)
+	}
+}
+
+// TestInfoRejectsSpecialFiles 非普通文件要**显式拒**,不能去 Open 它。
+// fifo/设备上的 os.Open 会永久阻塞(实测:无写端的 fifo 直接卡死整回合),
+// 而 image_ops 的第一步(info/换算前)必然要读文件头。
+func TestInfoRejectsSpecialFiles(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 上没有 mkfifo")
+	}
+	ws := t.TempDir()
+	c := buildEnv(t, ws, sdk.SandboxFullAccess)
+	fifo := filepath.Join(ws, "pipe")
+	if out, err := exec.Command("mkfifo", fifo).CombinedOutput(); err != nil {
+		t.Skipf("mkfifo 不可用:%v %s", err, out)
+	}
+	done := make(chan map[string]any, 1)
+	go func() {
+		out := call(t, c, `{"action":"info","src":"pipe"}`)
+		done <- out
+	}()
+	select {
+	case out := <-done:
+		r := firstResult(t, out)
+		if e, _ := r["error"].(string); !strings.Contains(e, "不是普通文件") {
+			t.Fatalf("应显式拒并非普通文件,得 %v", r)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("info 在 fifo 上阻塞了(整回合会卡死)")
+	}
+	// 转换路径同样不能在它上面卡住(Info 是第一步)
+	done2 := make(chan map[string]any, 1)
+	go func() {
+		out := call(t, c, `{"action":"thumbnail","src":"pipe"}`)
+		done2 <- out
+	}()
+	select {
+	case out := <-done2:
+		if e, _ := firstResult(t, out)["error"].(string); e == "" {
+			t.Fatalf("thumbnail 也应拒绝特殊文件:%v", firstResult(t, out))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("thumbnail 在 fifo 上阻塞了")
+	}
 }

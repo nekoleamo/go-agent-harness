@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
@@ -227,6 +228,14 @@ func (t *ImageTool) one(ctx context.Context, a opsArgs, srcArg string) (map[stri
 	if err != nil {
 		return map[string]any{"src": src, "error": err.Error()}, nil
 	}
+	// 原地覆盖(src == dst):**先拒**。上一版会走到"覆盖前删旧目标",于是把源文件删掉、
+	// 随后转换因"文件不存在"失败 —— 用户丢图,还拿到一句指向自己的报错。
+	// 要原地转格式请用不同的 dst(或在外面先备份);这里不做隐式原地改写。
+	if sameFile(src, dst) {
+		return map[string]any{"src": src, "error": fmt.Sprintf(
+			"dst 与 src 是同一个文件: %s(原地覆盖会先失去源文件;请给一个不同的 dst)", dst)}, nil
+	}
+	var backup string
 	if fi, err := os.Lstat(dst); err == nil {
 		if fi.IsDir() {
 			// dst 给了个目录名(模型很容易顺手写成 `/sdcard/Pictures`):显式说清,
@@ -238,21 +247,24 @@ func (t *ImageTool) one(ctx context.Context, a opsArgs, srcArg string) (map[stri
 			return map[string]any{"src": src, "error": fmt.Sprintf(
 				"目标已存在: %s(确实要覆盖就传 overwrite: true,或换一个 dst)", dst)}, nil
 		}
-		// 覆盖前清掉旧目标:Windows 上 os.Rename 不能覆盖已存在的文件。
-		// (删除推迟到这里而不是更早 —— 与 tool-files 的 checkDst/commitDst 同一纪律:
-		//  失败的操作不该先毁掉用户原本就在的文件。)
-		if err := sdk.RemoveTree(dst); err != nil {
-			return map[string]any{"src": src, "error": fmt.Sprintf("overwrite: true 但删不掉旧目标 %s: %v", dst, err)}, nil
+		// 覆盖:把旧目标**挪开**(不是删掉)。成功后再删备份,失败则挪回来 ——
+		// 与 tool-files 的 checkDst/commitDst 同一纪律:失败的操作不该赔掉用户原本就在的文件。
+		// 顺带解决 Windows:os.Rename 覆盖不了已存在的文件,腾位之后才能落盘。
+		if backup, err = stageOverwrite(dst); err != nil {
+			return map[string]any{"src": src, "error": err.Error()}, nil
 		}
 	}
 	spec, err := t.spec(a, info)
 	if err != nil {
+		restoreOverwrite(backup, dst, src)
 		return map[string]any{"src": src, "error": err.Error()}, nil
 	}
 	srcBytes := info.Bytes
 	if err := t.codec.Transform(src, dst, spec); err != nil {
+		restoreOverwrite(backup, dst, src)
 		return map[string]any{"src": src, "error": fmt.Sprintf("处理 %s: %v", src, err)}, nil
 	}
+	commitOverwrite(backup)
 	var outBytes int64
 	if fi, err := os.Stat(dst); err == nil {
 		outBytes = fi.Size()
@@ -298,6 +310,49 @@ func (t *ImageTool) notes(info sdk.ImageInfo, src string, spec sdk.TransformSpec
 		out = append(out, fmt.Sprintf("按目标体积 %d KB 迭代质量达成", spec.TargetBytes/1024))
 	}
 	return out
+}
+
+// sameFile 两个路径是否指向同一个文件(先比清理后的字符串;两边都存在时再用
+// os.SameFile 兜住大小写不敏感/符号链接的等价形态 —— macOS 与 Windows 上
+// "同一条路径的两种写法"是常态)。
+func sameFile(a, b string) bool {
+	if filepath.Clean(a) == filepath.Clean(b) {
+		return true
+	}
+	ai, aerr := os.Stat(a)
+	bi, berr := os.Stat(b)
+	return aerr == nil && berr == nil && os.SameFile(ai, bi)
+}
+
+// stageOverwrite 覆盖前把旧目标挪到同目录的临时名(返回备份路径)。
+// 同目录 = 同一文件系统 ⇒ rename 是原子的、几乎不花时间。
+func stageOverwrite(dst string) (string, error) {
+	backup := fmt.Sprintf("%s.gah-bak-%d", dst, time.Now().UnixNano())
+	if err := os.Rename(dst, backup); err != nil {
+		return "", fmt.Errorf("覆盖前腾位失败(旧目标 %s 挪不动): %w", dst, err)
+	}
+	return backup, nil
+}
+
+// commitOverwrite 转换成功:丢掉备份(失败只记日志 —— 结果已经写好了)。
+func commitOverwrite(backup string) {
+	if backup == "" {
+		return
+	}
+	if err := os.Remove(backup); err != nil {
+		fmt.Fprintf(os.Stderr, "image_ops: 覆盖后清理备份 %s 失败(可用它找回旧版本): %v\n", backup, err)
+	}
+}
+
+// restoreOverwrite 转换失败:把旧目标挪回来,保证"失败 = 什么都没变"。
+func restoreOverwrite(backup, dst, src string) {
+	if backup == "" {
+		return
+	}
+	if err := os.Rename(backup, dst); err != nil {
+		fmt.Fprintf(os.Stderr, "image_ops: 转换失败且旧目标恢复不了(旧版本在 %s,源在 %s): %v\n",
+			backup, src, err)
+	}
 }
 
 // spec 由动作与参数装配变换规格(各动作只填自己那几个字段)。

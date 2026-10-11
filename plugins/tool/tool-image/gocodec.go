@@ -199,6 +199,12 @@ func (c *GoCodec) Info(path string) (sdk.ImageInfo, error) {
 	if st.IsDir() {
 		return sdk.ImageInfo{}, fmt.Errorf("这是目录不是图像: %s", path)
 	}
+	if !st.Mode().IsRegular() {
+		// fifo/socket/设备上的 os.Open **会永久阻塞**(实测:fifo 无写端时整回合卡死),
+		// 而 os.Stat 已经跟随了符号链接 ⇒ 这里拒的就是真·特殊文件。
+		return sdk.ImageInfo{}, fmt.Errorf("不是普通文件(设备/fifo/socket 之类): %s"+
+			"(读取它可能永久阻塞,已拒绝)", path)
+	}
 	format, err := sniffFormat(path)
 	if err != nil {
 		return sdk.ImageInfo{}, err
@@ -307,9 +313,7 @@ func (c *GoCodec) applyOps(img image.Image, spec sdk.TransformSpec) (image.Image
 			return img, fmt.Errorf("裁剪区域 %d,%d %dx%d 超出图像范围(摆正后尺寸 %dx%d)",
 				cr.X, cr.Y, cr.W, cr.H, b.Dx(), b.Dy())
 		}
-		img = img.(interface {
-			SubImage(image.Rectangle) image.Image
-		}).SubImage(image.Rect(cr.X, cr.Y, cr.X+cr.W, cr.Y+cr.H))
+		img = cropRegion(img, image.Rect(cr.X, cr.Y, cr.X+cr.W, cr.Y+cr.H))
 	}
 	if spec.Resize != nil {
 		img = resizeImage(img, spec.Resize)
@@ -375,35 +379,58 @@ func qualityOr(spec sdk.TransformSpec, def int) int {
 	return spec.Quality
 }
 
-// encodeToTarget 二分质量逼近目标体积(±10% 内即算达成;到质量 10 仍超限就如实报错)。
+// encodeToTarget 把体积压到目标以内,**同时尽量保住画质**:找"预算内可用的最高质量"。
+//
+// 上一版的搜索方向是反的(一旦落进预算就继续往下压质量),实测目标 200 KB 时输出只有
+// 41 KB —— 占预算 20%,也就是白白丢掉了八成可用的画质,而调用方从结果里**看不出**自己
+// 损失了什么(只知道"达成了目标")。压缩的目标从来是"不超过 X 且尽量清晰",不是"越小越好"。
 func encodeToTarget(w io.Writer, img image.Image, format sdk.ImageFormat, spec sdk.TransformSpec) error {
-	lo, hi := 10, 92
-	best := []byte(nil)
+	target := int64(spec.TargetBytes)
+	// 先取质量下限的产物:既用于"根本压不到"的如实报错(数字要真,不能是最后一次采样),
+	// 也作为二分兜底(它一定 ≤ 预算才会往下走)。
+	smallest, err := encodeAt(img, format, spec, minEncodeQuality)
+	if err != nil {
+		return err
+	}
+	if int64(len(smallest)) > target {
+		return fmt.Errorf("压到质量下限(%d)仍超出目标体积:目标 %d 字节,最小可达 %d 字节"+
+			"(想要更小只能缩尺寸:先用 resize/thumbnail)", minEncodeQuality, target, len(smallest))
+	}
+	best := smallest
+	lo, hi := minEncodeQuality, maxEncodeQuality
 	for lo <= hi {
 		mid := (lo + hi) / 2
-		var buf bytes.Buffer
-		s := spec
-		s.Quality = mid
-		s.TargetBytes = 0
-		if err := encodeOnce(&buf, img, format, s); err != nil {
+		buf, err := encodeAt(img, format, spec, mid)
+		if err != nil {
 			return err
 		}
-		best = buf.Bytes()
-		if int64(buf.Len()) <= int64(spec.TargetBytes) {
-			hi = mid - 1 // 还能再小 → 继续压
-		} else {
+		if int64(len(buf)) <= target {
+			best = buf // 这个质量可行 → 记下来,再往上试
 			lo = mid + 1
+		} else {
+			hi = mid - 1
 		}
 	}
-	if best == nil {
-		return fmt.Errorf("压缩到目标体积失败:质量已到下限仍超出 %d 字节;建议同时缩小尺寸", spec.TargetBytes)
-	}
-	if int64(len(best)) > int64(spec.TargetBytes) {
-		return fmt.Errorf("压到质量下限仍超出目标体积:目标 %d 字节,最小可达 %d 字节(要更小就缩小尺寸)",
-			spec.TargetBytes, len(best))
-	}
-	_, err := w.Write(best)
+	_, err = w.Write(best)
 	return err
+}
+
+// 质量搜索区间。上限 95 而不是 100:JPEG 在 100 附近体积暴涨而肉眼收益趋零。
+const (
+	minEncodeQuality = 10
+	maxEncodeQuality = 95
+)
+
+// encodeAt 以指定质量编码一份(内存里的完整产物,供体积比较)。
+func encodeAt(img image.Image, format sdk.ImageFormat, spec sdk.TransformSpec, quality int) ([]byte, error) {
+	var buf bytes.Buffer
+	s := spec
+	s.Quality = quality
+	s.TargetBytes = 0 // 防止递归(此时只比较体积)
+	if err := encodeOnce(&buf, img, format, s); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 // ── 几何变换 ────────────────────────────────────────────────────
@@ -458,6 +485,20 @@ func resizeImage(img image.Image, r *sdk.ResizeSpec) image.Image {
 	h := max(1, int(float64(sh)*scale+0.5))
 	dst := image.NewRGBA(image.Rect(0, 0, w, h))
 	filter.Scale(dst, dst.Bounds(), img, sb, drawOp, nil)
+	return dst
+}
+
+// cropRegion 取源上的一块。SubImage 是零拷贝(快),但并非所有 image 实现都提供它 ——
+// 缺了就复制一块。**关键是不用无检查的类型断言**:那会把"某个解码器/宿主实现返回了自定义
+// image"变成一次 panic,而工具 panic 对用户是无法解释的崩溃(宁慢不崩)。
+func cropRegion(img image.Image, r image.Rectangle) image.Image {
+	if si, ok := img.(interface {
+		SubImage(image.Rectangle) image.Image
+	}); ok {
+		return si.SubImage(r)
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, r.Dx(), r.Dy()))
+	draw.Draw(dst, dst.Bounds(), img, r.Min, drawOp)
 	return dst
 }
 
