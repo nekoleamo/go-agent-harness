@@ -459,3 +459,89 @@ func TestDenyPathHomeCandidateUnion(t *testing.T) {
 		t.Fatalf("家目录之外的普通文件不该被拒: %v", err)
 	}
 }
+
+// TestCheckPathArgsFileOpsAndImage M3:F1 文件操作与 F4 图像工具的**写目标**必须进裁决表。
+//
+// 这一组是安全面的红线用例:内置名表(builtinPathParams)与各工具自述的 PathParams 若漂移,
+// 某个写目标就绕过了宿主裁决 —— 所以两类入口(自述 / 名表兜底)都要钉住。
+func TestCheckPathArgsFileOpsAndImage(t *testing.T) {
+	withCaseFold(t, false)
+	testutil.SkipNoPosixPath(t)
+	ws := t.TempDir()
+	outside := filepath.ToSlash(t.TempDir())
+	p := DefaultSandbox(ws)
+
+	// 越界写目标一律拒(源在区内、目标在区外 —— 移动/复制最容易被漏)
+	rejects := []struct {
+		tool string
+		args string
+	}{
+		{"file_mkdir", `{"path":"` + outside + `/d"}`},
+		{"file_move", `{"from":"a.txt","to":"` + outside + `/a.txt"}`},
+		{"file_copy", `{"from":"a.txt","to":"` + outside + `/a.txt"}`},
+		{"file_rename", `{"path":"` + outside + `/a.txt","name":"b.txt"}`},
+		{"file_delete", `{"paths":["` + outside + `/a.txt"]}`},
+		{"file_restore", `{"entry":"x","to":"` + outside + `/a.txt"}`},
+		{"image_ops", `{"action":"convert","src":"a.png","dst":"` + outside + `/a.png"}`},
+	}
+	for _, tc := range rejects {
+		if err := p.CheckPathArgs(tc.tool, tc.args); err == nil {
+			t.Errorf("%s 的越界写目标应被拒(工具:%s)", tc.tool, tc.args)
+		}
+	}
+	// 区内放行
+	allows := []struct {
+		tool string
+		args string
+	}{
+		{"file_mkdir", `{"path":"sub/d"}`},
+		{"file_move", `{"from":"a.txt","to":"b.txt"}`},
+		{"file_copy", `{"from":"a.txt","to":"b.txt"}`},
+		{"file_rename", `{"path":"a.txt","name":"b.txt"}`},
+		{"file_delete", `{"paths":["a.txt","b.txt"]}`},
+		{"file_list", `{"path":"."}`},
+		{"file_glob", `{"path":".","pattern":"*.go"}`},
+		{"file_grep", `{"path":".","pattern":"x"}`},
+		{"file_trash_list", `{}`},
+		{"file_restore", `{"entry":"x"}`},
+		{"image_ops", `{"action":"info","src":"a.png"}`},
+		{"image_ops", `{"action":"convert","src":"a.png","format":"png"}`},
+	}
+	for _, tc := range allows {
+		if err := p.CheckPathArgs(tc.tool, tc.args); err != nil {
+			t.Errorf("%s 区内调用应放行: %v(工具:%s)", tc.tool, err, tc.args)
+		}
+	}
+	// 读动作在区外仍按读口径拒(移动的源侧就是读)
+	if err := p.CheckPathArgs("file_move", `{"from":"`+outside+`/a.txt","to":"b.txt"}`); err == nil {
+		t.Error("移动的源在区外应按读口径被拒")
+	}
+}
+
+// TestBuiltinPathParamsMatchToolDeclarations 名表兜底与工具自述必须一致:
+// 名表是「定义没带过来」时的第二道防线,两处漂移就等于写目标漏裁决。
+func TestBuiltinPathParamsMatchToolDeclarations(t *testing.T) {
+	// 与 tool-files/tool-image 的自述逐一对齐(同仓同构建期断言,漂移立刻红)
+	cases := map[string][]sdk.PathParam{
+		"file_list":       {{Arg: "path", Access: sdk.PathRead, Optional: true}},
+		"file_mkdir":      {{Arg: "path", Access: sdk.PathWrite}},
+		"file_move":       {{Arg: "from", Access: sdk.PathRead}, {Arg: "to", Access: sdk.PathWrite}},
+		"file_copy":       {{Arg: "from", Access: sdk.PathRead}, {Arg: "to", Access: sdk.PathWrite}},
+		"file_rename":     {{Arg: "path", Access: sdk.PathWrite}, {Arg: "name", Access: sdk.PathRead, Optional: true}},
+		"file_delete":     {{Arg: "paths", Access: sdk.PathWrite, Many: true}},
+		"file_trash_list": {{Arg: "path", Access: sdk.PathRead, Optional: true}},
+		"file_restore":    {{Arg: "to", Access: sdk.PathWrite, Optional: true}},
+	}
+	for name, want := range cases {
+		got := builtinPathParams(name)
+		if len(got) != len(want) {
+			t.Fatalf("%s 名表条目数 = %d, want %d(%+v)", name, len(got), len(want), got)
+		}
+		for i := range want {
+			if got[i].Arg != want[i].Arg || got[i].Access != want[i].Access ||
+				got[i].Many != want[i].Many || got[i].Optional != want[i].Optional {
+				t.Errorf("%s 第 %d 项 = %+v, want %+v", name, i, got[i], want[i])
+			}
+		}
+	}
+}

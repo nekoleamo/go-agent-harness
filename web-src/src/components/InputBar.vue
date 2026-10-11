@@ -77,7 +77,9 @@ const dragging = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
 
 const ATT_ACCEPT =
-  'image/*,text/*,.txt,.md,.json,.csv,.log,application/json,application/pdf,.pdf,.png,.jpg,.jpeg,.gif,.webp'
+  // heic/heif/avif:手机照片常是 HEIC —— 选得到才能由 image_ops / 附件链路处理;
+  // 桌面端没有原生 codec 时会显式提示需要转换,而不是静默失败(见 tool-image 的 K1–K4)。
+  'image/*,text/*,.txt,.md,.json,.csv,.log,application/json,application/pdf,.pdf,.png,.jpg,.jpeg,.gif,.webp,.heic,.heif,.avif'
 const MAX_ATT = 8
 const MAX_ATT_BYTES = 20 << 20
 

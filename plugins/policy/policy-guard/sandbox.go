@@ -645,7 +645,34 @@ func pathValues(name string, pa sdk.PathParam, raw any) ([]string, error) {
 }
 
 // builtinPathParams 内置工具名表 → 路径参数声明(未声明 PathParams 的工具走这条)。
+//
+// 这张表是**第二道防线**:工具自述的 PathParams 经桥协议原样传到宿主(声明优先),
+// 本表服务的是「定义没带过来」的那些路径 —— 老宿主/老桥、或第三方仿名工具。
+// 因此它必须与各工具自述保持一致,否则两处漂移 = 某个写目标漏裁决。
 func builtinPathParams(name string) []sdk.PathParam {
+	// F1 文件操作与 F4 图像:读写分开声明,移动/复制要**两个**参数(源读、目标写)。
+	switch name {
+	case "file_list", "file_glob", "file_grep":
+		return []sdk.PathParam{{Arg: "path", Access: sdk.PathRead, Optional: true}}
+	case "file_mkdir":
+		return []sdk.PathParam{{Arg: "path", Access: sdk.PathWrite}}
+	case "file_move", "file_copy":
+		return []sdk.PathParam{{Arg: "from", Access: sdk.PathRead}, {Arg: "to", Access: sdk.PathWrite}}
+	case "file_rename":
+		return []sdk.PathParam{{Arg: "path", Access: sdk.PathWrite}, {Arg: "name", Access: sdk.PathRead, Optional: true}}
+	case "file_delete":
+		return []sdk.PathParam{{Arg: "paths", Access: sdk.PathWrite, Many: true}}
+	case "file_trash_list":
+		return []sdk.PathParam{{Arg: "path", Access: sdk.PathRead, Optional: true}}
+	case "file_restore":
+		return []sdk.PathParam{{Arg: "to", Access: sdk.PathWrite, Optional: true}}
+	case "image_ops":
+		return []sdk.PathParam{
+			{Arg: "src", Access: sdk.PathRead, Optional: true},
+			{Arg: "srcs", Access: sdk.PathRead, Many: true, Optional: true},
+			{Arg: "dst", Access: sdk.PathWrite, Optional: true},
+		}
+	}
 	kind, ok := fileToolKind(name)
 	if !ok {
 		return nil
