@@ -2,12 +2,14 @@ package llmopenai
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
@@ -227,5 +229,128 @@ func TestCompleteStreamSizeCap(t *testing.T) {
 	_, err := a.Complete(context.Background(), &sdk.LLMRequest{Model: "test-model"}, nil)
 	if err == nil || !strings.Contains(err.Error(), "上限") {
 		t.Fatalf("超限应显式报错,实际: %v", err)
+	}
+}
+
+// bodyCapture 记录发往端点的请求体(诊断兼容性字段用)。
+type bodyCapture struct {
+	mu     sync.Mutex
+	bodies []map[string]any
+}
+
+func (b *bodyCapture) add(m map[string]any) {
+	b.mu.Lock()
+	b.bodies = append(b.bodies, m)
+	b.mu.Unlock()
+}
+func (b *bodyCapture) all() []map[string]any {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]map[string]any(nil), b.bodies...)
+}
+
+func decodeBody(t *testing.T, r *http.Request) map[string]any {
+	t.Helper()
+	var m map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
+		t.Fatalf("请求体不是 JSON: %v", err)
+	}
+	return m
+}
+
+// TestCompleteRequestsStreamUsage 流式 usage 必须**显式要求**:
+// OpenAI 官方与多数兼容端点在没收到 stream_options.include_usage 时,流末块不带 usage,
+// 于是 final.Usage 恒为 0 ⇒ 不记 session/usage ⇒ 界面永远显示「用量待补」。
+func TestCompleteRequestsStreamUsage(t *testing.T) {
+	var cap bodyCapture
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cap.add(decodeBody(t, r))
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\n")
+		// usage 块按 OpenAI 形状:choices 为空数组,只有 usage
+		fmt.Fprint(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":3,\"prompt_tokens_details\":{\"cached_tokens\":4}}}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+	a := &Adapter{client: srv.Client(), baseURL: srv.URL, model: "m"}
+
+	resp, err := a.Complete(context.Background(), &sdk.LLMRequest{Model: "m"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bodies := cap.all()
+	if len(bodies) != 1 {
+		t.Fatalf("应只发一次请求,实际 %d", len(bodies))
+	}
+	so, ok := bodies[0]["stream_options"].(map[string]any)
+	if !ok || so["include_usage"] != true {
+		t.Fatalf("请求应带 stream_options.include_usage=true,实际: %v", bodies[0]["stream_options"])
+	}
+	if resp.Usage.PromptTokens != 11 || resp.Usage.CompletionTokens != 3 || resp.Usage.CachedTokens != 4 {
+		t.Fatalf("流末 usage 未解析: %+v", resp.Usage)
+	}
+}
+
+// TestCompleteFallsBackWhenStreamOptionsRejected 严格端点点名拒 stream_options 时:
+// 去掉它重发一次并记住结论,后续请求不再带(否则每一跳都要多付一次 4xx)。
+func TestCompleteFallsBackWhenStreamOptionsRejected(t *testing.T) {
+	var cap bodyCapture
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := decodeBody(t, r)
+		cap.add(body)
+		if _, has := body["stream_options"]; has {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"error":{"message":"Unrecognized request argument supplied: stream_options"}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+	a := &Adapter{client: srv.Client(), baseURL: srv.URL, model: "m"}
+
+	if _, err := a.Complete(context.Background(), &sdk.LLMRequest{Model: "m"}, nil); err != nil {
+		t.Fatalf("降级重试应成功: %v", err)
+	}
+	if bodies := cap.all(); len(bodies) != 2 {
+		t.Fatalf("应恰好重发一次,实际 %d 次", len(bodies))
+	} else if _, has := bodies[1]["stream_options"]; has {
+		t.Fatal("重发时不应再带 stream_options")
+	}
+	// 第二次调用:结论已记住,直接不带 ⇒ 只发一次
+	if _, err := a.Complete(context.Background(), &sdk.LLMRequest{Model: "m"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	bodies := cap.all()
+	if len(bodies) != 3 {
+		t.Fatalf("第二次调用应只发一次,累计 %d", len(bodies))
+	}
+	if _, has := bodies[2]["stream_options"]; has {
+		t.Fatal("记住结论后不应再带 stream_options")
+	}
+}
+
+// TestCompleteDoesNotRetryUnrelatedBadRequest 没点名的 400 不得重发:
+// 那可能是模型名/参数错,重发既掩盖原因又多花一次请求。
+func TestCompleteDoesNotRetryUnrelatedBadRequest(t *testing.T) {
+	var cap bodyCapture
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cap.add(decodeBody(t, r))
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{"error":{"message":"model not found"}}`)
+	}))
+	defer srv.Close()
+	a := &Adapter{client: srv.Client(), baseURL: srv.URL, model: "m"}
+
+	_, err := a.Complete(context.Background(), &sdk.LLMRequest{Model: "ghost"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "model not found") {
+		t.Fatalf("应原样报出端点错误,实际: %v", err)
+	}
+	if n := len(cap.all()); n != 1 {
+		t.Fatalf("无关 400 不应重发,实际发了 %d 次", n)
+	}
+	if a.streamUsageUnsupported() {
+		t.Fatal("无关 400 不应被记成「该端点不支持 stream_options」")
 	}
 }

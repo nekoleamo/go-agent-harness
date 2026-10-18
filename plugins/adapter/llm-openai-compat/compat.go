@@ -120,9 +120,32 @@ type Adapter struct {
 	headers                                     sdk.ProviderHeaders // provider 级自定义请求头(见 ConfigureHeaders)
 	modelsCache                                 []sdk.ModelInfo     // ListModels TTL 缓存
 	modelsCachedAt                              time.Time           // 缓存写入时间
+	noStreamUsage                               bool                // 该端点明确拒过 stream_options ⇒ 后续不再发(见 Complete)
 }
 
 func (a *Adapter) Name() string { return "llm-openai-compat" }
+
+// streamUsageUnsupported 该端点是否明确拒过 stream_options(见 Complete 的降级重试)。
+func (a *Adapter) streamUsageUnsupported() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.noStreamUsage
+}
+
+func (a *Adapter) markStreamUsageUnsupported() {
+	a.mu.Lock()
+	a.noStreamUsage = true
+	a.mu.Unlock()
+}
+
+// rejectsStreamOptions 端点是否因为 stream_options **这个字段本身**拒了请求。
+// 只认 400/422 且响应体点名该字段:同样是 400,模型名/参数错不该被当成「不支持 usage」。
+func rejectsStreamOptions(status int, raw []byte) bool {
+	if status != http.StatusBadRequest && status != http.StatusUnprocessableEntity {
+		return false
+	}
+	return strings.Contains(strings.ToLower(string(raw)), "stream_options")
+}
 
 // Configure 运行时切换端点与凭据(校验 http(s) 前缀;原子生效,零重启;模型缓存失效)。
 func (a *Adapter) Configure(baseURL, apiKey string) error {
@@ -132,8 +155,9 @@ func (a *Adapter) Configure(baseURL, apiKey string) error {
 	a.mu.Lock()
 	a.baseURL = strings.TrimSuffix(baseURL, "/")
 	a.apiKey = apiKey
-	a.headers = nil     // 端点已变:旧的自定义头属于上一个端点,留着会把它发去不相干的网关
-	a.modelsCache = nil // 端点已变:缓存失效
+	a.headers = nil         // 端点已变:旧的自定义头属于上一个端点,留着会把它发去不相干的网关
+	a.modelsCache = nil     // 端点已变:缓存失效
+	a.noStreamUsage = false // 端点已变:兼容性结论不能跨端点沿用
 	a.mu.Unlock()
 	return nil
 }
@@ -312,13 +336,20 @@ type wireToolDef struct {
 }
 
 type wireReq struct {
-	Model           string     `json:"model"`
-	Messages        []wireMsg  `json:"messages"`
-	Tools           []wireTool `json:"tools,omitempty"`
-	Stream          bool       `json:"stream"`
-	MaxTokens       *int       `json:"max_tokens,omitempty"`
-	Temperature     *float64   `json:"temperature,omitempty"`
-	ReasoningEffort string     `json:"reasoning_effort,omitempty"` // 思考等级(off 不发送)
+	Model    string     `json:"model"`
+	Messages []wireMsg  `json:"messages"`
+	Tools    []wireTool `json:"tools,omitempty"`
+	Stream   bool       `json:"stream"`
+	// StreamOptions 要求流末块携带 usage。OpenAI 官方与多数兼容端点**默认不给**流式 usage,
+	// 不显式要求 ⇒ LLMResponse.Usage 恒为 0 ⇒ 不记 session/usage ⇒ 界面只能显示「用量待补」。
+	StreamOptions   *wireStreamOptions `json:"stream_options,omitempty"`
+	MaxTokens       *int               `json:"max_tokens,omitempty"`
+	Temperature     *float64           `json:"temperature,omitempty"`
+	ReasoningEffort string             `json:"reasoning_effort,omitempty"` // 思考等级(off 不发送)
+}
+
+type wireStreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 type wireChunk struct {
@@ -380,41 +411,60 @@ func (a *Adapter) Complete(ctx context.Context, req *sdk.LLMRequest, onChunk fun
 	case sdk.ThinkingHigh:
 		wire.ReasoningEffort = "high"
 	}
-	body, err := json.Marshal(wire)
-	if err != nil {
-		return nil, err
+	// 要求流末块带 usage(见 wireReq.StreamOptions)。该字段是兼容层里最容易被严格校验
+	// 拒掉的一个,所以下面有一次**降级重试**:拒绝时去掉它重发,并记住这个端点。
+	if !a.streamUsageUnsupported() {
+		wire.StreamOptions = &wireStreamOptions{IncludeUsage: true}
 	}
-	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost, a.endpoint(), bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	hreq.Header.Set("Content-Type", "application/json")
-	hreq.Header.Set("Accept", "text/event-stream")
-	if key := a.credentials(); key != "" {
-		hreq.Header.Set("Authorization", "Bearer "+key)
-	}
-	a.applyHeaders(hreq)
 
-	resp, err := a.client.Do(hreq)
-	if err != nil {
-		if ctx.Err() != nil {
-			return nil, ctx.Err() // 取消:不包装,不重试
+	var resp *http.Response
+	var body []byte
+	var err error
+	for attempt := 0; ; attempt++ {
+		if body, err = json.Marshal(wire); err != nil {
+			return nil, err
 		}
-		return nil, &sdk.RetryableError{Err: fmt.Errorf("llm-openai: request: %w%s", err, sdk.TLSVerifyHint(err))} // 网络故障可重试
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+		hreq, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, a.endpoint(), bytes.NewReader(body))
+		if reqErr != nil {
+			return nil, reqErr
+		}
+		hreq.Header.Set("Content-Type", "application/json")
+		hreq.Header.Set("Accept", "text/event-stream")
+		if key := a.credentials(); key != "" {
+			hreq.Header.Set("Authorization", "Bearer "+key)
+		}
+		a.applyHeaders(hreq)
+
+		resp, err = a.client.Do(hreq)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err() // 取消:不包装,不重试
+			}
+			return nil, &sdk.RetryableError{Err: fmt.Errorf("llm-openai: request: %w%s", err, sdk.TLSVerifyHint(err))} // 网络故障可重试
+		}
+		if resp.StatusCode == http.StatusOK {
+			break
+		}
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		resp.Body.Close()
+		// 只降级**一次**,且只在端点**点名** stream_options 时 —— 同样是 400,
+		// 模型名/参数写错也会 400,不能被当成「不支持 usage」而白白重发一次。
+		if attempt == 0 && wire.StreamOptions != nil && rejectsStreamOptions(resp.StatusCode, raw) {
+			a.markStreamUsageUnsupported() // 该端点的兼容性结论:后续请求直接不带
+			wire.StreamOptions = nil
+			continue
+		}
 		msg := fmt.Sprintf("llm-openai: HTTP %d", resp.StatusCode)
 		if hint := sdk.HTTPStatusHint(resp.StatusCode); hint != "" {
 			msg += "(" + hint + ")" // 人话提示 + 原始响应体一并给出
 		}
-		err := fmt.Errorf("%s: %s", msg, strings.TrimSpace(string(raw)))
+		err = fmt.Errorf("%s: %s", msg, strings.TrimSpace(string(raw)))
 		if resp.StatusCode >= 500 {
 			return nil, &sdk.RetryableError{Err: err} // 5xx 瞬态:可重试
 		}
 		return nil, err // 4xx(auth/quota):不可重试(§11)
 	}
+	defer resp.Body.Close()
 
 	var content strings.Builder
 	var calls []sdk.ToolCall

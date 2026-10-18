@@ -75,6 +75,63 @@ export function resultSummary(raw: string): { text: string; full: string } {
   return { text: raw.slice(0, 400) + '\n…', full: raw }
 }
 
+// —— 思考分隔标签清理 ——
+// 部分 OpenAI 兼容网关把 ` thinking`/`<｜end▁of▁thinking｜>` 分隔标签漏进正文或推理增量:思考一结束,
+// 回答里会顶出一行 `</think>`。标签是协议残留、不是内容,渲染前在**边界**剥掉。
+// 只认这三种成对标签,只在开头/结尾处理,不做全文替换 —— 正文里正常讨论 `</think>` 时不该被改。
+const THINK_TAGS = ['<think>', '<thinking>', '<reasoning>', '</think>', '</thinking>', '</reasoning>']
+const CLOSE_TAGS = ['</think>', '</thinking>', '</reasoning>']
+
+// stripLeadingTags 掐掉开头连续的思考标签。`</thi` 这种**只到一半**的闭标签也不先露出来:
+// 流式增量会把标签拆成两个 chunk,不处理就会闪一下。
+function stripLeadingTags(s: string): string {
+  let stripped = false
+  for (;;) {
+    const t = s.replace(/^\s+/, '')
+    const full = THINK_TAGS.find((x) => t.toLowerCase().startsWith(x))
+    if (full) {
+      s = t.slice(full.length)
+      stripped = true
+      continue
+    }
+    const partial = t.startsWith('</') && CLOSE_TAGS.some((x) => x.startsWith(t.toLowerCase()))
+    if (partial) return ''
+    // 标签前后的空行/缩进是分隔符的伴生物,不是正文:剥过标签就一并去掉。
+    return stripped ? t : s
+  }
+}
+
+// stripTrailingCloseTags 掐掉结尾的闭标签,含流式中只到一半的形态。
+function stripTrailingCloseTags(s: string): string {
+  for (;;) {
+    const t = s.replace(/\s+$/, '')
+    const full = CLOSE_TAGS.find((x) => t.toLowerCase().endsWith(x))
+    if (full) {
+      s = t.slice(0, t.length - full.length)
+      continue
+    }
+    let cut = 0
+    for (let k = 2; k < 16 && k <= t.length; k++) {
+      const tail = t.slice(t.length - k).toLowerCase()
+      if (tail.startsWith('</') && CLOSE_TAGS.some((x) => x.startsWith(tail))) {
+        cut = k
+        break
+      }
+    }
+    return cut ? t.slice(0, t.length - cut) : s
+  }
+}
+
+// cleanThink 思维块文本(掐头去尾)。
+export function cleanThink(s: string): string {
+  return s ? stripTrailingCloseTags(stripLeadingTags(s)) : s
+}
+
+// cleanAnswer 已落定/流式中的回答正文:标签漏在开头(`</think>` 顶一行)是唯一见过的形态。
+export function cleanAnswer(s: string): string {
+  return s ? stripLeadingTags(s) : s
+}
+
 // consume 处理一帧会话事件(SSE 顺序保证;重放与实时共用)
 export function consume(m: StreamModel, ev: SessionEvent): void {
   const kind = ev.Kind
@@ -104,8 +161,8 @@ export function consume(m: StreamModel, ev: SessionEvent): void {
     }
     case 'assistant/message': {
       const am = p as { Content: string; ToolCalls: ToolCall[] }
-      const text = am.Content || m.pending
-      const think = m.pendingThink
+      const text = cleanAnswer(am.Content || m.pending)
+      const think = cleanThink(m.pendingThink)
       const tools: ToolRow[] = (am.ToolCalls ?? []).map((c) => m.pendingTool && m.pendingTool.id === c.ID ? m.pendingTool : ({ id: c.ID, name: c.Name, args: argsSummary(c.Arguments), status: 'called', result: '', full: '' }))
       // 已落定的叫工具行保持结果;新条目挂到 assistant 消息
       m.pending = ''

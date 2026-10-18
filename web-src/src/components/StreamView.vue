@@ -4,6 +4,7 @@
 // 视觉:用户气泡轻盈化(浅蓝底 + 主色文字),工具调用为弱化胶囊,meta/pending 极淡。
 import { computed, ref } from 'vue'
 import type { Msg, ToolRow } from '../sse'
+import { cleanAnswer, cleanThink } from '../sse'
 import type { MetaLine, PendingView } from '../registry'
 import { rowsOf, type Row } from '../streamrows'
 import DocText from './doc/DocText.vue'
@@ -34,10 +35,10 @@ function toolCallsOf(m: Msg): ToolRow[] {
 
 // hasPending:三个字段全空的 pending 对象等同于「没有进行中内容」——
 // 宿主传 undefined 之外,落定后理论上还可能短暂持有一个空壳。
-const hasPending = computed(() => {
-  const p = props.pending
-  return !!p && (!!p.text || !!p.think || !!p.tool)
-})
+// 判据看**清理后**的值:只剩一个网关漏出的 `</think>` 尾巴不算「有内容」。
+const liveText = computed(() => cleanAnswer(props.pending?.text ?? ''))
+const liveThink = computed(() => cleanThink(props.pending?.think ?? ''))
+const hasPending = computed(() => !!props.pending && (!!liveText.value || !!liveThink.value || !!props.pending.tool))
 
 const META_TAG: Record<string, string> = {
   command: '命令',
@@ -130,17 +131,17 @@ function attUrl(rel: string): string {
          结构与已落定的 assistant 块同形(思维折叠 / 正文 / 工具行),只是末尾多一个光标,
          这样「正在写的这段」与「已写好的那段」看上去是同一类东西。 -->
     <div v-if="pending && hasPending" class="pending-live">
-      <details v-if="pending.think" class="think" open>
+      <details v-if="liveThink" class="think" open>
         <summary>
           <span class="think-tag">思考中</span>
-          <span class="think-nums">{{ pending.think.length }} 字</span>
+          <span class="think-nums">{{ liveThink.length }} 字</span>
         </summary>
-        <div class="think-body">{{ pending.think }}</div>
+        <div class="think-body">{{ liveThink }}</div>
       </details>
-      <div v-if="pending.text" class="assistant">
+      <div v-if="liveText" class="assistant">
         <!-- settle=false:流式中用 700ms 防抖(见 DocText),否则每个 chunk 改一次文本
              就发一次 /api/doc/render;落定后由已落定那块走 40ms 立即渲染 -->
-        <DocText :text="pending.text" :settle="false" />
+        <DocText :text="liveText" :settle="false" />
         <span class="caret" aria-hidden="true" />
       </div>
       <div v-if="pending.tool" class="tool-inline mono">

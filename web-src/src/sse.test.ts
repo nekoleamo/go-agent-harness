@@ -3,7 +3,7 @@
 // 异常到达顺序(结果先于调用)、取消/摘要 meta 行、usage 判定。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { argsSummary, consume, isUsage, newModel, resultSummary } from './sse.ts'
+import { argsSummary, cleanAnswer, cleanThink, consume, isUsage, newModel, resultSummary } from './sse.ts'
 import type { StreamModel } from './sse.ts'
 import type { SessionEvent } from './types.ts'
 
@@ -146,4 +146,32 @@ test('只有思维、没有正文的轮次也保留思考内容', () => {
   consume(m, ev('assistant/message', { Content: '', ToolCalls: [] }))
   assert.equal(m.msgs[0].think, '在想。')
   assert.equal(m.msgs[0].text, '')
+})
+
+test('思考标签:正文开头漏出的闭标签被剥掉(网关把分隔符当正文推)', () => {
+  const m = newModel()
+  consume(m, ev('assistant/chunk', { Thinking: '想法' }, 1))
+  consume(m, ev('assistant/message', { Content: '</think>\n\n正文' }, 2))
+  assert.equal(m.msgs[0].text, '正文')
+  assert.equal(m.msgs[0].think, '想法')
+})
+
+test('思考标签:思维文本尾部的闭标签被剥掉', () => {
+  const m = newModel()
+  consume(m, ev('assistant/chunk', { Thinking: '想法</think>' }, 1))
+  consume(m, ev('assistant/message', { Content: '正文' }, 2))
+  assert.equal(m.msgs[0].think, '想法')
+})
+
+test('思考标签:流式拆成两截的半截标签也不先露出来', () => {
+  assert.equal(cleanAnswer('</thi'), '')
+  assert.equal(cleanAnswer('\n</think'), '')
+  assert.equal(cleanThink('想法</thi'), '想法')
+  assert.equal(cleanThink('想法</think>'), '想法')
+})
+
+test('思考标签:只在边界剥,正文里正常讨论时一个字都不动', () => {
+  assert.equal(cleanAnswer('讨论 </think> 的用法'), '讨论 </think> 的用法')
+  assert.equal(cleanThink('提到 <thinking> 标签时'), '提到 <thinking> 标签时')
+  assert.equal(cleanAnswer('正文'), '正文')
 })
