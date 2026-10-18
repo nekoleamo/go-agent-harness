@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { othersRunning, runLabel, sessionRunning } from './session-parallel.ts'
+import { hasConversation, othersRunning, runLabel, sessionRunning } from './session-parallel.ts'
 
 // 多会话并行视图的派生逻辑。核心诚实边界:**步数只对本窗口会话给**,
 // 别的会话只说「运行中」——事件连接按会话过滤,收不到别的会话的帧,
@@ -27,4 +27,13 @@ test('othersRunning:本会话在跑时不提示(底栏已写着运行中)', () =
   assert.equal(othersRunning(['a', 'b'], true), 0)
   assert.equal(othersRunning(['a', 'b'], false), 2)
   assert.equal(othersRunning(undefined, false), 0)
+})
+
+// hasConversation:空会话判定(omitempty 字段缺失时必须当"有对话")。
+test('hasConversation: Empty 缺省视为有对话', () => {
+  assert.equal(hasConversation({}), true)
+  assert.equal(hasConversation({ Empty: false }), true)
+  assert.equal(hasConversation({ Empty: true }), false)
+  assert.equal(hasConversation(null), true)
+  assert.equal(hasConversation(undefined), true)
 })

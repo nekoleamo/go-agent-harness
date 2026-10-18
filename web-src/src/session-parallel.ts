@@ -28,3 +28,17 @@ export function othersRunning(running: string[] | undefined, curRunning: boolean
   if (curRunning) return 0
   return (running || []).length
 }
+
+/**
+ * 会话列表里「有对话」的判据(后端 SessionInfo.Empty 的消费方)。
+ *
+ * 为什么前端还要判一次:空会话在后端**默认已被过滤**,但当前打开的那个是例外
+ * (侧栏要靠它高亮"我在这儿")。而「一条对话都没有的当前会话」被点击切换没有意义
+ * (就是现在这个),所以交互上按空会话处理。
+ *
+ * 注意 Empty 是 omitempty:旧后端/无该字段时一律当"有对话"(宁可多列一条,
+ * 也不要因为字段缺失把历史会话从列表里抹掉)。
+ */
+export function hasConversation(s: { Empty?: boolean } | null | undefined): boolean {
+  return !s?.Empty
+}

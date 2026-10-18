@@ -255,6 +255,9 @@ export interface SessionInfo {
   SummaryTopics?: string[]
   SummaryCoveredFrames?: number
   SummaryState?: string // ready | stale | missing | unavailable
+  // Empty 空会话:一条对话都没有。后端默认已把这类会话从列表里滤掉,
+  // 唯一例外是**当前打开的那个**(侧栏靠它高亮"我在这儿")。
+  Empty?: boolean
 }
 
 // 工作区(项目)历史项(/api/workspaces)

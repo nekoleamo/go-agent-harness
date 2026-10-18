@@ -3,7 +3,7 @@
 // 全部增删改操作(切换会话/工作区、新建、改名、删除)经全局确认条二次确认(inject askConfirm)。
 // 切换/删除/改名后 emit session-changed(宿主重建 SSE 重放);列表经 refreshKey 或手动刷新重拉。
 import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { runLabel } from '../session-parallel'
+import { hasConversation, runLabel } from '../session-parallel'
 import { api, sessionExportName, sessionExportUrl } from '../api'
 import { isDesktop, pickDirectory, saveExport, shellLog } from '../desktop'
 import { sameDir } from '../wsdir'
@@ -67,9 +67,18 @@ function label(s: SessionInfo): string {
 }
 
 // detailOf 展示行降级链(F3 §5.4):概述 → 内容预览 → （空会话）
+// 「空会话」现在只可能是**当前打开的那个**:后端列表已滤掉没聊过的会话
+// (CwdSessions.Sessions 只留有过对话的),当前会话是唯一例外(侧栏靠它高亮"我在这儿")。
 function detailOf(s: SessionInfo): string {
   if (s.Summary) return s.Summary
   return s.Preview || '（空会话）'
+}
+
+// 空会话上的改名/概述/导出一律置灰:没有内容可概述、导出也是空文件;
+// 改名虽然后端允许,但一个连对话都没有的会话名没人会去看 —— 隐掉比报错好。
+// 删除仍可用(扔掉这个空会话)。
+function emptySession(s: SessionInfo): boolean {
+  return !hasConversation(s)
 }
 
 // togglePin 置顶/取消置顶(F2;无需二次确认——可逆且无副作用,列表即时刷新)
@@ -84,6 +93,7 @@ async function togglePin(s: SessionInfo): Promise<void> {
 
 // summarize 生成/更新概述(F3;会调用模型 → 二次确认提示隐私)
 function summarize(s: SessionInfo): void {
+  if (emptySession(s)) return // 空会话没有内容可概述(按钮本已置灰,这里是第二道)
   guard('生成会话概述会把该会话内容发送给当前模型,继续？', false, () => {
     void (async () => {
       try {
@@ -140,6 +150,7 @@ function newSession(): void {
 
 // —— 会话改名(内联编辑,保存时二次确认;后端 rename 仅作用当前会话 → 先切目标会话再改名)—
 function startEdit(s: SessionInfo): void {
+  if (emptySession(s)) return // 空会话不给改名(按钮已置灰,这里是第二道)
   editing.value = { id: s.ID, val: s.Name }
 }
 async function doSaveName(s: SessionInfo): Promise<void> {
@@ -242,6 +253,7 @@ function exportSession(id: string, fmt: 'html' | 'jsonl'): void {
 const exportMenu = ref<{ id: string; label: string; top: number; right: number } | null>(null)
 
 function openExportMenu(ev: MouseEvent, s: SessionInfo): void {
+  if (emptySession(s)) return // 空会话导出的是空文件(按钮已置灰,这里是第二道)
   const r = (ev.currentTarget as HTMLElement).getBoundingClientRect()
   exportMenu.value = {
     id: s.ID || '',
@@ -517,9 +529,27 @@ defineExpose({ refresh })
                 <span v-if="editing && editing.id === s.ID" class="op" data-tip="保存改名(需确认)" @click.stop="saveName(s)">✓</span>
                 <template v-else>
                   <span class="op" :data-tip="s.Pinned ? '取消置顶' : '置顶会话'" @click.stop="togglePin(s)">{{ s.Pinned ? '☆' : '★' }}</span>
-                  <span class="op" data-tip="生成/更新概述(调用模型)" @click.stop="summarize(s)">⟳</span>
-                  <span class="op" data-tip="修改会话名(需确认)" @click.stop="startEdit(s)">✎</span>
-                  <span class="op" data-tip="导出会话(网页 / jsonl)" @click.stop="openExportMenu($event, s)">⤓</span>
+                  <span
+                    class="op"
+                    :class="{ off: emptySession(s) }"
+                    :data-tip="emptySession(s) ? '空会话没有内容可概述' : '生成/更新概述(调用模型)'"
+                    @click.stop="summarize(s)"
+                    >⟳</span
+                  >
+                  <span
+                    class="op"
+                    :class="{ off: emptySession(s) }"
+                    :data-tip="emptySession(s) ? '空会话没有内容可改名' : '修改会话名(需确认)'"
+                    @click.stop="startEdit(s)"
+                    >✎</span
+                  >
+                  <span
+                    class="op"
+                    :class="{ off: emptySession(s) }"
+                    :data-tip="emptySession(s) ? '空会话没有内容可导出' : '导出会话(网页 / jsonl)'"
+                    @click.stop="openExportMenu($event, s)"
+                    >⤓</span
+                  >
                   <span class="op del" data-tip="删除会话(仅删记录,需确认)" @click.stop="deleteSession(s)">×</span>
                 </template>
               </span>
@@ -907,6 +937,15 @@ defineExpose({ refresh })
 .op.del:hover {
   color: var(--err);
   background: var(--err-soft);
+}
+/* 空会话上不可用的操作(概述/改名/导出):置灰且不响应 hover 强调 ——
+   显示"点了也没用"比点完报错诚实。删除不在此列(扔空会话是正当操作)。 */
+.op.off,
+.op.off:hover {
+  color: var(--fg-faint);
+  background: none;
+  opacity: 0.35;
+  cursor: default;
 }
 /* 运行中标记:用**单强调色** + 轻微脉冲,不引第二种语义色(它不是"错误/警告",
   只是"这个会话在跑")。prefers-reduced-motion 下停掉动画(taste 纪律)。 */

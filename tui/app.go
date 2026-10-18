@@ -1370,6 +1370,9 @@ func (a *App) cmdSessions() (string, error) {
 			line += " · " + time.Unix(si.MTime, 0).Format("01-02 15:04")
 		}
 		line += " · " + fmt.Sprint(si.Frames) + " 条" + now
+		if si.Empty {
+			line += "(空会话,尚无对话)"
+		}
 		if si.Summary != "" {
 			line += "\n    " + truncWidthRunes(si.Summary, 60)
 			if si.SummaryState == "stale" {

@@ -2,6 +2,7 @@
 package hostcwdsessions
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -113,10 +114,11 @@ func TestSessionsListOrder(t *testing.T) {
 	a := filepath.Join(root, "other.jsonl") // 其他项目会话,应排除
 	b := filepath.Join(root, "key-20240101-1200.jsonl")
 	c := filepath.Join(root, "key-20240102-1300.jsonl")
-	os.WriteFile(main, []byte("e1\ne2\n"), 0o644)
-	os.WriteFile(a, []byte("x\n"), 0o644)
-	os.WriteFile(b, []byte("e1\n"), 0o644)
-	os.WriteFile(c, []byte("e1\ne2\ne3\n"), 0o644)
+	// 内容必须是**真事件**:列表只认对话帧(见 HasConversation),随便写几行字会被当成空会话
+	os.WriteFile(main, []byte(userEv("主会话首条")+userEv("主会话第二条")), 0o644)
+	os.WriteFile(a, []byte(userEv("别项目")), 0o644)
+	os.WriteFile(b, []byte(userEv("b")), 0o644)
+	os.WriteFile(c, []byte(userEv("c1")+userEv("c2")+userEv("c3")), 0o644)
 	// c 修改时间新于 b(倒序预期 c 在前)
 	older := time.Now().Add(-2 * time.Hour)
 	os.Chtimes(b, older, older)
@@ -298,6 +300,15 @@ func withGahHome(t *testing.T, dir string) {
 	t.Cleanup(func() { os.Setenv("GAH_HOME", prev) })
 }
 
+// userEv 造一条合法的用户消息事件行(列表的"聊过天"判据只认真事件,不认任意行)。
+func userEv(text string) string {
+	b, _ := json.Marshal(map[string]any{
+		"Kind":    sdk.EventUserMessage,
+		"Payload": map[string]any{"Content": text},
+	})
+	return string(b) + "\n"
+}
+
 func TestSessionRenamePersistAndIndependent(t *testing.T) {
 	tmp := t.TempDir()
 	root := filepath.Join(tmp, "sessions")
@@ -305,10 +316,10 @@ func TestSessionRenamePersistAndIndependent(t *testing.T) {
 		t.Fatal(err)
 	}
 	withGahHome(t, tmp)
-	// 主会话 + 一个切换会话文件
-	os.WriteFile(filepath.Join(root, "k.jsonl"), []byte("e1\n"), 0o644)
+	// 主会话 + 一个切换会话文件(内容须是真对话事件,否则列表按空会话滤掉)
+	os.WriteFile(filepath.Join(root, "k.jsonl"), []byte(userEv("主会话一句")), 0o644)
 	swPath := filepath.Join(root, "k-20261002-100000.jsonl")
-	os.WriteFile(swPath, []byte("e1\n"), 0o644)
+	os.WriteFile(swPath, []byte(userEv("切换会话一句")), 0o644)
 	// 分别命名(按会话独立)
 	main := &Service{key: "k", path: filepath.Join(root, "k.jsonl")}
 	if err := main.Rename("总纲"); err != nil {
@@ -657,5 +668,89 @@ func TestIndexAtomicOverwrite(t *testing.T) {
 		if strings.HasPrefix(e.Name(), ".idx-") {
 			t.Fatalf("残留临时文件: %s", e.Name())
 		}
+	}
+}
+
+// TestSessionsSkipEmpty 空会话不进历史列表(只有"聊过天"的才留)。
+//
+// 判据三档,缺一不可:
+//   - 一条对话都没有 → 不列(启动/新建时建下的文件);
+//   - 只有非对话事件(切角色 role/switch)→ 不列(这正是用户反馈的那一类);
+//   - 有用户消息或助手回复 → 列(哪怕只发了一句就关窗口,那也是用户的输入)。
+//
+// 另有一条例外:当前打开的空会话要留在列表里(侧栏靠它高亮"我在这儿"),
+// 否则用户新建会话后会发现自己在列表里消失了。
+func TestSessionsSkipEmpty(t *testing.T) {
+	tmp := t.TempDir()
+	root := filepath.Join(tmp, "sessions")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	withGahHome(t, tmp)
+	write := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 0 字节:启动/新建会话建下但一次都没写过
+	write("key-20240101-1000.jsonl", "")
+	// 只有非对话事件:切过角色但没说话(用户反馈的那一类)
+	write("key-20240102-1000.jsonl", `{"Kind":"role/switch","Payload":{"id":"finance"},"Seq":1}`+"\n")
+	// 只发了用户消息(没等到回复):算聊过
+	write("key-20240103-1000.jsonl", userEv("只发了一句"))
+	// 只有助手回复(极端/外部写入):也算聊过
+	write("key-20240104-1000.jsonl",
+		`{"Kind":"assistant/message","Payload":{"Content":"我只说了一句"},"Seq":1}`+"\n")
+
+	// 当前会话指向一个空会话 → 它必须留下(列表高亮)
+	svc := &Service{key: "key", current: "20240101-1000"}
+	list := svc.Sessions()
+	got := map[string]bool{}
+	for _, si := range list {
+		got[si.ID] = si.Empty
+	}
+	if !got["20240101-1000"] {
+		t.Fatalf("当前打开的空会话应在列表里且标 Empty: %+v", list)
+	}
+	if _, ok := got["20240102-1000"]; ok {
+		t.Fatalf("只有非对话事件的会话不该进历史列表: %+v", list)
+	}
+	for _, id := range []string{"20240103-1000", "20240104-1000"} {
+		if empty, ok := got[id]; !ok || empty {
+			t.Fatalf("有对话的会话应在列表且不标 Empty: id=%s %+v", id, list)
+		}
+	}
+	if len(list) != 3 {
+		t.Fatalf("应剩 3 条(当前空会话 + 两条有对话),got %d: %+v", len(list), list)
+	}
+}
+
+// TestHasConversation 判据本身(反向验证的靶子):0 字节/坏行/非对话事件都不算聊过。
+func TestHasConversation(t *testing.T) {
+	tmp := t.TempDir()
+	cases := map[string]struct {
+		content string
+		want    bool
+	}{
+		"空文件":        {"", false},
+		"只有非对话事件":    {`{"Kind":"role/switch","Payload":{"id":"x"},"Seq":1}` + "\n", false},
+		"只有坏行":       {"{not-json}\n", false},
+		"用户消息":       {userEv("hi"), true},
+		"助手消息":       {`{"Kind":"assistant/message","Payload":{"Content":"yo"},"Seq":1}` + "\n", true},
+		"坏行后接用户消息":   {"{not-json}\n" + userEv("hi"), true},
+		"非对话事件后用户消息": {`{"Kind":"role/switch","Payload":{"id":"x"},"Seq":1}` + "\n" + userEv("hi"), true},
+	}
+	for name, c := range cases {
+		p := filepath.Join(tmp, strings.ReplaceAll(name, "/", "_")+".jsonl")
+		if err := os.WriteFile(p, []byte(c.content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got := HasConversation(p); got != c.want {
+			t.Errorf("%s: HasConversation = %v,want %v", name, got, c.want)
+		}
+	}
+	if HasConversation(filepath.Join(tmp, "不存在.jsonl")) {
+		t.Error("读不了的路径不该被当成聊过")
 	}
 }

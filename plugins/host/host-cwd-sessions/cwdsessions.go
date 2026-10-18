@@ -244,9 +244,20 @@ func (s *Service) Sessions() []sdk.SessionInfo {
 		info.Name = metaName(meta, names, name)
 		if fi, err := e.Info(); err == nil {
 			info.MTime = fi.ModTime().Unix()
-			info.Frames = countLines(info.Path)
 		}
-		info.Preview = previewOf(info.Path, 48) // 内容省略版(首条用户消息截断)
+		info.Frames, info.Preview, info.Empty = scanSession(info.Path)
+		// 空会话(一条对话都没有)不进历史列表:每次启动/新建都会建文件,而那些不是"历史".
+		// 唯一的例外是**当前打开的那个** —— 它得在列表里高亮,否则用户看不出自己现在在哪。
+		// 例外不靠 id 猜,只认 s.CurrentSession():那才是"此刻打开"的唯一事实源。
+		// 注意这个 s.CurrentSession() 必须留在循环内:它是唯一一把锁的读,挪到循环外
+		// 会让「列到一半会话被切走」这半秒窗口读到旧值(切换是另一个 goroutine)。
+		if info.Empty && id != s.CurrentSession() {
+			continue
+		}
+		// 预览截断到展示宽度(48 字):预览只在侧栏一行里显示,长文本按原样下发纯属浪费
+		if r := []rune(info.Preview); len(r) > 48 {
+			info.Preview = string(r[:48]) + "…"
+		}
 		// F0/F2/F3:置顶 + 概述(只读缓存;列表请求绝不触发模型)
 		if me, ok := meta[name]; ok {
 			info.Pinned, info.PinnedAt = me.Pinned, me.PinnedAt
@@ -621,9 +632,10 @@ func currentDir() string {
 	return wd
 }
 
-// countLines 文件事件条数(会话描述用;读不了 = -1)。
 // previewOf 会话内容省略版:扫描 jsonl 取首条用户消息(user/message)文本,
 // 截断到 maxRunes(超限加省略号);无用户消息/坏行 = 空。仅读第一条即停,廉价。
+// 与 scanSession 的分工:本函数单独给「只要预览」的调用方(测试/诊断)用;
+// 会话列表走 scanSession,一次扫描同时拿到条数、预览与空会话判定。
 func previewOf(path string, maxRunes int) string {
 	f, err := os.Open(path)
 	if err != nil {
@@ -637,7 +649,7 @@ func previewOf(path string, maxRunes int) string {
 			Kind    string
 			Payload map[string]any
 		}
-		if json.Unmarshal(sc.Bytes(), &ev) != nil || ev.Kind != "user/message" {
+		if json.Unmarshal(sc.Bytes(), &ev) != nil || ev.Kind != sdk.EventUserMessage {
 			continue
 		}
 		s, _ := ev.Payload["Content"].(string)
@@ -667,21 +679,64 @@ func validSessionID(id string) bool {
 	return true
 }
 
-func countLines(path string) int {
+// conversationKinds 算作"聊过天"的事件种类。
+//
+// 为何不直接把**任何**事件都算:开会话/切会话时账本上会先落一些非对话帧
+// (切角色 role/switch、改设置)。若拿"文件非空"当判据,一个"开了窗口没说话就切了角色"
+// 的会话会被当成历史 —— 正是要拦的那一类。
+//
+// 为什么两个方向都要:只发一句话就关窗口(没等到回复)也算聊过 —— 那是用户的输入,
+// 不该默默消失;只有助手回复、没有用户消息的(极端/外部写入)同理。
+var conversationKinds = map[string]bool{
+	sdk.EventUserMessage:      true,
+	sdk.EventAssistantMessage: true,
+}
+
+// HasConversation 会话文件里有没有一条对话事件(读不了 = false,不把坏文件当历史)。
+// 与 scanSession 同一份判据(两处各写一份必然漂),scanSession 用它顺手算出条数。
+func HasConversation(path string) bool {
+	_, _, empty := scanSession(path)
+	return !empty
+}
+
+// scanSession 一次扫描算出列表要的三个值:事件条数(-1 = 读不了)、首条用户消息预览
+// (未截断,截断由调用方按展示宽度做)、是否空会话。合并的原因:三者都要逐行解析同一个
+// 文件,分开扫就是 N 倍 I/O(会话列表是每轮都会拉的请求)。
+func scanSession(path string) (frames int, preview string, empty bool) {
 	f, err := os.Open(path)
 	if err != nil {
-		return -1
+		return -1, "", true
 	}
 	defer f.Close()
-	n := 0
+	empty = true
 	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
 	for sc.Scan() {
-		if len(sc.Bytes()) > 0 {
-			n++
+		line := sc.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		frames++
+		if !empty && preview != "" {
+			continue // 三个值都已定,剩下只为数条数(不再解析)
+		}
+		var ev struct {
+			Kind    string
+			Payload map[string]any
+		}
+		if json.Unmarshal(line, &ev) != nil {
+			continue // 坏行(旧格式/半写)容忍:不算对话,也不拖垮整次扫描
+		}
+		if conversationKinds[ev.Kind] {
+			empty = false
+		}
+		if preview == "" && ev.Kind == sdk.EventUserMessage {
+			if s, _ := ev.Payload["Content"].(string); strings.TrimSpace(s) != "" {
+				preview = s
+			}
 		}
 	}
-	return n
+	return frames, preview, empty
 }
 
 func fileExists(path string) bool {

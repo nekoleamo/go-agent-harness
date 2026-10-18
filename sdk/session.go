@@ -541,6 +541,9 @@ type SessionInfo struct {
 	// SummaryState:ready(覆盖帧数 = 当前帧数)/ stale(已生成但会话又更新)/
 	// missing(未生成)/ unavailable(模型不可用)
 	SummaryState string `json:",omitempty"`
+	// Empty 空会话:一条对话都没有(没发过消息、没落过助手回复),只有建会话时
+	// 顺手写下的非对话事件(切角色、改设置)。列表默认不展示这些 —— 见 CwdSessions.Sessions。
+	Empty bool `json:",omitempty"`
 }
 
 // SessionSummary 会话概述产物(F3:host-session-summary 生成,落 meta.json 缓存)。
@@ -571,6 +574,9 @@ type CwdSessions interface {
 	// List 列出项目会话 key(按名称;含历史项目)。
 	List() []string
 	// Sessions 当前项目的会话列表(主会话 + 已切换会话;按最后修改时间倒序)。
+	//
+	// **只列有过对话的会话**:一条消息都没发过的空会话(启动/新建时建下的文件)不进列表 ——
+	// 历史会话列表是"我聊过什么"的账本,不是每次开机的痕迹。哪些算空见 HasConversation。
 	Sessions() []SessionInfo
 	// Open 切换当前会话:载入 id 对应文件的历史并设为落盘目标。
 	// id 空 = 主会话;文件不存在 = 新建会话(空历史,继续从头记)。
