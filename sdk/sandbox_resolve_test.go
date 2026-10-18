@@ -137,6 +137,13 @@ func TestResolveSandboxPathCapabilityPriority(t *testing.T) {
 func TestResolveSandboxPathReadFallbackByMode(t *testing.T) {
 	// 未实现读校验能力时按**有效档位**兜底:full/read-only 放行,workspace 限区内
 	// (这条兜底就是"未装配 ReadValidator 的旧沙箱"不会退化成无限制的地方)
+	//
+	// 根与区外路径一律由 t.TempDir() 派生,不用 POSIX 字面量:Windows 上 `/ws`、`/etc/passwd`
+	// **没有盘符就不算绝对路径**(filepath.IsAbs=false)⇒ 会被当成本地相对路径拼进根,
+	// 区外路径于是变成"区内",这条兜底分支根本没被验到(2026-10-11 起 test-windows 一直红在
+	// 这个假想上;本地 macOS 绿不代表它绿)。
+	root := filepath.Join(t.TempDir(), "ws")
+	outside := filepath.Join(t.TempDir(), "passwd")
 	for _, tc := range []struct {
 		mode    SandboxMode
 		wantErr bool
@@ -145,20 +152,19 @@ func TestResolveSandboxPathReadFallbackByMode(t *testing.T) {
 		{SandboxReadOnly, false},
 		{SandboxWorkspace, true},
 	} {
-		sb := &baseSB{root: filepath.Join(string(filepath.Separator), "ws"), mode: tc.mode}
-		outside := filepath.Join(string(filepath.Separator), "etc", "passwd")
+		sb := &baseSB{root: root, mode: tc.mode}
 		_, err := ResolveSandboxPath(context.Background(), sb, outside, false)
 		if (err != nil) != tc.wantErr {
 			t.Fatalf("mode=%s 读区外:err=%v, wantErr=%v", tc.mode, err, tc.wantErr)
 		}
 		// 区内一律放行
-		if _, err := ResolveSandboxPath(context.Background(), sb, "/ws/a.txt", false); err != nil {
+		if _, err := ResolveSandboxPath(context.Background(), sb, filepath.Join(root, "a.txt"), false); err != nil {
 			t.Fatalf("mode=%s 读区内不该被拒: %v", tc.mode, err)
 		}
 	}
 	// 根本身(无尾分隔符)也算区内
-	sb := &baseSB{root: "/ws", mode: SandboxWorkspace}
-	if _, err := ResolveSandboxPath(context.Background(), sb, "/ws", false); err != nil {
+	sb := &baseSB{root: root, mode: SandboxWorkspace}
+	if _, err := ResolveSandboxPath(context.Background(), sb, root, false); err != nil {
 		t.Fatalf("root 自身应放行: %v", err)
 	}
 	// 空 root 的极端情形不能 panic(单测里 sandbox.Root() 可能为空)
