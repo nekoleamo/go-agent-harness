@@ -250,10 +250,12 @@ func (b *bodyCapture) all() []map[string]any {
 }
 
 func decodeBody(t *testing.T, r *http.Request) map[string]any {
+	// handler 跑在 httptest 自己的 goroutine 里:t.Fatalf 只退出那个 goroutine、
+	// 靠它在主 goroutine 上报错会让用例挂住不动(t.FailNow 不是退出整个测试)。
 	t.Helper()
 	var m map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
-		t.Fatalf("请求体不是 JSON: %v", err)
+		t.Errorf("请求体不是 JSON: %v", err)
 	}
 	return m
 }
