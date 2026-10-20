@@ -91,11 +91,10 @@ func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
 func (t *Tool) Definition() sdk.ToolDefinition {
 	return sdk.ToolDefinition{
 		Name: "todo",
-		Description: "任务清单(复杂多步任务先建单、执行中推进、完成立即销单)。状态机 pending→in_progress→completed," +
-			"deleted 为坟墓;状态变更只用专用 action:start(id,activeForm?)/complete(id)/pend(id)/delete(id),update 不改状态。" +
-			"约束:同一时刻仅一个 in_progress(start 前须先 pend/complete 当前进行项);blockedBy 依赖(create/update 可带," +
-			"update 用 addBlockedBy/removeBlockedBy 增删)——成环与悬空引用被拒,start 前全部依赖须 completed," +
-			"被依赖任务不可 delete。list(status?)看摘要(get 详情)。落盘跨会话保留、人工可编辑。",
+		Description: "任务清单(复杂多步任务先建单、执行中推进、完成立即销单)。" +
+			"状态机 pending→in_progress→completed;状态变更只用专用 action(start/complete/pend/delete),update 不改状态。" +
+			"约束:同一时刻仅一个 in_progress;blockedBy 依赖(成环与悬空引用被拒,start 前依赖须 completed,被依赖任务不可 delete)。" +
+			"list(status?)看摘要(get 详情)。落盘跨会话保留。",
 		InputSchema: map[string]any{
 			"type":     "object",
 			"required": []any{"action"},

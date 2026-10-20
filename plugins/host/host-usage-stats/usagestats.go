@@ -88,6 +88,7 @@ type counter struct {
 	prompt, completion int
 	lastPrompt         int // 最近一次请求的实测输入 token(上下文占用口径,不是累计)
 	cached             int
+	lastCached         int // 最近一次请求的缓存命中 token(逐轮口径,不是累计)
 	requests           int
 }
 
@@ -167,6 +168,7 @@ func (s *Service) add(sid, model string, u sdk.Usage) {
 	c.completion += u.CompletionTokens
 	c.lastPrompt = u.PromptTokens // 上下文占用 = 最近一次发出去的 prompt,与累计量无关
 	c.cached += u.CachedTokens
+	c.lastCached = u.CachedTokens // 逐轮缓存命中(诊断用;累计值会把「早期命中过」与「现在还在命中」混成一个数)
 	c.requests++
 	s.cur = sid
 }
@@ -234,6 +236,7 @@ func (s *Service) StatsFor(sessionID string) sdk.UsageStats {
 		st.CachedTokens = c.cached
 		st.Requests = c.requests
 		st.LastPromptTokens = c.lastPrompt
+		st.LastCachedTokens = c.lastCached
 	}
 	return st
 }

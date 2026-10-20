@@ -44,6 +44,14 @@ func (h *Host) cmdCache(args []string) (string, error) {
 			pct := st.CachedTokens * 100 / st.PromptTokens
 			fmt.Fprintf(&sb, "累计: 输入 %d · 缓存命中 %d(%d%%) · 请求 %d\n",
 				st.PromptTokens, st.CachedTokens, pct, st.Requests)
+			// 逐轮口径(2026-10-20 A3):累计百分比会把「早期命中过」和「现在还在命中」
+			// 混成一个数 —— 前期命中过一次,累计就一直好看,而当前前缀早已失配。
+			// 诊断要看的是**最近一轮**的命中比例。
+			if st.LastPromptTokens > 0 {
+				lastPct := st.LastCachedTokens * 100 / st.LastPromptTokens
+				fmt.Fprintf(&sb, "最近一轮: 输入 %d · 命中 %d(%d%%)\n",
+					st.LastPromptTokens, st.LastCachedTokens, lastPct)
+			}
 		} else {
 			sb.WriteString("累计: 本会话尚无请求\n")
 		}

@@ -32,6 +32,10 @@ func TestAccumulateFromUsageEvents(t *testing.T) {
 	if st.LastPromptTokens != 50 {
 		t.Fatalf("LastPromptTokens 应取最近一次(50): %+v", st)
 	}
+	// 逐轮缓存命中口径(2026-10-20 A3):累计 90 会把「早期命中过」和「现在还在命中」混成一个数。
+	if st.LastCachedTokens != 30 {
+		t.Fatalf("LastCachedTokens 应取最近一次(30): %+v", st)
+	}
 	if st.Window != 128*1024 {
 		t.Fatalf("deepseek-chat 窗口应为 128K: %+v", st)
 	}
@@ -43,7 +47,7 @@ func TestReset(t *testing.T) {
 	s.HandleSessionEvent(usageEvent("claude-sonnet-4-5", sdk.Usage{PromptTokens: 999}))
 	s.Reset()
 	st := s.Stats()
-	if st.Requests != 0 || st.PromptTokens != 0 || st.CachedTokens != 0 || st.LastPromptTokens != 0 {
+	if st.Requests != 0 || st.PromptTokens != 0 || st.CachedTokens != 0 || st.LastPromptTokens != 0 || st.LastCachedTokens != 0 {
 		t.Fatalf("Reset 应归零: %+v", st)
 	}
 	if st.Window != 0 {

@@ -280,7 +280,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `/plugins list\|on\|off <id>` | 运行期插拔插件(`on/off` 持久化开关,重启仍生效;`default` 恢复配置树默认) |
 | `/settings history N\|off\|unlimited` | 会话历史注入条数(`off` 禁止 / `unlimited` 全部 / N 最近 N 条;全局偏好跨会话) |
 | `/compact [指示词]` | 手动滚动摘要压缩(立即折叠旧历史;自动超预算压缩不变;指示词仅记录);端点报上下文超窗时会**自动**压缩后重试本回合(溢出兜底,只重试一次),无需手动 |
-| `/cache [n]` | 缓存命中率诊断(只读):累计命中率 + 最近 n 次请求的**前缀指纹**。指纹变了会指名「第几条消息开始不一样」—— 命中率先低可能是前缀被改写(改代码能修),也可能前缀太短/厂商缓存过期(改代码没用),这条命令就是把两者分开;全程不发模型请求、不写盘 |
+| `/cache [n]` | 缓存命中率诊断(只读):累计命中率 + **最近一轮**命中率(累计会把「早期命中过」和「现在还在命中」混成一个数)+ 最近 n 次请求的**前缀指纹**。指纹变了会指名「第几条消息开始不一样」—— 命中率先低可能是前缀被改写(改代码能修),也可能前缀太短/厂商缓存过期(改代码没用),这条命令就是把两者分开;全程不发模型请求、不写盘 |
 | `/export [path]` | 导出当前会话事件序列(`.html` 结尾 = 自包含 HTML 渲染,否则 jsonl;**导出成功后默认自动用系统默认程序打开**,`GAH_EXPORT_OPEN=0` 关闭);Web/桌面端等价入口 = 侧栏会话行 `⤓` 菜单(桌面端落盘到下载目录) |
 | `/role-pack export <标识> [路径]` · `/role-pack import <包路径> [--as 名] [--overwrite]` | 角色包(定义 + 工作规则 + 私有技能,单个 zip):TUI/headless 侧的分享入口(与 Web 的 `/api/rolepack` 同一实现;同名默认拒,`--overwrite` 才覆盖且旧份进回收站) |
 | `/skill-export <技能名> [路径]` · `/skill-import <包路径> [--as 名] [--overwrite]` | 技能包(借鉴 5):`/skill-export` 把**共享技能**导成 `.zip`(只有它的 `SKILL.md`,缺省落当前工作区,给目录则拼 `gah-skill-<名>.zip`);`/skill-import` 导入(`--as` 改名会同步改写正文 frontmatter,**同名缺省拒**,`--overwrite` 才覆盖且旧份进回收站)。角色私有技能随**角色包**走 |
@@ -323,7 +323,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | 工具 | 说明 |
 |---|---|
 | `shell` | 执行 shell 命令(沙箱/审批策略拦截;写目标经路径裁决:workspace-write 下越界写被拒、只读档拒绝一切写;`data.pty` 可驱动交互式进程;凭据 env 滤除;**环境 jail**:`TMPDIR`/`XDG_CACHE_HOME`/`GOCACHE`/`GOMODCACHE`/`npm_config_cache`/`PIP_CACHE_DIR` 恒重定向到 `$GAH_HOME/jail/**`,`HOME`/`GOPATH` 等不动,`GAH_SHELL_JAIL=0` 可关;**内核级沙箱**(第 3 组):宿主把**有效**档位下发到执行入口,`shell` 在**进程树**层面限制文件写(读侧另拒凭据目录,见 `GAH_SHELL_CRED_READ_KERNEL`)—— macOS `/usr/bin/sandbox-exec`(seatbelt)、Linux **Landlock**(内核 ≥5.13,自举 helper 重新 exec 后施加);白名单 = 有效档允许的 workspace 根 + `$GAH_HOME/jail/**` + 必要设备节点(路径先解析软链),read-only 档仍保留 jail 可写;无能力平台(Windows 等)→ 一次性 stderr 告警 + 不施加包装,`GAH_SHELL_KERNEL_SANDBOX=0` 可关;**POSIX shell 解析**(`sdk/shellpath.go`):`GAH_SHELL_PATH` > Windows 上的 Git for Windows 常见安装位/PATH → `sh`,后台任务同源,缺失时显式报错不静默降级;Windows 下关闭 MSYS 参数路径转换(`MSYS_NO_PATHCONV`),防裁决路径与实际落点脱节) |
-| `file_read` / `file_write` / `file_append` / `file_edit` | 文件读写/追加/精确编辑(经沙箱路径校验) |
+| `file_read` / `file_write` / `file_append` / `file_edit` | 文件读写/追加/精确编辑(经沙箱路径校验)。**`file_read` 分页**:可选 `offset`(起始行,1 起)与 `limit`(最多行数,默认 2000、上限 20000);内容长时返回 `truncated` + `next_offset` + `note`,**如实告知**而不静默截断(单次读取不再一次灌爆上下文) |
 | `file_list` / `file_glob` / `file_grep` | 目录列举(分页)/通配递归查找/内容搜索(Go 正则,单行截断、大文件跳过并如实报数) |
 | `file_mkdir` / `file_move` / `file_copy` / `file_rename` | 建目录 / 移动 / 复制 / 重命名。**默认不覆盖**(目标已存在即报错,`overwrite: true` 才覆盖);写一律「同目录临时文件 + rename」原子落盘;**跨设备自动改走复制+校验+删源**(移动盘、外置卷、`/sdcard` → 数据根),复制失败**保留源文件** |
 | `file_delete` / `file_trash_list` / `file_restore` | 删除(**默认移入回收站** `$GAH_HOME/trash/`,每分区保留最近 20 份)/列条目/恢复。`permanent: true` 才是不可恢复的真删 |

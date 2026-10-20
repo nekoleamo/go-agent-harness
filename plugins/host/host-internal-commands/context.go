@@ -120,6 +120,11 @@ func (h *Host) cmdContext(args []string) (string, error) {
 			if st.PromptTokens > 0 {
 				cache = st.CachedTokens * 100 / st.PromptTokens
 			}
+			// 逐轮命中(2026-10-20 A3):累计口径会把「早期命中过」和「现在还在命中」混成一个数。
+			lastCache := 0
+			if st.LastPromptTokens > 0 {
+				lastCache = st.LastCachedTokens * 100 / st.LastPromptTokens
+			}
 			label := "占用"
 			if usedIsEstimate {
 				label = "占用(无实测请求,按累计输入估)"
@@ -127,6 +132,10 @@ func (h *Host) cmdContext(args []string) (string, error) {
 			fmt.Fprintf(&sb, "%s: %s/%s(%d%%)  %s\n", label, fmtK(used), fmtK(window), used*100/window, contextBar(used, window))
 			fmt.Fprintf(&sb, "累计: 输入 %d · 输出 %d · 缓存命中 %d(%d%%) · 请求 %d\n",
 				st.PromptTokens, st.CompletionTokens, st.CachedTokens, cache, st.Requests)
+			if st.LastPromptTokens > 0 {
+				fmt.Fprintf(&sb, "最近一轮: 输入 %d · 缓存命中 %d(%d%%)\n",
+					st.LastPromptTokens, st.LastCachedTokens, lastCache)
+			}
 		} else {
 			sb.WriteString("累计: 本会话尚无请求(占用待首轮对话后统计)\n")
 		}

@@ -8,13 +8,15 @@
 // 实现上的克制(它挂在每轮请求的关键路径上):
 //   - system 段进哈希时用全文(只取长度+头部会漏掉「长度相近、中间被改写」这类失配 ——
 //     实测第一版就是这么漏的),但**不留正文副本**:哈希算完即弃;
-//   - 非 system 消息仍只哈希「role + 长度 + 开头 48 字节」,比对够用且省;
+//   - 其余消息同样按全文算内容指纹(2026-10-20 补:原先只取头部,会把「被改写的
+//     消息」判成「尾部追加」,主动掩盖失配 —— 见 messageKey 注释);
 //   - 样本环形上限 prefixProbeCap 条,不随会话增长。
 package hostagentloop
 
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"hash"
 	"strings"
@@ -41,12 +43,36 @@ type prefixProbe struct {
 }
 
 // messageKey 一条消息参与指纹的摘要。
+//
+// **必须含内容指纹**(不只是长度+头部)—— 这是 2026-10-20 修的一个真缺陷:
+// 原实现是 `role|长度|前 48 字节`,于是「长度相同、开头相同、中间被改写」的消息与
+// 原消息**键完全相同**。而「appended(只是尾部追加)」这个结论正是拿键的前缀关系判的
+// ⇒ 一条被改写的 system 消息会被判成「appended · 正常」,**主动掩盖**一次缓存失配。
+// 这比"看不见"更坏:诊断会把人引到错的方向(实测:往系统提示里塞一个每轮重算的片段,
+// 探针连续报「尾部追加 2 条(前缀未变)」,而 sys 段指纹每轮都在变)。
+//
+// 现在键 = role|长度|内容指纹|开头若干字节:
+//   - 内容指纹 = sha256(正文 + 工具调用)前 8 位(全文参与,不只头部);
+//   - 工具调用也要进指纹 —— 它同样是模型看到的提示的一部分。
+//
+// 代价:每请求对全部历史正文各算一次 sha256(100K token 历史 ≈ 400KB ≈ 1ms)。
+// 这点开销换「不掩盖失配」很划算 —— 探针挂在每轮请求的关键路径上,算错一次就带偏一个人。
 func messageKey(m sdk.LLMMessage) string {
 	head := m.Content
 	if len(head) > prefixHeadBytes {
 		head = head[:prefixHeadBytes]
 	}
-	return fmt.Sprintf("%s|%d|%s", m.Role, len(m.Content), head)
+	return fmt.Sprintf("%s|%d|%s|%s", m.Role, len(m.Content), contentFingerprint(m), head)
+}
+
+// contentFingerprint 一条消息正文的短指纹(全文参与;工具调用一并计入)。
+func contentFingerprint(m sdk.LLMMessage) string {
+	h := sha256.New()
+	fmt.Fprintf(h, "%d\x00%s\x00", len(m.Content), m.Content)
+	for _, c := range m.ToolCalls {
+		fmt.Fprintf(h, "c\x00%s\x00%s\x00", c.Name, c.Arguments)
+	}
+	return hex.EncodeToString(h.Sum(nil))[:8]
 }
 
 // record 在一次请求组装完成后取样。
@@ -71,7 +97,17 @@ func (p *prefixProbe) record(msgs []sdk.LLMMessage, tools []sdk.ToolDefinition) 
 	keys := make([]string, 0, len(msgs))
 	sys, toolsH, hist := sha256.New(), sha256.New(), sha256.New()
 	for _, t := range tools {
-		fmt.Fprintf(toolsH, "t\x00%s\x00%s\x00", t.Name, t.Description)
+		// **必须含参数 schema**:模型看到的工具定义就是 name+description+schema 三样,
+		// 只指纹前两样 ⇒ 改 schema(比如给 file_read 加 offset/limit)时探针**完全看不见**,
+		// 而这次改动确实让前缀失配(schema 是提示的一部分)。A1 改 file_read 的 schema 时
+		// 正是靠这一条才看得见。
+		schema := ""
+		if t.InputSchema != nil {
+			if b, err := json.Marshal(t.InputSchema); err == nil {
+				schema = string(b)
+			}
+		}
+		fmt.Fprintf(toolsH, "t\x00%s\x00%s\x00%s\x00", t.Name, t.Description, schema)
 	}
 	sysChars, sysCount := 0, 0
 	for i, m := range msgs {
@@ -204,12 +240,13 @@ func roleOf(key string) string {
 }
 
 func headOf(key string) string {
-	// key = role|len|head —— 取第三段开头 24 字节,够认出是「哪段内容」变了
-	parts := splitN(key, '|', 3)
-	if len(parts) < 3 {
+	// key = role|len|内容指纹|开头若干字节 —— 取**最后一段**(头部文字)给人看。
+	// 注意:内容指纹是第 3 段,不是第 4 段;早先按「第 3 段」取会显示成指纹而不是正文开头。
+	parts := splitN(key, '|', 4)
+	if len(parts) < 4 {
 		return ""
 	}
-	head := parts[2]
+	head := parts[3]
 	if len(head) > 24 {
 		head = head[:24]
 	}

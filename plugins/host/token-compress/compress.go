@@ -151,13 +151,50 @@ func lastUserIndex(evs []sdk.SessionEvent) int {
 	return last
 }
 
-// mergeSummary 累计摘要:旧 + 新段,限长(预算一半,防摘要自身膨胀)。
+// mergeSummary 累计摘要:老段 + 新段,限长(预算一半,防摘要自身膨胀)。
+//
+// **新段必留、老段让位**(2026-10-20 优化批次 A2 修的真缺陷)。
+// 原实现是 `clip(merged, budget/2)` —— clip 取**头部**,于是摘要一旦长到预算一半,
+// 此后每次折叠**新折进来的那段直接消失**,摘要永久停在最老的内容上;会话越长,
+// 「模型看到的历史摘要」与「实际历史」偏离越大,而且是**静默**的。
+//
+// 现在的口径(两端各留一头,中间丢):
+//
+//	头部  = 累计摘要最早的 limit/3 字符(**钉住**最初的任务陈述,别让它被滑掉);
+//	尾部  = 累计摘要最新的剩余部分(**必含**新折进来的那段);
+//	中间  = 省略,并标 [早期内容已省略] —— 免得模型误以为摘要是完整的。
+//
+// 之所以两端都留而不是只留尾部:只留尾部等于把「最初要做什么」滑出窗口(老),
+// 只留头部等于把「刚做完什么」滑掉(新,原实现就是这个坑);两端各留是折中。
+//
+// 反向验证:把本函数改回 `clip(merged, budget/2)`,TestMergeSummaryKeepsNewSegment 必须红。
 func mergeSummary(old, seg string, budget int) string {
 	merged := old + seg
-	if budget > 0 && len([]rune(merged)) > budget/2 {
-		merged = clip(merged, budget/2)
+	limit := budget / 2
+	if limit <= 0 {
+		return merged
 	}
-	return merged
+	r := []rune(merged)
+	if len(r) <= limit {
+		return merged
+	}
+	const mark = "[早期内容已省略]"
+	headKeep := limit / 3
+	tailKeep := limit - headKeep - len([]rune(mark))
+	if tailKeep < 0 {
+		// 预算太小(极小 budget)⇒ 退化为只留尾部,保证新段一定在。
+		tailKeep = limit
+		headKeep = 0
+	}
+	head := ""
+	if headKeep > 0 {
+		head = string(r[:headKeep])
+	}
+	tail := string(r[len(r)-tailKeep:])
+	if headKeep > 0 {
+		return head + mark + tail
+	}
+	return tail
 }
 
 // clip 按 rune 截断并加省略号。

@@ -139,14 +139,13 @@ func RuleSectionText() string {
 func (t *Tool) Definition() sdk.ToolDefinition {
 	return sdk.ToolDefinition{
 		Name: "auto_plan",
-		Description: "规划模式工具(规划期产物与确认门;执行期任务追踪用 todo)。模型面对'先规划后执行'或复杂任务(3+ 步)时," +
+		Description: "规划模式工具(规划期产物与确认门;执行期任务追踪用 todo)。" +
 			"先只读探索再 create 落盘结构化规划,等用户确认后才执行。action:" +
-			"create(request 必填,objective/constraints[]/steps[] 由探索后生成;steps=线性检查清单标题数组)→ 返回 id(状态 proposed);" +
-			"get(id) 看详情;list(status?) 当前项目全部(摘要);" +
-			"confirm(id) 用户明确确认后标记(proposed→confirmed,允许执行);" +
-			"step(id,index,status) 步骤推进(status: pending|in_progress|completed;仅 confirmed 后可改,completed 步骤锁定;执行期主要状态机用 todo,plan step 供轻量/收尾同步);" +
-			"complete(id) 全部完成后归档(confirmed→completed)。M11-T2 联动:确认后把检查清单转 todo.create 逐项追踪执行(todo 状态机)," +
-			"执行完回 complete 归档规划。跨会话保留、人工可编辑 jsonl。",
+			"create(request 必填;objective/constraints[]/steps[] 由探索后生成,steps=线性检查清单标题数组)→ 返回 id(proposed);" +
+			"get(id) / list(status?) 看详情与全部;confirm(id) 用户确认后标记(→confirmed,允许执行);" +
+			"step(id,index,status) 推进步骤(pending|in_progress|completed;仅 confirmed 后可改);" +
+			"complete(id) 全部完成后归档(→completed)。" +
+			"确认后把检查清单转 todo.create 逐项追踪,执行完回 complete 归档规划。跨会话保留。",
 		InputSchema: map[string]any{
 			"type":     "object",
 			"required": []any{"action"},

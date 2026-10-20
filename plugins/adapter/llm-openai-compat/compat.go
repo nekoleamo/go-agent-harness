@@ -362,11 +362,15 @@ type wireChunk struct {
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage *struct {
-		PromptTokens        int `json:"prompt_tokens"`
-		CompletionTokens    int `json:"completion_tokens"`
-		PromptTokensDetails *struct {
-			CachedTokens int `json:"cached_tokens"` // 缓存命中(deepseek 等)
-		} `json:"prompt_tokens_details"`
+		PromptTokens        int              `json:"prompt_tokens"`
+		CompletionTokens    int              `json:"completion_tokens"`
+		PromptTokensDetails *wirePromptCache `json:"prompt_tokens_details"`
+		// DeepSeek 原生形状:命中/未命中分开报(不在 prompt_tokens_details 里)。
+		// 经某些网关转发时 prompt_tokens_details 可能整个缺失 ⇒ 只认前一种形状的话,
+		// 命中率会**恒显示 0%**,用户据此判断「缓存没生效」—— 而其实命中了。
+		// 两形状都取,取大者(见 cacheusage.go)。
+		PromptCacheHitTokens  int `json:"prompt_cache_hit_tokens"`
+		PromptCacheMissTokens int `json:"prompt_cache_miss_tokens"`
 	} `json:"usage"`
 }
 
@@ -490,9 +494,7 @@ func (a *Adapter) Complete(ctx context.Context, req *sdk.LLMRequest, onChunk fun
 		}
 		if ck.Usage != nil {
 			usage = sdk.Usage{PromptTokens: ck.Usage.PromptTokens, CompletionTokens: ck.Usage.CompletionTokens}
-			if ck.Usage.PromptTokensDetails != nil {
-				usage.CachedTokens = ck.Usage.PromptTokensDetails.CachedTokens
-			}
+			usage.CachedTokens = cachedTokensOf(ck.Usage.PromptTokensDetails, ck.Usage.PromptCacheHitTokens)
 		}
 		for _, ch := range ck.Choices {
 			ev := sdk.LLMStreamEvent{Delta: ch.Delta.Content, Thinking: ch.Delta.ReasoningContent}

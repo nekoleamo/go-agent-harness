@@ -57,7 +57,11 @@ func fileSchema(kind string) map[string]any {
 	switch kind {
 	case "read":
 		return map[string]any{"type": "object", "required": []any{"path"},
-			"properties": map[string]any{"path": map[string]any{"type": "string"}}}
+			"properties": map[string]any{
+				"path":   map[string]any{"type": "string"},
+				"offset": map[string]any{"type": "integer", "description": "起始行号(1 起,默认 1)"},
+				"limit":  map[string]any{"type": "integer", "description": fmt.Sprintf("最多返回行数(默认 %d,上限 %d)", readDefaultLimit, readMaxLimit)},
+			}}
 	case "write":
 		return map[string]any{"type": "object", "required": []any{"path", "content"},
 			"properties": map[string]any{
@@ -110,6 +114,8 @@ func (f *FilesTool) exec(ctx context.Context, name, raw string) (any, error) {
 		Content string `json:"content,omitempty"`
 		Old     string `json:"old,omitempty"`
 		New     string `json:"new,omitempty"`
+		Offset  int    `json:"offset,omitempty"`
+		Limit   int    `json:"limit,omitempty"`
 	}
 	if err := json.Unmarshal([]byte(raw), &a); err != nil {
 		return nil, fmt.Errorf("%s: args: %w", name, err)
@@ -120,11 +126,11 @@ func (f *FilesTool) exec(ctx context.Context, name, raw string) (any, error) {
 		if err != nil {
 			return map[string]any{"error": err.Error()}, nil
 		}
-		b, err := os.ReadFile(p)
+		seg, err := readSegment(p, a.Offset, a.Limit)
 		if err != nil {
 			return map[string]any{"error": fmt.Sprintf("读 %s: %v", p, err)}, nil
 		}
-		return map[string]any{"path": p, "content": string(b)}, nil
+		return seg, nil
 	case "file_write", "file_append":
 		p, err := f.resolve(ctx, a.Path, true)
 		if err != nil {
@@ -242,11 +248,7 @@ func (f *FilesTool) relPath(p string) string {
 // register 注册工具(统一执行分发):四件套 + F1 文件操作。
 func (f *FilesTool) register(tools sdk.ToolRegistry) sdk.Disposer {
 	var ds []func()
-	ds = append(ds, tools.Register(&fileTool{name: "file_read", f: f, schema: map[string]any{
-		"type":       "object",
-		"required":   []any{"path"},
-		"properties": map[string]any{"path": map[string]any{"type": "string"}},
-	}}))
+	ds = append(ds, tools.Register(&fileTool{name: "file_read", f: f, schema: fileSchema("read")}))
 	ds = append(ds, tools.Register(&fileTool{name: "file_write", f: f, schema: map[string]any{
 		"type":     "object",
 		"required": []any{"path", "content"},
@@ -300,7 +302,8 @@ type fileTool struct {
 
 // fileOpDescs 四件套描述;F1 十个动作的描述在 ops.go(opsDesc)。
 var fileOpDescs = map[string]string{
-	"file_read":   "读文件内容:{path}",
+	"file_read": "读文件内容:{path},可选 offset(起始行,1 起)与 limit(最多行数,默认 2000);" +
+		"内容长时按 next_offset 继续读",
 	"file_write":  "写文件(覆盖):{path, content}",
 	"file_append": "追加文件:{path, content}",
 	"file_edit":   "替换文件中的片段:{path, old, new}",

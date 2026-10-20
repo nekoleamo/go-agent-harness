@@ -170,6 +170,12 @@ type UsageStats struct {
 	// 而累计 PromptTokens 是多轮之和 —— 拿它比窗口会越跑越离谱(多轮后出现
 	// 「5000K/128K」)。展示层的「上下文 xx/xx%」一律用本字段;累计量只用于总量统计。
 	LastPromptTokens int
+	// LastCachedTokens 最近一次请求的**缓存命中** token(0 = 该轮没命中或尚无请求)。
+	//
+	// 为何单列(2026-10-20 优化批次 A3):累计口径会把「早期命中过」和「现在还在命中」
+	// 混成一个数 —— 一场会话里只要前面命中过一次,累计百分比就一直好看,而**当前**
+	// 前缀早就失配了。诊断「命中率为什么低」要看的是**逐轮**的值。
+	LastCachedTokens int
 	Window           int // 模型上下文窗口(token;context_window 配置,默认 65536)
 }
 

@@ -80,19 +80,16 @@ func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
 func (t *Tool) Definition() sdk.ToolDefinition {
 	return sdk.ToolDefinition{
 		Name: "subagent",
-		Description: "委派一个独立子代理执行多步/独立任务(引擎=宿主 ctx.fanout;子代理上下文隔离," +
-			"仅结论回流父级,不占父上下文)。action:" +
-			"delegate(task 必填:委派目标与验收口径)→ one-shot 同步等子代理完成,返回其最终回复文本;" +
-			"适合可并行拆给独立上下文的子任务(独立实现/独立评审/独立调研);轻量单步直接自己做,不必委派。" +
-			"spawn(task)→ 后台启动子代理(不阻塞当前回合),返回 agent_id 句柄——长任务/需并行推进时用;" +
-			"agents()→ 全部后台会话(状态 running/done/failed/killed);agent_status(agent_id)→ 单个状态与结果;" +
-			"fork(task)→ 带父上下文的子代理:继承当前会话已发生的历史 + task,后台启动(句柄同 spawn);" +
-			"agents()→ 全部后台会话(状态 running/done/failed/killed);agent_status(agent_id)→ 单个状态与" +
-			"结果,含 send_message 对话记录(messages);agent_kill(agent_id)→ 终止运行中的后台子代理;" +
-			"send_message(agent_id, message)→ 向运行中的子代理注入消息(追加为输入,子代理继续执行并回复)。" +
-			"isolate=\"worktree\"(可配 delegate/spawn/fork)→ **隔离运行**:子代理在独立 git worktree 里工作" +
-			"(自有目录与分支),改动不落主工作区 —— 多子代理并行改同一批文件时用;回包含 worktree 路径/分支。" +
-			"非 git 仓库或未启用 host-worktrees 会**显式报错**(不会静默退化为在主工作区执行)。",
+		// 描述体量说明(2026-10-20 A5):本描述曾 1435 字节,占整个工具 schema 的一半。
+		// 描述是**每轮都发**的固定前缀(见 §7 固定前缀账),而 action 的枚举、每个动作要传什么
+		// 参数,schema 的 properties 里已经写全了 —— 描述里再抄一遍是纯浪费。
+		// 现在只留「什么时候用」与「模型不知道就会做错」的那几条硬规则,细节交给 schema。
+		Description: "委派独立子代理执行多步/独立任务(上下文隔离,仅结论回流父级,不占父上下文)。" +
+			"轻量单步直接自己做,不必委派。action: delegate=同步等完成并返回最终回复;" +
+			"spawn=后台启动(返回 agent_id,不阻塞);fork=带父上下文后台启动;" +
+			"agents=列后台会话;agent_status=查状态与结果;agent_kill=终止;send_message=给运行中的子代理注入消息。" +
+			"isolate=\"worktree\"(delegate/spawn/fork 可配)=子代理在独立 git worktree 里工作," +
+			"改动不落主工作区(多子代理并行改同一批文件时用);非 git 仓库或未启用 host-worktrees 会**显式报错**。",
 		InputSchema: map[string]any{
 			"type":     "object",
 			"required": []any{"action"},
