@@ -109,7 +109,9 @@ function attUrl(rel: string): string {
         <div v-else-if="r.m.kind === 'tool'" class="tool mono">
           <span class="tl">{{ r.m.text }}</span>
           <div class="result" :class="{ err: r.m.err }">
-            <pre>{{ expanded[r.m.seq] ? r.m.full : r.m.full?.slice(0, 400) }}</pre>
+            <!-- 折叠态先给**结论**(宿主算好的一行人话摘要,2026-10-20 B1);
+                 摘要缺失(旧日志/未知工具)才回退到截断全文。 -->
+            <pre>{{ expanded[r.m.seq] ? r.m.full : (r.m.summary || r.m.full?.slice(0, 400)) }}</pre>
           </div>
           <button
             v-if="r.m.full && r.m.full.length > 400"

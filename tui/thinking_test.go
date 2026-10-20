@@ -60,7 +60,12 @@ func TestThinkingFoldRender(t *testing.T) {
 	for _, p := range rowsFull {
 		joined += stripANSI(renderSessionRow(p, s, 0))
 	}
-	if joined != long {
+	// 展开态是全文(折行后拼接);首行带左缘标记 "⋯ "(2026-10-20 B4:思考行要有形状标记,
+	// 多数终端不渲染斜体,只靠颜色分不出“思考”与“正文”)。
+	if !strings.HasPrefix(joined, "⋯ ") {
+		t.Fatalf("展开态首行应带左缘标记: %q…", joined[:20])
+	}
+	if !strings.HasSuffix(joined, long) {
 		t.Fatalf("展开态应全文(折行后拼接): %q…", joined[:50])
 	}
 	s2 := &State{}

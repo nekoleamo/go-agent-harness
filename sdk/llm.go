@@ -176,7 +176,15 @@ type UsageStats struct {
 	// 混成一个数 —— 一场会话里只要前面命中过一次,累计百分比就一直好看,而**当前**
 	// 前缀早就失配了。诊断「命中率为什么低」要看的是**逐轮**的值。
 	LastCachedTokens int
-	Window           int // 模型上下文窗口(token;context_window 配置,默认 65536)
+	// AutoSummary 当前上下文里含**自动压缩**产生的滚动摘要(2026-10-20 B3)。
+	//
+	// 为什么值得单独说:自动压缩后上下文占用会**变小**,而模型"忘了前面说过什么"
+	// 恰恰是这时候发生的。标出来,用户才知道"它看到的已经不是原话了"。
+	//
+	// 填充方:host-usage-stats 不知道压缩发生过(它只看用量事件)⇒ 由**组装视图的一方**
+	// (TUI/Web)在取统计后从 ctx.sessions 的可选扩展补上(见 sdk.AutoSummaryState)。
+	AutoSummary bool
+	Window      int // 模型上下文窗口(token;context_window 配置,默认 65536)
 }
 
 // LLMStreamEvent 流式增量(文本增量 + 思维增量 + 工具调用增量;Done 时携带最终消息)。

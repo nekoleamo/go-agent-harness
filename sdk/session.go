@@ -165,6 +165,23 @@ type ToolResultEvent struct {
 	Name    string
 	Content string // 序列化后的结果/错误
 	Error   string
+
+	// Summary 一行**人话**摘要(展示层用;空串 = 未算或该工具不认识)。
+	//
+	// 为什么要有它(2026-10-20 优化批次 B1):工具结果是一段 JSON,界面此前直接截断显示
+	// —— TUI 给前 160 字符、Web 给前 400 字符。于是 file_read 显示成
+	// `{"content":"package main\n\nimport (` —— 一个字也没告诉人"它读了多少行"。
+	// 用户要的是**结论**,不是**开销**。
+	//
+	// 由宿主算好后随事件下发(见 internal/toolsummary):TUI 与 Web 显示**同一句**,
+	// 不各写一份实现(两份实现迟早漂移)。旧会话日志没有这个字段 ⇒ 展示层回退到旧的
+	// 截断行为(向后兼容,不需要迁移历史数据)。
+	Summary string
+	// SummaryErr 摘要表示这是一次**失败**(工具把错误写在结果内容里而非错误通道时)。
+	//
+	// 为什么单独一个字段:内容级错误此前在 TUI 显示成「✓ file_read: {"error":…}」——
+	// 给一次失败打绿勾,比"没信息"更误导。模型侧不受影响(仍按原样看到 JSON)。
+	SummaryErr bool
 }
 
 // SessionLog 服务(ctx.sessions):追加事件 + 投影模型历史。
@@ -472,6 +489,22 @@ type ForkableSessions interface {
 // 重读全局/多级项目/附加指令文件,失败保留旧值(错误回滚,免重启生效)。
 type ReloadableInstructions interface {
 	ReloadInstructions() error
+}
+
+// AutoSummaryState 可选扩展(ctx.sessions 实现者):当前会话的投影里是否含
+// **自动压缩**产生的滚动摘要。
+//
+// 为什么需要它(2026-10-20 B3):自动压缩之后上下文占用会**变小**,而模型
+// “忘了前面说过什么”恰恰是这时候发生的。标一句“含自动摘要”,用户才知道
+// “它看到的已经不是原话了”。
+//
+// 为什么不放进 ctx.usageStats:统计服务只看用量事件,不知道压缩发生过(那是
+// 会话日志的事)——由**组装视图的一方**(TUI/Web)在取统计后按类型断言补上。
+//
+// 手动 /compact 也产生摘要,但那是用户自己按的 ⇒ 标 “auto” 会误导,故只报自动压缩。
+type AutoSummaryState interface {
+	// HasAutoSummary 当前投影是否含自动压缩产生的摘要(手动 /compact 不算)。
+	HasAutoSummary() bool
 }
 
 // CompactService 手动滚动压缩服务(/compact;可选实现——host-session-log 实现,

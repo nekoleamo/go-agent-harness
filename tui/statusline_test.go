@@ -9,11 +9,15 @@ import (
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
-// TestStatuslineDefaultMatchesBaseline 默认配置(未设置)= F15.3 基线输出(逐段对账)。
+// TestStatuslineDefaultMatchesBaseline 默认配置(未设置)= 基线输出(逐段对账)。
+//
+// 基线在 2026-10-20 B2 改过一次:静态组(工作区/沙箱/审批/角色/会话)内部从 " | "
+// 改成 " · " —— 它们本来就是**并列的事实**而不是一个语义集群,用一个分隔符连成一块,
+// 才看得出“这几项是常驻配置、那边是会变的信号”。
 func TestStatuslineDefaultMatchesBaseline(t *testing.T) {
 	s := &State{Workspace: "proj", Sandbox: "workspace-write", Approval: "smart", Session: "s1"}
 	out := stripColor(renderStatusLine(s, 0))
-	for _, want := range []string{" 空闲 | 工作区: proj | 沙箱: workspace-write | 审批: 智能 | 会话: s1"} {
+	for _, want := range []string{" 空闲 | 工作区: proj · 沙箱: workspace-write · 审批: 智能 · 会话: s1"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("基线状态栏应含 %q: %q", want, out)
 		}
@@ -23,8 +27,39 @@ func TestStatuslineDefaultMatchesBaseline(t *testing.T) {
 	if strings.Contains(out, "审批") || strings.Contains(out, "会话") {
 		t.Fatalf("空值项不应渲染: %q", out)
 	}
-	if !strings.Contains(out, "空闲 | 工作区: ? | 沙箱: workspace-write") {
+	if !strings.Contains(out, "空闲 | 工作区: ? · 沙箱: workspace-write") {
 		t.Fatalf("工作区/沙箱缺省回退应保留: %q", out)
+	}
+}
+
+// TestStatuslineLeftLiveRightStatic 默认布局:实时信号在左、静态配置在右(2026-10-20 B2)。
+//
+// 为什么:一条 80 列的终端上,静态那几项几乎**永不变**,它们会把“会变的”
+// (state/queue/questions)挤到边上。两端对齐后,左端永远是"要盯的",右端是"扫一眼的"。
+func TestStatuslineLeftLiveRightStatic(t *testing.T) {
+	s := &State{Workspace: "proj", Sandbox: "workspace-write", Approval: "smart", Session: "s1"}
+	out := stripColor(renderStatusLine(s, 80))
+	live := strings.Index(out, "空闲")
+	static := strings.Index(out, "工作区: proj")
+	if live < 0 || static < 0 {
+		t.Fatalf("实时项与静态项都应在: %q", out)
+	}
+	if live > static {
+		t.Fatalf("实时项应在左、静态项在右: %q", out)
+	}
+	// 右端对齐:静态组末尾贴近行尾
+	if !strings.HasSuffix(strings.TrimRight(out, " "), "会话: s1") {
+		t.Fatalf("静态组应右对齐到行尾: %q", out)
+	}
+}
+
+// TestStatuslineNarrowKeepsLive 窄终端:放不下时**实时项一个都不丢**(丢“待答 2”
+// 等于把用户需要回来的信号弄没了;静态项可让位)。
+func TestStatuslineNarrowKeepsLive(t *testing.T) {
+	s := &State{Questions: []PendingQ{{ID: "q1"}}, Workspace: "proj", Sandbox: "workspace-write", Session: "s1"}
+	out := stripColor(renderStatusLine(s, 30))
+	if !strings.Contains(out, "待答") {
+		t.Fatalf("窄屏时实时信号不能丢: %q", out)
 	}
 }
 

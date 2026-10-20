@@ -140,7 +140,16 @@ func NewApp(c sdk.Ctx, loop sdk.AgentLoop, llm sdk.LLMService, profile string, p
 		if err := a.c.Inject("ctx.usageStats", &us); err != nil {
 			return sdk.UsageStats{} // host-usage-stats 未装配:状态栏显示 上下文 -
 		}
-		return us.Stats()
+		st := us.Stats()
+		// “含自动摘要”标记(2026-10-20 B3):统计服务不知道压缩发生过(它只看用量事件),
+		// 由这里从会话日志的可选扩展补上(手动 /compact 不算 —— 那是用户自己按的)。
+		var sess sdk.SessionLog
+		if err := a.c.Inject("ctx.sessions", &sess); err == nil {
+			if as, ok := sess.(sdk.AutoSummaryState); ok {
+				st.AutoSummary = as.HasAutoSummary()
+			}
+		}
+		return st
 	}
 	m.onDock = a.dockInfo
 	m.onDockOutput = a.dockOutputCmd

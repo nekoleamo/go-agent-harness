@@ -95,6 +95,10 @@ type Log struct {
 	// 消费者是 host-cwd-sessions 的「切走闸门」:当前会话的单例被 Load 换掉时,
 	// 在跑的回合会继续往新会话文件里写(跨会话串写)。挂在 Log 上 = 判定与事实同源。
 	busy atomic.Int32
+	// autoSummary 本会话是否发生过**自动**压缩(预算/溢出兜底路径的折叠)。
+	// 手动 /compact 不置位 —— 那是用户自己按的,标成"auto"会误导。
+	// 用途:界面标一句"含自动摘要"(模型看到的已经不是原话了)��见 sdk.AutoSummaryState。
+	autoSummary bool
 }
 
 // NewMemLog 建一个**纯内存**会话日志(不落盘;Flush 为 no-op)。
@@ -320,6 +324,7 @@ func (l *Log) deriveLocked() []sdk.LLMMessage {
 	if l.compressor != nil && budget > 0 && approxChars(out) > budget {
 		l.compressedUntil = l.compressor.Fold(l.events, l.compressedUntil, budget,
 			func(s string) { _, _ = l.appendLocked(sdk.SessionEvent{Kind: sdk.EventSummary, Payload: s}) })
+		l.autoSummary = true // 自动压缩发生过(预算触发)
 		out = l.projectLocked(l.compressedUntil)
 		if l.historyLimit > 0 && len(out) > l.historyLimit {
 			out = out[len(out)-l.historyLimit:]
@@ -569,6 +574,18 @@ func (l *Log) Replay() []sdk.SessionEvent {
 // 不等待投影超限(自动路径仍由 DeriveMessages 触发)。prompt 仅作指示词记录
 // (token-compress 抽取式引擎不消费其内容,不污染事实摘要)。
 // 返回:最新累计摘要文本、本次折叠事件跨度(0 = 无可折叠)、错误(压缩器/预算未启用)。
+// HasAutoSummary 实现 sdk.AutoSummaryState:本会话是否发生过**自动**压缩。
+//
+// 只读、锁内取(与投影同源);手动 /compact 不置位(那是用户自己按的)。
+func (l *Log) HasAutoSummary() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.autoSummary
+}
+
+// Compact 立即以注册预算折叠滚动摘要(不等待投影超限)。
+// prompt 为调用方指示词(token-compress 为抽取式引擎,不消费其内容,仅作记录);
+// 返回最新累计摘要文本与本次被摘要覆盖的事件跨度(0 = 无可折叠/未发生)。
 func (l *Log) Compact(prompt string) (string, int, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -625,6 +642,7 @@ func (l *Log) CompressForOverflow() (int, error) {
 		_, _ = l.appendLocked(sdk.SessionEvent{Kind: sdk.EventSummary, Payload: s})
 	})
 	l.compressedUntil = w
+	l.autoSummary = true // 溢出兜底也是**自动**压缩(不是用户按的)
 	if trim > 0 {
 		l.emergencyTrim = trim
 	}

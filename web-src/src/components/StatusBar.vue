@@ -37,12 +37,17 @@ function k(n: number): string {
 const ctx = computed(() => {
   const s = props.state.stats
   const used = s.LastPromptTokens
+  // 自动压缩标记(2026-10-20 B3):上下文里有一部分已经是**摘要**(模型看到的不是原话)。
+  // 不标的话,占用突然变小而模型"忘了前面说过什么"会无从解释。
+  const auto = s.AutoSummary ? ' · 含自动摘要' : ''
   if (s.Window > 0) {
     const pct = Math.min(100, Math.round((used / s.Window) * 100))
+    // 缓存命中率用**累计**口径(与 TUI 状态栏同源):状态栏只放一个数,
+    // 两个口径摆在一起反而没人看得懂;逐轮诊断在 /cache 与 /context 里。
     const cachePct = s.PromptTokens > 0 ? Math.round((s.CachedTokens / s.PromptTokens) * 100) : 0
-    return `${k(used)}/${k(s.Window)} ${pct}% · 缓存 ${cachePct}%`
+    return `${k(used)}/${k(s.Window)} ${pct}% · 缓存 ${cachePct}%${auto}`
   }
-  return used > 0 ? `${k(used)} (窗口未知)` : '–'
+  return used > 0 ? `${k(used)} (窗口未知)${auto}` : '–'
 })
 
 const SANDBOX_ZH: Record<string, string> = { 'read-only': '只读', 'full-access': '完全', 'workspace-write': '工作区' }

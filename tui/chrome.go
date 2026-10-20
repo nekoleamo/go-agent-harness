@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/lipgloss/v2"
+
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -34,22 +36,57 @@ func renderInputRight(s *State) string {
 		}
 		parts = append(parts, "思维: "+t)
 	}
-	stats := "上下文 -"
+	// 上下文占用:**按水位分档着色**(中性/提示/警示),并且**不假精确**。
+	//
+	// 分档(2026-10-20 B3):<70% 中性 · 70–90% 提示(琥珀)· ≥90% 警示(红)。
+	// 为什么要色:数字要用户自己算才知道"快满了",而"快满了"是需要**立刻**反应的事
+	// (该 /compact 或换窗口更大的模型)—— 颜色让它在余光里就被看见。
+	stats, statsStyle := "上下文 -", styleStatus
 	if s.Stats.Requests > 0 {
 		// 上下文占用用**最近一次请求的实测 prompt**(LastPromptTokens),不是累计 PromptTokens ——
 		// 累计是多轮之和,多轮后会显示成 5000K/128K 这种越跑越大的假数字。
 		used := s.Stats.LastPromptTokens
-		if w := s.Stats.Window; w > 0 {
-			stats = fmt.Sprintf("上下文 %s/%s (%d%%)", fmtK(used), fmtK(w), used*100/w)
-		} else {
+		switch {
+		case used <= 0:
+			// 有请求但拿不到实测占用(本轮未再请求/用量事件缺字段):显示 "?" 而不是
+			// "0/128K (0%)" —— 后者是**假数字**(说"没占",其实是"不知道")。
+			stats = "上下文 ?"
+		case s.Stats.Window > 0:
+			pct := used * 100 / s.Stats.Window
+			stats = fmt.Sprintf("上下文 %s/%s (%d%%)", fmtK(used), fmtK(s.Stats.Window), pct)
+			statsStyle = contextUsageStyle(pct)
+		default:
 			stats = fmt.Sprintf("上下文 %s", fmtK(used)) // 窗口未知:仅使用量(不假精确)
 		}
+		// 缓存命中率:状态栏用**累计**口径(稳定的"这場会话缓存省了多少")。
+		// 逐轮命中率的诊断价值在 /cache(那里同时给累计与最近一轮)—— 状态栏只放一个数,
+		// 两个口径摆在一起反而没人看得懂。
 		if s.Stats.CachedTokens > 0 && s.Stats.PromptTokens > 0 {
 			stats += fmt.Sprintf(" 缓存 %d%%", s.Stats.CachedTokens*100/s.Stats.PromptTokens)
 		}
+		if s.Stats.AutoSummary {
+			// 自动压缩标记:上下文里有一部分已经是**摘要**了(模型看到的不是原话)。
+			// 不标的话,用户看到占用突然变小却不知道为什么模型"忘了前面说过什么"。
+			stats += " (含自动摘要)"
+		}
 	}
-	parts = append(parts, stats)
+	parts = append(parts, statsStyle.Render(stats))
 	return strings.Join(parts, " · ")
+}
+
+// contextUsageStyle 上下文占用的分档样式(中性/提示/警示)。
+//
+// 阈值 70% / 90%:70% 是"还能聊但该留意了",90% 是"再聊几句就要压缩"。
+// 阈值写成常量而不是散在渲染里:换档位时只有一处要动。
+func contextUsageStyle(pct int) *lipgloss.Style {
+	switch {
+	case pct >= 90:
+		return styleError
+	case pct >= 70:
+		return styleBusy
+	default:
+		return styleStatus
+	}
 }
 
 // fmtDur 耗时短格式:>=10s 整数秒,<10s 一位小数(状态栏展示)。
@@ -314,15 +351,69 @@ func statuslineItem(s *State, token string) string {
 }
 
 // renderStatusLine 状态栏(/statusline 可配置;未配置 = F15.3 基线)。
-// 宽度填充防行尾锯齿(旧版空白仍在尾部)。
+//
+// 布局(2026-10-20 B2):**左实时、右静态**。
+//
+// 为什么改:一条 80 列的终端上塞十来段,而工作区/沙箱/审批/角色/会话这几项几乎
+// **永不变** —— 它们会把"会变的"(state/queue/questions/dock/last/tps)挤到边上,
+// 眼睛要在两堆信息里找。分区后:**左边是会变的(要盯),右边是常驻的(扫一眼)**,
+// 右区右对齐 ⇒ 两堆各占一端,互不干扰(pi/Codex 的底栏同款思路)。
+//
+// 放不下怎么办(窄终端):
+//   - **实时项一个都不丢** —— 丢"待答 2"是把用户需要回来的信号弄没了;
+//   - 放不下就不做右对齐,退回"实时在前、静态在后"的单行(与旧基线同序),
+//     超宽部分由 clampFrame 从**右端**截断 ⇒ 被截掉的天然是静态项(优先级最低)。
+//     (右对齐时若强行截断,被截的会是左边的实时项 —— 那才是事故。)
+//
+// 用户显式 /statusline 配置过 → 保持**用户顺序单行**(那是ta的意图,不由这里重排)。
 func renderStatusLine(s *State, width int) string {
-	items := s.Statusline
-	if len(items) == 0 {
-		items = defaultStatusline
+	if len(s.Statusline) > 0 {
+		return renderStatusLineOrdered(s, width)
 	}
+	var live, static []string
+	for _, tok := range defaultStatusline {
+		txt := statuslineItem(s, tok)
+		if txt == "" {
+			continue
+		}
+		if statuslineLive[tok] {
+			live = append(live, txt)
+		} else {
+			static = append(static, txt)
+		}
+	}
+	l := strings.Join(live, " · ")
+	r := strings.Join(static, " · ")
+	out := l
+	right := false
+	if l != "" && r != "" {
+		if width > 0 && 1+lipgloss.Width(l)+1+lipgloss.Width(r) <= width {
+			// 两端对齐:左实时、右静态,中间留白。
+			pad := width - 1 - lipgloss.Width(l) - lipgloss.Width(r)
+			out = l + strings.Repeat(" ", pad) + r
+			right = true
+		} else {
+			out = l + " | " + r
+		}
+	} else if r != "" {
+		out = r
+	}
+	if out == "" {
+		out = "空闲" // 兜底:不留空行(与旧基线"至少有一项"一致)
+	}
+	if right {
+		return styleStatus.Render(" " + out)
+	}
+	return styleStatus.Render(" " + out + strings.Repeat(" ", maxInt(0, width-1-lipgloss.Width(out))))
+}
+
+// renderStatusLineOrdered 用户显式配置过的状态栏:按用户顺序单行渲染。
+//
+// 与默认布局的区别:不分区、不右对齐(用户要什么就给什么;超宽由 clampFrame 兜底)。
+func renderStatusLineOrdered(s *State, width int) string {
 	out := ""
 	prevCluster := false
-	for _, tok := range items {
+	for _, tok := range s.Statusline {
 		txt := statuslineItem(s, tok)
 		if txt == "" {
 			continue
@@ -337,5 +428,22 @@ func renderStatusLine(s *State, width int) string {
 		out += txt
 		prevCluster = statuslineCluster[tok]
 	}
-	return styleStatus.Render(" " + out + strings.Repeat(" ", width))
+	return styleStatus.Render(" " + out + strings.Repeat(" ", maxInt(0, width-1-lipgloss.Width(out))))
+}
+
+// statuslineLive 该项是否属"实时信号"组(左区;会变、要盯)。
+//
+// 划分依据:**信息会不会在这一轮内变**。state/queue/questions/dock/last/tps/notice 都会;
+// workspace/sandbox/approval/role/session 是配置,一轮内基本不动(除非用户切)。
+var statuslineLive = map[string]bool{
+	"notice": true, "state": true, "queue": true, "questions": true,
+	"dock": true, "last": true, "tps": true,
+}
+
+// maxInt 两数取大(避免为一个比较引入 math)。
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

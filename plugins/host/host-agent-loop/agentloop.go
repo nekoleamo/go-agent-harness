@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/nekoleamo/go-agent-harness/internal/toolsummary"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -678,8 +679,12 @@ func (l *Loop) step(ctx context.Context, t *turn, sess sdk.SessionLog) error {
 		if outcomes[i].content == "" && outcomes[i].errText == "" {
 			continue // 与串行路径一致:结果为 nil 且无错时不落事件
 		}
+		// 一行人话摘要(宿主算,两端同源):内容是 JSON,直接截断显示等于给用户看开销
+		// 而不是结论(见 internal/toolsummary 的头注)。
+		sum := toolsummary.Summarize(call.Name, outcomes[i].content, outcomes[i].errText)
 		if aerr := l.appendEvents(sess, sdk.SessionEvent{Kind: sdk.EventToolResult,
-			Payload: sdk.ToolResultEvent{CallID: call.ID, Name: call.Name, Content: outcomes[i].content, Error: outcomes[i].errText}}); aerr != nil {
+			Payload: sdk.ToolResultEvent{CallID: call.ID, Name: call.Name, Content: outcomes[i].content,
+				Error: outcomes[i].errText, Summary: sum.Text, SummaryErr: sum.Err}}); aerr != nil {
 			return fmt.Errorf("session log: %w", aerr)
 		}
 	}

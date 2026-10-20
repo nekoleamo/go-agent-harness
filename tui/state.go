@@ -217,14 +217,23 @@ func (s *State) ApplySessionEvent(ev *sdk.SessionEvent) {
 				kind = "error"
 				label = "✗"
 				full = r.Error
+			} else if r.SummaryErr {
+				// 内容级错误(工具把失败写在结果 JSON 里):此前会显示成「✓ file_read: {"error":…}」
+				// —— 给一次失败打绿勾,比"没信息"更误导。
+				kind = "error"
+				label = "✗"
 			}
-			// 摘要行(S2.1 单行截断);完整内容存 Full(上限防爆,会话日志仍是事实源)。
-			// S2.2 折叠:结果行可点击展开/收起(见 state.foldOpen)。
-			// 按 rune 截断:CJK/emoji 在字节切口会被切成半个 rune,渲染成 U+FFFD。
-			sum := truncWidthRunes(full, 160)
-			sum = strings.ReplaceAll(sum, "\n", " ") // 摘要强制单行(多段折行由展开查看)
-			if r := []rune(sum); len(r) > 160 {
-				sum = string(r[:159]) + "…"
+			// 摘要行:**优先用宿主算好的人话摘要**(2026-10-20 B1)。
+			// 旧行为是把结果 JSON 直接截断显示 —— file_read 显示成 `{"content":"package main…`,
+			// 一个字也没告诉人"它读了多少行";用户要的是结论,不是开销。
+			// 摘要缺失(旧会话日志 / 宿主未算)⇒ 回退到原截断行为(逐字兼容)。
+			sum := r.Summary
+			if sum == "" {
+				sum = truncWidthRunes(full, 160)
+				sum = strings.ReplaceAll(sum, "\n", " ") // 摘要强制单行(多段折行由展开查看)
+				if r := []rune(sum); len(r) > 160 {
+					sum = string(r[:159]) + "…"
+				}
 			}
 			// P5.2 工具耗时:调用到结果真实耗时段(>=100ms)挂结果行尾(重放毫秒级自然抑制;
 			// toolStart 零值 = 无前置 ToolCall(异常/重放起点),不显示)

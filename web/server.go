@@ -1008,6 +1008,13 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		if ss, ok := s.us.(sdk.SessionUsageStats); ok {
 			v.Stats = ss.StatsFor(s.usageSessionKey(scopeQ))
 		}
+		// “含自动摘要”标记(2026-10-20 B3):统计服务不知道压缩发生过(它只看用量事件),
+		// 由这里从会话日志的可选扩展补上(手动 /compact 不算 —— 那是用户自己按的)。
+		if s.sessions != nil {
+			if as, ok := s.sessions.(sdk.AutoSummaryState); ok {
+				v.Stats.AutoSummary = as.HasAutoSummary()
+			}
+		}
 	}
 	if s.cs != nil {
 		v.Session = &SessionV{ID: s.cs.CurrentSession(), Name: s.cs.SessionName(), Path: s.cs.Path(), Key: s.cs.Current()}

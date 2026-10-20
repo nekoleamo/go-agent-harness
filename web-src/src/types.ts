@@ -144,6 +144,10 @@ export interface ToolResult {
   Name: string
   Content: string
   Error: string
+  // Summary 宿主算好的一行人话摘要(2026-10-20 B1);缺失 = 旧日志/未知工具 ⇒ 展示层回退到截断。
+  Summary?: string
+  // SummaryErr 摘要表示这是一次失败(工具把错误写在结果内容里而非错误通道)。
+  SummaryErr?: boolean
 }
 export interface UsageEvent {
   Model: string
@@ -164,6 +168,10 @@ export interface UsageStats {
   Requests: number
   // LastPromptTokens 最近一次请求的实测输入 token(= 当前上下文占用;累计量不能当水位)
   LastPromptTokens: number
+  // LastCachedTokens 最近一次请求的缓存命中 token(逐轮口径;累计会把「早期命中过」与「现在还在命中」混成一个数)
+  LastCachedTokens?: number
+  // AutoSummary 当前上下文含**自动压缩**产生的滚动摘要(模型看到的已经不是原话了)
+  AutoSummary?: boolean
   Window: number
 }
 export interface SessionView {

@@ -9,12 +9,14 @@ export interface ToolRow {
   status: 'called' | 'ok' | 'err'
   result: string // 结果摘要(截断)
   full: string // 全文(折叠展开)
+  summary?: string // 宿主算好的一行人话摘要(2026-10-20 B1;缺失 = 旧日志/未知工具)
 }
 
 export interface Msg {
   kind: 'user' | 'assistant' | 'tool' | 'meta'
   text: string
   full?: string // tool:全文;assistant:无
+  summary?: string // tool:一行人话摘要(宿主算好;缺失 ⇒ 展示层回退到截断全文)
   tools?: ToolRow[] // assistant 携带的工具调用(落定时的快照)
   atts?: AttachmentInfo[] // user:附件(图片预览/文件引用)
   think?: string // assistant:本轮的思维/推理过程(与最终答复分开渲染)
@@ -184,20 +186,25 @@ export function consume(m: StreamModel, ev: SessionEvent): void {
         m.pendingTool = { id: tr.CallID, name: tr.Name, args: '', status: 'called', result: '', full: '' }
       }
       const row = m.pendingTool!
-      row.status = tr.Error ? 'err' : tr.Content ? 'ok' : 'ok'
+      row.status = tr.Error || tr.SummaryErr ? 'err' : 'ok'
       if (tr.Error) {
         row.status = 'err'
         row.result = tr.Error
         row.full = tr.Error
       } else {
         const { text, full } = resultSummary(tr.Content ?? '')
-        row.result = text
+        // 宿主算好的一行人话摘要(2026-10-20 B1):有它就用它 ——
+        // 直接截断 JSON 显示等于给用户看开销而不是结论
+        // (file_read 会显示成 `{"content":"package main…`)。
+        row.summary = tr.Summary
+        row.result = tr.Summary || text
         row.full = full
       }
       const mark = row.status === 'err' ? '✗' : '✓'
       m.msgs.push({
         kind: 'tool',
         text: `${mark} ${row.name} ${row.args}`.trim(),
+        summary: row.summary,
         full: row.full,
         seq: ev.Seq,
         ts: ev.TS,

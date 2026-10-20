@@ -332,6 +332,8 @@ func flattenLine(li int, ln Line, colW int) []physRow {
 			limit = colW - 2 // 首行挂 "❯ " 前缀,可用宽减 2
 		case si == 0 && ln.Kind == "tool" && strings.HasPrefix(ln.Text, "⚙ "):
 			limit = colW - 2 // 工具调用行:左缘竖线 "▍ " 前缀(P5 框感)
+		case si == 0 && ln.Kind == "thinking":
+			limit = colW - 2 // 思考行:左缘标记 "⋯ " 前缀(2026-10-20 B4)
 		}
 		if limit < 1 {
 			limit = 1
@@ -345,6 +347,8 @@ func flattenLine(li int, ln Line, colW int) []physRow {
 					t = "❯ " + p
 				case ln.Kind == "tool" && strings.HasPrefix(ln.Text, "⚙ "):
 					t = "▍ " + p
+				case ln.Kind == "thinking":
+					t = "⋯ " + p
 				}
 			}
 			rows = append(rows, physRow{kind: ln.Kind, text: t, lineIdx: li, first: si == 0 && pi == 0})

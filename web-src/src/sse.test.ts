@@ -73,6 +73,50 @@ test('工具错误 → err 行与 err 标记', () => {
   assert.equal(row.full, 'boom')
 })
 
+test('宿主算好的一行人话摘要优先于截断全文(2026-10-20 B1)', () => {
+  const m = newModel()
+  consume(m, ev('tool/call', { ID: 't5', Name: 'file_read', Arguments: '{"path":"/a/b.go"}' }, 1))
+  consume(
+    m,
+    ev(
+      'tool/result',
+      {
+        CallID: 't5',
+        Name: 'file_read',
+        Content: JSON.stringify({ path: '/a/b.go', content: 'package main\n' }),
+        Summary: '读 2 行 · 12 B',
+      },
+      2
+    )
+  )
+  const row = m.msgs.at(-1)!
+  assert.equal(row.kind, 'tool')
+  // 摘要直接用（不是 JSON 前部）
+  assert.equal(row.summary, '读 2 行 · 12 B')
+  assert.ok(row.full.includes('package main'))
+})
+
+test('内容级错误(工具把失败写在结果里)→ 错误行而非绿勾', () => {
+  const m = newModel()
+  consume(m, ev('tool/call', { ID: 't6', Name: 'file_read', Arguments: '{}' }, 1))
+  consume(
+    m,
+    ev('tool/result', { CallID: 't6', Name: 'file_read', Content: '{"error":"permission denied"}', Summary: 'permission denied', SummaryErr: true }, 2)
+  )
+  const row = m.msgs.at(-1)!
+  assert.equal(row.err, true)
+  assert.ok(row.text.startsWith('✗ file_read'))
+})
+
+test('旧日志(无摘要)→ 回退到截断全文(向后兼容)', () => {
+  const m = newModel()
+  consume(m, ev('tool/call', { ID: 't7', Name: 'shell', Arguments: '{}' }, 1))
+  consume(m, ev('tool/result', { CallID: 't7', Name: 'shell', Content: 'hello' }, 2))
+  const row = m.msgs.at(-1)!
+  assert.equal(row.summary, undefined)
+  assert.equal(row.full, 'hello')
+})
+
 test('结果帧先于调用帧到达不丢结果', () => {
   const m = newModel()
   consume(m, ev('tool/result', { CallID: 't9', Name: 'web_search', Content: 'r' }, 1))
