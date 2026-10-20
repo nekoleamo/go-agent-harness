@@ -36,6 +36,8 @@ func styleForKind(kind string) lipgloss.Style {
 		return *styleTool
 	case "meta":
 		return *styleMeta
+	case "toolout":
+		return *styleMeta // C1:工具实时输出(附属内容,弱化到与系统提示同档)
 	case "thinking":
 		return *styleThink // 思维块灰斜体(弱化,不抢正文)
 	case "error":
@@ -317,6 +319,16 @@ func flattenViewLines(s *State, colW int) []physRow {
 			}
 		}
 		rows = append(rows, flattenLine(li, Line{Kind: ln.Kind, Text: text}, colW)...)
+		if ln.Live != "" {
+			// C1:工具执行中的实时输出,渲染在该工具调用行下方(缩进 2 列,弱化样式)。
+			// first=false:它是附属内容,不该继承工具行的底色/折叠标记。
+			live := flattenLine(li, Line{Kind: "toolout", Text: ln.Live}, colW-2)
+			for i := range live {
+				live[i].text = "  " + live[i].text
+				live[i].first = false
+			}
+			rows = append(rows, live...)
+		}
 	}
 	return rows
 }

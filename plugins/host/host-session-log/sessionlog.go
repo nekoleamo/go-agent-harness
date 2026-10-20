@@ -248,6 +248,28 @@ func (l *Log) Append(ev sdk.SessionEvent) error {
 	return err
 }
 
+// BroadcastTransient 广播一条**不落盘**的会话事件(实现 sdk.SessionBroadcaster)。
+//
+// 用途:工具执行中的增量输出(sdk.EventToolProgress,2026-10-20 C1)。
+// 它是「过程」不是「事实」:落盘会灌满会话文件、重放时再吐一遍、白占 token 预算,
+// 所以只在该会话的事件通道上瞬时广播一次 —— 界面按会话归位天然正确,重放/导出看不见。
+//
+// 与 Append 的差别(**三条不变量**,改动前务必确认):
+//  1. 不写文件、不进 l.events(重放/投影看不到它);
+//  2. 不递增 seq ⇒ 事件的 Seq 恒为 0,界面据此把它与「有编号的历史事件」区分开;
+//  3. 不改 l.events 的顺序 ⇒ 已落盘事件的 Seq 与续传游标不受影响。
+func (l *Log) BroadcastTransient(ev sdk.SessionEvent) error {
+	if l.ctx == nil {
+		return nil
+	}
+	if ev.TS.IsZero() {
+		ev.TS = time.Now()
+	}
+	ev.Seq = 0 // 瞬时事件不占序号(见上文不变量 2)
+	l.ctx.Emit(context.Background(), sdk.SessionEventName(l.id), &ev, sdk.Emit)
+	return nil
+}
+
 // appendLocked 锁内追加:回填 Seq/TS + 事件入列 + 落盘,返回回填后的事件
 // (调用方持有 mu;summary 落盘等内部路径使用)。
 func (l *Log) appendLocked(ev sdk.SessionEvent) (sdk.SessionEvent, error) {

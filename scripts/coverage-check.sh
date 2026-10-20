@@ -76,6 +76,8 @@ SKIP="${GAH_COVER_SKIP:-0}"             # 1 = 只测(不校验),用于基线测�
 #   2026-10-02(MCP 传输面:http 传输 + 凭据打码)后再上调:plugins/mcp/mcp-bridge 72 → **75**
 #   (实测 75.7)、internal/mcpconfig 80 → **88**(实测 88.8;新增的 ValidateEndpoint 与
 #   headers 规范化/打码都有用例)。
+#   2026-10-20(C1 批次)补登:internal/toolsummary 75(实测 80.4;纯字符串逻辑,跨平台一致,
+#   无平台专用代码 ⇒ 与 darwin 实测一致)。
 #   2026-10-02(子进程覆盖接通 + zstd 换代)后再上调:internal/embed 75.2 → **78**
 #   (实测 78.4;该包换 zstd 后新增了 SHA256SUMS 解析与流式落盘,补了坏清单/写失败两条用例)。
 # 方向只允许往上:降门必须换成补测(见 AGENTS.md「覆盖率门」)。
@@ -143,6 +145,7 @@ internal/embed 78
 internal/install 77
 internal/sessionevents 92
 internal/sessionhtml 92
+internal/toolsummary 75
 cmd/gah 69
 plugins/catalogue 70
 plugins/ui/ui-web-app 70

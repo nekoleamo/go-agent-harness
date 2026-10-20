@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/nekoleamo/go-agent-harness/internal/toolsummary"
 	"github.com/nekoleamo/go-agent-harness/sdk"
@@ -337,6 +338,43 @@ func (l *Loop) injectSteers(sess sdk.SessionLog, t *turn) error {
 	return nil
 }
 
+// emitProgress 发一条工具进度(C1):走**该会话的事件通道**,但不落盘
+// (过程不是事实 —— 落盘会灌满会话文件、重放再吐一遍、白占 token 预算)。
+//
+// 通道选择:会话事件名(sdk.SessionEventName(sess 会话 id))⇒ 界面按会话归位天然正确,
+// 消费方不必各自实现归属过滤;「广播不落盘」由会话日志实现 sdk.SessionBroadcaster
+// 的 BroadcastTransient 提供(见 plugins/host/host-session-log)。
+//
+// 失败即静默:进度是**锦上添花**,发不出去不该影响工具执行(工具已经在跑,
+// 用户还要拿结果)。
+//
+// seq 由调用方给(每次调用内递增):并行工具调用各有各的序号空间,
+// 用全局计数器会让两个调用的序号交错,UI 侧无法按序号丢弃乱序块。
+func (l *Loop) emitProgress(sess sdk.SessionLog, ctx context.Context, seq int, tool, chunk string) {
+	if chunk == "" {
+		return
+	}
+	b, ok := sess.(sdk.SessionBroadcaster)
+	if !ok {
+		return // 该会话日志不支持瞬时广播 ⇒ 本次没有进度(工具照常执行)
+	}
+	ev := sdk.SessionEvent{
+		Kind: sdk.EventToolProgress,
+		Payload: sdk.ToolProgressEvent{
+			CallID: sdk.ToolCallIDFrom(ctx),
+			Name:   tool,
+			Chunk:  chunk,
+			Seq:    seq,
+			// Session 归属:多会话并行时,界面据此把进度落到**对的那一页**。
+			// 与 usage 事件同口径(见 sdk.UsageEvent.Session)。
+			// 注:通道本身已按会话分流,此字段是冗余的**说明性**信息。
+			Session: sdk.SessionFromContext(ctx),
+		},
+	}
+	// 发不出去不是错误(可能没订阅者/总线已关);不打断工具。
+	_ = b.BroadcastTransient(ev)
+}
+
 // emitDroppedSteers 回合结束(任意路径:完成/取消/失败)时把仍未注入的转向消息经事件
 // 交回发起端(TUI 回「待发」队列 / Web 推回输入框)。
 // 已注入的已落账(属于历史)不在此列 —— 语义是「你的话没被模型看到,还给你」,
@@ -650,7 +688,22 @@ func (l *Loop) step(ctx context.Context, t *turn, sess sdk.SessionLog) error {
 				outcomes[i] = toolOutcome{errText: fmt.Sprintf("工具 %q panic: %v", calls[i].Name, r)}
 			}
 		}()
-		res, err := l.tools.Execute(ctx, calls[i].Name, calls[i].Arguments)
+		// 进度通道(C1):把**模型侧 call id** 与一个进度 sink 挂进 ctx ——
+		// sink 把工具的增量输出转成 tool/progress 事件(只走 UI 通道,不进会话日志)。
+		// 没有它,一个跑 3 分钟的构建在界面上只有一个转圈:看不出在动、在等什么、
+		// 是不是卡住了,"取消"也像失灵。
+		tctx := sdk.WithToolCallID(ctx, calls[i].ID)
+		var seq atomic.Int64 // 本次调用的进度序号(同一调用内递增)
+		th := &progressThrottle{}
+		th.emit = func(text string) {
+			l.emitProgress(sess, tctx, int(seq.Add(1)), th.tool, text)
+		}
+		tctx = sdk.WithToolProgressReporter(tctx, func(tool, chunk string) error {
+			th.add(tool, chunk)
+			return nil
+		})
+		res, err := l.tools.Execute(tctx, calls[i].Name, calls[i].Arguments)
+		th.flush() // 工具结束:把窗口内剩下的增量一次性发出(不许丢文本)
 		switch {
 		case err != nil:
 			outcomes[i] = toolOutcome{errText: err.Error()}

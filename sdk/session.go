@@ -72,6 +72,19 @@ const (
 	EventRoleSwitch = "role/switch"
 )
 
+// EventToolProgress 工具执行的**中间输出**(2026-10-20 优化批次 C1)。
+//
+// 为什么需要:一个跑 3 分钟的构建,界面上只有一个转圈 —— 用户不知道它在动、在等什么、
+// 是不是卡住了。而"取消"按钮在那 3 分钟里看上去也像失灵。
+//
+// **它是"瞬时会话事件"**:走该会话的事件通道(界面据此按会话归位,不必各自实现归属过滤),
+// 但**不落盘**(见 SessionBroadcaster)—— 进度是过程不是事实,进日志会灌满会话文件、
+// 重放时再吐一遍,还污染 token 预算。
+//
+// 载荷 sdk.ToolProgressEvent:CallID/Name/Chunk(增量文本)/Seq(同一调用内递增)/Session。
+// Seq 恒为 0(未落盘 ⇒ 不占序号):界面据此把它与"有编号的历史事件"区分开。
+const EventToolProgress = "tool/progress"
+
 // FileChangeEvent 一次文件改动事实(EventFileChange 载荷)。
 // 一次工具调用产生一条;同一文件多次改动 = 多条事件(审查视图按路径聚合)。
 type FileChangeEvent struct {
@@ -159,6 +172,26 @@ type ToolCallEvent struct {
 	Arguments string
 }
 
+// ToolProgressEvent 工具执行的中间输出(tool/progress 载荷;2026-10-20 C1)。
+//
+// **不进会话日志**:进度是过程不是事实,落盘会把会话文件灌满、重放时再吐一遍。
+// 它只走 UI 通道(与 tool/result 广播同级)。
+type ToolProgressEvent struct {
+	// CallID 对应的工具调用 id(与 tool/call 的 ID 一致;空 = 无法关联)。
+	CallID string
+	// Name 工具名(UI 侧据此归位到对应的工具行)。
+	Name string
+	// Chunk 本次增量文本(可能只有半行;UI 侧需自己拼接)。
+	Chunk string
+	// Seq 同一调用内的递增序号(UI 侧用它丢弃乱序/重复的块)。
+	Seq int
+	// Session 归属会话 id(空 = 主会话;与 sdk.UsageEvent.Session 同口径)。
+	//
+	// 为什么需要:多会话并行时,进度必须落到**对的那一页**——否则 A 会话的命令输出
+	// 会刷在 B 页上(与多页签下 usage/命令回显的归属问题同源)。
+	Session string
+}
+
 // ToolResultEvent 工具结果记录(tool/result 载荷)。
 type ToolResultEvent struct {
 	CallID  string
@@ -210,6 +243,17 @@ type SessionLog interface {
 	// RegisterCompressor 注册滚动摘要压缩器与其字符预算(M6.5 拆分后由 token-compress 注入)。
 	// budget <= 0 关闭压缩;压缩器在投影超预算时被调用(详见 SessionCompressor)。
 	RegisterCompressor(budget int, c SessionCompressor)
+}
+
+// SessionBroadcaster 可选能力:把事件**只广播、不落盘**(瞬时过程信号,如工具进度)。
+//
+// 为什么是可选接口而不是 SessionLog 的方法:SessionLog 的实现遍布宿主与测试替身,
+// 给接口加方法是全仓破坏性改动;而"广播但不落盘"只有真实日志需要。
+//
+// 用途(2026-10-20 C1):工具执行中的增量输出。它必须与该会话的其它事件**同通道**
+// (界面据此按会话归位),又不能进日志 ⇒ 专走这条广播。
+type SessionBroadcaster interface {
+	BroadcastTransient(ev SessionEvent) error
 }
 
 // SessionLogs 服务(ctx.sessionLogs,host-session-log 提供):按**落盘路径**取/建

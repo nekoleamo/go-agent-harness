@@ -66,6 +66,67 @@ type Tool interface {
 	Execute(ctx context.Context, args string) (any, error)
 }
 
+// ToolProgressReporter 工具进度的**上报出口**(2026-10-20 C1)。
+//
+// 为什么需要:一个跑 3 分钟的构建,界面上只有一个转圈 —— 用户不知道它在动、在等什么、
+// 是不是卡住了,而"取消"在那 3 分钟里看上去也像失灵。
+//
+// 契约:
+//   - **可选**:ctx 里没有 reporter 时工具照常工作(不产出进度)—— 旧工具/单测零改动;
+//   - **尽力而为**:上报失败(通道断/界面已关)不得影响工具本身的成败;
+//   - **只给 UI 看**:进度**不进会话日志**(过程不是事实,落盘会把会话文件灌满、
+//     重放时再吐一遍);它走**该会话的事件通道**(sdk.EventToolProgress)广播而不落盘。
+//   - **调用 id 由 reporter 侧持有**:工具只管报 (工具名, 增量文本),
+//     reporter 自己知道这次调用属于哪一行(进程内:agent-loop 知道模型给的 id;
+//     跨进程:桥把 ModelCallID 下传,外部进程经回调通道带回宿主)。
+type ToolProgressReporter func(tool, chunk string) error
+
+// progressReporterKey ctx 键(私有类型:外部无法伪造)。
+type progressReporterKey struct{}
+
+// WithToolProgressReporter 把进度上报出口挂到 ctx(宿主/外部进程侧装配)。
+func WithToolProgressReporter(ctx context.Context, rep ToolProgressReporter) context.Context {
+	return context.WithValue(ctx, progressReporterKey{}, rep)
+}
+
+// ToolProgressReporterFrom 取进度上报出口(不存在 ⇒ nil,false)。
+func ToolProgressReporterFrom(ctx context.Context) (ToolProgressReporter, bool) {
+	r, ok := ctx.Value(progressReporterKey{}).(ToolProgressReporter)
+	return r, ok && r != nil
+}
+
+// ReportToolProgress 上报一段增量(无 reporter ⇒ 静默跳过;上报失败 ⇒ 忽略)。
+//
+// 工具侧唯一调用点:不判错、不重试 —— 进度是锦上添花,失败不该让命令失败。
+func ReportToolProgress(ctx context.Context, tool, chunk string) {
+	if chunk == "" {
+		return
+	}
+	rep, ok := ToolProgressReporterFrom(ctx)
+	if !ok {
+		return
+	}
+	_ = rep(tool, chunk)
+}
+
+// toolCallIDKey ctx 键(私有类型)。
+type toolCallIDKey struct{}
+
+// WithToolCallID 把**模型侧**的工具调用 id 挂到 ctx。
+//
+// 为什么需要:工具执行在宿主里经过多层(agent-loop → host-tools → 插件),
+// 而进度要能对回界面上那一行工具 —— 只有 agent-loop 手里有模型给的 call id。
+// 各层 id 不同(host-tools 自己的 pre-execute id 是另一套),所以显式传。
+func WithToolCallID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, toolCallIDKey{}, id)
+}
+
+// ToolCallIDFrom 取模型侧调用 id(不存在 ⇒ 空串)。
+func ToolCallIDFrom(ctx context.Context) string {
+	id, _ := ctx.Value(toolCallIDKey{}).(string)
+	return id
+}
+
 // ToolResult 工具执行的结果载体(结构化错误回传模型,见设计 §11)。
 type ToolResult struct {
 	Content string // 序列化结果(JSON/文本)

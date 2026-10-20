@@ -150,6 +150,9 @@ function attUrl(rel: string): string {
         <span class="tl">{{ pending.tool.name || '…' }}</span>
         <span class="toolargs">{{ pending.tool.args }}</span>
       </div>
+      <!-- C1:工具执行中的实时输出(瞬时 —— 不落盘,翻历史看不到)。
+           放在工具胶囊下方:同一个工具的「正在产出」,跟终端里敲命令看回显同感。 -->
+      <pre v-if="pending.tool?.live" class="tool-live mono">{{ pending.tool.live }}</pre>
     </div>
     <div v-else-if="running" class="pending-indicator">
       <span class="dot" /> 正在运行…
@@ -278,6 +281,19 @@ function attUrl(rel: string): string {
 }
 .toolargs {
   color: var(--fg-dim);
+}
+/* 工具实时输出(C1):弱化到次级信息档 —— 它是过程,不是结论 */
+.tool-live {
+  margin: 4px 0 0;
+  padding: 4px 8px;
+  max-height: 160px;
+  overflow: auto;
+  border-left: 2px solid var(--tool-line);
+  color: var(--fg-dim);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 .tool {
   margin-top: 4px;

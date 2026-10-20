@@ -149,11 +149,21 @@ export interface ToolResult {
   // SummaryErr 摘要表示这是一次失败(工具把错误写在结果内容里而非错误通道)。
   SummaryErr?: boolean
 }
+// ToolProgress 工具执行中的增量输出(2026-10-20 C1;载荷 sdk.ToolProgressEvent)。
+//
+// 它是**瞬时**的:走会话事件通道广播但**不落盘** ⇒ 重放/翻历史看不到,
+// 只在工具正在跑的时候出现在界面上。Seq 是同一调用内的递增序号(丢弃乱序块)。
+export interface ToolProgress {
+  CallID: string
+  Name: string
+  Chunk: string
+  Seq: number
+  Session?: string
+}
 export interface UsageEvent {
   Model: string
   Usage: Usage
-}
-export interface Usage {
+}export interface Usage {
   PromptTokens: number
   CompletionTokens: number
   CachedTokens: number

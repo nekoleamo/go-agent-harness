@@ -1,6 +1,6 @@
 // SSE 消费者:帧流 → 渲染模型。语义对齐 tui 会话流(用户/助手/工具行 + meta)。
 // 历史重放与实时帧共用同一消费引擎(chunk 拼 pending、assistant/message 落定)。
-import type { AttachmentInfo, SessionEvent, ToolCall, ToolResult, UsageEvent, LLMStreamDelta } from './types'
+import type { AttachmentInfo, SessionEvent, ToolCall, ToolProgress, ToolResult, UsageEvent, LLMStreamDelta } from './types'
 
 export interface ToolRow {
   id: string
@@ -10,6 +10,7 @@ export interface ToolRow {
   result: string // 结果摘要(截断)
   full: string // 全文(折叠展开)
   summary?: string // 宿主算好的一行人话摘要(2026-10-20 B1;缺失 = 旧日志/未知工具)
+  live?: string // 工具执行中的实时输出(2026-10-20 C1;瞬时,工具结束后不再更新)
 }
 
 export interface Msg {
@@ -219,6 +220,19 @@ export function consume(m: StreamModel, ev: SessionEvent): void {
       m.pendingTool = undefined
       break
     }
+    case 'tool/progress': {
+      // C1:工具执行中的增量输出 —— 归位到「正在跑」的那一行(pendingTool)。
+      //
+      // 为什么只贴 pendingTool:它是**瞬时**过程(不落盘),工具结束后界面上留下的
+      // 是结论行(✓ 摘要 + 可展开全文)。贴到已完成的消息行上反而会让人误以为
+      // 那一行的结论被改写了。
+      const tp = p as ToolProgress
+      if (!tp || !tp.Chunk) break
+      const row = m.pendingTool
+      if (!row || row.id !== tp.CallID) break // 找不到对应调用(未登记/已结束)⇒ 丢弃
+      row.live = trimLive((row.live ?? '') + tp.Chunk)
+      break
+    }
     case 'session/summary': {
       const s = (p as { Summary?: string })?.Summary ?? (p as string)
       const txt = typeof s === 'string' ? s : String(p ?? '')
@@ -248,6 +262,21 @@ export function consume(m: StreamModel, ev: SessionEvent): void {
     default:
       break
   }
+}
+
+// 实时输出限长(与 TUI 侧 trimLive 同口径):只保留尾部若干行/字符。
+//
+// 为什么限长:工具可能连续输出几 MB(日志 tail、构建产物清单)。全量留着
+// ⇒ 每次重渲染都要处理几 MB 文本,界面直接卡住。只留尾巴 = 看得到「还在动」。
+const LIVE_MAX_LINES = 20
+const LIVE_MAX_CHARS = 4000
+
+export function trimLive(text: string): string {
+  if (!text) return ''
+  const lines = text.split('\n')
+  let out = lines.length > LIVE_MAX_LINES ? lines.slice(lines.length - LIVE_MAX_LINES).join('\n') : text
+  if (out.length > LIVE_MAX_CHARS) out = out.slice(out.length - LIVE_MAX_CHARS)
+  return out
 }
 
 // Usage 刷新需求(收到 usage 事件后调用方拉 /api/state 更新状态栏)

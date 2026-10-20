@@ -1747,7 +1747,8 @@ func (a *App) afterSessionSwitch(cs sdk.CwdSessions) {
 		a.model.state.Stats = sdk.UsageStats{}
 	}
 	a.model.state.Lines = nil
-	a.model.state.Traj.Reset() // S-P0-1:轨迹随会话重置(随后 ApplyReplay 从头重建)
+	a.model.state.resetToolRows() // C1:工具行索引随 Lines 重建失效(不清会误写到别的行)
+	a.model.state.Traj.Reset()    // S-P0-1:轨迹随会话重置(随后 ApplyReplay 从头重建)
 	a.model.state.LastTool = ""
 	a.model.state.ClearQueue() // P4-1:切会话丢弃旧队列(防错发到新会话上下文)
 	var sessions sdk.SessionLog

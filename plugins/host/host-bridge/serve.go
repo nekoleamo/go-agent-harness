@@ -154,7 +154,9 @@ func (s *toolServer) Execute(args *ExecArgs, reply *ExecReply) error {
 		return fmt.Errorf("多工具进程须用 ExecuteNamed(新协议)")
 	}
 	for _, t := range s.tools {
-		return s.exec(t, "", args.JSONArgs, reply, callMetaOf(args.CallID, args.TimeoutMs, args.SandboxMode, args.WorkspaceRoot))
+		cm := callMetaOf(args.CallID, args.TimeoutMs, args.SandboxMode, args.WorkspaceRoot)
+		cm.progressToken = args.ProgressToken
+		return s.exec(t, "", args.JSONArgs, reply, cm)
 	}
 	return nil
 }
@@ -166,7 +168,9 @@ func (s *toolServer) ExecuteNamed(args *ExecNamedArgs, reply *ExecReply) error {
 		reply.Error = fmt.Sprintf("外部插件无此工具 %q", args.Name)
 		return nil
 	}
-	return s.exec(t, args.Name, args.JSONArgs, reply, callMetaOf(args.CallID, args.TimeoutMs, args.SandboxMode, args.WorkspaceRoot))
+	cm := callMetaOf(args.CallID, args.TimeoutMs, args.SandboxMode, args.WorkspaceRoot)
+	cm.progressToken = args.ProgressToken
+	return s.exec(t, args.Name, args.JSONArgs, reply, cm)
 }
 
 // callMeta 一次外部调用的元信息(CallID/超时/有效沙箱档位)。
@@ -176,6 +180,9 @@ type callMeta struct {
 	timeoutMs     int64
 	sandboxMode   string
 	workspaceRoot string
+	// progressToken 宿主发放的进度回传令牌(2026-10-20 C1):插件侧把增量带上它回传,
+	// 宿主据此还原归属(会话 + 模型侧 call id)再发事件。空 = 宿主没开进度通道。
+	progressToken string
 }
 
 func callMetaOf(callID string, timeoutMs int64, sandboxMode, workspaceRoot string) callMeta {
@@ -231,6 +238,12 @@ func (s *toolServer) callContext(callID string, timeoutMs int64) (context.Contex
 func (s *toolServer) exec(t sdk.Tool, name, jsonArgs string, reply *ExecReply, cm callMeta) error {
 	ctx, done := s.callContext(cm.callID, cm.timeoutMs)
 	defer done()
+	// 进度回传出口进 ctx(C1):工具调 sdk.ReportToolProgress(ctx,...) 即经宿主回调通道
+	// 把增量输出回传宿主;令牌由宿主发放(见 bridge.go 的 toolRPCClient.Execute)。
+	// 无令牌(老宿主)⇒ 不装出口:工具照常工作,只是没有进度(不静默丢弃的边界在宿主侧)。
+	if rep := progressReporter(cm.progressToken); rep != nil {
+		ctx = sdk.WithToolProgressReporter(ctx, rep)
+	}
 	res, err := t.Execute(withSandboxHint(ctx, cm), jsonArgs)
 	if err != nil {
 		reply.Error = fmt.Sprintf("%s: %v", name, err)

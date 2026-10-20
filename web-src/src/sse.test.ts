@@ -219,3 +219,30 @@ test('思考标签:只在边界剥,正文里正常讨论时一个字都不动', 
   assert.equal(cleanThink('提到 <thinking> 标签时'), '提到 <thinking> 标签时')
   assert.equal(cleanAnswer('正文'), '正文')
 })
+
+// 工具实时输出(2026-10-20 C1):瞬时过程,归位到「正在跑」的那一行。
+test('tool/progress:增量贴到进行中的工具行', () => {
+  const m = newModel()
+  consume(m, ev('tool/call', { ID: 't7', Name: 'shell', Arguments: '{}' }, 1))
+  consume(m, ev('tool/progress', { CallID: 't7', Name: 'shell', Chunk: '编译中', Seq: 1 }, 0))
+  consume(m, ev('tool/progress', { CallID: 't7', Name: 'shell', Chunk: '链接中', Seq: 2 }, 0))
+  assert.equal(m.pendingTool?.live, '编译中链接中')
+  // 瞬时事件不进消息流(它是过程,不是会话内容)
+  assert.equal(m.msgs.length, 0)
+})
+
+test('tool/progress:找不到对应调用 ⇒ 丢弃(不张冠李戴)', () => {
+  const m = newModel()
+  consume(m, ev('tool/progress', { CallID: 'nobody', Name: 'shell', Chunk: '孤儿块', Seq: 1 }, 0))
+  assert.equal(m.pendingTool, undefined)
+  assert.equal(m.msgs.length, 0)
+})
+
+test('tool/progress:工具结束后不再更新(结论不被过程改写)', () => {
+  const m = newModel()
+  consume(m, ev('tool/call', { ID: 't8', Name: 'shell', Arguments: '{}' }, 1))
+  consume(m, ev('tool/result', { CallID: 't8', Name: 'shell', Content: 'ok' }, 2))
+  consume(m, ev('tool/progress', { CallID: 't8', Name: 'shell', Chunk: '迟到', Seq: 3 }, 0))
+  assert.equal(m.pendingTool, undefined)
+  assert.equal(m.msgs.at(-1)!.kind, 'tool')
+})

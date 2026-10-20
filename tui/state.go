@@ -17,6 +17,14 @@ type Line struct {
 	Text      string
 	Full      string // S2.2:折叠行全文(tool 结果超长时存原文,展开切换)
 	Streaming bool   // assistant 流式增量中
+
+	// Live 工具执行中的**实时输出**(2026-10-20 C1),渲染在该行下方。
+	//
+	// 为什么挂在展示行上:它是「正在发生」的过程,不是会话事实 ——
+	// 不落盘、不进会话日志(见 sdk.SessionBroadcaster),所以切会话/重放后不留痕。
+	// 挂在工具调用行上 ⇒ 天然归位(不用再维护「哪个调用对应哪一行」的额外索引),
+	// 且工具结束后仍可看到这一轮的输出尾巴(与终端 scrollback 同感)。
+	Live string
 }
 
 // State TUI 展示状态(事件驱动,线程安全由调用方保证)。
@@ -152,6 +160,10 @@ type State struct {
 	// 默认折叠(摘要单行显示);鼠标单击结果行展开查看完整内容(Line.Full)。
 	FoldOpen map[int]bool
 
+	// toolRow 工具调用行下标(模型侧 call id → Lines 下标;C1 实时输出归位用)。
+	// 进程内不持久化:实时输出本身不落盘(见 Line.Live)。
+	toolRow map[string]int
+
 	// S1.3 输入增强:历史/undo/编辑快捷键。
 	// CmdHistory 本进程已提交的斜杠命令(命令不入会话 Lines,单独记录补历史源;
 	// 普通 user 消息经 Lines 提取)。histActive+histIdx = 历史翻页态(false 未翻),
@@ -205,10 +217,17 @@ func (s *State) ApplySessionEvent(ev *sdk.SessionEvent) {
 			s.Lines = append(s.Lines, Line{Kind: "tool", Text: toolCallText(sdk.ToolCall(tc))})
 			s.LastTool = tc.Name     // 状态栏"执行工具"提示
 			s.toolStart = time.Now() // 工具耗时起点(下次 Result 结算)
+			s.noteToolRow(tc.ID, len(s.Lines)-1)
+		}
+	case sdk.EventToolProgress:
+		// C1:工具执行中的增量输出 → 贴到该工具调用行下方(不进会话日志)。
+		if p, ok := ev.Payload.(sdk.ToolProgressEvent); ok {
+			s.applyToolProgress(p)
 		}
 	case sdk.EventToolResult:
 		if r, ok := ev.Payload.(sdk.ToolResultEvent); ok {
 			s.LastTool = "" // 工具完成:回“思考中”
+			s.forgetToolRow(r.CallID)
 
 			kind := "tool"
 			label := "✓"
@@ -259,6 +278,65 @@ func (s *State) ApplySessionEvent(ev *sdk.SessionEvent) {
 			s.Lines = append(s.Lines, Line{Kind: "error", Text: "agent error: " + err.Error()})
 		}
 	}
+}
+
+// noteToolRow 登记工具调用行下标(C1:实时输出按 call id 归位到该行)。
+func (s *State) noteToolRow(callID string, lineIdx int) {
+	if callID == "" {
+		return
+	}
+	if s.toolRow == nil {
+		s.toolRow = map[string]int{}
+	}
+	s.toolRow[callID] = lineIdx
+}
+
+// forgetToolRow 工具调用结束:不再接增量(迟到的块丢弃)。
+func (s *State) forgetToolRow(callID string) {
+	if callID == "" {
+		return
+	}
+	delete(s.toolRow, callID)
+}
+
+// resetToolRows 清空工具行索引(切会话:Lines 重建,旧索引全部失效)。
+func (s *State) resetToolRows() {
+	s.toolRow = nil
+}
+
+// applyToolProgress 把一段增量输出并到对应工具调用行的实时区。
+//
+// 找不到对应行(旧日志/该调用未登记/已结束)⇒ 丢弃:宁可少显示,不可张冠李戴。
+func (s *State) applyToolProgress(p sdk.ToolProgressEvent) {
+	idx, ok := s.toolRow[p.CallID]
+	if !ok || idx < 0 || idx >= len(s.Lines) {
+		// 越界防御:切会话会把 Lines 清空重建(索引全变),此时旧索引已无意义。
+		return
+	}
+	s.Lines[idx].Live = trimLive(s.Lines[idx].Live + p.Chunk)
+}
+
+// trimLive 限长实时输出:只保留尾部若干行/若干字符。
+//
+// 为什么限长:工具可能连续输出几 MB(日志 tail、构建产物清单)。全量挂在展示行上
+// ⇒ 渲染每帧都要处理几 MB 文本,界面直接卡住。只留尾巴 = 用户看得到「还在动」,
+// 又不至于把界面拖垮。
+const (
+	liveMaxLines = 20
+	liveMaxRunes = 4000
+)
+
+func trimLive(text string) string {
+	if text == "" {
+		return ""
+	}
+	if lines := strings.Split(text, "\n"); len(lines) > liveMaxLines {
+		text = strings.Join(lines[len(lines)-liveMaxLines:], "\n")
+	}
+	if r := []rune(text); len(r) > liveMaxRunes {
+		text = string(r[len(r)-liveMaxRunes:])
+	}
+	return text
 }
 
 // ApplyStatus 处理 agent/status(running/idle)。

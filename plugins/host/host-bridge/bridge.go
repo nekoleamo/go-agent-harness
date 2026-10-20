@@ -85,6 +85,9 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		return nil, err
 	}
 	b := &Bridge{dir: dir, tools: tools, cmds: cmds, hostCtx: c, entries: map[string]*extEntry{}, cbAddr: cbAddr, cbToken: cbToken, lg: c.Logger()}
+	// 工具进度回传出口(C1):外部进程经回调通道 progress/record 回来 ⇒ 宿主按令牌
+	// 还原归属(会话 + 模型侧 call id)⇒ 发 tool/progress 事件(只走 UI 通道)。
+	cb.SetProgressSink(b.handleProgress)
 	if err := b.loadEntries(); err != nil {
 		cbClose()
 		return nil, err
@@ -195,6 +198,10 @@ type Bridge struct {
 	// closed 卸载标记:closeAll 之后不得再 respawn(否则崩溃重启与卸载撞车时,
 	// 外部进程与工具注册永久残留 → 违反"卸载即撤销")。
 	closed bool
+	// progOwners 进度归属表(令牌 → 会话/模型侧 call id/工具名;C1 跨进程回传)。
+	// 令牌由宿主随机发放:插件只能回传"这次调用的增量",不能指定别的归属。
+	progOwners map[string]progOwner
+	progMu     sync.Mutex
 }
 
 // logErr 记录外部插件加载失败(P3 软降级:不拖垮 boot,但信息不丢失)。
@@ -1428,16 +1435,27 @@ func (t *toolRPCClient) Execute(ctx context.Context, args string) (any, error) {
 	var reply ExecReply
 	callID := nextCallID(t.path)
 	cancelFn := func() { cancelCall(cl, callID) }
+	// 进度归属登记(C1):外部工具的增量输出经回调通道回传,归属(会话 + 模型侧 call id)
+	// 只有宿主知道 ⇒ 宿主发令牌、插件原样带回。调用结束即注销(迟到块无处可挂)。
+	//
+	// 归属取自 ctx 里的上报出口(agent-loop 装的):它闭包捕获那一回合的 ctx,
+	// 于是会话/调用 id/序号都在里面,宿主不必再抄一遍归属口径(抄一遍就会漂)。
+	progToken := ""
+	if rep, ok := sdk.ToolProgressReporterFrom(ctx); ok && rep != nil {
+		progToken = randomToken()
+		t.br.registerProgress(progToken, rep, t.name)
+		defer t.br.unregisterProgress(progToken)
+	}
 	// 有效档位随调用下传(见 sdk.SandboxHint):外部插件进程拿不到 ctx.sandbox 服务,
 	// 档位联动对它不可见 —— 无此字段则插件只能退回协作式控制。
 	sbMode, sbRoot := sandboxHintFields(ctx)
 	err := rpcCallCtx(ctx, cl, "Plugin.ExecuteNamed",
-		&ExecNamedArgs{Name: t.name, JSONArgs: args, CallID: callID, TimeoutMs: pluginSideTimeoutMs(timeout), SandboxMode: sbMode, WorkspaceRoot: sbRoot},
+		&ExecNamedArgs{Name: t.name, JSONArgs: args, CallID: callID, TimeoutMs: pluginSideTimeoutMs(timeout), SandboxMode: sbMode, WorkspaceRoot: sbRoot, ProgressToken: progToken},
 		&reply, timeout, cancelFn)
 	if err != nil && isMethodMissing(err) {
 		// 旧单工具协议回退(CallID 对旧插件无效:字段被忽略,行为不变)
 		err = rpcCallCtx(ctx, cl, "Plugin.Execute",
-			&ExecArgs{JSONArgs: args, CallID: callID, TimeoutMs: pluginSideTimeoutMs(timeout), SandboxMode: sbMode, WorkspaceRoot: sbRoot},
+			&ExecArgs{JSONArgs: args, CallID: callID, TimeoutMs: pluginSideTimeoutMs(timeout), SandboxMode: sbMode, WorkspaceRoot: sbRoot, ProgressToken: progToken},
 			&reply, timeout, cancelFn)
 	}
 	if err != nil {

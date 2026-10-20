@@ -43,14 +43,22 @@ type ExecArgs struct {
 	// 工具侧据此施加与档位一致的内核级约束,见 plugins/tool/tool-shell)。
 	SandboxMode   string
 	WorkspaceRoot string
+	// ProgressToken 宿主发放的**进度回传令牌**(2026-10-20 C1)。
+	//
+	// 为什么需要令牌:外部工具的增量输出要能对回界面上**那一行**工具,
+	// 而归属(会话 + 模型侧 call id)只有宿主知道;插件侧只需要一个"能回传"的把手。
+	// 宿主调用时登记 token → 归属,插件把 token 原样带回,宿主据此还原归属再发事件。
+	// 旧插件忽略未知字段(gob 按名匹配)⇒ 行为不变,只是外部工具暂无进度。
+	ProgressToken string
 }
 
 // ExecNamedArgs 新协议载荷:工具名 + 参数(含可中断契约,同 ExecArgs)。
 type ExecNamedArgs struct {
-	Name      string
-	JSONArgs  string
-	CallID    string
-	TimeoutMs int64
+	Name          string
+	JSONArgs      string
+	CallID        string
+	TimeoutMs     int64
+	ProgressToken string // 进度回传令牌(同 ExecArgs.ProgressToken)
 	// SandboxMode/WorkspaceRoot 同 ExecArgs(有效档位下传)。
 	SandboxMode   string
 	WorkspaceRoot string

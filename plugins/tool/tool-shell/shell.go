@@ -149,12 +149,20 @@ func (s *ShellTool) Execute(ctx context.Context, raw string) (any, error) {
 	setProcessGroup(cmd)
 	cmd.WaitDelay = 3 * time.Second
 	defer killProcessGroup(cmd) // 收尾杀掉组内残留(含后台孙进程)
-	out, err := cmd.CombinedOutput()
+	// 增量输出(C1):两个流指向**同一个** writer → os/exec 用同一管道读
+	// (与 CombinedOutput 的合并语义一致),最终 output 与从前逐字相同;
+	// pw 额外把增量喂给 sink(界面用)。
+	pw := newProgressWriter(ctx, "shell")
+	cmd.Stdout = pw
+	cmd.Stderr = pw
+	err := cmd.Run()
+	pw.close() // 收尾:零头发完 + 等发送队列排空(最后一行不能丢)
+	out := pw.String()
 	if err != nil {
 		return map[string]any{
 			"exit_error": err.Error(),
-			"output":     string(out),
+			"output":     out,
 		}, nil // 结构化错误回传模型
 	}
-	return map[string]any{"output": string(out)}, nil
+	return map[string]any{"output": out}, nil
 }

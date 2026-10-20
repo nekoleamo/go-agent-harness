@@ -38,6 +38,10 @@ type Callback struct {
 	// change 文件改动落账出口(S-P1-1 外部化补齐):外部进程工具没有宿主 Ctx,写盘后经
 	// change.record 回传;宿主按自己的沙箱根补 Rel 并 Append 账本。nil = 未装配(显式报错)。
 	change func(ev sdk.FileChangeEvent) error
+	// progress 工具增量输出回传出口(C1):外部进程的工具在另一个进程里跑,
+	// 中间输出经 progress/record 回传;宿主按令牌还原归属再发 tool/progress 事件。
+	// nil = 未装配(显式报错:不能让外部工具以为"回传出去了"其实被静默丢弃)。
+	progress func(token, chunk string) error
 }
 
 // NewCallback 构造回调服务(jobs/fanout 可为 nil;对应方法返回显式错误)。
@@ -49,6 +53,10 @@ func NewCallback(tools sdk.ToolRegistry, jobs sdk.JobService, fanout sdk.FanoutS
 // 会话账本 + 补 Rel)。由装配层(host-bridge Start)从 ctx.sessions/ctx.sandbox 组装,
 // 未注入时 change.record 返回显式错误(外部工具的改动不会被静默丢弃)。
 func (cb *Callback) SetChangeSink(fn func(ev sdk.FileChangeEvent) error) { cb.change = fn }
+
+// SetProgressSink 注入工具进度回传出口(宿主侧:按令牌还原归属 → 发 tool/progress 事件)。
+// 由装配层(host-bridge Start)注入;未注入时 progress/record 返回显式错误。
+func (cb *Callback) SetProgressSink(fn func(token, chunk string) error) { cb.progress = fn }
 
 // Call 执行一次宿主服务调用(校验 token,结果 JSON 写入 reply)。
 func (cb *Callback) Call(args CallArgs, reply *string) error {
@@ -65,6 +73,8 @@ func (cb *Callback) Call(args CallArgs, reply *string) error {
 		return cb.fanoutCall(ctx, args.Method, args.Args, reply)
 	case "change":
 		return cb.changeCall(ctx, args.Method, args.Args, reply)
+	case progressService:
+		return cb.progressCall(ctx, args.Method, args.Args, reply)
 	}
 	return errors.New("callback: 未知服务 " + args.Service)
 }
@@ -91,6 +101,27 @@ func (cb *Callback) changeCall(_ context.Context, method, raw string, reply *str
 		return fmt.Errorf("callback: change.record 落账失败: %w", err)
 	}
 	return nil
+}
+
+// progressCall progress/record(外部进程回传工具增量输出,C1)。
+//
+// 载荷只含令牌与文本:归属(会话 / 模型侧 call id)由宿主查表还原 ——
+// 插件说了不算(令牌是宿主随机发放并登记的)。
+func (cb *Callback) progressCall(_ context.Context, method, raw string, reply *string) error {
+	if method != progressRecord {
+		return errors.New("callback: progress 未知方法 " + method)
+	}
+	if cb.progress == nil {
+		return errors.New("callback: 宿主未装配工具进度回传出口,外部工具的增量输出无法回传")
+	}
+	var p progressRecordPayload
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		return fmt.Errorf("callback: progress.record 解析失败: %w", err)
+	}
+	if p.Token == "" {
+		return errors.New("callback: progress.record 缺令牌")
+	}
+	return cb.progress(p.Token, p.Chunk)
 }
 
 // toolsCall tools.list/tools.execute(工具定义与执行,经全流水线)。
