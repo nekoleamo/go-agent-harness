@@ -11,6 +11,7 @@ export interface ToolRow {
   full: string // 全文(折叠展开)
   summary?: string // 宿主算好的一行人话摘要(2026-10-20 B1;缺失 = 旧日志/未知工具)
   live?: string // 工具执行中的实时输出(2026-10-20 C1;瞬时,工具结束后不再更新)
+  startedAt?: number // 工具调用的开始时刻(ms epoch;2026-10-20 C2a:运行中实时耗时)
 }
 
 export interface Msg {
@@ -154,7 +155,15 @@ export function consume(m: StreamModel, ev: SessionEvent): void {
       if (d.ToolCallID) {
         // 工具调用增量归并(流式参数;实时下常与 message 落定重叠,保守归并即可)
         if (!m.pendingTool || m.pendingTool.id !== d.ToolCallID) {
-          m.pendingTool = { id: d.ToolCallID, name: d.ToolCallName ?? '', args: d.ToolCallArgs ?? '', status: 'called', result: '', full: '' }
+          m.pendingTool = {
+            id: d.ToolCallID,
+            name: d.ToolCallName ?? '',
+            args: d.ToolCallArgs ?? '',
+            status: 'called',
+            result: '',
+            full: '',
+            startedAt: Date.now(), // C2a:运行中实时耗时的起点
+          }
         } else {
           m.pendingTool.name += d.ToolCallName ?? ''
           m.pendingTool.args += d.ToolCallArgs ?? ''
@@ -176,7 +185,15 @@ export function consume(m: StreamModel, ev: SessionEvent): void {
     }
     case 'tool/call': {
       const tc = p as ToolCall
-      const row: ToolRow = { id: tc.ID, name: tc.Name, args: argsSummary(tc.Arguments), status: 'called', result: '', full: '' }
+      const row: ToolRow = {
+        id: tc.ID,
+        name: tc.Name,
+        args: argsSummary(tc.Arguments),
+        status: 'called',
+        result: '',
+        full: '',
+        startedAt: Date.now(), // C2a:运行中实时耗时的起点
+      }
       m.pendingTool = row
       break
     }

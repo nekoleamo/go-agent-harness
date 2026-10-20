@@ -2,7 +2,7 @@
 // 会话流渲染(槽位 stream):消息/工具行(折叠展开)/meta 行。
 // 渲染层禁止 v-html(文本一律插值转义);代码块内等宽字体展示。
 // 视觉:用户气泡轻盈化(浅蓝底 + 主色文字),工具调用为弱化胶囊,meta/pending 极淡。
-import { computed, ref } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import type { Msg, ToolRow } from '../sse'
 import { cleanAnswer, cleanThink } from '../sse'
 import type { MetaLine, PendingView } from '../registry'
@@ -39,6 +39,40 @@ function toolCallsOf(m: Msg): ToolRow[] {
 const liveText = computed(() => cleanAnswer(props.pending?.text ?? ''))
 const liveThink = computed(() => cleanThink(props.pending?.think ?? ''))
 const hasPending = computed(() => !!props.pending && (!!liveText.value || !!liveThink.value || !!props.pending.tool))
+
+// 运行中实时耗时(C2a):工具在跑时显示已耗时(整数秒)。
+//
+// 为何要一个秒级节拍:秒数得**跳**,不然用户不知道它是活的 ——
+// 渲染层自己算(不另收事件),节拍只为触发重绘。
+// 空闲不空转:没有正在跑的工具就不挂表。
+const now = ref(Date.now())
+let elapsedTimer: ReturnType<typeof setInterval> | null = null
+watch(
+  () => props.pending?.tool?.startedAt,
+  (v) => {
+    if (v && !elapsedTimer) {
+      now.value = Date.now()
+      elapsedTimer = setInterval(() => {
+        now.value = Date.now()
+      }, 1000)
+    } else if (!v && elapsedTimer) {
+      clearInterval(elapsedTimer)
+      elapsedTimer = null
+    }
+  },
+  { immediate: true }
+)
+onUnmounted(() => {
+  if (elapsedTimer) clearInterval(elapsedTimer)
+})
+
+// toolElapsed 运行中工具的已耗时(秒);没有起点或已结束 ⇒ 空串。
+const toolElapsed = computed(() => {
+  const t = props.pending?.tool
+  if (!t || !t.startedAt) return ''
+  const secs = Math.max(0, Math.floor((now.value - t.startedAt) / 1000))
+  return `${secs}s`
+})
 
 const META_TAG: Record<string, string> = {
   command: '命令',
@@ -149,6 +183,8 @@ function attUrl(rel: string): string {
       <div v-if="pending.tool" class="tool-inline mono">
         <span class="tl">{{ pending.tool.name || '…' }}</span>
         <span class="toolargs">{{ pending.tool.args }}</span>
+        <!-- C2a:运行中实时耗时(整数秒;结果到达后这行整体消失) -->
+        <span v-if="toolElapsed" class="toolelapsed">{{ toolElapsed }}</span>
       </div>
       <!-- C1:工具执行中的实时输出(瞬时 —— 不落盘,翻历史看不到)。
            放在工具胶囊下方:同一个工具的「正在产出」,跟终端里敲命令看回显同感。 -->
@@ -281,6 +317,12 @@ function attUrl(rel: string): string {
 }
 .toolargs {
   color: var(--fg-dim);
+}
+/* 运行中耗时(C2a):比参数更弱一档(它是过程信息,不是结论) */
+.toolelapsed {
+  color: var(--fg-dim);
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
 }
 /* 工具实时输出(C1):弱化到次级信息档 —— 它是过程,不是结论 */
 .tool-live {

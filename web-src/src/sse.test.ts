@@ -246,3 +246,11 @@ test('tool/progress:工具结束后不再更新(结论不被过程改写)', () =
   assert.equal(m.pendingTool, undefined)
   assert.equal(m.msgs.at(-1)!.kind, 'tool')
 })
+
+// 运行中实时耗时(2026-10-20 C2a):工具调用要带上开始时刻。
+test('tool/call 记录开始时刻(运行中实时耗时的起点)', () => {
+  const m = newModel()
+  consume(m, ev('tool/call', { ID: 't9', Name: 'shell', Arguments: '{}' }, 1))
+  const started = m.pendingTool?.startedAt
+  assert.ok(typeof started === 'number' && started > 0, '进行中的工具应带开始时刻')
+})

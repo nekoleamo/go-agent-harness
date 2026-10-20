@@ -4,7 +4,9 @@ package tui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
+	"time"
 
 	"charm.land/lipgloss/v2"
 )
@@ -318,6 +320,14 @@ func flattenViewLines(s *State, colW int) []physRow {
 				text = string(r[:thinkingFoldLen]) + " …(Ctrl+T 展开)"
 			}
 		}
+		// C2a:运行中实时耗时(只挂在**正在跑**的调用行上:结果到达即收尾)。
+		// 整数秒:一秒跳一次,不做小数(0.1 秒级抖动看着难受)。
+		if !ln.Since.IsZero() {
+			text += " (" + elapsedSecs(time.Since(ln.Since)) + ")"
+			if time.Since(ln.Since) >= runningHintAfter {
+				text += " · 仍在运行" // 超过阈值:明说它还在跑(还是卡住了?)
+			}
+		}
 		rows = append(rows, flattenLine(li, Line{Kind: ln.Kind, Text: text}, colW)...)
 		if ln.Live != "" {
 			// C1:工具执行中的实时输出,渲染在该工具调用行下方(缩进 2 列,弱化样式)。
@@ -332,6 +342,20 @@ func flattenViewLines(s *State, colW int) []physRow {
 	}
 	return rows
 }
+
+// elapsedSecs 运行中耗时(整数秒;<1s 显示 "0s" —— 别显示 "0.3s" 那种抖动的数字)。
+func elapsedSecs(d time.Duration) string {
+	secs := int(d.Seconds())
+	if secs < 0 {
+		secs = 0
+	}
+	return strconv.Itoa(secs) + "s"
+}
+
+// runningHintAfter 超过这么久就在调用行上补一句"仍在运行"(C2a)。
+//
+// 为什么要有这句:光有秒数只能说明"过了多久",分不清"在慢慢跑"与"卡死了"。
+const runningHintAfter = 30 * time.Second
 
 // flattenLine 单逻辑行 → 物理行序列。
 func flattenLine(li int, ln Line, colW int) []physRow {

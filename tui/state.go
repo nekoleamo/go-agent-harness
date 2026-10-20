@@ -25,6 +25,13 @@ type Line struct {
 	// 挂在工具调用行上 ⇒ 天然归位(不用再维护「哪个调用对应哪一行」的额外索引),
 	// 且工具结束后仍可看到这一轮的输出尾巴(与终端 scrollback 同感)。
 	Live string
+
+	// Since 工具调用的**开始时刻**(2026-10-20 C2a:运行中实时耗时)。
+	//
+	// 只在**实时**事件里设置(重放不设 —— 历史里的调用早跑完了,显示一个一直
+	// 往上跳的数字是骗人);结果到达时清零(那一刻起它不再「在跑」)。
+	// 渲染时按 now-since 现算 ⇒ 不需要额外的计时事件(思考动画的节拍已经带着重绘)。
+	Since time.Time
 }
 
 // State TUI 展示状态(事件驱动,线程安全由调用方保证)。
@@ -164,6 +171,10 @@ type State struct {
 	// 进程内不持久化:实时输出本身不落盘(见 Line.Live)。
 	toolRow map[string]int
 
+	// replaying 重放中(C2a):重放的事件是**历史** —— 里面的工具调用早跑完了,
+	// 不能挂实时耗时(会一直往上跳)。实时路径为 false。
+	replaying bool
+
 	// S1.3 输入增强:历史/undo/编辑快捷键。
 	// CmdHistory 本进程已提交的斜杠命令(命令不入会话 Lines,单独记录补历史源;
 	// 普通 user 消息经 Lines 提取)。histActive+histIdx = 历史翻页态(false 未翻),
@@ -214,7 +225,12 @@ func (s *State) ApplySessionEvent(ev *sdk.SessionEvent) {
 		}
 	case sdk.EventToolCall:
 		if tc, ok := ev.Payload.(sdk.ToolCallEvent); ok {
-			s.Lines = append(s.Lines, Line{Kind: "tool", Text: toolCallText(sdk.ToolCall(tc))})
+			ln := Line{Kind: "tool", Text: toolCallText(sdk.ToolCall(tc))}
+			// C2a:实时耗时起点(仅实时事件;重放不设 —— 见 Line.Since)。
+			if !s.replaying {
+				ln.Since = time.Now()
+			}
+			s.Lines = append(s.Lines, ln)
 			s.LastTool = tc.Name     // 状态栏"执行工具"提示
 			s.toolStart = time.Now() // 工具耗时起点(下次 Result 结算)
 			s.noteToolRow(tc.ID, len(s.Lines)-1)
@@ -227,6 +243,10 @@ func (s *State) ApplySessionEvent(ev *sdk.SessionEvent) {
 	case sdk.EventToolResult:
 		if r, ok := ev.Payload.(sdk.ToolResultEvent); ok {
 			s.LastTool = "" // 工具完成:回“思考中”
+			// C2a:结果到达 ⇒ 这个调用不再「在跑」(实时耗时收尾,交给结果行的耗时)。
+			if idx, ok := s.toolRow[r.CallID]; ok && idx < len(s.Lines) {
+				s.Lines[idx].Since = time.Time{}
+			}
 			s.forgetToolRow(r.CallID)
 
 			kind := "tool"
@@ -272,6 +292,7 @@ func (s *State) ApplySessionEvent(ev *sdk.SessionEvent) {
 	case sdk.EventTurnEnd:
 		s.Lines = append(s.Lines, Line{Kind: "meta", Text: "—— 轮次结束 ——"})
 		s.LastTool = ""
+		s.clearRunningSince() // C2a:回合结束 ⇒ 没有工具在跑了(悬着的调用不再计时)
 	case sdk.EventAgentError:
 		if err, ok := ev.Payload.(error); ok {
 			s.Error = err.Error()
@@ -302,6 +323,16 @@ func (s *State) forgetToolRow(callID string) {
 // resetToolRows 清空工具行索引(切会话:Lines 重建,旧索引全部失效)。
 func (s *State) resetToolRows() {
 	s.toolRow = nil
+}
+
+// clearRunningSince 清掉所有「正在跑」标记(回合结束:没有工具在跑了)。
+//
+// 为什么:工具卡住/被中断时,调用行可能永远等不到结果事件 ——
+// 不清就是一个永远往上跳的数字,骗人。
+func (s *State) clearRunningSince() {
+	for i := range s.Lines {
+		s.Lines[i].Since = time.Time{}
+	}
 }
 
 // applyToolProgress 把一段增量输出并到对应工具调用行的实时区。
@@ -878,7 +909,13 @@ func (s *State) foldOpenOf(lineIdx int) bool {
 // ApplyReplay 重放历史事件到展示层(/session switch 切换会话后)。
 // 多轮结构:跨轮时插一条细分隔线(轻量 meta,替代全宽“轮次结束”行——重放几十轮
 // 若每轮都铺全宽分隔仍显吵;细线只标轮界,实时回合保留原“轮次结束”分隔感)。
+// ApplyReplay 把一条**历史**事件铺进展示状态(重放路径)。
+//
+// 与实时路径的差别(C2a):重放里的工具调用**不在跑** ⇒ 不设实时耗时起点
+// (否则历史行上会挂一个一直往上跳的数字)。
 func (s *State) ApplyReplay(ev *sdk.SessionEvent) {
+	s.replaying = true
+	defer func() { s.replaying = false }()
 	// 轨迹先吃帧:重放下 turn/end 被展示层跳过(不铺"轮次结束"行),但轨迹必须看到它
 	// 才能结算回合时长——去重由 Traj.Push 按 seq 负责(随后的 ApplySessionEvent 会再进一次)。
 	s.Traj.Push(ev)
