@@ -37,10 +37,25 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 
 // Engine 滚动摘要引擎(零状态:每次 Fold 从事件流重读累计摘要,幂等)。
 // 估算口径与 host-session-log 的 approxChars 一致(中文 1 字 ≈ 1 token)。
-type Engine struct{}
+type Engine struct {
+	foldTarget float64 // 折叠深度:折到 预算×该比例(默认 0.5)
+	minFold    float64 // 单次最小折叠量:预算×该比例(默认 1/3)
+}
 
 // maxCompressPerCall 单次 Fold 的最大折叠数(防极端场景死循环)。
 const maxCompressPerCall = 20
+
+// 折叠深度的缺省比例(F7:显式参数化 —— "少折、深折"的账写在配置里,不埋在代码里)。
+//
+// 为什么折到预算的一半而不是刚好折到预算:折到预算 ⇒ 下一轮立刻又撞线 ⇒ 每轮都折
+// (每次折叠都改写历史前缀 ⇒ 缓存每轮失效)。折到一半 ⇒ 有滞回,通常隔几轮才折一次。
+//
+// 为什么单次折叠量有下限(预算的 1/3):折叠太小的块,摘要本身的开销可能比折掉的还多
+// (摘要也要进上下文),纯亏。
+const (
+	defaultFoldTarget = 0.5
+	defaultMinFold    = 1.0 / 3.0
+)
 
 // Fold 折叠 evs 中水位后的最旧块(不得越过最后一个用户轮,保留最新轮),
 // 直至估算投影回预算内;每折一块经 summary 回调落盘累计摘要事件。
@@ -48,13 +63,20 @@ const maxCompressPerCall = 20
 func (e *Engine) Fold(evs []sdk.SessionEvent, watermark int, budget int, summary func(string)) int {
 	oldSummary := summaryAt(evs, watermark)
 	w := watermark
+	foldTarget, minFold := e.foldTarget, e.minFold
+	if foldTarget <= 0 {
+		foldTarget = defaultFoldTarget
+	}
+	if minFold <= 0 {
+		minFold = defaultMinFold
+	}
 	for iter := 0; iter < maxCompressPerCall; iter++ {
 		if estimate(evs, w, oldSummary) <= budget {
 			return w
 		}
-		need := estimate(evs, w, oldSummary) - budget/2 // 需腾出的字符量(压到约一半预算)
-		if need < budget/3 {
-			need = budget / 3
+		need := estimate(evs, w, oldSummary) - int(float64(budget)*foldTarget) // 折到 预算×foldTarget
+		if minNeed := int(float64(budget) * minFold); need < minNeed {
+			need = minNeed // 单次最小折叠量(折太少不划算)
 		}
 		// 取水位后的原始事件块,累计到 need;块不得越过最后一个用户轮
 		start := w + 1

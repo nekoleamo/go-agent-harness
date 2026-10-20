@@ -26,6 +26,8 @@ type Planner struct {
 	maxTokens     int     // data.max_tokens:阈值上限(token;默认 200000)
 	fallbackChars int     // data.token_budget_chars:无实测用量/未启用时的字符预算(0 = 关闭)
 	cpt           float64 // 字符/token 起算值(data.chars_per_token,默认 2)
+	foldTarget    float64 // data.fold_target_ratio:折叠深度(默认 0.5)
+	minFold       float64 // data.min_fold_ratio:单次最小折叠量(默认 1/3)
 
 	prevTokens, prevChars int // 上次观测(增量校准用)
 }
@@ -106,6 +108,16 @@ func (p *Planner) Plan(in sdk.CompressInput) sdk.CompressDecision {
 }
 
 // thresholdTokens 阈值 = min(窗口 × 比例, 上限);窗口未知 → 只用上限(用户设的绝对线)。
+//
+// F7 核对结论(2026-10-21):**上限是有意的成本阀,不是 bug**。
+//   - 常规路径:阈值 = min(窗口×0.8, 200K)。512K 窗口的模型也只让历史涨到 200K ——
+//     看着像"白扔可用空间",实则是**花钱的闸**:历史每轮都要重发,窗口越大越贵,
+//     而且超长历史对模型质量本身是负担(《Lost in the Middle》那一族效应)。
+//     想让大窗口模型吃满历史,调 data.max_tokens 即可(不用改代码)。
+//   - 溢出路径(端点已报超窗):**不看这条上限**,按窗口×比例折 ——
+//     此时"已经超了"是事实,再按更小的绝对线折才是白扔空间(见 Plan 的 Overflow 段)。
+//
+// 两条路径的差别是**故意的**,别把它们抹平。
 func (p *Planner) thresholdTokens(window int) int {
 	t := p.maxTokens
 	if window > 0 && p.triggerRatio > 0 {
@@ -138,8 +150,11 @@ func newPlanner(m *sdk.Manifest, fallbackChars int) *Planner {
 		maxTokens:     defaultMaxTokens,
 		fallbackChars: fallbackChars,
 		cpt:           defaultCharsPerTok,
+		foldTarget:    defaultFoldTarget,
+		minFold:       defaultMinFold,
 	}
 	if m == nil || m.Data == nil {
+		p.eng = Engine{foldTarget: p.foldTarget, minFold: p.minFold}
 		return p
 	}
 	if v := numData(m, "trigger_ratio", 0); v > 0 {
@@ -151,6 +166,14 @@ func newPlanner(m *sdk.Manifest, fallbackChars int) *Planner {
 	if v := int(numData(m, "max_tokens", 0)); v > 0 {
 		p.maxTokens = v
 	}
+	// F7:折叠深度参数化("少折、深折"的账写在配置里,而不是埋在代码常量里)。
+	if v := numData(m, "fold_target_ratio", 0); v > 0 && v < 1 {
+		p.foldTarget = v
+	}
+	if v := numData(m, "min_fold_ratio", 0); v > 0 && v < 1 {
+		p.minFold = v
+	}
+	p.eng = Engine{foldTarget: p.foldTarget, minFold: p.minFold}
 	return p
 }
 
