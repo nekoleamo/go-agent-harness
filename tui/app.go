@@ -272,6 +272,39 @@ func (a *App) sendToUI(msg tea.Msg) {
 	}
 }
 
+// refreshPlan 回读规划进度并投递到 UI 循环(D2:状态栏项 plan)。
+//
+// 为什么在**订阅回调**里做(而不是 UI 线程):读文件是 IO,不能挡 UI 线程;
+// 回调跑在总线 goroutine,读完了经 sendToUI 递进(与 sessionEventMsg 同款纪律)。
+//
+// 未装配(tool-auto-plan 未启用)⇒ 静默:规划不是默认路径,不该在状态栏报错。
+func (a *App) refreshPlan() {
+	var plans sdk.PlanService
+	if err := a.c.Inject("ctx.plans", &plans); err != nil {
+		return
+	}
+	list := plans.List("")
+	if len(list) == 0 {
+		a.sendToUI(planMsg{})
+		return
+	}
+	// 取"最该看"的那份:未归档优先(proposed/confirmed),其次最近变更的。
+	// 全部归档了 ⇒ 取最后一份(仍显示"已归档"的事实,而不是让状态栏空着)。
+	best := list[0]
+	for _, p := range list[1:] {
+		if planMoreActive(p.Status, best.Status) {
+			best = p
+		}
+	}
+	a.sendToUI(planMsg{done: best.Done, total: best.Total, title: best.Objective})
+}
+
+// planMoreActive 排序用:未归档的规划比已归档的"更该看"。
+func planMoreActive(s, other string) bool {
+	active := func(x string) bool { return x == "proposed" || x == "confirmed" }
+	return active(s) && !active(other)
+}
+
 // OpenDoc 请求打开文档预览(host `doc/open` 事件 / 工具行 / 命令;异步投递到 UI 循环)。
 func (a *App) OpenDoc(path string, page, sheet int) {
 	if path == "" {
@@ -475,6 +508,11 @@ func (a *App) Start() error {
 	d2 := a.c.Subscribe(sdk.EventAgentStatus, func(ctx context.Context, ev *sdk.Event) error {
 		if s, ok := ev.Payload.(string); ok {
 			a.sendToUI(statusMsg{s})
+			// D2:回合结束 ⇒ 规划可能推进了(执行期靠 todo 推进,规划步骤靠 auto_plan.step),
+			// 回读一次让状态栏的「计划 n/m」不落后。
+			if s == "idle" {
+				a.refreshPlan()
+			}
 		}
 		return nil
 	})

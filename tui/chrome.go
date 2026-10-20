@@ -231,10 +231,10 @@ var statuslineCluster = map[string]bool{
 // NOND-N1:notice 置首 —— 提示是「需要人回来」的信号,无提示时该项渲染空串,
 // 输出与旧基线逐字符一致。
 // 第一百三十八批:tps 紧跟 last(两项同属「上一回合」的度量,拆开写才能各自 /statusline 开关)。
-var defaultStatusline = []string{"notice", "state", "queue", "questions", "dock", "last", "tps", "workspace", "sandbox", "approval", "role", "session"}
+var defaultStatusline = []string{"notice", "state", "queue", "questions", "plan", "dock", "last", "tps", "workspace", "sandbox", "approval", "role", "session"}
 
 // statuslineTokens 全部合法项(顺序无关;/statusline 错误提示与校验用)。
-var statuslineTokens = []string{"notice", "state", "queue", "questions", "dock", "last", "tps", "workspace", "sandbox", "approval", "role", "session"}
+var statuslineTokens = []string{"notice", "state", "queue", "questions", "plan", "dock", "last", "tps", "workspace", "sandbox", "approval", "role", "session"}
 
 // statuslineTokenDesc 项说明(/statusline 无参与错误提示用)。
 var statuslineTokenDesc = map[string]string{
@@ -242,6 +242,7 @@ var statuslineTokenDesc = map[string]string{
 	"state":     "回合状态(思考中/执行工具;运行中带 Esc 提示)",
 	"queue":     "转向/待发计数(转向 = 已注入本回合;待发 = 回告后自动续发)",
 	"questions": "待答提问计数(S-P0-2)",
+	"plan":      "规划进度(已完成/总步数;详情 /plan)",
 	"dock":      "后台任务/子代理坞(S-P0-3)",
 	"last":      "上一回合耗时",
 	"tps":       "上一回合输出速率(输出 tok/回合时长;工具与审批等待计入分母)",
@@ -304,6 +305,16 @@ func statuslineItem(s *State, token string) string {
 				hint += "(/answer 作答)"
 			}
 			return styleBusy.Render(hint)
+		}
+	case "plan":
+		// D2:规划进度(计划落盘了却没人看得见 —— 状态栏给一个常驻信号)。
+		// 无规划 ⇒ 隐身(不占位):规划模式不是默认路径。
+		if s.PlanTotal > 0 {
+			txt := fmt.Sprintf("计划 %d/%d", s.PlanDone, s.PlanTotal)
+			if s.PlanTitle != "" {
+				txt += " · " + truncWidthRunes(s.PlanTitle, 18)
+			}
+			return styleBusy.Render(txt)
 		}
 	case "dock":
 		if lbl := dockLabel(s.Dock); lbl != "" {
@@ -436,7 +447,7 @@ func renderStatusLineOrdered(s *State, width int) string {
 // 划分依据:**信息会不会在这一轮内变**。state/queue/questions/dock/last/tps/notice 都会;
 // workspace/sandbox/approval/role/session 是配置,一轮内基本不动(除非用户切)。
 var statuslineLive = map[string]bool{
-	"notice": true, "state": true, "queue": true, "questions": true,
+	"notice": true, "state": true, "queue": true, "questions": true, "plan": true,
 	"dock": true, "last": true, "tps": true,
 }
 

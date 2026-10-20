@@ -281,3 +281,52 @@ func TestLifecycleWithTodoHandoff(t *testing.T) {
 		t.Fatalf("联动收尾应可归档: %+v ok=%v", got, ok)
 	}
 }
+
+// TestPlanServiceReadOnly D2:插件提供 ctx.plans(只读视图)——
+// 界面上要看得见计划,写侧仍是本插件的工具。
+func TestPlanServiceReadOnly(t *testing.T) {
+	store := newStore(t)
+	svc := &planService{store: store}
+	p, err := store.Create("请把导出做成流式", "把导出做成流式", []string{"不许破坏缓存"}, []string{"先量一遍", "再改"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	list := svc.List("")
+	if len(list) != 1 {
+		t.Fatalf("应列出 1 份规划,got %d", len(list))
+	}
+	if list[0].ID != p.ID || list[0].Total != 2 {
+		t.Fatalf("摘要字段不对: %+v", list[0])
+	}
+	if list[0].Objective != "把导出做成流式" {
+		t.Fatalf("目标应带出,got %q", list[0].Objective)
+	}
+	det, ok := svc.Get(p.ID)
+	if !ok {
+		t.Fatal("应能取到明细")
+	}
+	if det.Total != 2 || len(det.Steps) != 2 {
+		t.Fatalf("明细步骤数不对: %+v", det)
+	}
+	if det.Steps[0].Title != "先量一遍" || det.Steps[0].Index != 0 {
+		t.Fatalf("步骤明细不对: %+v", det.Steps[0])
+	}
+	if len(det.Constraints) != 1 || det.Constraints[0] != "不许破坏缓存" {
+		t.Fatalf("约束应带出,got %v", det.Constraints)
+	}
+	// 步骤推进后进度要跟着变(状态栏的「计划 n/m」不能是死的)
+	if err := store.Confirm(p.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Step(p.ID, 0, StepCompleted); err != nil {
+		t.Fatal(err)
+	}
+	det2, _ := svc.Get(p.ID)
+	if det2.Done != 1 {
+		t.Fatalf("完成一步后进度应为 1,got %d", det2.Done)
+	}
+	// 不存在的 id ⇒ ok=false(不是零值详情)
+	if _, ok := svc.Get("nope"); ok {
+		t.Fatal("不存在的规划应 ok=false")
+	}
+}

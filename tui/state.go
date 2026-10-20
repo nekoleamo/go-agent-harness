@@ -121,6 +121,12 @@ type State struct {
 	// 保留到下一次用户提交(人已回到终端 = 提示已送达)——不是会话内容,不进 Lines/账本。
 	Notice *sdk.Notice
 
+	// D2:规划进度(状态栏项 plan 渲染):PlanDone 已完成步数 / PlanTotal 总步数 /
+	// PlanTitle 目标摘要(一句话)。无规划 ⇒ PlanTotal=0 ⇒ 该项隐身。
+	PlanDone  int
+	PlanTotal int
+	PlanTitle string
+
 	// P5 回合耗时:turnStart 运行起点(ApplyStatus running 首设),turnDur 上次回合耗时
 	// (ApplyStatus idle 结算;状态栏空闲态展示)。私有,渲染层同包可读。
 	turnStart time.Time

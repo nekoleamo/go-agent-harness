@@ -21,6 +21,16 @@ type sessionEventMsg struct{ ev *sdk.SessionEvent }
 
 type statusMsg struct{ status string }
 
+// planMsg 规划进度刷新(D2:状态栏项 plan 渲染)。
+//
+// 走 UI 消息而不是直改 Model:订阅回调可能在总线 goroutine(与 UI 协程并发读 State
+// = 数据竞争)。与 sessionEventMsg 同款纪律。
+type planMsg struct {
+	done  int
+	total int
+	title string
+}
+
 // noticeMsg 用户提示推送(NOND-N1;sdk.EventNotice 广播 → 状态栏 notice 项)。
 type noticeMsg struct{ n *sdk.Notice }
 
@@ -187,6 +197,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.dockTicking = false
 		}
 		m.skipView = false
+	case planMsg:
+		// D2:规划进度(无规划 ⇒ total=0 ⇒ 状态栏该项隐身)。
+		m.state.PlanDone = msg.done
+		m.state.PlanTotal = msg.total
+		m.state.PlanTitle = msg.title
 	case statusMsg:
 		m.state.ApplyStatus(msg.status)
 		// 回合开始(含别的端/其它渠道在同进程里起的回合)→ 起思考动画链

@@ -248,6 +248,9 @@ func (h *Host) specs() []sdk.CommandSpec {
 				return []sdk.Option{{Value: "all", Desc: "展开逐工具 schema 成本"}}
 			}}}},
 		{Name: "recap", Usage: "/recap", Desc: "本地会话速览(轮数/工具/文件/最近问答;纯本地不调模型)", Run: h.cmdRecap},
+		// D2:规划只读视图(计划落盘了却没人看得见 —— 人只能问模型"到第几步了")。
+		{Name: "plan", Usage: "/plan [规划id]", Desc: "查看规划进度(目标/步骤/完成度;只读,不发模型请求)", Run: h.cmdPlan,
+			Args: []sdk.ArgLevel{{FreeArgs: func([]string) []string { return []string{"规划id?"} }}}},
 		// 刻意叫 websearch 而不是 search:/search 是 **TUI 专属**命令(UI 元素搜索),
 		// 宿主命令与 UI 命令同名会让两处帮助都变得含混(测试里有这条断言)。
 		{Name: "websearch", Usage: "/websearch [测试 <词>]", Desc: "联网搜索配置诊断(在用哪家/端点/key 有无;可实跑一次)", Run: h.cmdSearch,

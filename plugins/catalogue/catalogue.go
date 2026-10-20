@@ -137,6 +137,8 @@ var All = map[string]Def{
 		Requires: []string{"ctx.tools", "ctx.doc"}}, Bundle: "base"},
 	"tool-auto-plan": {Factory: func() sdk.Plugin { return &toolautoplan.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "tool-auto-plan", Type: "tool", APIVersion: ">=1.0,<2.0",
+		// ctx.plans:规划的**只读**服务(D2:界面上看得见计划进度;写侧仍是本插件的工具)
+		Provides: []string{"ctx.plans"},
 		Requires: []string{"ctx.tools", "ctx.systemPrompt"}}, Bundle: "base"},
 	"tool-ask": {Factory: func() sdk.Plugin { return &toolask.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "tool-ask", Type: "tool", APIVersion: ">=1.0,<2.0",

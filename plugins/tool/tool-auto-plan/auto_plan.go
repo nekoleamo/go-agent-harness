@@ -92,6 +92,9 @@ func NewTool() sdk.Tool {
 	return &Tool{store: NewStore("")}
 }
 
+// newToolWithStore 用给定 store 构造工具(宿主侧:工具与只读服务共用一个 store)。
+func newToolWithStore(store *Store) *Tool { return &Tool{store: store} }
+
 // Plugin 实现 tool-auto-plan(进程内装配:注册工具 + 规则注入,同 host-skills 先例)。
 type Plugin struct{}
 
@@ -103,7 +106,14 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	if err := c.Inject("ctx.tools", &tools); err != nil {
 		return nil, err
 	}
-	d1 := tools.Register(NewTool())
+	// 工具与**只读服务**共用一个 store(D2:界面上要看得见计划 —— 计划落盘了却没人看,
+	// 人只能问模型"到第几步了")。
+	store := NewStore("")
+	d1 := tools.Register(newToolWithStore(store))
+	if err := c.Provide("ctx.plans", &planService{store: store}); err != nil {
+		d1()
+		return nil, err
+	}
 	enable := true
 	if m != nil && m.Data != nil {
 		if v, ok := m.Data["enable_rule"].(bool); ok {
@@ -123,6 +133,49 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		Content: RuleSectionText,
 	})
 	return func() { d1(); d2() }, nil
+}
+
+// planService 只读适配(sdk.PlanService):把内部 Plan/View 转成 sdk 的视图类型。
+//
+// 为什么在插件里转而不是让界面读文件:文件格式是本插件的事实源,
+// 界面去解析 jsonl = 两份格式知识(迟早漂移)。
+type planService struct{ store *Store }
+
+func (s *planService) List(status string) []sdk.PlanView {
+	views := s.store.List(status)
+	out := make([]sdk.PlanView, 0, len(views))
+	for _, v := range views {
+		out = append(out, sdk.PlanView{
+			ID: v.ID, Objective: v.Objective, Status: v.Status,
+			Done: v.Done, Total: v.Total,
+		})
+	}
+	return out
+}
+
+func (s *planService) Get(id string) (sdk.PlanDetail, bool) {
+	p, ok := s.store.Get(id)
+	if !ok {
+		return sdk.PlanDetail{}, false
+	}
+	done := 0
+	for _, st := range p.Steps {
+		if st.Status == StepCompleted {
+			done++
+		}
+	}
+	detail := sdk.PlanDetail{
+		PlanView: sdk.PlanView{
+			ID: p.ID, Objective: p.Objective, Status: p.Status,
+			Done: done, Total: len(p.Steps),
+		},
+		Request:     p.Request,
+		Constraints: p.Constraints,
+	}
+	for _, st := range p.Steps {
+		detail.Steps = append(detail.Steps, sdk.PlanStep{Index: st.Index, Title: st.Title, Status: st.Status})
+	}
+	return detail, true
 }
 
 // RuleSectionText 规划模式系统提示片段(纯函数,便于单测断言)。
