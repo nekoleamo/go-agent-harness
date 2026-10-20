@@ -175,6 +175,16 @@ type State struct {
 	// 不能挂实时耗时(会一直往上跳)。实时路径为 false。
 	replaying bool
 
+	// C3 工具分组:stepNo 步序号;stepHead 当前步的头行下标;stepOpen 是否有进行中的步;
+	// stepGroups 头行下标 → 分组;stepFold 头行下标 → 是否展开(默认折叠);
+	// stepStartTS 本步起始时刻(算耗时用)。
+	stepNo      int
+	stepHead    int
+	stepOpen    bool
+	stepGroups  map[int]*stepGroup
+	stepFold    map[int]bool
+	stepStartTS time.Time
+
 	// S1.3 输入增强:历史/undo/编辑快捷键。
 	// CmdHistory 本进程已提交的斜杠命令(命令不入会话 Lines,单独记录补历史源;
 	// 普通 user 消息经 Lines 提取)。histActive+histIdx = 历史翻页态(false 未翻),
@@ -234,6 +244,7 @@ func (s *State) ApplySessionEvent(ev *sdk.SessionEvent) {
 			s.LastTool = tc.Name     // 状态栏"执行工具"提示
 			s.toolStart = time.Now() // 工具耗时起点(下次 Result 结算)
 			s.noteToolRow(tc.ID, len(s.Lines)-1)
+			s.noteStepToolCall() // C3:本步的第一个工具行 ⇒ 分组起点
 		}
 	case sdk.EventToolProgress:
 		// C1:工具执行中的增量输出 → 贴到该工具调用行下方(不进会话日志)。
@@ -288,11 +299,16 @@ func (s *State) ApplySessionEvent(ev *sdk.SessionEvent) {
 				stored = full // 未截断:无需提示后缀
 			}
 			s.Lines = append(s.Lines, Line{Kind: kind, Text: label + " " + r.Name + ": " + sum, Full: stored})
+			s.noteStepToolLine(kind == "error") // C3:结果行也在本步的分组里(收尾时才知道分组到哪里)
 		}
 	case sdk.EventTurnEnd:
 		s.Lines = append(s.Lines, Line{Kind: "meta", Text: "—— 轮次结束 ——"})
 		s.LastTool = ""
 		s.clearRunningSince() // C2a:回合结束 ⇒ 没有工具在跑了(悬着的调用不再计时)
+	case sdk.EventStepStart:
+		s.startStep(ev)
+	case sdk.EventStepEnd:
+		s.endStep(ev)
 	case sdk.EventAgentError:
 		if err, ok := ev.Payload.(error); ok {
 			s.Error = err.Error()

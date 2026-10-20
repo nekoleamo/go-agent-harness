@@ -682,6 +682,10 @@ func (m *Model) searchRun(q string) string {
 
 // searchGoto 定位到命中逻辑行:其展平首个物理行放窗口顶(可看下文)。
 func (m *Model) searchGoto(lineIdx int) {
+	// C3:命中行若在**折叠中**的工具组里 ⇒ 先展开那一组(否则跳过去也看不见)。
+	if head := m.state.stepHeadOf(lineIdx); head >= 0 && !m.state.stepExpanded(head) {
+		m.state.ToggleStep(head)
+	}
 	rows := flattenViewLines(m.state, m.mouseColW())
 	first := -1
 	for i, p := range rows {
@@ -731,7 +735,8 @@ func (m *Model) handleMouseRelease(mo tea.Mouse) {
 				writeClipboardOSC52(text)
 			}
 		} else {
-			// 单击:若命中可折叠结果行(全文 Full)则切换展开/收起(几何变化),否则清除选区。
+			// 单击:若命中可折叠结果行(全文 Full)则切换展开/收起(几何变化),
+			// 若命中**步头行**(C3 工具分组)则切换该组的展开/收起;否则清除选区。
 			idx := -1
 			if m.selLineIdx != nil {
 				r := m.state.SelRow0
@@ -739,8 +744,12 @@ func (m *Model) handleMouseRelease(mo tea.Mouse) {
 					idx = m.selLineIdx[r]
 				}
 			}
-			if idx >= 0 && idx < len(m.state.Lines) && m.state.Lines[idx].Full != "" && m.state.ToggleFold(idx) {
-				m.skipView = false // 几何变化:强制重渲染(不再复用缓存)
+			if idx >= 0 && idx < len(m.state.Lines) {
+				if m.state.Lines[idx].Full != "" && m.state.ToggleFold(idx) {
+					m.skipView = false // 几何变化:强制重渲染(不再复用缓存)
+				} else if m.state.ToggleStep(idx) {
+					m.skipView = false // C3:分组展开/收起(几何变化)
+				}
 			}
 			m.state.SelActive = false // 单击清除(不论是否 toggle)
 		}

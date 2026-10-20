@@ -254,6 +254,13 @@ func foldMarkFor(s *State, p physRow) string {
 		return ""
 	}
 	ln := s.Lines[p.lineIdx]
+	// C3:步头行(分组)也能点开/收起 —— 标记复用同一套(▲ 折叠 / ▼ 展开)。
+	if g, ok := s.stepGroups[p.lineIdx]; ok && g.tools >= 2 {
+		if s.stepExpanded(p.lineIdx) {
+			return " ▼"
+		}
+		return " ▲"
+	}
 	if ln.Full == "" {
 		return "" // 非结果行(无可展开全文)
 	}
@@ -307,7 +314,11 @@ func flattenLines(lines []Line, colW int) []physRow {
 // 参与展平(多物理行),其余行用摘要 Text;折叠行的摘要尾缀提示可展开。
 func flattenViewLines(s *State, colW int) []physRow {
 	var rows []physRow
+	hidden := s.hiddenStepLines() // C3:折叠中的工具组(默认折叠)与无工具的步头行
 	for li, ln := range s.Lines {
+		if hidden[li] {
+			continue // 折叠收起(头行仍显示 ⇒ 知道有这一步)
+		}
 		text := ln.Text
 		if ln.Full != "" && s.foldOpenOf(li) {
 			text = ln.Full // 展开:全文(可能多段多行)
