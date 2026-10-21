@@ -251,8 +251,15 @@ export function consume(m: StreamModel, ev: SessionEvent): void {
       break
     }
     case 'session/summary': {
-      const s = (p as { Summary?: string })?.Summary ?? (p as string)
-      const txt = typeof s === 'string' ? s : String(p ?? '')
+      // 载荷有两种形态:新形态是结构体 {text, until, source}(2026-10-21 批次 E),
+      // 旧日志是纯字符串。两形态都要认 —— 认错就是“[object Object]”。
+      const raw = p as { text?: string; Summary?: string } | string | null
+      const s =
+        typeof raw === 'string'
+          ? raw
+          : (raw?.text ?? raw?.Summary ?? '')
+      const txt = typeof s === 'string' ? s : ''
+      if (!txt) break
       m.msgs.push({ kind: 'meta', text: `(滚动摘要) ${txt.slice(0, 120)}…`, seq: ev.Seq, ts: ev.TS })
       break
     }

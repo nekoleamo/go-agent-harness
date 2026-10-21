@@ -254,3 +254,20 @@ test('tool/call 记录开始时刻(运行中实时耗时的起点)', () => {
   const started = m.pendingTool?.startedAt
   assert.ok(typeof started === 'number' && started > 0, '进行中的工具应带开始时刻')
 })
+
+// 滚动摘要载荷的**新形态**(结构体 {text, until, source},2026-10-21 批次 E):
+// 认错就会显示成「(滚动摘要) [object Object]」—— 旧日志(纯字符串)也要认。
+test('滚动摘要 · 新形态结构体载荷', () => {
+  const m = newModel()
+  consume(m, ev('session/summary', { text: '新形态摘要', until: 3, source: 'llm' }, 1))
+  assert.equal(m.msgs.at(-1)?.kind, 'meta')
+  assert.ok((m.msgs.at(-1)?.text ?? '').includes('新形态摘要'))
+  // 旧形态:纯字符串
+  const m2 = newModel()
+  consume(m2, ev('session/summary', '旧形态摘要', 1))
+  assert.ok((m2.msgs.at(-1)?.text ?? '').includes('旧形态摘要'))
+  // 认不出来(无文本)⇒ 不产出行(而不是 [object Object])
+  const m3 = newModel()
+  consume(m3, ev('session/summary', { until: 1 }, 1))
+  assert.equal(m3.msgs.length, 0)
+})
