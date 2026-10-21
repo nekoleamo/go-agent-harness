@@ -37,7 +37,7 @@ func TestFoldDepthDefaults(t *testing.T) {
 	e := Engine{}
 	evs := mkEvents(40)
 	var summaries []string
-	w := e.Fold(evs, -1, 1000, func(s string) { summaries = append(summaries, s) })
+	w := e.Fold(evs, -1, 1000, func(s sdk.RollingSummary) { summaries = append(summaries, s.Text) })
 	if w < 0 {
 		t.Fatalf("应推进水位,got %d", w)
 	}
@@ -45,7 +45,7 @@ func TestFoldDepthDefaults(t *testing.T) {
 		t.Fatal("应产出摘要")
 	}
 	// 折到一半:剩余投影(摘要 + 未折部分)应明显低于原投影,但不低于最小折叠量
-	est := estimate(evs, w, summaryAt(evs, w))
+	est := estimate(evs, w, summaryAt(evs))
 	if est > 1000 {
 		t.Fatalf("折后投影应回预算内,got %d", est)
 	}
@@ -59,8 +59,8 @@ func TestFoldDepthConfigurable(t *testing.T) {
 	evs := mkEvents(60)
 	shallow := Engine{foldTarget: 0.9, minFold: 0.1} // 折到 预算×0.9 = 折得浅
 	deep := Engine{foldTarget: 0.2, minFold: 0.05}   // 折到 预算×0.2 = 折得深
-	wShallow := shallow.Fold(evs, -1, 1000, func(string) {})
-	wDeep := deep.Fold(evs, -1, 1000, func(string) {})
+	wShallow := shallow.Fold(evs, -1, 1000, func(sdk.RollingSummary) {})
+	wDeep := deep.Fold(evs, -1, 1000, func(sdk.RollingSummary) {})
 	if wShallow >= wDeep {
 		t.Fatalf("折得深(0.2)应折掉更多 ⇒ 水位更靠后:浅 %d 深 %d", wShallow, wDeep)
 	}

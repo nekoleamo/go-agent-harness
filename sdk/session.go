@@ -35,7 +35,7 @@ const (
 	EventAssistantMessage = "assistant/message"
 	EventToolCall         = "tool/call"
 	EventToolResult       = "tool/result"
-	// EventSummary 滚动摘要事件(M6.5):载荷为累计摘要文本;原始消息事件保留在日志(留盘完整)。
+	// EventSummary 滚动摘要事件(M6.5):载荷为 SessionSummary;原始消息事件保留在日志(留盘完整)。
 	EventSummary = "session/summary"
 	// EventUsage 每轮 LLM 请求完成后的 token 消耗(M):载荷为 sdk.UsageEvent(模型名 + Usage);
 	// agent-loop 每轮记录(同日志留盘),host-usage-stats 订阅累计为会话级统计。
@@ -151,6 +151,57 @@ type SessionEvent struct {
 	Seq     uint64
 	Payload any
 	TS      time.Time
+}
+
+// RollingSummary 滚动摘要事件载荷(session/summary)。
+//
+// 为什么从"纯字符串"改成结构体(2026-10-21 优化批次 E):
+//
+//  1. **Until(覆盖水位)**:本次折叠真正覆盖到的事件下标。旧实现里没有它 ⇒ 重启后
+//     恢复水位只能拿"摘要事件自己的下标"顶替 —— 而摘要事件是**追加在日志末尾**的,
+//     比真实折叠水位靠后 ⇒ "折叠点之后、摘要事件之前"那段**没被折叠**的事件被一并
+//     跳过(实测:8 条消息折叠后重载,投影只剩摘要,最后 3 条凭空消失)。
+//  2. **Source(来源)**:extract(抽取式)/llm(模型摘要)。让"这条摘要是谁写的"可查、可诊断。
+//
+// 旧日志的载荷是纯字符串 ⇒ 读取端必须容忍(见 SummaryText / SummaryUntil)。
+type RollingSummary struct {
+	// Text 累计摘要文本(模型看到的"先前对话"那段)。
+	Text string `json:"text"`
+	// Until 本次摘要覆盖到的事件下标(-1 = 未知;旧日志无此信息)。
+	Until int `json:"until"`
+	// Source 摘要来源(extract / llm;空 = 旧格式,按 extract 理解)。
+	Source string `json:"source,omitempty"`
+}
+
+// 摘要来源(写进 SessionSummary.Source)。
+const (
+	// SummarySourceExtract 抽取式摘要(逐条截断,零延迟、零成本、确定性)。
+	SummarySourceExtract = "extract"
+	// SummarySourceLLM 模型摘要(结构化,信息密度高)。
+	SummarySourceLLM = "llm"
+)
+
+// SummaryText 取摘要文本(兼容旧字符串载荷与新结构体载荷)。
+//
+// 为什么放在 sdk 而不是各消费方自己判类型:摘要载荷有**两种形态**(旧日志字符串 /
+// 新日志结构体),读它的地方有 4 处(host-session-log 投影/回读、token-compress 累计)。
+// 各自判类型 = 各自漂移的风险;口径收在一处,新形态上线时只改一处。
+func SummaryText(p any) string {
+	switch v := p.(type) {
+	case string:
+		return v
+	case RollingSummary:
+		return v.Text
+	}
+	return ""
+}
+
+// SummaryUntil 取摘要覆盖水位(旧字符串载荷或未知 ⇒ -1)。
+func SummaryUntil(p any) int {
+	if v, ok := p.(RollingSummary); ok {
+		return v.Until
+	}
+	return -1
 }
 
 // UserMessage 用户输入(user/message 载荷)。
@@ -415,7 +466,10 @@ type SessionCompressor interface {
 	// Fold 折叠 evs 中水位后的最旧块(不得越过最后一个用户轮),
 	// 直至估算投影回预算内或无可折叠;返回已被摘要覆盖的最大事件索引(水位)。
 	// watermark -1 表示尚未压缩;summary 回调幂等可多次调用。
-	Fold(evs []SessionEvent, watermark int, budget int, summary func(string)) int
+	//
+	// summary 回调收到的是**结构化摘要**(sdk.RollingSummary):文本 + 覆盖水位 + 来源。
+	// 覆盖水位是必需的 —— 宿主要靠它精确恢复折叠水位(见 sdk.SessionSummary.Until 的说明)。
+	Fold(evs []SessionEvent, watermark int, budget int, summary func(RollingSummary)) int
 }
 
 // BudgetPlanner 可选接口:压缩器不只“按预算折”,还能按**真实上下文占用**裁量本轮预算。

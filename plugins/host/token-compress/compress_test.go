@@ -46,7 +46,7 @@ func TestEngineFold(t *testing.T) {
 	}
 	var summaries []string
 	e := &Engine{}
-	w := e.Fold(evs, -1, 300, func(s string) { summaries = append(summaries, s) })
+	w := e.Fold(evs, -1, 300, func(s sdk.RollingSummary) { summaries = append(summaries, s.Text) })
 	if w < 3 {
 		t.Fatalf("应折叠至少一轮: 水位 %d", w)
 	}
@@ -66,7 +66,7 @@ func TestEngineFold(t *testing.T) {
 		t.Fatalf("水位不得越过最后一个用户轮(%d): %d", lastUser, w)
 	}
 	// 无事件可折叠时返回原水位
-	w2 := e.Fold(nil, -1, 100, func(string) {})
+	w2 := e.Fold(nil, -1, 100, func(sdk.RollingSummary) {})
 	if w2 != -1 {
 		t.Fatalf("空流应返回原水位: %d", w2)
 	}

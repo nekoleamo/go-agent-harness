@@ -81,7 +81,7 @@ func TestRollingSummaryKeepsRecent(t *testing.T) {
 	budget := 400 // limit=200 ⇒ 会折叠多轮
 	for iter := 0; iter < 10; iter++ {
 		prev := last
-		e.Fold(evs, -1, budget, func(s string) { last = s })
+		e.Fold(evs, -1, budget, func(s sdk.RollingSummary) { last = s.Text })
 		if last == prev {
 			break
 		}

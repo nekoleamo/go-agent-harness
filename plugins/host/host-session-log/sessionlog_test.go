@@ -36,7 +36,7 @@ type stubCompressor struct {
 	calls int
 }
 
-func (s *stubCompressor) Fold(evs []sdk.SessionEvent, watermark int, budget int, summary func(string)) int {
+func (s *stubCompressor) Fold(evs []sdk.SessionEvent, watermark int, budget int, summary func(sdk.RollingSummary)) int {
 	s.calls++
 	// 折叠水位后事件至最后一个用户轮之前(保留最新轮完整)
 	start := watermark + 1
@@ -55,7 +55,7 @@ func (s *stubCompressor) Fold(evs []sdk.SessionEvent, watermark int, budget int,
 			b.WriteString("工具;")
 		}
 	}
-	summary("stub:" + b.String())
+	summary(sdk.RollingSummary{Text: "stub:" + b.String(), Until: end, Source: sdk.SummarySourceExtract})
 	return end
 }
 

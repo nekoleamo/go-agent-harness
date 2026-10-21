@@ -815,7 +815,7 @@ func (o *overflowLLM) Complete(_ context.Context, req *sdk.LLMRequest, _ func(sd
 // (与真实引擎"水位不得越过最后一个用户轮"一致)。不消费预算 —— 溢出兜底路径本来就不看预算。
 type foldAllCompressor struct{ calls int }
 
-func (c *foldAllCompressor) Fold(evs []sdk.SessionEvent, watermark, _ int, summary func(string)) int {
+func (c *foldAllCompressor) Fold(evs []sdk.SessionEvent, watermark, _ int, summary func(sdk.RollingSummary)) int {
 	c.calls++
 	last := -1
 	for i, ev := range evs {
@@ -827,7 +827,7 @@ func (c *foldAllCompressor) Fold(evs []sdk.SessionEvent, watermark, _ int, summa
 	if end <= watermark {
 		return watermark
 	}
-	summary("【累计摘要】" + strings.Repeat("旧", 200))
+	summary(sdk.RollingSummary{Text: "【累计摘要】" + strings.Repeat("旧", 200), Until: end, Source: sdk.SummarySourceExtract})
 	return end
 }
 

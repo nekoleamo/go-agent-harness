@@ -214,10 +214,11 @@ func (l *Log) Load(path string) error {
 	}
 	l.path = path
 	l.events = events
-	// 水位从**最后一个摘要事件的索引**恢复,而不是恒 -1:摘要事件本身就在日志里,
+	// 水位从**摘要事件记录的覆盖水位**恢复,而不是恒 -1:摘要事件本身就在日志里,
 	// 恒 -1 会让下一次投影把“最新摘要 + 已被该摘要覆盖的全部原始事件”一起发出去
 	// (同一段内容重复占位),再靠一次大折叠收回。
-	l.compressedUntil = lastSummaryIndex(events)
+	// 覆盖水位取摘要载荷里的 Until(真实折叠点);旧日志无此字段 ⇒ 退回摘要事件下标。
+	l.compressedUntil = recoverWatermark(events)
 	l.pairedProjectChars, l.pairedUsageSeq = -1, 0 // 重启后首次:不估算投影增长,直接用实测值
 	l.lastProjectChars = 0
 	l.historyLimit = historyLimit
@@ -231,7 +232,7 @@ func (l *Log) RegisterCompressor(budget int, c sdk.SessionCompressor) {
 	defer l.mu.Unlock()
 	l.budget = budget
 	l.compressor = c
-	l.compressedUntil = lastSummaryIndex(l.events)
+	l.compressedUntil = recoverWatermark(l.events)
 	l.pairedProjectChars, l.pairedUsageSeq = -1, 0
 }
 
@@ -345,7 +346,9 @@ func (l *Log) deriveLocked() []sdk.LLMMessage {
 	budget, trim := l.planLocked(out, false)
 	if l.compressor != nil && budget > 0 && approxChars(out) > budget {
 		l.compressedUntil = l.compressor.Fold(l.events, l.compressedUntil, budget,
-			func(s string) { _, _ = l.appendLocked(sdk.SessionEvent{Kind: sdk.EventSummary, Payload: s}) })
+			func(s sdk.RollingSummary) {
+				_, _ = l.appendLocked(sdk.SessionEvent{Kind: sdk.EventSummary, Payload: s})
+			})
 		l.autoSummary = true // 自动压缩发生过(预算触发)
 		out = l.projectLocked(l.compressedUntil)
 		if l.historyLimit > 0 && len(out) > l.historyLimit {
@@ -427,6 +430,46 @@ func lastSummaryIndex(evs []sdk.SessionEvent) int {
 	return last
 }
 
+// latestSummary 最新一条摘要事件的(文本, 覆盖水位)(无摘要 ⇒ ("", -1))。
+//
+// 摘要载荷有两种形态:旧日志是纯字符串、新日志是 sdk.SessionSummary(带 Until/Source)。
+// 口径统一收在这里(sdk.SummaryText / sdk.SummaryUntil),避免各处自己判类型。
+func latestSummary(evs []sdk.SessionEvent) (string, int) {
+	text, until := "", -1
+	for _, ev := range evs {
+		if ev.Kind != sdk.EventSummary {
+			continue
+		}
+		t := sdk.SummaryText(ev.Payload)
+		if t == "" {
+			continue
+		}
+		text = t
+		until = sdk.SummaryUntil(ev.Payload)
+	}
+	return text, until
+}
+
+// recoverWatermark 从日志恢复折叠水位(-1 = 未压缩)。
+//
+// **优先用摘要载荷里的 Until**(真实折叠水位);旧日志(纯字符串载荷)没有它 ⇒
+// 退回"最后一条摘要事件的下标"。
+//
+// 为什么必须精确(2026-10-21 批次 E 修的真缺陷):摘要事件是**追加在日志末尾**的,
+// 它的下标比真实折叠水位**靠后** —— 两者之间那段事件**没有被折叠**,却会被水位跳过。
+// 实测:8 条消息折到第 5 条后重载,投影只剩一条摘要,最后 3 条(用户最新提问在内)
+// 凭空消失 ⇒ 模型看不到用户最后问了什么。
+func recoverWatermark(evs []sdk.SessionEvent) int {
+	idx := lastSummaryIndex(evs)
+	if idx < 0 {
+		return -1
+	}
+	if u := sdk.SummaryUntil(evs[idx].Payload); u >= 0 {
+		return u
+	}
+	return idx
+}
+
 // 截断保留的头/尾字符数(头部是命令/结果开头,尾部常带错误与退出状态)。
 const (
 	clipHeadChars = 1200
@@ -483,15 +526,8 @@ func clipContent(s string, head, tail int) (string, int) {
 // projectLocked 从事件流重建投影:累计摘要(system)置顶 + 水位后的未压缩块。
 // summary 从 events 中最新 EventSummary 读取(压缩器落盘的水位内摘要)。
 func (l *Log) projectLocked(watermark int) []sdk.LLMMessage {
-	summary := ""
 	// 全流扫描取最新 EventSummary(摘要事件总是追加在末尾,水位外)
-	for _, ev := range l.events {
-		if ev.Kind == sdk.EventSummary {
-			if s, ok := ev.Payload.(string); ok && s != "" {
-				summary = s
-			}
-		}
-	}
+	summary, _ := latestSummary(l.events)
 	var out []sdk.LLMMessage
 	for i := watermark + 1; i < len(l.events); i++ {
 		ev := l.events[i]
@@ -623,7 +659,7 @@ func (l *Log) Compact(prompt string) (string, int, error) {
 	if budget <= 0 {
 		return "", 0, errors.New("压缩预算关闭(data.token_budget_chars=0;自动压缩亦不生效)")
 	}
-	w := l.compressor.Fold(l.events, l.compressedUntil, budget, func(s string) {
+	w := l.compressor.Fold(l.events, l.compressedUntil, budget, func(s sdk.RollingSummary) {
 		_, _ = l.appendLocked(sdk.SessionEvent{Kind: sdk.EventSummary, Payload: s})
 	})
 	l.compressedUntil = w
@@ -632,14 +668,7 @@ func (l *Log) Compact(prompt string) (string, int, error) {
 		folded = 0
 	}
 	// 回读最新累计摘要(与 projectLocked 同口径:最新 EventSummary 载荷)
-	summary := ""
-	for _, ev := range l.events {
-		if ev.Kind == sdk.EventSummary {
-			if s, ok := ev.Payload.(string); ok && s != "" {
-				summary = s
-			}
-		}
-	}
+	summary, _ := latestSummary(l.events)
 	return summary, folded, nil
 }
 
@@ -660,7 +689,7 @@ func (l *Log) CompressForOverflow() (int, error) {
 	if budget <= 0 {
 		return 0, errors.New("压缩预算关闭(data.token_budget_chars=0)")
 	}
-	w := l.compressor.Fold(l.events, l.compressedUntil, budget, func(s string) {
+	w := l.compressor.Fold(l.events, l.compressedUntil, budget, func(s sdk.RollingSummary) {
 		_, _ = l.appendLocked(sdk.SessionEvent{Kind: sdk.EventSummary, Payload: s})
 	})
 	l.compressedUntil = w

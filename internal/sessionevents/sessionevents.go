@@ -53,6 +53,17 @@ func NormalizePayload(ev *sdk.SessionEvent) any {
 		if err := json.Unmarshal(raw, &v); err == nil {
 			return v
 		}
+	case sdk.EventSummary:
+		// 摘要载荷的新形态是结构体(带覆盖水位/来源);旧日志是纯字符串(非 map,
+		// 上面的类型断言已把它原样返回)。不还原 ⇒ 重启后水位恢复拿不到 Until,
+		// 累计摘要也读不出文本(载荷停在 map,SummaryText 返回空)。
+		if _, hasText := m["text"]; !hasText {
+			break
+		}
+		var v sdk.RollingSummary
+		if err := json.Unmarshal(raw, &v); err == nil {
+			return v
+		}
 	case sdk.EventRoleSwitch:
 		// 角色切换事实(R-3):/recap 统计角色经历靠它 —— 不还原就只能在**重启后**
 		// 看到 map(内存会话里是原类型,重启重放后不是),同一个命令两条口径。

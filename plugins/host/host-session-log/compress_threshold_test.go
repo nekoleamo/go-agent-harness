@@ -28,7 +28,7 @@ func (s *stubPlanner) Plan(in sdk.CompressInput) sdk.CompressDecision {
 	return s.decision
 }
 
-func (s *stubPlanner) Fold(evs []sdk.SessionEvent, watermark, budget int, summary func(string)) int {
+func (s *stubPlanner) Fold(evs []sdk.SessionEvent, watermark, budget int, summary func(sdk.RollingSummary)) int {
 	s.calls++
 	s.gotBudget = budget
 	start := watermark + 1
@@ -36,7 +36,7 @@ func (s *stubPlanner) Fold(evs []sdk.SessionEvent, watermark, budget int, summar
 	if end < start {
 		return watermark
 	}
-	summary("stub:折叠")
+	summary(sdk.RollingSummary{Text: "stub:折叠", Until: end, Source: sdk.SummarySourceExtract})
 	return end
 }
 

@@ -104,3 +104,29 @@ func typeName(v any) string {
 	}
 	return "other"
 }
+
+// TestNormalizeSummaryPayload 摘要载荷:新形态(结构体)还原成 sdk.RollingSummary,
+// 旧形态(纯字符串)原样保留;缺 text 的 map 不还原(避免把非摘要载荷误认成空摘要)。
+func TestNormalizeSummaryPayload(t *testing.T) {
+	ev := sdk.SessionEvent{Kind: sdk.EventSummary, Payload: map[string]any{
+		"text": "累计摘要", "until": float64(7), "source": "llm",
+	}}
+	got := NormalizePayload(&ev)
+	rs, ok := got.(sdk.RollingSummary)
+	if !ok {
+		t.Fatalf("摘要载荷应还原为 sdk.RollingSummary,得 %T", got)
+	}
+	if rs.Text != "累计摘要" || rs.Until != 7 || rs.Source != "llm" {
+		t.Fatalf("还原内容不符: %+v", rs)
+	}
+	// 旧日志:纯字符串载荷原样返回
+	old := sdk.SessionEvent{Kind: sdk.EventSummary, Payload: "旧摘要"}
+	if s, ok := NormalizePayload(&old).(string); !ok || s != "旧摘要" {
+		t.Fatalf("旧摘要载荷应原样保留,得 %T", NormalizePayload(&old))
+	}
+	// 缺 text 的 map:不还原(仍是 map,消费方读不出文本而不是读到空摘要)
+	noText := sdk.SessionEvent{Kind: sdk.EventSummary, Payload: map[string]any{"foo": 1}}
+	if _, ok := NormalizePayload(&noText).(map[string]any); !ok {
+		t.Fatal("缺 text 的载荷不应被还原成摘要")
+	}
+}

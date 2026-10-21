@@ -40,7 +40,7 @@ const (
 )
 
 // Fold 实现 sdk.SessionCompressor(委托抽取式引擎,行为不变)。
-func (p *Planner) Fold(evs []sdk.SessionEvent, watermark, budget int, summary func(string)) int {
+func (p *Planner) Fold(evs []sdk.SessionEvent, watermark, budget int, summary func(sdk.RollingSummary)) int {
 	return p.eng.Fold(evs, watermark, budget, summary)
 }
 

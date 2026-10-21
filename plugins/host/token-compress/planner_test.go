@@ -121,7 +121,7 @@ func TestPlannerFoldDelegates(t *testing.T) {
 		{Kind: sdk.EventUserMessage, Payload: sdk.UserMessage{Content: "三"}},
 	}
 	var summaries []string
-	if w := p.Fold(evs, -1, 1, func(s string) { summaries = append(summaries, s) }); w != 1 {
+	if w := p.Fold(evs, -1, 1, func(s sdk.RollingSummary) { summaries = append(summaries, s.Text) }); w != 1 {
 		t.Fatalf("应折叠到最后一个用户轮之前: %d", w)
 	}
 	if len(summaries) == 0 {

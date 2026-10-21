@@ -60,8 +60,8 @@ const (
 // Fold 折叠 evs 中水位后的最旧块(不得越过最后一个用户轮,保留最新轮),
 // 直至估算投影回预算内;每折一块经 summary 回调落盘累计摘要事件。
 // 返回推进后的水位(无可折叠时返回原水位)。
-func (e *Engine) Fold(evs []sdk.SessionEvent, watermark int, budget int, summary func(string)) int {
-	oldSummary := summaryAt(evs, watermark)
+func (e *Engine) Fold(evs []sdk.SessionEvent, watermark int, budget int, summary func(sdk.RollingSummary)) int {
+	oldSummary := summaryAt(evs)
 	w := watermark
 	foldTarget, minFold := e.foldTarget, e.minFold
 	if foldTarget <= 0 {
@@ -99,7 +99,10 @@ func (e *Engine) Fold(evs []sdk.SessionEvent, watermark int, budget int, summary
 		}
 		block := evs[start : end+1]
 		newSummary := mergeSummary(oldSummary, summarizeEvents(block), budget)
-		summary(newSummary) // 落盘 session/summary(host-session-log 锁内追加)
+		// 摘要事件带**覆盖水位**(本次真正折到的事件下标)与来源:
+		// 宿主靠它精确恢复水位(否则重载后水位取"摘要事件自己的下标",会连带跳过
+		// 折叠点之后那段没被折叠的事件 —— 实测重启后最后几条消息凭空消失)。
+		summary(sdk.RollingSummary{Text: newSummary, Until: end, Source: sdk.SummarySourceExtract})
 		oldSummary = newSummary
 		w = end
 	}
@@ -115,14 +118,25 @@ func estimate(evs []sdk.SessionEvent, watermark int, summary string) int {
 	return n
 }
 
-// summaryAt 水位内最新累计摘要(EventSummary 载荷为字符串)。
-func summaryAt(evs []sdk.SessionEvent, watermark int) string {
+// summaryAt 最新累计摘要(全流扫描取**最后**一条非空摘要事件)。
+//
+// **为什么不是"水位内"的最后一条**(2026-10-21 批次 E 修的真缺陷):
+// 摘要事件是**追加在日志末尾**的(它的下标 > 水位),所以"只扫水位以内"永远扫不到
+// 任何摘要 ⇒ 每次折叠拿到的 oldSummary 都是空 ⇒ 新摘要**不累计**:第二次折叠把
+// 第一次折叠的内容整段顶掉,模型视野里只剩最近折进去的那一小块,更早的历史**静默消失**。
+//
+// 折叠是单调的(水位只前进、摘要按折叠顺序追加),所以"全流最后一条摘要"就是
+// 当前水位处的累计摘要 —— 与 host-session-log 的投影口径(projectLocked)一致。
+//
+// 反向验证:把本函数改回"只扫 watermark 以内",TestRollingSummaryAccumulatesAcrossTurns 必须红。
+func summaryAt(evs []sdk.SessionEvent) string {
 	s := ""
-	for i := 0; i <= watermark; i++ {
-		if evs[i].Kind == sdk.EventSummary {
-			if x, ok := evs[i].Payload.(string); ok && x != "" {
-				s = x
-			}
+	for _, ev := range evs {
+		if ev.Kind != sdk.EventSummary {
+			continue
+		}
+		if x := sdk.SummaryText(ev.Payload); x != "" {
+			s = x
 		}
 	}
 	return s
