@@ -13,6 +13,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/nekoleamo/go-agent-harness/internal/redact"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -56,7 +57,7 @@ func buildInput(path string, o Options) (string, int, error) {
 				continue
 			}
 			if t := strings.TrimSpace(m.Content); t != "" {
-				turns = append(turns, turn{role: "用户", text: redact(t)})
+				turns = append(turns, turn{role: "用户", text: redact.Text(t)})
 				users++
 			}
 		case sdk.EventAssistantMessage:
@@ -80,7 +81,7 @@ func buildInput(path string, o Options) (string, int, error) {
 				}
 			}
 			if text != "" {
-				turns = append(turns, turn{role: "助手", text: redact(text)})
+				turns = append(turns, turn{role: "助手", text: redact.Text(text)})
 			}
 		}
 	}
@@ -127,64 +128,6 @@ func userTurns(path string) int {
 		return 0
 	}
 	return n
-}
-
-// redact 脱敏:密钥类字面量只保留键名/前缀,值替换为 [REDACTED](线性扫描,零回溯)。
-// 支持的形态:`sk-xxx`、`Bearer xxx`、`api_key=xxx`、`apiKey: xxx`、`"app_secret": "xxx"`、`AppSecret xxx`。
-// 目的:会话内容发给模型做概述前,凭据不进模型上下文。
-func redact(s string) string {
-	var sb strings.Builder
-	i := 0
-	for i < len(s) {
-		hit, hitKey := -1, ""
-		for _, key := range redactKeys {
-			if j := strings.Index(s[i:], key); j >= 0 {
-				if hit < 0 || i+j < hit {
-					hit, hitKey = i+j, key
-				}
-			}
-		}
-		if hit < 0 {
-			sb.WriteString(s[i:])
-			break
-		}
-		// 键名原样保留(便于读懂上下文),其后分隔符也保留
-		sep := hit + len(hitKey)
-		for sep < len(s) && isSepByte(s[sep]) {
-			sep++
-		}
-		end := sep
-		for end < len(s) && !isSpaceByte(s[end]) && !isDelimByte(s[end]) {
-			end++
-		}
-		sb.WriteString(s[hit:sep])
-		if end > sep {
-			sb.WriteString("[REDACTED]")
-		}
-		i = end
-		if end == sep {
-			i = sep // 无值:跳过键与分隔符,防死循环
-		}
-	}
-	return sb.String()
-}
-
-// redactKeys 触发脱敏的字面量(键名/前缀;值随其后被替换)。
-var redactKeys = []string{"sk-", "Bearer ", "api_key=", "api_key:", "apiKey=", "apiKey:",
-	"client_secret", "app_secret", "appSecret", "AppSecret", "password", "token=", "token:"}
-
-// isSepByte 键与值之间的分隔符(空格/冒号/等号/引号)。
-func isSepByte(b byte) bool {
-	return isSpaceByte(b) || b == ':' || b == '=' || b == '"' || b == '\''
-}
-
-func isSpaceByte(b byte) bool { return b == ' ' || b == '\t' || b == '\n' || b == '\r' }
-func isDelimByte(b byte) bool {
-	switch b {
-	case '"', '\'', ',', ';', ')', ']', '}', '<', '>':
-		return true
-	}
-	return false
 }
 
 // truncBytesRunes 按字节预算截断(不切碎 UTF-8;退回最近 rune 边界)。

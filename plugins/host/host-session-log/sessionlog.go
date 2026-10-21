@@ -704,6 +704,36 @@ func (l *Log) CompressForOverflow() (int, error) {
 	return folded, nil
 }
 
+// UpgradeSummary 实现 sdk.SessionSummaryUpgrader:把**最新一条**摘要换成 text(锁内原子)。
+//
+// 乐观锁:当前最新摘要的文本必须 == expected,否则返回 false(补写期间又折叠了一次 ⇒
+// 此时写进去会让投影回退到**更旧**的摘要,丢掉刚折进去的那一段)。
+// 覆盖水位(Until)从被替换的那条继承 —— 替换不改变“折了哪些事件”。
+func (l *Log) UpgradeSummary(expected string, text string, source string) (bool, error) {
+	if text == "" {
+		return false, nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	idx := lastSummaryIndex(l.events)
+	if idx < 0 {
+		return false, nil // 没有摘要可替换
+	}
+	if sdk.SummaryText(l.events[idx].Payload) != expected {
+		return false, nil // 期间又折叠了:放弃(确定性回退:保持抽取式摘要)
+	}
+	until := sdk.SummaryUntil(l.events[idx].Payload)
+	if until < 0 {
+		until = idx // 旧日志载荷没有水位:退回摘要事件下标
+	}
+	ev := sdk.SessionEvent{Kind: sdk.EventSummary, Payload: sdk.RollingSummary{
+		Text: text, Until: until, Source: source}}
+	if _, err := l.appendLocked(ev); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // Flush 落盘(os.Sync)。
 func (l *Log) Flush() error {
 	l.mu.Lock()

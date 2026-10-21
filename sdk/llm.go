@@ -79,6 +79,16 @@ const EventLLMPreRequest = "llm/pre-request"
 // 与 EventUsageWindow 同款先例(统计类信号走实例级,账本留在会话里)。
 const EventUsageRecorded = "usage/recorded"
 
+// LLMSummaryMarker 滚动摘要的**模型摘要**请求标记(进请求体 system 提示的首行)。
+//
+// 为什么需要它:摘要请求与回合请求走**同一条** LLM 通道 ⇒ 脚本化适配器(llm-mock)
+// 与测试探针(spy provider)会把它当成一次普通请求 —— 脚本步被消费、请求计数被污染
+// (真机验收用例曾因此误判「压缩未生效」)。
+//
+// 有了稳定标记,两边都能「认出它并让开」:llm-mock 对带标记的请求直接回一段现成的
+// 结构化摘要(不消耗脚本步),测试探针不把它计入回合请求。
+const LLMSummaryMarker = "[gah:summary]"
+
 // LLMRequest 一次模型请求。Tools 为模型可见的工具 schema 列表。
 type LLMRequest struct {
 	Model       string

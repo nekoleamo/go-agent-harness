@@ -6,6 +6,7 @@
 package tokencompress
 
 import (
+	"context"
 	"strings"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
@@ -19,6 +20,15 @@ func (p *Plugin) Name() string { return "token-compress" }
 
 // Start 读取 data.token_budget_chars 并注册压缩器到 ctx.sessions(host-session-log)。
 func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
+	runner, err := p.start(c, m)
+	if err != nil {
+		return nil, err
+	}
+	return func() { runner.close() }, nil
+}
+
+// start 装配(与 Start 分开:测试要拿到 runner 做断言)。
+func (p *Plugin) start(c sdk.Ctx, m *sdk.Manifest) (*upgradeRunner, error) {
 	var sessions sdk.SessionLog
 	if err := c.Inject("ctx.sessions", &sessions); err != nil {
 		return nil, err
@@ -31,8 +41,29 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	}
 	// 策略(阈值口径)与预算一起注册:压缩器实现了 sdk.BudgetPlanner,故 host-session-log
 	// 每轮投影前会先问 Plan(见 planner.go);budget 仍作为"无实测用量/未启用"时的回落口径。
-	sessions.RegisterCompressor(budget, newPlanner(m, budget))
-	return func() {}, nil
+	planner := newPlanner(m, budget)
+	// 模型摘要升级(可选,批次 D4):折叠当场只落抽取式摘要(确定性、零延迟),
+	// 模型摘要在**回合结束后**异步补写(折叠跑在会话日志锁内,不能就地调模型);
+	// 补写失败/被抢先 ⇒ 保持抽取式(确定性回退)。详见 upgrade.go。
+	opts := upgradeOptions(m)
+	runner := newUpgradeRunner(c, sessions, opts.timeout, opts.maxChars(budget))
+	runner.enabled = opts.enabled
+	if opts.enabled {
+		planner.eng.onFold = runner.onFold
+	}
+	sessions.RegisterCompressor(budget, planner)
+	// 回合结束 → 触发升级(不在折叠当场调模型:那会按住会话日志锁)。
+	//
+	// 订阅的是**会话事件通道**而不是总线事件 "turn/end":后者全仓**从未被 emit 过**
+	// (host-session-summary 的「回合后自动概述」就死在这同一处 —— 见交付记录)。
+	// 会话事件通道按会话归位(多会话并行时不会把 A 会话的回合结束当成 B 的)。
+	runner.dis = c.Subscribe(sdk.EventSession, func(_ context.Context, ev *sdk.Event) error {
+		if sev, ok := ev.Payload.(*sdk.SessionEvent); ok && sev.Kind == sdk.EventTurnEnd {
+			runner.trigger()
+		}
+		return nil
+	})
+	return runner, nil
 }
 
 // Engine 滚动摘要引擎(零状态:每次 Fold 从事件流重读累计摘要,幂等)。
@@ -40,6 +71,9 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 type Engine struct {
 	foldTarget float64 // 折叠深度:折到 预算×该比例(默认 0.5)
 	minFold    float64 // 单次最小折叠量:预算×该比例(默认 1/3)
+	// onFold 折叠后的可选回调(把本次折叠的范围交给可替换的摘要器做**事后升级**;
+	// nil = 不做模型摘要,只用抽取式)。见 upgrade.go。
+	onFold func(FoldScope)
 }
 
 // maxCompressPerCall 单次 Fold 的最大折叠数(防极端场景死循环)。
@@ -103,6 +137,10 @@ func (e *Engine) Fold(evs []sdk.SessionEvent, watermark int, budget int, summary
 		// 宿主靠它精确恢复水位(否则重载后水位取"摘要事件自己的下标",会连带跳过
 		// 折叠点之后那段没被折叠的事件 —— 实测重启后最后几条消息凭空消失)。
 		summary(sdk.RollingSummary{Text: newSummary, Until: end, Source: sdk.SummarySourceExtract})
+		// 通知可替换的摘要器:本次折叠的范围(旧摘要 + 新片段)——
+		// 它可以**事后**用模型把摘要升级成结构化版本(不在此处调模型:折叠跑在
+		// 会话日志锁内)。没有回调 = 纯抽取式(默认行为不变)。
+		e.onFoldHook(FoldScope{Prev: oldSummary, Seg: rawSegment(block), Merged: newSummary})
 		oldSummary = newSummary
 		w = end
 	}
@@ -174,6 +212,43 @@ func summarizeEvents(evs []sdk.SessionEvent) string {
 		}
 	}
 	return b.String()
+}
+
+// rawSegment 块 → 原始内容转述(每条截断,总量有上限)。
+//
+// 与 summarizeEvents 的区别:这里给的是**原文**(只截长度,不抽取)——
+// 模型摘要的价值就在于它能看到原文;抽取式已经把细节丢了,再拿它喂模型没有意义。
+func rawSegment(evs []sdk.SessionEvent) string {
+	const (
+		perEvent = 800  // 单条上限
+		total    = 6000 // 整段上限(与模型摘要的输入预算同量级)
+	)
+	var b strings.Builder
+	for _, ev := range evs {
+		if b.Len() >= total {
+			break
+		}
+		var text, who string
+		switch p := ev.Payload.(type) {
+		case sdk.UserMessage:
+			who, text = "用户", p.Content
+		case sdk.AssistantMessage:
+			who, text = "助手", p.Content
+		case sdk.ToolResultEvent:
+			who, text = "工具 "+p.Name, p.Content
+		default:
+			continue
+		}
+		if text == "" {
+			continue
+		}
+		b.WriteString(who + ": " + clip(text, perEvent) + "\n")
+	}
+	s := b.String()
+	if len([]rune(s)) > total {
+		s = clip(s, total)
+	}
+	return s
 }
 
 // lastUserIndex 最后一个用户消息索引(最新轮起点,压缩块不得越过;无则 -1)。

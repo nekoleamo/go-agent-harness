@@ -16,7 +16,8 @@ plugins/
 | 类别 | 插件 | 职责 | 依赖(requires) |
 |---|---|---|---|
 | host | host-session-log | 会话日志:追加式事件流 + 模型历史投影(ctx.sessions) | — |
-| host | token-compress | 滚动摘要压缩(超预算回调压缩器) | ctx.sessions |
+| host | token-compress | 滚动摘要压缩(超预算回调压缩器);折叠后可选**模型摘要**升级(回合后异步补写,失败/被抢先 ⇒ 保持抽取式) | ctx.sessions |
+| host | host-llm-summary | 滚动摘要的**模型摘要**实现(ctx.sessionSummarizer,可替换):结构化摘要(任务/改动/决定/未完成/错误);输入预算 8KB + 脱敏 + 严格 JSON;模型不可用 ⇒ 显式报错(调用方保持抽取式) | —(ctx.llm 可选) |
 | host | host-tools | 工具注册表(ctx.tools) | — |
 | host | host-system-prompt | 系统提示组装(ctx.systemPrompt) | — |
 | host | host-llm | LLM 注册表 + 路由 + 重试(ctx.llm) | — |

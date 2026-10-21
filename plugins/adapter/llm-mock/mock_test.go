@@ -80,3 +80,40 @@ func TestAdapterConsumesScript(t *testing.T) {
 		t.Fatalf("请求 2 应为文本收尾: resp=%+v err=%v text=%q", resp2, err, text.String())
 	}
 }
+
+// TestSummaryRequestDoesNotConsumeScript 滚动摘要的模型摘要请求**不消耗脚本步**。
+//
+// 为什么:脚本是给回合走的(第 N 次请求 = 第 N 步)。摘要请求是后台补写,
+// 混进来会把回合的脚本错位(第 2 轮拿到第 1 轮的回应)。
+func TestSummaryRequestDoesNotConsumeScript(t *testing.T) {
+	a := &Adapter{steps: []step{
+		{Text: "第一轮", Finish: "stop"},
+		{Text: "第二轮", Finish: "stop"},
+	}}
+	// 摘要请求(带标记)
+	sumReq := &sdk.LLMRequest{Messages: []sdk.LLMMessage{
+		{Role: sdk.RoleSystem, Content: sdk.LLMSummaryMarker + "你是会话归档助手"},
+	}}
+	resp, err := a.Complete(context.Background(), sumReq, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(resp.Message.Content, "\"task\"") {
+		t.Fatalf("摘要请求应回一段结构化摘要: %q", resp.Message.Content)
+	}
+	// 回合请求:第一次仍应拿到脚本第一步
+	r1, err := a.Complete(context.Background(), &sdk.LLMRequest{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r1.Message.Content != "第一轮" {
+		t.Fatalf("脚本步被摘要请求吃掉了: %q", r1.Message.Content)
+	}
+	r2, err := a.Complete(context.Background(), &sdk.LLMRequest{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r2.Message.Content != "第二轮" {
+		t.Fatalf("第二次回合请求应拿脚本第二步: %q", r2.Message.Content)
+	}
+}

@@ -1,4 +1,4 @@
-# seed-version: 31 # 样板版本:新增 base 能力条目(host-* 等)时 +1(31:token-compress 折叠深度可配(fold_target_ratio/min_fold_ratio;缺省行为不变);30:新增 tool-image 图像工具(image_ops 七动作);29:新增 host-memory 跨会话记忆;28:新增 host-roles 角色切换/技能挂载;27:host-agent-loop 增 data.max_steps(缺省 0 = 不限,此前硬编码 10);26:token-compress 阈值改按窗口比例(trigger_ratio/max_tokens/chars_per_token);25:host-internal-commands 增 export_open_browser;24:新增 tool-schedule 定时计划工具),老用户自动升级(备份后覆盖)
+# seed-version: 32 # 样板版本:新增 base 能力条目(host-* 等)时 +1(32:新增 host-llm-summary(滚动摘要的模型摘要实现,token-compress 侧 data.llm_summary 控制);31:token-compress 折叠深度可配(fold_target_ratio/min_fold_ratio;缺省行为不变);30:新增 tool-image 图像工具(image_ops 七动作);29:新增 host-memory 跨会话记忆;28:新增 host-roles 角色切换/技能挂载;27:host-agent-loop 增 data.max_steps(缺省 0 = 不限,此前硬编码 10);26:token-compress 阈值改按窗口比例(trigger_ratio/max_tokens/chars_per_token);25:host-internal-commands 增 export_open_browser;24:新增 tool-schedule 定时计划工具),老用户自动升级(备份后覆盖)
 # base bundle:对齐 dsh-base,一切功能皆插件的共享第一层。
 # M1 阶段条目仅记录意图;对应插件工厂在 M2 base bundle 落地。
 name: base
@@ -19,6 +19,14 @@ entries:
       fold_target_ratio: 0.5 # 折叠深度:一次折到 预算×该比例(0.5 = 折一半 ⇒ 有滞回,不会每轮都折)
       min_fold_ratio: 0.333 # 单次最小折叠量:预算×该比例(折太少不划算:摘要本身也要进上下文)
       token_budget_chars: 40960 # 回落口径:无实测用量(新会话首轮)时的投影字符预算(0 = 关闭)
+      llm_summary: true # D4:折叠后用**模型**把累计摘要升级成结构化版本(回合结束后异步补写;
+        # 失败/被抢先 ⇒ 保持抽取式摘要,确定性回退)。false = 纯抽取式(零额外调用)
+      llm_summary_timeout_seconds: 60 # 单次摘要模型调用超时
+  - id: host-llm-summary # D4:滚动摘要的**模型摘要**实现(ctx.sessionSummarizer,可替换);
+    # token-compress 折叠之后(回合结束)异步调用它,把抽取式摘要升级成结构化摘要
+    data:
+      input_budget_bytes: 8192 # 输入预算(已有摘要 + 新片段合计)
+      summary_max_tokens: 800 # 输出 token 上限
   - id: host-tools
   - id: host-system-prompt
   - id: host-llm

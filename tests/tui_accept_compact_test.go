@@ -15,6 +15,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
 // spyProvider 记录每个请求体,并按固定文本流式答复。
@@ -34,9 +36,13 @@ func newSpyProvider(t *testing.T, reply string, delay time.Duration) (string, *s
 	sp := &spyProvider{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
-		sp.mu.Lock()
-		sp.bodies = append(sp.bodies, string(b))
-		sp.mu.Unlock()
+		// 滚动摘要的**模型摘要**请求(后台补写)不是回合请求:不计入 bodies,
+		// 否则“末请求”会被它顶掉(真机验收曾因此误判「压缩未生效」)。
+		if !strings.Contains(string(b), sdk.LLMSummaryMarker) {
+			sp.mu.Lock()
+			sp.bodies = append(sp.bodies, string(b))
+			sp.mu.Unlock()
+		}
 		if delay > 0 {
 			time.Sleep(delay)
 		}

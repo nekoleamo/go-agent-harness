@@ -143,6 +143,7 @@ internal/mcpconfig 88
 internal/sysproxy 65
 internal/embed 78
 internal/install 77
+internal/redact 90
 internal/sessionevents 92
 internal/sessionhtml 92
 internal/toolsummary 75
@@ -166,6 +167,7 @@ plugins/host/host-jobs 88
 plugins/host/host-notices 70
 plugins/host/host-schedule 82
 plugins/host/host-llm 68
+plugins/host/host-llm-summary 68
 plugins/host/host-plugin-manager 76
 plugins/host/host-session-log 90.2
 plugins/host/host-session-summary 74

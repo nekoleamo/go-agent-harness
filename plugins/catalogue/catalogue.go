@@ -17,6 +17,7 @@ import (
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-internal-commands"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-jobs"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-llm"
+	"github.com/nekoleamo/go-agent-harness/plugins/host/host-llm-summary"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-memory"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-notices"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-plugin-manager"
@@ -185,6 +186,11 @@ var All = map[string]Def{
 		//(缺失 → Summary 显式 unavailable);概述只落 meta.json,不进模型上下文
 		Provides: []string{"ctx.sessionSummary"},
 		Requires: []string{"ctx.cwdSessions"}}, Bundle: "base"},
+	"host-llm-summary": {Factory: func() sdk.Plugin { return &hostllmsummary.Plugin{} }, Manifest: &sdk.Manifest{
+		ID: "host-llm-summary", Type: "host", APIVersion: ">=1.0,<2.0",
+		// D4 滚动摘要的**模型摘要**实现:ctx.sessionSummarizer(可替换);
+		// ctx.llm 可选注入(缺失 → Summarize 显式报不可用,调用方保持抽取式摘要)
+		Provides: []string{"ctx.sessionSummarizer"}}, Bundle: "base"},
 	"host-cwd-sessions": {Factory: func() sdk.Plugin { return &hostcwdsessions.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "host-cwd-sessions", Type: "host", APIVersion: ">=1.0,<2.0",
 		// ctx.sessionDir 是真在 Provide 的(按会话 id 取日志);漏报会让拓扑排序看不到

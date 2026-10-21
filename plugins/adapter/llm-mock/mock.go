@@ -92,6 +92,40 @@ func parseScript(v any) ([]step, error) {
 	return steps, nil
 }
 
+// isSummaryRequest 判定这是不是滚动摘要的模型摘要请求(看 system 提示里的标记)。
+func isSummaryRequest(req *sdk.LLMRequest) bool {
+	if req == nil {
+		return false
+	}
+	for _, m := range req.Messages {
+		if m.Role == sdk.RoleSystem && strings.Contains(m.Content, sdk.LLMSummaryMarker) {
+			return true
+		}
+	}
+	return false
+}
+
+// completeSummary 回一段现成的结构化摘要(dev 下的固定答案)。
+func (a *Adapter) completeSummary(ctx context.Context, onChunk func(ev sdk.LLMStreamEvent) error) (*sdk.LLMResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	text := `{"task":"(dev mock)会话归档","changes":[],"decisions":[],"open":[],"errors":[]}`
+	if onChunk != nil {
+		if err := onChunk(sdk.LLMStreamEvent{Delta: text}); err != nil {
+			return nil, err
+		}
+	}
+	done := sdk.LLMStreamEvent{Done: true, FinishReason: sdk.FinishReasonStop}
+	done.Message = sdk.LLMMessage{Role: sdk.RoleAssistant, Content: text}
+	if onChunk != nil {
+		if err := onChunk(done); err != nil {
+			return nil, err
+		}
+	}
+	return &sdk.LLMResponse{Message: done.Message, FinishReason: sdk.FinishReasonStop}, nil
+}
+
 // defaultSteps 默认脚本:请求 1 → shell 工具调用;请求 2 → 文本收尾。
 func defaultSteps() []step {
 	return []step{
@@ -109,7 +143,15 @@ type Adapter struct {
 func (a *Adapter) Name() string { return "llm-mock" }
 
 // Complete 按请求序号消费脚本一步。
-func (a *Adapter) Complete(ctx context.Context, _ *sdk.LLMRequest, onChunk func(ev sdk.LLMStreamEvent) error) (*sdk.LLMResponse, error) {
+func (a *Adapter) Complete(ctx context.Context, req *sdk.LLMRequest, onChunk func(ev sdk.LLMStreamEvent) error) (*sdk.LLMResponse, error) {
+	// 滚动摘要的**模型摘要**请求(带 sdk.LLMSummaryMarker):**不消耗脚本步**。
+	//
+	// 为什么:脚本是给回合走的(第 N 次请求 = 第 N 步)。摘要请求是后台补写,
+	// 混进来会把回合的脚本错位(第 2 轮拿到第 1 轮的回应)。直接回一段现成的
+	// 结构化摘要:既不扰动脚本,又让摘要链路在 dev 下真的能跑通。
+	if isSummaryRequest(req) {
+		return a.completeSummary(ctx, onChunk)
+	}
 	idx := int(a.req.Add(1) - 1)
 	if idx >= len(a.steps) {
 		idx = len(a.steps) - 1 // 超界时重复最后一步

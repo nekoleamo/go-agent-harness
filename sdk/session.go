@@ -472,6 +472,43 @@ type SessionCompressor interface {
 	Fold(evs []SessionEvent, watermark int, budget int, summary func(RollingSummary)) int
 }
 
+// SessionSummaryUpgrader 可选能力(host-session-log 实现):把**最新一条**滚动摘要
+// 换成更高质量的版本(锁内原子)。
+//
+// 为什么需要它(2026-10-21 批次 D4):折叠发生在**会话日志锁内**,不能就地调模型
+// (会把锁按住几秒,拖住整个会话的写入)⇒ 模型摘要只能**事后异步**补写。
+// 而“事后补写”必须**原子**:补写期间可能又折叠了一次 —— 那时若仍把旧范围的摘要
+// 写进去,投影会回退到**更旧**的摘要(丢掉刚折进去的那一段)。
+// 乐观锁口径:只有当“当前最新摘要 == 调用方看到的那条”时才替换,否则调用方放弃
+// (确定性的回退:保持抽取式摘要)。
+type SessionSummaryUpgrader interface {
+	// UpgradeSummary 把最新一条摘要的文本换成 text(来源标为 source);
+	// 当前最新摘要 != expected 时返回 false(期间又折叠了,调用方应放弃)。
+	UpgradeSummary(expected string, text string, source string) (bool, error)
+}
+
+// SessionSummarizer 可选能力(ctx.sessionSummarizer):把折叠出来的历史**摘要成结构化文本**。
+//
+// 为什么是接口而不是把模型调用写死在压缩引擎里(对照 pi/dsh/Codex 的做法:
+// **压缩策略可替换**是扩展点):默认实现 = 抽取式(零延迟、零成本、确定性);
+// 模型实现信息密度高(记“改过哪些文件 / 什么决定 / 未完成什么”),但**必须可回退**
+// —— 模型不可用/超时/解析失败时,调用方保持抽取式摘要,不许让回合失败。
+type SessionSummarizer interface {
+	// Summarize 把「已有累计摘要 + 本次新折叠的片段」合并成**一份新的累计摘要**
+	// (完整替换,不是追加)。失败必须返回 error —— 调用方据此保持原摘要。
+	Summarize(ctx context.Context, in SummaryRequest) (string, error)
+}
+
+// SummaryRequest 交给摘要器的事实。
+type SummaryRequest struct {
+	// Prev 之前的累计摘要(可空 = 首次折叠)。
+	Prev string
+	// Seg 本次新折叠进来的片段(**原始内容**转述,不是抽取式截断版)。
+	Seg string
+	// MaxChars 输出上限(rune);实现应自行截断到上限内。
+	MaxChars int
+}
+
 // BudgetPlanner 可选接口:压缩器不只“按预算折”,还能按**真实上下文占用**裁量本轮预算。
 // host-session-log 每次投影前调用 Plan(未实现则退回 RegisterCompressor 的固定字符预算)。
 // 为何需要:字符预算与模型窗口没有对应关系(实测语料约 2.8 字符/token,固定 40960 字符在
