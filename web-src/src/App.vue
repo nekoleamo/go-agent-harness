@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // 根组件:SSE 消费(历史重放 + 实时)+ REST 上行 + 四槽位装配(registry.ts 契约 v1)。
-import { computed, nextTick, onMounted, onUnmounted, provide, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, provide, ref, watch } from 'vue'
 import { api } from './api'
 import { probeAsync } from './desktop'
 import type { AskConfirm } from './types'
@@ -56,7 +56,7 @@ import { shortSessionId, tabTitle } from './frame-routing'
 import { boundSession, shouldFollowSwitch } from './session-scope'
 import { foreignOwner, foreignTodoText } from './frame-routing'
 import { extraPanel, slotComponent, type MetaLine, type PendingView } from './registry'
-import SessionPrefsPanel from './components/SessionPrefsPanel.vue'
+
 import { hasSessionOverride, sessionSetCount } from './scope'
 import { OPEN_DOC_EVENT, docRequest } from './docstore'
 import type {
@@ -86,7 +86,7 @@ import StatusBar from './components/StatusBar.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import QuestionDialog from './components/QuestionDialog.vue'
 import ConfirmBar from './components/ConfirmBar.vue'
-import SettingsPanel from './components/SettingsPanel.vue'
+
 import JobsPanel from './components/JobsPanel.vue'
 import Sidebar from './components/Sidebar.vue'
 import TrajectoryView from './components/TrajectoryView.vue'
@@ -97,6 +97,17 @@ import DockView from './components/DockView.vue'
 import ToastStack from './components/ToastStack.vue'
 import TabBar from './components/TabBar.vue'
 import InterventionBar from './components/InterventionBar.vue'
+
+// 设置面板与会话设置面板:**按需加载**(D1 · 2026-10-21)。
+//
+// 为什么:这两个面板是**抽屉**(点开才用),但此前是**静态 import** ⇒ 它们的全部代码
+// (设置面板一个文件就 258KB)都进了首屏主 chunk —— 首屏要为一个用户可能整个会话都不
+// 打开的抽屉付费(实测主 chunk 357KB)。
+//
+// 懒加载后:主 chunk 只留会话流/输入/状态栏;抽屉首次打开时才拉那一块(有加载态)。
+// 行为不变:抽屉是 v-if 挂载,首次打开前不渲染 ⇒ 组件代码用不到。
+const SettingsPanel = defineAsyncComponent(() => import('./components/SettingsPanel.vue'))
+const SessionPrefsPanel = defineAsyncComponent(() => import('./components/SessionPrefsPanel.vue'))
 
 const state = ref<StateView>({
   model: '',
