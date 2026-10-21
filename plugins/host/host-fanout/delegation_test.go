@@ -123,14 +123,14 @@ func (p *capturingPrompt) lastTools() []sdk.ToolDefinition {
 }
 
 // buildContractEnv 装配 host-llm + 记录型适配器 + 捕获型 system-prompt + 本插件(替换真实 registry)。
-func buildContractEnv(t *testing.T, reg *fanoutRecordingTools, ad *recordingLLM) (sdk.FanoutService, *capturingPrompt) {
+func buildContractEnv(t *testing.T, reg sdk.ToolRegistry, ad *recordingLLM) (sdk.FanoutService, *capturingPrompt) {
 	t.Helper()
 	svc, sp, _ := buildContractEnvCtx(t, reg, ad)
 	return svc, sp
 }
 
 // buildContractEnvCtx 同上,额外返回宿主 ctx(要订阅扩展点/注入服务时用)。
-func buildContractEnvCtx(t *testing.T, reg *fanoutRecordingTools, ad *recordingLLM) (sdk.FanoutService, *capturingPrompt, sdk.Ctx) {
+func buildContractEnvCtx(t *testing.T, reg sdk.ToolRegistry, ad *recordingLLM) (sdk.FanoutService, *capturingPrompt, sdk.Ctx) {
 	t.Helper()
 	logger := slog.New(slog.DiscardHandler)
 	c := ctx.New(logger, event.New(logger))

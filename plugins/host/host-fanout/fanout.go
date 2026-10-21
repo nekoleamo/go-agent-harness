@@ -91,19 +91,19 @@ const maxSubSteps = 8
 
 // SpawnAgent 后台启动单子代理(不阻塞):立即返回句柄 id;子代理在独立上下文运行,
 // 完成/失败/被终止后状态经 ListAgents/AgentStatus 可取(轮询)。
-func (f *Fanout) SpawnAgent(_ context.Context, input string) (string, error) {
-	return f.spawnBackground(input, false)
+func (f *Fanout) SpawnAgent(ctx context.Context, input string) (string, error) {
+	return f.spawnBackground(ctx, input, false)
 }
 
 // Fork 派生带父上下文的子代理(M9.3):初始消息历史 = 父会话已投影历史
 // (ctx.sessions.DeriveMessages)+ input;后台启动返回句柄 id。
-func (f *Fanout) Fork(_ context.Context, input string) (string, error) {
-	return f.spawnBackground(input, true)
+func (f *Fanout) Fork(ctx context.Context, input string) (string, error) {
+	return f.spawnBackground(ctx, input, true)
 }
 
 // spawnBackground 后台启动公共路径:forkSeed=true 时种入父会话历史。
-func (f *Fanout) spawnBackground(input string, forkSeed bool) (string, error) {
-	h, err := f.spawnWorker(input, forkSeed, nil)
+func (f *Fanout) spawnBackground(ctx context.Context, input string, forkSeed bool) (string, error) {
+	h, err := f.spawnWorker(ctx, input, forkSeed, nil)
 	if err != nil {
 		return "", err
 	}
@@ -111,7 +111,7 @@ func (f *Fanout) spawnBackground(input string, forkSeed bool) (string, error) {
 }
 
 // spawnWorker 后台启动(含句柄):workRoot 非空 = 隔离子代理(所有工具调用的工作根)。
-func (f *Fanout) spawnWorker(input string, forkSeed bool, workRoot *sdk.Worktree) (sdk.AgentHandle, error) {
+func (f *Fanout) spawnWorker(ctx context.Context, input string, forkSeed bool, workRoot *sdk.Worktree) (sdk.AgentHandle, error) {
 	if f.llm == nil || f.sp == nil {
 		return sdk.AgentHandle{}, fmt.Errorf("子代理编排需要 ctx.llm / ctx.systemPrompt(未装配)")
 	}
@@ -125,7 +125,18 @@ func (f *Fanout) spawnWorker(input string, forkSeed bool, workRoot *sdk.Worktree
 		}
 		seed = f.sessions.DeriveMessages()
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	// 后台子代理的 ctx:**继承父 ctx 的值,不受父 ctx 的取消/超时影响**
+	// (context.WithoutCancel:保留值、去掉取消与 deadline)。
+	//
+	// 为什么必须继承值(2026-10-21 D5 · 委派审批):**会话归属**在 ctx 值里
+	// (sdk.WithSessionContext),而裁决链按它取值 ——
+	// 会话级审批档(policy-guard 的 sessionPref)与**会话的角色收紧**(RoleForSession)
+	// 都按会话 id 解析。原实现用 context.Background() ⇒ 会话归属被丢掉 ⇒
+	// 后台子代理退回**全局**档位:父回合被会话级 strict 拦下的操作,
+	// 后台子代理却按全局 open 直接放行 ⇒ **经委派提权**(安全缺陷,不是风格问题)。
+	//
+	// 取消/超时不继承是**故意的**:后台子代理要在父回合结束后继续跑(可被 kill 终止)。
+	ctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	if workRoot != nil {
 		// 隔离运行:工作根随 ctx 下传,子代理的每个工具调用(cwd/相对路径/沙箱写范围)都据此
 		ctx = sdk.WithWorkRoot(ctx, workRoot.Path)
@@ -343,7 +354,7 @@ func (f *Fanout) RunInWorktree(ctx context.Context, req sdk.WorktreeRun) (sdk.Wo
 		text, err := f.runAgentLoop(sdk.WithWorkRoot(ctx, wt.Path), input, nil)
 		return sdk.WorktreeRunResult{Worktree: wt, Text: text}, err
 	}
-	h, err := f.spawnWorker(input, req.Fork, &wt)
+	h, err := f.spawnWorker(ctx, input, req.Fork, &wt)
 	if err != nil {
 		return sdk.WorktreeRunResult{Worktree: wt}, err
 	}
