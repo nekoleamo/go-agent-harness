@@ -11,6 +11,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,18 +22,31 @@ import (
 )
 
 // fakeSummarizer 假摘要器(可指定返回/报错)。
+//
+// 访问器带锁:摘要请求跑在**后台 goroutine**里(升级是异步的),而用例在主 goroutine
+// 读它 —— 不加锁就是数据竞争(go test -race 会报;CI 跑的就是 -race)。
 type fakeSummarizer struct {
+	mu   sync.Mutex
 	text string
 	err  error
 	got  sdk.SummaryRequest
 }
 
 func (f *fakeSummarizer) Summarize(_ context.Context, in sdk.SummaryRequest) (string, error) {
+	f.mu.Lock()
 	f.got = in
+	f.mu.Unlock()
 	if f.err != nil {
 		return "", f.err
 	}
 	return f.text, nil
+}
+
+// request 最近一次收到的请求(加锁读)。
+func (f *fakeSummarizer) request() sdk.SummaryRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.got
 }
 
 // buildUpgradeEnv 装配 host-session-log + token-compress(带摘要器),返回日志、runner 与 ctx。
@@ -110,7 +124,7 @@ func TestUpgradeReplacesExtractSummary(t *testing.T) {
 	if source != sdk.SummarySourceExtract {
 		t.Fatalf("折叠当场应只落抽取式摘要,来源=%q", source)
 	}
-	if sum.got.Prev != "" || sum.got.Seg != "" {
+	if req := sum.request(); req.Prev != "" || req.Seg != "" {
 		t.Fatal("折叠当场不应调模型")
 	}
 	// 回合结束(经会话事件通道)→ 触发补写
@@ -140,11 +154,11 @@ func TestUpgradeReplacesExtractSummary(t *testing.T) {
 		t.Fatalf("投影应含模型摘要: %q", proj)
 	}
 	// 摘要器拿到的输入:旧摘要 + 新片段(原始内容,不是抽取式截断)
-	if sum.got.Seg == "" {
+	if sum.request().Seg == "" {
 		t.Fatal("摘要器应收到新片段")
 	}
-	if !strings.Contains(sum.got.Seg, "用户") {
-		t.Fatalf("新片段应是原文转述: %q", sum.got.Seg)
+	if !strings.Contains(sum.request().Seg, "用户") {
+		t.Fatalf("新片段应是原文转述: %q", sum.request().Seg)
 	}
 }
 
@@ -159,7 +173,7 @@ func TestUpgradeFallsBackWhenSummarizerFails(t *testing.T) {
 	before, _ := latestSummaryOf(l)
 	runner.trigger()
 	// 跑过一次(等摘要器被调用过)
-	waitFor(t, "摘要器被调用", func() bool { return sum.got.Seg != "" })
+	waitFor(t, "摘要器被调用", func() bool { return sum.request().Seg != "" })
 	time.Sleep(50 * time.Millisecond) // 给"写坏摘要"留出机会
 	after, source := latestSummaryOf(l)
 	if source != sdk.SummarySourceExtract {
@@ -200,7 +214,7 @@ func TestUpgradeDisabledByConfig(t *testing.T) {
 	}
 	runner.trigger()
 	time.Sleep(100 * time.Millisecond)
-	if sum.got.Seg != "" {
+	if sum.request().Seg != "" {
 		t.Fatal("关闭后不应调模型")
 	}
 	_, source := latestSummaryOf(sessions)
