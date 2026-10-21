@@ -81,8 +81,14 @@ func TestStatuslineNoticeItem(t *testing.T) {
 		t.Fatalf("info 级用中性前缀: %q", out)
 	}
 	// 默认基线含 notice 项(否则插件/宿主发出的提示在 TUI 永远不可见)
-	if len(defaultStatusline) == 0 || defaultStatusline[0] != "notice" {
-		t.Fatalf("默认状态栏首项应为 notice: %v", defaultStatusline)
+	//
+	// D3(2026-10-21):首项换成了「介入」(intervene)—— 待审批/待答/出错比提示更急;
+	// notice 退到第二位(仍默认显示,只是不再抢首项)。
+	if len(defaultStatusline) == 0 || defaultStatusline[0] != "intervene" {
+		t.Fatalf("默认状态栏首项应为 intervene(介入信号优先于提示): %v", defaultStatusline)
+	}
+	if !containsToken(defaultStatusline, "notice") {
+		t.Fatalf("默认状态栏仍应含 notice 项(提示不得被挤掉): %v", defaultStatusline)
 	}
 	if statuslineTokenDesc["notice"] == "" {
 		t.Fatal("/statusline 校验表应登记 notice(否则配置该词会被当成坏项丢弃)")
@@ -146,4 +152,14 @@ func TestCommandNoticeRendersDetails(t *testing.T) {
 	if !strings.Contains(view, "10:30:00") {
 		t.Fatalf("应带时间戳: %q", view)
 	}
+}
+
+// containsToken 状态栏默认项里是否含某项。
+func containsToken(list []string, tok string) bool {
+	for _, t := range list {
+		if t == tok {
+			return true
+		}
+	}
+	return false
 }

@@ -231,13 +231,17 @@ var statuslineCluster = map[string]bool{
 // NOND-N1:notice 置首 —— 提示是「需要人回来」的信号,无提示时该项渲染空串,
 // 输出与旧基线逐字符一致。
 // 第一百三十八批:tps 紧跟 last(两项同属「上一回合」的度量,拆开写才能各自 /statusline 开关)。
-var defaultStatusline = []string{"notice", "state", "queue", "questions", "plan", "dock", "last", "tps", "workspace", "sandbox", "approval", "role", "session"}
+// D3(2026-10-21):**intervene 置首** —— 「现在轮到人了吗」是唯一需要一眼看到的事;
+// 待答提问(questions)的内容**并入** intervene(同一处、同一措辞),questions 退出默认集合
+// (仍可经 /statusline questions 单独打开),免得同一件事在一条状态栏里出现两遍。
+var defaultStatusline = []string{"intervene", "notice", "state", "queue", "plan", "dock", "last", "tps", "workspace", "sandbox", "approval", "role", "session"}
 
 // statuslineTokens 全部合法项(顺序无关;/statusline 错误提示与校验用)。
-var statuslineTokens = []string{"notice", "state", "queue", "questions", "plan", "dock", "last", "tps", "workspace", "sandbox", "approval", "role", "session"}
+var statuslineTokens = []string{"intervene", "notice", "state", "queue", "questions", "plan", "dock", "last", "tps", "workspace", "sandbox", "approval", "role", "session"}
 
 // statuslineTokenDesc 项说明(/statusline 无参与错误提示用)。
 var statuslineTokenDesc = map[string]string{
+	"intervene": "介入信号(待审批/待答提问/出错;D3:四态合一,置首)",
 	"notice":    "最近一条提示(NOND-N1;详情 /notice)",
 	"state":     "回合状态(思考中/执行工具;运行中带 Esc 提示)",
 	"queue":     "转向/待发计数(转向 = 已注入本回合;待发 = 回告后自动续发)",
@@ -256,6 +260,8 @@ var statuslineTokenDesc = map[string]string{
 // statuslineItem 渲染单项(空串 = 该项当前无内容,拼接时跳过)。
 func statuslineItem(s *State, token string) string {
 	switch token {
+	case "intervene":
+		return interventionItem(s)
 	case "notice":
 		// NOND-N1:只显示标题(正文在 /notice 浮层);级别决定颜色与标记。
 		// 标题裁到 40 列:提示占满整条状态栏会把其它实时信号挤没。
@@ -447,7 +453,7 @@ func renderStatusLineOrdered(s *State, width int) string {
 // 划分依据:**信息会不会在这一轮内变**。state/queue/questions/dock/last/tps/notice 都会;
 // workspace/sandbox/approval/role/session 是配置,一轮内基本不动(除非用户切)。
 var statuslineLive = map[string]bool{
-	"notice": true, "state": true, "queue": true, "questions": true, "plan": true,
+	"intervene": true, "notice": true, "state": true, "queue": true, "questions": true, "plan": true,
 	"dock": true, "last": true, "tps": true,
 }
 

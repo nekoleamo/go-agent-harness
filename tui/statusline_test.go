@@ -229,10 +229,26 @@ func TestStatuslineNoDanglingSeparator(t *testing.T) {
 }
 
 // TestStatuslineCommandRegistered TUI 本地命令注册(不与宿主命令同名冲突)。
+//
+// D3(2026-10-21)起有**一条**例外:待答提问项(questions)的内容并入了「介入」项
+// (intervene)—— 同一件事(待答提问)在一条状态栏里出现两遍是噪音。questions 仍是
+// 合法 token(/statusline questions 可单独打开),但不再默认出现。
 func TestStatuslineCommandRegistered(t *testing.T) {
 	var _ sdk.Option // 保持 sdk 引用(命令参数用 sdk.Option)
-	if len(statuslineTokens) != len(defaultStatusline) {
-		t.Fatalf("基线默认应覆盖全部可用项: %v vs %v", statuslineTokens, defaultStatusline)
+	mergedIntoIntervene := []string{"questions"}
+	missing := []string{}
+	for _, tok := range statuslineTokens {
+		if containsToken(defaultStatusline, tok) {
+			continue
+		}
+		if containsToken(mergedIntoIntervene, tok) && containsToken(defaultStatusline, "intervene") {
+			continue // 已并入介入项
+		}
+		missing = append(missing, tok)
+	}
+	if len(missing) > 0 {
+		t.Fatalf("基线默认应覆盖全部可用项(除已并入介入项的): 缺 %v; tokens=%v default=%v",
+			missing, statuslineTokens, defaultStatusline)
 	}
 	for _, tok := range defaultStatusline {
 		if statuslineTokenDesc[tok] == "" {

@@ -4,6 +4,7 @@ import { computed, nextTick, onMounted, onUnmounted, provide, ref, watch } from 
 import { api } from './api'
 import { probeAsync } from './desktop'
 import type { AskConfirm } from './types'
+import { interventionOf, type Intervention } from './intervention'
 import { consume, isUsage, msgsOfEvents, newModel, type StreamModel } from './sse'
 import {
   applyBaseline,
@@ -95,6 +96,7 @@ import BoardView from './components/BoardView.vue'
 import DockView from './components/DockView.vue'
 import ToastStack from './components/ToastStack.vue'
 import TabBar from './components/TabBar.vue'
+import InterventionBar from './components/InterventionBar.vue'
 
 const state = ref<StateView>({
   model: '',
@@ -678,6 +680,39 @@ function pinBottom(): void {
 }
 function goNewest(): void {
   pinBottom()
+}
+
+// —— D3 介入条:「现在轮到人了吗」的单一信号 ——
+// 四态全从前端已有状态派生(零新后端契约):确认请求 / 待答提问 / 最近一条 meta 错误 /
+// 上滚时的新内容。语义与 TUI 端同款(tui/intervention.go)。
+const lastMetaError = computed(() => {
+  // 只看**最后一条** meta:后面又来了别的东西 ⇒ 当前不是"出错"状态(错误已被后续动作盖过)。
+  const m = metas.value
+  const last = m.length ? m[m.length - 1] : null
+  return last && last.kind === 'error' ? last.text : ''
+})
+const intervention = computed<Intervention>(() =>
+  interventionOf({
+    pendingConfirm: !!confirm.value,
+    pendingQuestion: !!question.value,
+    lastError: lastMetaError.value,
+    running: state.value.running,
+    unreadBelow: showNewest.value, // 上滚读历史时新内容到达 ⇒ 下面有没看过的东西
+  }),
+)
+// 点击介入条:去处理那件事(待审批的确认弹层本身是模态、已经在最前,不必再动作)。
+function onInterventionAct(action: Intervention['action']): void {
+  switch (action) {
+    case 'answer':
+      questionMin.value = false // 恢复被收起的提问弹层(不新起一个)
+      break
+    case 'error':
+    case 'latest':
+      goNewest() // 错误行是流的最后一行(见 streamrows.rowsOf)⇒ 滚到底就是它
+      break
+    default:
+      break
+  }
 }
 
 // —— S-P1-2 长会话窗口 ——
@@ -1606,6 +1641,9 @@ onUnmounted(() => {
 
       <!-- 右侧列:会话流 + 输入框(左右分割;输入框只在右侧底部,不横跨侧栏) -->
       <div class="content" :class="{ empty }">
+        <!-- D3 介入条:待审批/待回答/出错/跑完了 收成一处常驻提示(切标签页回来也知道轮到自己了) -->
+        <InterventionBar :item="intervention" @act="onInterventionAct" />
+
         <!-- 非会话流视图的常驻提醒(真机反馈):视图是全屏切换的,切到轨迹/变更/看板后,
              新消息与回复都落在看不见的会话流里 —— 不给提示就会被误读成「agent 什么也没返回」
              (原话:「让它查 skill 或 MCP,返回的总是『本会话还没有捕获到文件改动』」)。
