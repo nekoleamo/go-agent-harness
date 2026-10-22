@@ -17,10 +17,11 @@ const props = defineProps<{
 const emit = defineEmits<{ (e: 'act', action: Intervention['action']): void }>()
 
 // 动作按钮的文案(按态给"点了会发生什么",而不是重复状态词)。
+//
+// 待审批**不给按钮**:确认弹层本身就是全屏模态(已经在最前,用户必须答),
+// 条子上的按钮点不出任何新东西 —— 给一个点了没反应的按钮比不给更糟。
 const actionLabel = (a: Intervention['action']): string => {
   switch (a) {
-    case 'approve':
-      return '去确认'
     case 'answer':
       return '去作答'
     case 'error':

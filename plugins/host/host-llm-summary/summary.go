@@ -113,6 +113,10 @@ func (s *Service) Summarize(ctx context.Context, in sdk.SummaryRequest) (string,
 		},
 		MaxTokens:   &maxTok,
 		Temperature: floatPtr(0.2),
+		// 思考档**显式关掉**:这是后台补写,不需要推理;不显式关的话,host-llm 会把
+		// 会话级的思考档回填进来(可能是一边推理一边写摘要 = 白烧 token)。
+		Thinking:    sdk.ThinkingOff,
+		ThinkingSet: true,
 	}
 	var lastErr error
 	for attempt := 0; attempt <= s.o.MaxRetries; attempt++ {

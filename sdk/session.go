@@ -211,14 +211,28 @@ func SummaryText(p any) string {
 		return v
 	case RollingSummary:
 		return v.Text
+	case map[string]any:
+		// 未归一化的载荷(某些读取路径没走 internal/sessionevents.NormalizePayload):
+		// 认一下 map 形态,免得摘要"读不出来"(投影会静默丢掉整段累计摘要)。
+		if t, ok := v["text"].(string); ok {
+			return t
+		}
 	}
 	return ""
 }
 
 // SummaryUntil 取摘要覆盖水位(旧字符串载荷或未知 ⇒ -1)。
 func SummaryUntil(p any) int {
-	if v, ok := p.(RollingSummary); ok {
+	switch v := p.(type) {
+	case RollingSummary:
 		return v.Until
+	case map[string]any:
+		switch n := v["until"].(type) {
+		case float64: // json 解码后的数字
+			return int(n)
+		case int:
+			return n
+		}
 	}
 	return -1
 }

@@ -398,6 +398,11 @@ func (s *State) ApplyStatus(status string) {
 	switch status {
 	case "running":
 		s.Running = true
+		// 新回合开始 ⇒ **清掉上一回合的错误横幅**(否则它会永远挂在屏顶:
+		// 横幅此前**从来没有被清过** ⇒ 一次失败后每次开界面都在提醒那次失败)。
+		// 错误本身不会丢:agent/error 事件已把它写进会话流(见 ApplyEvent 的
+		// EventAgentError 分支),回合失败也会补一行(见 model.go 的回合失败分支)。
+		s.Error = ""
 		if s.turnStart.IsZero() {
 			s.turnStart = time.Now()
 		}

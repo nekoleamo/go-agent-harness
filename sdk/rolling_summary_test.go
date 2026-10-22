@@ -33,3 +33,28 @@ func TestSummaryUntilBothShapes(t *testing.T) {
 		t.Fatalf("未知载荷应 -1: %d", got)
 	}
 }
+
+// TestSessionIDFromEventName 会话事件名 ⇄ 会话 id 的反解(多会话按会话归位靠它)。
+func TestSessionIDFromEventName(t *testing.T) {
+	if id, ok := SessionIDFromEventName(SessionEventName("")); !ok || id != "" {
+		t.Fatalf("主会话应反解为空 id: %q ok=%v", id, ok)
+	}
+	if id, ok := SessionIDFromEventName(SessionEventName("20240101-1200")); !ok || id != "20240101-1200" {
+		t.Fatalf("应反解出会话 id: %q ok=%v", id, ok)
+	}
+	// 不是会话事件名 ⇒ 不认(不当成主会话:会把别的通道的��件归到主会话上)
+	if _, ok := SessionIDFromEventName("agent/status"); ok {
+		t.Fatal("非会话事件名不应反解成功")
+	}
+}
+
+// TestSummaryTextMapPayload 未归一化的载荷(map)也要读得出文本与水位。
+func TestSummaryTextMapPayload(t *testing.T) {
+	m := map[string]any{"text": "摘要", "until": float64(7)}
+	if got := SummaryText(m); got != "摘要" {
+		t.Fatalf("map 载荷的文本: %q", got)
+	}
+	if got := SummaryUntil(m); got != 7 {
+		t.Fatalf("map 载荷的水位: %d", got)
+	}
+}

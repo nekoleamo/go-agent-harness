@@ -115,7 +115,9 @@ func (a *Adapter) completeSummary(ctx context.Context, onChunk func(ev sdk.LLMSt
 	// 字段**同时满足两个消费方**:会话概述(host-session-summary:title/summary/topics)
 	// 与滚动摘要的模型摘要(host-llm-summary:task/changes/…)——
 	// 两个解析器都是严格 JSON 解析且**忽略多余字段**,故一份答案两边都能用。
-	text := `{"title":"(dev mock)会话","summary":"(dev mock)会话概述","topics":["mock"],` +
+	// title 留空:会话概述会自动把标题**回填成会话名** —— 填了就会把 dev 的会话名
+	// 改成 "(dev mock)会话"(用户可见的污染)。留空 ⇒ 不回填(回填只认非空标题)。
+	text := `{"title":"","summary":"(dev mock)会话概述","topics":["mock"],` +
 		`"task":"(dev mock)会话归档","changes":[],"decisions":[],"open":[],"errors":[]}`
 	if onChunk != nil {
 		if err := onChunk(sdk.LLMStreamEvent{Delta: text}); err != nil {

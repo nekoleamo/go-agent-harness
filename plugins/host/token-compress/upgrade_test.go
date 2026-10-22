@@ -26,20 +26,29 @@ import (
 // 访问器带锁:摘要请求跑在**后台 goroutine**里(升级是异步的),而用例在主 goroutine
 // 读它 —— 不加锁就是数据竞争(go test -race 会报;CI 跑的就是 -race)。
 type fakeSummarizer struct {
-	mu   sync.Mutex
-	text string
-	err  error
-	got  sdk.SummaryRequest
+	mu    sync.Mutex
+	text  string
+	err   error
+	got   sdk.SummaryRequest
+	calls int
 }
 
 func (f *fakeSummarizer) Summarize(_ context.Context, in sdk.SummaryRequest) (string, error) {
 	f.mu.Lock()
 	f.got = in
+	f.calls++
 	f.mu.Unlock()
 	if f.err != nil {
 		return "", f.err
 	}
 	return f.text, nil
+}
+
+// callCount 模型被调用的次数(加锁读)。
+func (f *fakeSummarizer) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
 }
 
 // request 最近一次收到的请求(加锁读)。
@@ -247,5 +256,35 @@ func TestEngineReportsFoldScope(t *testing.T) {
 	}
 	if !strings.Contains(last.Merged, "用户") {
 		t.Fatalf("合并结果应是抽取式摘要: %q", last.Merged)
+	}
+}
+
+// TestUpgradeRunsOncePerFoldScope 同一个折叠范围只升级一次。
+//
+// 为什么(2026-10-21 review 发现):待升级范围被取走后若**不清空**,下一次回合结束
+// 又会拿**同一个**范围再跑一遍 ⇒ 白花一次模型调用(而且乐观锁必然对不上:
+// 最新摘要已被上一轮换成模型摘要了)。
+//
+// **反向验证**:把 trigger 里的 u.pending = nil 去掉 ⇒ 本用例必须红。
+func TestUpgradeRunsOncePerFoldScope(t *testing.T) {
+	sum := &fakeSummarizer{text: "模型摘要"}
+	l, _, _ := buildUpgradeEnv(t, sum)
+	for i := 1; i <= 12; i++ {
+		appendTurn(l, i)
+		l.DeriveMessages()
+	}
+	// 第一次回合结束 ⇒ 升级一次
+	_ = l.Append(sdk.SessionEvent{Kind: sdk.EventTurnEnd, Payload: "done"})
+	waitFor(t, "首次升级", func() bool { return sum.request().Seg != "" })
+	if n := sum.callCount(); n != 1 {
+		t.Fatalf("首次升级应只调一次模型: %d", n)
+	}
+
+	// 没有新折叠 ⇒ 再来一次回合结束**不应**再调模型
+	time.Sleep(50 * time.Millisecond)
+	_ = l.Append(sdk.SessionEvent{Kind: sdk.EventTurnEnd, Payload: "done"})
+	time.Sleep(200 * time.Millisecond)
+	if n := sum.callCount(); n != 1 {
+		t.Fatalf("同一折叠范围不应重复升级(白花一次模型调用): 调了 %d 次", n)
 	}
 }

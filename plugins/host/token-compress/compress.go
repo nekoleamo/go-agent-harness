@@ -140,7 +140,12 @@ func (e *Engine) Fold(evs []sdk.SessionEvent, watermark int, budget int, summary
 		// 通知可替换的摘要器:本次折叠的范围(旧摘要 + 新片段)——
 		// 它可以**事后**用模型把摘要升级成结构化版本(不在此处调模型:折叠跑在
 		// 会话日志锁内)。没有回调 = 纯抽取式(默认行为不变)。
-		e.onFoldHook(FoldScope{Prev: oldSummary, Seg: rawSegment(block), Merged: newSummary})
+		//
+		// 回调为空时**不构造** FoldScope:rawSegment 要把整块原文拼一遍(最多 6KB),
+		// 纯抽取式模式下白算(折叠虽少,但没必要)。
+		if e.onFold != nil {
+			e.onFoldHook(FoldScope{Prev: oldSummary, Seg: rawSegment(block), Merged: newSummary})
+		}
 		oldSummary = newSummary
 		w = end
 	}

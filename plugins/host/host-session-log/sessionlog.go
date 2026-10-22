@@ -432,7 +432,7 @@ func lastSummaryIndex(evs []sdk.SessionEvent) int {
 
 // latestSummary 最新一条摘要事件的(文本, 覆盖水位)(无摘要 ⇒ ("", -1))。
 //
-// 摘要载荷有两种形态:旧日志是纯字符串、新日志是 sdk.SessionSummary(带 Until/Source)。
+// 摘要载荷有两种形态:旧日志是纯字符串、新日志是 sdk.RollingSummary(带 Until/Source)。
 // 口径统一收在这里(sdk.SummaryText / sdk.SummaryUntil),避免各处自己判类型。
 func latestSummary(evs []sdk.SessionEvent) (string, int) {
 	text, until := "", -1

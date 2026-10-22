@@ -134,6 +134,11 @@ func (u *upgradeRunner) trigger() {
 		return
 	}
 	scope := *u.pending
+	// 取走就**清空**:同一个折叠范围只升级一次。
+	//
+	// 为什么(2026-10-21 review):不清空的话,下一次回合结束又会拿**同一个**范围再跑一遍
+	// —— 白花一次模型调用(而且乐观锁必然对不上:最新摘要已被上一轮换成了模型摘要)。
+	u.pending = nil
 	u.busy = true
 	u.mu.Unlock()
 	go u.run(scope)
@@ -182,6 +187,9 @@ func (u *upgradeRunner) run(scope FoldScope) {
 //
 // 为什么懒解析而不是 Start 期注入:插件的启动顺序由依赖图决定,而"模型摘要"是
 // **可选能力** —— 谁先启动谁后启动都该能工作(与 ctx.llm 的可选注入同款思路)。
+//
+// **解析失败不记成"已解析"**:提供方可能晚于第一次尝试才装配好(装配顺序不保证),
+// 记成已解析会让这条通道**永久**关着(直到重启)。失败 ⇒ 下次再试。
 func (u *upgradeRunner) summarizer() sdk.SessionSummarizer {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -189,10 +197,10 @@ func (u *upgradeRunner) summarizer() sdk.SessionSummarizer {
 		return u.sum
 	}
 	var s sdk.SessionSummarizer
-	if err := u.c.Inject("ctx.sessionSummarizer", &s); err == nil {
+	if err := u.c.Inject("ctx.sessionSummarizer", &s); err == nil && s != nil {
 		u.sum = s
+		u.sumDone = true
 	}
-	u.sumDone = true
 	return u.sum
 }
 

@@ -269,6 +269,10 @@ func (s *Service) generate(ctx context.Context, input string) (genOut, error) {
 		},
 		MaxTokens:   &maxTok,
 		Temperature: floatPtr(0.2),
+		// 思考档**显式关掉**:概述是后台补写,不需要推理;不显式关的话,host-llm 会把
+		// 会话级的思考档回填进来(白烧 token)。
+		Thinking:    sdk.ThinkingOff,
+		ThinkingSet: true,
 	}
 	var lastErr error
 	for attempt := 0; attempt <= s.o.MaxRetries; attempt++ {

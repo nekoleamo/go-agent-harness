@@ -82,3 +82,22 @@ func TestInterveneInDefaultStatusline(t *testing.T) {
 		t.Fatalf("待答 2 应在状态栏可见: %q", out)
 	}
 }
+
+// TestErrorBannerClearsOnNewTurn 错误横幅在**下个回合开始**时被清掉。
+//
+// 为什么(2026-10-21 review 发现):横幅此前**从来没有被清过** ⇒ 一次失败后,
+// 它会永远挂在屏顶(而且 D3 的介入项还会一直报「⛔ 出错」)。错误本身不丢:
+// agent/error 事件已把它写进会话流,回合失败也会补一行。
+//
+// **反向验证**:把 ApplyStatus("running") 里的清空去掉 ⇒ 本用例必须红。
+func TestErrorBannerClearsOnNewTurn(t *testing.T) {
+	s := &State{Error: "回合失败: 炸了"}
+	s.ApplyStatus("running")
+	if s.Error != "" {
+		t.Fatalf("新回合开始应清掉上一回合的错误横幅: %q", s.Error)
+	}
+	// 清掉之后,介入项也不再报「出错」
+	if out := stripColor(interventionItem(s)); strings.Contains(out, "出错") {
+		t.Fatalf("无错误时介入项不该报出错: %q", out)
+	}
+}

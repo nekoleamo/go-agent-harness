@@ -229,7 +229,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// 用户主动取消(Esc):提示而非报错
 				m.state.Lines = append(m.state.Lines, Line{Kind: "meta", Text: "回合已取消"})
 			} else {
+				// 回合失败:横幅 + **流里一行**(横幅会在下个回合开始时被清掉 ——
+				// 横幅此前从没被清过,一次失败后它会永远挂在屏顶)。
 				m.state.SetError("回合失败: " + msg.err.Error())
+				m.state.Lines = append(m.state.Lines, Line{Kind: "error", Text: "回合失败: " + msg.err.Error()})
 			}
 		}
 		m.state.Running = false
