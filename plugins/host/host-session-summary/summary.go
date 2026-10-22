@@ -77,11 +77,26 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	if err := c.Provide("ctx.sessionSummary", s); err != nil {
 		return nil, err
 	}
-	// 回合后自动生成(K3 默认开):订阅 turn/end,后台异步(不阻塞回合收尾)
+	// 回合后自动生成(K3 默认开):订阅**会话事件通道**并按 Kind 过滤 turn/end,
+	// 后台异步(不阻塞回合收尾)。
+	//
+	// 为什么不是总线事件 "turn/end"(2026-10-21 修):那个事件**全仓从未被 emit 过**
+	// (host-agent-loop 只把 turn/end 作为**会话事件**追加进会话日志)⇒ 原订阅是
+	// **死代码**,「回合后自动生成概述」从来没跑过(用户看到的现象:概述只有手动
+	// 生成才出现)。改走会话事件通道:按会话归位(多会话并行时不会把 A 会话的回合结束
+	// 当成 B 的),且不需要新增后端契约 —— 与滚动摘要的模型摘要同一套路(D4)。
 	var dis sdk.Disposer = func() {}
 	if o.AutoSummary {
-		dis = c.Subscribe(sdk.EventTurnEnd, func(_ context.Context, _ *sdk.Event) error {
-			go s.autoAfterTurn()
+		dis = c.Subscribe(sdk.EventSession, func(_ context.Context, ev *sdk.Event) error {
+			sev, ok := ev.Payload.(*sdk.SessionEvent)
+			if !ok || sev.Kind != sdk.EventTurnEnd {
+				return nil
+			}
+			sid, ok := sdk.SessionIDFromEventName(ev.Name)
+			if !ok {
+				return nil
+			}
+			go s.autoAfterTurn(sid)
 			return nil
 		})
 	}
@@ -126,11 +141,17 @@ func applyData(o *Options, data map[string]any) {
 func (s *Service) AutoEnabled() bool { return s.o.AutoSummary }
 
 // autoAfterTurn 回合结束后的自动生成判定(节流 + 帧数落后阈值;全局单飞)。
-func (s *Service) autoAfterTurn() {
+//
+// sid 是**刚结束那个回合的会话 id**(从会话事件名反解)—— 不是"当前会话":
+// 用户在回合跑完前切走了会话,概述也该落在**那个**会话上(落在当前会话上是张冠李戴)。
+func (s *Service) autoAfterTurn(sid string) {
 	if !s.o.AutoSummary {
 		return
 	}
-	id := s.cs.CurrentSession()
+	id := sid
+	if id == "" {
+		id = s.cs.CurrentSession()
+	}
 	info, ok := s.infoOf(id)
 	if !ok {
 		return
@@ -270,7 +291,11 @@ func (s *Service) generate(ctx context.Context, input string) (genOut, error) {
 }
 
 // summarySystemPrompt 固定系统提示(要求 JSON、中文、不编造)。
-const summarySystemPrompt = `你是会话归档助手。阅读给定的会话片段,输出严格 JSON(不要代码围栏、不要解释):
+//
+// 首行是 sdk.LLMSummaryMarker:让脚本化适配器(llm-mock)与测试探针能认出
+// 「这是后台摘要请求,不是回合请求」—— 否则它会消耗回合的脚本步 / 污染请求计数
+// (与滚动摘要的模型摘要同一纪律,D4)。
+const summarySystemPrompt = sdk.LLMSummaryMarker + `你是会话归档助手。阅读给定的会话片段,输出严格 JSON(不要代码围栏、不要解释):
 {"title":"会话标题(≤20 字,概括任务)","summary":"一句话概述(≤60 字,说明做了什么/结论)","topics":["主题词1","主题词2","主题词3"]}
 要求:中文;只依据会话内容,不编造;topics 最多 3 个、每个 ≤8 字;若信息不足,summary 写"信息不足,无法概述"。`
 

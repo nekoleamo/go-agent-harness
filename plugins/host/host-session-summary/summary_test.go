@@ -48,12 +48,23 @@ func (l *stubLLM) Complete(_ context.Context, req *sdk.LLMRequest, _ func(sdk.LL
 }
 
 // stubCS 会话服务桩(只实现概述依赖面)。
+//
+// 带锁:自动档在**后台 goroutine**里写(sums/names),而用例在主 goroutine 读
+// ⇒ 不加锁就是数据竞争(go test -race 会报)。
 type stubCS struct {
+	mu      sync.Mutex
 	infos   []sdk.SessionInfo
 	current string
 	sums    []sdk.SessionSummary
 	names   []string
 	pinned  []string
+}
+
+// summaryCount 已缓存的概述数(加锁读)。
+func (c *stubCS) summaryCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.sums)
 }
 
 func (c *stubCS) Current() string                      { return "proj" }
@@ -71,14 +82,20 @@ func (c *stubCS) SwitchProject(string) (string, error) { return "", nil }
 func (c *stubCS) RecentProjects() []sdk.ProjectInfo    { return nil }
 func (c *stubCS) SwitchDir(string) (string, error)     { return "", nil }
 func (c *stubCS) SetName(id, name string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.names = append(c.names, id+"="+name)
 	return nil
 }
 func (c *stubCS) SetSummary(id string, sum sdk.SessionSummary) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.sums = append(c.sums, sum)
 	return nil
 }
 func (c *stubCS) SetPinned(id string, p bool) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.pinned = append(c.pinned, id)
 	return nil
 }
@@ -227,11 +244,14 @@ func TestSummaryGeneratesAndCaches(t *testing.T) {
 	if sum.Text != "修了鉴权" || sum.Model != "stub-model" || sum.CoveredFrames != 8 {
 		t.Fatalf("概述异常: %+v", sum)
 	}
-	if len(cs.sums) != 1 {
+	if cs.summaryCount() != 1 {
 		t.Fatalf("应回写缓存一次: %+v", cs.sums)
 	}
-	if len(cs.names) != 1 || cs.names[0] != "=会话标题" {
-		t.Fatalf("未命名会话应用标题回填: %+v", cs.names)
+	cs.mu.Lock()
+	names := append([]string(nil), cs.names...)
+	cs.mu.Unlock()
+	if len(names) != 1 || names[0] != "=会话标题" {
+		t.Fatalf("未命名会话应用标题回填: %+v", names)
 	}
 	// 缓存命中(ready)→ 不再调模型
 	cs.infos[0].Summary, cs.infos[0].SummaryState = "修了鉴权", "ready"
@@ -250,13 +270,18 @@ func TestSummaryGeneratesAndCaches(t *testing.T) {
 		t.Fatalf("force 应重新生成: %d", ll.calls)
 	}
 	// 已命名会话不回填标题
+	cs.mu.Lock()
 	cs.names = nil
+	cs.mu.Unlock()
 	cs.infos[0].Name = "旧名"
 	if _, err := s.Summary(context.Background(), "", true); err != nil {
 		t.Fatal(err)
 	}
-	if len(cs.names) != 0 {
-		t.Fatalf("已命名会话不应回填: %+v", cs.names)
+	cs.mu.Lock()
+	names2 := len(cs.names)
+	cs.mu.Unlock()
+	if names2 != 0 {
+		t.Fatalf("已命名会话不应回填: %d", names2)
 	}
 }
 
@@ -313,18 +338,18 @@ func TestAutoAfterTurnThrottle(t *testing.T) {
 	cs := &stubCS{current: "", infos: []sdk.SessionInfo{{ID: "", Path: p, Frames: 8, SummaryState: "missing"}}}
 	ll := &stubLLM{reply: `{"summary":"自动生成"}`}
 	s := newSvc(t, ll, cs, nil)
-	s.autoAfterTurn()
+	s.autoAfterTurn("")
 	if ll.calls != 1 {
 		t.Fatalf("自动档应生成一次,得 %d", ll.calls)
 	}
 	// 节流:紧接着再触发 → 不再生成
-	s.autoAfterTurn()
+	s.autoAfterTurn("")
 	if ll.calls != 1 {
 		t.Fatalf("节流未生效: %d", ll.calls)
 	}
 	// 关闭自动档 → 不生成
 	s.o.AutoSummary = false
-	s.autoAfterTurn()
+	s.autoAfterTurn("")
 	if ll.calls != 1 {
 		t.Fatalf("关闭后不应生成: %d", ll.calls)
 	}
@@ -333,7 +358,7 @@ func TestAutoAfterTurnThrottle(t *testing.T) {
 	cs2 := &stubCS{infos: []sdk.SessionInfo{{ID: "", Path: short, Frames: 1}}}
 	ll2 := &stubLLM{reply: `{"summary":"x"}`}
 	s2 := newSvc(t, ll2, cs2, nil)
-	s2.autoAfterTurn()
+	s2.autoAfterTurn("")
 	if ll2.calls != 0 {
 		t.Fatalf("短会话不应进入自动生成: %d", ll2.calls)
 	}
@@ -341,7 +366,7 @@ func TestAutoAfterTurnThrottle(t *testing.T) {
 	cs3 := &stubCS{infos: []sdk.SessionInfo{{ID: "", Path: p, Frames: 10, Summary: "已有", SummaryCoveredFrames: 9}}}
 	ll3 := &stubLLM{reply: `{"summary":"y"}`}
 	s3 := newSvc(t, ll3, cs3, nil)
-	s3.autoAfterTurn()
+	s3.autoAfterTurn("")
 	if ll3.calls != 0 {
 		t.Fatalf("缓存新鲜不应重生成: %d", ll3.calls)
 	}

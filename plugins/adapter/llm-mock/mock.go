@@ -110,7 +110,13 @@ func (a *Adapter) completeSummary(ctx context.Context, onChunk func(ev sdk.LLMSt
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	text := `{"task":"(dev mock)会话归档","changes":[],"decisions":[],"open":[],"errors":[]}`
+	// 回一段现成的结构化摘要(dev 下的固定答案)。
+	//
+	// 字段**同时满足两个消费方**:会话概述(host-session-summary:title/summary/topics)
+	// 与滚动摘要的模型摘要(host-llm-summary:task/changes/…)——
+	// 两个解析器都是严格 JSON 解析且**忽略多余字段**,故一份答案两边都能用。
+	text := `{"title":"(dev mock)会话","summary":"(dev mock)会话概述","topics":["mock"],` +
+		`"task":"(dev mock)会话归档","changes":[],"decisions":[],"open":[],"errors":[]}`
 	if onChunk != nil {
 		if err := onChunk(sdk.LLMStreamEvent{Delta: text}); err != nil {
 			return nil, err

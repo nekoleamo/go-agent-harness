@@ -3,6 +3,7 @@ package sdk
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
@@ -18,6 +19,24 @@ func SessionEventName(id string) string {
 		return EventSession
 	}
 	return EventSessionPrefix + id
+}
+
+// SessionIDFromEventName 从会话事件名反解会话 id(主会话 ⇒ "")。
+//
+// 为什么需要它(2026-10-21):会话事件通道是**按会话命名**的("session/event/<id>"),
+// 而订阅方拿到的只是事件名 —— 想"按会话归位"就得能反解。
+//
+// 用法:订阅 sdk.EventSession 后,从 ev.Name 反解出是哪个会话的事件;
+// 反解不出来(不是会话事件名)⇒ 返回 "" 且 ok=false(**不**当成主会话 ——
+// 把别的通道当成主会话会让多会话并行时归错位)。
+func SessionIDFromEventName(name string) (string, bool) {
+	if name == EventSession {
+		return "", true
+	}
+	if strings.HasPrefix(name, EventSessionPrefix) {
+		return strings.TrimPrefix(name, EventSessionPrefix), true
+	}
+	return "", false
 }
 
 // 持久会话事件 Kind(对齐 dsh 轮次流程的事件域)。

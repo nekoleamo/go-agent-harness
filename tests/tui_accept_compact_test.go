@@ -36,8 +36,9 @@ func newSpyProvider(t *testing.T, reply string, delay time.Duration) (string, *s
 	sp := &spyProvider{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
-		// 滚动摘要的**模型摘要**请求(后台补写)不是回合请求:不计入 bodies,
-		// 否则“末请求”会被它顶掉(真机验收曾因此误判「压缩未生效」)。
+		// **后台摘要请求**(滚动摘要的模型摘要 / 会话概述自动档;都带同一个标记)
+		// 不是回合请求:不计入 bodies,否则“末请求”会被它顶掉
+		// (真机验收曾因此误判「压缩未生效」)。
 		if !strings.Contains(string(b), sdk.LLMSummaryMarker) {
 			sp.mu.Lock()
 			sp.bodies = append(sp.bodies, string(b))
