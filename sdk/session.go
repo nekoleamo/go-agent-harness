@@ -302,6 +302,14 @@ type ToolResultEvent struct {
 	// 为什么单独一个字段:内容级错误此前在 TUI 显示成「✓ file_read: {"error":…}」——
 	// 给一次失败打绿勾,比"没信息"更误导。模型侧不受影响(仍按原样看到 JSON)。
 	SummaryErr bool
+
+	// Data 工具结果的**数据面**(完整原文;空 = 未分流)。
+	//
+	// 为什么它必须进事件:界面(Web 的「展开全文」)与导出都要原文,而模型只能看
+	// Content。落盘后刷新/重连/换端仍可展开(旧日志没有该字段 ⇒ 展示层回落 Content,
+	// 向后兼容,不迁移历史数据)。纪律见 sdk.ToolResult.Data 的三条铁律 ——
+	// **它永不进模型投影**。
+	Data string `json:"Data,omitempty"`
 }
 
 // SessionLog 服务(ctx.sessions):追加事件 + 投影模型历史。

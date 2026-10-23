@@ -127,10 +127,45 @@ func ToolCallIDFrom(ctx context.Context) string {
 	return id
 }
 
+// toolNameKey ctx 键(私有类型)。
+type toolNameKey struct{}
+
+// WithToolName 把工具名挂到 ctx(由 host-tools 在执行前统一注入)。
+//
+// 为什么需要(2026-10-23 工具结果分流):`tools/post-execute` 的载荷只有
+// *ToolResult,**没有工具名** —— 而按工具决定分流策略(跳过/豁免/换标)必须有它。
+// 与 WithToolCallID 同源同理由:各层手里的 id 不是一套,只能显式传。
+func WithToolName(ctx context.Context, name string) context.Context {
+	return context.WithValue(ctx, toolNameKey{}, name)
+}
+
+// ToolNameFrom 取当前调用的工具名(不存在 ⇒ 空串)。
+func ToolNameFrom(ctx context.Context) string {
+	name, _ := ctx.Value(toolNameKey{}).(string)
+	return name
+}
+
 // ToolResult 工具执行的结果载体(结构化错误回传模型,见设计 §11)。
 type ToolResult struct {
-	Content string // 序列化结果(JSON/文本)
+	Content string // 模型可见内容(序列化结果 JSON/文本;可被宿主瘦身,见 Data)
 	Error   string // 错误时非空;不中断 turn,原样回传模型
+
+	// Data 数据面:**完整原文**,只给界面与会话记录,**永不进模型上下文**。
+	//
+	// 为什么要有两个面(2026-10-23,借鉴 Octop 的 octop_ui artifact 旁路):一个工具
+	// 结果同时服务两个消费者 —— 模型(越小越好)与界面(要完整)。此前只有 Content
+	// 一份,于是大结果只有两个坏选择:整份塞进上下文(一次 `cat` 大文件就能把窗口
+	// 打穿,溢出后被动压缩),或截断后界面也看不全。
+	//
+	// 分流点是宿主插件 host-tool-offload(订阅 tools/post-execute):超预算时把原文
+	// 搬到这里,Content 换成「头 + 省略说明 + 尾」(尽量保持 JSON 合法)。
+	//
+	// 三条铁律:
+	//  1. Data **不进模型投影** —— host-session-log 的 DeriveMessages 只读 Content
+	//     (用例 internal/tooloffload 与 host-session-log 各钉一条);
+	//  2. Data 随会话事件**落盘**(刷新/重连/换端后界面仍能展开原文);
+	//  3. 空串 = 未分流(原文就在 Content 里),不是「原文为空」。
+	Data string
 }
 
 // ToolConflict 注册期同名工具冲突(B3,2026-09-27 审计观察项)。

@@ -148,6 +148,10 @@ export interface ToolResult {
   Summary?: string
   // SummaryErr 摘要表示这是一次失败(工具把错误写在结果内容里而非错误通道)。
   SummaryErr?: boolean
+  // Data 工具结果的**完整原文**(2026-10-23 分流):Content 是被宿主瘦身后的模型视图,
+  // Data 才是工具真正输出。界面「展开全文」读它 —— 否则展开也只是瘦身版。
+  // 空 = 未分流(原文就在 Content 里)。
+  Data?: string
 }
 // ToolProgress 工具执行中的增量输出(2026-10-20 C1;载荷 sdk.ToolProgressEvent)。
 //

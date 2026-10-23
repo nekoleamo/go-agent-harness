@@ -1,4 +1,4 @@
-# seed-version: 32 # 样板版本:新增 base 能力条目(host-* 等)时 +1(32:新增 host-llm-summary(滚动摘要的模型摘要实现,token-compress 侧 data.llm_summary 控制);31:token-compress 折叠深度可配(fold_target_ratio/min_fold_ratio;缺省行为不变);30:新增 tool-image 图像工具(image_ops 七动作);29:新增 host-memory 跨会话记忆;28:新增 host-roles 角色切换/技能挂载;27:host-agent-loop 增 data.max_steps(缺省 0 = 不限,此前硬编码 10);26:token-compress 阈值改按窗口比例(trigger_ratio/max_tokens/chars_per_token);25:host-internal-commands 增 export_open_browser;24:新增 tool-schedule 定时计划工具),老用户自动升级(备份后覆盖)
+# seed-version: 33 # 样板版本:新增 base 能力条目(host-* 等)时 +1(33:新增 host-tool-offload 工具结果分流(limit=0 关闭);32:新增 host-llm-summary(滚动摘要的模型摘要实现,token-compress 侧 data.llm_summary 控制);31:token-compress 折叠深度可配(fold_target_ratio/min_fold_ratio;缺省行为不变);30:新增 tool-image 图像工具(image_ops 七动作);29:新增 host-memory 跨会话记忆;28:新增 host-roles 角色切换/技能挂载;27:host-agent-loop 增 data.max_steps(缺省 0 = 不限,此前硬编码 10);26:token-compress 阈值改按窗口比例(trigger_ratio/max_tokens/chars_per_token);25:host-internal-commands 增 export_open_browser;24:新增 tool-schedule 定时计划工具),老用户自动升级(备份后覆盖)
 # base bundle:对齐 dsh-base,一切功能皆插件的共享第一层。
 # M1 阶段条目仅记录意图;对应插件工厂在 M2 base bundle 落地。
 name: base
@@ -27,6 +27,14 @@ entries:
     data:
       input_budget_bytes: 8192 # 输入预算(已有摘要 + 新片段合计)
       summary_max_tokens: 800 # 输出 token 上限
+  - id: host-tool-offload # 工具结果的数据面/控制面分流(第一百六十五批,借鉴 Octop 的
+    # octop_ui 旁路):超预算时把原文搬进 ToolResult.Data(只给界面与会话记录,**永不进
+    # 模型上下文**),Content 换成「头 + 省略说明 + 尾」并尽量保持 JSON 合法。
+    # 为什么需要:此前工具结果没有执行期上限 —— 一次 `cat` 大文件就整份进上下文,
+    # 撑爆后由 token-compress 被动折叠;而界面要的"全文"与模型要的"够用"是同一份数据,
+    # 只能二选一。0 = 关闭(回到整份进上下文,不需要改代码)。
+    data:
+      limit: 20000 # 单条结果预算(字符)≈5k token;只碰真正会撑爆上下文的大结果
   - id: host-tools
   - id: host-system-prompt
   - id: host-llm

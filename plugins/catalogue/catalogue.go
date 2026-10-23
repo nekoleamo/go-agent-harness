@@ -27,6 +27,7 @@ import (
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-session-summary"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-skills"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-system-prompt"
+	"github.com/nekoleamo/go-agent-harness/plugins/host/host-tool-offload"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-tools"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-usage-stats"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-worktrees"
@@ -74,6 +75,12 @@ var All = map[string]Def{
 	"host-tools": {Factory: func() sdk.Plugin { return &hosttools.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "host-tools", Type: "host", APIVersion: ">=1.0,<2.0",
 		Provides: []string{"ctx.tools"}}, Bundle: "base"},
+	"host-tool-offload": {Factory: func() sdk.Plugin { return &hosttooloffload.Plugin{} }, Manifest: &sdk.Manifest{
+		ID: "host-tool-offload", Type: "host", APIVersion: ">=1.0,<2.0",
+		// 只订阅 tools/post-execute(结果瘦身);依赖 ctx.tools 是「这个事件由谁发」,
+		// 不是「要调它的方法」—— 缺失时该事件根本不会触发,等于静默不生效,
+		// 故**显式声明依赖**,让装配期就失败。
+		Requires: []string{"ctx.tools"}}, Bundle: "base"},
 	"host-system-prompt": {Factory: func() sdk.Plugin { return &hostsystemprompt.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "host-system-prompt", Type: "host", APIVersion: ">=1.0,<2.0",
 		Provides: []string{"ctx.systemPrompt"}}, Bundle: "base"},

@@ -216,7 +216,9 @@ export function consume(m: StreamModel, ev: SessionEvent): void {
         // (file_read 会显示成 `{"content":"package main…`)。
         row.summary = tr.Summary
         row.result = tr.Summary || text
-        row.full = full
+        // 展开全文读**原文**(2026-10-23 分流):Content 是被宿主瘦身过的模型视图,
+        // 拿它当"全文"会让「展开」展开出一份同样残缺的东西 —— 那是最坏的一种假全。
+        row.full = tr.Data && tr.Data.length > full.length ? tr.Data : full
       }
       const mark = row.status === 'err' ? '✗' : '✓'
       m.msgs.push({

@@ -117,6 +117,19 @@ test('旧日志(无摘要)→ 回退到截断全文(向后兼容)', () => {
   assert.equal(row.full, 'hello')
 })
 
+test('分流后的结果:展开读 Data 原文,摘要仍用宿主算的那句', () => {
+  const m = newModel()
+  const full = 'x'.repeat(5000)
+  consume(m, ev('tool/call', { ID: 't10', Name: 'shell', Arguments: '{}' }, 1))
+  consume(
+    m,
+    ev('tool/result', { CallID: 't10', Name: 'shell', Content: '瘦身\n…[省略 4900 字符]…\n尾巴', Data: full, Summary: '输出 5000 行' }, 2)
+  )
+  const row = m.msgs.at(-1)!
+  assert.equal(row.summary, '输出 5000 行')
+  assert.equal(row.full, full, '展开必须是原文,不是瘦身版')
+})
+
 test('结果帧先于调用帧到达不丢结果', () => {
   const m = newModel()
   consume(m, ev('tool/result', { CallID: 't9', Name: 'web_search', Content: 'r' }, 1))

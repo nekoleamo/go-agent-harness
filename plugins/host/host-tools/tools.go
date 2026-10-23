@@ -261,6 +261,11 @@ func (r *reg) Execute(ctx context.Context, name, args string) (*sdk.ToolResult, 
 		return res, nil
 	}
 
+	// 工具名挂进 ctx(2026-10-23 工具结果分流):tools/post-execute 的载荷只有
+	// *ToolResult,没有工具名 —— 而按工具决定策略(跳过/豁免/换标)必须有它。
+	// 同时盖住后面的 execute 与 post-execute 两段(同一调用内的 ctx 是同一份)。
+	ctx = sdk.WithToolName(ctx, name)
+
 	// 1. tools/pre-execute:waterfall veto 拦截
 	call := &sdk.ToolCallEvent{ID: newCallID(), Name: name, Arguments: args}
 	if r.c != nil {
@@ -363,7 +368,7 @@ func (r *reg) broadcastResult(ctx context.Context, name string, res *sdk.ToolRes
 	if r.c == nil {
 		return
 	}
-	_, _ = r.c.Emit(ctx, "tool/result", &sdk.ToolResultEvent{Name: name, Content: res.Content, Error: res.Error}, sdk.Emit)
+	_, _ = r.c.Emit(ctx, "tool/result", &sdk.ToolResultEvent{Name: name, Content: res.Content, Error: res.Error, Data: res.Data}, sdk.Emit)
 }
 
 var callSeq uint64

@@ -680,7 +680,7 @@ func (l *Loop) step(ctx context.Context, t *turn, sess sdk.SessionLog) error {
 			return fmt.Errorf("session log: %w", err)
 		}
 	}
-	type toolOutcome struct{ content, errText string }
+	type toolOutcome struct{ content, errText, data string }
 	outcomes := make([]toolOutcome, len(calls))
 	runOne := func(i int) {
 		defer func() { // 并行分支:单工具 panic 不得带走整个进程(转为结构化错误回传模型)
@@ -708,7 +708,7 @@ func (l *Loop) step(ctx context.Context, t *turn, sess sdk.SessionLog) error {
 		case err != nil:
 			outcomes[i] = toolOutcome{errText: err.Error()}
 		case res != nil:
-			outcomes[i] = toolOutcome{content: res.Content, errText: res.Error}
+			outcomes[i] = toolOutcome{content: res.Content, errText: res.Error, data: res.Data}
 		}
 	}
 	switch {
@@ -734,10 +734,18 @@ func (l *Loop) step(ctx context.Context, t *turn, sess sdk.SessionLog) error {
 		}
 		// 一行人话摘要(宿主算,两端同源):内容是 JSON,直接截断显示等于给用户看开销
 		// 而不是结论(见 internal/toolsummary 的头注)。
-		sum := toolsummary.Summarize(call.Name, outcomes[i].content, outcomes[i].errText)
+		//
+		// 摘要必须按**原文**算(2026-10-23 工具结果分流):分流后 Content 是瘦身版,
+		// 拿它很难得出真结论 —— `shell` 跑十万行日志被裁到 4 行,摘要会说"输出 4 行",
+		// 那是假数。Data 非空 = 它是原文。
+		sumSrc := outcomes[i].content
+		if outcomes[i].data != "" {
+			sumSrc = outcomes[i].data
+		}
+		sum := toolsummary.Summarize(call.Name, sumSrc, outcomes[i].errText)
 		if aerr := l.appendEvents(sess, sdk.SessionEvent{Kind: sdk.EventToolResult,
 			Payload: sdk.ToolResultEvent{CallID: call.ID, Name: call.Name, Content: outcomes[i].content,
-				Error: outcomes[i].errText, Summary: sum.Text, SummaryErr: sum.Err}}); aerr != nil {
+				Error: outcomes[i].errText, Data: outcomes[i].data, Summary: sum.Text, SummaryErr: sum.Err}}); aerr != nil {
 			return fmt.Errorf("session log: %w", aerr)
 		}
 	}
