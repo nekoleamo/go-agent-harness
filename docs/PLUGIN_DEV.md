@@ -383,6 +383,37 @@ UI 插件以 `$GAH_HOME/ui-plugins/<id>/` 落盘,manifest 声明槽位覆盖(str
 - 规划中(未实施):`iframe sandbox` + postMessage 能力桥 + manifest `permissions` 声明 —— 仅当 UI 插件成为**网络分发**面才值得做。
 - 开发约束不变:渲染层禁 `v-html`,组件不得散写裸色值(见 AGENTS.md「UI 规范」)。
 
+### 4.3 外部编码 agent 委派(acp-client / `acp_run`,第一百六十六批)
+
+gah 早已能**入站**当 ACP agent(`gah acp`,被 Zed 这类编辑器驱动);这一层是**出站**:
+让 gah 把一次编码任务交给外部编码 agent(ACP 协议,stdio + 换行分隔 JSON-RPC 2.0)。
+
+```yaml
+# config/bundle-base.yaml(默认 enabled: false —— 它拉起的是有完整文件读写能力的外部 agent)
+  - id: acp-client
+    enabled: true
+    data:
+      runners:
+        opencode:    { command: opencode, args: ["acp"] }
+        codex:       { command: npx,      args: ["-y", "@zed-industries/codex-acp"] }
+        claude_code: { command: npx,      args: ["-y", "@zed-industries/claude-agent-acp"] }
+      timeout_seconds: 600 # 单次默认超时(上限 3600)
+```
+
+- 一个 runner 都不配 ⇒ **不注册** `acp_run`(不留一个永远失败的工具;与 mcp-bridge 同口径)。
+- 一次调用 = 一个子进程 + 一个会话。不跨调用复用会话:复用要维护进程池/归属/崩溃重连,
+  而"一次任务"本来就是工具调用的天然边界。
+- 委派**不改审批语义**:外部 agent 的 `session/request_permission` 会被翻成人话弹给用户
+  (走 `ctx.confirm`),允许时挑**最窄**的授权(`allow_once` 优先于 `allow_always`)。
+  没有审批通道(headless/嵌入)时**一律拒绝**并在结果里如实回报 —— 不是"没人看着就放行"。
+- `cwd` 声明为**写意图**路径参数(`PathParams`),所以它照旧过路径沙箱的裁决;不声明
+  就等于开了一条 `acp_run{cwd:"/etc"}` 绕过只读档的侧门。
+- 安全边界(必须说清):外部 agent 是**独立的本机进程**,不受 gah 的沙箱/内核限制约束;
+  你对它的信任等于对那条 `command` 的信任。它的子进程树随会话一起终止(POSIX 进程组;
+  Windows 退化为只杀直接子进程,已在真机清单登记)。
+- 结果:正文增量进 `output`,思维另存,外部 agent 用过的工具标题进 `tool_calls`,
+  失败时附 stderr 尾巴(`stderr: …`)—— 外部 CLI 的报错几乎都在那里。
+
 ## 5. 检查清单(提交前)
 - [ ] 只 import sdk;无 core/tui/其它插件 import
 - [ ] Start 返回的 Disposer 可逆且幂等(注册的每个副作用都有撤销)

@@ -19,6 +19,7 @@ plugins/
 | host | token-compress | 滚动摘要压缩(超预算回调压缩器);折叠后可选**模型摘要**升级(回合后异步补写,失败/被抢先 ⇒ 保持抽取式) | ctx.sessions |
 | host | host-llm-summary | 滚动摘要的**模型摘要**实现(ctx.sessionSummarizer,可替换):结构化摘要(任务/改动/决定/未完成/错误);输入预算 8KB + 脱敏 + 严格 JSON;模型不可用 ⇒ 显式报错(调用方保持抽取式) | —(ctx.llm 可选) |
 | host | host-tools | 工具注册表(ctx.tools) | — |
+| host | host-tool-offload | 工具结果的**数据面/控制面分流**(第一百六十五批):超预算(默认 2 万字符)时原文进 `ToolResult.Data`(只给界面与会话记录,**永不进模型上下文**),模型只吃「头 + 省略说明 + 尾」;`data.limit=0` 关闭、`data.skip_tools` 按工具豁免 | ctx.tools |
 | host | host-system-prompt | 系统提示组装(ctx.systemPrompt) | — |
 | host | host-llm | LLM 注册表 + 路由 + 重试(ctx.llm) | — |
 | host | host-commands | 斜杠命令注册表(ctx.commands) | — |
@@ -49,6 +50,7 @@ plugins/
 | tool | tool-auto-plan | 规划模式(M11):auto_plan(create/get/list/step/confirm/complete)+ 规则注入(enable_rule,进程内装配同 host-skills,需 ctx.systemPrompt);M11-T2 联动:确认后执行期由 todo 承接(检查清单转 todo.create,执行完回 complete 归档) | ctx.tools + ctx.systemPrompt |
 | tool | tool-subagent | 子代理委派(M9.1+9.2):subagent delegate/spawn/agents/agent_status/agent_kill;extplugins/tool-subagent 独立进程(回调宿主 ctx.fanout);spawn=后台带句柄不阻塞 | ctx.tools + ctx.fanout |
 | mcp | mcp-bridge / mcp-server / acp-server | MCP 客户端桥 / MCP server 端 / ACP agent 端(`gah acp`:编辑器经 stdio 拉起,协议 v1) | ctx.tools / ctx.agentLoop + ctx.cwdSessions |
+| adapter | acp-client | **出站 ACP**(第一百六十六批):`acp_run` 把编码任务委派给外部编码 agent(opencode/codex/claude-code/kimi/cursor…);外部 agent 的权限请求翻成 gah 审批弹窗(无审批通道 ⇒ 一律拒绝并回报);**默认停用**,需配 `data.runners` | ctx.tools |
 | ui | ui-tui-app | TUI 挂载 | ctx.agentLoop/ctx.llm |
 | ui | ui-web-app | Web UI 挂载(M7):SSE 下行 + REST 上行;会话/状态栏/命令/审批/会话切换;addr 默认 127.0.0.1:2233,auth_token 可选(设置后**全表面**鉴权:接口/静态/附件/UI 插件产物均需凭据,浏览器用启动日志的 #token= 地址经 POST /api/auth 换 cookie),static_dir 开发态(HMR);与 tui bundle 互斥 | ctx.agentLoop/ctx.sessions/ctx.llm + ctx.confirm(提供) |
 

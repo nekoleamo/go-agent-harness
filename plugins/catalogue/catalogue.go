@@ -3,6 +3,7 @@
 package catalogue
 
 import (
+	"github.com/nekoleamo/go-agent-harness/plugins/adapter/acp-client"
 	"github.com/nekoleamo/go-agent-harness/plugins/adapter/llm-anthropic-compat"
 	"github.com/nekoleamo/go-agent-harness/plugins/adapter/llm-mock"
 	"github.com/nekoleamo/go-agent-harness/plugins/adapter/llm-openai-compat"
@@ -75,6 +76,12 @@ var All = map[string]Def{
 	"host-tools": {Factory: func() sdk.Plugin { return &hosttools.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "host-tools", Type: "host", APIVersion: ">=1.0,<2.0",
 		Provides: []string{"ctx.tools"}}, Bundle: "base"},
+	"acp-client": {Factory: func() sdk.Plugin { return &acpclient.Plugin{} }, Manifest: &sdk.Manifest{
+		ID: "acp-client", Type: "host", APIVersion: ">=1.0,<2.0",
+		// 出站 ACP:把编码任务委派给外部编码 agent(acp_run 工具)。
+		// 默认**停用**(bundle 里 enabled:false):它拉起的是有完整文件读写能力的
+		// 外部 agent,默认开着等于把一段"任意本地执行"塞进工具表。
+		Requires: []string{"ctx.tools"}}, Bundle: "base"},
 	"host-tool-offload": {Factory: func() sdk.Plugin { return &hosttooloffload.Plugin{} }, Manifest: &sdk.Manifest{
 		ID: "host-tool-offload", Type: "host", APIVersion: ">=1.0,<2.0",
 		// 只订阅 tools/post-execute(结果瘦身);依赖 ctx.tools 是「这个事件由谁发」,
