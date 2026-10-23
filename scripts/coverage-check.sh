@@ -146,6 +146,7 @@ internal/install 77
 internal/redact 90
 internal/sessionevents 92
 internal/sessionhtml 92
+internal/todostore 90
 internal/toolsummary 75
 cmd/gah 69
 plugins/catalogue 70

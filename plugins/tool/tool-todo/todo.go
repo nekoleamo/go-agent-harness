@@ -9,6 +9,10 @@
 // 存储:$GAH_HOME/todos/<project-key>.jsonl —— 追加式 jsonl(变更即追加该任务
 // 新版本行,同 id 最后一行胜;delete 追加墓碑),坏行容忍,人工可编辑
 // (与 memory/session 同三特性)。项目 key 用 sdk.ProjectKey(共享派生)。
+//
+// **读侧(type/路径/重放/排序)在 internal/todostore**:宿主的 /todo 命令要只读
+// 同一份文件(Web 有看板、TUI 此前只能问模型)。两份解析必然漂移,故读侧收口,
+// 本包只剩**写侧**(状态机/依赖校验/追加),类型用别名指过去。
 package tooltodo
 
 import (
@@ -18,20 +22,21 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/nekoleamo/go-agent-harness/internal/todostore"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
 // 任务状态(4 状态机)。变更仅经专用 action,状态字符串即持久化字段。
+// 值与类型都来自 internal/todostore(读侧单一事实源)。
 const (
-	StatusPending    = "pending"
-	StatusInProgress = "in_progress"
-	StatusCompleted  = "completed"
-	StatusDeleted    = "deleted"
+	StatusPending    = todostore.StatusPending
+	StatusInProgress = todostore.StatusInProgress
+	StatusCompleted  = todostore.StatusCompleted
+	StatusDeleted    = todostore.StatusDeleted
 )
 
 // validTransitions action → 允许的起始状态(start 前置状态机)。
@@ -42,28 +47,11 @@ var startableFrom = map[string]string{
 }
 
 // Task 一条任务(jsonl 每行一个 Task;同 id 最后一行为准)。
-type Task struct {
-	ID          string         `json:"id"`
-	Subject     string         `json:"subject"`
-	Description string         `json:"description,omitempty"`
-	ActiveForm  string         `json:"activeForm,omitempty"` // 进行时标签(in_progress 显示)
-	Owner       string         `json:"owner,omitempty"`
-	Metadata    map[string]any `json:"metadata,omitempty"`
-	BlockedBy   []string       `json:"blockedBy,omitempty"` // 依赖任务 id(全部须 completed 才能 start)
-	Status      string         `json:"status"`
-	TS          int64          `json:"ts"`
-	Deleted     bool           `json:"del,omitempty"` // 墓碑(deleted 状态冗余标记,便于人工核对)
-}
+// 定义在 internal/todostore(宿主 /todo 读同一份格式);此处别名保持包内 API 不变。
+type Task = todostore.Task
 
-// View list 摘要(精简字段,description/metadata 留给 get)。
-type View struct {
-	ID         string   `json:"id"`
-	Status     string   `json:"status"`
-	Subject    string   `json:"subject"`
-	ActiveForm string   `json:"activeForm,omitempty"`
-	BlockedBy  []string `json:"blockedBy,omitempty"`
-	TS         int64    `json:"ts"`
-}
+// View 列表摘要(精简字段,description/metadata 留给 get)。
+type View = todostore.View
 
 // Tool 实现 sdk.Tool(单工具多 action)。
 type Tool struct {
@@ -370,30 +358,12 @@ func (s *Store) Update(id, subject, desc, activeForm, owner string, meta map[str
 }
 
 // List 摘要视图(status 过滤;排序:进行中 > 待办 > 已完成,组内创建倒序)。
+// 过滤与排序在 internal/todostore.Views —— 宿主 /todo 与工具面板必须同款口径。
 func (s *Store) List(status string) []View {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	path, _ := s.path()
-	tasks := s.loadLocked(path)
-	weight := map[string]int{StatusInProgress: 0, StatusPending: 1, StatusCompleted: 2}
-	var out []View
-	for _, t := range tasks {
-		if t.Deleted {
-			continue
-		}
-		if status != "" && t.Status != status {
-			continue
-		}
-		out = append(out, View{ID: t.ID, Status: t.Status, Subject: t.Subject,
-			ActiveForm: t.ActiveForm, BlockedBy: append([]string(nil), t.BlockedBy...), TS: t.TS})
-	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if weight[out[i].Status] != weight[out[j].Status] {
-			return weight[out[i].Status] < weight[out[j].Status]
-		}
-		return out[i].TS > out[j].TS
-	})
-	return out
+	return todostore.Views(s.loadLocked(path), status)
 }
 
 // Get 任务详情(含 description/metadata;deleted 也返回供核对)。
@@ -457,38 +427,8 @@ func (s *Store) validateDeps(tasks []Task, self string, deps []string) error {
 	return nil
 }
 
-// loadLocked 重放文件(调用方持锁):逐行解析,同 id 最后一行胜(墓碑替换);
-// 坏行/注释行容忍跳过。无文件 = 空。
-func (s *Store) loadLocked(path string) []Task {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil
-	}
-	defer f.Close()
-	byID := map[string]Task{}
-	var order []string
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 256*1024), 4*1024*1024)
-	for sc.Scan() {
-		line := sc.Bytes()
-		if len(line) == 0 || line[0] == '#' {
-			continue // 空行/人工注释
-		}
-		var tk Task
-		if err := json.Unmarshal(line, &tk); err != nil || tk.ID == "" || tk.Status == "" {
-			continue // 坏行:容忍跳过
-		}
-		if _, seen := byID[tk.ID]; !seen {
-			order = append(order, tk.ID)
-		}
-		byID[tk.ID] = tk
-	}
-	out := make([]Task, 0, len(order))
-	for _, id := range order {
-		out = append(out, byID[id])
-	}
-	return out
-}
+// loadLocked 重放文件(调用方持锁)。实现委托 internal/todostore(读侧单一事实源)。
+func (s *Store) loadLocked(path string) []Task { return todostore.Load(path) }
 
 // appendTask 追加任务最新版本行。
 func (s *Store) appendTask(path string, tk Task) error {
@@ -500,14 +440,9 @@ func (s *Store) genID(path string) string {
 	return fmt.Sprintf("t%d-%d", time.Now().UnixNano(), countLines(path)+1)
 }
 
-// path 落盘路径:root 注入 > $GAH_HOME/todos > ~/.gah/todos;<project-key>.jsonl。
-func (s *Store) path() (string, error) {
-	root := s.root
-	if root == "" {
-		root = filepath.Join(sdk.Home(), "todos")
-	}
-	return filepath.Join(root, sdk.ProjectKeyFromCwd()+".jsonl"), nil
-}
+// path 落盘路径(root 注入 > $GAH_HOME/todos;<project-key>.jsonl)。
+// 派生在 internal/todostore:宿主 /todo 必须落在**同一个**文件上。
+func (s *Store) path() (string, error) { return todostore.Path(s.root), nil }
 
 // appendLine 追加一行单行 JSON(经 sdk.AppendJSONLine:含尾部残行修复,防止断电
 // 半写后与新记录粘成坏行导致两条记录同时被读侧跳过)。
@@ -521,23 +456,11 @@ func appendLine(path string, Task Task) error {
 	return sdk.AppendJSONLine(path, Task)
 }
 
-// findTask 在重放结果中找任务(按 id;deleted 墓碑仍返回,便于状态判断)。
-func findTask(tasks []Task, id string) (Task, bool) {
-	for _, t := range tasks {
-		if t.ID == id {
-			return t, true
-		}
-	}
-	return Task{}, false
-}
+// findTask 在重放结果中找任务(委托 todostore.Find)。
+func findTask(tasks []Task, id string) (Task, bool) { return todostore.Find(tasks, id) }
 
-// statusOf 状态显示(悬空引用/缺失任务提示用)。
-func statusOf(t Task) string {
-	if t.Deleted {
-		return "deleted"
-	}
-	return t.Status
-}
+// statusOf 状态显示(委托 todostore.StatusOf)。
+func statusOf(t Task) string { return todostore.StatusOf(t) }
 
 // countLines 当前文件行数(id 后缀,仅唯一性辅助)。
 func countLines(path string) int64 {

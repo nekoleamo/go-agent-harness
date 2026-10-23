@@ -251,6 +251,18 @@ func (h *Host) specs() []sdk.CommandSpec {
 		// D2:规划只读视图(计划落盘了却没人看得见 —— 人只能问模型"到第几步了")。
 		{Name: "plan", Usage: "/plan [规划id]", Desc: "查看规划进度(目标/步骤/完成度;只读,不发模型请求)", Run: h.cmdPlan,
 			Args: []sdk.ArgLevel{{FreeArgs: func([]string) []string { return []string{"规划id?"} }}}},
+		// D2 的另一半(2026-10-23):待办只读视图。Web 有看板,TUI 此前只能问模型。
+		// 读 internal/todostore(与工具同一份文件),**不经**工具流水线(不触发审批、
+		// 不往会话里塞一条模型没请求过的工具结果)。
+		{Name: "todo", Usage: "/todo [pending|in_progress|completed|all] | /todo <任务id>", Desc: "查看待办清单(状态/完成度/依赖;只读,不发模型请求)", Run: h.cmdTodo,
+			Args: []sdk.ArgLevel{{Options: func([]string) []sdk.Option {
+				return []sdk.Option{
+					{Value: "in_progress", Desc: "只看进行中"},
+					{Value: "pending", Desc: "只看待办"},
+					{Value: "completed", Desc: "只看已完成"},
+					{Value: "all", Desc: "全部(含已完成)"},
+				}
+			}}, {FreeArgs: func([]string) []string { return []string{"任务id?"} }}}},
 		// 刻意叫 websearch 而不是 search:/search 是 **TUI 专属**命令(UI 元素搜索),
 		// 宿主命令与 UI 命令同名会让两处帮助都变得含混(测试里有这条断言)。
 		{Name: "websearch", Usage: "/websearch [测试 <词>]", Desc: "联网搜索配置诊断(在用哪家/端点/key 有无;可实跑一次)", Run: h.cmdSearch,

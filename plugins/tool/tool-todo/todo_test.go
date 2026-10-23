@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/nekoleamo/go-agent-harness/internal/todostore"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -327,5 +328,37 @@ func TestFileShape(t *testing.T) {
 	}
 	if last.ID != id || last.Status != StatusPending {
 		t.Fatalf("最后一行应为任务记录: %+v", last)
+	}
+}
+
+// TestStoreAndHostReaderShareOneFile 写侧(工具)与读侧(宿主 /todo)必须落在**同一份文件**。
+//
+// 为什么(2026-10-23):/todo 命令读 internal/todostore,写侧仍是本包 —— 两侧路径
+// 派生/重放口径一旦漂移,宿主的 /todo 就会永远显示"暂无待办"(而工具里明明有单),
+// 且**没有任何报错**。这条用例把契约钉住:工具建单 ⇒ 宿主读得到;工具删单 ⇒ 宿主看不到。
+//
+// 反向验证:把 Store.path 改回旧派生(例如 root 直接用 $GAH_HOME,不带 todos/),
+// 本用例必须红。
+func TestStoreAndHostReaderShareOneFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GAH_HOME", home)
+	s := NewStore("")
+	tk, err := s.Create("写一份说明", "", "", "", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	views := todostore.List("", "")
+	if len(views) != 1 || views[0].ID != tk.ID {
+		t.Fatalf("宿主读侧应看到工具建的这一条: %+v", views)
+	}
+	if err := s.Delete(tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := todostore.List("", ""); len(got) != 0 {
+		t.Fatalf("工具删单后宿主读侧不该还看到它(墓碑不算): %+v", got)
+	}
+	// 详情也能读到(读侧 Find 与写侧重放同口径)
+	if _, ok := todostore.Find(todostore.Load(todostore.Path("")), tk.ID); !ok {
+		t.Fatal("详情读取应能找到该任务(墓碑仍可查)")
 	}
 }
