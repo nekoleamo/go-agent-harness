@@ -148,6 +148,7 @@ internal/embed 78
 internal/install 77
 internal/redact 90
 internal/sessionevents 92
+internal/tooloffload 76
 internal/sessionhtml 92
 internal/todostore 90
 internal/watch 76
@@ -180,12 +181,14 @@ plugins/host/host-skills 85
 plugins/host/host-roles 87
 plugins/host/host-system-prompt 88
 plugins/host/host-tools 91
+plugins/host/host-tool-offload 85
 plugins/host/host-worktrees 81
 plugins/host/host-usage-stats 60
 plugins/host/token-compress 84
 plugins/mcp/mcp-bridge 75
 plugins/mcp/mcp-server 85
 plugins/mcp/acp-server 86
+plugins/adapter/acp-client 64
 plugins/adapter/llm-anthropic-compat 58
 plugins/adapter/llm-mock 55
 plugins/adapter/llm-openai-compat 66
