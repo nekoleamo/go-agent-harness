@@ -69,6 +69,11 @@ function makeStub(
   // mainSessionId 非空时 /api/state 下发 session.id —— 首帧校准与 api 侧会话绑定都靠它。
   // 默认空:很多用例只测渲染,给一个真实 session 会把页签改绑/同步标题的路径也拖进来。
   mainSessionId = '',
+  // extraSse:连接时一并下发的**额外帧**（`[{ event, payload }]`）。
+  // 为什么只能"连接时发":桩的 SSE body 是一次性 fulfill 的静态串（见下面 /api/events），
+  // 想要"先开页、later 再来一帧"得把它改成真流 —— 那点复杂度换不来更多判据，
+  // 而介入条要验的是「帧接上了没有」，不是时序。
+  extraSse = [],
 ) {
   // seen:记录写类请求(方法/路径/体),供角色面板用例断言「面板真的提交了」而不是只改了本地状态。
   const seen = []
@@ -139,6 +144,10 @@ function makeStub(
       for (let i = 0; i < turns; i++) {
         frames.push(`event: session\ndata: ${JSON.stringify({ id: seq, type: 'session', ts: Date.now(), payload: { Kind: 'user/message', Payload: { Content: `u${i}` }, Seq: seq++, TS: now } })}\n\n`)
         frames.push(`event: session\ndata: ${JSON.stringify({ id: seq, type: 'session', ts: Date.now(), payload: { Kind: 'assistant/message', Payload: { Content: `a${i} ` + 'A'.repeat(80), ToolCalls: [] }, Seq: seq++, TS: now } })}\n\n`)
+      }
+      for (const x of extraSse) {
+        frames.push(`event: ${x.event}\ndata: ${JSON.stringify({ id: seq, type: x.event, ts: Date.now(), payload: x.payload })}\n\n`)
+        seq++
       }
       // baseline 只在“全新连接”(after=0)时发,与真实后端一致(断线续传不描述窗口)
       const tail = frames.filter((f) => {
@@ -3219,4 +3228,64 @@ test('无沙箱重试判定:只对沙箱/namespace 类失败生效(ubuntu-latest
   assert.ok(shouldRetryWithoutSandbox('Running as root without --no-sandbox is not supported'))
   assert.ok(!shouldRetryWithoutSandbox("Chromium distribution 'chrome' is not found at /opt/google/chrome/chrome"))
   assert.ok(!shouldRetryWithoutSandbox('spawn /usr/bin/google-chrome ENOENT'))
+})
+
+// 介入条接线(D3 · 第一百六十批):「四态从**真实帧**派生」这一步只活在 App.vue 里 ——
+// 纯函数用例(intervention.test.ts)测的是派生规则,订阅名写错一个字母照样全绿、
+// 界面永远不显示。这条把真帧送到 DOM 上验。
+//
+// 断言一律走 **class / 结构**,不比文案:CI 的 ubuntu 镜像没有 CJK 字体,中文渲成豆腐块
+// 时 textContent 还在,但一旦有人为了"看着对"去比字形就必然假红 —— 而这里要验的是
+// 「接上了没有」,不是措辞。
+test('介入条:真实帧派生待审批/出错,审批态不给点不动的按钮', { skip: skip && skipWhy }, async (t) => {
+  const LONG = 'E'.repeat(300) // 无空格长 token:错误行没换行的老毛病就靠它现形
+  const cases = [
+    {
+      name: 'confirm',
+      frames: [{ event: 'confirm', payload: { id: 'c1', prompt: 'run shell: rm -rf /tmp/build' } }],
+      cls: 'approve',
+      // 待审批**不给按钮**:确认弹层本身是全屏模态(已在最前),条上的按钮点不出新东西。
+      actCount: 0,
+    },
+    {
+      name: 'error',
+      frames: [{ event: 'error', payload: LONG }],
+      cls: 'error',
+      actCount: 1, // 有「看错误」(滚到底就是它)
+    },
+  ]
+  for (const c of cases) {
+    const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+    let page = null
+    try {
+      // turns 只为让桩走 SSE 分支（`turns=0` 时它回 JSON 兜底，一帧都不发）——
+      // 会话消息不是本用例的判据，给 1 条即可。
+      const stub = makeStub(true, false, false, false, false, 'finance', 0, false, true, 1, false, false, '', c.frames)
+      page = await open(ctx, stub, docks[1].dock)
+      await page.waitForSelector('.ibar.' + c.cls, { timeout: 20_000 })
+      const m = await page.evaluate(() => {
+        const bar = document.querySelector('.ibar')
+        const content = document.querySelector('.content')
+        const br = bar.getBoundingClientRect()
+        const cr = content.getBoundingClientRect()
+        return {
+          acts: bar.querySelectorAll('.ibar-act').length,
+          // 长 token 必须被 nowrap+ellipsis 吃掉,不许把内容列撑宽(撑宽 = 整页横向滚动)
+          overflowRight: Math.round(br.right - cr.right),
+          barScrollW: bar.scrollWidth,
+          barClientW: bar.clientWidth,
+        }
+      })
+      assert.equal(m.acts, c.actCount, `${c.name}: 动作按钮数量不对(待审批不该有按钮)`)
+      assert.ok(m.overflowRight <= 1, `${c.name}: 介入条越出内容列右侧 ${m.overflowRight}px`)
+      assert.ok(m.barScrollW <= m.barClientW + 1, `${c.name}: 介入条自身被撑出横向滚动`)
+      // 介入条在场时整页护栏仍须成立(它是新增的常驻元素,最容易把外壳顶高)
+      assertInvariants(await measure(page))
+    } catch (e) {
+      await shoot(page, `${t.name}-${c.name}`)
+      throw e
+    } finally {
+      await ctx.close()
+    }
+  }
 })
