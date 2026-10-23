@@ -54,7 +54,10 @@ type Plugin interface {
 | `ctx.confirm` | ui-tui-app | 危险操作 y/n 确认(无实现 = 安全拒绝)
 | `ctx.notices` | host-notices | 提示通道(见 §2.9):发布/回填用户提示,不进会话记录 |
 | `ctx.commands` | host-commands | 斜杠命令注册表:Register/List/Get;TUI 提示/分发/help 动态来自本表 |
+| `ctx.sessionSummarizer` | host-llm-summary | 滚动摘要的**模型摘要**实现(可替换扩展点:`sdk.SessionSummarizer`)。缺失 = token-compress 纯抽取式(确定性回退,不是错误);token-compress 在**回合结束后**异步调它,折叠当场只落抽取式(折叠跑在会话日志锁内,不能就地调模型) |
 | `ctx.turnControl` | host-agent-loop | 回合控制:取消(Esc / `/api/control` 共用入口)+ **转向**。转向走**可选能力接口** `sdk.TurnSteerer`(`Steer(text) bool`):实现了才能注入,未实现则调用方回落「排队待发」—— 与 `SandboxSync` / `MultiProviderService` 同一种能力探测模式,插件不应 import 提供方 |
+
+**滚动摘要的类型化(第一百五十五~一百五十八批,注意兼容性)**:会话日志里的摘要事件载荷从「纯字符串」改成 `sdk.RollingSummary{Text, Until, Source}` —— `Until` 是**本次折叠真正覆盖到的事件下标**(重启后靠它精确恢复水位;旧做法拿"摘要事件自己的下标",会连带跳过折叠点之后**没被折叠**的那段 ⇒ 重启后用户最后几条消息凭空消失)。要点:① 读载荷**一律走** `sdk.SummaryText(p)` / `sdk.SummaryUntil(p)`(它们同时认旧字符串、新结构体与未归一化的 map),别自己判类型 —— 读侧漂移的方向是"某处读不到摘要 ⇒ 静默丢整段历史";② `sdk.SessionCompressor.Fold` 的摘要回调签名随之变成 `func(sdk.RollingSummary)`(仓内实现全部已跟随;树外实现 `SessionCompressor` 的插件需同步);③ 旧日志(纯字符串载荷)必须继续可读。
 
 **工具可见性(可选能力,第九十一批)**:`ctx.tools` 的提供方(host-tools)额外实现 `sdk.ToolCatalogue` —— `SetFilter(visible func(sdk.ToolDefinition) bool) sdk.Disposer` + `ListAll() []sdk.ToolDefinition`。`host-roles` 在 Start 里按**当前角色**的排除清单装判定函数(每次求值现算 ⇒ 切角色即生效),卸载时经 Disposer 撤销(不留残留过滤)。契约要点:① `List()` = **模型可见**表(已过滤),`ListAll()` = **注册状态**面(给安装列表/管理面板用 —— "注册了什么"与"模型看得见什么"是两件事);② `Execute()` 也必须过滤(**只过 `List` 会让人凭历史上下文再叫一次就绕过**),拒绝文案要与"工具不存在"区分;③ `Get()` **不过滤** —— 它是裁决面(policy-guard 取真实目标工具定义做路径/审批裁决)与插件自查面;④ 未实现该接口的注册表(测试替身/极简宿主)⇒ 调用方跳过,这是"能力不存在",不是静默降级。判定用 `sdk.ToolVisible(role, name)`(运行期与展示端共用同一判据,别各写一份)。
 
