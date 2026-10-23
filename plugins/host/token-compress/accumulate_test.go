@@ -108,3 +108,30 @@ func TestFoldSummaryCarriesWatermark(t *testing.T) {
 		t.Fatal("摘要文本不应为空")
 	}
 }
+
+// TestFoldSkipsMarkerOnlyBlock 只含标记(turn/start、step/start…)的块**不得落空摘要**。
+//
+// 为什么(2026-10-23,端到端用例逮到):水位后的第一个事件常常是 turn/start,
+// 它 `approxEv` 为 0 ⇒ `chars >= need` 一次都到不了 ⇒ 整块只有标记 ⇒ 落一条
+// **空摘要**并推进水位。后果:投影多一条空摘要(噪声)、模型摘要通道拿到
+// `Merged:""` 的空范围(乐观锁语义错)、一次折叠迭代白跑。
+//
+// **反向验证**:把 Fold 里的 `if seg == ""` 分支去掉 ⇒ 本用例红(会看到一条空摘要)。
+func TestFoldSkipsMarkerOnlyBlock(t *testing.T) {
+	e := &Engine{}
+	var got []sdk.RollingSummary
+	evs := []sdk.SessionEvent{
+		{Kind: sdk.EventTurnStart}, // 标记(零字符)
+		{Kind: sdk.EventStepStart}, // 标记(零字符)
+		{Kind: sdk.EventUserMessage, Payload: sdk.UserMessage{Content: "问题甲"}}, // 最后一个用户轮(保留)
+	}
+	// 预算极小 ⇒ 一定想折;但可折的只有标记块(不得越过最后一个用户轮)
+	// 预算 1 字符:内容(3 字符)必然超预算,逼出折叠;可折的却只有那两个标记
+	w := e.Fold(evs, -1, 1, func(s sdk.RollingSummary) { got = append(got, s) })
+	if len(got) != 0 {
+		t.Fatalf("只含标记的块不该落摘要(空摘要会污染投影与乐观锁): %+v", got)
+	}
+	if w != 1 {
+		t.Fatalf("标记块应被跳过(水位推进到最后一个标记),实际水位 %d", w)
+	}
+}

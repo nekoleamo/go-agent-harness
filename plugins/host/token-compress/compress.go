@@ -132,7 +132,22 @@ func (e *Engine) Fold(evs []sdk.SessionEvent, watermark int, budget int, summary
 			return w // 无可压缩的普通消息
 		}
 		block := evs[start : end+1]
-		newSummary := mergeSummary(oldSummary, summarizeEvents(block), budget)
+		seg := summarizeEvents(block)
+		if seg == "" {
+			// 这块里**没有任何可摘要的内容**(只有 turn/start、step/start 这类无载荷标记)。
+			//
+			// 为什么单独判(2026-10-23,真机 e2e 逮到):水位后的第一个事件常常正是
+			// turn/start —— 它 `approxEv` 为 0,`chars >= need` 一次都到不了,于是
+			// 整块只有标记 ⇒ 落一条**空摘要**并推进水位。代价有三:
+			//   ① 投影里多一条空摘要事件(噪声,且 `recoverWatermark` 会认它);
+			//   ② 模型摘要那条通道会拿到 `Merged: ""` 的范围,可能把模型摘要写到
+			//      "什么都没覆盖"的水位上(乐观锁的 expected 也对不上语义);
+			//   ③ 一次折叠迭代白跑(每轮最多折 maxCompressPerCall 次)。
+			// 正确做法:跳过标记(推进水位但不落摘要),继续下一次迭代。
+			w = end
+			continue
+		}
+		newSummary := mergeSummary(oldSummary, seg, budget)
 		// 摘要事件带**覆盖水位**(本次真正折到的事件下标)与来源:
 		// 宿主靠它精确恢复水位(否则重载后水位取"摘要事件自己的下标",会连带跳过
 		// 折叠点之后那段没被折叠的事件 —— 实测重启后最后几条消息凭空消失)。
