@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
@@ -185,7 +186,17 @@ done
 		runners: map[string]runner{"fake": {command: script}},
 		timeout: defaultTimeout,
 	}
-	out, err := tool.Execute(context.Background(), `{"runner":"fake","message":"改个 bug","cwd":"`+dir+`"}`)
+	// 进度通道(反向验证过):onNotify 里若用 context.Background() 上报,这里收不到
+	// 任何 chunk —— 因为上报口(reporter)本身就在 ctx 里,Background 里没有它。
+	var mu sync.Mutex
+	var chunks []string
+	ctx := sdk.WithToolProgressReporter(context.Background(), func(_ string, chunk string) error {
+		mu.Lock()
+		chunks = append(chunks, chunk)
+		mu.Unlock()
+		return nil
+	})
+	out, err := tool.Execute(ctx, `{"runner":"fake","message":"改个 bug","cwd":"`+dir+`"}`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,6 +219,15 @@ done
 	}
 	if len(res.ToolCalls) != 1 || res.ToolCalls[0] != "写入 a.go" {
 		t.Fatalf("外部 agent 的工具调用应被记录: %v", res.ToolCalls)
+	}
+	mu.Lock()
+	joined := strings.Join(chunks, "")
+	mu.Unlock()
+	if !strings.Contains(joined, "已完成") {
+		t.Fatalf("外部 agent 的正文增量应进进度通道(界面看得到它在动), got %q", joined)
+	}
+	if !strings.Contains(joined, "写入 a.go") {
+		t.Fatalf("外部 agent 的工具调用也该进进度通道, got %q", joined)
 	}
 }
 

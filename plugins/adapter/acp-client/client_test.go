@@ -62,7 +62,7 @@ func pair(t *testing.T, cb callbacks) (*conn, *fakeAgent) {
 	t.Helper()
 	c2sR, c2sW := io.Pipe() // 客户端 → agent
 	s2cR, s2cW := io.Pipe() // agent → 客户端
-	c := newConn(c2sW, s2cR, cb)
+	c := newConn(context.Background(), c2sW, s2cR, cb)
 	fa := &fakeAgent{t: t, in: bufio.NewScanner(c2sR), out: s2cW}
 	t.Cleanup(func() {
 		_ = c2sW.Close()
@@ -111,7 +111,7 @@ func TestConnCallMatchesResponseByID(t *testing.T) {
 func TestConnNotificationGoesToCallback(t *testing.T) {
 	var mu sync.Mutex
 	var methods []string
-	c, fa := pair(t, callbacks{onNotify: func(method string, _ json.RawMessage) {
+	c, fa := pair(t, callbacks{onNotify: func(_ context.Context, method string, _ json.RawMessage) {
 		mu.Lock()
 		methods = append(methods, method)
 		mu.Unlock()
@@ -168,7 +168,7 @@ func TestConnServesPeerRequest(t *testing.T) {
 func TestConnFailsPendingOnEOF(t *testing.T) {
 	c2sR, c2sW := io.Pipe()
 	s2cR, s2cW := io.Pipe()
-	c := newConn(c2sW, s2cR, callbacks{})
+	c := newConn(context.Background(), c2sW, s2cR, callbacks{})
 	// 必须有人读走客户端写出的请求:io.Pipe 的写是**阻塞**的,没人读 ⇒ call 卡在写里,
 	// 根本走不到"等响应"那一步(这个坑值得留一行注释)。
 	go func() { _, _ = io.Copy(io.Discard, c2sR) }()

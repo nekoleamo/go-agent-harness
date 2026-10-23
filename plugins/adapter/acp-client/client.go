@@ -51,7 +51,8 @@ type callbacks struct {
 	// 返回 (结果, 错误);错误会作为 JSON-RPC error 回给对端。
 	onRequest func(ctx context.Context, method string, params json.RawMessage) (any, *rpcErr)
 	// onNotify 处理 agent → client 的通知(session/update 的各类增量)。
-	onNotify func(method string, params json.RawMessage)
+	// 带 ctx:增量要上报进**这次调用**的进度通道(ctx 里才有 reporter)。
+	onNotify func(ctx context.Context, method string, params json.RawMessage)
 }
 
 // conn 一条 stdio JSON-RPC 连接(读循环 + 待决请求表)。
@@ -62,6 +63,10 @@ type callbacks struct {
 type conn struct {
 	w  io.Writer
 	cb callbacks
+	// base 是这条连接所属调用的 ctx:对端请求(权限确认)与增量上报都挂在它上面 ——
+	// 用 context.Background() 会让「取消这一轮」传不到确认弹窗;进度也上报不了
+	// (上报口本身就在 ctx 里,Background 里没有它)。
+	base context.Context
 
 	mu      sync.Mutex
 	nextID  int64
@@ -74,8 +79,11 @@ type conn struct {
 }
 
 // newConn 建连接并启动读循环(r 通常是子进程 stdout)。
-func newConn(w io.Writer, r io.Reader, cb callbacks) *conn {
-	c := &conn{w: w, cb: cb, pending: map[int64]chan rpcMsg{}, done: make(chan struct{})}
+func newConn(ctx context.Context, w io.Writer, r io.Reader, cb callbacks) *conn {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	c := &conn{w: w, cb: cb, base: ctx, pending: map[int64]chan rpcMsg{}, done: make(chan struct{})}
 	go c.readLoop(r)
 	return c
 }
@@ -119,7 +127,7 @@ func (c *conn) dispatch(m rpcMsg) {
 		// 代价:onNotify 里**不能**反向调 conn.call(那会等自己回包 ⇒ 死锁)。
 		// 通知面只做累加与进度上报,满足这个约束。
 		if c.cb.onNotify != nil {
-			c.cb.onNotify(m.Method, m.Params)
+			c.cb.onNotify(c.base, m.Method, m.Params)
 		}
 	case m.ID != nil:
 		c.mu.Lock()
@@ -139,9 +147,7 @@ func (c *conn) serveRequest(m rpcMsg) {
 	if c.cb.onRequest == nil {
 		rerr = &rpcErr{Code: -32601, Message: "unsupported request: " + m.Method}
 	} else {
-		// 对端请求没有本地的 ctx 取消来源:用 Background(子进程被杀时连接会断,
-		// 读循环结束 ⇒ 回调里的确认通道由 UI 侧超时/取消兜底)。
-		out, rerr = c.cb.onRequest(context.Background(), m.Method, m.Params)
+		out, rerr = c.cb.onRequest(c.base, m.Method, m.Params)
 	}
 	resp := rpcMsg{JSONRPC: "2.0", ID: m.ID}
 	if rerr != nil {

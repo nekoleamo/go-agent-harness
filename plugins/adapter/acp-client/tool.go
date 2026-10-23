@@ -215,16 +215,16 @@ func (t *Tool) startSession(ctx context.Context, r runner, cwd string) (*session
 	}
 	s := &session{cmd: cmd, stderr: errTail}
 	s.stdin = in
-	s.conn = newConn(in, outPipe, callbacks{
+	s.conn = newConn(ctx, in, outPipe, callbacks{
 		onRequest: func(ctx context.Context, method string, params json.RawMessage) (any, *rpcErr) {
 			if method != "session/request_permission" {
 				return nil, &rpcErr{Code: -32601, Message: "unsupported request: " + method}
 			}
 			return t.handlePermission(ctx, s, params), nil
 		},
-		onNotify: func(method string, params json.RawMessage) {
+		onNotify: func(ctx context.Context, method string, params json.RawMessage) {
 			if method == "session/update" {
-				s.applyUpdate(params)
+				s.applyUpdate(ctx, params)
 			}
 		},
 	})
@@ -274,7 +274,7 @@ func (s *session) prompt(ctx context.Context, message string) (string, error) {
 }
 
 // applyUpdate 收 session/update 的增量:正文进输出、思维另存、工具调用记标题。
-func (s *session) applyUpdate(params json.RawMessage) {
+func (s *session) applyUpdate(ctx context.Context, params json.RawMessage) {
 	var p struct {
 		Update struct {
 			SessionUpdate string `json:"sessionUpdate"`
@@ -298,7 +298,7 @@ func (s *session) applyUpdate(params json.RawMessage) {
 		s.mu.Lock()
 		s.text.WriteString(u.Content.Text)
 		s.mu.Unlock()
-		sdk.ReportToolProgress(context.Background(), toolName, u.Content.Text)
+		sdk.ReportToolProgress(ctx, toolName, u.Content.Text)
 	case "agent_thought_chunk":
 		// 思维不进输出(它是过程):但要留在结果里,便于事后看"它当时在想什么"。
 		s.mu.Lock()
@@ -313,7 +313,7 @@ func (s *session) applyUpdate(params json.RawMessage) {
 			s.mu.Unlock()
 			// 外部 agent 的工具调用对用户是**重要过程信号**(它正在动哪个文件):
 			// 用一行紧凑文本进进度通道,不塞进正文输出(那会污染最终答复)。
-			sdk.ReportToolProgress(context.Background(), toolName, "\n["+u.Title+"]\n")
+			sdk.ReportToolProgress(ctx, toolName, "\n["+u.Title+"]\n")
 		}
 	}
 }
@@ -406,7 +406,7 @@ func (t *Tool) handlePermission(ctx context.Context, s *session, params json.Raw
 	} else {
 		// 没有审批通道:只能拒绝。把原因写进 prompt 的旁路 —— 结果里会记 permissions_asked
 		// 与实际发生的拒绝,事后看得见"为什么它没做"。
-		sdk.ReportToolProgress(context.Background(), toolName, "\n[未装配审批通道,已拒绝一次权限请求]\n")
+		sdk.ReportToolProgress(ctx, toolName, "\n[未装配审批通道,已拒绝一次权限请求]\n")
 	}
 	if !ok {
 		return cancelled()
