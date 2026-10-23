@@ -183,6 +183,9 @@ type SessionEvent struct {
 //  2. **Source(来源)**:extract(抽取式)/llm(模型摘要)。让"这条摘要是谁写的"可查、可诊断。
 //
 // 旧日志的载荷是纯字符串 ⇒ 读取端必须容忍(见 SummaryText / SummaryUntil)。
+//
+// ⚠️ 与 SessionSummary(会话概述,落 meta.json 给人看)名字近似但是两件事 ——
+// 判据:**会不会进模型的上下文**。会 ⇒ 本类型;不会 ⇒ SessionSummary。对照表见后者。
 type RollingSummary struct {
 	// Text 累计摘要文本(模型看到的"先前对话"那段)。
 	Text string `json:"text"`
@@ -748,6 +751,18 @@ type SessionInfo struct {
 }
 
 // SessionSummary 会话概述产物(F3:host-session-summary 生成,落 meta.json 缓存)。
+//
+// ⚠️ 与 RollingSummary(滚动摘要)名字近似但**是两件不同的事**,别混:
+//
+//	| | RollingSummary | SessionSummary |
+//	|---|---|---|
+//	| 属于 | 会话**内部**(推理上下文的一部分) | 会话**外面**(列表/选会话用的元数据) |
+//	| 谁写 | token-compress 折叠时写进会话事件流 | host-session-summary 写到 meta.json |
+//	| 干什么 | 替代被折叠掉的旧消息,叫模型"记得前面聊过什么" | 给人看"这个会话在讲什么" |
+//	| 提示词里 | 会出现(投影首条"对先前对话的滚动摘要") | **绝不进**提示词 |
+//	| 触发 | 投影超预算时(自动) / `/compact`(手动) | 回合结束后异步 / `/recap` 类入口 |
+//
+// 判据速记:**会不会进模型的上下文**。会 ⇒ RollingSummary;不会 ⇒ SessionSummary。
 type SessionSummary struct {
 	Text          string   `json:"text"`
 	Topics        []string `json:"topics,omitempty"`
