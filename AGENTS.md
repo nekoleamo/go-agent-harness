@@ -36,7 +36,7 @@
   diff 能读出来的(比对里一个"意外的零差异"case 逼我去查,因为管道里两侧都没输出)。
   两侧统一用假版本号 + 日志时间戳归一化,矩阵刻意离线(不含 `-install <repo>` 这类发网络的)。
 - 发布编译:`CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$(git describe --tags)"`。
-- 桌面壳(`desktop/src-tauri/`):改后必跑 `cargo fmt` 与 `cargo test --offline`(CI 的 `desktop-shell` job = `cargo fmt --check` + `cargo test --locked`;`--offline` 是因为 crates.io 偶发拉取超时)。
+- 桌面壳(`desktop/src-tauri/`):改后必跑 `cargo fmt` 与 `cargo test --offline`(CI 的 `desktop-shell` job = `cargo fmt --check` + `cargo test --locked`;`--offline` 是因为 crates.io 偶发拉取超时)。**工具链必须 ≥1.85**(2026-10-23 踩过):`Cargo.lock` 里有 `edition2024` 依赖(`serde_spanned 1.1.x`),Rust 1.84 会报 `failed to parse manifest … feature 'edition2024' is required` —— 那条报错读起来像「仓库/锁文件坏了」,实际是**工具链太旧**,`rustup update stable` 即愈(1.84 下 `release.sh preflight` 的桌面壳一步永远红)。
 - CI:go vet + go test ./... -race;全库测试必须保持 -race 全绿。
 
 ## UI 规范(web/tui)
