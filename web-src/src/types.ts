@@ -631,6 +631,10 @@ export interface McpServer {
   mode: string
   // source: file(配置文件,可编辑)/ env(GAH_MCP_COMMAND(S),只读)
   source?: string
+  // transport: 缺省 stdio(本地进程);'http' = Streamable HTTP 远程 server
+  // (没有 command,连的是 url;凭据在配置文件的 headers 里,服务端序列化时打码)。
+  transport?: string
+  url?: string
   // 运行期状态:是否检测到该 server 已连接(工具已注册进索引/注册表)
   loaded: boolean
   tools: number

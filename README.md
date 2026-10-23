@@ -473,7 +473,17 @@ servers:
   - name: codegraph
     command: codegraph serve --mcp
     mode: search      # 工具多时用 search:只给模型 mcp_search/mcp_call,省上下文
+  # 远程 server(Streamable HTTP,2025-03-26):没有本地进程,连 url
+  - name: remote-crm
+    transport: http
+    url: https://mcp.example.com/rpc   # 必须 https;明文 http 只允许本机回环
+    headers:
+      Authorization: Bearer sk-...     # 凭据只从本文件读(0600),不经 env、不进日志
+    mode: search
 ```
+
+远程条目的三条口径:**① 凭据只在配置文件里**(`headers` 的值在 `/api/mcp` 响应与日志里一律打码,面板只能看到有几个头);**② 只支持静态头** —— server 回 401/403 时如实报错,不假装能自动登录(OAuth 暂缓);**③ 传输细节**按规范做全了:响应既可能是单条 JSON 也可能是 SSE 流(两种都读)、`Mcp-Session-Id` 自动带上、会话失效回 404 时**只重新握手一次**(不是无限重试)。面板能看见远程条目(显示 url)但改不了 —— url 与凭据请编辑本文件。
+
 ```bash
 # 环境变量(启动面,只读;工具自动注册 mcp_<server>_<name>)
 export GAH_MCP_COMMANDS="deja=/opt/homebrew/bin/deja\ncodegraph=codegraph serve --mcp"

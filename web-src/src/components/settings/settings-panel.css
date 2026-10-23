@@ -714,6 +714,14 @@ textarea.inp {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* .brk:只读长文本(远程 server 的 url)要能换行 —— .psub 是 nowrap+ellipsis,
+   url 被截成 "https://mcp.example.com/…" 就失去"看一眼对不对"的作用。 */
+.psub.brk {
+  display: block;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+}
 .pops {
   display: inline-flex;
   gap: 6px;

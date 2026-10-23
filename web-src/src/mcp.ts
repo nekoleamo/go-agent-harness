@@ -7,11 +7,41 @@
 import type { McpServer, McpView } from './types'
 
 // McpDraft 编辑态的一项(保存时整体提交给后端)。
+//
+// transport/url 是**只读**字段(2026-10-23):远程 server(transport: http)没有本地命令,
+// 它的 url 与 headers 里的凭据只在 mcp.yaml 里。面板要能**看见**它(否则一进面板就只看到
+// 「名字 + 一个空命令框」),但不能改 —— 改 url/凭据请编辑配置文件。
 export interface McpDraft {
   name: string
   command: string
   enabled: boolean
   mode: string
+  // 缺省(undefined)= stdio。只在**真有远程传输**时才带上,免得 stdio 草稿对象上
+  // 多出两个空字段(draftKey 与既有用例都按"没有这两项"写的)。
+  transport?: string
+  url?: string
+}
+
+// MCP_TRANSPORT_HTTP 远程传输(Streamable HTTP)。其它值(含空)= stdio。
+export const MCP_TRANSPORT_HTTP = 'http'
+
+// isRemote 这一项是不是远程 server(没有本地进程,只有 url)。
+export function isRemote(r: { transport?: string }): boolean {
+  return r.transport === MCP_TRANSPORT_HTTP
+}
+
+// toSavePayload 草稿 → 提交形状(**刻意不含 transport/url/headers**)。
+//
+// 为什么保留这几行而不是过滤掉:后端 `handleMCPSave` 是「整份列表覆写」,漏掉同名项
+// 等于**删除**它 —— 而 url 与 headers 里的凭据只存在盘上,删了找不回来。后端拿到不含
+// transport 的项会按 name 从盘上补回(见 internal/mcpconfig 的 MergePreserve)。
+export function toSavePayload(rows: McpDraft[]): { name: string; command: string; enabled: boolean; mode: string }[] {
+  return rows.map((r) => ({
+    name: r.name.trim(),
+    command: normalizeCommand(r.command),
+    enabled: r.enabled,
+    mode: r.mode,
+  }))
 }
 
 // MCP_MODE_DIRECT 全量注册:工具直接进模型工具表(每轮都占固定前缀)。
@@ -26,7 +56,10 @@ export function canEdit(s: McpServer): boolean {
 
 // draftFrom 视图项 → 编辑态(把 args 拼回命令行)。
 export function draftFrom(s: McpServer): McpDraft {
-  return { name: s.name, command: fmtCommand(s), enabled: s.enabled, mode: s.mode || MCP_MODE_DIRECT }
+  const d: McpDraft = { name: s.name, command: fmtCommand(s), enabled: s.enabled, mode: s.mode || MCP_MODE_DIRECT }
+  if (s.transport) d.transport = s.transport
+  if (s.url) d.url = s.url
+  return d
 }
 
 // fmtCommand 命令行回显:命令 + 参数按空格拼接(参数含空格时加引号)。
@@ -48,6 +81,9 @@ export function draftKey(rows: McpDraft[]): string {
       command: normalizeCommand(r.command),
       enabled: r.enabled,
       mode: r.mode || MCP_MODE_DIRECT,
+      // 传输也是草稿的一部分:http 行本来就没有命令,不带上它脏检测与校验都会判错。
+      transport: r.transport || '',
+      url: (r.url || '').trim(),
     })),
   )
 }
@@ -64,7 +100,13 @@ export function validateDraft(rows: McpDraft[]): string {
     }
     if (seen.has(name)) return `第 ${no} 项名称「${name || '(留空)'}」重复(名称决定工具前缀,不能重名)`
     seen.add(name)
-    if (normalizeCommand(r.command) === '') return `第 ${no} 项缺少启动命令(如 npx -y @modelcontextprotocol/server-filesystem /tmp)`
+    // 远程条目没有命令(它连的是 url);对它的要求是 url 非空 —— 而 url 只读、来自配置
+    // 文件,所以这里只是兜住「配置文件里 url 为空」那种坏数据(后端也会拒)。
+    if (isRemote(r)) {
+      if ((r.url || '').trim() === '') return `第 ${no} 项是远程 server(transport: http)但配置里没有 url,请编辑 $GAH_HOME/config/mcp.yaml`
+    } else if (normalizeCommand(r.command) === '') {
+      return `第 ${no} 项缺少启动命令(如 npx -y @modelcontextprotocol/server-filesystem /tmp)`
+    }
     if (r.mode !== MCP_MODE_DIRECT && r.mode !== MCP_MODE_SEARCH) {
       return `第 ${no} 项模式非法:${r.mode}`
     }

@@ -11,8 +11,10 @@ import {
   modeLabel,
   normalizeCommand,
   searchSummary,
+  isRemote,
   serverStateLabel,
   sourceLabel,
+  toSavePayload,
   validateDraft,
   viewNotices,
 } from './mcp.ts'
@@ -113,4 +115,39 @@ test('searchSummary 只统计检索模式条目', () => {
     servers: [srv({ name: 'a', mode: MCP_MODE_SEARCH, tools: 20 }), srv({ name: 'b', mode: MCP_MODE_SEARCH, tools: 4 }), srv({})],
   })
   assert.match(searchSummary(v), /共 24 个工具/)
+})
+
+// 远程 MCP server(transport: http)在设置面板里的形状(2026-10-23)。
+//
+// 为什么要有这组:http 传输逻辑与配置层早就交付并有用例,但**面板的形状里没有它** ——
+// `McpDraft` 只有 name/command/enabled/mode。于是一个手写在 mcp.yaml 里的 http 条目
+// 进面板就变成「名字 + 空命令」,而 `validateDraft` 会以「第 N 项缺少启动命令」把**整份
+// 保存**拦下来:用户明明只想改另一条 stdio server 的名字,却被告知一个他根本没编辑过的
+// 行缺命令。症状是「面板存不了,而且说的不是我想改的那行」。
+//
+// 反向验证:去掉 `isRemote` 分支(命令照旧必填)⇒ 第一条用例红。
+
+
+test('http 条目不该被「缺少启动命令」拦下(它本来就没有命令)', () => {
+  const view = {
+    servers: [
+      { name: 'local', command: 'deja', enabled: true, mode: 'direct', source: 'file', loaded: true, tools: 3 },
+      { name: 'remote', command: '', enabled: true, mode: 'search', source: 'file', transport: 'http', url: 'https://mcp.example.com/rpc', loaded: true, tools: 5 },
+    ],
+  } as unknown as McpView
+  const rows = view.servers.filter(canEdit).map(draftFrom)
+  assert.equal(validateDraft(rows), '', '有 http 条目时整份保存不该被拦')
+  // 反向判据:真·空命令的 stdio 条目仍然要拦(别把校验整体削弱了)
+  const bad = [{ name: 'oops', command: '', enabled: true, mode: MCP_MODE_DIRECT, transport: '', url: '' }]
+  assert.match(validateDraft(bad), /缺少启动命令/)
+})
+
+test('http 条目只读展示 url,且保存时仍带着它(不带 = 被后端当成删除)', () => {
+  const remote = { name: 'remote', command: '', enabled: true, mode: MCP_MODE_DIRECT, transport: 'http', url: 'https://mcp.example.com/rpc' }
+  assert.equal(isRemote(remote), true)
+  // 保存形状里**保留**这一行:handleMCPSave 是「整份列表覆写」,漏掉同名项 = 删掉它
+  // (而它的 url/headers 只在盘上,删了就再也找不回来)。
+  const payload = toSavePayload([remote])
+  assert.equal(payload.length, 1)
+  assert.equal(payload[0].name, 'remote')
 })

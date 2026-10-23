@@ -80,9 +80,10 @@ import {
   fmtCommand,
   modeHint,
   modeLabel,
-  normalizeCommand,
   serverStateLabel,
   sourceLabel,
+  isRemote,
+  toSavePayload,
   validateDraft,
   viewNotices,
   type McpDraft,
@@ -3028,15 +3029,9 @@ async function saveMcp(): Promise<void> {
   busy.value = true;
   mcpMsg.value = "";
   try {
-    // 整行命令交给后端按引号规则拆参数(与终端一致);args 不在这里拆
-    const v = await api.mcpSave(
-      mcpDrafts.value.map((r) => ({
-        name: r.name.trim(),
-        command: normalizeCommand(r.command),
-        enabled: r.enabled,
-        mode: r.mode,
-      })),
-    );
+    // 整行命令交给后端按引号规则拆参数(与终端一致);args 不在这里拆。
+    // 形状来源统一在 mcp.ts 的 toSavePayload(远程条目的 url/凭据由后端按名字补回)。
+    const v = await api.mcpSave(toSavePayload(mcpDrafts.value));
     mcpView.value = v;
     mcpDrafts.value = v.servers.filter(canEdit).map(draftFrom);
     mcpBase.value = draftKey(mcpDrafts.value);
@@ -5453,7 +5448,7 @@ watch(
                         placeholder="deja"
                       />
                     </label>
-                    <label class="fld">
+                    <label v-if="!isRemote(r)" class="fld">
                       <span class="fld-lab">启动命令</span>
                       <input
                         v-model="r.command"
@@ -5461,6 +5456,13 @@ watch(
                         placeholder="npx -y @modelcontextprotocol/server-memory"
                       />
                     </label>
+                    <!-- 远程 server(transport: http):没有本地进程,只有 url。
+                         只读展示而不是空命令框 —— 空框会让人以为配置丢了,进而「补」上一条
+                         命令把它变成 stdio(后端 MergePreserve 只补不覆盖,那种改动会生效)。 -->
+                    <div v-else class="fld">
+                      <span class="fld-lab">远程地址(只读,改请编辑 config/mcp.yaml)</span>
+                      <span class="psub mono brk">{{ r.url }}</span>
+                    </div>
                     <div class="mrow">
                       <label class="chk">
                         <input v-model="r.enabled" type="checkbox" />

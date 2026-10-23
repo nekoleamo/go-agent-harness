@@ -492,7 +492,17 @@ servers:
   - name: codegraph
     command: codegraph serve --mcp
     mode: search      # many tools? use search: the model only sees mcp_search/mcp_call
+  # Remote server (Streamable HTTP, 2025-03-26): no local process, just a URL
+  - name: remote-crm
+    transport: http
+    url: https://mcp.example.com/rpc   # https required; plain http only for loopback
+    headers:
+      Authorization: Bearer sk-...     # credentials come from this file only (0600); never env, never logs
+    mode: search
 ```
+
+Three rules for remote entries: **① credentials live in the config file only** (`headers` values are masked in `/api/mcp` responses and logs; the panel shows how many headers exist, not their values); **② static headers only** — a 401/403 is reported as-is instead of pretending we can auto-login (OAuth deferred); **③ the transport follows the spec**: responses may be a single JSON body or an SSE stream (both are read), `Mcp-Session-Id` is carried automatically, and a 404 (session expired) triggers **one** re-handshake — not an unbounded retry loop. The settings panel lists remote entries (showing the URL) but cannot edit them — change the URL and credentials in this file.
+
 ```bash
 # Env vars (startup surface, read-only; tools auto-register as mcp_<server>_<name>)
 export GAH_MCP_COMMANDS="deja=/opt/homebrew/bin/deja\ncodegraph=codegraph serve --mcp"
