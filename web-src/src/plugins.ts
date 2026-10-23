@@ -3,17 +3,18 @@
 // 契约:v1 冻结槽位名;渲染层禁止 v-html(v-html 源码级拒装见 gah -install-ui);
 // 插件模块默认导出 Vue 组件(槽位 Props 兼容,见 registry.ts)。
 import { ref } from 'vue'
-import { registerSlot, registerSettingSection, registerSidebarAction, registerExtraPanel } from './registry'
+import { registerSlot, registerSettingSection, registerSidebarAction, registerExtraPanel, registerToolRenderer } from './registry'
 import type { SlotName } from './registry'
 import type { Component } from 'vue'
 import { failureRow, trustNoteOf, digestRows, toDigest } from './plugininfo'
 import type { UIPluginDigest, UIPluginFailure } from './plugininfo'
 
 interface SlotDef {
-  name: string // v1 四槽位 或 v2 扩展点(settings-section/sidebar-action/extra-panel)
+  name: string // v1 四槽位 / v2 扩展点(settings-section/sidebar-action/extra-panel)/ v3 tool-renderer
   priority: number
   module: string
   title?: string // v2:面板/动作标题
+  tools?: string[] // tool-renderer:接管的工具名('*' = 兜底);其它槽位忽略
 }
 
 interface UIPlugin {
@@ -60,6 +61,7 @@ export async function loadUIPlugins(): Promise<number> {
   }
   const V1 = ['stream', 'input', 'statusbar', 'confirm'] as const
   const EXT = ['settings-section', 'sidebar-action', 'extra-panel'] as const
+  const RENDERER = 'tool-renderer'
   // 边界映射一次到位:API 是 snake_case,展示层是 camelCase(直接混用会静默丢字段)
   const digests = digestRows(list.map(toDigest))
   const note = trustNoteOf(digests)
@@ -73,8 +75,15 @@ export async function loadUIPlugins(): Promise<number> {
       const name = slot.name
       const v1 = (V1 as readonly string[]).includes(name)
       const ext = (EXT as readonly string[]).includes(name)
+      const renderer = name === RENDERER
       // 槽位名契约校验(未知槽位忽略,不破坏宿主渲染)
-      if (!v1 && !ext) continue
+      if (!v1 && !ext && !renderer) continue
+      // tool-renderer 没声明 tools = 声明不完整(它不会匹配任何工具)。记进失败清单
+      // 让面板看得见 —— 否则用户只会看到"装了插件但结果区没变",无从排查。
+      if (renderer && (!slot.tools || slot.tools.length === 0)) {
+        errors.push(failureRow(p.id, name, 'tool-renderer 槽位缺少 tools 声明(例:"tools": ["image_ops"] 或 ["*"])'))
+        continue
+      }
       try {
         // 动态导入插件产物(经 server /ui-plugins/ 托管;绝对路径防 vite 产物路径重写)
         const url = `/ui-plugins/${p.id}/${slot.module.replace(/^\.\//, '')}`
@@ -89,6 +98,8 @@ export async function loadUIPlugins(): Promise<number> {
           registerSidebarAction(p.id, { component: comp, priority: slot.priority || 10, title: slot.title })
         } else if (name === 'extra-panel') {
           registerExtraPanel(p.id, { component: comp, priority: slot.priority || 10, title: slot.title })
+        } else if (renderer) {
+          registerToolRenderer(p.id, { component: comp, priority: slot.priority || 10, tools: slot.tools! })
         }
         loaded++
       } catch (e) {

@@ -17,6 +17,10 @@ export interface ToolRow {
 export interface Msg {
   kind: 'user' | 'assistant' | 'tool' | 'meta'
   text: string
+  /** tool:工具名(工具结果渲染器按它匹配;与 text 里的展示文案解耦 —— 别从文案反解)。 */
+  name?: string
+  /** tool:参数摘要(与工具行同一个值;渲染器要原参数请自己从 full 里读)。 */
+  args?: string
   full?: string // tool:全文;assistant:无
   summary?: string // tool:一行人话摘要(宿主算好;缺失 ⇒ 展示层回退到截断全文)
   tools?: ToolRow[] // assistant 携带的工具调用(落定时的快照)
@@ -223,6 +227,8 @@ export function consume(m: StreamModel, ev: SessionEvent): void {
       const mark = row.status === 'err' ? '✗' : '✓'
       m.msgs.push({
         kind: 'tool',
+        name: row.name,
+        args: row.args,
         text: `${mark} ${row.name} ${row.args}`.trim(),
         summary: row.summary,
         full: row.full,

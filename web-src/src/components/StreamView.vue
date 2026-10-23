@@ -6,6 +6,7 @@ import { computed, onUnmounted, ref, watch } from 'vue'
 import type { Msg, ToolRow } from '../sse'
 import { cleanAnswer, cleanThink } from '../sse'
 import type { MetaLine, PendingView } from '../registry'
+import { toolRendererFor, type ToolRendererReg } from '../registry'
 import { rowsOf, type Row } from '../streamrows'
 import DocText from './doc/DocText.vue'
 import { previewablePathOf, requestDoc } from '../docstore'
@@ -27,6 +28,25 @@ const rows = computed<Row[]>(() => rowsOf(props.frames, props.metas ?? []))
 
 function toggle(seq: number): void {
   expanded.value = { ...expanded.value, [seq]: !expanded.value[seq] }
+}
+
+// 工具结果渲染器(第一百六十五批):插件按**工具名**接管结果区。
+//
+// 边界:宿主仍然负责会话流的顺序/折叠/错误态,只把**结果区**交出去 —— 插件要改
+// 一个工具结果的展示方式,不该重画整条会话流。找不到渲染器时走原来的 <pre>,
+// 所以「没装插件」与「插件没匹配上」在这里是同一条路(不是降级,是本来如此)。
+function rendererOf(row: Msg): ToolRendererReg | null {
+  return row.name ? toolRendererFor(row.name) : null
+}
+
+function renderProps(row: Msg) {
+  return {
+    name: row.name ?? '',
+    args: row.args ?? '',
+    summary: row.summary,
+    full: row.full ?? '',
+    err: !!row.err,
+  }
 }
 
 function toolCallsOf(m: Msg): ToolRow[] {
@@ -142,19 +162,28 @@ function attUrl(rel: string): string {
         </div>
         <div v-else-if="r.m.kind === 'tool'" class="tool mono">
           <span class="tl">{{ r.m.text }}</span>
-          <div class="result" :class="{ err: r.m.err }">
-            <!-- 折叠态先给**结论**(宿主算好的一行人话摘要,2026-10-20 B1);
-                 摘要缺失(旧日志/未知工具)才回退到截断全文。 -->
-            <pre>{{ expanded[r.m.seq] ? r.m.full : (r.m.summary || r.m.full?.slice(0, 400)) }}</pre>
-          </div>
-          <button
-            v-if="r.m.full && r.m.full.length > 400"
-            class="fold"
-            data-tip="展开/收起工具结果"
-            @click="toggle(r.m.seq)"
-          >
-            {{ expanded[r.m.seq] ? '收起 ▲' : '展开 ▼' }}
-          </button>
+          <!-- 结果区交给插件渲染器(第一百六十五批):声明了 tool-renderer 且匹配本工具时,
+               宿主只保留行头(工具名/参数/状态),结果区整块交出;没匹配上走原来的 <pre>。 -->
+          <component
+            :is="rendererOf(r.m)?.component"
+            v-if="rendererOf(r.m)"
+            v-bind="renderProps(r.m)"
+          />
+          <template v-else>
+            <div class="result" :class="{ err: r.m.err }">
+              <!-- 折叠态先给**结论**(宿主算好的一行人话摘要,2026-10-20 B1);
+                   摘要缺失(旧日志/未知工具)才回退到截断全文。 -->
+              <pre>{{ expanded[r.m.seq] ? r.m.full : (r.m.summary || r.m.full?.slice(0, 400)) }}</pre>
+            </div>
+            <button
+              v-if="r.m.full && r.m.full.length > 400"
+              class="fold"
+              data-tip="展开/收起工具结果"
+              @click="toggle(r.m.seq)"
+            >
+              {{ expanded[r.m.seq] ? '收起 ▲' : '展开 ▼' }}
+            </button>
+          </template>
         </div>
         <div v-else-if="r.m.kind === 'meta'" class="meta mono">{{ r.m.text }}</div>
       </div>

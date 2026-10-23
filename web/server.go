@@ -1602,12 +1602,15 @@ type UIPlugin struct {
 
 // SlotDef 槽位覆盖声明(前端动态导入 module 后 registerSlot)。
 type SlotDef struct {
-	Name     string `json:"name"` // v1:stream|input|statusbar|confirm;v2 扩展:settings-section/sidebar-action/extra-panel
+	Name     string `json:"name"` // v1:stream|input|statusbar|confirm;v2 扩展:settings-section/sidebar-action/extra-panel;v3:tool-renderer
 	Priority int    `json:"priority"`
 	Module   string `json:"module"` // 相对插件目录的产物入口(如 ./dist/plugin.js)
 	// Title v2 扩展点展示文案(区段名/动作/面板标题);聚合时原样下发,
 	// 丢失会让插件声明的标题退化为宿主默认文案(2026-09-19 本机验收遯到)。
 	Title string `json:"title,omitempty"`
+	// Tools v3 tool-renderer 专用:本槽位接管的工具名('*' = 兜底渲染所有工具)。
+	// 其它槽位原样忽略(不报错:manifest 是插件作者写的,多一个无关字段不该拒装)。
+	Tools []string `json:"tools,omitempty"`
 }
 
 // handleUIPlugins 聚合全部已安装 UI 插件(每次读盘;安装/卸载即时生效,重载页面即换)。
@@ -1654,6 +1657,12 @@ func (s *Server) scanUIPlugins() []UIPlugin {
 		}
 		if m.Slots == nil {
 			m.Slots = []SlotDef{}
+		}
+		// tool-renderer 没声明 tools = 声明不完整(它不会匹配任何工具)。
+		// 这里**摘掉槽位并明说**,不整插件拒装:一个插件可以同时带 tool 与 ui,
+		// 为一个写错的槽位把整份产物挡在门外是过度处罚(与前端失败清单同一口径)。
+		if kept := filterIncompleteRenderers(s, m.ID, m.Slots); len(kept) != len(m.Slots) {
+			m.Slots = kept
 		}
 		// 完整性闸(2026-10-03):ui-plugins/SHA256SUMS 存在即强制。UI 插件是**与宿主同源
 		// 同权限**的面(产物经动态 import() 进主页面,能调全部 API),此前只有一个
@@ -3090,4 +3099,21 @@ func (s *Server) handleQuestion(w http.ResponseWriter, r *http.Request) {
 	}
 	s.question.Answer(body.ID, sdk.QuestionAnswer{Values: body.Values, Text: body.Text})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// filterIncompleteRenderers 摘掉未声明 tools 的 tool-renderer 槽位(其余原样保留)。
+//
+// 为什么要有一道后端校验:前端的失败清单只有**用户打开面板**才看得见,而这个错误
+// 的表现是「装了插件,结果区没变」—— 用户第一反应是插件坏了。日志里留一条
+// WARN 才能让人从 `gah` 的输出里直接看到原因。
+func filterIncompleteRenderers(s *Server, id string, slots []SlotDef) []SlotDef {
+	kept := make([]SlotDef, 0, len(slots))
+	for _, sl := range slots {
+		if sl.Name == "tool-renderer" && len(sl.Tools) == 0 {
+			s.log.Warn("ui-plugin: tool-renderer 槽位缺少 tools 声明,已忽略", "id", id, "module", sl.Module)
+			continue
+		}
+		kept = append(kept, sl)
+	}
+	return kept
 }

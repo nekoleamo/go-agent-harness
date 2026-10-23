@@ -354,7 +354,7 @@ func main() {
 
 ### 4.2 UI 插件(web 槽位)的信任模型
 
-UI 插件以 `$GAH_HOME/ui-plugins/<id>/` 落盘,manifest 声明槽位覆盖(stream/input/statusbar/confirm/settings-section/sidebar-action/extra-panel),前端经 `web-src/src/plugins.ts` 动态 `import()` 载入。
+UI 插件以 `$GAH_HOME/ui-plugins/<id>/` 落盘,manifest 声明槽位覆盖(stream/input/statusbar/confirm/settings-section/sidebar-action/extra-panel/**tool-renderer**),前端经 `web-src/src/plugins.ts` 动态 `import()` 载入。
 
 **关键事实:UI 插件与主应用同源同 realm,因此拥有与主应用相同的权限** —— 可读取页面上的全部会话内容、可用 cookie 调全部 `/api/*`(含 `/api/input`,即向模型投喂 prompt → 经工具执行等同本地代码执行)。这与外部插件二进制「与宿主进程同权限」等价。
 
@@ -368,6 +368,18 @@ UI 插件以 `$GAH_HOME/ui-plugins/<id>/` 落盘,manifest 声明槽位覆盖(str
 - 停用 = **不下发**(前端根本不加载);文件与闸条目留着,重新启用不需要重新登记。
 - 客户端开发时若发现"插件不加载",看日志与设置面板的说明行 —— 那是闸在起作用,不是坏了。
 - 纵深:SPA 响应带严格 CSP(`default-src 'none'` + 显式白名单,`connect-src 'self'`),切断「纯外发」通道(要绕过需注入,成本陡增);`/api/ui-plugins` 响应带 `trusted`/说明字段,设置页有同款提示。
+- **工具结果渲染器(`tool-renderer`,第一百六十五批)**:按**工具名**接管会话流里那一条结果的
+  渲染,而不是整条 stream 槽位(改 stream 要把整个会话流重画一遍才能换一个表格的展示方式)。
+  ```json
+  {"id":"my-plugin","version":"1","slots":[
+    {"name":"tool-renderer","priority":10,"module":"./dist/renderer.js","tools":["image_ops"]}
+  ]}
+  ```
+  组件 props(全部由宿主注入):`{ name, args, summary, full, err }`,其中 `full` 是**完整原文**
+  (工具结果分流后是原数据,不是模型看到的瘦身版)。`tools: ["*"]` = 兜底渲染所有未被专用
+  渲染器接管的工具。选择规则:精确匹配优先于 `*`,同档 priority 降序;`tools` 为空 =
+  声明不完整,后端**摘掉该槽位并记 WARN**、前端同时在失败清单里显示原因
+  (不整插件拒装:一个插件可以同时带 tool 与 ui)。
 - 规划中(未实施):`iframe sandbox` + postMessage 能力桥 + manifest `permissions` 声明 —— 仅当 UI 插件成为**网络分发**面才值得做。
 - 开发约束不变:渲染层禁 `v-html`,组件不得散写裸色值(见 AGENTS.md「UI 规范」)。
 

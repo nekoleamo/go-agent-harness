@@ -183,3 +183,71 @@ export function slotSnapshot(): Record<SlotName, string> {
   }
   return out
 }
+
+// —— 工具结果渲染器(第一百六十五批):插件按**工具名**接管结果区的渲染。
+//
+// 与 v1 四槽位(v1 语义:整槽覆盖)和 v2 扩展点(多实例追加)的区别:它挂在**一条工具结果**上,
+// 按工具名精确匹配 —— 因此不进 SlotName,单独一张表(key = 插件 id,同一工具以 priority 高者胜)。
+//
+// 为什么需要它(而不是让插件改 stream 槽位):改 stream 要把整条会话流重画一遍才能换
+// 一个工具结果的展示方式,那是"为了一个表格重写整个页面"。这里的契约是:宿主仍然负责
+// 会话流的顺序/折叠/错误态,只在**结果区**把渲染权交出去。
+export interface ToolRendererProps {
+  /** 工具名(与注册时声明的 tools 之一相同)。 */
+  name: string
+  /** 参数摘要(宿主已裁剪的一行;要原参数请自己从 content 里读)。 */
+  args: string
+  /** 宿主算好的一行人话摘要(缺失 = 旧日志/未知工具)。 */
+  summary?: string
+  /** 完整结果文本(分流后这里是**原文**,不是模型看到的瘦身版)。 */
+  full: string
+  /** 这次调用是否失败(判据同工具行:错误通道或内容级错误)。 */
+  err: boolean
+}
+
+export interface ToolRendererReg {
+  key: string // 插件 id(同 id 覆盖;便于面板显示"是谁渲染的")
+  tools: string[] // 声明的工具名;'*' = 兜底渲染所有工具
+  component: Component
+  priority: number // 降序;默认 10
+}
+
+const toolRenderers = new Map<string, ToolRendererReg>()
+
+// registerToolRenderer 注册(同 key 覆盖;tools 为空 = 无意义声明,直接忽略)。
+export function registerToolRenderer(key: string, reg: Omit<ToolRendererReg, 'key'>): void {
+  if (!reg.tools || reg.tools.length === 0) return
+  toolRenderers.set(key, { key, tools: [...reg.tools], component: reg.component, priority: reg.priority || 10 })
+}
+
+// toolRendererFor 按工具名取渲染器:精确匹配优先,其次 '*' 兜底,同档取 priority 高者。
+//
+// 为什么不合并成一趟排序:两者语义不同 —— 精确匹配是"这个插件懂这个工具的数据形状",
+// 兜底是"我想接管所有没人管的结果"。混在一起排会让一个 priority 高的兜底插件
+// 抢掉本该由专用插件的那个工具。
+export function toolRendererFor(name: string): ToolRendererReg | null {
+  let exact: ToolRendererReg | null = null
+  let wildcard: ToolRendererReg | null = null
+  for (const r of toolRenderers.values()) {
+    if (r.tools.includes(name)) {
+      if (!exact || r.priority > exact.priority) exact = r
+    } else if (r.tools.includes('*')) {
+      if (!wildcard || r.priority > wildcard.priority) wildcard = r
+    }
+  }
+  return exact ?? wildcard
+}
+
+// toolRendererSnapshot 快照(调试/文档/测试断言):工具名 → 插件 id。
+export function toolRendererSnapshot(): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const r of toolRenderers.values()) {
+    for (const t of r.tools) out[t] = r.key
+  }
+  return out
+}
+
+// clearToolRenderers 清空(测试用;生产路径没有"卸载 UI 插件"的运行时动作 —— 重载页面即换)。
+export function clearToolRenderers(): void {
+  toolRenderers.clear()
+}
