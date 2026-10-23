@@ -4,7 +4,7 @@
 // `plugins/<名>/<名>`(子目录)—— 重新 go build 覆盖子目录里的二进制不产生任何事件,
 // 热重载静默不生效,必须重启 gah。扁平布局(测试/手工摆放)碰巧有效,所以从没暴露。
 //
-// 三段:① watch 递归本身(core/plugin);② 事件到了之后 bridge 是否真的重载/装载
+// 三段:① watch 递归本身(internal/watch);② 事件到了之后 bridge 是否真的重载/装载
 // (本文件);③ 目录整体落盘时不能只拿到目录事件(见 TestLoadUnderNewDirLayout)。
 package hostbridge
 
@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nekoleamo/go-agent-harness/core/plugin"
+	"github.com/nekoleamo/go-agent-harness/internal/watch"
 )
 
 // hitCollector 收集 watch 回调(**带锁**:回调在 watcher goroutine 里,不加锁会被 -race
@@ -64,7 +64,7 @@ func TestWatcherRecursiveNestedDir(t *testing.T) {
 	buildFakePlugin(t, filepath.Join(sub, "tool-demo"))
 
 	hc := &hitCollector{}
-	_, closeFn, err := plugin.NewWatcher(dir, 80*time.Millisecond, hc.add)
+	_, closeFn, err := watch.NewWatcher(dir, 80*time.Millisecond, hc.add)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestWatcherFlatLayoutStillWorks(t *testing.T) {
 	buildFakePlugin(t, f)
 
 	hc := &hitCollector{}
-	_, closeFn, err := plugin.NewWatcher(dir, 80*time.Millisecond, hc.add)
+	_, closeFn, err := watch.NewWatcher(dir, 80*time.Millisecond, hc.add)
 	if err != nil {
 		t.Fatal(err)
 	}

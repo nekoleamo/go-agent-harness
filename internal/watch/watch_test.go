@@ -1,4 +1,4 @@
-package plugin
+package watch
 
 import (
 	"os"

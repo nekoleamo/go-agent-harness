@@ -25,9 +25,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	coreplugin "github.com/nekoleamo/go-agent-harness/core/plugin"
 	"github.com/nekoleamo/go-agent-harness/internal/plugintrust"
 	"github.com/nekoleamo/go-agent-harness/internal/searchfile"
+	"github.com/nekoleamo/go-agent-harness/internal/watch"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -110,7 +110,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 			// 目录不存在 = 空插件集(loadEntries 已降级):不监听、不报错——
 			// 热更新仅对已存在目录有意义(防止默认开 watch 后空目录拖垮 boot)
 			if _, serr := os.Stat(dir); serr == nil {
-				_, closeFn, werr := coreplugin.NewWatcher(dir, 300*time.Millisecond, b.onWatchEvent)
+				_, closeFn, werr := watch.NewWatcher(dir, 300*time.Millisecond, b.onWatchEvent)
 				if werr != nil {
 					b.closeAll()
 					return nil, fmt.Errorf("host-bridge: 监听 %s: %w", dir, werr)
@@ -828,7 +828,7 @@ func roleOf(name, path string) string {
 //     这一支原先根本不存在:watcher 只报 Write|Create|Rename,Remove 被显式排除
 //     (注释说"删除由 plugin-manager 决定"),而外部插件这条路**没有 plugin-manager 介入**
 //     ⇒ 用户 `rm` 掉文件,进程继续跑(持工具注册 + 回调 token)直到 gah 重启,
-//     「我删了它」给的是**虚假的安全感**。见 core/plugin/watch.go 的去抖与存在性判定。
+//     「我删了它」给的是**虚假的安全感**。见 internal/watch 的去抖与存在性判定。
 func (b *Bridge) onWatchEvent(path string) {
 	if strings.TrimSpace(path) == "" {
 		return // 监听错误上报(watcher 侧已记日志),此处不做事

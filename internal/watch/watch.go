@@ -1,5 +1,11 @@
-// 热重载监听框架:watch 插件目录(递归),文件变化经 debounce 触发回调。
-// (对齐设计 §2.3:进程内热重载 = fsnotify + dispose/reload;M2 起由 plugin-manager 使用)
+// Package watch 递归目录监听(去抖),供外部插件热重载使用。
+//
+// **为什么在 internal/ 而不在 core/plugin**(2026-10-23):它原先住在 `core/plugin`,
+// 而 `core/plugin` 自己**并不使用**它(唯一的消费者是 host-bridge 的外部插件热重载)
+// ⇒ 一个通用工具占着 core 的导出面,还逼内置插件 `import core/plugin` —— 那正是
+// AGENTS.md 红线里登记的一笔「待还的债」(插件只许 import sdk/;内置插件取宿主内部
+// 实现走 `internal/*`)。搬到 internal/ 后两边都正了:core 不再导出自己不用东西,
+// host-bridge 也不再穿透到 core 的内部实现。
 //
 // **为什么必须递归**(2026-10-03 实测修掉的一个静默失效):原实现只 `w.Add(dir)` 监听
 // **顶层**,而外部插件的**发布布局**是 `plugins/<名>/<名>` —— 子目录。
@@ -11,7 +17,7 @@
 // 递归边界:只跟进**新建的目录**,并带深度/数量上限。插件目录很小(几 MB 到几十 MB 的
 // 几个二进制),但用户也可能把别的东西扔进去;上限保证一次误投放不会把 fd 耗光
 // (fsnotify 每个目录一个 watch descriptor)。
-package plugin
+package watch
 
 import (
 	"os"

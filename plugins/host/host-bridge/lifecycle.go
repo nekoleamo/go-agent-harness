@@ -11,7 +11,7 @@
 //	② **删二进制不会卸载运行中的进程**:watcher 只监听 Write|Create|Rename,Remove 被
 //	   显式排除(注释"删除由 plugin-manager 决定"),而外部插件这条路**没有 plugin-manager
 //	   介入** ⇒ 用户 `rm` 掉文件,进程继续跑(持工具注册 + 回调 token)直到 gah 重启。
-//	   「我删了它」给人一个**虚假的安全感**。watcher 侧见 core/plugin/watch.go。
+//	   「我删了它」给人一个**虚假的安全感**。watcher 侧见 internal/watch。
 //
 //	③ pluginPath 多候选歧义叠加其上 ⇒ “清理插件”同时撞三个坑。停用有了明确路径后,
 //	   歧义只影响“重载/启停”这一条边(见 pluginPath 的报错文案)。

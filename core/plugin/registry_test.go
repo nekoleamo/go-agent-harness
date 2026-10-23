@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -191,5 +192,109 @@ func TestDisposeAllReverseOrder(t *testing.T) {
 	defer mu.Unlock()
 	if len(order) != 2 || order[0] != "b" || order[1] != "a" {
 		t.Fatalf("dispose 应逆拓扑序(b→a),got %v", order)
+	}
+}
+
+// TestBlockedByLoaded 卸载防护:仍加载且依赖「我提供的服务键」的插件要被点名。
+//
+// 为什么这条必须有(而不是"顺手补覆盖"):插拔安全的红线就是「运行期卸载不得破坏
+// 依赖者」—— 之前 BlockedByLoaded 是**零覆盖**,也就是那条保证一直只有注释撑着。
+// 反向验证:把 BlockedByLoaded 改成恒返回 nil ⇒ 本用例红。
+func TestBlockedByLoaded(t *testing.T) {
+	r := New()
+	var track atomic.Int32
+	a := &counter{id: "base", track: &track}
+	b := &counter{id: "user", track: &track}
+	c := &counter{id: "bystander", track: &track}
+	if err := r.Register(func() sdk.Plugin { return a }, m("base", []string{"svc.base"}, nil)); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Register(func() sdk.Plugin { return b }, m("user", []string{"svc.user"}, []string{"svc.base"})); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Register(func() sdk.Plugin { return c }, m("bystander", []string{"svc.by"}, nil)); err != nil {
+		t.Fatal(err)
+	}
+	// 未加载时:卸载没有影响 ⇒ 不算阻塞(否则"注册了就永远卸不掉")
+	if got := r.BlockedByLoaded("base"); len(got) != 0 {
+		t.Fatalf("未加载的插件不该阻塞任何人,got %v", got)
+	}
+	// 未注册的 id:空(不 panic)
+	if got := r.BlockedByLoaded("nope"); len(got) != 0 {
+		t.Fatalf("未知 id 应返回空,got %v", got)
+	}
+	if err := r.StartAll(newTestCtx(t)); err != nil {
+		t.Fatal(err)
+	}
+	// 全加载:只有「真的 requires 我提供的键」的那个被点名;旁观者不算
+	if got := r.BlockedByLoaded("base"); len(got) != 1 || got[0] != "user" {
+		t.Fatalf("应只阻塞依赖 svc.base 的 user,got %v", got)
+	}
+	if got := r.BlockedByLoaded("user"); len(got) != 0 {
+		t.Fatalf("没人依赖 user 提供的键,不该被阻塞,got %v", got)
+	}
+	// 依赖者卸载后就不再阻塞(防护要随状态变,不能一次性冻结)
+	r.Dispose("user")
+	if got := r.BlockedByLoaded("base"); len(got) != 0 {
+		t.Fatalf("依赖者已卸载,不该再阻塞,got %v", got)
+	}
+}
+
+// TestOrderAndDescribe 拓扑序快照与 describe 汇总(运维面:/plugins 与状态栏读它们)。
+func TestOrderAndDescribe(t *testing.T) {
+	r := New()
+	var track atomic.Int32
+	// 刻意乱序注册:b 依赖 a ⇒ 拓扑序必须把 a 排前
+	for _, id := range []string{"b", "c", "a"} {
+		pl := &counter{id: id, track: &track}
+		var req []string
+		if id == "b" {
+			req = []string{"svc.a"}
+		}
+		if err := r.Register(func() sdk.Plugin { return pl }, m(id, []string{"svc." + id}, req)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 启动前:order 为空(Order 报的是"最近一次拓扑序")
+	if got := r.Order(); len(got) != 0 {
+		t.Fatalf("未启动时 order 应为空,got %v", got)
+	}
+	if err := r.StartAll(newTestCtx(t)); err != nil {
+		t.Fatal(err)
+	}
+	order := r.Order()
+	if len(order) != 3 {
+		t.Fatalf("order 应含 3 项,got %v", order)
+	}
+	pos := map[string]int{}
+	for i, id := range order {
+		pos[id] = i
+	}
+	if pos["a"] > pos["b"] {
+		t.Fatalf("拓扑序应把 a 排在 b 前,got %v", order)
+	}
+	// Order 返回**副本**:调用方改它不得影响注册表(否则运维面板一次打印就把顺序搞乱)
+	if len(order) > 0 {
+		order[0] = "hacked"
+		if r.Order()[0] == "hacked" {
+			t.Fatal("Order 必须返回副本")
+		}
+	}
+	desc := r.Describe()
+	for _, id := range []string{"a", "b", "c"} {
+		if !strings.Contains(desc, id+" [host] started") {
+			t.Fatalf("describe 缺 %s 的加载态条目:\n%s", id, desc)
+		}
+	}
+	if !strings.Contains(desc, "requires=[svc.a]") {
+		t.Fatalf("describe 应列出 requires(运维靠它看依赖):\n%s", desc)
+	}
+	if strings.HasSuffix(desc, "\n") {
+		t.Fatalf("describe 不应带尾换行(调用方自己决定排版):%q", desc)
+	}
+	// 卸载后同一份 describe 要变 stopped(运维面不能报旧状态)
+	r.Dispose("c")
+	if d := r.Describe(); !strings.Contains(d, "c [host] stopped") {
+		t.Fatalf("卸载后 describe 应显示 stopped:\n%s", d)
 	}
 }

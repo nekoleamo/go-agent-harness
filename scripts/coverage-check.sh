@@ -126,7 +126,7 @@ SKIP="${GAH_COVER_SKIP:-0}"             # 1 = 只测(不校验),用于基线测�
 read -r -d '' MINS <<'EOF'
 core/event 90
 core/ctx 60
-core/plugin 72
+core/plugin 86
 core/config 65
 sdk 86.5
 internal/prefs 84
@@ -147,6 +147,7 @@ internal/redact 90
 internal/sessionevents 92
 internal/sessionhtml 92
 internal/todostore 90
+internal/watch 80
 internal/toolsummary 75
 cmd/gah 69
 plugins/catalogue 70
