@@ -234,10 +234,10 @@ var statuslineCluster = map[string]bool{
 // D3(2026-10-21):**intervene 置首** —— 「现在轮到人了吗」是唯一需要一眼看到的事;
 // 待答提问(questions)的内容**并入** intervene(同一处、同一措辞),questions 退出默认集合
 // (仍可经 /statusline questions 单独打开),免得同一件事在一条状态栏里出现两遍。
-var defaultStatusline = []string{"intervene", "notice", "state", "queue", "plan", "dock", "last", "tps", "workspace", "sandbox", "approval", "role", "session"}
+var defaultStatusline = []string{"intervene", "notice", "state", "queue", "plan", "todo", "dock", "last", "tps", "workspace", "sandbox", "approval", "role", "session"}
 
 // statuslineTokens 全部合法项(顺序无关;/statusline 错误提示与校验用)。
-var statuslineTokens = []string{"intervene", "notice", "state", "queue", "questions", "plan", "dock", "last", "tps", "workspace", "sandbox", "approval", "role", "session"}
+var statuslineTokens = []string{"intervene", "notice", "state", "queue", "questions", "plan", "todo", "dock", "last", "tps", "workspace", "sandbox", "approval", "role", "session"}
 
 // statuslineTokenDesc 项说明(/statusline 无参与错误提示用)。
 var statuslineTokenDesc = map[string]string{
@@ -247,6 +247,7 @@ var statuslineTokenDesc = map[string]string{
 	"queue":     "转向/待发计数(转向 = 已注入本回合;待发 = 回告后自动续发)",
 	"questions": "待答提问计数(S-P0-2)",
 	"plan":      "规划进度(已完成/总步数;详情 /plan)",
+	"todo":      "待办进度(已完成/总数;详情 /todo)",
 	"dock":      "后台任务/子代理坞(S-P0-3)",
 	"last":      "上一回合耗时",
 	"tps":       "上一回合输出速率(输出 tok/回合时长;工具与审批等待计入分母)",
@@ -321,6 +322,14 @@ func statuslineItem(s *State, token string) string {
 				txt += " · " + truncWidthRunes(s.PlanTitle, 18)
 			}
 			return styleBusy.Render(txt)
+		}
+	case "todo":
+		// D2 的另一半(2026-10-23):待办进度。无待办 ⇒ 隐身(不占位)。
+		//
+		// 刷新时机是「回合结束 + 文件 mtime 变了」——**不是每帧读文件**:待办是工具
+		// (发行态在外部进程)写的,状态栏每帧渲染,每帧读盘是"低频指标付高频成本"。
+		if s.TodoTotal > 0 {
+			return styleBusy.Render(fmt.Sprintf("待办 %d/%d", s.TodoDone, s.TodoTotal))
 		}
 	case "dock":
 		if lbl := dockLabel(s.Dock); lbl != "" {
@@ -454,6 +463,7 @@ func renderStatusLineOrdered(s *State, width int) string {
 // workspace/sandbox/approval/role/session 是配置,一轮内基本不动(除非用户切)。
 var statuslineLive = map[string]bool{
 	"intervene": true, "notice": true, "state": true, "queue": true, "questions": true, "plan": true,
+	"todo": true,
 	"dock": true, "last": true, "tps": true,
 }
 

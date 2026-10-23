@@ -31,6 +31,14 @@ type planMsg struct {
 	title string
 }
 
+// todoMsg 待办进度刷新(D2 的另一半:状态栏项 todo 渲染)。
+//
+// 与 planMsg 同款纪律(走 UI 消息,不在订阅回调里直改 State)。
+type todoMsg struct {
+	done  int
+	total int
+}
+
 // noticeMsg 用户提示推送(NOND-N1;sdk.EventNotice 广播 → 状态栏 notice 项)。
 type noticeMsg struct{ n *sdk.Notice }
 
@@ -197,6 +205,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.dockTicking = false
 		}
 		m.skipView = false
+	case todoMsg:
+		// D2 的另一半:待办进度(无待办 ⇒ total=0 ⇒ 状态栏该项隐身)。
+		m.state.TodoDone = msg.done
+		m.state.TodoTotal = msg.total
 	case planMsg:
 		// D2:规划进度(无规划 ⇒ total=0 ⇒ 状态栏该项隐身)。
 		m.state.PlanDone = msg.done

@@ -127,6 +127,11 @@ type State struct {
 	PlanTotal int
 	PlanTitle string
 
+	// D2 的另一半(2026-10-23):待办进度(状态栏项 todo 渲染)。
+	// TodoDone 已完成 / TodoTotal 未删除总数;均 0 ⇒ 该项隐身(没建过单不占位)。
+	TodoDone  int
+	TodoTotal int
+
 	// P5 回合耗时:turnStart 运行起点(ApplyStatus running 首设),turnDur 上次回合耗时
 	// (ApplyStatus idle 结算;状态栏空闲态展示)。私有,渲染层同包可读。
 	turnStart time.Time

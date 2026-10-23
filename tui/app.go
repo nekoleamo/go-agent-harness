@@ -20,6 +20,7 @@ import (
 	"github.com/nekoleamo/go-agent-harness/internal/install"
 	"github.com/nekoleamo/go-agent-harness/internal/prefs"
 	"github.com/nekoleamo/go-agent-harness/internal/providerfile"
+	"github.com/nekoleamo/go-agent-harness/internal/todostore"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -45,6 +46,13 @@ type App struct {
 	uiQueue chan tea.Msg // UI 投递队列(缓冲;UI 循环内外调用均不阻塞)
 	subs    []sdk.Disposer
 	cmds    sdk.CommandRegistry // ctx.commands(可为 nil:未装配时命令不可用)
+
+	// 待办计数缓存(D2 的另一半:状态栏项 todo)。只由 refreshTodos 所在的
+	// 总线 goroutine 读写(回合结束回调),UI 线程只收 todoMsg —— 无锁依赖。
+	todoSeen  bool      // 是否已读过一次(区分"还没读过"与"读过但没有文件")
+	todoMod   time.Time // 上次读取时文件的 mtime(mtime 未变 ⇒ 不重放)
+	todoDone  int
+	todoTotal int
 
 	// cancelFn 当前回合的取消函数(Esc 中断)。UI goroutine 读、回合 goroutine 写,
 	// 必须原子(普通字段是 data race:取消丢失或对已结束回合误调)。
@@ -299,6 +307,48 @@ func (a *App) refreshPlan() {
 	a.sendToUI(planMsg{done: best.Done, total: best.Total, title: best.Objective})
 }
 
+// todoCounts 读待办计数(读侧单一事实源 internal/todostore)。
+//
+// 触发时机 = 回合结束(idle)+ 文件 mtime 变化,**不是每帧**:待办由工具
+// (发行态是外部进程)写,状态栏每帧都渲染,每帧读盘是"低频指标付高频成本"。
+// mtime 没变就跳过重放(jnl 文件小,但解析 + 排序仍没必要每回合做一次)。
+func (a *App) todoCounts() (done, total int, changed bool) {
+	st, err := os.Stat(todostore.Path(""))
+	if err != nil {
+		// 没建过单 / 无权限:当作"没有待办"(状态栏项隐身),不报错 ——
+		// 与 /plan 同口径:没用的功能不该在状态栏喊。
+		if a.todoMod.IsZero() && a.todoSeen {
+			return 0, 0, false
+		}
+		a.todoSeen, a.todoMod = true, time.Time{}
+		return 0, 0, true
+	}
+	mod := st.ModTime()
+	if a.todoSeen && mod.Equal(a.todoMod) {
+		return a.todoDone, a.todoTotal, false
+	}
+	d, t := 0, 0
+	for _, task := range todostore.Load(todostore.Path("")) {
+		if task.Deleted {
+			continue
+		}
+		t++
+		if task.Status == todostore.StatusCompleted {
+			d++
+		}
+	}
+	a.todoSeen, a.todoMod = true, mod
+	a.todoDone, a.todoTotal = d, t
+	return d, t, true
+}
+
+// refreshTodos 回读待办计数并投递到 UI 循环(与 refreshPlan 同款纪律)。
+func (a *App) refreshTodos() {
+	if done, total, changed := a.todoCounts(); changed {
+		a.sendToUI(todoMsg{done: done, total: total})
+	}
+}
+
 // planMoreActive 排序用:未归档的规划比已归档的"更该看"。
 func planMoreActive(s, other string) bool {
 	active := func(x string) bool { return x == "proposed" || x == "confirmed" }
@@ -497,6 +547,9 @@ func (a *App) answerQuestion(id string, ans sdk.QuestionAnswer) {
 // Start 启动 TUI(goroutine 跑 Run),挂接事件订阅。
 func (a *App) Start() error {
 	a.started.Store(true)
+	// 首帧就要正确:启动时回读一次待办(此前只有回合结束才刷新,老清单要等到
+	// 下一回合结束才出现 —— 用户打开就在看的状态栏不该有"等一会儿才准"的项)。
+	a.refreshTodos()
 	// 会话事件 → UI
 	d1 := a.c.Subscribe(sdk.EventSession, func(ctx context.Context, ev *sdk.Event) error {
 		if sev, ok := ev.Payload.(*sdk.SessionEvent); ok {
@@ -512,6 +565,7 @@ func (a *App) Start() error {
 			// 回读一次让状态栏的「计划 n/m」不落后。
 			if s == "idle" {
 				a.refreshPlan()
+				a.refreshTodos() // 待办多半是回合里推进的(与 plan 同一时机回读)
 			}
 		}
 		return nil
@@ -523,10 +577,12 @@ func (a *App) Start() error {
 	// 同步广播,回调里直改 a.model.state 就是数据竞争(见 sessionSwitchedMsg 注释)。
 	d3 := a.c.Subscribe("cwd/session-switched", func(context.Context, *sdk.Event) error {
 		a.sendToUI(sessionSwitchedMsg{})
+		a.refreshTodos() // 待办按项目分文件:换工作区/会话 ⇒ 可能是另一份清单
 		return nil
 	})
 	d4 := a.c.Subscribe("cwd/workspace-switched", func(context.Context, *sdk.Event) error {
 		a.sendToUI(sessionSwitchedMsg{})
+		a.refreshTodos()
 		return nil
 	})
 	// NOND-N1 提示 → 状态栏(订阅回调可能在总线 goroutine,也可能在 UI 循环内,统一经 sendToUI 递进)

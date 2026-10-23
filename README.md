@@ -308,7 +308,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `/tree` | 会话分支树(会话全貌 + 可 fork 的提问点) |
 | `/name <显示名>` | 给当前会话加显示名(`-` 清除;状态栏/切换列表名优先) |
 | `/widgets on\|off` | 输入区上方 widget 区开关(宿主注册的动态信息行) |
-| `/statusline [项...]\|reset` | 状态栏项集合与顺序(TUI):无参=查看当前与可用项(`state/queue/questions/dock/notice/last/tps/workspace/sandbox/approval/role/session`);给项即按序渲染(回合态项之间 `·`、其余 `|`),`reset` 恢复 F15.3 基线;偏好持久化(`gah-state.json`)重启生效 |
+| `/statusline [项...]\|reset` | 状态栏项集合与顺序(TUI):无参=查看当前与可用项(`intervene/state/queue/questions/plan/todo/dock/notice/last/tps/workspace/sandbox/approval/role/session`);给项即按序渲染(回合态项之间 `·`、其余 `|`),`reset` 恢复 F15.3 基线;偏好持久化(`gah-state.json`)重启生效 |
 | `/traj` | 轨迹/可观测视图(TUI):以文本浮层呈现同一份会话事件账本的**回合 → 步 → 工具**投影(概览:回合数/总时长/累计 token 与缓存占比;逐回合倒序:时长与结束原因、步数与工具数、失败/未回填计数、token、模型名;工具行:状态/耗时/出参体积/错误原文/参数摘要)。只呈现过程与成本,不铺出参与正文;**时长只取事件时间戳,进行中的回合/步/工具一律显「进行中」**(概览改显「计算中」),不拿本地时钟补齐;浮层复用文本 pager(滚动/横移/搜索/`q` 关闭),Web 侧对应轨迹视图按钮 |
 | `/notice` | 查看最近的提示(TUI,NOND-N1):以浮层列出进程内提示缓冲(最新在前:级别/时刻/来源 + 标题 + 正文),并显示缓冲 gap 与去重计数;未装配提示通道时显式报错 |
 | `/notify [test\|auto\|osc\|bell\|off]` | 系统级通知开关与自测(TUI,NOND-N2):无参=回显**当前会怎么发**(落点与原因)与用法;`test` 发一条测试通知;`auto` 按终端能力探测(kitty OSC 99 / WezTerm·VTE OSC 777 / iTerm2 等 OSC 9 / 响铃 / 未附着终端则只留状态栏)、`osc` 强制转义、`bell` 只响铃、`off` 关闭(零输出);`GAH_TUI_NOTIFY` 是持久开关(未设或写错值回落 `auto`)。**只有 `warn`/`error` 会打扰人**,`info` 只更新状态栏 |
