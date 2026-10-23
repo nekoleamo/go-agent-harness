@@ -62,6 +62,12 @@ func (s *Server) handleCompact(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "会话服务不支持滚动压缩(CompactService)", http.StatusNotImplemented)
 		return
 	}
+	// 空闲闸门(第一百六十七批):回合进行中拒绝压缩,与 /compact 同一句话(单一事实源
+	// 在 sdk.MaintenanceBlocked) —— 两条入口给出不同口径的话,用户会以为是两个功能。
+	if reason, blocked := sdk.MaintenanceBlocked(s.ctx); blocked {
+		http.Error(w, reason, http.StatusConflict)
+		return
+	}
 	var req struct {
 		Prompt string `json:"prompt"`
 	}

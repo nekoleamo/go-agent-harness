@@ -178,3 +178,55 @@ func TestControlPersistsPrefs(t *testing.T) {
 		t.Fatalf("control 后应持久化偏好: %+v", p)
 	}
 }
+
+// TestCompactEndpointRefusedMidTurn 回合进行中压缩必须 409 + 明说原因(第一百六十七批)。
+//
+// 与 /compact 同一句话(单一事实源 sdk.MaintenanceBlocked):两条入口口径不一,
+// 用户会以为这是两个功能。
+func TestCompactEndpointRefusedMidTurn(t *testing.T) {
+	s, _ := newTestServer()
+	cl := &compactLog{memLog: &memLog{}, folded: 3}
+	s.sessions = cl
+	s.tc = &runningTurn{running: true}
+	s.ctx = &turnCtx{tc: s.tc}
+	hs := httptest.NewServer(s.handler())
+	defer hs.Close()
+
+	resp, err := http.Post(hs.URL+"/api/compact", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("回合进行中应 409,得 %d", resp.StatusCode)
+	}
+	body := make([]byte, 512)
+	n, _ := resp.Body.Read(body)
+	msg := string(body[:n])
+	if !strings.Contains(msg, "回合进行中") || !strings.Contains(msg, "/stop") {
+		t.Fatalf("拒绝要说清原因与出口: %q", msg)
+	}
+	if cl.summary != "" {
+		t.Fatal("被拒绝时**不能**已经压过(顺序:先闸门后动手)")
+	}
+}
+
+// turnCtx 只多提供 ctx.turnControl 的最小 Ctx(其余走 testCtx 的默认实现)。
+type turnCtx struct {
+	testCtx
+	tc sdk.TurnControl
+}
+
+func (c *turnCtx) Inject(key string, dst any) error {
+	if key != "ctx.turnControl" || c.tc == nil {
+		return nil // 与 testCtx 同口径:未装配不报错,MaintenanceBlocked 视为放行
+	}
+	*(dst.(*sdk.TurnControl)) = c.tc
+	return nil
+}
+
+// runningTurn 固定 Running 的回合控制替身。
+type runningTurn struct{ running bool }
+
+func (r *runningTurn) Running() bool { return r.running }
+func (r *runningTurn) Cancel()       {}

@@ -706,6 +706,11 @@ func (h *Host) cmdSettings(args []string) (string, error) {
 }
 
 func (h *Host) cmdCompact(args []string) (string, error) {
+	// 空闲闸门(第一百六十七批):回合进行中不做压缩 —— 它改写的是模型**本轮**看到的
+	// 上下文,中途动刀会让下一步请求和上一步不是同一份历史。拒绝要明说,不排队。
+	if reason, blocked := sdk.MaintenanceBlocked(h.c); blocked {
+		return "", errString("/compact: " + reason)
+	}
 	var sessions sdk.SessionLog
 	if err := h.c.Inject("ctx.sessions", &sessions); err != nil {
 		return "", errString("ctx.sessions 未装配")

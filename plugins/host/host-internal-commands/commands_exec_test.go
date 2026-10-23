@@ -421,3 +421,31 @@ func TestPureHelpers(t *testing.T) {
 		t.Fatalf("更早时间格式应为 MM-DD HH:MM: %q", got)
 	}
 }
+
+// TestCommandsCompactRefusedMidTurn 回合进行中 /compact 必须**明说拒绝**(第一百六十七批)。
+//
+// 为什么这条不是"多一道限制":压缩改写的是模型**本轮**看到的上下文 —— 中途动刀,
+// 下一步请求看到的投影就和上一步不是同一份历史。而排队更糟:用户以为压过了。
+// 反向验证过:去掉 cmdCompact 里的闸门 ⇒ 本用例红(压缩照做,拿到"已折叠")。
+func TestCommandsCompactRefusedMidTurn(t *testing.T) {
+	c, _ := buildEnv(t)
+	tc := &stubTurn{running: true}
+	if err := c.Provide("ctx.turnControl", sdk.TurnControl(tc)); err != nil {
+		t.Fatal(err)
+	}
+	cmds := startCmds(t, c)
+	_, err := run(t, cmds, "compact")
+	if err == nil {
+		t.Fatal("回合进行中应拒绝压缩")
+	}
+	if !strings.Contains(err.Error(), "回合进行中") || !strings.Contains(err.Error(), "/stop") {
+		t.Fatalf("拒绝要说清为什么与出口: %v", err)
+	}
+	tc.running = false
+	// 空闲后**不再被闸门拦**(这个夹具没装 ctx.sessions,所以接下来报的是"未装配"——
+	// 关键判据是错误里不该再出现闸门那句话)。
+	_, err = run(t, cmds, "compact")
+	if err != nil && strings.Contains(err.Error(), "回合进行中") {
+		t.Fatalf("空闲回合不该再被闸门拦: %v", err)
+	}
+}
