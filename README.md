@@ -305,7 +305,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `/theme [名]` | 切换主题(枚举 `$GAH_HOME/config/themes/*.yaml`;`default` 回默认;零重编译换肤,偏好持久化) |
 | `/fork [seq]` | 从历史任意点派生分支会话(`/tree` 查看 seq;缺省=最近提问) |
 | `/clone` | 复制当前会话(同一分支另一路演进) |
-| `/tree` | 会话分支树(会话全貌 + 可 fork 的提问点) |
+| `/tree` | 会话分支树(会话全貌 + 可 fork 的提问点;每条**分支**下补一句它在干什么 —— 取已缓存的会话概述,没有再退回首条提问,**不触发模型**) |
 | `/name <显示名>` | 给当前会话加显示名(`-` 清除;状态栏/切换列表名优先) |
 | `/widgets on\|off` | 输入区上方 widget 区开关(宿主注册的动态信息行) |
 | `/statusline [项...]\|reset` | 状态栏项集合与顺序(TUI):无参=查看当前与可用项(`intervene/state/queue/questions/plan/todo/dock/notice/last/tps/workspace/sandbox/approval/role/session`);给项即按序渲染(回合态项之间 `·`、其余 `|`),`reset` 恢复 F15.3 基线;偏好持久化(`gah-state.json`)重启生效 |

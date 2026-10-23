@@ -1353,7 +1353,12 @@ func (a *App) cmdTree(_ []string) (string, error) {
 		disp[si.ID] = name
 		curMark[si.ID] = si.ID == cur
 	}
-	body := treeRenderNodes(nodes, disp, curMark, fs.ForkPoints)
+	// C4「弃支一句话」的**只读那半**(2026-10-23):分支行补一句"这条支在干什么"。
+	// 数据来自已缓存的会话概述(SessionInfo.Summary),没有再退回首条用户消息的 Preview ——
+	// **绝不在这里调模型**:/tree 是查看命令,列表类请求触发模型是要命的成本形态
+	// (与 host-session-summary「列表请求绝不触发 Summary」同一条纪律)。
+	gists := branchGists(cs.Sessions())
+	body := treeRenderNodes(nodes, disp, curMark, fs.ForkPoints, gists)
 	body += "  (分支: /fork [seq] 从此点派生;复制当前: /clone;切换:/session switch)"
 	return "会话分支树:\n" + body, nil
 }
@@ -1361,8 +1366,37 @@ func (a *App) cmdTree(_ []string) (string, error) {
 // treeRenderNodes 会话分支树渲染(纯函数,可单测):由派生关系 nodes 组装树并输出文本。
 // 根判定:无父 / 父不在节点集 → 根;完全无记录 → 按 disp 全部平铺为根(向后兼容)。
 // 递归深度 ≤12 + visited 防环。forkPts 注入各会话分支点列表(错误忽略→空)。
+// branchGists 每个会话的一句话(it 用 gist 而不是 summary:它**可能**是退回 Preview)。
+func branchGists(infos []sdk.SessionInfo) map[string]string {
+	out := make(map[string]string, len(infos))
+	for _, si := range infos {
+		if t := firstLine(si.Summary); t != "" {
+			out[si.ID] = t
+			continue
+		}
+		if t := firstLine(si.Preview); t != "" {
+			out[si.ID] = t
+		}
+	}
+	return out
+}
+
+// firstLine 取首个非空行并按 60 字截断(概述是给列表看的一句,不是正文)。
+func firstLine(s string) string {
+	for _, ln := range strings.Split(s, "\n") {
+		if t := strings.TrimSpace(ln); t != "" {
+			r := []rune(t)
+			if len(r) > 60 {
+				return string(r[:60]) + "…"
+			}
+			return t
+		}
+	}
+	return ""
+}
+
 func treeRenderNodes(nodes []sdk.ForkNode, disp map[string]string, curMark map[string]bool,
-	forkPts func(id string) ([]sdk.ForkPoint, error)) string {
+	forkPts func(id string) ([]sdk.ForkPoint, error), gists map[string]string) string {
 	children := map[string][]sdk.ForkNode{}
 	known := map[string]bool{}
 	for _, n := range nodes {
@@ -1425,6 +1459,13 @@ func treeRenderNodes(nodes []sdk.ForkNode, disp map[string]string, curMark map[s
 			pts, _ = forkPts(id)
 		}
 		fmt.Fprintf(&b, "  %s %s %s(提问 %d 个;/fork 取 seq)\n", pad, mark, name, len(pts))
+		// 分支行补一句"这条支在干什么":否则一堆 fork-3 / fork-7 只能靠名字猜。
+		// 根(main)不给 —— 那是你正在看的那条,再写一遍是噪音。
+		if depth > 0 {
+			if g := gists[id]; g != "" {
+				fmt.Fprintf(&b, "  %s    %s\n", pad, g)
+			}
+		}
 		start := 0
 		if len(pts) > 5 {
 			start = len(pts) - 5
