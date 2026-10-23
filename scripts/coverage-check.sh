@@ -123,6 +123,9 @@ SKIP="${GAH_COVER_SKIP:-0}"             # 1 = 只测(不校验),用于基线测�
 #   → 两平台不可比。下限取 50(远低于实测值),逾期若在 Linux CI 报低,按上面的
 #   模式补了 `internal/kernelsandbox@linux 43`(Linux CI 实测 43.4%,2026-09-27)。
 #   注意这个下限不能按 darwin 的数字(实测 95.1)要求 —— 两平台可跑到的行集不同。
+#   internal/watch(2026-10-23 从 core/plugin 搬来):单独 `go test -cover` 是 83.7%,
+#   但本门在合并子进程覆盖(GAH_COVER_MERGE_DIR)的口径下算到 76% ⇒ 下限取**门能看到的那个数**
+#   (棘轮只许上调,不收"漂亮但算不出来"的数)。别照单独跑的数字改回去。
 read -r -d '' MINS <<'EOF'
 core/event 90
 core/ctx 60
@@ -147,7 +150,7 @@ internal/redact 90
 internal/sessionevents 92
 internal/sessionhtml 92
 internal/todostore 90
-internal/watch 80
+internal/watch 76
 internal/toolsummary 75
 cmd/gah 69
 plugins/catalogue 70
