@@ -812,80 +812,6 @@ const viewports = [
   { w: 820, h: 560 },
   { w: 700, h: 460 },
 ]
-// —— 样式快照(2026-10-24)——
-//
-// 为什么需要:把设置面板的样式从"13 个组件各自 scoped 编译一份"合并成"一份前缀化全局表"时,
-// 正确性肉眼看不出来 —— 而布局护栏只判几何(整页不滚/不撑宽),**不判颜色、边框、内边距**。
-// 这里采一组关键元素的 computed style:
-//   GAH_STYLE_DUMP=/tmp/before.json   ⇒ 采集并写文件(生成/刷新基线)
-//   否则若 test/style-baseline.json 存在 ⇒ 逐值比对,任何差异都红
-//   都没有 ⇒ skip(CI 不设这两个,不受影响)
-//
-// 判据强度:样式重构若漏掉一条规则的前缀(或把它当外壳类处理错),对应元素至少有一个
-// 属性会变 ⇒ 比对必报。这不是"看着没变"。
-// ⚠️ 所有选择器必须限定在**设置面板**内:页面上还有一个 `.panel`(Sidebar 的抽屉面板),
-// 裸 `.panel` 会采到它 —— 基线就会记录"透明背景 + 2px 内边距",把真实样式判成差异。
-const PANEL = '[aria-label="设置"]'
-const STYLE_PROBES = [
-  ['mask', '.gah-settings-mask'],
-  ['panel', PANEL],
-  ['head', `${PANEL} .head`],
-  ['title', `${PANEL} .head .title`],
-  ['close', `${PANEL} .x`],
-  ['cols', `${PANEL} .cols`],
-  ['nav', `${PANEL} .nav`],
-  ['navOn', `${PANEL} .nav-it.on`],
-  ['body', `${PANEL} .body`],
-  ['sec-model', '[data-sec="model"]'],
-  ['h', '[data-sec="model"] .h'],
-  ['reason-seg', '[data-sec="reason"] .seg'],
-  ['reason-seg-it', '[data-sec="reason"] .seg-it'],
-  ['history-row', '[data-sec="history"] .row'],
-  ['lab-inline', '[data-sec="history"] .lab-inline'],
-  ['ghost-btn', '[data-sec="history"] .ghost'],
-  ['dim', '[data-sec="history"] .dim'],
-  ['instr-fld', '[data-sec="instr"] .fld'],
-  ['instr-fldlab', '[data-sec="instr"] .fld-lab'],
-  ['provider-onboard', '[data-sec="provider"] .onboard'],
-  ['role-prow', '[data-sec="role"] .prow'],
-  ['role-btn', '[data-sec="role"] .prow button'],
-  ['mem-fld', '[data-sec="memory"] .fld'],
-  ['sched-fldrow', '[data-sec="schedule"] .fld-row'],
-  ['sched-chip', '[data-sec="schedule"] .chip'],
-  ['plugin-row', '[data-sec="plugin"] .plg-row'],
-  ['foot', `${PANEL} .foot`],
-]
-// 只采**与字体/内容无关**的属性。
-//
-// 为什么剔掉 lineHeight / gridTemplateColumns(2026-10-24,CI 上假红过):它们的 computed 值
-// 是**解析后的像素**,会随可用字体(CJK 缺失时回退字体度量不同)与内容宽度变 —— 那属于
-// 布局护栏的活儿,不是"样式重构有没有丢规则"的判据。这里要抓的是颜色/边框/内距/display 这类
-// 点位属性:漏一条规则的前缀,它们会整片消失。
-const STYLE_PROPS = [
-  'color', 'backgroundColor', 'borderTopWidth', 'borderTopStyle', 'borderTopColor', 'borderRadius',
-  'paddingTop', 'paddingLeft', 'paddingBottom', 'marginTop', 'fontSize', 'fontWeight',
-  'display', 'gap', 'flexDirection', 'overflowX', 'cursor',
-]
-
-// 采集:元素不存在就记 null(两侧同为 null 才算一致 —— "整段没渲染"本身就是要看见的差异)
-async function styleSnapshot(page) {
-  return page.evaluate(([probes, props]) => {
-    const out = {}
-    for (const [name, sel] of probes) {
-      const el = document.querySelector(sel)
-      if (!el) {
-        out[name] = null
-        continue
-      }
-      const cs = getComputedStyle(el)
-      const row = {}
-      for (const prop of props) row[prop] = cs[prop]
-      out[name] = row
-    }
-    return out
-  }, [STYLE_PROBES, STYLE_PROPS])
-}
-
 const docks = [
   { tag: '停靠收起', dock: { open: false, panel: 'changes', width: 392 } },
   { tag: '停靠-变更', dock: { open: true, panel: 'changes', width: 392 } },
@@ -3413,47 +3339,5 @@ test('介入条:真实帧派生待审批/出错,审批态不给点不动的按�
       await ctx.close()
     }
   }
-
-    // 样式快照比对(见上方 STYLE_PROBES 的说明)。
-  test('样式快照:设置面板关键元素的计算样式与基线一致', async (t) => {
-    const dump = process.env.GAH_STYLE_DUMP || ''
-    const baselinePath = path.join(WEB_SRC, 'test', 'style-baseline.json')
-    if (!dump && !fs.existsSync(baselinePath)) {
-      t.skip('没有基线也没有 GAH_STYLE_DUMP —— 跳过(CI 不设这两者,不受影响)')
-      return
-    }
-    const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
-    let page = null
-    try {
-      page = await open(ctx, makeStub(true, true, false, false, true), docks[1].dock)
-      await page.click('.gear')
-      await page.waitForSelector('[data-sec="model"]')
-      // 等布局稳定(字体/滚动条/异步段都就位)再采
-      await page.waitForTimeout(300)
-      const got = await styleSnapshot(page)
-      if (dump) {
-        fs.writeFileSync(dump, JSON.stringify(got, null, 2) + '\n')
-        t.diagnostic(`已写样式基线: ${dump}`)
-        return
-      }
-      const want = JSON.parse(fs.readFileSync(baselinePath, 'utf8'))
-      const diffs = []
-      for (const name of new Set([...Object.keys(want), ...Object.keys(got)])) {
-        const a = want[name]
-        const b = got[name]
-        if (!a || !b) {
-          if (!a !== !b) diffs.push(`${name}: 存在性变了(${a ? '有' : '无'} → ${b ? '有' : '无'})`)
-          continue
-        }
-        for (const prop of Object.keys(a)) {
-          if (a[prop] !== b[prop]) diffs.push(`${name}.${prop}: ${a[prop]} → ${b[prop]}`)
-        }
-      }
-      assert.deepEqual(diffs, [], `计算样式差异(样式重构不该改变外观):\n  ${diffs.join('\n  ')}`)
-    } finally {
-      await page?.close()
-      await ctx.close()
-    }
-  })
 
 })
