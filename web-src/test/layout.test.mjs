@@ -3337,20 +3337,29 @@ test('介入条:真实帧派生待审批/出错,审批态不给点不动的按�
       // 会话消息不是本用例的判据，给 1 条即可。
       const stub = makeStub(true, false, false, false, false, 'finance', 0, false, true, 1, false, false, '', c.frames)
       page = await open(ctx, stub, docks[1].dock)
-      await page.waitForSelector('.ibar.' + c.cls, { timeout: 20_000 })
-      const m = await page.evaluate(() => {
-        const bar = document.querySelector('.ibar')
-        const content = document.querySelector('.content')
-        const br = bar.getBoundingClientRect()
-        const cr = content.getBoundingClientRect()
-        return {
-          acts: bar.querySelectorAll('.ibar-act').length,
-          // 长 token 必须被 nowrap+ellipsis 吃掉,不许把内容列撑宽(撑宽 = 整页横向滚动)
-          overflowRight: Math.round(br.right - cr.right),
-          barScrollW: bar.scrollWidth,
-          barClientW: bar.clientWidth,
-        }
-      })
+      // 介入条是**瞬态**元素:`waitForSelector` 返回之后,再另起一次 evaluate 去量它可能
+      // 已经消失 —— 上一版就是这么在 CI 上红的(`Cannot read properties of null (reading
+      // 'getBoundingClientRect')`,v0.7.2 发版途中实测;本地帧快时撞不到)。存在性与测量必须在
+      // **同一次** evaluate 里完成,等不到就继续轮询(而不是先"看到"再"去拿")。
+      const handle = await page.waitForFunction(
+        (cls) => {
+          const bar = document.querySelector('.ibar.' + cls)
+          const content = document.querySelector('.content')
+          if (!bar || !content) return null
+          const br = bar.getBoundingClientRect()
+          const cr = content.getBoundingClientRect()
+          return {
+            acts: bar.querySelectorAll('.ibar-act').length,
+            // 长 token 必须被 nowrap+ellipsis 吃掉,不许把内容列撑宽(撑宽 = 整页横向滚动)
+            overflowRight: Math.round(br.right - cr.right),
+            barScrollW: bar.scrollWidth,
+            barClientW: bar.clientWidth,
+          }
+        },
+        c.cls,
+        { timeout: 20_000 },
+      )
+      const m = await handle.jsonValue()
       assert.equal(m.acts, c.actCount, `${c.name}: 动作按钮数量不对(待审批不该有按钮)`)
       assert.ok(m.overflowRight <= 1, `${c.name}: 介入条越出内容列右侧 ${m.overflowRight}px`)
       assert.ok(m.barScrollW <= m.barClientW + 1, `${c.name}: 介入条自身被撑出横向滚动`)
