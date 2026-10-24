@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime/coverage"
 	"strings"
 	"sync"
 	"syscall"
@@ -102,10 +103,30 @@ func init() {
 	if len(os.Args) < 7 || os.Args[1] != llExecFlag {
 		return
 	}
+	// 计数器必须在**施加限制之前**落盘(两件事都卡在这里):
+	//   ① `syscall.Exec` 替换进程镜像 ⇒ Go 的"退出时写 coverage 计数器"永远不会发生,
+	//      这段代码在覆盖率账上永远是 0%(与"没人跑"不可区分,见 internal/testutil/coverchild.go);
+	//   ② Landlock 一旦 restrict_self,GOCOVERDIR 不在白名单里 ⇒ 连写都写不出去。
+	// 所以顺序是"先写盘,再施加"。非插桩构建 / 未设 GOCOVERDIR 时是零开销的 no-op。
+	flushCoverageCounters()
 	if err := landlockSelfAndExec(os.Args[2], os.Args[3], os.Args[4], splitRWArg(os.Args[5]), os.Args[6:]); err != nil {
 		fmt.Fprintln(os.Stderr, "gah-kernelsandbox: 内核级沙箱自举失败: "+err.Error())
 	}
 	os.Exit(126) // Exec 成功则不会返回;返回即失败
+}
+
+// flushCoverageCounters 把进程当前的覆盖计数器写到 GOCOVERDIR(仅覆盖插桩构建;
+// 未插桩或未设该变量时静默跳过)。
+//
+// 为什么用 `runtime/coverage` 而不是改成"另起子进程再等待"(fork+等待那种常规解法):
+// 后者要动**沙箱施加路径**本身(信号转发 / 退出码 / pty / 进程组都要重新论证),
+// 而这里要修的只是"记账看不到" —— 用官方的运行期写盘接口把账补上,安全语义一个字都不用改。
+func flushCoverageCounters() {
+	dir := strings.TrimSpace(os.Getenv("GOCOVERDIR"))
+	if dir == "" {
+		return
+	}
+	_ = coverage.WriteCountersDir(dir) // 失败不外传:记账问题不该让命令跑不成
 }
 
 // ---------- ABI 探测 ----------

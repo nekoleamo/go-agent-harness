@@ -162,7 +162,11 @@ func failf(t *testing.T, format string, args ...any) {
 // 设了环境变量也只是一次无效的期待 —— 这正是以前那个盲区的成因。
 func BuildCovered(t *testing.T, out string, pkg string, extraArgs ...string) {
 	t.Helper()
-	args := append([]string{"build", "-cover", "-o", out}, extraArgs...)
+	// -covermode=atomic:与覆盖率门同模式(见 scripts/coverage-check.sh 的 -covermode=atomic)。
+	// 不用默认的 set 模式,是因为 `runtime/coverage.WriteCountersDir` **拒绝**在 set 模式下
+	// 写计数器("please use -covermode=atomic")—— 于是"进程 exec 前自己落盘"那条路(见
+	// internal/kernelsandbox/linux.go 的 flushCoverageCounters)在 set 模式下必然无声失效。
+	args := append([]string{"build", "-cover", "-covermode=atomic", "-o", out}, extraArgs...)
 	args = append(args, pkg)
 	cmd := exec.Command("go", args...)
 	if b, err := cmd.CombinedOutput(); err != nil {
