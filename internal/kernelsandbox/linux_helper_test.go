@@ -74,14 +74,26 @@ func TestBorderHelperFlushesCountersBeforeExec(t *testing.T) {
 	}
 	jail := t.TempDir()
 	root := t.TempDir()
-	coverDir := filepath.Join(t.TempDir(), "cov")
-	if err := os.MkdirAll(coverDir, 0o755); err != nil {
-		t.Fatal(err)
+	// 计数器目录**必须与 testutil 的合并目录同一个**:否则 Flush 读 RunDir 会是空的 ⇒
+	// 静默不并(第一版就是这么写的:断言绿了、账上却没变,只能靠 CI 的覆盖率读数发现)。
+	coverEnv := testutil.ChildEnv(t)
+	coverDir := ""
+	for _, kv := range coverEnv {
+		if k, v, ok := strings.Cut(kv, "="); ok && k == "GOCOVERDIR" {
+			coverDir = v
+		}
+	}
+	if coverDir == "" {
+		coverDir = filepath.Join(t.TempDir(), "cov")
+		if err := os.MkdirAll(coverDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		coverEnv = []string{"GOCOVERDIR=" + coverDir}
 	}
 	argv := helperArgv(t, sdk.SandboxWorkspace, root, jail, "true")
 	cmd := exec.Command(argv[0], argv[1:]...)
 	// 不设 GOCOVERDIR 以外的任何沙箱开关:这条用例只关心"exec 前有没有落盘"。
-	cmd.Env = append(os.Environ(), "GOCOVERDIR="+coverDir)
+	cmd.Env = append(os.Environ(), coverEnv...)
 	out, err := cmd.CombinedOutput()
 	// 两种结果都合法:能施加 Landlock ⇒ 0;不能 ⇒ 126(自举失败,绝不静默放行)。
 	if err != nil && !strings.Contains(string(out), "自举失败") {
