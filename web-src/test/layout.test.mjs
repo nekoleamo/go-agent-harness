@@ -713,6 +713,29 @@ async function open(ctx, stub, dock) {
   return page
 }
 
+// waitPanelSettled 等抽屉**滑入动画收尾**再量不变量。
+//
+// 为什么需要(`pane` 过渡:入场首帧 `transform: translateX(28px)`,见 style.css 的
+// `.pane-enter-from > *`):动画中途量到的是"面板整体右移 28px" —— 那不是布局缺陷,
+// 而是**我们自己的动画**。CI 上帧率慢时 `waitForSelector` 会在动画首帧就返回,于是
+// 「有元素越出视口且未被裁剪:[aside.ext-panel right=1228 @1200 宽]」恒红(v0.7.2 发版途中
+// 实撞:两次 rerun 都在同一条用例,本地却绿 —— 典型时序竞态)。
+// 判据取计算后的 transform 回到恒等,而不是固定 sleep:快机器上不等,慢机器上等够。
+async function waitPanelSettled(page, sel) {
+  await page
+    .waitForFunction(
+      (s) => {
+        const el = document.querySelector(s)
+        if (!el) return false
+        const t = getComputedStyle(el).transform
+        return t === 'none' || t === 'matrix(1, 0, 0, 1, 0, 0)'
+      },
+      sel,
+      { timeout: 5000 },
+    )
+    .catch(() => {}) // 拿不到(没有该面板)= 让后续断言自己报错,不在这里掩盖
+}
+
 // measure 在页面里量三个不变量(与人工验收用的探针同一套判定):
 //   ① 文档不被撑高(外壳永不滚:html/body overflow:hidden + 无越界子元素)
 //   ② 关键骨架在视口内(输入区/状态栏在场且不越界)
@@ -2413,6 +2436,7 @@ describe('布局护栏:整页永不滚动(第五十二/五十三批)', { skip: s
       await page.waitForTimeout(3500) // 至少一轮 stats 轮询 → 主页签跟随
       await page.click('.statusbar-slot .gear.ses')
       await page.waitForSelector('[data-testid="scp-models"]')
+      await waitPanelSettled(page, '.ext-panel') // 抽屉滑入收尾后再量(见 waitPanelSettled)
       await page.click('[data-testid="scp-models"] .scp-opt:has-text("other-model")')
       const hit = stub.seen.find((r) => r.path === '/api/control' && (r.body || '').includes('layout-guard/other-model'))
       assert.ok(hit, `选模型应提交 /api/control:${JSON.stringify(stub.seen)}`)
