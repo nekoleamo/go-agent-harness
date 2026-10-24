@@ -393,6 +393,22 @@ func TestToolLevelTimeout(t *testing.T) {
 	}
 }
 
+// instsOf 取某路径条目在**无档位桶**里的实例(测试直连:hostCtx 未装配 sandbox ⇒ 桶键为空)。
+func (b *Bridge) instsOf(t *testing.T, path string) *pluginInstance {
+	t.Helper()
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	e := b.entries[path]
+	if e == nil {
+		t.Fatalf("条目缺失: %s", path)
+	}
+	inst := e.insts[tierKey("", "")]
+	if inst == nil {
+		t.Fatalf("无档位桶实例缺失: %v", e.insts)
+	}
+	return inst
+}
+
 // TestCrashAutoRespawn 进程崩溃自动拉起(P0-3):连接断裂 → 调用转错误 +
 // 异步重建新实例(节流内),之后调用恢复正常。
 func TestCrashAutoRespawn(t *testing.T) {
@@ -431,8 +447,10 @@ func TestCrashAutoRespawn(t *testing.T) {
 	if old == nil {
 		t.Fatal("条目缺失")
 	}
-	// 模拟进程死亡:连接断裂
-	old.client.Close()
+	// 模拟进程死亡:连接断裂(断言的是**实例**换人,条目本身不换 —— 分桶后注册
+	// 代理与实例身份已分离)
+	oldInst := b.instsOf(t, path)
+	oldInst.client.Close()
 
 	// 调用应转结构化错误,且触发自动拉起(轮询直到新实例恢复)
 	deadline := time.Now().Add(10 * time.Second)
@@ -444,7 +462,7 @@ func TestCrashAutoRespawn(t *testing.T) {
 		}
 		if res.Error == "" && strings.Contains(res.Content, "after") {
 			b.mu.RLock()
-			recovered = b.entries[path] != old
+			recovered = b.instsOf(t, path) != oldInst
 			b.mu.RUnlock()
 			if recovered {
 				break

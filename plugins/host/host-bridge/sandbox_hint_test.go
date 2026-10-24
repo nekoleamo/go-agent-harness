@@ -35,7 +35,8 @@ func (t *hintStubTool) Execute(ctx context.Context, _ string) (any, error) {
 
 func TestBridgeClientForwardsSandboxHintNamed(t *testing.T) {
 	p := &fakeMultiPlugin{named: ExecReply{Content: `"ok"`}}
-	env := newFakeBridgeEnv(t, serveFake(t, p), "echo", sdk.ToolDefinition{Name: "echo"})
+	env := newFakeBridgeEnvAt(t, serveFake(t, p), "echo", sdk.ToolDefinition{Name: "echo"},
+		string(sdk.SandboxWorkspace), "/ws/named")
 	ctx := sdk.WithSandboxHint(context.Background(), sdk.SandboxHint{Mode: sdk.SandboxWorkspace, Root: "/ws/named"})
 
 	if _, err := env.toolOf(t, "echo").Execute(ctx, `{"a":1}`); err != nil {
@@ -56,7 +57,8 @@ func TestBridgeClientForwardsSandboxHintOnLegacyFallback(t *testing.T) {
 		def:   sdk.ToolDefinition{Name: "legacy"},
 		reply: ExecReply{Content: `"ok"`},
 	}
-	env := newFakeBridgeEnv(t, serveFake(t, p), "legacy", sdk.ToolDefinition{Name: "legacy"})
+	env := newFakeBridgeEnvAt(t, serveFake(t, p), "legacy", sdk.ToolDefinition{Name: "legacy"},
+		string(sdk.SandboxFullAccess), "/ws/legacy")
 	ctx := sdk.WithSandboxHint(context.Background(), sdk.SandboxHint{Mode: sdk.SandboxFullAccess, Root: "/ws/legacy"})
 
 	if _, err := env.toolOf(t, "legacy").Execute(ctx, `{}`); err != nil {

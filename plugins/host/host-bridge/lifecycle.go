@@ -166,12 +166,13 @@ func (b *Bridge) sourceEntryOf(path string) (install.SourceEntry, bool) {
 // 用户要的是"我装的东西现在什么状态",不是一份 ls。
 func (b *Bridge) List() []sdk.ExternalPluginInfo {
 	type agg struct {
-		info sdk.ExternalPluginInfo
-		seen map[string]bool
+		info   sdk.ExternalPluginInfo
+		seen   map[string]bool
+		seenMo map[string]bool // 档位去重(同一件插件多角色同档 ⇒ 只列一次)
 	}
 	byName := map[string]*agg{}
 
-	add := func(path, role string, loaded bool) {
+	add := func(path, role string, loaded bool, modes ...string) {
 		bin := externalPluginName(path)
 		a, ok := byName[bin]
 		if !ok {
@@ -180,12 +181,18 @@ func (b *Bridge) List() []sdk.ExternalPluginInfo {
 				Path:     path,
 				Disabled: b.disabledNow(bin),
 				Source:   b.sourceSummary(path),
-			}, seen: map[string]bool{}}
+			}, seen: map[string]bool{}, seenMo: map[string]bool{}}
 			byName[bin] = a
 		}
 		if role != "" && !a.seen[role] {
 			a.seen[role] = true
 			a.info.Roles = append(a.info.Roles, role)
+		}
+		for _, m := range modes {
+			if !a.seenMo[m] {
+				a.seenMo[m] = true
+				a.info.Modes = append(a.info.Modes, m)
+			}
 		}
 		a.info.Loaded = a.info.Loaded || loaded
 	}
@@ -195,7 +202,13 @@ func (b *Bridge) List() []sdk.ExternalPluginInfo {
 		if e == nil {
 			continue
 		}
-		add(e.path, e.role, true)
+		// 档位实例:分桶后同一件插件可能有多进程,清单要给出各自的档(否则用户
+		// `ps` 到三个同名进程会当成泄漏)。
+		var modes []string
+		for _, inst := range e.insts {
+			modes = append(modes, inst.mode)
+		}
+		add(e.path, e.role, true, modes...)
 	}
 	b.mu.RUnlock()
 
@@ -216,6 +229,7 @@ func (b *Bridge) List() []sdk.ExternalPluginInfo {
 	out := make([]sdk.ExternalPluginInfo, 0, len(byName))
 	for _, a := range byName {
 		sort.Strings(a.info.Roles)
+		sort.Strings(a.info.Modes)
 		out = append(out, a.info)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
@@ -251,6 +265,9 @@ func (b *Bridge) unloadPath(path string) int {
 	defer b.reloadMu.Unlock()
 	b.mu.Lock()
 	var victims []*extEntry
+	// 按沙箱上下文分桶:一件插件可能有多个进程,全部都要停 —— 少停一个就是
+	// "用户以为已卸载,进程还拿着旧档的写权在跑"。
+	insts := map[*extEntry][]*pluginInstance{}
 	for key, e := range b.entries {
 		if e == nil {
 			continue
@@ -259,12 +276,15 @@ func (b *Bridge) unloadPath(path string) int {
 			continue
 		}
 		victims = append(victims, e)
+		insts[e] = e.drainInstancesLocked()
 		delete(b.entries, key)
 	}
 	b.mu.Unlock()
 	for _, e := range victims {
 		e.unreg()
-		e.kill()
+		for _, inst := range insts[e] {
+			inst.kill()
+		}
 	}
 	return len(victims)
 }

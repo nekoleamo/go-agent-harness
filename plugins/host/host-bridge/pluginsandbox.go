@@ -14,10 +14,16 @@
 //	   `kernelsandbox.Wrap` 时看见标记直接返回 nil ⇒ 包装与自施加可叠加,shell 提供者也被
 //	   外层包装(其 in-process 直写因此进内核层)。A3b 当年的 `SandboxProvider:true`(宿主
 //	   据此不包装)已撤除;插件自报项只影响**策略面**(数据根白名单、凭据读拒)。
-//	② → **fail-closed 重载**:被包装的插件记住启动时的档位/根;每次调用前与当前有效值比较,
-//	   不一致 → 触发重载 + 本次调用拒绝(不拿旧 profile 继续跑,免得"档位已切严但仍按旧档写")。
+//	② → **按沙箱上下文分桶**(2026-10-24,方案 A):profile 是启动时静态串,而"该按哪一档"
+//	   由**调用方会话**决定(会话档 + 角色收紧 + 委派快照 + 隔离根,经 hint 下传)。于是同一
+//	   件插件可并存多个进程,**桶键 = 档位 + 工作根**:同档复用、异档另起,进程档永远等于本次
+//	   调用的期望档。此前只有一个实例 ⇒ 异档只能重建(方案 B:能挡住越权,但多页签不同档
+//	   交替调用会反复冷启动并丢掉插件进程内状态)。空闲桶按"最近使用"回收(上限见
+//	   maxIdleInstances),否则实例数会随 worktree 数量无界增长。
 //
-// 未被包装的插件(全权档、显式关闭、宿主自己就在内核沙箱内、平台不支持)沿各自原路径工作。
+// 未被包装的插件(全权档、显式关闭、宿主自己就在内核沙箱内、平台不支持)沿各自原路径工作;
+// 它们同样按档分桶 —— 因为注入给插件的 `GAH_EXT_SANDBOX_MODE/_ROOT`(它内部的 MCP server
+// 据此施加)也是启动时固化的。
 package hostbridge
 
 import (
@@ -220,70 +226,98 @@ func roleArgs(role string) []string {
 	return []string{role}
 }
 
-// sandboxStale 判定被包装插件的**启动档位/根**是否已过期(阻断 ②)。
+// tierKey 沙箱上下文桶键 = 档位 + 工作根(**进程实例**的寻址键,不是插件条目的键)。
 //
-// 返回非空消息 = 已尝试重建但仍不可安全执行,调用方必须 fail-closed 拒绝本次调用。
-// 比较两侧都取 b.sandboxModeRoot()(不是调用方 ctx 的 hint):profile 就是用它构建的,
-// 同源比较才是同构的;命令类调用拿不到 ctx hint,同源也让工具/命令两条路径共用一份实现。
+// 两者都空 = 宿主未给沙箱上下文(无 ctx.sandbox 的嵌入/单测)⇒ 键为空,全部调用共用一个
+// 实例(= 分桶前的行为)。为什么不只按档:同一个档在不同工作根(隔离运行的 worktree)下,
+// 内核白名单里可写的**根**不同 —— 那是 profile 的一部分,混桶就是拿旧根继续放行写。
+func tierKey(mode, root string) string {
+	if mode == "" && root == "" {
+		return ""
+	}
+	return mode + "|" + root
+}
+
+// errPluginNotLoaded 条目不存在(未加载 / 已卸载 / 正在重载)⇒ 调用方按"重建中"报。
+var errPluginNotLoaded = errors.New("外部插件未加载")
+
+// instanceFor 按本次调用的沙箱上下文取**进程实例**:命中复用,未命中按该档另起一个。
 //
-// 语义(2026-09-27 审计 A6 修正为「先重建再执行」):A3b 当时是“一律拒一次 + 异步重载”,
-// 方向对(绝不拿旧 profile 继续跑)但代价错:`tool-basic` 一被包装,`/ws` 切根后的
-// 第一次 shell/file 调用就必失败(e2e `TestExternalFileChangeLandsInLedger` 抓到)。
-// 现在改为：档位/根变了 ⇒ **同步重建**(持 reloadMu 重建,并发的另一路会串行等完)、
-// 就绪后本次调用照常执行。等不到(重建失败/条目被撤)才拒绝 —— 安全性不降(执行的
-// 始终是新 profile)。
-func (b *Bridge) sandboxStale(path, role, hintMode, hintRoot string) (string, bool) {
-	mode, root := b.desiredTier(hintMode, hintRoot)
-	if !b.wrappedStale(path, mode, root) {
-		return "", false
-	}
-	if err := b.reloadForSandbox(path, role, mode, root); err != nil && !errors.Is(err, errPluginIdle) {
-		b.logErr("host-bridge: 档位/根变更后的重载失败(条目已撤销,下次加载重试)", "path", path, "err", err)
-	}
-	if !b.wrappedStale(path, mode, root) {
-		return "", false // 已按新档位重建:本次调用照常执行
-	}
+// 这是方案 A(2026-10-24)的核心:内核 profile 是启动时静态串,而"该按哪一档"每次调用才知道。
+// 分桶让「多页签各设各的档」不必来回冷启动,也不丢插件进程内状态;进程档永远等于
+// **本次调用**的期望档(会话档 + 角色收紧 + 委派快照 + 隔离根,经 hint 下传)。
+func (b *Bridge) instanceFor(path, role, mode, root string) (*pluginInstance, error) {
+	key := tierKey(mode, root)
 	b.mu.RLock()
 	e := b.entries[entryKey(path, role)]
+	var inst *pluginInstance
+	if e != nil {
+		inst = e.insts[key]
+	}
 	b.mu.RUnlock()
+	if inst != nil {
+		inst.touch()
+		return inst, nil
+	}
 	if e == nil {
-		return "外部插件重建中或已撤销:请重新调用", true
+		return nil, errPluginNotLoaded
 	}
-	return fmt.Sprintf("外部插件沙箱上下文已变更(档位 %s→%s,根 %s→%s):重建未落地,请重新调用",
-		sbDesc(e.wrapMode), sbDesc(mode), sbDesc(e.wrapRoot), sbDesc(root)), true
+	return b.spawnBucket(e, mode, root)
 }
 
-// wrappedStale 该条目是否被包装、且启动档位/根与当前有效值不一致。
-func (b *Bridge) wrappedStale(path, mode, root string) bool {
-	b.mu.RLock()
-	e, ok := b.entries[path]
-	b.mu.RUnlock()
-	return ok && e.wrapped && (mode != e.wrapMode || root != e.wrapRoot)
-}
-
-// reloadForSandbox 为档位/根变更做一次重建(持 reloadMu,重检后决定,避免并发调用各自重启一遍)。
-// role:多角色二进制里重建要指明角色(一个文件四个角色,重建错角色 = 工具集体失踪)。
-func (b *Bridge) reloadForSandbox(path, role, mode, root string) error {
-	b.reloadMu.Lock()
-	defer b.reloadMu.Unlock()
-	if !b.wrappedStale(path, mode, root) {
-		return nil // 别的调用已经重建好了
+// spawnBucket 按指定档位/根**另起**一个实例(不注册:注册表里只有与档无关的代理)。
+//
+// 刻意不在启动期持锁:startPlugin 要等握手,而握手期间插件可能回调宿主(回调由另一个
+// goroutine 服务);若那条回调又要取同一把锁 ⇒ 死锁。代价是并发冷启动同一档会各起一个
+// 进程 —— 后到者在插表时发现别人先起了,直接关掉自己那份(浪费一次 exec,不串行等待)。
+func (b *Bridge) spawnBucket(e *extEntry, mode, root string) (*pluginInstance, error) {
+	n, err := b.loadOneTier(e.path, e.role, mode, root)
+	if err != nil {
+		return nil, err
 	}
-	// 用**同一个** mode/root 重建:profile 与注入的 GAH_EXT_SANDBOX_* 都按它(否则重建出来的
-	// 还是全局档,下一次调用又要重建 —— 表现就是"永远在重建"。
-	return b.reloadLockedTier(path, role, mode, root)
+	key := tierKey(mode, root)
+	inst := n.insts[key]
+	if inst == nil {
+		return nil, fmt.Errorf("host-bridge: 拉起外部插件实例失败(未枚举到档位桶)")
+	}
+	inst.touch()
+	b.mu.Lock()
+	// 期间被卸载/重载:条目已换人或桥已关闭 ⇒ 别把新进程挂到旧条目上(否则它没人回收,
+	// 最坏是一个拿着旧档写权的孤儿)。
+	if b.closed || b.entries[entryKey(e.path, e.role)] != e {
+		b.mu.Unlock()
+		inst.kill()
+		return nil, errors.New("外部插件已卸载或正在重载")
+	}
+	if exist := e.insts[key]; exist != nil {
+		b.mu.Unlock()
+		inst.kill()
+		exist.touch()
+		return exist, nil
+	}
+	e.insts[key] = inst
+	victims := e.evictSiblingsLocked(key)
+	count := len(e.insts)
+	b.mu.Unlock()
+	for _, v := range victims {
+		v.kill()
+		b.logInfo("host-bridge: 沙箱上下文实例超出保留数,已回收空闲实例",
+			"path", e.path, "role", e.role, "mode", sbDesc(v.mode), "root", sbDesc(v.root))
+	}
+	b.logInfo("host-bridge: 外部插件按沙箱上下文新起实例(同档复用、异档另起)",
+		"path", e.path, "role", e.role, "mode", sbDesc(mode), "root", sbDesc(root), "instances", count)
+	return inst, nil
 }
 
 // desiredTier 本次调用期望的进程档:调用方 hint(来自会话档 + 角色收紧 + 委派快照 +
 // 隔离工作根)优先,缺项回落到全局有效档。
 //
 // 为什么 hint 优先(2026-10-24):进程级内核 profile 是静态的,而"该按哪一档"是**每次调用**
-// 才知道的(多页签各设各的沙箱、后台子代理被 pin 成 strict)。此前这里恒取全局档 ⇒
-// 「会话只读」挡不住插件进程自身与它拉起的 MCP server 的写。hint 与单次工具调用下传的
+// 才知道的(多页签各设各的沙箱、后台子代理被 pin 成 strict)。hint 与单次工具调用下传的
 // `ExecNamedArgs.SandboxMode/WorkspaceRoot` 是同一份数据(同源),不另造口径。
 //
-// 代价(如实记):同一插件在不同档/不同工作根之间交替调用会**重建进程**(profile 不可变)。
-// 缓解见后续的"按沙箱上下文分桶"(同档复用实例)。
+// 命令插件路径拿不到 ctx(sdk.CommandSpec.Run(args) 不带 ctx),只能走回落分支 ——
+// 这是既有边界,已在 sdk/docs 写明。
 func (b *Bridge) desiredTier(hintMode, hintRoot string) (mode, root string) {
 	gm, gr := b.sandboxModeRoot()
 	if strings.TrimSpace(hintMode) != "" {

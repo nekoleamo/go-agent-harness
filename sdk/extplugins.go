@@ -45,6 +45,13 @@ type ExternalPluginInfo struct {
 	Roles []string `json:"roles,omitempty"`
 	// Loaded 当前是否有进程在跑(已停用/未装上 ⇒ false)。
 	Loaded bool `json:"loaded"`
+	// Modes 当前在跑的**每个进程实例**的内核沙箱档位(read-only / workspace-write /
+	// full-access;宿主未给沙箱上下文时为空字符串)。
+	//
+	// 为什么需要这个面(2026-10-24):外部插件进程按**沙箱上下文分桶**后,同一件插件
+	// 可能同时有两三个进程(不同页签/不同档)。不给出来,用户 `ps` 到三个同名进程会
+	// 当成进程泄漏;给出来才能看出"这是三个档,不是三个扇"。
+	Modes []string `json:"modes,omitempty"`
 	// Disabled 是否被用户停用。
 	Disabled bool `json:"disabled"`
 	// Source 来源摘要(仓库@ref · 短 sha),来自 internal/install 的来源账;

@@ -225,13 +225,33 @@ type fakeBridgeEnv struct {
 	e    *extEntry
 }
 
+// inst 取本条目**无档位桶**的实例(测试直连:ctx 不带 hint、宿主也未装沙箱 ⇒ 桶键为空)。
+func (e *fakeBridgeEnv) inst(t *testing.T) *pluginInstance {
+	t.Helper()
+	inst := e.e.insts[tierKey("", "")]
+	if inst == nil {
+		t.Fatalf("无档位桶实例缺失: %v", e.e.insts)
+	}
+	return inst
+}
+
 func newFakeBridgeEnv(t *testing.T, cl *rpc.Client, name string, def sdk.ToolDefinition) *fakeBridgeEnv {
+	t.Helper()
+	return newFakeBridgeEnvAt(t, cl, name, def, "", "")
+}
+
+// newFakeBridgeEnvAt 同 newFakeBridgeEnv,但把替身实例放进指定**沙箱上下文桶**:
+// 分桶后"实例"是按 (档, 根) 寻址的,用一个桶的实例去服务另一个桶的调用会走"另起进程"
+// 分支(替身没有真二进制 ⇒ 失败)。测 hint 下传的用例要按它自己下的 hint 定位。
+func newFakeBridgeEnvAt(t *testing.T, cl *rpc.Client, name string, def sdk.ToolDefinition, mode, root string) *fakeBridgeEnv {
 	t.Helper()
 	reg := newRecRegistry()
 	b := &Bridge{dir: t.TempDir(), tools: reg, lg: slog.New(slog.DiscardHandler), entries: map[string]*extEntry{}}
 	path := filepath.Join(b.dir, "tool-fake")
-	e := &extEntry{client: cl, kill: func() {}, unreg: func() {}, tools: map[string]*toolRPCClient{}}
-	e.tools[name] = &toolRPCClient{br: b, path: path, key: path, name: name, def: def}
+	inst := &pluginInstance{mode: mode, root: root, client: cl, kill: func() {}}
+	e := &extEntry{unreg: func() {}, tools: map[string]*toolRPCClient{}, path: path,
+		insts: map[string]*pluginInstance{tierKey(mode, root): inst}}
+	e.tools[name] = &toolRPCClient{br: b, path: path, name: name, def: def}
 	e.unreg = b.registerAll(e)
 	b.mu.Lock()
 	b.entries[path] = e
@@ -351,7 +371,7 @@ func TestToolRPCClientTimeoutCancelAndDeadline(t *testing.T) {
 		t.Fatalf("声明超时应回提示: %#v", v)
 	}
 	env.b.mu.RLock()
-	at := env.e.respawnAt
+	at := env.inst(t).respawnAt
 	env.b.mu.RUnlock()
 	if !at.IsZero() {
 		t.Fatal("超时不是连接错误,不应触发崩溃重建(节流时间戳应保持零值)")
@@ -393,7 +413,7 @@ func TestToolRPCClientConnLossThrottled(t *testing.T) {
 		t.Fatalf("断连应回崩溃重建提示: %#v err=%v", v, err)
 	}
 	env.b.mu.RLock()
-	first := env.e.respawnAt
+	first := env.inst(t).respawnAt
 	env.b.mu.RUnlock()
 	if first.IsZero() || !first.After(time.Now()) {
 		t.Fatalf("应设置重建节流时间戳: %v", first)
@@ -402,7 +422,7 @@ func TestToolRPCClientConnLossThrottled(t *testing.T) {
 		t.Fatal(err)
 	}
 	env.b.mu.RLock()
-	second := env.e.respawnAt
+	second := env.inst(t).respawnAt
 	env.b.mu.RUnlock()
 	if !second.Equal(first) {
 		t.Fatalf("节流内不应重复排重建: %v → %v", first, second)
@@ -410,13 +430,13 @@ func TestToolRPCClientConnLossThrottled(t *testing.T) {
 
 	// 卸载后:onDead 直接返回,不再拉起(不留「复活」进程)
 	env.b.closed = true
-	env.e.respawnAt = time.Time{}
+	env.inst(t).respawnAt = time.Time{}
 	v, _ = env.exec(t, "echo", `{}`)
 	if !strings.Contains(errText(v), "自动重建中") {
 		t.Fatalf("卸载后仍应回结构化错误: %#v", v)
 	}
 	env.b.mu.RLock()
-	after := env.e.respawnAt
+	after := env.inst(t).respawnAt
 	env.b.mu.RUnlock()
 	if !after.IsZero() {
 		t.Fatal("卸载后不应再排重建")
@@ -479,7 +499,7 @@ func TestCommandRPCClientArgsAndEnumOptions(t *testing.T) {
 	if opts := levels[0].Options(nil); opts != nil {
 		t.Fatalf("非法 JSON 应回 nil: %+v", opts)
 	}
-	_ = env.e.client.Close()
+	_ = env.inst(t).client.Close()
 	if opts := levels[0].Options(nil); opts != nil {
 		t.Fatalf("连接断裂应回 nil: %+v", opts)
 	}

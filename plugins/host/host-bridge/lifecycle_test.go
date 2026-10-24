@@ -10,6 +10,7 @@ package hostbridge
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,6 +24,36 @@ import (
 	"github.com/nekoleamo/go-agent-harness/internal/testutil"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
+
+// TestListReportsSandboxBuckets List 要报出每件插件**各实例的档位**:分桶后同一件插件
+// 可能同时有两三个进程(不同页签/不同档),不报出来用户 `ps` 到三个同名进程会当成泄漏。
+//
+// **反向验证**:删掉 List 里 modes 的收集 ⇒ 本用例红。
+func TestListReportsSandboxBuckets(t *testing.T) {
+	homeFor(t)
+	dir := t.TempDir()
+	b := &Bridge{dir: dir, lg: slog.New(slog.DiscardHandler), entries: map[string]*extEntry{}}
+	path := filepath.Join(dir, testutil.ExeName("tool-kit"))
+	e := &extEntry{path: path, role: "tool-basic", insts: map[string]*pluginInstance{
+		tierKey("read-only", "/ws"):          {mode: "read-only", root: "/ws"},
+		tierKey("workspace-write", "/ws"):    {mode: "workspace-write", root: "/ws"},
+		tierKey("workspace-write", "/ws/wt"): {mode: "workspace-write", root: "/ws/wt"},
+	}}
+	b.mu.Lock()
+	b.entries[entryKey(path, "tool-basic")] = e
+	b.mu.Unlock()
+
+	list := b.List()
+	if len(list) != 1 {
+		t.Fatalf("应列出 1 件插件: %+v", list)
+	}
+	if !list[0].Loaded {
+		t.Fatal("有实例 ⇒ Loaded")
+	}
+	if got := strings.Join(list[0].Modes, ","); got != "read-only,workspace-write" {
+		t.Fatalf("档位应去重并排序(两个实例不同根但同档 ⇒ 只列一次),得 %q", got)
+	}
+}
 
 // homeFor 把 GAH_HOME 指到临时目录(偏好与来源账都落在它下面)。
 func homeFor(t *testing.T) string {

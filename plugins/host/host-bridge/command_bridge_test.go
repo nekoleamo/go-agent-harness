@@ -294,7 +294,7 @@ func TestServeCommandsDTOAndEnum(t *testing.T) {
 	}
 
 	// DTO → 宿主 ArgLevel 构造(Enum 级→Options 经 RPC;FreeArgs 级→静态;皆空→直接执行)。
-	// br 用空 Bridge(entries nil;clientFor 读 nil map 安全返回 nil → 枚举选项空)。
+	// br 用空 Bridge(entries nil;instanceFor 读 nil map 安全返回"未加载" → 枚举选项空)。
 	var rpcOpts []sdk.Option
 	client := &commandRPCClient{br: &Bridge{}, def: CommandDTO{Args: []CommandArgDTO{{Enum: true}, {FreeArgs: []string{"参数"}}, {}}}}
 	levels := client.args()

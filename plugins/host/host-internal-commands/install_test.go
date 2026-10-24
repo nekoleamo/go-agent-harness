@@ -796,3 +796,46 @@ func fakeArchPayload(goos, goarch string) []byte {
 	}
 	return buf
 }
+
+// TestModeCellsShowsSandboxBuckets 沙箱档一列:外部插件按沙箱上下文分桶后,清单要能看出
+// "同一件插件有几个进程、各在哪一档" —— 否则用户 `ps` 到三个同名进程会当成泄漏。
+//
+// 三条判据:① 有档位实例才出这一列(极简 profile / 无插件在跑时不多一列空数据);
+// ② 档位列表原样来自控制面(List() 的 Modes),这里不重算;③ 未装配 host-bridge ⇒ 不出列。
+//
+// **反向验证**:让 modeCells 恒定返回 show=false ⇒ 本用例第一条断言红。
+func TestModeCellsShowsSandboxBuckets(t *testing.T) {
+	if _, show := modeCells(nil); show {
+		t.Fatal("未装配外部插件控制面时不该多出一列")
+	}
+
+	// 无插件在跑(Loaded=false / Modes 空):不出列
+	empty := &fakeExtPlugins{disabled: map[string]bool{"tool-kit": false}}
+	if modes, show := modeCells(empty); show || modes["tool-kit"] != "" {
+		t.Fatalf("无实例时不该出列: modes=%v show=%v", modes, show)
+	}
+
+	// 同一件插件两个档位实例:出列,且档位原样透传
+	bucketed := &fakeModesPlugins{infos: []sdk.ExternalPluginInfo{
+		{Name: "tool-kit", Loaded: true, Modes: []string{"read-only", "workspace-write"}},
+		{Name: "tool-echo", Loaded: true},
+	}}
+	modes, show := modeCells(bucketed)
+	if !show {
+		t.Fatal("有档位实例时应出这一列")
+	}
+	if modes["tool-kit"] != "read-only,workspace-write" {
+		t.Fatalf("档位列表应原样透传(不重算): %v", modes)
+	}
+	if modes["tool-echo"] != "" {
+		t.Fatalf("无实例档位的插件应为空(清单显示 '-'): %q", modes["tool-echo"])
+	}
+}
+
+// fakeModesPlugins 只实现 List 的控制面替身(专供 modeCells 用)。
+type fakeModesPlugins struct{ infos []sdk.ExternalPluginInfo }
+
+func (f *fakeModesPlugins) List() []sdk.ExternalPluginInfo { return f.infos }
+func (f *fakeModesPlugins) Reload(string) error            { return nil }
+func (f *fakeModesPlugins) Enable(string) error            { return nil }
+func (f *fakeModesPlugins) Disable(string) error           { return nil }

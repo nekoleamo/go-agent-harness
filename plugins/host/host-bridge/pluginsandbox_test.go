@@ -13,8 +13,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/nekoleamo/go-agent-harness/core/ctx"
 	"github.com/nekoleamo/go-agent-harness/core/event"
@@ -37,6 +40,12 @@ func buildCapsFixture(t *testing.T, dir string) string {
 // capsTestBridge 最小 Bridge(真 ctx.sandbox 桩 + 假工具注册表):只测包装/重载,不起整个插件树。
 func capsTestBridge(t *testing.T, dir string, sb *stubSandbox, logger *slog.Logger) *Bridge {
 	t.Helper()
+	return capsTestBridgeWith(t, dir, sb, logger, &cbStubTools{})
+}
+
+// capsTestBridgeWith 同上,但用调用方给的注册表(分桶用例要数"注册了几次")。
+func capsTestBridgeWith(t *testing.T, dir string, sb *stubSandbox, logger *slog.Logger, tools sdk.ToolRegistry) *Bridge {
+	t.Helper()
 	bus := event.New(logger)
 	c := ctx.New(logger, bus)
 	if err := c.Provide("ctx.sandbox", sdk.Sandbox(sb)); err != nil {
@@ -46,9 +55,33 @@ func capsTestBridge(t *testing.T, dir string, sb *stubSandbox, logger *slog.Logg
 		dir:     dir,
 		hostCtx: c,
 		lg:      logger,
-		tools:   &cbStubTools{}, // registerAll 要非 nil;这里不关心注册结果
+		tools:   tools,
 		entries: map[string]*extEntry{},
 	}
+}
+
+// cntRegistry 计数注册表:分桶**不得**带来重复注册。
+// 真实的 ctx.tools 在同名注册上是非静默的(记警告并跳过)⇒ 重复注册的表现是
+// "工具莫名少一半",正是最容易在分桶改造里踩到的那类故障。
+type cntRegistry struct {
+	cbStubTools
+	mu    sync.Mutex
+	n     int
+	names []string
+}
+
+func (r *cntRegistry) Register(t sdk.Tool) sdk.Disposer {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.n++
+	r.names = append(r.names, t.Definition().Name)
+	return func() {}
+}
+
+func (r *cntRegistry) count() (int, []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.n, append([]string{}, r.names...)
 }
 
 // TestProbeCapabilities 能力自报探测:声明的插件报出声明,不认该参数的插件(旧插件)探测失败。
@@ -213,68 +246,6 @@ func TestPluginSandboxSpecReadDeny(t *testing.T) {
 	}
 }
 
-// TestSandboxStaleRebuildsBeforeCall 档位变更 → 本次调用**同步重建**到新档位再执行(不拿旧 profile 跑)。
-//
-// 这是阻断 ②(profile 是启动时静态串)的验收。语义修正见 pluginsandbox.go 的 sandboxStale
-// 注释:A6 把「一律拒一次 + 异步重载」改成「先重建再执行」—— 执行的始终是新 profile,
-// 同时不会让 `/ws` 切根后的第一次 shell/file 调用必失败(那个回归由
-// `tests/TestExternalFileChangeLandsInLedger` 实测报出)。
-func TestSandboxStaleRebuildsBeforeCall(t *testing.T) {
-	logger := slog.New(slog.DiscardHandler)
-	root := t.TempDir()
-	sb := &stubSandbox{mode: sdk.SandboxWorkspace, root: root}
-	b := capsTestBridge(t, root, sb, logger)
-	bin := buildCapsFixture(t, root)
-
-	e, err := b.loadOne(bin, "")
-	if err != nil {
-		t.Fatalf("加载夹具失败: %v", err)
-	}
-	t.Cleanup(e.kill)
-	tc := e.tools["caps"]
-	if tc == nil {
-		t.Fatalf("夹具未暴露 caps 工具: %v", e.tools)
-	}
-	if !e.wrapped {
-		t.Skip("当前平台无法施加内核沙箱:跳过陈旧性断言")
-	}
-	b.entries[bin] = e
-
-	// ① 档位未变:正常调用(顺带证明被包装的插件确实能跑起来)
-	res, err := tc.Execute(context.Background(), `{"a":1}`)
-	if err != nil {
-		t.Fatalf("调用失败: %v", err)
-	}
-	if s, ok := res.(string); !ok || !strings.Contains(s, "ok:") {
-		t.Fatalf("被包装插件的调用应正常返回: %#v", res)
-	}
-
-	// ② 档位切严:本次必须先重建到新档位再执行 —— 调用正常返回,且条目快照已跟到新档位
-	sb.mode = sdk.SandboxReadOnly
-	res, err = tc.Execute(context.Background(), `{"a":2}`)
-	if err != nil {
-		t.Fatalf("调用失败: %v", err)
-	}
-	if s, ok := res.(string); !ok || !strings.Contains(s, "ok:") {
-		t.Fatalf("档位切换后的调用应在新 profile 下执行成功(而非被拒一次): %#v", res)
-	}
-	b.mu.RLock()
-	cur := b.entries[bin]
-	b.mu.RUnlock()
-	if cur == nil || !cur.wrapped || cur.wrapMode != string(sdk.SandboxReadOnly) {
-		t.Fatalf("调用前应以新档位重建: %+v", cur)
-	}
-
-	// ③ 新档位下继续可调用(不永久拒绝)
-	res, err = cur.tools["caps"].Execute(context.Background(), `{"a":3}`)
-	if err != nil {
-		t.Fatalf("新档位下调用失败: %v", err)
-	}
-	if s, ok := res.(string); !ok || !strings.Contains(s, "ok:") {
-		t.Fatalf("新档位下应正常返回: %#v", res)
-	}
-}
-
 // TestWrappedPluginProcessIsKernelConstrained 被包装的插件**进程自身**在内核沙箱内(A6 的核心断言)。
 //
 // 为何需要这条:tool-basic 自身就是 shell 提供者,它过去被宿主豁免包装 ⇒ 进程内直写
@@ -305,8 +276,8 @@ func TestWrappedPluginProcessIsKernelConstrained(t *testing.T) {
 		if lerr != nil {
 			t.Fatalf("加载夹具失败: %v", lerr)
 		}
-		t.Cleanup(e.kill)
-		if requireWrapped && !e.wrapped {
+		t.Cleanup(onlyInst(t, e).kill)
+		if requireWrapped && !onlyInst(t, e).wrapped {
 			t.Skip("当前平台无法施加内核沙箱(zarwin 需 sandbox-exec,linux 需 Landlock ABI≥1):跳过")
 		}
 		b.mu.Lock()
@@ -335,18 +306,225 @@ func TestWrappedPluginProcessIsKernelConstrained(t *testing.T) {
 	}
 }
 
-// TestSandboxStaleUsesPerCallHint 进程档跟**本次调用**的 hint(会话档 + 快照 + 隔离根),
-// 而不是全局有效档。
+// onlyInst 取条目里**唯一**的实例(刚 loadOne 出来时必然只有一个):分桶后实例挂在
+// e.insts 上,断言要落到实例而不是条目。
+func onlyInst(t *testing.T, e *extEntry) *pluginInstance {
+	t.Helper()
+	if len(e.insts) != 1 {
+		t.Fatalf("应恰好 1 个实例,得 %d: %v", len(e.insts), e.insts)
+	}
+	for _, inst := range e.insts {
+		return inst
+	}
+	return nil
+}
+
+// instancesOf 取条目当前全部实例(按档位/根字符串排序,便于逐条断言)。
+func instancesOf(e *extEntry) []*pluginInstance {
+	out := make([]*pluginInstance, 0, len(e.insts))
+	for _, inst := range e.insts {
+		out = append(out, inst)
+	}
+	sort.Slice(out, func(i, j int) bool { return tierKey(out[i].mode, out[i].root) < tierKey(out[j].mode, out[j].root) })
+	return out
+}
+
+// TestPluginInstanceBucketedBySandboxContext 进程实例按**沙箱上下文**分桶:
+// 同 (档, 根) 复用同一个进程,异档另起一个 —— 这是方案 A 的核心断言。
 //
-// 为什么单列一条(2026-10-24):进程级内核 profile 是静态串,而"该按哪一档"是每次调用才知道的。
-// 此前 sandboxStale 恒取全局档 ⇒ 会话只读 / 委派快照 strict 对插件进程自身与它拉起的
-// MCP server 都不生效(单次工具调用的子进程早就有 hint,缺的正是这一层)。
+// 为什么必须分桶(2026-10-24):内核 profile 是启动时静态串,而"该按哪一档"由**调用方会话**
+// 决定。只有一个实例时,两个页签不同档交替调用只能反复冷启动(方案 B 的代价),并且每次都丢掉
+// 插件进程内状态;分桶后同档复用、异档各有一个,进程档永远等于本次调用的期望档。
 //
-// **反向验证**:把 Execute 里的 hint 改成传 ""(回退全局)⇒ 本用例红。
-func TestSandboxStaleUsesPerCallHint(t *testing.T) {
+// **反向验证**:把 tierKey 改回恒定 ""(即不分桶)⇒ 本用例红(实例数停在 1)。
+func TestPluginInstanceBucketedBySandboxContext(t *testing.T) {
 	logger := slog.New(slog.DiscardHandler)
 	root := t.TempDir()
 	sb := &stubSandbox{mode: sdk.SandboxWorkspace, root: root} // 全局:workspace-write
+	reg := &cntRegistry{}
+	b := capsTestBridgeWith(t, root, sb, logger, reg)
+	bin := buildCapsFixture(t, root)
+
+	e, err := b.loadOne(bin, "")
+	if err != nil {
+		t.Fatalf("加载夹具失败: %v", err)
+	}
+	t.Cleanup(func() {
+		for _, inst := range instancesOf(e) {
+			inst.kill()
+		}
+	})
+	// 注册与实例分离:注册表里只有一件"与档无关的代理",异档拉起实例**不重注册**。
+	unreg := b.registerAll(e)
+	t.Cleanup(unreg)
+	b.mu.Lock()
+	b.entries[bin] = e
+	b.mu.Unlock()
+	tc := e.tools["caps"]
+	if tc == nil {
+		t.Fatalf("夹具未暴露 caps 工具: %v", e.tools)
+	}
+
+	wt := t.TempDir()
+	ctxRO := sdk.WithSandboxHint(context.Background(), sdk.SandboxHint{Mode: sdk.SandboxReadOnly, Root: wt})
+	_ = wt
+	// ① 只读档:另起一个实例,档/根跟住 hint
+	if res, err := tc.Execute(ctxRO, `{"a":1}`); err != nil {
+		t.Fatalf("调用失败: %v", err)
+	} else if v, ok := res.(string); !ok || !strings.Contains(v, "ok:") {
+		t.Fatalf("按新档拉起的实例应正常返回: %#v", res)
+	}
+	roInst := b.instanceForTest(t, bin, string(sdk.SandboxReadOnly), wt)
+	if roInst.mode != string(sdk.SandboxReadOnly) || roInst.root != wt {
+		t.Fatalf("只读桶实例的档/根不符: %+v", roInst)
+	}
+
+	// ② 同一档再调:复用同一个进程(不新起、不重建)
+	if _, err := tc.Execute(ctxRO, `{"a":2}`); err != nil {
+		t.Fatalf("调用失败: %v", err)
+	}
+	if again := b.instanceForTest(t, bin, string(sdk.SandboxReadOnly), wt); again != roInst {
+		t.Fatal("同档调用应复用同一实例,而不是每次重建(方案 B 的代价)")
+	}
+
+	// ③ 工作区档 + 隔离根:再起一个;总共两个实例,各自的档/根都对
+	ctxWT := sdk.WithSandboxHint(context.Background(), sdk.SandboxHint{Mode: sdk.SandboxWorkspace, Root: root})
+	if _, err := tc.Execute(ctxWT, `{"a":3}`); err != nil {
+		t.Fatalf("调用失败: %v", err)
+	}
+	b.mu.RLock()
+	insts := instancesOf(b.entries[bin])
+	b.mu.RUnlock()
+	if len(insts) != 2 {
+		t.Fatalf("两档应各一个实例,得 %d: %+v", len(insts), insts)
+	}
+	modes := []string{insts[0].mode + "@" + insts[0].root, insts[1].mode + "@" + insts[1].root}
+	sort.Strings(modes)
+	want := []string{string(sdk.SandboxReadOnly) + "@" + wt, string(sdk.SandboxWorkspace) + "@" + root}
+	sort.Strings(want)
+	if strings.Join(modes, "|") != strings.Join(want, "|") {
+		t.Fatalf("实例档/根不符:\n got=%v\nwant=%v", modes, want)
+	}
+	// 异档调用**不得**再注册(注册 = 与档无关的代理,实例只是它背后的进程):
+	// 判据是"同一个工具名没被注册两次" —— 真实注册表会跳过同名并记警告(工具少一半)。
+	_, names := reg.count()
+	seen := map[string]bool{}
+	for _, n := range names {
+		if seen[n] {
+			t.Fatalf("分桶带来了重复注册(真实注册表会跳过同名 ⇒ 工具少一半): %v", names)
+		}
+		seen[n] = true
+	}
+	if len(seen) != 2 { // 夹具暴露 caps + caps_write
+		t.Fatalf("应注册夹具的两个工具,得 %v", names)
+	}
+}
+
+// instanceForTest 断言某桶实例存在并返回它(测试辅助)。
+func (b *Bridge) instanceForTest(t *testing.T, path, mode, root string) *pluginInstance {
+	t.Helper()
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	e := b.entries[path]
+	if e == nil {
+		t.Fatalf("条目缺失: %s", path)
+	}
+	inst := e.insts[tierKey(mode, root)]
+	if inst == nil {
+		t.Fatalf("桶 %q 无实例: %v", tierKey(mode, root), e.insts)
+	}
+	return inst
+}
+
+// TestPluginBucketKernelEnforcesPerSessionTier 分桶的**安全判据**:同一份插件代码、同一个
+// 目标文件,在工作区档桶里写得进去,在只读档桶里被内核拒。
+//
+// 为什么这条比"实例数对了"更重要:实例数只是机制;**真正要证明的是"会话只读"能关上插件
+// 进程自身的写** —— 那是协作层看不见的写(插件自己拼路径),也是本层存在的唯一理由。
+// 目标文件放在工作区根**内部**:协作层会放行,能拦住它只可能是内核 profile。
+//
+// 平台无内核沙箱(Windows 等)⇒ Skip 并说明,不假装覆盖。
+//
+// **反向验证**:分桶退化成单桶(或 Execute 不按 hint 选桶)⇒ 只读档那次会写成功 ⇒ 红。
+func TestPluginBucketKernelEnforcesPerSessionTier(t *testing.T) {
+	logger := slog.New(slog.DiscardHandler)
+	// 工作区根**不能**取 t.TempDir():系统临时目录(/private/var/folders、/tmp)本来就在
+	// 内核白名单里(否则 TMPDIR/GOCACHE 会大面积断裂),放在那里连只读档也写得进去 ——
+	// 用例会变成"恒绿但什么也没测"。取 HOME 下的临时目录,才是真正需要按档放行/拒绝的落点。
+	home, herr := os.UserHomeDir()
+	if herr != nil || home == "" {
+		t.Skip("无 HOME:无法选内核白名单外的落点")
+	}
+	root, terr := os.MkdirTemp(home, ".gah-bucket-probe-")
+	if terr != nil {
+		t.Fatalf("建工作区根失败: %v", terr)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	sb := &stubSandbox{mode: sdk.SandboxWorkspace, root: root}
+	b := capsTestBridge(t, root, sb, logger)
+	bin := buildCapsFixture(t, root)
+	// 目标文件必须在**拉起进程之前**定下:实例的环境在 startPlugin 那一刻固化。
+	target := filepath.Join(root, "inside.txt")
+	t.Setenv("FIXTURE_WRITE_PATH", target)
+
+	e, err := b.loadOne(bin, "")
+	if err != nil {
+		t.Fatalf("加载夹具失败: %v", err)
+	}
+	t.Cleanup(func() {
+		for _, inst := range instancesOf(e) {
+			inst.kill()
+		}
+	})
+	if !onlyInst(t, e).wrapped {
+		t.Skip("当前平台无法施加内核沙箱(darwin 需 sandbox-exec,linux 需 Landlock ABI≥1):跳过")
+	}
+	b.mu.Lock()
+	b.entries[bin] = e
+	b.mu.Unlock()
+	tc := e.tools["caps_write"]
+	if tc == nil {
+		t.Fatalf("夹具未暴露 caps_write: %v", e.tools)
+	}
+
+	// ① 工作区档:根内部的写放行(证明这条路径在协作层是"合法"的)
+	ctxWS := sdk.WithSandboxHint(context.Background(), sdk.SandboxHint{Mode: sdk.SandboxWorkspace, Root: root})
+	res, err := tc.Execute(ctxWS, `{}`)
+	if err != nil {
+		t.Fatalf("调用失败: %v", err)
+	}
+	if v, _ := res.(string); !strings.HasPrefix(v, "wrote:") {
+		t.Fatalf("工作区档下根内写应成功: %q", v)
+	}
+	if err := os.Remove(target); err != nil {
+		t.Fatalf("清理探测文件失败: %v", err)
+	}
+
+	// ② 只读档:**同一目标、同一份代码**,内核 profile 不同 ⇒ 必须被拒
+	ctxRO := sdk.WithSandboxHint(context.Background(), sdk.SandboxHint{Mode: sdk.SandboxReadOnly, Root: root})
+	res, err = tc.Execute(ctxRO, `{}`)
+	if err != nil {
+		t.Fatalf("调用失败: %v", err)
+	}
+	if v, _ := res.(string); strings.HasPrefix(v, "wrote:") {
+		t.Fatalf("会话只读档下插件进程自身的写未被拦住(分桶没生效?): %q", v)
+	}
+	if _, serr := os.Stat(target); serr == nil {
+		t.Fatalf("只读档下不该留下文件: %s", target)
+	}
+}
+
+// TestReloadAndUnloadCoverAllBuckets 生命周期必须覆盖**同一件插件的全部桶**:漏一个桶
+// 就是"孤儿进程拿着旧档的写权在跑"(用户以为已重载/已卸载,实际没有)。
+//
+// 两条判据:① 重载 = 旧实例的进程真的没了(对它发 RPC 必失败)+ 只剩一个桶;
+// ② 卸载 = 条目没了 + 调用给"重建中"(而不是让调用落进一个已死的 client)。
+//
+// **反向验证**:重载里只关"当前档那个实例"(分桶前的写法)⇒ 旧实例仍可 RPC ⇒ 红。
+func TestReloadAndUnloadCoverAllBuckets(t *testing.T) {
+	logger := slog.New(slog.DiscardHandler)
+	root := t.TempDir()
+	sb := &stubSandbox{mode: sdk.SandboxWorkspace, root: root}
 	b := capsTestBridge(t, root, sb, logger)
 	bin := buildCapsFixture(t, root)
 
@@ -354,40 +532,137 @@ func TestSandboxStaleUsesPerCallHint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("加载夹具失败: %v", err)
 	}
-	t.Cleanup(e.kill)
-	if !e.wrapped {
-		t.Skip("当前平台无法施加内核沙箱:跳过陈旧性断言")
-	}
+	unreg := b.registerAll(e)
+	b.mu.Lock()
+	e.unreg = unreg
 	b.entries[bin] = e
+	b.mu.Unlock()
+	t.Cleanup(b.closeAll)
+
 	tc := e.tools["caps"]
-	if tc == nil {
-		t.Fatalf("夹具未暴露 caps 工具: %v", e.tools)
-	}
-
-	// 调用 ctx 把档收成只读(等价于「这个会话设了 read-only」/「子代理被 pin 成 strict」)
-	ctxRO := sdk.WithSandboxHint(context.Background(), sdk.SandboxHint{Mode: sdk.SandboxReadOnly, Root: root})
-	if res, err := tc.Execute(ctxRO, `{"a":1}`); err != nil {
-		t.Fatalf("调用失败: %v", err)
-	} else if s, ok := res.(string); !ok || !strings.Contains(s, "ok:") {
-		t.Fatalf("按 hint 重建后的调用应正常返回: %#v", res)
-	}
-	b.mu.RLock()
-	cur := b.entries[bin]
-	b.mu.RUnlock()
-	if cur == nil || cur.wrapMode != string(sdk.SandboxReadOnly) {
-		t.Fatalf("进程档应跟本次调用的 hint(read-only),得 %+v", cur)
-	}
-
-	// 换成工作根(隔离运行的 worktree)再调:档回到 workspace-write 且根跟着换
 	wt := t.TempDir()
-	ctxWT := sdk.WithSandboxHint(context.Background(), sdk.SandboxHint{Mode: sdk.SandboxWorkspace, Root: wt})
-	if _, err := tc.Execute(ctxWT, `{"a":2}`); err != nil {
+	ctxRO := sdk.WithSandboxHint(context.Background(), sdk.SandboxHint{Mode: sdk.SandboxReadOnly, Root: wt})
+	if _, err := tc.Execute(ctxRO, `{"a":1}`); err != nil {
+		t.Fatalf("调用失败: %v", err)
+	}
+	oldRO := b.instanceForTest(t, bin, string(sdk.SandboxReadOnly), wt)
+	if len(instancesOf(e)) != 2 {
+		t.Fatalf("应有 2 个桶实例: %v", len(instancesOf(e)))
+	}
+
+	// ① 重载:全部桶的进程都要停,新条目只带当前档一个实例
+	if err := b.reload(bin, ""); err != nil {
+		t.Fatalf("重载失败: %v", err)
+	}
+	var out string
+	if err := rpcCall(oldRO.client, "Plugin.Definitions", struct{}{}, &out, time.Second); err == nil {
+		t.Fatal("重载后旧实例的进程应已关闭(只关当前档那个桶会留下孤儿)")
+	}
+	b.mu.RLock()
+	after := b.entries[bin]
+	b.mu.RUnlock()
+	if after == nil || len(after.insts) != 1 {
+		t.Fatalf("重载后应只剩当前档一个实例: %+v", after)
+	}
+
+	// ② 卸载:条目摘除 + 调用给结构化错误(不留"半死"client)
+	if n := b.unloadPath(bin); n != 1 {
+		t.Fatalf("卸载应摘掉 1 个条目,得 %d", n)
+	}
+	res, rerr := after.tools["caps"].Execute(context.Background(), `{}`)
+	if rerr != nil {
+		t.Fatalf("宿主不应 panic: %v", rerr)
+	}
+	if !strings.Contains(errText(res), "重建中") {
+		t.Fatalf("卸载后调用应给「重建中」: %#v", res)
+	}
+}
+
+// TestPluginBucketEvictsIdleInstances 保留数上限:桶键含工作根 ⇒ 不设上限就会随 worktree
+// 数量无界增长(长跑时表现为"孤儿进程拿着旧档的写权",用户 `ps` 一脸问号)。
+// 规则 = 当前档 + 最近使用的 maxIdleInstances 个,其余回收(关进程 + 摘表)。
+func TestPluginBucketEvictsIdleInstances(t *testing.T) {
+	logger := slog.New(slog.DiscardHandler)
+	root := t.TempDir()
+	sb := &stubSandbox{mode: sdk.SandboxWorkspace, root: root}
+	reg := &cntRegistry{}
+	b := capsTestBridgeWith(t, root, sb, logger, reg)
+	bin := buildCapsFixture(t, root)
+
+	e, err := b.loadOne(bin, "")
+	if err != nil {
+		t.Fatalf("加载夹具失败: %v", err)
+	}
+	t.Cleanup(func() {
+		for _, inst := range instancesOf(e) {
+			inst.kill()
+		}
+	})
+	// 注册与实例分离:注册表里只有一件"与档无关的代理",异档拉起实例**不重注册**。
+	unreg := b.registerAll(e)
+	t.Cleanup(unreg)
+	b.mu.Lock()
+	b.entries[bin] = e
+	b.mu.Unlock()
+	tc := e.tools["caps"]
+
+	// 四个不同的桶(两档 × 两个根),逐个调用
+	type bucket struct {
+		mode sdk.SandboxMode
+		root string
+	}
+	roots := []string{t.TempDir(), t.TempDir()}
+	var order []bucket
+	for _, m := range []sdk.SandboxMode{sdk.SandboxReadOnly, sdk.SandboxWorkspace} {
+		for _, r := range roots {
+			order = append(order, bucket{m, r})
+		}
+	}
+	for _, bk := range order {
+		ctx := sdk.WithSandboxHint(context.Background(), sdk.SandboxHint{Mode: bk.mode, Root: bk.root})
+		if res, err := tc.Execute(ctx, `{"a":1}`); err != nil || res == nil {
+			t.Fatalf("调用失败: %v", err)
+		}
+	}
+
+	b.mu.RLock()
+	insts := instancesOf(b.entries[bin])
+	b.mu.RUnlock()
+	if len(insts) != maxIdleInstances+1 {
+		t.Fatalf("实例数应封顶在 %d(当前档 + %d 个空闲档),得 %d", maxIdleInstances+1, maxIdleInstances, len(insts))
+	}
+	// 最早用过的那一桶应被回收
+	b.mu.RLock()
+	_, alive := b.entries[bin].insts[tierKey(string(order[0].mode), order[0].root)]
+	b.mu.RUnlock()
+	if alive {
+		t.Fatalf("最久未用的桶应被回收: %v", tierKey(string(order[0].mode), order[0].root))
+	}
+
+	// 有调用在跑的实例**不回收**:长耗时工具跑到一半被"空闲回收"掐掉,用户看到的是
+	// "外部插件不可达",而它是被我们自己杀的。宁可暂时超上限。
+	b.mu.RLock()
+	var busy *pluginInstance
+	var busyKey string
+	for k, inst := range b.entries[bin].insts {
+		if busy == nil || inst.lastUsed.Load() < busy.lastUsed.Load() {
+			busy, busyKey = inst, k
+		}
+	}
+	b.mu.RUnlock()
+	if busy == nil {
+		t.Fatal("夹具状态异常:没有实例")
+	}
+	busy.inflight.Add(1)
+	defer busy.inflight.Add(-1)
+	ctxNew := sdk.WithSandboxHint(context.Background(), sdk.SandboxHint{Mode: sdk.SandboxReadOnly, Root: t.TempDir()})
+	if _, err := tc.Execute(ctxNew, `{"a":1}`); err != nil {
 		t.Fatalf("调用失败: %v", err)
 	}
 	b.mu.RLock()
-	cur = b.entries[bin]
+	_, busyAlive := b.entries[bin].insts[busyKey]
 	b.mu.RUnlock()
-	if cur == nil || cur.wrapMode != string(sdk.SandboxWorkspace) || cur.wrapRoot != wt {
-		t.Fatalf("进程档/根应跟 hint(workspace-write + worktree),得 %+v", cur)
+	if !busyAlive {
+		t.Fatal("有调用在跑的实例不得被回收(会表现为「外部插件不可达」)")
 	}
 }

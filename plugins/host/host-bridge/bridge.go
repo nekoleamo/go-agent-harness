@@ -167,30 +167,114 @@ func (b *Bridge) sandboxModeRoot() (mode, root string) {
 	// 白名单仍按 workspace-write 构造 ⇒ 插件自己选定的写落点(不经工具参数、协作层看不见,
 	// 正是内核层存在的理由)照样可写。
 	//
-	// 已知边界:这里拿不到调用方 ctx,**会话级档与委派快照到不了内核层**(会话/快照维度
-	// 需要把根与档一起下传,属跨插件契约变更,单独登记)。
+	// 这里的"拿不到调用方 ctx"只影响**兜底**范围:工具调用路径取的是本次调用的 hint
+	// (会话档 + 委派快照 + 隔离根,见 desiredTier),本函数只服务命令路径与启动兜底
+	// —— 命令插件没有 ctx(sdk.CommandSpec.Run(args)),这是如实的既有边界。
 	return string(sdk.EffectiveSandboxModeFor(context.Background(), sbx)), sbx.Root()
 }
 
-// extEntry 一个外部插件进程条目(可承载多工具 + 多命令)。
+// pluginInstance 一个外部插件**进程实例**:同一 (路径,角色) 按沙箱上下文分桶并存。
+//
+// 为什么要分桶(2026-10-24 方案 A):进程级内核 profile 是启动时静态串(seatbelt/Landlock
+// 都不可改),而"该按哪一档"由**调用方会话**决定(会话档 + 角色收紧 + 委派快照 + 隔离根)。
+// 只有一个实例时,异档只能重建(方案 B):两个页签不同档交替调用就会反复冷启动,并丢掉
+// 插件进程内状态。现在每个「档位 + 工作根」组合各一个实例 —— 同档复用、异档另起,
+// 进程档永远等于**本次调用**的期望档。
+type pluginInstance struct {
+	// mode/root 本实例启动时的档位与工作根(= 桶键,见 tierKey)。
+	mode, root string
+	// wrapped 本进程是否真被内核包装(平台不支持 / 显式关闭 / 全权档 → false;
+	// 此时 mode/root 仍照实记录,因为它们同时是注入给插件的 GAH_EXT_SANDBOX_*)。
+	wrapped bool
+	client  *rpc.Client
+	kill    sdk.Disposer
+	// lastUsed 最近一次被路由使用(unix nano):回收时"保留最近使用的那几档"。
+	lastUsed atomic.Int64
+	// inflight 正在执行中的调用数:**有调用在跑的实例不回收** —— 长耗时工具(MCP 常声明
+	// 120s)跑到一半被"空闲回收"掐掉,用户看到的是"外部插件不可达",而它是被我们自己杀的。
+	inflight atomic.Int32
+	// respawnAt 崩溃重建节流(60s 防循环);受 b.mu 保护。
+	respawnAt time.Time
+}
+
+// touch 记录一次使用(回收排序依据)。
+func (i *pluginInstance) touch() {
+	if i != nil {
+		i.lastUsed.Store(time.Now().UnixNano())
+	}
+}
+
+// maxIdleInstances 同一 (路径,角色) 除**当前档**之外最多再保留几个其它档实例。
+//
+// 2 ⇒ 每个插件最坏 3 个进程(正好覆盖 read-only / workspace-write / full-access 三档),
+// 当前 1–4 件外部插件 ⇒ ≤12 进程。必须设上限:桶键含工作根,不设的话实例数会随
+// worktree 数量无界增长 —— 那是"孤儿进程拿着旧档的写权"的另一种形态。
+const maxIdleInstances = 2
+
+// extEntry 一个外部插件条目(= 一件插件;内部按沙箱上下文持 1..N 个进程实例)。
+//
+// **注册只做一次**:工具/命令代理(tools/commands)与档位无关,注册表里永远只有它们;
+// 实例只是代理背后的进程(见 toolRPCClient.Execute → Bridge.instanceFor)。
 type extEntry struct {
-	// role 本进程承担的角色(= 配置文件里的插件 id,如 "tool-basic")。
+	// role 本条目承担的角色(= 配置文件里的插件 id,如 "tool-basic")。
 	// 2026-10-02 瘦身:一个二进制可提供多个角色(见 rolesOf/--roles),条目按
 	// 「路径 + 角色」寻址,否则四个角色共用一个文件时无法分别开关/重载。
-	role      string
-	path      string
-	tools     map[string]*toolRPCClient
-	commands  map[string]*commandRPCClient // M14 外部命令(可空)
-	unreg     sdk.Disposer                 // 聚合注销(全部工具+命令)
-	kill      sdk.Disposer
-	client    *rpc.Client
-	proto     int // 0 未知 / 1 旧单工具协议 / 2 新多工具协议
-	respawnAt time.Time
-	// wrapped 本进程是否被内核沙箱包装 + 包装时的档位/根快照:运行期档位变化时
-	// 必须重载(profile 是启动时静态串),见 sandboxStale。
-	wrapped  bool
-	wrapMode string
-	wrapRoot string
+	role     string
+	path     string
+	tools    map[string]*toolRPCClient
+	commands map[string]*commandRPCClient // M14 外部命令(可空)
+	unreg    sdk.Disposer                 // 聚合注销(全部工具+命令;每件插件只注册一次)
+	proto    int                          // 0 未知 / 1 旧单工具协议 / 2 新多工具协议
+	// insts 进程实例表,键 = tierKey(mode, root)。零值未初始化时按单桶处理(空键)。
+	insts map[string]*pluginInstance
+}
+
+// instancesLocked 取该条目的实例快照(调用方须持 b.mu)。
+func (e *extEntry) instancesLocked() []*pluginInstance {
+	out := make([]*pluginInstance, 0, len(e.insts))
+	for _, inst := range e.insts {
+		out = append(out, inst)
+	}
+	return out
+}
+
+// drainInstancesLocked 摘走全部实例并清空表(调用方须持 b.mu):关进程在锁外做,
+// kill 是优雅等待(每实例最长 2s),持 b.mu 会让所有调用阻塞。
+func (e *extEntry) drainInstancesLocked() []*pluginInstance {
+	out := e.instancesLocked()
+	e.insts = map[string]*pluginInstance{}
+	return out
+}
+
+// evictSiblingsLocked 回收超出保留数的其它档实例(调用方须持 b.mu;kill 在锁外做)。
+// 保留 keep(当前档)+ 最近使用的 maxIdleInstances 个,其余返回给调用方关闭。
+func (e *extEntry) evictSiblingsLocked(keep string) []*pluginInstance {
+	type cand struct {
+		key  string
+		inst *pluginInstance
+		used int64
+	}
+	others := make([]cand, 0, len(e.insts))
+	for k, inst := range e.insts {
+		if k == keep {
+			continue
+		}
+		if inst.inflight.Load() > 0 {
+			// 有调用在跑 ⇒ 不当"空闲"候选(宁可暂时超上限,也不杀正在工作的进程)。
+			continue
+		}
+		others = append(others, cand{k, inst, inst.lastUsed.Load()})
+	}
+	if len(others) <= maxIdleInstances {
+		return nil
+	}
+	sort.Slice(others, func(i, j int) bool { return others[i].used > others[j].used })
+	var victims []*pluginInstance
+	for _, c := range others[maxIdleInstances:] {
+		victims = append(victims, c.inst)
+		delete(e.insts, c.key)
+	}
+	return victims
 }
 
 // Bridge 外部插件目录管理(扫描/重载/关闭/崩溃拉起)。
@@ -206,6 +290,7 @@ type Bridge struct {
 	lg      *slog.Logger        // P3 软降级日志(sdk.Ctx.Logger();nil 时兜底 slog.Default)
 	mu      sync.RWMutex
 	// 键 = entryKey(路径 + 角色):一个二进制提供多角色时,每角色一个条目(可分别开关/重载)。
+	// 一个条目内部的**进程实例**再按沙箱上下文分桶(见 extEntry.insts)。
 	entries map[string]*extEntry
 	// reloadMu 串行化 reload(文件监听 / 工作区切换 / ctx.extplugins.Reload 三处入口并发时,
 	// 同一路径不得双载:否则先载的实例被后载覆盖且永不回收 = 进程泄漏 + 工具双注册残留)。
@@ -557,17 +642,19 @@ func (b *Bridge) loadOneTier(path, role, mode, root string) (*extEntry, error) {
 	}
 	dataWrites := b.validDataWrites(path, caps.DataWrites)
 	argv, extraEnv, wrapped := b.wrapPluginArgvTier(path, role, caps, capsKnown, dataWrites, mode, root)
-	wrapMode, wrapRoot := mode, root
 	if wrapped {
-		b.logInfo("host-bridge: 外部插件已施加内核沙箱", "path", path, "mode", sbDesc(wrapMode),
+		b.logInfo("host-bridge: 外部插件已施加内核沙箱", "path", path, "mode", sbDesc(mode), "root", sbDesc(root),
 			"cred_read_deny", (capsKnown && caps.CredentialReadDeny) || os.Getenv(pluginCredReadDenyEnv) == "1")
 	}
 	cl, killFn, se, err := startPlugin(argv, b.cbAddr, b.cbToken, append(b.sandboxEnvFor(mode, root), extraEnv...), b.configEnvFromCaps(caps, capsKnown))
 	if err != nil {
 		return nil, err
 	}
-	e := &extEntry{client: cl, kill: killFn, unreg: func() {}, tools: map[string]*toolRPCClient{},
-		role: role, path: path, wrapped: wrapped, wrapMode: wrapMode, wrapRoot: wrapRoot}
+	// 实例按「档位 + 工作根」入桶:同档调用复用,异档另起(见 spawnBucket)。
+	inst := &pluginInstance{mode: mode, root: root, wrapped: wrapped, client: cl, kill: killFn}
+	inst.touch()
+	e := &extEntry{unreg: func() {}, tools: map[string]*toolRPCClient{},
+		role: role, path: path, insts: map[string]*pluginInstance{tierKey(mode, root): inst}}
 	// 协议探测:新协议(Definitions)优先,旧单工具协议回退;
 	// 纯命令插件(cmd-*,无工具)可经 Commands 单独满足加载条件
 	raw := ""
@@ -579,7 +666,7 @@ func (b *Bridge) loadOneTier(path, role, mode, root string) (*extEntry, error) {
 			protoOK = true
 			for _, d := range multi {
 				def := sdk.ToolDefinition{Name: d.Name, Description: d.Description, InputSchema: d.InputSchema, TimeoutMs: d.TimeoutMs, PathParams: d.PathParams, ApprovalTargetParam: d.ApprovalTargetParam, PathParamsDeclared: d.PathParamsDeclared, ProxyArgsParam: d.ProxyArgsParam}
-				e.tools[d.Name] = &toolRPCClient{br: b, path: path, role: role, key: entryKey(path, role), name: d.Name, def: def}
+				e.tools[d.Name] = &toolRPCClient{br: b, path: path, role: role, name: d.Name, def: def}
 			}
 		}
 	}
@@ -591,7 +678,7 @@ func (b *Bridge) loadOneTier(path, role, mode, root string) (*extEntry, error) {
 			if json.Unmarshal([]byte(defJSON), &def) == nil && def.Name != "" {
 				e.proto = 1
 				protoOK = true
-				e.tools[def.Name] = &toolRPCClient{br: b, path: path, role: role, key: entryKey(path, role), name: def.Name, def: def}
+				e.tools[def.Name] = &toolRPCClient{br: b, path: path, role: role, name: def.Name, def: def}
 			}
 		}
 	}
@@ -605,7 +692,7 @@ func (b *Bridge) loadOneTier(path, role, mode, root string) (*extEntry, error) {
 			e.commands = make(map[string]*commandRPCClient, len(cmds))
 			for _, cd := range cmds {
 				name := cd.Name
-				e.commands[name] = &commandRPCClient{br: b, path: path, role: role, key: entryKey(path, role), name: name, def: cd, timeoutMs: cd.TimeoutMs}
+				e.commands[name] = &commandRPCClient{br: b, path: path, role: role, name: name, def: cd, timeoutMs: cd.TimeoutMs}
 			}
 		}
 	}
@@ -655,10 +742,7 @@ func (b *Bridge) Reload(name string) error {
 	if err != nil {
 		return err
 	}
-	b.mu.RLock()
-	_, loaded := b.entries[entryKey(path, roleOf(name, path))]
-	b.mu.RUnlock()
-	if !loaded {
+	if b.entryFor(path, roleOf(name, path)) == nil {
 		// 未加载:目录里没有(pluginPath 已报错)或上次加载失败/自述空闲;
 		// reload 对"不在 entries 里的路径"走 loadOne 补加载分支。
 		// 记 INFO 而非 ERROR:用户刚加第一个 MCP server 走的就是这条路,不是故障。
@@ -669,10 +753,7 @@ func (b *Bridge) Reload(name string) error {
 		// 自述空闲(未配置任何 server)不是重启失败:配置已保存,只是没有要加载的东西。
 		return nil
 	}
-	b.mu.RLock()
-	_, ok := b.entries[entryKey(path, roleOf(name, path))]
-	b.mu.RUnlock()
-	if !ok {
+	if b.entryFor(path, roleOf(name, path)) == nil {
 		return fmt.Errorf("host-bridge: 重启 %s 失败(详见日志;多为进程启动失败或握手拒绝)", name)
 	}
 	return nil
@@ -747,7 +828,7 @@ func entryKey(path, role string) string {
 // 返回 `[""]`,意思是「按**合并前**的老方式起一个无参进程」。第三方自己放进
 // plugins/ 的外部插件(或任何不认识 --roles 的二进制)完全不受影响。
 // 兜底刻意用**空角色**而不是文件基名:空角色让条目键保持等于路径,于是所有按路径
-// 寻址的老代码(测试替身、clientFor、文件监听)一行都不用改;用文件基名当角色会把
+// 寻址的老代码(测试替身、文件监听)一行都不用改;用文件基名当角色会把
 // 键变成 `路径#名字`,老代码全部失配(第一版就这么栽的,表现为「条目缺失」)。
 // 探测与能力自报(CapsFlag)一样有超时与凭据隔离,不给 GAH_CB_*/GAH_PLUGIN。
 func rolesOf(bin string) ([]string, bool) {
@@ -959,13 +1040,17 @@ func (b *Bridge) reload(path, role string) error {
 }
 
 // reloadLocked 同 reload,但要求调用方**已持** reloadMu。
-// 拆出来是因为档位变更路径要“持锁重检后再决定要不要重建”(见 pluginsandbox.go 的 sandboxStale)。
 func (b *Bridge) reloadLocked(path, role string) error {
 	mode, root := b.sandboxModeRoot()
 	return b.reloadLockedTier(path, role, mode, root)
 }
 
-// reloadLockedTier 按显式档位/根重建条目(重载后 profile 与注入的 GAH_EXT_SANDBOX_* 一并更新)。
+// reloadLockedTier 按显式档位/根重建条目。
+//
+// 分桶后重建是**整件插件**的事:注册只做一次(与档无关的代理),进程实例按沙箱上下文分桶。
+// 重建 = 撤注册 + 停掉**全部**桶的实例 + 按当前档重新加载一个实例 + 重新注册
+// (工具定义可能随二进制/配置变化,必须重新枚举 —— 与分桶前的语义一致)。
+// 只关"当前档那个实例"会留下别的桶拿着**旧二进制**继续跑,那比不重建更坑。
 func (b *Bridge) reloadLockedTier(path, role, mode, root string) error {
 	key := entryKey(path, role)
 	b.mu.Lock()
@@ -993,10 +1078,17 @@ func (b *Bridge) reloadLockedTier(path, role, mode, root string) error {
 		}
 		return nil
 	}
-	b.mu.Lock()
+	// 先摘实例再关:重建窗口内的调用拿到"未加载"(而不是一个已死的 client),
+	// 并且不会在旧条目上再新起桶(见 spawnBucket 的条目同一性检查)。
 	entry.unreg()
-	entry.kill()
-	b.mu.Unlock()
+	old := func() []*pluginInstance {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return entry.drainInstancesLocked()
+	}()
+	for _, inst := range old {
+		inst.kill()
+	}
 	e, err := b.loadOneTier(path, role, mode, root)
 	if err != nil {
 		b.mu.Lock()
@@ -1019,86 +1111,79 @@ func (b *Bridge) reloadLockedTier(path, role, mode, root string) error {
 	return nil
 }
 
-// closeAll 关闭全部插件条目:先摘条目(短锁),再锁外 unreg/kill——
-// kill 是优雅等待(每插件最长 2s),持 b.mu 会让所有 clientFor 阻塞。
+// closeAll 关闭全部插件条目:先摘条目与实例(短锁),再锁外 unreg/kill——
+// kill 是优雅等待(每实例最长 2s),持 b.mu 会让所有调用阻塞。
 func (b *Bridge) closeAll() {
 	b.mu.Lock()
 	b.closed = true
 	ents := make([]*extEntry, 0, len(b.entries))
+	insts := make([][]*pluginInstance, 0, len(b.entries))
 	for p, e := range b.entries {
 		ents = append(ents, e)
+		insts = append(insts, e.drainInstancesLocked())
 		delete(b.entries, p)
 	}
 	b.mu.Unlock()
-	for _, e := range ents {
-		e.unreg()
-		e.kill()
+	for i, e := range ents {
+		e.unreg() // 每件插件只注册过一次 ⇒ 只撤销一次
+		for _, inst := range insts[i] {
+			inst.kill()
+		}
 	}
 }
 
-// clientFor 取当前活动 client(未加载/重建中返回 nil)。
-// clientFor 按**条目键**(路径#角色)取进程连接。
-//
-// 为什么必须按键而不按路径:多角色二进制(瘦身)下一个文件对应多个进程,按路径寻址
-// 会拿到**别的角色**的连接 —— 实测症状是「外部插件无此工具 subagent」:subagent 的
-// 调用被送进了 tool-basic 的进程,而那次调用看起来像是「插件里没这个工具」。
-// 单角色二进制(第三方插件、tool-echo)的角色为空 ⇒ 键 == 路径,行为与从前一致。
-func (b *Bridge) clientFor(key string) *rpc.Client {
+// entryFor 取条目(未加载/重载中返回 nil)。
+func (b *Bridge) entryFor(path, role string) *extEntry {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	if e, ok := b.entries[key]; ok && e != nil {
-		return e.client
-	}
-	return nil
+	return b.entries[entryKey(path, role)]
 }
 
-// onDead 连接错误 → 标记并异步重建进程(60s 节流,防崩溃循环)。
-func (b *Bridge) onDead(path, role string) {
+// onDead 某**实例**连接错误 → 标记并异步重建该档实例(60s 节流,防崩溃循环)。
+//
+// 为何要带实例:分桶后同一个 (路径,角色) 可能有多个进程,只知道 path/role 就会
+// 把"别的档那个活着"的实例当成死了的,或者把重生写回错的桶。
+func (b *Bridge) onDead(path, role string, inst *pluginInstance) {
+	if inst == nil {
+		return
+	}
 	b.mu.Lock()
-	if b.closed {
+	if b.closed || !time.Now().After(inst.respawnAt) {
 		b.mu.Unlock()
 		return
 	}
-	e, ok := b.entries[entryKey(path, role)]
-	if !ok || !time.Now().After(e.respawnAt) {
-		b.mu.Unlock()
-		return
-	}
-	e.respawnAt = time.Now().Add(60 * time.Second)
+	inst.respawnAt = time.Now().Add(60 * time.Second)
+	mode, root := inst.mode, inst.root
 	b.mu.Unlock()
-	go b.respawn(path, role)
+	go b.respawn(path, role, mode, root)
 }
 
-// respawn 重建进程并替换条目(先注销旧工具腾名,再注册新工具,最后替换 map)。
-func (b *Bridge) respawn(path, role string) {
-	e, err := b.loadOne(path, role)
+// respawn 按**同一个档位桶**重建实例(崩溃拉起)。
+//
+// 刻意不重注册:注册表里是与档无关的代理,实例只是它背后的进程。分桶前那套
+// "old.unreg() + registerAll(e)" 在多桶下会变成"重生一个桶顺手多注册一次" —— 同名
+// 注册非静默(记警告并跳过)⇒ 表现为工具莫名少一半。
+func (b *Bridge) respawn(path, role, mode, root string) {
+	n, err := b.loadOneTier(path, role, mode, root)
 	if err != nil {
-		b.logErr("host-bridge: 崩溃自动拉起失败(60s 节流内不再尝试)", "path", path, "err", err)
+		b.logErr("host-bridge: 崩溃自动拉起失败(60s 节流内不再尝试)", "path", path, "mode", sbDesc(mode), "err", err)
+		return
+	}
+	inst := n.insts[tierKey(mode, root)]
+	if inst == nil {
 		return
 	}
 	b.mu.Lock()
-	if b.closed { // 卸载与重建撞车:不留"复活"的进程与工具注册
+	e := b.entries[entryKey(path, role)]
+	if b.closed || e == nil { // 卸载与重建撞车:不留"复活"的进程
 		b.mu.Unlock()
-		e.kill()
+		inst.kill()
 		return
 	}
-	old := b.entries[entryKey(path, role)]
+	old := e.insts[tierKey(mode, root)]
+	e.insts[tierKey(mode, root)] = inst
 	b.mu.Unlock()
-	if old != nil {
-		old.unreg()
-	}
-	unreg := b.registerAll(e)
-	b.mu.Lock()
-	if b.closed { // 注册期间卸载:立即撤销本次注册与进程
-		b.mu.Unlock()
-		unreg()
-		e.kill()
-		return
-	}
-	e.unreg = unreg
-	b.entries[path] = e
-	b.mu.Unlock()
-	if old != nil {
+	if old != nil && old != inst {
 		old.kill()
 	}
 }
@@ -1426,11 +1511,14 @@ func rpcCallCtx(ctx context.Context, cl *rpc.Client, method string, args, reply 
 // go-plugin 的 Client() 钩子取回同一对象)。
 
 // toolRPCClient 实现 sdk.Tool(经 RPC 转发;连接错误触发自动拉起)。def 为注册时快照。
+//
+// **它是代理,不是实例**:注册表里永远只有这一个对象,每次调用按本次 ctx 的沙箱上下文
+// 选进程实例(见 Bridge.instanceFor)。分桶若在注册侧展开成"每档一个工具对象",同名注册
+// 就会冲突(非静默:记警告并跳过)⇒ 表现为"工具莫名少一半"。
 type toolRPCClient struct {
 	br   *Bridge
 	path string
 	role string // 多角色二进制里的角色(= 插件 id);空 = 单角色(老行为)
-	key  string // 条目键(路径#角色):寻址用,别按 path(见 clientFor 注释)
 	name string
 	def  sdk.ToolDefinition
 }
@@ -1440,19 +1528,26 @@ func (t *toolRPCClient) Definition() sdk.ToolDefinition {
 }
 
 func (t *toolRPCClient) Execute(ctx context.Context, args string) (any, error) {
-	// 档位/根陈旧:插件进程的 profile 是启动时静态串 ⇒ **先同步重建**再执行(见
-	// pluginsandbox.go);重建不了才 fail-closed 拒绝本次。放在最前:拿不拿得到 client
-	// 都要先把"旧档不跑"说清楚。
-	// 档位/根陈旧判定用**本次调用**的有效档(hint = 会话档 + 角色收紧 + 委派快照 + 隔离根),
-	// 与下传给插件的 ExecNamedArgs.SandboxMode/WorkspaceRoot 同源。
+	// 按**本次调用**的有效档(hint = 会话档 + 角色收紧 + 委派快照 + 隔离根)选进程实例:
+	// 同档复用,异档另起(见 pluginsandbox.go 的 instanceFor)。这条取代了"异档重建进程"
+	// —— 重建会反复冷启动并丢掉插件进程内状态,而进程档本身是不可变的(profile 静态串)。
 	sbMode, sbRoot := sandboxHintFields(ctx)
-	if msg, stale := t.br.sandboxStale(t.path, t.role, sbMode, sbRoot); stale {
-		return map[string]any{"error": msg}, nil
+	mode, root := t.br.desiredTier(sbMode, sbRoot)
+	inst, aerr := t.br.instanceFor(t.path, t.role, mode, root)
+	if aerr != nil {
+		if errors.Is(aerr, errPluginNotLoaded) {
+			return map[string]any{"error": "外部插件重建中(崩溃自动拉起)"}, nil
+		}
+		// 拉起失败(重启/握手被拒/刚被卸载):结构化错误,不中断回合。
+		return map[string]any{"error": "外部插件不可用: " + aerr.Error()}, nil
 	}
-	cl := t.br.clientFor(t.key)
+	cl := inst.client
 	if cl == nil {
 		return map[string]any{"error": "外部插件重建中(崩溃自动拉起)"}, nil
 	}
+	// 标记在用:回收路径据此跳过本实例(见 pluginInstance.inflight)
+	inst.inflight.Add(1)
+	defer inst.inflight.Add(-1)
 	timeout := rpcTimeoutFor(t.def)
 	// 调用方 ctx 的截止时间收紧超时(不另起 goroutine 包装同步 Call:超时路径会
 	// 永久泄漏 goroutine——与 rpcCall 注释同一纪律)。
@@ -1501,7 +1596,7 @@ func (t *toolRPCClient) Execute(ctx context.Context, args string) (any, error) {
 				"外部插件调用超时(>%s;长耗时工具应声明 timeout_ms): %s", timeout, t.name)}, nil
 		}
 		if isConnErr(err) {
-			t.br.onDead(t.path, t.role)
+			t.br.onDead(t.path, t.role, inst)
 			return map[string]any{"error": "外部插件不可达(进程崩溃,自动重建中): " + err.Error()}, nil
 		}
 		return map[string]any{"error": "外部插件不可达: " + err.Error()}, nil
@@ -1552,10 +1647,17 @@ type commandRPCClient struct {
 	br        *Bridge
 	path      string
 	role      string // 同 toolRPCClient.role
-	key       string // 同 toolRPCClient.key
 	name      string
 	def       CommandDTO
 	timeoutMs int64
+}
+
+// instance 命令路径的进程实例。命令**没有 ctx**(sdk.CommandSpec.Run(args) 不带),拿不到
+// 会话/快照 hint ⇒ 只能按全局有效档选桶。这是既有边界(会话档对"外部命令进程"不生效),
+// 与工具路径分开写明,免得以后误以为漏了。
+func (c *commandRPCClient) instance() (*pluginInstance, error) {
+	mode, root := c.br.sandboxModeRoot()
+	return c.br.instanceFor(c.path, c.role, mode, root)
 }
 
 // spec 构造 sdk.CommandSpec(DTO 级联转 ArgLevel:Enum 级→Options 经 RPC 求值,
@@ -1573,22 +1675,20 @@ func (c *commandRPCClient) spec() sdk.CommandSpec {
 // run 命令执行(宿主 TUI 线程同步 + RPC 超时保护:死进程/慢命令不阻塞 UI;
 // 输出文本+结构化错误,连接错误触发自动拉起)。
 func (c *commandRPCClient) run(args []string) (string, error) {
-	// 与工具调用同一口径:被包装的插件档位/根变了就先同步重建,重建不了才拒绝本次
-	// (见 pluginsandbox.go)。
-	// 命令路径**没有 ctx**(sdk.CommandSpec.Run(args) 不带 ctx),拿不到会话/快照 hint ⇒
-	// 只能按全局有效档判陈旧。会话档对"外部命令进程"不生效,登记为已知边界。
-	if msg, stale := c.br.sandboxStale(c.path, c.role, "", ""); stale {
-		return "", errors.New(msg)
+	inst, aerr := c.instance()
+	if aerr != nil {
+		if errors.Is(aerr, errPluginNotLoaded) {
+			return "", errors.New("外部命令插件重建中(崩溃自动拉起)")
+		}
+		return "", errors.New("外部命令插件不可用: " + aerr.Error())
 	}
-	cl := c.br.clientFor(c.key)
-	if cl == nil {
-		return "", errors.New("外部命令插件重建中(崩溃自动拉起)")
-	}
+	inst.inflight.Add(1)
+	defer inst.inflight.Add(-1)
 	timeout := rpcTimeoutOf(c.timeoutMs)
 	var reply ExecReply
-	err := rpcCall(cl, "Plugin.RunCommand", &RunCommandArgs{Name: c.name, Args: args}, &reply, timeout)
+	err := rpcCall(inst.client, "Plugin.RunCommand", &RunCommandArgs{Name: c.name, Args: args}, &reply, timeout)
 	if isConnErr(err) {
-		c.br.onDead(c.path, c.role)
+		c.br.onDead(c.path, c.role, inst)
 		return "", errors.New("外部命令插件不可达(进程崩溃,自动重建中): " + err.Error())
 	}
 	if err != nil {
@@ -1624,14 +1724,16 @@ func (c *commandRPCClient) args() []sdk.ArgLevel {
 // enumOptions 枚举级选项(经 RPC 求值 + 超时保护;失败/连接断开/超时 = nil 无选项,
 // 选择器直接执行,不阻塞 UI)。
 func (c *commandRPCClient) enumOptions(level int, picked []string) []sdk.Option {
-	cl := c.br.clientFor(c.path)
-	if cl == nil {
+	inst, aerr := c.instance()
+	if aerr != nil {
 		return nil
 	}
+	inst.inflight.Add(1)
+	defer inst.inflight.Add(-1)
 	var raw string
-	err := rpcCall(cl, "Plugin.CommandOptions", &CmdOptionsArgs{Name: c.name, Level: level, Picked: picked}, &raw, rpcTimeoutOf(c.timeoutMs))
+	err := rpcCall(inst.client, "Plugin.CommandOptions", &CmdOptionsArgs{Name: c.name, Level: level, Picked: picked}, &raw, rpcTimeoutOf(c.timeoutMs))
 	if isConnErr(err) {
-		c.br.onDead(c.path, c.role)
+		c.br.onDead(c.path, c.role, inst)
 		return nil
 	}
 	if err != nil || raw == "" {

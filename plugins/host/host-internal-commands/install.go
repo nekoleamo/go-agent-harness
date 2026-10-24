@@ -28,7 +28,7 @@ import (
 func (h *Host) cmdInstall(args []string) (string, error) {
 	home := h.pluginHome()
 	if len(args) < 1 || args[0] == "list" {
-		return installRows(home)
+		return installRows(home, h.externalPlugins())
 	}
 	if err := h.guardInstallApproval(); err != nil {
 		return "", errString(err.Error())
@@ -271,7 +271,10 @@ func installCheck(home string) (string, error) {
 }
 
 // installRows 已安装插件清单(带白名单状态、最近登记来源与**装机时的 git 来源**)。
-func installRows(home string) (string, error) {
+//
+// extp(可空)只用来补一列「沙箱档」:外部插件进程按**沙箱上下文分桶**后,同一件插件可能
+// 同时有两三个进程(不同页签/不同档)。不显示出来,用户 `ps` 到三个同名进程会当成泄漏。
+func installRows(home string, extp sdk.ExternalPlugins) (string, error) {
 	list, err := plugintrust.Load(filepath.Join(home, "plugins"))
 	if err != nil {
 		return "", errString(err.Error())
@@ -286,6 +289,10 @@ func installRows(home string) (string, error) {
 		head += "(强制)"
 	} else {
 		head += "(未启用)"
+	}
+	modes, showModes := modeCells(extp)
+	if showModes {
+		head += "\t沙箱档"
 	}
 	b.WriteString(head + "\t来源\n")
 	// 来源账读不出来 ⇒ **整个清单报错**,不当空账。与 web 面同一口径:静默当成「这些插件
@@ -303,7 +310,16 @@ func installRows(home string) (string, error) {
 		if a, ok := list.LastAuditOf(binary); ok {
 			state = "已登记 " + a.Time[:16] + " " + a.Source
 		}
-		b.WriteString(strings.Join([]string{it.ID, it.Protocol, binary, state, sourceCell(ledger, it.ID)}, "\t") + "\n")
+		row := []string{it.ID, it.Protocol, binary, state}
+		if showModes {
+			m := modes[binary]
+			if m == "" {
+				m = "-"
+			}
+			row = append(row, m)
+		}
+		row = append(row, sourceCell(ledger, it.ID))
+		b.WriteString(strings.Join(row, "\t") + "\n")
 	}
 	out := strings.TrimRight(b.String(), "\n")
 	// 兼容性提示汇总在末尾(零网络;只看装机时记下的协议版本)。
@@ -311,6 +327,28 @@ func installRows(home string) (string, error) {
 		out += "\n\n注意:" + notice
 	}
 	return out, nil
+}
+
+// modeCells 沙箱档一列(二进制名 → 档位列表)与"要不要显示这一列"。
+//
+// 为什么要显示(2026-10-24):外部插件进程按**沙箱上下文分桶**,同一件插件可能同时有两三个
+// 进程(不同页签/不同档)。不显示,用户 `ps` 到三个同名进程会当成进程泄漏。
+// 未装配 host-bridge(extp == nil)或没有任何插件在跑 ⇒ 整列不出现 —— 不让极简 profile 的
+// 清单凭空多一列空数据。
+func modeCells(extp sdk.ExternalPlugins) (map[string]string, bool) {
+	modes := map[string]string{}
+	if extp == nil {
+		return modes, false
+	}
+	show := false
+	for _, info := range extp.List() {
+		cell := strings.Join(info.Modes, ",")
+		modes[info.Name] = cell
+		if cell != "" {
+			show = true
+		}
+	}
+	return modes, show
 }
 
 // sourceCell 来源一格(装机的仓库/ref/sha)。
