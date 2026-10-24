@@ -5,8 +5,10 @@
 package usageindex
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -167,5 +169,33 @@ func TestScanIgnoresNonJSONL(t *testing.T) {
 	}
 	if res.Files != 1 {
 		t.Fatalf("只该扫 .jsonl 文件,got %d", res.Files)
+	}
+}
+
+// 派生会话(fork/clone)复制了父会话的前缀事件 ⇒ 统计只看派生点之后的用量。
+// **反向验证**:去掉 scanFile 的 `skipUntil` 判断 ⇒ 本用例红(父的消耗被计两遍)。
+func TestForkedSessionPrefixNotDoubleCounted(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name string, evs []string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(strings.Join(evs, "\n")+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	usageLine := func(seq int, model string, prompt int) string {
+		return fmt.Sprintf(`{"Seq":%d,"Kind":"session/usage","Payload":{"Model":%q,"Usage":{"PromptTokens":%d,"CompletionTokens":1}}}`, seq, model, prompt)
+	}
+	// 父会话:seq 1..2 两条 usage
+	write("proj-20260101-000000.jsonl", []string{usageLine(1, "m", 100), usageLine(2, "m", 100)})
+	// 分支:fork at seq 2 ⇒ 前缀两条是复制的,自己又花了一条(seq 10)
+	write("proj-20260102-000000.jsonl", []string{usageLine(1, "m", 100), usageLine(2, "m", 100), usageLine(10, "m", 7)})
+	if err := os.WriteFile(filepath.Join(dir, "fork-tree.json"), []byte(`{"20260102-000000":{"ID":"20260102-000000","Parent":"","ParentSeq":2}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Scan(dir, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Prompt != 207 {
+		t.Fatalf("父两次 100 + 分支自己 7 = 207;得 %d(分支把父的前缀重复计了)", res.Prompt)
 	}
 }

@@ -53,6 +53,13 @@ func (s *Service) recordFork(id, parent string, seq uint64) {
 
 // ForkTree 项目会话分支树节点(含主会话节点,Parent 空 = 根;实现无记录 = 空表)。
 // 返回值只读语义:调用方自行深拷贝如需修改。
+//
+// **按当前项目过滤**:fork-tree.json 的键是**裸会话 id**,而 id 只在项目内唯一
+// (newSessionID/forkID 都只对本项目文件查重)。不过滤的话:
+//   - 两个项目在同一秒各建一个分支 ⇒ 同 id ⇒ 树里只剩一条;
+//   - `/tree` 会列出别的项目的节点(它们不在本项目 Sessions() 里 ⇒ 显示成裸 id 幽灵节点)。
+//
+// 旧记录(裸 id)保持可读 —— 判据是"这个 id 在本项目里有没有对应的会话文件"。
 func (s *Service) ForkTree() ([]sdk.ForkNode, error) {
 	s.ftMu.Lock()
 	defer s.ftMu.Unlock()
@@ -62,10 +69,20 @@ func (s *Service) ForkTree() ([]sdk.ForkNode, error) {
 	out = append(out, sdk.ForkNode{ID: "", Parent: ""})
 	seen := map[string]bool{"": true}
 	for _, n := range m {
-		if !seen[n.ID] {
-			out = append(out, n)
-			seen[n.ID] = true
+		if seen[n.ID] || !s.sessionExists(n.ID) {
+			continue
 		}
+		out = append(out, n)
+		seen[n.ID] = true
 	}
 	return out, nil
+}
+
+// sessionExists 该会话 id 是否属于**当前项目**(主会话恒 true)。
+// 与 Sessions() 的判定同源:主会话 = <key>.jsonl,切换会话 = <key>-<id>.jsonl。
+func (s *Service) sessionExists(id string) bool {
+	if id == "" {
+		return true
+	}
+	return fileExists(SessionPath(SessionsRoot(), s.Current(), id))
 }

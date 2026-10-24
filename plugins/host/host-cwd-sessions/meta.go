@@ -52,6 +52,15 @@ type sessionMeta struct {
 	Prefs *sdk.SessionPrefs `json:"prefs,omitempty"`
 }
 
+// metaEmpty 条目是否已空到可以删掉。
+//
+// 为什么抽成一个函数:清空类操作有三处(renameMeta / SetPinned / storeSummary),
+// 判据一旦漏字段就会**静默删掉不该删的信息** —— 2026-10-24 就发生过一次:BranchNotes
+// 加进来时三处判据没跟上,于是「改名清空」会把分支备注的去重指纹一起抹掉 ⇒ 重复注入。
+func metaEmpty(e sessionMeta) bool {
+	return e.Name == "" && !e.Pinned && e.Summary == nil && len(e.BranchNotes) == 0
+}
+
 // SetSessionPrefs 写会话级偏好(id 空 = 主会话)。
 //
 // 只写"非空项"之外的整份快照:调用方拿到的是**合并后的完整值**(先读现状 → 改若干项 → 写回),
@@ -170,7 +179,7 @@ func (s *Service) renameMeta(file, name string) error {
 	} else {
 		e.Name = name
 	}
-	if e.Name == "" && !e.Pinned && e.Summary == nil {
+	if metaEmpty(e) {
 		delete(m, file) // 无任何字段 → 不留空条目(避免 meta.json 膨胀)
 	} else {
 		m[file] = e
@@ -251,7 +260,7 @@ func (s *Service) SetPinned(id string, pinned bool) error {
 		e.Pinned = false
 		e.PinnedAt = 0
 	}
-	if e.Name == "" && !e.Pinned && e.Summary == nil {
+	if metaEmpty(e) {
 		delete(m, file)
 	} else {
 		m[file] = e
@@ -270,7 +279,7 @@ func (s *Service) storeSummary(file string, sum *summaryEntry) error {
 	} else {
 		e.Summary = sum
 	}
-	if e.Name == "" && !e.Pinned && e.Summary == nil {
+	if metaEmpty(e) {
 		delete(m, file)
 	} else {
 		m[file] = e

@@ -141,3 +141,41 @@ func TestBranchNoteTextFallsBackToID(t *testing.T) {
 		t.Fatalf("没有显示名时应退回 id: %q", got)
 	}
 }
+
+// 切会话必须清掉上一个会话的**应急状态**(2026-10-24 review 的 P1):
+// emergencyTrim 只在"下一条 usage 事件"里被清 ⇒ 不清就粘到新会话,新会话第一次投影
+// 会按旧会话的应急阈值截断最旧工具结果(静默丢内容);autoSummary 会让 HasAutoSummary 说谎。
+//
+// **反向验证**:删掉 Load 里 `l.emergencyTrim = 0` / `l.autoSummary = false` ⇒ 本用例红。
+func TestLoadResetsEmergencyState(t *testing.T) {
+	dir := t.TempDir()
+	a := filepath.Join(dir, "a.jsonl")
+	b := filepath.Join(dir, "b.jsonl")
+	l := newLog(dir)
+	l.SetPath(a)
+	_ = l.Append(sdk.SessionEvent{Kind: sdk.EventUserMessage, Payload: sdk.UserMessage{Content: strings.Repeat("问", 400)}})
+	_ = l.Append(sdk.SessionEvent{Kind: sdk.EventToolResult, Payload: sdk.ToolResultEvent{CallID: "c1", Name: "shell", Content: strings.Repeat("o", 800)}})
+	// 人为置上应急状态(等价于刚刚溢出过一次)
+	l.emergencyTrim = 120
+	l.autoSummary = true
+
+	// 切到另一个空会话
+	if err := l.Load(b); err != nil {
+		t.Fatal(err)
+	}
+	if l.emergencyTrim != 0 {
+		t.Fatalf("切会话后应急截断必须清零,得 %d(否则新会话首投影被旧阈值截断)", l.emergencyTrim)
+	}
+	if l.HasAutoSummary() {
+		t.Fatal("切会话后 HasAutoSummary 应为 false")
+	}
+	// 再切回去:旧会话自己的内容不受影响(未被应急截断改写)
+	if err := l.Load(a); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range l.DeriveMessages() {
+		if strings.Contains(m.Content, "[截断") {
+			t.Fatalf("旧会话内容不应被截断标记改写: %q", m.Content)
+		}
+	}
+}

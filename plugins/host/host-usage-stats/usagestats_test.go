@@ -12,7 +12,12 @@ func usageEvent(model string, u sdk.Usage) *sdk.SessionEvent {
 	return &sdk.SessionEvent{Kind: sdk.EventUsage, Payload: sdk.UsageEvent{Model: model, Usage: u}}
 }
 
-// TestAccumulateFromUsageEvents 订阅事件累计:非 usage 事件忽略;窗口跟随最新模型。
+// TestAccumulateFromUsageEvents 累计口径:**只认一条通道**。
+//
+// 历史(2026-10-24 review):agent-loop 每笔用量会同时写"会话事件 session/usage"与
+// "实例事件 usage/recorded"。统计服务以前两条都收 —— 主会话的 Session 恰好是空串,
+// 于是主会话被双计(累计 token/请求数/成本 ×2)。现在累计**只走 usage/recorded**
+// (`add`),session 事件只用来刷新"这个会话最近用的模型"(窗口解析需要它)。
 func TestAccumulateFromUsageEvents(t *testing.T) {
 	s := &Service{}
 	evs := []*sdk.SessionEvent{
@@ -21,7 +26,10 @@ func TestAccumulateFromUsageEvents(t *testing.T) {
 		usageEvent("deepseek-chat", sdk.Usage{PromptTokens: 50, CompletionTokens: 10, CachedTokens: 30}),
 	}
 	for _, ev := range evs {
-		s.HandleSessionEvent(ev)
+		s.HandleSessionEvent(ev) // 只刷模型(窗口),不累计
+		if ue, ok := ev.Payload.(sdk.UsageEvent); ok {
+			s.add(ue.Session, ue.Model, ue.Usage) // 等价 usage/recorded 通道
+		}
 	}
 	st := s.Stats()
 	if st.Requests != 2 || st.PromptTokens != 150 || st.CompletionTokens != 30 || st.CachedTokens != 90 {
@@ -45,6 +53,7 @@ func TestAccumulateFromUsageEvents(t *testing.T) {
 func TestReset(t *testing.T) {
 	s := &Service{}
 	s.HandleSessionEvent(usageEvent("claude-sonnet-4-5", sdk.Usage{PromptTokens: 999}))
+	s.add("", "claude-sonnet-4-5", sdk.Usage{PromptTokens: 999})
 	s.Reset()
 	st := s.Stats()
 	if st.Requests != 0 || st.PromptTokens != 0 || st.CachedTokens != 0 || st.LastPromptTokens != 0 || st.LastCachedTokens != 0 {

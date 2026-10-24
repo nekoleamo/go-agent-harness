@@ -78,6 +78,7 @@ func Scan(root string, since time.Time) (Result, error) {
 		root = filepath.Join(sdk.Home(), "sessions")
 	}
 	res := Result{Since: since}
+	forked := forkedBefore(root)
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		// 目录不存在 = 还没跑过 = 没有用量(不是错误)
@@ -100,12 +101,16 @@ func Scan(root string, since time.Time) (Result, error) {
 			continue
 		}
 		res.Files++
+		name := strings.TrimSuffix(e.Name(), ".jsonl")
 		su := SessionUsage{
-			Session: strings.TrimSuffix(e.Name(), ".jsonl"),
+			Session: name,
 			Path:    path,
 			MTime:   info.ModTime().Unix(),
 		}
-		scanFile(path, &su, &res)
+		// 派生会话(fork/clone)的文件里**复制了父会话的前缀事件**(含 session/usage)——
+		// 不跳过就会把父的消耗在每条分支上再计一遍,`/usage` 的总数随派生次数虚高
+		// (2026-10-24 review 的 P2)。ParentSeq 之后的才是这条支自己的花费。
+		scanFile(path, name, forked, &su, &res)
 		if su.Requests > 0 { // 没有任何请求的会话不进榜(空会话/只有设置事件的)
 			res.Sessions = append(res.Sessions, su)
 			res.Requests += su.Requests
@@ -123,8 +128,46 @@ func Scan(root string, since time.Time) (Result, error) {
 	return res, nil
 }
 
-// scanFile 累加单个会话文件里的 session/usage 事件。
-func scanFile(path string, su *SessionUsage, res *Result) {
+// forkedBefore 会话派生点:filename → 父会话覆盖到的 Seq(只统计 Seq 之后的事件)。
+//
+// 读 fork-tree.json(与 host-cwd-sessions 同一份记录);读不到就是空表 —— 那是"没有派生"
+// 而不是错误,统计退化成"整个文件都算"(与改造前一致)。
+func forkedBefore(root string) map[string]uint64 {
+	out := map[string]uint64{}
+	b, err := os.ReadFile(filepath.Join(root, "fork-tree.json"))
+	if err != nil {
+		return out
+	}
+	var m map[string]struct {
+		ID        string `json:"ID"`
+		Parent    string `json:"Parent"`
+		ParentSeq uint64 `json:"ParentSeq"`
+	}
+	if json.Unmarshal(b, &m) != nil {
+		return out
+	}
+	for id, n := range m {
+		if n.ParentSeq > 0 && id != "" {
+			out[id] = n.ParentSeq // 键是**裸会话 id**(文件名后缀)
+		}
+	}
+	return out
+}
+
+// parentSeqOf 该会话文件名对应的派生点(0 = 不是派生会话)。
+// fork-tree 的键是裸 id,文件名是 `<项目键>-<id>` ⇒ 用后缀匹配,不依赖项目键的形状。
+func parentSeqOf(name string, forked map[string]uint64) uint64 {
+	for id, seq := range forked {
+		if name == id || strings.HasSuffix(name, "-"+id) {
+			return seq
+		}
+	}
+	return 0
+}
+
+// scanFile 累加单个会话文件里的 session/usage 事件(forked 非空时只算 Seq 之后的事件)。
+func scanFile(path, name string, forked map[string]uint64, su *SessionUsage, res *Result) {
+	skipUntil := parentSeqOf(name, forked)
 	f, err := os.Open(path)
 	if err != nil {
 		res.Skipped++
@@ -144,6 +187,7 @@ func scanFile(path string, su *SessionUsage, res *Result) {
 			continue
 		}
 		var ev struct {
+			Seq     uint64          `json:"Seq"`
 			Kind    string          `json:"Kind"`
 			Payload json.RawMessage `json:"Payload"`
 		}
@@ -153,6 +197,9 @@ func scanFile(path string, su *SessionUsage, res *Result) {
 		}
 		if ev.Kind != sdk.EventUsage || len(ev.Payload) == 0 {
 			continue
+		}
+		if skipUntil > 0 && ev.Seq <= skipUntil {
+			continue // 从父会话复制来的前缀:那笔花费已经记在父会话名下
 		}
 		var ue sdk.UsageEvent
 		if err := json.Unmarshal(ev.Payload, &ue); err != nil {

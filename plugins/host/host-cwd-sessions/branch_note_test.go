@@ -3,8 +3,10 @@ package hostcwdsessions
 // C4 写侧:从分支切回祖先会话时,把分支的一句话注入目标会话;只注一次,反方向不注。
 
 import (
+	"encoding/json"
 	"errors"
 	"log/slog"
+	"os"
 	"strings"
 	"testing"
 
@@ -99,22 +101,65 @@ func TestBranchNoteNotInjectedWithoutForkRecord(t *testing.T) {
 	}
 }
 
-// TestBranchNoteFallsBackToPreview 概述缺失时退回首条用户消息(零模型调用)。
-func TestBranchNoteFallsBackToPreview(t *testing.T) {
+// TestBranchNoteFallsBackToBranchOwnWork 无概述时只认**派生点之后**的用户消息。
+// 反向验证:把回退改回"文件里首条用户消息" ⇒ 本用例必红(那会把主线开场白当成分支产出)。
+func TestBranchNoteFallsBackToBranchOwnWork(t *testing.T) {
 	svc, fs := forkSetup(t)
-	if _, err := svc.ForkAt(3); err != nil {
+	id, err := svc.ForkAt(3) // 继承 seq<=3(含主线的两句提问)
+	if err != nil {
 		t.Fatal(err)
 	}
-	// 不做 SetSummary:分支文件里已有继承来的用户消息 ⇒ 预览非空
+	// 分支里自己做了一件事:派生点之后的第一条用户消息
+	appendSessionLine(t, SessionPath(SessionsRoot(), "k", id), sdk.SessionEvent{
+		Seq: 10, Kind: sdk.EventUserMessage, Payload: sdk.UserMessage{Content: "分支里改成了流式写入"},
+	})
+	// 分支里再追加一条更新的(不应被取 —— 取第一条)
+	appendSessionLine(t, SessionPath(SessionsRoot(), "k", id), sdk.SessionEvent{
+		Seq: 11, Kind: sdk.EventUserMessage, Payload: sdk.UserMessage{Content: "第二条不该被取"},
+	})
 	if err := svc.Open(""); err != nil {
 		t.Fatal(err)
 	}
 	notes := branchNotes(fs.Replay())
 	if len(notes) != 1 {
-		t.Fatalf("应注入 1 条(退回首条提问),得 %d", len(notes))
+		t.Fatalf("应注入 1 条,得 %d", len(notes))
 	}
-	if notes[0].Text == "" {
-		t.Fatalf("退回到预览也不该是空文本: %+v", notes[0])
+	if strings.Contains(notes[0].Text, "第一问") || strings.Contains(notes[0].Text, "第二问") {
+		t.Fatalf("不许把继承来的主线提问当成分支产出: %q", notes[0].Text)
+	}
+	if !strings.Contains(notes[0].Text, "流式写入") || strings.Contains(notes[0].Text, "第二条") {
+		t.Fatalf("应取派生点之后的第一条用户消息: %q", notes[0].Text)
+	}
+}
+
+// 分支还没做事(派生点之后没有任何用户消息)⇒ **不注入**(空话比错话更糟)。
+func TestBranchNoteNoOwnWorkNoInjection(t *testing.T) {
+	svc, fs := forkSetup(t)
+	if _, err := svc.ForkAt(3); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Open(""); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(branchNotes(fs.Replay())); got != 0 {
+		t.Fatalf("分支没有自己的内容时不应注入,得 %d 条", got)
+	}
+}
+
+// appendSessionLine 往会话文件追加一条事件(jsonl,与落盘格式一致)。
+func appendSessionLine(t *testing.T, path string, ev sdk.SessionEvent) {
+	t.Helper()
+	b, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.Write(append(b, '\n')); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -197,4 +242,43 @@ func (f *failingAppend) Append(ev sdk.SessionEvent) error {
 		return errors.New("磁盘满")
 	}
 	return f.forkSessions.Append(ev)
+}
+
+// 去重指纹不能被"清空名字/取消置顶/清概述"顺手删掉 —— 三处清空判据曾漏掉 BranchNotes。
+// **反向验证**:把 metaEmpty 的 `len(e.BranchNotes) == 0` 去掉 ⇒ 本用例红(再切回会重复注入)。
+func TestBranchNoteFingerprintSurvivesMetaCleanup(t *testing.T) {
+	svc, fs := forkSetup(t)
+	id, err := svc.ForkAt(3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.SetSummary(id, sdk.SessionSummary{Text: "分支的工作"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Open(""); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(branchNotes(fs.Replay())); got != 1 {
+		t.Fatalf("应注入 1 条,得 %d", got)
+	}
+	// 对**目标会话**(主会话)做三种清空操作:都不该抹掉分支备注指纹
+	if err := svc.SetName("", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.SetPinned("", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.SetSummary("", sdk.SessionSummary{}); err != nil {
+		t.Fatal(err)
+	}
+	// 再切回同一个分支、再切回来:去重仍生效
+	if err := svc.Open(id); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Open(""); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(branchNotes(fs.Replay())); got != 1 {
+		t.Fatalf("清空元数据后去重失效(重复注入),得 %d 条", got)
+	}
 }

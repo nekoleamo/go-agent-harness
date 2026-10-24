@@ -115,19 +115,22 @@ func (s *Service) HandleSessionEvent(sev *sdk.SessionEvent) {
 	if sev == nil || sev.Kind != sdk.EventUsage {
 		return
 	}
-	ue, ok := sev.Payload.(sdk.UsageEvent)
-	if !ok {
-		// 兼容旧日志:载荷为裸 sdk.Usage(无模型名)时按现状累计,窗口不刷新
-		if u, ok2 := sev.Payload.(sdk.Usage); ok2 {
-			s.add("", "", u)
-		}
+	if ue, ok := sev.Payload.(sdk.UsageEvent); ok {
+		// 窗口要按模型刷新(账本里那条 usage 事件带模型名),但**不累加** —— 累加只走
+		// usage/recorded,否则主会话会双计。
+		// **带会话归属的新载荷一律交给 usage/recorded 通道记**(agent-loop 每次 usage 都会发
+		// 那条实例级事件,主会话也在内 —— `add("")` 就是主会话桶)。
+		//
+		// 这里原本写的是"Session 非空才跳过":而主会话的 Session **恰好是空字符串**
+		// (SessionFromContext 在主会话上返回 "") ⇒ 主会话的每笔用量被两条通道各记一次,
+		// 累计 token / 请求数 / 成本全部 ×2(2026-10-24 review 的 P1)。
+		s.noteModel(ue.Session, ue.Model)
 		return
 	}
-	if ue.Session != "" {
-		return // 带会话归属的由 usage/recorded 记账(agent-loop 同时发两条,这里跳过防重复计数)
+	// 兼容旧日志:载荷为裸 sdk.Usage(无模型名)时按现状累计,窗口不刷新
+	if u, ok2 := sev.Payload.(sdk.Usage); ok2 {
+		s.add("", "", u)
 	}
-	// 无 Session 字段 = 老日志/主单例通道 ⇒ 归主会话桶(空键)。
-	s.add("", ue.Model, ue.Usage)
 }
 
 // LearnWindowFromError 错误驱动学习:从 LLM 超限错误文本解析窗口数字并记忆
@@ -170,6 +173,25 @@ func (s *Service) add(sid, model string, u sdk.Usage) {
 	c.cached += u.CachedTokens
 	c.lastCached = u.CachedTokens // 逐轮缓存命中(诊断用;累计值会把「早期命中过」与「现在还在命中」混成一个数)
 	c.requests++
+	s.cur = sid
+}
+
+// noteModel 只刷新"这个会话最近用的模型"(窗口解析要它),不动任何计数。
+func (s *Service) noteModel(sid, model string) {
+	if model == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.buckets == nil {
+		s.buckets = make(map[string]*counter)
+	}
+	c := s.buckets[sid]
+	if c == nil {
+		c = &counter{}
+		s.buckets[sid] = c
+	}
+	c.model = model
 	s.cur = sid
 }
 
@@ -229,7 +251,10 @@ func (s *Service) StatsFor(sessionID string) sdk.UsageStats {
 	if s.buckets != nil {
 		c = s.buckets[sessionID]
 	}
-	st := sdk.UsageStats{Window: s.currentWindowLocked()}
+	// 窗口必须按**这个会话**的模型解析。此前取 currentWindowLocked()(最近累加的那个会话)
+	// ⇒ A 页签 1M 模型、B 页签 200K 模型时,先跑 B 再查 A 会拿 B 的窗口去算 A 的占用百分比
+	// (可差 5 倍;2026-10-24 review 的 P2)。
+	st := sdk.UsageStats{Window: s.currentWindowFor(sessionID)}
 	if c != nil {
 		st.PromptTokens = c.prompt
 		st.CompletionTokens = c.completion

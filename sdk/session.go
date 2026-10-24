@@ -54,7 +54,9 @@ const (
 	EventAssistantMessage = "assistant/message"
 	EventToolCall         = "tool/call"
 	EventToolResult       = "tool/result"
-	// EventSummary 滚动摘要事件(M6.5):载荷为 SessionSummary;原始消息事件保留在日志(留盘完整)。
+	// EventSummary 滚动摘要事件(M6.5):载荷为 sdk.RollingSummary(旧日志是纯字符串);
+	// 原始消息事件保留在日志(留盘完整)。**不要**与 sdk.SessionSummary 混了 ——
+	// 那是"会话概述"(给列表/分支 gist 看,绝不进提示词),本事件是"滚动的上下文摘要"。
 	EventSummary = "session/summary"
 	// EventUsage 每轮 LLM 请求完成后的 token 消耗(M):载荷为 sdk.UsageEvent(模型名 + Usage);
 	// agent-loop 每轮记录(同日志留盘),host-usage-stats 订阅累计为会话级统计。

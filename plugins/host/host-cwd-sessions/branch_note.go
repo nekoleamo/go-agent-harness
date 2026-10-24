@@ -11,8 +11,11 @@
 package hostcwdsessions
 
 import (
+	"bufio"
 	"crypto/sha1"
 	"encoding/hex"
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -35,7 +38,8 @@ func (s *Service) noteBranchReturn(from, to string) {
 	if from == "" || from == to || s.sessions == nil {
 		return
 	}
-	if !s.isBranchDescendant(to, from) {
+	descendant, forkSeq := s.isBranchDescendant(to, from)
+	if !descendant {
 		return
 	}
 	// 一次读 meta + names(下面三处都要用),别各读一遍 —— 切会话是高频路径。
@@ -46,7 +50,7 @@ func (s *Service) noteBranchReturn(from, to string) {
 	names := loadNames(filepath.Join(SessionsRoot(), "names.json"))
 	s.nmMu.Unlock()
 
-	gist := branchGistOf(SessionsRoot(), s.Current(), from, meta)
+	gist := branchGistOf(SessionsRoot(), s.Current(), from, forkSeq, meta)
 	if gist == "" {
 		return
 	}
@@ -90,37 +94,82 @@ func branchNoteFingerprint(from, text string) string {
 	return from + "|" + hex.EncodeToString(sum[:6])
 }
 
-// isBranchDescendant 判断 child 是否是 ancestor 的后代(沿 fork-tree.json 上溯)。
+// isBranchDescendant 判断 child 是否是 ancestor 的后代(沿 fork-tree.json 上溯),
+// 并返回 child 自己的派生点(ParentSeq;0 = 全量复制 clone)。
 // ancestor 空 = 主会话(所有派生链的根)。
-func (s *Service) isBranchDescendant(ancestor, child string) bool {
+func (s *Service) isBranchDescendant(ancestor, child string) (bool, uint64) {
 	s.ftMu.Lock()
 	tree := readForkTree(forkTreePath())
 	s.ftMu.Unlock()
+	if n, ok := tree[child]; ok && n.Parent == ancestor {
+		return true, n.ParentSeq
+	}
 	cur := child
 	for cur != "" {
 		n, ok := tree[cur]
 		if !ok {
-			return false // 没派生记录:不是从本会话分出去的(手工拷文件/外部写入)
+			return false, 0 // 没派生记录:不是从本会话分出去的(手工拷文件/外部写入)
 		}
 		if n.Parent == ancestor {
-			return true
+			// 深层链(祖先 → A → B):B 的 forkSeq 仍是 B 自己的派生点,
+			// 用它之后的用户消息才能回答"B 这条支做过什么"。
+			if own, ok := tree[child]; ok {
+				return true, own.ParentSeq
+			}
+			return true, n.ParentSeq
 		}
 		cur = n.Parent
 	}
-	return false
+	return false, 0
 }
 
-// branchGistOf 分支的一句话:优先已缓存的概述,退回首条用户消息预览;都没有 = 空。
-// root/key 显式传入(调用方已算好),meta 由调用方一次性读好。
-func branchGistOf(root, key, id string, meta map[string]sessionMeta) string {
+// branchGistOf 分支的一句话:优先已缓存的概述;没有概述时退回到**该分支自己在派生点之后**
+// 的第一条用户消息,再没有就不注入(返回空)。
+//
+// ⚠️ 不能拿"文件里首条用户消息"当退路:`ForkAt/CloneCurrent` 会把父会话的前缀事件原样
+// 复制进分支文件,所以子文件的第一句永远是**主线的开场白** —— 用它会让主线收到一条
+// 「分支做过:我自己刚问的那句」(把父的内容说成分支的产出)。派生点之后的才真是它的工作。
+func branchGistOf(root, key, id string, forkSeq uint64, meta map[string]sessionMeta) string {
 	path := SessionPath(root, key, id)
 	if me, ok := meta[filepath.Base(path)]; ok && me.Summary != nil {
 		if t := oneLine(me.Summary.Text); t != "" {
 			return t
 		}
 	}
-	_, preview, _ := scanSession(path)
-	return oneLine(preview)
+	return firstUserLineAfter(path, forkSeq)
+}
+
+// firstUserLineAfter 读会话文件,取 Seq > forkSeq 的第一条 user/message 正文(压成一行)。
+// 只为一个可能的回退读文件:切会话时通常已有概述缓存,走不到这里。
+func firstUserLineAfter(path string, forkSeq uint64) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	for sc.Scan() {
+		line := sc.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var ev struct {
+			Seq     uint64
+			Kind    string
+			Payload struct{ Content string }
+		}
+		if json.Unmarshal(line, &ev) != nil {
+			continue // 坏行容忍(与其它读侧同口径)
+		}
+		if ev.Kind != "user/message" || ev.Seq <= forkSeq {
+			continue
+		}
+		if t := oneLine(ev.Payload.Content); t != "" {
+			return t
+		}
+	}
+	return ""
 }
 
 // oneLine 压成一行并截断(注入的是"一句",不是正文)。
