@@ -328,7 +328,7 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B]
 | `/theme [name]` | Switch theme (enumerates `$GAH_HOME/config/themes/*.yaml`; `default` resets; no recompile; persists) |
 | `/fork [seq]` | Derive a branch session from any point in history (`/tree` shows seqs; default = latest question) |
 | `/clone` | Clone the current session (a second path in the same branch) |
-| `/tree` | Session branch tree (full picture + forkable question points; each **branch** gets a one-line gist from its cached overview, falling back to its first question — never triggers the model) |
+| `/tree` | Session branch tree (full picture + forkable question points; each **branch** gets a one-line gist from its cached overview, falling back to its first question — never triggers the model); **switching back from a branch to the main line** carries that branch's one-liner into the main context (visible to the model, one meta line in TUI/Web; injected once per branch+gist, zero model calls) |
 | `/name <display name>` | Give the current session a display name (`-` clears; takes priority in the status bar / switch list) |
 | `/widgets on\|off` | Toggle the widget strip above the input (dynamic host-registered info lines) |
 | `/statusline [items...]\|reset` | Status bar item set and order (TUI): no arg = show the current layout plus available items (`intervene/state/queue/questions/plan/todo/dock/notice/last/tps/workspace/sandbox/approval/role/session`); passing items renders them in that order (turn-state items joined with `·`, sections with `|`), `reset` restores the F15.3 baseline; the preference persists in `gah-state.json` and applies on restart |
