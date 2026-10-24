@@ -34,6 +34,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/nekoleamo/go-agent-harness/internal/testutil"
@@ -84,4 +85,83 @@ func TestBorderHelperRunsAndIsMeasured(t *testing.T) {
 		t.Fatalf("白名单内的写应成功(否则是用例环境问题,不是沙箱太严):%v\n%s", serr, out)
 	}
 
+}
+
+// TestHelperProbeCountersLandWithCoveredBuild 记账那半的**端到端**判据:
+// 用 `go build -cover -covermode=atomic` 构建探针(`testdata/helperprobe`,它内部调 Wrap
+// 起一条包装后的命令),跑一次后断言:① 区外写被内核拒(包装真生效);② helper(被
+// `syscall.Exec` 换掉的那个进程)**在 exec 之前**把计数器落进了 GOCOVERDIR。
+//
+// 为什么必须是"另建一个二进制"而不是直接在测试里起:见文件头那条实测约束 ——
+// `runtime/coverage.WriteCountersDir` 在 `go test` 的测试二进制里恒失败
+// (`-covermode=<invalid>`),所以只有 `go build -cover` 产物才写得进计数器。
+//
+// 平台:Lenux 且内核启用 Landlock。**CI 的 ubuntu runner 内核未启用 Landlock ⇒ 那里 Skip**,
+// 这条只能在 Linux 真机(或有能力的机器)上跑;跳过原因会打在 -v 输出里,不假装覆盖。
+//
+// 反向验证:删掉 linux.go 里 init() 的 flushCoverageCounters() ⇒ 计数器目录只剩 covmeta、
+// 没有 covcounters ⇒ 第 ② 条红(macOS 上用等价最小程序实测过同一条路径:61.5% ↔ 0.0%)。
+func TestHelperProbeCountersLandWithCoveredBuild(t *testing.T) {
+	clearMarker(t)
+	if why := platformAvailableReason(Spec{}); why != "" {
+		t.Skipf("本机无法施加 Landlock(CI 的 ubuntu runner 属于这类),跳过记账端到端:%s", why)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skip("无 HOME:无法选内核白名单外的落点")
+	}
+	root, jail := t.TempDir(), t.TempDir()
+	outside := filepath.Join(home, fmt.Sprintf(".gah-probe-%d", os.Getpid()))
+	_ = os.Remove(outside)
+	t.Cleanup(func() { _ = os.Remove(outside) })
+
+	bin := filepath.Join(t.TempDir(), "helperprobe")
+	testutil.BuildCovered(t, bin, "./testdata/helperprobe")
+
+	// 计数器目录与 testutil 的合并入口同源(否则 Flush 读 RunDir 会是空的,静默不并)。
+	coverEnv := testutil.ChildEnv(t)
+	coverDir := ""
+	for _, kv := range coverEnv {
+		if k, v, ok := strings.Cut(kv, "="); ok && k == "GOCOVERDIR" {
+			coverDir = v
+		}
+	}
+	if coverDir == "" {
+		coverDir = filepath.Join(t.TempDir(), "cov")
+		if err := os.MkdirAll(coverDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		coverEnv = []string{"GOCOVERDIR=" + coverDir}
+	}
+
+	inside := filepath.Join(root, "ok.txt")
+	script := fmt.Sprintf("echo hi > %q && echo hi > %q", inside, outside)
+	cmd := exec.Command(bin, string(sdk.SandboxWorkspace), root, jail, script)
+	cmd.Env = append(os.Environ(), coverEnv...)
+	out, rerr := cmd.CombinedOutput()
+	if rerr == nil {
+		t.Fatalf("区外写未被内核拦住(命令整体成功):%s", out)
+	}
+	if _, serr := os.Stat(outside); serr == nil {
+		t.Fatalf("区外文件不该存在:%s", outside)
+	}
+	if _, serr := os.Stat(inside); serr != nil {
+		t.Fatalf("白名单内的写应成功(否则是用例环境问题):%v\n%s", serr, out)
+	}
+
+	// ② 记账:helper 是 exec 掉自己的形态,只有 exec 前的 flush 能留下计数器。
+	ents, derr := os.ReadDir(coverDir)
+	if derr != nil {
+		t.Fatalf("读计数器目录失败: %v", derr)
+	}
+	var hasCounters bool
+	for _, e := range ents {
+		if strings.HasPrefix(e.Name(), "covcounters") {
+			hasCounters = true
+		}
+	}
+	if !hasCounters {
+		t.Fatalf("helper 的计数器没有落盘(exec 前的 flush 没生效?)目录内容:%v", ents)
+	}
+	testutil.Flush(t, "github.com/nekoleamo/go-agent-harness/internal/kernelsandbox")
 }
