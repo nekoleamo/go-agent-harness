@@ -62,16 +62,25 @@ func TestTodoCountsReadsStoreAndCaches(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := todostore.Path("")
+	// ts 每次写都**严格递增 1s**(而不是"现在 + 行数秒"):后者的偏移取决于行数,连续两次
+	// 同样行数的写会落在同一个秒级值上,只靠两次 time.Now() 的亚秒差区分 —— Windows CI 的
+	// 临时卷上这个差会被抹平,症状是「墓碑不该计数」那条断言恒红(v0.7.2 发版途中实撞,
+	// rerun 即绿 = 环境相关,不是产品缺陷)。
+	ts := time.Now()
 	write := func(lines ...string) {
 		body := strings.Join(lines, "\n") + "\n"
 		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		// 显式把 mtime 往前推:tmpfs/APFS 上同一毫秒内的两次写可能拿到相同 mtime,
-		// 那样这条用例会**恒绿**(缓存分支被跳过而不是被测到)。
-		ts := time.Now().Add(time.Duration(len(lines)) * time.Second)
+		ts = ts.Add(time.Second)
 		if err := os.Chtimes(path, ts, ts); err != nil {
 			t.Fatal(err)
+		}
+		// 环境的时间戳粒度比 1s 还粗(FAT/exFAT 一类 2s 粒度卷)⇒ "mtime 变了要重读"
+		// 这条根本测不到。显式跳过并说清原因,别让它报成产品缺陷(与只读目录类用例同款纪律)。
+		if st, err := os.Stat(path); err != nil || !st.ModTime().Equal(ts) {
+			t.Skipf("文件系统时间戳粒度不足以区分 1s(写成 %v,读回 %v):跳过缓存失效断言",
+				ts, st.ModTime())
 		}
 	}
 	write(
