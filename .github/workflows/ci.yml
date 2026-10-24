@@ -152,15 +152,20 @@ jobs:
           go vet ./...
           (cd sdk && go vet ./...)
       - name: go test(-race 需 cgo/gcc,有则跑,无则降级并明示)
+        # -timeout=20m:Windows runner 上 `tests` 包(pty 交互类 e2e)实测要 9.8–11 分钟,
+        # 而 Go 的**默认**逐包超时是 10 分钟 —— 只要 runner 稍微慢一点就打 `panic: test timed
+        # out after 10m0s`(2026-10-24 实撞:`TestScheduleUnloadLeavesNoResidue` 挂住,
+        # rerun 即绿,包里并无死等)。这不是放宽判据(没有哪条用例依赖"必须在 10 分钟内"),
+        # 而是让机器慢不变成假红;真正的计时护栏在 Linux job 的「计时回归护栏」那一步。
         run: |
           if command -v gcc >/dev/null 2>&1; then
             echo "gcc 可用 → 全库 -race"
-            go test -race ./...
-            (cd sdk && go test -race ./...)
+            go test -race -timeout=20m ./...
+            (cd sdk && go test -race -timeout=20m ./...)
           else
             echo "无 gcc → 降级为无 -race(race detector 在 windows 需 cgo)"
-            go test ./...
-            (cd sdk && go test ./...)
+            go test -timeout=20m ./...
+            (cd sdk && go test -timeout=20m ./...)
           fi
       - name: 构建 windows/amd64 主包
         run: CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o gah.exe ./cmd/gah

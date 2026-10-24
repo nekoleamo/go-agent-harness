@@ -106,14 +106,16 @@ SKIP="${GAH_COVER_SKIP:-0}"             # 1 = 只测(不校验),用于基线测�
 #   被 exec 替换掉的进程**不会在退出时写覆盖计数器**(Go 运行时在正常退出时写盘,而 exec
 #   替换了进程镜像 ⇒ 退出处理根本不执行),插桩程序 exec 掉自己后那段代码的计数恒为 0
 #   (2026-10-02 最小实验验证)。
-#   **2026-10-24 已弥合记账那一半**:helper 在 exec **之前**(也必须在那之前 —— 一旦
-#   restrict_self,GOCOVERDIR 不在 Landlock 白名单里就写不出去了)调
-#   `runtime/coverage.WriteCountersDir`(见 linux.go 的 flushCoverageCounters),再由
-#   `internal/kernelsandbox/linux_helper_test.go` 真跑一条包装后的命令并 `testutil.Flush`
-#   并进主 profile。**没走 fork+父进程等待那条路**:那要重论证信号转发/退出码/pty/进程组,
-#   而这里要修的只是"记账看不到",不改沙箱语义。前提 = 构建为 **-covermode=atomic**
-#   (`go test -cover` 默认是 set,`WriteCountersDir` 在 set 下拒写;本脚本已经用 atomic)。
-#   平台行仍然保留:@linux 的下限还含"darwin 专属用例在 Linux 不跑"这层不可比因素。
+#   **2026-10-24 已弥合记账那一半(但本脚本的读数看不到)**:helper 在 exec **之前**
+#   (也必须在那之前 —— 一旦 restrict_self,GOCOVERDIR 不在 Landlock 白名单里就写不出去了)
+#   调 `runtime/coverage.WriteCountersDir`(见 linux.go 的 flushCoverageCounters)。
+#   **本脚本跑的是 `go test -covermode=atomic`,而 `WriteCountersDir` 在 go test 生成的
+#   测试二进制里恒失败**(报 `-covermode=<invalid>`;2026-10-24 双向实测)⇒ 这里的
+#   @linux 读数**不会因此上涨,也别去追它**。账只对 `go build -cover -covermode=atomic`
+#   产物成立(e2e 的 `testutil.BuildCovered`),且端到端还要求内核能施加 Landlock
+#   (本脚本跑的 ubuntu runner 内核未启用)⇒ 只能 Linux 真机验。
+#   机制已在 macOS 用等价最小程序验证(flush 61.5% ↔ 无 flush 0.0%)。
+#   平台行仍然保留:@linux 的下限含"darwin 专属用例在 Linux 不跑"这层不可比因素。
 #   darwin 无此问题(seatbelt 走 argv 包装,profile 在父进程构建)。
 #
 # cmd/gah 曾是第三处同类盲区(main() 只能由**子进程**跑到),2026-10-02 **已弥合**:
