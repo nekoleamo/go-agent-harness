@@ -4,6 +4,7 @@ package acpclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -246,5 +247,84 @@ func TestExecuteStartFailureIsStructured(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "启动") {
 		t.Fatalf("错误应说清是启动失败(并提示查 PATH): %v", err)
+	}
+}
+
+// —— 档位与审批档(2026-10-24 review 的三条缺口)———
+
+// stubHostCtx 最小 sdk.Ctx:只回答 Inject(ctx.sandbox / ctx.approval)。
+type stubHostCtx struct {
+	sdk.Ctx
+	sandbox  sdk.Sandbox
+	approval sdk.ApprovalService
+}
+
+func (c stubHostCtx) Inject(key string, out any) error {
+	switch key {
+	case "ctx.sandbox":
+		if p, ok := out.(*sdk.Sandbox); ok {
+			*p = c.sandbox
+			return nil
+		}
+	case "ctx.approval":
+		if p, ok := out.(*sdk.ApprovalService); ok {
+			*p = c.approval
+			return nil
+		}
+	}
+	return errors.New("not provided")
+}
+
+type stubSandboxMode struct {
+	mode sdk.SandboxMode
+}
+
+func (s stubSandboxMode) Mode() sdk.SandboxMode     { return s.mode }
+func (s stubSandboxMode) SetMode(sdk.SandboxMode)   {}
+func (s stubSandboxMode) Root() string              { return "" }
+func (s stubSandboxMode) ValidatePath(string) error { return nil }
+
+type stubApprovalMode struct{ mode sdk.ApprovalMode }
+
+func (s stubApprovalMode) Mode() sdk.ApprovalMode   { return s.mode }
+func (s stubApprovalMode) SetMode(sdk.ApprovalMode) {}
+
+// 只读档:整条委派直接拒(无 cwd 时没有路径参数可供 pre-execute 裁决)。
+// **反向验证**:去掉 Execute 里的 checkWritableTier ⇒ 本用例红。
+func TestReadOnlyTierRejectsDelegation(t *testing.T) {
+	tool := &Tool{
+		c:       stubHostCtx{sandbox: stubSandboxMode{mode: sdk.SandboxReadOnly}},
+		runners: map[string]runner{"fake": {command: "true"}},
+		timeout: defaultTimeout,
+	}
+	_, err := tool.Execute(context.Background(), `{"runner":"fake","message":"改个 bug"}`)
+	if err == nil || !strings.Contains(err.Error(), "只读档") {
+		t.Fatalf("只读档必须**以档位理由**拒绝 acp_run,得 err=%v", err)
+	}
+	// workspace-write 档不因档位被拒(后续会因命令不存在失败,那不是本条要验的)
+	tool2 := &Tool{
+		c:       stubHostCtx{sandbox: stubSandboxMode{mode: sdk.SandboxWorkspace}},
+		runners: map[string]runner{"fake": {command: "definitely-not-a-real-binary-xyz"}},
+		timeout: defaultTimeout,
+	}
+	if _, err := tool2.Execute(context.Background(), `{"runner":"fake","message":"x"}`); err == nil ||
+		strings.Contains(err.Error(), "只读档") {
+		t.Fatalf("workspace-write 档不应因档位被拒: %v", err)
+	}
+}
+
+// strict 档:权限请求**直接拒**,不弹窗(走的是"危险操作直接拒"的语义)。
+func TestStrictApprovalBlocksPermission(t *testing.T) {
+	tool := &Tool{c: stubHostCtx{approval: stubApprovalMode{mode: sdk.ApprovalStrict}}}
+	if !tool.approvalBlocks(context.Background()) {
+		t.Fatal("strict 档应直接拒权限请求(否则退出成『点一下就行』)")
+	}
+	toolOpen := &Tool{c: stubHostCtx{approval: stubApprovalMode{mode: sdk.ApprovalOpen}}}
+	if toolOpen.approvalBlocks(context.Background()) {
+		t.Fatal("open 档不该被挡(仍需弹窗确认,这里只判『直接拒』)")
+	}
+	// 无人值守:连 open 档也直接拒(policy-guard 同一条硬规则)
+	if !toolOpen.approvalBlocks(sdk.WithUnattended(context.Background())) {
+		t.Fatal("无人值守应直接拒(定时任务里没人回答弹窗)")
 	}
 }

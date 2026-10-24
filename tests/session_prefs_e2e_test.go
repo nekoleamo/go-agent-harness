@@ -11,6 +11,7 @@ package tests
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -254,5 +255,64 @@ func TestSessionSandboxTierEndToEnd(t *testing.T) {
 	// 另一个会话(没设)⇒ 跟随全局(workspace-write)⇒ 写工作区内放行
 	if err := vf.ValidatePathFor(sdk.WithSessionContext(context.Background(), "no-such-session"), target); err != nil {
 		t.Fatalf("没设过的会话应跟随全局,写工作区内应放行: %v", err)
+	}
+}
+
+// TestSessionSandboxTierThroughRealPipeline 会话只读档必须经**真实 pre-execute 流水线**生效。
+//
+// 为什么单独一条(2026-10-24 review 的 HIGH):上一条直接调 `ValidatePathFor`,而生产路径
+// 走的是 `tools.Execute → tools/pre-execute → policy-guard` 的 `CheckToolCallAt`,它此前读
+// **无 ctx** 的有效档 ⇒ 会话档/角色收紧/委派快照在那一步全读不到(状态栏显示只读,
+// 文件照写)。这条用例只认"经流水线"的结果。
+//
+// **反向验证**:把 guard 里的 `CheckToolCallAtCtx` 改回 `CheckToolCallAt` ⇒ 本用例必须红。
+
+func TestSessionSandboxTierThroughRealPipeline(t *testing.T) {
+	ws := t.TempDir()
+	t.Setenv("GAH_HOME", t.TempDir())
+	c, _ := prefsEnv(t, ws)
+
+	var cs sdk.CwdSessions
+	if err := c.Inject("ctx.cwdSessions", &cs); err != nil {
+		t.Fatal(err)
+	}
+	var d sdk.SessionDir
+	if err := c.Inject("ctx.sessionDir", &d); err != nil {
+		t.Fatal(err)
+	}
+	setter, ok := cs.(interface {
+		SetSessionPrefs(id string, p sdk.SessionPrefs) error
+	})
+	if !ok {
+		t.Fatal("会话服务应支持 SetSessionPrefs")
+	}
+	roID, err := d.Spawn()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := setter.SetSessionPrefs(roID, sdk.SessionPrefs{Sandbox: "read-only"}); err != nil {
+		t.Fatal(err)
+	}
+
+	var tools sdk.ToolRegistry
+	if err := c.Inject("ctx.tools", &tools); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(ws, "pipeline.txt")
+	ctxRO := sdk.WithSessionContext(context.Background(), roID)
+	// 注意:工具被策略拦下时 host-tools 把原因放在 **ToolResult.Error** 里(Execute 本身的
+	// error 只表示宿主级故障)—— 断言要看 res.Error,否则永远看不到拒绝。
+	res, err := tools.Execute(ctxRO, "file_write", fmt.Sprintf(`{"path":%q,"content":"x"}`, target))
+	if err != nil {
+		t.Fatalf("宿主级错误不是本用例要验的: %v", err)
+	}
+	if !strings.Contains(res.Error, "read-only") {
+		t.Fatalf("会话只读档必须经真实流水线拦住写(得 res.Error=%q)", res.Error)
+	}
+	// 没设过的会话:跟随全局 workspace-write ⇒ 工作区内放行
+	res2, err := tools.Execute(sdk.WithSessionContext(context.Background(), "no-such-session"),
+		"file_write", fmt.Sprintf(`{"path":%q,"content":"x"}`, target))
+	if err != nil || res2.Error != "" {
+		t.Fatalf("未设会话档时应跟随全局(工作区内可写): err=%v resErr=%q", err, res2.Error)
 	}
 }

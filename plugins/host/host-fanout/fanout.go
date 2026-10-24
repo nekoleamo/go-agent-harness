@@ -355,7 +355,9 @@ func (f *Fanout) RunInWorktree(ctx context.Context, req sdk.WorktreeRun) (sdk.Wo
 	}
 	input := worktreeNote(wt) + task
 	if req.Sync {
-		text, err := f.runAgentLoop(sdk.WithWorkRoot(ctx, wt.Path), input, nil)
+		// 同步 worktree 路径也要钉快照 —— 否则同一个子任务走 agent / spawn / worktree
+		// 会有三套安全口径(2026-10-24 review 逮到的 LOW)。
+		text, err := f.runAgentLoop(f.withTierSnapshot(sdk.WithWorkRoot(ctx, wt.Path)), input, nil)
 		return sdk.WorktreeRunResult{Worktree: wt, Text: text}, err
 	}
 	h, err := f.spawnWorker(ctx, input, req.Fork, &wt)

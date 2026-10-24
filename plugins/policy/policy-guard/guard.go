@@ -243,7 +243,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 			// 路径裁决(R10 ①,顺序在审批之后、与 file_* 一致):显式写目标必须落在档位允许范围
 			// 内。审批通过不代表放开档位(workspace-write 下 `rm -rf /tmp/x` 即便人工同意仍被拒),
 			// 需要放开请显式切 /sandbox full。
-			if err := sp.CheckExecutorCommandAt(callRoot, call.Name, cmd); err != nil {
+			if err := sp.CheckExecutorCommandAtCtx(ctx, callRoot, call.Name, cmd); err != nil {
 				return err
 			}
 		}
@@ -262,12 +262,12 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 				return err
 			}
 		}
-		if err := sp.CheckTool(call.Name); err != nil {
+		if err := sp.CheckToolCtx(ctx, call.Name); err != nil {
 			return err
 		}
 		// A7(2026-09-27 安全审计):网页抓取的**出口审批**(域名级 TOFU)。位置在工具级审批之后、
 		// 路径裁决之前 —— 它决定的是"访问哪个域名",与文件路径无关;非抓取工具直接放行。
-		if err := checkWebToolFetch(ctx, confirmOf(), call.Name, call.Arguments, ap.EffectiveMode()); err != nil {
+		if err := checkWebToolFetch(ctx, confirmOf(), call.Name, call.Arguments, ap.EffectiveModeFor(ctx)); err != nil {
 			return err
 		}
 		// 宿主侧路径裁决(P0):默认发行态 file_* 由外部插件进程提供(sb 未注入),
@@ -275,7 +275,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		// 依据 = 工具自述声明 → 内置名表 → 按定义推断 → 值级兜底(见 CheckToolCallAt);
 		// 代理工具按**真实目标工具**裁决其内层参数(见 pathAdjudication)。
 		pname, pargs, pdef := pathAdjudication(c, call.Name, call.Arguments, def)
-		if err := sp.CheckToolCallAt(callRoot, pname, pargs, pdef); err != nil {
+		if err := sp.CheckToolCallAtCtx(ctx, callRoot, pname, pargs, pdef); err != nil {
 			return err
 		}
 		// 指令面写审批(S1/S2):角色/技能/全局 AGENTS.md 是“模型接下来要遵守的规则”,

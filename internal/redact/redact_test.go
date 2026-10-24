@@ -2,7 +2,10 @@
 // 漂移的方向是"某个凭据形态在另一处没被脱敏" ⇒ 密钥进模型上下文。
 package redact
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestTextRedactsCommonForms(t *testing.T) {
 	cases := []string{
@@ -51,4 +54,24 @@ func contains(s, sub string) bool {
 		}
 		return false
 	})()
+}
+
+// JSON 形态与大写形态(config dump 是最常见的泄露场面)。
+// **反向验证**:把 keys 里 `api_key"` / `API_KEY=` 去掉 ⇒ 本用例红。
+func TestRedactJSONAndUpperCaseKeys(t *testing.T) {
+	cases := []string{
+		`{"api_key": "abc123def"}`,
+		`{"apiKey": "abc123def"}`,
+		`OPENAI_API_KEY=abc123def`,
+		`API_KEY: abc123def`,
+	}
+	for _, in := range cases {
+		got := Text(in)
+		if strings.Contains(got, "abc123def") {
+			t.Fatalf("未脱敏: %q → %q", in, got)
+		}
+		if !strings.Contains(got, "[REDACTED]") {
+			t.Fatalf("应留下占位符: %q → %q", in, got)
+		}
+	}
 }

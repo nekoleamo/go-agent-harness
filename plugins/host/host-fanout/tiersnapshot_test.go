@@ -123,3 +123,43 @@ func TestNoServicesNoSnapshot(t *testing.T) {
 		}
 	}
 }
+
+// 同步 worktree 路径(第三套口径)也要钉快照:同一个子任务走 agent / spawn / worktree
+// 必须得到同一套安全口径。**反向验证**:去掉 RunInWorktree 同步分支的 withTierSnapshot ⇒ 红。
+func TestWorktreeSyncCarriesTierSnapshot(t *testing.T) {
+	reg := &tierProbeTools{}
+	ad := &recordingLLM{tool: "shell", args: `{"command":"echo sub"}`, final: "完成"}
+	svc, _, c := buildContractEnvCtx(t, reg, ad)
+	if err := c.Provide("ctx.approval", sdk.ApprovalService(stubAP{})); err != nil {
+		t.Fatal(err)
+	}
+	wts := &fakeWorktrees{dir: t.TempDir()}
+	if err := c.Provide("ctx.worktrees", sdk.WorktreeService(wts)); err != nil {
+		t.Fatal(err)
+	}
+	wf, ok := svc.(sdk.IsolatedFanout)
+	if !ok {
+		t.Fatal("Fanout 应实现 sdk.IsolatedFanout")
+	}
+	if _, err := wf.RunInWorktree(context.Background(), sdk.WorktreeRun{Input: "隔离任务", Sync: true}); err != nil {
+		t.Fatal(err)
+	}
+	snaps, oks := reg.seen()
+	if len(snaps) == 0 {
+		t.Fatal("worktree 子代理应调过工具")
+	}
+	for i := range snaps {
+		if !oks[i] || snaps[i].Approval != sdk.ApprovalStrict {
+			t.Fatalf("worktree 同步路径也应有档位快照(strict),得 %+v(ok=%v)", snaps[i], oks[i])
+		}
+	}
+}
+
+// fakeWorktrees 最小 worktree 服务:只给一个已存在的目录。
+type fakeWorktrees struct{ dir string }
+
+func (f *fakeWorktrees) Create(context.Context, string) (sdk.Worktree, error) {
+	return sdk.Worktree{Path: f.dir, Branch: "gah/test", Base: "deadbeef"}, nil
+}
+func (f *fakeWorktrees) Remove(string, bool) error { return nil }
+func (f *fakeWorktrees) List() []sdk.Worktree      { return nil }

@@ -154,7 +154,14 @@ func (b *Bridge) sandboxModeRoot() (mode, root string) {
 	if err := b.hostCtx.Inject("ctx.sandbox", &sbx); err != nil || sbx == nil {
 		return "", ""
 	}
-	return string(sbx.Mode()), sbx.Root()
+	// 取**有效**档(含审批联动与角色收紧)。此前读的是声明档 `Mode()` —— 于是
+	// `approval=strict` + `sync=true` 把有效沙箱压成 read-only 时,外部插件进程的内核
+	// 白名单仍按 workspace-write 构造 ⇒ 插件自己选定的写落点(不经工具参数、协作层看不见,
+	// 正是内核层存在的理由)照样可写。
+	//
+	// 已知边界:这里拿不到调用方 ctx,**会话级档与委派快照到不了内核层**(会话/快照维度
+	// 需要把根与档一起下传,属跨插件契约变更,单独登记)。
+	return string(sdk.EffectiveSandboxModeFor(context.Background(), sbx)), sbx.Root()
 }
 
 // extEntry 一个外部插件进程条目(可承载多工具 + 多命令)。

@@ -221,12 +221,9 @@ func (p *ApprovalPolicy) decide(ctx context.Context, confirm sdk.ConfirmService,
 		return fmt.Errorf("approval: 无人值守运行拒绝需审批的%s(定时任务没有确认通道;需人工确认的动作请手动执行)", label)
 	}
 	// 取**有效**档(会话档 + 角色收紧 + 委派快照):角色声明 strict 时危险命令直接拒,
-	// 不再弹确认框;委派快照(见 sdk.TierSnapshot)**只能更严**。
-	mode := p.EffectiveModeFor(ctx)
-	if snap, ok := sdk.TierSnapshotFrom(ctx); ok {
-		mode, _ = snap.ApprovalAtMost(mode)
-	}
-	switch mode {
+	// 不再弹确认框。快照的合成**只在 EffectiveModeFor 里做一份** —— 这里重复套一遍
+	// 虽然当前幂等,但两个必须同源的实现各带一份逻辑,改一处就会漂。
+	switch p.EffectiveModeFor(ctx) {
 	case sdk.ApprovalOpen:
 		return nil // 开放档:直接放行
 	case sdk.ApprovalStrict:

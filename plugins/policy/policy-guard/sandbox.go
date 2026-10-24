@@ -209,14 +209,26 @@ func (p *SandboxPolicy) ValidateReadFor(ctx context.Context, path string) error 
 // ValidatePathAt 以显式 root 为写范围校验(S-P1-4 隔离运行:root = 本次调用工作根/受管 worktree)。
 // root 空 → 退回自身 root(未隔离调用行为不变)。
 func (p *SandboxPolicy) ValidatePathAt(root, path string) error {
-	return p.validatePathAt(root, path, surfaceTool)
+	return p.validatePathAt(context.Background(), root, path, surfaceTool)
+}
+
+// ValidatePathAtCtx 按这次调用所属会话的有效档校验写路径(root = 本次工作根)。
+// 生产路径(pre-execute / 工具侧自检)应优先用它;无 ctx 版本只给"没有会话概念"的调用方。
+func (p *SandboxPolicy) ValidatePathAtCtx(ctx context.Context, root, path string) error {
+	return p.validatePathAt(ctx, root, path, surfaceTool)
 }
 
 // validatePathAtAt 同一判定,显式指定执行面(shell 命令走 surfaceShell —— 它的内核 spec 与
 // 工具面不同,见 kernelScopeTool 注释)。
-func (p *SandboxPolicy) validatePathAt(root, path string, surface kernelSurface) error {
+// validatePathAt 写校验的**带 ctx** 版本:档位取**这次调用所属会话**的有效档
+// (会话档 + 角色收紧 + 联动 + 委派快照)。
+//
+// 为什么必须带 ctx(2026-10-24 review 的 HIGH):真正拦写的是这里,而此前它读无参
+// `effectiveMode()` —— 于是「会话设了 read-only」「角色按会话收紧」「委派快照 pin」
+// 在 pre-execute 这一层**全都读不到**,状态栏显示只读而文件照写。多页签/后台子代理都命中。
+func (p *SandboxPolicy) validatePathAt(ctx context.Context, root, path string, surface kernelSurface) error {
 	p.mu.RLock()
-	mode := p.effectiveMode()
+	mode := p.effectiveModeWith(ctx)
 	p.mu.RUnlock()
 	return p.validateWriteAt(root, path, mode, surface)
 }
@@ -233,6 +245,10 @@ func (p *SandboxPolicy) validateWriteAt(root, path string, mode sdk.SandboxMode,
 	p.mu.RLock()
 	own := p.root
 	p.mu.RUnlock()
+	// 隔离运行(子代理在受管 worktree 内):**内核层白名单不参与放行** ——
+	// 那份清单是按主 workspace 根构造的,拿它放行等于把「写只落本次工作根」的承诺作废
+	// (2026-10-24 review 的 HIGH:worktree 隔离可写主工作区)。
+	isolated := root != "" && root != own
 	if root == "" {
 		root = own
 	}
@@ -256,9 +272,11 @@ func (p *SandboxPolicy) validateWriteAt(root, path string, mode sdk.SandboxMode,
 		// 工作区根之外,先看**内核层放不放行**(jail/临时区/包缓存/插件自报数据目录)。
 		// 内核层在场就以它为准 —— 边界由内核定义,协作层与之对齐(而不是比它更严地
 		// 拒掉同一批落点,让模型在同一堵墙上反复换路径重试)。
-		for _, w := range p.kernelWritablePaths(surface) {
-			if pathWithin(w, abs) {
-				return nil
+		if !isolated {
+			for _, w := range p.kernelWritablePaths(surface) {
+				if pathWithin(w, abs) {
+					return nil
+				}
 			}
 		}
 		if root != own {
@@ -282,8 +300,17 @@ func (p *SandboxPolicy) ValidateRead(path string) error {
 // 里未跟踪的文件(生成物/本地配置),把它们一并拒死会让隔离在实践中不可用。
 // 凭据类与 GAH_HOME 外部读限制不变。
 func (p *SandboxPolicy) ValidateReadAt(root, path string) error {
+	return p.validateReadAt(context.Background(), root, path)
+}
+
+// ValidateReadAtCtx 同 ValidateReadAt,档位按这次调用所属会话取(生产路径用)。
+func (p *SandboxPolicy) ValidateReadAtCtx(ctx context.Context, root, path string) error {
+	return p.validateReadAt(ctx, root, path)
+}
+
+func (p *SandboxPolicy) validateReadAt(ctx context.Context, root, path string) error {
 	p.mu.RLock()
-	mode, own := p.effectiveMode(), p.root
+	mode, own := p.effectiveModeWith(ctx), p.root
 	p.mu.RUnlock()
 	if root == "" {
 		root = own
@@ -325,11 +352,21 @@ func (p *SandboxPolicy) CheckShellCommand(cmd string) error {
 // CheckShellCommandAt 以显式 root 裁决 shell 命令写目标(S-P1-4 隔离运行:root = 本次工作根)。
 // **相对写路径以 root 为基准解析**(与工具侧 cmd.Dir 一致 —— 两边不同基准 = “以为拦住了其实没拦”)。
 func (p *SandboxPolicy) CheckShellCommandAt(root, cmd string) error {
+	return p.checkShellCommandAt(context.Background(), root, cmd)
+}
+
+// CheckShellCommandAtCtx 同 CheckShellCommandAt,但档位按**这次调用所属会话**取
+// (会话档 + 角色收紧 + 联动 + 委派快照)。生产路径用这个。
+func (p *SandboxPolicy) CheckShellCommandAtCtx(ctx context.Context, root, cmd string) error {
+	return p.checkShellCommandAt(ctx, root, cmd)
+}
+
+func (p *SandboxPolicy) checkShellCommandAt(ctx context.Context, root, cmd string) error {
 	if strings.TrimSpace(cmd) == "" {
 		return nil
 	}
 	p.mu.RLock()
-	mode, own := p.effectiveMode(), p.root
+	mode, own := p.effectiveModeWith(ctx), p.root
 	p.mu.RUnlock()
 	if root == "" {
 		root = own
@@ -347,7 +384,7 @@ func (p *SandboxPolicy) CheckShellCommandAt(root, cmd string) error {
 		if pth.Unresolvable {
 			return fmt.Errorf("sandbox: shell 命令含无法裁决的写目标 %q(含变量/命令替换、切换出工作区后的相对路径,或 Windows/MSYS 根相对路径如 /c/…、/tmp/…);请改写为确定路径或切 /sandbox full", pth.Path)
 		}
-		if err := p.validatePathAt(root, pth.Path, surfaceShell); err != nil {
+		if err := p.validatePathAt(ctx, root, pth.Path, surfaceShell); err != nil {
 			return fmt.Errorf("sandbox: shell 命令写目标被拒(%s): %w", pth.Path, err)
 		}
 	}
@@ -383,6 +420,16 @@ func (p *SandboxPolicy) CheckToolCall(name, rawArgs string, params []sdk.PathPar
 //
 // def.PathParamsDeclared = true 时跳过 ③④(作者明确“本工具没有路径参数”)。
 func (p *SandboxPolicy) CheckToolCallAt(root, name, rawArgs string, def sdk.ToolDefinition) error {
+	return p.checkToolCallAt(context.Background(), root, name, rawArgs, def)
+}
+
+// CheckToolCallAtCtx 同 CheckToolCallAt,但每一处路径裁决都按**这次调用所属会话**的
+// 有效档执行(会话档 + 角色收紧 + 联动 + 委派快照)。生产路径(pre-execute)用这个。
+func (p *SandboxPolicy) CheckToolCallAtCtx(ctx context.Context, root, name, rawArgs string, def sdk.ToolDefinition) error {
+	return p.checkToolCallAt(ctx, root, name, rawArgs, def)
+}
+
+func (p *SandboxPolicy) checkToolCallAt(ctx context.Context, root, name, rawArgs string, def sdk.ToolDefinition) error {
 	if root == "" {
 		root = p.Root()
 	}
@@ -432,9 +479,9 @@ func (p *SandboxPolicy) CheckToolCallAt(root, name, rawArgs string, def sdk.Tool
 				return fmt.Errorf("sandbox: %s 参数 %s 为空", name, paramLabel(pa))
 			}
 			if pa.Access == sdk.PathWrite {
-				err = p.ValidatePathAt(root, path)
+				err = p.validatePathAt(ctx, root, path, surfaceTool)
 			} else {
-				err = p.ValidateReadAt(root, path)
+				err = p.validateReadAt(ctx, root, path)
 			}
 			if err != nil {
 				switch {
@@ -698,9 +745,18 @@ func fileToolKind(name string) (string, bool) {
 
 // CheckTool pre-execute 工具级策略(按工具名,不解析参数——命令型工具一律按模式处理)。
 func (p *SandboxPolicy) CheckTool(name string) error {
+	return p.checkTool(context.Background(), name)
+}
+
+// CheckToolCtx 同 CheckTool,档位按这次调用所属会话取(会话档 + 角色收紧 + 快照)。
+func (p *SandboxPolicy) CheckToolCtx(ctx context.Context, name string) error {
+	return p.checkTool(ctx, name)
+}
+
+func (p *SandboxPolicy) checkTool(ctx context.Context, name string) error {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	switch p.effectiveMode() {
+	switch p.effectiveModeWith(ctx) {
 	case sdk.SandboxReadOnly:
 		if isExecutor(name) {
 			return fmt.Errorf("sandbox: read-only 拒绝执行器类工具 %q", name)
@@ -732,14 +788,23 @@ func isExecutor(name string) bool {
 // 为什么在这里分派而不是让调用方各自判断:「哪个工具用哪套语法」是**策略层**的知识
 // (漏一处 = 一个执行器没有写裁决),集中在一行 switch 里最容易在新增执行器时被看见。
 func (p *SandboxPolicy) CheckExecutorCommandAt(root, name, cmd string) error {
+	return p.checkExecutorCommandAt(context.Background(), root, name, cmd)
+}
+
+// CheckExecutorCommandAtCtx 同 CheckExecutorCommandAt,档位按这次调用所属会话取。
+func (p *SandboxPolicy) CheckExecutorCommandAtCtx(ctx context.Context, root, name, cmd string) error {
+	return p.checkExecutorCommandAt(ctx, root, name, cmd)
+}
+
+func (p *SandboxPolicy) checkExecutorCommandAt(ctx context.Context, root, name, cmd string) error {
 	if strings.TrimSpace(cmd) == "" {
 		return nil
 	}
 	if name != "powershell" {
-		return p.CheckShellCommandAt(root, cmd)
+		return p.checkShellCommandAt(ctx, root, cmd)
 	}
 	p.mu.RLock()
-	mode := p.effectiveMode()
+	mode := p.effectiveModeWith(ctx)
 	p.mu.RUnlock()
 	if mode == sdk.SandboxFullAccess {
 		return nil
@@ -758,7 +823,7 @@ func (p *SandboxPolicy) CheckExecutorCommandAt(root, name, cmd string) error {
 			return fmt.Errorf("sandbox: powershell 命令含无法裁决的写目标 %q(含 $ 变量/子表达式/通配/调用表达式);"+
 				"请改写为确定路径,或切 /sandbox full 后自行确认", pth.Path)
 		}
-		if err := p.validatePathAt(root, pth.Path, surfaceShell); err != nil {
+		if err := p.validatePathAt(ctx, root, pth.Path, surfaceShell); err != nil {
 			return fmt.Errorf("sandbox: powershell 命令写目标被拒(%s): %w", pth.Path, err)
 		}
 	}

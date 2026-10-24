@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nekoleamo/go-agent-harness/internal/redact"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -106,6 +107,12 @@ func (t *Tool) Execute(ctx context.Context, raw string) (any, error) {
 	if !ok {
 		return nil, fmt.Errorf("acp_run: 未配置的 runner %q(已配置: %s;配置见 config/bundle-base.yaml 的 acp-client.data.runners)",
 			a.Runner, strings.Join(t.runnerNames(), ", "))
+	}
+	// 档位前置裁决:acp_run 会拉起**独立的本机进程**替模型读写文件,而"不写 cwd"就等于
+	// 没有路径参数可供 pre-execute 裁决 —— 只读档下必须整条拒掉(否则 read-only 档可以
+	// 经委派外部 agent 随意落盘)。显式传 cwd 的那条仍由宿主的路径裁决兜住。
+	if err := t.checkWritableTier(ctx); err != nil {
+		return nil, err
 	}
 	cwd, err := t.workdir(ctx, a.CWD)
 	if err != nil {
@@ -199,6 +206,10 @@ type session struct {
 func (t *Tool) startSession(ctx context.Context, r runner, cwd string) (*session, error) {
 	cmd := exec.CommandContext(ctx, r.command, r.args...)
 	cmd.Dir = cwd
+	// 环境清洗:第三方 agent 是本机独立进程,不该继承宿主的 *_API_KEY / GAH_CB_TOKEN 等。
+	// 其它派生点(host-bridge / mcp-bridge / host-docview / host-jobs)都这么做,唯独这里漏了
+	// (2026-10-24 review)。需要额外变量的 runner 由用户经 GAH_EXT_ENV_PASS 显式点名。
+	cmd.Env = sdk.SanitizedChildEnv()
 	setProcessGroup(cmd)
 	in, err := cmd.StdinPipe()
 	if err != nil {
@@ -362,7 +373,9 @@ func (s *session) stderrSuffix() string {
 		return ""
 	}
 	if t := strings.TrimSpace(s.stderr.String()); t != "" {
-		return "; stderr: " + truncate(t, 800)
+		// 脱敏:外部 CLI 把 key 打进 stderr 是常见事故,而这段文本会进**模型上下文**与
+		// 会话 jsonl(错误体). 与摘要链路同一份实现,不另写一套规则。
+		return "; stderr: " + truncate(redact.Text(t), 800)
 	}
 	return ""
 }
@@ -395,6 +408,14 @@ func (t *Tool) handlePermission(ctx context.Context, s *session, params json.Raw
 	s.mu.Lock()
 	s.perms++
 	s.mu.Unlock()
+
+	// 审批档与无人值守先判:这条通道不经过 policy-guard.decide,所以 strict 档
+	// (「危险操作直接拒、不弹窗」)与「无人值守一律拒」都必须在这里自己判 —— 否则 strict
+	// 用户在这里退化成"点一下就行",定时任务里则会无限等一个不会有人回答的弹窗。
+	if t.approvalBlocks(ctx) {
+		sdk.ReportToolProgress(ctx, toolName, "\n[外部 agent 的权限请求被审批档直接拒绝]\n")
+		return cancelled()
+	}
 
 	prompt := describePermission(p)
 	ok := false
@@ -432,6 +453,45 @@ func (t *Tool) confirmService() (sdk.ConfirmService, bool) {
 		return nil, false
 	}
 	return svc, true
+}
+
+// approvalBlocks 这次权限请求是否应**直接拒绝**(不弹窗):
+//   - strict 档:危险操作直接拒是 strict 的定义;
+//   - 无人值守(定时任务):没有在场的人回答,连 open 档也不放行(policy-guard 同一条硬规则)。
+func (t *Tool) approvalBlocks(ctx context.Context) bool {
+	if sdk.UnattendedOf(ctx) {
+		return true
+	}
+	if t.c == nil {
+		return false
+	}
+	var ap sdk.ApprovalService
+	if err := t.c.Inject("ctx.approval", &ap); err != nil || ap == nil {
+		return false
+	}
+	eff := ap.Mode()
+	if ea, ok := ap.(sdk.EffectiveApprovalFor); ok {
+		eff = ea.EffectiveModeFor(ctx)
+	} else if ea, ok := ap.(sdk.EffectiveApproval); ok {
+		eff = ea.EffectiveMode()
+	}
+	return eff == sdk.ApprovalStrict
+}
+
+// checkWritableTier 只读档拒绝整条委派(外部 agent 会写盘,而无 cwd 时没有路径参数可裁决)。
+func (t *Tool) checkWritableTier(ctx context.Context) error {
+	if t.c == nil {
+		return nil // 裸构造(单测/嵌入):没有宿主档位概念,由调用方自己负责
+	}
+	var sb sdk.Sandbox
+	if err := t.c.Inject("ctx.sandbox", &sb); err != nil || sb == nil {
+		return nil
+	}
+	if sdk.EffectiveSandboxModeFor(ctx, sb) == sdk.SandboxReadOnly {
+		return errors.New("acp_run: 当前沙箱是只读档,不接受外部 agent 委派(它会写工作目录);" +
+			"请切到 workspace-write 后再委派")
+	}
+	return nil
 }
 
 // describePermission 把权限请求写成人话(用户要能判断"该不该给")。

@@ -345,10 +345,9 @@ func (r *reg) withSandboxHint(ctx context.Context) context.Context {
 		// 无沙箱但有工作根:只下传路径基准(Mode 留空 = 工具不得假定档位)
 		return sdk.WithSandboxHint(ctx, sdk.SandboxHint{Root: root})
 	}
-	mode := sb.Mode()
-	if es, ok := sb.(sdk.EffectiveSandbox); ok {
-		mode = es.EffectiveMode()
-	}
+	// 按**这次调用所属会话**取有效档(会话档 + 角色收紧 + 联动 + 委派快照)。
+	// 用无参版会让 read-only 页签/被 pin 的子代理拿到全局档 ⇒ 工具侧内核约束比承诺更松。
+	mode := sdk.EffectiveSandboxModeFor(ctx, sb)
 	if mode == "" {
 		if root == "" {
 			return ctx // 档位未知:不挂(不给工具可乘之机)

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nekoleamo/go-agent-harness/internal/kernelsandbox"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -180,5 +181,26 @@ func TestCheckShellCommandAtIsolated(t *testing.T) {
 	}
 	if err := p.CheckShellCommand("echo hi > out.txt"); err != nil {
 		t.Fatalf("未隔离调用行为不变,got %v", err)
+	}
+}
+
+// 隔离运行 + 内核写入面在场:主 workspace 的白名单**不得**参与放行。
+//
+// 为什么单独一条(2026-10-24 review 的 HIGH):`validateWriteAt` 在"工作根之外"时先查
+// 内核层白名单,而那份白名单是按**主 workspace 根**构造的 ⇒ 隔离运行写主工作区被放行,
+// 与 worktreeNote 对模型承诺的「改动只落此目录」直接矛盾。原用例没注入 kernel scope,
+// 所以恒绿。
+//
+// **反向验证**:去掉 validateWriteAt 里的 `if !isolated` 守卫 ⇒ 本用例红。
+func TestIsolatedWorktreeIgnoresKernelScopeOfMainRoot(t *testing.T) {
+	root, wt := t.TempDir(), t.TempDir()
+	p := DefaultSandbox(root)
+	// 内核层在场,且(按主 workspace 根)声称主工作区可写
+	p.SetKernelScope(func() []string { return []string{root, kernelsandbox.EnsureJailDir()} })
+	if err := p.ValidatePathAt("", filepath.Join(root, "ok.go")); err != nil {
+		t.Fatalf("未隔离时内核清单应参与放行(现状语义): %v", err)
+	}
+	if err := p.ValidatePathAt(wt, filepath.Join(root, "escaped.go")); err == nil {
+		t.Fatal("隔离运行时不得用主 workspace 的内核白名单放行 —— 那就是 worktree 逃逸")
 	}
 }

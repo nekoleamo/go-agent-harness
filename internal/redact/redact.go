@@ -49,7 +49,12 @@ func Text(s string) string {
 }
 
 // keys 触发脱敏的字面量(键名/前缀;值随其后被替换)。
-var keys = []string{"sk-", "Bearer ", "api_key=", "api_key:", "apiKey=", "apiKey:",
+// 注意 JSON 形态(`{"api_key": "xxx"`):键名后紧跟的是**引号**而不是 `:`/`=` ——
+// 只列 `api_key:`/`api_key=` 时这一形态**完全漏网**(2026-10-24 review;而模型 dump 出来的
+// 配置片段正是最常见的泄露场面)。全大写变体(OPENAI_API_KEY=)由 `API_KEY=` 覆盖。
+var keys = []string{"sk-", "Bearer ",
+	"api_key=", "api_key:", "api_key\"", "apiKey=", "apiKey:", "apiKey\"",
+	"API_KEY=", "API_KEY:", "API_KEY\"",
 	"client_secret", "app_secret", "appSecret", "AppSecret", "password", "token=", "token:"}
 
 // isSepByte 键与值之间的分隔符(空格/冒号/等号/引号)。
