@@ -137,6 +137,10 @@ func (f *Fanout) spawnWorker(ctx context.Context, input string, forkSeed bool, w
 	//
 	// 取消/超时不继承是**故意的**:后台子代理要在父回合结束后继续跑(可被 kill 终止)。
 	ctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	// 档位快照(pin):把**发起这一刻**的有效审批/沙箱档钉在 ctx 上。裁决链仍然每次现算,
+	// 但取 min(现算, 快照) —— 委派是跨回合授权,发起时是 strict、中途被放宽到 open 时,
+	// 后台子代理不能跟着变宽。拿不到服务则不注入(旧宿主/测试替身行为零变化)。
+	ctx = f.withTierSnapshot(ctx)
 	if workRoot != nil {
 		// 隔离运行:工作根随 ctx 下传,子代理的每个工具调用(cwd/相对路径/沙箱写范围)都据此
 		ctx = sdk.WithWorkRoot(ctx, workRoot.Path)
@@ -361,6 +365,25 @@ func (f *Fanout) RunInWorktree(ctx context.Context, req sdk.WorktreeRun) (sdk.Wo
 	return sdk.WorktreeRunResult{Worktree: wt, Handle: h}, nil
 }
 
+// withTierSnapshot 把当前有效档快照进 ctx(拿不到服务 = 原样返回)。
+//
+// 为什么读服务而不从父 ctx 里拿:审批/沙箱服务是宿主容器里的单例(ctx.approval /
+// ctx.sandbox),会话级档与角色收紧都靠传入的 ctx 求值 —— 这里传的正是**发起方**的 ctx,
+// 所以“快照”天然等于“父回合那一刻的生效档”。
+func (f *Fanout) withTierSnapshot(ctx context.Context) context.Context {
+	if f.c == nil {
+		return ctx
+	}
+	var approval sdk.ApprovalService
+	var sandbox sdk.Sandbox
+	_ = f.c.Inject("ctx.approval", &approval)
+	_ = f.c.Inject("ctx.sandbox", &sandbox)
+	if snap, ok := sdk.SnapshotTiers(ctx, approval, sandbox); ok {
+		return sdk.WithTierSnapshot(ctx, snap)
+	}
+	return ctx
+}
+
 // worktreeService 惰性取 ctx.worktrees(可能后于本插件启动;卸载后立即失效)。
 func (f *Fanout) worktreeService() sdk.WorktreeService {
 	if f.c == nil {
@@ -460,7 +483,9 @@ func findCall(calls *[]sdk.ToolCall, id string) int {
 // runSubAgent 同步路径:独立上下文跑一轮 ReAct(复用 ctx.llm/ctx.tools/ctx.systemPrompt);
 // 工具调用经全流水线执行(策略拦截经 tools/pre-execute 生效)。
 func (f *Fanout) runSubAgent(ctx context.Context, input string) (string, error) {
-	return f.runAgentLoop(ctx, input, nil)
+	// 同步委派同样钉快照:语义与后台一致(发起那一刻的档位是上限),
+	// 否则同一个子任务走 agent 还是 spawn 会得到两套安全口径。
+	return f.runAgentLoop(f.withTierSnapshot(ctx), input, nil)
 }
 
 // runAgentLoop 核心循环:ag 非 nil 时(后台会话)每步开头 drain inbox(send_message

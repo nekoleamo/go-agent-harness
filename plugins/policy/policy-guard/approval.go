@@ -109,8 +109,13 @@ func (p *ApprovalPolicy) EffectiveModeFor(ctx context.Context) sdk.ApprovalMode 
 	if p.role != nil {
 		if ra, _ := p.role(ctx); ra != "" {
 			out, _ := sdk.TightenApproval(ra, m)
-			return sdk.ApprovalMode(out)
+			m = out
 		}
+	}
+	// 委派快照(pin):发起那一刻的档是上限,只能更严。无快照 ⇒ 逐字不变。
+	if snap, ok := sdk.TierSnapshotFrom(ctx); ok {
+		cur, _ := snap.ApprovalAtMost(sdk.ApprovalMode(m))
+		return cur
 	}
 	return sdk.ApprovalMode(m)
 }
@@ -215,8 +220,13 @@ func (p *ApprovalPolicy) decide(ctx context.Context, confirm sdk.ConfirmService,
 	if sdk.UnattendedOf(ctx) {
 		return fmt.Errorf("approval: 无人值守运行拒绝需审批的%s(定时任务没有确认通道;需人工确认的动作请手动执行)", label)
 	}
-	// 取**有效**档(角色可收紧):角色声明 strict 时危险命令直接拒,不再弹确认框。
-	switch p.EffectiveMode() {
+	// 取**有效**档(会话档 + 角色收紧 + 委派快照):角色声明 strict 时危险命令直接拒,
+	// 不再弹确认框;委派快照(见 sdk.TierSnapshot)**只能更严**。
+	mode := p.EffectiveModeFor(ctx)
+	if snap, ok := sdk.TierSnapshotFrom(ctx); ok {
+		mode, _ = snap.ApprovalAtMost(mode)
+	}
+	switch mode {
 	case sdk.ApprovalOpen:
 		return nil // 开放档:直接放行
 	case sdk.ApprovalStrict:

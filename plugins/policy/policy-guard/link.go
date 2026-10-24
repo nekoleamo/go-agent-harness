@@ -27,7 +27,7 @@ func (p *SandboxPolicy) effectiveMode() sdk.SandboxMode {
 
 // effectiveModeWith 带会话上下文的有效档(第一百一十六批)。
 //
-// 顺序:**声明档 → 会话档 → 联动 → 角色收紧**。
+// 顺序:**声明档 → 会话档 → 联动 → 角色收紧 → 委派快照**。
 // 会话档为什么在联动之前:它与角色一样是**下限**,不能被一次联动覆盖成更松 ——
 // 否则用户给这个页签调成只读,全局 open 联动把它放宽,正好是用户最不想要的。
 // "只更严"由 sdk.TightenSandbox/TightenApproval 保证(取更严者,永不放宽)。
@@ -43,7 +43,14 @@ func (p *SandboxPolicy) effectiveModeWith(ctx context.Context) sdk.SandboxMode {
 	}
 	// 联动在会话档之后:审批 strict 是全局最高防线,它把沙箱压成只读时,
 	// 会话级放宽不生效(这一条要在界面上说清楚)。
-	return p.tightenRoleWith(p.linkedModeFrom(m), ctx)
+	out := p.tightenRoleWith(p.linkedModeFrom(m), ctx)
+	// 委派快照(pin):发起委派那一刻的有效档是**上限** —— 后台子代理跑到一半时有人把
+	// 会话放宽到 full-access,它也不能跟着变宽(sdk.TierSnapshot 的契约就是只能更严)。
+	// 无快照 ⇒ 逐字不变(旧路径 / 同步调用 / 测试替身)。
+	if snap, ok := sdk.TierSnapshotFrom(ctx); ok {
+		out, _ = snap.SandboxAtMost(out)
+	}
+	return out
 }
 
 // linkedMode 联动覆盖后的档(不含角色收紧)。
