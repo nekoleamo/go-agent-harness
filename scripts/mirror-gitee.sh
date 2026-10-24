@@ -50,7 +50,7 @@ need_token() {
 }
 
 # 产物清单:镜像「给人装的包」与「updater 要的包」——
-# dmg / *-setup.exe / *.app.tar.gz **外加便携包**。
+# dmg / *-setup.exe / *.app.tar.gz **外加便携包与 checksums-desktop.txt**。
 # 便携包为什么也要镜像:它**不进 latest.json**(updater 只认安装包),分发全靠人工拿链接;
 # 而 GitHub 在国内往往拉不动 ⇒ 不镜像等于国内用户没有便携包可用 —— 而便携包恰恰是
 # 「不想安装、解压即用」那批人的唯一入口(v0.4.0 起才有)。对 updater 无影响:它不读这两件。
@@ -69,6 +69,7 @@ belongs_to_tag() {
   local name="$1" ver
   case "$name" in
     gah.app.tar.gz) return 0 ;;                       # 名字里不带版本,属所有 tag
+    checksums-desktop.txt) return 0 ;;               # 同上(每个 tag 各一份,同名先删后传)
     *.dmg|*setup.exe|*portable.zip) ;;
     *) return 1 ;;                                    # 不认识的形态:不放行(宁可漏传)
   esac
@@ -80,7 +81,8 @@ belongs_to_tag() {
 }
 
 collect() {
-  find "$dir" -type f \( -name '*.dmg' -o -name '*-setup.exe' -o -name '*.app.tar.gz' -o -name '*-portable.zip' \) 2>/dev/null | sort
+  find "$dir" -type f \( -name '*.dmg' -o -name '*-setup.exe' -o -name '*.app.tar.gz' \
+       -o -name '*-portable.zip' -o -name 'checksums-desktop.txt' \) 2>/dev/null | sort
 }
 
 # collect_checked = collect + 版本闸:不属于本 tag 的**显式报错退出**,不静默跳过。

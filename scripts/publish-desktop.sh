@@ -6,6 +6,8 @@
 #           # 把 latest.json 里各平台的下载 URL 前置镜像前缀(updater 签名只对文件内容验签,
 #           # URL 不参与 ⇒ 换源不降低安全强度);`rewrite-url none` 还原成 GitHub 直链。
 #           首次运行会把原表另存为 latest.github.json,之后一律以它为改写源(幂等)。
+#   merge 还会生成 checksums-desktop.txt(桌面产物 sha256;独立文件名,不与 goreleaser 的
+#   checksums.txt 争)+ checksums 子命令可单独补跑。
 # 产物:dist-desktop/<平台>/(安装包 + updater 产物 + latest.<平台>.json);merge 后 latest.json 上传 GitHub Release,
 #       updater endpoint 固定取 https://github.com/<repo>/releases/latest/download/latest.json
 # 版本:RELEASE_VERSION=vX.Y.Z(缺省取最近 git tag;发布时由 git tag 驱动)
@@ -29,6 +31,52 @@ PROFILE_DIR=release
 OUT="$PWD/dist-desktop"
 mkdir -p "$OUT"
 
+# ---------- 桌面产物哈希清单(checksums-desktop.txt) ----------
+#
+# 为什么**另出一份**而不是往 goreleaser 的 checksums.txt 里追加:
+#   ① 两份清单由不同 workflow 产出,而 release-cli 的 goreleaser 用 `--clean` 重建自己的
+#      checksums.txt,merge job 之后还有 accelerate job 会重下重传同一批 asset ⇒ 追同一个
+#      文件必然互相覆盖;重复行还会让用户的 `sha256sum -c` 直接报错。
+#   ② 桌面三件(dmg / -setup.exe / portable.zip)本来就不在 CLI 归档里,分文件读起来也更清楚。
+# 幂等:内容只由「产物字节 + 文件名」决定(按名排序 + LF),同一批产物重跑逐字节相同。
+hash_of() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
+  else shasum -a 256 "$1" | awk '{print $1}'; fi
+}
+
+gen_checksums() {
+  local out="$OUT/checksums-desktop.txt" tmp f name
+  local -a files=()
+  while IFS= read -r f; do files+=("$f"); done < <(
+    # rw.* 是 dmg 的中间读写镜像(失败/中断的构建会留下 ~90MB),绝不能进清单
+    find "$OUT" -maxdepth 3 -type f \
+      \( -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*-setup.exe' -o -name '*-portable.zip' \) \
+      ! -name 'rw.*' | sort
+  )
+  if [ "${#files[@]}" -eq 0 ]; then
+    echo "checksums:$OUT 下没有桌面产物(先跑单平台构建并 merge)" >&2
+    return 1
+  fi
+  tmp="$out.tmp"
+  : > "$tmp"
+  for f in "${files[@]}"; do
+    name="$(basename "$f")"
+    printf '%s  %s\n' "$(hash_of "$f")" "$name" >> "$tmp"
+  done
+  # 同名不同内容 = 目录里混着两次构建的产物,清单会自相矛盾 ⇒ 显式拒绝而不是随便挑一个
+  local dup
+  dup="$(awk '{print $2}' "$tmp" | sort | uniq -d)"
+  if [ -n "$dup" ]; then
+    echo "checksums:产物目录里有同名文件(来自不同构建),先清理 $OUT 再重跑:" >&2
+    echo "$dup" >&2
+    rm -f "$tmp"
+    return 1
+  fi
+  mv "$tmp" "$out"
+  echo "checksums:$(wc -l < "$out" | tr -d ' ') 件桌面产物 → $out"
+  cat "$out"
+}
+
 # 便携版的 bundle identifier(与安装版 dev.gah.desktop **必须不同**)。
 #
 # 为什么:桌面壳注册了 tauri-plugin-single-instance,单实例锁按 bundle identifier 走。
@@ -47,7 +95,8 @@ case "$platform" in
   windows-arm64)   triple=aarch64-pc-windows-msvc; updkey=windows-arm64;  bdir=nsis ;;
   merge) merge=1 ;;
   rewrite-url) rewrite=1 ;;
-  *) echo "用法: $0 {darwin-aarch64|darwin-x86_64|windows-x86_64|windows-arm64|merge|rewrite-url}"; exit 1 ;;
+  checksums) checksums=1 ;;
+  *) echo "用法: $0 {darwin-aarch64|darwin-x86_64|windows-x86_64|windows-arm64|merge|rewrite-url|checksums}"; exit 1 ;;
 esac
 
 if [ "${merge:-0}" = 1 ]; then
@@ -72,6 +121,14 @@ if [ "${merge:-0}" = 1 ]; then
   }' "${files[@]}" > "$OUT/latest.json"
   echo "merged → $OUT/latest.json"
   jq . "$OUT/latest.json"
+  # 哈希清单跟着 merge 一起生成:发布路径上只有这一次「所有平台产物都在同一个目录」的时刻。
+  # 单独补跑:`publish-desktop.sh checksums`。
+  gen_checksums
+  exit 0
+fi
+
+if [ "${checksums:-0}" = 1 ]; then
+  gen_checksums
   exit 0
 fi
 

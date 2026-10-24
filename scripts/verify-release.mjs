@@ -364,13 +364,57 @@ try {
   // CI 平台 job 与本地 --local 都会跑;线上清单模式(没本地目录)只能提示。
   checkPortableBundle(opts)
 
-  // 5) checksums.txt 覆盖面(桌面产物是否登记;缺 = 上传方与哈希清单各自为政)
+  // 5) 桌面产物哈希清单(checksums-desktop.txt)
+  //    为什么单独一份:goreleaser 的 checksums.txt 只盖 CLI 归档,而桌面三件由另一个 workflow
+  //    **并发**上传(`--clean` 会重建前者、accelerate 会重下重传后者)⇒ 追同一个文件必然打架。
+  //    判据:有清单却**漏登**某件 ⇒ FAIL(用户按清单核对时会漏掉它);没有清单 ⇒ INFO
+  //    (旧版本发布的 Release 没有它,不该被追认为失败)。能拿到实体字节的,逐个比对 sha256。
+  const desktopNames = [
+    ...Object.values(manifest.platforms ?? {}).map((e) => basename(new URL(e.url).pathname)),
+    ...Object.values(manifest.portable ?? {}).map((e) => basename(new URL(e.url).pathname)),
+  ]
+  let deskText = ''
+  if (opts.local) {
+    const p = join(resolve(opts.local), 'checksums-desktop.txt')
+    if (existsSync(p)) deskText = readFileSync(p, 'utf8')
+    else info('checksums-desktop.txt', '--local 目录没有该文件(先跑 publish-desktop.sh merge 或 checksums)')
+  } else {
+    // 连 `--skip-artifacts` 也要拉这一份(几 KB):CI merge job 的发布后回查就是它守「漏登一件」。
+    try {
+      deskText = readFileSync(await downloadAsset(slug, opts.tag, 'checksums-desktop.txt', tmp), 'utf8')
+    } catch {
+      info('checksums-desktop.txt', '本次 Release 没有该文件(旧版本发布;桌面产物只能靠签名核对)')
+    }
+  }
+  if (deskText) {
+    // 格式与 sha256sum 一致:`<64 hex>  <文件名>`(允许 `*` 二进制标记)
+    const byName = new Map()
+    for (const line of deskText.split('\n').map((l) => l.trim()).filter(Boolean)) {
+      const m = line.match(/^([0-9a-f]{64})\s+\*?(.+)$/)
+      if (m) byName.set(m[2], m[1])
+    }
+    const missing = desktopNames.filter((n) => !byName.has(n))
+    if (missing.length > 0) fail('checksums-desktop.txt 覆盖', `漏登记:${missing.join(', ')}(用户按清单核对时会漏掉这几件)`)
+    else ok('checksums-desktop.txt 覆盖', `桌面 ${desktopNames.length} 件全部登记`)
+    let checked = 0
+    for (const n of desktopNames) {
+      const want = byName.get(n)
+      if (!want) continue
+      const p = opts.local ? findLocal(opts.local, n) : existsSync(join(tmp, n)) ? join(tmp, n) : ''
+      if (!p) continue
+      const got = createHash('sha256').update(readFileSync(p)).digest('hex')
+      if (got !== want) fail(`checksums-desktop.txt ${n}`, `sha256 不一致(清单 ${want.slice(0, 16)}… / 实得 ${got.slice(0, 16)}…)`)
+      else checked++
+    }
+    if (checked > 0) ok('checksums-desktop.txt 核对', `${checked} 件逐字节一致`)
+  }
   if (!opts.skipArtifacts && !opts.local) {
+    // CLI 侧那份 checksums.txt(goreleaser 产出)保持旧口径:只提示,不判红。
     try {
       const p = await downloadAsset(slug, opts.tag, 'checksums.txt', tmp)
       const text = readFileSync(p, 'utf8')
-      const missing = Object.values(manifest.platforms).map((e) => basename(new URL(e.url).pathname)).filter((n) => !text.includes(n))
-      if (missing.length > 0) info('checksums.txt 覆盖', `桌面产物未登记:${missing.join(', ')}(签名已验证,此项仅提示)`)
+      const missing = desktopNames.filter((n) => !text.includes(n))
+      if (missing.length > 0) info('checksums.txt 覆盖', `桌面产物未登记:${missing.join(', ')}(CLI 清单本来只盖命令行归档,属预期)`)
       else ok('checksums.txt 覆盖', '桌面产物已登记')
     } catch (e) {
       info('checksums.txt 覆盖', `拉取失败:${e.message}`)

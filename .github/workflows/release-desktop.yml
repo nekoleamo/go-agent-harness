@@ -203,6 +203,8 @@ jobs:
           # 该 pattern 不匹配只会打一行 warning(不失败),保留以兼容未来改名
           files: |
             dist-desktop/latest.json
+            # 桌面产物 sha256(独立文件:与 goreleaser 的 checksums.txt 分家,两边并发写不到同一处)
+            dist-desktop/checksums-desktop.txt
             dist-desktop/**/*.app.tar.gz
             dist-desktop/**/*.dmg
             dist-desktop/**/*-setup.exe
