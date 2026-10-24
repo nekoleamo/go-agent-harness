@@ -164,11 +164,12 @@ function attUrl(rel: string): string {
           <span class="tl">{{ r.m.text }}</span>
           <!-- 结果区交给插件渲染器(第一百六十五批):声明了 tool-renderer 且匹配本工具时,
                宿主只保留行头(工具名/参数/状态),结果区整块交出;没匹配上走原来的 <pre>。 -->
-          <component
-            :is="rendererOf(r.m)?.component"
-            v-if="rendererOf(r.m)"
-            v-bind="renderProps(r.m)"
-          />
+          <!-- 失败态的红框由**宿主**保证:插件分支原先只有裸 <component>,于是"这次失败"
+               只剩行头那个 ✗,红底取决于插件是否自觉处理 err prop(不勤快的插件会把失败
+               画得和成功一模一样)。错误态是宿主的责任,不是插件的自觉(2026-10-24 review)。 -->
+          <div v-if="rendererOf(r.m)" class="result" :class="{ err: r.m.err }">
+            <component :is="rendererOf(r.m)?.component" v-bind="renderProps(r.m)" />
+          </div>
           <template v-else>
             <div class="result" :class="{ err: r.m.err }">
               <!-- 折叠态先给**结论**(宿主算好的一行人话摘要,2026-10-20 B1);

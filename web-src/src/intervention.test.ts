@@ -1,7 +1,7 @@
 // 介入条(D3)的纯逻辑用例:四态与优先级。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { interventionOf, type InterventionInput } from './intervention.ts'
+import { interventionOf, latestErrorOf, type InterventionInput } from './intervention.ts'
 
 const base: InterventionInput = {
   pendingConfirm: false,
@@ -59,4 +59,16 @@ test('错误文本超长要裁(不留一行巨长文字)', () => {
   const got = interventionOf({ ...base, lastError: 'x'.repeat(300) })
   assert.ok(got.text.length <= 80, `过长: ${got.text.length}`)
   assert.ok(got.text.includes('…'))
+})
+
+// latestErrorOf:出错 meta 之后若已有新消息,就不再是"当前错误"。
+// **反向验证**:去掉 newer 判定(只判最后一条 meta 是 error)⇒ 本用例第二条红。
+test('latestErrorOf 只在"之后没有新消息"时成立', () => {
+  assert.equal(latestErrorOf([], [{ seq: 1 }]), '')
+  // 错误落在 after=1 之后:已有 seq=2 的消息 ⇒ 已被盖过
+  assert.equal(latestErrorOf([{ kind: 'error', text: '页签已达上限', after: 1 }], [{ seq: 1 }, { seq: 2 }]), '')
+  // 错误之后再没有更新 ⇒ 当前就是它
+  assert.equal(latestErrorOf([{ kind: 'error', text: '连接不可用', after: 3 }], [{ seq: 1 }, { seq: 3 }]), '连接不可用')
+  // 最后一条 meta 不是 error ⇒ 无错误
+  assert.equal(latestErrorOf([{ kind: 'error', text: 'x', after: 0 }, { kind: 'command', text: '/help', after: 0 }], []), '')
 })

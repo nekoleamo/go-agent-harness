@@ -32,9 +32,12 @@ test('每个分区子组件都通过 inject 取父层状态(没有偷偷自带�
   for (const f of files) {
     const src = readFileSync(join(dir, f), 'utf8')
     assert.match(src, /inject\(SETTINGS_CTX\)/, `${f} 应通过 SETTINGS_CTX 取状态`)
-    // 允许的局部声明只有两类:类型断言辅助(模板里箭头函数参数要具体类型)与 import。
-    // 若这里出现 ref()/reactive(),说明该段偷偷复制了状态 —— 两份真相必然漂。
-    assert.doesNotMatch(src, /\b(ref|reactive)\s*\(/, `${f} 不应自带状态(ref/reactive):状态留父层`)
+    // 允许的局部声明只有三类:import / 类型断言辅助(模板里箭头函数参数要具体类型)/
+    // computed(派生值,不是第二份状态)。若这里出现 ref()/reactive(),说明该段偷偷复制了
+    // 状态 —— 两份真相必然漂。
+    // 注意:只看**代码行**(先剥注释)—— 注释里写 `ref(` 不该误伤。
+    const code = src.replace(/<!--[\s\S]*?-->/g, '').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    assert.doesNotMatch(code, /\b(ref|reactive)\s*[(<]/, `${f} 不应自带状态(ref/reactive):状态留父层`)
   }
 })
 

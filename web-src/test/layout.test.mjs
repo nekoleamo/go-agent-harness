@@ -5,6 +5,11 @@
 // 769px 高的 .panel 之后,把文档撑到 1573px。jsdom 之类不算布局(得 0 高度),静态 AST
 // 也判不出来(v-else 绑到邻近的另一个 v-if 对 Vue 完全合法),所以只有真渲染才验得了。
 //
+// 体积护栏:设置面板 CSS 目前是"一份文件被 13 个组件各自 scoped 引用"(父 + 12 个分区子组件),
+// 单个 chunk 实测 ~180 KB 未压缩 / 11 KB gzip。这是**已知代价**(换零样式回归),但必须钉住
+// 上限防止继续涨:再复制一份就是 +14 KB。判据宽松(220 KB),够抓"又抄了一份"。
+const SETTINGS_CSS_MAX = 220 * 1024
+
 // 跑法:`cd web-src && npm run test:layout`(需先有 web/dist —— scripts/gen-web.sh)。
 // 依赖:本机 Chrome/Chromium;找不到就**跳过**(不拦人)。CI 用 GAH_LAYOUT_REQUIRE=1 变红灯。
 //   GAH_LAYOUT_CHROME=/path/to/chrome   指定可执行文件(否则按常见路径 + channel:'chrome' 依次试)
@@ -957,6 +962,20 @@ describe('布局护栏:整页永不滚动(第五十二/五十三批)', { skip: s
   // 角色文件读不了时的提示(宿主的 v.problems)。这条分支原先没有用例:
   // 拆分设置面板时它曾被写成「把 inject 回来的 ref 当数组直接 map」——类型断言把 vue-tsc
   // 骗过去了,只有真实浏览器渲染才会炸。护栏钉住:有 problems 就要在角色段里说出来。
+  test('体积护栏:设置面板 CSS chunk 不因"又复制一份样式表"继续膨胀', async () => {
+    const dir = path.join(DIST, 'assets')
+    const files = fs.readdirSync(dir).filter((f) => /^SettingsPanel-.*\.css$/.test(f))
+    assert.ok(files.length > 0, '找不到 SettingsPanel-*.css(先跑 scripts/gen-web.sh)')
+    for (const f of files) {
+      const size = fs.statSync(path.join(dir, f)).size
+      assert.ok(
+        size < SETTINGS_CSS_MAX,
+        `${f} 已 ${Math.round(size / 1024)} KB > 上限 ${SETTINGS_CSS_MAX / 1024} KB —— 别再复制样式表;` +
+          '要减体积就把声明合并到一次全局导入(见 DESIGN §14.1 第一百六十九批的边界)',
+      )
+    }
+  })
+
   test('设置面板:部分角色文件读不了时如实提示(不静默丢掉)', async (t) => {
     const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
     let page = null

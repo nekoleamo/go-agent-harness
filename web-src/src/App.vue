@@ -4,7 +4,7 @@ import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, provi
 import { api } from './api'
 import { probeAsync } from './desktop'
 import type { AskConfirm } from './types'
-import { interventionOf, type Intervention } from './intervention'
+import { interventionOf, latestErrorOf, type Intervention } from './intervention'
 import { consume, isUsage, msgsOfEvents, newModel, type StreamModel } from './sse'
 import {
   applyBaseline,
@@ -697,10 +697,13 @@ function goNewest(): void {
 // 四态全从前端已有状态派生(零新后端契约):确认请求 / 待答提问 / 最近一条 meta 错误 /
 // 上滚时的新内容。语义与 TUI 端同款(tui/intervention.go)。
 const lastMetaError = computed(() => {
-  // 只看**最后一条** meta:后面又来了别的东西 ⇒ 当前不是"出错"状态(错误已被后续动作盖过)。
-  const m = metas.value
-  const last = m.length ? m[m.length - 1] : null
-  return last && last.kind === 'error' ? last.text : ''
+  // 只看**最后一条** meta,而且要求它之后**没有更新的消息** —— 才是"当前这次出错"。
+  //
+  // 为什么加后半个条件(2026-10-24 review):meta 行是**按 after 织回会话流中间**的
+  // (streamrows.rowsOf),不是永远在末尾。只判"最后一条 meta 是不是 error"会让一条
+  // 早已被后续回答盖过的错误长期占着介入条(它优先级高于「跑完了」),而且"点它去看"
+  // 会滚到流底 —— 出错行在中间,点了等于没去。
+  return latestErrorOf(metas.value, model.value.msgs)
 })
 const intervention = computed<Intervention>(() =>
   interventionOf({

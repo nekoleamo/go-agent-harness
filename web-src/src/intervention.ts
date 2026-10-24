@@ -57,3 +57,24 @@ function clip(s: string, n: number): string {
   if (s.length <= n) return s
   return s.slice(0, Math.max(0, n - 1)) + '…'
 }
+
+// latestErrorOf 派生"当前这次出错"的文本(空 = 没有当前错误)。
+//
+// 判据两条缺一不可(2026-10-24 review):
+//  ① 最后一条 meta 是 error;
+//  ② 它之后**没有更新的消息**(seq > after)。
+// 为什么需要 ②:meta 行按 after 织回会话流**中间**(见 streamrows.rowsOf),不是永远在末尾。
+// 只判 ① 会让一条早已被后续回答盖过的错误长期占着介入条(优先级高于「跑完了」),
+// 而且"点它去看"会滚到流底 —— 出错行在中间,点了等于没去。
+export interface ErrorMetaLine {
+  kind: string
+  text: string
+  after?: number
+}
+
+export function latestErrorOf(metas: ErrorMetaLine[], msgs: { seq: number }[]): string {
+  const last = metas.length ? metas[metas.length - 1] : null
+  if (!last || last.kind !== 'error') return ''
+  const newer = msgs.some((m) => m.seq > (last.after ?? 0))
+  return newer ? '' : last.text
+}

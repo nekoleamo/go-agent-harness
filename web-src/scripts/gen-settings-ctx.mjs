@@ -66,6 +66,28 @@ export const SETTINGS_CTX: InjectionKey<SettingsCtx> = Symbol("gah.settings-ctx"
 `
 }
 
+// checkDeclaredBefore 确认每个名字的**首次出现**在 provide 块之前。
+//
+// 为什么必须校验:`<script setup>` 里 `provide(SETTINGS_CTX, { foo })` 若在
+// `const foo = ...` 之前求值,setup 期直接抛 `Cannot access 'foo' before initialization`
+// ⇒ **整块设置面板白屏**(渲染期一处异常让整块 UI 消失,正是这批代码最怕的形态)。
+// 生成器要求"新增顶层变量后重跑",而最自然的写法就是追加到脚本末尾 —— 那会把 provide
+// 留在中间 ⇒ 雷。这里显式拦下,并告诉修法(把 provide 块挪到末尾)。
+function checkDeclaredBefore(source, names) {
+  const provideAt = source.indexOf('provide(SETTINGS_CTX')
+  if (provideAt < 0) throw new Error('SettingsPanel.vue 缺少 provide(SETTINGS_CTX, …)')
+  const early = []
+  for (const n of names) {
+    const re = new RegExp(String.raw`(?:const|let|var|function|async function)\s+${n}\b|import[^\n]*\b${n}\b`)
+    const m = re.exec(source)
+    if (m && m.index > provideAt) early.push(n)
+  }
+  if (early.length) {
+    throw new Error(`这些名字声明在 provide 块之后(TDZ 会白屏):${early.join(', ')}\n` +
+      '  修法:把 // —— 跨段上下文 那段 provide(...) 挪到 <script setup> 末尾')
+  }
+}
+
 function renderProvide(names) {
   return `// —— 跨段上下文(D1:按分区拆子组件;状态仍留在父层)——
 // 子组件用 \`const { x } = inject(SETTINGS_CTX) as SettingsCtx\` 直接拿到**同一批 ref / 常量**,
@@ -76,6 +98,7 @@ provide(SETTINGS_CTX, {
 }
 
 export function patchPanel(source, names) {
+  checkDeclaredBefore(source, names)
   const block = renderProvide(names)
   const re = /\/\/ —— 跨段上下文[\s\S]*?\} as SettingsCtx\);/
   if (!re.test(source)) throw new Error('SettingsPanel.vue 缺少 provide 块(先手工加一次再跑本脚本)')
