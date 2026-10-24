@@ -334,3 +334,60 @@ func TestWrappedPluginProcessIsKernelConstrained(t *testing.T) {
 		t.Fatalf("关掉包装后同一写应成功: %q", s)
 	}
 }
+
+// TestSandboxStaleUsesPerCallHint 进程档跟**本次调用**的 hint(会话档 + 快照 + 隔离根),
+// 而不是全局有效档。
+//
+// 为什么单列一条(2026-10-24):进程级内核 profile 是静态串,而"该按哪一档"是每次调用才知道的。
+// 此前 sandboxStale 恒取全局档 ⇒ 会话只读 / 委派快照 strict 对插件进程自身与它拉起的
+// MCP server 都不生效(单次工具调用的子进程早就有 hint,缺的正是这一层)。
+//
+// **反向验证**:把 Execute 里的 hint 改成传 ""(回退全局)⇒ 本用例红。
+func TestSandboxStaleUsesPerCallHint(t *testing.T) {
+	logger := slog.New(slog.DiscardHandler)
+	root := t.TempDir()
+	sb := &stubSandbox{mode: sdk.SandboxWorkspace, root: root} // 全局:workspace-write
+	b := capsTestBridge(t, root, sb, logger)
+	bin := buildCapsFixture(t, root)
+
+	e, err := b.loadOne(bin, "")
+	if err != nil {
+		t.Fatalf("加载夹具失败: %v", err)
+	}
+	t.Cleanup(e.kill)
+	if !e.wrapped {
+		t.Skip("当前平台无法施加内核沙箱:跳过陈旧性断言")
+	}
+	b.entries[bin] = e
+	tc := e.tools["caps"]
+	if tc == nil {
+		t.Fatalf("夹具未暴露 caps 工具: %v", e.tools)
+	}
+
+	// 调用 ctx 把档收成只读(等价于「这个会话设了 read-only」/「子代理被 pin 成 strict」)
+	ctxRO := sdk.WithSandboxHint(context.Background(), sdk.SandboxHint{Mode: sdk.SandboxReadOnly, Root: root})
+	if res, err := tc.Execute(ctxRO, `{"a":1}`); err != nil {
+		t.Fatalf("调用失败: %v", err)
+	} else if s, ok := res.(string); !ok || !strings.Contains(s, "ok:") {
+		t.Fatalf("按 hint 重建后的调用应正常返回: %#v", res)
+	}
+	b.mu.RLock()
+	cur := b.entries[bin]
+	b.mu.RUnlock()
+	if cur == nil || cur.wrapMode != string(sdk.SandboxReadOnly) {
+		t.Fatalf("进程档应跟本次调用的 hint(read-only),得 %+v", cur)
+	}
+
+	// 换成工作根(隔离运行的 worktree)再调:档回到 workspace-write 且根跟着换
+	wt := t.TempDir()
+	ctxWT := sdk.WithSandboxHint(context.Background(), sdk.SandboxHint{Mode: sdk.SandboxWorkspace, Root: wt})
+	if _, err := tc.Execute(ctxWT, `{"a":2}`); err != nil {
+		t.Fatalf("调用失败: %v", err)
+	}
+	b.mu.RLock()
+	cur = b.entries[bin]
+	b.mu.RUnlock()
+	if cur == nil || cur.wrapMode != string(sdk.SandboxWorkspace) || cur.wrapRoot != wt {
+		t.Fatalf("进程档/根应跟 hint(workspace-write + worktree),得 %+v", cur)
+	}
+}

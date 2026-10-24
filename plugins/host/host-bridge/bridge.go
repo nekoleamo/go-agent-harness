@@ -136,16 +136,24 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 // → 不注入(对端按“未注入”处理,不得假定档位)。
 //
 // 现取不缓存:policy-guard 可能晚于本插件启动(装配顺序无保证),且档位运行中可变。
-func (b *Bridge) sandboxEnv() []string {
-	mode, root := b.sandboxModeRoot()
+func (b *Bridge) sandboxEnvFor(mode, root string) []string {
 	if mode == "" {
 		return nil
 	}
 	return []string{"GAH_EXT_SANDBOX_MODE=" + mode, "GAH_EXT_SANDBOX_ROOT=" + root}
 }
 
-// sandboxModeRoot 当前有效档位与工作根(无沙箱宿主/未联动 → 双双为空)。
-// 现取不缓存 —— 启动注入与调用前陈旧性判定共用同一事实源(见 pluginsandbox.go)。
+func (b *Bridge) sandboxEnv() []string {
+	mode, root := b.sandboxModeRoot()
+	return b.sandboxEnvFor(mode, root)
+}
+
+// sandboxModeRoot **全局**有效档位与工作根(无沙箱宿主/未联动 → 双双为空)。
+//
+// 它现在是**兜底**:真正的进程档由 desiredTier(hint 优先)决定 —— hint 来自本次调用的
+// 会话档 + 角色收紧 + 委派快照 + 隔离工作根(见 pluginsandbox.go 的 desiredTier)。
+// 命令路径(sdk.CommandSpec.Run 不带 ctx)与启动兜底仍用这一份。
+// 现取不缓存 —— 档位运行中可变。
 func (b *Bridge) sandboxModeRoot() (mode, root string) {
 	if b.hostCtx == nil {
 		return "", ""
@@ -523,6 +531,14 @@ var trustWarnOnce sync.Once
 //
 // role 非空 = 该二进制提供多个角色,按 `bin <role>` 起(瘦身);为空 = 老行为(无参起)。
 func (b *Bridge) loadOne(path, role string) (*extEntry, error) {
+	mode, root := b.sandboxModeRoot()
+	return b.loadOneTier(path, role, mode, root)
+}
+
+// loadOneTier 按**显式档位/根**加载插件(会话档 / 委派快照 / 隔离根)。
+// 档位决定两件事:内核 profile(argv 包装)与注入给插件进程的 GAH_EXT_SANDBOX_*(它内部起的
+// 长期子进程如 MCP server 用这一份)。两者必须同一档,否则"外层严内层松"。
+func (b *Bridge) loadOneTier(path, role, mode, root string) (*extEntry, error) {
 	// 白名单校验(2026-10-03):放在**探测之前** —— 探测会 exec 那个文件,而白名单的
 	// 全部意义就是「未经你确认的东西不许被执行」。清单不存在 ⇒ 不启用(照旧加载)。
 	// 每次 loadOne 现读:用户装完/登记完不必重启,热重载路径也跟着同一口径。
@@ -540,13 +556,13 @@ func (b *Bridge) loadOne(path, role string) (*extEntry, error) {
 			"path", path, "role", role, "timeout", capsProbeTimeout.String())
 	}
 	dataWrites := b.validDataWrites(path, caps.DataWrites)
-	argv, extraEnv, wrapped := b.wrapPluginArgv(path, role, caps, capsKnown, dataWrites)
-	wrapMode, wrapRoot := b.sandboxModeRoot()
+	argv, extraEnv, wrapped := b.wrapPluginArgvTier(path, role, caps, capsKnown, dataWrites, mode, root)
+	wrapMode, wrapRoot := mode, root
 	if wrapped {
 		b.logInfo("host-bridge: 外部插件已施加内核沙箱", "path", path, "mode", sbDesc(wrapMode),
 			"cred_read_deny", (capsKnown && caps.CredentialReadDeny) || os.Getenv(pluginCredReadDenyEnv) == "1")
 	}
-	cl, killFn, se, err := startPlugin(argv, b.cbAddr, b.cbToken, append(b.sandboxEnv(), extraEnv...), b.configEnvFromCaps(caps, capsKnown))
+	cl, killFn, se, err := startPlugin(argv, b.cbAddr, b.cbToken, append(b.sandboxEnvFor(mode, root), extraEnv...), b.configEnvFromCaps(caps, capsKnown))
 	if err != nil {
 		return nil, err
 	}
@@ -945,13 +961,19 @@ func (b *Bridge) reload(path, role string) error {
 // reloadLocked 同 reload,但要求调用方**已持** reloadMu。
 // 拆出来是因为档位变更路径要“持锁重检后再决定要不要重建”(见 pluginsandbox.go 的 sandboxStale)。
 func (b *Bridge) reloadLocked(path, role string) error {
+	mode, root := b.sandboxModeRoot()
+	return b.reloadLockedTier(path, role, mode, root)
+}
+
+// reloadLockedTier 按显式档位/根重建条目(重载后 profile 与注入的 GAH_EXT_SANDBOX_* 一并更新)。
+func (b *Bridge) reloadLockedTier(path, role, mode, root string) error {
 	key := entryKey(path, role)
 	b.mu.Lock()
 	entry, ok := b.entries[key]
 	b.mu.Unlock()
 	if !ok {
 		if isExternalPluginBin(filepath.Base(path)) {
-			e, err := b.loadOne(path, role)
+			e, err := b.loadOneTier(path, role, mode, root)
 			switch {
 			case err == nil:
 				unreg := b.registerAll(e)
@@ -975,7 +997,7 @@ func (b *Bridge) reloadLocked(path, role string) error {
 	entry.unreg()
 	entry.kill()
 	b.mu.Unlock()
-	e, err := b.loadOne(path, role)
+	e, err := b.loadOneTier(path, role, mode, root)
 	if err != nil {
 		b.mu.Lock()
 		delete(b.entries, key)
@@ -1421,7 +1443,10 @@ func (t *toolRPCClient) Execute(ctx context.Context, args string) (any, error) {
 	// 档位/根陈旧:插件进程的 profile 是启动时静态串 ⇒ **先同步重建**再执行(见
 	// pluginsandbox.go);重建不了才 fail-closed 拒绝本次。放在最前:拿不拿得到 client
 	// 都要先把"旧档不跑"说清楚。
-	if msg, stale := t.br.sandboxStale(t.path, t.role); stale {
+	// 档位/根陈旧判定用**本次调用**的有效档(hint = 会话档 + 角色收紧 + 委派快照 + 隔离根),
+	// 与下传给插件的 ExecNamedArgs.SandboxMode/WorkspaceRoot 同源。
+	sbMode, sbRoot := sandboxHintFields(ctx)
+	if msg, stale := t.br.sandboxStale(t.path, t.role, sbMode, sbRoot); stale {
 		return map[string]any{"error": msg}, nil
 	}
 	cl := t.br.clientFor(t.key)
@@ -1455,7 +1480,6 @@ func (t *toolRPCClient) Execute(ctx context.Context, args string) (any, error) {
 	}
 	// 有效档位随调用下传(见 sdk.SandboxHint):外部插件进程拿不到 ctx.sandbox 服务,
 	// 档位联动对它不可见 —— 无此字段则插件只能退回协作式控制。
-	sbMode, sbRoot := sandboxHintFields(ctx)
 	err := rpcCallCtx(ctx, cl, "Plugin.ExecuteNamed",
 		&ExecNamedArgs{Name: t.name, JSONArgs: args, CallID: callID, TimeoutMs: pluginSideTimeoutMs(timeout), SandboxMode: sbMode, WorkspaceRoot: sbRoot, ProgressToken: progToken},
 		&reply, timeout, cancelFn)
@@ -1551,7 +1575,9 @@ func (c *commandRPCClient) spec() sdk.CommandSpec {
 func (c *commandRPCClient) run(args []string) (string, error) {
 	// 与工具调用同一口径:被包装的插件档位/根变了就先同步重建,重建不了才拒绝本次
 	// (见 pluginsandbox.go)。
-	if msg, stale := c.br.sandboxStale(c.path, c.role); stale {
+	// 命令路径**没有 ctx**(sdk.CommandSpec.Run(args) 不带 ctx),拿不到会话/快照 hint ⇒
+	// 只能按全局有效档判陈旧。会话档对"外部命令进程"不生效,登记为已知边界。
+	if msg, stale := c.br.sandboxStale(c.path, c.role, "", ""); stale {
 		return "", errors.New(msg)
 	}
 	cl := c.br.clientFor(c.key)

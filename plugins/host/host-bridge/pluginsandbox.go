@@ -152,6 +152,14 @@ func (b *Bridge) validDataWrites(path string, decl []string) []string {
 // 档位为空 = 无沙箱宿主/未联动 → Mode 空 → Wrap 不施加且不告警)。
 func (b *Bridge) pluginSandboxSpec(dataWrites []string, credReadDeny bool) kernelsandbox.Spec {
 	mode, root := b.sandboxModeRoot()
+	return b.pluginSandboxSpecTier(mode, root, dataWrites, credReadDeny)
+}
+
+// pluginSandboxSpecTier 用**显式档位/根**组装 spec。
+//
+// 为什么要显式传:profile 是启动时静态串,而"哪个档"取决于**本次调用**的会话/快照
+// (见 desiredTier)。此前这里恒取全局有效档 ⇒ 会话只读档对插件进程自身的写不生效。
+func (b *Bridge) pluginSandboxSpecTier(mode, root string, dataWrites []string, credReadDeny bool) kernelsandbox.Spec {
 	rw := append([]string{}, kernelsandbox.DefaultRWPaths()...)
 	rw = append(rw, kernelsandbox.RWPathsFromEnv(pluginRWPathsEnv)...)
 	rw = append(rw, dataWrites...) // 插件自报(已校验)的数据根子目录
@@ -188,7 +196,14 @@ func (b *Bridge) pluginSandboxSpec(dataWrites []string, credReadDeny bool) kerne
 // 包装,它的 in-process 直写(memory/todos/file 工具)一并进内核层。
 // 自报的读拒绝经 Caps 传入(caps 零值 = 探测失败/未声明 ⇒ 默认关)。
 func (b *Bridge) wrapPluginArgv(bin, role string, caps Capabilities, capsKnown bool, dataWrites []string) ([]string, []string, bool) {
-	pre := kernelsandbox.Wrap(b.pluginSandboxSpec(dataWrites, capsKnown && caps.CredentialReadDeny))
+	mode, root := b.sandboxModeRoot()
+	return b.wrapPluginArgvTier(bin, role, caps, capsKnown, dataWrites, mode, root)
+}
+
+// wrapPluginArgvTier 同 wrapPluginArgv,但用**显式**档位/根(本次调用的会话档 + 快照 + 隔离根)。
+func (b *Bridge) wrapPluginArgvTier(bin, role string, caps Capabilities, capsKnown bool,
+	dataWrites []string, mode, root string) ([]string, []string, bool) {
+	pre := kernelsandbox.Wrap(b.pluginSandboxSpecTier(mode, root, dataWrites, capsKnown && caps.CredentialReadDeny))
 	full := append([]string{bin}, roleArgs(role)...)
 	if len(pre) == 0 {
 		return full, nil, false
@@ -217,8 +232,8 @@ func roleArgs(role string) []string {
 // 现在改为：档位/根变了 ⇒ **同步重建**(持 reloadMu 重建,并发的另一路会串行等完)、
 // 就绪后本次调用照常执行。等不到(重建失败/条目被撤)才拒绝 —— 安全性不降(执行的
 // 始终是新 profile)。
-func (b *Bridge) sandboxStale(path, role string) (string, bool) {
-	mode, root := b.sandboxModeRoot()
+func (b *Bridge) sandboxStale(path, role, hintMode, hintRoot string) (string, bool) {
+	mode, root := b.desiredTier(hintMode, hintRoot)
 	if !b.wrappedStale(path, mode, root) {
 		return "", false
 	}
@@ -254,7 +269,34 @@ func (b *Bridge) reloadForSandbox(path, role, mode, root string) error {
 	if !b.wrappedStale(path, mode, root) {
 		return nil // 别的调用已经重建好了
 	}
-	return b.reloadLocked(path, role)
+	// 用**同一个** mode/root 重建:profile 与注入的 GAH_EXT_SANDBOX_* 都按它(否则重建出来的
+	// 还是全局档,下一次调用又要重建 —— 表现就是"永远在重建"。
+	return b.reloadLockedTier(path, role, mode, root)
+}
+
+// desiredTier 本次调用期望的进程档:调用方 hint(来自会话档 + 角色收紧 + 委派快照 +
+// 隔离工作根)优先,缺项回落到全局有效档。
+//
+// 为什么 hint 优先(2026-10-24):进程级内核 profile 是静态的,而"该按哪一档"是**每次调用**
+// 才知道的(多页签各设各的沙箱、后台子代理被 pin 成 strict)。此前这里恒取全局档 ⇒
+// 「会话只读」挡不住插件进程自身与它拉起的 MCP server 的写。hint 与单次工具调用下传的
+// `ExecNamedArgs.SandboxMode/WorkspaceRoot` 是同一份数据(同源),不另造口径。
+//
+// 代价(如实记):同一插件在不同档/不同工作根之间交替调用会**重建进程**(profile 不可变)。
+// 缓解见后续的"按沙箱上下文分桶"(同档复用实例)。
+func (b *Bridge) desiredTier(hintMode, hintRoot string) (mode, root string) {
+	gm, gr := b.sandboxModeRoot()
+	if strings.TrimSpace(hintMode) != "" {
+		mode = hintMode
+	} else {
+		mode = gm
+	}
+	if strings.TrimSpace(hintRoot) != "" {
+		root = hintRoot
+	} else {
+		root = gr
+	}
+	return mode, root
 }
 
 // sbDesc 档位/根的日志展示(空 = 未注入,别打印成空串让人误以为"没有档位")。
