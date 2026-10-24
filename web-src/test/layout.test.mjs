@@ -855,10 +855,16 @@ const STYLE_PROBES = [
   ['plugin-row', '[data-sec="plugin"] .plg-row'],
   ['foot', `${PANEL} .foot`],
 ]
+// 只采**与字体/内容无关**的属性。
+//
+// 为什么剔掉 lineHeight / gridTemplateColumns(2026-10-24,CI 上假红过):它们的 computed 值
+// 是**解析后的像素**,会随可用字体(CJK 缺失时回退字体度量不同)与内容宽度变 —— 那属于
+// 布局护栏的活儿,不是"样式重构有没有丢规则"的判据。这里要抓的是颜色/边框/内距/display 这类
+// 点位属性:漏一条规则的前缀,它们会整片消失。
 const STYLE_PROPS = [
   'color', 'backgroundColor', 'borderTopWidth', 'borderTopStyle', 'borderTopColor', 'borderRadius',
-  'paddingTop', 'paddingLeft', 'marginTop', 'fontSize', 'fontWeight', 'lineHeight',
-  'display', 'gap', 'flexDirection', 'gridTemplateColumns', 'overflowX', 'cursor',
+  'paddingTop', 'paddingLeft', 'paddingBottom', 'marginTop', 'fontSize', 'fontWeight',
+  'display', 'gap', 'flexDirection', 'overflowX', 'cursor',
 ]
 
 // 采集:元素不存在就记 null(两侧同为 null 才算一致 —— "整段没渲染"本身就是要看见的差异)
@@ -3407,46 +3413,47 @@ test('介入条:真实帧派生待审批/出错,审批态不给点不动的按�
       await ctx.close()
     }
   }
-  // 样式快照比对(见上方 STYLE_PROBES 的说明)。
-test('样式快照:设置面板关键元素的计算样式与基线一致', async (t) => {
-  const dump = process.env.GAH_STYLE_DUMP || ''
-  const baselinePath = path.join(WEB_SRC, 'test', 'style-baseline.json')
-  if (!dump && !fs.existsSync(baselinePath)) {
-    t.skip('没有基线也没有 GAH_STYLE_DUMP —— 跳过(CI 不设这两者,不受影响)')
-    return
-  }
-  const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
-  let page = null
-  try {
-    page = await open(ctx, makeStub(true, true, false, false, true), docks[1].dock)
-    await page.click('.gear')
-    await page.waitForSelector('[data-sec="model"]')
-    // 等布局稳定(字体/滚动条/异步段都就位)再采
-    await page.waitForTimeout(300)
-    const got = await styleSnapshot(page)
-    if (dump) {
-      fs.writeFileSync(dump, JSON.stringify(got, null, 2) + '\n')
-      t.diagnostic(`已写样式基线: ${dump}`)
+
+    // 样式快照比对(见上方 STYLE_PROBES 的说明)。
+  test('样式快照:设置面板关键元素的计算样式与基线一致', async (t) => {
+    const dump = process.env.GAH_STYLE_DUMP || ''
+    const baselinePath = path.join(WEB_SRC, 'test', 'style-baseline.json')
+    if (!dump && !fs.existsSync(baselinePath)) {
+      t.skip('没有基线也没有 GAH_STYLE_DUMP —— 跳过(CI 不设这两者,不受影响)')
       return
     }
-    const want = JSON.parse(fs.readFileSync(baselinePath, 'utf8'))
-    const diffs = []
-    for (const name of new Set([...Object.keys(want), ...Object.keys(got)])) {
-      const a = want[name]
-      const b = got[name]
-      if (!a || !b) {
-        if (!a !== !b) diffs.push(`${name}: 存在性变了(${a ? '有' : '无'} → ${b ? '有' : '无'})`)
-        continue
+    const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+    let page = null
+    try {
+      page = await open(ctx, makeStub(true, true, false, false, true), docks[1].dock)
+      await page.click('.gear')
+      await page.waitForSelector('[data-sec="model"]')
+      // 等布局稳定(字体/滚动条/异步段都就位)再采
+      await page.waitForTimeout(300)
+      const got = await styleSnapshot(page)
+      if (dump) {
+        fs.writeFileSync(dump, JSON.stringify(got, null, 2) + '\n')
+        t.diagnostic(`已写样式基线: ${dump}`)
+        return
       }
-      for (const prop of Object.keys(a)) {
-        if (a[prop] !== b[prop]) diffs.push(`${name}.${prop}: ${a[prop]} → ${b[prop]}`)
+      const want = JSON.parse(fs.readFileSync(baselinePath, 'utf8'))
+      const diffs = []
+      for (const name of new Set([...Object.keys(want), ...Object.keys(got)])) {
+        const a = want[name]
+        const b = got[name]
+        if (!a || !b) {
+          if (!a !== !b) diffs.push(`${name}: 存在性变了(${a ? '有' : '无'} → ${b ? '有' : '无'})`)
+          continue
+        }
+        for (const prop of Object.keys(a)) {
+          if (a[prop] !== b[prop]) diffs.push(`${name}.${prop}: ${a[prop]} → ${b[prop]}`)
+        }
       }
+      assert.deepEqual(diffs, [], `计算样式差异(样式重构不该改变外观):\n  ${diffs.join('\n  ')}`)
+    } finally {
+      await page?.close()
+      await ctx.close()
     }
-    assert.deepEqual(diffs, [], `计算样式差异(样式重构不该改变外观):\n  ${diffs.join('\n  ')}`)
-  } finally {
-    await page?.close()
-    await ctx.close()
-  }
-})
+  })
 
 })
