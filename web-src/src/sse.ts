@@ -283,6 +283,21 @@ export function consume(m: StreamModel, ev: SessionEvent): void {
       })
       break
     }
+    case 'branch/note': {
+      // C4 写侧(2026-10-24):从分支切回祖先会话时,宿主往本会话追加一条分支备注。
+      // 它在模型上下文里是 system 说明(见 host-session-log 的投影),界面上应如实可见 ——
+      // 否则用户会疑惑“模型怎么突然提起这个会话里没说过的事”。没有 text = 不渲染。
+      const b = p as { from?: string; from_name?: string; text?: string }
+      if (!b?.text) break
+      const nm = b.from_name || b.from || ''
+      m.msgs.push({
+        kind: 'meta',
+        text: nm ? `↩ 分支「${nm}」：${b.text}` : `↩ 分支：${b.text}`,
+        seq: ev.Seq,
+        ts: ev.TS,
+      })
+      break
+    }
     case 'turn/end': {
       const why = typeof p === 'string' ? p : 'done'
       if (why === 'cancelled') {

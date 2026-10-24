@@ -325,6 +325,16 @@ func (s *State) ApplySessionEvent(ev *sdk.SessionEvent) {
 			s.Error = err.Error()
 			s.Lines = append(s.Lines, Line{Kind: "error", Text: "agent error: " + err.Error()})
 		}
+	case sdk.EventBranchNote:
+		// C4 写侧:模型看到的那条“分支做过什么”在界面上也要看得见 ——
+		// 否则用户会好奇“模型怎么突然提起一段我没在这个会话里说过的事”。
+		if n, ok := ev.Payload.(sdk.BranchNote); ok && n.Text != "" {
+			name := n.FromName
+			if name == "" {
+				name = n.From
+			}
+			s.Lines = append(s.Lines, Line{Kind: "meta", Text: fmt.Sprintf("↩ 分支「%s」: %s", name, n.Text)})
+		}
 	}
 }
 

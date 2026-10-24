@@ -550,6 +550,15 @@ func (l *Log) projectLocked(watermark int) []sdk.LLMMessage {
 			}
 		case sdk.EventSummary:
 			// 水位后的摘要事件(通常不存在;防御性跳过)
+		case sdk.EventBranchNote:
+			// C4 写侧(2026-10-24):分支备注 → 一条 **system** 消息。
+			// 为什么是 system 而不是 user:它不是用户说的话,而是“你之前从这条会话派出去的
+			// 分支做过什么”的环境事实 —— 与滚动摘要同类(背景信息,可能不完整,以当前对话为准)。
+			// 为什么只到「一句」:分支历史不在本会话里,写细了反而会让模型把别人的对话当自己的
+			// 记忆(比“不知道”更坏)。
+			if n, ok := branchNoteOf(ev.Payload); ok && n.Text != "" {
+				out = append(out, sdk.LLMMessage{Role: sdk.RoleSystem, Content: branchNoteText(n)})
+			}
 		}
 	}
 	// 累计摘要恒入投影(摘要 + 最近块)
@@ -557,6 +566,39 @@ func (l *Log) projectLocked(watermark int) []sdk.LLMMessage {
 		out = append([]sdk.LLMMessage{{Role: sdk.RoleSystem, Content: "对先前对话的滚动摘要:\n" + summary}}, out...)
 	}
 	return out
+}
+
+// branchNoteOf 取分支备注载荷(内存里是具体类型;Load 后由 sessionevents 还原,
+// 但防御性兼容未还原的 map —— 认错就是静默丢一条本该给模型的说明)。
+func branchNoteOf(v any) (sdk.BranchNote, bool) {
+	switch t := v.(type) {
+	case sdk.BranchNote:
+		return t, true
+	case map[string]any:
+		n := sdk.BranchNote{}
+		if s, ok := t["from"].(string); ok {
+			n.From = s
+		}
+		if s, ok := t["from_name"].(string); ok {
+			n.FromName = s
+		}
+		if s, ok := t["text"].(string); ok {
+			n.Text = s
+		}
+		return n, true
+	}
+	return sdk.BranchNote{}, false
+}
+
+// branchNoteText 模型可见文案。把“边界”写清楚(分支历史不在本会话、可能已过时),
+// 与记忆层/web_fetch 同一条纪律:外部/旁路内容按数据看,不作为指令。
+func branchNoteText(n sdk.BranchNote) string {
+	name := n.FromName
+	if name == "" {
+		name = n.From
+	}
+	return fmt.Sprintf("[分支说明] 你之前从本会话派生出去的分支「%s」做过:%s"+
+		"(该分支的完整对话不在本会话里;需要细节请切到它或用 /tree 查看。以当前对话为准。)", name, n.Text)
 }
 
 // approxChars 消息序列字符估算(中文 1 字 ≈ 1 token 的粗代理;与压缩器估算口径一致)。

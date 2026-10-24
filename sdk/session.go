@@ -89,6 +89,16 @@ const (
 	// 同一份历史里会共存多个人格的产出。自由切换是需求(不阻止),但会话记录里要有痕,
 	// 否则重看会话/`/recap` 时看不出「这段话是哪个人格写的」。
 	EventRoleSwitch = "role/switch"
+	// EventBranchNote 分支备注(C4 写侧,2026-10-24):载荷 BranchNote。
+	//
+	// 为什么需要:会话分支(/fork)是**平行世界** —— 从子分支切回祖先会话时,祖先对那段
+	// 工作一无所知(两边的 jsonl 各写各的),于是“主线记得那次尝试”这件事在结构上缺失。
+	// 本事件由 host-cwd-sessions 在**从后代切回祖先**时追加到目标会话,投影里渲染成一条
+	// system 消息 ⇒ 模型下一轮就知道分支做了什么。
+	//
+	// 纪律:文本来自**已缓存的概述/预览**(SessionInfo.Summary → Preview),绝不在这里调模型
+	// (切会话是高频交互,调模型的开销不可接受);同一个分支只注入一次(同 From+Text 去重)。
+	EventBranchNote = "branch/note"
 )
 
 // EventToolProgress 工具执行的**中间输出**(2026-10-20 优化批次 C1)。
@@ -122,6 +132,18 @@ type FileChangeEvent struct {
 	Diff      string `json:"diff,omitempty"`
 	Truncated bool   `json:"truncated,omitempty"` // Diff 超预算已截断
 	Coarse    bool   `json:"coarse,omitempty"`    // 差异段过大 → 整段替换(未逐行对齐)
+}
+
+// BranchNote 分支备注(EventBranchNote 载荷):一条分支的进展回到祖先会话时的一句话。
+//
+// From 是**分支会话 id**(空 = 主会话,理论上不会出现:根不可能是别人的后代);
+// FromName 是注入当时的显示名快照(分支可能随后被改名/删除,展示端不该反查);
+// Text 是**已缓存**的一句话概述(Summary 优先、退回首条提问),不是新生成的。
+type BranchNote struct {
+	From     string `json:"from,omitempty"`
+	FromName string `json:"from_name,omitempty"`
+	Text     string `json:"text,omitempty"`
+	At       int64  `json:"at,omitempty"`
 }
 
 // RoleSwitchEvent 一次角色切换事实(EventRoleSwitch 载荷),只记「切成了谁」。

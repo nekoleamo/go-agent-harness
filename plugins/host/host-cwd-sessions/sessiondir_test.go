@@ -2,6 +2,7 @@ package hostcwdsessions
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -50,6 +51,10 @@ func (c *testCtx) Provide(key string, v any) error {
 func (c *testCtx) Emit(_ context.Context, _ string, _ any, _ sdk.DispatchMode) (any, error) {
 	return nil, nil
 }
+
+// Logger 覆盖:同上(Start 取宿主日志写进 Service;分支备注注入失败要报一行)。
+// 不覆盖就会在裸嵌入的 nil 接口上 panic —— 那不是被测代码的问题,是替身不完整。
+func (c *testCtx) Logger() *slog.Logger { return slog.New(slog.DiscardHandler) }
 
 type injectErr struct{}
 

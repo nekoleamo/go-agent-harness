@@ -168,8 +168,20 @@ test('role/switch → meta 行(含回基线)', () => {
   assert.match(m.msgs.at(-1)?.text ?? '', /默认（基线）/, 'ID 空 = 回基线,要说清楚')
 })
 
-test('isUsage 只认 session/usage', () => {
-  assert.equal(isUsage(ev('session/usage', {})), true)
+test('branch/note → meta 行(模型看得见的,界面也要看得见)', () => {
+  const m = newModel()
+  consume(m, ev('branch/note', { from: '20261024-101500', from_name: 'fork@3 ← 主', text: '把导出逻辑改成流式' }, 1))
+  assert.equal(m.msgs.at(-1)?.kind, 'meta')
+  assert.match(m.msgs.at(-1)?.text ?? '', /分支.*fork@3 ← 主.*流式/)
+  // 没名字时退回到 id;没 text 时不渲染(空备注不该占一行)
+  consume(m, ev('branch/note', { from: 'abc', text: 'x' }, 2))
+  assert.match(m.msgs.at(-1)?.text ?? '', /abc/)
+  const before = m.msgs.length
+  consume(m, ev('branch/note', { from: 'abc', text: '' }, 3))
+  assert.equal(m.msgs.length, before)
+})
+
+test('isUsage 只认 session/usage', () => {  assert.equal(isUsage(ev('session/usage', {})), true)
   assert.equal(isUsage(ev('assistant/chunk', {})), false)
 })
 

@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -42,7 +43,7 @@ func (p *Plugin) Start(c sdk.Ctx, _ *sdk.Manifest) (sdk.Disposer, error) {
 	// 位置很关键:必须在 key 计算与 recordProject **之前**,否则无意义 cwd 会被写进
 	// 最近使用列表,下一次恢复又会被这条脏记录带偏。svc 先建空壳(key 稍后由落点决定),
 	// 因为恢复动作本身要调 svc.SwitchDir。
-	svc := &Service{sessions: sessions, logs: logs}
+	svc := &Service{sessions: sessions, logs: logs, logger: c.Logger()}
 	svc.dir = &sessionDir{svc: svc, logs: logs}
 	// 工作区切换事件广播(广播模式,监听器错误仅记日志不中断切换)
 	svc.emitWS = func(dir string) {
@@ -168,6 +169,8 @@ type Service struct {
 
 	// emitSession 会话切换事件广播(可选;Open/New 后触发,UI 订阅重放刷新)。
 	emitSession func(id string)
+	// logger 插件日志(Start 注入;分支备注注入失败时报一行 —— 不能静默)。
+	logger *slog.Logger
 }
 
 func (s *Service) Current() string {
@@ -305,6 +308,7 @@ func (s *Service) Open(id string) error {
 	if err := CheckSessionPath(path); err != nil {
 		return err
 	}
+	from := s.CurrentSession() // Load 前取源会话(切换后 current 已是新值)
 	if s.sessions != nil {
 		if err := s.sessions.Load(path); err != nil {
 			return err
@@ -314,6 +318,9 @@ func (s *Service) Open(id string) error {
 	s.path = path
 	s.current = id
 	s.mu.Unlock()
+	// C4 写侧:从分支切回祖先时把分支的一句话带进本会话上下文(零模型调用)。
+	// 位置在 **Load 之后**:必须是往“目标会话”追加,否则会写进刚关掉的那个文件。
+	s.noteBranchReturn(from, id)
 	if s.emitSession != nil {
 		s.emitSession(id)
 	}

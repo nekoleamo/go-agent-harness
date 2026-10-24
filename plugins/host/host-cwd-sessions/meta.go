@@ -40,6 +40,10 @@ type sessionMeta struct {
 	Pinned   bool          `json:"pinned,omitempty"`
 	PinnedAt int64         `json:"pinned_at,omitempty"`
 	Summary  *summaryEntry `json:"summary,omitempty"`
+	// BranchNotes 分支备注去重指纹(from|文摘哈希;C4 写侧)。
+	// 为什么记在 meta 而不是扫会话事件:去重要看"这句注入过没有",而扫事件要复制整份
+	// Replay(大会话上就是几十 MB 的拷贝)—— 切会话是高频动作,不值得。
+	BranchNotes []string `json:"branch_notes,omitempty"`
 	// 会话级偏好(第一百一十六批):每个会话各用各的角色/模型/思考档/沙箱档/审批档。
 	//
 	// 为什么空 = "跟随全局":老会话零迁移(没有这些字段 = 跟随全局当前值 = 与从前逐字一致),

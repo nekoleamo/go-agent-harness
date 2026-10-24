@@ -78,6 +78,13 @@ func NormalizePayload(ev *sdk.SessionEvent) any {
 		if err := json.Unmarshal(raw, &v); err == nil {
 			return v
 		}
+	case sdk.EventBranchNote:
+		// C4 写侧:分支备注重启后要能投影进模型上下文 —— 不还原就只能看到 map，
+		// 而 host-session-log 的投影只认具体类型(那样重启后这条说明就静默消失了)。
+		var v sdk.BranchNote
+		if err := json.Unmarshal(raw, &v); err == nil {
+			return v
+		}
 	}
 	return m // 未识别/二次解析失败:保留 map(消费者自行容忍)
 }
