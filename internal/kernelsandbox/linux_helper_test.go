@@ -13,8 +13,16 @@
 //  ② 白名单外的写被**内核**拒(不是协作层 —— 这里根本没有协作层);
 //  ③ 子进程的计数器确实落到了 GOCOVERDIR(没有第 ③ 条,①② 绿了也说明不了记账已修好)。
 //
-// 平台:只在能施加 Landlock 的机器上跑(Linux 内核 5.13+ 且 ABI 探测通过);
-// 其余环境 Skip 并说明 —— 与同包其它内核用例同一纪律,不假装覆盖。
+// 拆成两条,因为**记账那一半不该被"这台机器能不能施加 Landlock"绑住**:
+//   - `TestBorderHelperFlushesCountersBeforeExec`:不要求 Landlock 可用 —— 手拼 helper argv
+//     直接跑,Landlock 可用则命令正常跑完、不可用则自举失败(126),**两种情形都要看到计数器
+//     落盘**。CI 的 ubuntu runner 属于后者(GitHub 的 runner 内核没启用 Landlock),
+//     2026-10-24 实测:只靠下面那条用例的话,记账在 CI 上永远验不到。
+//   - `TestBorderHelperRunsAndIsMeasured`:要求 Landlock 可用(真机 / 有能力的环境),
+//     钉"白名单内放行 / 区外拒"这两条**沙箱行为**。
+//
+// 平台:不能施加 Landlock 时,行为用例 Skip 并说明 —— 与同包其它内核用例同一纪律,
+// 不假装覆盖。
 
 package kernelsandbox
 
@@ -31,12 +39,76 @@ import (
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
-// TestBorderHelperRunsAndIsMeasured 自举 helper 真跑一条命令:白名单内放行、区外拒、
-// 计数器落盘。
+// helperArgv 手拼 helper 的启动 argv(与 platformWrap 的布局一致:
+// [self, 魔数, 档位, 根, jail, RW(换行分隔), 真实命令…])。
+//
+// 为什么要手拼:`Wrap` 在"本机不能施加 Landlock"时返回 nil,而这条用例要验的正是
+// **exec 之前的记账** —— 那一步与能不能施加无关(施加失败也照样先落盘)。
+func helperArgv(t *testing.T, mode sdk.SandboxMode, root, jail, script string) []string {
+	t.Helper()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("取自身可执行文件失败: %v", err)
+	}
+	return []string{self, llExecFlag, string(mode), root, jail, "", "/bin/sh", "-c", script}
+}
+
+// TestBorderHelperFlushesCountersBeforeExec helper 在 exec **之前**把计数器落盘
+// (与 Landlock 是否可用无关)。
+//
+// 为什么这条必须存在:CI 的 ubuntu runner 内核**没启用 Landlock**,于是一切"包装后真跑"
+// 的用例都会 Skip ⇒ helper 的 `init` 在 CI 上**一行都没执行过**,那几十条语句的账永远是 0。
+// 手拼 argv 跑起来之后,CI 至少能把 init / 参数校验 / ABI 探测这几段计入账。
+//
+// **诚实边界**:这台机器上 Landlock 不可用时,helper 是以 126 退出的 —— 那种情形下计数器
+// 由 Go 的**退出路径**写出,所以"计数器落盘"并不能证明 flush(退出路径本来就会写)。
+// flush 的真正证明只在**能施加 Landlock** 的机器上成立(那里 helper exec 掉自己,没有退出
+// 路径可依赖),即下面第二条用例;本机 macOS 用等价最小程序实测过同一机制(0% ↔ 61.5%)。
+//
+// **反向验证**:删掉 `init()` 里的 flushCoverageCounters() ⇒ 计数器目录只剩 covmeta、
+// 没有 covcounters ⇒ 本用例红(macOS 上已用等价最小程序实测:covdata 61.5% → 0.0%)。
+func TestBorderHelperFlushesCountersBeforeExec(t *testing.T) {
+	clearMarker(t)
+	if _, ok := countersWritable(t); !ok {
+		t.Skip("本次构建不写计数器(未 -cover 或覆盖模式非 atomic):跳过记账断言")
+	}
+	jail := t.TempDir()
+	root := t.TempDir()
+	coverDir := filepath.Join(t.TempDir(), "cov")
+	if err := os.MkdirAll(coverDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	argv := helperArgv(t, sdk.SandboxWorkspace, root, jail, "true")
+	cmd := exec.Command(argv[0], argv[1:]...)
+	// 不设 GOCOVERDIR 以外的任何沙箱开关:这条用例只关心"exec 前有没有落盘"。
+	cmd.Env = append(os.Environ(), "GOCOVERDIR="+coverDir)
+	out, err := cmd.CombinedOutput()
+	// 两种结果都合法:能施加 Landlock ⇒ 0;不能 ⇒ 126(自举失败,绝不静默放行)。
+	if err != nil && !strings.Contains(string(out), "自举失败") {
+		t.Fatalf("helper 既没跑完也不是「自举失败」(exit=%v):%s", err, out)
+	}
+	ents, derr := os.ReadDir(coverDir)
+	if derr != nil || len(ents) == 0 {
+		t.Fatalf("helper 的计数器没有落盘(exec 前的 flush 没生效?):err=%v 文件数=%d 输出=%s",
+			derr, len(ents), out)
+	}
+	var hasCounters bool
+	for _, e := range ents {
+		if strings.HasPrefix(e.Name(), "covcounters") {
+			hasCounters = true
+		}
+	}
+	if !hasCounters {
+		t.Fatalf("目录里只有元数据没有计数器(说明只走了 covmeta 那一步):%v", ents)
+	}
+	testutil.Flush(t, "github.com/nekoleamo/go-agent-harness/internal/kernelsandbox")
+}
+
+// TestBorderHelperRunsAndIsMeasured 自举 helper 真跑一条命令:白名单内放行、区外拒。
 //
 // **反向验证**:
-//   - 删掉 localhost 的 flushCoverageCounters()(或把它挪到 restrict_self 之后)⇒ 第 ③ 条红
-//     (GOCOVERDIR 里没有任何文件 / 写被 Landlock 拒)。
+//   - 删掉 linux.go 的 flushCoverageCounters()(或把它挪到 restrict_self 之后)⇒ 第 ③ 条红
+//     (计数器目录里没有 covcounters / 写被 Landlock 拒)。
 //   - 把 spec.Root 从白名单里去掉 ⇒ 第 ① 条红(白名单内的写也失败)。
 func TestBorderHelperRunsAndIsMeasured(t *testing.T) {
 	clearMarker(t)
