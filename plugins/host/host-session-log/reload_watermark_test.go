@@ -22,6 +22,7 @@ func TestReloadKeepsUnfoldedTail(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "s.jsonl")
 	l := newLog(dir)
+	t.Cleanup(l.Close)
 	l.SetPath(path)
 	l.RegisterCompressor(300, &tokencompress.Engine{})
 	for i := 1; i <= 8; i++ {
@@ -41,6 +42,7 @@ func TestReloadKeepsUnfoldedTail(t *testing.T) {
 
 	// 重新加载(模拟重启/切换会话)
 	l2 := newLog(dir)
+	t.Cleanup(l2.Close)
 	l2.SetPath(path)
 	if err := l2.Load(path); err != nil {
 		t.Fatal(err)

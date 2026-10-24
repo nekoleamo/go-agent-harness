@@ -54,6 +54,7 @@ func TestBranchNoteSurvivesReload(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "s.jsonl")
 	l := newLog(dir)
+	t.Cleanup(l.Close)
 	l.SetPath(path)
 	if err := l.Append(sdk.SessionEvent{Kind: sdk.EventBranchNote, Payload: sdk.BranchNote{
 		From: "b1", FromName: "分支一", Text: "试了 A 方案,失败",
@@ -65,6 +66,7 @@ func TestBranchNoteSurvivesReload(t *testing.T) {
 	}
 
 	l2 := newLog(dir)
+	t.Cleanup(l2.Close)
 	t.Cleanup(l2.Close)
 	l2.SetPath(path)
 	if err := l2.Load(path); err != nil {
@@ -152,6 +154,7 @@ func TestLoadResetsEmergencyState(t *testing.T) {
 	a := filepath.Join(dir, "a.jsonl")
 	b := filepath.Join(dir, "b.jsonl")
 	l := newLog(dir)
+	t.Cleanup(l.Close)
 	l.SetPath(a)
 	_ = l.Append(sdk.SessionEvent{Kind: sdk.EventUserMessage, Payload: sdk.UserMessage{Content: strings.Repeat("问", 400)}})
 	_ = l.Append(sdk.SessionEvent{Kind: sdk.EventToolResult, Payload: sdk.ToolResultEvent{CallID: "c1", Name: "shell", Content: strings.Repeat("o", 800)}})

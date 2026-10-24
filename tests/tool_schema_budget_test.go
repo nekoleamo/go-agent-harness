@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"runtime"
 	"testing"
 
 	baseb "github.com/nekoleamo/go-agent-harness/bundles/base"
@@ -35,6 +36,16 @@ import (
 //     注:file_read 因 A1 增加了 offset/limit 两个参数(+265 字节 schema),这是**有意**的
 //     代价 —— 换来「一次读取不再灌爆上下文」,净值仍为负。
 const toolSchemaBudgetBytes = 18333
+
+// windows 上多一个 powershell 工具(NOND-W1b;POSIX 没有等价执行器,所以 macOS/Linux 的
+// 基线里没有它)。2026-10-24 实测:Windows 合计 18920 = 18333 + powershell 586(+ 逗号 1)。
+// 这条门此前只在 macOS/Linux 上量过 —— Windows CI 因此一直红在 18920 vs 18333。
+func toolSchemaBudget() int {
+	if runtime.GOOS == "windows" {
+		return 18920
+	}
+	return toolSchemaBudgetBytes
+}
 
 // budgetToolPlugins 参与预算的**仓库自带**工具插件(固定清单)。
 //
@@ -98,10 +109,10 @@ func TestToolSchemaBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(blob) > toolSchemaBudgetBytes {
+	if len(blob) > toolSchemaBudget() {
 		t.Fatalf("工具 schema 体积 %d 字节 > 基线 %d(每轮都发,涨了就是每轮多付钱)\n"+
 			"要加就显式改基线(tests/tool_schema_budget_test.go 里写清为什么值得),别默默涨。\n逐工具:\n%s",
-			len(blob), toolSchemaBudgetBytes, perToolSizes(tools))
+			len(blob), toolSchemaBudget(), perToolSizes(tools))
 	}
 }
 
