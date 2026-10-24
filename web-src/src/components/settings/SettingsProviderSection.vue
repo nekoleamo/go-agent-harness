@@ -186,4 +186,3 @@ const { addProvider, applied, applyPreset, busy, deleteProvider, doProviderUse, 
               </section>
 </template>
 
-<style scoped src="../settings/settings-panel.css"></style>

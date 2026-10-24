@@ -71,4 +71,3 @@ const { busy, discardInstr, instrBytes, instrDirty, instrDraft, instrEdit, instr
               </section>
 </template>
 
-<style scoped src="../settings/settings-panel.css"></style>

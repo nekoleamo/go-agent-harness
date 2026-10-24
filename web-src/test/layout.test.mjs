@@ -5,10 +5,13 @@
 // 769px 高的 .panel 之后,把文档撑到 1573px。jsdom 之类不算布局(得 0 高度),静态 AST
 // 也判不出来(v-else 绑到邻近的另一个 v-if 对 Vue 完全合法),所以只有真渲染才验得了。
 //
-// 体积护栏:设置面板 CSS 目前是"一份文件被 13 个组件各自 scoped 引用"(父 + 12 个分区子组件),
-// 单个 chunk 实测 ~180 KB 未压缩 / 11 KB gzip。这是**已知代价**(换零样式回归),但必须钉住
-// 上限防止继续涨:再复制一份就是 +14 KB。判据宽松(220 KB),够抓"又抄了一份"。
-const SETTINGS_CSS_MAX = 220 * 1024
+// 体积护栏:设置面板 CSS 现在是**一份**非 scoped 表(所有规则挂 .gah-settings 前缀),
+// 单个 chunk 实测 14 KB 未压缩 / 2.6 KB gzip。
+//
+// 历史(2026-10-24):此前是 13 个组件各自 `<style scoped src>` 引用同一份 ⇒ 184 KB 未压缩,
+// 而且**样式其实没生效**(scoped 按模板绑定,同一文件被多组件引用时只有一份 scope 能命中;
+// 那次是靠 computed-style 快照才发现的)。上限设 40 KB:再涨回去就是又走上了老路。
+const SETTINGS_CSS_MAX = 40 * 1024
 
 // 跑法:`cd web-src && npm run test:layout`(需先有 web/dist —— scripts/gen-web.sh)。
 // 依赖:本机 Chrome/Chromium;找不到就**跳过**(不拦人)。CI 用 GAH_LAYOUT_REQUIRE=1 变红灯。
@@ -809,6 +812,74 @@ const viewports = [
   { w: 820, h: 560 },
   { w: 700, h: 460 },
 ]
+// —— 样式快照(2026-10-24)——
+//
+// 为什么需要:把设置面板的样式从"13 个组件各自 scoped 编译一份"合并成"一份前缀化全局表"时,
+// 正确性肉眼看不出来 —— 而布局护栏只判几何(整页不滚/不撑宽),**不判颜色、边框、内边距**。
+// 这里采一组关键元素的 computed style:
+//   GAH_STYLE_DUMP=/tmp/before.json   ⇒ 采集并写文件(生成/刷新基线)
+//   否则若 test/style-baseline.json 存在 ⇒ 逐值比对,任何差异都红
+//   都没有 ⇒ skip(CI 不设这两个,不受影响)
+//
+// 判据强度:样式重构若漏掉一条规则的前缀(或把它当外壳类处理错),对应元素至少有一个
+// 属性会变 ⇒ 比对必报。这不是"看着没变"。
+// ⚠️ 所有选择器必须限定在**设置面板**内:页面上还有一个 `.panel`(Sidebar 的抽屉面板),
+// 裸 `.panel` 会采到它 —— 基线就会记录"透明背景 + 2px 内边距",把真实样式判成差异。
+const PANEL = '[aria-label="设置"]'
+const STYLE_PROBES = [
+  ['mask', '.gah-settings-mask'],
+  ['panel', PANEL],
+  ['head', `${PANEL} .head`],
+  ['title', `${PANEL} .head .title`],
+  ['close', `${PANEL} .x`],
+  ['cols', `${PANEL} .cols`],
+  ['nav', `${PANEL} .nav`],
+  ['navOn', `${PANEL} .nav-it.on`],
+  ['body', `${PANEL} .body`],
+  ['sec-model', '[data-sec="model"]'],
+  ['h', '[data-sec="model"] .h'],
+  ['reason-seg', '[data-sec="reason"] .seg'],
+  ['reason-seg-it', '[data-sec="reason"] .seg-it'],
+  ['history-row', '[data-sec="history"] .row'],
+  ['lab-inline', '[data-sec="history"] .lab-inline'],
+  ['ghost-btn', '[data-sec="history"] .ghost'],
+  ['dim', '[data-sec="history"] .dim'],
+  ['instr-fld', '[data-sec="instr"] .fld'],
+  ['instr-fldlab', '[data-sec="instr"] .fld-lab'],
+  ['provider-onboard', '[data-sec="provider"] .onboard'],
+  ['role-prow', '[data-sec="role"] .prow'],
+  ['role-btn', '[data-sec="role"] .prow button'],
+  ['mem-fld', '[data-sec="memory"] .fld'],
+  ['sched-fldrow', '[data-sec="schedule"] .fld-row'],
+  ['sched-chip', '[data-sec="schedule"] .chip'],
+  ['plugin-row', '[data-sec="plugin"] .plg-row'],
+  ['foot', `${PANEL} .foot`],
+]
+const STYLE_PROPS = [
+  'color', 'backgroundColor', 'borderTopWidth', 'borderTopStyle', 'borderTopColor', 'borderRadius',
+  'paddingTop', 'paddingLeft', 'marginTop', 'fontSize', 'fontWeight', 'lineHeight',
+  'display', 'gap', 'flexDirection', 'gridTemplateColumns', 'overflowX', 'cursor',
+]
+
+// 采集:元素不存在就记 null(两侧同为 null 才算一致 —— "整段没渲染"本身就是要看见的差异)
+async function styleSnapshot(page) {
+  return page.evaluate(([probes, props]) => {
+    const out = {}
+    for (const [name, sel] of probes) {
+      const el = document.querySelector(sel)
+      if (!el) {
+        out[name] = null
+        continue
+      }
+      const cs = getComputedStyle(el)
+      const row = {}
+      for (const prop of props) row[prop] = cs[prop]
+      out[name] = row
+    }
+    return out
+  }, [STYLE_PROBES, STYLE_PROPS])
+}
+
 const docks = [
   { tag: '停靠收起', dock: { open: false, panel: 'changes', width: 392 } },
   { tag: '停靠-变更', dock: { open: true, panel: 'changes', width: 392 } },
@@ -3336,4 +3407,46 @@ test('介入条:真实帧派生待审批/出错,审批态不给点不动的按�
       await ctx.close()
     }
   }
+  // 样式快照比对(见上方 STYLE_PROBES 的说明)。
+test('样式快照:设置面板关键元素的计算样式与基线一致', async (t) => {
+  const dump = process.env.GAH_STYLE_DUMP || ''
+  const baselinePath = path.join(WEB_SRC, 'test', 'style-baseline.json')
+  if (!dump && !fs.existsSync(baselinePath)) {
+    t.skip('没有基线也没有 GAH_STYLE_DUMP —— 跳过(CI 不设这两者,不受影响)')
+    return
+  }
+  const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+  let page = null
+  try {
+    page = await open(ctx, makeStub(true, true, false, false, true), docks[1].dock)
+    await page.click('.gear')
+    await page.waitForSelector('[data-sec="model"]')
+    // 等布局稳定(字体/滚动条/异步段都就位)再采
+    await page.waitForTimeout(300)
+    const got = await styleSnapshot(page)
+    if (dump) {
+      fs.writeFileSync(dump, JSON.stringify(got, null, 2) + '\n')
+      t.diagnostic(`已写样式基线: ${dump}`)
+      return
+    }
+    const want = JSON.parse(fs.readFileSync(baselinePath, 'utf8'))
+    const diffs = []
+    for (const name of new Set([...Object.keys(want), ...Object.keys(got)])) {
+      const a = want[name]
+      const b = got[name]
+      if (!a || !b) {
+        if (!a !== !b) diffs.push(`${name}: 存在性变了(${a ? '有' : '无'} → ${b ? '有' : '无'})`)
+        continue
+      }
+      for (const prop of Object.keys(a)) {
+        if (a[prop] !== b[prop]) diffs.push(`${name}.${prop}: ${a[prop]} → ${b[prop]}`)
+      }
+    }
+    assert.deepEqual(diffs, [], `计算样式差异(样式重构不该改变外观):\n  ${diffs.join('\n  ')}`)
+  } finally {
+    await page?.close()
+    await ctx.close()
+  }
+})
+
 })

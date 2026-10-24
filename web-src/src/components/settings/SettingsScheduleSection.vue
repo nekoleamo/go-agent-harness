@@ -520,4 +520,3 @@ const repeatList = REPEATS as { kind: string; hint?: string }[];
               </section>
 </template>
 
-<style scoped src="../settings/settings-panel.css"></style>

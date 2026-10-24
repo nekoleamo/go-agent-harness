@@ -400,4 +400,3 @@ const { PLUGIN_CAP, bundledPlugins, digestLine, doCheckPluginUpdates, doDisableP
               </section>
 </template>
 
-<style scoped src="../settings/settings-panel.css"></style>

@@ -118,4 +118,3 @@ const { AP, AP_ZH, SB, SB_ZH, THINK, THINK_LABEL, applyCtl, busy, onSyncToggle, 
               </section>
 </template>
 
-<style scoped src="../settings/settings-panel.css"></style>

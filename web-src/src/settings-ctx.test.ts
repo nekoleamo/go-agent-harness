@@ -47,8 +47,16 @@ test('父面板只保留外壳(分区内容都已搬走)', () => {
   // data-sec 的静态分区应已全部搬走;只剩动态扩展点(:data-sec="'ext-' + s.key")
   const staticSecs = [...tpl.matchAll(/data-sec="([a-z-]+)"/g)].map((m) => m[1])
   assert.deepEqual(staticSecs, [], `父模板仍有未拆分区: ${staticSecs.join(', ')}`)
-  // 外壳要素还在
-  for (const cls of ['mask', 'panel', 'nav', 'body']) {
-    assert.match(tpl, new RegExp(`class="${cls}"`), `外壳缺少 .${cls}`)
+  // 外壳要素还在(类名可能多值:例如 .mask 同时带唯一作用域类 .gah-settings-mask)
+  for (const cls of ['mask', 'panel', 'nav', 'body', 'gah-settings', 'gah-settings-mask']) {
+    assert.match(tpl, new RegExp(`class="[^"]*\\b${cls}\\b`), `外壳缺少 .${cls}`)
   }
+  // 样式作用域:一份非 scoped 表(前缀化),不是每个组件各编一份 scoped
+  const css = readFileSync(join(root, 'src/components/settings/settings-panel.css'), 'utf8')
+  assert.match(css, /^\.gah-settings /m, '设置面板样式应挂 .gah-settings 作用域')
+  assert.doesNotMatch(
+    readFileSync(join(root, 'src/components/SettingsPanel.vue'), 'utf8'),
+    /<style scoped src="\.\/settings\/settings-panel\.css">/,
+    '设置面板样式应由父组件一次性非 scoped 导入(不是 scoped 编译)',
+  )
 })

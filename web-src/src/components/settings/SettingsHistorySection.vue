@@ -34,4 +34,3 @@ const { applyHistory, busy, compactNow, histN } = inject(SETTINGS_CTX) as Settin
               </section>
 </template>
 
-<style scoped src="../settings/settings-panel.css"></style>

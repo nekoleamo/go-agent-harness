@@ -94,4 +94,3 @@ const { busy, curModelLabel, filteredModels, hiddenModelCount, modelFilter, mode
               </section>
 </template>
 
-<style scoped src="../settings/settings-panel.css"></style>

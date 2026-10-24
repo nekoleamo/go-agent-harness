@@ -145,4 +145,3 @@ const { MCP_MODE_DIRECT, MCP_MODE_SEARCH, busy, discardMcp, fmtCommand, isRemote
               </section>
 </template>
 
-<style scoped src="../settings/settings-panel.css"></style>

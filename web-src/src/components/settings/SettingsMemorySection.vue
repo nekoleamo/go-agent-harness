@@ -192,4 +192,3 @@ const { memBudget, memBusy, memCand, memContent, memDraft, memEnabled, memErr, m
               </section>
 </template>
 
-<style scoped src="../settings/settings-panel.css"></style>

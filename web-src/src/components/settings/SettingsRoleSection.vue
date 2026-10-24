@@ -978,4 +978,3 @@ const roleProblemList = computed(() => (roleProblems.value ?? []) as { id: strin
               </section>
 </template>
 
-<style scoped src="../settings/settings-panel.css"></style>

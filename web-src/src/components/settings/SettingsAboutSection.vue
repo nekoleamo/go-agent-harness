@@ -26,4 +26,3 @@ const { autoState, isDesktop } = inject(SETTINGS_CTX) as SettingsCtx;
               </section>
 </template>
 
-<style scoped src="../settings/settings-panel.css"></style>

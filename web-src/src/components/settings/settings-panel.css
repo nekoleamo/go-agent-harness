@@ -1,5 +1,5 @@
 /* —— W3 首启引导:空状态即入口 —— */
-.onboard {
+.gah-settings .onboard {
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -9,17 +9,17 @@
   border: 1px solid var(--sel-border);
   border-radius: var(--r-card);
 }
-.ob-lead {
+.gah-settings .ob-lead {
   margin: 0;
   font-size: 13px;
   color: var(--fg);
 }
-.ob-row {
+.gah-settings .ob-row {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
-.chip {
+.gah-settings .chip {
   border: 1px solid var(--line-strong);
   background: var(--bg);
   color: var(--fg);
@@ -29,27 +29,27 @@
   cursor: pointer;
   transition: color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
 }
-.chip:hover {
+.gah-settings .chip:hover {
   border-color: var(--accent);
   color: var(--accent);
-}
-/* 表单字段:标签在输入框上方(不以 placeholder 充当标签) */
-.fld {
+}/* 表单字段:标签在输入框上方(不以 placeholder 充当标签) */
+
+.gah-settings .fld {
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
-.fld-lab {
+.gah-settings .fld-lab {
   font-size: 11px;
   color: var(--fg-dim);
 }
-.form-acts {
+.gah-settings .form-acts {
   display: flex;
   gap: 8px;
   margin-top: 2px;
-}
-/* 连通性自检结果 */
-.probe {
+}/* 连通性自检结果 */
+
+.gah-settings .probe {
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -59,57 +59,57 @@
   font-size: 12px;
   line-height: 1.5;
 }
-.probe.ok {
+.gah-settings .probe.ok {
   color: var(--ok);
   background: var(--ok-soft);
   border: 1px solid var(--ok-line);
 }
-.probe.bad {
+.gah-settings .probe.bad {
   color: var(--err);
   background: var(--err-soft);
   border: 1px solid var(--err-line);
 }
-.probe-raw {
+.gah-settings .probe-raw {
   color: var(--fg-faint);
   word-break: break-all;
-}
-/* —— MCP server(NOND-M1)—— */
-.mrow {
+}/* —— MCP server(NOND-M1)—— */
+
+.gah-settings .mrow {
   display: flex;
   align-items: center;
   gap: 10px;
 }
-.chk {
+.gah-settings .chk {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   font-size: 12px;
   color: var(--fg-dim);
 }
-.chk input {
+.gah-settings .chk input {
   accent-color: var(--accent);
-}
-/* —— 定时计划(NOND-W4)—— */
-/* 自定义表达式区(高级入口):视觉上降一档,不跟主流程抢注意力 */
-.sched-adv {
+}/* —— 定时计划(NOND-W4)—— *//* 自定义表达式区(高级入口):视觉上降一档,不跟主流程抢注意力 */
+
+
+.gah-settings .sched-adv {
   border-top: 1px dashed var(--line);
   padding-top: 8px;
 }
-.sched-adv .link {
+.gah-settings .sched-adv .link {
   font-size: 12px;
-}
-/* 周几多选 chip:与 checkbox 相比更接近「选标签」的直觉,且不用额外的勾选图形 */
-.sched-presets {
+}/* 周几多选 chip:与 checkbox 相比更接近「选标签」的直觉,且不用额外的勾选图形 */
+
+.gah-settings .sched-presets {
   margin-top: 2px;
   padding-top: 8px;
   border-top: 1px dashed var(--line);
 }
-.chip-row {
+.gah-settings .chip-row {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
-.chip {
+.gah-settings .chip {
   border: 1px solid var(--line);
   border-radius: var(--r-input);
   background: var(--bg);
@@ -119,22 +119,22 @@
   cursor: pointer;
   min-width: 30px;
 }
-.chip.on {
+.gah-settings .chip.on {
   border-color: var(--accent);
   background: var(--accent-soft);
   color: var(--accent);
-}
-/* 已添加过的 provider 预设:弱化处理(不是禁用 —— 点它仍可用,只是提醒你保存会更新那个)。
+}/* 已添加过的 provider 预设:弱化处理(不是禁用 —— 点它仍可用,只是提醒你保存会更新那个)。
    刻意不用 .chip.on(那是「当前选中」的口径),也不用纯 dim(降对比度到像不可点)。 */
-.chip.added {
+
+.gah-settings .chip.added {
   border-color: var(--line-strong);
   background: var(--bg2);
   color: var(--fg-faint);
-}
-/* 预览:中文排期 + 接下来几次 —— 不会 cron 的用户靠它验收。
+}/* 预览:中文排期 + 接下来几次 —— 不会 cron 的用户靠它验收。
    竖排而非 flex-wrap 横排:横排时「每天 08:00」与第一次触发会挤在同一行、
    换行后的第二行只剩孤零零一个「然后」,读起来像坏掉了。 */
-.sched-preview {
+
+.gah-settings .sched-preview {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -146,21 +146,21 @@
   font-size: 12px;
   word-break: break-word;
 }
-.sched-view {
+.gah-settings .sched-view {
   font-weight: 500;
   color: var(--fg);
 }
-.fld-row {
+.gah-settings .fld-row {
   display: flex;
   gap: 8px;
   align-items: flex-end;
   flex-wrap: wrap;
 }
-.sched-note {
+.gah-settings .sched-note {
   margin: 0;
-}
-/* 警示(不是错误):文件已经写成功了,只是本轮提示还没跟上 —— 用红框会把"已保存"说成"失败"。 */
-.swarn {
+}/* 警示(不是错误):文件已经写成功了,只是本轮提示还没跟上 —— 用红框会把"已保存"说成"失败"。 */
+
+.gah-settings .swarn {
   color: var(--tool-strong);
   background: var(--tool-soft);
   border: 1px solid var(--tool-line);
@@ -169,9 +169,9 @@
   padding: 6px 8px;
   margin-bottom: 8px;
   word-break: break-word;
-}
-/* 未保存草稿标记(amber 语义色 = 不是错,但需要你处理;与 .swarn 同色系) */
-.dirty {
+}/* 未保存草稿标记(amber 语义色 = 不是错,但需要你处理;与 .swarn 同色系) */
+
+.gah-settings .dirty {
   margin-left: 6px;
   padding: 1px 6px;
   border-radius: 999px;
@@ -182,7 +182,7 @@
   font-weight: 500;
   letter-spacing: 0;
 }
-.serr {
+.gah-settings .serr {
   color: var(--err);
   background: var(--err-soft);
   border: 1px solid var(--err-line);
@@ -191,12 +191,12 @@
   padding: 6px 8px;
   margin-bottom: 8px;
   word-break: break-word;
-}
-/* —— 跨会话记忆段(第一百一十批)——
+}/* —— 跨会话记忆段(第一百一十批)——
    记忆正文是**用户自己写的整句话**,长度不可控(既有技能行会碰到的长文本撑出横向滚动,
    见第七十九批的实测)。所以不用 .m-lab 的单行省略(删之前看不清自己删的是什么),
    改成最多两行 + 全文进 data-tip,并显式 overflow-wrap:anywhere(长 URL/路径不撑破)。 */
-.mem-list {
+
+.gah-settings .mem-list {
   max-height: 220px;
   overflow-y: auto;
   display: flex;
@@ -208,7 +208,7 @@
   padding: 4px;
   margin-bottom: 8px;
 }
-.mem-item {
+.gah-settings .mem-item {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -217,10 +217,10 @@
   font-size: 12px;
   transition: background var(--dur-fast) var(--ease-out);
 }
-.mem-item:hover {
+.gah-settings .mem-item:hover {
   background: var(--bg3);
 }
-.mem-txt {
+.gah-settings .mem-txt {
   flex: 1;
   min-width: 0;
   color: var(--fg);
@@ -230,22 +230,22 @@
   overflow: hidden;
   overflow-wrap: anywhere;
 }
-.mem-src {
+.gah-settings .mem-src {
   margin-bottom: 8px;
-}
-/* .prow.scrow 提高特异性:.prow 的 align-items:center 在样式表里更靠后,会盖掉这里的 stretch ——
+}/* .prow.scrow 提高特异性:.prow 的 align-items:center 在样式表里更靠后,会盖掉这里的 stretch ——
    而 scrow 的堆叠布局全靠 stretch(cross 轴不被 stretch 时,flex item 宽 = 内容 min-content,
    长计划名/长错误文本会把面板撑出横向滚动)。 */
-.prow.scrow {
+
+.gah-settings .prow.scrow {
   flex-direction: column;
   align-items: stretch;
   gap: 6px;
 }
-.scrow.off .sname,
-.scrow.off .psub {
+.gah-settings .scrow.off .sname,
+.gah-settings .scrow.off .psub {
   color: var(--fg-faint);
 }
-.sname {
+.gah-settings .sname {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -255,7 +255,7 @@
   /* 计划名可能是一整段无空格文本:不断行就会溢出面板,把设置页拉出横向滚动条。 */
   overflow-wrap: anywhere;
 }
-.sstate {
+.gah-settings .sstate {
   font-size: 10px;
   border-radius: 999px;
   padding: 0 6px;
@@ -263,43 +263,43 @@
   border: 1px solid var(--line);
   color: var(--fg-faint);
 }
-.sstate.ss-ok {
+.gah-settings .sstate.ss-ok {
   color: var(--ok);
   border-color: var(--ok-line);
   background: var(--ok-soft);
 }
-.sstate.ss-failed {
+.gah-settings .sstate.ss-failed {
   color: var(--err);
   border-color: var(--err-line);
   background: var(--err-soft);
 }
-.sstate.ss-skipped {
+.gah-settings .sstate.ss-skipped {
   color: var(--warn, var(--fg-dim));
   border-color: var(--line-strong);
 }
-.sacts {
+.gah-settings .sacts {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
 }
-.err-text {
+.gah-settings .err-text {
   color: var(--err);
 }
-textarea.inp {
+.gah-settings textarea.inp {
   resize: vertical;
   font-family: inherit;
   line-height: 1.5;
-}
-
-/* 显隐动效统一在 style.css 的 pane 过渡里(入场滑入 + 退场反向);此处不再写 animation,
+}/* 显隐动效统一在 style.css 的 pane 过渡里(入场滑入 + 退场反向);此处不再写 animation,
    否则与过渡同写 opacity/transform 会互抢(动画优先级更高 ⇒ 退场仍硬切)。 */
-.mask {
+
+
+.gah-settings-mask {
   position: fixed;
   inset: 0;
   background: var(--overlay);
   z-index: 70;
 }
-.panel {
+.gah-settings {
   position: absolute;
   top: 0;
   right: 0;
@@ -311,19 +311,19 @@ textarea.inp {
   display: flex;
   flex-direction: column;
 }
-.head {
+.gah-settings .head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 12px 16px;
   border-bottom: 1px solid var(--line);
 }
-.title {
+.gah-settings .title {
   font-size: 15px;
   font-weight: 600;
   margin: 0;
 }
-.x {
+.gah-settings .x {
   background: none;
   border: none;
   color: var(--fg-faint);
@@ -333,23 +333,23 @@ textarea.inp {
   border-radius: 6px;
   transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
 }
-.x:hover {
+.gah-settings .x:hover {
   color: var(--fg);
   background: var(--bg3);
 }
-.body {
+.gah-settings .body {
   flex: 1;
   min-width: 0; /* 与左导航同排:不收缩就会被长 token 顶宽(面板里禁横向滚动条) */
   overflow-y: auto;
   padding: 6px 16px 20px;
-}
-/* 段导航:点击跳转 + 滚动高亮。面板宽时竖排左栏,窄窗口退化成顶部横向芯片条 */
-.cols {
+}/* 段导航:点击跳转 + 滚动高亮。面板宽时竖排左栏,窄窗口退化成顶部横向芯片条 */
+
+.gah-settings .cols {
   flex: 1;
   min-height: 0;
   display: flex;
 }
-.nav {
+.gah-settings .nav {
   width: 148px;
   flex-shrink: 0;
   display: flex;
@@ -359,7 +359,7 @@ textarea.inp {
   overflow-y: auto;
   border-right: 1px solid var(--line-faint);
 }
-.nav-it {
+.gah-settings .nav-it {
   text-align: left;
   border: none;
   background: none;
@@ -373,20 +373,20 @@ textarea.inp {
   text-overflow: ellipsis;
   transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
 }
-.nav-it:hover {
+.gah-settings .nav-it:hover {
   background: var(--bg3);
   color: var(--fg);
 }
-.nav-it.on {
+.gah-settings .nav-it.on {
   background: var(--accent-soft);
   color: var(--accent);
   font-weight: 500;
 }
 @media (max-width: 719px) {
-  .cols {
+  .gah-settings .cols {
     flex-direction: column;
   }
-  .nav {
+  .gah-settings .nav {
     width: auto;
     flex-direction: row;
     gap: 4px;
@@ -396,9 +396,9 @@ textarea.inp {
     border-right: none;
     border-bottom: 1px solid var(--line-faint);
   }
-}
-/* 固定底栏(桌面版):升级入口常驻可见,不随内容滚动 */
-.foot {
+}/* 固定底栏(桌面版):升级入口常驻可见,不随内容滚动 */
+
+.gah-settings .foot {
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -406,20 +406,20 @@ textarea.inp {
   border-top: 1px solid var(--line);
   background: var(--bg2);
 }
-.foot-row {
+.gah-settings .foot-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
 }
-.foot-msg {
+.gah-settings .foot-msg {
   margin: 0;
 }
-.foot .ver {
+.gah-settings .foot .ver {
   font-size: 12px;
   color: var(--fg-faint);
 }
-.err {
+.gah-settings .err {
   color: var(--err);
   background: var(--err-soft);
   border: 1px solid var(--err-line);
@@ -429,31 +429,31 @@ textarea.inp {
   margin: 8px 16px 0;
   word-break: break-word;
 }
-.info {
+.gah-settings .info {
   color: var(--ok);
   font-size: 12px;
   padding: 6px 10px;
   margin: 8px 16px 0;
 }
-.sec {
+.gah-settings .sec {
   padding: 14px 0;
   border-bottom: 1px solid var(--line-faint);
   scroll-margin-top: 8px; /* 锚点跳转后标题不离容器上沿 */
 }
-.sec:last-child {
+.gah-settings .sec:last-child {
   border-bottom: none;
 }
-.h-sub {
+.gah-settings .h-sub {
   font-size: 11px;
   font-weight: 400;
   letter-spacing: 0;
   text-transform: none;
 }
-.ghost.more {
+.gah-settings .ghost.more {
   align-self: stretch;
   margin-top: 2px;
 }
-.h {
+.gah-settings .h {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -464,72 +464,72 @@ textarea.inp {
   text-transform: uppercase;
   margin: 0 0 10px;
 }
-.lab {
+.gah-settings .lab {
   display: block;
   font-size: 12px;
   color: var(--fg-dim);
   margin-bottom: 4px;
 }
-.lab-inline {
+.gah-settings .lab-inline {
   font-size: 13px;
   color: var(--fg);
   min-width: 56px;
 }
-.row {
+.gah-settings .row {
   display: flex;
   align-items: center;
   gap: 10px;
   margin-bottom: 10px;
-}
-
-/* —— 插件段的分区节奏(批九)——
+}/* —— 插件段的分区节奏(批九)——
    原先「安装 / 检查更新 / 已装清单 / UI 插件」是四组同级的 .row 直接堆叠,
    彼此之间只有 10px,读起来是一堵墙。现在每组是一个带标题与边框的**子块**,
    块内控件行只留控件,长说明文字下沉独占一行。
    控件行允许换行:窄窗时按钮整块下移,而不是被压窄折字。 */
-.plg-block {
+
+
+.gah-settings .plg-block {
   border: 1px solid var(--line-faint);
   border-radius: var(--r-input);
   padding: 12px 14px;
   margin-bottom: 14px;
 }
-.plg-block > summary {
+.gah-settings .plg-block > summary {
   cursor: pointer;
   font-size: 12px;
 }
-.plg-block-t {
+.gah-settings .plg-block-t {
   font-size: 12px;
   font-weight: 600;
   color: var(--fg-dim);
   letter-spacing: 0.04em;
   margin-bottom: 10px;
 }
-.plg-row {
+.gah-settings .plg-row {
   display: flex;
   align-items: center;
   gap: 10px;
   flex-wrap: wrap; /* 窄窗时整块下移,不压窄 */
   margin-bottom: 8px;
 }
-.plg-row > .inp {
+.gah-settings .plg-row > .inp {
   min-width: 220px;
 }
-.plg-hint {
+.gah-settings .plg-hint {
   margin: 6px 0 0;
   line-height: 1.7;
-}
-/* 行内说明文字与正文同字体(比例),只有真正的命令/路径才用 <code>。
+}/* 行内说明文字与正文同字体(比例),只有真正的命令/路径才用 <code>。
    整段等宽会让中文小字号变成一堵方块墙 —— 这是「阅读困难」的另一半成因。 */
-.plg-hint code {
+
+.gah-settings .plg-hint code {
   font-size: 11px;
 }
-.row:last-child {
+.gah-settings .row:last-child {
   margin-bottom: 0;
 }
-.row.acts {
+.gah-settings .row.acts {
   margin-top: 10px;
 }
-.sel {
+.gah-settings .sel {
   flex: 1;
   min-width: 0;
   border: 1px solid var(--line);
@@ -540,19 +540,19 @@ textarea.inp {
   padding: 6px 8px;
   outline: none;
 }
-.sel:focus {
+.gah-settings .sel:focus {
   border-color: var(--accent);
 }
-.sel.grow {
+.gah-settings .sel.grow {
   flex: 1;
 }
-.seg {
+.gah-settings .seg {
   display: inline-flex;
   border: 1px solid var(--line);
   border-radius: var(--r-input);
   overflow: hidden;
 }
-.seg-it {
+.gah-settings .seg-it {
   border: none;
   background: none;
   color: var(--fg-dim);
@@ -563,15 +563,15 @@ textarea.inp {
     background 0.15s ease,
     color 0.15s ease;
 }
-.seg-it:hover {
+.gah-settings .seg-it:hover {
   background: var(--bg3);
 }
-.seg-it.on {
+.gah-settings .seg-it.on {
   background: var(--accent-soft);
   color: var(--accent);
   font-weight: 500;
 }
-.ghost {
+.gah-settings .ghost {
   border: 1px solid var(--line);
   border-radius: var(--r-input);
   background: none;
@@ -590,50 +590,50 @@ textarea.inp {
     color 0.15s ease,
     background 0.15s ease;
 }
-.ghost:disabled {
+.gah-settings .ghost:disabled {
   cursor: not-allowed;
   color: var(--fg-faint);
   border-style: dashed;
   opacity: 0.75;
 }
-.ghost:hover {
+.gah-settings .ghost:hover {
   border-color: var(--accent);
   color: var(--accent);
   background: var(--accent-soft);
-}
-/* 破坏性动作(卸载并删除):用**语义色**,不用灰(批九)。
+}/* 破坏性动作(卸载并删除):用**语义色**,不用灰(批九)。
    原先这里是 `.ro`(--fg-faint + cursor:default)—— 那个样子读起来就是「禁用」,
    而它恰恰是唯一**必须一直可用**的动作:一个行为不良的插件正是要靠卸载来止损,
    把止损手段做成「看起来是灰的」等于在用户最需要它的时刻把它藏起来。
    「已登记 / 已启用时禁用它」这个方案**不采纳**:那正好禁掉了最该用的时刻。 */
-.ghost.danger {
+
+.gah-settings .ghost.danger {
   color: var(--err);
   border-color: var(--err-line);
 }
-.ghost.danger:hover {
+.gah-settings .ghost.danger:hover {
   border-color: var(--err);
   color: var(--err);
   background: var(--err-soft);
 }
-.ghost.danger:disabled {
+.gah-settings .ghost.danger:disabled {
   color: var(--fg-faint);
   border-color: var(--line);
   border-style: dashed;
 }
-.ghost.solid {
+.gah-settings .ghost.solid {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--fg-on-accent);
 }
-.ghost.solid:hover {
+.gah-settings .ghost.solid:hover {
   background: var(--accent-hover);
 }
-.danger-text:hover {
+.gah-settings .danger-text:hover {
   border-color: var(--err);
   color: var(--err);
   background: var(--err-soft);
 }
-.link {
+.gah-settings .link {
   background: none;
   border: none;
   color: var(--accent);
@@ -641,7 +641,7 @@ textarea.inp {
   font-size: 12px;
   padding: 0;
 }
-.add-form {
+.gah-settings .add-form {
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -650,7 +650,7 @@ textarea.inp {
   background: var(--bg2);
   border-radius: var(--r-card);
 }
-.inp {
+.gah-settings .inp {
   border: 1px solid var(--line);
   border-radius: var(--r-input);
   background: var(--bg);
@@ -659,19 +659,19 @@ textarea.inp {
   padding: 6px 8px;
   outline: none;
 }
-.inp.grow {
+.gah-settings .inp.grow {
   flex: 1;
   min-width: 0; /* row 内与标签同排时伸展且可收缩(短 placeholder 完整可见) */
 }
-.inp:focus {
+.gah-settings .inp:focus {
   border-color: var(--accent);
 }
-.plist {
+.gah-settings .plist {
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
-.prow {
+.gah-settings .prow {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -680,24 +680,24 @@ textarea.inp {
   border-radius: var(--r-card);
   padding: 8px 10px;
 }
-.prow.active {
+.gah-settings .prow.active {
   border-color: var(--accent);
   background: var(--accent-soft);
 }
-.pmain {
+.gah-settings .pmain {
   display: flex;
   flex-direction: column;
   gap: 2px;
   min-width: 0;
 }
-.pname {
+.gah-settings .pname {
   font-size: 13px;
   color: var(--fg);
   font-weight: 500;
   /* 插件 ID / 用户自定义的 provider 名同样是单段无空格文本:与 .dim 同理，不断行就溢出面板。 */
   overflow-wrap: anywhere;
 }
-.pbadge {
+.gah-settings .pbadge {
   align-self: flex-start;
   font-size: 10px;
   color: var(--accent);
@@ -707,38 +707,38 @@ textarea.inp {
   padding: 0 6px;
   line-height: 1.5;
 }
-.psub {
+.gah-settings .psub {
   font-size: 11px;
   color: var(--fg-faint);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-/* .brk:只读长文本(远程 server 的 url)要能换行 —— .psub 是 nowrap+ellipsis,
+}/* .brk:只读长文本(远程 server 的 url)要能换行 —— .psub 是 nowrap+ellipsis,
    url 被截成 "https://mcp.example.com/…" 就失去"看一眼对不对"的作用。 */
-.psub.brk {
+
+.gah-settings .psub.brk {
   display: block;
   white-space: normal;
   overflow-wrap: anywhere;
   line-height: 1.45;
 }
-.pops {
+.gah-settings .pops {
   display: inline-flex;
   gap: 6px;
   flex-shrink: 0;
 }
-.dim {
+.gah-settings .dim {
   font-size: 12px;
   color: var(--fg-faint);
   margin: 4px 0;
   /* 这句里的路径/URL/命令常是一整段无空格文本(如 mcp 配置文件路径):不断行就溢出面板,
      而 .body 的 overflow-y:auto 会把 overflow-x 也算成 auto ⇒ 设置页多出一条横向滚动条。 */
   overflow-wrap: anywhere;
-}
-/* 「当前生效」行:当前**状态**而不是说明文字 ⇒ 强调色 + 加重 + 左侧强调条。
+}/* 「当前生效」行:当前**状态**而不是说明文字 ⇒ 强调色 + 加重 + 左侧强调条。
    此前它与一排 .dim 提示同级(灰小字),用户完全扫不到
    (2026-10-03:「这一行颜色应为强调色,更显眼」)。 */
-.cur-line {
+
+.gah-settings .cur-line {
   display: flex;
   align-items: baseline;
   flex-wrap: wrap;
@@ -751,75 +751,75 @@ textarea.inp {
   font-size: 13px;
   overflow-wrap: anywhere;
 }
-.cur-key {
+.gah-settings .cur-key {
   color: var(--fg-dim);
   font-weight: 600;
 }
-.cur-val {
+.gah-settings .cur-val {
   color: var(--accent);
   font-weight: 600;
-}
-/* 产物校验值列表(R10 ⑤-3):等宽字体便于逐字符比对;折行不裁剪(哈希截断会误导) */
-/* 安装期的长期影响提示(补依赖):警告色而非错误色 —— 装**成功了**,但供应链面变了。 */
-.warn-line {
+}/* 产物校验值列表(R10 ⑤-3):等宽字体便于逐字符比对;折行不裁剪(哈希截断会误导) *//* 安装期的长期影响提示(补依赖):警告色而非错误色 —— 装**成功了**,但供应链面变了。 */
+
+
+.gah-settings .warn-line {
   color: var(--tool);
   font-size: 12px;
   margin: 4px 0;
-}
-/* 插件安装行与已装列表。
+}/* 插件安装行与已装列表。
    **刻意不复用 .plist**:那个类被布局护栏的「插件列表默认只列 5 条」用例按选择器数行,
    两张表共用一个类会让护栏数到错的行数(实测 43 ≠ 1)。选择器与语义都要各自成立。 */
-.install-list {
+
+.gah-settings .install-list {
   list-style: none;
   margin: 4px 0 8px;
   padding: 0;
 }
-.irow {
+.gah-settings .irow {
   display: flex;
   align-items: baseline;
   gap: 8px;
   flex-wrap: wrap;
   padding: 2px 0;
 }
-.iact {
+.gah-settings .iact {
   display: inline-flex;
   gap: 6px;
   margin-left: auto;
-}
-/* 被拒插件的原因行:错误语义色,但只到"说明"的分量(不抢主体) */
-.pwhy {
+}/* 被拒插件的原因行:错误语义色,但只到"说明"的分量(不抢主体) */
+
+.gah-settings .pwhy {
   display: block;
   color: var(--err);
   font-size: 11px;
   margin-top: 2px;
   word-break: break-word;
-}
-/* UI 插件段的失败清单:与工具结果里的错误块同一套语义色(不用第二个色相) */
-.err-line {
+}/* UI 插件段的失败清单:与工具结果里的错误块同一套语义色(不用第二个色相) */
+
+.gah-settings .err-line {
   color: var(--err);
   font-size: 12px;
   margin: 4px 0;
   word-break: break-word;
 }
-.ui-plugin-row code {
+.gah-settings .ui-plugin-row code {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-size: 11px;
   color: var(--fg-dim);
 }
-.digests {
+.gah-settings .digests {
   margin: 4px 0 0;
   padding-left: 18px;
   display: flex;
   flex-direction: column;
   gap: 2px;
 }
-.digests li {
+.gah-settings .digests li {
   font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-size: 11px;
   overflow-wrap: anywhere;
-}
-/* 模型筛选列表:输入框下匹配项,超出滚动;当前模型高亮 */
-.m-list {
+}/* 模型筛选列表:输入框下匹配项,超出滚动;当前模型高亮 */
+
+.gah-settings .m-list {
   max-height: 200px;
   overflow-y: auto;
   display: flex;
@@ -830,7 +830,7 @@ textarea.inp {
   background: var(--bg);
   padding: 4px;
 }
-.m-item {
+.gah-settings .m-item {
   padding: 5px 8px;
   border-radius: 6px;
   cursor: pointer;
@@ -838,23 +838,23 @@ textarea.inp {
   color: var(--fg-dim);
   transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
 }
-.m-item:hover {
+.gah-settings .m-item:hover {
   background: var(--bg3);
   color: var(--fg);
 }
-.m-item.on {
+.gah-settings .m-item.on {
   background: var(--accent-soft);
   color: var(--accent);
   font-weight: 500;
 }
-.m-lab {
+.gah-settings .m-lab {
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-/* 「只看能当 agent 用的」开关行:与筛选框同区但更轻(它改的是**可见范围**不是查询词) */
-.m-filter {
+}/* 「只看能当 agent 用的」开关行:与筛选框同区但更轻(它改的是**可见范围**不是查询词) */
+
+.gah-settings .m-filter {
   display: flex;
   gap: 6px;
   align-items: baseline;
@@ -862,13 +862,13 @@ textarea.inp {
   font-size: 12px;
   line-height: 1.5;
 }
-.m-filter input {
+.gah-settings .m-filter input {
   margin: 0;
   vertical-align: baseline;
-}
-/* 不可用/有警告条目的行内标记。刻意用语义色的「注意」档而不是错误色:
+}/* 不可用/有警告条目的行内标记。刻意用语义色的「注意」档而不是错误色:
    这类条目仍可选(比如你只想拿它聊天),不该看起来像出错。 */
-.m-warn {
+
+.gah-settings .m-warn {
   margin-left: 6px;
   color: var(--tool);
   cursor: help;

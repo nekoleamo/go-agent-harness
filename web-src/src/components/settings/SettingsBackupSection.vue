@@ -35,4 +35,3 @@ const { backupMsg, backups, busy, doBackupNow, doBackupRestore, fmtSize } = inje
               </section>
 </template>
 
-<style scoped src="../settings/settings-panel.css"></style>

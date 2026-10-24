@@ -3671,8 +3671,8 @@ provide(SETTINGS_CTX, {
        早前「遮罩点击不关闭」的取舍是为防误触丢正在编辑的表单,现按统一交互反转) -->
   <!-- 显隐走全局 pane 过渡(style.css):遮罩淡 + 抽屉横滑;关闭不再硬切 -->
   <Transition name="pane">
-    <div v-if="open" class="mask" @click.self="emit('close')">
-      <aside class="panel" role="dialog" aria-label="设置">
+    <div v-if="open" class="mask gah-settings-mask" @click.self="emit('close')">
+      <aside class="panel gah-settings" role="dialog" aria-label="设置">
         <header class="head">
           <h2 class="title">设置</h2>
           <button class="x" data-tip="关闭设置" @click="emit('close')">
@@ -3775,4 +3775,9 @@ provide(SETTINGS_CTX, {
   </Transition>
 </template>
 
-<style scoped src="./settings/settings-panel.css"></style>
+<!-- 设置面板样式:一份**非 scoped** 全局表,所有规则挂 .panel 前缀(见 scripts/ns-settings-css.mjs)。
+     为什么不再是 scoped:12 个分区子组件各自 scoped 引用同一份表 = 同一批规则被编译 13 遍
+     (单 chunk 184 KB → 现在 1 份);而 scoped 是按模板绑定的,没法跨组件共享编译结果。
+     前缀化的特异性与 scoped 相同(.panel .row ≡ .row[data-v]),所以外观不变 ——
+     判据是 test/style-baseline.json 的 computed-style 快照比对。 -->
+<style src="./settings/settings-panel.css"></style>
