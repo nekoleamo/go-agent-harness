@@ -81,6 +81,15 @@ func NewWatcher(dir string, debounce time.Duration, onChange func(path string)) 
 		default:
 			close(wt.done)
 		}
+		// 停掉所有还在等去抖的定时器:否则关闭后它们仍会触发 onChange ——
+		// 调用方(host-bridge)已经 Dispose,回调却会把外部插件进程**重新拉起来**
+		// (2026-10-24 review 的 P2)。
+		wt.mu.Lock()
+		for name, t := range wt.timers {
+			t.Stop()
+			delete(wt.timers, name)
+		}
+		wt.mu.Unlock()
 		w.Close()
 	}
 	return wt, closeFn, nil
@@ -120,7 +129,18 @@ func (wt *Watcher) addDir(dir string) error {
 	if full {
 		return nil
 	}
-	return wt.w.Add(dir)
+	if err := wt.w.Add(dir); err != nil {
+		// 失败要回滚登记:否则同一路径下次进来会因"已登记"直接 return,
+		// 这个目录从此**静默失联**(2026-10-24 review 的 P2)。
+		wt.mu.Lock()
+		if wt.dirs[dir] {
+			delete(wt.dirs, dir)
+			wt.nDirs--
+		}
+		wt.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
 // depth 相对深度(用于上限判断)。
@@ -195,6 +215,13 @@ func (wt *Watcher) schedule(name string, debounce time.Duration, onChange func(s
 		wt.mu.Lock()
 		delete(wt.timers, name)
 		wt.mu.Unlock()
+		// Stop 与已开始的回调之间有竞态:这里再判一次 closed(closeFn 之后不再上报)。
+		wt.closeMu.Lock()
+		closed := wt.closed
+		wt.closeMu.Unlock()
+		if closed {
+			return
+		}
 		// 目录删除后递归监听就断了:把该目录从监听表里摘掉,避免无限增长。
 		// 不摘也无害(条目数上限 watchMaxDirs 堆着),但它会让「同一路径重建」时
 		// addDir 因“已登记”而不再真正 add —— 那才是真会出事的地方。

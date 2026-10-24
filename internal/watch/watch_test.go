@@ -193,3 +193,47 @@ func TestWatcherRecreateAfterRemove(t *testing.T) {
 	}
 	t.Fatal("目录删除后重建,新文件没有事件 —— addDir 因「已登记」跳过了真正的 add")
 }
+
+// closeFn 之后去抖回调不得再触发(否则 host-bridge 已 Dispose,回调又把外部插件进程拉起来)。
+// **反向验证**:去掉 closeFn 里的 timers Stop + 回调的 closed 判定 ⇒ 本用例红。
+func TestCloseStopsPendingDebounce(t *testing.T) {
+	dir := t.TempDir()
+	var mu sync.Mutex
+	var calls int
+	_, closeFn, err := NewWatcher(dir, 120*time.Millisecond, func(string) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 造一个变化以排入去抖,然后**立刻**关闭
+	if err := os.WriteFile(filepath.Join(dir, "plugin.exe"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	closeFn()
+	time.Sleep(400 * time.Millisecond) // 远超过 debounce
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 0 {
+		t.Fatalf("关闭后仍有 %d 次去抖回调", calls)
+	}
+}
+
+// addDir 失败必须回滚登记 —— 否则同一路径下次进来会被"已登记"直接跳过,目录永久失联。
+func TestAddDirRollsBackOnFailure(t *testing.T) {
+	dir := t.TempDir()
+	wt, closeFn, err := NewWatcher(dir, 10*time.Millisecond, func(string) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeFn()
+	gone := filepath.Join(t.TempDir(), "nope") // 不存在的目录:Add 必失败
+	if err := wt.addDir(gone); err == nil {
+		t.Skip("该平台对不存在目录的 Add 不报错,本条无法构造失败")
+	}
+	if wt.dirs[gone] {
+		t.Fatal("Add 失败后目录仍在登记表里 —— 下次进来会被跳过,监听永久失联")
+	}
+}
