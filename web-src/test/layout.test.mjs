@@ -74,6 +74,10 @@ function makeStub(
   // 想要"先开页、later 再来一帧"得把它改成真流 —— 那点复杂度换不来更多判据，
   // 而介入条要验的是「帧接上了没有」，不是时序。
   extraSse = [],
+  // roleProblems:角色列表的「部分角色文件读不了」提示(宿主 v.problems)。
+  // 之前桩里没有这个字段,于是模板里 roleProblems 的渲染分支**一次都没被真实浏览器跑过** ——
+  // 而拆分设置面板时正好在这一段引入过「把 ref 当数组用」的运行时缺陷。
+  roleProblems = [],
 ) {
   // seen:记录写类请求(方法/路径/体),供角色面板用例断言「面板真的提交了」而不是只改了本地状态。
   const seen = []
@@ -183,6 +187,7 @@ function makeStub(
         // currentRole 可注入:面板「默认(基线)」合成行与"当前角色悬空"提示都靠它构造(第八十一批 形态 B)。
         current: currentRole,
         max_agents_bytes: 32768,
+        problems: roleProblems,
         roles: [
           {
             id: 'finance',
@@ -949,6 +954,30 @@ describe('布局护栏:整页永不滚动(第五十二/五十三批)', { skip: s
   // ② 元素在退场期间仍留在 DOM(异步退场),过渡结束后必须清干净。删掉动效退回硬切,这条必红。
   // 角色面板(第七十九批 1b):装配态可展开编辑、挂载技能即时提交、删除走全局二次确认。
   // 这里钉的是**面板真的提交了** —— 只改本地状态的假保存(刷新即回)正是这类面板最容易犯的错。
+  // 角色文件读不了时的提示(宿主的 v.problems)。这条分支原先没有用例:
+  // 拆分设置面板时它曾被写成「把 inject 回来的 ref 当数组直接 map」——类型断言把 vue-tsc
+  // 骗过去了,只有真实浏览器渲染才会炸。护栏钉住:有 problems 就要在角色段里说出来。
+  test('设置面板:部分角色文件读不了时如实提示(不静默丢掉)', async (t) => {
+    const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+    let page = null
+    try {
+      const stub = makeStub(true, true, false, false, true, 'finance', 0, false, true, 0, false, false, '', [], [
+        { id: 'broken-role-0123456789abcdef', error: 'permission denied' },
+      ])
+      page = await open(ctx, stub, docks[1].dock)
+      await page.click('.gear')
+      await page.waitForSelector('[data-sec="role"]')
+      const text = await page.evaluate(() =>
+        document.querySelector('[data-sec="role"]')?.textContent ?? '',
+      )
+      assert.match(text, /部分角色文件读不了/, `应提示有角色文件读不了:「${text.slice(0, 200)}」`)
+      assert.match(text, /broken-role-0123456789abcdef/, '提示里要说清是哪几个角色')
+    } finally {
+      await page?.close()
+      await ctx.close()
+    }
+  })
+
   test('设置面板:角色段可展开编辑、挂载即提交、删除进二次确认', async (t) => {
     const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
     let page = null

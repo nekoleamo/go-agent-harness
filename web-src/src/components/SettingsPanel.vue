@@ -8,6 +8,7 @@ import {
   nextTick,
   onMounted,
   onUnmounted,
+  provide,
   ref,
   watch,
 } from "vue";
@@ -37,7 +38,19 @@ import {
 import type { ModelOption } from "../modelsel";
 import { parseHeaderLines } from "../providerheaders";
 import { settingSections } from "../registry";
-import ScopeNote from "./ScopeNote.vue";
+import { SETTINGS_CTX, type SettingsCtx } from "./settings/ctx";
+import SettingsPluginSection from "./settings/SettingsPluginSection.vue";
+import SettingsMcpSection from "./settings/SettingsMcpSection.vue";
+import SettingsScheduleSection from "./settings/SettingsScheduleSection.vue";
+import SettingsRoleSection from "./settings/SettingsRoleSection.vue";
+import SettingsAboutSection from "./settings/SettingsAboutSection.vue";
+import SettingsBackupSection from "./settings/SettingsBackupSection.vue";
+import SettingsProviderSection from "./settings/SettingsProviderSection.vue";
+import SettingsMemorySection from "./settings/SettingsMemorySection.vue";
+import SettingsInstrSection from "./settings/SettingsInstrSection.vue";
+import SettingsReasonSection from "./settings/SettingsReasonSection.vue";
+import SettingsModelSection from "./settings/SettingsModelSection.vue";
+import SettingsHistorySection from "./settings/SettingsHistorySection.vue";
 import { hasSessionOverride } from "../scope";
 import {
   loadUIPlugins,
@@ -3223,6 +3236,434 @@ watch(
   },
   { immediate: true },
 );
+// —— 跨段上下文(D1:按分区拆子组件;状态仍留在父层)——
+// 子组件用 `const { x } = inject(SETTINGS_CTX) as SettingsCtx` 直接拿到**同一批 ref / 常量**,
+// 既不复制状态也不引入第二份真相。列表由 scripts/gen-settings-ctx.mjs 生成(勿手改)。
+provide(SETTINGS_CTX, {
+  AP,
+  AP_ZH,
+  DEFAULT_FORM,
+  DOW_ORDER,
+  DOW_ZH,
+  EVERY_HOUR,
+  EVERY_MIN,
+  HOURS,
+  LUNAR_FESTIVALS,
+  LUNAR_MONTHS,
+  MANAGE_META,
+  MCP_MODE_DIRECT,
+  MCP_MODE_SEARCH,
+  MINUTES,
+  MONTH_DAYS,
+  NTHS,
+  PLUGIN_CAP,
+  PRESETS,
+  PROVIDER_PRESETS,
+  REPEATS,
+  ROLE_AP,
+  ROLE_DEF_FIELDS,
+  ROLE_SB,
+  SB,
+  SB_ZH,
+  SETTINGS_CTX,
+  THINK,
+  THINK_LABEL,
+  UIInstallConfirmText,
+  activeProvider,
+  activeSec,
+  addProvider,
+  afterPack,
+  agentsDirty,
+  agentsDraft,
+  agentsSaved,
+  anyDraftDirty,
+  api,
+  applied,
+  applyCtl,
+  applyHistory,
+  applyModel,
+  applyPreset,
+  applyScheduleNL,
+  applyUpdateSnapshot,
+  ask,
+  autoState,
+  autostartState,
+  backupMsg,
+  backups,
+  bodyEl,
+  buildModelOptions,
+  bundledPlugins,
+  busy,
+  byteLength,
+  canEdit,
+  cancelSchedEdit,
+  checkUpdate,
+  clearRawExpression,
+  compactNow,
+  computed,
+  costHint,
+  createRole,
+  createSkill,
+  curModelLabel,
+  currentModelValue,
+  deleteProvider,
+  deleteRole,
+  deleteSchedule,
+  deleteSkill,
+  digestLine,
+  discardAgents,
+  discardInstr,
+  discardMcp,
+  discardSkill,
+  doBackupNow,
+  doBackupRestore,
+  doCheckPluginUpdates,
+  doCheckUpdate,
+  doCompact,
+  doDisablePlugin,
+  doEnablePlugin,
+  doInstall,
+  doInstallNow,
+  doInstallUpdate,
+  doPluginInstallNow,
+  doPluginToggle,
+  doProviderDelete,
+  doProviderUse,
+  doReload,
+  doScheduleRun,
+  doTrustPlugin,
+  doUIInstall,
+  doUIToggle,
+  doUITrust,
+  doUIUninstall,
+  doUninstallPlugin,
+  doUntrustPlugin,
+  draftFrom,
+  draftKey,
+  draftLabels,
+  editSchedule,
+  emit,
+  err,
+  excludedCount,
+  explainProbeError,
+  exportRole,
+  exportSkillPack,
+  filteredModels,
+  fmtAbs,
+  fmtCommand,
+  fmtNextRun,
+  fmtSize,
+  fmtTrashTime,
+  formLunarMD,
+  formLunarPhrase,
+  groupLabel,
+  guard,
+  hasSessionOverride,
+  hiddenModelCount,
+  histN,
+  importRolePack,
+  info,
+  infoTimer,
+  inject,
+  installBusy,
+  installErr,
+  installOk,
+  installPrebuilt,
+  installRows,
+  installSpec,
+  installUpdate,
+  installWarn,
+  instrBytes,
+  instrDirty,
+  instrDraft,
+  instrEdit,
+  instrErr,
+  instrExists,
+  instrMax,
+  instrMsg,
+  instrOver,
+  instrPath,
+  instrReady,
+  instrSaved,
+  instrWarn,
+  isDesktop,
+  isRemote,
+  jumpTo,
+  keyInput,
+  lastSaved,
+  lastUpdSeq,
+  load,
+  loadBackups,
+  loadInstructions,
+  loadMcp,
+  loadMemory,
+  loadRoles,
+  loadSchedules,
+  loadTools,
+  loadTrash,
+  loadUIPlugins,
+  lunarDayText,
+  manageMeta,
+  mcpAdd,
+  mcpBase,
+  mcpDirty,
+  mcpDrafts,
+  mcpEnvRows,
+  mcpErr,
+  mcpMsg,
+  mcpMsgTimer,
+  mcpNotices,
+  mcpRemove,
+  mcpRowState,
+  mcpRowStateClass,
+  mcpView,
+  memBudget,
+  memBusy,
+  memCand,
+  memContent,
+  memDraft,
+  memEnabled,
+  memErr,
+  memHasCandidates,
+  memLimit,
+  memMsg,
+  memPath,
+  memProject,
+  memReady,
+  memSource,
+  memSources,
+  memSync,
+  memToday,
+  memTodayMax,
+  memUsed,
+  memUser,
+  memoryAccept,
+  memoryAcceptAll,
+  memoryAdd,
+  memoryPropose,
+  memoryReject,
+  memoryRejectAll,
+  memoryRemove,
+  memoryRemoveSource,
+  memoryRun,
+  memoryToggle,
+  modeHint,
+  modeLabel,
+  modelFilter,
+  modelLabelOf,
+  modelOptionValue,
+  modelOptions,
+  modelRank,
+  modelVal,
+  models,
+  mounted,
+  navItems,
+  navRaf,
+  navSettle,
+  navTarget,
+  nextTick,
+  noPriceInfoProviders,
+  nthDow,
+  onBeforeUnload,
+  onBodyScroll,
+  onEsc,
+  onMounted,
+  onPackPick,
+  onSkPackPick,
+  onSyncToggle,
+  onUnmounted,
+  onboardHint,
+  onlyUsableModels,
+  openMove,
+  openSchedAdd,
+  openSkill,
+  packAs,
+  packBusy,
+  panelSections,
+  parseHeaderLines,
+  pf,
+  pfConflicts,
+  pickDirectory,
+  pickInstallDir,
+  pickModel,
+  pickUIDir,
+  pluginExpanded,
+  pluginFilter,
+  pluginHidden,
+  pluginHits,
+  pluginShown,
+  pluginStateLabel,
+  pluginToggle,
+  plugins,
+  presets,
+  previewLines,
+  probe,
+  probeProvider,
+  props,
+  provide,
+  providerNames,
+  providers,
+  queueRolePatch,
+  ref,
+  refreshDesktopState,
+  refreshInstallList,
+  refreshProbeFromActive,
+  refreshRoleDetail,
+  refreshSchedulePreview,
+  refreshUIState,
+  removeStaleMount,
+  removeStaleTool,
+  renameRole,
+  reprobe,
+  rescanUIPlugins,
+  resetSchedForm,
+  resolveRaw,
+  restoreAllTools,
+  restoreTrash,
+  revertRoleDef,
+  rf,
+  roleBaseline,
+  roleCurrent,
+  roleDangling,
+  roleDefDirty,
+  roleDefKey,
+  roleDefSaved,
+  roleDefSnapshot,
+  roleDetail,
+  roleErr,
+  roleGroups,
+  roleHint,
+  roleIDDraft,
+  roleIsCurrent,
+  roleLib,
+  roleMax,
+  roleMsg,
+  rolePackDownloadUrl,
+  rolePackName,
+  rolePatchQueue,
+  roleProblems,
+  roleReady,
+  roleSaving,
+  roleSavingN,
+  roleTierNote,
+  roles,
+  saveAgents,
+  saveInstructions,
+  saveMcp,
+  saveRoleDef,
+  saveRoleDefNow,
+  saveSchedule,
+  saveSkill,
+  schedDone,
+  schedEditing,
+  schedErr,
+  schedForm,
+  schedNL,
+  schedNLBusy,
+  schedNLNote,
+  schedRaw,
+  schedRawNote,
+  schedRawOpen,
+  schedReady,
+  schedRowLabel,
+  schedTypeChanged,
+  schedView,
+  schedules,
+  secEls,
+  selRole,
+  selectRole,
+  serverStateLabel,
+  setLunarFestival,
+  settingSections,
+  sf,
+  showAdd,
+  showInfo,
+  showPackImport,
+  showRoleNew,
+  showSchedAdd,
+  showSkPackImport,
+  showSkillNew,
+  skDirty,
+  skEdit,
+  skErr,
+  skMove,
+  skMoveDirty,
+  skNew,
+  skPackAs,
+  skPackBusy,
+  skSaved,
+  skillPackDownloadUrl,
+  skillPackName,
+  skillsByRole,
+  skipHint,
+  sourceLabel,
+  sourceLine,
+  staleMounts,
+  staleTools,
+  stateTimer,
+  statusLabel,
+  structToCron,
+  submitMove,
+  tierBrief,
+  toSavePayload,
+  todayStr,
+  toggleAdd,
+  toggleDow,
+  toggleInherit,
+  toggleMount,
+  toggleSchedule,
+  toggleTool,
+  toggleTools,
+  toggleTrash,
+  toolAll,
+  toolExcluded,
+  toolQuery,
+  toolShown,
+  toolsErr,
+  toolsLoaded,
+  toolsOpen,
+  trashCount,
+  trashErr,
+  trashOpen,
+  trashReady,
+  trashRoles,
+  trashSkills,
+  tryImport,
+  uiBusy,
+  uiErr,
+  uiOk,
+  uiPluginDigests,
+  uiPluginDisabled,
+  uiPluginErrors,
+  uiPluginList,
+  uiPluginTrustEnforced,
+  uiPluginTrustNote,
+  uiScanBusy,
+  uiSpec,
+  unlockNav,
+  updAvailable,
+  updBusy,
+  updChecking,
+  updChecks,
+  updErr,
+  updMsg,
+  updOk,
+  updateState,
+  useDefaultPool,
+  useRawExpression,
+  useReplacePool,
+  useRole,
+  useSchedPreset,
+  userPlugins,
+  validateDraft,
+  viewNotices,
+  viewToForm,
+  watch,
+  withCurrentModel,
+  withDrafts,
+  withPreset,
+} as SettingsCtx);
+
 </script>
 
 <template>
@@ -3258,2699 +3699,42 @@ watch(
           </nav>
           <div ref="bodyEl" class="body" @scroll="onBodyScroll">
             <!-- 模型(输入筛选 + 匹配列表;模型多时原生 select 难找,点选即应用) -->
-            <section data-sec="model" class="sec">
-              <h3 class="h">模型</h3>
-              <!-- 作用域声明(第一百三十四批):本段的控件改的是**全局默认**,
-                   下方那一行显示的是**本会话当前在用**的值。两者不是一回事,
-                   原来只有一个没标作用域的「当前生效」⇒ 用户以为改的是全局、实际只改了当前页签。 -->
-              <ScopeNote what="模型" />
-              <div class="row">
-                <span class="lab-inline">当前模型</span>
-                <input
-                  id="set-model"
-                  v-model="modelFilter"
-                  class="inp grow"
-                  :placeholder="'筛选模型名/Provider'"
-                  :disabled="busy"
-                />
-              </div>
-              <!-- 当前生效单独一行:上面那个输入框是筛选框,用户会把它当成「当前模型」的显示位,
-               真机上因此得出「已选了模型但当前模型显示为空」的结论。
-               这一行是「当前状态」不是说明文字 → 用强调色 + 加重,别与灰色提示同级
-               (2026-10-03 用户反馈:这一行应为强调色,更显眼)。 -->
-              <p class="cur-line" data-testid="cur-model">
-                <span class="cur-key">本会话在用</span>
-                <span class="cur-val">{{ curModelLabel || "(未设置)" }}</span>
-                <span
-                  v-if="props.state.model_from === 'role'"
-                  class="sstate ss-ok"
-                  >角色指定</span
-                >
-                <span
-                  v-if="
-                    props.state.model_from === 'role' &&
-                    props.state.model_session
-                  "
-                  class="dim"
-                >
-                  （会话档
-                  {{ props.state.model_session }} 被角色覆盖，停用角色后生效）
-                </span>
-              </p>
-              <p
-                v-if="props.state.model_from === 'role'"
-                class="dim"
-                data-testid="model-role-note"
-              >
-                当前角色已指定模型：这里切换只改会话档，实际仍按角色跑。
-              </p>
-              <p v-if="noPriceInfoProviders.length" class="dim">
-                {{ noPriceInfoProviders.join("、") }}
-                未提供价格信息，判不出哪些模型免费（免费标记只依据端点自述的价格，
-                gah 不内置任何"某家免费"的说法——那些政策变得比软件快）。
-              </p>
-              <div class="m-list">
-                <label class="m-filter dim">
-                  <input type="checkbox" v-model="onlyUsableModels" />
-                  只看能当 agent 用的
-                  <span v-if="hiddenModelCount > 0" class="dim">
-                    （已隐去 {{ hiddenModelCount }} 条：端点声明不支持工具调用，或上下文
-                    太小；关掉开关就能看到，它们会在标签后标出原因）
-                  </span>
-                </label>
-                <div
-                  v-for="o in filteredModels"
-                  :key="o.value"
-                  class="m-item"
-                  :class="{ on: modelVal === o.value }"
-                  data-tip="点击切换模型"
-                  @click="pickModel(o)"
-                >
-                  <span class="m-lab">{{ o.label }}</span>
-                  <span v-if="o.warn" class="m-warn" :data-tip="o.warn">⚠</span>
-                </div>
-                <p v-if="!filteredModels.length" class="dim">
-                  {{
-                    onlyUsableModels
-                      ? "没有能当 agent 用的模型(可关掉上方开关查看全部,或换一个 Provider)"
-                      : "无匹配模型(清空筛选或经 /model 手动设置)"
-                  }}
-                </p>
-              </div>
-              <p v-if="!models.length && !modelOptions.length" class="dim">
-                模型列表不可用(可经 Provider 配置或 /model 手动设置)
-              </p>
-            </section>
+            <SettingsModelSection />
 
             <!-- 推理 -->
-            <section data-sec="reason" class="sec">
-              <h3 class="h">推理</h3>
-              <!-- 同上:这一段的思考/沙箱/审批三个控件改的都是**全局默认**。 -->
-              <ScopeNote what="思考 / 沙箱 / 审批" />
-              <div class="row">
-                <span class="lab-inline">思考</span>
-                <div class="seg">
-                  <button
-                    v-for="t in THINK"
-                    :key="t"
-                    class="seg-it"
-                    :class="{
-                      on:
-                        (props.state.thinking_session ??
-                          props.state.thinking) === t,
-                    }"
-                    :data-tip="'思考 ' + THINK_LABEL[t]"
-                    @click="applyCtl({ thinking: t })"
-                  >
-                    {{ THINK_LABEL[t] }}
-                  </button>
-                </div>
-              </div>
-              <p
-                v-if="props.state.thinking_from === 'role'"
-                class="dim"
-                data-testid="thinking-role-note"
-              >
-                当前角色的思考档覆盖了会话设置：实际按「{{
-                  THINK_LABEL[props.state.thinking] || props.state.thinking
-                }}」跑（上面选的是会话档，停用角色后生效）。
-              </p>
-              <div class="row">
-                <span class="lab-inline">沙箱</span>
-                <div class="seg">
-                  <button
-                    v-for="s in SB"
-                    :key="s.v"
-                    class="seg-it"
-                    :class="{ on: props.state.sandbox === s.v }"
-                    :data-tip="'沙箱 ' + s.label"
-                    @click="applyCtl({ sandbox: s.v })"
-                  >
-                    {{ s.label }}
-                  </button>
-                </div>
-              </div>
-              <p
-                v-if="props.state.sandbox_from === 'role'"
-                class="dim"
-                data-testid="sandbox-role-note"
-              >
-                当前角色把沙箱收紧为「{{
-                  SB_ZH[props.state.sandbox_effective ?? ""] ??
-                  props.state.sandbox_effective
-                }}」：写入被拦在这里，上面选的是**本会话**档（停用角色后生效）。
-              </p>
-              <div class="row">
-                <span class="lab-inline">审批</span>
-                <div class="seg">
-                  <button
-                    v-for="s in AP"
-                    :key="s.v"
-                    class="seg-it"
-                    :class="{ on: props.state.approval === s.v }"
-                    :data-tip="'审批 ' + s.label"
-                    @click="applyCtl({ approval: s.v })"
-                  >
-                    {{ s.label }}
-                  </button>
-                </div>
-              </div>
-              <!-- 上面选的是**本会话档**(这一段三个控件都经 api.control 默认带 session,第一百三十四批核实);
-               角色收紧时实际按更严的那个裁决(第九十二批)。
-               不说清就会变成"点了严格却不生效"的静默矛盾。 -->
-              <p
-                v-if="props.state.approval_from === 'role'"
-                class="dim"
-                data-testid="approval-role-note"
-              >
-                当前角色把审批收紧为「{{
-                  AP_ZH[props.state.approval_effective ?? ""] ??
-                  props.state.approval_effective
-                }}」：实际按它裁决（上面选的是**本会话**档，停用角色后生效）。
-              </p>
-              <!-- 联动开关(R10 ②-2):默认开启时审批档会覆盖沙箱档(开放 → 完全访问、
-               严格 → 只读),于是"改了沙箱档却不生效";关掉后沙箱档独立生效。
-               后端不支持时该字段缺失 → 整行不显示(不摆一个点了没反应的开关)。 -->
-              <div v-if="props.state.sandbox_sync !== undefined" class="row">
-                <span class="lab-inline">档位联动</span>
-                <label
-                  class="chk"
-                  :data-tip="'审批档联动沙箱:开启时开放档 → 完全访问、严格档 → 只读'"
-                >
-                  <input
-                    type="checkbox"
-                    :checked="props.state.sandbox_sync"
-                    :disabled="busy"
-                    @change="onSyncToggle"
-                  />
-                  <span>审批档覆盖沙箱档</span>
-                </label>
-                <span class="dim grow">{{
-                  props.state.sandbox_sync ? "开启" : "关闭(沙箱档独立生效)"
-                }}</span>
-              </div>
-            </section>
+            <SettingsReasonSection />
 
             <!-- 历史与压缩 -->
             <!-- 角色(第七十九批 1b):人设 + 工作规则(AGENTS.md)+ 技能挂载。
              未装配 ctx.roles 的环境整段不渲染(roleReady=false),导航项也一并隐藏。 -->
             <!-- 全局指令(第八十一批):角色之外的基线层 —— 对所有角色生效,除非角色声明 exclude_global -->
-            <section v-if="instrReady" data-sec="instr" class="sec">
-              <h3 class="h">
-                指令
-                <span v-if="instrDirty" class="dirty">未保存</span>
-                <button
-                  class="link"
-                  data-tip="编辑全局 AGENTS.md"
-                  @click="instrEdit = !instrEdit"
-                >
-                  {{ instrEdit ? "收起" : "编辑" }}
-                </button>
-              </h3>
-              <p class="dim">
-                全局 <span class="mono">AGENTS.md</span>（<span class="mono">{{
-                  instrPath
-                }}</span
-                >）对<strong>所有</strong>角色生效：没有角色时注入，有角色时也注入（除非该角色声明了「不注入全局
-                AGENTS.md」）。
-              </p>
-              <div v-if="instrErr" class="serr">{{ instrErr }}</div>
-              <div v-if="instrWarn" class="swarn">{{ instrWarn }}</div>
-              <p v-if="instrMsg" class="dim ok">{{ instrMsg }}</p>
-              <p class="dim">
-                {{
-                  instrExists
-                    ? "当前 " + instrBytes + " 字节"
-                    : "还没有这份文件（保存即创建）"
-                }}／上限 {{ instrMax }} 字节
-                <span v-if="instrOver"
-                  >·
-                  现有文件已超上限，保存会被拒；注入时按上限截断并标注「已截断」</span
-                >
-              </p>
-              <div v-if="instrEdit" class="add-form">
-                <label class="fld">
-                  <span class="fld-lab">全局指令（原文，保存即覆盖）</span>
-                  <textarea
-                    v-model="instrDraft"
-                    class="inp mono"
-                    rows="12"
-                  ></textarea>
-                </label>
-                <div class="form-acts">
-                  <button
-                    class="ghost solid"
-                    :disabled="busy"
-                    @click="saveInstructions"
-                  >
-                    保存全局指令
-                  </button>
-                  <button
-                    v-if="instrDirty"
-                    class="ghost danger-text"
-                    @click="discardInstr"
-                  >
-                    放弃修改
-                  </button>
-                  <button class="ghost" @click="instrEdit = false">收起</button>
-                </div>
-              </div>
-            </section>
+            <SettingsInstrSection />
 
-            <section v-if="memReady" data-sec="memory" class="sec">
-              <h3 class="h">
-                记忆
-                <span v-if="!memEnabled" class="dim" data-testid="mem-off"
-                  >注入已关</span
-                >
-              </h3>
-              <p class="dim">
-                跨会话记忆是<strong>事实性记录</strong>：每轮按预算注入系统提示，排在角色指令之后
-                —— 记忆
-                <strong>不能覆盖</strong
-                >指令与工作规则，冲突时以指令为准。记忆不会自动提取（要记住什么，由你
-                或 <span class="mono">/memory add</span> 明确写下来）。
-              </p>
-              <p class="dim">
-                存在纯 markdown 文件 <span class="mono">{{ memPath }}</span
-                >，写错了可以直接改这个文件（记忆层最大的风险是写错，给人一个文本文件比给一套管理工具更有用）。
-              </p>
-              <div v-if="memErr" class="serr">{{ memErr }}</div>
-              <p v-if="memMsg" class="dim ok">{{ memMsg }}</p>
-              <p class="dim">
-                用户级 {{ memUser.length }} 条／本项目
-                {{ memProject.length }} 条／注入预算 {{ memBudget }}
-                字节（超预算时按时间倒序丢最旧）
-              </p>
-              <template v-if="memHasCandidates">
-                <p class="dim" data-testid="mem-cand-head">
-                  候选池 {{ memUsed }}/{{ memLimit }} 条（今日已提
-                  {{ memToday }}/{{ memTodayMax }}）——
-                  <strong>候选不进上下文</strong>，只有「转正」之后才生效。文件
-                  <span class="mono">{{
-                    memPath.replace(/user\.md$/, "candidates.md")
-                  }}</span>
-                  同样可以直接改。
-                </p>
-                <div v-if="memCand.length" class="mem-list">
-                  <div
-                    v-for="(l, i) in memCand"
-                    :key="'c' + i"
-                    class="mem-item"
-                  >
-                    <span class="mem-txt" :data-tip="memContent(l)">{{
-                      memContent(l)
-                    }}</span>
-                    <button
-                      class="ghost solid"
-                      :disabled="memBusy"
-                      data-tip="转正为记忆(之后每轮带进上下文)"
-                      @click="memoryAccept(i + 1)"
-                    >
-                      转正
-                    </button>
-                    <button
-                      class="ghost danger-text"
-                      :disabled="memBusy"
-                      data-tip="丢弃(不进记忆)"
-                      @click="memoryReject(i + 1)"
-                    >
-                      丢弃
-                    </button>
-                  </div>
-                </div>
-                <div v-if="memCand.length" class="form-acts">
-                  <button
-                    class="ghost solid"
-                    :disabled="memBusy"
-                    data-testid="mem-accept-all"
-                    @click="memoryAcceptAll"
-                  >
-                    全部转正
-                  </button>
-                  <button
-                    class="ghost danger-text"
-                    :disabled="memBusy"
-                    @click="memoryRejectAll"
-                  >
-                    全部丢弃
-                  </button>
-                </div>
-                <p v-else class="dim">候选池是空的。</p>
-              </template>
-              <div class="add-form">
-                <label class="fld">
-                  <span class="fld-lab">记一条（写清“是什么、为什么”）</span>
-                  <input
-                    v-model="memDraft"
-                    class="inp"
-                    :disabled="memBusy"
-                    placeholder="比如：报告里的图表用蓝灰配色，不要渐变"
-                    data-testid="mem-input"
-                    @keyup.enter="memoryAdd"
-                  />
-                </label>
-                <div class="form-acts">
-                  <button
-                    class="ghost solid"
-                    :disabled="memBusy || !memDraft.trim()"
-                    data-testid="mem-add"
-                    @click="memoryAdd"
-                  >
-                    记住
-                  </button>
-                  <button
-                    v-if="memHasCandidates"
-                    class="ghost"
-                    :disabled="memBusy || !memDraft.trim()"
-                    data-testid="mem-propose"
-                    data-tip="先进候选池,确认之后才进上下文"
-                    @click="memoryPropose"
-                  >
-                    提候选
-                  </button>
-                  <button
-                    v-if="memEnabled"
-                    class="ghost danger-text"
-                    data-tip="只关注入，记忆文件保留"
-                    @click="memoryToggle(false)"
-                  >
-                    关掉注入
-                  </button>
-                  <button
-                    v-else
-                    class="ghost"
-                    data-tip="重新把记忆注入系统提示"
-                    @click="memoryToggle(true)"
-                  >
-                    开启注入
-                  </button>
-                </div>
-              </div>
-              <template v-if="memUser.length">
-                <div class="mem-list">
-                  <div v-for="(l, i) in memUser" :key="i" class="mem-item">
-                    <span class="mem-txt" :data-tip="memContent(l)">{{
-                      memContent(l)
-                    }}</span>
-                    <span v-if="memSource(l)" class="dim mono">{{
-                      memSource(l)
-                    }}</span>
-                    <button
-                      class="ghost danger-text"
-                      :disabled="memBusy"
-                      data-tip="删除这条记忆"
-                      @click="memoryRemove(i + 1, l)"
-                    >
-                      删除
-                    </button>
-                  </div>
-                </div>
-                <div v-if="memSources.length" class="mem-src">
-                  <p class="dim">
-                    按来源整段删（某个会话写进来的记忆一次性清干净）
-                  </p>
-                  <div class="form-acts">
-                    <button
-                      v-for="s in memSources"
-                      :key="s"
-                      class="ghost danger-text"
-                      :disabled="memBusy"
-                      data-tip="删掉该来源的全部记忆"
-                      @click="memoryRemoveSource(s)"
-                    >
-                      会话 {{ s }}
-                    </button>
-                  </div>
-                </div>
-              </template>
-              <p v-else class="dim">
-                还没有记忆。记一条试试，比如“部署前先跑一次 /verify”。
-              </p>
-              <div v-if="memProject.length" class="mem-list">
-                <div
-                  v-for="(l, i) in memProject"
-                  :key="'p' + i"
-                  class="mem-item"
-                >
-                  <span class="mem-txt dim" :data-tip="memContent(l)">{{
-                    memContent(l)
-                  }}</span>
-                </div>
-              </div>
-            </section>
+            <SettingsMemorySection />
 
-            <section v-if="roleReady" data-sec="role" class="sec">
-              <h3 class="h">
-                角色
-                <button
-                  class="link"
-                  data-tip="导入角色包(单文件 zip,别人分享给你的)"
-                  @click="showPackImport = !showPackImport"
-                >
-                  {{ showPackImport ? "收起" : "⤒ 导入" }}
-                </button>
-                <button
-                  class="link"
-                  data-tip="新建一个角色"
-                  @click="showRoleNew = !showRoleNew"
-                >
-                  {{ showRoleNew ? "收起" : "＋ 新建" }}
-                </button>
-              </h3>
-              <!-- 作用域声明(第一百三十八批):角色此前是本面板里**唯一**会话级的控件(其余四项在
-                   第一百三十四批已收口到全局),与其它段的说法不一致。现在对齐:这里改全局默认,
-                   本会话另选角色去右上角「当前会话设置」。 -->
-              <ScopeNote what="角色" />
-              <p class="dim">
-                角色 = 人设（身份句）+ 工作规则（AGENTS.md）+
-                技能挂载。切换后<strong>下一轮</strong>生效，不换会话（回合历史与工作区都不动，与切换工作区不同）。列表顶部「默认（基线）」=
-                不启用任何角色：全局指令 + 项目规则 + 默认技能池。
-              </p>
-              <div v-if="roleErr" class="serr">{{ roleErr }}</div>
-              <p v-if="roleMsg" class="dim ok">{{ roleMsg }}</p>
-              <p v-if="roleSaving" class="dim" data-testid="role-saving">
-                提交中…
-              </p>
-              <p v-if="roleProblems.length" class="dim">
-                部分角色文件读不了（已跳过）：{{
-                  roleProblems.map((p) => p.id).join("、")
-                }}
-              </p>
-
-              <!-- 导入角色包:一个 zip 里装着定义 + 工作规则 + 私有技能(第九十三批)。
-               「导入为」留空 = 用包里的标识;同名时后端会拒,再问一次是否覆盖(旧份进回收站)。 -->
-              <div v-if="showPackImport" class="add-form">
-                <label class="fld">
-                  <span class="fld-lab">角色包文件(.zip)</span>
-                  <input
-                    class="inp"
-                    type="file"
-                    accept=".zip,application/zip"
-                    :disabled="packBusy"
-                    data-testid="pack-file"
-                    @change="onPackPick"
-                  />
-                </label>
-                <label class="fld">
-                  <span class="fld-lab"
-                    >导入为（可选：留空 = 用包里的标识）</span
-                  >
-                  <input
-                    v-model="packAs"
-                    class="inp mono"
-                    placeholder="finance-copy"
-                    :disabled="packBusy"
-                  />
-                </label>
-                <p class="dim">
-                  包里是别人导出的角色（人设 + 工作规则 +
-                  私有技能）；导入<strong>不会</strong>动你现有角色，
-                  同名时默认拒绝，确认后才覆盖（旧份进回收站可恢复）。
-                  想并存一份就填「导入为」换一个标识。
-                </p>
-                <p v-if="packBusy" class="dim" data-testid="pack-busy">
-                  导入中…
-                </p>
-              </div>
-
-              <div v-if="showRoleNew" class="add-form">
-                <label class="fld">
-                  <span class="fld-lab">标识（小写字母/数字/连字符）</span>
-                  <input
-                    v-model="rf.id"
-                    class="inp mono"
-                    placeholder="finance"
-                  />
-                </label>
-                <label class="fld">
-                  <span class="fld-lab">显示名（留空取标识）</span>
-                  <input v-model="rf.name" class="inp" placeholder="财务分析" />
-                </label>
-                <label class="fld">
-                  <span class="fld-lab">一句话定位（可选）</span>
-                  <input
-                    v-model="rf.description"
-                    class="inp"
-                    placeholder="记账与报表分析"
-                  />
-                </label>
-                <label class="fld">
-                  <span class="fld-lab">人设（身份句，一句话即可）</span>
-                  <input
-                    v-model="rf.identity"
-                    class="inp"
-                    placeholder="你是资深财务分析师，先对齐口径再给数。"
-                  />
-                </label>
-                <label class="chk">
-                  <input v-model="rf.exclude_global" type="checkbox" />
-                  <span>不注入全局 AGENTS.md（非开发角色建议勾上）</span>
-                </label>
-                <p class="dim">
-                  新建后会同时生成一份可改的 AGENTS.md
-                  模板（空文件不会进系统提示）。
-                </p>
-                <div class="form-acts">
-                  <button
-                    class="ghost solid"
-                    :disabled="busy || !rf.id"
-                    @click="createRole"
-                  >
-                    创建角色
-                  </button>
-                </div>
-              </div>
-
-              <p v-if="roleDangling" class="dim">
-                偏好里的当前角色
-                <span class="mono">{{ roleCurrent }}</span>
-                已经不存在了（角色目录被外部删除），本轮按基线运行（只有全局与项目指令）；点下面「默认（基线）」的「切换」即可切回来。
-              </p>
-
-              <div class="plist">
-                <!-- 合成行(不落盘):不启用角色也是一种确定的形态,给它一个名字与一键切回的落点 -->
-                <div class="prow scrow" :class="{ off: !roleBaseline }">
-                  <div class="pmain">
-                    <span class="sname">
-                      默认（基线）
-                      <span class="sstate mono">none</span>
-                      <span v-if="roleBaseline" class="sstate ss-ok">当前</span>
-                    </span>
-                    <span class="psub"
-                      >不注入角色设定：全局指令 + 项目规则</span
-                    >
-                    <span class="psub">技能：默认池（全部共享技能）</span>
-                  </div>
-                  <div class="sacts">
-                    <button
-                      v-if="!roleBaseline"
-                      class="ghost"
-                      data-tip="下一轮生效，不换会话"
-                      @click="useRole('')"
-                    >
-                      切换
-                    </button>
-                  </div>
-                </div>
-                <p v-if="roleHint" class="dim" data-testid="role-hint">
-                  还没挑过角色。下面
-                  {{ roles.length }}
-                  个预置角色按场景分组，<strong>挑一个</strong>就能换身份、工作规则与技能面；
-                  不挑也能用（走默认：全局指令 +
-                  全部技能）。选中后本提示不再出现。
-                </p>
-                <template v-for="sec in roleGroups" :key="sec.group">
-                  <div
-                    v-if="sec.items.length > 1 || sec.group !== '其它'"
-                    class="srow-label"
-                  >
-                    {{ sec.group }}
-                    <span class="dim">{{ sec.items.length }}</span>
-                  </div>
-                  <div
-                    v-for="r in sec.items"
-                    :key="r.id"
-                    class="prow scrow"
-                    :class="{ off: !roleIsCurrent(r) }"
-                  >
-                    <div class="pmain">
-                      <span class="sname">
-                        {{ r.name || r.id }}
-                        <span class="sstate mono">{{ r.id }}</span>
-                        <span v-if="roleIsCurrent(r)" class="sstate ss-ok"
-                          >当前</span
-                        >
-                        <span v-if="r.seed" class="sstate">预置</span>
-                      </span>
-                      <span v-if="r.description" class="psub">{{
-                        r.description
-                      }}</span>
-                      <span class="psub">
-                        技能：{{
-                          r.skills_set
-                            ? r.skills?.length
-                              ? r.skills.join("、")
-                              : "未挂载"
-                            : "默认池（全部库技能）"
-                        }}
-                        <span v-if="r.skills_inherit">+ 默认池</span>
-                      </span>
-                      <span v-if="r.exclude_global" class="psub"
-                        >不注入全局 AGENTS.md</span
-                      >
-                      <span v-if="r.model || r.thinking" class="psub">
-                        模型：{{ r.model || "跟随会话" }} · 思考：{{
-                          r.thinking
-                            ? THINK_LABEL[r.thinking] || r.thinking
-                            : "跟随会话"
-                        }}
-                      </span>
-                      <span v-if="r.approval || r.sandbox" class="psub"
-                        >收紧：{{ tierBrief(r) }}</span
-                      >
-                    </div>
-                    <div class="sacts">
-                      <button
-                        v-if="!roleIsCurrent(r)"
-                        class="ghost"
-                        data-tip="下一轮生效，不换会话"
-                        @click="useRole(r.id)"
-                      >
-                        切换
-                      </button>
-                      <button class="ghost" @click="selectRole(r)">
-                        {{ selRole === r.id ? "收起" : "编辑" }}
-                      </button>
-                      <button
-                        class="ghost"
-                        :disabled="packBusy"
-                        data-tip="导成单个 zip（定义 + 工作规则 + 私有技能），可分享给别的 gah"
-                        @click="exportRole(r)"
-                      >
-                        导出
-                      </button>
-                      <button
-                        class="ghost danger-text"
-                        data-tip="删除角色（需确认，移入回收站）"
-                        @click="deleteRole(r)"
-                      >
-                        删除
-                      </button>
-                    </div>
-                  </div>
-                </template>
-                <p v-if="!roles.length" class="dim">
-                  还没有角色：点上方「＋ 新建」建一个；首次启动会释放 12
-                  个预置角色（通用 / 工程 / 数据 / 写作 / 学习五组）。
-                </p>
-              </div>
-
-              <p v-if="roleCurrent" class="row acts">
-                <button
-                  class="ghost"
-                  data-tip="回到基线（不注入任何角色设定）"
-                  @click="useRole('')"
-                >
-                  停用当前角色
-                </button>
-              </p>
-
-              <!-- 详情编辑（列表不带正文，展开时才拉） -->
-              <div v-if="roleDetail" class="role-detail">
-                <h3 class="h">编辑：{{ roleDetail.name || roleDetail.id }}</h3>
-                <div class="row">
-                  <span class="lab-inline">显示名</span>
-                  <input
-                    class="inp grow"
-                    :value="roleDetail.name"
-                    @change="
-                      (e) =>
-                        (roleDetail!.name = (
-                          e.target as HTMLInputElement
-                        ).value)
-                    "
-                  />
-                </div>
-                <div class="row">
-                  <span class="lab-inline">一句话定位</span>
-                  <input
-                    class="inp grow"
-                    :value="roleDetail.description"
-                    @change="
-                      (e) =>
-                        (roleDetail!.description = (
-                          e.target as HTMLInputElement
-                        ).value)
-                    "
-                  />
-                </div>
-                <div class="row">
-                  <span class="lab-inline">人设</span>
-                  <input
-                    class="inp grow"
-                    :value="roleDetail.identity"
-                    @change="
-                      (e) =>
-                        (roleDetail!.identity = (
-                          e.target as HTMLInputElement
-                        ).value)
-                    "
-                  />
-                </div>
-                <label class="chk">
-                  <!-- 选项型控件一律**只改本地草稿**,由下面的「保存定义」一次性写盘(2026-10-04 用户实测)。
-                   此前这里是 @change="saveRoleDef(...)" = 选中即写盘,而同一区的文本框却要点保存 ——
-                   两套语义并排,用户无法形成稳定预期;且选项里恰好是**权限档**。 -->
-                  <input
-                    type="checkbox"
-                    :checked="!!roleDetail.exclude_global"
-                    :disabled="roleSaving"
-                    @change="
-                      roleDetail!.exclude_global = (
-                        $event.target as HTMLInputElement
-                      ).checked
-                    "
-                  />
-                  <span>不注入全局 AGENTS.md</span>
-                </label>
-                <!-- 角色携带模型/思考档(第八十六批):留空 = 跟随会话。
-                 这两个输入框不是"建议值"而是真生效的值(每回合注入请求),故文案要写清。 -->
-                <div class="row">
-                  <span class="lab-inline">模型</span>
-                  <input
-                    class="inp grow mono"
-                    :value="roleDetail.model || ''"
-                    :disabled="roleSaving"
-                    placeholder="留空 = 跟随会话模型"
-                    @change="
-                      roleDetail!.model = (
-                        $event.target as HTMLInputElement
-                      ).value
-                    "
-                  />
-                </div>
-                <div class="row">
-                  <span class="lab-inline">思考</span>
-                  <div class="seg">
-                    <button
-                      class="seg-it"
-                      :class="{ on: !roleDetail.thinking }"
-                      data-tip="跟随会话思考档"
-                      :disabled="roleSaving"
-                      @click="roleDetail!.thinking = ''"
-                    >
-                      跟随会话
-                    </button>
-                    <button
-                      v-for="t in THINK"
-                      :key="t"
-                      class="seg-it"
-                      :class="{ on: roleDetail.thinking === t }"
-                      :data-tip="'角色固定为 ' + THINK_LABEL[t]"
-                      :disabled="roleSaving"
-                      @click="roleDetail!.thinking = t"
-                    >
-                      {{ THINK_LABEL[t] }}
-                    </button>
-                  </div>
-                </div>
-                <p class="dim">
-                  模型/思考档按角色生效：每回合的请求都按这里填的值走（会话档被它覆盖，停用角色后恢复）。
-                  模型名没有任何 provider
-                  能接时本轮会退回会话模型并提示（不会硬失败）。
-                </p>
-
-                <!-- 权限档(第九十二批):角色只能收紧,不能放宽 —— 值域由 SDK 定死,
-                 后端对 open/full-access 直接拒(400),故这里只列更严的档。 -->
-                <h3 class="h">权限档（只能收紧）</h3>
-                <div class="row">
-                  <span class="lab-inline">审批</span>
-                  <select
-                    class="sel grow"
-                    :value="roleDetail.approval || ''"
-                    :disabled="roleSaving"
-                    @change="
-                      roleDetail!.approval = (
-                        $event.target as HTMLSelectElement
-                      ).value
-                    "
-                  >
-                    <option value="">跟随全局</option>
-                    <option
-                      v-for="a in ROLE_AP"
-                      :key="'ra-' + a.v"
-                      :value="a.v"
-                    >
-                      {{ a.label }}
-                    </option>
-                  </select>
-                </div>
-                <div class="row">
-                  <span class="lab-inline">沙箱</span>
-                  <select
-                    class="sel grow"
-                    :value="roleDetail.sandbox || ''"
-                    :disabled="roleSaving"
-                    @change="
-                      roleDetail!.sandbox = (
-                        $event.target as HTMLSelectElement
-                      ).value
-                    "
-                  >
-                    <option value="">跟随全局</option>
-                    <option
-                      v-for="s in ROLE_SB"
-                      :key="'rs-' + s.v"
-                      :value="s.v"
-                    >
-                      {{ s.label }}
-                    </option>
-                  </select>
-                </div>
-                <p v-if="roleTierNote" class="dim" data-testid="role-tier-note">
-                  当前实际生效：{{ roleTierNote }}（角色收紧中）
-                </p>
-                <p class="dim">
-                  实际档位取「全局档」与「角色档」里更严的那个；停用角色后回到全局档。
-                  审批收紧到「严格」时不弹确认框，危险命令直接拒——子代理与定时任务同样按它跑。
-                </p>
-                <div class="row acts">
-                  <button
-                    class="ghost solid"
-                    :disabled="busy || roleSaving || !roleDefDirty"
-                    :data-tip="
-                      roleDefDirty
-                        ? '把上面这些改动写进角色定义'
-                        : '没有未保存的改动'
-                    "
-                    @click="saveRoleDefNow()"
-                  >
-                    保存定义
-                  </button>
-                  <button
-                    v-if="roleDefDirty"
-                    class="ghost"
-                    :disabled="roleSaving"
-                    @click="revertRoleDef()"
-                  >
-                    放弃改动
-                  </button>
-                  <span v-if="roleDefDirty" class="dirty">未保存</span>
-                </div>
-
-                <label class="fld">
-                  <span class="fld-lab">
-                    工作规则（AGENTS.md）{{ byteLength(agentsDraft) }} /
-                    {{ roleMax }} 字节
-                    <span v-if="agentsDirty" class="dirty">未保存</span>
-                    <span
-                      v-if="byteLength(agentsDraft) > roleMax"
-                      class="err-text"
-                      >超出上限</span
-                    >
-                  </span>
-                  <textarea
-                    v-model="agentsDraft"
-                    class="inp mono"
-                    rows="8"
-                    placeholder="写这个角色的做事规程（逐字进系统提示，越短越省）"
-                  ></textarea>
-                </label>
-                <div class="form-acts">
-                  <button
-                    class="ghost solid"
-                    :disabled="busy || !selRole"
-                    @click="saveAgents"
-                  >
-                    保存工作规则
-                  </button>
-                  <button
-                    v-if="agentsDirty"
-                    class="ghost danger-text"
-                    @click="discardAgents"
-                  >
-                    放弃修改
-                  </button>
-                </div>
-
-                <div class="row">
-                  <span class="lab-inline">改标识</span>
-                  <input v-model="roleIDDraft" class="inp mono grow" />
-                  <button
-                    class="ghost"
-                    :disabled="
-                      roleIDDraft.trim() === roleDetail.id ||
-                      !roleIDDraft.trim()
-                    "
-                    @click="renameRole"
-                  >
-                    改标识
-                  </button>
-                </div>
-                <p class="dim">改标识 = 角色目录改名（当前角色会跟着改）。</p>
-
-                <!-- 技能挂载 -->
-                <h3 class="h">技能挂载</h3>
-                <div class="row">
-                  <span class="lab-inline">挂载方式</span>
-                  <div class="seg">
-                    <button
-                      class="seg-it"
-                      :class="{ on: !roleDetail.skills_set }"
-                      :disabled="roleSaving"
-                      data-tip="不写 skills 键 = 用默认池（全部库技能）"
-                      @click="useDefaultPool"
-                    >
-                      默认池
-                    </button>
-                    <button
-                      class="seg-it"
-                      :class="{ on: roleDetail.skills_set }"
-                      :disabled="roleSaving"
-                      data-tip="写了 skills 键 = 只挂勾选的"
-                      @click="useReplacePool"
-                    >
-                      替换
-                    </button>
-                  </div>
-                </div>
-                <label class="chk">
-                  <input
-                    type="checkbox"
-                    :checked="!!roleDetail.skills_inherit"
-                    :disabled="roleSaving"
-                    @change="
-                      toggleInherit(($event.target as HTMLInputElement).checked)
-                    "
-                  />
-                  <span>再并入默认池（替换之外额外挂上全部库技能）</span>
-                </label>
-                <p class="dim">
-                  角色私有技能（roles/&lt;id&gt;/skills/）只增不减；同名技能按目录顺序首个生效，重名会在日志里告警。
-                </p>
-                <div v-if="!roleDetail.skills_set" class="dim">
-                  当前为默认池，勾选任一项即切到「替换」。
-                </div>
-                <div class="m-list">
-                  <template v-for="[g, list] in skillsByRole" :key="g">
-                    <p class="dim">{{ groupLabel(g) }}</p>
-                    <div
-                      v-for="s in list"
-                      :key="(s.role || '') + '/' + s.name"
-                      class="m-item"
-                    >
-                      <label class="chk grow">
-                        <input
-                          type="checkbox"
-                          :checked="mounted(roleDetail, s.name)"
-                          :disabled="roleSaving"
-                          @change="
-                            toggleMount(
-                              s.name,
-                              ($event.target as HTMLInputElement).checked,
-                            )
-                          "
-                        />
-                        <span class="m-lab">{{ s.name }}</span>
-                      </label>
-                      <span v-if="s.description" class="dim grow">{{
-                        s.description
-                      }}</span>
-                      <button
-                        class="ghost"
-                        data-tip="看/改 SKILL.md 原文"
-                        @click="openSkill(s.name, s.role || '')"
-                      >
-                        原文
-                      </button>
-                      <button
-                        v-if="!s.role"
-                        class="ghost"
-                        data-tip="导出为技能包(.zip,含 SKILL.md,可分享)"
-                        @click="exportSkillPack(s.name)"
-                      >
-                        导出包
-                      </button>
-                      <button
-                        class="ghost"
-                        data-tip="改目录名 / 换归属库（会同步改角色挂载；目标同名会被拒）"
-                        @click="openMove(s.name, s.role || '')"
-                      >
-                        改名/移动
-                      </button>
-                      <button
-                        class="ghost danger-text"
-                        data-tip="删除技能（需确认）"
-                        @click="deleteSkill(s.name, s.role || '')"
-                      >
-                        删除
-                      </button>
-                    </div>
-                  </template>
-                  <p v-if="!roleLib.length" class="dim">
-                    技能库为空：可在下方新建，或把技能放到
-                    skills/&lt;名&gt;/SKILL.md。
-                  </p>
-                </div>
-                <div v-if="staleMounts.length" class="m-list">
-                  <p class="dim">
-                    已失效挂载（技能已不存在）：保存其它改动不受影响，建议清掉。
-                  </p>
-                  <div
-                    v-for="n in staleMounts"
-                    :key="'stale-' + n"
-                    class="m-item"
-                  >
-                    <span class="m-lab">{{ n }}</span>
-                    <button
-                      class="ghost danger-text"
-                      :disabled="roleSaving"
-                      data-tip="从挂载清单里移除这个名字"
-                      @click="removeStaleMount(n)"
-                    >
-                      移除
-                    </button>
-                  </div>
-                </div>
-
-                <!-- 工具排除(第九十一批):默认全给,勾上 = 不给(模型看不见也调不动) -->
-                <h3 class="h">
-                  工具
-                  <button
-                    class="link"
-                    data-tip="默认全部工具可用;勾上即排除"
-                    @click="toggleTools"
-                  >
-                    {{ toolsOpen ? "收起" : "配置" }}
-                  </button>
-                </h3>
-                <p class="dim">
-                  默认该角色可用全部工具。勾掉即排除：模型看不见也调不动(凭记忆调用会被显式拒绝)。
-                  <span v-if="excludedCount"
-                    >已排除 {{ excludedCount }} 项。</span
-                  >
-                  <button
-                    v-if="excludedCount"
-                    class="ghost"
-                    :disabled="roleSaving"
-                    data-tip="清空排除清单，恢复全部工具"
-                    @click="restoreAllTools"
-                  >
-                    全部恢复
-                  </button>
-                </p>
-                <div v-if="toolsOpen">
-                  <div v-if="toolsErr" class="serr">{{ toolsErr }}</div>
-                  <label class="fld">
-                    <span class="fld-lab">筛选（名字/描述）</span>
-                    <input
-                      v-model="toolQuery"
-                      class="inp"
-                      placeholder="shell / file / mcp_"
-                    />
-                  </label>
-                  <p v-if="toolsLoaded && !toolAll.length" class="dim">
-                    没有已注册的工具。
-                  </p>
-                  <div v-if="toolShown.length" class="m-list">
-                    <div
-                      v-for="t in toolShown"
-                      :key="'tool-' + t.name"
-                      class="m-item"
-                    >
-                      <label class="chk grow">
-                        <input
-                          type="checkbox"
-                          :checked="toolExcluded(t.name)"
-                          :disabled="roleSaving"
-                          @change="
-                            toggleTool(
-                              t.name,
-                              ($event.target as HTMLInputElement).checked,
-                            )
-                          "
-                        />
-                        <span class="m-lab mono">{{ t.name }}</span>
-                      </label>
-                      <span v-if="t.description" class="dim grow">{{
-                        t.description
-                      }}</span>
-                      <span v-if="toolExcluded(t.name)" class="dirty"
-                        >已排除</span
-                      >
-                    </div>
-                  </div>
-                  <p v-else-if="toolsLoaded" class="dim">没有匹配的工具。</p>
-                  <div v-if="staleTools.length" class="m-list">
-                    <p class="dim">
-                      已排除但当前不存在（插件卸载/改名后残留）：不报错，建议清掉。
-                    </p>
-                    <div
-                      v-for="n in staleTools"
-                      :key="'stale-tool-' + n"
-                      class="m-item"
-                    >
-                      <span class="m-lab mono">{{ n }}</span>
-                      <span class="dim grow">该工具当前不存在</span>
-                      <button
-                        class="ghost danger-text"
-                        :disabled="roleSaving"
-                        data-tip="从排除清单里移除这个名字"
-                        @click="removeStaleTool(n)"
-                      >
-                        清除
-                      </button>
-                    </div>
-                  </div>
-                </div>
-
-                <!-- 技能改名/跨库移动(第八十四批)：目录名即身份，frontmatter 的 name 由服务端同步改 -->
-                <div v-if="skMove" class="add-form">
-                  <label class="fld">
-                    <span class="fld-lab">
-                      改名 / 移动:{{ skMove.name }}
-                      <span class="dim"
-                        >(目录名即身份,会同步改挂载它的角色)</span
-                      >
-                    </span>
-                  </label>
-                  <label class="fld">
-                    <span class="fld-lab">新名称（小写字母/数字/._-）</span>
-                    <input
-                      v-model="skMove.toName"
-                      class="inp mono"
-                      :placeholder="skMove.name"
-                    />
-                  </label>
-                  <label class="fld">
-                    <span class="fld-lab">移到哪个库</span>
-                    <select v-model="skMove.toRole" class="sel">
-                      <option value="">共享技能库（所有角色可见）</option>
-                      <option
-                        v-for="r in roles"
-                        :key="'mv-' + r.id"
-                        :value="r.id"
-                      >
-                        角色私有 · {{ r.name || r.id }}
-                      </option>
-                    </select>
-                  </label>
-                  <div class="form-acts">
-                    <button
-                      class="ghost solid"
-                      :disabled="busy || !skMoveDirty"
-                      @click="submitMove"
-                    >
-                      确认改名/移动
-                    </button>
-                    <button class="ghost" @click="skMove = null">取消</button>
-                  </div>
-                </div>
-
-                <!-- 技能原文编辑（覆盖写） -->
-                <div v-if="skEdit" class="add-form">
-                  <label class="fld">
-                    <span class="fld-lab">
-                      编辑 {{ skEdit.name }} 的 SKILL.md（原文，保存即覆盖）
-                      <span v-if="skDirty" class="dirty">未保存</span>
-                    </span>
-                    <textarea
-                      v-model="skEdit.content"
-                      class="inp mono"
-                      rows="10"
-                    ></textarea>
-                  </label>
-                  <div class="form-acts">
-                    <button
-                      class="ghost solid"
-                      :disabled="busy"
-                      @click="saveSkill"
-                    >
-                      保存技能
-                    </button>
-                    <button
-                      v-if="skDirty"
-                      class="ghost danger-text"
-                      @click="discardSkill"
-                    >
-                      放弃修改
-                    </button>
-                    <button class="ghost" @click="skEdit = null">收起</button>
-                  </div>
-                </div>
-              </div>
-
-              <!-- 新建技能（共享库 / 角色私有） -->
-              <h3 class="h">
-                技能库
-                <button
-                  class="link"
-                  data-tip="新建一个技能"
-                  @click="showSkillNew = !showSkillNew"
-                >
-                  {{ showSkillNew ? "收起" : "＋ 新建技能" }}
-                </button>
-                <!-- 技能包(第一百零六批):只管**共享库**;角色私有技能随角色包导出 -->
-                <button
-                  class="link"
-                  data-tip="导入一个 gah 技能包(.zip,内含单个 SKILL.md)"
-                  @click="showSkPackImport = !showSkPackImport"
-                >
-                  {{ showSkPackImport ? "收起" : "＋ 导入技能包" }}
-                </button>
-              </h3>
-              <div v-if="showSkPackImport" class="add-form">
-                <p class="dim">
-                  包里只有那个技能的 <code>SKILL.md</code>(frontmatter + 正文)——
-                  导入端
-                  <strong>不执行任何脚本</strong
-                  >。同名已存在时后端会先拒，再问你要不要覆盖(旧份进回收站)。
-                </p>
-                <label class="fld">
-                  <span class="fld-lab">技能包文件(.zip)</span>
-                  <input
-                    class="inp"
-                    type="file"
-                    accept=".zip,application/zip"
-                    :disabled="skPackBusy"
-                    data-testid="skpack-file"
-                    @change="onSkPackPick"
-                  />
-                </label>
-                <label class="fld">
-                  <span class="fld-lab"
-                    >导入为（可选：留空 = 用包里的名称）</span
-                  >
-                  <input
-                    v-model="skPackAs"
-                    class="inp mono"
-                    placeholder="weekly-report-copy"
-                    :disabled="skPackBusy"
-                  />
-                </label>
-                <p v-if="skPackBusy" class="dim">导入中…</p>
-              </div>
-              <div v-if="skErr" class="serr">{{ skErr }}</div>
-              <div v-if="showSkillNew" class="add-form">
-                <label class="fld">
-                  <span class="fld-lab">名称（小写字母/数字/._-）</span>
-                  <input
-                    v-model="skNew.name"
-                    class="inp mono"
-                    placeholder="weekly-report"
-                  />
-                </label>
-                <label class="fld">
-                  <span class="fld-lab">什么时候用（触发词，逗号分隔）</span>
-                  <input
-                    v-model="skNew.triggers"
-                    class="inp"
-                    placeholder="写周报, 汇总进度"
-                  />
-                </label>
-                <label class="fld">
-                  <span class="fld-lab">做什么（一句话）</span>
-                  <input
-                    v-model="skNew.description"
-                    class="inp"
-                    placeholder="按项目汇总本周进展与风险"
-                  />
-                </label>
-                <label class="fld">
-                  <span class="fld-lab">正文（步骤）</span>
-                  <textarea
-                    v-model="skNew.body"
-                    class="inp"
-                    rows="4"
-                    placeholder="1. 读本周提交…"
-                  ></textarea>
-                </label>
-                <label class="fld">
-                  <span class="fld-lab">放哪里</span>
-                  <select v-model="skNew.role" class="sel">
-                    <option value="">共享技能库（所有角色可见）</option>
-                    <option v-for="r in roles" :key="r.id" :value="r.id">
-                      角色私有 · {{ r.name || r.id }}
-                    </option>
-                  </select>
-                </label>
-                <div class="form-acts">
-                  <button
-                    class="ghost solid"
-                    :disabled="busy || !skNew.name"
-                    @click="createSkill"
-                  >
-                    创建技能
-                  </button>
-                </div>
-              </div>
-
-              <!-- 回收站(第八十三批):删除的角色/技能都能从这里恢复 -->
-              <h3 class="h">
-                回收站
-                <button
-                  class="link"
-                  data-tip="删除的角色与技能(移入 .trash,可恢复)"
-                  @click="toggleTrash"
-                >
-                  {{ trashOpen ? "收起" : "查看" }}
-                </button>
-              </h3>
-              <p v-if="!trashOpen" class="dim">
-                删除的角色与技能不会真删:移入
-                <span class="mono">.trash/</span>(各自保留最近 20
-                份),在这里可以恢复。
-              </p>
-              <div v-if="trashOpen">
-                <div v-if="trashErr" class="serr">{{ trashErr }}</div>
-                <template v-if="trashReady">
-                  <p v-if="!trashCount" class="dim">回收站是空的。</p>
-                  <template v-else>
-                    <div v-if="trashRoles.length" class="m-list">
-                      <p class="dim">角色</p>
-                      <div
-                        v-for="t in trashRoles"
-                        :key="'tr-' + t.name"
-                        class="m-item"
-                      >
-                        <span class="m-lab">{{ t.id || t.name }}</span>
-                        <span v-if="!t.id" class="dim grow"
-                          >目录名不合约定,无法还原</span
-                        >
-                        <span v-else-if="t.deleted_at" class="dim grow"
-                          >删除于 {{ fmtTrashTime(t.deleted_at) }}</span
-                        >
-                        <button
-                          v-if="t.id"
-                          class="ghost"
-                          data-tip="移回 roles/&lt;id&gt;/(同名已存在会被拒)"
-                          @click="restoreTrash('role', t)"
-                        >
-                          恢复
-                        </button>
-                      </div>
-                    </div>
-                    <div v-if="trashSkills.length" class="m-list">
-                      <p class="dim">技能</p>
-                      <div
-                        v-for="t in trashSkills"
-                        :key="'ts-' + t.role + '/' + t.name"
-                        class="m-item"
-                      >
-                        <span class="m-lab">{{ t.skill || t.name }}</span>
-                        <span class="dim grow"
-                          >{{ t.role ? "角色私有 · " + t.role : "共享技能库"
-                          }}<template v-if="t.deleted_at">
-                            · 删除于 {{ fmtTrashTime(t.deleted_at) }}</template
-                          ></span
-                        >
-                        <span v-if="!t.skill" class="dim"
-                          >目录名不合约定,无法还原</span
-                        >
-                        <button
-                          v-else
-                          class="ghost"
-                          data-tip="移回原技能库(同名已存在会被拒)"
-                          @click="restoreTrash('skill', t)"
-                        >
-                          恢复
-                        </button>
-                      </div>
-                    </div>
-                  </template>
-                </template>
-              </div>
-            </section>
+            <SettingsRoleSection />
 
             <!-- 会话历史 -->
-            <section data-sec="history" class="sec">
-              <h3 class="h">会话历史</h3>
-              <div class="row">
-                <span class="lab-inline">历史注入</span>
-                <select v-model="histN" class="sel grow" @change="applyHistory">
-                  <option :value="0">全部上下文</option>
-                  <option :value="20">最近 20 条</option>
-                  <option :value="10">最近 10 条</option>
-                  <option :value="-1">不注入历史</option>
-                </select>
-              </div>
-              <div class="row acts">
-                <button
-                  class="ghost danger-text"
-                  :disabled="busy"
-                  @click="compactNow"
-                >
-                  压缩当前会话
-                </button>
-              </div>
-              <p class="dim">
-                压缩将最旧内容折叠为摘要(节省上下文),仅影响后续回合。
-              </p>
-            </section>
+            <SettingsHistorySection />
 
             <!-- Provider(W3:首启引导 + 预设 + 保存后连通性自检) -->
-            <section data-sec="provider" class="sec">
-              <h3 class="h">
-                Provider
-                <button
-                  class="link"
-                  data-tip="新增/编辑 LLM 端点"
-                  @click="toggleAdd"
-                >
-                  {{ showAdd ? "收起" : "＋ 新增" }}
-                </button>
-              </h3>
-
-              <!-- 一个 Key 就能开始:没有 provider 时空状态本身就是入口。
-                   点完预设会自动展开下方表单(加 !showAdd 是为了不出现两排一模一样的 chip)。 -->
-              <div v-if="!providers.length && !showAdd" class="onboard">
-                <p class="ob-lead">
-                  粘贴一个 API Key 就能开始,base_url 由预设填好。
-                </p>
-                <div class="ob-row">
-                  <button
-                    v-for="p in presets"
-                    :key="p.name"
-                    class="chip"
-                    :data-tip="p.note"
-                    @click="applyPreset(p)"
-                  >
-                    {{ p.label }}
-                  </button>
-                </div>
-                <p class="dim">{{ onboardHint }}</p>
-              </div>
-
-              <div v-if="showAdd" class="add-form">
-                <!-- 预设入口:**不能只存在于空状态**。
-                     原实现里预设 chips 整块包在 `!providers.length` 里 ⇒ 配好第一个之后
-                     预设全部消失,而「＋ 新增」打开的表单只能手打 base_url ——
-                     「已添加一个 provider 之后就无法再通过预设添加」就是这么来的
-                     (2026-10-06 用户反馈)。现在无论有没有 provider，点「＋ 新增」都能从预设起步。 -->
-                <div class="chip-row">
-                  <button
-                    v-for="p in presets"
-                    :key="p.name"
-                    class="chip"
-                    :class="{ added: providerNames.has(p.name) }"
-                    :data-tip="
-                      providerNames.has(p.name)
-                        ? p.note + '(已添加:保存会更新它)'
-                        : p.note
-                    "
-                    @click="applyPreset(p)"
-                  >
-                    {{ p.label }}
-                  </button>
-                </div>
-                <p v-if="pfConflicts" class="dim">
-                  「{{ pfConflicts }}」已存在：保存会**更新**它（换成这次的 api_key），不是新增一条；
-                  想多接一家请选别的预设，或自己改个名称。
-                </p>
-                <label class="fld">
-                  <span class="fld-lab">名称</span>
-                  <input
-                    v-model="pf.name"
-                    class="inp"
-                    placeholder="如 deepseek"
-                  />
-                </label>
-                <label class="fld">
-                  <span class="fld-lab">base_url</span>
-                  <input
-                    v-model="pf.base_url"
-                    class="inp mono"
-                    placeholder="https://api.deepseek.com/v1"
-                  />
-                </label>
-                <label class="fld">
-                  <span class="fld-lab">api_key</span>
-                  <input
-                    ref="keyInput"
-                    v-model="pf.api_key"
-                    class="inp mono"
-                    type="password"
-                    autocomplete="off"
-                    :placeholder="
-                      applied?.key_optional ? '本地端点留空即可' : 'sk-…'
-                    "
-                  />
-                </label>
-                <label class="fld">
-                  <span class="fld-lab">默认模型(可选)</span>
-                  <input
-                    v-model="pf.model"
-                    class="inp mono"
-                    placeholder="留空则在保存后从模型下拉里选"
-                  />
-                </label>
-                <label class="fld">
-                  <span class="fld-lab">自定义请求头(可选,一行一个「键: 值」)</span>
-                  <textarea
-                    v-model="pf.headers"
-                    class="inp mono"
-                    rows="2"
-                    placeholder="x-opencode-session: ${session}"
-                  ></textarea>
-                  <span class="dim"
-                    >网关按请求头路由或限流时才需要。支持
-                    <code>${session}</code> / <code>${version}</code> /
-                    <code>${cwd}</code> 三个占位符(保存时由服务端展开);值留空表示删掉
-                    这个键。注意:头值会**明文**存在 provider.yaml 里,长期凭据请放
-                    api_key。</span
-                  >
-                </label>
-                <div class="form-acts">
-                  <button
-                    class="ghost solid"
-                    :disabled="busy"
-                    @click="addProvider"
-                  >
-                    保存 Provider
-                  </button>
-                </div>
-              </div>
-
-              <!-- 连通性自检:保存后自动跑;失败给人话 + 原始报错 + 重试 -->
-              <div v-if="probe" class="probe" :class="probe.ok ? 'ok' : 'bad'">
-                <span>{{ probe.text }}</span>
-                <span v-if="probe.raw" class="probe-raw mono">{{
-                  probe.raw
-                }}</span>
-                <button
-                  v-if="!probe.ok"
-                  class="link"
-                  :disabled="busy"
-                  @click="reprobe"
-                >
-                  重新自检
-                </button>
-              </div>
-
-              <div class="plist">
-                <div
-                  v-for="p in providers"
-                  :key="p.Name"
-                  class="prow"
-                  :class="{ active: p.Active }"
-                >
-                  <div class="pmain">
-                    <span class="pname">{{ p.Name }}</span>
-                    <span v-if="p.Active" class="pbadge">活跃</span>
-                    <span class="psub mono">{{
-                      p.BaseURL.replace(/^https?:\/\//, "")
-                    }}</span>
-                    <span class="psub mono">{{ p.Model }}</span>
-                  </div>
-                  <div class="pops">
-                    <button
-                      v-if="!p.Active"
-                      class="ghost"
-                      data-tip="切换为活跃"
-                      @click="doProviderUse(p.Name)"
-                    >
-                      启用
-                    </button>
-                    <button
-                      class="ghost danger-text"
-                      data-tip="删除该 Provider(不可恢复)"
-                      @click="deleteProvider(p)"
-                    >
-                      删除
-                    </button>
-                  </div>
-                </div>
-                <p v-if="!providers.length" class="dim">
-                  还没有配置 Provider:点上方「＋ 新增」或直接选一个预设
-                </p>
-              </div>
-            </section>
+            <SettingsProviderSection />
 
             <!-- 数据备份(M18) -->
-            <section data-sec="backup" class="sec">
-              <h3 class="h">数据备份</h3>
-              <div class="row acts">
-                <button class="ghost" :disabled="busy" @click="doBackupNow()">
-                  立即备份
-                </button>
-                <button
-                  v-if="backups.length"
-                  class="ghost danger-text"
-                  :disabled="busy"
-                  :data-tip="'恢复 ' + backups[0].Name"
-                  @click="doBackupRestore()"
-                >
-                  恢复最新备份
-                </button>
-              </div>
-              <p v-if="backups.length" class="dim">
-                最近备份:{{ backups[0].Name }} · {{ fmtSize(backups[0].Size) }}
-                <span v-if="backups.length > 1"
-                  >(共 {{ backups.length }} 份)</span
-                >
-              </p>
-              <p v-else class="dim">暂无备份(/backup 或立即备份创建第一份)</p>
-              <p v-if="backupMsg" class="dim ok">{{ backupMsg }}</p>
-            </section>
+            <SettingsBackupSection />
 
             <!-- 定时计划(NOND-W4,host-schedule 未装配时整段隐藏) -->
-            <section v-if="schedReady" data-sec="schedule" class="sec">
-              <h3 class="h">
-                计划
-                <button
-                  class="link"
-                  data-tip="新增定时计划"
-                  @click="openSchedAdd()"
-                >
-                  {{ showSchedAdd && !schedEditing ? "收起" : "＋ 新增" }}
-                </button>
-              </h3>
-              <!-- 无人值守行为明示(方案 W4 要求:计划详情里说清楚会发生什么) -->
-              <p class="dim">
-                到点自动把描述发给模型跑一轮(走与手动输入完全相同的回合入口)。无人值守运行:需审批的动作一律拒绝(没人在场回答确认),沙箱档位沿用当前设置。
-              </p>
-              <div v-if="schedErr" class="serr">{{ schedErr }}</div>
-
-              <div v-if="showSchedAdd" class="add-form">
-                <p v-if="schedEditing" class="dim">
-                  正在修改已有计划(保存会覆盖原来的排期)
-                </p>
-
-                <label class="fld">
-                  <span class="fld-lab">多久跑一次</span>
-                  <select
-                    v-model="schedForm.repeat"
-                    class="sel"
-                    @change="schedTypeChanged()"
-                  >
-                    <option v-for="r in REPEATS" :key="r.kind" :value="r.kind">
-                      {{ r.label }}
-                    </option>
-                  </select>
-                </label>
-                <p class="dim sched-note">
-                  {{ REPEATS.find((r) => r.kind === schedForm.repeat)?.hint }}
-                </p>
-
-                <div v-if="schedForm.repeat === 'weekly'" class="chip-row">
-                  <button
-                    v-for="d in DOW_ORDER"
-                    :key="d"
-                    class="chip"
-                    :class="{ on: schedForm.dows.includes(d) }"
-                    type="button"
-                    @click="toggleDow(d)"
-                  >
-                    {{ DOW_ZH[d] }}
-                  </button>
-                </div>
-
-                <div
-                  v-else-if="schedForm.repeat === 'monthly_nth'"
-                  class="fld-row"
-                >
-                  <label class="fld">
-                    <span class="fld-lab">第几个</span>
-                    <select
-                      v-model.number="schedForm.nth"
-                      class="sel"
-                      @change="refreshSchedulePreview()"
-                    >
-                      <option v-for="n in NTHS" :key="n.v" :value="n.v">
-                        {{ n.t }}
-                      </option>
-                    </select>
-                  </label>
-                  <label class="fld">
-                    <span class="fld-lab">周几</span>
-                    <select v-model="nthDow" class="sel">
-                      <option v-for="d in DOW_ORDER" :key="d" :value="d">
-                        {{ DOW_ZH[d] }}
-                      </option>
-                    </select>
-                  </label>
-                </div>
-
-                <!-- 每年某天(公历):cron 能表达,后端反解得出来 -->
-                <div
-                  v-else-if="schedForm.repeat === 'annual_date'"
-                  class="fld-row"
-                >
-                  <label class="fld">
-                    <span class="fld-lab">几月</span>
-                    <select
-                      v-model.number="schedForm.month"
-                      class="sel"
-                      @change="refreshSchedulePreview()"
-                    >
-                      <option v-for="m in 12" :key="m" :value="m">
-                        {{ m }} 月
-                      </option>
-                    </select>
-                  </label>
-                  <label class="fld">
-                    <span class="fld-lab">几号</span>
-                    <select
-                      v-model.number="schedForm.day"
-                      class="sel"
-                      @change="refreshSchedulePreview()"
-                    >
-                      <option v-for="d in MONTH_DAYS" :key="d" :value="d">
-                        {{ d }} 号
-                      </option>
-                    </select>
-                  </label>
-                </div>
-
-                <!-- 农历节日/农历某天:日期在公历上每年都在变,cron 表达不了 -->
-                <template v-else-if="schedForm.repeat === 'lunar_annual'">
-                  <label class="fld">
-                    <span class="fld-lab">哪个农历日子</span>
-                    <select
-                      :value="schedForm.lunarFestival"
-                      class="sel"
-                      @change="
-                        setLunarFestival(
-                          ($event.target as HTMLSelectElement).value,
-                        )
-                      "
-                    >
-                      <option
-                        v-for="f in LUNAR_FESTIVALS"
-                        :key="f.name"
-                        :value="f.name"
-                      >
-                        {{ f.name }}
-                      </option>
-                      <option value="">自定义农历日期…</option>
-                    </select>
-                  </label>
-                  <div v-if="!schedForm.lunarFestival" class="fld-row">
-                    <label class="fld">
-                      <span class="fld-lab">农历月</span>
-                      <select
-                        v-model.number="schedForm.month"
-                        class="sel"
-                        @change="refreshSchedulePreview()"
-                      >
-                        <option
-                          v-for="(m, i) in LUNAR_MONTHS"
-                          :key="m"
-                          :value="i + 1"
-                        >
-                          {{ m }}
-                        </option>
-                      </select>
-                    </label>
-                    <label class="fld">
-                      <span class="fld-lab">农历日</span>
-                      <select
-                        v-model.number="schedForm.day"
-                        class="sel"
-                        @change="refreshSchedulePreview()"
-                      >
-                        <option :value="0">最后一天(除夕这类)</option>
-                        <option v-for="d in 30" :key="d" :value="d">
-                          {{ lunarDayText(d) }}
-                        </option>
-                      </select>
-                    </label>
-                  </div>
-                  <p class="dim sched-note">
-                    农历日期每年在公历上都不一样,所以预览里显示的正是它实际会跑的那几天。
-                  </p>
-                </template>
-
-                <label
-                  v-else-if="schedForm.repeat === 'monthly_day'"
-                  class="fld"
-                >
-                  <span class="fld-lab">几号</span>
-                  <select
-                    v-model.number="schedForm.day"
-                    class="sel"
-                    @change="refreshSchedulePreview()"
-                  >
-                    <option v-for="d in MONTH_DAYS" :key="d" :value="d">
-                      {{ d }} 号
-                    </option>
-                  </select>
-                </label>
-
-                <div v-else-if="schedForm.repeat === 'once'" class="fld-row">
-                  <label class="fld">
-                    <span class="fld-lab">哪一天(到点跑一轮就结束)</span>
-                    <input
-                      v-model="schedForm.onceDate"
-                      class="inp"
-                      type="date"
-                      :min="todayStr()"
-                      @change="refreshSchedulePreview()"
-                    />
-                  </label>
-                  <label class="fld">
-                    <span class="fld-lab">几点</span>
-                    <select
-                      v-model.number="schedForm.hour"
-                      class="sel"
-                      @change="refreshSchedulePreview()"
-                    >
-                      <option v-for="h in HOURS" :key="h" :value="h">
-                        {{ String(h).padStart(2, "0") }} 点
-                      </option>
-                    </select>
-                  </label>
-                  <label class="fld">
-                    <span class="fld-lab">分</span>
-                    <select
-                      v-model.number="schedForm.minute"
-                      class="sel"
-                      @change="refreshSchedulePreview()"
-                    >
-                      <option v-for="m in MINUTES" :key="m" :value="m">
-                        {{ String(m).padStart(2, "0") }} 分
-                      </option>
-                    </select>
-                  </label>
-                </div>
-
-                <label
-                  v-else-if="schedForm.repeat === 'every_n_min'"
-                  class="fld"
-                >
-                  <span class="fld-lab">每隔几分钟</span>
-                  <select
-                    v-model.number="schedForm.every"
-                    class="sel"
-                    @change="refreshSchedulePreview()"
-                  >
-                    <option v-for="n in EVERY_MIN" :key="n" :value="n">
-                      {{ n }} 分钟
-                    </option>
-                  </select>
-                </label>
-
-                <div
-                  v-else-if="schedForm.repeat === 'every_n_hour'"
-                  class="fld-row"
-                >
-                  <label class="fld">
-                    <span class="fld-lab">每隔几小时</span>
-                    <select
-                      v-model.number="schedForm.every"
-                      class="sel"
-                      @change="refreshSchedulePreview()"
-                    >
-                      <option v-for="n in EVERY_HOUR" :key="n" :value="n">
-                        {{ n }} 小时
-                      </option>
-                    </select>
-                  </label>
-                  <label class="fld">
-                    <span class="fld-lab">第几分钟</span>
-                    <select
-                      v-model.number="schedForm.minute"
-                      class="sel"
-                      @change="refreshSchedulePreview()"
-                    >
-                      <option v-for="m in MINUTES" :key="m" :value="m">
-                        {{ String(m).padStart(2, "0") }} 分
-                      </option>
-                    </select>
-                  </label>
-                </div>
-
-                <!-- 时刻:不用原生 type=time(外观与 12/24 小时制随系统区域变,跨端不一致);
-                 每小时档只给分钟(小时由「每小时」本身承担) -->
-                <div v-if="schedForm.repeat === 'hourly'" class="fld">
-                  <span class="fld-lab">第几分钟</span>
-                  <select
-                    v-model.number="schedForm.minute"
-                    class="sel"
-                    @change="refreshSchedulePreview()"
-                  >
-                    <option v-for="m in MINUTES" :key="m" :value="m">
-                      {{ String(m).padStart(2, "0") }} 分
-                    </option>
-                  </select>
-                </div>
-                <div
-                  v-else-if="schedForm.repeat !== 'every_n_min'"
-                  class="fld-row"
-                >
-                  <label v-if="schedForm.repeat !== 'every_n_hour'" class="fld">
-                    <span class="fld-lab">几点</span>
-                    <select
-                      v-model.number="schedForm.hour"
-                      class="sel"
-                      @change="refreshSchedulePreview()"
-                    >
-                      <option v-for="h in HOURS" :key="h" :value="h">
-                        {{ String(h).padStart(2, "0") }} 点
-                      </option>
-                    </select>
-                  </label>
-                  <label class="fld">
-                    <span class="fld-lab">分</span>
-                    <select
-                      v-model.number="schedForm.minute"
-                      class="sel"
-                      @change="refreshSchedulePreview()"
-                    >
-                      <option v-for="m in MINUTES" :key="m" :value="m">
-                        {{ String(m).padStart(2, "0") }} 分
-                      </option>
-                    </select>
-                  </label>
-                </div>
-
-                <p v-if="skipHint(schedForm)" class="dim sched-note">
-                  {{ skipHint(schedForm) }}
-                </p>
-                <p v-if="costHint(schedForm)" class="dim sched-note">
-                  {{ costHint(schedForm) }}
-                </p>
-
-                <!-- 预览:不会 cron 的用户唯一的验收手段 -->
-                <div v-if="schedView" class="sched-preview">
-                  <span class="sched-view">{{
-                    schedView.label || "自定义排期"
-                  }}</span>
-                  <span
-                    v-for="(l, i) in previewLines(schedView.next_runs)"
-                    :key="i"
-                    class="dim"
-                    >{{ l }}</span
-                  >
-                </div>
-                <p v-else-if="structToCron(schedForm)" class="dim sched-note">
-                  正在算下次触发…
-                </p>
-
-                <div class="chip-row">
-                  <button
-                    v-for="p in PRESETS"
-                    :key="p.label"
-                    class="chip"
-                    type="button"
-                    @click="useSchedPreset(p.form)"
-                  >
-                    {{ p.label }}
-                  </button>
-                </div>
-
-                <div class="fld-row">
-                  <input
-                    v-model="schedNL"
-                    class="inp grow"
-                    placeholder="或直接说:每天早上8点 / 每周一三五 9 点 / 月底最后一天 17:00"
-                    @keyup.enter="applyScheduleNL()"
-                  />
-                  <button
-                    class="ghost"
-                    :disabled="schedNLBusy"
-                    @click="applyScheduleNL()"
-                  >
-                    按这句话排
-                  </button>
-                </div>
-                <p v-if="schedNLNote" class="dim sched-note">
-                  {{ schedNLNote }}
-                </p>
-
-                <!-- 自定义表达式(高级):界面上**唯一**出现 cron 的地方。
-                     它只服务一个真实用例 —— 用户从教程/AI 那里抄来一条表达式,
-                     总得有地方粘贴。能反解就提示改用选择器,反解不出也允许原样保存。 -->
-                <div class="sched-adv">
-                  <button
-                    v-if="!schedRawOpen"
-                    class="link"
-                    type="button"
-                    @click="useRawExpression()"
-                  >
-                    从别处粘贴排期表达式…
-                  </button>
-                  <template v-else>
-                    <label class="fld">
-                      <span class="fld-lab">
-                        自定义表达式(分 时 日 月 周;只建议粘贴你确切知道含义的)
-                      </span>
-                      <input
-                        v-model="schedRaw"
-                        class="inp mono"
-                        placeholder="0 9 * * 1-5"
-                        @input="refreshSchedulePreview()"
-                      />
-                    </label>
-                    <div class="fld-row">
-                      <button
-                        class="ghost"
-                        type="button"
-                        @click="clearRawExpression()"
-                      >
-                        改用选择器
-                      </button>
-                      <span class="dim sched-note">{{ schedRawNote }}</span>
-                    </div>
-                  </template>
-                </div>
-
-                <label class="fld">
-                  <span class="fld-lab">名称(可选,留空取描述开头)</span>
-                  <input v-model="sf.name" class="inp" placeholder="每日对账" />
-                </label>
-                <label class="fld">
-                  <span class="fld-lab">到点做什么(作为输入发给模型)</span>
-                  <textarea
-                    v-model="sf.prompt"
-                    class="inp"
-                    rows="2"
-                    placeholder="把昨天的订单导出成对账表"
-                  ></textarea>
-                </label>
-                <div class="form-acts">
-                  <button
-                    class="ghost solid"
-                    :disabled="busy"
-                    @click="saveSchedule"
-                  >
-                    {{ schedEditing ? "保存修改" : "保存计划" }}
-                  </button>
-                  <button
-                    v-if="schedEditing"
-                    class="ghost"
-                    @click="cancelSchedEdit()"
-                  >
-                    取消
-                  </button>
-                </div>
-              </div>
-
-              <div class="plist">
-                <div
-                  v-for="s in schedules"
-                  :key="s.id"
-                  class="prow scrow"
-                  :class="{ off: !s.enabled }"
-                >
-                  <div class="pmain">
-                    <span class="sname">
-                      {{ s.name }}
-                      <span
-                        class="sstate"
-                        :class="'ss-' + (s.last_status || 'none')"
-                        >{{ statusLabel(s.last_status) }}</span
-                      >
-                    </span>
-                    <span class="psub">{{ schedRowLabel(s) }}</span>
-                    <span class="psub"
-                      >下次:{{
-                        s.enabled
-                          ? fmtNextRun(s.next_run)
-                          : s.once
-                            ? "已于 " + fmtAbs(s.last_run_at) + " 执行"
-                            : "已停用"
-                      }}</span
-                    >
-                    <span v-if="s.last_run_at" class="psub"
-                      >上次:{{ fmtAbs(s.last_run_at) }}</span
-                    >
-                    <span
-                      v-if="s.last_status === 'failed' && s.last_error"
-                      class="psub err-text"
-                      >{{ s.last_error }}</span
-                    >
-                  </div>
-                  <div class="sacts">
-                    <button
-                      v-if="!schedDone(s)"
-                      class="ghost"
-                      data-tip="立即跑一次"
-                      :disabled="!s.enabled"
-                      @click="doScheduleRun(s.id)"
-                    >
-                      {{ s.once ? "现在跑" : "运行" }}
-                    </button>
-                    <button
-                      v-if="!schedDone(s)"
-                      class="ghost"
-                      data-tip="修改排期与描述"
-                      @click="editSchedule(s)"
-                    >
-                      编辑
-                    </button>
-                    <button
-                      v-if="!schedDone(s)"
-                      class="ghost"
-                      data-tip="启用或停用"
-                      @click="toggleSchedule(s)"
-                    >
-                      {{ s.enabled ? "停用" : "启用" }}
-                    </button>
-                    <button
-                      class="ghost danger-text"
-                      data-tip="删除计划(需确认)"
-                      @click="deleteSchedule(s)"
-                    >
-                      删除
-                    </button>
-                  </div>
-                </div>
-                <p v-if="!schedules.length" class="dim">
-                  还没有计划:点上方「＋ 新增」选一个时间,或直接说一句「每天 8
-                  点整理昨日订单」。
-                </p>
-              </div>
-            </section>
+            <SettingsScheduleSection />
 
             <!-- MCP server 配置(NOND-M1 第 2/3 步:配置 + 状态 + 保存即重载) -->
-            <section data-sec="mcp" class="sec">
-              <h3 class="h">
-                MCP server
-                <button
-                  class="link"
-                  data-tip="新增一个 MCP server"
-                  @click="mcpAdd"
-                >
-                  ＋ 添加
-                </button>
-                <span v-if="mcpDirty" class="dirty">未保存</span>
-              </h3>
-              <p class="dim">
-                MCP
-                让模型用上外部工具(记忆、代码图谱、数据库等)。每行一条启动命令,与你终端里输入的一致。
-                <strong>全量注册</strong>适合工具少的
-                server;<strong>按需检索</strong>适合工具多的
-                server(工具不进每轮上下文,模型先 mcp_search 查、再 mcp_call
-                调)。
-              </p>
-              <div v-if="mcpErr" class="serr">{{ mcpErr }}</div>
-              <p v-if="mcpMsg" class="dim ok">{{ mcpMsg }}</p>
-              <div v-for="n in mcpNotices" :key="n" class="serr">{{ n }}</div>
-
-              <div class="plist">
-                <div
-                  v-for="(r, i) in mcpDrafts"
-                  :key="'mcp' + i"
-                  class="prow scrow"
-                  :class="{ off: !r.enabled }"
-                >
-                  <div class="pmain">
-                    <label class="fld">
-                      <span class="fld-lab"
-                        >名称(决定工具前缀
-                        mcp_&lt;名称&gt;_*,留空则不加前缀)</span
-                      >
-                      <input
-                        v-model="r.name"
-                        class="inp mono"
-                        placeholder="deja"
-                      />
-                    </label>
-                    <label v-if="!isRemote(r)" class="fld">
-                      <span class="fld-lab">启动命令</span>
-                      <input
-                        v-model="r.command"
-                        class="inp mono"
-                        placeholder="npx -y @modelcontextprotocol/server-memory"
-                      />
-                    </label>
-                    <!-- 远程 server(transport: http):没有本地进程,只有 url。
-                         只读展示而不是空命令框 —— 空框会让人以为配置丢了,进而「补」上一条
-                         命令把它变成 stdio(后端 MergePreserve 只补不覆盖,那种改动会生效)。 -->
-                    <div v-else class="fld">
-                      <span class="fld-lab">远程地址(只读,改请编辑 config/mcp.yaml)</span>
-                      <span class="psub mono brk">{{ r.url }}</span>
-                    </div>
-                    <div class="mrow">
-                      <label class="chk">
-                        <input v-model="r.enabled" type="checkbox" />
-                        <span>启用</span>
-                      </label>
-                      <select v-model="r.mode" class="sel">
-                        <option :value="MCP_MODE_DIRECT">全量注册</option>
-                        <option :value="MCP_MODE_SEARCH">按需检索</option>
-                      </select>
-                    </div>
-                    <span class="psub">{{ modeHint(r.mode) }}</span>
-                  </div>
-                  <div class="sacts">
-                    <span class="sstate" :class="mcpRowStateClass(r)">{{
-                      mcpRowState(r)
-                    }}</span>
-                    <button
-                      class="ghost danger-text"
-                      data-tip="从配置里移除"
-                      @click="mcpRemove(i)"
-                    >
-                      删除
-                    </button>
-                  </div>
-                </div>
-
-                <div
-                  v-for="s in mcpEnvRows"
-                  :key="'env' + s.name"
-                  class="prow scrow"
-                >
-                  <div class="pmain">
-                    <span class="sname">
-                      {{ s.name || "(未命名)" }}
-                      <span class="sstate ss-none">{{
-                        sourceLabel(s.source)
-                      }}</span>
-                    </span>
-                    <span class="psub mono">{{ fmtCommand(s) }}</span>
-                    <span class="psub"
-                      >{{ modeLabel(s.mode) }} · {{ serverStateLabel(s) }}</span
-                    >
-                  </div>
-                  <div class="sacts">
-                    <span class="dim">来自环境变量(env.sh),改后需重启 gah</span>
-                  </div>
-                </div>
-
-                <p v-if="!mcpDrafts.length && !mcpEnvRows.length" class="dim">
-                  还没有 MCP server:点上方「＋
-                  添加」写一条启动命令,保存后模型立刻能用上它的工具。
-                </p>
-              </div>
-
-              <div class="row acts">
-                <button
-                  class="ghost solid"
-                  :disabled="busy || !mcpDirty"
-                  @click="saveMcp"
-                >
-                  保存并重载
-                </button>
-                <button
-                  class="ghost"
-                  :disabled="busy || !mcpDirty"
-                  @click="discardMcp"
-                >
-                  放弃修改
-                </button>
-              </div>
-              <p v-if="mcpView" class="dim">
-                配置文件:{{ mcpView.path }}
-                <span v-if="!mcpView.reload_available"
-                  >(当前构建不能热重载,改完需重启 gah)</span
-                >
-              </p>
-            </section>
+            <SettingsMcpSection />
 
             <!-- 插件与指令 -->
-            <section data-sec="plugin" class="sec">
-              <h3 class="h">
-                插件
-                <span class="h-sub"
-                  >{{ pluginShown.length }}/{{ plugins.length }}</span
-                >
-              </h3>
-              <!-- 插件安装(2026-10-03):CLI 的安装内核接进面板。两条来源都支持 ——
-               第三方仓库与**本地自己写的目录**(不需要先 git init + push)。
-               每次安装/卸载/登记都走二次确认;审批档为「严格」时服务端直接拒。 -->
-              <!-- 批九重排:三个子块各带标题与边框,控件行只留控件。
-               原先标签 / 输入框 / 按钮 / 一句很长的 checkbox 全挤在**一个 flex 行**里,
-               窗口一窄按钮就被压到折行(实测「检查更新」断成「检查更 / 新」),
-               整段读起来是一堵墙。现在长文案一律下沉到控件行**下面**独占一行。 -->
-              <div class="plg-block">
-                <div class="plg-block-t">安装外部插件</div>
-                <div class="plg-row">
-                  <input
-                    v-model="installSpec"
-                    class="inp grow"
-                    placeholder="仓库地址(git@…/@版本或 40 位 commit sha)或本地目录绝对路径"
-                    :disabled="installBusy"
-                    @keyup.enter="doInstall()"
-                  />
-                  <button
-                    v-if="isDesktop"
-                    class="ghost"
-                    :disabled="installBusy"
-                    data-tip="选择本地插件源码目录"
-                    @click="pickInstallDir()"
-                  >
-                    浏览…
-                  </button>
-                  <button
-                    class="ghost solid"
-                    :disabled="installBusy || !installSpec.trim()"
-                    @click="doInstall()"
-                  >
-                    {{ installBusy ? "处理中…" : "安装" }}
-                  </button>
-                </div>
-                <label
-                  class="chk plg-hint"
-                  data-tip="只下载作者发布的预编译产物,不执行仓库里的构建脚本(本机可以没有 go/node/make)。要求 plugin.yaml 声明了当前平台;下载源由作者声明,gah 不验签名 —— 装的那一刻没有独立校验。"
-                >
-                  <input
-                    type="checkbox"
-                    v-model="installPrebuilt"
-                    :disabled="installBusy"
-                    data-testid="install-prebuilt"
-                  />
-                  <span>只装预编译产物(不跑它的构建脚本)</span>
-                </label>
-                <p v-if="installOk" class="dim">{{ installOk }}</p>
-                <p v-if="installWarn" class="warn-line">{{ installWarn }}</p>
-                <p v-if="installErr" class="err-line">{{ installErr }}</p>
-              </div>
-              <!-- 检查更新(批一 §1.5):**只问不装**。没有自动更新通道 —— 在不签名的前提下,
-               那是一条无认证的、持续性的远程代码执行通道(理由见 internal/install/updatecheck.go)。
-               网络只在这个按钮被点时发生一次。 -->
-              <div v-if="installRows.length" class="plg-block">
-                <div class="plg-block-t">检查更新</div>
-                <div class="plg-row">
-                  <button
-                    class="ghost"
-                    :disabled="updChecking"
-                    @click="doCheckPluginUpdates()"
-                  >
-                    {{ updChecking ? "检查中…" : "检查更新" }}
-                  </button>
-                </div>
-                <p class="dim plg-hint">
-                  gah
-                  不自动更新插件:这里只查远端当前指向,装新版要你自己重跑安装命令
-                </p>
-                <p v-if="updErr" class="err-line">{{ updErr }}</p>
-                <ul v-if="updChecks.length" class="install-list">
-                  <li v-for="c in updChecks" :key="c.plugin_id" class="irow">
-                    <span class="pname">{{ c.plugin_id }}</span>
-                    <span
-                      class="psub"
-                      :class="{ 'warn-line': c.status === 'tag_changed' }"
-                    >
-                      {{ c.repo }}{{ c.ref ? "@" + c.ref : "" }} ——
-                      {{ c.message }}
-                    </span>
-                  </li>
-                </ul>
-              </div>
-              <details v-if="installRows.length" class="plg-block dim">
-                <summary>
-                  已装外部插件({{ installRows.length }};白名单{{
-                    installRows[0]?.enforced ? "强制" : "未启用"
-                  }})
-                </summary>
-                <!-- 分组(批四 P3):两个集合的**处置完全不同** ——
-                 「随 gah 附带」由 embed 每次启动与嵌入清单比对,用户碰它没有意义;
-                 「你安装的」才需要登记 / 启停 / 卸载。混在一张表里,用户每次都要
-                 先读一列才知道哪些按钮对自己有意义。 -->
-                <p v-if="bundledPlugins.length" class="dim">
-                  随 gah 附带的插件({{ bundledPlugins.length }})
-                </p>
-                <ul v-if="bundledPlugins.length" class="install-list">
-                  <li
-                    v-for="r in bundledPlugins"
-                    :key="'b-' + r.id"
-                    class="irow"
-                  >
-                    <span class="pname">{{ r.id }}</span>
-                    <span class="psub"
-                      >{{ r.protocol || "bridge" }} · {{ r.binary }} · 随 gah
-                      附带(由 embed 每次启动校验,不必手动登记)</span
-                    >
-                  </li>
-                </ul>
-                <p v-if="userPlugins.length" class="dim">
-                  你安装的插件({{ userPlugins.length }})
-                </p>
-                <ul v-if="userPlugins.length" class="install-list">
-                  <li v-for="r in userPlugins" :key="r.id" class="irow">
-                    <span class="pname">{{ r.id }}</span>
-                    <span class="psub"
-                      >{{ r.protocol || "bridge" }} · {{ r.binary }} ·
-                      <!-- 三态(启用 / 已停用 / 二进制缺失):三种情况**处置完全不同**,
-                       而「工具不出现」这一个症状对应它们 —— 不分开呈现,用户只能猜。 -->
-                      {{ pluginStateLabel(r) }}
-                      <template v-if="r.audit_source">
-                        · {{ r.audit_source }} @
-                        {{ (r.audit_time || "").slice(0, 16) }}</template
-                      >
-                      <!-- 装机来源(批一):「它当初是从哪一份代码装的」—— 与上面的白名单状态
-                       答的不是同一个问题,故另起一行而不是挤在同一行里。 -->
-                      <template v-if="r.source_repo">
-                        · 来源 {{ sourceLine(r) }}</template
-                      >
-                      <template v-if="!r.compat_ok">
-                        ·
-                        <span class="warn-line"
-                          >协议版本 {{ r.api_version }} 不在本版 gah
-                          的支持范围内</span
-                        ></template
-                      >
-                    </span>
-                    <span class="iact">
-                      <button
-                        v-if="!r.trusted && r.loadable"
-                        class="ghost"
-                        @click="doTrustPlugin(r.binary)"
-                      >
-                        登记
-                      </button>
-                      <button
-                        v-if="r.trusted"
-                        class="ghost"
-                        @click="doUntrustPlugin(r.binary)"
-                      >
-                        撤销登记
-                      </button>
-                      <!-- 停用与卸载**文案不同**(批二):停用留文件与登记,卸载删全部。 -->
-                      <button
-                        v-if="!r.disabled && r.loadable"
-                        class="ghost"
-                        @click="doDisablePlugin(r.binary)"
-                      >
-                        停用
-                      </button>
-                      <!-- 「启用」在**未登记**时必然失败:Enable → reload → loadOne → verifyTrust 被完整性闸拒。
-                       实测(2026-10-04 用户报):停用 + 撤销登记后点启用,报的是登记错误而不是启用错误,
-                       而按钮看上去完全可点。所以这里**禁用并说明原因**,而不是让人点一次换一条看不懂的报错。 -->
-                      <button
-                        v-if="r.disabled"
-                        class="ghost"
-                        :disabled="!r.trusted"
-                        :data-tip="
-                          r.trusted
-                            ? '加载这个插件'
-                            : '需先登记:未登记的插件过不了完整性闸,启用必然失败'
-                        "
-                        @click="doEnablePlugin(r.binary)"
-                      >
-                        启用
-                      </button>
-                      <!-- 破坏性动作用**语义色**,不用灰:灰色读起来就是「禁用」。
-                       刻意**不在已登记/已启用时禁用它** —— 那恰恰是最需要它的时刻
-                       (一个行为不良的插件正是要靠卸载来止损),禁掉它等于把止损手段藏起来。 -->
-                      <button
-                        class="ghost danger"
-                        @click="doUninstallPlugin(r.id)"
-                      >
-                        卸载并删除
-                      </button>
-                    </span>
-                  </li>
-                </ul>
-              </details>
-              <!-- UI 插件(2026-10-03):信任模型 + 摘要 + **重扫入口** + 失败原因。
-               重扫解决的是「装了插件但没生效、只能靠刷新页面」;失败清单解决的是
-               「没生效」与「没被扫到」在界面上分不出来 —— 这两者的处置完全不同。 -->
-              <!-- UI 插件(批九):**补上安装入口**。此前这一段只有「重新扫描」,
-               而它对**从没装过**的用户毫无用处(扫一个空目录),安装与放行都只在命令行有
-               —— 用户看到「UI 插件」却找不到任何能开始的动作。
-               UI 插件经动态 import() 进主页面,与宿主**同源同权限**,所以确认文案要自己讲清。 -->
-              <div class="plg-block">
-                <div class="plg-block-t">UI 插件</div>
-                <div class="plg-row">
-                  <input
-                    v-model="uiSpec"
-                    class="inp grow"
-                    placeholder="仓库地址或本地目录绝对路径"
-                    :disabled="uiBusy"
-                    @keyup.enter="doUIInstall()"
-                  />
-                  <button
-                    v-if="isDesktop"
-                    class="ghost"
-                    :disabled="uiBusy"
-                    data-tip="选择本地 UI 插件源码目录"
-                    @click="pickUIDir()"
-                  >
-                    浏览…
-                  </button>
-                  <button
-                    class="ghost solid"
-                    :disabled="uiBusy || !uiSpec.trim()"
-                    @click="doUIInstall()"
-                  >
-                    {{ uiBusy ? "处理中…" : "安装" }}
-                  </button>
-                  <button
-                    class="ghost"
-                    :disabled="uiScanBusy"
-                    @click="rescanUIPlugins()"
-                  >
-                    {{ uiScanBusy ? "扫描中…" : "重新扫描" }}
-                  </button>
-                </div>
-                <p class="dim plg-hint">
-                  UI 插件经<strong>动态 import()</strong> 进入主页面 ——
-                  与宿主<strong>同源同权限</strong>, 可读全部会话内容、可用
-                  cookie 调全部 API。装完重载页面即生效,不必重启 gah。
-                </p>
-                <p v-if="uiOk" class="dim">{{ uiOk }}</p>
-                <p v-if="uiErr" class="err-line">{{ uiErr }}</p>
-
-                <ul v-if="uiPluginList.length" class="install-list">
-                  <li v-for="p in uiPluginList" :key="p.id" class="irow">
-                    <span class="pname">{{ p.id }}</span>
-                    <span class="psub">
-                      v{{ p.version || "?" }} · {{ p.slots }} 槽位 ·
-                      <template v-if="p.disabled">已停用</template>
-                      <template v-else-if="p.trusted">已登记</template>
-                      <template v-else>未登记(完整性闸拦下,不加载)</template>
-                      <template v-if="p.reject"> —— {{ p.reject }}</template>
-                    </span>
-                    <span class="iact">
-                      <button
-                        v-if="!p.trusted && !p.disabled"
-                        class="ghost"
-                        @click="doUITrust(p.id)"
-                      >
-                        登记
-                      </button>
-                      <button
-                        v-if="p.disabled"
-                        class="ghost"
-                        @click="doUIToggle(p.id, true)"
-                      >
-                        启用
-                      </button>
-                      <button
-                        v-if="!p.disabled"
-                        class="ghost"
-                        @click="doUIToggle(p.id, false)"
-                      >
-                        停用
-                      </button>
-                      <button class="ghost danger" @click="doUIUninstall(p.id)">
-                        卸载并删除
-                      </button>
-                    </span>
-                  </li>
-                </ul>
-                <p v-else-if="uiScanBusy || !uiBusy" class="dim plg-hint">
-                  还没装 UI 插件。
-                </p>
-                <p v-if="uiPluginTrustEnforced" class="warn-line plg-hint">
-                  完整性闸已启用:手工放进
-                  <code>ui-plugins/</code> 的插件默认**不加载**。
-                  确认某个可信之后,在上面点「登记」放行(命令行等价物
-                  <code>gah -trust-ui-plugin &lt;id&gt;</code>)。
-                </p>
-              </div>
-              <!-- 批四的闸说明已移进上面的 UI 子块内(原先它在块外,与「重新扫描」那段
-               隔着一整个已装列表,读起来像另一件事)。 -->
-              <!-- 原先这里还有一条「已停用的 UI 插件」独立列表。批九**删掉**:installed 列表
-               每行已带 disabled 状态与启停按钮,两条列表会把同一个插件显示两遍。 -->
-              <p v-if="uiPluginTrustNote" class="dim">
-                UI 插件(ui-plugins):{{ uiPluginTrustNote }}
-              </p>
-              <p v-if="uiPluginErrors.length" class="err-line">
-                {{ uiPluginErrors.length }} 个槽位加载失败:
-                <template v-for="(e, i) in uiPluginErrors" :key="e.id + e.slot">
-                  {{ i ? ";" : "" }}{{ e.id }}·{{ e.slot }} — {{ e.reason }}
-                </template>
-              </p>
-              <!-- 产物完整性提示(R10 ⑤-3):sha256 覆盖范围与降级原因如实显示;值供人比对,
-               本面板不做"通过/不通过"判断(同源页面自证不构成安全边界) -->
-              <details v-if="uiPluginDigests.length" class="dim">
-                <summary>
-                  产物校验值(sha256,{{ uiPluginDigests.length }} 个 UI
-                  插件;可与发布方公布的比对)
-                </summary>
-                <ul class="digests">
-                  <li
-                    v-for="d in uiPluginDigests"
-                    :key="d.id"
-                    :title="d.sha256 || '无摘要'"
-                  >
-                    {{ digestLine(d) }}
-                  </li>
-                </ul>
-              </details>
-              <!-- data-testid:本段新增了「安装插件」的输入框,`[data-sec="plugin"] input`
-               已经**不唯一**(布局护栏按它 fill,装到安装框上,筛选就失效)。给筛选框一个
-               稳定锚点,别让"谁排在前面"决定语义。 -->
-              <div v-if="plugins.length > PLUGIN_CAP" class="row">
-                <input
-                  v-model="pluginFilter"
-                  class="inp grow"
-                  data-testid="plugin-filter"
-                  placeholder="筛选插件 ID / 类型 / 状态"
-                />
-              </div>
-              <div class="plist">
-                <div v-for="p in pluginShown" :key="p.ID" class="prow">
-                  <div class="pmain">
-                    <span class="pname">{{ p.ID }}</span>
-                    <span class="psub"
-                      >{{ p.Type }} · {{ p.State }} ·
-                      {{ manageMeta(p).label }}</span
-                    >
-                    <!-- 被拒(白名单不符等):必须显示原因与补救办法 ——
-                     否则表现只是「插件不见了」,用户无从判断是没装还是被拦。 -->
-                    <span v-if="p.rejected" class="pwhy" :title="p.rejected"
-                      >被拒绝:{{ p.rejected }}</span
-                    >
-                  </div>
-                  <!-- 外部化/场景专用:只读标记,web 侧禁用启停 -->
-                  <button
-                    v-if="p.manage === 'external' || p.manage === 'scenario'"
-                    class="ghost"
-                    :class="{ ro: true }"
-                    :data-tip="manageMeta(p).tip"
-                    disabled
-                    @click="pluginToggle(p)"
-                  >
-                    只读
-                  </button>
-                  <button
-                    v-else
-                    class="ghost"
-                    :class="{ 'danger-text': p.State === 'loaded' }"
-                    :data-tip="p.State === 'loaded' ? '卸载(确认)' : '加载启用'"
-                    @click="pluginToggle(p)"
-                  >
-                    {{ p.State === "loaded" ? "卸载" : "启用" }}
-                  </button>
-                </div>
-                <p v-if="!plugins.length" class="dim">插件管理不可用</p>
-                <p v-else-if="!pluginHits.length" class="dim">没有匹配的插件</p>
-                <!-- 长列表折叠(前 5 条之外的默认不渲染);≤5 条时 pluginHidden 恒为 0,不出现按钮 -->
-                <button
-                  v-if="pluginHidden > 0"
-                  class="ghost more"
-                  @click="pluginExpanded = true"
-                >
-                  展开全部(还有 {{ pluginHidden }} 个)
-                </button>
-                <button
-                  v-else-if="pluginExpanded && pluginHits.length > PLUGIN_CAP"
-                  class="ghost more"
-                  @click="pluginExpanded = false"
-                >
-                  收起
-                </button>
-              </div>
-              <div class="row acts">
-                <button class="ghost" @click="doReload">重载指令文件</button>
-              </div>
-            </section>
+            <SettingsPluginSection />
 
             <!-- 桌面壳专属:升级入口(浏览器直连时整段隐藏)。此前升级只在托盘菜单里,
              菜单弹不出来就等于没有入口,故补到界面上。 -->
-            <section v-if="isDesktop" data-sec="about" class="sec">
-              <h3 class="h">关于 gah</h3>
-              <p class="dim" data-testid="about-autostart">
-                开机自启:{{
-                  autoState === "on"
-                    ? "已启用"
-                    : autoState === "off"
-                      ? "未启用"
-                      : "未知"
-                }}
-              </p>
-              <p class="dim">
-                升级入口固定在面板底部(不随内容滚动):点「检查更新」即查 GitHub
-                Release 上的新版本,有更新会自动下载安装并重启。
-              </p>
-            </section>
+            <SettingsAboutSection />
 
             <!-- v2 扩展点:设置面板区段(插件注入,每插件一节) -->
             <section
