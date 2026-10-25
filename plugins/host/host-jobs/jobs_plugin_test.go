@@ -540,8 +540,11 @@ func TestJobViewShapes(t *testing.T) {
 	}
 }
 
-// TestCappedBufferTruncation 输出上限:超限后丢弃尾部并标记截断,
-// 且必须继续返回成功(否则子进程会因 EPIPE 改变行为)。
+// TestCappedBufferTruncation 输出上限:超限后丢弃尾部并继续报成功(否则子进程会因 EPIPE
+// 改变行为),但**必须报出丢了多少 + 怎么拿到全部**(只说「已截断」不管用:没人能凭它
+// 判断该不该换一种取法)。
+//
+// 反向验证过:把 total 计数改回旧的 truncated bool(即超限后不再累计字节)⇒ 本用例红。
 func TestCappedBufferTruncation(t *testing.T) {
 	b := &cappedBuffer{}
 	chunk := []byte(strings.Repeat("a", 4096))
@@ -552,18 +555,18 @@ func TestCappedBufferTruncation(t *testing.T) {
 		}
 		written += len(chunk)
 	}
-	if b.truncated {
-		t.Fatal("未超限不该标记截断")
+	if b.dropped() != 0 {
+		t.Fatal("未超限不该有丢弃")
 	}
-	// 跨越上限:部分写入 + 标记
+	// 跨越上限:部分写入 + 开始计数丢弃
 	over := []byte(strings.Repeat("b", 8192))
 	if n, err := b.Write(over); err != nil || n != len(over) {
 		t.Fatalf("跨界写入应报成功(不触发 EPIPE): n=%d err=%v", n, err)
 	}
-	if !b.truncated {
-		t.Fatal("跨界应标记截断")
+	if b.dropped() != 4096 {
+		t.Fatalf("跨界应只丢超出部分 4096, got %d", b.dropped())
 	}
-	// 超限后继续写:仍报成功且不再增长
+	// 超限后继续写:仍报成功、不再增长,但丢弃量要跟着涨
 	before := b.buf.Len()
 	if n, err := b.Write(chunk); err != nil || n != len(chunk) {
 		t.Fatalf("超限后写入仍应报成功: n=%d err=%v", n, err)
@@ -571,9 +574,18 @@ func TestCappedBufferTruncation(t *testing.T) {
 	if b.buf.Len() != before {
 		t.Fatalf("超限后不应继续增长: %d → %d", before, b.buf.Len())
 	}
+	if b.dropped() != 8192 {
+		t.Fatalf("丢弃量必须跟着涨到 8192, got %d", b.dropped())
+	}
 	s := b.String()
-	if !strings.HasSuffix(s, "…(输出超 1048576 字节已截断)") || strings.Count(s, "已截断") != 1 {
-		t.Fatalf("截断标记应恰一次且带字节数: %q", s[len(s)-40:])
+	if strings.Count(s, "已丢弃尾部") != 1 {
+		t.Fatalf("截断说明应恰一次: %q", s[len(s)-80:])
+	}
+	if !strings.Contains(s, "已丢弃尾部 8192 字节") {
+		t.Fatalf("必须报出实际丢弃量: %q", s[len(s)-80:])
+	}
+	if !strings.Contains(s, "重定向到文件") {
+		t.Fatalf("必须给出复原路径(被丢的字节没落盘): %q", s[len(s)-80:])
 	}
 }
 

@@ -10,7 +10,7 @@
 //
 // 配置(config/bundle-base.yaml 的 data):
 //
-//	limit: 20000        # 单条工具结果预算(字符);0 = 关闭分流
+//	limit: 20000        # 单条工具结果预算(字符);0 = 关闭分流;正数须 >= minLimit
 //	skip_tools: [..]    # 豁免工具名(它们自带更精确的预算,例如 file_read 的行区间)
 package hosttooloffload
 
@@ -28,6 +28,17 @@ import (
 // 工具结果(读几十行、grep 十几条)都在 2k 以下。取 2 万 = 只碰真正会撑爆上下文的
 // 那批,不改变绝大多数回合的模型输入。
 const defaultLimit = 20000
+
+// minLimit 单条预算下限(字符)。低于它就不再是「给模型瘦身」,而是「把结果切成碎片」:
+//
+// internal/tooloffload 的 envelope 注释已经写明这个失败模式(模型看到半截 JSON 会去猜它、
+// 甚至照着补全),而在这条预算下模型连「这是什么」都读不到 —— 于是它猜出来的东西会被
+// 当成事实继续用。上游 Harness² 对同类参数的处理是硬下限(观测截断 < 10k 直接拒绝,
+// 理由写的是 "fabricates defects"):同一个坑,同一道闸。
+//
+// 取 4000(≈1k token):此时说明文字与 JSON 骨架约占 4%,头尾各能分到 1.5k 以上,
+// trimJSON 的字段预算(limit*7/10 = 2800)远高于它自己的 256 放弃线。
+const minLimit = 4000
 
 // Plugin 实现 host-tool-offload。
 type Plugin struct{}
@@ -85,6 +96,13 @@ func parseConfig(m *sdk.Manifest) (config, error) {
 			return cfg, fmt.Errorf("host-tool-offload: data.limit 必须是整数(0 = 关闭), got %T", v)
 		}
 		cfg.limit = n
+	}
+	// 显式失败而不是静默抬到下限:静默改用户设的数同样属于「静默改意图」,
+	// 而 0 已经是「关闭」的合法写法 —— 报错文案把两条合法选择直接写出来。
+	if cfg.limit > 0 && cfg.limit < minLimit {
+		return cfg, fmt.Errorf(
+			"host-tool-offload: data.limit=%d 太小,会把工具结果切成碎片(模型会去猜被省略的部分);"+
+				"改成 0(关闭分流)或 >= %d", cfg.limit, minLimit)
 	}
 	if v, ok := m.Data["skip_tools"]; ok {
 		list, ok := v.([]any)

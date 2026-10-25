@@ -135,29 +135,42 @@ const keepHistory = 20 // 完成后最多保留的任务数(防内存膨胀)
 const maxJobOutput = 1 << 20 // 1 MiB
 
 // cappedBuffer 限长输出缓冲。
+//
+// **只计不存**:超过上限的字节不留在内存里,但仍计入 total —— 因为报告「丢了多大一块」
+// 必须有这个数。只说「已截断」而不给量,读的人(人或者模型)无法判断要不要换一种取法
+// (重定向到文件/减少 verbose/分段看),这是 tooloffload 那一节就写下的纪律。
 type cappedBuffer struct {
-	buf       bytes.Buffer
-	truncated bool
+	buf   bytes.Buffer
+	total int // 实际收到的字节总数(含被丢弃的那部分)
 }
 
 func (b *cappedBuffer) Write(p []byte) (int, error) {
+	b.total += len(p)
 	remain := maxJobOutput - b.buf.Len()
 	if remain <= 0 {
-		b.truncated = true
 		return len(p), nil // 丢弃但报写入成功(不让子进程因 EPIPE 变更行为)
 	}
 	if len(p) > remain {
 		_, _ = b.buf.Write(p[:remain])
-		b.truncated = true
 		return len(p), nil
 	}
 	return b.buf.Write(p)
 }
 
+// dropped 被丢弃的字节数(0 = 没丢)。
+func (b *cappedBuffer) dropped() int {
+	if d := b.total - b.buf.Len(); d > 0 {
+		return d
+	}
+	return 0
+}
+
 func (b *cappedBuffer) String() string {
 	s := b.buf.String()
-	if b.truncated {
-		s += fmt.Sprintf("\n…(输出超 %d 字节已截断)", maxJobOutput)
+	if d := b.dropped(); d > 0 {
+		// 三条必须同时在场:上限多少、丢了多少、怎么拿到全部。第三条尤其重要 ——
+		// 被丢的字节没有落盘,重定向到文件是唯一的复原路径,不给出来就是死信息。
+		s += fmt.Sprintf("\n…(单任务输出上限 %d 字节,已丢弃尾部 %d 字节;要看全请重跑命令并重定向到文件再读,例如 `cmd > /tmp/job.log 2>&1`)", maxJobOutput, d)
 	}
 	return s
 }

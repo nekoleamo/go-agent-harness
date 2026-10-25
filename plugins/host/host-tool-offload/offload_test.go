@@ -6,9 +6,11 @@ package hosttooloffload
 //  ① 超预算时原文进 Data、Content 变瘦 —— 而**小结果一个字节都不许动**;
 //  ② data.limit=0 真的关掉(不订阅);
 //  ③ skip_tools / 工具自带 Data 时**不重复分流**(尊重工具自己的判断);
-// 外加配置写错必须显式报错(预算写错会让分流静默失效)。
+// 外加配置写错必须显式报错(预算写错会让分流静默失效),预算过小同样必须报错
+// (把结果切成碎片 = 让模型去猜被省略的部分)。
 
 import (
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -39,7 +41,7 @@ func emit(t *testing.T, c sdk.Ctx, tool, content string) *sdk.ToolResult {
 // TestOffloadsOversizedResult 超预算 ⇒ Content 变瘦、Data 是完整原文、且瘦身版**明说**省略了多少。
 func TestOffloadsOversizedResult(t *testing.T) {
 	c := newCtx(t)
-	if _, err := (&Plugin{}).Start(c, &sdk.Manifest{Data: map[string]any{"limit": 1000}}); err != nil {
+	if _, err := (&Plugin{}).Start(c, &sdk.Manifest{Data: map[string]any{"limit": minLimit}}); err != nil {
 		t.Fatal(err)
 	}
 	big := strings.Repeat("x", 5000)
@@ -50,7 +52,7 @@ func TestOffloadsOversizedResult(t *testing.T) {
 	if res.Content == big {
 		t.Fatal("Content 应该被瘦身")
 	}
-	if len([]rune(res.Content)) > 1000 {
+	if len([]rune(res.Content)) > minLimit {
 		t.Fatalf("瘦身后 %d 字符,超预算", len([]rune(res.Content)))
 	}
 	if !strings.Contains(res.Content, "省略") {
@@ -63,7 +65,7 @@ func TestOffloadsOversizedResult(t *testing.T) {
 // 反向验证过:把 Split 的 `orig <= limit` 早退删掉(改成永远走裁剪路径)⇒ 本用例红。
 func TestUnderBudgetUntouched(t *testing.T) {
 	c := newCtx(t)
-	if _, err := (&Plugin{}).Start(c, &sdk.Manifest{Data: map[string]any{"limit": 1000}}); err != nil {
+	if _, err := (&Plugin{}).Start(c, &sdk.Manifest{Data: map[string]any{"limit": minLimit}}); err != nil {
 		t.Fatal(err)
 	}
 	small := `{"output":"ok"}`
@@ -92,7 +94,7 @@ func TestLimitZeroDisables(t *testing.T) {
 // TestSkipTools 豁免清单里的工具不碰。
 func TestSkipTools(t *testing.T) {
 	c := newCtx(t)
-	m := &sdk.Manifest{Data: map[string]any{"limit": 100, "skip_tools": []any{"file_read"}}}
+	m := &sdk.Manifest{Data: map[string]any{"limit": minLimit, "skip_tools": []any{"file_read"}}}
 	if _, err := (&Plugin{}).Start(c, m); err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +110,7 @@ func TestSkipTools(t *testing.T) {
 // TestToolProvidedDataWins 工具自己带了 Data(它更懂自己的数据)⇒ 宿主不再覆盖。
 func TestToolProvidedDataWins(t *testing.T) {
 	c := newCtx(t)
-	if _, err := (&Plugin{}).Start(c, &sdk.Manifest{Data: map[string]any{"limit": 100}}); err != nil {
+	if _, err := (&Plugin{}).Start(c, &sdk.Manifest{Data: map[string]any{"limit": minLimit}}); err != nil {
 		t.Fatal(err)
 	}
 	res := &sdk.ToolResult{Content: "已摘要", Data: strings.Repeat("w", 5000)}
@@ -130,6 +132,31 @@ func TestBadConfigFailsLoudly(t *testing.T) {
 	} {
 		if _, err := (&Plugin{}).Start(c, &sdk.Manifest{Data: tc}); err == nil {
 			t.Fatalf("配置 %v 应报错", tc)
+		}
+	}
+}
+
+// TestLimitBelowFloorFailsLoudly 预算低于下限 ⇒ Start 报错,且文案给出两条合法选择。
+//
+// 为什么要报错而不是抬到下限:静默改用户设的数等于静默改意图;而 0 已经是「关闭」的
+// 逃逸口,文案直接写出来,用户不需要读源码就知道该改哪个数。
+// 反向验证过:把 parseConfig 里的下限判断整段删掉 ⇒ 本用例红。
+func TestLimitBelowFloorFailsLoudly(t *testing.T) {
+	c := newCtx(t)
+	for _, n := range []int{1, 500, minLimit - 1} {
+		_, err := (&Plugin{}).Start(c, &sdk.Manifest{Data: map[string]any{"limit": n}})
+		if err == nil {
+			t.Fatalf("limit=%d 低于下限 %d,应报错", n, minLimit)
+		}
+		msg := err.Error()
+		if !strings.Contains(msg, "0(") || !strings.Contains(msg, fmt.Sprint(minLimit)) {
+			t.Fatalf("报错必须给出两条合法选择(0 关闭 / >= %d): %q", minLimit, msg)
+		}
+	}
+	// 边界:正好等于下限与 0 都必须放行
+	for _, n := range []int{minLimit, 0} {
+		if _, err := (&Plugin{}).Start(c, &sdk.Manifest{Data: map[string]any{"limit": n}}); err != nil {
+			t.Fatalf("limit=%d 应放行: %v", n, err)
 		}
 	}
 }
