@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/nekoleamo/go-agent-harness/internal/kernelsandbox"
 	"github.com/nekoleamo/go-agent-harness/sdk"
@@ -536,6 +537,11 @@ func (t *KillTool) Execute(_ context.Context, raw string) (any, error) {
 }
 
 // jobView 精简视图:模型输出友好(省略大段 output)。
+//
+// 截断处必须交代三件事(与 cappedBuffer 同一条纪律):前段多长、省了多少、怎么拿全文 ——
+// 只写「截断」的话,读的人(模型)无法判断是该重试、换命令还是直接引这一截。
+// 另:这里是 **rune 边界**截断,不是字节切片 —— 命令输出常常是中文,按字节切会把一个汉字
+// 切成两半(JSON 里就变成 U+FFFD),而模型会把它当真实内容引用。
 func jobView(j sdk.Job) map[string]any {
 	out := map[string]any{
 		"id": j.ID, "state": string(j.State), "command": j.Command,
@@ -551,13 +557,30 @@ func jobView(j sdk.Job) map[string]any {
 		out["result"] = j.Result
 	}
 	if l := len(j.Output); l > 0 {
-		if l > 2000 {
-			out["output"] = j.Output[:2000] + "…(截断)"
+		if l > maxViewOutput {
+			head, dropped := clipUTF8(j.Output, maxViewOutput)
+			out["output"] = fmt.Sprintf("%s…(以上为前 %d 字节的可见部分,已省略 %d 字节;要全文用 /jobs output %s)",
+				head, len(head), dropped, j.ID)
 		} else {
 			out["output"] = j.Output
 		}
 	}
 	return out
+}
+
+// maxViewOutput jobView 里 output 字段的字节预算(模型面:只给结论与上下文,不给全文)。
+const maxViewOutput = 2000
+
+// clipUTF8 保留头部至多 max 字节,并在**rune 边界**回退一步;返回保留部分与丢弃字节数。
+func clipUTF8(s string, max int) (string, int) {
+	if len(s) <= max {
+		return s, 0
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut], len(s) - cut
 }
 
 // jobsView 列表视图。

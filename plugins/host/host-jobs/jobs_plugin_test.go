@@ -13,6 +13,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/nekoleamo/go-agent-harness/plugins/policy/policy-guard"
 	"github.com/nekoleamo/go-agent-harness/sdk"
@@ -512,13 +513,38 @@ func TestJobToolsListOutputKill(t *testing.T) {
 }
 
 // TestJobViewShapes jobView/jobsView 的展示契约:长输出截断、可选字段按需出现。
+//
+// 截断那一段同时钉三条(与 cappedBuffer 同一条纪律):前段可见、**丢了多少**、**怎么拿全文**。
+// 反向验证过:把 clipUTF8 换回 `j.Output[:2000]` ⇒ 子用例②(中文切碎)与③(丢弃量魔数)
+// 同时红。
 func TestJobViewShapes(t *testing.T) {
 	long := strings.Repeat("x", 2001)
 	j := sdk.Job{ID: "job_1", State: sdk.JobDone, Command: "echo", Output: long,
 		Error: "警告", Result: "结果", CreatedAt: time.Now(), DoneAt: time.Now()}
 	v := jobView(j)
-	if s, ok := v["output"].(string); !ok || !strings.HasSuffix(s, "…(截断)") || len(s) != 2000+len("…(截断)") {
-		t.Fatalf("超长输出应截断标记: %#v", v["output"])
+	s, ok := v["output"].(string)
+	if !ok {
+		t.Fatalf("output 应为字符串: %#v", v["output"])
+	}
+	for _, want := range []string{"已省略 1 字节", "/jobs output job_1"} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("截断说明必须交代量与复原路径(缺 %q): %q", want, s)
+		}
+	}
+	if !strings.HasPrefix(s, long[:maxViewOutput]) {
+		t.Fatal("前段必须原样保留")
+	}
+	// 中文边界:按字节切会把汉字切成两半(JSON 里成 U+FFFD,模型会当真实内容引用)
+	cn := strings.Repeat("汉", 1000) // 3000 字节
+	cs, _ := jobView(sdk.Job{ID: "job_cn", State: sdk.JobDone, Output: cn})["output"].(string)
+	if !utf8.ValidString(cs) {
+		t.Fatalf("截断后必须是合法 UTF-8: %q", cs[len(cs)-40:])
+	}
+	if strings.ContainsRune(cs, utf8.RuneError) {
+		t.Fatalf("字符未切碎(不得出现替换符): %q", cs[len(cs)-40:])
+	}
+	if !strings.HasPrefix(cs, strings.Repeat("汉", maxViewOutput/3)) {
+		t.Fatal("中文前段应在 rune 边界回退后完整保留")
 	}
 	for _, k := range []string{"id", "state", "command", "created_at", "done_at", "error", "result"} {
 		if _, ok := v[k]; !ok {
