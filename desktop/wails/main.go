@@ -46,8 +46,9 @@ type shell struct {
 	quitting atomic.Bool
 	notifier *notifier // 系统通知(未装配时为 nil,调用方需容忍)
 
-	noticeSvcMissing atomic.Bool // 宿主未装配 ctx.notices:只记一次
-	dataRoot         string      // 本次运行实际使用的数据根(备份/诊断用)
+	noticeSvcMissing atomic.Bool      // 宿主未装配 ctx.notices:只记一次
+	dataRoot         string           // 本次运行实际使用的数据根(备份/诊断用)
+	updater          *desktopProvider // 更新源(未装配时为 nil ⇒ 控制面如实报不可用)
 }
 
 func main() {
@@ -111,6 +112,13 @@ func main() {
 		EnableFileDrop: false,
 	})
 	sh.buildTray()
+
+	if err := sh.initUpdater(); err != nil {
+		// 更新器起不来不该拦住整个应用(界面/会话全不能用比没有更新更糟);
+		// 但要留痕,并让控制面如实报「不可用」。
+		shellLogf("更新器初始化失败(本次禁用检查更新): %v", err)
+		sh.updater = nil
+	}
 
 	// 启动链放协程:spawn sidecar → 等就绪 → 导航 → 显示窗口。
 	// 就绪前失败不 panic:把原因铺在窗口里,比白屏闪退有用得多。

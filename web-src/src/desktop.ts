@@ -339,7 +339,9 @@ export async function checkUpdate(timeoutMs = CHECK_TIMEOUT_MS): Promise<UpdateR
 // 超时给得比检查宽得多:下载 30+ MB 在慢网络下要几分钟,拿检查的 75 秒套上去会假红。
 export async function installUpdate(timeoutMs = INSTALL_TIMEOUT_MS): Promise<UpdateResult> {
   if (isWailsShell) {
-    throw new Error('Go 壳的更新器尚未接入(见 docs/DESKTOP_FEASIBILITY §11.7),请到项目 Release 页下载')
+    // 下载+验签+落位都在壳侧(框架负责),这里只要一个结论。
+    const r = (await raceWails('/shell/update-install', timeoutMs)) as UpdateResult
+    return r
   }
   if (!tauriInvoke) throw new Error('当前环境不支持升级(需桌面版)')
   return raceUpdate(

@@ -13,6 +13,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
@@ -91,6 +92,8 @@ func (c *controlPlane) routes() http.Handler {
 	mux.HandleFunc("/shell/autostart", c.guard(c.handleAutostart))
 	mux.HandleFunc("/shell/update-state", c.guard(c.handleUpdateState))
 	mux.HandleFunc("/shell/update-check", c.guard(c.handleUpdateCheck))
+	mux.HandleFunc("/shell/update-install", c.guard(c.handleUpdateInstall))
+	mux.HandleFunc("/shell/update-restart", c.guard(c.handleUpdateRestart))
 	mux.HandleFunc("/shell/notify-test", c.guard(c.handleNotifyTest))
 	mux.HandleFunc("/shell/diag", c.guard(c.handleDiag))
 	mux.HandleFunc("/shell/backup", c.guard(c.handleBackup))
@@ -313,11 +316,13 @@ func (c *controlPlane) handleBackup(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"path": path})
 }
 
-// handleUpdateState 更新状态:本期恒为 idle。
-// shortcut: 更新器迁移未在本批范围内(见 docs/DESKTOP_FEASIBILITY.md §11.6);
-// 上线路径是 wails updater(zip/单文件 + ed25519),替换旧的 latest.json 双源方案。
+// handleUpdateState 当前更新状态(状态机由 wails updater 持有,壳不再自己维护一份)。
 func (c *controlPlane) handleUpdateState(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"status": "idle", "version": version})
+	st := "unconfigured"
+	if c.sh.updater != nil && c.sh.app != nil {
+		st = string(c.sh.app.Updater.State())
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": st, "version": version})
 }
 
 // handleNotifyTest 发一条测试通知:真机上验「通知到底有没有送达」的唯一手段
@@ -331,9 +336,71 @@ func (c *controlPlane) handleNotifyTest(w http.ResponseWriter, _ *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (c *controlPlane) handleUpdateCheck(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusNotImplemented, map[string]any{
-		"status": "unavailable",
-		"reason": "更新器尚未迁移到 Wails v3 壳,请到项目 Release 页下载",
+// handleUpdateCheck 只查不装(2026-10-03 的决定):一次「检查更新」不该顺手把整个应用换掉。
+func (c *controlPlane) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
+	if c.sh.updater == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"status": "unavailable",
+			"reason": "更新器未装配(见壳日志)",
+		})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	rel, err := c.sh.app.Updater.Check(ctx)
+	if err != nil {
+		shellLogf("检查更新失败: %v", err)
+		writeJSON(w, http.StatusOK, map[string]any{"status": "failed", "message": err.Error()})
+		return
+	}
+	if rel == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "upToDate", "version": version})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":  "available",
+		"version": rel.Version,
+		"notes":   rel.Notes,
 	})
+}
+
+// handleUpdateInstall 下载并安装上一次检查到的更新(下载+验签+落位由框架负责)。
+func (c *controlPlane) handleUpdateInstall(w http.ResponseWriter, r *http.Request) {
+	if c.sh.updater == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"status": "unavailable"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
+	defer cancel()
+	// 升级前备份:整包替换一旦把数据读坏,用户没有第二份。
+	if path, err := backupBeforeUpgrade(c.sh.dataRoot); err != nil {
+		shellLogf("升级前备份失败(中止升级): %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"status": "failed", "message": "升级前备份失败,已中止: " + err.Error()})
+		return
+	} else if path != "" {
+		shellLogf("升级前备份: %s", path)
+	}
+	if err := c.sh.app.Updater.DownloadAndInstall(ctx); err != nil {
+		shellLogf("安装更新失败: %v", err)
+		writeJSON(w, http.StatusOK, map[string]any{"status": "failed", "message": err.Error()})
+		return
+	}
+	shellLogf("更新已就绪,等待重启应用")
+	writeJSON(w, http.StatusOK, map[string]any{"status": "installed"})
+}
+
+// handleUpdateRestart 应用已就绪的更新(框架会起 helper 等本进程退出后换文件)。
+func (c *controlPlane) handleUpdateRestart(w http.ResponseWriter, r *http.Request) {
+	if c.sh.updater == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"status": "unavailable"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "restarting"})
+	go func() {
+		// 先把应答发出去再重启,否则前端拿到的是断链而不是结论。
+		time.Sleep(200 * time.Millisecond)
+		if err := c.sh.app.Updater.Restart(context.Background()); err != nil {
+			shellLogf("重启应用失败: %v", err)
+		}
+	}()
 }
