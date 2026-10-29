@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# ⚠️ 旧 Tauri 链发布脚本。Go + Wails 链见 scripts/publish-desktop-wails.sh
+# (产物 .app.zip / 单 exe zip;清单 desktop-latest.json;签名 desktopman)。
 # 桌面壳零成本发行(无 Apple/Windows 代码签名,updater ed25519 自持签名):
 #   单平台:bash scripts/publish-desktop.sh darwin-aarch64      # 或 darwin-x86_64 / windows-x86_64
 #   合并:   bash scripts/publish-desktop.sh merge               # 读 dist-desktop/latest.<平台>.json 合成 latest.json

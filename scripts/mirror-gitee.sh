@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# ⚠️ 本文件的桌面部分是**旧 Tauri 链**口径(latest.json 的 URL 改写)。
+# Go + Wails 链对应:`desktopman rewrite-url --manifest dist-desktop-wails/desktop-latest.json --base <镜像前缀>`。
 # 把发布产物镜像到 Gitee Release(国内加速;零成本自控镜像,不依赖公益代理)。
 #
 # 用法:

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# ⚠️ 旧 Tauri 壳的构建脚本。Go + Wails 链见 scripts/gen-desktop-wails.sh(壳在 desktop/wails/)。
 # 桌面壳构建(desktop/):sidecar gah 打包 + Tauri 壳编译。
 # 用法:
 #   bash scripts/gen-desktop.sh                 # dev 构建(cargo build)

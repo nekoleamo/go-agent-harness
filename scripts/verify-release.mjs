@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// ⚠️ 本文件只服务**旧 Tauri 链**(latest.json + dmg/exe)。
+// Go + Wails 链的发布门是 `go run ./desktop/wails/cmd/desktopman verify-release --dir dist-desktop-wails --pubkey <hex>`
+// (校验 sha256 / 签名 / zip 唯一顶层条目,见 desktop/wails/cmd/desktopman/release.go)。
 // 发布产物校验(release gate):检查 updater 端点当前供应的 latest.json 是否**真的能装**。
 //
 // 为什么需要它(2026-09-18):`scripts/publish-desktop.sh` 只在**本平台**产出

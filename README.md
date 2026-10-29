@@ -63,7 +63,7 @@ Go 实现的编程代理 Agent Harness:以**单静态二进制**交付全部能�
 | **Web 附件+多模态** | 传图/文件入输入框或**拖到窗口任意位置**(按钮 + 拖放 + 粘贴),芯片预览/删除;图片经 openai/anthropic 适配器结构化注入(模型看图),文本附件路径引用;落盘 `$GAH_HOME/attachments/` |
 | **文档预览** | 一个块模型 + 四端同源渲染(markdown/文本/代码/CSV/notebook + PDF 页事实):Web 预览工作台(文件树/PDF 原生查看器/HTML 源码视图+沙箱)、TUI `/preview` pager(滚动/搜索/横移)、`gah doc` CLI、会话流 markdown 渲染;路径经沙箱+逃逸校验+密钥 deny-list,零 v-html;旧二进制 Office(`.doc/.xls/.ppt`)走**可选**外部转换(`data.external_converters` / `gah doc --convert`,需本机 LibreOffice,缺省关,未装时显式提示不静默) |
 | **优雅停机** | `POST /api/shutdown` → DisposeAll 全回收(Windows 无 SIGTERM 的统一停机通道;桌面壳/运维复用) |
-| **桌面壳(GUI)** | `desktop/` Tauri v2 壳:sidecar gah + 窗口直连本地服务;**两种形态**(macOS/Windows 安装版、Windows 便携版 —— 对照表与升级/数据根/多实例策略见「桌面端(GUI)」小节;两形态身份独立、可同时运行);托盘(关于/检查更新/开机自启/**新会话窗口**/**新实例**)/ 通知 / 单实例 / 系统文件夹选择器(与设置面板状态同源:面板开着时托盘操作 1.5 秒内同步);**便携版的「检查更新」可点**(不自动更新,但查到新版会打开便携包下载页并按网络可达性选 Gitee/GitHub);**产物栏**(会话流上方常驻一条「产物 N 个文件 · 新建 M · +X −Y」,展开列出本轮落盘的文件、点开进文档面板预览、一键跳变更审查面;只列**已落盘**的改动 —— 被拒绝的写不进清单,它没写盘)、**多实例多开**(托盘「新实例…」或启动参数 `--new-instance` 再起一个壳进程;**默认仍是单实例**——第二次启动聚焦已有窗口。多实例共享数据根,故定时计划按租约只由一个实例触发、偏好读-改-写走跨进程文件锁、worktree id 带实例短码,避免"计划跑两遍/偏好丢更新/撞名")、**多会话并行视图**(侧栏在跑的会话有脉冲点与逐会话「■ 停止」;底栏显示本会话「第 N 步」,空闲时提示「另有 N 个会话在跑」—— 步数只对本窗口会话给,别的会话只知道在跑)、**多会话窗口与并行回合**(托盘「新会话窗口…」开一个绑定独立会话的窗口,`?session=<id>` 让每个窗口各看各的会话;多个会话的回合**可同时跑**(同会话内仍严格串行,保证会话日志单写者);向指定会话提交经 `/api/input {session}`;取消可按会话 `/api/control {cancel, session}`);**诊断**:壳日志 `<用户数据目录>/gah-shell.log` 同时收录壳侧事件、sidecar stderr(滤掉 go-plugin 的 `[DEBUG]`)、sidecar 文本 stdout、页面侧错误(前端经 `shell_log` 上报)、**启动自检的通道矩阵**(同步/异步/选择器/自启四条通道各探一次)与**任何线程的 panic**(`panic @ 文件:行`);**零成本发行**(updater ed25519 自持签名 + CI 矩阵 + 无签名首次启动指引);**侧栏会话导出走壳命令落盘**(HTML/jsonl 写入下载目录,网页自动打开,侧栏回执路径) |
+| **桌面壳(GUI)** | `desktop/wails/` Go + Wails v3 壳:内嵌 sidecar gah(单文件发放)+ 窗口直连本地服务;**两种形态**(macOS/Windows 安装版、Windows 便携版 —— 对照表与升级/数据根/多实例策略见「桌面端(GUI)」小节;两形态身份独立、可同时运行);托盘(关于/检查更新/开机自启/**新会话窗口**/**新实例**)/ 通知 / 单实例 / 系统文件夹选择器(与设置面板状态同源:面板开着时托盘操作 1.5 秒内同步);**便携版可原地自动更新**(程序目录可写时;不可写则退回「只查不装 + 下载指引」);**产物栏**(会话流上方常驻一条「产物 N 个文件 · 新建 M · +X −Y」,展开列出本轮落盘的文件、点开进文档面板预览、一键跳变更审查面;只列**已落盘**的改动 —— 被拒绝的写不进清单,它没写盘)、**多实例多开**(托盘「新实例…」或启动参数 `--new-instance` 再起一个壳进程;**默认仍是单实例**——第二次启动聚焦已有窗口。多实例共享数据根,故定时计划按租约只由一个实例触发、偏好读-改-写走跨进程文件锁、worktree id 带实例短码,避免"计划跑两遍/偏好丢更新/撞名")、**多会话并行视图**(侧栏在跑的会话有脉冲点与逐会话「■ 停止」;底栏显示本会话「第 N 步」,空闲时提示「另有 N 个会话在跑」—— 步数只对本窗口会话给,别的会话只知道在跑)、**多会话窗口与并行回合**(托盘「新会话窗口…」开一个绑定独立会话的窗口,`?session=<id>` 让每个窗口各看各的会话;多个会话的回合**可同时跑**(同会话内仍严格串行,保证会话日志单写者);向指定会话提交经 `/api/input {session}`;取消可按会话 `/api/control {cancel, session}`);**诊断**:壳日志 `<用户数据目录>/gah-shell.log` 同时收录壳侧事件、sidecar stderr(滤掉 go-plugin 的 `[DEBUG]`)、sidecar 文本 stdout、页面侧错误(前端经 `/shell/log` 上报)、启动自检(控制面 `ping`)与**panic**(壳日志 + 完整堆栈);**零成本发行**(updater ed25519 自持签名 + CI 矩阵 + 无签名首次启动指引);**侧栏会话导出走壳命令落盘**(HTML/jsonl 写入下载目录,网页自动打开,侧栏回执路径) |
 
 ## 三、快速开始
 
@@ -73,7 +73,7 @@ Go 实现的编程代理 Agent Harness:以**单静态二进制**交付全部能�
 
 | 系统 | 下载文件 | 说明 |
 |---|---|---|
-| macOS(Apple 芯片) | `gah_<版本>_aarch64.dmg` | 打开后把 gah 拖进「应用程序」 |
+| macOS(Apple 芯片) | `gah-<版本>-aarch64-apple-darwin.app.zip`(首装另有 `.dmg`) | 打开后把 gah 拖进「应用程序」 |
 | Windows(64 位) | `gah_<版本>_x64-setup.exe` | 双击安装(仅当前用户,不要求管理员) |
 | Windows 便携版 | `gah_<版本>_x64-portable.zip` | **不安装**:解压到任意可写目录,双击 `gah-desktop.exe`(见下) |
 | 命令行版(任意平台) | `go-agent-harness_<版本>_<系统>_<架构>.tar.gz` | 解压即用的单文件二进制(另附 `.zip` 与 `checksums.txt`) |
@@ -95,29 +95,29 @@ Go 实现的编程代理 Agent Harness:以**单静态二进制**交付全部能�
 (DeepSeek / Kimi / 智谱 / 通义 / Ollama 等有一键预设,粘贴 API Key 即可)。
 
 > **数据在哪 / 升级与卸载**:数据(会话、记忆、计划、密钥)都在 `gah-data/`,与运行文件同级。
-> 桌面版首启会把运行文件复制到**你的用户数据目录**再启动(Windows `%LOCALAPPDATA%\dev.gah.desktop\bin\`,
+> 桌面版首启会把**内嵌在壳里的运行文件**解压到**你的用户数据目录**再启动(Windows `%LOCALAPPDATA%\dev.gah.desktop\bin\`,
 > macOS `~/Library/Application Support/dev.gah.desktop/bin/`),数据因此落在**应用目录之外** ——
 > **升级(整包替换应用)不会动数据,卸载也不会删数据**。升级前桌面壳仍会额外备份一份到
 > `~/gah-upgrade-backup/`(备份失败会取消升级,不拿数据冒险);想手动备份/恢复就用
 > `/backup <应用目录之外的路径>` 与 `/backup restore <名字>`。
 >
 > **便携版(Windows)例外**:便携包里同目录有 `portable.marker`,壳就**就地运行**、不外置,
-> 数据在本目录的 `gah-data/`(换机器请整个目录一起拷)。它**不会自动更新**(Windows 不允许
-> 覆盖正在运行的程序),但托盘里的「**检查更新…(便携版:打开下载页)**」**可以点**:查一次版本,
-> 有新版就自动打开便携包下载页(国内走 Gitee 镜像、取不到时回落 GitHub),下载后你自己
-> 解压覆盖即可。升级时**别删 `gah-data/`,也别删 `portable.marker`**(删了就退回安装版行为)。
+> 数据在本目录的 `gah-data/`(换机器请整个目录一起拷)。它**可以原地自动更新**:更新器会起一个
+> 小助手等本进程退出后再换掉壳本体,所以「Windows 不允许覆盖运行中的程序」不再是障碍(0.7.x 起实测);
+> 程序目录**不可写**时(只读 U 盘 / Program Files / 受管目录)自动退回「只查不装 + 打开下载页」。
+> 升级时**别删 `gah-data/`,也别删 `portable.marker`**(删了就退回安装版行为)。
 > 安装版与便携版**可以同时运行、互不干扰**(两者是不同的产品身份,详见下节)。
 > 命令行版:数据与 `gah` 同目录,升级只替换单文件,`gah-data/` 原地保留。
 >
-> **国内网络升级(GitHub 直连不稳时)**:升级只依赖两样东西——`latest.json` 与安装包,两者都能用「GitHub 加速代理前缀」就地换源:把原链接拼在代理前缀之后即可,例如 `https://gh-proxy.com/https://github.com/nekoleamo/go-agent-harness/releases/download/v0.3.0/gah_0.3.0_aarch64.dmg`(Windows 换成 `gah_0.3.0_x64-setup.exe`;CLI 归档同理)。**桌面端自动升级换源**:发布侧一条命令即可把 `latest.json` 里的下载 URL 整体前置代理前缀——`bash scripts/publish-desktop.sh rewrite-url https://gh-proxy.com/`(还原:`… rewrite-url none`),或在 GitHub Actions 里跑 `release-desktop` 的 `workflow_dispatch { tag, mirror_base }`,**不需重发版本、对已装版本立即生效**。**换源不降低安全性**:updater 的 ed25519 签名只对**文件内容**验签、URL 不参与 ⇒ 代理/镜像换包会被签名直接拒掉(脚本内含「签名逐平台未被改动」自检,不过即回滚)。公共代理是公益服务、可用性不保证:失效时换一个前缀或跑 `none` 还原直链;而自控镜像**已就绪** —— Gitee Release 附件随各版本同步上传(见下段自动选源),不再单靠公共代理。
+> **国内网络升级(GitHub 直连不稳时)**:升级只依赖两样东西——`desktop-latest.json` 与产物包,两者都能用「GitHub 加速代理前缀」就地换源:把原链接拼在代理前缀之后即可,例如 `https://gh-proxy.com/https://github.com/nekoleamo/go-agent-harness/releases/download/v0.3.0/gah_0.3.0_aarch64.dmg`(Windows 换成 `gah_0.3.0_x64-setup.exe`;CLI 归档同理)。**桌面端自动升级换源**:发布侧一条命令即可把 `latest.json` 里的下载 URL 整体前置代理前缀——`go run ./desktop/wails/cmd/desktopman rewrite-url --manifest dist-desktop-wails/desktop-latest.json --base https://gh-proxy.com/`(还原:`--base none --orig <原始前缀>`),或在 GitHub Actions 里跑 `release-desktop-wails` 的 `workflow_dispatch`(打 `desktop-wails-v*` tag 自动发),**不需重发版本、对已装版本立即生效**。**换源不降低安全性**:updater 的 ed25519 签名只对**文件内容**验签、URL 不参与 ⇒ 代理/镜像换包会被签名直接拒掉(脚本内含「签名逐平台未被改动」自检,不过即回滚)。公共代理是公益服务、可用性不保证:失效时换一个前缀或跑 `none` 还原直链;而自控镜像**已就绪** —— Gitee Release 附件随各版本同步上传(见下段自动选源),不再单靠公共代理。
 >
 > **升级源自动切换(0.1.6 起)**:桌面端检查更新时同时拿着两个源 —— Gitee 镜像(国内直连)与
 > GitHub Release(全球可达),默认 Gitee 优先,取不到表就自动落到另一个;**某个源「表能取到但包下不下来」
-> 时会被记住并垫到最后**,下次检查先试另一个源。两份 `latest.json` 各自把安装包地址指向自己的源,
+> 时会被记住并垫到最后**,下次检查先试另一个源。两份 `desktop-latest.json` 各自把产物地址指向自己的源,
 > 所以选源同时决定了取表与下载两跳。签名始终只有一套(ed25519 只对**文件内容**验签,换源不降低强度)。
 > 存量 0.1.5 用户走 GitHub 那份表(其中下载地址已指向加速前缀),因此国内也能升到 0.1.6。
 > 手动下载(Gitee 镜像,**附件随各版本同步上传**;若某个 tag 下尚未出现,请用 GitHub Release 里的链接):`https://gitee.com/null_593_5354/go-agent-harness/releases/download/<tag>/gah_<版本>_aarch64.dmg`
-> (Windows 换 `gah_<版本>_x64-setup.exe`);代码快照在 `https://gitee.com/null_593_5354/go-agent-harness`。
+> (Windows 首装用 `gah-<版本>-setup.exe`,升级包是单 exe 的 zip);代码快照在 `https://gitee.com/null_593_5354/go-agent-harness`。
 > Gitee 侧只放**最新代码快照**(无历史)与桌面安装包,完整历史与 CLI 各平台归档仍在 GitHub。
 > 换回 GitHub 直链:`bash scripts/publish-desktop.sh rewrite-url none`(或 CI 里 `workflow_dispatch { tag, mirror_base: none }`)。
 > **两点例外(唯一会丢配置的情况)**:① Windows 卸载页有个「Delete app data」勾选框,勾了会连
@@ -127,7 +127,7 @@ Go 实现的编程代理 Agent Harness:以**单静态二进制**交付全部能�
 
 ### 桌面端(GUI):安装版与便携版
 
-桌面壳(Tauri v2)只是一个窗口,真正干活的是旁边的 `gah` 进程(sidecar):壳负责托盘/通知/开机自启/
+桌面壳(Go + Wails v3)只是一个窗口,真正干活的是旁边的 `gah` 进程(sidecar):壳负责托盘/通知/开机自启/
 文件选择器,`gah` 负责会话、工具、沙箱与审批 —— 所以「壳」和「数据」是两回事,升级与卸载才敢分开做。
 
 | | 安装版(macOS / Windows) | 便携版(仅 Windows) | 命令行版(任意平台) |
@@ -704,7 +704,7 @@ UI 插件是**与宿主同源同权限**的最宽面:产物经动态 `import()` 
 ├── internal/         # embed(seed 样板/外部分发)/ install(插件安装)/ prefs(偏好持久化)/ providerfile
 ├── config/           # profile/bundle/patch 样板(seed-version 与 internal/embed/seed 同步)
 ├── scripts/          # gen.sh(统一构建)/ gen-web.sh / gen-extplugins.sh / gen-desktop.sh / publish-desktop.sh(桌面零成本发行)/ verify-release.mjs(发版后校验:平台矩阵/签名/包内版本)/ ws-smoke.go
-├── desktop/          # 桌面壳 P1(Tauri v2 + sidecar gah;零成本发行:updater ed25519 自持签名 + CI 矩阵,见「三」)
+├── desktop/wails/    # 桌面壳(Go + Wails v3;sidecar 内嵌;零成本发行:updater ed25519 自持签名 + CI 矩阵,见「三」)
 ├── .gah/skills/      # 自注册技能(gah-plugin-dev)
 └── docs/             # 本地设计文档(随仓库分发仅 PLUGIN_DEV.md;其余设计/排期/清单为本地资料)
 ```
