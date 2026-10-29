@@ -237,10 +237,29 @@ func copyTree(src, dst string) error {
 //     复制反而让「数据在哪」不可预期;
 //  3. 安装版:外置到用户数据目录(见文件头),并把旧位置的数据一次性迁过去。
 func resolveRuntime(home, version string) (runtimePlan, error) {
-	// 发行构建优先:内嵌 sidecar(见 embed_sidecar.go 的三条理由)。
+	// 便携模式(同目录有 portable.marker):**就地跑** —— sidecar 也落在可执行文件旁边,
+	// 数据根 = 程序目录/gah-data。这是便携用户的直觉(整个目录一起拷/删),
+	// 若走下面的外置路径,数据会被塞进 %LOCALAPPDATA%,「删目录即删数据」就不成立了。
+	if exe, err := os.Executable(); err == nil {
+		dir := filepath.Dir(exe)
+		if isPortableAt(dir) && os.Getenv("GAH_SIDECAR") == "" {
+			stripMarkOfTransfer(exe)
+			if len(sidecarGz) > 0 {
+				plan, err := stageEmbedded(dir, version)
+				if err != nil {
+					return runtimePlan{}, err
+				}
+				plan.external = false
+				return plan, nil
+			}
+			// 开发构建(无内嵌)在便携目录里找不到 sidecar 时,退回下面的通用查找,并在那里报错。
+		}
+	}
+
+	// 发行构建:内嵌 sidecar(见 embed_sidecar.go 的三条理由),落用户数据目录。
 	// 显式 GAH_SIDECAR 仍然最高优先 —— 开发/演练时要能指向任意 gah 产物。
 	if len(sidecarGz) > 0 && os.Getenv("GAH_SIDECAR") == "" {
-		return stageEmbedded(home, version)
+		return stageEmbedded(filepath.Join(home, "bin"), version)
 	}
 	if v := os.Getenv("GAH_SIDECAR"); v != "" {
 		if _, err := os.Stat(v); err != nil {
@@ -335,8 +354,8 @@ func isErrNotExist(err error) bool { return errors.Is(err, os.ErrNotExist) }
 //
 // 指纹用**内嵌字节的 sha256**,与磁盘 mtime 无关 —— 同一份壳二进制每次启动都得到同一个
 // 名字,于是「解压一次、之后永久复用」成立(旧的文件外置靠源文件 mtime,重建就会换名字)。
-func stageEmbedded(home, ver string) (runtimePlan, error) {
-	binDir := filepath.Join(home, "bin")
+func stageEmbedded(dir, ver string) (runtimePlan, error) {
+	binDir := dir
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		return runtimePlan{}, fmt.Errorf("建 %s 失败: %w", binDir, err)
 	}
@@ -345,7 +364,7 @@ func stageEmbedded(home, ver string) (runtimePlan, error) {
 	pruneStale(binDir, dst)
 
 	if st, err := os.Stat(dst); err == nil && st.Size() > 0 {
-		return runtimePlan{bin: dst, dataRoot: dataRoot(home), external: true}, nil
+		return runtimePlan{bin: dst, dataRoot: filepath.Join(dir, "gah-data"), external: dir != ""}, nil
 	}
 	tmp := dst + ".new"
 	_ = os.Remove(tmp)
@@ -372,5 +391,5 @@ func stageEmbedded(home, ver string) (runtimePlan, error) {
 	if err := os.Rename(tmp, dst); err != nil {
 		return runtimePlan{}, fmt.Errorf("放下 %s 失败: %w", dst, err)
 	}
-	return runtimePlan{bin: dst, dataRoot: dataRoot(home), external: true, staged: true}, nil
+	return runtimePlan{bin: dst, dataRoot: filepath.Join(dir, "gah-data"), external: true, staged: true}, nil
 }

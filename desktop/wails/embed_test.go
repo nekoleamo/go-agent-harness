@@ -52,6 +52,10 @@ func TestStageEmbedded(t *testing.T) {
 	if !strings.Contains(p1.bin, "gah-0.1.7-") {
 		t.Fatalf("副本名应带版本与指纹: %s", p1.bin)
 	}
+	// 数据根 = sidecar 所在目录的 gah-data(便携模式下 = 程序目录,见 resolveRuntime)。
+	if p1.dataRoot != filepath.Join(home, "gah-data") {
+		t.Fatalf("数据根应跟着副本目录走: %q", p1.dataRoot)
+	}
 
 	p2, err := stageEmbedded(home, "0.1.7")
 	if err != nil {

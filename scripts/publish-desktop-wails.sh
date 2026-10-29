@@ -92,6 +92,10 @@ BIN_DIR="$SHELL_MOD/binaries"
 EXE="$SHELL_MOD/build/gah-desktop"
 [ "$GOOS" = "windows" ] && EXE="$SHELL_MOD/build/gah-desktop.exe"
 
+# 前置:web/dist 与 extplugins 必须现成(go:embed 在编译期就要它们);缺了报一句人话,
+# 而不是让 go build 抛一堆 embed 路径错误。
+[ -d web/dist ] || { echo "publish: 缺 web/dist —— 先跑 bash scripts/gen-web.sh"; exit 1; }
+
 echo "[1/4] sidecar: $GOOS/$GOARCH"
 mkdir -p "$BIN_DIR"
 SIDECAR="$BIN_DIR/gah-$TRIPLE"
@@ -124,8 +128,36 @@ case "$GOOS" in
       cp "$(ls -t "$SHELL_MOD"/build/*.app.zip | head -1)" "$ART"
     ;;
   windows)
+    # ① 升级产物:单 exe 的 zip(updater 只换这一个文件;sidecar 已内嵌)
     ART="$OUT/gah-$VERSION-$TRIPLE.zip"
     go run ./desktop/wails/cmd/desktopman pack --in "$EXE" --entry gah-desktop.exe --out "$ART"
+
+    # ② 首次安装:NSIS setup.exe(按用户安装,不弹 UAC)。makensis 只在 Windows/CI 上有。
+    if command -v makensis >/dev/null 2>&1; then
+      SETUP="$OUT/gah-$VERSION-setup.exe"
+      makensis -V2 -DVERSION="$VERSION" -DAPPEXE="$EXE" -DOUTFILE="$SETUP" \
+        desktop/wails/installer/installer.nsi
+      echo "SETUP: $SETUP"
+    else
+      echo "publish: 本机无 makensis —— 跳过 NSIS 安装包(CI 的 windows runner 会产出)"
+    fi
+
+    # ③ 便携包:解压即用(同目录放 portable.marker ⇒ 数据根 = 程序目录/gah-data,
+    #    删目录即删数据,与安装版把数据放 %LOCALAPPDATA% 的形态区分开)
+    PORT_DIR="$OUT/portable/gah"
+    mkdir -p "$PORT_DIR"
+    cp "$EXE" "$PORT_DIR/gah-desktop.exe"
+    : > "$PORT_DIR/portable.marker"
+    cat > "$PORT_DIR/README.txt" <<'TXT'
+gah 便携版
+
+- 双击 gah-desktop.exe 运行;所有数据在本目录的 gah-data/(换机器请整个目录一起拷)
+- 便携版不自动更新(Windows 不允许覆盖正在运行的程序):请下载新包覆盖本目录
+- 想彻底清理:退出 gah 后删除整个目录即可
+TXT
+    go run ./desktop/wails/cmd/desktopman pack --in "$PORT_DIR" --entry gah \
+      --out "$OUT/gah-$VERSION-portable-$TRIPLE.zip"
+    rm -rf "$OUT/portable"
     ;;
 esac
 [ -f "$ART" ] || { echo "publish: 产物缺失 $ART"; exit 1; }
