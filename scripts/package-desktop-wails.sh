@@ -51,8 +51,8 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp desktop/wails/build/gah-desktop "$APP/Contents/MacOS/gah-desktop"
 chmod +x "$APP/Contents/MacOS/gah-desktop"
 
-# 图标:沿用桌面壳工程里已有的 icns(不重新生成,免得引入 icon 工具链)。
-ICNS=desktop/src-tauri/icons/icon.icns
+# 图标:壳自己的 assets(不再依赖旧 Tauri 工程目录 —— 那条链删掉后这里会静默丢图标)。
+ICNS=desktop/wails/assets/gah.icns
 [ -f "$ICNS" ] && cp "$ICNS" "$APP/Contents/Resources/icon.icns"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
