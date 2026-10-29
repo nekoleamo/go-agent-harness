@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/updater"
 )
@@ -33,6 +34,13 @@ func TestVersionNewer(t *testing.T) {
 		{"0.1.7-3-gabc", "0.1.6", true},
 		{"0.1.7", "dev", true}, // 开发版本视为最旧
 		{"1.0.0", "0.9.9", true},
+		// 预发布口径:核心号相同时只有「当前是预发布、远端是正式版」才算更新
+		// (否则预发布用户会永久停在预发布版,界面只说「已是最新」)。
+		{"0.8.0", "0.8.0-preview", true},
+		{"0.8.0-preview", "0.7.4", true},
+		{"0.8.0-preview", "0.8.0", false},
+		{"0.8.0-preview", "0.8.0-preview", false},
+		{"0.8.0+build7", "0.8.0", false}, // + 是 build 元数据,不算预发布
 	}
 	for _, c := range cases {
 		if got := versionNewer(c.remote, c.current); got != c.want {
@@ -109,7 +117,7 @@ func TestProviderCheckAndDownload(t *testing.T) {
 	defer ms.Close()
 	t.Setenv("GAH_DESKTOP_UPDATE_SOURCES", ms.URL+"/manifest.json")
 
-	p := &desktopProvider{client: &http.Client{}}
+	p := newDesktopProvider()
 	req := updater.CheckRequest{CurrentVersion: "0.1.6", Platform: "testos", Arch: "testarch"}
 
 	rel, err := p.Check(context.Background(), req)
@@ -147,6 +155,39 @@ func TestProviderCheckAndDownload(t *testing.T) {
 	}
 }
 
+// TestDownloadNotLimitedByManifestTimeout 下载不受清单客户端的短超时影响。
+//
+// 为什么要有这条(2026-10-30 发现):清单与下载原先共用一个 `http.Client{Timeout: 30s}`,
+// 而 http.Client.Timeout 是**整个请求(含响应体)**的上限 —— 30–45MB 的升级包在慢网/国内
+// 镜像源下常常要一两分钟,于是每一次升级都会在 30 秒处被自己杀掉,界面只说「安装失败」。
+// 反向验证:Download 改回用 p.client,本条必红(服务端每字节 40ms、共 360ms)。
+func TestDownloadNotLimitedByManifestTimeout(t *testing.T) {
+	payload := []byte("hello gah")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprint(len(payload)))
+		w.WriteHeader(http.StatusOK)
+		for _, b := range payload {
+			_, _ = w.Write([]byte{b})
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			time.Sleep(40 * time.Millisecond)
+		}
+	}))
+	defer srv.Close()
+
+	p := newDesktopProvider()
+	p.client.Timeout = 50 * time.Millisecond // 清单侧刻意设得比整次下载短
+	rel := &updater.Release{Metadata: map[string]any{"url": srv.URL + "/a.zip", "source": "test"}}
+	var buf bytes.Buffer
+	if err := p.Download(context.Background(), rel, &buf, func(int64, int64) {}); err != nil {
+		t.Fatalf("下载被清单客户端的超时打断: %v", err)
+	}
+	if !bytes.Equal(buf.Bytes(), payload) {
+		t.Fatalf("下载内容不一致: %q", buf.String())
+	}
+}
+
 // TestProviderFallsBackToSecondSource 第一个源不通 → 自动落到第二个(与旧壳同语义)。
 func TestProviderFallsBackToSecondSource(t *testing.T) {
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -165,7 +206,7 @@ func TestProviderFallsBackToSecondSource(t *testing.T) {
 	dead.Close() // 直接关掉:连不上
 
 	t.Setenv("GAH_DESKTOP_UPDATE_SOURCES", deadURL+"/m.json,"+ms.URL+"/m.json")
-	p := &desktopProvider{client: &http.Client{}}
+	p := newDesktopProvider()
 	rel, err := p.Check(context.Background(), updater.CheckRequest{CurrentVersion: "0.1.6", Platform: "testos", Arch: "testarch"})
 	if err != nil || rel == nil {
 		t.Fatalf("应回退到第二个源: rel=%v err=%v", rel, err)
@@ -188,7 +229,7 @@ func TestProviderRejectsBadManifest(t *testing.T) {
 			fmt.Fprint(w, body)
 		}))
 		t.Setenv("GAH_DESKTOP_UPDATE_SOURCES", ms.URL)
-		p := &desktopProvider{client: &http.Client{}}
+		p := newDesktopProvider()
 		if _, err := p.Check(context.Background(), updater.CheckRequest{CurrentVersion: "0.1.6", Platform: "testos", Arch: "testarch"}); err == nil {
 			t.Fatalf("坏清单应报错: %s", body)
 		}

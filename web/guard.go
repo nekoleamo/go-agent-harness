@@ -30,6 +30,10 @@ const (
 	apiBodyLimit = 1 << 20 // 1 MiB
 	// attachmentBodyLimit 附件上传上限(图片/文件需大额)。
 	attachmentBodyLimit = 64 << 20 // 64 MiB
+	// shellExportLimit 桌面壳「导出落盘」的请求体上限。
+	// 它把**整份导出内容**放在 body 里(HTML/JSONL),长会话轻松超过 1 MiB ——
+	// 套 1 MiB 的普通 API 上限会让「导出会话」在长会话上直接失败(2026-10-30 实测到这条路径)。
+	shellExportLimit = 64 << 20 // 64 MiB
 )
 
 func (s *Server) guardMiddleware(next http.Handler) http.Handler {
@@ -56,8 +60,11 @@ func (s *Server) guardMiddleware(next http.Handler) http.Handler {
 			// 请求体上限(防无界读进内存/写盘):附件上传单独给大额,其余 API 1 MiB
 			if consumesBody(r.Method) {
 				limit := int64(apiBodyLimit)
-				if strings.HasPrefix(r.URL.Path, "/api/attachments") {
+				switch {
+				case strings.HasPrefix(r.URL.Path, "/api/attachments"):
 					limit = attachmentBodyLimit
+				case r.URL.Path == "/shell/export-save":
+					limit = shellExportLimit // 整份导出内容在 body 里(见常量注释)
 				}
 				r.Body = http.MaxBytesReader(w, r.Body, limit)
 			}

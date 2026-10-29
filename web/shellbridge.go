@@ -35,29 +35,35 @@ func shellBridgeHandler() http.Handler {
 		return nil // 只允许回环:这是本机进程间通道,不接受远端目标
 	}
 	target := &url.URL{Scheme: "http", Host: addr}
-	proxy := httputil.NewSingleHostReverseProxy(target)
-	// Rewrite(而非已废弃的 Director):SetURL 会顺带清掉入站转发头,
-	// 再手动补齐路径;X-Forwarded-* 也不会被带出去。
-	proxy.Rewrite = func(pr *httputil.ProxyRequest) {
-		pr.SetURL(target)
-		pr.Out.Host = target.Host
-		pr.Out.Header.Set("X-Shell-Token", token)
-		// 不把 gah 的凭据带给壳,也不带 Cookie(壳不需要,少一条泄露路径)。
-		pr.Out.Header.Del("Cookie")
-		// 壳侧守卫按 Origin 白名单判断「是不是自家页面」;代理之后 Origin 是 gah 自己的,
-		// 那一层由 gah 的 authMiddleware 替代,所以这里去掉,免得被壳当外部源拒掉。
-		pr.Out.Header.Del("Origin")
-		pr.Out.Header.Del("Referer")
-	}
-	// 目录选择框/备份/安装都可能阻塞很久(用户翻目录、下 30MB):不要让代理自带超时打断。
-	proxy.Transport = &http.Transport{
-		Proxy:                 nil,
-		ResponseHeaderTimeout: 0,
-		IdleConnTimeout:       30 * time.Second,
-	}
-	proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, err error) {
-		// 壳没起/已退出:给一句能查的话,而不是空 502。
-		http.Error(w, "桌面壳控制面不可达:"+err.Error(), http.StatusBadGateway)
+	// **不能用 NewSingleHostReverseProxy**:它预设 Director,而这里要的是 Rewrite ——
+	// 两者同时存在时 ReverseProxy 直接报「must have exactly one of Director or Rewrite set」
+	// 并把每个请求变成 502(2026-10-30 实测:页面里每个 /shell/* 都 502,而壳侧一条日志都没有
+	// —— 那一层根本没被调到,于是选目录/导出/检查更新/提示条全静默失效)。
+	// 单测:web/shellbridge_test.go。
+	proxy := &httputil.ReverseProxy{
+		// Rewrite(而非已废弃的 Director):SetURL 会顺带清掉入站转发头,
+		// 再手动补齐路径;X-Forwarded-* 也不会被带出去。
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.SetURL(target)
+			pr.Out.Host = target.Host
+			pr.Out.Header.Set("X-Shell-Token", token)
+			// 不把 gah 的凭据带给壳,也不带 Cookie(壳不需要,少一条泄露路径)。
+			pr.Out.Header.Del("Cookie")
+			// 壳侧守卫按 Origin 白名单判断「是不是自家页面」;代理之后 Origin 是 gah 自己的,
+			// 那一层由 gah 的 authMiddleware 替代,所以这里去掉,免得被壳当外部源拒掉。
+			pr.Out.Header.Del("Origin")
+			pr.Out.Header.Del("Referer")
+		},
+		// 目录选择框/备份/安装都可能阻塞很久(用户翻目录、下 30MB):不要让代理自带超时打断。
+		Transport: &http.Transport{
+			Proxy:                 nil,
+			ResponseHeaderTimeout: 0,
+			IdleConnTimeout:       30 * time.Second,
+		},
+		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+			// 壳没起/已退出:给一句能查的话,而不是空 502。
+			http.Error(w, "桌面壳控制面不可达:"+err.Error(), http.StatusBadGateway)
+		},
 	}
 	return proxy
 }

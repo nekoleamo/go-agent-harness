@@ -74,8 +74,8 @@ Go 实现的编程代理 Agent Harness:以**单静态二进制**交付全部能�
 | 系统 | 下载文件 | 说明 |
 |---|---|---|
 | macOS(Apple 芯片) | `gah-<版本>-aarch64-apple-darwin.app.zip`(首装另有 `.dmg`) | 打开后把 gah 拖进「应用程序」 |
-| Windows(64 位) | `gah_<版本>_x64-setup.exe` | 双击安装(仅当前用户,不要求管理员) |
-| Windows 便携版 | `gah_<版本>_x64-portable.zip` | **不安装**:解压到任意可写目录,双击 `gah-desktop.exe`(见下) |
+| Windows(64 位) | `gah-<版本>-setup.exe` | 双击安装(仅当前用户,不要求管理员) |
+| Windows 便携版 | `gah-<版本>-portable-x86_64-pc-windows-msvc.zip` | **不安装**:解压到任意可写目录,双击 `gah-desktop.exe`(见下) |
 | 命令行版(任意平台) | `go-agent-harness_<版本>_<系统>_<架构>.tar.gz` | 解压即用的单文件二进制(另附 `.zip` 与 `checksums.txt`) |
 
 > **首次打开会被系统拦一下**(本应用未购买 Apple 开发者证书 / 微软代码签名证书 —— 程序本身完好,
@@ -109,17 +109,22 @@ Go 实现的编程代理 Agent Harness:以**单静态二进制**交付全部能�
 > 安装版与便携版**可以同时运行、互不干扰**(两者是不同的产品身份,详见下节)。
 > 命令行版:数据与 `gah` 同目录,升级只替换单文件,`gah-data/` 原地保留。
 >
-> **国内网络升级(GitHub 直连不稳时)**:升级只依赖两样东西——`desktop-latest.json` 与产物包,两者都能用「GitHub 加速代理前缀」就地换源:把原链接拼在代理前缀之后即可,例如 `https://gh-proxy.com/https://github.com/nekoleamo/go-agent-harness/releases/download/v0.3.0/gah_0.3.0_aarch64.dmg`(Windows 换成 `gah_0.3.0_x64-setup.exe`;CLI 归档同理)。**桌面端自动升级换源**:发布侧一条命令即可把 `latest.json` 里的下载 URL 整体前置代理前缀——`go run ./desktop/wails/cmd/desktopman rewrite-url --manifest dist-desktop-wails/desktop-latest.json --base https://gh-proxy.com/`(还原:`--base none --orig <原始前缀>`),或在 GitHub Actions 里跑 `release-desktop-wails` 的 `workflow_dispatch`(打 `desktop-wails-v*` tag 自动发),**不需重发版本、对已装版本立即生效**。**换源不降低安全性**:updater 的 ed25519 签名只对**文件内容**验签、URL 不参与 ⇒ 代理/镜像换包会被签名直接拒掉(脚本内含「签名逐平台未被改动」自检,不过即回滚)。公共代理是公益服务、可用性不保证:失效时换一个前缀或跑 `none` 还原直链;而自控镜像**已就绪** —— Gitee Release 附件随各版本同步上传(见下段自动选源),不再单靠公共代理。
+> **国内网络升级(GitHub 直连不稳时)**:升级只依赖两样东西——`desktop-latest.json` 与产物包,两者都能用「GitHub 加速代理前缀」就地换源:把原链接拼在代理前缀之后即可,例如 `https://gh-proxy.com/https://github.com/nekoleamo/go-agent-harness/releases/download/v0.8.0/gah-0.8.0-aarch64-apple-darwin.app.zip`(Windows 升级包是 `gah-<版本>-x86_64-pc-windows-msvc.zip`,首装是 `gah-<版本>-setup.exe`;CLI 归档同理)。**桌面端自动升级换源**:发布侧一条命令即可把 `desktop-latest.json` 里的下载 URL 整体前置代理前缀——`go run ./desktop/wails/cmd/desktopman rewrite-url --manifest dist-desktop-wails/desktop-latest.json --base https://gh-proxy.com/`(还原:`--base none --orig <原始前缀>`),或在 GitHub Actions 里跑 `release-desktop-wails` 的 `workflow_dispatch`(打 `v*` tag 自动发,**与命令行版共用同一个 Release**),**不需重发版本、对已装版本立即生效**。**换源不降低安全性**:updater 的 ed25519 签名只对**文件内容**验签、URL 不参与 ⇒ 代理/镜像换包会被签名直接拒掉(脚本内含「签名逐平台未被改动」自检,不过即回滚)。公共代理是公益服务、可用性不保证:失效时换一个前缀或跑 `none` 还原直链;而自控镜像**已就绪** —— Gitee Release 附件随各版本同步上传(见下段自动选源),不再单靠公共代理。
 >
 > **升级源自动切换(0.1.6 起)**:桌面端检查更新时同时拿着两个源 —— Gitee 镜像(国内直连)与
 > GitHub Release(全球可达),默认 Gitee 优先,取不到表就自动落到另一个;**某个源「表能取到但包下不下来」
 > 时会被记住并垫到最后**,下次检查先试另一个源。两份 `desktop-latest.json` 各自把产物地址指向自己的源,
 > 所以选源同时决定了取表与下载两跳。签名始终只有一套(ed25519 只对**文件内容**验签,换源不降低强度)。
 > 存量 0.1.5 用户走 GitHub 那份表(其中下载地址已指向加速前缀),因此国内也能升到 0.1.6。
-> 手动下载(Gitee 镜像,**附件随各版本同步上传**;若某个 tag 下尚未出现,请用 GitHub Release 里的链接):`https://gitee.com/null_593_5354/go-agent-harness/releases/download/<tag>/gah_<版本>_aarch64.dmg`
-> (Windows 首装用 `gah-<版本>-setup.exe`,升级包是单 exe 的 zip);代码快照在 `https://gitee.com/null_593_5354/go-agent-harness`。
+> 手动下载(Gitee 镜像,**附件随各版本同步上传**;若某个 tag 下尚未出现,请用 GitHub Release 里的链接):`https://gitee.com/null_593_5354/go-agent-harness/releases/download/<tag>/gah-<版本>-aarch64-apple-darwin.app.zip`
+> (Windows 首装用 `gah-<版本>-setup.exe`,升级包是单 exe 的 zip `gah-<版本>-x86_64-pc-windows-msvc.zip`);代码快照在 `https://gitee.com/null_593_5354/go-agent-harness`。
 > Gitee 侧只放**最新代码快照**(无历史)与桌面安装包,完整历史与 CLI 各平台归档仍在 GitHub。
 > 换回 GitHub 直链:`go run ./desktop/wails/cmd/desktopman rewrite-url --manifest dist-desktop-wails/desktop-latest.json --base none --orig <原始前缀>`。
+> **从 0.7.x 桌面版升到 0.8.x 要手动装一次**:0.8.0 起桌面壳从 Tauri(Rust)换成 Go + Wails v3,
+> 更新清单格式与签名口径随之改变(旧壳读不了新清单,新壳也不认旧清单)⇒ **已在 0.7.x 的桌面版
+> 不会自动收到 0.8.x 的更新提示**。手动下载一次 0.8.x 安装包覆盖安装即可,数据在应用目录之外,
+> 不会丢;之后 0.8.x → 0.8.y 以及更远的版本恢复自动更新。命令行版不受影响。
+>
 > **两点例外(唯一会丢配置的情况)**:① Windows 卸载页有个「Delete app data」勾选框,勾了会连
 > `%LOCALAPPDATA%\dev.gah.desktop`(数据根所在)一起删 —— 默认**不勾**,想留着就别勾;
 > ② Linux 只有命令行包(解压即用),数据在 `gah` 同目录 —— **把新版本解压覆盖到同一目录**就保留,
@@ -136,7 +141,7 @@ Go 实现的编程代理 Agent Harness:以**单静态二进制**交付全部能�
 | 判定标记 | 应用目录里有壳 | 同目录有 `portable.marker` | 无 |
 | 运行文件在哪 | 外置到用户数据目录的 `bin/`(macOS `~/Library/Application Support/dev.gah.desktop/bin/`、Windows `%LOCALAPPDATA%\dev.gah.desktop\bin\`) | **就地运行**(不复制、不外置) | 目录里 |
 | 数据在哪 | 上述 `bin/gah-data/` | 本目录的 `gah-data/` | 同目录的 `gah-data/` |
-| 升级 | **自动更新**:托盘「检查更新…」→ 确认 → 下载 → 替换 → 自动重启(升级前额外备份一次) | **不自动更新**:「检查更新…」可点,查到新版**打开便携包下载页**,你解压覆盖即可 | 替换单个文件 |
+| 升级 | **自动更新**:托盘「检查更新…」→ 确认 → 下载 → 替换 → 自动重启(升级前额外备份一次) | **可原地自动更新**(程序目录可写时;不可写则只查不装并给下载指引) | 替换单个文件 |
 | 卸载 | 删应用(**默认不删数据**;Windows 卸载页有个「Delete app data」勾选框,勾了会连数据一起删) | 删掉整个目录 | 删文件(`gah-data/` 留下或一并删由你) |
 
 **安装版与便携版可以同时跑**。它们是两份独立的程序身份(不同的 bundle identifier),数据根也天然不同,
@@ -714,7 +719,7 @@ UI 插件是**与宿主同源同权限**的最宽面:产物经动态 `import()` 
 ```bash
 ./scripts/gen.sh cli             # 本平台单二进制(TUI+Web+headless;前端已内嵌,前端未改动时自动跳过构建)
 ./scripts/gen.sh release         # goreleaser 六目标发行(tar.gz/zip + checksums)
-./scripts/gen.sh desktop         # 桌面壳:sidecar(=cli 产物)→ tauri build(.app/.dmg,未签名)
+./scripts/gen.sh desktop         # 桌面壳:sidecar(=cli 产物)→ 壳构建 + 组装 .app/.app.zip(可选 dmg,未签名)
 ./scripts/gen.sh web-dev         # 前端热更开发(vite watch + GAH_WEB_STATIC 免重启)
 ```
 

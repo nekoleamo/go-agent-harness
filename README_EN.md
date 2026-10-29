@@ -72,9 +72,9 @@ Grab the right file from [Releases](https://github.com/nekoleamo/go-agent-harnes
 
 | System | File | Notes |
 |---|---|---|
-| macOS (Apple silicon) | `gah_<version>_aarch64.dmg` | open, then drag gah into /Applications |
-| Windows (64-bit) | `gah_<version>_x64-setup.exe` | double-click to install (current user, no admin) |
-| Windows portable | `gah_<version>_x64-portable.zip` | **no install**: unzip anywhere writable, run `gah-desktop.exe` (see below) |
+| macOS (Apple silicon) | `gah-<version>-aarch64-apple-darwin.app.zip` (optionally `.dmg` for the first install) | open, then drag gah into /Applications |
+| Windows (64-bit) | `gah-<version>-setup.exe` | double-click to install (current user, no admin) |
+| Windows portable | `gah-<version>-portable-x86_64-pc-windows-msvc.zip` | **no install**: unzip anywhere writable, run `gah-desktop.exe` (see below) |
 | CLI (any platform) | `go-agent-harness_<version>_<os>_<arch>.tar.gz` | single binary, unzip and run (also `.zip` + `checksums.txt`) |
 
 > **The first launch is blocked once by the OS** (the app ships without an Apple Developer
@@ -114,7 +114,7 @@ provider (DeepSeek / Kimi / Zhipu / Qwen / Ollama presets; paste an API key).
 > behaves like the installed one). Installed and portable builds are **separate product identities and can run
 > side by side** without fighting over the window (see the desktop section below).
 >
-> **Upgrading from mainland China (when GitHub is flaky)**: an upgrade needs only two things — `desktop-latest.json` and the artifact — and both can be re-sourced through a GitHub acceleration prefix: just concatenate the original link after the prefix, e.g. `https://gh-proxy.com/https://github.com/nekoleamo/go-agent-harness/releases/download/v0.3.0/gah_0.3.0_aarch64.dmg` (Windows: `gah_0.3.0_x64-setup.exe`; same idea for the CLI archive). **Auto-update re-sourcing**: one release-side command prefixes every download URL in `latest.json` — `go run ./desktop/wails/cmd/desktopman rewrite-url --manifest dist-desktop-wails/desktop-latest.json --base https://gh-proxy.com/` (revert with `… rewrite-url none`) — or run the `release-desktop` workflow via `workflow_dispatch`(tagging `desktop-wails-v*` publishes automatically)`. **No re-release needed, and it applies to already-installed builds.** **Re-sourcing does not weaken security**: the updater's ed25519 signature covers the **file contents**, not the URL, so a mirror swapping the payload is rejected outright (the script self-checks that every platform's `signature` is untouched, and rolls back otherwise). Public proxies are community services with no availability guarantee — if one dies, try another prefix or `none` to restore the direct link; and the **self-hosted mirror is live**: Gitee Release assets ship with every release (see the automatic source switching below), so you no longer depend on community proxies.
+> **Upgrading from mainland China (when GitHub is flaky)**: an upgrade needs only two things — `desktop-latest.json` and the artifact — and both can be re-sourced through a GitHub acceleration prefix: just concatenate the original link after the prefix, e.g. `https://gh-proxy.com/https://github.com/nekoleamo/go-agent-harness/releases/download/v0.8.0/gah-0.8.0-aarch64-apple-darwin.app.zip` (Windows upgrade: `gah-<version>-x86_64-pc-windows-msvc.zip`; first install: `gah-<version>-setup.exe`; same idea for the CLI archive). **Auto-update re-sourcing**: one release-side command prefixes every download URL in `desktop-latest.json` — `go run ./desktop/wails/cmd/desktopman rewrite-url --manifest dist-desktop-wails/desktop-latest.json --base https://gh-proxy.com/` (revert with `… rewrite-url none`) — or run the `release-desktop-wails` workflow via `workflow_dispatch` (tagging `v*` publishes automatically, sharing the same Release as the CLI build). **No re-release needed, and it applies to already-installed builds.** **Re-sourcing does not weaken security**: the updater's ed25519 signature covers the **file contents**, not the URL, so a mirror swapping the payload is rejected outright (the script self-checks that every platform's `signature` is untouched, and rolls back otherwise). Public proxies are community services with no availability guarantee — if one dies, try another prefix or `none` to restore the direct link; and the **self-hosted mirror is live**: Gitee Release assets ship with every release (see the automatic source switching below), so you no longer depend on community proxies.
 >
 > **Automatic update-source switching (0.1.6 onward)**: the desktop app holds two sources at once — the Gitee
 > mirror (direct from mainland China) and the GitHub Release (globally reachable). Gitee is tried first; if its
@@ -125,11 +125,18 @@ provider (DeepSeek / Kimi / Zhipu / Qwen / Ollama presets; paste an API key).
 > **contents**, not URLs, so re-sourcing does not weaken anything). Existing 0.1.5 users go through the GitHub
 > manifest, whose download URLs already point at an acceleration prefix, so they can upgrade from mainland China too.
 > Manual download (Gitee mirror; **attachments are uploaded with each release** — if a given tag has none yet,
-> use the links on the GitHub Release page): `https://gitee.com/null_593_5354/go-agent-harness/releases/download/<tag>/gah_<version>_aarch64.dmg`
-> (Windows: `gah_<version>_x64-setup.exe`); the code snapshot lives at `https://gitee.com/null_593_5354/go-agent-harness`.
+> use the links on the GitHub Release page): `https://gitee.com/null_593_5354/go-agent-harness/releases/download/<tag>/gah-<version>-aarch64-apple-darwin.app.zip`
+> (Windows first install: `gah-<version>-setup.exe`, upgrade: `gah-<version>-x86_64-pc-windows-msvc.zip`); the code snapshot lives at `https://gitee.com/null_593_5354/go-agent-harness`.
 > Gitee carries only the **latest code snapshot** (no history) plus the desktop installers — full history and the
 > per-platform CLI archives stay on GitHub. Revert to the direct GitHub link with
 > `go run ./desktop/wails/cmd/desktopman rewrite-url --manifest dist-desktop-wails/desktop-latest.json --base none --orig <original prefix>`.
+> **Upgrading a 0.7.x desktop build to 0.8.x needs one manual install**: from 0.8.0 the desktop shell moved from
+> Tauri (Rust) to Go + Wails v3, and the update-manifest format and signing convention changed with it (the old
+> shell cannot read the new manifest, and the new shell does not accept the old one) ⇒ **a desktop build already on
+> 0.7.x will not be offered 0.8.x automatically**. Download the 0.8.x package once and install it over the existing
+> app — your data lives outside the app directory, so nothing is lost. Automatic updates resume from 0.8.x onward.
+> The CLI builds are unaffected.
+>
 > **Two exceptions (the only ways to lose your config)**: ① the Windows uninstaller page has a
 > \"Delete app data\" checkbox — ticking it also removes `%LOCALAPPDATA%\dev.gah.desktop` (where the data root
 > lives). It is **unchecked by default**; leave it unchecked to keep your data. ② Linux ships as a CLI
@@ -148,7 +155,7 @@ and approvals. That split is exactly why upgrading the app never has to touch yo
 | Marker | the app bundle | `portable.marker` next to the executable | none |
 | Where the program runs | copied out to `<user data>/bin/` (macOS `~/Library/Application Support/dev.gah.desktop/bin/`, Windows `%LOCALAPPDATA%\dev.gah.desktop\bin\`) | **in place** (nothing copied, nothing externalised) | next to the binary |
 | Where the data lives | `bin/gah-data/` above | this directory's `gah-data/` | `gah-data/` next to the binary |
-| Upgrading | **automatic**: tray "Check for updates…" → confirm → download → replace → restart (an extra backup is taken first) | **not automatic**: "Check for updates…" is clickable, finds a newer version and **opens the portable package download page**; you unpack over it yourself | replace the single file |
+| Upgrading | **automatic**: tray "Check for updates…" → confirm → download → replace → restart (an extra backup is taken first) | **automatic in place** (when the program directory is writable; otherwise it only checks and points you at the download page) | replace the single file |
 | Uninstalling | delete the app (**data is not deleted by default**; the Windows uninstall page has a "Delete app data" checkbox — ticking it deletes the data too) | delete the whole directory | delete the file (keep or remove `gah-data/` as you like) |
 
 **Installed and portable builds can run at the same time.** They are distinct program identities
@@ -763,7 +770,7 @@ Red lines: plugins import **only `sdk/`** — never core/tui/other plugins; regi
 ```bash
 ./scripts/gen.sh cli             # single binary for this platform (TUI+Web+headless; frontend embedded; skips rebuild when unchanged)
 ./scripts/gen.sh release         # goreleaser six-target release (tar.gz/zip + checksums)
-./scripts/gen.sh desktop         # desktop shell: sidecar (= cli artifact) → tauri build (.app/.dmg, unsigned)
+./scripts/gen.sh desktop         # desktop shell: sidecar (= cli artifact) → shell build + assemble .app/.app.zip (optional dmg, unsigned)
 ./scripts/gen.sh web-dev         # frontend hot dev (vite watch + GAH_WEB_STATIC, no restarts)
 ```
 

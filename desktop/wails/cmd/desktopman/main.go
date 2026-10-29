@@ -68,6 +68,8 @@ func main() {
 		err = cmdPack(os.Args[2:])
 	case "verify-release":
 		err = cmdVerifyRelease(os.Args[2:])
+	case "pubkey":
+		err = cmdPubkey(os.Args[2:])
 	case "rewrite-url":
 		err = cmdRewriteURL(os.Args[2:])
 	case "-h", "--help", "help":
@@ -88,6 +90,7 @@ func usage() {
   desktopman sign   --key <私钥> --artifact <产物> --platform <清单键> --version <版本> --url <下载地址> [--out 清单] [--notes 说明]
   desktopman verify --manifest <清单> --platform <清单键> --artifact <产物>
   desktopman pack   --in <文件> --entry <顶层条目名> --out <zip>
+  desktopman pubkey --key <私钥>              # 从私钥推出公钥 hex(注入壳/验签用)
   desktopman verify-release --dir <产物目录> [--pubkey <hex>] [--expect <版本>]
   desktopman rewrite-url    --manifest <清单> --base <镜像前缀|none> [--orig <原始前缀>]
 
@@ -181,6 +184,28 @@ func cmdSign(args []string) error {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "已写入 %s: %s %s(%d 字节)\n", *out, *platform, *version, size)
+	return nil
+}
+
+// cmdPubkey 从私钥推公钥(hex)。
+//
+// 为什么要它:发版校验必须验签,而公钥只能来自「与签名私钥同一对」。CI 里两者都是 secret,
+// 本机只能从私钥推导 —— 让 `release.sh verify` 能在不读 secrets 文件的前提下拿到公钥
+// (本命令只打印**公钥**,私钥仍然只在文件里)。
+func cmdPubkey(args []string) error {
+	fs := flag.NewFlagSet("pubkey", flag.ContinueOnError)
+	keyPath := fs.String("key", "", "私钥文件")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *keyPath == "" {
+		return fmt.Errorf("缺 --key")
+	}
+	priv, err := readKey(*keyPath)
+	if err != nil {
+		return err
+	}
+	fmt.Println(hex.EncodeToString(priv.Public().(ed25519.PublicKey)))
 	return nil
 }
 

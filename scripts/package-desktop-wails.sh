@@ -8,6 +8,9 @@
 # 用法:
 #   bash scripts/package-desktop-wails.sh            # 构建 .app 与 .app.zip
 #   bash scripts/package-desktop-wails.sh --dmg      # 额外出 dmg
+#   RELEASE_VERSION=0.8.0-preview bash scripts/package-desktop-wails.sh --no-build --dmg
+#     ↑ 发版路径**必须显式给版本**:缺省取 `git describe`,在非 tag 提交上会变成
+#       "0.7.4-26-gabcd" —— Info.plist 就与清单/壳里的版本不一致了(2026-10-30 实测)。
 #
 # 关键点:
 #   - **bundle identifier 必须有**:macOS 的系统通知服务在这个上面直接失败
@@ -30,7 +33,7 @@ done
 
 [ "$(uname -s)" = "Darwin" ] || { echo "packaging: 只支持 macOS(Windows 走 NSIS)"; exit 1; }
 
-VERSION="$(git describe --tags 2>/dev/null | sed 's/^v//')"
+VERSION="${RELEASE_VERSION:-$(git describe --tags 2>/dev/null | sed 's/^v//')}"
 [ -n "$VERSION" ] || VERSION="0.0.0-dev"
 ARCH="$(uname -m)"
 case "$ARCH" in
@@ -99,13 +102,19 @@ print("zip 顶层条目:", tops.pop())
 PYZ
 echo "APP:  $APP"
 echo "ZIP:  $ZIP ($(du -h "$ZIP" | cut -f1))"
-shasum -a 256 "$ZIP" | awk '{print "SHA256:", $1}'
+shasum_of() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi; }
+shasum_of "$ZIP" | awk '{print "SHA256:", $1}'
 
 if [ "$DO_DMG" = "1" ]; then
   DMG="$OUT_DIR/gah-${VERSION}-${TRIPLE}.dmg"
   rm -f "$DMG"
-  hdiutil create -volname "gah" -srcfolder "$APP" -ov -format UDZO "$DMG" >/dev/null
-  echo "DMG:  $DMG ($(du -h "$DMG" | cut -f1))"
+  # dmg 只是首装的便利包(**不进**更新清单):hdiutil 失败(磁盘满/权限)时告警继续,
+  # 不要让一个可选产物把整版发行卡死。
+  if hdiutil create -volname "gah" -srcfolder "$APP" -ov -format UDZO "$DMG" >/dev/null 2>&1; then
+    echo "DMG:  $DMG ($(du -h "$DMG" | cut -f1))"
+  else
+    echo "package: ！生成 dmg 失败(可选产物,继续;首装可用 .app.zip)" >&2
+  fi
 fi
 
 echo "下一步:desktopman sign --artifact $ZIP --platform darwin-$( [ "$ARCH" = arm64 ] && echo aarch64 || echo x86_64 ) ..."

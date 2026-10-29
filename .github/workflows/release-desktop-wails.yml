@@ -1,11 +1,11 @@
-# Go + Wails v3 桌面壳发行(Tauri 链已于 2026-10-29 删除,这里是唯一的桌面发行流水线)。
+# Go + Wails v3 桌面壳发行(旧 Tauri 链已于 2026-10-29 删除,这里是唯一的桌面发行流水线)。
 #
-# 触发:workflow_dispatch 手动(默认),或打 `desktop-wails-v*` tag 自动发布。
-# **刻意不复用 `v*` tag**:两条链同时抢同一个 tag 会互相覆盖 Release 资产,
-# 主干合并(删掉 Tauri 链)后再统一到 `v*`。
+# 触发:打 `v*` tag 自动发布(与 release-cli 共用同一个 Release),或 workflow_dispatch 手动。
+# 2026-10-30 起**统一到 `v*`**:旧链删除后不再有「两条链抢同一个 tag」的问题,
+# 再分两个前缀只会让「桌面版没跟上」变成一件静默的事(CLI 发了、桌面没发)。
 #
 # 差异(相对 Tauri 链):
-#   - 产物:mac `.app.zip` / win 单 exe zip(updater 只吃「唯一顶层条目的 zip」)
+#   - 产物:mac `.app.zip`(+ 可选 dmg)/ win 单 exe zip(updater 只吃「唯一顶层条目的 zip」)
 #   - 清单:desktop-latest.json(自持格式,签名对象 = 产物 sha256 摘要)
 #   - 密钥:GAH_DESKTOP_UPDATE_KEY(ed25519 私钥 hex);公钥经 -ldflags 注入壳
 #   - windows 目标纯 Go(无 cgo),darwin 必须 cgo → 各自的 runner
@@ -16,10 +16,15 @@
 name: release-desktop-wails
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发行/补发的 tag(留空则用当前 ref)"
+        required: false
+        type: string
   push:
     tags:
-      - 'desktop-wails-v*'
+      - 'v*'
 
 permissions:
   contents: write
@@ -50,8 +55,12 @@ jobs:
         env:
           GAH_DESKTOP_UPDATE_KEY: ${{ secrets.GAH_DESKTOP_UPDATE_KEY }}
           GAH_DESKTOP_UPDATE_PUBKEY: ${{ secrets.GAH_DESKTOP_UPDATE_PUBKEY }}
+          # 下载地址用**本 tag 的直链**,不用 releases/latest/download:
+          # `latest` 不包含预发布(semver 带后缀的 tag 会被 GitHub 标成 prerelease),
+          # 预告版发出去后那个地址会 404 或指到上一版 —— 2026-10-30 发 0.8.0-preview 时踩过。
+          GAH_DESKTOP_URL_BASE: https://github.com/nekoleamo/go-agent-harness/releases/download/${{ inputs.tag || github.ref_name }}
           RELEASE_NOTES: ${{ github.event.head_commit.message }}
-          RELEASE_VERSION: ${{ github.ref_name }}
+          RELEASE_VERSION: ${{ inputs.tag || github.ref_name }}
         run: |
           # 私钥从 secret 落到临时文件(脚本按路径读),退出即随 runner 销毁。
           umask 077
@@ -75,9 +84,13 @@ jobs:
         include:
           - plat: windows-x86_64
             runner: windows-latest
-          - plat: windows-arm64
+          # 清单键必须是 windows-aarch64(壳侧 platformKey():GOOS-<归一化 arch>),
+          # 写成 windows-arm64 时 arm64 客户端永远查不到自己的产物。
+          - plat: windows-aarch64
             runner: windows-11-arm
     runs-on: ${{ matrix.runner }}
+    env:
+      GAH_DESKTOP_URL_BASE: https://github.com/nekoleamo/go-agent-harness/releases/download/${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -104,7 +117,7 @@ jobs:
           GAH_DESKTOP_UPDATE_KEY: ${{ secrets.GAH_DESKTOP_UPDATE_KEY }}
           GAH_DESKTOP_UPDATE_PUBKEY: ${{ secrets.GAH_DESKTOP_UPDATE_PUBKEY }}
           RELEASE_NOTES: ${{ github.event.head_commit.message }}
-          RELEASE_VERSION: ${{ github.ref_name }}
+          RELEASE_VERSION: ${{ inputs.tag || github.ref_name }}
         run: |
           umask 077
           printf '%s\n' "$GAH_DESKTOP_UPDATE_KEY" > "$RUNNER_TEMP/update.key"
@@ -144,20 +157,29 @@ jobs:
           rm -rf dist-desktop-wails/desktop-wails-*
       - name: 合并清单 + 校验和
         env:
-          RELEASE_VERSION: ${{ github.ref_name }}
+          RELEASE_VERSION: ${{ inputs.tag || github.ref_name }}
         run: |
           export RELEASE_VERSION="${RELEASE_VERSION#desktop-wails-v}"
           export RELEASE_VERSION="${RELEASE_VERSION#v}"
           bash scripts/publish-desktop-wails.sh merge
-      - name: 上传到 Release
+      - name: 上传到 Release(升级包 / 首装包 / 清单 / 校验和)
         uses: softprops/action-gh-release@v2
         with:
+          # 预发布标记跟 tag 走(semver 带后缀 = prerelease):goreleaser 默认就是 auto,
+          # 两边对同一个 Release 的说法要一致。
+          prerelease: ${{ contains(inputs.tag || github.ref_name, '-') }}
           files: |
             dist-desktop-wails/desktop-latest.json
             dist-desktop-wails/checksums-desktop-wails.txt
             dist-desktop-wails/*/*.zip
             dist-desktop-wails/*/*setup.exe
           fail_on_unmatched_files: true
+      - name: 上传 dmg(可选;首装便利包,不进更新清单)
+        # 单独一步 + 不强制匹配:hdiutil 失败时 package 脚本只告警,这里也不该因此整版变红。
+        if: ${{ hashFiles('dist-desktop-wails/*/*.dmg') != '' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist-desktop-wails/*/*.dmg
 
   # 说明(与 Tauri 链同一口径):CI 不往 Gitee 传附件 —— 海外 runner 往 Gitee 传 25MB 级
   # 附件实测 60 秒 0 字节超时。Gitee 镜像由 scripts/mirror-gitee.sh 在本机跑。

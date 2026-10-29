@@ -30,11 +30,12 @@ checksum:
   name_template: checksums.txt
 # 与桌面壳流水线(release-desktop-wails.yml)共用同一个 tag 的 Release:已存在则只追加产物
 # (不覆盖正文、不报错);谁先跑完谁负责创建。draft=false 保证 releases/latest 立刻可用
-# (updater 端点取 releases/latest/download/latest.json)。
+# (稳定的 GitHub 兜底端点取 releases/latest/download/desktop-latest.json;
+#  国内第一顺位是 Gitee raw/master/desktop-latest.json,由 scripts/mirror-gitee.sh 推)。
 release:
   draft: false
   mode: keep-existing
-# 正文归属:由 release-desktop 的 merge job 用 GitHub 自动 notes 生成(两个 workflow 并发,
+# 正文归属:由 release-desktop-wails 的 merge job 用 GitHub 自动 notes 生成(两个 workflow 并发,
 # 若 goreleaser 也写正文,谁后跑谁覆盖 → 结果不确定)。此处关掉自带 changelog,使最终正文
 # 恒为 GitHub notes(本仓提交历史与**本地**设计登记册 DESIGN.md §14.1 已是完整变更记录;
 # DESIGN.md 自 2026-10-01 起不入库,故不随发行包分发)。

@@ -9,9 +9,11 @@
 ;     只在「完成页勾选」且非覆盖安装时创建)
 ;
 ; 构建(需 makensis,CI 的 windows runner 上装好;本机 mac 不做):
-;   makensis -DVERSION=0.1.7 -DAPPEXE=dist-desktop-wails/windows-x86_64/gah-desktop.exe \
-;            -DOUTFILE=dist-desktop-wails/windows-x86_64/gah-0.1.7-setup.exe \
-;            desktop/wails/installer/installer.nsi
+;   makensis -DVERSION=0.1.7 -DNUMVERSION=0.1.7.0 -DAPPEXE=<壳 exe> -DOUTFILE=<setup.exe> \
+;            -DICONDIR=<本目录绝对路径> desktop/wails/installer/installer.nsi
+;   NUMVERSION 必须是**纯数字四段**:VIProductVersion 不认 "0.8.0-preview" ——
+;   预告版 tag 直接拼会报 invalid VIProductVersion,整版 Windows 产物发不出去
+;   (scripts/publish-desktop-wails.sh 的 num_version 负责换算)。
 
 Unicode true
 !include "MUI2.nsh"
@@ -21,11 +23,20 @@ Unicode true
 !ifndef VERSION
   !define VERSION "0.0.0"
 !endif
+; 纯数字四段,只给 VIProductVersion(Windows 文件版本属性)用。
+!ifndef NUMVERSION
+  !define NUMVERSION "0.0.0.0"
+!endif
 !ifndef APPEXE
   !define APPEXE "gah-desktop.exe"
 !endif
 !ifndef OUTFILE
   !define OUTFILE "gah-setup.exe"
+!endif
+; 图标目录。**NSIS 的 File/Icon 相对路径是相对「.nsi 所在目录」**解析的(不是 cwd,
+; 2026-10-30 实测):所以缺省值用 "." 就正好指向本脚本旁边;发行脚本会传绝对路径。
+!ifndef ICONDIR
+  !define ICONDIR "."
 !endif
 
 !define APPNAME "gah"
@@ -41,18 +52,18 @@ InstallDirRegKey HKCU "Software\${APPNAME}" "InstallDir"
 RequestExecutionLevel user
 SetCompressor /SOLID lzma
 
-VIProductVersion "${VERSION}.0"
+VIProductVersion "${NUMVERSION}"
 VIAddVersionKey "ProductName" "${APPNAME}"
 VIAddVersionKey "FileDescription" "${APPNAME} 安装程序"
 VIAddVersionKey "FileVersion" "${VERSION}"
 VIAddVersionKey "ProductVersion" "${VERSION}"
 VIAddVersionKey "LegalCopyright" "${PUBLISHER}"
 
-; 安装器图标(来自 desktop/icons 的图标源;不再用 NSIS 默认图标)
-!define MUI_ICON "gah.ico"
-!define MUI_UNICON "gah.ico"
-Icon "gah.ico"
-UninstallIcon "gah.ico"
+; 安装器图标(来自桌面壳自己的图标资产;不再用 NSIS 默认图标)
+!define MUI_ICON "${ICONDIR}/gah.ico"
+!define MUI_UNICON "${ICONDIR}/gah.ico"
+Icon "${ICONDIR}/gah.ico"
+UninstallIcon "${ICONDIR}/gah.ico"
 
 !define MUI_ABORTWARNING
 !define MUI_FINISHPAGE_RUN "$INSTDIR\${APPNAME}.exe"

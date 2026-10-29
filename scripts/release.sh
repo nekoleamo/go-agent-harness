@@ -13,16 +13,19 @@
 # —— 这正是镜像链路那两道护栏已经证明有效的形态。
 #
 # 本层**不发明逻辑**:所有实质能力都已存在(gate.sh / coverage-check.sh / size-check.sh /
-# verify-release.mjs / mirror-gitee.sh / sync-gitee.sh),这里只做**顺序、门、停**。
+# desktopman verify-release / mirror-gitee.sh / sync-gitee.sh),这里只做**顺序、门、停**。
 # 出现新的构建/校验逻辑就意味着第二份事实源,而本项目吃过两次亏(gate.sh 之前的三步只活在
 # 开发者习惯里;assert_arch 两份实现会漂)。
 #
+# 2026-10-30:Tauri 链已删,桌面产物口径全部换到 Go+Wails 链
+# （`desktop-latest.json` + `desktopman verify-release`,不再有 latest.json / verify-release.mjs）。
+#
 # 用法:
 #   bash scripts/release.sh preflight          # tag 之前的本地闸(不联网)
-#   bash scripts/release.sh wait               # 等 master 的 CI 五 job 全绿
+#   bash scripts/release.sh wait               # 等 master 的 CI 全部 job 绿
 #   bash scripts/release.sh tag v0.6.0 --yes    # 打 tag 并推(默认只打印将执行的命令)
-#   bash scripts/release.sh watch v0.6.0       # 盯 release-cli + release-desktop 到终态
-#   bash scripts/release.sh verify v0.6.0 --all  # 产物校验门(逐平台下载验签;发版建议加)
+#   bash scripts/release.sh watch v0.6.0       # 盯 release-cli + release-desktop-wails 到终态
+#   bash scripts/release.sh verify v0.6.0      # 产物校验门(下载 Release 产物 + 逐平台验签)
 #   bash scripts/release.sh mirror v0.6.0 --mirror      # Gitee 镜像(需 env 的 GITEE_TOKEN)
 #   bash scripts/release.sh verify-mirror v0.6.0 --dir /tmp/rel   # 只做逐字节核对(**只读**,不需 token)
 #   bash scripts/release.sh endpoint v0.6.0    # 回查壳的第一顺位端点
@@ -53,9 +56,11 @@ GH_REPO="${GAH_GITHUB_REPO:-nekoleamo/go-agent-harness}"
 GITEE_REPO="${GITEE_REPO:-null_593_5354/go-agent-harness}"
 TIMEOUT="${GAH_RELEASE_TIMEOUT:-1800}"
 
-# ci.yml 的五个 job。**逐个判绿**而不是「workflow 结束」—— 后者在有 job 被 skip 时也会是绿的。
-CI_JOBS=(test test-macos test-windows desktop-shell desktop-shell-macos)
-RELEASE_WORKFLOWS=(release-cli release-desktop)
+# ci.yml 的 job。**逐个判绿**而不是「workflow 结束」—— 后者在有 job 被 skip 时也会是绿的。
+# 2026-10-30:desktop-shell / desktop-shell-macos(Rust 侧)已随旧链删除,
+# 桌面壳的编译/测试门并进了 test-windows/ test-macos 的 go vet + go test + 构建冒烟步骤。
+CI_JOBS=(test test-macos test-windows)
+RELEASE_WORKFLOWS=(release-cli release-desktop-wails)
 
 # 先取子命令并 shift —— **再**扫旗标/位置参数。
 # (顺序反了的话子命令会被当成位置参数,报「多余的位置参数」——第一版就栽在这。)
@@ -75,43 +80,32 @@ shift || true
 
 FAST=0; YES=0; MIRROR=0; SKIP_VERIFY=0; VERIFY_ALL=0; SKIP_MIRROR=0
 MIRROR_DIR="" # verify-mirror 的 --dir:本地产物目录(与 GAH_MIRROR_DIR 同义,显式的优先)
-VERIFY_FLAGS=() # 转发给 verify-release.mjs 的未知旗标(见下面 --*) 分支)
 TAG=""; ARGS=()
-# verify 阶段**完全不分类**:位置参数是 tag,其余一律原样转发给 verify-release.mjs。
-#
-# 为什么:编排层冻结叶子脚本的命令面是**第二份 CLI 契约** —— 叶子加一个选项就得改这里,
-# 漏改的后果是「明明支持却报未知旗标」。第一版就因此连栽两次(--all、--platform)。
-# 而 verify-release 用的是 `argv[++i]` 式解析(旗标带值),任何「猜哪些旗标带值」的转发都会错
-# (第二版就把 `--platform darwin-aarch64` 的**值**当成了位置参数)。
-if [ "$sub" = verify ]; then
-  ARGS=("$@")
-else
-  # 用 while+shift 而不是 for:--dir 要**带值**,for 里的 "$@" 无法消费下一个参数。
-  while [ $# -gt 0 ]; do
-    a="$1"
-    case "$a" in
-      --fast) FAST=1 ;;
-      --yes) YES=1 ;;
-      --mirror) MIRROR=1 ;;
-      --skip-mirror) SKIP_MIRROR=1 ;; # 明知不做 Gitee 镜像才写;终局闸会打一段后果说明
-      --skip-artifacts) SKIP_VERIFY=1 ;;
-      --all) VERIFY_ALL=1 ;; # verify-release 的逐平台全量验签(慢,但发版该跑)
-      --dir)
-        shift
-        [ $# -gt 0 ] || { echo "--dir 需要目录参数" >&2; exit 2; }
-        MIRROR_DIR="$1"
-        ;;
-      -h|--help) usage; exit 0 ;;
-      --*) echo "未知旗标:$a(--help 看用法)" >&2; exit 2 ;;
-      *) ARGS+=("$a") ;;
-    esac
-    shift
-  done
-fi
-# 位置参数个数检查**跳过 verify**:它的整行参数都是原样转发的(旗标带值,不做分类)。
-if [ "$sub" != verify ]; then
-  [ "${#ARGS[@]}" -le 1 ] || { echo "多余的位置参数:${ARGS[*]:1}" >&2; exit 2; }
-fi
+# 旗标统一在这里解析(2026-10-30 起没有例外):旧 verify 阶段整行原样转发给
+# `verify-release.mjs`,那层已经随 Tauri 链删除,验签改由 desktopman 承担 ——
+# 编排层不再冻结任何叶子 CLI 契约,也就不需要「猜哪些旗标带值」的转发。
+# 用 while+shift 而不是 for:--dir 要**带值**,for 里的 "$@" 无法消费下一个参数。
+while [ $# -gt 0 ]; do
+  a="$1"
+  case "$a" in
+    --fast) FAST=1 ;;
+    --yes) YES=1 ;;
+    --mirror) MIRROR=1 ;;
+    --skip-mirror) SKIP_MIRROR=1 ;; # 明知不做 Gitee 镜像才写;终局闸会打一段后果说明
+    --skip-artifacts) SKIP_VERIFY=1 ;;
+    --all) VERIFY_ALL=1 ;; # 兼容旧写法:新实现本来就逐平台全验,值不起作用
+    --dir)
+      shift
+      [ $# -gt 0 ] || { echo "--dir 需要目录参数" >&2; exit 2; }
+      MIRROR_DIR="$1"
+      ;;
+    -h|--help) usage; exit 0 ;;
+    --*) echo "未知旗标:$a(--help 看用法)" >&2; exit 2 ;;
+    *) ARGS+=("$a") ;;
+  esac
+  shift
+done
+[ "${#ARGS[@]}" -le 1 ] || { echo "多余的位置参数:${ARGS[*]:1}" >&2; exit 2; }
 if [ "${#ARGS[@]}" -ge 1 ]; then TAG="${ARGS[0]}"; fi
 
 # —— 输出小工具(不用颜色:日志会被 CI 抓走,转义序列只会更难读)——
@@ -162,7 +156,7 @@ preflight() {
   本地护栏跑的是**上一版代码**的产物(v0.5.0 的 P0 正是这样溜过去的)。先跑:bash scripts/gen-web.sh"
 
   step "preflight · 静态检查(gate.sh)"
-  bash scripts/gate.sh || die "gate.sh 红(gofmt / go vet ×2 / staticcheck ×2)"
+  bash scripts/gate.sh || die "gate.sh 红(gofmt / go vet ×3 / staticcheck ×3)"
 
   step "preflight · 覆盖率棘轮"
   local covdir; covdir="$(mktemp -d)"
@@ -309,15 +303,15 @@ watch_release() {
   done
   [ "$bad" = 0 ] || die "有 workflow 红。修好可用 workflow_dispatch 补发,或按方案 §5 的红线人工判断"
 
-  # latest.json 只由 release-desktop 的 merge job 生成;缺了它 updater 端点会 404。
+  # desktop-latest.json 只由 release-desktop-wails 的 merge job 生成;缺了它 updater 端点会 404。
   local assets
   assets="$(gh release view "$TAG" --repo "$GH_REPO" --json assets -q '.assets[].name' 2>/dev/null || true)"
-  printf '%s\n' "$assets" | grep -qx latest.json \
-    || die "Release $TAG 没有 latest.json —— release-desktop 的 merge job 没成功。updater 端点会 404(用户端显示「暂无可用更新」)"
-  say "    Release 资产 $(printf '%s\n' "$assets" | grep -c . ) 件,含 latest.json"
+  printf '%s\n' "$assets" | grep -qx desktop-latest.json \
+    || die "Release $TAG 没有 desktop-latest.json —— release-desktop-wails 的 merge job 没成功。updater 端点会 404(用户端显示「暂无可用更新」)"
+  say "    Release 资产 $(printf '%s\n' "$assets" | grep -c . ) 件,含 desktop-latest.json"
   say ""
   say "    ⚠ GitHub 侧到此为止,**这个版本还没发完**:Gitee 镜像与端点回查在后面。"
-  say "      updater 的第一顺位端点是 Gitee(raw/master/latest.json),GitHub 只是兜底;"
+  say "      updater 的第一顺位端点是 Gitee(raw/master/desktop-latest.json),GitHub 只是兜底;"
   say "      它不跑到本次 tag,国内用户的「检查更新」就看不到这一版(2026-10-10 v0.6.1 真踩过)。"
   say "      接着跑其中一条:"
   say "        bash ~/.pi/agent/local/gitee-release.sh $TAG    # 镜像 + 逐字节核对 + 端点回查"
@@ -325,20 +319,40 @@ watch_release() {
 }
 
 # ───────────────────────────── verify ─────────────────────────────
+# 产物校验门:摘要在账、逐平台 ed25519 验签、zip 唯一顶层条目。
+#
+# 旧链是 `node scripts/verify-release.mjs`(Tauri latest.json 口径),随旧链一起删除了;
+# 新口径全部在 `desktopman verify-release` 里 —— 与 sign/verify 共用同一份算法,
+# 不再有「发布工具一套、校验脚本另一套」的漂移风险。
 do_verify() {
-  need_cmd node
-  [ -n "$TAG" ] || die "用法:release.sh verify <vX.Y.Z>"
-  step "verify · 产物校验门(verify-release.mjs --all)"
-  # 参数解析阶段把整个 verify 参数行**原样**收进了 ARGS:第一个是 tag,其余转发。
-  local tag="${ARGS[0]:-$TAG}"
-  local rest=("${ARGS[@]:1}")
-  [ -n "$tag" ] || die "用法:release.sh verify <vX.Y.Z> [--all|--platform <键>|--local <目录>|--skip-artifacts]"
-  [ "$SKIP_VERIFY" = 1 ] && rest+=(--skip-artifacts)
-  # --all:逐平台下载产物验签(每平台 20~40 MiB,慢)。发版**建议加** ——
-  # 只验本机平台时,「另一个平台的包压根没下下来过」这件事没有任何人会发现。
-  [ "$VERIFY_ALL" = 1 ] && rest+=(--all)
-  node scripts/verify-release.mjs --tag "$tag" ${rest[@]+"${rest[@]}"} \
-    || die "产物校验不过(逐平台验签 / updater 端点一致性)"
+  need_cmd go
+  [ -n "$TAG" ] || die "用法:release.sh verify <vX.Y.Z> [--dir <产物目录>]"
+  step "verify · 产物校验门(desktopman verify-release)"
+  if [ "$SKIP_VERIFY" = 1 ]; then
+    say "  --skip-artifacts:已跳过(**不是通过**)"
+    return 0
+  fi
+  local dir="${MIRROR_DIR:-${GAH_MIRROR_DIR:-}}"
+  if [ -z "$dir" ]; then
+    need_cmd gh
+    dir="$(mktemp -d)"
+    say "  下载 Release 产物 → $dir"
+    mirror_fetch "$dir" "$TAG" || die "Release $TAG 上没有可校验的桌面产物"
+  fi
+  [ -d "$dir" ] || die "产物目录不存在:$dir"
+  dir="$(cd "$dir" && pwd)"
+
+  # 验签公钥:env 优先(--mirror 发布机上由外部入口注入);否则从本地私钥**推导**。
+  # 本脚本仍然**不读任何 secrets 文件** —— 私钥是 desktopman 自己按路径读的,
+  # 公钥只作为一行 hex 传给校验器。
+  local pk="${GAH_DESKTOP_UPDATE_PUBKEY:-}" keyfile="${GAH_DESKTOP_UPDATE_KEY:-$HOME/.gah-desktop/update.key}"
+  if [ -z "$pk" ] && [ -f "$keyfile" ]; then
+    pk="$(go run ./desktop/wails/cmd/desktopman pubkey --key "$keyfile" 2>/dev/null || true)"
+  fi
+  [ -n "$pk" ] || die "没有验签公钥:设 GAH_DESKTOP_UPDATE_PUBKEY,或把私钥放在 ~/.gah-desktop/update.key。
+  发版必须验签 —— 只比摘要的「通过」等于没验(清单与产物可被一起替掉)。"
+  go run ./desktop/wails/cmd/desktopman verify-release --dir "$dir" --pubkey "$pk" --expect "$(ver_of "$TAG")" \
+    || die "产物校验不过(逐平台验签 / 摘要 / zip 顶层条目)"
 }
 
 # ───────────────────────────── mirror ─────────────────────────────
@@ -371,10 +385,11 @@ do_mirror() {
   只补核对那一步(不碰远端):bash scripts/release.sh verify-mirror $TAG --dir $dir"
 
   # 4) 推快照 + 注表
-  local snap="$REPO_ROOT/dist-desktop/gitee/latest.json"
-  [ -f "$snap" ] || die "缺 Gitee 版更新表:$snap"
-  step "mirror 4/4 · 推代码快照 + 注入 latest.json"
-  GAH_EXTRA_FILES="$snap:latest.json" bash scripts/sync-gitee.sh || die "推快照失败"
+  # 表名是 desktop-latest.json(壳读 raw/master/desktop-latest.json;旧链叫 latest.json)。
+  local snap="$REPO_ROOT/dist-desktop-wails/gitee/desktop-latest.json"
+  [ -f "$snap" ] || die "缺 Gitee 版更新表:$snap(由 mirror-gitee.sh upload 生成)"
+  step "mirror 4/4 · 推代码快照 + 注入 desktop-latest.json"
+  GAH_EXTRA_FILES="$snap:desktop-latest.json" bash scripts/sync-gitee.sh || die "推快照失败"
 }
 
 # ───────────────────────────── verify-mirror ─────────────────────────────
@@ -420,21 +435,41 @@ do_verify_mirror() {
 # 却一直没有「只重跑第 3 步」的入口,只能手工拼 curl。抽成函数后 verify-mirror 复用它,
 # 核对逻辑仍然只有一份(第二份 = 第二份事实源,本脚本头部明令禁止)。
 
+# 桌面产物文件名口径(Go+Wails 链,2026-10-30 起):
+#   升级包    gah-<ver>-<triple>.zip(mac 是 gah-<ver>-<triple>.app.zip;triple 如 aarch64-apple-darwin)
+#   首装包    gah-<ver>-setup.exe(windows NSIS)/ *.dmg(mac,可选)
+#   便携包    gah-<ver>-portable-<triple>.zip
+#   清单/校验和 desktop-latest.json / checksums-desktop-wails.txt
+#
+# mirror_fetch 的判据分两层:`is_desktop_asset` 决定「哪些算桌面产物」,
+# 版本闸(gah-<ver>-*)决定「是不是本 tag 的」。mirror-gitee.sh 的 belongs_to_tag
+# 用同一套规则(两个脚本各一份字面量是不得已 —— 但规则本身只有一句:文件名里带本版号)。
+is_desktop_asset() {
+  case "$1" in
+    desktop-latest.json|checksums-desktop-wails.txt) return 0 ;;
+    *.app.zip|*-setup.exe|*.dmg|*-portable-*.zip) return 0 ;;
+    gah-*-apple-darwin.zip|gah-*-pc-windows-msvc.zip) return 0 ;;
+  esac
+  return 1
+}
+
 # mirror_fetch 按 Release 资产清单把桌面临产物拉到 $1(标签 $2)。
 # 目录**先清空**:它是复用的,上一次发版的包还躺在里面 —— 旧脚本会把它们一并传进本 tag
 # (v0.4.1 首次镜像时,v0.1.7 的两个安装包就被传到了 0.4.1 页面上)。
 mirror_fetch() {
   local dir="$1" tag="$2" ver names f
   ver="$(ver_of "$tag")"
-  names="$(gh release view "$tag" --repo "$GH_REPO" --json assets -q '.assets[].name' 2>/dev/null \
-          | grep -E '\.app\.tar\.gz$|-setup\.exe$|\.dmg$|-portable\.zip$|^latest\.json$' || true)"
+  names="$(gh release view "$tag" --repo "$GH_REPO" --json assets -q '.assets[].name' 2>/dev/null || true)"
+  names="$(printf '%s\n' "$names" | while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    is_desktop_asset "$n" || continue
+    echo "$n"
+  done)"
   if [ -z "$names" ]; then
-    say "    取不到资产清单(gh 缺失/未登录/无此 tag)→ 退回按平台名猜"
-    names="$(printf '%s\n' "gah_${ver}_aarch64.dmg" "gah_${ver}_x64.dmg" \
-             "gah_${ver}_x64-setup.exe" "gah_${ver}_x64-portable.zip" "gah.app.tar.gz" "latest.json")"
+    say "    取不到资产清单(gh 缺失/未登录/无此 tag)→ 没有可拉的东西(不猜文件名)"
+    return 1
   fi
-  find "$dir" -maxdepth 1 -type f \( -name '*.dmg' -o -name '*-setup.exe' -o -name '*.app.tar.gz' \
-       -o -name '*-portable.zip' -o -name 'latest.json' \) -delete
+  find "$dir" -maxdepth 1 -type f -delete
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     say "    拉取 $f …"
@@ -444,10 +479,17 @@ mirror_fetch() {
   done <<< "$names"
 }
 
-# release_asset_names 打印该 tag 上「该镜像」的资产名(gh 不可用时打不出东西 —— 调用方要能容忍)。
+# release_asset_names 打印该 tag 上「该镜像」的资产名(仅产物,不含清单/校验和:
+# 清单两边内容本就不同 —— Gitee 那份把 URL 换到了 Gitee 直链)。
+# gh 不可用时打不出东西 —— 调用方要能容忍。
 release_asset_names() {
   gh release view "$1" --repo "$GH_REPO" --json assets -q '.assets[].name' 2>/dev/null \
-    | grep -E '\.app\.tar\.gz$|-setup\.exe$|\.dmg$|-portable\.zip$' || true
+    | while IFS= read -r n; do
+        case "$n" in
+          desktop-latest.json|checksums-desktop-wails.txt) continue ;;
+        esac
+        is_desktop_asset "$n" && echo "$n"
+      done || true
 }
 
 # mirror_bytecheck 逐字节核对:本地副本 vs Gitee 匿名直链(标签 $2)。
@@ -485,10 +527,10 @@ mirror_bytecheck() {
 }
 
 attach_list() {
-  # 便携包一并上传:它不进 latest.json(updater 只认安装包),但分发靠人工链接,
+  # 便携包一并上传:它不进 desktop-latest.json(updater 只装升级包),但分发靠人工链接,
   # 不镜像等于国内用户拿不到(见 mirror-gitee.sh collect 的注释)。
-  find "$1" -maxdepth 1 -type f \( -name '*.dmg' -o -name '*-setup.exe' -o -name '*.app.tar.gz' \
-       -o -name '*-portable.zip' \) 2>/dev/null | sort
+  find "$1" -maxdepth 1 -type f \( -name '*.app.zip' -o -name '*-setup.exe' -o -name '*.dmg' \
+       -o -name '*-portable-*.zip' -o -name 'gah-*-pc-windows-msvc.zip' \) 2>/dev/null | sort
 }
 
 sha256_of() {
@@ -502,7 +544,7 @@ do_endpoint() {
   need_cmd curl; need_cmd jq
   [ -n "$TAG" ] || die "用法:release.sh endpoint <vX.Y.Z>"
   step "endpoint · 回查壳的第一顺位端点"
-  local url="https://gitee.com/${GITEE_REPO}/raw/master/latest.json"
+  local url="https://gitee.com/${GITEE_REPO}/raw/master/desktop-latest.json"
   # Gitee raw 是 302 → raw.giteeusercontent.com,必须 -L(少它只拿到 448 字节跳转页,
   # jq 报 `Invalid numeric literal` —— 2026-09-27 踩过,别当「回源延迟」)。
   local got="" i
@@ -513,7 +555,7 @@ do_endpoint() {
     sleep 10
   done
   curl -fsSL "$url" | jq -r '"  version=\(.version)",
-    (.platforms | to_entries[] | "  \(.key) → \(.value.url)")'
+    (.artifacts | to_entries[] | "  \(.key) → \(.value.url)")'
   say "    表地址:$url"
   [ "$got" = "$(ver_of "$TAG")" ] \
     || die "端点未对齐到 $TAG(当前 $got)。**这是可接受的安全态**:升级器不会指向未核验的字节"

@@ -78,11 +78,15 @@ func platformKey() string {
 	return runtime.GOOS + "-" + arch
 }
 
-// versionNewer 判断 remote 是否比 current 新(容忍 "v" 前缀与后缀)。
+// versionNewer 判断 remote 是否比 current 新(容忍 "v" 前缀、预发布后缀与 build 元数据)。
 // 不引 semver 依赖:gah 的版本就是 tag,逐段数字比较足够,且行为一眼可验。
+//
+// 预发布口径(2026-10-30 补):**核心号相同时,正式版比预发布版新** ——
+// 0.8.0 > 0.8.0-preview。缺了这条,预发布用户升到正式版时会被判「已是最新」,
+// 于是「0.8.0-preview 发出去、0.8.0 发不出来」,而界面只会说「当前已是最新」。
 func versionNewer(remote, current string) bool {
-	a := parseVer(remote)
-	b := parseVer(current)
+	a, aPre := parseVer(remote)
+	b, bPre := parseVer(current)
 	n := len(a)
 	if len(b) > n {
 		n = len(b)
@@ -99,17 +103,23 @@ func versionNewer(remote, current string) bool {
 			return x > y
 		}
 	}
-	return false
+	// 核心号相同:只有「当前是预发布、远端是正式版」才算更新。
+	return bPre && !aPre
 }
 
-// parseVer 取版本号的数字段("v0.7.4-3-gabc" → [0,7,4])。
-func parseVer(v string) []int {
+// parseVer 取版本号的核心数字段,并标出是否为预发布。
+//
+//	"v0.7.4-3-gabc" → [0,7,4], true(-rc/-preview/describe 后缀都算预发布)
+//	"0.8.0+build"   → [0,8,0], false(+ 是 build 元数据,不影响新旧)
+func parseVer(v string) (core []int, pre bool) {
 	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
-	core := v
-	if i := strings.IndexAny(core, "-+"); i >= 0 {
-		core = core[:i]
+	if i := strings.IndexByte(v, '+'); i >= 0 {
+		v = v[:i]
 	}
-	parts := strings.Split(core, ".")
+	if i := strings.IndexByte(v, '-'); i >= 0 {
+		v, pre = v[:i], true
+	}
+	parts := strings.Split(v, ".")
 	out := make([]int, 0, len(parts))
 	for _, p := range parts {
 		n, err := strconv.Atoi(p)
@@ -118,7 +128,15 @@ func parseVer(v string) []int {
 		}
 		out = append(out, n)
 	}
-	return out
+	return out, pre
+}
+
+// newDesktopProvider 造 provider:清单与下载各用一个客户端(理由见 desktopProvider 字段注释)。
+func newDesktopProvider() *desktopProvider {
+	return &desktopProvider{
+		client: &http.Client{Timeout: 30 * time.Second},
+		dl:     &http.Client{},
+	}
 }
 
 // updateSources 本次使用的清单地址(env 可覆盖,便于本地/CI 演练)。
@@ -139,7 +157,12 @@ func updateSources() []string {
 
 // desktopProvider gah 自己的更新源 provider(实现 updater.Provider)。
 type desktopProvider struct {
+	// client 取清单(几 KB 的 JSON):总超时 30s,失败要尽快落到下一个源。
 	client *http.Client
+	// dl 下载产物(30–45MB):**不设总超时** —— http.Client.Timeout 覆盖整个响应体读取,
+	// 慢网下 30s 会把一次正常下载判成失败(客户端看起来在「下载失败」,而其实只是慢)。
+	// 兜底是调用方给的 ctx(安装流程 30 分钟)。
+	dl *http.Client
 
 	mu        sync.Mutex
 	badSource string // 失败记忆:上次「表能取到、包下不下来」的源,下次垫到最后
@@ -236,19 +259,15 @@ func (p *desktopProvider) Download(ctx context.Context, r *updater.Release, dst 
 	if err != nil {
 		return err
 	}
-	resp, err := p.client.Do(req)
+	resp, err := p.dl.Do(req)
 	if err != nil {
 		// 「表能取到、包下不下来」正是失败记忆要治的那半段路。
-		if src, ok := r.Metadata["source"].(string); ok {
-			p.rememberBad(src)
-		}
+		p.rememberBadSource(r)
 		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		if src, ok := r.Metadata["source"].(string); ok {
-			p.rememberBad(src)
-		}
+		p.rememberBadSource(r)
 		return fmt.Errorf("下载返回 HTTP %d", resp.StatusCode)
 	}
 	buf := make([]byte, 64<<10)
@@ -266,8 +285,20 @@ func (p *desktopProvider) Download(ctx context.Context, r *updater.Release, dst 
 			return nil
 		}
 		if rerr != nil {
+			// 读一半断掉(代理超时/截断)同样属于「这个源下不来包」,记下来下次垫后。
+			p.rememberBadSource(r)
 			return rerr
 		}
+	}
+}
+
+// rememberBadSource 记录「这个源下不来包」(下次检查先试另一个源)。
+func (p *desktopProvider) rememberBadSource(r *updater.Release) {
+	if r == nil {
+		return
+	}
+	if src, ok := r.Metadata["source"].(string); ok && src != "" {
+		p.rememberBad(src)
 	}
 }
 
@@ -321,7 +352,7 @@ func parsePubDate(s string) time.Time {
 
 // initUpdater 装配更新器(在 app.Run() 之前调用)。
 func (s *shell) initUpdater() error {
-	p := &desktopProvider{client: &http.Client{Timeout: 30 * time.Second}}
+	p := newDesktopProvider()
 	cfg := updater.Config{
 		CurrentVersion: strings.TrimPrefix(version, "v"),
 		Providers:      []updater.Provider{p},
@@ -359,7 +390,7 @@ func explainUpdateError(err error) string {
 	msg := err.Error()
 	lower := strings.ToLower(msg)
 	switch {
-	case strings.Contains(lower, "404") || strings.Contains(lower, "no such host") && strings.Contains(lower, "manifest"):
+	case strings.Contains(lower, "404"):
 		return "更新源上没有这个版本的清单(可能还没发布完):" + msg
 	case strings.Contains(lower, "signature"):
 		return "更新包验签失败(发布包与内置公钥不匹配,可能被替换或签名错了):" + msg
@@ -367,6 +398,8 @@ func explainUpdateError(err error) string {
 		return "连不上更新源(超时):" + msg
 	case strings.Contains(lower, "connection refused") || strings.Contains(lower, "no route"):
 		return "连不上更新源(网络不可达):" + msg
+	case strings.Contains(lower, "no such host") || strings.Contains(lower, "dns"):
+		return "连不上更新源(域名解析失败):" + msg
 	case strings.Contains(lower, "没有") && strings.Contains(msg, "产物"):
 		return "更新源里没有当前平台的产物:" + msg
 	default:

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# 统一构建入口:一条命令出 gah 全部形态(TUI/Web 单二进制、六目标发行、桌面壳 .app/.dmg)。
+# 统一构建入口:一条命令出 gah 全部形态(TUI/Web 单二进制、六目标发行、桌面壳 .app/.app.zip/dmg)。
 # 三端融合原理:gah 单二进制内嵌 web/dist(TUI/Web/headless 同进程三 profile,零打包差异);
-# 桌面壳的 sidecar 复用同一 cli 产物,Tauri 仅做窗口/托盘/打包。
+# 桌面壳(Go+Wails v3)的 sidecar 复用同一 cli 产物,壳只做窗口/托盘/打包。
 #
 # 用法:
 #   ./scripts/gen.sh cli           本平台单二进制(TUI+Web+headless 全形态;前端已内嵌)
 #   ./scripts/gen.sh release       goreleaser 六目标发行(tar.gz/zip;before hooks 已含 web/ext 构建)
-#   ./scripts/gen.sh desktop       桌面壳:sidecar(=cli 产物)→ tauri build(.app/.dmg,未签名)
+#   ./scripts/gen.sh desktop       桌面壳:sidecar(=cli 产物)→ 壳构建 + 组装 .app/.app.zip(可选 dmg,未签名)
 #   ./scripts/gen.sh web-dev       前端热更开发(vite watch;后端 GAH_WEB_STATIC 指向产物免重启)
 set -euo pipefail
 cd "$(dirname "$0")/.."

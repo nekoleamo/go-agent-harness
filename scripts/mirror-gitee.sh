@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# ⚠️ 本文件的桌面部分是**旧 Tauri 链**口径(latest.json 的 URL 改写)。
-# Go + Wails 链对应:`desktopman rewrite-url --manifest dist-desktop-wails/desktop-latest.json --base <镜像前缀>`。
 # 把发布产物镜像到 Gitee Release(国内加速;零成本自控镜像,不依赖公益代理)。
+#
+# 口径:Go + Wails 链(2026-10-30 起)。清单是 `desktop-latest.json`,换源一律走
+# `desktopman rewrite-url`(与 sign/verify 同一份算法;本脚本不再用 jq 手写改写规则)。
 #
 # 用法:
 #   GITEE_TOKEN=xxx bash scripts/mirror-gitee.sh upload <tag> <产物目录>
@@ -10,11 +11,12 @@
 #
 # 做什么(upload):
 #   1. 创建(或复用)Gitee 上同名 tag 的 Release;
-#   2. 上传桌面产物(dmg / *-setup.exe / *.app.tar.gz / 便携包 *-portable.zip);同名附件**先删后传**,所以可重复跑;
-#   3. 回查匿名直链(HEAD 跟随重定向后 200)并打印 —— 这是「镜像真的能下」的唯一自动出口。
+#   2. 上传桌面产物(*.app.zip / *-setup.exe / *.dmg / 升级包 *-<triple>.zip /
+#      便携包 *-portable-*.zip);同名附件**先删后传**,所以可重复跑;
+#   3. 回查匿名直链(HEAD 跟随重定向后 200)并打印 —— 这是「镜像真的能下」的唯一自动出口;
+#   4. 生成 Gitee 版清单(gitee/desktop-latest.json,下载地址整体换到 Gitee 直链)。
 #
-# 之后由调用方决定是否把 latest.json 的下载地址换成 Gitee(GitHub 与 Gitee 的直链同形:
-# 同 tag、同文件名,只差 host 与仓库路径):
+# 第 4 步的换源(GitHub 与 Gitee 的直链同形:同 tag、同文件名,只差 host 与仓库路径):
 #   go run ./desktop/wails/cmd/desktopman rewrite-url --manifest <清单> --base gitee:<owner/repo>
 #
 # 令牌:Gitee → 设置 → 私人令牌,勾选 projects 权限。只经 env 传入,不落盘、不入库
@@ -22,7 +24,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 REPO="${GITEE_REPO:-${GAH_GITEE_REPO:-null_593_5354/go-agent-harness}}"
-OUT_DIR="${GAH_DIST_DIR:-dist-desktop}"
+OUT_DIR="${GAH_DIST_DIR:-dist-desktop-wails}"
 API="https://gitee.com/api/v5/repos/$REPO"
 # 上传失败时的响应体暂存(Gitee 的错误信息全在里面;不读就只能猜,2026-10-06 的教训)
 TMP_UPLOAD_BODY="$(mktemp)"
@@ -52,7 +54,8 @@ need_token() {
 }
 
 # 产物清单:镜像「给人装的包」与「updater 要的包」——
-# dmg / *-setup.exe / *.app.tar.gz **外加便携包与 checksums-desktop.txt**。
+# *.app.zip(升级)/ *-setup.exe(首装)/ *.dmg / *-<triple>.zip(Windows 升级)/
+# **便携包与 checksums-desktop-wails.txt**。
 # 便携包为什么也要镜像:它**不进 latest.json**(updater 只认安装包),分发全靠人工拿链接;
 # 而 GitHub 在国内往往拉不动 ⇒ 不镜像等于国内用户没有便携包可用 —— 而便携包恰恰是
 # 「不想安装、解压即用」那批人的唯一入口(v0.4.0 起才有)。对 updater 无影响:它不读这两件。
@@ -64,27 +67,29 @@ need_token() {
 # 0.1.7 的安装包」,用户点下去装的是三个月前的版本。旧脚本只做「同名先删后传」,
 # 对**不同名**的脏文件一无所知。
 #
-# 形状:gah_<版本>_<平台>.<ext> / gah.app.tar.gz(无版本号,永远放行)。
-# 判据取「文件名里含 _<版本>_ 」而不是逐个平台写死 —— 与 --prepare 那侧从 Release
-# 资产清单派生名字的做法同源。
+# 形状(Go+Wails 链,2026-10-30 起):`gah-<版本>-<triple>[.app].zip` /
+# `gah-<版本>-setup.exe` / `gah-<版本>-portable-<triple>.zip` / `gah-<版本>-<triple>.dmg`。
+# 判据取「文件名里含 gah-<版本>- 」而不是逐个平台写死 —— 与 release.sh 的 mirror_fetch
+# 同一句规则(两边各一份字面量,规则只有一句:文件名里带本版号)。
 belongs_to_tag() {
   local name="$1" ver
   case "$name" in
-    gah.app.tar.gz) return 0 ;;                       # 名字里不带版本,属所有 tag
-    checksums-desktop.txt) return 0 ;;               # 同上(每个 tag 各一份,同名先删后传)
-    *.dmg|*setup.exe|*portable.zip) ;;
+    checksums-desktop-wails.txt) return 0 ;;          # 每个 tag 各一份,同名先删后传
+    *.dmg|*setup.exe|*.app.zip|*-portable-*.zip) ;;
+    *-apple-darwin.zip|*-pc-windows-msvc.zip) ;;
     *) return 1 ;;                                    # 不认识的形态:不放行(宁可漏传)
   esac
   ver="${tag#v}"
   case "$name" in
-    *_"$ver"_*) return 0 ;;
+    gah-"$ver"-*) return 0 ;;
     *) return 1 ;;
   esac
 }
 
 collect() {
-  find "$dir" -type f \( -name '*.dmg' -o -name '*-setup.exe' -o -name '*.app.tar.gz' \
-       -o -name '*-portable.zip' -o -name 'checksums-desktop.txt' \) 2>/dev/null | sort
+  find "$dir" -maxdepth 1 -type f \( -name '*.dmg' -o -name '*-setup.exe' -o -name '*.app.zip' \
+       -o -name '*-portable-*.zip' -o -name 'gah-*-pc-windows-msvc.zip' \
+       -o -name 'checksums-desktop-wails.txt' \) 2>/dev/null | sort
 }
 
 # collect_checked = collect + 版本闸:不属于本 tag 的**显式报错退出**,不静默跳过。
@@ -147,8 +152,9 @@ prune_old_releases() {
   local keep_tags
   keep_tags="$(api_json "$API/releases?access_token=$TOKEN&per_page=100" \
     | jq -r --arg t "$tag" '[.[] | .tag_name]
-             | map(select(test("^v?[0-9]+\\.[0-9]+\\.[0-9]+$")))
-             | sort_by(. | sub("^v"; "") | split(".") | map(tonumber))
+             | map(select(test("^v?[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.]+)?$")))
+             | sort_by(sub("^v"; "") | [ (split("-")[0] | split(".") | map(tonumber)),
+                                         (if test("-") then 0 else 1 end) ])
              | reverse
              | .[0:'"$keep"'] | join("\n")')"
   [ -n "$keep_tags" ] || { echo "  取不到可解析的版本列表(跳过清理)" >&2; return 0; }
@@ -171,7 +177,7 @@ prune_old_releases() {
     echo "  已清理旧版本附件:$old_tag($n 件,Release 页保留)"
   done < <(api_json "$API/releases?access_token=$TOKEN&per_page=100" \
             | jq -r --arg t "$tag" '.[] | select(.tag_name != $t)
-                     | select(.tag_name | test("^v?[0-9]+\\.[0-9]+\\.[0-9]+$"))
+                     | select(.tag_name | test("^v?[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.]+)?$"))
                      | .id')
 }
 
@@ -261,36 +267,30 @@ case "$cmd" in
     done <<< "$files"
     echo "上传完成,回查匿名直链:"
     verify || exit 1
-    # 生成 Gitee 版 latest.json:把每个平台的下载地址换到 Gitee 直链(取原 URL 最后两段
-    # tag/文件名 ⇒ 与源无关,输入是不是已被加速前缀包过都成)。壳从 raw 通道读这份表。
-    if [ -f "$dir/latest.json" ]; then
+    # 生成 Gitee 版清单:把所有下载地址换到 Gitee 直链。**换源只走 desktopman**
+    # (与 sign/verify 同一份算法;顺带保证 sig/sha256/size 一个字段都不动)。
+    MANIFEST="$dir/desktop-latest.json"
+    if [ -f "$MANIFEST" ]; then
       mkdir -p "$OUT_DIR/gitee"
-      jq --arg g "https://gitee.com/$REPO/releases/download/" \
-        '(.platforms |= with_entries(.value |= (.url = ($g + (.url | split("/") | .[-2:] | join("/"))))))
-         | (if .portable then (.portable |= with_entries(.value |= (.url = ($g + (.url | split("/") | .[-2:] | join("/")))))) else . end)' \
-        "$dir/latest.json" > "$OUT_DIR/gitee/latest.json"
-      # 自检:平台集合与签名必须与原表逐平台一致(换源可以,改签名不行)
-      diff <(jq -S '.platforms | map_values(.signature)' "$dir/latest.json") \
-           <(jq -S '.platforms | map_values(.signature)' "$OUT_DIR/gitee/latest.json") \
-        || { echo "自检失败:Gitee 版表的签名与原表不一致" >&2; rm -rf "$OUT_DIR/gitee"; exit 1; }
-      jq -e --arg b "https://gitee.com/$REPO/releases/download/" \
-        '[.platforms[].url | startswith($b)] | all' "$OUT_DIR/gitee/latest.json" >/dev/null \
+      cp "$MANIFEST" "$OUT_DIR/gitee/desktop-latest.json"
+      ( cd "$(dirname "$0")/.." && go run ./desktop/wails/cmd/desktopman rewrite-url \
+          --manifest "$OUT_DIR/gitee/desktop-latest.json" \
+          --base "https://gitee.com/$REPO/releases/download/$tag" ) \
+        || { echo "生成 Gitee 版清单失败(desktopman rewrite-url)" >&2; rm -rf "$OUT_DIR/gitee"; exit 1; }
+      # 自检一:换源可以,换签名/摘要不行 —— 逐平台比对 sha256+sig+size+filename。
+      diff <(jq -S '.artifacts | map_values({sha256, sig, size, filename})' "$MANIFEST") \
+           <(jq -S '.artifacts | map_values({sha256, sig, size, filename})' "$OUT_DIR/gitee/desktop-latest.json") \
+        || { echo "自检失败:Gitee 版清单的签名/摘要与原表不一致" >&2; rm -rf "$OUT_DIR/gitee"; exit 1; }
+      # 自检二:每个平台的下载地址都指向 Gitee 本 tag。
+      jq -e --arg b "https://gitee.com/$REPO/releases/download/$tag/" \
+        '[.artifacts[].url | startswith($b)] | all' "$OUT_DIR/gitee/desktop-latest.json" >/dev/null \
         || { echo "自检失败:仍有下载地址未指向 Gitee" >&2; rm -rf "$OUT_DIR/gitee"; exit 1; }
-      # 便携资产同样要换源(它在顶层 portable 键下,不参与 updater,但下载页要指着 Gitee)
-      if jq -e 'has("portable") and (.portable | length > 0)' "$dir/latest.json" >/dev/null; then
-        jq -e --arg b "https://gitee.com/$REPO/releases/download/" \
-          '[.portable[].url | startswith($b)] | all' "$OUT_DIR/gitee/latest.json" >/dev/null \
-          || { echo "自检失败:便携包地址未指向 Gitee" >&2; rm -rf "$OUT_DIR/gitee"; exit 1; }
-        diff <(jq -S '.portable | map_values(.note)' "$dir/latest.json") \
-             <(jq -S '.portable | map_values(.note)' "$OUT_DIR/gitee/latest.json") >/dev/null \
-          || { echo "自检失败:便携包的 note 被改写了" >&2; rm -rf "$OUT_DIR/gitee"; exit 1; }
-      fi
-      echo "已生成 Gitee 版表:$OUT_DIR/gitee/latest.json"
-      echo "→ 随代码快照提交:GAH_EXTRA_FILES=$OUT_DIR/gitee/latest.json:latest.json bash scripts/sync-gitee.sh"
+      echo "已生成 Gitee 版清单:$OUT_DIR/gitee/desktop-latest.json"
+      echo "→ 随代码快照提交:GAH_EXTRA_FILES=$OUT_DIR/gitee/desktop-latest.json:desktop-latest.json bash scripts/sync-gitee.sh"
     else
-      echo "警告:$dir/latest.json 不存在,跳过 Gitee 版表生成(客户端将只能走 GitHub 表)" >&2
+      echo "警告:$MANIFEST 不存在,跳过 Gitee 版清单生成(客户端将只能走 GitHub 表)" >&2
     fi
-    echo "→ 客户端取表地址:https://gitee.com/$REPO/raw/master/latest.json"
+    echo "→ 客户端取表地址:https://gitee.com/$REPO/raw/master/desktop-latest.json"
     ;;
   verify)
     [ -n "$dir" ] && [ -d "$dir" ] || usage

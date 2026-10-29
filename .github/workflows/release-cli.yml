@@ -3,7 +3,7 @@
 # 干净树要求:发行路径只用**已入库**的 extplugins embed + 现生成的 web/dist(gitignore),
 # 不重生成入库产物(跨工具链字节不同 → goreleaser 拒绝发行);故 release 带 --skip=before。
 # 与 release-desktop-wails.yml 并行:两者共用同一个 Release(goreleaser release.mode=keep-existing),
-# 桌面壳流水线另加安装包与 latest.json;谁的产物先到都不影响另一方。
+# 桌面壳流水线另加安装包与 desktop-latest.json;谁的产物先到都不影响另一方。
 name: release-cli
 on:
   push:

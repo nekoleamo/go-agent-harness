@@ -174,12 +174,19 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// readJSON 解析请求体(上限 8MiB:导出内容走这里,别让超大 body 吃内存)。
-func readJSON(r *http.Request, v any) error {
+// readJSON 解析请求体(上限 8MiB:普通控制面调用都很小,别让超大 body 吃内存)。
+func readJSON(r *http.Request, v any) error { return readJSONLimit(r, v, 8<<20) }
+
+// readJSONLimit 带自定义上限的 readJSON。
+//
+// 导出落盘是唯一一个「body 里装整份用户内容」的端点(会话导出 HTML/JSONL),
+// 长会话轻松超过 8MiB —— web 侧同一条路已经把上限放宽到 64MiB(web/guard.go 的
+// shellExportLimit),两侧必须一致:哪一侧小一点,导出的最后一次读写就断在哪一侧。
+func readJSONLimit(r *http.Request, v any, limit int64) error {
 	if r.Body == nil {
 		return nil
 	}
-	return json.NewDecoder(io.LimitReader(r.Body, 8<<20)).Decode(v)
+	return json.NewDecoder(io.LimitReader(r.Body, limit)).Decode(v)
 }
 
 func (c *controlPlane) handlePing(w http.ResponseWriter, _ *http.Request) {
@@ -246,7 +253,8 @@ func (c *controlPlane) handleExportSave(w http.ResponseWriter, r *http.Request) 
 		Content  string `json:"content"`
 		Open     bool   `json:"open"`
 	}
-	if err := readJSON(r, &req); err != nil {
+	// 上限与 web/guard.go 的 shellExportLimit 对齐(整份导出内容在 body 里)。
+	if err := readJSONLimit(r, &req, 64<<20); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad json: " + err.Error()})
 		return
 	}

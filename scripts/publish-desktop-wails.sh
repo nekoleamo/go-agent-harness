@@ -14,6 +14,10 @@
 #   bash scripts/publish-desktop-wails.sh windows-x86_64    # 在 win 上(或 mac 交叉编,见下)
 #   bash scripts/publish-desktop-wails.sh merge             # 合并各平台清单 + 生成校验和
 #
+# 平台键 = **GOOS-<归一化 arch>**(darwin-aarch64 / windows-x86_64 / windows-aarch64):
+# 壳侧 platformKey() 用同一形状查清单,两边写不一致的后果是「这个平台永远查不到更新」
+# (2026-10-30 发现 windows-arm64 这种 Go 拼法曾被当作清单键写入 —— 见下面的拒绝分支)。
+#
 # 环境变量:
 #   GAH_DESKTOP_UPDATE_KEY  签名私钥(缺省 ~/.gah-desktop/update.key;**勿入库**)
 #   RELEASE_VERSION         版本号(缺省 git describe 去 v)
@@ -27,9 +31,13 @@ cd "$(dirname "$0")/.."
 
 PLATFORM="${1:-}"
 case "$PLATFORM" in
-  darwin-aarch64|darwin-x86_64|windows-x86_64|windows-arm64|merge) ;;
-  -h|--help) sed -n '2,27p' "$0"; exit 0 ;;
-  *) echo "用法: $0 {darwin-aarch64|darwin-x86_64|windows-x86_64|windows-arm64|merge}"; exit 2 ;;
+  darwin-aarch64|darwin-x86_64|windows-x86_64|windows-aarch64|merge) ;;
+  windows-arm64)
+    # 曾经这么拼:列表键写成 Go 的 arch,而壳查的是 windows-aarch64 ⇒ 永远查不到更新。
+    echo "publish: 清单键是 windows-aarch64(不是 windows-arm64);产物 triple 仍在脚本内部映射为 aarch64-pc-windows-msvc" >&2
+    exit 2 ;;
+  -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
+  *) echo "用法: $0 {darwin-aarch64|darwin-x86_64|windows-x86_64|windows-aarch64|merge}"; exit 2 ;;
 esac
 
 ROOT="$PWD"
@@ -37,6 +45,12 @@ OUT_ROOT="$ROOT/dist-desktop-wails"
 VERSION="${RELEASE_VERSION:-$(git describe --tags 2>/dev/null | sed 's/^v//')}"
 [ -n "$VERSION" ] || { echo "publish: 取不到版本号(设 RELEASE_VERSION)"; exit 1; }
 KEY="${GAH_DESKTOP_UPDATE_KEY:-$HOME/.gah-desktop/update.key}"
+
+# sha256_of:sha256sum(Linux)优先,否则 shasum(mac)。输出「摘要  文件」两列。
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi
+}
+
 
 # ---------- 合并 ----------
 if [ "$PLATFORM" = "merge" ]; then
@@ -66,20 +80,37 @@ if not merged["artifacts"]:
 pathlib.Path(out).write_text(json.dumps(merged, ensure_ascii=False, indent=2) + "\n")
 print(f"merged → {out}: {version} {sorted(merged['artifacts'])}")
 PY
-  # 校验和(独立文件名:不与 goreleaser 的 checksums.txt 争)
-  ( cd "$OUT_ROOT" && find . -maxdepth 2 -name '*.zip' -o -maxdepth 2 -name '*.dmg' | sort | while read -r f; do
-      [ -f "$f" ] && shasum -a 256 "$f"
-    done ) > "$OUT_ROOT/checksums-desktop-wails.txt"
+  # 校验和(独立文件名:不与 goreleaser 的 checksums.txt 争)。
+  # sha256_of 走 sha256sum/shasum 双路径:merge job 跑在 ubuntu 上,只有 sha256sum 是标配。
+  (
+    cd "$OUT_ROOT"
+    find . -type f \( -name '*.zip' -o -name '*.dmg' \) | sort | while read -r f; do sha256_of "$f"; done
+  ) > "$OUT_ROOT/checksums-desktop-wails.txt"
   echo "checksums → $OUT_ROOT/checksums-desktop-wails.txt"
   exit 0
 fi
+
+# num_version:NSIS 的 VIProductVersion 只接受**纯数字四段**(x.x.x.x),
+# 而预告版 tag 是 0.8.0-preview ⇒ 直接拼成 "0.8.0-preview.0" 会让 makensis 报
+# 「invalid VIProductVersion」直接失败(Windows 侧整版发不出去)。
+# 非数字段一律当 0;不追求语义正确,
+# 只要求「能编过且单调」—— 真正的版本号在 DisplayVersion/清单/壳里。
+num_version() {
+  local core="${1%%-*}" a b c
+  core="${core%%+*}"
+  IFS=. read -r a b c <<< "$core"
+  for p in "$a" "$b" "$c"; do
+    case "$p" in ''|*[!0-9]*) echo "publish: 版本号 $1 的前三段必须是数字(NumVersion 用)" >&2; return 1 ;; esac
+  done
+  printf '%s.%s.%s.0' "$a" "$b" "${c:-0}"
+}
 
 # ---------- 单平台 ----------
 case "$PLATFORM" in
   darwin-aarch64)  GOOS=darwin;  GOARCH=arm64; TRIPLE=aarch64-apple-darwin ;;
   darwin-x86_64)   GOOS=darwin;  GOARCH=amd64; TRIPLE=x86_64-apple-darwin ;;
   windows-x86_64)  GOOS=windows; GOARCH=amd64; TRIPLE=x86_64-pc-windows-msvc ;;
-  windows-arm64)   GOOS=windows; GOARCH=arm64; TRIPLE=aarch64-pc-windows-msvc ;;
+  windows-aarch64) GOOS=windows; GOARCH=arm64; TRIPLE=aarch64-pc-windows-msvc ;;
 esac
 
 [ -f "$KEY" ] || { echo "publish: 找不到签名私钥 $KEY(用 desktopman keygen 生成,勿入库)"; exit 1; }
@@ -122,10 +153,16 @@ echo "[3/4] 打包(唯一顶层条目)"
 case "$GOOS" in
   darwin)
     [ "$(uname -s)" = "Darwin" ] || { echo "publish: darwin 产物只能在 mac 上组装(.app 需要 ditto)"; exit 1; }
-    bash scripts/package-desktop-wails.sh --no-build >/dev/null
+    # 版本必须**显式传进去**:package 脚本自己的缺省是 `git describe`,在非 tag 提交上会得到
+    # "0.7.4-26-gxxxx" 这种字符串 —— 那样 Info.plist 里的版本与清单/壳里的版本就对不上了
+    # (2026-10-30 实测)。--dmg 顺带出首装用的 dmg;hdiutil 失败只告警(它不进清单)。
+    RELEASE_VERSION="$VERSION" bash scripts/package-desktop-wails.sh --no-build --dmg >/dev/null \
+      || { echo "publish: 组装 .app/.app.zip 失败"; exit 1; }
     ART="$OUT/gah-$VERSION-$TRIPLE.app.zip"
-    cp "$SHELL_MOD/build/gah-$VERSION-$TRIPLE.app.zip" "$ART" 2>/dev/null || \
-      cp "$(ls -t "$SHELL_MOD"/build/*.app.zip | head -1)" "$ART"
+    cp "$SHELL_MOD/build/gah-$VERSION-$TRIPLE.app.zip" "$ART"
+    if [ -f "$SHELL_MOD/build/gah-$VERSION-$TRIPLE.dmg" ]; then
+      cp "$SHELL_MOD/build/gah-$VERSION-$TRIPLE.dmg" "$OUT/gah-$VERSION-$TRIPLE.dmg"
+    fi
     ;;
   windows)
     # ① 升级产物:单 exe 的 zip(updater 只换这一个文件;sidecar 已内嵌)
@@ -135,7 +172,10 @@ case "$GOOS" in
     # ② 首次安装:NSIS setup.exe(按用户安装,不弹 UAC)。makensis 只在 Windows/CI 上有。
     if command -v makensis >/dev/null 2>&1; then
       SETUP="$OUT/gah-$VERSION-setup.exe"
-      makensis -V2 -DVERSION="$VERSION" -DAPPEXE="$EXE" -DOUTFILE="$SETUP" \
+      NUMVER="$(num_version "$VERSION")" || exit 1
+      makensis -V2 -DVERSION="$VERSION" -DNUMVERSION="$NUMVER" \
+        -DAPPEXE="$ROOT/$EXE" -DOUTFILE="$SETUP" \
+        -DICONDIR="$ROOT/desktop/wails/installer" \
         desktop/wails/installer/installer.nsi
       echo "SETUP: $SETUP"
     else
@@ -175,5 +215,5 @@ go run ./desktop/wails/cmd/desktopman verify \
   --manifest "$OUT/desktop-latest.$PLATFORM.json" --platform "$PLATFORM" --artifact "$ART" 2>&1 | sed 's/^/  /'
 
 ls -lh "$ART" | awk '{print "ART:", $9, $5}'
-shasum -a 256 "$ART" | awk '{print "SHA256:", $1}'
+sha256_of "$ART" | awk '{print "SHA256:", $1}'
 echo "清单: $OUT/desktop-latest.$PLATFORM.json"
