@@ -27,7 +27,6 @@ import (
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
-	"github.com/wailsapp/wails/v3/pkg/icons"
 	"github.com/wailsapp/wails/v3/pkg/services/notifications"
 )
 
@@ -101,6 +100,7 @@ func main() {
 	app := application.New(application.Options{
 		Name:        "gah",
 		Description: "gah 桌面壳",
+		Icon:        appIconPNG, // 窗口/任务栏图标(= 裸二进制跑时的 Dock 图标兜底)
 		Services:    svcs,
 		// panic 一律落壳日志:GUI 进程没有终端,崩了就是窗口凭空消失,
 		// 没有日志的话用户能提供的信息为零(旧壳 installPanicLog 的等价)。
@@ -128,14 +128,27 @@ func main() {
 	sh.ctl = cp
 	shellLogf("控制面: http://127.0.0.1:%s(仅放行 http://%s)", cp.port(), addr)
 
-	sh.window = app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Name:           "main",
-		Title:          "gah",
-		Width:          1200,
-		Height:         800,
-		Hidden:         true, // 就绪后再显示:避免先闪一帧空白页(parent 的旧壳同理)
+	// 窗口几何:上次的位置/尺寸优先(校验过"还在某块屏幕上"才用,见 windowstate.go)。
+	opts := application.WebviewWindowOptions{
+		Name:   "main",
+		Title:  "gah",
+		Width:  1200,
+		Height: 800,
+		// 就绪后再显示:避免先闪一帧空白页(旧壳同理)。
+		Hidden: true,
+		// **故意关掉**:Wails 的原生 drop 会拦截系统拖拽并改成 FilesDropped 事件,
+		// 而 gah 前端已经有 HTML5 拖拽(拿到的是真正的 File 对象,直接走 /api/attachments)。
+		// 开着等于把已经能用的功能换成需要壳中转的版本。
 		EnableFileDrop: false,
-	})
+	}
+	if st, ok := loadWindowState(); ok && screenVisible(app, st) {
+		opts.X, opts.Y = st.X, st.Y
+		opts.Width, opts.Height = st.W, st.H
+		opts.InitialPosition = application.WindowXY
+		shellLogf("窗口几何: 恢复上次位置 %dx%d @ (%d,%d)", st.W, st.H, st.X, st.Y)
+	}
+	sh.window = app.Window.NewWithOptions(opts)
+	watchWindowState(app, sh.window)
 	sh.buildTray()
 
 	if err := sh.initUpdater(); err != nil {
@@ -318,11 +331,12 @@ func htmlEscape(s string) string {
 }
 
 // trayIcon 托盘图标:mac 用模板图(随明暗主题反色),win/linux 用彩色图。
+// 都是 gah 自己的图标,不再是 Wails 默认的红龙(见 assets.go)。
 func trayIcon() []byte {
 	if runtime.GOOS == "darwin" {
-		return icons.SystrayMacTemplate
+		return trayTemplatePNG
 	}
-	return icons.SystrayLight
+	return trayColorPNG
 }
 
 // announce 尽力用系统通知告诉用户一件事;通知不可用时退回壳日志(并留一行说明)。

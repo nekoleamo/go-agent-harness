@@ -48,6 +48,12 @@ VIAddVersionKey "FileVersion" "${VERSION}"
 VIAddVersionKey "ProductVersion" "${VERSION}"
 VIAddVersionKey "LegalCopyright" "${PUBLISHER}"
 
+; 安装器图标(来自 desktop/icons 的图标源;不再用 NSIS 默认图标)
+!define MUI_ICON "gah.ico"
+!define MUI_UNICON "gah.ico"
+Icon "gah.ico"
+UninstallIcon "gah.ico"
+
 !define MUI_ABORTWARNING
 !define MUI_FINISHPAGE_RUN "$INSTDIR\${APPNAME}.exe"
 !define MUI_FINISHPAGE_RUN_TEXT "立即启动 gah"
