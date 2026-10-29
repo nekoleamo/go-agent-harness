@@ -47,6 +47,7 @@ type shell struct {
 	notifier *notifier // 系统通知(未装配时为 nil,调用方需容忍)
 
 	noticeSvcMissing atomic.Bool // 宿主未装配 ctx.notices:只记一次
+	dataRoot         string      // 本次运行实际使用的数据根(备份/诊断用)
 }
 
 func main() {
@@ -136,6 +137,7 @@ func (s *shell) boot() {
 	}
 	shellLogf("运行落点: bin=%s data_root=%s external=%v staged=%v",
 		plan.bin, plan.dataRoot, plan.external, plan.staged)
+	s.dataRoot = plan.dataRoot
 	for _, n := range plan.notices {
 		// TODO(notice): 便携模式说明应走系统通知;通知服务迁移在本批之后。
 		shellLogf("提示: %s", n)
@@ -237,8 +239,11 @@ func (s *shell) showDiag(title string, lines []string) {
 	for _, l := range lines {
 		body += "<p>" + htmlEscape(l) + "</p>"
 	}
-	html := `<html><body style="font-family:-apple-system,'Segoe UI',sans-serif;padding:40px;max-width:680px;color:#1f2328">` +
-		`<h2 style="margin:0 0 16px">` + htmlEscape(title) + `</h2>` + body +
+	tail := shellLogTail(16)
+	html := `<html><body style="font-family:-apple-system,'Segoe UI',sans-serif;padding:36px;max-width:760px;line-height:1.7;color:#1f2328">` +
+		`<h2 style="margin:0 0 12px">` + htmlEscape(title) + `</h2>` + body +
+		`<p style="color:#6b7280;font-size:13px">日志文件: ` + htmlEscape(shellLogPath()) + `</p>` +
+		`<pre style="white-space:pre-wrap;background:#f5f5f5;padding:12px;border-radius:6px;font-size:12px">` + htmlEscape(tail) + `</pre>` +
 		`<p style="color:#6b7280;font-size:13px">版本 ` + htmlEscape(version) + ` · ` + htmlEscape(runtime.GOOS+"/"+runtime.GOARCH) + `</p>` +
 		`</body></html>`
 	if s.window != nil {

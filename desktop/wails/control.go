@@ -92,6 +92,8 @@ func (c *controlPlane) routes() http.Handler {
 	mux.HandleFunc("/shell/update-state", c.guard(c.handleUpdateState))
 	mux.HandleFunc("/shell/update-check", c.guard(c.handleUpdateCheck))
 	mux.HandleFunc("/shell/notify-test", c.guard(c.handleNotifyTest))
+	mux.HandleFunc("/shell/diag", c.guard(c.handleDiag))
+	mux.HandleFunc("/shell/backup", c.guard(c.handleBackup))
 	return mux
 }
 
@@ -281,6 +283,34 @@ func (c *controlPlane) handleAutostart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// handleDiag 返回诊断信息(日志路径 + 尾部):真机反馈问题时,让用户能一键拿到关键线索。
+func (c *controlPlane) handleDiag(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"log_path":  shellLogPath(),
+		"tail":      shellLogTail(200),
+		"data_root": c.sh.dataRoot,
+		"web_addr":  c.sh.addr,
+	})
+}
+
+// handleBackup 手动备份数据根到用户主目录(gah-upgrade-backup/<时间戳>)。
+// 升级前壳会自己调一次;这个端点给「用户手动做一件危险操作前」留个出口。
+func (c *controlPlane) handleBackup(w http.ResponseWriter, _ *http.Request) {
+	root := c.sh.dataRoot
+	if root == "" {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "数据根未知(服务未就绪)"})
+		return
+	}
+	path, err := backupBeforeUpgrade(root)
+	if err != nil {
+		shellLogf("手动备份失败: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	shellLogf("手动备份完成: %q", path)
+	writeJSON(w, http.StatusOK, map[string]any{"path": path})
 }
 
 // handleUpdateState 更新状态:本期恒为 idle。
