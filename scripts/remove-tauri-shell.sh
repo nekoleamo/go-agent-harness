@@ -159,7 +159,8 @@ print(f'  ✓ .gitattributes: {len(lines)-len(kept)} 行')
 # ---- 2) .gitignore:删 src-tauri 条目及其两段注释;补 desktopman 产物忽略 ----
 p = '.gitignore'
 lines = read(p).split('\n')
-drop_markers = ('src-tauri', '# ② Tauri 编译期生成的 schema', '# 恢复跟踪:git add -f internal/embed/extplugins')
+drop_markers = ('src-tauri', '# ② Tauri 编译期生成的 schema', '# 恢复跟踪:git add -f internal/embed/extplugins',
+                '# 桌面壳产物与依赖(desktop/;sidecar 二进制构建产物')
 kept = [l for l in lines if not any(m in l for m in drop_markers)]
 s2 = '\n'.join(kept)
 if 'desktop/wails/cmd/*/desktopman' not in s2:
