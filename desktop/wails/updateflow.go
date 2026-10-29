@@ -64,7 +64,9 @@ func (s *shell) checkUpdateFromTray(item *application.MenuItem) {
 		d.AttachToWindow(s.window)
 	}
 	d.AddButton("稍后").SetAsCancel()
-	d.AddButton("下载并安装").SetAsDefault().OnClick(func() { s.installUpdateFromTray() })
+	// 回调里**不要**做阻塞工作:平台实现可能就在主线程/模态循环里调它
+	// (darwin 是 dialogRunModal 的完成回调),下载几十 MB 会把界面冻住。
+	d.AddButton("下载并安装").SetAsDefault().OnClick(func() { go s.installUpdateFromTray() })
 	d.Show()
 }
 
