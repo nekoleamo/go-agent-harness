@@ -1,5 +1,5 @@
 #!/bin/bash
-# 本地提交前门禁(gofmt / go vet / staticcheck)。
+# 本地提交前门禁(gofmt / go vet / staticcheck;三 module:根 + sdk + desktop/wails)。
 #
 # 存在理由(2026-10-02,第二项待办「门禁固化」):
 #   这三步原先只以「习惯」的形式活在开发者脑子里 —— 批次记录里反复写「护栏:
@@ -67,6 +67,16 @@ if go vet ./...; then echo "OK"; else fail "go vet 根模块"; fi
 step "go vet(sdk module)"
 if (cd sdk && go vet ./...); then echo "OK"; else fail "go vet sdk module"; fi
 
+# —— 2b) go vet:desktop/wails 是第三个 module(Go+Wails 壳,自带 go.mod)——
+# Linux 上它在编译期需要 webkit2gtk/gtk3 头文件(v3 的 linux 实现是 cgo),
+# 而桌面壳只发 mac/win → 在 Linux 上**显式跳过并说明**,不假装通过。
+step "go vet(desktop/wails module)"
+if [ "$(go env GOOS)" = "linux" ]; then
+  echo "SKIP(linux 需要 webkit2gtk/gtk3 头文件;桌面壳只发 mac/win,见 docs/DESKTOP_FEASIBILITY.md §11)"
+else
+  if (cd desktop/wails && go vet ./...); then echo "OK"; else fail "go vet desktop/wails module"; fi
+fi
+
 # —— 3) staticcheck(双模块;缺失即失败,不静默跳过)——
 if [ "$FAST" = "1" ]; then
   step "staticcheck(--fast:已跳过,不是通过)"
@@ -86,6 +96,12 @@ else
     if "$SC" ./...; then echo "OK"; else fail "staticcheck 根模块"; fi
     step "staticcheck(sdk module)"
     if (cd sdk && "$SC" ./...); then echo "OK"; else fail "staticcheck sdk module"; fi
+    step "staticcheck(desktop/wails module)"
+    if [ "$(go env GOOS)" = "linux" ]; then
+      echo "SKIP(linux 需要 webkit2gtk/gtk3 头文件;桌面壳只发 mac/win)"
+    else
+      if (cd desktop/wails && "$SC" ./...); then echo "OK"; else fail "staticcheck desktop/wails module"; fi
+    fi
     # 版本漂移会让人误判「本地过了就是过了」——CI 固定 2026.2.1。
     if ! "$SC" -version 2>/dev/null | grep -q "$STATICCHECK_VERSION"; then
       echo "  ! 本地 staticcheck 版本与 CI 固定版本($STATICCHECK_VERSION)不同,结论可能不一致"

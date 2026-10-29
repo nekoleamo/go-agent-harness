@@ -151,6 +151,7 @@ jobs:
         run: |
           go vet ./...
           (cd sdk && go vet ./...)
+          (cd desktop/wails && go vet ./...)
       - name: go test(-race 需 cgo/gcc,有则跑,无则降级并明示)
         # -timeout=20m:Windows runner 上 `tests` 包(pty 交互类 e2e)实测要 9.8–11 分钟,
         # 而 Go 的**默认**逐包超时是 10 分钟 —— 只要 runner 稍微慢一点就打 `panic: test timed
@@ -278,15 +279,18 @@ jobs:
         run: |
           go vet ./...
           (cd sdk && go vet ./...)
+          (cd desktop/wails && go vet ./...)
       - name: staticcheck(与 ubuntu job 同版本,保证本地/CI 一致)
         run: |
           go install honnef.co/go/tools/cmd/staticcheck@2026.2.1
           "$(go env GOPATH)/bin/staticcheck" ./...
           (cd sdk && "$(go env GOPATH)/bin/staticcheck" ./...)
+          (cd desktop/wails && "$(go env GOPATH)/bin/staticcheck" ./...)
       - name: go test -race(macOS 自带 clang,-race 无需额外工具链)
         run: |
           go test -race ./...
           (cd sdk && go test -race ./...)
+          (cd desktop/wails && go test -race ./...)
       - name: 构建 darwin/arm64 主包并校验架构
         run: |
           CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o gah ./cmd/gah
