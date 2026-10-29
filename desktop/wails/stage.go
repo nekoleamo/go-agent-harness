@@ -18,6 +18,10 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"hash/fnv"
@@ -233,6 +237,11 @@ func copyTree(src, dst string) error {
 //     复制反而让「数据在哪」不可预期;
 //  3. 安装版:外置到用户数据目录(见文件头),并把旧位置的数据一次性迁过去。
 func resolveRuntime(home, version string) (runtimePlan, error) {
+	// 发行构建优先:内嵌 sidecar(见 embed_sidecar.go 的三条理由)。
+	// 显式 GAH_SIDECAR 仍然最高优先 —— 开发/演练时要能指向任意 gah 产物。
+	if len(sidecarGz) > 0 && os.Getenv("GAH_SIDECAR") == "" {
+		return stageEmbedded(home, version)
+	}
 	if v := os.Getenv("GAH_SIDECAR"); v != "" {
 		if _, err := os.Stat(v); err != nil {
 			return runtimePlan{}, fmt.Errorf("GAH_SIDECAR 指向的文件不存在: %w", err)
@@ -320,3 +329,48 @@ func markPortableNoticeShown(root string) error {
 
 // isErrNotExist 小工具(测试里区分「不存在」与「其他错误」)。
 func isErrNotExist(err error) bool { return errors.Is(err, os.ErrNotExist) }
+
+// stageEmbedded 把内嵌的 sidecar(gzip)解到 `<home>/bin/gah-<版本>-<内容指纹8>`,
+// 返回可执行路径。已存在同指纹副本时直接复用(不重复解压)。
+//
+// 指纹用**内嵌字节的 sha256**,与磁盘 mtime 无关 —— 同一份壳二进制每次启动都得到同一个
+// 名字,于是「解压一次、之后永久复用」成立(旧的文件外置靠源文件 mtime,重建就会换名字)。
+func stageEmbedded(home, ver string) (runtimePlan, error) {
+	binDir := filepath.Join(home, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		return runtimePlan{}, fmt.Errorf("建 %s 失败: %w", binDir, err)
+	}
+	sum := sha256.Sum256(sidecarGz)
+	dst := filepath.Join(binDir, stagedName(ver, hex.EncodeToString(sum[:])))
+	pruneStale(binDir, dst)
+
+	if st, err := os.Stat(dst); err == nil && st.Size() > 0 {
+		return runtimePlan{bin: dst, dataRoot: dataRoot(home), external: true}, nil
+	}
+	tmp := dst + ".new"
+	_ = os.Remove(tmp)
+	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o700)
+	if err != nil {
+		return runtimePlan{}, fmt.Errorf("写下 %s 失败: %w", tmp, err)
+	}
+	gz, err := gzip.NewReader(bytes.NewReader(sidecarGz))
+	if err != nil {
+		_ = out.Close()
+		return runtimePlan{}, fmt.Errorf("内嵌 sidecar 不是合法 gzip: %w", err)
+	}
+	if _, err := io.Copy(out, gz); err != nil {
+		_ = out.Close()
+		return runtimePlan{}, fmt.Errorf("解压内嵌 sidecar 失败: %w", err)
+	}
+	if err := out.Close(); err != nil {
+		return runtimePlan{}, err
+	}
+	if err := makeExecutable(tmp); err != nil {
+		return runtimePlan{}, err
+	}
+	stripMarkOfTransfer(tmp)
+	if err := os.Rename(tmp, dst); err != nil {
+		return runtimePlan{}, fmt.Errorf("放下 %s 失败: %w", dst, err)
+	}
+	return runtimePlan{bin: dst, dataRoot: dataRoot(home), external: true, staged: true}, nil
+}

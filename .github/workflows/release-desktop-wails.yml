@@ -1,0 +1,146 @@
+# Go + Wails v3 桌面壳发行(迁移期与 release-desktop.yml 的 Tauri 链并列)。
+#
+# 触发:workflow_dispatch 手动(默认),或打 `desktop-wails-v*` tag 自动发布。
+# **刻意不复用 `v*` tag**:两条链同时抢同一个 tag 会互相覆盖 Release 资产,
+# 主干合并(删掉 Tauri 链)后再统一到 `v*`。
+#
+# 差异(相对 Tauri 链):
+#   - 产物:mac `.app.zip` / win 单 exe zip(updater 只吃「唯一顶层条目的 zip」)
+#   - 清单:desktop-latest.json(自持格式,签名对象 = 产物 sha256 摘要)
+#   - 密钥:GAH_DESKTOP_UPDATE_KEY(ed25519 私钥 hex);公钥经 -ldflags 注入壳
+#   - windows 目标纯 Go(无 cgo),darwin 必须 cgo → 各自的 runner
+#
+# 必填 secrets:
+#   GAH_DESKTOP_UPDATE_KEY      签名私钥(hex,由 desktopman keygen 生成)
+#   GAH_DESKTOP_UPDATE_PUBKEY   对应公钥(hex,注入壳内置信任根)
+name: release-desktop-wails
+
+on:
+  workflow_dispatch: {}
+  push:
+    tags:
+      - 'desktop-wails-v*'
+
+permissions:
+  contents: write
+
+env:
+  # 内嵌 web/dist 与 extplugins 都要现成产物,否则 sidecar 编不出来(与 Tauri 链同前置)。
+  CGO_ENABLED: '0'
+
+jobs:
+  darwin-aarch64:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web-src/package-lock.json
+      - name: 外部插件与前端产物(go:embed 前置)
+        run: |
+          bash scripts/gen-extplugins.sh
+          bash scripts/gen-web.sh
+      - name: 构建 + 打包 + 签名 + 清单
+        env:
+          GAH_DESKTOP_UPDATE_KEY: ${{ secrets.GAH_DESKTOP_UPDATE_KEY }}
+          RELEASE_NOTES: ${{ github.event.head_commit.message }}
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          # 私钥从 secret 落到临时文件(脚本按路径读),退出即随 runner 销毁。
+          umask 077
+          printf '%s\n' "$GAH_DESKTOP_UPDATE_KEY" > "$RUNNER_TEMP/update.key"
+          export GAH_DESKTOP_UPDATE_KEY="$RUNNER_TEMP/update.key"
+          export RELEASE_VERSION="${RELEASE_VERSION#desktop-wails-v}"
+          export RELEASE_VERSION="${RELEASE_VERSION#v}"
+          bash scripts/publish-desktop-wails.sh darwin-aarch64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-wails-darwin-aarch64
+          path: dist-desktop-wails/darwin-aarch64/
+          if-no-files-found: error
+
+  windows-x86_64:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web-src/package-lock.json
+      - name: 外部插件与前端产物(go:embed 前置)
+        shell: bash
+        run: |
+          bash scripts/gen-extplugins.sh
+          bash scripts/gen-web.sh
+      - name: 构建 + 打包 + 签名 + 清单
+        shell: bash
+        env:
+          GAH_DESKTOP_UPDATE_KEY: ${{ secrets.GAH_DESKTOP_UPDATE_KEY }}
+          RELEASE_NOTES: ${{ github.event.head_commit.message }}
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          umask 077
+          printf '%s\n' "$GAH_DESKTOP_UPDATE_KEY" > "$RUNNER_TEMP/update.key"
+          export GAH_DESKTOP_UPDATE_KEY="$RUNNER_TEMP/update.key"
+          export RELEASE_VERSION="${RELEASE_VERSION#desktop-wails-v}"
+          export RELEASE_VERSION="${RELEASE_VERSION#v}"
+          bash scripts/publish-desktop-wails.sh windows-x86_64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-wails-windows-x86_64
+          path: dist-desktop-wails/windows-x86_64/
+          if-no-files-found: error
+
+  merge-and-publish:
+    needs: [darwin-aarch64, windows-x86_64]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist-desktop-wails
+          pattern: desktop-wails-*
+      - name: 摊平目录结构
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/flat
+          for d in dist-desktop-wails/desktop-wails-*; do
+            plat="${d#dist-desktop-wails/desktop-wails-}"
+            mkdir -p "dist-desktop-wails/$plat"
+            cp -f "$d"/* "dist-desktop-wails/$plat"/
+          done
+          rm -rf dist-desktop-wails/desktop-wails-*
+      - name: 合并清单 + 校验和
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          export RELEASE_VERSION="${RELEASE_VERSION#desktop-wails-v}"
+          export RELEASE_VERSION="${RELEASE_VERSION#v}"
+          bash scripts/publish-desktop-wails.sh merge
+      - name: 上传到 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist-desktop-wails/desktop-latest.json
+            dist-desktop-wails/checksums-desktop-wails.txt
+            dist-desktop-wails/*/*.zip
+          fail_on_unmatched_files: true
+
+  # 说明(与 Tauri 链同一口径):CI 不往 Gitee 传附件 —— 海外 runner 往 Gitee 传 25MB 级
+  # 附件实测 60 秒 0 字节超时。Gitee 镜像由 scripts/mirror-gitee.sh 在本机跑。

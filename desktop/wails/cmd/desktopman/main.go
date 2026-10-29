@@ -64,6 +64,8 @@ func main() {
 		err = cmdSign(os.Args[2:])
 	case "verify":
 		err = cmdVerify(os.Args[2:])
+	case "pack":
+		err = cmdPack(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 		return
@@ -81,6 +83,7 @@ func usage() {
   desktopman keygen --out <私钥路径>
   desktopman sign   --key <私钥> --artifact <产物> --platform <清单键> --version <版本> --url <下载地址> [--out 清单] [--notes 说明]
   desktopman verify --manifest <清单> --platform <清单键> --artifact <产物>
+  desktopman pack   --in <文件> --entry <顶层条目名> --out <zip>
 
 清单键:darwin-aarch64 / darwin-x86_64 / windows-x86_64 / windows-aarch64
 `)

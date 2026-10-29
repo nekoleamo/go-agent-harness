@@ -80,3 +80,6 @@ mobile/android/app/build/
 mobile/android/local.properties
 mobile/android/app/src/main/jniLibs/
 mobile/android/app/src/main/assets/*.wasm
+
+# Go+Wails 桌面壳发行产物(scripts/publish-desktop-wails.sh)
+/dist-desktop-wails/
