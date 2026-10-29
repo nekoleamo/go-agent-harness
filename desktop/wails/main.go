@@ -110,17 +110,22 @@ func main() {
 
 // boot 启动 sidecar 并在就绪后把窗口导航到 gah 的页面。
 func (s *shell) boot() {
-	bin, err := resolveSidecar()
+	plan, err := resolveRuntime(localDataDir(), version)
 	if err != nil {
 		shellLogf("%v", err)
 		s.showDiag("找不到运行文件", []string{
 			err.Error(),
-			"开发态:先跑 bash scripts/gen-desktop.sh(或设 GAH_SIDECAR 指向已构建的 gah)。",
+			"开发态:先跑 bash scripts/gen-desktop-wails.sh(或设 GAH_SIDECAR 指向已构建的 gah)。",
 		})
 		return
 	}
-	shellLogf("sidecar: %s", bin)
-	sc, err := startSidecar(bin, s.addr, s.gahToken)
+	shellLogf("运行落点: bin=%s data_root=%s external=%v staged=%v",
+		plan.bin, plan.dataRoot, plan.external, plan.staged)
+	for _, n := range plan.notices {
+		// TODO(notice): 便携模式说明应走系统通知;通知服务迁移在本批之后。
+		shellLogf("提示: %s", n)
+	}
+	sc, err := startSidecar(plan.bin, s.addr, s.gahToken)
 	if err != nil {
 		shellLogf("%v", err)
 		s.showDiag("gah 服务未能启动", []string{err.Error(), "壳日志: " + shellLogPath()})

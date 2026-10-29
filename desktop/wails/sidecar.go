@@ -13,7 +13,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -38,39 +37,16 @@ func sidecarName() string {
 	return "gah"
 }
 
-// resolveSidecar 找 sidecar 二进制,顺序:
-//  1. `GAH_SIDECAR`(开发/CI 显式指定;也让 spike 能指向任意 gah 产物)
-//  2. 与壳同目录(`gah` / `gah.exe`)—— 发行包布局,等同 Tauri 的 externalBin
-//  3. `<壳目录>/binaries/gah-<triple>` —— scripts/gen-desktop.sh 的开发产物布局
-func resolveSidecar() (string, error) {
-	if v := os.Getenv("GAH_SIDECAR"); v != "" {
-		if _, err := os.Stat(v); err != nil {
-			return "", fmt.Errorf("GAH_SIDECAR 指向的文件不存在: %w", err)
-		}
-		return v, nil
-	}
-	exe, err := os.Executable()
-	if err != nil {
-		return "", fmt.Errorf("取壳自身路径失败: %w", err)
-	}
-	dir := filepath.Dir(exe)
-	for _, p := range []string{
-		filepath.Join(dir, sidecarName()),
-		filepath.Join(dir, "binaries", sidecarName()+"-"+triple()),
-	} {
-		if st, err := os.Stat(p); err == nil && !st.IsDir() {
-			return p, nil
-		}
-	}
-	return "", fmt.Errorf("找不到 sidecar %s(试过 %s 与 %s;开发态先跑 scripts/gen-desktop.sh,或设 GAH_SIDECAR)",
-		sidecarName(), filepath.Join(dir, sidecarName()), filepath.Join(dir, "binaries"))
-}
-
 // triple 当前平台的 Rust/Go 二进制品名后缀(沿用 gen-desktop.sh 的命名)。
 func triple() string {
 	arch := runtime.GOARCH
-	if arch == "amd64" {
+	switch arch {
+	case "amd64":
 		arch = "x86_64"
+	case "arm64":
+		// ARM 在 Rust target triple 里叫 aarch64(gen-desktop*.sh 的产物名同源)。
+		// 写成 arm64 会让壳在 arm mac 上「找不到 sidecar」—— 实测踩过一次。
+		arch = "aarch64"
 	}
 	switch runtime.GOOS {
 	case "darwin":
