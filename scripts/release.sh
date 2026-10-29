@@ -469,7 +469,11 @@ mirror_fetch() {
     say "    取不到资产清单(gh 缺失/未登录/无此 tag)→ 没有可拉的东西(不猜文件名)"
     return 1
   fi
-  find "$dir" -maxdepth 1 -type f -delete
+  # 只删**桌面产物形状**的文件:目录是复用的(GAH_MIRROR_DIR 可以是用户指定目录),
+  # 无差别 -delete 会把那里别的东西一起删掉。
+  find "$dir" -maxdepth 1 -type f -print | while IFS= read -r old; do
+    is_desktop_asset "$(basename "$old")" && rm -f "$old"
+  done
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     say "    拉取 $f …"
