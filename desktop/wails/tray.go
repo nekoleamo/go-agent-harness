@@ -49,9 +49,9 @@ func (s *shell) buildTray() {
 		shellLogf("开机自启: want=%v err=%v 实际=%v", want, err, got)
 	})
 
-	menu.Add("检查更新…").OnClick(func(*application.Context) {
-		s.notImplemented("检查更新")
-	})
+	// 菜单项要能被改成「检查更新中…」并置灰,所以留一个可操作的句柄。
+	checkItem := menu.Add(checkIdleText)
+	checkItem.OnClick(func(*application.Context) { s.checkUpdateFromTray(checkItem) })
 	menu.AddSeparator()
 	menu.Add("退出").OnClick(func(*application.Context) {
 		shellLogf("托盘: 退出")
@@ -75,19 +75,6 @@ func (s *shell) autostartEnabled() bool {
 // notifyDialog 用系统弹框说明一件事(托盘点击后没有别的反馈渠道)。
 func (s *shell) notifyDialog(title, body string) {
 	d := s.app.Dialog.Info().SetTitle(title).SetMessage(body)
-	if s.window != nil {
-		d.AttachToWindow(s.window)
-	}
-	d.Show()
-}
-
-// notImplemented 对本期占位功能给出明确结论(不静默、不假成功)。
-// shortcut: 更新器迁移未在本批范围内;完成前这里只解释,不做任何动作。
-func (s *shell) notImplemented(what string) {
-	msg := "「" + what + "」正在从旧壳迁移(Go/Wails v3 分支),当前版本还没有接上更新器。\n" +
-		"需要更新请到项目 Release 页下载。\n\n壳日志:" + shellLogPath()
-	shellLogf("占位功能被点击: %s", what)
-	d := s.app.Dialog.Info().SetTitle("gah").SetMessage(msg)
 	if s.window != nil {
 		d.AttachToWindow(s.window)
 	}
