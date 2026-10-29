@@ -72,3 +72,22 @@ func (n *notifier) native(title, body string) error {
 	}
 	return n.svc.SendNotification(opts)
 }
+
+// logNotifyPermission 启动时把通知授权状况记进壳日志(旧 Rust 壳同款)。
+// 真机上「通知没弹」时,这一行能立刻区分「没权限」还是「发了但被静音」。
+func (n *notifier) logNotifyPermission() {
+	if n == nil || n.svc == nil {
+		return
+	}
+	ok, err := n.svc.CheckNotificationAuthorization()
+	switch {
+	case err != nil:
+		shellLogf("通知授权状况: 查询失败(%v)", err)
+	case ok:
+		n.auth.Store(1)
+		shellLogf("通知授权状况: 已授权")
+	default:
+		n.auth.Store(2)
+		shellLogf("通知授权状况: 未授权(首次发送时会请求;用户拒绝后通知不会弹出)")
+	}
+}

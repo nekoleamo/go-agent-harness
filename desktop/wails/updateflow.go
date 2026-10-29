@@ -44,7 +44,7 @@ func (s *shell) checkUpdateFromTray(item *application.MenuItem) {
 	rel, err := s.app.Updater.Check(ctx)
 	if err != nil {
 		shellLogf("托盘: 检查更新失败: %v", err)
-		s.notifyDialog("检查更新失败", err.Error())
+		s.notifyDialog("检查更新失败", explainUpdateError(err))
 		return
 	}
 	if rel == nil {
@@ -93,7 +93,7 @@ func (s *shell) installUpdateFromTray() {
 	shellLogf("托盘: 开始下载安装更新")
 	if err := s.app.Updater.DownloadAndInstall(ctx); err != nil {
 		shellLogf("托盘: 安装更新失败: %v", err)
-		s.notifyDialog("安装失败", err.Error())
+		s.notifyDialog("安装失败", explainUpdateError(err))
 		return
 	}
 	shellLogf("托盘: 更新已就绪,等待重启")

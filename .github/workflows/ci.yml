@@ -152,6 +152,9 @@ jobs:
           go vet ./...
           (cd sdk && go vet ./...)
           (cd desktop/wails && go vet ./...)
+      - name: 桌面壳构建冒烟(Windows:纯 Go,无 cgo)
+        shell: bash
+        run: (cd desktop/wails && CGO_ENABLED=0 go build -o /tmp/gah-desktop.exe .)
       - name: go test(-race 需 cgo/gcc,有则跑,无则降级并明示)
         # -timeout=20m:Windows runner 上 `tests` 包(pty 交互类 e2e)实测要 9.8–11 分钟,
         # 而 Go 的**默认**逐包超时是 10 分钟 —— 只要 runner 稍微慢一点就打 `panic: test timed
@@ -291,6 +294,9 @@ jobs:
           go test -race ./...
           (cd sdk && go test -race ./...)
           (cd desktop/wails && go test -race ./...)
+      - name: 桌面壳构建冒烟(Wails 壳,macOS cgo)
+        # vet/test 不链接系统框架,cgo 链接期问题(ObjC/AppKit 符号)只有真编一次才暴露。
+        run: (cd desktop/wails && CGO_ENABLED=1 go build -o /tmp/gah-desktop .)
       - name: 构建 darwin/arm64 主包并校验架构
         run: |
           CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o gah ./cmd/gah

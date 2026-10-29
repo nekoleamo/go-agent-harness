@@ -441,7 +441,7 @@ func (c *controlPlane) handleUpdateCheck(w http.ResponseWriter, r *http.Request)
 	_ = seq
 	if err != nil {
 		shellLogf("检查更新失败: %v", err)
-		writeJSON(w, http.StatusOK, map[string]any{"status": "failed", "message": err.Error()})
+		writeJSON(w, http.StatusOK, map[string]any{"status": "failed", "message": explainUpdateError(err)})
 		return
 	}
 	if rel == nil {
@@ -489,11 +489,22 @@ func (c *controlPlane) handleUpdateInstall(w http.ResponseWriter, r *http.Reques
 	}
 	if err := c.sh.app.Updater.DownloadAndInstall(ctx); err != nil {
 		shellLogf("安装更新失败: %v", err)
-		writeJSON(w, http.StatusOK, map[string]any{"status": "failed", "message": err.Error()})
+		writeJSON(w, http.StatusOK, map[string]any{"status": "failed", "message": explainUpdateError(err)})
 		return
 	}
-	shellLogf("更新已就绪,等待重启应用")
-	writeJSON(w, http.StatusOK, map[string]any{"status": "installed"})
+	shellLogf("更新已就绪,准备重启应用")
+	// 与旧壳同口径:装完就重启(界面上的确认文案写的就是「会替换应用本体并重启」)。
+	// 先把应答发出去,再重启,否则前端拿到的是断链而不是结论。
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":  "installed",
+		"message": "更新已安装,正在重启 gah…",
+	})
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		if err := c.sh.app.Updater.Restart(context.Background()); err != nil {
+			shellLogf("更新后自动重启失败(请手动重启): %v", err)
+		}
+	}()
 }
 
 // handleUpdateRestart 应用已就绪的更新(框架会起 helper 等本进程退出后换文件)。

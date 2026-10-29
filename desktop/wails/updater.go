@@ -347,3 +347,29 @@ func (s *shell) initUpdater() error {
 	shellLogf("更新器已就绪: current=%s 源=%v", cfg.CurrentVersion, updateSources())
 	return nil
 }
+
+// explainUpdateError 把更新失败的原始错误翻成人话(旧 Rust 壳 explainUpdateError 等价)。
+//
+// 为什么要翻:失败原文形如 `updater: gah-desktop: HTTP 404`、`ed25519 signature did not verify`,
+// 用户看不懂也不知道该找谁。这里只做**归类**,不吞掉原文(原文追加在括号里,便于反馈)。
+func explainUpdateError(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	lower := strings.ToLower(msg)
+	switch {
+	case strings.Contains(lower, "404") || strings.Contains(lower, "no such host") && strings.Contains(lower, "manifest"):
+		return "更新源上没有这个版本的清单(可能还没发布完):" + msg
+	case strings.Contains(lower, "signature"):
+		return "更新包验签失败(发布包与内置公钥不匹配,可能被替换或签名错了):" + msg
+	case strings.Contains(lower, "timeout") || strings.Contains(lower, "deadline exceeded"):
+		return "连不上更新源(超时):" + msg
+	case strings.Contains(lower, "connection refused") || strings.Contains(lower, "no route"):
+		return "连不上更新源(网络不可达):" + msg
+	case strings.Contains(lower, "没有") && strings.Contains(msg, "产物"):
+		return "更新源里没有当前平台的产物:" + msg
+	default:
+		return msg
+	}
+}

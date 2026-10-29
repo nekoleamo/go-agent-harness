@@ -92,6 +92,9 @@ func main() {
 	} else {
 		shellLogf("通知: 未打包运行(macOS 需要 bundle identifier),本轮禁用系统通知")
 	}
+	if sh.notifier != nil {
+		sh.notifier.logNotifyPermission()
+	}
 
 	newInstance := wantsNewInstance()
 	if newInstance {

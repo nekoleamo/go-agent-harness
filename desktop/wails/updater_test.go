@@ -195,3 +195,32 @@ func TestProviderRejectsBadManifest(t *testing.T) {
 		ms.Close()
 	}
 }
+
+// TestExplainUpdateError 错误翻人话:归类对、原文不丢(用户反馈时要靠原文定位)。
+// 反向验证:把 signature 分支去掉,验签那条断言必红。
+func TestExplainUpdateError(t *testing.T) {
+	cases := []struct{ in, wantIn string }{
+		{"updater: gah-desktop: HTTP 404", "没发布完"},
+		{"updater: ed25519 signature did not verify", "验签失败"},
+		{"dial tcp: connection refused", "网络不可达"},
+		{"context deadline exceeded", "超时"},
+		{"something weird", "something weird"},
+	}
+	for _, c := range cases {
+		got := explainUpdateError(errString(c.in))
+		if !strings.Contains(got, c.wantIn) {
+			t.Fatalf("%q → %q,应包含 %q", c.in, got, c.wantIn)
+		}
+		if c.wantIn != c.in && !strings.Contains(got, c.in) {
+			t.Fatalf("原文被吞了: %q", got)
+		}
+	}
+	if explainUpdateError(nil) != "" {
+		t.Fatal("nil 应返回空串")
+	}
+}
+
+// errString 造一个只有 Error() 的错误(避免引 errors 只为一处)。
+type errString string
+
+func (e errString) Error() string { return string(e) }
