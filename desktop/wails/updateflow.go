@@ -26,11 +26,11 @@ func (s *shell) checkUpdateFromTray(item *application.MenuItem) {
 		return
 	}
 	// 进行中态:文字 + 置灰。恢复一律放在 defer,避免任何一条 return 把它留在「检查中」。
-	item.SetLabel(checkBusyText)
-	item.SetEnabled(false)
+	setMenuItemLabel(item, checkBusyText)
+	setMenuItemEnabled(item, false)
 	defer func() {
-		item.SetLabel(checkIdleText)
-		item.SetEnabled(true)
+		setMenuItemLabel(item, checkIdleText)
+		setMenuItemEnabled(item, true)
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)

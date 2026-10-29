@@ -45,7 +45,7 @@ func (s *shell) buildTray() {
 		}
 		// 勾选态一律回写成**真实**状态:否则用户点完看不出任何变化(旧壳同一个坑)。
 		got := s.autostartEnabled()
-		auto.SetChecked(got)
+		setMenuItemChecked(auto, got)
 		shellLogf("开机自启: want=%v err=%v 实际=%v", want, err, got)
 	})
 

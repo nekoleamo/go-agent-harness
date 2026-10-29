@@ -95,6 +95,9 @@ func startSidecar(bin, addr, token string) (*sidecarProc, error) {
 	cmd.Stdout = outW
 	cmd.Stderr = errW
 
+	// Windows:别让 sidecar 弹出控制台黑框(见 proc_windows.go)。
+	hideConsole(cmd)
+
 	if err := cmd.Start(); err != nil {
 		for _, f := range []*os.File{inR, inW, outR, outW, errR, errW} {
 			_ = f.Close()

@@ -157,3 +157,29 @@ func TestSessionURLTokenLast(t *testing.T) {
 		t.Fatalf("控制面凭据缺失: %s", u)
 	}
 }
+
+// TestPostOnlyRejectsGET 会改状态的端点只接 POST:GET 带副作用会让「预取/预览」
+// 类请求也能触发动作(CSRF 的另一半)。
+// 反向验证:把 postOnly 换成直通,GET 断言必红。
+func TestPostOnlyRejectsGET(t *testing.T) {
+	cp := &controlPlane{token: "tok", origin: "http://127.0.0.1:2233", sh: &shell{addr: "127.0.0.1:2233"}}
+	h := cp.guard(cp.postOnly(cp.handleLog))
+
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:9/shell/log", nil)
+	req.Host = "127.0.0.1:9"
+	req.Header.Set("X-Shell-Token", "tok")
+	rec := httptest.NewRecorder()
+	h(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET 应 405,得到 %d", rec.Code)
+	}
+
+	req2 := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:9/shell/log", strings.NewReader(`{"line":"x"}`))
+	req2.Host = "127.0.0.1:9"
+	req2.Header.Set("X-Shell-Token", "tok")
+	rec2 := httptest.NewRecorder()
+	h(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("POST 应 200,得到 %d(%s)", rec2.Code, rec2.Body.String())
+	}
+}

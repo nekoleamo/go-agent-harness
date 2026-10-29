@@ -86,20 +86,20 @@ func randomToken() (string, error) {
 func (c *controlPlane) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/shell/ping", c.guard(c.handlePing))
-	mux.HandleFunc("/shell/log", c.guard(c.handleLog))
-	mux.HandleFunc("/shell/pick-folder", c.guard(c.handlePickFolder))
-	mux.HandleFunc("/shell/export-save", c.guard(c.handleExportSave))
+	mux.HandleFunc("/shell/log", c.guard(c.postOnly(c.handleLog)))
+	mux.HandleFunc("/shell/pick-folder", c.guard(c.postOnly(c.handlePickFolder)))
+	mux.HandleFunc("/shell/export-save", c.guard(c.postOnly(c.handleExportSave)))
 	mux.HandleFunc("/shell/autostart", c.guard(c.handleAutostart))
 	mux.HandleFunc("/shell/update-state", c.guard(c.handleUpdateState))
-	mux.HandleFunc("/shell/update-check", c.guard(c.handleUpdateCheck))
-	mux.HandleFunc("/shell/update-install", c.guard(c.handleUpdateInstall))
-	mux.HandleFunc("/shell/update-restart", c.guard(c.handleUpdateRestart))
-	mux.HandleFunc("/shell/notify-test", c.guard(c.handleNotifyTest))
+	mux.HandleFunc("/shell/update-check", c.guard(c.postOnly(c.handleUpdateCheck)))
+	mux.HandleFunc("/shell/update-install", c.guard(c.postOnly(c.handleUpdateInstall)))
+	mux.HandleFunc("/shell/update-restart", c.guard(c.postOnly(c.handleUpdateRestart)))
+	mux.HandleFunc("/shell/notify-test", c.guard(c.postOnly(c.handleNotifyTest)))
 	mux.HandleFunc("/shell/diag", c.guard(c.handleDiag))
-	mux.HandleFunc("/shell/session-window", c.guard(c.handleSessionWindow))
-	mux.HandleFunc("/shell/open-external", c.guard(c.handleOpenExternal))
-	mux.HandleFunc("/shell/reveal", c.guard(c.handleReveal))
-	mux.HandleFunc("/shell/backup", c.guard(c.handleBackup))
+	mux.HandleFunc("/shell/session-window", c.guard(c.postOnly(c.handleSessionWindow)))
+	mux.HandleFunc("/shell/open-external", c.guard(c.postOnly(c.handleOpenExternal)))
+	mux.HandleFunc("/shell/reveal", c.guard(c.postOnly(c.handleReveal)))
+	mux.HandleFunc("/shell/backup", c.guard(c.postOnly(c.handleBackup)))
 	return mux
 }
 
@@ -133,6 +133,17 @@ func (c *controlPlane) guard(h func(http.ResponseWriter, *http.Request)) http.Ha
 		}
 		if r.Method != http.MethodGet && r.Method != http.MethodPost {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method"})
+			return
+		}
+		h(w, r)
+	}
+}
+
+// postOnly 会改状态的端点只接 POST(GET 不该有副作用)。
+func (c *controlPlane) postOnly(h func(http.ResponseWriter, *http.Request)) func(http.ResponseWriter, *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "只接受 POST"})
 			return
 		}
 		h(w, r)

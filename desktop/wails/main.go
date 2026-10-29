@@ -46,10 +46,14 @@ type shell struct {
 	quitting atomic.Bool
 	notifier *notifier // 系统通知(未装配时为 nil,调用方需容忍)
 
-	noticeSvcMissing atomic.Bool      // 宿主未装配 ctx.notices:只记一次
-	dataRoot         string           // 本次运行实际使用的数据根(备份/诊断用)
-	updater          *desktopProvider // 更新源(未装配时为 nil ⇒ 控制面如实报不可用)
-	portable         bool             // 便携模式:只查不装(Windows 不允许覆盖运行中的程序)
+	noticeSvcMissing atomic.Bool // 宿主未装配 ctx.notices:只记一次
+	// 下列字段全部在 app.Run() 之前写好、之后只读 —— 控制面 handler 会并发读它们,
+	// 所以**不能**在 boot() 协程里再改(那是一次真实的 data race:备份端点可能读到半个值)。
+	plan     runtimePlan      // 本次运行落点(由 resolveRuntime 在启动前算好)
+	planErr  error            // 落点解析失败的原因(有窗口后再铺诊断页)
+	dataRoot string           // = plan.dataRoot(便于 handlers 直接取)
+	portable bool             // 便携模式:只查不装(Windows 不允许覆盖运行中的程序)
+	updater  *desktopProvider // 更新源(未装配时为 nil ⇒ 控制面如实报不可用)
 }
 
 func main() {
@@ -62,6 +66,17 @@ func main() {
 		os.Exit(1)
 	}
 	sh := &shell{addr: addr, gahToken: os.Getenv("GAH_WEB_TOKEN")}
+	// 运行落点(sidecar 从哪来、数据根在哪)在起控制面之前算清楚:
+	// ① handlers 会读 dataRoot/portable,晚写就是 data race;
+	// ② 解析失败也要让控制面/诊断页能如实报出来,而不是半个壳在跑。
+	if plan, perr := resolveRuntime(localDataDir(), version); perr != nil {
+		sh.planErr = perr
+		shellLogf("运行落点解析失败: %v", perr)
+	} else {
+		sh.plan = plan
+		sh.dataRoot = plan.dataRoot
+		sh.portable = plan.portable
+	}
 	shellLogf("gah web 地址: %s(token 模式: %v)", addr, sh.gahToken != "")
 
 	// 通知服务:macOS 只在 .app 内可注册(见 notify.go 的说明),否则整个应用起不来。
@@ -135,19 +150,16 @@ func main() {
 
 // boot 启动 sidecar 并在就绪后把窗口导航到 gah 的页面。
 func (s *shell) boot() {
-	plan, err := resolveRuntime(localDataDir(), version)
-	if err != nil {
-		shellLogf("%v", err)
+	if s.planErr != nil {
 		s.showDiag("找不到运行文件", []string{
-			err.Error(),
+			s.planErr.Error(),
 			"开发态:先跑 bash scripts/gen-desktop-wails.sh(或设 GAH_SIDECAR 指向已构建的 gah)。",
 		})
 		return
 	}
-	shellLogf("运行落点: bin=%s data_root=%s external=%v staged=%v",
-		plan.bin, plan.dataRoot, plan.external, plan.staged)
-	s.dataRoot = plan.dataRoot
-	s.portable = plan.portable
+	plan := s.plan
+	shellLogf("运行落点: bin=%s data_root=%s external=%v staged=%v portable=%v",
+		plan.bin, plan.dataRoot, plan.external, plan.staged, plan.portable)
 	for _, n := range plan.notices {
 		// 便携形态说明「一次讲清就够」:走系统通知,拿不到通知权限就退回日志
 		// (不能因为通知不可用就把这条事实吞掉 —— 用户需要知道数据在程序目录里)。
