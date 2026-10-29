@@ -45,26 +45,8 @@ case "$cmd" in
     goreleaser release "${@:2}"
     ;;
   desktop)
-    ensure_web
-    # sidecar = 同一 gah 产物(按本平台 triple 落位;跨平台矩阵归 CI/P2)
-    case "$(uname -s)-$(uname -m)" in
-      Darwin-arm64)             triple=aarch64-apple-darwin ;;
-      Darwin-x86_64|Darwin-amd64) triple=x86_64-apple-darwin ;;
-      Linux-x86_64|Linux-amd64)   triple=x86_64-unknown-linux-gnu ;;
-      Linux-aarch64|Linux-arm64)  triple=aarch64-unknown-linux-gnu ;;
-      MINGW*|MSYS*|CYGWIN*)        triple=x86_64-pc-windows-msvc ;;
-      *) echo "[desktop] 未知平台 $(uname -s)-$(uname -m)"; exit 1 ;;
-    esac
-    echo "[desktop] sidecar build: gah-$triple(复用 cli 产物,含内嵌前端)"
-    CGO_ENABLED=0 go build -trimpath -o "desktop/src-tauri/binaries/gah-$triple" ./cmd/gah
-    if ! command -v tauri >/dev/null; then
-      echo "[desktop] 缺 tauri-cli:安装 → cargo install tauri-cli(或 npm i -g @tauri-apps/cli);"
-      echo "         本地开发壳可先跑: bash scripts/gen-desktop.sh && desktop/src-tauri/target/debug/gah-desktop"
-      exit 1
-    fi
-    echo "[desktop] tauri build(未签名;mac 双击被 Gatekeeper 拦时右键打开或 xattr -cr)"
-    ( cd desktop/src-tauri && tauri build "${@:2}" )
-    echo "产出: desktop/src-tauri/target/release/bundle/ (macos/gah.app + .dmg / windows 安装器)"
+    # 旧 Tauri 链已移除;桌面壳构建见 scripts/gen-desktop-wails.sh(壳在 desktop/wails/)。
+    bash scripts/gen-desktop-wails.sh "${@:2}"
     ;;
   web-dev)
     echo "[web-dev] vite watch(vite dev 产物落盘需 build --watch;前端改动自动重建)"

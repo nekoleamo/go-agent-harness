@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 桌面壳(Go + Wails v3)发行:构建 → 打包 → 签名 → 清单。
 #
-# 与旧链(scripts/publish-desktop.sh,Tauri)并列存在,主干合并后删旧的。差异:
+# 旧的 Tauri 链已于 2026-10-29 删除。与它的差异:
 #   - 产物形态:wails updater 只吃「单文件 / 唯一顶层条目的 zip」
 #       mac  → gah-<ver>-<triple>.app.zip(整个 .app 打包,sidecar 在内嵌壳里)
 #       win  → gah-<ver>-<triple>.zip(单个 exe,sidecar 同样内嵌)

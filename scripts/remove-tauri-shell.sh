@@ -130,6 +130,9 @@ for p in "${DEL_PATHS[@]}"; do
   [ -e "$p" ] || continue
   if git ls-files --error-unmatch "$p" >/dev/null 2>&1; then
     git rm -r -q --ignore-unmatch "$p" || die "git rm 失败:$p"
+    # git rm 只删**跟踪**文件;target/(7GB 级)、.DS_Store、旧 binaries/ 都还是未跟踪的,
+    # 留着等于白白占磁盘(实测一次 7.3G)。整目录一起清掉。
+    [ -e "$p" ] && rm -rf "$p"
   else
     rm -rf "$p" || die "rm 失败:$p"
   fi

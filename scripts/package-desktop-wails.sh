@@ -2,8 +2,8 @@
 # 组装 macOS 发行包:`gah.app` + 更新器要的 `.app.zip`(+ 可选 dmg)。
 #
 # 为什么手写而不是用打包框架:壳只有一个二进制 + 一个 sidecar,Info.plist 就十几行;
-# 用框架会再拉一套工具链(与「省磁盘」的初衷相反)。Windows 侧仍是 NSIS(见
-# scripts/publish-desktop.sh),首次安装走 dmg/NSIS,升级走 updater 的 zip。
+# 用框架会再拉一套工具链(与「省磁盘」的初衷相反)。Windows 侧是 NSIS(见 desktop/wails/installer/),
+# 首次安装走 dmg/NSIS,升级走 updater 的 zip。
 #
 # 用法:
 #   bash scripts/package-desktop-wails.sh            # 构建 .app 与 .app.zip

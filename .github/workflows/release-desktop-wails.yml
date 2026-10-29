@@ -1,4 +1,4 @@
-# Go + Wails v3 桌面壳发行(迁移期与 release-desktop.yml 的 Tauri 链并列)。
+# Go + Wails v3 桌面壳发行(Tauri 链已于 2026-10-29 删除,这里是唯一的桌面发行流水线)。
 #
 # 触发:workflow_dispatch 手动(默认),或打 `desktop-wails-v*` tag 自动发布。
 # **刻意不复用 `v*` tag**:两条链同时抢同一个 tag 会互相覆盖 Release 资产,

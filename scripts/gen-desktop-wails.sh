@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 # Go 壳(Wails v3)构建:sidecar `gah` + 壳本体。
 #
-# 与 scripts/gen-desktop.sh(Tauri/Rust 壳)并存:迁移期内两条链都能跑,
-# 主干合并后再删旧的。Tauri 链的产物布局是 desktop/src-tauri/binaries/gah-<triple>,
-# 这里沿用同一套 triple 命名,只是落在 desktop/wails/binaries/。
+# 旧的 Tauri 链已于 2026-10-29 删除;产物布局沿用同一套 triple 命名(落 desktop/wails/binaries/),
 #
 # 用法:
 #   bash scripts/gen-desktop-wails.sh              # debug 构建(CGO=1,快)

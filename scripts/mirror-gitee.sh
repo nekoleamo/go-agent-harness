@@ -15,7 +15,7 @@
 #
 # 之后由调用方决定是否把 latest.json 的下载地址换成 Gitee(GitHub 与 Gitee 的直链同形:
 # 同 tag、同文件名,只差 host 与仓库路径):
-#   bash scripts/publish-desktop.sh rewrite-url gitee:<owner/repo>
+#   go run ./desktop/wails/cmd/desktopman rewrite-url --manifest <清单> --base gitee:<owner/repo>
 #
 # 令牌:Gitee → 设置 → 私人令牌,勾选 projects 权限。只经 env 传入,不落盘、不入库
 # (Gitee API 用 `access_token` 查询参数,故会出现在本机进程列表里;CI 上由 GitHub 打码)。

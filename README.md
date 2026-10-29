@@ -119,7 +119,7 @@ Go 实现的编程代理 Agent Harness:以**单静态二进制**交付全部能�
 > 手动下载(Gitee 镜像,**附件随各版本同步上传**;若某个 tag 下尚未出现,请用 GitHub Release 里的链接):`https://gitee.com/null_593_5354/go-agent-harness/releases/download/<tag>/gah_<版本>_aarch64.dmg`
 > (Windows 首装用 `gah-<版本>-setup.exe`,升级包是单 exe 的 zip);代码快照在 `https://gitee.com/null_593_5354/go-agent-harness`。
 > Gitee 侧只放**最新代码快照**(无历史)与桌面安装包,完整历史与 CLI 各平台归档仍在 GitHub。
-> 换回 GitHub 直链:`bash scripts/publish-desktop.sh rewrite-url none`(或 CI 里 `workflow_dispatch { tag, mirror_base: none }`)。
+> 换回 GitHub 直链:`go run ./desktop/wails/cmd/desktopman rewrite-url --manifest dist-desktop-wails/desktop-latest.json --base none --orig <原始前缀>`。
 > **两点例外(唯一会丢配置的情况)**:① Windows 卸载页有个「Delete app data」勾选框,勾了会连
 > `%LOCALAPPDATA%\dev.gah.desktop`(数据根所在)一起删 —— 默认**不勾**,想留着就别勾;
 > ② Linux 只有命令行包(解压即用),数据在 `gah` 同目录 —— **把新版本解压覆盖到同一目录**就保留,
@@ -703,7 +703,7 @@ UI 插件是**与宿主同源同权限**的最宽面:产物经动态 `import()` 
 ├── tests/            # 端到端 + 迷你 MCP server(卸载矩阵见 AGENTS.md)
 ├── internal/         # embed(seed 样板/外部分发)/ install(插件安装)/ prefs(偏好持久化)/ providerfile
 ├── config/           # profile/bundle/patch 样板(seed-version 与 internal/embed/seed 同步)
-├── scripts/          # gen.sh(统一构建)/ gen-web.sh / gen-extplugins.sh / gen-desktop.sh / publish-desktop.sh(桌面零成本发行)/ verify-release.mjs(发版后校验:平台矩阵/签名/包内版本)/ ws-smoke.go
+├── scripts/          # gen.sh(统一构建)/ gen-web.sh / gen-extplugins.sh / gen-desktop-wails.sh / publish-desktop-wails.sh(桌面零成本发行)/ ws-smoke.go
 ├── desktop/wails/    # 桌面壳(Go + Wails v3;sidecar 内嵌;零成本发行:updater ed25519 自持签名 + CI 矩阵,见「三」)
 ├── .gah/skills/      # 自注册技能(gah-plugin-dev)
 └── docs/             # 本地设计文档(随仓库分发仅 PLUGIN_DEV.md;其余设计/排期/清单为本地资料)

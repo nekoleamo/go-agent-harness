@@ -36,7 +36,6 @@
   diff 能读出来的(比对里一个"意外的零差异"case 逼我去查,因为管道里两侧都没输出)。
   两侧统一用假版本号 + 日志时间戳归一化,矩阵刻意离线(不含 `-install <repo>` 这类发网络的)。
 - 发布编译:`CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$(git describe --tags)"`。
-- 桌面壳(`desktop/src-tauri/`):改后必跑 `cargo fmt` 与 `cargo test --offline`(CI 的 `desktop-shell` job = `cargo fmt --check` + `cargo test --locked`;`--offline` 是因为 crates.io 偶发拉取超时)。**工具链必须 ≥1.85**(2026-10-23 踩过):`Cargo.lock` 里有 `edition2024` 依赖(`serde_spanned 1.1.x`),Rust 1.84 会报 `failed to parse manifest … feature 'edition2024' is required` —— 那条报错读起来像「仓库/锁文件坏了」,实际是**工具链太旧**,`rustup update stable` 即愈(1.84 下 `release.sh preflight` 的桌面壳一步永远红)。
 - CI:go vet + go test ./... -race;全库测试必须保持 -race 全绿。
 
 ## UI 规范(web/tui)
@@ -72,7 +71,6 @@
 - **CI 计时门口径**:`全库 -race 计时回归护栏` 只覆盖**核心包**(`go list ./... | grep -v '/tests$'`),阈值 150s(本地基线 ~40s);`tests/` 包单独一步、**不设时长门** —— 它的耗时是 pty 交互 sleep 之和(随用例数线性增长),拿墙钟做回归判据会必然假红。
 
 ## 变更纪律
-- **行尾钉死**:凡参与逐字节比较的仓库内文本 fixture(如 `desktop/src-tauri/fixtures/*`)必须写进 `.gitattributes`(`text eol=lf`)—— 否则 Windows 检出成 CRLF,该测试会在 `test-windows` 上假红(内容打印完全一致却比较失败)。
 - **新增插件必须**:登记 `plugins/catalogue` + 落位 `plugins/<类别>/`(host/adapter/policy/tool/mcp/ui,总览 plugins/README.md)+ 同步 config 与 internal/embed/seed 两份 bundle 样板。
 - **预置角色/技能**:形态(三道闸、配方表、契约、bump `SeedRolesVersion` 的流程)见 docs/PRESET_SKILLS.md;机器判定在 `internal/embed/preset_skills_contract_test.go`(宁少勿滥的机制化,与预置角色内容契约同一条纪律)。
 - **样板版本化**:config/bundle-*.yaml 头部 `# seed-version: N`(seed 与 repo 两份同步,guard 测试强制);**新增 base 能力条目必须 bump 版本号**(EnsureSeed 对低版本落盘自动备份后覆盖,否则老用户不升级)。仅 bundle 系列参与;profile/patch 不覆盖。

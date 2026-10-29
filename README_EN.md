@@ -129,7 +129,7 @@ provider (DeepSeek / Kimi / Zhipu / Qwen / Ollama presets; paste an API key).
 > (Windows: `gah_<version>_x64-setup.exe`); the code snapshot lives at `https://gitee.com/null_593_5354/go-agent-harness`.
 > Gitee carries only the **latest code snapshot** (no history) plus the desktop installers — full history and the
 > per-platform CLI archives stay on GitHub. Revert to the direct GitHub link with
-> `bash scripts/publish-desktop.sh rewrite-url none` (or `workflow_dispatch { tag, mirror_base: none }` in CI).
+> `go run ./desktop/wails/cmd/desktopman rewrite-url --manifest dist-desktop-wails/desktop-latest.json --base none --orig <original prefix>`.
 > **Two exceptions (the only ways to lose your config)**: ① the Windows uninstaller page has a
 > \"Delete app data\" checkbox — ticking it also removes `%LOCALAPPDATA%\dev.gah.desktop` (where the data root
 > lives). It is **unchecked by default**; leave it unchecked to keep your data. ② Linux ships as a CLI
@@ -752,7 +752,7 @@ Red lines: plugins import **only `sdk/`** — never core/tui/other plugins; regi
 ├── tests/            # e2e + mini MCP server (unload matrix per AGENTS.md)
 ├── internal/         # embed (seed samples/external plugins) / install / prefs / providerfile
 ├── config/           # profile/bundle/patch samples (seed-version kept in sync with internal/embed/seed)
-├── scripts/          # gen.sh (unified build)/ gen-web.sh / gen-extplugins.sh / gen-desktop.sh / publish-desktop.sh / verify-release.mjs (post-release checks: platform matrix / signature / bundled version)/ ws-smoke.go
+├── scripts/          # gen.sh (unified build)/ gen-web.sh / gen-extplugins.sh / gen-desktop-wails.sh / publish-desktop-wails.sh / ws-smoke.go
 ├── desktop/wails/    # desktop shell (Go + Wails v3; sidecar embedded; zero-cost release: updater+CI)
 ├── .gah/skills/      # self-registered skills (gah-plugin-dev)
 └── docs/             # local design docs (only PLUGIN_DEV.md ships with the repo; the rest are local materials)
