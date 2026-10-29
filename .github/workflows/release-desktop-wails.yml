@@ -176,6 +176,9 @@ jobs:
       - name: 上传到 Release(升级包 / 首装包 / 清单 / 校验和)
         uses: softprops/action-gh-release@v2
         with:
+          # tag 必须显式给:补发(workflow_dispatch)时 github.ref 是**分支**,
+          # action 会报「GitHub Releases requires a tag」并整步失败(2026-10-30 实测)。
+          tag_name: ${{ inputs.tag || github.ref_name }}
           # 预发布标记跟 tag 走(semver 带后缀 = prerelease):goreleaser 默认就是 auto,
           # 两边对同一个 Release 的说法要一致。
           prerelease: ${{ contains(inputs.tag || github.ref_name, '-') }}
@@ -190,6 +193,7 @@ jobs:
         if: ${{ hashFiles('dist-desktop-wails/*/*.dmg') != '' }}
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
           files: dist-desktop-wails/*/*.dmg
 
   # 说明(与 Tauri 链同一口径):CI 不往 Gitee 传附件 —— 海外 runner 往 Gitee 传 25MB 级
