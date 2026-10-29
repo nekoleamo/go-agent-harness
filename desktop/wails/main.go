@@ -56,10 +56,9 @@ type shell struct {
 	portable bool             // 便携模式:只查不装(Windows 不允许覆盖运行中的程序)
 	updater  *desktopProvider // 更新源(未装配时为 nil ⇒ 控制面如实报不可用)
 
-	pendingNotices []string              // 壳侧提示(便携/迁移/失联),就绪后贴进页面
-	trayCheckItem  *application.MenuItem // 托盘「检查更新…」(自动检查用它)
-	updateBusy     atomic.Bool           // 检查更新进行中(前端轮询 update-state 用)
-	updateSeq      atomic.Uint64         // 检查轮次(前端据此判断"这一轮有结论了")
+	trayCheckItem *application.MenuItem // 托盘「检查更新…」(自动检查用它)
+	updateBusy    atomic.Bool           // 检查更新进行中(前端轮询 update-state 用)
+	updateSeq     atomic.Uint64         // 检查轮次(前端据此判断"这一轮有结论了")
 }
 
 func main() {

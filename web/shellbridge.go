@@ -36,17 +36,18 @@ func shellBridgeHandler() http.Handler {
 	}
 	target := &url.URL{Scheme: "http", Host: addr}
 	proxy := httputil.NewSingleHostReverseProxy(target)
-	base := proxy.Director
-	proxy.Director = func(req *http.Request) {
-		base(req)
-		req.Host = target.Host
-		req.Header.Set("X-Shell-Token", token)
+	// Rewrite(而非已废弃的 Director):SetURL 会顺带清掉入站转发头,
+	// 再手动补齐路径;X-Forwarded-* 也不会被带出去。
+	proxy.Rewrite = func(pr *httputil.ProxyRequest) {
+		pr.SetURL(target)
+		pr.Out.Host = target.Host
+		pr.Out.Header.Set("X-Shell-Token", token)
 		// 不把 gah 的凭据带给壳,也不带 Cookie(壳不需要,少一条泄露路径)。
-		req.Header.Del("Cookie")
+		pr.Out.Header.Del("Cookie")
 		// 壳侧守卫按 Origin 白名单判断「是不是自家页面」;代理之后 Origin 是 gah 自己的,
 		// 那一层由 gah 的 authMiddleware 替代,所以这里去掉,免得被壳当外部源拒掉。
-		req.Header.Del("Origin")
-		req.Header.Del("Referer")
+		pr.Out.Header.Del("Origin")
+		pr.Out.Header.Del("Referer")
 	}
 	// 目录选择框/备份/安装都可能阻塞很久(用户翻目录、下 30MB):不要让代理自带超时打断。
 	proxy.Transport = &http.Transport{
