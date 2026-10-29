@@ -49,6 +49,7 @@ type shell struct {
 	noticeSvcMissing atomic.Bool      // 宿主未装配 ctx.notices:只记一次
 	dataRoot         string           // 本次运行实际使用的数据根(备份/诊断用)
 	updater          *desktopProvider // 更新源(未装配时为 nil ⇒ 控制面如实报不可用)
+	portable         bool             // 便携模式:只查不装(Windows 不允许覆盖运行中的程序)
 }
 
 func main() {
@@ -146,6 +147,7 @@ func (s *shell) boot() {
 	shellLogf("运行落点: bin=%s data_root=%s external=%v staged=%v",
 		plan.bin, plan.dataRoot, plan.external, plan.staged)
 	s.dataRoot = plan.dataRoot
+	s.portable = plan.portable
 	for _, n := range plan.notices {
 		// TODO(notice): 便携模式说明应走系统通知;通知服务迁移在本批之后。
 		shellLogf("提示: %s", n)

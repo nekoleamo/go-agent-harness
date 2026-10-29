@@ -139,3 +139,21 @@ type fakeAddr string
 
 func (a fakeAddr) Network() string { return "tcp" }
 func (a fakeAddr) String() string  { return string(a) }
+
+// TestSessionURLTokenLast 会话窗口地址:带 &session=,且 gah token 仍在 fragment 末尾
+// (引导页正则取到 fragment 末尾,顺序错了 token 会被吞掉 → 会话窗口拿不到 cookie)。
+func TestSessionURLTokenLast(t *testing.T) {
+	cp := &controlPlane{token: "ctltok", origin: "http://127.0.0.1:1"}
+	cp.ln = fakeListener{addr: "127.0.0.1:5555"}
+	sh := &shell{addr: "127.0.0.1:2233", gahToken: "gahtok", ctl: cp}
+	u := sh.sessionURL("20261029-101010")
+	if !strings.Contains(u, "/?shell=desktop&session=20261029-101010#") {
+		t.Fatalf("会话窗口地址形状不对: %s", u)
+	}
+	if !strings.HasSuffix(u, "&token=gahtok") {
+		t.Fatalf("gah token 必须在 fragment 末尾: %s", u)
+	}
+	if !strings.Contains(u, "shellport=5555") {
+		t.Fatalf("控制面凭据缺失: %s", u)
+	}
+}

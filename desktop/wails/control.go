@@ -96,6 +96,7 @@ func (c *controlPlane) routes() http.Handler {
 	mux.HandleFunc("/shell/update-restart", c.guard(c.handleUpdateRestart))
 	mux.HandleFunc("/shell/notify-test", c.guard(c.handleNotifyTest))
 	mux.HandleFunc("/shell/diag", c.guard(c.handleDiag))
+	mux.HandleFunc("/shell/session-window", c.guard(c.handleSessionWindow))
 	mux.HandleFunc("/shell/backup", c.guard(c.handleBackup))
 	return mux
 }
@@ -288,6 +289,16 @@ func (c *controlPlane) handleAutostart(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// handleSessionWindow 开一个新会话窗口(前端「新会话在新窗口打开」用)。
+func (c *controlPlane) handleSessionWindow(w http.ResponseWriter, _ *http.Request) {
+	id, err := c.sh.openSessionWindow()
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": id})
+}
+
 // handleDiag 返回诊断信息(日志路径 + 尾部):真机反馈问题时,让用户能一键拿到关键线索。
 func (c *controlPlane) handleDiag(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -368,6 +379,16 @@ func (c *controlPlane) handleUpdateCheck(w http.ResponseWriter, r *http.Request)
 func (c *controlPlane) handleUpdateInstall(w http.ResponseWriter, r *http.Request) {
 	if c.sh.updater == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"status": "unavailable"})
+		return
+	}
+	// 便携版不自动更新:Windows 不允许覆盖正在运行的程序,「装到一半失败」比「不装」更糟。
+	// 但仍然保留检查(用户需要知道有没有新版),只是把动作换成「去下载」。
+	if c.sh.portable {
+		shellLogf("便携版: 拒绝自动安装,提示用户下载新包")
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":  "portable",
+			"message": "便携版不自动更新:请下载新包覆盖本目录",
+		})
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)

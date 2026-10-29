@@ -44,6 +44,7 @@ type runtimePlan struct {
 	bin      string   // 实际要 spawn 的 sidecar
 	dataRoot string   // 数据根(便于日志/诊断展示)
 	external bool     // 是否外置到用户数据目录
+	portable bool     // 便携模式(marker 命中 ⇒ 就地跑,不自动更新)
 	staged   bool     // 本次是否真的复制了
 	notices  []string // 要提示用户的事实(便携模式说明等)
 }
@@ -250,6 +251,7 @@ func resolveRuntime(home, version string) (runtimePlan, error) {
 					return runtimePlan{}, err
 				}
 				plan.external = false
+				plan.portable = true
 				return plan, nil
 			}
 			// 开发构建(无内嵌)在便携目录里找不到 sidecar 时,退回下面的通用查找,并在那里报错。
@@ -303,7 +305,7 @@ func resolveRuntime(home, version string) (runtimePlan, error) {
 		stripMarkOfTransfer(src)
 		stripMarkOfTransfer(exe)
 		root := filepath.Join(dir, "gah-data")
-		plan := runtimePlan{bin: src, dataRoot: root}
+		plan := runtimePlan{bin: src, dataRoot: root, portable: true}
 		if !portableNoticeShown(root) {
 			if err := markPortableNoticeShown(root); err != nil {
 				// 标记写不下去只是退回「每次都提示」,不该拦住启动。

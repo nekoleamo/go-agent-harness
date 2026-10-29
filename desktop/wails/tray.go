@@ -20,6 +20,15 @@ func (s *shell) buildTray() {
 
 	menu := s.app.Menu.New()
 	menu.Add("打开 gah").OnClick(func(*application.Context) { s.focus() })
+	menu.Add("新会话窗口").OnClick(func(*application.Context) {
+		id, err := s.openSessionWindow()
+		if err != nil {
+			shellLogf("托盘: 新会话窗口失败: %v", err)
+			s.notifyDialog("无法新建会话窗口", err.Error())
+			return
+		}
+		shellLogf("托盘: 已开新会话窗口 %s", id)
+	})
 	menu.AddSeparator()
 
 	auto := menu.AddCheckbox("开机自启", s.autostartEnabled())
@@ -61,6 +70,15 @@ func (s *shell) autostartEnabled() bool {
 		return false
 	}
 	return on
+}
+
+// notifyDialog 用系统弹框说明一件事(托盘点击后没有别的反馈渠道)。
+func (s *shell) notifyDialog(title, body string) {
+	d := s.app.Dialog.Info().SetTitle(title).SetMessage(body)
+	if s.window != nil {
+		d.AttachToWindow(s.window)
+	}
+	d.Show()
 }
 
 // notImplemented 对本期占位功能给出明确结论(不静默、不假成功)。
