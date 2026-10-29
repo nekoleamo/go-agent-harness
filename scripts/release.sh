@@ -238,7 +238,7 @@ wait_ci() {
   done
   [ "$bad" = 0 ] || die "CI 有 job 非 success(run $run,conclusion=$conclusion)。红了不要打 tag"
   [ "$conclusion" = success ] || die "CI run $run 的 conclusion=$conclusion"
-  say "    run $run 五 job 全绿"
+  say "    run $run 全部 $((${#CI_JOBS[@]})) 个 job 全绿"
 }
 
 # ───────────────────────────── tag ─────────────────────────────
