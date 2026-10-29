@@ -169,3 +169,55 @@ func TestTripleArchNaming(t *testing.T) {
 		t.Fatalf("triple 里不该出现 Go 的 arm64 拼法: %q", got)
 	}
 }
+
+// TestPruneStaleNeverDeletesShell 便携模式下 sidecar 与壳同目录,而壳叫 `gah-desktop`
+// (前缀同样是 `gah-`)。按前缀删会**在每次启动时删掉壳本体** —— 2026-10-29 实测踩到:
+// mac 上 unlink 成功、进程继续跑,用户下次打开就是「程序不见了」;Windows 因文件锁
+// 删不掉,反而把问题掩盖了。
+//
+// 反向验证:把 pruneStale 的判定换回「前缀 gah-」,第一条断言必红。
+func TestPruneStaleNeverDeletesShell(t *testing.T) {
+	dir := t.TempDir()
+	keep := filepath.Join(dir, "gah-0.7.4-1a2b3c4d")
+	decoy := filepath.Join(dir, "gah-desktop") // 壳本体(不是外置副本)
+	stale := filepath.Join(dir, "gah-0.7.3-deadbeef")
+	notes := filepath.Join(dir, "notes.txt")
+	for _, p := range []string{keep, decoy, stale, notes} {
+		writeFile(t, p, "x")
+	}
+	pruneStale(dir, keep)
+
+	for _, survive := range []string{keep, decoy, notes} {
+		if _, err := os.Stat(survive); err != nil {
+			t.Fatalf("不该删 %s: %v", filepath.Base(survive), err)
+		}
+	}
+	if _, err := os.Stat(stale); !isErrNotExist(err) {
+		t.Fatal("外置副本旧版本应被清理")
+	}
+}
+
+// TestIsStagedName 形状判定:只认 `gah-…-<8位十六进制>[.exe|.new]` 与历史遗留名。
+func TestIsStagedName(t *testing.T) {
+	yes := []string{"gah-0.7.4-1a2b3c4d", "gah-0.7.4-1a2b3c4d.exe", "gah-0.7.4-1a2b3c4d.new", "gah", "gah.exe", ".gah-stage"}
+	no := []string{"gah-desktop", "gah-desktop.exe", "gah-notes.txt", "gah-0.7.4-notahash", "other"}
+	for _, n := range yes {
+		if !isStagedName(n) {
+			t.Fatalf("%q 应认作外置副本", n)
+		}
+	}
+	for _, n := range no {
+		if isStagedName(n) {
+			t.Fatalf("%q 不该认作外置副本(会误删同目录文件)", n)
+		}
+	}
+}
+
+// TestPortableWritable 便携目录可写性探测:可写目录 true;不存在的目录/文件路径 false。
+// 这条决定「能不能就地自动更新」,判错会让更新在只读介质上失败(比不更新更糟)。
+func TestPortableWritable(t *testing.T) {
+	// 探测的是**壳所在目录**(测试进程的可执行文件目录,通常可写)。
+	if !portableWritable() {
+		t.Skip("测试环境本身不可写,跳过(不是失败)")
+	}
+}

@@ -129,18 +129,48 @@ func pruneStale(binDir, keep string) {
 	if err != nil {
 		return
 	}
+	self, _ := os.Executable()
 	for _, e := range entries {
 		p := filepath.Join(binDir, e.Name())
 		if p == keep || e.IsDir() {
 			continue // 目录一律不碰:同级 gah-data 是用户数据
 		}
-		name := e.Name()
-		ours := name == "gah" || name == "gah.exe" ||
-			strings.HasPrefix(name, "gah-") || strings.HasPrefix(name, ".gah-stage")
-		if ours {
+		// **绝不删壳自己**:便携模式下 sidecar 就落在程序目录里,而壳的可执行文件叫
+		// `gah-desktop`(前缀同样是 `gah-`)。2026-10-29 实测:这条按前缀删的逻辑
+		// 在便携模式每次启动都会把壳本体删掉(mac 上 unlink 成功、进程继续跑,
+		// 用户下次再打开就"程序不见了";Windows 上因文件锁删不掉,把问题掩盖了)。
+		if self != "" && (p == self || e.Name() == filepath.Base(self)) {
+			continue
+		}
+		if isStagedName(e.Name()) {
 			_ = os.Remove(p)
 		}
 	}
+}
+
+// isStagedName 只认「外置副本」的形状:`gah-…-<8位十六进制>[.exe]`,以及历史遗留的
+// `gah` / `gah.exe` / `.gah-stage*`。用形状而不是前缀,是为了不误伤同目录里的其它文件
+// (壳本体 `gah-desktop` 就是被前缀规则误伤的那个)。
+func isStagedName(name string) bool {
+	if name == "gah" || name == "gah.exe" || strings.HasPrefix(name, ".gah-stage") {
+		return true
+	}
+	// 未完成的 `.new` 残留也要清(原子落盘失败时留下的)。
+	name = strings.TrimSuffix(name, ".new")
+	stem := strings.TrimSuffix(name, ".exe")
+	if !strings.HasPrefix(stem, "gah-") {
+		return false
+	}
+	i := strings.LastIndexByte(stem, '-')
+	if i < 0 || len(stem)-i-1 != 8 {
+		return false
+	}
+	for _, r := range stem[i+1:] {
+		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // copyFile 复制文件(标准库;保留权限位由 makeExecutable 统一处理)。
@@ -404,4 +434,24 @@ func portableNotices(root string) []string {
 		"便携模式:数据在本目录的 gah-data/(换机器请整个目录一起拷)",
 		"便携版不自动更新(Windows 不允许覆盖正在运行的程序):请下载新包覆盖本目录",
 	}
+}
+
+// portableWritable 便携目录可写性探测(自动更新要在原地换壳本体)。
+//
+// 不做「能否 rename 覆盖自己」的真实演练 —— 那等于先跑一遍更新。只验证目录可写:
+// 在程序目录里建一个临时文件再删掉,失败即判定不可写(只读介质、Program Files、受管目录)。
+func portableWritable() bool {
+	exe, err := os.Executable()
+	if err != nil {
+		return false
+	}
+	dir := filepath.Dir(exe)
+	f, err := os.CreateTemp(dir, ".gah-probe-*")
+	if err != nil {
+		return false
+	}
+	name := f.Name()
+	_ = f.Close()
+	_ = os.Remove(name)
+	return true
 }

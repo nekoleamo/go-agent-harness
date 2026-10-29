@@ -461,9 +461,15 @@ func (c *controlPlane) handleUpdateInstall(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"status": "unavailable"})
 		return
 	}
-	// 便携版不自动更新:Windows 不允许覆盖正在运行的程序,「装到一半失败」比「不装」更糟。
-	// 但仍然保留检查(用户需要知道有没有新版),只是把动作换成「去下载」。
-	if c.sh.portable {
+	// 便携版**可以自动更新**(2026-10-29 实测):wails updater 的做法是「helper 等父进程
+	// 退出后再 rename」,正好绕开「Windows 不允许覆盖运行中的 exe」—— 那条正是旧壳当初
+	// 一刀切禁掉便携更新的理由,现在已经不成立。数据根在程序目录旁边,换的只是壳本体
+	// (sidecar 内嵌在里面),所以「删目录即删数据」的承诺不变。
+	//
+	// 唯一新的硬约束:**程序目录必须可写**(U 盘只读/Program Files/受管目录都不行)。
+	// 所以先做写入探测,写不进去就退回「只查不装」并给出下载指引。
+	// GAH_DESKTOP_PORTABLE_UPDATE=0 可强制关掉(应急开关)。
+	if c.sh.portable && (os.Getenv("GAH_DESKTOP_PORTABLE_UPDATE") == "0" || !portableWritable()) {
 		shellLogf("便携版: 拒绝自动安装,提示用户下载新包")
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":  "portable",
