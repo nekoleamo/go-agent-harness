@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"os"
 	"runtime"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -54,6 +55,11 @@ type shell struct {
 	dataRoot string           // = plan.dataRoot(便于 handlers 直接取)
 	portable bool             // 便携模式:只查不装(Windows 不允许覆盖运行中的程序)
 	updater  *desktopProvider // 更新源(未装配时为 nil ⇒ 控制面如实报不可用)
+
+	pendingNotices []string              // 壳侧提示(便携/迁移/失联),就绪后贴进页面
+	trayCheckItem  *application.MenuItem // 托盘「检查更新…」(自动检查用它)
+	updateBusy     atomic.Bool           // 检查更新进行中(前端轮询 update-state 用)
+	updateSeq      atomic.Uint64         // 检查轮次(前端据此判断"这一轮有结论了")
 }
 
 func main() {
@@ -89,21 +95,25 @@ func main() {
 		shellLogf("通知: 未打包运行(macOS 需要 bundle identifier),本轮禁用系统通知")
 	}
 
+	newInstance := wantsNewInstance()
+	if newInstance {
+		shellLogf("以 --new-instance 启动:不注册单实例(与既有实例各自独立)")
+	}
 	app := application.New(application.Options{
 		Name:        "gah",
 		Description: "gah 桌面壳",
 		Services:    svcs,
+		// panic 一律落壳日志:GUI 进程没有终端,崩了就是窗口凭空消失,
+		// 没有日志的话用户能提供的信息为零(旧壳 installPanicLog 的等价)。
+		PanicHandler: func(pd *application.PanicDetails) {
+			shellLogf("panic: %v", pd.Error)
+			shellLogf("stack:\n%s", pd.FullStackTrace)
+		},
 		Mac: application.MacOptions{
 			// 关掉主窗口不退出:gah 驻留托盘(后台任务/计划仍在跑),与旧壳一致。
 			ApplicationShouldTerminateAfterLastWindowClosed: false,
 		},
-		SingleInstance: &application.SingleInstanceOptions{
-			UniqueID: appID,
-			OnSecondInstanceLaunch: func(application.SecondInstanceData) {
-				shellLogf("第二次启动:聚焦已有窗口")
-				sh.focus()
-			},
-		},
+		SingleInstance: singleInstanceOptions(newInstance, sh),
 		// 退出链的第一跳:托盘退出/关窗退出都走这里 → 优雅停 sidecar。
 		OnShutdown: func() { sh.stopSidecar(true) },
 	})
@@ -160,12 +170,13 @@ func (s *shell) boot() {
 	plan := s.plan
 	shellLogf("运行落点: bin=%s data_root=%s external=%v staged=%v portable=%v",
 		plan.bin, plan.dataRoot, plan.external, plan.staged, plan.portable)
+	setShellNotices(plan.notices)
 	for _, n := range plan.notices {
 		// 便携形态说明「一次讲清就够」:走系统通知,拿不到通知权限就退回日志
 		// (不能因为通知不可用就把这条事实吞掉 —— 用户需要知道数据在程序目录里)。
 		s.announce("gah 便携模式", n)
 	}
-	sc, err := startSidecar(plan.bin, s.addr, s.gahToken)
+	sc, err := startSidecar(plan.bin, s.addr, s.gahToken, "127.0.0.1:"+s.ctl.port(), s.ctl.token)
 	if err != nil {
 		shellLogf("%v", err)
 		s.showDiag("gah 服务未能启动", []string{err.Error(), "壳日志: " + shellLogPath()})
@@ -207,17 +218,28 @@ func (s *shell) boot() {
 	s.window.Show()
 	s.window.Focus()
 	go s.startNoticePoller()
+	go s.startHealthWatch()
+	// 升级冒烟脚本入口(旧壳同款):启动后自动走一次检查,让「发出去的包能不能升级」
+	// 可以脚本化验证。默认关闭,不打扰用户。
+	if secs := updateAutoCheckSeconds(); secs > 0 {
+		shellLogf("GAH_SHELL_UPDATE_AUTOCHECK=%d: %ds 后自动检查更新", secs, secs)
+		go func() {
+			time.Sleep(time.Duration(secs) * time.Second)
+			s.checkUpdateFromTray(s.trayCheckItem)
+		}()
+	}
 }
 
 // shellURL 主窗口地址:`?shell=desktop` 让 web UI 走桌面壳布局;fragment 里带控制面
 // 端口与 token(gah 自己的 token 必须放**最后** —— 引导页的正则是 `token=` 取到末端)。
 func (s *shell) shellURL() string {
-	frag := fmt.Sprintf("shellport=%s&shelltoken=%s",
-		url.QueryEscape(s.ctl.port()), url.QueryEscape(s.ctl.token))
+	// 凭据不再进 URL:控制面地址与令牌经 env 交给 sidecar(/shell/* 同源代理),
+	// 于是 fragment 只剩 gah 自己的 token(引导页换 cookie 用)。
+	base := "http://" + s.addr + "/?shell=desktop"
 	if s.gahToken != "" {
-		frag += "&token=" + url.QueryEscape(s.gahToken)
+		return base + "#token=" + url.QueryEscape(s.gahToken)
 	}
-	return "http://" + s.addr + "/?shell=desktop#" + frag
+	return base
 }
 
 // redactURL 把 fragment 里的 token 打码后再进日志(日志是要让用户发回来的)。
@@ -229,7 +251,7 @@ func redactURL(raw string) string {
 	if u.Fragment == "" {
 		return raw
 	}
-	u.Fragment = "shellport=<ctl>&shelltoken=***"
+	u.Fragment = "token=***"
 	return u.String()
 }
 
@@ -310,4 +332,41 @@ func (s *shell) announce(title, body string) {
 	if err := s.sendNotification(title, body); err != nil {
 		shellLogf("(通知不可用,已只写日志: %v)", err)
 	}
+}
+
+// wantsNewInstance 是否要求「另起一个进程」(旧壳 --new-instance)。
+//
+// 与「新会话窗口」是两件事:那个共用同一个 sidecar(同端口/同偏好),这个各有独立
+// sidecar 与端口(共享数据根,靠宿主自己的租约与偏好锁协调)。
+func wantsNewInstance() bool {
+	for _, a := range os.Args[1:] {
+		if a == "--new-instance" {
+			return true
+		}
+	}
+	return false
+}
+
+// singleInstanceOptions 单实例配置;--new-instance 时**不注册**(否则第二个进程会自己退出)。
+func singleInstanceOptions(newInstance bool, sh *shell) *application.SingleInstanceOptions {
+	if newInstance {
+		return nil
+	}
+	return &application.SingleInstanceOptions{
+		UniqueID: appID,
+		OnSecondInstanceLaunch: func(application.SecondInstanceData) {
+			shellLogf("第二次启动:聚焦已有窗口")
+			sh.focus()
+		},
+	}
+}
+
+// updateAutoCheckSeconds 升级冒烟入口(旧壳同款):>0 时启动后自动检查一次。
+func updateAutoCheckSeconds() int {
+	if v := os.Getenv("GAH_SHELL_UPDATE_AUTOCHECK"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 0
 }

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { sniffTauriInvoke } from './desktop.ts'
+import { fetchShellNotices, hasShellQuery, sniffTauriInvoke, wailsUpdateSnapshot } from './desktop.ts'
 
 const invoke = (): Promise<unknown> => Promise.resolve('ok')
 
@@ -29,43 +29,26 @@ test('形状不对(同名但非函数)不能误判成桌面', () => {
   assert.equal(sniffTauriInvoke({ __TAURI__: { core: {} } }), undefined)
 })
 
-// —— Go + Wails v3 壳:控制面凭据从 fragment 解析 ——
-import { parseShellCtl, stripShellCreds, wailsUpdateSnapshot } from './desktop.ts'
+// —— Go + Wails v3 壳:靠 ?shell=desktop 判定,凭据走 gah 的同源代理 ——
 
-test('控制面凭据:从 fragment 取端口与 token', () => {
-  assert.deepEqual(parseShellCtl('#shellport=61720&shelltoken=' + 'a'.repeat(32)), {
-    base: 'http://127.0.0.1:61720',
-    token: 'a'.repeat(32),
-  })
-  // 与 gah 自己的 token 共存(gah token 必须最后一个,但它在本函数里无关)
-  assert.deepEqual(parseShellCtl('#shellport=1&shelltoken=0123456789&token=xyz'), {
-    base: 'http://127.0.0.1:1',
-    token: '0123456789',
-  })
+test('壳标记:只有 ?shell=desktop 才算(与布局开关同一来源)', () => {
+  assert.equal(hasShellQuery('?shell=desktop'), true)
+  assert.equal(hasShellQuery('?a=1&shell=desktop&session=x'), true)
+  assert.equal(hasShellQuery('?shell=web'), false)
+  assert.equal(hasShellQuery(''), false)
+  assert.equal(hasShellQuery('?session=1'), false)
 })
 
-test('控制面凭据:残缺/伪造一律返回 null(否则壳功能会半可用)', () => {
-  assert.equal(parseShellCtl(''), null)
-  assert.equal(parseShellCtl('#token=abc'), null)
-  assert.equal(parseShellCtl('#shellport=99999&shelltoken=0123456789'), null)
-  assert.equal(parseShellCtl('#shellport=1234&shelltoken=short'), null)
-  assert.equal(parseShellCtl('#shellport=ab&shelltoken=0123456789'), null)
-})
-
-test('抹凭据:只删控制面两个参数,保留其余 fragment', () => {
-  assert.equal(stripShellCreds('#shellport=1&shelltoken=0123456789&token=xyz'), '#token=xyz')
-  assert.equal(stripShellCreds('#shellport=1&shelltoken=0123456789'), '')
-  assert.equal(stripShellCreds(''), '')
-})
-
-test('控制面精简状态补成面板形状(busy/seq 给默认值,不猜状态)', () => {
-  assert.deepEqual(wailsUpdateSnapshot({ status: 'idle', version: '0.7.4' }), {
-    busy: false,
-    seq: 0,
-    status: 'idle',
+test('控制面状态:busy/seq 用壳侧真实值(缺省才补 false/0)', () => {
+  assert.deepEqual(wailsUpdateSnapshot({ status: 'checking', busy: true, seq: 7 }), {
+    busy: true,
+    seq: 7,
+    status: 'checking',
     message: '',
-    version: '0.7.4',
+    version: null,
   })
-  assert.equal(wailsUpdateSnapshot(null), null)
-  assert.equal(wailsUpdateSnapshot('x'), null)
+})
+
+test('壳侧提示:非壳环境不请求(浏览器里不发多余请求)', async () => {
+  assert.deepEqual(await fetchShellNotices(), [])
 })

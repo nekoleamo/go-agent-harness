@@ -25,7 +25,12 @@ func (s *shell) checkUpdateFromTray(item *application.MenuItem) {
 		s.notifyDialog("检查更新不可用", "更新器未装配(壳日志里有原因)。")
 		return
 	}
-	// 进行中态:文字 + 置灰。恢复一律放在 defer,避免任何一条 return 把它留在「检查中」。
+	// 进行中态:文字 + 置灰(以及 update-state 的 busy/seq)。恢复一律放在 defer,
+	// 避免任何一条 return 把它留在「检查中」。
+	seq := s.updateSeq.Add(1)
+	s.updateBusy.Store(true)
+	defer s.updateBusy.Store(false)
+	_ = seq
 	setMenuItemLabel(item, checkBusyText)
 	setMenuItemEnabled(item, false)
 	defer func() {

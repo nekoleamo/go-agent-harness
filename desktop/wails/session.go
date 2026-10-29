@@ -68,12 +68,11 @@ func (s *shell) spawnSession() string {
 // sessionURL 会话窗口地址:主窗口同源 + &session=<id>;凭据仍在 fragment 里
 // (gah 的 token 必须最后,引导页的正则会取到 fragment 末尾)。
 func (s *shell) sessionURL(sessionID string) string {
-	frag := fmt.Sprintf("shellport=%s&shelltoken=%s",
-		url.QueryEscape(s.ctl.port()), url.QueryEscape(s.ctl.token))
+	base := "http://" + s.addr + "/?shell=desktop&session=" + url.QueryEscape(sessionID)
 	if s.gahToken != "" {
-		frag += "&token=" + url.QueryEscape(s.gahToken)
+		return base + "#token=" + url.QueryEscape(s.gahToken)
 	}
-	return "http://" + s.addr + "/?shell=desktop&session=" + url.QueryEscape(sessionID) + "#" + frag
+	return base
 }
 
 // openSessionWindow 开一个新会话窗口。返回会话 id 与失败原因(二选一)。

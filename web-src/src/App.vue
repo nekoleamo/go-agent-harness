@@ -2,7 +2,7 @@
 // 根组件:SSE 消费(历史重放 + 实时)+ REST 上行 + 四槽位装配(registry.ts 契约 v1)。
 import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, provide, ref, watch } from 'vue'
 import { api } from './api'
-import { installExternalLinkGuard, probeAsync } from './desktop'
+import { fetchShellNotices, installExternalLinkGuard, probeAsync } from './desktop'
 import type { AskConfirm } from './types'
 import { interventionOf, latestErrorOf, type Intervention } from './intervention'
 import { consume, isUsage, msgsOfEvents, newModel, type StreamModel } from './sse'
@@ -404,6 +404,14 @@ const questionMin = ref(false)
 const conn = ref<ConnModel>(newConn())
 // lastTick 上次与服务端成功交互的时刻(睡眠检测基准:合盖期间定时器停摆 → 唤醒时时钟跳变)
 let lastTick = Date.now()
+// 壳侧提示(便携模式/数据迁移/后台服务失联)。壳用拉取式而不是往页面注入 DOM:
+// Wails v3 的 ExecJS 对外部 URL 页面永不生效(见 desktop.ts 的 fetchShellNotices)。
+const shellNotices = ref<string[]>([])
+const shellNoticeClosed = ref(false)
+async function refreshShellNotices(): Promise<void> {
+  shellNotices.value = await fetchShellNotices()
+}
+
 const offline = computed(() => !submitAllowed(conn.value))
 const connHint = computed(() => offlineHint(conn.value))
 const err = ref('')
@@ -1544,6 +1552,10 @@ onMounted(async () => {
   // 桌面壳:启动时探一次异步命令通道(结果只写壳日志,见 desktop.ts 的 probeAsync)。
   // 真机上出现过 async 命令连函数体都没进,这一行是分辨「任务没被调度」与「请求没到」的证据。
   probeAsync()
+  // 桌面壳:壳侧提示每 10s 取一次(本地回环调用,代价可忽略;失联提示要能及时出现)。
+  void refreshShellNotices()
+  const shellNoticeTimer = setInterval(() => void refreshShellNotices(), 10_000)
+  window.addEventListener('beforeunload', () => clearInterval(shellNoticeTimer), { once: true })
   // 桌面壳:外链交给系统浏览器,别把窗口导航走(桌面窗口只有一个 webview,
   // 导航走就再也回不到 gah;浏览器里什么也不做)。见 desktop.ts 的 installExternalLinkGuard。
   installExternalLinkGuard()
@@ -1732,6 +1744,14 @@ onUnmounted(() => {
           <span class="q-tag">待答</span>
           <span class="q-text">{{ question.prompt }}</span>
           <button class="q-act" data-tip="回到提问弹层作答" @click="questionMin = false">作答</button>
+        </div>
+
+        <!-- 壳侧提示(便携模式/数据迁移/失联):页面自己从控制面拉,壳无法注入 DOM -->
+        <div v-if="shellNotices.length && !shellNoticeClosed" class="shell-banner" role="status">
+          <div class="shell-banner-body">
+            <div v-for="(line, i) in shellNotices" :key="i">{{ line }}</div>
+          </div>
+          <button class="shell-banner-x" aria-label="关闭" @click="shellNoticeClosed = true">×</button>
         </div>
 
         <!-- S-P1-3 断连横幅(仅明确离线时出现;重连中走状态栏角标,不弹横幅) -->
@@ -2194,6 +2214,37 @@ onUnmounted(() => {
   font-size: 12px;
 }
 /* S-P1-3 断连横幅:贴在输入区上方(与提问角标同一竖列),不遮会话流 */
+.shell-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 12px 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--tool-line);
+  border-radius: var(--r-input);
+  background: var(--tool-soft);
+  color: var(--tool-strong);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.shell-banner-body {
+  flex: 1;
+  min-width: 0;
+}
+.shell-banner-x {
+  flex: none;
+  border: 0;
+  background: transparent;
+  color: var(--tool-strong);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+.shell-banner-x:hover {
+  color: var(--fg);
+}
+
 .off-banner {
   display: flex;
   align-items: center;

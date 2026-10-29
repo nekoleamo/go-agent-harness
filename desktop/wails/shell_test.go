@@ -4,6 +4,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -73,36 +74,40 @@ func TestGuardGates(t *testing.T) {
 	}
 }
 
-// TestShellURLTokenLast 钉住 fragment 顺序:gah 引导页的正则 `[#&]token=` 会取到
-// fragment **末尾**,所以 gah 自己的 token 必须是最后一个参数,否则会被吞掉。
-func TestShellURLTokenLast(t *testing.T) {
+// TestShellURL 主窗口地址:带 ?shell=desktop;token 模式下 fragment 只剩 gah 自己的令牌。
+//
+// **控制面凭据不得出现在 URL 里**(2026-10-29 改):它经 env 交给 sidecar,由 /shell/*
+// 同源代理转发 —— 页面里的 UI 插件 JS 拿不到它。反向验证:把 ctl token 拼回 URL,
+// 第二条断言必红。
+func TestShellURL(t *testing.T) {
 	cp := &controlPlane{token: "ctltok", origin: "http://127.0.0.1:1"}
 	cp.ln = fakeListener{addr: "127.0.0.1:5555"}
 	sh := &shell{addr: "127.0.0.1:2233", gahToken: "gahtok", ctl: cp}
+
 	u := sh.shellURL()
-	if !strings.HasSuffix(u, "&token=gahtok") {
+	if !strings.Contains(u, "/?shell=desktop") {
+		t.Fatalf("缺桌面壳标记: %s", u)
+	}
+	if strings.Contains(u, "ctltok") || strings.Contains(u, "shelltoken") || strings.Contains(u, "shellport") {
+		t.Fatalf("控制面凭据不该进 URL: %s", u)
+	}
+	if !strings.HasSuffix(u, "#token=gahtok") {
 		t.Fatalf("gah token 必须在 fragment 末尾: %s", u)
 	}
-	if !strings.Contains(u, "shellport=5555") || !strings.Contains(u, "shelltoken=ctltok") {
-		t.Fatalf("控制面凭据缺失: %s", u)
-	}
-	if !strings.Contains(u, "/?shell=desktop#") {
-		t.Fatalf("桌面壳路径标记缺失: %s", u)
-	}
-	// 无 token 模式(gah 未开鉴权)时不应出现 token 参数。
+
 	sh.gahToken = ""
-	if strings.Contains(sh.shellURL(), "token=gahtok") {
-		t.Fatalf("无 token 时不该带 token 参数: %s", sh.shellURL())
+	if u2 := sh.shellURL(); strings.Contains(u2, "#") {
+		t.Fatalf("无 token 时不该有 fragment: %s", u2)
 	}
 }
 
 // TestRedactURLHidesToken 日志里的 URL 会随用户反馈流转,凭据必须打码。
 func TestRedactURLHidesToken(t *testing.T) {
-	got := redactURL("http://127.0.0.1:2233/?shell=desktop#shellport=5555&shelltoken=SECRET&token=SECRET2")
-	if strings.Contains(got, "SECRET") {
+	got := redactURL("http://127.0.0.1:2233/?shell=desktop#token=SECRET2")
+	if strings.Contains(got, "SECRET2") {
 		t.Fatalf("凭据未打码: %s", got)
 	}
-	if !strings.Contains(got, "shellport=%3Cctl%3E") && !strings.Contains(got, "shellport=<ctl>") {
+	if !strings.Contains(got, "shell=desktop") {
 		t.Fatalf("保留结构信息有助排查: %s", got)
 	}
 }
@@ -140,21 +145,20 @@ type fakeAddr string
 func (a fakeAddr) Network() string { return "tcp" }
 func (a fakeAddr) String() string  { return string(a) }
 
-// TestSessionURLTokenLast 会话窗口地址:带 &session=,且 gah token 仍在 fragment 末尾
-// (引导页正则取到 fragment 末尾,顺序错了 token 会被吞掉 → 会话窗口拿不到 cookie)。
-func TestSessionURLTokenLast(t *testing.T) {
+// TestSessionURL 会话窗口地址:主线同源 + &session=,凭据同样不进 URL。
+func TestSessionURL(t *testing.T) {
 	cp := &controlPlane{token: "ctltok", origin: "http://127.0.0.1:1"}
 	cp.ln = fakeListener{addr: "127.0.0.1:5555"}
 	sh := &shell{addr: "127.0.0.1:2233", gahToken: "gahtok", ctl: cp}
 	u := sh.sessionURL("20261029-101010")
-	if !strings.Contains(u, "/?shell=desktop&session=20261029-101010#") {
+	if !strings.Contains(u, "/?shell=desktop&session=20261029-101010") {
 		t.Fatalf("会话窗口地址形状不对: %s", u)
 	}
-	if !strings.HasSuffix(u, "&token=gahtok") {
-		t.Fatalf("gah token 必须在 fragment 末尾: %s", u)
+	if strings.Contains(u, "ctltok") {
+		t.Fatalf("控制面凭据不该进 URL: %s", u)
 	}
-	if !strings.Contains(u, "shellport=5555") {
-		t.Fatalf("控制面凭据缺失: %s", u)
+	if !strings.HasSuffix(u, "#token=gahtok") {
+		t.Fatalf("gah token 必须在 fragment 末尾: %s", u)
 	}
 }
 
@@ -181,5 +185,87 @@ func TestPostOnlyRejectsGET(t *testing.T) {
 	h(rec2, req2)
 	if rec2.Code != http.StatusOK {
 		t.Fatalf("POST 应 200,得到 %d(%s)", rec2.Code, rec2.Body.String())
+	}
+}
+
+// TestShellNoticesStore 提示存储:整体替换、空列表清空、返回快照(调用方改不到内部)。
+// 反向验证:把 getShellNotices 改成直接返回内部切片,第三条断言必红。
+func TestShellNoticesStore(t *testing.T) {
+	setShellNotices([]string{"便携模式:数据在本目录"})
+	got := getShellNotices()
+	if len(got) != 1 || got[0] != "便携模式:数据在本目录" {
+		t.Fatalf("存储读回不对: %v", got)
+	}
+	// 快照:外部改切片不影响内部。
+	got[0] = "被篡改"
+	if again := getShellNotices(); again[0] != "便携模式:数据在本目录" {
+		t.Fatalf("应返回副本,内部被改成了 %q", again[0])
+	}
+	setShellNotices(nil)
+	if len(getShellNotices()) != 0 {
+		t.Fatal("空列表应清空")
+	}
+}
+
+// TestLostTracker 连续 N 次不可达才报,且只报一次;恢复后重新武装。
+// 反向验证:去掉 reported 守卫,第三条断言(不重复)必红。
+func TestLostTracker(t *testing.T) {
+	var tr lostTracker
+	for i := 1; i < sidecarLostStreak; i++ {
+		if notify, _ := tr.observe(false); notify {
+			t.Fatalf("第 %d 次就报失联(太少)", i)
+		}
+	}
+	if notify, _ := tr.observe(false); !notify {
+		t.Fatalf("%d 次连续不可达应报失联", sidecarLostStreak)
+	}
+	if notify, _ := tr.observe(false); notify {
+		t.Fatal("同一次失联不该反复提示")
+	}
+	if _, recovered := tr.observe(true); !recovered {
+		t.Fatal("恢复应报 recovered")
+	}
+	// 再次掉线要能重新报警。
+	for i := 0; i < sidecarLostStreak-1; i++ {
+		tr.observe(false)
+	}
+	if notify, _ := tr.observe(false); !notify {
+		t.Fatal("恢复后再次失联应重新报警")
+	}
+}
+
+// TestWantsNewInstance --new-instance 是「另一个进程」的开关(不注册单实例)。
+func TestWantsNewInstance(t *testing.T) {
+	old := os.Args
+	t.Cleanup(func() { os.Args = old })
+	os.Args = []string{"gah-desktop"}
+	if wantsNewInstance() {
+		t.Fatal("默认不该是新实例")
+	}
+	os.Args = []string{"gah-desktop", "--new-instance"}
+	if !wantsNewInstance() {
+		t.Fatal("带 --new-instance 应识别")
+	}
+	if singleInstanceOptions(true, &shell{}) != nil {
+		t.Fatal("新实例必须不注册单实例(否则第二个进程会自己退出)")
+	}
+	if singleInstanceOptions(false, &shell{}) == nil {
+		t.Fatal("默认必须注册单实例")
+	}
+}
+
+// TestUpdateAutoCheckSeconds 升级冒烟入口:>0 才生效,非法值忽略。
+func TestUpdateAutoCheckSeconds(t *testing.T) {
+	t.Setenv("GAH_SHELL_UPDATE_AUTOCHECK", "")
+	if updateAutoCheckSeconds() != 0 {
+		t.Fatal("未设置应为 0")
+	}
+	t.Setenv("GAH_SHELL_UPDATE_AUTOCHECK", "3")
+	if updateAutoCheckSeconds() != 3 {
+		t.Fatal("应解析为 3")
+	}
+	t.Setenv("GAH_SHELL_UPDATE_AUTOCHECK", "abc")
+	if updateAutoCheckSeconds() != 0 {
+		t.Fatal("非法值应为 0(不猜)")
 	}
 }

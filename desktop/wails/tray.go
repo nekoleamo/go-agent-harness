@@ -29,6 +29,7 @@ func (s *shell) buildTray() {
 		}
 		shellLogf("托盘: 已开新会话窗口 %s", id)
 	})
+	menu.Add("新实例…").OnClick(func(*application.Context) { s.spawnNewInstance() })
 	menu.AddSeparator()
 
 	auto := menu.AddCheckbox("开机自启", s.autostartEnabled())
@@ -52,6 +53,29 @@ func (s *shell) buildTray() {
 	// 菜单项要能被改成「检查更新中…」并置灰,所以留一个可操作的句柄。
 	checkItem := menu.Add(checkIdleText)
 	checkItem.OnClick(func(*application.Context) { s.checkUpdateFromTray(checkItem) })
+	s.trayCheckItem = checkItem
+
+	menu.Add("测试系统通知").OnClick(func(*application.Context) {
+		// 真机上「通知到底通没通」只能靠人点一下看:失败在界面上完全不可见。
+		if err := s.sendNotification("gah 通知测试", "看到这条说明系统通知通道是通的"); err != nil {
+			shellLogf("测试通知失败: %v", err)
+			s.notifyDialog("通知发送失败", err.Error())
+			return
+		}
+		shellLogf("测试通知已发送")
+	})
+	menu.Add("关于 gah").OnClick(func(*application.Context) { s.showAbout() })
+	menu.Add("重新启动服务").OnClick(func(*application.Context) {
+		shellLogf("托盘: 重新启动服务")
+		go func() {
+			if err := s.restartSidecar(); err != nil {
+				shellLogf("重启服务失败: %v", err)
+				s.notifyDialog("重启服务失败", err.Error())
+				return
+			}
+			s.notifyDialog("已重启", "后台服务已重新启动,界面已重新加载。")
+		}()
+	})
 	menu.AddSeparator()
 	menu.Add("退出").OnClick(func(*application.Context) {
 		shellLogf("托盘: 退出")

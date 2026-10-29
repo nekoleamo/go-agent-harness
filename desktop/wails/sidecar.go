@@ -60,12 +60,16 @@ func triple() string {
 }
 
 // startSidecar 拉起 sidecar 并接管它的日志。
-func startSidecar(bin, addr, token string) (*sidecarProc, error) {
+func startSidecar(bin, addr, token string, ctlAddr, ctlToken string) (*sidecarProc, error) {
 	cmd := exec.Command(bin, "--profile", "web")
 	cmd.Env = append(os.Environ(),
 		"GAH_WEB_OPEN=0",         // 壳自己开窗口,不让 gah 再开浏览器
 		"GAH_WEB_ADDR="+addr,     // 本次私有端口
 		"GAH_WEB_PARENT_WATCH=1", // 父死子死(见文件头)
+		// 控制面同源入口:页面里的 /shell/* 由 gah 转发到壳(见 web/shellbridge.go)。
+		// 令牌走 env 而不是 URL —— 跑在页面里的 UI 插件 JS 拿不到它。
+		"GAH_SHELL_CTL_ADDR="+ctlAddr,
+		"GAH_SHELL_CTL_TOKEN="+ctlToken,
 	)
 	if cwd := defaultWorkspace(); cwd != "" {
 		cmd.Dir = cwd

@@ -325,6 +325,10 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET /api/mcp", s.handleMCPList)
 	mux.HandleFunc("POST /api/mcp", s.handleMCPSave)
 	mux.HandleFunc("GET /api/schedules", s.handleSchedules)
+	// 桌面壳控制面同源入口(env 未设时不挂载;见 shellbridge.go 的来龙去脉)。
+	if h := shellBridgeHandler(); h != nil {
+		mux.Handle("/shell/", h)
+	}
 	mux.HandleFunc("GET /api/notices", s.handleNotices)
 	mux.HandleFunc("POST /api/schedules", s.handleScheduleAdd)
 	mux.HandleFunc("POST /api/schedules/resolve", s.handleScheduleResolve)

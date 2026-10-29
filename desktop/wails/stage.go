@@ -244,14 +244,17 @@ func resolveRuntime(home, version string) (runtimePlan, error) {
 	if exe, err := os.Executable(); err == nil {
 		dir := filepath.Dir(exe)
 		if isPortableAt(dir) && os.Getenv("GAH_SIDECAR") == "" {
+			// 就地跑没有「复制」那一环,「来自网络」标记得自己清(否则 sidecar 静默起不来)。
 			stripMarkOfTransfer(exe)
 			if len(sidecarGz) > 0 {
-				plan, err := stageEmbedded(dir, version)
-				if err != nil {
-					return runtimePlan{}, err
+				plan, perr := stageEmbedded(dir, version)
+				if perr != nil {
+					return runtimePlan{}, perr
 				}
 				plan.external = false
 				plan.portable = true
+				// 便携说明**两种构建都要给**(内嵌/磁盘只是 sidecar 来源不同,对用户是同一件事)。
+				plan.notices = portableNotices(plan.dataRoot)
 				return plan, nil
 			}
 			// 开发构建(无内嵌)在便携目录里找不到 sidecar 时,退回下面的通用查找,并在那里报错。
@@ -306,16 +309,7 @@ func resolveRuntime(home, version string) (runtimePlan, error) {
 		stripMarkOfTransfer(exe)
 		root := filepath.Join(dir, "gah-data")
 		plan := runtimePlan{bin: src, dataRoot: root, portable: true}
-		if !portableNoticeShown(root) {
-			if err := markPortableNoticeShown(root); err != nil {
-				// 标记写不下去只是退回「每次都提示」,不该拦住启动。
-				shellLogf("便携提示标记写入失败(将每次启动都提示): %v", err)
-			}
-			plan.notices = []string{
-				"便携模式:数据在本目录的 gah-data/(换机器请整个目录一起拷)",
-				"便携版不自动更新(Windows 不允许覆盖正在运行的程序):请下载新包覆盖本目录",
-			}
-		}
+		plan.notices = portableNotices(root)
 		return plan, nil
 	}
 
@@ -394,4 +388,20 @@ func stageEmbedded(dir, ver string) (runtimePlan, error) {
 		return runtimePlan{}, fmt.Errorf("放下 %s 失败: %w", dst, err)
 	}
 	return runtimePlan{bin: dst, dataRoot: filepath.Join(dir, "gah-data"), external: true, staged: true}, nil
+}
+
+// portableNotices 便携形态说明:**仅首次提示**(标记落数据根里,删掉它就会再提示一次)。
+// 内容是一次讲清就够的事实:「数据在哪」与「怎么升级」。
+func portableNotices(root string) []string {
+	if portableNoticeShown(root) {
+		return nil
+	}
+	if err := markPortableNoticeShown(root); err != nil {
+		// 标记写不下去只是退回「每次都提示」,不该拦住启动。
+		shellLogf("便携提示标记写入失败(将每次启动都提示): %v", err)
+	}
+	return []string{
+		"便携模式:数据在本目录的 gah-data/(换机器请整个目录一起拷)",
+		"便携版不自动更新(Windows 不允许覆盖正在运行的程序):请下载新包覆盖本目录",
+	}
 }

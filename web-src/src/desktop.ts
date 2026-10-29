@@ -3,10 +3,11 @@
 // **两代壳并存**(迁移期,见 docs/DESKTOP_FEASIBILITY.md §11):
 //  - Tauri v2(Rust 壳):`window.__TAURI_INTERNALS__.invoke` 走 IPC;
 //  - Go + Wails v3 壳:页面由 gah 自己提供(外部 URL),v3.0 拿不到 bindings
-//    (上游 wails#4473 未进 3.0),所以壳侧能力改由**壳自建的本地控制面 HTTP API** 提供:
-//    端口与一次性 token 由壳经 URL fragment 传入(`#shellport=<p>&shelltoken=<t>`)。
-//    这个文件只做两件事:① 从 fragment 取凭据并立刻从地址栏抹掉;② 把「命令名」翻译成
-//    控制面的 HTTP 调用。上游页面代码看到的仍是同一组异步函数。
+//    (上游 wails#4473 未进 3.0),所以壳侧能力改由壳的本地控制面提供,并经 **gah 的同源
+//    代理** `/shell/*` 转发(见 web/shellbridge.go)。为什么必须同源:SPA 的 CSP 是
+//    `connect-src 'self'`,跨源请求会被浏览器直接拦掉 —— 2026-10-29 实测,页面里一条请求
+//    都发不出去,表现就是「壳的按钮点了没反应」。顺带控制面令牌留在 sidecar 的 env 里,
+//    不再进 URL,跑在页面里的 UI 插件 JS 也拿不到。
 //
 // 为什么不用 window.__TAURI__:那是 withGlobalTauri 注入的全局(整套 Tauri API 加各插件的
 // JS),2026-09-15 真机白屏排查后刻意关掉了它。壳的 init 脚本总会注入 __TAURI_INTERNALS__
@@ -29,68 +30,27 @@ export function sniffTauriInvoke(g: unknown): TauriInvoke | undefined {
   return typeof inv === 'function' ? (inv as TauriInvoke) : undefined
 }
 
-// ShellCtl 控制面凭据(Go 壳经 fragment 下发)。
-export interface ShellCtl {
-  base: string
-  token: string
-}
-
-// parseShellCtl 从 URL fragment 解析控制面凭据。纯函数 + 单测:
-// 解析失败的表现是「桌面版里所有壳功能点了没反应」,页面上无从自证。
-export function parseShellCtl(hash: string): ShellCtl | null {
-  if (!hash) return null
-  const q = new URLSearchParams(hash.replace(/^#/, ''))
-  const port = q.get('shellport') ?? ''
-  const token = q.get('shelltoken') ?? ''
-  // 端口必须是**有效**的 TCP 端口(1..65535):99999 这种看着像端口的值不能放行,
-  // 否则壳功能会「半可用」——地址拿到了、请求全失败,而报错只有一行 fetch 失败。
-  if (!/^\d{1,5}$/.test(port)) return null
-  const n = Number(port)
-  if (!Number.isInteger(n) || n < 1 || n > 65535) return null
-  if (token.length < 8) return null
-  return { base: `http://127.0.0.1:${n}`, token }
-}
-
-// stripShellCreds 把控制面凭据从 fragment 去掉(保留其余参数,例如 gah 自己的 token)。
-// 凭据留在地址栏会进截图/录屏/复制分享,而这层凭据能弹原生框、能写文件。
-export function stripShellCreds(hash: string): string {
-  if (!hash) return ''
-  const q = new URLSearchParams(hash.replace(/^#/, ''))
-  q.delete('shellport')
-  q.delete('shelltoken')
-  const rest = q.toString()
-  return rest ? '#' + rest : ''
+// hasShellQuery 页面是否带桌面壳标记(`?shell=desktop`,与布局开关同一个来源)。
+// 纯函数 + 单测:判错的表现是「桌面版里没有桌面功能」或反过来,页面上无从自证。
+export function hasShellQuery(search: string): boolean {
+  if (!search) return false
+  const q = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search)
+  return q.get('shell') === 'desktop'
 }
 
 export const tauriInvoke = sniffTauriInvoke(globalThis)
 
-// ctl 控制面凭据(仅 Go 壳内有);浏览器与 Tauri 壳都是 null。
-export const shellCtl: ShellCtl | null =
-  typeof location === 'undefined' ? null : parseShellCtl(location.hash)
-
-/** 是否是 Go + Wails v3 壳(壳侧能力走本地控制面 HTTP)。 */
-export const isWailsShell = shellCtl !== null
+/** 是否是 Go + Wails v3 壳(壳侧能力走 gah 的同源 /shell/* 代理)。 */
+export const isWailsShell =
+  typeof location !== 'undefined' && hasShellQuery(location.search) && !tauriInvoke
 export const isDesktop = typeof tauriInvoke === 'function' || isWailsShell
 
-// 启动即抹掉地址栏里的控制面凭据(取不到就不动)。
-if (shellCtl && typeof history !== 'undefined') {
-  try {
-    const next = location.pathname + location.search + stripShellCreds(location.hash)
-    history.replaceState(null, '', next)
-  } catch {
-    // 无关紧要:抹不掉也不影响功能,只是地址栏里多留一会儿凭据。
-  }
-}
-
-// ctlFetch 调一次控制面接口(token 走头,不进 URL;跨源由壳侧按 Origin 白名单放行)。
+// shellFetch 调一次壳控制面(同源相对路径,凭据由 gah 的代理补,页面不经手)。
 async function ctlFetch(path: string, init?: { method?: string; body?: unknown }): Promise<unknown> {
-  if (!shellCtl) throw new Error('不是桌面壳环境')
-  const resp = await fetch(shellCtl.base + path, {
+  if (!isWailsShell) throw new Error('不是桌面壳环境')
+  const resp = await fetch(path, {
     method: init?.method ?? 'GET',
-    headers: {
-      'X-Shell-Token': shellCtl.token,
-      ...(init?.body === undefined ? {} : { 'Content-Type': 'application/json' }),
-    },
+    headers: init?.body === undefined ? {} : { 'Content-Type': 'application/json' },
     body: init?.body === undefined ? undefined : JSON.stringify(init.body),
   })
   let body: unknown = undefined
@@ -191,6 +151,22 @@ export async function openExternal(raw: string): Promise<void> {
     }
   }
   if (typeof window !== 'undefined') window.open(raw, '_blank', 'noopener,noreferrer')
+}
+
+// fetchShellNotices 取壳侧提示(便携模式/旧数据迁移/后台服务失联)。
+//
+// 为什么是拉取:Wails v3 的 ExecJS 对「从外部 URL 加载的页面」永不生效
+// (脚本压在 pendingJS 队列里等 runtimeLoaded,而外部页面没有 runtime)——
+// 壳侧注入这条路走不通,改成页面来取。空数组 = 无事。
+export async function fetchShellNotices(): Promise<string[]> {
+  if (!isWailsShell) return []
+  try {
+    const r = (await ctlFetch('/shell/notices')) as { items?: unknown }
+    if (!Array.isArray(r?.items)) return []
+    return r.items.filter((x): x is string => typeof x === 'string' && x.length > 0)
+  } catch {
+    return []
+  }
 }
 
 // installExternalLinkGuard 让页面里所有外链都交给系统浏览器。
@@ -300,10 +276,12 @@ export function wailsUpdateSnapshot(raw: unknown): UpdateSnapshot | null {
   if (!raw || typeof raw !== 'object') return null
   const o = raw as Record<string, unknown>
   return {
-    busy: false,
-    seq: 0,
+    // busy/seq 由壳侧真实上报(检查进行中/第几轮);缺省补 false/0 —— 面板据此显示
+    // 「检查中…」并在轮次变化时判定"这一轮有结论了",补错值会让面板一直转圈。
+    busy: o.busy === true,
+    seq: typeof o.seq === 'number' ? o.seq : 0,
     status: typeof o.status === 'string' ? o.status : '',
-    message: '',
+    message: typeof o.message === 'string' ? o.message : '',
     version: typeof o.version === 'string' ? o.version : null,
   }
 }

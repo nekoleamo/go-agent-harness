@@ -96,10 +96,12 @@ func (c *controlPlane) routes() http.Handler {
 	mux.HandleFunc("/shell/update-restart", c.guard(c.postOnly(c.handleUpdateRestart)))
 	mux.HandleFunc("/shell/notify-test", c.guard(c.postOnly(c.handleNotifyTest)))
 	mux.HandleFunc("/shell/diag", c.guard(c.handleDiag))
+	mux.HandleFunc("/shell/notices", c.guard(c.handleNotices))
 	mux.HandleFunc("/shell/session-window", c.guard(c.postOnly(c.handleSessionWindow)))
 	mux.HandleFunc("/shell/open-external", c.guard(c.postOnly(c.handleOpenExternal)))
 	mux.HandleFunc("/shell/reveal", c.guard(c.postOnly(c.handleReveal)))
 	mux.HandleFunc("/shell/backup", c.guard(c.postOnly(c.handleBackup)))
+	mux.HandleFunc("/shell/restart-service", c.guard(c.postOnly(c.handleRestartService)))
 	return mux
 }
 
@@ -347,6 +349,24 @@ func (c *controlPlane) handleReveal(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+// handleRestartService 重启后台服务(与托盘「重新启动服务」同一条路径)。
+func (c *controlPlane) handleRestartService(w http.ResponseWriter, _ *http.Request) {
+	if err := c.sh.restartSidecar(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleNotices 壳侧提示(便携/迁移/失联)。页面自己来取,理由见 notices.go 文件头。
+func (c *controlPlane) handleNotices(w http.ResponseWriter, _ *http.Request) {
+	items := getShellNotices()
+	if items == nil {
+		items = []string{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
 // handleDiag 返回诊断信息(日志路径 + 尾部):真机反馈问题时,让用户能一键拿到关键线索。
 func (c *controlPlane) handleDiag(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -381,7 +401,12 @@ func (c *controlPlane) handleUpdateState(w http.ResponseWriter, _ *http.Request)
 	if c.sh.updater != nil && c.sh.app != nil {
 		st = string(c.sh.app.Updater.State())
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"status": st, "version": version})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":  st,
+		"version": version,
+		"busy":    c.sh.updateBusy.Load(),
+		"seq":     c.sh.updateSeq.Load(),
+	})
 }
 
 // handleNotifyTest 发一条测试通知:真机上验「通知到底有没有送达」的唯一手段
@@ -404,9 +429,16 @@ func (c *controlPlane) handleUpdateCheck(w http.ResponseWriter, r *http.Request)
 		})
 		return
 	}
+	// busy/seq:前端设置面板凭它们显示「检查中…」并判断这一轮有没有结论
+	// (旧壳用 CHECK_SEQ/CHECK_DONE 做同一件事)。
+	seq := c.sh.updateSeq.Add(1)
+	c.sh.updateBusy.Store(true)
+	defer c.sh.updateBusy.Store(false)
+
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 	rel, err := c.sh.app.Updater.Check(ctx)
+	_ = seq
 	if err != nil {
 		shellLogf("检查更新失败: %v", err)
 		writeJSON(w, http.StatusOK, map[string]any{"status": "failed", "message": err.Error()})
