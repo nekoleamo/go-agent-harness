@@ -182,10 +182,13 @@ preflight() {
     GAH_LAYOUT_REQUIRE=1 npm run test:layout || die "布局护栏红(本地产物;它跑的是 web/dist)"
   )
 
-  step "preflight · 桌面壳(cargo fmt --check + cargo test)"
-  ( cd desktop/src-tauri
-    cargo fmt --check || die "cargo fmt --check 红(桌面壳)"
-    cargo test --offline --locked || die "桌面壳单测红"
+  step "preflight · 桌面壳(Go + Wails v3:go vet + go test + 构建)"
+  # 旧链这里跑 cargo fmt/test;换壳后同样要有门:vet/test 保正确性,构建保 cgo 链接期
+  # (ObjC/AppKit 符号)不炸 —— vet/test 都不链接系统框架。
+  ( cd desktop/wails
+    go vet ./...      || die "桌面壳 go vet 红"
+    go test ./...     || die "桌面壳单测红"
+    CGO_ENABLED=1 go build -o /tmp/gah-desktop-preflight . || die "桌面壳构建红(cgo 链接)"
   )
 
   step "preflight · 体积门"

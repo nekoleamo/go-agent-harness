@@ -1,8 +1,8 @@
 // A-1 条目 86(壳内通知端到端)的可自动化半边:**宿主真产物 → 壳解析**。
 //
-// 桌面壳(desktop/src-tauri)靠 GET /api/notices 的正文做「该不该弹系统通知」的判定。
-// 此前 Rust 侧用的是**手抄**样例(REAL_SAMPLE),与宿主实际输出之间没有回归约束:
-// 宿主改字段名/改形状,Rust 不会红。这里把真产物固化成**可复现 fixture**:
+// 桌面壳(desktop/wails)靠 GET /api/notices 的正文做「该不该弹系统通知」的判定。
+// 此前壳侧用的是**手抄**样例(REAL_SAMPLE),与宿主实际输出之间没有回归约束:
+// 宿主改字段名/改形状,壳不会红。这里把真产物固化成**可复现 fixture**:
 //   - 事件从**真总线**触发(job/done、schedule/run、agent/error)→ host-notices 自动生产 → 真 HTTP 端点取正文;
 //   - ts 置零(时钟不可复现),其余字段原样 —— 壳的判定链不读 ts;
 //   - `GAH_UPDATE_NOTICE_FIXTURE=1 go test ./tests/ -run TestNoticeFeedFixture` 重新生成。
@@ -21,7 +21,7 @@ import (
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
-const noticeFixturePath = "../desktop/src-tauri/fixtures/notices-feed.json"
+const noticeFixturePath = "fixtures/notices-feed.json"
 
 func TestNoticeFeedFixtureForDesktopShell(t *testing.T) {
 	c, srv := buildNoticeEnv(t, true)

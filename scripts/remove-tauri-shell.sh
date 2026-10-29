@@ -72,6 +72,7 @@ DEL_PATHS=(
   scripts/verify-release.mjs # 旧:latest.json 发布校验门
   .github/workflows/release-desktop.yml # 旧:tauri CLI 矩阵
   desktop/wails/cmd/desktopman/desktopman # 误提交的编译产物(顺手清)
+  desktop/icons/gen-icon.mjs             # 旧:调 @tauri-apps/cli 生成图标集的 node 脚本
 )
 for p in "${DEL_PATHS[@]}"; do
   if [ -e "$p" ]; then
@@ -208,9 +209,9 @@ for wf in pathlib.Path('.github/workflows').glob('*.yml'):
 # ---- 4) AGENTS.md:删掉引用 tauri fixtures 的那条纪律 ----
 p = 'AGENTS.md'
 lines = read(p).split('\n')
-kept = [l for l in lines if 'desktop/src-tauri/fixtures' not in l]
+kept = [l for l in lines if 'desktop/src-tauri' not in l]
 write(p, '\n'.join(kept))
-print(f'  ✓ AGENTS.md: 删 {len(lines)-len(kept)} 行')
+print(f'  ✓ AGENTS.md: 删 {len(lines)-len(kept)} 行(桌面壳 cargo 纪律)')
 
 # ---- 5) scripts/gen.sh:desktop 子命令改指新链 ----
 p = 'scripts/gen.sh'
@@ -228,6 +229,14 @@ if m:
     print('  ✓ scripts/gen.sh: desktop 子命令改指 gen-desktop-wails.sh')
 else:
     print('  · scripts/gen.sh: 未找到 desktop 分支(可能已改)')
+
+# ---- 6) scripts/release.sh:兜底检查(本分支已改成 Go 链;若还是 cargo 就报错让人工处理)----
+p = 'scripts/release.sh'
+s = read(p)
+if 'desktop/src-tauri' in s:
+    print('  ✗ scripts/release.sh 仍引用 desktop/src-tauri —— 手工把它改成 go vet/test/build')
+    sys.exit(1)
+print('  ✓ scripts/release.sh: 桌面 preflight 已是 Go 链')
 PYEDIT
 [ $? -eq 0 ] || die "文件改动失败(可能已部分执行,git checkout -- . 可还原)"
 
