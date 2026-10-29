@@ -192,6 +192,11 @@ case "$GOOS" in
       echo "SETUP: $SETUP"
     elif [ "$PLATFORM" != "windows-x86_64" ]; then
       echo "publish: 非 x86_64 目标不产 NSIS 安装包(arm64 用便携 zip / 系统模拟安装)"
+    elif [ "${GAH_DESKTOP_REQUIRE_NSIS:-}" = "1" ]; then
+      # 发行路径上缺 makensis = 发出去的版本没有首装包(用户只能靠 zip 解压),
+      # 静默跳过会让这件事直到 merge job 的 fail_on_unmatched_files 才暴露,甚至更晚。
+      echo "publish: 缺 makensis 而本次要求产 NSIS 安装包(GAH_DESKTOP_REQUIRE_NSIS=1)" >&2
+      exit 1
     else
       echo "publish: 本机无 makensis —— 跳过 NSIS 安装包(CI 的 windows runner 会产出)"
     fi
