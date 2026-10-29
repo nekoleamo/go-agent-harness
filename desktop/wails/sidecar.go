@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -66,18 +67,8 @@ func startSidecar(bin, addr, token string) (*sidecarProc, error) {
 		"GAH_WEB_ADDR="+addr,     // 本次私有端口
 		"GAH_WEB_PARENT_WATCH=1", // 父死子死(见文件头)
 	)
-	// 初始工作目录:真机上壳的 cwd 可能是 C:\WINDOWS\system32 或 /,让 gah 以它为
-	// 「默认工作区」会莫名其妙。用一个可预期的家目录;显式 env 优先。
-	cwd := os.Getenv("GAH_DESKTOP_CWD")
-	if cwd == "" {
-		if h, err := os.UserHomeDir(); err == nil {
-			cwd = h
-		}
-	}
-	if cwd != "" {
-		if st, err := os.Stat(cwd); err == nil && st.IsDir() {
-			cmd.Dir = cwd
-		}
+	if cwd := defaultWorkspace(); cwd != "" {
+		cmd.Dir = cwd
 	}
 
 	// stdin 管道:壳持有写端并**永不关闭**,直到进程退出(OS 自动关)。
@@ -194,4 +185,38 @@ func (s *sidecarProc) wait() error {
 	err := s.cmd.Wait()
 	s.exited.Store(true)
 	return err
+}
+
+// defaultWorkspace sidecar 的初始工作目录(gah 把它当「默认工作区」)。
+//
+// 与旧 Rust 壳同口径:能用 shell 自己的 cwd 就用(用户从终端/文件管理器在哪个目录启动,
+// 就默认在哪个目录干活),但**系统目录一律拒绝** —— 真机上壳的 cwd 常常是
+// `C:\WINDOWS\system32` 或 `/`,拿它当工作区会莫名其妙。显式 GAH_DESKTOP_CWD 优先。
+func defaultWorkspace() string {
+	if v := os.Getenv("GAH_DESKTOP_CWD"); v != "" {
+		if st, err := os.Stat(v); err == nil && st.IsDir() {
+			return v
+		}
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		if !isSystemDir(cwd) {
+			return cwd
+		}
+	}
+	if h, err := os.UserHomeDir(); err == nil {
+		return h
+	}
+	return ""
+}
+
+// isSystemDir 判断目录是不是系统目录(不能当工作区)。
+func isSystemDir(dir string) bool {
+	clean := filepath.Clean(dir)
+	if runtime.GOOS == "windows" {
+		if root := os.Getenv("SystemRoot"); root != "" {
+			return strings.HasPrefix(strings.ToLower(clean), strings.ToLower(filepath.Clean(root)))
+		}
+		return false
+	}
+	return clean == "/" || strings.HasPrefix(clean, "/System") || strings.HasPrefix(clean, "/usr")
 }

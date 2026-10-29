@@ -2,7 +2,7 @@
 // 根组件:SSE 消费(历史重放 + 实时)+ REST 上行 + 四槽位装配(registry.ts 契约 v1)。
 import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, provide, ref, watch } from 'vue'
 import { api } from './api'
-import { probeAsync } from './desktop'
+import { installExternalLinkGuard, probeAsync } from './desktop'
 import type { AskConfirm } from './types'
 import { interventionOf, latestErrorOf, type Intervention } from './intervention'
 import { consume, isUsage, msgsOfEvents, newModel, type StreamModel } from './sse'
@@ -1544,6 +1544,9 @@ onMounted(async () => {
   // 桌面壳:启动时探一次异步命令通道(结果只写壳日志,见 desktop.ts 的 probeAsync)。
   // 真机上出现过 async 命令连函数体都没进,这一行是分辨「任务没被调度」与「请求没到」的证据。
   probeAsync()
+  // 桌面壳:外链交给系统浏览器,别把窗口导航走(桌面窗口只有一个 webview,
+  // 导航走就再也回不到 gah;浏览器里什么也不做)。见 desktop.ts 的 installExternalLinkGuard。
+  installExternalLinkGuard()
   // A-5#124:系统通知权限只在**用户手势**里申请(无手势的自动请求会被浏览器静默拒),
   // 首次交互触发一次;非本机来源内部直接跳过(不弹权限条、不报错)。
   window.addEventListener('pointerdown', onFirstGesture, { once: true, capture: true })

@@ -97,6 +97,8 @@ func (c *controlPlane) routes() http.Handler {
 	mux.HandleFunc("/shell/notify-test", c.guard(c.handleNotifyTest))
 	mux.HandleFunc("/shell/diag", c.guard(c.handleDiag))
 	mux.HandleFunc("/shell/session-window", c.guard(c.handleSessionWindow))
+	mux.HandleFunc("/shell/open-external", c.guard(c.handleOpenExternal))
+	mux.HandleFunc("/shell/reveal", c.guard(c.handleReveal))
 	mux.HandleFunc("/shell/backup", c.guard(c.handleBackup))
 	return mux
 }
@@ -229,6 +231,7 @@ func (c *controlPlane) handleExportSave(w http.ResponseWriter, r *http.Request) 
 		Title    string `json:"title"`
 		Filename string `json:"filename"`
 		Content  string `json:"content"`
+		Open     bool   `json:"open"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad json: " + err.Error()})
@@ -259,6 +262,12 @@ func (c *controlPlane) handleExportSave(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	shellLogf("导出: 已写入 %s(%d 字节)", p, len(req.Content))
+	// 写完顺手定位:用户点「导出」通常是马上要用那个文件,还得自己找一遍就是摩擦。
+	if req.Open {
+		if err := revealFile(p); err != nil {
+			shellLogf("导出后定位失败(不影响导出): %v", err)
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"path": p})
 }
 
@@ -297,6 +306,34 @@ func (c *controlPlane) handleSessionWindow(w http.ResponseWriter, _ *http.Reques
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"id": id})
+}
+
+// handleOpenExternal 用系统浏览器打开外链(页面里点外链都走这里,别把窗口导航走)。
+func (c *controlPlane) handleOpenExternal(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		URL string `json:"url"`
+	}
+	_ = readJSON(r, &req)
+	if err := c.sh.openExternal(req.URL); err != nil {
+		shellLogf("打开外链失败: %v", err)
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleReveal 在文件管理器里定位文件(导出完成后「在文件夹中显示」)。
+func (c *controlPlane) handleReveal(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Path string `json:"path"`
+	}
+	_ = readJSON(r, &req)
+	if err := revealFile(req.Path); err != nil {
+		shellLogf("定位文件失败: %v", err)
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // handleDiag 返回诊断信息(日志路径 + 尾部):真机反馈问题时,让用户能一键拿到关键线索。

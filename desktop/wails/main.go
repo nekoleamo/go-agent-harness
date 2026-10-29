@@ -149,8 +149,9 @@ func (s *shell) boot() {
 	s.dataRoot = plan.dataRoot
 	s.portable = plan.portable
 	for _, n := range plan.notices {
-		// TODO(notice): 便携模式说明应走系统通知;通知服务迁移在本批之后。
-		shellLogf("提示: %s", n)
+		// 便携形态说明「一次讲清就够」:走系统通知,拿不到通知权限就退回日志
+		// (不能因为通知不可用就把这条事实吞掉 —— 用户需要知道数据在程序目录里)。
+		s.announce("gah 便携模式", n)
 	}
 	sc, err := startSidecar(plan.bin, s.addr, s.gahToken)
 	if err != nil {
@@ -289,4 +290,12 @@ func trayIcon() []byte {
 		return icons.SystrayMacTemplate
 	}
 	return icons.SystrayLight
+}
+
+// announce 尽力用系统通知告诉用户一件事;通知不可用时退回壳日志(并留一行说明)。
+func (s *shell) announce(title, body string) {
+	shellLogf("提示: %s — %s", title, body)
+	if err := s.sendNotification(title, body); err != nil {
+		shellLogf("(通知不可用,已只写日志: %v)", err)
+	}
 }

@@ -175,6 +175,48 @@ export async function pickDirectory(title = '选择工作区目录'): Promise<st
   }
 }
 
+// openExternal 用系统浏览器打开外链(壳专属)。
+//
+// 为什么必须走壳:桌面窗口只有一个 webview,页面里点外链会把这个窗口**导航走**,
+// 用户就再也回不到 gah 了(旧 Rust 壳为此有 openURLInBrowser + 导航白名单两道)。
+// 浏览器里直接开新标签页。
+export async function openExternal(raw: string): Promise<void> {
+  if (isWailsShell) {
+    try {
+      await ctlFetch('/shell/open-external', { method: 'POST', body: { url: raw } })
+      return
+    } catch (e) {
+      shellLog('打开外链失败: ' + (e as Error).message)
+      return
+    }
+  }
+  if (typeof window !== 'undefined') window.open(raw, '_blank', 'noopener,noreferrer')
+}
+
+// installExternalLinkGuard 让页面里所有外链都交给系统浏览器。
+//
+// 为什么放在前端而不是壳的导航钩子:Wails v3.0 没有公开「导航前回调」的 API
+// (旧 Rust 壳用的是 tauri 的 on_navigation)。而页面是我们自己的,在 document 上接管
+// 点击即可达到同样效果 —— 唯一的差异是它挡不住 JS 主动改 location(那种情况由
+// 「窗口导航走后用户回不来」兜底为一次重启即可)。
+export function installExternalLinkGuard(): void {
+  if (!isDesktop || typeof document === 'undefined') return
+  document.addEventListener(
+    'click',
+    (ev) => {
+      const a = (ev.target as HTMLElement | null)?.closest?.('a[href]') as HTMLAnchorElement | null
+      if (!a) return
+      const href = a.getAttribute('href') || ''
+      if (!/^https?:\/\//i.test(href)) return
+      // 同源(本机壳服务)的内部链接照常走前端路由。
+      if (href.startsWith(location.origin)) return
+      ev.preventDefault()
+      void openExternal(href)
+    },
+    true,
+  )
+}
+
 // shellLog 把页面侧诊断写进壳日志(gah-shell.log,与壳侧/sidecar stderr 同一份文件)。
 // 桌面版没有终端:失败必须自证,否则真机上只剩「点了没反应」。非壳环境静默丢弃。
 export function shellLog(msg: string): void {
@@ -287,16 +329,13 @@ export async function updateState(): Promise<UpdateSnapshot | null> {
 // 为什么不让 WebView 自己下载:壳的窗口没注册下载委托 ⇒ `<a download>` 点了什么都不会发生
 // (桌面端导出静默失效的根因)。
 // 失败回空串(调用方据此报错)。
-// shortcut: Go 壳暂未实现「写完后在文件管理器里高亮」那一步(旧壳的 open 参数),
-// 迁移完成前桌面端导出只落盘、不弹目录。
 export async function saveExport(name: string, text: string, open: boolean): Promise<string> {
   if (isWailsShell) {
     try {
       const r = (await ctlFetch('/shell/export-save', {
         method: 'POST',
-        body: { filename: name, content: text },
+        body: { filename: name, content: text, open },
       })) as { path?: string }
-      if (open) shellLog('导出: 已写入(本版本不自动打开所在目录)')
       return typeof r?.path === 'string' ? r.path : ''
     } catch (e) {
       shellLog('导出(控制面)失败: ' + (e as Error).message)

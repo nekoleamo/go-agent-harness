@@ -135,6 +135,8 @@ func (p *noticePoller) notify(sent *int, title, body string) {
 		return
 	}
 	shellLogf("通知已发: %s", title)
+	// Dock 弹一下:通知被静音/聚焦助手挡掉时,这是唯一还剩的提示通道(mac 专有,别处空实现)。
+	bounceDock()
 }
 
 // runTurnWatch 把「回合结束」也接进同一次轮询(见文件头:一次 sleep、两个信号源)。
