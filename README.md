@@ -76,6 +76,7 @@ Go 实现的编程代理 Agent Harness:以**单静态二进制**交付全部能�
 | macOS(Apple 芯片) | `gah-<版本>-aarch64-apple-darwin.app.zip`(首装另有 `.dmg`) | 打开后把 gah 拖进「应用程序」 |
 | Windows(64 位) | `gah-<版本>-setup.exe` | 双击安装(仅当前用户,不要求管理员) |
 | Windows 便携版 | `gah-<版本>-portable-x86_64-pc-windows-msvc.zip` | **不安装**:解压到任意可写目录,双击 `gah-desktop.exe`(见下) |
+| Windows on ARM | `gah-<版本>-portable-aarch64-pc-windows-msvc.zip` | 同上(**arm64 不单独出安装器**:用便携 zip,或让系统模拟运行 x64 安装器) |
 | 命令行版(任意平台) | `go-agent-harness_<版本>_<系统>_<架构>.tar.gz` | 解压即用的单文件二进制(另附 `.zip` 与 `checksums.txt`) |
 
 > **首次打开会被系统拦一下**(本应用未购买 Apple 开发者证书 / 微软代码签名证书 —— 程序本身完好,

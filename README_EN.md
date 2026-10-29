@@ -75,6 +75,7 @@ Grab the right file from [Releases](https://github.com/nekoleamo/go-agent-harnes
 | macOS (Apple silicon) | `gah-<version>-aarch64-apple-darwin.app.zip` (optionally `.dmg` for the first install) | open, then drag gah into /Applications |
 | Windows (64-bit) | `gah-<version>-setup.exe` | double-click to install (current user, no admin) |
 | Windows portable | `gah-<version>-portable-x86_64-pc-windows-msvc.zip` | **no install**: unzip anywhere writable, run `gah-desktop.exe` (see below) |
+| Windows on ARM | `gah-<version>-portable-aarch64-pc-windows-msvc.zip` | same (**no separate ARM64 installer**: use the portable zip, or let Windows emulate the x64 installer) |
 | CLI (any platform) | `go-agent-harness_<version>_<os>_<arch>.tar.gz` | single binary, unzip and run (also `.zip` + `checksums.txt`) |
 
 > **The first launch is blocked once by the OS** (the app ships without an Apple Developer

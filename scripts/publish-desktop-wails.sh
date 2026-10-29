@@ -46,6 +46,13 @@ VERSION="${RELEASE_VERSION:-$(git describe --tags 2>/dev/null | sed 's/^v//')}"
 [ -n "$VERSION" ] || { echo "publish: 取不到版本号(设 RELEASE_VERSION)"; exit 1; }
 KEY="${GAH_DESKTOP_UPDATE_KEY:-$HOME/.gah-desktop/update.key}"
 
+# winpath:把 git-bash(MSYS)路径转成 Windows 原生形态,交给 Windows 程序(windows 上无 cygpath 时原样返回)。
+# 为什么要它:同一个 makensis 命令,`C:/a/...` 在 x86_64 runner 上能认,在 arm64 runner 上报
+# `no files found`(2026-10-30 实测);反过来原生 `C:\a\...` 两边都认。
+winpath() {
+  if command -v cygpath >/dev/null 2>&1; then cygpath -w "$1"; else printf '%s' "$1"; fi
+}
+
 # sha256_of:sha256sum(Linux)优先,否则 shasum(mac)。输出「摘要  文件」两列。
 sha256_of() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi
@@ -169,15 +176,22 @@ case "$GOOS" in
     ART="$OUT/gah-$VERSION-$TRIPLE.zip"
     go run ./desktop/wails/cmd/desktopman pack --in "$EXE" --entry gah-desktop.exe --out "$ART"
 
-    # ② 首次安装:NSIS setup.exe(按用户安装,不弹 UAC)。makensis 只在 Windows/CI 上有。
-    if command -v makensis >/dev/null 2>&1; then
+    # ② 首次安装:NSIS setup.exe(按用户安装,不弹 UAC)。
+    #    **只在 x86_64 目标上产**:安装器本身就是 x64 的(arm64 机器靠系统模拟运行),而在
+    #    arm64 runner 上的 makensis 是另一份发行(2026-10-30 实测:它对 `C:/a/...` 形式的绝对
+    #    路径报 `no files found`,同一条命令在 x86_64 runner 上正常)—— 给不存在的产物多一次
+    #    失败机会没有意义。arm64 用户走便携 zip 或模拟安装 x64 安装器(README 已写明)。
+    if [ "$PLATFORM" = "windows-x86_64" ] && command -v makensis >/dev/null 2>&1; then
       SETUP="$OUT/gah-$VERSION-setup.exe"
       NUMVER="$(num_version "$VERSION")" || exit 1
+      [ -f "$ROOT/$EXE" ] || { echo "publish: 壳产物缺失 $ROOT/$EXE(NSIS 无从打包)"; exit 1; }
       makensis -V2 -DVERSION="$VERSION" -DNUMVERSION="$NUMVER" \
-        -DAPPEXE="$ROOT/$EXE" -DOUTFILE="$SETUP" \
-        -DICONDIR="$ROOT/desktop/wails/installer" \
+        -DAPPEXE="$(winpath "$ROOT/$EXE")" -DOUTFILE="$(winpath "$SETUP")" \
+        -DICONDIR="$(winpath "$ROOT/desktop/wails/installer")" \
         desktop/wails/installer/installer.nsi
       echo "SETUP: $SETUP"
+    elif [ "$PLATFORM" != "windows-x86_64" ]; then
+      echo "publish: 非 x86_64 目标不产 NSIS 安装包(arm64 用便携 zip / 系统模拟安装)"
     else
       echo "publish: 本机无 makensis —— 跳过 NSIS 安装包(CI 的 windows runner 会产出)"
     fi
