@@ -49,6 +49,7 @@ jobs:
       - name: 构建 + 打包 + 签名 + 清单
         env:
           GAH_DESKTOP_UPDATE_KEY: ${{ secrets.GAH_DESKTOP_UPDATE_KEY }}
+          GAH_DESKTOP_UPDATE_PUBKEY: ${{ secrets.GAH_DESKTOP_UPDATE_PUBKEY }}
           RELEASE_NOTES: ${{ github.event.head_commit.message }}
           RELEASE_VERSION: ${{ github.ref_name }}
         run: |
@@ -65,8 +66,18 @@ jobs:
           path: dist-desktop-wails/darwin-aarch64/
           if-no-files-found: error
 
-  windows-x86_64:
-    runs-on: windows-latest
+  windows:
+    # 两个 Windows 目标:升级产物是**同一个单 exe zip**,arm64 需要 arm runner(托管镜像
+    # windows-11-arm)。NSIS 安装包只在 x86_64 上做(x86 安装器在 arm64 上靠系统模拟运行)。
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - plat: windows-x86_64
+            runner: windows-latest
+          - plat: windows-arm64
+            runner: windows-11-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -83,13 +94,15 @@ jobs:
         run: |
           bash scripts/gen-extplugins.sh
           bash scripts/gen-web.sh
-      - name: 装 NSIS(首次安装包;updater 用的是单 exe zip,不依赖它)
+      - name: 装 NSIS(仅 x86_64 需要)
+        if: matrix.plat == 'windows-x86_64'
         shell: powershell
         run: choco install nsis --no-progress -y
       - name: 构建 + 打包 + 签名 + 清单
         shell: bash
         env:
           GAH_DESKTOP_UPDATE_KEY: ${{ secrets.GAH_DESKTOP_UPDATE_KEY }}
+          GAH_DESKTOP_UPDATE_PUBKEY: ${{ secrets.GAH_DESKTOP_UPDATE_PUBKEY }}
           RELEASE_NOTES: ${{ github.event.head_commit.message }}
           RELEASE_VERSION: ${{ github.ref_name }}
         run: |
@@ -98,15 +111,15 @@ jobs:
           export GAH_DESKTOP_UPDATE_KEY="$RUNNER_TEMP/update.key"
           export RELEASE_VERSION="${RELEASE_VERSION#desktop-wails-v}"
           export RELEASE_VERSION="${RELEASE_VERSION#v}"
-          bash scripts/publish-desktop-wails.sh windows-x86_64
+          bash scripts/publish-desktop-wails.sh ${{ matrix.plat }}
       - uses: actions/upload-artifact@v4
         with:
-          name: desktop-wails-windows-x86_64
-          path: dist-desktop-wails/windows-x86_64/
+          name: desktop-wails-${{ matrix.plat }}
+          path: dist-desktop-wails/${{ matrix.plat }}/
           if-no-files-found: error
 
   merge-and-publish:
-    needs: [darwin-aarch64, windows-x86_64]
+    needs: [darwin-aarch64, windows]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:
