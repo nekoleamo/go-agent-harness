@@ -27,6 +27,7 @@ import (
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/icons"
+	"github.com/wailsapp/wails/v3/pkg/services/notifications"
 )
 
 // version 由构建时 -ldflags "-X main.version=..." 注入(发行版跟 tag 走)。
@@ -43,6 +44,9 @@ type shell struct {
 	mu       sync.Mutex  // 保护 sc(tray 退出与 OnShutdown 会并发取)
 	sc       *sidecarProc
 	quitting atomic.Bool
+	notifier *notifier // 系统通知(未装配时为 nil,调用方需容忍)
+
+	noticeSvcMissing atomic.Bool // 宿主未装配 ctx.notices:只记一次
 }
 
 func main() {
@@ -57,9 +61,20 @@ func main() {
 	sh := &shell{addr: addr, gahToken: os.Getenv("GAH_WEB_TOKEN")}
 	shellLogf("gah web 地址: %s(token 模式: %v)", addr, sh.gahToken != "")
 
+	// 通知服务:macOS 只在 .app 内可注册(见 notify.go 的说明),否则整个应用起不来。
+	var svcs []application.Service
+	if notificationsSupported() {
+		nf := &notifier{svc: notifications.New()}
+		sh.notifier = nf
+		svcs = append(svcs, application.NewService(nf.svc))
+	} else {
+		shellLogf("通知: 未打包运行(macOS 需要 bundle identifier),本轮禁用系统通知")
+	}
+
 	app := application.New(application.Options{
 		Name:        "gah",
 		Description: "gah 桌面壳",
+		Services:    svcs,
 		Mac: application.MacOptions{
 			// 关掉主窗口不退出:gah 驻留托盘(后台任务/计划仍在跑),与旧壳一致。
 			ApplicationShouldTerminateAfterLastWindowClosed: false,
@@ -166,6 +181,7 @@ func (s *shell) boot() {
 	s.window.SetURL(u)
 	s.window.Show()
 	s.window.Focus()
+	go s.startNoticePoller()
 }
 
 // shellURL 主窗口地址:`?shell=desktop` 让 web UI 走桌面壳布局;fragment 里带控制面

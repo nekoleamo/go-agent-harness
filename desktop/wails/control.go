@@ -91,6 +91,7 @@ func (c *controlPlane) routes() http.Handler {
 	mux.HandleFunc("/shell/autostart", c.guard(c.handleAutostart))
 	mux.HandleFunc("/shell/update-state", c.guard(c.handleUpdateState))
 	mux.HandleFunc("/shell/update-check", c.guard(c.handleUpdateCheck))
+	mux.HandleFunc("/shell/notify-test", c.guard(c.handleNotifyTest))
 	return mux
 }
 
@@ -287,6 +288,17 @@ func (c *controlPlane) handleAutostart(w http.ResponseWriter, r *http.Request) {
 // 上线路径是 wails updater(zip/单文件 + ed25519),替换旧的 latest.json 双源方案。
 func (c *controlPlane) handleUpdateState(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "idle", "version": version})
+}
+
+// handleNotifyTest 发一条测试通知:真机上验「通知到底有没有送达」的唯一手段
+// (通知失败在界面上完全不可见,只能看这条端点返回的真实错误)。
+func (c *controlPlane) handleNotifyTest(w http.ResponseWriter, _ *http.Request) {
+	err := c.sh.sendNotification("gah 通知测试", "看到这条说明系统通知通道是通的")
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (c *controlPlane) handleUpdateCheck(w http.ResponseWriter, _ *http.Request) {
