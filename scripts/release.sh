@@ -135,6 +135,21 @@ newest_mtime() {
     | sort -rn | head -1 || echo 0
 }
 
+# gh_run_field <run> <field>:查 run 的单个字段,瞬时空结果重试。
+# 2026-10-30 发 v0.8.0 时两次假红实测:run 刚落 completed 的那几十秒里,
+# `gh run view --json jobs` / `--json conclusion` 会偶发回空或直接失败,
+# 而紧接着重跑同一条命令就正常。一次 API 抖动不等于「CI / workflow 红了」——
+# 这条门的职责是拦真红;把抖动记成红会逼人去手工判断,也教人不再相信这道门。
+gh_run_field() {
+  local run="$1" field="$2" v="" i
+  for i in 1 2 3 4 5; do
+    v="$(gh run view "$run" --repo "$GH_REPO" --json "$field" -q ".$field" 2>/dev/null || true)"
+    [ -n "$v" ] && { printf '%s' "$v"; return 0; }
+    sleep 5
+  done
+  printf 'unknown'
+}
+
 # ───────────────────────────── preflight ─────────────────────────────
 # tag 之前的本地闸。这一步拦的是「本地绿是假的 / 本地没绿」。
 preflight() {
@@ -219,11 +234,11 @@ wait_ci() {
   while :; do
     [ "$(date +%s)" -lt "$deadline" ] || die "等 CI 超时(${TIMEOUT}s)。别急着打 tag —— 本次已有两版是把红 CI 发出去的"
     local status conclusion
-    status="$(gh run view "$run" --repo "$GH_REPO" --json status -q .status 2>/dev/null || echo unknown)"
+    status="$(gh_run_field "$run" status)"
     [ "$status" = completed ] && break
     sleep 20
   done
-  conclusion="$(gh run view "$run" --repo "$GH_REPO" --json conclusion -q .conclusion 2>/dev/null || echo unknown)"
+  conclusion="$(gh_run_field "$run" conclusion)"
 
   # 逐 job 判绿 —— 「workflow 成功」在有 job 被 skip 时也会为真。
   #
@@ -268,8 +283,8 @@ do_tag() {
   run="$(gh run list --repo "$GH_REPO" --commit "$sha" --json databaseId,workflowName \
          -q '[.[] | select(.workflowName == "ci")][0].databaseId' 2>/dev/null || true)"
   [ -n "$run" ] || die "本次提交还没有 CI run —— 先 push master 并跑完 CI(release.sh wait)"
-  status="$(gh run view "$run" --repo "$GH_REPO" --json status -q .status 2>/dev/null || echo unknown)"
-  conclusion="$(gh run view "$run" --repo "$GH_REPO" --json conclusion -q .conclusion 2>/dev/null || echo unknown)"
+  status="$(gh_run_field "$run" status)"
+  conclusion="$(gh_run_field "$run" conclusion)"
   [ "$status" = completed ] && [ "$conclusion" = success ] \
     || die "master 的 CI 还没绿(status=$status conclusion=$conclusion)。**tag 一推产物就公开** —— 先跑 release.sh wait"
 
@@ -304,11 +319,11 @@ watch_release() {
     [ -n "$run" ] || die "$w 没找到 tag $TAG 的 run"
     while :; do
       [ "$(date +%s)" -lt "$deadline" ] || die "等 $w 超时(${TIMEOUT}s)"
-      status="$(gh run view "$run" --repo "$GH_REPO" --json status -q .status 2>/dev/null || echo unknown)"
+      status="$(gh_run_field "$run" status)"
       [ "$status" = completed ] && break
       sleep 20
     done
-    conclusion="$(gh run view "$run" --repo "$GH_REPO" --json conclusion -q .conclusion 2>/dev/null || echo unknown)"
+    conclusion="$(gh_run_field "$run" conclusion)"
     if [ "$conclusion" = success ]; then say "    OK   $w (run $run)"; else say "    红   $w = $conclusion" >&2; bad=1; fi
   done
   [ "$bad" = 0 ] || die "有 workflow 红。修好可用 workflow_dispatch 补发,或按方案 §5 的红线人工判断"
