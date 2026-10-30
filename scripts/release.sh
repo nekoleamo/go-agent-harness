@@ -226,10 +226,20 @@ wait_ci() {
   conclusion="$(gh run view "$run" --repo "$GH_REPO" --json conclusion -q .conclusion 2>/dev/null || echo unknown)"
 
   # 逐 job 判绿 —— 「workflow 成功」在有 job 被 skip 时也会为真。
-  local j jc bad=0
+  #
+  # 空结果要**重试**再判红(2026-10-30 实测):run 刚落 completed 的那几十秒里,
+  # `gh run view --json jobs` 偶尔回一个缺项的列表,`|| echo missing` 会把它记成
+  # 「红 test-macos = missing」,而 `gh run view --json jobs` 重跑一次就是 success。
+  # 一次瞬时的 API 抖动不该等于「CI 红了」—— 这条门要拦的是真红,不是网络。
+  local j jc bad=0 tries
   for j in "${CI_JOBS[@]}"; do
-    jc="$(gh run view "$run" --repo "$GH_REPO" --json jobs \
-           -q ".jobs[] | select(.name == \"$j\") | .conclusion" 2>/dev/null || echo missing)"
+    jc=""
+    for tries in 1 2 3; do
+      jc="$(gh run view "$run" --repo "$GH_REPO" --json jobs \
+             -q ".jobs[] | select(.name == \"$j\") | .conclusion" 2>/dev/null)"
+      [ -n "$jc" ] && break
+      sleep 5
+    done
     if [ "$jc" = success ]; then
       say "    OK   $j"
     else
