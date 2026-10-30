@@ -236,6 +236,9 @@ func (s *shell) boot() {
 	s.window.SetURL(u)
 	s.window.Show()
 	s.window.Focus()
+	// 壳与 sidecar 是两个二进制,各有自己的 -X main.version:启动就把两份版本对一遍
+	// (2026-10-30 v0.8.0 只给壳注了版本号 ⇒ Web 底栏报 vdev)。
+	s.logSidecarVersion()
 	go s.startNoticePoller()
 	go s.startHealthWatch()
 	// 升级冒烟脚本入口(旧壳同款):启动后自动走一次检查,让「发出去的包能不能升级」

@@ -134,11 +134,32 @@ EXE="$SHELL_MOD/build/gah-desktop"
 # 而不是让 go build 抛一堆 embed 路径错误。
 [ -d web/dist ] || { echo "publish: 缺 web/dist —— 先跑 bash scripts/gen-web.sh"; exit 1; }
 
-echo "[1/4] sidecar: $GOOS/$GOARCH"
+echo "[1/4] sidecar: $GOOS/$GOARCH($VERSION)"
 mkdir -p "$BIN_DIR"
 SIDECAR="$BIN_DIR/gah-$TRIPLE"
 [ "$GOOS" = "windows" ] && SIDECAR="$SIDECAR.exe"
-CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH go build -trimpath -ldflags "-s -w" -o "$SIDECAR" ./cmd/gah
+# 版本号必须同时烧进 sidecar:壳与内嵌的 gah 是两个二进制,只给壳注入时
+# 托盘「关于 gah」报 0.8.0、Web 底栏报 **vdev**(2026-10-30 v0.8.0 实测事故,
+# 用户报「下载的便携版版本号显示 vdev」)。
+SIDE_LD="-s -w -X main.version=$VERSION"
+CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH go build -trimpath \
+  -ldflags "$SIDE_LD" -o "$SIDECAR" ./cmd/gah || exit 1
+# 版本核验:同一平台就**真跑一次** `--version`(CI 上 macos runner 建 darwin、windows runner
+# 建 windows,都拿到真答案);交叉编译的产物在本机执行不了,那半边交给运行期核对
+# (壳启动时 logSidecarVersion 对账 + 「关于」两个版本都摊出来,WARN 不静默)。
+# 为什么不扫二进制找版本串:版本号(如 0.8.1)可能恰好出现在依赖或嵌入数据里,
+# 漏注入也能 grep 到 —— 2026-10-30 实测过,那种护栏会假通过。
+if [ "$GOOS/$GOARCH" = "$(go env GOOS)/$(go env GOARCH)" ]; then
+  got="$("$SIDECAR" --version 2>/dev/null | awk '{print $2}')"
+  if [ "${got#v}" != "${VERSION#v}" ]; then
+    echo "publish: sidecar 版本不对(期望 $VERSION,实际 ${got:-<空>}):$SIDECAR" >&2
+    echo "         壳会报对、sidecar 报 dev —— 用户看到的是「版本号不对」,不发这种包。" >&2
+    exit 1
+  fi
+  echo "  版本核验: --version → $got"
+else
+  echo "  版本核验: 交叉编译($GOOS/$GOARCH),本机执行不了 —— 由壳启动时的版本对账兜底"
+fi
 
 echo "[2/4] 壳 + 内嵌 sidecar"
 mkdir -p "$SHELL_MOD/embed"

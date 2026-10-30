@@ -6,9 +6,11 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -132,6 +134,40 @@ func (s *shell) spawnNewInstance() {
 	shellLogf("新实例: 已启动 pid=%d(%s)", cmd.Process.Pid, exe)
 }
 
+// sidecarVersion 读一次 sidecar 自报的版本(`/api/state.version`)。
+//
+// 为什么要它:壳与内嵌的 gah 是**两个二进制**,各有自己的 `-X main.version`。
+// 2026-10-30 v0.8.0 就只给壳注了版本号 ⇒ 托盘「关于 gah」说 0.8.0、Web 底栏说
+// **vdev**,用户报的是「版本号不对」。构建期已有断言(publish/gen 脚本扫版本串),
+// 这里补的是**运行期看得见**:真出现不一致时,壳日志与「关于」里都要写明是哪个不一致。
+func (s *shell) sidecarVersion() string {
+	body, ok := s.getState()
+	if !ok {
+		return ""
+	}
+	var st struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(body, &st); err != nil {
+		return ""
+	}
+	return st.Version
+}
+
+// logSidecarVersion 启动时把两个版本记进壳日志(不一致就 WARN,不静默)。
+func (s *shell) logSidecarVersion() {
+	v := s.sidecarVersion()
+	if v == "" {
+		shellLogf("版本: 壳=%s sidecar=未知(/api/state 没给出 version)", version)
+		return
+	}
+	if strings.TrimPrefix(v, "v") != strings.TrimPrefix(version, "v") {
+		shellLogf("版本不一致: 壳=%s sidecar=%s —— 内嵌 sidecar 可能漏了 -X main.version(Web 底栏显示的就是 sidecar 的那份)", version, v)
+		return
+	}
+	shellLogf("版本: %s(壳与 sidecar 一致)", v)
+}
+
 // showAbout 托盘「关于 gah」:版本 / Web 地址 / 数据根 / 自启状态 / 日志路径。
 // 窗口缩在托盘里时,这是用户最先够到的地方(旧壳同一条文案口径)。
 func (s *shell) showAbout() {
@@ -139,7 +175,19 @@ func (s *shell) showAbout() {
 	if s.autostartEnabled() {
 		autostart = "已启用"
 	}
-	text := fmt.Sprintf("gah 桌面版 %s\n\nWeb 地址:http://%s\n数据根:%s\n开机自启:%s\n日志:%s\n便携模式:%v",
-		version, s.addr, s.dataRoot, autostart, shellLogPath(), s.portable)
+	// 两个版本都摊出来:只看壳的版本会让「sidecar 报 dev」这种事一直藏在 Web 底栏里。
+	text := fmt.Sprintf("gah 桌面版 %s\n\n后台服务:%s\nWeb 地址:http://%s\n数据根:%s\n开机自启:%s\n日志:%s\n便携模式:%v",
+		version, sidecarVersionText(s.sidecarVersion(), version), s.addr, s.dataRoot, autostart, shellLogPath(), s.portable)
 	s.notifyDialog("关于 gah", text)
+}
+
+// sidecarVersionText 「关于」里的那一行;不一致时把偏差写出来(而不是只给一个数字)。
+func sidecarVersionText(sc, shell string) string {
+	if sc == "" {
+		return "gah(版本未取到)"
+	}
+	if strings.TrimPrefix(sc, "v") != strings.TrimPrefix(shell, "v") {
+		return fmt.Sprintf("gah %s(与壳 %s 不一致;这个包的内嵌 sidecar 没注入版本号)", sc, shell)
+	}
+	return "gah " + sc
 }

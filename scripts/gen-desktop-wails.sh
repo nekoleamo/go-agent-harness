@@ -31,11 +31,30 @@ SHELL_MOD="desktop/wails"
 BIN="$SHELL_MOD/binaries"
 mkdir -p "$BIN"
 
-echo "[1/2] sidecar: gah-$triple"
-CGO_ENABLED=0 go build -trimpath -o "$BIN/gah-$triple" ./cmd/gah
+# 版本号在**构建 sidecar 之前**就要有:壳与 sidecar 必须报同一个版本
+# (2026-10-30 v0.8.0 事故:sidecar 拼命令漏了 -X main.version,壳是 0.8.0、
+#  内嵌的 gah 是 dev ⇒ 托盘「关于」显示 0.8.0,Web 底栏显示 vdev)。
+VERSION="$(git describe --tags 2>/dev/null || echo dev)"
+SIDE_LD="-X main.version=$VERSION"
+[ "$MODE" = "release" ] && SIDE_LD="-s -w $SIDE_LD"
+
+# 版本核验:本机 build 一定能真跑一次(不扫二进制找版本串 —— 版本号可能恰好出现在
+# 依赖或嵌入数据里,漏注入也能 grep 到,那种护栏会假通过;2026-10-30 实测)。
+assert_sidecar_version() { # <bin> <version>
+  local got
+  got="$("$1" --version 2>/dev/null | awk '{print $2}')"
+  [ "${got#v}" = "${2#v}" ] || {
+    echo "!! sidecar 版本不对(期望 $2,实际 ${got:-<空>}):$1" >&2
+    echo "   壳会报对、sidecar 报 dev —— 用户看到的是「版本号不对」,别把它发出去。" >&2
+    exit 1
+  }
+}
+
+echo "[1/2] sidecar: gah-$triple($VERSION)"
+CGO_ENABLED=0 go build -trimpath -ldflags "$SIDE_LD" -o "$BIN/gah-$triple" ./cmd/gah || exit 1
+assert_sidecar_version "$BIN/gah-$triple" "$VERSION"
 
 echo "[2/2] 壳: $SHELL_MOD(CGO=1,$MODE)"
-VERSION="$(git describe --tags 2>/dev/null || echo dev)"
 LDFLAGS="-X main.version=$VERSION"
 TAGS=""
 if [ "$MODE" = "release" ]; then
