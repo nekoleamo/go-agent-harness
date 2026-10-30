@@ -86,9 +86,11 @@ func main() {
 	// 通知服务:macOS 只在 .app 内可注册(见 notify.go 的说明),否则整个应用起不来。
 	var svcs []application.Service
 	if notificationsSupported() {
-		nf := &notifier{svc: notifications.New()}
-		sh.notifier = nf
-		svcs = append(svcs, application.NewService(nf.svc))
+		// 分开存:wails 要的是具体类型(application.NewService 的 *T 泛型),
+		// notifier 只认接口(为了单测能注假系统)。
+		svc := notifications.New()
+		sh.notifier = &notifier{svc: svc}
+		svcs = append(svcs, application.NewService(svc))
 	} else {
 		shellLogf("通知: 未打包运行(macOS 需要 bundle identifier),本轮禁用系统通知")
 	}
@@ -151,6 +153,8 @@ func main() {
 		shellLogf("窗口几何: 恢复上次位置 %dx%d @ (%d,%d)", st.W, st.H, st.X, st.Y)
 	}
 	sh.window = app.Window.NewWithOptions(opts)
+	// 关窗口 ≠ 销毁窗口:否则召回只能靠重启(见 windowclose.go 的真机报告)。
+	sh.interceptMainWindowClose(sh.window)
 	watchWindowState(app, sh.window)
 	sh.buildTray()
 
@@ -270,13 +274,17 @@ func redactURL(raw string) string {
 	return u.String()
 }
 
-// focus 把已有窗口提到前台(托盘点击 / 二次启动)。
+// focus 把已有窗口提到前台(托盘点击 / 二次启动 / Dock 点击)。
 func (s *shell) focus() {
 	if s.window == nil {
 		return
 	}
+	// 最小化/全屏时 makeKeyAndOrderFront 提不起来 —— 先还原再提。
+	s.window.Restore()
 	s.window.Show()
 	s.window.Focus()
+	// 用户按过 Cmd+H(整个应用被隐藏)时,activate 不会自动 unhide。
+	activateApp()
 }
 
 // stopSidecar 走优雅退出链(幂等)。fromShutdown=true 表示由 OnShutdown 触发。

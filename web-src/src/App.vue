@@ -58,6 +58,7 @@ import { foreignOwner, foreignTodoText } from './frame-routing'
 import { extraPanel, slotComponent, type MetaLine, type PendingView } from './registry'
 
 import { hasSessionOverride, sessionSetCount } from './scope'
+import { exportSession as doExport, type ExportFmt } from './sessionexport'
 import { OPEN_DOC_EVENT, docRequest } from './docstore'
 import type {
   SessionEvent,
@@ -96,6 +97,7 @@ import BoardView from './components/BoardView.vue'
 import DockView from './components/DockView.vue'
 import ToastStack from './components/ToastStack.vue'
 import TabBar from './components/TabBar.vue'
+import ExportMenu from './components/ExportMenu.vue'
 import InterventionBar from './components/InterventionBar.vue'
 
 // 设置面板与会话设置面板:**按需加载**(D1 · 2026-10-21)。
@@ -415,6 +417,46 @@ async function refreshShellNotices(): Promise<void> {
 const offline = computed(() => !submitAllowed(conn.value))
 const connHint = computed(() => offlineHint(conn.value))
 const err = ref('')
+// —— 顶栏导出(第一百七十七批)——
+// 为什么需要:侧栏行内 ⤓ 只存在于「有行的会话」,而空会话按 2f6977d 不进历史列表
+// ⇒ 「导出我正在看的这个会话」在界面上根本没有入口(2026-10-30 用户实测反馈)。
+// 导出流程(浏览器下载 / 桌面壳落盘)在 sessionexport.ts 里只有一份,与侧栏共用。
+const exportMenu = ref<{ label: string; top: number; right: number } | null>(null)
+const note = ref('')
+let noteTimer: number | undefined
+function flashNote(msg: string): void {
+  note.value = msg
+  if (noteTimer) window.clearTimeout(noteTimer)
+  noteTimer = window.setTimeout(() => {
+    note.value = ''
+  }, 8000)
+}
+function openTopExport(ev: MouseEvent): void {
+  const r = (ev.currentTarget as HTMLElement).getBoundingClientRect()
+  const t = tabList.value.find((x) => x.id === curTabId())
+  exportMenu.value = {
+    label: t?.title || state.value.session?.name || '当前会话',
+    top: Math.round(r.bottom + 4),
+    right: Math.round(window.innerWidth - r.right),
+  }
+}
+function closeTopExport(): void {
+  exportMenu.value = null
+}
+function exportCurrent(fmt: ExportFmt): void {
+  // 页签 → **真实会话 id**(占位 'main' 由 sessionIdFor 解析;空串 = 主会话路由)
+  const id = sessionIdFor(curTabId())
+  closeTopExport()
+  void (async () => {
+    err.value = ''
+    try {
+      const path = await doExport(id, fmt)
+      flashNote(path ? '已导出到 ' + path : '已发起下载')
+    } catch (e) {
+      err.value = '导出失败:' + (e as Error).message
+    }
+  })()
+}
 // 侧栏数据刷新信号:会话/工作区切换后 +1,Sidebar watch 重拉列表
 const refreshKey = ref(0)
 // 全局二次确认(增删改前置):Sidebar/InputBar 经 inject('askConfirm') 触发
@@ -1578,6 +1620,7 @@ onUnmounted(() => {
   document.removeEventListener('visibilitychange', onVisibility)
   transport?.close()
   if (statsTimer) clearInterval(statsTimer)
+  if (noteTimer) window.clearTimeout(noteTimer)
 })
 </script>
 
@@ -1627,6 +1670,18 @@ onUnmounted(() => {
       <!-- 当前会话设置(第一百三十六批移来、第一百三十七批独立):从其它 gear 按钮里**单独分出**一身
             —— 它改的是「这个页签用什么」,与右侧的全局设置/任务/侧栏/视图不是一类东西。分隔线 + 常驻强调色
             + 右对齐,解决用户反馈的「配色不够突出、难以识别」。 -->
+      <!-- 导出当前页签的会话(第一百七十七批):空会话不在侧栏列表里,否则无处可导。
+           位置刻意在分隔线**之前** —— 分隔线右边的「当前会话设置」必须保持"单独靠右"
+           (布局护栏用例钉着:它是槽位最后一个子元素、前面紧着一个 sep)。
+           @click.stop 是必须的:ExportMenu 在 document 上监听 click 来关闭自己。 -->
+      <button
+        class="gear exp"
+        data-tip="导出当前页签的会话:自包含网页(.html)/ 原始事件(.jsonl)"
+        :aria-expanded="!!exportMenu"
+        @click.stop="openTopExport"
+      >
+        <span class="exp-full">导出</span><span class="exp-short">⤓</span>
+      </button>
       <span class="gear-sep" aria-hidden="true" />
       <button
         class="gear ses"
@@ -1834,6 +1889,17 @@ onUnmounted(() => {
     />
 
     <div v-if="err" class="err-banner">{{ err }}</div>
+    <div v-if="note" class="note-banner" role="status">{{ note }}</div>
+
+    <!-- 顶栏导出菜单(与侧栏共用同一个组件) -->
+    <ExportMenu
+      v-if="exportMenu"
+      :label="exportMenu.label"
+      :top="exportMenu.top"
+      :right="exportMenu.right"
+      @close="closeTopExport"
+      @pick="exportCurrent"
+    />
 
     <!-- 全局二次确认条 -->
     <ConfirmBar :pending="askRef" @confirm="onAskConfirm" @cancel="onAskCancel" />
@@ -2016,6 +2082,11 @@ onUnmounted(() => {
 .ses-short {
   display: none;
 }
+/* 窄窗(≤900px)导出入口也收成一个字形:右上角按钮组已吃紧(布局护栏 820×560 / 700×460
+   实测底栏横向溢出)。用 ⤓ 而不是隐掉 —— 「藏起来」等于「没有」(用户反馈的正是找不到)。 */
+.exp-short {
+  display: none;
+}
 @media (max-width: 900px) {
   .ses-full {
     display: none;
@@ -2023,17 +2094,35 @@ onUnmounted(() => {
   .ses-short {
     display: inline;
   }
+  .exp-full {
+    display: none;
+  }
+  .exp-short {
+    display: inline;
+  }
+  .gear.exp {
+    padding: 1px 4px;
+  }
+  /* 多了一个入口,窄窗的横向预算要跟着收:间距 8→4、按钮内边距 5→4
+     (布局护栏 820×560 / 700×460 实测:只收 ses/exp 文案后仍溢出 6/16px)。 */
+  .statusbar-slot {
+    gap: 4px;
+    padding: 4px 10px;
+  }
+  .gear {
+    padding: 1px 4px;
+  }
 }
 /* 窄窗(≤760px):底栏本就贴边,右上角按钮组再宽一点就会把底栏顶出横向溢出
    (布局护栏 test:layout 700×460 实测 60px)。收紧间距与内边距,而不是隐藏入口 ——
    用户反馈的正是「入口不够明显」,窄窗下更不能把它藏掉。 */
 @media (max-width: 760px) {
   .statusbar-slot {
-    gap: 4px;
-    padding: 4px 10px;
+    gap: 3px;
+    padding: 4px 8px;
   }
   .gear {
-    padding: 1px 5px;
+    padding: 1px 3px;
   }
   .gear-sep {
     margin: 0 1px;
@@ -2212,6 +2301,17 @@ onUnmounted(() => {
   bottom: 10px;
   color: var(--err);
   font-size: 12px;
+}
+/* 导出回执(落盘路径等中性信息):与错误横幅同位置、不同色 —— 成功也必须有回执,
+   否则用户不知道该去哪儿找文件。 */
+.note-banner {
+  position: fixed;
+  left: 12px;
+  bottom: 10px;
+  color: var(--fg-dim);
+  font-size: 12px;
+  max-width: 60vw;
+  word-break: break-all;
 }
 /* S-P1-3 断连横幅:贴在输入区上方(与提问角标同一竖列),不遮会话流 */
 .shell-banner {

@@ -148,6 +148,9 @@ CGO=0; [ "$GOOS" = "darwin" ] && CGO=1
 # 验签公钥必须烧进壳(信任根不能来自发行渠道);没给就明确警告 —— 那种包只能校验摘要。
 PUBKEY="${GAH_DESKTOP_UPDATE_PUBKEY:-}"
 LD="-s -w -X main.version=$VERSION"
+# Windows 壳必须是 GUI 子系统:不带 -H windowsgui 时 Go 编出的是 console 子系统,
+# Explorer 里双击会**多弹一个黑窗口**(wails 自己的发行模板同样是 `-ldflags="-w -s -H windowsgui"`)。
+[ "$GOOS" = "windows" ] && LD="$LD -H windowsgui"
 if [ -n "$PUBKEY" ]; then
   LD="$LD -X main.updatePubKeyHex=$PUBKEY"
 else

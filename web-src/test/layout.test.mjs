@@ -2385,6 +2385,44 @@ describe('布局护栏:整页永不滚动(第五十二/五十三批)', { skip: s
     }
   })
 
+  // 顶栏导出(第一百七十七批):侧栏行内 ⤓ 只对有行的会话存在(空会话不进历史列表),
+  // 于是「导出我正在看的会话」原本没有界面入口。这条用例钉的是三件事:
+  //   ① 顶栏真的有入口;② 菜单两项齐(自包含网页 / 原始 jsonl);
+  //   ③ 选中后**按当前页签的真实会话 id** 发请求(不是拿全局 state.session.id 顶替)。
+  // 反向验证:把顶栏按钮去掉、把菜单项少给一项、或把 id 写死成 '',本用例都会红。
+  test('顶栏导出:菜单两项齐,且按当前页签的会话 id 导出', async (t) => {
+    const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 }, acceptDownloads: true })
+    let page = null
+    try {
+      const stub = makeStub(true, false, false, false, false, 'finance', 0, false, true, 0, false, false, 'layout-main')
+      page = await open(ctx, stub, docks[0].dock)
+      const btn = page.locator('.statusbar-slot .gear:has-text("导出")')
+      assert.equal(await btn.count(), 1, '顶栏应有「导出」入口')
+
+      await btn.click()
+      await page.waitForSelector('.xmenu')
+      const items = await page.locator('.xmenu .xm-i').allInnerTexts()
+      assert.equal(items.length, 2, `导出菜单应有两项:${JSON.stringify(items)}`)
+      assert.ok(items[0].includes('导出网页'), `第一项应为自包含网页:${items[0]}`)
+      assert.ok(items[1].includes('导出 jsonl'), `第二项应为原始 jsonl:${items[1]}`)
+
+      // 主页面签在桩里改绑到 layout-main(state.session.id),导出必须落到这个 id 上
+      const [dl] = await Promise.all([
+        page.waitForEvent('download'),
+        page.click('.xmenu .xm-i:has-text("导出 jsonl")'),
+      ])
+      assert.equal(dl.suggestedFilename(), 'session-layout-main.jsonl', `导出文件名不对:${dl.suggestedFilename()}`)
+      assert.ok(dl.url().includes('/api/sessions/layout-main/export'), `导出请求路径不对:${dl.url()}`)
+      assert.equal(await page.locator('.xmenu').count(), 0, '选完一项后菜单应关闭')
+      assertInvariants(await measure(page))
+    } catch (e) {
+      await shoot(page, t.name)
+      throw e
+    } finally {
+      await ctx.close()
+    }
+  })
+
   // W1:非主会话页签**不跟随**服务端当前会话。
   //
   // 后端 /api/state 的 session.id 恒为 CurrentSession()(与 ?session= 无关),而页签是

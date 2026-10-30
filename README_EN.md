@@ -1,789 +1,346 @@
 # go-agent-harness (gah)
 
-A programming-agent harness implemented in Go, shipping **all capabilities as a single static binary** with zero runtime dependencies. It follows the "everything is a plugin" philosophy of DeepSeek Harness and Cordis: the microkernel only handles plugin load/unload and dependency management (no agent logic, no UI). Every capability lives in a plugin that the config layer (`profile → bundle → patch`) can switch on or off at will.
+> English | [简体中文](./README.md) — both files are kept in sync
 
-> English edition of [README.md](./README.md). Keep both in sync when updating. 中文版见 [README.md](./README.md)。
-> Design references: [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness) (TS/Cordis), [naamfung/dsc](https://github.com/naamfung/dsc) (Go/go-plugin/gRPC), [pi coding agent](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) (TS terminal harness).
-> - Full design: the design register (`DESIGN.md`) is a **local document and is not distributed with the repository**; see this README and the commit history for the delivery overview
-> - Plugin development: [docs/PLUGIN_DEV.md](./docs/PLUGIN_DEV.md); plugin overview: [plugins/README.md](./plugins/README.md)
+A programming-agent harness written in Go: one static binary carries TUI / Web / headless / desktop shell, with zero runtime dependencies. The design follows DeepSeek Harness's "everything is a plugin" philosophy — the micro-kernel only owns the ctx service container, the event bus, the plugin registry and the config layer; every capability is a plugin.
 
----
+- Plugin development: [docs/PLUGIN_DEV.md](./docs/PLUGIN_DEV.md) · Plugin overview: [plugins/README.md](./plugins/README.md)
+- Design notes and delivery records are local-only and not distributed; this file plus the commit history are the public delivery overview
 
-## 1. Positioning
+## 1. What it is
 
-**Removes the Node.js dependency that dsh carries**:
+- **One static binary**: `CGO_ENABLED=0`, six cross-compile targets (darwin / linux / windows on amd64 / arm64); measured 27-29 MiB single file, 12-14 MiB gzipped, gates at 30 / 15 MiB (`scripts/size-check.sh`).
+- **Zero runtime deps**: no Node runtime, no node_modules, no version managers; starts under a bare `env -i`.
+- **Fully portable**: the data root is `gah-data/` next to the binary, created on first run; `gah` + `gah-data/` is the whole deployment, upgrades replace a single file.
+- **One source, three shapes**: TUI, Web (frontend embedded via `go:embed`) and headless are three profiles of the same process; the desktop shell reuses the same sidecar.
 
-- Single static binary (`CGO_ENABLED=0`, **41–46 MiB** across five targets; compressed download ≈27–31 MiB; external plugins are embedded zstd-compressed, gate in `scripts/size-check.sh`): no node runtime, no node_modules distribution chain, no version manager;
-- `scp` one file to any machine and it works; runtime dependencies = 0 (boots fine under `env -i`);
-- Six-target cross-compilation (darwin/linux/windows × amd64/arm64);
-- Portable data root: `gah-data/` is auto-created next to the binary; the deployment directory (gah + gah-data) is self-contained; upgrades replace the single binary only.
+## 2. Features
 
-One source, three surfaces: the same gah binary hosts **TUI / Web / headless**; the Web frontend is embedded via `go:embed` (zero build at runtime).
-
-## 2. Feature highlights
-
-| Capability | Description |
+| Capability | Notes |
 |---|---|
-| **Microkernel** | `core/` holds only the ctx service container / 5-dispatch EventBus / plugin registry (topological + hot-reload) / config layer (profile→bundle→patch); zero business logic |
-| **Everything is a plugin** | Session log, LLM routing, tool pipeline, sandbox, approval, agent loop, UI — all plugins; the config layer and runtime `/plugins` toggle them at will; unloading revokes side effects |
-| **Dual UI** | TUI (bubbletea v2) and Web (Vue3, auto-opens the browser) are feature-equivalent over the same `$GAH_HOME`; plus a UI-less one-shot headless form (CI/scripts) |
-| **ReAct loop** | dsh-style turns: pre-step → llm/stream → tool/call* → turn/end; AgentLoop itself is replaceable; **the step cap is configurable** (`data.max_steps` on the bundle entry, **unlimited by default** — a cap is a heuristic, not something the harness should decide for you; set N for a hard cap, and the exhaustion error says how to relax it) |
-| **Mid-turn steering** | Pressing `Enter` while a turn runs **injects the message into the current turn** (the model sees it on its next request; the status bar shows「转向 N」); if injection is impossible it queues as「待发 N」and `Alt+Up` takes it back for editing; steered messages that never landed are returned to the queue **in order** when the turn ends (nothing is dropped, and the stream gets one line explaining it); `/` commands are **never** steered |
-| **Structured tools** | MCP-compatible JSON schema; execution pipeline pre-execute(veto) → execute → post-execute → result broadcast; structured errors fed back to the model |
-| **Unified LLM model** | Pure HTTP+SSE OpenAI-compatible adapter (DeepSeek/OpenAI/Ollama/vLLM/Kimi/llama.cpp) + Anthropic adapter (`claude-*` prefix routing) + mock adapter (CI without network); multiple providers coexist (`/provider`) |
-| **Sandbox tiers** | read-only / workspace-write (`../` traversal blocked) / full-access; switch at runtime via TUI `/sandbox` or the Web settings panel ; **unified write-path adjudication**: `file_*` arguments *and* the write targets of `shell` commands (redirections, write commands, output flags such as `-o/-O/-C/-t/--target/--prefix`, `git clone` destination) must stay inside the mode's allowed scope (out-of-scope writes and unresolvable targets such as variable-built paths are rejected); **path arguments converge in four tiers**: self-declared → built-in name table → inferred from `inputSchema` parameter names and tool-name verbs → value-level fallback (an obviously path-shaped value is adjudicated by the tool name's read/write intent; unknown intent counts as write), so *not declaring* no longer means *not adjudicating* — tools with truly no path arguments declare `PathParamsDeclared`, and proxied calls (`mcp_call`) have their inner arguments adjudicated against the real target tool — approving a prompt does **not** widen the mode; switch to full-access explicitly. **Tier linkage is visible and controllable**: approval `open`/`strict` overrides the *effective* sandbox tier (`full-access`/`read-only`), and `/sandbox`, `/approval`, the TUI status bar and the Web state all echo «declared → effective (source of the override)» instead of failing silently. To keep `open` approval (fewer prompts) while still holding the sandbox tier, turn the linkage off with **`/sandbox sync off`** or the tier-linkage checkbox in the Web settings panel (one preference either way, restored on restart; with it off the sandbox tier stands alone and enforcement follows). **Kernel-level sandbox (group 3)**: macOS seatbelt / Linux Landlock backstop writes whose *target cannot be adjudicated* (interpreter-internal writes, `ccache`/`make` wrappers, `go install`, `curl -O`, ...), and the **write-target table** keeps growing (group 2: `sort -o`, `patch -o/-d`, `cargo --target-dir`, `npm --cache`, `pip --cache-dir/-d`, `gcc -MF/-MJ`, `go test -coverprofile/-trace`, `find -exec/-delete/-fprint`, `mktemp -p`, `split`, `tar czf`, `zip`/`7z`, `cmake --prefix`); **Windows still has the cooperative layer only** (no equivalent unprivileged mechanism) |
-| **Approval tiers** | Dangerous commands (rm -rf / git push -f / sudo / chmod 777…) follow a tier: open (allow) / smart (confirm dialog — **it waits for your answer with no timeout by default**; safe-deny when no confirm channel; default) / strict (deny); while waiting the turn stays put and runs nothing further (set an upper bound with `confirm_timeout_sec` in `policy-guard` to fall back to safe-deny); preference persists |
-| **Credential isolation** | Tool subprocess env strips `*_API_KEY/_TOKEN/_SECRET`; dangerous operations safe-deny without a confirm channel |
-| **Session tabs (parallel sessions)** | Web/desktop open several sessions in one window and let them **run at the same time** (each session has its own log and its own per-session turn lock; turns inside one session are still strictly serialized): a tab bar (new / close / pulse dot while running / unread dot, capped at 8), **draft text and scroll position travel with their tab**, and **so does the session view itself** (reopening a session you already visited picks up exactly where it was — stream, trajectory, changes and per-turn TPS notes all intact, no reload and no jump to the bottom; up to 8 sessions, closing a tab does not drop the cache), and the tab set is restored after a refresh; clicking a session in the sidebar **opens it in the current tab** instead of switching the global current session (global switching stays with TUI and `/session switch`); closing a running tab lets the **turn keep running in the background** (it never claims "stopped"); **honest limits**: a background tab tells you who is running but not which step; drafts do not survive a refresh; tabs stay inside one workspace; the desktop shell's new-session-window path is kept, but tabs are the main way to work with several sessions |
-| **Streaming replies and long sessions** | Model output **appears token by token** (thinking, the tool call in flight, plus a breathing caret at the end) instead of a single "running…" line until the whole answer lands; **live output while a tool runs** (a long `shell` command streams its output as it goes — no more staring at a spinner wondering whether it is stuck; the process is **not persisted**: replays and exports do not show it and it costs no tokens); **the elapsed time is visible while a tool runs** (the call line ticks seconds, and past 30 s it adds "still running"); **tool calls are grouped per step** (a header line "step 1 · 2 tools · 1.5 s"; click it to collapse that step's tool lines); opening a long session (hundreds of messages) **no longer freezes the UI** — measured: the first paint for 800 messages went from a 7.9 s freeze to 0.1 s, with the visible part arriving first and formatting filled in as you scroll near it; **honest limits**: the in-memory formatting cache only lives within this window (a full page reload re-fetches), the live window holds 400 messages, and older turns come back by scrolling up (nothing is lost) |
-| **Per-session preferences** | Each tab can have its own **role / model / thinking level / sandbox tier / approval tier** (stored in the session metadata, so they survive switching back to a history session, a refresh, or a restart); anything not set per session **follows the global current value** (the tab shows a badge so you can tell them apart); the **current-session settings entry sits at the top-right of the status bar** (set apart on the right, always accented, with a count badge once this session really overrides the global), and **both the role and the model can be set per session there** (only models of the current provider are listed; switching provider stays a global action); the settings panel's model/thinking/sandbox/approval/role controls all change the **global default**; a session may relax its sandbox to full access, but a role declared `strict` still caps it, and a global `strict` approval keeps the sandbox read-only; fork/clone inherit all of it; plugin enablement, credentials and the fetch domain allowlist stay **global** (making those per-session turns "why does this tab have fewer tools" into a mystery) |
-| **Session management** | Per-project isolation + multi-session switching + branch tree (`/fork` `/clone` `/tree` + naming); **a reopen lands in the workspace you last used** (when the initial directory is the user home / the data root / a system directory, the most recently used workspace is restored; launching from inside a project directory is left alone); rolling summary compression over token budget (token-compress; full logs stay on disk; after a fold the summary is upgraded to a **structured** one — task / changes / decisions / open items / errors — written back asynchronously after the turn, falling back to the extractive summary if the model is unavailable or fails; turn it off with `data.llm_summary=false`); an **intervention bar** (pending approval / pending question / error / finished — one persistent place that says whether it is your turn; first item of the TUI status line, a fixed bar at the top of the Web UI); **automatic compress-and-retry for one turn when the endpoint reports a context overflow** (layered detection, exactly one retry, recorded on the notice channel; if it still fails the error names `/compact` and other ways out); **cache-hit diagnosis** (`/cache`: a fingerprint of the request prefix per request, and when it changes it names the first message that differs — that is what turns "why is the hit rate low" into a measurement instead of a guess) |
-| **Model tools** | shell / file_read-write-append-edit + file operations (list/search/mkdir/move/copy/rename/delete-with-trash) / image processing (convert/resize/crop/rotate/compress/thumbnail) / web_fetch / web_search / workflow / subagent / todo / memory / auto_plan / session_search / schedule (off by default) / job_* / skill reader / MCP bridge tools (see §5) |
-| **Tool-result split** | When one tool result exceeds the budget (20k chars by default) the **model** gets only head + elision note + tail, while the full text stays in the session record (the web UI's "expand" shows all of it) — one `cat` of a huge file no longer blows up the context. `data.limit=0` disables, `data.skip_tools` exempts tools; a positive value below 4000 is **refused at startup** (too small a budget only shreds the result, and the model then guesses what was elided — a loud error beats a silent mincing); the one-line summary is still computed from the **original** (a 100k-line log is not reported as "4 lines") |
-| **Background jobs** | host-jobs + workflow `background`: async submit/fetch/kill long tasks without blocking a turn |
-| **Parallel isolation** | host-worktrees (`ctx.worktrees` + `/worktree`): managed git worktrees live under `$GAH_HOME/worktrees/` (never inside your repo); a subagent run with `subagent(isolate="worktree")` works in its own directory and branch, so two parallel subagents editing the same files never clobber each other. **Isolation is enforced, not advisory**: the sandbox write scope is narrowed to that worktree, so relative and absolute writes both stay out of the main workspace. Non-git repos fail explicitly instead of degrading; worktrees are kept by default and reclaimed with `/worktree rm` (branch preserved) |
-| **Scheduled tasks** | host-schedule (`ctx.schedule`): 5-field cron plans (min hour dom month dow, with `L` in the day field meaning last day of month) stored in `$GAH_HOME/schedules/*.yaml`; when due they run a turn **through the existing turn entry** (agentLoop to tools, still subject to approval/sandbox policy and still written to the session log); managed in the settings panel "Plans" section (**nobody is assumed to know cron**: a twelve-way time control — daily / weekly (multi-select weekdays) / every weekday / monthly on a day / monthly on the Nth weekday / monthly on the last day / monthly on the last weekday / hourly / every N hours / every N minutes / a fixed date each year / a lunar festival or lunar date / one time only — plus common presets and a plain-language line such as "every Mon, Wed, Fri at 8:30am" that **fills the controls for you to confirm** and falls back to the controls instead of erroring when it does not understand; **the word cron never appears in the UI**, and the list shows the schedule in words plus the next three run times); **lunar festivals** (Spring Festival / New Year's Eve / Lantern / Dragon Boat / Qixi / Ghost / Mid-Autumn / Double Ninth / Laba — the lunar calendar is **pure arithmetic and works offline** (1900-2100 table, cross-checked against an algorithmic implementation), while **statutory holidays and make-up workdays are not supported** because they need yearly external data; New Year's Eve is computed as the last day of the 12th lunar month, so it is right in both 29- and 30-day months); **paste a schedule expression from elsewhere** (a collapsed advanced entry — the only place in the UI where cron appears: if it can be understood it suggests the controls instead, and if it cannot it states the cost plainly, namely that the plan will show as "custom schedule" and can only be disabled or deleted); **one-time tasks** (run once then auto-disable; `/schedule add once <YYYY-MM-DD> <HH:MM> <description>`); **unattended = no confirmation channel, so actions needing approval are always refused (including in open mode)** |
-| **Notice channel** | host-notices (`ctx.notices`, NOND-N1): plugins/the host tell the **human** something (job terminal state, plan failed or skipped, turn error) **without touching the session log or token budget**; in-process ring buffer (200) with `id`-based backfill (`GET /api/notices?since=`, SSE `notice` frame), surfaced as a Web bottom-right toast plus a TUI status-bar item and `/notice`; dedupe per `Key` for 60s prevents flooding; system-level notifications shipped (NOND-N2): the TUI degrades through terminal capabilities (OSC 99/777/9 or bell; `GAH_TUI_NOTIFY=auto|osc|bell|off`, `/notify test`, written to `/dev/tty`) and the desktop shell now **consumes the notice stream over a single 2s poll** (`warn`/`error` → desktop notification) instead of one poller per scenario |
-| **Subagent fanout** | `agent/parallel/pipeline` ReAct fan-out in isolated contexts, results aggregated; `send_message`/`fork` inject messages and derive sessions |
-| **starlark workflow** | Model writes a restricted starlark script composing multi-step tool calls (sandboxed, no stdlib); `background` for async |
-| **Web search** | web_search (**default AnySearch**: works anonymously, reachable from mainland China, no key needed; Exa kept as an alternative); result pages pointing at DuckDuckGo/Google and friends are dropped automatically; key and endpoint from env or `$GAH_HOME/config/search.yaml`, endpoint may target a self-hosted compatible service; works with web_fetch; errors normalized |
-| **MCP both ways** | client bridge (attach external servers; tools `mcp_<server>_<name>`) and server side (expose all repository tools; launchable by Claude Desktop etc.) |
-| **ACP both ways** | **Inbound** (`gah acp`: editors such as Zed spawn gah as a coding agent over stdio) and **outbound** (`acp-client` + `acp_run`: delegate a coding task to an external ACP agent — opencode / codex / claude-code / kimi / cursor). Outbound is off by default and needs `data.runners`; the external agent's permission requests become gah approval prompts (`allow_once` preferred) and are refused outright when no approval channel exists |
-| **MCP on-demand search** | per-server `mode`: `direct` (default, full tool set in context) or `search` (tools stay **out of the per-turn context**; only `mcp_search` to look them up and `mcp_call` to invoke). Config lives in `$GAH_HOME/config/mcp.yaml` (add/edit/remove in the settings panel's "MCP server" section; **saving writes the file and hot-reloads the plugin**, no restart). Env vars still work (file wins) |
-| **ACP agent side** | `gah acp`: run as a first-class agent over **ACP v1** (Agent Client Protocol, Linux Foundation) inside editors (Zed, Neovim, ...). Sessions, streaming replies, tool progress and approval prompts all travel over ACP, on the **same data** as TUI/Web (same session ledger, same sandbox/approval decisions; not a second runtime). Editor permission buttons only map to `allow_once`/`reject_once` (never always: one click should not permanently relax dangerous operations); interactive questions and image input are not supported (explicit errors, answer in TUI/Web) |
-| **External plugin bridge** | out-of-process plugins (go-plugin); crash isolation (host survives a killed child); callback channel (GAH_CB_ADDR) so external processes can request tools/jobs/fanout; tools are 100% external (extplugins/) |
-| **Plugin install** | One kernel, three entries: the CLI `gah -install <repo\|local dir>[@version]`, the TUI slash command `/install` (divided from `/plugins`: the former installs and trusts, the latter toggles), and the Web/desktop settings panel's install row (with a native "Browse…" picker on desktop). **A plugin you wrote locally does not have to be `git init` + `push` first** — hand it a directory. All three entries render the confirmation text from one shared generator, and an approval tier of "strict" refuses everywhere (installing a plugin means introducing code that keeps running). **The build step itself is fenced too**: the default build is `GOFLAGS=-mod=readonly go build` (it never rewrites go.mod/go.sum), and `go mod tidy` runs **only when the build genuinely cannot succeed without it** — flagged in the panel and in the receipt, because it means the plugin pulls module dependencies the repository never declared. The build subprocess gets a credential-scrubbed environment (no `*_API_KEY`/tokens), and host switches that would change build semantics (`GOFLAGS`/`GO111MODULE`/…) are stripped **Hash allowlist**: `plugins/SHA256SUMS` is enforced as soon as it exists — a plugin that is unlisted or whose hash differs is **refused** (the official ones self-register on every boot; `gah -install` registers what it just built; a binary you placed yourself needs `gah -trust-plugin <name>`). Registry lines carry `# audit:` comments (time/source: `embed` / `install:<spec>` / `trust:manual`) — **not a security boundary** (anyone who can edit the plugin directory can edit it too); it answers "who put this here, when, and from where" after the fact. **UI plugins get a gate too** (`ui-plugins/SHA256SUMS`, qualified at manifest + the modules the slots actually `import()` — not the whole directory, so a sourcemap change must not get you rejected): as soon as it exists it is enforced, and an unlisted or mismatched plugin is **not served at all**. A refused plugin shows its reason and the remedy **in the settings panel's plugin section**. **Load failures** (start failure / refused handshake / incompatible protocol) go into the same list, tagged `kind: load` to distinguish them from the integrity gate's `kind: trust` — the remedies differ completely: trusting the plugin does not help in the first case, you need the reason in stderr or a reinstall. Previously a load failure was **log-only**, so on the panel the plugin simply *was not there* with no explanation. Protocol compatibility is declared via `api_version` in `plugin.yaml` (absent = v1); an incompatible version is refused at install time |
-| **Instruction files & skills** | Global/project AGENTS.md auto-injected (closer overrides; `/reload` hot reload); SKILL.md scanning with on-demand loading (`list_skills`/`read_skill`); ships the `gah-plugin-dev` skill |
-| **Roles** | `$GAH_HOME/roles/<id>/` (persona + working rules AGENTS.md + private skills + **optional model / thinking level** + **tighten-only permission tiers `approval`/`sandbox`** + an **excluded tool list**); the identity slot is injected after the fixed preamble and before the instruction layers (on conflict the user/project rules win); skills are filtered by the role's mounts (unmounted ones can neither be read nor listed), `/role` or the **settings panel's "Roles" section** switches **live, without a new session**; **a role's declared model/thinking level overrides the session setting on every turn** (all three surfaces label the source instead of silently changing session preferences; an unusable model falls back to the session model with a one-time warning, and parallel subagents inherit the role's model, thinking level, identity slot and skill visibility (same persona, same visible skill set, and the same **tool table** — the role's `tools_exclude` list filters both)); **tool set by role**: `tools_exclude` in `role.yaml` means listed = denied (default is everything, so tools of a newly installed plugin stay visible to existing roles) — an excluded tool can be neither seen nor called, and the same predicate covers subagents, workflows, external-plugin callbacks and the MCP server; **permission tiers can only be tightened** (`approval`/`sandbox` in `role.yaml`; the effective tier is the strictest of declared → linkage → role, and all three surfaces label it "role-tightened"); **12 seeded roles in five scenario groups** (general: assistant; engineering: coding-master / tech-lead / reviewer / ops-sre; data: finance / data-analyst; writing: novelist / news-writer / tech-writer / translator; learning: teacher) — the panel lists them grouped by scenario, and shows a one-line hint while no role has ever been picked (it disappears once you pick one; picking is optional — the baseline is the global instructions plus every skill); roles, working rules, skill mounts and the skill library (including role-private skills) can all be created/edited/deleted in the panel (the list opens with a **synthesised "Default (baseline)" row** = no role active, one click to switch back), and both the TUI status bar and the Web bottom bar show the current role; the model only gets read-only `list_roles`/`read_role` (a model cannot rewrite its own persona), and writes to `roles/**`, `skills/**` or the global AGENTS.md go through the approval gate; skills can be **renamed or moved between the shared library and a role's private library**, and a rename rewrites the mount list of every role that mounted it (no stale mounts left behind); skills can be **exported/imported as a skill pack** (`gah-skill-<name>.zip`, holding just that skill's `SKILL.md`; the import side **executes nothing** — a gah skill is a prompt file with no executable payload, while role-private skills travel with their role pack); roles can be **exported/imported as a single-file role pack** (`.zip`: definition + working rules + private skills, shareable and reproducible) |
-| **Externalized themes** | `$GAH_HOME/config/themes/*.yaml` + `/theme` runtime switching — reskin without recompiling |
-| **Full backup/restore** | `/backup` packs GAH_HOME (config incl. keys/plugins/sessions/env.sh/prefs) into a deterministic tar.gz; `list|restore`; restore auto-backs-up the current state first |
-| **Config self-healing** | On boot failure, automatically rolls back to the last good backup and retries once; broken config does not brick startup |
-| **pty interaction** | tool-shell `data.pty` flag: drive REPLs, git editors, and other interactive processes; uses the **same POSIX shell** as the non-pty path (on Windows this needs Git for Windows, and fails explicitly without it) — adjudication and execution stay in sync, so cmd built-ins cannot bypass write-target checks |
-| **Web attachments + multimodal** | Drop images/files into the input **or anywhere in the window** (button + drag-drop + paste), chip preview/remove; images injected structurally through openai/anthropic adapters (the model sees images); text files referenced by path; stored under `$GAH_HOME/attachments/` |
-| **Document preview** | One block model rendered by four front ends (markdown/text/code/CSV/notebook + PDF page facts): Web preview workbench (file tree / native PDF viewer / HTML source view + sandbox), TUI `/preview` pager (scroll/search/horizontal), `gah doc` CLI, and markdown rendering in the web session stream; every path goes through the sandbox + escape checks + secret deny-list, zero `v-html`; legacy binary Office (`.doc/.xls/.ppt`) goes through an **optional** external converter (`data.external_converters` / `gah doc --convert`, requires a local LibreOffice, off by default, explicit message when missing) |
-| **Graceful shutdown** | `POST /api/shutdown` → DisposeAll full teardown (the cross-platform stop channel, incl. Windows without SIGTERM; reused by the desktop shell) |
-| **Desktop app (GUI)** | `desktop/wails/` Go + Wails v3 shell: sidecar gah embedded in a single binary + window wired straight to the local service; **two shapes** (installed for macOS/Windows, portable for Windows — the comparison table plus data-root, upgrade and multi-instance rules live in the "Desktop app (GUI)" section; the two are separate identities and may run side by side); tray (about / check updates / autostart / **new session window** / **new instance**) / notify / single-instance / system folder picker (state shared with the settings panel: tray actions reach an open panel within 1.5 s); the portable build **auto-updates in place** when its directory is writable (otherwise it falls back to "check only + open the download page"); **artifact bar** (a bar above the conversation stream shows "artifacts: N files · created M · +X −Y", expands to the files written this round, opens any of them in the document panel, and jumps to the change-review view; it lists **only changes that actually landed** — a rejected write never appears because nothing was written), **multi-instance** (tray "New instance…" or the `--new-instance` flag starts another shell process; **single-instance is still the default** — a second launch focuses the existing window. Instances share the data root, so scheduled plans fire under a lease held by exactly one instance, preference read-modify-write goes through a cross-process file lock, and worktree ids carry an instance tag to avoid "plan runs twice / lost preference updates / name collisions"), **multi-session parallel view** (running sessions get a pulsing dot and a per-session "■ stop" in the sidebar; the bottom bar shows this window's "step N", or "N other sessions are running" when this one is idle — step counts are only visible for this window's session, other sessions are only known to be running), **multi-session windows and parallel turns** (tray "New session window…" opens a window bound to an independent session; `?session=<id>` makes every window read its own session; turns of **different sessions may run at the same time** — turns within one session stay strictly serial, keeping the session log single-writer; submitting to a given session goes through `/api/input {session}`, and cancelling one session through `/api/control {cancel, session}`); **diagnostics**: `<user data>/gah-shell.log` collects shell events, sidecar stderr (go-plugin `[DEBUG]` filtered), textual sidecar stdout, page-side errors (reported by the frontend via `/shell/log`), a startup self-check (control-plane `ping`) and **panics** (shell log + full stack); **zero-cost release** (updater with self-held ed25519 signing + CI matrix + unsigned-run first-launch guide); **session export from the sidebar saves through a shell command** (HTML/jsonl into the downloads folder, the HTML opens automatically, the path is echoed in the sidebar) |
+| **Micro-kernel** | `core/` holds only ctx / event / plugin (topology + hot reload) / config (profile→bundle→patch) / boot — zero business logic |
+| **Everything is a plugin** | Sessions, LLM routing, tools, sandbox, approval, the agent loop and the UI are all plugins; `/plugins` toggles them at runtime, unload undoes side effects |
+| **Two UIs + headless** | TUI (bubbletea v2) and Web (Vue 3) are feature-equal and share one `$GAH_HOME`; `--profile headless` for CI and scripts |
+| **ReAct loop** | `pre-step → llm/stream → tool/call* → turn/end`, configurable step cap (unlimited by default) |
+| **In-turn steering** | Pressing Enter mid-turn injects the message into the running turn; falls back to "queued", `Alt+Up` recalls it |
+| **Tool pipeline** | MCP-compatible schemas; `pre-execute` (veto-able) → execute → post-execute → result broadcast; structured errors back to the model |
+| **Unified LLM model** | OpenAI-compatible adapter (DeepSeek / OpenAI / Ollama / vLLM / Kimi …) + Anthropic adapter + mock; multiple providers side by side |
+| **Sandbox, three levels** | read-only / workspace-write / full-access; uniform write-target adjudication incl. shell redirections and output flags; macOS seatbelt and Linux Landlock back it at the process-tree level |
+| **Approval, three levels** | open / smart (default, asks and waits) / strict; no confirmation channel means a safe reject |
+| **Sessions and context** | Per-project isolation, multiple sessions, fork/clone/tree, rolling summarisation over budget, `/cache` hit-rate diagnostics, `/usage` cross-session usage |
+| **Parallel sessions** | Web/desktop tabs run independently; within one session turns stay strictly serialised, single writer per session log |
+| **Jobs and schedules** | Background jobs, starlark workflows, subagent fan-out, git worktree isolation, scheduled tasks (Chinese scheduling controls, incl. lunar calendar) |
+| **Notice channel** | `ctx.notices` messages aimed at humans (not in the session log, no tokens); TUI uses terminal notifications, the desktop shell uses system notifications |
+| **MCP / ACP, both ways** | MCP client bridge and server mode; `gah acp` is a first-class agent for editors, `acp-client` delegates work to external coding agents |
+| **Plugin install** | CLI `/install` and the Web panel share one core: source pinning with drift guard, `--prebuilt`, integrity gate, start/stop at will |
+| **Desktop shell** | Go + Wails v3: tray, notifications, autostart, single instance, multi-instance, `gah-shell.log` diagnostics; auto-update with its own ed25519 signature |
+| **Document preview** | One block model rendered in four places (markdown / text / code / CSV / notebook / PDF / Office): Web workbench, TUI pager, `gah doc` |
 
 ## 3. Quick start
 
-### Download and install (recommended for non-programmers)
+### Download
 
 Grab the right file from [Releases](https://github.com/nekoleamo/go-agent-harness/releases/latest):
 
-| System | File | Notes |
+| Platform | File | Notes |
 |---|---|---|
-| macOS (Apple silicon) | `gah-<version>-aarch64-apple-darwin.app.zip` (optionally `.dmg` for the first install) | open, then drag gah into /Applications |
-| Windows (64-bit) | `gah-<version>-setup.exe` | double-click to install (current user, no admin) |
-| Windows portable | `gah-<version>-portable-x86_64-pc-windows-msvc.zip` | **no install**: unzip anywhere writable, run `gah-desktop.exe` (see below) |
-| Windows on ARM | `gah-<version>-portable-aarch64-pc-windows-msvc.zip` | same (**no separate ARM64 installer**: use the portable zip, or let Windows emulate the x64 installer) |
-| CLI (any platform) | `go-agent-harness_<version>_<os>_<arch>.tar.gz` | single binary, unzip and run (also `.zip` + `checksums.txt`) |
+| macOS (Apple silicon) | `gah-<version>-aarch64-apple-darwin.app.zip` (plus `.dmg`) | Unzip and drag gah into Applications |
+| Windows (64-bit) | `gah-<version>-setup.exe` | Double click; per-user install, no admin rights |
+| Windows portable | `gah-<version>-portable-x86_64-pc-windows-msvc.zip` | No install: unzip into a writable folder and run `gah-desktop.exe` |
+| Windows on ARM | `gah-<version>-portable-aarch64-pc-windows-msvc.zip` | Same as above (no separate arm64 installer) |
+| CLI (any platform) | `go-agent-harness_<version>_<os>_<arch>.tar.gz` | Single binary, unpack and run (also `.zip` and `checksums.txt`) |
 
-> **The first launch is blocked once by the OS** (the app ships without an Apple Developer
-> certificate / Microsoft code-signing certificate — the binaries are fine, the system simply has not
-> seen them before):
->
-> **macOS** has two different messages, and they need different handling:
-> - "**cannot verify the developer**" → in /Applications **right-click gah → Open → Open** (once).
-> - "**is damaged and can't be opened. You should move it to the Bin**" → **the app is not damaged.**
->   That is macOS's fixed wording for an unsigned/unnotarized app downloaded from the internet (it only
->   carries an ad-hoc local signature). **Right-click → Open does not help here**; run this once in
->   Terminal (after dragging the app into Applications; repeat it after an upgrade if it appears again):
->   ```bash
->   xattr -dr com.apple.quarantine /Applications/gah.app
->   ```
-> - **Windows** blue SmartScreen warning → click "**More info** → **Run anyway**" (once)
+**The OS will block the first launch once** (no Apple / Microsoft signing certificate; the binary itself is fine):
 
-After installing, just double-click: built-in chat UI plus a settings panel. On first use pick one model
-provider (DeepSeek / Kimi / Zhipu / Qwen / Ollama presets; paste an API key).
+- macOS "unidentified developer" → right-click gah in Applications → Open → Open (once only).
+- macOS "is damaged and can't be opened" → the file is not damaged, that is the standard wording for "unsigned + downloaded"; run once: `xattr -dr com.apple.quarantine /Applications/gah.app`.
+- Windows SmartScreen → More info → Run anyway.
 
-> **Where the data lives / upgrading and uninstalling**: everything (sessions, memory, schedules, keys) lives in
-> `gah-data/`, next to the running binary. On first launch the desktop shell unpacks the **embedded** runtime binary into **your user
-> data directory** (Windows `%LOCALAPPDATA%\dev.gah.desktop\bin\`, macOS
-> `~/Library/Application Support/dev.gah.desktop/bin/`) and runs it from there, so the data sits **outside the
-> app directory**: **upgrading (whole-app replacement) keeps it, and uninstalling does not delete it**.
-> The desktop shell still auto-backs up to `~/gah-upgrade-backup/` before installing an update and **cancels the
-> upgrade** if that backup fails. For manual backups use `/backup <path outside the app dir>` and
-> `/backup restore <name>`. The CLI build is unaffected: upgrading replaces the single `gah` file and keeps
-> `gah-data/` in place.
->
-> **Portable build (Windows) is the exception**: when a `portable.marker` file sits next to the executable, the
-> shell runs **in place** and copies nothing out, so the data lives in that directory's own `gah-data/` (copy
-> the whole directory to move machines). It **can auto-update in place**: the updater spawns a helper that waits
-> for this process to exit and only then swaps the shell binary, so "Windows won't overwrite a running program"
-> no longer blocks it (measured). If the directory is **not writable** (read-only USB stick, Program Files,
-> managed folders) it falls back to "check only + open the download page". **Do not delete `gah-data/`** (that is your data) **nor `portable.marker`** (without it the build
-> behaves like the installed one). Installed and portable builds are **separate product identities and can run
-> side by side** without fighting over the window (see the desktop section below).
->
-> **Upgrading from mainland China (when GitHub is flaky)**: an upgrade needs only two things — `desktop-latest.json` and the artifact — and both can be re-sourced through a GitHub acceleration prefix: just concatenate the original link after the prefix, e.g. `https://gh-proxy.com/https://github.com/nekoleamo/go-agent-harness/releases/download/v0.8.0/gah-0.8.0-aarch64-apple-darwin.app.zip` (Windows upgrade: `gah-<version>-x86_64-pc-windows-msvc.zip`; first install: `gah-<version>-setup.exe`; same idea for the CLI archive). **Auto-update re-sourcing**: one release-side command prefixes every download URL in `desktop-latest.json` — `go run ./desktop/wails/cmd/desktopman rewrite-url --manifest dist-desktop-wails/desktop-latest.json --base https://gh-proxy.com/` (revert with `… rewrite-url none`) — or run the `release-desktop-wails` workflow via `workflow_dispatch` (tagging `v*` publishes automatically, sharing the same Release as the CLI build). **No re-release needed, and it applies to already-installed builds.** **Re-sourcing does not weaken security**: the updater's ed25519 signature covers the **file contents**, not the URL, so a mirror swapping the payload is rejected outright (the script self-checks that every platform's `signature` is untouched, and rolls back otherwise). Public proxies are community services with no availability guarantee — if one dies, try another prefix or `none` to restore the direct link; and the **self-hosted mirror is live**: Gitee Release assets ship with every release (see the automatic source switching below), so you no longer depend on community proxies.
->
-> **Automatic update-source switching (0.1.6 onward)**: the desktop app holds two sources at once — the Gitee
-> mirror (direct from mainland China) and the GitHub Release (globally reachable). Gitee is tried first; if its
-> manifest cannot be fetched, the other source is used automatically. **A source that serves the manifest but
-> cannot serve the payload is remembered and demoted to last**, so the next check tries the other one first.
-> Each source publishes its own `desktop-latest.json` whose download URLs point at that source's installers, so picking
-> the source decides both hops at once. There is still exactly one signature set (ed25519 verifies file
-> **contents**, not URLs, so re-sourcing does not weaken anything). Existing 0.1.5 users go through the GitHub
-> manifest, whose download URLs already point at an acceleration prefix, so they can upgrade from mainland China too.
-> Manual download (Gitee mirror; **attachments are uploaded with each release** — if a given tag has none yet,
-> use the links on the GitHub Release page): `https://gitee.com/null_593_5354/go-agent-harness/releases/download/<tag>/gah-<version>-aarch64-apple-darwin.app.zip`
-> (Windows first install: `gah-<version>-setup.exe`, upgrade: `gah-<version>-x86_64-pc-windows-msvc.zip`); the code snapshot lives at `https://gitee.com/null_593_5354/go-agent-harness`.
-> Gitee carries only the **latest code snapshot** (no history) plus the desktop installers — full history and the
-> per-platform CLI archives stay on GitHub. Revert to the direct GitHub link with
-> `go run ./desktop/wails/cmd/desktopman rewrite-url --manifest dist-desktop-wails/desktop-latest.json --base none --orig <original prefix>`.
-> **Upgrading a 0.7.x desktop build to 0.8.x needs one manual install**: from 0.8.0 the desktop shell moved from
-> Tauri (Rust) to Go + Wails v3, and the update-manifest format and signing convention changed with it (the old
-> shell cannot read the new manifest, and the new shell does not accept the old one) ⇒ **a desktop build already on
-> 0.7.x will not be offered 0.8.x automatically**. Download the 0.8.x package once and install it over the existing
-> app — your data lives outside the app directory, so nothing is lost. Automatic updates resume from 0.8.x onward.
-> The CLI builds are unaffected.
->
-> **Two exceptions (the only ways to lose your config)**: ① the Windows uninstaller page has a
-> \"Delete app data\" checkbox — ticking it also removes `%LOCALAPPDATA%\dev.gah.desktop` (where the data root
-> lives). It is **unchecked by default**; leave it unchecked to keep your data. ② Linux ships as a CLI
-> tarball only: the data sits next to `gah`, so **extracting the new version over the same directory** keeps
-> it, while replacing the whole directory loses it. Full matrix: local design register (`DESIGN.md`) R25.
+Then fill in one model provider in the settings panel (one-click presets for DeepSeek / Kimi / Zhipu / Qwen / Ollama).
 
-### Desktop app (GUI): installed vs portable
+**Data and upgrades**
 
-The desktop shell (Go + Wails v3) is just a window — the actual worker is the `gah` process next to it (sidecar).
-The shell owns the tray, notifications, autostart and the folder picker; `gah` owns sessions, tools, sandbox
-and approvals. That split is exactly why upgrading the app never has to touch your data.
+- All data (sessions, memory, schedules, keys) lives in `gah-data/`; upgrades and uninstalls leave it alone. Only the uninstaller's "Delete app data" checkbox removes it (unchecked by default).
+- The desktop shell takes an extra backup to `~/gah-upgrade-backup/` before upgrading; if that backup fails the upgrade is cancelled.
+- Behind a flaky network: the updater tries a Gitee mirror first and falls back to GitHub; a source that serves the manifest but not the artifact is remembered and demoted. Signatures cover file contents only, so re-sourcing does not weaken security.
+- **Upgrading a 0.7.x desktop build to 0.8.x needs one manual install**: 0.8.0 swapped the shell from Tauri to Go + Wails v3, which changed the manifest format and signing scheme — the old shell cannot read the new manifest. Install once by hand (data is untouched), then auto-update resumes. The CLI is unaffected.
 
-| | Installed (macOS / Windows) | Portable (Windows only) | CLI (any platform) |
+### Desktop shapes
+
+| | Installed (macOS / Windows) | Portable (Windows only) | CLI |
 |---|---|---|---|
-| How to use | macOS: drag into Applications; Windows: run `-setup.exe` (current user only) | Unzip the zip into any **writable** directory, double-click `gah-desktop.exe` | Unpack the tar.gz, get a single `gah` |
-| Marker | the app bundle | `portable.marker` next to the executable | none |
-| Where the program runs | copied out to `<user data>/bin/` (macOS `~/Library/Application Support/dev.gah.desktop/bin/`, Windows `%LOCALAPPDATA%\dev.gah.desktop\bin\`) | **in place** (nothing copied, nothing externalised) | next to the binary |
-| Where the data lives | `bin/gah-data/` above | this directory's `gah-data/` | `gah-data/` next to the binary |
-| Upgrading | **automatic**: tray "Check for updates…" → confirm → download → replace → restart (an extra backup is taken first) | **automatic in place** (when the program directory is writable; otherwise it only checks and points you at the download page) | replace the single file |
-| Uninstalling | delete the app (**data is not deleted by default**; the Windows uninstall page has a "Delete app data" checkbox — ticking it deletes the data too) | delete the whole directory | delete the file (keep or remove `gah-data/` as you like) |
+| How to run | macOS: drag into Applications; Windows: `-setup.exe` | Unzip into a writable folder, run `gah-desktop.exe` | Unpack the tarball, get `gah` |
+| Marker | A shell exists in the app folder | `portable.marker` next to the exe | none |
+| Runtime files | Extracted to the user data dir `bin/` (macOS `~/Library/Application Support/dev.gah.desktop/`, Windows `%LOCALAPPDATA%\dev.gah.desktop\`) | Run in place | In the same folder |
+| Data | `bin/gah-data/` under that folder | `gah-data/` in the folder | `gah-data/` next to the binary |
+| Upgrade | Tray "Check for updates…" → confirm → download → replace → restart | Auto-updates in place; read-only folder falls back to "check only" plus a download hint | Replace the single file |
 
-**Installed and portable builds can run at the same time.** They are distinct program identities
-(different bundle identifiers) with inherently different data roots, so they never steal each other's window:
-whichever you start second opens its own interface. Launching the *same* build twice focuses the existing
-window instead (a stray double-click does not spawn a second instance); use the tray's "New instance…" or the
-`--new-instance` flag when you really want a second one.
+The installed and portable builds are separate identities and can run side by side; double-launching the same shape just focuses the existing window (use the tray "New instance…" or `--new-instance` to really open another). When something breaks, read `<user data dir>/gah-shell.log` (tray "About gah → Diagnostics" opens it).
 
-**Reopening lands in the workspace you last worked in**: a launch triggered by an icon double-click or by
-autostart gets the user home as its working directory, which is not what you meant — gah recognises that case
-(the initial directory is the user home, the data root, or a system directory) and switches back to the most
-recently used workspace. Start gah from inside a project directory and that directory *is* your intent, so it
-is left alone.
-
-**The portable build explains itself once**: on first launch it says where the data lives and how to upgrade;
-afterwards it stays quiet (to see it again, delete the empty `gah-data/.portable-notice-shown` marker).
-
-**When something is wrong, read the log first**: the shell collects its own events, sidecar stderr, page-side
-errors and panics from any thread into one file — `<user data>/gah-shell.log` (tray "About gah → Diagnostics"
-opens it). If the sidecar cannot start on a first portable launch (unwritable directory and the like), the
-window shows the actual reason and the log path instead of a blank page.
-
-### Build (release form)
+### Build
 
 ```bash
-# Direct build (single file, dev version)
+# Single binary (version taken from the git tag)
 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$(git describe --tags)" -o gah ./cmd/gah
-# Or the unified entry (guarantees the embedded frontend; write VERSION=v0.x.y)
+
+# Or the single entry point (guarantees the embedded frontend; VERSION=v0.8.0 ./scripts/gen.sh cli for a release)
 ./scripts/gen.sh cli
 ```
 
-### Global install (deploy once, run from any directory, pi-style)
+### Global install (deploy once, run anywhere)
 
 ```bash
-# macOS / Linux: build → ~/.local/gah + symlink ~/.local/bin/gah (prompts for PATH when missing)
+# macOS / Linux: build → ~/.local/gah + symlink ~/.local/bin/gah
 bash scripts/install.sh
-# Windows (PowerShell): build → %LOCALAPPDATA%\gah + add to the user PATH (new terminal)
+
+# Windows (PowerShell): build → %LOCALAPPDATA%\gah + add to the user PATH
 powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 ```
 
-After install, run `gah` / `gah web` / `gah --profile headless -input "…"` from any directory.
-The data root is `gah-data/` next to the real binary (created on first run; a symlinked launch also resolves to the real install dir). Sessions/memory/todo are isolated per project by the current cwd. Upgrade = rerun the script; uninstall = `--uninstall` / `-Uninstall`.
+Afterwards, from any directory: `gah` / `gah web` / `gah --profile headless -input "…"`. Upgrade = re-run the script, uninstall = `--uninstall`.
 
-> **Windows prerequisite**: the `shell` tool and background jobs run through a POSIX shell (`sh -c`),
-> so Windows needs [Git for Windows](https://git-scm.com/download/win) (it ships `bash.exe`; probed at
-> `%ProgramFiles%\Git\bin\bash.exe`, `%ProgramFiles(x86)%\Git\bin\bash.exe`,
-> `%LOCALAPPDATA%\Programs\Git\bin\bash.exe`, then `bash.exe` on `PATH`), or set `GAH_SHELL_PATH`
-> explicitly. There is **no cmd.exe/PowerShell fallback** — write-target adjudication is POSIX-lexical,
-> and swapping the shell would decouple the sandbox decision from what actually runs; when no POSIX
-> shell is found the tool fails **explicitly** (never degrades silently).
+> **Windows prerequisite**: the `shell` tool and background jobs run through a POSIX shell, so install [Git for Windows](https://git-scm.com/download/win) (common locations are auto-detected) or set `GAH_SHELL_PATH`. There is no cmd.exe / PowerShell fallback: write-target adjudication is POSIX-lexical, and swapping the shell would decouple the sandbox decision from what actually runs.
 
-> **Known boundary (Windows)**: the session file name is the workspace's absolute path flattened
-> (separators become `-`), so a very deep workspace (> ~200 characters) hits MAX_PATH (260). In that
-> case creating/opening a session fails **explicitly with actionable guidance** (move the workspace
-> shallower) instead of letting the OS throw `filename or extension is too long`.
-
-**Two modes coexist (same binary; the mode is the location)**: ① **Global/shared** — after install, run `gah` from any directory; the data root lives once under the install dir's `gah-data/`, with sessions/memory isolated per project by the cwd. ② **Portable single** — just copy/download `gah` into any directory and run it there; that directory auto-creates its own independent `gah-data/`, fully isolated from the global install. They never interfere; no switching needed.
-
-### Three run forms
+### Three run shapes
 
 ```bash
-./gah                                        # TUI (default tui profile; **refuses explicitly** when stdin is not a TTY and points to headless — no silent fallback)
-./gah web                                    # Web UI (≡ --profile web), http://127.0.0.1:2233, opens browser
-./gah acp                                    # ACP agent form (launched over stdio by an editor such as Zed; ≡ --profile acp)
-./gah --profile headless --input "run echo hi"        # one headless turn (CI/scripts; mock model needs no key)
-./gah --profile mcp-serve                    # MCP-server form (launched over stdio by an external MCP client)
-./gah --profile dev --dump-config            # print the merged config tree (any entry is patchable)
-./gah --ephemeral --profile headless --input "hi"    # throwaway data root (isolated testing)
-./gah --version                              # version
+./gah                                              # TUI (default; refuses a non-TTY stdin and points at headless)
+./gah web                                          # Web UI at http://127.0.0.1:2233, opens the browser
+./gah acp                                          # ACP agent shape (editors launch it over stdio)
+./gah --profile headless --input "run echo hi"      # one headless turn
+./gah --profile mcp-serve                          # MCP server shape (external clients over stdio)
+./gah --profile dev --dump-config                  # dump the merged config tree
+./gah --ephemeral --profile headless --input "hi"  # throwaway data root
 ```
 
-> `--ephemeral` puts all runtime data (incl. the external plugin dir) into a temp home that is deleted on exit — good for isolated CI smoke tests.
-
-### Use a real model
+### Wiring a real model
 
 ```bash
-export DEEPSEEK_API_KEY=sk-...          # or OPENAI_API_KEY / ANTHROPIC_API_KEY (for claude-* models)
-./gah --profile headless --input "你好"
+export DEEPSEEK_API_KEY=sk-...     # or OPENAI_API_KEY / ANTHROPIC_API_KEY (for claude-* models)
+./gah --profile headless --input "hello"
 ```
 
-For production, copy `config/profile-headless.yaml` to your own profile; in a patch, disable `llm-mock` and enable `llm-openai-compat` (set `data.base_url/model`). Keys can also be written to `provider.yaml` via `/provider` (below) instead of shell env.
+Attach any OpenAI-compatible endpoint from inside the TUI, no config edit and no restart:
 
-### Add any provider instantly (inside TUI; zero config edits, zero restarts)
-
-Any OpenAI-compatible endpoint (DeepSeek/SiliconFlow/Ollama/vLLM/Kimi…) needs one line:
-
+```bash
+/provider set https://api.siliconflow.cn/v1 sk-<key> deepseek-ai/DeepSeek-V3   # takes effect and persists (0600)
+/provider show | use <name> | unset <field> | remove <name> | clear            # inspect / switch / edit / delete / reset
 ```
-/provider set <baseUrl> <apiKey> [model]    # effective + persisted immediately (provider.yaml, 0600)
-/provider show                              # show current endpoint/model/credentials (masked)
-/provider unset base_url|api_key|model      # remove one field (falls back to env/sample; keeps the rest)
-/provider remove <name>                    # delete one provider (active one falls back to the next; last one falls back to env/sample)
-/provider clear                             # wipe everything + reset at runtime
-```
-
-Example (SiliconFlow):
-
-```
-/provider set https://api.siliconflow.cn/v1 sk-<your-key> deepseek-ai/DeepSeek-V3
-```
-
-Then chat normally; use `/provider clear` to return to env-var config.
 
 ### Common CLI flags
 
-| Flag | Effect |
+| Flag | Purpose |
 |---|---|
-| `-profile <name>` | profile (tui/headless/dev/web/acp/mcp-serve/custom) |
-| `-input <text>` | headless single input: run one turn, print the reply, exit |
-| `-dump-config` | print the merged config tree and exit |
-| `-ephemeral` | throwaway data root |
-| `-version` | print version (pure query: works with no TTY in a pipe/CI, before the TUI guard) |
-| `-install <repo>[@version]` | install online/bridge plugins (`mcp:<id>:<command>` registers MCP plugins). `version` may be a tag/branch name **or a 40-hex commit sha** (`@<sha>` pins one exact commit) |
-| `-accept-drift` | With `-install`: accept a **same-named tag now pointing at a different commit** (default is to **refuse**, see "Pinned sources & drift guard") |
-| `-prebuilt` | With `-install`: download the author's **prebuilt artifact** and **execute none of the repository's build commands** (see "Prebuilt artifacts: `--prebuilt`") |
-| `-install-artifact <url>` + `-id <id>` + `-name <tool-xxx>` | Install a plugin binary **somebody else already built**, from a URL. **This machine needs no Go / node / any toolchain**, and no build command runs at all. `-id` / `-name` both end up in the install path, so they are validated with a whitelist (see "Installing a binary somebody else built") |
-| `-check-plugin-updates` | Check whether the sources of installed plugins moved on. **Only `git ls-remote` — no clone, no install** |
-| `-uninstall <id>` / `-list-plugins` | uninstall / list external plugins (`-list-plugins` appends the source triple: repo · ref · commit) |
-| `-install-ui <repo\|local dir>` / `-uninstall-ui <id>` / `-list-ui-plugins` | UI-plugin install / uninstall / list |
-| `-trust-ui-plugin <id>` / `-untrust-ui-plugin <id>` | Register a UI plugin **already placed** under `ui-plugins/` into the integrity gate / revoke. The UI-side gate is **enforced by default** (created unconditionally at boot), so a hand-placed plugin does not load until you say so — this is that exit |
-| `-trust-plugin <name>` / `-untrust-plugin <name>` / `-list-trusted-plugins` | Register a binary you already placed under `plugins/` into the **hash allowlist** / revoke / list. For "the plugin was refused but I trust its source" — it records the hash of the copy **you have right now**; if the list already holds a different hash it refuses explicitly rather than laundering a mismatch |
-| `/install` | TUI slash command: `list` / `check` / `enable <name>` / `disable <name>` / `prebuilt <repo>` / `<repo\|dir>[@version or commit]` / `uninstall <id>` / `trust <name>` / `untrust <name>`. The split against `/plugins` is stated in both commands' descriptions |
-
-Document reading subcommand (same level as `web`/`im`; zero assembly, read-only):
+| `-profile <name>` | profile (tui / headless / dev / web / acp / mcp-serve / custom) |
+| `-input <text>` | one headless input, run a turn and exit |
+| `-dump-config` | print the merged config tree |
+| `-ephemeral` | throwaway data root, gone on exit |
+| `-version` | version info (pure query, fine in pipes and CI) |
+| `-install <repo\|local dir>[@version or commit]` | install a plugin; `mcp:<id>:<command>` registers an MCP plugin |
+| `-prebuilt` / `-accept-drift` | install the author's prebuilt artifact / accept a tag that moved to a new commit |
+| `-install-artifact <url> -id <id> -name <tool-x>` | install an artifact someone else built (no toolchain needed) |
+| `-check-plugin-updates` | `git ls-remote` only, no clone and no install |
+| `-list-plugins` / `-uninstall <id>` | list external plugins (with repo/ref/commit) / uninstall |
+| `-trust-plugin` / `-untrust-plugin` / `-list-trusted-plugins` | hash allow-list: add / revoke / list |
+| `-install-ui` / `-list-ui-plugins` / `-uninstall-ui` / `-trust-ui-plugin` | UI plugin install and the integrity-gate escape hatch |
 
 ```bash
-gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--max-input-bytes B] [--tree] [--depth N]
+gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--tree] [--depth N]
 # exit codes: 0 ok / 2 usage / 3 unsupported format / 4 over budget / 5 parse failure
-# --convert (optional): with LibreOffice installed, converts legacy binary Office (.doc/.xls/.ppt)
-# to PDF first; artifacts land in $GAH_HOME/cache/doc/ (kept 7 days); failures fall back explicitly
+# --convert: use a local LibreOffice to turn legacy Office files into PDF first (off by default)
 ```
-
-> **Prefer to subscribe to a curated gateway?** The panel also ships an **OpenCode Go** preset (OpenCode's official subscription gateway, $10/month, OpenAI-compatible, covering a set of Grok/GLM/Kimi/DeepSeek models). It identifies clients by **request header**, and the preset pre-fills `x-opencode-session: ${session}` — the session id of the current session, so it is stable per conversation and differs across conversations, which is exactly what that gateway asks for.
-> **Custom request headers (advanced)**: the provider form takes one `key: value` per line, with `${session}` / `${version}` / `${cwd}` expanded on save. The client always sends its own `gah/<version>` User-Agent (it does not masquerade as a generic HTTP library — some gateways route or rate-limit by UA). Header values are stored **in plain text** in `provider.yaml` (same file and 0600 permission as api_key), so keep long-lived credentials in the api_key field instead.
-
-> **Want to try it at zero cost?** Settings panel → Provider → the **OpenRouter** preset, paste a key (a free account is enough) — the default model is set to **`openrouter/free`**, which is OpenRouter's own maintained "auto-router" id: it picks a currently available **free** model per request. Prefer a specific one? Pick any row whose id ends in `:free` in the model list (rows carry tags — free / tools / vision / context size — plus an "only models that can act as the agent" filter, on by default).
-> **Three boundaries, not promises**: ① free models are **rate-limited** and will queue or return 429 at peak; ② the free list **changes daily** (measured: half of it turned over within a day), which is exactly why no list is hard-coded here and everything is enumerated live; ③ the **quality and tool-calling reliability of free models are unverified** here (no key on this machine; anonymous calls are rejected with 401) — before letting one edit code, switch the sandbox to read-only (`/sandbox ro`) or tighten approval; the sandbox and approval layer is the boundary that matters, regardless of how clever the model is.
 
 ## 4. TUI commands
 
-> Commands register into the host `ctx.commands` and work from TUI/Web/headless with a `/` prefix; typing `/` pops the command palette (name+description, filterable). **Every command supports step-by-step confirmation**: arguments cascade as declared (subcommand enums → dynamic candidates such as providers/sessions/plugins/jobs/backups/themes/IM groups; free-form args break into input prompts) — the TUI uses its picker, and Web uses the same registry-declared candidate list (click through the levels). TUI-only commands (search/widgets/statusline/traj/theme/help/exit/fork/clone/tree/name) are available in the TUI only.
+Commands register into `ctx.commands` and work in TUI / Web / headless behind the `/` prefix; typing `/` shows completions.
 
-| Command | Effect |
+| Command | Purpose |
 |---|---|
-| `/model <name>` | Switch model (**dynamically enumerates all models of the current endpoint**, source annotated like `(siliconflow)`; auto-switches to that provider; manual input fallback when listing fails or no key). **When the current role declares a model**, this only sets the session value and says so explicitly |
-| `/thinking off\|low\|medium\|high` | Thinking budget; **Shift+Tab cycles forward**; the status bar shows the thinking label (hidden when off). **When the current role declares a level**, this only sets the session value and says so explicitly |
-| `/sandbox ro\|ws\|full` | Switch sandbox tier at runtime (read-only / workspace-write / full-access; live status bar shows the *effective* tier and, when the approval tier or the current role overrides it, the source; preference persists across restarts). **When the current role declares a tighter tier**, this only changes the global tier and says so explicitly ("the role tightening is in force, this setting has no effect right now") |
-| `/sandbox sync [on\|off]` | Toggle the approval → effective-sandbox **tier linkage** (no argument = show the switch plus the current effective tier). With `off` the sandbox tier stands alone instead of being overridden by `open`/`strict` (e.g. keep `open` approval for fewer prompts but refuse out-of-workspace writes). The choice persists in `gah-state.json` and is restored on restart and in unattended runs; a sandbox without this capability reports it explicitly |
-| `/approval open\|smart\|strict` | Switch approval tier at runtime (open=allow dangerous cmds / smart=confirm dialog (default) / strict=deny; persists). **When the current role declares a tighter tier** it likewise only changes the global tier and reports the effective (stricter) one |
-| `/provider show\|add\|use\|set\|unset\|remove\|clear` | Configure LLM providers (multi-provider): `show` list (active ★ credentials masked) / `add endpoint key [model]` (first becomes active) / `use <name>` switch / `set …` edit active / `unset field` remove one (env/sample fallback) / `remove <name>` delete one provider (active one hands over to the next) / `clear` wipe & reset |
-| `/plugins list\|on\|off <id>` | Runtime plugin toggles (`on/off` persist; `default` restores the config-tree default) |
-| `/settings history N\|off\|unlimited` | Session-history injection count (off=disabled / unlimited=all / N=recent N; global preference) |
-| `/compact [hint]` | Manual rolling summary compaction (auto over-budget compaction unchanged; hint is only recorded); when the endpoint reports a context overflow the turn is **automatically** compacted and retried once (overflow fallback), no manual step needed |
-| `/cache [n]` | Cache-hit diagnosis (read-only): the cumulative hit rate, the **most recent** hit rate (the cumulative number blends "we hit once long ago" with "we are still hitting"), plus a **prefix fingerprint** per request for the last n requests. When the fingerprint changes it names the first message that differs — a low hit rate either means the prefix is being rewritten (fixable in code) or that the prefix is too short / the vendor cache expired (not fixable in code), and this command is what tells the two apart. No model request, no disk write |
-| `/export [path]` | Export current session events (`.html` suffix = self-contained HTML, otherwise jsonl; **on success it opens in the system default program**, `GAH_EXPORT_OPEN=0` disables that). Web/desktop equivalent: the `⤓` menu on a sidebar session row (the desktop shell saves into the downloads folder) |
-| `/role-pack export <id> [path]` · `/role-pack import <pack> [--as name] [--overwrite]` | Role packs (definition + working rules + private skills, one zip): the TUI/headless sharing entry point (same implementation as the Web `/api/rolepack`; an existing name is refused unless `--overwrite`, whose old copy stays recoverable) |
-| `/skill-export <skill> [path]` · `/skill-import <pack> [--as name] [--overwrite]` | Skill packs: `/skill-export` packs a **shared** skill into a `.zip` (just its `SKILL.md`; defaults to the current workspace, a directory target gets `gah-skill-<name>.zip`); `/skill-import` imports it (`--as` renames and rewrites the body's frontmatter accordingly; an existing name is **refused** unless `--overwrite`, whose old copy stays recoverable). Role-private skills travel with their **role pack** |
-| `/workspace [dir]` | Switch workspace (project): pick from recent list or type a new dir; opens a new session, really chdirs tool processes, syncs sandbox root |
-| `/session list\|switch\|new\|current` | Session management: list (★ = pinned, with summary) / switch (picker with content preview + time) / new (empty history) / current |
-| `/session pin\|unpin [id]` | Pin / unpin a session (defaults to the current one; pinned block sorts first, max 8) |
-| `/session summary [id]` | Generate/show the session summary (LLM: one-line + topics; **calls the model**) |
-| `/reload` | Hot-reload instruction files (AGENTS.md hierarchy/global/extra) and role definitions (identity sentence/working rules/skill mounts; external edits apply without restart) |
-| `/role list\|show [id]\|use <id>\|none\|new <id>\|rename <id> <new-id>\|rm <id>\|export <id> [path]\|import <path> [as <new-id>] [force]` | Role management: list (★ = current) / show one role (identity sentence + working rules + skills) / switch (applies next turn, **no new session**) / leave the role / create (with a template AGENTS.md) / rename the id / delete (moved to `roles/.trash/`, the current role is refused) / **export as a single-file role pack** (`gah-role-<id>.zip`: definition + working rules + private skills, `role.yaml` carried over verbatim; without a path it lands in the current directory) / **import a role pack** (**same name is refused by default**; `force` overwrites and moves the old copy into `roles/.trash/` first; **the current role is always refused**; `as <new-id>` lets it coexist; a key this version does not know is **explicitly rejected** instead of being silently dropped). The model side only has read-only `list_roles`/`read_role`; writes go through this command and the Web panel |
-| `/context [all]` | Context-usage breakdown: **real** tokens (cumulative input/output/cache hits/window bar) listed separately from **local estimates** (fixed guidance, global+project instructions, extra instructions, prompt sections, tool-name list, tool-schema JSON cost, projected history), with the basis labelled explicitly; `all` also lists each tool's schema bytes and rough tokens (**fully local, no model request**) |
-| `/diff [path]` | Change review: no arg = files changed in this session (+/~ lines, aggregated by path); with a path = per-line diff of that file (TUI opens the pager, Web switches to the changes view). Built from before/after content captured at write time, so it **does not depend on git** (no repo, or other uncommitted edits, change nothing about the basis); oversize/invalid cases (32 KiB budget, binary, huge input) are labelled explicitly |
-| `/usage [days\|all]` | Cross-session token usage (last 30 days by default): requests, input/output/total, cache-hit rate, and the most expensive sessions. **Reads the local session ledger only** (every `session/usage` event), no model call — the board's usage card and `/context` cover only the current session, while the stats service is an in-process accumulator (reset on restart), so this command answers “how much have I spent over this period” |
-| `/recap` | Session recap (turns / top tools with failures / files touched / last Q&A / model / span / **role history** — switching roles does not open a new session, so this lists which roles the session has gone through; **local stats only, no model call**) |
-| `/plan [plan-id]` | Show plan progress (objective/status/step list with completion; plans written by plan mode are visible here, so **no more asking the model**; read-only and fully local) |
-| `/todo [pending\|in_progress\|completed\|all] \| /todo <task-id>` | Show the todo list (status marks / active-form label / completion / blocked-by count; no arg = unfinished sorted by status, with an id = one task's detail). It reads **the very same** `$GAH_HOME/todos/<project>.jsonl` as the task tool (bad lines tolerated, tombstones excluded) and is **read-only, bypassing the tool pipeline** — so no approval prompt, no tool result injected into the session, no model request |
-| `/answer [index\|text\|skip]` | Answer a structured question (TUI): no args returns to answering mode; multiple pending questions are answered in arrival order; `skip` skips; `Esc` leaves answering mode (question and draft kept) |
-| `/jobs [list]\|output <id>\|kill <id>` | Unified view of background jobs **and subagents**: no arg = list (running first, with duration/summary) / output / kill (kill needs `running`; same source as workflow `background` and the Web jobs panel; the TUI status bar also shows a persistent fold line "N running"; press **F6** in the TUI to expand the live dock) |
-| `/worktree [list]\|rm <id> [force]` | Managed worktrees (the working directory of isolated subagents): no args = list (branch/base/path + reclaim hint) / `rm` reclaims the directory (**branch is preserved**, since unmerged work still lives on it; refused without `force` when there are untracked changes, so work is never silently dropped) |
-| `/schedule [list]\|add <cron> <description>\|add once <YYYY-MM-DD> <HH:MM> <description>\|rm\|on\|off\|run <id>` | Scheduled tasks: list / add (5-field cron, e.g. `0 8 * * *` = daily at 08:00; `L` = last day of month, `LW` = last weekday of month) / add one-time / remove / enable-disable / run once now (same source as the settings panel "Plans" section, where you pick times from controls instead of typing expressions) |
-| `/backup [dest]\|list\|restore <name>` | Full GAH_HOME backup (config incl. keys/plugins/sessions/env.sh/prefs, excludes backups/ itself): no arg = back up now (default `$GAH_HOME/backups/`, external path allowed) / `list` (newest first) / `restore <name>` (**auto-backs-up the current state first**; fully effective after restart) |
-| `/preview <path>` | Open the document preview workbench: TUI shows a full-screen pager (`↑↓`/`PgUp`/`PgDn` scroll, `←→` horizontal, `/` search with `n/N`, `q`/`Esc` close); Web opens the document panel at that file (markdown/text/code/CSV/notebook/docx/xlsx/pptx/PDF) |
-| `/search <word>` | In-session search (hits highlighted; n/N/F3 cycle; Esc exits) |
-| `/theme [name]` | Switch theme (enumerates `$GAH_HOME/config/themes/*.yaml`; `default` resets; no recompile; persists) |
-| `/fork [seq]` | Derive a branch session from any point in history (`/tree` shows seqs; default = latest question) |
-| `/clone` | Clone the current session (a second path in the same branch) |
-| `/tree` | Session branch tree (full picture + forkable question points; each **branch** gets a one-line gist from its cached overview, falling back to its first question — never triggers the model); **switching back from a branch to the main line** carries that branch's one-liner into the main context (visible to the model, one meta line in TUI/Web; injected once per branch+gist, zero model calls) |
-| `/name <display name>` | Give the current session a display name (`-` clears; takes priority in the status bar / switch list) |
-| `/widgets on\|off` | Toggle the widget strip above the input (dynamic host-registered info lines) |
-| `/statusline [items...]\|reset` | Status bar item set and order (TUI): no arg = show the current layout plus available items (`intervene/state/queue/questions/plan/todo/dock/notice/last/tps/workspace/sandbox/approval/role/session`); passing items renders them in that order (turn-state items joined with `·`, sections with `|`), `reset` restores the F15.3 baseline; the preference persists in `gah-state.json` and applies on restart |
-| `/traj` | Trajectory/observability view (TUI): renders the same session event ledger as a **turn → step → tool** projection in a text overlay (overview: turns, total duration, cumulative tokens and cache share; per-turn newest-first: duration and stop reason, step/tool counts, failure/pending counts, tokens, model; tool rows: status, duration, output bytes, error text, args summary). It shows process and cost only, never output bodies or message text; **durations come only from event timestamps, so an in-flight turn/step/tool always reads "进行中"** (the overview reads "计算中") instead of a fabricated duration. The overlay reuses the text pager (scroll, horizontal shift, search, `q` to close); Web has the equivalent trajectory view button |
-| `/notice` | Recent notices (TUI, NOND-N1): lists the in-process notice buffer newest-first (level/timestamp/source + title + body) in an overlay, and reports the buffer gap and dedupe count; fails explicitly when the notice channel is not assembled |
-| `/notify [test\|auto\|osc\|bell\|off]` | System-level notification switch and self-test (TUI, NOND-N2): no arg = report **how it would actually fire** (target plus reason) and the usage; `test` emits a probe notification; `auto` detects the terminal (kitty OSC 99 / WezTerm·VTE OSC 777 / iTerm2 and friends OSC 9 / bell / status bar only when no terminal is attached), `osc` forces escapes, `bell` rings only, `off` disables it (zero output); `GAH_TUI_NOTIFY` is the persistent switch (unset or misspelled falls back to `auto`). **Only `warn`/`error` interrupt the human**; `info` merely updates the status bar |
-| `/help` `/exit` | Help / quit (**press Ctrl+C twice**, anti-misfire) |
+| `/model <name>` | switch model (enumerated from the current endpoint; a role-declared model only changes the session slot and says so) |
+| `/thinking off\|low\|medium\|high` | reasoning level (`Shift+Tab` cycles) |
+| `/sandbox ro\|ws\|full` · `/sandbox sync on\|off` | sandbox level / approval-to-sandbox coupling switch |
+| `/approval open\|smart\|strict` | approval level (persisted) |
+| `/provider show\|add\|use\|set\|unset\|remove\|clear` | manage multiple providers |
+| `/plugins list\|on\|off <id>` | plug and unplug plugins at runtime |
+| `/compact [hint]` · `/cache [n]` · `/context [all]` · `/usage [days\|all]` | manual compaction / cache diagnostics / context breakdown / cross-session usage |
+| `/workspace [dir]` · `/session list\|switch\|new\|current\|pin\|summary` | workspace and session management |
+| `/fork [seq]` · `/clone` · `/tree` · `/name <name>` | branch, clone, view the tree, rename |
+| `/role list\|use\|new\|rm\|export\|import` · `/role-pack export\|import` | roles and role packs |
+| `/skill-export` · `/skill-import` | skill packs |
+| `/diff [path]` · `/recap` · `/traj` · `/plan` · `/todo` | change review / recap / trajectory / plan / todos |
+| `/jobs` · `/worktree` · `/schedule` | background jobs / isolated worktrees / schedules |
+| `/backup [dest]\|list\|restore <name>` | whole-home backup and restore |
+| `/preview <path>` · `/search <word>` · `/theme [name]` | document preview / in-session search / theme |
+| `/export [path]` | export the session (`.html` = self-contained page, otherwise jsonl; Web/desktop equivalent: sidebar ⤓ and the top-bar "Export") |
+| `/reload` · `/settings history N` · `/statusline` · `/notify` · `/help` | hot reload / history depth / status line / system notifications / help |
 
-> **Notice channel (`ctx.notices`, NOND-N1)**: plugins and the host can tell the **human** something (background job terminal state, scheduled run failed/skipped, turn error) without requiring screen-watching. **A notice is not session content** — it is never written to `jsonl`, never enters the model context, and costs no tokens; it lives in an in-process ring buffer (200 entries) with `id`-based incremental backfill (`GET /api/notices?since=`; SSE `notice` frame), so reconnecting or reloading loses no notice that was already emitted. Each front end decides its own intensity: Web shows a bottom-right toast (`info` auto-dismisses after 6s, `warn`/`error` stay until dismissed, overflow is counted explicitly), the TUI renders a `notice` status-bar item (zero footprint when empty, so the byte-level baseline is unchanged) plus a `/notice` overlay for details. Dedupe: the same `Key` emits only once per 60s, so a retry storm cannot flood the user. **System-level notifications (NOND-N2, shipped)**: the two non-Web front ends can now bring the human back. The TUI degrades through terminal capability detection (OSC 99/777/9 or bell) rather than a hard-coded support matrix (public matrices contradict each other for Windows Terminal / VTE, and hard-coding turns "configured but silent" into a silent failure), writes to `/dev/tty` instead of stdout (redirected or hook-captured stdout is not a terminal), and when no terminal is attached it degrades silently to status-bar only while `/notify` **reports the real reason**. Bodies are treated as untrusted input (control characters are stripped so a body cannot terminate the escape sequence early) and tmux/screen payloads are DCS-wrapped. The desktop shell collapsed from "one poller per scenario" to **a single 2s poll consuming the notice stream** (the judgement lives only in the host, so new categories arrive for free) and only `warn`/`error` raise a desktop notification. **On macOS an unsigned/un-notarized build gets no banner** (the system accepts the request but does not present it — expected, not a bug: the shell additionally bounces the Dock icon and logs the real delivery result), and the in-app notice channel and status bar are unaffected. **Verified on real terminals**: kitty / Terminal.app / tmux on this machine; iTerm2·GNOME VTE·WezTerm·Windows Terminal still need `/notify test` on the corresponding device.
+> A leading `!` runs a shell command through the same sandbox and approval pipeline as model tools. To quit, press `Ctrl+C` twice.
 
-> **`!` shell passthrough**: an input starting with `!` (e.g. `!git status`) runs that shell command immediately (**through the same sandbox/approval pipeline as model tools** — there is no "hand-typed means unchecked" bypass) and echoes the output inline; long commands can be interrupted with `Esc`. The result stays **local and never enters the model context** (an orphan tool message would break the projection). Let the model call a tool when you need the output in context.
->
-> **Key cheat-sheet**: a single `Ctrl+C` while typing only clears the input (does not quit); with empty input you must press `Ctrl+C` **twice within 2s** to quit — the first press highlights a "press again" hint, and the timer resets on timeout or any other key; `Esc` cancels the running turn; pressing Enter while a turn runs **steers the message into the current turn** (status bar「转向 N」 — the model sees it on its next request; if steering is unavailable the message queues as「待发 N」 and is sent after the turn); `Shift+Tab` cycles thinking levels; `Ctrl+T` folds/expands thinking blocks; `Ctrl+O` folds the latest tool result; `Ctrl+↑/↓` jumps to the earliest user line / back to bottom; `Ctrl+A` select-all (delete = clear / typing = replace), `Ctrl+B/F` move left/right, `Ctrl+Y` redo, `Alt+P` yank-paste, `Alt+←/→` word-wise move; `F6` expands/collapses the background dock (↑/↓ select, `Enter` view output, `s` steer, `x` kill with a second press to confirm, `Esc` collapse).
+## 5. Model-facing tools
 
-## 5. Model-callable tools (invoked by the model, no interaction)
-
-| Tool | Description |
+| Tool | Notes |
 |---|---|
-| `shell` | Run shell commands (sandbox/approval policies intercept; `data.pty` drives interactive processes; credential env stripped) ; write targets are path-adjudicated (out-of-workspace writes denied under workspace-write, every write denied under read-only) ; **env jail**: `TMPDIR`/`XDG_CACHE_HOME`/`GOCACHE`/`GOMODCACHE`/`npm_config_cache`/`PIP_CACHE_DIR` are always redirected to `$GAH_HOME/jail/**` (`HOME`/`GOPATH` are left alone; `GAH_SHELL_JAIL=0` disables) ; **kernel-level sandbox** (group 3): the host passes the *effective* tier down to the execution entry, and `shell` restricts file **writes at the process-tree level** (credential **reads** are additionally denied — see `GAH_SHELL_CRED_READ_KERNEL**) — macOS `/usr/bin/sandbox-exec` (seatbelt), Linux **Landlock** (kernel >= 5.13, applied by a self re-exec helper since Landlock is irreversible); allow-list = the workspace root the effective tier permits + `$GAH_HOME/jail/**` + required device nodes (paths are symlink-resolved first), and `read-only` keeps the jail writable; platforms without the capability (e.g. Windows) get a one-time stderr warning and no wrapper; `GAH_SHELL_KERNEL_SANDBOX=0` disables; **POSIX shell resolution** (`sdk/shellpath.go`): `GAH_SHELL_PATH` > Git for Windows common install locations / `PATH` on Windows > `sh`, shared with background jobs, explicit error when missing (no silent degradation), and MSYS argument path conversion is disabled on Windows (`MSYS_NO_PATHCONV`) so adjudicated paths match what actually runs) |
-| `file_read` / `file_write` / `file_append` / `file_edit` | Read/write/append/precise-edit files (sandbox path validation). **`file_read` is paged**: optional `offset` (start line, 1-based) and `limit` (max lines, default 2000, cap 20000); long content returns `truncated` + `next_offset` + `note` — it says so out loud instead of silently truncating (one read can no longer flood the context) |
-| `file_list` / `file_glob` / `file_grep` | List a directory (paginated) / glob recursively / grep contents (Go regexp; long lines truncated, oversized files skipped and counted) |
-| `file_mkdir` / `file_move` / `file_copy` / `file_rename` | Create directory / move / copy / rename. **Never overwrites by default** (an existing destination is an error; pass `overwrite: true` to replace); every write lands atomically via a same-directory temp file + rename; **cross-device moves automatically fall back to copy + verify + delete** (removable media, external volumes, `/sdcard` → data root) and a failed copy **keeps the source file** |
-| `file_delete` / `file_trash_list` / `file_restore` | Delete (**moved to the trash** `$GAH_HOME/trash/` by default, newest 20 entries kept per project) / list entries / restore. `permanent: true` is the unrecoverable variant |
-| `image_ops` | Seven image actions: `info` (format/size/EXIF summary, no pixel decode) · `convert` · `resize` · `crop` · `rotate` · `compress` (down to a target byte size) · `thumbnail`. **Four limits**: ①EXIF orientation is auto-applied and baked in, so **crop coordinates refer to the oriented image**; ②≤ 30 MP and ≤ 8000 px per side (pure Go cannot downscale while decoding, so oversized images fail explicitly); ③animated GIF/APNG → first frame only, multi-page TIFF → first page only; ④**all metadata (including GPS) is stripped from the output by default**. Supports jpeg/png/gif/bmp/tiff conversion and WebP **decoding**; **HEIC/AVIF and WebP encoding are not implemented** (they need a host-native implementation) and fail explicitly instead of degrading silently. Wide-gamut (Display P3) input shifts colour when converted to sRGB (pure Go has no ICC transform) |
-| **Thinking block** | A reasoning model's **thinking and its final answer are rendered as separate blocks**: thinking gets its own block (left rail + faint background + muted italic, collapsed by default with a character count) while the answer keeps the normal foreground colour. The Web frontend previously **dropped `Thinking` deltas entirely** — nothing of the reasoning was shown, so users saw a conclusion with no visible reasoning behind it |
-| `web_fetch` / `web_search` | Fetch URL content / web search (default **AnySearch** — works anonymously, reachable from mainland China, no key needed; Exa kept as an alternative; provider is `anysearch` or `exa`). Result pages pointing at DuckDuckGo/Google and friends are dropped automatically. Key/endpoint via env (`GAH_SEARCH_API_KEY`/`ANYSEARCH_API_KEY`/`EXA_API_KEY`/`GAH_SEARCH_PROVIDER`/`GAH_SEARCH_ENDPOINT`) or `$GAH_HOME/config/search.yaml`, **env wins**; the endpoint may point at a self-hosted compatible service; 401/402/429/5xx structured errors |
-| `workflow` / `workflow_collect` | Restricted starlark composing multi-step tool calls (natively sandboxed); `background` async + collect |
-| `job_list` / `job_output` / `job_kill` | Background job query/output/kill (same source as `/jobs`) |
-| `memory` | Cross-session memory (remember/list/recall/forget; `$GAH_HOME/memory/<project>.jsonl`, human-editable) |
-| `todo` | Task list (create/start/complete/pend/delete/update/list; 4-state machine + blockedBy deps; `$GAH_HOME/todos/`) |
-| `auto_plan` | Planning mode (create/get/list/step/confirm/complete; detects planning intent, outputs a structured plan first, zero side-effect tool calls before confirmation; `$GAH_HOME/plans/`) |
-| `session_search` | Cross-session search (queries the historical session ledger: `{query, limit, scope?}` returns matched snippets plus session id/time; searches the **current workspace** by default, `scope="all"` widens it to other projects; read-only, no index files, and hits are **historical records**, not current facts) |
-| `schedule` | Scheduled-plan management (list/add/update/remove/run; delegates to host-schedule through `ctx.schedule`, same source as `/schedule`). Runs fire **unattended, so there is no confirmation channel**: any action requiring approval is rejected outright, and `update` is a partial update (only the fields you pass change). **This tool is disabled by default** (`tool-schedule` carries `enabled: false` in `bundle-base.yaml`); enable it in the config layer to use it |
-| `subagent` | Subagent delegation (delegate/spawn/agents/agent_status/agent_kill/send_message/fork; isolated ReAct contexts, background handles); `isolate="worktree"` (valid for delegate/spawn/fork) = **isolated run**: the subagent works inside a managed git worktree, so its changes land only there and never in the main workspace, and the reply carries the worktree path/branch (the parent decides whether to merge or discard). Non-git repos or a missing host-worktrees plugin fail explicitly instead of silently degrading to a non-isolated run |
-| `list_skills` / `read_skill` | Skill index / load SKILL.md on demand (project `.gah/skills/`, `$GAH_HOME/skills/`) |
-| `list_roles` / `read_role` | Role list and details (current role, identity sentence, working rules, mounted skills; `$GAH_HOME/roles/<id>/`) — **read-only**: a model cannot create/update/delete roles (writes go through `/role` and the Web panel) |
-| `mcp_<server>_<tool>` | MCP bridge tools (`mode: direct`; see "MCP" below) |
-| `mcp_search` / `mcp_call` | MCP search-mode proxy tools (`mode: search`): search the tool list by keyword (empty query = all), then invoke by name |
+| `shell` | run commands (sandbox and approval apply, write targets adjudicated, credential env stripped, environment jail; `data.pty` drives interactive processes) |
+| `file_read` / `file_write` / `file_append` / `file_edit` | read and edit; `file_read` pages via `offset` / `limit` and reports truncation honestly |
+| `file_list` / `file_glob` / `file_grep` | list / glob / content search |
+| `file_mkdir` / `file_move` / `file_copy` / `file_rename` | never overwrite by default; temp file plus rename for atomic writes, copies across devices |
+| `file_delete` / `file_trash_list` / `file_restore` | trash by default (`$GAH_HOME/trash/`); `permanent: true` really deletes |
+| `image_ops` | info / convert / resize / crop / rotate / compress / thumbnail (metadata incl. GPS stripped by default) |
+| `web_fetch` / `web_search` | fetch a page / search the web (AnySearch by default, no key; anti-injection and private-address blocks on by default) |
+| `workflow` / `workflow_collect` | starlark scripts composing tool calls (sandboxed, can run in background) |
+| `job_list` / `job_output` / `job_kill` | background jobs |
+| `memory` · `todo` · `auto_plan` · `session_search` | cross-session memory / todos / plan mode / past-session search |
+| `schedule` | schedule management (disabled by default, enable in the config layer) |
+| `subagent` | subagent delegation; `isolate="worktree"` runs it in a managed git worktree |
+| `list_skills` / `read_skill` · `list_roles` / `read_role` | skills and roles (roles are read-only; writes go through `/role` and the panel) |
+| `mcp_<server>_<tool>` · `mcp_search` / `mcp_call` | MCP tools (direct mode / on-demand search mode) |
+| `ask_user_question` | structured questions (Web overlay, `/answer` in the TUI) |
 
-## 6. Web usage (settings panel / REST)
+## 6. Web
 
-`gah web` serves http://127.0.0.1:2233 (auto-opens the browser; disable with `GAH_WEB_OPEN=0`). Feature-equivalent to the TUI, plus visual panels:
+`gah web` serves `http://127.0.0.1:2233` (`GAH_WEB_OPEN=0` disables the browser launch). Feature-equal to the TUI, plus visual panels: settings (model / reasoning / instructions / roles / history / provider / backup / schedules / MCP / plugins), a document-preview workbench, trajectory / changes / board views, sidebar docking, structured questions, attachments and image input.
 
-**Auth (token mode = non-empty `data.auth_token`)**: every surface is gated — API, static assets, `/attachments/` and `/ui-plugins/` all require a credential (previously only `/api/*` was protected). Open the `#token=<token>` URL printed in the startup log: the credential sits in the **URL fragment** (never sent to the server, absent from access logs/Referer), the bootstrap page exchanges it via `POST /api/auth` for an HttpOnly + SameSite=Strict `gah_token` cookie, then redirects into the UI. The desktop shell passes the same token via `GAH_WEB_TOKEN` (`?token=` is deprecated).
+In `token` mode (non-empty `data.auth_token`) every surface requires auth; `POST /api/auth` is the only exempt path.
 
-- **Settings panel** (⚙ in the status bar, with a **left section rail** — model / reasoning / instructions / roles / session history / provider / backup / plans / MCP server / plugins / About plus plugin-injected sections, one click away each, active section highlighted, so a long panel never needs top-to-bottom scrolling): model dropdown (all providers aggregated; each row carries **capability tags** (free / tools / vision / context size) and a **"only models that can act as the agent"** filter (**on by default**) — a model without tool-calling support can only chat here and its **tools will never execute**, and such rows are not hidden (hiding them would read as "does not exist"): they sink to the end with the reason spelled out; tags and usability are **decided by the backend**, so TUI and Web agree and the frontend never judges twice), thinking/sandbox/**approval** segmented controls, history-injection dropdown + compact button, **Roles section** (role list / working rules / skill mounts / skill library / trash, plus a role's **model and thinking level** — declared values are shown as taking effect on every turn), provider management (enable/delete/add; **first-run onboarding** auto-opens the panel when no provider exists and offers one-click presets for DeepSeek/Kimi/GLM/Qwen/SiliconFlow/OpenRouter/OpenAI/Ollama that need only an api_key, followed by a **connectivity self-check** that renders 401/404/DNS endpoint errors as plain language next to the raw response), **scheduled plans** ("Plans" section: **buildable without knowing cron** — a repeat dropdown (daily / weekly with multi-select weekdays / every weekday / monthly on a day / monthly on the Nth weekday / monthly on the last day / hourly / every N hours / every N minutes / one time only), time selects, **common presets** (before end of day, before Monday standup, ...) and a **plain-language line** ("every day at 8am" fills the controls for you to confirm, and falls back to the controls rather than erroring when it cannot parse), **the next three run times are shown before saving**, the list shows each schedule in words rather than as an expression, and every plan can be edited, enabled, run now or deleted; **lunar festivals** (Mid-Autumn, Spring Festival, New Year's Eve, ...) and **a fixed date each year** have their own controls (a lunar plan stores no expression — the solar date moves every year, so the preview shows exactly the three days it will actually run), the plain-language line also understands range phrasings such as "before the end of the month", "start of the month" and "mid-month" (**converged to a definite date and stated as such** — it neither asks you back nor guesses silently), numeric weekdays ("every Mon, Wed, Fri" as `1,3,5`) and festival names ("Mid-Autumn", "New Year's Eve"); frequent schedules state their cost ("every 30 minutes = about 48 runs a day") and monthly days 29-31 state that months without that day are skipped; the unattended-run semantics are stated in that section), **global instructions** (the "Instructions" section edits `$GAH_HOME/AGENTS.md` directly — the file that applies to **every** role: byte counter, 32 KiB cap that refuses oversized saves, double-confirmed save, and the server reloads instructions right after writing, reporting honestly when the file was written but the reload failed; a hand-edited oversized file stays readable, and injection truncates it at the cap with an explicit "truncated" note), **MCP servers** ("MCP server" section: per-entry name/command/enable/mode (full registration or on-demand search), read-only rows for env-provided servers, per-row "loaded, N tools" state, and **Save and reload** for immediate effect), **plugins** ("Plugins" section: the first 5 rows by default — all of them when there are 5 or fewer — with a filter over id/type/state and an "Expand all" toggle once the list is longer; instruction reload lives in the same section), **data backup** (back up now / restore — **double-confirmed**); **desktop builds get a pinned footer bar** (version + check updates, never scrolls away; **checking never installs** — only after an update is found does an "Upgrade to X" button appear, and clicking it still requires **a second confirmation** before anything is downloaded, installed or restarted; the tray's "Check updates…" asks first too, with the default focus on "Later" — an upgrade replaces the whole application binary and must never be triggered by a stray Enter). Everything editable in the panel (role working rules, skill `SKILL.md` source, global instructions, **MCP server config**) carries an **unsaved** badge — switching targets asks first (and the confirmation lists only what that step would actually discard), and edits are only cleared by "Save" or an explicit "Discard changes", never silently overwritten when you switch roles, skills, or reload config; renaming a role does **not** collapse the editor (a rename is not a role switch). Instant-commit controls on a role definition (skill mounts, inherit default pool, exclude global instructions, model/thinking level) submit **one after another in order**, with the affected controls disabled and a "submitting…" read-back while in flight — double-clicking can no longer lose a change (the mount list is sent whole, and the old implementation lost one). Every change persists on exit (gah-state.json, shared with the TUI). The Roles section can also **export a role pack** (in the browser the Export button downloads the zip directly; the desktop shell routes it through a native "choose a folder" picker and lets the server write the file — a WebView has no download channel, so `<a download>` silently does nothing inside the shell) and **import one** ("⤒ Import" takes a `.zip`, with an optional "import as" id; a same-named target is asked about first, and on confirm the old copy moves into `roles/.trash/` where it can be restored).
-- **Sidebar**: pinned workspaces (switching = real chdir) + session history (**only sessions that actually had a conversation** — a session where nothing was ever sent never enters the list; the sole exception is the currently open one, which stays so the list can highlight where you are; name/content preview/time; ✎ rename, × delete — double-confirmed; summarize/rename/export are greyed out on an empty session), attachment upload (button/drag-drop/paste; image thumbnails + the model sees images), session export (⤓ opens a menu: self-contained HTML or raw jsonl; browsers download directly, the desktop shell saves into the downloads folder and opens the HTML page).
-- **Status bar** (only read-only facts that live nowhere else): idle/running, **effective sandbox tier**, unnamed-session id, connection state (green/orange/red), context·cache usage, and the version number (**click → "About gah"**; on desktop the update entry sits in a pinned footer bar of the settings panel and never scrolls away). Model/thinking/approval each have their single control elsewhere (input toolbar, settings panel) and are no longer mirrored here; the background-jobs button sits in the top-right corner (running badge + list/output/kill).
-- **Document preview panel** (sidebar "Document preview"): workspace file tree on the left (filter / lazy expand / whole tree resets on workspace switch) and preview on the right (markdown block rendering, code/tables, docx/xlsx/pptx block model, native in-browser PDF viewer, images, HTML **source view by default with a click-to-load sandboxed iframe**; truncation and warning strips); tool result rows with a previewable path get a "Preview" button; assistant text in the session stream is markdown-rendered server-side (zero `v-html` in the frontend).
-- **Structured questions**: the `ask_user_question` tool opens a dialog with the prompt and options; it can be collapsed into a **badge above the input** ("answer later") without blocking the conversation, and clicking the badge returns to the dialog. Multiple pending questions are answered in arrival order.
-- **Trajectory view** (status-bar "轨迹/会话流" toggle, remembered): aggregates the same session event ledger into **turn → step → tool** to inspect process and cost: a sticky overview (turns, total duration, cumulative tokens and cache share, plus clickable turn chips that jump to that turn), turn status badges (done/cancelled/step limit/running), per-step tool rows (name, args, duration, **output bytes**, ok/fail with the error text inline) and per-turn token breakdown. **Durations come only from event timestamps; an in-flight turn/step/tool always shows "进行中"** instead of a fabricated duration. When the loaded window is incomplete (older history of a long session not loaded / folded away) the overview is relabelled "窗口内 token" and states that it only covers the current window.
-- **Changes view** (status-bar cycle: stream → trajectory → changes → board, remembered): shows only **files this session actually changed through tools**: a sticky overview (file count, +lines/−lines, change count, plus clickable file chips that jump to a file), collapsible per-file blocks (new/binary/truncated badges, ops and ± counts), and an expanded per-line coloured patch where each hunk carries a `#seq op time` header to locate it against the session stream, along with explicit degradation notes. It is built from before/after content captured at write time, so the basis is deliberately **not git** (it is not "working tree vs HEAD"); `/diff <path>` jumps straight to one file.
-- **Board view** (fourth projection, cycled from the status bar): aggregates data already in hand into a single information surface with **five cards** — usage (cumulative input/output, cache hit share, request count, context fill), turns (completed turns, total duration, tool calls and failures, average tokens), background jobs (running, record count, most recent), file changes (files, ±lines, change count) and scheduled plans (enabled count, next run, last outcome). Cards can be **hidden / reordered**, reset to defaults, and the layout is remembered in the browser (new cards are appended automatically); card actions jump straight to the matching view or drawer (trajectory / changes / jobs panel / the settings plan section). **Each card states its own basis**: usage is session-cumulative, the turn count includes the in-flight turn, and changes come from the tool write path (not git). Everything is derived from the local event ledger and existing endpoints: no executable content, no new backend contract.
-- **Sidebar dock** (opened from the status bar, remembered): docks the changes / board / jobs panels **beside the conversation stream** instead of making you choose between "switch away from the stream to see changes" and "let the jobs panel cover the conversation". Panels switch via the dock's tabs; the width is **draggable** (focus the separator and use `←/→`, double-click to reset) and the layout is stored in the browser. **The width yields to the conversation**: when the viewport is tight the dock gives way first (min 280 / max 720 / always keep 520 for the stream), and below 900px it degrades to an overlay drawer. Zero backend contract: the dock reuses the existing view components, so the data pipeline is unchanged. **The shell never scrolls as a whole page** — every scroll area has an owner (conversation stream / sidebar lists / drawer), and that rule is guarded by a real-browser layout regression gate (see section 10).
-- **Long-session window** (first-frame baseline + scroll-up paging): opening a very long session no longer replays all history. The first connect replays only a **tail window** (about 400 events, turn-aligned) and sends a **baseline** frame first to tell the frontend the window boundaries and whether older history exists; scrolling near the top (or clicking the top button) fetches one earlier page by cursor and prepends it (deduplicated by sequence, **scroll position stays put**). While reading at the bottom the oldest messages are folded away (cap 800, shown as `已折叠 N 条更早消息`) and can be fetched back by scrolling up, so DOM and memory do not grow with session length. The trajectory/changes views label their scope explicitly when the window is incomplete instead of presenting window totals as session totals.
-- **WebSocket channel**: `/api/events/ws` (same payload as SSE; the frontend degrades automatically; both paths carry the `after` cursor on reconnect).
-- **Keep talking while a turn runs** (steering): the input box stays **editable and Enter-submittable** while a turn is running — a plain message steers into the current turn (visible to the model on its next request, with an “injected into current turn” line in the stream), and a submission carrying attachments is rejected instead (409: the steering channel is text-only, attachments are never silently dropped). The input bar also shows a **“Stop” button** (aborts the turn — use it to leave a pending approval as well).
-- **Disconnection behaviour** (explicit three states: connected / reconnecting / **disconnected**): when the link is lost a red banner with a "retry" button appears above the input, **submitting and approving/answering are blocked while the draft, attachments and dialogs stay exactly as they were** (nothing local is thrown away before it is delivered; you resend manually after recovery, there is no automatic queue replay). On recovery the server snapshot takes over and stale completion frames are discarded. The disconnected verdict only uses observable facts (browser `navigator.onLine`, EventSource giving up, failed probe) instead of guessing from "how long since the last frame"; returning to the foreground or waking from sleep (clock jump > 20s) re-handshakes once.
-- **General REST surface** (callable by the frontend or scripts; missing services return explicit 503/501):
+Main REST surface (unwired services answer 503/501):
 
-| Method / path | Description |
+| Path | Purpose |
 |---|---|
-| `POST /api/auth` | Bootstrap channel: `{"token":"…"}` (or `Authorization: Bearer`) → `gah_token` cookie (POST-only, 401 on a wrong token); the only path exempt from the auth gate, still under the Host allow-list + same-origin guard |
-| `GET /api/state` | State snapshot (model/thinking/sandbox/sandbox_effective/sandbox_sync/approval/stats/session/running/version; **model_from/thinking_from plus model_session/thinking_session** = the effective values and their source (`role`\|`session`) together with the overridden session values). **`?session=<id>`** scopes the snapshot: echoes `session_id` and lists `active_sessions` (sessions held by other windows); `running` is always false for non-main sessions (parallel turns not implemented yet — never a fake "it's running") |
-| `POST /api/input` | Submit a turn; body may carry `session`; `/` prefix routes to commands; a plain message while a turn is running **steers into the current turn** (the response carries `accepted:"steer"`); **submissions carrying attachments fall back to 409** (the steering channel is text-only; attachments are never silently dropped); 409 also when steering is unavailable or for `/` commands. **Submitting to a non-current session is always 409** (per-session turns not implemented yet; the text would land in the current session — refused explicitly instead of silently written to the wrong one) |
-| `POST /api/confirm` | Approval reply `{id, ok, session?}`; a `session` that is not the current one ⇒ 409 (stops one window from answering on behalf of another) |
-| `GET /api/events` + `GET /api/events/ws` | Event stream (SSE replay on reconnect / WS; first connect sends the `baseline` frame plus the tail window, reconnects replay the `after` delta). **`?session=<id>`** keeps only that session's session frames (frames carry a `session` field); **non-session frames** (status/notice/plan/diff) are still broadcast to everyone |
-| `GET /api/session/events` | Session event paging (`?before=<seq>&limit=<n>&session=<id>`): load older history in long sessions; windows are turn-aligned and return `has_more`; `session` reads **that session's own** log |
-| `GET /api/sessions`, `POST /api/sessions` | Session list / `{action: switch\|new\|spawn\|fork\|clone\|delete}`; **`spawn`** creates an independent session **without switching the current one** (used by multi-window) |
-| `POST /api/sessions/rename`, `GET /api/sessions/{id}/export` | Rename / export session (`?format=html` = self-contained HTML, default jsonl; no-id path = main session) |
-| `GET /api/workspaces`, `DELETE /api/workspaces/{key}` | Workspace history / delete record (keeps the folder) |
-| `GET /api/commands`, `POST /api/commands/{name}` | Command registry / direct execution `{args}` |
-| `GET /api/tools`, `POST /api/tools/{name}` | Tool listing / invocation (JSON args pass-through) |
-| `GET /api/jobs`, `GET/POST /api/jobs/{id}[/kill]` | Background jobs |
-| `GET/POST /api/schedules`, `PATCH/DELETE /api/schedules/{id}`, `POST /api/schedules/{id}/run`, `POST /api/schedules/resolve` | Scheduled plans: list / add / update (only the fields sent) / delete / run now; `resolve` interprets a schedule (pass `cron` or a plain-language `text`) and returns the control kind, a wording of it and the next three run times — **an unparsable phrase still returns 200 with a plain-language reason**, because "did not understand" is routine, not a failure |
-| `GET/POST /api/mcp` | MCP server config: GET returns the config plus per-entry runtime state (loaded / tool count); POST submits the full list = write `config/mcp.yaml` and restart the plugin (`reload:false` writes only; a save that succeeds while the reload fails returns 200 + `reload_err`) |
-| `GET /api/plugins`, `POST /api/plugins/{id}/load\|unload` | Plugin toggles |
-| `GET /api/models?all=1`, `GET/POST/DELETE /api/providers...` | Model aggregation / provider add-edit-delete (delete syncs persistence and runtime) |
-| `POST /api/control` | Status-bar-level control `{model?\|thinking?\|sandbox?\|approval?\|workspace?\|cancel?}` (persists; `cancel:true` aborts the running turn — this is what the web input bar's “Stop” button calls) |
-| `POST /api/compact`, `POST /api/settings/history` | Manual compaction / history-injection count |
-| `GET /api/todo` | Todo panel data (pass-through of the todo tool list) |
-| `GET /api/backup`, `POST /api/backup` | Backup list / `{action: backup\|restore, dest?, name?}` |
-| `POST /api/attachments` + `GET /attachments/...` | Attachment upload (20MB / type allow-list) / static preview. The allow-list is images (`image/*`), text, PDF and JSON; when the browser gives no usable Content-Type (HEIC/HEIF/AVIF have no registered MIME on Windows, and `.md`/`.log` often arrive as `application/octet-stream`) we fall back to the **file extension**, matching the front-end accept list — anything the picker lets you choose can be uploaded. HEIC/AVIF upload and preview fine, but **desktop has no decoder**: reading one says "cannot decode, convert first" explicitly (no hex-dump degradation, no silence). To actually see the pixels, convert to JPEG/PNG or use the Android shell, which has native decoding |
-| `POST /api/reload` | Instruction-file hot reload |
-| `POST /api/shutdown` | Graceful shutdown (→ system/shutdown → DisposeAll; reused by desktop/ops) |
-| `GET /api/ui-plugins` + `/ui-plugins/` | UI-plugin aggregate view / static hosting; aggregate items carry `trusted`/`trust_note` (UI plugins share the app's origin and therefore its privileges: they can call any API, including `/api/input` → tool execution; only install plugins you trust; the SPA ships a strict CSP that closes pure exfiltration) |
-| `GET /api/doc/preview` `raw` `asset` `tree` `html`, `POST /api/doc/render` | Document preview (block-model JSON) / raw bytes (Range, `dl=1` download) / embedded assets (MIME allow-list) / file tree / sandboxed HTML (CSP) / markdown text → block model |
+| `GET /api/state` · `POST /api/input` · `POST /api/confirm` · `POST /api/control` | state snapshot (`?session=`) / submit a turn (steers while running) / approval reply / model, sandbox, approval, cancel |
+| `GET /api/events` · `GET /api/events/ws` · `GET /api/session/events` | event stream (SSE / WS, resumable by `after`) plus paging for long sessions |
+| `GET/POST /api/sessions` · `rename` · `/api/sessions/{id}/export` | session list and switch/new/spawn/fork/clone/delete / rename / export |
+| `GET/POST/DELETE /api/providers` · `GET /api/models?all=1` | provider CRUD and model aggregation |
+| `GET /api/tools` · `POST /api/tools/{name}` · `GET /api/commands` | direct tool and command calls |
+| `GET/POST /api/schedules` (`PATCH` / `DELETE` / `run` / `resolve`) | schedules; `resolve` turns Chinese text or cron into a schedule |
+| `GET/POST /api/mcp` · `GET /api/plugins` · `POST /api/plugins/{id}/load\|unload` | MCP config (write plus hot reload) / plugin toggling |
+| `POST /api/attachments` + `GET /attachments/...` | attachment upload (20MB, type allow-list) / preview |
+| `GET /api/jobs` · `GET /api/todo` · `GET/POST /api/backup` | jobs / todos / backup and restore |
+| `POST /api/compact` · `POST /api/reload` · `POST /api/shutdown` | compaction / instruction hot reload / graceful shutdown |
+| `GET /api/doc/preview\|raw\|asset\|tree\|html` · `POST /api/doc/render` | document preview (block model / raw bytes / assets / tree / HTML sandbox) |
 
-## 7. Configuration & runtime directories
+## 7. Config and runtime layout
 
-### Config layer (profile→bundle→patch)
+### Config layers (profile → bundle → patch)
 
 ```
-profile-<name>.yaml     # bundles + patches, declared in order
-bundle-base.yaml        # plugin entries (id + enabled + data params)
-patch-*.yaml            # replace/insert/toggle entries by id (hot pluggable)
+profile-<name>.yaml     # bundles + patches, in order
+bundle-base.yaml        # plugin entries (id + enabled + data)
+patch-*.yaml            # replace / insert / toggle entries by id
 ```
 
-Samples live in `config/` (two copies kept in sync with `internal/embed/seed`; `# seed-version: N` header; bump on new base entries). Any entry printed by `--dump-config` can be replaced by your own patch.
+Sample sources live in `config/` (kept in sync with `internal/embed/seed`, header `# seed-version: N`). An entry id is `<type>-<name>`, matching its `plugins/` directory.
 
-### Runtime data root (GAH_HOME, fully portable)
+### Data root (fully portable)
 
-The data root is **the `gah-data/` sibling of the gah binary (the only one; auto-created on first run, releasing config samples + bundled plugins — the deployment directory is self-contained)**. If creation fails (read-only/unwritable dir) startup **fails with an explicit error**. Neither `GAH_HOME env` nor `~/.gah` acts as a data-root source anymore (tightened 2026-09-16; after boot GAH_HOME is set internally for plumbing, see cmd/gah homeDir).
+- The data root is **`gah-data/` next to the binary** (the only one; created on first run together with the config samples and bundled plugins). If it cannot be created (read-only folder) startup fails loudly — move to a writable folder.
+- Keys live in `gah-data/config/` (provider.yaml / search.yaml) and travel with the directory.
+- Whole-home backup: `/backup` packs all of `gah-data/` (minus `backups/` itself) into `gah-data/backups/` or an external path.
 
-```bash
-# 1) Drop gah into any directory; the first run auto-creates gah-data/ and releases config samples + plugins:
-./gah --profile web
-#    Migrating existing data (e.g. from the old ~/.gah): mkdir gah-data && cp -a ~/.gah/. gah-data/
-# 2) Upgrades replace the single gah file only; data stays put; if the dir is read-only, set GAH_HOME or move to a writable dir
-```
+### Environment variables (common)
 
-- Multiple gah copies can share one gah-data (single root; never system root / scattered cwd); explicit override: `GAH_HOME=/path ./gah ...`.
-- Keys (provider.yaml / search.yaml) live in `gah-data/config/`, backed up and moved with the directory.
-- **Full backup**: `/backup` packs the whole gah-data (excluding backups/ itself) → default `gah-data/backups/` (moves with the dir) or an external path; `/backup restore <name>` restores (auto-backup of the current state first).
-
-### Environment variables
-
-| Variable | Effect |
+| Variable | Purpose |
 |---|---|
-| `GAH_HOME` | Internal plumbing variable (set by boot to the portable `gah-data/`; plugins/external processes derive subdirs from it); **user-set values are ignored** (the only data root is the sibling `gah-data/`, since 2026-09-16; a different user-set value logs a warning) |
-| `GAH_PROFILE` / `GAH_NO_TUI` | Default profile / force TUI off (headless/CI) |
-| `GAH_WEB_ADDR` / `GAH_WEB_OPEN` / `GAH_WEB_STATIC` | Web listen address (default 127.0.0.1:2233) / auto-open browser / static dir override (dev HMR); the desktop shell additionally uses `GAH_WEB_TOKEN` to pass the token and navigate to the `#token=` URL (its readiness probe treats 401 as ready) and **picks a free port** to override the listen address via `GAH_WEB_ADDR` (a fixed port can land on someone else's instance: an orphan sidecar or the user's own `gah web`), setting `GAH_WEB_PARENT_WATCH=1`: once the parent dies the sidecar exits gracefully (no orphan holding the data root) |
-| `GAH_EXPORT_OPEN` | Whether `/export <path>.html` auto-opens the exported file with the system default app (default **on**; `0`/`false` disables; same as `data.export_open_browser` on the `host-internal-commands` entry) |
-| `GAH_MCP_COMMAND` / `GAH_MCP_COMMANDS` | MCP bridge (single server / multi server one per line `name=command args`); **`$GAH_HOME/config/mcp.yaml` wins** — same-name entries taken from the file (env-only entries show as read-only "env" rows in the settings panel) |
-| `GAH_CB_ADDR` / `GAH_CB_TOKEN` | host-bridge callback channel (external plugins request tools/jobs/fanout from the host; auth token; **never leaked downstream** — `SanitizedEnv` strips it) |
-| `GAH_SHELL_KERNEL_SANDBOX` | `0` disables the shell **kernel-level sandbox** (enabled by default: macOS `sandbox-exec` seatbelt / Linux Landlock restrict file writes at the process-tree level; writes only — reads and network are untouched; platforms without the capability warn once and degrade to the cooperative layer) |
-| `GAH_SHELL_CRED_READ_KERNEL` | `0` disables the **kernel-level credential read denial** (enabled by default: on macOS `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.config/gcloud` and `$GAH_HOME/config` are denied **reads** in the seatbelt profile). Why: the cooperative layer only sees *literal* paths in the command text, so a dynamically built path such as `python3 -c "open('~/.ss'+'h/id_'+'rsa')"` bypasses it entirely (measured 2026-09-27 audit), and reads had no kernel backstop (writes did, via `deny file-write*`); disabling this falls back to the text layer alone. Cost: `ssh`/`git push` and `aws`/`gcloud` CLIs that read key files directly are denied (unaffected when using an agent/keychain). **Not available on Linux**: Landlock rules are an allow-list and cannot express "allow all reads except these credential dirs" |
-| `GAH_SHELL_JAIL` | `0` disables the shell **env jail** (enabled by default: redirects `TMPDIR`/`XDG_CACHE_HOME`/`GOCACHE`/`GOMODCACHE`/`npm_config_cache`/`PIP_CACHE_DIR` into `$GAH_HOME/jail/**` so build caches and temp files stop littering the user home directory; `HOME`/`GOPATH`/`CARGO_HOME`/`XDG_CONFIG_HOME` are deliberately preserved so git/ssh keep working) |
-| `GAH_EXT_ENV_PASS` | Explicit allow-list of env vars passed to external plugin processes (comma-separated): external plugins do **not** inherit host credentials by default (`*_API_KEY`/`*_TOKEN`/`AWS_*`/`GAH_CB_*` are stripped); name the ones a plugin genuinely needs (e.g. `EXA_API_KEY`), or put them in `$GAH_HOME/config/search.yaml` — the host **reads that file and injects the values into the plugin process env** on the plugin's declaration (batch 85; the plugin process itself is denied reads of `config/` by the kernel). A named env var with a value wins over the file |
-| `GAH_EXT_KERNEL_SANDBOX` | `0` disables the **kernel-level sandbox for MCP servers** (enabled by default: an MCP server is third-party code and argument-level write adjudication cannot see the DB/cache/temp locations it picks itself, so the process is launched under the same seatbelt/Landlock wrapper; allow-list = the workspace root the effective tier permits + `$GAH_HOME/jail/**` + package-manager caches and system temp dirs) |
-| `GAH_EXT_RW_PATHS` | Extra **writable paths** for MCP servers (colon-separated): name your server's own data directory (e.g. `~/Library/Application Support/<app>`); the default allow-list covers caches and temp dirs only and does not guess application data directories |
-| `GAH_EXT_CRED_READ_DENY` | `1` enables the **kernel-level credential read denial for MCP servers** (default **off**: reading credential dirs is a server's legitimate job and denying it breaks workflows broadly; directories only, never files — same list as `GAH_SHELL_CRED_READ_KERNEL`, macOS only) |
-| `GAH_EXT_PLUGIN_SANDBOX` | `0` disables the **kernel-level sandbox for external plugin processes** (enabled by default: a plugin process is independent code, the collaborative layer only sees paths passed as tool arguments, and the write targets it picks itself are invisible; allow-list = the workspace root the effective tier permits + `$GAH_HOME/jail/**` + package-manager caches and system temp dirs + the data dirs the plugin **declares**). **The writable scope is defined by the kernel and the cooperative layer is aligned to it**: there is exactly one definition of "where a write may land" (`kernelsandbox.WritablePaths`), so the policy layer no longer refuses write targets the kernel already allows (temp dirs, `$GAH_HOME/jail`, package-manager caches) — that mismatch used to make the model retry the same wall over and over. Two lists, one per execution surface (the shell surface redirects `TMPDIR` into the jail; the external-plugin surface additionally allows caches and system temp). **When the kernel layer is not in force** (platform has no equivalent / switch off / jail missing) the cooperative layer falls back to the narrow "inside the workspace root only" rule — there it is the only boundary. **Which tier** (2026-10-24): the process tier follows the **calling session's tier** (session-level sandbox + role tightening + delegation snapshot + isolated work root are all passed down as a hint). The kernel profile is a static string fixed at exec time, so plugin processes are **bucketed by sandbox context** (tier + work root): the same tier reuses a process, a different tier gets its own, and idle buckets are reclaimed least-recently-used first (at most 3 processes per plugin; the `sandbox tier` column of `/install list` shows them). Command-only plugin paths have no ctx and still use the global effective tier |
-| `GAH_EXT_PLUGIN_RW_PATHS` | Extra writable paths for **external plugin processes** (colon-separated): name your data dir/DB here for third-party plugins; first-party plugins should declare `DataWrites` instead |
-| `GAH_EXT_PLUGIN_CRED_READ_DENY` | `1` enables the **kernel-level credential read denial for external plugin processes** (default **off**, same rationale as the MCP entry above; macOS only) |
-| `GAH_MCP_SERVE` / `GAH_PLUGIN` / `GAH_VERSION` | External tool-process entry params (serve/load plugin/version announcement; injected when host-bridge launches them) |
-| `DEEPSEEK_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | LLM keys (per-provider prefix routing; or write to provider.yaml via `/provider`) |
-| —(outbound proxy) | Standard `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` (either case). The **desktop shell is launched from Finder / the Start menu and does not inherit the shell environment**, so when none of these is set gah **reads the macOS system proxy** (`scutil --proxy`, the same setting browsers use); an explicit environment variable is always respected. If your egress goes through a proxy/gateway that swaps certificates (errors like `x509: … certificate is not standards compliant`), add the endpoint to `NO_PROXY` to go direct; if a self-signed root is genuinely required, export it and point `SSL_CERT_FILE` at it — since Go 1.27, setting that variable on macOS switches to Go's own verifier instead of the system one |
-| `GAH_SEARCH_API_KEY` | Generic web_search key (env beats `api_key` in `$GAH_HOME/config/search.yaml`). The default AnySearch works **anonymously**, so this is usually unnecessary; a key only raises concurrency and quota |
-| `ANYSEARCH_API_KEY` / `EXA_API_KEY` | Provider-specific keys (they win over the generic `api_key`); only needed when switching the provider to exa |
-| `ANYSEARCH_ENDPOINT` / `EXA_ENDPOINT` | Provider-specific endpoints (they win over the generic `GAH_SEARCH_ENDPOINT`). **Both key and endpoint are scoped per provider**, so switching provider means editing the single `provider:` line in `search.yaml` — mixing them up fails *silently* (a key sent to the wrong gateway gets 401; an endpoint sent to the wrong service just returns nothing useful) |
-| — (file) | `search.yaml` carries a `search-config-version` marker; **after an upgrade gah brings it up to the current schema automatically** (the old file is backed up to `config/config-backups/search.yaml.*`, backup also 0600). Generic values whose owner is unambiguous (`api_key`/`endpoint` with provider unset or set to `exa`) move into the exa-specific keys; values whose owner is **ambiguous are kept as-is plus a printed hint** — moving them automatically would be a guess, and a wrong guess shows up as search silently failing |
-| `GAH_SEARCH_PROVIDER` / `GAH_SEARCH_ENDPOINT` | Provider name and endpoint for web_search (the endpoint may target a **self-hosted Exa-compatible service**, in which case no key is needed — an empty key sends no `Authorization`); env beats the config file. Note: the external plugin process cannot read `config/` (kernel credential read denial), so the host reads the file and injects it — **reload the `tool-basic` plugin (or restart) after editing the file** |
-| `GAH_WEB_APPROVE` | Outbound approval tier for `web_fetch`: `auto` (**default** — follows the approval tier: open/smart pass straight through, strict behaves like `new-host`) / `off` (no gate) / `new-host` (one prompt the first time each new host is visited, then remembered) / `query` (prompt every time, nothing remembered). Prompt-injection hardening, private-address / DNS-rebinding blocking and credential-read denial do **not** depend on this gate, so the smart/open tiers no longer interrupt once per host |
-| `GAH_WEB_ALLOW_HOSTS` | Static host allow-list for `web_fetch` (comma-separated exact hosts; `*.suffix.com` matches subdomains): the pre-approval path for unattended runs and no-confirm-channel setups (hosts you approved interactively are stored in `web_allow_hosts` inside `$GAH_HOME/config/gah-state.json`) |
-| `GAH_WEB_ALLOW_PRIVATE` | `1` allows `web_fetch` to reach **private/loopback/link-local** addresses (denied by default: the URL comes from the model, so this blocks model-induced reads of unauthenticated local services and the cloud metadata endpoint `169.254.169.254`; turn it on for local dev servers or when your egress **is a local HTTP proxy** — the guard then sees the proxy address and does not exempt it) |
-| `GAH_ALLOW_PLUGIN_GOENV` | `1` = keep the host's `GOPRIVATE`/`GONOSUMDB`/`GOSUMDB` in the plugin build subprocess (stripped by default — see "Build-environment isolation and its escape hatch"). Affects only go's module resolution and verification; no credentials involved |
-| `GAH_ALLOW_IMPLICIT_PLUGIN_BUILD` | `1` = allow the default build command for a `plugin.yaml` with no `build:` key. **Currently inert** (the A behaviour is "install as usual, plus label that the command was chosen by gah"); the constant and the judgement point are already in place, so tightening it to "refuse" is a one-function change |
-| `GAH_DOC_CONVERTER_SANDBOX` | `0` disables the **kernel sandbox around the document-converter subprocess** (LibreOffice/`pdftoppm`; on by default because it consumes untrusted documents — downloads and attachments; allow-list = the conversion cache + `$GAH_HOME/jail/**` + system temp, tier fixed at read-only. External converters themselves are off by default: see `data.external_converters`) |
+| `GAH_PROFILE` / `GAH_NO_TUI` | default profile / force the TUI off |
+| `GAH_WEB_ADDR` / `GAH_WEB_OPEN` / `GAH_WEB_STATIC` / `GAH_WEB_TOKEN` | Web listen address / auto-open browser / static dir override (HMR) / desktop shell token |
+| `GAH_EXPORT_OPEN` | open `/export` output automatically (`0` disables) |
+| `GAH_MCP_COMMAND(S)` | MCP bridge wiring (`config/mcp.yaml` wins) |
+| `GAH_SHELL_KERNEL_SANDBOX` / `GAH_SHELL_CRED_READ_KERNEL` / `GAH_SHELL_JAIL` | shell kernel sandbox / credential-read denial / environment jail (all on by default, `0` disables) |
+| `GAH_EXT_ENV_PASS` · `GAH_EXT_KERNEL_SANDBOX` · `GAH_EXT_RW_PATHS` | external plugins: env pass-list / kernel sandbox / extra writable paths |
+| `GAH_WEB_APPROVE` · `GAH_WEB_ALLOW_HOSTS` · `GAH_WEB_ALLOW_PRIVATE` | `web_fetch` egress approval / static allow-list / allow private addresses |
+| `GAH_SEARCH_PROVIDER` / `GAH_SEARCH_API_KEY` / `ANYSEARCH_API_KEY` / `EXA_API_KEY` | search provider and keys (env wins over `search.yaml`) |
+| `DEEPSEEK_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | LLM keys (or write them via `/provider`) |
+| `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` | egress proxy; the desktop shell falls back to the macOS system proxy |
 
-### MCP (bridge client / serve form)
+> `GAH_HOME` is an internal plumbing variable (boot sets it to the portable root); a user-supplied value is ignored.
 
-> **MCP servers are launched under the kernel sandbox** (2026-09-27 audit, A3): a server is third-party code, and path adjudication only sees arguments passed through the `mcp_*` tools — the DB/cache/temp locations it picks itself are invisible. The host therefore starts it inside a seatbelt (macOS) / Landlock (Linux) wrapper following the **effective tier**: allow-list = the workspace root that tier permits + `$GAH_HOME/jail/**` + package-manager caches and system temp dirs (measured: an `npx`-style server fails to start without the cache entries). Name extra write targets with `GAH_EXT_RW_PATHS=/path/a:/path/b`; disable wholesale with `GAH_EXT_KERNEL_SANDBOX=0`; add credential **read** denial with `GAH_EXT_CRED_READ_DENY=1` (off by default).
->
-> **External plugin processes are covered too** (2026-09-27 audit, A3b + A6): `tool-mcp`/`tool-workflow`/`tool-subagent` and third-party plugin processes are wrapped as a whole (same allow-list + the data dirs the plugin **declares**), and any child process they spawn inherits that profile (no re-application — kernel sandboxes cannot nest). `tool-basic` is wrapped like any other: the per-call layer it applies inside for `shell` is skipped automatically thanks to the `GAH_KERNEL_SANDBOXED` marker, so the outer profile governs (which is why no "don't wrap me, I sandbox myself" exemption exists); it declares "this process runs shell commands" via `bridge.ServeToolsWith(..., Capabilities{CredentialReadDeny:true})`, and the host then denies credential-dir **reads** to that process by default (carrying F1's protection over). After a sandbox-tier or workspace-root change, a wrapped plugin is **rebuilt under the new tier synchronously, then the call proceeds** (the host never runs under a stale profile, and the first call after a workspace switch no longer fails). See `docs/PLUGIN_DEV.md` for the declaration and the writable set.
-
-Two ways to configure (precedence: config file > env vars; the GUI writes the file):
+### MCP
 
 ```yaml
-# $GAH_HOME/config/mcp.yaml (same source the settings panel writes)
+# $GAH_HOME/config/mcp.yaml (written by the settings panel's "MCP server" section; hot reloads on save)
 servers:
-  - name: deja
-    command: /opt/homebrew/bin/deja
   - name: codegraph
     command: codegraph serve --mcp
-    mode: search      # many tools? use search: the model only sees mcp_search/mcp_call
-  # Remote server (Streamable HTTP, 2025-03-26): no local process, just a URL
+    mode: search        # search: expose only mcp_search / mcp_call to the model, saving context
   - name: remote-crm
     transport: http
     url: https://mcp.example.com/rpc   # https required; plain http only for loopback
-    headers:
-      Authorization: Bearer sk-...     # credentials come from this file only (0600); never env, never logs
-    mode: search
 ```
 
-Three rules for remote entries: **① credentials live in the config file only** (`headers` values are masked in `/api/mcp` responses and logs; the panel shows how many headers exist, not their values); **② static headers only** — a 401/403 is reported as-is instead of pretending we can auto-login (OAuth deferred); **③ the transport follows the spec**: responses may be a single JSON body or an SSE stream (both are read), `Mcp-Session-Id` is carried automatically, and a 404 (session expired) triggers **one** re-handshake — not an unbounded retry loop. The settings panel lists remote entries (showing the URL) but cannot edit them — change the URL and credentials in this file.
+MCP servers are third-party code, so they are launched inside the kernel sandbox. To expose this repo's tools as an MCP server: `./gah --profile mcp-serve`.
 
-```bash
-# Env vars (startup surface, read-only; tools auto-register as mcp_<server>_<name>)
-export GAH_MCP_COMMANDS="deja=/opt/homebrew/bin/deja\ncodegraph=codegraph serve --mcp"
-./gah --profile web
+### ACP
 
-# As an MCP server exposing all repository tools (launchable by Claude Desktop etc. over stdio)
-./gah --profile mcp-serve
-```
-
-### ACP integration (editor <-> gah)
-
-`gah acp` lets an editor launch gah as an ACP agent (needs `$GAH_HOME/config/profile-acp.yaml`, shipped in the seed; `gah acp` ≡ `gah --profile acp`, bundles = base + confirm-fusion).
+`gah acp` lets editors drive gah as an ACP v1 agent (sessions, streaming, tool progress and approvals all over ACP, sharing the same session ledger as TUI/Web):
 
 ```jsonc
-// Zed (~/.config/zed/settings.json): the agent_servers section
-{
-  "agent_servers": {
-    "gah": { "command": "/path/to/gah", "args": ["acp"] }
-  }
-}
+// Zed (~/.config/zed/settings.json)
+{ "agent_servers": { "gah": { "command": "/path/to/gah", "args": ["acp"] } } }
 ```
 
-What the editor gets: new sessions (workspace = the `session/new` cwd), streaming replies and thinking blocks, tool calls and results (including file-change patches), a command menu (`/` runs gah's own host commands, without a model turn), and approval prompts for dangerous commands (answers go straight back into gah's approval pipeline).
-One process serves **one workspace** (bound by the cwd of the first `session/new`; start another agent instance for another directory) and runs **one turn at a time** (concurrent prompts return busy; send `session/cancel` first).
-If `ctx.confirmFusion` is missing (profile without the confirm-fusion bundle) the plugin **refuses to start** with the reason: nothing would answer approvals, so dangerous operations would all be denied silently.
+One process serves one workspace and runs one turn at a time; the editor's permission buttons map to `allow_once` / `reject_once` only.
 
-### Plugin install (capability expansion beyond TUI/Web)
+### Plugin install
 
 ```bash
-./gah -install <repo>[@version]     # external plugin (go-plugin bridge): git clone → build → $GAH_HOME/plugins/<id>/ → idempotent register; enabled right away
-./gah -install <repo>@<40-hex sha>   # pin one exact commit (for when a tag was moved and you want to stay on the old one)
-./gah -install mcp:<id>:<command>   # MCP plugin registered through the same entry
-./gah -install-ui <repo|local dir>  # UI plugin (manifest.json slot overrides; two reject guards: v-html directive scan + build output containing an unreplaced bare process.env)
-./gah -list-plugins / -uninstall <id>
-./gah -list-ui-plugins / -uninstall-ui <id>
+./gah -install <repo>[@version or 40-char sha]        # external plugin: clone → build → $GAH_HOME/plugins/<id>/ → register
+./gah -install <local dir>                            # local plugins need no git init + push first
+./gah -install-ui <repo|local dir>                    # UI plugin (two refusals: v-html scan, bare process.env)
+./gah -install-artifact <url> -id <id> -name <tool-x> # install a prebuilt artifact, no toolchain needed
 ```
 
-#### Pinned sources & drift guard
+- **Source pinning**: a tag that now points at a new commit is refused by default (`-accept-drift` opts in); `@<sha>` reinstalls that exact commit.
+- **Check, don't auto-update**: `-check-plugin-updates` only runs `git ls-remote`; without signatures there is no auto-update channel.
+- **Integrity and lifecycle**: `SHA256SUMS` is enforced once it exists (UI plugins too); disable is not uninstall, and a disabled plugin stays disabled across restarts.
+- **Build containment**: `-mod=readonly` builds, credential env scrubbing, semantic flags such as `GOFLAGS` stripped; `--prebuilt` runs no repo script at all.
 
-A **third-party plugin** is one someone uploaded to their own repository (or any public repository). gah
-**does not verify signatures — you bear the consequences**, but it does turn "which piece of code did
-I actually install" into a fact that is **recorded, displayed, and can refuse drift**.
+### Instructions and skills
 
-**Why**: `git clone --depth 1 --branch <ref>` pinned **nothing** — a same-named **tag can be force-pushed**,
-and GitHub / Gitee **usernames can be released and re-registered** (author abandons the plugin → the account
-is reclaimed → someone new registers the same name and pushes a "v1.2.0"). Re-running the *exact same command*
-then installs someone else's code, with no trace. `SHA256SUMS` cannot stop that: it only answers "was this
-copy swapped after installing", not "was it the same copy in the first place".
-
-- **Source ledger** `$GAH_HOME/plugins/sources.yaml` (0600), keyed by **repository**: the normalized repo name, the ref, the **40-hex sha it actually resolved to**, the plugin id, the protocol version declared at install time, origin, install time. Deliberately **not merged** into `SHA256SUMS`: that one is keyed by **binary** and changes as plugins come and go; this one is keyed by **repository** and is only written at install time — different lifecycles, different key spaces. Repository URLs are normalized (`https://github.com/a/b`, `git@github.com:a/b.git`, `github.com/a/b` and the trailing-slash form are one repository) — without that the guard would be theater. **A corrupt ledger errors out explicitly** rather than being treated as empty: silently treating it as empty means the next install overwrites it wholesale, and that file is the only thing that can answer "which one was that, last week".
-- **Drift verdict**: same ref resolving to the **same** sha ⇒ idempotent reinstall. A different sha ⇒
-  - **tag** ⇒ **refused**, with two ways out: `--accept-drift` (take the author's current one) / `@<old sha>` (stay put);
-  - **branch / default branch** ⇒ allowed, but **flagged prominently and recorded as `drifted`**.
-  **Tags are refused, branches are not**: a tag is the author's promise that "this version is this version", and re-pushing it breaks that promise; refusing branches would force everyone to tag releases, and long-tail authors rarely do.
-- **`@<commit sha>` only became possible with this change**: `git clone --branch` does not accept a bare sha, so before it, the "stay on the old version" half of the refusal message above **could not be carried out at all**. It now uses `git fetch --depth 1 <sha>` + `checkout FETCH_HEAD`, and falls back to a full clone when the host disallows shallow fetch of an arbitrary historical commit.
-- The panel and the listing show the triple honestly: `github.com/a/b @v1.2.0 (tag · 9f2c1ab3e5f7)`, with moving refs marked as such.
-
-**Check for updates (check-then-ask), not automatic updates**: `gah -check-plugin-updates` / `/install check` / the panel's "check for updates" button ask the remote once via `git ls-remote` (**no clone**) and return one of three states: up to date / the branch moved on / **a same-named tag was changed** (which the guard will refuse; the message gives both ways out). Installation happens only after you confirm.
-
-**Why no automatic updates**: (1) with **no signatures**, an auto-update channel is an unauthenticated, permanent remote-code-execution channel — installing by hand is something "you read and decided on", auto-update turns it into something that keeps happening in the background where **you cannot answer which author the package came from** (when an author's account is compromised, the manual model only exposes whoever re-runs the command, while the automatic model exposes **every user at once**); (2) it would destroy the reassuring property that "gah never auto-updates plugins"; (3) it would be inconsistent with gah itself — the desktop shell was just changed from "download and install as soon as one is found" to "ask first", and the host only dares to ask because *it* is signed. Even with signatures, auto-update stays dangerous: **"update to the newest version" is not "the newest version you trust"** — the tag is itself the author's mechanism for expressing "this version".
-
-#### Prebuilt artifacts: `--prebuilt` gets the foreign build script off your machine
-
-Installing a plugin otherwise means running the author's **arbitrary shell command** on **your** machine. The
-earlier build hardening (`-mod=readonly`, no proactive `tidy`, credential scrubbing) constrains it, but it is
-still arbitrary shell — the build script can still read files on your disk. `--prebuilt` removes that cell
-entirely: it only downloads the author's published artifact, so **this machine needs no go / node / make**.
-
-Publishers declare it in `plugin.yaml` (a Release is where an author puts artifacts; no separate index service
-— that would mean trusting yet another party):
-
-```yaml
-prebuilt:
-  darwin/arm64: https://github.com/a/b/releases/download/v1.2.0/tool-demo-darwin-arm64
-  linux/amd64:  https://…
-```
-
-- **Without that section, or without the current platform ⇒ an explicit error**, and it **never silently falls back to building from source** — you reached for this switch precisely to avoid running its scripts, so falling back would turn it into a lie. The error lists which platforms the author did declare and tells you that dropping the switch builds from source.
-- Three checks before installing: non-empty / size cap (512 MiB) / **architecture magic** (mirroring the release script's `assert_arch` in `gen-extplugins.sh`: ELF / Mach-O LE64 / PE). An architecture mismatch is the easiest mistake to make and the hardest to diagnose — uncaught, the symptom is "it installed, and every call dies with exec format error", which reads like the plugin is broken.
-- URLs must be `http/https`: `file:///etc/shadow` would turn "download an artifact" into "read an arbitrary file on this machine and install it as an executable plugin".
-- **It hooks into the drift guard**: the `prebuilt:` section is part of the manifest, and the manifest arrives via clone ⇒ **the tag-drift guard is already in effect before the download happens**. A hijacked tag's prebuilt URL is caught the same way.
-- The artifact's hash still goes into the allowlist and the ledger still records repo/ref/commit; additionally the **artifact URL** is recorded and the audit source is marked `install-prebuilt:<url>`, so afterwards you can tell at a glance that this binary was **downloaded, not built here**.
-
-> ⚠️ **The honest cost**: the download URL is **declared by the author itself**, and gah **does not verify
-> signatures** ⇒ **there is no independent verification at the moment of installation**. That is a direct
-> consequence of choosing no signatures, not an implementation gap that can be worked around. The only
-> mitigation: the installed hash goes into the allowlist, so **swapping it afterwards is blocked at the next
-> load**. This paragraph is also in the install confirmation text, not only here in the docs.
-
-#### Build-environment isolation and its escape hatch
-
-The build subprocess gets none of your `*_API_KEY`/tokens (`sdk.SanitizedEnv`), and the host's
-`GOFLAGS`/`GO111MODULE`/`GOWORK` are stripped — they **change build semantics**, and semantics should be decided
-by this install, not by whatever environment variable happens to be set on your machine.
-
-`GOPRIVATE`/`GONOSUMDB`/`GOSUMDB` are stripped too by default: stripping `GOPRIVATE` makes go treat
-**private module paths as public** and query sumdb for them, which means **leaking internal module names to
-public lookups** — the right direction. But a corporate plugin that depends on private modules then fails to
-build, and "it won't build" is a dead end for the user ⇒ an explicit escape hatch: `GAH_ALLOW_PLUGIN_GOENV=1`.
-
-> `GAH_ALLOW_IMPLICIT_PLUGIN_BUILD` is a different thing (implicit builds when `build:` is undeclared), and it
-> is **currently inert**: the A behaviour is "install as usual, plus label in three places that this command was
-> chosen by gah rather than written by the author". Tightening it to C (refuse) has its **judgement point** already
-> in the code (`implicitBuildAllowed`) — changing one function is all it takes.
-
-`copyDir` (local-directory install) had two defects fixed: (1) **symbolic links are refused** — the old code
-walked with Lstat (does not follow) but read with `os.ReadFile` (**follows**), so a symlink pointing at
-`~/.ssh/id_rsa` was **read and copied into the temporary clone**, and that clone then *is* the plugin repository:
-build scripts can see it in full; (2) **the executable bit is preserved** — it used to write `0o644` for
-everything, so a local plugin building via `./build.sh` failed with `Permission denied`, a message bearing no
-relation to the actual cause.
-
-#### Installing a binary somebody else built (`-install-artifact`): long-tail plugins without Go too
-
-`--prebuilt` removes the toolchain requirement **when the author cooperates** (a `prebuilt:` section in the
-manifest plus that flag). But long-tail third-party plugins mostly will not write one - it asks the author to
-publish seven artifacts and maintain a table. For those, the only Go-free path today is three manual steps:
-download by hand, drop it into `plugins/`, then `gah -trust-plugin`.
-
-`-install-artifact <url> -id <id> -name <tool-xxx>` collapses those three steps into one command:
-
-```bash
-./gah -install-artifact https://.../tool-demo-darwin-arm64 -id demo -name tool-demo
-```
-
-- **No Go / node / make, and no build command runs at all** - it verifies the architecture magic and places the binary.
-- Checks: `http/https` only / size cap / **architecture magic** (mirroring the release script's `assert_arch`). An architecture mismatch is the easiest mistake to make and the hardest to diagnose; uncaught, the symptom is "it installed, and every call dies with exec format error".
-- **`-id` / `-name` go straight into the install path**, so they are validated with a **whitelist** (`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`, no `..`, the name must start with `tool-` / `cmd-`). A whitelist beats a blacklist because a blacklist always misses one. It reuses the **loader's own** prefix predicate rather than a second set of rules - if the two drift you get "passed at install time, silently skipped at load time".
-- **Nothing is guessed**: both `-id` and `-name` must be given explicitly. The "infer the id/platform from the filename" shape is not accepted (its failure mode is "it installed, and the tool is not the one you wanted").
-- On success it registers the hash allowlist, the source ledger (`kind: artifact`) and an audit line (`artifact-install:<url>`) exactly as the other two install paths do. Artifact entries are **excluded from update checks** - they have no repository at all, and running `ls-remote` against a URL would only produce an error that means nothing to the user.
-- TUI equivalent: `/install artifact <url> <id> <name>`.
-
-> The **same honest cost as `--prebuilt`**: whoever supplies the URL decides where the bytes come from,
-> and gah **does not verify signatures** => **there is no independent verification at the moment of installation**.
-> The only mitigation: the installed hash goes into the allowlist, so **swapping it afterwards is blocked at
-> the next load**. This is also in the install confirmation text.
-
-**Zero-network local compatibility notice**: the protocol version declared at install time is stored in the ledger (the plugin's `Capabilities` is deliberately **not** given a new field — that is burden on plugin authors). `api_version` is a **compatibility range** (`api_version: v1` or `api_version: [v1, v2]`; the scalar and list spellings are equivalent), and plugins this gah does not recognize produce **one summary line** in the panel (not one pop-up each), with no network involved.
-
-#### Plugin probing: a timeout is no longer disguised as "it has none" (2026-10-03)
-
-Before starting, an external plugin is asked two short-lived questions (`bin --roles` for roles,
-`bin <role> --gah-caps` for capability declarations). Both probes used to share one 3s timeout, and their
-**degradation directions are opposite**: a roles-probe timeout makes a multi-role binary get started as
-single-role, so it fails the handshake without its role argument and its **whole toolset disappears** — with
-only the plugin's own usage text in the log; a capabilities-probe timeout silently **drops the author's
-declarations** (`CredentialReadDeny` among them).
-
-Both conflate "**we did not find out**" with "**we found out: it has none**". On a loaded machine (observed
-while running the full test suite and six-target cross-compiles at once) this made the bundled `tool-kit`
-fail to load entirely.
-
-Now:
-
-- The two probes get **their own** timeouts. Roles 3s → **10s** (a four-role kit is probed once, because it
-  is probed per *binary*, not per role); capabilities **stays at 3s** — it runs **once per role** inside
-  `loadOne`, so raising it to 10s means 40s of startup in the worst case. Sharing one constant was a hazard
-  in itself: tuning one silently retuned the other.
-- A timeout **still** degrades to "start it as single-role", and that direction is **deliberately unchanged**:
-  a third-party single-role plugin happens to get the right answer under a timeout. Making it "skip on
-  timeout" would be the regression — entirely healthy plugins would vanish en masse on slow machines. What
-  needed fixing was **leaving a trace**, not the degradation direction.
-- Timeouts now **say so**: the log and the rejected list both point out that this binary was not probed
-  accurately, and the capabilities one additionally names **which declarations were lost**.
-- The total budget (20s) must exceed the single-probe timeout — otherwise the budget returns before any probe
-  can finish and the mechanism is effectively dead. A unit test pins that invariant.
-
-#### Lifecycle: third-party process plugins can be enabled/disabled at any time (disable ≠ uninstall)
-
-`sdk.ExternalPlugins` previously had **only `Reload`** ⇒ there was **no runtime means at all** to switch off a
-misbehaving plugin. Under a "no signatures, you bear the consequences" model that is not a nice-to-have: **it is
-the user's stop-loss mechanism**.
-
-| | `disable` | `uninstall` |
-|---|---|---|
-| Process / tools | killed, registrations withdrawn | killed, registrations withdrawn |
-| Plugin files | **kept** | deleted |
-| Allowlist / source-ledger entry | **kept** (re-opening needs **no** re-`trust`) | revoked |
-
-The panel buttons, the TUI `/install enable|disable` and `POST /api/plugins/install/{disable,enable}` all go
-through one kernel. Disabling is **per binary, not per role** — a `tool-kit` provides four roles, but the unit a
-user thinks in is the single `tool-kit`.
-
-Four behaviours this changed:
-
-- **The order is load-bearing**: uninstall must "stop the process, *then* delete the file". The other way round means "the user deletes the file while the process keeps holding tool registrations and a callback token until gah restarts" — a **false sense of safety**. If the process cannot be stopped, the uninstall **aborts with an error** and the file is left in place, so there is something to retry.
-- **Deleting the binary really does unload it**, no restart needed. The watcher previously reported only write/create/rename — **deletion was explicitly excluded** (comment: "deletion is decided by plugin-manager") — and the external-plugin path has **no plugin-manager in it**, so `rm` left the process running until a restart.
-- **The disabled state takes effect at boot**. That is how a stop-loss gets used in a real incident (shut down → disable → start again); if it only applied while running, one restart would bring the plugin back on its own.
-- **Re-enabling re-checks drift**: come back after six months and the author may have moved the tag. Without the re-check, "disable" would be a back door around the drift guard. A moved tag ⇒ refused with the two ways out (reinstall / stay on the old one); **remote unreachable (offline) ⇒ allowed**, because "cannot tell" is not "has drifted" — otherwise an offline user could never re-enable anything.
-- Disabling mid-turn ⇒ the in-flight tool call gets a **readable error** and can be retried, and **the host does not crash** (the RPC disconnect takes the existing soft-degradation path).
-
-#### The UI plugin integrity gate is enforced by default (batch 4 — one old path **cut off**)
-
-A UI plugin is the **widest surface in this project, with the same origin and the same permissions as the host**:
-its artifact is pulled into the main page via dynamic `import()`, and it can call every API including tool
-execution. Its `ui-plugins/SHA256SUMS` used to be created **only by `-install-ui`** ⇒ **anyone who had never
-installed a UI plugin could copy a directory into `ui-plugins/` and just use it** — the widest zero-validation
-opening in the project.
-
-Now `ui-web-app` creates the gate **unconditionally** at Start (failure only logs a WARN, never blocks boot).
-Consequently:
-
-- **A hand-placed UI plugin does not load by default.** The exit: `gah -trust-ui-plugin <id>`, which records the entry-scope digest of **the copy you have right now** (manifest + the modules the slots declare); if the list already holds a **different** digest it refuses explicitly rather than laundering the mismatch. `-install-ui` goes through the same registration, no extra step.
-- At the moment that old path is cut, **the panel and the log each leave one line of explanation** — silent refusal is the worst option, because the user just sees "the plugin I placed is gone" and concludes the product is broken.
-- **UI plugins get enable/disable too** (disabled = not served; the files and the gate entry stay, so re-enabling needs no re-registration). `POST /api/ui-plugins/{enable,disable}`. The state lives in `prefs.ui_disabled`, **as a field separate from `external_disabled`** — the key spaces differ (one is a binary basename, the other a manifest id), and merging them into one list will eventually break.
-- "Two kinds of empty" are now separated inside `plugintrust` (**and both sides use the same rule**): **0 bytes** = corrupted ⇒ error (fail-closed unchanged); **comments only** = legal ⇒ enforced, with nothing trusted yet. That distinction is what lets "unconditionally create the gate" coexist with "fail closed" — the UI side has **no official plugin** for embed to self-register, so "register the official four at boot like the process side does" simply does not exist there.
-- The panel's plugin section is **split by origin**: "plugins bundled with gah" (compared against the embedded manifest on every boot) and "plugins you installed" (three states: enabled / disabled / binary missing). The two sets are handled completely differently; in one table the user has to read a column every time to work out which buttons are even meaningful.
-
-> Division of labour between `/plugins` and `/install` (stated in both commands' descriptions): `/plugins`
-> governs **in-process** plugins (config tree + `patch-runtime.yaml`); enable/disable for external process plugins
-> goes through `/install` or the panel's plugin section. Reaching for `/plugins off` and finding it does nothing
-> to a third-party plugin is the most common misuse of this split.
-
-### Instruction files & skills
-
-- **Instructions**: global `$GAH_HOME/AGENTS.md` + project `AGENTS.md` (closer overrides farther; `AGENTS.override.md` replaces at the same level) — auto-injected into the system prompt; `/reload` hot-reloads.
-- **Skills**: project `.gah/skills/` + global `$GAH_HOME/skills/` + the current role's `roles/<id>/skills/`, SKILL.md scanning (filtered by the role's mounts; the directory set is **recomputed on every scan**, so after `/workspace` switches directories the new project's `.gah/skills/` is visible immediately, no restart); the model loads them on demand via `list_skills`/`read_skill`. **Duplicate names are de-duplicated globally by name (first wins)**: a role-private skill **shadows** a same-named shared skill (including the name another role explicitly mounted — those roles can neither list nor read it), so treat private skill names as globally unique; duplicates are warned about on **every** rescan, not just once at startup.
-- **The global layer that applies to every role** (already in place): there is no separate "default role" entity — globality is carried by two layers: the **global instructions** `$GAH_HOME/AGENTS.md` (injected when no role is active, or when the role does not declare `exclude_global`; editable from the settings panel's "Instructions" section, no need to touch the file by hand; capped at 32 KiB — the panel refuses oversized content, and a hand-edited oversized file is truncated with an explicit "truncated" note when injected) and the **shared skill library** `$GAH_HOME/skills/` (= the default pool: fully visible unless the role writes a `skills` key, which **replaces** the pool, with `skills_inherit: true` appending it back). A role opting out of global content is an explicit act (`exclude_global` / replacing `skills`), never the default.
-- **Roles**: `$GAH_HOME/roles/<id>/` = `role.yaml` (name/identity sentence/`exclude_global`/skill mounts/**`model` and `thinking`**/**excluded tool list**/**`approval` and `sandbox`**) + `AGENTS.md` (working rules, capped at 32 KiB and explicitly marked when truncated) + `skills/` (private skills). **A role can carry a model and a thinking level**: a declared value **overrides the session setting on every turn** (the TUI input line, the Web bottom bar and the settings panel all mark it as "role-specified" and show the overridden session value; `/model` and `/thinking` still change the session value, but that only takes effect once the role is disabled); if no provider can serve the role's model, **the turn falls back to the session model with a one-time warning** (no silent degradation, no hard failure); a role **cannot** pick a provider or credentials. **A role can tighten permissions (never relax them)**: `approval` (`smart`/`strict`) and `sandbox` (`read-only`/`workspace-write`) in `role.yaml` declare a **floor** — the effective tier is the strictest of "global declared tier → approval linkage → role tier" (so a role's `read-only` still wins when `open` approval plus linkage would otherwise widen the sandbox to `full-access`), and a role-tightened `strict` approval **denies dangerous commands outright instead of prompting** (unattended scheduled jobs and subagents are adjudicated the same way). All three faces report it honestly: the status bar shows `approval: smart→strict(role-tightened)`, `/approval` and `/sandbox` echo `effective: X(role-tightened)`, and the Web bottom bar and settings panel match — the source of the deviation is reported by the policy itself rather than hard-coded as "linkage". Relaxing values such as `open`/`full-access` are **rejected explicitly** (400 / an error — never silently ignored, never silently clamped to the strictest), because relaxing is a privilege grant and needs an explicit switch plus a second confirmation. **Parallel subagents inherit the current role's model/thinking level, identity slot, skill visibility and tool visibility** (a role's clones run the same model, share its identity, see the same skills and may call the same tools — identity rides the same system-prompt assembly, visibility and the tool table ride the same session-level predicate). **A role can exclude tools**: `tools_exclude` in `role.yaml` means listed = denied (everything is available by default — the opposite direction of skill mounts, so tools from a newly installed plugin stay visible to existing roles); an excluded tool is **neither listed nor callable**, a model calling it from memory gets an explicit refusal (worded to be distinguishable from "tool does not exist"), and subagents, workflows, external-plugin callbacks and the MCP server all share that one predicate; the panel's "Roles → Tools" subsection ticks tools (the full list is fetched only when expanded), offers "restore all", and marks excluded names that no longer exist (plugin unloaded) so they can be cleared individually. **Not done** by design: per-role plugin enable/disable (it would touch the user's UI surface and the dependency graph) and whitelist-style tool sets (new plugins would become silently invisible). A `model:` key hand-written into `role.yaml` by an older version now really takes effect. The thinking level accepts only `off`/`low`/`medium`/`high` (case and surrounding whitespace are normalised); any other value marks the role **broken** and is reported in the panel and by `list_roles` instead of silently running as `off`. The Web settings panel's "Roles" section does the same: create/rename/delete (deletion moves to `roles/.trash/`, the current role is refused), edit the working rules (with a byte counter), tick skill mounts, and create/edit skills (shared library or role-private, deletion moves to the library's `.trash/`). Deletions land in the respective `.trash/` (**the latest 20 entries by deletion time are kept**), and the panel's "Trash" subsection lists both the role and skill entries and restores one by name (a same-named role/skill already present is refused, never overwritten). Five seeded roles are ready for `/role use`; omitting the `skills` key means the default pool, listing it **replaces** the pool, and `skills_inherit: true` appends the pool back. Private skills only ever add, are invisible to other roles, and win over a same-named library skill. A skill can be **renamed or moved between libraries** in the panel (the directory name is the identity, and the frontmatter `name` is updated with it); **a rename rewrites the mount list of every role that mounted it**, so no stale mounts are left behind, and **moving a skill into a role's private library reports the visibility consequences** (it leaves the shared default pool, and the other roles that explicitly mounted it are listed). Switching roles records a `role/switch` event in the session log (marked in the Web session stream, and reported as "role history" by `/recap`). **Roles can be packed and shared**: `/role export <id> [path]` turns a role into a **single file** `gah-role-<id>.zip` (manifest `gah-role.json` + `role.yaml` carried over **verbatim** + `AGENTS.md` + private skills; the same role exported at the same instant yields identical bytes), and `/role import <path>` reproduces it on another gah (or through the Web: Export/Import in the settings panel's Roles section, `GET /api/rolepack/{id}` to download, `POST /api/rolepack` to upload). Import **refuses a same-named target by default**; `force` moves the old copy into `roles/.trash/` first, and **the current role is always refused**; an unknown key, an unknown archive entry or oversized content is **reported explicitly with zero bytes written** (unpacking is whitelist-based: only those four entry names are accepted and on-disk paths are re-composed from the parsed name). An export carries **the role only** — not the global `AGENTS.md`, the shared skill library or any credential.
-- **Themes**: `$GAH_HOME/config/themes/*.yaml` (`/theme` to switch, no recompile; the repo ships a gruvbox-dark sample).
+- **Instructions**: global `$GAH_HOME/AGENTS.md` plus project `AGENTS.md` (nearer wins, `AGENTS.override.md` replaces at the same level), injected automatically, `/reload` hot-reloads.
+- **Skills**: project `.gah/skills/`, `$GAH_HOME/skills/` and the current role's private skills; the model loads them on demand via `list_skills` / `read_skill`.
+- **Roles**: `$GAH_HOME/roles/<id>/` (persona, working rules, private skills, optional model / thinking level, tool exclusions, tighten-only permission levels); 12 preset roles in five groups; `/role` or the panel switches instantly without changing sessions.
+- **Themes**: `$GAH_HOME/config/themes/*.yaml`, switched at runtime with `/theme`.
 
 ## 8. Plugin development
 
-Follow [docs/PLUGIN_DEV.md](./docs/PLUGIN_DEV.md) (registered in-repo as the `gah-plugin-dev` skill, so a running gah can read it on demand):
+Read [docs/PLUGIN_DEV.md](./docs/PLUGIN_DEV.md) (also registered as the `gah-plugin-dev` skill, so the model can load it):
 
-1. `plugins/<type>-<name>/`, implement `sdk.Plugin` (Start registers side effects, returns a Disposer)
-2. Register in `plugins/catalogue` (provides/requires/bundle)
-3. Add an entry to `config/bundle-base.yaml` (enable/data params) + sync `internal/embed/seed` and bump seed-version
-4. Unit tests + full `-race` green before committing
+1. `plugins/<type>-<name>/` implements `sdk.Plugin` (Start registers side effects, returns a Disposer)
+2. Register in `plugins/catalogue` (provides / requires / bundle)
+3. Add an entry to `config/bundle-base.yaml` and mirror the sample into `internal/embed/seed`, bumping `seed-version`
+4. Unit tests green under `-race`, then commit
 
-Red lines: plugins import **only `sdk/`** — never core/tui/other plugins; registration is a side effect, unloading revokes it. Tool plugin bodies are externalized to `extplugins/` by default (crash isolation, independent upgrades); built-in implementations are disabled.
+Hard rules: plugins import `sdk/` only — never `core/`, `tui/` or another plugin; registration is a side effect and unload must undo it; disposers are idempotent.
 
-## 9. Project layout
+## 9. Layout
 
 ```
-├── cmd/gah/          # boot: profile assembly entry + CLI flags (profile/input/install/ephemeral…)
-├── core/             # microkernel: ctx container / event (5 dispatch) / plugin (topology+hot reload) / config (profile→bundle→patch)
-├── sdk/              # the only dependency of plugins: interfaces + domain models (standalone module)
-├── bundles/          # bundle assembly (base/tui/web/register)
-├── plugins/          # all plugins: host/adapter/policy/tool/mcp/ui (catalogue/ is the single source of truth)
-├── extplugins/       # out-of-process plugin entrypoints (tool-basic/tool-workflow/tool-mcp/tool-subagent/tool-echo)
-├── tui/              # bubbletea v2 UI (testable state machine; ui-tui-app thin shell)
-├── web/              # Web server Go runtime (SSE/WS + REST + static embed web/dist)
-├── web-src/          # frontend project (Vue3+Vite+TS; build embedded; UI-plugin samples in web-src/examples/)
-├── tests/            # e2e + mini MCP server (unload matrix per AGENTS.md)
-├── internal/         # embed (seed samples/external plugins) / install / prefs / providerfile
-├── config/           # profile/bundle/patch samples (seed-version kept in sync with internal/embed/seed)
-├── scripts/          # gen.sh (unified build)/ gen-web.sh / gen-extplugins.sh / gen-desktop-wails.sh / publish-desktop-wails.sh / ws-smoke.go
-├── desktop/wails/    # desktop shell (Go + Wails v3; sidecar embedded; zero-cost release: updater+CI)
-├── .gah/skills/      # self-registered skills (gah-plugin-dev)
-└── docs/             # local design docs (only PLUGIN_DEV.md ships with the repo; the rest are local materials)
+├── cmd/gah/      # boot: profile assembly + CLI flags
+├── core/         # micro-kernel: ctx / event / plugin / config / boot
+├── sdk/          # the only interface surface plugins depend on (separate module)
+├── bundles/      # bundle assembly (base / tui / web / register)
+├── plugins/      # host / adapter / policy / tool / mcp / ui plugins (catalogue is the source of truth)
+├── extplugins/   # external-process plugin entry points
+├── tui/          # bubbletea v2 UI
+├── web/          # Web server (SSE/WS + REST + static hosting)
+├── web-src/      # Vue 3 + Vite + TS frontend (build output is embedded)
+├── desktop/      # Go + Wails v3 desktop shell
+├── tests/        # end-to-end and unload-matrix tests
+└── scripts/      # build / release / gates / checks
 ```
 
-## 10. Build & release
+## 10. Build and release
 
 ```bash
-./scripts/gen.sh cli             # single binary for this platform (TUI+Web+headless; frontend embedded; skips rebuild when unchanged)
-./scripts/gen.sh release         # goreleaser six-target release (tar.gz/zip + checksums)
-./scripts/gen.sh desktop         # desktop shell: sidecar (= cli artifact) → shell build + assemble .app/.app.zip (optional dmg, unsigned)
-./scripts/gen.sh web-dev         # frontend hot dev (vite watch + GAH_WEB_STATIC, no restarts)
+./scripts/gen.sh cli       # single binary for this platform (TUI + Web + headless, frontend embedded)
+./scripts/gen.sh release   # goreleaser, six targets (tar.gz / zip + checksums)
+./scripts/gen.sh desktop   # desktop shell: sidecar → shell build → .app / .app.zip (optional dmg)
+./scripts/gen.sh web-dev   # frontend HMR (vite watch + GAH_WEB_STATIC)
 ```
 
-One gah binary, three surfaces: the Web frontend is embedded; TUI/Web/headless are three profiles of one process; the desktop shell reuses the same sidecar artifact. Release matrix:
-
-- `scripts/gen-extplugins.sh` builds external plugin artifacts for the matrix (darwin/linux × amd64/arm64 + windows/amd64), `gzip -9 -n` deterministic compression, embed split per platform (each target embeds only its own).
-- `goreleaser release --snapshot` produces all six target bundles directly; `.goreleaser.yaml` configures before hooks.
-
-- **Gates (identical in CI and locally)**: `go vet` + `go test -race` across the repo + `bash scripts/coverage-check.sh` (per-package ratchet + global floor, exemptions need a reason; **locally pass `GAH_COVER_MERGE_DIR=<dir>`** or `cmd/gah`'s subprocess coverage is not merged in and the gate turns red falsely) + `scripts/size-check.sh` (size gate ≤36 MiB / gz ≤23 MiB) + frontend `npm test` (logic unit tests) + **`npm run test:layout`** (real-browser layout regression: 5 viewports × 4 dock states, asserting no whole-page scroll / no overflowing elements / skeleton present, including a **detector self-check**; CI sets `GAH_LAYOUT_REQUIRE=1` so an unmet environment fails red instead of skipping silently). `sdk/` is a separate module (`go.work`) and its three checks run separately.
-
-Measured acceptance (DESIGN §7.6 / latest baseline): `CGO_ENABLED=0` static single file **30–34 MiB** across five targets (gate = `scripts/size-check.sh`, currently ≤36 MiB / gz ≤23 MiB), six-target cross-compilation green, bare `env -i` boot OK, sha256 attached.
+- **Gates (CI and local share one source)**: `bash scripts/gate.sh` (gofmt + vet + staticcheck, three modules), full `go test -race`, `scripts/coverage-check.sh` (per-package ratchet plus a global floor), `scripts/size-check.sh` (single file ≤30 MiB / gz ≤15 MiB), frontend `npm test` and `npm run test:layout` (real-browser layout regression).
+- **Release**: pushing a `v*` tag triggers two pipelines (CLI and desktop shell) that share one GitHub Release and `desktop-latest.json`; the Gitee mirror is synced locally by `scripts/mirror-gitee.sh`.
+- `sdk/` is a separate module (`go.work`), so `go vet/test/staticcheck` must run inside it too.
 
 ## 11. License
 
-**MIT License** (see [LICENSE](./LICENSE), © 2026 nekoleamo): permissive — use, modify, and distribute commercially under closed source.
+**MIT License** (see [LICENSE](./LICENSE), © 2026 nekoleamo): use it, modify it, ship it closed-source commercially.

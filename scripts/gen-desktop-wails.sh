@@ -53,6 +53,10 @@ if [ "$MODE" = "release" ]; then
   fi
   echo "内嵌 sidecar: $SHELL_MOD/embed/gah.bin.gz($(du -h "$SHELL_MOD/embed/gah.bin.gz" | cut -f1))"
 fi
+# Windows 壳必须是 GUI 子系统(否则双击会多弹一个黑窗口),且只能对 windows 目标加。
+case "$triple" in
+  *windows*) [ "$MODE" = release ] && LDFLAGS="$LDFLAGS -H windowsgui" ;;
+esac
 OUT="$SHELL_MOD/build/gah-desktop"
 mkdir -p "$SHELL_MOD/build"
 # shellcheck disable=SC2086  # TAGS 需要按空格拆开(空时不能留空参数)

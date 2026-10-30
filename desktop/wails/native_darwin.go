@@ -2,8 +2,9 @@
 
 // macOS 原生小动作(AppKit 一行能做完、Wails v3 没暴露的那些)。
 //
-// 目前只有「Dock 图标弹一下」:通知被系统静音/聚焦助手开着时,这是唯一还剩的提示通道
-// (旧 Rust 壳的 bounceDock,真机上确实救过一次「任务失败但通知没弹」)。
+// 两个都跟「窗口不在用户眼前」有关:
+//   - bounceDock:通知被系统静音/聚焦助手挡掉时唯一还剩的提示通道(旧 Rust 壳同款);
+//   - activateApp:托盘/Dock 召回主窗口时,先把应用从 Cmd+H 隐藏态拉出来。
 package main
 
 /*
@@ -18,8 +19,19 @@ static void gahBounceDock(void) {
 		[NSApp requestUserAttention:NSInformationalRequest];
 	});
 }
+
+static void gahActivateApp(void) {
+	// unhide:Cmd+H 隐藏整个应用后,单纯 activate 不会把窗口拉回来。
+	dispatch_async(dispatch_get_main_queue(), ^{
+		[NSApp unhide:nil];
+		[NSApp activateIgnoringOtherApps:YES];
+	});
+}
 */
 import "C"
 
 // bounceDock 让 Dock 图标跳一下(用户点一下应用即取消)。
 func bounceDock() { C.gahBounceDock() }
+
+// activateApp 把整个应用拿到前台(含 Cmd+H 隐藏态)。
+func activateApp() { C.gahActivateApp() }

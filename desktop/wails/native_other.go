@@ -4,3 +4,6 @@
 package main
 
 func bounceDock() {}
+
+// activateApp 非 macOS 无需额外动作。
+func activateApp() {}

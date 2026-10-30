@@ -84,6 +84,22 @@ PLIST
 
 OUT_DIR="desktop/wails/build"
 ZIP="$OUT_DIR/gah-${VERSION}-${TRIPLE}.app.zip"
+
+# 代码签名:macOS 按「签名标识 + bundle 封章」认应用,而 Go 链接器只给**可执行文件**
+# 一层 adhoc 签名(flags=adhoc,linker-signed:`codesign -dv` 显示 Identifier=a.out、
+# Info.plist=not bound)。2026-10-30 真机现场:这样组装的 .app 一发送通知就是
+# UNErrorDomain error 1,通知中心里也查不到 gah 这一项。wails 的 updater 同样要求
+# 「打包并签名」(validate.go 对本情形是宽容不改判,但那是容错不是正确)。
+# 有开发者身份就用它(发行版),否则 adhoc(本地/内测;系统接受,codesign --verify 也过)。
+# 签名必须在打 zip **之前**:包内容再变(换二进制)就得重签。
+SIGN_ID="${GAH_CODESIGN_ID:--}"
+codesign --force --sign "$SIGN_ID" "$APP" >/dev/null
+codesign --verify --strict --verbose=2 "$APP" >/dev/null 2>&1 || {
+  echo "package: 签名后校验失败(bundle: $APP)" >&2
+  exit 1
+}
+echo "签名: $SIGN_ID($(codesign -dv "$APP" 2>&1 | awk -F= '/^Identifier=/{print $2}'))"
+
 rm -f "$ZIP"
 # ditto 保资源叉与符号链接;--keepParent 让 zip 里只有一个顶层条目(.app),
 # 这是 updater 的硬要求:多于一个顶层条目会被拒绝(staging 无法确定换哪个)。

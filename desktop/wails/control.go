@@ -422,7 +422,11 @@ func (c *controlPlane) handleUpdateState(w http.ResponseWriter, _ *http.Request)
 func (c *controlPlane) handleNotifyTest(w http.ResponseWriter, _ *http.Request) {
 	err := c.sh.sendNotification("gah 通知测试", "看到这条说明系统通知通道是通的")
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+		// 与托盘菜单同口径:原始系统错误 + 未授权时的可执行说明。
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"ok":    false,
+			"error": c.sh.notifier.explain(err).Error(),
+		})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})

@@ -34,20 +34,32 @@ func (s *shell) buildTray() {
 
 	auto := menu.AddCheckbox("开机自启", s.autostartEnabled())
 	auto.OnClick(func(*application.Context) {
-		want := !auto.Checked()
+		// 别再取反:v3 在调回调**之前**已经把勾选态翻成用户点的那个值
+		// (menuitem.go handleClick 先 `m.checked = !m.checked` 再发回调)。
+		// 2026-10-30 真机就是被这里坑了:老代码 `want := !auto.Checked()` 每次都反着来,
+		// 于是「点自启 ⇒ 执行 Disable ⇒ 勾选态回写 false」,表现为点了毫无反应。
+		want := auto.Checked()
 		var err error
 		if want {
 			err = s.app.Autostart.Enable()
 		} else {
 			err = s.app.Autostart.Disable()
 		}
-		if err != nil {
-			shellLogf("开机自启切换失败(want=%v): %v", want, err)
-		}
 		// 勾选态一律回写成**真实**状态:否则用户点完看不出任何变化(旧壳同一个坑)。
 		got := s.autostartEnabled()
 		setMenuItemChecked(auto, got)
 		shellLogf("开机自启: want=%v err=%v 实际=%v", want, err, got)
+		if err != nil {
+			// 托盘点击后没有别的反馈渠道:失败只在日志里等于让用户以为程序坏了。
+			s.notifyDialog("开机自启设置失败", err.Error())
+			return
+		}
+		if want && !got {
+			// macOS 13+ 走 SMAppService:注册成功但系统把它挂成「待批准」时,
+			// IsEnabled 仍是 false —— 真正生效的开关在系统设置里,不在我们的菜单上。
+			s.notifyDialog("开机自启需要在系统里批准",
+				"gah 已登记为登录项,但系统还没放行:系统设置 → 通用 → 登录项,\n在「允许在后台」里打开 gah。")
+		}
 	})
 
 	// 菜单项要能被改成「检查更新中…」并置灰,所以留一个可操作的句柄。
@@ -59,7 +71,9 @@ func (s *shell) buildTray() {
 		// 真机上「通知到底通没通」只能靠人点一下看:失败在界面上完全不可见。
 		if err := s.sendNotification("gah 通知测试", "看到这条说明系统通知通道是通的"); err != nil {
 			shellLogf("测试通知失败: %v", err)
-			s.notifyDialog("通知发送失败", err.Error())
+			// 原始系统错误对用户没有可执行信息(UNErrorDomain error 1 什么也没说),
+			// 未授权时补上「去哪儿开」以及「列表里没有 gah 意味着什么」。
+			s.notifyDialog("通知发送失败", s.notifier.explain(err).Error())
 			return
 		}
 		shellLogf("测试通知已发送")
