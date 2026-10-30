@@ -499,12 +499,25 @@ mirror_fetch() {
   find "$dir" -maxdepth 1 -type f -print | while IFS= read -r old; do
     is_desktop_asset "$(basename "$old")" && rm -f "$old"
   done
+  # 代理前缀:未设置 = 默认公共代理;显式设为 none/direct(或空)= 直连。
+  # 为什么要有直连口:公共代理今天可能整片挂着(2026-10-30 发 v0.8.1 时
+  # gh-proxy.com 对小文件 5 次里成功 2 次、ghfast.top 0 次),而直连 GitHub 是好的 ——
+  # 没有这个口就只能改脚本才能救场。
+  local pf="${GH_PROXY-https://gh-proxy.com/}"
+  case "$pf" in none|direct|NONE|DIRECT) pf="" ;; esac
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     say "    拉取 $f …"
-    curl -fsSL --connect-timeout 20 --max-time 900 -o "$dir/$f" \
-      "${GH_PROXY:-https://gh-proxy.com/}https://github.com/${GH_REPO}/releases/download/${tag}/${f}" \
-      || die "拉取 $f 失败"
+    # 单件重试 3 次:代理抖动是常态(上面那条),一次 502/超时就让整段 mirror 停摆,
+    # 逼人重跑整个步骤 —— 而 mirror 第 2 步之后的重跑是「先删后传」,本来就不该重跑。
+    local ok=0 try
+    for try in 1 2 3; do
+      if curl -fsSL --connect-timeout 20 --max-time 900 -o "$dir/$f" \
+           "${pf}https://github.com/${GH_REPO}/releases/download/${tag}/${f}"; then ok=1; break; fi
+      say "      第 $try 次失败,2s 后重试…"
+      sleep 2
+    done
+    [ "$ok" = 1 ] || die "拉取 $f 失败(3 次;换 GH_PROXY=<前缀> 或 GH_PROXY=none 直连再跑 —— 此时还没上传任何东西,重跑安全)"
   done <<< "$names"
 }
 
