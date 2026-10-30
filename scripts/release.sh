@@ -42,6 +42,8 @@
 #   GAH_RELEASE_TIMEOUT   wait/watch 的超时秒数(缺省 1800;超时按**红**处理,不是继续等)
 #   GAH_GITHUB_REPO       缺省 nekoleamo/go-agent-harness
 #   GITEE_REPO            缺省 null_593_5354/go-agent-harness(与 mirror-gitee.sh 同口径)
+#   GH_PROXY              mirror 拉产物的候选前缀(空格分隔;none/direct = 直连)。
+#                         缺省 https://gh-proxy.com/。
 #   GITEE_TOKEN           mirror 阶段**只认 env**。本脚本**不读任何 secrets 文件** ——
 #                         凭据引入留在仓库外(`~/.pi/agent/local/gitee-release.sh` 只做这一件事)
 #
@@ -499,25 +501,31 @@ mirror_fetch() {
   find "$dir" -maxdepth 1 -type f -print | while IFS= read -r old; do
     is_desktop_asset "$(basename "$old")" && rm -f "$old"
   done
-  # 代理前缀:未设置 = 默认公共代理;显式设为 none/direct(或空)= 直连。
-  # 为什么要有直连口:公共代理今天可能整片挂着(2026-10-30 发 v0.8.1 时
-  # gh-proxy.com 对小文件 5 次里成功 2 次、ghfast.top 0 次),而直连 GitHub 是好的 ——
-  # 没有这个口就只能改脚本才能救场。
-  local pf="${GH_PROXY-https://gh-proxy.com/}"
-  case "$pf" in none|direct|NONE|DIRECT) pf="" ;; esac
+  # 代理前缀:**空格分隔的候选列表,按序试**。未设置 = 默认公共代理;`none`/`direct`/空 = 直连。
+  # 为什么是候选列表:公共代理会整片抖动(2026-10-30 发 v0.8.1 实测:同一个
+  # checksums-desktop-wails.txt,gh-proxy.com 5 次成功 2 次、ghfast.top 0 次、
+  # 直连稳定;而 20MB 的 setup.exe 反过来只有代理能过)。单件只试一个源时,
+  # 一次抖动就让整段 mirror 停摆 —— 而 mirror 第 2 步之后的重跑是「先删后传」,
+  # 本来就不该重跑,代价全落在人身上。
+  local pfs="${GH_PROXY-https://gh-proxy.com/}"
+  local -a cands=()
+  local p
+  for p in $pfs; do
+    case "$p" in none|direct|NONE|DIRECT) cands+=("") ;; *) cands+=("$p") ;; esac
+  done
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     say "    拉取 $f …"
-    # 单件重试 3 次:代理抖动是常态(上面那条),一次 502/超时就让整段 mirror 停摆,
-    # 逼人重跑整个步骤 —— 而 mirror 第 2 步之后的重跑是「先删后传」,本来就不该重跑。
     local ok=0 try
-    for try in 1 2 3; do
-      if curl -fsSL --connect-timeout 20 --max-time 900 -o "$dir/$f" \
-           "${pf}https://github.com/${GH_REPO}/releases/download/${tag}/${f}"; then ok=1; break; fi
-      say "      第 $try 次失败,2s 后重试…"
-      sleep 2
+    for p in "${cands[@]}"; do
+      for try in 1 2; do
+        if curl -fsSL --connect-timeout 20 --max-time 900 -o "$dir/$f" \
+             "${p}https://github.com/${GH_REPO}/releases/download/${tag}/${f}"; then ok=1; break 2; fi
+        say "      ${p:-直连} 第 $try 次失败,2s 后重试…"
+        sleep 2
+      done
     done
-    [ "$ok" = 1 ] || die "拉取 $f 失败(3 次;换 GH_PROXY=<前缀> 或 GH_PROXY=none 直连再跑 —— 此时还没上传任何东西,重跑安全)"
+    [ "$ok" = 1 ] || die "拉取 $f 失败(试过 ${#cands[@]} 个源;可用 GH_PROXY=\"<前缀1> <前缀2> none\" 再跑 —— 此时还没上传任何东西,重跑安全)"
   done <<< "$names"
 }
 
