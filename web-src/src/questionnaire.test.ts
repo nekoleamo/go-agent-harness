@@ -66,7 +66,19 @@ test('qnInit 接收补推已答', () => {
   assert.equal(qnAnswered(s, r.questions[1]), true)
   assert.equal(qnAnswered(s, r.questions[2]), false)
   assert.equal(qnAllAnswered(s, r), false)
-  assert.equal(qnCurrent(s, r)?.id, 'scope')
+  // 已有两题作答 ⇒ 光标落在第一道未答题(恢复位置而不是回第 1 题)
+  assert.equal(qnCurrent(s, r)?.id, 'free')
+})
+
+// 刷新恢复:光标落在第一道未答的题(不是永远回第 1 题);全答完直接到确认页。
+test('qnInit 恢复位置', () => {
+  const r = req()
+  r.answered = { scope: { values: ['web'], index: 1 } }
+  assert.equal(qnInit(r).tab, 1)
+  r.answered = { scope: { values: ['web'] }, prio: { values: ['a'] }, free: { text: '好', custom: true } }
+  assert.equal(qnInit(r).tab, r.questions.length)
+  delete r.answered
+  assert.equal(qnInit(r).tab, 0)
 })
 
 // 单选落地:记 values+index,并自动前进到下一题(多题)。

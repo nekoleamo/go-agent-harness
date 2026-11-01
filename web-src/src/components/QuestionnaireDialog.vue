@@ -5,7 +5,7 @@
 //
 // 与单题 QuestionDialog 并列存在而不是改造它:单题路径是已交付体验(S-P0-2 的角标/收起),
 // 改造等于把两条路径的回归面绑在一起。
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { QuestionnaireQuestion, QuestionnaireRequest } from '../types'
 import {
   qnAllAnswered,
@@ -38,6 +38,7 @@ const props = defineProps<{
 
 const state = ref<QnState>(qnInit({ id: '', questions: [] }))
 const busy = ref(false)
+const inputEl = ref<HTMLInputElement | null>(null)
 
 // 新整卷到达(含补推)才重置;同一个 id 重复推送(重连补推)不打断正在做的选择。
 watch(
@@ -59,6 +60,15 @@ const allDone = computed<boolean>(() => (props.request ? qnAllAnswered(state.val
 const summary = computed(() => (props.request ? qnSummary(props.request, state.value) : []))
 const answeredAt = (q: QuestionnaireQuestion): boolean => qnAnswered(state.value, q)
 const onConfirmTab = computed<boolean>(() => !!props.request && state.value.tab >= questions.value.length)
+
+// 手写框出现即聚焦(含「✎ 自己输入」与纯自由文本题):少一次点击,键盘流不断。
+// 用 state.inputQid 而不是 tab 作触发:同一个问题也可能是点伪选项进来的。
+watch(
+  () => [state.value.inputQid, state.value.tab] as const,
+  () => {
+    if (state.value.inputQid) void nextTick(() => inputEl.value?.focus())
+  },
+)
 
 // 纯自由文本题:进入该题即开手写态(否则用户要先点一下才出现输入框)。
 watch(
@@ -163,8 +173,11 @@ function onKey(e: KeyboardEvent): void {
   // Tab/Esc/数字键从别人的输入里偷走。target 落在**其它** .mask 内 ⇒ 直接放行。
   const mask = el?.closest?.('.mask')
   if (mask && !mask.hasAttribute('data-qn')) return
+  // 焦点在输入类控件里:一个键都不接管。手写框自己的 @keydown.enter/@keydown.esc 会提交/退出,
+  // 这里再处理一次就成了"两处都跑"(实测会先提交、再由二次调用把输入框重新打开)。
   const typing = !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')
-  // 手写态:只接管 Enter(提交)与 Esc(退出手写),其余键交给输入框
+  if (typing) return
+  // 手写态但焦点不在输入框(点了别处):仍让 Enter/Esc 有意义
   if (state.value.inputQid) {
     if (e.key === 'Enter' && !e.isComposing) {
       e.preventDefault()
@@ -177,7 +190,6 @@ function onKey(e: KeyboardEvent): void {
     }
     return
   }
-  if (typing) return
   switch (e.key) {
     case 'Tab':
       e.preventDefault()
@@ -299,6 +311,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
           <!-- 手写 / 纯自由文本题 -->
           <div v-if="state.inputQid === cur.id || freeOnly" class="input-row">
             <input
+              ref="inputEl"
               v-model="state.input"
               class="inp"
               :placeholder="freeOnly ? '请输入你的回答…' : '你的回答(回车提交)'"

@@ -27,13 +27,20 @@ export interface QnState {
   chat: string // 用户选了「聊聊这个」的题 id(非空 ⇒ 调用方应立即收口)
 }
 
-// qnInit 初始态:把服务端补推的 answered 原样接进来(tab 栏 ■ 与已选项都能恢复)。
+// qnInit 初始态:把服务端补推的 answered 原样接进来(tab 栏 ■ 与已选项都能恢复),
+// 并把光标落在**第一道未答的题**上(全答完则直接到确认页)—— 刷新后不该让用户从第 1 题
+// 重新点一遍才知道自己答到哪。
 export function qnInit(req: QuestionnaireRequest): QnState {
   const draft: Record<string, QnResult> = {}
   for (const [qid, a] of Object.entries(req.answered ?? {})) {
     draft[qid] = toResult(a)
   }
-  return { tab: 0, sel: 0, draft, input: '', inputQid: null, notice: '', chat: '' }
+  let tab = req.questions.findIndex((q) => {
+    const a = draft[q.id]
+    return !a || (a.values.length === 0 && a.text.trim() === '')
+  })
+  if (tab < 0) tab = req.questions.length // 全答完 → 确认页
+  return { tab, sel: 0, draft, input: '', inputQid: null, notice: '', chat: '' }
 }
 
 // toResult 载荷 → 本地作答(缺字段按零值,不 undefined 扩散)。
