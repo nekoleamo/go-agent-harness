@@ -52,10 +52,13 @@ type Plugin interface {
 | `ctx.sandbox` | policy-guard | 三档沙箱(ro/ws/full);**实际生效档**会再被 sync 联动与当前角色收紧 (`sdk.EffectiveSandbox`) |
 | `ctx.pluginManager` | host-plugin-manager | 运行期插拔(Load/Unload) |
 | `ctx.confirm` | ui-tui-app | 危险操作 y/n 确认(无实现 = 安全拒绝)
+| `ctx.question` | host-confirm-fusion(单 UI profile 由 ui-* 提供) | 结构化提问:`Ask` 单题阻塞等待 + `RegisterQuestioner` 渠道注册(首答生效)。**整卷问卷**是可选能力,见下 |
 | `ctx.notices` | host-notices | 提示通道(见 §2.9):发布/回填用户提示,不进会话记录 |
 | `ctx.commands` | host-commands | 斜杠命令注册表:Register/List/Get;TUI 提示/分发/help 动态来自本表 |
 | `ctx.sessionSummarizer` | host-llm-summary | 滚动摘要的**模型摘要**实现(可替换扩展点:`sdk.SessionSummarizer`)。缺失 = token-compress 纯抽取式(确定性回退,不是错误);token-compress 在**回合结束后**异步调它,折叠当场只落抽取式(折叠跑在会话日志锁内,不能就地调模型) |
 | `ctx.turnControl` | host-agent-loop | 回合控制:取消(Esc / `/api/control` 共用入口)+ **转向**。转向走**可选能力接口** `sdk.TurnSteerer`(`Steer(text) bool`):实现了才能注入,未实现则调用方回落「排队待发」—— 与 `SandboxSync` / `MultiProviderService` 同一种能力探测模式,插件不应 import 提供方 |
+
+**整卷问卷(`ctx.question` 的可选能力,第一百七十九批)**:模型侧 `ask_user_question` 支持两种形状(单题 `prompt+options` / 整卷 `questions[]`),呈现侧对应两条可选接口 —— 提供方实现 `sdk.QuestionnaireService`(`AskQuestionnaire`)才有整卷语义,UI 渠道实现 `sdk.QuestionnairePresenter`(`PresentQuestionnaire`)才会收到整卷广播。契约要点:① **都走类型断言探测**(与 `TurnSteerer`/`SandboxSync` 同一模式),给 `QuestionService` 加方法会编译期破窗所有 provider 与第三方 UI 插件;② 没有整卷渠道时由 `sdk.AskQuestionnaire` **逐题 `Ask` 降级**(功能不丢,只是没有 tab/确认页),已答部分在失败时保留;③ 整卷路径**只发** `questionnaire/requested|resolved` 事件,逐题降级路径**才**每题一对 `question/requested|resolved`(两套叠加 = 订阅方看到重复,已用 e2e 钉住);④ 呈现层要处理的语义:每题 `Label/Hint/AllowOther/AllowChat/Index/Group`、选项 `Label`(展示)与 `Desc`(说明)分离、答案 `Custom/Index`、整卷 `Cancelled`/`Chat`(「聊聊这个」= 转对话而不是重发整卷);⑤ 参考实现:TUI `tui/form.go`(底部面板)、Web `web/questionnaire.go` + `web-src/src/questionnaire.ts`(服务端逐题存答案,刷新后 tab ■ 恢复)。
 
 **滚动摘要的类型化(第一百五十五~一百五十八批,注意兼容性)**:会话日志里的摘要事件载荷从「纯字符串」改成 `sdk.RollingSummary{Text, Until, Source}` —— `Until` 是**本次折叠真正覆盖到的事件下标**(重启后靠它精确恢复水位;旧做法拿"摘要事件自己的下标",会连带跳过折叠点之后**没被折叠**的那段 ⇒ 重启后用户最后几条消息凭空消失)。要点:① 读载荷**一律走** `sdk.SummaryText(p)` / `sdk.SummaryUntil(p)`(它们同时认旧字符串、新结构体与未归一化的 map),别自己判类型 —— 读侧漂移的方向是"某处读不到摘要 ⇒ 静默丢整段历史";② `sdk.SessionCompressor.Fold` 的摘要回调签名随之变成 `func(sdk.RollingSummary)`(仓内实现全部已跟随;树外实现 `SessionCompressor` 的插件需同步);③ 旧日志(纯字符串载荷)必须继续可读。
 
@@ -73,6 +76,7 @@ type Plugin interface {
 - 名称点分:`agent/pre-step`、`tools/pre-execute`、`llm/pre-request`、`session/event`(会话事件广播)。
 - 扩展点优先 **Waterfall**(返回 error = veto/拦截)。
 - 持久事实用 `ctx.sessions.Append`(可回放);实时通知用 `Emit`。
+- 交互事件(只读观察面):`confirm/requested|resolved`、`question/requested|resolved`、`questionnaire/requested|resolved`(整卷问卷,见 §2.3);载荷用 `sdk.ConfirmEventOf`/`QuestionEventOf`/`QuestionnaireEventOf` 取,**别自己判类型**。
 
 **`llm/pre-request`(sdk.EventLLMPreRequest,waterfall)**:宿主 `host-llm` 在**每次模型请求的公共必经点**(`Service.Complete` 开头)发出,载荷 `*sdk.LLMRequest` —— 监听器**就地改写**即可生效(改 `Model`/`Thinking`/`Messages`/任何请求字段均在适配器调用之前);返回 error = **veto**,整个请求不发出。
 
