@@ -53,6 +53,17 @@ func interventionOf(s *State) (string, string) {
 	if s.PendingConfirm != "" {
 		return interveneApprove, "⏸ 待审批"
 	}
+	// 整卷问卷(P3 扩展):面板展开时它自己就在屏幕上(不占状态栏);收起后必须留信号,
+	// 否则用户按 Esc 之后就再也想不起来还有一卷待答。
+	if f := s.Form; f != nil && !f.Open {
+		answered := 0
+		for _, q := range f.Qs {
+			if f.formAnswered(q) {
+				answered++
+			}
+		}
+		return interveneQuestion, "❓ 问卷 " + strconv.Itoa(answered) + "/" + strconv.Itoa(len(f.Qs)) + "(/answer 展开)"
+	}
 	if n := len(s.Questions); n > 0 {
 		hint := "❓ 待答"
 		if n > 1 {

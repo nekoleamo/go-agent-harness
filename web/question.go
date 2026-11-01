@@ -30,6 +30,9 @@ type QuestionService struct {
 
 	mu      sync.Mutex
 	pending map[string]pendingQuestion
+	// qnPending 未决**整卷**问卷(P3 扩展):逐题作答落在服务端,刷新/重连后按
+	// Answered 补推 ⇒ tab 栏 ■ 与已选项不丢(前端内存版本做不到这一点)。
+	qnPending map[string]*pendingQuestionnaire
 }
 
 // pendingQuestion 一个未决提问:作答通道 + 补推所需的载荷与会话归属。
@@ -41,7 +44,11 @@ type pendingQuestion struct {
 
 // NewQuestionService 构造 Web 提问服务(prompt 经 hub 广播为 FrameQuestion 帧)。
 func NewQuestionService(hub *EventHub) *QuestionService {
-	return &QuestionService{hub: hub, pending: make(map[string]pendingQuestion)}
+	return &QuestionService{
+		hub:       hub,
+		pending:   make(map[string]pendingQuestion),
+		qnPending: make(map[string]*pendingQuestionnaire),
+	}
 }
 
 // PresentQuestion 推送提问弹层并返回作答通道;cancel 幂等清理本次 pending。
@@ -144,4 +151,10 @@ func (q singleQuestion) Ask(ctx context.Context, question sdk.Question) (sdk.Que
 // RegisterQuestioner 单渠道场景无需注册(本服务即唯一渠道)。
 func (q singleQuestion) RegisterQuestioner(string, sdk.QuestionPresenter) sdk.Disposer {
 	return func() {}
+}
+
+// AskQuestionnaire 整卷能力直通(单 web profile 也支持"一次问完";无 fusion 时
+// 由 ObservedQuestion 包装补事件面)。
+func (q singleQuestion) AskQuestionnaire(ctx context.Context, qn sdk.Questionnaire) (sdk.QuestionnaireAnswer, error) {
+	return q.s.AskQuestionnaire(ctx, qn)
 }

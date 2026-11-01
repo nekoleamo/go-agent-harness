@@ -61,6 +61,12 @@ type questionMsg struct{ q sdk.Question }
 // questionGoneMsg 提问已结束(呈现者 cancel:其它渠道已答/超时/回合取消)→ 出栈。
 type questionGoneMsg struct{ id string }
 
+// questionnaireMsg 整卷问卷(P3 扩展):底部面板呈现(tab/确认页/鼠标命中)。
+type questionnaireMsg struct{ qn sdk.Questionnaire }
+
+// questionnaireGoneMsg 整卷已结束(其它渠道已答/超时/回合取消)→ 关面板。
+type questionnaireGoneMsg struct{ id string }
+
 // interactionMsg G-E5-4 交互审计行:confirm/question requested↔resolved 事件观察面
 // (多端并存时显示“已在其它渠道作答/取消”),只入会话流,不改模型可见事实。
 type interactionMsg struct{ text string }
@@ -99,6 +105,7 @@ type Model struct {
 	onCommand         func(cmd string) error                                // 命令处理(注入)
 	onConfirm         func(ok bool)                                         // 确认答复(注入;见 app.Confirm)
 	onQuestion        func(id string, ans sdk.QuestionAnswer)               // 提问作答(注入;按 id 定向;见 app.answerQuestion)
+	onQuestionnaire   func(id string, ans sdk.QuestionnaireAnswer)          // 整卷收口(注入;按 id 定向回填)
 	onCancel          func()                                                // 取消进行中的回合(注入;Esc 触发)
 	hints             func(prefix string) []sdk.Option                      // 命令选项(注入;前缀=去掉 / 后的输入)
 	levels            func(name string) []sdk.ArgLevel                      // 命令参数级定义(注入;枚举/自由级)
@@ -264,6 +271,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.state.ApplyConfirmPrompt(msg.prompt)
 	case questionMsg:
 		m.state.ApplyQuestionPrompt(msg.q)
+	case questionnaireMsg:
+		// 同一整卷再次到达(重连补推)不重建面板:已答进度比"重新开始"有价值。
+		if m.state.Form == nil || m.state.Form.ID != msg.qn.ID {
+			m.state.Form = NewQuestionForm(msg.qn)
+		} else {
+			m.state.Form.Open = true
+		}
+		m.skipView = false
+	case questionnaireGoneMsg:
+		if m.state.Form != nil && m.state.Form.ID == msg.id {
+			m.state.Form = nil
+			m.skipView = false
+		}
 	case questionGoneMsg:
 		// S-P0-2:提问已结束(其它渠道作答/超时/回合取消)→ 出栈;若仍在栈内则提示
 		// (TUI 自己作答的路径已在作答时出栈,cancel 兜底不重复提示)
@@ -611,6 +631,18 @@ func colAt(text string, x int) int {
 // handleMousePress 鼠标按下:bar 列走滚动条;内容区(非选择器)开始划选——
 // 清除旧选区、缓存展平行文本(拖动不高频重算)、记起点。
 func (m *Model) handleMousePress(mo tea.Mouse) {
+	// 整卷问卷面板:点 tab 切题 / 点选项选中(命中区由 Render 每帧登记,绝对行号)
+	if f := m.state.Form; f != nil && f.Open {
+		if rel := mo.Y - f.top; rel >= 0 {
+			if ans, handled := f.formClick(rel, mo.X); handled {
+				if ans != nil {
+					m.finishQuestionnaire(*ans)
+				}
+				m.skipView = false
+				return
+			}
+		}
+	}
 	if mo.X >= m.scrollbarCol() {
 		m.handleBarPress(mo)
 		return
@@ -860,6 +892,17 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			m.state.Doc = nil
 		}
 		return nil
+	}
+	// 整卷问卷面板(底部面板):打开时按键归它 —— 必须在确认弹层之前(面板里 Enter/Space
+	// 是作答键,不能被审批的 y/n 分支吃掉)。Esc 收起面板后一切照旧。
+	if f := m.state.Form; f != nil && f.Open {
+		if ans, handled := f.formKey(k); handled {
+			if ans != nil {
+				m.finishQuestionnaire(*ans)
+			}
+			m.skipView = false
+			return nil
+		}
 	}
 	// 确认弹层优先:y/n 决定(任何确认态下的键入不再进输入框,Ctrl+C 亦被忽略)
 	if m.state.PendingConfirm != "" {
@@ -1417,6 +1460,28 @@ func (m *Model) resolveQuestion(id string, ans sdk.QuestionAnswer) {
 	m.state.ResolveQuestion(id)
 	if m.onQuestion != nil {
 		m.onQuestion(id, ans)
+	}
+}
+
+// finishQuestionnaire 整卷收口:关面板 → 定向回填 → 会话流留一行摘要
+// (chat/取消/逐题答案三种口径由 sdk.QuestionnaireSummary 统一,与 Web 端同源)。
+func (m *Model) finishQuestionnaire(ans sdk.QuestionnaireAnswer) {
+	f := m.state.Form
+	if f == nil {
+		return
+	}
+	summary := sdk.QuestionnaireSummary(sdk.Questionnaire{Title: f.Title, Questions: f.Qs}, ans)
+	m.state.Form = nil
+	if m.onQuestionnaire != nil {
+		m.onQuestionnaire(f.ID, ans)
+	}
+	switch {
+	case ans.Chat != "":
+		m.state.Lines = append(m.state.Lines, Line{Kind: "meta", Text: "💬 问卷:" + summary})
+	case ans.Cancelled:
+		m.state.Lines = append(m.state.Lines, Line{Kind: "meta", Text: "❓ 问卷已跳过:" + summary})
+	default:
+		m.state.Lines = append(m.state.Lines, Line{Kind: "meta", Text: "✓ 问卷已作答:" + summary})
 	}
 }
 

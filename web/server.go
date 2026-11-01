@@ -409,7 +409,9 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET /api/doc/html", s.handleDocHTML)
 	mux.HandleFunc("POST /api/doc/render", s.handleDocRender)
 	mux.HandleFunc("POST /api/question", s.handleQuestion)
-	mux.HandleFunc(authPath, s.handleAuth) // token 引导通道(唯一豁免鉴权门;护栏照常;非 POST 由处理器 405)
+	mux.HandleFunc("POST /api/questionnaire/answer", s.handleQuestionnaireAnswer) // 整卷:逐题作答(部分作答落库)
+	mux.HandleFunc("POST /api/questionnaire/submit", s.handleQuestionnaireSubmit) // 整卷:收口提交/取消/聊聊这个
+	mux.HandleFunc(authPath, s.handleAuth)                                        // token 引导通道(唯一豁免鉴权门;护栏照常;非 POST 由处理器 405)
 	mux.Handle("/ui-plugins/", s.uiPluginsHandler())
 	mux.Handle("/attachments/", s.attachmentsHandler())
 	mux.Handle("/", s.staticHandler())
@@ -511,6 +513,14 @@ func (s *Server) consumeStream(after uint64, sink func(Frame) error, hb func() e
 	}
 	if s.question != nil {
 		for _, f := range s.question.PendingFrames() {
+			if err := sink(f); err != nil {
+				return
+			}
+		}
+	}
+	if s.question != nil {
+		// 整卷补推:带**已答集合**(刷新后 tab 栏 ■ 与已选项都能恢复,不必从头再答一遍)。
+		for _, f := range s.question.PendingQuestionnaireFrames() {
 			if err := sink(f); err != nil {
 				return
 			}
@@ -3103,6 +3113,62 @@ func (s *Server) handleQuestion(w http.ResponseWriter, r *http.Request) {
 	}
 	s.question.Answer(body.ID, sdk.QuestionAnswer{Values: body.Values, Text: body.Text})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleQuestionnaireAnswer POST /api/questionnaire/answer:整卷的**逐题**作答复传。
+//
+// 逐题落库(而不是"填完一次性提交")是刷新恢复的前提:用户可能在答第 3 题时刷新页面,
+// 前两题的选择必须还在(PendingQuestionnaireFrames 会把 Answered 带回)。
+// 未知整卷 id / 题 id 不在卷内:200 + ok:false(幂等忽略,不报错 —— 帧过期是常态)。
+func (s *Server) handleQuestionnaireAnswer(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ID         string   `json:"id"`
+		QuestionID string   `json:"question_id"`
+		Values     []string `json:"values"`
+		Text       string   `json:"text"`
+		Custom     bool     `json:"custom"`
+		Index      int      `json:"index"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if body.ID == "" || body.QuestionID == "" {
+		http.Error(w, "缺少整卷 id 或题 id", http.StatusBadRequest)
+		return
+	}
+	if s.question == nil {
+		http.Error(w, "提问通道未装配(ctx.question)", http.StatusServiceUnavailable)
+		return
+	}
+	ok := s.question.AnswerQuestion(body.ID, body.QuestionID, sdk.QuestionAnswer{
+		Values: body.Values, Text: body.Text, Custom: body.Custom, Index: body.Index,
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": ok})
+}
+
+// handleQuestionnaireSubmit POST /api/questionnaire/submit:整卷收口(提交/取消/聊聊这个)。
+// 答案由服务端按题序组装(前端不必回传全量,少一次"前端漏带"的失误面)。
+func (s *Server) handleQuestionnaireSubmit(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ID        string `json:"id"`
+		Cancelled bool   `json:"cancelled"`
+		Chat      string `json:"chat"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if body.ID == "" {
+		http.Error(w, "缺少整卷 id", http.StatusBadRequest)
+		return
+	}
+	if s.question == nil {
+		http.Error(w, "提问通道未装配(ctx.question)", http.StatusServiceUnavailable)
+		return
+	}
+	ok := s.question.SubmitQuestionnaire(body.ID, body.Cancelled, body.Chat)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": ok})
 }
 
 // filterIncompleteRenderers 摘掉未声明 tools 的 tool-renderer 槽位(其余原样保留)。

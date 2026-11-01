@@ -18,13 +18,26 @@ import (
 	"time"
 )
 
-// 交互事件名(host-confirm-fusion 在 Confirm/Ask 前后广播;sdk.Emit 广播模式)。
+// 交互事件名(host-confirm-fusion 在 Confirm/Ask/AskQuestionnaire 前后广播;sdk.Emit 广播模式)。
 const (
 	EventConfirmRequested  = "confirm/requested"
 	EventConfirmResolved   = "confirm/resolved"
 	EventQuestionRequested = "question/requested"
 	EventQuestionResolved  = "question/resolved"
+	// 整卷问卷(P3 扩展)：整卷路径**只发这两条**，不再为每题补发 question/*。
+	// 逐题降级路径仍然每题一对 question/requested↔resolved(观察面与老 UI 不变)。
+	EventQuestionnaireRequested = "questionnaire/requested"
+	EventQuestionnaireResolved  = "questionnaire/resolved"
 )
+
+// QuestionnaireEvent 整卷问卷事件载荷(requested 时 Answer/Resolved 无意义)。
+type QuestionnaireEvent struct {
+	Questionnaire Questionnaire       `json:"questionnaire"`
+	Answer        QuestionnaireAnswer `json:"answer,omitempty"`
+	Resolved      bool                `json:"resolved,omitempty"`
+	Channel       string              `json:"channel,omitempty"` // 请求/作答渠道(多端并存时判定是否自己)
+	Err           string              `json:"err,omitempty"`
+}
 
 // ConfirmEvent 审批事件载荷(requested 时 OK/Resolved 无意义)。
 type ConfirmEvent struct {
@@ -98,6 +111,34 @@ func (o observedQuestion) RegisterQuestioner(channel string, p QuestionPresenter
 	return o.inner.RegisterQuestioner(channel, p)
 }
 
+// AskQuestionnaire 整卷提问的事件包装:优先调内层的整卷能力,没有就逐题走 o.Ask
+// (逐题路径每题都带 question/requested↔resolved,单渠道老 UI 的观察面不丢)。
+func (o observedQuestion) AskQuestionnaire(ctx context.Context, qn Questionnaire) (QuestionnaireAnswer, error) {
+	qn = NormalizeQuestionnaire(qn)
+	o.emit(EventQuestionnaireRequested, &QuestionnaireEvent{Questionnaire: qn, Channel: o.channel})
+	var (
+		ans QuestionnaireAnswer
+		err error
+	)
+	if inner, ok := o.inner.(QuestionnaireService); ok {
+		ans, err = inner.AskQuestionnaire(ctx, qn)
+	} else {
+		ans = QuestionnaireAnswer{Answers: make([]QuestionAnswer, len(qn.Questions))}
+		for i, q := range qn.Questions {
+			a, aerr := o.Ask(ctx, q)
+			if aerr != nil {
+				err = aerr
+				break
+			}
+			ans.Answers[i] = a
+		}
+	}
+	o.emit(EventQuestionnaireResolved, &QuestionnaireEvent{
+		Questionnaire: qn, Answer: ans, Resolved: true, Channel: o.channel, Err: errorText(err),
+	})
+	return ans, err
+}
+
 // emit best-effort 广播(失败/无 Ctx 不影响呈现管道)。
 func (o observedQuestion) emit(name string, payload any) {
 	if o.c == nil {
@@ -126,6 +167,20 @@ func QuestionEventOf(payload any) (QuestionEvent, bool) {
 		return *v, true
 	}
 	return QuestionEvent{}, false
+}
+
+// QuestionnaireEventOf 从事件载荷取 QuestionnaireEvent(值/指针兼容;取不到返回 false)。
+func QuestionnaireEventOf(payload any) (QuestionnaireEvent, bool) {
+	switch v := payload.(type) {
+	case QuestionnaireEvent:
+		return v, true
+	case *QuestionnaireEvent:
+		if v == nil {
+			return QuestionnaireEvent{}, false
+		}
+		return *v, true
+	}
+	return QuestionnaireEvent{}, false
 }
 
 // ConfirmEventOf 从事件载荷取 ConfirmEvent(值/指针兼容;取不到返回 false)。

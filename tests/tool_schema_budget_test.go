@@ -35,14 +35,20 @@ import (
 //     (≈ -1.6K 字节/轮 ≈ -400 token/轮)。
 //     注:file_read 因 A1 增加了 offset/limit 两个参数(+265 字节 schema),这是**有意**的
 //     代价 —— 换来「一次读取不再灌爆上下文」,净值仍为负。
-const toolSchemaBudgetBytes = 18333
+//   - 2026-11-01:ask_user_question 增加**整卷形状** questions[](+940 字节:tab 标签/hint/
+//     伪选项开关/每题选项;含选项 schema 的第二份副本)。为什么值得:整卷把"连问 N 次"
+//     压成一次调用 —— 每次往返都要重发**全部**工具 schema 与累积历史,4 题问卷省下的
+//     远超 940 字节;单题老形状一字未改(向后兼容)。
+//     同批:描述与字段说明按体积门要求做了两轮瘦身(ask_user_question 初版 +1580 → +940)。
+const toolSchemaBudgetBytes = 19273
 
 // windows 上多一个 powershell 工具(NOND-W1b;POSIX 没有等价执行器,所以 macOS/Linux 的
 // 基线里没有它)。2026-10-24 实测:Windows 合计 18920 = 18333 + powershell 586(+ 逗号 1)。
+// 2026-11-01:随 macOS/Linux 基线 +940,Windows 基线同步 18920 → 19860。
 // 这条门此前只在 macOS/Linux 上量过 —— Windows CI 因此一直红在 18920 vs 18333。
 func toolSchemaBudget() int {
 	if runtime.GOOS == "windows" {
-		return 18920
+		return 19860
 	}
 	return toolSchemaBudgetBytes
 }

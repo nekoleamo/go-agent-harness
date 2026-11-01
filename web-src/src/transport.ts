@@ -76,7 +76,7 @@ export interface Transport {
   onclose?: () => void
   // onstate 统一链路状态(优先于三个细分回调;两者可共存)
   onstate?: (s: LinkState) => void
-  // 按帧类型订阅(服务端 event 名):见 web/events.go FrameXxx(session|status|error|confirm|command|question|doc|questiondone|confirmdone|schedule|diff|baseline)
+  // 按帧类型订阅(服务端 event 名):见 web/events.go FrameXxx(session|status|error|confirm|command|question|questionnaire|doc|questiondone|questionnairedone|confirmdone|schedule|diff|baseline)
   on(type: string, fn: TransportListener): void
   // reconnect 主动重建链路(唤醒/切网/用户点「重试连接」):重置退避计数与降级态,
   // 立即重连一次(不用等退避计时器)。
@@ -268,7 +268,7 @@ class EsTransport implements Transport {
     }
     // SSE 的 event: <type> 对应帧类型
     // 帧类型白名单:必须覆盖 web/events.go 全部 FrameXxx(漏项 = 该帧在 SSE 降级路径被静默丢弃)
-    for (const t of ['session', 'status', 'error', 'confirm', 'command', 'question', 'doc', 'questiondone', 'confirmdone', 'schedule', 'diff', 'baseline', 'notice', 'steer_dropped', 'sessionswitched']) {
+    for (const t of ['session', 'status', 'error', 'confirm', 'command', 'question', 'questionnaire', 'doc', 'questiondone', 'questionnairedone', 'confirmdone', 'schedule', 'diff', 'baseline', 'notice', 'steer_dropped', 'sessionswitched']) {
       es.addEventListener(t, (e) => {
         try {
           const f = JSON.parse((e as MessageEvent).data) as Frame

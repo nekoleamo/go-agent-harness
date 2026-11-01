@@ -194,11 +194,11 @@ gah doc <path> [--json|--md|--text] [--page N] [--sheet S] [--tree] [--depth N]
 | `subagent` | 子代理委派;`isolate="worktree"` 隔离到受管 git worktree |
 | `list_skills` / `read_skill` · `list_roles` / `read_role` | 技能与角色(角色只读,写走 `/role` 与面板) |
 | `mcp_<server>_<工具>` · `mcp_search` / `mcp_call` | MCP 工具(direct 模式 / search 按需检索) |
-| `ask_user_question` | 结构化提问(Web 弹层,TUI `/answer`) |
+| `ask_user_question` | 结构化提问:单题弹层,**整卷**(多题 tab 栏/确认页/「聊聊这个」;Web 弹层,TUI 底部面板 `/answer`) |
 
 ## 六、Web 使用
 
-`gah web` 起 `http://127.0.0.1:2233`(`GAH_WEB_OPEN=0` 关闭自动开浏览器)。功能与 TUI 对等,另有可视化面板:设置(模型 / 推理 / 指令 / 角色 / 会话历史 / Provider / 备份 / 计划 / MCP / 插件)、文档预览工作台、轨迹 / 变更 / 看板三视图、侧栏停靠区、结构化提问、附件与图片注入。
+`gah web` 起 `http://127.0.0.1:2233`(`GAH_WEB_OPEN=0` 关闭自动开浏览器)。功能与 TUI 对等,另有可视化面板:设置(模型 / 推理 / 指令 / 角色 / 会话历史 / Provider / 备份 / 计划 / MCP / 插件)、文档预览工作台、轨迹 / 变更 / 看板三视图、侧栏停靠区、结构化提问(含多题问卷)、附件与图片注入。
 
 `token` 模式(`data.auth_token` 非空)下全表面鉴权,`POST /api/auth` 是唯一豁免路径。
 

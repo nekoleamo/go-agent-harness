@@ -301,6 +301,15 @@ func statuslineItem(s *State, token string) string {
 			return styleBusy.Render(strings.Join(parts, " · "))
 		}
 	case "questions":
+		if f := s.Form; f != nil && !f.Open { // 整卷问卷收起后的常驻信号(展开时面板本身在屏上)
+			done := 0
+			for _, q := range f.Qs {
+				if f.formAnswered(q) {
+					done++
+				}
+			}
+			return styleBusy.Render(fmt.Sprintf("❓ 问卷 %d/%d(/answer 展开)", done, len(f.Qs)))
+		}
 		if n := len(s.Questions); n > 0 {
 			hint := "❓ 待答"
 			if n > 1 {

@@ -11,8 +11,10 @@ export type FrameType =
   | 'confirm'
   | 'command'
   | 'question'
+  | 'questionnaire'
   | 'doc'
   | 'questiondone'
+  | 'questionnairedone'
   | 'confirmdone'
   | 'schedule'
   | 'diff'
@@ -96,6 +98,49 @@ export interface QuestionRequest {
   options?: { value: string; desc?: string }[]
   multiple?: boolean
   free_text?: boolean
+}
+
+// 选项(单题与整卷同形;label 缺省回退 value)
+export interface QuestionOptionView {
+  value: string
+  label?: string
+  desc?: string
+}
+
+// 整卷问卷的一题(FrameQuestionnaire payload 的 questions 元素)
+export interface QuestionnaireQuestion {
+  id: string
+  label?: string
+  prompt: string
+  hint?: string
+  options?: QuestionOptionView[]
+  multiple?: boolean
+  allow_other?: boolean
+  allow_chat?: boolean
+  free_text?: boolean
+  index?: number
+}
+
+// 一题的作答(与 Go 侧 sdk.QuestionAnswer 同名同义)
+export interface QuestionAnswerView {
+  values?: string[]
+  text?: string
+  custom?: boolean
+  index?: number
+}
+
+// 整卷载荷(FrameQuestionnaire payload;answered = 补推时的已答集合)
+export interface QuestionnaireRequest {
+  id: string
+  title?: string
+  questions: QuestionnaireQuestion[]
+  answered?: Record<string, QuestionAnswerView>
+}
+
+// 整卷已解决载荷(FrameQuestionnairedone payload)
+export interface QuestionnaireDone {
+  id: string
+  err?: string
 }
 
 // —— 各 Kind 载荷 ——

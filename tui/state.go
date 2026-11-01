@@ -94,6 +94,7 @@ type State struct {
 	PickDismissed    bool           // Esc/断点后抑制自动激活,直至输入变化
 	Mention          *Mention       // 非空 = @ 文件引用补全激活(↑/↓ 移动,Tab/Enter 应用;见 mention.go)
 	Doc              *DocPager      // 非空 = 文档预览 pager 浮层激活(全屏模态;见 docview.go)
+	Form             *QuestionForm  // 非空 = 整卷问卷面板(底部面板;Open=false 表示收起但进度保留;见 form.go)
 	Free             *freeStep      // 多值自由参数逐步向导(/provider set 等;断点建立,submit 前步进)。nil = 未启用
 	QuitArmed        bool           // 双按退出武装中:第一次 Ctrl+C(输入为空)后待第二次确认(输入行提示)
 	SpinnerIdx       int            // 思考动画帧索引(回合运行中 tick 推进)

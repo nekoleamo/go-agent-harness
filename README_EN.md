@@ -194,7 +194,7 @@ Commands register into `ctx.commands` and work in TUI / Web / headless behind th
 | `subagent` | subagent delegation; `isolate="worktree"` runs it in a managed git worktree |
 | `list_skills` / `read_skill` · `list_roles` / `read_role` | skills and roles (roles are read-only; writes go through `/role` and the panel) |
 | `mcp_<server>_<tool>` · `mcp_search` / `mcp_call` | MCP tools (direct mode / on-demand search mode) |
-| `ask_user_question` | structured questions (Web overlay, `/answer` in the TUI) |
+| `ask_user_question` | structured questions: single question, or a **multi-question sheet** (tab bar / confirm page / "chat about this"; Web overlay, TUI bottom panel via `/answer`) |
 
 ## 6. Web
 

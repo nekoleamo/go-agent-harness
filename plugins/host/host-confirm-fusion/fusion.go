@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 
 	"github.com/nekoleamo/go-agent-harness/sdk"
@@ -175,6 +176,107 @@ func (f *Fusion) askInner(ctx context.Context, q sdk.Question) (sdk.QuestionAnsw
 type namedQuestioner struct {
 	name string
 	p    sdk.QuestionPresenter
+}
+
+// namedQuestionnaireer 渠道名 + 整卷呈现者。
+type namedQuestionnaireer struct {
+	name string
+	p    sdk.QuestionnairePresenter
+}
+
+// AskQuestionnaire sdk.QuestionnaireService:整卷提问(一次问完 N 题)。
+//
+// 语义:优先广播给**实现 QuestionnairePresenter 的渠道**(首卷胜出,其余撤销);
+// 没有任何渠道支持整卷 ⇒ 逐题 Ask 降级(ACP/第三方 UI 插件走这条,功能不丢,
+// 只是没有 tab/确认页;每题的"首答生效"与事件面与单题完全一致)。
+// 事件面:整卷路径只发 questionnaire/requested ↔ resolved,**不**为每题补发 question/*;
+// 逐题降级路径由 Ask 自己发每题一对 question/*(见 sdk/interaction.go 常量注释)。
+func (f *Fusion) AskQuestionnaire(ctx context.Context, qn sdk.Questionnaire) (sdk.QuestionnaireAnswer, error) {
+	qn = sdk.NormalizeQuestionnaire(qn)
+	f.emit(sdk.EventQuestionnaireRequested, &sdk.QuestionnaireEvent{Questionnaire: qn})
+	ans, channel, err := f.askQuestionnaireInner(ctx, qn)
+	f.emit(sdk.EventQuestionnaireResolved, &sdk.QuestionnaireEvent{
+		Questionnaire: qn, Answer: ans, Resolved: true, Channel: channel, Err: errStr(err),
+	})
+	return ans, err
+}
+
+// askQuestionnaireInner 整卷广播与竞速(事件包裹在 AskQuestionnaire);返回胜出渠道名。
+func (f *Fusion) askQuestionnaireInner(ctx context.Context, qn sdk.Questionnaire) (sdk.QuestionnaireAnswer, string, error) {
+	f.mu.Lock()
+	caps := make([]namedQuestionnaireer, 0, len(f.questioners))
+	for name, p := range f.questioners {
+		if qp, ok := p.(sdk.QuestionnairePresenter); ok {
+			caps = append(caps, namedQuestionnaireer{name: name, p: qp})
+		}
+	}
+	f.mu.Unlock()
+	if len(caps) == 0 {
+		// 无整卷渠道:逐题降级(已答部分在失败/取消时保留,由 sdk 保证)
+		ans, err := sdk.AskQuestionnaireSequential(ctx, f, qn)
+		return ans, "", err
+	}
+	// 按渠道名排序:map 遍历无序,排序让"同权重时谁先呈现"在多端测试里可预测
+	sort.Slice(caps, func(i, j int) bool { return caps[i].name < caps[j].name })
+
+	type active struct {
+		name   string
+		ch     <-chan sdk.QuestionnaireAnswer
+		cancel func()
+	}
+	var cases []active
+	for _, np := range caps {
+		ch, cancel, err := np.p.PresentQuestionnaire(ctx, qn)
+		if err != nil || ch == nil {
+			continue // 该渠道整卷呈现不可用:跳过,由其它渠道接手
+		}
+		cases = append(cases, active{name: np.name, ch: ch, cancel: cancel})
+	}
+	defer func() {
+		for _, c := range cases {
+			c.cancel()
+		}
+	}()
+	if len(cases) == 0 {
+		return sdk.QuestionnaireAnswer{}, "", fmt.Errorf("questionnaire: 全部渠道呈现失败")
+	}
+	if len(cases) == 1 {
+		select {
+		case a := <-cases[0].ch:
+			return a, cases[0].name, nil
+		case <-ctx.Done():
+			return sdk.QuestionnaireAnswer{}, "", ctx.Err()
+		}
+	}
+	type won struct {
+		ans  sdk.QuestionnaireAnswer
+		name string
+	}
+	merged := make(chan won, 1)
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(len(cases))
+	for _, c := range cases {
+		go func(ac active) {
+			defer wg.Done()
+			select {
+			case a := <-ac.ch:
+				select {
+				case merged <- won{ans: a, name: ac.name}:
+				default:
+				}
+			case <-done:
+			}
+		}(c)
+	}
+	go func() { wg.Wait(); close(merged) }()
+	defer close(done)
+	select {
+	case w := <-merged:
+		return w.ans, w.name, nil
+	case <-ctx.Done():
+		return sdk.QuestionnaireAnswer{}, "", ctx.Err()
+	}
 }
 
 // Register 注册渠道呈现者(Disposer 幂等撤销)。

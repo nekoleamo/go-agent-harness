@@ -108,6 +108,20 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 			app.NoteInteraction("提问已由其它渠道(" + qe.Channel + ")处理: " + detail)
 			return nil
 		}),
+		// 整卷问卷(P3 扩展):其它渠道作答/取消 → 本端关面板并在会话流留一行
+		// (整卷走 questionnaire/* 事件,不经过 question/*,所以必须单独订阅)。
+		c.Subscribe(sdk.EventQuestionnaireResolved, func(_ context.Context, ev *sdk.Event) error {
+			qe, ok := sdk.QuestionnaireEventOf(ev.Payload)
+			if !ok || qe.Channel == "" || qe.Channel == "tui" {
+				return nil
+			}
+			detail := sdk.QuestionnaireSummary(qe.Questionnaire, qe.Answer)
+			if qe.Err != "" {
+				detail = "已取消/失败(" + qe.Err + ")"
+			}
+			app.NoteInteraction("问卷已由其它渠道(" + qe.Channel + ")处理: " + detail)
+			return nil
+		}),
 		c.Subscribe(sdk.EventConfirmResolved, func(_ context.Context, ev *sdk.Event) error {
 			ce, ok := sdk.ConfirmEventOf(ev.Payload)
 			if !ok || ce.Channel == "" || ce.Channel == "tui" {
@@ -161,6 +175,22 @@ func (s tuiQuestionService) Ask(ctx context.Context, q sdk.Question) (sdk.Questi
 
 func (s tuiQuestionService) RegisterQuestioner(string, sdk.QuestionPresenter) sdk.Disposer {
 	return func() {}
+}
+
+// AskQuestionnaire 单 tui profile 的整卷提问(P3 扩展):直连 App 的底部面板呈现。
+// 未实现这条时 sdk 会逐题降级(每题一次面板),整卷语义(tab/确认页)就没了。
+func (s tuiQuestionService) AskQuestionnaire(ctx context.Context, qn sdk.Questionnaire) (sdk.QuestionnaireAnswer, error) {
+	ch, cancel, err := s.app.PresentQuestionnaire(ctx, qn)
+	if err != nil {
+		return sdk.QuestionnaireAnswer{}, err
+	}
+	defer cancel()
+	select {
+	case a := <-ch:
+		return a, nil
+	case <-ctx.Done():
+		return sdk.QuestionnaireAnswer{}, ctx.Err()
+	}
 }
 
 // stdinIsTTY 检测 stdin 是否为交互终端(管道/重定向时降级文本)。

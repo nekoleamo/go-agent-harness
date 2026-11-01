@@ -168,6 +168,8 @@ entries:
     # P3 语义交互:ask_user_question 结构化提问(单选/多选/自由文本)。
     # 进程内装配(同 tool-auto-plan:提问通道需 ctx.question 运行期注入,外部进程不可达);
     # 问题经 ctx.question(host-confirm-fusion)广播 web/tui 渠道呈现,首答生效。
+    # 2026-11-01:同一工具支持**整卷**形状 questions[](tab 栏/确认页/部分作答/聊聊这个);
+    # 渠道实现 sdk.QuestionnairePresenter 才走整卷,否则逐题降级(ACP 等第三方渠道)。
   - id: tool-todo
     enabled: false # M8 外部化:todo(create/start/complete/pend/delete/update/list/get)由 host-bridge 加载 extplugins/tool-basic;内嵌双轨同 tool-files
   - id: tool-doc

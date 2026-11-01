@@ -66,6 +66,7 @@ import type {
   ConfirmRequest,
   CommandResult,
   QuestionRequest,
+  QuestionnaireRequest,
   Frame,
   Baseline,
   Job,
@@ -86,6 +87,7 @@ import { createNotifier } from './notify'
 import StatusBar from './components/StatusBar.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import QuestionDialog from './components/QuestionDialog.vue'
+import QuestionnaireDialog from './components/QuestionnaireDialog.vue'
 import ConfirmBar from './components/ConfirmBar.vue'
 
 import JobsPanel from './components/JobsPanel.vue'
@@ -401,6 +403,9 @@ const confirm = ref<ConfirmRequest | null>(null)
 const question = ref<QuestionRequest | null>(null)
 // S-P0-2:提问弹层可收起(收起=角标,不阻塞继续对话)。新提问/换提问一律回到展开态。
 const questionMin = ref(false)
+// P3 扩展:整卷问卷(一次问完多题)。与单题弹层并列:单题是既有路径,本节零改动。
+const questionnaire = ref<QuestionnaireRequest | null>(null)
+const questionnaireMin = ref(false)
 // S-P1-3 连接健康三态(open/reconnecting/offline):由 conn.ts 状态机统一裁决;
 // offline = 明确断开 → 横幅 + 禁止提交(草稿与附件保留),reconnecting 不拦截。
 const conn = ref<ConnModel>(newConn())
@@ -758,7 +763,7 @@ const lastMetaError = computed(() => {
 const intervention = computed<Intervention>(() =>
   interventionOf({
     pendingConfirm: !!confirm.value,
-    pendingQuestion: !!question.value,
+    pendingQuestion: !!question.value || !!questionnaire.value,
     lastError: lastMetaError.value,
     running: state.value.running,
     unreadBelow: showNewest.value, // 上滚读历史时新内容到达 ⇒ 下面有没看过的东西
@@ -1017,6 +1022,27 @@ function rebuild(plan: SwitchPlan): void {
     if (p?.id && question.value && question.value.id === p.id) {
       question.value = null
       questionMin.value = false
+    }
+  }))
+  // P3 扩展:整卷问卷推送。跨会话门控与单题同口径(弹层只落在提出问题的那个会话)。
+  transport.on('questionnaire', gate((f) => {
+    const req = f.payload as QuestionnaireRequest
+    const fo = foreignOwner(f, curTabId())
+    if (fo) {
+      const txt = foreignTodoText('question', fo, req?.title || req?.questions?.[0]?.prompt || '')
+      pushMeta('status', txt + '(请到该会话处理)')
+      notifier.fireEvent('gah 需要你作答', txt.slice(0, 120))
+      return
+    }
+    questionnaire.value = req
+    questionnaireMin.value = false
+    if (hidden()) notifier.fireEvent('gah 需要你作答', (req?.title || '').slice(0, 120))
+  }))
+  transport.on('questionnairedone', gate((f) => {
+    const p = f.payload as { id?: string }
+    if (p?.id && questionnaire.value && questionnaire.value.id === p.id) {
+      questionnaire.value = null
+      questionnaireMin.value = false
     }
   }))
   // G-E5-4:审批已裁决(confirm/resolved;Confirm 无端侧 id → 按 prompt 关联)。
@@ -1545,6 +1571,40 @@ async function onQuestionAnswer(values: string[], text: string): Promise<void> {
   }
 }
 
+// 整卷逐题落库:先写服务端(刷新可恢复),再让弹层前进。
+async function onQuestionnairePick(questionId: string, ans: { values: string[]; text: string; custom: boolean; index: number }): Promise<void> {
+  const req = questionnaire.value
+  if (!req) return
+  if (!submitAllowed(conn.value)) {
+    pushMeta('error', '作答未提交:连接已断开。弹层与进度已保留,恢复后可重试。')
+    return
+  }
+  try {
+    await api.questionnaireAnswer(req.id, questionId, ans)
+  } catch (e) {
+    pushMeta('error', '作答保存失败: ' + (e as Error).message + '。弹层已保留。')
+    void probeConn()
+  }
+}
+
+// 整卷收口(cancelled=整卷跳过;chat=聊聊这个的题 id)。
+async function onQuestionnaireSubmit(cancelled: boolean, chat: string): Promise<void> {
+  const req = questionnaire.value
+  if (!req) return
+  if (!submitAllowed(conn.value)) {
+    pushMeta('error', '提交未送达:连接已断开。弹层已保留,恢复后可重试。')
+    return
+  }
+  try {
+    await api.questionnaireSubmit(req.id, cancelled, chat)
+    questionnaire.value = null
+    questionnaireMin.value = false
+  } catch (e) {
+    pushMeta('error', '问卷提交失败: ' + (e as Error).message + '。弹层已保留。')
+    void probeConn()
+  }
+}
+
 async function onAnswer(ok: boolean): Promise<void> {
   const req = confirm.value
   if (!req) return
@@ -1801,6 +1861,13 @@ onUnmounted(() => {
           <button class="q-act" data-tip="回到提问弹层作答" @click="questionMin = false">作答</button>
         </div>
 
+        <!-- 整卷问卷角标(同上;题数一并告诉用户,收起后也知道还剩几题) -->
+        <div v-if="questionnaire && questionnaireMin" class="q-chip" role="status">
+          <span class="q-tag">问卷</span>
+          <span class="q-text">{{ questionnaire.title || '需要你确认几件事' }}({{ questionnaire.questions.length }} 题)</span>
+          <button class="q-act" data-tip="回到问卷继续作答" @click="questionnaireMin = false">作答</button>
+        </div>
+
         <!-- 壳侧提示(便携模式/数据迁移/失联):页面自己从控制面拉,壳无法注入 DOM -->
         <div v-if="shellNotices.length && !shellNoticeClosed" class="shell-banner" role="status">
           <div class="shell-banner-body">
@@ -1886,6 +1953,15 @@ onUnmounted(() => {
       :minimized="questionMin"
       :on-answer="onQuestionAnswer"
       :on-minimize="() => (questionMin = true)"
+    />
+
+    <!-- 整卷问卷弹层(P3 扩展;与单题弹层并列,宿主直挂) -->
+    <QuestionnaireDialog
+      :request="questionnaire"
+      :minimized="questionnaireMin"
+      :on-pick="onQuestionnairePick"
+      :on-submit="onQuestionnaireSubmit"
+      :on-minimize="() => (questionnaireMin = true)"
     />
 
     <div v-if="err" class="err-banner">{{ err }}</div>

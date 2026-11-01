@@ -40,6 +40,7 @@ type App struct {
 
 	askMu   sync.Mutex   // 提问待答通道(P3:tui 作为 question presenter)
 	qPend   []pendingQ   // 每次 PresentQuestion 一个(按 id 定向回填,见 answerQuestion)
+	qnPend  []pendingQn  // 每次 PresentQuestionnaire 一个(P3 整卷;按卷 id 定向回填)
 	qSeq    atomic.Int64 // 无 id 提问(直调 presenter/测试)的本地编号源
 	started atomic.Bool  // TUI 程序已启动(未启动时不向 program 发送,防测试/装配期阻塞)
 	uiOnce  sync.Once    // 投递队列初始化一次(见 sendToUI)
@@ -136,6 +137,7 @@ func NewApp(c sdk.Ctx, loop sdk.AgentLoop, llm sdk.LLMService, profile string, p
 	m.onCommand = a.command
 	m.onConfirm = a.confirmResult
 	m.onQuestion = a.answerQuestion
+	m.onQuestionnaire = a.answerQuestionnaire
 	m.onCancel = a.cancelCurrent
 	m.hints = a.suggestHints
 	m.levels = a.levels
@@ -510,6 +512,61 @@ func (a *App) PresentQuestion(_ context.Context, q sdk.Question) (<-chan sdk.Que
 type pendingQ struct {
 	id string
 	ch chan sdk.QuestionAnswer
+}
+
+// PresentQuestionnaire sdk.QuestionnairePresenter(P3 整卷):底部面板呈现,返回整卷作答通道。
+// 与单题同一套定向回填(按**卷 id**),cancel 幂等撤销(其它渠道已答/超时/回合取消 → 关面板)。
+func (a *App) PresentQuestionnaire(_ context.Context, qn sdk.Questionnaire) (<-chan sdk.QuestionnaireAnswer, func(), error) {
+	qn = sdk.NormalizeQuestionnaire(qn)
+	ch := make(chan sdk.QuestionnaireAnswer, 1)
+	a.askMu.Lock()
+	a.qnPend = append(a.qnPend, pendingQn{id: qn.ID, ch: ch})
+	a.askMu.Unlock()
+	if a.program != nil && a.started.Load() {
+		a.sendToUI(questionnaireMsg{qn: qn})
+	}
+	cancel := func() {
+		a.askMu.Lock()
+		for i, p := range a.qnPend {
+			if p.ch == ch {
+				a.qnPend = append(a.qnPend[:i], a.qnPend[i+1:]...)
+				break
+			}
+		}
+		a.askMu.Unlock()
+		if a.program != nil && a.started.Load() {
+			a.sendToUI(questionnaireGoneMsg{id: qn.ID})
+		}
+	}
+	return ch, cancel, nil
+}
+
+// pendingQn 一个未决整卷(与卷 id 绑定;定向回填用)。
+type pendingQn struct {
+	id string
+	ch chan sdk.QuestionnaireAnswer
+}
+
+// answerQuestionnaire 整卷收口(模型侧 Ui 回调):按卷 id 定向回填,清理其余同 id 通道。
+func (a *App) answerQuestionnaire(id string, ans sdk.QuestionnaireAnswer) {
+	a.askMu.Lock()
+	var hit []chan sdk.QuestionnaireAnswer
+	rest := a.qnPend[:0]
+	for _, p := range a.qnPend {
+		if p.id == id {
+			hit = append(hit, p.ch)
+			continue
+		}
+		rest = append(rest, p)
+	}
+	a.qnPend = rest
+	a.askMu.Unlock()
+	for _, ch := range hit {
+		select {
+		case ch <- ans:
+		default:
+		}
+	}
 }
 
 // NoteInteraction 追加一条交互审计行(G-E5-4):宿主/插件订阅 confirm|question 事件后落进会话流。
@@ -1621,6 +1678,15 @@ const answerSkipValue = "__skip__"
 //
 // 多问并存时按栈序逐个作答(栈首 = 最早到达的阻塞提问),不提供乱序跳答(保持语义简单)。
 func (a *App) cmdAnswer(args []string) (string, error) {
+	// 整卷问卷(Esc 收起后):无参 /answer 直接展开面板;其余动作面板内自己做,
+	// 命令面不再复制一套"第几题第几项"的语义(避免两套真值源漂移)。
+	if f := a.model.state.Form; f != nil && !f.Open && len(args) == 0 {
+		f.Open = true
+		return fmt.Sprintf("已展开问卷(%s:%d 题;Enter 作答,Esc 收起)", f.Title, len(f.Qs)), nil
+	}
+	if f := a.model.state.Form; f != nil && f.Open {
+		return "问卷面板已展开:在面板内作答(Esc 收起,进度保留)", nil
+	}
 	p := a.model.state.ActiveQuestion()
 	if p == nil {
 		return "当前没有待答提问", nil

@@ -204,7 +204,10 @@ func Render(s *State, width, height int) string {
 	widgetRows := widgetLines(s)
 	// S-P0-3 坞展开(F6):面板行同样扣主区(收起 = nil,零几何变化)
 	dockPanel := dockPanelLines(s, width)
-	mainH := height - 8 - hintRows - inputExtra - len(widgetRows) - len(dockPanel)
+	// P3 扩展:整卷问卷面板(底部,收起 = nil,零几何变化);行数同样扣主区 —— 会话流
+	// 始终留在面板上方可见(答问卷时常要回看上一轮结论)。
+	formPanel := formPanelLines(s, width, height)
+	mainH := height - 8 - hintRows - inputExtra - len(widgetRows) - len(dockPanel) - len(formPanel)
 	if mainH < 1 {
 		mainH = 1
 	}
@@ -305,6 +308,12 @@ func Render(s *State, width, height int) string {
 	}
 	// S-P0-3 坞展开面板:F6 展开时占位(在分隔线/widget 下、输入区上方;收起无行)
 	bottom = append(bottom, dockPanel...)
+	// P3 扩展:整卷问卷面板贴输入区上方。鼠标命中要**终端绝对行号**,这里算好写回
+	// (会话流实际行数 = len(body);+1 = 分隔线;再加 widget 与坞占的行)。
+	if s.Form != nil {
+		s.Form.top = len(body) + 1 + len(widgetRows) + len(dockPanel)
+	}
+	bottom = append(bottom, formPanel...)
 	bottom = append(bottom, inputStr)
 	bottom = append(bottom, renderHintLines(s, hintItems, hintRows)...)
 	bottom = append(bottom, "") // F15.5:状态栏/指标行与输入/提示区留空隙行

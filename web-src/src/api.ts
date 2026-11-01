@@ -194,6 +194,18 @@ export const api = {
   questionAnswer(id: string, values: string[], text: string): Promise<void> {
     return req('/api/question', { method: 'POST', headers: json, body: JSON.stringify({ id, values, text }) })
   },
+  // 整卷问卷**逐题**作答(P3 扩展):先落库再前端前进 —— 刷新/重连后 tab 栏 ■ 可恢复。
+  questionnaireAnswer(id: string, questionId: string, ans: { values: string[]; text: string; custom: boolean; index: number }): Promise<void> {
+    return req('/api/questionnaire/answer', {
+      method: 'POST',
+      headers: json,
+      body: JSON.stringify({ id, question_id: questionId, values: ans.values, text: ans.text, custom: ans.custom, index: ans.index }),
+    })
+  },
+  // 整卷收口:提交 / cancelled=整卷跳过 / chat=聊聊这个的题 id(答案由服务端按题序组装)
+  questionnaireSubmit(id: string, cancelled = false, chat = ''): Promise<void> {
+    return req('/api/questionnaire/submit', { method: 'POST', headers: json, body: JSON.stringify({ id, cancelled, chat }) })
+  },
   sessionSwitch(id: string): Promise<void> {
     return req('/api/sessions', { method: 'POST', headers: json, body: JSON.stringify({ action: 'switch', id }) })
   },

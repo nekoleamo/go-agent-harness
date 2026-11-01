@@ -35,6 +35,12 @@ const (
 	// FrameQuestionDone 提问已解决(G-E5-4:question/resolved 事件订阅面;
 	// 多端并存时关闭本端遗留弹层 —— 已由其它渠道作答/超时)。载荷 *QuestionDone。
 	FrameQuestionDone = "questiondone"
+	// FrameQuestionnaire 整卷问卷推送(P3 扩展):载荷 *QuestionnaireRequest,一次问完
+	// 多题(tab 栏/确认页)。**故意不复用 FrameQuestion** —— 老前端会把整卷当单题渲染出
+	// 一个答不了的弹层,比不弹更糟;新帧在老前端里只是被忽略(静默)。
+	FrameQuestionnaire = "questionnaire"
+	// FrameQuestionnaireDone 整卷已解决(多端并存时按 id 关弹层)。载荷 *QuestionnaireDone。
+	FrameQuestionnaireDone = "questionnairedone"
 	// FrameConfirmDone 审批已裁决(G-E5-4:confirm/resolved 事件订阅面;
 	// 多端并存时关闭本端遗留弹层)。载荷 *ConfirmDone。
 	FrameConfirmDone = "confirmdone"
@@ -221,6 +227,18 @@ func (h *EventHub) Subscribe(c sdk.Ctx, sessions sdk.SessionLog) (disposer sdk.D
 		}
 		h.Push(Frame{Type: FrameQuestionDone, Payload: &QuestionDone{
 			ID: qe.Question.ID, Answer: qe.Answer, Err: qe.Err,
+		}})
+		return nil
+	})
+	add(sdk.EventQuestionnaireResolved, func(_ context.Context, ev *sdk.Event) error {
+		// 整卷已解决(本端作答收口 / 其它渠道抢先 / 超时):推 done 帧让前端按 id 关弹层。
+		// 整卷路径只发 questionnaire/* 事件(见 sdk/interaction.go 常量注释),故这里另开一条订阅。
+		qe, ok := sdk.QuestionnaireEventOf(ev.Payload)
+		if !ok {
+			return nil
+		}
+		h.Push(Frame{Type: FrameQuestionnaireDone, Payload: &QuestionnaireDone{
+			ID: qe.Questionnaire.ID, Answer: qe.Answer, Err: qe.Err,
 		}})
 		return nil
 	})

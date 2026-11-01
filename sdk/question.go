@@ -9,23 +9,37 @@ import "context"
 
 // QuestionOption 一个可选项。
 type QuestionOption struct {
-	Value string `json:"value"`          // 选中后返回的值(比 Desc 更短、机器可读)
-	Desc  string `json:"desc,omitempty"` // 展示说明
+	Value string `json:"value"`           // 选中后返回的值(比 Desc 更短、机器可读)
+	Label string `json:"label,omitempty"` // 展示名(问卷内每题用;空 = 回退 Value)
+	Desc  string `json:"desc,omitempty"`  // 展示说明
 }
 
 // Question 一次结构化提问。
+//
+// 单题用法只填前五个字段(ask_user_question 的老形状);问卷内每题额外带
+// Label/Hint/AllowOther/AllowChat/Index + Group(见 sdk/questionnaire.go)。
 type Question struct {
 	ID       string           `json:"id,omitempty"`        // 提问标识(呈现/诊断用;空由服务生成)
 	Prompt   string           `json:"prompt"`              // 问题正文
 	Options  []QuestionOption `json:"options,omitempty"`   // 可选项(空 = 纯自由文本提问)
 	Multiple bool             `json:"multiple,omitempty"`  // 多选(用户可选多个 Value)
 	FreeText bool             `json:"free_text,omitempty"` // 允许自由文本作答(即使有选项)
+	// —— 问卷内每题(单题留空) ——
+	Label      string `json:"label,omitempty"`       // tab 短标签("Scope"/"优先级")
+	Hint       string `json:"hint,omitempty"`        // 题干下方一行灰字(上下文/代价/为什么问)
+	AllowOther bool   `json:"allow_other,omitempty"` // 末位「✎ 自己输入」伪选项
+	AllowChat  bool   `json:"allow_chat,omitempty"`  // 末位「💬 聊聊这个」逃生口
+	Index      int    `json:"index,omitempty"`       // 卷内序号(1 起)
+	Group      string `json:"group,omitempty"`       // 所属问卷 id(空 = 独立单题)
 }
 
 // QuestionAnswer 用户作答(Values 与 Text 至少一项非空)。
 type QuestionAnswer struct {
 	Values []string `json:"values,omitempty"` // 选中的 Value(单选 ≤1,多选可多个)
 	Text   string   `json:"text,omitempty"`   // 自由文本作答
+	// —— 问卷内作答补充 ——
+	Custom bool `json:"custom,omitempty"` // 手写答案(展示为「(手写)」)
+	Index  int  `json:"index,omitempty"`  // 单选时用户选的序号(1 起)
 }
 
 // Empty 作答是否为空(认定用户跳过/无法解析时调用方决定语义)。
