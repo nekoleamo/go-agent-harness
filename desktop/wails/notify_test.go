@@ -17,6 +17,7 @@ type fakeNotify struct {
 	sendErr    error
 
 	checks, requests, sends int
+	lastTitle               string // 最近一条通知的标题(attention 的默认标题断言用)
 }
 
 func (f *fakeNotify) CheckNotificationAuthorization() (bool, error) {
@@ -35,8 +36,9 @@ func (f *fakeNotify) RequestNotificationAuthorization() (bool, error) {
 	return f.requestRes, nil
 }
 
-func (f *fakeNotify) SendNotification(notifications.NotificationOptions) error {
+func (f *fakeNotify) SendNotification(o notifications.NotificationOptions) error {
 	f.sends++
+	f.lastTitle = o.Title
 	// 真机行为:未授权时 addNotificationRequest 一律 UNErrorDomain error 1。
 	if !f.authorized {
 		return errors.New("Error: The operation couldn't be completed. (UNErrorDomain error 1.)")

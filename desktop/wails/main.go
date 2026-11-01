@@ -46,6 +46,9 @@ type shell struct {
 	quitting atomic.Bool
 	notifier *notifier // 系统通知(未装配时为 nil,调用方需容忍)
 
+	flasher  windowFlasher // 窗口闪烁(窗口创建后注入;单测注假实现)
+	flashDur time.Duration // 闪烁收尾时长(0 = 不收尾,测试用)
+
 	noticeSvcMissing atomic.Bool // 宿主未装配 ctx.notices:只记一次
 	// 下列字段全部在 app.Run() 之前写好、之后只读 —— 控制面 handler 会并发读它们,
 	// 所以**不能**在 boot() 协程里再改(那是一次真实的 data race:备份端点可能读到半个值)。
@@ -153,6 +156,10 @@ func main() {
 		shellLogf("窗口几何: 恢复上次位置 %dx%d @ (%d,%d)", st.W, st.H, st.X, st.Y)
 	}
 	sh.window = app.Window.NewWithOptions(opts)
+	// 提醒用户的壳层落点(窗口闪烁):窗口就绪后注入,控制面 handler 并发读它
+	// —— 与 plan/dataRoot 同一条纪律:app.Run() 之前写好、之后只读。
+	sh.flasher = sh.window
+	sh.flashDur = attentionFlashDur
 	// 关窗口 ≠ 销毁窗口:否则召回只能靠重启(见 windowclose.go 的真机报告)。
 	sh.interceptMainWindowClose(sh.window)
 	watchWindowState(app, sh.window)

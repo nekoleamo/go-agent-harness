@@ -2,7 +2,7 @@
 // 根组件:SSE 消费(历史重放 + 实时)+ REST 上行 + 四槽位装配(registry.ts 契约 v1)。
 import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, provide, ref, watch } from 'vue'
 import { api } from './api'
-import { fetchShellNotices, installExternalLinkGuard, probeAsync } from './desktop'
+import { fetchShellNotices, installExternalLinkGuard, probeAsync, requestAttention } from './desktop'
 import type { AskConfirm } from './types'
 import { interventionOf, latestErrorOf, type Intervention } from './intervention'
 import { consume, isUsage, msgsOfEvents, newModel, type StreamModel } from './sse'
@@ -1001,6 +1001,7 @@ function rebuild(plan: SwitchPlan): void {
     confirm.value = req
     // 审批在后台弹出来 = 回合一直阻塞到超时:这是真正“需要人回来”的时刻。
     if (hidden()) notifier.fireEvent('gah 需要你确认', (req?.prompt || '').slice(0, 120))
+    shellAttention('confirm:' + (req?.prompt || ''), 'gah 需要你确认', req?.prompt || '')
   }))
   transport.on('question', gate((f) => {
     const req = f.payload as QuestionRequest
@@ -1014,6 +1015,7 @@ function rebuild(plan: SwitchPlan): void {
     question.value = req
     questionMin.value = false
     if (hidden()) notifier.fireEvent('gah 需要你作答', (req?.prompt || '').slice(0, 120))
+    shellAttention('question:' + (req?.id || ''), 'gah 需要你作答', req?.prompt || '')
   }))
   // G-E5-4:提问已解决(question/resolved 事件订阅面)——多端并存时本端弹层
   // 可能还开着(已由其它渠道作答/超时)→ 按 id 关闭遗留弹层。
@@ -1037,6 +1039,7 @@ function rebuild(plan: SwitchPlan): void {
     questionnaire.value = req
     questionnaireMin.value = false
     if (hidden()) notifier.fireEvent('gah 需要你作答', (req?.title || '').slice(0, 120))
+    shellAttention('questionnaire:' + (req?.id || ''), 'gah 需要你作答(问卷)', req?.title || req?.questions?.[0]?.prompt || '')
   }))
   transport.on('questionnairedone', gate((f) => {
     const p = f.payload as { id?: string }
@@ -1280,6 +1283,20 @@ function onVisibility(): void {
 // 后台才有系统通知的意义:前台自有界面反馈,再弹通知只是噪音(与 TUI `/notify auto` 同口径)。
 function hidden(): boolean {
   return typeof document !== 'undefined' && document.visibilityState !== 'visible'
+}
+
+// shellAttention 把"需要人回来"的信号落到**壳层**(窗口闪烁 + 系统通知)。
+//
+// 为什么判定用 hasFocus 而不是 hidden:窗口**可见但被别的应用盖住**时 document.hidden
+// 仍是 false,而那恰恰是最需要提醒的桌面场景(用户在看别处,回合在后台阻塞到超时)。
+// 浏览器端 requestAttention 恒 false,由 notifier.fireEvent 负责,两条路互不干扰。
+// 去重按 key(帧 id / prompt):重连补推会重发同一帧,重复闪烁与系统通知才是真噪音。
+let lastAttentionKey = ''
+function shellAttention(key: string, title: string, body: string): void {
+  if (typeof document !== 'undefined' && document.hasFocus()) return // 人正看着:不打扰
+  if (key && key === lastAttentionKey) return
+  lastAttentionKey = key
+  void requestAttention(title, body.slice(0, 160))
 }
 
 // stopTurn 中止运行中的回合(输入区「停止」按钮)。

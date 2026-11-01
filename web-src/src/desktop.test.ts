@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { fetchShellNotices, hasShellQuery, sniffTauriInvoke, wailsUpdateSnapshot } from './desktop.ts'
+import { fetchShellNotices, hasShellQuery, requestAttention, sniffTauriInvoke, wailsUpdateSnapshot } from './desktop.ts'
 
 const invoke = (): Promise<unknown> => Promise.resolve('ok')
 
@@ -51,4 +51,10 @@ test('控制面状态:busy/seq 用壳侧真实值(缺省才补 false/0)', () => 
 
 test('壳侧提示:非壳环境不请求(浏览器里不发多余请求)', async () => {
   assert.deepEqual(await fetchShellNotices(), [])
+})
+
+// requestAttention 非壳环境恒 false:浏览器端由 notifier.fireEvent 负责,
+// 这条护栏保证调用方不必自己分支(也不会往 /shell/* 发无意义的请求)。
+test('requestAttention 在浏览器里是 no-op(不抛、不发请求)', async () => {
+  assert.equal(await requestAttention('t', 'b'), false)
 })

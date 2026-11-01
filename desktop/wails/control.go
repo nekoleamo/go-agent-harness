@@ -95,6 +95,7 @@ func (c *controlPlane) routes() http.Handler {
 	mux.HandleFunc("/shell/update-install", c.guard(c.postOnly(c.handleUpdateInstall)))
 	mux.HandleFunc("/shell/update-restart", c.guard(c.postOnly(c.handleUpdateRestart)))
 	mux.HandleFunc("/shell/notify-test", c.guard(c.postOnly(c.handleNotifyTest)))
+	mux.HandleFunc("/shell/attention", c.guard(c.postOnly(c.handleAttention)))
 	mux.HandleFunc("/shell/diag", c.guard(c.handleDiag))
 	mux.HandleFunc("/shell/notices", c.guard(c.handleNotices))
 	mux.HandleFunc("/shell/session-window", c.guard(c.postOnly(c.handleSessionWindow)))
@@ -430,6 +431,29 @@ func (c *controlPlane) handleNotifyTest(w http.ResponseWriter, _ *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleAttention POST /shell/attention:页面在**窗口处于后台**时请求一次「提醒用户」
+// (新的提问/问卷/审批到达)。壳只做呈现:窗口闪烁 + 系统通知;判据与去重都在页面。
+//
+// 为什么不让壳自己判:壳不知道"这一帧是不是重复补推"、"用户在不在这一页"——那是页面的事实;
+// 壳侧判据一旦长出来就是第二份真值源(notice.go 头注里同一条教训)。
+func (c *controlPlane) handleAttention(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Title string `json:"title"`
+		Body  string `json:"body"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 8<<10) // 只允许一行文案进来
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad request: " + err.Error()})
+		return
+	}
+	res := c.sh.attention(strings.TrimSpace(body.Title), strings.TrimSpace(body.Body))
+	code := http.StatusOK
+	if !res.Flashed && !res.Notified {
+		code = http.StatusServiceUnavailable // 两条路都没走通:如实报,不假装成功
+	}
+	writeJSON(w, code, res)
 }
 
 // handleUpdateCheck 只查不装(2026-10-03 的决定):一次「检查更新」不该顺手把整个应用换掉。

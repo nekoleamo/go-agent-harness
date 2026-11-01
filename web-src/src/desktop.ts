@@ -169,6 +169,25 @@ export async function fetchShellNotices(): Promise<string[]> {
   }
 }
 
+// requestAttention 请壳层「提醒用户」:窗口闪烁 + 系统通知(见 desktop/wails/attention.go)。
+//
+// 为什么不用浏览器的 Notification:桌面 webview(macOS WKWebView)里 Notification 常常
+// 不存在,而"提问/审批在后台到达"正是最需要提醒的时刻。壳侧两条路独立成败,这里只回
+// "有没有送出去",失败静默(壳日志里有一行,不拿它打扰用户)。
+// 非壳环境恒 false(浏览器端由 notifier.fireEvent 负责),调用方无需分支。
+export async function requestAttention(title: string, body: string): Promise<boolean> {
+  if (!isWailsShell) return false
+  try {
+    const r = (await ctlFetch('/shell/attention', { method: 'POST', body: { title, body } })) as {
+      flashed?: boolean
+      notified?: boolean
+    }
+    return r?.flashed === true || r?.notified === true
+  } catch {
+    return false
+  }
+}
+
 // installExternalLinkGuard 让页面里所有外链都交给系统浏览器。
 //
 // 为什么放在前端而不是壳的导航钩子:Wails v3.0 没有公开「导航前回调」的 API
