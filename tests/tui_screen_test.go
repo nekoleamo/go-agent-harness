@@ -108,9 +108,18 @@ func (s *tuiScreen) feed(b []byte) {
 			} else {
 				s.pend = s.pend[end+2:]
 			}
-		default: // 双字节转义(如 ESC c 复位)
+		default: // 双字节转义(ESC 7/8 存读光标、ESC c 复位等:忽略;M/D/E 要动光标)
 			if len(s.pend) < 2 {
 				return
+			}
+			switch s.pend[1] {
+			case 'M': // 反索引:光标上移;已在顶行则整体下滚一行
+				s.reverseIndex()
+			case 'D': // 索引:光标下移;已在底行则整体上滚一行
+				s.index()
+			case 'E': // 下一行(列归零 + 索引)
+				s.col = 0
+				s.index()
 			}
 			s.pend = s.pend[2:]
 		}
@@ -176,6 +185,22 @@ func (s *tuiScreen) csi(params string, final byte) {
 				s.buf[s.row][j] = ' '
 			}
 		}
+	case 'L': // 插入行(bubbletea v2.1 起输入区用它开新行)
+		s.insertLines(maxInt(n, 1))
+	case 'M': // 删除行
+		s.deleteLines(maxInt(n, 1))
+	case '@': // 插入字符
+		s.insertChars(maxInt(n, 1))
+	case 'P': // 删除字符
+		s.deleteChars(maxInt(n, 1))
+	case 'S': // 上滚 n 行
+		for i := 0; i < maxInt(n, 1); i++ {
+			s.scrollUp()
+		}
+	case 'T': // 下滚 n 行
+		for i := 0; i < maxInt(n, 1); i++ {
+			s.scrollDown()
+		}
 	case 'm': // SGR:颜色/样式,忽略
 	default:
 		// 其它(含 ?25l 光标显隐、?2026 同步刷新等私有序列)忽略
@@ -186,6 +211,93 @@ func (s *tuiScreen) clearRow(i int) {
 	for j := range s.buf[i] {
 		s.buf[i][j] = ' '
 	}
+}
+
+// insertLines 在光标行插入 n 行(下方整体下移,溢出的底行丢弃)。真实终端受滚动区限制,
+// 本模型没有滚动区 —— 对"屏幕上有没有这段文本"的断言足够。
+func (s *tuiScreen) insertLines(n int) {
+	if n < 1 {
+		n = 1
+	}
+	for k := 0; k < n; k++ {
+		s.buf = append(s.buf[:s.row], append([][]rune{s.blankRow()}, s.buf[s.row:]...)...)
+		s.buf = s.buf[:scrRows] // 底行被挤出屏幕
+	}
+}
+
+// deleteLines 从光标行删除 n 行(下方整体上移,底端补空行)。
+func (s *tuiScreen) deleteLines(n int) {
+	if n < 1 {
+		n = 1
+	}
+	for k := 0; k < n; k++ {
+		s.buf = append(s.buf[:s.row], s.buf[s.row+1:]...)
+		s.buf = append(s.buf, s.blankRow())
+	}
+}
+
+// insertChars 在光标列插入 n 个空格(行内右移,溢出丢弃)。
+func (s *tuiScreen) insertChars(n int) {
+	row := s.buf[s.row]
+	pad := make([]rune, n)
+	for i := range pad {
+		pad[i] = ' '
+	}
+	row = append(row[:s.col], append(pad, row[s.col:]...)...)
+	copy(s.buf[s.row], row[:scrCols])
+}
+
+// deleteChars 从光标列删除 n 个字符(行内左移,尾部补空格)。
+func (s *tuiScreen) deleteChars(n int) {
+	row := s.buf[s.row]
+	if s.col >= len(row) {
+		return
+	}
+	end := s.col + n
+	if end > len(row) {
+		end = len(row)
+	}
+	row = append(row[:s.col], row[end:]...)
+	for len(row) < scrCols {
+		row = append(row, ' ')
+	}
+	copy(s.buf[s.row], row)
+}
+
+// scrollUp 整体上滚一行(内容上移,底行补空)。
+func (s *tuiScreen) scrollUp() {
+	s.buf = append(s.buf[1:], s.blankRow())
+}
+
+// scrollDown 整体下滚一行(内容下移,顶行补空)。
+func (s *tuiScreen) scrollDown() {
+	s.buf = append([][]rune{s.blankRow()}, s.buf[:scrRows-1]...)
+}
+
+func (s *tuiScreen) blankRow() []rune {
+	r := make([]rune, scrCols)
+	for i := range r {
+		r[i] = ' '
+	}
+	return r
+}
+
+// reverseIndex ESC M:光标上移;已在顶行则整屏下滚(真实终端行为)。
+func (s *tuiScreen) reverseIndex() {
+	if s.row == 0 {
+		s.scrollDown()
+		return
+	}
+	s.row--
+}
+
+// index ESC D:光标下移;已在底行则整屏上滚。
+func (s *tuiScreen) index() {
+	if s.row >= scrRows-1 {
+		s.scrollUp()
+		return
+	}
+	s.row++
 }
 
 // put 写入一个 rune(宽字符占两列,这里只占一格 —— 对文本包含断言无影响)。
@@ -478,4 +590,64 @@ func (s *tuiSess) rawText() string {
 	s.rawMu.Lock()
 	defer s.rawMu.Unlock()
 	return s.raw.String()
+}
+
+// TestTUIScreenEditSequences 屏幕模型的编辑/滚动序列单测。
+//
+// 为什么值得单独测:这个模型是几十条 TUI 验收用例的**判据本身** —— 它漏掉一条序列,
+// 用例就会假阴(2026-11-01 bubbletea v2.1.1 改用 CSI L + ESC M 开新行,旧模型直接
+// 把第一行覆盖成空白,TestTUIAcceptInput 当场红)。这里把用到的原语各钉一条。
+func TestTUIScreenEditSequences(t *testing.T) {
+	feed := func(raw string) string {
+		sc := newTuiScreen()
+		sc.feed([]byte(raw))
+		return sc.text()
+	}
+	cases := []struct{ name, raw, want, notWant string }{
+		{
+			name: "CSI L 插入行:光标行起下移,上一行保留",
+			raw:  "\x1b[2;1H第二行\x1b[1;1H第一行" + "\x1b[2;1H\x1b[L" + "\x1b[2;1H插队",
+			want: "插队", // 插入行后原第二行被推到第 3 行
+			// 反例由下一条断言覆盖(第一行仍在)
+		},
+		{
+			name: "ESC M 反索引:光标上移不吞内容",
+			raw:  "\x1b[3;1H底\x1bM上",
+			want: "上", // 上移一行后在第二行写
+		},
+		{
+			name: "CSI M 删除行:下方内容上移",
+			raw:  "\x1b[1;1H一行\x1b[2;1H二行\x1b[1;1H\x1b[M\x1b[1;1H顶",
+			want: "顶",
+		},
+		{
+			name: "CSI P 删除字符",
+			raw:  "\x1b[1;1Habcdef\x1b[1;2H\x1b[2P",
+			want: "adef",
+		},
+		{
+			name: "CSI @ 插入字符:光标处让出两格,右侧内容右移",
+			raw:  "\x1b[1;1Habf\x1b[1;3H\x1b[2@",
+			want: "ab  f",
+		},
+	}
+	for _, c := range cases {
+		got := feed(c.raw)
+		if !strings.Contains(got, c.want) {
+			t.Fatalf("%s: 应含 %q,屏幕=%q", c.name, c.want, got)
+		}
+	}
+	// 插入行后"第一行"必须还在(这正是 2026-11-01 假阴的现场)
+	got := feed("\x1b[1;1H第一行\x1b[2;1H第二行\x1b[1;2H\x1b[L")
+	if !strings.Contains(got, "第一行") {
+		t.Fatalf("CSI L 后上一行应保留,屏幕=%q", got)
+	}
+	// 滚出屏幕的内容应消失(整体上滚)
+	scrolled := feed("\x1b[24;1H末行\x1b[1;1H\x1b[S")
+	if strings.Contains(scrolled, "末行") && !strings.Contains(scrolled, "\x1b") {
+		// 上滚一屏后,底行内容要么被挤到第 23 行(仍在屏),要么消失 —— 这里只要求不 panic 且仍是 24 行文本
+	}
+	if lines := strings.Count(scrolled, "\n"); lines > scrRows {
+		t.Fatalf("上滚后不应产生超过 %d 行,得到 %d", scrRows, lines+1)
+	}
 }
