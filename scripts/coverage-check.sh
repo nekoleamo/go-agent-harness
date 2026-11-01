@@ -29,6 +29,19 @@
 #   2026-10-05:未设该变量且 cmd/gah 跌破棘轮时,脚本会**在红字里明示这一点**
 #   (此前只印覆盖率数字,很容易被当成代码退化去追 —— 实测 45.9% → 加变量即 70.7)。
 #
+# —— 测量工具链(2026-11-01 补齐:尺子必须与 CI 同一把)——
+#   现象:同一份代码、同一条命令,本机(darwin,Go 1.27.3)有 12 个包低于棘轮
+#   (xlock 70→67.4、prefs 84.3→83.9、mcp-bridge 75.7→74.1 …),而 Linux CI(Go 1.27.0)
+#   全部达标。**不是代码退化,是编译器换了**:补丁版本之间内联/SSA 的差异会改变覆盖块
+#   的切分,同一份代码量出来的百分比就不同(用 `GOTOOLCHAIN=go1.27.0` 在本机复跑,
+#   数字与 CI 逐项一致,已实测)。
+#   处置:门**自己钉住测量工具链** —— 取 go.mod 的 `go` 指令(CI 的 setup-go 就是
+#   `go-version-file: go.mod`,天然同源),以 `GOTOOLCHAIN=go<该版本>` 跑测试。
+#   为什么不干脆降棘轮:棘轮只许上调;降门会把「编译器换了」永久记成「代码变差了」,
+#   以后再有人加测试也涨不回来。为什么不补 @darwin 行:**这不是平台差异**,是工具链差异
+#   —— 一台 Linux 机器用 1.27.3 跑同样会低,按平台登记等于把原因写错。
+#   代价:本地首次会下载一次该工具链(已缓存则无感),与 CI 完全同一把尺。
+#
 # —— 结构性稀释口径(2026-10-02 补齐,原先只有「不降门」三个字)——
 #   背景:棘轮是**逐包绝对百分比**,而一批新功能往往给某个包一次加几百行新代码
 #   (例:第一百零九批给 host-internal-commands 加约 700 行命令面)。此时该包的
@@ -134,9 +147,10 @@ SKIP="${GAH_COVER_SKIP:-0}"             # 1 = 只测(不校验),用于基线测�
 #   → 两平台不可比。下限取 50(远低于实测值),逾期若在 Linux CI 报低,按上面的
 #   模式补了 `internal/kernelsandbox@linux 43`(Linux CI 实测 43.4%,2026-09-27)。
 #   注意这个下限不能按 darwin 的数字(实测 95.1)要求 —— 两平台可跑到的行集不同。
-#   internal/watch(2026-10-23 从 core/plugin 搬来):单独 `go test -cover` 是 83.7%,
-#   但本门在合并子进程覆盖(GAH_COVER_MERGE_DIR)的口径下算到 76% ⇒ 下限取**门能看到的那个数**
-#   (棘轮只许上调,不收"漂亮但算不出来"的数)。别照单独跑的数字改回去。
+#   internal/watch(2026-10-23 从 core/plugin 搬来):曾因「单独跑 83.7%、门里只看到 76%」把下限
+#   定在 76(棘轮只许上调,不收"漂亮但算不出来"的数)。2026-11-01 查明那 7pp 差额是**测量工具链**
+#   造成的(见上「测量工具链」),钉住 go.mod 的版本后门里能看到 82.1%(与 CI 一致);
+#   下限保守留在 76,不按新尺子重定基(下批有需要再上调)。
 read -r -d '' MINS <<'EOF'
 core/event 90
 core/ctx 60
@@ -315,6 +329,20 @@ if [ "${1:-}" = "--dilution" ]; then
   ' "$TMP/mins.txt" "$TMP/dilution.txt" "$1" "$2" "$3" "$4"
   exit $?
 fi
+
+# 测量工具链:与 CI 同源(见头部「测量工具链」)。取 go.mod 的 go 指令 —— 只取一次,
+# 后面所有 go 调用(covdata 由测试里的 exec 继承)都跟着走。
+GO_DIRECTIVE="$(awk '$1=="go"{print $2; exit}' "$ROOT/go.mod")"
+if [ -z "$GO_DIRECTIVE" ]; then
+  echo "FAIL 取不到 go.mod 的 go 指令(拿不准该用哪个工具链量,拒绝用本机默认值)"
+  exit 1
+fi
+export GOTOOLCHAIN="go${GO_DIRECTIVE}"
+if ! go version >/dev/null 2>&1; then
+  echo "FAIL GOTOOLCHAIN=$GOTOOLCHAIN 不可用(首次需要下载该工具链;装好后重跑)"
+  exit 1
+fi
+echo "== 测量工具链:$GOTOOLCHAIN($(go version 2>/dev/null)) =="
 
 if [ "$#" -gt 0 ]; then
   PROFILES=("$@")

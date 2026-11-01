@@ -23,8 +23,14 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT" || exit 1
 
-# staticcheck 版本与 CI 固定一致(2026.2.1);本地版本不同会得到不同的检查结论。
-STATICCHECK_VERSION="2026.2.1"
+# staticcheck 版本与 CI 固定一致(2026.2.2);本地版本不同会得到不同的检查结论。
+#
+# 2026.2.1 → 2026.2.2(2026-11-01):Go 1.27.3 把导出数据版本抬到 5,而 staticcheck 0.8.1
+# 只认到 4 —— 它对**未改动**的包也报 `internal error in importing "internal/goarch"
+# (cannot decode ... export data version 5 is greater than maximum supported version 4)`,
+# 于是本机门禁的 staticcheck 一步恒红(CI 的 Go 1.27.0 还不受影响,更隐蔽:本地红、CI 绿)。
+# 0.8.2 两个工具链都读得动(2026-11-01 实测:本机 1.27.3 + CI 的 1.27.0)。
+STATICCHECK_VERSION="2026.2.2"
 FAST=0
 for arg in "$@"; do
   case "$arg" in
@@ -102,7 +108,7 @@ else
     else
       if (cd desktop/wails && "$SC" ./...); then echo "OK"; else fail "staticcheck desktop/wails module"; fi
     fi
-    # 版本漂移会让人误判「本地过了就是过了」——CI 固定 2026.2.1。
+    # 版本漂移会让人误判「本地过了就是过了」——CI 固定同一个版本(见 STATICCHECK_VERSION)。
     if ! "$SC" -version 2>/dev/null | grep -q "$STATICCHECK_VERSION"; then
       echo "  ! 本地 staticcheck 版本与 CI 固定版本($STATICCHECK_VERSION)不同,结论可能不一致"
     fi
