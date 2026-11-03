@@ -59,7 +59,7 @@ func TestTUIAcceptTwoQuestionsStack(t *testing.T) {
 	if !s.waitRaw("两问都已作答", 60*time.Second) {
 		t.Fatalf("条目 16:两问答完后回合未收尾(第二问未被接上);尾段 %q", stripANSI(tailS(s.rawText(), 500)))
 	}
-	if !s.waitIdle(30 * time.Second) {
+	if !s.waitIdle(t, 30*time.Second) {
 		t.Errorf("条目 16:作答后回合未回到空闲")
 	}
 	// 待答段消失的**实时**判据:命令面读数(状态栏旧帧会留残影,不能拿屏幕 Contains 判消失)

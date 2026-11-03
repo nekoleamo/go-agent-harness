@@ -92,7 +92,7 @@ func TestTUIAcceptCompactRollingSummary(t *testing.T) {
 	if !s.waitScreen("压缩前第一轮答复", 60*time.Second) {
 		t.Fatalf("条目 13:第一轮未完成;屏尾 %q", firstN(tailS(s.screen(), 300), 300))
 	}
-	if !s.waitIdle(30 * time.Second) {
+	if !s.waitIdle(t, 30*time.Second) {
 		t.Fatalf("条目 13:第一轮未结束;屏尾 %q", firstN(tailS(s.screen(), 300), 300))
 	}
 	bodies := spy.snapshot()

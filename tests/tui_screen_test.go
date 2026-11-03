@@ -539,24 +539,43 @@ func (s *tuiSess) waitScreenGone(sub string, d time.Duration) bool {
 	return !s.scr.contains(sub)
 }
 
-// waitIdle 轮询到"回合结束"(状态栏最下方那行含 空闲 而非 思考中/执行工具)。
-// 判据取「最后一个含 空闲/思考中 的行」——就地重绘会留旧行,越靠下越新。
-func (s *tuiSess) waitIdle(d time.Duration) bool {
+// waitIdle 轮询到"回合结束"(状态栏最下方那段含 空闲 而非 思考中/执行工具)。
+//
+// 判据做过两次折行修正(2026-09-28 是状态栏待答段、2026-11-03 是本函数):窄 pty 的
+// 折行 + 差分重绘会把**一个状态段拆到两行**,按行 Contains 就成了假阴 —— CI 慢机器上
+// 实测等 30s 也等不到(本机同时跑 6s 就绿),而那个红会被当成「回合卡住」去追。
+// 现在把可视屏拼成一段(去换行)再比"最后一个 空闲 / 最后一个执行标记 谁更靠后":
+// 状态栏是就地重绘,越靠后越新。失败时把屏尾打进日志 —— 「真慢」与「判据假阴」
+// 必须能分辨,否则下一个人还得重新推理一遍。
+func (s *tuiSess) waitIdle(t *testing.T, d time.Duration) bool {
 	deadline := time.Now().Add(d)
 	for time.Now().Before(deadline) {
-		lines := strings.Split(s.screen(), "\n")
-		for i := len(lines) - 1; i >= 0; i-- {
-			l := lines[i]
-			if strings.Contains(l, "思考中") || strings.Contains(l, "执行工具") {
-				break
-			}
-			if strings.Contains(l, "空闲") {
-				return true
-			}
+		if statusIsIdle(s.screen()) {
+			return true
 		}
 		time.Sleep(150 * time.Millisecond)
 	}
+	tail := stripANSI(strings.ReplaceAll(s.screen(), "\n", ""))
+	if r := []rune(tail); len(r) > 300 {
+		tail = string(r[len(r)-300:])
+	}
+	t.Logf("诊断:等空闲超时(判据已去折行);屏尾=%q", tail)
 	return false
+}
+
+// statusIsIdle 从可视屏文本判「状态栏处于空闲态」。
+//
+// 抽成纯函数的理由:这是几十条 pty 用例共用的判据,**判据本身要有单测**
+// (同一个理由见 TestTUIScreenEditSequences —— 判据漏一条就是一片假阴)。
+// 先去掉换行:窄 pty 折行会把 `空闲` / `执行工具` 拆成两行(2026-11-03 CI 实测)。
+// 再比位置:状态栏就地重绘,最后一个 `空闲` 比任何执行标记都靠后 = 空闲。
+func statusIsIdle(screen string) bool {
+	joined := strings.ReplaceAll(screen, "\n", "")
+	i := strings.LastIndex(joined, "空闲")
+	if i < 0 {
+		return false
+	}
+	return max(strings.LastIndex(joined, "思考中"), strings.LastIndex(joined, "执行工具")) < i
 }
 
 // inputLine 输入框那行(`│ ❯ … │`);取最后一行匹配(就地重绘会留旧行)。
@@ -590,6 +609,30 @@ func (s *tuiSess) rawText() string {
 	s.rawMu.Lock()
 	defer s.rawMu.Unlock()
 	return s.raw.String()
+}
+
+// TestStatusIsIdle 空闲判据本身:折行免疫 + “最后一段状态才算数”。
+//
+// 反向验证:把 statusIsIdle 改回「按行 Contains」(即不加 ReplaceAll)后,
+// 折行那两条必红 —— 2026-11-03 CI 就是死在那里。
+func TestStatusIsIdle(t *testing.T) {
+	cases := []struct {
+		name, screen string
+		want         bool
+	}{
+		{"直写空闲", "│ 上一回合 3.2s 空闲 │", true},
+		{"折行拆开空闲", "│ 上一回合 3.2s 空\n闲 │", true},
+		{"折行拆开执行工具", "│ 执行\n工具: shell │", false},
+		{"运行中(思考中在后)", "上一回合 空闲\n│ 思考中 …", false},
+		{"执行工具在后", "上一回合 空闲\n│ 执行工具: ask_user_question", false},
+		{"从运行回到空闲", "思考中\n│ 空闲", true},
+		{"无状态段", "无关文本", false},
+	}
+	for _, c := range cases {
+		if got := statusIsIdle(c.screen); got != c.want {
+			t.Errorf("%s: statusIsIdle(%q) = %v,want %v", c.name, c.screen, got, c.want)
+		}
+	}
 }
 
 // TestTUIScreenEditSequences 屏幕模型的编辑/滚动序列单测。
