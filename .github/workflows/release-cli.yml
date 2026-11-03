@@ -63,6 +63,13 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # 手动补发时 github.ref 是分支,显式告诉 goreleaser 目标是哪个 tag
           GITHUB_REF: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
+          # tag 必须**显式**告知 goreleaser(2026-11-03 真踩):同一 commit 上同时存在
+          # v0.8.5-preview 与 v0.8.5 时,goreleaser 自己 `git describe --abbrev=0` 取到的是
+          # **preview** ⇒ `.Version`=0.8.5-preview(资产名带 preview),而且它按 preview tag
+          # 找 Release(keep-existing)⇒ 上传到已存在的 preview Release ⇒ 全部
+          # `422 already_exists`,正式版 CLI 产物一件都没发出去。
+          # GORELEASER_CURRENT_TAG 是官方提供的覆盖口(优先级高于 git 推断)。
+          GORELEASER_CURRENT_TAG: ${{ inputs.tag || github.ref_name }}
       - name: 产物抽查(五目标归档齐全)
         run: |
           for t in darwin_amd64 darwin_arm64 linux_amd64 linux_arm64 windows_amd64; do
