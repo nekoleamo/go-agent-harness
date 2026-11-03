@@ -188,6 +188,182 @@ func TestDownloadNotLimitedByManifestTimeout(t *testing.T) {
 	}
 }
 
+// signedManifest 造一份签名清单(artifact 的 sha256 签名,url 可指向任意地址)。
+func signedManifest(t *testing.T, version string, artifact []byte, url string, key ed25519.PrivateKey) []byte {
+	t.Helper()
+	sum := sha256.Sum256(artifact)
+	sig := ed25519.Sign(key, sum[:])
+	body, err := json.Marshal(map[string]any{
+		"version":  version,
+		"pub_date": "2026-10-29T00:00:00Z",
+		"artifacts": map[string]any{
+			"testos-testarch": map[string]any{
+				"url":    url,
+				"size":   len(artifact),
+				"sha256": hex.EncodeToString(sum[:]),
+				"sig":    base64.StdEncoding.EncodeToString(sig),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+// manifestBytes 把一段清单 JSON 当成清单端点。
+func manifestBytes(t *testing.T, body []byte) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestProviderCheckDigestOnlyWithoutPubKey 壳没内置公钥(开发构建)时,清单只能出摘要。
+//
+// 为什么要有这条:原先 provider 无条件把清单里的 sig 填进 Verification,而 wails
+// 的口径是「有签名但没配公钥 ⇒ 直接拒」(pkg/updater/verify.go runVerification),
+// 于是开发构建**永远**装不上更新,报错是用户看不懂的
+// "signature requires a public key but none configured"(2026-11-02 真机反馈)。
+// 反向验证:把 p.digestOnly 改回 false(即不修),本条的签名断言必红。
+func TestProviderCheckDigestOnlyWithoutPubKey(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact := []byte("dev build artifact")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(artifact)
+	}))
+	defer srv.Close()
+	ms := manifestBytes(t, signedManifest(t, "0.1.7", artifact, srv.URL+"/a.zip", priv))
+	t.Setenv("GAH_DESKTOP_UPDATE_SOURCES", ms.URL+"/m.json")
+
+	p := newDesktopProvider()
+	p.digestOnly = true
+	rel, err := p.Check(context.Background(), updater.CheckRequest{CurrentVersion: "0.1.6", Platform: "testos", Arch: "testarch"})
+	if err != nil || rel == nil {
+		t.Fatalf("应发现新版本: rel=%v err=%v", rel, err)
+	}
+	v := rel.Verification
+	if v == nil {
+		t.Fatal("无公钥时仍要校验摘要,Verification 不能为空")
+	}
+	if len(v.Signature) != 0 || v.SignatureAlgo != "" {
+		t.Fatalf("无公钥时不能带签名(wails 会直接拒掉): algo=%q siglen=%d", v.SignatureAlgo, len(v.Signature))
+	}
+	want := sha256.Sum256(artifact)
+	if !bytes.Equal(v.Digest, want[:]) {
+		t.Fatal("摘要必须仍然校验")
+	}
+
+	// 有公钥时(发行构建)签名照旧强制带上。
+	p2 := newDesktopProvider()
+	rel2, err := p2.Check(context.Background(), updater.CheckRequest{CurrentVersion: "0.1.6", Platform: "testos", Arch: "testarch"})
+	if err != nil || rel2 == nil {
+		t.Fatalf("应发现新版本: rel=%v err=%v", rel2, err)
+	}
+	if rel2.Verification.SignatureAlgo != "ed25519" || len(rel2.Verification.Signature) == 0 {
+		t.Fatalf("发行构建(配了公钥)必须带签名: %+v", rel2.Verification)
+	}
+}
+
+// TestDownloadRetriesOtherSourceWhenPrimaryPurged 主源的包已被镜像清理(404)时,
+// 从另一个清单里拿**同一个包**(同版本 + 同 sha256)再下一次。
+//
+// 为什么要有这条:Gitee 只保留最近两个 release 的附件(实测 v0.8.0-preview 的
+// .app.zip 已 404,而清单还指着它),而原来 Download 只试清单里那一个 URL ⇒ 用户
+// 当下这次升级就走不通,失败记忆要等到**下一次**检查才生效。
+// 反向验证:把 Download 里的 altURLs 循环去掉,本条必红(错误变成 HTTP 404)。
+func TestDownloadRetriesOtherSourceWhenPrimaryPurged(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact := []byte("fresh update bytes")
+	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/alive.zip") {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write(artifact)
+	}))
+	defer live.Close()
+
+	// 第一顺位清单指向已被清理的地址;第二顺位清单指向同一版的活地址。
+	primary := manifestBytes(t, signedManifest(t, "0.1.7", artifact, live.URL+"/gone.zip", priv))
+	alt := manifestBytes(t, signedManifest(t, "0.1.7", artifact, live.URL+"/alive.zip", priv))
+	t.Setenv("GAH_DESKTOP_UPDATE_SOURCES", primary.URL+"/m.json,"+alt.URL+"/m.json")
+
+	p := newDesktopProvider()
+	rel, err := p.Check(context.Background(), updater.CheckRequest{CurrentVersion: "0.1.6", Platform: "testos", Arch: "testarch"})
+	if err != nil || rel == nil {
+		t.Fatalf("应发现新版本: rel=%v err=%v", rel, err)
+	}
+	if u, _ := rel.Metadata["url"].(string); !strings.HasSuffix(u, "/gone.zip") {
+		t.Fatalf("本用例要的是「主源已清理」的场景,实际取到 %q", u)
+	}
+	var buf bytes.Buffer
+	if err := p.Download(context.Background(), rel, &buf, func(int64, int64) {}); err != nil {
+		t.Fatalf("应换源成功: %v", err)
+	}
+	if !bytes.Equal(buf.Bytes(), artifact) {
+		t.Fatalf("下载内容不一致: %q", buf.String())
+	}
+}
+
+// TestDownloadDoesNotSwitchSourceAfterPartialBytes 开下就不能换源。
+//
+// wails 的摘要是**边下载边算**的,中途换源会把两份字节拼进同一个文件 ⇒ 摘要必然
+// 不符,错会跑到下游、更难解释。所以只有「一个字节都没落盘」时才能换源。
+// 反向验证:把 Download 里的 `if written > 0 { return err }` 去掉,本条必红
+// (错误消失、buf 变成 4 字节前缀 + 完整包)。
+func TestDownloadDoesNotSwitchSourceAfterPartialBytes(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact := []byte("0123456789abcdef")
+	// 主源先吐 4 字节再掐断连接。
+	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprint(len(artifact)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(artifact[:4])
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		panic(http.ErrAbortHandler)
+	}))
+	defer broken.Close()
+	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(artifact)
+	}))
+	defer live.Close()
+
+	primary := manifestBytes(t, signedManifest(t, "0.1.7", artifact, broken.URL+"/half.zip", priv))
+	alt := manifestBytes(t, signedManifest(t, "0.1.7", artifact, live.URL+"/alive.zip", priv))
+	t.Setenv("GAH_DESKTOP_UPDATE_SOURCES", primary.URL+"/m.json,"+alt.URL+"/m.json")
+
+	p := newDesktopProvider()
+	rel, err := p.Check(context.Background(), updater.CheckRequest{CurrentVersion: "0.1.6", Platform: "testos", Arch: "testarch"})
+	if err != nil || rel == nil {
+		t.Fatalf("应发现新版本: rel=%v err=%v", rel, err)
+	}
+	var buf bytes.Buffer
+	if err := p.Download(context.Background(), rel, &buf, func(int64, int64) {}); err == nil {
+		t.Fatal("已开始落盘后断流必须报错,不能换源把两份字节拼起来")
+	}
+	if bytes.Equal(buf.Bytes(), artifact) {
+		t.Fatal("换源拼出来的文件居然等于完整包 —— 说明换源逻辑吞掉了断流")
+	}
+	if buf.Len() != 4 {
+		t.Fatalf("中途不该再写入任何字节: 实际 %d 字节 %q", buf.Len(), buf.String())
+	}
+}
+
 // TestProviderFallsBackToSecondSource 第一个源不通 → 自动落到第二个(与旧壳同语义)。
 func TestProviderFallsBackToSecondSource(t *testing.T) {
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -243,6 +419,12 @@ func TestExplainUpdateError(t *testing.T) {
 	cases := []struct{ in, wantIn string }{
 		{"updater: gah-desktop: HTTP 404", "没发布完"},
 		{"updater: ed25519 signature did not verify", "验签失败"},
+		// 「本机没公钥」与「出版方签名不对」是两件事:前者怪不到发布包头上。
+		{"updater: signature requires a public key but none configured", "开发构建"},
+		{"updater: a public key is configured, so the release must carry a signature", "开发构建"},
+		// 下载 404 ≠ 清单 404:前者是镜像清了附件。
+		{"updater: gah-desktop: 下载返回 HTTP 404", "镜像源上已被清理"},
+		{"updater: digest mismatch", "摘要不一致"},
 		{"dial tcp: connection refused", "网络不可达"},
 		{"context deadline exceeded", "超时"},
 		{"something weird", "something weird"},

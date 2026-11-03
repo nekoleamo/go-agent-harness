@@ -166,6 +166,11 @@ type desktopProvider struct {
 
 	mu        sync.Mutex
 	badSource string // 失败记忆:上次「表能取到、包下不下来」的源,下次垫到最后
+
+	// digestOnly 壳里没内置验签公钥(开发构建)。此时**不能**把清单里的 sig 填进
+	// Verification:wails 的口径是「有签名但没配公钥 ⇒ 直接拒」(verify.go 的
+	// runVerification),那会让开发构建永远装不上更新,而日志还写着「仅校验摘要」。
+	digestOnly bool
 }
 
 // Name 稳定的短名(事件与日志里出现)。
@@ -229,18 +234,18 @@ func (p *desktopProvider) Check(ctx context.Context, req updater.CheckRequest) (
 			return nil, fmt.Errorf("清单里的签名不是合法 base64: %w", err)
 		}
 		shellLogf("更新: 发现 %s(来源 %s)", m.Version, src)
+		verification := &updater.Verification{DigestAlgo: "sha256", Digest: digest}
+		if !p.digestOnly {
+			verification.SignatureAlgo = "ed25519"
+			verification.Signature = sig
+		}
 		return &updater.Release{
-			Version:     m.Version,
-			Notes:       m.Notes,
-			PublishedAt: parsePubDate(m.PubDate),
-			Artifact:    updater.Artifact{Filename: art.File, Size: art.Size, Platform: req.Platform, Arch: req.Arch},
-			Verification: &updater.Verification{
-				DigestAlgo:    "sha256",
-				Digest:        digest,
-				SignatureAlgo: "ed25519",
-				Signature:     sig,
-			},
-			Metadata: map[string]any{"url": art.URL, "source": src},
+			Version:      m.Version,
+			Notes:        m.Notes,
+			PublishedAt:  parsePubDate(m.PubDate),
+			Artifact:     updater.Artifact{Filename: art.File, Size: art.Size, Platform: req.Platform, Arch: req.Arch},
+			Verification: verification,
+			Metadata:     map[string]any{"url": art.URL, "source": src},
 		}, nil
 	}
 	if lastErr == nil {
@@ -250,25 +255,60 @@ func (p *desktopProvider) Check(ctx context.Context, req updater.CheckRequest) (
 }
 
 // Download 流式下载产物(带进度回调)。
+//
+// 换源重试(2026-11-02 补):Gitee 只保留最近两个 release 的附件,清单里指着的版本
+// 一旦被清理,那个源就**注定**下不动(实测 v0.8.0-preview 的 .app.zip 已 404,而
+// 清单还指着它)—— 失败记忆只是把这个源垫到下次检查的后面,用户当下这次升级仍然
+// 走不通。所以主源在「一个字节都还没落盘」的阶段失败时,去另一个清单里找**同一个包**
+// (同版本 + 同平台键 + 同 sha256)再下一次。
 func (p *desktopProvider) Download(ctx context.Context, r *updater.Release, dst io.Writer, onProgress func(written, total int64)) error {
 	url, _ := r.Metadata["url"].(string)
 	if url == "" {
 		return fmt.Errorf("release 缺少下载地址")
 	}
+	written, err := p.stream(ctx, url, dst, onProgress)
+	if err == nil {
+		return nil
+	}
+	// 已经落盘就不能换源:换了等于把两份字节拼进同一个文件,而 wails 的摘要是
+	// 在下载流里边写边算的 ⇒ 摘要必然不符,错误会跑到下游、更难解释。
+	if written > 0 {
+		p.rememberBadSource(r)
+		return err
+	}
+	alts := p.altURLs(ctx, r)
+	if len(alts) > 0 {
+		shellLogf("更新: 主源下载失败(%v),换源重试同一个包(sha256 一致才算)", err)
+	}
+	for _, alt := range alts {
+		w, aerr := p.stream(ctx, alt, dst, onProgress)
+		if aerr == nil {
+			shellLogf("更新: 已从备用源下载成功: %s", alt)
+			return nil
+		}
+		if w > 0 {
+			return aerr
+		}
+	}
+	// 「表能取到、包下不下来」正是失败记忆要治的那半段路。
+	p.rememberBadSource(r)
+	return err
+}
+
+// stream 下载一个地址。返回值 written 是**已写进 dst 的字节数**,调用方靠它判断
+// 「是不是还能安全换源」(0 = dst 还没被动过)。
+func (p *desktopProvider) stream(ctx context.Context, url string, dst io.Writer, onProgress func(written, total int64)) (int64, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	resp, err := p.dl.Do(req)
 	if err != nil {
-		// 「表能取到、包下不下来」正是失败记忆要治的那半段路。
-		p.rememberBadSource(r)
-		return err
+		return 0, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		p.rememberBadSource(r)
-		return fmt.Errorf("下载返回 HTTP %d", resp.StatusCode)
+		return 0, fmt.Errorf("下载返回 HTTP %d", resp.StatusCode)
 	}
 	buf := make([]byte, 64<<10)
 	var written int64
@@ -276,20 +316,53 @@ func (p *desktopProvider) Download(ctx context.Context, r *updater.Release, dst 
 		n, rerr := resp.Body.Read(buf)
 		if n > 0 {
 			if _, werr := dst.Write(buf[:n]); werr != nil {
-				return werr
+				return written, werr
 			}
 			written += int64(n)
-			onProgress(written, resp.ContentLength)
+			if onProgress != nil {
+				onProgress(written, resp.ContentLength)
+			}
 		}
 		if rerr == io.EOF {
-			return nil
+			return written, nil
 		}
 		if rerr != nil {
 			// 读一半断掉(代理超时/截断)同样属于「这个源下不来包」,记下来下次垫后。
-			p.rememberBadSource(r)
-			return rerr
+			return written, rerr
 		}
 	}
+}
+
+// altURLs 其他清单里的**同一个包**。判定只认 sha256:换源换的必须是同一份字节,
+// 只按版本号认等于把「下载失败」换成「验签失败」,用户更看不懂。
+func (p *desktopProvider) altURLs(ctx context.Context, r *updater.Release) []string {
+	if r.Verification == nil || len(r.Verification.Digest) == 0 || r.Artifact.Platform == "" {
+		return nil
+	}
+	want := hex.EncodeToString(r.Verification.Digest)
+	key := r.Artifact.Platform + "-" + normalizeArch(r.Artifact.Arch)
+	self, _ := r.Metadata["source"].(string)
+	seen := map[string]bool{}
+	if u, _ := r.Metadata["url"].(string); u != "" {
+		seen[u] = true
+	}
+	var out []string
+	for _, src := range p.ordered() {
+		if src == self {
+			continue
+		}
+		m, err := p.fetchManifest(ctx, src)
+		if err != nil || m.Version != r.Version {
+			continue
+		}
+		art, ok := m.Artifacts[key]
+		if !ok || art.URL == "" || seen[art.URL] || !strings.EqualFold(art.SHA256, want) {
+			continue
+		}
+		seen[art.URL] = true
+		out = append(out, art.URL)
+	}
+	return out
 }
 
 // rememberBadSource 记录「这个源下不来包」(下次检查先试另一个源)。
@@ -368,8 +441,12 @@ func (s *shell) initUpdater() error {
 		}
 		cfg.PublicKey = key
 	} else {
-		// 没有公钥 = 只校验摘要。显式说明,不让它悄悄弱化。
-		shellLogf("更新: 未内置验签公钥,本次仅校验 sha256 摘要(发行构建应注入 updatePubKeyHex)")
+		// 没有公钥 = 只校验摘要。**provider 必须同步按这个口径出清单**:清单里带着
+		// sig 而壳没配公钥时,wails 会直接拒(fail closed),开发构建就永远装不上更新,
+		// 报错还是「signature requires a public key but none configured」这种
+		// 用户无法理解的原文(2026-11-02 真机反馈)。
+		p.digestOnly = true
+		shellLogf("更新: 未内置验签公钥(开发构建),本次仅校验 sha256 摘要:能装更新,但不校验出版方签名")
 	}
 	if err := s.app.Updater.Init(cfg); err != nil {
 		return err
@@ -390,10 +467,23 @@ func explainUpdateError(err error) string {
 	msg := err.Error()
 	lower := strings.ToLower(msg)
 	switch {
-	case strings.Contains(lower, "404"):
-		return "更新源上没有这个版本的清单(可能还没发布完):" + msg
+	// 「下载」的 404 与「清单」的 404 不是一回事:前者是镜像把附件清了(国内源常见),
+	// 后者是这个版本压根还没发布。/ 顺序必须在通用 404 之前。
+	case strings.Contains(msg, "下载返回 HTTP"):
+		if strings.Contains(msg, "404") {
+			return "更新包在镜像源上已被清理(Gitee 只保留最近两个 release 的附件),另一个源也拿不到同一个包:请到 Release 页手动下载:" + msg
+		}
+		return "更新包下载失败:" + msg
+	case strings.Contains(lower, "requires a public key") || strings.Contains(lower, "must carry a signature"):
+		// 这条是「本机壳没内置公钥」(开发构建),**不是**发布包有问题 ——
+		// 「发布包与内置公钥不匹配」那种归因会把人引到错误的方向(2026-11-02 真机反馈)。
+		return "这个壳没有内置验签公钥(开发构建),装不了官方更新包:请下载发行版安装包覆盖;要继续用自建包请注入 GAH_DESKTOP_UPDATE_PUBKEY:" + msg
+	case strings.Contains(lower, "digest mismatch"):
+		return "下载到的更新包与清单摘要不一致(包被替换或下载被截断):" + msg
 	case strings.Contains(lower, "signature"):
 		return "更新包验签失败(发布包与内置公钥不匹配,可能被替换或签名错了):" + msg
+	case strings.Contains(lower, "404"):
+		return "更新源上没有这个版本的清单(可能还没发布完):" + msg
 	case strings.Contains(lower, "timeout") || strings.Contains(lower, "deadline exceeded"):
 		return "连不上更新源(超时):" + msg
 	case strings.Contains(lower, "connection refused") || strings.Contains(lower, "no route"):
