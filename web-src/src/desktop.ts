@@ -348,7 +348,7 @@ export async function saveExport(name: string, text: string, open: boolean): Pro
   }
 }
 
-/** 壳侧升级结果。status:available=有更新待确认 / installed=已装待重启 / upToDate / failed / portable。 */
+/** 壳侧升级结果。status:available=有更新待确认 / installed=已装待重启 / versionChanged=检查与安装之间更新源换版,需要重新确认 / upToDate / failed / portable。 */
 export interface UpdateResult {
   status?: string
   message?: string
@@ -373,10 +373,18 @@ export async function checkUpdate(timeoutMs = CHECK_TIMEOUT_MS): Promise<UpdateR
 
 // installUpdate 确认升级:下载并安装上一次 checkUpdate 找到的更新,完成后壳自动重启。
 // 超时给得比检查宽得多:下载 30+ MB 在慢网络下要几分钟,拿检查的 75 秒套上去会假红。
-export async function installUpdate(timeoutMs = INSTALL_TIMEOUT_MS): Promise<UpdateResult> {
+//
+// expect = 用户二次确认时看到的版本。壳会拿它与「现在看到的版本」对账:不一致就返回
+// versionChanged 而不安装(2026-11-03 真机反馈:检查到 0.8.4、实际装上 0.8.5 —— 中间
+// 镜像把清单换了)。用户点头的版本必须等于装进去的版本。
+export async function installUpdate(
+  expect = '',
+  timeoutMs = INSTALL_TIMEOUT_MS,
+): Promise<UpdateResult> {
   if (isWailsShell) {
     // 下载+验签+落位都在壳侧(框架负责),这里只要一个结论。
-    const r = (await raceWails('/shell/update-install', timeoutMs)) as UpdateResult
+    const body = expect ? { expect } : undefined
+    const r = (await raceWails('/shell/update-install', timeoutMs, body)) as UpdateResult
     return r
   }
   if (!tauriInvoke) throw new Error('当前环境不支持升级(需桌面版)')
@@ -388,13 +396,13 @@ export async function installUpdate(timeoutMs = INSTALL_TIMEOUT_MS): Promise<Upd
 }
 
 // raceWails 控制面调用的超时包装(与 raceUpdate 同口径:永不让界面停在「进行中」)。
-async function raceWails(path: string, timeoutMs: number): Promise<unknown> {
+async function raceWails(path: string, timeoutMs: number, body?: unknown): Promise<unknown> {
   let timer: ReturnType<typeof setTimeout> | undefined
   const timeout = new Promise<never>((_, rej) => {
     timer = setTimeout(() => rej(new Error('壳侧 ' + timeoutMs + 'ms 没有响应')), timeoutMs)
   })
   try {
-    return await Promise.race([ctlFetch(path, { method: 'POST' }), timeout])
+    return await Promise.race([ctlFetch(path, { method: 'POST', body }), timeout])
   } finally {
     if (timer) clearTimeout(timer)
   }

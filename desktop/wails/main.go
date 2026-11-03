@@ -76,6 +76,14 @@ type shell struct {
 	trayCheckItem *application.MenuItem   // 托盘「检查更新…」(自动检查用它)
 	tray          *application.SystemTray // 托盘本体(启动期显示「启动中…」用)
 
+	// updateSeen 最近一次「检查更新」看到的远端版本(check 与 install 对账用)。
+	//
+	// 为什么需要它(2026-11-03 真机反馈):「显示的可更新版本是 0.8.4,实际装上了 0.8.5」
+	// —— 检查与点安装之间,更新源(镜像)会把清单里的版本换掉。用户点头的版本必须等于
+	// 真正装进去的版本,对不上就停下来问一声,而不是静默换一个新版本。
+	updateSeenMu sync.Mutex
+	updateSeen   string
+
 	// 首帧门控(2026-11-03 修启动黑闪):先前 `SetURL` 后立刻 `Show()`,webview 里
 	// 一个像素都还没画 ⇒ 露出系统窗口背景(深色模式下就是黑)。现在等页面在**画完
 	// 首帧**后报一次 `/shell/ui-ready`(control.go)再显窗,兜底 firstFrameFallback。

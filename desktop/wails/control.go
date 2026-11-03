@@ -498,6 +498,8 @@ func (c *controlPlane) handleUpdateCheck(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusOK, map[string]any{"status": "upToDate", "version": version})
 		return
 	}
+	// 记下这一轮看到的版本:install 时要拿它跟「用户看到的那个版本」对账。
+	c.sh.noteSeenVersion(rel.Version)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":  "available",
 		"version": rel.Version,
@@ -527,6 +529,23 @@ func (c *controlPlane) handleUpdateInstall(w http.ResponseWriter, r *http.Reques
 		})
 		return
 	}
+	// 版本对账(2026-11-03 真机反馈:「显示可更新到 0.8.4,实际装上了 0.8.5」)。
+	// 前端把它二次确认时看到的版本传过来;两次之间清单被镜像换掉是**真会发生**的
+	// (实测就是 0.8.4→0.8.5 那段窗口),所以对不上就停下来让它重新确认,
+	// 而不是静默换成另一个版本装进去。
+	var req struct {
+		Expect string `json:"expect"`
+	}
+	_ = readJSONLimit(r, &req, 1<<12) // 没传/传坏了都不拦(旧前端兼容)
+	if seen := c.sh.seenVersion(); versionDrift(req.Expect, seen) {
+		shellLogf("安装更新: 版本已漂移(确认的是 %s,现在是 %s),请用户重新确认", req.Expect, seen)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":  "versionChanged",
+			"version": seen,
+			"message": "更新源已变成 " + seen + "(你确认的是 " + req.Expect + "),请重新确认后再安装",
+		})
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
 	defer cancel()
 	// 升级前备份:整包替换一旦把数据读坏,用户没有第二份。
@@ -542,12 +561,14 @@ func (c *controlPlane) handleUpdateInstall(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusOK, map[string]any{"status": "failed", "message": explainUpdateError(err)})
 		return
 	}
-	shellLogf("更新已就绪,准备重启应用")
+	shellLogf("更新已就绪,准备重启应用(版本 %s)", c.sh.seenVersion())
 	// 与旧壳同口径:装完就重启(界面上的确认文案写的就是「会替换应用本体并重启」)。
 	// 先把应答发出去,再重启,否则前端拿到的是断链而不是结论。
+	installed := c.sh.seenVersion()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":  "installed",
-		"message": "更新已安装,正在重启 gah…",
+		"version": installed,
+		"message": "更新 " + installed + " 已安装,正在重启 gah…",
 	})
 	go func() {
 		time.Sleep(500 * time.Millisecond)

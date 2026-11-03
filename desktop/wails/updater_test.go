@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -447,3 +448,53 @@ func TestExplainUpdateError(t *testing.T) {
 type errString string
 
 func (e errString) Error() string { return string(e) }
+
+// TestVersionDrift 安装前的版本对账:用户确认的版本必须等于现在要装的版本。
+//
+// 为什么要有这条(2026-11-03 真机反馈):「0.8.4 里点更新,显示可更新到 0.8.4,实际装上了
+// 0.8.5」—— 检查与点安装之间,镜像把清单里的版本换掉了。空串一律不漂移(调用方没传
+// expect 时不能凭空拦人)。
+// 反向验证:把 versionDrift 改成恒 false,最后一条必红。
+func TestVersionDrift(t *testing.T) {
+	cases := []struct {
+		expect, seen string
+		want         bool
+	}{
+		{"", "", false},
+		{"0.8.4", "", false},
+		{"", "0.8.5", false},
+		{"0.8.4", "0.8.4", false},
+		{"0.8.4", "0.8.5", true},
+	}
+	for _, c := range cases {
+		if got := versionDrift(c.expect, c.seen); got != c.want {
+			t.Errorf("versionDrift(%q,%q)=%v want %v", c.expect, c.seen, got, c.want)
+		}
+	}
+}
+
+// TestSeenVersion 记录/读取最近一次检查到的远端版本(空串不覆盖),并发安全。
+func TestSeenVersion(t *testing.T) {
+	sh := &shell{}
+	if got := sh.seenVersion(); got != "" {
+		t.Fatalf("初始应为空,得到 %q", got)
+	}
+	sh.noteSeenVersion("0.8.4")
+	if got := sh.seenVersion(); got != "0.8.4" {
+		t.Fatalf("应记下 0.8.4,得到 %q", got)
+	}
+	sh.noteSeenVersion("") // 空串不覆盖已有值(没检查到东西不代表"版本变空了")
+	if got := sh.seenVersion(); got != "0.8.4" {
+		t.Fatalf("空串不该覆盖,得到 %q", got)
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			sh.noteSeenVersion("0.8.4")
+			_ = sh.seenVersion()
+		}(i)
+	}
+	wg.Wait()
+}

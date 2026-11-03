@@ -456,6 +456,30 @@ func (s *shell) initUpdater() error {
 	return nil
 }
 
+// noteSeenVersion 记下本次「检查更新」看到的远端版本(check 与 install 对账用)。
+func (s *shell) noteSeenVersion(v string) {
+	if v == "" {
+		return
+	}
+	s.updateSeenMu.Lock()
+	s.updateSeen = v
+	s.updateSeenMu.Unlock()
+}
+
+// seenVersion 读最近一次看到的远端版本。
+func (s *shell) seenVersion() string {
+	s.updateSeenMu.Lock()
+	defer s.updateSeenMu.Unlock()
+	return s.updateSeen
+}
+
+// versionDrift 判「用户确认要装的版本」与「现在看到的版本」已不是同一个。
+//
+// 空串一律不漂移:调用方没传 expect 时不能凭这个拦人。
+func versionDrift(expect, seen string) bool {
+	return expect != "" && seen != "" && expect != seen
+}
+
 // explainUpdateError 把更新失败的原始错误翻成人话(旧 Rust 壳 explainUpdateError 等价)。
 //
 // 为什么要翻:失败原文形如 `updater: gah-desktop: HTTP 404`、`ed25519 signature did not verify`,

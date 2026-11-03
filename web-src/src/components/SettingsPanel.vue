@@ -584,7 +584,15 @@ async function doInstallNow(): Promise<void> {
   updBusy.value = true;
   updMsg.value = "正在下载安装…";
   try {
-    const r = await installUpdate();
+    // 把用户刚才确认的版本传下去:壳会拿它与当前更新源对账(检查→安装之间清单可能换版)
+    const r = await installUpdate(updAvailable.value);
+    if (r?.status === "versionChanged") {
+      // 不装:换成新版本号并要求重新确认(用户点的是另一个版本)
+      updAvailable.value = String(r?.version ?? updAvailable.value);
+      updOk.value = false;
+      updMsg.value = String(r?.message ?? "更新源里的版本已变化,请重新确认");
+      return;
+    }
     updOk.value = r?.status === "installed";
     updAvailable.value = r?.status === "installed" ? "" : updAvailable.value;
     updMsg.value = String(r?.message ?? "安装完成");

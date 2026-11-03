@@ -53,6 +53,9 @@ func (s *shell) checkUpdateFromTray(item *application.MenuItem) {
 		return
 	}
 	shellLogf("托盘: 发现新版本 %s", rel.Version)
+	// 记下来:用户点「下载并安装」时要用它做一次版本对账。
+	s.noteSeenVersion(rel.Version)
+	expect := rel.Version
 
 	msg := "发现新版本 " + rel.Version
 	if rel.Notes != "" {
@@ -71,13 +74,23 @@ func (s *shell) checkUpdateFromTray(item *application.MenuItem) {
 	d.AddButton("稍后").SetAsCancel()
 	// 回调里**不要**做阻塞工作:平台实现可能就在主线程/模态循环里调它
 	// (darwin 是 dialogRunModal 的完成回调),下载几十 MB 会把界面冻住。
-	d.AddButton("下载并安装").SetAsDefault().OnClick(func() { go s.installUpdateFromTray() })
+	d.AddButton("下载并安装").SetAsDefault().OnClick(func() { go s.installUpdateFromTray(expect) })
 	d.Show()
 }
 
 // installUpdateFromTray 下载+安装(失败如实弹窗,成功提示重启)。
-func (s *shell) installUpdateFromTray() {
+//
+// expect = 用户在弹窗里看到的那个版本。下载前先对一次账:检查与点安装之间镜像可能
+// 把清单换掉(2026-11-03 真机反馈「显示 0.8.4、装上 0.8.5」),那种情况**不能**静默换成
+// 新版本装进去 —— 停下来让用户重新确认。
+func (s *shell) installUpdateFromTray(expect string) {
 	if s.updater == nil {
+		return
+	}
+	if seen := s.seenVersion(); versionDrift(expect, seen) {
+		shellLogf("托盘: 版本已漂移(确认的是 %s,现在是 %s),不安装", expect, seen)
+		s.notifyDialog("版本已变化",
+			"你确认的是 "+expect+",而更新源现在是 "+seen+"。\n\n请重新点一次「检查更新…」再确认安装。")
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
@@ -96,8 +109,8 @@ func (s *shell) installUpdateFromTray() {
 		s.notifyDialog("安装失败", explainUpdateError(err))
 		return
 	}
-	shellLogf("托盘: 更新已就绪,等待重启")
-	d := s.app.Dialog.Question().SetTitle("更新已就绪").SetMessage("新版本已下载完成。现在重启 gah 应用更新吗?")
+	shellLogf("更新已就绪,等待重启(版本 %s)", s.seenVersion())
+	d := s.app.Dialog.Question().SetTitle("更新已就绪").SetMessage("新版本 " + s.seenVersion() + " 已下载完成。现在重启 gah 应用更新吗?")
 	if s.window != nil {
 		d.AttachToWindow(s.window)
 	}
