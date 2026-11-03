@@ -47,4 +47,13 @@ setTransportSession(boundSession)
 // 装配期加载外部 UI 插件(M7.2;失败静默保持默认实现,不阻塞界面)
 void Promise.all([loadUIPlugins(), registerDocPanel()]).then(() => {
   createApp(App).mount('#app')
+  // 桌面壳:报一次「已挂载」让壳显窗(2026-11-03 修启动黑闪)。
+  //
+  // 为什么**不用** requestAnimationFrame:此刻窗口还是 Hidden 的,而隐藏视图里
+  // rAF 会被浏览器节流到不触发 —— 实测壳侧 1.2s 翟底超时都等不到它(走双 rAF
+  // 那一版等于没生效)。mount 是同步渲染,样式表也在同一 bundle 里注入完毕,
+  // 所以直接报;壳侧自己留 ~40ms 给合成。非桌面壳没有 /shell/ 代理,不调。
+  if (new URLSearchParams(location.search).get('shell') === 'desktop') {
+    void fetch('/shell/ui-ready', { method: 'POST' }).catch(() => {})
+  }
 })

@@ -6,7 +6,10 @@
 package main
 
 import (
+	"runtime"
+
 	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v3/pkg/events"
 )
 
 // buildTray 建托盘与菜单。必须在 app.Run() 之前调用。
@@ -17,6 +20,11 @@ func (s *shell) buildTray() {
 		// Windows/Linux 用同一个图标即可;mac 的模板图已在 trayIcon 里选好。
 	}
 	tray.SetTooltip("gah")
+	// 启动期给个信号:首帧就绪前窗口是隐的(避免闪底),这期间用户看不到任何反应,
+	// 菜单栏文字是唯一不增加「等待」的反馈渠道。
+	// ⚠ 设文字必须等 Run 之后(见 onAppStarted):buildTray 跑在 app.Run() 之前,
+	// 那时调 InvokeSync 直接 nil 崩(2026-11-03 实测)。
+	s.tray = tray
 
 	menu := s.app.Menu.New()
 	menu.Add("打开 gah").OnClick(func(*application.Context) { s.focus() })
@@ -98,6 +106,59 @@ func (s *shell) buildTray() {
 
 	tray.SetMenu(menu)
 	tray.OnClick(func() { s.focus() })
+}
+
+// onAppStarted 在「应用真的跑起来之后」执行一次 f。
+//
+// 为什么不能直接调:buildTray 跑在 app.Run() **之前**,那时 wails 的主线程调度器还没
+// 初始化,`application.InvokeSync` 会 nil panic —— 2026-11-03 实测就是启动即崩
+// (`dispatchOnMainThread` 空指针,栈顶就是 setTrayStarting)。所以这类托盘操作挂在各平台的
+// 「启动完成」事件上;三个平台的事件名不同,也不存在统一封装。
+func (s *shell) onAppStarted(f func()) {
+	if s.app == nil || s.app.Event == nil {
+		return
+	}
+	var ev events.ApplicationEventType
+	switch runtime.GOOS {
+	case "darwin":
+		ev = events.Mac.ApplicationDidFinishLaunching
+	case "windows":
+		ev = events.Windows.ApplicationStarted
+	case "linux":
+		ev = events.Linux.ApplicationStartup
+	default:
+		return // 没对应事件的平台就不提示 —— 宁可少个提示,也不在 Run 之前碰平台 UI
+	}
+	s.app.Event.OnApplicationEvent(ev, func(*application.ApplicationEvent) { f() })
+}
+
+// setTrayStarting 启动期的菜单栏提示(在显示窗口时撒掉)。
+//
+// 为什么不只改 tooltip:tooltip 要把鼠标悬到图标上才看得到,而这段等待(首次启动要
+// 解压内嵌 sidecar)用户看不到窗口也看不到任何反应。macOS 的 SetLabel 是图标旁的
+// 文字,一眼可见;其他平台 label 语义不同,它不显示也无害。
+// 必须回主线程 —— 与菜单文字同一条纪律(见 mainthread.go)。
+func (s *shell) setTrayStarting(on bool) {
+	if s.tray == nil {
+		return
+	}
+	tray := s.tray
+	tip := "gah"
+	label := ""
+	if on {
+		label = "启动中…"
+		tip = "gah 正在启动"
+	}
+	application.InvokeSync(func() {
+		tray.SetLabel(label)
+		tray.SetTooltip(tip)
+	})
+	// 日志里能看到这一步,「启动中」到底有没有生效不用猜(真机反馈时很关键)。
+	if on {
+		shellLogf("托盘: 启动中(首帧就绪前窗口保持隐藏)")
+	} else {
+		shellLogf("托盘: 启动中已撒掉")
+	}
 }
 
 // autostartEnabled 读真实自启状态(读失败按「未启用」显示并留痕)。

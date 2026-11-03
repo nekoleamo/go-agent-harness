@@ -33,6 +33,21 @@ import (
 // version 由构建时 -ldflags "-X main.version=..." 注入(发行版跟 tag 走)。
 var version = "dev"
 
+// firstFrameFallback 前端首帧就绪的最长等待。
+//
+// 取 1.2s 而不是 3s/5s:这是在**与显窗赛跑** —— 用户要的是「尽快看到界面」,
+// 首帧正常情况只需几十毫秒,兜底只在前端挂了时才起作用。真机上首次启动的解压期
+// 本来就在 Hidden 里过,不占这个预算。
+const firstFrameFallback = 1200 * time.Millisecond
+
+// firstFrameSettle 前端报「已挂载」之后留多少给浏览器合成一帧。
+//
+// 前端**不能**自己等 rAF:窗口此刻是 Hidden 的,隐藏视图里 rAF 会被节流到不触发
+// (2026-11-03 实测:1.2s 翟底超时都等不到)。所以改成 mount 后立即上报 +
+// 这里留一段固定时间。猜错也不亏:窗口底色与前端同色(index.html 内联 + BackgroundColour),
+// 最坏只闪一帧白。
+const firstFrameSettle = 40 * time.Millisecond
+
 // shell 桌面壳的运行态(单实例,全字段在 main 里填好后再起协程)。
 type shell struct {
 	app      *application.App
@@ -58,9 +73,17 @@ type shell struct {
 	portable bool             // 便携模式:只查不装(Windows 不允许覆盖运行中的程序)
 	updater  *desktopProvider // 更新源(未装配时为 nil ⇒ 控制面如实报不可用)
 
-	trayCheckItem *application.MenuItem // 托盘「检查更新…」(自动检查用它)
-	updateBusy    atomic.Bool           // 检查更新进行中(前端轮询 update-state 用)
-	updateSeq     atomic.Uint64         // 检查轮次(前端据此判断"这一轮有结论了")
+	trayCheckItem *application.MenuItem   // 托盘「检查更新…」(自动检查用它)
+	tray          *application.SystemTray // 托盘本体(启动期显示「启动中…」用)
+
+	// 首帧门控(2026-11-03 修启动黑闪):先前 `SetURL` 后立刻 `Show()`,webview 里
+	// 一个像素都还没画 ⇒ 露出系统窗口背景(深色模式下就是黑)。现在等页面在**画完
+	// 首帧**后报一次 `/shell/ui-ready`(control.go)再显窗,兜底 firstFrameFallback。
+	uiReady     chan struct{}
+	uiReadyOnce sync.Once
+	windowShown atomic.Bool   // 主窗口是否已显示(首帧/兜底/诊断页,只显一次)
+	updateBusy  atomic.Bool   // 检查更新进行中(前端轮询 update-state 用)
+	updateSeq   atomic.Uint64 // 检查轮次(前端据此判断"这一轮有结论了")
 }
 
 func main() {
@@ -72,7 +95,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "gah: 挑空闲端口失败: %v\n", err)
 		os.Exit(1)
 	}
-	sh := &shell{addr: addr, gahToken: os.Getenv("GAH_WEB_TOKEN")}
+	sh := &shell{addr: addr, gahToken: os.Getenv("GAH_WEB_TOKEN"), uiReady: make(chan struct{})}
 	// 运行落点(sidecar 从哪来、数据根在哪)在起控制面之前算清楚:
 	// ① handlers 会读 dataRoot/portable,晚写就是 data race;
 	// ② 解析失败也要让控制面/诊断页能如实报出来,而不是半个壳在跑。
@@ -144,6 +167,10 @@ func main() {
 		Height: 800,
 		// 就绪后再显示:避免先闪一帧空白页(旧壳同理)。
 		Hidden: true,
+		// 窗口底色与前端 --bg 同色:前端样式随 JS bundle 到达,若 HTML 已到但样式还没上,
+		// 不设这个就会露出**系统窗口背景**(macOS 深色模式 = 近黑),用户看到的就是
+		// 「启动先闪一下黑底」(2026-11-03 反馈)。设了之后即使兜底提前显窗也只是白一下。
+		BackgroundColour: application.NewRGB(255, 255, 255),
 		// **故意关掉**:Wails 的原生 drop 会拦截系统拖拽并改成 FilesDropped 事件,
 		// 而 gah 前端已经有 HTML5 拖拽(拿到的是真正的 File 对象,直接走 /api/attachments)。
 		// 开着等于把已经能用的功能换成需要壳中转的版本。
@@ -164,6 +191,8 @@ func main() {
 	sh.interceptMainWindowClose(sh.window)
 	watchWindowState(app, sh.window)
 	sh.buildTray()
+	// 托盘「启动中…」:必须等 app.Run() 之后才能碰托盘(见 onAppStarted 的说明)。
+	sh.onAppStarted(func() { sh.setTrayStarting(true) })
 
 	if err := sh.initUpdater(); err != nil {
 		// 更新器起不来不该拦住整个应用(界面/会话全不能用比没有更新更糟);
@@ -241,8 +270,9 @@ func (s *shell) boot() {
 	u := s.shellURL()
 	shellLogf("就绪,导航: %s", redactURL(u))
 	s.window.SetURL(u)
-	s.window.Show()
-	s.window.Focus()
+	// **不在这里 Show**:导航刚发起,webview 还没画任何像素。等前端首帧报就绪
+	// (或兜底超时)再显窗 —— 用户看到的第一帧就是完整界面。
+	go s.waitFirstFrame()
 	// 壳与 sidecar 是两个二进制,各有自己的 -X main.version:启动就把两份版本对一遍
 	// (2026-10-30 v0.8.0 只给壳注了版本号 ⇒ Web 底栏报 vdev)。
 	s.logSidecarVersion()
@@ -284,10 +314,49 @@ func redactURL(raw string) string {
 	return u.String()
 }
 
+// waitFirstFrame 等前端报「首帧已画」再显窗;超过 firstFrameFallback 就兜底显示。
+// 为什么要有兜底:前端报就绪靠的是那条 JS 真的跑到 mount 之后 —— 前端崩了/侧车页面
+// 报错时就会一直不报,不能因此让用户对着一个永不出现的窗口干等。
+func (s *shell) waitFirstFrame() {
+	select {
+	case <-s.uiReady:
+		time.Sleep(firstFrameSettle)
+		s.showMainWindow("前端首帧就绪")
+	case <-time.After(firstFrameFallback):
+		shellLogf("前端 %v 内未报首帧就绪,兜底显窗(可能闪一帧窗口底色)", firstFrameFallback)
+		s.showMainWindow("兜底超时")
+	}
+}
+
+// markUIFirstFrame 前端报「首帧已画」(幂等:多条路径/重复请求都只关一次通道)。
+func (s *shell) markUIFirstFrame() {
+	s.uiReadyOnce.Do(func() {
+		if s.uiReady != nil {
+			close(s.uiReady)
+		}
+	})
+}
+
+// showMainWindow 首次显示主窗口(幂等)。托盘「启动中…」到这一步才撤。
+func (s *shell) showMainWindow(reason string) {
+	if s.window == nil || s.windowShown.Swap(true) {
+		return
+	}
+	shellLogf("窗口显示(%s)", reason)
+	s.setTrayStarting(false)
+	s.window.Show()
+	s.window.Focus()
+}
+
 // focus 把已有窗口提到前台(托盘点击 / 二次启动 / Dock 点击)。
 func (s *shell) focus() {
 	if s.window == nil {
 		return
+	}
+	// 启动期就点托盘:用户主动要窗口,不等首帧(他要求看东西,空白也好过没反应)。
+	if !s.windowShown.Swap(true) {
+		shellLogf("窗口显示(用户主动召回,首帧可能未就绪)")
+		s.setTrayStarting(false)
 	}
 	// 最小化/全屏时 makeKeyAndOrderFront 提不起来 —— 先还原再提。
 	s.window.Restore()
@@ -326,8 +395,12 @@ func (s *shell) showDiag(title string, lines []string) {
 		`</body></html>`
 	if s.window != nil {
 		s.window.SetHTML(html)
-		s.window.Show()
-		s.window.Focus()
+		if s.windowShown.Load() {
+			s.window.Show()
+			s.window.Focus()
+		} else {
+			s.showMainWindow("诊断页")
+		}
 	}
 }
 

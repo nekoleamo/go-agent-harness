@@ -4,6 +4,17 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>gah Web</title>
+    <!-- 首屏底色:样式表随 JS bundle 到达(main.ts import style.css),晚一步就露出
+         宿主的背景色 —— 桌面壳里是系统窗口色(macOS 深色模式 = 近黑),用户看到的就是
+         "启动先闪一下黑底"。这里先给底色,与 style.css 的 --bg 保持一致。 -->
+    <style>
+      html,
+      body {
+        background: #ffffff;
+        height: 100%;
+        margin: 0;
+      }
+    </style>
   </head>
   <body>
     <!-- 槽位契约 v1(registry.ts):stream / input / statusbar / confirm 四槽位。

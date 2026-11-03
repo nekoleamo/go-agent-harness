@@ -37,6 +37,17 @@ type controlPlane struct {
 	sh     *shell
 }
 
+// handleUIReady POST /shell/ui-ready:页面首帧绘制完成后报一次。
+//
+// 为什么要有它(2026-11-03):先前 `SetURL` 后立刻 `Show()`,webview 还没画任何像素 ⇒
+// 露出系统窗口底色(深色模式下就是用户看到的"启动先闪一下黑底")。关窗口太粗暴
+// (用户点图标后没任何反应),所以把"什么时候显窗"交给"什么时候画好" —— 前端在
+// mount + 双 rAF 后报一次,壳收到就显窗,双方都不是猜的。
+func (c *controlPlane) handleUIReady(w http.ResponseWriter, r *http.Request) {
+	c.sh.markUIFirstFrame()
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // port 控制面端口(fragment 里交给页面)。
 func (c *controlPlane) port() string {
 	_, p, err := net.SplitHostPort(c.ln.Addr().String())
@@ -86,6 +97,9 @@ func randomToken() (string, error) {
 func (c *controlPlane) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/shell/ping", c.guard(c.handlePing))
+	// 页面首帧画好后报一次,壳据此显示主窗口(见 main.go 的 waitFirstFrame)。
+	// 放在 guard 内:其他源的本机页面不得把我们的窗口弹出来。
+	mux.HandleFunc("/shell/ui-ready", c.guard(c.postOnly(c.handleUIReady)))
 	mux.HandleFunc("/shell/log", c.guard(c.postOnly(c.handleLog)))
 	mux.HandleFunc("/shell/pick-folder", c.guard(c.postOnly(c.handlePickFolder)))
 	mux.HandleFunc("/shell/export-save", c.guard(c.postOnly(c.handleExportSave)))

@@ -109,13 +109,17 @@ func waitPortReleased(addr string, d time.Duration) bool {
 // waitReady 轮询就绪(最多 d),返回是否就绪。
 // 期间顺带记一条「还在等」的日志:真机上白屏时,日志里有没有这行是判断
 // 「服务没起来」还是「壳根本没走这条路」的唯一依据。
+//
+// 轮询间隔 100ms(原 200ms):这段是用户感知的「点图标后多久出界面」的直接成分,
+// 首次启动侧车约 1s 就绪,200ms 粒度最坏白等一枚—— 每 100ms 一个回环 GET 的开销
+// 可以忽略(只在启动期这十几下)。
 func waitReady(addr, token string, d time.Duration) bool {
 	deadline := time.Now().Add(d)
 	for time.Now().Before(deadline) {
 		if stateAlive(addr, token, 400*time.Millisecond) {
 			return true
 		}
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 	return false
 }
