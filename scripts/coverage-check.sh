@@ -29,6 +29,14 @@
 #   2026-10-05:未设该变量且 cmd/gah 跌破棘轮时,脚本会**在红字里明示这一点**
 #   (此前只印覆盖率数字,很容易被当成代码退化去追 —— 实测 45.9% → 加变量即 70.7)。
 #
+#   自己生成 profile 再喂进来时,测试那一步**必须带同一把尺**(见下方「测量工具链」):
+#     GOTOOLCHAIN=go1.27.0 GAH_COVER_MERGE_DIR=/tmp/gah-cover-merge \
+#       go test -count=1 -race -coverprofile=a.out -covermode=atomic ./...
+#   2026-11-03 踩过:profile 用本机 1.27.3 切、棘轮按 1.27.0 定 ⇒ 13 个包假红;
+#   而脚本事后 export GOTOOLCHAIN **救不了已经切好的 profile**。
+#   `-count=1` 也不能省:cmd/gah 的账来自「测试真跑了子进程」,测试缓存命中时子进程不跑,
+#   合并目录就是空的(那种状态脚本现在会单独诊断,见下)。
+#
 # —— 测量工具链(2026-11-01 补齐:尺子必须与 CI 同一把)——
 #   现象:同一份代码、同一条命令,本机(darwin,Go 1.27.3)有 12 个包低于棘轮
 #   (xlock 70→67.4、prefs 84.3→83.9、mcp-bridge 75.7→74.1 …),而 Linux CI(Go 1.27.0)
@@ -371,10 +379,14 @@ done
 #  文件已按包筛过,不把别的包的测量混进来)。这里做「按区块计数相加」的并入:
 # 没设该变量 = 不启用,普通模式与 --dilution 的行为与从前**逐字相同**。
 CHILD_DIR="${GAH_COVER_MERGE_DIR:-}"
+# CHILD_MERGED = 实际并入的几份。awk 那边靠它分辨「拿不到子进程数据」的两种成因
+# (未设目录 / 设了但目录是空的),两者的处置不一样(2026-11-03)。
+CHILD_MERGED=0
 if [ -n "$CHILD_DIR" ] && [ -d "$CHILD_DIR" ]; then
   shopt -s nullglob
   child_files=("$CHILD_DIR"/*.child.out)
   shopt -u nullglob
+  CHILD_MERGED=${#child_files[@]}
   if [ "${#child_files[@]}" -gt 0 ]; then
     echo "== 合并子进程覆盖:${#child_files[@]} 份 =="
     for f in "${child_files[@]}"; do echo "   $(basename "$f")"; done
@@ -409,7 +421,10 @@ if [ -n "$CHILD_DIR" ] && [ -d "$CHILD_DIR" ]; then
       fi
     done
   else
-    echo "== 子进程覆盖:无数据(测试未启用插桩,或本平台无子进程路径) =="
+    # 目录设了却一份都没有:**多半是 go test 缓存命中**(测试没真跑 ⇒ 子进程没跑 ⇒
+    # 没人写 GOCOVERDIR)。2026-11-03 真踩:只改了 desktop/wails 的提交在 CI 假红,
+    # 因为 setup-go 的 GOCACHE 跨 run 复用,而合并目录路径在 runner 上是固定的。
+    echo "== 子进程覆盖:目录已设但没有 *.child.out —— 若本平台本应有子进程覆盖,多半是 go test 缓存命中(子进程没跑),这类数字不可比;用 -count=1 重跑 =="
   fi
 fi
 
@@ -417,7 +432,7 @@ GOOS_NOW="$(go env GOOS 2>/dev/null || uname -s | tr '[:upper:]' '[:lower:]')"
 # 子进程覆盖是否启用(未启用 ⇒ cmd/gah 的 main() 那段永远写不到计数器,必假红)
 CHILD_ON=0; [ -n "${GAH_COVER_MERGE_DIR:-}" ] && CHILD_ON=1
 echo "== 逐包覆盖率(棘轮;平台 $GOOS_NOW;子进程覆盖 $([ "$CHILD_ON" = 1 ] && echo 已启用 || echo 未启用)) =="
-awk -v mins="$TMP/mins.txt" -v exempt="$TMP/exempt.txt" -v floor_min="$FLOOR_MIN" -v skip="$SKIP" -v goos="$GOOS_NOW" -v child="$CHILD_ON" '
+awk -v mins="$TMP/mins.txt" -v exempt="$TMP/exempt.txt" -v floor_min="$FLOOR_MIN" -v skip="$SKIP" -v goos="$GOOS_NOW" -v child="$CHILD_ON" -v merged="$CHILD_MERGED" '
   FILENAME==mins   {
     if (NF>=2) {
       k=$1; v=$2+0
@@ -463,8 +478,11 @@ awk -v mins="$TMP/mins.txt" -v exempt="$TMP/exempt.txt" -v floor_min="$FLOOR_MIN
       # 它必然远低于棘轮。那是**测量缺失**,不是回退,但只印数字会被当成代码退化
       # 去追(实测裸跑 45.9% / 棘轮 69,加 GAH_COVER_MERGE_DIR 后 70.7)。
       # 这里只作**明示**:不跳过判定、不降门 —— 静默跳过正是本门要消灭的东西。
-      if (p == "cmd/gah" && m != "" && pct + 0.05 < m && child == "0") {
-        bads[++nb] = "      ↳ 本次未启用子进程覆盖(未设 GAH_COVER_MERGE_DIR),该数字必偏低、不是回退;按脚本头部用法带上该变量重跑才是真结论"
+      if (p == "cmd/gah" && m != "" && pct + 0.05 < m && merged == 0) {
+        if (child == "1")
+          bads[++nb] = "      ↳ 合并目录已设但一份 *.child.out 都没拿到 —— 多半是 go test 缓存命中(子进程没跑),与代码回退不可区分;先带 -count=1 重跑再下结论"
+        else
+          bads[++nb] = "      ↳ 本次未启用子进程覆盖(未设 GAH_COVER_MERGE_DIR),该数字必偏低、不是回退;按脚本头部用法带上该变量重跑才是真结论"
       }
       if (!(p in min) && !isExempt(p) && pct <= 0.0) { bads[++nb] = "  ✗ " p " 覆盖率为 0(非豁免包必须带测试)"; bad = 1 }
     }

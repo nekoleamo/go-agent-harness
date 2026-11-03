@@ -54,8 +54,14 @@ jobs:
           GAH_COVER_MERGE_DIR: ${{ runner.temp }}/gah-cover-merge
         run: |
           mkdir -p "$GAH_COVER_MERGE_DIR"
-          go test -race -coverprofile=coverage.out -covermode=atomic ./...
-          (cd sdk && go test -race -coverprofile=../sdk-coverage.out -covermode=atomic ./...)
+          # -count=1 **必须**:这条账来自「测试**真的**跑了子进程」这一运行期副作用。
+          # actions/setup-go 的 cache:true 会跨 run 复用 GOCACHE,而本变量的路径在 runner
+          # 上是固定的、根模块源码又可能没变(只改了 sdk/desktop 或文档)⇒ 测试缓存命中时
+          # 子进程根本不跑 ⇒ 没有任何 *.child.out ⇒ cmd/gah 只剩不含 main() 的那部分
+          # (实测 57.6%),覆盖率门把「拿不到子进程数据」当成代码退化报红。
+          # 2026-11-03 真踩:只改了 desktop/wails 的提交在 CI 假红,而同一棵树的上一版全绿。
+          go test -count=1 -race -coverprofile=coverage.out -covermode=atomic ./...
+          (cd sdk && go test -count=1 -race -coverprofile=../sdk-coverage.out -covermode=atomic ./...)
       - name: 覆盖率门(逐包棘轮 + 全局下限;阈值只在 scripts/coverage-check.sh)
         env:
           GAH_COVER_MERGE_DIR: ${{ runner.temp }}/gah-cover-merge
