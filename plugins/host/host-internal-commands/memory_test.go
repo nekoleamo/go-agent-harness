@@ -10,12 +10,16 @@ package hostintcmd
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/nekoleamo/go-agent-harness/internal/memory"
 	"github.com/nekoleamo/go-agent-harness/internal/prefs"
+	"github.com/nekoleamo/go-agent-harness/plugins/host/host-cwd-sessions"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-memory"
+	hostsessionlog "github.com/nekoleamo/go-agent-harness/plugins/host/host-session-log"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-system-prompt"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
@@ -345,3 +349,67 @@ type fakeExtractStats struct {
 
 func (f fakeExtractStats) LastExtract() sdk.MemoryExtractSnapshot { return f.snap }
 func (f fakeExtractStats) ExtractEnabled() bool                   { return f.on }
+
+// —— P2 治理面 ——
+
+// 没有项目上下文时 `add --project` 必须显式报错,**不能**悄悄写进用户级(那会让"只在本项目
+// 生效"的意图变成全局生效,用户完全看不出来)。
+func TestCmdMemoryAddProjectWithoutContext(t *testing.T) {
+	h := memHost(t)
+	if _, err := h.cmdMemory([]string{"add", "--project", "只在本项目生效的一条"}); err == nil {
+		t.Fatal("没有项目上下文应报错")
+	}
+	if out, _ := h.cmdMemory([]string{"list"}); strings.Contains(out, "只在本项目生效的一条") {
+		t.Fatalf("失败时不该落进用户级:\n%s", out)
+	}
+}
+
+func TestCmdMemoryAddProjectWritesProjectFile(t *testing.T) {
+	t.Setenv("GAH_HOME", t.TempDir())
+	c, _ := buildEnv(t)
+	for _, p := range []sdk.Plugin{&hostsystemprompt.Plugin{}, &hostsessionlog.Plugin{},
+		&hostcwdsessions.Plugin{}, &hostmemory.Plugin{}} {
+		if _, err := p.Start(c, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h := &Host{c: c}
+	var cs sdk.CwdSessions
+	if err := c.Inject("ctx.cwdSessions", &cs); err != nil {
+		t.Fatal(err)
+	}
+	key := cs.Current()
+	if key == "" {
+		t.Skip("拿不到项目键,跳过")
+	}
+	out, err := h.cmdMemory([]string{"add", "--project", "接口层统一返回 struct"})
+	if err != nil || !strings.Contains(out, "已记住(本项目)") {
+		t.Fatalf("写项目级: %v(%s)", err, out)
+	}
+	raw, err := os.ReadFile(memory.ProjectPath(key))
+	if err != nil || !strings.Contains(string(raw), "接口层统一返回 struct") {
+		t.Fatalf("应落进项目级文件: %v %s", err, raw)
+	}
+	if got, _ := os.ReadFile(memory.UserPath()); strings.Contains(string(got), "接口层统一返回 struct") {
+		t.Fatal("项目级写入不该污染用户级")
+	}
+}
+
+// 自动写入的条目要一眼看得出类型与置信度(面板与 /memory list 共用同一份展示行)。
+func TestCmdMemoryListShowsKindBadge(t *testing.T) {
+	h := memHost(t)
+	var ms sdk.MemoryService
+	if err := h.c.Inject("ctx.memory", &ms); err != nil {
+		t.Fatal(err)
+	}
+	if err := memory.AppendMeta(memory.UserPath(), "交付前先跑 gate.sh", "s1", "convention", 0.92); err != nil {
+		t.Fatal(err)
+	}
+	out, err := h.cmdMemory([]string{"list"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "类型 convention 0.92") {
+		t.Fatalf("展示行应带类型与置信度(自动写入要可辨认):\n%s", out)
+	}
+}

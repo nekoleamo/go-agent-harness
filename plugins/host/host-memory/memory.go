@@ -175,6 +175,18 @@ func (s *Service) Add(content, source string) error {
 	return memory.Append(memory.UserPath(), content, source)
 }
 
+// AddProject 手工加一条**项目级**记忆(补第一百零九批登记的"项目级只读"缺口)。
+//
+// 没有项目上下文(拿不到 projectKey)时**显式报错**而不是悄悄写进用户级:
+// 那会让"这条只在本项目生效"的意图变成全局生效,用户完全看不出来。
+func (s *Service) AddProject(content, source string) error {
+	key := s.currentProjectKey()
+	if key == "" {
+		return fmt.Errorf("没有当前项目上下文(拿不到 projectKey):用 /memory add 写用户级,或先打开一个工作区会话")
+	}
+	return memory.Append(memory.ProjectPath(key), content, source)
+}
+
 // List 用户级记忆的展示行(新的在前;带序号与来源标注)。
 func (s *Service) List() []string {
 	return displayLines(memory.SortedForDisplay(s.userEntries()))
@@ -190,6 +202,15 @@ func displayLines(es []memory.Entry) []string {
 	out := make([]string, 0, len(es))
 	for i, e := range es {
 		line := fmt.Sprintf("%d. [%s] %s", i+1, e.Date, e.Content)
+		// 类型/置信度徽标:自动写入的条目必须**一眼看得出是自动写的**(治理面板与
+		// /memory list 共用这份展示行,所以放在这里就两端都有了,不必各写一遍)。
+		if e.Kind != "" {
+			line += " (类型 " + e.Kind
+			if e.Confidence > 0 {
+				line += " " + memory.FormatConfidence(e.Confidence)
+			}
+			line += ")"
+		}
 		if e.Source != "" {
 			line += " (来源: 会话 " + e.Source + ")"
 		}

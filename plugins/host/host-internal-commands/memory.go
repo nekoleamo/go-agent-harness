@@ -86,7 +86,23 @@ func (h *Host) cmdMemory(args []string) (string, error) {
 		return fmt.Sprintf("已丢弃 %d 条候选(没有进记忆)", n), nil
 	case "add":
 		if rest == "" {
-			return "", errString("用法:/memory add <要记住的内容>(一句话即可,写清「是什么、为什么」)")
+			return "", errString("用法:/memory add [--project] <要记住的内容>(一句话即可,写清「是什么、为什么」)")
+		}
+		// 项目级写入(P2):`--project` 前缀是必需的分流 —— 不加就是用户级(全局生效),
+		// 两者的作用域不同,不能靠猜。
+		if strings.HasPrefix(rest, "--project") {
+			content := strings.TrimSpace(strings.TrimPrefix(rest, "--project"))
+			if content == "" {
+				return "", errString("用法:/memory add --project <内容>(只在本项目生效)")
+			}
+			pa, ok := ms.(projectAdder)
+			if !ok {
+				return "", errString("该构建不支持项目级写入(ctx.memory 未实现 AddProject)")
+			}
+			if err := pa.AddProject(content, ""); err != nil {
+				return "", errString("记不下来:" + err.Error())
+			}
+			return "已记住(本项目):" + content, nil
 		}
 		if err := ms.Add(rest, ""); err != nil {
 			return "", errString("记不下来:" + err.Error())
@@ -99,10 +115,11 @@ func (h *Host) cmdMemory(args []string) (string, error) {
 	case "off":
 		return "记忆注入:" + onoff(ms.SetEnabled(false)), nil
 	case "project":
-		// 项目级记忆当前只展示(M1 的写入入口仍走 add;项目级自动提取属 M2)
+		// 项目级:展示 + 写入入口(add --project)。项目级**自动提取**仍属未做项
+		// (提取器统一写用户级;按项目分流需要先给 TurnDigest 带 projectKey)。
 		lines := h.memoryProjectLines(ms)
 		if len(lines) == 0 {
-			return "本项目还没有项目级记忆(用户级用 /memory list 看)", nil
+			return "本项目还没有项目级记忆。用 /memory add --project <内容> 记一条;用户级用 /memory list 看", nil
 		}
 		return "本项目记忆:\n  " + strings.Join(lines, "\n  "), nil
 	default:
@@ -136,6 +153,11 @@ func (h *Host) memoryStatus(ms sdk.MemoryService) (string, error) {
 	return fmt.Sprintf("记忆:%s;用户级 %d 条,本项目 %d 条%s;注入预算 %d 字节%s%s\n  /memory status     本页概览(含最近一次自动调取)\n  /memory add <内容>  记住一条\n  /memory list       看全部(新的在前)\n  /memory rm <序号>  删一条\n  /memory rm --from <会话>  按来源整段删\n  /memory on|off     开/关注入\n  /memory propose <内容>  提一条候选(确认后才进上下文)\n  /memory candidates / accept <序号> / accept-all / reject <序号>\n  /memory extract on|off  开/关自动提取(规则闸命中才花一次小请求;状态用 /memory status)",
 		onoff(ms.Enabled()), len(ms.List()), len(h.memoryProjectLines(ms)), cand, ms.Budget(),
 		retrieveStatusLine(ms), extractStatusLine(ms)), nil
+}
+
+// projectAdder 可选扩展:写项目级记忆(host-memory 实现;未实现 ⇒ 命令面显式报错)。
+type projectAdder interface {
+	AddProject(content, source string) error
 }
 
 // extractStatusLine status 里的自动提取段(未实现窄接口的构建不显示)。
