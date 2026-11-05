@@ -1,4 +1,4 @@
-# seed-version: 36 # 样板版本:新增 base 能力条目(host-* 等)时 +1(36:host-memory 自动调取(data.retrieve=per_step 按当前用户消息检索 top-K 注入 / retrieve_budget / top_k);35:host-tool-offload 默认豁免 file_read(它自带行预算);34:新增 acp-client 出站 ACP(默认停用,需配 runners);33:新增 host-tool-offload 工具结果分流(limit=0 关闭);32:新增 host-llm-summary(滚动摘要的模型摘要实现,token-compress 侧 data.llm_summary 控制);31:token-compress 折叠深度可配(fold_target_ratio/min_fold_ratio;缺省行为不变);30:新增 tool-image 图像工具(image_ops 七动作);29:新增 host-memory 跨会话记忆;28:新增 host-roles 角色切换/技能挂载;27:host-agent-loop 增 data.max_steps(缺省 0 = 不限,此前硬编码 10);26:token-compress 阈值改按窗口比例(trigger_ratio/max_tokens/chars_per_token);25:host-internal-commands 增 export_open_browser;24:新增 tool-schedule 定时计划工具),老用户自动升级(备份后覆盖)
+# seed-version: 37 # 样板版本:新增 base 能力条目(host-* 等)时 +1(37:host-memory 自动生成(data.extract=rule:回合结束规则闸命中才提取一次;白名单直写+其余候选);36:host-memory 自动调取(data.retrieve=per_step 按当前用户消息检索 top-K 注入 / retrieve_budget / top_k);35:host-tool-offload 默认豁免 file_read(它自带行预算);34:新增 acp-client 出站 ACP(默认停用,需配 runners);33:新增 host-tool-offload 工具结果分流(limit=0 关闭);32:新增 host-llm-summary(滚动摘要的模型摘要实现,token-compress 侧 data.llm_summary 控制);31:token-compress 折叠深度可配(fold_target_ratio/min_fold_ratio;缺省行为不变);30:新增 tool-image 图像工具(image_ops 七动作);29:新增 host-memory 跨会话记忆;28:新增 host-roles 角色切换/技能挂载;27:host-agent-loop 增 data.max_steps(缺省 0 = 不限,此前硬编码 10);26:token-compress 阈值改按窗口比例(trigger_ratio/max_tokens/chars_per_token);25:host-internal-commands 增 export_open_browser;24:新增 tool-schedule 定时计划工具),老用户自动升级(备份后覆盖)
 # base bundle:对齐 dsh-base,一切功能皆插件的共享第一层。
 # M1 阶段条目仅记录意图;对应插件工厂在 M2 base bundle 落地。
 name: base
@@ -71,6 +71,7 @@ entries:
   - id: host-skills
   - id: host-memory # 跨会话记忆:$GAH_HOME/memory/{user.md, projects/<key>.md, <key>.jsonl};注入排在指令层之后;记忆按数据处理;关闭位在偏好 memory_off
     data:
+      extract: rule # P1 自动生成:rule=回合结束规则闸命中才提取一次|off=关闭(已记的仍生效)
       retrieve: per_step # P0 自动调取:per_step=按当前用户消息检索 top-K 注入|off=回退全量(时间倒序)
       retrieve_budget: 4096 # 检索注入的总预算(含抬头/围栏);超出时片段内如实说明还有几条没进
       top_k: 6 # 单次最多注入几条(与预算共同截断)

@@ -37,9 +37,13 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	retrieve := retrievePerStep
 	retrieveBudget := memory.DefaultRetrieveBudget
 	topK := memory.DefaultTopK
+	extract := extractRule
 	if m != nil && m.Data != nil {
 		if v, ok := m.Data["budget_bytes"].(int); ok && v > 0 {
 			budget = v
+		}
+		if v, ok := m.Data["extract"].(string); ok && strings.TrimSpace(v) != "" {
+			extract = strings.TrimSpace(v)
 		}
 		if v, ok := m.Data["retrieve"].(string); ok && strings.TrimSpace(v) != "" {
 			retrieve = strings.TrimSpace(v)
@@ -58,11 +62,17 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		return nil, fmt.Errorf("host-memory: 不支持的 data.retrieve=%q(支持 %s|%s)",
 			retrieve, retrievePerStep, retrieveOff)
 	}
+	switch extract {
+	case extractRule, extractOff:
+	default:
+		return nil, fmt.Errorf("host-memory: 不支持的 data.extract=%q(支持 %s|%s)",
+			extract, extractRule, extractOff)
+	}
 	var sp sdk.SystemPromptService
 	if err := c.Inject("ctx.systemPrompt", &sp); err != nil {
 		return nil, err // 缺系统提示服务 = 记忆无处可注入,显式失败(不静默只落盘)
 	}
-	svc := &Service{c: c, budget: budget, retrieve: retrieve, retrieveBudget: retrieveBudget, topK: topK}
+	svc := &Service{c: c, budget: budget, retrieve: retrieve, retrieveBudget: retrieveBudget, topK: topK, extract: extract}
 	// 片段内容每次组装现算(记忆随时可改,不能靠 Disposer 撤销重加来"刷新")。
 	// 这里只放**稳定块**(最近 N 条):它的变动只来自记忆被写入,不该逐轮变 ——
 	// 逐轮变的"本轮相关"走 Augment(尾部追加,见 sdk.MessageAugmenter)。
@@ -80,7 +90,18 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		d()
 		return nil, err
 	}
-	return func() { d() }, nil
+	// 自动生成:回合结束时的后台提取(非阻塞;Disposer 里关队列并等 worker 退出)。
+	ex := newExtractor(c, svc)
+	svc.ex = ex
+	if err := c.Provide("ctx.memoryExtract", sdk.MemoryExtractor(ex)); err != nil {
+		ex.close()
+		d()
+		return nil, err
+	}
+	return func() {
+		ex.close()
+		d()
+	}, nil
 }
 
 // Service 实现 sdk.MemoryService。
@@ -91,6 +112,8 @@ type Service struct {
 	retrieve       string // per_step|off(见 Start 的校验)
 	retrieveBudget int    // 检索注入的总预算(含抬头与围栏)
 	topK           int
+	extract        string     // rule|off(自动提取的模式;见 Start 的校验)
+	ex             *extractor // 提取 worker(nil = 未装配)
 
 	mu   sync.RWMutex
 	last sdk.MemoryInjectStats // 最近一次注入的观测值(/memory status 与 Web 面板)
@@ -323,6 +346,22 @@ func (s *Service) LastInject() sdk.MemoryInjectStats {
 // RetrieveMode 实现 sdk.MemoryRetrieveStats。
 func (s *Service) RetrieveMode() string { return s.retrieve }
 
+// LastExtract 实现 sdk.MemoryExtractStats(本会话最近一次提取的观测值)。
+func (s *Service) LastExtract() sdk.MemoryExtractSnapshot {
+	if s.ex == nil {
+		return sdk.MemoryExtractSnapshot{}
+	}
+	return s.ex.lastSnapshot()
+}
+
+// ExtractEnabled 实现 sdk.MemoryExtractStats。
+func (s *Service) ExtractEnabled() bool {
+	if s.ex == nil {
+		return false
+	}
+	return s.ex.enabled()
+}
+
 // countLines 数注入块里的条目行(以 "  · " 开头)。
 func countLines(text string) int {
 	n := 0
@@ -336,6 +375,7 @@ func countLines(text string) int {
 
 var _ sdk.MemoryService = (*Service)(nil)
 var _ sdk.MemoryRetrieveStats = (*Service)(nil)
+var _ sdk.MemoryExtractStats = (*Service)(nil)
 
 // —— 候选池(M2 前置件;实现 sdk.MemoryCandidates) ——
 // 单独一组方法而不是并进 MemoryService:那会**追坏现有实现**(接口加方法 = 破坏性变更),

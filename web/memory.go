@@ -90,6 +90,22 @@ type memoryView struct {
 	// 自动调取的观测值(P0):未实现窄接口的记忆服务(旧构建)时整组省略。
 	// 三种空结果必须可区分 —— 没记忆 / 没命中 / 命中但超预算,否则用户不知道该怎么修。
 	Retrieve *retrieveView `json:"retrieve,omitempty"`
+	// 自动生成的观测值(P1):未实现窄接口的构建整组省略。
+	Extract *extractView `json:"extract,omitempty"`
+}
+
+// extractView 自动提取的开关与最近一次结果(不含记忆正文)。
+type extractView struct {
+	Enabled   bool   `json:"enabled"`
+	At        string `json:"at,omitempty"`
+	Rule      string `json:"rule,omitempty"`
+	Produced  int    `json:"produced"`
+	Written   int    `json:"written"`
+	Candidate int    `json:"candidate"`
+	Dropped   int    `json:"dropped"`
+	Skipped   string `json:"skipped,omitempty"` // 非空 = 最近一次没做成(llm/parse/quota/cooldown/disabled/busy)
+	Model     string `json:"model,omitempty"`
+	Ledger    string `json:"ledger,omitempty"` // 当日账本一行
 }
 
 // retrieveView 最近一次自动调取快照。
@@ -249,6 +265,19 @@ func (s *Server) memoryView(w http.ResponseWriter, ms sdk.MemoryService, extra m
 		}
 		v.CandidatePath = memory.CandidatesPath()
 		v.CandidateUsed, v.CandidateLimit, v.CandidateToday, v.CandidateTodayMax = cs.CandidateQuota()
+	}
+	if es, ok := ms.(sdk.MemoryExtractStats); ok {
+		snap := es.LastExtract()
+		ev := &extractView{Enabled: es.ExtractEnabled(), Rule: snap.RuleHit, Produced: snap.Produced,
+			Written: snap.Written, Candidate: snap.Candidate, Dropped: snap.Dropped,
+			Skipped: snap.Skipped, Model: snap.Model}
+		if !snap.At.IsZero() {
+			ev.At = snap.At.Format(time.RFC3339)
+		}
+		if st, err := memory.LoadExtractState(); err == nil {
+			ev.Ledger = st.FormatState()
+		}
+		v.Extract = ev
 	}
 	if rs, ok := ms.(sdk.MemoryRetrieveStats); ok {
 		st := rs.LastInject()

@@ -105,6 +105,43 @@ func isSummaryRequest(req *sdk.LLMRequest) bool {
 	return false
 }
 
+// isMemoryRequest 判定这是不是记忆提取请求(独立标记 —— 摘要那套固定 JSON 的字段
+// 与记忆提取的 items 不同,混用会让解析恒失败)。
+func isMemoryRequest(req *sdk.LLMRequest) bool {
+	if req == nil {
+		return false
+	}
+	for _, m := range req.Messages {
+		if m.Role == sdk.RoleSystem && strings.Contains(m.Content, sdk.LLMMemoryMarker) {
+			return true
+		}
+	}
+	return false
+}
+
+// completeMemory 回一段现成的提取结果(dev 下的固定答案;同样**不消耗脚本步**)。
+//
+// 内容刻意是一条"规则闸命中时最该记"的偏好,便于端到端演示"说了偏好 → 下一轮自动生效"。
+func (a *Adapter) completeMemory(ctx context.Context, onChunk func(ev sdk.LLMStreamEvent) error) (*sdk.LLMResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	text := `{"items":[{"text":"(dev mock)示例偏好:交付前先跑 gate.sh","kind":"convention","confidence":0.9,"cue":"以后都先跑 gate"}]}`
+	if onChunk != nil {
+		if err := onChunk(sdk.LLMStreamEvent{Delta: text}); err != nil {
+			return nil, err
+		}
+	}
+	done := sdk.LLMStreamEvent{Done: true, FinishReason: sdk.FinishReasonStop}
+	done.Message = sdk.LLMMessage{Role: sdk.RoleAssistant, Content: text}
+	if onChunk != nil {
+		if err := onChunk(done); err != nil {
+			return nil, err
+		}
+	}
+	return &sdk.LLMResponse{Message: done.Message, FinishReason: sdk.FinishReasonStop}, nil
+}
+
 // completeSummary 回一段现成的结构化摘要(dev 下的固定答案)。
 func (a *Adapter) completeSummary(ctx context.Context, onChunk func(ev sdk.LLMStreamEvent) error) (*sdk.LLMResponse, error) {
 	if err := ctx.Err(); err != nil {
@@ -157,6 +194,9 @@ func (a *Adapter) Complete(ctx context.Context, req *sdk.LLMRequest, onChunk fun
 	// 为什么:脚本是给回合走的(第 N 次请求 = 第 N 步)。摘要请求是后台补写,
 	// 混进来会把回合的脚本错位(第 2 轮拿到第 1 轮的回应)。直接回一段现成的
 	// 结构化摘要:既不扰动脚本,又让摘要链路在 dev 下真的能跑通。
+	if isMemoryRequest(req) {
+		return a.completeMemory(ctx, onChunk)
+	}
 	if isSummaryRequest(req) {
 		return a.completeSummary(ctx, onChunk)
 	}

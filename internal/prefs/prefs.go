@@ -41,6 +41,13 @@ type Prefs struct {
 	// 为什么是「关闭」而不是「开启」:记忆默认开启是有用默认,而"记住什么"由用户显式添加,
 	// 记为 0 条时片段自然不渲染 ⇒ 不需要"开"这个状态。
 	MemoryOff bool `json:"memory_off,omitempty"`
+	// MemoryExtractOff 自动提取**关闭**标记(默认开:规则闸命中才花一次小请求)。
+	// 与 MemoryOff 分开的理由:注入(读)与提取(写)是两件事 —— 想保留已记的东西但
+	// 不想再自动攒新的,只关这一个。
+	MemoryExtractOff bool `json:"memory_extract_off,omitempty"`
+	// MemoryWriteMode 自动提取的写入模式:""/"auto" = 按白名单直写其余进候选;
+	// "candidates" = 一律进候选(用户要自己看一遍)。
+	MemoryWriteMode string `json:"memory_write_mode,omitempty"`
 	// ExternalDisabled 已被用户**停用**的外部插件二进制名(去平台扩展名,如 tool-kit)。
 	//
 	// 为什么用 internal/prefs 而不是 patch-runtime.yaml:后者是**配置树**的补丁,

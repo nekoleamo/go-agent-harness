@@ -471,6 +471,8 @@ func (l *Loop) run(ctx context.Context, sid, input string, atts []sdk.Attachment
 		l.c.Emit(context.Background(), "agent/status", "idle", sdk.Emit)
 		return fmt.Errorf("session log: %w", err)
 	}
+	// 自动生成记忆:回合正常结束后投一次(非阻塞;失败不影响回合终态)。
+	l.observeTurn(sess, sid, input)
 	l.c.Emit(context.Background(), "agent/status", "idle", sdk.Emit)
 	return nil
 }

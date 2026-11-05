@@ -17,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/nekoleamo/go-agent-harness/internal/memory"
+	"github.com/nekoleamo/go-agent-harness/internal/prefs"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
@@ -32,6 +34,8 @@ func (h *Host) cmdMemory(args []string) (string, error) {
 	sub := strings.TrimSpace(args[0])
 	rest := strings.TrimSpace(strings.Join(args[1:], " "))
 	switch sub {
+	case "extract":
+		return h.memoryExtract(ms, rest)
 	case "status":
 		// 显式 status 子命令:没有它的话 `/memory status` 会掉到 default 分支,被当成
 		// 「用户要记的内容」写进记忆 —— 一个看起来成功、实际记了句 "status" 的静默失效。
@@ -129,9 +133,78 @@ func (h *Host) memoryStatus(ms sdk.MemoryService) (string, error) {
 			cand = fmt.Sprintf(",待确认候选 %d 条(上限 %d;今日已提 %d/%d)", used, limit, today, todayLimit)
 		}
 	}
-	return fmt.Sprintf("记忆:%s;用户级 %d 条,本项目 %d 条%s;注入预算 %d 字节%s\n  /memory status     本页概览(含最近一次自动调取)\n  /memory add <内容>  记住一条\n  /memory list       看全部(新的在前)\n  /memory rm <序号>  删一条\n  /memory rm --from <会话>  按来源整段删\n  /memory on|off     开/关注入\n  /memory propose <内容>  提一条候选(确认后才进上下文)\n  /memory candidates / accept <序号> / accept-all / reject <序号>",
+	return fmt.Sprintf("记忆:%s;用户级 %d 条,本项目 %d 条%s;注入预算 %d 字节%s%s\n  /memory status     本页概览(含最近一次自动调取)\n  /memory add <内容>  记住一条\n  /memory list       看全部(新的在前)\n  /memory rm <序号>  删一条\n  /memory rm --from <会话>  按来源整段删\n  /memory on|off     开/关注入\n  /memory propose <内容>  提一条候选(确认后才进上下文)\n  /memory candidates / accept <序号> / accept-all / reject <序号>\n  /memory extract on|off  开/关自动提取(规则闸命中才花一次小请求;状态用 /memory status)",
 		onoff(ms.Enabled()), len(ms.List()), len(h.memoryProjectLines(ms)), cand, ms.Budget(),
-		retrieveStatusLine(ms)), nil
+		retrieveStatusLine(ms), extractStatusLine(ms)), nil
+}
+
+// extractStatusLine status 里的自动提取段(未实现窄接口的构建不显示)。
+func extractStatusLine(ms sdk.MemoryService) string {
+	es, ok := ms.(sdk.MemoryExtractStats)
+	if !ok {
+		return ""
+	}
+	return "\n  " + extractStatusText(es)
+}
+
+// memoryExtract 自动提取的开关与状态:`/memory extract on|off|status`。
+//
+// 为什么要能单独关提取(而不是只关注入):注入是"读"、提取是"写"。想保留已记的东西
+// 但不想再自动攒新的,只关这一个。
+func (h *Host) memoryExtract(ms sdk.MemoryService, arg string) (string, error) {
+	es, ok := ms.(sdk.MemoryExtractStats)
+	if !ok {
+		return "", errString("该构建不支持自动提取(ctx.memory 未实现 MemoryExtractStats)")
+	}
+	switch strings.ToLower(strings.TrimSpace(arg)) {
+	case "on":
+		prefs.Update(func(p *prefs.Prefs) { p.MemoryExtractOff = false })
+		return "自动提取已开启:规则闸命中时每次收尾最多一次小请求(每日上限 " +
+			strconv.Itoa(memory.ExtractDailyLimit) + " 次)", nil
+	case "off":
+		prefs.Update(func(p *prefs.Prefs) { p.MemoryExtractOff = true })
+		return "自动提取已关闭(已记下的记忆仍然生效;恢复用 /memory extract on)", nil
+	case "", "status":
+		return extractStatusText(es), nil
+	default:
+		return "", errString("用法:/memory extract on|off|status")
+	}
+}
+
+// extractStatusText 提取开关 + 最近一次提取的观测值 + 当日账本。
+func extractStatusText(es sdk.MemoryExtractStats) string {
+	state := "开"
+	if !es.ExtractEnabled() {
+		state = "关"
+	}
+	snap := es.LastExtract()
+	var sb strings.Builder
+	sb.WriteString("自动提取:" + state)
+	if snap.At.IsZero() {
+		sb.WriteString(";本会话还没触发过(规则闸未命中或还没跑回合)")
+	} else {
+		switch {
+		case snap.Skipped != "":
+			sb.WriteString(";最近一次**没做成**(" + snap.Skipped + ")")
+			if snap.Err != "" {
+				sb.WriteString(":" + snap.Err)
+			}
+		case snap.RuleHit == "":
+			sb.WriteString(";最近一次规则闸未命中(未花费模型请求)")
+		default:
+			fmt.Fprintf(&sb, ";最近一次命中「%s」:产出 %d 条,直写 %d,候选 %d,丢弃 %d",
+				snap.RuleHit, snap.Produced, snap.Written, snap.Candidate, snap.Dropped)
+			if snap.Model != "" {
+				sb.WriteString(";模型 " + snap.Model)
+			}
+		}
+	}
+	if st, err := memory.LoadExtractState(); err == nil {
+		sb.WriteString("\n  " + st.FormatState())
+	} else {
+		sb.WriteString("\n  (账本读取失败:" + err.Error() + ")")
+	}
+	return sb.String()
 }
 
 // retrieveStatusLine 最近一次自动调取的观测值(未实现该窄接口的构建不显示这一段)。

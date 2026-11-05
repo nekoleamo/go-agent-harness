@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nekoleamo/go-agent-harness/internal/prefs"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-memory"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-system-prompt"
 	"github.com/nekoleamo/go-agent-harness/sdk"
@@ -274,3 +275,73 @@ func TestClipQuery(t *testing.T) {
 		t.Fatalf("短查询原样回显,got %q", got)
 	}
 }
+
+// —— 自动提取的命令面(P1) ——
+
+func TestCmdMemoryExtractToggle(t *testing.T) {
+	h := memHost(t)
+	out, err := h.cmdMemory([]string{"extract", "off"})
+	if err != nil || !strings.Contains(out, "已关闭") {
+		t.Fatalf("extract off: %v(%s)", err, out)
+	}
+	if !prefs.Load().MemoryExtractOff {
+		t.Fatal("off 应落到偏好位(跨端共享)")
+	}
+	out, err = h.cmdMemory([]string{"extract", "on"})
+	if err != nil || !strings.Contains(out, "已开启") {
+		t.Fatalf("extract on: %v(%s)", err, out)
+	}
+	if prefs.Load().MemoryExtractOff {
+		t.Fatal("on 应清掉偏好位")
+	}
+	// 裸 /memory extract = 状态
+	out, err = h.cmdMemory([]string{"extract"})
+	if err != nil || !strings.Contains(out, "自动提取:") {
+		t.Fatalf("extract 无参应回状态: %v(%s)", err, out)
+	}
+	// 未知参数显式报错(不静默当状态)
+	if _, err := h.cmdMemory([]string{"extract", "maybe"}); err == nil {
+		t.Fatal("未知参数应报错")
+	}
+}
+
+func TestCmdMemoryExtractUnsupported(t *testing.T) {
+	h := memHost(t)
+	// bareMemory 只实现 MemoryService ⇒ 命令面必须显式说"不支持",不假装成功。
+	if _, err := h.memoryExtract(bareMemory{}, "off"); err == nil {
+		t.Fatal("未实现 MemoryExtractStats 的构建应显式报错")
+	}
+}
+
+func TestExtractStatusTextBranches(t *testing.T) {
+	base := sdk.MemoryExtractSnapshot{At: time.Now()}
+	cases := []struct {
+		name string
+		snap sdk.MemoryExtractSnapshot
+		on   bool
+		want string
+	}{
+		{"未触发", sdk.MemoryExtractSnapshot{}, true, "还没触发过"},
+		{"规则未命中", base, true, "规则闸未命中"},
+		{"产出", sdk.MemoryExtractSnapshot{At: time.Now(), RuleHit: "长期指令",
+			Produced: 2, Written: 1, Candidate: 1, Model: "m"}, true, "直写 1"},
+		{"失败", sdk.MemoryExtractSnapshot{At: time.Now(), Skipped: "llm", Err: "端点 500"}, true, "没做成"},
+		{"关闭", base, false, "自动提取:关"},
+	}
+	for _, c := range cases {
+		var es sdk.MemoryExtractStats = fakeExtractStats{snap: c.snap, on: c.on}
+		out := extractStatusText(es)
+		if !strings.Contains(out, c.want) {
+			t.Fatalf("%s: 应含 %q,got %q", c.name, c.want, out)
+		}
+	}
+}
+
+// fakeExtractStats 只实现提取观测(命令面分支判定用)。
+type fakeExtractStats struct {
+	snap sdk.MemoryExtractSnapshot
+	on   bool
+}
+
+func (f fakeExtractStats) LastExtract() sdk.MemoryExtractSnapshot { return f.snap }
+func (f fakeExtractStats) ExtractEnabled() bool                   { return f.on }

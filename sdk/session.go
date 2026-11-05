@@ -697,6 +697,47 @@ type MemoryInjectStats struct {
 	Mode      string    // per_step|off|fallback(无查询时回退全量)
 }
 
+// TurnDigest 一个回合的提取原料(自动生成记忆的输入)。
+//
+// 只带**这一回合**的内容:跨回合的原料不在这里给,提取器自己按限流决定要不要花这次钱。
+type TurnDigest struct {
+	SessionID string // 会话 id(空 = 主会话;来源追溯与限流都用它)
+	UserText  string // 本回合用户消息(已截断)
+	ReplyText string // 助手最终答复(已截断;空 = 本回合没有文本收尾)
+}
+
+// MemoryExtractor 可选扩展(由 host-memory 实现):回合结束时的记忆提取入口。
+//
+// 契约两条:
+//   - **必须非阻塞**:实现内部投队列,不得在回合路径上发模型请求(那会给每次收尾加尾延迟);
+//   - **失败不得影响回合**:返回值只用于日志,调用方不因此改回合终态。
+type MemoryExtractor interface {
+	ObserveTurn(ctx context.Context, d TurnDigest) error
+}
+
+// MemoryExtractStats 可选扩展(由 host-memory 实现):提取账本的只读快照。
+//
+// 为什么必须分开记账:提取成功但没产出、提取**失败**、命中规则闸但被限流,三者的用户
+// 动作完全不同(改 prompt / 修配置 / 等额度)。把失败记成"本轮无新事实"就是撒谎。
+type MemoryExtractStats interface {
+	LastExtract() MemoryExtractSnapshot
+	// ExtractEnabled 自动提取是否开启(偏好位 + data 双开关后的有效值)。
+	ExtractEnabled() bool
+}
+
+// MemoryExtractSnapshot 一次提取的观测值(零值 = 本会话还没触发过)。
+type MemoryExtractSnapshot struct {
+	At        time.Time
+	RuleHit   string // 命中的规则词(空 = 规则闸未命中,没花钱)
+	Produced  int    // 模型产出几条
+	Written   int    // 直写几条
+	Candidate int    // 进候选几条
+	Dropped   int    // 丢弃几条(重复/低置信/黑名单)
+	Skipped   string // 非空 = 这次没做成:llm|parse|quota|cooldown|disabled
+	Err       string // 失败原因(仅诊断;不含用户内容,凭据已拒)
+	Model     string // 用的模型(空 = 没发请求)
+}
+
 // ForkableSessions 会话树/分支(P4-10;可选实现——host-cwd-sessions)。类型断言发现,
 // ctx.cwdSessions 接口不变。分支 = 复制继承历史到点的独立会话文件,继续演进互不影响。
 type ForkableSessions interface {

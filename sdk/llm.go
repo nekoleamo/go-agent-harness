@@ -89,6 +89,13 @@ const EventUsageRecorded = "usage/recorded"
 // 结构化摘要(不消耗脚本步),测试探针不把它计入回合请求。
 const LLMSummaryMarker = "[gah:summary]"
 
+// LLMMemoryMarker 记忆提取请求的标记(后台请求,prompt 首行带上)。
+//
+// 为什么不复用 LLMSummaryMarker:脚本化适配器(llm-mock)对摘要请求回的是**固定的摘要 JSON**
+// (task/changes/...),记忆解析必然失败;两者混用会让"提取失败"变成常态,而失败态是要
+// 如实记账的信号,不能被噪声淹没。
+const LLMMemoryMarker = "[gah:memory-extract]"
+
 // LLMRequest 一次模型请求。Tools 为模型可见的工具 schema 列表。
 type LLMRequest struct {
 	Model       string
