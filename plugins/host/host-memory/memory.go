@@ -204,13 +204,25 @@ func displayLines(es []memory.Entry) []string {
 }
 
 // ListFiltered 实现 sdk.MemoryFilteredList(命令面 / 面板的过滤)。
+//
+// 过滤视图**不编号**:序号是删除操作的抓手,而它取自全量展示序 —— 过滤后重新编号会
+// 让"删第 1 条"删到别的条目(删错数据)。
 func (s *Service) ListFiltered(opt sdk.MemoryListOptions) ([]string, error) {
-	return memory.DisplayLines(s.userEntries(), toListOptions(opt)), nil
+	lo := toListOptions(opt)
+	lo.NoIndex = sdkHasFilter(opt)
+	return memory.DisplayLines(s.userEntries(), lo), nil
 }
 
 // ListProjectFiltered 同上(项目级)。
 func (s *Service) ListProjectFiltered(opt sdk.MemoryListOptions) ([]string, error) {
-	return memory.DisplayLines(s.projectEntries(), toListOptions(opt)), nil
+	lo := toListOptions(opt)
+	lo.NoIndex = sdkHasFilter(opt)
+	return memory.DisplayLines(s.projectEntries(), lo), nil
+}
+
+// sdkHasFilter 是否真的在过滤(决定要不要编号)。
+func sdkHasFilter(opt sdk.MemoryListOptions) bool {
+	return opt.Kind != "" || opt.AutoOnly || opt.StaleDays > 0
 }
 
 // Counts 实现 sdk.MemoryFilteredList(总量口径;Stale 固定按 180 天算)。
@@ -323,21 +335,21 @@ func (s *Service) Augment(ctx context.Context, msgs []sdk.LLMMessage) []sdk.LLMM
 	if budget <= 0 {
 		return msgs // 预算连抬头与围栏都放不下:宁可不注入,也不注入被截断的半块
 	}
-	res, err := memory.Retrieve(s.currentProjectKey(), q, memory.RetrieveOptions{
-		Budget: budget,
-		TopK:   s.topK,
-	})
+	// **一次读盘**:检索、与稳定块去重、报稳定块条数用的是同一份快照。
+	// (曾经各读一次 = 每步 7~9 次文件读,而每步都会走到这里。)
+	snap, err := memory.LoadSnapshot(s.currentProjectKey(), s.budget)
 	if err != nil {
 		// 读盘失败不伪装成"没有记忆":日志留痕,系统提示的稳定块仍在,不额外追加。
 		s.c.Logger().Warn("host-memory: 按话题检索失败(本轮不追加相关记忆)", "err", err)
 		s.record(sdk.MemoryInjectStats{Query: q, Mode: retrieveFallback, At: time.Now()})
 		return msgs
 	}
+	res := memory.Rank(snap.Items, q, memory.RetrieveOptions{Budget: budget, TopK: s.topK})
 	// 剔除稳定块里已经有的条目:同一句出现两遍既费 token,也让模型以为是两条事实。
-	if skip := s.stableContents(); len(skip) > 0 {
+	if len(snap.Stable) > 0 {
 		kept := res.Items[:0]
 		for _, it := range res.Items {
-			if skip[strings.ToLower(strings.TrimSpace(it.Content))] {
+			if snap.Stable[strings.ToLower(strings.TrimSpace(it.Content))] {
 				continue
 			}
 			kept = append(kept, it)
@@ -350,10 +362,10 @@ func (s *Service) Augment(ctx context.Context, msgs []sdk.LLMMessage) []sdk.LLMM
 			// 有相关记忆但全部已在稳定块里,或预算连一条都放不下 —— 两种情况都不追加,
 			// 但观测值必须能区分(用户看到"没注入"才知道该看哪里)。
 			s.record(sdk.MemoryInjectStats{Query: q, Mode: retrievePerStep, Total: res.Total,
-				Stable: s.stableCount(), Truncated: res.Truncated, At: time.Now()})
+				Stable: snap.StableN, Truncated: res.Truncated, At: time.Now()})
 			return msgs
 		}
-		s.record(sdk.MemoryInjectStats{Query: q, Mode: retrievePerStep, Stable: s.stableCount(), At: time.Now()})
+		s.record(sdk.MemoryInjectStats{Query: q, Mode: retrievePerStep, Stable: snap.StableN, At: time.Now()})
 		return msgs
 	}
 	var sb strings.Builder
@@ -369,20 +381,9 @@ func (s *Service) Augment(ctx context.Context, msgs []sdk.LLMMessage) []sdk.LLMM
 	out := strings.TrimRight(sb.String(), "\n")
 	s.record(sdk.MemoryInjectStats{
 		Query: q, Items: len(res.Items), Bytes: len(out), Total: res.Total,
-		Stable: s.stableCount(), Truncated: res.Truncated, Mode: retrievePerStep, At: time.Now(),
+		Stable: snap.StableN, Truncated: res.Truncated, Mode: retrievePerStep, At: time.Now(),
 	})
 	return append(msgs, sdk.LLMMessage{Role: sdk.RoleUser, Content: out})
-}
-
-// stableContents 系统提示稳定块实际渲染的条目内容集合(小写、trim),用于尾部去重。
-// 读盘失败 ⇒ 空集合(去重是优化,不是正确性前提;不能因此让整轮失败)。
-func (s *Service) stableContents() map[string]bool {
-	return memory.InjectedContents(s.userEntries(), s.projectEntries(), s.budget)
-}
-
-// stableCount 稳定块实际渲染的条目数(观测面:区分"没记忆"与"命中的已在稳定块里")。
-func (s *Service) stableCount() int {
-	return memory.StableCount(s.userEntries(), s.projectEntries(), s.budget)
 }
 
 // record 记一次注入观测值(只读快照,供 /memory status 与 Web 面板)。

@@ -529,3 +529,30 @@ func TestCmdMemoryListStale(t *testing.T) {
 		t.Fatalf("组合过滤应给出空结果说明:\n%s", out)
 	}
 }
+
+// 过滤视图**不能带序号**:序号是 rm 的抓手,而它取自全量展示序 ——
+// 过滤后重新编号会让"删第 1 条"删到另一条(删错数据)。
+func TestCmdMemoryListFilterHasNoIndex(t *testing.T) {
+	h := memHost(t)
+	if err := memory.AppendMeta(memory.UserPath(), "交付前跑 gate.sh", "s1", "convention", 0.9); err != nil {
+		t.Fatal(err)
+	}
+	out, err := h.cmdMemory([]string{"list", "--kind", "convention"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, " 1. [") {
+		t.Fatalf("过滤视图不该编号(否则 rm 序号指错条):\n%s", out)
+	}
+	if !strings.Contains(out, "不编号") {
+		t.Fatalf("应说明不编号及删除方式:\n%s", out)
+	}
+	// 全量视图仍编号(rm 仍可用)
+	all, err := h.cmdMemory([]string{"list"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(all, " 1. [") {
+		t.Fatalf("全量视图应保持编号:\n%s", all)
+	}
+}

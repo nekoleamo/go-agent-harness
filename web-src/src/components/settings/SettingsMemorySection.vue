@@ -225,7 +225,7 @@ const { memBudget, memBusy, memCand, memContent, memCounts, memDraft, memEnabled
                   </div>
                 </div>
                 <template v-if="memUser.length">
-                  <div class="mem-list">
+                  <div class="mem-list" data-testid="mem-user-list">
                     <div v-for="(l, i) in memUser" :key="i" class="mem-item">
                       <span class="mem-txt" :data-tip="memContent(l)">{{
                         memContent(l)
@@ -233,10 +233,16 @@ const { memBudget, memBusy, memCand, memContent, memCounts, memDraft, memEnabled
                       <span v-if="memSource(l)" class="dim mono">{{
                         memSource(l)
                       }}</span>
+                      <!-- 过滤时禁用逐条删除:序号是删除的抓手,而它取自全量展示序 ——
+                           过滤后重新编号会删到另一条(删错数据)。按来源删仍可用。 -->
                       <button
                         class="ghost danger-text"
-                        :disabled="memBusy"
-                        data-tip="删除这条记忆"
+                        :disabled="memBusy || memFiltering"
+                        :data-tip="
+                          memFiltering
+                            ? '过滤中不能按序号删：先点「全部」清除筛选再删（也可按来源整段删）'
+                            : '删除这条记忆'
+                        "
                         @click="memoryRemove(i + 1, l)"
                       >
                         删除

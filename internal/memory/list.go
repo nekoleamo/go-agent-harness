@@ -17,6 +17,12 @@ type ListOptions struct {
 	AutoOnly  bool      // 只看自动写入的:判据 = 带 kind 元数据(人工 add 的条目没有)
 	StaleDays int       // 只留**超过**这么多天的(0 = 不筛)
 	Now       time.Time // StaleDays 的基准(零值 = 现在)
+	// NoIndex 不渲染序号。
+	//
+	// 为什么必须有:序号是 `/memory rm <序号>` 与面板"删除"的**唯一抓手**,而那个序号
+	// 取自**全量**展示序。过滤后的列表若也编号,用户看到"1."删的却是全量第 1 条 ——
+	// 删错数据。所以过滤视图一律不编号(删除请先 /memory list 定位)。
+	NoIndex bool
 }
 
 // ContentID 条目内容的稳定短标识(与检索层的 Item.ID 同一算法)。
@@ -90,7 +96,12 @@ func DisplayLines(entries []Entry, opt ListOptions) []string {
 	es := FilterEntries(entries, opt)
 	out := make([]string, 0, len(es))
 	for i, e := range es {
-		line := fmt.Sprintf("%d. [%s] %s", i+1, e.Date, e.Content)
+		var line string
+		if opt.NoIndex {
+			line = "- [" + e.Date + "] " + e.Content
+		} else {
+			line = fmt.Sprintf("%d. [%s] %s", i+1, e.Date, e.Content)
+		}
 		if e.Kind != "" {
 			line += " (类型 " + e.Kind
 			if e.Confidence > 0 {

@@ -472,15 +472,10 @@ func bigramCounts(s string) map[string]int {
 
 // —— 读盘投影 ——
 
-// loadMarkdownItems 把一个 markdown 记忆文件读成 Item(文件不存在 = 空,不是错误)。
-func loadMarkdownItems(path, scope string) ([]Item, error) {
-	es, err := Read(path)
-	if err != nil {
-		return nil, err
-	}
-	// 被取代的旧条目**不参与检索**:否则新旧两条事实会同时进上下文,模型无从取舍。
+// entriesToItems 把 (已 Active 过的)条目投影成 Item(不读盘)。
+func entriesToItems(es []Entry, scope string) []Item {
 	out := make([]Item, 0, len(es))
-	for _, e := range Active(es) {
+	for _, e := range es {
 		out = append(out, Item{
 			ID:         stableID(scope, e.Content),
 			Date:       e.Date,
@@ -491,7 +486,58 @@ func loadMarkdownItems(path, scope string) ([]Item, error) {
 			Scope:      scope,
 		})
 	}
-	return out, nil
+	return out
+}
+
+// loadMarkdownItems 读一个 markdown 记忆文件并投影(文件不存在 = 空,不是错误)。
+func loadMarkdownItems(path, scope string) ([]Item, error) {
+	es, err := Read(path)
+	if err != nil {
+		return nil, err
+	}
+	// 被取代的旧条目**不参与检索**:否则新旧两条事实会同时进上下文,模型无从取舍。
+	return entriesToItems(Active(es), scope), nil
+}
+
+// Snapshot 一次读盘的完整视图。
+//
+// 为什么需要它:自动调取在主循环的**每一步**都要用同一批数据做三件事 ——
+// 检索、与系统提示稳定块去重、报稳定块条数。分开各读一次盘就是每步 7~9 次文件读
+// (实测过),而它们本来就该是同一份快照。
+type Snapshot struct {
+	Items   []Item          // 全部条目(markdown 已 Active + JSONL)
+	Stable  map[string]bool // 稳定块实际渲染的内容(小写 trim;去重用)
+	StableN int             // 稳定块条数(观测面)
+}
+
+// LoadSnapshot 读三处来源一次,并给出稳定块的去重集合与条数。
+func LoadSnapshot(projectKey string, stableBudget int) (Snapshot, error) {
+	user, err := Read(UserPath())
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("memory: 读用户级记忆: %w", err)
+	}
+	user = Active(user)
+	var proj []Entry
+	if strings.TrimSpace(projectKey) != "" {
+		proj, err = Read(ProjectPath(projectKey))
+		if err != nil {
+			return Snapshot{}, fmt.Errorf("memory: 读项目级记忆: %w", err)
+		}
+		proj = Active(proj)
+	}
+	items := append(entriesToItems(user, ScopeUser), entriesToItems(proj, ScopeProject)...)
+	if strings.TrimSpace(projectKey) != "" {
+		fromTool, err := ReadToolStore(filepath.Join(Dir(), projectKey+".jsonl"))
+		if err != nil {
+			return Snapshot{}, fmt.Errorf("memory: 读工具记忆: %w", err)
+		}
+		items = append(items, fromTool...)
+	}
+	return Snapshot{
+		Items:   items,
+		Stable:  InjectedContents(user, proj, stableBudget),
+		StableN: StableCount(user, proj, stableBudget),
+	}, nil
 }
 
 // stableID 内容哈希派生的稳定标识:删掉别的条目不会改它的 ID ⇒ 命中集合不变时

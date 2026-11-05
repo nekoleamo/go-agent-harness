@@ -2928,6 +2928,7 @@ test('检测器自检:注入越界元素必须被抓到,移除后必须恢复', 
     const fired = dirty.scrollHeight > dirty.clientHeight + 1 || dirty.scrolled !== 0 || dirty.outsideTotal > 0
     assert.ok(fired, `检测器没开火 —— 护栏本身失效:${JSON.stringify(dirty)}`)
     await page.evaluate(() => document.querySelector('.canary-stray')?.remove())
+
     assertInvariants(await measure(page))
   } catch (e) {
     await shoot(page, t.name)
@@ -3603,6 +3604,15 @@ test('记忆面板:过滤条带查询参数、状态行可见', { skip: skip && 
     // 计数文案:过滤中应显示 N/M
     const txt = await page.textContent('[data-testid="mem-counts"]')
     assert.match(txt ?? '', /过滤中/, `过滤中应显示 N/M 口径: ${txt}`)
+
+    // 过滤视图的行不带序号(后端 NoIndex),面板也不该把 "- " 原样显示出来
+    const firstTxt = await page.$eval('[data-testid="mem-user-list"] .mem-txt', (n) => n.textContent ?? '')
+    assert.ok(!firstTxt.trimStart().startsWith('-'), `过滤视图不该显示列表符号: ${firstTxt}`)
+
+    // 过滤中**禁用**逐条删除:序号取自全量展示序,过滤后重新编号会删到另一条(删错数据)。
+    const delDisabled = await page.$eval('[data-testid="mem-user-list"] .danger-text', (b) => b.disabled)
+    assert.equal(delDisabled, true, '过滤中应禁用逐条删除(避免按错序号删错条)')
+
     assertInvariants(await measure(page))
   } catch (e) {
     await shoot(page, t.name)

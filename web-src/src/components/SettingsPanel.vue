@@ -1185,9 +1185,14 @@ function memSource(line: string): string {
   return m ? m[1] : "";
 }
 function memContent(line: string): string {
-  return line
-    .replace(/\(来源:\s*会话\s+\S+?\s*\)\s*$/, "")
-    .replace(/^\d+\.\s*/, "");
+  return (
+    line
+      .replace(/\(来源:\s*会话\s+\S+?\s*\)\s*$/, "")
+      .replace(/^\d+\.\s*/, "")
+      // 过滤视图**不编号**(序号是删除的抓手,过滤后重新编号会删错条)⇒ 行形如 "- [日期] 内容";
+      // 这里把列表符号剥掉,否则面板里会显示成 "- [2026-11-03] ..." 这种重复前缀。
+      .replace(/^-\s+/, "")
+  );
 }
 // memHasCandidates 该构建是否提供候选能力(字段组缺席 = 老版本;不渲染空壳)
 const memHasCandidates = computed(() => Array.isArray(memCand.value));

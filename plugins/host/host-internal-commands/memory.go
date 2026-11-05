@@ -203,7 +203,10 @@ func (h *Host) memoryListFiltered(ms sdk.MemoryService, args []string) (string, 
 	if len(lines) == 0 {
 		return fmt.Sprintf("没有符合条件的记忆(共 %d 条;换个条件试试,/memory list 看全部)", c.User+c.Project), nil
 	}
-	return fmt.Sprintf("过滤中 %d/%d 条(用户级):\n  %s", len(lines), c.User, strings.Join(lines, "\n  ")), nil
+	// 过滤视图**不编号**(上面的 ListFiltered 已按 NoIndex 渲染):删除仍用全量序号,
+	// 不说清的话用户会拿过滤后的"第 1 条"去 rm,删到的是另一条。
+	return fmt.Sprintf("过滤中 %d/%d 条(用户级,不编号;删除请先用 /memory list 定位):\n  %s",
+		len(lines), c.User, strings.Join(lines, "\n  ")), nil
 }
 
 // projectAdder 可选扩展:写项目级记忆(host-memory 实现;未实现 ⇒ 命令面显式报错)。
