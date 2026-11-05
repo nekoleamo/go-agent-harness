@@ -249,7 +249,7 @@ const { memBudget, memBusy, memCand, memContent, memCounts, memDraft, memEnabled
                       </button>
                     </div>
                   </div>
-                  <div v-if="memSources.length" class="mem-src">
+                  <div v-if="memSources.length" class="mem-src" data-testid="mem-src">
                     <p class="dim">
                       按来源整段删（某个会话写进来的记忆一次性清干净）
                     </p>

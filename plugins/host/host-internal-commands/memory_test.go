@@ -556,3 +556,67 @@ func TestCmdMemoryListFilterHasNoIndex(t *testing.T) {
 		t.Fatalf("全量视图应保持编号:\n%s", all)
 	}
 }
+
+// 命令级联提示(继续完善项):/memory 的二级提示必须按子命令说清可用参数 ——
+// 一句泛泛的"子命令后的内容(可选)"等于没提示,用户不知道 list 还支持过滤。
+func TestMemoryCommandArgLevelHints(t *testing.T) {
+	c, cmds := buildEnv(t)
+	dis, err := (&Plugin{}).Start(c, &sdk.Manifest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dis()
+	spec, ok := cmds.Get("memory")
+	if !ok {
+		t.Fatal("/memory 未注册")
+	}
+	if len(spec.Args) < 2 {
+		t.Fatalf("/memory 应有两级参数定义,got %d", len(spec.Args))
+	}
+	// 一级枚举里必须能选到后面新增的子命令(status / extract)
+	var subNames []string
+	for _, o := range spec.Args[0].Options([]string{"memory"}) {
+		subNames = append(subNames, o.Value)
+	}
+	for _, want := range []string{"status", "list", "add", "extract"} {
+		found := false
+		for _, n := range subNames {
+			if n == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("子命令枚举缺 %q(只能手打):%v", want, subNames)
+		}
+	}
+	// 二级提示按子命令区分
+	cases := map[string]string{
+		"list":    "--kind",
+		"add":     "--project",
+		"rm":      "--from",
+		"extract": "on | off",
+		"propose": "候选内容",
+		"accept":  "候选序号",
+		"reject":  "候选序号",
+	}
+	for sub, want := range cases {
+		free := spec.Args[1].FreeArgs([]string{"memory", sub})
+		if len(free) == 0 || !strings.Contains(strings.Join(free, " "), want) {
+			t.Fatalf("%s 的提示应含 %q,got %v", sub, want, free)
+		}
+	}
+	// 无参数子命令 ⇒ 不回提示(选中即执行)
+	for _, sub := range []string{"status", "candidates", "on", "off", "project", "accept-all", "reject-all"} {
+		if free := spec.Args[1].FreeArgs([]string{"memory", sub}); len(free) != 0 {
+			t.Fatalf("%s 不该有参数提示,got %v", sub, free)
+		}
+	}
+	// 未知子命令 ⇒ 回落到泛提示(不是 nil:用户手打的内容也要有"继续输入"的余地)
+	if free := spec.Args[1].FreeArgs([]string{"memory", "whatever"}); len(free) == 0 {
+		t.Fatal("未知子命令应回落泛提示")
+	}
+	// picked 不足两级(还没选子命令)⇒ 不回提示
+	if free := spec.Args[1].FreeArgs([]string{"memory"}); len(free) != 0 {
+		t.Fatalf("只选了命令名时不该有二级提示,got %v", free)
+	}
+}

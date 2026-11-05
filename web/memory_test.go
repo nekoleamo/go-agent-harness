@@ -387,3 +387,34 @@ func TestMemoryEndpointFilter(t *testing.T) {
 		t.Fatal("无过滤时不该回 filter 字段")
 	}
 }
+
+// TestMemoryEndpointSourcesUnaffectedByFilter "按来源整段删"的选项取自**全量**来源:
+// 过滤只缩列表,不该让一部分来源永远选不到(整段删是整段动作,与筛选无关)。
+func TestMemoryEndpointSourcesUnaffectedByFilter(t *testing.T) {
+	s, _ := memoryServer(t, true)
+	if err := memory.AppendMeta(memory.UserPath(), "约定 A", "sess-a", "convention", 0.9); err != nil {
+		t.Fatal(err)
+	}
+	if err := memory.AppendMeta(memory.UserPath(), "偏好 B", "sess-b", "preference", 0.9); err != nil {
+		t.Fatal(err)
+	}
+	code, body := do(t, s, "GET", "/api/memory?kind=convention", "")
+	if code != http.StatusOK {
+		t.Fatalf("GET 200,got %d", code)
+	}
+	m := decodeMemory(t, body)
+	// 过滤后列表只剩 sess-a
+	user, _ := m["user"].([]any)
+	if len(user) != 1 {
+		t.Fatalf("kind=convention 应只剩 1 条,got %#v", m["user"])
+	}
+	// 但来源清单必须两个都在(否则 sess-b 的记忆永远删不掉)
+	src, _ := m["sources"].([]any)
+	got := map[string]bool{}
+	for _, x := range src {
+		got[x.(string)] = true
+	}
+	if !got["sess-a"] || !got["sess-b"] {
+		t.Fatalf("sources 应是全量来源(不受过滤影响),got %#v", m["sources"])
+	}
+}

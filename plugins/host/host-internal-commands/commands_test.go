@@ -144,3 +144,29 @@ func TestDupSkip(t *testing.T) {
 		t.Fatal("判重跳过后命令不应被替换")
 	}
 }
+
+// TestRolepackArgLevelHints picked[0] 恒为命令名:第一级值在 picked[1]。
+// export 与 import 的提示必须区分(此前写成 picked[0],export 那条永远不生效)。
+func TestRolepackArgLevelHints(t *testing.T) {
+	c, cmds := buildEnv(t)
+	dis, err := (&Plugin{}).Start(c, &sdk.Manifest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dis()
+	spec, ok := cmds.Get("rolepack")
+	if !ok {
+		t.Skip("该构建未注册 /rolepack")
+	}
+	if len(spec.Args) < 2 || spec.Args[1].FreeArgs == nil {
+		t.Skip("rolepack 没有二级自由参数")
+	}
+	exp := strings.Join(spec.Args[1].FreeArgs([]string{"rolepack", "export"}), " ")
+	imp := strings.Join(spec.Args[1].FreeArgs([]string{"rolepack", "import"}), " ")
+	if exp == imp {
+		t.Fatalf("export/import 的提示不该相同(picked[0] 是命令名,不是子命令): %q", exp)
+	}
+	if !strings.Contains(exp, "角色标识") || !strings.Contains(imp, "包路径") {
+		t.Fatalf("提示应分别指向角色标识 / 包路径,got export=%q import=%q", exp, imp)
+	}
+}

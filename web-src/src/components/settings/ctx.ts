@@ -208,6 +208,7 @@ export interface SettingsCtx {
   memRetrieve: any
   memSource: any
   memSources: any
+  memSourcesAll: any
   memSync: any
   memToday: any
   memTodayMax: any

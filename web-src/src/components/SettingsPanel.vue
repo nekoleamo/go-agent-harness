@@ -1177,6 +1177,7 @@ const memCounts = ref<{ user: number; project: number; auto: number; stale: numb
 const memExtract = ref<MemoryView["extract"] | null>(null);
 const memRetrieve = ref<MemoryView["retrieve"] | null>(null);
 const memToolRemember = ref(0);
+const memSourcesAll = ref<string[]>([]);
 
 // memSource 拆出行尾的「(来源: 会话 x)」—— 治理的关键动作是“按来源整段删”,
 // 面板得能一键删掉“某个会话写进来的全部记忆”,而不只是逐条删。
@@ -1262,7 +1263,11 @@ function memoryRejectAll(): void {
   });
 }
 
+// memSources 按来源整段删的可选项。
+// 优先用后端给的**全量**来源:sources 是"整段"动作,过滤只缩列表 ——
+// 从过滤结果里推来源会让一部分来源永远选不到(旧后端没有 sources 字段时回退到本地推导)。
 const memSources = computed(() => {
+  if (memSourcesAll.value.length) return memSourcesAll.value;
   const seen = new Set<string>();
   for (const l of memUser.value) {
     const s = memSource(l);
@@ -1289,6 +1294,7 @@ async function loadMemory(): Promise<void> {
     memExtract.value = v.extract ?? null;
     memRetrieve.value = v.retrieve ?? null;
     memToolRemember.value = v.tool_remember ?? 0;
+    memSourcesAll.value = Array.isArray(v.sources) ? v.sources : [];
     memSync(v);
   } catch {
     memReady.value = false;
@@ -3481,6 +3487,7 @@ provide(SETTINGS_CTX, {
   memRetrieve,
   memSource,
   memSources,
+  memSourcesAll,
   memSync,
   memToday,
   memTodayMax,

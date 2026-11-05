@@ -142,6 +142,17 @@ function makeStub(
     },
     retrieve: { mode: 'per_step', query: '怎么部署', items: 1, total: 1, bytes: 120, truncated: false, at: '2026-11-03T10:00:00Z' },
     tool_remember: 2,
+    // 全量来源(不受过滤影响):"按来源整段删"要靠它 —— 与真实后端同源,由用户级行推导。
+    sources: Array.from(
+      new Set(
+        st.user
+          .map((l) => {
+            const m = /\(来源:\s*会话\s+(\S+?)\s*\)/.exec(String(l))
+            return m ? m[1] : ''
+          })
+          .filter(Boolean),
+      ),
+    ),
     user_path: '/tmp/gah-home/memory/user.md',
     project_path: '/tmp/gah-home/memory/projects/proj-1.md',
     project_key: 'proj-1',
@@ -3562,6 +3573,9 @@ test('记忆面板:过滤条带查询参数、状态行可见', { skip: skip && 
     await page.click('.gear')
     await page.waitForSelector('[data-sec="memory"]', { timeout: 5000 })
 
+    const srcBefore = await page.$$eval('[data-testid="mem-src"] button', (bs) => bs.map((b) => b.textContent?.trim()))
+    assert.ok(srcBefore.length > 0, '记忆段应有来源按钮(按来源整段删的入口)')
+
     // 状态行(后端字段存在才渲染)
     assert.ok(await page.$('[data-testid="mem-extract-state"]'), '应显示自动生成状态')
     assert.ok(await page.$('[data-testid="mem-retrieve-state"]'), '应显示自动调取状态')
@@ -3612,6 +3626,10 @@ test('记忆面板:过滤条带查询参数、状态行可见', { skip: skip && 
     // 过滤中**禁用**逐条删除:序号取自全量展示序,过滤后重新编号会删到另一条(删错数据)。
     const delDisabled = await page.$eval('[data-testid="mem-user-list"] .danger-text', (b) => b.disabled)
     assert.equal(delDisabled, true, '过滤中应禁用逐条删除(避免按错序号删错条)')
+
+    // "按来源整段删"的选项取**全量**来源:过滤只缩列表,不该让来源选不到
+    const srcBtns = await page.$$eval('[data-testid="mem-src"] button', (bs) => bs.map((b) => b.textContent?.trim()))
+    assert.deepEqual(srcBtns, srcBefore, `过滤后来源按钮应与过滤前一致(全量): ${JSON.stringify({ before: srcBefore, after: srcBtns })}`)
 
     assertInvariants(await measure(page))
   } catch (e) {

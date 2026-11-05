@@ -779,6 +779,8 @@ export interface MemoryView {
   counts?: { user: number; project: number; auto: number; stale: number }
   /** 本会话模型经 memory 工具 remember 的次数(0/缺省 = 不显示)。 */
   tool_remember?: number
+  /** 用户级记忆的**全部**来源(不受过滤影响;"按来源整段删"要用它)。 */
+  sources?: string[]
   /** 自动调取的最近一次观测(P0)。缺省 = 该构建不支持。 */
   retrieve?: {
     mode: string

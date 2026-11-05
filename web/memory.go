@@ -98,6 +98,11 @@ type memoryView struct {
 	Counts *countsView `json:"counts,omitempty"`
 	// ToolRemember 本会话模型经 memory 工具 remember 的次数(未实现窄接口则省略)。
 	ToolRemember int `json:"tool_remember,omitempty"`
+	// Sources 用户级记忆的**全部**来源会话(不受过滤影响)。
+	//
+	// 为什么单独给:面板的"按来源整段删"是**整段**动作,而过滤后的列表只有一部分来源 ——
+	// 让用户从过滤结果里选"整段删哪个来源"会让某些来源永远选不到。
+	Sources []string `json:"sources,omitempty"`
 }
 
 // filterView 面板当前的筛选条件(回显用:刷新后面板仍显示"正在筛什么")。
@@ -336,6 +341,14 @@ func (s *Server) memoryViewOpt(w http.ResponseWriter, ms sdk.MemoryService, extr
 	if ts, ok := ms.(sdk.MemoryToolStats); ok {
 		v.ToolRemember = ts.ModelRememberCount()
 	}
+	// 来源清单取**全量**(过滤只影响列表,不影响"能按哪些来源整段删")。
+	seen := map[string]bool{}
+	for _, l := range ms.List() {
+		if src := sourceOf(l); src != "" && !seen[src] {
+			seen[src] = true
+			v.Sources = append(v.Sources, src)
+		}
+	}
 	if rs, ok := ms.(sdk.MemoryRetrieveStats); ok {
 		st := rs.LastInject()
 		rv := &retrieveView{Mode: rs.RetrieveMode(), Query: st.Query, Items: st.Items,
@@ -364,6 +377,20 @@ func (s *Server) memoryViewOpt(w http.ResponseWriter, ms sdk.MemoryService, extr
 		m[k] = val
 	}
 	writeJSON(w, http.StatusOK, m)
+}
+
+// sourceOf 从展示行里取"(来源: 会话 x)"(与 internal/memory.DisplayLines 的格式同源)。
+func sourceOf(line string) string {
+	const marker = "(来源: 会话 "
+	i := strings.LastIndex(line, marker)
+	if i < 0 {
+		return ""
+	}
+	rest := line[i+len(marker):]
+	if j := strings.Index(rest, ")"); j > 0 {
+		return strings.TrimSpace(rest[:j])
+	}
+	return ""
 }
 
 // memoryProjectKey 当前打开会话的项目键(拿不到 = 只显示用户级,不编一个 key)。

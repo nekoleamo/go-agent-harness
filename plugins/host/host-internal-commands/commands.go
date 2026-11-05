@@ -193,30 +193,53 @@ func (h *Host) specs() []sdk.CommandSpec {
 					return []sdk.Option{{Value: "export", Desc: "导出角色为 .zip"}, {Value: "import", Desc: "导入角色包"}}
 				}},
 				{FreeArgs: func(picked []string) []string {
-					if len(picked) > 0 && picked[0] == "export" {
+					// picked[0] **恒为命令名**,第一级值在 picked[1] —— 这里曾经写成 picked[0],
+					// 于是 export 那条提示永远不生效(一直显示"包路径(.zip)")。
+					if len(picked) > 1 && picked[1] == "export" {
 						return []string{"角色标识", "路径?"}
 					}
 					return []string{"包路径(.zip)"}
 				}},
 			}},
 		// 跨会话记忆(第一百零九批):子命令 + 自由文本(记忆正文是自然语言)。
-		{Name: "memory", Usage: "/memory list|add <内容>|rm <序号>|rm --from <会话>|on|off|project|propose <内容>|candidates|accept <序号>|reject <序号>|accept-all|reject-all",
+		{Name: "memory", Usage: "/memory status|list [--kind <类型>] [--auto] [--stale <天数>]|add [--project] <内容>|rm <序号>|rm --from <会话>|on|off|project|propose <内容>|candidates|accept <序号>|reject <序号>|accept-all|reject-all|extract on|off",
 			Desc: "跨会话记忆:记住跨对话要长期遵守的事(偏好、约定、口径);每轮带进上下文,按预算截断;propose 先进候选池(不进上下文),确认后才生效",
 			Run:  h.cmdMemory,
 			Args: []sdk.ArgLevel{
 				{Options: func([]string) []sdk.Option {
 					return []sdk.Option{
-						{Value: "list", Desc: "看全部记忆(新的在前)"},
-						{Value: "add", Desc: "记住一条(后面跟内容)"},
+						{Value: "status", Desc: "总览(条数/自动调取/自动提取账本/模型自记)"},
+						{Value: "list", Desc: "看全部记忆(可加 --kind/--auto/--stale 过滤)"},
+						{Value: "add", Desc: "记住一条(加 --project 只在本项目生效)"},
 						{Value: "rm", Desc: "删一条(按序号)或按来源整段删"},
 						{Value: "on", Desc: "开启注入"},
 						{Value: "off", Desc: "关闭注入(记忆仍留着)"},
 						{Value: "project", Desc: "看本项目记忆"},
+						{Value: "extract", Desc: "自动提取开关(on|off)与状态"},
 					}
 				}},
 				{FreeArgs: func(picked []string) []string {
-					if len(picked) > 0 && picked[0] == "add" {
-						return []string{"要记住的内容"}
+					// 逐个子命令给精确提示:一句泛泛的"子命令后的内容(可选)"等于没提示 ——
+					// 用户根本不知道 list 还支持过滤参数、extract 只认 on|off。
+					// 注意 picked[0] **恒为命令名**,第一级值在 picked[1]。
+					if len(picked) < 2 {
+						return nil
+					}
+					switch picked[1] {
+					case "list":
+						return []string{"--kind <preference|convention|decision|pitfall|env> | --auto | --stale <天数>?"}
+					case "add":
+						return []string{"[--project] 要记住的内容"}
+					case "rm":
+						return []string{"<序号> | --from <会话>"}
+					case "propose":
+						return []string{"要提的候选内容"}
+					case "accept", "reject":
+						return []string{"<候选序号>"}
+					case "extract":
+						return []string{"on | off"}
+					case "status", "candidates", "accept-all", "reject-all", "on", "off", "project":
+						return nil // 无参数:选中即执行
 					}
 					return []string{"子命令后的内容(可选)"}
 				}},
