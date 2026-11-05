@@ -527,6 +527,33 @@ function makeStub(
         },
       ])
     }
+    // 命令注册表(输入区 "/" 提示 + 逐级参数选择):键盘候选靠这两个端点。
+    if (p === '/api/commands') {
+      return json([
+        { name: 'status', usage: '/status', desc: '看状态' },
+        { name: 'sample', usage: '/sample <alpha|beta>', desc: '演示参数级' },
+      ])
+    }
+    if (p === '/api/commands/sample/options') {
+      let picked = []
+      try {
+        picked = route.request().postDataJSON()?.picked ?? []
+      } catch {
+        picked = []
+      }
+      if (Array.isArray(picked) && picked.length === 0) {
+        return json({
+          items: [
+            { value: 'alpha', desc: '甲' },
+            { value: 'beta', desc: '乙' },
+          ],
+          freeArgs: [],
+          done: false,
+        })
+      }
+      return json({ items: [], freeArgs: [], done: true })
+    }
+    if (p === '/api/commands/status/options') return json({ items: [], freeArgs: [], done: true })
     if (p === '/api/input') {
       // 运行中的提交回 accepted=steer(宿主把消息注入当前回合);否则 turn(开新回合)。
       return json({ ok: true, accepted: running ? 'steer' : 'turn' })
@@ -3411,4 +3438,96 @@ test('介入条:真实帧派生待审批/出错,审批态不给点不动的按�
     }
   }
 
+})
+
+// 命令候选的键盘选择(第一百八十四批):
+//   ① 上下键在候选里移动高亮;② 回车选中候选(不发送);③ 选中命令后进入参数级,
+//   选完最后一级自动执行;④ 打全命令名后回车 = 直接执行。
+// 这条护栏的"牙":旧实现里上下键只移动 textarea 光标、回车把 "/s" 原样发出去 ——
+// 断言 input body 必须收到执行后的完整命令,旧实现会收到 "/s"。
+test('命令候选:上下键可选、回车进参数级、选完自动执行', { skip: skip && skipWhy }, async (t) => {
+  const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+  let page = null
+  try {
+    const stub = makeStub(true, true, false, false, true)
+    page = await open(ctx, stub, docks[1].dock)
+    const ta = '.input-slot textarea'
+    await page.fill(ta, '/s')
+    await page.waitForSelector('[data-cmd-hints] .hint', { timeout: 5000 })
+
+    const labels = await page.$$eval('[data-cmd-hints] .hint .hn', (ns) => ns.map((n) => n.textContent?.trim()))
+    assert.deepEqual(labels, ['status', 'sample'], `候选应列出两个前缀匹配的命令: ${labels}`)
+    const sel = () => page.$eval('[data-cmd-hints] .hint.sel .hn', (n) => n.textContent?.trim())
+    assert.equal(await sel(), 'status', '默认高亮第一项')
+
+    // ① 上下键移动
+    await page.keyboard.press('ArrowDown')
+    assert.equal(await sel(), 'sample', 'ArrowDown 应把高亮移到第二项')
+    await page.keyboard.press('ArrowUp')
+    assert.equal(await sel(), 'status', 'ArrowUp 应回到第一项')
+
+    // ② 选中 sample(而不是把 "/s" 发出去)
+    await page.keyboard.press('ArrowDown')
+    await page.keyboard.press('Enter')
+    await page.waitForFunction(
+      () => Array.from(document.querySelectorAll('[data-cmd-hints] .hint .hn')).some((n) => n.textContent?.trim() === 'alpha'),
+      null,
+      { timeout: 5000 },
+    )
+    assert.equal(await page.inputValue(ta), '/sample ', '选中命令后文本就位并进入参数级')
+    const opts = await page.$$eval('[data-cmd-hints] .hint .hn', (ns) => ns.map((n) => n.textContent?.trim()))
+    assert.deepEqual(opts, ['alpha', 'beta'], `参数级候选: ${opts}`)
+    assert.ok(
+      !stub.seen.some((r) => r.path === '/api/input' && String(r.body).includes('/s')),
+      '选中候选时不该把半截命令 "/s" 发出去',
+    )
+
+    // ③ 选完最后一级参数 ⇒ 自动执行
+    await page.keyboard.press('ArrowDown') // alpha → beta
+    await page.keyboard.press('Enter')
+    // 注意:settle 的回调在**页面里**执行,拿不到 Node 侧的 stub ⇒ 这里自己轮询。
+    const waitSeen = async (pred, ms = 3000) => {
+      const deadline = Date.now() + ms
+      while (Date.now() < deadline) {
+        if (pred()) return true
+        await page.waitForTimeout(50)
+      }
+      return false
+    }
+    await waitSeen(() => stub.seen.some((r) => r.path === '/api/input' && String(r.body).includes('/sample beta')))
+    const sent = stub.seen.find((r) => r.path === '/api/input' && String(r.body).includes('/sample beta'))
+    assert.ok(sent, `应执行 "/sample beta",实际提交: ${JSON.stringify(stub.seen.filter((r) => r.path === '/api/input'))}`)
+    await page.waitForFunction((sel) => document.querySelector(sel)?.value === '', ta, { timeout: 5000 })
+  } catch (e) {
+    await shoot(page, t.name)
+    throw e
+  } finally {
+    await ctx.close()
+  }
+})
+
+// 打全命令名后回车 = 直接执行(不再"选中一次候选"):否则 /status 要按两次回车才生效,
+// 第一次那一下没有任何反馈。
+test('命令候选:打全命令名后回车直接执行', { skip: skip && skipWhy }, async (t) => {
+  const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+  let page = null
+  try {
+    const stub = makeStub(true, true, false, false, true)
+    page = await open(ctx, stub, docks[1].dock)
+    const ta = '.input-slot textarea'
+    await page.fill(ta, '/status')
+    await page.waitForSelector('[data-cmd-hints] .hint', { timeout: 5000 })
+    await page.keyboard.press('Enter')
+    const deadline = Date.now() + 3000
+    while (Date.now() < deadline && !stub.seen.some((r) => r.path === '/api/input' && String(r.body).includes('/status'))) {
+      await page.waitForTimeout(50)
+    }
+    const sent = stub.seen.find((r) => r.path === '/api/input' && String(r.body).includes('/status'))
+    assert.ok(sent, `完整命令名回车应直接执行,实际: ${JSON.stringify(stub.seen.filter((r) => r.path === '/api/input'))}`)
+  } catch (e) {
+    await shoot(page, t.name)
+    throw e
+  } finally {
+    await ctx.close()
+  }
 })

@@ -241,6 +241,59 @@ const hints = computed(() => {
   return cmds.value.filter((c) => c.name.startsWith(p)).slice(0, 8)
 })
 
+// —— 候选的键盘选择(上下移动 + 回车选中) ——
+//
+// 为什么必须有:此前候选只能鼠标点。键盘用户打 /mem 之后既不能用上下键选,回车也只会把
+// "/mem" 原样发出去 —— 命令根本没执行,而他看不出为什么。
+//
+// 三条口径:
+//  1. **回车是"选中",不是"发送"**:只要还有候选,回车就选当前高亮项;
+//  2. **打全命令名后回车 = 执行**(不进入参数级):否则 /status 要在选一次候选后才生效,
+//     多一次没有反馈的车回;
+//  3. 选中命令后自动拉参数级;该命令**没有可选参数**时直接执行(浮层是空的,再按回车
+//     只会让人以为卡住)。
+const hintIdx = ref(-1)
+const hintDismissed = ref(false) // Esc 关掉候选(文本一变就恢复)
+const hintBox = ref<HTMLElement | null>(null)
+const hintList = computed(() => (hintDismissed.value ? [] : hints.value))
+
+// 候选变化(打字/切到参数级)⇒ 高亮回到第一项:n/p 之外不需要"记住上次选到哪"。
+watch(
+  hints,
+  (list) => {
+    hintIdx.value = list.length ? 0 : -1
+  },
+  { flush: 'post' },
+)
+// 文本一变就重新允许候选(否则 Esc 之后再也弹不出来)。
+watch(text, () => {
+  hintDismissed.value = false
+})
+
+// moveHint 上下移动高亮(循环);顺带把它滚进可视区(候选最多 8 条,窄窗会截)。
+function moveHint(delta: number): void {
+  const n = hintList.value.length
+  if (!n) return
+  const cur = hintIdx.value
+  hintIdx.value = cur < 0 ? (delta > 0 ? 0 : n - 1) : (cur + delta + n) % n
+  void nextTick(() => {
+    const el = hintBox.value?.children[hintIdx.value] as HTMLElement | undefined
+    el?.scrollIntoView({ block: 'nearest' })
+  })
+}
+
+// isCompleteCommand 文本是否已经是"某个命令的全名"(不含参数)。
+// 这类文本回车应当**直接执行**,而不是被当成"还要再选一次候选"。
+function isCompleteCommand(): boolean {
+  // 已在参数级(levelCmd 非空)⇒ **永远不是"完整命令"**:此时浮层是参数候选,
+  // 回车就该选参数。少了这个判断,`/sample `(选中命令后带尾空格)trim 后正好等于命令名,
+  // 于是最后一级参数还没选就被当成"命令已完整"直接提交了 —— 护栏用例逮到的就是这个。
+  if (levelCmd.value) return false
+  const t = text.value.trim()
+  if (!t.startsWith('/') || t.includes(' ')) return false
+  return cmds.value.some((c) => '/' + c.name === t)
+}
+
 function resetLevel(): void {
   levelCmd.value = ''
   levelPath.value = []
@@ -249,9 +302,15 @@ function resetLevel(): void {
   levelText.value = ''
 }
 
-async function loadLevel(): Promise<void> {
+interface LevelState {
+  items: number
+  free: boolean
+  done: boolean
+}
+
+async function loadLevel(): Promise<LevelState> {
   const name = levelCmd.value
-  if (!name) return
+  if (!name) return { items: 0, free: false, done: true }
   try {
     const resp = await api.commandOptions(name, levelPath.value)
     // 空枚举/空自由参数可能是 [] 也可能是 null(旧后端/未归零的响应)→ 一律按数组消费,
@@ -259,9 +318,13 @@ async function loadLevel(): Promise<void> {
     const items = resp.items ?? []
     levelItems.value = items.map((i) => ({ name: i.value, usage: '', desc: i.desc }))
     levelFree.value = items.length === 0 && !resp.done ? (resp.freeArgs ?? []).join(' | ') : ''
+    return { items: items.length, free: !!levelFree.value, done: !!resp.done }
   } catch {
+    // 拉不到参数级(旧后端/网络抖动)按"该级没有可选项"处理 —— 命令本身仍可执行,
+    // 比卡在逐级态里出不去好。
     levelItems.value = []
     levelFree.value = ''
+    return { items: 0, free: false, done: true }
   }
 }
 
@@ -269,7 +332,9 @@ async function pickLevel(value: string): Promise<void> {
   levelPath.value = [...levelPath.value, value]
   levelText.value = '/' + levelCmd.value + ' ' + levelPath.value.join(' ') + ' '
   text.value = levelText.value
-  await loadLevel()
+  const st = await loadLevel()
+  // 参数已选完且没有下一级可选 ⇒ 直接执行:此时浮层是空的,再按回车只会让人以为卡住。
+  if (st.items === 0 && !st.free && levelText.value === text.value) void submit()
 }
 
 // 手工改写命令文本(换成别的命令/别的参数)→ 退出逐级态,避免陈旧候选
@@ -325,15 +390,34 @@ function onKeydown(e: KeyboardEvent): void {
   // 时直接放行,否则 CJK 用户按 Enter 上屏即被当发送,输入内容未完成就发出去。
   if (e.isComposing || e.keyCode === 229) return
   const mod = e.ctrlKey || e.metaKey
+  // 上下键在候选里移动(有候选才拦截:否则要保留 textarea 自己的光标/滚动行为)。
+  if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && hintList.value.length) {
+    e.preventDefault()
+    moveHint(e.key === 'ArrowDown' ? 1 : -1)
+    return
+  }
   if (e.key === 'Enter' && !e.shiftKey && (mod || !e.altKey)) {
     // 裸 Enter(无修饰)=发送;Cmd/Ctrl+Enter=发送(mac/win 习惯);Shift+Enter=换行(原生)
     if (!props.disabled && !uploading.value) {
+      // 还有候选、且用户没打出完整命令名 ⇒ 回车是"选中候选",不发送。
+      if (hintList.value.length && !isCompleteCommand()) {
+        e.preventDefault()
+        pickHintAt(hintIdx.value)
+        return
+      }
       e.preventDefault()
       void submit()
     }
     return
   }
   if (e.key === 'Escape') {
+    // 候选开着时 Esc 先关候选(第一步),再按才清空输入 —— 与抽屉同款的分层返回。
+    if (hintList.value.length || levelFree.value) {
+      e.preventDefault()
+      hintDismissed.value = true
+      resetLevel()
+      return
+    }
     e.preventDefault()
     if (showPicker.value) {
       showPicker.value = false
@@ -389,14 +473,25 @@ async function submit(): Promise<void> {
 
 function pickHint(name: string): void {
   if (levelCmd.value) {
-    void pickLevel(name) // 参数级:点击值继续下一级
+    void pickLevel(name) // 参数级:选中值继续下一级
     return
   }
   resetLevel()
   levelCmd.value = name
   text.value = '/' + name + ' '
   levelText.value = text.value // 命令级文本也属逐级流程(否则 watch 立刻把 levelCmd 清掉)
-  void loadLevel() // 命令级:拉取该命令的参数级候选
+  // 命令级:拉参数级;该命令没有参数级(如 /status)⇒ 直接执行,不再多要一次回车。
+  void loadLevel().then((st) => {
+    if (st.items === 0 && !st.free && levelText.value === text.value) void submit()
+  })
+}
+
+// pickHintAt 选中当前高亮的候选(回车用;越界回落到第一项)。
+function pickHintAt(idx: number): void {
+  const list = hintList.value
+  if (!list.length) return
+  const i = idx >= 0 && idx < list.length ? idx : 0
+  pickHint(list[i].name)
 }
 
 // 会话切换抽屉
@@ -505,12 +600,14 @@ defineExpose({ cycleThinking, cycleSandbox, getText: () => text.value, setText: 
       </div>
     </Teleport>
     <!-- / 命令提示(浮于外壳上方) -->
-    <div v-if="hints.length || levelFree" class="float">
+    <div v-if="hintList.length || levelFree" ref="hintBox" class="float" data-cmd-hints>
       <div
-        v-for="h in hints"
+        v-for="(h, i) in hintList"
         :key="h.name"
         class="hint"
+        :class="{ sel: i === hintIdx }"
         :data-tip="levelCmd ? '选择该参数' : '继续选择参数'"
+        @mouseenter="hintIdx = i"
         @mousedown.prevent="pickHint(h.name)"
       >
         <span class="hn">{{ h.name }}</span>
@@ -934,8 +1031,12 @@ defineExpose({ cycleThinking, cycleSandbox, getText: () => text.value, setText: 
   border-radius: 6px;
   transition: background var(--dur-fast) var(--ease-out);
 }
-.hint:hover {
-  background: var(--bg3);
+.hint:hover,
+.hint.sel {
+  background: var(--accent-soft);
+}
+.hint.sel .hn {
+  text-decoration: underline;
 }
 .hint.free {
   cursor: default;
