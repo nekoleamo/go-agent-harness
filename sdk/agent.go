@@ -37,6 +37,39 @@ type SystemPromptSection struct {
 	Slot    SectionSlot // 位置槽(零值 = SlotDefault)
 }
 
+// MessageAugmenter 可选扩展:在组装完消息后**在尾部追加**内容(如按当前话题检索到的
+// 跨会话记忆)。
+//
+// 为什么不在系统提示里现算:系统提示在最前,它的任何变动都是「前缀改写」——提示缓存从
+// 那一点起全部按全价计(仓里的 A4 门 tests/cache_stability_test.go 就是在拦这个)。
+// 而"本轮相关"天然逐轮变化,所以它必须落在**尾部追加**,不能落在前缀里。
+type MessageAugmenter interface {
+	// Augment 返回追加了内容的完整消息序列(可以原样返回 msgs)。
+	// 只读:不改 msgs 里已有的消息,也不写盘。
+	Augment(ctx context.Context, msgs []LLMMessage) []LLMMessage
+}
+
+// queryKey 当前回合查询在 ctx 里的键(私有类型,防外部碰撞)。
+type queryKey struct{}
+
+// WithQuery 把"本步要检索什么"(通常是最后一条用户消息)放进 ctx,供
+// MessageAugmenter 使用。
+func WithQuery(ctx context.Context, q string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, queryKey{}, q)
+}
+
+// QueryFrom 取回 WithQuery 放的查询;未设返回 ("", false)。
+func QueryFrom(ctx context.Context) (string, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	v, ok := ctx.Value(queryKey{}).(string)
+	return v, ok
+}
+
 // SystemPromptService 服务(ctx.systemPrompt):片段注册 + 组装模型可见消息。
 type SystemPromptService interface {
 	// AddSection 注册一个系统提示片段,返回 Disposer。

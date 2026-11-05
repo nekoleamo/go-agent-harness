@@ -516,17 +516,34 @@ func (l *Loop) step(ctx context.Context, t *turn, sess sdk.SessionLog) error {
 		if cc, ok := l.tools.(sdk.ContextualToolCatalogue); ok {
 			tools = cc.ListFor(ctx)
 		}
+		// 当前查询(供片段按话题现算,如跨会话记忆的 top-K 检索):唯一来源是本回合日志里
+		// **最后一条用户消息** —— steer 已由 injectSteers 落账,所以中途插话也在这里可见。
+		// 没实现 ContentFor 的片段忽略这个值,行为逐字不变。
+		recallCtx := sdk.WithQuery(ctx, recallQuery(history))
 		messages := l.sp.Assemble(history, tools)
 		if cp, ok := l.sp.(sdk.ContextualSystemPrompt); ok {
-			messages = cp.AssembleFor(ctx, history, tools)
+			messages = cp.AssembleFor(recallCtx, history, tools)
+		}
+		// 尾部附加(如按当前话题检索到的跨会话记忆):只能追加在**末尾** ——
+		// 放进系统提示就是前缀改写,提示缓存从那一点起全部按全价计(见 sdk.MessageAugmenter)。
+		// 运行期懒解析:host-memory 在 bundle 里排在 host-agent-loop 之后,Start 期拿不到。
+		//
+		// historyLen 是**真实会话历史**的长度:附加块不落账(只本次请求可见),下一步就不在
+		// messages 里了 —— 如果让它参与前缀指纹,每次都会报"前缀被改写",而实际损失只是
+		// 上一步末尾那一小段。所以下面的探针只对 [:historyLen] 取样。
+		historyLen := len(messages)
+		var aug sdk.MessageAugmenter
+		if err := l.c.Inject("ctx.messageAugment", &aug); err == nil && aug != nil {
+			messages = aug.Augment(recallCtx, messages)
 		}
 		// 伪调用提醒注入(上步检测到文本伪造工具调用;作为追加输入给模型修正机会)
 		if t.reminder != "" {
 			messages = append(messages, sdk.LLMMessage{Role: sdk.RoleUser, Content: t.reminder})
 			t.reminder = ""
 		}
-		// 前缀指纹取样(只读诊断;开销见 prefixprobe.go 头注)
-		l.probe.record(messages, tools)
+		// 前缀指纹取样(只读诊断;开销见 prefixprobe.go 头注)。
+		// 只取真实历史,不含尾部附加的临时块(见上面对 historyLen 的注释)。
+		l.probe.record(messages[:historyLen], tools)
 		return &sdk.LLMRequest{Messages: messages, Tools: tools}
 	}
 

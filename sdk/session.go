@@ -673,6 +673,30 @@ type MemoryCandidates interface {
 	CandidateQuota() (used, limit, today, todayLimit int)
 }
 
+// MemoryRetrieveStats 可选扩展(由 host-memory 实现):最近一次**自动调取**的观测值。
+//
+// 为什么不在 MemoryService 上加:那是破坏性变更(接口加方法 = 既有实现全断)。
+// 也没有这条观测,用户就分不清三种情况 —— 没记忆、检索没命中、命中但被预算截掉,
+// 而它们的下一步动作完全不同。
+type MemoryRetrieveStats interface {
+	// LastInject 最近一次注入的观测值(未跑过回合时为零值)。
+	LastInject() MemoryInjectStats
+	// RetrieveMode 当前调取模式(per_step|off|fallback)。
+	RetrieveMode() string
+}
+
+// MemoryInjectStats 一次注入的观测值(只读快照)。
+type MemoryInjectStats struct {
+	Query     string    // 本轮用于检索的查询(截断后的)
+	Stable    int       // 系统提示稳定块里有几条(记忆的全量视图,与查询无关)
+	Items     int       // 本轮**尾部追加**了几条(稳定块里已有的不重复追加)
+	Bytes     int       // 实际注入体积
+	Total     int       // 相关条目总数(> Items 说明被预算/topK 截断)
+	Truncated bool      // 是否发生截断
+	At        time.Time // 记录时间
+	Mode      string    // per_step|off|fallback(无查询时回退全量)
+}
+
 // ForkableSessions 会话树/分支(P4-10;可选实现——host-cwd-sessions)。类型断言发现,
 // ctx.cwdSessions 接口不变。分支 = 复制继承历史到点的独立会话文件,继续演进互不影响。
 type ForkableSessions interface {

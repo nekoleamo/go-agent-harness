@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -56,10 +57,19 @@ var entryRe = regexp.MustCompile(`^-\s*\[(\d{4}-\d{2}-\d{2})\]\s*(.*?)(?:\s*\(\s
 // Entry 一条记忆。
 type Entry struct {
 	Date    string // YYYY-MM-DD
-	Content string // 正文(不含来源标注)
+	Content string // 正文(不含来源标注与行尾元数据)
 	Source  string // 来源会话 id(可空:手工写的)
-	Raw     string // 原始行(回写用)
+	Raw     string // 原始行(回写用,含行尾元数据)
+	// Kind/Confidence 行尾可选元数据(P1 自动提取写入):`{kind=preference conf=0.90}`。
+	// 老文件没有这一段 ⇒ 零值,检索层按缺省置信度计,不需要迁移。
+	Kind       string
+	Confidence float64
 }
+
+// metaRe 行尾元数据块:`{kind=preference conf=0.90}`(键值空格分隔,顺序不敏感)。
+// 为什么放行尾而不是改成 JSON 行:记忆文件是**人可读可改**的,元数据也应当一眼能读、
+// 能手工删掉(删了退化成老条目,不是坏数据)。
+var metaRe = regexp.MustCompile(`\s*\{([^{}]*)\}\s*$`)
 
 // Dir 记忆根目录。
 func Dir() string { return filepath.Join(sdk.Home(), "memory") }
@@ -74,25 +84,60 @@ func ProjectPath(projectKey string) string {
 
 // Format 把一条记忆渲染成文件里的一行。
 func Format(date, content, source string) string {
+	return FormatMeta(date, content, source, "", 0)
+}
+
+// FormatMeta 同上,但可带行尾元数据(kind/confidence)。kind 空且 conf<=0 ⇒ 与 Format 完全一致。
+func FormatMeta(date, content, source, kind string, conf float64) string {
 	line := "- [" + date + "] " + strings.TrimSpace(content)
 	if strings.TrimSpace(source) != "" {
 		line += "(来源: 会话 " + strings.TrimSpace(source) + ")"
 	}
-	return line
+	if kind == "" && conf <= 0 {
+		return line
+	}
+	var parts []string
+	if kind != "" {
+		parts = append(parts, "kind="+kind)
+	}
+	if conf > 0 {
+		parts = append(parts, "conf="+strconv.FormatFloat(conf, 'f', 2, 64))
+	}
+	return line + " {" + strings.Join(parts, " ") + "}"
 }
 
 // ParseLine 解析一行;不是记忆行返回 ok=false(跳过,不报错 —— 文件是人写的,
 // 允许夹注释与空行)。
 func ParseLine(line string) (Entry, bool) {
-	t := strings.TrimSpace(line)
-	if t == "" || strings.HasPrefix(t, "#") {
+	raw := strings.TrimSpace(line)
+	if raw == "" || strings.HasPrefix(raw, "#") {
 		return Entry{}, false
+	}
+	t := raw
+	var kind string
+	var conf float64
+	if mm := metaRe.FindStringSubmatch(t); mm != nil {
+		for _, kv := range strings.Fields(mm[1]) {
+			k, v, ok := strings.Cut(kv, "=")
+			if !ok {
+				continue
+			}
+			switch k {
+			case "kind":
+				kind = v
+			case "conf":
+				if f, err := strconv.ParseFloat(v, 64); err == nil {
+					conf = f
+				}
+			}
+		}
+		t = strings.TrimSpace(strings.TrimSuffix(t, mm[0]))
 	}
 	m := entryRe.FindStringSubmatch(t)
 	if m == nil {
 		return Entry{}, false
 	}
-	return Entry{Date: m[1], Content: m[2], Source: m[3], Raw: t}, true
+	return Entry{Date: m[1], Content: m[2], Source: m[3], Raw: raw, Kind: kind, Confidence: conf}, true
 }
 
 // Read 读一个记忆文件里的条目(保持文件里的顺序;文件不存在 = 空,不是错误)。
@@ -119,6 +164,11 @@ func Read(path string) ([]Entry, error) {
 // Append 往记忆文件追加一条(原子写:临时文件 + rename)。
 // 同内容同日不重复追加 —— 手工 `/memory add` 时用户很容易把同一句打两遍。
 func Append(path, content, source string) error {
+	return AppendMeta(path, content, source, "", 0)
+}
+
+// AppendMeta 同 Append,可带 kind/confidence 元数据(P1 自动提取的直写路径用它)。
+func AppendMeta(path, content, source, kind string, conf float64) error {
 	content = strings.TrimSpace(content)
 	if content == "" {
 		return fmt.Errorf("memory: 内容为空,不写入")
@@ -131,7 +181,7 @@ func Append(path, content, source string) error {
 		return err
 	}
 	today := time.Now().Format("2006-01-02")
-	line := Format(today, content, source)
+	line := FormatMeta(today, content, source, kind, conf)
 	for _, e := range cur {
 		if e.Date == today && e.Content == strings.TrimSpace(content) {
 			return fmt.Errorf("memory: 今天已经有同一条记忆了(不重复写)")
@@ -242,12 +292,28 @@ func Inject(user, project []Entry, budget int) string {
 	if budget <= ShellOverhead {
 		return "" // 预算连抬头 + 围栏都放不下:宁可不注入,也不注入一个被截断的半块
 	}
-	avail := budget - ShellOverhead
+	lines, split := collectWithin(user, project, budget-ShellOverhead)
+	if len(lines) == 0 {
+		return ""
+	}
+	var out strings.Builder
+	out.WriteString(headLine)
+	out.WriteString("<memory>\n")
+	// 小节标题:两类都非空时才各带一个标题(有标题才知道哪条属于哪一级)。
+	// 归属靠**内容出现的位置**:先收集 user 的、再收集 project 的,故这里按分界拆。
+	out.WriteString(sectionLines(lines, split))
+	out.WriteString("</memory>\n")
+	return out.String()
+}
 
+// collectWithin 按「新的优先」把条目装进 avail 字节,返回渲染行与**实际收进的用户级条数**。
+//
+// 两处消费方(系统提示的稳定块 Inject、自动调取的重复判定 InjectedContents)必须走同一个
+// 裁剪口径,否则「尾部又注入了一遍系统提示里已有的那条」这类重复会悄悄发生。
+func collectWithin(user, project []Entry, avail int) (lines []string, split int) {
 	// 收集条目行(**新的优先**:文件里是追加序,倒序遍历),累计长度即已用预算。
 	// 刻意写成扁平流程而不是闭包 + 共享计数器:那段逻辑算错过一次(预算算成了只有
 	// 条目、不含抬头),而它的后果是记忆把上下文顶出去 —— 宁可啰嗦也要一眼能算清。
-	var lines []string
 	used := 0
 	collect := func(entries []Entry) {
 		for i := len(entries) - 1; i >= 0; i-- {
@@ -260,18 +326,46 @@ func Inject(user, project []Entry, budget int) string {
 		}
 	}
 	collect(user)
+	split = len(lines) // 实际收进的用户级条数(不是 len(user):超预算时后者会算多)
 	collect(project)
-	if len(lines) == 0 {
-		return ""
+	return lines, split
+}
+
+// StableCount 稳定块(Inject)实际会渲染的条目数(与 Inject 同源口径;诊断面用)。
+//
+// 为什么需要它:自动调取只追加**稳定块之外**的相关条目。用户看到"本轮追加 0 条"时,
+// 必须能分清是"没记忆""没命中"还是"命中的都已在稳定块里"。
+func StableCount(user, project []Entry, budget int) int {
+	if budget <= 0 {
+		budget = DefaultInjectBudget
 	}
-	var out strings.Builder
-	out.WriteString(headLine)
-	out.WriteString("<memory>\n")
-	// 小节标题:两类都非空时才各带一个标题(有标题才知道哪条属于哪一级)。
-	// 归属靠**内容出现的位置**:先收集 user 的、再收集 project 的,故这里按分界拆。
-	out.WriteString(sectionLines(lines, len(user)))
-	out.WriteString("</memory>\n")
-	return out.String()
+	if budget <= ShellOverhead {
+		return 0
+	}
+	lines, _ := collectWithin(user, project, budget-ShellOverhead)
+	return len(lines)
+}
+
+// InjectedContents 返回稳定块(Inject)实际会渲染的条目内容集合(小写、trim 后)。
+//
+// 自动调取用它去重:系统提示里已经有的那条,不该在尾部再注入一遍(重复占 token,
+// 还让模型以为是两条不同的事实)。
+func InjectedContents(user, project []Entry, budget int) map[string]bool {
+	if budget <= 0 {
+		budget = DefaultInjectBudget
+	}
+	if budget <= ShellOverhead {
+		return nil
+	}
+	lines, _ := collectWithin(user, project, budget-ShellOverhead)
+	if len(lines) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(lines))
+	for _, l := range lines {
+		out[strings.ToLower(strings.TrimSpace(strings.TrimPrefix(l, "  · ")))] = true
+	}
+	return out
 }
 
 // sectionLines 把收集到的行按 user/project 分界渲染成两个小节。

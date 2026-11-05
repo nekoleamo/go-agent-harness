@@ -300,8 +300,10 @@ func (s *Service) assemble(history []sdk.LLMMessage, tools []sdk.ToolDefinition,
 }
 
 // writeSection 渲染一个注册片段(空正文不产出空块;与 Breakdown 的跳过口径一致)。
+// ctx 可能是 nil(直接调 Assemble 的路径):此时只用无上下文回退 Content ——
+// 这条回退是必需的,意味着"没有查询"时片段仍然有内容(最近 N 条),而不是消失。
 func (s *Service) writeSection(sb *strings.Builder, sec sdk.SystemPromptSection) {
-	content := sec.Content()
+	content := sectionContent(sec)
 	if strings.TrimSpace(content) == "" {
 		return
 	}
@@ -309,6 +311,16 @@ func (s *Service) writeSection(sb *strings.Builder, sec sdk.SystemPromptSection)
 	sb.WriteString(sec.Name)
 	sb.WriteString(":\n")
 	sb.WriteString(content)
+}
+
+// sectionContent 片段正文的求值入口(组装与诊断共用一个判定,不各写一份)。
+// 注意:片段内容属于**系统提示前缀**,它的每次变动都是一次前缀改写 —— 逐轮变化的内容
+// (如按话题检索的记忆)不该放这里,那是 sdk.MessageAugmenter 的位置。
+func sectionContent(sec sdk.SystemPromptSection) string {
+	if sec.Content != nil {
+		return sec.Content()
+	}
+	return ""
 }
 
 // guidanceText 固定引导段(身份 + 规则)。抽为常量使 Assemble 与 Breakdown 共用同一份
@@ -337,7 +349,9 @@ func (s *Service) Breakdown(tools []sdk.ToolDefinition) []sdk.PromptPart {
 		if sec.Slot != sdk.SlotIdentity {
 			continue
 		}
-		content := sec.Content()
+		// Breakdown 不经 WithQuery(诊断无当前查询)⇒ 走无上下文回退。真实注入量以
+		// `/memory status` 的上轮命中为准 —— 两处口径分开写清,不假装诊断就是本轮。
+		content := sectionContent(sec)
 		if strings.TrimSpace(content) == "" {
 			continue
 		}
@@ -370,7 +384,7 @@ func (s *Service) Breakdown(tools []sdk.ToolDefinition) []sdk.PromptPart {
 		if sec.Slot != sdk.SlotDefault {
 			continue
 		}
-		content := sec.Content()
+		content := sectionContent(sec)
 		if strings.TrimSpace(content) == "" {
 			continue
 		}

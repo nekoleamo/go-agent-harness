@@ -322,3 +322,24 @@ func (plainMemory) Add(string, string) error           { return nil }
 func (plainMemory) List() []string                     { return []string{} }
 func (plainMemory) Remove(int) (string, error)         { return "", nil }
 func (plainMemory) RemoveBySource(string) (int, error) { return 0, nil }
+
+// TestMemoryEndpointRetrieveSection 面板要能显示"最近一次自动调取"——
+// 三种空结果(没记忆/没命中/命中但超预算)在 JSON 里必须可区分。
+func TestMemoryEndpointRetrieveSection(t *testing.T) {
+	s, _ := memoryServer(t, true)
+	code, body := do(t, s, "GET", "/api/memory", "")
+	if code != http.StatusOK {
+		t.Fatalf("GET 应 200,got %d", code)
+	}
+	m := decodeMemory(t, body)
+	rv, ok := m["retrieve"].(map[string]any)
+	if !ok {
+		t.Fatalf("装配了 MemoryRetrieveStats 的构建应带 retrieve 段,got %#v", m["retrieve"])
+	}
+	if rv["mode"] != "per_step" {
+		t.Fatalf("调取模式应回显 per_step,got %#v", rv["mode"])
+	}
+	if _, has := rv["at"]; has {
+		t.Fatalf("还没跑过回合时不该编一个时间戳: %#v", rv)
+	}
+}

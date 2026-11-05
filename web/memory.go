@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/nekoleamo/go-agent-harness/internal/memory"
 	"github.com/nekoleamo/go-agent-harness/sdk"
@@ -86,6 +87,20 @@ type memoryView struct {
 	CandidateLimit    int      `json:"candidate_limit"`
 	CandidateToday    int      `json:"candidate_today"`
 	CandidateTodayMax int      `json:"candidate_today_max"`
+	// 自动调取的观测值(P0):未实现窄接口的记忆服务(旧构建)时整组省略。
+	// 三种空结果必须可区分 —— 没记忆 / 没命中 / 命中但超预算,否则用户不知道该怎么修。
+	Retrieve *retrieveView `json:"retrieve,omitempty"`
+}
+
+// retrieveView 最近一次自动调取快照。
+type retrieveView struct {
+	Mode      string `json:"mode"`
+	Query     string `json:"query,omitempty"`
+	Items     int    `json:"items"`
+	Total     int    `json:"total"`
+	Bytes     int    `json:"bytes"`
+	Truncated bool   `json:"truncated"`
+	At        string `json:"at,omitempty"` // RFC3339;空 = 本次会话还没跑过回合
 }
 
 // handleMemory GET /api/memory(只读视图)/ POST /api/memory(四个动作)。
@@ -234,6 +249,15 @@ func (s *Server) memoryView(w http.ResponseWriter, ms sdk.MemoryService, extra m
 		}
 		v.CandidatePath = memory.CandidatesPath()
 		v.CandidateUsed, v.CandidateLimit, v.CandidateToday, v.CandidateTodayMax = cs.CandidateQuota()
+	}
+	if rs, ok := ms.(sdk.MemoryRetrieveStats); ok {
+		st := rs.LastInject()
+		rv := &retrieveView{Mode: rs.RetrieveMode(), Query: st.Query, Items: st.Items,
+			Total: st.Total, Bytes: st.Bytes, Truncated: st.Truncated}
+		if !st.At.IsZero() {
+			rv.At = st.At.Format(time.RFC3339)
+		}
+		v.Retrieve = rv
 	}
 	if len(extra) == 0 {
 		writeJSON(w, http.StatusOK, v)

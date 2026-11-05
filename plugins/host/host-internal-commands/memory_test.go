@@ -9,11 +9,14 @@ package hostintcmd
 // 没装插件时显式说没装。
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-memory"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-system-prompt"
+	"github.com/nekoleamo/go-agent-harness/sdk"
 )
 
 func memHost(t *testing.T) *Host {
@@ -149,5 +152,125 @@ func TestCmdMemoryListEmptyGivesHint(t *testing.T) {
 	}
 	if !strings.Contains(out, "/memory add") {
 		t.Fatalf("空列表应告诉用户怎么记:\n%s", out)
+	}
+}
+
+// —— 自动调取的观测段(P0) ——
+//
+// status 要能回答"为什么没看到记忆":没跑过回合 / 有记忆但没命中 / 命中但被预算挤掉,
+// 三种的下一步动作完全不同。
+
+func TestCmdMemoryStatusShowsRetrieveMode(t *testing.T) {
+	h := memHost(t)
+	out, err := h.cmdMemory([]string{"status"})
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if !strings.Contains(out, "自动调取:per_step") || !strings.Contains(out, "还没跑过回合") {
+		t.Fatalf("未跑过回合时应说明调取模式与无观测值:\n%s", out)
+	}
+}
+
+func TestCmdMemoryStatusShowsLastInjection(t *testing.T) {
+	h := memHost(t)
+	if _, err := h.cmdMemory([]string{"add", "部署统一走 make deploy"}); err != nil {
+		t.Fatal(err)
+	}
+	var sp sdk.SystemPromptService
+	if err := h.c.Inject("ctx.systemPrompt", &sp); err != nil {
+		t.Fatal(err)
+	}
+	cp, ok := sp.(sdk.ContextualSystemPrompt)
+	if !ok {
+		t.Fatal("host-system-prompt 应实现 ContextualSystemPrompt")
+	}
+	// 走真实组装链:系统提示(稳定块)+ 尾部追加(自动调取)。
+	ctx := sdk.WithQuery(context.Background(), "怎么部署")
+	msgs := cp.AssembleFor(ctx, nil, nil)
+	var aug sdk.MessageAugmenter
+	if err := h.c.Inject("ctx.messageAugment", &aug); err != nil || aug == nil {
+		t.Fatalf("ctx.messageAugment 未装配: %v", err)
+	}
+	_ = aug.Augment(ctx, msgs)
+	out, err := h.cmdMemory([]string{"status"})
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	// 口径:稳定块条数与本轮追加条数分开报(只报一个会让人误判"记忆没生效")。
+	if !strings.Contains(out, "稳定块 1 条") || !strings.Contains(out, "怎么部署") {
+		t.Fatalf("status 应回显稳定块条数与本轮查询:\n%s", out)
+	}
+}
+
+// bareMemory 只实现 MemoryService(模拟未支持自动调取的旧构建)。
+type bareMemory struct{}
+
+func (bareMemory) Enabled() bool              { return true }
+func (bareMemory) SetEnabled(bool) bool       { return true }
+func (bareMemory) Budget() int                { return 2048 }
+func (bareMemory) Add(string, string) error   { return nil }
+func (bareMemory) List() []string             { return nil }
+func (bareMemory) Remove(int) (string, error) { return "", nil }
+func (bareMemory) RemoveBySource(string) (int, error) {
+	return 0, nil
+}
+
+func TestCmdMemoryStatusOmitsRetrieveForLegacyBuild(t *testing.T) {
+	out := retrieveStatusLine(bareMemory{})
+	if out != "" {
+		t.Fatalf("未实现 MemoryRetrieveStats 的构建不该摆空壳段,got %q", out)
+	}
+}
+
+// statsMemory 在 bareMemory 之上实现 sdk.MemoryRetrieveStats(演练观测段的四种口径)。
+type statsMemory struct {
+	bareMemory
+	st   sdk.MemoryInjectStats
+	mode string
+}
+
+func (m statsMemory) LastInject() sdk.MemoryInjectStats { return m.st }
+func (m statsMemory) RetrieveMode() string              { return m.mode }
+
+// TestRetrieveStatusLineBranches 四种观测形态必须说清不同的事 ——
+// 全都退化成"没有记忆"就等于用户没法判断下一步该修什么。
+func TestRetrieveStatusLineBranches(t *testing.T) {
+	cases := []struct {
+		name string
+		st   sdk.MemoryInjectStats
+		want string
+	}{
+		{"未跑过回合", sdk.MemoryInjectStats{Mode: "per_step"}, "还没跑过回合"},
+		{"追加且截断", sdk.MemoryInjectStats{Mode: "per_step", Query: "部署", Stable: 2, Items: 3,
+			Total: 9, Bytes: 900, Truncated: true, At: time.Now()}, "其余超预算"},
+		{"追加未截断", sdk.MemoryInjectStats{Mode: "per_step", Query: "部署", Stable: 2, Items: 2,
+			Bytes: 400, Total: 2, At: time.Now()}, "本轮追加 2 条"},
+		{"命中但未追加", sdk.MemoryInjectStats{Mode: "per_step", Query: "部署", Stable: 2,
+			Total: 3, At: time.Now()}, "都已在稳定块里或放不进预算"},
+		{"零命中", sdk.MemoryInjectStats{Mode: "per_step", Query: "数据库", Stable: 2,
+			At: time.Now()}, "本轮未命中"},
+		{"回退模式无查询", sdk.MemoryInjectStats{Mode: "fallback", Stable: 1,
+			At: time.Now()}, "回退全量注入"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := retrieveStatusLine(statsMemory{st: c.st, mode: c.st.Mode})
+			if !strings.Contains(got, c.want) {
+				t.Fatalf("应含 %q,got %q", c.want, got)
+			}
+		})
+	}
+}
+
+func TestClipQuery(t *testing.T) {
+	long := strings.Repeat("部署", 40)
+	if got := clipQuery(long); !strings.HasSuffix(got, "…") {
+		t.Fatalf("超长查询应截短并可辨认,got %q", got)
+	}
+	if got := clipQuery("  "); got != "(无查询:回退全量注入)" {
+		t.Fatalf("空查询应说明回退,got %q", got)
+	}
+	if got := clipQuery("部署"); got != "部署" {
+		t.Fatalf("短查询原样回显,got %q", got)
 	}
 }

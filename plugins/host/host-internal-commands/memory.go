@@ -32,6 +32,10 @@ func (h *Host) cmdMemory(args []string) (string, error) {
 	sub := strings.TrimSpace(args[0])
 	rest := strings.TrimSpace(strings.Join(args[1:], " "))
 	switch sub {
+	case "status":
+		// 显式 status 子命令:没有它的话 `/memory status` 会掉到 default 分支,被当成
+		// 「用户要记的内容」写进记忆 —— 一个看起来成功、实际记了句 "status" 的静默失效。
+		return h.memoryStatus(ms)
 	case "list":
 		return h.memoryList(ms)
 	case "candidates":
@@ -113,7 +117,10 @@ func (h *Host) cmdMemory(args []string) (string, error) {
 	}
 }
 
-// memoryStatus 概览:开关 + 两条记忆的数量 + 预算。
+// memoryStatus 概览:开关 + 两条记忆的数量 + 预算 + **最近一次自动调取**。
+//
+// 为什么要带自动调取段:记忆系统最难的判断不是"有没有记忆",而是三种空结果的区别 ——
+// 没记忆 / 没命中 / 命中但被预算截掉。三种的下一步动作完全不同,所以必须可见。
 func (h *Host) memoryStatus(ms sdk.MemoryService) (string, error) {
 	cand := ""
 	if cs, ok := ms.(sdk.MemoryCandidates); ok {
@@ -122,8 +129,53 @@ func (h *Host) memoryStatus(ms sdk.MemoryService) (string, error) {
 			cand = fmt.Sprintf(",待确认候选 %d 条(上限 %d;今日已提 %d/%d)", used, limit, today, todayLimit)
 		}
 	}
-	return fmt.Sprintf("记忆:%s;用户级 %d 条,本项目 %d 条%s;注入预算 %d 字节\n  /memory add <内容>  记住一条\n  /memory list       看全部(新的在前)\n  /memory rm <序号>  删一条\n  /memory rm --from <会话>  按来源整段删\n  /memory on|off     开/关注入\n  /memory propose <内容>  提一条候选(确认后才进上下文)\n  /memory candidates / accept <序号> / accept-all / reject <序号>",
-		onoff(ms.Enabled()), len(ms.List()), len(h.memoryProjectLines(ms)), cand, ms.Budget()), nil
+	return fmt.Sprintf("记忆:%s;用户级 %d 条,本项目 %d 条%s;注入预算 %d 字节%s\n  /memory status     本页概览(含最近一次自动调取)\n  /memory add <内容>  记住一条\n  /memory list       看全部(新的在前)\n  /memory rm <序号>  删一条\n  /memory rm --from <会话>  按来源整段删\n  /memory on|off     开/关注入\n  /memory propose <内容>  提一条候选(确认后才进上下文)\n  /memory candidates / accept <序号> / accept-all / reject <序号>",
+		onoff(ms.Enabled()), len(ms.List()), len(h.memoryProjectLines(ms)), cand, ms.Budget(),
+		retrieveStatusLine(ms)), nil
+}
+
+// retrieveStatusLine 最近一次自动调取的观测值(未实现该窄接口的构建不显示这一段)。
+//
+// 口径要点:系统提示里的"稳定块"(最近 N 条)与本轮"尾部追加"(按话题检索、已去重)是两件事。
+// 只报后者会让人误以为"记忆没生效",所以两个数都要在。
+func retrieveStatusLine(ms sdk.MemoryService) string {
+	rs, ok := ms.(sdk.MemoryRetrieveStats)
+	if !ok {
+		return ""
+	}
+	st := rs.LastInject()
+	mode := rs.RetrieveMode()
+	if st.At.IsZero() {
+		return fmt.Sprintf("\n  自动调取:%s(本次会话还没跑过回合,暂无观测值)", mode)
+	}
+	stable := fmt.Sprintf("稳定块 %d 条", st.Stable)
+	switch {
+	case st.Items > 0 && st.Truncated:
+		return fmt.Sprintf("\n  自动调取:%s;%s;本轮追加 %d 条(相关 %d 条,其余超预算),%d 字节;查询:%s",
+			st.Mode, stable, st.Items, st.Total, st.Bytes, clipQuery(st.Query))
+	case st.Items > 0:
+		return fmt.Sprintf("\n  自动调取:%s;%s;本轮追加 %d 条,%d 字节;查询:%s",
+			st.Mode, stable, st.Items, st.Bytes, clipQuery(st.Query))
+	case st.Total > 0:
+		return fmt.Sprintf("\n  自动调取:%s;%s;命中 %d 条但都已在稳定块里或放不进预算(未追加);查询:%s",
+			st.Mode, stable, st.Total, clipQuery(st.Query))
+	default:
+		return fmt.Sprintf("\n  自动调取:%s;%s;本轮未命中(有记忆但与本轮查询无关);查询:%s",
+			st.Mode, stable, clipQuery(st.Query))
+	}
+}
+
+// clipQuery 回显查询时截短(命令回执不是日志,不需要整段粘贴)。
+func clipQuery(q string) string {
+	q = strings.TrimSpace(q)
+	r := []rune(q)
+	if len(r) > 40 {
+		return string(r[:40]) + "…"
+	}
+	if q == "" {
+		return "(无查询:回退全量注入)"
+	}
+	return q
 }
 
 // mustMemoryCandidates 列候选(出错时回一句说明,不吞错误 —— 命令回执是唯一反馈面)。
