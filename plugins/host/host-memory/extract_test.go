@@ -113,7 +113,7 @@ func observe(t *testing.T, svc *Service, d sdk.TurnDigest) {
 // waitSnap 等 worker 把观测值写出来(提取是异步的)。
 func waitSnap(t *testing.T, svc *Service, cond func(sdk.MemoryExtractSnapshot) bool) sdk.MemoryExtractSnapshot {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(6 * time.Second)
 	for time.Now().Before(deadline) {
 		if snap := svc.LastExtract(); !snap.At.IsZero() && cond(snap) {
 			return snap

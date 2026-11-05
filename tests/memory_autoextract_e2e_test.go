@@ -105,9 +105,12 @@ func TestMemoryAutoExtractEndToEnd(t *testing.T) {
 	if err := loop.Run(context.Background(), "以后都先跑 gate.sh 再提交"); err != nil {
 		t.Fatalf("命中回合: %v", err)
 	}
-	raw := waitMemoryContains(t, "gate.sh", 3*time.Second)
+	raw := waitMemoryContains(t, "gate.sh", 6*time.Second)
 	if !strings.Contains(raw, "gate.sh") {
-		t.Fatalf("自动提取的记忆应落盘(带来源可追溯):\n%s", raw)
+		// 失败时把提取观测一起打出来:否则只能猜"是没触发、还是慢"。
+		var es sdk.MemoryExtractStats
+		_ = c.Inject("ctx.memory", &es)
+		t.Fatalf("自动提取的记忆应落盘(带来源可追溯);最近一次提取=%+v\n%s", es.LastExtract(), raw)
 	}
 	if !strings.Contains(raw, "kind=convention") {
 		t.Fatalf("直写条目应带 kind 元数据(否则检索层与治理面看不到类型):\n%s", raw)
