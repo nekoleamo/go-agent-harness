@@ -196,6 +196,23 @@
    见第七十九批的实测)。所以不用 .m-lab 的单行省略(删之前看不清自己删的是什么),
    改成最多两行 + 全文进 data-tip,并显式 overflow-wrap:anywhere(长 URL/路径不撑破)。 */
 
+/* 记忆过滤条:一行放得下就一行,窄窗自动换行(类型按钮 + 两个开关 + 计数)。
+   形状与面板其它小按钮一致(ghost / ghost.solid 表达"当前选中"),不新造控件语言。 */
+.gah-settings .mem-filter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0 2px;
+}
+.gah-settings .mem-filter .ghost {
+  padding: 3px 9px;
+  font-size: 12px;
+}
+.gah-settings .mem-filter .dim.mono {
+  font-size: 11px;
+  margin-left: 2px;
+}
 .gah-settings .mem-list {
   max-height: 220px;
   overflow-y: auto;

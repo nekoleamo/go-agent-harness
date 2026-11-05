@@ -343,3 +343,47 @@ func TestMemoryEndpointRetrieveSection(t *testing.T) {
 		t.Fatalf("还没跑过回合时不该编一个时间戳: %#v", rv)
 	}
 }
+
+// TestMemoryEndpointFilter 面板过滤在后端:查询参数生效,且回显 counts/filter
+// (前端要靠它显示"过滤中 N/M 条",不自己解析展示行)。
+func TestMemoryEndpointFilter(t *testing.T) {
+	s, _ := memoryServer(t, true)
+	// 造两条:一条自动(带类型)、一条手工
+	if err := memory.AppendMeta(memory.UserPath(), "交付前跑 gate.sh", "s1", "convention", 0.9); err != nil {
+		t.Fatal(err)
+	}
+	if err := memory.Append(memory.UserPath(), "手工记的一条", ""); err != nil {
+		t.Fatal(err)
+	}
+	code, body := do(t, s, "GET", "/api/memory?auto=1", "")
+	if code != http.StatusOK {
+		t.Fatalf("GET 200,got %d", code)
+	}
+	m := decodeMemory(t, body)
+	user, _ := m["user"].([]any)
+	if len(user) != 1 {
+		t.Fatalf("auto=1 应只留自动写入的 1 条,got %#v", m["user"])
+	}
+	fv, ok := m["filter"].(map[string]any)
+	if !ok || fv["auto"] != true {
+		t.Fatalf("应回显 filter.auto,got %#v", m["filter"])
+	}
+	cv, ok := m["counts"].(map[string]any)
+	if !ok || cv["user"] != float64(2) || cv["auto"] != float64(1) {
+		t.Fatalf("counts 应给总量口径,got %#v", m["counts"])
+	}
+	// kind 过滤
+	code, body = do(t, s, "GET", "/api/memory?kind=convention", "")
+	if code != http.StatusOK {
+		t.Fatalf("GET 200,got %d", code)
+	}
+	m = decodeMemory(t, body)
+	if user, _ := m["user"].([]any); len(user) != 1 {
+		t.Fatalf("kind=convention 应只留 1 条,got %#v", m["user"])
+	}
+	// 无过滤时不该带 filter 字段(形状与旧版逐字一致)
+	_, body = do(t, s, "GET", "/api/memory", "")
+	if _, has := decodeMemory(t, body)["filter"]; has {
+		t.Fatal("无过滤时不该回 filter 字段")
+	}
+}

@@ -11,6 +11,7 @@ package hostintcmd
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -411,5 +412,120 @@ func TestCmdMemoryListShowsKindBadge(t *testing.T) {
 	}
 	if !strings.Contains(out, "类型 convention 0.92") {
 		t.Fatalf("展示行应带类型与置信度(自动写入要可辨认):\n%s", out)
+	}
+}
+
+// —— P2 过滤命令行 ——
+
+func TestCmdMemoryListFilters(t *testing.T) {
+	h := memHost(t)
+	var ms sdk.MemoryService
+	if err := h.c.Inject("ctx.memory", &ms); err != nil {
+		t.Fatal(err)
+	}
+	// 三条:两条自动(不同 kind)+ 一条手工
+	for _, e := range []struct {
+		text, kind string
+		conf       float64
+	}{
+		{"以后都用 pnpm", "preference", 0.92},
+		{"交付前跑 gate.sh", "convention", 0.9},
+	} {
+		if err := memory.AppendMeta(memory.UserPath(), e.text, "s1", e.kind, e.conf); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := ms.Add("手工记的一条偏好", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := h.cmdMemory([]string{"list", "--kind", "convention"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "交付前跑 gate.sh") || strings.Contains(out, "以后都用 pnpm") {
+		t.Fatalf("--kind 应只留约定那条:\n%s", out)
+	}
+	if !strings.Contains(out, "过滤中 1/3 条") {
+		t.Fatalf("应回显过滤口径(N/M),否则用户以为记忆少了:\n%s", out)
+	}
+
+	out, err = h.cmdMemory([]string{"list", "--auto"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "手工记的一条偏好") || !strings.Contains(out, "过滤中 2/3 条") {
+		t.Fatalf("--auto 应只留自动写入的两条:\n%s", out)
+	}
+
+	// 无符合条件时如实说明(不返回空白)
+	out, err = h.cmdMemory([]string{"list", "--kind", "pitfall"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "没有符合条件的记忆") {
+		t.Fatalf("空结果应说明原因并给总量:\n%s", out)
+	}
+
+	// 参数错误显式报错
+	for _, bad := range [][]string{
+		{"list", "--kind"},
+		{"list", "--stale", "abc"},
+		{"list", "--kind", "nope"},
+		{"list", "--wat"},
+	} {
+		if _, err := h.cmdMemory(bad); err == nil {
+			t.Fatalf("参数错误应报错: %v", bad)
+		}
+	}
+}
+
+// 未实现过滤能力的旧构建:显式说"不支持",不静默返回全部(那会让用户以为筛选生效了)。
+func TestCmdMemoryListFilterUnsupported(t *testing.T) {
+	h := memHost(t)
+	if _, err := h.memoryListFiltered(bareMemory{}, []string{"--auto"}); err == nil {
+		t.Fatal("旧构建应显式报错")
+	}
+}
+
+func TestCmdMemoryStatusShowsToolRemember(t *testing.T) {
+	h := memHost(t)
+	// 未装 session-log ⇒ 0 ⇒ 不显示该行(不摆空壳)
+	out, err := h.cmdMemory([]string{"status"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "模型自记") {
+		t.Fatalf("没有自记时不该显示该行:\n%s", out)
+	}
+}
+
+func TestCmdMemoryListStale(t *testing.T) {
+	h := memHost(t)
+	// 直接写一条 2025 年的老条目(append 只写今天,构造超期只能自己落行)
+	if err := os.MkdirAll(filepath.Dir(memory.UserPath()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(memory.UserPath(), []byte("- [2025-01-01] 很老的一条\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := h.cmdMemory([]string{"list", "--stale", "180"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "很老的一条") || !strings.Contains(out, "过滤中 1/1 条") {
+		t.Fatalf("--stale 180 应命中超期条目:\n%s", out)
+	}
+	// 天数必须是正数
+	if _, err := h.cmdMemory([]string{"list", "--stale", "0"}); err == nil {
+		t.Fatal("--stale 0 应报错")
+	}
+	// 组合:超期 + 只看自动写入 ⇒ 0 条(老条目是手工的)
+	out, err = h.cmdMemory([]string{"list", "--stale", "180", "--auto"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "没有符合条件的记忆") {
+		t.Fatalf("组合过滤应给出空结果说明:\n%s", out)
 	}
 }

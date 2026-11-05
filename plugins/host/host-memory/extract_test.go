@@ -335,3 +335,25 @@ func TestExtractorDisposerStopsWorker(t *testing.T) {
 		t.Fatal("Disposer 阻塞:worker 未退出")
 	}
 }
+
+// countRememberCalls 的口径:只数 memory 工具的 remember(recall/list/forget 不算),
+// 且按工具调用逐条计 —— 一次回合调两次 remember 就是 2。
+func TestCountRememberCalls(t *testing.T) {
+	msgs := []sdk.LLMMessage{
+		{Role: sdk.RoleAssistant, ToolCalls: []sdk.ToolCall{
+			{Name: "memory", Arguments: `{"action":"remember","text":"a"}`},
+			{Name: "memory", Arguments: `{"action":"recall","query":"a"}`},
+			{Name: "shell", Arguments: `{"command":"echo hi"}`},
+		}},
+		{Role: sdk.RoleAssistant, ToolCalls: []sdk.ToolCall{
+			{Name: "memory", Arguments: `{"action":"remember","text":"b"}`},
+		}},
+		{Role: sdk.RoleUser, Content: "不算"},
+	}
+	if got := countRememberCalls(msgs); got != 2 {
+		t.Fatalf("应只数 remember 2 次,got %d", got)
+	}
+	if got := countRememberCalls(nil); got != 0 {
+		t.Fatalf("空会话应为 0,got %d", got)
+	}
+}

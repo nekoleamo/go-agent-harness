@@ -146,7 +146,7 @@ func (s *Service) projectEntries() []memory.Entry {
 		s.c.Logger().Warn("host-memory: 项目记忆读取失败(本轮不注入项目级)", "err", err)
 		return nil
 	}
-	return es
+	return memory.Active(es)
 }
 
 func (s *Service) userEntries() []memory.Entry {
@@ -155,7 +155,7 @@ func (s *Service) userEntries() []memory.Entry {
 		s.c.Logger().Warn("host-memory: 用户记忆读取失败(本轮不注入用户级)", "err", err)
 		return nil
 	}
-	return es
+	return memory.Active(es)
 }
 
 // Enabled 记忆注入是否开启(偏好位:一键关闭后不再注入)。
@@ -199,24 +199,59 @@ func (s *Service) ListProject() []string {
 
 // displayLines 渲染展示行:序号 + 日期 + 内容 + 来源。
 func displayLines(es []memory.Entry) []string {
-	out := make([]string, 0, len(es))
-	for i, e := range es {
-		line := fmt.Sprintf("%d. [%s] %s", i+1, e.Date, e.Content)
-		// 类型/置信度徽标:自动写入的条目必须**一眼看得出是自动写的**(治理面板与
-		// /memory list 共用这份展示行,所以放在这里就两端都有了,不必各写一遍)。
-		if e.Kind != "" {
-			line += " (类型 " + e.Kind
-			if e.Confidence > 0 {
-				line += " " + memory.FormatConfidence(e.Confidence)
-			}
-			line += ")"
-		}
-		if e.Source != "" {
-			line += " (来源: 会话 " + e.Source + ")"
-		}
-		out = append(out, line)
+	// 渲染下沉到 internal/memory(命令面、面板、检索用同一份口径;不再各写一遍)。
+	return memory.DisplayLines(es, memory.ListOptions{})
+}
+
+// ListFiltered 实现 sdk.MemoryFilteredList(命令面 / 面板的过滤)。
+func (s *Service) ListFiltered(opt sdk.MemoryListOptions) ([]string, error) {
+	return memory.DisplayLines(s.userEntries(), toListOptions(opt)), nil
+}
+
+// ListProjectFiltered 同上(项目级)。
+func (s *Service) ListProjectFiltered(opt sdk.MemoryListOptions) ([]string, error) {
+	return memory.DisplayLines(s.projectEntries(), toListOptions(opt)), nil
+}
+
+// Counts 实现 sdk.MemoryFilteredList(总量口径;Stale 固定按 180 天算)。
+func (s *Service) Counts() sdk.MemoryCounts {
+	user, proj := s.userEntries(), s.projectEntries()
+	all := append(append([]memory.Entry(nil), user...), proj...)
+	stale := len(memory.FilterEntries(all, memory.ListOptions{StaleDays: 180}))
+	// FilterEntries 的 StaleDays / AutoOnly 分支只保留命中项 ⇒ 长度就是该口径的条数
+	// (两者都已排除被取代的条目,与展示行同一口径)。
+	auto := len(memory.FilterEntries(all, memory.ListOptions{AutoOnly: true}))
+	return sdk.MemoryCounts{User: len(user), Project: len(proj), Auto: auto, Stale: stale}
+}
+
+// ModelRememberCount 实现 sdk.MemoryToolStats:本会话模型经 memory 工具 remember 的次数。
+//
+// 口径:扫当前会话的投影里 name == "memory" 且参数含 "remember" 的工具调用。
+// 只报数、不改行为 —— 工具已外部化,动它要重跑发行矩阵;先"看得见"就够。
+func (s *Service) ModelRememberCount() int {
+	var sess sdk.SessionLog
+	if err := s.c.Inject("ctx.sessions", &sess); err != nil || sess == nil {
+		return 0
 	}
-	return out
+	return countRememberCalls(sess.DeriveMessages())
+}
+
+// countRememberCalls 纯函数(便于测试):数 memory 工具 remember 的调用次数。
+func countRememberCalls(msgs []sdk.LLMMessage) int {
+	n := 0
+	for _, m := range msgs {
+		for _, tc := range m.ToolCalls {
+			if tc.Name == "memory" && strings.Contains(tc.Arguments, `"remember"`) {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+// toListOptions sdk 选项 → internal 选项(两处各定义一份类型,转换集中在这里)。
+func toListOptions(opt sdk.MemoryListOptions) memory.ListOptions {
+	return memory.ListOptions{Kind: opt.Kind, AutoOnly: opt.AutoOnly, StaleDays: opt.StaleDays}
 }
 
 // Remove 按 List 的序号删一条(序号与展示行一致 = 新的在前)。
@@ -396,6 +431,8 @@ func countLines(text string) int {
 
 var _ sdk.MemoryService = (*Service)(nil)
 var _ sdk.MemoryRetrieveStats = (*Service)(nil)
+var _ sdk.MemoryFilteredList = (*Service)(nil)
+var _ sdk.MemoryToolStats = (*Service)(nil)
 var _ sdk.MemoryExtractStats = (*Service)(nil)
 
 // —— 候选池(M2 前置件;实现 sdk.MemoryCandidates) ——

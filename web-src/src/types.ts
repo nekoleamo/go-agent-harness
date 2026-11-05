@@ -773,6 +773,35 @@ export interface MemoryView {
   candidate_limit?: number
   candidate_today?: number
   candidate_today_max?: number
+  /** 面板当前筛选条件(回显:刷新后仍显示"正在筛什么")。 */
+  filter?: { kind?: string; auto?: boolean; stale?: number }
+  /** 记忆总量口径(过滤时显示"过滤中 N/M 条")。 */
+  counts?: { user: number; project: number; auto: number; stale: number }
+  /** 本会话模型经 memory 工具 remember 的次数(0/缺省 = 不显示)。 */
+  tool_remember?: number
+  /** 自动调取的最近一次观测(P0)。缺省 = 该构建不支持。 */
+  retrieve?: {
+    mode: string
+    query?: string
+    items: number
+    total: number
+    bytes: number
+    truncated: boolean
+    at?: string
+  }
+  /** 自动提取的开关与最近一次结果(P1)。缺省 = 该构建不支持。 */
+  extract?: {
+    enabled: boolean
+    at?: string
+    rule?: string
+    produced: number
+    written: number
+    candidate: number
+    dropped: number
+    skipped?: string
+    model?: string
+    ledger?: string
+  }
 }
 export interface RolesView {
   current: string

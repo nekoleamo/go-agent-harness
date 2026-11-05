@@ -4,7 +4,7 @@
 import { inject } from "vue";
 import { SETTINGS_CTX, type SettingsCtx } from "../settings/ctx";
 
-const { memBudget, memBusy, memCand, memContent, memDraft, memEnabled, memErr, memHasCandidates, memLimit, memMsg, memPath, memProject, memReady, memSource, memSources, memToday, memTodayMax, memUsed, memUser, memoryAccept, memoryAcceptAll, memoryAdd, memoryPropose, memoryReject, memoryRejectAll, memoryRemove, memoryRemoveSource, memoryToggle } = inject(SETTINGS_CTX) as SettingsCtx;
+const { memBudget, memBusy, memCand, memContent, memCounts, memDraft, memEnabled, memErr, memExtract, memFilter, memFiltering, memHasCandidates, memLimit, memMsg, memPath, memProject, memReady, memRetrieve, memSource, memSources, memToday, memTodayMax, memToolRemember, memUsed, memUser, memoryFilterAuto, memoryFilterKind, memoryFilterStale, memoryAccept, memoryAcceptAll, memoryAdd, memoryPropose, memoryReject, memoryRejectAll, memoryRemove, memoryRemoveSource, memoryToggle } = inject(SETTINGS_CTX) as SettingsCtx;
 </script>
 
 <template>
@@ -19,8 +19,9 @@ const { memBudget, memBusy, memCand, memContent, memDraft, memEnabled, memErr, m
                   跨会话记忆是<strong>事实性记录</strong>：每轮按预算注入系统提示，排在角色指令之后
                   —— 记忆
                   <strong>不能覆盖</strong
-                  >指令与工作规则，冲突时以指令为准。记忆不会自动提取（要记住什么，由你
-                  或 <span class="mono">/memory add</span> 明确写下来）。
+                  >指令与工作规则，冲突时以指令为准。你明确说过「以后都…」「记住…」这类长期
+                  要求时，回合结束后会自动提取一次并落到下面（白名单类型直接生效，易过期的类型进候选
+                  等你确认）；也可以手动 <span class="mono">/memory add</span>。
                 </p>
                 <p class="dim">
                   存在纯 markdown 文件 <span class="mono">{{ memPath }}</span
@@ -28,10 +29,95 @@ const { memBudget, memBusy, memCand, memContent, memDraft, memEnabled, memErr, m
                 </p>
                 <div v-if="memErr" class="serr">{{ memErr }}</div>
                 <p v-if="memMsg" class="dim ok">{{ memMsg }}</p>
-                <p class="dim">
-                  用户级 {{ memUser.length }} 条／本项目
-                  {{ memProject.length }} 条／注入预算 {{ memBudget }}
-                  字节（超预算时按时间倒序丢最旧）
+                <p class="dim" data-testid="mem-counts">
+                  <template v-if="memFiltering && memCounts">
+                    过滤中 {{ memUser.length }}／{{ memCounts.user }} 条（用户级）／本项目
+                    {{ memProject.length }}／{{ memCounts.project }} 条
+                  </template>
+                  <template v-else>
+                    用户级 {{ memUser.length }} 条／本项目 {{ memProject.length }} 条
+                  </template>
+                  ／注入预算 {{ memBudget }} 字节（超预算时按时间倒序丢最旧）
+                </p>
+                <!-- 过滤条:类型 + 只看自动写入 + 只看超期。命中条件在**后端**算
+                     (展示行由 internal/memory 渲染,前端不解析文本)。 -->
+                <div class="mem-filter" data-testid="mem-filter">
+                  <button
+                    v-for="k in [
+                      { v: '', label: '全部' },
+                      { v: 'preference', label: '偏好' },
+                      { v: 'convention', label: '约定' },
+                      { v: 'decision', label: '决策' },
+                      { v: 'pitfall', label: '坑' },
+                      { v: 'env', label: '环境' },
+                    ]"
+                    :key="'k' + k.v"
+                    class="ghost"
+                    :class="{ solid: (memFilter?.kind ?? '') === k.v }"
+                    :disabled="memBusy"
+                    @click="memoryFilterKind(k.v)"
+                  >
+                    {{ k.label }}
+                  </button>
+                  <button
+                    class="ghost"
+                    :class="{ solid: !!memFilter?.auto }"
+                    :disabled="memBusy"
+                    data-testid="mem-filter-auto"
+                    data-tip="只看自动写入的条目（带类型元数据）"
+                    @click="memoryFilterAuto(!memFilter?.auto)"
+                  >
+                    只看自动写入
+                  </button>
+                  <button
+                    class="ghost"
+                    :class="{ solid: !!memFilter?.stale }"
+                    :disabled="memBusy"
+                    data-testid="mem-filter-stale"
+                    data-tip="只看超过 180 天的条目（不判断是否还在用，也不自动删）"
+                    @click="memoryFilterStale(!memFilter?.stale)"
+                  >
+                    只看超期(180 天)
+                  </button>
+                  <span v-if="memCounts" class="dim mono">
+                    自动 {{ memCounts.auto }} 条／超期 {{ memCounts.stale }} 条
+                  </span>
+                </div>
+                <!-- 状态行:自动生成与自动调取的最近一次观测(缺字段 = 该构建不支持,不渲染空壳) -->
+                <p v-if="memExtract" class="dim" data-testid="mem-extract-state">
+                  自动生成：
+                  <strong>{{ memExtract.enabled ? "开" : "关" }}</strong>
+                  <template v-if="memExtract.at">
+                    ·最近一次
+                    <template v-if="memExtract.skipped">
+                      <span class="warn">未做成（{{ memExtract.skipped }}）</span>
+                    </template>
+                    <template v-else-if="!memExtract.rule">
+                      ·规则未命中（没花模型请求）
+                    </template>
+                    <template v-else>
+                      ·命中「{{ memExtract.rule }}」产出 {{ memExtract.produced }} 条（直写
+                      {{ memExtract.written }}／候选 {{ memExtract.candidate }}／丢弃
+                      {{ memExtract.dropped }}）
+                    </template>
+                  </template>
+                  <template v-if="memExtract.ledger">
+                    <br /><span class="mono">{{ memExtract.ledger }}</span>
+                  </template>
+                </p>
+                <p v-if="memRetrieve" class="dim" data-testid="mem-retrieve-state">
+                  自动调取：{{ memRetrieve.mode }}
+                  <template v-if="memRetrieve.at">
+                    ·最近一轮追加 {{ memRetrieve.items }} 条（相关
+                    {{ memRetrieve.total }} 条<template v-if="memRetrieve.truncated">，其余超预算</template>）·查询
+                    <span class="mono">{{ memRetrieve.query || "（无查询）" }}</span>
+                  </template>
+                  <template v-else>·本次会话还没跑过回合</template>
+                </p>
+                <p v-if="memToolRemember > 0" class="dim" data-testid="mem-tool-remember">
+                  模型自记：本会话 <span class="mono">memory</span> 工具 remember
+                  {{ memToolRemember }} 次（它直接写 <span class="mono">memory/&lt;项目&gt;.jsonl</span>，
+                  与上面两条链路的文件不同）
                 </p>
                 <template v-if="memHasCandidates">
                   <p class="dim" data-testid="mem-cand-head">

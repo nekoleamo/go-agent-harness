@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -92,6 +93,26 @@ type memoryView struct {
 	Retrieve *retrieveView `json:"retrieve,omitempty"`
 	// 自动生成的观测值(P1):未实现窄接口的构建整组省略。
 	Extract *extractView `json:"extract,omitempty"`
+	// 过滤与计数(P2 面板):filter 回显当前筛选,counts 给"过滤中 N/M 条"。
+	Filter *filterView `json:"filter,omitempty"`
+	Counts *countsView `json:"counts,omitempty"`
+	// ToolRemember 本会话模型经 memory 工具 remember 的次数(未实现窄接口则省略)。
+	ToolRemember int `json:"tool_remember,omitempty"`
+}
+
+// filterView 面板当前的筛选条件(回显用:刷新后面板仍显示"正在筛什么")。
+type filterView struct {
+	Kind      string `json:"kind,omitempty"`
+	AutoOnly  bool   `json:"auto,omitempty"`
+	StaleDays int    `json:"stale,omitempty"`
+}
+
+// countsView 记忆总量口径(过滤时显示 N/M)。
+type countsView struct {
+	User    int `json:"user"`
+	Project int `json:"project"`
+	Auto    int `json:"auto"`
+	Stale   int `json:"stale"`
 }
 
 // extractView 自动提取的开关与最近一次结果(不含记忆正文)。
@@ -126,7 +147,7 @@ func (s *Server) handleMemory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodGet {
-		s.memoryView(w, ms, nil)
+		s.memoryViewWithFilter(w, ms, r)
 		return
 	}
 	var body struct {
@@ -237,8 +258,26 @@ func (s *Server) handleMemory(w http.ResponseWriter, r *http.Request) {
 	s.memoryView(w, ms, map[string]any{"deleted": deleted})
 }
 
+// memoryViewWithFilter GET 视图:解析 ?kind=&auto=1&stale=N,按条件列记忆。
+//
+// 为什么过滤放后端而不是前端:记忆条目的展示行由 internal/memory 渲染(命令面与面板
+// 同一份),前端只负责画;让前端自己解析"类型/来源"文本会立刻分叉成第二份口径。
+func (s *Server) memoryViewWithFilter(w http.ResponseWriter, ms sdk.MemoryService, r *http.Request) {
+	q := r.URL.Query()
+	opt := sdk.MemoryListOptions{Kind: q.Get("kind"), AutoOnly: q.Get("auto") == "1"}
+	if v, err := strconv.Atoi(q.Get("stale")); err == nil && v > 0 {
+		opt.StaleDays = v
+	}
+	s.memoryViewOpt(w, ms, nil, opt)
+}
+
 // memoryView 写只读视图(写动作完成后回同一形状,面板刷新即可;extra 并进响应)。
 func (s *Server) memoryView(w http.ResponseWriter, ms sdk.MemoryService, extra map[string]any) {
+	s.memoryViewOpt(w, ms, extra, sdk.MemoryListOptions{})
+}
+
+// memoryViewOpt 带筛选条件的视图构造(零值选项 = 全部,与既有形状逐字一致)。
+func (s *Server) memoryViewOpt(w http.ResponseWriter, ms sdk.MemoryService, extra map[string]any, opt sdk.MemoryListOptions) {
 	v := memoryView{
 		Enabled:    ms.Enabled(),
 		Budget:     ms.Budget(),
@@ -246,11 +285,26 @@ func (s *Server) memoryView(w http.ResponseWriter, ms sdk.MemoryService, extra m
 		UserPath:   memory.UserPath(),
 		ProjectKey: s.memoryProjectKey(),
 	}
+	if fl, ok := ms.(sdk.MemoryFilteredList); ok {
+		if lines, err := fl.ListFiltered(opt); err == nil {
+			v.User = lines
+		}
+		c := fl.Counts()
+		v.Counts = &countsView{User: c.User, Project: c.Project, Auto: c.Auto, Stale: c.Stale}
+		if opt.Kind != "" || opt.AutoOnly || opt.StaleDays > 0 {
+			v.Filter = &filterView{Kind: opt.Kind, AutoOnly: opt.AutoOnly, StaleDays: opt.StaleDays}
+		}
+	}
 	if v.User == nil {
 		v.User = []string{} // 空清单回 [] 不回 null(与角色/技能段同口径)
 	}
 	if pm, ok := ms.(projectMemory); ok {
 		v.Project = pm.ListProject()
+		if fl, okk := ms.(sdk.MemoryFilteredList); okk {
+			if lines, err := fl.ListProjectFiltered(opt); err == nil {
+				v.Project = lines
+			}
+		}
 		if v.Project == nil {
 			v.Project = []string{}
 		}
@@ -278,6 +332,9 @@ func (s *Server) memoryView(w http.ResponseWriter, ms sdk.MemoryService, extra m
 			ev.Ledger = st.FormatState()
 		}
 		v.Extract = ev
+	}
+	if ts, ok := ms.(sdk.MemoryToolStats); ok {
+		v.ToolRemember = ts.ModelRememberCount()
 	}
 	if rs, ok := ms.(sdk.MemoryRetrieveStats); ok {
 		st := rs.LastInject()

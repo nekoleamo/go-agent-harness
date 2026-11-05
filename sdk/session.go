@@ -715,6 +715,40 @@ type MemoryExtractor interface {
 	ObserveTurn(ctx context.Context, d TurnDigest) error
 }
 
+// MemoryListOptions 记忆列表的筛选条件(命令面 `/memory list` 与 Web 面板共用)。
+// 零值 = 全部(新的在前)。为什么放在 sdk:两边都要传同一组条件,各定义一份必然漂移。
+type MemoryListOptions struct {
+	Kind      string // 只留该类型(preference|convention|decision|pitfall|env)
+	AutoOnly  bool   // 只看自动写入的(判据:带 kind 元数据)
+	StaleDays int    // 只留超过这么多天的(0 = 不筛)
+}
+
+// MemoryCounts 记忆的总量口径(面板与 status 的"过滤中 N/M 条"要用)。
+type MemoryCounts struct {
+	User    int // 用户级(已排除被取代的)
+	Project int // 项目级
+	Auto    int // 带类型元数据的条目(自动写入)
+	Stale   int // 超过 180 天的条目(不做命中判断,只报年龄)
+}
+
+// MemoryFilteredList 可选扩展(由 host-memory 实现):按条件列出记忆。
+//
+// 与 MemoryService.List 分开的理由:后者是"全部"的稳定形状(老构建照用),
+// 过滤是新能力 —— 窄接口按项目惯例加,不改既有接口。
+type MemoryFilteredList interface {
+	ListFiltered(opt MemoryListOptions) ([]string, error)
+	ListProjectFiltered(opt MemoryListOptions) ([]string, error)
+	Counts() MemoryCounts
+}
+
+// MemoryToolStats 可选扩展:模型自己用 `memory` 工具 remember 的次数(本会话)。
+//
+// 为什么只报数不做联动:工具已外部化成独立二进制,改它要重跑发行矩阵;
+// 而"模型自己记了什么"先能看见就已经解决了"完全不知道"的问题。
+type MemoryToolStats interface {
+	ModelRememberCount() int
+}
+
 // MemoryExtractStats 可选扩展(由 host-memory 实现):提取账本的只读快照。
 //
 // 为什么必须分开记账:提取成功但没产出、提取**失败**、命中规则闸但被限流,三者的用户

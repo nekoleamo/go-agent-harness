@@ -36,6 +36,7 @@ import {
   withCurrentModel,
 } from "../modelsel";
 import type { ModelOption } from "../modelsel";
+import type { MemoryView } from "../types";
 import { parseHeaderLines } from "../providerheaders";
 import { settingSections } from "../registry";
 import { SETTINGS_CTX, type SettingsCtx } from "./settings/ctx";
@@ -1168,6 +1169,14 @@ const memErr = ref("");
 const memMsg = ref("");
 const memDraft = ref("");
 const memBusy = ref(false);
+// 面板筛选(P2):类型 / 只看自动写入 / 只看超期。过滤在**后端**做(展示行由 internal/memory
+// 渲染,前端解析文本会分叉出第二份口径),这里只保存条件并带上查询参数。
+const memFilter = ref<{ kind: string; auto: boolean; stale: number }>({ kind: "", auto: false, stale: 0 });
+const memCounts = ref<{ user: number; project: number; auto: number; stale: number } | null>(null);
+// 自动生成/自动调取的观测(缺省 = 该构建不支持,整块不渲染)。
+const memExtract = ref<MemoryView["extract"] | null>(null);
+const memRetrieve = ref<MemoryView["retrieve"] | null>(null);
+const memToolRemember = ref(0);
 
 // memSource 拆出行尾的「(来源: 会话 x)」—— 治理的关键动作是“按来源整段删”,
 // 面板得能一键删掉“某个会话写进来的全部记忆”,而不只是逐条删。
@@ -1260,7 +1269,7 @@ const memSources = computed(() => {
 // loadMemory 拉记忆视图(读失败 → 整段隐藏)。**不覆盖正在输入的草稿**。
 async function loadMemory(): Promise<void> {
   try {
-    const v = await api.memory();
+    const v = await api.memory(memFilter.value);
     if (!v || !Array.isArray(v.user)) {
       memReady.value = false;
       return;
@@ -1271,11 +1280,33 @@ async function loadMemory(): Promise<void> {
     memUser.value = v.user;
     memProject.value = Array.isArray(v.project) ? v.project : [];
     memPath.value = v.user_path;
+    memCounts.value = v.counts ?? null;
+    memExtract.value = v.extract ?? null;
+    memRetrieve.value = v.retrieve ?? null;
+    memToolRemember.value = v.tool_remember ?? 0;
     memSync(v);
   } catch {
     memReady.value = false;
   }
 }
+
+// memoryFilterKind / memoryFilterAuto / memoryFilterStale 改筛选并重拉(筛选只影响列表)。
+function memoryFilterKind(kind: string): void {
+  memFilter.value = { ...memFilter.value, kind: memFilter.value.kind === kind ? "" : kind };
+  void loadMemory();
+}
+function memoryFilterAuto(on: boolean): void {
+  memFilter.value = { ...memFilter.value, auto: on };
+  void loadMemory();
+}
+function memoryFilterStale(on: boolean): void {
+  memFilter.value = { ...memFilter.value, stale: on ? 180 : 0 };
+  void loadMemory();
+}
+// memFiltering 是否有筛选在生效(决定"过滤中 N/M"与"清除"按钮要不要出现)。
+const memFiltering = computed(
+  () => !!(memFilter.value.kind || memFilter.value.auto || memFilter.value.stale),
+);
 
 // memoryRun 发一个动作并把回执(刷新后的视图)并进状态;写动作统一走这里。
 async function memoryRun(
@@ -3429,25 +3460,34 @@ provide(SETTINGS_CTX, {
   memBusy,
   memCand,
   memContent,
+  memCounts,
   memDraft,
   memEnabled,
   memErr,
+  memExtract,
+  memFilter,
+  memFiltering,
   memHasCandidates,
   memLimit,
   memMsg,
   memPath,
   memProject,
   memReady,
+  memRetrieve,
   memSource,
   memSources,
   memSync,
   memToday,
   memTodayMax,
+  memToolRemember,
   memUsed,
   memUser,
   memoryAccept,
   memoryAcceptAll,
   memoryAdd,
+  memoryFilterAuto,
+  memoryFilterKind,
+  memoryFilterStale,
   memoryPropose,
   memoryReject,
   memoryRejectAll,

@@ -157,7 +157,10 @@ func (e *extractor) handle(d sdk.TurnDigest) {
 	existing := e.existingItems()
 	total := len(existing)
 	for _, p := range props {
-		sim := maxSimilarity(p.Text, existing)
+		// 相似度一次算两用:≥0.90 判重复丢弃(见 Route),0.80–0.90 判**更新** ——
+		// 新条目在行尾写 superseded_by=旧条内容哈希,旧的自动退出检索与展示。
+		// 为什么不做"折叠 UI":写侧标记更根治(单一事实源),面板只是照着渲染。
+		sim, target := memory.BestMatch(p.Text, existing)
 		dec, reason := memory.Route(p, sim)
 		// 用户把写入模式切成"全部进候选" ⇒ 连白名单类型也不直写(这是"我要自己看一遍"的表达)。
 		if dec == memory.DecisionWrite && e.writeAutoOnly() {
@@ -172,9 +175,13 @@ func (e *extractor) handle(d sdk.TurnDigest) {
 				dec, reason = memory.DecisionCandidate, why
 			}
 		}
+		supersededBy := ""
+		if sim >= 0.80 && sim < 0.90 && target != "" {
+			supersededBy = memory.ContentID(target)
+		}
 		switch dec {
 		case memory.DecisionWrite:
-			if err := memory.AppendMeta(memory.UserPath(), p.Text, d.SessionID, p.Kind, p.Confidence); err != nil {
+			if err := memory.AppendMetaFull(memory.UserPath(), p.Text, d.SessionID, p.Kind, p.Confidence, supersededBy); err != nil {
 				// 写失败(同日重复/超限)不静默:降级为候选,让人还能看到它。
 				if err := memory.Propose(p.Text, d.SessionID); err == nil {
 					snap.Candidate++
@@ -268,17 +275,6 @@ func (e *extractor) emit(snap sdk.MemoryExtractSnapshot) {
 		"rule": snap.RuleHit, "produced": snap.Produced, "written": snap.Written,
 		"candidate": snap.Candidate, "dropped": snap.Dropped, "model": snap.Model,
 	}, sdk.Emit)
-}
-
-// maxSimilarity 与既有条目的最大相似度(0 = 没有可比的)。
-func maxSimilarity(text string, items []memory.Item) float64 {
-	var max float64
-	for _, it := range items {
-		if s := memory.Similarity(text, it.Content); s > max {
-			max = s
-		}
-	}
-	return max
 }
 
 func floatPtr(f float64) *float64 { return &f }

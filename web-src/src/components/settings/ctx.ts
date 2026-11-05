@@ -192,25 +192,34 @@ export interface SettingsCtx {
   memBusy: any
   memCand: any
   memContent: any
+  memCounts: any
   memDraft: any
   memEnabled: any
   memErr: any
+  memExtract: any
+  memFilter: any
+  memFiltering: any
   memHasCandidates: any
   memLimit: any
   memMsg: any
   memPath: any
   memProject: any
   memReady: any
+  memRetrieve: any
   memSource: any
   memSources: any
   memSync: any
   memToday: any
   memTodayMax: any
+  memToolRemember: any
   memUsed: any
   memUser: any
   memoryAccept: any
   memoryAcceptAll: any
   memoryAdd: any
+  memoryFilterAuto: any
+  memoryFilterKind: any
+  memoryFilterStale: any
   memoryPropose: any
   memoryReject: any
   memoryRejectAll: any

@@ -478,8 +478,9 @@ func loadMarkdownItems(path, scope string) ([]Item, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 被取代的旧条目**不参与检索**:否则新旧两条事实会同时进上下文,模型无从取舍。
 	out := make([]Item, 0, len(es))
-	for _, e := range es {
+	for _, e := range Active(es) {
 		out = append(out, Item{
 			ID:         stableID(scope, e.Content),
 			Date:       e.Date,

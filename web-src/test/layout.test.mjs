@@ -121,11 +121,27 @@ function makeStub(
     lastDeleted: 0,
     writes: [],
   }
+  const memQueries = []
   const memView = (st) => ({
     enabled: st.enabled,
     budget: 2048,
     user: st.user,
     project: st.project,
+    // 过滤/观测(P2):面板要显示"过滤中 N/M"、自动生成与自动调取的最近一次状态。
+    counts: { user: st.user.length, project: st.project.length, auto: 1, stale: 0 },
+    filter: st.filter ?? undefined,
+    extract: {
+      enabled: true,
+      at: '2026-11-03T10:00:00Z',
+      rule: '长期指令',
+      produced: 1,
+      written: 1,
+      candidate: 0,
+      dropped: 0,
+      ledger: '提取账本:今日请求 1/30,直写 1/10,候选 0;累计 请求 1 / 空 0 / 失败 0',
+    },
+    retrieve: { mode: 'per_step', query: '怎么部署', items: 1, total: 1, bytes: 120, truncated: false, at: '2026-11-03T10:00:00Z' },
+    tool_remember: 2,
     user_path: '/tmp/gah-home/memory/user.md',
     project_path: '/tmp/gah-home/memory/projects/proj-1.md',
     project_key: 'proj-1',
@@ -317,6 +333,7 @@ function makeStub(
     // 记忆治理面板(第一百一十批):读 + 四个写动作。回执里带 deleted(面板要显示“删了几条”)。
     if (p === '/api/memory') {
       if (!withMemory) return json({ error: '记忆服务未装配(缺 ctx.memory / host-memory 插件)' }, 503)
+      if (route.request().method() === 'GET') memQueries.push(url.search)
       if (route.request().method() === 'POST') {
         const b = JSON.parse(route.request().postData() || '{}')
         memState.writes.push(b)
@@ -579,6 +596,7 @@ function makeStub(
     return json([])
   }
   handler.seen = seen
+  handler.memQueries = memQueries
   handler.eventReqs = eventReqs
   handler.toolQueries = toolQueries
   handler.packPosts = packPosts
@@ -3524,6 +3542,68 @@ test('命令候选:打全命令名后回车直接执行', { skip: skip && skipWh
     }
     const sent = stub.seen.find((r) => r.path === '/api/input' && String(r.body).includes('/status'))
     assert.ok(sent, `完整命令名回车应直接执行,实际: ${JSON.stringify(stub.seen.filter((r) => r.path === '/api/input'))}`)
+  } catch (e) {
+    await shoot(page, t.name)
+    throw e
+  } finally {
+    await ctx.close()
+  }
+})
+
+// 记忆面板的过滤与状态(P2):过滤条件必须**带到后端**(前端不自己解析展示行),
+// 且自动生成/自动调取的最近一次状态要看得见 —— 否则用户无法判断"记忆到底在不在工作"。
+test('记忆面板:过滤条带查询参数、状态行可见', { skip: skip && skipWhy }, async (t) => {
+  const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+  let page = null
+  try {
+    const stub = makeStub(true, false, false, false, false)
+    page = await open(ctx, stub, docks[1].dock)
+    await page.click('.gear')
+    await page.waitForSelector('[data-sec="memory"]', { timeout: 5000 })
+
+    // 状态行(后端字段存在才渲染)
+    assert.ok(await page.$('[data-testid="mem-extract-state"]'), '应显示自动生成状态')
+    assert.ok(await page.$('[data-testid="mem-retrieve-state"]'), '应显示自动调取状态')
+    assert.ok(await page.$('[data-testid="mem-tool-remember"]'), '应显示模型自记次数')
+
+    // 点"只看自动写入" ⇒ 后端收到 auto=1(过滤在后端做)
+    await page.click('[data-testid="mem-filter-auto"]')
+    await page.waitForFunction(() => true)
+    const deadline = Date.now() + 3000
+    while (Date.now() < deadline && !stub.memQueries.some((q) => q.includes('auto=1'))) {
+      await page.waitForTimeout(50)
+    }
+    assert.ok(
+      stub.memQueries.some((q) => q.includes('auto=1')),
+      `只看自动写入应带 auto=1,实际: ${JSON.stringify(stub.memQueries)}`,
+    )
+
+    // 类型过滤 ⇒ kind=convention
+    await page.click('[data-sec="memory"] .mem-filter button:has-text("约定")')
+    const d2 = Date.now() + 3000
+    while (Date.now() < d2 && !stub.memQueries.some((q) => q.includes('kind=convention'))) {
+      await page.waitForTimeout(50)
+    }
+    assert.ok(
+      stub.memQueries.some((q) => q.includes('kind=convention')),
+      `类型过滤应带 kind=convention,实际: ${JSON.stringify(stub.memQueries)}`,
+    )
+
+    // 超期过滤 ⇒ stale=180
+    await page.click('[data-testid="mem-filter-stale"]')
+    const d3 = Date.now() + 3000
+    while (Date.now() < d3 && !stub.memQueries.some((q) => q.includes('stale=180'))) {
+      await page.waitForTimeout(50)
+    }
+    assert.ok(
+      stub.memQueries.some((q) => q.includes('stale=180')),
+      `超期过滤应带 stale=180,实际: ${JSON.stringify(stub.memQueries)}`,
+    )
+
+    // 计数文案:过滤中应显示 N/M
+    const txt = await page.textContent('[data-testid="mem-counts"]')
+    assert.match(txt ?? '', /过滤中/, `过滤中应显示 N/M 口径: ${txt}`)
+    assertInvariants(await measure(page))
   } catch (e) {
     await shoot(page, t.name)
     throw e

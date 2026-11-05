@@ -64,6 +64,9 @@ type Entry struct {
 	// 老文件没有这一段 ⇒ 零值,检索层按缺省置信度计,不需要迁移。
 	Kind       string
 	Confidence float64
+	// SupersededBy 本条目**取代**了哪一条(值是对方内容的 ContentID)。
+	// 单向声明:旧条目一个字都不用改,"被取代"由新条目单方面声明(见 Active)。
+	SupersededBy string
 }
 
 // metaRe 行尾元数据块:`{kind=preference conf=0.90}`(键值空格分隔,顺序不敏感)。
@@ -89,11 +92,16 @@ func Format(date, content, source string) string {
 
 // FormatMeta 同上,但可带行尾元数据(kind/confidence)。kind 空且 conf<=0 ⇒ 与 Format 完全一致。
 func FormatMeta(date, content, source, kind string, conf float64) string {
+	return FormatMetaFull(date, content, source, kind, conf, "")
+}
+
+// FormatMetaFull 再可带 superseded_by(自动写入判定为"更新既有条目"时用)。
+func FormatMetaFull(date, content, source, kind string, conf float64, supersededBy string) string {
 	line := "- [" + date + "] " + strings.TrimSpace(content)
 	if strings.TrimSpace(source) != "" {
 		line += "(来源: 会话 " + strings.TrimSpace(source) + ")"
 	}
-	if kind == "" && conf <= 0 {
+	if kind == "" && conf <= 0 && supersededBy == "" {
 		return line
 	}
 	var parts []string
@@ -102,6 +110,9 @@ func FormatMeta(date, content, source, kind string, conf float64) string {
 	}
 	if conf > 0 {
 		parts = append(parts, "conf="+strconv.FormatFloat(conf, 'f', 2, 64))
+	}
+	if supersededBy != "" {
+		parts = append(parts, "superseded_by="+supersededBy)
 	}
 	return line + " {" + strings.Join(parts, " ") + "}"
 }
@@ -116,6 +127,7 @@ func ParseLine(line string) (Entry, bool) {
 	t := raw
 	var kind string
 	var conf float64
+	var supersededBy string
 	if mm := metaRe.FindStringSubmatch(t); mm != nil {
 		for _, kv := range strings.Fields(mm[1]) {
 			k, v, ok := strings.Cut(kv, "=")
@@ -129,6 +141,8 @@ func ParseLine(line string) (Entry, bool) {
 				if f, err := strconv.ParseFloat(v, 64); err == nil {
 					conf = f
 				}
+			case "superseded_by":
+				supersededBy = v
 			}
 		}
 		t = strings.TrimSpace(strings.TrimSuffix(t, mm[0]))
@@ -137,7 +151,8 @@ func ParseLine(line string) (Entry, bool) {
 	if m == nil {
 		return Entry{}, false
 	}
-	return Entry{Date: m[1], Content: m[2], Source: m[3], Raw: raw, Kind: kind, Confidence: conf}, true
+	return Entry{Date: m[1], Content: m[2], Source: m[3], Raw: raw, Kind: kind, Confidence: conf,
+		SupersededBy: supersededBy}, true
 }
 
 // Read 读一个记忆文件里的条目(保持文件里的顺序;文件不存在 = 空,不是错误)。
@@ -169,6 +184,11 @@ func Append(path, content, source string) error {
 
 // AppendMeta 同 Append,可带 kind/confidence 元数据(P1 自动提取的直写路径用它)。
 func AppendMeta(path, content, source, kind string, conf float64) error {
+	return AppendMetaFull(path, content, source, kind, conf, "")
+}
+
+// AppendMetaFull 再可带 superseded_by(提取器判定为"更新既有条目"时用)。
+func AppendMetaFull(path, content, source, kind string, conf float64, supersededBy string) error {
 	content = strings.TrimSpace(content)
 	if content == "" {
 		return fmt.Errorf("memory: 内容为空,不写入")
@@ -181,7 +201,7 @@ func AppendMeta(path, content, source, kind string, conf float64) error {
 		return err
 	}
 	today := time.Now().Format("2006-01-02")
-	line := FormatMeta(today, content, source, kind, conf)
+	line := FormatMetaFull(today, content, source, kind, conf, supersededBy)
 	for _, e := range cur {
 		if e.Date == today && e.Content == strings.TrimSpace(content) {
 			return fmt.Errorf("memory: 今天已经有同一条记忆了(不重复写)")

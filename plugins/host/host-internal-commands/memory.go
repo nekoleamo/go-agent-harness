@@ -41,7 +41,7 @@ func (h *Host) cmdMemory(args []string) (string, error) {
 		// 「用户要记的内容」写进记忆 —— 一个看起来成功、实际记了句 "status" 的静默失效。
 		return h.memoryStatus(ms)
 	case "list":
-		return h.memoryList(ms)
+		return h.memoryListFiltered(ms, args[1:])
 	case "candidates":
 		return h.memoryCandidates(ms)
 	case "propose":
@@ -150,14 +150,80 @@ func (h *Host) memoryStatus(ms sdk.MemoryService) (string, error) {
 			cand = fmt.Sprintf(",待确认候选 %d 条(上限 %d;今日已提 %d/%d)", used, limit, today, todayLimit)
 		}
 	}
-	return fmt.Sprintf("记忆:%s;用户级 %d 条,本项目 %d 条%s;注入预算 %d 字节%s%s\n  /memory status     本页概览(含最近一次自动调取)\n  /memory add <内容>  记住一条\n  /memory list       看全部(新的在前)\n  /memory rm <序号>  删一条\n  /memory rm --from <会话>  按来源整段删\n  /memory on|off     开/关注入\n  /memory propose <内容>  提一条候选(确认后才进上下文)\n  /memory candidates / accept <序号> / accept-all / reject <序号>\n  /memory extract on|off  开/关自动提取(规则闸命中才花一次小请求;状态用 /memory status)",
+	return fmt.Sprintf("记忆:%s;用户级 %d 条,本项目 %d 条%s;注入预算 %d 字节%s%s%s\n  /memory status     本页概览(含最近一次自动调取)\n  /memory add <内容>  记住一条\n  /memory list       看全部(新的在前)\n  /memory rm <序号>  删一条\n  /memory rm --from <会话>  按来源整段删\n  /memory on|off     开/关注入\n  /memory propose <内容>  提一条候选(确认后才进上下文)\n  /memory candidates / accept <序号> / accept-all / reject <序号>\n  /memory list --kind <类型> --auto --stale <天数>  过滤(自动写入的一眼可辨)\n  /memory extract on|off  开/关自动提取(规则闸命中才花一次小请求;状态用 /memory status)",
 		onoff(ms.Enabled()), len(ms.List()), len(h.memoryProjectLines(ms)), cand, ms.Budget(),
-		retrieveStatusLine(ms), extractStatusLine(ms)), nil
+		retrieveStatusLine(ms), extractStatusLine(ms), toolStatsLine(ms)), nil
+}
+
+// memoryListFiltered `/memory list [--kind <类型>] [--auto] [--stale <天数>]`。
+//
+// 过滤交给 internal/memory 的 DisplayLines(与面板同一份渲染),这里只解析参数并回一句
+// "过滤中 N/M 条" —— 不说明筛选口径的话,用户会以为"记忆少了"。
+func (h *Host) memoryListFiltered(ms sdk.MemoryService, args []string) (string, error) {
+	var opt sdk.MemoryListOptions
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--kind":
+			if i+1 >= len(args) {
+				return "", errString("用法:/memory list [--kind <preference|convention|decision|pitfall|env>] [--auto] [--stale <天数>]")
+			}
+			opt.Kind = args[i+1]
+			i++
+		case "--auto":
+			opt.AutoOnly = true
+		case "--stale":
+			if i+1 >= len(args) {
+				return "", errString("--stale 需要天数,如 --stale 180")
+			}
+			n, err := strconv.Atoi(args[i+1])
+			if err != nil || n <= 0 {
+				return "", errString("--stale 需正整数天数")
+			}
+			opt.StaleDays = n
+			i++
+		default:
+			return "", errString("未知参数 " + args[i] + ";用法:/memory list [--kind <类型>] [--auto] [--stale <天数>]")
+		}
+	}
+	if opt.Kind != "" && !memory.ValidKinds[opt.Kind] {
+		return "", errString("未知类型 " + opt.Kind + "(preference|convention|decision|pitfall|env)")
+	}
+	if opt.Kind == "" && !opt.AutoOnly && opt.StaleDays == 0 {
+		return h.memoryList(ms) // 无过滤 = 既有行为(逐字不变)
+	}
+	fl, ok := ms.(sdk.MemoryFilteredList)
+	if !ok {
+		return "", errString("该构建不支持过滤(旧版本),只能用 /memory list")
+	}
+	lines, err := fl.ListFiltered(opt)
+	if err != nil {
+		return "", errString("读取记忆失败:" + err.Error())
+	}
+	c := fl.Counts()
+	if len(lines) == 0 {
+		return fmt.Sprintf("没有符合条件的记忆(共 %d 条;换个条件试试,/memory list 看全部)", c.User+c.Project), nil
+	}
+	return fmt.Sprintf("过滤中 %d/%d 条(用户级):\n  %s", len(lines), c.User, strings.Join(lines, "\n  ")), nil
 }
 
 // projectAdder 可选扩展:写项目级记忆(host-memory 实现;未实现 ⇒ 命令面显式报错)。
 type projectAdder interface {
 	AddProject(content, source string) error
+}
+
+// toolStatsLine 模型自记次数(未实现窄接口的构建不显示)。
+//
+// 只报数不做联动:工具已外部化(改它要重跑发行矩阵),而"模型自己记了什么"先能看见
+// 就已经解决了"完全不知道"的问题。
+func toolStatsLine(ms sdk.MemoryService) string {
+	ts, ok := ms.(sdk.MemoryToolStats)
+	if !ok {
+		return ""
+	}
+	if n := ts.ModelRememberCount(); n > 0 {
+		return fmt.Sprintf("\n  模型自记:本会话 memory 工具 remember %d 次(工具直写 jsonl,与上面两条链路的文件不同)", n)
+	}
+	return ""
 }
 
 // extractStatusLine status 里的自动提取段(未实现窄接口的构建不显示)。

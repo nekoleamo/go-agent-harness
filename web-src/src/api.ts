@@ -338,8 +338,15 @@ export const api = {
     return req('/api/instructions', { method: 'PUT', headers: json, body: JSON.stringify({ text }) })
   },
   // memory 跨会话记忆读(治理面板;未装配 host-memory → 503,面板整段隐藏)
-  memory(): Promise<MemoryView> {
-    return req('/api/memory')
+  // memory 可选筛选(kind/auto/stale):过滤在后端做 —— 展示行由 internal/memory 渲染,
+  // 让前端自己解析"类型/来源"会立刻分叉出第二份口径。
+  memory(filter?: { kind?: string; auto?: boolean; stale?: number }): Promise<MemoryView> {
+    const q = new URLSearchParams()
+    if (filter?.kind) q.set('kind', filter.kind)
+    if (filter?.auto) q.set('auto', '1')
+    if (filter?.stale) q.set('stale', String(filter.stale))
+    const qs = q.toString()
+    return req('/api/memory' + (qs ? '?' + qs : ''))
   },
   // memoryAct 四个动作:add / remove(按展示序号) / remove_source(按来源会话整段删) / toggle。
   // 响应就是刷新后的视图(+ deleted),面板不必再拉一次。
