@@ -103,7 +103,13 @@ export function createTransport(): Transport {
 }
 
 // WsTransport WebSocket 承载。断开后指数退避重连(1s/2s/4s,带 after 游标
-// 差集续传);持续失败(约 7s)才永久降级 EventSource(浏览器自动重连自愈)。
+// 差集续传);持续失败才永久降级 EventSource(浏览器自动重连自愈)。
+//
+// 首连失败**不退避,立即降级**(2026-11-06,实测):退避那三次是「曾经连上过」才划算的
+// —— 后端热重启/网络抖动几秒内就能回到 WS。而**首连**就失败(反代没转发 Upgrade、
+// 企业网络/扩展拦 ws:、壳里 WebView 的异常)时退避只会换来 7 秒空白:实测首屏 7187ms 里
+// 7103ms 都花在这条退避上,期间一条会话帧都没到。首连失败时 after 游标要么是 0(没有任何
+// 帧可丢),要么由 SSE 的 Last-Event-ID 同样做差集 ⇒ 降级不损失任何数据。
 class WsTransport implements Transport {
   private sock: WebSocket | null = null
   private listeners = new Map<string, TransportListener[]>()
@@ -111,6 +117,8 @@ class WsTransport implements Transport {
   private es: EsTransport | null = null
   private retry = 0
   private retryTimer: ReturnType<typeof setTimeout> | null = null
+  // 本实例是否**已经握手成功过**:决定"这次断开"值不值得退避重连(见类头注释)。
+  private opened = false
   // 降级前重连次数(退避 1s/2s/4s;超过 → 永久降级 SSE)
   private static readonly maxRetry = 3
   onopen?: () => void
@@ -131,11 +139,20 @@ class WsTransport implements Transport {
     const after = afterCursor()
     // sessionQS 同时带上本窗口绑定的会话(多窗口各看各的);after 游标是**该会话**的 seq。
     const url = '/api/events/ws' + sessionQS({ after: after > 0 ? after : undefined })
-    const sock = new WebSocket(url)
+    let sock: WebSocket
+    try {
+      sock = new WebSocket(url)
+    } catch {
+      // 构造期同步抛(典型:CSP 的 connect-src 没放行 ws:)—— 隐藏成 onclose 太绕,直接降级
+      this.report('reconnecting')
+      this.degrade()
+      return
+    }
     this.sock = sock
     sock.onopen = () => {
       // sock !== this.sock = 旧 socket(已被 reconnect/降级取代)的迟到事件,一律丢弃
       if (this.closed || sock !== this.sock) return
+      this.opened = true
       this.retry = 0
       this.clearRetryTimer()
       this.report('open')
@@ -151,8 +168,14 @@ class WsTransport implements Transport {
     }
     sock.onclose = () => {
       if (this.closed || this.es || sock !== this.sock) return
+      // 首连就失败:没有"正在看的流"需要保 WS(SSE 拿到的是同一份数据),立刻降级(见类头注释)
+      if (!this.opened) {
+        this.report('reconnecting')
+        this.degrade()
+        return
+      }
       if (this.retry < WsTransport.maxRetry) {
-        // 指数退避重连(短暂拖拽/后端热重启数秒内回 WS)
+        // 指数退避重连(曾连上过 ⇒ 短暂拖拽/后端热重启数秒内能回 WS)
         this.retry++
         this.report('reconnecting')
         const delay = Math.min(1000 * 2 ** (this.retry - 1), 8000)
@@ -164,15 +187,29 @@ class WsTransport implements Transport {
       }
       // 持续失败 → 永久降级 EventSource(同 payload 续接;Last-Event-ID 自动差集)
       this.report('reconnecting')
-      this.es = new EsTransport(this.onopen, this.onreconnecting, this.onclose, this.onstate)
-      for (const [t, fns] of this.listeners) {
-        for (const fn of fns) this.es.on(t, fn)
-      }
+      this.degrade()
     }
     sock.onerror = () => {
       // 浏览器保证 onerror 后必触发 onclose(统一在那里调度重连/降级)
       if (this.closed || sock !== this.sock) return
       this.report('reconnecting')
+    }
+  }
+
+  /** 永久降级到 EventSource(同 payload 续接;Last-Event-ID 自动差集)。幂等。 */
+  private degrade(): void {
+    if (this.es || this.closed) return
+    // 回调一律用闭包**转发**,不把当前的 this.onstate/onopen 值传进去:降级可能发生在
+    // 构造期(WS 构造就抛,CSP 拦 ws:),那时宿主还没挂 onstate —— 直接传值会永久失去
+    // 链路状态上报(2026-11-06 单测逮到)。闭包转发也保证宿主后挂的回调照样生效。
+    this.es = new EsTransport(
+      () => this.onopen?.(),
+      () => this.onreconnecting?.(),
+      () => this.onclose?.(),
+      (s) => this.onstate?.(s),
+    )
+    for (const [t, fns] of this.listeners) {
+      for (const fn of fns) this.es.on(t, fn)
     }
   }
 
@@ -216,6 +253,8 @@ class WsTransport implements Transport {
     } catch {
       /* 已关团 */
     }
+    // 新一轮握手重新计:若这次首连也失败,同样立即降级,别让用户再等一次 7 秒
+    this.opened = false
     this.report('reconnecting')
     this.connect()
   }

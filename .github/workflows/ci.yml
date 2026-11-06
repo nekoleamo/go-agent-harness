@@ -34,6 +34,12 @@ jobs:
           GAH_LAYOUT_REQUIRE: "1"
           GAH_LAYOUT_ARTIFACTS: ${{ runner.temp }}/gah-layout
         run: cd web-src && npm run test:layout
+      # 稳态追加性能(docs/WEB_OPTIMIZE.md §3):400 条窗口下逐帧追加的批处理+patch 耗时。
+      # 与布局护栏同源 fixture(共享 test/harness.mjs),但指标不同:它量的是"每帧花了多少主线程"。
+      - name: 稳态追加性能护栏(逐帧追加的批处理+patch 耗时;REQUIRE=1 ⇒ 环境不满足直接红灯)
+        env:
+          GAH_PERF_REQUIRE: "1"
+        run: cd web-src && npm run test:perf
       - name: 布局护栏失败截图(仅在护栏失败时上传,便于排查画面)
         if: failure()
         uses: actions/upload-artifact@v4

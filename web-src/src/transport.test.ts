@@ -138,6 +138,38 @@ test('WS 断开 → reconnecting(退避重连,1s/2s),不发 closed', async () =>
   assert.equal(FakeWS.instances.length, 2)
 })
 
+test('首连就失败 → 立即降级 SSE,不退避(2026-11-06:退避 3 次 = 7s 空白)', async () => {
+  // 反向验证:把 onclose 里的 `if (!this.opened)` 拿掉 ⇒ 这里会变成
+  // 「只有 1 个 WS、0 个 ES,还要 tick 三次才降级」,用例转红。
+  await newTransport()
+  FakeWS.last().fireClose() // 从未 open 过
+  assert.equal(FakeWS.instances.length, 1, '首连失败不该再重试 WS')
+  assert.equal(FakeES.instances.length, 1, '应立即降级 EventSource')
+  assert.deepEqual(states, ['reconnecting'], '降级前先报 reconnecting(状态栏要有话说)')
+  mock.timers.tick(9000) // 越过原来的 1s/2s/4s:不该再冒出新的 WS
+  assert.equal(FakeWS.instances.length, 1, '退避计时器不该被排上')
+})
+
+test('WS 构造期同步抛(CSP 拦 ws: )→ 直接降级,不把异常抛给调用方', async () => {
+  // 反向验证:去掉 connect() 里的 try/catch ⇒ 这里 createTransport 直接抛 SecurityError。
+  const realWS = globalThis.WebSocket
+  globalThis.WebSocket = class {
+    constructor() {
+      throw new Error('SecurityError: connect-src 未放行 ws:')
+    }
+  } as unknown as typeof WebSocket
+  try {
+    await newTransport() // 不抛 = 已达目的(CSP 拦 ws: 时页面不该整块白屏)
+    assert.equal(FakeES.instances.length, 1, '构造失败应直接降级')
+    // 降级后的 EventSource 必须接上状态回调(构造期还没挂 onstate,故只能验后续帧)
+    assert.ok(FakeES.last().onopen, '降级后的 EventSource 必须接着上报链路状态')
+    FakeES.last().onopen?.({})
+    assert.deepEqual(states, ['open'])
+  } finally {
+    globalThis.WebSocket = realWS
+  }
+})
+
 test('退避耗尽(3 次)→ 永久降级 EventSource,状态继续上报', async () => {
   await newTransport()
   const ws = FakeWS.last()

@@ -16,6 +16,7 @@ import {
   windowPartial,
 } from './streamwin'
 import { FrameQueue, rafScheduler } from './framequeue'
+import { probeOn, probeRecord, probeStart } from './perfprobe'
 import { clip, newTraj, trajOverview, trajPush, turnSpeedLine, turnStats, type TrajModel, type TrajTurn } from './traj'
 import { SessionCache, switchPlan, type SwitchPlan } from './sessioncache'
 import { changesPush, changesStats, newChanges, type ChangesModel } from './changes'
@@ -867,6 +868,9 @@ let streamSessionId = ''
 // (rAF 在隐藏页不触发,否则后台标签页会一直攒帧,回前台再一次性爆出来)。
 const sessionQueue = new FrameQueue<SessionEvent>(
   (batch) => {
+    // 性能探针(默认关闭,见 perfprobe.ts):量「这一帧的批处理 + Vue patch」花了多少主线程。
+    // 打点在批前、收尾在 nextTick 之后 —— 只记批处理本身会漏掉真正的大头(patch)。
+    const perfT0 = probeOn() ? probeStart() : 0
     for (const se of batch) {
       // 步数(仅本窗口会话):step/start 累加,turn/end 归零;用 kind 判定,不看 payload。
       if (se.Kind === 'step/start') steps.value++
@@ -886,6 +890,7 @@ const sessionQueue = new FrameQueue<SessionEvent>(
     if (stick && model.value.msgs.length > MAX_LIVE_MSGS) trimHead(model.value)
     // 贴底滚动的信号(计数器,见 contentTick 注释)
     if (batch.length > 0) contentTick.value++
+    if (perfT0) void nextTick(() => probeRecord(probeStart() - perfT0))
   },
   rafScheduler(),
 )
