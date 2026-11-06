@@ -218,7 +218,13 @@ jobs:
           echo "WS 通道 + 优雅停机 OK"
 
   test-macos:
-    runs-on: macos-14 # Apple Silicon(arm64),与 release-desktop-wails.yml 的打包机一致
+    # Apple Silicon(arm64),与 release-desktop-wails.yml 的打包机一致。
+    # 2026-11-06:macos-14 已从 GitHub 的公开仓库 runner 表里移除 —— 用它会在 1 秒内被
+    # 取消(job 从未被接走,报 "The configuration 'macos-14-arm64-us-default' is not
+    # supported",runner_name 为空)。官方当前 arm64 标签是 macos-latest / macos-15 / macos-26;
+    # 这里选**显式版次** macos-15,而不是 macos-latest:后者会随时间跳到新大版本,
+    # 而桌面打包对 Xcode/系统版本敏感,发版机不该被静默升级。
+    runs-on: macos-15
     defaults:
       run:
         shell: bash

@@ -35,7 +35,10 @@ env:
 
 jobs:
   darwin-aarch64:
-    runs-on: macos-14
+    # macos-15 = Apple Silicon(arm64)。2026-11-06 起 macos-14 已从公开仓库的 runner 表移除
+    # (用它 job 会被立即取消,报 'macos-14-arm64-us-default is not supported')。
+    # 用显式版次而非 macos-latest:打包机不该随 latest 静默跳到新系统大版本。
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
