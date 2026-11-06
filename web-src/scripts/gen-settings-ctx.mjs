@@ -53,7 +53,7 @@ function renderCtx(names) {
 // 每加一个字段要改三处(父传、子声明、子使用),必然漂。
 //
 // 类型面:SettingsCtx 由父组件实际顶层名字 + 具名 import 生成(any),子组件解构时**拼错名字
-// 会让 vue-tsc 报错** —— 这正是故意不用 \`Record<string, any>\` 的原因(那个拼错只会静默渲染
+// 会让 vue-tsgo 报错** —— 这正是故意不用 \`Record<string, any>\` 的原因(那个拼错只会静默渲染
 // undefined)。本文件由 \`node scripts/gen-settings-ctx.mjs\` 生成,勿手改;
 // 一致性由 src/settings-ctx.test.ts 守护。
 import type { InjectionKey } from "vue";

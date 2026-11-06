@@ -129,6 +129,9 @@ const { memBudget, memBusy, memCand, memContent, memCounts, memDraft, memEnabled
                     }}</span>
                     同样可以直接改。
                   </p>
+                  <!-- 序号一律 Number(i) + 1:memCand/memUser/memProject 的类型面来自
+                       ctx.ts(生成,全 any)⇒ 模板里 v-for 的 key 是 string | number,
+                       直接 i + 1 会被 vue-tsgo 判 TS2365。 -->
                   <div v-if="memCand.length" class="mem-list">
                     <div
                       v-for="(l, i) in memCand"
@@ -142,7 +145,7 @@ const { memBudget, memBusy, memCand, memContent, memCounts, memDraft, memEnabled
                         class="ghost solid"
                         :disabled="memBusy"
                         data-tip="转正为记忆(之后每轮带进上下文)"
-                        @click="memoryAccept(i + 1)"
+                        @click="memoryAccept(Number(i) + 1)"
                       >
                         转正
                       </button>
@@ -150,7 +153,7 @@ const { memBudget, memBusy, memCand, memContent, memCounts, memDraft, memEnabled
                         class="ghost danger-text"
                         :disabled="memBusy"
                         data-tip="丢弃(不进记忆)"
-                        @click="memoryReject(i + 1)"
+                        @click="memoryReject(Number(i) + 1)"
                       >
                         丢弃
                       </button>
@@ -243,7 +246,7 @@ const { memBudget, memBusy, memCand, memContent, memCounts, memDraft, memEnabled
                             ? '过滤中不能按序号删：先点「全部」清除筛选再删（也可按来源整段删）'
                             : '删除这条记忆'
                         "
-                        @click="memoryRemove(i + 1, l)"
+                        @click="memoryRemove(Number(i) + 1, l)"
                       >
                         删除
                       </button>

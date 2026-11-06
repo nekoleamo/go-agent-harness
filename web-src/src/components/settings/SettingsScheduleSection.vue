@@ -149,10 +149,12 @@ const repeatList = REPEATS as { kind: string; hint?: string }[];
                           class="sel"
                           @change="refreshSchedulePreview()"
                         >
+                          <!-- Number(i):LUNAR_MONTHS 走 ctx(类型面全 any)⇒ key 是
+                               string | number,直接 i + 1 会被 vue-tsgo 判 TS2365。 -->
                           <option
                             v-for="(m, i) in LUNAR_MONTHS"
                             :key="m"
-                            :value="i + 1"
+                            :value="Number(i) + 1"
                           >
                             {{ m }}
                           </option>

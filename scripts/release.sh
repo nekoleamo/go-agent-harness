@@ -186,9 +186,9 @@ preflight() {
     return 0
   fi
 
-  step "preflight · 前端(vue-tsc + 单测 + 布局护栏)"
+  step "preflight · 前端(vue-tsgo + 单测 + 布局护栏)"
   ( cd web-src
-    npm run typecheck || die "vue-tsc 有错"
+    npm run typecheck || die "vue-tsgo 有错"
     npm test           || die "前端单测红"
     GAH_LAYOUT_REQUIRE=1 npm run test:layout || die "布局护栏红(本地产物;它跑的是 web/dist)"
   )

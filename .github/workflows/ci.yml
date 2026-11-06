@@ -25,7 +25,7 @@ jobs:
           cache-dependency-path: web-src/package-lock.json
       - name: 重建外部插件(gzip embed)
         run: bash scripts/gen-extplugins.sh
-      - name: 重建前端产物(M7:vue-tsc 类型检查 + vite build → web/dist,漏则 go:embed 编译失败)
+      - name: 重建前端产物(M7:vue-tsgo 类型检查 + vite build → web/dist,漏则 go:embed 编译失败)
         run: bash scripts/gen-web.sh
       - name: 前端逻辑单测(node 内置运行器,零新增依赖;E-E)
         run: cd web-src && npm test
@@ -151,7 +151,7 @@ jobs:
           cache-dependency-path: web-src/package-lock.json
       - name: 重建外部插件(gzip embed;发行矩阵含 windows/amd64)
         run: bash scripts/gen-extplugins.sh
-      - name: 重建前端产物(vue-tsc + vite build → web/dist,漏则 go:embed 编译失败)
+      - name: 重建前端产物(vue-tsgo + vite build → web/dist,漏则 go:embed 编译失败)
         run: bash scripts/gen-web.sh
       - name: go vet(sdk 为独立 module,须单独跑)
         run: |
@@ -241,7 +241,7 @@ jobs:
           cache-dependency-path: web-src/package-lock.json
       - name: 重建外部插件(gzip embed;darwin/arm64 在发行矩阵内)
         run: bash scripts/gen-extplugins.sh
-      - name: 重建前端产物(vue-tsc + vite build → web/dist,漏则 go:embed 编译失败)
+      - name: 重建前端产物(vue-tsgo + vite build → web/dist,漏则 go:embed 编译失败)
         run: bash scripts/gen-web.sh
       - name: 前端逻辑单测(node 内置运行器,零新增依赖)
         run: cd web-src && npm test

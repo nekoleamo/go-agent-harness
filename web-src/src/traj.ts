@@ -10,7 +10,7 @@
 //  - turn 边界:由 `user/message`(起点)与 `turn/end`(终点)派生 —— `turn/start` 在
 //    会话账本里是可选标记(旧会话没有它),故不作为必要输入。
 // 注:本模块只做 type-only 引入 —— src/ 下的逻辑模块保持自包含(node 直跑 *.test.ts 时
-// 无法解析无扩展名相对导入,而 vue-tsc 不允许带 .ts 扩展名导入)。参数摘要等展示口径
+// 无法解析无扩展名相对导入,而 vue-tsgo 不允许带 .ts 扩展名导入)。参数摘要等展示口径
 // 由视图层调 sse.argsSummary,本模型保留原始参数 JSON(精度不丢,便于 inspector 展开)。
 import type { SessionEvent, ToolCall, ToolResult, UsageEvent } from './types'
 
