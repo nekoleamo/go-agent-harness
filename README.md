@@ -2,14 +2,14 @@
 
 > [English](./README_EN.md) | 简体中文(两份同步维护)
 
-Go 实现的编程代理 Agent Harness:一个静态二进制承载 TUI / Web / headless / 桌面壳,零运行时依赖。设计对齐 DeepSeek Harness 的「一切皆插件」——微内核只负责 ctx 服务容器、事件总线、插件注册表与配置层,其余能力全是插件。
+**Go 实现的编程代理 Harness** —— 单静态二进制交付,零运行时依赖;微内核 + 一切皆插件(profile→bundle→patch),TUI / Web / headless 三端同源。
 
 - 插件开发:[docs/PLUGIN_DEV.md](./docs/PLUGIN_DEV.md) · 插件总览:[plugins/README.md](./plugins/README.md)
 - 设计文档与交付记录为本地资料,不随仓库分发;对外交付总览即本文与提交历史
 
 ## 一、项目定位
 
-- **单一静态二进制**:`CGO_ENABLED=0`,六目标交叉编译(darwin / linux / windows × amd64 / arm64);实测单文件 27–29 MiB、gz 12–14 MiB,体积门 ≤30 / ≤15 MiB(`scripts/size-check.sh`)。
+- **单一静态二进制**:`CGO_ENABLED=0`,六目标交叉编译(darwin / linux / windows × amd64 / arm64);实测单文件 26.9–29.1 MiB、gz 12.5–13.7 MiB(darwin/arm64 最小、windows/amd64 最大),体积门 ≤30 / ≤15 MiB(`scripts/size-check.sh`)。
 - **零运行时依赖**:无 node 运行时、无 node_modules、无版本管理器;裸环境 `env -i` 可直接启动。
 - **完全便携**:数据根 = 二进制同级 `gah-data/`,首次启动自动创建;部署目录内 `gah` + `gah-data/` 即完整,升级只换单文件。
 - **三端同源**:TUI、Web(前端 `go:embed` 内嵌)、headless 是同一进程的三个 profile;桌面壳复用同一个 sidecar 产物。

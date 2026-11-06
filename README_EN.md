@@ -2,14 +2,14 @@
 
 > English | [简体中文](./README.md) — both files are kept in sync
 
-A programming-agent harness written in Go: one static binary carries TUI / Web / headless / desktop shell, with zero runtime dependencies. The design follows DeepSeek Harness's "everything is a plugin" philosophy — the micro-kernel only owns the ctx service container, the event bus, the plugin registry and the config layer; every capability is a plugin.
+**Go-powered coding agent harness** — shipped as a single static binary with zero runtime dependencies; micro-kernel core, everything-as-plugin (profile→bundle→patch), one binary for TUI / Web / headless.
 
 - Plugin development: [docs/PLUGIN_DEV.md](./docs/PLUGIN_DEV.md) · Plugin overview: [plugins/README.md](./plugins/README.md)
 - Design notes and delivery records are local-only and not distributed; this file plus the commit history are the public delivery overview
 
 ## 1. What it is
 
-- **One static binary**: `CGO_ENABLED=0`, six cross-compile targets (darwin / linux / windows on amd64 / arm64); measured 27-29 MiB single file, 12-14 MiB gzipped, gates at 30 / 15 MiB (`scripts/size-check.sh`).
+- **One static binary**: `CGO_ENABLED=0`, six cross-compile targets (darwin / linux / windows on amd64 / arm64); measured 26.9-29.1 MiB single file, 12.5-13.7 MiB gzipped (smallest on darwin/arm64, largest on windows/amd64), gates at 30 / 15 MiB (`scripts/size-check.sh`).
 - **Zero runtime deps**: no Node runtime, no node_modules, no version managers; starts under a bare `env -i`.
 - **Fully portable**: the data root is `gah-data/` next to the binary, created on first run; `gah` + `gah-data/` is the whole deployment, upgrades replace a single file.
 - **One source, three shapes**: TUI, Web (frontend embedded via `go:embed`) and headless are three profiles of the same process; the desktop shell reuses the same sidecar.
