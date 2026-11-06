@@ -103,10 +103,21 @@ function metaTag(kind: string): string {
   return META_TAG[kind] ?? ''
 }
 
+// 时间戳格式化**必须记忆化**:它每行每次重渲染都调一遍,而 toLocaleTimeString('zh-CN')
+// 要走 Intl —— CPU profile 实测占稳态逐帧追加主线程的 **15%**(2026-11-06,400 条窗口),
+// 比 vnode diff 本身还贵。ts 是字符串、同一条消息永远是同一个值 ⇒ 命中率接近 100%。
+// 上限 2000 条(≈ 一个长会话的全部消息):超了整体清空,顺序淘汰够用,不必上 LRU。
+const TS_CACHE_MAX = 2000
+const tsCache = new Map<string, string>()
+
 function fmtTs(ts: string): string {
+  const hit = tsCache.get(ts)
+  if (hit !== undefined) return hit
   const d = new Date(ts)
-  if (isNaN(d.getTime())) return ''
-  return d.toLocaleTimeString('zh-CN', { hour12: false })
+  const out = isNaN(d.getTime()) ? '' : d.toLocaleTimeString('zh-CN', { hour12: false })
+  if (tsCache.size >= TS_CACHE_MAX) tsCache.clear()
+  tsCache.set(ts, out)
+  return out
 }
 
 // 附件预览 URL:/attachments/<Rel>,路径段编码(文件名可含空格等)
@@ -119,7 +130,11 @@ function attUrl(rel: string): string {
 <template>
   <div class="stream">
     <template v-for="(r, ri) in rows" :key="r.t === 'msg' ? 'm' + r.m.seq : 'x' + ri">
-      <div v-if="r.t === 'msg'" class="msg" :class="r.m.kind">
+      <div
+        v-if="r.t === 'msg'"
+        class="msg"
+        :class="r.m.kind"
+      >
         <span class="ts mono">{{ fmtTs(r.m.ts) }}</span>
         <div v-if="r.m.kind === 'user'" class="user mono">
           {{ r.m.text }}

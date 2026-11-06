@@ -17,8 +17,9 @@
 //   GAH_PERF_FRAMES=120  steady 段帧数
 // 判据两条(唯一的基线数字记在 docs/WEB_OPTIMIZE.md §3):
 //   ① 帧间距 p95 ≤ 2 帧(33ms):一帧装不下就会掉帧,这是用户能看见的那一档;
-//   ② 批处理+patch **p50 ≤ 16ms**:12ms 是当前基线(400 条窗口,2026-11-06),帧间距在
-//      这一档是盲的(装得下就恒定 17ms),所以必须有这条探针口径。
+//   ② 批处理+patch **p50 ≤ 8ms**:当前基线是 3ms(400 条窗口,2026-11-06),帧间距在这一档
+//      是盲的(装得下就恒定 17ms),所以必须有这条探针口径。上限设 8ms 的理由:把
+//      「时间戳格式化忘了记忆化」那种回退(实测 12ms)当场抓住,又给慢机器留一倍余量。
 // **度量自检**(2026-11-06 做过):把 MAX_LIVE_MSGS 临时改成 800 ⇒ ① 变红、② 从 12ms 涨到 21ms。
 // 判据动不得松:松到 3 帧(=50ms)就等于「允许掉两帧」,那已经能看出卡顿了。
 
@@ -167,6 +168,7 @@ test(`稳态逐帧追加:400 条窗口下 p95 帧间隔 ≤ 3 帧(${STEADY_FRAME
     await page.waitForTimeout(STEADY_FRAMES * STEADY_INTERVAL_MS + 1500)
 
     const patched = await page.evaluate(() => window.__gahPatchMs || [])
+
     const frames = await page.evaluate(() => window.__frames)
     const full = frames.filter(([, n]) => n >= 400)
     assert.ok(full.length > 20, `稳态样本太少(${full.length} 帧),测量本身失效`)
@@ -185,8 +187,9 @@ test(`稳态逐帧追加:400 条窗口下 p95 帧间隔 ≤ 3 帧(${STEADY_FRAME
     )
     assert.ok(p95 <= 33, `稳态帧间距 p95 = ${p95}ms(上限 33ms = 2 帧);分布=${JSON.stringify(deltas.slice(0, 40))}`)
     assert.ok(
-      bp50 > 0 && bp50 <= 16,
-      `批处理+patch p50 = ${bp50}ms 超出单帧预算(16ms) —— 逐帧追加已经开始掉帧;样本=${JSON.stringify(tail.slice(0, 40))}`,
+      bp50 > 0 && bp50 <= 8,
+      `批处理+patch p50 = ${bp50}ms(上限 8ms;基线 3ms)—— 逐帧追加的主线程成本回退了;` +
+        `先看是不是又加了每行每次渲染都跑的 Intl/正则/字符串拼接(见 src/perfprobe.ts 头注)。样本=${JSON.stringify(tail.slice(0, 40))}`,
     )
   } catch (e) {
     throw e

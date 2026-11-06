@@ -111,14 +111,27 @@ function fmtDir(dir: string): string {
   const i = dir.lastIndexOf('/')
   return i >= 0 ? dir.slice(i + 1) : dir
 }
+// 记忆化理由同 StreamView 的 fmtTs:会话列表每次重渲染对每条都走一次 Intl(实测占
+// 稳态追加主线程 2.6%,2026-11-06)。缓存键带「今天」—— 判定「是不是今天」会跨午夜变,
+// 键里带上当天日期就不用为它写失效逻辑(清缓存反而会漏)。
+// 上限 500 条(会话列表量级),超了整体清空。
+const TIME_CACHE_MAX = 500
+const timeCache = new Map<string, string>()
+
 function fmtTime(ts: number): string {
   if (!ts) return ''
+  const today = new Date().toDateString()
+  const key = `${ts}|${today}`
+  const hit = timeCache.get(key)
+  if (hit !== undefined) return hit
   const d = new Date(ts * 1000)
-  const now = new Date()
-  if (d.toDateString() === now.toDateString()) {
-    return d.toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' })
-  }
-  return d.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })
+  const out =
+    d.toDateString() === today
+      ? d.toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' })
+      : d.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })
+  if (timeCache.size >= TIME_CACHE_MAX) timeCache.clear()
+  timeCache.set(key, out)
+  return out
 }
 
 // guard 统一二次确认入口(无注入兜底直执行,防御性)
