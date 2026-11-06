@@ -23,6 +23,9 @@ const { autoState, isDesktop } = inject(SETTINGS_CTX) as SettingsCtx;
                   升级入口固定在面板底部(不随内容滚动):点「检查更新」即查 GitHub
                   Release 上的新版本,有更新会自动下载安装并重启。
                 </p>
+                <p class="dim" data-testid="about-channel">
+                  通道:稳定版只追稳定版;预览版会继续追预览,并在有正式版时被引导回正式版。
+                </p>
               </section>
 </template>
 

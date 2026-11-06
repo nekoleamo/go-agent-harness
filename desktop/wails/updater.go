@@ -87,6 +87,17 @@ func platformKey() string {
 func versionNewer(remote, current string) bool {
 	a, aPre := parseVer(remote)
 	b, bPre := parseVer(current)
+	// 通道口径(2026-11-06 用户决定):**稳定版只追稳定版**。
+	//
+	// 为什么单列一条而不是靠版本号比较:预览版的核心号往往更大(0.9.0-preview > 0.8.9),
+	// 光比号码会把它推给稳定版用户。而「正式版」这个发布语义是有承诺的 —— 稳定版用户不该
+	// 被自动推到预览通道;他们装了预览之后,下一个正式版的版本号还往往更小,对账会更绕。
+	//
+	// 预览版用户不设限:同核心号的正式版比预览版新(见文件末尾那条规则),所以预览用户会被
+	// 正常引导回正式版。"dev"(本地开发构建,解析不出核心号)同样不设限 —— 它本来就不是发布版。
+	if len(b) > 0 && !bPre && aPre {
+		return false
+	}
 	n := len(a)
 	if len(b) > n {
 		n = len(b)
