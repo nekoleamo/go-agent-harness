@@ -129,7 +129,15 @@ function fmtTime(ts: number): string {
     d.toDateString() === today
       ? d.toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' })
       : d.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })
-  if (timeCache.size >= TIME_CACHE_MAX) timeCache.clear()
+  // 同 StreamView:超限丢最老的 1/4,不清空(会话多时清空等于没有缓存)
+  if (timeCache.size >= TIME_CACHE_MAX) {
+    const it = timeCache.keys()
+    for (let i = 0; i < TIME_CACHE_MAX / 4; i++) {
+      const k = it.next().value
+      if (k === undefined) break
+      timeCache.delete(k)
+    }
+  }
   timeCache.set(key, out)
   return out
 }

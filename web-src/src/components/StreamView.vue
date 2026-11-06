@@ -115,7 +115,16 @@ function fmtTs(ts: string): string {
   if (hit !== undefined) return hit
   const d = new Date(ts)
   const out = isNaN(d.getTime()) ? '' : d.toLocaleTimeString('zh-CN', { hour12: false })
-  if (tsCache.size >= TS_CACHE_MAX) tsCache.clear()
+  // 超限时丢**最老的 1/4**(Map 按插入序),而不是整个清空:会话列表可能有几百条,
+  // 清空会让命中率归零、每次渲染全量重算(那正是记忆化要避免的)。
+  if (tsCache.size >= TS_CACHE_MAX) {
+    const it = tsCache.keys()
+    for (let i = 0; i < TS_CACHE_MAX / 4; i++) {
+      const k = it.next().value
+      if (k === undefined) break
+      tsCache.delete(k)
+    }
+  }
   tsCache.set(ts, out)
   return out
 }
