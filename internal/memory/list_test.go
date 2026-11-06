@@ -7,6 +7,7 @@ package memory
 //   ② 过滤把序号打乱 ⇒ `/memory rm <序号>` 删错条(序号必须始终来自同一份展示序)。
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -116,7 +117,7 @@ func TestBestMatch(t *testing.T) {
 }
 
 func TestAppendMetaFullRoundTrip(t *testing.T) {
-	path := t.TempDir() + "/m.md"
+	path := filepath.Join(t.TempDir(), "m.md") // 跨平台:不拼 "/" (Windows 上虽能跑,但规范要求 Join)
 	old := "部署统一走 make deploy"
 	if err := AppendMeta(path, old, "s1", "convention", 0.9); err != nil {
 		t.Fatal(err)

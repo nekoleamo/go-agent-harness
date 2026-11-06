@@ -120,13 +120,21 @@ func TestMemoryAutoExtractEndToEnd(t *testing.T) {
 	}
 
 	// ③ 观测面:本会话最近一次提取应有产出计数(而不是只有"成功了"三个字)。
+	//
+	// 这里必须**轮询**而不是紧跟文件断言:提取是异步的,实现顺序是「先落盘、再记观测」——
+	// 文件一出现就读 LastExtract 会在慢机器上读到**上一轮**(规则未命中)的观测值。
+	// Windows CI 就这么红过一次(run 42168857369),本地 macOS 快得多所以从没复现。
 	var es sdk.MemoryExtractStats
-	if err := c.Inject("ctx.memory", &es); err != nil && es == nil {
+	if err := c.Inject("ctx.memory", &es); err != nil || es == nil {
 		t.Fatalf("ctx.memory 应实现 MemoryExtractStats: %v", err)
+	}
+	deadline := time.Now().Add(6 * time.Second)
+	for time.Now().Before(deadline) && es.LastExtract().Produced == 0 {
+		time.Sleep(20 * time.Millisecond)
 	}
 	snap := es.LastExtract()
 	if snap.Produced == 0 || snap.Written == 0 {
-		t.Fatalf("观测值应记产出与直写条数,got %+v", snap)
+		t.Fatalf("观测值应记产出与直写条数(等不到有产出的观测),got %+v", snap)
 	}
 	if !es.ExtractEnabled() {
 		t.Fatal("data.extract=rule 时 ExtractEnabled 应为 true")
