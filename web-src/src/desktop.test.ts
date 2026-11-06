@@ -58,3 +58,23 @@ test('壳侧提示:非壳环境不请求(浏览器里不发多余请求)', async
 test('requestAttention 在浏览器里是 no-op(不抛、不发请求)', async () => {
   assert.equal(await requestAttention('t', 'b'), false)
 })
+
+// updateTarget:壳侧快照里「能升级到哪个版本」。
+//
+// 回归自 2026-11-06 真机反馈:0.8.5 上「检查更新」先显示「升级到 0.8.8-preview」,
+// 一秒后翻回「升级到 0.8.5」—— 壳侧把 version 报成了当前版本,面板轮询照单全收。
+// 反向验证:把 updateTarget 里的 `t === cur` 判断去掉,第 2 条就会转红。
+test('updateTarget:只有 available 且目标 ≠ 当前版本才给按钮', async () => {
+  const snap = (status: string, version: string | null) =>
+    ({ busy: false, seq: 1, status, message: '', version }) as Parameters<typeof updateTarget>[0]
+  const { updateTarget } = await import('./desktop.ts')
+  assert.equal(updateTarget(snap('available', '0.8.8-preview'), '0.8.5'), '0.8.8-preview')
+  assert.equal(
+    updateTarget(snap('available', '0.8.5'), '0.8.5'),
+    '',
+    '目标 == 当前版本 = 壳报错了字段:不能给「升级到自己」的按钮',
+  )
+  assert.equal(updateTarget(snap('upToDate', '0.8.8-preview'), '0.8.5'), '', '已最新不提供升级')
+  assert.equal(updateTarget(snap('available', ''), '0.8.5'), '', '没有版本号不猜')
+  assert.equal(updateTarget(snap('available', ' v0.8.9 '), '0.8.5'), 'v0.8.9', '两端空白要裁掉再判')
+})

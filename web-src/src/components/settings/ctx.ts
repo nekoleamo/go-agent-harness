@@ -430,6 +430,7 @@ export interface SettingsCtx {
   updMsg: any
   updOk: any
   updateState: any
+  updateTarget: any
   useDefaultPool: any
   useRawExpression: any
   useReplacePool: any

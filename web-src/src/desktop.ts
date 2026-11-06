@@ -266,6 +266,20 @@ export interface UpdateSnapshot {
   version: string | null
 }
 
+// updateTarget 从壳侧快照里取「可以升级到的版本」;不可升级返回空串。
+//
+// 为什么要单独一个纯函数(2026-11-06 真机反馈):0.8.5 上检查更新,按钮先显示
+// 「升级到 0.8.8-preview」,一秒后又翻回「升级到 0.8.5」。根因是壳侧 `/shell/update-state`
+// 把 version 一律报成**当前版本**,而面板 1.5 秒轮询一次并照单全收(壳侧已修)。
+// 这里再挡一层:目标版本等于当前运行版本时一律不给按钮 —— 「升级到自己」永远是错的,
+// 它只会把人引到一次必然失败(或空转)的安装。
+export function updateTarget(s: UpdateSnapshot, current: string): string {
+  const t = String(s.version ?? '').trim()
+  const cur = String(current ?? '').trim()
+  if (s.status !== 'available' || t === '' || t === cur) return ''
+  return t
+}
+
 // parseUpdateState 解析壳侧 `update_state` 的 JSON(纯函数,配单测)。
 // 形状不对时返回 null 而不是猜:猜错了会让面板显示假状态。
 export function parseUpdateState(raw: unknown): UpdateSnapshot | null {

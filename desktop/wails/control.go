@@ -418,6 +418,22 @@ func (c *controlPlane) handleBackup(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"path": path})
 }
 
+// updateStateVersion 决定这个快照里的 version 字段该报谁。
+//
+// 为什么需要它(2026-11-06 真机反馈):0.8.5 上「检查更新」先显示「升级到 0.8.8-preview」,
+// **一秒后按钮翻回「升级到 0.8.5」**。根因就在这个端点:不管状态是什么,version 一律报壳自己的
+// 当前版本;设置面板每 1.5s 轮询一次状态快照,拿到 seq 比本地新(刚查过)就照单全收 ⇒ 把
+// 「可更新到 0.8.8-preview」覆盖成「可更新到 0.8.5」。与正式版/preview 通道无关,纯粹是字段报错。
+//
+// 口径:**available 时报远端版本**(检查时记下的 seenVersion,托盘与面板两条入口都记),
+// 其余状态(upToDate/检查中/没装配)报当前版本 —— 那些状态下前端只用它显示「当前是哪个版本」。
+func updateStateVersion(state, current, seen string) string {
+	if state == "available" && seen != "" {
+		return seen
+	}
+	return current
+}
+
 // handleUpdateState 当前更新状态(状态机由 wails updater 持有,壳不再自己维护一份)。
 func (c *controlPlane) handleUpdateState(w http.ResponseWriter, _ *http.Request) {
 	st := "unconfigured"
@@ -426,7 +442,7 @@ func (c *controlPlane) handleUpdateState(w http.ResponseWriter, _ *http.Request)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":  st,
-		"version": version,
+		"version": updateStateVersion(st, version, c.sh.seenVersion()),
 		"busy":    c.sh.updateBusy.Load(),
 		"seq":     c.sh.updateSeq.Load(),
 	})

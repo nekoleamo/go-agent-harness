@@ -27,6 +27,7 @@ import {
   isDesktop,
   pickDirectory,
   updateState,
+  updateTarget,
   type UpdateSnapshot,
 } from "../desktop";
 import {
@@ -626,8 +627,9 @@ function applyUpdateSnapshot(u: UpdateSnapshot): void {
   if (u.seq <= lastUpdSeq.value) return;
   lastUpdSeq.value = u.seq;
   updBusy.value = false;
-  updAvailable.value =
-    u.status === "available" ? String(u.version ?? "新版本") : "";
+  // 目标版本口径只在 updateTarget 里(纯函数,配单测):目标 == 当前版本一律不给按钮
+  // (2026-11-06 真机:按钮从 0.8.8-preview 翻回 0.8.5,壳侧字段报错,已一并修)。
+  updAvailable.value = updateTarget(u, String(props.state.version ?? ""));
   updOk.value = u.status === "upToDate" || u.status === "installed";
   updMsg.value = u.message || "检查完成";
 }
@@ -3709,6 +3711,7 @@ provide(SETTINGS_CTX, {
   updMsg,
   updOk,
   updateState,
+  updateTarget,
   useDefaultPool,
   useRawExpression,
   useReplacePool,

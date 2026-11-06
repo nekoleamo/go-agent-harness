@@ -473,6 +473,29 @@ func TestVersionDrift(t *testing.T) {
 	}
 }
 
+// TestUpdateStateVersion 快照里的 version 该报谁。
+//
+// 回归自 2026-11-06 真机反馈:0.8.5 上检查更新,按钮先显示「升级到 0.8.8-preview」,
+// 一秒后被设置面板的轮询覆盖成「升级到 0.8.5」—— 因为 /shell/update-state 不管状态
+// 一律报壳自己的当前版本。反向验证:把 updateStateVersion 改成恒返回 current,本用例转红。
+func TestUpdateStateVersion(t *testing.T) {
+	cases := []struct {
+		state, current, seen, want string
+		why                        string
+	}{
+		{"available", "0.8.5", "0.8.8-preview", "0.8.8-preview", "可更新时必须是远端版本"},
+		{"available", "0.8.5", "", "0.8.5", "没记到远端版本:不能凭空造一个"},
+		{"upToDate", "0.8.5", "0.8.8-preview", "0.8.5", "已最新时前端只用它显示当前版本"},
+		{"checking", "0.8.5", "", "0.8.5", "检查中同上"},
+		{"unconfigured", "", "", "", "更新器没装配:如实留空"},
+	}
+	for _, c := range cases {
+		if got := updateStateVersion(c.state, c.current, c.seen); got != c.want {
+			t.Errorf("updateStateVersion(%q,%q,%q)=%q want %q(%s)", c.state, c.current, c.seen, got, c.want, c.why)
+		}
+	}
+}
+
 // TestSeenVersion 记录/读取最近一次检查到的远端版本(空串不覆盖),并发安全。
 func TestSeenVersion(t *testing.T) {
 	sh := &shell{}
