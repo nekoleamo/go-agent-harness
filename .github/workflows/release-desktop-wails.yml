@@ -47,7 +47,7 @@ jobs:
           cache: true
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 26
           cache: npm
           cache-dependency-path: web-src/package-lock.json
       - name: 外部插件与前端产物(go:embed 前置)
@@ -102,7 +102,7 @@ jobs:
           cache: true
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 26
           cache: npm
           cache-dependency-path: web-src/package-lock.json
       - name: 外部插件与前端产物(go:embed 前置)

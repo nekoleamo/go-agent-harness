@@ -34,7 +34,7 @@ jobs:
           cache: true
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 26
           cache: npm
           cache-dependency-path: web-src/package-lock.json
       - name: 预生成前端产物(web/dist 未入库,主包 go:embed 需要它)
