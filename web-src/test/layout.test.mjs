@@ -2935,6 +2935,81 @@ test('命令候选:打全命令名后回车直接执行', { skip: skip && skipWh
   }
 })
 
+// 参数级继续输入 = 筛选候选(第一百八十五批):选中命令后键入的字必须**收窄候选**,不许
+// 静默退出逐级态。这条护栏的牙:旧实现里命令文本一变就 resetLevel,于是多打一个 "b" 候选全没
+// (只剩空列表),用户只能先在几十项里用方向键找 —— 断言 "键入 be 后候选 = ['beta']" 会红。
+// 同时钉住两条口径:① 过滤词不写进命令文本(提交的是 /sample beta 而不是 /sample be);
+// ② 退格删过滤词、Esc 清过滤词,而命令文本始终是 /sample 。
+test('命令候选:参数级继续输入可筛选、退格/Esc 回到全量', { skip: skip && skipWhy }, async (t) => {
+  const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+  let page = null
+  try {
+    const stub = makeStub(true, true, false, false, true)
+    page = await open(ctx, stub, docks[1].dock)
+    const ta = '.input-slot textarea'
+    // 进参数级:/s 回车选中 sample(默认高亮 status,故先下移一项)
+    await page.fill(ta, '/s')
+    await page.waitForSelector('[data-cmd-hints] .hint', { timeout: 5000 })
+    await page.keyboard.press('ArrowDown')
+    await page.keyboard.press('Enter')
+    await page.waitForFunction(
+      () => Array.from(document.querySelectorAll('[data-cmd-hints] .hint .hn')).some((n) => n.textContent?.trim() === 'alpha'),
+      null,
+      { timeout: 5000 },
+    )
+    assert.equal(await page.inputValue(ta), '/sample ', '选中命令后文本就位')
+
+    const opts = () => page.$$eval('[data-cmd-hints] .hint:not(.filt) .hn', (ns) => ns.map((n) => n.textContent?.trim()))
+    assert.deepEqual(await opts(), ['alpha', 'beta'], '参数级全量候选')
+
+    // ① 继续输入 = 筛选(不是退出逐级态);过滤词在输入框里可见,但不进命令正文
+    await page.keyboard.type('be')
+    await page.waitForFunction(() => document.querySelector('[data-cmd-filter]') !== null, null, { timeout: 5000 })
+    assert.deepEqual(await opts(), ['beta'], '键入 be 后候选应只剩 beta')
+    assert.equal(await page.inputValue(ta), '/sample be', '过滤词留在输入框里作可见状态')
+
+    // ② 退格删过滤词(命令正文不动),删空后回到全量
+    await page.keyboard.press('Backspace')
+    assert.deepEqual(await opts(), ['beta'], '退格到 "b" 仍只匹配 beta')
+    await page.keyboard.press('Backspace')
+    await page.waitForFunction(() => document.querySelector('[data-cmd-filter]') === null, null, { timeout: 5000 })
+    assert.deepEqual(await opts(), ['alpha', 'beta'], '过滤词删空后候选恢复全量')
+    assert.equal(await page.inputValue(ta), '/sample ', '过滤词删空后命令正文完好')
+
+    // ③ 大小写不敏感子串过滤;Esc 清词后逐级态与命令正文都还在
+    await page.keyboard.type('A')
+    await page.waitForFunction(() => document.querySelector('[data-cmd-filter]') !== null, null, { timeout: 5000 })
+    assert.deepEqual(await opts(), ['alpha', 'beta'], '大写 "A" 也应命中(大小写不敏感)')
+    await page.keyboard.press('Escape')
+    await page.waitForFunction(() => document.querySelector('[data-cmd-filter]') === null, null, { timeout: 5000 })
+    assert.deepEqual(await opts(), ['alpha', 'beta'], 'Esc 后候选回到全量')
+    assert.equal(await page.inputValue(ta), '/sample ', 'Esc 先清过滤词(不退出逐级态)')
+
+    // ④ 筛选后回车选中高亮项 ⇒ 提交的是参数值,不是过滤词
+    await page.keyboard.type('be')
+    await page.waitForFunction(() => document.querySelector('[data-cmd-filter]') !== null, null, { timeout: 5000 })
+    await page.keyboard.press('Enter')
+    const deadline = Date.now() + 3000
+    while (Date.now() < deadline && !stub.seen.some((r) => r.path === '/api/input' && String(r.body).includes('/sample beta'))) {
+      await page.waitForTimeout(50)
+    }
+    const posts = stub.seen.filter((r) => r.path === '/api/input')
+    assert.ok(
+      posts.some((r) => String(r.body).includes('/sample beta')),
+      `筛选后回车应执行 /sample beta,实际: ${JSON.stringify(posts)}`,
+    )
+    assert.ok(
+      !posts.some((r) => /\/sample be(?!ta)/.test(String(r.body))),
+      `过滤词不该出现在提交的命令里: ${JSON.stringify(posts)}`,
+    )
+  } catch (e) {
+    await shoot(page, t.name)
+    throw e
+  } finally {
+    await ctx.close()
+  }
+})
+
 // 记忆面板的过滤与状态(P2):过滤条件必须**带到后端**(前端不自己解析展示行),
 // 且自动生成/自动调取的最近一次状态要看得见 —— 否则用户无法判断"记忆到底在不在工作"。
 test('记忆面板:过滤条带查询参数、状态行可见', { skip: skip && skipWhy }, async (t) => {

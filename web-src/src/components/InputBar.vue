@@ -226,8 +226,18 @@ function guard(title: string, run: () => void): void {
 // 选中命令后逐级拉候选:有枚举 → 列表点击继续;无枚举但有自由参数 → 提示手动输入;皆无 → 结束。
 const levelCmd = ref('') // 正在逐级选择的命令名('' = 命令级)
 const levelPath = ref<string[]>([]) // 已选参数值(不含命令名)
-const levelItems = ref<CommandView[]>([]) // 当前级候选(复用渲染形状)
+const levelAll = ref<CommandView[]>([]) // 当前级全量候选(过滤前;退格/清词恢复用)
+const levelFilter = ref('') // 参数级过滤词(继续输入即筛选;只在输入框里可见,**不进提交的命令正文**)
 const levelFree = ref('') // 自由参数提示(无枚举时)
+// levelItems 当前级可见候选 = 全量按过滤词筛出(子串、大小写不敏感;值或说明任一命中)。
+// 为什么过滤词要跟命令正文分开算:正文是「提交时原样执行」的字符串,
+// 把筛选词当参数带上去就是 /memory list --kind 里的非法参数。
+// TUI 选择器同一口径(tui/picker.go 的 Pick.Filter + filterOptions)。
+const levelItems = computed(() => {
+  const q = levelFilter.value.trim().toLowerCase()
+  if (!q) return levelAll.value
+  return levelAll.value.filter((i) => i.name.toLowerCase().includes(q) || i.desc.toLowerCase().includes(q))
+})
 // levelText = 逐级流程自己写下的命令文本:只有它才算「仍在逐级」——
 // 用户手工改写命令文本(如从“备份到自定义路径”改成“/backup restore”)必须退出逐级态,
 // 否则会留一个陈旧的“继续输入…”提示,把命令当成的参数级候选(提示与实际参数不符)。
@@ -277,8 +287,9 @@ function moveHint(delta: number): void {
   const cur = hintIdx.value
   hintIdx.value = cur < 0 ? (delta > 0 ? 0 : n - 1) : (cur + delta + n) % n
   void nextTick(() => {
-    const el = hintBox.value?.children[hintIdx.value] as HTMLElement | undefined
-    el?.scrollIntoView({ block: 'nearest' })
+    // 只数候选行:过滤状态行(.filt)不是候选,直接拿 children[i] 会错位到它身上
+    const rows = hintBox.value?.querySelectorAll('.hint:not(.filt)')
+    ;(rows?.[hintIdx.value] as HTMLElement | undefined)?.scrollIntoView({ block: 'nearest' })
   })
 }
 
@@ -297,7 +308,8 @@ function isCompleteCommand(): boolean {
 function resetLevel(): void {
   levelCmd.value = ''
   levelPath.value = []
-  levelItems.value = []
+  levelAll.value = []
+  levelFilter.value = ''
   levelFree.value = ''
   levelText.value = ''
 }
@@ -311,18 +323,19 @@ interface LevelState {
 async function loadLevel(): Promise<LevelState> {
   const name = levelCmd.value
   if (!name) return { items: 0, free: false, done: true }
+  levelFilter.value = '' // 换到新一级:上一级的过滤词不跟过来(否则新级可能一进来就是空的)
   try {
     const resp = await api.commandOptions(name, levelPath.value)
     // 空枚举/空自由参数可能是 [] 也可能是 null(旧后端/未归零的响应)→ 一律按数组消费,
     // 否则 items.map 抛错被 catch 吞掉 → 自由参数提示整级消失(命令链静默断掉)。
     const items = resp.items ?? []
-    levelItems.value = items.map((i) => ({ name: i.value, usage: '', desc: i.desc }))
+    levelAll.value = items.map((i) => ({ name: i.value, usage: '', desc: i.desc }))
     levelFree.value = items.length === 0 && !resp.done ? (resp.freeArgs ?? []).join(' | ') : ''
     return { items: items.length, free: !!levelFree.value, done: !!resp.done }
   } catch {
     // 拉不到参数级(旧后端/网络抖动)按"该级没有可选项"处理 —— 命令本身仍可执行,
     // 比卡在逐级态里出不去好。
-    levelItems.value = []
+    levelAll.value = []
     levelFree.value = ''
     return { items: 0, free: false, done: true }
   }
@@ -337,9 +350,23 @@ async function pickLevel(value: string): Promise<void> {
   if (st.items === 0 && !st.free && levelText.value === text.value) void submit()
 }
 
-// 手工改写命令文本(换成别的命令/别的参数)→ 退出逐级态,避免陈旧候选
+// 手工改写命令文本(换成别的命令/别的参数)→ 退出逐级态,避免陈旧候选。
+// 例外:参数级且本级**有枚举候选**时,紧跟在命令文本后多打的字 = 过滤词(不是改命令)。
+// 关键细节:过滤词就**留在输入框里**(文本 = levelText + 过滤词)—— 不回写命令文本。
+// 回写会把刚敲的字抹掉:下一次按键合到的是 levelText 而不是 levelText+过滤词,
+// 于是过滤词永远只剩最后一个字符(实测、“be” 只剩 “e”,候选停在 2 项)。
+// 提交/选中时再用 levelText 作命令正文,过滤词不进命令(tui/picker.go 的 Pick.Filter 同口径)。
 watch(text, (v) => {
-  if (levelCmd.value && v !== levelText.value) resetLevel()
+  if (!levelCmd.value) return
+  if (v === levelText.value) {
+    levelFilter.value = '' // 退格删到只剩命令正文 = 过滤词删空(不清就会留个陈旧过滤词卡住候选)
+    return
+  }
+  if (levelAll.value.length && v.startsWith(levelText.value)) {
+    levelFilter.value = v.slice(levelText.value.length)
+    return
+  }
+  resetLevel()
 })
 
 const THINK = ['off', 'low', 'medium', 'high'] as const
@@ -411,6 +438,13 @@ function onKeydown(e: KeyboardEvent): void {
     return
   }
   if (e.key === 'Escape') {
+    // 参数级过滤中:Esc 先清过滤词恢复全量候选(与 TUI pickFilterEsc 同口径)。
+    if (levelCmd.value && levelFilter.value) {
+      e.preventDefault()
+      levelFilter.value = ''
+      text.value = levelText.value // 过滤词在输入框里,一并抹掉
+      return
+    }
     // 候选开着时 Esc 先关候选(第一步),再按才清空输入 —— 与抽屉同款的分层返回。
     if (hintList.value.length || levelFree.value) {
       e.preventDefault()
@@ -429,7 +463,10 @@ function onKeydown(e: KeyboardEvent): void {
 }
 
 async function submit(): Promise<void> {
-  const t = text.value.trim()
+  // 参数级过滤词是输入框里的尾巴(见 watch(text)),不属于命令文本 —— 提交前剪掉,
+  // 否则 /memory list 加个筛选词就会变成带非法参数的 /memory list --k
+  const raw = levelCmd.value && levelFilter.value ? levelText.value : text.value
+  const t = raw.trim()
   if (!t || props.disabled || uploading.value) return
   if (attachments.value.length && t.startsWith('/')) {
     setAttErr('命令消息不支持附件')
@@ -600,7 +637,12 @@ defineExpose({ cycleThinking, cycleSandbox, getText: () => text.value, setText: 
       </div>
     </Teleport>
     <!-- / 命令提示(浮于外壳上方) -->
-    <div v-if="hintList.length || levelFree" ref="hintBox" class="float" data-cmd-hints>
+    <div v-if="hintList.length || levelFree || levelFilter" ref="hintBox" class="float" data-cmd-hints>
+      <!-- 参数级过滤状态行:告诉用户「多打的字被当成筛选」,以及怎么退回去 -->
+      <div v-if="levelFilter" class="hint filt" data-cmd-filter>
+        <span class="hn">过滤</span>
+        <span class="hd">{{ levelFilter }} → {{ levelItems.length }}/{{ levelAll.length }} 项 {{ levelItems.length ? '(退格收窄/Esc 恢复)' : '无匹配(退格清除)' }}</span>
+      </div>
       <div
         v-for="(h, i) in hintList"
         :key="h.name"
@@ -1038,8 +1080,19 @@ defineExpose({ cycleThinking, cycleSandbox, getText: () => text.value, setText: 
 .hint.sel .hn {
   text-decoration: underline;
 }
-.hint.free {
+.hint.free,
+.hint.filt {
   cursor: default;
+}
+/* 过滤状态行压一行、不参与高亮(hintIdx 只数候选,故用 filt 单独一类) */
+.hint.filt {
+  padding: 2px 10px 4px;
+}
+.hint.filt .hn {
+  min-width: 0;
+  font-weight: 500;
+  color: var(--fg-dim);
+  text-decoration: none;
 }
 .hint.free .hd {
   color: var(--fg-dim);
