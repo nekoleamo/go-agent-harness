@@ -620,3 +620,60 @@ func TestMemoryCommandArgLevelHints(t *testing.T) {
 		t.Fatalf("只选了命令名时不该有二级提示,got %v", free)
 	}
 }
+
+// —— 收录范围(scope)——
+
+// 没有项目上下文时 `/memory scope` 必须显式报错:范围行落在**项目文件**里,
+// 悄悄写进用户级会让"只描述本项目"变成全局口径。
+func TestCmdMemoryScopeWithoutContext(t *testing.T) {
+	h := memHost(t)
+	if _, err := h.cmdMemory([]string{"scope", "只收编译约定"}); err == nil {
+		t.Fatal("没有项目上下文应报错")
+	}
+	if out, err := h.cmdMemory([]string{"scope"}); err != nil || !strings.Contains(out, "还没设收录范围") {
+		t.Fatalf("读范围应给空态提示: %v(%s)", err, out)
+	}
+}
+
+func TestCmdMemoryScopeSetShowClear(t *testing.T) {
+	t.Setenv("GAH_HOME", t.TempDir())
+	c, _ := buildEnv(t)
+	for _, p := range []sdk.Plugin{&hostsystemprompt.Plugin{}, &hostsessionlog.Plugin{},
+		&hostcwdsessions.Plugin{}, &hostmemory.Plugin{}} {
+		if _, err := p.Start(c, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h := &Host{c: c}
+	var cs sdk.CwdSessions
+	if err := c.Inject("ctx.cwdSessions", &cs); err != nil {
+		t.Fatal(err)
+	}
+	key := cs.Current()
+	if key == "" {
+		t.Skip("拿不到项目键,跳过")
+	}
+	scope := "只收编译/测试/发布约定,不收个人偏好"
+	out, err := h.cmdMemory([]string{"scope", scope})
+	if err != nil || !strings.Contains(out, "已设置本项目收录范围") {
+		t.Fatalf("设置范围: %v(%s)", err, out)
+	}
+	// 落盘 + 回显 + 出现在 /memory project 的展示里(三处同一份口径)。
+	got, err := memory.ScopeLine(memory.ProjectPath(key))
+	if err != nil || got != scope {
+		t.Fatalf("应落进项目文件: %q %v", got, err)
+	}
+	if out, _ := h.cmdMemory([]string{"scope"}); !strings.Contains(out, scope) {
+		t.Fatalf("回显应含范围: %s", out)
+	}
+	if out, _ := h.cmdMemory([]string{"project"}); !strings.Contains(out, "收录范围:"+scope) {
+		t.Fatalf("/memory project 应显示收录范围: %s", out)
+	}
+	// 清除
+	if out, err := h.cmdMemory([]string{"scope", "--clear"}); err != nil || !strings.Contains(out, "已清除") {
+		t.Fatalf("清除范围: %v(%s)", err, out)
+	}
+	if got, _ := memory.ScopeLine(memory.ProjectPath(key)); got != "" {
+		t.Fatalf("清除后不该还在: %q", got)
+	}
+}

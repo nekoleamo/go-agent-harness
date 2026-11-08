@@ -7,9 +7,12 @@
 //   - Provide `ctx.memory`,供命令与面板经宿主读改。
 //
 // 不做什么(边界,写在代码里免得后来以为漏了):
-//   - **不自动提取记忆**。自动提取意味着"模型自己决定把什么写进长期记忆",那是静默提权
-//     (记忆会长期影响后续每次对话)。M1 只做手动(`/memory add`);自动提取是 M2,须先
-//     把「候选 + 用户批量确认 + 限流」三件事做完。
+//   - **不静默提权**:自动**直写**只限三类可核对的事实(preference/convention/decision);
+//     pitfall 与 env 永远走候选池等人工转正(见 internal/memory 的 AutoWriteKinds)。
+//   - **不做记忆系统路由**:不给每回合加一次「选哪套记忆机制/哪个状态集群」的模型调用。
+//     Routed CL(arXiv 2610.38796)自己的对照显示:选择性检索型记忆加路由无一致增益、
+//     成本反而 +8–29%,而换成 ground-truth 固定分配只多 0.008–0.071 —— 状态边界才是
+//     主要矛盾,而本插件已用 user.md / projects/<key>.md 两级**静态**切好了。
 //   - **不静默失败**:记忆文件读不出来/预算截断,都不假装"没有记忆";截断会写在片段里。
 package hostmemory
 
@@ -293,7 +296,7 @@ func (s *Service) section() string {
 	if len(user) == 0 && len(project) == 0 {
 		return ""
 	}
-	text := memory.Inject(user, project, s.budget)
+	text := memory.Inject(user, project, s.budget, s.scope(s.currentProjectKey()))
 	if strings.TrimSpace(text) == "" {
 		return ""
 	}
@@ -304,6 +307,37 @@ func (s *Service) section() string {
 		text += fmt.Sprintf("\n(共 %d 条记忆,预算内放进了 %d 条;其余未进上下文——用 `/memory list` 看全部)\n", total, injected)
 	}
 	return text
+}
+
+// scope 当前项目的收录范围(读不出来 = 不渲染;日志留痕,不把 IO 故障伪装成"没设过")。
+func (s *Service) scope(key string) string {
+	if key == "" {
+		return ""
+	}
+	sc, err := memory.ScopeLine(memory.ProjectPath(key))
+	if err != nil {
+		s.c.Logger().Warn("host-memory: 读收录范围失败(本次不渲染)", "err", err)
+		return ""
+	}
+	return sc
+}
+
+// ProjectScope 实现 sdk.MemoryProjectScope:当前项目的「本文件收录什么」。
+func (s *Service) ProjectScope() (string, error) {
+	key := s.currentProjectKey()
+	if key == "" {
+		return "", nil
+	}
+	return memory.ScopeLine(memory.ProjectPath(key))
+}
+
+// SetProjectScope 实现 sdk.MemoryProjectScope(text 空 = 清除)。
+func (s *Service) SetProjectScope(text string) error {
+	key := s.currentProjectKey()
+	if key == "" {
+		return fmt.Errorf("memory: 没有当前项目(先切到一个工作区会话再设)")
+	}
+	return memory.SetScope(key, text)
 }
 
 // Augment 自动调取:按本轮查询检索 top-K,作为**尾部消息**附在上下文末尾。
@@ -431,6 +465,7 @@ func countLines(text string) int {
 }
 
 var _ sdk.MemoryService = (*Service)(nil)
+var _ sdk.MemoryProjectScope = (*Service)(nil)
 var _ sdk.MemoryRetrieveStats = (*Service)(nil)
 var _ sdk.MemoryFilteredList = (*Service)(nil)
 var _ sdk.MemoryToolStats = (*Service)(nil)

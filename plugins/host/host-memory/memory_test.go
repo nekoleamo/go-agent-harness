@@ -14,6 +14,7 @@ import (
 
 	"github.com/nekoleamo/go-agent-harness/core/ctx"
 	"github.com/nekoleamo/go-agent-harness/core/event"
+	"github.com/nekoleamo/go-agent-harness/internal/memory"
 	"github.com/nekoleamo/go-agent-harness/internal/prefs"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-system-prompt"
 	"github.com/nekoleamo/go-agent-harness/sdk"
@@ -122,8 +123,9 @@ func TestTruncationIsDisclosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := &Plugin{}
-	// 预算小到只放得下一条
-	if _, err := p.Start(c, &sdk.Manifest{Data: map[string]any{"budget_bytes": 340}}); err != nil {
+	// 预算小到只放得下一条。**按壳开销表达**:写死字节数会在壳大小一变时
+	// 悄悄从"放一条"变成"一条都放不下",而那时用例仍然绿(它就失效了)。
+	if _, err := p.Start(c, &sdk.Manifest{Data: map[string]any{"budget_bytes": int(memory.ShellOverhead) + 20}}); err != nil {
 		t.Fatal(err)
 	}
 	var ms sdk.MemoryService

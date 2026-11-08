@@ -673,6 +673,20 @@ type MemoryCandidates interface {
 	CandidateQuota() (used, limit, today, todayLimit int)
 }
 
+// MemoryProjectScope 可选扩展(由 host-memory 实现):项目级记忆文件的「本文件收录什么」。
+//
+// 为什么放在服务侧而不是命令侧自己算路径:项目键的**唯一来源**是当前会话的工作区
+// (host-memory 的 currentProjectKey)。命令侧再算一次 sdk.ProjectKeyFromCwd() 就会
+// 出现「/ws 切换后命令与注入指向两个文件」这类静默错位。
+//
+// 边界:只存**人要拍板的一句口径**,不自动生成 —— 模型写范围等于又一个静默提权入口。
+type MemoryProjectScope interface {
+	// ProjectScope 当前项目的收录范围(空 = 没设过,不是错误)。
+	ProjectScope() (string, error)
+	// SetProjectScope 设置收录范围(text 空 = 清除);没有当前项目时显式报错。
+	SetProjectScope(text string) error
+}
+
 // MemoryRetrieveStats 可选扩展(由 host-memory 实现):最近一次**自动调取**的观测值。
 //
 // 为什么不在 MemoryService 上加:那是破坏性变更(接口加方法 = 既有实现全断)。

@@ -35,7 +35,7 @@ func TestProposeDoesNotEnterMemory(t *testing.T) {
 		t.Fatalf("提候选不该创建记忆文件(stat err=%v)", err)
 	}
 	// 注入块对候选无感:Inject 只吃传进去的 entries,这里断言「候选池不在任何注入路径上」
-	if Inject(nil, nil, DefaultInjectBudget) != "" {
+	if Inject(nil, nil, DefaultInjectBudget, "") != "" {
 		t.Fatal("空输入时 Inject 应为空")
 	}
 	_ = path

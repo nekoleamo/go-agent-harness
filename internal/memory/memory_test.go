@@ -135,7 +135,7 @@ func TestSortedForDisplaySameDayNewestFirst(t *testing.T) {
 func TestInjectBudgetKeepsNewestFirst(t *testing.T) {
 	old := Entry{Date: "2026-01-01", Content: "很旧的口径"}
 	recent := Entry{Date: "2026-10-01", Content: "最新口径"}
-	text := Inject([]Entry{old, recent}, nil, 1024)
+	text := Inject([]Entry{old, recent}, nil, 1024, "")
 	if !strings.Contains(text, "最新口径") {
 		t.Fatalf("应含最新口径:\n%s", text)
 	}
@@ -144,7 +144,7 @@ func TestInjectBudgetKeepsNewestFirst(t *testing.T) {
 	}
 	// 极小预算:只放新的(预算 = 壳开销 + 一条 ⇒ 放得下一条,放不下两条)
 	one := len("  · ") + len(recent.Content) + 1
-	small := Inject([]Entry{old, recent}, nil, ShellOverhead+one)
+	small := Inject([]Entry{old, recent}, nil, ShellOverhead+one, "")
 	if strings.Contains(small, "很旧的口径") {
 		t.Fatalf("预算不足时应丢掉旧的:\n%s", small)
 	}
@@ -153,13 +153,13 @@ func TestInjectBudgetKeepsNewestFirst(t *testing.T) {
 	}
 	// 契约本身:输出总长不得超过预算(含抬头与围栏)
 	for _, b := range []int{ShellOverhead + one, 512, 2048} {
-		got := Inject([]Entry{old, recent}, []Entry{{Date: "2026-09-01", Content: "项目口径"}}, b)
+		got := Inject([]Entry{old, recent}, []Entry{{Date: "2026-09-01", Content: "项目口径"}}, b, "")
 		if len(got) > b {
 			t.Fatalf("输出 %d 字节超过预算 %d", len(got), b)
 		}
 	}
 	// 预算连壳都放不下:宁可不注入
-	if got := Inject([]Entry{old}, nil, ShellOverhead); got != "" {
+	if got := Inject([]Entry{old}, nil, ShellOverhead, ""); got != "" {
 		t.Fatalf("预算不足一整块时不该注入半块: %q", got)
 	}
 }
@@ -167,7 +167,7 @@ func TestInjectBudgetKeepsNewestFirst(t *testing.T) {
 // TestInjectDeclaresDataNotInstruction 注入块必须自带边界声明(记忆是数据不是指令,
 // 且位次低于指令层)—— 这是防提示注入的关键一行。
 func TestInjectDeclaresDataNotInstruction(t *testing.T) {
-	text := Inject([]Entry{{Date: "2026-10-01", Content: "x"}}, nil, 1024)
+	text := Inject([]Entry{{Date: "2026-10-01", Content: "x"}}, nil, 1024, "")
 	for _, must := range []string{"以指令为准", "<memory>", "</memory>", "可能已过时"} {
 		if !strings.Contains(text, must) {
 			t.Fatalf("注入块应含 %q:\n%s", must, text)
@@ -176,7 +176,7 @@ func TestInjectDeclaresDataNotInstruction(t *testing.T) {
 }
 
 func TestInjectEmptyIsEmpty(t *testing.T) {
-	if Inject(nil, nil, 1024) != "" {
+	if Inject(nil, nil, 1024, "") != "" {
 		t.Fatal("没有记忆时注入块应为空(不占提示词)")
 	}
 }

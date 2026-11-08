@@ -18,6 +18,7 @@ import (
 
 	"github.com/nekoleamo/go-agent-harness/core/ctx"
 	"github.com/nekoleamo/go-agent-harness/core/event"
+	"github.com/nekoleamo/go-agent-harness/internal/memory"
 	"github.com/nekoleamo/go-agent-harness/plugins/host/host-system-prompt"
 	"github.com/nekoleamo/go-agent-harness/sdk"
 )
@@ -198,7 +199,7 @@ func TestUnknownRetrieveModeFailsLoudly(t *testing.T) {
 
 func TestAugmentBudgetTruncationIsVisible(t *testing.T) {
 	// 稳定块极小(只放最新一条);检索预算 520(扣壳后可放约一条)。
-	c, svc := startServiceWith(t, map[string]any{"budget_bytes": 360, "retrieve_budget": 520})
+	c, svc := startServiceWith(t, map[string]any{"budget_bytes": int(memory.ShellOverhead) + 40, "retrieve_budget": int(memory.ShellOverhead) + 200})
 	for i := 0; i < 4; i++ {
 		if err := svc.Add(fmt.Sprintf("部署注意事项 %d:%s", i, strings.Repeat("细节", 12)), ""); err != nil {
 			t.Fatal(err)
@@ -214,7 +215,8 @@ func TestAugmentBudgetTruncationIsVisible(t *testing.T) {
 }
 
 func TestAugmentBudgetTooSmallToFitAny(t *testing.T) {
-	c, svc := startServiceWith(t, map[string]any{"budget_bytes": 360, "retrieve_budget": 330})
+	// 检索预算只够壳、不够任何一条:那一条必须显示成「有命中但放不下」。
+	c, svc := startServiceWith(t, map[string]any{"budget_bytes": int(memory.ShellOverhead) + 40, "retrieve_budget": int(memory.ShellOverhead) + 5})
 	if err := svc.Add("部署统一走 make deploy", ""); err != nil {
 		t.Fatal(err)
 	}

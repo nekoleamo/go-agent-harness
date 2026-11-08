@@ -114,14 +114,23 @@ func (h *Host) cmdMemory(args []string) (string, error) {
 		return "记忆注入:" + onoff(ms.SetEnabled(true)), nil
 	case "off":
 		return "记忆注入:" + onoff(ms.SetEnabled(false)), nil
+	case "scope":
+		return h.memoryScope(ms, rest)
 	case "project":
 		// 项目级:展示 + 写入入口(add --project)。项目级**自动提取**仍属未做项
 		// (提取器统一写用户级;按项目分流需要先给 TurnDigest 带 projectKey)。
 		lines := h.memoryProjectLines(ms)
-		if len(lines) == 0 {
-			return "本项目还没有项目级记忆。用 /memory add --project <内容> 记一条;用户级用 /memory list 看", nil
+		scopeLine := ""
+		if ps, ok := ms.(sdk.MemoryProjectScope); ok {
+			if cur, err := ps.ProjectScope(); err == nil && cur != "" {
+				scopeLine = "\n  收录范围:" + cur
+			}
 		}
-		return "本项目记忆:\n  " + strings.Join(lines, "\n  "), nil
+		if len(lines) == 0 {
+			return "本项目还没有项目级记忆。用 /memory add --project <内容> 记一条;用户级用 /memory list 看" +
+				scopeLine, nil
+		}
+		return "本项目记忆:" + scopeLine + "\n  " + strings.Join(lines, "\n  "), nil
 	default:
 		// 不是已知子命令 ⇒ 当成「用户直接说了要记的内容」(最自然的用法:
 		// `/memory 周报里先写结论`,不必先打 add)。
@@ -136,6 +145,41 @@ func (h *Host) cmdMemory(args []string) (string, error) {
 		}
 		return "已记住:" + content, nil
 	}
+}
+
+// memoryScope `/memory scope [<一句话>|--clear]`:项目记忆的「本文件收录什么」。
+//
+// 为什么独立子命令而不并进 add:它描述的是**文件级的边界**(哪些该写这里),与
+// 「记一条」是两件事 —— 混在 add 后面会让人以为它是一条记忆。
+// 为什么不由模型写:自动生成范围 = 又一个静默提权入口(MemoryProjectScope 注释同源)。
+func (h *Host) memoryScope(ms sdk.MemoryService, arg string) (string, error) {
+	ps, ok := ms.(sdk.MemoryProjectScope)
+	if !ok {
+		return "", errString("该构建不支持收录范围(ctx.memory 未实现 MemoryProjectScope)")
+	}
+	arg = strings.TrimSpace(arg)
+	if arg == "" {
+		cur, err := ps.ProjectScope()
+		if err != nil {
+			return "", errString("读取收录范围失败:" + err.Error())
+		}
+		if cur == "" {
+			return "本项目还没设收录范围(写这个文件的人和模型只能靠猜该写什么)。\n" +
+				"  /memory scope <一句话>  设置,如「只收编译/测试/发布约定,不收个人偏好」", nil
+		}
+		return "本项目收录范围:" + cur + "\n" +
+			"  /memory scope <新描述>  改写;/memory scope --clear  清除", nil
+	}
+	if arg == "--clear" {
+		if err := ps.SetProjectScope(""); err != nil {
+			return "", errString("清除失败:" + err.Error())
+		}
+		return "已清除本项目的收录范围(注入里那一行不再出现)", nil
+	}
+	if err := ps.SetProjectScope(arg); err != nil {
+		return "", errString(err.Error())
+	}
+	return "已设置本项目收录范围:" + arg + "\n(它会作为「本项目记忆」小节的一行出现在系统提示里;写错就重设或 --clear)", nil
 }
 
 // memoryStatus 概览:开关 + 两条记忆的数量 + 预算 + **最近一次自动调取**。

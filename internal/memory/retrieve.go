@@ -518,12 +518,19 @@ func LoadSnapshot(projectKey string, stableBudget int) (Snapshot, error) {
 	}
 	user = Active(user)
 	var proj []Entry
+	var projScope string
 	if strings.TrimSpace(projectKey) != "" {
 		proj, err = Read(ProjectPath(projectKey))
 		if err != nil {
 			return Snapshot{}, fmt.Errorf("memory: 读项目级记忆: %w", err)
 		}
 		proj = Active(proj)
+		// 收录范围行与条目同文件:读盘失败**显式返回** —— 与上面两处的纪律一致
+		// (一次 IO 故障不该伪装成「这个项目没有收录范围」)。
+		projScope, err = ScopeLine(ProjectPath(projectKey))
+		if err != nil {
+			return Snapshot{}, err
+		}
 	}
 	items := append(entriesToItems(user, ScopeUser), entriesToItems(proj, ScopeProject)...)
 	if strings.TrimSpace(projectKey) != "" {
@@ -535,8 +542,8 @@ func LoadSnapshot(projectKey string, stableBudget int) (Snapshot, error) {
 	}
 	return Snapshot{
 		Items:   items,
-		Stable:  InjectedContents(user, proj, stableBudget),
-		StableN: StableCount(user, proj, stableBudget),
+		Stable:  InjectedContents(user, proj, stableBudget, projScope),
+		StableN: StableCount(user, proj, stableBudget, projScope),
 	}, nil
 }
 

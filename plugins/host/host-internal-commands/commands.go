@@ -202,7 +202,7 @@ func (h *Host) specs() []sdk.CommandSpec {
 				}},
 			}},
 		// 跨会话记忆(第一百零九批):子命令 + 自由文本(记忆正文是自然语言)。
-		{Name: "memory", Usage: "/memory status|list [--kind <类型>] [--auto] [--stale <天数>]|add [--project] <内容>|rm <序号>|rm --from <会话>|on|off|project|propose <内容>|candidates|accept <序号>|reject <序号>|accept-all|reject-all|extract on|off",
+		{Name: "memory", Usage: "/memory status|list [--kind <类型>] [--auto] [--stale <天数>]|add [--project] <内容>|rm <序号>|rm --from <会话>|on|off|project|scope [<一句话>|--clear]|propose <内容>|candidates|accept <序号>|reject <序号>|accept-all|reject-all|extract on|off",
 			Desc: "跨会话记忆:记住跨对话要长期遵守的事(偏好、约定、口径);每轮带进上下文,按预算截断;propose 先进候选池(不进上下文),确认后才生效",
 			Run:  h.cmdMemory,
 			Args: []sdk.ArgLevel{
