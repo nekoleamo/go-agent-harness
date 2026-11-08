@@ -10,6 +10,7 @@ package hostintcmd
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -770,3 +771,100 @@ func TestCmdMemoryStatusShowsFailTrigger(t *testing.T) {
 		t.Fatalf("应回显已提候选条数: %s", out)
 	}
 }
+
+// —— 窄接口缺失 / 试查的各种分支(覆盖率与"显式不降级"两条一起钉)——
+
+// fakeMem 只实现 sdk.MemoryService(不实现任何可选窄接口)。
+//
+// 用途:证明命令面对"旧构建 / 精简宿主"是**显式说不支持**,而不是静默什么都不显示
+// (静默会让用户以为"没有失败触发"或"试查没命中")。
+type fakeMem struct{}
+
+func (fakeMem) Enabled() bool                      { return true }
+func (fakeMem) SetEnabled(bool) bool               { return true }
+func (fakeMem) Budget() int                        { return 2048 }
+func (fakeMem) Add(string, string) error           { return nil }
+func (fakeMem) List() []string                     { return nil }
+func (fakeMem) Remove(int) (string, error)         { return "", nil }
+func (fakeMem) RemoveBySource(string) (int, error) { return 0, nil }
+
+// fakeProbe 在 fakeMem 之上实现试查(含错误分支与三种判定)。
+type fakeProbe struct {
+	fakeMem
+	res sdk.MemoryProbeResult
+	err error
+}
+
+func (f fakeProbe) Probe(string) (sdk.MemoryProbeResult, error) { return f.res, f.err }
+
+func fakeHost(t *testing.T, ms sdk.MemoryService) *Host {
+	t.Helper()
+	c, _ := buildEnv(t)
+	if err := c.Provide("ctx.memory", ms); err != nil {
+		t.Fatal(err)
+	}
+	return &Host{c: c}
+}
+
+func TestCmdMemoryWithoutOptionalCapabilities(t *testing.T) {
+	h := fakeHost(t, fakeMem{})
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"probe", "部署"}, "不支持试查"},
+		{[]string{"scope", "一句话"}, "不支持收录范围"},
+	} {
+		if _, err := h.cmdMemory(tc.args); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%v 应显式报「%s」, got %v", tc.args, tc.want, err)
+		}
+	}
+	// status 里两个窄接口的通知行都不显示(不是显示 0)
+	out, err := h.cmdMemory([]string{"status"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "成本账") || strings.Contains(out, "失败触发") {
+		t.Fatalf("未实现窄接口时不该出现这两行: %s", out)
+	}
+}
+
+func TestCmdMemoryProbeBranches(t *testing.T) {
+	long := strings.Repeat("细", 80)
+	h := fakeHost(t, fakeProbe{res: sdk.MemoryProbeResult{
+		Query: "部署", Total: 4, Budget: 100, Bytes: 90, Truncated: true,
+		Terms: []string{"部署"},
+		Hits: []sdk.MemoryProbeHit{
+			{Scope: "project", Score: 0.83, Content: long, Selected: true},
+			{Scope: "user", Score: 0.55, Content: "稳定块里的一条", Stable: true},
+			{Scope: "user", Score: 0.40, Content: "挤不进预算的一条"},
+		},
+	}})
+	out, err := h.cmdMemory([]string{"probe", "部署"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, must := range []string{"会注入", "已在稳定块", "挤不进预算", "已截断", "…"} {
+		if !strings.Contains(out, must) {
+			t.Fatalf("试查输出应含 %q:\n%s", must, out)
+		}
+	}
+	// 试查失败要如实回错因(不伪装成零命中)
+	bad := fakeHost(t, fakeProbe{err: os.ErrPermission})
+	if _, err := bad.cmdMemory([]string{"probe", "部署"}); err == nil || !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("试查失败应带上原因, got %v", err)
+	}
+}
+
+// scope 读失败也要如实回错因(不伪装成"还没设过")。
+func TestCmdMemoryScopeReadError(t *testing.T) {
+	h := fakeHost(t, fakeScopeErr{})
+	if _, err := h.cmdMemory([]string{"scope"}); err == nil || !strings.Contains(err.Error(), "读不到") {
+		t.Fatalf("读范围失败应带上原因, got %v", err)
+	}
+}
+
+type fakeScopeErr struct{ fakeMem }
+
+func (fakeScopeErr) ProjectScope() (string, error) { return "", errors.New("读不到") }
+func (fakeScopeErr) SetProjectScope(string) error  { return errors.New("读不到") }

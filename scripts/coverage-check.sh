@@ -176,6 +176,7 @@ internal/providerfile 72
 internal/kernelsandbox 50
 internal/kernelsandbox@linux 43
 internal/mcpconfig 88
+internal/memory 84
 internal/sysproxy 65
 internal/embed 78
 internal/install 77
@@ -206,6 +207,7 @@ plugins/host/host-jobs 88
 plugins/host/host-notices 70
 plugins/host/host-schedule 82
 plugins/host/host-llm 68
+plugins/host/host-memory 74
 plugins/host/host-llm-summary 68
 plugins/host/host-plugin-manager 76
 plugins/host/host-session-log 90.2
