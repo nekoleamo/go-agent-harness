@@ -520,17 +520,13 @@ func LoadSnapshot(projectKey string, stableBudget int) (Snapshot, error) {
 	var proj []Entry
 	var projScope string
 	if strings.TrimSpace(projectKey) != "" {
-		proj, err = Read(ProjectPath(projectKey))
+		// 条目与收录范围在**同一个文件**里:一次读盘取两者,不读两遍。
+		// 读盘失败**显式返回** —— 一次 IO 故障不该伪装成「这个项目没有记忆/没有收录范围」。
+		proj, projScope, err = ReadWithScope(ProjectPath(projectKey))
 		if err != nil {
 			return Snapshot{}, fmt.Errorf("memory: 读项目级记忆: %w", err)
 		}
 		proj = Active(proj)
-		// 收录范围行与条目同文件:读盘失败**显式返回** —— 与上面两处的纪律一致
-		// (一次 IO 故障不该伪装成「这个项目没有收录范围」)。
-		projScope, err = ScopeLine(ProjectPath(projectKey))
-		if err != nil {
-			return Snapshot{}, err
-		}
 	}
 	items := append(entriesToItems(user, ScopeUser), entriesToItems(proj, ScopeProject)...)
 	if strings.TrimSpace(projectKey) != "" {

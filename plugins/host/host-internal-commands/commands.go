@@ -215,6 +215,14 @@ func (h *Host) specs() []sdk.CommandSpec {
 						{Value: "on", Desc: "开启注入"},
 						{Value: "off", Desc: "关闭注入(记忆仍留着)"},
 						{Value: "project", Desc: "看本项目记忆"},
+						{Value: "scope", Desc: "看/设本项目的收录范围(这个文件收什么)"},
+						{Value: "probe", Desc: "试查:如果现在问这句,会注入什么(只读诊断)"},
+						{Value: "propose", Desc: "提一条候选(先进候选池,确认后才进上下文)"},
+						{Value: "candidates", Desc: "看候选池"},
+						{Value: "accept", Desc: "转正一条候选(按序号)"},
+						{Value: "reject", Desc: "丢弃一条候选(按序号)"},
+						{Value: "accept-all", Desc: "全部转正"},
+						{Value: "reject-all", Desc: "清空候选池"},
 						{Value: "extract", Desc: "自动提取开关(on|off)与状态"},
 					}
 				}},
@@ -238,6 +246,10 @@ func (h *Host) specs() []sdk.CommandSpec {
 						return []string{"<候选序号>"}
 					case "extract":
 						return []string{"on | off"}
+					case "scope":
+						return []string{"<一句话:这个文件收什么> | --clear"}
+					case "probe":
+						return []string{"要试查的一句话"}
 					case "status", "candidates", "accept-all", "reject-all", "on", "off", "project":
 						return nil // 无参数:选中即执行
 					}

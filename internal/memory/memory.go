@@ -35,7 +35,6 @@
 package memory
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -182,23 +181,10 @@ func ParseLine(line string) (Entry, bool) {
 
 // Read 读一个记忆文件里的条目(保持文件里的顺序;文件不存在 = 空,不是错误)。
 func Read(path string) ([]Entry, error) {
-	f, err := os.Open(path)
-	if os.IsNotExist(err) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	var out []Entry
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 4096), 1<<20)
-	for sc.Scan() {
-		if e, ok := ParseLine(sc.Text()); ok {
-			out = append(out, e)
-		}
-	}
-	return out, sc.Err()
+	// 行格式(什么算一条记忆、什么算注释)唯一事实源在 ReadWithScope —— 两处各写一遍
+	// 迟早有一处漏掉"夹注释/空行"这条宽松规则(那不是崩,是"某天起某类记忆读不出来")。
+	out, _, err := ReadWithScope(path)
+	return out, err
 }
 
 // Append 往记忆文件追加一条(原子写:临时文件 + rename)。

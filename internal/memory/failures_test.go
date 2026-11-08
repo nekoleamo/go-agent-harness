@@ -148,3 +148,34 @@ func TestFailureStateCapAndRoundTrip(t *testing.T) {
 		t.Fatalf("坏账本应按空继续并报错, got %+v err=%v", empty, err)
 	}
 }
+
+// 阈值封顶:2 翻 40 次会把 int 撑成负数(32 位平台 31 次就够),而"负数阈值"等于
+// 之后每次失败都触发 —— 一个只在长期运行的机器上才出现的错误。
+func TestFailureThresholdCapAndPolicyDenial(t *testing.T) {
+	// 封顶的判据不是"够大"而是"到顶之后不再翻":shift 版在 40 次后与 60 次后差 2^20 倍。
+	if nextThreshold(2, 20) != nextThreshold(2, 60) {
+		t.Fatalf("阈值应封顶, got %d vs %d", nextThreshold(2, 20), nextThreshold(2, 60))
+	}
+	if got := nextThreshold(2, 60); got <= 0 {
+		t.Fatalf("阈值不该溢出成负数, got %d", got)
+	}
+	var st FailureState
+	now := time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC)
+	// 伪造一个已经触发过很多次的历史条目
+	st.Items = []FailureEntry{{Sig: failureSig("bash", "boom"), Tool: "bash", Head: "boom", Count: 2,
+		Fired: 40, First: now.Format(time.RFC3339), Last: now.Format(time.RFC3339)}}
+	_, hit := st.Record("bash", "boom", "", "", 2, now)
+	if hit.Fire {
+		t.Fatal("阈值封顶后不该因为溢出而每次都触发")
+	}
+
+	// 策略拒绝的文案特征(与宿主侧跳过判定同源)
+	for _, denial := range []string{"approval: 用户拒绝了 x", "sandbox: read-only 拒绝执行器类工具", "策略 guard: 拒绝"} {
+		if !IsPolicyDenial(denial) {
+			t.Fatalf("应判为策略拒绝: %s", denial)
+		}
+	}
+	if IsPolicyDenial("permission denied: /etc/hosts") {
+		t.Fatal("真·环境错误不该被判成策略拒绝(它正是最该记成坑的一类)")
+	}
+}

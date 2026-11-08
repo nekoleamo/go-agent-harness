@@ -126,3 +126,29 @@ func TestFailureLedgerFlushesAfterThreshold(t *testing.T) {
 
 // alpha 互不相同的短串(数字会被签名归一化掉,不能用来区分)。
 func alpha(n int) string { return string(rune('a' + n%26)) }
+
+// 审批/策略/沙箱主动挡下的调用**不是工具缺陷**:用户点两次"拒绝"不该变成一条候选。
+// 判据刻意窄 —— 真·环境错误("permission denied")仍然要记账,那正是最该记成坑的一类。
+func TestFailureTriggerSkipsPolicyDenials(t *testing.T) {
+	c, svc := startServiceWith(t, map[string]any{"fail_threshold": 2})
+	for _, denial := range []string{
+		"approval: 用户拒绝了写入 /tmp/x",
+		"approval: 检测到需审批的写文件,无确认通道,已拒绝",
+		"策略 guard: 用户拒绝了 bash 访问域名 example.com。",
+		"sandbox: read-only 拒绝执行器类工具 \"bash\"",
+	} {
+		for i := 0; i < 3; i++ {
+			emitToolFail(t, c, "bash", denial)
+		}
+	}
+	if got := candidatesText(t, svc); got != "" {
+		t.Fatalf("策略性拒绝不该产生候选: %s", got)
+	}
+	// 真·环境错误仍然记账(否则这条过滤就把最该记的一类也吞了)
+	for i := 0; i < 2; i++ {
+		emitToolFail(t, c, "bash", "permission denied: /etc/hosts")
+	}
+	if got := candidatesText(t, svc); !strings.Contains(got, "permission denied") {
+		t.Fatalf("真·环境错误应照旧进候选: %s", got)
+	}
+}

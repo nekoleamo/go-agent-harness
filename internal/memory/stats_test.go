@@ -18,9 +18,9 @@ func TestInjectLedgerApplySemantics(t *testing.T) {
 	st = st.Apply("", InjectSample{Mode: "fallback", Fallback: true, StableBytes: 800, At: at})           // 没查询(回退)
 	st = st.Apply("", InjectSample{Mode: "per_step", At: at})                                             // 检索了但零命中
 	st = st.Apply("", InjectSample{Mode: "per_step", Items: 2, TailBytes: 400, StableBytes: 800, At: at}) // 命中
-	st = st.Apply("", InjectSample{Mode: "per_step", Items: 1, TailBytes: 900, Truncated: true, At: at})
-	st = st.Apply("", InjectSample{Mode: "fallback", Fallback: true, At: at})
-	st = st.Apply("", InjectSample{Mode: "per_step", Items: 3, TailBytes: 100, At: at})
+	st = st.Apply("", InjectSample{Mode: "per_step", Items: 1, TailBytes: 900, Truncated: true, StableBytes: 800, At: at})
+	st = st.Apply("", InjectSample{Mode: "fallback", Fallback: true, StableBytes: 800, At: at})
+	st = st.Apply("", InjectSample{Mode: "per_step", Items: 3, TailBytes: 100, StableBytes: 800, At: at})
 
 	led := st.LedgerFor("")
 	if led.Requests != 6 {
@@ -41,6 +41,11 @@ func TestInjectLedgerApplySemantics(t *testing.T) {
 	// 稳定块记「最近一次」而不是累计:累计会把同一个块重复计价。
 	if led.StableBytes != 800 {
 		t.Fatalf("稳定块应是最新一次的值, got %d", led.StableBytes)
+	}
+	// 关掉注入:稳定块真的是 0,成本账**不能**沿用上一次的 800(否则会长期谎报开销)。
+	st = st.Apply("", InjectSample{Mode: "off", Fallback: true, At: at})
+	if got := st.LedgerFor("").StableBytes; got != 0 {
+		t.Fatalf("关掉注入后每请求成本应归零, got %d", got)
 	}
 	if led.HitRate() != 0.5 {
 		t.Fatalf("命中率应是 3/6=0.5, got %v", led.HitRate())

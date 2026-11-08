@@ -91,6 +91,34 @@ func SetScope(projectKey, text string) error {
 	return writeFileAtomic(path, []byte(sb.String()))
 }
 
+// ReadWithScope 一次读盘同时取条目与首行收录范围(自动调取每步都走这条路)。
+//
+// 为什么要有它:`LoadSnapshot` 的注释写着"一次读盘",而范围行与条目在**同一个文件**里 ——
+// 各读一次不但多一次 IO,也让"条目的来源"与"范围行的来源"不再是同一份字节。
+func ReadWithScope(path string) (entries []Entry, scope string, err error) {
+	raw, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil, "", nil
+	}
+	if err != nil {
+		return nil, "", fmt.Errorf("memory: 读 %s: %w", path, err)
+	}
+	for i, line := range strings.Split(string(raw), "\n") {
+		// 不单独 TrimSuffix("\r"):ParseLine 与 scopeRe 的 `\s*$` 本来就吃 CRLF
+		//(用例 TestReadWithScopeSinglePass 钉着"正文里不残留 \r"这条性质)。
+		if i == 0 {
+			if m := scopeRe.FindStringSubmatch(line); m != nil {
+				scope = strings.TrimSpace(m[1])
+				continue
+			}
+		}
+		if e, ok := ParseLine(line); ok {
+			entries = append(entries, e)
+		}
+	}
+	return entries, scope, nil
+}
+
 // splitLines 按行切分并丢掉末尾换行造成的空串(不改变其余行内容)。
 func splitLines(raw string) []string {
 	if raw == "" {

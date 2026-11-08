@@ -197,3 +197,43 @@ func TestInjectedContentsIgnoresScope(t *testing.T) {
 		t.Fatalf("稳定块条数应是 2 条记忆, got %d", n)
 	}
 }
+
+// ReadWithScope 一次读盘同时取条目与范围行:两者必须来自**同一份字节**,
+// 且 CRLF 文件不该因此丢行(手写文件在 Windows 上是常态)。
+func TestReadWithScopeSinglePass(t *testing.T) {
+	scopeHome(t)
+	key := "single"
+	path := ProjectPath(key)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	raw := "<!-- scope: 只收编译约定 -->\r\n- [2026-10-01] 第一条\r\n- [2026-10-02] 第二条(来源: 会话 s1)\r\n"
+	if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	es, scope, err := ReadWithScope(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scope != "只收编译约定" {
+		t.Fatalf("范围行读错: %q", scope)
+	}
+	if len(es) != 2 || es[1].Source != "s1" {
+		t.Fatalf("CRLF 文件不该丢行或丢来源: %+v", es)
+	}
+	// 正文里不该残留 \r(它会跟着注入进上下文,而且是**看**不出来的那种脏字)
+	for _, e := range es {
+		if strings.ContainsRune(e.Content, '\r') {
+			t.Fatalf("CRLF 文件的条目正文残留 \\r: %q", e.Content)
+		}
+	}
+	// 与 Read 同源:条目数一致(Read 现在委托给它)。
+	viaRead, err := Read(path)
+	if err != nil || len(viaRead) != len(es) {
+		t.Fatalf("Read 与 ReadWithScope 应给出同一批条目: %d vs %d (%v)", len(viaRead), len(es), err)
+	}
+	// 文件不存在:空 + 无错(与 Read 一致)
+	if es, sc, err := ReadWithScope(filepath.Join(t.TempDir(), "nope.md")); err != nil || len(es) != 0 || sc != "" {
+		t.Fatalf("不存在的文件应是空, got %v %q %v", es, sc, err)
+	}
+}

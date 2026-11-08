@@ -94,6 +94,10 @@ func (f *failureWatch) handle(ctx context.Context, ev *sdk.Event) error {
 	if tool == "" {
 		return nil // 拿不到工具名就没法归组(宁可漏也不写一条"未知工具")
 	}
+	if memory.IsPolicyDenial(res.Error) {
+		// 审批/策略/沙箱主动挡下的调用不是工具缺陷:用户点两次"拒绝"不该变成一条候选。
+		return nil
+	}
 	project := f.svc.currentProjectKey()
 	session := sdk.SessionFromContext(ctx)
 

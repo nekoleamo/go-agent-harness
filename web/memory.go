@@ -319,7 +319,12 @@ func (s *Server) memoryViewWithFilter(w http.ResponseWriter, ms sdk.MemoryServic
 	var extra map[string]any
 	// ?probe=<一句话> 试查:只读诊断,**不写账本、不进上下文**(与 /memory probe 同一实现)。
 	if probeText := strings.TrimSpace(q.Get("probe")); probeText != "" {
-		if pb, ok := ms.(sdk.MemoryProbe); ok {
+		pb, ok := ms.(sdk.MemoryProbe)
+		if !ok {
+			// 支持与否要显式说出来:没有 probe 组时面板看起来像"没命中"。
+			extra = map[string]any{"probe_error": "该构建不支持试查(ctx.memory 未实现 MemoryProbe)"}
+		}
+		if ok {
 			res, err := pb.Probe(probeText)
 			if err != nil {
 				// 试查失败是**内容问题**(没给话/读盘失败),不该让整个面板 500:

@@ -232,9 +232,11 @@ func (h *Host) memoryProbe(ms sdk.MemoryService, arg string) (string, error) {
 	return sb.String(), nil
 }
 
-// clipProbe 试查结果里的正文截断(诊断面一行一条,别把整条记忆铺满屏)。
+// clipProbe 试查结果里的正文:压成一行并截断(诊断面一行一条,别把整条记忆铺满屏)。
 func clipProbe(s string) string {
 	const max = 60
+	// 工具写入的条目理论上可以带换行:铺进输出会把"一行一条"的版面撑坏。
+	s = strings.Join(strings.Fields(s), " ")
 	r := []rune(s)
 	if len(r) <= max {
 		return s
@@ -274,7 +276,8 @@ func (h *Host) memoryScope(ms sdk.MemoryService, arg string) (string, error) {
 	if err := ps.SetProjectScope(arg); err != nil {
 		return "", errString(err.Error())
 	}
-	return "已设置本项目收录范围:" + arg + "\n(它会作为「本项目记忆」小节的一行出现在系统提示里;写错就重设或 --clear)", nil
+	return "已设置本项目收录范围:" + arg +
+		"\n(它会作为「本项目记忆」小节的一行出现在系统提示里;本项目还没有任何项目级记忆时这一行不会单独出现 —— 先用 `/memory add --project` 记一条;写错就重设或 --clear)", nil
 }
 
 // memoryStatus 概览:开关 + 两条记忆的数量 + 预算 + **最近一次自动调取**。

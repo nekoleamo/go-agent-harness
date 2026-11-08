@@ -126,7 +126,7 @@ func (s FailureState) Record(tool, errText, project, session string, threshold i
 		if session != "" {
 			e.Session = session
 		}
-		fire := e.Count >= threshold<<e.Fired
+		fire := e.Count >= nextThreshold(threshold, e.Fired)
 		if fire {
 			e.Fired++
 		}
@@ -135,11 +135,10 @@ func (s FailureState) Record(tool, errText, project, session string, threshold i
 	e := FailureEntry{Sig: sig, Tool: tool, Head: shown, Count: 1, First: at, Last: at, Project: project, Session: session}
 	s.Items = append(s.Items, e)
 	s.evict()
-	fire := 1 >= threshold<<e.Fired // threshold>=2 ⇒ 首次出现不触发
-	if fire {
-		s.Items[len(s.Items)-1].Fired++
-	}
-	return s, FailureHit{Sig: sig, Tool: tool, Head: shown, Count: 1, Fire: fire}
+	// 首次出现永远不触发(threshold >= 2)。这里刻意不写 `1 >= nextThreshold(...)`:
+	// 那样一来 evict() 若刚好把新条目淘汰掉,后面任何"回写最后一条"的写法都会写错对象 ——
+	// 一个恒假的分支不值得留下这份风险。
+	return s, FailureHit{Sig: sig, Tool: tool, Head: shown, Count: 1, Fire: false}
 }
 
 // evict 超上限时丢最久没发生的那条(时间相同按签名稳定排序,便于测试)。
@@ -154,6 +153,43 @@ func (s *FailureState) evict() {
 		}
 		s.Items = append(s.Items[:oldest], s.Items[oldest+1:]...)
 	}
+}
+
+// nextThreshold 第 fire 次触发所要求的累计次数:threshold × 2^fire,并**封顶**。
+//
+// 为什么要封顶:位移在 32 位平台上超过 30 次就会变成负数,而"负数阈值"意味着
+// 之后每一次失败都触发 —— 一个只在长期运行的机器上才出现的错误。
+func nextThreshold(threshold, fired int) int {
+	n := threshold
+	for i := 0; i < fired; i++ {
+		if n > 1<<20 {
+			return n // 已经足够大(百万次),再翻会溢出
+		}
+		n *= 2
+	}
+	return n
+}
+
+// policyDenialMarkers 审批/策略/沙箱**主动拒绝**的文案特征。
+//
+// 为什么要排除它们:用户点两次"拒绝"、或同一策略两次拦住同一命令,在账本上会表现为
+// "同一个错误重复了 2 次",于是一条毫无信息量的候选(「工具 bash 已 2 次报同一错误
+// 「approval: 用户拒绝了…」」)就会进候选池。**策略结果不是工具缺陷**。
+// 判定刻意窄:只排除"这次调用被人或策略挡了"的文案,"permission denied"(真·环境问题)
+// 仍然记账 —— 那正是最该被记成坑的一类。
+var policyDenialMarkers = []string{
+	"用户拒绝", "无确认通道", "策略 guard", "approval:", "sandbox: read-only",
+}
+
+// IsPolicyDenial 这次"失败"其实是被审批/策略/沙箱挡下来的(不该算工具缺陷)。
+func IsPolicyDenial(errText string) bool {
+	head := firstLineRunes(errText, FailureHeadRunes)
+	for _, m := range policyDenialMarkers {
+		if strings.Contains(head, m) {
+			return true
+		}
+	}
+	return false
 }
 
 // CandidateText 到达阈值时给人的那条候选正文。

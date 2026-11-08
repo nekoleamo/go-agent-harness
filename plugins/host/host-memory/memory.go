@@ -334,11 +334,11 @@ func (s *Service) sectionText() string {
 		return ""
 	}
 	user := s.userEntries()
-	project := s.projectEntries()
+	project, scope := s.projectEntriesAndScope()
 	if len(user) == 0 && len(project) == 0 {
 		return ""
 	}
-	text := memory.Inject(user, project, s.budget, s.scope(s.currentProjectKey()))
+	text := memory.Inject(user, project, s.budget, scope)
 	if strings.TrimSpace(text) == "" {
 		return ""
 	}
@@ -351,17 +351,20 @@ func (s *Service) sectionText() string {
 	return text
 }
 
-// scope 当前项目的收录范围(读不出来 = 不渲染;日志留痕,不把 IO 故障伪装成"没设过")。
-func (s *Service) scope(key string) string {
+// projectEntriesAndScope 一次读盘取项目条目与收录范围(注入每步都走这条路)。
+//
+// 条目与范围行在同一个文件里:各读一次不但多一次 IO,也让两处可能看到不同版本的字节。
+func (s *Service) projectEntriesAndScope() ([]memory.Entry, string) {
+	key := s.currentProjectKey()
 	if key == "" {
-		return ""
+		return nil, ""
 	}
-	sc, err := memory.ScopeLine(memory.ProjectPath(key))
+	es, sc, err := memory.ReadWithScope(memory.ProjectPath(key))
 	if err != nil {
-		s.c.Logger().Warn("host-memory: 读收录范围失败(本次不渲染)", "err", err)
-		return ""
+		s.c.Logger().Warn("host-memory: 项目记忆读取失败(本轮不注入项目级)", "err", err)
+		return nil, ""
 	}
-	return sc
+	return memory.Active(es), sc
 }
 
 // ProjectScope 实现 sdk.MemoryProjectScope:当前项目的「本文件收录什么」。
@@ -409,7 +412,10 @@ func (s *Service) Augment(ctx context.Context, msgs []sdk.LLMMessage) []sdk.LLMM
 	}
 	budget := s.retrieveBudget - memory.ShellOverhead
 	if budget <= 0 {
-		return msgs // 预算连抬头与围栏都放不下:宁可不注入,也不注入被截断的半块
+		// 预算连抬头与围栏都放不下:宁可不注入,也不注入被截断的半块。
+		// 但**账要记**:否则成本账的分母会少掉这类请求,算出来的命中率偏高。
+		s.record(sdk.MemoryInjectStats{Query: q, Mode: retrieveFallback, At: time.Now()})
+		return msgs
 	}
 	// **一次读盘**:检索、与稳定块去重、报稳定块条数用的是同一份快照。
 	// (曾经各读一次 = 每步 7~9 次文件读,而每步都会走到这里。)

@@ -142,3 +142,25 @@ func TestProbeEmptyAndUnrelated(t *testing.T) {
 		t.Fatalf("无关句子应零命中: %+v", res)
 	}
 }
+
+// 检索预算连壳都放不下时也要记一次采样:否则成本账的分母少掉这类请求,命中率偏高。
+func TestInjectLedgerCountsTooSmallRetrieveBudget(t *testing.T) {
+	c, svc := startServiceWith(t, map[string]any{
+		"budget_bytes":    int(memory.ShellOverhead) + 40,
+		"retrieve_budget": int(memory.ShellOverhead), // 扣掉壳之后 <= 0
+	})
+	if err := svc.Add("部署统一走 make deploy", ""); err != nil {
+		t.Fatal(err)
+	}
+	_, tail := augmentWithQuery(t, c, "部署")
+	if strings.Contains(tail, "<memory>") {
+		t.Fatalf("预算放不下时不该追加半块: %s", tail)
+	}
+	led := svc.InjectLedger()
+	if led.Requests != 1 {
+		t.Fatalf("这类请求也要计入分母, got requests=%d", led.Requests)
+	}
+	if led.Fallbacks != 1 || led.Hits != 0 {
+		t.Fatalf("应记为回退(没检索)而非命中, got %+v", led)
+	}
+}

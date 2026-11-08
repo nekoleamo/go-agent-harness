@@ -76,8 +76,10 @@ func (l InjectLedger) Format() string {
 	if l.Requests == 0 {
 		return "还没有记账(没跑过请求或刚升级;账本从第一次注入开始累计)"
 	}
-	return fmt.Sprintf("命中 %d/%d 请求(%.0f%%);每请求约 %d 字节(稳定块 %d + 尾部 %d),尾部峰值 %d;截断 %d 次,回退 %d 次",
-		l.Hits, l.Requests, l.HitRate()*100, l.CostPerRequest(), l.StableBytes, l.AvgTailBytes(), l.TailBytesMax,
+	// 两个分项必须**相加等于**每请求成本,否则这条口径句自己就自相矛盾:
+	// 尾部按"每请求摊薄"(TailBytes/Requests),不是按命中次数平均(后者只说明命中时多大)。
+	return fmt.Sprintf("命中 %d/%d 请求(%.0f%%);每请求约 %d 字节(稳定块 %d + 尾部摊薄 %d),尾部峰值 %d;截断 %d 次,回退 %d 次",
+		l.Hits, l.Requests, l.HitRate()*100, l.CostPerRequest(), l.StableBytes, l.TailBytes/max(l.Requests, 1), l.TailBytesMax,
 		l.Truncated, l.Fallbacks)
 }
 
@@ -161,10 +163,10 @@ func (s InjectStats) Apply(projectKey string, sample InjectSample) InjectStats {
 	if sample.Truncated {
 		led.Truncated++
 	}
-	if sample.StableBytes > 0 {
-		// 稳定块只在记忆变动时变,记"最近一次"而不是累计 —— 累计会把同一个块重复计价。
-		led.StableBytes = sample.StableBytes
-	}
+	// 稳定块记「最近一次」而不是累计 —— 累计会把同一个块重复计价。
+	// **必须无条件赋值**(含 0):关掉注入后稳定块真的是 0,若沿用上一次的值,
+	// 成本账会长期停在"每请求 950 字节",而实际上一个字节都没注入。
+	led.StableBytes = sample.StableBytes
 	led.LastAt = at.Format(time.RFC3339)
 	if projectKey == "" {
 		s.User = led
