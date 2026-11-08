@@ -127,9 +127,19 @@ func TestTUIProbeSandboxSync(t *testing.T) {
 	if !strings.Contains(plainOff, "沙箱联动 -> off") && !strings.Contains(plainOff, "独立生效") {
 		t.Fatalf("切换应有可见回显;实得 %q", firstN(tailS(plainOff, 300), 300))
 	}
-	// 状态栏也该立刻改口径:不再宣称"审批联动"
-	if strings.Contains(plainOff, "审批联动") {
-		t.Fatalf("关掉联动后状态栏不应再写「随审批」;实得 %q", firstN(tailS(plainOff, 300), 300))
+	// 状态栏也该立刻改口径:不再宣称"审批联动"。
+	//
+	// 判据只看**切换回显之后**渲染的部分:pty 是一条追加流,`plainOff` 里天然会带着
+	// 命令之前那些帧(CI 上比本机多一次重绘就会带上)。拿整段去断言"不再出现审批联动",
+	// 判的其实是"缓冲里有没有历史"—— 2026-11-08 的 test-macos 就是被这一条判红的
+	// (实得里同时有旧帧 `→full-access(审批联动)` 与新帧 `沙箱: workspace-write`)。
+	// 切点取回显里的「独立生效」:之前 = 历史,之后 = 命令生效后新渲染的内容。
+	if i := strings.Index(plainOff, "独立生效"); i >= 0 {
+		if after := plainOff[i:]; strings.Contains(after, "审批联动") {
+			t.Fatalf("关掉联动后新渲染的状态栏仍写「随审批」;实得 %q", firstN(tailS(after, 300), 300))
+		}
+	} else if strings.Contains(plainOff, "审批联动") {
+		t.Fatalf("没等到切换回显,且状态栏仍写「审批联动」;实得 %q", firstN(tailS(plainOff, 300), 300))
 	}
 
 	// 退出,验证重启后按偏好恢复(配置里 sync 仍是 true —— 偏好必须压过它)
