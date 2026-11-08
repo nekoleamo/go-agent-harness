@@ -687,6 +687,65 @@ type MemoryProjectScope interface {
 	SetProjectScope(text string) error
 }
 
+// MemoryInjectLedger 可选扩展(由 host-memory 实现):**累计**注入账(成本口径)。
+//
+// 为什么需要它与 LastInject 并存:那个是「上一次注入了什么」,回答不了
+// 「这套记忆值不值它的 token」—— 命中几次、平均多少字节、截断几次、分母是多少。
+// Routed CL(arXiv 2610.38796)把成本与奖励并列当一等结论,而成本账没有分母就是空话。
+//
+// 口径约定(实现方与展示方必须一致,否则数字不可比):分母是**请求**不是回合。
+type MemoryInjectLedger interface {
+	// InjectLedger 当前作用域的累计账(取不到时返回零值快照,不返回错误 —— 它是诊断面)。
+	InjectLedger() MemoryInjectLedgerSnapshot
+}
+
+// MemoryInjectLedgerSnapshot 累计注入账的快照(只读)。
+type MemoryInjectLedgerSnapshot struct {
+	Scope        string // 作用域(项目键;空 = 用户级)
+	Requests     int    // 组装过的模型请求数(分母)
+	Hits         int    // 真的追加了条目的请求数
+	Fallbacks    int    // 没查询/关闭/读盘失败(不参与命中率分子)
+	TailBytes    int    // 尾部追加字节累计
+	TailBytesMax int    // 单次尾部追加峰值
+	StableBytes  int    // 最近一次稳定块字节(每请求都付的那笔)
+	Truncated    int    // 因预算/topK 截断的请求数
+	LastAt       time.Time
+	// Line 已渲染好的一行口径描述。
+	// 为什么由实现方提供而不是展示方拼:这句话的每个分式都在实现侧定义
+	//(命中率的分母是请求、成本 = 稳定块 + 摊薄尾部),两边各拼一遍必然漂移。
+	Line string
+}
+
+// MemoryProbe 可选扩展(由 host-memory 实现):「如果现在问这句,会注入什么」。
+//
+// 用途:把「记忆到底好不好使」从一次性人工核对表变成**可复现命令**
+// (10 条真实问句逐条跑 probe,命中/未命中/无关三分类)。
+// 铁律:probe 的输出**永不进上下文** —— 它只是诊断面。
+type MemoryProbe interface {
+	Probe(query string) (MemoryProbeResult, error)
+}
+
+// MemoryProbeResult 一次试查的结果。
+type MemoryProbeResult struct {
+	Query     string
+	Hits      []MemoryProbeHit
+	Total     int      // 相关条目总数(> len(Hits) 说明本次只展示了前几条)
+	Terms     []string // 实际参与打分的词
+	Ignored   []string // 被丢掉的词(停用词/库里一个都不含)
+	Budget    int      // 本次生效的尾部分预算
+	Bytes     int      // 预算内选中条目的渲染字节
+	Truncated bool     // 预算/topK 造成截断
+}
+
+// MemoryProbeHit 一条命中及其判定依据。
+type MemoryProbeHit struct {
+	Scope    string // user|project|tool
+	Score    float64
+	Content  string
+	Selected bool // 是否被预算选进尾部;false = 分数够但挤不进去
+	Stable   bool // 是否已在系统提示的稳定块里(那样尾部不会重复注入)
+}
+
 // MemoryRetrieveStats 可选扩展(由 host-memory 实现):最近一次**自动调取**的观测值。
 //
 // 为什么不在 MemoryService 上加:那是破坏性变更(接口加方法 = 既有实现全断)。

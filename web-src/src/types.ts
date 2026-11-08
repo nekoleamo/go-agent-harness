@@ -791,6 +791,46 @@ export interface MemoryView {
     truncated: boolean
     at?: string
   }
+  /**
+   * 累计成本口径(B 批)。缺省 = 该构建不支持。
+   * 分母是**请求**不是回合(一次用户回合可能对应多次模型请求);hit_rate = hits/requests。
+   * line 由后端渲染(分式都在实现侧定义),前端直接显示,不自己拼句子。
+   */
+  inject?: {
+    scope?: string
+    requests: number
+    hits: number
+    fallbacks: number
+    hit_rate: number
+    tail_bytes: number
+    tail_bytes_max: number
+    stable_bytes: number
+    cost_per_request: number
+    truncated: number
+    last_at?: string
+    line: string
+  }
+  /** 试查结果(仅 ?probe=… 时出现)。**只读诊断,永不进上下文**。 */
+  probe?: {
+    query: string
+    hits: {
+      scope: string
+      score: number
+      content: string
+      /** 是否被预算选进尾部;false = 分数够但挤不进去 */
+      selected: boolean
+      /** 是否已在系统提示的稳定块里(那样尾部不会重复注入) */
+      stable: boolean
+    }[]
+    total: number
+    terms?: string[]
+    ignored?: string[]
+    budget: number
+    bytes: number
+    truncated: boolean
+  }
+  /** 试查失败原因(?probe= 出错时出现;面板显示一行,其余照常渲染)。 */
+  probe_error?: string
   /** 自动提取的开关与最近一次结果(P1)。缺省 = 该构建不支持。 */
   extract?: {
     enabled: boolean

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -416,5 +417,67 @@ func TestMemoryEndpointSourcesUnaffectedByFilter(t *testing.T) {
 	}
 	if !got["sess-a"] || !got["sess-b"] {
 		t.Fatalf("sources 应是全量来源(不受过滤影响),got %#v", m["sources"])
+	}
+}
+
+// —— 成本账与试查(B 批)——
+
+// 面板要能回答"这套记忆值不值它的 token":累计口径必须随视图下发(没跑过请求时
+// requests=0、hit_rate=0,而不是省略字段让前端猜)。
+func TestMemoryEndpointInjectLedger(t *testing.T) {
+	s, _ := memoryServer(t, true)
+	code, body := do(t, s, "GET", "/api/memory", "")
+	if code != http.StatusOK {
+		t.Fatalf("GET 200, got %d", code)
+	}
+	m := decodeMemory(t, body)
+	inj, ok := m["inject"].(map[string]any)
+	if !ok {
+		t.Fatalf("应下发 inject 组(未实现窄接口才省略): %#v", m["inject"])
+	}
+	if inj["requests"].(float64) != 0 || inj["hit_rate"].(float64) != 0 {
+		t.Fatalf("没跑过请求时应是 0/0, got %#v", inj)
+	}
+	if line, _ := inj["line"].(string); !strings.Contains(line, "还没有记账") {
+		t.Fatalf("应有口径描述行, got %q", line)
+	}
+}
+
+// ?probe= 试查:命中要有分数与"会不会注入"的判定;空查询给 400 之外的错因字段
+// (面板照常渲染其余部分,不整段 500)。
+func TestMemoryEndpointProbe(t *testing.T) {
+	s, _ := memoryServer(t, true)
+	for _, c := range []string{"部署统一走 make deploy", "发布前先跑 gate 与覆盖率门"} {
+		if code, _ := do(t, s, "POST", "/api/memory", `{"action":"add","content":`+jsonStr(c)+`}`); code != http.StatusOK {
+			t.Fatalf("add 应 200")
+		}
+	}
+	code, body := do(t, s, "GET", "/api/memory?probe="+url.QueryEscape("部署"), "")
+	if code != http.StatusOK {
+		t.Fatalf("试查 200, got %d", code)
+	}
+	m := decodeMemory(t, body)
+	pv, ok := m["probe"].(map[string]any)
+	if !ok {
+		t.Fatalf("应下发 probe 组: %#v", m["probe"])
+	}
+	hits, _ := pv["hits"].([]any)
+	if len(hits) == 0 {
+		t.Fatalf("「部署」应命中一条: %#v", pv)
+	}
+	first := hits[0].(map[string]any)
+	if _, ok := first["score"].(float64); !ok {
+		t.Fatalf("命中要带分数(诊断面要能看'为什么选中'): %#v", first)
+	}
+	if _, ok := first["selected"].(bool); !ok {
+		t.Fatalf("命中要带'会不会注入'的判定: %#v", first)
+	}
+	// 零命中也要照常返回(空数组,不是 null)
+	if code, body := do(t, s, "GET", "/api/memory?probe="+url.QueryEscape("量子色动力学胶子禁闭"), ""); code != http.StatusOK {
+		t.Fatalf("零命中 200, got %d", code)
+	} else if pv, ok := decodeMemory(t, body)["probe"].(map[string]any); !ok {
+		t.Fatal("零命中也要给 probe 组")
+	} else if hits, ok := pv["hits"].([]any); !ok || len(hits) != 0 {
+		t.Fatalf("零命中应是空数组, got %#v", pv["hits"])
 	}
 }

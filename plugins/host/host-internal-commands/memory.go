@@ -116,6 +116,8 @@ func (h *Host) cmdMemory(args []string) (string, error) {
 		return "记忆注入:" + onoff(ms.SetEnabled(false)), nil
 	case "scope":
 		return h.memoryScope(ms, rest)
+	case "probe":
+		return h.memoryProbe(ms, rest)
 	case "project":
 		// 项目级:展示 + 写入入口(add --project)。项目级**自动提取**仍属未做项
 		// (提取器统一写用户级;按项目分流需要先给 TurnDigest 带 projectKey)。
@@ -145,6 +147,83 @@ func (h *Host) cmdMemory(args []string) (string, error) {
 		}
 		return "已记住:" + content, nil
 	}
+}
+
+// ledgerStatusLine status 里的**累计**成本口径(未实现窄接口的构建不显示)。
+//
+// 为什么要单列一行而不是并进"最近一次":一个是"这一次注入了什么",一个是
+// "一共命中几次、每请求花多少钱" —— 回答的是两个不同的问题,混在一行会都读不清。
+func ledgerStatusLine(ms sdk.MemoryService) string {
+	lg, ok := ms.(sdk.MemoryInjectLedger)
+	if !ok {
+		return ""
+	}
+	snap := lg.InjectLedger()
+	if snap.Line == "" {
+		return ""
+	}
+	return "\n  成本账(按请求):" + snap.Line
+}
+
+// memoryProbe `/memory probe <一句话>`:如果现在问这句,会注入什么。
+//
+// 用途:把"记忆好不好使"从一次性的人工核对表变成可复现命令 —— 10 条真实问句逐条跑,
+// 命中/未命中/无关三分类。**它只是诊断面**:输出不进上下文,也不写账本。
+func (h *Host) memoryProbe(ms sdk.MemoryService, arg string) (string, error) {
+	arg = strings.TrimSpace(arg)
+	if arg == "" {
+		return "", errString("用法:/memory probe <一句话>(按这句话试检索,看会注入什么;不进上下文)")
+	}
+	pb, ok := ms.(sdk.MemoryProbe)
+	if !ok {
+		return "", errString("该构建不支持试查(ctx.memory 未实现 MemoryProbe)")
+	}
+	res, err := pb.Probe(arg)
+	if err != nil {
+		return "", errString("试查失败:" + err.Error())
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "试查「%s」:相关 %d 条,本次尾部预算 %d 字节", res.Query, res.Total, res.Budget)
+	if len(res.Hits) == 0 {
+		sb.WriteString("\n  零命中(库里没有与这句话词面相近的条目;换个说法或用 /memory list 看全部)")
+	} else {
+		injected := 0
+		for i, hit := range res.Hits {
+			mark := "-"
+			why := ""
+			switch {
+			case hit.Stable:
+				mark, why = "=", "(已在稳定块里,尾部不重复注入)"
+			case hit.Selected:
+				mark, why = "✓", "(会注入)"
+				injected++
+			default:
+				why = "(分数够但预算/topK 挤不进)"
+			}
+			fmt.Fprintf(&sb, "\n  %s %d. [%s %.2f] %s %s", mark, i+1, hit.Scope, hit.Score, clipProbe(hit.Content), why)
+		}
+		fmt.Fprintf(&sb, "\n  本轮会注入 %d 条 / 共 %d 条相关", injected, res.Total)
+		if res.Truncated {
+			sb.WriteString("(已截断:加大 top_k 或 retrieve_budget 可多放)")
+		}
+	}
+	if len(res.Terms) > 0 {
+		sb.WriteString("\n  参与打分:" + strings.Join(res.Terms, " "))
+	}
+	if len(res.Ignored) > 0 {
+		sb.WriteString(";丢弃:" + strings.Join(res.Ignored, " "))
+	}
+	return sb.String(), nil
+}
+
+// clipProbe 试查结果里的正文截断(诊断面一行一条,别把整条记忆铺满屏)。
+func clipProbe(s string) string {
+	const max = 60
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max]) + "…"
 }
 
 // memoryScope `/memory scope [<一句话>|--clear]`:项目记忆的「本文件收录什么」。
@@ -194,9 +273,9 @@ func (h *Host) memoryStatus(ms sdk.MemoryService) (string, error) {
 			cand = fmt.Sprintf(",待确认候选 %d 条(上限 %d;今日已提 %d/%d)", used, limit, today, todayLimit)
 		}
 	}
-	return fmt.Sprintf("记忆:%s;用户级 %d 条,本项目 %d 条%s;注入预算 %d 字节%s%s%s\n  /memory status     本页概览(含最近一次自动调取)\n  /memory add <内容>  记住一条\n  /memory list       看全部(新的在前)\n  /memory rm <序号>  删一条\n  /memory rm --from <会话>  按来源整段删\n  /memory on|off     开/关注入\n  /memory propose <内容>  提一条候选(确认后才进上下文)\n  /memory candidates / accept <序号> / accept-all / reject <序号>\n  /memory list --kind <类型> --auto --stale <天数>  过滤(自动写入的一眼可辨)\n  /memory extract on|off  开/关自动提取(规则闸命中才花一次小请求;状态用 /memory status)",
+	return fmt.Sprintf("记忆:%s;用户级 %d 条,本项目 %d 条%s;注入预算 %d 字节%s%s%s%s\n  /memory status     本页概览(含最近一次自动调取)\n  /memory add <内容>  记住一条\n  /memory list       看全部(新的在前)\n  /memory rm <序号>  删一条\n  /memory rm --from <会话>  按来源整段删\n  /memory on|off     开/关注入\n  /memory propose <内容>  提一条候选(确认后才进上下文)\n  /memory candidates / accept <序号> / accept-all / reject <序号>\n  /memory list --kind <类型> --auto --stale <天数>  过滤(自动写入的一眼可辨)\n  /memory extract on|off  开/关自动提取(规则闸命中才花一次小请求;状态用 /memory status)",
 		onoff(ms.Enabled()), len(ms.List()), len(h.memoryProjectLines(ms)), cand, ms.Budget(),
-		retrieveStatusLine(ms), extractStatusLine(ms), toolStatsLine(ms)), nil
+		retrieveStatusLine(ms), ledgerStatusLine(ms), extractStatusLine(ms), toolStatsLine(ms)), nil
 }
 
 // memoryListFiltered `/memory list [--kind <类型>] [--auto] [--stale <天数>]`。

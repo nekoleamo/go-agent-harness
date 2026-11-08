@@ -200,9 +200,14 @@ export interface SettingsCtx {
   memFilter: any
   memFiltering: any
   memHasCandidates: any
+  memInject: any
   memLimit: any
   memMsg: any
   memPath: any
+  memProbe: any
+  memProbeBusy: any
+  memProbeErr: any
+  memProbeText: any
   memProject: any
   memReady: any
   memRetrieve: any
@@ -221,6 +226,7 @@ export interface SettingsCtx {
   memoryFilterAuto: any
   memoryFilterKind: any
   memoryFilterStale: any
+  memoryProbe: any
   memoryPropose: any
   memoryReject: any
   memoryRejectAll: any

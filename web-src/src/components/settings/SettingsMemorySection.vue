@@ -4,7 +4,7 @@
 import { inject } from "vue";
 import { SETTINGS_CTX, type SettingsCtx } from "../settings/ctx";
 
-const { memBudget, memBusy, memCand, memContent, memCounts, memDraft, memEnabled, memErr, memExtract, memFilter, memFiltering, memHasCandidates, memLimit, memMsg, memPath, memProject, memReady, memRetrieve, memSource, memSources, memToday, memTodayMax, memToolRemember, memUsed, memUser, memoryFilterAuto, memoryFilterKind, memoryFilterStale, memoryAccept, memoryAcceptAll, memoryAdd, memoryPropose, memoryReject, memoryRejectAll, memoryRemove, memoryRemoveSource, memoryToggle } = inject(SETTINGS_CTX) as SettingsCtx;
+const { memBudget, memBusy, memCand, memContent, memCounts, memDraft, memEnabled, memErr, memExtract, memFilter, memFiltering, memHasCandidates, memInject, memLimit, memMsg, memPath, memProbe, memProbeBusy, memProbeErr, memProbeText, memProject, memReady, memRetrieve, memSource, memSources, memToday, memTodayMax, memToolRemember, memUsed, memUser, memoryFilterAuto, memoryFilterKind, memoryFilterStale, memoryAccept, memoryAcceptAll, memoryAdd, memoryProbe, memoryPropose, memoryReject, memoryRejectAll, memoryRemove, memoryRemoveSource, memoryToggle } = inject(SETTINGS_CTX) as SettingsCtx;
 </script>
 
 <template>
@@ -38,6 +38,11 @@ const { memBudget, memBusy, memCand, memContent, memCounts, memDraft, memEnabled
                     用户级 {{ memUser.length }} 条／本项目 {{ memProject.length }} 条
                   </template>
                   ／注入预算 {{ memBudget }} 字节（超预算时按时间倒序丢最旧）
+                </p>
+                <!-- 成本口径:回答"这套记忆值不值它的 token"。分母是**请求**不是回合,
+                     sentence 由后端渲染(分式都在实现侧定义,前端不自己拼)。 -->
+                <p v-if="memInject" class="dim" data-testid="mem-cost">
+                  成本账（按请求）：{{ memInject.line }}
                 </p>
                 <!-- 过滤条:类型 + 只看自动写入 + 只看超期。命中条件在**后端**算
                      (展示行由 internal/memory 渲染,前端不解析文本)。 -->
@@ -273,6 +278,54 @@ const { memBudget, memBusy, memCand, memContent, memCounts, memDraft, memEnabled
                 <p v-else class="dim">
                   还没有记忆。记一条试试，比如“部署前先跑一次 /verify”。
                 </p>
+                <!-- 试查:如果现在问这句,会注入什么。只读诊断(不写账本、不进上下文),
+                     所以敢放在面板上随手点 —— 它是"记忆好不好使"的可复现核对工具。 -->
+                <div class="add-form" data-testid="mem-probe">
+                  <label class="fld">
+                    <span class="fld-lab">试查（如果现在问这句，会注入什么）</span>
+                    <input
+                      v-model="memProbeText"
+                      class="inp"
+                      :disabled="memProbeBusy"
+                      placeholder="比如：发版前要跑哪些门"
+                      @keyup.enter="memoryProbe"
+                    />
+                  </label>
+                  <div class="form-acts">
+                    <button
+                      class="ghost"
+                      :disabled="memProbeBusy || !memProbeText.trim()"
+                      data-tip="只读诊断：不写账本、不进上下文"
+                      @click="memoryProbe"
+                    >
+                      试查
+                    </button>
+                  </div>
+                </div>
+                <div v-if="memProbeErr" class="serr">{{ memProbeErr }}</div>
+                <div v-if="memProbe" data-testid="mem-probe-out">
+                  <p class="dim">
+                    相关 {{ memProbe.total }} 条／尾部预算 {{ memProbe.budget }} 字节<template
+                      v-if="memProbe.truncated"
+                      >（已截断）</template
+                    >
+                  </p>
+                  <p v-if="!memProbe.hits.length" class="dim">
+                    零命中：库里没有与这句话词面相近的条目（换个说法试试）
+                  </p>
+                  <div v-else class="mem-list">
+                    <div v-for="(hit, i) in memProbe.hits" :key="'h' + i" class="mem-item">
+                      <span class="mem-txt" :data-tip="hit.content">{{ hit.content }}</span>
+                      <span class="dim mono">{{ hit.scope }} {{ hit.score.toFixed(2) }}</span>
+                      <span v-if="hit.stable" class="dim">已在稳定块</span>
+                      <span v-else-if="hit.selected" class="dim ok">会注入</span>
+                      <span v-else class="dim">挤不进预算</span>
+                    </div>
+                  </div>
+                  <p v-if="memProbe.terms?.length" class="dim mono">
+                    参与打分：{{ memProbe.terms.join(" ") }}
+                  </p>
+                </div>
                 <div v-if="memProject.length" class="mem-list">
                   <div
                     v-for="(l, i) in memProject"

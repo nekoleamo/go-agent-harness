@@ -1178,6 +1178,13 @@ const memCounts = ref<{ user: number; project: number; auto: number; stale: numb
 // 自动生成/自动调取的观测(缺省 = 该构建不支持,整块不渲染)。
 const memExtract = ref<MemoryView["extract"] | null>(null);
 const memRetrieve = ref<MemoryView["retrieve"] | null>(null);
+// 累计成本账(B 批):Requests/Hits/... 由后端算,前端只画;line 是后端渲染的口径句。
+const memInject = ref<MemoryView["inject"] | null>(null);
+// 试查(只读诊断):memProbeText 是输入框,memProbe 是上一次结果。
+const memProbeText = ref("");
+const memProbe = ref<MemoryView["probe"] | null>(null);
+const memProbeErr = ref("");
+const memProbeBusy = ref(false);
 const memToolRemember = ref(0);
 const memSourcesAll = ref<string[]>([]);
 
@@ -1295,11 +1302,34 @@ async function loadMemory(): Promise<void> {
     memCounts.value = v.counts ?? null;
     memExtract.value = v.extract ?? null;
     memRetrieve.value = v.retrieve ?? null;
+    memInject.value = v.inject ?? null;
     memToolRemember.value = v.tool_remember ?? 0;
     memSourcesAll.value = Array.isArray(v.sources) ? v.sources : [];
     memSync(v);
   } catch {
     memReady.value = false;
+  }
+}
+
+// memoryProbe 试查:如果现在问这句,会注入什么。**只读** —— 不写账本、不进上下文,
+// 所以它敢放在面板上随手点(用途:把"记忆好不好使"从一次性核对表变成可复现动作)。
+async function memoryProbe(): Promise<void> {
+  const q = memProbeText.value.trim();
+  if (!q) {
+    memProbeErr.value = "先填一句实际的话(它按这句话检索)";
+    return;
+  }
+  memProbeBusy.value = true;
+  memProbeErr.value = "";
+  try {
+    const v = await api.memory({ probe: q });
+    memProbe.value = (v as any).probe ?? null;
+    const e = (v as any).probe_error;
+    if (typeof e === "string" && e) memProbeErr.value = e;
+  } catch (e) {
+    memProbeErr.value = (e as Error).message;
+  } finally {
+    memProbeBusy.value = false;
   }
 }
 
@@ -3481,9 +3511,14 @@ provide(SETTINGS_CTX, {
   memFilter,
   memFiltering,
   memHasCandidates,
+  memInject,
   memLimit,
   memMsg,
   memPath,
+  memProbe,
+  memProbeBusy,
+  memProbeErr,
+  memProbeText,
   memProject,
   memReady,
   memRetrieve,
@@ -3502,6 +3537,7 @@ provide(SETTINGS_CTX, {
   memoryFilterAuto,
   memoryFilterKind,
   memoryFilterStale,
+  memoryProbe,
   memoryPropose,
   memoryReject,
   memoryRejectAll,

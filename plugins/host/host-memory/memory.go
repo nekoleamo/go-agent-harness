@@ -76,6 +76,12 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		return nil, err // 缺系统提示服务 = 记忆无处可注入,显式失败(不静默只落盘)
 	}
 	svc := &Service{c: c, budget: budget, retrieve: retrieve, retrieveBudget: retrieveBudget, topK: topK, extract: extract}
+	// 累计账:读一次进内存(坏文件按零值继续,日志留痕 —— 与 extract 账本同一条纪律)。
+	if st, err := memory.LoadInjectStats(); err != nil {
+		c.Logger().Warn("host-memory: 注入账本读取失败(按空账本继续)", "err", err)
+	} else {
+		svc.stats = st
+	}
 	// 片段内容每次组装现算(记忆随时可改,不能靠 Disposer 撤销重加来"刷新")。
 	// 这里只放**稳定块**(最近 N 条):它的变动只来自记忆被写入,不该逐轮变 ——
 	// 逐轮变的"本轮相关"走 Augment(尾部追加,见 sdk.MessageAugmenter)。
@@ -103,6 +109,7 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 	}
 	return func() {
 		ex.close()
+		svc.flushStats(true) // 卸载是最后一次机会:不落盘这批计数就丢了
 		d()
 	}, nil
 }
@@ -120,7 +127,17 @@ type Service struct {
 
 	mu   sync.RWMutex
 	last sdk.MemoryInjectStats // 最近一次注入的观测值(/memory status 与 Web 面板)
+
+	// 累计账(B 批):内存态累计 + 节流落盘。
+	// 为什么不在每次请求都落盘:Augment 是**每次组装模型请求**都走的热路径,
+	// 一次 fsync 换来的是一条诊断数字,不值;丢了顶多少个几次数,不会丢记忆本身。
+	stats     memory.InjectStats
+	statsDirt int // 距上次落盘累计了几次采样
+	stableB   int // 最近一次组装系统提示时稳定块的字节数(section 里写)
 }
+
+// statsFlushEvery 每累计这么多次采样落一次盘(另在卸载与读取时兜底)。
+const statsFlushEvery = 8
 
 // 调取模式。per_turn 需要回合标识(ctx 里没有),本批**不支持**而不是假装支持:
 // Start 遇到未知名会显式报错。
@@ -288,6 +305,18 @@ func (s *Service) RemoveBySource(source string) (int, error) {
 
 // section 组装注入片段;关掉时返回空串(片段自动不渲染内容)。
 func (s *Service) section() string {
+	text := s.sectionText()
+	// 稳定块**每个请求都带**,是成本账里最实的那一笔:在组装处记下它的体积。
+	// 必须写在所有提前返回**之前**(空块 = 0 也是事实),否则"记忆被关掉/被预算挤空"
+	// 这类状态会让账本一直沿用上一个旧的体积。
+	s.mu.Lock()
+	s.stableB = len(text)
+	s.mu.Unlock()
+	return text
+}
+
+// sectionText 组装片段正文(与 section 拆开只为把"记账"放在唯一出口上)。
+func (s *Service) sectionText() string {
 	if !s.Enabled() {
 		return ""
 	}
@@ -420,11 +449,131 @@ func (s *Service) Augment(ctx context.Context, msgs []sdk.LLMMessage) []sdk.LLMM
 	return append(msgs, sdk.LLMMessage{Role: sdk.RoleUser, Content: out})
 }
 
+// probeShow 试查最多展示几条(诊断面,10 条足够看出"为什么选中/没选中")。
+const probeShow = 10
+
+// Probe 实现 sdk.MemoryProbe:**如果现在问这句,会注入什么**。
+//
+// 与 Augment 走同一套(exactly 同一份快照、同一个预算、同一个 Rank),否则试查会给出
+// 一个"看起来对、实际不一致"的答案 —— 那比没有试查更坏。
+// 只读:不写账本、不进上下文、不改任何状态。
+func (s *Service) Probe(query string) (sdk.MemoryProbeResult, error) {
+	q := strings.TrimSpace(query)
+	if q == "" {
+		return sdk.MemoryProbeResult{}, fmt.Errorf("memory: 试查需要一句实际的话(按这句话检索)")
+	}
+	snap, err := memory.LoadSnapshot(s.currentProjectKey(), s.budget)
+	if err != nil {
+		return sdk.MemoryProbeResult{}, err
+	}
+	budget := s.retrieveBudget - memory.ShellOverhead
+	if budget <= 0 {
+		// 预算连壳都放不下:仍然给出分数,让用户看到"命中了但没地方放"。
+		budget = 1
+	}
+	opt := memory.RetrieveOptions{Budget: budget, TopK: s.topK}
+	res := memory.Rank(snap.Items, q, opt)
+	scored, _ := memory.RankScored(snap.Items, q, opt)
+	selected := make(map[string]bool, len(res.Items))
+	for _, it := range res.Items {
+		selected[it.ID] = true
+	}
+	hits := make([]sdk.MemoryProbeHit, 0, probeShow)
+	for i, sc := range scored {
+		if i >= probeShow {
+			break
+		}
+		hits = append(hits, sdk.MemoryProbeHit{
+			Scope:    sc.Item.Scope,
+			Score:    sc.Score,
+			Content:  sc.Item.Content,
+			Selected: selected[sc.Item.ID],
+			Stable:   snap.Stable[strings.ToLower(strings.TrimSpace(sc.Item.Content))],
+		})
+	}
+	return sdk.MemoryProbeResult{
+		Query: q, Hits: hits, Total: res.Total, Terms: res.Terms, Ignored: res.Ignored,
+		Budget: budget, Bytes: res.Bytes, Truncated: res.Truncated,
+	}, nil
+}
+
 // record 记一次注入观测值(只读快照,供 /memory status 与 Web 面板)。
 func (s *Service) record(st sdk.MemoryInjectStats) {
+	// 项目键要在**加锁之前**取:currentProjectKey 走 c.Inject,持锁调用有死锁风险。
+	key := s.currentProjectKey()
 	s.mu.Lock()
 	s.last = st
+	s.stats = s.stats.Apply(key, memory.InjectSample{
+		Mode:        st.Mode,
+		Items:       st.Items,
+		TailBytes:   st.Bytes,
+		StableBytes: s.stableB,
+		Truncated:   st.Truncated,
+		Fallback:    st.Mode == retrieveFallback || st.Mode == retrieveOff,
+		At:          st.At,
+	})
+	s.statsDirt++
+	flush := s.statsDirt >= statsFlushEvery
+	if flush {
+		s.statsDirt = 0
+	}
+	snap := s.stats
 	s.mu.Unlock()
+	if flush {
+		s.saveStats(snap)
+	}
+}
+
+// saveStats 落盘(失败只影响账本精度,不影响记忆本身)。
+func (s *Service) saveStats(snap memory.InjectStats) {
+	if err := snap.Save(); err != nil {
+		s.c.Logger().Warn("host-memory: 注入账本落盘失败(累计数可能回退)", "err", err)
+	}
+}
+
+// flushStats 把累计账立刻落盘(卸载时必调;读账前也调一次以跨实例一致)。
+func (s *Service) flushStats(force bool) {
+	s.mu.Lock()
+	if !force && s.statsDirt == 0 {
+		s.mu.Unlock()
+		return
+	}
+	snap := s.stats
+	s.statsDirt = 0
+	s.mu.Unlock()
+	s.saveStats(snap)
+}
+
+// InjectLedger 实现 sdk.MemoryInjectLedger(累计成本口径)。
+func (s *Service) InjectLedger() sdk.MemoryInjectLedgerSnapshot {
+	key := s.currentProjectKey()
+	s.mu.RLock()
+	led := s.stats.LedgerFor(key)
+	s.mu.RUnlock()
+	return sdk.MemoryInjectLedgerSnapshot{
+		Scope:        key,
+		Requests:     led.Requests,
+		Hits:         led.Hits,
+		Fallbacks:    led.Fallbacks,
+		TailBytes:    led.TailBytes,
+		TailBytesMax: led.TailBytesMax,
+		StableBytes:  led.StableBytes,
+		Truncated:    led.Truncated,
+		LastAt:       parseLedgerTime(led.LastAt),
+		// 一行口径由 internal/memory 渲染:分式都在那里定义,展示侧不重算。
+		Line: led.Format(),
+	}
+}
+
+// parseLedgerTime 账本里的时间串转回 time.Time(坏值 ⇒ 零值,不报错)。
+func parseLedgerTime(s string) time.Time {
+	if s == "" {
+		return time.Time{}
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t
+	}
+	return time.Time{}
 }
 
 // LastInject 实现 sdk.MemoryRetrieveStats。
@@ -466,6 +615,8 @@ func countLines(text string) int {
 
 var _ sdk.MemoryService = (*Service)(nil)
 var _ sdk.MemoryProjectScope = (*Service)(nil)
+var _ sdk.MemoryInjectLedger = (*Service)(nil)
+var _ sdk.MemoryProbe = (*Service)(nil)
 var _ sdk.MemoryRetrieveStats = (*Service)(nil)
 var _ sdk.MemoryFilteredList = (*Service)(nil)
 var _ sdk.MemoryToolStats = (*Service)(nil)

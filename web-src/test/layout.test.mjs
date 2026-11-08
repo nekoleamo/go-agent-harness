@@ -944,6 +944,45 @@ describe('布局护栏:整页永不滚动(第五十二/五十三批)', { skip: s
     }
   })
 
+  // 成本账与试查(B 批):前者回答"这套记忆值不值它的 token",后者把"记忆好不好使"
+  // 从一次性人工核对表变成可复现动作。钉三件事:① 成本行的口径句来自后端(不在前端拼);
+  // ② 试查真的发 ?probe= 并渲染命中/稳定块两种判定;③ 零命中要说清,不摆空白。
+  test('设置面板:记忆成本账与试查', async (t) => {
+    const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+    let page = null
+    try {
+      const stub = makeStub(true, true, false, false, true)
+      page = await open(ctx, stub, docks[1].dock)
+      await page.click('.gear')
+      await page.waitForSelector('[data-sec="memory"] [data-testid="mem-cost"]')
+      const cost = await page.textContent('[data-sec="memory"] [data-testid="mem-cost"]')
+      assert.ok(cost?.includes('按请求'), `成本行应点明分母是请求:${cost}`)
+      assert.ok(cost?.includes('命中 3/8'), `成本行应显示后端渲染的口径句:${cost}`)
+
+      // 试查:真发 ?probe=,命中区出现"会注入"与"已在稳定块"两种判定
+      await page.fill('[data-sec="memory"] [data-testid="mem-probe"] input', '部署 口径')
+      await page.click('[data-sec="memory"] [data-testid="mem-probe"] button:has-text("试查")')
+      await page.waitForSelector('[data-sec="memory"] [data-testid="mem-probe-out"]')
+      const out = await page.textContent('[data-sec="memory"] [data-testid="mem-probe-out"]')
+      assert.ok(out?.includes('PROBE-HIT-'), `试查未回填命中内容:${out?.slice(0, 160)}`)
+      assert.ok(out?.includes('会注入'), `应标出"会注入":${out?.slice(0, 200)}`)
+      assert.ok(out?.includes('已在稳定块'), `应标出"已在稳定块":${out?.slice(0, 200)}`)
+
+      // 零命中:说清是零命中,不是空白
+      await page.fill('[data-sec="memory"] [data-testid="mem-probe"] input', '无关 句子')
+      await page.click('[data-sec="memory"] [data-testid="mem-probe"] button:has-text("试查")')
+      await page.waitForTimeout(200)
+      const empty = await page.textContent('[data-sec="memory"] [data-testid="mem-probe-out"]')
+      assert.ok(empty?.includes('零命中'), `零命中应明说:${empty?.slice(0, 200)}`)
+      assertInvariants(await measure(page))
+    } catch (e) {
+      await shoot(page, t.name)
+      throw e
+    } finally {
+      await ctx.close()
+    }
+  })
+
   // 候选池(记忆层 M2 前置件):候选**不进上下文**,只有转正才生效 —— 界面上必须把这
   // 句话说在按钮旁边(否则用户会以为「提了就已经记住了」),且两个动作真提交后端。
   test('设置面板:候选池的提/转正/丢弃与二次确认', async (t) => {

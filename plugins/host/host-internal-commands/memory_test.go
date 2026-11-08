@@ -677,3 +677,51 @@ func TestCmdMemoryScopeSetShowClear(t *testing.T) {
 		t.Fatalf("清除后不该还在: %q", got)
 	}
 }
+
+// —— 成本账与试查(B 批)——
+
+// 累计账要能回答"这套记忆值不值它的 token":分母、命中、回退、字节、截断都要有一行口径。
+func TestCmdMemoryStatusShowsCostLedger(t *testing.T) {
+	h := memHost(t)
+	out, err := h.cmdMemory([]string{"status"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "成本账(按请求)") {
+		t.Fatalf("status 应有累计成本口径: %s", out)
+	}
+	if !strings.Contains(out, "还没有记账") {
+		t.Fatalf("没跑过请求时应说清账本为空,而不是给一个 0%%: %s", out)
+	}
+}
+
+// 试查:命中/未命中都要说清,且**只读**(不进上下文、不加账)。
+func TestCmdMemoryProbe(t *testing.T) {
+	h := memHost(t)
+	for _, s := range []string{"部署统一走 make deploy", "发布前先跑 gate 与覆盖率门"} {
+		if _, err := h.cmdMemory([]string{"add", s}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, err := h.cmdMemory([]string{"probe", "部署"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "试查「部署」") || !strings.Contains(out, "参与打分") {
+		t.Fatalf("试查应给出命中与参与打分的词: %s", out)
+	}
+	unrelated, err := h.cmdMemory([]string{"probe", "量子色动力学胶子禁闭"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(unrelated, "零命中") {
+		t.Fatalf("无关句子应零命中: %s", unrelated)
+	}
+	if _, err := h.cmdMemory([]string{"probe"}); err == nil {
+		t.Fatal("缺参数应报用法(否则会给一个看起来'零命中'的假答案)")
+	}
+	// 试查是只读诊断:不能给成本账加分母。
+	if out, _ := h.cmdMemory([]string{"status"}); !strings.Contains(out, "还没有记账") {
+		t.Fatalf("试查不该改账本: %s", out)
+	}
+}

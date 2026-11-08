@@ -96,6 +96,12 @@ type memoryView struct {
 	// 过滤与计数(P2 面板):filter 回显当前筛选,counts 给"过滤中 N/M 条"。
 	Filter *filterView `json:"filter,omitempty"`
 	Counts *countsView `json:"counts,omitempty"`
+	// Inject 累计成本口径(B 批):未实现窄接口时整组省略。
+	// 为什么与 Retrieve 分开给:一个是"上一次注入了什么",一个是"一共命中几次、
+	// 每请求花多少钱" —— 前者解释当场,后者回答"值不值"。
+	Inject *injectView `json:"inject,omitempty"`
+	// Probe 试查结果(仅 ?probe=… 时出现):如果现在问这句,会注入什么。
+	Probe *probeView `json:"probe,omitempty"`
 	// ToolRemember 本会话模型经 memory 工具 remember 的次数(未实现窄接口则省略)。
 	ToolRemember int `json:"tool_remember,omitempty"`
 	// Sources 用户级记忆的**全部**来源会话(不受过滤影响)。
@@ -132,6 +138,43 @@ type extractView struct {
 	Skipped   string `json:"skipped,omitempty"` // 非空 = 最近一次没做成(llm/parse/quota/cooldown/disabled/busy)
 	Model     string `json:"model,omitempty"`
 	Ledger    string `json:"ledger,omitempty"` // 当日账本一行
+}
+
+// injectView 累计成本口径(数值 + 一行已渲染的描述)。
+type injectView struct {
+	Scope        string  `json:"scope,omitempty"`
+	Requests     int     `json:"requests"`
+	Hits         int     `json:"hits"`
+	Fallbacks    int     `json:"fallbacks"`
+	HitRate      float64 `json:"hit_rate"`
+	TailBytes    int     `json:"tail_bytes"`
+	TailBytesMax int     `json:"tail_bytes_max"`
+	StableBytes  int     `json:"stable_bytes"`
+	CostPerReq   int     `json:"cost_per_request"`
+	Truncated    int     `json:"truncated"`
+	LastAt       string  `json:"last_at,omitempty"`
+	Line         string  `json:"line"`
+}
+
+// probeHitView 一条试查命中。
+type probeHitView struct {
+	Scope    string  `json:"scope"`
+	Score    float64 `json:"score"`
+	Content  string  `json:"content"`
+	Selected bool    `json:"selected"`
+	Stable   bool    `json:"stable"`
+}
+
+// probeView 试查结果(只读诊断,永不进上下文)。
+type probeView struct {
+	Query     string         `json:"query"`
+	Hits      []probeHitView `json:"hits"`
+	Total     int            `json:"total"`
+	Terms     []string       `json:"terms,omitempty"`
+	Ignored   []string       `json:"ignored,omitempty"`
+	Budget    int            `json:"budget"`
+	Bytes     int            `json:"bytes"`
+	Truncated bool           `json:"truncated"`
 }
 
 // retrieveView 最近一次自动调取快照。
@@ -273,7 +316,30 @@ func (s *Server) memoryViewWithFilter(w http.ResponseWriter, ms sdk.MemoryServic
 	if v, err := strconv.Atoi(q.Get("stale")); err == nil && v > 0 {
 		opt.StaleDays = v
 	}
-	s.memoryViewOpt(w, ms, nil, opt)
+	var extra map[string]any
+	// ?probe=<一句话> 试查:只读诊断,**不写账本、不进上下文**(与 /memory probe 同一实现)。
+	if probeText := strings.TrimSpace(q.Get("probe")); probeText != "" {
+		if pb, ok := ms.(sdk.MemoryProbe); ok {
+			res, err := pb.Probe(probeText)
+			if err != nil {
+				// 试查失败是**内容问题**(没给话/读盘失败),不该让整个面板 500:
+				// 带上错因,面板显示一行,其余照常渲染。
+				extra = map[string]any{"probe_error": err.Error()}
+			} else {
+				pv := &probeView{Query: res.Query, Total: res.Total, Terms: res.Terms,
+					Ignored: res.Ignored, Budget: res.Budget, Bytes: res.Bytes, Truncated: res.Truncated}
+				for _, h := range res.Hits {
+					pv.Hits = append(pv.Hits, probeHitView{Scope: h.Scope, Score: h.Score,
+						Content: h.Content, Selected: h.Selected, Stable: h.Stable})
+				}
+				if pv.Hits == nil {
+					pv.Hits = []probeHitView{}
+				}
+				extra = map[string]any{"probe": pv}
+			}
+		}
+	}
+	s.memoryViewOpt(w, ms, extra, opt)
 }
 
 // memoryView 写只读视图(写动作完成后回同一形状,面板刷新即可;extra 并进响应)。
@@ -357,6 +423,24 @@ func (s *Server) memoryViewOpt(w http.ResponseWriter, ms sdk.MemoryService, extr
 			rv.At = st.At.Format(time.RFC3339)
 		}
 		v.Retrieve = rv
+	}
+	if lg, ok := ms.(sdk.MemoryInjectLedger); ok {
+		snap := lg.InjectLedger()
+		iv := &injectView{
+			Scope: snap.Scope, Requests: snap.Requests, Hits: snap.Hits, Fallbacks: snap.Fallbacks,
+			TailBytes: snap.TailBytes, TailBytesMax: snap.TailBytesMax, StableBytes: snap.StableBytes,
+			Truncated: snap.Truncated, Line: snap.Line,
+		}
+		if snap.Requests > 0 {
+			iv.HitRate = float64(snap.Hits) / float64(snap.Requests)
+			// 每请求成本 = 稳定块 + 摊薄的尾部追加。与 internal/memory 的 Format 同口径,
+			// 这里只是把数字也带出去给面板画进度条,文本仍用 Line(不重写句子)。
+			iv.CostPerReq = snap.StableBytes + snap.TailBytes/snap.Requests
+		}
+		if !snap.LastAt.IsZero() {
+			iv.LastAt = snap.LastAt.Format(time.RFC3339)
+		}
+		v.Inject = iv
 	}
 	if len(extra) == 0 {
 		writeJSON(w, http.StatusOK, v)

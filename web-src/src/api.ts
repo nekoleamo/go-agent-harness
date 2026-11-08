@@ -340,11 +340,13 @@ export const api = {
   // memory 跨会话记忆读(治理面板;未装配 host-memory → 503,面板整段隐藏)
   // memory 可选筛选(kind/auto/stale):过滤在后端做 —— 展示行由 internal/memory 渲染,
   // 让前端自己解析"类型/来源"会立刻分叉出第二份口径。
-  memory(filter?: { kind?: string; auto?: boolean; stale?: number }): Promise<MemoryView> {
+  memory(filter?: { kind?: string; auto?: boolean; stale?: number; probe?: string }): Promise<MemoryView> {
     const q = new URLSearchParams()
     if (filter?.kind) q.set('kind', filter.kind)
     if (filter?.auto) q.set('auto', '1')
     if (filter?.stale) q.set('stale', String(filter.stale))
+    // probe 试查:只读诊断,永不进上下文(与 /memory probe 同一实现)
+    if (filter?.probe) q.set('probe', filter.probe)
     const qs = q.toString()
     return req('/api/memory' + (qs ? '?' + qs : ''))
   },

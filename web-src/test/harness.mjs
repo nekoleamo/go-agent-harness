@@ -121,6 +121,20 @@ export function makeStub(
       ledger: '提取账本:今日请求 1/30,直写 1/10,候选 0;累计 请求 1 / 空 0 / 失败 0',
     },
     retrieve: { mode: 'per_step', query: '怎么部署', items: 1, total: 1, bytes: 120, truncated: false, at: '2026-11-03T10:00:00Z' },
+    // 累计成本口径(B 批):分母是**请求**不是回合;line 由后端渲染,面板直接显示。
+    inject: {
+      requests: 8,
+      hits: 3,
+      fallbacks: 2,
+      hit_rate: 0.375,
+      tail_bytes: 1200,
+      tail_bytes_max: 900,
+      stable_bytes: 800,
+      cost_per_request: 950,
+      truncated: 1,
+      last_at: '2026-11-08T10:00:00Z',
+      line: '命中 3/8 请求(38%);每请求约 950 字节(稳定块 800 + 尾部 150),尾部峰值 900;截断 1 次,回退 2 次',
+    },
     tool_remember: 2,
     // 全量来源(不受过滤影响):"按来源整段删"要靠它 —— 与真实后端同源,由用户级行推导。
     sources: Array.from(
@@ -339,7 +353,23 @@ export function makeStub(
     // 记忆治理面板(第一百一十批):读 + 四个写动作。回执里带 deleted(面板要显示“删了几条”)。
     if (p === '/api/memory') {
       if (!withMemory) return json({ error: '记忆服务未装配(缺 ctx.memory / host-memory 插件)' }, 503)
-      if (route.request().method() === 'GET') memQueries.push(url.search)
+      if (route.request().method() === 'GET') {
+        memQueries.push(url.search)
+        // 试查(?probe=…):回一条命中 + 一条"已在稳定块",零命中回空数组(与真实后端同形)。
+        const probeText = url.searchParams.get('probe')
+        if (probeText) {
+          const hit = probeText.includes('无关')
+            ? []
+            : [
+                { scope: 'project', score: 0.83, content: 'PROBE-HIT-' + 'p'.repeat(80), selected: true, stable: false },
+                { scope: 'user', score: 0.41, content: 'PROBE-STABLE', selected: false, stable: true },
+              ]
+          return json({
+            ...memView(memState),
+            probe: { query: probeText, hits: hit, total: hit.length, terms: ['probe', 'hit'], budget: 4096, bytes: 120, truncated: false },
+          })
+        }
+      }
       if (route.request().method() === 'POST') {
         const b = JSON.parse(route.request().postData() || '{}')
         memState.writes.push(b)
