@@ -149,6 +149,22 @@ func (h *Host) cmdMemory(args []string) (string, error) {
 	}
 }
 
+// failTriggerStatusLine status 里的失败触发行(未实现窄接口的构建不显示)。
+//
+// 单独一行而不是并进提取账:它是**纯规则**路径,零模型成本;与"花了多少钱"混在
+// 一起会让人以为触发失败也要花钱。
+func failTriggerStatusLine(ms sdk.MemoryService) string {
+	ft, ok := ms.(sdk.MemoryFailTrigger)
+	if !ok {
+		return ""
+	}
+	hits, fired := ft.FailureTriggerStats()
+	if hits == 0 {
+		return ""
+	}
+	return fmt.Sprintf("\n  失败触发(纯规则,零模型调用):累计 %d 次工具失败,已提 %d 条 pitfall 候选(等人工确认)", hits, fired)
+}
+
 // ledgerStatusLine status 里的**累计**成本口径(未实现窄接口的构建不显示)。
 //
 // 为什么要单列一行而不是并进"最近一次":一个是"这一次注入了什么",一个是
@@ -273,9 +289,9 @@ func (h *Host) memoryStatus(ms sdk.MemoryService) (string, error) {
 			cand = fmt.Sprintf(",待确认候选 %d 条(上限 %d;今日已提 %d/%d)", used, limit, today, todayLimit)
 		}
 	}
-	return fmt.Sprintf("记忆:%s;用户级 %d 条,本项目 %d 条%s;注入预算 %d 字节%s%s%s%s\n  /memory status     本页概览(含最近一次自动调取)\n  /memory add <内容>  记住一条\n  /memory list       看全部(新的在前)\n  /memory rm <序号>  删一条\n  /memory rm --from <会话>  按来源整段删\n  /memory on|off     开/关注入\n  /memory propose <内容>  提一条候选(确认后才进上下文)\n  /memory candidates / accept <序号> / accept-all / reject <序号>\n  /memory list --kind <类型> --auto --stale <天数>  过滤(自动写入的一眼可辨)\n  /memory extract on|off  开/关自动提取(规则闸命中才花一次小请求;状态用 /memory status)",
+	return fmt.Sprintf("记忆:%s;用户级 %d 条,本项目 %d 条%s;注入预算 %d 字节%s%s%s%s%s\n  /memory status     本页概览(含最近一次自动调取)\n  /memory add <内容>  记住一条\n  /memory list       看全部(新的在前)\n  /memory rm <序号>  删一条\n  /memory rm --from <会话>  按来源整段删\n  /memory on|off     开/关注入\n  /memory propose <内容>  提一条候选(确认后才进上下文)\n  /memory candidates / accept <序号> / accept-all / reject <序号>\n  /memory list --kind <类型> --auto --stale <天数>  过滤(自动写入的一眼可辨)\n  /memory extract on|off  开/关自动提取(规则闸命中才花一次小请求;状态用 /memory status)",
 		onoff(ms.Enabled()), len(ms.List()), len(h.memoryProjectLines(ms)), cand, ms.Budget(),
-		retrieveStatusLine(ms), ledgerStatusLine(ms), extractStatusLine(ms), toolStatsLine(ms)), nil
+		retrieveStatusLine(ms), ledgerStatusLine(ms), extractStatusLine(ms), failTriggerStatusLine(ms), toolStatsLine(ms)), nil
 }
 
 // memoryListFiltered `/memory list [--kind <类型>] [--auto] [--stale <天数>]`。

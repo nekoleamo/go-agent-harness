@@ -725,3 +725,48 @@ func TestCmdMemoryProbe(t *testing.T) {
 		t.Fatalf("试查不该改账本: %s", out)
 	}
 }
+
+// startServiceWithFail 装配一个**开启了失败触发**的 host-memory(默认 data 里开着,但
+// 显式写出来以免将来默认值改动把这条用例变成恒绿)。
+func startServiceWithFail(t *testing.T) (sdk.Ctx, sdk.MemoryService) {
+	t.Helper()
+	t.Setenv("GAH_HOME", t.TempDir())
+	c, _ := buildEnv(t)
+	if _, err := (&hostsystemprompt.Plugin{}).Start(c, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&hostmemory.Plugin{}).Start(c, &sdk.Manifest{Data: map[string]any{"fail_trigger": "on", "fail_threshold": 2}}); err != nil {
+		t.Fatal(err)
+	}
+	var ms sdk.MemoryService
+	if err := c.Inject("ctx.memory", &ms); err != nil {
+		t.Fatal(err)
+	}
+	return c, ms
+}
+
+// 失败触发要能被看见:它是纯规则路径(零模型成本),与提取账本分开列 —— 混在一起
+// 会让人以为"观察工具失败"也要花模型钱。
+func TestCmdMemoryStatusShowsFailTrigger(t *testing.T) {
+	c, svc := startServiceWithFail(t)
+	_ = svc
+	_ = c
+	h := &Host{c: c}
+	// 两次同错 ⇒ 提一条候选 + status 出现失败触发行
+	for i := 0; i < 2; i++ {
+		tctx := sdk.WithToolName(context.Background(), "bash")
+		if _, err := c.Emit(tctx, "tools/post-execute", &sdk.ToolResult{Error: "no such service api"}, sdk.Waterfall); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, err := h.cmdMemory([]string{"status"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "失败触发") || !strings.Contains(out, "零模型调用") {
+		t.Fatalf("status 应单列失败触发行并点明不花模型钱: %s", out)
+	}
+	if !strings.Contains(out, "已提 1 条") {
+		t.Fatalf("应回显已提候选条数: %s", out)
+	}
+}

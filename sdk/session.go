@@ -746,6 +746,15 @@ type MemoryProbeHit struct {
 	Stable   bool // 是否已在系统提示的稳定块里(那样尾部不会重复注入)
 }
 
+// MemoryFailTrigger 可选扩展(由 host-memory 实现):重复失败触发的观测值。
+//
+// 为什么单列:它是**纯规则**路径(零模型成本),与提取账本(那是"花了多少钱")不同源,
+// 混在一起会让人以为失败触发也要花钱。
+type MemoryFailTrigger interface {
+	// FailureTriggerStats 返回 (累计观察到的失败次数, 已提候选条数)。
+	FailureTriggerStats() (hits, fired int)
+}
+
 // MemoryRetrieveStats 可选扩展(由 host-memory 实现):最近一次**自动调取**的观测值。
 //
 // 为什么不在 MemoryService 上加:那是破坏性变更(接口加方法 = 既有实现全断)。

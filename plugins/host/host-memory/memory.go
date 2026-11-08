@@ -76,6 +76,12 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		return nil, err // 缺系统提示服务 = 记忆无处可注入,显式失败(不静默只落盘)
 	}
 	svc := &Service{c: c, budget: budget, retrieve: retrieve, retrieveBudget: retrieveBudget, topK: topK, extract: extract}
+	// 失败触发(C 批):工具重复报同一个错 ⇒ 提一条 pitfall 候选(纯规则,零模型调用)。
+	fw, err := newFailureWatch(c, svc, m)
+	if err != nil {
+		return nil, err
+	}
+	svc.fail = fw
 	// 累计账:读一次进内存(坏文件按零值继续,日志留痕 —— 与 extract 账本同一条纪律)。
 	if st, err := memory.LoadInjectStats(); err != nil {
 		c.Logger().Warn("host-memory: 注入账本读取失败(按空账本继续)", "err", err)
@@ -99,16 +105,22 @@ func (p *Plugin) Start(c sdk.Ctx, m *sdk.Manifest) (sdk.Disposer, error) {
 		d()
 		return nil, err
 	}
+	stopFail := func() {}
+	if fw != nil {
+		stopFail = fw.start()
+	}
 	// 自动生成:回合结束时的后台提取(非阻塞;Disposer 里关队列并等 worker 退出)。
 	ex := newExtractor(c, svc)
 	svc.ex = ex
 	if err := c.Provide("ctx.memoryExtract", sdk.MemoryExtractor(ex)); err != nil {
 		ex.close()
+		stopFail()
 		d()
 		return nil, err
 	}
 	return func() {
 		ex.close()
+		stopFail()
 		svc.flushStats(true) // 卸载是最后一次机会:不落盘这批计数就丢了
 		d()
 	}, nil
@@ -131,6 +143,7 @@ type Service struct {
 	// 累计账(B 批):内存态累计 + 节流落盘。
 	// 为什么不在每次请求都落盘:Augment 是**每次组装模型请求**都走的热路径,
 	// 一次 fsync 换来的是一条诊断数字,不值;丢了顶多少个几次数,不会丢记忆本身。
+	fail      *failureWatch // 失败观察者(nil = fail_trigger=off 或未装配)
 	stats     memory.InjectStats
 	statsDirt int // 距上次落盘累计了几次采样
 	stableB   int // 最近一次组装系统提示时稳定块的字节数(section 里写)
@@ -452,6 +465,14 @@ func (s *Service) Augment(ctx context.Context, msgs []sdk.LLMMessage) []sdk.LLMM
 // probeShow 试查最多展示几条(诊断面,10 条足够看出"为什么选中/没选中")。
 const probeShow = 10
 
+// FailureTriggerStats 实现 sdk.MemoryFailTrigger(off 时恒 0,不假装"没发生过")。
+func (s *Service) FailureTriggerStats() (hits, fired int) {
+	if s.fail == nil {
+		return 0, 0
+	}
+	return s.fail.FailureTriggerStats()
+}
+
 // Probe 实现 sdk.MemoryProbe:**如果现在问这句,会注入什么**。
 //
 // 与 Augment 走同一套(exactly 同一份快照、同一个预算、同一个 Rank),否则试查会给出
@@ -617,6 +638,7 @@ var _ sdk.MemoryService = (*Service)(nil)
 var _ sdk.MemoryProjectScope = (*Service)(nil)
 var _ sdk.MemoryInjectLedger = (*Service)(nil)
 var _ sdk.MemoryProbe = (*Service)(nil)
+var _ sdk.MemoryFailTrigger = (*Service)(nil)
 var _ sdk.MemoryRetrieveStats = (*Service)(nil)
 var _ sdk.MemoryFilteredList = (*Service)(nil)
 var _ sdk.MemoryToolStats = (*Service)(nil)
