@@ -34,11 +34,9 @@ jobs:
           GAH_LAYOUT_REQUIRE: "1"
           GAH_LAYOUT_ARTIFACTS: ${{ runner.temp }}/gah-layout
         run: cd web-src && npm run test:layout
-      # 观察期:与布局护栏同基座(同一 launchBrowser/静态桩),但**用例是新的** —— 首次几轮
-      # 先 continue-on-error,避免新用例的时序假设把主干弄红;连续 2 轮绿、且日志里确实跑了 4 条
-      # 用例后再去掉这一行(去掉后 REQUIRE=1 的硬失败才真正生效)。
+      # 2026-11-09 收紧:两轮 CI(run 42627167479 / 42631455230)均为 success,日志确认 4 条用例
+      # 真跑(允许/拒绝各一条 + 失败提示 + 侧栏三档),且浏览器与静态桩与布局护栏同源 ⇒ 去掉观察期。
       - name: 交互护栏(真浏览器:审批允许/拒绝真的发 POST、失败如实提示、侧栏三档视觉;REQUIRE=1 ⇒ 环境不满足直接红灯)
-        continue-on-error: true
         env:
           GAH_LAYOUT_REQUIRE: "1"
         run: cd web-src && npm run test:interaction
@@ -83,11 +81,11 @@ jobs:
       # Linux 是内核沙箱唯一能真验的平台:runner 的 LSM 没启用 Landlock 时用例会 SKIP,
       # 于是「内核层真的拦住看不见的写」长期只有 SKIP 记录。这一步把判定变成硬条件 ——
       # 能力在场就必须真跑通过(出现 SKIP 或 no tests to run 都算失败),不在场则如实留痕。
-      # 观察期:`continue-on-error` —— 探针首次上 CI 前没人知道 ubuntu runner 的 LSM 到底带不带
-      # landlock(带的话就会真跑内核用例,而内核行为差异只有真跑才知道)。先让它"红了不拦主干但
-      # 留证据",连续 2 轮绿且日志确认走的是"真跑通过"分支后再去掉这一行。
+      # 2026-11-09 收紧:两轮绿(run 42627167479 / 42631455230),日志确认走的是"真跑通过"分支
+      # (包内 1 条 + 端到端 2 条 + child.out 记账在场)⇒ 去掉观察期,现在它红就是真红。
+      # 注意:它红有两种含义,含义不同但都必须查 —— ①内核能力在但用例失败(真缺陷);
+      # ②容器 seccomp 挡了 landlock 系统调用(用例 SKIP 被本探针视为失败,需要自托管 runner)。
       - name: Linux 内核沙箱探针(Landlock 在场即强制真跑;不支持则留痕不拦)
-        continue-on-error: true
         env:
           # 与覆盖率门同目录:探针据此断言 L2(exec 前的子进程覆盖记账)真的落了盘。
           GAH_COVER_MERGE_DIR: ${{ runner.temp }}/gah-cover-merge
@@ -246,14 +244,13 @@ jobs:
   # Windows **arm64**:发行矩阵里一直有 windows/arm64 产物,但它**从未在 arm64 上运行过**
   # (真机清单 W/A 组里"产物从未运行"那条)。2026-11-09 起接 GitHub 公有 arm64 Windows runner。
   #
-  # 观察期:`windows-11-arm` 目前是预览标签、镜像与 git-bash 可用性都可能变,所以先
-  # `continue-on-error: true` —— **它红了不拦主干,但要留下证据**。收紧条件(三条都满足就去掉):
-  #   ① 连续 3 轮绿;② 日志里 `go env GOARCH` 确为 arm64(防 runner 悄悄换成 x64);
-  #   ③ `gen-extplugins.sh` 与 `gen-web.sh` 在 arm64 上都能跑完(它们依赖 bash/node)。
+  # 2026-11-09 收紧:三条条件全部满足 —— ①连续 3 轮绿(run 42623016495 / 42627167479 / 42631455230);
+  # ②日志 `go version go1.27.0 windows/arm64` + `GOARCH=arm64`(防 runner 悄悄换成 x64);
+  # ③`gen-extplugins.sh`(产出 windows-arm64/tool-kit.exe 且架构断言 OK)与 `gen-web.sh` 都跑通。
+  # 现在它红了就是真红:arm64 产物真跑不起来是必须立刻知道的事。
   # 刻意不跑:布局/交互护栏(chromium arm64 下载不稳)、覆盖率与体积门(阈值按 linux/amd64)、
   # `tests` 包 pty e2e(arm64 上的 pty 实现差异不是本 job 要判的东西 —— 行为面由 x64 job 承担)。
   test-windows-arm64:
-    continue-on-error: true
     runs-on: windows-11-arm
     defaults:
       run:
@@ -326,11 +323,9 @@ jobs:
           GAH_LAYOUT_REQUIRE: "1"
           GAH_LAYOUT_ARTIFACTS: ${{ runner.temp }}/gah-layout
         run: cd web-src && npm run test:layout
-      # 观察期:与布局护栏同基座(同一 launchBrowser/静态桩),但**用例是新的** —— 首次几轮
-      # 先 continue-on-error,避免新用例的时序假设把主干弄红;连续 2 轮绿、且日志里确实跑了 4 条
-      # 用例后再去掉这一行(去掉后 REQUIRE=1 的硬失败才真正生效)。
+      # 2026-11-09 收紧:两轮 CI(run 42627167479 / 42631455230)均为 success,日志确认 4 条用例
+      # 真跑(允许/拒绝各一条 + 失败提示 + 侧栏三档),且浏览器与静态桩与布局护栏同源 ⇒ 去掉观察期。
       - name: 交互护栏(真浏览器:审批允许/拒绝真的发 POST、失败如实提示、侧栏三档视觉;REQUIRE=1 ⇒ 环境不满足直接红灯)
-        continue-on-error: true
         env:
           GAH_LAYOUT_REQUIRE: "1"
         run: cd web-src && npm run test:interaction
