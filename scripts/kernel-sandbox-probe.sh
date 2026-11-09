@@ -61,4 +61,25 @@ if [ "${PASSED:-0}" -eq 0 ]; then
   exit 1
 fi
 echo "kernel-sandbox-probe: 真跑通过 $PASSED 条用例。"
+
+# 端到端那一层:真实进程**真的**被内核约束(模型看不见的写被拒 / 有效档跟到内核)。
+# 包内单测只验"包装参数对不对",而这两条是"包装之后真的挡住了"—— 真机清单 L1 的核心判据。
+echo "kernel-sandbox-probe: 端到端用例(真实进程被内核约束)也必须在跑。"
+E2E=$(go test ./tests/ -run 'TestKernelSandbox' -v -count=1 -timeout=10m 2>&1)
+E2E_RC=$?
+echo "$E2E" | grep -E '^(=== RUN|--- (PASS|SKIP|FAIL)|PASS|FAIL|ok)' | tail -20
+if [ $E2E_RC -ne 0 ]; then
+  echo "kernel-sandbox-probe: 端到端内核用例失败。"
+  exit 1
+fi
+if echo "$E2E" | grep -q -- "--- SKIP"; then
+  echo "kernel-sandbox-probe: Landlock 在场却出现 SKIP ⇒ 端到端那层没验(容器 seccomp 挡了 landlock 系统调用?)"
+  exit 1
+fi
+E2E_PASSED=$(echo "$E2E" | grep -c -- "--- PASS:")
+if [ "${E2E_PASSED:-0}" -lt 2 ]; then
+  echo "kernel-sandbox-probe: 端到端内核用例应至少 2 条真跑通过,实际 ${E2E_PASSED:-0} 条。"
+  exit 1
+fi
+echo "kernel-sandbox-probe: 端到端真跑通过 $E2E_PASSED 条(看不见的写被拒 / 有效档跟到内核)。"
 echo "kernel-sandbox-probe: OK(真实内核约束已验,无 SKIP)。"
