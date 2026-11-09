@@ -58,7 +58,9 @@ func TestThinkingFoldRender(t *testing.T) {
 	rowsFull := flattenViewLines(s, 100)
 	joined := ""
 	for _, p := range rowsFull {
-		joined += stripANSI(renderSessionRow(p, s, 0))
+		// 续行带 2 格对齐空白(2026-11-09 口径:标记只在首行,但整行预留宽度统一)——
+		// 比"内容是否完整"时把它剥掉,否则断言测的是缩进而非内容。
+		joined += strings.TrimLeft(stripANSI(renderSessionRow(p, s, 0)), " ")
 	}
 	// 展开态是全文(折行后拼接);首行带左缘标记 "⋯ "(2026-10-20 B4:思考行要有形状标记,
 	// 多数终端不渲染斜体,只靠颜色分不出“思考”与“正文”)。

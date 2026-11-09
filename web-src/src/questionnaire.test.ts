@@ -9,12 +9,14 @@ import {
   qnAnswered,
   qnCommitMulti,
   qnCurrent,
+  qnDoneApplies,
   qnFreeTextOnly,
   qnGoTab,
   qnInit,
   qnItems,
   qnMove,
   qnOpenInput,
+  qnPendingMulti,
   qnPickOption,
   qnSetInput,
   qnSubmitInput,
@@ -170,6 +172,27 @@ test('qnMove 夹紧', () => {
   assert.equal(qnMove(confirm, r, 1).sel, 0)
 })
 
+// qnPendingMulti 「下一题」的落库判定:只有「多选题 + 已有勾选」才算待提交。
+// 这条区分得开是因为单选点选时已经 land 过了、空集合不该造答案 —— 两者都不应再上报。
+test('qnPendingMulti 多选已勾选才算待提交', () => {
+  const r = req()
+  // 多选空白 / 无草稿 ⇒ undefined
+  assert.equal(qnPendingMulti(qnGoTab(qnInit(r), r, 1), r), undefined)
+  // 勾选后有答案(「下一题」要把它落库,否则刷新后 ■ 不亮、提交时模型收到 (未答))
+  let s = qnGoTab(qnInit(r), r, 1)
+  s = qnToggle(s, r, { kind: 'option', index: 0, value: 'a', label: 'A' })
+  const pending = qnPendingMulti(s, r)
+  assert.ok(pending)
+  assert.deepEqual(pending?.values, ['a'])
+  // 勾完又取消 ⇒ 回到 undefined
+  s = qnToggle(s, r, { kind: 'option', index: 0, value: 'a', label: 'A' })
+  assert.equal(qnPendingMulti(s, r), undefined)
+  // 单选题 ⇒ undefined(单选点选那刻已经上报过,不需要这个按钮补)
+  assert.equal(qnPendingMulti(qnInit(r), r), undefined)
+  // 确认页无当前题 ⇒ undefined
+  assert.equal(qnPendingMulti(qnGoTab(qnInit(r), r, r.questions.length), r), undefined)
+})
+
 // 摘要:未答显式标 (未答);手写标 custom;多选拼标签。
 test('qnSummary 三种口径', () => {
   const r = req()
@@ -188,4 +211,17 @@ test('qnSummary 三种口径', () => {
   w = qnSubmitInput(w, r)
   assert.equal(qnSummary(r, w)[2].custom, true)
   assert.equal(qnSummary(r, w)[2].text, '还想加个 i18n')
+})
+
+// qnDoneApplies 跨端互关:整卷弹层只在 id 相同时关(判定从 App.vue 抽出来才测得到)。
+test('qnDoneApplies 只认同一个整卷 id', () => {
+  assert.equal(qnDoneApplies('qn1', 'qn1'), true)
+  // 别的卷收口了(本端这卷还没答完)⇒ 不许关:关掉等于吞掉用户正在做的作答
+  assert.equal(qnDoneApplies('qn2', 'qn1'), false)
+  // 缺边都不动:宁可留一个能点的弹层,也不要关掉一个人的界面
+  assert.equal(qnDoneApplies(undefined, 'qn1'), false)
+  assert.equal(qnDoneApplies('qn1', undefined), false)
+  assert.equal(qnDoneApplies(undefined, undefined), false)
+  // 空串(旧服务端/异常帧)同样不算
+  assert.equal(qnDoneApplies('', 'qn1'), false)
 })

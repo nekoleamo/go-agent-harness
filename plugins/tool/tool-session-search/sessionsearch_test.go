@@ -161,3 +161,69 @@ func TestExecuteEndToEndWithHome(t *testing.T) {
 		t.Fatalf("scope=all 结果不对: %+v", r3)
 	}
 }
+
+// 纯只读:检索跑完后数据根**一个字节都不该变**(不建索引、不写缓存、不动 mtime)。
+//
+// 为什么要单独钉:这个工具读的是人最私密的东西(全部历史会话),一旦它开始"顺手建个索引",
+// 数据根就多出一份可被别处读到的副本 —— 而那种退化肉眼看不出来(功能照常好用)。
+// 原来这条在人工清单里写的是 `find gah-data -newer <标记>` 自证,其实一条用例就够。
+func TestSearchDoesNotWriteAnyFile(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(home, "sessions")
+	ws := filepath.Join(home, "work")
+	for _, d := range []string{root, ws} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("GAH_HOME", home)
+	writeFile(t, filepath.Join(root, "workspaces.json"), fmt.Sprintf(`[{"key":"work","dir":%q,"ts":1}]`, ws))
+	writeFile(t, filepath.Join(root, "work-20260101-1.jsonl"),
+		ev("user/message", 1, "2026-01-01T10:00:00+08:00", userMsg("只读性探针"))+"\n")
+
+	old, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(ws); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(old) }()
+
+	before := treeSnapshot(t, home)
+	tool := NewTool()
+	for _, q := range []string{`{"query":"只读性"}`, `{"query":""}`, `{"query":"不存在的词"}`} {
+		if _, err := tool.Execute(context.Background(), q); err != nil {
+			t.Fatalf("检索应成功(%s): %v", q, err)
+		}
+	}
+	after := treeSnapshot(t, home)
+	if len(after) != len(before) {
+		t.Fatalf("检索后文件数变了(纯只读被破坏): %d → %d\nbefore=%v\nafter=%v",
+			len(before), len(after), before, after)
+	}
+	for p, sig := range before {
+		if got, ok := after[p]; !ok {
+			t.Fatalf("检索删掉了文件: %s", p)
+		} else if got != sig {
+			t.Fatalf("检索改写了文件 %s: %v → %v", p, sig, got)
+		}
+	}
+}
+
+// treeSnapshot 目录树的「路径 → 大小|mtime」快照(证明只读用)。
+func treeSnapshot(t *testing.T, root string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	err := filepath.Walk(root, func(p string, fi os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		out[p] = fmt.Sprintf("%d|%d", fi.Size(), fi.ModTime().UnixNano())
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("遍历 %s: %v", root, err)
+	}
+	return out
+}

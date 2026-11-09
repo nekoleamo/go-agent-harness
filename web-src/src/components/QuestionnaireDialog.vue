@@ -18,6 +18,7 @@ import {
   qnMove,
   qnOpenInput,
   qnPickOption,
+  qnPendingMulti,
   qnSubmitInput,
   qnSummary,
   qnTab,
@@ -60,6 +61,13 @@ const allDone = computed<boolean>(() => (props.request ? qnAllAnswered(state.val
 const summary = computed(() => (props.request ? qnSummary(props.request, state.value) : []))
 const answeredAt = (q: QuestionnaireQuestion): boolean => qnAnswered(state.value, q)
 const onConfirmTab = computed<boolean>(() => !!props.request && state.value.tab >= questions.value.length)
+const onLastTab = computed<boolean>(() => state.value.tab >= questions.value.length - 1)
+// 多选已勾选但还没提交:此时「下一题」会顺带提交,按钮给个强调色(否则用户以为只是翻页)。
+const multiPending = computed<boolean>(() => {
+  const q = cur.value
+  if (!q?.multiple) return false
+  return (state.value.draft[q.id]?.values ?? []).length > 0
+})
 
 // 手写框出现即聚焦(含「✎ 自己输入」与纯自由文本题):少一次点击,键盘流不断。
 // 用 state.inputQid 而不是 tab 作触发:同一个问题也可能是点伪选项进来的。
@@ -164,6 +172,24 @@ function step(delta: number): void {
 
 function move(delta: number): void {
   if (props.request) state.value = qnMove(state.value, props.request, delta)
+}
+
+// 多选题没有"点一下就前进"的动作(qnToggle 只勾不前进),原先只能按 Enter 或去点 tab 标题 ——
+// 实测用户不知道该点标题,停在多选题上以为卡住了。这两个按钮把"翻页"显式化。
+function prev(): void {
+  if (props.request) state.value = qnGoTab(state.value, props.request, Math.max(0, state.value.tab - 1))
+}
+
+async function next(): Promise<void> {
+  const req = props.request
+  const q = cur.value
+  if (!req || !q) return
+  // 多选题已勾过项:“下一题”= 翻页 + 提交本题(落库)。顺序上先翻页再上报,
+  // 不让一次网络往返阻塞界面;qid 先取好,因为翻页后 cur 就换了。
+  const pending = qnPendingMulti(state.value, req)
+  const qid = q.id
+  go(Math.min(state.value.tab + 1, req.questions.length))
+  if (pending) await land(qid, pending)
 }
 
 function onKey(e: KeyboardEvent): void {
@@ -322,8 +348,16 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
           </div>
 
           <div v-if="state.notice" class="notice">{{ state.notice }}</div>
-          <div class="help">
-            {{ cur.multiple ? '空格勾选 · Enter 提交本题 · 数字键直选' : '数字键/点击直选 · Enter 确认' }} · Tab/←→ 切题
+          <div class="foot">
+            <span class="help">
+              {{ cur.multiple ? '空格勾选 · Enter 或「下一题」提交本题' : '数字键/点击直选 · Enter 确认' }} · Tab/←→ 切题
+            </span>
+            <span class="navbtns">
+              <button type="button" class="navbtn" :disabled="state.tab === 0" @click="prev()">← 上一题</button>
+              <button type="button" class="navbtn" :class="{ ready: multiPending }" @click="next()">
+                {{ onLastTab ? '去确认' : '下一题' }} →
+              </button>
+            </span>
           </div>
         </template>
 
@@ -533,6 +567,43 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   color: var(--fg-faint);
   font-size: 0.86em;
   margin-bottom: 10px;
+}
+.foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.foot .help {
+  margin-bottom: 0;
+}
+.navbtns {
+  display: flex;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+.navbtn {
+  background: transparent;
+  color: var(--fg-dim);
+  border: 1px solid var(--line);
+  border-radius: var(--r-input);
+  padding: 5px 11px;
+  font-size: 0.86em;
+  cursor: pointer;
+}
+.navbtn:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: var(--fg-dim);
+}
+.navbtn.ready {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.navbtn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 .actions {
   display: flex;

@@ -154,6 +154,17 @@ export function qnCommitMulti(s: QnState, req: QuestionnaireRequest): QnState {
   return qnAfterAnswer(s, req)
 }
 
+// qnPendingMulti 当前题是否有一份「已勾选但还没提交」的多选答案。
+// Web/桌面壳的「下一题」按钮靠它决定**要不要先落库** —— 多选不像单选那样点一下就上报,
+// 若只翻页不落库,勾选只活在本地草稿里:刷新后 ■ 不亮、提交时模型收到 (未答)。
+export function qnPendingMulti(s: QnState, req: QuestionnaireRequest): QnResult | undefined {
+  const q = qnCurrent(s, req)
+  if (!q?.multiple) return undefined
+  const a = s.draft[q.id]
+  if (!a || a.values.length === 0) return undefined
+  return a
+}
+
 // qnOpenInput 进入某题的手写态。
 export function qnOpenInput(s: QnState, questionId: string): QnState {
   return { ...s, inputQid: questionId, input: '', notice: '' }
@@ -196,4 +207,15 @@ export function qnSummary(req: QuestionnaireRequest, s: QnState): { id: string; 
     const labels = a.values.map((v) => q.options?.find((o) => o.value === v)?.label || v)
     return { id: q.id, label, text: labels.join('、'), custom: false }
   })
+}
+
+// qnDoneApplies 收到 questionnairedone 帧时,是否该关掉本地这卷弹层。
+//
+// 为什么单抽出来:跨端并存时(Web 与 TUI 同开)由**另一头**收口,服务端只推一个带 id 的帧 ——
+// 「按 id 关、别误关别的」这条判断原先内联在 App.vue 里,没有任何测试能碰到它。写错的表现是
+// 静默的:要么弹层永远关不掉(用户以为没提交),要么把刚收到的新整卷误关掉。
+// 缺 id(旧服务端/异常帧)一律不动:宁可留着一个能点的弹层,也不要关掉一个人的作答界面。
+export function qnDoneApplies(currentId: string | undefined, frameId: string | undefined): boolean {
+  if (!currentId || !frameId) return false
+  return currentId === frameId
 }

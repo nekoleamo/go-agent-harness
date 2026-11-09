@@ -34,6 +34,14 @@ jobs:
           GAH_LAYOUT_REQUIRE: "1"
           GAH_LAYOUT_ARTIFACTS: ${{ runner.temp }}/gah-layout
         run: cd web-src && npm run test:layout
+      # 观察期:与布局护栏同基座(同一 launchBrowser/静态桩),但**用例是新的** —— 首次几轮
+      # 先 continue-on-error,避免新用例的时序假设把主干弄红;连续 2 轮绿、且日志里确实跑了 4 条
+      # 用例后再去掉这一行(去掉后 REQUIRE=1 的硬失败才真正生效)。
+      - name: 交互护栏(真浏览器:审批允许/拒绝真的发 POST、失败如实提示、侧栏三档视觉;REQUIRE=1 ⇒ 环境不满足直接红灯)
+        continue-on-error: true
+        env:
+          GAH_LAYOUT_REQUIRE: "1"
+        run: cd web-src && npm run test:interaction
       # 稳态追加性能(docs/WEB_OPTIMIZE.md §3):400 条窗口下逐帧追加的批处理+patch 耗时。
       # 与布局护栏同源 fixture(共享 test/harness.mjs),但指标不同:它量的是"每帧花了多少主线程"。
       - name: 稳态追加性能护栏(逐帧追加的批处理+patch 耗时;REQUIRE=1 ⇒ 环境不满足直接红灯)
@@ -72,6 +80,15 @@ jobs:
         env:
           GAH_COVER_MERGE_DIR: ${{ runner.temp }}/gah-cover-merge
         run: bash scripts/coverage-check.sh coverage.out sdk-coverage.out
+      # Linux 是内核沙箱唯一能真验的平台:runner 的 LSM 没启用 Landlock 时用例会 SKIP,
+      # 于是「内核层真的拦住看不见的写」长期只有 SKIP 记录。这一步把判定变成硬条件 ——
+      # 能力在场就必须真跑通过(出现 SKIP 或 no tests to run 都算失败),不在场则如实留痕。
+      # 观察期:`continue-on-error` —— 探针首次上 CI 前没人知道 ubuntu runner 的 LSM 到底带不带
+      # landlock(带的话就会真跑内核用例,而内核行为差异只有真跑才知道)。先让它"红了不拦主干但
+      # 留证据",连续 2 轮绿且日志确认走的是"真跑通过"分支后再去掉这一行。
+      - name: Linux 内核沙箱探针(Landlock 在场即强制真跑;不支持则留痕不拦)
+        continue-on-error: true
+        run: bash scripts/kernel-sandbox-probe.sh
       - name: 交叉编译矩阵(五目标+体积门+平台匹配)
         run: |
           # 体积门:五目标交叉编译 + 二进制/gz 双阈值(阈值只在 scripts/size-check.sh);
@@ -223,6 +240,56 @@ jobs:
           fi
           echo "WS 通道 + 优雅停机 OK"
 
+  # Windows **arm64**:发行矩阵里一直有 windows/arm64 产物,但它**从未在 arm64 上运行过**
+  # (真机清单 W/A 组里"产物从未运行"那条)。2026-11-09 起接 GitHub 公有 arm64 Windows runner。
+  #
+  # 观察期:`windows-11-arm` 目前是预览标签、镜像与 git-bash 可用性都可能变,所以先
+  # `continue-on-error: true` —— **它红了不拦主干,但要留下证据**。收紧条件(三条都满足就去掉):
+  #   ① 连续 3 轮绿;② 日志里 `go env GOARCH` 确为 arm64(防 runner 悄悄换成 x64);
+  #   ③ `gen-extplugins.sh` 与 `gen-web.sh` 在 arm64 上都能跑完(它们依赖 bash/node)。
+  # 刻意不跑:布局/交互护栏(chromium arm64 下载不稳)、覆盖率与体积门(阈值按 linux/amd64)、
+  # `tests` 包 pty e2e(arm64 上的 pty 实现差异不是本 job 要判的东西 —— 行为面由 x64 job 承担)。
+  test-windows-arm64:
+    continue-on-error: true
+    runs-on: windows-11-arm
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+      - name: 环境探测(首次接入:先把"到底跑在什么上"留成证据)
+        run: |
+          go env GOOS GOARCH
+          echo "bash: $(bash --version | head -1)"
+          echo "git : $(git --version)"
+          echo "arch: $(uname -m)"
+      - name: 重建外部插件(六目标,含 windows/arm64)
+        run: bash scripts/gen-extplugins.sh
+      - name: 重建前端产物(vue-tsgo + vite build → web/dist,漏则 go:embed 编译失败)
+        run: bash scripts/gen-web.sh
+      - name: 原生构建 + 核心包单测(arm64 上的第一次真跑)
+        run: |
+          go build ./...
+          go test -timeout=25m ./internal/... ./core/... ./plugins/... ./tui/ ./web/
+      - name: 构建主包并裸机冒烟
+        run: |
+          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o gah.exe ./cmd/gah
+          ./gah.exe --version
+          HOME="$(mktemp -d)" ./gah.exe --profile headless --ephemeral --dump-config >/dev/null
+          echo "windows/arm64 裸机启动 OK"
+      - name: 裸机真实回合(外部插件 tool-kit 在 arm64 上真跑)
+        run: |
+          HOME="$(mktemp -d)" ./gah.exe --profile headless --ephemeral -input "hi" >/dev/null 2>arm-round.log
+          echo "windows/arm64 headless 真实回合 OK"
+          echo "--- stderr 前 5 行(沙箱软降级/插件加载观测)---"
+          head -5 arm-round.log || true
   test-macos:
     # Apple Silicon(arm64),与 release-desktop-wails.yml 的打包机一致。
     # 2026-11-06:macos-14 已从 GitHub 的公开仓库 runner 表里移除 —— 用它会在 1 秒内被
@@ -256,6 +323,14 @@ jobs:
           GAH_LAYOUT_REQUIRE: "1"
           GAH_LAYOUT_ARTIFACTS: ${{ runner.temp }}/gah-layout
         run: cd web-src && npm run test:layout
+      # 观察期:与布局护栏同基座(同一 launchBrowser/静态桩),但**用例是新的** —— 首次几轮
+      # 先 continue-on-error,避免新用例的时序假设把主干弄红;连续 2 轮绿、且日志里确实跑了 4 条
+      # 用例后再去掉这一行(去掉后 REQUIRE=1 的硬失败才真正生效)。
+      - name: 交互护栏(真浏览器:审批允许/拒绝真的发 POST、失败如实提示、侧栏三档视觉;REQUIRE=1 ⇒ 环境不满足直接红灯)
+        continue-on-error: true
+        env:
+          GAH_LAYOUT_REQUIRE: "1"
+        run: cd web-src && npm run test:interaction
       - name: 布局护栏失败截图(仅在护栏失败时上传,便于排查画面)
         if: failure()
         uses: actions/upload-artifact@v4

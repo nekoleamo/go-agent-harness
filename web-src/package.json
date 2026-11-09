@@ -10,7 +10,8 @@
     "typecheck": "vue-tsgo --noEmit",
     "test": "node --test src/*.test.ts",
     "test:layout": "node --test test/layout.test.mjs",
-    "test:perf": "node --test test/perf.test.mjs"
+    "test:perf": "node --test test/perf.test.mjs",
+    "test:interaction": "node --test test/interaction.test.mjs"
   },
   "dependencies": {
     "vue": "^3.5.45"

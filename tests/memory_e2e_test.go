@@ -235,3 +235,88 @@ func TestMemoryProjectScopedByWorkspace(t *testing.T) {
 		t.Fatalf("换工作区后不该看到别的项目的记忆:%v", lines2)
 	}
 }
+
+// 收录范围(/memory scope)真的进系统提示 —— 不是只在命令回执里"设上了"。
+//
+// 原来这条挂在「待人工确认:注入文本在系统提示里,只有真模型会话能看全」。
+// 那句话是错的:系统提示由 host-system-prompt 现场组装,测试里 Assemble 出来的
+// 就是模型看到的那一段 —— 同一条路,不需要真模型。顺带把两条边界钉住:
+// ① 没有项目级条目时**不单独渲染**范围行(它属于「本项目记忆」小节);
+// ② --clear 之后条目还在、范围行消失(证明消失的原因就是范围被清,不是整块没注入)。
+func TestMemoryScopeVisibleInSystemPrompt(t *testing.T) {
+	home := t.TempDir()
+	c := buildMemoryEnv(t, home)
+
+	var ms sdk.MemoryService
+	if err := c.Inject("ctx.memory", &ms); err != nil {
+		t.Fatal(err)
+	}
+	ps, ok := ms.(sdk.MemoryProjectScope)
+	if !ok {
+		t.Fatal("ctx.memory 应实现 MemoryProjectScope(/memory scope 的落点)")
+	}
+	var sp sdk.SystemPromptService
+	if err := c.Inject("ctx.systemPrompt", &sp); err != nil {
+		t.Fatal(err)
+	}
+	var cs sdk.CwdSessions
+	if err := c.Inject("ctx.cwdSessions", &cs); err != nil {
+		t.Fatal(err)
+	}
+	key := cs.Current()
+	if key == "" {
+		t.Skip("当前环境拿不到项目键(host-cwd-sessions 未装配真实依赖),跳过")
+	}
+
+	const scope = "只收编译/测试/发布约定,不收个人偏好"
+	const entry = "本项目的门禁是 scripts/gate.sh"
+
+	// ① 设范围:命令走的就是这个 API;读回必须一致(否则回执会骗人)
+	if err := ps.SetProjectScope(scope); err != nil {
+		t.Fatalf("设收录范围: %v", err)
+	}
+	if got, err := ps.ProjectScope(); err != nil || got != scope {
+		t.Fatalf("读回收录范围应为 %q, got %q err=%v", scope, got, err)
+	}
+	// ② 还没有项目级条目 ⇒ 不渲染范围行(空小节加一句话是误导,也白占预算)
+	if txt := systemText(t, sp, nil); strings.Contains(txt, "[收录范围]") {
+		t.Fatalf("没有项目级记忆时不该单独出现范围行:\n%s", txt)
+	}
+
+	// ③ 追加一条项目级记忆(与本包既有用例同口径:直接写文件,保留首行范围)
+	p := filepath.Join(home, "memory", "projects", key+".md")
+	f, err := os.OpenFile(p, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatalf("打开项目记忆文件: %v", err)
+	}
+	if _, err := f.WriteString("- [2026-11-09] " + entry + "\n"); err != nil {
+		t.Fatalf("追加项目记忆: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// ④ 现在系统提示里两样都在,且范围行在「本项目记忆」标题之后、条目之前
+	txt := systemText(t, sp, nil)
+	iTitle := strings.Index(txt, "本项目记忆")
+	iScope := strings.Index(txt, "[收录范围] "+scope)
+	iEntry := strings.Index(txt, entry)
+	if iScope < 0 || iEntry < 0 {
+		t.Fatalf("注入里应同时有范围行与项目条目(scope=%d entry=%d):\n%s", iScope, iEntry, txt)
+	}
+	if !(iTitle >= 0 && iTitle < iScope && iScope < iEntry) {
+		t.Fatalf("范围行应在「本项目记忆」标题之后、条目之前(title=%d scope=%d entry=%d):\n%s", iTitle, iScope, iEntry, txt)
+	}
+
+	// ⑤ 清除范围 ⇒ 范围行消失,条目仍在(证明消失的原因是范围被清)
+	if err := ps.SetProjectScope(""); err != nil {
+		t.Fatalf("清除收录范围: %v", err)
+	}
+	txt = systemText(t, sp, nil)
+	if strings.Contains(txt, "[收录范围]") {
+		t.Fatalf("清除后不该再有范围行:\n%s", txt)
+	}
+	if !strings.Contains(txt, entry) {
+		t.Fatalf("清除范围不该连带丢掉项目条目:\n%s", txt)
+	}
+}

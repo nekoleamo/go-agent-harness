@@ -537,14 +537,6 @@ func (c *controlPlane) handleUpdateInstall(w http.ResponseWriter, r *http.Reques
 	// 唯一新的硬约束:**程序目录必须可写**(U 盘只读/Program Files/受管目录都不行)。
 	// 所以先做写入探测,写不进去就退回「只查不装」并给出下载指引。
 	// GAH_DESKTOP_PORTABLE_UPDATE=0 可强制关掉(应急开关)。
-	if c.sh.portable && (os.Getenv("GAH_DESKTOP_PORTABLE_UPDATE") == "0" || !portableWritable()) {
-		shellLogf("便携版: 拒绝自动安装,提示用户下载新包")
-		writeJSON(w, http.StatusOK, map[string]any{
-			"status":  "portable",
-			"message": "便携版不自动更新:请下载新包覆盖本目录",
-		})
-		return
-	}
 	// 版本对账(2026-11-03 真机反馈:「显示可更新到 0.8.4,实际装上了 0.8.5」)。
 	// 前端把它二次确认时看到的版本传过来;两次之间清单被镜像换掉是**真会发生**的
 	// (实测就是 0.8.4→0.8.5 那段窗口),所以对不上就停下来让它重新确认,
@@ -553,12 +545,27 @@ func (c *controlPlane) handleUpdateInstall(w http.ResponseWriter, r *http.Reques
 		Expect string `json:"expect"`
 	}
 	_ = readJSONLimit(r, &req, 1<<12) // 没传/传坏了都不拦(旧前端兼容)
-	if seen := c.sh.seenVersion(); versionDrift(req.Expect, seen) {
+	seen := c.sh.seenVersion()
+	// 准入判定与托盘点「下载并安装」共用一份(installGate):便携拒绝优先于版本对账。
+	// writable 惰性求值:portableWritable() 会在可执行文件目录里**真写一个临时文件**,
+	// 非便携路径不该凭空多这一次 IO(便携判定用不到它)。
+	writable := true
+	if c.sh.portable {
+		writable = portableWritable()
+	}
+	action, msg := installGate(req.Expect, seen, c.sh.portable, writable,
+		os.Getenv("GAH_DESKTOP_PORTABLE_UPDATE") == "0")
+	switch action {
+	case installPortableOnly:
+		shellLogf("便携版: 拒绝自动安装,提示用户下载新包")
+		writeJSON(w, http.StatusOK, map[string]any{"status": "portable", "message": msg})
+		return
+	case installVersionChanged:
 		shellLogf("安装更新: 版本已漂移(确认的是 %s,现在是 %s),请用户重新确认", req.Expect, seen)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":  "versionChanged",
 			"version": seen,
-			"message": "更新源已变成 " + seen + "(你确认的是 " + req.Expect + "),请重新确认后再安装",
+			"message": msg,
 		})
 		return
 	}

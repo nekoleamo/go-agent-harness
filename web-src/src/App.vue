@@ -5,6 +5,7 @@ import { api } from './api'
 import { fetchShellNotices, installExternalLinkGuard, probeAsync, requestAttention } from './desktop'
 import type { AskConfirm } from './types'
 import { interventionOf, latestErrorOf, type Intervention } from './intervention'
+import { qnDoneApplies } from './questionnaire'
 import { consume, isUsage, msgsOfEvents, newModel, type StreamModel } from './sse'
 import {
   applyBaseline,
@@ -1048,7 +1049,8 @@ function rebuild(plan: SwitchPlan): void {
   }))
   transport.on('questionnairedone', gate((f) => {
     const p = f.payload as { id?: string }
-    if (p?.id && questionnaire.value && questionnaire.value.id === p.id) {
+    // 按 id 关:跨端并存时是**另一头**收口,别把本端刚收到的新整卷误关(判定在 questionnaire.ts,有单测)
+    if (qnDoneApplies(questionnaire.value?.id, p?.id)) {
       questionnaire.value = null
       questionnaireMin.value = false
     }

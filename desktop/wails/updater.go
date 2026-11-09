@@ -467,6 +467,33 @@ func (s *shell) initUpdater() error {
 	return nil
 }
 
+// installAction 「下载并安装」这一步的准入判定结果。
+type installAction string
+
+const (
+	installProceed        installAction = "proceed"
+	installPortableOnly   installAction = "portable"
+	installVersionChanged installAction = "versionChanged"
+)
+
+// installGate 决定这一步能不能走 —— 托盘菜单与 /shell/update-install **共用同一份**判定。
+//
+// 为什么必须共用(2026-11-09 修):原先两条路径各写一份,而托盘那份**没有便携判定**
+// (文件头注释却写着「便携版只查不装」)⇒ 便携版从托盘点「下载并安装」会真的去覆盖
+// 程序目录:只读 U 盘上以一句 wails 原文报错收场,而 HTTP 端点同一步骤给的是
+// 「请下载新包覆盖本目录」的指引。同一件事两套说法,用户看到哪个取决于他点的入口。
+//
+// 顺序:便携拒绝**先于**版本对账 —— 便携版连"要不要装"都不该问,再谈版本没有意义。
+func installGate(expect, seen string, portable, writable, autoUpdateOff bool) (installAction, string) {
+	if portable && (autoUpdateOff || !writable) {
+		return installPortableOnly, "便携版不自动更新:请下载新包覆盖本目录"
+	}
+	if versionDrift(expect, seen) {
+		return installVersionChanged, "更新源已变成 " + seen + "(你确认的是 " + expect + "),请重新确认后再安装"
+	}
+	return installProceed, ""
+}
+
 // noteSeenVersion 记下本次「检查更新」看到的远端版本(check 与 install 对账用)。
 func (s *shell) noteSeenVersion(v string) {
 	if v == "" {

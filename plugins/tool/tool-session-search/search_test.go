@@ -551,6 +551,14 @@ func TestToolNameAndSchemas(t *testing.T) {
 	if len(def.PathParams) != 0 {
 		t.Fatalf("不该声明路径参数: %+v", def.PathParams)
 	}
+	// 工具描述里的三条口径:模型只看得到这段文字,漏一条就会以错误的方式引用结果
+	// (把历史当现状 / 以为默认跨工作区 / 把"预算用尽"当"没有")。原来这条挂在人工核对表
+	// 的「抽查模型是否照做」上 —— 模型照不照做测不了,但"有没有写给它"能测。
+	for _, want := range []string{"历史记录", "默认只搜当前工作区", "truncated", "不等于不存在"} {
+		if !strings.Contains(def.Description, want) {
+			t.Fatalf("工具描述缺口径 %q(模型据此判断结果可信度):\n%s", want, def.Description)
+		}
+	}
 }
 
 var _ = sdk.Home

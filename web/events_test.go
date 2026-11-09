@@ -228,6 +228,51 @@ func TestInteractionResolvedFrames(t *testing.T) {
 	}
 	// 无关载荷不产帧(类型不符 → 静默)
 	c.fire(sdk.EventQuestionResolved, "无关注载荷")
+}
+
+// 整卷问卷收口 → questionnaireDone 帧(多端并存时别的端按 id 关掉遗留弹层)。
+//
+// 为什么单列一条:整卷路径**只发 questionnaire/\* 事件**(见 sdk/interaction.go 的常量注释),
+// 不叠加每题 question/*,所以 questiondone 那条订阅收不到它 —— 少了这条帧,另一端(比如先答完的
+// TUI)的整卷弹层就永远留在那儿。原来「跨端互关」挂在人眼清单上,而它两头都能自动化:
+// 这一条钉住"帧确实推了",前端钉住"按 id 关、别误关别的"。
+func TestQuestionnaireResolvedFrame(t *testing.T) {
+	hub := NewHub()
+	c := newTestCtx()
+	dis, err := hub.Subscribe(c, &memLog{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dis()
+	ch, release := hub.Stream("")
+	defer release()
+
+	c.fire(sdk.EventQuestionnaireResolved, &sdk.QuestionnaireEvent{
+		Questionnaire: sdk.Questionnaire{ID: "qn-9"},
+		Answer:        sdk.QuestionnaireAnswer{Answers: []sdk.QuestionAnswer{{Values: []string{"web"}}}},
+		Resolved:      true,
+		Channel:       "tui",
+	})
+	select {
+	case f := <-ch:
+		if f.Type != FrameQuestionnaireDone {
+			t.Fatalf("帧类型应为 %q,得 %q", FrameQuestionnaireDone, f.Type)
+		}
+		done, ok := f.Payload.(*QuestionnaireDone)
+		if !ok {
+			t.Fatalf("载荷类型应为 *QuestionnaireDone: %#v", f.Payload)
+		}
+		if done.ID != "qn-9" {
+			t.Fatalf("done 帧必须带整卷 id(前端靠它决定关哪个弹层): %#v", done)
+		}
+		if len(done.Answer.Answers) != 1 || done.Answer.Answers[0].Values[0] != "web" {
+			t.Fatalf("答案应原样透出: %#v", done.Answer)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("未收到 FrameQuestionnaireDone")
+	}
+	// 无关载荷不产帧
+	c.fire(sdk.EventQuestionnaireResolved, "无关注载荷")
 	select {
 	case f := <-ch:
 		t.Fatalf("无关载荷不应产帧: %#v", f)

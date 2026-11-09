@@ -371,31 +371,34 @@ const runningHintAfter = 30 * time.Second
 // flattenLine 单逻辑行 → 物理行序列。
 func flattenLine(li int, ln Line, colW int) []physRow {
 	var rows []physRow
-	segs := strings.Split(ln.Text, "\n")
-	for si, seg := range segs {
-		limit := colW
-		switch {
-		case si == 0 && ln.Kind == "user":
-			limit = colW - 2 // 首行挂 "❯ " 前缀,可用宽减 2
-		case si == 0 && ln.Kind == "tool" && strings.HasPrefix(ln.Text, "⚙ "):
-			limit = colW - 2 // 工具调用行:左缘竖线 "▍ " 前缀(P5 框感)
-		case si == 0 && ln.Kind == "thinking":
-			limit = colW - 2 // 思考行:左缘标记 "⋯ " 前缀(2026-10-20 B4)
-		}
+	// 左缘标记（P5 框感 / 2026-10-20 B4 思考标记）：**只有首物理行**带形状标记，
+	// 续行用等宽空白对齐 —— 否则长消息折行后续行贴在 0 列，与首行正文参差。
+	// 口径（2026-11-09 拍板）：标记不重复，但**整条行的预留宽度统一**，视觉左边界一条线。
+	mark := ""
+	switch {
+	case ln.Kind == "user":
+		mark = "❯ "
+	case ln.Kind == "thinking":
+		mark = "⋯ "
+	case ln.Kind == "tool" && strings.HasPrefix(ln.Text, "⚙ "):
+		mark = "▍ "
+	}
+	ind := 0
+	if mark != "" {
+		ind = 2
+	}
+	for si, seg := range strings.Split(ln.Text, "\n") {
+		limit := colW - ind
 		if limit < 1 {
 			limit = 1
 		}
-		parts := wrapSegment(seg, limit)
-		for pi, p := range parts {
+		for pi, p := range wrapSegment(seg, limit) {
 			t := p
-			if si == 0 && pi == 0 {
-				switch {
-				case ln.Kind == "user":
-					t = "❯ " + p
-				case ln.Kind == "tool" && strings.HasPrefix(ln.Text, "⚙ "):
-					t = "▍ " + p
-				case ln.Kind == "thinking":
-					t = "⋯ " + p
+			if ind > 0 {
+				if si == 0 && pi == 0 {
+					t = mark + p
+				} else {
+					t = strings.Repeat(" ", ind) + p
 				}
 			}
 			rows = append(rows, physRow{kind: ln.Kind, text: t, lineIdx: li, first: si == 0 && pi == 0})

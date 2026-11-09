@@ -9,6 +9,7 @@ package main
 
 import (
 	"context"
+	"os"
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -87,7 +88,23 @@ func (s *shell) installUpdateFromTray(expect string) {
 	if s.updater == nil {
 		return
 	}
-	if seen := s.seenVersion(); versionDrift(expect, seen) {
+	// 准入判定与 /shell/update-install 共用一份(installGate):便携拒绝**先于**版本对账 ——
+	// 原先托盘这条路没有便携判定(文件头注释却写着「便携版只查不装」)⇒ 便携版从托盘
+	// 点「下载并安装」会真的去覆盖程序目录。
+	seen := s.seenVersion()
+	// writable 与 control.go 同口径:只有便携模式才做写探测(它会真写临时文件)。
+	writable := true
+	if s.portable {
+		writable = portableWritable()
+	}
+	action, msg := installGate(expect, seen, s.portable, writable,
+		os.Getenv("GAH_DESKTOP_PORTABLE_UPDATE") == "0")
+	switch action {
+	case installPortableOnly:
+		shellLogf("便携版: 拒绝自动安装,提示用户下载新包")
+		s.notifyDialog("便携版不自动更新", msg)
+		return
+	case installVersionChanged:
 		shellLogf("托盘: 版本已漂移(确认的是 %s,现在是 %s),不安装", expect, seen)
 		s.notifyDialog("版本已变化",
 			"你确认的是 "+expect+",而更新源现在是 "+seen+"。\n\n请重新点一次「检查更新…」再确认安装。")
