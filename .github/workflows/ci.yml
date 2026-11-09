@@ -264,6 +264,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 26
+          # 缓存是硬需求而非优化:2026-11-09 这轮 `npm ci` 在 arm64 runner 上偶发失败
+          # (当时 gen-web.sh 用 --silent,连错误都不打印,只留 exit 1)。缓存把"每次全量
+          # 下载依赖"从必经路径上拿掉。
+          cache: npm
+          cache-dependency-path: web-src/package-lock.json
       - name: 环境探测(首次接入:先把"到底跑在什么上"留成证据)
         run: |
           go env GOOS GOARCH

@@ -11,7 +11,10 @@ fi
 # npm ci(不是 install):严格按 lockfile 安装且**绝不改写** package-lock.json ——
 # 发行路径(goreleaser release)要求工作树干净,npm install 在不同 npm 版本下会重排 lockfile,
 # 让 release 直接以「git is in a dirty state」失败(首个 tag 实测踩到)。
-npm ci --no-audit --no-fund --silent
+# 失败必须可诊断(2026-11-09):原先用 --silent,npm 在 arm64 Windows runner 上偶发失败时
+# 只留下「Process completed with exit code 1」,一条错误信息都没有 —— 排查只能靠猜。
+# --loglevel=error 安静程度相当,但错误照打。
+npm ci --no-audit --no-fund --loglevel=error
 npm run build
 if [ ! -f ../web/dist/index.html ]; then
   echo "gen-web: 构建产物缺失 web/dist/index.html" >&2
