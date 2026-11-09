@@ -61,7 +61,9 @@ TIMEOUT="${GAH_RELEASE_TIMEOUT:-1800}"
 # ci.yml 的 job。**逐个判绿**而不是「workflow 结束」—— 后者在有 job 被 skip 时也会是绿的。
 # 2026-10-30:desktop-shell / desktop-shell-macos(Rust 侧)已随旧链删除,
 # 桌面壳的编译/测试门并进了 test-windows/ test-macos 的 go vet + go test + 构建冒烟步骤。
-CI_JOBS=(test test-macos test-windows)
+# 2026-11-09:新增 test-windows-arm64(arm64 产物真跑,已是硬门)—— 新加 job 必须同步进这份
+# 清单,否则 wait 会"跳过它也算绿":发版前最该判的恰恰是那一档。
+CI_JOBS=(test test-macos test-windows test-windows-arm64)
 RELEASE_WORKFLOWS=(release-cli release-desktop-wails)
 
 # 先取子命令并 shift —— **再**扫旗标/位置参数。
