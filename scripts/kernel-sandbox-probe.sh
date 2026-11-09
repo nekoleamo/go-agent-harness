@@ -82,4 +82,21 @@ if [ "${E2E_PASSED:-0}" -lt 2 ]; then
   exit 1
 fi
 echo "kernel-sandbox-probe: 端到端真跑通过 $E2E_PASSED 条(看不见的写被拒 / 有效档跟到内核)。"
+
+# L2:子进程覆盖记账。helper 会 **exec 掉自己**去施加限制,进程镜像被替换 ⇒ 退出处理不执行;
+# 唯一的硬证据是它在 exec 之前把计数器写进 GOCOVERDIR,再由覆盖率门合并进主 profile。
+# 这条以前被记为「只有 Linux 真机 + BuildCovered 二进制能验」,实测 CI 早就在记 ——
+# 现在把它从"日志里碰巧看到"变成断言:带了 GAH_COVER_MERGE_DIR 就必须真的有 child.out。
+if [ -n "${GAH_COVER_MERGE_DIR:-}" ]; then
+  if ls "$GAH_COVER_MERGE_DIR"/kernelsandbox-*.child.out >/dev/null 2>&1; then
+    N=$(ls "$GAH_COVER_MERGE_DIR"/kernelsandbox-*.child.out | wc -l | tr -d ' ')
+    echo "kernel-sandbox-probe: 子进程覆盖记账在场($N 个 kernelsandbox child.out)。"
+  else
+    echo "kernel-sandbox-probe: 未发现 kernelsandbox child.out ⇒ L2(exec 前的覆盖记账)没生效,"
+    echo "  或覆盖率门不在本 job 里跑(需要 GAH_COVER_MERGE_DIR 指向它产出的目录)。"
+    exit 1
+  fi
+else
+  echo "kernel-sandbox-probe: 未设 GAH_COVER_MERGE_DIR,跳过 L2 记账断言。"
+fi
 echo "kernel-sandbox-probe: OK(真实内核约束已验,无 SKIP)。"

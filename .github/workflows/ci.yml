@@ -88,6 +88,9 @@ jobs:
       # 留证据",连续 2 轮绿且日志确认走的是"真跑通过"分支后再去掉这一行。
       - name: Linux 内核沙箱探针(Landlock 在场即强制真跑;不支持则留痕不拦)
         continue-on-error: true
+        env:
+          # 与覆盖率门同目录:探针据此断言 L2(exec 前的子进程覆盖记账)真的落了盘。
+          GAH_COVER_MERGE_DIR: ${{ runner.temp }}/gah-cover-merge
         run: bash scripts/kernel-sandbox-probe.sh
       - name: 交叉编译矩阵(五目标+体积门+平台匹配)
         run: |
