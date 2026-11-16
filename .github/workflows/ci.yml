@@ -357,9 +357,12 @@ jobs:
           go test -race ./...
           (cd sdk && go test -race ./...)
           (cd desktop/wails && go test -race ./...)
-      - name: 桌面壳构建冒烟(Wails 壳,macOS cgo)
-        # vet/test 不链接系统框架,cgo 链接期问题(ObjC/AppKit 符号)只有真编一次才暴露。
-        run: (cd desktop/wails && CGO_ENABLED=1 go build -o /tmp/gah-desktop .)
+      - name: 桌面壳构建冒烟(Wails 壳,macOS 纯 Go/purego 后端)
+        # 发行路径 = CGO_ENABLED=0 + -tags purego(mac 不再需要 Xcode/clang)。
+        # cgo 后端是回退路径,同样编一次 —— 两条只留一条时另一条会默默朽掉。
+        run: |
+          (cd desktop/wails && CGO_ENABLED=0 go build -tags purego -o /tmp/gah-desktop .)
+          (cd desktop/wails && CGO_ENABLED=1 go build -o /tmp/gah-desktop-cgo .)
       - name: 构建 darwin/arm64 主包并校验架构
         run: |
           CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o gah ./cmd/gah

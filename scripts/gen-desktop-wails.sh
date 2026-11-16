@@ -4,10 +4,10 @@
 # 旧的 Tauri 链已于 2026-10-29 删除;产物布局沿用同一套 triple 命名(落 desktop/wails/binaries/),
 #
 # 用法:
-#   bash scripts/gen-desktop-wails.sh              # debug 构建(CGO=1,快)
+#   bash scripts/gen-desktop-wails.sh              # debug 构建(CGO=0,快)
 #   bash scripts/gen-desktop-wails.sh --release    # 发行构建(-s -w + 版本号)
 #
-# 前置:Go 工具链 + Xcode CLT(clang;Wails 的 mac/win 实现都要 cgo 链接系统 webview)。
+# 前置:Go 工具链。mac 走 Wails v3.1 的 purego 后端,不再需要 Xcode CLT(见 §11.14)。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -54,16 +54,16 @@ echo "[1/2] sidecar: gah-$triple($VERSION)"
 CGO_ENABLED=0 go build -trimpath -ldflags "$SIDE_LD" -o "$BIN/gah-$triple" ./cmd/gah || exit 1
 assert_sidecar_version "$BIN/gah-$triple" "$VERSION"
 
-echo "[2/2] 壳: $SHELL_MOD(CGO=1,$MODE)"
+echo "[2/2] 壳: $SHELL_MOD(CGO=0,$MODE)"
 LDFLAGS="-X main.version=$VERSION"
-TAGS=""
+TAGLIST=""
 if [ "$MODE" = "release" ]; then
   LDFLAGS="-s -w $LDFLAGS"
   # 发行:sidecar 以 gzip 内嵌进壳(见 desktop/wails/embed_sidecar.go 的三条理由)。
   # 内嵌后**更新器只需换一个文件**,Windows 上才不会出现「新壳配旧 sidecar」。
   mkdir -p "$SHELL_MOD/embed"
   gzip -9 -n -c "$BIN/gah-$triple" > "$SHELL_MOD/embed/gah.bin.gz"
-  TAGS="-tags embed_sidecar"
+  TAGLIST="embed_sidecar"
   # 验签公钥烧进壳(信任根不能来自发行渠道);缺省空 = 只校验摘要,并留一条警告。
   if [ -n "${GAH_DESKTOP_UPDATE_PUBKEY:-}" ]; then
     LDFLAGS="$LDFLAGS -X main.updatePubKeyHex=$GAH_DESKTOP_UPDATE_PUBKEY"
@@ -76,10 +76,16 @@ fi
 case "$triple" in
   *windows*) [ "$MODE" = release ] && LDFLAGS="$LDFLAGS -H windowsgui" ;;
 esac
+# macOS 走 Wails v3.1 的 purego 后端(ObjC runtime + dlopen),壳从此 CGO=0 ——
+# mac 产物与 windows 一样纯 Go 构建,不再依赖 Xcode CLT / clang。
+# 见 docs/DESKTOP_FEASIBILITY.md §11.14;不带这个标签时上游 buildguard 会显式报错。
+[ "$(go env GOOS)" = "darwin" ] && TAGLIST="${TAGLIST:+$TAGLIST }purego"
+TAGS=""
+[ -n "$TAGLIST" ] && TAGS="-tags $TAGLIST"
 OUT="$SHELL_MOD/build/gah-desktop"
 mkdir -p "$SHELL_MOD/build"
 # shellcheck disable=SC2086  # TAGS 需要按空格拆开(空时不能留空参数)
-(cd "$SHELL_MOD" && CGO_ENABLED=1 go build -trimpath $TAGS -ldflags "$LDFLAGS" -o "build/gah-desktop" .)
+(cd "$SHELL_MOD" && CGO_ENABLED=0 go build -trimpath $TAGS -ldflags "$LDFLAGS" -o "build/gah-desktop" .)
 
 echo "产物: $OUT ($(du -h "$OUT" | cut -f1)) version=$VERSION"
 if [ "$MODE" = "release" ]; then

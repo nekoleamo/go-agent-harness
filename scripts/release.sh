@@ -196,12 +196,14 @@ preflight() {
   )
 
   step "preflight · 桌面壳(Go + Wails v3:go vet + go test + 构建)"
-  # 旧链这里跑 cargo fmt/test;换壳后同样要有门:vet/test 保正确性,构建保 cgo 链接期
-  # (ObjC/AppKit 符号)不炸 —— vet/test 都不链接系统框架。
+  # 旧链这里跑 cargo fmt/test;换壳后同样要有门:vet/test 保正确性,构建保链接期不炸。
+  # 2026-11-17 起 mac 壳也走 CGO=0(-tags purego):两条后端都编一次 ——
+  # 发行走 purego,cgo 后端作为回退路径不能默默朽掉(见 DESKTOP_FEASIBILITY §11.14)。
   ( cd desktop/wails
     go vet ./...      || die "桌面壳 go vet 红"
     go test ./...     || die "桌面壳单测红"
-    CGO_ENABLED=1 go build -o /tmp/gah-desktop-preflight . || die "桌面壳构建红(cgo 链接)"
+    CGO_ENABLED=0 go build -tags purego -o /tmp/gah-desktop-preflight . || die "桌面壳构建红(purego)"
+    CGO_ENABLED=1 go build -o /tmp/gah-desktop-preflight-cgo . || die "桌面壳构建红(cgo 回退路径)"
   )
 
   step "preflight · 体积门"

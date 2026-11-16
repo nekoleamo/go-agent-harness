@@ -164,8 +164,10 @@ fi
 echo "[2/4] 壳 + 内嵌 sidecar"
 mkdir -p "$SHELL_MOD/embed"
 gzip -9 -n -c "$SIDECAR" > "$SHELL_MOD/embed/gah.bin.gz"
-# darwin 的壳必须 cgo(objc 绑定);windows 实现是纯 Go,可 CGO=0(于是能在 mac 上交叉编)。
-CGO=0; [ "$GOOS" = "darwin" ] && CGO=1
+# 壳全程 CGO=0:darwin 走 Wails v3.1 的 purego 后端(-tags purego),windows 本来就是纯 Go。
+# 于是两个平台都能在同一台 mac 上交叉编(见 docs/DESKTOP_FEASIBILITY.md §11.14)。
+TAGS="embed_sidecar"
+[ "$GOOS" = "darwin" ] && TAGS="$TAGS purego"
 # 验签公钥必须烧进壳(信任根不能来自发行渠道);没给就明确警告 —— 那种包只能校验摘要。
 PUBKEY="${GAH_DESKTOP_UPDATE_PUBKEY:-}"
 LD="-s -w -X main.version=$VERSION"
@@ -177,7 +179,7 @@ if [ -n "$PUBKEY" ]; then
 else
   echo "publish: ！未提供 GAH_DESKTOP_UPDATE_PUBKEY —— 本次产物只校验摘要,不应作为正式发行"
 fi
-(cd "$SHELL_MOD" && CGO_ENABLED=$CGO GOOS=$GOOS GOARCH=$GOARCH go build -trimpath -tags embed_sidecar \
+(cd "$SHELL_MOD" && CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH go build -trimpath -tags "$TAGS" \
    -ldflags "$LD" -o "build/$(basename "$EXE")" .)
 
 echo "[3/4] 打包(唯一顶层条目)"
