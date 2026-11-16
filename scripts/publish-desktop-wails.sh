@@ -165,7 +165,7 @@ echo "[2/4] 壳 + 内嵌 sidecar"
 mkdir -p "$SHELL_MOD/embed"
 gzip -9 -n -c "$SIDECAR" > "$SHELL_MOD/embed/gah.bin.gz"
 # 壳全程 CGO=0:darwin 走 Wails v3.1 的 purego 后端(-tags purego),windows 本来就是纯 Go。
-# 于是两个平台都能在同一台 mac 上交叉编(见 docs/DESKTOP_FEASIBILITY.md §11.14)。
+# 于是两个平台都能在同一台 mac 上交叉编(见 docs/DESKTOP_FEASIBILITY.md §12)。
 TAGS="embed_sidecar"
 [ "$GOOS" = "darwin" ] && TAGS="$TAGS purego"
 # 验签公钥必须烧进壳(信任根不能来自发行渠道);没给就明确警告 —— 那种包只能校验摘要。

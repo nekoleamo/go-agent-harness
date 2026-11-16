@@ -8,7 +8,7 @@
 //
 // 这里直接打 ObjC 运行时(purego/objc),不再要一个 cgo 文件 —— 于是壳在 mac 上也能
 // CGO_ENABLED=0(配合 Wails v3.1 的 `-tags purego` 后端;来龙去脉见
-// docs/DESKTOP_FEASIBILITY.md §11.14)。cgo 后端下同一份代码照样可用:AppKit 已在进程里。
+// docs/DESKTOP_FEASIBILITY.md §12)。cgo 后端下同一份代码照样可用:AppKit 已在进程里。
 //
 // 语义与旧 cgo 版逐条对齐(不是「行为差不多」):
 //   - NSInformationalRequest = 10:跳一下就自己结束,不会像 NSCriticalRequest(0) 那样持续弹;

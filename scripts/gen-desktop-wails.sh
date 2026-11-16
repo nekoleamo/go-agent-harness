@@ -7,7 +7,7 @@
 #   bash scripts/gen-desktop-wails.sh              # debug 构建(CGO=0,快)
 #   bash scripts/gen-desktop-wails.sh --release    # 发行构建(-s -w + 版本号)
 #
-# 前置:Go 工具链。mac 走 Wails v3.1 的 purego 后端,不再需要 Xcode CLT(见 §11.14)。
+# 前置:Go 工具链。mac 走 Wails v3.1 的 purego 后端,不再需要 Xcode CLT(见 §12)。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -78,7 +78,7 @@ case "$triple" in
 esac
 # macOS 走 Wails v3.1 的 purego 后端(ObjC runtime + dlopen),壳从此 CGO=0 ——
 # mac 产物与 windows 一样纯 Go 构建,不再依赖 Xcode CLT / clang。
-# 见 docs/DESKTOP_FEASIBILITY.md §11.14;不带这个标签时上游 buildguard 会显式报错。
+# 见 docs/DESKTOP_FEASIBILITY.md §12;不带这个标签时上游 buildguard 会显式报错。
 [ "$(go env GOOS)" = "darwin" ] && TAGLIST="${TAGLIST:+$TAGLIST }purego"
 TAGS=""
 [ -n "$TAGLIST" ] && TAGS="-tags $TAGLIST"
