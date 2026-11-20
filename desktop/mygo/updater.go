@@ -1,19 +1,19 @@
-// updater:桌面壳自更新(用 Wails v3 的 updater 机制 + gah 自己的清单格式)。
+// updater:桌面壳自更新(gah 自己的清单格式 + 自己的安装器;不依赖任何框架的 updater)。
 //
 // 为什么不用现成的 provider(github/keygen/appcast):
 //   - gah 的升级源是**两个**自持清单(Gitee 镜像优先、GitHub 兜底),而且带「失败记忆」
 //     (某个源「表能取到、包下不下来」时下次先试另一个)—— 旧 Rust 壳的 update_source.rs
 //     就是干这个的,换壳不能把这段判断丢掉;
-//   - 清单格式自己定 ⇒ 一个 `go run` 的小工具就能签名发版,不需要 wails3 CLI(那玩意儿
-//     装一次要 1.2GB,而省磁盘正是这次迁移的起因之一)。
+//   - 清单格式自己定 ⇒ 一个纯标准库的小工具(`desktop/desktopman`)就能签名发版,
+//     不引入任何打包/更新 CLI。
 //
-// 安全模型(与旧壳一致,只是签名对象按 wails 的口径改):
+// 安全模型(与旧壳一致;签名对象是产物的 sha256 摘要):
 //   - 清单里每个产物带 sha256 + ed25519(对 **sha256 摘要** 签名);
 //   - 公钥**内置在壳二进制里**(构建时注入),清单自己无法替换信任根;
-//   - Config.PublicKey 一旦设置,框架强制验签(fail closed):剥掉签名、退化成只校验摘要
-//     的发布包会被拒绝。
+//   - 壳里内置了公钥时**强制验签**(fail closed):剥掉签名、退化成只校验摘要的发布包
+//     会被拒绝(见 stageUpdatePayload)。
 //
-// 产物形态:wails updater 只吃 单文件 / .zip(唯一顶层条目)/ .tar.gz;.dmg/.msi 不支持。
+// 产物形态:更新器只吃 单文件 / .zip(唯一顶层条目);.dmg/.msi 不支持。
 // 所以 mac 发 `.app.zip`、win 发「单 exe 的 zip」,首次安装仍走 dmg/NSIS。
 package main
 
@@ -169,7 +169,7 @@ type desktopProvider struct {
 	badSource string // 失败记忆:上次「表能取到、包下不下来」的源,下次垫到最后
 
 	// digestOnly 壳里没内置验签公钥(开发构建)。此时**不能**把清单里的 sig 填进
-	// Verification:wails 的口径是「有签名但没配公钥 ⇒ 直接拒」(verify.go 的
+	// Verification:口径是「有签名但没配公钥 ⇒ 直接拒」(stageUpdatePayload 的
 	// runVerification),那会让开发构建永远装不上更新,而日志还写着「仅校验摘要」。
 	digestOnly bool
 }
@@ -270,7 +270,7 @@ func (p *desktopProvider) Download(ctx context.Context, r *updateRelease, dst io
 	if err == nil {
 		return nil
 	}
-	// 已经落盘就不能换源:换了等于把两份字节拼进同一个文件,而 wails 的摘要是
+	// 已经落盘就不能换源:换了等于把两份字节拼进同一个文件,而摘要是
 	// 在下载流里边写边算的 ⇒ 摘要必然不符,错误会跑到下游、更难解释。
 	if written > 0 {
 		p.rememberBadSource(r)
@@ -425,7 +425,7 @@ func parsePubDate(s string) time.Time {
 
 // —— 以下为壳内自有更新器(不依赖框架):清单→下载校验→落位→重启 ——
 
-// updateRelease 一次「发现新版本」的结论(自持类型,取代 wails updater 的 Release)。
+// updateRelease 一次「发现新版本」的结论(壳自有类型,不依赖任何框架的 Release)。
 type updateRelease struct {
 	Version      string
 	Notes        string

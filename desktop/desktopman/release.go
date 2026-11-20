@@ -25,7 +25,7 @@ import (
 // 失败即非零退出:它是发布门,不是报告工具。
 func cmdVerifyRelease(args []string) error {
 	fs := flag.NewFlagSet("verify-release", flag.ContinueOnError)
-	dir := fs.String("dir", "dist-desktop-wails", "产物目录(含 desktop-latest.json 与各平台子目录)")
+	dir := fs.String("dir", "dist-desktop", "产物目录(含 desktop-latest.json 与各平台子目录)")
 	pub := fs.String("pubkey", "", "验签公钥 hex(强烈建议给;不给只校摘要)")
 	expect := fs.String("expect", "", "期望版本(缺省取清单里的 version)")
 	if err := fs.Parse(args); err != nil {

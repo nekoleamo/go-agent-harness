@@ -414,7 +414,7 @@ const conn = ref<ConnModel>(newConn())
 // lastTick 上次与服务端成功交互的时刻(睡眠检测基准:合盖期间定时器停摆 → 唤醒时时钟跳变)
 let lastTick = Date.now()
 // 壳侧提示(便携模式/数据迁移/后台服务失联)。壳用拉取式而不是往页面注入 DOM:
-// Wails v3 的 ExecJS 对外部 URL 页面永不生效(见 desktop.ts 的 fetchShellNotices)。
+// 框架的脚本注入对外部 URL 页面不生效(见 desktop.ts 的 fetchShellNotices)。
 const shellNotices = ref<string[]>([])
 const shellNoticeClosed = ref(false)
 async function refreshShellNotices(): Promise<void> {

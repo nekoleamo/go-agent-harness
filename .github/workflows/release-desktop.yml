@@ -8,12 +8,12 @@
 #   - 产物:mac `.app.zip`(+ 可选 dmg)/ win 单 exe zip(updater 只吃「唯一顶层条目的 zip」)
 #   - 清单:desktop-latest.json(自持格式,签名对象 = 产物 sha256 摘要)
 #   - 密钥:GAH_DESKTOP_UPDATE_KEY(ed25519 私钥 hex);公钥经 -ldflags 注入壳
-#   - windows 目标纯 Go(无 cgo),darwin 走 Wails v3.1 的 purego 后端(CGO=0)→ 各自 runner 均无需 Xcode/clang
+#   - windows 与 darwin 都是纯 Go(mygo webview 模式,CGO=0)→ 各自 runner 均无需 Xcode/clang
 #
 # 必填 secrets:
 #   GAH_DESKTOP_UPDATE_KEY      签名私钥(hex,由 desktopman keygen 生成)
 #   GAH_DESKTOP_UPDATE_PUBKEY   对应公钥(hex,注入壳内置信任根)
-name: release-desktop-wails
+name: release-desktop
 
 on:
   workflow_dispatch:
@@ -32,9 +32,6 @@ permissions:
 env:
   # 内嵌 web/dist 与 extplugins 都要现成产物,否则 sidecar 编不出来(与 Tauri 链同前置)。
   CGO_ENABLED: '0'
-  # 2026-11-20 起缺省 **mygo**(0.10.0 的桌面壳);两套并存期可用仓库变量临时切回 wails,
-  # 与 scripts/lib-desktop-shell.sh 的默认值必须一致。
-  GAH_DESKTOP_SHELL: ${{ vars.GAH_DESKTOP_SHELL || 'mygo' }}
 
 jobs:
   darwin-aarch64:
@@ -72,13 +69,13 @@ jobs:
           umask 077
           printf '%s\n' "$GAH_DESKTOP_UPDATE_KEY" > "$RUNNER_TEMP/update.key"
           export GAH_DESKTOP_UPDATE_KEY="$RUNNER_TEMP/update.key"
-          export RELEASE_VERSION="${RELEASE_VERSION#desktop-wails-v}"
+          export RELEASE_VERSION="${RELEASE_VERSION#desktop-v}"
           export RELEASE_VERSION="${RELEASE_VERSION#v}"
-          bash scripts/publish-desktop-wails.sh darwin-aarch64
+          bash scripts/publish-desktop.sh darwin-aarch64
       - uses: actions/upload-artifact@v4
         with:
-          name: desktop-wails-darwin-aarch64
-          path: dist-desktop-wails/darwin-aarch64/
+          name: desktop-darwin-aarch64
+          path: dist-desktop/darwin-aarch64/
           if-no-files-found: error
 
   windows:
@@ -137,13 +134,13 @@ jobs:
           umask 077
           printf '%s\n' "$GAH_DESKTOP_UPDATE_KEY" > "$RUNNER_TEMP/update.key"
           export GAH_DESKTOP_UPDATE_KEY="$RUNNER_TEMP/update.key"
-          export RELEASE_VERSION="${RELEASE_VERSION#desktop-wails-v}"
+          export RELEASE_VERSION="${RELEASE_VERSION#desktop-v}"
           export RELEASE_VERSION="${RELEASE_VERSION#v}"
-          bash scripts/publish-desktop-wails.sh ${{ matrix.plat }}
+          bash scripts/publish-desktop.sh ${{ matrix.plat }}
       - uses: actions/upload-artifact@v4
         with:
-          name: desktop-wails-${{ matrix.plat }}
-          path: dist-desktop-wails/${{ matrix.plat }}/
+          name: desktop-${{ matrix.plat }}
+          path: dist-desktop/${{ matrix.plat }}/
           if-no-files-found: error
 
   merge-and-publish:
@@ -160,25 +157,25 @@ jobs:
           cache: true
       - uses: actions/download-artifact@v4
         with:
-          path: dist-desktop-wails
-          pattern: desktop-wails-*
+          path: dist-desktop
+          pattern: desktop-*
       - name: 摊平目录结构
         run: |
           set -euo pipefail
           mkdir -p /tmp/flat
-          for d in dist-desktop-wails/desktop-wails-*; do
-            plat="${d#dist-desktop-wails/desktop-wails-}"
-            mkdir -p "dist-desktop-wails/$plat"
-            cp -f "$d"/* "dist-desktop-wails/$plat"/
+          for d in dist-desktop/desktop-*; do
+            plat="${d#dist-desktop/desktop-}"
+            mkdir -p "dist-desktop/$plat"
+            cp -f "$d"/* "dist-desktop/$plat"/
           done
-          rm -rf dist-desktop-wails/desktop-wails-*
+          rm -rf dist-desktop/desktop-*
       - name: 合并清单 + 校验和
         env:
           RELEASE_VERSION: ${{ inputs.tag || github.ref_name }}
         run: |
-          export RELEASE_VERSION="${RELEASE_VERSION#desktop-wails-v}"
+          export RELEASE_VERSION="${RELEASE_VERSION#desktop-v}"
           export RELEASE_VERSION="${RELEASE_VERSION#v}"
-          bash scripts/publish-desktop-wails.sh merge
+          bash scripts/publish-desktop.sh merge
       - name: 上传到 Release(升级包 / 首装包 / 清单 / 校验和)
         uses: softprops/action-gh-release@v2
         with:
@@ -189,18 +186,18 @@ jobs:
           # 两边对同一个 Release 的说法要一致。
           prerelease: ${{ contains(inputs.tag || github.ref_name, '-') }}
           files: |
-            dist-desktop-wails/desktop-latest.json
-            dist-desktop-wails/checksums-desktop-wails.txt
-            dist-desktop-wails/*/*.zip
-            dist-desktop-wails/*/*setup.exe
+            dist-desktop/desktop-latest.json
+            dist-desktop/checksums-desktop.txt
+            dist-desktop/*/*.zip
+            dist-desktop/*/*setup.exe
           fail_on_unmatched_files: true
       - name: 上传 dmg(可选;首装便利包,不进更新清单)
         # 单独一步 + 不强制匹配:hdiutil 失败时 package 脚本只告警,这里也不该因此整版变红。
-        if: ${{ hashFiles('dist-desktop-wails/*/*.dmg') != '' }}
+        if: ${{ hashFiles('dist-desktop/*/*.dmg') != '' }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}
-          files: dist-desktop-wails/*/*.dmg
+          files: dist-desktop/*/*.dmg
 
   # 说明(与 Tauri 链同一口径):CI 不往 Gitee 传附件 —— 海外 runner 往 Gitee 传 25MB 级
   # 附件实测 60 秒 0 字节超时。Gitee 镜像由 scripts/mirror-gitee.sh 在本机跑。

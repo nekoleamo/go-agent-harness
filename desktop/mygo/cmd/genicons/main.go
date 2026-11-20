@@ -8,7 +8,7 @@
 //
 // 用法(改了图标再跑一次,产物入库):
 //
-//	go run ./desktop/wails/cmd/genicons
+//	go run ./cmd/genicons
 package main
 
 import (
@@ -24,15 +24,15 @@ import (
 // 输入:仓库里的图标源(1024×1024 PNG,透明背景)。
 const srcPath = "desktop/icons/gah-icon-1024.png"
 
-// 产物(入库,构建时 go:embed)。
+// 产物(入库,构建时 go:embed;路径相对壳模块根,本工具在 cmd/genicons 下运行时 cwd 是模块根)。
 var outputs = []struct {
 	path string
 	size int
 	mode string // "app" 原样缩放;"tray" 彩色;"template" 纯黑+alpha
 }{
-	{"desktop/wails/assets/appicon.png", 256, "app"},
-	{"desktop/wails/assets/tray.png", 32, "tray"},
-	{"desktop/wails/assets/tray-template.png", 32, "template"},
+	{"assets/appicon.png", 256, "app"},
+	{"assets/tray.png", 32, "tray"},
+	{"assets/tray-template.png", 32, "template"},
 }
 
 func main() {

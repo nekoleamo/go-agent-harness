@@ -11,7 +11,7 @@
 #     - 豁免表(exempt):声明/装配/外部二进制/测试辅助等无语句覆盖意义的包,
 #       必须写理由,且**不允许**非豁免包覆盖率为 0(防新增无测试包)。
 #
-#   desktop/wails(Go+Wails 桌面壳)是**第三个 module,刻意不在本门内**:它的多数路径
+#   desktop/mygo(桌面壳)是**第三个 module,刻意不在本门内**:它的多数路径
 #   需要 cgo + 系统 webview,Linux CI 上连编译都过不去;纯逻辑部分(安全闸/清单/指纹/备份/
 #   日志尾/窗口状态)另有单测且都做过反向验证,壳的生命周期只能真机验 —— 拿门去逼它只会
 #   产生一堆"为覆盖率而造"的假用例。
@@ -246,6 +246,8 @@ plugins/tool/tool-subagent 56
 plugins/tool/tool-todo 75
 plugins/tool/tool-web 85
 plugins/tool/tool-workflow 72
+desktop/desktopman 50
+
 EOF
 
 # —— 稀释豁免表:仅「结构性稀释且本批补不满」时用(包名|理由)。前缀不匹配,精确包名。——
@@ -429,7 +431,7 @@ if [ -n "$CHILD_DIR" ] && [ -d "$CHILD_DIR" ]; then
     done
   else
     # 目录设了却一份都没有:**多半是 go test 缓存命中**(测试没真跑 ⇒ 子进程没跑 ⇒
-    # 没人写 GOCOVERDIR)。2026-11-03 真踩:只改了 desktop/wails 的提交在 CI 假红,
+    # 没人写 GOCOVERDIR)。2026-11-03 真踩:只改了桌面壳的提交在 CI 假红,
     # 因为 setup-go 的 GOCACHE 跨 run 复用,而合并目录路径在 runner 上是固定的。
     echo "== 子进程覆盖:目录已设但没有 *.child.out —— 若本平台本应有子进程覆盖,多半是 go test 缓存命中(子进程没跑),这类数字不可比;用 -count=1 重跑 =="
   fi

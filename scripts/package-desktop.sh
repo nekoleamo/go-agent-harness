@@ -2,13 +2,13 @@
 # 组装 macOS 发行包:`gah.app` + 更新器要的 `.app.zip`(+ 可选 dmg)。
 #
 # 为什么手写而不是用打包框架:壳只有一个二进制 + 一个 sidecar,Info.plist 就十几行;
-# 用框架会再拉一套工具链(与「省磁盘」的初衷相反)。Windows 侧是 NSIS(见 desktop/wails/installer/),
+# 用框架会再拉一套工具链(与「省磁盘」的初衷相反)。Windows 侧是 NSIS(见 desktop/mygo/installer/),
 # 首次安装走 dmg/NSIS,升级走 updater 的 zip。
 #
 # 用法:
-#   bash scripts/package-desktop-wails.sh            # 构建 .app 与 .app.zip
-#   bash scripts/package-desktop-wails.sh --dmg      # 额外出 dmg
-#   RELEASE_VERSION=0.8.0-preview bash scripts/package-desktop-wails.sh --no-build --dmg
+#   bash scripts/package-desktop.sh            # 构建 .app 与 .app.zip
+#   bash scripts/package-desktop.sh --dmg      # 额外出 dmg
+#   RELEASE_VERSION=0.8.0-preview bash scripts/package-desktop.sh --no-build --dmg
 #     ↑ 发版路径**必须显式给版本**:缺省取 `git describe`,在非 tag 提交上会变成
 #       "0.7.4-26-gabcd" —— Info.plist 就与清单/壳里的版本不一致了(2026-10-30 实测)。
 #
@@ -19,7 +19,6 @@
 #   - 版本号取 git describe,写进 CFBundleShortVersionString 与 updater 清单
 set -euo pipefail
 cd "$(dirname "$0")/.."
-source scripts/lib-desktop-shell.sh
 
 DO_DMG=0
 NO_BUILD=0
@@ -44,14 +43,14 @@ case "$ARCH" in
 esac
 
 # --no-build:发行脚本已经构建过(带公钥/版本注入),这里只组装,免得再编一遍覆盖掉。
-[ "$NO_BUILD" = "1" ] || bash scripts/gen-desktop-wails.sh --release >/dev/null
+[ "$NO_BUILD" = "1" ] || bash scripts/gen-desktop.sh --release >/dev/null
 
-SHELL_MOD="$(gah_shell_mod)" || exit 1
+SHELL_MOD=desktop/mygo
 APP="$SHELL_MOD/build/gah.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
-# 只放壳:sidecar 已 gzip 内嵌在壳里(见 desktop/wails/embed_sidecar.go),
+# 只放壳:sidecar 已 gzip 内嵌在壳里(见 desktop/mygo/embed_sidecar.go),
 # 于是 .app 只有一个可执行文件,更新器换这一个文件就等于整包升级。
 cp "$SHELL_MOD/build/gah-desktop" "$APP/Contents/MacOS/gah-desktop"
 chmod +x "$APP/Contents/MacOS/gah-desktop"
@@ -90,7 +89,7 @@ ZIP="$OUT_DIR/gah-${VERSION}-${TRIPLE}.app.zip"
 # 代码签名:macOS 按「签名标识 + bundle 封章」认应用,而 Go 链接器只给**可执行文件**
 # 一层 adhoc 签名(flags=adhoc,linker-signed:`codesign -dv` 显示 Identifier=a.out、
 # Info.plist=not bound)。2026-10-30 真机现场:这样组装的 .app 一发送通知就是
-# UNErrorDomain error 1,通知中心里也查不到 gah 这一项。wails 的 updater 同样要求
+# UNErrorDomain error 1,通知中心里也查不到 gah 这一项。更新器同样要求
 # 「打包并签名」(validate.go 对本情形是宽容不改判,但那是容错不是正确)。
 # 有开发者身份就用它(发行版),否则 adhoc(本地/内测;系统接受,codesign --verify 也过)。
 # 签名必须在打 zip **之前**:包内容再变(换二进制)就得重签。
@@ -105,7 +104,7 @@ echo "签名: $SIGN_ID($(codesign -dv "$APP" 2>&1 | awk -F= '/^Identifier=/{prin
 rm -f "$ZIP"
 # ditto 保资源叉与符号链接;--keepParent 让 zip 里只有一个顶层条目(.app),
 # 这是 updater 的硬要求:多于一个顶层条目会被拒绝(staging 无法确定换哪个)。
-# 不加 --sequesterRsrc:ditto 会额外塞一个 `__MACOSX/` 顶层条目,而 wails updater 要求
+# 不加 --sequesterRsrc:ditto 会额外塞一个 `__MACOSX/` 顶层条目,而更新器要求
 # zip **恰好一个顶层条目**,否则拒绝(实测过:__MACOSX 也不算例外)。
 ditto -c -k --keepParent "$APP" "$ZIP"
 

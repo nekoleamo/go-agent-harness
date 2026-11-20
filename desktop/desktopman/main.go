@@ -1,21 +1,21 @@
 // desktopman:桌面壳的更新清单工具(签名 + 合并)。
 //
-// 为什么自己写一个而不是用 `wails3 updater manifest`:那要装 wails3 CLI(一次 1.2GB),
-// 而这次迁移的起点就是「不想再养一套大工具链」。这里只依赖标准库,和壳共用同一个 module。
+// 为什么自己写一个:壳的更新清单是**gah 自己定的格式**(ed25519 over sha256 + Gitee/GitHub 双源),
+// 任何框架自带工具都不认它。这里只依赖标准库,放在根 module 里(`go run ./desktop/desktopman`)。
 //
 // 用法:
 //
 //	# 1) 生成密钥对(私钥留本机/CI secret,公钥注入壳)
-//	go run ./desktop/wails/cmd/desktopman keygen --out ~/.gah-desktop/update.key
+//	go run ./desktop/desktopman keygen --out ~/.gah-desktop/update.key
 //
 //	# 2) 给一个产物签名并写进清单(多平台多次执行,自动合并)
-//	go run ./desktop/wails/cmd/desktopman sign \
+//	go run ./desktop/desktopman sign \
 //	    --key ~/.gah-desktop/update.key --out dist-desktop/desktop-latest.json \
 //	    --artifact dist-desktop/mac/gah.zip --platform darwin-aarch64 \
 //	    --version 0.1.7 --url https://example.com/gah.zip --notes "修了什么"
 //
 //	# 3) 自检:清单里的摘要与签名是否和产物对得上(上传前必跑)
-//	go run ./desktop/wails/cmd/desktopman verify --manifest dist-desktop/desktop-latest.json \
+//	go run ./desktop/desktopman verify --manifest dist-desktop/desktop-latest.json \
 //	    --artifact mac=dist-desktop/mac/gah.zip --platform darwin-aarch64
 package main
 

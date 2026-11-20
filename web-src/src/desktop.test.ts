@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { ctlErrorMessage, fetchShellNotices, hasShellQuery, requestAttention, sniffTauriInvoke, wailsUpdateSnapshot } from './desktop.ts'
+import { ctlErrorMessage, fetchShellNotices, hasShellQuery, requestAttention, sniffTauriInvoke, desktopUpdateSnapshot } from './desktop.ts'
 
 const invoke = (): Promise<unknown> => Promise.resolve('ok')
 
@@ -29,7 +29,7 @@ test('形状不对(同名但非函数)不能误判成桌面', () => {
   assert.equal(sniffTauriInvoke({ __TAURI__: { core: {} } }), undefined)
 })
 
-// —— Go + Wails v3 壳:靠 ?shell=desktop 判定,凭据走 gah 的同源代理 ——
+// —— Go 桌面壳(mygo):靠 ?shell=desktop 判定,凭据走 gah 的同源代理 ——
 
 test('壳标记:只有 ?shell=desktop 才算(与布局开关同一来源)', () => {
   assert.equal(hasShellQuery('?shell=desktop'), true)
@@ -40,7 +40,7 @@ test('壳标记:只有 ?shell=desktop 才算(与布局开关同一来源)', () =
 })
 
 test('控制面状态:busy/seq 用壳侧真实值(缺省才补 false/0)', () => {
-  assert.deepEqual(wailsUpdateSnapshot({ status: 'checking', busy: true, seq: 7 }), {
+  assert.deepEqual(desktopUpdateSnapshot({ status: 'checking', busy: true, seq: 7 }), {
     busy: true,
     seq: 7,
     status: 'checking',

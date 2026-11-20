@@ -46,10 +46,10 @@ func TestSidecarVersionText(t *testing.T) {
 // 壳注了、sidecar 没注,而两个二进制在界面上都自称「版本」。
 // 运行期的对账(壳日志 + 「关于」)只能**发现**;这一个是让它在构建期就红。
 // 反向验证:把任一脚本的 SIDE_LD 里的 `-X main.version=$VERSION` 删掉,本用例必红
-// (实测:删掉后 publish-desktop-wails.sh 真跑一次会以「sidecar 版本不对(实际 dev)」退出)。
+// (实测:删掉后 publish-desktop.sh 真跑一次会以「sidecar 版本不对(实际 dev)」退出)。
 func TestSidecarBuildInjectsVersion(t *testing.T) {
 	re := regexp.MustCompile(`(?m)^SIDE_LD="[^"]*-X main\.version=\$VERSION`)
-	for _, f := range []string{"publish-desktop-wails.sh", "gen-desktop-wails.sh"} {
+	for _, f := range []string{"publish-desktop.sh", "gen-desktop.sh"} {
 		path := filepath.Join("..", "..", "scripts", f)
 		b, err := os.ReadFile(path)
 		if err != nil {

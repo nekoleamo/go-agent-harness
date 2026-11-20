@@ -52,13 +52,13 @@ if [ -z "${GAH_EXTRA_FILES:-}" ] && [ -z "${GAH_ALLOW_DROP_TABLE:-}" ]; then
   if node -e 'fetch(process.argv[1],{method:"HEAD"}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))' "$probe" 2>/dev/null; then
     echo "拒绝执行:$probe 已存在,而本次未设 GAH_EXTRA_FILES。" >&2
     echo "  快照为全量替换,继续会把线上升级表删掉。正确用法(先弄一份表到本地):" >&2
-    echo "  GITEE_URL=... GAH_EXTRA_FILES=dist-desktop-wails/gitee/desktop-latest.json:desktop-latest.json bash scripts/sync-gitee.sh" >&2
+    echo "  GITEE_URL=... GAH_EXTRA_FILES=dist-desktop/gitee/desktop-latest.json:desktop-latest.json bash scripts/sync-gitee.sh" >&2
     echo "  确实要删掉表:加 GAH_ALLOW_DROP_TABLE=1。" >&2
     exit 1
   fi
 fi
 git archive HEAD | tar -x -C "$tmp"
-# 额外文件注入(逗号分隔的 `源:目标` 对)。用途:把 dist-desktop-wails/gitee/desktop-latest.json
+# 额外文件注入(逗号分隔的 `源:目标` 对)。用途:把 dist-desktop/gitee/desktop-latest.json
 # 作为 desktop-latest.json 一起提交 —— 客户端从 Gitee raw 通道读的就是它。
 if [ -n "${GAH_EXTRA_FILES:-}" ]; then
   IFS=',' read -r -a pairs <<< "$GAH_EXTRA_FILES"

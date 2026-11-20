@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
-# Go 壳(Wails v3)构建:sidecar `gah` + 壳本体。
+# 桌面壳构建:sidecar `gah` + 壳本体(mygo webview 模式,CGO=0)。
 #
-# 旧的 Tauri 链已于 2026-10-29 删除;产物布局沿用同一套 triple 命名(落 desktop/wails/binaries/),
+# 旧的 Tauri/Wails 链已删除(2026-10-29 / 2026-11-20);产物布局沿用同一套 triple 命名(落 desktop/mygo/binaries/),
 #
 # 用法:
-#   bash scripts/gen-desktop-wails.sh              # debug 构建(CGO=0,快)
-#   bash scripts/gen-desktop-wails.sh --release    # 发行构建(-s -w + 版本号)
+#   bash scripts/gen-desktop.sh              # debug 构建(CGO=0,快)
+#   bash scripts/gen-desktop.sh --release    # 发行构建(-s -w + 版本号)
 #
 # 前置:Go 工具链。mac 走 Wails v3.1 的 purego 后端,不再需要 Xcode CLT(见 §12)。
 set -euo pipefail
 cd "$(dirname "$0")/.."
-source scripts/lib-desktop-shell.sh
 
 MODE=debug
 for arg in "$@"; do
@@ -25,12 +24,13 @@ case "$(uname -s)-$(uname -m)" in
   Darwin-arm64)   triple=aarch64-apple-darwin ;;
   Darwin-x86_64)  triple=x86_64-apple-darwin ;;
   MINGW*|MSYS*|CYGWIN*) triple=x86_64-pc-windows-msvc ;;
-  *) echo "gen-desktop-wails: 未支持平台 $(uname -s)-$(uname -m)(桌面壳只发 mac/win)"; exit 1 ;;
+  *) echo "gen-desktop: 未支持平台 $(uname -s)-$(uname -m)(桌面壳只发 mac/win)"; exit 1 ;;
 esac
 
-SHELL_MOD="$(gah_shell_mod)" || exit 1
+# 壳模块固定是 desktop/mygo(0.10.0 起 Wails 壳已删)。它自带 go.mod 且要求 go 1.27.3,
+# 不在仓库 workspace 里 ⇒ 所有构建都要 GOWORK=off(见 docs/DESKTOP_FEASIBILITY.md §14.3)。
+SHELL_MOD=desktop/mygo
 BIN="$SHELL_MOD/binaries"
-echo "壳: $SHELL_MOD(GAH_DESKTOP_SHELL=$(gah_shell_id))"
 mkdir -p "$BIN"
 
 # 版本号在**构建 sidecar 之前**就要有:壳与 sidecar 必须报同一个版本
@@ -61,7 +61,7 @@ LDFLAGS="-X main.version=$VERSION"
 TAGLIST=""
 if [ "$MODE" = "release" ]; then
   LDFLAGS="-s -w $LDFLAGS"
-  # 发行:sidecar 以 gzip 内嵌进壳(见 desktop/wails/embed_sidecar.go 的三条理由)。
+  # 发行:sidecar 以 gzip 内嵌进壳(见 desktop/mygo/embed_sidecar.go 的三条理由)。
   # 内嵌后**更新器只需换一个文件**,Windows 上才不会出现「新壳配旧 sidecar」。
   mkdir -p "$SHELL_MOD/embed"
   gzip -9 -n -c "$BIN/gah-$triple" > "$SHELL_MOD/embed/gah.bin.gz"
@@ -78,15 +78,16 @@ fi
 case "$triple" in
   *windows*) [ "$MODE" = release ] && LDFLAGS="$LDFLAGS -H windowsgui" ;;
 esac
-# 平台附加标签由 lib-desktop-shell.sh 决定:
-#   wails/darwin → purego(Wails v3.1 的 CGO-free macOS 后端,见 §12)
-#   mygo         → 无(本来就是 purego 实现)
-EXTRA_TAGS="$(gah_shell_tags "$(go env GOOS)")"
-TAGLIST="${TAGLIST:+$TAGLIST }${EXTRA_TAGS}"
 # Windows:图标/版本信息必须写进 PE 资源段(否则桌面/任务栏是 Go 默认图标)。
-gah_shell_genwinres "$(go env GOOS)" "$VERSION"
-OUT="$SHELL_MOD/build/$(gah_shell_exe "$(go env GOOS)")"
-gah_shell_build "$(go env GOOS)" "$(go env GOARCH)" "$LDFLAGS" "$TAGLIST" "$OUT"
+# 见 desktop/mygo/cmd/genwinres(纯 Go,不依赖 windres),产物 .syso 按平台后缀自动链接。
+if [ "$(go env GOOS)" = "windows" ]; then
+  ( cd "$SHELL_MOD" && GOWORK=off go run ./cmd/genwinres -version "$VERSION" ) || exit 1
+fi
+OUT="$SHELL_MOD/build/gah-desktop"
+[ "$(go env GOOS)" = "windows" ] && OUT="$OUT.exe"
+TAGS=""
+[ -n "$TAGLIST" ] && TAGS="-tags $TAGLIST"
+(cd "$SHELL_MOD" && GOWORK=off CGO_ENABLED=0 go build -trimpath $TAGS -ldflags "$LDFLAGS" -o "build/$(basename "$OUT")" .)
 
 echo "产物: $OUT ($(du -h "$OUT" | cut -f1)) version=$VERSION"
 if [ "$MODE" = "release" ]; then
@@ -94,4 +95,4 @@ if [ "$MODE" = "release" ]; then
 else
   echo "运行: GAH_SIDECAR=$PWD/$BIN/gah-$triple $OUT"
 fi
-echo "注:发行包(.app/.dmg/NSIS)与更新器迁移见 docs/DESKTOP_FEASIBILITY.md §11.6"
+echo "注:发行包(.app/.dmg/NSIS)与更新器迁移见 docs/DESKTOP_FEASIBILITY.md §14"

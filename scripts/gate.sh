@@ -1,5 +1,5 @@
 #!/bin/bash
-# 本地提交前门禁(gofmt / go vet / staticcheck;四 module:根 + sdk + desktop/wails + desktop/mygo)。
+# 本地提交前门禁(gofmt / go vet / staticcheck;三 module:根 + sdk + desktop/mygo)。
 #
 # 存在理由(2026-10-02,第二项待办「门禁固化」):
 #   这三步原先只以「习惯」的形式活在开发者脑子里 —— 批次记录里反复写「护栏:
@@ -73,18 +73,8 @@ if go vet ./...; then echo "OK"; else fail "go vet 根模块"; fi
 step "go vet(sdk module)"
 if (cd sdk && go vet ./...); then echo "OK"; else fail "go vet sdk module"; fi
 
-# —— 2b) go vet:desktop/wails 是第三个 module(Go+Wails 壳,自带 go.mod)——
-# Linux 上它在编译期需要 webkit2gtk/gtk3 头文件(v3 的 linux 实现是 cgo),
-# 而桌面壳只发 mac/win → 在 Linux 上**显式跳过并说明**,不假装通过。
-step "go vet(desktop/wails module)"
-if [ "$(go env GOOS)" = "linux" ]; then
-  echo "SKIP(linux 需要 webkit2gtk/gtk3 头文件;桌面壳只发 mac/win,见 docs/DESKTOP_FEASIBILITY.md §11)"
-else
-  if (cd desktop/wails && go vet ./...); then echo "OK"; else fail "go vet desktop/wails module"; fi
-fi
-
-# —— 2c) go vet:desktop/mygo 是第四个 module(mygo webview 壳,自带 go.mod)——
-# 它不在 go.work 里(mygo 要 go 1.27.3,工作区是 1.27.0)⇒ 构建必须 GOWORK=off。
+# —— 2b) go vet:desktop/mygo 是第三个 module(桌面壳,自带 go.mod)——
+# 它不在 go.work 里(它要 go 1.27.3,工作区是 1.27.0)⇒ 构建必须 GOWORK=off。
 step "go vet(desktop/mygo module)"
 if (cd desktop/mygo && GOWORK=off go vet ./...); then echo "OK"; else fail "go vet desktop/mygo module"; fi
 
@@ -107,12 +97,6 @@ else
     if "$SC" ./...; then echo "OK"; else fail "staticcheck 根模块"; fi
     step "staticcheck(sdk module)"
     if (cd sdk && "$SC" ./...); then echo "OK"; else fail "staticcheck sdk module"; fi
-    step "staticcheck(desktop/wails module)"
-    if [ "$(go env GOOS)" = "linux" ]; then
-      echo "SKIP(linux 需要 webkit2gtk/gtk3 头文件;桌面壳只发 mac/win)"
-    else
-      if (cd desktop/wails && "$SC" ./...); then echo "OK"; else fail "staticcheck desktop/wails module"; fi
-    fi
     step "staticcheck(desktop/mygo module)"
     if (cd desktop/mygo && GOWORK=off "$SC" ./...); then echo "OK"; else fail "staticcheck desktop/mygo module"; fi
     # 版本漂移会让人误判「本地过了就是过了」——CI 固定同一个版本(见 STATICCHECK_VERSION)。

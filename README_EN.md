@@ -33,7 +33,7 @@
 | **Notice channel** | `ctx.notices` messages aimed at humans (not in the session log, no tokens); TUI uses terminal notifications, the desktop shell uses system notifications |
 | **MCP / ACP, both ways** | MCP client bridge and server mode; `gah acp` is a first-class agent for editors, `acp-client` delegates work to external coding agents |
 | **Plugin install** | CLI `/install` and the Web panel share one core: source pinning with drift guard, `--prebuilt`, integrity gate, start/stop at will |
-| **Desktop shell** | Go + Wails v3: tray, notifications, autostart, single instance, multi-instance, `gah-shell.log` diagnostics; auto-update with its own ed25519 signature |
+| **Desktop shell** | Go + [mygo](https://github.com/egoist/mygo) (webview mode): tray, notifications, autostart, single instance, multi-session windows, `gah-shell.log` diagnostics; auto-update with its own ed25519 manifest and a separate installer (the Windows portable build updates in place too) |
 | **Document preview** | One block model rendered in four places (markdown / text / code / CSV / notebook / PDF / Office): Web workbench, TUI pager, `gah doc` |
 
 ## 3. Quick start
@@ -63,7 +63,8 @@ Then fill in one model provider in the settings panel (one-click presets for Dee
 - All data (sessions, memory, schedules, keys) lives in `gah-data/`; upgrades and uninstalls leave it alone. Only the uninstaller's "Delete app data" checkbox removes it (unchecked by default).
 - The desktop shell takes an extra backup to `~/gah-upgrade-backup/` before upgrading; if that backup fails the upgrade is cancelled.
 - Behind a flaky network: the updater tries a Gitee mirror first and falls back to GitHub; a source that serves the manifest but not the artifact is remembered and demoted. Signatures cover file contents only, so re-sourcing does not weaken security.
-- **Upgrading a 0.7.x desktop build to 0.8.x needs one manual install**: 0.8.0 swapped the shell from Tauri to Go + Wails v3, which changed the manifest format and signing scheme — the old shell cannot read the new manifest. Install once by hand (data is untouched), then auto-update resumes. The CLI is unaffected.
+- **Upgrading a 0.7.x desktop build to 0.8.x needs one manual install**: 0.8.0 swapped the shell from Tauri to a Go shell, which changed the manifest format and signing scheme — the old shell cannot read the new manifest. Install once by hand (data is untouched), then auto-update resumes. The CLI is unaffected.
+- **0.10.0 moves the desktop shell to mygo** (0.9.x to 0.10.0 updates in place: manifest format and signing scheme are unchanged).
 
 ### Desktop shapes
 
@@ -323,7 +324,7 @@ Hard rules: plugins import `sdk/` only — never `core/`, `tui/` or another plug
 ├── tui/          # bubbletea v2 UI
 ├── web/          # Web server (SSE/WS + REST + static hosting)
 ├── web-src/      # Vue 3 + Vite + TS frontend (build output is embedded)
-├── desktop/      # Go + Wails v3 desktop shell
+├── desktop/      # Go desktop shell (mygo webview mode) + desktopman update-manifest tool
 ├── tests/        # end-to-end and unload-matrix tests
 └── scripts/      # build / release / gates / checks
 ```

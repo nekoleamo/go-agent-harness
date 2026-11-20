@@ -17,14 +17,14 @@
 #   4. 生成 Gitee 版清单(gitee/desktop-latest.json,下载地址整体换到 Gitee 直链)。
 #
 # 第 4 步的换源(GitHub 与 Gitee 的直链同形:同 tag、同文件名,只差 host 与仓库路径):
-#   go run ./desktop/wails/cmd/desktopman rewrite-url --manifest <清单> --base gitee:<owner/repo>
+#   go run ./desktop/desktopman rewrite-url --manifest <清单> --base gitee:<owner/repo>
 #
 # 令牌:Gitee → 设置 → 私人令牌,勾选 projects 权限。只经 env 传入,不落盘、不入库
 # (Gitee API 用 `access_token` 查询参数,故会出现在本机进程列表里;CI 上由 GitHub 打码)。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 REPO="${GITEE_REPO:-${GAH_GITEE_REPO:-null_593_5354/go-agent-harness}}"
-OUT_DIR="${GAH_DIST_DIR:-dist-desktop-wails}"
+OUT_DIR="${GAH_DIST_DIR:-dist-desktop}"
 API="https://gitee.com/api/v5/repos/$REPO"
 # 上传失败时的响应体暂存(Gitee 的错误信息全在里面;不读就只能猜,2026-10-06 的教训)
 TMP_UPLOAD_BODY="$(mktemp)"
@@ -55,7 +55,7 @@ need_token() {
 
 # 产物清单:镜像「给人装的包」与「updater 要的包」——
 # *.app.zip(升级)/ *-setup.exe(首装)/ *.dmg / *-<triple>.zip(Windows 升级)/
-# **便携包与 checksums-desktop-wails.txt**。
+# **便携包与 checksums-desktop.txt**。
 # 便携包为什么也要镜像:它**不进 latest.json**(updater 只认安装包),分发全靠人工拿链接;
 # 而 GitHub 在国内往往拉不动 ⇒ 不镜像等于国内用户没有便携包可用 —— 而便携包恰恰是
 # 「不想安装、解压即用」那批人的唯一入口(v0.4.0 起才有)。对 updater 无影响:它不读这两件。
@@ -74,7 +74,7 @@ need_token() {
 belongs_to_tag() {
   local name="$1" ver
   case "$name" in
-    checksums-desktop-wails.txt) return 0 ;;          # 每个 tag 各一份,同名先删后传
+    checksums-desktop.txt) return 0 ;;          # 每个 tag 各一份,同名先删后传
     *.dmg|*setup.exe|*.app.zip|*-portable-*.zip) ;;
     *-apple-darwin.zip|*-pc-windows-msvc.zip) ;;
     *) return 1 ;;                                    # 不认识的形态:不放行(宁可漏传)
@@ -89,7 +89,7 @@ belongs_to_tag() {
 collect() {
   find "$dir" -maxdepth 1 -type f \( -name '*.dmg' -o -name '*-setup.exe' -o -name '*.app.zip' \
        -o -name '*-portable-*.zip' -o -name 'gah-*-pc-windows-msvc.zip' \
-       -o -name 'checksums-desktop-wails.txt' \) 2>/dev/null | sort
+       -o -name 'checksums-desktop.txt' \) 2>/dev/null | sort
 }
 
 # collect_checked = collect + 版本闸:不属于本 tag 的**显式报错退出**,不静默跳过。
@@ -273,7 +273,7 @@ case "$cmd" in
     if [ -f "$MANIFEST" ]; then
       mkdir -p "$OUT_DIR/gitee"
       cp "$MANIFEST" "$OUT_DIR/gitee/desktop-latest.json"
-      ( cd "$(dirname "$0")/.." && go run ./desktop/wails/cmd/desktopman rewrite-url \
+      ( cd "$(dirname "$0")/.." && go run ./desktop/desktopman rewrite-url \
           --manifest "$OUT_DIR/gitee/desktop-latest.json" \
           --base "https://gitee.com/$REPO/releases/download/$tag" ) \
         || { echo "生成 Gitee 版清单失败(desktopman rewrite-url)" >&2; rm -rf "$OUT_DIR/gitee"; exit 1; }

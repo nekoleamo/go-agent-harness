@@ -45,8 +45,8 @@ case "$cmd" in
     goreleaser release "${@:2}"
     ;;
   desktop)
-    # 旧 Tauri 链已移除;桌面壳构建见 scripts/gen-desktop-wails.sh(壳在 desktop/wails/)。
-    bash scripts/gen-desktop-wails.sh "${@:2}"
+    # 旧 Tauri/Wails 链已移除;桌面壳构建见 scripts/gen-desktop.sh(壳在 desktop/mygo/)。
+    bash scripts/gen-desktop.sh "${@:2}"
     ;;
   web-dev)
     echo "[web-dev] vite watch(vite dev 产物落盘需 build --watch;前端改动自动重建)"

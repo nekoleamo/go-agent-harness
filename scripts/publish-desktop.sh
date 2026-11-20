@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# 桌面壳(Go + Wails v3)发行:构建 → 打包 → 签名 → 清单。
+# 桌面壳(mygo 0.10.0 起)发行:构建 → 打包 → 签名 → 清单。
 #
 # 旧的 Tauri 链已于 2026-10-29 删除。与它的差异:
-#   - 产物形态:wails updater 只吃「单文件 / 唯一顶层条目的 zip」
+#   - 产物形态:更新器只吃「单文件 / 唯一顶层条目的 zip」
 #       mac  → gah-<ver>-<triple>.app.zip(整个 .app 打包,sidecar 在内嵌壳里)
 #       win  → gah-<ver>-<triple>.zip(单个 exe,sidecar 同样内嵌)
 #   - 清单换格式:desktop-latest.json {version,notes,pub_date,artifacts{平台键:{url,size,sha256,sig}}}
@@ -10,9 +10,9 @@
 #   - 首次安装仍是 dmg / NSIS;updater 只负责后续升级
 #
 # 用法:
-#   bash scripts/publish-desktop-wails.sh darwin-aarch64    # 在 mac 上
-#   bash scripts/publish-desktop-wails.sh windows-x86_64    # 在 win 上(或 mac 交叉编,见下)
-#   bash scripts/publish-desktop-wails.sh merge             # 合并各平台清单 + 生成校验和
+#   bash scripts/publish-desktop.sh darwin-aarch64    # 在 mac 上
+#   bash scripts/publish-desktop.sh windows-x86_64    # 在 win 上(或 mac 交叉编,见下)
+#   bash scripts/publish-desktop.sh merge             # 合并各平台清单 + 生成校验和
 #
 # 平台键 = **GOOS-<归一化 arch>**(darwin-aarch64 / windows-x86_64 / windows-aarch64):
 # 壳侧 platformKey() 用同一形状查清单,两边写不一致的后果是「这个平台永远查不到更新」
@@ -24,7 +24,7 @@
 #   RELEASE_NOTES           更新说明(缺省取空)
 #   GAH_DESKTOP_URL_BASE    产物下载前缀(缺省 GitHub release 直链;Gitee 镜像用它覆盖)
 #
-# 说明:Windows 目标可以在 mac 上交叉编译(Wails v3 的 windows 实现不需要 cgo,
+# 说明:Windows 目标可以在 mac 上交叉编译(mygo 的 windows 实现不需要 cgo,
 # 已实测 `GOOS=windows go build` 通过);但**运行验证**必须真机。
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -41,7 +41,7 @@ case "$PLATFORM" in
 esac
 
 ROOT="$PWD"
-OUT_ROOT="$ROOT/dist-desktop-wails"
+OUT_ROOT="$ROOT/dist-desktop"
 VERSION="${RELEASE_VERSION:-$(git describe --tags 2>/dev/null | sed 's/^v//')}"
 [ -n "$VERSION" ] || { echo "publish: 取不到版本号(设 RELEASE_VERSION)"; exit 1; }
 KEY="${GAH_DESKTOP_UPDATE_KEY:-$HOME/.gah-desktop/update.key}"
@@ -92,8 +92,8 @@ PY
   (
     cd "$OUT_ROOT"
     find . -type f \( -name '*.zip' -o -name '*.dmg' \) | sort | while read -r f; do sha256_of "$f"; done
-  ) > "$OUT_ROOT/checksums-desktop-wails.txt"
-  echo "checksums → $OUT_ROOT/checksums-desktop-wails.txt"
+  ) > "$OUT_ROOT/checksums-desktop.txt"
+  echo "checksums → $OUT_ROOT/checksums-desktop.txt"
   exit 0
 fi
 
@@ -125,11 +125,10 @@ esac
 OUT="$OUT_ROOT/$PLATFORM"
 rm -rf "$OUT"; mkdir -p "$OUT"
 
-source scripts/lib-desktop-shell.sh
-SHELL_MOD="$(gah_shell_mod)" || exit 1
+SHELL_MOD=desktop/mygo
 BIN_DIR="$SHELL_MOD/binaries"
-EXE="$SHELL_MOD/build/$(gah_shell_exe "$GOOS")"
-echo "壳: $SHELL_MOD(GAH_DESKTOP_SHELL=$(gah_shell_id))"
+EXE="$SHELL_MOD/build/gah-desktop"
+[ "$GOOS" = "windows" ] && EXE="$EXE.exe"
 
 # 前置:web/dist 与 extplugins 必须现成(go:embed 在编译期就要它们);缺了报一句人话,
 # 而不是让 go build 抛一堆 embed 路径错误。
@@ -168,8 +167,6 @@ gzip -9 -n -c "$SIDECAR" > "$SHELL_MOD/embed/gah.bin.gz"
 # 壳全程 CGO=0:darwin 走 Wails v3.1 的 purego 后端(-tags purego),windows 本来就是纯 Go。
 # 于是两个平台都能在同一台 mac 上交叉编(见 docs/DESKTOP_FEASIBILITY.md §12)。
 TAGS="embed_sidecar"
-EXTRA_TAGS="$(gah_shell_tags "$GOOS")"
-[ -n "$EXTRA_TAGS" ] && TAGS="$TAGS $EXTRA_TAGS"
 # 验签公钥必须烧进壳(信任根不能来自发行渠道);没给就明确警告 —— 那种包只能校验摘要。
 PUBKEY="${GAH_DESKTOP_UPDATE_PUBKEY:-}"
 LD="-s -w -X main.version=$VERSION"
@@ -181,8 +178,12 @@ if [ -n "$PUBKEY" ]; then
 else
   echo "publish: ！未提供 GAH_DESKTOP_UPDATE_PUBKEY —— 本次产物只校验摘要,不应作为正式发行"
 fi
-gah_shell_genwinres "$GOOS" "$VERSION"
-gah_shell_build "$GOOS" "$GOARCH" "$LD" "$TAGS" "$EXE"
+# Windows:图标/版本信息进 PE 资源段(go run 用宿主工具链跑,产物是 .syso 数据文件)。
+if [ "$GOOS" = "windows" ]; then
+  ( cd "$SHELL_MOD" && GOWORK=off go run ./cmd/genwinres -version "$VERSION" ) || exit 1
+fi
+( cd "$SHELL_MOD" && GOWORK=off CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH \
+    go build -trimpath -tags "$TAGS" -ldflags "$LD" -o "build/$(basename "$EXE")" . )
 
 echo "[3/4] 打包(唯一顶层条目)"
 case "$GOOS" in
@@ -191,7 +192,7 @@ case "$GOOS" in
     # 版本必须**显式传进去**:package 脚本自己的缺省是 `git describe`,在非 tag 提交上会得到
     # "0.7.4-26-gxxxx" 这种字符串 —— 那样 Info.plist 里的版本与清单/壳里的版本就对不上了
     # (2026-10-30 实测)。--dmg 顺带出首装用的 dmg;hdiutil 失败只告警(它不进清单)。
-    RELEASE_VERSION="$VERSION" bash scripts/package-desktop-wails.sh --no-build --dmg >/dev/null \
+    RELEASE_VERSION="$VERSION" bash scripts/package-desktop.sh --no-build --dmg >/dev/null \
       || { echo "publish: 组装 .app/.app.zip 失败"; exit 1; }
     ART="$OUT/gah-$VERSION-$TRIPLE.app.zip"
     cp "$SHELL_MOD/build/gah-$VERSION-$TRIPLE.app.zip" "$ART"
@@ -202,7 +203,7 @@ case "$GOOS" in
   windows)
     # ① 升级产物:单 exe 的 zip(updater 只换这一个文件;sidecar 已内嵌)
     ART="$OUT/gah-$VERSION-$TRIPLE.zip"
-    go run ./desktop/wails/cmd/desktopman pack --in "$EXE" --entry gah-desktop.exe --out "$ART"
+    go run ./desktop/desktopman pack --in "$EXE" --entry gah-desktop.exe --out "$ART"
 
     # ② 首次安装:NSIS setup.exe(按用户安装,不弹 UAC)。
     #    **只在 x86_64 目标上产**:安装器本身就是 x64 的(arm64 机器靠系统模拟运行),而在
@@ -215,8 +216,8 @@ case "$GOOS" in
       [ -f "$ROOT/$EXE" ] || { echo "publish: 壳产物缺失 $ROOT/$EXE(NSIS 无从打包)"; exit 1; }
       makensis -V2 -DVERSION="$VERSION" -DNUMVERSION="$NUMVER" \
         -DAPPEXE="$(winpath "$ROOT/$EXE")" -DOUTFILE="$(winpath "$SETUP")" \
-        -DICONDIR="$(winpath "$ROOT/desktop/wails/installer")" \
-        desktop/wails/installer/installer.nsi
+        -DICONDIR="$(winpath "$ROOT/desktop/mygo/installer")" \
+        desktop/mygo/installer/installer.nsi
       echo "SETUP: $SETUP"
     elif [ "$PLATFORM" != "windows-x86_64" ]; then
       echo "publish: 非 x86_64 目标不产 NSIS 安装包(arm64 用便携 zip / 系统模拟安装)"
@@ -242,7 +243,7 @@ gah 便携版
 - 本目录可写时支持应用内自动更新(装完自动重启);提示不可更新时再下载新包覆盖本目录
 - 想彻底清理:退出 gah 后删除整个目录即可
 TXT
-    go run ./desktop/wails/cmd/desktopman pack --in "$PORT_DIR" --entry gah \
+    go run ./desktop/desktopman pack --in "$PORT_DIR" --entry gah \
       --out "$OUT/gah-$VERSION-portable-$TRIPLE.zip"
     rm -rf "$OUT/portable"
     ;;
@@ -251,14 +252,14 @@ esac
 
 echo "[4/4] 签名 + 清单"
 URL_BASE="${GAH_DESKTOP_URL_BASE:-https://github.com/nekoleamo/go-agent-harness/releases/latest/download}"
-go run ./desktop/wails/cmd/desktopman sign \
+go run ./desktop/desktopman sign \
   --key "$KEY" --artifact "$ART" --platform "$PLATFORM" \
   --version "$VERSION" --url "$URL_BASE/$(basename "$ART")" \
   --notes "${RELEASE_NOTES:-}" --pub-date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   --out "$OUT/desktop-latest.$PLATFORM.json"
 
 # 上传前自检:清单里的摘要/大小必须与产物对得上(签名与产物脱节是最难查的一类错)。
-go run ./desktop/wails/cmd/desktopman verify \
+go run ./desktop/desktopman verify \
   --manifest "$OUT/desktop-latest.$PLATFORM.json" --platform "$PLATFORM" --artifact "$ART" 2>&1 | sed 's/^/  /'
 
 ls -lh "$ART" | awk '{print "ART:", $9, $5}'

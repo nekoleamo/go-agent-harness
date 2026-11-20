@@ -24,7 +24,7 @@
 #   bash scripts/release.sh preflight          # tag 之前的本地闸(不联网)
 #   bash scripts/release.sh wait               # 等 master 的 CI 全部 job 绿
 #   bash scripts/release.sh tag v0.6.0 --yes    # 打 tag 并推(默认只打印将执行的命令)
-#   bash scripts/release.sh watch v0.6.0       # 盯 release-cli + release-desktop-wails 到终态
+#   bash scripts/release.sh watch v0.6.0       # 盯 release-cli + release-desktop 到终态
 #   bash scripts/release.sh verify v0.6.0      # 产物校验门(下载 Release 产物 + 逐平台验签)
 #   bash scripts/release.sh mirror v0.6.0 --mirror      # Gitee 镜像(需 env 的 GITEE_TOKEN)
 #   bash scripts/release.sh verify-mirror v0.6.0 --dir /tmp/rel   # 只做逐字节核对(**只读**,不需 token)
@@ -66,7 +66,7 @@ TIMEOUT="${GAH_RELEASE_TIMEOUT:-1800}"
 # 2026-11-09:新增 test-windows-arm64(arm64 产物真跑,已是硬门)—— 新加 job 必须同步进这份
 # 清单,否则 wait 会"跳过它也算绿":发版前最该判的恰恰是那一档。
 CI_JOBS=(test test-windows test-windows-arm64)
-RELEASE_WORKFLOWS=(release-cli release-desktop-wails)
+RELEASE_WORKFLOWS=(release-cli release-desktop)
 
 # 先取子命令并 shift —— **再**扫旗标/位置参数。
 # (顺序反了的话子命令会被当成位置参数,报「多余的位置参数」——第一版就栽在这。)
@@ -197,18 +197,9 @@ preflight() {
     GAH_LAYOUT_REQUIRE=1 npm run test:layout || die "布局护栏红(本地产物;它跑的是 web/dist)"
   )
 
-  step "preflight · 桌面壳(Go + Wails v3:go vet + go test + 构建)"
-  # 旧链这里跑 cargo fmt/test;换壳后同样要有门:vet/test 保正确性,构建保链接期不炸。
-  # 2026-11-17 起 mac 壳也走 CGO=0(-tags purego):两条后端都编一次 ——
-  # 发行走 purego,cgo 后端作为回退路径不能默默朽掉(见 DESKTOP_FEASIBILITY §12)。
-  ( cd desktop/wails
-    go vet ./...      || die "桌面壳(Wails)go vet 红"
-    go test ./...     || die "桌面壳(Wails)单测红"
-    CGO_ENABLED=0 go build -tags purego -o /tmp/gah-desktop-preflight . || die "桌面壳构建红(purego)"
-    CGO_ENABLED=1 go build -o /tmp/gah-desktop-preflight-cgo . || die "桌面壳构建红(cgo 回退路径)"
-  )
-  # 2026-11-20:mygo 壳进了分支 ⇒ 两套壳的**两套**门都要跑,否则另一套会默默朽掉
-  # (与「purego / cgo 两条后端都编一次」同一条纪律)。mygo 不在 workspace,必须 GOWORK=off。
+  step "preflight · 桌面壳(mygo:go vet + go test + 构建)"
+  # 壳是**独立 module**:根目录 ./... 覆盖不到,且它不在 workspace(要 go 1.27.3)⇒ GOWORK=off。
+  # 2026-11-20 Wails 壳已删;这里是唯一一套壳门(vet/test 保正确性,构建保链接期不炸)。
   ( cd desktop/mygo
     GOWORK=off go vet ./...    || die "桌面壳(mygo)go vet 红"
     GOWORK=off go test ./...   || die "桌面壳(mygo)单测红"
@@ -343,11 +334,11 @@ watch_release() {
   done
   [ "$bad" = 0 ] || die "有 workflow 红。修好可用 workflow_dispatch 补发,或按方案 §5 的红线人工判断"
 
-  # desktop-latest.json 只由 release-desktop-wails 的 merge job 生成;缺了它 updater 端点会 404。
+  # desktop-latest.json 只由 release-desktop 的 merge job 生成;缺了它 updater 端点会 404。
   local assets
   assets="$(gh release view "$TAG" --repo "$GH_REPO" --json assets -q '.assets[].name' 2>/dev/null || true)"
   printf '%s\n' "$assets" | grep -qx desktop-latest.json \
-    || die "Release $TAG 没有 desktop-latest.json —— release-desktop-wails 的 merge job 没成功。updater 端点会 404(用户端显示「暂无可用更新」)"
+    || die "Release $TAG 没有 desktop-latest.json —— release-desktop 的 merge job 没成功。updater 端点会 404(用户端显示「暂无可用更新」)"
   say "    Release 资产 $(printf '%s\n' "$assets" | grep -c . ) 件,含 desktop-latest.json"
   say ""
   say "    ⚠ GitHub 侧到此为止,**这个版本还没发完**:Gitee 镜像与端点回查在后面。"
@@ -387,11 +378,11 @@ do_verify() {
   # 公钥只作为一行 hex 传给校验器。
   local pk="${GAH_DESKTOP_UPDATE_PUBKEY:-}" keyfile="${GAH_DESKTOP_UPDATE_KEY:-$HOME/.gah-desktop/update.key}"
   if [ -z "$pk" ] && [ -f "$keyfile" ]; then
-    pk="$(go run ./desktop/wails/cmd/desktopman pubkey --key "$keyfile" 2>/dev/null || true)"
+    pk="$(go run ./desktop/desktopman pubkey --key "$keyfile" 2>/dev/null || true)"
   fi
   [ -n "$pk" ] || die "没有验签公钥:设 GAH_DESKTOP_UPDATE_PUBKEY,或把私钥放在 ~/.gah-desktop/update.key。
   发版必须验签 —— 只比摘要的「通过」等于没验(清单与产物可被一起替掉)。"
-  go run ./desktop/wails/cmd/desktopman verify-release --dir "$dir" --pubkey "$pk" --expect "$(ver_of "$TAG")" \
+  go run ./desktop/desktopman verify-release --dir "$dir" --pubkey "$pk" --expect "$(ver_of "$TAG")" \
     || die "产物校验不过(逐平台验签 / 摘要 / zip 顶层条目)"
 }
 
@@ -426,7 +417,7 @@ do_mirror() {
 
   # 4) 推快照 + 注表
   # 表名是 desktop-latest.json(壳读 raw/master/desktop-latest.json;旧链叫 latest.json)。
-  local snap="$REPO_ROOT/dist-desktop-wails/gitee/desktop-latest.json"
+  local snap="$REPO_ROOT/dist-desktop/gitee/desktop-latest.json"
   [ -f "$snap" ] || die "缺 Gitee 版更新表:$snap(由 mirror-gitee.sh upload 生成)"
   step "mirror 4/4 · 推代码快照 + 注入 desktop-latest.json"
   GAH_EXTRA_FILES="$snap:desktop-latest.json" bash scripts/sync-gitee.sh || die "推快照失败"
@@ -479,14 +470,14 @@ do_verify_mirror() {
 #   升级包    gah-<ver>-<triple>.zip(mac 是 gah-<ver>-<triple>.app.zip;triple 如 aarch64-apple-darwin)
 #   首装包    gah-<ver>-setup.exe(windows NSIS)/ *.dmg(mac,可选)
 #   便携包    gah-<ver>-portable-<triple>.zip
-#   清单/校验和 desktop-latest.json / checksums-desktop-wails.txt
+#   清单/校验和 desktop-latest.json / checksums-desktop.txt
 #
 # mirror_fetch 的判据分两层:`is_desktop_asset` 决定「哪些算桌面产物」,
 # 版本闸(gah-<ver>-*)决定「是不是本 tag 的」。mirror-gitee.sh 的 belongs_to_tag
 # 用同一套规则(两个脚本各一份字面量是不得已 —— 但规则本身只有一句:文件名里带本版号)。
 is_desktop_asset() {
   case "$1" in
-    desktop-latest.json|checksums-desktop-wails.txt) return 0 ;;
+    desktop-latest.json|checksums-desktop.txt) return 0 ;;
     *.app.zip|*-setup.exe|*.dmg|*-portable-*.zip) return 0 ;;
     gah-*-apple-darwin.zip|gah-*-pc-windows-msvc.zip) return 0 ;;
   esac
@@ -516,7 +507,7 @@ mirror_fetch() {
   done
   # 代理前缀:**空格分隔的候选列表,按序试**。未设置 = 默认公共代理;`none`/`direct`/空 = 直连。
   # 为什么是候选列表:公共代理会整片抖动(2026-10-30 发 v0.8.1 实测:同一个
-  # checksums-desktop-wails.txt,gh-proxy.com 5 次成功 2 次、ghfast.top 0 次、
+  # checksums-desktop.txt,gh-proxy.com 5 次成功 2 次、ghfast.top 0 次、
   # 直连稳定;而 20MB 的 setup.exe 反过来只有代理能过)。单件只试一个源时,
   # 一次抖动就让整段 mirror 停摆 —— 而 mirror 第 2 步之后的重跑是「先删后传」,
   # 本来就不该重跑,代价全落在人身上。
@@ -549,7 +540,7 @@ release_asset_names() {
   gh release view "$1" --repo "$GH_REPO" --json assets -q '.assets[].name' 2>/dev/null \
     | while IFS= read -r n; do
         case "$n" in
-          desktop-latest.json|checksums-desktop-wails.txt) continue ;;
+          desktop-latest.json|checksums-desktop.txt) continue ;;
         esac
         is_desktop_asset "$n" && echo "$n"
       done || true

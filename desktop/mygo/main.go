@@ -210,7 +210,7 @@ func (s *shell) boot(windowReady <-chan struct{}) {
 		<-windowReady
 		s.showDiag("找不到运行文件", []string{
 			s.planErr.Error(),
-			"开发态:先跑 bash scripts/gen-desktop-wails.sh(或设 GAH_SIDECAR 指向已构建的 gah)。",
+			"开发态:先跑 bash scripts/gen-desktop.sh(或设 GAH_SIDECAR 指向已构建的 gah)。",
 		})
 		return
 	}

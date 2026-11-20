@@ -28,7 +28,7 @@ var (
 // initLog 解析壳日志路径并写入本次运行的头几行。
 func initLog(version string) {
 	logPath = filepath.Join(localDataDir(), "gah-shell.log")
-	shellLogf("=== gah 壳(go/wails v3)启动 pid=%d version=%s os=%s/%s ===",
+	shellLogf("=== gah 壳(mygo)启动 pid=%d version=%s os=%s/%s ===",
 		os.Getpid(), version, runtime.GOOS, runtime.GOARCH)
 	shellLogf("壳日志: %s", logPath)
 }

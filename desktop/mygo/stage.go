@@ -358,7 +358,7 @@ func resolveRuntime(home, version string) (runtimePlan, error) {
 			}
 		}
 		if found == "" {
-			return runtimePlan{}, fmt.Errorf("找不到 sidecar %s(试过 %s、%s;开发态先跑 bash scripts/gen-desktop-wails.sh,或设 GAH_SIDECAR)",
+			return runtimePlan{}, fmt.Errorf("找不到 sidecar %s(试过 %s、%s;开发态先跑 bash scripts/gen-desktop.sh,或设 GAH_SIDECAR)",
 				sidecarName(), filepath.Join(dir, sidecarName()), strings.Join(cands, "、"))
 		}
 		src = found

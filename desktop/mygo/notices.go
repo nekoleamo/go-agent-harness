@@ -2,7 +2,7 @@
 //
 // 为什么不做「壳往页面里注入 DOM」:旧 Rust 壳用的是 Tauri 的 `w.eval()`,而 Wails v3 的
 // `ExecJS` **对从外部 URL 加载的页面永远不生效** —— 它把脚本压进 pendingJS 队列,等
-// `runtimeLoaded` 变真才执行,而 runtimeLoaded 只在页面加载 wails 自己的 runtime 时才置位
+// `runtimeLoaded` 变真才执行,而 runtimeLoaded 只在页面加载框架自己的 runtime 时才置位
 // (外部页面根本没有 runtime,同「拿不到 bindings」是同一个根因,2026-10-29 实测:注入的
 // 横带一次都没出现过)。
 //

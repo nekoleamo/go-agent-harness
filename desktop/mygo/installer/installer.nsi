@@ -10,10 +10,10 @@
 ;
 ; 构建(需 makensis,CI 的 windows runner 上装好;本机 mac 不做):
 ;   makensis -DVERSION=0.1.7 -DNUMVERSION=0.1.7.0 -DAPPEXE=<壳 exe> -DOUTFILE=<setup.exe> \
-;            -DICONDIR=<本目录绝对路径> desktop/wails/installer/installer.nsi
+;            -DICONDIR=<本目录绝对路径> desktop/mygo/installer/installer.nsi
 ;   NUMVERSION 必须是**纯数字四段**:VIProductVersion 不认 "0.8.0-preview" ——
 ;   预告版 tag 直接拼会报 invalid VIProductVersion,整版 Windows 产物发不出去
-;   (scripts/publish-desktop-wails.sh 的 num_version 负责换算)。
+;   (scripts/publish-desktop.sh 的 num_version 负责换算)。
 
 Unicode true
 !include "MUI2.nsh"

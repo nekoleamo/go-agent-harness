@@ -2,8 +2,8 @@
 //
 // **两代壳并存**(迁移期,见 docs/DESKTOP_FEASIBILITY.md §11):
 //  - Tauri v2(Rust 壳):`window.__TAURI_INTERNALS__.invoke` 走 IPC;
-//  - Go + Wails v3 壳:页面由 gah 自己提供(外部 URL),v3.0 拿不到 bindings
-//    (上游 wails#4473 未进 3.0),所以壳侧能力改由壳的本地控制面提供,并经 **gah 的同源
+//  - Go 桌面壳(mygo):页面由 gah 自己提供(外部 URL),v3.0 拿不到 bindings
+//    (Wails v3 时代的上游 wails#4473 从未合入;mygo 的 TrustedOrigins 又是按 origin 放行),所以壳侧能力改由壳的本地控制面提供,并经 **gah 的同源
 //    代理** `/shell/*` 转发(见 web/shellbridge.go)。为什么必须同源:SPA 的 CSP 是
 //    `connect-src 'self'`,跨源请求会被浏览器直接拦掉 —— 2026-10-29 实测,页面里一条请求
 //    都发不出去,表现就是「壳的按钮点了没反应」。顺带控制面令牌留在 sidecar 的 env 里,
@@ -40,10 +40,10 @@ export function hasShellQuery(search: string): boolean {
 
 export const tauriInvoke = sniffTauriInvoke(globalThis)
 
-/** 是否是 Go + Wails v3 壳(壳侧能力走 gah 的同源 /shell/* 代理)。 */
-export const isWailsShell =
+/** 是否是 Go 桌面壳(mygo)(壳侧能力走 gah 的同源 /shell/* 代理)。 */
+export const isDesktopShell =
   typeof location !== 'undefined' && hasShellQuery(location.search) && !tauriInvoke
-export const isDesktop = typeof tauriInvoke === 'function' || isWailsShell
+export const isDesktop = typeof tauriInvoke === 'function' || isDesktopShell
 
 // ctlErrorMessage 非 2xx 响应的报错文案(纯函数,配单测)。
 //
@@ -62,7 +62,7 @@ export function ctlErrorMessage(status: number, body: unknown): string {
 
 // shellFetch 调一次壳控制面(同源相对路径,凭据由 gah 的代理补,页面不经手)。
 async function ctlFetch(path: string, init?: { method?: string; body?: unknown }): Promise<unknown> {
-  if (!isWailsShell) throw new Error('不是桌面壳环境')
+  if (!isDesktopShell) throw new Error('不是桌面壳环境')
   const resp = await fetch(path, {
     method: init?.method ?? 'GET',
     headers: init?.body === undefined ? {} : { 'Content-Type': 'application/json' },
@@ -109,7 +109,7 @@ export function parsePick(raw: unknown): { status: string; path?: string } {
 //      前端 await 永久挂起;同机同步命令(shell_probe/shell_log)全通。
 // Go 壳没有那套 IPC 语义,一次请求阻塞到用户选定即可 —— 所以这里按壳类型分两条路。
 export async function pickDirectory(title = '选择工作区目录'): Promise<string | null> {
-  if (isWailsShell) {
+  if (isDesktopShell) {
     try {
       const r = (await ctlFetch('/shell/pick-folder', { method: 'POST', body: { title } })) as {
         path?: string
@@ -150,7 +150,7 @@ export async function pickDirectory(title = '选择工作区目录'): Promise<st
 // 用户就再也回不到 gah 了(旧 Rust 壳为此有 openURLInBrowser + 导航白名单两道)。
 // 浏览器里直接开新标签页。
 export async function openExternal(raw: string): Promise<void> {
-  if (isWailsShell) {
+  if (isDesktopShell) {
     try {
       await ctlFetch('/shell/open-external', { method: 'POST', body: { url: raw } })
       return
@@ -164,11 +164,11 @@ export async function openExternal(raw: string): Promise<void> {
 
 // fetchShellNotices 取壳侧提示(便携模式/旧数据迁移/后台服务失联)。
 //
-// 为什么是拉取:Wails v3 的 ExecJS 对「从外部 URL 加载的页面」永不生效
+// 为什么是拉取:框架的脚本注入对「从外部 URL 加载的页面」不生效
 // (脚本压在 pendingJS 队列里等 runtimeLoaded,而外部页面没有 runtime)——
 // 壳侧注入这条路走不通,改成页面来取。空数组 = 无事。
 export async function fetchShellNotices(): Promise<string[]> {
-  if (!isWailsShell) return []
+  if (!isDesktopShell) return []
   try {
     const r = (await ctlFetch('/shell/notices')) as { items?: unknown }
     if (!Array.isArray(r?.items)) return []
@@ -178,14 +178,14 @@ export async function fetchShellNotices(): Promise<string[]> {
   }
 }
 
-// requestAttention 请壳层「提醒用户」:窗口闪烁 + 系统通知(见 desktop/wails/attention.go)。
+// requestAttention 请壳层「提醒用户」:窗口闪烁 + 系统通知(见 desktop/mygo/attention.go)。
 //
 // 为什么不用浏览器的 Notification:桌面 webview(macOS WKWebView)里 Notification 常常
 // 不存在,而"提问/审批在后台到达"正是最需要提醒的时刻。壳侧两条路独立成败,这里只回
 // "有没有送出去",失败静默(壳日志里有一行,不拿它打扰用户)。
 // 非壳环境恒 false(浏览器端由 notifier.fireEvent 负责),调用方无需分支。
 export async function requestAttention(title: string, body: string): Promise<boolean> {
-  if (!isWailsShell) return false
+  if (!isDesktopShell) return false
   try {
     const r = (await ctlFetch('/shell/attention', { method: 'POST', body: { title, body } })) as {
       flashed?: boolean
@@ -199,7 +199,7 @@ export async function requestAttention(title: string, body: string): Promise<boo
 
 // installExternalLinkGuard 让页面里所有外链都交给系统浏览器。
 //
-// 为什么放在前端而不是壳的导航钩子:Wails v3.0 没有公开「导航前回调」的 API
+// 为什么放在前端而不是壳的导航钩子:框架没有公开「导航前回调」的 API
 // (旧 Rust 壳用的是 tauri 的 on_navigation)。而页面是我们自己的,在 document 上接管
 // 点击即可达到同样效果 —— 唯一的差异是它挡不住 JS 主动改 location(那种情况由
 // 「窗口导航走后用户回不来」兜底为一次重启即可)。
@@ -224,7 +224,7 @@ export function installExternalLinkGuard(): void {
 // shellLog 把页面侧诊断写进壳日志(gah-shell.log,与壳侧/sidecar stderr 同一份文件)。
 // 桌面版没有终端:失败必须自证,否则真机上只剩「点了没反应」。非壳环境静默丢弃。
 export function shellLog(msg: string): void {
-  if (isWailsShell) {
+  if (isDesktopShell) {
     void ctlFetch('/shell/log', { method: 'POST', body: { line: msg } }).catch(() => {})
     return
   }
@@ -236,7 +236,7 @@ export function shellLog(msg: string): void {
 // 真机上出现过「async 命令连函数体都没进」,这条日志是区分「任务没被调度」与
 // 「请求没到处理函数」的唯一证据。Go 壳没有这条通道,改为打一次控制面 ping。
 export function probeAsync(): void {
-  if (isWailsShell) {
+  if (isDesktopShell) {
     void ctlFetch('/shell/ping')
       .then((r) => shellLog('控制面 ping 返回: ' + JSON.stringify(r)))
       .catch((e) => shellLog('控制面 ping 失败: ' + (e as Error).message))
@@ -250,7 +250,7 @@ export function probeAsync(): void {
 
 // autostartState 查询开机自启的实际状态(设置面板「关于 gah」展示;失败返回空串=未知)。
 export async function autostartState(): Promise<'on' | 'off' | ''> {
-  if (isWailsShell) {
+  if (isDesktopShell) {
     try {
       const r = (await ctlFetch('/shell/autostart')) as { enabled?: boolean }
       return r?.enabled ? 'on' : 'off'
@@ -312,9 +312,9 @@ export function parseUpdateState(raw: unknown): UpdateSnapshot | null {
   }
 }
 
-// wailsUpdateSnapshot 把控制面的精简状态({status,version})补成面板要的完整形状。
+// desktopUpdateSnapshot 把控制面的精简状态({status,version})补成面板要的完整形状。
 // 控制面还没有 busy/seq(更新器未迁移),补默认值而不是让面板直接报「形状不对」。
-export function wailsUpdateSnapshot(raw: unknown): UpdateSnapshot | null {
+export function desktopUpdateSnapshot(raw: unknown): UpdateSnapshot | null {
   if (!raw || typeof raw !== 'object') return null
   const o = raw as Record<string, unknown>
   return {
@@ -330,9 +330,9 @@ export function wailsUpdateSnapshot(raw: unknown): UpdateSnapshot | null {
 
 // updateState 读一次壳侧更新状态(设置面板开着时轮询;失败返回 null)。
 export async function updateState(): Promise<UpdateSnapshot | null> {
-  if (isWailsShell) {
+  if (isDesktopShell) {
     try {
-      return wailsUpdateSnapshot(await ctlFetch('/shell/update-state'))
+      return desktopUpdateSnapshot(await ctlFetch('/shell/update-state'))
     } catch {
       return null
     }
@@ -350,7 +350,7 @@ export async function updateState(): Promise<UpdateSnapshot | null> {
 // (桌面端导出静默失效的根因)。
 // 失败回空串(调用方据此报错)。
 export async function saveExport(name: string, text: string, open: boolean): Promise<string> {
-  if (isWailsShell) {
+  if (isDesktopShell) {
     try {
       const r = (await ctlFetch('/shell/export-save', {
         method: 'POST',
@@ -385,9 +385,9 @@ export interface UpdateResult {
 // 前端也加超时:真机上出现过壳侧异步任务不返回、界面永远停在「检查中…」——
 // 宁可给出「没有结果」的结论,也不让用户空等。
 export async function checkUpdate(timeoutMs = CHECK_TIMEOUT_MS): Promise<UpdateResult> {
-  if (isWailsShell) {
+  if (isDesktopShell) {
     // 更新器还没迁移到 Go 壳:控制面明确回 501 + 原因,这里原样抛给界面。
-    const r = (await raceWails('/shell/update-check', timeoutMs)) as UpdateResult
+    const r = (await raceDesktop('/shell/update-check', timeoutMs)) as UpdateResult
     return r
   }
   if (!tauriInvoke) throw new Error('当前环境不支持检查更新(需桌面版)')
@@ -404,10 +404,10 @@ export async function installUpdate(
   expect = '',
   timeoutMs = INSTALL_TIMEOUT_MS,
 ): Promise<UpdateResult> {
-  if (isWailsShell) {
+  if (isDesktopShell) {
     // 下载+验签+落位都在壳侧(框架负责),这里只要一个结论。
     const body = expect ? { expect } : undefined
-    const r = (await raceWails('/shell/update-install', timeoutMs, body)) as UpdateResult
+    const r = (await raceDesktop('/shell/update-install', timeoutMs, body)) as UpdateResult
     return r
   }
   if (!tauriInvoke) throw new Error('当前环境不支持升级(需桌面版)')
@@ -418,8 +418,8 @@ export async function installUpdate(
   )
 }
 
-// raceWails 控制面调用的超时包装(与 raceUpdate 同口径:永不让界面停在「进行中」)。
-async function raceWails(path: string, timeoutMs: number, body?: unknown): Promise<unknown> {
+// raceDesktop 控制面调用的超时包装(与 raceUpdate 同口径:永不让界面停在「进行中」)。
+async function raceDesktop(path: string, timeoutMs: number, body?: unknown): Promise<unknown> {
   let timer: ReturnType<typeof setTimeout> | undefined
   const timeout = new Promise<never>((_, rej) => {
     timer = setTimeout(() => rej(new Error('壳侧 ' + timeoutMs + 'ms 没有响应')), timeoutMs)

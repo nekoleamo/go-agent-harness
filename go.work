@@ -2,6 +2,5 @@ go 1.27.0
 
 use (
 	.
-	./desktop/wails
 	./sdk
 )

@@ -65,16 +65,10 @@ jobs:
         run: |
           go install honnef.co/go/tools/cmd/staticcheck@2026.2.2
           bash scripts/gate.sh
-      - name: 桌面壳构建冒烟 + 单测(Wails purego/cgo + mygo)
-        # 2026-11-20:原 test-macos 并入本 job。发行路径 = CGO_ENABLED=0 + -tags purego;
-        # cgo 后端是回退路径,同样编一次 —— 两条只留一条时另一条会默默朽掉。
-        # **两个壳的单测都要跑**:they 是独立 module,根目录 `go test ./...` 覆盖不到;
-        # 2026-11-20 删 test-macos 时漏掉这一层 ⇒ 桌面壳 60+ 条用例在 CI 里静默不跑
-        # (review 逮到)。mygo 不在 workspace,必须 GOWORK=off。
+      - name: 桌面壳构建冒烟 + 单测(mygo)
+        # 壳是独立 module,根目录 `go test ./...` 覆盖不到;它不在 workspace(要 go 1.27.3),
+        # 所以必须 GOWORK=off。2026-11-20 删 test-macos 时漏掉这一层曾让 60+ 条用例静默不跑。
         run: |
-          (cd desktop/wails && CGO_ENABLED=0 go build -tags purego -o /tmp/gah-desktop .)
-          (cd desktop/wails && CGO_ENABLED=1 go build -o /tmp/gah-desktop-cgo .)
-          (cd desktop/wails && go test -race ./...)
           (cd desktop/mygo && GOWORK=off CGO_ENABLED=0 go build -o /tmp/gah-desktop-mygo .)
           (cd desktop/mygo && GOWORK=off go test -race ./...)
       - name: go test -race(含覆盖率 profile,供下一步复用;sdk module 单独跑)
@@ -90,7 +84,7 @@ jobs:
           # 上是固定的、根模块源码又可能没变(只改了 sdk/desktop 或文档)⇒ 测试缓存命中时
           # 子进程根本不跑 ⇒ 没有任何 *.child.out ⇒ cmd/gah 只剩不含 main() 的那部分
           # (实测 57.6%),覆盖率门把「拿不到子进程数据」当成代码退化报红。
-          # 2026-11-03 真踩:只改了 desktop/wails 的提交在 CI 假红,而同一棵树的上一版全绿。
+          # 2026-11-03 真踩:只改了桌面壳的提交在 CI 假红,而同一棵树的上一版全绿。
           go test -count=1 -race -coverprofile=coverage.out -covermode=atomic ./...
           (cd sdk && go test -count=1 -race -coverprofile=../sdk-coverage.out -covermode=atomic ./...)
       - name: 覆盖率门(逐包棘轮 + 全局下限;阈值只在 scripts/coverage-check.sh)
@@ -197,10 +191,10 @@ jobs:
         run: |
           go vet ./...
           (cd sdk && go vet ./...)
-          (cd desktop/wails && go vet ./...)
+          (cd desktop/mygo && GOWORK=off go vet ./...)
       - name: 桌面壳构建冒烟(Windows:纯 Go,无 cgo)
         shell: bash
-        run: (cd desktop/wails && CGO_ENABLED=0 go build -o /tmp/gah-desktop.exe .)
+        run: (cd desktop/mygo && GOWORK=off CGO_ENABLED=0 go build -o /tmp/gah-desktop.exe .)
       - name: go test(-race 需 cgo/gcc,有则跑,无则降级并明示)
         # -timeout=20m:Windows runner 上 `tests` 包(pty 交互类 e2e)实测要 9.8–11 分钟,
         # 而 Go 的**默认**逐包超时是 10 分钟 —— 只要 runner 稍微慢一点就打 `panic: test timed

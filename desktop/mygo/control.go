@@ -1,9 +1,11 @@
 // 控制面:壳侧能力的本地 HTTP 接口(替代旧壳的 10 条 Tauri IPC 命令)。
 //
-// 为什么不用 bindings:v3.0 的 JS runtime 由 asset server 在 /wails/runtime.js 提供,
-// call 走**同源** HTTP;而本项目的页面由 gah 自己提供(同源直连才能保住 SSE/WS/cookie),
-// 页面源是 http://127.0.0.1:<port>,拿不到 runtime(上游 PR #4473 被以「不进 3.0 周期」关闭)。
-// 于是壳侧能力改成一份**只监听回环**的小 HTTP API。
+// 为什么不绑 Go 方法:页面由 gah 自己提供(同源直连才能保住 SSE/WS/cookie),源是
+// http://127.0.0.1:<port>;框架的 bindings 要求自己的 runtime/protocol,外部源拿不到
+// (Wails v3 时代 PR #4473 就是卡在这条)。mygo 的 TrustedOrigins 虽能放行回环源,
+// 但那是**按 origin 放行**——同源的 UI 插件 JS 也能调 install/export-save/autostart,
+// 等于把边界交给"页面里跑的所有脚本"。所以保留这份**只监听回环**的小 HTTP API,
+// token 留在 sidecar 的 env 里,页面 JS 永远拿不到。
 //
 // 三道闸(缺一条就等于把「选目录/写文件/开关自启」开放给本机任意网页):
 //  1. 监听地址固定 127.0.0.1,且校验 Host 头是回环原名(DNS rebinding 防护);
@@ -431,7 +433,7 @@ func updateStateVersion(state, current, seen string) string {
 	return current
 }
 
-// handleUpdateState 当前更新状态(状态机由 wails updater 持有,壳不再自己维护一份)。
+// handleUpdateState 当前更新状态(状态机由壳自己的 updater 持有,单一事实源)。
 func (c *controlPlane) handleUpdateState(w http.ResponseWriter, _ *http.Request) {
 	st := "unconfigured"
 	if c.sh.updater != nil {
@@ -526,7 +528,7 @@ func (c *controlPlane) handleUpdateInstall(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"status": "unavailable"})
 		return
 	}
-	// 便携版**可以自动更新**(2026-10-29 实测):wails updater 的做法是「helper 等父进程
+	// 便携版**可以自动更新**(2026-10-29 实测):安装器的做法是「helper 等父进程
 	// 退出后再 rename」,正好绕开「Windows 不允许覆盖运行中的 exe」—— 那条正是旧壳当初
 	// 一刀切禁掉便携更新的理由,现在已经不成立。数据根在程序目录旁边,换的只是壳本体
 	// (sidecar 内嵌在里面),所以「删目录即删数据」的承诺不变。

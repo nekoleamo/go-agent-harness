@@ -61,7 +61,7 @@ func verifyDetached(pub, digest, sig []byte) error {
 }
 
 // checkSingleTopLevel zip 必须恰好一个顶层条目。
-// 这不是洁癖:wails updater 只换**单个**落盘目标,多于一个顶层条目时无法确定换哪个,直接拒绝。
+// 这不是洁癖:更新器只换**单个**落盘目标,多于一个顶层条目时无法确定换哪个,直接拒绝。
 func checkSingleTopLevel(p string) error {
 	zr, err := zip.OpenReader(p)
 	if err != nil {

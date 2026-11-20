@@ -13,7 +13,7 @@
 - **零运行时依赖**:无 node 运行时、无 node_modules、无版本管理器;裸环境 `env -i` 可直接启动。
 - **完全便携**:数据根 = 二进制同级 `gah-data/`,首次启动自动创建;部署目录内 `gah` + `gah-data/` 即完整,升级只换单文件。
 - **三端同源**:TUI、Web(前端 `go:embed` 内嵌)、headless 是同一进程的三个 profile;桌面壳复用同一个 sidecar 产物。
-- **桌面壳纯 Go**:0.10.0 起桌面壳用 [mygo](https://github.com/egoist/mygo)(webview 模式,`CGO_ENABLED=0`,mac/Windows 同构);渲染器仍是系统 WebView,页面仍是 gah 自己那份。旧 Wails v3 壳保留可构建作回退(`GAH_DESKTOP_SHELL=wails`)。
+- **桌面壳纯 Go**:0.10.0 起桌面壳用 [mygo](https://github.com/egoist/mygo)(webview 模式,`CGO_ENABLED=0`,mac/Windows 同构);渲染器仍是系统 WebView,页面仍是 gah 自己那份。旧 Wails v3 壳已从仓库删除,不再保留第二套壳。
 
 ## 二、功能特性
 
@@ -34,7 +34,7 @@
 | **提示通道** | `ctx.notices` 面向人发提示(不进会话、不计 token);TUI 走终端通知,桌面壳走系统通知 |
 | **MCP / ACP 双向** | MCP client 桥与 server 端;`gah acp` 被编辑器当一等 agent,`acp-client` 把任务委派给外部编码 agent |
 | **插件安装** | CLI `/install` / Web 面板共用一份内核;来源固定与漂移守卫、`--prebuilt` 免构建脚本、完整性闸、随时启停 |
-| **桌面壳** | Go + Wails v3:托盘、通知、开机自启、单实例、多实例、`gah-shell.log` 诊断;自动更新(ed25519 自持签名) |
+| **桌面壳** | Go + [mygo](https://github.com/egoist/mygo)(webview 模式):托盘、通知、开机自启、单实例、多会话窗口、`gah-shell.log` 诊断;自动更新(自持 ed25519 清单 + 独立安装器,Windows 便携版也能就地升级) |
 | **文档预览** | 一套块模型 + 四端渲染(markdown / 文本 / 代码 / CSV / notebook / PDF / Office),Web 工作台、TUI pager、`gah doc` |
 
 ## 三、快速开始
@@ -64,7 +64,8 @@
 - 数据(会话、记忆、计划、密钥)都在 `gah-data/`,升级与卸载都**不动**它;卸载页「Delete app data」勾选才会删(默认不勾)。
 - 桌面版升级前额外备份一份到 `~/gah-upgrade-backup/`,备份失败则取消升级。
 - 国内网络:升级源默认 Gitee 优先、取不到表自动落 GitHub;「表能取到但包下不下来」的源会被记忆并垫后。签名只对文件内容验签,换源不降低强度。
-- **从 0.7.x 桌面版升到 0.8.x 需手动装一次**:0.8.0 起壳从 Tauri 换成 Go + Wails v3,清单格式与签名口径都变了,旧壳读不了新清单。手动覆盖安装一次即可,数据不丢;之后恢复自动更新。命令行版不受影响。
+- **从 0.7.x 桌面版升到 0.8.x 需手动装一次**:0.8.0 起壳从 Tauri 换成 Go 壳,清单格式与签名口径都变了,旧壳读不了新清单。手动覆盖安装一次即可,数据不丢;之后恢复自动更新。命令行版不受影响。
+- **0.10.0 起桌面壳换成 mygo**(0.9.x → 0.10.0 可直接应用内升级:清单格式与签名口径未变)。
 
 ### 桌面端形态
 
@@ -324,7 +325,7 @@ MCP server 是第三方代码,起进程时按内核沙箱限制文件写。作�
 ├── tui/          # bubbletea v2 界面
 ├── web/          # Web 服务端(SSE/WS + REST + 静态托管)
 ├── web-src/      # Vue 3 + Vite + TS 前端(产物内嵌)
-├── desktop/      # Go + Wails v3 桌面壳
+├── desktop/      # Go 桌面壳(mygo webview 模式)+ desktopman 更新清单工具
 ├── tests/        # 端到端与卸载矩阵
 └── scripts/      # 构建 / 发行 / 门禁 / 校验
 ```
