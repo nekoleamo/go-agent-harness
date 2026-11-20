@@ -545,21 +545,15 @@ func (c *controlPlane) handleUpdateInstall(w http.ResponseWriter, r *http.Reques
 	}
 	_ = readJSONLimit(r, &req, 1<<12) // 没传/传坏了都不拦(旧前端兼容)
 	seen := c.sh.seenVersion()
-	// 准入判定与托盘点「下载并安装」共用一份(installGate):便携拒绝优先于版本对账。
-	// writable 惰性求值:portableWritable() 会在可执行文件目录里**真写一个临时文件**,
-	// 非便携路径不该凭空多这一次 IO(便携判定用不到它)。
-	writable := true
-	if c.sh.portable {
-		writable = portableWritable()
-	}
-	action, msg := installGate(req.Expect, seen, c.sh.portable, writable,
-		os.Getenv("GAH_DESKTOP_PORTABLE_UPDATE") == "0")
-	switch action {
-	case installPortableOnly:
+	// 准入门 + 升级前备份与托盘原生面板共用一份(shell.installPrecheck):
+	// 便携拒绝优先于版本对账;备份失败就中止(整包替换一旦把数据读坏,用户没有第二份)。
+	action, msg, perr := c.sh.installPrecheck(req.Expect)
+	switch {
+	case action == installPortableOnly:
 		shellLogf("便携版: 拒绝自动安装,提示用户下载新包")
 		writeJSON(w, http.StatusOK, map[string]any{"status": "portable", "message": msg})
 		return
-	case installVersionChanged:
+	case action == installVersionChanged:
 		shellLogf("安装更新: 版本已漂移(确认的是 %s,现在是 %s),请用户重新确认", req.Expect, seen)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":  "versionChanged",
@@ -567,17 +561,13 @@ func (c *controlPlane) handleUpdateInstall(w http.ResponseWriter, r *http.Reques
 			"message": msg,
 		})
 		return
+	case perr != nil:
+		shellLogf("升级前备份失败(中止升级): %v", perr)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"status": "failed", "message": perr.Error()})
+		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
 	defer cancel()
-	// 升级前备份:整包替换一旦把数据读坏,用户没有第二份。
-	if path, err := backupBeforeUpgrade(c.sh.dataRoot); err != nil {
-		shellLogf("升级前备份失败(中止升级): %v", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"status": "failed", "message": "升级前备份失败,已中止: " + err.Error()})
-		return
-	} else if path != "" {
-		shellLogf("升级前备份: %s", path)
-	}
 	if err := c.sh.updater.DownloadAndInstall(ctx); err != nil {
 		shellLogf("安装更新失败: %v", err)
 		writeJSON(w, http.StatusOK, map[string]any{"status": "failed", "message": explainUpdateError(err)})

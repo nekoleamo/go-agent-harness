@@ -67,6 +67,7 @@ type shell struct {
 	updater  *updater
 
 	trayCheckItem *mygo.MenuItem // 托盘「检查更新…」
+	panel         *updatePanel   // 原生更新面板(懒建;托盘不可用时为 nil)
 
 	updateSeenMu sync.Mutex
 	updateSeen   string
@@ -277,7 +278,7 @@ func (s *shell) boot(windowReady <-chan struct{}) {
 		shellLogf("GAH_SHELL_UPDATE_AUTOCHECK=%d: %ds 后自动检查更新", secs, secs)
 		go func() {
 			time.Sleep(time.Duration(secs) * time.Second)
-			s.checkUpdateFromTray(s.trayCheckItem)
+			s.openUpdatePanel()
 		}()
 	}
 }

@@ -46,7 +46,7 @@ func TestStageUpdatePayloadDigestOnly(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	dir, err := stageUpdatePayload(context.Background(), newTestProvider(), releaseFor(srv.URL, body, []byte("ignored")), nil)
+	dir, err := stageUpdatePayload(context.Background(), newTestProvider(), releaseFor(srv.URL, body, []byte("ignored")), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestStageUpdatePayloadDigestMismatch(t *testing.T) {
 	defer srv.Close()
 
 	rel := releaseFor(srv.URL, body, nil) // 摘要按 body 算,而服务器给的是别的字节
-	if dir, err := stageUpdatePayload(context.Background(), newTestProvider(), rel, nil); err == nil {
+	if dir, err := stageUpdatePayload(context.Background(), newTestProvider(), rel, nil, nil); err == nil {
 		_ = os.RemoveAll(dir)
 		t.Fatal("摘要不符应报错")
 	}
@@ -88,16 +88,16 @@ func TestStageUpdatePayloadSignature(t *testing.T) {
 	other := sha256.Sum256([]byte("other"))
 	bad := ed25519.Sign(priv, other[:])
 
-	if dir, err := stageUpdatePayload(context.Background(), newTestProvider(), releaseFor(srv.URL, body, good), pub); err != nil {
+	if dir, err := stageUpdatePayload(context.Background(), newTestProvider(), releaseFor(srv.URL, body, good), pub, nil); err != nil {
 		t.Fatalf("签名正确应通过: %v", err)
 	} else {
 		_ = os.RemoveAll(dir)
 	}
-	if dir, err := stageUpdatePayload(context.Background(), newTestProvider(), releaseFor(srv.URL, body, bad), pub); err == nil {
+	if dir, err := stageUpdatePayload(context.Background(), newTestProvider(), releaseFor(srv.URL, body, bad), pub, nil); err == nil {
 		_ = os.RemoveAll(dir)
 		t.Fatal("签名不符应报错")
 	}
-	if dir, err := stageUpdatePayload(context.Background(), newTestProvider(), releaseFor(srv.URL, body, nil), pub); err == nil {
+	if dir, err := stageUpdatePayload(context.Background(), newTestProvider(), releaseFor(srv.URL, body, nil), pub, nil); err == nil {
 		_ = os.RemoveAll(dir)
 		t.Fatal("有公钥但清单没签名应报错(fail closed)")
 	}

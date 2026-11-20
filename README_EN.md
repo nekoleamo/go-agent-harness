@@ -74,7 +74,7 @@ Then fill in one model provider in the settings panel (one-click presets for Dee
 | Marker | A shell exists in the app folder | `portable.marker` next to the exe | none |
 | Runtime files | Extracted to the user data dir `bin/` (macOS `~/Library/Application Support/dev.gah.desktop/`, Windows `%LOCALAPPDATA%\dev.gah.desktop\`) | Run in place | In the same folder |
 | Data | `bin/gah-data/` under that folder | `gah-data/` in the folder | `gah-data/` next to the binary |
-| Upgrade | Tray "Check for updates…" → confirm → download → replace → restart | Auto-updates in place; read-only folder falls back to "check only" plus a download hint | Replace the single file |
+| Upgrade | Tray "Check for updates…" → confirm in a native panel (with progress and cancel) → replace → restart | Auto-updates in place; read-only folder falls back to "check only" plus a download hint | Replace the single file |
 
 The installed and portable builds are separate identities and can run side by side; double-launching the same shape just focuses the existing window (use the tray "New instance…" or `--new-instance` to really open another). When something breaks, read `<user data dir>/gah-shell.log` (tray "About gah → Diagnostics" opens it).
 

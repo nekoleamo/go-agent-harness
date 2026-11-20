@@ -478,6 +478,26 @@ type updater struct {
 	last  *updateRelease
 	state string
 	msg   string
+	// progress 下载进度回调(原生面板装、控制面为空;见 setProgressHook)。
+	progress func(written, total int64)
+}
+
+// setProgressHook 装下载进度回调(原生更新面板用;控制面不装)。
+//
+// 为什么挂在 updater 上而不是给 DownloadAndInstall 加参数:进度是**下载阶段**的属性,
+// 而调用方(控制面 / 托盘面板)只关心「DownloadAndInstall 干完了没有」——
+// 参数化会让两个调用点都得传一个多半是 nil 的函数,钩子则只在需要时挂。
+func (u *updater) setProgressHook(fn func(written, total int64)) {
+	u.mu.Lock()
+	u.progress = fn
+	u.mu.Unlock()
+}
+
+// progressHook 取当前进度回调(调用点保证并发安全;返回时持锁拷贝)。
+func (u *updater) progressHook() func(written, total int64) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.progress
 }
 
 // State 当前状态(控制面 /shell/update-state)。
@@ -559,7 +579,7 @@ func (u *updater) DownloadAndInstall(ctx context.Context) error {
 		return terr
 	}
 	u.setState(updateDownloading, "")
-	dir, err := stageUpdatePayload(ctx, u.p, rel, u.key)
+	dir, err := stageUpdatePayload(ctx, u.p, rel, u.key, u.progressHook())
 	if err != nil {
 		u.setState(updateFailed, explainUpdateError(err))
 		return err
@@ -619,7 +639,8 @@ func safeArtifactName(name string) string {
 //
 // 校验顺序刻意固定为「摘要在先签名在后」:摘要是**字节是否完整**,签名是**是不是我们发的**。
 // 混在一起报错会让用户分不清"下载坏了"和"包被换了"。
-func stageUpdatePayload(ctx context.Context, p *desktopProvider, rel *updateRelease, key ed25519.PublicKey) (string, error) {
+func stageUpdatePayload(ctx context.Context, p *desktopProvider, rel *updateRelease, key ed25519.PublicKey,
+	onProgress func(written, total int64)) (string, error) {
 	if rel.Verification == nil || len(rel.Verification.Digest) != sha256.Size {
 		return "", fmt.Errorf("清单缺少合法的 sha256 摘要")
 	}
@@ -635,7 +656,7 @@ func stageUpdatePayload(ctx context.Context, p *desktopProvider, rel *updateRele
 		return "", fmt.Errorf("建暂存文件失败: %w", err)
 	}
 	h := sha256.New()
-	err = p.Download(ctx, rel, io.MultiWriter(f, h), nil)
+	err = p.Download(ctx, rel, io.MultiWriter(f, h), onProgress)
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
@@ -681,6 +702,35 @@ func installGate(expect, seen string, portable, writable, autoUpdateOff bool) (i
 		return installVersionChanged, "更新源已变成 " + seen + "(你确认的是 " + expect + "),请重新确认后再安装"
 	}
 	return installProceed, ""
+}
+
+// installPrecheck 「下载并安装」动手前的两步:installGate 准入 + 升级前备份。
+//
+// 原生更新面板与控制面 `/shell/update-install` **共用这一份**(2026-11-20 收):
+// 此前两者各写一遍 gate+备份,已经出现过一边漏便携判定的事故(见 updateflow 旧注释),
+// 再加一个面板就是第三份,所以统一到壳上。
+func (s *shell) installPrecheck(expect string) (installAction, string, error) {
+	seen := s.seenVersion()
+	// writable 惰性求值:portableWritable() 会在可执行文件目录里**真写一个临时文件**,
+	// 非便携路径不该凭空多这一次 IO。
+	writable := true
+	if s.portable {
+		writable = portableWritable()
+	}
+	action, msg := installGate(expect, seen, s.portable, writable,
+		os.Getenv("GAH_DESKTOP_PORTABLE_UPDATE") == "0")
+	if action != installProceed {
+		return action, msg, nil
+	}
+	// 升级前备份:整包替换一旦把数据读坏,用户没有第二份。
+	path, err := backupBeforeUpgrade(s.dataRoot)
+	if err != nil {
+		return installProceed, "", fmt.Errorf("升级前备份失败,已中止: %w", err)
+	}
+	if path != "" {
+		shellLogf("升级前备份: %s", path)
+	}
+	return installProceed, "", nil
 }
 
 // noteSeenVersion 记下本次「检查更新」看到的远端版本(check 与 install 对账用)。

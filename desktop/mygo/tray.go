@@ -57,7 +57,8 @@ func (s *shell) buildTray() {
 
 		// 菜单项要能被改成「检查更新中…」并置灰,所以留一个可操作的句柄。
 		{ID: checkIdleID(), Label: checkIdleText, Click: func(*mygo.MenuItem, *mygo.Window) {
-			s.checkUpdateFromTray(s.trayCheckItem)
+			// 2026-11-20 起走原生面板(带进度/可取消),不再弹阻塞对话框。
+			s.openUpdatePanel()
 		}},
 
 		{Label: "测试系统通知", Click: func(*mygo.MenuItem, *mygo.Window) {
