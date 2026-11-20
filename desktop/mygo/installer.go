@@ -21,6 +21,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -139,12 +140,13 @@ func extractUpdate(archivePath, dir string) (string, error) {
 	return filepath.Join(dest, top), nil
 }
 
-// keys map 的键(日志用;顺序固定为字典序,便于比对)。
+// keys map 的键(日志用;排序成字典序,便于两次日志直接 diff)。
 func keys(m map[string]bool) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
 		out = append(out, k)
 	}
+	sort.Strings(out)
 	return out
 }
 
@@ -201,6 +203,9 @@ func installerMain(planPath string) error {
 	if err := json.Unmarshal(b, &plan); err != nil {
 		return fmt.Errorf("安装计划解析失败: %w", err)
 	}
+	if err := validatePlan(planPath, plan); err != nil {
+		return err
+	}
 	shellLogf("安装器: 等 pid=%d 退出 → 换 %s", plan.WaitPID, plan.Target)
 	if !waitProcessExit(plan.WaitPID, 10*time.Minute) {
 		return fmt.Errorf("等旧进程退出超时(10 分钟),放弃本次安装(目标未改动)")
@@ -209,7 +214,7 @@ func installerMain(planPath string) error {
 	if err := os.Rename(plan.Target, old); err != nil {
 		return fmt.Errorf("移开旧目标失败(未改动任何文件): %w", err)
 	}
-	if err := os.Rename(plan.PayloadTop, plan.Target); err != nil {
+	if err := moveInto(plan.PayloadTop, plan.Target); err != nil {
 		// 放不进去就把旧的搬回来 —— 用户必须还有一个能启动的程序。
 		if rerr := os.Rename(old, plan.Target); rerr != nil {
 			return fmt.Errorf("放新目标失败(%v),且回滚也失败(%v):请手动重装", err, rerr)
@@ -229,6 +234,102 @@ func installerMain(planPath string) error {
 	}
 	// 临时目录(内含安装器自己):尽力删,删不掉不影响用户。
 	_ = os.RemoveAll(filepath.Dir(planPath))
+	return nil
+}
+
+// moveInto 把解包好的新目标搬到安装位置。
+//
+// 优先 rename(同一卷上原子、瞬时);跨卷时(临时目录在另一块盘 —— /var/folders 与
+// 外接盘上的安装目录、或用户把 .app 放在另一个 APFS 卷上)rename 会返回 EXDEV,
+// 那时**退回复制**:更新慢一点,但不会因为"放不进去"把用户停在旧版本上。
+func moveInto(src, dst string) error {
+	if err := os.Rename(src, dst); err == nil {
+		return nil
+	}
+	if err := copyPath(src, dst); err != nil {
+		return err
+	}
+	return os.RemoveAll(src)
+}
+
+// copyPath 复制文件或目录树(保留权限位;安装目标里的可执行位必须跟着走)。
+func copyPath(src, dst string) error {
+	st, err := os.Lstat(src)
+	if err != nil {
+		return err
+	}
+	if !st.IsDir() {
+		return copyOne(src, dst, st.Mode().Perm())
+	}
+	return filepath.WalkDir(src, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, p)
+		if err != nil {
+			return err
+		}
+		out := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(out, 0o755)
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		return copyOne(p, out, info.Mode().Perm())
+	})
+}
+
+// copyOne 复制单个文件。
+func copyOne(src, dst string, mode os.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = in.Close() }()
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	_, cerr := io.Copy(out, in)
+	if cerr == nil {
+		cerr = out.Close()
+	} else {
+		_ = out.Close()
+	}
+	return cerr
+}
+
+// validatePlan 安装计划的输入校验。
+//
+// 威胁模型写清楚:安装器**不做信任判断**(产物字节在壳里已验过 sha256 + ed25519),它只搬运。
+// 但它能被命令行直接拉起(`gah-desktop --install-update <plan>`),所以至少要挡住
+// 「用别的目录里的计划去 rename 任意文件」这条路:计划必须与安装器同处临时目录,
+// 目标与载荷都必须写绝对路径。攻击者若已能以用户身份跑任意程序,本来就能直接动文件 ——
+// 这层是防误用与防"被诱导执行一份奇怪的计划",不是防本地提权。
+func validatePlan(planPath string, plan installPlan) error {
+	if plan.Target == "" || !filepath.IsAbs(plan.Target) {
+		return fmt.Errorf("安装计划里的目标不是绝对路径(%q),拒绝执行", plan.Target)
+	}
+	if plan.PayloadTop == "" || !filepath.IsAbs(plan.PayloadTop) {
+		return fmt.Errorf("安装计划里的载荷不是绝对路径(%q),拒绝执行", plan.PayloadTop)
+	}
+	if plan.WaitPID < 0 {
+		return fmt.Errorf("安装计划里的 pid 非法(%d)", plan.WaitPID)
+	}
+	dir := filepath.Dir(planPath)
+	tmp := filepath.Clean(os.TempDir())
+	clean := filepath.Clean(dir)
+	if clean != tmp && !strings.HasPrefix(clean, tmp+string(filepath.Separator)) {
+		return fmt.Errorf("安装计划不在临时目录内(%s),拒绝执行", clean)
+	}
+	if st, err := os.Stat(plan.PayloadTop); err != nil || (!st.IsDir() && st.Size() == 0) {
+		return fmt.Errorf("安装载荷不存在或为空(%s),拒绝执行", plan.PayloadTop)
+	}
 	return nil
 }
 

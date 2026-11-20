@@ -65,13 +65,18 @@ jobs:
         run: |
           go install honnef.co/go/tools/cmd/staticcheck@2026.2.2
           bash scripts/gate.sh
-      - name: 桌面壳构建冒烟(Wails 壳 macOS purego 后端 + cgo 回退路径)
+      - name: 桌面壳构建冒烟 + 单测(Wails purego/cgo + mygo)
         # 2026-11-20:原 test-macos 并入本 job。发行路径 = CGO_ENABLED=0 + -tags purego;
         # cgo 后端是回退路径,同样编一次 —— 两条只留一条时另一条会默默朽掉。
+        # **两个壳的单测都要跑**:they 是独立 module,根目录 `go test ./...` 覆盖不到;
+        # 2026-11-20 删 test-macos 时漏掉这一层 ⇒ 桌面壳 60+ 条用例在 CI 里静默不跑
+        # (review 逮到)。mygo 不在 workspace,必须 GOWORK=off。
         run: |
           (cd desktop/wails && CGO_ENABLED=0 go build -tags purego -o /tmp/gah-desktop .)
           (cd desktop/wails && CGO_ENABLED=1 go build -o /tmp/gah-desktop-cgo .)
+          (cd desktop/wails && go test -race ./...)
           (cd desktop/mygo && GOWORK=off CGO_ENABLED=0 go build -o /tmp/gah-desktop-mygo .)
+          (cd desktop/mygo && GOWORK=off go test -race ./...)
       - name: go test -race(含覆盖率 profile,供下一步复用;sdk module 单独跑)
         env:
           # 子进程覆盖:cmd/gah 的 main() 只能在**子进程**里跑到,测试用 `go build -cover`

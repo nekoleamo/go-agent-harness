@@ -191,3 +191,93 @@ func TestSafeArtifactName(t *testing.T) {
 		}
 	}
 }
+
+// TestMoveIntoFallsBackToCopy 跨卷时 rename 会失败(EXDEV),那时必须退回复制而不是放弃:
+// 临时目录在另一块盘上是很正常的形态(外接 SSD 上的安装目录)。
+//
+// 这里不模拟 EXDEV(要造两个卷),而是直接打 moveInto 的**失败分支入口** copyPath:
+// rename 成功路径由 TestInstallerMainSwapsTarget 覆盖,本用例钉的是"复制子树时权限位跟得上"。
+func TestCopyPathPreservesModeAndTree(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "gah.app")
+	if err := os.MkdirAll(filepath.Join(src, "Contents", "MacOS"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(src, "Contents", "MacOS", "gah-desktop")
+	if err := os.WriteFile(bin, []byte("bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "Contents", "Info.plist"), []byte("plist"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(root, "placed.app")
+	if err := copyPath(src, dst); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(filepath.Join(dst, "Contents", "MacOS", "gah-desktop"))
+	if err != nil {
+		t.Fatalf("目录树应被复制: %v", err)
+	}
+	if st.Mode().Perm()&0o100 == 0 {
+		t.Fatalf("可执行位必须跟着走,拿到 %v", st.Mode().Perm())
+	}
+	if b, err := os.ReadFile(filepath.Join(dst, "Contents", "Info.plist")); err != nil || string(b) != "plist" {
+		t.Fatalf("文件内容应一致: %q %v", b, err)
+	}
+}
+
+// TestXMLMarksReplaced 开机自启的 plist 里路径必须转义(路径带 & / < 是合法目录名)。
+func TestPlistEscapesBundlePath(t *testing.T) {
+	got := plistContent("/Users/x/Dev & Tools/gah.app")
+	if strings.Contains(got, "Dev & Tools") {
+		t.Fatal("未转义的 & 会让 plist 解析失败")
+	}
+	if !strings.Contains(got, "Dev &amp; Tools") {
+		t.Fatalf("应转义成 &amp;,得到 %q", got)
+	}
+}
+
+// TestValidatePlanRejectsOutsideTemp 计划文件不在临时目录里 ⇒ 拒绝执行。
+// 为什么值得钉:安装器能被命令行直接拉起(`--install-update <plan>`),这是它唯一的输入面。
+func TestValidatePlanRejectsOutsideTemp(t *testing.T) {
+	root := t.TempDir()
+	payload := filepath.Join(root, "payload")
+	if err := os.WriteFile(payload, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	home, _ := os.UserHomeDir()
+	if home == "" {
+		t.Skip("无用户主目录")
+	}
+	outside := filepath.Join(home, ".gah-plan-test.json")
+	plan := installPlan{WaitPID: 0, Target: filepath.Join(root, "t"), PayloadTop: payload}
+	if err := validatePlan(outside, plan); err == nil {
+		t.Fatal("临时目录之外的计划应被拒绝")
+	}
+	// 临时目录内的同一份计划应通过。
+	inside := filepath.Join(t.TempDir(), "install.json")
+	if err := validatePlan(inside, plan); err != nil {
+		t.Fatalf("临时目录内的计划应通过: %v", err)
+	}
+}
+
+// TestValidatePlanRejectsBadFields 相对路径 / 负数 pid / 空载荷都必须拒绝。
+func TestValidatePlanRejectsBadFields(t *testing.T) {
+	root := t.TempDir()
+	planPath := filepath.Join(root, "p.json")
+	payload := filepath.Join(root, "payload")
+	if err := os.WriteFile(payload, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cases := []installPlan{
+		{WaitPID: 0, Target: "relative", PayloadTop: payload},
+		{WaitPID: 0, Target: filepath.Join(root, "t"), PayloadTop: "relative"},
+		{WaitPID: -1, Target: filepath.Join(root, "t"), PayloadTop: payload},
+		{WaitPID: 0, Target: filepath.Join(root, "t"), PayloadTop: filepath.Join(root, "missing")},
+	}
+	for i, c := range cases {
+		if err := validatePlan(planPath, c); err == nil {
+			t.Fatalf("case %d 应被拒绝: %+v", i, c)
+		}
+	}
+}

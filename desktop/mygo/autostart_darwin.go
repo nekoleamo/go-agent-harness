@@ -34,7 +34,12 @@ func plistPath() string {
 }
 
 // plistContent 生成 LaunchAgent 内容(纯文本,一眼能看完)。
+//
+// bundle 路径要转义:它来自用户自己的安装位置(`~/Applications/Dev & Tools/gah.app` 这种
+// 名字里带 `&` 的目录完全合法),直接拼进 XML 会让 plist 解析失败 —— 表现是"勾了开机自启
+// 但重启后不生效",而日志里什么都没有。
 func plistContent(bundle string) string {
+	bundle = xmlEscape(bundle)
 	return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -53,6 +58,12 @@ func plistContent(bundle string) string {
 `
 }
 
+// xmlEscape 转义 XML 文本节点的四个特殊字符。
+func xmlEscape(s string) string {
+	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", "\"", "&quot;")
+	return r.Replace(s)
+}
+
 // autostartEnabled 读真实自启状态。
 func (s *shell) autostartEnabled() bool {
 	bundle := bundlePath()
@@ -67,7 +78,7 @@ func (s *shell) autostartEnabled() bool {
 	if err != nil {
 		return false
 	}
-	return strings.Contains(string(b), "<string>"+bundle+"</string>")
+	return strings.Contains(string(b), "<string>"+xmlEscape(bundle)+"</string>")
 }
 
 // setAutostart 开/关开机自启。
