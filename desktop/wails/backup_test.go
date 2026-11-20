@@ -76,6 +76,41 @@ func TestBackupBeforeUpgrade(t *testing.T) {
 	}
 }
 
+// TestBackupSkipsRuntimeLockFiles 运行态锁文件不进备份。
+//
+// 回归自 2026-11-20 真机日志:`gah-data\schedules\.lease` 被 sidecar 的 LockFileEx 持着
+// (Windows 强制锁 ⇒ 别的进程连 read 都失败)→ 备份 step 报错 → 中止升级 → 界面只有
+// 一个「HTTP 500」。mac/Linux 的 flock 是建议锁,读得通,所以本地跑绿不代表真机不卡。
+//
+// 反向验证:去掉 copyTree 里的 isRuntimeLockFile 跳过,第 1 组断言立刻转红。
+func TestBackupSkipsRuntimeLockFiles(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dataRoot := filepath.Join(t.TempDir(), "gah-data")
+	// 运行态锁:调度租约 + 偏好写锁(prefs 锁的形状 = 状态文件 + ".lock")。
+	writeFile(t, filepath.Join(dataRoot, "schedules", ".lease"), "")
+	writeFile(t, filepath.Join(dataRoot, "schedules", "nightly.yaml"), "cron: '0 3 * * *'")
+	writeFile(t, filepath.Join(dataRoot, "prefs.json"), "{}")
+	writeFile(t, filepath.Join(dataRoot, "prefs.json.lock"), "")
+	// 用户的孤名 .lock(无同名状态文件)不是锁:不能拿后缀一刀切把它们也丢了。
+	writeFile(t, filepath.Join(dataRoot, "attachments", "notes.lock"), "用户自己的文件")
+
+	dst, err := backupBeforeUpgrade(dataRoot)
+	if err != nil {
+		t.Fatalf("遇到运行态锁文件不该让备份失败: %v", err)
+	}
+	for _, gone := range []string{filepath.Join("schedules", ".lease"), "prefs.json.lock"} {
+		if _, err := os.Stat(filepath.Join(dst, "gah-data", gone)); !isErrNotExist(err) {
+			t.Fatalf("运行态锁文件 %s 不该进备份(err=%v)", gone, err)
+		}
+	}
+	for _, kept := range []string{filepath.Join("schedules", "nightly.yaml"), "prefs.json", filepath.Join("attachments", "notes.lock")} {
+		if _, err := os.Stat(filepath.Join(dst, "gah-data", kept)); err != nil {
+			t.Fatalf("数据文件 %s 必须进备份: %v", kept, err)
+		}
+	}
+}
+
 // TestReadTailDropsPartialFirstLine 截断时丢掉被切断的首行(面板里不该出现残句)。
 func TestReadTailDropsPartialFirstLine(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "log")

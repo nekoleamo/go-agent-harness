@@ -45,6 +45,21 @@ export const isWailsShell =
   typeof location !== 'undefined' && hasShellQuery(location.search) && !tauriInvoke
 export const isDesktop = typeof tauriInvoke === 'function' || isWailsShell
 
+// ctlErrorMessage 非 2xx 响应的报错文案(纯函数,配单测)。
+//
+// 优先级 error → message → 裸状态码。为什么要有 message 兜底(2026-11-17 真机反馈):
+// 升级接口的失败体是 `{status:"failed", message:"...升级前备份失败: 复制 … 失败: …"}`
+// (没有 error 字段),只认 error 时界面显示的是一句「安装失败:HTTP 500」—— 真实原因
+// 就在响应体里,却恰好是用户最需要看到的那一行。
+export function ctlErrorMessage(status: number, body: unknown): string {
+  if (body && typeof body === 'object') {
+    const b = body as { error?: unknown; message?: unknown }
+    if (typeof b.error === 'string' && b.error) return b.error
+    if (typeof b.message === 'string' && b.message) return b.message
+  }
+  return `HTTP ${status}`
+}
+
 // shellFetch 调一次壳控制面(同源相对路径,凭据由 gah 的代理补,页面不经手)。
 async function ctlFetch(path: string, init?: { method?: string; body?: unknown }): Promise<unknown> {
   if (!isWailsShell) throw new Error('不是桌面壳环境')
@@ -59,13 +74,7 @@ async function ctlFetch(path: string, init?: { method?: string; body?: unknown }
   } catch {
     body = undefined
   }
-  if (!resp.ok) {
-    const msg =
-      body && typeof body === 'object' && typeof (body as { error?: unknown }).error === 'string'
-        ? String((body as { error?: string }).error)
-        : `HTTP ${resp.status}`
-    throw new Error(msg)
-  }
+  if (!resp.ok) throw new Error(ctlErrorMessage(resp.status, body))
   return body
 }
 

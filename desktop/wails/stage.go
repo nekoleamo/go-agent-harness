@@ -234,7 +234,16 @@ func migrateFrom(legacy, home string) (string, error) {
 	return target, nil
 }
 
-// copyTree 递归复制目录(符号链接按文件复制,与 Rust 壳同口径)。
+// copyTree 递归复制**数据根**(符号链接按文件复制,与 Rust 壳同口径)。
+//
+// 两处调用(升级前备份、旧位置迁移)复制的都是数据根,所以都要跳过**运行态锁文件**:
+// Windows 的 LockFileEx 是**强制锁** —— 持锁进程活着时别的进程连 read 都拿不到
+// (`ERROR_LOCK_VIOLATION`),而 mac/Linux 的 flock 是建议锁,读得通 ⇒ 同一个 bug 只在
+// Windows 显形。2026-11-20 真机日志:
+//
+//	升级前备份失败(中止升级): 复制 ...\gah-data → ... 失败: read ...\gah-data\schedules\.lease: The process cannot access the file because another process has locked a portion of the file.
+//
+// 锁文件本身不含数据(空的锁句柄载体),进程会按需重建,漏掉它不影响恢复。
 func copyTree(src, dst string) error {
 	if err := os.MkdirAll(dst, 0o755); err != nil {
 		return err
@@ -244,6 +253,9 @@ func copyTree(src, dst string) error {
 		return err
 	}
 	for _, e := range entries {
+		if isRuntimeLockFile(src, e) {
+			continue
+		}
 		from := filepath.Join(src, e.Name())
 		to := filepath.Join(dst, e.Name())
 		if e.IsDir() {
@@ -257,6 +269,25 @@ func copyTree(src, dst string) error {
 		}
 	}
 	return nil
+}
+
+// isRuntimeLockFile 判断目录项是不是「运行态锁文件」(复制数据根时跳过)。
+//
+// 名单与 xlock 的使用者一一对应,新增使用者时同步这里:
+//   - `$GAH_HOME/schedules/.lease`(host-schedule 的调度租约,进程全程持有);
+//   - `<状态文件>.lock`(internal/prefs 的 lockPath = 目标路径 + ".lock"),
+//     **只在同目录存在对应状态文件时才认** —— 否则用户自己的 `foo.lock` 会被误伤。
+//     复制期 stat 失败按「不是锁」处理:宁可多拷一份,也不静默丢用户文件。
+func isRuntimeLockFile(dir string, e os.DirEntry) bool {
+	name := e.Name()
+	if name == ".lease" {
+		return true
+	}
+	if !strings.HasSuffix(name, ".lock") {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(dir, strings.TrimSuffix(name, ".lock")))
+	return err == nil
 }
 
 // resolveRuntime 决定本次从哪个 sidecar 跑、数据根在哪。

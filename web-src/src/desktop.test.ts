@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { fetchShellNotices, hasShellQuery, requestAttention, sniffTauriInvoke, wailsUpdateSnapshot } from './desktop.ts'
+import { ctlErrorMessage, fetchShellNotices, hasShellQuery, requestAttention, sniffTauriInvoke, wailsUpdateSnapshot } from './desktop.ts'
 
 const invoke = (): Promise<unknown> => Promise.resolve('ok')
 
@@ -57,6 +57,21 @@ test('壳侧提示:非壳环境不请求(浏览器里不发多余请求)', async
 // 这条护栏保证调用方不必自己分支(也不会往 /shell/* 发无意义的请求)。
 test('requestAttention 在浏览器里是 no-op(不抛、不发请求)', async () => {
   assert.equal(await requestAttention('t', 'b'), false)
+})
+
+test('壳侧报错文案:error 优先,message 兜底,都没有才给裸状态码', () => {
+  // 回归自 2026-11-17 真机反馈:Windows 便携版点「升级」只看到「安装失败:HTTP 500」。
+  // 壳的升级接口把原因写在 message 里(升级前备份失败: 复制 … 失败: …),而这里只认
+  // error 字段 → 最该看到的那一行被吞成裸状态码。
+  // 反向验证:去掉 message 兜底,第 2 条即转红。
+  assert.equal(ctlErrorMessage(500, { error: '壳炸了' }), '壳炸了')
+  assert.equal(
+    ctlErrorMessage(500, { status: 'failed', message: '升级前备份失败,已中止: 复制 … 失败' }),
+    '升级前备份失败,已中止: 复制 … 失败',
+  )
+  assert.equal(ctlErrorMessage(500, {}), 'HTTP 500', '没有可读字段时不假装有原因')
+  assert.equal(ctlErrorMessage(503, undefined), 'HTTP 503')
+  assert.equal(ctlErrorMessage(500, { error: '' }), 'HTTP 500', '空串当没有')
 })
 
 // updateTarget:壳侧快照里「能升级到哪个版本」。
