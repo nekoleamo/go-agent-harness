@@ -159,6 +159,21 @@ func TestPanelCheckWithoutUpdaterFails(t *testing.T) {
 	}
 }
 
+// 连点守卫:进行中时第二次 tryBegin 必须失败(备份那几秒按钮还在)。
+func TestPanelBusyGuard(t *testing.T) {
+	p := &updatePanel{}
+	if !p.tryBegin() {
+		t.Fatal("首次 tryBegin 失败")
+	}
+	if p.tryBegin() {
+		t.Fatal("进行中又抢到了第二个名额(连点会两次备份 + 两份安装器)")
+	}
+	p.end()
+	if !p.tryBegin() {
+		t.Fatal("end 之后抢不回来")
+	}
+}
+
 // 进度比例:总量未知 = -1(不确定长度),超界钳到 [0,1]。
 func TestPanelProgressRatio(t *testing.T) {
 	cases := []struct {

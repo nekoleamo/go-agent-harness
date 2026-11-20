@@ -707,8 +707,8 @@ func installGate(expect, seen string, portable, writable, autoUpdateOff bool) (i
 // installPrecheck 「下载并安装」动手前的两步:installGate 准入 + 升级前备份。
 //
 // 原生更新面板与控制面 `/shell/update-install` **共用这一份**(2026-11-20 收):
-// 此前两者各写一遍 gate+备份,已经出现过一边漏便携判定的事故(见 updateflow 旧注释),
-// 再加一个面板就是第三份,所以统一到壳上。
+// 此前两者各写一遍 gate+备份,已经出现过一边漏便携判定的事故(旧 updateflow.go 与
+// control.go 各写一遍,其中一份漏了便携判定);再加一个面板就是第三份,所以统一到壳上。
 func (s *shell) installPrecheck(expect string) (installAction, string, error) {
 	seen := s.seenVersion()
 	// writable 惰性求值:portableWritable() 会在可执行文件目录里**真写一个临时文件**,

@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -35,6 +36,8 @@ type miniSnap struct {
 	others    int          // 另有几个会话在跑(running_sessions 去掉主会话)
 	notices   []noticeItem // 最近的 warn/error
 	at        time.Time    // 最近一次成功刷新的时刻
+	// restarting「重启服务」进行中:重启期间状态必然取不到,别显示成「服务失联」。
+	restarting bool
 }
 
 // miniState 是 /api/state 里本浮层用到的子集(其余字段不关心,不解码)。
@@ -111,6 +114,8 @@ type miniPanel struct {
 	snap   miniSnap
 	cursor uint64
 	stop   chan struct{}
+	// restarting 防连点:两次「重启服务」会并发停/起 sidecar,端口与进程都可能打架。
+	restarting atomic.Bool
 }
 
 // newMiniPanel 建浮层描述(**懒**建,第一次用才建 flyout)。
@@ -247,6 +252,7 @@ func (p *miniPanel) pollOnce() {
 	p.mu.Lock()
 	prev := p.snap
 	p.mu.Unlock()
+	next.restarting = p.restarting.Load()
 	if next.reachable && !prev.reachable {
 		shellLogf("概览浮层: 已连上服务 running=%v model=%s", next.running, next.model)
 	}
@@ -267,6 +273,15 @@ func (p *miniPanel) set(s miniSnap) {
 	if p.win != nil {
 		p.win.Update(func() {})
 	}
+}
+
+// setRestarting 只改快照里的 restarting 位(不整体覆盖:提示与状态要留着)。
+func (p *miniPanel) setRestarting(on bool) {
+	p.mu.Lock()
+	s := p.snap
+	s.restarting = on
+	p.mu.Unlock()
+	p.set(s)
 }
 
 // view 画一帧(只读快照,单测可直接喂 ui.NewTester)。
@@ -352,14 +367,26 @@ func (p *miniPanel) runNew() {
 }
 
 func (p *miniPanel) runRestart() {
+	// 守卫放在副作用出口**之前**:连点两次重启会并发停/起 sidecar(端口与进程都会打架)。
+	if !p.restarting.CompareAndSwap(false, true) {
+		return
+	}
+	p.setRestarting(true)
+	done := func() {
+		p.restarting.Store(false)
+		p.setRestarting(false)
+	}
 	if p.doRestart != nil {
 		p.doRestart()
+		done()
 		return
 	}
 	if p.sh == nil {
+		done()
 		return
 	}
 	go func() {
+		defer done()
 		if err := p.sh.restartSidecar(); err != nil {
 			shellLogf("概览浮层: 重启服务失败: %v", err)
 			p.sh.notifyDialog("重启服务失败", err.Error())
@@ -373,6 +400,9 @@ func (p *miniPanel) runRestart() {
 
 func miniStatusLine(s miniSnap) string {
 	switch {
+	case s.restarting:
+		// 重启期间 /api/state 必然取不到;说成「服务失联」会让人以为崩了。
+		return "正在重启服务…"
 	case !s.reachable:
 		return "服务失联"
 	case s.running:

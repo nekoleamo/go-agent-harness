@@ -14,6 +14,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -67,7 +68,16 @@ type updatePanel struct {
 	mu     sync.Mutex
 	snap   panelSnap
 	cancel context.CancelFunc // 下载期可取消
+	// busy 检查/安装进行中。防连点:备份那几秒按钮还在(阶段还没切),连点会做两次备份、
+	// 起两份安装器 —— 一次发布替换两份文件正是最难排查的那类现场。
+	busy atomic.Bool
 }
+
+// tryBegin 抢占「进行中」标记;已经在进行就返回 false(调用方直接退出)。
+func (p *updatePanel) tryBegin() bool { return p.busy.CompareAndSwap(false, true) }
+
+// end 放开标记。
+func (p *updatePanel) end() { p.busy.Store(false) }
 
 // newUpdatePanel 建面板(**懒**建:第一次用到才建 flyout,避免启动期多点一个窗口)。
 // tray 为 nil 时返回 nil(托盘起不来的降级路径:面板一样没有落点)。
@@ -206,6 +216,10 @@ func (p *updatePanel) runClose() {
 
 // check 只查不装(2026-10-03 的决定),结论落到面板而不是弹窗。
 func (p *updatePanel) check() {
+	if !p.tryBegin() {
+		return
+	}
+	defer p.end()
 	p.set(func(s *panelSnap) {
 		s.phase = panelChecking
 		s.message = ""
@@ -255,6 +269,10 @@ func (p *updatePanel) check() {
 
 // install 下载并安装。准入与备份走 shell.installPrecheck(与控制面同一份判定)。
 func (p *updatePanel) install(expect string) {
+	if !p.tryBegin() {
+		return
+	}
+	defer p.end()
 	sh := p.sh
 	if sh == nil || sh.updater == nil {
 		return
@@ -262,6 +280,12 @@ func (p *updatePanel) install(expect string) {
 	if expect == "" {
 		expect = sh.seenVersion()
 	}
+	// 先把阶段切到「下载中」再准入:否则备份那几秒按钮还亮着(连点会把下面的
+	// busy 守卫当摆设,而守卫只挡得住协程层)。总量未知时进度条走不确定长度态。
+	p.set(func(s *panelSnap) {
+		s.phase = panelDownloading
+		s.written, s.total = 0, 0
+	})
 	action, msg, err := sh.installPrecheck(expect)
 	switch {
 	case action == installPortableOnly:
@@ -298,10 +322,6 @@ func (p *updatePanel) install(expect string) {
 		p.mu.Unlock()
 	}()
 
-	p.set(func(s *panelSnap) {
-		s.phase = panelDownloading
-		s.written, s.total = 0, 0
-	})
 	shellLogf("更新面板: 开始下载安装更新")
 	if err := sh.updater.DownloadAndInstall(ctx); err != nil {
 		if ctx.Err() != nil {

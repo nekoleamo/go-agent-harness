@@ -19,6 +19,32 @@ func stateJSON(t *testing.T, v map[string]any) []byte {
 	return b
 }
 
+// 连点「重启服务」只该起一次(两次会并发停/起 sidecar)。
+func TestMiniRestartGuard(t *testing.T) {
+	p := &miniPanel{}
+	calls := 0
+	// 第一次还在进行中时再点一次:守卫必须挡住(直接串两次会被「瞬时假实现」
+	// 复位标记掩盖 —— 那正是这条用例第一版自证无效的原因)。
+	p.doRestart = func() {
+		calls++
+		p.runRestart()
+	}
+	p.runRestart()
+	if calls != 1 {
+		t.Fatalf("restart 调用 = %d, want 1", calls)
+	}
+	if p.restarting.Load() {
+		t.Fatal("重启结束后 restarting 位没复位")
+	}
+}
+
+// 重启期间状态取不到,但界面说的是「正在重启服务…」而不是「服务失联」。
+func TestMiniRestartingStatusWins(t *testing.T) {
+	if got := miniStatusLine(miniSnap{restarting: true}); got != "正在重启服务…" {
+		t.Fatalf("line = %q", got)
+	}
+}
+
 // 解析:会话名/角色/版本/「另有几个在跑」都要各归各位。
 func TestParseMiniState(t *testing.T) {
 	raw := stateJSON(t, map[string]any{
