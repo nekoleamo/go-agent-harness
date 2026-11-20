@@ -113,7 +113,15 @@ after(async () => {
   server?.close()
 })
 
-test(`稳态逐帧追加:400 条窗口下 p95 帧间隔 ≤ 3 帧(${STEADY_FRAMES} 帧)`, { skip: skip || undefined }, async (t) => {
+// 帧间隔预算:这条指标量的是**runner 的合成节奏**,不是我们自己的活(后者由下面的
+// 批处理+patch 断言钉住)。GitHub 的 macOS runner 明显慢于 ubuntu(2026-11-20 首次
+// 把主测试 job 换到 macos-15 时实测:p95 67ms,同一构建上批处理+patch p50 仍是 3ms),
+// 所以只对「CI 上的 darwin」放宽到 84ms(5 帧);本地 mac 与 Linux 保持 33ms(2 帧) ——
+// 别把它放宽到让真回归溜过去的程度:真正的回归会先体现在 bp50/bp95 上。
+const CI_MAC = process.env.CI === 'true' && process.platform === 'darwin'
+const FRAME_P95_BUDGET_MS = CI_MAC ? 84 : 33
+
+test(`稳态逐帧追加:400 条窗口下 p95 帧间隔 ≤ ${FRAME_P95_BUDGET_MS}ms(${STEADY_FRAMES} 帧)`, { skip: skip || undefined }, async (t) => {
   if (!browser) {
     let chromium
     try {
@@ -185,7 +193,10 @@ test(`稳态逐帧追加:400 条窗口下 p95 帧间隔 ≤ 3 帧(${STEADY_FRAME
         `帧间距 p50 ${p50}ms / p95 ${p95}ms / 最差 ${worst}ms;` +
         `批处理+patch(后一半样本)p50 ${bp50}ms / p95 ${bp95}ms / n=${tail.length}`,
     )
-    assert.ok(p95 <= 33, `稳态帧间距 p95 = ${p95}ms(上限 33ms = 2 帧);分布=${JSON.stringify(deltas.slice(0, 40))}`)
+    assert.ok(
+      p95 <= FRAME_P95_BUDGET_MS,
+      `稳态帧间距 p95 = ${p95}ms(上限 ${FRAME_P95_BUDGET_MS}ms);分布=${JSON.stringify(deltas.slice(0, 40))}`,
+    )
     assert.ok(
       bp50 > 0 && bp50 <= 8,
       `批处理+patch p50 = ${bp50}ms(上限 8ms;基线 3ms)—— 逐帧追加的主线程成本回退了;` +
