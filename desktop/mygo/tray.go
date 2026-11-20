@@ -33,6 +33,10 @@ func (s *shell) buildTray() {
 			}
 			shellLogf("托盘: 已开新会话窗口 %s", id)
 		}},
+		{Label: "概览…", Click: func(*mygo.MenuItem, *mygo.Window) {
+			shellLogf("托盘: 打开概览浮层")
+			s.openMiniWindow()
+		}},
 		{Label: "新实例…", Click: func(*mygo.MenuItem, *mygo.Window) { s.spawnNewInstance() }},
 		{Type: mygo.MenuItemSeparator},
 
@@ -114,6 +118,10 @@ func isTemplateIcon() bool { return runtime.GOOS == "darwin" }
 func (s *shell) quit() {
 	if s.quitting.Swap(true) {
 		return // 已经在退
+	}
+	// 概览浮层的轮询先停:退出过程中不该再发请求(它也不该成为孤儿协程)。
+	if s.mini != nil {
+		s.mini.stopPolling()
 	}
 	s.stopSidecar(true)
 	mygo.App.Quit()

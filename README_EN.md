@@ -33,7 +33,7 @@
 | **Notice channel** | `ctx.notices` messages aimed at humans (not in the session log, no tokens); TUI uses terminal notifications, the desktop shell uses system notifications |
 | **MCP / ACP, both ways** | MCP client bridge and server mode; `gah acp` is a first-class agent for editors, `acp-client` delegates work to external coding agents |
 | **Plugin install** | CLI `/install` and the Web panel share one core: source pinning with drift guard, `--prebuilt`, integrity gate, start/stop at will |
-| **Desktop shell** | Go + [mygo](https://github.com/egoist/mygo) (webview mode): tray, notifications, autostart, single instance, multi-session windows, `gah-shell.log` diagnostics; auto-update with its own ed25519 manifest and a separate installer (the Windows portable build updates in place too) |
+| **Desktop shell** | Go + [mygo](https://github.com/egoist/mygo) (webview mode): tray, notifications, autostart, single instance, multi-session windows, a tray overview panel (is it running? is the service reachable?), `gah-shell.log` diagnostics; auto-update with its own ed25519 manifest and a separate installer (the Windows portable build updates in place too) |
 | **Document preview** | One block model rendered in four places (markdown / text / code / CSV / notebook / PDF / Office): Web workbench, TUI pager, `gah doc` |
 
 ## 3. Quick start

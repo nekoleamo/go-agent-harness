@@ -68,6 +68,7 @@ type shell struct {
 
 	trayCheckItem *mygo.MenuItem // 托盘「检查更新…」
 	panel         *updatePanel   // 原生更新面板(懒建;托盘不可用时为 nil)
+	mini          *miniPanel     // 概览浮层(懒建;同理)
 
 	updateSeenMu sync.Mutex
 	updateSeen   string
@@ -281,6 +282,13 @@ func (s *shell) boot(windowReady <-chan struct{}) {
 			s.openUpdatePanel()
 		}()
 	}
+	if secs := miniOpenSeconds(); secs > 0 {
+		shellLogf("GAH_SHELL_MINI_OPEN=%d: %ds 后自动开概览浮层", secs, secs)
+		go func() {
+			time.Sleep(time.Duration(secs) * time.Second)
+			s.openMiniWindow()
+		}()
+	}
 }
 
 // shellURL 主窗口地址:`?shell=desktop` 让 web UI 走桌面壳布局;fragment 里带 gah
@@ -438,6 +446,18 @@ func trayIcon() []byte {
 // updateAutoCheckSeconds 升级冒烟入口:>0 时启动后自动检查一次。
 func updateAutoCheckSeconds() int {
 	if v := os.Getenv("GAH_SHELL_UPDATE_AUTOCHECK"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 0
+}
+
+// miniOpenSeconds 真机验证用的开关:启动 N 秒后自动开概览浮层(不开则等托盘菜单)。
+// 有这个开关,托盘锚定/DPI/深色这些只能人眼确认的东西才能在 CI 之外的一台机器上
+// 用一条命令跑出来(与 GAH_SHELL_UPDATE_AUTOCHECK 同口径)。
+func miniOpenSeconds() int {
+	if v := os.Getenv("GAH_SHELL_MINI_OPEN"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			return n
 		}

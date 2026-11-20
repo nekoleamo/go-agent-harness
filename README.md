@@ -34,7 +34,7 @@
 | **提示通道** | `ctx.notices` 面向人发提示(不进会话、不计 token);TUI 走终端通知,桌面壳走系统通知 |
 | **MCP / ACP 双向** | MCP client 桥与 server 端;`gah acp` 被编辑器当一等 agent,`acp-client` 把任务委派给外部编码 agent |
 | **插件安装** | CLI `/install` / Web 面板共用一份内核;来源固定与漂移守卫、`--prebuilt` 免构建脚本、完整性闸、随时启停 |
-| **桌面壳** | Go + [mygo](https://github.com/egoist/mygo)(webview 模式):托盘、通知、开机自启、单实例、多会话窗口、`gah-shell.log` 诊断;自动更新(自持 ed25519 清单 + 独立安装器,Windows 便携版也能就地升级) |
+| **桌面壳** | Go + [mygo](https://github.com/egoist/mygo)(webview 模式):托盘、通知、开机自启、单实例、多会话窗口、托盘概览浮层(在不在跑/失联就看它)、`gah-shell.log` 诊断;自动更新(自持 ed25519 清单 + 独立安装器,Windows 便携版也能就地升级) |
 | **文档预览** | 一套块模型 + 四端渲染(markdown / 文本 / 代码 / CSV / notebook / PDF / Office),Web 工作台、TUI pager、`gah doc` |
 
 ## 三、快速开始
