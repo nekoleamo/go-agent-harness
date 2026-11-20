@@ -60,10 +60,12 @@ TIMEOUT="${GAH_RELEASE_TIMEOUT:-1800}"
 
 # ci.yml 的 job。**逐个判绿**而不是「workflow 结束」—— 后者在有 job 被 skip 时也会是绿的。
 # 2026-10-30:desktop-shell / desktop-shell-macos(Rust 侧)已随旧链删除,
-# 桌面壳的编译/测试门并进了 test-windows/ test-macos 的 go vet + go test + 构建冒烟步骤。
+# 桌面壳的编译/测试门并进了 test(macOS)/ test-windows 的 go vet + go test + 构建冒烟步骤。
+# 2026-11-20:linux 退出发行矩阵,主测试 job 从 ubuntu 换 macOS 且 test-macos 并入其中 ——
+# 清单里删掉 test-macos(不删的话 wait 会一直等一个**永远不会出现**的 job 直到超时)。
 # 2026-11-09:新增 test-windows-arm64(arm64 产物真跑,已是硬门)—— 新加 job 必须同步进这份
 # 清单,否则 wait 会"跳过它也算绿":发版前最该判的恰恰是那一档。
-CI_JOBS=(test test-macos test-windows test-windows-arm64)
+CI_JOBS=(test test-windows test-windows-arm64)
 RELEASE_WORKFLOWS=(release-cli release-desktop-wails)
 
 # 先取子命令并 shift —— **再**扫旗标/位置参数。
@@ -257,7 +259,7 @@ wait_ci() {
   #
   # 空结果要**重试**再判红(2026-10-30 实测):run 刚落 completed 的那几十秒里,
   # `gh run view --json jobs` 偶尔回一个缺项的列表,`|| echo missing` 会把它记成
-  # 「红 test-macos = missing」,而 `gh run view --json jobs` 重跑一次就是 success。
+  # 「红 = missing」,而 `gh run view --json jobs` 重跑一次就是 success。
   # 一次瞬时的 API 抖动不该等于「CI 红了」—— 这条门要拦的是真红,不是网络。
   local j jc bad=0 tries
   for j in "${CI_JOBS[@]}"; do
