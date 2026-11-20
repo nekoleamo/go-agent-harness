@@ -53,9 +53,13 @@
 #   路径 ②(附包化)自此**永久排除**:它打破「单一静态二进制」这个对外承诺,不是省几 MiB 的事。
 #   **纪律不变:门只许往下调,不许往上抬。**
 #
+#   2026-11-20 **发行矩阵去 linux(只保留 darwin/windows × amd64/arm64)**:
+#   用户决定 Linux 整体退出发行矩阵 ⇒ `--all` 从六目标变**四目标**(linux/amd64、linux/arm64
+#   不再参与体积门)。阈值不变(仍 30/15 MiB):linux 两侧原本就在余量内,删它们不影响判据。
+#
 # 用法:
 #   bash scripts/size-check.sh              # 本平台(darwin/arm64 等)
-#   bash scripts/size-check.sh --all        # 发行矩阵五目标(交叉编译,离线可跑)
+#   bash scripts/size-check.sh --all        # 发行矩阵四目标(darwin/windows × amd64/arm64;交叉编译,离线可跑)
 #   GAH_SIZE_MAX_BIN_MIB=36 GAH_SIZE_MAX_GZ_MIB=23 bash scripts/size-check.sh --all
 set -euo pipefail
 
@@ -68,7 +72,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 TARGETS="$(go env GOOS)/$(go env GOARCH)"
-[ "$ALL" -eq 1 ] && TARGETS="darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64 windows/arm64"
+[ "$ALL" -eq 1 ] && TARGETS="darwin/amd64 darwin/arm64 windows/amd64 windows/arm64"
 
 MINOR="$(git describe --tags 2>/dev/null || echo dev)"
 TMP="$(mktemp -d)"

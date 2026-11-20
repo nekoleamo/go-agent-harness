@@ -211,7 +211,7 @@ preflight() {
 
   step "preflight · 六目标交叉编译"
   local t
-  for t in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64 windows/arm64; do
+  for t in darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
     GOOS="${t%/*}" GOARCH="${t#*/}" CGO_ENABLED=0 go build ./... || die "交叉编译红:$t"
     say "    OK $t"
   done

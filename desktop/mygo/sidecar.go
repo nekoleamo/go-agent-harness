@@ -12,7 +12,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -29,17 +28,22 @@ type sidecarProc struct {
 }
 
 // startSidecar 拉起 sidecar 并接管它的输出。
-func startSidecar(bin, addr, token string) (*sidecarProc, error) {
+//
+// ctlAddr/ctlToken 是壳自建控制面的入口(经 env 交给 sidecar,页面里的 /shell/* 由
+// gah 的同源代理转发)。令牌走 env 而不是 URL —— 跑在页面里的 UI 插件 JS 拿不到它。
+func startSidecar(bin, addr, token, ctlAddr, ctlToken string) (*sidecarProc, error) {
 	cmd := exec.Command(bin, "--profile", "web")
 	cmd.Env = append(os.Environ(),
 		"GAH_WEB_OPEN=0",         // 壳自己开窗口
 		"GAH_WEB_ADDR="+addr,     // 本次私有端口
 		"GAH_WEB_PARENT_WATCH=1", // 父死子死
+		// 控制面同源入口:页面里的 /shell/* 由 gah 转发到壳(见 web/shellbridge.go)。
+		"GAH_SHELL_CTL_ADDR="+ctlAddr,
+		"GAH_SHELL_CTL_TOKEN="+ctlToken,
 	)
 	if cwd := defaultWorkspace(); cwd != "" {
 		cmd.Dir = cwd
 	}
-	_ = token // 验证分支未挂控制面;token 只在探活/停机时用
 
 	inR, inW, err := os.Pipe()
 	if err != nil {
@@ -55,6 +59,9 @@ func startSidecar(bin, addr, token string) (*sidecarProc, error) {
 	}
 	cmd.Stdout = pw
 	cmd.Stderr = pw
+
+	// Windows:别让 sidecar 弹出控制台黑框。
+	hideConsole(cmd)
 
 	if err := cmd.Start(); err != nil {
 		for _, f := range []*os.File{inR, inW, pr, pw} {
@@ -103,28 +110,29 @@ func looksLikeLogLine(s string) bool {
 	return bad*20 < len(s)
 }
 
-// stop 优雅停 sidecar:POST /api/shutdown → 等端口释放 → 超时强杀。幂等。
-func (s *shell) stopSidecar() {
-	if s == nil || s.sc == nil {
+// stop 优雅停 sidecar:先 POST /api/shutdown,等端口释放,超时强杀。幂等(once)。
+//
+// 为什么不是 Kill:sidecar 要回收外部插件进程、落盘会话/计划状态;强杀会留下孤儿插件
+// 与半写的状态文件(旧壳真机踩过「升级后界面还是旧的」)。
+func (s *sidecarProc) stop(addr, token string) {
+	if s == nil {
 		return
 	}
-	s.sc.once.Do(func() {
-		p := s.sc
-		if p.cmd.Process == nil || p.exited.Load() {
+	s.once.Do(func() {
+		if s.cmd.Process == nil || s.exited.Load() {
 			return
 		}
-		shellLogf("退出链: POST /api/shutdown")
-		if err := postShutdown(s.addr, os.Getenv("GAH_WEB_TOKEN")); err != nil {
-			shellLogf("退出链: shutdown 失败(%v),继续等端口释放", err)
+		shellLogf("退出链: POST /api/shutdown → %s", addr)
+		if err := postShutdown(addr, token); err != nil {
+			shellLogf("退出链: shutdown 请求失败(%v),继续等端口释放", err)
 		}
-		if waitPortReleased(s.addr, 5*time.Second) {
+		if waitPortReleased(addr, 5*time.Second) {
 			shellLogf("退出链: 端口已释放")
 		} else {
 			shellLogf("退出链: 5s 内端口未释放,强杀 sidecar")
-			_ = p.cmd.Process.Kill()
+			_ = s.cmd.Process.Kill()
 		}
-		_ = p.stdin.Close()
-		p.exited.Store(true)
+		_ = s.stdin.Close()
 	})
 }
 
@@ -133,19 +141,4 @@ func (s *sidecarProc) wait() error {
 	err := s.cmd.Wait()
 	s.exited.Store(true)
 	return err
-}
-
-// triple 当前平台产物名后缀(沿用 gen-desktop 的命名)。
-func triple() string {
-	arch := runtime.GOARCH
-	switch arch {
-	case "amd64":
-		arch = "x86_64"
-	case "arm64":
-		arch = "aarch64"
-	}
-	if runtime.GOOS == "windows" {
-		return arch + "-pc-windows-msvc"
-	}
-	return arch + "-apple-darwin"
 }

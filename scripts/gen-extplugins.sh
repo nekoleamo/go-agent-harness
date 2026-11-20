@@ -2,8 +2,8 @@
 # 生成随包分发的外部工具插件二进制(M6.9 工具类全外部化):**一个** tool-kit 二进制,
 # 按角色分派 tool-basic(三件套)/ tool-workflow(starlark)/ tool-mcp(MCP client)/
 # tool-subagent —— 2026-10-02 由四个独立二进制合并而来(原始 30.8 MiB → 9.6 MiB)。
-# P4 平台匹配:按发行矩阵(darwin/linux/windows × amd64/arm64,与
-# .goreleaser.yaml 对齐)每目标构建一份,落 internal/embed/extplugins/<os>-<arch>/;
+# P4 平台匹配:按发行矩阵(darwin/windows × amd64/arm64;linux 自 2026-11-20 起已在矩阵外,
+# 与其对齐)。每目标构建一份,落 internal/embed/extplugins/<os>-<arch>/;
 # 主包交叉编译时经 build-tag 只嵌本平台产物(体积门不变);
 # 产物缺失时主包构建失败(goreleaser before hook 调用,防漏)。
 # P0 体积门回归(M7):strip(-s -w)+ 压缩;embed 存压缩产物,宿主首启 EnsurePlugins 解压落盘。
@@ -19,7 +19,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 EMBED_DIR=internal/embed/extplugins
-TARGETS="darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64 windows/arm64"
+TARGETS="darwin/amd64 darwin/arm64 windows/amd64 windows/arm64"
 # 2026-10-02 瘦身:四个独立二进制合成一个 tool-kit(按角色分派,见 extplugins/toolkit)。
 # 合成的是二进制不是进程 —— 宿主仍逐角色起进程,配置文件里的插件 id 一个都没变。
 NAMES="tool-kit"

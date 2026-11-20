@@ -11,7 +11,14 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # 2026-11-20:主测试 job 从 ubuntu-latest 换到 macOS —— Linux 整体退出发行矩阵
+    # (用户决定:后续只支持 Windows + macOS),测试平台跟着只保留要发的平台。
+    # 原先 ubuntu job 里那些 linux 专属步骤(Landlock 沙箱探针、linux/amd64 架构抽查)
+    # 随之删除;darwin 侧架构/构建校验由本 job 承担。
+    runs-on: macos-15
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -58,6 +65,13 @@ jobs:
         run: |
           go install honnef.co/go/tools/cmd/staticcheck@2026.2.2
           bash scripts/gate.sh
+      - name: 桌面壳构建冒烟(Wails 壳 macOS purego 后端 + cgo 回退路径)
+        # 2026-11-20:原 test-macos 并入本 job。发行路径 = CGO_ENABLED=0 + -tags purego;
+        # cgo 后端是回退路径,同样编一次 —— 两条只留一条时另一条会默默朽掉。
+        run: |
+          (cd desktop/wails && CGO_ENABLED=0 go build -tags purego -o /tmp/gah-desktop .)
+          (cd desktop/wails && CGO_ENABLED=1 go build -o /tmp/gah-desktop-cgo .)
+          (cd desktop/mygo && GOWORK=off CGO_ENABLED=0 go build -o /tmp/gah-desktop-mygo .)
       - name: go test -race(含覆盖率 profile,供下一步复用;sdk module 单独跑)
         env:
           # 子进程覆盖:cmd/gah 的 main() 只能在**子进程**里跑到,测试用 `go build -cover`
@@ -78,41 +92,34 @@ jobs:
         env:
           GAH_COVER_MERGE_DIR: ${{ runner.temp }}/gah-cover-merge
         run: bash scripts/coverage-check.sh coverage.out sdk-coverage.out
-      # Linux 是内核沙箱唯一能真验的平台:runner 的 LSM 没启用 Landlock 时用例会 SKIP,
-      # 于是「内核层真的拦住看不见的写」长期只有 SKIP 记录。这一步把判定变成硬条件 ——
-      # 能力在场就必须真跑通过(出现 SKIP 或 no tests to run 都算失败),不在场则如实留痕。
-      # 2026-11-09 收紧:两轮绿(run 42627167479 / 42631455230),日志确认走的是"真跑通过"分支
-      # (包内 1 条 + 端到端 2 条 + child.out 记账在场)⇒ 去掉观察期,现在它红就是真红。
-      # 注意:它红有两种含义,含义不同但都必须查 —— ①内核能力在但用例失败(真缺陷);
-      # ②容器 seccomp 挡了 landlock 系统调用(用例 SKIP 被本探针视为失败,需要自托管 runner)。
-      - name: Linux 内核沙箱探针(Landlock 在场即强制真跑;不支持则留痕不拦)
-        env:
-          # 与覆盖率门同目录:探针据此断言 L2(exec 前的子进程覆盖记账)真的落了盘。
-          GAH_COVER_MERGE_DIR: ${{ runner.temp }}/gah-cover-merge
-        run: bash scripts/kernel-sandbox-probe.sh
-      - name: 交叉编译矩阵(五目标+体积门+平台匹配)
+      # 2026-11-20:linux 退出发行矩阵后,原先的「Linux 内核沙箱探针(Landlock)」两步
+      # 随之删除 —— 该能力已不在发行平台内,不再作为合并门;代码保留在 linux build tag 下。
+      - name: 交叉编译矩阵(四目标+体积门+平台匹配)
         run: |
-          # 体积门:五目标交叉编译 + 二进制/gz 双阈值(阈值只在 scripts/size-check.sh);
-          # embed 经 build-tag 只嵌本平台外部插件(产物平台匹配由下方单测在 linux/amd64 上校验,
+          # 体积门:四目标交叉编译 + 二进制/gz 双阈值(阈值只在 scripts/size-check.sh);
+          # embed 经 build-tag 只嵌本平台外部插件(产物平台匹配由下方单测在本机平台上校验,
           # 其余目标由 go build 能否取到对应 embed 目录保证)。
           bash scripts/size-check.sh --all
-          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /tmp/gah-linux-amd64 ./cmd/gah
+          # 供后续裸机冒烟用的主包(本平台原生构建;2026-11-20 前这里是 linux 交叉编译)
+          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o ./gah ./cmd/gah
+          # Mach-O 64 位:前 4 字节 magic(cf fa ed fe)+ cputype@4(arm64 = 0c 00 00 01)。
+          head -c 8 gah | od -An -tx1 | tr -d ' \n' | grep -q 'cffaedfe0c000001' \
+            || { echo "darwin/arm64 主包 cputype 不符"; head -c 8 gah | od -An -tx1; exit 1; }
           go test ./internal/embed/ -run TestExtPluginsMatchPlatform -count=1
-          cp /tmp/gah-linux-amd64 ./gah # 供后续裸机冒烟
       - name: 发行流水线冒烟(goreleaser snapshot 全链路)
         uses: goreleaser/goreleaser-action@v6
         with:
           args: release --snapshot --clean
-      - name: snapshot 产物抽查(五目标归档 + linux/amd64 主包架构)
+      - name: snapshot 产物抽查(四目标归档 + darwin/arm64 主包架构)
         run: |
-          # 冒烟覆盖:before hook(go mod tidy + 重生成插件)→ 五目标交叉构建 →
+          # 冒烟覆盖:before hook(go mod tidy + 重生成插件)→ 四目标交叉构建 →
           # 归档/checksum;插件平台匹配已由 gen-extplugins.sh 内 assert_arch 与单测护栏。
-          for t in darwin_amd64 darwin_arm64 linux_amd64 linux_arm64 windows_amd64; do
+          for t in darwin_amd64 darwin_arm64 windows_amd64 windows_arm64; do
             ls dist/*${t}*.tar.gz >/dev/null || { echo "缺少 ${t} 归档"; exit 1; }
           done
-          mkdir -p /tmp/dist-check && tar -xzf dist/*linux_amd64*.tar.gz -C /tmp/dist-check
-          find /tmp/dist-check -name gah -type f -exec head -c 4 {} \; | od -An -tx1 | grep -q '7f 45 4c 46' \
-            || { echo "linux/amd64 主包非 ELF"; exit 1; }
+          mkdir -p /tmp/dist-check && tar -xzf dist/*darwin_arm64*.tar.gz -C /tmp/dist-check
+          find /tmp/dist-check -name gah -type f -exec head -c 4 {} \; | od -An -tx1 | grep -q 'cf fa ed fe' \
+            || { echo "darwin/arm64 主包非 Mach-O"; exit 1; }
           echo "发行流水线冒烟 OK"
       - name: 裸机冒烟(env -i 纯净环境启动)
         run: |
@@ -295,98 +302,3 @@ jobs:
           echo "windows/arm64 headless 真实回合 OK"
           echo "--- stderr 前 5 行(沙箱软降级/插件加载观测)---"
           head -5 arm-round.log || true
-  test-macos:
-    # Apple Silicon(arm64),与 release-desktop-wails.yml 的打包机一致。
-    # 2026-11-06:macos-14 已从 GitHub 的公开仓库 runner 表里移除 —— 用它会在 1 秒内被
-    # 取消(job 从未被接走,报 "The configuration 'macos-14-arm64-us-default' is not
-    # supported",runner_name 为空)。官方当前 arm64 标签是 macos-latest / macos-15 / macos-26;
-    # 这里选**显式版次** macos-15,而不是 macos-latest:后者会随时间跳到新大版本,
-    # 而桌面打包对 Xcode/系统版本敏感,发版机不该被静默升级。
-    runs-on: macos-15
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 26
-          cache: npm
-          cache-dependency-path: web-src/package-lock.json
-      - name: 重建外部插件(gzip embed;darwin/arm64 在发行矩阵内)
-        run: bash scripts/gen-extplugins.sh
-      - name: 重建前端产物(vue-tsgo + vite build → web/dist,漏则 go:embed 编译失败)
-        run: bash scripts/gen-web.sh
-      - name: 前端逻辑单测(node 内置运行器,零新增依赖)
-        run: cd web-src && npm test
-      - name: 布局回归护栏(真渲染:整页不滚 + 开合语义 + 检测器自检;REQUIRE=1 ⇒ 环境不满足直接红灯)
-        env:
-          GAH_LAYOUT_REQUIRE: "1"
-          GAH_LAYOUT_ARTIFACTS: ${{ runner.temp }}/gah-layout
-        run: cd web-src && npm run test:layout
-      # 2026-11-09 收紧:两轮 CI(run 42627167479 / 42631455230)均为 success,日志确认 4 条用例
-      # 真跑(允许/拒绝各一条 + 失败提示 + 侧栏三档),且浏览器与静态桩与布局护栏同源 ⇒ 去掉观察期。
-      - name: 交互护栏(真浏览器:审批允许/拒绝真的发 POST、失败如实提示、侧栏三档视觉;REQUIRE=1 ⇒ 环境不满足直接红灯)
-        env:
-          GAH_LAYOUT_REQUIRE: "1"
-        run: cd web-src && npm run test:interaction
-      - name: 布局护栏失败截图(仅在护栏失败时上传,便于排查画面)
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: layout-artifacts-${{ runner.os }}
-          path: ${{ runner.temp }}/gah-layout
-          if-no-files-found: ignore
-      - name: go vet(sdk 为独立 module,go.work 下根目录 ./... 不含它,须单独跑)
-        run: |
-          go vet ./...
-          (cd sdk && go vet ./...)
-          (cd desktop/wails && go vet ./...)
-      - name: staticcheck(与 ubuntu job 同版本,保证本地/CI 一致)
-        run: |
-          go install honnef.co/go/tools/cmd/staticcheck@2026.2.2
-          "$(go env GOPATH)/bin/staticcheck" ./...
-          (cd sdk && "$(go env GOPATH)/bin/staticcheck" ./...)
-          (cd desktop/wails && "$(go env GOPATH)/bin/staticcheck" ./...)
-      - name: go test -race(macOS 自带 clang,-race 无需额外工具链)
-        run: |
-          go test -race ./...
-          (cd sdk && go test -race ./...)
-          (cd desktop/wails && go test -race ./...)
-      - name: 桌面壳构建冒烟(Wails 壳,macOS 纯 Go/purego 后端)
-        # 发行路径 = CGO_ENABLED=0 + -tags purego(mac 不再需要 Xcode/clang)。
-        # cgo 后端是回退路径,同样编一次 —— 两条只留一条时另一条会默默朽掉。
-        run: |
-          (cd desktop/wails && CGO_ENABLED=0 go build -tags purego -o /tmp/gah-desktop .)
-          (cd desktop/wails && CGO_ENABLED=1 go build -o /tmp/gah-desktop-cgo .)
-      - name: 构建 darwin/arm64 主包并校验架构
-        run: |
-          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o gah ./cmd/gah
-          # Mach-O 64 位:前 4 字节 magic(cf fa ed fe)+ cputype@4(arm64 = 0c 00 00 01)。
-          # od 会用双空格对齐列,先去空白再做紧凑匹配。
-          head -c 8 gah | od -An -tx1 | tr -d ' \n' | grep -q 'cffaedfe0c000001' \
-            || { echo "darwin/arm64 主包 cputype 不符"; head -c 8 gah | od -An -tx1; exit 1; }
-          echo "darwin/arm64 主包架构 OK"
-      - name: 裸机冒烟(env -i 纯净环境启动)
-        run: |
-          env -i HOME="$(mktemp -d)" PATH="$PATH" ./gah --profile headless --ephemeral --dump-config >/dev/null
-          echo "macOS 裸机启动 OK"
-      - name: 裸机真实回合(覆盖 kernel_darwin.go 的 seatbelt 包装)
-        run: |
-          # seatbelt 是 macOS 独有分支:platformWrap 生成 sandbox-exec profile。
-          # sandbox-exec 不可用时走 warnUnavailable 告警路径(不阻断),所以这里只断言
-          # 真实回合能跑完,不断言包装一定生效。
-          env -i HOME="$(mktemp -d)" PATH="$PATH" ./gah --profile headless --ephemeral -input "hi" >/dev/null
-          echo "macOS headless 真实回合 OK"
-      - name: WebSocket 通道冒烟(M7.3:WS 事件载体 + 会话帧)
-        run: |
-          env -i HOME="$(mktemp -d)" PATH="$PATH" GAH_WEB_OPEN=0 ./gah --profile web --ephemeral &
-          GAH_PID=$!
-          sleep 2
-          go run ./scripts/ws-smoke.go
-          kill $GAH_PID 2>/dev/null || true
-          echo "macOS WS 通道冒烟 OK"

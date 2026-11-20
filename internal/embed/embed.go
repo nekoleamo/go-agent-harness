@@ -194,7 +194,7 @@ const ExtPluginExt = ".zst"
 // checkPlatformEmbedded 平台内置产物可用性(发行矩阵外 → 显式错误,不静默返回空/不存在)。
 func checkPlatformEmbedded() error {
 	if extPluginDir == "" {
-		return fmt.Errorf("internal/embed: 本平台不在内置外部插件发行矩阵内(darwin/linux × amd64/arm64 + windows/amd64);"+
+		return fmt.Errorf("internal/embed: 本平台不在内置外部插件发行矩阵内(darwin × amd64/arm64 + windows × amd64/arm64);"+
 			"当前 %s/%s 请自行把插件二进制放入数据根 plugins/(矩阵见 scripts/gen-extplugins.sh)", runtime.GOOS, runtime.GOARCH)
 	}
 	return nil
