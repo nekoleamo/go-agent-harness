@@ -113,15 +113,19 @@ after(async () => {
   server?.close()
 })
 
-// 帧间隔预算:这条指标量的是**runner 的合成节奏**,不是我们自己的活(后者由下面的
-// 批处理+patch 断言钉住)。GitHub 的 macOS runner 明显慢于 ubuntu(2026-11-20 首次
-// 把主测试 job 换到 macos-15 时实测:p95 67ms,同一构建上批处理+patch p50 仍是 3ms),
-// 所以只对「CI 上的 darwin」放宽到 84ms(5 帧);本地 mac 与 Linux 保持 33ms(2 帧) ——
-// 别把它放宽到让真回归溜过去的程度:真正的回归会先体现在 bp50/bp95 上。
+// 这条指标量的是**runner 的合成节奏**,不是我们自己的活(后者由批处理+patch 断言钉住)。
+// 2026-11-20 把主测试 job 从 ubuntu 换到 macOS 后实测:同一构建上批处理+patch p50 仍是 3ms,
+// 而帧间隔 p95 从 33ms 漂到 67 → 117ms(单帧 383ms 的尖峰),区间完全由 runner 决定。
+// 所以分档:
+//   - 本地/linux:绝对帧预算 33ms(2 帧),这是原口径,能抓住真实的逐帧退化;
+//   - CI 上的 macOS:**不对绝对帧间隔下断言**(它测的是 runner),只断言我们自己的活
+//     (批处理+patch p50 ≤ 8ms、p95 ≤ 24ms)+ 打印帧分布留证据。
+// 为什么不是"把门放宽到 120ms":那样真回归(每行每次渲染都跑 Intl/正则)照样能混过去,
+// 而它恰恰会先把 bp50 顶穿。
 const CI_MAC = process.env.CI === 'true' && process.platform === 'darwin'
-const FRAME_P95_BUDGET_MS = CI_MAC ? 84 : 33
+const FRAME_P95_BUDGET_MS = 33
 
-test(`稳态逐帧追加:400 条窗口下 p95 帧间隔 ≤ ${FRAME_P95_BUDGET_MS}ms(${STEADY_FRAMES} 帧)`, { skip: skip || undefined }, async (t) => {
+test(`稳态逐帧追加:400 条窗口下${CI_MAC ? '批处理+patch 预算(CI-macOS:不判绝对帧间隔)' : ` p95 帧间隔 ≤ ${FRAME_P95_BUDGET_MS}ms`}(${STEADY_FRAMES} 帧)`, { skip: skip || undefined }, async (t) => {
   if (!browser) {
     let chromium
     try {
@@ -193,14 +197,21 @@ test(`稳态逐帧追加:400 条窗口下 p95 帧间隔 ≤ ${FRAME_P95_BUDGET_M
         `帧间距 p50 ${p50}ms / p95 ${p95}ms / 最差 ${worst}ms;` +
         `批处理+patch(后一半样本)p50 ${bp50}ms / p95 ${bp95}ms / n=${tail.length}`,
     )
-    assert.ok(
-      p95 <= FRAME_P95_BUDGET_MS,
-      `稳态帧间距 p95 = ${p95}ms(上限 ${FRAME_P95_BUDGET_MS}ms);分布=${JSON.stringify(deltas.slice(0, 40))}`,
-    )
+    if (!CI_MAC) {
+      assert.ok(
+        p95 <= FRAME_P95_BUDGET_MS,
+        `稳态帧间距 p95 = ${p95}ms(上限 ${FRAME_P95_BUDGET_MS}ms = 2 帧);分布=${JSON.stringify(deltas.slice(0, 40))}`,
+      )
+    }
     assert.ok(
       bp50 > 0 && bp50 <= 8,
       `批处理+patch p50 = ${bp50}ms(上限 8ms;基线 3ms)—— 逐帧追加的主线程成本回退了;` +
         `先看是不是又加了每行每次渲染都跑的 Intl/正则/字符串拼接(见 src/perfprobe.ts 头注)。样本=${JSON.stringify(tail.slice(0, 40))}`,
+    )
+    // p95 也钉住(尾巴比中位数更能说明"偶发卡顿");上限取基线的 8 倍,不随 runner 走。
+    assert.ok(
+      bp95 > 0 && bp95 <= 24,
+      `批处理+patch p95 = ${bp95}ms(上限 24ms;基线 4ms);样本=${JSON.stringify(tail.slice(0, 40))}`,
     )
   } catch (e) {
     throw e
