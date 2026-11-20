@@ -9,7 +9,7 @@
 
 ## 1. What it is
 
-- **One static binary**: `CGO_ENABLED=0`, six cross-compile targets (darwin / linux / windows on amd64 / arm64); measured 26.9-29.1 MiB single file, 12.5-13.7 MiB gzipped (smallest on darwin/arm64, largest on windows/amd64), gates at 30 / 15 MiB (`scripts/size-check.sh`).
+- **One static binary**: `CGO_ENABLED=0`, four cross-compile targets (darwin / windows on amd64 / arm64); measured 26.9-29.1 MiB single file, 12.5-13.7 MiB gzipped (smallest on darwin/arm64, largest on windows/amd64), gates at 30 / 15 MiB (`scripts/size-check.sh`). **Linux is no longer supported as of 2026-11-20** (the Linux code paths still build from source, but no artifacts are published and CI no longer verifies them).
 - **Zero runtime deps**: no Node runtime, no node_modules, no version managers; starts under a bare `env -i`.
 - **Fully portable**: the data root is `gah-data/` next to the binary, created on first run; `gah` + `gah-data/` is the whole deployment, upgrades replace a single file.
 - **One source, three shapes**: TUI, Web (frontend embedded via `go:embed`) and headless are three profiles of the same process; the desktop shell reuses the same sidecar.
@@ -25,7 +25,7 @@
 | **In-turn steering** | Pressing Enter mid-turn injects the message into the running turn; falls back to "queued", `Alt+Up` recalls it |
 | **Tool pipeline** | MCP-compatible schemas; `pre-execute` (veto-able) → execute → post-execute → result broadcast; structured errors back to the model |
 | **Unified LLM model** | OpenAI-compatible adapter (DeepSeek / OpenAI / Ollama / vLLM / Kimi …) + Anthropic adapter + mock; multiple providers side by side |
-| **Sandbox, three levels** | read-only / workspace-write / full-access; uniform write-target adjudication incl. shell redirections and output flags; macOS seatbelt and Linux Landlock back it at the process-tree level |
+| **Sandbox, three levels** | read-only / workspace-write / full-access; uniform write-target adjudication incl. shell redirections and output flags; macOS seatbelt backs it at the process-tree level (the Linux Landlock path stays in the source, but Linux is out of the release matrix) |
 | **Approval, three levels** | open / smart (default, asks and waits) / strict; no confirmation channel means a safe reject |
 | **Sessions and context** | Per-project isolation, multiple sessions, fork/clone/tree, rolling summarisation over budget, `/cache` hit-rate diagnostics, `/usage` cross-session usage |
 | **Parallel sessions** | Web/desktop tabs run independently; within one session turns stay strictly serialised, single writer per session log |
@@ -48,7 +48,7 @@ Grab the right file from [Releases](https://github.com/nekoleamo/go-agent-harnes
 | Windows (64-bit) | `gah-<version>-setup.exe` | Double click; per-user install, no admin rights |
 | Windows portable | `gah-<version>-portable-x86_64-pc-windows-msvc.zip` | No install: unzip into a writable folder and run `gah-desktop.exe` |
 | Windows on ARM | `gah-<version>-portable-aarch64-pc-windows-msvc.zip` | Same as above (no separate arm64 installer) |
-| CLI (any platform) | `go-agent-harness_<version>_<os>_<arch>.tar.gz` | Single binary, unpack and run (also `.zip` and `checksums.txt`) |
+| CLI (macOS / Windows) | `go-agent-harness_<version>_<os>_<arch>.tar.gz` | Single binary, unpack and run (also `.zip` and `checksums.txt`; Linux artifacts stopped shipping 2026-11-20) |
 
 **The OS will block the first launch once** (no Apple / Microsoft signing certificate; the binary itself is fine):
 
@@ -90,7 +90,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$(git describe 
 ### Global install (deploy once, run anywhere)
 
 ```bash
-# macOS / Linux: build → ~/.local/gah + symlink ~/.local/bin/gah
+# macOS: build → ~/.local/gah + symlink ~/.local/bin/gah
 bash scripts/install.sh
 
 # Windows (PowerShell): build → %LOCALAPPDATA%\gah + add to the user PATH
@@ -332,7 +332,7 @@ Hard rules: plugins import `sdk/` only — never `core/`, `tui/` or another plug
 
 ```bash
 ./scripts/gen.sh cli       # single binary for this platform (TUI + Web + headless, frontend embedded)
-./scripts/gen.sh release   # goreleaser, six targets (tar.gz / zip + checksums)
+./scripts/gen.sh release   # goreleaser, four targets (darwin / windows on amd64 / arm64; tar.gz / zip + checksums)
 ./scripts/gen.sh desktop   # desktop shell: sidecar → shell build → .app / .app.zip (optional dmg)
 ./scripts/gen.sh web-dev   # frontend HMR (vite watch + GAH_WEB_STATIC)
 ```

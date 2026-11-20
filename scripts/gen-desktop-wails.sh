@@ -10,6 +10,7 @@
 # 前置:Go 工具链。mac 走 Wails v3.1 的 purego 后端,不再需要 Xcode CLT(见 §12)。
 set -euo pipefail
 cd "$(dirname "$0")/.."
+source scripts/lib-desktop-shell.sh
 
 MODE=debug
 for arg in "$@"; do
@@ -27,8 +28,9 @@ case "$(uname -s)-$(uname -m)" in
   *) echo "gen-desktop-wails: 未支持平台 $(uname -s)-$(uname -m)(桌面壳只发 mac/win)"; exit 1 ;;
 esac
 
-SHELL_MOD="desktop/wails"
+SHELL_MOD="$(gah_shell_mod)" || exit 1
 BIN="$SHELL_MOD/binaries"
+echo "壳: $SHELL_MOD(GAH_DESKTOP_SHELL=$(gah_shell_id))"
 mkdir -p "$BIN"
 
 # 版本号在**构建 sidecar 之前**就要有:壳与 sidecar 必须报同一个版本
@@ -76,16 +78,15 @@ fi
 case "$triple" in
   *windows*) [ "$MODE" = release ] && LDFLAGS="$LDFLAGS -H windowsgui" ;;
 esac
-# macOS 走 Wails v3.1 的 purego 后端(ObjC runtime + dlopen),壳从此 CGO=0 ——
-# mac 产物与 windows 一样纯 Go 构建,不再依赖 Xcode CLT / clang。
-# 见 docs/DESKTOP_FEASIBILITY.md §12;不带这个标签时上游 buildguard 会显式报错。
-[ "$(go env GOOS)" = "darwin" ] && TAGLIST="${TAGLIST:+$TAGLIST }purego"
-TAGS=""
-[ -n "$TAGLIST" ] && TAGS="-tags $TAGLIST"
-OUT="$SHELL_MOD/build/gah-desktop"
-mkdir -p "$SHELL_MOD/build"
-# shellcheck disable=SC2086  # TAGS 需要按空格拆开(空时不能留空参数)
-(cd "$SHELL_MOD" && CGO_ENABLED=0 go build -trimpath $TAGS -ldflags "$LDFLAGS" -o "build/gah-desktop" .)
+# 平台附加标签由 lib-desktop-shell.sh 决定:
+#   wails/darwin → purego(Wails v3.1 的 CGO-free macOS 后端,见 §12)
+#   mygo         → 无(本来就是 purego 实现)
+EXTRA_TAGS="$(gah_shell_tags "$(go env GOOS)")"
+TAGLIST="${TAGLIST:+$TAGLIST }${EXTRA_TAGS}"
+# Windows:图标/版本信息必须写进 PE 资源段(否则桌面/任务栏是 Go 默认图标)。
+gah_shell_genwinres "$(go env GOOS)" "$VERSION"
+OUT="$SHELL_MOD/build/$(gah_shell_exe "$(go env GOOS)")"
+gah_shell_build "$(go env GOOS)" "$(go env GOARCH)" "$LDFLAGS" "$TAGLIST" "$OUT"
 
 echo "产物: $OUT ($(du -h "$OUT" | cut -f1)) version=$VERSION"
 if [ "$MODE" = "release" ]; then

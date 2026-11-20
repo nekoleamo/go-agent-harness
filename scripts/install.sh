@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 全局安装(macOS/Linux,方案 A):一次部署,任意目录敲 `gah` 启动(pi 式)。
+# 全局安装(macOS,方案 A):一次部署,任意目录敲 `gah` 启动(pi 式)。
 #   - 构建 gah → 安装到 INSTALL_DIR(默认 ~/.local/gah)→ 符号链接进 ~/.local/bin
 #   - 数据根(R8)= 二进制同级 gah-data/(即 ~/.local/gah/gah-data,首次运行自动创建);
 #     GAH_HOME env 不作输入源;卸载会删除数据,需要保留请先 /backup。
@@ -14,6 +14,16 @@ cd "$(dirname "$0")/.."
 PROG=gah
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/gah}"
 BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
+
+# 2026-11-20:Linux 整体退出发行矩阵(只保留 macOS/Windows);
+# 保留本脚本的 linux 分支会让用户装到一个后续不再更新的版本,所以直接拒。
+case "$(uname -s)" in
+  Darwin) ;;
+  *)
+    echo "本脚本只支持 macOS;Linux/Windows 见 README 说明" >&2
+    exit 2
+    ;;
+esac
 
 if [ "${1:-}" = "--uninstall" ]; then
   rm -f "$BIN_DIR/$PROG"

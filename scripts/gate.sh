@@ -1,5 +1,5 @@
 #!/bin/bash
-# 本地提交前门禁(gofmt / go vet / staticcheck;三 module:根 + sdk + desktop/wails)。
+# 本地提交前门禁(gofmt / go vet / staticcheck;四 module:根 + sdk + desktop/wails + desktop/mygo)。
 #
 # 存在理由(2026-10-02,第二项待办「门禁固化」):
 #   这三步原先只以「习惯」的形式活在开发者脑子里 —— 批次记录里反复写「护栏:
@@ -83,6 +83,11 @@ else
   if (cd desktop/wails && go vet ./...); then echo "OK"; else fail "go vet desktop/wails module"; fi
 fi
 
+# —— 2c) go vet:desktop/mygo 是第四个 module(mygo webview 壳,自带 go.mod)——
+# 它不在 go.work 里(mygo 要 go 1.27.3,工作区是 1.27.0)⇒ 构建必须 GOWORK=off。
+step "go vet(desktop/mygo module)"
+if (cd desktop/mygo && GOWORK=off go vet ./...); then echo "OK"; else fail "go vet desktop/mygo module"; fi
+
 # —— 3) staticcheck(双模块;缺失即失败,不静默跳过)——
 if [ "$FAST" = "1" ]; then
   step "staticcheck(--fast:已跳过,不是通过)"
@@ -108,6 +113,8 @@ else
     else
       if (cd desktop/wails && "$SC" ./...); then echo "OK"; else fail "staticcheck desktop/wails module"; fi
     fi
+    step "staticcheck(desktop/mygo module)"
+    if (cd desktop/mygo && GOWORK=off "$SC" ./...); then echo "OK"; else fail "staticcheck desktop/mygo module"; fi
     # 版本漂移会让人误判「本地过了就是过了」——CI 固定同一个版本(见 STATICCHECK_VERSION)。
     if ! "$SC" -version 2>/dev/null | grep -q "$STATICCHECK_VERSION"; then
       echo "  ! 本地 staticcheck 版本与 CI 固定版本($STATICCHECK_VERSION)不同,结论可能不一致"

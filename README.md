@@ -9,10 +9,11 @@
 
 ## 一、项目定位
 
-- **单一静态二进制**:`CGO_ENABLED=0`,六目标交叉编译(darwin / linux / windows × amd64 / arm64);实测单文件 26.9–29.1 MiB、gz 12.5–13.7 MiB(darwin/arm64 最小、windows/amd64 最大),体积门 ≤30 / ≤15 MiB(`scripts/size-check.sh`)。
+- **单一静态二进制**:`CGO_ENABLED=0`,四目标交叉编译(darwin / windows × amd64 / arm64);实测单文件 26.9–29.1 MiB、gz 12.5–13.7 MiB(darwin/arm64 最小、windows/amd64 最大),体积门 ≤30 / ≤15 MiB(`scripts/size-check.sh`)。**Linux 自 2026-11-20 起不再支持**(源码里的 Linux 分支仍可自行构建,但不再产出发行产物、也不再在 CI 上验证)。
 - **零运行时依赖**:无 node 运行时、无 node_modules、无版本管理器;裸环境 `env -i` 可直接启动。
 - **完全便携**:数据根 = 二进制同级 `gah-data/`,首次启动自动创建;部署目录内 `gah` + `gah-data/` 即完整,升级只换单文件。
 - **三端同源**:TUI、Web(前端 `go:embed` 内嵌)、headless 是同一进程的三个 profile;桌面壳复用同一个 sidecar 产物。
+- **桌面壳纯 Go**:0.10.0 起桌面壳用 [mygo](https://github.com/egoist/mygo)(webview 模式,`CGO_ENABLED=0`,mac/Windows 同构);渲染器仍是系统 WebView,页面仍是 gah 自己那份。旧 Wails v3 壳保留可构建作回退(`GAH_DESKTOP_SHELL=wails`)。
 
 ## 二、功能特性
 
@@ -25,7 +26,7 @@
 | **回合内转向** | 回合运行中回车即把消息注入当前回合;注入不成转「待发」,`Alt+Up` 取回 |
 | **工具流水线** | MCP 兼容 schema;`pre-execute`(可 veto)→ execute → post-execute → result 广播;错误结构化回传 |
 | **LLM 统一域模型** | OpenAI 兼容适配器(DeepSeek / OpenAI / Ollama / vLLM / Kimi …)+ Anthropic 适配器 + mock;多 provider 并存 |
-| **沙箱三档** | read-only / workspace-write / full-access;写路径统一裁决,`shell` 的重定向与输出旗标同口径;macOS seatbelt、Linux Landlock 在进程树层面兜底 |
+| **沙箱三档** | read-only / workspace-write / full-access;写路径统一裁决,`shell` 的重定向与输出旗标同口径;macOS seatbelt 在进程树层面兜底(Linux Landlock 实现保留在源码里,但 Linux 已不在发行矩阵) |
 | **审批三档** | open / smart(默认,弹确认且不超时)/ strict;无确认通道一律安全拒绝 |
 | **会话与上下文** | 项目级隔离、多会话、fork/clone/tree、超预算滚动摘要、`/cache` 命中率诊断、`/usage` 跨会话用量 |
 | **多会话并行** | Web/桌面端页签各自独立跑;同一会话内严格串行,会话日志单写者 |
@@ -48,7 +49,7 @@
 | Windows(64 位) | `gah-<版本>-setup.exe` | 双击安装,仅当前用户,不要求管理员 |
 | Windows 便携版 | `gah-<版本>-portable-x86_64-pc-windows-msvc.zip` | 不安装:解压到可写目录,双击 `gah-desktop.exe` |
 | Windows on ARM | `gah-<版本>-portable-aarch64-pc-windows-msvc.zip` | 同上(arm64 不单独出安装器) |
-| 命令行版(任意平台) | `go-agent-harness_<版本>_<系统>_<架构>.tar.gz` | 解压即用的单文件二进制(另附 `.zip` 与 `checksums.txt`) |
+| 命令行版(macOS / Windows) | `go-agent-harness_<版本>_<系统>_<架构>.tar.gz` | 解压即用的单文件二进制(另附 `.zip` 与 `checksums.txt`;Linux 产物自 2026-11-20 起不再发布) |
 
 **首次打开会被系统拦一次**(未购买 Apple / 微软签名证书,程序本身完好):
 
@@ -90,7 +91,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$(git describe 
 ### 全局安装(一次部署,任意目录启动)
 
 ```bash
-# macOS / Linux:构建 → ~/.local/gah + 符号链接 ~/.local/bin/gah
+# macOS:构建 → ~/.local/gah + 符号链接 ~/.local/bin/gah
 bash scripts/install.sh
 
 # Windows(PowerShell):构建 → %LOCALAPPDATA%\gah + 加入用户 PATH
@@ -332,7 +333,7 @@ MCP server 是第三方代码,起进程时按内核沙箱限制文件写。作�
 
 ```bash
 ./scripts/gen.sh cli       # 本平台单二进制(TUI + Web + headless,前端已内嵌)
-./scripts/gen.sh release   # goreleaser 六目标发行(tar.gz / zip + checksums)
+./scripts/gen.sh release   # goreleaser 四目标发行(darwin / windows × amd64 / arm64;tar.gz / zip + checksums)
 ./scripts/gen.sh desktop   # 桌面壳:sidecar → 壳构建 + 组装 .app / .app.zip(可选 dmg)
 ./scripts/gen.sh web-dev   # 前端热更开发(vite watch + GAH_WEB_STATIC)
 ```

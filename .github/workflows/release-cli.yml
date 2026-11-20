@@ -72,7 +72,7 @@ jobs:
           GORELEASER_CURRENT_TAG: ${{ inputs.tag || github.ref_name }}
       - name: 产物抽查(五目标归档齐全)
         run: |
-          for t in darwin_amd64 darwin_arm64 linux_amd64 linux_arm64 windows_amd64; do
+          for t in darwin_amd64 darwin_arm64 windows_amd64 windows_arm64; do
             ls dist/*${t}*.tar.gz >/dev/null || { echo "缺少 ${t} 归档"; exit 1; }
           done
           echo "release 产物 OK"

@@ -1,0 +1,10 @@
+# 构建产物
+build/
+binaries/
+embed/
+# Windows PE 资源(genwinres 生成;含版本号,发版时按 tag 重新生成)
+rsrc_windows_*.syso
+
+gah.app/
+*.app.zip
+*.dmg

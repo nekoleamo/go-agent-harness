@@ -350,7 +350,7 @@ func main() {
 - 运行期崩溃:调用转结构化错误,宿主 60s 节流自动拉起。
 
 **平台与构建(P4)**
-- 插件二进制必须与宿主同平台;`scripts/gen-extplugins.sh` 按发行矩阵(darwin/linux × amd64/arm64 + windows/amd64)构建,embed 分平台打包(主包每目标只嵌本平台产物)。
+- 插件二进制必须与宿主同平台;`scripts/gen-extplugins.sh` 按发行矩阵(darwin × amd64/arm64 + windows × amd64/arm64;linux 自 2026-11-20 起不在矩阵内)构建,embed 分平台打包(主包每目标只嵌本平台产物)。
 - 需要限制子进程写入的插件:用根模块的 `internal/kernelsandbox`(**仅进程内插件可用**;外部插件只 import `sdk`,故只能经上文的沙箱上下文变量 + 自己实现——`tool-basic` 就是这样给 shell 施加的;进程被宿主包装时,它内部那次 `Wrap` 会因 `GAH_KERNEL_SANDBOXED` 标记返回 nil,由外层 profile 统一生效)。
 - 新增外部插件:加进脚本的 NAMES 列表 + catalogue 登记;构建链产物缺失时主包构建失败(防漏,勿手动删除 embed 产物目录)。
 
