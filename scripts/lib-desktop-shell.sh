@@ -5,18 +5,19 @@
 #   source scripts/lib-desktop-shell.sh
 #   MOD="$(gah_shell_mod)"
 #
-# 开关:GAH_DESKTOP_SHELL=wails(默认)| mygo
-#   - 默认仍是 **wails**:现网发的就是它,本分支在 mygo 真机矩阵跑完之前不抢默认;
+# 开关:GAH_DESKTOP_SHELL=mygo(默认)| wails
+#   - 2026-11-20 起默认 **mygo**(0.10.0 的桌面壳就是它;用户已真机验收);
+#     wails 保留可构建作回退:出问题把这里的默认值改回 wails 重打即可,不需改代码;
 #   - mygo 壳的构建方式不同:它自带 go.mod 且要求 go 1.27.3,不在仓库 workspace 里,
 #     所以必须 GOWORK=off(见 docs/DESKTOP_FEASIBILITY.md §14.3);
-#   - 切换口径:真机矩阵通过后把本文件的默认值改成 mygo,再删 desktop/wails(§14.7)。
+#   - wails 的退役(删模块/脚本改名)留给后续批次;在那之前两边都要能编。
 #
 # 为什么需要这层:产物布局(binaries/、build/、embed/gah.bin.gz、.app 结构、可执行文件名)
 # 两套壳完全一致 —— 让调用方(gen/publish/package/release/workflow)只认这些函数,
 # 而不是各自硬编码 desktop/wails 路径(硬编码是"换壳时漏改一处就静默发错产物"的成因)。
 
 # gah_shell_id 当前选择的壳 id。
-gah_shell_id() { echo "${GAH_DESKTOP_SHELL:-wails}"; }
+gah_shell_id() { echo "${GAH_DESKTOP_SHELL:-mygo}"; }
 
 # gah_shell_mod 壳模块目录(相对仓库根)。
 gah_shell_mod() {

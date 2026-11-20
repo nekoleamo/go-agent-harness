@@ -13,6 +13,7 @@
 - **零运行时依赖**:无 node 运行时、无 node_modules、无版本管理器;裸环境 `env -i` 可直接启动。
 - **完全便携**:数据根 = 二进制同级 `gah-data/`,首次启动自动创建;部署目录内 `gah` + `gah-data/` 即完整,升级只换单文件。
 - **三端同源**:TUI、Web(前端 `go:embed` 内嵌)、headless 是同一进程的三个 profile;桌面壳复用同一个 sidecar 产物。
+- **桌面壳纯 Go**:0.10.0 起桌面壳用 [mygo](https://github.com/egoist/mygo)(webview 模式,`CGO_ENABLED=0`,mac/Windows 同构);渲染器仍是系统 WebView,页面仍是 gah 自己那份。旧 Wails v3 壳保留可构建作回退(`GAH_DESKTOP_SHELL=wails`)。
 
 ## 二、功能特性
 
