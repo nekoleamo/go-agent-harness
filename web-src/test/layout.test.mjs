@@ -215,7 +215,25 @@ async function measure(page) {
       const bb = el.getBoundingClientRect()
       return { top: Math.round(bb.top), bottom: Math.round(bb.bottom), inside: bb.bottom <= vh + 1 && bb.top >= -1 }
     }
+    // 底栏不许压到右上角按钮上(Windows 真机反馈:窄窗口下版本号/用量文字直接叠在按钮上)。
+    // 为什么整页护栏抓不到:溢出发生在 .statusbar-slot 的 flex 行**内部**,既不撑高也不撑宽
+    // 文档 —— 文字只是画到了相邻按钮的位置,measure 的越界判定与滚动判定都看不见。
+    const statusbarOverlap = (() => {
+      const slot = document.querySelector('.statusbar-slot')
+      const bar = slot && slot.querySelector('.bar')
+      if (!bar) return null
+      const bb = bar.getBoundingClientRect()
+      const gears = [...slot.querySelectorAll('.gear')]
+      const first = gears.length ? Math.round(gears[0].getBoundingClientRect().left) : null
+      return {
+        barRight: Math.round(bb.right),
+        gearLeft: first,
+        barHidden: Math.round(bar.scrollWidth - bar.clientWidth),
+        slotHidden: Math.round(slot.scrollWidth - slot.clientWidth),
+      }
+    })()
     return {
+      statusbarOverlap,
       scrollHeight: se.scrollHeight,
       clientHeight: se.clientHeight,
       scrollWidth: se.scrollWidth,
@@ -252,6 +270,19 @@ function assertInvariants(m) {
   assert.ok(m.hasSidebar, '侧栏未渲染')
   assert.ok(m.composer && m.composer.inside, `输入区不在视口内:${JSON.stringify(m.composer)}`)
   assert.ok(m.statusbar && m.statusbar.inside, `状态栏不在视口内:${JSON.stringify(m.statusbar)}`)
+  const sb = m.statusbarOverlap
+  if (sb) {
+    if (sb.gearLeft !== null) {
+      assert.ok(
+        sb.barRight <= sb.gearLeft + 1,
+        `底栏压到右上角按钮上(barRight=${sb.barRight} > gearLeft=${sb.gearLeft}):窄窗该隐藏低价值项,而不是让文字叠——见 StatusBar.vue 的媒体阶梯`,
+      )
+    }
+    assert.ok(
+      sb.barHidden <= 1,
+      `底栏内容被裁掉 ${sb.barHidden}px(说明隐藏阶梯不够:该在更宽的断点就丢掉低价值项)`,
+    )
+  }
 }
 
 const viewports = [
@@ -285,6 +316,37 @@ describe('布局护栏:整页永不滚动(第五十二/五十三批)', { skip: s
         }
       })
     }
+  }
+
+  // 底栏在**最挤的形态**下也不许把文字叠到右上角按钮上。
+  // 2026-11-20 Windows 真机反馈:窗口一变窄,「15.5K(窗口未知) v0.9.9-test」直接压在
+  // 「任务/侧栏」按钮上 —— 底栏内容溢出的位置在 .statusbar-slot 行内部,既不撑高也不撑宽
+  // 文档,原来的整页护栏(滚动/越界)一条都看不见它。判据见 measure() 的 statusbarOverlap。
+  // 复刻真机那一帧的**最坏组合**:在跑 + 沙箱档 + 未命名会话(长 id)+ 速率 + 用量 + 版本,
+  // 而且**没有角色徽标** —— 角色是底栏里唯一会截断(可牺牲)的项,它一在场亏空就被它吸走,
+  // 于是任何护栏都看不出问题(这正是这条缺陷一直没被抓到的原因:已有用例的桩都带长角色)。
+  const fatState = {
+    // 未命名会话 ⇒ 底栏第三长项「未命名会话 #20261120-113636」
+    session: { id: '20261120-113636', path: '/tmp/anon.jsonl', key: 'k-anon' },
+    // 15.5K(窗口未知):窗口未知时不显示分母,但量本身仍要占位
+    stats: { PromptTokens: 15872, CompletionTokens: 300, CachedTokens: 0, Requests: 3, LastPromptTokens: 15872, Window: 0 },
+  }
+  for (const w of [1440, 1200, 1000, 820, 700]) {
+    test(`${w}x700 底栏不压右上角按钮(在跑 + 未命名会话 + 速率 + 用量,无角色)`, async (t) => {
+      const ctx = await browser.newContext({ viewport: { width: w, height: 700 } })
+      let page = null
+      try {
+        // sseTurns=1:让「速率」这一项真的出现(底栏里第三长度项)。
+        const stub = makeStub(true, true, true, false, false, 'finance', 0, false, true, 1, false, false, '', [], [], fatState)
+        page = await open(ctx, stub, docks[0].dock)
+        assertInvariants(await measure(page))
+      } catch (e) {
+        await shoot(page, t.name)
+        throw e
+      } finally {
+        await ctx.close()
+      }
+    })
   }
 
   // 设置面板内部不许出现横向滚动条(第六十三批真机反馈)。

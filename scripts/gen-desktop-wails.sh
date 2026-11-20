@@ -83,6 +83,8 @@ esac
 #   mygo         → 无(本来就是 purego 实现)
 EXTRA_TAGS="$(gah_shell_tags "$(go env GOOS)")"
 TAGLIST="${TAGLIST:+$TAGLIST }${EXTRA_TAGS}"
+# Windows:图标/版本信息必须写进 PE 资源段(否则桌面/任务栏是 Go 默认图标)。
+gah_shell_genwinres "$(go env GOOS)" "$VERSION"
 OUT="$SHELL_MOD/build/$(gah_shell_exe "$(go env GOOS)")"
 gah_shell_build "$(go env GOOS)" "$(go env GOARCH)" "$LDFLAGS" "$TAGLIST" "$OUT"
 

@@ -59,3 +59,19 @@ gah_shell_build() {
   ( cd "$mod" && env "${gowork[@]}" CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
       go build -trimpath "${targs[@]}" -ldflags "$ld" -o "build/$(basename "$out")" . )
 }
+
+# gah_shell_genwinres <goos> <version>
+# 给 Windows 产物写 PE 资源(图标/版本信息/manifest)。**为什么必须在构建前跑**:
+# 图标与"属性→详细信息"都来自 exe 的资源段,裸 go build 不含它们 —— 用户看到的是 Go 默认图标
+# 与空版本(2026-11-20 真机反馈)。只有 mygo 壳带这个生成器(wails 壳走它的打包工具链)。
+gah_shell_genwinres() {
+  local goos="$1" ver="$2" mod
+  [ "$goos" = "windows" ] || return 0
+  [ "$(gah_shell_id)" = "mygo" ] || return 0
+  mod="$(gah_shell_mod)" || return 1
+  [ -f "$mod/cmd/genwinres/main.go" ] || return 0
+  ( cd "$mod" && GOWORK=off go run ./cmd/genwinres -version "$ver" ) || {
+    echo "gah_shell_genwinres: 生成 Windows 资源失败($mod)" >&2
+    return 1
+  }
+}

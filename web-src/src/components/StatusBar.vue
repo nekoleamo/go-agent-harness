@@ -108,14 +108,14 @@ const tpsLabel = computed(() => {
     </span>
     <!-- 别的窗口/别的会话在跑:只在**本会话没在跑**时提示。本会话在跑时不必说
          「还有 N 个」——底栏已经很挤,且那件事在侧栏有逐会话标记。 -->
-    <span v-if="othersN > 0" class="it faint" data-testid="others-running">
+    <span v-if="othersN > 0" class="it faint opt-others" data-testid="others-running">
       另有 {{ othersN }} 个会话在跑
     </span>
     <!-- 沙箱与角色都是**本会话**的(第一百三十四批)。前缀只在**该会话真的压过了全局**时出现:
          绝大多数会话跟随全局,那时这三个字是纯噪音,还要挤底栏的宽度(700px 窗口下实测溢出
          46px)。真独立了才值得说 —— 「信号才占位」与页签方块标记同一口径。 -->
-    <span v-if="sessionScoped" class="it faint scope-key">当前会话</span>
-    <span class="it faint">沙箱 {{ sandboxLabel }}</span>
+    <span v-if="sessionScoped" class="it faint scope-key opt-scope">当前会话</span>
+    <span class="it faint opt-sandbox">沙箱 {{ sandboxLabel }}</span>
     <!-- 角色名是本栏唯一「用户自定长度」的字段:截断显示,全文在 tooltip 里 ——
          不截断时长名字会把文字挤成多行(底栏从 22px 涨到 58px,真实测得)并把右侧挤出去。 -->
     <span
@@ -125,14 +125,14 @@ const tpsLabel = computed(() => {
     >
       <span class="role-key">角色</span>{{ roleLabel }}
     </span>
-    <span v-if="anonSession" class="it faint">未命名会话{{ anonSession }}</span>
+    <span v-if="anonSession" class="it faint opt-anon">未命名会话{{ anonSession }}</span>
     <span class="spacer" />
-    <span v-if="tpsLabel" class="it faint mono" data-testid="tps">速率 {{ tpsLabel }}</span>
+    <span v-if="tpsLabel" class="it faint mono opt-tps" data-testid="tps">速率 {{ tpsLabel }}</span>
     <span class="conn" :class="props.conn">
       <span class="conn-dot" />
       <span class="conn-text">{{ connText }}</span>
     </span>
-    <span class="ctx mono">{{ ctx }}</span>
+    <span class="ctx mono opt-ctx">{{ ctx }}</span>
     <button class="ver mono" data-tip="关于 gah(版本 / 检查更新)" @click="emit('open-about')">
       v{{ state.version || 'dev' }}
     </button>
@@ -151,6 +151,11 @@ const tpsLabel = computed(() => {
   /* min-width:0:底栏是状态栏槽位的 flex 项,默认的 min-width:auto(= 内容宽)会让它
      拒绝收缩,于是窄窗口下把右侧按钮顶出屏幕。允许收缩后,亏空由 .role 的省略号吸收。 */
   min-width: 0;
+  /* 兜底:内容再多也不许画到相邻的右上角按钮上(2026-11-20 Windows 真机反馈:
+     窗口变窄时「15.5K(窗口未知) / v0.9.9-test」直接压在「任务/侧栏」按钮上)。
+     溢出裁剪只是最后一道保险 —— 正常情况由下面的媒体阶梯按优先级**隐藏**低价值项,
+     而不是让文字互相叠。 */
+  overflow: hidden;
 }
 .bar > * {
   /* 固定文案不参与挤压(挤压份额全部留给 .role;见下方 .role 的 flex-shrink:1) */
@@ -234,6 +239,40 @@ const tpsLabel = computed(() => {
    700px 视口下整条底栏溢出 16px(布局护栏 test:layout 实测红)。
    故窄窗退成**无胶囊的强调色粗体**:显眼度的大头(强调色 + 加重)全保留,只丢掉装饰,
    零布局开销。判断线取 760px:低于它底栏本就没有余量。 */
+/* 窄窗阶梯:底栏是单行事实栏,窄了就按「值不值钱」从上往下丢,而不是让文字叠在一起。
+   顺序刻意固定(丢的顺序 = 用户能容忍的顺序):
+     另有会话 > 速率 > 未命名会话号 > 「当前会话」前缀 > 上下文用量 > 沙箱
+   留下的四件是不可牺牲的:运行态(在跑没有)、连接状态(断了最要紧)、版本(关于入口)、角色(会截断)。 */
+@media (max-width: 1290px) {
+  .opt-others {
+    display: none;
+  }
+}
+@media (max-width: 1230px) {
+  .opt-tps {
+    display: none;
+  }
+}
+@media (max-width: 1160px) {
+  .opt-anon {
+    display: none;
+  }
+}
+@media (max-width: 1080px) {
+  .opt-scope {
+    display: none;
+  }
+}
+@media (max-width: 1000px) {
+  .opt-ctx {
+    display: none;
+  }
+}
+@media (max-width: 920px) {
+  .opt-sandbox {
+    display: none;
+  }
+}
 @media (max-width: 760px) {
   .bar {
     gap: 8px;

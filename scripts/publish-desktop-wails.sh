@@ -181,6 +181,7 @@ if [ -n "$PUBKEY" ]; then
 else
   echo "publish: ！未提供 GAH_DESKTOP_UPDATE_PUBKEY —— 本次产物只校验摘要,不应作为正式发行"
 fi
+gah_shell_genwinres "$GOOS" "$VERSION"
 gah_shell_build "$GOOS" "$GOARCH" "$LD" "$TAGS" "$EXE"
 
 echo "[3/4] 打包(唯一顶层条目)"
