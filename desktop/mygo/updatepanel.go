@@ -23,6 +23,9 @@ import (
 // panelAccent 与 web 端同一支强调色(web-src/src/style.css 的 DeepSeek 蓝)。
 const panelAccent = "#4176e6"
 
+// releasePageURL 便携版/被挡住时的下载落点(与 README 里给用户的那句话一致)。
+const releasePageURL = "https://github.com/nekoleamo/go-agent-harness/releases/latest"
+
 // 面板阶段。与 updater 的五态**不是一回事**:updater 只有「下载/装」两段,
 // 面板还要表示「检查中 / 已是最新 / 被准入判定挡住」这些只发生在面板里的态。
 const (
@@ -55,10 +58,11 @@ type updatePanel struct {
 
 	// 副作用出口:为 nil 时走 shell 上的真实实现。单测注入假实现后
 	// 只验「哪个按钮点了会触发哪件事」,不碰网络、不碰文件。
-	doCheck   func()
-	doInstall func(expect string)
-	doRestart func()
-	doClose   func()
+	doCheck    func()
+	doInstall  func(expect string)
+	doRestart  func()
+	doClose    func()
+	doDownload func()
 
 	mu     sync.Mutex
 	snap   panelSnap
@@ -172,6 +176,21 @@ func (p *updatePanel) runRestart() {
 	}
 	if err := p.sh.updater.Restart(context.Background()); err != nil {
 		shellLogf("更新面板: 重启失败: %v", err)
+	}
+}
+
+// runDownload 打开发行页(便携版自动更新被拒时的唯一出路)。
+func (p *updatePanel) runDownload() {
+	if p.doDownload != nil {
+		p.doDownload()
+		return
+	}
+	if p.sh == nil {
+		return
+	}
+	if err := p.sh.openExternal(releasePageURL); err != nil {
+		shellLogf("更新面板: 打开下载页失败: %v", err)
+		p.sh.notifyDialog("打不开浏览器", err.Error())
 	}
 }
 
@@ -404,9 +423,14 @@ func (p *updatePanel) body(c *ui.Context, t ui.Theme, s panelSnap) {
 
 	case panelAvailable:
 		if s.notes != "" {
-			ui.Scroll(c).Height(96).Children(func() {
-				ui.Text(c, truncateRunes(s.notes, 600)).TextColor(t.TextMuted)
-			})
+			// 短说明直接铺开(固定 96 高会在下面留一条空白带);长说明才进滚动区。
+			if len([]rune(s.notes)) <= 240 {
+				ui.Text(c, s.notes).Wrap().TextColor(t.TextMuted)
+			} else {
+				ui.Scroll(c).Height(96).Children(func() {
+					ui.Text(c, truncateRunes(s.notes, 600)).TextColor(t.TextMuted)
+				})
+			}
 		} else {
 			ui.Text(c, "这个版本没带更新说明。").TextColor(t.TextMuted)
 		}
@@ -439,7 +463,18 @@ func (p *updatePanel) body(c *ui.Context, t ui.Theme, s panelSnap) {
 			}
 		})
 
-	case panelFailed, panelBlocked:
+	case panelBlocked:
+		ui.Text(c, truncateRunes(s.message, 600)).Wrap().TextColor(t.TextMuted)
+		ui.Row(c).Gap(8).Children(func() {
+			if ui.PrimaryButton(c, "去下载").Clicked() {
+				p.runDownload()
+			}
+			if ui.Button(c, "关闭").Clicked() {
+				p.runClose()
+			}
+		})
+
+	case panelFailed:
 		ui.Scroll(c).Height(96).Children(func() {
 			ui.Text(c, truncateRunes(s.message, 600)).TextColor(t.TextMuted)
 		})

@@ -105,7 +105,9 @@ func (s *shell) buildTray() {
 	}
 	s.tray = tray
 	s.trayCheckItem = menu.ItemByID(checkIdleID())
-	tray.OnClick(func() { s.focus() })
+	// 托盘左键开「概览」浮层(2026-11-20 用户拍板):托盘常驻应用的直觉是点图标看状态,
+	// 打开主窗口走菜单「打开 gah」。托盘没起来时 focus() 仍是兜底(菜单项也还在)。
+	tray.OnClick(func() { s.focusOverview() })
 }
 
 // checkIdleID 「检查更新」菜单项的 ID(便于 ItemByID 取句柄)。
@@ -125,6 +127,11 @@ func (s *shell) quit() {
 	}
 	s.stopSidecar(true)
 	mygo.App.Quit()
+}
+
+// focusOverview 托盘左键:开概览浮层(它自己处理「托盘不可用」的降级)。
+func (s *shell) focusOverview() {
+	s.openMiniWindow()
 }
 
 // setTrayStarting 启动期的菜单栏提示(在显示窗口时撒掉)。

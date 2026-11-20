@@ -279,21 +279,21 @@ func (p *miniPanel) view(c *ui.Context) {
 	s := p.snap
 	p.mu.Unlock()
 
-	root := ui.Column(c).Padding(16).Gap(10).Width(340)
+	root := ui.Column(c).Padding(16).Gap(10).Width(360)
 	if !c.Vibrancy() {
 		root.Background(t.Background)
 	}
 	root.Children(func() {
 		// 状态行:圆点 + 一句话。
-		ui.Row(c).Gap(8).Children(func() {
+		ui.Row(c).Gap(8).AlignItems(ui.Baseline).Children(func() {
 			ui.Text(c, "●").FontSize(11).TextColor(miniStatusColor(t, s))
 			ui.Text(c, miniStatusLine(s)).Bold()
 		})
 		ui.Divider(c)
 
 		if s.reachable {
-			ui.Text(c, "会话:"+miniSessionName(s)).TextColor(t.TextMuted)
-			ui.Text(c, "模型:"+orDash(s.model)+miniRoleSuffix(s)).TextColor(t.TextMuted)
+			ui.Text(c, "会话: "+miniSessionName(s)).TextColor(t.TextMuted)
+			ui.Text(c, "模型: "+orDash(s.model)+miniRoleSuffix(s)).TextColor(t.TextMuted)
 			if s.others > 0 {
 				ui.Text(c, fmt.Sprintf("另有 %d 个会话在跑", s.others)).TextColor(t.TextMuted)
 			}

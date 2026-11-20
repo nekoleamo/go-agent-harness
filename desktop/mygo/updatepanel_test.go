@@ -40,8 +40,9 @@ func TestPanelPhaseRenders(t *testing.T) {
 			[]string{"新版本 0.11.0 已就绪,重启后生效。", "立即重启", "稍后"}},
 		{"failed", panelSnap{phase: panelFailed, message: "连不上更新源(超时):xxx"}, "更新失败",
 			[]string{"连不上更新源(超时):xxx", "重试", "关闭"}},
+		// 被挡住 ≠ 失败:便携版重试没有意义,给的是「去下载」(发行页)。
 		{"blocked", panelSnap{phase: panelBlocked, message: "便携版不自动更新:请下载新包覆盖本目录"}, "无法自动更新",
-			[]string{"便携版不自动更新", "重试", "关闭"}},
+			[]string{"便携版不自动更新", "去下载", "关闭"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -91,6 +92,22 @@ func TestPanelReadyActions(t *testing.T) {
 	}
 	if restarts != 1 || closes != 1 {
 		t.Fatalf("restarts=%d closes=%d, want 1/1", restarts, closes)
+	}
+}
+
+// 被挡住时「去下载」走打开发行页,而不是再查一次(便携版重试无意义)。
+func TestPanelBlockedDownload(t *testing.T) {
+	p := testPanel(panelSnap{phase: panelBlocked, message: "便携版不自动更新"})
+	downloads, checks := 0, 0
+	p.doDownload = func() { downloads++ }
+	p.doCheck = func() { checks++ }
+
+	tt := ui.NewTester(p.view, 420, 320)
+	if err := tt.Click("去下载"); err != nil {
+		t.Fatal(err)
+	}
+	if downloads != 1 || checks != 0 {
+		t.Fatalf("downloads=%d checks=%d, want 1/0", downloads, checks)
 	}
 }
 
