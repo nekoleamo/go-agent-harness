@@ -1,3 +1,8 @@
 # 构建产物
 build/
 binaries/
+embed/
+
+gah.app/
+*.app.zip
+*.dmg

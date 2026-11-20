@@ -125,10 +125,11 @@ esac
 OUT="$OUT_ROOT/$PLATFORM"
 rm -rf "$OUT"; mkdir -p "$OUT"
 
-SHELL_MOD=desktop/wails
+source scripts/lib-desktop-shell.sh
+SHELL_MOD="$(gah_shell_mod)" || exit 1
 BIN_DIR="$SHELL_MOD/binaries"
-EXE="$SHELL_MOD/build/gah-desktop"
-[ "$GOOS" = "windows" ] && EXE="$SHELL_MOD/build/gah-desktop.exe"
+EXE="$SHELL_MOD/build/$(gah_shell_exe "$GOOS")"
+echo "壳: $SHELL_MOD(GAH_DESKTOP_SHELL=$(gah_shell_id))"
 
 # 前置:web/dist 与 extplugins 必须现成(go:embed 在编译期就要它们);缺了报一句人话,
 # 而不是让 go build 抛一堆 embed 路径错误。
@@ -167,7 +168,8 @@ gzip -9 -n -c "$SIDECAR" > "$SHELL_MOD/embed/gah.bin.gz"
 # 壳全程 CGO=0:darwin 走 Wails v3.1 的 purego 后端(-tags purego),windows 本来就是纯 Go。
 # 于是两个平台都能在同一台 mac 上交叉编(见 docs/DESKTOP_FEASIBILITY.md §12)。
 TAGS="embed_sidecar"
-[ "$GOOS" = "darwin" ] && TAGS="$TAGS purego"
+EXTRA_TAGS="$(gah_shell_tags "$GOOS")"
+[ -n "$EXTRA_TAGS" ] && TAGS="$TAGS $EXTRA_TAGS"
 # 验签公钥必须烧进壳(信任根不能来自发行渠道);没给就明确警告 —— 那种包只能校验摘要。
 PUBKEY="${GAH_DESKTOP_UPDATE_PUBKEY:-}"
 LD="-s -w -X main.version=$VERSION"
@@ -179,8 +181,7 @@ if [ -n "$PUBKEY" ]; then
 else
   echo "publish: ！未提供 GAH_DESKTOP_UPDATE_PUBKEY —— 本次产物只校验摘要,不应作为正式发行"
 fi
-(cd "$SHELL_MOD" && CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH go build -trimpath -tags "$TAGS" \
-   -ldflags "$LD" -o "build/$(basename "$EXE")" .)
+gah_shell_build "$GOOS" "$GOARCH" "$LD" "$TAGS" "$EXE"
 
 echo "[3/4] 打包(唯一顶层条目)"
 case "$GOOS" in

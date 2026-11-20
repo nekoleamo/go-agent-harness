@@ -200,16 +200,23 @@ preflight() {
   # 2026-11-17 起 mac 壳也走 CGO=0(-tags purego):两条后端都编一次 ——
   # 发行走 purego,cgo 后端作为回退路径不能默默朽掉(见 DESKTOP_FEASIBILITY §12)。
   ( cd desktop/wails
-    go vet ./...      || die "桌面壳 go vet 红"
-    go test ./...     || die "桌面壳单测红"
+    go vet ./...      || die "桌面壳(Wails)go vet 红"
+    go test ./...     || die "桌面壳(Wails)单测红"
     CGO_ENABLED=0 go build -tags purego -o /tmp/gah-desktop-preflight . || die "桌面壳构建红(purego)"
     CGO_ENABLED=1 go build -o /tmp/gah-desktop-preflight-cgo . || die "桌面壳构建红(cgo 回退路径)"
+  )
+  # 2026-11-20:mygo 壳进了分支 ⇒ 两套壳的**两套**门都要跑,否则另一套会默默朽掉
+  # (与「purego / cgo 两条后端都编一次」同一条纪律)。mygo 不在 workspace,必须 GOWORK=off。
+  ( cd desktop/mygo
+    GOWORK=off go vet ./...    || die "桌面壳(mygo)go vet 红"
+    GOWORK=off go test ./...   || die "桌面壳(mygo)单测红"
+    GOWORK=off CGO_ENABLED=0 go build -o /tmp/gah-desktop-mygo-preflight . || die "桌面壳(mygo)构建红"
   )
 
   step "preflight · 体积门"
   bash scripts/size-check.sh || die "体积门红"
 
-  step "preflight · 六目标交叉编译"
+  step "preflight · 交叉编译矩阵(darwin/windows × amd64/arm64)"
   local t
   for t in darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
     GOOS="${t%/*}" GOARCH="${t#*/}" CGO_ENABLED=0 go build ./... || die "交叉编译红:$t"

@@ -32,6 +32,9 @@ permissions:
 env:
   # 内嵌 web/dist 与 extplugins 都要现成产物,否则 sidecar 编不出来(与 Tauri 链同前置)。
   CGO_ENABLED: '0'
+  # 2026-11-20:两套桌面壳并存期由**仓库变量**选择(缺省 wails = 现网在发的那套,
+  # 与 scripts/lib-desktop-shell.sh 的默认值一致)。真机矩阵通过后两边一起改成 mygo。
+  GAH_DESKTOP_SHELL: ${{ vars.GAH_DESKTOP_SHELL || 'wails' }}
 
 jobs:
   darwin-aarch64:

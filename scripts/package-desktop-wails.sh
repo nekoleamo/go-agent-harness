@@ -19,6 +19,7 @@
 #   - 版本号取 git describe,写进 CFBundleShortVersionString 与 updater 清单
 set -euo pipefail
 cd "$(dirname "$0")/.."
+source scripts/lib-desktop-shell.sh
 
 DO_DMG=0
 NO_BUILD=0
@@ -45,17 +46,18 @@ esac
 # --no-build:发行脚本已经构建过(带公钥/版本注入),这里只组装,免得再编一遍覆盖掉。
 [ "$NO_BUILD" = "1" ] || bash scripts/gen-desktop-wails.sh --release >/dev/null
 
-APP="desktop/wails/build/gah.app"
+SHELL_MOD="$(gah_shell_mod)" || exit 1
+APP="$SHELL_MOD/build/gah.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 # 只放壳:sidecar 已 gzip 内嵌在壳里(见 desktop/wails/embed_sidecar.go),
 # 于是 .app 只有一个可执行文件,更新器换这一个文件就等于整包升级。
-cp desktop/wails/build/gah-desktop "$APP/Contents/MacOS/gah-desktop"
+cp "$SHELL_MOD/build/gah-desktop" "$APP/Contents/MacOS/gah-desktop"
 chmod +x "$APP/Contents/MacOS/gah-desktop"
 
 # 图标:壳自己的 assets(不再依赖旧 Tauri 工程目录 —— 那条链删掉后这里会静默丢图标)。
-ICNS=desktop/wails/assets/gah.icns
+ICNS="$SHELL_MOD/assets/gah.icns"
 [ -f "$ICNS" ] && cp "$ICNS" "$APP/Contents/Resources/icon.icns"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
@@ -82,7 +84,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-OUT_DIR="desktop/wails/build"
+OUT_DIR="$SHELL_MOD/build"
 ZIP="$OUT_DIR/gah-${VERSION}-${TRIPLE}.app.zip"
 
 # 代码签名:macOS 按「签名标识 + bundle 封章」认应用,而 Go 链接器只给**可执行文件**
