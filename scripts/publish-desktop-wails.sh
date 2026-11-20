@@ -237,7 +237,7 @@ case "$GOOS" in
 gah 便携版
 
 - 双击 gah-desktop.exe 运行;所有数据在本目录的 gah-data/(换机器请整个目录一起拷)
-- 便携版不自动更新(Windows 不允许覆盖正在运行的程序):请下载新包覆盖本目录
+- 本目录可写时支持应用内自动更新(装完自动重启);提示不可更新时再下载新包覆盖本目录
 - 想彻底清理:退出 gah 后删除整个目录即可
 TXT
     go run ./desktop/wails/cmd/desktopman pack --in "$PORT_DIR" --entry gah \
